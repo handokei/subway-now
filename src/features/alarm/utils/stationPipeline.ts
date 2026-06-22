@@ -19,6 +19,7 @@ import {
   logFiredStationPassed,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
+  logSuppressedPhaseToPhaseDedup,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -28,6 +29,7 @@ import {
 } from './alarmLog';
 import {
   isStationRecentlyFired,
+  isPhaseToPhaseCrossStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
   markStationFired,
 } from './crossCategoryStationDedup';
@@ -332,9 +334,26 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       // #1643 — trip-scoped cross-category + cross-station 즉시 cascade. 같은 trip에 직전 5s 안에
       // **다른 station에서 cross-category(SP↔phase)** fire가 있었다면 phase 알람 차단. 2026-06-20
       // 12:31 어대 "군자 도착"(SP) + "곧 성수 도착"(D imminent) 회귀 차단. 같은 station 진행
-      // (early→imminent)은 통과 — per-station dedup이 담당. same-category cross-station은 통과 —
-      // 정상 trip 진행 보존.
+      // (early→imminent)은 통과 — per-station dedup이 담당.
       logSuppressedCrossCategoryRecent({
+        source,
+        stationName: alarmEvent.stationName,
+        kind: alarmEvent.type,
+        phaseId: alarmEvent.phaseId,
+      });
+    } else if (
+      isPhaseToPhaseCrossStationRecentlyFired(
+        destination.id,
+        alarmEvent.stationName,
+        alarmEvent.type,
+        Date.now(),
+      )
+    ) {
+      // #1656 — phase↔phase cross-station 즉시 cascade(3s 윈도우). 같은 trip에 직전 3s 안에 다른
+      // station에서 phase(transfer/destination) fire가 있었다면 차단. leg 전환 race 회귀:
+      //   - 2026-06-20 12:32 어대: "곧 건대"(transfer) + "성수 도착"(destination)
+      //   - 2026-06-19 15:37 BG: "곧 이수"(destination) + "다음 역 사당"(transfer)
+      logSuppressedPhaseToPhaseDedup({
         source,
         stationName: alarmEvent.stationName,
         kind: alarmEvent.type,

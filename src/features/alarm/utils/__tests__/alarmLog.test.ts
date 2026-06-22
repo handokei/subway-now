@@ -31,6 +31,7 @@ import {
   FLUSH_MAX_DELAY_MS,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
+  logSuppressedPhaseToPhaseDedup,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedSleepFirstTransfer,
@@ -588,6 +589,36 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(lastJson);
       const recent = saved.filter((e) => e.reason === 'dedup-cross-category-recent');
       expect(recent).toHaveLength(1);
+    });
+
+    it('#1656 logSuppressedPhaseToPhaseDedup: reason=dedup-phase-to-phase + kind/phase 보존', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedPhaseToPhaseDedup({
+        source: 'fg',
+        stationName: '성수',
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+      await expectLastSavedEntryMatches({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'dedup-phase-to-phase',
+        stationName: '성수',
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('#1656 logSuppressedPhaseToPhaseDedup: 윈도우 내 같은 stationName 재호출은 drop', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedPhaseToPhaseDedup({ source: 'fg', stationName: '성수', kind: 'destination' });
+      logSuppressedPhaseToPhaseDedup({ source: 'bg', stationName: '성수', kind: 'transfer' });
+      await flushAlarmLog();
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      const lastJson = calls[calls.length - 1][1];
+      const saved: AlarmLogEntry[] = JSON.parse(lastJson);
+      const p2p = saved.filter((e) => e.reason === 'dedup-phase-to-phase');
+      expect(p2p).toHaveLength(1);
     });
 
     it('logSuppressedDedupAlarm: reason=dedup-alarm, phase+type+stationName 적재 (#580)', async () => {

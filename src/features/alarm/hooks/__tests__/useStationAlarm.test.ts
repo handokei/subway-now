@@ -85,6 +85,7 @@ const mockLogSuppressedOriginHopLockless = jest.fn();
 const mockLogSuppressedPassedEventOnLockOrigin = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
+const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
@@ -114,6 +115,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedCrossCategoryDedup(...args),
   logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryRecent(...args),
+  logSuppressedPhaseToPhaseDedup: (...args: unknown[]) =>
+    mockLogSuppressedPhaseToPhaseDedup(...args),
   logSuppressedSsotFireGate: (...args: unknown[]) =>
     mockLogSuppressedSsotFireGate(...args),
 }));
@@ -705,6 +708,31 @@ describe('useStationAlarm', () => {
       }),
     );
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+  });
+
+  it('#1656 phase↔phase dedup — 직전 3s 안 다른 station에서 phase fire됐다면 phase 알람 차단', async () => {
+    // 어대 12:32 시나리오: "곧 건대"(transfer imminent) 직후 "성수 도착"(destination) 차단.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const dedup = require('../../utils/crossCategoryStationDedup');
+    const route = makeDirectRoute(1, '2');
+    // 직전 다른 station(건대)에서 transfer phase fire를 시뮬레이션.
+    dedup.markStationFired(destination.id, '건대', 'transfer', Date.now());
+    // destination phase 알람(성수=earlyDest.stationName, 다른 station) 발사 시도.
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127 }, speedMps: 5 }),
+      ),
+    );
+    await waitFor(() =>
+      expect(mockLogSuppressedPhaseToPhaseDedup).toHaveBeenCalledWith({
+        source: 'fg',
+        stationName: earlyDest.stationName,
+        kind: 'destination',
+        phaseId: 'early',
+      }),
+    );
+    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
   });
 
   it('destination 변경 시 새 destinationId로 re-hydrate 한다 (#462 destination scoped)', async () => {

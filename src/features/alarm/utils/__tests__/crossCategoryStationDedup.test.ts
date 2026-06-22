@@ -1,9 +1,11 @@
 import {
   CROSS_CATEGORY_DEDUP_WINDOW_MS,
+  PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS,
   TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS,
   _resetCrossCategoryDedupForTests,
   clearCrossCategoryDedup,
   isStationRecentlyFired,
+  isPhaseToPhaseCrossStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
   markStationFired,
 } from '../crossCategoryStationDedup';
@@ -131,8 +133,10 @@ describe('crossCategoryStationDedup (#1515)', () => {
 
       // ── 통과 (cross-station + same-category, 정상 trip 진행 보존) ──
       ['역삼', 'station-passed', '선릉', 'station-passed', false, 'cross-station + SP→SP NOT blocked (정상 trip 폴링 station 변경)'],
-      ['건대', 'transfer', '성수', 'destination', false, 'cross-station + phase→phase NOT blocked (별도 leg 진행, currentLine 게이트가 담당)'],
-      ['이수', 'destination', '사당', 'transfer', false, 'cross-station + phase→phase NOT blocked (별도 leg)'],
+      // phase→phase cross-station은 isPhaseToPhaseCrossStationRecentlyFired(3s 윈도우)가 별도 담당.
+      // isTripScopedCrossCategoryRecentlyFired는 SP↔phase 그룹만 차단 — phase→phase는 통과.
+      ['건대', 'transfer', '성수', 'destination', false, 'cross-station + phase→phase NOT blocked (isPhaseToPhaseCrossStationRecentlyFired 담당)'],
+      ['이수', 'destination', '사당', 'transfer', false, 'cross-station + phase→phase NOT blocked (isPhaseToPhaseCrossStationRecentlyFired 담당)'],
     ])(
       '(%s, %s) → (%s, %s) within trip window: blocked=%s (%s)',
       (firstSt, firstCat, secondSt, secondCat, blocked) => {
@@ -204,6 +208,88 @@ describe('crossCategoryStationDedup (#1515)', () => {
       expect(isTripScopedCrossCategoryRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(true);
       _resetCrossCategoryDedupForTests();
       expect(isTripScopedCrossCategoryRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(false);
+    });
+  });
+
+  // #1656 — phase↔phase cross-station cascade window (3s).
+  // 차단 조건: (1) 다른 stationName + (2) 양쪽 모두 phase(destination/transfer). 둘 다 만족해야 차단.
+  // station-passed 포함 케이스는 isTripScopedCrossCategoryRecentlyFired / isStationRecentlyFired 담당.
+  describe('isPhaseToPhaseCrossStationRecentlyFired (#1656)', () => {
+    it('returns false when no fire has been recorded', () => {
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '건대', 'destination', 1_000)).toBe(false);
+    });
+
+    // (firstStation, firstCategory, secondStation, secondCategory, expectedBlocked, label)
+    it.each<[string, Category, string, Category, boolean, string]>([
+      // ── 차단 (cross-station + 양쪽 phase) ──
+      // 2026-06-20 12:32 어대: "곧 건대 도착"(transfer) + "성수 도착"(destination)
+      ['건대', 'transfer', '성수', 'destination', true, 'transfer→destination cross-station blocked (어대 12:32 evidence)'],
+      // 2026-06-19 15:37 BG: "곧 이수"(destination imminent) + "다음 역 사당"(transfer)
+      ['이수', 'destination', '사당', 'transfer', true, 'destination→transfer cross-station blocked (15:37 evidence)'],
+      // 역방향도 차단
+      ['성수', 'destination', '건대', 'transfer', true, 'destination→transfer cross-station blocked'],
+      ['사당', 'transfer', '이수', 'destination', true, 'transfer→destination cross-station blocked'],
+
+      // ── 통과 (same station 진행, firedAlarms set이 dedup) ──
+      ['건대', 'transfer', '건대', 'destination', false, 'same station: NOT blocked (early→imminent on same station)'],
+      ['성수', 'destination', '성수', 'destination', false, 'same station same-cat: NOT blocked'],
+      ['이수(부속)', 'destination', '이수', 'transfer', false, 'same station normalized: NOT blocked'],
+
+      // ── 통과 (station-passed 포함, 다른 함수가 담당) ──
+      ['군자', 'station-passed', '성수', 'destination', false, 'station-passed as prev: NOT blocked (isTripScoped 담당)'],
+      ['성수', 'destination', '왕십리', 'station-passed', false, 'station-passed as current: NOT blocked (isTripScoped 담당)'],
+      ['역삼', 'station-passed', '선릉', 'station-passed', false, 'SP→SP: NOT blocked'],
+    ])(
+      '(%s, %s) → (%s, %s) within 3s window: blocked=%s (%s)',
+      (firstSt, firstCat, secondSt, secondCat, blocked) => {
+        markStationFired('dest-1', firstSt, firstCat, 10_000);
+        expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', secondSt, secondCat, 10_500)).toBe(blocked);
+      },
+    );
+
+    it('returns false once the 3s window has elapsed', () => {
+      markStationFired('dest-1', '건대', 'transfer', 1_000);
+      expect(
+        isPhaseToPhaseCrossStationRecentlyFired(
+          'dest-1',
+          '성수',
+          'destination',
+          1_000 + PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS,
+        ),
+      ).toBe(false);
+    });
+
+    it('blocks within 3s window then allows after window (normal leg progression)', () => {
+      // leg 전환 즉시 cascade는 차단.
+      markStationFired('dest-1', '건대', 'transfer', 1_000);
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(true);
+      // 3s 이후엔 통과 (정상 다음 hop fire 보존).
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 4_500)).toBe(false);
+    });
+
+    it('isolates entries by destinationId', () => {
+      markStationFired('dest-1', '건대', 'transfer', 1_000);
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-2', '성수', 'destination', 1_500)).toBe(false);
+    });
+
+    it('accepts custom window override', () => {
+      markStationFired('dest-1', '건대', 'transfer', 1_000);
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_500, 100)).toBe(false);
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_050, 100)).toBe(true);
+    });
+
+    it('clearCrossCategoryDedup also clears phase-to-phase fire records', async () => {
+      markStationFired('dest-1', '건대', 'transfer', 1_000);
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(true);
+      await clearCrossCategoryDedup();
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(false);
+    });
+
+    it('_resetCrossCategoryDedupForTests also clears phase-to-phase fire records', () => {
+      markStationFired('dest-1', '건대', 'transfer', 1_000);
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(true);
+      _resetCrossCategoryDedupForTests();
+      expect(isPhaseToPhaseCrossStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(false);
     });
   });
 });

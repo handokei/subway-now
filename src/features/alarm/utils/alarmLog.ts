@@ -223,7 +223,11 @@ export type AlarmLogReason =
   // 안에서 phase ↔ station-passed가 다른 station에 즉시 cascade로 발사되는 회귀 차단(2026-06-19
   // 15:37 이수-사당, 2026-06-20 12:31 어대-군자-성수). 기존 'dedup-station-unified'(같은 station 30s
   // 윈도우)와 분리해 trip-scoped cross-station cascade를 독립 카운트.
-  | 'dedup-cross-category-recent';
+  | 'dedup-cross-category-recent'
+  // #1656 — phase↔phase cross-station 즉시 cascade 윈도우(PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS=3s)
+  // 안에서 다른 station에 두 phase 알람(transfer + destination 또는 역방향)이 leg 전환 race로
+  // 연이어 발사되는 회귀 차단(2026-06-20 12:32 건대+성수, 2026-06-19 15:37 이수+사당).
+  | 'dedup-phase-to-phase';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -401,6 +405,31 @@ export function logSuppressedCrossCategoryRecent(input: {
     source: input.source,
     outcome: 'suppressed',
     reason: 'dedup-cross-category-recent',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #1656 — phase↔phase cross-station cascade 차단 suppression 로그.
+ * 같은 trip 안에서 다른 station에 transfer/destination phase가 3s 안에 연이어 fire될 때 차단.
+ * 2026-06-20 12:32 어대 "곧 건대"+성수 도착 / 2026-06-19 15:37 이수+사당 회귀.
+ *
+ * burst dedup 윈도우로 같은 (source, stationName) 반복 로그는 1건만 적재.
+ */
+export function logSuppressedPhaseToPhaseDedup(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  if (isBurstDuplicate('dedup-phase-to-phase', input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'dedup-phase-to-phase',
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,

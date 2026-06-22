@@ -56,6 +56,22 @@ export const CROSS_CATEGORY_DEDUP_WINDOW_MS = 30_000;
  */
 export const TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS = 5_000;
 
+/**
+ * #1656 — phase↔phase cross-station 즉시 cascade 윈도우.
+ *
+ * 같은 trip(destinationId) 안에서 **다른 station + 양쪽 phase 카테고리(transfer/destination)**가 같은
+ * cycle/leg 전환 race로 연이어 발사되는 회귀를 차단한다:
+ *   - 2026-06-20 12:32 어대 "곧 건대 도착"(transfer imminent, line 7) + "성수 도착"(destination, line 2)
+ *   - 2026-06-19 15:37 BG "곧 이수 도착"(destination imminent, line 4) + "다음 역 사당 하차"(transfer, line 4→2)
+ *
+ * `TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS`(5s, SP↔phase) 보다 좁은 3s 윈도우 — phase→phase 정상 leg 진행
+ * (환승 직후 새 leg의 early phase 즉시 fire 등)을 보존하기 위해 더 좁게 잡는다. 같은 cycle 즉시 cascade
+ * (< 1s)만 차단하면 충분.
+ *
+ * ADR-010 첫 줄(false positive ↔ miss 동급) 정합 — window를 좁게 두어 miss 위험 최소화.
+ */
+export const PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS = 3_000;
+
 /** Map 무한 성장 cap. 정상 trip(역 수 ~수십) × destination ~수 = ≤ 수백. cap 도달 시 만료 일괄 정리. */
 const DEDUP_MAP_CAP = 256;
 
@@ -191,7 +207,7 @@ export function markStationFired(
  * 차단하지 않는 케이스 (정상 동작 보존):
  *   - **같은 station 진행** (early→imminent): per-station dedup(`isStationRecentlyFired`)이 담당.
  *   - **same-category cross-station**: station-passed→station-passed (정상 trip 폴링 station 변경),
- *     phase→phase (별도 leg/waypoint 진행). 본 PR 범위 외 — followup 이슈로 분리.
+ *     phase→phase (`isPhaseToPhaseCrossStationRecentlyFired`가 3s 윈도우로 별도 차단).
  *
  * 윈도우(5s, TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS)는 사용자 체감 cascade(< 1s)만 차단하고
  * 정상 진행(30s cycle 다음 hop fire)은 통과시키도록 좁게 설정.
@@ -212,6 +228,50 @@ export function isTripScopedCrossCategoryRecentlyFired(
   if (rec.stationName === normalizeStationName(stationName)) return false;
   // 같은 그룹(phase↔phase or SP→SP) cross-station은 통과 — 정상 trip 진행 보존.
   return isCategoryGroupChange(rec.category, category);
+}
+
+/**
+ * #1656 — phase↔phase cross-station 즉시 cascade가 짧은 윈도우 내에 발생했는지 확인.
+ *
+ * 같은 trip(destinationId)에 직전 fire가 본 query와:
+ *   1) **다른 station** (stationName 비교, normalize 후)
+ *   2) **양쪽 모두 phase** (destination 또는 transfer; station-passed 제외)
+ * 두 조건을 모두 만족하면 차단.
+ *
+ * trip evidence 회귀:
+ *   - 2026-06-20 12:32 어대: "곧 건대 도착"(transfer imminent) + "성수 도착"(destination)
+ *     ← leg 전환 race에서 옛 leg(2호선→건대입구 imminent) + 새 leg(7호선→성수 도착) 동시 fire
+ *   - 2026-06-19 15:37 BG: "곧 이수 도착"(destination imminent) + "다음 역 사당 하차"(transfer)
+ *     ← 동일 race 패턴, BG path
+ *
+ * 차단하지 않는 케이스 (정상 동작 보존):
+ *   - **같은 station 진행** (early→imminent on same station): per-station firedAlarms가 dedup.
+ *   - **station-passed 포함**: `isTripScopedCrossCategoryRecentlyFired`(5s) 또는
+ *     `isStationRecentlyFired`(30s)가 커버.
+ *
+ * 윈도우(3s, PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS)는 SP↔phase 5s보다 좁음 — leg 전환 직후
+ * 새 leg의 early phase가 즉시 fire돼야 정상인 케이스를 보존하기 위해 더 좁게 잡는다.
+ *
+ * fire 직전 호출 — true면 호출자는 발사 skip + 'dedup-phase-to-phase' 로그.
+ */
+export function isPhaseToPhaseCrossStationRecentlyFired(
+  destinationId: string,
+  stationName: string,
+  category: FireCategory,
+  now: number,
+  windowMs: number = PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS,
+): boolean {
+  // station-passed는 본 함수가 담당하는 phase↔phase 차단 대상이 아님.
+  if (category === 'station-passed') return false;
+  const rec = lastTripFire.get(destinationId);
+  if (rec === undefined) return false;
+  if (now - rec.ts >= windowMs) return false;
+  // 직전 fire가 station-passed면 본 함수 대상 아님(isTripScopedCrossCategoryRecentlyFired 담당).
+  if (rec.category === 'station-passed') return false;
+  // 같은 station 진행(early→imminent on same station)은 통과 — firedAlarms set이 dedup.
+  if (rec.stationName === normalizeStationName(stationName)) return false;
+  // 여기까지 오면: 직전=phase, 현재=phase, 다른 station, 윈도우 안 → 차단.
+  return true;
 }
 
 /** 테스트 전용 — 모듈 상태 리셋. production 호출 금지. */
