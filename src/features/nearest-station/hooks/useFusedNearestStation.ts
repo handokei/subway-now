@@ -861,13 +861,44 @@ export function useFusedNearestStation(
     nowMsForSsot - backendSsotMirror.lastAdvanceAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
   const backendSsotAccepts = ssotStation !== null && ssotFresh;
 
+  // #1646 — positionTrain + lockedTrainCode 매칭 + 지하 환경 + 사용자 명시 의향 trip 3-of-3 합의.
+  //
+  // True일 때 positionTrain을 backend SSoT mirror보다 1순위로 승격한다.
+  // 사용자 trip evidence(2026-06-22 14:28/14:30/14:33): backend silent push 5-10s + cron 5s + APNs 처리
+  // 본질적 10-30s lag로 b역 도착해도 mirror 도착 전까지 cascade가 채택하지 않아 1역 lag 발생.
+  // positionTrain은 Seoul realtimePosition + lockedTrainCode 매칭 = 사용자가 명시적으로 탭한 열차의
+  // 실시간 위치 → backend SSoT mirror가 forward되기 전에도 advance를 1차 신호로 확정 가능.
+  //
+  // 3-of-3 합의 (Strategy ① 6 fail mode 차단 — ADR-010 두 실패 모드 동급):
+  //   1. positionTrainResult 존재 (이미 모든 positionTrain 게이트 통과 — distance/arc/forward)
+  //   2. lockMatch — trainProgress.trainNo === lockedTrainCode (trainCode 오선택 / API stale 차단)
+  //   3. barometerSubsurface === true (지하 환경 명시 — surface GPS 가용 시 GPS fast-path 우선)
+  //   4. boardingLock != null (사용자 명시 의향 trip 한정 — lockless trip은 본 승격 적용 X)
+  //
+  // backward-compat: 본 합의 미충족 시 기존 cascade 그대로 (backendSsotAccepts → wifi → positionTrain ...).
+  // positionTrainResult가 non-null이면 trainProgress도 non-null (line 219 guard).
+  const positionTrainBoardingLockMatch =
+    positionTrainResult != null &&
+    lockedTrainCode != null &&
+    trainProgress!.trainNo === lockedTrainCode &&
+    barometerSubsurface === true &&
+    boardingLock != null;
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
-  if (backendSsotAccepts) {
-    // #1568 (T8b) — backend SSoT 권위 mirror. cascade 최상위. backend advance 게이트가
+  if (positionTrainBoardingLockMatch) {
+    // #1646 — 사용자 명시 의향 + 지하 + lockMatch 3-of-3 합의 시 positionTrain 1순위.
+    // backend SSoT mirror lag(10-30s)에 의한 현재역 1역 뒤쳐짐 회귀 차단.
+    // confidence/source는 #584 PR D2와 동일한 'boarding-lock' (lockMatch 매칭 경로).
+    result = positionTrainResult!;
+    confidence = 'boarding-lock';
+    source = 'boarding-lock';
+  } else if (backendSsotAccepts) {
+    // #1568 (T8b) — backend SSoT 권위 mirror. backend advance 게이트가
     // ADR-017 6단(seed/repeat/motion-stop/cross-validation 등)을 이미 통과한 결과이므로
     // device-side cascade tier보다 신뢰도가 높다. lock 활성/lockless 모두 동일 우선순위.
+    // #1646 — 3-of-3 합의(lock+지하+lockMatch) 시 positionTrain에 양보 (위 분기).
     result = { station: ssotStation!, distanceKm: 0 };
     confidence = 'backend-ssot';
     source = 'backend-ssot';
