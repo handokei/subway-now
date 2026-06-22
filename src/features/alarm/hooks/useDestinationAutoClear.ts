@@ -41,7 +41,9 @@ import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import type { Station } from '../../../shared/types/station';
 import {
   detectDestinationArrival,
+  detectStationaryTripEnd,
   type DestinationArrivalDetectInput,
+  type StationaryTripEndDetectInput,
 } from '../utils/destinationArrivalDetect';
 import { getArrivalPriority } from '../../../shared/constants/arrivalCodes';
 import { createLogger } from '../../../shared/utils/logger';
@@ -56,6 +58,12 @@ export interface UseDestinationAutoClearInputs {
   userLocation: { lat: number; lng: number } | null;
   /** CMMotionActivity stationary 신호. 미지원/거절 케이스는 false, warmup은 undefined로 전달. */
   motionStationary: boolean | undefined;
+  /**
+   * #1647 — boardingLock 활성 여부. API-independent 5min stationary 게이트가 lockless trip을
+   * 자동 종료하지 않도록 차단한다 (사용자 명시 의향 trip만 동급 보호 — ADR-014).
+   * 기존 arvlCd 게이트는 lock 비활성에서도 동작 — 후방 호환 보장.
+   */
+  lockActive: boolean;
   /**
    * 자동 해제 시 호출. `setDestination(null)` 등 cleanup은 caller 책임이다.
    * #1058: cleared station을 인자로 받아 caller가 undo toast에 노출하거나 복원할 수 있다.
@@ -90,6 +98,7 @@ export function useDestinationAutoClear({
   destination,
   userLocation,
   motionStationary,
+  lockActive,
   onAutoClear,
 }: UseDestinationAutoClearInputs): void {
   // destination 폴링 — useStationAlarm의 동일 호출과 TtlCache dedup.
@@ -143,7 +152,24 @@ export function useDestinationAutoClear({
     if (result.shouldAutoClear) {
       firedForDestIdRef.current = destId;
       logger.info(
-        `destination=${destination.name} 자동 해제 (confidence=${result.confidence})`,
+        `destination=${destination.name} 자동 해제 (confidence=${result.confidence}, gate=arrival)`,
+      );
+      onAutoClear(destination);
+      return;
+    }
+    // #1647 — Seoul API-independent fallback gate. arvlCd 게이트가 outage/dead zone로 fire 0건일 때
+    // 100m + 5min stationary + lock 활성 3-of-3로 자동 종료. lockless trip은 차단(정보용 trip 보호).
+    const stationaryInput: StationaryTripEndDetectInput = {
+      destinationStation: destination,
+      userLocation,
+      stationaryDurationMs,
+      lockActive,
+    };
+    const stationaryResult = detectStationaryTripEnd(stationaryInput);
+    if (stationaryResult.shouldAutoClear) {
+      firedForDestIdRef.current = destId;
+      logger.info(
+        `destination=${destination.name} 자동 해제 (confidence=${stationaryResult.confidence}, gate=stationary)`,
       );
       onAutoClear(destination);
     }
@@ -152,6 +178,7 @@ export function useDestinationAutoClear({
     destinationArrival,
     userLocation,
     motionStationary,
+    lockActive,
     onAutoClear,
   ]);
 }

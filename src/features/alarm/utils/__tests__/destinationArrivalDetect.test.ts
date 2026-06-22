@@ -1,10 +1,12 @@
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 import {
+  DESTINATION_NEARBY_RADIUS_M,
   NEAR_STATION_RADIUS_M,
   STATIONARY_THRESHOLD_MS,
+  STATIONARY_TRIP_END_THRESHOLD_MS,
 } from '../../../../shared/constants/arrivalDetect';
 import type { Station } from '../../../../shared/types/station';
-import { detectDestinationArrival } from '../destinationArrivalDetect';
+import { detectDestinationArrival, detectStationaryTripEnd } from '../destinationArrivalDetect';
 
 const DESTINATION: Station = {
   id: '0150',
@@ -159,5 +161,63 @@ describe('detectDestinationArrival', () => {
   it('상수 export 확인 — 회귀 게이트', () => {
     expect(NEAR_STATION_RADIUS_M).toBe(50);
     expect(STATIONARY_THRESHOLD_MS).toBe(60_000);
+  });
+});
+
+describe('detectStationaryTripEnd', () => {
+  /**
+   * 3-of-3 합의 기본 입력. happy path를 시작점으로 각 케이스가 한 필드만 override하면
+   * SonarCloud가 잡는 boilerplate 중복(매 it() 마다 동일 4-key object) 제거.
+   */
+  type Input = Parameters<typeof detectStationaryTripEnd>[0];
+  const happyInput: Input = {
+    destinationStation: DESTINATION,
+    userLocation: AT_DESTINATION,
+    stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+    lockActive: true,
+  };
+
+  it('3-of-3 합의 만족(destination 100m + 5min stationary + lock 활성) → high', () => {
+    expect(detectStationaryTripEnd(happyInput)).toEqual({
+      shouldAutoClear: true,
+      confidence: 'high',
+    });
+  });
+
+  // 거리/lock/destination/userLocation 미충족 = low.
+  it.each<[string, Partial<Input>]>([
+    ['lockActive=false (lockless trip 보호)', { lockActive: false }],
+    ['destinationStation=null', { destinationStation: null }],
+    ['destinationStation=undefined', { destinationStation: undefined }],
+    ['userLocation=null', { userLocation: null }],
+    ['userLocation=undefined', { userLocation: undefined }],
+    ['destination 100m 밖 (환승역/인접역 false fire 차단)', { userLocation: FAR_FROM_DESTINATION }],
+  ])('low 반환 — %s', (_label, override) => {
+    const result = detectStationaryTripEnd({ ...happyInput, ...override });
+    expect(result.shouldAutoClear).toBe(false);
+    expect(result.confidence).toBe('low');
+  });
+
+  // destination/lock/거리는 통과하고 stationary 시간만 부족 = medium.
+  it.each<[string, Partial<Input>]>([
+    ['1ms 부족', { stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS - 1 }],
+    ['stationaryDurationMs=null', { stationaryDurationMs: null }],
+    ['stationaryDurationMs=undefined', { stationaryDurationMs: undefined }],
+  ])('medium 반환 — 정지 시간 %s', (_label, override) => {
+    const result = detectStationaryTripEnd({ ...happyInput, ...override });
+    expect(result.shouldAutoClear).toBe(false);
+    expect(result.confidence).toBe('medium');
+  });
+
+  it('정확히 DESTINATION_NEARBY_RADIUS_M 경계 직전(99m)은 통과', () => {
+    // 위도 1m ≈ 0.0000090 도. 99m ≈ 0.000891 도 (위도축).
+    const nearEdge = { lat: DESTINATION.lat + 0.00089, lng: DESTINATION.lng };
+    const result = detectStationaryTripEnd({ ...happyInput, userLocation: nearEdge });
+    expect(result.shouldAutoClear).toBe(true);
+  });
+
+  it('상수 export 확인 — 회귀 게이트', () => {
+    expect(DESTINATION_NEARBY_RADIUS_M).toBe(100);
+    expect(STATIONARY_TRIP_END_THRESHOLD_MS).toBe(5 * 60 * 1_000);
   });
 });

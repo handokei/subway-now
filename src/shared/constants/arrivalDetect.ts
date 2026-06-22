@@ -15,3 +15,21 @@
  */
 export const NEAR_STATION_RADIUS_M = 50;
 export const STATIONARY_THRESHOLD_MS = 60_000;
+
+/**
+ * #1647 — API-independent auto-end gate 임계값.
+ *
+ * 기존 detectDestinationArrival(arvlCd ARRIVED/ENTERING + 50m + 60s)은 Seoul Arrival API
+ * 단일 의존이라 outage(6/22 13:36 / 10.5h 좀비 trip evidence) 시 fire 0건.
+ * device self-contained 보장을 위해 API-independent 3-of-3 게이트 추가 (#1647).
+ *
+ * - DESTINATION_NEARBY_RADIUS_M (100m):
+ *   destination 도착 게이트 — GPS noise tolerance를 50m → 100m로 완화.
+ *   환승역/인접역 false fire 방지는 destination 1:1 매칭으로 보장 (destination ≠ 환승역).
+ *
+ * - STATIONARY_TRIP_END_THRESHOLD_MS (5min):
+ *   60s → 5min로 강화. 정차(20~30s) + 개찰구(1~2min) + 출구 진입(1~2min) 합산이 안전 마진 안.
+ *   3-of-3 합의(lock + destination 100m + 5min stationary)라 false positive 비대칭 작음.
+ */
+export const DESTINATION_NEARBY_RADIUS_M = 100;
+export const STATIONARY_TRIP_END_THRESHOLD_MS = 5 * 60 * 1_000;
