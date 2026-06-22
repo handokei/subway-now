@@ -11,7 +11,7 @@ import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
-import { pushRawSignal } from '../../observability/utils/rawSignalBuffer';
+import { pushRawSignal, type MotionLabel } from '../../observability/utils/rawSignalBuffer';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
@@ -237,6 +237,13 @@ interface UseFusedNearestStationReturn {
    * V1 mismatch 자동 측정에 충분.
    */
   backendSsotCurrentStationId: string | null;
+  /**
+   * #1678 — CMMotionManager 60s window RMS magnitude 분류 결과.
+   * DebugModal Fusion 섹션 + raw signal dump motion 필드의 SSOT.
+   * 'automotive' = train 진동 env vote 1표, 'unknown' = 미수렴/미지원.
+   * EAS rebuild 전에는 native module이 없어 항상 'unknown'.
+   */
+  accelerometerPattern: import('../utils/accelerometerFingerprint').AccelerometerPattern;
   refresh: () => Promise<void>;
 }
 
@@ -1458,10 +1465,13 @@ export function useFusedNearestStation(
           speedMps: gps.speedMps,
         }
       : null;
-    // motionStationary는 boolean | undefined. boolean으로 들어오면 stationary/unknown 라벨로 매핑.
-    // 정확한 motion provider 라벨(walking/automotive)은 후속 PR에서 motion-activity 모듈 expose 후 보강.
-    let motionForDump: 'stationary' | 'unknown' | null = null;
-    if (motionStationary === true) {
+    // #1678 — accelerometerPattern이 concrete(unknown 아님)이면 우선 채택.
+    // 'automotive' / 'walking' / 'stationary'는 raw signal dump에 직접 반영.
+    // 'unknown' (60s window 미수렴 / 미지원)이면 boolean motionStationary fallback.
+    let motionForDump: MotionLabel | null = null;
+    if (accelerometerPattern !== 'unknown') {
+      motionForDump = accelerometerPattern;
+    } else if (motionStationary === true) {
       motionForDump = 'stationary';
     } else if (motionStationary === false) {
       motionForDump = 'unknown';
@@ -1530,7 +1540,7 @@ export function useFusedNearestStation(
       source,
       confidence,
     });
-  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
+  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, accelerometerPattern, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
 
   return {
     result,
@@ -1570,6 +1580,8 @@ export function useFusedNearestStation(
     // #1421 — DebugModal Auto-lock 측정 섹션이 SSOT 객체를 inferAutoLockCandidate에 직접 전달.
     surfaceSSOT,
     undergroundSSOT,
+    // #1678 — DebugModal Fusion 섹션 + raw signal dump에서 accelerometer vote 상태 확인.
+    accelerometerPattern,
     // #1486 (ADR-015 §2) — sticky 표시 채널 패스스루. useNearestStation이 sticky.locked를 노출하고
     // 본 hook은 그대로 통과. fire path는 본 필드는 읽지 않는다.
     stickyDisplayOnly: gps.stickyDisplayOnly,
