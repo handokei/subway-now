@@ -792,6 +792,22 @@ function buildAlarmLogSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #1692 — Alarm Log Reasons (1h) 섹션.
+ *
+ * dump 시점 기준 최근 1시간 내 suppressed reason 집계 (count 내림차순 top-10).
+ * 사용자가 "어떤 게이트가 가장 자주 발동했는지"를 share dump 수신 즉시 파악 가능.
+ *
+ * nowMs 미전달 시 Date.now() 사용 — 테스트 결정적 출력 확보.
+ * 1h 윈도우 내 suppressed 항목이 없으면 (empty) 반환.
+ */
+function buildAlarmLogReasonsSummarySection(args: BuildDumpArgs): string[] {
+  const now = args.nowMs ?? Date.now();
+  const counters = countAlarmLogReasonsByWindow(args.logs, 60 * 60 * 1000, now);
+  if (counters.length === 0) return ['(empty)'];
+  return counters.map(({ reason, count }) => `${reason}: ${count}`);
+}
+
+/**
  * #1501 — Raw signal 섹션. 직전 30건(혹은 그 이하)을 최신순으로 직렬화. 빈 buffer는
  * (empty)로 명시 — "한 번도 push 안 됨"과 "load 안 함"을 구분(Fusion log와 동일 컨벤션).
  *
@@ -1208,6 +1224,9 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildAlarmLogSection,
     suffix: (args) => ` (${args.logs.length})`,
   },
+  // #1692 — Alarm Log Reasons (1h): suppress reason 집계 요약. Alarm log 직후 배치해
+  // 사용자가 발사 실패 분포를 share dump에서 즉시 파악 가능.
+  { title: 'Alarm Log Reasons (1h)', build: buildAlarmLogReasonsSummarySection },
   // #1346 — fusion log를 share에 포함. 누락 시 sticky cascade 같은 회귀를 사후 재구성 불가.
   {
     title: 'Fusion log',

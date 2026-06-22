@@ -873,6 +873,8 @@ export function summarizeAlarmLogCounters(
   return [...map.values()].sort((a, b) => b.count - a.count);
 }
 
+
+
 /**
  * Silent push outcome별 집계 (#856).
  *
@@ -1709,7 +1711,7 @@ export function countGateReasons(
 }
 
 /**
- * #1682 — suppressed reason별 집계 (시간 윈도우 필터링).
+ * #1682/#1692 — suppressed reason별 집계 (시간 윈도우 필터링, top-N 옵션).
  *
  * summarizeAlarmLogCounters에 시간 윈도우 필터를 추가한 래퍼.
  * windowMs 이내 suppressed 엔트리만 집계해 반환. read-only, write 부담 0.
@@ -1719,15 +1721,18 @@ export function countGateReasons(
  * @param entries  alarmLog 전체 또는 부분 스냅샷
  * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 배열 반환. Infinity이면 전체.
  * @param now      기준 시각 (ms epoch). 테스트 결정성용. 기본값 Date.now().
+ * @param topN     반환할 최대 reason 수. 미지정 시 전체 반환.
  */
 export function countAlarmLogReasonsByWindow(
   entries: readonly AlarmLogEntry[],
   windowMs: number,
   now: number = Date.now(),
+  topN?: number,
 ): AlarmLogReasonCounter[] {
   if (windowMs <= 0) return [];
   const windowed = entries.filter((e) => now - e.ts <= windowMs);
-  return summarizeAlarmLogCounters(windowed);
+  const result = summarizeAlarmLogCounters(windowed);
+  return topN !== undefined ? result.slice(0, topN) : result;
 }
 
 /**

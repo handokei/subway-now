@@ -1941,6 +1941,71 @@ describe('alarmLog', () => {
     });
   });
 
+  describe('countAlarmLogReasonsByWindow (#1692)', () => {
+    it('1h 윈도우 내 suppressed reason을 count 내림차순으로 반환한다', () => {
+      const now = 1_700_000_000_000;
+      const oneHourMs = 60 * 60 * 1000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', ts: now - 1000 }),
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', ts: now - 2000 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 3000 }),
+        makeEntry({ outcome: 'fired', ts: now - 100 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, oneHourMs, now);
+      expect(result[0]).toEqual({ reason: 'movement-static-speed', count: 2, lastTs: now - 1000 });
+      expect(result[1]).toEqual({ reason: 'gate-age', count: 1, lastTs: now - 3000 });
+    });
+
+    it('1h 윈도우 밖 항목은 제외한다', () => {
+      const now = 1_700_000_000_000;
+      const oneHourMs = 60 * 60 * 1000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - oneHourMs - 1 }),
+        makeEntry({ outcome: 'suppressed', reason: 'dedup-station', ts: now - 1000 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, oneHourMs, now);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.reason).toBe('dedup-station');
+    });
+
+    it('suppressed가 없으면 빈 배열을 반환한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'fired', ts: now - 1000 }),
+      ];
+      expect(countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now)).toEqual([]);
+    });
+
+    it('topN 제한이 적용된다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = Array.from({ length: 15 }, (_, i) =>
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - (i + 1) * 1000, count: 15 - i }),
+      );
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now, 3);
+      expect(result.length).toBeLessThanOrEqual(3);
+    });
+
+    it('count 필드가 없으면 1로 해석한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 100 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 200 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('나중 entry의 ts가 더 작으면 lastTs를 갱신하지 않는다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 100 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 500 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
+    });
+  });
+
   describe('logBoardingPromptFired + countBoardingPromptByWindow (#1021)', () => {
     it('logBoardingPromptFired가 boarding-prompt entry를 적재한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
