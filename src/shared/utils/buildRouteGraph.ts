@@ -14,11 +14,11 @@
  *
  * Sub-D 본 PR 범위. boardable wait(Sub C cascade) 합산은 Sub-E 후속.
  */
-import stationsRaw from '../../../data/stations.json';
-import stationDistancesRaw from '../../../data/stationDistances.json';
-import transferTimesRaw from '../../../data/transferTimes.json';
-import { LINE_AVERAGE_SPEED_KMH } from '../../../shared/constants/lineSpeeds';
-import type { LineNumber, Station } from '../../../shared/types/station';
+import stationsRaw from '../../data/stations.json';
+import stationDistancesRaw from '../../data/stationDistances.json';
+import transferTimesRaw from '../../data/transferTimes.json';
+import { LINE_AVERAGE_SPEED_KMH } from '../constants/lineSpeeds';
+import type { LineNumber, Station } from '../types/station';
 
 const STATIONS = stationsRaw as Station[];
 const DISTANCES = stationDistancesRaw as Record<string, number>;

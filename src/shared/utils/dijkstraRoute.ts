@@ -10,7 +10,7 @@
  * stationRoute.ts / DebugModal에서 cross-check 가능하게 한다.
  */
 import { buildRouteGraph, type RouteEdge } from './buildRouteGraph';
-import type { LineNumber } from '../../../shared/types/station';
+import type { LineNumber } from '../types/station';
 
 export type RouteOptimizationType = 'min-transfer' | 'min-distance' | 'min-time';
 
