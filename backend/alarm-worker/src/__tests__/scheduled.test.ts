@@ -14,6 +14,8 @@ import {
   STALE_LOCK_FIRE_THRESHOLD_MS,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
   VANISH_RE_ATTACH_THRESHOLD,
+  BACKEND_TRIP_LIFECYCLE_SILENCE_MS,
+  BACKEND_TRIP_LIFECYCLE_FORCE_END_MS,
   arvlCdFireKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
@@ -27,6 +29,7 @@ import {
   pickLatestCurrentStationName,
   resolveEtaMissingThreshold,
   runScheduled,
+  tripLifecyclePhase,
   appendPassedStation,
   computeCronJitterMs,
   PASSED_STATIONS_MAX_LEN,
@@ -3549,6 +3552,159 @@ describe('ScheduledStats 초기값 (#826 E4)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1652 — staged lifecycle backstop (X8: trip 6h+ 잔존 0건)
+// ---------------------------------------------------------------------------
+
+describe('#1652 — tripLifecyclePhase (staged lifecycle backstop)', () => {
+  it('createdAt 부터 6h 미만 → normal', () => {
+    expect(tripLifecyclePhase({ createdAt: NOW - (6 * 60 * 60_000 - 1) }, NOW)).toBe('normal');
+  });
+
+  it('createdAt 부터 정확히 6h → silence', () => {
+    expect(tripLifecyclePhase({ createdAt: NOW - 6 * 60 * 60_000 }, NOW)).toBe('silence');
+  });
+
+  it('createdAt 부터 6h~9h → silence', () => {
+    expect(tripLifecyclePhase({ createdAt: NOW - 7 * 60 * 60_000 }, NOW)).toBe('silence');
+  });
+
+  it('createdAt 부터 정확히 9h → force-end', () => {
+    expect(tripLifecyclePhase({ createdAt: NOW - 9 * 60 * 60_000 }, NOW)).toBe('force-end');
+  });
+
+  it('createdAt 부터 9h 초과 (10.5h 좀비 evidence) → force-end', () => {
+    expect(tripLifecyclePhase({ createdAt: NOW - 10.5 * 60 * 60_000 }, NOW)).toBe('force-end');
+  });
+
+  it('상수 매핑 — device-side `TRIP_LIFECYCLE_*_MS`와 정합 (6h / 9h)', () => {
+    expect(BACKEND_TRIP_LIFECYCLE_SILENCE_MS).toBe(6 * 60 * 60_000);
+    expect(BACKEND_TRIP_LIFECYCLE_FORCE_END_MS).toBe(9 * 60 * 60_000);
+  });
+});
+
+describe('runScheduled — #1652 staged lifecycle backstop', () => {
+  it('normal phase trip은 게이트 통과 — lifecycleSilenceSkipped / lifecycleForceEnded 둘 다 0', async () => {
+    const kv = new InMemoryKV();
+    // 1h 전 시작 trip + expiresAt 미래 + alarm 윈도우 진입
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'normal-tok',
+        createdAt: NOW - 60 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+      }),
+    );
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleSilenceSkipped).toBe(0);
+    expect(stats.lifecycleForceEnded).toBe(0);
+  });
+
+  it('silence phase trip (createdAt 7h 전) → cron skip + lifecycleSilenceSkipped++', async () => {
+    const kv = new InMemoryKV();
+    // 7h 전 시작 trip — silence 진입. expiresAt은 미래로 둬서 만료 분기를 통과시킨다.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'silence-tok',
+        createdAt: NOW - 7 * 60 * 60_000,
+        // expiresAt은 createdAt + 2h가 디바이스 default였지만, 좀비 trip은 client가
+        // re-register하면서 expiresAt이 미래로 갱신됨 (#578/#704 isSameSession 분기).
+        // 즉 expiresAt이 미래여도 6h+ 잔존 가능 — 좀비 evidence.
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        boardingLock: makeBoardingLock(),
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleSilenceSkipped).toBe(1);
+    expect(stats.lifecycleForceEnded).toBe(0);
+    // silence는 cron skip — Seoul polling + push 둘 다 발사 안 함.
+    expect(stats.polled).toBe(0);
+    expect(stats.pushed).toBe(0);
+    expect(apnsFetch).not.toHaveBeenCalled();
+  });
+
+  it('force-end phase trip (createdAt 10h 전 좀비) → cleanupTripWithLa + lifecycleForceEnded++', async () => {
+    const kv = new InMemoryKV();
+    // 10.5h 전 시작 좀비 trip — force-end 진입. lockless여도 강제 종료.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'zombie-tok',
+        createdAt: NOW - 10.5 * 60 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        locklessStationPassed: true,
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleForceEnded).toBe(1);
+    expect(stats.lifecycleSilenceSkipped).toBe(0);
+    // cleanupTripWithLa가 trip-ended alert push를 발사 (reason='expired' 재사용).
+    expect(apnsFetch).toHaveBeenCalled();
+    // trip이 KV에서 제거됐는지 — listTrips로 enumerate 시 비어있어야.
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('expiresAt 만료 분기는 staged backstop보다 우선 — force-end가 아닌 expired로 종료', async () => {
+    const kv = new InMemoryKV();
+    // createdAt 10h 전 + expiresAt 이미 만료. expiresAt 분기가 먼저 trigger.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'both-expired-tok',
+        createdAt: NOW - 10 * 60 * 60_000,
+        expiresAt: NOW - 1_000, // 이미 만료
+        alarmAtEpochMs: NOW + 60_000,
+      }),
+    );
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    // expiresAt 분기가 먼저 cleanup하므로 lifecycle 카운터는 증가하지 않는다.
+    expect(stats.lifecycleForceEnded).toBe(0);
+    expect(stats.lifecycleSilenceSkipped).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #826 — drift telemetry
 // ---------------------------------------------------------------------------
 
@@ -6133,6 +6289,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
       realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
       staleLockFireSkipped: 0,
+      // #1652 — staged lifecycle backstop.
+      lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,
