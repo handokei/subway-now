@@ -20,7 +20,17 @@
   },
   "include": [
     "src/**/*.ts",
-    "../../src/shared/infra/monitoring/tripTokenHash.ts"
+    "../../src/shared/infra/monitoring/tripTokenHash.ts",
+    "../../src/data/stations.json",
+    "../../src/data/stationDistances.json",
+    "../../src/data/transferTimes.json",
+    "../../src/data/stationAliases.js",
+    "../../src/shared/types/station.ts",
+    "../../src/shared/utils/stationLookup.ts",
+    "../../src/shared/utils/normalizeStationName.js",
+    "../../src/shared/utils/dijkstraRoute.ts",
+    "../../src/shared/utils/buildRouteGraph.ts",
+    "../../src/shared/constants/lineSpeeds.ts"
   ],
   "exclude": ["node_modules"]
 }
