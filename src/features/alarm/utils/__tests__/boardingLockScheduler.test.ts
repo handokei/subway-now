@@ -48,11 +48,12 @@ jest.mock('../scheduledNotificationsStorage', () => ({
   getScheduledNotificationIds: jest.fn(),
   clearScheduledNotificationIds: jest.fn(),
 }));
+const mockLoggerWarn = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
     error: jest.fn(),
   }),
 }));
@@ -355,13 +356,20 @@ describe('cancelAllHopsForLock', () => {
     // 직렬 await 루프였을 때는 첫 id의 cancel reject에서 throw → 나머지 `bl:` 사전 예약이
     // OS 큐에 남아 trip 종료 후 좀비 알림으로 발사됐다. allSettled로 묶여 한 id의
     // cancel reject가 나머지를 막지 않아야 한다.
+    // #1415/#1353 R1 — Fix 3 retry로 reject된 id는 한 번 더 cancel 호출 발생.
     mockedGet.mockResolvedValueOnce([
       'bl:T-100:0:early:강남',
       'bl:T-100:0:imminent:강남',
       'bl:T-100:1:early:역삼',
     ]);
+    // 강남은 1차 reject, 2차(재시도) success.
+    let gangnamCallCount = 0;
     mockedCancel.mockImplementation((id) => {
-      if (id === 'bl:T-100:0:early:강남') return Promise.reject(new Error('already fired'));
+      if (id === 'bl:T-100:0:early:강남') {
+        gangnamCallCount++;
+        if (gangnamCallCount === 1) return Promise.reject(new Error('temporary OS busy'));
+        return Promise.resolve();
+      }
       return Promise.resolve();
     });
 
@@ -371,8 +379,63 @@ describe('cancelAllHopsForLock', () => {
       expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
       expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:imminent:강남');
       expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:1:early:역삼');
+      // Fix 3 — reject 된 id에 대해 한 번 더 cancel 호출 (총 2회).
+      expect(gangnamCallCount).toBe(2);
     } finally {
       // 다른 describe로 reject impl leak 방지.
+      mockedCancel.mockReset();
+    }
+  });
+
+  // #1415/#1353 R1 — Fix 3: 1차 reject + 재시도도 reject 시 pass-2 warn 로그.
+  it('R1 (#1415/#1353) Fix 3 — 영구 reject identifier는 retry 후에도 실패하면 pass-2 warn 로그', async () => {
+    mockedGet.mockResolvedValueOnce([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:0:imminent:역삼',
+    ]);
+    mockedCancel.mockImplementation((id) => {
+      if (id === 'bl:T-100:0:early:강남') return Promise.reject(new Error('permanent'));
+      return Promise.resolve();
+    });
+
+    try {
+      await expect(cancelAllHopsForLock(lock)).resolves.toBeUndefined();
+
+      // 강남 2회(pass-1+pass-2), 역삼 1회.
+      const gangnamCalls = mockedCancel.mock.calls.filter((c) => c[0] === 'bl:T-100:0:early:강남');
+      expect(gangnamCalls).toHaveLength(2);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('cancel reject pass-1: channel=bl count=1'),
+      );
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('cancel reject pass-2 (final): channel=bl count=1'),
+      );
+    } finally {
+      mockedCancel.mockReset();
+    }
+  });
+
+  // #1415/#1353 R1 — Fix 3: 4건 이상 reject 시 ids 표시는 처음 3건 + '...'.
+  it('R1 (#1415/#1353) Fix 3 — 4건 이상 reject 시 ids 로그는 처음 3건 + "..." 표기', async () => {
+    mockedGet.mockResolvedValueOnce([
+      'bl:T-100:0:early:A',
+      'bl:T-100:0:early:B',
+      'bl:T-100:0:early:C',
+      'bl:T-100:0:early:D',
+    ]);
+    mockedCancel.mockImplementation(() => Promise.reject(new Error('all fail')));
+
+    try {
+      await cancelAllHopsForLock(lock);
+
+      // 처음 3건만 + '...' suffix.
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/cancel reject pass-1: channel=bl count=4 ids=bl:T-100:0:early:A,bl:T-100:0:early:B,bl:T-100:0:early:C\.\.\./),
+      );
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/cancel reject pass-2 \(final\): channel=bl count=4/),
+      );
+    } finally {
       mockedCancel.mockReset();
     }
   });

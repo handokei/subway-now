@@ -176,13 +176,39 @@ function revalidateTbaAlarm(parsed: {
   });
 }
 
-/** `bl:` 알람 재검증 — lock SSOT이라 tripStart 게이트 없음 + boarding-lock sig (#1282). */
+/**
+ * `bl:` 알람 재검증 (#1282 → #1415/#1353 R1).
+ *
+ * #1415/#1353 R1 (stale-fire cluster) — `requireTripStart=true`로 강화.
+ *
+ * 회귀 evidence (2026-06-22 / 2026-06-19 사용자 trip):
+ *   - 6/22 14:19 사용자 을지로3가 위치인데 `bl:5호선:1:imminent:애오개` stale fire
+ *   - 6/22 14:25 사용자 상왕십리 위치인데 `bl:2호선:1:imminent:아현` stale fire
+ *   - 6/19 15:51 사용자 고속터미널 위치인데 `bl:7호선:N:imminent:용마산` stale fire (이전 trip의 destination)
+ *
+ * Root cause chain: backend cron auto-end → silent push trip-ended 도착 → device cleanup
+ * (`purgeBoardingLockSchedulerQueue` + `runTripBoundCleanups`)이 OS queue cancel을 시도하지만,
+ * race / 직렬 cancel reject / expo-notifications 내부 큐 반영 지연으로 일부 `bl:` 사전 예약이 OS
+ * 큐에 잔존. 이후 ETA 도달 시 OS가 잔존 알람을 직접 발사 → 사용자 체감 "정적인데 다음역 stale fire".
+ *
+ * 기존 정책(`requireTripStart=false`)은 "lock SSOT이라 tripStart 게이트가 불필요"라는 가정에
+ * 의존했으나, lock release / trip cleanup 후의 race window를 가드하지 못했다. tripStart 게이트는
+ * 가장 강력한 trip-종료 신호이므로 `bl:` 채널에도 동일하게 적용한다 — `bl:` 사전 예약은 항상 trip
+ * 컨텍스트 내에서 의미 있는 알람이고, trip이 끝났다면 lock 유무와 무관하게 stale.
+ *
+ * 트레이드오프 (의도적):
+ *   - Trip 종료 직후 OS가 발사한 직전 `bl:` 알람이 race로 `tripStartedAt=null` 상태에서 도달하면
+ *     `revalidate-no-trip`으로 suppress될 수 있다. 그러나 trip 종료 = lock 무효 = stale 알람이라
+ *     이 silence는 의도적 — false positive (잘못 발사) 방지가 사용자 가치 직결 (ADR-010 동급).
+ *   - 새 trip 시작 직후 backend가 새 `bl:` sig를 등록하기 전 race window에서 도달한 알람은 본
+ *     게이트가 아닌 `revalidate-route-sig-mismatch`로 분류 — 새 trip의 sig가 다르기 때문.
+ */
 function revalidateBlAlarm(parsed: {
   phaseId: string;
   stationName: string;
 }): Promise<'pass' | 'suppress'> {
   return revalidatePrescheduledAlarm(parsed, {
-    requireTripStart: false,
+    requireTripStart: true,
     getRegisteredSig: getRegisteredBlRouteSig,
   });
 }

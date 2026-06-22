@@ -442,14 +442,21 @@ describe('cancelTripBoundAlarms', () => {
     // 직렬 for await 루프였을 때는 첫 reject에서 throw → 나머지 `tba:` 사전 예약이 OS 큐에
     // 남아 trip 종료 후 좀비 알림이 발사됐다 (2026-06-19 08:48 사례). allSettled로 묶여
     // 한 id의 cancel reject가 나머지를 막지 않아야 한다.
+    // #1415/#1353 R1 — Fix 3 (retry) 추가로 reject된 id는 한 번 더 cancel 호출 발생.
     mockedGetAll.mockResolvedValue([
       { identifier: 'tba:early:강남' },
       { identifier: 'tba:imminent:강남' },
       { identifier: 'tba:early:역삼' },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any);
+    // 첫 호출은 reject, 재시도(2번째 호출)는 success로 응답 — Fix 3 retry path 검증.
+    let gangNamCallCount = 0;
     mockedCancel.mockImplementation((id) => {
-      if (id === 'tba:early:강남') return Promise.reject(new Error('already fired'));
+      if (id === 'tba:early:강남') {
+        gangNamCallCount++;
+        if (gangNamCallCount === 1) return Promise.reject(new Error('temporary OS busy'));
+        return Promise.resolve();
+      }
       return Promise.resolve();
     });
 
@@ -460,13 +467,79 @@ describe('cancelTripBoundAlarms', () => {
       expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
       expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:강남');
       expect(mockedCancel).toHaveBeenCalledWith('tba:early:역삼');
-      // fulfilled 2건만 cancelled 카운트에 반영.
+      // Fix 3 — reject된 id 재시도 후 success → cancelled 카운트 3건 모두 반영.
+      expect(gangNamCallCount).toBe(2);
       expect(mockLoggerInfo).toHaveBeenCalledWith(
-        expect.stringContaining('cancelled 2 trip-bound alarms'),
+        expect.stringContaining('cancelled 3 trip-bound alarms'),
+      );
+      // Fix 3 — pass-1 rejected 명시 로그.
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('cancel reject pass-1: channel=tba count=1'),
       );
     } finally {
       // 다른 describe로 reject impl이 leak되지 않도록 default 복귀 (beforeEach가
       // mockReset이 아닌 clearAllMocks만 하므로 implementation은 유지된다).
+      mockedCancel.mockReset();
+    }
+  });
+
+  // #1415/#1353 R1 — Fix 3: 1차 reject + 재시도도 reject 시 명시 pass-2 warn 로그.
+  it('R1 (#1415/#1353) Fix 3 — 영구 reject identifier는 retry 후에도 실패하면 명시 pass-2 warn 로그', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:강남' },
+      { identifier: 'tba:imminent:역삼' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    // 강남은 영구 reject (잘못된 identifier 등), 역삼은 정상.
+    mockedCancel.mockImplementation((id) => {
+      if (id === 'tba:early:강남') return Promise.reject(new Error('permanent error'));
+      return Promise.resolve();
+    });
+
+    try {
+      await expect(cancelTripBoundAlarms()).resolves.toBeUndefined();
+
+      // 강남은 2회 호출 (pass-1 + pass-2), 역삼은 1회.
+      const gangnamCalls = mockedCancel.mock.calls.filter((c) => c[0] === 'tba:early:강남');
+      expect(gangnamCalls).toHaveLength(2);
+      // fulfilled 1건만 카운트.
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('cancelled 1 trip-bound alarms'),
+      );
+      // pass-1 + pass-2 warn 로그 둘 다 적재.
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('cancel reject pass-1: channel=tba count=1'),
+      );
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('cancel reject pass-2 (final): channel=tba count=1'),
+      );
+    } finally {
+      mockedCancel.mockReset();
+    }
+  });
+
+  // #1415/#1353 R1 — Fix 3: 3건 이상 reject 시 ids 표시는 처음 3건 + '...' 표기.
+  it('R1 (#1415/#1353) Fix 3 — 4건 이상 reject 시 ids 로그는 처음 3건 + "..." 표기', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:A' },
+      { identifier: 'tba:early:B' },
+      { identifier: 'tba:early:C' },
+      { identifier: 'tba:early:D' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    mockedCancel.mockImplementation(() => Promise.reject(new Error('all fail')));
+
+    try {
+      await cancelTripBoundAlarms();
+
+      // pass-1과 pass-2 둘 다 4건 reject. ids는 처음 3건만 + '...' suffix.
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/cancel reject pass-1: channel=tba count=4 ids=tba:early:A,tba:early:B,tba:early:C\.\.\./),
+      );
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringMatching(/cancel reject pass-2 \(final\): channel=tba count=4/),
+      );
+    } finally {
       mockedCancel.mockReset();
     }
   });
