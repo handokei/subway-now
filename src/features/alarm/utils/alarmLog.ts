@@ -923,6 +923,41 @@ export function countSilentPushOutcomes(
   return counts;
 }
 
+/**
+ * #1683 — silent push received 엔트리를 kind별로 집계.
+ *
+ * `silent-push-received` 소스의 엔트리만 추출해 kind 분포를 반환.
+ * kind가 없는(구버전 backend / 미지정) 엔트리는 `unknown` 버킷에 포함.
+ * DebugModal Silent Push 섹션에서 "received by kind" 분포로 시각화한다.
+ */
+export interface SilentPushKindBreakdown {
+  'station-passed': number;
+  transfer: number;
+  destination: number;
+  unknown: number;
+}
+
+export function countSilentPushKindBreakdown(
+  entries: readonly AlarmLogEntry[],
+): SilentPushKindBreakdown {
+  const counts: SilentPushKindBreakdown = {
+    'station-passed': 0,
+    transfer: 0,
+    destination: 0,
+    unknown: 0,
+  };
+  for (const entry of entries) {
+    if (entry.source !== 'silent-push-received') continue;
+    const { kind } = entry;
+    if (kind === 'station-passed' || kind === 'transfer' || kind === 'destination') {
+      counts[kind] += 1;
+    } else {
+      counts.unknown += 1;
+    }
+  }
+  return counts;
+}
+
 export function logSuppressedGate(
   reason: 'gate-age' | 'gate-accuracy' | 'gate-jump' | 'gate-motion-stationary',
   location: AlarmLogLocation,
