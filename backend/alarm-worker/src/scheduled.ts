@@ -1220,6 +1220,12 @@ export async function fireArvlCdStationPush(
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
     stats.envCorrected += 1;
+    // #1633 — corrected env 즉시 KV persist. 후속 caller putTrip이 early-return / race /
+    // exception으로 누락되거나 KV eventual consistency로 다음 cron이 stale read해도, 본
+    // 즉시 write가 origin 갱신을 보장해 같은 trip의 후속 push가 mismatch retry로 1초 지연
+    // → device gate-station-already-passed로 drop되는 회귀(2026-06-22 evidence)를 차단.
+    // putTrip은 idempotent하며 caller의 후속 putTrip은 자연 dedup(같은 in-memory snapshot).
+    await putTrip(env.TRIPS, trip);
   }
   if (!heal.result.ok) {
     stats.errors += 1;
@@ -1550,6 +1556,10 @@ export async function fireVanishFallbackStationPush(
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
     stats.envCorrected += 1;
+    // #1633 — corrected env 즉시 KV persist. vanish-fallback / vanish-release 경로는 본 함수가
+    // void 반환이라 호출자가 dirty 신호 없이 putTrip 결정. 후속 putTrip은 advanceBoardingLockWaypoint
+    // 또는 명시 putTrip이 있지만 race/early-return 시 누락 가능 — 본 즉시 write로 영구 보존.
+    await putTrip(env.TRIPS, trip);
   }
   if (!heal.result.ok) {
     stats.errors += 1;
@@ -2142,7 +2152,7 @@ export async function advanceBoardingLockWaypoint(
     const ssotForTransfer = await readSsot(env.TRIPS, trip.token, {
       cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
     });
-    await sendWithEnvHeal(
+    const transferHeal = await sendWithEnvHeal(
       (host) =>
         sendSilentPush({
           deviceToken: trip.token,
@@ -2166,6 +2176,15 @@ export async function advanceBoardingLockWaypoint(
       log,
       trip.token.slice(0, 8),
     );
+    // #1633 — transfer-release fire의 corrected env capture. 종전엔 결과 discard로
+    // trip.apnsEnv 가 in-memory mutate 되지 않아 line 2217 putTrip 이 OLD value 를 쓰고,
+    // 환승 후 leg 2 의 후속 push 들이 매번 mismatch retry 로 1초 지연된다. 즉시 write 로
+    // corrected env 영구 보존.
+    if (transferHeal.correctedEnv) {
+      trip.apnsEnv = transferHeal.correctedEnv;
+      stats.envCorrected += 1;
+      await putTrip(env.TRIPS, trip);
+    }
   }
   // #902 Seam F — 환승 직후 자동 trainCode swap. release한 lock 자리에 새 노선의 후보를
   // 동일 cycle 안에 부착해 다음 cycle의 lockMissing/boarding-prompt 우회 + 즉시 trainCode 추적.
@@ -2358,6 +2377,10 @@ export async function maybeReschedulePush(
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
     stats.envCorrected += 1;
+    // #1633 — reschedule push corrected env 즉시 KV persist. 후속 maybeReschedulePush 호출이
+    // 다음 cron까지 1분 간격이라 그 사이 device re-POST나 cron stale read로 mismatch가 반복될
+    // 수 있다. 즉시 write로 race window 차단.
+    await putTrip(env.TRIPS, trip);
   }
   const envMismatchExhausted = heal.envMismatchExhausted;
   const result = heal.result;
@@ -2651,6 +2674,10 @@ export async function runLocklessIntermediate(
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
     stats.envCorrected += 1;
+    // #1633 — lockless intermediate corrected env 즉시 KV persist. lockless는 매역 fire 경로라
+    // 다음 push까지 짧은 간격(~60s)이지만, 본 cycle 내 후속 코드가 cleanupTripWithLa로 early
+    // return하면 putTrip이 호출되지 않는다. 즉시 write로 corrected env 영구 보존.
+    await putTrip(env.TRIPS, trip);
   }
   if (!heal.result.ok) {
     stats.errors += 1;
@@ -2965,6 +2992,10 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
     stats.envCorrected += 1;
+    // #1633 — boarding-prompt corrected env 즉시 KV persist. dirty 후속 putTrip(line 2990)이
+    // 정상 경로지만, 본 함수가 trip 종료 / cleanup 경로로 분기하면 누락 가능. 즉시 write로
+    // corrected env가 영구 보존돼 후속 cron / push가 mismatch retry 없이 정상 호스트로 직행.
+    await putTrip(env.TRIPS, trip);
   }
   if (heal.result.ok) {
     stats.boardingPromptFired += 1;
