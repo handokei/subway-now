@@ -84,6 +84,7 @@ const mockLogSuppressedHopWindowNoSource = jest.fn();
 const mockLogSuppressedOriginHopLockless = jest.fn();
 const mockLogSuppressedPassedEventOnLockOrigin = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
+const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
@@ -111,6 +112,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedPassedEventOnLockOrigin(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
+  logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
+    mockLogSuppressedCrossCategoryRecent(...args),
   logSuppressedSsotFireGate: (...args: unknown[]) =>
     mockLogSuppressedSsotFireGate(...args),
 }));
@@ -655,6 +658,53 @@ describe('useStationAlarm', () => {
       }),
     );
     expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+  });
+
+  it('#1643 trip-scoped dedup — 직전 5s 안 다른 station에서 station-passed fire됐다면 phase 알람 차단', async () => {
+    // 어대 evidence 시나리오: "군자 도착"(SP) 직후 "곧 성수 도착"(D imminent) 차단.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const dedup = require('../../utils/crossCategoryStationDedup');
+    const route = makeDirectRoute(1, '2');
+    // 직전 다른 station(군자)에서 SP fire를 시뮬레이션.
+    dedup.markStationFired(destination.id, '군자', 'station-passed', Date.now());
+    // phase 알람은 다른 station(성수=earlyDest.stationName)에 발사 시도.
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127 }, speedMps: 5 }),
+      ),
+    );
+    await waitFor(() =>
+      expect(mockLogSuppressedCrossCategoryRecent).toHaveBeenCalledWith({
+        source: 'fg',
+        stationName: earlyDest.stationName,
+        kind: 'destination',
+        phaseId: 'early',
+      }),
+    );
+    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+  });
+
+  it('#1643 trip-scoped dedup — 직전 5s 안 다른 station에서 phase fire됐다면 station-passed 차단', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const dedup = require('../../utils/crossCategoryStationDedup');
+    const route = makeDirectRoute(1, '2');
+    // 직전 다른 station(성수=earlyDest.stationName)에서 phase D fire를 시뮬레이션.
+    dedup.markStationFired(destination.id, earlyDest.stationName, 'destination', Date.now());
+    // station-passed는 다른 station(군자) 통과 시도 — cross-station + cross-cat이라 차단.
+    const passedStation = makeStation('S-gunja', '군자');
+    mockEvaluateAlarmPhase.mockReturnValue(null);
+    renderHook(() =>
+      useStationAlarm(defaultInputs({ route, destination, nearestStation: passedStation })),
+    );
+    await waitFor(() =>
+      expect(mockLogSuppressedCrossCategoryRecent).toHaveBeenCalledWith({
+        source: 'fg',
+        stationName: '군자',
+        kind: 'station-passed',
+      }),
+    );
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
   });
 
   it('destination 변경 시 새 destinationId로 re-hydrate 한다 (#462 destination scoped)', async () => {

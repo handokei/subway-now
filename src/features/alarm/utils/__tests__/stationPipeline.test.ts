@@ -77,6 +77,7 @@ const mockLogSuppressedSleepFirstTransfer = jest.fn();
 const mockLogSuppressedSleepStationPassed = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
+const mockLogSuppressedCrossCategoryRecent = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -89,6 +90,8 @@ jest.mock('../alarmLog', () => ({
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
+  logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
+    mockLogSuppressedCrossCategoryRecent(...args),
 }));
 
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -893,6 +896,69 @@ describe('processLocationUpdate', () => {
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
     });
 
+  });
+
+  // #1643 — trip-scoped cross-category + cross-station 즉시 cascade dedup (BG path).
+  // 2026-06-20 12:31 어대 "군자 도착"(SP) + "곧 성수 도착"(D imminent) 회귀 차단.
+  describe('#1643 trip-scoped cross-category + cross-station cascade dedup (BG path)', () => {
+    const passedStation: Station = { ...mockStation, name: '군자', id: 'station-1' };
+    const otherStation: Station = { ...mockStation, name: '성수', id: 'station-3' };
+
+    beforeEach(() => {
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockIsStationOnRoute.mockReturnValue(true);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+    });
+
+    it('station-passed 발사(군자) 후 5s 안 phase 알람(성수=다른 station, cross-cat)은 trip-scoped dedup으로 차단', async () => {
+      // 1st: 군자 station-passed 발사 → trip-scoped mark.
+      mockFindNearestStation.mockReturnValue({ station: passedStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      await call({ source: 'bg' });
+      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+
+      // 2nd: 다른 station(성수) phase 알람 — cross-station + cross-cat이라 trip-scoped 차단.
+      mockFindNearestStation.mockReturnValue({ station: otherStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: otherStation.name,
+      });
+      mockIsStationOnRoute.mockReturnValue(false); // station-passed 분기 회피
+      await call({ source: 'bg' });
+      expect(mockLogSuppressedCrossCategoryRecent).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: otherStation.name,
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('phase 알람 발사(성수) 후 5s 안 다른 station(군자) station-passed는 trip-scoped dedup으로 차단', async () => {
+      // 1st: 성수 phase 발사 → trip-scoped mark.
+      mockFindNearestStation.mockReturnValue({ station: otherStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: otherStation.name,
+      });
+      mockIsStationOnRoute.mockReturnValueOnce(false);
+      await call({ source: 'fg-evaluated' });
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+
+      // 2nd: 군자(다른 station) station-passed 시도 — trip-scoped cross-cat 차단.
+      mockFindNearestStation.mockReturnValue({ station: passedStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockIsStationOnRoute.mockReturnValue(true);
+      await call({ source: 'bg' });
+      expect(mockLogSuppressedCrossCategoryRecent).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: passedStation.name,
+        kind: 'station-passed',
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
   });
 
   // #1236 (Epic #1204 D8 wire) — BG station-passed dispatch path도 sleep 룰 게이트 호출.

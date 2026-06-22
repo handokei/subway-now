@@ -46,6 +46,16 @@ function normalizeStationName(name: string): string {
 /** 같은 station에 대해 cross-category fire를 차단하는 윈도우. */
 export const CROSS_CATEGORY_DEDUP_WINDOW_MS = 30_000;
 
+/**
+ * #1643 — trip-scoped 즉시 cascade 윈도우.
+ * 같은 trip(destinationId) 안에서 **다른 station + cross-category(phase↔SP)** 알람이 같은 cycle/
+ * 즉시 cascade로 발사되는 회귀(2026-06-20 12:31 어대 "군자 도착"(SP)+"곧 성수 도착"(D imminent))를 차단한다.
+ * 짧은 윈도우(5s)로 잡아 정상 진행(30s cycle)에 영향이 없도록 한다.
+ * ADR-010 첫 줄 (false positive ↔ miss 동급) 정합 — window를 좁게 두어 miss 위험 최소화.
+ * 같은 그룹(phase↔phase, SP→SP) cross-station은 통과시킴 — 정상 trip 진행 보존.
+ */
+export const TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS = 5_000;
+
 /** Map 무한 성장 cap. 정상 trip(역 수 ~수십) × destination ~수 = ≤ 수백. cap 도달 시 만료 일괄 정리. */
 const DEDUP_MAP_CAP = 256;
 
@@ -61,6 +71,29 @@ interface FireRecord {
 }
 
 const lastFire = new Map<string, FireRecord>();
+
+/**
+ * #1643 — trip-scoped last-fire 추적. 키는 destinationId만.
+ *
+ * 사용자 trip evidence (2026-06-20 12:31 어대) 회귀는 같은 trip 안에 **다른 stationName + cross-category
+ * (SP↔phase)** 알람이 5s 안에 연이어 발사되는 형태:
+ *   - "군자 도착"(station-passed) → "곧 성수 도착"(destination imminent)
+ *
+ * 같은 그룹 cross-station (예: phase→phase, SP→SP) 또는 같은 station 진행(early→imminent)은
+ * 정상 동작이므로 통과시킴 — 본 record는 두 비교를 위해 stationName과 category를 모두 보존한다.
+ *
+ * phase→phase cross-station 회귀(2026-06-20 12:32 어대 "곧 건대"+"성수 도착", 2026-06-19 15:37 BG
+ * "곧 이수"+"다음 역 사당")는 본 PR 범위 외 — `evaluateAlarmPhase`의 currentLine 게이트가 담당하며,
+ * 별도 followup 이슈로 분리해 추적.
+ *
+ * 정상 30s cycle 진행(다음 hop fire)은 5s 윈도우 통과 → 정상 발사 보장.
+ */
+interface TripFireRecord {
+  ts: number;
+  category: FireCategory;
+  stationName: string;
+}
+const lastTripFire = new Map<string, TripFireRecord>();
 
 function makeKey(destinationId: string, stationName: string): string {
   return `${destinationId}|${normalizeStationName(stationName)}`;
@@ -91,6 +124,20 @@ function isCrossCategory(prev: FireCategory, current: FireCategory): boolean {
 }
 
 /**
+ * #1643 — 카테고리 그룹 차이 판정. `isCrossCategory`와 다름:
+ *   - `isCrossCategory`: SP→SP도 true (per-station race 차단 의도, #1515).
+ *   - `isCategoryGroupChange`: SP↔phase 그룹 변화일 때만 true (SP→SP / phase→phase = false).
+ *
+ * trip-scoped cascade 회귀(2026-06-20 어대 evidence)는 phase↔SP 그룹 cascade — 같은 그룹 안
+ * cross-station은 정상 trip 진행이라 통과시켜야 한다.
+ */
+function isCategoryGroupChange(prev: FireCategory, current: FireCategory): boolean {
+  const prevIsSP = prev === 'station-passed';
+  const currentIsSP = current === 'station-passed';
+  return prevIsSP !== currentIsSP;
+}
+
+/**
  * cross-category fire가 윈도우 내에 발생했는지 확인.
  * fire 직전 호출 — true면 호출자는 발사를 skip하고 `dedup-station-unified`로 로그.
  *
@@ -113,6 +160,8 @@ export function isStationRecentlyFired(
 /**
  * fire 성공 직후 윈도우 갱신. 호출자는 알람 노출 직전/직후에 호출한다.
  * 같은 station에 후속 fire가 발생하면 category가 덮어쓰여 최근 fire를 기준으로 cross-cat 판정.
+ *
+ * #1643 — 같은 trip의 last fire도 함께 갱신(station 무관). trip-scoped cross-category cascade 차단용.
  */
 export function markStationFired(
   destinationId: string,
@@ -121,12 +170,54 @@ export function markStationFired(
   now: number,
 ): void {
   lastFire.set(makeKey(destinationId, stationName), { ts: now, category });
+  lastTripFire.set(destinationId, {
+    ts: now,
+    category,
+    stationName: normalizeStationName(stationName),
+  });
   sweepExpired(now);
+}
+
+/**
+ * #1643 — trip-scoped cross-category + cross-station 즉시 cascade가 짧은 윈도우 내에 발생했는지 확인.
+ *
+ * 같은 trip(destinationId)에 직전 fire가 본 query와:
+ *   1) **다른 station** (stationName 비교, normalize 후)
+ *   2) **cross-category** (한 쪽은 phase, 다른 쪽은 station-passed)
+ * 두 조건을 모두 만족하면 차단.
+ *
+ * trip evidence 회귀(2026-06-20 12:31 어대 "군자 도착"(SP) + "곧 성수 도착"(D imminent))를 잡는다.
+ *
+ * 차단하지 않는 케이스 (정상 동작 보존):
+ *   - **같은 station 진행** (early→imminent): per-station dedup(`isStationRecentlyFired`)이 담당.
+ *   - **same-category cross-station**: station-passed→station-passed (정상 trip 폴링 station 변경),
+ *     phase→phase (별도 leg/waypoint 진행). 본 PR 범위 외 — followup 이슈로 분리.
+ *
+ * 윈도우(5s, TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS)는 사용자 체감 cascade(< 1s)만 차단하고
+ * 정상 진행(30s cycle 다음 hop fire)은 통과시키도록 좁게 설정.
+ *
+ * fire 직전 호출 — true면 호출자는 발사 skip + 'dedup-cross-category-recent' 로그.
+ */
+export function isTripScopedCrossCategoryRecentlyFired(
+  destinationId: string,
+  stationName: string,
+  category: FireCategory,
+  now: number,
+  windowMs: number = TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS,
+): boolean {
+  const rec = lastTripFire.get(destinationId);
+  if (rec === undefined) return false;
+  if (now - rec.ts >= windowMs) return false;
+  // 같은 station 진행(예: early→imminent)은 통과 — per-station dedup이 담당.
+  if (rec.stationName === normalizeStationName(stationName)) return false;
+  // 같은 그룹(phase↔phase or SP→SP) cross-station은 통과 — 정상 trip 진행 보존.
+  return isCategoryGroupChange(rec.category, category);
 }
 
 /** 테스트 전용 — 모듈 상태 리셋. production 호출 금지. */
 export function _resetCrossCategoryDedupForTests(): void {
   lastFire.clear();
+  lastTripFire.clear();
 }
 
 /**
@@ -139,5 +230,6 @@ export function _resetCrossCategoryDedupForTests(): void {
  */
 export function clearCrossCategoryDedup(): Promise<void> {
   lastFire.clear();
+  lastTripFire.clear();
   return Promise.resolve();
 }
