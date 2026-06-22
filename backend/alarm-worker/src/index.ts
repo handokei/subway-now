@@ -523,14 +523,14 @@ app.post('/trips', async (c) => {
       : undefined;
   // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
   // 다른 trainCode/none이면 progress 폐기.
-  // #1285: lockless opt-in trip(boardingLock 없음 + locklessStationPassed===true)은
+  // #1285: lockless opt-in trip(boardingLock 없음 + infoModeEnabled===true)은
   // token 기준 lockless progress로 보존 — trainCode 없이 lockless===true 마커로 매칭.
   const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
   const progressApplies =
     progress !== null &&
     ((incoming.boardingLock !== undefined &&
       progress.trainCode === incoming.boardingLock.trainCode) ||
-      (progress.lockless === true && incoming.locklessStationPassed === true));
+      (progress.lockless === true && incoming.infoModeEnabled === true));
   if (progress !== null && !progressApplies) {
     await deleteProgress(c.env.TRIPS, incoming.token);
   }
@@ -1844,8 +1844,14 @@ export function validateTrip(input: unknown): Trip | null {
     consecutiveEtaMissing:
       typeof obj.consecutiveEtaMissing === 'number' ? obj.consecutiveEtaMissing : undefined,
     // #816 C: 사용자 명시 opt-in 토글값. 미송신 또는 boolean 아니면 undefined (default OFF).
-    locklessStationPassed:
-      typeof obj.locklessStationPassed === 'boolean' ? obj.locklessStationPassed : undefined,
+    // #1669 backward-compat: 구 device는 locklessStationPassed, 신 device는 infoModeEnabled 송신.
+    // 둘 다 accept하고 infoModeEnabled 우선.
+    infoModeEnabled:
+      typeof obj.infoModeEnabled === 'boolean'
+        ? obj.infoModeEnabled
+        : typeof obj.locklessStationPassed === 'boolean'
+          ? obj.locklessStationPassed
+          : undefined,
     // #819: boarding-prompt 평가용 컨텍스트. 좌표/표시 명시 부재 시 백엔드는 lockMissing 분기에서
     // 자연 skip — 좌표 없는 평가는 게이트 #4/#5 정확도 0이라 의미 없음.
     promptGeoContext: parsePromptGeoContext(obj.promptGeoContext),

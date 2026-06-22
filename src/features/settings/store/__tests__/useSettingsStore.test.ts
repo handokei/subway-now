@@ -45,7 +45,7 @@ describe('useSettingsStore', () => {
       allowSpeaker: true,
       accessibilityMode: false,
       // #915 — default ON. 각 테스트가 명시적으로 false로 덮어쓸 수 있다.
-      locklessStationPassed: true,
+      infoModeEnabled: true,
       sentryOptIn: false,
     });
     jest.clearAllMocks();
@@ -169,25 +169,25 @@ describe('useSettingsStore', () => {
     expect(useSettingsStore.getState().accessibilityMode).toBe(false);
   });
 
-  // ── #816 C / #915 — locklessStationPassed (기본 ON, destination-only baseline) ──
+  // ── #816 C / #915 — infoModeEnabled (기본 ON, destination-only baseline) ──
 
-  it('초기 locklessStationPassed는 true이다 (#915 default ON)', () => {
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+  it('초기 infoModeEnabled는 true이다 (#915 default ON)', () => {
+    expect(useSettingsStore.getState().infoModeEnabled).toBe(true);
   });
 
-  it('setLocklessStationPassed: false를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
-    await useSettingsStore.getState().setLocklessStationPassed(false);
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(false);
+  it('setInfoModeEnabled: false를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
+    await useSettingsStore.getState().setInfoModeEnabled(false);
+    expect(useSettingsStore.getState().infoModeEnabled).toBe(false);
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:lockless-station-passed',
       JSON.stringify(false),
     );
   });
 
-  it('setLocklessStationPassed: true를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
-    useSettingsStore.setState({ locklessStationPassed: false });
-    await useSettingsStore.getState().setLocklessStationPassed(true);
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+  it('setInfoModeEnabled: true를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
+    useSettingsStore.setState({ infoModeEnabled: false });
+    await useSettingsStore.getState().setInfoModeEnabled(true);
+    expect(useSettingsStore.getState().infoModeEnabled).toBe(true);
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:lockless-station-passed',
       JSON.stringify(true),
@@ -195,48 +195,48 @@ describe('useSettingsStore', () => {
   });
 
   // B1 (Epic #1008, ADR-013) — 토글 OFF 시 활성 BoardingLock cleanup
-  it('setLocklessStationPassed(false): useBoardingLockStore.releaseLock을 호출한다', async () => {
+  it('setInfoModeEnabled(false): useBoardingLockStore.releaseLock을 호출한다', async () => {
     const releaseLock = jest.fn().mockResolvedValue(undefined);
     useBoardingLockStoreMock.getState.mockReturnValue({ releaseLock });
-    await useSettingsStore.getState().setLocklessStationPassed(false);
+    await useSettingsStore.getState().setInfoModeEnabled(false);
     expect(releaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('setLocklessStationPassed(true): releaseLock을 호출하지 않는다', async () => {
+  it('setInfoModeEnabled(true): releaseLock을 호출하지 않는다', async () => {
     const releaseLock = jest.fn().mockResolvedValue(undefined);
     useBoardingLockStoreMock.getState.mockReturnValue({ releaseLock });
-    await useSettingsStore.getState().setLocklessStationPassed(true);
+    await useSettingsStore.getState().setInfoModeEnabled(true);
     expect(releaseLock).not.toHaveBeenCalled();
   });
 
-  it('loadLocklessStationPassed: 저장된 false를 복원한다 (기존 사용자 명시 OFF 보존)', async () => {
+  it('loadInfoModeEnabled: 저장된 false를 복원한다 (기존 사용자 명시 OFF 보존)', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(false));
-    await useSettingsStore.getState().loadLocklessStationPassed();
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(false);
+    await useSettingsStore.getState().loadInfoModeEnabled();
+    expect(useSettingsStore.getState().infoModeEnabled).toBe(false);
   });
 
-  it('loadLocklessStationPassed: 저장된 값이 없으면 기본 true 유지 (#915)', async () => {
+  it('loadInfoModeEnabled: 저장된 값이 없으면 기본 true 유지 (#915)', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
-    await useSettingsStore.getState().loadLocklessStationPassed();
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+    await useSettingsStore.getState().loadInfoModeEnabled();
+    expect(useSettingsStore.getState().infoModeEnabled).toBe(true);
   });
 
-  it('loadLocklessStationPassed: AsyncStorage 오류 시 true 유지', async () => {
+  it('loadInfoModeEnabled: AsyncStorage 오류 시 true 유지', async () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
-    await useSettingsStore.getState().loadLocklessStationPassed();
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+    await useSettingsStore.getState().loadInfoModeEnabled();
+    expect(useSettingsStore.getState().infoModeEnabled).toBe(true);
   });
 
   // #1175 — lockless funnel transition emit
-  it('setLocklessStationPassed: prev=true → next=false 시 emit(true, false) 호출', async () => {
-    useSettingsStore.setState({ locklessStationPassed: true });
-    await useSettingsStore.getState().setLocklessStationPassed(false);
+  it('setInfoModeEnabled: prev=true → next=false 시 emit(true, false) 호출', async () => {
+    useSettingsStore.setState({ infoModeEnabled: true });
+    await useSettingsStore.getState().setInfoModeEnabled(false);
     expect(emitLocklessToggleTransition).toHaveBeenCalledWith(true, false);
   });
 
-  it('setLocklessStationPassed: prev=false → next=true 시 emit(false, true) 호출', async () => {
-    useSettingsStore.setState({ locklessStationPassed: false });
-    await useSettingsStore.getState().setLocklessStationPassed(true);
+  it('setInfoModeEnabled: prev=false → next=true 시 emit(false, true) 호출', async () => {
+    useSettingsStore.setState({ infoModeEnabled: false });
+    await useSettingsStore.getState().setInfoModeEnabled(true);
     expect(emitLocklessToggleTransition).toHaveBeenCalledWith(false, true);
   });
 

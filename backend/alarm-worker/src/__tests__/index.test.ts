@@ -175,17 +175,27 @@ describe('validateTrip', () => {
   });
 
   // #816 C — lockless station-passed opt-in 필드
-  it('preserves boolean locklessStationPassed (#816)', () => {
-    expect(validateTrip({ ...base(), locklessStationPassed: true })?.locklessStationPassed).toBe(true);
-    expect(validateTrip({ ...base(), locklessStationPassed: false })?.locklessStationPassed).toBe(false);
+  it('preserves boolean infoModeEnabled (#816)', () => {
+    expect(validateTrip({ ...base(), infoModeEnabled: true })?.infoModeEnabled).toBe(true);
+    expect(validateTrip({ ...base(), infoModeEnabled: false })?.infoModeEnabled).toBe(false);
   });
 
-  it('drops non-boolean locklessStationPassed and absent field stays undefined', () => {
+  it('drops non-boolean infoModeEnabled and absent field stays undefined', () => {
     expect(
-      validateTrip({ ...base(), locklessStationPassed: 'yes' })?.locklessStationPassed,
+      validateTrip({ ...base(), infoModeEnabled: 'yes' })?.infoModeEnabled,
     ).toBeUndefined();
-    expect(validateTrip({ ...base(), locklessStationPassed: 1 })?.locklessStationPassed).toBeUndefined();
-    expect(validateTrip(base())?.locklessStationPassed).toBeUndefined();
+    expect(validateTrip({ ...base(), infoModeEnabled: 1 })?.infoModeEnabled).toBeUndefined();
+    expect(validateTrip(base())?.infoModeEnabled).toBeUndefined();
+  });
+
+  // #1669 backward-compat: 구 device가 locklessStationPassed 필드명으로 송신해도 infoModeEnabled로 파싱
+  it('backward-compat: locklessStationPassed 필드를 infoModeEnabled로 파싱한다 (#1669)', () => {
+    expect(validateTrip({ ...base(), locklessStationPassed: true })?.infoModeEnabled).toBe(true);
+    expect(validateTrip({ ...base(), locklessStationPassed: false })?.infoModeEnabled).toBe(false);
+    // infoModeEnabled 우선: 둘 다 있으면 infoModeEnabled 채택
+    expect(
+      validateTrip({ ...base(), infoModeEnabled: true, locklessStationPassed: false })?.infoModeEnabled,
+    ).toBe(true);
   });
 
   // #903 (Seam G) — subsurface 필드
@@ -991,7 +1001,7 @@ describe('POST /trips — #1285 lockless progress KV 재등록 시 진행 보존
       ...base(),
       token: LOCKLESS_TOKEN,
       createdAt: SESSION_CREATED,
-      locklessStationPassed: true,
+      infoModeEnabled: true,
       waypoints: LOCKLESS_WAYPOINTS,
       ...overrides,
     };
@@ -1031,12 +1041,12 @@ describe('POST /trips — #1285 lockless progress KV 재등록 시 진행 보존
     expect((finalTrip.waypoints as Array<{ stationName: string }>)[0].stationName).toBe('군자');
   });
 
-  it('lockless progress가 있어도 locklessStationPassed=false면 progress 폐기', async () => {
+  it('lockless progress가 있어도 infoModeEnabled=false면 progress 폐기', async () => {
     const env = makeKvEnv();
     await post('/trips', locklessTripBody(), env);
     await seedLocklessProgress(env, 1);
-    // locklessStationPassed가 false인 재등록 — progress 미적용
-    await post('/trips', locklessTripBody({ locklessStationPassed: false }), env);
+    // infoModeEnabled가 false인 재등록 — progress 미적용
+    await post('/trips', locklessTripBody({ infoModeEnabled: false }), env);
     expect(await env.TRIPS.get(`progress:${LOCKLESS_TOKEN}`)).toBeNull();
   });
 

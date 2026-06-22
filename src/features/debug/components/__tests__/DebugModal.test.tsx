@@ -2262,13 +2262,13 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
     jest.clearAllMocks();
     setupHookDefaults();
     act(() => {
-      useSettingsStore.setState({ locklessStationPassed: false });
+      useSettingsStore.setState({ infoModeEnabled: false });
     });
   });
 
   afterEach(() => {
     act(() => {
-      useSettingsStore.setState({ locklessStationPassed: false });
+      useSettingsStore.setState({ infoModeEnabled: false });
     });
   });
 
@@ -2299,15 +2299,15 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
     expect(screen.getByText(/^1 \(last \d{2}:\d{2}:\d{2}\)$/)).toBeTruthy();
   });
 
-  it('locklessStationPassed=false면 toggle row가 OFF 안내 문구로 노출된다', async () => {
+  it('infoModeEnabled=false면 toggle row가 OFF 안내 문구로 노출된다', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     expect(screen.getByText(/lockless station-passed 비활성/)).toBeTruthy();
   });
 
-  it('locklessStationPassed=true면 toggle row가 "on"으로 노출된다', async () => {
+  it('infoModeEnabled=true면 toggle row가 "on"으로 노출된다', async () => {
     act(() => {
-      useSettingsStore.setState({ locklessStationPassed: true });
+      useSettingsStore.setState({ infoModeEnabled: true });
     });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
@@ -2320,7 +2320,7 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
       { ts: 2, source: 'silent-push-fired', outcome: 'fired' },
     ]);
     act(() => {
-      useSettingsStore.setState({ locklessStationPassed: true });
+      useSettingsStore.setState({ infoModeEnabled: true });
     });
     const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);

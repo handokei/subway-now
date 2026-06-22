@@ -38,9 +38,9 @@ export default function SettingsScreen() {
   const setAccessibilityMode = useSettingsStore((s) => s.setAccessibilityMode);
   const loadAccessibilityMode = useSettingsStore((s) => s.loadAccessibilityMode);
   // #816 C — lockless station-passed opt-in 토글.
-  const locklessStationPassed = useSettingsStore((s) => s.locklessStationPassed);
-  const setLocklessStationPassed = useSettingsStore((s) => s.setLocklessStationPassed);
-  const loadLocklessStationPassed = useSettingsStore((s) => s.loadLocklessStationPassed);
+  const infoModeEnabled = useSettingsStore((s) => s.infoModeEnabled);
+  const setInfoModeEnabled = useSettingsStore((s) => s.setInfoModeEnabled);
+  const loadInfoModeEnabled = useSettingsStore((s) => s.loadInfoModeEnabled);
   // #1038 follow-up — Sentry 오류 진단 정보 opt-in.
   const sentryOptIn = useSettingsStore((s) => s.sentryOptIn);
   const setSentryOptIn = useSettingsStore((s) => s.setSentryOptIn);
@@ -63,7 +63,7 @@ export default function SettingsScreen() {
     loadAllowSpeaker();
     loadAccessibilityMode();
     loadRoutePreference();
-    loadLocklessStationPassed();
+    loadInfoModeEnabled();
     loadSentryOptIn();
     // #1175 — lockless 토글 학습 funnel viewed step. SettingsScreen 진입 = 토글 노출.
     emitLocklessToggleViewed();
@@ -175,15 +175,15 @@ export default function SettingsScreen() {
               </Text>
             </View>
             <Switch
-              value={locklessStationPassed}
-              onValueChange={setLocklessStationPassed}
+              value={infoModeEnabled}
+              onValueChange={setInfoModeEnabled}
               trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={locklessStationPassed ? colors.onAccent : colors.subtle}
+              thumbColor={infoModeEnabled ? colors.onAccent : colors.subtle}
               testID="lockless-station-passed-switch"
               accessibilityRole="switch"
               accessibilityLabel={t('settings.locklessStationPassedLabel')}
               accessibilityHint={t('a11y.settings.locklessStationPassedHint')}
-              accessibilityState={{ checked: locklessStationPassed }}
+              accessibilityState={{ checked: infoModeEnabled }}
             />
           </View>
         </View>

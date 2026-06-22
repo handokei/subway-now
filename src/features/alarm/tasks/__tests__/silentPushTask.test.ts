@@ -213,7 +213,7 @@ import {
   ACTIVE_TRIP_KEY,
   BACKEND_SSOT_MIRROR_KEY,
   DESTINATION_KEY,
-  LOCKLESS_STATION_PASSED_KEY,
+  INFO_MODE_ENABLED_KEY,
   ROUTE_KEY,
   SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
@@ -1341,7 +1341,7 @@ describe('silentPushTask', () => {
         (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
           if (key === DESTINATION_KEY) return JSON.stringify(destStation);
           if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(true);
+          if (key === INFO_MODE_ENABLED_KEY) return JSON.stringify(true);
           return null;
         });
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
@@ -1373,7 +1373,7 @@ describe('silentPushTask', () => {
         (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
           if (key === DESTINATION_KEY) return JSON.stringify(destStation);
           if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) {
+          if (key === INFO_MODE_ENABLED_KEY) {
             if (state === 'on') return JSON.stringify(true);
             if (state === 'off') return JSON.stringify(false);
             if (state === 'throw') throw new Error('boom');
@@ -1541,7 +1541,7 @@ describe('silentPushTask', () => {
         (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
           if (key === DESTINATION_KEY) return JSON.stringify(destStation);
           if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(value);
+          if (key === INFO_MODE_ENABLED_KEY) return JSON.stringify(value);
           return null;
         });
       }
@@ -1688,7 +1688,7 @@ describe('silentPushTask', () => {
 
       it('sleep ON + transfer + hopIndex=0 (first hop) → sleep-first-transfer skip', async () => {
         setAsyncStorageMap({
-          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [INFO_MODE_ENABLED_KEY]: JSON.stringify(true),
           [SLEEP_MODE_KEY]: JSON.stringify(true),
         });
         await handleSilentPush(
@@ -1705,7 +1705,7 @@ describe('silentPushTask', () => {
 
       it('sleep ON + destination + hopIndex=0 → 통과 (destination은 절대 suppress 안 함)', async () => {
         setAsyncStorageMap({
-          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [INFO_MODE_ENABLED_KEY]: JSON.stringify(true),
           [SLEEP_MODE_KEY]: JSON.stringify(true),
         });
         await handleSilentPush(
@@ -1717,7 +1717,7 @@ describe('silentPushTask', () => {
 
       it('sleep ON + transfer + hopIndex>0 → 통과 (first hop 아님)', async () => {
         setAsyncStorageMap({
-          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [INFO_MODE_ENABLED_KEY]: JSON.stringify(true),
           [SLEEP_MODE_KEY]: JSON.stringify(true),
         });
         await handleSilentPush(
@@ -1728,7 +1728,7 @@ describe('silentPushTask', () => {
 
       it('sleep OFF + transfer + hopIndex=0 → 통과', async () => {
         setAsyncStorageMap({
-          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [INFO_MODE_ENABLED_KEY]: JSON.stringify(true),
           [SLEEP_MODE_KEY]: JSON.stringify(false),
         });
         await handleSilentPush(
@@ -1739,7 +1739,7 @@ describe('silentPushTask', () => {
 
       it('SLEEP_MODE_KEY AsyncStorage read 오류 → 가드 자연 skip (안전 fallback)', async () => {
         setAsyncStorageMap({
-          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [INFO_MODE_ENABLED_KEY]: JSON.stringify(true),
           [SLEEP_MODE_KEY]: THROW,
         });
         await handleSilentPush(
@@ -1751,7 +1751,7 @@ describe('silentPushTask', () => {
 
       it('SLEEP_MODE_KEY 부재 (key 자체 없음) → 가드 자연 skip (기본 OFF)', async () => {
         // SLEEP_MODE_KEY override 없음 → 기본 null 반환 → loadSleepModeFlag가 false return.
-        setAsyncStorageMap({ [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true) });
+        setAsyncStorageMap({ [INFO_MODE_ENABLED_KEY]: JSON.stringify(true) });
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
         );

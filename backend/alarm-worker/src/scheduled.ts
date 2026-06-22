@@ -434,7 +434,7 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   vanishReleaseFired: number;
   /**
-   * #1370 L3 — vanish 후 hop 시간 미경과로 lock release할 때 trip.locklessStationPassed가
+   * #1370 L3 — vanish 후 hop 시간 미경과로 lock release할 때 trip.infoModeEnabled가
    * false였던 trip을 강제 enable해 lockless 인계 경로를 살린 횟수. 0이 아니면 사용자가 opt-in
    * 토글 OFF였지만 vanish recovery로 매역 push가 복구된 trip 수.
    */
@@ -682,7 +682,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
       // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면
       // 잘못된 leg/방향으로 갈 위험.
-      if (trip.locklessStationPassed && waypoint.kind === 'intermediate') {
+      if (trip.infoModeEnabled && waypoint.kind === 'intermediate') {
         try {
           await runLocklessIntermediate(trip, waypoint, env, deps, stats, now, log, generatePushId);
         } catch (e) {
@@ -695,7 +695,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       log('boarding-lock: skip cycle (lock missing or expired)', {
         token: trip.token.slice(0, 8),
         station: waypoint.stationName,
-        locklessOptIn: trip.locklessStationPassed === true,
+        locklessOptIn: trip.infoModeEnabled === true,
         waypointKind: waypoint.kind,
       });
       // #819 — lock 미발생 trip에 boarding-prompt 9단 게이트 평가 분기. 게이트 통과 시 alert
@@ -1853,8 +1853,8 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     }
     // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
     // isBoardingLockActive=false가 되는 즉시 다음 cycle의 evaluateAndMaybeFireBoardingPrompt 경로 복구.
-    // #1370 L3 — lock release 후 lockless 인계가 실제로 작동하려면 trip.locklessStationPassed가
-    // true여야 한다(`if (!isBoardingLockActive) → if (trip.locklessStationPassed && intermediate)`).
+    // #1370 L3 — lock release 후 lockless 인계가 실제로 작동하려면 trip.infoModeEnabled가
+    // true여야 한다(`if (!isBoardingLockActive) → if (trip.infoModeEnabled && intermediate)`).
     // OFF인 trip은 다음 cycle에서 lockMissing으로 spin하며 군자/중곡까지 push 0건. vanish fallback은
     // 시스템이 trainCode를 잃은 상황이므로 lockless 인계를 강제 enable해 매역 push 경로를 복구한다.
     //
@@ -1895,11 +1895,11 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       station: waypoint.stationName,
       consecutiveEtaMissing: nextMissCount,
       lastTrackedArrivalEpoch: lastEpoch,
-      locklessTakeoverEnabled: trip.locklessStationPassed !== true,
+      locklessTakeoverEnabled: trip.infoModeEnabled !== true,
     });
     trip.boardingLock = undefined;
     trip.consecutiveEtaMissing = 0;
-    trip.locklessStationPassed = true;
+    trip.infoModeEnabled = true;
     stats.vanishLocklessTakeover += 1;
     await deleteProgress(env.TRIPS, trip.token);
     await putTrip(env.TRIPS, trip);

@@ -1370,7 +1370,7 @@ function DebugModalInner({
   // #856: lockless station-passed toggle. OFF면 backend가 받은 silent push도 client가
   // intermediate 알림을 차단 → "received는 늘어도 fired는 안 늘어남"이 정상 동작.
   // DebugModal에 한 줄로 노출해 사용자가 설정 위치를 즉시 알 수 있게 한다.
-  const locklessOn = useSettingsStore((s) => s.locklessStationPassed);
+  const locklessOn = useSettingsStore((s) => s.infoModeEnabled);
   // #1215 (D9) — 기압계 subsurface. useBarometer는 shared/hooks이라 의존 위배 없음.
   // useFusedNearestStation 내부 useBarometer와 별개 listener — DebugModal 관찰자 효과 허용 범위.
   // #1398 — `stop=undefined` 원인(unavailableReason)과 readingCount도 dump에 노출.

@@ -208,30 +208,30 @@ describe('alarmBackend', () => {
       });
 
       // #816 C — lockless station-passed 토글
-      it('locklessStationPassed=true 송신 + 토글 변경 시 재등록', async () => {
+      it('infoModeEnabled=true 송신 + 토글 변경 시 재등록', async () => {
         const first = await registerActiveTrip({
           ...SAMPLE_PAYLOAD,
-          locklessStationPassed: true,
+          infoModeEnabled: true,
         });
         expect(first.ok).toBe(true);
         const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-        expect(body.locklessStationPassed).toBe(true);
+        expect(body.infoModeEnabled).toBe(true);
 
         // 토글 OFF로 재호출 → hash 달라져서 재등록 (dedup 미적용)
         const off = await registerActiveTrip({
           ...SAMPLE_PAYLOAD,
-          locklessStationPassed: false,
+          infoModeEnabled: false,
         });
         expect(off).toEqual({ ok: true, status: 200 });
         expect(global.fetch).toHaveBeenCalledTimes(2);
         const offBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
-        expect(offBody.locklessStationPassed).toBeUndefined();
+        expect(offBody.infoModeEnabled).toBeUndefined();
       });
 
-      it('locklessStationPassed=false/미설정이면 body에 미포함', async () => {
-        await registerActiveTrip({ ...SAMPLE_PAYLOAD, locklessStationPassed: false });
+      it('infoModeEnabled=false/미설정이면 body에 미포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: false });
         const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-        expect(body.locklessStationPassed).toBeUndefined();
+        expect(body.infoModeEnabled).toBeUndefined();
       });
 
       // #903 (Seam G) — subsurface 동봉

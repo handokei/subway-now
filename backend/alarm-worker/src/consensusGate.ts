@@ -24,7 +24,7 @@
  *   채널(promptDisplay)은 동작 보존 — 본 모듈은 fire 결정에만 관여한다.
  *
  * §7 토글 input X:
- *   본 게이트는 `trip.locklessStationPassed`(C 토글) / `trip.boardingPromptState.fired`
+ *   본 게이트는 `trip.infoModeEnabled`(C 토글) / `trip.boardingPromptState.fired`
  *   (사용자 응답) 등 **사용자 명시 의향 필드를 input으로 받지 않는다**. 시그너처가 `environment`
  *   + `signals` 만 받는 사실이 §7의 정적 보증. 토글 UI 라벨은 frontend 책임.
  *

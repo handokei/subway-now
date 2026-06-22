@@ -37,7 +37,7 @@ import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
-  LOCKLESS_STATION_PASSED_KEY,
+  INFO_MODE_ENABLED_KEY,
   SLEEP_MODE_KEY,
 } from '../../../shared/constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
@@ -707,7 +707,7 @@ async function loadApnsToken(): Promise<string | null> {
  */
 async function loadLocklessOptIn(): Promise<boolean> {
   try {
-    const raw = await AsyncStorage.getItem(LOCKLESS_STATION_PASSED_KEY);
+    const raw = await AsyncStorage.getItem(INFO_MODE_ENABLED_KEY);
     if (!raw) return false;
     return JSON.parse(raw) === true;
   } catch {
