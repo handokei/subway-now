@@ -84,3 +84,20 @@ export const WIFI_SSID_MAX_DISTANCE_KM = 1.5;
  * fused 후보는 산출된다(거리만 fusedPasses 임계 0.6km를 넘김).
  */
 export const DETECTION_FUSED_MAX_DISTANCE_KM = 0.5;
+
+/**
+ * #1657 — GPS-derived advance fast-path (지상 lock 활성).
+ *
+ * GPS 신선도 게이트:
+ *   - accuracy ≤ GPS_DERIVED_ACCURACY_MAX_M: 지상 open-sky GPS fix. 50m는 기존
+ *     passesFusionDistanceGate strict 기준(50m)과 동일 — 불일관 차단.
+ *   - fix age ≤ GPS_DERIVED_FIX_MAX_AGE_MS: 30s 초과는 GPS가 stale해 cascade advance의
+ *     SSOT로 쓸 수 없다.
+ *
+ * 노선 정합 게이트:
+ *   - candidates[0].distanceKm ≤ GPS_DERIVED_ROUTE_MATCH_MAX_KM(100m): GPS 좌표가
+ *     boardingLine 위 역 100m 이내 — 옆 노선 station drift 차단.
+ */
+export const GPS_DERIVED_ACCURACY_MAX_M = 50;
+export const GPS_DERIVED_FIX_MAX_AGE_MS = 30_000;
+export const GPS_DERIVED_ROUTE_MATCH_MAX_KM = 0.1;
