@@ -794,6 +794,39 @@ describe('bl: fire-time 재검증 (#1282)', () => {
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();
       expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
     });
+
+    // #1415/#1353 R1 — `bl:` 채널도 tripStart 게이트 적용 (revalidateBlAlarm requireTripStart=true).
+    // 6/22 14:19 애오개 / 6/22 14:25 아현 / 6/19 15:51 용마산 stale fire 회귀의 핵심 backstop.
+    it('R1 (#1415/#1353) tripStart 미존재 시 bl: 재검증은 revalidate-no-trip + skip', async () => {
+      mockGetTripStartedAt.mockResolvedValueOnce(null);
+
+      await reconcileScheduledAlarmDelivery(blChannel.id('imminent', '애오개'));
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-no-trip',
+        stationName: '애오개',
+        phaseId: 'imminent',
+      });
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+      // suppress 결정 시 OS scheduled queue cancel(#1354)도 함께 트리거되어 영구 misfire 차단.
+      expect(mockCancelScheduled).toHaveBeenCalledWith(blChannel.id('imminent', '애오개'));
+    });
+
+    it('R1 (#1415/#1353) tripStart 미존재 시 sig 검증보다 먼저 차단된다', async () => {
+      // tripStart=null이면 sig 일치 여부와 무관하게 revalidate-no-trip 결정.
+      mockGetTripStartedAt.mockResolvedValueOnce(null);
+      blChannel.registeredSigMock.mockResolvedValueOnce('SIG-A');
+      mockRouteSignature.mockReturnValueOnce('SIG-A');
+
+      await reconcileScheduledAlarmDelivery(blChannel.id('early', '용마산'));
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-no-trip',
+        stationName: '용마산',
+        phaseId: 'early',
+      });
+    });
   });
 
   describe('drainDeliveredScheduledAlarms — `bl:` 항목 재검증', () => {
@@ -834,6 +867,28 @@ describe('bl: fire-time 재검증 (#1282)', () => {
 
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();
       expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+      handle.remove();
+    });
+
+    // #1415/#1353 R1 — drain 경로에서도 bl 채널의 tripStart 게이트 적용.
+    it('R1 (#1415/#1353) drain — tripStart=null이면 모든 bl 항목 suppress + lastStationName 갱신 안 함', async () => {
+      mockGetTripStartedAt.mockResolvedValue(null);
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: blChannel.id('imminent', '애오개') } },
+        { date: 2, request: { identifier: blChannel.id('imminent', '아현') } },
+      ]);
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-no-trip', stationName: '애오개' }),
+      );
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-no-trip', stationName: '아현' }),
+      );
       handle.remove();
     });
 

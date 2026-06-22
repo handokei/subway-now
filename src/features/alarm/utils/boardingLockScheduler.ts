@@ -256,7 +256,11 @@ async function cancelAndDismiss(ids: string[]): Promise<void> {
   // 뒤의 id들을 막지 않게 한다. 직렬 await에서 한 번 throw하면 `bl:` 사전 예약 잔여가
   // OS 큐에 남아 trip 종료 후 좀비 알림이 발사된다 (cancelTripBoundAlarms와 같은 회귀
   // 표면). dismiss는 기존과 동일하게 throw를 swallow한다.
-  await Promise.allSettled(
+  //
+  // #1415/#1353 R1 — Fix 3 보강: rejected 결과를 명시 로그 + 1회 재시도.
+  // cancelTripBoundAlarms와 동형. dismiss 실패는 무시(기존 정책 보존) — cancel만 측정.
+  // 호출자는 모두 `length > 0` 가드 후 진입하므로 본 함수 내부엔 empty 가드 불필요.
+  const firstPass = await Promise.allSettled(
     ids.map(async (id) => {
       await Notifications.cancelScheduledNotificationAsync(id);
       try {
@@ -266,6 +270,30 @@ async function cancelAndDismiss(ids: string[]): Promise<void> {
       }
     }),
   );
+  const rejected: string[] = [];
+  for (let i = 0; i < firstPass.length; i++) {
+    if (firstPass[i].status === 'rejected') {
+      rejected.push(ids[i]);
+    }
+  }
+  if (rejected.length === 0) return;
+  logger.warn(
+    `cancel reject pass-1: channel=bl count=${rejected.length} ids=${rejected.slice(0, 3).join(',')}${rejected.length > 3 ? '...' : ''}`,
+  );
+  const secondPass = await Promise.allSettled(
+    rejected.map((id) => Notifications.cancelScheduledNotificationAsync(id)),
+  );
+  const stillRejected: string[] = [];
+  for (let i = 0; i < secondPass.length; i++) {
+    if (secondPass[i].status === 'rejected') {
+      stillRejected.push(rejected[i]);
+    }
+  }
+  if (stillRejected.length > 0) {
+    logger.warn(
+      `cancel reject pass-2 (final): channel=bl count=${stillRejected.length} ids=${stillRejected.slice(0, 3).join(',')}${stillRejected.length > 3 ? '...' : ''}`,
+    );
+  }
 }
 
 export interface ScheduleHopsParams {

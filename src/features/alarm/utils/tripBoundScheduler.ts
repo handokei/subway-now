@@ -758,13 +758,79 @@ export async function cancelTripBoundAlarms(): Promise<void> {
   // 나머지 identifier cancel을 막지 않도록 한다. 직렬 await 루프에서 한 번 throw하면
   // 뒤에 남아 있는 `tba:` 사전 예약이 OS 큐에 그대로 남아 trip 종료 후 좀비 알림으로
   // 발사된다 (2026-06-19 08:48 "안내 종료" 도달 사례).
-  const results = await Promise.allSettled(
-    targets.map((req) => Notifications.cancelScheduledNotificationAsync(req.identifier)),
+  //
+  // #1415/#1353 R1 — Fix 3 보강: rejected 결과를 명시 로그 + 1회 재시도.
+  // 기존엔 rejected를 allSettled가 silent swallow → cancel 실패가 측정 인프라에 노출 안 됐고,
+  // 일시적 OS 내부 race로 인한 reject도 재시도 없이 그대로 좀비 알림 유발. 1회 재시도는 throw
+  // 가능하므로 동일 allSettled 패턴으로 묶어 retry-of-retry는 silent log (회수 무한 루프 방지).
+  const cancelled = await cancelIdentifiersWithRetry(
+    targets.map((req) => req.identifier),
+    'tba',
   );
-  const cancelled = results.filter((r) => r.status === 'fulfilled').length;
   if (cancelled > 0) {
     logger.info(`cancelled ${cancelled} trip-bound alarms`);
   }
   // #918 A3 PR2: sig storage도 함께 cleanup — 다음 reconcile 시 stale sig가 남지 않게.
   await clearRegisteredTripRouteSig();
+}
+
+/**
+ * #1415/#1353 R1 — Fix 3 (cancel 직렬화 + 재시도).
+ *
+ * `Notifications.cancelScheduledNotificationAsync`를 identifier 배열에 대해 호출하며,
+ * 1차 reject 발생 시 1회 재시도한다. `Promise.allSettled` 패턴을 유지해 한 항목 실패가 나머지 진행을
+ * 막지 않는다 (#1525 정책 보존). 재시도 후에도 실패하면 명시 로그만 남기고 다음 항목 진행 — production
+ * 회귀가 측정 인프라(`logger.warn`)에 노출되도록 한다.
+ *
+ * 반환: 최종 성공한 cancel 수. 호출자가 log info에 사용.
+ *
+ * 트레이드오프:
+ *   - 1회 재시도는 expo-notifications 내부 큐 race 또는 일시적 OS busy state 회복용. 영구 오류
+ *     (잘못된 identifier 등)는 retry해도 같은 reject — log warn으로 측정 노출 후 다음 진행.
+ *   - 직렬 await 루프로 바꾸지 않은 이유: trip 종료 직후 수십~64개 identifier에 대해 직렬 await하면
+ *     앱 종료까지 수 초 stall 가능 (OS API latency 100~300ms × N). allSettled 병렬 유지가 성능 우선.
+ */
+async function cancelIdentifiersWithRetry(
+  identifiers: string[],
+  channelLabel: 'tba',
+): Promise<number> {
+  if (identifiers.length === 0) return 0;
+  const firstPass = await Promise.allSettled(
+    identifiers.map((id) => Notifications.cancelScheduledNotificationAsync(id)),
+  );
+  const rejected: string[] = [];
+  for (let i = 0; i < firstPass.length; i++) {
+    if (firstPass[i].status === 'rejected') {
+      rejected.push(identifiers[i]);
+    }
+  }
+  if (rejected.length === 0) {
+    return firstPass.length;
+  }
+  // 1차 reject 발견 — 명시 로그 + 1회 재시도.
+  logger.warn(
+    `cancel reject pass-1: channel=${channelLabel} count=${rejected.length} ids=${rejected.slice(0, 3).join(',')}${rejected.length > 3 ? '...' : ''}`,
+  );
+  const secondPass = await Promise.allSettled(
+    rejected.map((id) => Notifications.cancelScheduledNotificationAsync(id)),
+  );
+  let firstPassSuccess = 0;
+  for (const r of firstPass) {
+    if (r.status === 'fulfilled') firstPassSuccess++;
+  }
+  let retryRescued = 0;
+  const stillRejected: string[] = [];
+  for (let i = 0; i < secondPass.length; i++) {
+    if (secondPass[i].status === 'fulfilled') {
+      retryRescued++;
+    } else {
+      stillRejected.push(rejected[i]);
+    }
+  }
+  if (stillRejected.length > 0) {
+    logger.warn(
+      `cancel reject pass-2 (final): channel=${channelLabel} count=${stillRejected.length} ids=${stillRejected.slice(0, 3).join(',')}${stillRejected.length > 3 ? '...' : ''}`,
+    );
+  }
+  return firstPassSuccess + retryRescued;
 }
