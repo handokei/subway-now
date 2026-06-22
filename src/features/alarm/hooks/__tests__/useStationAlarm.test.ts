@@ -1871,7 +1871,7 @@ describe('useStationAlarm', () => {
     });
   });
 
-  // #670/#672/#1316 — phase 알람 warmup 가드. 하이드레이션 완료 후 HYDRATE_WARMUP_MS(30s) 시간 window
+  // #670/#672/#1316/#1645 — phase 알람 warmup 가드. 하이드레이션 완료 후 HYDRATE_WARMUP_MS(10s) 시간 window
   // 동안 phase 평가를 보류한다. #1316 이전엔 첫 eval 1회만 suppress(isFirstAlarmEvalRef)했으나, 2번째
   // eval이 GPS/ETA 안정화 전 destination/transfer early를 발사 → firedAlarms 슬롯 점유로 실제 도착이
   // dedup되는 회귀(08:24:31 성수)가 있었다. station-passed(#1010)와 동일한 시간 window로 통일한다.
@@ -1914,7 +1914,7 @@ describe('useStationAlarm', () => {
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
 
-    it('warmup window 경과 후 좌표 갱신 시 evaluate 호출됨 (hydratedAt + 30s 이후)', async () => {
+    it('warmup window 경과 후 좌표 갱신 시 evaluate 호출됨 (hydratedAt + 10s 이후)', async () => {
       const baseTs = 1_700_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       const { rerender } = renderHook(
@@ -1925,7 +1925,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
       // window 경과 후(30s + 1ms) 좌표 갱신 → 안정된 입력으로 평가 진입.
-      nowSpy.mockReturnValue(baseTs + 30_001);
+      nowSpy.mockReturnValue(baseTs + 10_001);
       rerender({ loc: { lat: 37.41, lng: 127.01 } });
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
     });
@@ -1988,7 +1988,7 @@ describe('useStationAlarm', () => {
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
 
       // 실제 도착 시점: window 경과 + 좌표 갱신. firedAlarms가 비어 있으므로 dedup 없이 발사돼야 한다.
-      nowSpy.mockReturnValue(baseTs + 30_001);
+      nowSpy.mockReturnValue(baseTs + 10_001);
       rerender({ loc: { lat: 37.498, lng: 127.028 } });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
@@ -2493,7 +2493,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });
 
-    it('warmup window 경과 후 발사 허용 (hydratedAt + 30s 이후)', async () => {
+    it('warmup window 경과 후 발사 허용 (hydratedAt + 10s 이후)', async () => {
       const baseTs = 1_700_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
@@ -2516,7 +2516,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
 
       // warmup window 경과 후 nearestStation 제공 — 이 시점엔 warmup guard를 통과해야 함.
-      nowSpy.mockReturnValue(baseTs + 30_001);
+      nowSpy.mockReturnValue(baseTs + 10_001);
       rerender({ s: station });
 
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());

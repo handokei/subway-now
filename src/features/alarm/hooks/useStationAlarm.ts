@@ -77,10 +77,15 @@ import { resolveNotificationSource, type NotificationSource } from '../utils/not
 
 const logger = createLogger('StationAlarm');
 
-// #1010/#1316 — 하이드레이션 warmup. lock hydrate 완료 후 이 기간 동안 알람 발사를 차단한다.
+// #1010/#1316/#1645 — 하이드레이션 warmup. lock hydrate 완료 후 이 기간 동안 알람 발사를 차단한다.
 // 하이드레이션 직후 firedAlarms가 복원되기 전 GPS/ETA 신호와 동기화되는 과도 구간 false alarm 방지.
 // station-passed effect(#1010)와 phase 알람 effect(#1316) 양쪽이 같은 window를 공유한다.
-const HYDRATE_WARMUP_MS = 30_000;
+//
+// #1645 — 30s → 10s 단축. 사용자 trip evidence 6/22 13:38~41 (상왕십리/신당/동대문역사문화공원
+// 첫 3 station 알림 누락) — destination 변경/cold start 직후 30s window가 지하철 station 간격(1~2분)
+// 보다 길어 V4 acceptance(매역 silent 알림) 일관 위반. 단축 + 다른 가드(firedAlarmsRefDestIdRef #699,
+// cross-category dedup #1515, hydrationPhase H5, SSoT Gate A) 이중 보호로 false fire 회귀 방지.
+const HYDRATE_WARMUP_MS = 10_000;
 
 /**
  * #1010/#1316 — 하이드레이션 완료(hydratedAt) 후 HYDRATE_WARMUP_MS 시간 window 안인지 판정.
