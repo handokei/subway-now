@@ -2445,16 +2445,16 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(getLaCalls(fetchImpl)).toHaveLength(0);
   });
 
-  // #900 Seam D — 60s heartbeat 게이트.
-  it('fires LA heartbeat when delta < 30s but lastLaPushAt is ≥ 60s ago', async () => {
+  // #900 Seam D / #1671 — 90s heartbeat 게이트.
+  it('fires LA heartbeat when delta < 30s but lastLaPushAt is ≥ 90s ago', async () => {
     const kv = new InMemoryKV();
-    // ETA 변동(ΔETA=10s)은 임계 미달이지만 lastLaPushAt이 60s 전이라 heartbeat 발사 기대.
+    // ETA 변동(ΔETA=10s)은 임계 미달이지만 lastLaPushAt이 90s 전이라 heartbeat 발사 기대.
     await putTrip(
       kv as unknown as KVNamespace,
       makeLockedLaTrip({
         lastTrackedArrivalEpoch: NOW + 110_000,
         lastLaPushEpoch: NOW + 110_000,
-        lastLaPushAt: NOW - 60_000,
+        lastLaPushAt: NOW - 90_000,
       }),
     );
     const fetchImpl = makeOkFetch();
@@ -2468,18 +2468,166 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
   });
 
-  it('does not fire LA heartbeat when lastLaPushAt is < 60s ago and delta < 30s', async () => {
+  it('does not fire LA heartbeat when lastLaPushAt is < 90s ago and delta < 30s', async () => {
     const kv = new InMemoryKV();
     await putTrip(
       kv as unknown as KVNamespace,
       makeLockedLaTrip({
         lastTrackedArrivalEpoch: NOW + 110_000,
         lastLaPushEpoch: NOW + 110_000,
-        lastLaPushAt: NOW - 30_000, // 30s 전 — 60s 임계 미달
+        lastLaPushAt: NOW - 60_000, // 60s 전 — 90s 임계 미달
       }),
     );
     const fetchImpl = makeOkFetch();
     const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  // #1671 — 환승/도착 즉시 trigger.
+  it('fires LA immediately on transfer waypoint even when delta < 30s and heartbeat not due', async () => {
+    const kv = new InMemoryKV();
+    // transfer waypoint, ΔETA=10s < 30s, lastLaPushAt=45s 전(heartbeat 미달)
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-tok',
+        route: { type: 'transfer', fromLine: '2', toLine: '7', transferName: '건대입구', stopsToTransfer: 1, stopsFromTransfer: 2 },
+        waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
+        activityPushToken: 'la-token',
+        activityState: 'live',
+        apnsEnv: 'sandbox',
+        boardingLock: {
+          trainCode: 'T',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['강변', '건대입구'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        lastTrackedArrivalEpoch: NOW + 110_000,
+        lastLaPushEpoch: NOW + 110_000,
+        lastLaPushAt: NOW - 45_000, // 45s 전 — heartbeat(90s) 미달
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    // ΔETA=10s < 30s, heartbeat 미달이지만 transfer → 즉시 발사
+    const stats = await runLaScheduled(kv, {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(
+            JSON.stringify({
+              realtimeArrivalList: [
+                {
+                  barvlDt: '120',
+                  recptnDt: '',
+                  updnLine: '상행',
+                  trainLineNm: '건대입구',
+                  btrainNo: 'T',
+                  subwayNm: '지하철2호선',
+                  arvlCd: null,
+                },
+              ],
+            }),
+            { status: 200 },
+          )) as unknown as typeof fetch,
+      }),
+      fetchImpl,
+    });
+    expect(stats.laPushSent).toBe(1);
+    expect(getLaCalls(fetchImpl)).toHaveLength(1);
+  });
+
+  it('fires LA immediately on destination waypoint when etaSeconds <= 60 and delta < 30s', async () => {
+    const kv = new InMemoryKV();
+    // destination, ETA=45s (≤60s 즉시 임계), ΔETA=5s < 30s, heartbeat 미달
+    const etaMs = 45_000;
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        lastTrackedArrivalEpoch: NOW + etaMs + 5_000,
+        lastLaPushEpoch: NOW + etaMs + 5_000,
+        lastLaPushAt: NOW - 30_000, // 30s 전 — heartbeat(90s) 미달
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(45), fetchImpl });
+    expect(stats.laPushSent).toBe(1);
+    expect(getLaCalls(fetchImpl)).toHaveLength(1);
+  });
+
+  it('does not fire LA immediately on destination waypoint when etaSeconds > 60 and delta < 30s and heartbeat not due', async () => {
+    const kv = new InMemoryKV();
+    // destination, ETA=90s (>60s), ΔETA=10s < 30s, heartbeat 미달 → skip
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        lastTrackedArrivalEpoch: NOW + 100_000,
+        lastLaPushEpoch: NOW + 100_000,
+        lastLaPushAt: NOW - 30_000, // 30s 전
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(90), fetchImpl });
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  it('dedup window still prevents immediate trigger when lastLaPushEpoch is within 30s', async () => {
+    const kv = new InMemoryKV();
+    // transfer waypoint, 하지만 dedup window(30s) 안에 이미 발사함 — skip
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-tok',
+        route: { type: 'transfer', fromLine: '2', toLine: '7', transferName: '건대입구', stopsToTransfer: 1, stopsFromTransfer: 2 },
+        waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
+        activityPushToken: 'la-token',
+        activityState: 'live',
+        apnsEnv: 'sandbox',
+        boardingLock: {
+          trainCode: 'T',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['강변', '건대입구'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        lastTrackedArrivalEpoch: NOW + 120_000,
+        // dedup: 방금(15s 전) 동일 epoch으로 발사됨 → ΔETA=0 < 30s + heartbeat 미달 + immediate는 dedup window 안
+        lastLaPushEpoch: NOW + 120_000,
+        lastLaPushAt: NOW - 15_000,
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(
+            JSON.stringify({
+              realtimeArrivalList: [
+                {
+                  barvlDt: '120',
+                  recptnDt: '',
+                  updnLine: '상행',
+                  trainLineNm: '건대입구',
+                  btrainNo: 'T',
+                  subwayNm: '지하철2호선',
+                  arvlCd: null,
+                },
+              ],
+            }),
+            { status: 200 },
+          )) as unknown as typeof fetch,
+      }),
+      fetchImpl,
+    });
     expect(stats.laPushSent).toBe(0);
     expect(getLaCalls(fetchImpl)).toHaveLength(0);
   });

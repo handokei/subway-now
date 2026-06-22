@@ -110,14 +110,26 @@ export const FALLBACK_HOP_SEC = 90;
 export const LA_PUSH_THRESHOLD_MS = 30_000;
 
 /**
- * LA heartbeat 간격 (#900 Seam D). ETA가 정체돼 ΔETA 임계 미달이어도 마지막 LA push 후
+ * LA heartbeat 간격 (#900 Seam D / #1671). ETA가 정체돼 ΔETA 임계 미달이어도 마지막 LA push 후
  * 이 간격이 지나면 한 번 더 발사한다. 사용자가 BG에서도 stale content-state를 보지 않게
  * 갱신을 강제하기 위한 안전망.
  *
- * cron 60s × 임계 60_000ms = 매 cron 마다 적어도 한 번 LA refresh 보장. APNs LA budget
- * (앱당 분당 ~60건)을 단일 trip이 모두 소모해도 안전한 상한.
+ * #1671 — 60s → 90s (33% 감소). 환승/도착 임박 즉시 trigger(LA_IMMEDIATE_TRIGGER_ETA_SEC)가
+ * 핵심 시점을 cover하므로 일반 heartbeat를 늘려도 사용자 체감 lagは없다.
+ * Net LA push 빈도 ↓ (배터리/발열 개선). APNs LA budget 절감.
  */
-export const LA_HEARTBEAT_INTERVAL_MS = 60_000;
+export const LA_HEARTBEAT_INTERVAL_MS = 90_000;
+
+/**
+ * #1671 — 환승/도착 임박 즉시 trigger 임계 (초).
+ * `waypoint.kind === 'transfer'` (환승) 또는
+ * `waypoint.kind === 'destination' && etaSeconds <= LA_IMMEDIATE_TRIGGER_ETA_SEC` (도착 임박)
+ * 일 때 heartbeat/ΔETA 대기 없이 즉시 LA push를 발사한다.
+ *
+ * dedup window(LA_PUSH_THRESHOLD_MS=30s)는 여전히 적용 — 잦은 재발사 차단.
+ * 환승은 etaSeconds 무관하게 즉시(trip 중 leg 전환 = 중요도 최상). 도착은 1분 이내만 즉시.
+ */
+export const LA_IMMEDIATE_TRIGGER_ETA_SEC = 60;
 
 /**
  * 연속 etaMissing 임계치 (#706). 한 trip이 N회 연속 trainCode 매칭 실패면 자동 종료.
@@ -2346,9 +2358,14 @@ export async function advanceBoardingLockWaypoint(
  * 반환 dirty=true는 호출자가 putTrip을 호출해야 함을 의미한다.
  * (lastLaPushEpoch 갱신 또는 410 token clear 둘 다 dirty)
  *
- * #900 Seam D — ΔETA 임계가 미달이어도 직전 LA push 후 LA_HEARTBEAT_INTERVAL_MS(60s)가
+ * #900 Seam D — ΔETA 임계가 미달이어도 직전 LA push 후 LA_HEARTBEAT_INTERVAL_MS(90s)가
  * 지났으면 heartbeat로 한 번 더 발사한다. ETA가 정체된 BG 구간에서 content-state가
  * stale로 남는 것을 방지하기 위한 안전망. `trip.lastLaPushAt`(epoch ms) 기반.
+ *
+ * #1671 — 환승/도착 임박 즉시 trigger. waypoint.kind==='transfer' 또는
+ * (kind==='destination' && etaSeconds≤LA_IMMEDIATE_TRIGGER_ETA_SEC) 일 때 ΔETA/heartbeat
+ * 대기 없이 즉시 발사한다. dedup window(30s)는 여전히 적용.
+ * X9 sub (환승/도착 LA lag) 해소 + V8 배터리 Net ↓ (heartbeat 90s로 상쇄).
  */
 export async function maybeFireLiveActivityUpdate(
   trip: Trip,
@@ -2361,16 +2378,31 @@ export async function maybeFireLiveActivityUpdate(
 ): Promise<boolean> {
   if (!trip.activityPushToken || trip.activityState !== 'live') return false;
   const last = trip.lastLaPushEpoch;
-  // #900 — 둘 다 만족 안 하면 skip:
+  const etaSeconds = Math.max(0, Math.round((newArrivalEpoch - now) / 1000));
+
+  // #1671 — 즉시 trigger 여부 판정. dedup window(30s)는 통과해야 발사.
+  // transfer: leg 전환 시점 — 중요도 최상, etaSeconds 무관.
+  // destination: 도착 1분 이내 — 사용자가 내릴 준비를 해야 하는 시점.
+  const isImmediateTrigger =
+    waypoint.kind === 'transfer' ||
+    (waypoint.kind === 'destination' && etaSeconds <= LA_IMMEDIATE_TRIGGER_ETA_SEC);
+
+  // #1671 — wall-clock dedup guard (즉시 trigger / heartbeat 공통).
+  // lastLaPushAt 기준 LA_PUSH_THRESHOLD_MS(30s) 이내에 이미 발사했으면 모든 경로 차단.
+  // 환승 시점에 isImmediateTrigger=true라도 30s 안에 중복 발사되지 않도록 race 차단.
+  const lastPushAt = trip.lastLaPushAt;
+  if (lastPushAt !== undefined && now - lastPushAt < LA_PUSH_THRESHOLD_MS) return false;
+
+  // #900 — 다음 셋 중 하나라도 만족하면 발사 (dedup 통과 후):
   //   (a) ΔETA ≥ LA_PUSH_THRESHOLD_MS (변동 발사)
   //   (b) heartbeat: (now − lastLaPushAt) ≥ LA_HEARTBEAT_INTERVAL_MS (정체 안전망)
+  //   (c) 즉시 trigger (환승/도착 임박) — ΔETA 미달이어도 통과
   // last/lastLaPushAt이 둘 다 undefined인 첫 push는 (a) 분기에서 통과 (기존 동작).
   if (last !== undefined && Math.abs(newArrivalEpoch - last) < LA_PUSH_THRESHOLD_MS) {
     const heartbeatDue =
-      trip.lastLaPushAt !== undefined && now - trip.lastLaPushAt >= LA_HEARTBEAT_INTERVAL_MS;
-    if (!heartbeatDue) return false;
+      lastPushAt !== undefined && now - lastPushAt >= LA_HEARTBEAT_INTERVAL_MS;
+    if (!heartbeatDue && !isImmediateTrigger) return false;
   }
-  const etaSeconds = Math.max(0, Math.round((newArrivalEpoch - now) / 1000));
   const contentState = buildLiveActivityContentState(
     waypoint,
     etaSeconds,
