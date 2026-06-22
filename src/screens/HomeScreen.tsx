@@ -48,6 +48,7 @@ import { SourceBadge } from '../features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../features/alarm/utils/notificationSource';
 import { ArrivalSourceNotice } from '../features/arrival/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
+import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushHealthCheck';
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
 import { useBoardingLockScheduler } from '../features/alarm/hooks/useBoardingLockScheduler';
@@ -196,7 +197,10 @@ export default function HomeScreen() {
   //   2) useCurrentStationConfirmModal: 매칭되면 useStationCandidates가 단일 후보로 자동 확정(#914 F4).
   // useFusedNearestStation 호출(아래) 전에 선언해 8번째 인자로 전달한다.
   const wifiStation = useWifiStation();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, backendSsotCurrentStationId } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation);
+  // #1677 — silent push 60s+ 미수신 감지. FG 시 backendSsotAccepts 강제 false → device tier fallback.
+  // 신규 폴링 없음 — 기존 arrival/position 30s cycle 재사용.
+  const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, backendSsotCurrentStationId } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
