@@ -2630,6 +2630,117 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();
   });
+
+  // #1658 — 환승 leg 전환 감지 + LA content-state 즉시 갱신 통합 테스트.
+  describe('transfer waypoint → LA shows new leg line (#1658)', () => {
+    /**
+     * 7호선(군자, transfer) → 5호선(아차산, destination) trip.
+     * boardingLock은 7호선으로 군자를 추적 중. LA token 활성.
+     * maybeFireLiveActivityUpdate 경로(reschedule + LA 동시 발사): estimate NOT arrived 상태에서
+     * 환승역 추적 중 LA push 시 content-state의 lineName이 새 leg(5호선)로 반영되는지 검증.
+     */
+    function makeTransferLaTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeLockedLaTrip({
+        token: 'la-xfer-tok',
+        route: { type: 'transfer', fromLine: '7', toLine: '5', transferName: '군자', stopsToTransfer: 1, stopsFromTransfer: 1 },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['중곡', '군자'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        ...overrides,
+      });
+    }
+
+    /** 군자역 ETA 120s (NOT arrived) 응답 — maybeFireLiveActivityUpdate 경로(reschedule + LA). */
+    function makeTransferSeoul120(): SeoulArrivalClient {
+      return new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(
+            JSON.stringify({
+              realtimeArrivalList: [
+                {
+                  barvlDt: '120',
+                  recptnDt: '',
+                  updnLine: '상행',
+                  trainLineNm: '군자',
+                  btrainNo: 'T',
+                  subwayNm: '지하철7호선',
+                  arvlCd: 5, // 미결 (not ENTERING/ARRIVED)
+                },
+              ],
+            }),
+            { status: 200 },
+          )) as unknown as typeof fetch,
+      });
+    }
+
+    it('환승 waypoint 추적 중 LA push content-state lineName이 새 leg(5호선)으로 갱신됨', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTransferLaTrip());
+      const fetchImpl = makeOkFetch();
+      const stats = await runLaScheduled(kv, { seoul: makeTransferSeoul120(), fetchImpl });
+      // reschedule push(background) 1건 + LA update 1건 발사 기대
+      expect(stats.laPushSent).toBe(1);
+      const laCalls = getLaCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+      // #1658 — 환승 waypoint는 7호선이지만 다음 leg(아차산, 5호선)의 line을 LA에 즉시 노출
+      expect(contentState.lineName).toBe('5호선');
+      expect(contentState.lineColorHex).toBe('#996CAC');
+      // stationName은 transfer station(군자) 그대로 유지
+      expect(contentState.stationName).toBe('군자');
+    });
+
+    it('환승 waypoint 도착(ARRIVED) → advanceBoardingLockWaypoint LA update도 새 leg(5호선) 반영', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTransferLaTrip());
+      const fetchImpl = makeOkFetch();
+      // 군자역 ARRIVED(arvlCd=1) → advanceBoardingLockWaypoint → 다음 waypoint=아차산(5호선)
+      await runLaScheduled(kv, {
+        seoul: new SeoulArrivalClient({
+          apiKey: 'K',
+          host: 'h',
+          now: () => NOW,
+          fetchImpl: (async () =>
+            new Response(
+              JSON.stringify({
+                realtimeArrivalList: [
+                  {
+                    barvlDt: '0',
+                    recptnDt: '',
+                    updnLine: '상행',
+                    trainLineNm: '군자',
+                    btrainNo: 'T',
+                    subwayNm: '지하철7호선',
+                    arvlCd: 1, // ARRIVED
+                  },
+                ],
+              }),
+              { status: 200 },
+            )) as unknown as typeof fetch,
+        }),
+        fetchImpl,
+      });
+      const laCalls = getLaCalls(fetchImpl);
+      // advanceBoardingLockWaypoint 직후 즉시 LA update 발사 (ETA 임계 무시)
+      expect(laCalls).toHaveLength(1);
+      const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+      // nextWaypoint = 아차산(5호선) → LA는 5호선 표시
+      expect(contentState.lineName).toBe('5호선');
+      expect(contentState.stationName).toBe('아차산');
+    });
+  });
 });
 
 // #1337 — server-side trip auto-end 경로에서 클라 state sync용 trip-ended alert push가 발사되는지.
