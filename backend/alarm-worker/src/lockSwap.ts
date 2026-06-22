@@ -16,7 +16,7 @@
 
 import { pickAutoTrainCode } from './boardingPrompt';
 import { isLockLineAllowed } from './consensusGate';
-import { subwayIdForLine } from './lineAlias';
+import { matchLine, subwayIdForLine } from './lineAlias';
 import type { SeoulArrivalClient } from './seoul';
 import type { BoardingLockMeta, LineNumber, Trip, Waypoint } from './types';
 
@@ -93,6 +93,13 @@ export async function attachTrainCodeForLeg(
 
   const trainCode = pickAutoTrainCode(arrivals, line, null);
   if (!trainCode) return null;
+
+  // line cross-check (2단 방어, #1626 follow-up) — `pickAutoTrainCode`가 이미 `matchLine`을
+  // 적용하지만, chosen trainCode entry 의 subwayNm 이 line 과 매칭되는지 한 번 더 verify.
+  // swap 흐름은 transfer 직후 + vanish 후 재부착 모두 같은 보호가 필요하다 — autoLock 과
+  // 동일 정책으로 wrong-line trainCode lock 합성을 봉쇄. autoLock.ts:258-259 참조.
+  const chosen = arrivals.find((a) => a.trainCode === trainCode);
+  if (!chosen || !matchLine(chosen.subwayNm, line)) return null;
 
   return {
     trainCode,

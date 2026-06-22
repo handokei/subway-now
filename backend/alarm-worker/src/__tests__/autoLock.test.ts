@@ -155,6 +155,21 @@ describe('attemptAutoLock (#916 A1)', () => {
     });
     expect(lock?.segmentStations).toEqual(['강남', '역삼']);
   });
+
+  it('chosen arrival subwayNm 이 line 과 불일치 → null (2단 cross-check, #1626 follow-up)', async () => {
+    // 2026-06-22 trip B 회귀 재현 — 2호선 trip 에 trainCode=3222 push 5건 발사.
+    // pickAutoTrainCode 가 matchLine 우회로 chosen 후 subwayNm 이 빈 문자열인 entry 시뮬.
+    // 2단 cross-check 가 lock 합성을 차단해야 한다 (wrong-line trainCode 30분 TTL 지속 봉쇄).
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1, subwayNm: '' })]),
+      now: NOW,
+    });
+    expect(lock).toBeNull();
+  });
 });
 
 describe('attemptAutoLock RC1 confidence gate (#1018)', () => {
