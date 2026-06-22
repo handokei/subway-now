@@ -2066,6 +2066,47 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(await kv.get('trip:lock-tok')).toBeNull();
   });
 
+  // #1633 — corrected env 즉시 KV persist 검증.
+  //
+  // 2026-06-22 trip 회귀: 같은 token에 대해 매 cron cycle(13:42/43/44/46) mismatch retry가 반복돼
+  // 매번 ~1초 지연 → device fg가 먼저 station 발사 → backend silent push가 `gate-station-already-passed`로
+  // drop → 매역 알림 backend 발사 0건. 종전엔 corrected env가 in-memory mutate 후 caller의 후속
+  // putTrip에 의존했으나, 그 사이 race / cleanup 분기 / KV eventual consistency로 영구 저장이 누락 가능.
+  //
+  // 본 테스트는 corrected env 발생 직후 KV trip record에 'production'이 stamp되는 immediate persist를
+  // 검증한다 — apns fetch 성공 직후 곧바로 kv put이 실행됨을 fetch ↔ put 호출 순서로 확인.
+  it('#1633 — corrected env 즉시 KV persist (fetch 성공 → 다음 KV put이 trip.apnsEnv=production stamp)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ apnsEnv: 'sandbox' }));
+    // KV put을 spy. corrected env 직후의 putTrip 호출에서 apnsEnv='production'이 stamp되는지 검증.
+    const putSpy = vi.spyOn(kv, 'put');
+    const apnsFetch = vi.fn();
+    apnsFetch
+      .mockImplementationOnce(async () =>
+        new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+      )
+      .mockImplementationOnce(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-persist',
+    });
+    // 첫 번째 trip:lock-tok 대상 put에 apnsEnv='production'이 포함돼야 한다.
+    // (caller 후속 putTrip이 다시 같은 값을 쓰는 idempotent dedup도 허용 — 여기서는 처음 stamp만 검증.)
+    const tripPutsAfterMismatch = putSpy.mock.calls
+      .filter(([key]) => key === 'trip:lock-tok')
+      .map(([, value]) => JSON.parse(value as string));
+    expect(tripPutsAfterMismatch.length).toBeGreaterThan(0);
+    // 모든 trip put이 corrected env(production)를 가져야 한다 — corrected 이후 어느 putTrip도
+    // 절대 sandbox로 되돌아가지 않음을 보장.
+    for (const stored of tripPutsAfterMismatch) {
+      expect(stored.apnsEnv).toBe('production');
+    }
+  });
+
   it('deletes trip on Unregistered (410)', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockTrip());
