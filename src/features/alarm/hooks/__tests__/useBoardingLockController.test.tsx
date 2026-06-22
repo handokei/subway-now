@@ -1173,4 +1173,293 @@ describe('useBoardingLockController', () => {
       expect(createLockMock).not.toHaveBeenCalled();
     });
   });
+
+  describe('origin leg device-side auto-lock (#1640)', () => {
+    // ARRIVAL_CODE 미사용 — 테스트는 arvlCd 숫자 리터럴(1=도착, 0=진입)을 직접 사용한다(production 모듈과 같은 SSOT).
+    let alarmLogSpy: jest.SpyInstance;
+    beforeEach(() => {
+      // logBoardingPromptAutoLock은 storage flush를 트리거하므로 spy로 격리.
+      const alarmLog = jest.requireActual('../../utils/alarmLog');
+      alarmLogSpy = jest.spyOn(alarmLog, 'logBoardingPromptAutoLock');
+      // direction 'up' (arrival.up이 directionalArrivals로 흘러가도록).
+      mockResolveTripDirection.mockReturnValue('up');
+    });
+    afterEach(() => {
+      alarmLogSpy.mockRestore();
+    });
+
+    /** trainCode 단일 후보(arvlCd=1 도착) — pickAutoTrainCodeFromArrivals가 항상 같은 train을 선정. */
+    const singleArrived = makeTrain({ trainCode: 'AUTO-X', arrivalCode: 1, line: '2' });
+    const singleArrival: StationArrival = { up: [singleArrived], down: [] };
+
+    it('lock 부재 + directionalArrivals 단일 후보 → device-side createLock 호출 (backend push 의존 없음)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: singleArrival }),
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      const arg = createLockMock.mock.calls[0][0];
+      expect(arg.trainCode).toBe('AUTO-X');
+      expect(arg.boardingLine).toBe('2');
+      expect(arg.initialEtaSeconds).toBe(180);
+    });
+
+    it('lock 이미 존재 → 자동 lock skip (사용자 명시 탭 / lockSuggestion 보호)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      const existing: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: 'USER-TAP',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 30 * 60_000,
+      };
+      mockGetBoardingLock.mockResolvedValue(existing);
+      useBoardingLockStore.setState({ lock: existing, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: singleArrival }),
+      );
+      // 첫 effect cycle이 완전히 settle하도록 microtask flush.
+      await waitFor(() => {
+        // loadLock이 이미 끝났는지 확인. createLock은 미호출이 되어야.
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('directionalArrivals empty → skip (다음 polling cycle 재시도)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: { up: [], down: [] } }),
+      );
+      // arrival 비어 있어도 hook 마운트는 동기 — 동기 flush 후 createLock 미호출 확인.
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('arvlCd ambiguity (도착=2개) → pickAutoTrainCode null → skip → fallback 흐름 유지', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      const ambig: StationArrival = {
+        up: [
+          makeTrain({ trainCode: 'A', arrivalCode: 1, line: '2' }),
+          makeTrain({ trainCode: 'B', arrivalCode: 1, line: '2' }),
+        ],
+        down: [],
+      };
+      renderHook(() => useBoardingLockController({ ...defaultInputs, arrival: ambig }));
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('arvlCd가 ENTERING/ARRIVED/DEPARTED 외 (fallback first-candidate) → skip — false positive 차단', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      // 모든 train이 RUNNING(99) — pickAutoTrainCodeFromArrivals는 fallback으로 arrivals[0]을 반환하지만
+      // device-side origin auto-lock은 강 evidence(0/1/2)만 신뢰하므로 거부.
+      const weakEvidence: StationArrival = {
+        up: [makeTrain({ trainCode: 'WEAK', arrivalCode: 99, line: '2' })],
+        down: [],
+      };
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: weakEvidence }),
+      );
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('arvlCd DEPARTED(2) 단일 후보 → device-side createLock 호출 (출발 evidence)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      const departed: StationArrival = {
+        up: [makeTrain({ trainCode: 'DEP', arrivalCode: 2, line: '2' })],
+        down: [],
+      };
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: departed }),
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      expect(createLockMock.mock.calls[0][0].trainCode).toBe('DEP');
+    });
+
+    it('arvlCd ENTERING(0) 단일 후보 → device-side createLock 호출 (진입 evidence)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      const entering: StationArrival = {
+        up: [makeTrain({ trainCode: 'ENT', arrivalCode: 0, line: '2' })],
+        down: [],
+      };
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: entering }),
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      expect(createLockMock.mock.calls[0][0].trainCode).toBe('ENT');
+    });
+
+    it('currentStation null → skip (다음 cycle 재시도)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({
+          ...defaultInputs,
+          currentStation: null,
+          arrival: singleArrival,
+        }),
+      );
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('route null → skip (lock 컨텍스트 부재 — 사용자 명시 의향 trip 아님)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, route: null, arrival: singleArrival }),
+      );
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('allowedLines 검증 — train.line이 trip route allowed 아니면 reject (#1449)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      // route는 line 2, train은 line 7 (옆 노선 fusion 오류 시뮬레이션).
+      const wrongLine: StationArrival = {
+        up: [makeTrain({ trainCode: 'WRONG-LINE', arrivalCode: 1, line: '7' })],
+        down: [],
+      };
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: wrongLine }),
+      );
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('idempotency — 같은 origin key (destinationId + currentStation.id) 조합으로 1회만 시도', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      const { rerender } = renderHook(
+        (props: { arr: StationArrival }) =>
+          useBoardingLockController({ ...defaultInputs, arrival: props.arr }),
+        { initialProps: { arr: singleArrival } },
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalledTimes(1);
+      });
+      // arrival이 polling으로 새 객체(같은 train code)로 갱신 — 같은 origin key라 재시도 X.
+      const refreshed: StationArrival = {
+        up: [makeTrain({ trainCode: 'AUTO-X', arrivalCode: 1, line: '2' })],
+        down: [],
+      };
+      rerender({ arr: refreshed });
+      // 충분한 flush 후 여전히 1회.
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('expectedDurationMinutes null → FALLBACK_BOARDING_DURATION_MINUTES(30분)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({
+          ...defaultInputs,
+          expectedDurationMinutes: null,
+          arrival: singleArrival,
+        }),
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      expect(createLockMock.mock.calls[0][0].expectedDurationMs).toBe(30 * 60_000);
+    });
+
+    it('destinationId null → free-trip sentinel으로 hydrate (#978 정책 재사용)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({
+          ...defaultInputs,
+          destinationId: null,
+          arrival: singleArrival,
+        }),
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      const arg = createLockMock.mock.calls[0][0];
+      expect(arg.hydratedFromSentinel).toBeDefined();
+    });
+
+    it('boardingStationId — train.line 기준 정정 (#707) — 환승역 옆 노선 stop id 회귀 차단', async () => {
+      mockFindStationByNameAndLine.mockReturnValue({
+        id: 'stn-A-corrected',
+        name: '강남',
+        line: '2',
+        lineColor: '#000',
+        lat: 37.5,
+        lng: 127.0,
+      });
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: singleArrival }),
+      );
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      expect(createLockMock.mock.calls[0][0].boardingStationId).toBe('stn-A-corrected');
+    });
+
+    it('createLock 성공 → logBoardingPromptAutoLock(autolock-success) 적재 (V/X 측정)', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: singleArrival }),
+      );
+      await waitFor(() => {
+        expect(alarmLogSpy).toHaveBeenCalledWith({
+          reason: 'autolock-success',
+          originStation: '강남',
+          line: '2',
+        });
+      });
+    });
+
+    it('createLock 실패 → logBoardingPromptAutoLock(autolock-lock-failed) graceful (throw X)', async () => {
+      const createLockMock = jest.fn().mockRejectedValue(new Error('storage'));
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: singleArrival }),
+      );
+      await waitFor(() => {
+        expect(alarmLogSpy).toHaveBeenCalledWith({
+          reason: 'autolock-lock-failed',
+          originStation: '강남',
+          line: '2',
+        });
+      });
+    });
+  });
 });

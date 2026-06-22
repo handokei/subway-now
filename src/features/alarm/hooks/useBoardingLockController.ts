@@ -6,7 +6,7 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
@@ -24,6 +24,9 @@ import {
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import { useLockSuggestion } from '../api/useLockSuggestion';
 import type { LockSuggestionMirror } from '../utils/backendSsotMirror';
+import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
+import { logBoardingPromptAutoLock } from '../utils/alarmLog';
+import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -385,6 +388,125 @@ export function useBoardingLockController({
     },
     [destinationId, currentStation, expectedDurationMinutes, lock, createLock, directionalArrivals, motionStationary, speedMps, allowedLines],
   );
+
+  // #1640 — Origin leg device-side auto-lock.
+  //
+  // 환승 leg는 `useTransferTrainList.ts:152-161`에서 이미 device-side로 arvlCd 우선순위 자동 lock을
+  // 시도한다. 하지만 origin leg(첫 lock 부재 상태)는 backend boardingPrompt push → useBoardingPromptResponder
+  // 응답 chain에 100% 종속이라, backend 9-AND gate fail(지하/lockless 환경)이면 device가 자체로 lock 시도조차
+  // 못 했다 — 7일 누적 push 0건 / autoLock 0건 / lockless 알림 0건 회귀의 root cause.
+  //
+  // 본 effect는 origin leg에서 동일 device-side trigger를 복원한다. 정책은 `useTransferTrainList` D5
+  // (#1211)와 같은 패턴:
+  //   - lock 부재 + arrival 가용 + currentStation 확정 시
+  //   - `pickAutoTrainCodeFromArrivals(directionalArrivals)` 단일 후보 산출 가능 시
+  //   - allowedLines 검증 통과 시
+  //   - createLock 즉시 호출 (사용자 액션 0)
+  // ambiguity / empty 시 skip → 자연스럽게 BoardingTrainList (HomeScreen.tsx:1099 분기) fallback UX로 도달.
+  //
+  // backend push 응답 chain(C 경로)은 그대로 유지 — 본 effect가 먼저 성공하면 store lock 활성으로
+  // 뒤늦은 backend push 응답의 createLock도 `if (lock) return` idempotent로 자연 skip.
+  //
+  // 정합성 가드:
+  //   1) `lock != null` → skip (사용자 명시 탭/lockSuggestion/hydrateLockFromCandidate 우선 보호).
+  //   2) `!currentStation || !route` → skip (lock 컨텍스트 부재).
+  //   3) `directionalArrivals.length === 0` → skip (다음 polling cycle 재시도).
+  //   4) `pickAutoTrainCodeFromArrivals` ambiguity/empty → skip + idempotency ref 미설정 (다음 cycle 재시도).
+  //   5) **arvlCd 강 evidence 요구** — 선정된 train의 arvlCd가 ENTERING(0) / ARRIVED(1) / DEPARTED(2) 중
+  //      하나여야 자동 lock 진행. `pickAutoTrainCodeFromArrivals`의 마지막 fallback(arrivals[0] 첫 후보)은
+  //      device-side origin auto-lock에서 거부 — backend push 응답 path는 "사용자가 boarded 응답" 신호로
+  //      그 후보를 신뢰하지만, device-side trigger는 사용자 신호 없이 발사하므로 강 evidence가 필수.
+  //      false positive(엉뚱한 열차 lock) ≤ ambiguity 차단 (CLAUDE.md 룰 + ADR-014 첫 줄).
+  //   6) `allowedLines` 검증 — trip route 외 line train 자동 lock 차단 (환승역 fusion 오류 보호).
+  //   7) Idempotency: 같은 `${destinationId}|${currentStation.id}` 조합에서 최대 1회 lock 시도. 사용자가
+  //      release 후 같은 origin에서 다시 lock 시도하려면 effect의 success 분기에서 ref가 set되므로
+  //      자연 차단. trip 전환(destination 변경)으로 stale lock release되면 새 key → 자동 재시도 허용.
+  //
+  // CLAUDE.md 룰 정렬:
+  //   - lockless 토글 OFF도 자동 lock 진행 (정보용 라벨, ADR-014 "사용자 명시 의향 trip 동급" 룰).
+  //   - GPS 결정 권한 X — 본 effect는 arrival API + arvlCd 우선순위만 사용.
+  //   - 시간 적분 fire 권한 X — fire가 아니라 lock 부착만.
+  const lastOriginAutoLockKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lock) return;
+    if (!route) return;
+    if (!currentStation) return;
+    if (directionalArrivals.length === 0) return;
+    const originKey = `${destinationId ?? FREE_TRIP_DESTINATION_SENTINEL}|${currentStation.id}`;
+    if (lastOriginAutoLockKeyRef.current === originKey) return;
+    const chosen = pickAutoTrainCodeFromArrivals(directionalArrivals);
+    if (!chosen) return;
+    // 강 evidence 게이트: arvlCd가 ENTERING/ARRIVED/DEPARTED 중 하나일 때만 진행.
+    // `pickAutoTrainCodeFromArrivals`는 receivedAt 정렬 첫 후보로 fallback하지만, 본 effect는
+    // 사용자 신호 없이 device-side 자체 발사이므로 fallback path를 거부한다 (false positive 차단).
+    if (
+      chosen.arrivalCode !== ARRIVAL_CODE.ENTERING &&
+      chosen.arrivalCode !== ARRIVAL_CODE.ARRIVED &&
+      chosen.arrivalCode !== ARRIVAL_CODE.DEPARTED
+    ) {
+      return;
+    }
+    // allowedLines 검증 — useBoardingPromptResponder.tryAutoLock과 createLockFromTrain의 정책을 그대로 반영.
+    if (allowedLines && !allowedLines.has(chosen.line)) return;
+    // idempotency ref는 시도 직전에 set — store action이 race/storage 실패해도 다음 cycle 재시도하지 않도록.
+    // graceful 실패는 ref reset 없이 그대로 두고, 사용자 release 시 자연 재진입(다른 key로) 시점에 재시도된다.
+    lastOriginAutoLockKeyRef.current = originKey;
+    const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
+    const correctedStation = findStationByNameAndLine(currentStation.name, chosen.line);
+    const boardingStationId = correctedStation?.id ?? currentStation.id;
+    const isSentinel = !destinationId;
+    const effectiveDestinationId = destinationId ?? FREE_TRIP_DESTINATION_SENTINEL;
+    const now = Date.now();
+    createLock({
+      destinationId: effectiveDestinationId,
+      trainCode: chosen.trainCode,
+      boardingStationId,
+      boardingLine: chosen.line,
+      boardedAt: now,
+      expectedDurationMs: durationMin * 60_000,
+      // #897 Seam A: 자동 lock도 탑승 시점 ETA 스냅샷 보존 — origin leg device-side 채택은 사용자 명시 탭과
+      // 동급으로 신뢰(arvlCd 우선순위 단일 후보 + arrival API 가용)하므로 지연 칩이 backend SSoT hydrate와
+      // 다르게 활성화돼야 자연스럽다.
+      initialEtaSeconds: chosen.arrivalSeconds,
+      ...(isSentinel
+        ? {
+            hydratedFromSentinel: {
+              destinationId: FREE_TRIP_DESTINATION_SENTINEL,
+              sentinelAt: now,
+            },
+          }
+        : {}),
+    })
+      .then(() => {
+        // V/X 측정 — `source='boarding-prompt'` 재사용해 DebugModal/autoLock outcome 분포에서 한 화면에서 가시화.
+        // backend push 응답 path(useBoardingPromptResponder)와 같은 reason 라벨을 쓰되, alarm log entry에는
+        // stationName=`${line}·${originStation}` 포맷으로 stamped — countBoardingPromptAutoLockOutcomes 결과에
+        // 가산되어 1주 production 측정에서 device-side origin 시도 가시화.
+        logBoardingPromptAutoLock({
+          reason: 'autolock-success',
+          originStation: currentStation.name,
+          line: chosen.line,
+        });
+      })
+      .catch(() => {
+        // store action rejection은 graceful — 이미 ref가 set돼 있어 즉시 재시도 폭주는 차단.
+        // 사용자 명시 탭 / backend push 응답 path가 fallback으로 남아 있다.
+        logBoardingPromptAutoLock({
+          reason: 'autolock-lock-failed',
+          originStation: currentStation.name,
+          line: chosen.line,
+        });
+      });
+  }, [
+    lock,
+    route,
+    currentStation,
+    directionalArrivals,
+    destinationId,
+    expectedDurationMinutes,
+    allowedLines,
+    createLock,
+  ]);
 
   return {
     lock,
