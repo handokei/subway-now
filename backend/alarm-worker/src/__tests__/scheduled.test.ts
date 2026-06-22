@@ -35,6 +35,7 @@ import {
   PASSED_STATIONS_MAX_LEN,
   CRON_NOMINAL_INTERVAL_MS,
   toSilentPushSsot,
+  shouldSkipStationary,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -2160,6 +2161,11 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expectedFire: boolean;
       expectedBlockedMotion: number;
       expectedFallbackNoSsot: number;
+      /**
+       * #1680 — stationary trip이 upstream 게이트에서 차단된 경우.
+       * reschedule 경로 자체에 미도달 → rescheduleBlockedMotion=0, lifecycleStationarySkipped=1.
+       */
+      expectedStationarySkip?: boolean;
     };
     const rescheduleScenarios: Scenario[] = [
       // Positive — SSoT moving + delta > 15s → fire
@@ -2172,15 +2178,17 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expectedBlockedMotion: 0,
         expectedFallbackNoSsot: 0,
       },
-      // Negative — SSoT stationary + delta > 15s → blocked
+      // Negative — SSoT stationary + delta > 15s → upstream stationary gate 차단 (#1680).
+      // #1559 reschedule-gate(rescheduleBlockedMotion)는 미도달. lifecycleStationarySkipped=1.
       {
-        name: 'SSoT stationary + ETA delta > 15s → blocked (motion-stationary)',
+        name: 'SSoT stationary + ETA delta > 15s → upstream stationary skip (회귀 차단 유지)',
         ssotMotion: 'stationary',
         arrivalSec: 140,
         lastTrackedDeltaMs: 120_000,
         expectedFire: false,
-        expectedBlockedMotion: 1,
+        expectedBlockedMotion: 0,
         expectedFallbackNoSsot: 0,
+        expectedStationarySkip: true,
       },
       // Fallback — SSoT 없음 (legacy) + delta > 15s → fire (기존 동작 유지)
       {
@@ -2213,6 +2221,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expectedFire,
         expectedBlockedMotion,
         expectedFallbackNoSsot,
+        expectedStationarySkip,
       }) => {
         const kv = new InMemoryKV();
         const trip = makeLockTrip(
@@ -2247,6 +2256,10 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stats.pushed).toBe(expectedFire ? 1 : 0);
         expect(stats.rescheduleBlockedMotion).toBe(expectedBlockedMotion);
         expect(stats.rescheduleFallbackNoSsot).toBe(expectedFallbackNoSsot);
+        // #1680 — upstream stationary gate 차단 여부.
+        if (expectedStationarySkip) {
+          expect(stats.lifecycleStationarySkipped).toBe(1);
+        }
       },
     );
   });
@@ -3960,6 +3973,168 @@ describe('runScheduled — #1652 staged lifecycle backstop', () => {
     // expiresAt 분기가 먼저 cleanup하므로 lifecycle 카운터는 증가하지 않는다.
     expect(stats.lifecycleForceEnded).toBe(0);
     expect(stats.lifecycleSilenceSkipped).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1680 — V8d backend cron stationary skip
+// ---------------------------------------------------------------------------
+
+describe('shouldSkipStationary (pure helper)', () => {
+  it('stationary + intermediate → skip', () => {
+    expect(shouldSkipStationary('stationary', 'intermediate', false)).toBe(true);
+  });
+
+  it('moving + intermediate → 평가 유지 (no skip)', () => {
+    expect(shouldSkipStationary('moving', 'intermediate', false)).toBe(false);
+  });
+
+  it('unknown + intermediate → 평가 유지 (backward-compat)', () => {
+    expect(shouldSkipStationary('unknown', 'intermediate', false)).toBe(false);
+  });
+
+  it('stationary + destination → 항상 bypass (ETA 신선도 보장 불가 → 안전 방향)', () => {
+    expect(shouldSkipStationary('stationary', 'destination', false)).toBe(false);
+  });
+
+  it('stationary + transfer → 항상 bypass (ETA 신선도 보장 불가 → 안전 방향)', () => {
+    expect(shouldSkipStationary('stationary', 'transfer', false)).toBe(false);
+  });
+
+  it('stationary + intermediate + userIntentDeclared=true → bypass (ADR-014 동급 보장)', () => {
+    expect(shouldSkipStationary('stationary', 'intermediate', true)).toBe(false);
+  });
+
+  it('stationary + intermediate + userIntentDeclared=false → skip', () => {
+    expect(shouldSkipStationary('stationary', 'intermediate', false)).toBe(true);
+  });
+});
+
+describe('runScheduled — #1680 V8d stationary cron skip', () => {
+  it('SSoT null → stationary skip 없음 (평가 유지, backward-compat)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'no-ssot-tok',
+        waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+        // SSoT 미존재 — backward-compat, 평가 유지
+      }),
+    );
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleStationarySkipped).toBe(0);
+  });
+
+  it('motionState=unknown → stationary skip 없음 (평가 유지)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'unknown-motion-tok',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    // seedSsot은 motionState='unknown'으로 시작 — 평가 유지
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleStationarySkipped).toBe(0);
+  });
+
+  it('motionState=stationary + intermediate → cron skip + lifecycleStationarySkipped++', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'stationary-tok',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // SSOT motionState 수동 지정: stationary
+    const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionState = 'stationary';
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleStationarySkipped).toBe(1);
+    // stationary skip — Seoul polling + push 모두 미발사.
+    expect(stats.polled).toBe(0);
+    expect(stats.pushed).toBe(0);
+    expect(apnsFetch).not.toHaveBeenCalled();
+  });
+
+  it('motionState=stationary + destination → 항상 bypass, 평가 진행 (ETA 신선도 보장 불가)', async () => {
+    // destination kind는 ETA 값에 무관하게 항상 bypass.
+    // trip.lastEtaSeconds는 device 마지막 등록값으로 cron 중 최신화 안 됨 → 안전 방향.
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'stationary-dest-tok',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionState = 'stationary';
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    // bypass → skip 없음
+    expect(stats.lifecycleStationarySkipped).toBe(0);
+  });
+
+  it('motionState=moving → stationary skip 없음', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'moving-tok',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.lifecycleStationarySkipped).toBe(0);
   });
 });
 
@@ -5907,6 +6082,12 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
     subsurface?: boolean;
     expectFire: boolean;
     expectBlockReason?: 'motion-stationary' | 'env-consensus-fail';
+    /**
+     * #1680 (V8d) — stationary trip이 upstream 게이트(shouldSkipStationary)에서 이미 차단될 경우
+     * `arvlCdFireBlocked` 대신 `lifecycleStationarySkipped`가 올라간다.
+     * userIntentDeclared=true 인 stationary는 upstream bypass → advanceTripPosition 게이트에서 판정.
+     */
+    expectStationarySkip?: boolean;
   };
 
   const arvlcdScenarios: Scenario[] = [
@@ -5929,12 +6110,14 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
       userIntentDeclared: true,
       expectFire: true,
     },
-    // Negative — 2026-06-19 회귀 박제
+    // Negative — 2026-06-19 회귀 박제.
+    // #1680: 이제 upstream stationary gate(shouldSkipStationary)가 먼저 차단 → lifecycleStationarySkipped=1.
+    // arvlCdFireBlocked는 0 (downstream gate 미도달). expectFire=false 불변.
     {
-      name: 'N1 stationary trip + lock + arvlcd → blocked motion-stationary (회귀 박제)',
+      name: 'N1 stationary trip + lock + arvlcd → blocked (upstream stationary gate, 회귀 박제)',
       motionState: 'stationary',
       expectFire: false,
-      expectBlockReason: 'motion-stationary',
+      expectStationarySkip: true,
     },
     // Note: N4 train-mismatch는 본 entry point(arvlcd fire)에서는 구조적으로 도달 불가 —
     // `estimateBoardingLockArrival`이 이미 lock.trainCode 기준으로 Seoul 응답을 필터하므로,
@@ -5975,6 +6158,13 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
       expect(stats.arvlCdFireSuccess).toBe(1);
       expect(stats.arvlCdFireBlocked).toBe(0);
       expect(getArvlCdStationPassedCalls(apnsFetch)).toHaveLength(1);
+    } else if (sc.expectStationarySkip) {
+      // #1680 — upstream stationary gate가 먼저 차단. 하위 게이트(arvlCdFireBlocked)는 미도달.
+      expect(stats.arvlCdFireFired).toBe(0);
+      expect(stats.arvlCdFireSuccess).toBe(0);
+      expect(stats.arvlCdFireBlocked).toBe(0);
+      expect(stats.lifecycleStationarySkipped).toBe(1);
+      expect(getArvlCdStationPassedCalls(apnsFetch)).toHaveLength(0);
     } else {
       expect(stats.arvlCdFireFired).toBe(0);
       expect(stats.arvlCdFireSuccess).toBe(0);
@@ -6231,6 +6421,11 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     expectAdvance: boolean;
     expectBlockReason?: 'motion-stationary';
     expectCleanup?: boolean;
+    /**
+     * #1680 — stationary upstream gate가 차단한 경우. boardingLockWaypointAdvanceBlocked=0,
+     * lifecycleStationarySkipped=1. waypoints는 그대로 (advance 미발생).
+     */
+    expectStationarySkip?: boolean;
   };
 
   const advanceScenarios: Scenario[] = [
@@ -6257,20 +6452,21 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
       expectAdvance: true,
       expectCleanup: true,
     },
-    // Negative — 2026-06-19 회귀 박제
+    // Negative — 2026-06-19 회귀 박제.
+    // #1680: upstream stationary gate가 먼저 차단 → boardingLockWaypointAdvanceBlocked=0, lifecycleStationarySkipped=1.
     {
-      name: 'N1 arvlcd-arrived + stationary trip → trip.waypoints 보존 (회귀 박제)',
+      name: 'N1 arvlcd-arrived + stationary trip → trip.waypoints 보존 (회귀 박제, upstream gate)',
       path: 'arvlcd-arrived',
       motionState: 'stationary',
       expectAdvance: false,
-      expectBlockReason: 'motion-stationary',
+      expectStationarySkip: true,
     },
     {
-      name: 'N2 vanish-fallback + stationary trip → trip.waypoints 보존',
+      name: 'N2 vanish-fallback + stationary trip → trip.waypoints 보존 (upstream gate)',
       path: 'vanish-fallback',
       motionState: 'stationary',
       expectAdvance: false,
-      expectBlockReason: 'motion-stationary',
+      expectStationarySkip: true,
     },
   ];
 
@@ -6326,6 +6522,11 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
       // 첫 waypoint(중곡)가 shift되어 군자만 남아야 함.
       expect(stored.waypoints[0].stationName).toBe('군자');
       expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
+    } else if (sc.expectStationarySkip) {
+      // #1680 — upstream stationary gate가 먼저 차단. waypoints는 그대로, downstream gate 미도달.
+      expect(stored.waypoints[0].stationName).toBe('중곡');
+      expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
+      expect(stats.lifecycleStationarySkipped).toBe(1);
     } else {
       // SSoT 게이트 차단 → trip.waypoints 그대로.
       expect(stored.waypoints[0].stationName).toBe('중곡');
@@ -6382,11 +6583,10 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
   });
 
-  it('vanish-fallback path 도 stationary trip → trip.waypoints 보존 (SSoT 게이트 광범위 보호)', async () => {
-    // 기존 `isFallbackAdvanceBlockedByMotion`은 GPS series stationary 만 검증.
-    // 본 PR(T5) 이후엔 SSoT motionState='stationary' 가 evidence type 무관(arvlcd 계열 / vanish 계열
-    // 모두)으로 차단 — 동급 보호 보장. 본 테스트는 GPS series 없는 시나리오에서도 SSoT 게이트만으로
-    // advance 차단됨을 박제한다.
+  it('vanish-fallback path 도 stationary trip → trip.waypoints 보존 (upstream stationary gate 광범위 보호)', async () => {
+    // #1680: upstream stationary gate(shouldSkipStationary)가 cron loop 진입 직후 차단.
+    // 기존 T5 advanceTripPosition 게이트보다 더 앞단에서 차단 — 동급 보호 보장.
+    // GPS series 없이도 SSoT motionState='stationary'만으로 advance 미발생, waypoints 보존.
     const kv = new InMemoryKV();
     const trip = makeLockTripFixture(TOKEN, {
       consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
@@ -6398,8 +6598,6 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     });
     seeded.motionState = 'stationary';
     await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
-    // GPS series 는 없음(=`isFallbackAdvanceBlockedByMotion` 경유 motion='unknown')으로 두어
-    // SSoT 게이트만 advance 차단을 책임짐을 보장한다.
     const stats = await runScheduled(makeEnv(kv), {
       seoul: makeVanishedSeoul(),
       apnsConfig,
@@ -6410,7 +6608,9 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     });
     const stored = JSON.parse((await kv.get(`trip:${TOKEN}`))!) as Trip;
     expect(stored.waypoints[0].stationName).toBe('중곡');
-    expect(stats.boardingLockWaypointAdvanceBlocked).toBe(1);
+    // #1680: upstream gate 차단 → boardingLockWaypointAdvanceBlocked=0, lifecycleStationarySkipped=1.
+    expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
+    expect(stats.lifecycleStationarySkipped).toBe(1);
   });
 });
 
@@ -6550,6 +6750,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       staleLockFireSkipped: 0,
       // #1652 — staged lifecycle backstop.
       lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
+      // #1680 — stationary cron skip.
+      lifecycleStationarySkipped: 0,
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,
