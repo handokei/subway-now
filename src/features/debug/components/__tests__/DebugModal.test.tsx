@@ -986,6 +986,31 @@ describe('DebugModal helpers', () => {
     expect(dump).not.toContain('sources:');
   });
 
+  it('buildDumpText: Alarm Log Reasons (1h) 섹션이 suppressed reason 집계를 포함한다 (#1692)', () => {
+    const now = 1_700_000_000_000;
+    const logs: AlarmLogEntry[] = [
+      { ts: now - 1000, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+      { ts: now - 2000, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+      { ts: now - 3000, source: 'bg', outcome: 'suppressed', reason: 'gate-age' },
+    ];
+    const dump = __test__.buildDumpText(makeDumpArgs({ logs, nowMs: now }));
+    expect(dump).toContain('## Alarm Log Reasons (1h)');
+    expect(dump).toContain('movement-static-speed: 2');
+    expect(dump).toContain('gate-age: 1');
+  });
+
+  it('buildDumpText: Alarm Log Reasons (1h) suppressed가 없으면 (empty)를 표기한다 (#1692)', () => {
+    const now = 1_700_000_000_000;
+    const logs: AlarmLogEntry[] = [
+      { ts: now - 1000, source: 'fg', outcome: 'fired', stationName: '강남' },
+    ];
+    const dump = __test__.buildDumpText(makeDumpArgs({ logs, nowMs: now }));
+    expect(dump).toContain('## Alarm Log Reasons (1h)');
+    // fired 항목만 있으면 (empty) 출력
+    const section = dump.slice(dump.indexOf('## Alarm Log Reasons (1h)'));
+    expect(section).toContain('(empty)');
+  });
+
   it('formatLogLine: location 없는 fired 엔트리는 acc/age를 포함하지 않는다', () => {
     const line = __test__.formatLogLine({
       ts: Date.now(),

@@ -874,6 +874,41 @@ export function summarizeAlarmLogCounters(
 }
 
 /**
+ * #1692 — 지정 시간 윈도우 내 suppressed reason 집계 (count 내림차순, top-N).
+ *
+ * dump 시점 1회 read — polling / log spam 없음. dump 자체가 사용자 action이므로
+ * 배터리/발열에 영향 없음. 시간 윈도우 밖 항목은 카운트에 포함되지 않는다.
+ *
+ * @param entries  alarmLog 전체 항목 (getAlarmLog 결과)
+ * @param windowMs 집계 윈도우 (ms). 기본값 1h.
+ * @param now      기준 시각 (ms). 미전달 시 Date.now() 사용 — 테스트 결정적 출력용.
+ * @param topN     반환할 최대 reason 수. 기본값 10.
+ */
+export function countAlarmLogReasonsByWindow(
+  entries: readonly AlarmLogEntry[],
+  windowMs: number = 60 * 60 * 1000,
+  now: number = Date.now(),
+  topN: number = 10,
+): AlarmLogReasonCounter[] {
+  const cutoff = now - windowMs;
+  const map = new Map<string, AlarmLogReasonCounter>();
+  for (const entry of entries) {
+    if (entry.outcome !== 'suppressed') continue;
+    if (entry.ts < cutoff) continue;
+    const key = entry.reason ?? '(unknown)';
+    const entryCount = entry.count ?? 1;
+    const existing = map.get(key);
+    if (existing) {
+      existing.count += entryCount;
+      if (entry.ts > existing.lastTs) existing.lastTs = entry.ts;
+    } else {
+      map.set(key, { reason: key, count: entryCount, lastTs: entry.ts });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count).slice(0, topN);
+}
+
+/**
  * Silent push outcome별 집계 (#856).
  *
  * DebugModal Silent Push 섹션에서 "lastRecv 시간만 보고 왜 안 울리지?" 의문을 해소하기 위한
