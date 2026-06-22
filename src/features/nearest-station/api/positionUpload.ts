@@ -115,6 +115,17 @@ export interface PositionUploadPayload {
    * backend `consensusGate`의 environment contradict 판정에 사용된다.
    */
   cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
+  /**
+   * #1667 (ADR-015 strongDB wire) — WiFi SSID 매핑으로 결정한 역명.
+   *
+   * 디바이스가 `lookupStationBySsid(currentWifiSsid)?.name`을 산출해 forward한다.
+   * backend는 stations.json을 갖지 않으므로 lookup은 device 책임 (`mapMatchedLine/ArcM`과 동일 패턴).
+   *
+   * - 매칭 성공: `Station.name` 문자열 (예: '강남')
+   * - iOS WiFi 미연결 / 매칭 실패 / Android: undefined → backend strongDB false fallback
+   * - `reference_ios_wifi_api_constraint.md` — 사용자가 5G/LTE 전용 시 undefined (graceful).
+   */
+  wifiSsidStationName?: string;
 }
 
 export interface PositionUploadResult {

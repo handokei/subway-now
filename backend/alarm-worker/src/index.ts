@@ -1171,6 +1171,12 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
     obj.cellularEnvironmentVote === 'unknown'
       ? obj.cellularEnvironmentVote
       : undefined;
+  // #1667 (ADR-015 strongDB) — WiFi SSID 매핑 역명. 디바이스가 lookupStationBySsid 결과를 forward.
+  // 빈 문자열은 "매칭 없음"과 동일 → graceful omit (consensusGate wifiSsidMatch=false fallback).
+  const wifiSsidStationName =
+    typeof obj.wifiSsidStationName === 'string' && obj.wifiSsidStationName.length > 0
+      ? obj.wifiSsidStationName
+      : undefined;
   return {
     token: obj.token,
     point: {
@@ -1183,6 +1189,7 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       ...(nearestStationDistanceM !== undefined ? { nearestStationDistanceM } : {}),
       ...(currentStationName !== undefined ? { currentStationName } : {}),
       ...(cellularEnvironmentVote !== undefined ? { cellularEnvironmentVote } : {}),
+      ...(wifiSsidStationName !== undefined ? { wifiSsidStationName } : {}),
     },
     accelSummary,
   };

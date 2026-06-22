@@ -43,6 +43,10 @@ import { getBoardingLock } from '../../alarm/utils/boardingLockStorage';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { isValidGpsSpeedMps, MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import type { Station } from '../../../shared/types/station';
+// #1667 (ADR-015 strongDB wire) — WiFi SSID 매핑 역명 backend forward.
+// device가 lookup 후 역명만 송신 — backend는 stations.json 없으므로 lookup은 device 책임.
+import { getCurrentWifiSsid } from '../utils/wifiSsidNative';
+import { lookupStationBySsid } from '../utils/wifiSsidLookup';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -197,6 +201,12 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       // 뒤집힘 mitigation, lesson_motion_activity_intermittent_signal).
       const accelPattern = classifyAccelerometerPattern(getLatestAccelerometerSnapshot());
       const motion: PositionMotion = pickMotionLabel(accelPattern, getCurrentMotionStationary());
+      // #1667 (ADR-015 strongDB wire) — WiFi SSID 매핑 역명 산출. await로 동기화해 uploadPosition
+      // 에 함께 전달 — WiFi lookup 실패 시 graceful undefined (strongDB false fallback,
+      // strongBE/strongCB는 계속 활성). iOS WiFi 미연결 시 null → undefined.
+      // `reference_ios_wifi_api_constraint.md`: 사용자가 5G/LTE만 쓰면 항상 undefined.
+      const wifiSsid = await getCurrentWifiSsid().catch(() => null);
+      const wifiStation = lookupStationBySsid(wifiSsid);
       void uploadPosition({
         token: apnsToken,
         lat,
@@ -205,6 +215,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         ts: latest.timestamp,
         motion,
         accelSummary,
+        ...(wifiStation ? { wifiSsidStationName: wifiStation.name } : {}),
       });
     }
 

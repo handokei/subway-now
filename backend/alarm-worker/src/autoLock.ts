@@ -161,6 +161,19 @@ export interface AttemptAutoLockInputs {
    * 미전달(undefined) / 빈 배열 시 consensusGate가 자연 `?? false` fallback (strongBE 동작 유지).
    */
   selfPollPositions?: readonly { trainCode: string; stationName: string }[];
+  /**
+   * #1667 (ADR-015 strongDB wire) — device가 WiFi SSID 매핑으로 결정한 역명.
+   *
+   * `PositionPoint.wifiSsidStationName`에서 가장 최근 point의 값을 forward.
+   * caller(scheduled.ts)가 `fusion.series`의 마지막 point에서 추출해 전달한다.
+   *
+   * attemptAutoLock 내부에서 `targetWaypoint.stationName`과 비교해 `wifiSsidMatch` boolean을
+   * 산출 → `evaluateConsensusGate`의 strongDB 분기를 활성화.
+   *
+   * 미전달(undefined) → wifiSsidMatch=undefined → consensusGate가 `?? false` fallback
+   * (strongBE/strongCB fallback 유지 — iOS WiFi 미연결 시 graceful 동작).
+   */
+  wifiSsidStationName?: string;
 }
 
 /**
@@ -226,6 +239,7 @@ export async function attemptAutoLock(
     environment,
     gateOutcome,
     selfPollPositions,
+    wifiSsidStationName,
   } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
@@ -271,6 +285,14 @@ export async function attemptAutoLock(
     const positionTrainAgreement = selfPollPositions
       ? selfPollPositions.some((p) => p.trainCode === trainCode)
       : undefined;
+    // #1667 (ADR-015 strongDB wire) — device WiFi SSID 매핑 역명 cross-match.
+    // wifiSsidStationName이 targetWaypoint.stationName과 일치하면 사용자가 해당 역 WiFi에
+    // 연결 중 → underground에서 strongDB(D) + arrival(B) 2-of-2 통과 path를 연다.
+    // undefined(미전달/iOS WiFi 미연결/Android) → undefined → consensusGate `?? false` fallback.
+    const wifiSsidMatch =
+      typeof wifiSsidStationName === 'string'
+        ? wifiSsidStationName === targetWaypoint.stationName
+        : undefined;
     const consensus = evaluateConsensusGate(environment, {
       gateOutcome,
       arrivalSignalPresent,
@@ -278,6 +300,7 @@ export async function attemptAutoLock(
       // 더 위에서 return 했으므로 본 시점에서는 항상 true.
       lockAttachable: true,
       positionTrainAgreement,
+      wifiSsidMatch,
     });
     if (!consensus.pass) return { lock: null };
   }
