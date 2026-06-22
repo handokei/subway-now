@@ -3051,6 +3051,11 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // 자연 교체. boardingPromptState도 함께 fired stamp해 같은 cycle에서 prompt 발사를 차단.
   const targetWaypoint = pickActiveWaypoint(trip);
   if (targetWaypoint) {
+    // #1676 — strongCB (positionTrainAgreement) wire. cron 진입부에서 stamp된
+    // `realtime-position:<line>` KV를 read해 pickAutoTrainCode 후보 cross-match 입력으로 전달.
+    // maybeBindLocklessTrainCode 와 동일 패턴 — boarding-prompt auto-lock 경로에서도
+    // underground 환경의 strongCB 통과 path를 활성화해 5G/LTE 사용자(WiFi 미연결) V4 cover.
+    const selfPollPositions = await readSelfPollPosition(env.TRIPS, targetWaypoint.line);
     const autoLockResult = await attemptAutoLock({
       trip,
       targetWaypoint,
@@ -3066,6 +3071,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       // #1536 (S3) — environment + gateOutcome forward. 환경 분기 consensusGate 강제.
       environment,
       gateOutcome: outcome,
+      // #1676 — strongCB wire. self-poll stamp → attemptAutoLock 내 positionTrainAgreement 산출.
+      selfPollPositions: selfPollPositions?.positions,
       // #1667 (ADR-015 strongDB) — 마지막 position point의 WiFi SSID 매핑 역명 forward.
       // undefined(iOS WiFi 미연결/Android/시리즈 없음) 시 consensusGate가 자연 false fallback.
       wifiSsidStationName: fusion.series[fusion.series.length - 1]?.wifiSsidStationName,

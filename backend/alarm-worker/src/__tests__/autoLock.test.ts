@@ -3,6 +3,7 @@ import {
   AUTO_LOCK_CONFIDENCE_THRESHOLD,
   AUTO_LOCK_TTL_MS,
   attemptAutoLock,
+  POSITION_RECPTN_MAX_AGE_MS,
   recordAutoLockConfidence,
 } from '../autoLock';
 import { METRIC_KIND } from '../metrics';
@@ -711,6 +712,104 @@ describe('attemptAutoLock #1667 wifiSsidStationName → strongDB wire', () => {
         gateOutcome: passingGateOutcome(),
       },
     );
+    expect(lock?.trainCode).toBe('T1');
+  });
+});
+
+/**
+ * #1676 — selfPollPositions recptnMs age 가드 테스트.
+ *
+ * positionTrainAgreement 산출 시 recptnMs > 0 이면 POSITION_RECPTN_MAX_AGE_MS(30s) 이내만
+ * 신선 데이터로 인정. stale snapshot으로 strongCB false positive 차단.
+ */
+describe('attemptAutoLock #1676 recptnMs age 가드', () => {
+  it('POSITION_RECPTN_MAX_AGE_MS는 30000ms', () => {
+    expect(POSITION_RECPTN_MAX_AGE_MS).toBe(30_000);
+  });
+
+  it.each([
+    {
+      label: 'recptnMs 신선 (now - recptnMs = 10s) → positionTrainAgreement true, strongCB pass',
+      recptnMs: NOW - 10_000,
+      expected: 'lock' as const,
+    },
+    {
+      label: 'recptnMs 경계 (now - recptnMs = 30s 정확히) → 신선 포함, strongCB pass',
+      recptnMs: NOW - 30_000,
+      expected: 'lock' as const,
+    },
+    {
+      label: 'recptnMs stale (now - recptnMs = 31s) → positionTrainAgreement false, strongBE 의존',
+      recptnMs: NOW - 31_000,
+      // underground + lockAttachable=true + arrival 있으면 strongBE pass (lockAttachable=true는 pickAutoTrainCode 단일 수렴으로 보장)
+      expected: 'lock' as const,
+    },
+  ])('underground + $label', async ({ recptnMs, expected }) => {
+    // trainCode 일치 + recptnMs 조건 → strongCB pass/fail. strongBE는 arrival+lockAttachable 있으면 항상 통과.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+      selfPollPositions: [{ trainCode: 'T1', stationName: '강남', recptnMs }],
+    });
+    if (expected === 'lock') {
+      expect(lock?.trainCode).toBe('T1');
+    } else {
+      expect(lock).toBeNull();
+    }
+  });
+
+  it('underground + trainCode 불일치 + arrival 없음(arvlCd=5) + recptnMs stale → strongCB false + strongBE false → null', async () => {
+    // trainCode 불일치 → positionTrainAgreement false. arvlCd=5(범위 밖) → arrivalSignalPresent false.
+    // strongBE = lockAttachable && arrivalSignalPresent = true && false = false. → null.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 5 })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+      selfPollPositions: [{ trainCode: 'T1', stationName: '강남', recptnMs: NOW - 31_000 }],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('recptnMs=0 → age 가드 skip (backward-compat), trainCode 일치 → positionTrainAgreement true', async () => {
+    // recptnMs=0는 미포함 entry의 기본값 — age 가드 skip해 기존 동작 유지.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+      selfPollPositions: [{ trainCode: 'T1', stationName: '강남', recptnMs: 0 }],
+    });
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('recptnMs undefined → age 가드 skip (backward-compat), trainCode 일치 → positionTrainAgreement true', async () => {
+    // recptnMs 필드 없음 — 기존 { trainCode, stationName } 구조 호환.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+      selfPollPositions: [{ trainCode: 'T1', stationName: '강남' }],
+    });
     expect(lock?.trainCode).toBe('T1');
   });
 });
