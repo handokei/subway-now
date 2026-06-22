@@ -3768,6 +3768,47 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredStationPassed).not.toHaveBeenCalledWith('fg', arcOrigin[0]);
     });
 
+    // #1630 — lockless mode는 estimator(시간 적분)가 idx를 임의 진행할 수 있으므로 출발역
+    // 머무는 동안에도 effectiveHopIndex >= 1이 정상 산출됨 (2026-06-22 08:34:18 용마산 evidence).
+    // candidate가 arc[0]이면 effectiveHopIndex 값과 무관하게 차단해야 한다 (ADR-014 §4).
+    // effectiveHopIndex가 hop window 범위(±1)를 넘으면 별도 gate-hop-window 가드가 먼저 차단하므로
+    // 본 가드 직접 cover는 effectiveHopIndex=1 케이스 (직전 trip evidence와 정합).
+    it('#1630 lockless + currentHopIndex=1 + candidate arc[0] → suppressed (estimator overshoot, 2026-06-22 용마산 evidence)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderOriginHopCase(0, 1);
+      await waitFor(() => {
+        expect(mockLogSuppressedOriginHopLockless).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arcOrigin[0].name,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    // #1630 회귀 가드 — lock 활성 + currentHopIndex=1 + candidate arc[0]: isOriginHopCandidate=true이지만
+    // IIFE 내 `!lock` 조건에 걸려 #1514 lockless 가드 미발사 + #1599 lock-origin 가드로 차단해야 함.
+    // (이번 fix로 lock 활성에서 영향 받지 않음을 명시 검증)
+    it('#1630 lock 활성 + currentHopIndex=1 + candidate arc[0] → #1599 lock-origin 가드로 차단 (lockless 가드 미발사)', async () => {
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-LOCK',
+        boardingStationId: arcOrigin[0].id,
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      });
+      mockNextTargetStops(4);
+      renderOriginHopCase(0, 1);
+      await waitFor(() => {
+        expect(mockLogSuppressedPassedEventOnLockOrigin).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arcOrigin[0].name,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
+    });
+
     it('#1599 band-aid — lock 활성 + currentHopIndex=0 + candidate arc[0] (= boardingStationId) → 차단 (passed-event-on-lock-origin)', async () => {
       // ADR-014 §4 "lock origin은 정당 신호" 명제는 2026-06-20 용마산 evidence(lock 1초 후 origin 자체에
       // station-passed fire = X1 wrong-station-alarm)로 반증됨. #1596(autoLock multi-signal consensus)이
