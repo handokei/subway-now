@@ -34,6 +34,7 @@ import {
 import {
   BOARDING_PROMPT_WINDOWS,
   clearAlarmLog,
+  countAlarmLogReasonsByWindow,
   countBoardingPromptByWindow,
   countGateReasons,
   countSilentPushOutcomes,
@@ -929,6 +930,24 @@ function buildCountersSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #1682 — Suppress Reasons 섹션. 1h 윈도우 suppress reason 분포 top 5.
+ * V9(suppress event rate < 100/h/trip) 측정 인프라.
+ */
+const SUPPRESS_REASONS_WINDOW_MS = 60 * 60 * 1000; // 1h
+const SUPPRESS_REASONS_TOP_N = 5;
+
+function buildSuppressReasonsSection(args: BuildDumpArgs): string[] {
+  const counters = countAlarmLogReasonsByWindow(
+    args.logs,
+    SUPPRESS_REASONS_WINDOW_MS,
+    args.nowMs ?? Date.now(),
+  );
+  if (counters.length === 0) return ['(empty — no suppressed events in 1h)'];
+  const top = counters.slice(0, SUPPRESS_REASONS_TOP_N);
+  return top.map(({ reason, count, lastTs }) => `${reason}=${count}x (${formatTime(lastTs)})`);
+}
+
+/**
  * #1421 — Auto-lock Candidate 섹션. SSOT/stability/direction/candidate 4개 라인으로
  * device-side auto-lock 측정 상태를 dump.
  *
@@ -1207,6 +1226,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'Boarding Prompt Acceptance', build: buildBoardingPromptAcceptanceSection },
   // #1413 — reason별 누적 + 마지막 발생 시각.
   { title: 'Counters', build: buildCountersSection },
+  // #1682 — suppress reason 1h 윈도우 top 5. V9(suppress event rate < 100/h/trip) 측정 인프라.
+  { title: 'Suppress Reasons (1h)', build: buildSuppressReasonsSection },
   // #1421 — PR-AutoLock-1 측정 인프라. SSOT consensus → stability → direction → candidate 4줄.
   { title: 'Auto-lock Candidate', build: buildAutoLockSection },
   // #1430 — 환경 분포 측정 인프라. SSOT 활성 cascade → state별 누적 시간 + transition 카운트.
@@ -2072,6 +2093,9 @@ function DebugModalInner({
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
 
+          {/* #1682 — Suppress Reasons: 1h 윈도우 top 5 suppress reason 분포 */}
+          <SuppressReasonsSection logs={logs} colors={colors} />
+
           {/* #1501 — PR-C. Raw signal 자동 표시 (toggle 없음). 직전 30건만 노출 — share dump에는
               buffer 전체가 시간 역순으로 흐른다. Clear는 buffer + AsyncStorage 모두 wipe. */}
           <DebugLogSection
@@ -2389,6 +2413,42 @@ function CountersSection({
         <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
       ) : (
         counters.map(({ reason, count, lastTs }) => (
+          <KeyValue
+            key={reason}
+            label={reason}
+            value={`${count}x (${formatTime(lastTs)})`}
+            colors={colors}
+          />
+        ))
+      )}
+    </Section>
+  );
+}
+
+/**
+ * #1682 — Suppress Reasons 섹션 본문. 1h 윈도우 top 5 suppress reason 분포.
+ * V9(suppress event rate < 100/h/trip) 측정 인프라. 디버그 only.
+ */
+function SuppressReasonsSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const counters = countAlarmLogReasonsByWindow(logs, SUPPRESS_REASONS_WINDOW_MS);
+  const top = counters.slice(0, SUPPRESS_REASONS_TOP_N);
+  return (
+    <Section title="Suppress Reasons (1h)" colors={colors}>
+      {top.length === 0 ? (
+        <Text
+          style={[typography.mono, { color: colors.muted }]}
+          testID="debug-suppress-reasons-empty"
+        >
+          (empty — no suppressed events in 1h)
+        </Text>
+      ) : (
+        top.map(({ reason, count, lastTs }) => (
           <KeyValue
             key={reason}
             label={reason}

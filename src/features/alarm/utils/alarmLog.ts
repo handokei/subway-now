@@ -1638,3 +1638,58 @@ export function countGateReasons(
   }
   return counts;
 }
+
+/**
+ * #1682 — suppressed reason별 집계 (시간 윈도우 필터링).
+ *
+ * countBoardingPromptByWindow 패턴 재사용 — suppressed 엔트리의 reason을 windowMs 이내 항목만
+ * 집계해 반환. read-only, write 부담 0.
+ *
+ * count 내림차순 정렬 — 가장 빈번한 reason이 상단에 노출.
+ *
+ * @param entries  alarmLog 전체 또는 부분 스냅샷
+ * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 객체 반환. Infinity이면 전체.
+ * @param now      기준 시각 (ms epoch). 테스트 결정성용. 기본값 Date.now().
+ */
+export function countAlarmLogReasonsByWindow(
+  entries: readonly AlarmLogEntry[],
+  windowMs: number,
+  now: number = Date.now(),
+): AlarmLogReasonCounter[] {
+  if (windowMs <= 0) return [];
+  const map = new Map<string, AlarmLogReasonCounter>();
+  for (const entry of entries) {
+    if (entry.outcome !== 'suppressed') continue;
+    const ageMs = now - entry.ts;
+    if (ageMs > windowMs) continue;
+    const key = entry.reason ?? '(unknown)';
+    const entryCount = entry.count ?? 1;
+    const existing = map.get(key);
+    if (existing) {
+      existing.count += entryCount;
+      if (entry.ts > existing.lastTs) existing.lastTs = entry.ts;
+    } else {
+      map.set(key, { reason: key, count: entryCount, lastTs: entry.ts });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+/**
+ * #1682 — 최근 N건의 suppressed reason raw entries 반환.
+ *
+ * DebugModal Telemetry 섹션에서 suppressed reason 분포를 빠르게 파악하기 위한 헬퍼.
+ * reason 미설정 항목은 포함되지 않는다 (순수 suppressed signal만 취급).
+ * 시간 역순 정렬 (최신이 앞) — DebugModal 표시에 직접 사용 가능.
+ *
+ * @param entries alarmLog 전체 또는 부분 스냅샷
+ * @param n       반환할 최대 항목 수. 0 이하이면 빈 배열 반환.
+ */
+export function lastNReasons(
+  entries: readonly AlarmLogEntry[],
+  n: number,
+): AlarmLogEntry[] {
+  if (n <= 0) return [];
+  const suppressed = entries.filter((e) => e.outcome === 'suppressed' && e.reason !== undefined);
+  return suppressed.slice(-n).reverse();
+}
