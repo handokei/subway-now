@@ -1002,8 +1002,13 @@ export function useStationAlarm({
           logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
         } else if (isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
           // hop window 통과 — origin hop 케이스만 추가 표식 (lockless 차단은 IIFE 내부).
+          // #1630 — effectiveHopIndex AND 조건 제거. lockless mode는 estimator(시간 적분)가
+          // idx를 임의 진행 — 출발역에 머물러도 idx>=1 정상 산출(2026-06-22 08:34:18 용마산
+          // evidence: estimator idx=1, 사용자는 출발 직후 = X1 위반). candidate가 arc[0]이면
+          // effectiveHopIndex 값과 무관하게 origin hop으로 판정 (ADR-014 §4: 출발역 자체에
+          // station-passed fire는 X1). lock 활성 trip은 line 1042 `!lock` 가드가 별도 차단.
           const candidateIndex = arcIndexOf(arcStations, candidateStation);
-          isOriginHopCandidate = effectiveHopIndex === 0 && candidateIndex === 0;
+          isOriginHopCandidate = candidateIndex === 0;
         } else {
           logSuppressedHopWindow({
             source: 'fg',
