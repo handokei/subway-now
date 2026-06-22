@@ -9,6 +9,11 @@
  *   3. mirror stale(lastAdvanceAt 180s 초과, #1573 T10) → cascade 채택 거부 → 기존 tier fallback.
  *   4. mirror lock 활성 + line mismatch → station resolve null → 채택 거부.
  *   5. mirror lockless + resolve 가능 → cascade 채택 (lockless도 lock과 동급 우선순위).
+ *
+ * #1646 — positionTrain cascade priority 승격 (3-of-3 합의 lock+지하+lockMatch).
+ *   사용자 trip evidence(2026-06-22 14:28/14:30/14:33): backend SSoT mirror lag(10-30s)로 인해
+ *   b역 도착해도 fusion 현재역이 1역 뒤쳐짐. positionTrain이 실시간 신호인데도 cascade 3순위라
+ *   backend mirror가 advance될 때까지 채택되지 않음. 합의 충족 시 positionTrain 1순위 승격.
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react-native';
@@ -18,9 +23,11 @@ import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../../route/hooks/useTrainPositions';
 import { findTopNearestStations } from '../../utils/findNearestStation';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
+import { TRAIN_STATUS } from '../../../../shared/constants/trainStatus';
 import {
   arrivalRet,
   positionRet,
+  makeTrain as train,
   GPS_BASE_DEFAULTS,
 } from '../../../../testUtils/positionApiFixtures';
 import {
@@ -229,6 +236,144 @@ describe('#1568 (T8b) cascade picker — backend-ssot tier', () => {
     await flushSsotRead();
     await waitFor(() => {
       expect(hook.result.current.result?.station.id).toBe(chungdam.id);
+    });
+  });
+});
+
+describe('#1646 cascade picker — positionTrain 1순위 승격 (3-of-3 합의)', () => {
+  const TRAIN_CODE = 'T-1646';
+  const lockOn7Match: BoardingLock = {
+    destinationId: 'dest-7',
+    trainCode: TRAIN_CODE,
+    boardingLine: '7',
+    boardingStationId: yongmasan.id,
+    boardedAt: T0,
+    expectedDurationMs: 10 * 60_000,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    jest.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /**
+   * GPS at yongmasan + positionTrain at yongmasan (좌표 일치로 fusion gate 통과).
+   * mirror가 다른 station(청담)을 가리키면 합의 충족 시 mirror가 무시되는지 검증 가능.
+   */
+  function setupPositionTrainMatch(opts?: { withPositionTrain?: boolean }) {
+    const { withPositionTrain = true } = opts ?? {};
+    setupBaselineGpsAt('용마산');
+    mockPos.mockReturnValue(
+      positionRet(
+        withPositionTrain
+          ? { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: TRAIN_CODE })] }
+          : null,
+      ),
+    );
+  }
+
+  function renderFusion(opts: {
+    lockedTrainCode?: string | null;
+    boardingLock?: BoardingLock | null;
+    barometer?: { subsurface?: boolean };
+  }) {
+    return renderHook(() =>
+      useFusedNearestStation(
+        undefined,
+        undefined,
+        undefined,
+        opts.lockedTrainCode,
+        opts.boardingLock,
+        undefined,
+        opts.barometer,
+      ),
+    );
+  }
+
+  it('3-of-3 합의(lock+지하+lockMatch) 시 positionTrain 1순위 — backend mirror 무시', async () => {
+    setupPositionTrainMatch();
+    // mirror가 다른 station(청담)을 가리켜도 합의 충족 시 무시.
+    mockRead.mockResolvedValue(makeMirror({ currentStationId: chungdam.name }));
+    const hook = renderFusion({
+      lockedTrainCode: TRAIN_CODE,
+      boardingLock: lockOn7Match,
+      barometer: { subsurface: true },
+    });
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('boarding-lock');
+    });
+    expect(hook.result.current.confidence).toBe('boarding-lock');
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+  });
+
+  it('3-of-3 합의 충족 + backend mirror null → positionTrain 1순위 (fallback 충돌 없음)', async () => {
+    setupPositionTrainMatch();
+    mockRead.mockResolvedValue(null);
+    const hook = renderFusion({
+      lockedTrainCode: TRAIN_CODE,
+      boardingLock: lockOn7Match,
+      barometer: { subsurface: true },
+    });
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('boarding-lock');
+    });
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+  });
+
+  // 본 합의 미충족 케이스 — 모두 backend mirror 1순위 채택.
+  it.each<[
+    string,
+    Parameters<typeof renderFusion>[0],
+    Parameters<typeof setupPositionTrainMatch>[0] | undefined,
+  ]>([
+    [
+      'barometer 지상(subsurface=false)',
+      { lockedTrainCode: TRAIN_CODE, boardingLock: lockOn7Match, barometer: { subsurface: false } },
+      undefined,
+    ],
+    [
+      'barometer 미전달(subsurface=undefined)',
+      { lockedTrainCode: TRAIN_CODE, boardingLock: lockOn7Match },
+      undefined,
+    ],
+    [
+      'lockless trip(boardingLock=null)',
+      { lockedTrainCode: TRAIN_CODE, boardingLock: null, barometer: { subsurface: true } },
+      undefined,
+    ],
+    [
+      'trainCode mismatch(lockedTrainCode != trainProgress.trainNo)',
+      {
+        lockedTrainCode: 'T-DIFFERENT',
+        boardingLock: { ...lockOn7Match, trainCode: 'T-DIFFERENT' },
+        barometer: { subsurface: true },
+      },
+      undefined,
+    ],
+    [
+      'lockedTrainCode null',
+      { lockedTrainCode: undefined, boardingLock: lockOn7Match, barometer: { subsurface: true } },
+      undefined,
+    ],
+    [
+      'positionTrain null(realtimePosition API outage)',
+      { lockedTrainCode: TRAIN_CODE, boardingLock: lockOn7Match, barometer: { subsurface: true } },
+      { withPositionTrain: false },
+    ],
+  ])('합의 미충족 — %s → backend mirror 1순위', async (_label, fusionOpts, mocksOpts) => {
+    setupPositionTrainMatch(mocksOpts);
+    mockRead.mockResolvedValue(makeMirror({ currentStationId: chungdam.name }));
+    const hook = renderFusion(fusionOpts);
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
     });
   });
 });

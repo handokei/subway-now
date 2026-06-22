@@ -861,7 +861,7 @@ export function useFusedNearestStation(
     nowMsForSsot - backendSsotMirror.lastAdvanceAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
   const backendSsotAccepts = ssotStation !== null && ssotFresh;
 
-  // #1646 — positionTrain + lockedTrainCode 매칭 + 지하 환경 + 사용자 명시 의향 trip 3-of-3 합의.
+  // #1646 — positionTrain 1순위 승격 (3-of-3 합의 + positionTrainResult 전제).
   //
   // True일 때 positionTrain을 backend SSoT mirror보다 1순위로 승격한다.
   // 사용자 trip evidence(2026-06-22 14:28/14:30/14:33): backend silent push 5-10s + cron 5s + APNs 처리
@@ -869,13 +869,14 @@ export function useFusedNearestStation(
   // positionTrain은 Seoul realtimePosition + lockedTrainCode 매칭 = 사용자가 명시적으로 탭한 열차의
   // 실시간 위치 → backend SSoT mirror가 forward되기 전에도 advance를 1차 신호로 확정 가능.
   //
-  // 3-of-3 합의 (Strategy ① 6 fail mode 차단 — ADR-010 두 실패 모드 동급):
-  //   1. positionTrainResult 존재 (이미 모든 positionTrain 게이트 통과 — distance/arc/forward)
-  //   2. lockMatch — trainProgress.trainNo === lockedTrainCode (trainCode 오선택 / API stale 차단)
-  //   3. barometerSubsurface === true (지하 환경 명시 — surface GPS 가용 시 GPS fast-path 우선)
-  //   4. boardingLock != null (사용자 명시 의향 trip 한정 — lockless trip은 본 승격 적용 X)
+  // 전제: positionTrainResult != null (이미 모든 positionTrain 게이트 통과 — distance/arc/forward).
   //
-  // backward-compat: 본 합의 미충족 시 기존 cascade 그대로 (backendSsotAccepts → wifi → positionTrain ...).
+  // 3-of-3 합의 (Strategy ① 6 fail mode 차단 — ADR-010 두 실패 모드 동급):
+  //   1. lockMatch — trainProgress.trainNo === lockedTrainCode (trainCode 오선택 / API stale 차단)
+  //   2. barometerSubsurface === true (지하 환경 명시 — surface GPS 가용 시 GPS fast-path 우선)
+  //   3. boardingLock != null (사용자 명시 의향 trip 한정 — lockless trip은 본 승격 적용 X)
+  //
+  // backward-compat: 합의 미충족 시 기존 cascade 그대로 (backendSsotAccepts → wifi → positionTrain ...).
   // positionTrainResult가 non-null이면 trainProgress도 non-null (line 219 guard).
   const positionTrainBoardingLockMatch =
     positionTrainResult != null &&
