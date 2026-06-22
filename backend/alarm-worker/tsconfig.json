@@ -20,7 +20,10 @@
   },
   "include": [
     "src/**/*.ts",
-    "../../src/shared/infra/monitoring/tripTokenHash.ts"
+    "../../src/shared/infra/monitoring/tripTokenHash.ts",
+    "../../src/data/stations.json",
+    "../../src/data/stationDistances.json",
+    "../../src/data/transferTimes.json"
   ],
   "exclude": ["node_modules"]
 }
