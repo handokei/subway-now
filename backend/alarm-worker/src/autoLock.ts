@@ -89,6 +89,16 @@ const ARVL_CD_DEPARTED = 2;
 /** lastMotionAt이 이 시간(ms) 이내이면 "최근 이동" 신호로 간주. */
 const RECENT_MOTION_WINDOW_MS = 3 * 60 * 1000;
 
+/**
+ * #1676 — Seoul API realtimePosition recptnDt 신선도 임계 (30s).
+ *
+ * `selfPollPositions` entry의 `recptnMs`(Seoul API 수신 시각)이 이 임계를 초과하면
+ * stale snapshot으로 간주해 positionTrainAgreement 산출 시 제외. cron 주기(60s)의 절반 —
+ * 직전 cron cycle의 snapshot이 다음 cycle 시작 직전까지 ≤60s이므로 30s는 "이번 cycle
+ * 내 신선 데이터"를 의미. 0 또는 미포함 entry는 age 가드 skip (backward-compat).
+ */
+export const POSITION_RECPTN_MAX_AGE_MS = 30_000;
+
 export interface AttemptAutoLockInputs {
   trip: Trip;
   /** 다음 추적 대상 waypoint — arrivals 폴링 대상 (현재 leg 첫 waypoint). */
@@ -152,15 +162,19 @@ export interface AttemptAutoLockInputs {
   /**
    * #1614 Phase B (S4 #1537) — backend self-poll realtimePosition 결과 (호선 단위 운행 trainCode 위치).
    *
-   * caller(scheduled.ts `maybeBindLocklessTrainCode`)가 `readSelfPollPosition(env.TRIPS, line)`
-   * 으로 KV stamp 읽어 그대로 전달. attemptAutoLock 가 `pickAutoTrainCode` 결과로 trainCode를
-   * 결정한 직후, 본 list 에 해당 trainCode가 존재하면 `consensusGate.ts:155` strongCB
-   * (positionTrainAgreement + arrival) 통과 path를 연다 — underground 환경에서 strongBE 외 추가
-   * 합의 분기를 활성화.
+   * caller(scheduled.ts `maybeBindLocklessTrainCode` / `evaluateAndMaybeFireBoardingPrompt`)가
+   * `readSelfPollPosition(env.TRIPS, line)`으로 KV stamp 읽어 그대로 전달. attemptAutoLock 가
+   * `pickAutoTrainCode` 결과로 trainCode를 결정한 직후, 본 list 에 해당 trainCode가 존재하면
+   * `consensusGate.ts:155` strongCB (positionTrainAgreement + arrival) 통과 path를 연다 —
+   * underground 환경에서 strongBE 외 추가 합의 분기를 활성화.
+   *
+   * `recptnMs` (Seoul API 수신 시각 epoch ms) 포함 시 age ≤ `POSITION_RECPTN_MAX_AGE_MS`(30s)
+   * 가드 적용 — stale snapshot으로 positionTrainAgreement=true 되는 false positive 차단.
+   * `recptnMs` 미포함(=0 또는 undefined) entry는 age 가드를 skip (backward-compat).
    *
    * 미전달(undefined) / 빈 배열 시 consensusGate가 자연 `?? false` fallback (strongBE 동작 유지).
    */
-  selfPollPositions?: readonly { trainCode: string; stationName: string }[];
+  selfPollPositions?: readonly { trainCode: string; stationName: string; recptnMs?: number }[];
   /**
    * #1667 (ADR-015 strongDB wire) — device가 WiFi SSID 매핑으로 결정한 역명.
    *
@@ -279,11 +293,20 @@ export async function attemptAutoLock(
   if (environment && gateOutcome) {
     const arrivalSignalPresent =
       typeof chosen.arvlCd === 'number' && chosen.arvlCd >= 0 && chosen.arvlCd <= 3;
-    // #1614 Phase B — backend self-poll realtimePosition cross-match.
+    // #1614 Phase B / #1676 — backend self-poll realtimePosition cross-match + recptnMs age 가드.
     // pickAutoTrainCode 가 선택한 trainCode가 line의 운행 trains 중에 실제 존재하면 true.
+    // recptnMs > 0 이면 Seoul API 수신 시각 기준으로 POSITION_RECPTN_MAX_AGE_MS(30s) 이내만 신선
+    // 데이터로 인정 — stale snapshot으로 positionTrainAgreement=true 되는 false positive 차단.
+    // recptnMs=0 / 미포함 entry는 age 가드 skip (backward-compat, 기존 entry 구조 유지).
     // undefined / 빈 list 시 자연 undefined → consensusGate가 `?? false` fallback (strongBE 동작 유지).
     const positionTrainAgreement = selfPollPositions
-      ? selfPollPositions.some((p) => p.trainCode === trainCode)
+      ? selfPollPositions.some(
+          (p) =>
+            p.trainCode === trainCode &&
+            (p.recptnMs === undefined ||
+              p.recptnMs === 0 ||
+              now - p.recptnMs <= POSITION_RECPTN_MAX_AGE_MS),
+        )
       : undefined;
     // #1667 (ADR-015 strongDB wire) — device WiFi SSID 매핑 역명 cross-match.
     // wifiSsidStationName이 targetWaypoint.stationName과 일치하면 사용자가 해당 역 WiFi에
