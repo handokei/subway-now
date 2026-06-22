@@ -101,3 +101,13 @@ export const DETECTION_FUSED_MAX_DISTANCE_KM = 0.5;
 export const GPS_DERIVED_ACCURACY_MAX_M = 50;
 export const GPS_DERIVED_FIX_MAX_AGE_MS = 30_000;
 export const GPS_DERIVED_ROUTE_MATCH_MAX_KM = 0.1;
+
+/**
+ * #1668 — arvlCd=1(ARRIVED) + lock.trainCode 매칭 즉시 SSoT 채택 신선도 게이트.
+ *
+ * Seoul realtimeStationArrival API의 ARRIVED 신호는 열차 정차 구간(~30s)에서만 발생.
+ * receivedAtMs 기준 본 ms 초과 시 stale로 간주해 cascade 채택 거부.
+ * Seoul API 폴링 주기(30s) + 처리 latency (~5s) 여유 → 35s.
+ * stale 신호를 채택하면 이전 정차 역을 현재역으로 오인하는 false positive 위험.
+ */
+export const ARVL_CD_ARRIVED_MAX_AGE_MS = 35_000;

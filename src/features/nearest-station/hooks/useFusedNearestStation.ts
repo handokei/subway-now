@@ -54,7 +54,9 @@ import {
   type BackendSsotMirrorEntry,
 } from '../../alarm/utils/backendSsotMirror';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
+import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import {
+  ARVL_CD_ARRIVED_MAX_AGE_MS,
   BACKEND_SSOT_MIRROR_MAX_AGE_MS,
   DETECTION_FUSED_MAX_DISTANCE_KM,
   GPS_DERIVED_ACCURACY_MAX_M,
@@ -928,6 +930,55 @@ export function useFusedNearestStation(
     gpsTopCandidate.station.line === boardingLock.boardingLine &&
     gpsTopCandidate.distanceKm <= GPS_DERIVED_ROUTE_MATCH_MAX_KM;
 
+  // #1668 — arvlCd=1(ARRIVED) + lock.trainCode 매칭 즉시 SSoT 채택.
+  //
+  // Seoul realtimeStationArrival API가 직접 확정한 "열차 도착" 신호 + 사용자가 탑승한 trainCode와 매칭.
+  // backend SSoT mirror lag(10-30s) 없이 arrival API 30s cycle에서 즉시 advance 가능.
+  //
+  // 3-of-3 합의 (ADR-010 두 실패 모드 동급 — false positive/miss 동급 방어):
+  //   1. boardingLock 활성 + lockedTrainCode 존재 — 사용자 명시 의향 trip 한정 (lockless 미적용).
+  //   2. arrival row: arrivalCode === ARRIVED(1) AND trainCode === lock.trainCode.
+  //   3. arrival row: receivedAtMs age ≤ ARVL_CD_ARRIVED_MAX_AGE_MS(35s) — stale 신호 채택 차단.
+  //      (receivedAtMs === 0 = mock/미상 → 신선도 판정 불가 → 거부)
+  //
+  // 채택 station: boardingLock.boardingLine에 일치하는 candidates 슬롯의 station.
+  //   - candidates는 GPS 좌표 기준 거리순 정렬 — 가장 가까운 매칭 역을 우선 채택.
+  //   - lockless trip(boardingLock=null)은 본 분기 미진입 → 기존 cascade.
+  //
+  // 트레이드오프 완화:
+  //   - trainCode 중복 운행(같은 코드 다른 회차): age ≤ 35s 가드로 최근 cycle 신호만 채택.
+  //   - ARRIVED 신호 짧음(~30s): 본 tier 이후 positionTrain/backend-ssot 등 cascade가 유지.
+  //   - 사용자 하차 후 lock 잔존: useTrainCodeMismatchDetector(#1659) 90s 가드 별도 방어.
+  //   - receivedAtMs === 0(mock/schedule API 응답): 거부해 테스트/schedule fallback 오채택 차단.
+  //
+  // PR #1646/#1662 보완 관계:
+  //   - #1646: lock + 지하 + positionTrain lockMatch → positionTrain 1순위
+  //   - #1662: lock + 지상 + GPS 신선 → GPS-derived 1순위 (gpsDerivedFastPath, 위)
+  //   - 본 PR: lock + ARRIVED + trainCode 매칭 + 신선 → arrival-ssot 1순위 (지상/지하 무관)
+  //   셋 합쳐 lock 활성 환경 3 path 커버.
+  const arvlCdArrivedMatch = (() => {
+    if (!boardingLock || !lockedTrainCode) return null;
+    const now = Date.now();
+    const candidateSlots = [
+      { candidate: candidates[0] ?? null, arrival: a0.arrival },
+      { candidate: candidates[1] ?? null, arrival: a1.arrival },
+      { candidate: candidates[2] ?? null, arrival: a2.arrival },
+    ];
+    for (const { candidate, arrival } of candidateSlots) {
+      if (!candidate || !arrival) continue;
+      if (candidate.station.line !== boardingLock.boardingLine) continue;
+      const allRows = [...arrival.up, ...arrival.down];
+      for (const row of allRows) {
+        if (row.arrivalCode !== ARRIVAL_CODE.ARRIVED) continue;
+        if (row.trainCode !== lockedTrainCode) continue;
+        if (row.receivedAtMs === 0) continue;
+        if (now - row.receivedAtMs > ARVL_CD_ARRIVED_MAX_AGE_MS) continue;
+        return candidate;
+      }
+    }
+    return null;
+  })();
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
@@ -945,12 +996,21 @@ export function useFusedNearestStation(
     result = gpsTopCandidate!;
     confidence = 'gps-only';
     source = 'gps';
+  } else if (arvlCdArrivedMatch) {
+    // #1668 — ARRIVED + trainCode 매칭 + 신선 3-of-3 합의 시 arrival-ssot 1순위.
+    // Seoul API 직접 도착 확정 신호 — backend SSoT mirror 10-30s lag 우회.
+    // boardingLock.boardingLine 일치 + 거리 기준 가장 가까운 candidates 슬롯 station 채택.
+    // confidence='boarding-lock' (사용자 탭한 열차가 도착 확정된 가장 강한 신호).
+    result = arvlCdArrivedMatch;
+    confidence = 'boarding-lock';
+    source = 'boarding-lock';
   } else if (backendSsotAccepts) {
     // #1568 (T8b) — backend SSoT 권위 mirror. backend advance 게이트가
     // ADR-017 6단(seed/repeat/motion-stop/cross-validation 등)을 이미 통과한 결과이므로
     // device-side cascade tier보다 신뢰도가 높다. lock 활성/lockless 모두 동일 우선순위.
     // #1646 — 3-of-3 합의(lock+지하+lockMatch) 시 positionTrain에 양보 (위 분기).
     // #1657 — 지상 GPS 신선 합의 시 gpsDerivedFastPath에 양보 (위 분기).
+    // #1668 — ARRIVED+trainCode 합의 시 arvlCdArrivedMatch에 양보 (위 분기).
     result = { station: ssotStation!, distanceKm: 0 };
     confidence = 'backend-ssot';
     source = 'backend-ssot';
