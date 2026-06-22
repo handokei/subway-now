@@ -61,6 +61,8 @@ import {
   countGateReasons,
   countSilentPushOutcomes,
   summarizeAlarmLogCounters,
+  countAlarmLogReasonsByWindow,
+  lastNReasons,
   logBoardingPromptFired,
   logBoardingPromptResponded,
   BOARDING_PROMPT_WINDOWS,
@@ -2178,6 +2180,143 @@ describe('alarmLog', () => {
       setSentryEnabled(true);
       appendAlarmLog(makeEntry({ source: 'fg', outcome: 'fired' }));
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('countAlarmLogReasonsByWindow (#1682)', () => {
+    const NOW = 1_700_000_000_000;
+    // 테스트 내 shared factory — SonarCloud CPD 회피 (lesson_sonarcloud_dup_prevention).
+    const sup = (
+      reason: AlarmLogEntry['reason'],
+      tsOffset = 1_000,
+      extra?: Partial<AlarmLogEntry>,
+    ): AlarmLogEntry =>
+      makeEntry({ ts: NOW - tsOffset, outcome: 'suppressed', reason, ...extra });
+
+    it('windowMs 이내 suppressed 엔트리만 집계하고 윈도우 밖은 제외한다', () => {
+      const entries = [sup('dedup-station'), sup('dedup-station', 2_000), sup('dedup-station', 10_000)];
+      const result = countAlarmLogReasonsByWindow(entries, 5_000, NOW);
+      expect(result).toHaveLength(1);
+      expect(result[0].reason).toBe('dedup-station');
+      expect(result[0].count).toBe(2);
+    });
+
+    it.each<{ name: string; entries: AlarmLogEntry[]; expectLen: number; expectReason?: string }>([
+      {
+        name: 'suppressed 아닌 엔트리는 집계 제외',
+        entries: [
+          makeEntry({ ts: NOW - 1_000, outcome: 'fired', reason: 'dedup-station' }),
+          makeEntry({ ts: NOW - 1_000, outcome: 'received', reason: 'dedup-station' }),
+          sup('gate-accuracy'),
+        ],
+        expectLen: 1,
+        expectReason: 'gate-accuracy',
+      },
+      {
+        name: 'reason 미설정이면 (unknown)으로 집계',
+        entries: [sup(undefined)],
+        expectLen: 1,
+        expectReason: '(unknown)',
+      },
+    ])('$name', ({ entries, expectLen, expectReason }) => {
+      const result = countAlarmLogReasonsByWindow(entries, 5_000, NOW);
+      expect(result).toHaveLength(expectLen);
+      if (expectReason !== undefined) expect(result[0].reason).toBe(expectReason);
+    });
+
+    it('count 내림차순 정렬', () => {
+      const entries = [sup('gate-accuracy'), sup('dedup-station'), sup('dedup-station'), sup('dedup-station')];
+      const result = countAlarmLogReasonsByWindow(entries, 5_000, NOW);
+      expect(result[0]).toMatchObject({ reason: 'dedup-station', count: 3 });
+      expect(result[1]).toMatchObject({ reason: 'gate-accuracy', count: 1 });
+    });
+
+    it('count 필드가 있는 엔트리는 count를 합산한다', () => {
+      const entries = [sup('dedup-alarm', 1_000, { count: 5 }), sup('dedup-alarm', 1_000, { count: 3 })];
+      const result = countAlarmLogReasonsByWindow(entries, 5_000, NOW);
+      expect(result[0].count).toBe(8);
+    });
+
+    it('lastTs는 windowMs 내 가장 최신 ts를 기록한다', () => {
+      const entries = [sup('dedup-station', 3_000), sup('dedup-station', 1_000), sup('dedup-station', 2_000)];
+      const result = countAlarmLogReasonsByWindow(entries, 5_000, NOW);
+      expect(result[0].lastTs).toBe(NOW - 1_000);
+    });
+
+    it.each([
+      { label: 'windowMs=0', windowMs: 0 },
+      { label: 'windowMs=-100', windowMs: -100 },
+    ])('$label이면 빈 배열 반환', ({ windowMs }) => {
+      const entries = [sup('dedup-station')];
+      expect(countAlarmLogReasonsByWindow(entries, windowMs, NOW)).toEqual([]);
+    });
+
+    it('빈 entries면 빈 배열 반환', () => {
+      expect(countAlarmLogReasonsByWindow([], 3_600_000, NOW)).toEqual([]);
+    });
+
+    it('windowMs=Infinity면 전체 집계', () => {
+      const entries = [sup('dedup-station', 999_999_999), sup('dedup-station')];
+      expect(countAlarmLogReasonsByWindow(entries, Infinity, NOW)[0].count).toBe(2);
+    });
+
+    it('now 미지정 시 Date.now() 기준으로 집계 (default parameter 분기)', () => {
+      const ts = Date.now() - 500;
+      const entries: AlarmLogEntry[] = [makeEntry({ ts, outcome: 'suppressed', reason: 'dedup-station' })];
+      const result = countAlarmLogReasonsByWindow(entries, 5_000);
+      expect(result[0].reason).toBe('dedup-station');
+    });
+  });
+
+  describe('lastNReasons (#1682)', () => {
+    const NOW = 1_700_000_000_000;
+    const sup = (reason: AlarmLogEntry['reason'], tsOffset = 1_000): AlarmLogEntry =>
+      makeEntry({ ts: NOW - tsOffset, outcome: 'suppressed', reason });
+
+    it('suppressed 엔트리 최근 N건을 시간 역순으로 반환한다', () => {
+      const entries = [sup('gate-accuracy', 3_000), sup('dedup-station', 2_000), sup('dedup-alarm', 1_000)];
+      const result = lastNReasons(entries, 2);
+      expect(result).toHaveLength(2);
+      expect(result[0].reason).toBe('dedup-alarm');
+      expect(result[1].reason).toBe('dedup-station');
+    });
+
+    it.each<{ name: string; entries: AlarmLogEntry[]; expectLen: number; expectReason?: string }>([
+      {
+        name: 'fired/received 엔트리는 제외',
+        entries: [
+          makeEntry({ ts: NOW - 1_000, outcome: 'fired', reason: 'dedup-station' }),
+          makeEntry({ ts: NOW - 1_000, outcome: 'received', reason: 'dedup-station' }),
+          sup('gate-accuracy'),
+        ],
+        expectLen: 1,
+        expectReason: 'gate-accuracy',
+      },
+      {
+        name: 'reason 미설정 억제 엔트리는 제외',
+        entries: [sup(undefined), sup('dedup-station')],
+        expectLen: 1,
+        expectReason: 'dedup-station',
+      },
+    ])('$name', ({ entries, expectLen, expectReason }) => {
+      const result = lastNReasons(entries, 10);
+      expect(result).toHaveLength(expectLen);
+      if (expectReason !== undefined) expect(result[0].reason).toBe(expectReason);
+    });
+
+    it.each([
+      { label: 'n=0', n: 0 },
+      { label: 'n=-1', n: -1 },
+    ])('$label이면 빈 배열 반환', ({ n }) => {
+      expect(lastNReasons([sup('dedup-station')], n)).toEqual([]);
+    });
+
+    it('빈 entries면 빈 배열 반환', () => {
+      expect(lastNReasons([], 5)).toEqual([]);
+    });
+
+    it('entries 수가 n보다 적으면 있는 것만 반환', () => {
+      expect(lastNReasons([sup('dedup-station')], 10)).toHaveLength(1);
     });
   });
 });

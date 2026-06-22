@@ -1638,3 +1638,44 @@ export function countGateReasons(
   }
   return counts;
 }
+
+/**
+ * #1682 — suppressed reason별 집계 (시간 윈도우 필터링).
+ *
+ * summarizeAlarmLogCounters에 시간 윈도우 필터를 추가한 래퍼.
+ * windowMs 이내 suppressed 엔트리만 집계해 반환. read-only, write 부담 0.
+ *
+ * count 내림차순 정렬 — 가장 빈번한 reason이 상단에 노출.
+ *
+ * @param entries  alarmLog 전체 또는 부분 스냅샷
+ * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 배열 반환. Infinity이면 전체.
+ * @param now      기준 시각 (ms epoch). 테스트 결정성용. 기본값 Date.now().
+ */
+export function countAlarmLogReasonsByWindow(
+  entries: readonly AlarmLogEntry[],
+  windowMs: number,
+  now: number = Date.now(),
+): AlarmLogReasonCounter[] {
+  if (windowMs <= 0) return [];
+  const windowed = entries.filter((e) => now - e.ts <= windowMs);
+  return summarizeAlarmLogCounters(windowed);
+}
+
+/**
+ * #1682 — 최근 N건의 suppressed reason raw entries 반환.
+ *
+ * DebugModal Telemetry 섹션에서 suppressed reason 분포를 빠르게 파악하기 위한 헬퍼.
+ * reason 미설정 항목은 포함되지 않는다 (순수 suppressed signal만 취급).
+ * 시간 역순 정렬 (최신이 앞) — DebugModal 표시에 직접 사용 가능.
+ *
+ * @param entries alarmLog 전체 또는 부분 스냅샷
+ * @param n       반환할 최대 항목 수. 0 이하이면 빈 배열 반환.
+ */
+export function lastNReasons(
+  entries: readonly AlarmLogEntry[],
+  n: number,
+): AlarmLogEntry[] {
+  if (n <= 0) return [];
+  const suppressed = entries.filter((e) => e.outcome === 'suppressed' && e.reason !== undefined);
+  return suppressed.slice(-n).reverse();
+}
