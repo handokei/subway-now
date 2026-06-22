@@ -3823,6 +3823,26 @@ describe('ScheduledStats 초기값 (#826 E4)', () => {
   });
 });
 
+describe('ScheduledStats 초기값 (#1683 silentPushFiredByKind)', () => {
+  it('silentPushFiredByKind 모든 kind 초기값 0 — trip 없는 빈 실행', async () => {
+    const kv = new InMemoryKV();
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.silentPushFiredByKind).toEqual({
+      intermediate: 0,
+      transfer: 0,
+      destination: 0,
+      boardingPrompt: 0,
+      reschedule: 0,
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #1652 — staged lifecycle backstop (X8: trip 6h+ 잔존 0건)
 // ---------------------------------------------------------------------------
@@ -6752,6 +6772,14 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
       // #1680 — stationary cron skip.
       lifecycleStationarySkipped: 0,
+      // #1683 — silent push fired by kind.
+      silentPushFiredByKind: {
+        intermediate: 0,
+        transfer: 0,
+        destination: 0,
+        boardingPrompt: 0,
+        reschedule: 0,
+      },
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,

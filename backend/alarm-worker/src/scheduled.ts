@@ -554,6 +554,25 @@ export interface ScheduledStats extends LiveActivityStats {
    * 정상 운영: 정지 대기 사용자 수(trip × cycle) 만큼 누적. Seoul API call 절감 + false fire 방어 효과.
    */
   lifecycleStationarySkipped: number;
+  /**
+   * #1683 — silent push 발사 건수 kind별 분리 (backend 단계 측정).
+   * `sendSilentPush` 성공 호출 수 = APNs로 넘어간 push 수. device received와 diff → APNs 손실 분리.
+   *
+   * - `intermediate`: station-passed(매역 통과) 알림 발사
+   * - `transfer`     : 환승 임박 / transfer-release lock sync 발사
+   * - `destination`  : 도착 임박 발사
+   * - `boardingPrompt`: boarding-prompt alert push 발사
+   * - `reschedule`   : reschedule push 발사 (스케줄 정정)
+   *
+   * cron tail `kind` 필드로 fired vs received 단계 손실을 손쉽게 집계 가능.
+   */
+  silentPushFiredByKind: {
+    intermediate: number;
+    transfer: number;
+    destination: number;
+    boardingPrompt: number;
+    reschedule: number;
+  };
 }
 
 /**
@@ -661,6 +680,14 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     lifecycleForceEnded: 0,
     // #1680 (V8d) — stationary cron skip.
     lifecycleStationarySkipped: 0,
+    // #1683 — silent push kind별 발사 카운터 (backend cron stage 측정).
+    silentPushFiredByKind: {
+      intermediate: 0,
+      transfer: 0,
+      destination: 0,
+      boardingPrompt: 0,
+      reschedule: 0,
+    },
   };
   // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
   log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
@@ -1406,6 +1433,14 @@ export async function fireArvlCdStationPush(
   }
   stats.arvlCdFireSuccess += 1;
   stats.pushed += 1;
+  // #1683 — kind별 발사 카운터. 'intermediate'는 station-passed 경로, 그 외 그대로.
+  if (waypoint.kind === 'intermediate') {
+    stats.silentPushFiredByKind.intermediate += 1;
+  } else if (waypoint.kind === 'transfer') {
+    stats.silentPushFiredByKind.transfer += 1;
+  } else if (waypoint.kind === 'destination') {
+    stats.silentPushFiredByKind.destination += 1;
+  }
   // #1402 — 30s alert fallback 안전망 등록. silent push가 30s 내 ACK되지 않으면
   // runFallbackPushes가 alert(소리) push를 발사. arvlCd 경로는 가장 흔한 발사 경로이므로
   // 여기서도 안전망을 가동해 "하차 침묵 0" acceptance를 보강한다.
@@ -1743,6 +1778,14 @@ export async function fireVanishFallbackStationPush(
     stats.vanishReleaseFired += 1;
   } else {
     stats.vanishFallbackFired += 1;
+  }
+  // #1683 — kind별 발사 카운터. vanish 경로는 waypoint.kind로 분류.
+  if (waypoint.kind === 'intermediate') {
+    stats.silentPushFiredByKind.intermediate += 1;
+  } else if (waypoint.kind === 'transfer') {
+    stats.silentPushFiredByKind.transfer += 1;
+  } else if (waypoint.kind === 'destination') {
+    stats.silentPushFiredByKind.destination += 1;
   }
   // P0-1 (#1577) — Site 4 of 6: vanish fire 적재 (transfer/destination imminent 포함).
   writeMetric(env, {
@@ -2367,6 +2410,10 @@ export async function advanceBoardingLockWaypoint(
       stats.envCorrected += 1;
       await putTrip(env.TRIPS, trip);
     }
+    // #1683 — transfer-release push 성공 시 kind 카운터 누적.
+    if (transferHeal.result.ok) {
+      stats.silentPushFiredByKind.transfer += 1;
+    }
   }
   // #902 Seam F — 환승 직후 자동 trainCode swap. release한 lock 자리에 새 노선의 후보를
   // 동일 cycle 안에 부착해 다음 cycle의 lockMissing/boarding-prompt 우회 + 즉시 trainCode 추적.
@@ -2589,6 +2636,8 @@ export async function maybeReschedulePush(
 
   if (result.ok) {
     stats.pushed += 1;
+    // #1683 — reschedule kind 카운터.
+    stats.silentPushFiredByKind.reschedule += 1;
     trip.lastTrackedArrivalEpoch = newArrivalEpoch;
     dirty = true;
   } else {
@@ -2905,6 +2954,8 @@ export async function runLocklessIntermediate(
   // 발사 성공 — waypoint 진행 + dedup stamp + 측정 카운터.
   stats.pushed += 1;
   stats.locklessIntermediateFired += 1;
+  // #1683 — lockless intermediate kind 카운터.
+  stats.silentPushFiredByKind.intermediate += 1;
   // #1402 — 30s alert fallback 안전망 등록. shift 전 stationName으로 등록해 alert 본문이
   // 사용자가 실제로 통과한 station을 가리키게 한다. lockless intermediate는 lock 경로보다
   // device-side validation이 느슨해 silent push 누락 시 안전망 가동이 더 절실한 경로.
@@ -3214,6 +3265,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   }
   if (heal.result.ok) {
     stats.boardingPromptFired += 1;
+    // #1683 — boardingPrompt kind 카운터.
+    stats.silentPushFiredByKind.boardingPrompt += 1;
     trip.boardingPromptState = markPromptFired(now);
     // #916 follow-up B — prompt push도 같은 dedup 마커를 stamp한다. dismiss + 클리어 후
     // isSameSession=false 분기로 boardingPromptState가 사라져도 window 안에서 재발사 차단.

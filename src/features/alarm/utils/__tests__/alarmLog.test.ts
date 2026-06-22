@@ -59,6 +59,7 @@ import {
   logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
+  countSilentPushKindBreakdown,
   countSilentPushOutcomes,
   summarizeAlarmLogCounters,
   countAlarmLogReasonsByWindow,
@@ -1662,6 +1663,61 @@ describe('alarmLog', () => {
         makeEntry({ source: 'silent-push-received' }),
       ];
       expect(countSilentPushOutcomes(entries)).toEqual({ received: 1, fired: 0, skipped: 0 });
+    });
+  });
+
+  describe('countSilentPushKindBreakdown (#1683)', () => {
+    it('빈 배열이면 모두 0', () => {
+      expect(countSilentPushKindBreakdown([])).toEqual({
+        'station-passed': 0,
+        transfer: 0,
+        destination: 0,
+        unknown: 0,
+      });
+    });
+
+    it('silent-push-received 엔트리만 kind별 집계한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: 'station-passed' }),
+        makeEntry({ source: 'silent-push-received', kind: 'station-passed' }),
+        makeEntry({ source: 'silent-push-received', kind: 'transfer' }),
+        makeEntry({ source: 'silent-push-received', kind: 'destination' }),
+        makeEntry({ source: 'silent-push-fired', kind: 'station-passed' }), // fired는 집계 X
+      ];
+      expect(countSilentPushKindBreakdown(entries)).toEqual({
+        'station-passed': 2,
+        transfer: 1,
+        destination: 1,
+        unknown: 0,
+      });
+    });
+
+    it('kind 미지정(구버전 backend)은 unknown 버킷', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: undefined }), // kind 명시 없음
+        makeEntry({ source: 'silent-push-received', kind: 'transfer' }),
+      ];
+      expect(countSilentPushKindBreakdown(entries)).toEqual({
+        'station-passed': 0,
+        transfer: 1,
+        destination: 0,
+        unknown: 1,
+      });
+    });
+
+    it('silent-push-received 이외 source(fired/skipped/fg 등)는 무시', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-fired', kind: 'station-passed' }),
+        makeEntry({ source: 'silent-push-skipped', kind: 'transfer' }),
+        makeEntry({ source: 'fg', kind: 'destination' }),
+        makeEntry({ source: 'silent-push-received', kind: 'destination' }),
+      ];
+      expect(countSilentPushKindBreakdown(entries)).toEqual({
+        'station-passed': 0,
+        transfer: 0,
+        destination: 1,
+        unknown: 0,
+      });
     });
   });
 

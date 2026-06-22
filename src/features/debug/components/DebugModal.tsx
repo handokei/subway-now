@@ -37,6 +37,7 @@ import {
   countAlarmLogReasonsByWindow,
   countBoardingPromptByWindow,
   countGateReasons,
+  countSilentPushKindBreakdown,
   countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogByReason,
@@ -374,6 +375,9 @@ function silentPushDiagRows(
   // #1308 — LPM은 silent push를 throttle/drop 한다. received 카운트 옆에 두어 "LPM ON인데
   // received가 안 늘어남"을 한눈에 보고 측정할 수 있게 한다.
   const lowPowerValue = lowPowerMode ? 'ON' : 'off';
+  // #1683 — received kind 분포. backend fired vs device received 갭 분석용.
+  const kindBreakdown = countSilentPushKindBreakdown(logs);
+  const receivedKindValue = `stn=${kindBreakdown['station-passed']} xfer=${kindBreakdown.transfer} dst=${kindBreakdown.destination} unk=${kindBreakdown.unknown}`;
   return [
     { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
     { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
@@ -388,6 +392,8 @@ function silentPushDiagRows(
       dumpKey: SILENT_PUSH_LABELS.receivedKey,
       value: receivedValue,
     },
+    // #1683 — received kind 분포 (station-passed / transfer / destination / unknown)
+    { uiLabel: 'recvKind', dumpKey: 'receivedByKind', value: receivedKindValue },
     {
       uiLabel: SILENT_PUSH_LABELS.firedKey,
       dumpKey: SILENT_PUSH_LABELS.firedKey,
