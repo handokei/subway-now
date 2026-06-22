@@ -2758,6 +2758,35 @@ describe('DebugModal — Gates 섹션 (#1025)', () => {
   });
 });
 
+// #1682 — Suppress Reasons (1h) 섹션 UI 검증.
+describe('DebugModal — Suppress Reasons 섹션 (#1682)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+  });
+
+  it('1h 이내 suppressed 엔트리가 없으면 empty 메시지를 표시한다', async () => {
+    // ts=1 은 Date.now()보다 훨씬 과거(ms epoch) → 1h 윈도우 밖 → empty
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('debug-suppress-reasons-empty')).toBeTruthy());
+  });
+
+  it('1h 이내 suppressed 엔트리가 있으면 reason 카운트를 표시한다', async () => {
+    const ts = Date.now() - 1_000; // 1초 전 — 1h 윈도우 이내
+    mockGetAlarmLog.mockResolvedValue([
+      { ts, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Suppress Reasons (1h)')).toBeTruthy());
+    // reason label 노출. getAllByText — CountersSection도 같은 reason을 표시할 수 있음.
+    expect(screen.getAllByText('gate-out-of-range').length).toBeGreaterThan(0);
+  });
+});
+
 // #1346 — Share build SSOT. 모든 섹션이 한 배열에서 enumerate되므로 누락 없이 출력된다.
 describe('DebugModal share SSOT (#1346)', () => {
   // outer scope factory — SonarCloud nested function 회피.
@@ -2820,6 +2849,8 @@ describe('DebugModal share SSOT (#1346)', () => {
     expect(dump).toContain('## Counters');
     // #1421 — PR-AutoLock-1 측정 인프라.
     expect(dump).toContain('## Auto-lock Candidate');
+    // #1682 — suppress reason 1h 윈도우 섹션.
+    expect(dump).toContain('## Suppress Reasons (1h)');
     // suppressed reason 없으면 Gates 헤더 자체 생략(omitIfEmpty=true).
     expect(dump).not.toContain('## Gates');
   });
@@ -3105,6 +3136,33 @@ describe('DebugModal share SSOT (#1346)', () => {
       const section = dump.slice(dump.indexOf('## Counters'));
       expect(section).toContain('gate-out-of-range=2x');
       expect(section).toContain('movement-static-speed=1x');
+    });
+
+    it('Suppress Reasons (1h): 비어있으면 empty 메시지 출력', () => {
+      const dump = __test__.buildDumpText(makeSsotArgs());
+      const section = dump.slice(dump.indexOf('## Suppress Reasons (1h)'));
+      expect(section).toContain('(empty — no suppressed events in 1h)');
+    });
+
+    it('Suppress Reasons (1h): 1h 이내 suppressed reason count 출력', () => {
+      // nowMs를 고정해 윈도우 계산을 결정적으로 만든다.
+      const NOW = new Date('2026-06-17T13:00:10Z').getTime();
+      const ts1 = NOW - 1_000; // 1h 이내
+      const ts2 = NOW - 2_000; // 1h 이내
+      const tsOld = NOW - 2 * 60 * 60 * 1000; // 2h 전 → 윈도우 밖
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: NOW,
+          logs: [
+            { ts: ts1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+            { ts: ts2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+            { ts: tsOld, source: 'bg', outcome: 'suppressed', reason: 'dedup-station' }, // 윈도우 밖
+          ],
+        }),
+      );
+      const section = dump.slice(dump.indexOf('## Suppress Reasons (1h)'));
+      expect(section).toContain('gate-out-of-range=2x');
+      expect(section).not.toContain('dedup-station');
     });
   });
 
