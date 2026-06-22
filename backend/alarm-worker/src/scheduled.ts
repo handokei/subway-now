@@ -165,6 +165,37 @@ export const BACKEND_TRIP_LIFECYCLE_SILENCE_MS = 6 * 60 * 60 * 1000;
 export const BACKEND_TRIP_LIFECYCLE_FORCE_END_MS = 9 * 60 * 60 * 1000;
 
 /**
+ * #1680 (V8d) — cron 사이클에서 stationary skip 여부 결정.
+ *
+ * SSoT.motionState === 'stationary' 시 Seoul polling + push를 skip한다.
+ *
+ * Bypass 조건:
+ *   1. userIntentDeclared=true — C 토글 ON / boardingPrompt 응답 / BoardingTrainList 직접 탭.
+ *      ADR-014 §사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무. 정지 중이어도 skip X.
+ *   2. destination/transfer kind — 항상 bypass.
+ *      이 시점에서 현재 ETA를 알 수 없으므로(trip.lastEtaSeconds는 device 마지막 등록값으로
+ *      최신이 아님) 안전 방향(bypass)으로 평가를 진행한다. intermediate waypoint만 skip 대상.
+ *      실제 false fire는 downstream advanceTripPosition 게이트(motion-stationary)가 차단한다.
+ *
+ * motionState='unknown' 또는 SSoT null → skip하지 않음 (backward-compat, 평가 유지).
+ *
+ * @returns true = skip, false = 평가 계속
+ */
+export function shouldSkipStationary(
+  motionState: 'moving' | 'stationary' | 'unknown',
+  waypointKind: Waypoint['kind'],
+  userIntentDeclared: boolean,
+): boolean {
+  if (motionState !== 'stationary') return false;
+  // ADR-014 §사용자 명시 의향 trip — 동급 보장. 정지 중이어도 skip X.
+  if (userIntentDeclared) return false;
+  // destination/transfer — 항상 bypass. ETA 신선도를 알 수 없어 skip하면 도착 알림 누락 위험.
+  // intermediate만 skip 대상 (Seoul API call + push 절감 대상).
+  if (waypointKind === 'destination' || waypointKind === 'transfer') return false;
+  return true;
+}
+
+/**
  * #1652 — trip lifecycle phase 판정.
  *
  * `createdAt` 기준 elapsed로 단계 분리. cron이 매 cycle iterate하면서 phase에 따라 처리 분기:
@@ -516,6 +547,13 @@ export interface ScheduledStats extends LiveActivityStats {
    * cron tail에서 1주 0건이면 본 backstop이 dual safety net으로 동작 중임을 확인.
    */
   lifecycleForceEnded: number;
+  /**
+   * #1680 (V8d) — SSoT.motionState === 'stationary' 명시로 cron Seoul polling + silent push 발사를
+   * skip한 누적 횟수. motionState='unknown' 또는 SSoT 미존재는 평가 유지 (backward-compat).
+   * destination/transfer kind + etaSeconds ≤ 60 임박 시 bypass — 도착 알림 누락 방지.
+   * 정상 운영: 정지 대기 사용자 수(trip × cycle) 만큼 누적. Seoul API call 절감 + false fire 방어 효과.
+   */
+  lifecycleStationarySkipped: number;
 }
 
 /**
@@ -621,6 +659,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
     lifecycleSilenceSkipped: 0,
     lifecycleForceEnded: 0,
+    // #1680 (V8d) — stationary cron skip.
+    lifecycleStationarySkipped: 0,
   };
   // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
   log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
@@ -685,6 +725,31 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
 
     const waypoint = pickActiveWaypoint(trip);
     if (!waypoint) continue;
+
+    // #1680 (V8d) — stationary cron skip 게이트. SSoT.motionState === 'stationary' 명시 시
+    // Seoul polling + push 발사를 skip한다. motionState='unknown' 또는 SSoT null은 평가 유지.
+    // destination/transfer 임박 bypass: 사용자가 환승역/목적지에 정차 중인 케이스를 보호.
+    {
+      const stationarySsot = await readSsot(env.TRIPS, trip.token, {
+        cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+      });
+      if (
+        stationarySsot !== null &&
+        shouldSkipStationary(
+          stationarySsot.motionState,
+          waypoint.kind,
+          stationarySsot.userIntentDeclared,
+        )
+      ) {
+        stats.lifecycleStationarySkipped += 1;
+        log('cron: stationary skip', {
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+          kind: waypoint.kind,
+        });
+        continue;
+      }
+    }
 
     // #640 — BoardingLock 게이트. 사용자가 열차를 아직 선택하지 않았거나 lock이 만료된 trip은
     // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
