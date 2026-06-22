@@ -40,6 +40,7 @@ import {
   logHydrationTransition,
   logRefMismatch,
   logSuppressedCrossCategoryDedup,
+  logSuppressedCrossCategoryRecent,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -58,6 +59,7 @@ import {
 import { evaluateSsotFireGate } from '../utils/ssotFireGate';
 import {
   isStationRecentlyFired,
+  isTripScopedCrossCategoryRecentlyFired,
   markStationFired,
 } from '../utils/crossCategoryStationDedup';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
@@ -178,6 +180,25 @@ async function dispatchStationPassed(params: {
       )
     ) {
       logSuppressedCrossCategoryDedup({
+        source,
+        stationName: candidateStation.name,
+        kind: 'station-passed',
+      });
+      return;
+    }
+    // #1643 — trip-scoped cross-category + cross-station 즉시 cascade(5s 윈도우). 같은 trip에 직전
+    // 5s 안에 **다른 station에서 phase 알람** fire가 있었다면 station-passed 차단. 어대 "곧 성수 도착"
+    // 직후 어대 station-passed 발사 같은 회귀 차단. same-category(SP→SP) cross-station은 통과 —
+    // 정상 trip 폴링 진행 보존.
+    if (
+      isTripScopedCrossCategoryRecentlyFired(
+        capturedDestinationId,
+        candidateStation.name,
+        'station-passed',
+        Date.now(),
+      )
+    ) {
+      logSuppressedCrossCategoryRecent({
         source,
         stationName: candidateStation.name,
         kind: 'station-passed',
@@ -655,6 +676,29 @@ export function useStationAlarm({
       // 갱신했으므로 storage 영속화 skip(net-zero).
       firedAlarmsRef.current.delete(key);
       logSuppressedCrossCategoryDedup({
+        source: 'fg',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
+    // #1643 — trip-scoped cross-category + cross-station 즉시 cascade(5s 윈도우). 같은 trip에 직전
+    // 5s 안에 **다른 station에서 station-passed** fire가 있었다면 phase 알람 차단. 2026-06-20 12:31
+    // 어대 "군자 도착"(SP) → "곧 성수 도착"(D imminent) 회귀 차단. 같은 station 진행(early→imminent)은
+    // 통과 — firedAlarms set이 그 dedup을 담당. same-category(phase→phase) cross-station도 통과 —
+    // 별도 leg 진행 보존(case 2 어대 "곧 건대"+"성수 도착"은 currentLine 게이트가 잡아야 함).
+    // firedAlarmsRef는 sleep/CC dedup와 동일 패턴 (storage 영속화 skip — net-zero).
+    if (
+      isTripScopedCrossCategoryRecentlyFired(
+        activeDestination.id,
+        rawEvent.stationName,
+        rawEvent.type,
+        Date.now(),
+      )
+    ) {
+      firedAlarmsRef.current.delete(key);
+      logSuppressedCrossCategoryRecent({
         source: 'fg',
         stationName: rawEvent.stationName,
         kind: rawEvent.type,

@@ -218,7 +218,12 @@ export type AlarmLogReason =
   | 'candidate-distance-reject'
   // #1628 — R11 cross-trip mirror skip(PR #1613) 차단 1건. 같은 site에서 burst 발사하는 race 케이스를
   // 차단하기 위해 5s 윈도우 burst dedup 적용.
-  | 'cross-trip-mirror-skip';
+  | 'cross-trip-mirror-skip'
+  // #1643 — trip-scoped cross-category recent fire 윈도우(TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS=5s)
+  // 안에서 phase ↔ station-passed가 다른 station에 즉시 cascade로 발사되는 회귀 차단(2026-06-19
+  // 15:37 이수-사당, 2026-06-20 12:31 어대-군자-성수). 기존 'dedup-station-unified'(같은 station 30s
+  // 윈도우)와 분리해 trip-scoped cross-station cascade를 독립 카운트.
+  | 'dedup-cross-category-recent';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -368,6 +373,34 @@ export function logSuppressedCrossCategoryDedup(input: {
     source: input.source,
     outcome: 'suppressed',
     reason: 'dedup-station-unified',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #1643 — trip-scoped cross-category cascade 차단 1건 적재.
+ *
+ * 같은 trip(destinationId)에 직전 cross-category fire(phase ↔ station-passed)가 5s 윈도우 안에
+ * 있을 때 다른 station 후속 발사를 차단한 케이스. 'dedup-station-unified'(같은 station 30s)와
+ * 다른 신호 — station 무관 trip-wide 즉시 cascade(2026-06-19 15:37 이수-사당, 2026-06-20 12:31
+ * 어대-군자-성수)를 잡는다.
+ *
+ * burst dedup 윈도우로 같은 (source, stationName) 반복 로그는 1건만 적재.
+ */
+export function logSuppressedCrossCategoryRecent(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  if (isBurstDuplicate('dedup-cross-category-recent', input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'dedup-cross-category-recent',
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,

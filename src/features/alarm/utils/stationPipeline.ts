@@ -18,6 +18,7 @@ import {
   logFiredAlarm,
   logFiredStationPassed,
   logSuppressedCrossCategoryDedup,
+  logSuppressedCrossCategoryRecent,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -27,6 +28,7 @@ import {
 } from './alarmLog';
 import {
   isStationRecentlyFired,
+  isTripScopedCrossCategoryRecentlyFired,
   markStationFired,
 } from './crossCategoryStationDedup';
 import { isStationPassedFirstHop, shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
@@ -319,6 +321,25 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         kind: alarmEvent.type,
         phaseId: alarmEvent.phaseId,
       });
+    } else if (
+      isTripScopedCrossCategoryRecentlyFired(
+        destination.id,
+        alarmEvent.stationName,
+        alarmEvent.type,
+        Date.now(),
+      )
+    ) {
+      // #1643 — trip-scoped cross-category + cross-station 즉시 cascade. 같은 trip에 직전 5s 안에
+      // **다른 station에서 cross-category(SP↔phase)** fire가 있었다면 phase 알람 차단. 2026-06-20
+      // 12:31 어대 "군자 도착"(SP) + "곧 성수 도착"(D imminent) 회귀 차단. 같은 station 진행
+      // (early→imminent)은 통과 — per-station dedup이 담당. same-category cross-station은 통과 —
+      // 정상 trip 진행 보존.
+      logSuppressedCrossCategoryRecent({
+        source,
+        stationName: alarmEvent.stationName,
+        kind: alarmEvent.type,
+        phaseId: alarmEvent.phaseId,
+      });
     } else {
       markStationFired(destination.id, alarmEvent.stationName, alarmEvent.type, Date.now());
       await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
@@ -372,6 +393,23 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         // 직전 phase 알람(destination/transfer)에서 fire됐다면 BG station-passed 차단. FG phase fire와
         // BG station-passed가 같은 station에 거의 동시 fire하는 회귀 차단. lock/lockless 동급 (ADR-014).
         logSuppressedCrossCategoryDedup({
+          source,
+          stationName: nearest.station.name,
+          kind: 'station-passed',
+        });
+      } else if (
+        isTripScopedCrossCategoryRecentlyFired(
+          destination.id,
+          nearest.station.name,
+          'station-passed',
+          Date.now(),
+        )
+      ) {
+        // #1643 — trip-scoped cross-category + cross-station 즉시 cascade. 같은 trip에 직전 5s 안에
+        // **다른 station에서 phase 알람** fire가 있었다면 station-passed 차단. 어대 "곧 성수 도착"
+        // 직후 어대 station-passed 발사 같은 회귀 차단. same-category(SP→SP) cross-station은 통과 —
+        // 정상 trip 폴링 진행 보존.
+        logSuppressedCrossCategoryRecent({
           source,
           stationName: nearest.station.name,
           kind: 'station-passed',
