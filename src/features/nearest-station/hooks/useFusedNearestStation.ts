@@ -33,6 +33,7 @@ import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
 import {
   logFusionCandidateDistanceReject,
+  logFusionPickerTier,
   logSuppressedLocklessForwardOnly,
 } from '../../alarm/utils/alarmLog';
 import { haversine } from '../../../shared/utils/haversine';
@@ -1051,6 +1052,31 @@ export function useFusedNearestStation(
     result = gps.liveResult;
     confidence = 'gps-only';
     source = 'gps';
+  }
+
+  // #1693 — cascade picker가 채택한 tier를 alarmLog에 적재 (측정 보강 3차).
+  // dedup 1s — 같은 tier 연속 폴링 cycle에서 1건만 적재.
+  // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd tier 채택률) 검증.
+  if (positionTrainBoardingLockMatch) {
+    logFusionPickerTier('positionTrainBoardingLockMatch');
+  } else if (gpsDerivedFastPath) {
+    logFusionPickerTier('gpsDerivedFastPath');
+  } else if (arvlCdArrivedMatch) {
+    logFusionPickerTier('arvlCdArrivedMatch');
+  } else if (backendSsotAccepts) {
+    logFusionPickerTier('backendSsotAccepts');
+  } else if (wifiStationResolved) {
+    logFusionPickerTier('wifiStationResolved');
+  } else if (positionTrainResult) {
+    logFusionPickerTier('positionTrain');
+  } else if (fused && fusedPasses) {
+    logFusionPickerTier('fused');
+  } else if (detectionVerdictAccepts) {
+    logFusionPickerTier('detectionVerdictAccepts');
+  } else if (routeResult && routePasses) {
+    logFusionPickerTier('routeResult');
+  } else {
+    logFusionPickerTier('gpsFallback');
   }
 
   // #1418 — Tier 1 SSOT 합의 판정 + 환경 추정.
