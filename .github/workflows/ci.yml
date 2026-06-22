@@ -52,6 +52,11 @@ jobs:
   backend-validation:
     # #1624 — backend/alarm-worker type-check + vitest CI gate.
     # frontend `test` job은 backend를 검증하지 않으므로 별도 job으로 회귀 차단.
+    #
+    # **frontend deps 선행 설치 필수**: backend/alarm-worker/src/sentry.ts가
+    # `../../../src/shared/infra/monitoring/tripTokenHash`를 import한다. root tsconfig.json이
+    # `expo/tsconfig.base`를 extends하므로, expo 패키지(=frontend node_modules) 부재 시
+    # vite transform이 'Cannot find module expo/tsconfig.base/tsconfig.json' 으로 fail.
     name: Backend Validation
     runs-on: ubuntu-latest
 
@@ -64,9 +69,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: backend/alarm-worker/package-lock.json
 
-      - name: 의존성 설치
+      - name: frontend 의존성 설치 (expo tsconfig.base resolver)
+        run: npm ci --legacy-peer-deps
+
+      - name: backend 의존성 설치
         working-directory: backend/alarm-worker
         run: npm ci
 
