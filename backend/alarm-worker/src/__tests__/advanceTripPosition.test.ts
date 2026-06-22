@@ -21,6 +21,7 @@ import {
   writeSsot,
   type LockSuggestion,
   type MotionEvidence,
+  type TripPositionSSoT,
 } from '../tripPositionSsot';
 import { putTrip } from '../trips';
 import type { BoardingLockMeta, Trip } from '../types';
@@ -827,7 +828,7 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
   // Shared setup — seedSsot(motion) + putTrip(with lock) + advanceTripPosition 4-line 시퀀스.
   // 3 case가 motion state만 다르고 나머지가 동일 → factory + advance 호출 통합으로 SonarCloud CPD 회피.
   async function setupAndAdvance(motion: 'moving' | 'stationary'): Promise<{
-    result: 'advanced' | 'blocked';
+    result: AdvanceResult;
     after: Awaited<ReturnType<typeof readSsot>>;
   }> {
     const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
