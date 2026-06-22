@@ -1,261 +1,104 @@
 /**
- * #1604 — Backend Dijkstra. Device(`src/features/route/utils/dijkstraRoute.ts`)와 구조 동일하지만
- * backend는 `min-time`(운행 + 환승 도보 시간) 단일 옵션만 사용한다 — POST /trips infer 경로에서
- * "사용자가 가장 빨리 갈 수 있는 경로"를 추론하면 충분(min-transfer/min-distance UI 비교 필요 없음).
+ * #1604 — Backend Dijkstra adapter.
  *
- * 사용처: `src/index.ts` POST /trips 핸들러에서 `waypoints = [destination only]` 케이스의
- * 자동 경로 추론 (옵션 (B), S1 #1534 spirit과 정합 — backend = decider).
+ * 알고리즘 본체는 `src/shared/utils/dijkstraRoute.ts` (frontend shared, PR #1644)를 재사용한다.
+ * 본 모듈은 backend-specific 입구만 정의:
+ *   - `findStationIdByNameAndLine`: device의 `promptDisplay.originStation` + `line`을 station id로 역추적
+ *   - `inferWaypointsFromOriginAndDestination`: 최단시간(`min-time`) 경로 → backend `Waypoint[]` 변환
+ *
+ * 사용처: `index.ts` POST /trips 핸들러에서 `waypoints = [destination only]` 케이스의
+ * 자동 경로 추론(옵션 B, S1 #1534 spirit과 정합 — backend = decider).
+ *
+ * Backend가 frontend shared를 import하는 패턴은 [[lesson_backend_imports_frontend_shared]] 참조.
+ * tsconfig include로 shared file 직접 컴파일.
  */
+import stationsRaw from '../../../src/data/stations.json';
+import { findStationByNameAndLine } from '../../../src/shared/utils/stationLookup';
 import {
-  buildRouteGraph,
-  findStationIdByNameAndLine,
-  type RouteEdge,
-} from './buildRouteGraph';
+  findRouteByType,
+  type Route,
+  type RouteLeg,
+} from '../../../src/shared/utils/dijkstraRoute';
 import type { LineNumber, Waypoint } from './types';
 
 /** Dijkstra 결과를 Waypoint 형태로 매핑하기 위한 sub-shape. validateTrip이 occurrenceIdx/hopIndex stamp. */
 export type InferredWaypoint = Pick<Waypoint, 'stationName' | 'line' | 'kind'>;
 
-export interface RouteLeg {
-  readonly fromId: string;
-  readonly toId: string;
-  readonly line: LineNumber;
-  readonly stationIds: readonly string[];
-}
-
-export interface RouteTransfer {
-  readonly stationName: string;
-  readonly fromLine: LineNumber;
-  readonly toLine: LineNumber;
-}
-
-export interface InferredRoute {
-  readonly fromId: string;
-  readonly toId: string;
-  readonly legs: readonly RouteLeg[];
-  readonly transfers: readonly RouteTransfer[];
-}
-
 /**
- * Binary min-heap — 533 노드 규모에서 array shift O(n)보다 우수. Device 코드와 동일 구조.
+ * (name, line) → station id 조회. POST /trips에서 device의 `promptDisplay.originStation` +
+ * `promptDisplay.line`로 currentStation의 id를 역추적할 때 사용한다.
+ * 매치 없으면 null.
+ *
+ * shared `findStationByNameAndLine`을 재사용 (canonical fallback 포함, #1405).
  */
-class MinHeap<T> {
-  private readonly data: Array<{ key: number; value: T }> = [];
-
-  get size(): number {
-    return this.data.length;
-  }
-
-  push(key: number, value: T): void {
-    this.data.push({ key, value });
-    this.bubbleUp(this.data.length - 1);
-  }
-
-  /** 호출자는 항상 `size > 0` 확인 후 호출. */
-  pop(): { key: number; value: T } {
-    const top = this.data[0];
-    const last = this.data.pop() as { key: number; value: T };
-    if (this.data.length > 0) {
-      this.data[0] = last;
-      this.sinkDown(0);
-    }
-    return top;
-  }
-
-  private bubbleUp(index: number): void {
-    let i = index;
-    while (i > 0) {
-      const parent = Math.floor((i - 1) / 2);
-      if (this.data[parent].key <= this.data[i].key) {
-        break;
-      }
-      [this.data[parent], this.data[i]] = [this.data[i], this.data[parent]];
-      i = parent;
-    }
-  }
-
-  private sinkDown(index: number): void {
-    let i = index;
-    const n = this.data.length;
-    for (;;) {
-      const left = 2 * i + 1;
-      const right = 2 * i + 2;
-      let smallest = i;
-      if (left < n && this.data[left].key < this.data[smallest].key) {
-        smallest = left;
-      }
-      if (right < n && this.data[right].key < this.data[smallest].key) {
-        smallest = right;
-      }
-      if (smallest === i) {
-        break;
-      }
-      [this.data[i], this.data[smallest]] = [this.data[smallest], this.data[i]];
-      i = smallest;
-    }
-  }
-}
-
-function edgeWeight(edge: RouteEdge): number {
-  // min-time: line edge는 운행 시간, transfer edge는 도보 시간.
-  return edge.kind === 'line' ? edge.durationSeconds : edge.walkingSeconds;
-}
-
-interface PrevPointer {
-  readonly nodeId: string;
-  readonly edge: RouteEdge;
+export function findStationIdByNameAndLine(name: string, line: LineNumber): string | null {
+  // backend `LineNumber = string`이지만 shared lookup은 union 타입 LineNumber를 받음 — string
+  // 호환성 보장(런타임 비교는 `===`). cast로 타입 시스템 경계만 통과.
+  const station = findStationByNameAndLine(
+    name,
+    line as Parameters<typeof findStationByNameAndLine>[1],
+  );
+  return station?.id ?? null;
 }
 
 /**
- * Dijkstra (min-time): from→to 최단경로.
- * 도달 불가 또는 from/to invalid 시 null.
+ * stationId → stationName 역조회 캐시. shared `findStationByNameAndLine`은 (name,line) 진입이라
+ * 역방향 lookup이 없어 별도 1회 빌드. infer 경로는 호출 빈도 낮음 + lazy 1회 build로 비용 무시.
  */
-export function findRoute(fromId: string, toId: string): InferredRoute | null {
-  const graph = buildRouteGraph();
-  if (!graph.nodes.has(fromId) || !graph.nodes.has(toId)) {
-    return null;
-  }
-  if (fromId === toId) {
-    return { fromId, toId, legs: [], transfers: [] };
-  }
+let stationNameByIdCache: Map<string, string> | null = null;
 
-  const dist = new Map<string, number>();
-  const prev = new Map<string, PrevPointer>();
-  const heap = new MinHeap<string>();
-  dist.set(fromId, 0);
-  heap.push(0, fromId);
-
-  while (heap.size > 0) {
-    const { key: d, value: u } = heap.pop();
-    if (u === toId) {
-      break;
+function lookupStationNameById(id: string): string {
+  if (stationNameByIdCache === null) {
+    const next = new Map<string, string>();
+    for (const s of stationsRaw as Array<{ id: string; name: string }>) {
+      next.set(s.id, s.name);
     }
-    const currentBest = dist.get(u);
-    if (currentBest !== undefined && d > currentBest) {
-      continue;
-    }
-    const neighbors = graph.adjacency.get(u) ?? [];
-    for (const edge of neighbors) {
-      const w = edgeWeight(edge);
-      const nd = d + w;
-      const prevBest = dist.get(edge.toId);
-      if (prevBest === undefined || nd < prevBest) {
-        dist.set(edge.toId, nd);
-        prev.set(edge.toId, { nodeId: u, edge });
-        heap.push(nd, edge.toId);
-      }
-    }
+    stationNameByIdCache = next;
   }
-
-  if (!prev.has(toId)) {
-    return null;
-  }
-  return reconstructRoute(fromId, toId, prev);
+  return stationNameByIdCache.get(id) ?? id;
 }
 
-function reconstructRoute(
-  fromId: string,
-  toId: string,
-  prev: Map<string, PrevPointer>,
-): InferredRoute {
-  const reversedEdges: RouteEdge[] = [];
-  const reversedFromNodes: string[] = [];
-  let cursor = toId;
-  while (cursor !== fromId) {
-    // Dijkstra invariant: prev.has(toId) 이고 back-path 모든 노드에 predecessor.
-    const p = prev.get(cursor) as PrevPointer;
-    reversedEdges.push(p.edge);
-    reversedFromNodes.push(p.nodeId);
-    cursor = p.nodeId;
-  }
-  reversedEdges.reverse();
-  reversedFromNodes.reverse();
-
-  const legs: RouteLeg[] = [];
-  const transfers: RouteTransfer[] = [];
-
-  let legStartId: string | null = null;
-  let legLine: LineNumber | null = null;
-  let legStations: string[] = [];
-
-  const flushLeg = (endId: string): void => {
-    /* istanbul ignore next — legStartId/legLine은 동시 set/unset (pair invariant). */
-    if (legLine === null || legStartId === null) {
-      return;
-    }
-    legs.push({
-      fromId: legStartId,
-      toId: endId,
-      line: legLine,
-      stationIds: [...legStations],
-    });
-    legStartId = null;
-    legLine = null;
-    legStations = [];
-  };
-
-  for (let i = 0; i < reversedEdges.length; i += 1) {
-    const edge = reversedEdges[i];
-    const from = reversedFromNodes[i];
-    if (edge.kind === 'line') {
-      if (legStartId === null) {
-        legStartId = from;
-        legLine = edge.line;
-        legStations = [from];
-      }
-      legStations.push(edge.toId);
-    } else {
-      flushLeg(from);
-      transfers.push({
-        stationName: edge.stationName,
-        fromLine: edge.fromLine,
-        toLine: edge.toLine,
-      });
-    }
-  }
-  flushLeg(toId);
-
-  return { fromId, toId, legs, transfers };
+/** 테스트 전용 — name lookup 캐시 초기화. */
+export function __resetStationNameCache(): void {
+  stationNameByIdCache = null;
 }
 
 /**
- * `InferredRoute` → backend Waypoint[]. routeWaypoints(device)와 형태 정합.
+ * `Route.legs` → backend Waypoint[]. routeWaypoints(device)와 형태 정합.
  *
  * 규칙:
  *  - 각 leg는 시작역(=출발역 또는 환승역) 제외, 나머지 station을 `intermediate`로 펼친다.
  *    마지막 leg의 마지막 station은 `destination`으로 swap.
  *  - 각 transfer는 fromLine 컨텍스트의 `transfer` waypoint로 표현 (device routeWaypoints와 동일).
  *  - 결과 시퀀스는 backend의 `validateTrip`이 occurrenceIdx/hopIndex를 stamp한다.
- *
- * destinationName: 목적지 역 표시명 (device `promptDisplay`/route 의도 보존용).
  */
-export function inferredRouteToWaypoints(
-  route: InferredRoute,
-  destinationName: string,
-): InferredWaypoint[] {
+function routeToInferredWaypoints(route: Route, destinationName: string): InferredWaypoint[] {
   const result: InferredWaypoint[] = [];
+  const legs = route.legs;
+  const legCount = legs.length;
 
-  const graph = buildRouteGraph();
-  const stationName = (id: string): string => graph.nodes.get(id)?.name ?? id;
-
-  const legCount = route.legs.length;
   for (let i = 0; i < legCount; i += 1) {
-    const leg = route.legs[i];
+    const leg = legs[i] as RouteLeg;
     const isLastLeg = i === legCount - 1;
+    const stationIds = leg.stationIds;
     // leg.stationIds[0] = 출발역(직전 transfer 또는 fromId) — push 안 함.
-    for (let j = 1; j < leg.stationIds.length; j += 1) {
-      const stationId = leg.stationIds[j];
-      const isLastStationOfLeg = j === leg.stationIds.length - 1;
-      // 마지막 leg의 마지막 station = destination. 표시명은 destinationName 우선(device 의도).
+    for (let j = 1; j < stationIds.length; j += 1) {
+      const isLastStationOfLeg = j === stationIds.length - 1;
       if (isLastLeg && isLastStationOfLeg) {
+        // 마지막 leg의 마지막 station = destination. 표시명은 destinationName 우선(device 의도).
         result.push({ stationName: destinationName, line: leg.line, kind: 'destination' });
       } else if (isLastStationOfLeg) {
-        // 환승역 — 다음 transfer가 같은 fromLine의 같은 stationName으로 처리.
+        // 환승역 — 다음 transfer record의 stationName 사용 (device routeWaypoints와 동형).
+        // transfer record는 leg 개수 - 1만큼 있으므로 마지막 leg가 아니면 항상 존재.
         const transfer = route.transfers[i];
-        const name = transfer ? transfer.stationName : stationName(stationId);
+        const name = transfer ? transfer.stationName : '';
         result.push({ stationName: name, line: leg.line, kind: 'transfer' });
       } else {
-        result.push({ stationName: stationName(stationId), line: leg.line, kind: 'intermediate' });
+        result.push({
+          stationName: lookupStationNameById(stationIds[j]),
+          line: leg.line,
+          kind: 'intermediate',
+        });
       }
     }
   }
@@ -264,7 +107,7 @@ export function inferredRouteToWaypoints(
 
 /**
  * POST /trips infer 진입점. device의 `promptDisplay`(originStation + line) + `destination`(station id)
- * 만으로 backend가 Dijkstra 경로를 계산해 `Waypoint[]`를 반환한다.
+ * 만으로 backend가 Dijkstra(min-time) 경로를 계산해 `Waypoint[]`를 반환한다.
  *
  *  - origin 미해소 / destination 미해소 / 도달 불가 / 동일역 → null (caller가 incoming waypoints 유지).
  *  - 정상 시 device routeWaypoints와 동형 시퀀스 반환.
@@ -277,16 +120,11 @@ export function inferWaypointsFromOriginAndDestination(args: {
 }): InferredWaypoint[] | null {
   const fromId = findStationIdByNameAndLine(args.originName, args.originLine);
   if (fromId === null) return null;
-  const graph = buildRouteGraph();
-  if (!graph.nodes.has(args.destinationId)) return null;
-  const route = findRoute(fromId, args.destinationId);
+  // shared findRouteByType이 graph build + Dijkstra 실행. destination id가 graph에 없으면
+  // null 반환 — 별도 nodes.has 체크 불필요.
+  const route = findRouteByType(fromId, args.destinationId, 'min-time');
   if (route === null) return null;
   // 동일역(degenerate) — legs/transfers 모두 빈 배열. 호출자가 incoming 그대로 유지하도록 null.
   if (route.legs.length === 0 && route.transfers.length === 0) return null;
-  return inferredRouteToWaypoints(route, args.destinationName);
-}
-
-/** 테스트/디버그 — 그래프 stats 노출. */
-export function getRouteGraphStats(): { nodeCount: number; lineEdgeCount: number; transferEdgeCount: number } {
-  return buildRouteGraph().stats;
+  return routeToInferredWaypoints(route, args.destinationName);
 }
