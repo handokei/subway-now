@@ -20,7 +20,8 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_APNS_ENV": "production"
+        "EXPO_PUBLIC_APNS_ENV": "production",
+        "EXPO_PUBLIC_ALARM_BACKEND_URL": "https://subway-now-alarm-worker.handokei.workers.dev"
       }
     }
   },
