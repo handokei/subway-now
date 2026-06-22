@@ -1642,13 +1642,13 @@ export function countGateReasons(
 /**
  * #1682 — suppressed reason별 집계 (시간 윈도우 필터링).
  *
- * countBoardingPromptByWindow 패턴 재사용 — suppressed 엔트리의 reason을 windowMs 이내 항목만
- * 집계해 반환. read-only, write 부담 0.
+ * summarizeAlarmLogCounters에 시간 윈도우 필터를 추가한 래퍼.
+ * windowMs 이내 suppressed 엔트리만 집계해 반환. read-only, write 부담 0.
  *
  * count 내림차순 정렬 — 가장 빈번한 reason이 상단에 노출.
  *
  * @param entries  alarmLog 전체 또는 부분 스냅샷
- * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 객체 반환. Infinity이면 전체.
+ * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 배열 반환. Infinity이면 전체.
  * @param now      기준 시각 (ms epoch). 테스트 결정성용. 기본값 Date.now().
  */
 export function countAlarmLogReasonsByWindow(
@@ -1657,22 +1657,8 @@ export function countAlarmLogReasonsByWindow(
   now: number = Date.now(),
 ): AlarmLogReasonCounter[] {
   if (windowMs <= 0) return [];
-  const map = new Map<string, AlarmLogReasonCounter>();
-  for (const entry of entries) {
-    if (entry.outcome !== 'suppressed') continue;
-    const ageMs = now - entry.ts;
-    if (ageMs > windowMs) continue;
-    const key = entry.reason ?? '(unknown)';
-    const entryCount = entry.count ?? 1;
-    const existing = map.get(key);
-    if (existing) {
-      existing.count += entryCount;
-      if (entry.ts > existing.lastTs) existing.lastTs = entry.ts;
-    } else {
-      map.set(key, { reason: key, count: entryCount, lastTs: entry.ts });
-    }
-  }
-  return [...map.values()].sort((a, b) => b.count - a.count);
+  const windowed = entries.filter((e) => now - e.ts <= windowMs);
+  return summarizeAlarmLogCounters(windowed);
 }
 
 /**
