@@ -707,6 +707,30 @@ describe('DebugModal', () => {
     expect(el.props.children).toContain('fail=1');
   });
 
+  it('#1693: Fusion Tier (1h) 섹션이 tier 분포를 표시한다', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
+      { ts: now - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
+      { ts: now - 300, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-backendSsotAccepts' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Fusion Tier (1h)')).toBeTruthy();
+    const tierEl = screen.getByTestId('debug-fusion-picker-tier');
+    expect(tierEl.props.children).toContain('tier-gpsFallback=2');
+    expect(tierEl.props.children).toContain('tier-backendSsotAccepts=1');
+  });
+
+  it('#1693: Fusion Tier (1h) 섹션 — fusion-picker-tier 없으면 (none) 표시', async () => {
+    mockGetAlarmLog.mockResolvedValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Fusion Tier (1h)')).toBeTruthy();
+    const tierEl = screen.getByTestId('debug-fusion-picker-tier');
+    expect(tierEl.props.children).toBe('(none)');
+  });
+
   it('unmount 시 AppState listener를 정리한다', async () => {
     const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());

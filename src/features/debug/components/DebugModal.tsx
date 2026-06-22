@@ -40,6 +40,7 @@ import {
   countGateReasons,
   countSilentPushKindBreakdown,
   countSilentPushOutcomes,
+  formatFusionPickerTierDistribution,
   getAlarmLog,
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
@@ -2111,6 +2112,17 @@ function DebugModalInner({
               </Text>
             </Section>
           ) : null}
+
+          {/* #1693 — fusion picker tier 채택 분포 (최근 1h). PR #1650/#1662/#1674 효과 검증. */}
+          <Section title="Fusion Tier (1h)" colors={colors}>
+            <Text
+              style={[typography.mono, { color: colors.ink }]}
+              selectable
+              testID="debug-fusion-picker-tier"
+            >
+              {formatFusionPickerTierDistribution(logs)}
+            </Text>
+          </Section>
 
           {/* #1021: boardingPrompt 발사 빈도 카운터 */}
           <Section title="Boarding Prompt" colors={colors}>
