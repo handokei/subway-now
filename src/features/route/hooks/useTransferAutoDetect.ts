@@ -30,7 +30,7 @@ import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSy
 import type { StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LineNumber, NearestStationsResult, Station } from '../../../shared/types/station';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { normalizeStationName, type Route } from '../../../shared/utils/stationRoute';
 
 export interface UseTransferAutoDetectInputs {
   /** 환승역 신호 + 후보 산출에 필요한 현재 fusion 결과. */
@@ -105,7 +105,11 @@ export function useTransferAutoDetect({
   const dismissedAtStationRef = useRef<string | null>(null);
   const lastAutoLockedKeyRef = useRef<string | null>(null);
 
-  const stationKey = currentStation?.id ?? null;
+  // #1637 — 환승역에서 station.id는 line별로 분리(예: '합정-2' vs '합정-6')되어 있어 dismiss flag
+  // 추적에 부적합. fusion이 같은 환승역의 다른 line variant를 primary로 채택하면 id 변경 →
+  // dismiss reset → 모달 재오픈 무한 cycle (evidence: 2026-06-22 14:01:55 합정역 스크린샷).
+  // station name(normalize)으로 추적해 line 무관하게 dismiss 보존.
+  const stationKey = currentStation ? normalizeStationName(currentStation.name) : null;
 
   // 사용자가 환승역을 벗어나면 dismiss flag 리셋 — 다음 환승에서 다시 모달 열림 허용.
   useEffect(() => {
@@ -153,13 +157,16 @@ export function useTransferAutoDetect({
   const selectLine = useCallback(
     (line: LineNumber) => {
       if (!currentStation) return;
+      // #1637 — arrival race로 candidate=null이어도 사용자 선택 의도는 dismiss로 stamp.
+      // 그렇지 않으면 buildAutoLockCandidate가 null 반환 시(같은 환승역에서 polling 사이
+      // arrival 갱신 race) 모달이 즉시 닫혔다가 다음 cycle에 재오픈된다.
+      setModalVisible(false);
+      dismissedAtStationRef.current = stationKey;
       const candidate = buildAutoLockCandidate(line, arrival, destinationName);
       if (!candidate) return;
       const key = `${currentStation.id}|${candidate.trainCode}|${candidate.line}`;
       lastAutoLockedKeyRef.current = key;
       onAutoLock(candidate);
-      setModalVisible(false);
-      dismissedAtStationRef.current = stationKey;
     },
     [currentStation, arrival, destinationName, onAutoLock, stationKey],
   );

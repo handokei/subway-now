@@ -292,6 +292,95 @@ describe('useTransferAutoDetect', () => {
     expect(onAutoLock).not.toHaveBeenCalled();
   });
 
+  /**
+   * #1637 — 환승역 line selection 모달 반복 표시 회귀 가드.
+   *
+   * Evidence: 2026-06-22 14:01:55 합정 환승역(2호선/6호선) 스크린샷 — 사용자 선택 후에도
+   * 매 GPS cycle 모달 반복. root cause: stationKey = currentStation.id는 line별로 분리되어
+   * fusion이 같은 환승역의 다른 line variant를 primary로 채택하면 stationKey 변경 →
+   * dismissedAtStationRef reset → 모달 재오픈. fix: stationKey를 normalize(name)으로 변경.
+   *
+   * 부수 fix: selectLine arrival race(candidate=null) 시에도 dismiss flag stamp.
+   */
+  describe('#1637 환승역 dismiss 보존', () => {
+    // 합정 — 2호선/6호선 환승역. line별 id 분리 fixture.
+    const HAPJEONG_2: Station = { id: '0238', name: '합정', line: '2', lineColor: '#009D3E', lat: 37.549, lng: 126.913 };
+    const HAPJEONG_6: Station = { id: '0622', name: '합정', line: '6', lineColor: '#CD7C2F', lat: 37.549, lng: 126.913 };
+    const hapjeongNearestLine2: NearestStationsResult = {
+      primary: HAPJEONG_2,
+      variants: [HAPJEONG_2, HAPJEONG_6],
+      distanceKm: 0.03,
+      isTransfer: true,
+    };
+    const hapjeongNearestLine6: NearestStationsResult = {
+      primary: HAPJEONG_6,
+      variants: [HAPJEONG_2, HAPJEONG_6],
+      distanceKm: 0.03,
+      isTransfer: true,
+    };
+    /** 2호선 60s + 6호선 90s 두 줄 임박. */
+    function hapjeongMultiArrival(): StationArrival {
+      return makeArrival([
+        makeArrivalInfo({ destination: '잠실', arrivalSeconds: 60, line: '2', trainCode: 'T-2-A' }),
+        makeArrivalInfo({ destination: '봉화산', arrivalSeconds: 90, line: '6', trainCode: 'T-6-A' }),
+      ]);
+    }
+
+    it('Case A: 환승역 line variant 변경 시 dismiss 보존 (line=2 dismiss → line=6 primary 채택 → 모달 재오픈 X)', () => {
+      const onAutoLock = jest.fn();
+      const arrival = hapjeongMultiArrival();
+      // 2호선 primary로 시작 → 다중 후보 모달 open
+      const { result, rerender } = renderTransferDetect(
+        baseInputs({ nearestStations: hapjeongNearestLine2, arrival, onAutoLock }),
+      );
+      expect(result.current.modalVisible).toBe(true);
+      // 사용자 dismiss
+      act(() => result.current.dismissModal());
+      expect(result.current.modalVisible).toBe(false);
+      // 다음 GPS cycle: fusion이 6호선 variant를 primary로 채택 — id가 '0238' → '0622'로 변경.
+      // station.name은 둘 다 '합정'이라 normalize 기반 stationKey는 보존되어야 한다.
+      rerender(baseInputs({ nearestStations: hapjeongNearestLine6, arrival, onAutoLock }));
+      expect(result.current.modalVisible).toBe(false);
+    });
+
+    it('Case B: selectLine early return (arrival race) 시에도 dismiss flag stamp', () => {
+      const onAutoLock = jest.fn();
+      const arrival = hapjeongMultiArrival();
+      const { result, rerender } = renderTransferDetect(
+        baseInputs({ nearestStations: hapjeongNearestLine2, arrival, onAutoLock }),
+      );
+      expect(result.current.modalVisible).toBe(true);
+      // arrival을 단일-line-only로 갱신 — 사용자가 6호선 선택하지만 6호선 arrival이 사라진 race.
+      // arrival에 line 6 train이 없어 buildAutoLockCandidate(6, ...) → null.
+      const arrivalOnly2 = makeArrival([
+        makeArrivalInfo({ destination: '잠실', arrivalSeconds: 60, line: '2', trainCode: 'T-2-A' }),
+      ]);
+      rerender(baseInputs({ nearestStations: hapjeongNearestLine2, arrival: arrivalOnly2, onAutoLock }));
+      onAutoLock.mockClear();
+      act(() => result.current.selectLine('6'));
+      // candidate=null이라 onAutoLock은 호출 안 됨 (정상)
+      expect(onAutoLock).not.toHaveBeenCalled();
+      // 모달은 닫혀야 하고, 다음 polling에서도 재오픈 안 됨 — 사용자 선택 의도 보존.
+      expect(result.current.modalVisible).toBe(false);
+      rerender(baseInputs({ nearestStations: hapjeongNearestLine2, arrival: hapjeongMultiArrival(), onAutoLock }));
+      expect(result.current.modalVisible).toBe(false);
+    });
+
+    it('Case C: 다른 환승역으로 이동 시는 모달 재오픈 (정상 동작 보존)', () => {
+      const onAutoLock = jest.fn();
+      const arrival = hapjeongMultiArrival();
+      const { result, rerender } = renderTransferDetect(
+        baseInputs({ nearestStations: hapjeongNearestLine2, arrival, onAutoLock }),
+      );
+      expect(result.current.modalVisible).toBe(true);
+      act(() => result.current.dismissModal());
+      expect(result.current.modalVisible).toBe(false);
+      // 합정에서 dismiss 후 동대문역사문화공원(다른 환승역)으로 이동 → 다시 모달 open 가능
+      rerender(baseInputs({ nearestStations: transferNearest, arrival: multiCandidateArrival(), onAutoLock }));
+      expect(result.current.modalVisible).toBe(true);
+    });
+  });
+
   it('currentStation 없는 동안 selectLine 호출 — 안전 no-op', () => {
     const onAutoLock = jest.fn();
     const { result } = renderHook(() =>
