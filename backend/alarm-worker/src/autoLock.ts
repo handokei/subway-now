@@ -249,16 +249,22 @@ export async function attemptAutoLock(
   const trainCode = pickAutoTrainCode(arrivals, line, direction);
   if (!trainCode) return { lock: null };
 
+  // line cross-check (2단 방어, #1626 follow-up) — `pickAutoTrainCode`가 이미 `matchLine`을
+  // 적용하지만, chosen trainCode 의 실제 entry 의 subwayNm 이 line 과 매칭되는지 한 번 더
+  // verify 한다. trainCode 가 line 과 다른 경우(예: 2호선 trip 에 trainCode=3222 가 발사된
+  // 2026-06-22 trip B 회귀) 명시적으로 차단. chosen entry 가 없거나 subwayNm 이 line 과
+  // 매칭되지 않으면 null 반환 → prompt fallback. lock TTL 30분 동안 wrong-line trainCode 가
+  // reschedule push 마다 노출되는 회귀를 봉쇄.
+  const chosen = arrivals.find((a) => a.trainCode === trainCode);
+  if (!chosen || !matchLine(chosen.subwayNm, line)) return { lock: null };
+
   // #1536 (S3, Epic #1533) — environment + gateOutcome 모두 전달 시 consensusGate 분기 강제.
   // underground/mixed/unknown 환경에서 arrival(=chosen arvlCd 0~3) + lockAttachable(=trainCode
   // 단일 수렴 = true) 2-of-2 합의가 통과해야 lock 합성 진행. surface 는 base gate(=outcome.pass)
   // 가 통과하면 즉시 통과. 미전달 시 (구 호출자) skip.
   if (environment && gateOutcome) {
-    const chosenForGate = arrivals.find((a) => a.trainCode === trainCode);
     const arrivalSignalPresent =
-      typeof chosenForGate?.arvlCd === 'number' &&
-      chosenForGate.arvlCd >= 0 &&
-      chosenForGate.arvlCd <= 3;
+      typeof chosen.arvlCd === 'number' && chosen.arvlCd >= 0 && chosen.arvlCd <= 3;
     // #1614 Phase B — backend self-poll realtimePosition cross-match.
     // pickAutoTrainCode 가 선택한 trainCode가 line의 운행 trains 중에 실제 존재하면 true.
     // undefined / 빈 list 시 자연 undefined → consensusGate가 `?? false` fallback (strongBE 동작 유지).
@@ -279,9 +285,8 @@ export async function attemptAutoLock(
   // #1018 RC1 confidence gate — arvlCd=2(출발) at next-waypoint는 사용자가 이미 그 열차를
   // 타고 origin을 떠났거나, 반대로 그 열차가 사용자보다 먼저 출발했을 수 있다 (origin-pass 후보).
   // 추가 신호로 confidence를 합산해 임계 미달 시 null 반환 → prompt push fallback.
-  const chosenEntry = arrivals.find((a) => a.trainCode === trainCode);
   let confidenceTrace: AutoLockConfidenceTrace | undefined;
-  if (chosenEntry?.arvlCd === ARVL_CD_DEPARTED) {
+  if (chosen.arvlCd === ARVL_CD_DEPARTED) {
     const score = await computeConfidence({
       trainCode,
       line,

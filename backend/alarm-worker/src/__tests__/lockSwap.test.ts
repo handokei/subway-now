@@ -268,4 +268,19 @@ describe('attachTrainCodeForLeg', () => {
     });
     expect(lock).toBeNull();
   });
+
+  it('chosen arrival subwayNm 이 line 과 불일치 → null (2단 cross-check, #1626 follow-up)', async () => {
+    // pickAutoTrainCode 가 matchLine 우회로 cross-line train을 선택했다고 가정한 회귀 시뮬레이션:
+    // arrivals 단일 후보로 ambiguity 없이 통과하지만 subwayNm 이 빈 문자열이라 matchLine=false 발동.
+    // chosen subwayNm 의 line cross-check 가 lock 합성을 차단해야 한다 (wrong-line trainCode lock
+    // 30분 TTL 지속 회귀 봉쇄).
+    const seoul = makeSeoul([makeArrival('T1', 1, 60, '')]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }]),
+      targetWaypoint: { stationName: '중곡', line: '7', kind: 'intermediate' },
+      seoul,
+      now: NOW,
+    });
+    expect(lock).toBeNull();
+  });
 });
