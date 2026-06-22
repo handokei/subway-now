@@ -980,6 +980,7 @@ describe('silentPushTask', () => {
 
       it.each([
         ['eta-missing'],
+        ['seoul-outage'],
         ['destination-arrived'],
         ['expired'],
         ['push-unrecoverable'],

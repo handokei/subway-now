@@ -1909,16 +1909,23 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
   // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
   const threshold = resolveEtaMissingThreshold(trip);
   if (nextMissCount >= threshold) {
+    // #1663 — Seoul API HTTP error가 이 cron 사이클에 1건이라도 관측됐으면 'seoul-outage'로 구분.
+    // trip auto-end 원인이 Seoul API 장애(일시 HTTP error)였다고 판별해 #1425 cooldown을 면제한다.
+    // httpErrorCount는 SeoulArrivalClient 인스턴스 수명(= cron 1 cycle) 범위라 cron scope 내에서만 유효.
+    const endReason: import('./types').TripEndedReason =
+      deps.seoul.stats.httpErrorCount > 0 ? 'seoul-outage' : 'eta-missing';
     // #706 — 운행 시간대 외 무한 폴링 차단. cleanupTripWithLa가 LA dismissal + deleteTrip을 묶어 정리.
-    // #868 — 클라 state sync용 trip-ended silent push 발사 (reason=eta-missing).
+    // #868 — 클라 state sync용 trip-ended silent push 발사.
     log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
       token: trip.token.slice(0, 8),
       trainCode: activeLock.trainCode,
       station: waypoint.stationName,
       threshold,
       subsurface: trip.subsurface === true,
+      endReason,
+      seoulHttpErrors: deps.seoul.stats.httpErrorCount,
     });
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, 'eta-missing');
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, endReason);
     return;
   }
   trip.consecutiveEtaMissing = nextMissCount;

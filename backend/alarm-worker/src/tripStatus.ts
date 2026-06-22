@@ -18,8 +18,11 @@ import type { TripEndedReason } from './types';
 
 const TRIP_STATUS_PREFIX = 'tripStatus:';
 
-/** 외부 응답에 노출하는 endReason — `destination-arrived` → `destination`로 축약 (contract). */
-export type TripStatusEndReason = 'expired' | 'eta-missing' | 'destination' | 'push-unrecoverable';
+/**
+ * 외부 응답에 노출하는 endReason — `destination-arrived` → `destination`로 축약 (contract).
+ * `seoul-outage` (#1663) — Seoul API HTTP error로 인한 false-end. #1425 cooldown 면제 대상.
+ */
+export type TripStatusEndReason = 'expired' | 'eta-missing' | 'seoul-outage' | 'destination' | 'push-unrecoverable';
 
 export interface TripStatusRecord {
   endedAt: number;
@@ -47,6 +50,7 @@ export function tripStatusKey(token: string): string {
  * TripEndedReason(내부 enum) → TripStatusEndReason(외부 contract) 매핑.
  * 클라이언트 API 응답은 `destination`으로 축약 — `destination-arrived`는 backend 내부 식별자라
  * 외부 노출 표면에는 단축형이 깔끔하다.
+ * `seoul-outage` (#1663) — 1:1 pass-through. POST /trips 핸들러가 cooldown 면제 분기에 사용.
  */
 export function toTripStatusEndReason(reason: TripEndedReason): TripStatusEndReason {
   if (reason === 'destination-arrived') return 'destination';
@@ -88,6 +92,7 @@ export async function readTripEndedStatus(
     if (
       parsed.endReason !== 'expired' &&
       parsed.endReason !== 'eta-missing' &&
+      parsed.endReason !== 'seoul-outage' &&
       parsed.endReason !== 'destination' &&
       parsed.endReason !== 'push-unrecoverable'
     ) {

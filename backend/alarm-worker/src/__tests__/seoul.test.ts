@@ -278,4 +278,75 @@ describe('SeoulArrivalClient', () => {
     expect(client.stats.callCount).toBe(2);
     expect(client.stats.cacheSize).toBe(2);
   });
+
+  describe('httpErrorCount (#1663 Seoul outage detection)', () => {
+    it('starts at 0 for successful fetches', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [] }));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('서울역');
+      expect(client.stats.httpErrorCount).toBe(0);
+    });
+
+    it('increments on fetchArrivals HTTP error', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({}, false, 500));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('서울역');
+      expect(client.stats.httpErrorCount).toBe(1);
+    });
+
+    it('increments on fetchPositions HTTP error', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({}, false, 503));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchPositions('7');
+      expect(client.stats.httpErrorCount).toBe(1);
+    });
+
+    it('accumulates across multiple failed calls', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({}, false, 500));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('서울역');
+      // second call hits cache (short error cache), no new HTTP error
+      await client.fetchArrivals('서울역');
+      await client.fetchArrivals('다른역'); // different station — new HTTP call
+      expect(client.stats.httpErrorCount).toBe(2);
+    });
+
+    it('does not count cached error responses as new HTTP errors', async () => {
+      let callCount = 0;
+      const fetchImpl = vi.fn(async () => {
+        callCount += 1;
+        return makeResponse({}, false, 500);
+      });
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('서울역');
+      await client.fetchArrivals('서울역'); // cached — no HTTP call
+      expect(callCount).toBe(1);
+      expect(client.stats.httpErrorCount).toBe(1);
+    });
+  });
 });

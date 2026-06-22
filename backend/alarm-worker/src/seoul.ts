@@ -66,11 +66,18 @@ export class SeoulArrivalClient {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly positionCache = new Map<string, PositionCacheEntry>();
   private callCount = 0;
+  /**
+   * #1663 — HTTP-level error count (non-2xx response) across all fetch calls this instance.
+   * Cron scope = one scheduled() invocation = one SeoulArrivalClient lifetime.
+   * `httpErrorCount > 0` in `handleEtaMissing` signals Seoul API was unreachable this cycle,
+   * not just that the specific trainCode disappeared.
+   */
+  private httpErrorCount = 0;
 
   constructor(private readonly options: FetchSeoulOptions) {}
 
-  get stats(): { callCount: number; cacheSize: number } {
-    return { callCount: this.callCount, cacheSize: this.cache.size };
+  get stats(): { callCount: number; cacheSize: number; httpErrorCount: number } {
+    return { callCount: this.callCount, cacheSize: this.cache.size, httpErrorCount: this.httpErrorCount };
   }
 
   /**
@@ -92,6 +99,7 @@ export class SeoulArrivalClient {
     this.callCount += 1;
     const response = await fetchImpl(url);
     if (!response.ok) {
+      this.httpErrorCount += 1;
       this.positionCache.set(lineName, { expiresAt: now + ERROR_CACHE_TTL_MS, data: [] });
       return [];
     }
@@ -120,6 +128,7 @@ export class SeoulArrivalClient {
     const response = await fetchImpl(url);
     if (!response.ok) {
       // 실패 시 빈 배열을 짧게 캐시해 폭주 방지
+      this.httpErrorCount += 1;
       this.cache.set(stationName, { expiresAt: now + ERROR_CACHE_TTL_MS, data: [] });
       return [];
     }
