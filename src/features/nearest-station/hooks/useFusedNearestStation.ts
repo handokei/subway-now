@@ -395,6 +395,21 @@ export function useFusedNearestStation(
    * 교차 신호가 없으면 lookupStationBySsid 결과 그대로 채택(단일 호선 역 / 호선 미확정).
    */
   wifiStation?: Station | null,
+  /**
+   * #1677 — silent push 건강 상태 (useSilentPushHealthCheck 출력).
+   *
+   * false 시 `backendSsotAccepts` 강제 false — backend SSoT mirror tier를 cascade에서 제거.
+   * 기존 tier(wifi / positionTrain / fused / gps)가 자연 fallback.
+   *
+   * 미전달(undefined) = 기존 동작 유지(healthy로 간주).
+   * true 또는 undefined = `backendSsotAccepts` 판정에 영향 없음.
+   *
+   * 정책 정합:
+   * - 신규 폴링 추가 없음 — 기존 arrival/position 30s cycle 그대로.
+   * - FG 상태에서만 효과 — BG에서는 silentPushHealthy를 true로 유지(호출자 책임).
+   * - backendSsotAccepts=false이므로 backend mirror가 fresh여도 cascade 채택 안 함.
+   */
+  silentPushHealthy?: boolean,
 ): UseFusedNearestStationReturn {
   const barometerSubsurface = barometer?.subsurface;
   const barometerSignal = barometer?.signal;
@@ -871,7 +886,12 @@ export function useFusedNearestStation(
   const ssotFresh =
     backendSsotMirror !== null &&
     nowMsForSsot - backendSsotMirror.lastAdvanceAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
-  const backendSsotAccepts = ssotStation !== null && ssotFresh;
+  // #1677 — silent push 60s+ 미수신 시 backend SSoT mirror tier 강제 비활성.
+  // silentPushHealthy=false → backend가 silent push를 전달 못 하는 환경이므로
+  // mirror가 fresh여도 cascade에서 제거 → wifi/positionTrain/fused 등 device tier fallback.
+  // silentPushHealthy=undefined는 기존 동작 유지(healthy로 간주).
+  const backendSsotAccepts =
+    ssotStation !== null && ssotFresh && silentPushHealthy !== false;
 
   // #1646 — positionTrain 1순위 승격 (3-of-3 합의 + positionTrainResult 전제).
   //
