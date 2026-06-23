@@ -1,51 +1,65 @@
 import type { LineNumber } from '../../../shared/types/station';
 import type { TravelDirection } from '../../../shared/types/exitSide';
 import { getStationsOnLine, normalizeStationName } from '../../../shared/utils/stationRoute';
+import lineTopology from '../../../data/lineTopology.json';
 
-// 비단조 노선(현재 2호선 순환선만) 방향 추론.
-// monotonic 화이트리스트(`travelDirection.ts`)에 들어가지 못하는 노선을 보완한다.
+// 비단조 노선 방향 추론. `MONOTONIC_LINES` 화이트리스트(`travelDirection.ts`)에 들어가지 못하는
+// 노선을 보완한다. 토폴로지 SSOT는 `lineTopology.json`의 `closedLoops`.
 //
-// 2호선 순환선:
-//   - 메인 루프(시청 ~ 충정로, stations.json id 2-001 ~ 2-043, 43개)는 순환선.
-//   - 까치산(2-105) / 신설동(2-205)은 지선으로 본 추론 대상 외 → null.
-//   - 진행 방향 결정: from → to까지 id 증가 방향으로 가는 호(arc)와
-//     반대 방향(루프 wrap) 호 중 짧은 쪽을 선택.
-//   - 증가 방향이 더 짧으면 외선순환 = 'down' (low→high 컨벤션 정렬)
-//   - 감소 방향(wrap)이 더 짧으면 내선순환 = 'up'
-//   - 두 호가 정확히 같은 길이(정반대 위치)면 ambiguous → null.
+// 모델:
+//   - **순환선 (2호선)**: `mainIdRange`만 있는 진짜 closed loop. forward/backward 호 중 짧은
+//     쪽을 채택. 지선(2-105/2-205)은 main range 밖이라 자동 배제.
+//   - **Hybrid 노선 (6호선 응암 루프)**: `loopTailRange`가 있는 P자 노선. 루프 꼬리는 단방향
+//     운행(응암→역촌→...→새절)이라 wrap이 의미 없음 — 모든 from/to 쌍을 단순 id 단조 비교로
+//     처리한다(id 증가=down, 감소=up). 합정(6-013)→공덕(6-017)=down / 합정→망원(6-012)=up /
+//     응암(6-001)→연신내(6-005)=down / 새절(6-007)→증산(6-008)=down 등 acceptance 케이스
+//     (#1703)를 모두 자연스럽게 만족한다.
 //
-// 이 util은 호출부에 직접 wiring 되지 않는다(후속 PR). monotonic util과 분리 유지.
+// 본 util은 `boardingPromptContext.ts`와 `alarmDirection.ts`에서 `resolveTravelDirection` null
+// 시 fallback으로 호출된다.
 
-const LOOP_LINES = new Set<LineNumber>(['2']);
+interface ClosedLoopMeta {
+  mainIdRange: { firstId: string; lastId: string };
+  /** 있으면 hybrid 노선(P자 + 단방향 꼬리). 없으면 진짜 순환선. */
+  loopTailRange?: { firstId: string; lastId: string };
+}
 
-// 2호선 메인 루프 station id prefix. 지선(2-105, 2-205)을 배제.
-const LINE2_LOOP_PREFIX = '2-0';
+const CLOSED_LOOPS = lineTopology.closedLoops as Partial<Record<LineNumber, ClosedLoopMeta>>;
 
 /**
- * 2호선 순환선의 from → to 방향을 추론한다.
- * - 'up'   = 내선순환 (id 감소 방향이 더 짧음)
- * - 'down' = 외선순환 (id 증가 방향이 더 짧음)
- * - null   = 추론 불가 (지선 포함, 동일 역, 정반대 위치 등)
+ * 순환/하이브리드 노선의 from → to 방향을 추론한다.
+ * - 'up'   = id 감소 방향 (순환선의 경우 내선순환 = wrap 짧음)
+ * - 'down' = id 증가 방향 (순환선의 경우 외선순환 = forward 짧음)
+ * - null   = 추론 불가 (대상 노선 아님, 동일 역, 지선, 정반대 위치 등)
  */
 export function inferLoopDirection(
   line: LineNumber,
   fromName: string,
   toName: string,
 ): TravelDirection | null {
-  if (!LOOP_LINES.has(line)) return null;
+  const meta = CLOSED_LOOPS[line];
+  if (!meta) return null;
+
   const stations = getStationsOnLine(line);
   if (stations.length === 0) return null;
 
-  // 메인 루프만 추출(지선 제외). id 오름차순 정렬은 stations.json 기준 유지.
-  const loop = stations.filter((s) => s.id.startsWith(LINE2_LOOP_PREFIX));
-  if (loop.length < 2) return null;
+  // 메인 운행 구간만 추출(지선 배제). id 오름차순은 stations.json 기준.
+  const { firstId, lastId } = meta.mainIdRange;
+  const main = stations.filter((s) => s.id >= firstId && s.id <= lastId);
+  if (main.length < 2) return null;
 
-  const fromIdx = indexOf(loop, fromName);
-  const toIdx = indexOf(loop, toName);
+  const fromIdx = indexOf(main, fromName);
+  const toIdx = indexOf(main, toName);
   if (fromIdx === -1 || toIdx === -1) return null;
   if (fromIdx === toIdx) return null;
 
-  const n = loop.length;
+  // Hybrid 노선(6호선)은 단방향 꼬리 때문에 wrap 비교가 무의미 — 단순 id 단조 비교.
+  if (meta.loopTailRange) {
+    return toIdx > fromIdx ? 'down' : 'up';
+  }
+
+  // 진짜 순환선(2호선): forward/backward 호 길이 비교.
+  const n = main.length;
   const forward = (toIdx - fromIdx + n) % n; // id 증가 방향 호 길이
   const backward = n - forward; // wrap 방향 호 길이
 
