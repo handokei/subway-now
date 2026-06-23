@@ -1,6 +1,7 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
+import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
 import type { WindowedMetrics } from '../positionSeries';
 import {
@@ -447,6 +448,42 @@ describe('pickApnsHost', () => {
   });
   it('falls back to sandbox host when apnsEnv is undefined (#482 safe default)', () => {
     expect(pickApnsHost(undefined, APNS_HOSTS)).toBe(APNS_HOSTS.sandbox);
+  });
+});
+
+describe('isRetryableApnsError (#1721)', () => {
+  it.each([
+    [429, true],
+    [500, true],
+    [502, true],
+    [503, true],
+    [599, true],
+    [200, false],
+    [400, false],
+    [403, false],
+    [404, false],
+    [410, false],
+    [600, false],
+  ])('status=%i → %s', (status, expected) => {
+    expect(isRetryableApnsError(status)).toBe(expected);
+  });
+});
+
+describe('computeNextRetryAt (#1721)', () => {
+  const NOW = 1_700_000_000_000;
+  it.each([
+    [0, NOW + 60_000],
+    [1, NOW + 120_000],
+    [2, NOW + 240_000],
+  ])('attempt=%i → now + correct backoff', (attempt, expectedAt) => {
+    expect(computeNextRetryAt(attempt, NOW)).toBe(expectedAt);
+  });
+  it('attempt >= schedule length → null (영구 폐기 신호)', () => {
+    expect(computeNextRetryAt(3, NOW)).toBeNull();
+    expect(computeNextRetryAt(10, NOW)).toBeNull();
+  });
+  it('attempt < 0 → null (방어적)', () => {
+    expect(computeNextRetryAt(-1, NOW)).toBeNull();
   });
 });
 
@@ -1834,6 +1871,61 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.waypoints).toHaveLength(1);
     expect(stored.waypoints[0].stationName).toBe('군자');
     expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
+  });
+
+  // #1721 — arvlcd fire 가 transient APNs error(503) 받으면 retry-push: 큐에 적재된다.
+  // sendWithEnvHeal 의 양 env retry 후에도 lost 되던 silent push 가 다음 cron cycle backoff 후
+  // 재발사된다. envHeal 자체는 BadDeviceToken 에만 발동하므로 503 은 1회 호출로 즉시 실패 반환.
+  it('#1721 — arvlcd fire 503 → retry-push: 큐 적재 (transient retry queue)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ lastTrackedArrivalEpoch: NOW + 5000 }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 503 }));
+    // PENDING_PUSHES 는 동일 kv 인스턴스 사용 — retry-push: prefix 도 같은 store 에 적재.
+    const stats = await runScheduled(makeEnv(kv, kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-1721',
+    });
+    expect(stats.errors).toBeGreaterThan(0);
+    // retry-push: prefix entry 가 적재되어 다음 cron cycle 에서 재발사 가능.
+    const stored = await kv.get('retry-push:p-1721');
+    expect(stored).not.toBeNull();
+    const entry = JSON.parse(stored as string);
+    expect(entry.pushId).toBe('p-1721');
+    expect(entry.attemptCount).toBe(0);
+    expect(entry.nextAttemptAt).toBe(NOW + 60_000);
+    expect(entry.lastErrorStatus).toBe(503);
+    // payload 도 같이 적재되어 retry 시점에 재구성 불필요.
+    expect(entry.payload.nextWaypoint).toBe('중곡');
+  });
+
+  // #1721 — 410 Unregistered 같은 unrecoverable 은 retry-push: 큐 적재 X.
+  // 기존 cleanup path (cleanupTripWithLa 'push-unrecoverable') 가 책임.
+  it('#1721 — 410 Unregistered 는 retry-push: 큐 적재 X (unrecoverable)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ lastTrackedArrivalEpoch: NOW + 5000 }),
+    );
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
+    );
+    await runScheduled(makeEnv(kv, kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-410',
+    });
+    // 410 은 retry queue 적재 X — trip 자체가 cleanup (deleteTrip) 되므로.
+    expect(await kv.get('retry-push:p-410')).toBeNull();
   });
 
   // #864 — transfer waypoint 통과 시 lock release. 다음 cycle에서 새 leg의 trainCode를

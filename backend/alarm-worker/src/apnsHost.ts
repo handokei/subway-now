@@ -26,6 +26,47 @@ export function isApnsEnvMismatch(status: number, reason: string | undefined): b
   return status === 400 && reason === 'BadDeviceToken';
 }
 
+/**
+ * #1721 — APNs response status 분류 (transient retry vs permanent fail).
+ *
+ * 6/23 13:44 evidence (backend log): env mismatch self-heal이 1회 retry만 시도하고 second
+ * call도 transient 실패면 silent push 영구 lost. 본 helper는 transient retry가 필요한 상태
+ * 를 분리해 retry queue 적재 결정을 단순화한다.
+ *
+ * | status | 분류           | 처리                                                   |
+ * |--------|---------------|--------------------------------------------------------|
+ * | 410    | unrecoverable | device token 제거 + trip cleanup (기존 흐름 유지)     |
+ * | 429    | retryable     | exponential backoff (60s/120s/240s) → retry           |
+ * | 500-599| retryable     | exponential backoff (60s/120s/240s) → retry           |
+ * | 그 외  | non-retryable | 기존 동작 (envHeal/dedup 등)                          |
+ */
+export function isRetryableApnsError(status: number): boolean {
+  if (status === 429) return true;
+  if (status >= 500 && status < 600) return true;
+  return false;
+}
+
+/**
+ * #1721 — exponential backoff schedule for retryable APNs failures.
+ * - attempt 0 → 1차 시도 (즉시)
+ * - attempt 1 → 60s 후 retry
+ * - attempt 2 → 120s 후 retry
+ * - attempt 3 → 240s 후 retry
+ * - attempt ≥ 4 → 영구 폐기 (RETRY_BACKOFF_SCHEDULE_MS.length 초과)
+ *
+ * 60s가 1차 backoff인 이유: cron이 1분 주기라 그보다 짧은 backoff는 의미 없음. APNs 429는
+ * 대개 burst rate-limit이라 60s면 충분히 해소.
+ */
+export const RETRY_BACKOFF_SCHEDULE_MS = [60_000, 120_000, 240_000] as const;
+
+/**
+ * 다음 retry 시각 계산. attempt가 schedule 범위 밖이면 null (영구 폐기 신호).
+ */
+export function computeNextRetryAt(attempt: number, now: number): number | null {
+  if (attempt < 0 || attempt >= RETRY_BACKOFF_SCHEDULE_MS.length) return null;
+  return now + RETRY_BACKOFF_SCHEDULE_MS[attempt];
+}
+
 export interface EnvHealResult {
   result: SendPushResult;
   /** retry로 정정된 새 env. 정정 발생 시에만 set. */

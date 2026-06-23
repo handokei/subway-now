@@ -19,6 +19,7 @@ import {
   validateBoardingPromptOutcome,
 } from './boardingPromptOutcome';
 import { runFallbackPushes } from './fallback';
+import { runRetryPushes } from './retryPushes';
 import {
   checkRateLimit,
   generateFeedbackId,
@@ -2058,6 +2059,9 @@ export default {
     await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
     // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
     await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
+    // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
+    // 시 재발사. KV binding 부재 시 graceful no-op (개발/테스트 환경 호환).
+    await runRetryPushes(env, { apnsConfig, apnsHosts, log });
     // #972 — low-recall trip ratio 임계 위반 시 운영 webhook 발사. dedup KV(1h)로 spam 차단.
     // binding/secret 미설정 환경에서는 graceful no-op이라 회귀 없음.
     await evaluateAndMaybeAlert(env, { fetchImpl: fetch, now: () => Date.now(), log });

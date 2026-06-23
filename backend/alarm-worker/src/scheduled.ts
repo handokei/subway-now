@@ -64,6 +64,7 @@ import {
 import { findStationCoordsByNameAndLine } from './stationsLookup';
 import { assertCronCacheTtl } from './kvConsistency';
 import { buildAlarmKey, putPending } from './pendingPushes';
+import { enqueueRetryIfTransient } from './retryPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { pollLinesAndStamp, readSelfPollPosition } from './selfPollPosition';
@@ -1498,19 +1499,21 @@ export async function fireArvlCdStationPush(
   });
   // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward.
   // #1614 Phase C — stale guard 단계에서 이미 read한 ssotForStale 재사용 (KV read 1회 절약).
+  // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+  const arvlcdPayload = buildStationPassedImminentPayload({
+    trip,
+    waypoint,
+    lock,
+    pushId,
+    now,
+    origin: 'arvlcd',
+    ssot: ssotForStale,
+  });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: buildStationPassedImminentPayload({
-          trip,
-          waypoint,
-          lock,
-          pushId,
-          now,
-          origin: 'arvlcd',
-          ssot: ssotForStale,
-        }),
+        payload: arvlcdPayload,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -1539,6 +1542,18 @@ export async function fireArvlCdStationPush(
       status: heal.result.status,
       reason: heal.result.reason,
       token: trip.token.slice(0, 8),
+    });
+    // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. envHeal 양 env 모두 실패해도 영구 lost
+    // 차단. 410/400 BadDeviceToken 같은 unrecoverable 은 enqueueRetryIfTransient 가 자연 skip
+    // (caller 가 이미 dedup/cleanup 책임).
+    await enqueueRetryIfTransient(env.PENDING_PUSHES, {
+      pushId,
+      token: trip.token,
+      payload: arvlcdPayload,
+      apnsEnv: trip.apnsEnv ?? 'sandbox',
+      status: heal.result.status,
+      reason: heal.result.reason,
+      now,
     });
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
@@ -1843,20 +1858,22 @@ export async function fireVanishFallbackStationPush(
   // release하므로 device에 `lockReleasedReason='vanish'`를 forward해 store sync. vanish-fallback은
   // 직후 `advanceBoardingLockWaypoint`로 흘러가 그 함수가 transfer 시 별도로 release를 통지한다.
   const lockReleasedReason: 'vanish' | undefined = origin === 'vanish-release' ? 'vanish' : undefined;
+  // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+  const vanishPayload = buildStationPassedImminentPayload({
+    trip,
+    waypoint,
+    lock,
+    pushId,
+    now,
+    origin,
+    lockReleasedReason,
+    ssot,
+  });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: buildStationPassedImminentPayload({
-          trip,
-          waypoint,
-          lock,
-          pushId,
-          now,
-          origin,
-          lockReleasedReason,
-          ssot,
-        }),
+        payload: vanishPayload,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -1881,6 +1898,16 @@ export async function fireVanishFallbackStationPush(
       status: heal.result.status,
       reason: heal.result.reason,
       token: trip.token.slice(0, 8),
+    });
+    // #1721 — vanish 경로는 silent push 가 가장 잘 누락되는 경로라 retry queue 적재 우선순위 1순위.
+    await enqueueRetryIfTransient(env.PENDING_PUSHES, {
+      pushId,
+      token: trip.token,
+      payload: vanishPayload,
+      apnsEnv: trip.apnsEnv ?? 'sandbox',
+      status: heal.result.status,
+      reason: heal.result.reason,
+      now,
     });
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
@@ -2525,20 +2552,22 @@ export async function advanceBoardingLockWaypoint(
     const ssotForTransfer = await readSsot(env.TRIPS, trip.token, {
       cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
     });
+    // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+    const transferPayload = buildStationPassedImminentPayload({
+      trip,
+      waypoint,
+      lock: releasedLockSnapshot,
+      pushId,
+      now,
+      origin: 'transfer-release',
+      lockReleasedReason: 'transfer',
+      ssot: ssotForTransfer,
+    });
     const transferHeal = await sendWithEnvHeal(
       (host) =>
         sendSilentPush({
           deviceToken: trip.token,
-          payload: buildStationPassedImminentPayload({
-            trip,
-            waypoint,
-            lock: releasedLockSnapshot,
-            pushId,
-            now,
-            origin: 'transfer-release',
-            lockReleasedReason: 'transfer',
-            ssot: ssotForTransfer,
-          }),
+          payload: transferPayload,
           config: deps.apnsConfig,
           host,
           fetchImpl: deps.fetchImpl,
@@ -2561,6 +2590,18 @@ export async function advanceBoardingLockWaypoint(
     // #1683 — transfer-release push 성공 시 kind 카운터 누적.
     if (transferHeal.result.ok) {
       stats.silentPushFiredByKind.transfer += 1;
+    } else {
+      // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. transfer-release 도 silent push 누락 시
+      // leg 2 boardingPrompt 재요청이 차단되는 회귀(2026-06-18 evidence)가 발생하므로 retry 필요.
+      await enqueueRetryIfTransient(env.PENDING_PUSHES, {
+        pushId,
+        token: trip.token,
+        payload: transferPayload,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+        status: transferHeal.result.status,
+        reason: transferHeal.result.reason,
+        now,
+      });
     }
   }
   // #902 Seam F — 환승 직후 자동 trainCode swap. release한 lock 자리에 새 노선의 후보를
@@ -3036,39 +3077,41 @@ export async function runLocklessIntermediate(
   const locklessSsot = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
+  // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+  const locklessPayload: SilentPushPayload = {
+    nextWaypoint: waypoint.stationName,
+    etaSeconds: signal.etaSeconds,
+    phase: 'imminent',
+    kind: 'intermediate',
+    sentAt: now,
+    pushId,
+    // Epic #1204 그룹 2 D3 (#1273) — lockless intermediate도 waypoint.hopIndex forward.
+    // D1 estimator의 currentHopIndex와 ±tolerance 매칭 시 거리 검증 우회 + GPS 미준비 fallback.
+    hopIndex: waypoint.hopIndex,
+    // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+    // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+    occupiedLine: waypoint.line,
+    // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
+    // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
+    subsurface: trip.subsurface === true,
+    // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
+    // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
+    tripToken: trip.token,
+    // #1402 — 발사 경로 stamp. device alarmLog에 pushOrigin=lockless로 기록.
+    origin: 'lockless' as const,
+    // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
+    // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
+    passedStations: trip.passedStations,
+    // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts
+    // JSON serializer가 자연 누락 → device cascade picker는 기존 tier fallback. lockless trip은
+    // backend SSoT가 가장 신뢰 높은 단일 신호 (lock 부재 환경).
+    ssot: toSilentPushSsot(locklessSsot),
+  };
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: {
-          nextWaypoint: waypoint.stationName,
-          etaSeconds: signal.etaSeconds,
-          phase: 'imminent',
-          kind: 'intermediate',
-          sentAt: now,
-          pushId,
-          // Epic #1204 그룹 2 D3 (#1273) — lockless intermediate도 waypoint.hopIndex forward.
-          // D1 estimator의 currentHopIndex와 ±tolerance 매칭 시 거리 검증 우회 + GPS 미준비 fallback.
-          hopIndex: waypoint.hopIndex,
-          // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
-          // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
-          occupiedLine: waypoint.line,
-          // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
-          // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-          subsurface: trip.subsurface === true,
-          // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
-          // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
-          tripToken: trip.token,
-          // #1402 — 발사 경로 stamp. device alarmLog에 pushOrigin=lockless로 기록.
-          origin: 'lockless' as const,
-          // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
-          // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
-          passedStations: trip.passedStations,
-          // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts
-          // JSON serializer가 자연 누락 → device cascade picker는 기존 tier fallback. lockless trip은
-          // backend SSoT가 가장 신뢰 높은 단일 신호 (lock 부재 환경).
-          ssot: toSilentPushSsot(locklessSsot),
-        },
+        payload: locklessPayload,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -3103,6 +3146,18 @@ export async function runLocklessIntermediate(
       await cleanupTripWithLa(trip, env, deps, stats, now, log, 'push-unrecoverable');
       return;
     }
+    // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
+    // 분기 이후이므로 본 경로는 transient 또는 기타 비치명 실패. enqueueRetryIfTransient 가 retryable
+    // 만 적재한다.
+    await enqueueRetryIfTransient(env.PENDING_PUSHES, {
+      pushId,
+      token: trip.token,
+      payload: locklessPayload,
+      apnsEnv: trip.apnsEnv ?? 'sandbox',
+      status: heal.result.status,
+      reason: heal.result.reason,
+      now,
+    });
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
