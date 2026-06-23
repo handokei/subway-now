@@ -111,3 +111,25 @@ export const GPS_DERIVED_ROUTE_MATCH_MAX_KM = 0.1;
  * stale 신호를 채택하면 이전 정차 역을 현재역으로 오인하는 false positive 위험.
  */
 export const ARVL_CD_ARRIVED_MAX_AGE_MS = 35_000;
+
+/**
+ * #1723 — GPS fallback stale 게이트.
+ *
+ * 사용자 6/23 evidence: 13:56 trip 종료 후 새로고침 시 을지로3가 stuck (실제 위치 다름, stale GPS
+ * lastFix 6분 전). useFusedNearestStation cascade의 최종 fallback인 `gps.liveResult`가 GPS lastFix
+ * 6분 전 좌표를 들고 있어 현재역으로 표시. 5분+ stale은 사용자가 BG 동안 이동했거나 지하 dead zone
+ * 진입한 가능성이 높아 사용자 실제 위치와 무관.
+ *
+ * 5분 임계의 근거:
+ *   - 일반 도시 trip 평균 한 정차 ~1-2분 → 5분이면 3+ stop 통과 가능 (정확도 게이트로 부적합).
+ *   - iOS BG 위치 보고가 정상이면 lastFixAtMs는 3-5분 안에 갱신 (silent push wake / FG 복귀).
+ *   - 60s/30s 임계는 cascade의 다른 tier(positionTrain / GPS-derived / ARRIVED)가 이미 처리 —
+ *     본 게이트는 모든 device tier 실패 후 최종 fallback에만 적용해 false null 위험 최소화.
+ *
+ * 채택 시 동작: 5분+ stale GPS는 cascade 최종 fallback에서 채택 거부 → result=null 노출. 호출자는
+ * "위치 확인 중" UX(useNearestStation.locationUncertain와 동일 의미)로 표시.
+ *
+ * lockless / lock 활성 모두 동일 게이트 — backend SSoT / wifi / positionTrain 등 다른 tier가
+ * 살아있으면 자연 채택되므로 본 게이트 미진입.
+ */
+export const GPS_FALLBACK_STALE_MAX_AGE_MS = 5 * 60_000;
