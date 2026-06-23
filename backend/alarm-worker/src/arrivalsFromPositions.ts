@@ -106,6 +106,9 @@ export function synthesizeArrivalsFromPositions(
       // ENTERING(0) — 보수적. priority 우선순위에서 가장 낮아 real arrivals 가 같은 train 을
       // 더 강한 신호로 표기하면 priority 가 우선됨.
       arvlCd: 0,
+      // #1720 — consensusGate strongBE (signal B) 자격 차단. arvlCd=0 + lockAttachable 조합으로
+      // underground 2-of-2 통과되던 false positive 봉쇄. positions-derived 는 signal C 만 자격.
+      synthesized: true,
     });
   }
   return synthesized;

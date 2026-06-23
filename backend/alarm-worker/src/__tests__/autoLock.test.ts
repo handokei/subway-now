@@ -983,3 +983,43 @@ describe('attemptAutoLock #1702 positions fallback', () => {
     expect(lock).toBeNull();
   });
 });
+
+/**
+ * #1720 — 합성 ArrivalEntry(arvlCd=0, synthesized=true)가 consensusGate strongBE 통과 자격을 잃는다.
+ *
+ * positions-derived 합성 entry는 ADR-015 §3 signal C(position) 자격만 있고 signal B(arrival) 자격이
+ * 없다. underground 환경 + failing gateOutcome 시 strongBE=arrival+lockAttachable 2-of-2 가 fix 전에는
+ * 합성 entry로 통과되던 false positive를 차단.
+ *
+ * 대조군: real ArrivalEntry(arvlCd=1)는 동일 environment + gateOutcome 에서 strongBE 통과 → lock 채택.
+ */
+describe('attemptAutoLock #1720 합성 entry consensusGate 차단', () => {
+  it('underground + failing gate + arrivals=[] + positions 합성 → strongBE 차단 → null', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([]),
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'SYNTH', stationName: '강남', isUp: true })],
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('대조군: underground + failing gate + real arrivals(arvlCd=1) → strongBE pass → lock', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'REAL', arvlCd: 1, isUp: true })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+    });
+    expect(lock?.trainCode).toBe('REAL');
+  });
+});
