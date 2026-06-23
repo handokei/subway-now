@@ -67,6 +67,13 @@ jest.mock('../alarmLog', () => ({
   logSuppressedTbaRevalidation: (...args: unknown[]) => mockLogSuppressedTbaRevalidation(...args),
 }));
 
+// #1704 — position-mismatch 게이트가 backend SSoT mirror를 read해 사용자 currentStation을 결정.
+// 기본은 null 반환(mirror 부재 → 게이트 skip)으로 기존 테스트 동작 보존.
+const mockReadBackendSsotMirror = jest.fn();
+jest.mock('../backendSsotMirror', () => ({
+  readBackendSsotMirror: (...args: unknown[]) => mockReadBackendSsotMirror(...args),
+}));
+
 const mockErrorSpy = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -137,6 +144,9 @@ beforeEach(async () => {
   mockResolveAllTargets.mockReset();
   mockResolveAllTargets.mockReturnValue([{ name: '강남' }, { name: '시청' }, { name: '서울역' }]);
   mockLogSuppressedTbaRevalidation.mockReset();
+  // #1704 — 기본은 mirror null (위치 게이트 skip → 기존 동작 유지). 새 테스트는 mockResolvedValue로 override.
+  mockReadBackendSsotMirror.mockReset();
+  mockReadBackendSsotMirror.mockResolvedValue(null);
   // 기본 AppState 스파이 — 각 테스트는 mockImplementationOnce로 추가 override 가능.
   appStateSpy = jest
     .spyOn(AppState, 'addEventListener')
@@ -906,6 +916,293 @@ describe('bl: fire-time 재검증 (#1282)', () => {
       expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남']));
       expect(blChannel.registeredSigMock).not.toHaveBeenCalled();
       handle.remove();
+    });
+  });
+});
+
+// #1704 — position-mismatch 게이트: 사용자 currentStation 대비 fire 대상이 N hop 이상
+// 미래면 suppress. 2026-06-23 사용자 trip evidence(14:04 신촌 trip 중 종로3가/충정로 BG misfire,
+// 14:18 합정 trip 등록 직후 공덕/군자 미리 fire)의 backstop.
+describe('#1704 position-mismatch 게이트', () => {
+  // 강남(2-022) → 시청(2-001) direct route on line 2 (21 hops via 외선/외부 순환).
+  // 시청·강남·역삼·선릉 등 실 stations.json 데이터로 routeToWaypoints가 intermediate 시퀀스를 생성.
+  const LONG_ROUTE_JSON = JSON.stringify({ type: 'direct', stops: 21, line: '2', travelSeconds: 1260 });
+  const SIHCEONG_DEST_JSON = JSON.stringify({ id: '2-001', name: '시청' });
+
+  // mirror fixture factory. dedup overhead 없이 source별 차이만 입력.
+  // fresh=현재 시각 기준 receivedAt, stale=5+ min 이전 receivedAt.
+  const makeMirror = (currentStationId: string, ageMs = 0) => ({
+    currentStationId,
+    motionState: 'moving' as const,
+    lastAdvanceEvidence: 'test',
+    lastAdvanceAt: Date.now() - ageMs,
+    passedStations: [] as string[],
+    receivedAt: Date.now() - ageMs,
+  });
+
+  beforeEach(() => {
+    setStorageMap({
+      'subway-now:destination': SIHCEONG_DEST_JSON,
+      'subway-now:route': LONG_ROUTE_JSON,
+    });
+    // 본 블록은 routeToWaypoints만 호출하는 위치 게이트를 검증.
+    // resolveAllTargets mock은 waypoint mismatch 게이트가 통과되도록 fire 대상이 포함된 list로 변경.
+    mockResolveAllTargets.mockReturnValue([
+      { name: '시청' },
+      { name: '강남' }, // 강남도 통과시켜 waypoint mismatch 차단 우회 (위치 게이트 검증 목적)
+    ]);
+  });
+
+  // it.each + factory로 같은 패턴(mirror+identifier→expected reason) 반복 코드 dedup (SonarCloud).
+  // pass 케이스는 reason 미발사 검증, suppress 케이스는 reason 검증 + cancel(#1354) 동반 검증.
+  describe('reconcileScheduledAlarmDelivery — `tba:` 단건', () => {
+    it.each([
+      {
+        label: '사용자 강남(2-022) + fire=시청(시청은 21 hop 미래) → suppress',
+        mirrorStationId: '2-022',
+        identifier: 'tba:early:시청',
+        expectedReason: 'revalidate-position-mismatch' as const,
+        expectedStationName: '시청',
+        expectedPhase: 'early',
+      },
+      {
+        label: '사용자 시청(2-001) + fire=시청 → currentName==targetName 즉시 pass',
+        mirrorStationId: '2-001',
+        identifier: 'tba:imminent:시청',
+        expectedReason: null,
+      },
+      {
+        label: '사용자 을지로4가(2-004, 시청 직전 3 hop) + fire=시청 → threshold 미만 pass',
+        // 을지로4가=2-004 → 을지로3가(2-003) → 을지로입구(2-002) → 시청(2-001) = 3 hop.
+        // POSITION_MISMATCH_HOP_THRESHOLD=5 미만이므로 pass.
+        mirrorStationId: '2-004',
+        identifier: 'tba:imminent:시청',
+        expectedReason: null,
+      },
+    ])('$label', async ({ mirrorStationId, identifier, expectedReason, expectedStationName, expectedPhase }) => {
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror(mirrorStationId));
+
+      await reconcileScheduledAlarmDelivery(identifier);
+
+      if (expectedReason === null) {
+        expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+        expect(mockCancelScheduled).not.toHaveBeenCalled();
+      } else {
+        expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+          reason: expectedReason,
+          stationName: expectedStationName,
+          phaseId: expectedPhase,
+        });
+        expect(mockCancelScheduled).toHaveBeenCalledWith(identifier);
+      }
+    });
+
+    it('mirror가 5분+ stale이고 sticky 부재 → 게이트 skip (보수 fallback)', async () => {
+      // mirror receivedAt이 6분 전 → POSITION_MISMATCH_MIRROR_STALE_MS(5분) 초과로 skip.
+      // sticky storage 키도 부재.
+      mockReadBackendSsotMirror.mockResolvedValueOnce(
+        makeMirror('2-022', 6 * 60 * 1_000),
+      );
+      // 강남 위치 + 시청 fire는 원래라면 suppress 대상. mirror stale로 게이트 skip이라 pass.
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+      expect(mockCancelScheduled).not.toHaveBeenCalled();
+    });
+
+    it('mirror 부재 + sticky 부재 → 게이트 skip (보수 fallback)', async () => {
+      // mockReadBackendSsotMirror 기본값 = null. sticky storage 키도 setStorageMap에 부재.
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+      expect(mockCancelScheduled).not.toHaveBeenCalled();
+    });
+
+    it('mirror stale이고 sticky 있으면 sticky로 fallback해 게이트 적용', async () => {
+      // mirror stale + sticky=강남 → 강남 위치 fallback. fire=시청은 21 hop 미래 → suppress.
+      setStorageMap({
+        'subway-now:destination': SIHCEONG_DEST_JSON,
+        'subway-now:route': LONG_ROUTE_JSON,
+        'subway-now:sticky-station': JSON.stringify({
+          station: { id: '2-022', name: '강남', line: '2', lat: 37.5, lng: 127.0 },
+          lockedAt: Date.now() - 1_000,
+        }),
+      });
+      mockReadBackendSsotMirror.mockResolvedValueOnce(
+        makeMirror('2-022', 10 * 60 * 1_000), // 10 min stale
+      );
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-position-mismatch',
+        stationName: '시청',
+        phaseId: 'early',
+      });
+    });
+
+    it('mirror 부재 + sticky JSON 파손 → 게이트 skip (graceful)', async () => {
+      setStorageMap({
+        'subway-now:destination': SIHCEONG_DEST_JSON,
+        'subway-now:route': LONG_ROUTE_JSON,
+        'subway-now:sticky-station': '{not json',
+      });
+      // mirror null + sticky parse fail → currentStation null → 게이트 skip.
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+    });
+
+    it('sticky에 station.id 필드 누락 → 게이트 skip (graceful)', async () => {
+      setStorageMap({
+        'subway-now:destination': SIHCEONG_DEST_JSON,
+        'subway-now:route': LONG_ROUTE_JSON,
+        'subway-now:sticky-station': JSON.stringify({ station: { name: '강남' }, lockedAt: 0 }),
+      });
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+    });
+
+    it('sticky에 station.id가 있지만 stations.json에 미존재 → 게이트 skip (graceful)', async () => {
+      // readStickyStation의 getStationById(id) ?? null 분기 cover.
+      // 사용자 환경에서 stations.json 갱신으로 옛 sticky id가 무효화된 케이스.
+      setStorageMap({
+        'subway-now:destination': SIHCEONG_DEST_JSON,
+        'subway-now:route': LONG_ROUTE_JSON,
+        'subway-now:sticky-station': JSON.stringify({
+          station: { id: '__deleted_station__', name: '폐역', line: '2', lat: 0, lng: 0 },
+          lockedAt: Date.now() - 1_000,
+        }),
+      });
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      // currentStation null → 게이트 skip → suppress 없음.
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+    });
+
+    it('mirror.currentStationId가 stations.json에 없으면 sticky로 fallback', async () => {
+      setStorageMap({
+        'subway-now:destination': SIHCEONG_DEST_JSON,
+        'subway-now:route': LONG_ROUTE_JSON,
+        'subway-now:sticky-station': JSON.stringify({
+          station: { id: '2-022', name: '강남', line: '2', lat: 37.5, lng: 127.0 },
+          lockedAt: Date.now() - 1_000,
+        }),
+      });
+      // mirror fresh이지만 currentStationId가 stations.json에 없는 ID — getStationById null → fallback.
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror('__no_such_id__'));
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      // sticky=강남으로 fallback → 21 hop suppress.
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-position-mismatch' }),
+      );
+    });
+
+    it('fire 대상이 route waypoint 시퀀스에 없으면 게이트 skip (route 외 역은 별 게이트 담당)', async () => {
+      // 사용자 강남, fire 대상은 route에 없는 '서울대입구' — routeToWaypoints에서 안 나옴 → null → skip.
+      // 단 waypoint mismatch 게이트가 먼저 차단할 수 있으므로 mockResolveAllTargets에 '서울대입구' 포함.
+      mockResolveAllTargets.mockReturnValueOnce([{ name: '서울대입구' }, { name: '시청' }]);
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror('2-022'));
+
+      await reconcileScheduledAlarmDelivery('tba:early:서울대입구');
+
+      // route는 강남→시청. 서울대입구는 line 2이지만 시청과 정반대 방향 (외선). routeToWaypoints는
+      // currentStation=강남 → 시청 방향만 펼침 → 서울대입구는 시퀀스에 없음 → null → skip.
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('drainDeliveredScheduledAlarms — `tba:` 항목 위치 게이트', () => {
+    it('suppress된 position-mismatch 항목은 fired set/lastStationName 갱신에서 제외', async () => {
+      // 첫 항목 suppress (강남 위치+시청 fire, 21 hop), 두 번째 항목 pass (을지로4가 위치+시청 fire, 3 hop).
+      mockReadBackendSsotMirror
+        .mockResolvedValueOnce(makeMirror('2-022')) // 강남
+        .mockResolvedValueOnce(makeMirror('2-004')); // 을지로4가
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'tba:early:시청' } },
+        { date: 2, request: { identifier: 'tba:imminent:시청' } },
+      ]);
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      // 첫 항목(강남 위치) suppress + cancel. 두 번째 항목(을지로4가 위치) pass → fired set에 등록.
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-position-mismatch', stationName: '시청' }),
+      );
+      expect(mockCancelScheduled).toHaveBeenCalledWith('tba:early:시청');
+      // 두 번째(pass)만 fired set에 등록. destinationId='2-001' (SIHCEONG_DEST_JSON).
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('2-001', new Set(['imminent:시청']));
+      expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
+      handle.remove();
+    });
+  });
+
+  describe('revalidate 순서: position-mismatch는 다른 게이트 통과 후 진입', () => {
+    it('tripStart 미존재면 position 게이트보다 먼저 revalidate-no-trip', async () => {
+      mockGetTripStartedAt.mockResolvedValueOnce(null);
+      // mirror도 fresh이지만 tripStart 없음이 우선 차단.
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror('2-022'));
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-no-trip' }),
+      );
+      // position-mismatch는 발사 안 함.
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-position-mismatch' }),
+      );
+    });
+
+    it('route-sig mismatch면 position 게이트보다 먼저 revalidate-route-sig-mismatch', async () => {
+      mockGetRegisteredTripRouteSig.mockResolvedValueOnce('SIG-OLD');
+      mockRouteSignature.mockReturnValueOnce('SIG-NEW');
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror('2-022'));
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-route-sig-mismatch' }),
+      );
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-position-mismatch' }),
+      );
+    });
+
+    it('waypoint mismatch면 position 게이트보다 먼저 revalidate-waypoint-mismatch', async () => {
+      // mockResolveAllTargets에 '시청' 누락 → waypoint mismatch 먼저 차단.
+      mockResolveAllTargets.mockReturnValueOnce([{ name: '강남' }, { name: '역삼' }]);
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror('2-022'));
+
+      await reconcileScheduledAlarmDelivery('tba:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-waypoint-mismatch' }),
+      );
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-position-mismatch' }),
+      );
+    });
+  });
+
+  describe('bl: 채널도 동일 게이트 적용', () => {
+    it('bl: identifier에도 position-mismatch 적용 (revalidateBlAlarm 공유 helper)', async () => {
+      mockReadBackendSsotMirror.mockResolvedValueOnce(makeMirror('2-022'));
+      // bl: identifier 포맷은 `bl:trainCode:hopIdx:phase:stationName`.
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:early:시청');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-position-mismatch',
+        stationName: '시청',
+        phaseId: 'early',
+      });
     });
   });
 });

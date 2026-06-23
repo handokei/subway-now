@@ -157,9 +157,16 @@ export type AlarmLogReason =
   //   'revalidate-no-trip': tripStart 미존재(이미 종료된 trip의 잔여 발화).
   //   'revalidate-route-sig-mismatch': 예약 시점 sig와 현재 sig 불일치(목적지 변경/환승 재산정).
   //   'revalidate-waypoint-mismatch': 파싱된 stationName이 현재 route waypoint에 없음.
+  //   'revalidate-position-mismatch' (#1704): fire 대상 stationName이 사용자 currentStation보다
+  //     N hop(POSITION_MISMATCH_HOP_THRESHOLD=5) 이상 미래라 fire 시점이 도래하지 않은 잔여 발화.
+  //     2026-06-23 사용자 trip evidence: 14:04 신촌(2-018) trip 중 종로3가/합정/충정로 3건 BG misfire,
+  //     14:18 합정 trip 등록 직후 공덕/군자 2건 BG misfire — 모두 routeSig/waypoint pass인데 사용자
+  //     위치가 fire 대상보다 한참 뒤. 기존 게이트가 사용자 위치를 검사하지 않아 OS DATE trigger
+  //     도달 시 그냥 fire. backend SSoT mirror + sticky station fallback으로 위치 결정.
   | 'revalidate-no-trip'
   | 'revalidate-route-sig-mismatch'
   | 'revalidate-waypoint-mismatch'
+  | 'revalidate-position-mismatch'
   // #1167 — boardingPrompt [탑승] 응답 → arvlCd 우선순위 autoLock 결과.
   //   'autolock-success': arvlCd 우선순위로 1대 확정 → createLock 성공.
   //   'autolock-no-trip': destinationId null (사용자 trip 종료 후 늦은 탭).
@@ -1381,7 +1388,11 @@ export function logHydrationTransition(
  * source='bg-scheduled' 재사용 — preschedule path 출처 통일(stamp/fired log와 동일 source).
  */
 export function logSuppressedTbaRevalidation(input: {
-  reason: 'revalidate-no-trip' | 'revalidate-route-sig-mismatch' | 'revalidate-waypoint-mismatch';
+  reason:
+    | 'revalidate-no-trip'
+    | 'revalidate-route-sig-mismatch'
+    | 'revalidate-waypoint-mismatch'
+    | 'revalidate-position-mismatch';
   stationName: string;
   phaseId?: AlarmPhaseId;
 }): void {

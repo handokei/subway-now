@@ -238,6 +238,14 @@ export function useApnsTripRegistration({
   // 첫 setDestination(이전 sig 없음)에는 cancel 호출 X — 불필요한 OS 호출 방지.
   const lastRouteSigRef = useRef<string | null>(null);
 
+  // #1704 (d) — 직전 effect cycle의 destination.id / boardingLockSig. routeSig는 같지만
+  // destination 또는 lock 내용이 바뀌면 (예: 같은 line·hop 수의 다른 destination) routeSig
+  // 단독 게이트가 전환을 감지 못해 stale tba: 사전 예약이 OS queue에 잔존한다. 2026-06-23
+  // 사용자 trip evidence: 14:18 2차 trip 등록 직후 1차 trip의 공덕/군자 stale fire.
+  // 첫 register(이전 값 없음)에는 cancel 호출 X — 신규 trip은 cancel할 대상 없음.
+  const lastDestinationIdRef = useRef<string | null>(null);
+  const lastBoardingLockSigRef = useRef<string | null>(null);
+
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {
     let cancelled = false;
@@ -325,25 +333,38 @@ export function useApnsTripRegistration({
         // 트립 없음 분기에서도 lock 시그를 reset — 다음 trip이 새로 등록될 때 첫 cycle은
         // 즉시 발사(debounce 미적용) 보장.
         lastSentLockSigRef.current = null;
-        // #1264 (N3): trip 종료 시 routeSig 추적도 reset — 다음 trip 시작 시 첫 routeSig는
-        // 신규로 취급되어 cancel skip(불필요한 OS 호출 방지).
+        // #1264 (N3) + #1704 (d): trip 종료 시 routeSig / destination.id / boardingLockSig 추적
+        // 모두 reset — 다음 trip 시작 시 첫 register는 신규로 취급되어 cancel skip(불필요한 OS 호출 방지).
         lastRouteSigRef.current = null;
+        lastDestinationIdRef.current = null;
+        lastBoardingLockSigRef.current = null;
         // #1284: trip 종료 시 prompt context 캐시 reset — 다음 trip이 이전 trip의
         // 출발역 컨텍스트를 stamp하는 오염 방지.
         lastPromptContextRef.current = null;
         return;
       }
 
-      // #1264 (N3) — routeSig 전환 감지: 이전 routeSig가 있고 다르면 사전 예약된 `tba:` 알람
-      // cancel. backend 정정 silent push가 stale identifier에 매칭 실패하는 회귀 차단.
-      // 첫 setDestination(lastRouteSigRef=null)에는 호출 X — 신규 trip은 cancel할 대상 없음.
+      // #1264 (N3) + #1704 (d) — routeSig / destination.id / boardingLockSig 어느 하나라도
+      // 전환되면 사전 예약된 `tba:` 알람 cancel. backend 정정 silent push가 stale identifier에
+      // 매칭 실패하는 회귀 차단 + 같은 routeSig에서 destination/lock만 바뀐 cross-trip 잔재
+      // (2026-06-23 trip evidence: 14:18 2차 trip 등록 직후 1차 trip 공덕/군자 stale fire) 차단.
+      // 첫 register(이전 값 모두 null)에는 호출 X — 신규 trip은 cancel할 대상 없음.
       // cancel 실패해도 후속 register는 진행 (graceful) — runTripBoundCleanups + useTripBoundAlarmScheduler
       // 가 별경로로 동일 cleanup을 시도하므로 본 호출은 belt-and-suspenders.
-      if (lastRouteSigRef.current !== null && lastRouteSigRef.current !== routeSig) {
+      const hasPrevTrip =
+        lastRouteSigRef.current !== null ||
+        lastDestinationIdRef.current !== null ||
+        lastBoardingLockSigRef.current !== null;
+      const tripSwitched =
+        hasPrevTrip &&
+        (lastRouteSigRef.current !== routeSig ||
+          lastDestinationIdRef.current !== destination.id ||
+          lastBoardingLockSigRef.current !== boardingLockSig);
+      if (tripSwitched) {
         try {
           await cancelTripBoundAlarms();
         } catch (e) {
-          logger.warn('cancelTripBoundAlarms (route switch) 실패:', e);
+          logger.warn('cancelTripBoundAlarms (trip switch) 실패:', e);
         }
         if (cancelled) return;
       }
@@ -382,8 +403,11 @@ export function useApnsTripRegistration({
       // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
       // 신규 = null" 패턴인지 판정해 race 차단.
       lastSentLockSigRef.current = boardingLockSig;
-      // #1264 (N3) — POST 발사 직후 송신된 routeSig를 기록. 다음 cycle에서 전환 감지에 사용.
+      // #1264 (N3) + #1704 (d) — POST 발사 직후 송신된 routeSig / destination.id / boardingLockSig
+      // 를 기록. 다음 cycle이 trip 전환(어느 하나라도 변경) 시 cancel 트리거.
       lastRouteSigRef.current = routeSig;
+      lastDestinationIdRef.current = destination.id;
+      lastBoardingLockSigRef.current = boardingLockSig;
       // #669: cancelled 가드 밖에서 setItem — backend register 성공이면 UI cleanup 여부와 무관하게
       // ACTIVE_TRIP_KEY를 동기화. 가드 안에 두면 nextStationEtaSeconds·currentStation 변경으로
       // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
