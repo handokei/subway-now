@@ -1935,12 +1935,16 @@ async function attemptVanishSwap(
   trip: Trip,
   waypoint: Waypoint,
   activeLock: BoardingLockMeta,
+  env: Env,
   deps: ScheduledDeps,
   now: number,
   log: Logger,
 ): Promise<BoardingLockMeta | null> {
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   if (previousMissCount + 1 < VANISH_RE_ATTACH_THRESHOLD) return null;
+  // #1702 (B2-A) — Seoul 단방향/0건 arrivals fallback. attachTrainCodeForLeg 가 candidate 를
+  // 찾지 못하면 line 의 realtimePosition snapshot 에서 segmentStations 기반 합성을 시도.
+  const selfPollPositions = await readSelfPollPosition(env.TRIPS, waypoint.line);
   const swapped = await attachTrainCodeForLeg({
     trip,
     targetWaypoint: waypoint,
@@ -1948,6 +1952,7 @@ async function attemptVanishSwap(
     now,
     // #1439 (E6, ADR-015 §9) — vanish-swap이 trip route 외 line으로 잘못 매핑되지 않도록.
     allowedLines: computeAllowedLines(trip.route, trip.waypoints),
+    selfPollPositions: selfPollPositions?.positions,
   });
   if (!swapped || swapped.trainCode === activeLock.trainCode) return null;
   log('boarding-lock: trainCode vanished, swapped', {
@@ -2179,7 +2184,7 @@ export async function runTrainCodeTracking(
   let activeLock = lock;
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
   if (estimate === null) {
-    const swappedLock = await attemptVanishSwap(trip, waypoint, activeLock, deps, now, log);
+    const swappedLock = await attemptVanishSwap(trip, waypoint, activeLock, env, deps, now, log);
     if (swappedLock) {
       activeLock = swappedLock;
       estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
@@ -2565,6 +2570,9 @@ export async function advanceBoardingLockWaypoint(
   let transferSwapAttached = false;
   if (lockReleasedOnTransfer && trip.waypoints.length > 0) {
     const next = trip.waypoints[0];
+    // #1702 (B2-A) — transfer-swap arrivals 단방향/0건 fallback. 새 leg 의 line positions 를 함께
+    // 전달해 `attachTrainCodeForLeg` 내부에서 합성 ArrivalEntry retry path 활성화.
+    const transferSelfPoll = await readSelfPollPosition(env.TRIPS, next.line);
     const swapped = await attachTrainCodeForLeg({
       trip,
       targetWaypoint: next,
@@ -2572,6 +2580,7 @@ export async function advanceBoardingLockWaypoint(
       now,
       // #1439 (E6, ADR-015 §9) — transfer-swap이 trip route 외 line으로 잘못 매핑되지 않도록.
       allowedLines: computeAllowedLines(trip.route, trip.waypoints),
+      selfPollPositions: transferSelfPoll?.positions,
     });
     if (swapped) {
       trip.boardingLock = swapped;

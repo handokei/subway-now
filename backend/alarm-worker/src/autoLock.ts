@@ -28,7 +28,8 @@
  * (지하 7일 누적 0건) 직접 해소.
  */
 
-import { pickAutoTrainCode, type GateOutcome } from './boardingPrompt';
+import { resolveTrainCodeWithFallback } from './arrivalsFromPositions';
+import { type GateOutcome } from './boardingPrompt';
 import {
   evaluateConsensusGate,
   isLockLineAllowed,
@@ -37,7 +38,7 @@ import {
 import { matchLine, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import { METRIC_KIND, writeMetricDataPoints, type HistogramMetric } from './metrics';
-import type { SeoulArrivalClient } from './seoul';
+import type { PositionEntry, SeoulArrivalClient } from './seoul';
 import type {
   AnalyticsEngineWriter,
   BoardingLockMeta,
@@ -173,8 +174,13 @@ export interface AttemptAutoLockInputs {
    * `recptnMs` 미포함(=0 또는 undefined) entry는 age 가드를 skip (backward-compat).
    *
    * 미전달(undefined) / 빈 배열 시 consensusGate가 자연 `?? false` fallback (strongBE 동작 유지).
+   *
+   * #1702 (B2-A) — Seoul OpenAPI 단방향/0건 arrivals fallback 에도 본 list 가 사용된다. positions
+   * 의 `isUp` + `stationName` 을 기반으로 segmentStations 진행 방향 trains 만 추출 → ArrivalEntry
+   * 합성 → `pickAutoTrainCode` retry. 따라서 entry 의 `isUp` / `trainSttus` 필드 (PositionEntry)
+   * 가 필요해졌으므로 narrow 구조 대신 PositionEntry 전체 타입을 받는다.
    */
-  selfPollPositions?: readonly { trainCode: string; stationName: string; recptnMs?: number }[];
+  selfPollPositions?: readonly PositionEntry[];
   /**
    * #1667 (ADR-015 strongDB wire) — device가 WiFi SSID 매핑으로 결정한 역명.
    *
@@ -271,11 +277,23 @@ export async function attemptAutoLock(
   const segmentStations =
     legStations[0] === originStation ? legStations : [originStation, ...legStations];
 
-  const arrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
-  if (arrivals.length === 0) return { lock: null };
-
-  const trainCode = pickAutoTrainCode(arrivals, line, direction);
-  if (!trainCode) return { lock: null };
+  const realArrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
+  // #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback.
+  //
+  // realArrivals 가 비어 있거나, `pickAutoTrainCode` 가 user direction 으로 candidate 를 찾지
+  // 못한 경우 (단방향만 반환된 케이스) selfPollPositions 에서 ArrivalEntry 를 합성한다.
+  // 합성된 entry 는 segmentStations 인덱스 기반 ETA + canonical subwayNm 으로 matchLine
+  // cross-check 까지 통과한다. positions 미전달 / 빈 list 시 기존 동작 (null 반환) 유지.
+  const resolved = resolveTrainCodeWithFallback({
+    realArrivals,
+    positions: selfPollPositions,
+    line,
+    direction,
+    segmentStations,
+    targetStation: targetWaypoint.stationName,
+  });
+  if (!resolved) return { lock: null };
+  const { trainCode, arrivals } = resolved;
 
   // line cross-check (2단 방어, #1626 follow-up) — `pickAutoTrainCode`가 이미 `matchLine`을
   // 적용하지만, chosen trainCode 의 실제 entry 의 subwayNm 이 line 과 매칭되는지 한 번 더

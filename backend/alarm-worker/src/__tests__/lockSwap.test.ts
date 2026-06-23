@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
+import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import {
   SWAP_LOCK_TTL_MS,
   attachTrainCodeForLeg,
@@ -282,5 +282,128 @@ describe('attachTrainCodeForLeg', () => {
       now: NOW,
     });
     expect(lock).toBeNull();
+  });
+});
+
+/**
+ * #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback.
+ *
+ * `attachTrainCodeForLeg` 는 direction=null 로 호출 (swap 흐름은 양방향 허용) 이지만
+ * segmentStations 기반 필터로 진행 방향 외 train (이미 target 지남) 은 자연 제외된다.
+ * 합성 path 가 transfer-swap + vanish-swap 모두에서 작동하는지 검증.
+ *
+ * 사용 fixture: line=7, segmentStations=[중곡, 군자, 어린이대공원], target=중곡.
+ */
+
+function position(overrides: Partial<PositionEntry> & { trainCode: string }): PositionEntry {
+  return {
+    stationName: '',
+    trainSttus: 0,
+    isUp: true,
+    recptnMs: 0,
+    ...overrides,
+  };
+}
+
+describe('attachTrainCodeForLeg #1702 positions fallback', () => {
+  const swapTarget: Waypoint = { stationName: '중곡', line: '7', kind: 'intermediate' };
+  const swapWaypoints: Waypoint[] = [
+    swapTarget,
+    { stationName: '군자', line: '7', kind: 'intermediate' },
+    { stationName: '어린이대공원', line: '7', kind: 'destination' },
+  ];
+
+  it('arrivals=[] + positions=[T1@중곡] → 합성 swap candidate', async () => {
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'T1', stationName: '중곡' })],
+    });
+    expect(lock?.trainCode).toBe('T1');
+    expect(lock?.line).toBe('7');
+  });
+
+  it('arrivals=[] + positions=[] → null (구 schedule fallback 유지)', async () => {
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('arrivals=[] + positions undefined → null (구 호출자 호환)', async () => {
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('real arrivals 통과 → fallback 진입 X', async () => {
+    // real arrivals 가 candidate 를 가지면 positions 무시 — real 우선.
+    const seoul = makeSeoul([makeArrival('REAL', 1, 60)]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'SYNTH', stationName: '중곡' })],
+    });
+    expect(lock?.trainCode).toBe('REAL');
+  });
+
+  it('positions train 이미 target 지남 → 합성 제외 → null', async () => {
+    // target=중곡(idx=0), train@군자(idx=1) — currentIdx>targetIdx → 제외.
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'PASSED', stationName: '군자' })],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('합성 candidate ambiguity → null (boarding-prompt fallback)', async () => {
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'T1', stationName: '중곡' }),
+        position({ trainCode: 'T2', stationName: '중곡' }),
+      ],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('arrivals=[UP only] + positions=[DOWN train] → DOWN train 합성 보강', async () => {
+    // direction=null swap 분기지만, positions 의 다른 stationName/방향 train 이 segmentStations
+    // 인덱스로 자연 필터링. arrivals 가 wrong-line (matchLine 우회로 null) 인 경우 fallback.
+    const seoul = makeSeoul([
+      // 빈 subwayNm — matchLine 통과 X. pickAutoTrainCode null 반환.
+      makeArrival('UP_TRAIN', 1, 60, ''),
+    ]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'POSITIONS_TRAIN', stationName: '중곡' })],
+    });
+    expect(lock?.trainCode).toBe('POSITIONS_TRAIN');
   });
 });

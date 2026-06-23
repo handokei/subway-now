@@ -8,7 +8,7 @@ import {
 } from '../autoLock';
 import { METRIC_KIND } from '../metrics';
 import { SWAP_LOCK_TTL_MS } from '../lockSwap';
-import { type ArrivalEntry } from '../seoul';
+import { type ArrivalEntry, type PositionEntry } from '../seoul';
 import type { Waypoint } from '../types';
 import {
   FIXTURE_NOW as NOW,
@@ -29,6 +29,19 @@ function arrival(overrides: Partial<ArrivalEntry>): ArrivalEntry {
     // 기본값 arvlCd=1(도착) — confidence gate(#1018)를 의도치 않게 트리거하지 않도록.
     // arvlCd=2(출발)를 테스트하려면 명시 지정한다.
     arvlCd: 1,
+    ...overrides,
+  };
+}
+
+// PositionEntry 기본값 fixture — recptnMs=0 (age 가드 skip), isUp=true 기본.
+// `selfPollPositions` 입력으로 PositionEntry 전체 타입을 받아 `synthesizeArrivalsFromPositions`
+// 등 새 fallback 분기와 기존 strongCB/recptnMs 가드 모두 일관되게 호출된다.
+function position(overrides: Partial<PositionEntry> & { trainCode: string }): PositionEntry {
+  return {
+    stationName: '',
+    trainSttus: 0,
+    isUp: true,
+    recptnMs: 0,
     ...overrides,
   };
 }
@@ -524,7 +537,7 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
  */
 function callAutoLockWithSelfPoll(
   arrivalEntry: ArrivalEntry,
-  selfPollPositions: readonly { trainCode: string; stationName: string }[] | undefined,
+  selfPollPositions: readonly PositionEntry[] | undefined,
   opts: {
     environment?: Parameters<typeof attemptAutoLock>[0]['environment'];
     gateOutcome?: Parameters<typeof attemptAutoLock>[0]['gateOutcome'];
@@ -547,31 +560,31 @@ describe('attemptAutoLock #1614 Phase B selfPollPositions wire (S4)', () => {
   it.each([
     {
       label: 'trainCode 일치 + arvlCd 0~3 → strongCB pass (underground, base gate fail)',
-      positions: [{ trainCode: 'T1', stationName: '강남' }],
+      positions: [position({ trainCode: 'T1', stationName: '강남' })],
       arvlCd: 1,
       expected: 'lock' as const,
     },
     {
       label: 'trainCode 불일치 + arvlCd 1 → strongCB undefined, strongBE pass (lockAttachable + arrival)',
-      positions: [{ trainCode: 'OTHER', stationName: '강남' }],
+      positions: [position({ trainCode: 'OTHER', stationName: '강남' })],
       arvlCd: 1,
       expected: 'lock' as const,
     },
     {
       label: 'trainCode 불일치 + arvlCd 5(범위 밖) → strongCB false + strongBE false → null',
-      positions: [{ trainCode: 'OTHER', stationName: '강남' }],
+      positions: [position({ trainCode: 'OTHER', stationName: '강남' })],
       arvlCd: 5,
       expected: 'null' as const,
     },
     {
       label: 'trainCode 일치 + arvlCd 5(범위 밖) → strongCB false (arrival missing) + strongBE false → null',
-      positions: [{ trainCode: 'T1', stationName: '강남' }],
+      positions: [position({ trainCode: 'T1', stationName: '강남' })],
       arvlCd: 5,
       expected: 'null' as const,
     },
     {
       label: '빈 list + arvlCd 1 → positionTrainAgreement false, strongBE pass',
-      positions: [] as const,
+      positions: [] as readonly PositionEntry[],
       arvlCd: 1,
       expected: 'lock' as const,
     },
@@ -606,7 +619,7 @@ describe('attemptAutoLock #1614 Phase B selfPollPositions wire (S4)', () => {
   it('surface: selfPollPositions 무관 — base gate pass면 통과 (positionTrainAgreement 평가 X)', async () => {
     const { lock } = await callAutoLockWithSelfPoll(
       arrival({ trainCode: 'T1', arvlCd: 1 }),
-      [{ trainCode: 'OTHER', stationName: '강남' }],
+      [position({ trainCode: 'OTHER', stationName: '강남' })],
       {
         environment: 'surface',
         gateOutcome: passingGateOutcome(),
@@ -755,7 +768,7 @@ describe('attemptAutoLock #1676 recptnMs age 가드', () => {
       now: NOW,
       environment: 'underground',
       gateOutcome: failingGateOutcome(),
-      selfPollPositions: [{ trainCode: 'T1', stationName: '강남', recptnMs }],
+      selfPollPositions: [position({ trainCode: 'T1', stationName: '강남', recptnMs })],
     });
     if (expected === 'lock') {
       expect(lock?.trainCode).toBe('T1');
@@ -776,7 +789,7 @@ describe('attemptAutoLock #1676 recptnMs age 가드', () => {
       now: NOW,
       environment: 'underground',
       gateOutcome: failingGateOutcome(),
-      selfPollPositions: [{ trainCode: 'T1', stationName: '강남', recptnMs: NOW - 31_000 }],
+      selfPollPositions: [position({ trainCode: 'T1', stationName: '강남', recptnMs: NOW - 31_000 })],
     });
     expect(lock).toBeNull();
   });
@@ -792,7 +805,7 @@ describe('attemptAutoLock #1676 recptnMs age 가드', () => {
       now: NOW,
       environment: 'underground',
       gateOutcome: failingGateOutcome(),
-      selfPollPositions: [{ trainCode: 'T1', stationName: '강남', recptnMs: 0 }],
+      selfPollPositions: [position({ trainCode: 'T1', stationName: '강남', recptnMs: 0 })],
     });
     expect(lock?.trainCode).toBe('T1');
   });
@@ -808,8 +821,165 @@ describe('attemptAutoLock #1676 recptnMs age 가드', () => {
       now: NOW,
       environment: 'underground',
       gateOutcome: failingGateOutcome(),
-      selfPollPositions: [{ trainCode: 'T1', stationName: '강남' }],
+      selfPollPositions: [position({ trainCode: 'T1', stationName: '강남' })],
     });
     expect(lock?.trainCode).toBe('T1');
+  });
+});
+
+/**
+ * #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback.
+ *
+ * 사용자 6/23 trip evidence: `fetchArrivals(합정 6호선)` 한 방향만 반환 → 사용자 의도 방향
+ * candidate 0건 → wrong-direction lock. 본 describe 는 fallback 분기가 segmentStations 기반
+ * positions 합성으로 올바른 방향 lock 을 만들어내는지 검증.
+ *
+ * 사용 fixture: target=역삼(2호선), origin=강남, waypoints=[역삼, 선릉] → segmentStations=[강남, 역삼, 선릉].
+ */
+describe('attemptAutoLock #1702 positions fallback', () => {
+  it('arrivals=[] + positions=[T1@강남 up] + direction=up → 합성 lock (T1)', async () => {
+    // 가장 단순 시나리오: 실제 arrivals 가 비어 있고 positions 에 사용자 방향 train 이 있는 경우.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([]), // 빈 arrivals
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'T1', stationName: '강남', isUp: true })],
+    });
+    expect(lock?.trainCode).toBe('T1');
+    // 합성 entry 의 subwayNm 은 canonical('2호선') 이라 matchLine cross-check 통과.
+    expect(lock?.line).toBe('2');
+  });
+
+  it('arrivals=[] + positions=[T_UP, T_DOWN] + direction=down → DOWN candidate 선택', async () => {
+    // 사용자 6/23 evidence 와 동형: positions 양방향 train 다 있을 때 user direction 만 채택.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'down',
+      seoul: makeSeoul([]),
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'TU', stationName: '강남', isUp: true }), // 반대 방향 — 제외
+        position({ trainCode: 'TD', stationName: '강남', isUp: false }), // 사용자 방향 — 채택
+      ],
+    });
+    expect(lock?.trainCode).toBe('TD');
+  });
+
+  it('arrivals=[UP only] + positions=[DOWN train] + direction=down → 합성 DOWN candidate 보강', async () => {
+    // 핵심 evidence 시나리오: 실제 arrivals 가 잘못된 방향만 반환 + user direction 으로 합성 retry.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'down',
+      seoul: makeSeoul([arrival({ trainCode: 'UP_TRAIN', isUp: true })]), // UP only — direction 불일치
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'DOWN_TRAIN', stationName: '강남', isUp: false }), // DOWN candidate
+      ],
+    });
+    expect(lock?.trainCode).toBe('DOWN_TRAIN');
+  });
+
+  it('arrivals=[] + positions=[] → 기존 schedule-based fallback (lock null)', async () => {
+    // positions 도 비어있으면 합성 불가 → 기존 null 동작 유지 (caller boarding-prompt fallback).
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([]),
+      now: NOW,
+      selfPollPositions: [],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('arrivals=[] + positions undefined → lock null (구 호출자 호환)', async () => {
+    // selfPollPositions 미전달 시 fallback 자체가 비활성 → 기존 동작 보존.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([]),
+      now: NOW,
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('arrivals 통과 candidate 있음 → fallback 진입 X (real arrivals 우선)', async () => {
+    // real arrivals 가 single candidate 를 가지면 positions 는 무시 — 합성보다 신뢰도 높음.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'REAL', isUp: true })]),
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'SYNTH', stationName: '강남', isUp: true }),
+      ],
+    });
+    expect(lock?.trainCode).toBe('REAL');
+  });
+
+  it('merge dedup — 같은 trainCode 는 real 만 보존, 합성 동일 trainCode 제거', async () => {
+    // real arrivals: T1 wrong direction (UP) — pickAutoTrainCode(down) null → fallback 진입.
+    // positions: T1 (real 과 같은 code) + T2 (다른 code) → dedup 으로 T1 제외, T2 만 합성.
+    // 결과: merged = [T1 UP (real)] + [T2 DOWN (synth)] → pickAutoTrainCode(down) → T2.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'down',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1, isUp: true })]),
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'T1', stationName: '강남', isUp: false }), // dedup 제외
+        position({ trainCode: 'T2', stationName: '강남', isUp: false }), // 합성 채택
+      ],
+    });
+    // T2 만 user direction 합성 candidate 로 남아 lock.
+    // (T1 이 dedup 안 되면 T1+T2 → ambiguity → null 이 되어 본 test 가 fail 했을 것)
+    expect(lock?.trainCode).toBe('T2');
+  });
+
+  it('합성 candidate ambiguity (DOWN train 2개) → null (boarding-prompt fallback)', async () => {
+    // 같은 priority tier 에 2개 이상이면 pickAutoTrainCode 가 null 반환 — 합성 분기도 동일.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'down',
+      seoul: makeSeoul([]),
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'TD1', stationName: '강남', isUp: false }),
+        position({ trainCode: 'TD2', stationName: '강남', isUp: false }),
+      ],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('positions train 이미 target 지남 → 합성 제외 → null', async () => {
+    // target=역삼(idx=1), train@선릉(idx=2) — currentIdx>targetIdx → synthesize 에서 제외.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([]),
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'PASSED', stationName: '선릉', isUp: true }),
+      ],
+    });
+    expect(lock).toBeNull();
   });
 });
