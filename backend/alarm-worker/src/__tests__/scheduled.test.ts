@@ -16,6 +16,10 @@ import {
   VANISH_RE_ATTACH_THRESHOLD,
   BACKEND_TRIP_LIFECYCLE_SILENCE_MS,
   BACKEND_TRIP_LIFECYCLE_FORCE_END_MS,
+  DESTINATION_GPS_CROSS_CHECK_MAX_M,
+  DESTINATION_GPS_STALE_THRESHOLD_MS,
+  evaluateDestinationCrossCheck,
+  recordDestinationCrossCheck,
   arvlCdFireKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
@@ -6780,6 +6784,14 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
         boardingPrompt: 0,
         reschedule: 0,
       },
+      // #1707 — destination cross-check 결과 분포.
+      destinationCrossCheck: {
+        within: 0,
+        gpsFar: 0,
+        staleGps: 0,
+        noGps: 0,
+        stationUnknown: 0,
+      },
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,
@@ -6850,3 +6862,409 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     expect(STALE_LOCK_FIRE_THRESHOLD_MS).toBe(3 * 60 * 1000);
   });
 });
+
+// #1707 — destination 도달 자동 종료 시 device GPS cross-check.
+//
+// 검증 범위:
+//   1. evaluateDestinationCrossCheck — 5 결과 enum 분기(within / gps-far / stale-gps / no-gps / station-unknown).
+//   2. recordDestinationCrossCheck — ScheduledStats 카운터 1:1 매핑.
+//   3. runScheduled 통합 — destination kind advance 시점 cross-check 결과별 cleanup vs preserve.
+//   4. 상수값 — 500m / 5min.
+//   5. 사용자 6/23 1차 trip evidence fixture — 외선 27 hop cascade로 홍대입구 자동 종료 회귀 차단.
+//
+// 상수: DESTINATION_GPS_CROSS_CHECK_MAX_M=500m, DESTINATION_GPS_STALE_THRESHOLD_MS=5min.
+describe('evaluateDestinationCrossCheck (#1707)', () => {
+  // 홍대입구 line 2 좌표 (stations.json) — within 케이스 fixture.
+  const HONGIK_DEST: Waypoint = { stationName: '홍대입구', line: '2', kind: 'destination' };
+  // 합정 line 2 좌표 — 홍대입구와 약 1.1km. far 케이스 fixture (gps@합정 vs destination=홍대입구).
+  const HAPJEONG_LAT = 37.549457;
+  const HAPJEONG_LNG = 126.913808;
+  const HONGIK_LAT = 37.55679;
+  const HONGIK_LNG = 126.923708;
+
+  function makePoint(overrides: Partial<PositionPoint> = {}): PositionPoint {
+    return {
+      lat: HONGIK_LAT,
+      lng: HONGIK_LNG,
+      accuracy: 10,
+      ts: NOW,
+      motion: 'automotive',
+      ...overrides,
+    };
+  }
+
+  it('returns "within" when GPS ≤ 500m of destination', () => {
+    const series = [makePoint({ lat: HONGIK_LAT, lng: HONGIK_LNG })];
+    expect(evaluateDestinationCrossCheck(series, HONGIK_DEST, NOW)).toBe('within');
+  });
+
+  it('returns "gps-far" when GPS > 500m and fresh (< 5min stale)', () => {
+    const series = [makePoint({ lat: HAPJEONG_LAT, lng: HAPJEONG_LNG, ts: NOW - 30_000 })];
+    expect(evaluateDestinationCrossCheck(series, HONGIK_DEST, NOW)).toBe('gps-far');
+  });
+
+  it('returns "stale-gps" when last sample > 5min old (even if far)', () => {
+    const series = [
+      makePoint({
+        lat: HAPJEONG_LAT,
+        lng: HAPJEONG_LNG,
+        ts: NOW - DESTINATION_GPS_STALE_THRESHOLD_MS - 1,
+      }),
+    ];
+    expect(evaluateDestinationCrossCheck(series, HONGIK_DEST, NOW)).toBe('stale-gps');
+  });
+
+  it('returns "no-gps" when series is empty', () => {
+    expect(evaluateDestinationCrossCheck([], HONGIK_DEST, NOW)).toBe('no-gps');
+  });
+
+  it('returns "station-unknown" when stations.json lookup fails', () => {
+    const series = [makePoint()];
+    const unknown: Waypoint = { stationName: '없는역', line: '2', kind: 'destination' };
+    expect(evaluateDestinationCrossCheck(series, unknown, NOW)).toBe('station-unknown');
+  });
+
+  it('boundary: exactly 500m → still "within" (≤ 임계)', () => {
+    // 1 degree lat ≈ 111km → 0.0045 deg ≈ 500m. 좌표 살짝 안쪽으로 두어 ≤500m 보장.
+    const series = [makePoint({ lat: HONGIK_LAT + 0.0044, lng: HONGIK_LNG })];
+    const result = evaluateDestinationCrossCheck(series, HONGIK_DEST, NOW);
+    expect(result).toBe('within');
+  });
+
+  it('uses the most recent (last) sample, not first', () => {
+    // 첫 sample은 far, 마지막 sample은 within → within 반환되어야.
+    const series = [
+      makePoint({ lat: HAPJEONG_LAT, lng: HAPJEONG_LNG, ts: NOW - 60_000 }),
+      makePoint({ lat: HONGIK_LAT, lng: HONGIK_LNG, ts: NOW }),
+    ];
+    expect(evaluateDestinationCrossCheck(series, HONGIK_DEST, NOW)).toBe('within');
+  });
+
+  it('DESTINATION_GPS_CROSS_CHECK_MAX_M is 500m', () => {
+    expect(DESTINATION_GPS_CROSS_CHECK_MAX_M).toBe(500);
+  });
+
+  it('DESTINATION_GPS_STALE_THRESHOLD_MS is 5min', () => {
+    expect(DESTINATION_GPS_STALE_THRESHOLD_MS).toBe(5 * 60 * 1000);
+  });
+});
+
+describe('recordDestinationCrossCheck (#1707)', () => {
+  function makeEmptyStats() {
+    return {
+      destinationCrossCheck: {
+        within: 0,
+        gpsFar: 0,
+        staleGps: 0,
+        noGps: 0,
+        stationUnknown: 0,
+      },
+    };
+  }
+
+  it('increments "within" counter for within result', () => {
+    const stats = makeEmptyStats();
+    recordDestinationCrossCheck(stats, 'within');
+    expect(stats.destinationCrossCheck.within).toBe(1);
+    expect(stats.destinationCrossCheck.gpsFar).toBe(0);
+  });
+
+  it('increments "gpsFar" counter for gps-far result', () => {
+    const stats = makeEmptyStats();
+    recordDestinationCrossCheck(stats, 'gps-far');
+    expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+  });
+
+  it('increments "staleGps" counter for stale-gps result', () => {
+    const stats = makeEmptyStats();
+    recordDestinationCrossCheck(stats, 'stale-gps');
+    expect(stats.destinationCrossCheck.staleGps).toBe(1);
+  });
+
+  it('increments "noGps" counter for no-gps result', () => {
+    const stats = makeEmptyStats();
+    recordDestinationCrossCheck(stats, 'no-gps');
+    expect(stats.destinationCrossCheck.noGps).toBe(1);
+  });
+
+  it('increments "stationUnknown" counter for station-unknown result', () => {
+    const stats = makeEmptyStats();
+    recordDestinationCrossCheck(stats, 'station-unknown');
+    expect(stats.destinationCrossCheck.stationUnknown).toBe(1);
+  });
+
+  it('accumulates over multiple calls', () => {
+    const stats = makeEmptyStats();
+    recordDestinationCrossCheck(stats, 'within');
+    recordDestinationCrossCheck(stats, 'within');
+    recordDestinationCrossCheck(stats, 'gps-far');
+    expect(stats.destinationCrossCheck.within).toBe(2);
+    expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+  });
+});
+
+// 통합: destination kind advance 시점 cross-check 결과별 cleanup vs preserve.
+// 사용자 6/23 trip(성수→합정 2호선 외선)을 직접 fixture로 재현해 회귀 차단을 검증한다.
+describe('runScheduled — #1707 destination GPS cross-check integration', () => {
+  /**
+   * 6/23 trip fixture: 합정(line 2) destination, lock active, ARRIVED arvlCd=1로 cleanup 분기 진입.
+   * series는 호출자가 fixture에서 KV에 직접 seed (테스트마다 좌표/ts 다름).
+   */
+  function makeHapjeongDestTrip(token: string): Trip {
+    return makeTrip({
+      token,
+      route: { type: 'direct', line: '2', stops: 1 },
+      destination: '2-038', // 합정 station id (stations.json)
+      waypoints: [{ stationName: '합정', line: '2', kind: 'destination' }],
+      activityPushToken: 'la-token',
+      activityState: 'live',
+      apnsEnv: 'sandbox',
+      boardingLock: {
+        trainCode: 'T',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['홍대입구', '합정'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+    });
+  }
+
+  function makeHapjeongArrivedSeoul(): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '0',
+                recptnDt: '',
+                updnLine: '내선',
+                trainLineNm: '합정',
+                btrainNo: 'T',
+                subwayNm: '지하철2호선',
+                arvlCd: 1, // ARRIVED → advanceBoardingLockWaypoint → destination cleanup 분기
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+  }
+
+  /**
+   * 6/23 trip evidence fixture — 사용자가 신촌 부근(GPS far)에 있을 때 backend가 합정 도달로 잘못
+   * 판정하면 trip 보존되어야 한다.
+   *   - GPS 좌표: 신촌 부근 (~합정에서 약 1.3km 떨어짐)
+   *   - GPS ts: fresh (NOW - 30s)
+   *   - 결과: 'gps-far' → trip preserved → KV에 trip 잔존 + stats.destinationCrossCheck.gpsFar = 1
+   */
+  it('preserves trip when device GPS is far (>500m) and fresh — 6/23 사용자 trip 회귀 차단', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('user-6-23-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // 신촌 부근 좌표 (37.5552, 126.9368) — 합정(37.549457, 126.913808)에서 약 1.3km. fresh 30s.
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        {
+          lat: 37.5552,
+          lng: 126.9368,
+          accuracy: 15,
+          ts: NOW - 30_000,
+          motion: 'automotive',
+        },
+      ]),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeHapjeongArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // trip 보존 — KV에 잔존.
+    expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
+    // cross-check 카운터 누적.
+    expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+    expect(stats.destinationCrossCheck.within).toBe(0);
+    // cleanup 미발생 — trip-ended push 없음.
+    const calls = fetchImpl.mock.calls as unknown as [string, RequestInit][];
+    const tripEndedCalls = calls.filter((c) => {
+      try {
+        const body = JSON.parse(c[1]?.body as string) as { data?: { reason?: string } };
+        return body?.data?.reason === 'destination-arrived';
+      } catch {
+        return false;
+      }
+    });
+    expect(tripEndedCalls).toHaveLength(0);
+  });
+
+  /**
+   * GPS 500m 이내 + waypoints=0 → 정상 cleanup. 사용자가 실제로 합정에 도착한 happy path.
+   */
+  it('cleans up normally when device GPS is within 500m of destination', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('user-happy-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // 합정 거의 정확한 좌표 (37.549, 126.9138) — 약 50m.
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        {
+          lat: 37.549,
+          lng: 126.9138,
+          accuracy: 10,
+          ts: NOW - 10_000,
+          motion: 'automotive',
+        },
+      ]),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeHapjeongArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // trip 삭제됨.
+    expect(await kv.get(`trip:${trip.token}`)).toBeNull();
+    // cross-check 카운터 누적 (within).
+    expect(stats.destinationCrossCheck.within).toBe(1);
+    expect(stats.destinationCrossCheck.gpsFar).toBe(0);
+  });
+
+  /**
+   * Stale GPS (>5min) → conservative cleanup. backend가 device GPS에 종속되면 안 됨.
+   */
+  it('cleans up normally when last GPS upload is stale (>5min) — conservative behavior preserved', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('user-stale-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // 5분 + 1ms 이전 GPS — stale-gps.
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        {
+          lat: 37.5552, // 신촌 (far) — stale이라 거리는 무관.
+          lng: 126.9368,
+          accuracy: 15,
+          ts: NOW - DESTINATION_GPS_STALE_THRESHOLD_MS - 1,
+          motion: 'automotive',
+        },
+      ]),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeHapjeongArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // stale → cleanup 진행.
+    expect(await kv.get(`trip:${trip.token}`)).toBeNull();
+    expect(stats.destinationCrossCheck.staleGps).toBe(1);
+    expect(stats.destinationCrossCheck.gpsFar).toBe(0);
+  });
+
+  /**
+   * Position series 없음 (legacy / boardingPrompt-only trip 등) → conservative cleanup.
+   */
+  it('cleans up normally when no position series exists (legacy graceful)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('user-no-gps-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // pos:${token} 미설정 — series 빈 배열.
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeHapjeongArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(await kv.get(`trip:${trip.token}`)).toBeNull();
+    expect(stats.destinationCrossCheck.noGps).toBe(1);
+  });
+
+  /**
+   * Last-intermediate effective-destination cleanup도 동일 cross-check 적용. trip.waypoints.length === 1
+   * 이고 advance가 발생하면 cleanup 분기 진입 — gps-far면 trip 보존.
+   */
+  it('preserves trip on last-intermediate effective-destination when GPS far', async () => {
+    const kv = new InMemoryKV();
+    // 마지막 intermediate(홍대입구) 도착 → waypoints=[]로 cleanup 분기.
+    const trip = makeTrip({
+      token: 'last-intermediate-tok',
+      route: { type: 'direct', line: '2', stops: 1 },
+      destination: '2-039', // 홍대입구 line 2 id
+      waypoints: [{ stationName: '홍대입구', line: '2', kind: 'intermediate' }],
+      activityPushToken: 'la-token',
+      activityState: 'live',
+      apnsEnv: 'sandbox',
+      boardingLock: {
+        trainCode: 'T',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['신촌', '홍대입구'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // GPS@신촌 부근, destination=홍대입구 → ~1.4km far + fresh.
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        {
+          lat: 37.5552,
+          lng: 126.9368,
+          accuracy: 15,
+          ts: NOW - 30_000,
+          motion: 'automotive',
+        },
+      ]),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '0',
+                recptnDt: '',
+                updnLine: '내선',
+                trainLineNm: '홍대입구',
+                btrainNo: 'T',
+                subwayNm: '지하철2호선',
+                arvlCd: 1, // ARRIVED
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // trip 보존 — KV에 잔존.
+    expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
+    expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+  });
+});
+

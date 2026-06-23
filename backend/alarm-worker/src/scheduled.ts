@@ -57,9 +57,11 @@ import {
 } from './tripPositionSsot';
 import {
   evaluateWindow,
+  haversineKm,
   readSeries,
   type WindowedMetrics,
 } from './positionSeries';
+import { findStationCoordsByNameAndLine } from './stationsLookup';
 import { assertCronCacheTtl } from './kvConsistency';
 import { buildAlarmKey, putPending } from './pendingPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
@@ -163,6 +165,89 @@ export const SUBSURFACE_ETA_MISSING_TOLERANCE = 10;
  */
 export const BACKEND_TRIP_LIFECYCLE_SILENCE_MS = 6 * 60 * 60 * 1000;
 export const BACKEND_TRIP_LIFECYCLE_FORCE_END_MS = 9 * 60 * 60 * 1000;
+
+/**
+ * #1707 — destination 도달 자동 종료 시 device GPS cross-check 임계.
+ *
+ * 배경: backend vanish-fallback이 1.5분/hop pace로 cascade(`FALLBACK_HOP_SEC=90s`)되면 외선
+ * 우회 27 hop trip이 약 27~40분 만에 destination 도달 신호를 만들어 사용자 trip이 실제 도달
+ * 전에 자동 종료될 수 있다 (2026-06-23 13:35 사용자 1차 trip evidence: 성수→합정 외선 우회를
+ * 14:07 홍대입구에서 강제 종료).
+ *
+ * 정책:
+ *   - DESTINATION_GPS_CROSS_CHECK_MAX_M (500m): GPS 좌표와 destination 좌표 차이 ≤ 이 값이면
+ *     정상 종료. 도시 한 역 반경 + GPS accuracy 여유.
+ *   - DESTINATION_GPS_STALE_THRESHOLD_MS (5min): 마지막 position upload가 이 값보다 오래되면
+ *     "device GPS 자체가 없음"으로 간주해 기존 동작(정상 종료) 유지. backend가 device GPS
+ *     loss에 종속되면 안 됨 — graceful.
+ *
+ * fallback: GPS far(>500m) + fresh(<5min) → trip 보존 + force-end 9h auto-end로 이관.
+ *   force-end는 `tripLifecyclePhase` 9h 백스톱이 처리한다 (`BACKEND_TRIP_LIFECYCLE_FORCE_END_MS`).
+ */
+export const DESTINATION_GPS_CROSS_CHECK_MAX_M = 500;
+export const DESTINATION_GPS_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+/** #1707 destination GPS cross-check 결과. log/stats에 1:1로 매핑. */
+export type DestinationCrossCheckResult =
+  | 'within' // GPS 좌표 ≤ 500m → 정상 종료
+  | 'gps-far' // GPS 좌표 > 500m (fresh) → trip 보존 + force-end 위임
+  | 'stale-gps' // 마지막 GPS upload > 5min stale → 정상 종료 (graceful)
+  | 'no-gps' // device GPS upload 자체 없음 → 정상 종료 (legacy graceful)
+  | 'station-unknown'; // stations.json lookup fail → 정상 종료 (conservative)
+
+/**
+ * #1707 — destination 도달 cross-check.
+ *
+ * cleanupTripWithLa('destination-arrived') 호출 직전 device GPS 좌표와 destination station
+ * 좌표 거리를 verify한다. 결과는 호출자에게 enum으로 반환 — 'gps-far'만 trip 보존, 나머지는
+ * 모두 정상 종료.
+ *
+ * 입력 series는 KV에서 호출자가 read해 전달 (테스트 격리 + 호출자 cycle 내 series read 재사용).
+ *
+ * @param series device positionSeries (KV `pos:${token}`)
+ * @param waypoint destination kind waypoint (stationName + line으로 stations.json lookup)
+ * @param now 현재 epoch ms
+ */
+export function evaluateDestinationCrossCheck(
+  series: readonly PositionPoint[],
+  waypoint: Waypoint,
+  now: number,
+): DestinationCrossCheckResult {
+  if (series.length === 0) return 'no-gps';
+  // 마지막 sample 기준 — 시간순 정렬 가정(append-only).
+  const last = series[series.length - 1];
+  const ageMs = now - last.ts;
+  if (ageMs > DESTINATION_GPS_STALE_THRESHOLD_MS) return 'stale-gps';
+  const coords = findStationCoordsByNameAndLine(waypoint.stationName, waypoint.line);
+  if (coords === null) return 'station-unknown';
+  const distanceM = haversineKm(last.lat, last.lng, coords.lat, coords.lng) * 1000;
+  if (distanceM <= DESTINATION_GPS_CROSS_CHECK_MAX_M) return 'within';
+  return 'gps-far';
+}
+
+/** #1707 — cross-check 결과를 ScheduledStats.destinationCrossCheck 카운터에 누적. */
+export function recordDestinationCrossCheck(
+  stats: Pick<ScheduledStats, 'destinationCrossCheck'>,
+  result: DestinationCrossCheckResult,
+): void {
+  switch (result) {
+    case 'within':
+      stats.destinationCrossCheck.within += 1;
+      return;
+    case 'gps-far':
+      stats.destinationCrossCheck.gpsFar += 1;
+      return;
+    case 'stale-gps':
+      stats.destinationCrossCheck.staleGps += 1;
+      return;
+    case 'no-gps':
+      stats.destinationCrossCheck.noGps += 1;
+      return;
+    case 'station-unknown':
+      stats.destinationCrossCheck.stationUnknown += 1;
+      return;
+  }
+}
 
 /**
  * #1680 (V8d) — cron 사이클에서 stationary skip 여부 결정.
@@ -573,6 +658,25 @@ export interface ScheduledStats extends LiveActivityStats {
     boardingPrompt: number;
     reschedule: number;
   };
+  /**
+   * #1707 — destination 도달 자동 종료 시 device GPS cross-check 결과 분포.
+   *
+   * - `within`         : GPS 좌표 ≤ 500m → 정상 종료
+   * - `gpsFar`         : GPS 좌표 > 500m (fresh) → trip 보존 + force-end 9h 위임 (회귀 차단 누적)
+   * - `staleGps`       : 마지막 GPS upload > 5min stale → 정상 종료 (graceful)
+   * - `noGps`          : device GPS upload 자체 없음 → 정상 종료 (legacy graceful)
+   * - `stationUnknown` : stations.json lookup fail → 정상 종료 (conservative)
+   *
+   * 정상 운영에서 `gpsFar` > 0이면 backend가 destination 도달을 잘못 판정한 케이스가 그만큼
+   * 있었다는 신호 = 회귀 차단 발동. cron tail로 1주 측정.
+   */
+  destinationCrossCheck: {
+    within: number;
+    gpsFar: number;
+    staleGps: number;
+    noGps: number;
+    stationUnknown: number;
+  };
 }
 
 /**
@@ -687,6 +791,14 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       destination: 0,
       boardingPrompt: 0,
       reschedule: 0,
+    },
+    // #1707 — destination 도달 cross-check 결과 분포 (회귀 차단 측정).
+    destinationCrossCheck: {
+      within: 0,
+      gpsFar: 0,
+      staleGps: 0,
+      noGps: 0,
+      stationUnknown: 0,
     },
   };
   // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
@@ -2324,6 +2436,37 @@ export async function advanceBoardingLockWaypoint(
     });
   }
 
+  // #1707 — destination 자동 종료 전 device GPS cross-check.
+  // 본 advance가 trip을 cleanup으로 이끄는지 판정 (destination kind 또는 마지막 intermediate).
+  // 둘 다 동일 cross-check 정책: device GPS가 destination 좌표 ≤500m면 정상 종료, >500m이고
+  // GPS fresh면 trip 보존 + 9h force-end 위임. stale/no-gps/station-unknown은 정상 종료.
+  // backend hop-time fallback cascade(1.5분/hop)가 외선 우회 27 hop trip을 약 27~40분 만에
+  // destination 도달로 잘못 판정하던 회귀(2026-06-23 13:35 성수→합정 trip 14:07 홍대입구
+  // 자동 종료 evidence)를 차단한다.
+  const isCleanupAdvance =
+    waypoint.kind === 'destination' || trip.waypoints.length === 1;
+  if (isCleanupAdvance) {
+    const series = await readSeries(env.TRIPS, trip.token);
+    const crossCheck = evaluateDestinationCrossCheck(series, waypoint, now);
+    recordDestinationCrossCheck(stats, crossCheck);
+    log('boarding-lock: destination cross-check', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      kind: waypoint.kind,
+      result: crossCheck,
+    });
+    if (crossCheck === 'gps-far') {
+      // trip 보존 — advance 자체를 abort. trip.waypoints 미변동 → 다음 cycle 재평가 진입.
+      // 9h 도달 시 `tripLifecyclePhase`의 force-end 가 자연 cleanup (legacy 안전망).
+      log('boarding-lock: cleanup deferred (gps-far)', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+      });
+      return;
+    }
+  }
+
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
     await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
@@ -2446,6 +2589,9 @@ export async function advanceBoardingLockWaypoint(
   });
   if (trip.waypoints.length === 0) {
     // #868 — waypoints 소진(intermediate 마지막 통과)도 effective destination-arrived.
+    // #1707 — 본 분기 진입 전 상단 isCleanupAdvance 게이트가 cross-check 완료. gps-far 케이스는
+    // 이미 early return으로 차단됐다. 여기 도달 = within / stale-gps / no-gps / station-unknown
+    // 중 하나 = 정상 cleanup 진행.
     await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
