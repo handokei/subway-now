@@ -52,6 +52,9 @@ import {
   logSuppressedHopWindowNoSource,
   logSuppressedLocklessForwardOnly,
   logFusionCandidateDistanceReject,
+  logFusionPickerTier,
+  _resetFusionPickerTierWindowForTests,
+  formatFusionPickerTierDistribution,
   logCrossTripMirrorSkip,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
@@ -70,6 +73,7 @@ import {
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
   countBoardingPromptAutoLockOutcomes,
+  countAutoLockReasonsByWindow,
   logScheduleSkipped,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
@@ -122,6 +126,7 @@ describe('alarmLog', () => {
     _resetDedupAlarmWindowForTests();
     _resetRefMismatchWindowForTests();
     _resetBurstSuppressWindowForTests();
+    _resetFusionPickerTierWindowForTests();
     // #735 — 모듈 스코프 pending/timer 격리.
     resetAlarmLogForTest();
   });
@@ -1940,6 +1945,100 @@ describe('alarmLog', () => {
     });
   });
 
+  describe('countAlarmLogReasonsByWindow (#1692)', () => {
+    it('1h 윈도우 내 suppressed reason을 count 내림차순으로 반환한다', () => {
+      const now = 1_700_000_000_000;
+      const oneHourMs = 60 * 60 * 1000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', ts: now - 1000 }),
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', ts: now - 2000 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 3000 }),
+        makeEntry({ outcome: 'fired', ts: now - 100 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, oneHourMs, now);
+      expect(result[0]).toEqual({ reason: 'movement-static-speed', count: 2, lastTs: now - 1000 });
+      expect(result[1]).toEqual({ reason: 'gate-age', count: 1, lastTs: now - 3000 });
+    });
+
+    it('1h 윈도우 밖 항목은 제외한다', () => {
+      const now = 1_700_000_000_000;
+      const oneHourMs = 60 * 60 * 1000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - oneHourMs - 1 }),
+        makeEntry({ outcome: 'suppressed', reason: 'dedup-station', ts: now - 1000 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, oneHourMs, now);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.reason).toBe('dedup-station');
+    });
+
+    it('suppressed가 없으면 빈 배열을 반환한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'fired', ts: now - 1000 }),
+      ];
+      expect(countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now)).toEqual([]);
+    });
+
+    it('topN 제한이 적용된다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = Array.from({ length: 15 }, (_, i) =>
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - (i + 1) * 1000, count: 15 - i }),
+      );
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now, 3);
+      expect(result.length).toBeLessThanOrEqual(3);
+    });
+
+    it('count 필드가 없으면 1로 해석한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 100 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 200 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('나중 entry의 ts가 더 작으면 lastTs를 갱신하지 않는다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 100 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 500 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('나중 entry의 ts가 더 크면 lastTs를 갱신한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 500 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 100 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('reason이 없으면 (unknown)으로 집계한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: undefined, ts: now - 100 }),
+        makeEntry({ outcome: 'suppressed', reason: undefined, ts: now - 200 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: '(unknown)', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('windowMs/now 기본값으로 호출해도 동작한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: Date.now() - 1000 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.reason).toBe('gate-age');
+    });
+  });
+
   describe('logBoardingPromptFired + countBoardingPromptByWindow (#1021)', () => {
     it('logBoardingPromptFired가 boarding-prompt entry를 적재한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
@@ -2068,6 +2167,74 @@ describe('alarmLog', () => {
       const counts = countBoardingPromptAutoLockOutcomes(entries);
       expect(counts['autolock-success']).toBe(0);
       expect(counts['autolock-no-trip']).toBe(0);
+    });
+  });
+
+  describe('countAutoLockReasonsByWindow (#1687)', () => {
+    it('windowMs 이후 엔트리만 집계한다', () => {
+      const now = 10_000;
+      const entries: AlarmLogEntry[] = [
+        // 윈도우 안 (now - 5000 = 5000, ts=6000 > 5000)
+        { ts: 6_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        // 윈도우 경계 밖 (ts=5000 <= 5000)
+        { ts: 5_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        // 윈도우 밖 (ts=4000 < 5000)
+        { ts: 4_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 5_000, now);
+      expect(counts['autolock-success']).toBe(1);
+      expect(counts['autolock-ambiguity']).toBe(0);
+    });
+
+    it('reason별 분포를 올바르게 집계한다', () => {
+      const now = 100_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: 99_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 99_001, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+        { ts: 99_002, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
+        { ts: 99_003, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-no-trip' },
+        { ts: 99_004, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-station-lookup' },
+        { ts: 99_005, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 10_000, now);
+      expect(counts).toEqual({
+        'autolock-success': 1,
+        'autolock-ambiguity': 1,
+        'autolock-arrivals-empty': 1,
+        'autolock-no-trip': 1,
+        'autolock-station-lookup': 1,
+        'autolock-lock-failed': 1,
+      });
+    });
+
+    it('boarding-prompt 외 source는 무시한다', () => {
+      const now = 10_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: 9_000, source: 'fg', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 9_001, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 5_000, now);
+      expect(counts['autolock-success']).toBe(1);
+    });
+
+    it('엔트리 없을 때 모든 카운터가 0', () => {
+      const counts = countAutoLockReasonsByWindow([], 3_600_000);
+      expect(counts['autolock-success']).toBe(0);
+      expect(counts['autolock-ambiguity']).toBe(0);
+      expect(counts['autolock-arrivals-empty']).toBe(0);
+      expect(counts['autolock-no-trip']).toBe(0);
+      expect(counts['autolock-station-lookup']).toBe(0);
+      expect(counts['autolock-lock-failed']).toBe(0);
+    });
+
+    it('reason 없는 entry(발사 빈도 #1021)는 집계에서 제외한다', () => {
+      const now = 10_000;
+      const entries: AlarmLogEntry[] = [
+        // reason 없는 발사 빈도 entry — autolock 집계 제외
+        { ts: 9_000, source: 'boarding-prompt', outcome: 'fired' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 5_000, now);
+      expect(counts['autolock-success']).toBe(0);
     });
   });
 
@@ -2373,6 +2540,136 @@ describe('alarmLog', () => {
 
     it('entries 수가 n보다 적으면 있는 것만 반환', () => {
       expect(lastNReasons([sup('dedup-station')], 10)).toHaveLength(1);
+    });
+  });
+
+  describe('logFusionPickerTier + formatFusionPickerTierDistribution (#1693)', () => {
+    it('logFusionPickerTier: tier 채택 시 source=fusion-picker-tier, outcome=fired 적재', async () => {
+      logFusionPickerTier('gpsFallback');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fusion-picker-tier',
+        outcome: 'fired',
+        reason: 'tier-gpsFallback',
+      });
+    });
+
+    it('logFusionPickerTier: 1s 윈도우 내 같은 tier 재호출은 drop (dedup)', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        logFusionPickerTier('backendSsotAccepts');
+        logFusionPickerTier('backendSsotAccepts'); // 동일 tier, 1s 이내 → drop
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toHaveLength(1);
+        expect(saved[0]).toMatchObject({
+          source: 'fusion-picker-tier',
+          reason: 'tier-backendSsotAccepts',
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('logFusionPickerTier: 1s 경과 후 같은 tier 재호출은 적재 (appendAlarmLog burst counter로 합산)', async () => {
+      // 첫 호출 → 적재
+      logFusionPickerTier('fused');
+      // dedup window 리셋 (1s+ 경과 시뮬레이션)
+      _resetFusionPickerTierWindowForTests();
+      // 두 번째 호출 → burst counter 증가 (appendAlarmLog가 같은 source/reason 연속이면 count++)
+      logFusionPickerTier('fused');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      // appendAlarmLog burst inline counter: 같은 (source, reason, stationName) 연속이면 count++ (1 entry)
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ source: 'fusion-picker-tier', reason: 'tier-fused' });
+      expect(saved[0].count).toBe(2);
+    });
+
+    it('logFusionPickerTier: 다른 tier는 각각 독립 dedup', async () => {
+      logFusionPickerTier('positionTrainBoardingLockMatch');
+      logFusionPickerTier('gpsDerivedFastPath'); // 다른 tier → 별도 적재
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(2);
+      expect(saved[0]).toMatchObject({ reason: 'tier-positionTrainBoardingLockMatch' });
+      expect(saved[1]).toMatchObject({ reason: 'tier-gpsDerivedFastPath' });
+    });
+
+    it('formatFusionPickerTierDistribution: 1h 내 entries만 집계', () => {
+      const nowMs = 1_700_000_000_000;
+      const ONE_HOUR_MS = 60 * 60 * 1_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
+        makeEntry({ ts: nowMs - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
+        makeEntry({ ts: nowMs - ONE_HOUR_MS - 1, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }), // 1h 초과 → 제외
+        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-backendSsotAccepts' }),
+      ];
+
+      const result = formatFusionPickerTierDistribution(entries, nowMs);
+      expect(result).toContain('tier-gpsFallback=2');
+      expect(result).toContain('tier-backendSsotAccepts=1');
+      expect(result).not.toContain('tier-gpsFallback=3'); // stale entry 포함 X
+    });
+
+    it('formatFusionPickerTierDistribution: fusion-picker-tier 아닌 entries 무시', () => {
+      const nowMs = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ ts: nowMs - 100, source: 'fg', outcome: 'fired', reason: 'tier-gpsFallback' }),
+        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-positionTrain' }),
+      ];
+
+      const result = formatFusionPickerTierDistribution(entries, nowMs);
+      expect(result).toBe('tier-positionTrain=1');
+    });
+
+    it('formatFusionPickerTierDistribution: entries 없으면 (none) 반환', () => {
+      const result = formatFusionPickerTierDistribution([], Date.now());
+      expect(result).toBe('(none)');
+    });
+
+    it('formatFusionPickerTierDistribution: count 내림차순 정렬', () => {
+      const nowMs = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-fused' }),
+        makeEntry({ ts: nowMs - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
+        makeEntry({ ts: nowMs - 300, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
+      ];
+
+      const result = formatFusionPickerTierDistribution(entries, nowMs);
+      const parts = result.split(', ');
+      expect(parts[0]).toBe('tier-gpsFallback=2');
+      expect(parts[1]).toBe('tier-fused=1');
+    });
+
+    it('formatFusionPickerTierDistribution: outcome이 fired가 아닌 fusion-picker-tier entries는 무시', () => {
+      const nowMs = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'suppressed', reason: 'tier-gpsFallback' }),
+      ];
+
+      const result = formatFusionPickerTierDistribution(entries, nowMs);
+      expect(result).toBe('(none)');
+    });
+
+    it('formatFusionPickerTierDistribution: reason이 없는 fusion-picker-tier entries는 (unknown) 키로 집계', () => {
+      const nowMs = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired' }),
+      ];
+
+      const result = formatFusionPickerTierDistribution(entries, nowMs);
+      expect(result).toBe('(unknown)=1');
     });
   });
 });

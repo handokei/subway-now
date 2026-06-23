@@ -69,7 +69,10 @@ export type AlarmLogSource =
   //   'cross-trip-mirror-launch'   : R11-c (useLaunchTripReconciliation.ts:89, active trip 없을 때 clear)
   | 'cross-trip-mirror-register'
   | 'cross-trip-mirror-mismatch'
-  | 'cross-trip-mirror-launch';
+  | 'cross-trip-mirror-launch'
+  // #1693 — fusion cascade picker가 어느 tier를 채택했는지 측정. tier 변화 시 1건 적재.
+  // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd tier 채택률) 검증.
+  | 'fusion-picker-tier';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -227,7 +230,19 @@ export type AlarmLogReason =
   // #1656 — phase↔phase cross-station 즉시 cascade 윈도우(PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS=3s)
   // 안에서 다른 station에 두 phase 알람(transfer + destination 또는 역방향)이 leg 전환 race로
   // 연이어 발사되는 회귀 차단(2026-06-20 12:32 건대+성수, 2026-06-19 15:37 이수+사당).
-  | 'dedup-phase-to-phase';
+  | 'dedup-phase-to-phase'
+  // #1693 — fusion cascade picker tier 채택 이름. 'fusion-picker-tier' source로 적재.
+  // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd 채택률) 검증.
+  | 'tier-positionTrainBoardingLockMatch'
+  | 'tier-gpsDerivedFastPath'
+  | 'tier-arvlCdArrivedMatch'
+  | 'tier-backendSsotAccepts'
+  | 'tier-wifiStationResolved'
+  | 'tier-positionTrain'
+  | 'tier-fused'
+  | 'tier-detectionVerdictAccepts'
+  | 'tier-routeResult'
+  | 'tier-gpsFallback';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -643,6 +658,59 @@ export function logCrossTripMirrorSkip(site: 'register' | 'mismatch' | 'launch')
 }
 
 /**
+ * #1693 — fusion cascade picker tier 채택 1건 적재.
+ *
+ * tier가 변경됐을 때만 적재(dedup window 1s) — 같은 tier가 연속 폴링으로 반복 채택돼도
+ * log spam 없이 tier 변화 분포만 측정한다.
+ * 호출 site: `useFusedNearestStation.ts` cascade picker if/else if 블록 이후.
+ *
+ * 각 tier 이름 → reason 매핑:
+ *   positionTrainBoardingLockMatch (#1646) → tier-positionTrainBoardingLockMatch
+ *   gpsDerivedFastPath (#1657)             → tier-gpsDerivedFastPath
+ *   arvlCdArrivedMatch (#1668)             → tier-arvlCdArrivedMatch
+ *   backendSsotAccepts (#1568 T8b)         → tier-backendSsotAccepts
+ *   wifiStationResolved (#1286)            → tier-wifiStationResolved
+ *   positionTrain (Phase 1C)               → tier-positionTrain
+ *   fused (pickFusedStation)               → tier-fused
+ *   detectionVerdictAccepts (#1513)        → tier-detectionVerdictAccepts
+ *   routeResult (Phase A)                  → tier-routeResult
+ *   gpsFallback (gps.liveResult)           → tier-gpsFallback
+ */
+export type FusionPickerTier =
+  | 'positionTrainBoardingLockMatch'
+  | 'gpsDerivedFastPath'
+  | 'arvlCdArrivedMatch'
+  | 'backendSsotAccepts'
+  | 'wifiStationResolved'
+  | 'positionTrain'
+  | 'fused'
+  | 'detectionVerdictAccepts'
+  | 'routeResult'
+  | 'gpsFallback';
+
+const FUSION_PICKER_TIER_DEDUP_MS = 1_000;
+const lastFusionPickerTierTs = new Map<string, number>();
+
+export function logFusionPickerTier(tier: FusionPickerTier): void {
+  const now = Date.now();
+  const last = lastFusionPickerTierTs.get(tier);
+  if (last !== undefined && now - last < FUSION_PICKER_TIER_DEDUP_MS) return;
+  lastFusionPickerTierTs.set(tier, now);
+  const reason: AlarmLogReason = `tier-${tier}` as AlarmLogReason;
+  appendAlarmLog({
+    ts: now,
+    source: 'fusion-picker-tier',
+    outcome: 'fired',
+    reason,
+  });
+}
+
+/** 테스트용 — fusion picker tier dedup 윈도우 캐시 리셋. */
+export function _resetFusionPickerTierWindowForTests(): void {
+  lastFusionPickerTierTs.clear();
+}
+
+/**
  * #1545 (S12) — trip 종료 시 3개 dedup 윈도우 Map을 모두 클리어.
  *
  * 사용자가 직전 trip에서 동일 destination/같은 phaseId를 가진 새 trip을 즉시 시작하면,
@@ -873,6 +941,38 @@ export function summarizeAlarmLogCounters(
   return [...map.values()].sort((a, b) => b.count - a.count);
 }
 
+
+
+/**
+ * #1693 — fusion picker tier 채택 분포 집계 (최근 1h, DebugModal Telemetry row).
+ *
+ * 직전 1h의 'fusion-picker-tier' source 엔트리에서 reason(tier name) 별 count를 집계.
+ * DebugModal이 "Fusion Tier (1h)" row에 표시할 문자열로 포맷해 반환한다.
+ *
+ * 예: "tier-positionTrainBoardingLockMatch=3, tier-gpsFallback=12"
+ * 엔트리 없음 시 "(none)" 반환.
+ */
+export function formatFusionPickerTierDistribution(
+  entries: readonly AlarmLogEntry[],
+  nowMs: number = Date.now(),
+): string {
+  const ONE_HOUR_MS = 60 * 60 * 1_000;
+  const counts: Record<string, number> = {};
+  for (const e of entries) {
+    if (e.source !== 'fusion-picker-tier') continue;
+    if (e.outcome !== 'fired') continue;
+    if (nowMs - e.ts > ONE_HOUR_MS) continue;
+    const key = e.reason ?? '(unknown)';
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  const keys = Object.keys(counts);
+  if (keys.length === 0) return '(none)';
+  return keys
+    .sort((a, b) => (counts[b] as number) - (counts[a] as number))
+    .map((k) => `${k}=${counts[k]}`)
+    .join(', ');
+}
+
 /**
  * Silent push outcome별 집계 (#856).
  *
@@ -904,6 +1004,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'cross-trip-mirror-register': null,
   'cross-trip-mirror-mismatch': null,
   'cross-trip-mirror-launch': null,
+  'fusion-picker-tier': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1400,6 +1501,40 @@ export function countBoardingPromptAutoLockOutcomes(
   return counts;
 }
 
+/**
+ * #1687 — 시간 윈도우 기반 autolock outcome 분포 집계.
+ *
+ * `countBoardingPromptAutoLockOutcomes`와 동일 로직에 windowMs 시간 필터를 추가.
+ * DebugModal Telemetry 섹션에서 "autoLock (1h)" 같은 최근 N분/시간 집계에 사용.
+ *
+ * @param entries  alarmLog 전체 엔트리 배열
+ * @param windowMs 집계 윈도우(ms). `now - windowMs` 이후 엔트리만 포함.
+ * @param now      현재 시각(epoch ms). 기본값 Date.now() — 테스트에서 고정값 주입 가능.
+ */
+export function countAutoLockReasonsByWindow(
+  entries: readonly AlarmLogEntry[],
+  windowMs: number,
+  now: number = Date.now(),
+): Record<BoardingPromptAutoLockReason, number> {
+  const cutoff = now - windowMs;
+  const counts: Record<BoardingPromptAutoLockReason, number> = {
+    'autolock-success': 0,
+    'autolock-no-trip': 0,
+    'autolock-arrivals-empty': 0,
+    'autolock-ambiguity': 0,
+    'autolock-station-lookup': 0,
+    'autolock-lock-failed': 0,
+  };
+  for (const entry of entries) {
+    if (entry.ts <= cutoff) continue;
+    if (entry.source !== 'boarding-prompt') continue;
+    const { reason } = entry;
+    if (reason === undefined) continue;
+    if (reason in counts) counts[reason as BoardingPromptAutoLockReason] += 1;
+  }
+  return counts;
+}
+
 /** #1170: boardingPrompt 사용자 응답 1건 적재. */
 export function logBoardingPromptResponded(input: {
   outcome: 'boarded' | 'dismissed';
@@ -1675,7 +1810,7 @@ export function countGateReasons(
 }
 
 /**
- * #1682 — suppressed reason별 집계 (시간 윈도우 필터링).
+ * #1682/#1692 — suppressed reason별 집계 (시간 윈도우 필터링, top-N 옵션).
  *
  * summarizeAlarmLogCounters에 시간 윈도우 필터를 추가한 래퍼.
  * windowMs 이내 suppressed 엔트리만 집계해 반환. read-only, write 부담 0.
@@ -1683,17 +1818,20 @@ export function countGateReasons(
  * count 내림차순 정렬 — 가장 빈번한 reason이 상단에 노출.
  *
  * @param entries  alarmLog 전체 또는 부분 스냅샷
- * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 배열 반환. Infinity이면 전체.
+ * @param windowMs 집계 윈도우 (ms). 기본값 1h. 0 이하이면 빈 배열 반환. Infinity이면 전체.
  * @param now      기준 시각 (ms epoch). 테스트 결정성용. 기본값 Date.now().
+ * @param topN     반환할 최대 reason 수. 미지정 시 전체 반환.
  */
 export function countAlarmLogReasonsByWindow(
   entries: readonly AlarmLogEntry[],
-  windowMs: number,
+  windowMs: number = 60 * 60 * 1000,
   now: number = Date.now(),
+  topN?: number,
 ): AlarmLogReasonCounter[] {
   if (windowMs <= 0) return [];
   const windowed = entries.filter((e) => now - e.ts <= windowMs);
-  return summarizeAlarmLogCounters(windowed);
+  const result = summarizeAlarmLogCounters(windowed);
+  return topN !== undefined ? result.slice(0, topN) : result;
 }
 
 /**

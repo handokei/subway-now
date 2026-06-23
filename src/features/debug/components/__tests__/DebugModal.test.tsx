@@ -681,7 +681,57 @@ describe('DebugModal', () => {
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
-    it('unmount 시 AppState listener를 정리한다', async () => {
+  it('#1687: autoLock(1h) row — 엔트리 없을 때 "—" 표기', async () => {
+    mockGetAlarmLog.mockResolvedValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByTestId('debug-autolock-telemetry-1h')).toBeTruthy();
+    expect(screen.getByTestId('debug-autolock-telemetry-1h').props.children).toBe('—');
+  });
+
+  it('#1687: autoLock(1h) row — success/ambiguous/empty/failed 분포 표기', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 1_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+      { ts: now - 2_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+      { ts: now - 3_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
+      { ts: now - 4_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    const el = screen.getByTestId('debug-autolock-telemetry-1h');
+    expect(el).toBeTruthy();
+    expect(el.props.children).toContain('ok=1');
+    expect(el.props.children).toContain('amb=1');
+    expect(el.props.children).toContain('empty=1');
+    expect(el.props.children).toContain('fail=1');
+  });
+
+  it('#1693: Fusion Tier (1h) 섹션이 tier 분포를 표시한다', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
+      { ts: now - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
+      { ts: now - 300, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-backendSsotAccepts' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Fusion Tier (1h)')).toBeTruthy();
+    const tierEl = screen.getByTestId('debug-fusion-picker-tier');
+    expect(tierEl.props.children).toContain('tier-gpsFallback=2');
+    expect(tierEl.props.children).toContain('tier-backendSsotAccepts=1');
+  });
+
+  it('#1693: Fusion Tier (1h) 섹션 — fusion-picker-tier 없으면 (none) 표시', async () => {
+    mockGetAlarmLog.mockResolvedValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Fusion Tier (1h)')).toBeTruthy();
+    const tierEl = screen.getByTestId('debug-fusion-picker-tier');
+    expect(tierEl.props.children).toBe('(none)');
+  });
+
+  it('unmount 시 AppState listener를 정리한다', async () => {
     const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     unmount();
@@ -988,6 +1038,31 @@ describe('DebugModal helpers', () => {
       logs: [],
     });
     expect(dump).not.toContain('sources:');
+  });
+
+  it('buildDumpText: Alarm Log Reasons (1h) 섹션이 suppressed reason 집계를 포함한다 (#1692)', () => {
+    const now = 1_700_000_000_000;
+    const logs: AlarmLogEntry[] = [
+      { ts: now - 1000, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+      { ts: now - 2000, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+      { ts: now - 3000, source: 'bg', outcome: 'suppressed', reason: 'gate-age' },
+    ];
+    const dump = __test__.buildDumpText(makeDumpArgs({ logs, nowMs: now }));
+    expect(dump).toContain('## Alarm Log Reasons (1h)');
+    expect(dump).toContain('movement-static-speed: 2');
+    expect(dump).toContain('gate-age: 1');
+  });
+
+  it('buildDumpText: Alarm Log Reasons (1h) suppressed가 없으면 (empty)를 표기한다 (#1692)', () => {
+    const now = 1_700_000_000_000;
+    const logs: AlarmLogEntry[] = [
+      { ts: now - 1000, source: 'fg', outcome: 'fired', stationName: '강남' },
+    ];
+    const dump = __test__.buildDumpText(makeDumpArgs({ logs, nowMs: now }));
+    expect(dump).toContain('## Alarm Log Reasons (1h)');
+    // fired 항목만 있으면 (empty) 출력
+    const section = dump.slice(dump.indexOf('## Alarm Log Reasons (1h)'));
+    expect(section).toContain('(empty)');
   });
 
   it('formatLogLine: location 없는 fired 엔트리는 acc/age를 포함하지 않는다', () => {
