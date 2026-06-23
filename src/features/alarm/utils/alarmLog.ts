@@ -1818,13 +1818,13 @@ export function countGateReasons(
  * count 내림차순 정렬 — 가장 빈번한 reason이 상단에 노출.
  *
  * @param entries  alarmLog 전체 또는 부분 스냅샷
- * @param windowMs 집계 윈도우 (ms). 0 이하이면 빈 배열 반환. Infinity이면 전체.
+ * @param windowMs 집계 윈도우 (ms). 기본값 1h. 0 이하이면 빈 배열 반환. Infinity이면 전체.
  * @param now      기준 시각 (ms epoch). 테스트 결정성용. 기본값 Date.now().
  * @param topN     반환할 최대 reason 수. 미지정 시 전체 반환.
  */
 export function countAlarmLogReasonsByWindow(
   entries: readonly AlarmLogEntry[],
-  windowMs: number,
+  windowMs: number = 60 * 60 * 1000,
   now: number = Date.now(),
   topN?: number,
 ): AlarmLogReasonCounter[] {
