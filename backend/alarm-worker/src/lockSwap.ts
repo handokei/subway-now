@@ -9,13 +9,18 @@
  *
  * 본 모듈은 순수 pipeline (KV I/O 없음). 호출자가 결과 BoardingLockMeta를 trip에 stamp + putTrip.
  *
- * 방향 매칭은 stationName 필터로 implicit 해소:
- *  - 다음 waypoint stationName + 같은 line의 arrivals만 평가 → 잘못된 방향은 station 응답 자체가 없음.
- *  - 추가로 `pickAutoTrainCode`(boardingPrompt.ts)의 arvlCd 우선순위(2>1>0)로 ambiguity 회피.
+ * 방향 매칭 (#1719):
+ *  - `inferLegDirection(line, segmentStations[0], segmentStations[last])` 로 leg 진행 방향 추론.
+ *    추론 가능 노선(monotonic + closedLoop hybrid/pure)에서는 wrong-direction trains 가 candidate
+ *    pool 에 들어가지 않는다 (2호선 외선/내선 / 6호선 응암 방향 회귀 봉쇄).
+ *  - 추론 불가 노선(1/5/gyeongui)에서는 direction=null fallback → stationName + segmentStations
+ *    인덱스 필터로 진행 방향 implicit 해소 (기존 동작 유지).
+ *  - `pickAutoTrainCode` 의 arvlCd 우선순위(2>1>0) + ambiguity null 반환으로 후보 확정.
  */
 
 import { resolveTrainCodeWithFallback } from './arrivalsFromPositions';
 import { isLockLineAllowed } from './consensusGate';
+import { inferLegDirection } from './legDirection';
 import { matchLine, subwayIdForLine } from './lineAlias';
 import type { PositionEntry, SeoulArrivalClient } from './seoul';
 import type { BoardingLockMeta, LineNumber, Trip, Waypoint } from './types';
@@ -79,8 +84,10 @@ export interface AttachLockInputs {
  * 후보 선택 정책:
  *  - 노선 매칭(matchLine) + arvlCd 우선순위(2 출발 > 1 도착 > 0 진입 > 그 외)
  *  - 같은 우선순위 후보 다수 = ambiguity → null (silent skip, caller가 boarding-prompt fallback)
- *  - direction=null: stationName 필터가 이미 진행 방향을 implicit으로 결정 (그 역에 보이지 않는
- *    방향 train은 응답 자체가 없음).
+ *  - direction: #1719 — `inferLegDirection(line, segmentStations[0], segmentStations[last])` 로
+ *    leg 의 진행 방향을 추론해 `resolveTrainCodeWithFallback` 에 forward. 실패(비단조 노선 /
+ *    단일-station leg / 매핑 실패) 시 null → 기존 양방향 허용 동작 유지. 양방향 train 이 같은
+ *    station 에 있는 케이스(2호선 외선/내선, 6호선 응암 방향) 의 wrong-direction lock 회귀 차단.
  *
  * subwayId 매핑 누락 line이면 null — backend는 stations.json 없이 line code만 신뢰.
  */
@@ -97,15 +104,23 @@ export async function attachTrainCodeForLeg(
   const segmentStations = buildLegSegmentStations(trip.waypoints, line);
   if (segmentStations.length === 0) return null;
 
+  // #1719 — leg 진행 방향 추론. segmentStations 가 단일 역이거나 비단조 노선이면 null →
+  // 기존 양방향 허용 동작 유지 (현재 코드와 동일 회귀 위험 잔존, 단 회귀 가능 line 은 추론
+  // 가능 노선 밖). 추론 성공 시 양방향 train 동일 station 의 wrong-direction lock 봉쇄.
+  const direction =
+    segmentStations.length >= 2
+      ? inferLegDirection(line, segmentStations[0], segmentStations[segmentStations.length - 1])
+      : null;
+
   const realArrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
   // #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback. autoLock 과 동일 패턴.
-  // direction=null 인 swap 흐름에서도 segmentStations 기반 필터로 같은 line 의 진행 방향 trains
-  // 만 추출되므로 wrong-direction lock 회귀를 차단한다 (transfer 후 leg + vanish 후 재부착 모두).
+  // direction (#1719) 으로 양방향 합성/real arrivals 양쪽에서 wrong-direction trains 차단 —
+  // transfer 후 leg + vanish 후 재부착 모두 같은 게이트.
   const resolved = resolveTrainCodeWithFallback({
     realArrivals,
     positions: selfPollPositions,
     line,
-    direction: null,
+    direction,
     segmentStations,
     targetStation: targetWaypoint.stationName,
   });
