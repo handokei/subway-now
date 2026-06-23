@@ -4,6 +4,7 @@ import {
   getStationsOnLine,
   type Route,
 } from '../../../shared/utils/stationRoute';
+import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 import type { Station } from '../../../shared/types/station';
 import { MAX_INTER_STATION_M } from '../../../shared/constants/routeProgress';
 
@@ -56,9 +57,9 @@ function stationsBetween(
   const fromIdx = lineStations.findIndex((s) => s.id === fromId);
   const toIdx = lineStations.findIndex((s) => s.id === toId);
   if (fromIdx === -1 || toIdx === -1) return null;
-  if (fromIdx === toIdx) return [lineStations[fromIdx]];
-  if (fromIdx < toIdx) return lineStations.slice(fromIdx, toIdx + 1);
-  return lineStations.slice(toIdx, fromIdx + 1).reverse();
+  // #1698 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path 반환.
+  const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, line);
+  return path.map((i) => lineStations[i]);
 }
 
 function appendSegment(stations: Station[], segment: Station[]): void {

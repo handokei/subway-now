@@ -11,6 +11,7 @@ import { normalizeStationName as baseNormalizeStationName } from './normalizeSta
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
 import { getTransferSeconds } from './transferTimes';
 import { getStopSecondsFromDistance } from './lineSpeeds';
+import { shortestLinePathIndices } from './lineLoopPath';
 
 const logger = createLogger('StationRoute');
 
@@ -58,19 +59,29 @@ export function getStopDistanceMeters(line: LineNumber, fromId: string, toId: st
 }
 
 // line 위 fromIdx → toIdx 구간을 한 hop씩 누적한 운행 시간(초). 환승 대기 미포함.
+// #1698 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path를 반환한다.
 function computeSegmentSeconds(
   line: LineNumber,
   fromIdx: number,
   toIdx: number,
   lineStations: Station[],
 ): number {
-  if (fromIdx === toIdx) return 0;
-  const step = fromIdx < toIdx ? 1 : -1;
+  const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, line);
   let total = 0;
-  for (let i = fromIdx; i !== toIdx; i += step) {
-    total += getStopSeconds(line, lineStations[i].id, lineStations[i + step].id);
+  for (let i = 0; i < path.length - 1; i++) {
+    total += getStopSeconds(line, lineStations[path[i]].id, lineStations[path[i + 1]].id);
   }
   return total;
+}
+
+// #1698 — line 위 fromIdx → toIdx hop 수 (closed loop 짧은 쪽 awareness).
+function computeSegmentHops(
+  line: LineNumber,
+  fromIdx: number,
+  toIdx: number,
+  lineStations: Station[],
+): number {
+  return shortestLinePathIndices(lineStations, fromIdx, toIdx, line).length - 1;
 }
 
 // O(1) 룩업 테이블 (성능 최적화)
@@ -492,7 +503,10 @@ export function getRemainingStops(
   const currentIdx = lineStations.findIndex((s) => s.id === currentId);
   const destIdx = lineStations.findIndex((s) => s.id === destinationId);
 
-  return Math.abs(destIdx - currentIdx);
+  // #1698 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path 반환.
+  // trip 진행 중 매 update마다 호출되는 hot path이므로 wraparound도 정합 필수.
+  const path = shortestLinePathIndices(lineStations, currentIdx, destIdx, current.line);
+  return path.length - 1;
 }
 
 // 같은 노선 위 두 역 사이의 중간역 이름 배열을 진행 방향대로 반환.
@@ -513,12 +527,9 @@ export function getIntermediateStationNames(
   if (fromIdx === -1 || toIdx === -1) return null;
   if (fromIdx === toIdx) return [];
 
-  const step = fromIdx < toIdx ? 1 : -1;
-  const names: string[] = [];
-  for (let i = fromIdx + step; i !== toIdx; i += step) {
-    names.push(lineStations[i].name);
-  }
-  return names;
+  // #1698 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path 반환.
+  const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, from.line);
+  return path.slice(1, -1).map((i) => lineStations[i].name);
 }
 
 function buildNameIndex(stations: Station[]): Map<string, number> {
@@ -560,9 +571,11 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+    // #1698 — 2호선 본선 closed loop은 wraparound 짧은 쪽 stops 산출.
+    const path = shortestLinePathIndices(lineStations, cIdx, dIdx, current.line);
     const direct: DirectRoute = {
       type: 'direct',
-      stops: Math.abs(dIdx - cIdx),
+      stops: path.length - 1,
       line: current.line,
       travelSeconds: computeSegmentSeconds(current.line, cIdx, dIdx, lineStations),
     };
@@ -587,8 +600,9 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     const transferDestIdx = lookupNameIdx(destNameIndex, candidate.name);
     if (transferDestIdx === undefined) continue;
 
-    const stopsToTransfer = Math.abs(i - currentIdx);
-    const stopsFromTransfer = Math.abs(transferDestIdx - destIdx);
+    // #1698 — 환승 leg도 closed loop 짧은 쪽 hop 수 사용 (stops/seconds 정합).
+    const stopsToTransfer = computeSegmentHops(current.line, currentIdx, i, currentLineStations);
+    const stopsFromTransfer = computeSegmentHops(destination.line, transferDestIdx, destIdx, destLineStations);
     const total = stopsToTransfer + stopsFromTransfer;
 
     if (total < bestSingleTotal) {
@@ -697,7 +711,8 @@ function findMultiTransferRoute(
       /* istanbul ignore next -- 환승 그래프가 같은 데이터에서 빌드되므로 undefined 불가 */
       if (t1CurrentIdx === undefined || t1MidIdx === undefined) continue;
 
-      const stopsToFirst = Math.abs(t1CurrentIdx - currentIdx);
+      // #1698 — 환승 leg hop 수도 closed loop awareness.
+      const stopsToFirst = computeSegmentHops(fromLine, currentIdx, t1CurrentIdx, currentLineStations);
 
       // 두 번째 환승: 중간노선 → 목적지노선
       for (const t2Name of transfer2Names) {
@@ -706,8 +721,8 @@ function findMultiTransferRoute(
         /* istanbul ignore next */
         if (t2MidIdx === undefined || t2DestIdx === undefined) continue;
 
-        const stopsToSecond = Math.abs(t2MidIdx - t1MidIdx);
-        const stopsAfter = Math.abs(destIdx - t2DestIdx);
+        const stopsToSecond = computeSegmentHops(midLine, t1MidIdx, t2MidIdx, midLineStations);
+        const stopsAfter = computeSegmentHops(toLine, t2DestIdx, destIdx, destLineStations);
         const total = stopsToFirst + stopsToSecond + stopsAfter;
 
         if (total < bestTotal) {
@@ -1136,12 +1151,13 @@ function getNextStationOnLine(
   if (currentIdx === undefined || targetIdx === undefined) return null;
   if (currentIdx === targetIdx) return null;
 
+  // #1698 — 2호선 본선 closed loop은 shortestLinePathIndices의 path[1]이 다음 역.
+  // 외선/내선 짧은 쪽 방향과 일치.
   const lineStations = getLineStationsCached(line);
-  const step = targetIdx > currentIdx ? 1 : -1;
-  const nextIdx = currentIdx + step;
-  /* istanbul ignore next -- 노선 데이터에서 boundary를 벗어나는 케이스는 발생 불가 */
-  if (nextIdx < 0 || nextIdx >= lineStations.length) return null;
-  return lineStations[nextIdx].name;
+  const path = shortestLinePathIndices(lineStations, currentIdx, targetIdx, line);
+  /* istanbul ignore next -- currentIdx !== targetIdx invariant → path.length >= 2 */
+  if (path.length < 2) return null;
+  return lineStations[path[1]].name;
 }
 
 export function getNextStationName(

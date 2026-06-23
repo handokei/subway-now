@@ -60,6 +60,16 @@ describe('getRemainingStops', () => {
     expect(getRemainingStops('1-001', 'unknown-id')).toBeNull();
     expect(getRemainingStops('unknown-id', '1-001')).toBeNull();
   });
+
+  // #1698 — 2호선 본선 closed loop wraparound 정합 (사용자 trip evidence)
+  it.each<[string, string, number, string]>([
+    ['2-011', '2-038', 16, '성수→합정 내선 16 hop (사용자 6/23 trip)'],
+    ['2-038', '2-011', 16, '합정→성수 내선 16 hop 역방향'],
+    ['2-001', '2-039', 5, '시청→홍대입구 wraparound 5 hop'],
+    ['2-009', '2-026', 17, '한양대→사당 정방향 17 hop (wraparound 짧지 않음)'],
+  ])('getRemainingStops(%s, %s) === %i — %s', (from, to, expected) => {
+    expect(getRemainingStops(from, to)).toBe(expected);
+  });
 });
 
 describe('findRoute', () => {
@@ -84,6 +94,34 @@ describe('findRoute', () => {
     if (route?.type === 'direct') {
       expect(route.stops).toBe(0);
     }
+  });
+
+  // #1698 — 2호선 본선 closed loop wraparound
+  it('2호선 성수→합정 DirectRoute는 wraparound 16 stops를 반환한다 (사용자 trip)', () => {
+    const route = findRoute('2-011', '2-038');
+    expect(route?.type).toBe('direct');
+    if (route?.type === 'direct') {
+      expect(route.stops).toBe(16);
+    }
+  });
+
+  it('2호선 시청→홍대입구 DirectRoute는 wraparound 5 stops', () => {
+    const route = findRoute('2-001', '2-039');
+    expect(route?.type).toBe('direct');
+    if (route?.type === 'direct') {
+      expect(route.stops).toBe(5);
+    }
+  });
+
+  // #1698 — 2호선 본선 closed loop awareness: getNextStationName이 외선/내선 짧은 쪽 다음 역
+  it.each<[string, string, string, string]>([
+    ['2-011', '2-038', '뚝섬', '성수→합정: 내선 다음 역 = 뚝섬 (사용자 trip)'],
+    ['2-038', '2-011', '홍대입구', '합정→성수: 내선 다음 역 = 홍대입구'],
+    ['2-001', '2-039', '충정로(경기대입구)', '시청→홍대입구: wraparound 다음 역 = 충정로'],
+    ['2-009', '2-026', '뚝섬', '한양대→사당: 정방향 다음 역 = 뚝섬 (wraparound 아님)'],
+  ])('getNextStationName(%s, %s) === %s — %s', (from, to, expected) => {
+    const route = findRoute(from, to);
+    expect(getNextStationName(from, to, route)).toBe(expected);
   });
 
   it('환승 가능한 다른 노선이면 TransferRoute를 반환한다', () => {
