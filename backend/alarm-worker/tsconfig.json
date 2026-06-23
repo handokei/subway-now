@@ -25,6 +25,7 @@
     "../../src/data/stationDistances.json",
     "../../src/data/transferTimes.json",
     "../../src/data/stationAliases.js",
+    "../../src/data/lineTopology.json",
     "../../src/shared/types/station.ts",
     "../../src/shared/utils/stationLookup.ts",
     "../../src/shared/utils/normalizeStationName.js",

@@ -1646,8 +1646,9 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       );
       // arrivals에 다른 trainCode(7999)가 중곡행으로 있음 → attachTrainCodeForLeg가 swap candidate 반환
       // swap 후 재estimate 성공 → consecutiveEtaMissing 리셋, lock 유지
+      // #1719 — leg(중곡→군자, 7호선) direction=down 이므로 isUp=false 로 fixture 정정.
       const arrivals: ArrivalEntry[] = [
-        { destination: '중곡', arrivalSeconds: 60, trainCode: '7999', isUp: true, subwayNm: '지하철7호선', arvlCd: null },
+        { destination: '중곡', arrivalSeconds: 60, trainCode: '7999', isUp: false, subwayNm: '지하철7호선', arvlCd: null },
       ];
       await runScheduled(makeEnv(kv), {
         seoul: makeSeoulCombo(arrivals, []),
