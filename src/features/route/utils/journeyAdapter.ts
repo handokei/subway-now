@@ -1,6 +1,7 @@
 import i18next from 'i18next';
 import type { JourneyDisplay, JourneySegment } from '../../../shared/utils/stationRoute';
 import { getStationsOnLine, isSameStationName } from '../../../shared/utils/stationRoute';
+import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { NearestStationResult, LineNumber, Station } from '../../../shared/types/station';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
@@ -24,21 +25,20 @@ export type { StopArrivalContext, StopTransferTarget, Stop, ArrivalTrain, Handof
 const WALK_SPEED_M_PER_MIN = 80;
 
 // segment의 from/to 사이 중간 정거장을 노선 데이터에서 슬라이스한다.
-// id 정렬 순서가 곧 노선 순서라는 데이터 invariant에 의존한다 (stationRoute.ts).
-// stationRoute의 getIntermediateStationNames(fromId, toId)와 유사하지만 JourneySegment에는
-// id가 없어 name 기반 lookup이 필요하므로 별도 구현 유지.
+// #1717 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path를 반환.
+// 이전 단순 slice 구현은 wraparound seg.stops(예: 16)와 직선 slice(예: 26) 불일치로
+// 안전 가드에 빠져 빈 배열 fallback → "전체 역 보기" 토글 expand 시 중간역 0개 표시 회귀.
 function intermediateStationsForSegment(seg: JourneySegment): Station[] {
   const lineStations = getStationsOnLine(seg.line);
   const fromIdx = lineStations.findIndex((s) => isSameStationName(s.name, seg.fromName));
   const toIdx = lineStations.findIndex((s) => isSameStationName(s.name, seg.toName));
   if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return [];
-  const [lo, hi] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
-  const slice = lineStations.slice(lo + 1, hi);
-  // 경로 탐색의 stops 카운트와 중간역 수가 불일치하면 invariant 위반(예: 향후 순환선
-  // wrap-around 최단경로 탐색이 도입될 때 stops=1인데 41개 역이 슬라이스되는 케이스).
-  // 안전하게 빈 배열 fallback.
-  if (slice.length !== seg.stops - 1) return [];
-  return fromIdx < toIdx ? slice : slice.slice().reverse();
+  const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, seg.line);
+  // path[0]=fromIdx, path[length-1]=toIdx. 중간 station은 양 끝 제외.
+  const intermediate = path.slice(1, -1).map((i) => lineStations[i]);
+  // 안전 가드: 산출된 중간역 수가 seg.stops-1과 다르면 invariant 위반 (데이터 drift).
+  if (intermediate.length !== seg.stops - 1) return [];
+  return intermediate;
 }
 
 export function journeyDisplayToStops(

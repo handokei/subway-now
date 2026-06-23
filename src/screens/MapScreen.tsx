@@ -176,6 +176,11 @@ export default function MapScreen() {
               onPress={() => {
                 setCustomOrigin(selectedStation);
                 setSelectedStation(null);
+                // #1717 — destination이 이미 set이면 trip 시작 가능 → 현재역 탭 auto-navigate.
+                // setDestination 분기와 동일 UX 보장 (destination만 변경 시 자동 이동되는 패턴).
+                if (destination) {
+                  router.navigate('/(tabs)');
+                }
               }}
               testID="set-origin-button"
             >
