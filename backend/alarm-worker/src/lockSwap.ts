@@ -14,10 +14,10 @@
  *  - 추가로 `pickAutoTrainCode`(boardingPrompt.ts)의 arvlCd 우선순위(2>1>0)로 ambiguity 회피.
  */
 
-import { pickAutoTrainCode } from './boardingPrompt';
+import { resolveTrainCodeWithFallback } from './arrivalsFromPositions';
 import { isLockLineAllowed } from './consensusGate';
 import { matchLine, subwayIdForLine } from './lineAlias';
-import type { SeoulArrivalClient } from './seoul';
+import type { PositionEntry, SeoulArrivalClient } from './seoul';
 import type { BoardingLockMeta, LineNumber, Trip, Waypoint } from './types';
 
 /**
@@ -61,6 +61,15 @@ export interface AttachLockInputs {
    * 미전달 시 검증 skip(구 호출자 호환).
    */
   allowedLines?: Set<LineNumber>;
+  /**
+   * #1702 (B2-A) — Seoul OpenAPI 단방향/0건 fallback 용 realtimePosition snapshot.
+   *
+   * caller (scheduled.ts `attemptVanishSwap` / transfer-swap site) 가
+   * `readSelfPollPosition(env.TRIPS, line)` 결과를 전달한다. arrivals 가 비거나
+   * `pickAutoTrainCode` 가 candidate 를 찾지 못한 경우 positions 에서 segmentStations 기반
+   * ArrivalEntry 를 합성해 retry. 미전달 / 빈 list 시 기존 동작 (null 반환) 유지.
+   */
+  selfPollPositions?: readonly PositionEntry[];
 }
 
 /**
@@ -78,7 +87,7 @@ export interface AttachLockInputs {
 export async function attachTrainCodeForLeg(
   inputs: AttachLockInputs,
 ): Promise<BoardingLockMeta | null> {
-  const { targetWaypoint, seoul, now, trip, allowedLines } = inputs;
+  const { targetWaypoint, seoul, now, trip, allowedLines, selfPollPositions } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
   if (!subwayId) return null;
@@ -88,11 +97,20 @@ export async function attachTrainCodeForLeg(
   const segmentStations = buildLegSegmentStations(trip.waypoints, line);
   if (segmentStations.length === 0) return null;
 
-  const arrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
-  if (arrivals.length === 0) return null;
-
-  const trainCode = pickAutoTrainCode(arrivals, line, null);
-  if (!trainCode) return null;
+  const realArrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
+  // #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback. autoLock 과 동일 패턴.
+  // direction=null 인 swap 흐름에서도 segmentStations 기반 필터로 같은 line 의 진행 방향 trains
+  // 만 추출되므로 wrong-direction lock 회귀를 차단한다 (transfer 후 leg + vanish 후 재부착 모두).
+  const resolved = resolveTrainCodeWithFallback({
+    realArrivals,
+    positions: selfPollPositions,
+    line,
+    direction: null,
+    segmentStations,
+    targetStation: targetWaypoint.stationName,
+  });
+  if (!resolved) return null;
+  const { trainCode, arrivals } = resolved;
 
   // line cross-check (2단 방어, #1626 follow-up) — `pickAutoTrainCode`가 이미 `matchLine`을
   // 적용하지만, chosen trainCode entry 의 subwayNm 이 line 과 매칭되는지 한 번 더 verify.
