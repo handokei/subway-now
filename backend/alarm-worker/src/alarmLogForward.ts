@@ -10,8 +10,9 @@
  *   - tripStartedAt epoch ms로 같은 device의 동시 trip 충돌 차단.
  *   - YYYY/MM/DD는 tripStartedAt UTC 기준 — operator가 prefix list로 일자별 조회 가능.
  *
- * Body: ndjson (1줄 = JSON 객체). 7줄: header + alarmLog 1줄 + fusionLog 1줄 + gpsDrops 1줄
- *   + ssotSnapshot 1줄 + deviceMetadata 1줄. 사후 분석 도구가 줄 단위 stream parse 가능.
+ * Body: ndjson (1줄 = JSON 객체). 7줄: header + alarmLog 1줄 + fusionLog 1줄
+ *   + fusionTierLog 1줄(#1706) + gpsDrops 1줄 + ssotSnapshot 1줄 + deviceMetadata 1줄.
+ *   사후 분석 도구가 줄 단위 stream parse 가능.
  *
  * R2 lifecycle 90일 삭제는 Cloudflare Dashboard에서 운영자가 수동 설정 (PR 본문 참고).
  *
@@ -21,7 +22,10 @@
  */
 import { tokenPrefix } from './telemetry';
 
-/** entries cap — alarmLog 200 + fusionLog 200 + gpsDrops 100 = 500 + overhead. 1500 cap. */
+/**
+ * entries cap — alarmLog 200 + fusionLog 200 + fusionTierLog 200 + gpsDrops 100 = 700 + overhead.
+ * 1500 cap.
+ */
 export const MAX_ENTRIES_PER_BUCKET = 1500;
 
 /** R2 key prefix. */
@@ -33,6 +37,13 @@ export interface AlarmLogForwardUpload {
   tripEndedAt: number;
   alarmLog: unknown[];
   fusionLog: unknown[];
+  /**
+   * #1706 — fusion picker tier 별 ring buffer entries.
+   * alarmLog ring 점령 회귀 차단을 위해 device-side에서 분리된 채널.
+   * alarmLogStats.ts의 `obj.kind !== 'alarmLog'` 필터로 자동 stats에서 제외 — fusion-picker-tier
+   * 가 sources/reasons 분포를 점령하지 않는다.
+   */
+  fusionTierLog: unknown[];
   gpsDrops: unknown[];
   backendSsotSnapshot: unknown;
   deviceMetadata: {
@@ -54,6 +65,7 @@ export function validateAlarmLogForward(input: unknown): AlarmLogForwardUpload |
     tripEndedAt,
     alarmLog,
     fusionLog,
+    fusionTierLog,
     gpsDrops,
     backendSsotSnapshot,
     deviceMetadata,
@@ -63,6 +75,15 @@ export function validateAlarmLogForward(input: unknown): AlarmLogForwardUpload |
   if (typeof tripEndedAt !== 'number' || tripEndedAt < tripStartedAt) return null;
   if (!Array.isArray(alarmLog) || alarmLog.length > MAX_ENTRIES_PER_BUCKET) return null;
   if (!Array.isArray(fusionLog) || fusionLog.length > MAX_ENTRIES_PER_BUCKET) return null;
+  // #1706 — fusionTierLog는 신규 채널. 누락 시 기본값 [] 허용(구 device 호환). 배열이면 cap 검증.
+  let safeFusionTierLog: unknown[];
+  if (fusionTierLog === undefined) {
+    safeFusionTierLog = [];
+  } else if (Array.isArray(fusionTierLog) && fusionTierLog.length <= MAX_ENTRIES_PER_BUCKET) {
+    safeFusionTierLog = fusionTierLog;
+  } else {
+    return null;
+  }
   if (!Array.isArray(gpsDrops) || gpsDrops.length > MAX_ENTRIES_PER_BUCKET) return null;
   if (!isStringRecord(deviceMetadata)) return null;
   if (typeof deviceMetadata.os !== 'string') return null;
@@ -72,6 +93,7 @@ export function validateAlarmLogForward(input: unknown): AlarmLogForwardUpload |
     tripEndedAt,
     alarmLog,
     fusionLog,
+    fusionTierLog: safeFusionTierLog,
     gpsDrops,
     backendSsotSnapshot: backendSsotSnapshot ?? null,
     deviceMetadata: {
@@ -109,6 +131,8 @@ export function buildNdjsonBody(upload: AlarmLogForwardUpload): string {
     },
     { kind: 'alarmLog', entries: upload.alarmLog },
     { kind: 'fusionLog', entries: upload.fusionLog },
+    // #1706 — fusion picker tier 별 채널. alarmLogStats가 `obj.kind !== 'alarmLog'` 필터로 제외.
+    { kind: 'fusionTierLog', entries: upload.fusionTierLog },
     { kind: 'gpsDrops', entries: upload.gpsDrops },
     { kind: 'backendSsotSnapshot', value: upload.backendSsotSnapshot },
     { kind: 'deviceMetadata', value: upload.deviceMetadata },

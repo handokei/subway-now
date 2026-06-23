@@ -55,6 +55,9 @@ import {
   logFusionPickerTier,
   _resetFusionPickerTierWindowForTests,
   formatFusionPickerTierDistribution,
+  getFusionTierLog,
+  FUSION_TIER_LOG_BUFFER_SIZE,
+  type FusionTierLogEntry,
   logCrossTripMirrorSkip,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
@@ -2543,94 +2546,106 @@ describe('alarmLog', () => {
     });
   });
 
-  describe('logFusionPickerTier + formatFusionPickerTierDistribution (#1693)', () => {
-    it('logFusionPickerTier: tier 채택 시 source=fusion-picker-tier, outcome=fired 적재', async () => {
+  describe('logFusionPickerTier + getFusionTierLog (#1693/#1706 별 ring buffer)', () => {
+    it('logFusionPickerTier: 별 ring buffer에만 적재 — alarmLog ring에 안 들어감', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
       logFusionPickerTier('gpsFallback');
+      // alarmLog는 flush 시도해도 빈 채로 유지 — 별 채널 분리 검증.
       await flushAlarmLog();
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
 
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'fusion-picker-tier',
-        outcome: 'fired',
-        reason: 'tier-gpsFallback',
-      });
+      const ring = getFusionTierLog();
+      expect(ring).toHaveLength(1);
+      expect(ring[0]?.tier).toBe('gpsFallback');
+      expect(typeof ring[0]?.ts).toBe('number');
     });
 
-    it('logFusionPickerTier: 1s 윈도우 내 같은 tier 재호출은 drop (dedup)', async () => {
+    it('logFusionPickerTier: 1s 윈도우 내 같은 tier 재호출은 drop (dedup)', () => {
       const baseTs = 1_700_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       try {
         logFusionPickerTier('backendSsotAccepts');
         logFusionPickerTier('backendSsotAccepts'); // 동일 tier, 1s 이내 → drop
-        await flushAlarmLog();
 
-        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-        expect(saved).toHaveLength(1);
-        expect(saved[0]).toMatchObject({
-          source: 'fusion-picker-tier',
-          reason: 'tier-backendSsotAccepts',
-        });
+        const ring = getFusionTierLog();
+        expect(ring).toHaveLength(1);
+        expect(ring[0]?.tier).toBe('backendSsotAccepts');
       } finally {
         nowSpy.mockRestore();
       }
     });
 
-    it('logFusionPickerTier: 1s 경과 후 같은 tier 재호출은 적재 (appendAlarmLog burst counter로 합산)', async () => {
-      // 첫 호출 → 적재
+    it('logFusionPickerTier: dedup 윈도우 reset 후 같은 tier 재호출은 새 entry 추가', () => {
       logFusionPickerTier('fused');
       // dedup window 리셋 (1s+ 경과 시뮬레이션)
       _resetFusionPickerTierWindowForTests();
-      // 두 번째 호출 → burst counter 증가 (appendAlarmLog가 같은 source/reason 연속이면 count++)
       logFusionPickerTier('fused');
-      await flushAlarmLog();
 
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      // appendAlarmLog burst inline counter: 같은 (source, reason, stationName) 연속이면 count++ (1 entry)
-      expect(saved).toHaveLength(1);
-      expect(saved[0]).toMatchObject({ source: 'fusion-picker-tier', reason: 'tier-fused' });
-      expect(saved[0].count).toBe(2);
+      const ring = getFusionTierLog();
+      expect(ring).toHaveLength(1); // reset이 ring도 비웠으므로 1건만 (사양: reset = full reset)
+      expect(ring[0]?.tier).toBe('fused');
     });
 
-    it('logFusionPickerTier: 다른 tier는 각각 독립 dedup', async () => {
+    it('logFusionPickerTier: 다른 tier는 각각 독립 dedup → 모두 ring에 적재', () => {
       logFusionPickerTier('positionTrainBoardingLockMatch');
-      logFusionPickerTier('gpsDerivedFastPath'); // 다른 tier → 별도 적재
-      await flushAlarmLog();
+      logFusionPickerTier('gpsDerivedFastPath');
 
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved).toHaveLength(2);
-      expect(saved[0]).toMatchObject({ reason: 'tier-positionTrainBoardingLockMatch' });
-      expect(saved[1]).toMatchObject({ reason: 'tier-gpsDerivedFastPath' });
+      const ring = getFusionTierLog();
+      expect(ring).toHaveLength(2);
+      expect(ring[0]?.tier).toBe('positionTrainBoardingLockMatch');
+      expect(ring[1]?.tier).toBe('gpsDerivedFastPath');
+    });
+
+    it(`logFusionPickerTier: ring buffer cap=${FUSION_TIER_LOG_BUFFER_SIZE} FIFO drop`, () => {
+      // cap+5건을 unique tier 조합 + ts 진행으로 push.
+      // dedup window를 매 호출마다 reset해 모두 적재.
+      const baseTs = 2_000_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now');
+      try {
+        for (let i = 0; i < FUSION_TIER_LOG_BUFFER_SIZE + 5; i++) {
+          nowSpy.mockReturnValue(baseTs + i * 2_000);
+          // dedup map reset 없이도 ts gap > 1s 이므로 dedup 통과
+          // 단 첫 reset은 ring 비우니까 호출 X
+          logFusionPickerTier('gpsFallback');
+        }
+        const ring = getFusionTierLog();
+        expect(ring).toHaveLength(FUSION_TIER_LOG_BUFFER_SIZE);
+        // 가장 오래된 entry(i=0~4)가 drop됐는지: 첫 entry ts는 baseTs+5*2000 이상.
+        expect(ring[0]?.ts).toBeGreaterThanOrEqual(baseTs + 5 * 2_000);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('getFusionTierLog: 호출 시 snapshot copy 반환 (외부 변경 영향 없음)', () => {
+      logFusionPickerTier('routeResult');
+      const ring = getFusionTierLog() as FusionTierLogEntry[];
+      ring.push({ ts: 0, tier: 'gpsFallback' });
+      // 내부 ring은 외부 push에 영향 없음.
+      expect(getFusionTierLog()).toHaveLength(1);
+    });
+
+    it('_resetFusionPickerTierWindowForTests: dedup window + ring 모두 reset', () => {
+      logFusionPickerTier('positionTrain');
+      expect(getFusionTierLog()).toHaveLength(1);
+      _resetFusionPickerTierWindowForTests();
+      expect(getFusionTierLog()).toHaveLength(0);
     });
 
     it('formatFusionPickerTierDistribution: 1h 내 entries만 집계', () => {
       const nowMs = 1_700_000_000_000;
       const ONE_HOUR_MS = 60 * 60 * 1_000;
-      const entries: AlarmLogEntry[] = [
-        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
-        makeEntry({ ts: nowMs - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
-        makeEntry({ ts: nowMs - ONE_HOUR_MS - 1, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }), // 1h 초과 → 제외
-        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-backendSsotAccepts' }),
+      const entries: FusionTierLogEntry[] = [
+        { ts: nowMs - 100, tier: 'gpsFallback' },
+        { ts: nowMs - 200, tier: 'gpsFallback' },
+        { ts: nowMs - ONE_HOUR_MS - 1, tier: 'gpsFallback' }, // 1h 초과 → 제외
+        { ts: nowMs - 100, tier: 'backendSsotAccepts' },
       ];
 
       const result = formatFusionPickerTierDistribution(entries, nowMs);
       expect(result).toContain('tier-gpsFallback=2');
       expect(result).toContain('tier-backendSsotAccepts=1');
       expect(result).not.toContain('tier-gpsFallback=3'); // stale entry 포함 X
-    });
-
-    it('formatFusionPickerTierDistribution: fusion-picker-tier 아닌 entries 무시', () => {
-      const nowMs = 1_700_000_000_000;
-      const entries: AlarmLogEntry[] = [
-        makeEntry({ ts: nowMs - 100, source: 'fg', outcome: 'fired', reason: 'tier-gpsFallback' }),
-        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-positionTrain' }),
-      ];
-
-      const result = formatFusionPickerTierDistribution(entries, nowMs);
-      expect(result).toBe('tier-positionTrain=1');
     });
 
     it('formatFusionPickerTierDistribution: entries 없으면 (none) 반환', () => {
@@ -2640,10 +2655,10 @@ describe('alarmLog', () => {
 
     it('formatFusionPickerTierDistribution: count 내림차순 정렬', () => {
       const nowMs = 1_700_000_000_000;
-      const entries: AlarmLogEntry[] = [
-        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-fused' }),
-        makeEntry({ ts: nowMs - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
-        makeEntry({ ts: nowMs - 300, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' }),
+      const entries: FusionTierLogEntry[] = [
+        { ts: nowMs - 100, tier: 'fused' },
+        { ts: nowMs - 200, tier: 'gpsFallback' },
+        { ts: nowMs - 300, tier: 'gpsFallback' },
       ];
 
       const result = formatFusionPickerTierDistribution(entries, nowMs);
@@ -2652,24 +2667,13 @@ describe('alarmLog', () => {
       expect(parts[1]).toBe('tier-fused=1');
     });
 
-    it('formatFusionPickerTierDistribution: outcome이 fired가 아닌 fusion-picker-tier entries는 무시', () => {
+    it('formatFusionPickerTierDistribution: 1h 윈도우 밖 entries만 있으면 (none)', () => {
       const nowMs = 1_700_000_000_000;
-      const entries: AlarmLogEntry[] = [
-        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'suppressed', reason: 'tier-gpsFallback' }),
+      const ONE_HOUR_MS = 60 * 60 * 1_000;
+      const entries: FusionTierLogEntry[] = [
+        { ts: nowMs - ONE_HOUR_MS - 1, tier: 'gpsFallback' },
       ];
-
-      const result = formatFusionPickerTierDistribution(entries, nowMs);
-      expect(result).toBe('(none)');
-    });
-
-    it('formatFusionPickerTierDistribution: reason이 없는 fusion-picker-tier entries는 (unknown) 키로 집계', () => {
-      const nowMs = 1_700_000_000_000;
-      const entries: AlarmLogEntry[] = [
-        makeEntry({ ts: nowMs - 100, source: 'fusion-picker-tier', outcome: 'fired' }),
-      ];
-
-      const result = formatFusionPickerTierDistribution(entries, nowMs);
-      expect(result).toBe('(unknown)=1');
+      expect(formatFusionPickerTierDistribution(entries, nowMs)).toBe('(none)');
     });
   });
 });

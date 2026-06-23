@@ -27,6 +27,8 @@ function basePayload(over: Partial<TelemetryForwardPayload> = {}): TelemetryForw
     tripEndedAt: tripStartedAt + MIN_TRIP_DURATION_MS + 1,
     alarmLog: [{ ts: 1 }],
     fusionLog: [{ ts: 2 }],
+    // #1706 — fusion picker tier 별 ring buffer. alarmLog ring 점령 회귀 차단 채널.
+    fusionTierLog: [{ ts: 4, tier: 'gpsFallback' }],
     gpsDrops: [{ ts: 3 }],
     backendSsotSnapshot: { currentStationId: '강남' },
     deviceMetadata: { os: 'ios', appVersion: '1.2.3', locale: 'ko' },
@@ -89,12 +91,48 @@ describe('forwardTripTelemetry', () => {
       basePayload({
         alarmLog: [],
         fusionLog: [],
+        fusionTierLog: [],
         gpsDrops: [],
         backendSsotSnapshot: null,
       }),
     );
     expect(result.skipReason).toBe('empty-payload');
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('#1706 — fusionTierLog만 단독 적재돼도 forward (empty-payload 아님)', async () => {
+    setBackend({ ok: true, status: 200 });
+    const result = await forwardTripTelemetry(
+      basePayload({
+        alarmLog: [],
+        fusionLog: [],
+        fusionTierLog: [{ ts: 1, tier: 'gpsFallback' }],
+        gpsDrops: [],
+        backendSsotSnapshot: null,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(init.body);
+    // 별 채널로 분리됐는지 검증 — alarmLog ring과 같은 line에 섞이지 않는다.
+    expect(body.fusionTierLog).toEqual([{ ts: 1, tier: 'gpsFallback' }]);
+    expect(body.alarmLog).toEqual([]);
+  });
+
+  it('#1706 — alarmLog/fusionLog/fusionTierLog 동시 forward 시 별 line으로 분리', async () => {
+    setBackend({ ok: true, status: 200 });
+    await forwardTripTelemetry(
+      basePayload({
+        alarmLog: [{ ts: 10, source: 'silent-push-received' }],
+        fusionLog: [{ ts: 20 }],
+        fusionTierLog: [{ ts: 30, tier: 'backendSsotAccepts' }],
+      }),
+    );
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.alarmLog).toEqual([{ ts: 10, source: 'silent-push-received' }]);
+    expect(body.fusionLog).toEqual([{ ts: 20 }]);
+    expect(body.fusionTierLog).toEqual([{ ts: 30, tier: 'backendSsotAccepts' }]);
   });
 
   it('성공 시 ok=true + outbox 비움', async () => {
