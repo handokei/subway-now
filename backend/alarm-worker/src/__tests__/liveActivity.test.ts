@@ -11,6 +11,7 @@ import {
   type LiveActivityDeps,
   type LiveActivityStats,
 } from '../liveActivity';
+import { readSsot, seedSsot } from '../tripPositionSsot';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -783,6 +784,92 @@ describe('cleanupTripWithLa', () => {
         'expired',
       );
       expect(logs).toContain('trip-status write failed');
+    });
+  });
+
+  // #1701 — SSoT mirror row(`ssot:<token>`) cleanup. 모든 종료 경로(cleanupTripWithLa 호출자)가
+  // SSoT를 함께 정리해 같은 token으로 새 trip 등록 시 lazy-seed가 빈 stationName으로 정착하도록.
+  // evidence: device가 옛 trip stationName(7-018 어린이대공원, 6-038 봉화산)을 stale mirror로 받아
+  // 잘못된 알림 발사. fix는 deleteTrip 직후 deleteSsot도 함께 호출하는 것.
+  describe('SSoT mirror cleanup (#1701)', () => {
+    const reasonMatrix: TripEndedReason[] = [
+      'destination-arrived',
+      'expired',
+      'eta-missing',
+      'seoul-outage',
+      'push-unrecoverable',
+    ];
+
+    for (const reason of reasonMatrix) {
+      it(`removes SSoT row when cleanup called with reason ${reason}`, async () => {
+        const kv = new InMemoryKV();
+        const trip = makeTrip({ activityPushToken: undefined });
+        await kv.put('trip:devtoken', JSON.stringify(trip));
+        // SSoT row 사전 seed — 옛 trip의 stationName이 mirror로 남은 상태.
+        await seedSsot(kv as unknown as KVNamespace, 'devtoken', '봉화산(서울의료원)');
+        expect(await readSsot(kv as unknown as KVNamespace, 'devtoken')).not.toBeNull();
+        const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+        await cleanupTripWithLa(
+          trip,
+          env,
+          makeDeps(vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch),
+          makeStats(),
+          NOW,
+          () => undefined,
+          reason,
+        );
+        // trip + SSoT 모두 KV에서 제거됨.
+        expect(await kv.get('trip:devtoken')).toBeNull();
+        expect(await readSsot(kv as unknown as KVNamespace, 'devtoken')).toBeNull();
+      });
+    }
+
+    it('removes SSoT row even when reason is omitted (HTTP DELETE /trips/:token path)', async () => {
+      // HTTP DELETE 경로는 reason 없이 cleanupTripWithLa를 호출 — SSoT는 동등하게 정리돼야 한다.
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      await seedSsot(kv as unknown as KVNamespace, 'devtoken', '용마산');
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+      );
+      expect(await readSsot(kv as unknown as KVNamespace, 'devtoken')).toBeNull();
+    });
+
+    it('logs but does not throw when SSoT delete fails (cleanup continues)', async () => {
+      // KV.delete가 ssot:* 키에서 throw하는 broken 환경. cleanup 흐름은 끝까지 진행돼야 한다.
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const brokenKv = {
+        get: kv.get.bind(kv),
+        put: kv.put.bind(kv),
+        delete: vi.fn(async (key: string) => {
+          if (key.startsWith('ssot:')) throw new Error('ssot kv down');
+          return kv.delete(key);
+        }),
+        list: kv.list.bind(kv),
+      };
+      const env = { TRIPS: brokenKv as unknown as KVNamespace } as Env;
+      const logs: string[] = [];
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        (msg) => logs.push(msg),
+        'expired',
+      );
+      // ssot delete 실패 로그가 남고, trip 정리는 정상 완료.
+      expect(logs).toContain('ssot delete failed');
+      expect(await kv.get('trip:devtoken')).toBeNull();
     });
   });
 });

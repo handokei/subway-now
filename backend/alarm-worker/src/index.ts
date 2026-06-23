@@ -92,7 +92,7 @@ import {
   writeRegressionDataPoints,
 } from './regressionTelemetry';
 import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
-import { readSsot } from './tripPositionSsot';
+import { deleteSsot, readSsot } from './tripPositionSsot';
 import { getTrip, putTrip } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
@@ -686,6 +686,27 @@ app.post('/trips', async (c) => {
     : baseTrip;
 
   await putTrip(c.env.TRIPS, trip);
+
+  // #1701 — 새 세션 분기에서는 SSoT mirror도 강제 cleanup. cleanupTripWithLa가 이미 4 종료
+  // 경로에서 deleteSsot를 호출하지만, 종료 후 KV TTL 자연 만료를 기다리는 동안 같은 token으로
+  // 새 trip이 등록되거나, cleanup 호출 자체가 race로 누락된 경우(예: trip TTL 만료 → cron이
+  // 그냥 skip → trip + SSoT 둘 다 KV에 남음 → 새 POST /trips가 SSoT 살아있는 상태에서 등록)에
+  // 옛 stationName이 device로 forward되는 회귀가 발생한다. 새 세션 판정 시 SSoT 즉시 reset해
+  // 후속 lazy-seed가 새 waypoint.stationName으로 정착되도록 강제한다.
+  // KV delete 실패 graceful — putTrip 성공이 우선이며 trip 등록을 차단하지 않는다.
+  if (!isSameSession) {
+    try {
+      await deleteSsot(c.env.TRIPS, incoming.token);
+    } catch (e) {
+      console.log(
+        JSON.stringify({
+          msg: 'ssot delete on new session failed (#1701)',
+          tokenPrefix: tokenPrefix(incoming.token),
+          error: String(e),
+        }),
+      );
+    }
+  }
 
   // P0-1 (#1577) — Site 6 of 6: trip-mutation 적재 (V8b /trips rate 검증).
   writeMetric(c.env, {

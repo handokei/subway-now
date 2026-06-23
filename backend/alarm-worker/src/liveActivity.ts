@@ -22,6 +22,7 @@ import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { computeMultiHopContext } from './tripMultiHop';
+import { deleteSsot } from './tripPositionSsot';
 import { deleteTrip } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
@@ -282,6 +283,20 @@ export async function cleanupTripWithLa(
   // #705 — trip을 폐기할 때 progress entry도 함께 제거. TTL이 자연 만료를 보장하지만
   // 즉시 cleanup해야 새 동일 token trip 등록 시 stale shiftedCount가 끼지 않는다.
   await deleteProgress(env.TRIPS, trip.token);
+  // #1701 — SSoT mirror row(`ssot:<token>`)도 함께 제거. trip TTL(최대 9h+)이 자연 만료를
+  // 보장하지만, 같은 token 새 trip 등록 시 lazy-seed가 `ssot === null` 조건이라 옛 SSoT가
+  // 살아있으면 새 trip의 stationName이 아닌 옛 trip stationName이 그대로 device로 forward되어
+  // cross-trip stale mirror 누수 (evidence: 7-018 어린이대공원, 6-038 봉화산). 즉시 cleanup해
+  // 새 trip seed가 비어있는 stationName으로 정착되도록 강제한다.
+  // KV write 실패 graceful — alert push와 마찬가지로 best-effort. cleanup 흐름 차단 X.
+  try {
+    await deleteSsot(env.TRIPS, trip.token);
+  } catch (e) {
+    log('ssot delete failed', {
+      token: trip.token.slice(0, 8),
+      error: String(e),
+    });
+  }
 }
 
 /**

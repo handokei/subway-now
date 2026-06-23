@@ -684,6 +684,56 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.waypoints[0].stationName).toBe('중곡');
   });
 
+  // #1701 — 새 세션 분기에서 SSoT mirror가 강제 reset되어야 cross-trip stale mirror가 누수되지 않는다.
+  // evidence: device가 옛 trip stationName(7-018 어린이대공원)을 picker 입력으로 받아 잘못된 알림 발사.
+  it('deletes stale SSoT row on new session (different createdAt) (#1701)', async () => {
+    const { seedSsot, readSsot } = await import('../tripPositionSsot');
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    // 옛 trip의 SSoT mirror 시뮬레이션 — 다른 line의 station name이 남은 상태.
+    await seedSsot(env.TRIPS, 'tok-578', '어린이대공원(세종대)');
+    expect(await readSsot(env.TRIPS, 'tok-578')).not.toBeNull();
+    // 새 세션(다른 createdAt) 등록.
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    // SSoT는 즉시 reset → 후속 lazy-seed가 새 waypoint.stationName으로 정착할 수 있다.
+    expect(await readSsot(env.TRIPS, 'tok-578')).toBeNull();
+  });
+
+  it('preserves SSoT row on same-session re-register (no reset) (#1701)', async () => {
+    // 회귀 가드 — 같은 세션 재등록에서는 SSoT가 유지돼야 한다 (advance 진행분 보존 정신과 정합).
+    const { seedSsot, readSsot } = await import('../tripPositionSsot');
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await seedSsot(env.TRIPS, 'tok-578', '중곡');
+    // 같은 createdAt으로 재POST (same session).
+    await post('/trips', tripBody(), env);
+    const ssot = await readSsot(env.TRIPS, 'tok-578');
+    expect(ssot).not.toBeNull();
+    expect(ssot?.currentStationId).toBe('중곡');
+  });
+
+  it('logs but does not throw when SSoT delete fails on new session (#1701)', async () => {
+    // 회귀 가드 — SSoT delete 실패가 trip 등록을 차단하지 않는다 (graceful).
+    const { seedSsot } = await import('../tripPositionSsot');
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await seedSsot(env.TRIPS, 'tok-578', '어린이대공원(세종대)');
+    // KV.delete가 ssot:* 키에서 throw하도록 patch.
+    const originalDelete = env.TRIPS.delete.bind(env.TRIPS);
+    env.TRIPS.delete = vi.fn(async (key: string) => {
+      if (key.startsWith('ssot:')) throw new Error('ssot kv down');
+      return originalDelete(key);
+    }) as unknown as typeof env.TRIPS.delete;
+    const logSpy = vi.spyOn(console, 'log');
+    const res = await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    expect(res.status).toBe(200);
+    const failureLog = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('ssot delete on new session failed'));
+    expect(failureLog).toBeDefined();
+    logSpy.mockRestore();
+  });
+
   it('preserves existing apnsEnv when incoming omits it', async () => {
     const env = makeKvEnv();
     await post('/trips', tripBody({ apnsEnv: 'production' }), env);
