@@ -10,6 +10,7 @@ import type { AlarmPhase } from './alarm';
 import { TRIP_ENDED_ALERT_BODY, TRIP_ENDED_ALERT_TITLE } from './alertContent';
 import type {
   BoardingPromptPushPayload,
+  LineNumber,
   RescheduleChannel,
   ReschedulePushPayload,
   TripEndedAlertPushPayload,
@@ -175,6 +176,12 @@ export interface SilentPushPayload {
 export interface SilentPushSsotPayload {
   /** 현재 device가 위치한다고 backend가 확신하는 stationId(또는 stationName 호환). */
   currentStationId: string;
+  /**
+   * #1705 (A1/A3-b) — currentStationId 의 노선 metadata. device cascade picker 가 `findStationByNameAndLine`
+   * 으로 동명역/cross-line confusion 차단에 사용. backend v2 schema 부터 stamp; legacy v1 row 호환
+   * 위해 optional — 부재 시 device 는 기존 name-only fallback 으로 동작 (graceful).
+   */
+  currentStationLine?: LineNumber;
   /** backend SSoT motion state — `'moving'` | `'stationary'` | `'unknown'`. */
   motionState: 'moving' | 'stationary' | 'unknown';
   /** 마지막 advance를 통과시킨 evidence type 표시 — device 진단/cascade tier 보조 판단용. */
@@ -359,6 +366,11 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
         : {
             ssot: {
               currentStationId: options.payload.ssot.currentStationId,
+              // #1705 (A1/A3-b) — currentStationLine 정의된 경우에만 wire (cross-line confusion 차단).
+              // 부재 시 JSON serializer 가 omit → device 는 name-only fallback (legacy v1 호환).
+              ...(options.payload.ssot.currentStationLine === undefined
+                ? {}
+                : { currentStationLine: options.payload.ssot.currentStationLine }),
               motionState: options.payload.ssot.motionState,
               lastAdvanceEvidence: options.payload.ssot.lastAdvanceEvidence,
               lastAdvanceAt: options.payload.ssot.lastAdvanceAt,

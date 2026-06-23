@@ -871,15 +871,34 @@ export function useFusedNearestStation(
   //   2. lastAdvanceAt 기준 staleness 60s 이하 — backend cycle(~30s) 2회 + margin.
   //      stale entry는 backend가 trip을 잊었거나 device가 silent push를 한동안 못 받은 상태 →
   //      cascade 채택 시 사용자 실제 위치를 뒤덮을 risk가 있어 자연 fallback.
-  //   3. 노선 가드 — lock 활성 시 resolved station이 lock.boardingLine과 일치해야 채택.
-  //      lockless trip은 노선 가드 없이 backend가 advance한 station을 신뢰(보조 cross-check 없음).
+  //   3. 노선 가드 (3-layer):
+  //      a) lock 활성 + mirror.currentStationLine 정의 + lock.boardingLine 불일치 → 거부.
+  //      b) lock 활성 + mirror.currentStationLine 미정의(legacy v1 row) → boardingLine 기반 매칭 fallback.
+  //      c) lockless + mirror.currentStationLine 정의 → currentStationLine 으로 정확 매칭 (#1705).
+  //      d) lockless + mirror.currentStationLine 미정의(legacy v1 row) → name-only fallback (graceful).
+  //
+  // #1705 (A1/A3-b) — 동명역/cross-line confusion 차단: 사용자 2026-06-23 trip evidence
+  // (2호선 trip 중 "어린이대공원(세종대)" 7호선 mislabel, 6호선 trip 중 "신내역 도착" mislabel)
+  // 직접 fix. backend v2 SSoT 가 currentStationLine 을 stamp 하므로 device 는 line cross-check
+  // 으로 wrong line station 을 cascade 채택 거부한다.
   const ssotStation = useMemo<Station | null>(() => {
     if (!backendSsotMirror) return null;
+    const mirrorLine = backendSsotMirror.currentStationLine;
     if (boardingLock) {
+      // lock 활성: mirror 의 line metadata 가 정의됐고 lock.boardingLine 과 불일치하면 채택 거부
+      // (cross-line confusion 차단). 정의 안 됐으면 boardingLine 기반 매칭으로 graceful fallback.
+      if (mirrorLine !== undefined && mirrorLine !== boardingLock.boardingLine) {
+        return null;
+      }
       return findStationByNameAndLine(
         backendSsotMirror.currentStationId,
         boardingLock.boardingLine,
       );
+    }
+    // lockless: mirror line metadata 가 정의되면 정확 매칭 (cross-line confusion 차단).
+    // 미정의(legacy v1) 면 기존 name-only fallback (graceful).
+    if (mirrorLine !== undefined) {
+      return findStationByNameAndLine(backendSsotMirror.currentStationId, mirrorLine);
     }
     return findStationByName(backendSsotMirror.currentStationId);
   }, [backendSsotMirror, boardingLock]);

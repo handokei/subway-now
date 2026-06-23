@@ -822,6 +822,50 @@ describe('silentPushTask', () => {
         );
         expect(result).toMatchObject({ ssot: { passedStations: [] } });
       });
+
+      // #1705 (A1/A3-b) — currentStationLine wire 흡수.
+      it('currentStationLine 정의된 v2 payload → 그대로 forward', () => {
+        const result = extractPayload(
+          bgTaskData({
+            nextWaypoint: 'A',
+            etaSeconds: 0,
+            phase: 'imminent',
+            ssot: { ...validSsotInput, currentStationLine: '7' },
+          }),
+        );
+        expect(result).toMatchObject({ ssot: { currentStationLine: '7' } });
+      });
+
+      it('currentStationLine 부재 → forward omit (legacy v1 graceful)', () => {
+        const result = extractPayload(
+          bgTaskData({
+            nextWaypoint: 'A',
+            etaSeconds: 0,
+            phase: 'imminent',
+            ssot: validSsotInput,
+          }),
+        );
+        // 본체는 wire 됐으나 currentStationLine 은 omit
+        expect((result as { ssot?: { currentStationLine?: unknown } }).ssot?.currentStationLine).toBeUndefined();
+      });
+
+      it.each([
+        ['empty string', ''],
+        ['non-string number', 7],
+        ['non-string null', null],
+      ])('currentStationLine 형식 mismatch %s → omit (graceful, 본체 wire)', (_label, badLine) => {
+        const result = extractPayload(
+          bgTaskData({
+            nextWaypoint: 'A',
+            etaSeconds: 0,
+            phase: 'imminent',
+            ssot: { ...validSsotInput, currentStationLine: badLine },
+          }),
+        );
+        expect((result as { ssot?: { currentStationLine?: unknown } }).ssot?.currentStationLine).toBeUndefined();
+        // 본체 살아있음 확인
+        expect((result as { ssot?: { currentStationId?: string } }).ssot?.currentStationId).toBe('강남');
+      });
     });
 
     // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
@@ -3406,6 +3450,31 @@ describe('silentPushTask', () => {
       expect(validSsotMirror(undefined)).toBeUndefined();
       expect(validSsotMirror('string')).toBeUndefined();
       expect(validSsotMirror(123)).toBeUndefined();
+    });
+
+    // #1705 (A1/A3-b) — validSsotMirror currentStationLine narrow.
+    describe('currentStationLine narrow (#1705)', () => {
+      it('valid currentStationLine string → forward', () => {
+        const result = validSsotMirror({ ...validSsot, currentStationLine: '7' });
+        expect(result?.currentStationLine).toBe('7');
+      });
+
+      it('currentStationLine 부재 → undefined (legacy v1 graceful)', () => {
+        const result = validSsotMirror(validSsot);
+        expect(result?.currentStationLine).toBeUndefined();
+        expect(result?.currentStationId).toBe('강남'); // 본체 살아있음
+      });
+
+      it.each([
+        ['empty string', ''],
+        ['non-string number', 7],
+        ['non-string null', null],
+        ['non-string object', { id: '7' }],
+      ])('형식 mismatch %s → currentStationLine omit (graceful, 본체 살아있음)', (_label, badLine) => {
+        const result = validSsotMirror({ ...validSsot, currentStationLine: badLine });
+        expect(result?.currentStationLine).toBeUndefined();
+        expect(result?.currentStationId).toBe('강남');
+      });
     });
 
     // #1572 (T9, ADR-017) — Path E SSoT 게이트 통합 acceptance.

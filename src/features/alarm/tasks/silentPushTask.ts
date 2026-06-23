@@ -435,13 +435,27 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
 export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefined {
   if (value == null || typeof value !== 'object') return undefined;
   const obj = value as Record<string, unknown>;
-  const { currentStationId, motionState, lastAdvanceEvidence, lastAdvanceAt, passedStations, alarmEvents } = obj;
+  const {
+    currentStationId,
+    currentStationLine,
+    motionState,
+    lastAdvanceEvidence,
+    lastAdvanceAt,
+    passedStations,
+    alarmEvents,
+  } = obj;
   if (typeof currentStationId !== 'string' || currentStationId.length === 0) return undefined;
   if (motionState !== 'moving' && motionState !== 'stationary' && motionState !== 'unknown') {
     return undefined;
   }
   if (typeof lastAdvanceEvidence !== 'string' || lastAdvanceEvidence.length === 0) return undefined;
   if (typeof lastAdvanceAt !== 'number' || !Number.isFinite(lastAdvanceAt)) return undefined;
+  // #1705 (A1/A3-b) — currentStationLine optional narrow. 형식 mismatch 시 graceful drop (legacy v1
+  // row 와 동일 처리). 본체 mirror 는 살아 있음. caller(cascade picker) 는 line 부재 시 name-only
+  // fallback 으로 동작.
+  const line = typeof currentStationLine === 'string' && currentStationLine.length > 0
+    ? (currentStationLine as LineNumber)
+    : undefined;
   const passed: string[] = [];
   if (Array.isArray(passedStations)) {
     for (const p of passedStations) {
@@ -454,6 +468,7 @@ export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefine
   const events = parseAlarmEventsMirror(alarmEvents);
   return {
     currentStationId,
+    ...(line !== undefined ? { currentStationLine: line } : {}),
     motionState,
     lastAdvanceEvidence,
     lastAdvanceAt,

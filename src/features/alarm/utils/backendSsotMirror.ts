@@ -12,6 +12,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../shared/constants/storageKeys';
+import type { LineNumber } from '../../../shared/types/station';
 
 /**
  * #1534 (S1, T9b, ADR-016) — backend가 추론한 lock 제안 (device 측 mirror schema).
@@ -58,6 +59,16 @@ export interface AlarmEventMirror {
  */
 export interface SilentPushSsotMirror {
   currentStationId: string;
+  /**
+   * #1705 (A1/A3-b) — currentStationId 의 노선 metadata. device cascade picker 가
+   * `findStationByNameAndLine(currentStationId, currentStationLine)` 으로 동명역/cross-line
+   * confusion 을 차단한다 (사용자 2026-06-23 trip: 2호선 trip 에 7호선 "어린이대공원(세종대)" /
+   * 6호선 trip 에 "신내역 도착" mislabel evidence).
+   *
+   * legacy v1 row (backend v2 schema 적용 전, 또는 부재 시) 호환 위해 optional — 부재 시 device
+   * cascade picker 는 기존 name-only fallback (`findStationByName`) 로 동작 (graceful).
+   */
+  currentStationLine?: LineNumber;
   motionState: 'moving' | 'stationary' | 'unknown';
   lastAdvanceEvidence: string;
   lastAdvanceAt: number;
@@ -140,8 +151,15 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
     // #1572 (T9) — alarmEvents parse (optional). 부재/형식 mismatch entry는 graceful drop —
     // 잔여만 채택 (passedStations와 동일 패턴).
     const alarmEvents = parseAlarmEventsMirror(parsed.alarmEvents);
+    // #1705 (A1/A3-b) — currentStationLine parse (optional). 비-string/빈 문자열은 graceful drop
+    // (legacy v1 row 와 동일 처리). 본체 mirror entry 는 살아 있음.
+    const line =
+      typeof parsed.currentStationLine === 'string' && parsed.currentStationLine.length > 0
+        ? (parsed.currentStationLine as LineNumber)
+        : undefined;
     return {
       currentStationId: parsed.currentStationId,
+      ...(line !== undefined ? { currentStationLine: line } : {}),
       motionState: parsed.motionState,
       lastAdvanceEvidence: parsed.lastAdvanceEvidence,
       lastAdvanceAt: parsed.lastAdvanceAt,

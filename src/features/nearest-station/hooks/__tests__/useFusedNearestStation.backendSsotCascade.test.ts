@@ -240,6 +240,123 @@ describe('#1568 (T8b) cascade picker — backend-ssot tier', () => {
   });
 });
 
+// #1705 (A1/A3-b) — cascade picker currentStationLine cross-check.
+//
+// 사용자 2026-06-23 trip evidence: backend SSoT currentStationId 가 한글 stationName 으로 저장돼
+// 동명역/cross-line confusion 발생 (2호선 trip 에 7호선 "어린이대공원(세종대)" 채택 / 6호선 trip 에
+// "신내역 도착" mislabel). 본 fix 는 backend v2 SSoT 가 currentStationLine 을 forward 하면 device
+// cascade picker 가 line cross-check 으로 wrong line station 채택을 거부하게 한다.
+describe('#1705 cascade picker — currentStationLine cross-line confusion guard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    jest.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const flushSsotRead = flushBackendSsotMirrorTick;
+
+  it('lockless trip + mirror line 정의 + 일치 → 정확한 line 으로 채택', async () => {
+    setupBaselineGpsAt('청담');
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name,
+        currentStationLine: '7',
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushSsotRead();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+    expect(hook.result.current.result?.station.line).toBe('7');
+  });
+
+  it('lockless trip + mirror line 미정의(legacy v1) → name-only fallback (기존 동작)', async () => {
+    // legacy v1 row: currentStationLine 부재 → 기존 findStationByName fallback 으로 동작.
+    setupBaselineGpsAt('청담');
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name,
+        // currentStationLine 미지정 = legacy v1 row
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushSsotRead();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    // findStationByName 이 첫 매칭 line 반환 — 용마산은 7호선 단독이라 7로 resolve.
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+  });
+
+  it('lock 활성 trip(line 2) + mirror line 6 (cross-line confusion) → 채택 거부', async () => {
+    // 사용자 evidence 재현: lock=2호선, backend SSoT 가 wrong line=6 으로 forward.
+    // 동명역 "어린이대공원(세종대)" (2호선 동대문역사문화공원 부근 또는 7호선 어린이대공원) 같은 케이스.
+    // device 는 line cross-check 으로 채택 거부 → wifi/positionTrain/fused 등 device tier fallback.
+    setupBaselineGpsAt('청담');
+    const lockOnLine2: BoardingLock = {
+      destinationId: 'dest-2',
+      trainCode: 'T-2',
+      boardingLine: '2',
+      boardingStationId: gangnam2.id,
+      boardedAt: T0,
+      expectedDurationMs: 10 * 60_000,
+    };
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name, // 용마산은 7호선
+        currentStationLine: '6', // backend 가 wrong line 6 으로 stamp (cross-line confusion 시뮬)
+      }),
+    );
+    const hook = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, undefined, undefined, lockOnLine2),
+    );
+    await flushSsotRead();
+    // line 불일치 → backend-ssot 채택 거부 → 기존 tier(GPS 청담) fallback.
+    expect(hook.result.current.source).not.toBe('backend-ssot');
+  });
+
+  it('lockless trip + mirror line 정의 + cross-line (mirror 가 7로 stamp, 실제 stations.json 에 7호선 station 존재) → 정확한 line 으로 매칭', async () => {
+    // 본 케이스는 lockless trip 인데 backend 가 line metadata 를 정의해 보낸 경우. line 일치 시 정상 채택.
+    setupBaselineGpsAt('청담');
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name,
+        currentStationLine: '7',
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushSsotRead();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.result?.station.line).toBe('7');
+  });
+
+  it('lock 활성 trip(line 7) + mirror line 7 일치 → 정상 채택', async () => {
+    setupBaselineGpsAt('청담');
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name,
+        currentStationLine: '7',
+      }),
+    );
+    const hook = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, undefined, undefined, lockOn7),
+    );
+    await flushSsotRead();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+  });
+});
+
 describe('#1646 cascade picker — positionTrain 1순위 승격 (3-of-3 합의)', () => {
   const TRAIN_CODE = 'T-1646';
   const lockOn7Match: BoardingLock = {

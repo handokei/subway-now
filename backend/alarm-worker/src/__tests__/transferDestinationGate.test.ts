@@ -5,6 +5,7 @@ import {
   evaluateTransferDestinationGate,
   isAtOrApproachingTransferDestination,
   isSsotAdvanceRecent,
+  isSsotLineMatchingWaypoint,
   isTransferOrDestination,
   type TransferDestinationBlockReason,
 } from '../transferDestinationGate';
@@ -224,5 +225,78 @@ describe('evaluateTransferDestinationGate', () => {
     const outcome = evaluateTransferDestinationGate(ssot, trip, waypoint, NOW);
     expect(outcome.pass).toBe(false);
     expect(outcome.blockReason).toBe('ssot-not-at-or-approaching');
+  });
+});
+
+// #1705 (A1/A3-b) — currentStationLine cross-check 단위 + 통합.
+describe('isSsotLineMatchingWaypoint (#1705)', () => {
+  it('currentStationLine 미정의(legacy v1) → 무조건 true (dormant)', () => {
+    expect(
+      isSsotLineMatchingWaypoint(
+        { currentStationLine: undefined },
+        { line: '2' },
+      ),
+    ).toBe(true);
+  });
+
+  it('waypoint.line 비어 있음 → 무조건 true (보수적 dormant)', () => {
+    expect(
+      isSsotLineMatchingWaypoint(
+        { currentStationLine: '2' },
+        { line: '' },
+      ),
+    ).toBe(true);
+  });
+
+  it('line 정합 → true', () => {
+    expect(
+      isSsotLineMatchingWaypoint(
+        { currentStationLine: '2' },
+        { line: '2' },
+      ),
+    ).toBe(true);
+  });
+
+  it('line 불일치 → false (cross-line confusion 차단)', () => {
+    // 사용자 2026-06-23 evidence: 2호선 trip 에 7호선 "어린이대공원(세종대)" mislabel.
+    expect(
+      isSsotLineMatchingWaypoint(
+        { currentStationLine: '7' },
+        { line: '2' },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('evaluateTransferDestinationGate — line cross-check (#1705)', () => {
+  it('SSoT 정합 + line 정합 + 신선 → pass', () => {
+    const ssot = makeSsot({ currentStationLine: '2' });
+    const trip = makeTrip();
+    const waypoint = makeWaypoint({ line: '2' });
+    expect(evaluateTransferDestinationGate(ssot, trip, waypoint, NOW).pass).toBe(true);
+  });
+
+  it('SSoT 정합 + line 불일치 → block(ssot-line-mismatch)', () => {
+    // 사용자 2026-06-23 evidence: 6호선 trip 인데 SSoT currentStationLine=6, waypoint.line=6 정합.
+    // 반대 케이스: backend 가 wrong line stamp → device 가 잘못된 waypoint trigger → 본 게이트가 차단.
+    const ssot = makeSsot({
+      currentStationId: '봉화산(서울의료원)',
+      currentStationLine: '7', // backend 가 잘못된 line stamp (cross-line confusion 시뮬)
+    });
+    const trip = makeTrip();
+    const waypoint = makeWaypoint({
+      stationName: '봉화산(서울의료원)',
+      line: '6', // device 의 trip line
+    });
+    const outcome = evaluateTransferDestinationGate(ssot, trip, waypoint, NOW);
+    expect(outcome.pass).toBe(false);
+    expect(outcome.blockReason).toBe('ssot-line-mismatch');
+  });
+
+  it('legacy v1 SSoT (currentStationLine 부재) → line 검증 dormant, 기존 동작 그대로', () => {
+    const ssot = makeSsot({ currentStationLine: undefined });
+    const trip = makeTrip();
+    const waypoint = makeWaypoint({ line: '2' });
+    expect(evaluateTransferDestinationGate(ssot, trip, waypoint, NOW).pass).toBe(true);
   });
 });

@@ -288,6 +288,11 @@ export async function persistFromPositionResponse(
   if (currentStationId.length === 0) return;
   const mirror: SilentPushSsotMirror = {
     currentStationId,
+    // #1705 (A1/A3-b) — lockSuggestion.lineId 가 있으면 currentStationLine 으로 stamp (cross-line
+    // confusion 차단). lockSuggestion 부재 시 omit (legacy v1 row 와 동일 처리, graceful).
+    ...(body.lockSuggestion?.lineId
+      ? { currentStationLine: body.lockSuggestion.lineId as SilentPushSsotMirror['currentStationLine'] }
+      : {}),
     motionState: 'unknown',
     lastAdvanceEvidence: 'seed-override',
     lastAdvanceAt: body.lockSuggestion?.decidedAt ?? 0,
