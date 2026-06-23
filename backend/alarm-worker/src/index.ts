@@ -320,8 +320,10 @@ app.get('/admin/quota', async (c) => {
 app.get('/admin/push-ack-stats', async (c) => {
   const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
   if (authError) return c.json({ error: authError.code }, authError.status);
-  const kv = c.env.TRIPS;
-  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  // #1700 fix — write 대상(pendingPushes.ts:stampReceived)이 PENDING_PUSHES이므로
+  // scan 대상도 동일 namespace여야 한다. 이전엔 TRIPS scan으로 항상 0건 반환.
+  const kv = c.env.PENDING_PUSHES;
+  if (!kv) return c.json({ error: 'pending_pushes_unavailable' }, 503);
   const limit = parseQueryNumber(c.req.query('limit'));
   const stats = await computePushAckStats(kv, Date.now(), limit);
   return c.json(stats);

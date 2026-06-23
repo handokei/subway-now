@@ -57,7 +57,7 @@ export interface PushAckStatsResponse {
 /**
  * KV `received:` + `pending:` prefix scan으로 분포 산출.
  *
- * @param kv TRIPS KV namespace
+ * @param kv PENDING_PUSHES KV namespace (#1700 — stampReceived write 대상과 동일)
  * @param now 현재 epoch ms (윈도우 계산)
  * @param limit 최대 enumerate entry 수 (KV cost 보호, default 500)
  */
