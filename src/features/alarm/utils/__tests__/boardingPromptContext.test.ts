@@ -72,15 +72,72 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptGeoContext.direction).toBe('up');
     });
 
-    it('비단조 line(2호선 순환) — direction null', () => {
+    it('순환선(2호선) — resolveTravelDirection null이지만 inferLoopDirection fallback으로 down 채움 (#1703)', () => {
+      // 시청(2-001) → 을지로3가(2-003): forward=2, backward=41 → forward 짧음 → down(외선순환).
+      // 이전엔 null이었지만 #1703 wiring으로 순환선도 backend가 양방향 후보 ambiguity 회피.
       const ctx = buildBoardingPromptContext({
         route: makeDirectRoute(2, '2'),
         currentStation: st('2-001'),
         destination: st('2-003'),
       });
       expect(ctx).not.toBeNull();
-      expect(ctx?.promptGeoContext.direction).toBeNull();
+      expect(ctx?.promptGeoContext.direction).toBe('down');
       expect(ctx?.promptDisplay.line).toBe('2');
+    });
+
+    it('하이브리드 노선(6호선) — 합정→공덕 down (#1703, 사용자 6/23 trip 회귀 차단)', () => {
+      // 합정(6-013) → 공덕(6-017): id 증가 → down. backend pickAutoTrainCode가 응암 방면
+      // 6184 trainCode를 잘못 잡지 않게 한다.
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(4, '6'),
+        currentStation: st('6-013'),
+        destination: st('6-017'),
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptGeoContext.direction).toBe('down');
+      expect(ctx?.promptDisplay.line).toBe('6');
+      expect(ctx?.promptDisplay.originStation).toBe('합정');
+    });
+
+    it('하이브리드 노선(6호선) — 합정→망원 up (#1703)', () => {
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(1, '6'),
+        currentStation: st('6-013'),
+        destination: st('6-012'),
+      });
+      expect(ctx?.promptGeoContext.direction).toBe('up');
+    });
+
+    it('하이브리드 노선(6호선) — 응암→연신내 down (loop 안, #1703)', () => {
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(4, '6'),
+        currentStation: st('6-001'),
+        destination: st('6-005'),
+      });
+      expect(ctx?.promptGeoContext.direction).toBe('down');
+    });
+
+    it('하이브리드 노선(6호선) — 새절→증산 down (loop→본선 연결점, #1703)', () => {
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(1, '6'),
+        currentStation: st('6-007'),
+        destination: st('6-008'),
+      });
+      expect(ctx?.promptGeoContext.direction).toBe('down');
+    });
+
+    it('비단조/closedLoops 미포함 line(1호선) — direction null fallback', () => {
+      // 1호선은 단조 화이트리스트 + closedLoops 둘 다 없음 → 양쪽 모두 null → 양방향 허용.
+      const current = st('1-001');
+      const dest = st('1-003');
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(2, '1'),
+        currentStation: current,
+        destination: dest,
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptGeoContext.direction).toBeNull();
+      expect(ctx?.promptDisplay.line).toBe('1');
     });
 
     it('next station lookup 실패(current===destination) → null', () => {

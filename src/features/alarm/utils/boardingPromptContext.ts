@@ -36,6 +36,7 @@ import {
   getNextStationName,
 } from '../../../shared/utils/stationRoute';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
+import { inferLoopDirection } from '../../route/utils/loopDirection';
 
 export interface BoardingPromptContext {
   promptGeoContext: {
@@ -70,8 +71,12 @@ export function buildBoardingPromptContext({
   /* istanbul ignore next -- getNextStationName이 같은 line에서 lookup한 name이므로 재조회 실패 불가 */
   if (!nextStation) return null;
 
-  const resolved = resolveTravelDirection(leg.line, currentStation.name, leg.endName);
-  const direction = resolved ? resolved.direction : null;
+  // 단조 노선은 resolveTravelDirection이, 순환/하이브리드 노선(2호선/6호선)은 inferLoopDirection
+  // 이 fallback으로 방향을 채운다(#1703). 둘 다 null이면 양방향 후보 허용 — backend
+  // `pickAutoTrainCode`는 stationName 필터로 implicit 방향 해소(허용 가능한 false negative).
+  const direction =
+    resolveTravelDirection(leg.line, currentStation.name, leg.endName)?.direction ??
+    inferLoopDirection(leg.line, currentStation.name, leg.endName);
 
   return {
     promptGeoContext: {
