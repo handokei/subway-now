@@ -91,3 +91,19 @@ function buildForward(fromIdx: number, toIdx: number): number[] {
   out.push(toIdx);
   return out;
 }
+
+/**
+ * 같은 line 위 두 station idx 사이 hop 수(wraparound aware).
+ *
+ * Closed loop 본선이면 짧은 쪽 hop 수, 그 외(지선/직선)는 정방향 idx 차이.
+ * `pickCandidateTrains` 같은 anchor 기준 거리 비교에 사용 — 직선 `Math.abs(a-b)`로는
+ * 2호선 본선 wraparound 가까운 train이 멀리 인식되어 window/sort에서 누락된다(#1722).
+ */
+export function hopsOnLine(
+  lineStations: readonly Station[],
+  fromIdx: number,
+  toIdx: number,
+  line: LineNumber,
+): number {
+  return shortestLinePathIndices(lineStations, fromIdx, toIdx, line).length - 1;
+}

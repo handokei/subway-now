@@ -176,4 +176,39 @@ describe('buildBoardingLockMeta', () => {
     });
     expect(result).toBeNull();
   });
+
+  describe('2호선 본선 wraparound (#1722, #622 후속)', () => {
+    // 시청(2-001, idx 0) → 합정(2-038): 직선 slice는 37+ stations.
+    // wraparound aware는 시청 → 충정로(2-043) → ... → 합정 = 6 hop (7 stations).
+    it('시청 → 합정 segmentStations는 wraparound short path (≤ 10 stations)', () => {
+      const route = makeDirectRoute(6, '2');
+      const result = buildBoardingLockMeta({
+        lock: { ...baseLock, boardingLine: '2' },
+        route,
+        destinationName: '합정',
+        boardingStationName: '시청',
+      });
+      expect(result).not.toBeNull();
+      expect(result!.segmentStations[0]).toBe('시청');
+      expect(result!.segmentStations[result!.segmentStations.length - 1]).toBe('합정');
+      // wraparound 경로 6 hop (7 stations) 보장 — 직선 slice 38 stations와 명확히 구분.
+      expect(result!.segmentStations.length).toBeLessThanOrEqual(10);
+      // wraparound이므로 두 번째 station은 정방향 인접(을지로입구)이 아니라 충정로(prefix).
+      expect(result!.segmentStations[1].startsWith('충정로')).toBe(true);
+    });
+
+    it('합정 → 시청 segmentStations도 wraparound (역방향, 6 hop)', () => {
+      const route = makeDirectRoute(6, '2');
+      const result = buildBoardingLockMeta({
+        lock: { ...baseLock, boardingLine: '2' },
+        route,
+        destinationName: '시청',
+        boardingStationName: '합정',
+      });
+      expect(result).not.toBeNull();
+      expect(result!.segmentStations[0]).toBe('합정');
+      expect(result!.segmentStations[result!.segmentStations.length - 1]).toBe('시청');
+      expect(result!.segmentStations.length).toBeLessThanOrEqual(10);
+    });
+  });
 });

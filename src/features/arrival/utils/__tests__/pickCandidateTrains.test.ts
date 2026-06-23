@@ -1,5 +1,6 @@
 import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
 import type { LineNumber } from '../../../../shared/types/station';
+import { getStationsOnLine } from '../../../../shared/utils/stationRoute';
 import { pickCandidateTrains, CANDIDATE_DISTANCE_THRESHOLD_KM } from '../pickCandidateTrains';
 
 const LINE: LineNumber = '2';
@@ -324,6 +325,68 @@ describe('pickCandidateTrains', () => {
       });
       expect(result.map((t) => t.trainNo)).toEqual(['NEAR']);
       expect(onReject).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('2호선 본선 wraparound (#1722)', () => {
+    // 본선 closed loop: 시청(2-001, idx 0) ↔ 충정로(2-043) 인접.
+    // 직선 Math.abs로는 시청 → 합정(2-038) 거리가 37이라 window=10이면 reject.
+    // wraparound aware로는 6 hop (시청→충정로→...→합정)이라 keep.
+    const LINE2: LineNumber = '2';
+    const line2 = getStationsOnLine(LINE2);
+    const sicheongName = line2.find((s) => s.id === '2-001')!.name;
+    const hapjeongName = line2.find((s) => s.id === '2-038')!.name;
+
+    it('keeps wraparound-near train within window (직선 Math.abs로는 reject)', () => {
+      const result = pickCandidateTrains({
+        positions: [
+          {
+            line: LINE2,
+            trains: [makeTrain({ trainNo: 'WRAP', statnNm: hapjeongName })],
+          },
+        ],
+        line: LINE2,
+        anchorStationName: sicheongName,
+        windowStations: 10,
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['WRAP']);
+    });
+
+    it('rejects train beyond wraparound-aware window', () => {
+      // 시청 idx 0, 사당(2-026) idx 25 — wraparound도 18 hop. window=10이면 양쪽 다 X.
+      const sadangName = line2.find((s) => s.id === '2-026')!.name;
+      const result = pickCandidateTrains({
+        positions: [
+          {
+            line: LINE2,
+            trains: [makeTrain({ trainNo: 'FAR', statnNm: sadangName })],
+          },
+        ],
+        line: LINE2,
+        anchorStationName: sicheongName,
+        windowStations: 10,
+      });
+      expect(result).toEqual([]);
+    });
+
+    it('sortKey uses wraparound-aware hops, not |Δidx|', () => {
+      // anchor=시청. 합정(wraparound 6 hop)이 을지로입구(직선 1 hop)보다 멀어야 정상.
+      const euljiroName = line2.find((s) => s.id === '2-002')!.name;
+      const result = pickCandidateTrains({
+        positions: [
+          {
+            line: LINE2,
+            trains: [
+              makeTrain({ trainNo: 'WRAP', statnNm: hapjeongName }),
+              makeTrain({ trainNo: 'NEAR', statnNm: euljiroName }),
+            ],
+          },
+        ],
+        line: LINE2,
+        anchorStationName: sicheongName,
+        windowStations: 10,
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['NEAR', 'WRAP']);
     });
   });
 
