@@ -307,10 +307,14 @@ export default function HomeScreen() {
   const boardingLockStation = fusionBoardingLock
     ? getStationById(fusionBoardingLock.boardingStationId) ?? null
     : null;
+  // #1723 — locationUncertain(GPS stale 5분+ 포함) 동안 lastFusedStationRef 우회.
+  //   사용자 6/23 13:56 evidence: trip 종료 후 GPS lastFix 6분 전 → result=null 이지만
+  //   lastFusedStationRef가 이전 trip 마지막 fused station(을지로3가) 보존 → stale stuck.
+  //   stale 시 ref skip → boardingLockStation / tripOrigin fallback → 모두 null 시 "위치 확인 중" UX.
   const effectiveOrigin =
     customOrigin ??
     result?.station ??
-    lastFusedStationRef.current ??
+    (locationUncertain ? null : lastFusedStationRef.current) ??
     boardingLockStation ??
     tripOrigin ??
     null;

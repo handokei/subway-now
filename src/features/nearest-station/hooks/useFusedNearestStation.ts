@@ -63,6 +63,7 @@ import {
   GPS_DERIVED_ACCURACY_MAX_M,
   GPS_DERIVED_FIX_MAX_AGE_MS,
   GPS_DERIVED_ROUTE_MATCH_MAX_KM,
+  GPS_FALLBACK_STALE_MAX_AGE_MS,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
@@ -72,7 +73,7 @@ import {
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { NearestStationResult, Station } from '../../../shared/types/station';
+import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
 import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
 import {
@@ -754,17 +755,36 @@ export function useFusedNearestStation(
     maxDeltaKm: MAX_FUSION_DELTA_KM,
     lockActive: boardingLock != null,
   };
+  // #1723 — GPS fix staleness 게이트 (5분+ stale 거부).
+  //
+  // gps-only confidence(arrival/position 신호 부재 시 pickFusedStation이 GPS top-1로 fallback)는
+  // 사실상 GPS 좌표만으로 station을 산출하므로 GPS가 stale이면 stale station을 cascade로 흘려보낸다
+  // (사용자 6/23 13:56 evidence: trip 종료 후 을지로3가 stuck, GPS lastFix 6분 전 → fused tier가
+  // gps-only로 stale 좌표 채택). arrival/position 신호가 있는 fused는 GPS 좌표와 무관하게 신뢰
+  // 가능하므로 본 게이트 비적용.
+  const nowForGpsFallback = Date.now();
+  const gpsFallbackStale =
+    typeof gps.lastFixAtMs === 'number' &&
+    nowForGpsFallback - gps.lastFixAtMs > GPS_FALLBACK_STALE_MAX_AGE_MS;
+
   // #662: BoardingLock 활성 시 fused도 lock.boardingLine과 다른 노선이면 강등 — positionTrain과
   // 동일 정신. 환승역에서 GPS 후보가 두 노선 모두 잡아 fused가 옆 노선으로 fusion되는 케이스 방어.
   // race: createTransferLock으로 lock이 새 leg로 교체되는 순간 1 render cycle 동안 옛 lock 기준
   // 강등이 일어나 source가 한 번 gps로 flash 가능 — UX 임팩트 미미해 현재는 수용.
+  // #1723: fused.confidence='gps-only' + GPS stale → 게이트 실패 → cascade 다음 우선순위(routeResult /
+  //   verdict / GPS fallback) 시도. arrival/position 신호 있는 fused는 본 게이트 비적용 (gps-only만).
   const fusedPasses =
     fused != null &&
     passesFusionDistanceGate({ ...gateOpts, candidate: fused.result }) &&
-    (!boardingLock || fused.result.station.line === boardingLock.boardingLine);
+    (!boardingLock || fused.result.station.line === boardingLock.boardingLine) &&
+    !(fused.confidence === 'gps-only' && gpsFallbackStale);
   // routeResult는 route arc(단일 노선 segment) 위 진행도라 옆 노선 station이 들어올 수 없음 → 가드 불필요.
+  // #1723: route-progress는 progress 알고리즘이 user GPS와 arc를 fusion한 결과 — GPS stale이면
+  //   arc 위 progress 추정도 stale이므로 거부 (gps-only fused와 동일 정신).
   const routePasses =
-    routeResult != null && passesFusionDistanceGate({ ...gateOpts, candidate: routeResult });
+    routeResult != null &&
+    passesFusionDistanceGate({ ...gateOpts, candidate: routeResult }) &&
+    !gpsFallbackStale;
 
   // #1286 — WiFi SSID 역 매칭 → fusion cascade.
   // wifiSsidLookup은 역명 → 첫 번째 호선 Station을 반환하므로, 환승역 호선 보정:
@@ -1007,6 +1027,22 @@ export function useFusedNearestStation(
     return null;
   })();
 
+  // #1723 — GPS fallback 정제: stale 거부 (환승역 line 보정은 post-cascade에서 처리).
+  //
+  // useNearestStation.liveResult는 sticky override 없는 GPS 최근접 결과. cascade 최종 fallback
+  // (모든 device tier 실패) 또는 shouldDowngradeFusion 강등 후 GPS 원본 fallback에서 사용. stale GPS
+  // 6분 전 fix가 BG/지하 dead zone 후에도 남아 사용자 실제 위치와 무관한 stale station을 표시하는
+  // 회귀를 차단 (사용자 6/23 13:56 evidence: trip 종료 후 을지로3가 stuck).
+  //
+  // gpsFallbackStale는 위(fusedPasses/routePasses)에서 이미 계산. 본 helper도 같은 신선도 게이트
+  // 공유 — gps-only 모든 cascade tier(fused gps-only / routeProgress / 최종 fallback)에서 일관 적용.
+  //
+  // 환승역 line drift 보정은 cascade picker 직후 post-cascade 단계에서 source 화이트리스트
+  // (`source === 'gps' || source === 'route-progress'`) 기반으로 처리 — 본 helper는 stale gate만 담당.
+  const gpsFallbackResult: NearestStationResult | null = gpsFallbackStale
+    ? null
+    : gps.liveResult;
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
@@ -1076,7 +1112,9 @@ export function useFusedNearestStation(
     // cascade fallback에 들어가 station-passed/imminent fire의 nearestStation 입력이 된다.
     // gps.liveResult는 sticky override 없는 GPS 최근접 결과 — sticky:locked가 fire path 진입 차단.
     // 표시 채널은 gps.stickyDisplayOnly로 별 노출(아래 return).
-    result = gps.liveResult;
+    // #1723 — stale GPS 거부 + 환승역 line 보정 (gpsFallbackResult helper).
+    //   gps.liveResult를 직접 쓰지 않고 정제된 helper를 사용해 stale fix stuck + cross-line drift 회귀 차단.
+    result = gpsFallbackResult;
     confidence = 'gps-only';
     source = 'gps';
   }
@@ -1105,6 +1143,43 @@ export function useFusedNearestStation(
   } else {
     logFusionPickerTier('gpsFallback');
   }
+
+  // #1723 — 환승역 line drift 보정 (post-cascade + 강등 후 fallback 공통).
+  //
+  // gps 또는 route-progress source로 산출된 result는 stations.json entry order 의존이라 환승역에서
+  // 잘못된 line이 채택될 수 있다 (사용자 6/23 14:20 evidence: 광흥창 부근에서 신내/합정 toggle).
+  // 이미 line-validated된 tier(boarding-lock / backend-ssot / wifi-ssid / position-train)는 본 보정
+  // 미적용 — source 화이트리스트로 강등.
+  //
+  // 보정 정책:
+  //   1. lock 활성 → boardingLock.boardingLine 선호
+  //   2. lockless + allowedLines size=1 (direct route 또는 단일 leg) → 그 line 선호
+  //   3. lockless + allowedLines size≥2 (환승 route) → 보정 없음 (어느 line 선호인지 불명확)
+  //   4. lockless + allowedLines undefined (trip 비활성) → 보정 없음 (자유 화면)
+  //
+  // 매칭 실패(target line에 해당 name 없음) 시 원본 그대로 (graceful, 회귀 0).
+  //
+  // distanceKm: 환승역 line별 좌표 미세 차이(예: 합정 line2 vs line6 ~25m)는 보존된 distanceKm로
+  // 흡수. fusion 거리 게이트 임계(0.5~0.6km)에 비해 미세해 false positive/negative 임팩트 무시 가능.
+  // 정확한 distanceKm 갱신은 후속 cycle GPS userLocation 변화 시 자연 재산출.
+  const applyTransferLineCorrection = (
+    candidate: NearestStationResult | null,
+    sourceForCheck: FusionSource,
+  ): NearestStationResult | null => {
+    if (candidate == null) return null;
+    if (sourceForCheck !== 'gps' && sourceForCheck !== 'route-progress') return candidate;
+    const preferredLine: LineNumber | null =
+      boardingLock?.boardingLine ??
+      (allowedLines && allowedLines.size === 1
+        ? Array.from(allowedLines)[0]
+        : null);
+    if (preferredLine === null) return candidate;
+    if (candidate.station.line === preferredLine) return candidate;
+    const reresolved = findStationByNameAndLine(candidate.station.name, preferredLine);
+    if (!reresolved) return candidate;
+    return { station: reresolved, distanceKm: candidate.distanceKm };
+  };
+  result = applyTransferLineCorrection(result, source);
 
   // #1418 — Tier 1 SSOT 합의 판정 + 환경 추정.
   //
@@ -1366,7 +1441,10 @@ export function useFusedNearestStation(
     source = 'gps';
     // #1486 (ADR-015 §2) — 강등 후 GPS 원본 fallback도 sticky 격리.
     // 위 cascade fallback과 동일 패턴: gps.liveResult가 sticky override 없는 GPS 최근접.
-    result = gps.liveResult;
+    // #1723 — 정제된 gpsFallbackResult helper (stale 거부) + 환승역 line 보정 동시 적용.
+    //   강등 후 source가 'gps'로 flip되므로 post-cascade 단계에서 놓친 transfer correction을
+    //   본 분기에서 다시 적용해 환승역 line drift 회귀 차단 (lock 활성 trip 보호).
+    result = applyTransferLineCorrection(gpsFallbackResult, 'gps');
   }
 
   // #1401 — prev arc idx 갱신. 최종 result 결정 후(강등 후 station이 바뀌었을 수 있음) idx 다시 계산.
@@ -1661,7 +1739,9 @@ export function useFusedNearestStation(
     loading: gps.loading,
     error: gps.error,
     permissionDenied: gps.permissionDenied,
-    locationUncertain: gps.locationUncertain,
+    // #1723 — GPS lastFix 5분+ stale 시 locationUncertain hoist. HomeScreen lastFusedStationRef +
+    //   effectiveOrigin cascade가 stale station을 사용자에게 stuck으로 노출하지 않도록 신호 전파.
+    locationUncertain: gps.locationUncertain || gpsFallbackStale,
     gpsActive: gps.gpsActive,
     lastFixAtMs: gps.lastFixAtMs,
     positionStability,
