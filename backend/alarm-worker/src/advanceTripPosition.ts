@@ -66,7 +66,7 @@ import {
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import { getTrip } from './trips';
-import type { BoardingLockMeta, Trip } from './types';
+import type { BoardingLockMeta, LineNumber, Trip } from './types';
 
 /**
  * Evidence environment — device가 upload하는 좁은 set.
@@ -360,6 +360,9 @@ export function lookupStationFromWifiSsid(
  * @param evidence advance 후보 evidence (1건).
  * @param options.gatePassed 외부 9단 AND 게이트 결과 (caller가 stamp). 미stamp 시 false.
  * @param options.lockAttachable `pickAutoTrainCode` 단일 수렴 여부. caller stamp.
+ * @param options.candidateStationLine `waypoint.line` — advance 통과 시 SSoT.currentStationLine 으로 stamp.
+ *   (#1705 A1/A3-b) device cascade picker 가 동명역 cross-line confusion 차단을 위해 사용. 미지정 시
+ *   currentStationLine 누락 (legacy v1 schema 호환, device 는 name-only fallback).
  *
  * blocked 시 SSoT는 mutate 하지 않음. 'noop'은 현재 게이트에서 발생하지 않지만 향후 reader
  * migration이 idempotent advance(이미 같은 stationId)를 'noop'으로 처리할 수 있는 type slot.
@@ -369,7 +372,16 @@ export async function advanceTripPosition(
   token: string,
   candidateStationId: string,
   evidence: AdvanceEvidence,
-  options: { gatePassed: boolean; lockAttachable: boolean },
+  options: {
+    gatePassed: boolean;
+    lockAttachable: boolean;
+    /**
+     * #1705 (A1/A3-b) — advance 통과 시 SSoT.currentStationLine 에 stamp 할 line.
+     * caller(scheduled.ts fire path)는 `waypoint.line` 을 forward. undefined 면 stamp 누락
+     * (legacy v1 schema 호환).
+     */
+    candidateStationLine?: LineNumber;
+  },
 ): Promise<AdvanceOutcome> {
   const ssot = await readSsot(kv, token);
 
@@ -462,6 +474,10 @@ export async function advanceTripPosition(
     ...ssot,
     passedStations: appendUnique(ssot.passedStations, ssot.currentStationId),
     currentStationId: candidateStationId,
+    // #1705 (A1/A3-b) — candidateStationLine 이 주어지면 stamp. 미지정 시 기존 값 보존 (구 caller 호환).
+    ...(options.candidateStationLine !== undefined
+      ? { currentStationLine: options.candidateStationLine }
+      : {}),
     lastAdvanceAt: evidence.ts,
     lastAdvanceEvidence: evidence.type,
     // alarmEvents는 ssot에서 inherit — 아래 appendAlarmEvent로 in-place mutate.

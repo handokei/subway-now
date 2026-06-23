@@ -1202,3 +1202,126 @@ describe('advanceTripPosition — gate #7 position-train jump/stale (#1665)', ()
     expect(out.result).toBe('advanced');
   });
 });
+
+// #1705 (A1/A3-b) — candidateStationLine stamp.
+describe('advanceTripPosition — candidateStationLine stamp (#1705)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('options.candidateStationLine 지정 시 advanced 결과의 SSoT.currentStationLine 으로 stamp', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', { line: '7' });
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence(),
+      { gatePassed: true, lockAttachable: true, candidateStationLine: '7' },
+    );
+    expect(out.result).toBe('advanced');
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.currentStationLine).toBe('7');
+  });
+
+  it('options.candidateStationLine 미지정 시 currentStationLine 변경 X (기존 값 보존)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', { line: '7' });
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence(),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(out.result).toBe('advanced');
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    // 이전 seed line('7')이 보존됨 (caller가 line 미전달이라도 기존 값 유지)
+    expect(after?.currentStationLine).toBe('7');
+  });
+
+  it('legacy v1 SSoT (currentStationLine 부재) + candidateStationLine 지정 → 신규 line stamp', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산'); // line 미지정
+    expect(ssot.currentStationLine).toBeUndefined();
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence(),
+      { gatePassed: true, lockAttachable: true, candidateStationLine: '7' },
+    );
+    expect(out.result).toBe('advanced');
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.currentStationLine).toBe('7');
+  });
+
+  it('blocked 시 SSoT mutate X (currentStationLine 변경 안 됨)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', { line: '7' });
+    ssot.motionState = 'stationary'; // motion 게이트 차단
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence(),
+      { gatePassed: true, lockAttachable: true, candidateStationLine: '2' },
+    );
+    expect(out.result).toBe('blocked');
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    // 기존 '7' 보존 (candidateStationLine '2' 가 무시됨)
+    expect(after?.currentStationLine).toBe('7');
+  });
+});
+
+// #1705 (A1/A3-b) — toSilentPushSsot currentStationLine forward.
+describe('toSilentPushSsot — currentStationLine forward (#1705)', () => {
+  it('currentStationLine 정의 시 payload 에 forward', async () => {
+    const { toSilentPushSsot } = await import('../scheduled');
+    const ssot: TripPositionSSoT = {
+      tripToken: 't',
+      currentStationId: '용마산',
+      currentStationLine: '7',
+      motionState: 'moving',
+      motionEvidence: [],
+      lastAdvanceAt: 0,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      passedStations: [],
+      userIntentDeclared: false,
+      seedOverrideCount: 0,
+      schemaVersion: 1,
+    };
+    const payload = toSilentPushSsot(ssot);
+    expect(payload?.currentStationLine).toBe('7');
+  });
+
+  it('currentStationLine 미정의(legacy v1) 시 payload 에 omit', async () => {
+    const { toSilentPushSsot } = await import('../scheduled');
+    const ssot: TripPositionSSoT = {
+      tripToken: 't',
+      currentStationId: '용마산',
+      motionState: 'moving',
+      motionEvidence: [],
+      lastAdvanceAt: 0,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      passedStations: [],
+      userIntentDeclared: false,
+      seedOverrideCount: 0,
+      schemaVersion: 1,
+    };
+    const payload = toSilentPushSsot(ssot);
+    expect(payload?.currentStationLine).toBeUndefined();
+  });
+});

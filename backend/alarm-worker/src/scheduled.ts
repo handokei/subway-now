@@ -1194,6 +1194,12 @@ export function toSilentPushSsot(
   if (ssot == null) return undefined;
   return {
     currentStationId: ssot.currentStationId,
+    // #1705 (A1/A3-b) — currentStationLine forward (cross-line confusion 차단). 부재 시 wire 자연
+    // 누락 (apns.ts JSON serializer는 undefined 필드 omit) — device 는 legacy v1 row 처럼 name-only
+    // fallback 으로 동작 (graceful, backward-compat).
+    ...(ssot.currentStationLine !== undefined
+      ? { currentStationLine: ssot.currentStationLine }
+      : {}),
     motionState: ssot.motionState,
     lastAdvanceEvidence: ssot.lastAdvanceEvidence,
     lastAdvanceAt: ssot.lastAdvanceAt,
@@ -1508,10 +1514,13 @@ async function tryAdvanceAndFireArvlcd(inputs: {
     // device upload로 motion 갱신을 시작하면 게이트 #2가 자동 활성화.
     ssot = await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
       expiresAt: trip.expiresAt,
+      // #1705 (A1/A3-b) — currentStationLine stamp (cross-line confusion 차단).
+      line: waypoint.line,
     });
     log('arvlcd-fire: lazy-seed ssot', {
       token: trip.token.slice(0, 8),
       currentStationId: waypoint.stationName,
+      currentStationLine: waypoint.line,
     });
   }
   // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 추가 SSoT 일관성 검증.
@@ -1553,6 +1562,8 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       // 검증. lock 활성 trip에서 lockAttachable 단일 trainCode 수렴은 lock 부착 자체가 증거.
       gatePassed: true,
       lockAttachable: true,
+      // #1705 (A1/A3-b) — currentStationLine stamp (cross-line confusion 차단).
+      candidateStationLine: waypoint.line,
     },
   );
   if (outcome.result !== 'advanced') {
@@ -2278,10 +2289,13 @@ export async function advanceBoardingLockWaypoint(
     if (existingSsot === null) {
       await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
         expiresAt: trip.expiresAt,
+        // #1705 (A1/A3-b) — currentStationLine stamp (cross-line confusion 차단).
+        line: waypoint.line,
       });
       log('boarding-lock: lazy-seed ssot for waypoint advance', {
         token: trip.token.slice(0, 8),
         currentStationId: waypoint.stationName,
+        currentStationLine: waypoint.line,
       });
     }
     const outcome = await advanceTripPosition(
@@ -2293,6 +2307,8 @@ export async function advanceBoardingLockWaypoint(
         // lock 활성 = base 합의 surrogate (T4 `tryAdvanceAndFireArvlcd` 와 같은 정책).
         gatePassed: true,
         lockAttachable: trip.boardingLock !== undefined,
+        // #1705 (A1/A3-b) — currentStationLine stamp (cross-line confusion 차단).
+        candidateStationLine: waypoint.line,
       },
     );
     if (outcome.result !== 'advanced') {

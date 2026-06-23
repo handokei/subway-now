@@ -422,3 +422,39 @@ describe('alarmEvents helpers (#1572 T9)', () => {
     ]);
   });
 });
+
+// #1705 (A1/A3-b) — currentStationLine stamp + round-trip + legacy v1 graceful fallback.
+describe('tripPositionSsot — currentStationLine (#1705 A1/A3-b)', () => {
+  it('seedSsot: options.line 지정 시 currentStationLine 으로 stamp', async () => {
+    const kv = new InMemoryKV();
+    const ssot = await seedSsot(kv as unknown as KVNamespace, 'tok', '용마산', {
+      line: '7',
+    });
+    expect(ssot.currentStationLine).toBe('7');
+    const persisted = await readSsot(kv as unknown as KVNamespace, 'tok');
+    expect(persisted?.currentStationLine).toBe('7');
+  });
+
+  it('seedSsot: options.line 미지정 시 currentStationLine 부재 (legacy v1 호환)', async () => {
+    const kv = new InMemoryKV();
+    const ssot = await seedSsot(kv as unknown as KVNamespace, 'tok', '용마산');
+    expect(ssot.currentStationLine).toBeUndefined();
+  });
+
+  it('writeSsot → readSsot round-trip: currentStationLine 보존', async () => {
+    const kv = new InMemoryKV();
+    const ssot = makeSsot({ currentStationLine: '2' });
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    const got = await readSsot(kv as unknown as KVNamespace, ssot.tripToken);
+    expect(got?.currentStationLine).toBe('2');
+  });
+
+  it('legacy v1 row read: currentStationLine 부재 → undefined (graceful)', async () => {
+    const kv = new InMemoryKV();
+    const ssot = makeSsot(); // currentStationLine 미지정
+    expect(ssot.currentStationLine).toBeUndefined();
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    const got = await readSsot(kv as unknown as KVNamespace, ssot.tripToken);
+    expect(got?.currentStationLine).toBeUndefined();
+  });
+});

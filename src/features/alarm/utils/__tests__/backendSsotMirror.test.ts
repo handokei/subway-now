@@ -233,3 +233,80 @@ describe('persistBackendSsotMirror (#1568 T8b)', () => {
     );
   });
 });
+
+// #1705 (A1/A3-b) — readBackendSsotMirror currentStationLine parse.
+describe('readBackendSsotMirror currentStationLine parse (#1705)', () => {
+  const baseEntry = {
+    currentStationId: '용마산',
+    motionState: 'moving',
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: 1_700_000_000_000,
+    passedStations: ['중곡'],
+    receivedAt: 1_700_000_010_000,
+  };
+
+  beforeEach(() => {
+    mockGetItem.mockReset();
+  });
+
+  it('valid currentStationLine forward 시 결과에 포함 (v2 schema)', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...baseEntry, currentStationLine: '7' }),
+    );
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBe('7');
+  });
+
+  it('currentStationLine 부재 → undefined (legacy v1 row graceful)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(baseEntry));
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBeUndefined();
+    // 본체 mirror entry 는 살아 있음
+    expect(got?.currentStationId).toBe('용마산');
+  });
+
+  it.each([
+    ['empty string', ''],
+    ['non-string number', 7],
+    ['non-string null', null],
+    ['non-string object', { id: '7' }],
+  ])('형식 mismatch %s → currentStationLine 누락 (graceful, 본체 살아있음)', async (_label, badLine) => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...baseEntry, currentStationLine: badLine }),
+    );
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBeUndefined();
+    expect(got?.currentStationId).toBe('용마산');
+  });
+});
+
+// #1705 (A1/A3-b) — persistBackendSsotMirror 에 currentStationLine 까지 round-trip.
+describe('persistBackendSsotMirror currentStationLine round-trip (#1705)', () => {
+  beforeEach(() => {
+    mockSetItem.mockReset();
+    mockGetItem.mockReset();
+  });
+
+  it('v2 mirror persist → read 시 currentStationLine 보존', async () => {
+    mockSetItem.mockResolvedValue(undefined);
+    let stored = '';
+    mockSetItem.mockImplementation(async (_key: string, value: string) => {
+      stored = value;
+    });
+    await persistBackendSsotMirror(
+      {
+        currentStationId: '용마산',
+        currentStationLine: '7',
+        motionState: 'moving',
+        lastAdvanceEvidence: 'arvlcd-confirmed-train',
+        lastAdvanceAt: 1_700_000_000_000,
+        passedStations: ['중곡'],
+      },
+      1_700_000_010_000,
+    );
+    expect(stored).toContain('"currentStationLine":"7"');
+    mockGetItem.mockResolvedValue(stored);
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBe('7');
+  });
+});

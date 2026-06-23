@@ -34,7 +34,7 @@
  */
 
 import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
-import type { Trip } from './types';
+import type { LineNumber, Trip } from './types';
 
 /**
  * Motion evidence ring buffer cap. KV row 크기 폭주 방지 (단일 row ≤25MB CF KV 한도 대비
@@ -201,6 +201,24 @@ export interface TripPositionSSoT {
    * 본 필드가 빈 문자열인 동안 advance 게이트 #1(no-seed)이 blocked로 차단해 fire를 막는다.
    */
   currentStationId: string;
+  /**
+   * #1705 (A1/A3-b) — currentStationId의 노선 metadata. 동명역/cross-line confusion 차단.
+   *
+   * 배경: `currentStationId`는 실제로 한글 stationName(예: "어린이대공원(세종대)")으로 저장된다.
+   * 같은 stationName을 여러 노선이 공유하거나(합정 2-038/6-013, 공덕 5-020/6-017) 다른 노선에 동명
+   * stationName이 존재해 device cascade picker가 wrong line의 station을 채택하는 회귀가 발생했다
+   * (사용자 2026-06-23 trip evidence: 2호선 trip 중 7호선 "어린이대공원(세종대)"; 6호선 trip 중
+   * "봉화산(서울의료원)" → "신내역 도착" mislabel).
+   *
+   * v2 schema (#1705)부터 `seedSsot`/`advanceTripPosition`이 본 필드를 stamp한다 (`waypoint.line` 사용).
+   * 본 필드는 silent push payload `currentStationLine`으로 forward되어 device cascade picker가
+   * `findStationByNameAndLine(currentStationId, currentStationLine)`로 정확 매칭한다.
+   *
+   * 구 backend 호환 (legacy v1 row graceful fallback) — KV에 적재된 구 row는 본 필드가 부재.
+   * 본 필드가 undefined인 경우 device는 기존 name-only fallback(`findStationByName`)으로 동작 (graceful).
+   * 본 필드와 candidate waypoint의 line이 모두 정의됐을 때만 cross-line 가드가 활성화된다.
+   */
+  currentStationLine?: LineNumber;
   /** 게이트 #2 입력. T3 motion state machine이 갱신. */
   motionState: MotionState;
   /** T3가 누적하는 ring buffer (cap 50). 최신 evidence가 마지막 index. */
@@ -309,12 +327,25 @@ export async function deleteSsot(kv: KVNamespace, token: string): Promise<void> 
  * trip을 등록할 때 backend는 빈 stationId로 seed하고, /position upload + 후속 advance 수렴으로
  * lockSuggestion을 추론한다. advance 게이트 #1(no-seed)가 빈 stationId를 blocked로 차단해
  * 그 동안 fire는 자연 보류된다.
+ *
+ * #1705 (A1/A3-b) — `options.line` 으로 currentStationLine 을 stamp 한다. caller(scheduled.ts의 fire
+ * path)는 `waypoint.line` 을 forward 해 동명역 cross-line confusion 을 차단한다. 미지정 시
+ * `currentStationLine` 은 undefined (legacy v1 row graceful fallback) — device cascade picker는 기존
+ * name-only fallback 으로 동작한다.
  */
 export async function seedSsot(
   kv: KVNamespace,
   token: string,
   currentStationId: string,
-  options?: { expiresAt?: number; userIntentDeclared?: boolean },
+  options?: {
+    expiresAt?: number;
+    userIntentDeclared?: boolean;
+    /**
+     * #1705 (A1/A3-b) — currentStationId 의 노선 metadata. caller 는 `waypoint.line` 을 그대로 전달.
+     * undefined 면 legacy v1 schema 와 호환 (graceful, device 는 name-only fallback).
+     */
+    line?: LineNumber;
+  },
 ): Promise<TripPositionSSoT> {
   const ssot: TripPositionSSoT = {
     tripToken: token,
@@ -329,6 +360,7 @@ export async function seedSsot(
     seedOverrideCount: 0,
     alarmEvents: [],
     schemaVersion: 1,
+    ...(options?.line !== undefined ? { currentStationLine: options.line } : {}),
   };
   await writeSsot(kv, ssot, { expiresAt: options?.expiresAt });
   return ssot;

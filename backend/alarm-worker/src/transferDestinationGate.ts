@@ -48,10 +48,15 @@ export const TRANSFER_DESTINATION_FRESH_WINDOW_MS = 60_000;
  * legacy/lazy-seed 직후)은 본 게이트가 dormant로 통과시킨다 — T4 motion 게이트의 'unknown' 통과
  * 정책과 동일 ([[advanceTripPosition.ts]] #2 게이트). 본 게이트가 stationary advance와 짝을 이루는
  * defense-in-depth이지 legacy 경로 차단 게이트가 아니기 때문.
+ *
+ * #1705 (A1/A3-b) — 'ssot-line-mismatch'는 ssot.currentStationLine 이 정의됐고 waypoint.line 과
+ * 일치하지 않는 경우. 동명역(합정 2-038/6-013, 공덕 5-020/6-017) cross-line confusion 차단. legacy
+ * v1 row 는 currentStationLine 미정의 → dormant (graceful, 기존 name-only 비교 그대로).
  */
 export type TransferDestinationBlockReason =
   | 'ssot-not-at-or-approaching'
-  | 'ssot-stale';
+  | 'ssot-stale'
+  | 'ssot-line-mismatch';
 
 export interface TransferDestinationGateOutcome {
   pass: boolean;
@@ -95,6 +100,22 @@ export function isAtOrApproachingTransferDestination(
 }
 
 /**
+ * #1705 (A1/A3-b) — SSoT.currentStationLine 이 waypoint.line 과 정합한지.
+ *
+ * currentStationLine 이 정의된 v2 schema 에 한해 적용. legacy v1 row (currentStationLine 미정의)
+ * 는 dormant 통과 — graceful, 기존 name-only 비교 그대로. waypoint 의 line 이 비어 있으면
+ * 비교 불능 → dormant 통과 (보수적).
+ */
+export function isSsotLineMatchingWaypoint(
+  ssot: Pick<TripPositionSSoT, 'currentStationLine'>,
+  waypoint: Pick<Waypoint, 'line'>,
+): boolean {
+  if (ssot.currentStationLine === undefined) return true;
+  if (!waypoint.line) return true;
+  return ssot.currentStationLine === waypoint.line;
+}
+
+/**
  * SSoT.lastAdvanceAt이 신선(`now - lastAdvanceAt <= TRANSFER_DESTINATION_FRESH_WINDOW_MS`) 한지.
  *
  * lastAdvanceAt===0(미 advance, lazy-seed 직후)은 dormant 분기로 true 반환 — T4 motion 게이트가
@@ -119,13 +140,18 @@ export function isSsotAdvanceRecent(
  * @param now epoch ms.
  */
 export function evaluateTransferDestinationGate(
-  ssot: Pick<TripPositionSSoT, 'currentStationId' | 'lastAdvanceAt'>,
+  ssot: Pick<TripPositionSSoT, 'currentStationId' | 'currentStationLine' | 'lastAdvanceAt'>,
   trip: Pick<Trip, 'passedStations'>,
-  waypoint: Pick<Waypoint, 'stationName' | 'kind'>,
+  waypoint: Pick<Waypoint, 'stationName' | 'line' | 'kind'>,
   now: number,
 ): TransferDestinationGateOutcome {
   if (!isAtOrApproachingTransferDestination(ssot, trip, waypoint)) {
     return { pass: false, blockReason: 'ssot-not-at-or-approaching' };
+  }
+  // #1705 (A1/A3-b) — currentStationLine 정의된 v2 row 에 한해 cross-line confusion 차단.
+  // 동명역(어린이대공원 2/7호선, 합정 2/6, 공덕 5/6) 발사 직전 line 정합 검증.
+  if (!isSsotLineMatchingWaypoint(ssot, waypoint)) {
+    return { pass: false, blockReason: 'ssot-line-mismatch' };
   }
   if (!isSsotAdvanceRecent(ssot, now)) {
     return { pass: false, blockReason: 'ssot-stale' };
