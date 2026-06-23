@@ -1378,6 +1378,144 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).not.toHaveBeenCalled();
     });
   });
+
+  // #1704 (d) — destination.id / boardingLockSig 전환 시 cross-trip cleanup 강화.
+  // 2026-06-23 사용자 trip evidence: 14:18 2차 trip 등록 직후 1차 trip의 공덕/군자 stale fire.
+  // routeSig는 같지만(예: 같은 line · 같은 hop 수의 다른 destination) destination/lock 변경만으로도 cancel 트리거.
+  describe('#1704 (d) destination.id / boardingLockSig 전환 시 cross-trip cancel', () => {
+    type TripProps = {
+      route: Route | null;
+      destination: Station | null;
+      boardingLock?: {
+        destinationId: string;
+        trainCode: string;
+        boardingStationId: string;
+        boardingLine: '2';
+        boardedAt: number;
+        expectedDurationMs: number;
+      } | null;
+    };
+    const renderTrip = (initialProps: TripProps) =>
+      renderHook(
+        ({ route, destination, boardingLock }: TripProps) =>
+          useApnsTripRegistration({
+            route,
+            destination,
+            nextStationEtaSeconds: 120,
+            boardingLock: boardingLock ?? null,
+          }),
+        { initialProps },
+      );
+
+    // it.each + factory로 trip-switch trigger 3종(route/destination/lock) 케이스 공통 패턴 dedup.
+    // 같은 patterns(첫 register → trigger change → cancel + 재register 검증).
+    const lockA = {
+      destinationId: station.id,
+      trainCode: '7246',
+      boardingStationId: station.id,
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+    const lockB = { ...lockA, trainCode: '7415', boardedAt: 1_700_000_500_000 };
+    const altStation: Station = { ...station, id: '2-023', name: '역삼' };
+
+    it('routeSig 동일 + destination.id 변경 시 cancelTripBoundAlarms 호출', async () => {
+      const { rerender } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+
+      // routeSig 동일 (같은 line·stops) + destination만 다른 역으로 변경.
+      // 기존 #1264 게이트는 routeSig만 검사라 trigger 안 됐지만 #1704 (d)는 destination 변경도 잡는다.
+      rerender({ route: makeDirectRoute(5, '2'), destination: altStation });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('routeSig 동일 + boardingLockSig 변경 시 cancelTripBoundAlarms 호출', async () => {
+      const { rerender } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+        boardingLock: lockA,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+
+      // routeSig 동일 + destination 동일 + lock만 다른 trainCode로 변경.
+      rerender({ route: makeDirectRoute(5, '2'), destination: station, boardingLock: lockB });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('routeSig + destination + lock 모두 동일하면 cancel 호출 안 함 (false positive 차단)', async () => {
+      const { rerender } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+        boardingLock: lockA,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // 모든 trigger 동일 — reference만 신규.
+      rerender({
+        route: makeDirectRoute(5, '2'),
+        destination: { ...station },
+        boardingLock: { ...lockA },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+    });
+
+    it('trip 종료(route/destination → null) 후 새 trip 시작 시 첫 register는 cancel 호출 안 함 (모든 ref reset)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
+      const { rerender } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+        boardingLock: lockA,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // trip 종료 — 모든 ref(routeSig/destinationId/lockSig) reset.
+      rerender({ route: null, destination: null, boardingLock: null });
+      await waitFor(() => expect(mockClear).toHaveBeenCalled());
+
+      // 새 trip 시작 — 모든 ref가 null로 reset되었으므로 cancel skip.
+      rerender({
+        route: makeDirectRoute(7, '2'),
+        destination: altStation,
+        boardingLock: lockB,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+    });
+
+    it('routeSig + destination + lock이 모두 동시에 바뀌어도 cancel 1회만 호출', async () => {
+      const { rerender } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+        boardingLock: lockA,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // 모든 trigger 동시 변경 (실제 trip switch 패턴).
+      rerender({
+        route: makeDirectRoute(7, '2'),
+        destination: altStation,
+        boardingLock: lockB,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // cancel은 한 effect cycle 안에 1회만.
+      expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 // #1366 Layer 2 — route ↔ lock line 일치 검증 헬퍼.

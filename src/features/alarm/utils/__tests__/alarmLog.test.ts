@@ -733,6 +733,8 @@ describe('alarmLog', () => {
       ['revalidate-no-trip' as const, '강남', 'early' as const],
       ['revalidate-route-sig-mismatch' as const, '시청', 'imminent' as const],
       ['revalidate-waypoint-mismatch' as const, '서울역', 'early' as const],
+      // #1704 — 사용자 위치 대비 fire 대상이 N hop 이상 미래 (2026-06-23 trip evidence backstop).
+      ['revalidate-position-mismatch' as const, '종로3가', 'imminent' as const],
     ])(
       '#918 A3 PR2 logSuppressedTbaRevalidation: %s — source=bg-scheduled 고정 + reason/stationName/phaseId 보존',
       async (reason, stationName, phaseId) => {
