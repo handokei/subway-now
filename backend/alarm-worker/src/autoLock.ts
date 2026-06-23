@@ -309,8 +309,12 @@ export async function attemptAutoLock(
   // 단일 수렴 = true) 2-of-2 합의가 통과해야 lock 합성 진행. surface 는 base gate(=outcome.pass)
   // 가 통과하면 즉시 통과. 미전달 시 (구 호출자) skip.
   if (environment && gateOutcome) {
+    // #1720 — 합성 entry(arvlCd=0)는 ADR-015 §3 signal B 자격 X. positions-derived 는 signal C 만.
     const arrivalSignalPresent =
-      typeof chosen.arvlCd === 'number' && chosen.arvlCd >= 0 && chosen.arvlCd <= 3;
+      !chosen.synthesized &&
+      typeof chosen.arvlCd === 'number' &&
+      chosen.arvlCd >= 0 &&
+      chosen.arvlCd <= 3;
     // #1614 Phase B / #1676 — backend self-poll realtimePosition cross-match + recptnMs age 가드.
     // pickAutoTrainCode 가 선택한 trainCode가 line의 운행 trains 중에 실제 존재하면 true.
     // recptnMs > 0 이면 Seoul API 수신 시각 기준으로 POSITION_RECPTN_MAX_AGE_MS(30s) 이내만 신선

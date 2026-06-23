@@ -186,6 +186,7 @@ describe('synthesizeArrivalsFromPositions', () => {
       isUp: false,
       subwayNm: '6호선', // canonical
       arvlCd: 0, // ENTERING — 가장 보수적, RC1 confidence gate 트리거 X
+      synthesized: true, // #1720 — strongBE signal B 자격 X
     });
   });
 

@@ -29,6 +29,11 @@ export interface ArrivalEntry {
    * ETA 예측 대신 실측 신호로 phase 판정하기 위한 핵심 필드.
    */
   arvlCd: number | null;
+  /**
+   * #1720 — positions 합성 entry 표기. true 면 ADR-015 §3 signal B(arrival) 자격이 없어
+   * consensusGate strongBE 통과 X. real Seoul API entry 는 undefined / false.
+   */
+  synthesized?: boolean;
 }
 
 export interface FetchSeoulOptions {
