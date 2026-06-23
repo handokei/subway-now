@@ -11,7 +11,7 @@ import {
   verifyBoardingLockPersisted,
 } from '../index';
 import { progressKey, type TripProgress } from '../progress';
-import { pendingKey } from '../pendingPushes';
+import { pendingKey, putPending, stampReceived } from '../pendingPushes';
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
 import type { AnalyticsEngineWriter, Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -3900,29 +3900,41 @@ async function getAdminPushAckStats(
   );
 }
 
+/**
+ * #1700 — `/admin/push-ack-stats`는 `PENDING_PUSHES` namespace를 scan해야 하므로
+ * KV 두 개(TRIPS, PENDING_PUSHES)를 모두 bind한 env를 생성. write 대상과 같은
+ * namespace scan을 보장.
+ */
+function makePushAckEnv(): Env {
+  return makeEnv({
+    TRIPS: new InMemoryKV() as unknown as Env['TRIPS'],
+    PENDING_PUSHES: new InMemoryKV() as unknown as Env['PENDING_PUSHES'],
+  });
+}
+
 describe('GET /admin/push-ack-stats (#1614 Phase D)', () => {
   it('returns 503 when ADMIN_TOKEN is not configured', async () => {
-    const env = makeKvEnv();
+    const env = makePushAckEnv();
     const res = await getAdminPushAckStats(env, 'Bearer some-token');
     expect(res.status).toBe(503);
   });
 
   it('returns 401 when no Authorization header', async () => {
-    const env = makeKvEnv();
+    const env = makePushAckEnv();
     env.ADMIN_TOKEN = 'secret';
     const res = await getAdminPushAckStats(env);
     expect(res.status).toBe(401);
   });
 
   it('returns 401 when token does not match', async () => {
-    const env = makeKvEnv();
+    const env = makePushAckEnv();
     env.ADMIN_TOKEN = 'secret';
     const res = await getAdminPushAckStats(env, 'Bearer wrong-token');
     expect(res.status).toBe(401);
   });
 
   it('returns 200 with stats shape (empty KV)', async () => {
-    const env = makeKvEnv();
+    const env = makePushAckEnv();
     env.ADMIN_TOKEN = 'secret';
     const res = await getAdminPushAckStats(env, 'Bearer secret');
     expect(res.status).toBe(200);
@@ -3941,10 +3953,69 @@ describe('GET /admin/push-ack-stats (#1614 Phase D)', () => {
     expect(body.receivedByStation).toEqual({});
   });
 
-  it('returns 503 when TRIPS binding unavailable', async () => {
-    const env = makeEnv({ TRIPS: undefined as unknown as Env['TRIPS'], ADMIN_TOKEN: 'secret' });
+  it('returns 503 when PENDING_PUSHES binding unavailable (#1700)', async () => {
+    // TRIPS는 살아있어도 PENDING_PUSHES 미바인딩이면 503 — write 대상 KV와 일치 강제.
+    const env = makeEnv({
+      TRIPS: new InMemoryKV() as unknown as Env['TRIPS'],
+      ADMIN_TOKEN: 'secret',
+    });
     const res = await getAdminPushAckStats(env, 'Bearer secret');
     expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('pending_pushes_unavailable');
+  });
+
+  // #1700 회귀 가드 — write(`stampReceived`) → read(`/admin/push-ack-stats`) 정합성.
+  it('counts received stamps written to PENDING_PUSHES via stampReceived (#1700)', async () => {
+    const env = makePushAckEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const pendingKv = env.PENDING_PUSHES as unknown as KVNamespace;
+    // 1) silent push 발사 시점에 pending entry 적재 (60s TTL).
+    await putPending(pendingKv, {
+      pushId: 'p1700',
+      token: 'device-token-A',
+      alarmKey: 'imminent:용마산',
+      sentAt: Date.now(),
+      stationName: '용마산',
+      kind: 'destination',
+      phase: 'imminent',
+      etaSeconds: 60,
+      apnsEnv: 'production',
+    });
+    // 2) device → POST /push/ack → stampReceived 호출 시뮬레이션.
+    const result = await stampReceived(pendingKv, 'p1700', 'device-token-A', Date.now());
+    expect(result.stamped).toBe(true);
+
+    const res = await getAdminPushAckStats(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      received: number;
+      receivedByPhase: Record<string, number>;
+      receivedByStation: Record<string, number>;
+    };
+    expect(body.received).toBe(1);
+    expect(body.receivedByPhase.imminent).toBe(1);
+    expect(body.receivedByStation['용마산']).toBe(1);
+  });
+
+  // #1700 — TRIPS namespace에 같은 prefix가 있어도 endpoint는 영향받지 않음을 보장.
+  it('ignores received: prefix entries in TRIPS namespace (#1700)', async () => {
+    const env = makePushAckEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const tripsKv = env.TRIPS as unknown as InMemoryKV;
+    // TRIPS namespace에 우연히 같은 prefix entry가 있어도 카운트되지 않아야 한다.
+    tripsKv.store.set('received:noise', {
+      value: JSON.stringify({
+        pushId: 'noise',
+        receivedAt: Date.now() - 10_000,
+        stationName: '잘못된-namespace',
+        phase: 'imminent',
+      }),
+    });
+    const res = await getAdminPushAckStats(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { received: number };
+    expect(body.received).toBe(0);
   });
 });
 
