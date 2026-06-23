@@ -212,6 +212,33 @@ describe('journeyDisplayToStops', () => {
       const stops = journeyDisplayToStops(journey, { expanded: true });
       expect(stops.some((s) => s.mark === 'intermediate')).toBe(false);
     });
+
+    // #1717 — 2호선 본선 closed loop wraparound 호환
+    it('expanded: 2호선 성수→합정 wraparound 16 hop 중간역 표시 (사용자 trip evidence)', () => {
+      // 성수(2-011) → 합정(2-038): 내선 16 hop. 정방향 단순 slice는 26개로 invariant guard에 빠짐.
+      // shortestLinePathIndices 사용으로 정확한 16 hop 중간역 (뚝섬, 한양대, ...) 산출.
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '성수', toName: '합정', stops: 16 }],
+        totalStops: 16,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      const intermediates = stops.filter((s) => s.mark === 'intermediate');
+      expect(intermediates).toHaveLength(15);
+      expect(intermediates[0].station).toContain('뚝섬');
+      expect(intermediates[1].station).toContain('한양대');
+    });
+
+    it('expanded: 2호선 시청→홍대입구 wraparound 4 hop 중간역', () => {
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '시청', toName: '홍대입구', stops: 5 }],
+        totalStops: 5,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      const intermediates = stops.filter((s) => s.mark === 'intermediate');
+      // 시청 → 충정로 → 아현 → 이대 → 신촌 → 홍대입구 (intermediate 4개)
+      expect(intermediates).toHaveLength(4);
+      expect(intermediates[0].station).toContain('충정로');
+    });
   });
 });
 
