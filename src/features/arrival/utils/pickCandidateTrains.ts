@@ -1,6 +1,7 @@
 import type { LinePositions, TrainPosition } from '../../../shared/types/position';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import { getStationsOnLine } from '../../../shared/utils/stationRoute';
+import { hopsOnLine } from '../../../shared/utils/lineLoopPath';
 import { haversine } from '../../../shared/utils/haversine';
 
 // CandidateTrain은 shared/types/position으로 추출됨 (#890, Phase 5). re-export 유지.
@@ -103,7 +104,11 @@ export function pickCandidateTrains(input: PickCandidateTrainsInput): CandidateT
     const stationIdx = nameToIndex.get(train.statnNm);
     if (stationIdx === undefined) continue;
 
-    if (anchorIdx !== undefined && Math.abs(stationIdx - anchorIdx) > window) continue;
+    // #1722 — 2호선 본선 wraparound 고려. 직선 `Math.abs`는 wraparound 가까운 train을
+    // 멀리 인식해 window 누락 → anchor 부근 train 후보 손실.
+    const hopsFromAnchor =
+      anchorIdx !== undefined ? hopsOnLine(stationsOnLine, anchorIdx, stationIdx, line) : 0;
+    if (anchorIdx !== undefined && hopsFromAnchor > window) continue;
 
     // #1616 (R12-a): candidate station GPS 좌표 hard gate.
     if (distanceGateActive) {
@@ -128,8 +133,7 @@ export function pickCandidateTrains(input: PickCandidateTrainsInput): CandidateT
       }
     }
 
-    const sortKey = anchorIdx !== undefined ? Math.abs(stationIdx - anchorIdx) : 0;
-    candidates.push({ candidate: buildCandidate(train, line, train.updnLine), sortKey });
+    candidates.push({ candidate: buildCandidate(train, line, train.updnLine), sortKey: hopsFromAnchor });
   }
 
   candidates.sort((a, b) => {

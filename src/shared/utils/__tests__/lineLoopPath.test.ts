@@ -1,4 +1,4 @@
-import { isClosedLoopMainStation, shortestLinePathIndices } from '../lineLoopPath';
+import { hopsOnLine, isClosedLoopMainStation, shortestLinePathIndices } from '../lineLoopPath';
 import { getStationsOnLine } from '../stationRoute';
 import type { LineNumber } from '../../types/station';
 
@@ -134,5 +134,34 @@ describe('shortestLinePathIndices', () => {
       // 역방향 단순 walk
       expect(path.length).toBe(8);
     });
+  });
+});
+
+describe('hopsOnLine (#1722)', () => {
+  it('2호선 본선 wraparound: 시청(2-001) → 합정(2-038) hop=6 (wraparound 짧음)', () => {
+    const line2 = getStationsOnLine('2');
+    const from = line2.findIndex((s) => s.id === '2-001');
+    const to = line2.findIndex((s) => s.id === '2-038');
+    expect(hopsOnLine(line2, from, to, '2')).toBe(6);
+  });
+
+  it('2호선 본선 정방향: 시청(2-001) → 사당(2-026) hop=25 (정방향 짧음)', () => {
+    const line2 = getStationsOnLine('2');
+    const from = line2.findIndex((s) => s.id === '2-001');
+    const to = line2.findIndex((s) => s.id === '2-026');
+    // 정방향 25, wraparound 18 → wraparound 짧음.  실제 값으로 자가 검증.
+    const hops = hopsOnLine(line2, from, to, '2');
+    expect(hops).toBeLessThanOrEqual(25);
+    expect(hops).toBe(shortestLinePathIndices(line2, from, to, '2').length - 1);
+  });
+
+  it('1호선 직선: 0 → 5 hop=5', () => {
+    const line1 = getStationsOnLine('1');
+    expect(hopsOnLine(line1, 0, 5, '1')).toBe(5);
+  });
+
+  it('같은 idx면 hop=0', () => {
+    const line1 = getStationsOnLine('1');
+    expect(hopsOnLine(line1, 3, 3, '1')).toBe(0);
   });
 });

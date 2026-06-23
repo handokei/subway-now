@@ -2,6 +2,7 @@ import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { BOARDING_LOCK_EXPIRY_FACTOR } from '../../../shared/types/boardingLock';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { getStationsOnLine, findStationByNameAndLine } from '../../../shared/utils/stationRoute';
+import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 import { lineToSubwayId } from '../../../shared/constants/lineApiNames';
 import type { Station } from '../../../shared/types/station';
 import type { LineNumber } from '../../../shared/types/station';
@@ -67,13 +68,10 @@ function buildSegmentStations(
   if (startIdx === endIdx) return [lineStations[startIdx].name];
   // backend `estimateArrivalFromPosition`은 `segmentStations.indexOf(currentStation) >= indexOf(target)`
   // 이면 "이미 도착"으로 판정 — boarding이 [0], destination이 [length-1] 순서여야 한다.
-  // lineStations의 id 순서가 진행 방향과 반대인 경우 reverse로 boarding→destination 정렬.
-  // 2호선 순환선의 wrap-around(시계/반시계 더 짧은 길) 케이스는 별도 follow-up으로 처리 (#622 후속).
-  const goesForward = startIdx < endIdx;
-  const slice = goesForward
-    ? lineStations.slice(startIdx, endIdx + 1)
-    : lineStations.slice(endIdx, startIdx + 1).slice().reverse();
-  return slice.map((s) => s.name);
+  // #1722 (#622 후속): 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path를
+  // 진행 방향대로 정렬해 반환 — 직선 slice는 wraparound 시 잘못된 구간을 생성한다.
+  const path = shortestLinePathIndices(lineStations, startIdx, endIdx, boardingLine);
+  return path.map((i) => lineStations[i].name);
 }
 
 /**
