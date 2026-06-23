@@ -69,10 +69,7 @@ export type AlarmLogSource =
   //   'cross-trip-mirror-launch'   : R11-c (useLaunchTripReconciliation.ts:89, active trip 없을 때 clear)
   | 'cross-trip-mirror-register'
   | 'cross-trip-mirror-mismatch'
-  | 'cross-trip-mirror-launch'
-  // #1693 — fusion cascade picker가 어느 tier를 채택했는지 측정. tier 변화 시 1건 적재.
-  // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd tier 채택률) 검증.
-  | 'fusion-picker-tier';
+  | 'cross-trip-mirror-launch';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -230,19 +227,7 @@ export type AlarmLogReason =
   // #1656 — phase↔phase cross-station 즉시 cascade 윈도우(PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS=3s)
   // 안에서 다른 station에 두 phase 알람(transfer + destination 또는 역방향)이 leg 전환 race로
   // 연이어 발사되는 회귀 차단(2026-06-20 12:32 건대+성수, 2026-06-19 15:37 이수+사당).
-  | 'dedup-phase-to-phase'
-  // #1693 — fusion cascade picker tier 채택 이름. 'fusion-picker-tier' source로 적재.
-  // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd 채택률) 검증.
-  | 'tier-positionTrainBoardingLockMatch'
-  | 'tier-gpsDerivedFastPath'
-  | 'tier-arvlCdArrivedMatch'
-  | 'tier-backendSsotAccepts'
-  | 'tier-wifiStationResolved'
-  | 'tier-positionTrain'
-  | 'tier-fused'
-  | 'tier-detectionVerdictAccepts'
-  | 'tier-routeResult'
-  | 'tier-gpsFallback';
+  | 'dedup-phase-to-phase';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -658,7 +643,11 @@ export function logCrossTripMirrorSkip(site: 'register' | 'mismatch' | 'launch')
 }
 
 /**
- * #1693 — fusion cascade picker tier 채택 1건 적재.
+ * #1693/#1706 — fusion cascade picker tier 채택 1건 적재.
+ *
+ * **별 ring buffer (#1706).** PR #1697까지는 `appendAlarmLog`로 alarmLog 200 cap에 적재했으나
+ * 1 trip에 110/137 (≈99%) 점령으로 silent-push-received/fired 같은 진짜 측정 신호가 ring
+ * 밖으로 밀려나 R2 forward에 도달 못 함. 별 200 cap ring으로 분리해 채널 오염 차단.
  *
  * tier가 변경됐을 때만 적재(dedup window 1s) — 같은 tier가 연속 폴링으로 반복 채택돼도
  * log spam 없이 tier 변화 분포만 측정한다.
@@ -688,26 +677,46 @@ export type FusionPickerTier =
   | 'routeResult'
   | 'gpsFallback';
 
+/** 별 ring buffer 엔트리 (alarmLog와 분리, #1706). */
+export interface FusionTierLogEntry {
+  ts: number;
+  tier: FusionPickerTier;
+}
+
+/** 별 ring cap. alarmLog 200과 동일 정책 — DebugModal 표시 + R2 forward 용량 한정. */
+export const FUSION_TIER_LOG_BUFFER_SIZE = 200;
+
 const FUSION_PICKER_TIER_DEDUP_MS = 1_000;
 const lastFusionPickerTierTs = new Map<string, number>();
+
+// 별 ring buffer — module-private. AsyncStorage 적재 X (in-memory only, alarmLog와 다른 정책).
+// trip 종료 시 `getFusionTierLog()` snapshot이 backend로 forward되어 R2에 archive.
+const fusionTierLog: FusionTierLogEntry[] = [];
 
 export function logFusionPickerTier(tier: FusionPickerTier): void {
   const now = Date.now();
   const last = lastFusionPickerTierTs.get(tier);
   if (last !== undefined && now - last < FUSION_PICKER_TIER_DEDUP_MS) return;
   lastFusionPickerTierTs.set(tier, now);
-  const reason: AlarmLogReason = `tier-${tier}` as AlarmLogReason;
-  appendAlarmLog({
-    ts: now,
-    source: 'fusion-picker-tier',
-    outcome: 'fired',
-    reason,
-  });
+  fusionTierLog.push({ ts: now, tier });
+  // FIFO — 가장 오래된 entry부터 drop.
+  if (fusionTierLog.length > FUSION_TIER_LOG_BUFFER_SIZE) {
+    fusionTierLog.splice(0, fusionTierLog.length - FUSION_TIER_LOG_BUFFER_SIZE);
+  }
 }
 
-/** 테스트용 — fusion picker tier dedup 윈도우 캐시 리셋. */
+/**
+ * 별 ring buffer 스냅샷 — 호출 시점 누적 entry copy.
+ * DebugModal / triggerTripEndRecall에서 사용.
+ */
+export function getFusionTierLog(): readonly FusionTierLogEntry[] {
+  return [...fusionTierLog];
+}
+
+/** 테스트용 — fusion picker tier dedup 윈도우 + ring buffer 모두 리셋. */
 export function _resetFusionPickerTierWindowForTests(): void {
   lastFusionPickerTierTs.clear();
+  fusionTierLog.length = 0;
 }
 
 /**
@@ -944,25 +953,26 @@ export function summarizeAlarmLogCounters(
 
 
 /**
- * #1693 — fusion picker tier 채택 분포 집계 (최근 1h, DebugModal Telemetry row).
+ * #1693/#1706 — fusion picker tier 채택 분포 집계 (최근 1h, DebugModal Telemetry row).
  *
- * 직전 1h의 'fusion-picker-tier' source 엔트리에서 reason(tier name) 별 count를 집계.
- * DebugModal이 "Fusion Tier (1h)" row에 표시할 문자열로 포맷해 반환한다.
+ * 직전 1h의 fusionTierLog 엔트리에서 tier 별 count를 집계. DebugModal이 "Fusion Tier (1h)"
+ * row에 표시할 문자열로 포맷해 반환한다.
  *
  * 예: "tier-positionTrainBoardingLockMatch=3, tier-gpsFallback=12"
  * 엔트리 없음 시 "(none)" 반환.
+ *
+ * **별 ring 분리 (#1706).** 입력은 `FusionTierLogEntry[]` — alarmLog ring과 채널 분리로
+ * 점령 회귀 차단.
  */
 export function formatFusionPickerTierDistribution(
-  entries: readonly AlarmLogEntry[],
+  entries: readonly FusionTierLogEntry[],
   nowMs: number = Date.now(),
 ): string {
   const ONE_HOUR_MS = 60 * 60 * 1_000;
   const counts: Record<string, number> = {};
   for (const e of entries) {
-    if (e.source !== 'fusion-picker-tier') continue;
-    if (e.outcome !== 'fired') continue;
     if (nowMs - e.ts > ONE_HOUR_MS) continue;
-    const key = e.reason ?? '(unknown)';
+    const key = `tier-${e.tier}`;
     counts[key] = (counts[key] ?? 0) + 1;
   }
   const keys = Object.keys(counts);
@@ -1004,7 +1014,6 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'cross-trip-mirror-register': null,
   'cross-trip-mirror-mismatch': null,
   'cross-trip-mirror-launch': null,
-  'fusion-picker-tier': null,
 };
 
 export interface SilentPushOutcomeCounts {

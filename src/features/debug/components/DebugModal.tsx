@@ -42,12 +42,14 @@ import {
   countSilentPushOutcomes,
   formatFusionPickerTierDistribution,
   getAlarmLog,
+  getFusionTierLog,
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   summarizeAlarmLogCounters,
   type AlarmLogEntry,
   type AlarmLogReason,
   type AlarmLogReasonCounter,
+  type FusionTierLogEntry,
 } from '../../../features/alarm/utils/alarmLog';
 import {
   computeBoardingPromptMonitor,
@@ -1547,6 +1549,11 @@ function DebugModalInner({
   });
 
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
+  // #1706 — fusion picker tier 별 ring buffer snapshot. alarmLog ring 점령 회귀 차단으로
+  // 분리된 채널 (alarmLog와 다른 200 cap). refresh 사이클에 함께 snapshot.
+  const [fusionTierLogs, setFusionTierLogs] = useState<readonly FusionTierLogEntry[]>(() =>
+    getFusionTierLog(),
+  );
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
   );
@@ -1607,6 +1614,9 @@ function DebugModalInner({
 
   const refreshLogs = useCallback(async () => {
     setLogs(await getAlarmLog());
+    // #1706 — fusion picker tier 별 ring buffer 동시 snapshot. AsyncStorage 없는 in-memory ring
+    // 이라 동기 read. logs와 함께 refresh되어 UI/share dump 정합성 유지.
+    setFusionTierLogs(getFusionTierLog());
   }, []);
 
   useEffect(() => {
@@ -2113,14 +2123,15 @@ function DebugModalInner({
             </Section>
           ) : null}
 
-          {/* #1693 — fusion picker tier 채택 분포 (최근 1h). PR #1650/#1662/#1674 효과 검증. */}
+          {/* #1693/#1706 — fusion picker tier 채택 분포 (최근 1h). 별 ring buffer(#1706)에서
+              직접 집계 — alarmLog ring 점령 회귀 차단. PR #1650/#1662/#1674 효과 검증. */}
           <Section title="Fusion Tier (1h)" colors={colors}>
             <Text
               style={[typography.mono, { color: colors.ink }]}
               selectable
               testID="debug-fusion-picker-tier"
             >
-              {formatFusionPickerTierDistribution(logs)}
+              {formatFusionPickerTierDistribution(fusionTierLogs)}
             </Text>
           </Section>
 

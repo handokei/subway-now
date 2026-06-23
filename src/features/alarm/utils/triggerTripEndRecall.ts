@@ -53,7 +53,7 @@ import {
   buildDeviceMetadata,
   forwardTripTelemetry,
 } from '../api/telemetryForward';
-import { getAlarmLog } from './alarmLog';
+import { getAlarmLog, getFusionTierLog } from './alarmLog';
 import { getFusionDebugEntries } from '../../nearest-station/utils/fusionDebugBuffer';
 import { getGpsDropEntries } from '../../nearest-station/utils/gpsDropBuffer';
 import { readBackendSsotMirror } from './backendSsotMirror';
@@ -216,6 +216,8 @@ async function triggerAlarmLogForward(tripStart: number): Promise<void> {
       tripEndedAt: Date.now(),
       alarmLog,
       fusionLog: getFusionDebugEntries(),
+      // #1706 — fusion picker tier 별 ring buffer. alarmLog ring 점령 회귀 차단용 채널 분리.
+      fusionTierLog: getFusionTierLog(),
       gpsDrops: getGpsDropEntries(),
       backendSsotSnapshot: ssotMirror,
       deviceMetadata: buildDeviceMetadata(),

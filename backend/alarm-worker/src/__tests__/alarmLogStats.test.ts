@@ -88,6 +88,43 @@ describe('computeAlarmLogStats', () => {
     expect(stats.tripsScanned).toBe(2);
   });
 
+  it('#1706 — fusionTierLog kind는 sources/reasons 카운터에서 자동 제외', async () => {
+    // ndjson에 alarmLog 1 entry + fusionTierLog 5 entry. stats는 alarmLog kind만 카운트해야 함.
+    const tripEndedAt = NOW - 5 * 60 * 1000;
+    const body = [
+      JSON.stringify({ kind: 'header', tripEndedAt }),
+      JSON.stringify({
+        kind: 'alarmLog',
+        entries: [{ source: 'silent-push-received', outcome: 'received' }],
+      }),
+      JSON.stringify({
+        kind: 'fusionTierLog',
+        entries: [
+          { ts: 1, tier: 'gpsFallback' },
+          { ts: 2, tier: 'gpsFallback' },
+          { ts: 3, tier: 'gpsFallback' },
+          { ts: 4, tier: 'backendSsotAccepts' },
+          { ts: 5, tier: 'backendSsotAccepts' },
+        ],
+      }),
+    ].join('\n');
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/20/aabbccdd-1000.ndjson',
+        tripEndedAt,
+        body,
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    // alarmLog 1건만 반영. fusionTierLog 5건은 카운터에 추가되지 않는다.
+    expect(stats.totalEvents).toBe(1);
+    expect(stats.received).toBe(1);
+    expect(stats.sources['silent-push-received']).toBe(1);
+    expect(stats.sources['fusion-picker-tier']).toBeUndefined();
+    expect(stats.reasons['tier-gpsFallback']).toBeUndefined();
+    expect(stats.reasons['tier-backendSsotAccepts']).toBeUndefined();
+  });
+
   it('excludes archives outside windowHours window', async () => {
     const r2 = makeFakeR2([
       {

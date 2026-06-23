@@ -49,6 +49,11 @@ export interface TelemetryForwardPayload {
   alarmLog: readonly unknown[];
   /** fusionLog 200 ring buffer snapshot. */
   fusionLog: readonly unknown[];
+  /**
+   * fusion picker tier 200 ring buffer snapshot (#1706).
+   * alarmLog ring과 분리된 별 채널 — 점령 회귀 차단.
+   */
+  fusionTierLog: readonly unknown[];
   /** GPS drop 100 ring buffer snapshot. */
   gpsDrops: readonly unknown[];
   /** backend SSoT mirror snapshot (또는 null — mirror 미존재 trip). */
@@ -130,6 +135,7 @@ function payloadIsEmpty(p: TelemetryForwardPayload): boolean {
   return (
     p.alarmLog.length === 0 &&
     p.fusionLog.length === 0 &&
+    p.fusionTierLog.length === 0 &&
     p.gpsDrops.length === 0 &&
     p.backendSsotSnapshot === null
   );

@@ -14,6 +14,8 @@ const mockUseArrivalInfo = jest.fn();
 const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
+// #1706 — fusion picker tier 별 ring buffer mock. alarmLog ring과 분리된 채널.
+const mockGetFusionTierLog = jest.fn();
 const mockUseBarometer = jest.fn();
 const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
@@ -57,6 +59,8 @@ jest.mock('../../../alarm/utils/alarmLog', () => {
     ...actual,
     getAlarmLog: () => mockGetAlarmLog(),
     clearAlarmLog: () => mockClearAlarmLog(),
+    // #1706 — 별 ring buffer reader mock. test가 명시적으로 entries 주입.
+    getFusionTierLog: () => mockGetFusionTierLog(),
   };
 });
 
@@ -183,6 +187,8 @@ const setupHookDefaults = () => {
   });
   mockGetAlarmLog.mockResolvedValue([]);
   mockClearAlarmLog.mockResolvedValue(undefined);
+  // #1706 — 별 ring 기본 빈 배열. fusion-picker-tier 테스트는 명시 주입.
+  mockGetFusionTierLog.mockReturnValue([]);
   mockDumpScheduledNotifications.mockResolvedValue([]);
   // #1215 (D9) — 기본은 subsurface=false (지상).
   mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
@@ -707,12 +713,13 @@ describe('DebugModal', () => {
     expect(el.props.children).toContain('fail=1');
   });
 
-  it('#1693: Fusion Tier (1h) 섹션이 tier 분포를 표시한다', async () => {
+  it('#1693/#1706: Fusion Tier (1h) 섹션이 별 ring tier 분포를 표시한다', async () => {
     const now = Date.now();
-    mockGetAlarmLog.mockResolvedValue([
-      { ts: now - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
-      { ts: now - 200, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
-      { ts: now - 300, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-backendSsotAccepts' },
+    // #1706 — alarmLog ring이 아닌 fusionTierLog 별 ring에서 집계.
+    mockGetFusionTierLog.mockReturnValue([
+      { ts: now - 100, tier: 'gpsFallback' },
+      { ts: now - 200, tier: 'gpsFallback' },
+      { ts: now - 300, tier: 'backendSsotAccepts' },
     ]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
@@ -722,11 +729,25 @@ describe('DebugModal', () => {
     expect(tierEl.props.children).toContain('tier-backendSsotAccepts=1');
   });
 
-  it('#1693: Fusion Tier (1h) 섹션 — fusion-picker-tier 없으면 (none) 표시', async () => {
-    mockGetAlarmLog.mockResolvedValue([]);
+  it('#1693/#1706: Fusion Tier (1h) 섹션 — 별 ring 빈 경우 (none) 표시', async () => {
+    mockGetFusionTierLog.mockReturnValue([]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     expect(screen.getByText('Fusion Tier (1h)')).toBeTruthy();
+    const tierEl = screen.getByTestId('debug-fusion-picker-tier');
+    expect(tierEl.props.children).toBe('(none)');
+  });
+
+  it('#1706: alarmLog에 fusion-picker-tier 들어 있어도 Fusion Tier 섹션은 별 ring만 본다', async () => {
+    const now = Date.now();
+    // 회귀 evidence: 만에 하나 stale entry가 alarmLog ring에 남아 있어도 ((과거 PR #1697 시절))
+    // 새 섹션은 별 ring만 본다. 별 ring 비어 있으면 (none).
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 100, source: 'fusion-picker-tier', outcome: 'fired', reason: 'tier-gpsFallback' },
+    ]);
+    mockGetFusionTierLog.mockReturnValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     const tierEl = screen.getByTestId('debug-fusion-picker-tier');
     expect(tierEl.props.children).toBe('(none)');
   });

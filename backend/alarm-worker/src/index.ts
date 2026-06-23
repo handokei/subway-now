@@ -1047,6 +1047,8 @@ app.post('/telemetry/alarm-log', async (c) => {
       durationMs: payload.tripEndedAt - payload.tripStartedAt,
       alarmLog: payload.alarmLog.length,
       fusionLog: payload.fusionLog.length,
+      // #1706 — 별 ring 채널. 점령 회귀 측정 baseline.
+      fusionTierLog: payload.fusionTierLog.length,
       gpsDrops: payload.gpsDrops.length,
     }),
   );

@@ -19,6 +19,8 @@ const mockGetRawSignalEntries = jest.fn();
 const mockForwardTripTelemetry = jest.fn();
 const mockBuildDeviceMetadata = jest.fn();
 const mockGetAlarmLog = jest.fn();
+// #1706 — fusion picker tier 별 ring buffer reader mock.
+const mockGetFusionTierLog = jest.fn();
 const mockGetFusionDebugEntries = jest.fn();
 const mockGetGpsDropEntries = jest.fn();
 const mockReadBackendSsotMirror = jest.fn();
@@ -78,6 +80,8 @@ jest.mock('../../api/telemetryForward', () => ({
 
 jest.mock('../alarmLog', () => ({
   getAlarmLog: (...args: unknown[]) => mockGetAlarmLog(...args),
+  // #1706 — 별 ring reader. test가 명시적으로 entries 주입.
+  getFusionTierLog: (...args: unknown[]) => mockGetFusionTierLog(...args),
 }));
 
 jest.mock('../../../nearest-station/utils/fusionDebugBuffer', () => ({
@@ -161,6 +165,8 @@ describe('triggerTripEndRecall', () => {
     mockBuildDeviceMetadata.mockReturnValue({ os: 'ios' });
     mockGetAlarmLog.mockReset();
     mockGetAlarmLog.mockResolvedValue([]);
+    mockGetFusionTierLog.mockReset();
+    mockGetFusionTierLog.mockReturnValue([]);
     mockGetFusionDebugEntries.mockReset();
     mockGetFusionDebugEntries.mockReturnValue([]);
     mockGetGpsDropEntries.mockReset();
@@ -538,6 +544,8 @@ describe('triggerTripEndRecall', () => {
       setupHappyPath();
       mockGetAlarmLog.mockResolvedValue([{ ts: 1, source: 'fg' }]);
       mockGetFusionDebugEntries.mockReturnValue([{ ts: 2, kind: 'cycle' }]);
+      // #1706 — 별 ring buffer entries 주입. 별 line으로 forward.
+      mockGetFusionTierLog.mockReturnValue([{ ts: 4, tier: 'gpsFallback' }]);
       mockGetGpsDropEntries.mockReturnValue([{ ts: 3 }]);
       mockReadBackendSsotMirror.mockResolvedValue({ currentStationId: '강남' });
       mockBuildDeviceMetadata.mockReturnValue({ os: 'ios', appVersion: '1.2.3' });
@@ -551,6 +559,8 @@ describe('triggerTripEndRecall', () => {
       expect(payload.tripEndedAt).toBeGreaterThanOrEqual(100);
       expect(payload.alarmLog).toEqual([{ ts: 1, source: 'fg' }]);
       expect(payload.fusionLog).toEqual([{ ts: 2, kind: 'cycle' }]);
+      // #1706 — 별 ring 채널 분리.
+      expect(payload.fusionTierLog).toEqual([{ ts: 4, tier: 'gpsFallback' }]);
       expect(payload.gpsDrops).toEqual([{ ts: 3 }]);
       expect(payload.backendSsotSnapshot).toEqual({ currentStationId: '강남' });
       expect(payload.deviceMetadata).toEqual({ os: 'ios', appVersion: '1.2.3' });
