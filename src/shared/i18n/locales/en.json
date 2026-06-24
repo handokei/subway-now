@@ -12,10 +12,7 @@
     "settings": "Settings"
   },
   "permissions": {
-    "locationRequiredTitle": "Location permission required",
     "locationRequiredShort": "Location permission required.",
-    "locationRequiredDescription": "Please allow location permission in Settings.\nLocation permission is required to detect your current station.",
-    "request": "Grant permission",
     "locating": "Locating...",
     "backgroundDeniedTitle": "Background location required",
     "backgroundDeniedBody": "To receive background alarms, set location access to \"Always\" in Settings.",
@@ -326,12 +323,9 @@
       "assignSlotLabel": "Assign {{label}} slot",
       "assignSlotHint": "Saves the next selected station to this slot",
       "favoriteChipHint": "Tap to set this station as destination",
-      "misBoardingCloseLabel": "Close",
-      "misBoardingCloseHint": "Cancels reselection",
       "misBoardingBannerLabel": "Cannot identify your train. Please reselect.",
       "misBoardingReselectLabel": "Reselect boarding train",
-      "misBoardingReselectHint": "Reopens the boarding train picker",
-      "titleHeaderRole": "header"
+      "misBoardingReselectHint": "Reopens the boarding train picker"
     }
   },
   "service": {
