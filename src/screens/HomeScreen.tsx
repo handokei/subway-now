@@ -984,6 +984,8 @@ export default function HomeScreen() {
                       ? removeFavorite(effectiveOrigin.id)
                       : addFavorite(effectiveOrigin)
                   }
+                  accessibilityRole="button"
+                  accessibilityLabel={isFav ? t('home.favRemove') : t('home.favAdd')}
                 >
                   <Text style={styles.favoriteIcon}>
                     {isFav ? '⭐' : '☆'}
@@ -1317,6 +1319,7 @@ export default function HomeScreen() {
                     trackColor={{ false: colors.hair, true: colors.accent }}
                     thumbColor={colors.bg}
                     testID="home-sleep-mode-switch"
+                    accessibilityLabel={t('home.sleepModeLabel')}
                   />
                 </View>
 

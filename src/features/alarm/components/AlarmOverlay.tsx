@@ -102,13 +102,13 @@ const styles = StyleSheet.create({
     padding: spacing.xxxl,
   },
   title: {
-    fontSize: 24,
+    ...typography.title,
     fontWeight: '700',
     marginBottom: spacing.xxl,
     letterSpacing: 2,
   },
   station: {
-    fontSize: 48,
+    ...typography.hero,
     fontWeight: '900',
     textAlign: 'center',
     lineHeight: 64,
@@ -120,7 +120,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   buttonText: {
-    fontSize: 28,
+    ...typography.title,
     fontWeight: '800',
   },
   exitSection: {

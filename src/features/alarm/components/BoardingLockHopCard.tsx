@@ -103,7 +103,7 @@ const styles = StyleSheet.create({
   },
   releaseButton: {
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
+    paddingVertical: spacing.md,
     borderRadius: radius.sm,
     borderWidth: 1,
   },

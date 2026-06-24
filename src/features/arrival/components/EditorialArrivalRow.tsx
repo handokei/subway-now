@@ -1,9 +1,10 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing } from '../../../shared/theme';
 import { useCountdown } from '../../../shared/hooks/useCountdown';
 import type { ArrivalTrain } from '../../../shared/types/journey';
-import { LineBadge, getLineColor } from '../../../shared/ui/LineBadge';
+import { LineBadge, getLineColor, getLineLabel } from '../../../shared/ui/LineBadge';
 import { ArrivalStatusBadge } from './ArrivalStatusBadge';
 
 interface Props {
@@ -14,9 +15,21 @@ export function EditorialArrivalRow({ train }: Props) {
   const { mm, ss } = useCountdown(train.arrivalAtMs);
   const lineC = getLineColor(train.line);
   const { colors } = useTheme();
+  const { t } = useTranslation();
+  const rowLabel = t('arrival.rowLabel', {
+    line: getLineLabel(train.line),
+    direction: train.direction,
+    mm,
+    ss,
+  });
 
   return (
-    <View style={[styles.arrivalRow, { borderBottomColor: colors.hair }]} testID="editorial-arrival-row">
+    <View
+      style={[styles.arrivalRow, { borderBottomColor: colors.hair }]}
+      testID="editorial-arrival-row"
+      accessibilityLabel={rowLabel}
+      accessible
+    >
       <View style={{ minWidth: 90 }}>
         <Text>
           <Text style={[typography.countMM, { color: colors.ink }]}>{mm}</Text>
