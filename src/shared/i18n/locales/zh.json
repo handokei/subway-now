@@ -106,8 +106,6 @@
     "speakerOffTitle": "关闭扬声器输出",
     "speakerOffMessage": "关闭扬声器输出后,未连接耳机时只会震动。是否继续?",
     "speakerOffConfirm": "关闭",
-    "locklessStationPassedLabel": "显示全部站点",
-    "locklessStationPassedDescription": "即使未选择乘车列车,也以信息形式通知所有站点。关闭后仅在确认乘车时通知。",
     "languageSection": "语言",
     "languageLabel": "应用语言",
     "languageDescription": "自动会跟随设备设置",
@@ -310,7 +308,6 @@
     "settings": {
       "sleepModeHint": "连接耳机时以起床闹钟音播放",
       "speakerOutputHint": "未连接耳机时通过扬声器播放闹钟音",
-      "locklessStationPassedHint": "切换全部站点信息通知",
       "sentryOptInHint": "同意发送匿名错误信息",
       "accessibilityModeHint": "按电梯位置引导快速下车位置",
       "versionFooterLabel": "应用版本 {{version}}",

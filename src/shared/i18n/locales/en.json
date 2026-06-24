@@ -106,8 +106,6 @@
     "speakerOffTitle": "Turn off speaker output",
     "speakerOffMessage": "Disabling speaker output will play only vibration when earphones are not connected. Continue?",
     "speakerOffConfirm": "Turn off",
-    "locklessStationPassedLabel": "Show all stations",
-    "locklessStationPassedDescription": "Receive informational alerts for every station, even without a confirmed boarding train. Turn off to alert only after boarding is confirmed.",
     "languageSection": "Language",
     "languageLabel": "App language",
     "languageDescription": "Auto follows your device setting",
@@ -310,7 +308,6 @@
     "settings": {
       "sleepModeHint": "Plays a wake-up alarm sound when headphones are connected",
       "speakerOutputHint": "Plays alarm sound through the speaker when headphones are not connected",
-      "locklessStationPassedHint": "Toggle all-station informational alerts",
       "sentryOptInHint": "Consent to send anonymous error reports",
       "accessibilityModeHint": "Guides quick-exit positions based on elevators",
       "versionFooterLabel": "App version {{version}}",

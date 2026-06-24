@@ -78,7 +78,6 @@ jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
 }));
 
 // 동적 import — mock이 hoist된 뒤 store를 로드해야 한다.
-import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import type { Station } from '../../../../shared/types/station';
 
@@ -116,33 +115,11 @@ describe('#1176 tripBoundCleanups audit — lockless ↔ lock 전이 회귀 가�
     jest.clearAllMocks();
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
-    useSettingsStore.setState({ infoModeEnabled: true });
     useDestinationStore.setState({
       destination: null,
       customOrigin: null,
       tripOrigin: null,
     });
-  });
-
-  // ── case 2: lock active → toggle OFF (B1 / PR-β) ─────────────────────────────
-
-  it('case 2: setInfoModeEnabled(false)은 releaseLock만 호출하고 runTripBoundCleanups를 호출하지 않는다', async () => {
-    // PR-β의 B1 결정: 토글 OFF는 lock만 정리하고 destination/route는 유지한다.
-    // 누군가 실수로 setInfoModeEnabled(false) → runTripBoundCleanups()를 추가하면
-    // 사용자의 destination이 사라지는 회귀가 즉시 빨갛게 잡힌다.
-    await useSettingsStore.getState().setInfoModeEnabled(false);
-    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
-    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
-    expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
-  });
-
-  it('case 3: setInfoModeEnabled(true)은 releaseLock도 runTripBoundCleanups도 호출하지 않는다', async () => {
-    // 토글 ON 전환은 backend register payload flag만 갱신하는 의미. lock 자동 재생성은
-    // 사용자 명시 탑승 의사를 요구하므로 여기서 어떤 cleanup도 일어나면 안 된다.
-    useSettingsStore.setState({ infoModeEnabled: false });
-    await useSettingsStore.getState().setInfoModeEnabled(true);
-    expect(mockReleaseLock).not.toHaveBeenCalled();
-    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
   });
 
   // ── case 5: trip-end via destination switch/null ─────────────────────────────
@@ -184,21 +161,6 @@ describe('#1176 tripBoundCleanups audit — lockless ↔ lock 전이 회귀 가�
     expect(mockSetTripStartedAt).not.toHaveBeenCalled();
   });
 
-  // ── orthogonality: settings 토글이 destination chain을 invoke하지 않는다 ─────
-
-  it('orthogonality: 토글 OFF가 destination chain(triggerTripEndRecall/setTripStartedAt)을 건드리지 않는다', async () => {
-    // settings → alarm cross-feature는 의도된 orchestration이지만, 그 효과가
-    // destination layer까지 확산되면 안 된다. settings → route 호출은 금지.
-    useDestinationStore.setState({ destination: station });
-    await useSettingsStore.getState().setInfoModeEnabled(false);
-    await Promise.resolve();
-
-    expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
-    expect(mockSetTripStartedAt).not.toHaveBeenCalled();
-    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
-    // destination 자체는 살아있어야 한다.
-    expect(useDestinationStore.getState().destination).toEqual(station);
-  });
 });
 
 /**

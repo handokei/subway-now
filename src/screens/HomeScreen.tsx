@@ -121,9 +121,6 @@ export default function HomeScreen() {
   const setSleepMode = useSettingsStore((s) => s.setSleepMode);
   const loadSleepMode = useSettingsStore((s) => s.loadSleepMode);
   const loadAllowSpeaker = useSettingsStore((s) => s.loadAllowSpeaker);
-  // #816 C — lockless station-passed 토글. useApnsTripRegistration이 backend register payload에 포함시킨다.
-  const infoModeEnabled = useSettingsStore((s) => s.infoModeEnabled);
-  const loadInfoModeEnabled = useSettingsStore((s) => s.loadInfoModeEnabled);
   const showSleepModeGuide = useSleepModeGuide();
   const alarmEvent = useAlarmEventStore((s) => s.alarmEvent);
   const clearAlarmEvent = useAlarmEventStore((s) => s.clearAlarmEvent);
@@ -695,7 +692,6 @@ export default function HomeScreen() {
       nextTrainMinutes != null && nextTrainMinutes !== Infinity ? nextTrainMinutes * 60 : null,
     currentStation: result?.station ?? null,
     boardingLock,
-    infoModeEnabled,
     subsurface: barometerSubsurface,
   });
 
@@ -713,7 +709,6 @@ export default function HomeScreen() {
     loadRoutePreference();
     loadRecentDestinations();
     loadAlarmEvent();
-    loadInfoModeEnabled();
     loadDismissSilence();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).

@@ -2280,8 +2280,6 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
     expect(dump).toContain('received=0 (last ');
     expect(dump).toContain('fired=0 (last ');
     expect(dump).toContain('lastSkipped=');
-    // #856 — lockless toggle 기본 OFF(미전달 시 false).
-    expect(dump).toContain('toggle=off');
   });
 
   it('buildDumpText: token 없으면 (none), 시각 null이면 (never)', () => {
@@ -2573,19 +2571,10 @@ describe('DebugModal — Scheduled queue UI (#756)', () => {
   });
 });
 
-describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
+describe('DebugModal — Silent Push UX 카운트 (#856)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     setupHookDefaults();
-    act(() => {
-      useSettingsStore.setState({ infoModeEnabled: false });
-    });
-  });
-
-  afterEach(() => {
-    act(() => {
-      useSettingsStore.setState({ infoModeEnabled: false });
-    });
   });
 
   it('alarm log에 silent-push-received/fired/skipped가 있으면 received/fired 카운트 row가 노출된다', async () => {
@@ -2615,29 +2604,11 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
     expect(screen.getByText(/^1 \(last \d{2}:\d{2}:\d{2}\)$/)).toBeTruthy();
   });
 
-  it('infoModeEnabled=false면 toggle row가 OFF 안내 문구로 노출된다', async () => {
-    renderWithTheme(<DebugModal onClose={jest.fn()} />);
-    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText(/lockless station-passed 비활성/)).toBeTruthy();
-  });
-
-  it('infoModeEnabled=true면 toggle row가 "on"으로 노출된다', async () => {
-    act(() => {
-      useSettingsStore.setState({ infoModeEnabled: true });
-    });
-    renderWithTheme(<DebugModal onClose={jest.fn()} />);
-    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText('on')).toBeTruthy();
-  });
-
-  it('Share dump에 received/fired 카운트와 toggle 라벨이 포함된다', async () => {
+  it('Share dump에 received/fired 카운트가 포함된다', async () => {
     mockGetAlarmLog.mockResolvedValue([
       { ts: 1, source: 'silent-push-received', outcome: 'received' },
       { ts: 2, source: 'silent-push-fired', outcome: 'fired' },
     ]);
-    act(() => {
-      useSettingsStore.setState({ infoModeEnabled: true });
-    });
     const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     // logs 반영(Alarm log 카운트로 검증) 후 share — useCallback closure가 신규 logs 캡처.
@@ -2646,7 +2617,6 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
     const msg = shareSpy.mock.calls[0][0].message;
     expect(msg).toContain('received=1');
     expect(msg).toContain('fired=1');
-    expect(msg).toContain('toggle=on');
     shareSpy.mockRestore();
   });
 

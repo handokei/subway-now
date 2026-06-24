@@ -366,14 +366,13 @@ function formatAt(ts: number | null): string {
  * - dumpKey: 텍스트 dump의 헤더 (전체 단어)
  * 새 필드는 여기와 hook 타입만 손대면 dump/UI가 동시에 갱신된다.
  *
- * #856 — `logs`/`locklessOn` 보강. lastRecv/lastFired 시간만 보고 "왜 안 울리지?" 묻는
- * 사용자 의문을 한 라인으로 해소하기 위해 received/fired 카운트 + toggle 상태 row 추가.
+ * #856 — `logs` 보강. lastRecv/lastFired 시간만 보고 "왜 안 울리지?" 묻는
+ * 사용자 의문을 한 라인으로 해소하기 위해 received/fired 카운트 row 추가.
  * lastRecv/lastFired row는 카운트와 같은 값으로 흡수돼 단일 라인으로 줄어든다(중복 제거).
  */
 function silentPushDiagRows(
   d: SilentPushDiagnostics,
   logs: readonly AlarmLogEntry[],
-  locklessOn: boolean,
   lowPowerMode: boolean,
 ): { uiLabel: string; dumpKey: string; value: string }[] {
   const task = d.taskRegistrationError
@@ -382,7 +381,6 @@ function silentPushDiagRows(
   const silentCounts = countSilentPushOutcomes(logs);
   const receivedValue = buildSilentPushCountValue(silentCounts.received, formatAt(d.lastReceivedAt));
   const firedValue = buildSilentPushCountValue(silentCounts.fired, formatAt(d.lastFiredAt));
-  const toggleValue = locklessOn ? SILENT_PUSH_LABELS.toggleOn : SILENT_PUSH_LABELS.toggleOff;
   // #1308 — LPM은 silent push를 throttle/drop 한다. received 카운트 옆에 두어 "LPM ON인데
   // received가 안 늘어남"을 한눈에 보고 측정할 수 있게 한다.
   const lowPowerValue = lowPowerMode ? 'ON' : 'off';
@@ -411,11 +409,6 @@ function silentPushDiagRows(
       value: firedValue,
     },
     { uiLabel: 'lastSkip', dumpKey: 'lastSkipped', value: formatAt(d.lastSkippedAt) },
-    {
-      uiLabel: SILENT_PUSH_LABELS.toggleKey,
-      dumpKey: SILENT_PUSH_LABELS.toggleKey,
-      value: toggleValue,
-    },
     { uiLabel: 'lowPower', dumpKey: 'lowPowerMode', value: lowPowerValue },
   ];
 }
@@ -521,9 +514,6 @@ interface BuildDumpArgs {
    */
   backendSsotMirror?: BackendSsotMirrorEntry | null;
   logs: AlarmLogEntry[];
-  // #856: lockless station-passed toggle ON/OFF — Silent Push 섹션 row의 SSOT.
-  // optional — DebugModal 본체는 항상 전달, 단순 dump 단위 테스트는 생략 가능(기본 false).
-  locklessOn?: boolean;
   // #1308: iOS 저전력 모드. optional — 미전달 시 false(off). silent push 측정용.
   lowPowerMode?: boolean;
   // #756: OS 큐 dump. 미전달/null = DebugModal에서 한 번도 Refresh 안 한 상태.
@@ -734,7 +724,6 @@ function buildSilentPushSection(args: BuildDumpArgs): string[] {
   return silentPushDiagRows(
     args.silentPush,
     args.logs,
-    args.locklessOn ?? false,
     args.lowPowerMode ?? false,
   ).map(({ dumpKey, value }) => `${dumpKey}=${value}`);
 }
@@ -1484,10 +1473,6 @@ function DebugModalInner({
       clearInterval(id);
     };
   }, []);
-  // #856: lockless station-passed toggle. OFF면 backend가 받은 silent push도 client가
-  // intermediate 알림을 차단 → "received는 늘어도 fired는 안 늘어남"이 정상 동작.
-  // DebugModal에 한 줄로 노출해 사용자가 설정 위치를 즉시 알 수 있게 한다.
-  const locklessOn = useSettingsStore((s) => s.infoModeEnabled);
   // #1215 (D9) — 기압계 subsurface. useBarometer는 shared/hooks이라 의존 위배 없음.
   // useFusedNearestStation 내부 useBarometer와 별개 listener — DebugModal 관찰자 효과 허용 범위.
   // #1398 — `stop=undefined` 원인(unavailableReason)과 readingCount도 dump에 노출.
@@ -1722,7 +1707,6 @@ function DebugModalInner({
       // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror.
       backendSsotMirror,
       logs,
-      locklessOn,
       lowPowerMode,
       scheduledDump,
       barometerSubsurface,
@@ -1770,7 +1754,6 @@ function DebugModalInner({
     silentPush,
     backendSsotMirror,
     logs,
-    locklessOn,
     lowPowerMode,
     scheduledDump,
     barometerSubsurface,
@@ -2003,7 +1986,7 @@ function DebugModalInner({
           </Section>
 
           <Section title="Silent Push" colors={colors}>
-            {silentPushDiagRows(silentPush, logs, locklessOn, lowPowerMode).map(
+            {silentPushDiagRows(silentPush, logs, lowPowerMode).map(
               ({ uiLabel, value }) => (
                 <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
               ),

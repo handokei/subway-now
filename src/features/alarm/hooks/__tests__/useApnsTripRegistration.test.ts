@@ -971,82 +971,6 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
-  // #816 C — lockless station-passed opt-in
-  describe('lockless station-passed (#816)', () => {
-    it('infoModeEnabled=true 입력 시 register payload에 포함', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-          infoModeEnabled: true,
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      expect(mockRegister.mock.calls[0][0].infoModeEnabled).toBe(true);
-    });
-
-    it('infoModeEnabled 미지정/false면 register payload에 미포함', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      expect(mockRegister.mock.calls[0][0].infoModeEnabled).toBeUndefined();
-    });
-
-    it('토글 OFF→ON 전환 시 즉시 재등록 (deps 반영)', async () => {
-      const { rerender } = renderHook(
-        ({ lsp }: { lsp: boolean }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            infoModeEnabled: lsp,
-          }),
-        { initialProps: { lsp: false } },
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      expect(mockRegister.mock.calls[0][0].infoModeEnabled).toBeUndefined();
-
-      rerender({ lsp: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-      expect(mockRegister.mock.calls[1][0].infoModeEnabled).toBe(true);
-    });
-
-    it('token refresh 경로도 최신 토글값을 송신 (latestInputsRef)', async () => {
-      const { rerender } = renderHook(
-        ({ lsp }: { lsp: boolean }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            infoModeEnabled: lsp,
-          }),
-        { initialProps: { lsp: false } },
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      // 토글 ON으로 변경
-      rerender({ lsp: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-
-      const listener = mockAddPushTokenListener.mock.calls[0][0];
-      await act(async () => {
-        listener({ data: 'token-NEW' });
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      const refreshed = mockRegister.mock.calls.find(
-        (c) => (c[0] as { token: string }).token === 'token-NEW',
-      );
-      expect(refreshed?.[0].infoModeEnabled).toBe(true);
-    });
-  });
-
   // #903 (Seam G) — 기압계 subsurface 전달
   describe('subsurface (#903)', () => {
     const baseInputs = (subsurface?: boolean) => ({
@@ -1190,7 +1114,7 @@ describe('useApnsTripRegistration', () => {
         expect(mockRegister.mock.calls[0][0].promptDisplay).toBeDefined();
 
         // currentStation → null (BG GPS 누락 시뮬레이션). deps에 포함 안 됐으므로
-        // register 재호출 안 됨 (#703). token-refresh나 다음 infoModeEnabled toggle 등으로
+        // register 재호출 안 됨 (#703). token-refresh나 다음 subsurface 변경 등으로
         // re-register 시 캐시 활용 여부를 아래 token-refresh 경로로 검증.
         rerender({ cs: null });
         // 재등록 미발생 (currentStation은 deps 아님) — 캐시 검증은 token-refresh로 진행

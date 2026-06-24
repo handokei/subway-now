@@ -106,8 +106,6 @@
     "speakerOffTitle": "スピーカー出力をオフ",
     "speakerOffMessage": "スピーカー出力をオフにすると、イヤホン未接続時は振動のみになります。続けますか?",
     "speakerOffConfirm": "オフにする",
-    "locklessStationPassedLabel": "全駅表示",
-    "locklessStationPassedDescription": "乗車列車を選択していない経路でも全ての駅を情報として通知します。オフにすると乗車確定時のみ通知します。",
     "languageSection": "言語",
     "languageLabel": "アプリの言語",
     "languageDescription": "自動はデバイスの設定に従います",
@@ -310,7 +308,6 @@
     "settings": {
       "sleepModeHint": "イヤホン接続時に起床アラーム音で鳴ります",
       "speakerOutputHint": "イヤホン未接続時にスピーカーでアラーム音を再生",
-      "locklessStationPassedHint": "全駅情報通知のオン/オフ",
       "sentryOptInHint": "匿名のエラー情報送信に同意",
       "accessibilityModeHint": "エレベーター基準で速やかな降車位置を案内",
       "versionFooterLabel": "アプリバージョン {{version}}",

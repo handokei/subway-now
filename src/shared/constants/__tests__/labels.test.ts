@@ -54,18 +54,8 @@ describe('buildSilentPushCountValue (#856)', () => {
 });
 
 describe('SILENT_PUSH_LABELS (#856)', () => {
-  it('toggle off 라벨은 lockless 비활성 + 설정 안내 문구를 포함한다', () => {
-    expect(SILENT_PUSH_LABELS.toggleOff).toContain('lockless');
-    expect(SILENT_PUSH_LABELS.toggleOff).toContain('설정');
-  });
-
-  it('toggle on 라벨은 짧은 활성 표기다', () => {
-    expect(SILENT_PUSH_LABELS.toggleOn).toBe('on');
-  });
-
-  it('received/fired/toggle key는 dump 헤더용 안정 식별자', () => {
+  it('received/fired key는 dump 헤더용 안정 식별자', () => {
     expect(SILENT_PUSH_LABELS.receivedKey).toBe('received');
     expect(SILENT_PUSH_LABELS.firedKey).toBe('fired');
-    expect(SILENT_PUSH_LABELS.toggleKey).toBe('toggle');
   });
 });
