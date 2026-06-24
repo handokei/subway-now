@@ -517,14 +517,38 @@ describe('DebugModal', () => {
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalledTimes(2));
   });
 
-  it('Clear log 버튼이 로그를 비우고 재조회한다', async () => {
+  it('Clear all logs 버튼이 6개 buffer를 모두 비우고 재조회한다', async () => {
+    const estimatorMod = jest.requireActual('../../../route/utils/estimatorDebugBuffer') as typeof import('../../../route/utils/estimatorDebugBuffer');
+    const fusionMod = jest.requireActual('../../../nearest-station/utils/fusionDebugBuffer') as typeof import('../../../nearest-station/utils/fusionDebugBuffer');
+    const gpsDropMod = jest.requireActual('../../../nearest-station/utils/gpsDropBuffer') as typeof import('../../../nearest-station/utils/gpsDropBuffer');
+    const backendMod = jest.requireActual('../../../../shared/utils/backendCallBuffer') as typeof import('../../../../shared/utils/backendCallBuffer');
+    const rawMod = jest.requireActual('../../../observability/utils/rawSignalBuffer') as typeof import('../../../observability/utils/rawSignalBuffer');
+
+    const spyEstimator = jest.spyOn(estimatorMod, 'clearEstimatorEntries');
+    const spyFusion = jest.spyOn(fusionMod, 'clearFusionDebugEntries');
+    const spyGpsDrop = jest.spyOn(gpsDropMod, 'clearGpsDropEntries');
+    const spyBackend = jest.spyOn(backendMod, 'clearBackendCallEntries');
+    const spyRaw = jest.spyOn(rawMod, 'clearRawSignalEntries');
+
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalledTimes(1));
     await act(async () => {
       fireEvent.press(screen.getByTestId('debug-clear-log'));
     });
-    expect(mockClearAlarmLog).toHaveBeenCalled();
+
+    expect(mockClearAlarmLog).toHaveBeenCalledTimes(1);
+    expect(spyEstimator).toHaveBeenCalledTimes(1);
+    expect(spyFusion).toHaveBeenCalledTimes(1);
+    expect(spyGpsDrop).toHaveBeenCalledTimes(1);
+    expect(spyBackend).toHaveBeenCalledTimes(1);
+    expect(spyRaw).toHaveBeenCalledTimes(1);
     expect(mockGetAlarmLog).toHaveBeenCalledTimes(2);
+
+    spyEstimator.mockRestore();
+    spyFusion.mockRestore();
+    spyGpsDrop.mockRestore();
+    spyBackend.mockRestore();
+    spyRaw.mockRestore();
   });
 
   it('Close 버튼이 onClose를 호출한다', () => {
