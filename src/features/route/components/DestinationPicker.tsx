@@ -30,7 +30,7 @@ import { StationMap } from '../../map/components/StationMap';
 import { StationSuggestionList } from '../../nearest-station/components/StationSuggestionList';
 import { createLogger } from '../../../shared/utils/logger';
 import { matchesStationQuery, getStationDisplayName } from '../../../shared/utils/stationDisplay';
-import { useTheme, spacing, radius } from '../../../shared/theme';
+import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
 const logger = createLogger('DestinationPicker');
 
@@ -298,7 +298,7 @@ const styles = StyleSheet.create({
     padding: spacing.xxl,
   },
   mapFallbackText: {
-    fontSize: 14,
+    ...typography.bodySm,
     textAlign: 'center',
   },
   overlay: {
@@ -316,18 +316,18 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
   },
   title: {
-    fontSize: 20,
+    ...typography.titleXs,
     fontWeight: 'bold',
   },
   closeText: {
-    fontSize: 16,
+    ...typography.bodyMd,
   },
   input: {
     marginHorizontal: spacing.xl,
     borderRadius: radius.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    fontSize: 16,
+    ...typography.bodyMd,
     borderWidth: 1,
   },
   dropdownWrap: {
@@ -351,10 +351,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   chipIcon: {
-    fontSize: 14,
+    ...typography.bodySm,
   },
   chipText: {
-    fontSize: 14,
+    ...typography.bodySm,
     fontWeight: '600',
   },
   chipPlaceholder: {
@@ -371,12 +371,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   pendingText: {
-    fontSize: 14,
+    ...typography.bodySm,
     fontWeight: '600',
     flex: 1,
   },
   pendingCancel: {
-    fontSize: 14,
+    ...typography.bodySm,
     fontWeight: '700',
     paddingHorizontal: spacing.sm,
   },
@@ -397,7 +397,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   recenterIcon: {
-    fontSize: 22,
+    ...typography.titleSm,
     lineHeight: 24,
   },
 });

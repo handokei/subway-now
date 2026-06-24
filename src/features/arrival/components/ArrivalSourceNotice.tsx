@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 import { StyleSheet, Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { StationArrival } from '../api/arrivalApi';
-import { useTheme } from '../../../shared/theme';
+import { useTheme, typography } from '../../../shared/theme';
 
 interface Props {
   arrival: StationArrival | null;
@@ -56,7 +56,7 @@ export function ArrivalSourceNotice({ arrival }: Props): ReactElement | null {
 
 const styles = StyleSheet.create({
   notice: {
-    fontSize: 12,
+    ...typography.captionSm,
     marginBottom: 8,
   },
 });

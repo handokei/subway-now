@@ -25,7 +25,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { submitFeedback } from '../../../shared/api/feedback';
-import { useTheme, spacing, radius } from '../../../shared/theme';
+import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
 /** message 최대 길이 — backend FEEDBACK_MAX_MESSAGE_LENGTH와 정합. */
 export const FEEDBACK_MAX_LENGTH = 2000;
@@ -193,15 +193,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   title: {
-    fontSize: 18,
+    ...typography.bodyLg,
     fontWeight: '700',
   },
   close: {
-    fontSize: 20,
+    ...typography.titleXs,
     padding: spacing.xs,
   },
   description: {
-    fontSize: 13,
+    ...typography.caption,
     lineHeight: 18,
     marginBottom: spacing.md,
   },
@@ -210,16 +210,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: radius.md,
     padding: spacing.md,
-    fontSize: 15,
+    ...typography.bodyBase,
     textAlignVertical: 'top',
   },
   counter: {
-    fontSize: 12,
+    ...typography.captionSm,
     textAlign: 'right',
     marginTop: spacing.xs,
   },
   status: {
-    fontSize: 13,
+    ...typography.caption,
     marginTop: spacing.sm,
     textAlign: 'center',
   },
@@ -230,7 +230,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   submitText: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '700',
   },
 });

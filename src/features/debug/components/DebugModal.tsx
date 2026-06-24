@@ -2710,6 +2710,6 @@ const styles = StyleSheet.create({
   },
   actionText: {
     fontWeight: '700',
-    fontSize: 14,
+    ...typography.bodySm,
   },
 });

@@ -9,7 +9,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { useTheme, spacing, radius, withAlpha } from '../../../shared/theme';
+import { useTheme, typography, spacing, radius, withAlpha } from '../../../shared/theme';
 import type { FusionSource } from '../../../shared/types/fusion';
 import {
   resolveNotificationSource,
@@ -58,7 +58,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   label: {
-    fontSize: 11,
+    ...typography.micro,
     fontWeight: '700',
     letterSpacing: 0.4,
   },

@@ -10,7 +10,7 @@ import { MapSearchBar } from '../features/map/components/MapSearchBar';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { StatusChip } from '../features/arrival/components/StatusChip';
 import stationsData from '../data/stations.json';
-import { useTheme, spacing, radius } from '../shared/theme';
+import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { LineBadge } from '../shared/ui/LineBadge';
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   closeText: {
-    fontSize: 16,
+    ...typography.bodyMd,
     paddingHorizontal: spacing.xs,
   },
   selectionCard: {
@@ -272,7 +272,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   selectionName: {
-    fontSize: 18,
+    ...typography.bodyLg,
     fontWeight: '700',
     marginBottom: spacing.xs,
   },
@@ -287,7 +287,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   selectionButtonText: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '700',
   },
   slotButtons: {
@@ -306,10 +306,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   slotButtonIcon: {
-    fontSize: 14,
+    ...typography.bodySm,
   },
   slotButtonText: {
-    fontSize: 13,
+    ...typography.caption,
     fontWeight: '600',
   },
   recenterButton: {
@@ -328,7 +328,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   recenterIcon: {
-    fontSize: 22,
+    ...typography.titleSm,
     lineHeight: 24,
   },
 });

@@ -13,7 +13,7 @@ import MapView, { Circle, Marker, Polyline, PROVIDER_DEFAULT } from 'react-nativ
 import type { Station } from '../../../shared/types/station';
 import type { RouteCoordinatePath } from '../../route/utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
-import { useTheme, withAlpha } from '../../../shared/theme';
+import { useTheme, typography, withAlpha } from '../../../shared/theme';
 import { LINE_BADGE_LABEL } from '../../../shared/constants/lineColors';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 
@@ -290,7 +290,7 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     color: '#ffffff',
-    fontSize: 10,
+    ...typography.badge,
     fontWeight: '700',
     lineHeight: 12,
   },
@@ -307,7 +307,7 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   markerLabel: {
-    fontSize: 12,
+    ...typography.captionSm,
     fontWeight: '600',
     color: '#111111',
     textAlign: 'center',

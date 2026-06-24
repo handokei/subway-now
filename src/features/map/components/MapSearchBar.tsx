@@ -12,7 +12,7 @@ import { useTranslation } from 'react-i18next';
 import stationsData from '../../../data/stations.json';
 import type { Station } from '../../../shared/types/station';
 import { matchesStationQuery } from '../../../shared/utils/stationDisplay';
-import { useTheme, spacing, radius } from '../../../shared/theme';
+import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { StationSuggestionList } from '../../nearest-station/components/StationSuggestionList';
 
 const allStations = stationsData as Station[];
@@ -83,7 +83,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    fontSize: 16,
+    ...typography.bodyMd,
     borderWidth: 1,
   },
   dropdownWrap: {

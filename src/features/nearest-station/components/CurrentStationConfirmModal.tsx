@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
   },
   lineText: {
     color: '#ffffff',
-    fontSize: 12,
+    ...typography.captionSm,
     fontWeight: 'bold',
   },
   empty: {

@@ -11,7 +11,7 @@ import { useThemeStore, type ThemeMode } from '../shared/theme/store/useThemeSto
 import { useLocaleStore, type LocalePreference } from '../shared/i18n/store/useLocaleStore';
 import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
-import { useTheme, spacing, radius } from '../shared/theme';
+import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
 import { emitLocklessToggleViewed } from '../features/settings/utils/locklessFunnel';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
@@ -430,7 +430,7 @@ const styles = StyleSheet.create({
     paddingBottom: 80,
   },
   header: {
-    fontSize: 14,
+    ...typography.bodySm,
     letterSpacing: 2,
     textTransform: 'uppercase',
     padding: 24,
@@ -443,7 +443,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   sectionTitle: {
-    fontSize: 14,
+    ...typography.bodySm,
     letterSpacing: 1,
     textTransform: 'uppercase',
     marginBottom: 16,
@@ -458,12 +458,12 @@ const styles = StyleSheet.create({
     marginRight: 16,
   },
   settingLabel: {
-    fontSize: 16,
+    ...typography.bodyMd,
     fontWeight: '600',
     marginBottom: 4,
   },
   settingDesc: {
-    fontSize: 13,
+    ...typography.caption,
     lineHeight: 18,
   },
   segmentGroup: {
@@ -479,7 +479,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   segmentText: {
-    fontSize: 13,
+    ...typography.caption,
     fontWeight: '600',
   },
   localeTrigger: {
@@ -492,11 +492,11 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
   },
   localeTriggerValue: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '500',
   },
   localeChevron: {
-    fontSize: 20,
+    ...typography.titleXs,
     marginLeft: spacing.sm,
   },
   versionFooter: {
@@ -505,7 +505,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   versionText: {
-    fontSize: 12,
+    ...typography.captionSm,
     letterSpacing: 0.5,
   },
 });
