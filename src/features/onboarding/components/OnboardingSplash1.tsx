@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 
 interface Props {
-  onNext: () => void;
-  onSkip: () => void;
+  readonly onNext: () => void;
+  readonly onSkip: () => void;
 }
 
 /**

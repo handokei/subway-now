@@ -4,9 +4,9 @@ import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 import type { PermissionStep } from '../hooks/useOnboardingPermissions';
 
 interface Props {
-  step: PermissionStep;
-  onGrantPermissions: () => void;
-  onSkip: () => void;
+  readonly step: PermissionStep;
+  readonly onGrantPermissions: () => void;
+  readonly onSkip: () => void;
 }
 
 /**
