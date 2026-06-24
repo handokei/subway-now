@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import * as sentryModule from '../sentry';
 import {
   app,
   applyBoardingLockTrainCodeSwap,
@@ -451,6 +452,56 @@ describe('POST /trips — boardingLock merge (#585)', () => {
     await post('/trips', lockBody({ trainCode: '2317' }), env);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
     expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
+  });
+});
+
+// #1731 — validateTrip reject logger: console.warn + Sentry breadcrumb
+describe('validateTrip — reject logger (#1731)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let breadcrumbSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    breadcrumbSpy = vi.spyOn(sentryModule, 'addValidateRejectBreadcrumb').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['non-object input → non-object', null, 'non-object'],
+    ['missing token → missing-token', { ...base(), token: undefined }, 'missing-token'],
+    ['missing destination → missing-destination', { ...base(), destination: undefined }, 'missing-destination'],
+    ['missing route → missing-route', { ...base(), route: undefined }, 'missing-route'],
+    ['empty waypoints → empty-waypoints', { ...base(), waypoints: [] }, 'empty-waypoints'],
+    ['expired expiresAt → invalid-expiresAt', { ...base(), expiresAt: Date.now() - 1 }, 'invalid-expiresAt'],
+    ['missing alarmAtEpochMs → missing-alarmAtEpochMs', (() => { const b = base(); delete b.alarmAtEpochMs; return b; })(), 'missing-alarmAtEpochMs'],
+    ['0-stop direct route → zero-stop-direct-route', { ...base(), route: { type: 'direct', line: '2', stops: 0 } }, 'zero-stop-direct-route'],
+    ['waypoint null → invalid-waypoint-non-object', { ...base(), waypoints: [null] }, 'invalid-waypoint-non-object'],
+    ['waypoint stationName number → invalid-waypoint-stationName', { ...base(), waypoints: [{ stationName: 1, line: '2', kind: 'destination' }] }, 'invalid-waypoint-stationName'],
+    ['waypoint line missing → invalid-waypoint-line', { ...base(), waypoints: [{ stationName: '강남', kind: 'destination' }] }, 'invalid-waypoint-line'],
+    ['waypoint kind unknown → invalid-waypoint-kind', { ...base(), waypoints: [{ stationName: '강남', line: '2', kind: 'unknown' }] }, 'invalid-waypoint-kind'],
+  ] as const)('%s', (_label, input, expectedReason) => {
+    validateTrip(input as unknown);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    const warnArg = warnSpy.mock.calls[0][0] as string;
+    expect(warnArg).toContain(expectedReason);
+    expect(breadcrumbSpy).toHaveBeenCalledOnce();
+    expect(breadcrumbSpy).toHaveBeenCalledWith(expectedReason, expect.any(Object));
+  });
+
+  it('valid input → no console.warn, no breadcrumb', () => {
+    validateTrip(base());
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(breadcrumbSpy).not.toHaveBeenCalled();
+  });
+
+  it('token 앞 8자만 tokenPrefix로 mask', () => {
+    validateTrip({ ...base(), destination: undefined });
+    const data = breadcrumbSpy.mock.calls[0][1] as Record<string, unknown>;
+    expect(data.tokenPrefix).toBe('tok');           // 'tok' is 3 chars, slice(0,8) = 'tok'
+    expect(data.tokenPrefix).not.toBe(base().token + 'extra');
   });
 });
 

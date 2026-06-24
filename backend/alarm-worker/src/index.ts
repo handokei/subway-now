@@ -51,7 +51,7 @@ import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
-import { sentryInit } from './sentry';
+import { addValidateRejectBreadcrumb, sentryInit } from './sentry';
 import {
   recordRecallUpload,
   validateRecallUpload,
@@ -1878,30 +1878,40 @@ export function applyProgress(
 }
 
 export function validateTrip(input: unknown): Trip | null {
-  if (!input || typeof input !== 'object') return null;
+  // #1731 — reject helper: console.warn + Sentry breadcrumb (DSN 미설정 시 no-op).
+  // sanitizedPayload: token은 앞 8자만 노출 (PII mask).
+  function reject(reason: string, tokenRaw?: string): null {
+    const tokenPrefix = typeof tokenRaw === 'string' ? tokenRaw.slice(0, 8) : undefined;
+    console.warn(`validateTrip reject: ${reason}`, JSON.stringify({ reason, tokenPrefix }));
+    addValidateRejectBreadcrumb(reason, { tokenPrefix });
+    return null;
+  }
+
+  if (!input || typeof input !== 'object') return reject('non-object');
   const obj = input as Record<string, unknown>;
 
-  if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
-  if (typeof obj.destination !== 'string') return null;
-  if (!obj.route || typeof obj.route !== 'object') return null;
-  if (!Array.isArray(obj.waypoints) || obj.waypoints.length === 0) return null;
-  if (typeof obj.expiresAt !== 'number' || obj.expiresAt <= Date.now()) return null;
-  if (typeof obj.alarmAtEpochMs !== 'number') return null;
+  const tokenRaw = typeof obj.token === 'string' ? obj.token : undefined;
+  if (!tokenRaw || tokenRaw.length === 0) return reject('missing-token');
+  if (typeof obj.destination !== 'string') return reject('missing-destination', tokenRaw);
+  if (!obj.route || typeof obj.route !== 'object') return reject('missing-route', tokenRaw);
+  if (!Array.isArray(obj.waypoints) || obj.waypoints.length === 0) return reject('empty-waypoints', tokenRaw);
+  if (typeof obj.expiresAt !== 'number' || obj.expiresAt <= Date.now()) return reject('invalid-expiresAt', tokenRaw);
+  if (typeof obj.alarmAtEpochMs !== 'number') return reject('missing-alarmAtEpochMs', tokenRaw);
 
   // #1324 — degenerate trip 방어: 출발역 == 목적지면 client(stationRoute.findRoutes)가
   // `{ type: 'direct', stops: 0 }` 경로를 만든다 — 진행할 hop이 없어 방향 null/빈 탑승목록/
   // skip-cycle로 이어진다(사가정 trip 사고). frontend 경계가 1차 차단하지만, 0-stop direct
   // 경로는 backend도 거부해 어떤 client에서도 이런 trip이 등록되지 않게 한다.
   const route = obj.route as Record<string, unknown>;
-  if (route.type === 'direct' && route.stops === 0) return null;
+  if (route.type === 'direct' && route.stops === 0) return reject('zero-stop-direct-route', tokenRaw);
 
   // waypoints 검증
   for (const w of obj.waypoints) {
-    if (!w || typeof w !== 'object') return null;
+    if (!w || typeof w !== 'object') return reject('invalid-waypoint-non-object', tokenRaw);
     const wp = w as Record<string, unknown>;
-    if (typeof wp.stationName !== 'string') return null;
-    if (typeof wp.line !== 'string') return null;
-    if (wp.kind !== 'transfer' && wp.kind !== 'destination' && wp.kind !== 'intermediate') return null;
+    if (typeof wp.stationName !== 'string') return reject('invalid-waypoint-stationName', tokenRaw);
+    if (typeof wp.line !== 'string') return reject('invalid-waypoint-line', tokenRaw);
+    if (wp.kind !== 'transfer' && wp.kind !== 'destination' && wp.kind !== 'intermediate') return reject('invalid-waypoint-kind', tokenRaw);
   }
 
   // #1193 — incoming waypoints 전체에 대해 occurrenceIdx를 1-pass로 stamp.
@@ -1929,13 +1939,13 @@ export function validateTrip(input: unknown): Trip | null {
   });
 
   return {
-    token: obj.token,
+    token: tokenRaw,
     route: obj.route as Trip['route'],
-    destination: obj.destination,
+    destination: obj.destination as string,
     waypoints: stampedWaypoints,
-    expiresAt: obj.expiresAt,
+    expiresAt: obj.expiresAt as number,
     createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : Date.now(),
-    alarmAtEpochMs: obj.alarmAtEpochMs,
+    alarmAtEpochMs: obj.alarmAtEpochMs as number,
     lastFiredPhase: obj.lastFiredPhase === 'early' || obj.lastFiredPhase === 'imminent'
       ? obj.lastFiredPhase
       : undefined,
