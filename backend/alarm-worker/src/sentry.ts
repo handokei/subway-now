@@ -18,7 +18,7 @@
  *   현재 모듈은 DSN 부재 시 100% no-op이라 production runtime 영향 없음.
  */
 
-import { captureMessage } from '@sentry/cloudflare';
+import { addBreadcrumb, captureMessage } from '@sentry/cloudflare';
 import {
   hashTripToken,
   sanitizeContext,
@@ -85,6 +85,24 @@ export function isSentryInitialized(): boolean {
 /** 진단/테스트용 — 현재 DSN(노출 가능 시). */
 export function getConfiguredDsn(): string | null {
   return configuredDsn;
+}
+
+/**
+ * #1731 — validateTrip reject breadcrumb.
+ *
+ * DSN 미설정 시 no-op (graceful). Sentry SDK 실패 시 swallow.
+ * reason: reject 사유 식별자, data: sanitized payload 조각.
+ */
+export function addValidateRejectBreadcrumb(
+  reason: string,
+  data: Record<string, string | number | boolean | null | undefined>,
+): void {
+  if (!initialized) return;
+  try {
+    addBreadcrumb({ category: 'trips-validate', level: 'warning', data: { reason, ...data } });
+  } catch (e) {
+    console.warn(JSON.stringify({ msg: 'sentry addBreadcrumb failed', err: String(e) }));
+  }
 }
 
 /** 테스트 격리용 — 모듈 스코프 init 상태 reset. */
