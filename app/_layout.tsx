@@ -179,7 +179,12 @@ function RootContent() {
   // #1780 — 첫 실행 온보딩 redirect.
   // router.replace(useEffect) 대신 Redirect 컴포넌트로 render path 안에서 처리.
   // Stack 마운트 전 navigate 호출로 인한 "Attempted to navigate before mounting the Root Layout" crash 방지.
+  // #1809 — hydrated 전에는 hasCompletedOnboarding=false(초기값)이므로 redirect를 보류.
+  // SplashScreen.preventAutoHideAsync()가 splash를 유지하므로 null 반환은 안전.
   const isOnOnboarding = segments[0] === 'onboarding';
+  if (!hydrated) {
+    return null;
+  }
   if (!hasCompletedOnboarding && !isOnOnboarding) {
     return <Redirect href="/onboarding" />;
   }
