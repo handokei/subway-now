@@ -559,6 +559,50 @@ describe('sendSilentPush', () => {
     expect('ssot' in body.data).toBe(false);
   });
 
+  // #1788 — apns-thread-id 헤더 wire 검증 (sendSilentPush).
+  it('tripToken 지정 시 apns-thread-id 헤더로 전달 (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        tripToken: 'trip-abc',
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-thread-id']).toBe('trip-abc');
+  });
+
+  it('tripToken 미지정 시 apns-thread-id 헤더 omit (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect('apns-thread-id' in headers).toBe(false);
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),
@@ -633,6 +677,40 @@ describe('sendAlertPush (#572 P2c)', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toBeUndefined();
+  });
+
+  // #1788 — apns-thread-id 헤더 wire 검증 (sendAlertPush).
+  it('tripToken 지정 시 apns-thread-id 헤더로 전달 (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendAlertPush({
+      deviceToken: 't',
+      title: 'T',
+      body: 'B',
+      pushId: 'p',
+      tripToken: 'trip-xyz',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-thread-id']).toBe('trip-xyz');
+  });
+
+  it('tripToken 미지정 시 apns-thread-id 헤더 omit (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendAlertPush({
+      deviceToken: 't',
+      title: 'T',
+      body: 'B',
+      pushId: 'p',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect('apns-thread-id' in headers).toBe(false);
   });
 });
 
@@ -895,6 +973,27 @@ describe('sendBoardingPromptPush (#819)', () => {
     expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
   });
 
+  // #1788 — apns-thread-id 헤더 wire 검증 (sendBoardingPromptPush, tripToken required).
+  it('apns-thread-id 헤더에 tripToken이 그대로 전달된다 (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-thread',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: 'L',
+      tripToken: 'trip-boarding-123',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-thread-id']).toBe('trip-boarding-123');
+  });
+
   it.each([['cron' as const], ['instant' as const]])(
     '#1536 (S3) — triggerKind=%s payload.data.triggerKind forward',
     async (triggerKind) => {
@@ -962,6 +1061,7 @@ describe('sendTripEndedAlertPush (#1337)', () => {
       'apns-push-type': 'alert',
       'apns-priority': '10',
       'content-type': 'application/json',
+      'apns-thread-id': 'trip-abc',
     });
     const body = JSON.parse(call[1].body as string);
     expect(body.aps.alert).toEqual({
@@ -1005,5 +1105,14 @@ describe('sendTripEndedAlertPush (#1337)', () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe(503);
     expect(result.reason).toBeUndefined();
+  });
+
+  // #1788 — apns-thread-id 헤더 wire 검증 (sendTripEndedAlertPush, tripToken required).
+  it('apns-thread-id 헤더에 tripToken이 그대로 전달된다 (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await runTripEndedAlertPush(fetchImpl, { tripToken: 'trip-ended-tok' });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-thread-id']).toBe('trip-ended-tok');
   });
 });
