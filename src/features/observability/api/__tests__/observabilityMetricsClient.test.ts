@@ -41,6 +41,7 @@ function makeMetrics(): ObservabilityMetrics {
       stationary: { count: 2, ratio: 0.2 },
       unknown: { count: 1, ratio: 0.1 },
     },
+    laPushDeliveryRatio: { sent: 10, failed: 2, ratio: 10 / 12 },
     window: '24h',
     timestamp: 1_700_000_000_000,
   };
@@ -100,6 +101,17 @@ describe('fetchObservabilityMetrics', () => {
         expect(result.metrics.accuracyRatio.value).toBe(8);
         expect(result.metrics.locklessMissRatio.ratio).toBe(0.1);
         expect(result.metrics.window).toBe('24h');
+      }
+    });
+
+    it('forwards laPushDeliveryRatio from response (#1779)', async () => {
+      mockFetchOk(makeMetrics());
+      const result = await fetchObservabilityMetrics();
+      expect(result.kind).toBe('ok');
+      if (result.kind === 'ok') {
+        expect(result.metrics.laPushDeliveryRatio.sent).toBe(10);
+        expect(result.metrics.laPushDeliveryRatio.failed).toBe(2);
+        expect(result.metrics.laPushDeliveryRatio.ratio).toBeCloseTo(10 / 12);
       }
     });
 

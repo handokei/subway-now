@@ -58,6 +58,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         unknown: { count: 0, ratio: 0 },
       },
       silentPushLatency: null,
+      laPushDeliveryRatio: { sent: 10, failed: 2, ratio: 10 / 12 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -94,6 +95,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         unknown: { count: 0, ratio: 0 },
       },
       silentPushLatency: null,
+      laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -398,5 +400,67 @@ describe('computeObservabilityMetrics — accelPatternHitRatio (#1769)', () => {
       accelPatternHitRatio.stationary.ratio +
       accelPatternHitRatio.unknown.ratio;
     expect(ratioSum).toBeCloseTo(1.0);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — laPushDeliveryRatio (#1779)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — laPushDeliveryRatio (#1779)', () => {
+  it('no tripsKv → placeholder 0/0/0', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW, undefined);
+    expect(result.laPushDeliveryRatio).toEqual({ sent: 0, failed: 0, ratio: 0 });
+  });
+
+  it('empty tripsKv → 0/0/0', async () => {
+    const r2 = makeEmptyFakeR2();
+    const kv = new InMemoryKV();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW, kv as unknown as KVNamespace);
+    expect(result.laPushDeliveryRatio).toEqual({ sent: 0, failed: 0, ratio: 0 });
+  });
+
+  it('computes sent/(sent+failed) from accumulated KV counters', async () => {
+    const r2 = makeEmptyFakeR2();
+    const kv = new InMemoryKV();
+    // Pre-populate la-push-counters bucket for current hour
+    const bucket = Math.floor(NOW / (60 * 60 * 1000));
+    kv.store.set(`la-push-counters:${bucket}`, {
+      value: JSON.stringify({ sent: 8, failed: 2 }),
+    });
+    const result = await computeObservabilityMetrics(r2, undefined, NOW, kv as unknown as KVNamespace);
+    expect(result.laPushDeliveryRatio.sent).toBe(8);
+    expect(result.laPushDeliveryRatio.failed).toBe(2);
+    expect(result.laPushDeliveryRatio.ratio).toBeCloseTo(0.8);
+  });
+
+  it('all sent (failed=0) → ratio=1', async () => {
+    const r2 = makeEmptyFakeR2();
+    const kv = new InMemoryKV();
+    const bucket = Math.floor(NOW / (60 * 60 * 1000));
+    kv.store.set(`la-push-counters:${bucket}`, {
+      value: JSON.stringify({ sent: 5, failed: 0 }),
+    });
+    const result = await computeObservabilityMetrics(r2, undefined, NOW, kv as unknown as KVNamespace);
+    expect(result.laPushDeliveryRatio.ratio).toBe(1);
+  });
+
+  it('all failed (sent=0) → ratio=0', async () => {
+    const r2 = makeEmptyFakeR2();
+    const kv = new InMemoryKV();
+    const bucket = Math.floor(NOW / (60 * 60 * 1000));
+    kv.store.set(`la-push-counters:${bucket}`, {
+      value: JSON.stringify({ sent: 0, failed: 3 }),
+    });
+    const result = await computeObservabilityMetrics(r2, undefined, NOW, kv as unknown as KVNamespace);
+    expect(result.laPushDeliveryRatio.ratio).toBe(0);
+    expect(result.laPushDeliveryRatio.failed).toBe(3);
+  });
+
+  it('laPushDeliveryRatio included in response shape', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect('laPushDeliveryRatio' in result).toBe(true);
   });
 });

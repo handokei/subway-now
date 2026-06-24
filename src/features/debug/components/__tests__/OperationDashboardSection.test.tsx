@@ -87,6 +87,8 @@ function makeSuccessResult(
   boardableTotal = 0,
   accelPattern: observabilityClient.AccelPatternBucket = DEFAULT_ACCEL_PATTERN,
   pushLatency: { p50: number; p95: number; totalSamples: number } | null = null,
+  laSent = 10,
+  laFailed = 2,
 ): observabilityClient.FetchMetricsResult {
   return {
     kind: 'ok',
@@ -97,6 +99,7 @@ function makeSuccessResult(
       boardableMissRatio: { value: boardableValue, total: boardableTotal, ratio: boardableTotal === 0 ? 0 : boardableValue / boardableTotal },
       accelPatternHitRatio: accelPattern,
       silentPushLatency: pushLatency,
+      laPushDeliveryRatio: { sent: laSent, failed: laFailed, ratio: laSent / (laSent + laFailed) },
       window: '24h',
       timestamp: 1_700_000_000_000,
     },
@@ -122,13 +125,14 @@ afterEach(() => {
 
 describe('OperationDashboardSection', () => {
   describe('Sub 1 — 빈 데이터 상태 (4 metric 모두 0)', () => {
-    it('4개 metric row를 렌더한다', async () => {
+    it('5개 metric row를 렌더한다 (laPushDelivery 포함)', async () => {
       renderWithTheme(<OperationDashboardSection logs={[]} />);
       await act(async () => { jest.runAllTimers(); });
       expect(screen.getByTestId('operation-metric-alarmAccuracy')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-silentPushReach')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-locklessMiss')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-boardableMiss')).toBeTruthy();
+      expect(screen.getByTestId('operation-metric-laPushDelivery')).toBeTruthy();
     });
 
     it('alarmAccuracy: 응답 0건 → no data bar 렌더', async () => {
@@ -422,6 +426,25 @@ describe('OperationDashboardSection', () => {
       await act(async () => { jest.runAllTimers(); });
       await waitFor(() => {
         expect(screen.getByTestId('push-latency-na')).toBeTruthy();
+      });
+    });
+  });
+
+  // ── #1779 LA push delivery section ──────────────────────────────────────────
+
+  describe('#1779 — laPushDelivery metric', () => {
+    it('backend 미수신 상태에서 laPushDelivery row가 (no data) 표시', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      expect(screen.getByTestId('operation-metric-laPushDelivery')).toBeTruthy();
+    });
+
+    it('fetch 성공 → laPushDelivery ratio bar 렌더', async () => {
+      mockFetchMetrics.mockResolvedValue(makeSuccessResult(2, 10, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2));
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('operation-metric-laPushDelivery')).toBeTruthy();
       });
     });
   });

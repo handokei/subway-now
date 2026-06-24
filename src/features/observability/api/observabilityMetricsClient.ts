@@ -24,6 +24,13 @@ export interface AccelPatternBucket {
   unknown: { count: number; ratio: number };
 }
 
+/** #1779 — LA push 도달률 응답 bucket. */
+export interface LaPushDeliveryBucket {
+  sent: number;
+  failed: number;
+  ratio: number;
+}
+
 export interface ObservabilityMetrics {
   accuracyRatio: ObservabilityMetricsBucket;
   silentPushDeliveryRatio: ObservabilityMetricsBucket;
@@ -36,6 +43,8 @@ export interface ObservabilityMetrics {
    * latencyMs stamp 있는 샘플만 집계. 샘플 0건이면 null.
    */
   silentPushLatency?: { p50: number; p95: number; totalSamples: number } | null;
+  /** #1779 — LA push 도달률 (sent / (sent + failed), 24h rolling window). */
+  laPushDeliveryRatio: LaPushDeliveryBucket;
   window: '24h';
   timestamp: number;
 }

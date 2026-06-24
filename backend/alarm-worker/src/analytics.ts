@@ -21,6 +21,7 @@ import type { AnalyticsEngineWriter, Env } from './types';
  *  - `motion-transition`: SSoT motionState 전환 (moving ↔ stationary ↔ unknown)
  *  - `position-upload`  : POST `/position` 수신 (V8a 적재 카운터)
  *  - `trip-mutation`    : POST `/trips` 수신 (V8b 적재 카운터)
+ *  - `la-push`          : Live Activity push 발사 결과 (#1779)
  */
 export type TripMetricEventType =
   | 'advance'
@@ -28,7 +29,8 @@ export type TripMetricEventType =
   | 'suppress'
   | 'motion-transition'
   | 'position-upload'
-  | 'trip-mutation';
+  | 'trip-mutation'
+  | 'la-push';
 
 /**
  * 적재 event shape. `tripToken`은 index, dimensions는 blob, metrics는 double로 매핑된다.
