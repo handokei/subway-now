@@ -32,6 +32,7 @@ import {
   fetchObservabilityMetrics,
   type ObservabilityMetricsBucket,
   type AccelPatternBucket,
+  type LaPushDeliveryBucket,
   type FetchMetricsResult,
 } from '../../observability/api/observabilityMetricsClient';
 import {
@@ -62,7 +63,7 @@ interface MetricData {
 type BackendLoadState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket; accelPattern: AccelPatternBucket; pushLatency: { p50: number; p95: number; totalSamples: number } | null }
+  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket; accelPattern: AccelPatternBucket; pushLatency: { p50: number; p95: number; totalSamples: number } | null; laPushDelivery: LaPushDeliveryBucket }
   | { kind: 'unconfigured' }
   | { kind: 'error'; message: string };
 
@@ -303,6 +304,7 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
         boardableMiss: result.metrics.boardableMissRatio,
         accelPattern: result.metrics.accelPatternHitRatio,
         pushLatency: result.metrics.silentPushLatency ?? null,
+        laPushDelivery: result.metrics.laPushDeliveryRatio,
       });
     } else if (result.kind === 'unconfigured') {
       setBackendState({ kind: 'unconfigured' });
@@ -359,7 +361,20 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
   const pushLatencyData: { p50: number; p95: number; totalSamples: number } | null | undefined =
     backendState.kind === 'ok' ? backendState.pushLatency : undefined;
 
-  const metrics: MetricData[] = [alarmAccuracy, silentPushReach, locklessMiss, boardableMiss];
+  // Metric 7 — LA push delivery ratio (#1779, backend 수신 시만 유효)
+  const laPushDelivery: MetricData =
+    backendState.kind === 'ok'
+      ? {
+          key: 'locklessMiss', // drill-down reuse — LA push has no dedicated drill-down yet
+          label: 'laPushDelivery',
+          ratio: computeRatio(backendState.laPushDelivery.sent, backendState.laPushDelivery.sent + backendState.laPushDelivery.failed),
+          numerator: backendState.laPushDelivery.sent,
+          denominator: backendState.laPushDelivery.sent + backendState.laPushDelivery.failed,
+          isMock: false,
+        }
+      : { key: 'locklessMiss', label: 'laPushDelivery', ratio: null, numerator: 0, denominator: 0, isMock: true };
+
+  const metrics: MetricData[] = [alarmAccuracy, silentPushReach, locklessMiss, boardableMiss, laPushDelivery];
 
   const handleMetricPress = useCallback((key: DrillDownMetricKey) => {
     setDrillDownKey((prev) => (prev === key ? null : key));

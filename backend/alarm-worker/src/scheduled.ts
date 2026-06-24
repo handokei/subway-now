@@ -83,6 +83,7 @@ import type {
 } from './types';
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { writeMetric } from './analytics';
+import { accumulateLaPushCounters } from './laPushCounters';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -952,6 +953,24 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     ...stats,
     seoulCalls: deps.seoul.stats.callCount,
   });
+
+  // #1779 — LA push 도달률 Analytics Engine forward.
+  // cron cycle 합산(laPushSent / laPushFailed)을 단일 la-push 이벤트로 적재.
+  // binding 미설정 시 writeMetric은 no-op — 개발/테스트 환경 호환.
+  if (stats.laPushSent + stats.laPushFailed > 0) {
+    writeMetric(env, {
+      eventType: 'la-push',
+      tripToken: 'cron-aggregate',
+      reason: 'cycle-summary',
+      staleMs: stats.laPushFailed,
+      hopIndex: stats.laPushSent,
+    });
+  }
+
+  // #1779 — LA push 도달률 KV 누적. 1h bucket별 sent/failed를 accumulate해
+  // computeObservabilityMetrics가 laPushDeliveryRatio를 산출할 수 있도록 한다.
+  await accumulateLaPushCounters(env.TRIPS, stats.laPushSent, stats.laPushFailed, now);
+
   return stats;
 }
 

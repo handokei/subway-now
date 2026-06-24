@@ -1109,7 +1109,7 @@ app.get('/v1/observability/metrics', async (c) => {
   if (cached) return c.json(cached);
 
   // 첫 요청 또는 KV TTL 만료(1h) 시 실시간 계산 후 KV 적재.
-  const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now);
+  const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now, c.env.TRIPS);
   await storeObservabilityMetrics(c.env.TRIPS, metrics, now);
   return c.json(metrics);
 });
@@ -2123,7 +2123,7 @@ export default {
       const now = Date.now();
       const existing = await readObservabilityMetrics(env.TRIPS, now);
       if (!existing) {
-        const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now);
+        const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now, env.TRIPS);
         await storeObservabilityMetrics(env.TRIPS, metrics, now);
         log('observability metrics aggregated', { window: '24h', timestamp: now });
       }

@@ -33,6 +33,7 @@
 
 import { computeAlarmLogStats } from './alarmLogStats';
 import { computePushAckStats } from './pushAckStats';
+import { sumLaPushCounters } from './laPushCounters';
 
 /** 집계 KV 키 prefix. */
 const METRICS_KEY_PREFIX = 'obs-metrics:24h:';
@@ -61,6 +62,8 @@ export interface ObservabilityMetricsResponse {
    * latencyMs stamp 있는 샘플만 집계. 샘플 0건이면 null.
    */
   silentPushLatency: { p50: number; p95: number; totalSamples: number } | null;
+  /** #1779 — LA push 도달률 (sent / (sent + failed), 24h rolling window). */
+  laPushDeliveryRatio: { sent: number; failed: number; ratio: number };
   window: '24h';
   timestamp: number;
 }
@@ -75,16 +78,18 @@ export function hourBucketKey(now: number): string {
 }
 
 /**
- * R2 alarmLog scan으로 4 metric 계산.
+ * R2 alarmLog scan으로 metric 계산.
  *
  * @param r2 TELEMETRY_R2 bucket
  * @param pendingPushesKv PENDING_PUSHES KV namespace (optional)
  * @param now 현재 epoch ms
+ * @param tripsKv TRIPS KV namespace — laPushDeliveryRatio 산출용 (optional, 미설정 시 placeholder)
  */
 export async function computeObservabilityMetrics(
   r2: R2Bucket,
   pendingPushesKv: KVNamespace | undefined,
   now: number,
+  tripsKv?: KVNamespace,
 ): Promise<ObservabilityMetricsResponse> {
   // 1. R2 alarmLog 24h scan — accuracyRatio + locklessMissRatio 원천
   const alarmStats = await computeAlarmLogStats(r2, now, 24, 500);
@@ -115,6 +120,20 @@ export async function computeObservabilityMetrics(
   // stationName 슬롯에 인코딩된 pattern(automotive/walking/stationary/unknown) 분포 산출.
   const accelPatternHitRatio = buildAccelPatternBucket(alarmStats.accelPatternCounts);
 
+  // 5. #1779 — laPushDeliveryRatio. TRIPS KV la-push-counters:{bucket} 24h 합산.
+  let laPushDeliveryRatio: ObservabilityMetricsResponse['laPushDeliveryRatio'];
+  if (tripsKv !== undefined) {
+    const laCounts = await sumLaPushCounters(tripsKv, now);
+    const laTotal = laCounts.sent + laCounts.failed;
+    laPushDeliveryRatio = {
+      sent: laCounts.sent,
+      failed: laCounts.failed,
+      ratio: laTotal === 0 ? 0 : laCounts.sent / laTotal,
+    };
+  } else {
+    laPushDeliveryRatio = { sent: 0, failed: 0, ratio: 0 };
+  }
+
   return {
     accuracyRatio,
     silentPushDeliveryRatio,
@@ -122,6 +141,7 @@ export async function computeObservabilityMetrics(
     boardableMissRatio,
     accelPatternHitRatio,
     silentPushLatency,
+    laPushDeliveryRatio,
     window: '24h',
     timestamp: now,
   };
