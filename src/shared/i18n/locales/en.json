@@ -205,7 +205,12 @@
     "transferEarlyTitle": "Transfer alert",
     "arrivalEarlyTitle": "Arrival alert",
     "transferImminentTitle": "Transfer imminent",
-    "arrivalImminentTitle": "Arrival imminent"
+    "arrivalImminentTitle": "Arrival imminent",
+    "actions": {
+      "acknowledge": "OK",
+      "endTrip": "End trip",
+      "nextTrip": "Start next trip"
+    }
   },
   "journey": {
     "transferNote": "Transfer",

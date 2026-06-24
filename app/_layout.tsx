@@ -24,7 +24,11 @@ import { registerScheduledAlarmListener } from '../src/features/alarm/utils/sche
 import { cancelScheduledAlarms } from '../src/features/alarm/utils/alarmScheduler';
 import { unregisterAlarmRefreshTask } from '../src/features/alarm/tasks/alarmRefreshTask';
 import { stopVibration } from '../src/features/alarm/utils/alarmSound';
-import { setupBoardingPromptCategory } from '../src/features/alarm/utils/notificationCategory';
+import {
+  setupAlarmCategory,
+  setupBoardingPromptCategory,
+  setupTripEndedCategory,
+} from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
 import { useBoardingPromptDisplayLogger } from '../src/features/alarm/hooks/useBoardingPromptDisplayLogger';
 import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
@@ -62,6 +66,14 @@ registerSilentPushTask().catch((e) => layoutLogger.warn('silent push task 등록
 // #819 — "탑승했냐?" 푸시의 BOARDING_PROMPT category 등록. 액션 [탑승]/[미탑승]을 노출.
 setupBoardingPromptCategory().catch((e) =>
   layoutLogger.warn('boarding-prompt category 등록 실패(#819):', e),
+);
+// #1798 P2 — transfer/destination 알람 ALARM_CATEGORY 등록. 액션 [확인]/[trip 종료]을 노출.
+setupAlarmCategory().catch((e) =>
+  layoutLogger.warn('alarm category 등록 실패(#1798):', e),
+);
+// #1798 P2 — trip 종료 TRIP_ENDED_CATEGORY 등록. 액션 [다음 여정 시작]을 노출.
+setupTripEndedCategory().catch((e) =>
+  layoutLogger.warn('trip-ended category 등록 실패(#1798):', e),
 );
 // 사전 예약 alarm receiver는 잔존 예약 발사 시 FIRED_ALARMS 갱신만 담당.
 registerScheduledAlarmListener();

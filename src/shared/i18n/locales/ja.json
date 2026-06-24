@@ -205,7 +205,12 @@
     "transferEarlyTitle": "乗換アラーム",
     "arrivalEarlyTitle": "到着アラーム",
     "transferImminentTitle": "まもなく乗換",
-    "arrivalImminentTitle": "まもなく到着"
+    "arrivalImminentTitle": "まもなく到着",
+    "actions": {
+      "acknowledge": "確認",
+      "endTrip": "trip終了",
+      "nextTrip": "次の旅程を開始"
+    }
   },
   "journey": {
     "transferNote": "乗換",

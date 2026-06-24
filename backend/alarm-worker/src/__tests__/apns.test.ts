@@ -712,6 +712,40 @@ describe('sendAlertPush (#572 P2c)', () => {
     const headers = call[1].headers as Record<string, string>;
     expect('apns-thread-id' in headers).toBe(false);
   });
+
+  // #1798 P2 — category 필드 wire 검증.
+  it('category 지정 시 aps.category에 전달된다 (#1798)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendAlertPush({
+      deviceToken: 't',
+      title: 'T',
+      body: 'B',
+      pushId: 'p',
+      category: 'ALARM_CATEGORY',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.category).toBe('ALARM_CATEGORY');
+  });
+
+  it('category 미지정 시 aps.category omit (#1798)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendAlertPush({
+      deviceToken: 't',
+      title: 'T',
+      body: 'B',
+      pushId: 'p',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('category' in body.aps).toBe(false);
+  });
 });
 
 describe('sendReschedulePush (#585)', () => {
@@ -1017,6 +1051,48 @@ describe('sendBoardingPromptPush (#819)', () => {
       expect(body.data.triggerKind).toBe(triggerKind);
     },
   );
+
+  // #1798 P3 — subtitle wire 검증.
+  it('subtitle 지정 시 aps.alert.subtitle에 전달된다 (#1798)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-sub',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      subtitle: '2호선 상행방면',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert.subtitle).toBe('2호선 상행방면');
+  });
+
+  it('subtitle 미지정 시 aps.alert.subtitle omit (#1798)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-nosub',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('subtitle' in body.aps.alert).toBe(false);
+  });
 });
 
 // #1337 — trip-ended를 silent → alert로 전환. killed 앱에 OS banner로 즉시 표시.
