@@ -13,11 +13,7 @@ import {
   type SilentPushPayload,
 } from './apns';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
-import {
-  attemptAutoLock,
-  AUTO_PROMPT_DEDUP_WINDOW_MS,
-  recordAutoLockConfidence,
-} from './autoLock';
+import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
   markPromptFired,
@@ -2604,30 +2600,9 @@ export async function advanceBoardingLockWaypoint(
       });
     }
   }
-  // #902 Seam F — 환승 직후 자동 trainCode swap. release한 lock 자리에 새 노선의 후보를
-  // 동일 cycle 안에 부착해 다음 cycle의 lockMissing/boarding-prompt 우회 + 즉시 trainCode 추적.
-  // 후보 ambiguity / arrivals 비어있음 / subwayId 매핑 누락이면 attempted=true + 결과 null →
-  // 기존 lockMissing → evaluateAndMaybeFireBoardingPrompt fallback 흐름이 그대로 살아있다.
-  let transferSwapAttached = false;
-  if (lockReleasedOnTransfer && trip.waypoints.length > 0) {
-    const next = trip.waypoints[0];
-    // #1702 (B2-A) — transfer-swap arrivals 단방향/0건 fallback. 새 leg 의 line positions 를 함께
-    // 전달해 `attachTrainCodeForLeg` 내부에서 합성 ArrivalEntry retry path 활성화.
-    const transferSelfPoll = await readSelfPollPosition(env.TRIPS, next.line);
-    const swapped = await attachTrainCodeForLeg({
-      trip,
-      targetWaypoint: next,
-      seoul: deps.seoul,
-      now,
-      // #1439 (E6, ADR-015 §9) — transfer-swap이 trip route 외 line으로 잘못 매핑되지 않도록.
-      allowedLines: computeAllowedLines(trip.route, trip.waypoints),
-      selfPollPositions: transferSelfPoll?.positions,
-    });
-    if (swapped) {
-      trip.boardingLock = swapped;
-      transferSwapAttached = true;
-    }
-  }
+  // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
+  // 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
+  // 다음 cron cycle에서 lockMissing → evaluateAndMaybeFireBoardingPrompt → boardingPrompt push 발사.
   log('boarding-lock: waypoint advanced', {
     token: trip.token.slice(0, 8),
     completed: waypoint.stationName,
@@ -2635,7 +2610,6 @@ export async function advanceBoardingLockWaypoint(
     remaining: trip.waypoints.length,
     // P2-2: true일 때만 log key 포함 — false noise로 운영 로그 가시성 저하 방지.
     ...(lockReleasedOnTransfer ? { lockReleasedOnTransfer: true } : {}),
-    ...(transferSwapAttached ? { transferSwapAttached: true } : {}),
   });
   if (trip.waypoints.length === 0) {
     // #868 — waypoints 소진(intermediate 마지막 통과)도 effective destination-arrived.
@@ -2860,118 +2834,14 @@ export async function maybeReschedulePush(
 }
 
 /**
- * #1315 — lockless trip에서 탑승 열차의 trainCode를 확보해 `trip.boardingLock`을 부착 시도한다.
- *
- * `evaluateAndMaybeFireBoardingPrompt`의 auto-lock 경로(#916 A1)와 동일한 9단 게이트
- * (`evaluateBoardingPromptGates`) + `attemptAutoLock`을 재사용한다 — 게이트가 통과하는 시점
- * (사용자가 실제 이동 중 + 단일 후보 trainCode)에만 lock을 합성한다. 부착 성공 시 다음 cron
- * 사이클의 `isBoardingLockActive` 게이트가 trip을 `runTrainCodeTracking`으로 라우팅 →
- * lock 경로와 동일하게 `arrivals.find(a => a.trainCode === lock.trainCode)`로 *그 열차*만 추적한다.
- *
- * 좌표 컨텍스트(`promptGeoContext`/`promptDisplay`) 부재 시 바인딩 자체가 불가하므로 false 반환
- * (backend는 stations 좌표를 갖지 않아 게이트 평가 불가 — 기존 boarding-prompt 정책과 동일).
- *
- * 반환: lock을 부착하고 putTrip까지 완료했으면 true (호출자는 즉시 return — 이번 cycle은 발사 안 함).
- * 부착 못 했으면 false (호출자는 기존 bare-arvlCd 경로로 진행하되 motion 게이트로 보수 차단).
- *
- * 본 함수는 `fusion`을 재사용해 중복 KV read를 피한다(arrivals fetch는 attemptAutoLock 내부 1회).
- */
-async function maybeBindLocklessTrainCode(
-  trip: Trip,
-  waypoint: Waypoint,
-  fusion: FusionStepResult,
-  env: Env,
-  deps: ScheduledDeps,
-  stats: ScheduledStats,
-  now: number,
-  log: Logger,
-): Promise<boolean> {
-  const geo = trip.promptGeoContext;
-  const display = trip.promptDisplay;
-  if (!geo || !display) return false;
-
-  // 9단 AND 게이트 — 사용자가 실제 이동 중일 때만 통과 (정적/저신뢰는 false positive 차단).
-  // boarding-prompt 경로와 동일하게 fusion 결과(series/kalman/metrics)를 그대로 입력으로 전달.
-  // #1536 (S3) — 환경 분기. underground/unknown 은 GPS 의존 게이트(#3~#7) 를 byPass.
-  const environment = deriveTripEnvironment(trip);
-  const outcome = evaluateBoardingPromptGates({
-    series: fusion.series,
-    origin: geo.origin,
-    nextStation: geo.nextStation,
-    now,
-    promptState: trip.boardingPromptState,
-    kalmanKmh: fusion.kalmanKmh,
-    metrics: fusion.posMetrics,
-    environment,
-  });
-  if (!outcome.pass) return false;
-  // #1536 (S3) — environment-aware consensusGate. underground 분기는 arrival +
-  // lockAttachable 2-of-2 합의로 false positive 차단. arrivals 는 attemptAutoLock 이
-  // fetch 하므로 본 함수에서는 lockAttachable 신호만 forward 하고 consensusGate 의 분기
-  // 자체는 attemptAutoLock 내부에서 평가한다. caller 는 outcome.pass(motion+silence) 만
-  // 사용해 auto-lock 시도 진입을 허용.
-  // #1614 Phase B (S4 #1537) — backend self-poll positionTrainAgreement forward. cron 진입부에서
-  // stamp된 `realtime-position:<line>` KV를 read해, pickAutoTrainCode 가 선택할 candidate
-  // trainCode가 line에서 실제 운행 중인지 검사. caller 시점에는 trainCode 가 아직 결정 안 됐으므로
-  // line의 positions list 자체를 forward — attemptAutoLock 가 pickAutoTrainCode 결과를 그 list 와
-  // cross-match (Phase B-2 함수에서 처리). 본 caller 는 raw list 전달만 담당.
-  const selfPollPositions = await readSelfPollPosition(env.TRIPS, waypoint.line);
-  const autoLockResult = await attemptAutoLock({
-    trip,
-    targetWaypoint: waypoint,
-    originStation: display.originStation,
-    direction: geo.direction,
-    seoul: deps.seoul,
-    now,
-    boardingPromptState: trip.boardingPromptState,
-    lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
-    // #1439 (E6, ADR-015 §9) — lockless auto-lock 합성도 route 외 line이면 reject.
-    allowedLines: computeAllowedLines(trip.route, trip.waypoints),
-    // #1536 (S3) — environment + gateOutcome forward. attemptAutoLock 이 환경 분기
-    // consensusGate 평가로 surface 통과 / underground arrival+lockAttachable 합의 강제.
-    environment,
-    gateOutcome: outcome,
-    // #1614 Phase B — self-poll 결과를 attemptAutoLock 에 forward. 함수 내부에서 trainCode 결정
-    // 직후 cross-match 후 consensusGate 입력으로 positionTrainAgreement 전달.
-    selfPollPositions: selfPollPositions?.positions,
-    // #1667 (ADR-015 strongDB) — 마지막 position point의 WiFi SSID 매핑 역명 forward.
-    // undefined(iOS WiFi 미연결/Android/시리즈 없음) 시 consensusGate가 자연 false fallback.
-    wifiSsidStationName: fusion.series[fusion.series.length - 1]?.wifiSsidStationName,
-  });
-  if (autoLockResult.confidenceTrace && env.TELEMETRY) {
-    recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
-  }
-  const autoLock = autoLockResult.lock;
-  if (!autoLock) return false;
-
-  // boarding-prompt auto-lock 성공 블록과 동형 — lock 부착 + dedup 마커 + 카운터.
-  trip.boardingLock = autoLock;
-  trip.boardingPromptState = markPromptFired(now);
-  trip.lastAutoPromptedAt = now;
-  trip.consecutiveEtaMissing = 0;
-  stats.autoLockSuccess += 1;
-  log('lockless: auto-lock attached', {
-    token: trip.token.slice(0, 8),
-    trainCode: autoLock.trainCode,
-    line: autoLock.line,
-    originStation: display.originStation,
-  });
-  await putTrip(env.TRIPS, trip);
-  return true;
-}
-
-/**
  * #816 C — lockless trip (사용자 opt-in)에서 intermediate waypoint 통과를 추적하고 station-passed
  * push를 발사한다.
  *
- * #1315 — 우선 `maybeBindLocklessTrainCode`로 탑승 열차의 trainCode 확보를 시도한다(9단 게이트
- * 통과 시). 확보되면 다음 cycle이 lock 경로(trainCode 매칭)로 *그 열차*만 추적 — lockless 안정성의
- * 핵심. trainCode 미확보 cycle에서만 아래 bare-arvlCd 경로로 진행하되, GPS motion이 실제 이동
- * (walking/automotive)을 보일 때만 advance를 허용한다(`LOCKLESS_ADVANCE_MOTION_MODES`). 정적/
- * 저신뢰 cycle은 보류 — `pickBestArrivalSignal`의 "아무 열차" arvlCd는 *사용자 열차* ground truth가
- * 아니므로 false positive(2026-06-15 용마산 정적 false advance) 차단.
+ * #1729 paradigm shift — `maybeBindLocklessTrainCode`(Path B') 제거.
+ * 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
+ * lockless 9단 통과 시 boardingPrompt push 흐름으로 fallthrough.
  *
- * 발사 조건(trainCode 미확보 cycle):
+ * 발사 조건:
  *   1. arrivals 중 best signal의 arvlCd가 ARRIVED(1) 또는 ENTERING(0)
  *   2. GPS motion ∈ {walking, automotive} (실제 이동 확증)
  *   3. dedup: 같은 waypoint에서 이미 한 번 발사한 경우 (lastFiredPhase='imminent') skip
@@ -3001,11 +2871,8 @@ export async function runLocklessIntermediate(
     trip.stationPhase = fusion.phaseState;
     dirty = true;
   }
-  // #1315 — bare-arvlCd 발사 전에 탑승 열차 trainCode 확보를 우선 시도한다. 성공 시 lock이
-  // 부착되고(putTrip 완료) 다음 cron 사이클이 lock 경로로 *그 열차*만 추적 — 이번 cycle은 발사 안 함.
-  if (await maybeBindLocklessTrainCode(trip, waypoint, fusion, env, deps, stats, now, log)) {
-    return;
-  }
+  // #1729 paradigm shift — maybeBindLocklessTrainCode(Path B') 제거됨.
+  // lockless trip은 boardingPrompt push 경로로 사용자 인지 후 BoardingTrainList에서 명시 탭.
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const signal = pickBestArrivalSignal(arrivals, waypoint);
   if (signal === null || signal.arvlCd === null) {
@@ -3378,65 +3245,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     return;
   }
 
-  // #916 A1 — 9단 게이트 통과 시점에 backend가 직접 trainCode를 결정 가능한지 시도.
-  // 성공하면 사용자에게 "탑승했냐?" 푸시 없이 lock을 자동 부착하고 cron이 매역 추적을 시작.
-  // 실패(arrivals 없음/ambiguity/subwayId 매핑 누락 등) → 기존 boarding-prompt push fallback.
-  // 거짓 양성 방어: 사용자가 다른 trainCode를 탭하면 client가 새 lock POST → #864/#704 분기로
-  // 자연 교체. boardingPromptState도 함께 fired stamp해 같은 cycle에서 prompt 발사를 차단.
-  const targetWaypoint = pickActiveWaypoint(trip);
-  if (targetWaypoint) {
-    // #1676 — strongCB (positionTrainAgreement) wire. cron 진입부에서 stamp된
-    // `realtime-position:<line>` KV를 read해 pickAutoTrainCode 후보 cross-match 입력으로 전달.
-    // maybeBindLocklessTrainCode 와 동일 패턴 — boarding-prompt auto-lock 경로에서도
-    // underground 환경의 strongCB 통과 path를 활성화해 5G/LTE 사용자(WiFi 미연결) V4 cover.
-    const selfPollPositions = await readSelfPollPosition(env.TRIPS, targetWaypoint.line);
-    const autoLockResult = await attemptAutoLock({
-      trip,
-      targetWaypoint,
-      originStation: display.originStation,
-      direction: geo.direction,
-      seoul: deps.seoul,
-      now,
-      // #1018 RC1 confidence gate 입력 — arvlCd=2 at next-waypoint 검출 시 사용.
-      boardingPromptState: trip.boardingPromptState,
-      lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
-      // #1439 (E6, ADR-015 §9) — boarding-prompt auto-lock 합성도 route 외 line이면 reject.
-      allowedLines: computeAllowedLines(trip.route, trip.waypoints),
-      // #1536 (S3) — environment + gateOutcome forward. 환경 분기 consensusGate 강제.
-      environment,
-      gateOutcome: outcome,
-      // #1676 — strongCB wire. self-poll stamp → attemptAutoLock 내 positionTrainAgreement 산출.
-      selfPollPositions: selfPollPositions?.positions,
-      // #1667 (ADR-015 strongDB) — 마지막 position point의 WiFi SSID 매핑 역명 forward.
-      // undefined(iOS WiFi 미연결/Android/시리즈 없음) 시 consensusGate가 자연 false fallback.
-      wifiSsidStationName: fusion.series[fusion.series.length - 1]?.wifiSsidStationName,
-    });
-    // #1171 — RC1 confidence gate가 평가된 경우(arvlCd=2 branch) score 분포를 AE에 적재.
-    // 1주 운영 후 본 분포로 AUTO_LOCK_CONFIDENCE_THRESHOLD 튜닝 결정.
-    // gate 미평가 케이스(arvlCd!=2 / 더 이른 실패)는 trace undefined → skip.
-    if (autoLockResult.confidenceTrace && env.TELEMETRY) {
-      recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
-    }
-    const autoLock = autoLockResult.lock;
-    if (autoLock) {
-      trip.boardingLock = autoLock;
-      trip.boardingPromptState = markPromptFired(now);
-      // #916 follow-up B — auto-prompt dedup 마커. lock이 나중에 클리어돼도 window 안에서
-      // 재발사를 차단한다. boardingPromptState와 별개라 isSameSession=false 리셋에도 살아남는다.
-      trip.lastAutoPromptedAt = now;
-      trip.consecutiveEtaMissing = 0;
-      stats.autoLockSuccess += 1;
-      log('boarding-prompt: auto-lock attached', {
-        token: trip.token.slice(0, 8),
-        trainCode: autoLock.trainCode,
-        line: autoLock.line,
-        originStation: display.originStation,
-        fusedSpeedKmh: Math.round(outcome.fusedSpeedKmh * 10) / 10,
-      });
-      await putTrip(env.TRIPS, trip);
-      return;
-    }
-  }
+  // #1729 paradigm shift — attemptAutoLock(Path B) 제거.
+  // 9단 게이트 통과 시 backend가 자동 trainCode 결정 X. boardingPrompt push 발사 → 사용자 인지 요구.
 
   // 9단 통과 — alert push 발사.
   const pushId = generatePushId();

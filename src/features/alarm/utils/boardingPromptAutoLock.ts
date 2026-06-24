@@ -22,6 +22,11 @@ import type { ArrivalInfo } from '../../../shared/types/arrival';
  *
  * 빈 입력 또는 ambiguity → null.
  * 결과 trainCode가 빈 문자열이면 null로 강등(빈 trainCode로 lock 만들면 backend tracking이 무용).
+ *
+ * @deprecated #1729 paradigm shift (Path D) — boardingPrompt 응답 후 client 자동 pick 제거.
+ * 호출 사이트(`useBoardingPromptResponder.tryAutoLock`, `useBoardingLockController`)는 별도
+ * 이슈에서 BoardingTrainList 직접 노출 흐름으로 전환 예정. 현재는 기존 동작 유지.
+ * `useTransferTrainList`의 환승 leg 자동 lock도 동일 별도 이슈 대상.
  */
 export function pickAutoTrainCodeFromArrivals(
   arrivals: readonly ArrivalInfo[],
