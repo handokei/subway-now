@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { DevSettings } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { Redirect, Stack, useSegments } from 'expo-router';
@@ -116,13 +116,22 @@ function RootContent() {
   const segments = useSegments();
 
   // #1780 — 첫 실행 온보딩: storage에서 완료 여부 로드.
+  // hydrated=true 시점에 SplashScreen.hideAsync() 호출하여 splash가 영구 잔류하는 회귀 차단.
+  const [hydrated, setHydrated] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
-    loadOnboardingState().then(() => {
-      if (cancelled) return;
+    loadOnboardingState().finally(() => {
+      if (!cancelled) setHydrated(true);
     });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (hydrated) {
+      SplashScreen.hideAsync().catch((e) => layoutLogger.warn('SplashScreen.hideAsync 실패', e));
+    }
+  }, [hydrated]);
 
   // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아
   // arvlCd 우선순위로 trainCode 자동 lock 또는 5분 silence POST. 미bound trip(destinationId=null)에서도
