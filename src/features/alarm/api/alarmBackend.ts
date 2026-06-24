@@ -82,15 +82,6 @@ export interface RegisterTripPayload {
    */
   boardingLock?: AlarmBoardingLock;
   /**
-   * #816 C — 사용자 명시 opt-in (lockless station-passed).
-   * true면 BoardingLock 없는 trip에서도 backend가 intermediate waypoint 통과 시
-   * station-passed(silent push)를 발사한다. 미송신/false면 기존 #640 게이트 그대로 (lock 부재 → skip).
-   *
-   * 토글 OFF 상태에선 false를 명시 송신할 필요 없음 — alarmBackend는 미송신 시 backend에서
-   * default OFF로 해석. dedup hash에는 반드시 포함해 토글 변경이 즉시 재등록되도록 한다.
-   */
-  infoModeEnabled?: boolean;
-  /**
    * #819 — boarding-prompt 9단 게이트 평가에 필요한 출발역/다음역 좌표.
    * lockMissing trip에 대해 backend가 평가 — 좌표 부재 시 backend는 자동 skip.
    */
@@ -167,7 +158,6 @@ function buildRegisterHash(body: {
   alarmAtEpochMs: number;
   apnsEnv: ApnsEnv;
   boardingLock?: AlarmBoardingLock;
-  infoModeEnabled?: boolean;
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
 }): string {
@@ -183,9 +173,6 @@ function buildRegisterHash(body: {
     boardingLockKey: body.boardingLock
       ? `${body.boardingLock.trainCode}|${body.boardingLock.line}|${body.boardingLock.subwayId}|${body.boardingLock.segmentStations.join(',')}`
       : null,
-    // #816 C — 토글 변경 즉시 backend로 전달되도록 dedup key에 포함.
-    // undefined와 false를 다르게 다루지 않는다 — 둘 다 OFF 동일 효과.
-    infoModeEnabled: body.infoModeEnabled === true,
     // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
     // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
     // 게이트 평가 시점에 KV series로 자체 계산하니 영향 없음.
@@ -253,8 +240,6 @@ async function performRegisterFetch(
     apnsEnv: payload.apnsEnv,
     // boardingLock은 있을 때만 송신 (없으면 backend는 기존 anchor 폴링).
     ...(payload.boardingLock ? { boardingLock: payload.boardingLock } : {}),
-    // #816 C — 토글 ON일 때만 송신. OFF/미설정은 필드 자체를 누락해 기존 trip schema 호환.
-    ...(payload.infoModeEnabled === true ? { infoModeEnabled: true } : {}),
     // #819 — boarding-prompt 평가 컨텍스트. 좌표/표시 둘 중 하나라도 없으면 backend는 자동 skip.
     ...(payload.promptGeoContext ? { promptGeoContext: payload.promptGeoContext } : {}),
     ...(payload.promptDisplay ? { promptDisplay: payload.promptDisplay } : {}),
@@ -305,7 +290,6 @@ export function registerActiveTrip(
     alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
     boardingLock: payload.boardingLock,
-    infoModeEnabled: payload.infoModeEnabled,
     promptDisplay: payload.promptDisplay,
     subsurface: payload.subsurface,
   });

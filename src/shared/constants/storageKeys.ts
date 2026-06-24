@@ -52,11 +52,6 @@ export const BG_PERMISSION_DENIED_DISMISSED_KEY = 'subway-now:bg-permission-deni
 // 형식: {"station": Station, "distanceKm": number, "timestamp": number} JSON.
 // WhileInUse 권한 사용자에게는 BG task 자체가 동작하지 않으므로 graceful no-op (key 없음).
 export const BG_LAST_STATION_KEY = 'subway-now:bg-last-station';
-// #816 C — 사용자 opt-in 토글: lock 없는 trip route에서도 station-passed 알림 허용 여부.
-// 기본 OFF. #640 회귀(lock 없는 noise alarm) 차단을 위해 명시적 opt-in 필요.
-// 형식: 'true' 또는 키 부재. (sleep 모드 같은 패턴 — 단순 boolean)
-// AsyncStorage key string은 backward-compat 유지 — #1669 rename.
-export const INFO_MODE_ENABLED_KEY = 'subway-now:lockless-station-passed';
 // #816 B — boardingPrompt 발사 추적 (trip당 1회 발사 + dismiss 시 5분 silence).
 // 형식: {"tripKey": string, "promptedAt": number, "dismissedAt"?: number} JSON.
 // tripKey는 `${destinationId}|${createdAtBucketMs}` — destination 변경 시 자동 reset.
@@ -130,12 +125,6 @@ export const ACTIVE_BOARDING_LINE_KEY = 'subway-now:active-boarding-line';
 // 최대 RECENT_ROUTES_LIMIT개(`src/shared/constants/recentDestinations.ts`)까지 보관.
 // 형식: Station[] JSON.
 export const RECENT_DESTINATIONS_KEY = 'subway-now:recent-destinations';
-// #1175 — lockless 토글 학습 funnel: 사용자가 한 번이라도 토글을 OFF로 전환한 적이
-// 있는지(즉, "전체역 보기"가 무엇을 하는지 인지 후 의도적으로 비활성화한 적이 있는지)를
-// 추적한다. ON으로 되돌리는 시점에 이 키가 'true'면 `re_on` funnel step으로 분류해
-// 학습 곡선의 "이해 후 의도적 사용" 신호로 집계한다.
-// 형식: 'true' 또는 키 부재.
-export const LOCKLESS_FUNNEL_SEEN_OFF_KEY = 'subway-now:lockless-funnel-seen-off';
 // #1038 — Sentry 에러 모니터링 opt-in 토글. 기본 OFF (opt-in only).
 // 사용자 명시 동의 전에는 외부 SaaS(Sentry)로 어떤 데이터도 전송하지 않는다.
 // 'true'일 때만 boot 시 Sentry.init 실행. DSN(EXPO_PUBLIC_SENTRY_DSN) 미설정 시 추가 no-op.

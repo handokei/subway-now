@@ -39,8 +39,6 @@ import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
-  INFO_MODE_ENABLED_KEY,
-  SLEEP_MODE_KEY,
 } from '../../../shared/constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
@@ -746,39 +744,6 @@ async function loadApnsToken(): Promise<string | null> {
 // 본 파일 상단에서 type/함수 re-export 유지.
 
 /**
- * #816 C — 사용자 토글 (lockless station-passed opt-in) 현재값을 AsyncStorage에서 읽는다.
- * BG task에서는 zustand store에 접근 불가하므로 useSettingsStore.setLocklessStationPassed가
- * 기록한 키를 직접 read. 값이 없거나 파싱 실패면 OFF(false) — default 보수적.
- */
-async function loadLocklessOptIn(): Promise<boolean> {
-  try {
-    const raw = await AsyncStorage.getItem(INFO_MODE_ENABLED_KEY);
-    if (!raw) return false;
-    return JSON.parse(raw) === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * #1399 — 취침 모드 토글 현재값을 AsyncStorage에서 읽는다.
- * BG task에서는 zustand store에 접근 불가하므로 useSettingsStore.setSleepMode가 기록한 키를
- * 직접 read. lockless transfer/destination 확장(#1399)으로 도입된 sleep mode 회귀 차단용.
- * 값이 없거나 파싱 실패면 OFF(false) — default 보수적(false negative, sleep 미적용).
- *
- * `backgroundLocationTask`도 같은 키를 같은 방식으로 read한다 (`:101,129`).
- */
-async function loadSleepModeFlag(): Promise<boolean> {
-  try {
-    const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
-    if (!raw) return false;
-    return JSON.parse(raw) === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
@@ -1195,49 +1160,17 @@ async function fireWithGate(
     // 발사한 lock-path push이므로 authoritative. lockless opt-in 토글은 lock 없는 trip 전용이라
     // 적용하지 않고(backend lock 보유) line 가드 통과 후 바로 위치/movement 게이트로 진행한다.
   } else {
-    // #816 C — lock 없고 payload line도 없는 진짜 lockless 분기.
-    // backend가 lockless trip의 station-passed(intermediate)만 발사하지만, race로 transfer/destination이
-    // 도착하거나 토글 OFF로 변경된 직후의 push가 도달할 수 있어 client에서 추가 가드.
-    //
-    // #1399 — kind 가드 제거. 사용자 명시 의향 trip(C 토글 ON / boardingPrompt 응답 /
-    // BoardingTrainList 직접 탭)은 lock 활성과 동급 정확도 보장 의무(ADR-013 §B3, ADR-014).
-    // 기존 `payload.kind !== 'intermediate'` skip은 lockless trip에서 destination/transfer 도착
-    // 알림을 구조적으로 차단했다 (S6/S8 14:10 군자/용마산 하차 알림 누락 회귀). lock 가드는
-    // 옵트인(loadLocklessOptIn) + 후속 line/위치/movement 게이트만으로도 충분 — kind 자체로
-    // 막지 않는다. backend도 본 PR에서 lockless destination/transfer를 발사하도록 함께 확장.
-    const optedIn = await loadLocklessOptIn();
-    if (!optedIn) {
-      const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-      logSilentPushSkipped({
-        stationName: payload.nextWaypoint,
-        kind: logKind,
-        phaseId: payload.phase,
-        reason: 'lockless-opt-out',
-      });
-      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
-      logger.info(`lockless skip opt-out: station=${payload.nextWaypoint}`);
-      return;
-    }
-    // #1399 — lockless transfer/destination 확장으로 도입된 sleep mode 회귀 차단.
-    // 기존 lockless 분기는 `intermediate`만 통과해 sleep + first transfer suppress 정책이 자연
-    // 비활성이었다. 이제 lockless에서 transfer/destination이 도달할 수 있으므로 BG에서도 sleep
-    // 정책을 명시 적용한다. `destination`은 절대 통과(종착역 놓치지 않게 — shouldSuppressBySleepRule
-    // 정책과 일치). `transfer`만 sleep 게이트 진입. lockless 첫 hop 판정은 payload.hopIndex===0으로
-    // 산출 — backend `runLocklessIntermediate`/vanish-fallback이 forward한 절대 시퀀스 SSOT.
-    if (payload.kind === 'transfer' && payload.hopIndex === 0) {
-      const sleepMode = await loadSleepModeFlag();
-      if (sleepMode) {
-        logSilentPushSkipped({
-          stationName: payload.nextWaypoint,
-          kind: payload.kind,
-          phaseId: payload.phase,
-          reason: 'sleep-first-transfer',
-        });
-        void ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-first-transfer');
-        logger.info(`lockless skip sleep-first-transfer: station=${payload.nextWaypoint}`);
-        return;
-      }
-    }
+    // #1810 — paradigm shift Phase 1+2: 사용자 명시 의향(lock 활성)만 알림.
+    // lockless trip에서는 station-passed silent push를 항상 skip.
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: 'station-passed',
+      phaseId: payload.phase,
+      reason: 'lockless-opt-out',
+    });
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
+    logger.info(`lockless skip (paradigm shift #1810): station=${payload.nextWaypoint}`);
+    return;
   }
 
   // #1572 (T9, ADR-017) — backend SSoT 권위 게이트 (Path E silent push). BG 경로가 backend가

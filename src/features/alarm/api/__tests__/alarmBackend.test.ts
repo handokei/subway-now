@@ -207,33 +207,6 @@ describe('alarmBackend', () => {
         expect(body.boardingLock).toBeUndefined();
       });
 
-      // #816 C — lockless station-passed 토글
-      it('infoModeEnabled=true 송신 + 토글 변경 시 재등록', async () => {
-        const first = await registerActiveTrip({
-          ...SAMPLE_PAYLOAD,
-          infoModeEnabled: true,
-        });
-        expect(first.ok).toBe(true);
-        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-        expect(body.infoModeEnabled).toBe(true);
-
-        // 토글 OFF로 재호출 → hash 달라져서 재등록 (dedup 미적용)
-        const off = await registerActiveTrip({
-          ...SAMPLE_PAYLOAD,
-          infoModeEnabled: false,
-        });
-        expect(off).toEqual({ ok: true, status: 200 });
-        expect(global.fetch).toHaveBeenCalledTimes(2);
-        const offBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
-        expect(offBody.infoModeEnabled).toBeUndefined();
-      });
-
-      it('infoModeEnabled=false/미설정이면 body에 미포함', async () => {
-        await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: false });
-        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-        expect(body.infoModeEnabled).toBeUndefined();
-      });
-
       // #903 (Seam G) — subsurface 동봉
       it('subsurface=true 송신 + 토글 변경 시 재등록', async () => {
         const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, subsurface: true });

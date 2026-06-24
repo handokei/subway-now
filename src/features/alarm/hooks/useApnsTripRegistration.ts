@@ -51,12 +51,6 @@ export interface UseApnsTripRegistrationInputs {
    */
   boardingLock?: BoardingLock | null;
   /**
-   * #816 C — 사용자 명시 opt-in. BoardingLock 없는 trip에서 station-passed 알림 발사 허용 여부.
-   * true면 backend가 lock 부재 trip에서도 intermediate waypoint 통과 시 silent push 발사한다.
-   * 미설정/false면 기존 #640 게이트 그대로 (lock 없으면 push 0건).
-   */
-  infoModeEnabled?: boolean;
-  /**
    * #903 (Seam G) — 기압계 dP/dt가 지하 진입을 시사하는가. true면 backend로 함께 전달되어
    * consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival 누락에 더 인내한다.
    * 미설정/false면 기존 threshold(5) 유지 — 기압계 미지원 환경 graceful.
@@ -83,7 +77,6 @@ interface RegisterCallInputs {
   nextStationEtaSeconds: number | null;
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
-  infoModeEnabled: boolean;
   /** #903 (Seam G) — 기압계 subsurface 신호. true면 backend threshold 5→10. */
   subsurface: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
@@ -174,8 +167,6 @@ async function callRegister(input: RegisterCallInputs) {
     apnsEnv: resolveApnsEnv(),
     createdAt: input.createdAt,
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
-    // #816 C — 토글 ON이면 backend에 lockless station-passed opt-in 명시. OFF면 필드 누락.
-    ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
     // #819 / #1028 — boarding-prompt 평가/표시 컨텍스트. 짝으로만 송신.
     ...(promptContext
       ? {
@@ -194,7 +185,6 @@ export function useApnsTripRegistration({
   nextStationEtaSeconds,
   currentStation = null,
   boardingLock = null,
-  infoModeEnabled = false,
   subsurface = false,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
@@ -204,9 +194,9 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, infoModeEnabled, subsurface });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, infoModeEnabled, subsurface };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -283,7 +273,6 @@ export function useApnsTripRegistration({
           nextStationEtaSeconds: eta,
           currentStation: cs,
           boardingLock: bl,
-          infoModeEnabled: lsp,
           subsurface: sub,
         } = latestInputsRef.current;
         if (!r || !d) return;
@@ -295,7 +284,6 @@ export function useApnsTripRegistration({
           nextStationEtaSeconds: eta,
           currentStation: cs,
           boardingLock: bl,
-          infoModeEnabled: lsp,
           subsurface: sub,
           createdAt: resolveTripCreatedAt(sessionKey),
           cachedPromptContext: lastPromptContextRef.current,
@@ -395,7 +383,6 @@ export function useApnsTripRegistration({
         nextStationEtaSeconds,
         currentStation,
         boardingLock,
-        infoModeEnabled,
         subsurface,
         createdAt: resolveTripCreatedAt(sessionKey),
         cachedPromptContext: lastPromptContextRef.current,
@@ -446,11 +433,9 @@ export function useApnsTripRegistration({
     // deps에서 제외한다. 첫 register 후 backend cron(#704/#705)이 자체 progress KV로
     // station-by-station advance를 영속화하므로 client 재등록이 불필요하다. latestInputsRef로
     // token-refresh 경로는 여전히 최신값을 사용한다.
-    // #816 C: 토글 변경 시 즉시 backend에 반영해야 하므로 deps에 포함. 사용자가 ON/OFF 전환하면
-    // 한 cycle만에 register payload가 갱신된다.
     // #903 (Seam G): subsurface 변화 시 backend threshold(5→10)를 빨리 갱신해 지하 진입 직후
     // 일시 GPS/arrival 누락에 인내. useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로
     // deps churn 위험 낮음. alarmBackend의 dedup hash가 subsurface 미변화 사이클은 POST를 skip.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig, infoModeEnabled, subsurface]);
+  }, [routeSig, destination?.id, boardingLockSig, subsurface]);
 }

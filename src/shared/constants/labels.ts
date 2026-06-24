@@ -50,12 +50,6 @@ export const SILENT_PUSH_LABELS = {
   receivedKey: 'received',
   /** fired row 라벨. 카운트와 last time을 결합한다. */
   firedKey: 'fired',
-  /** lockless station-passed toggle row 라벨. */
-  toggleKey: 'toggle',
-  /** toggle ON 표기 — 활성. */
-  toggleOn: 'on',
-  /** toggle OFF 표기 — lockless 비활성, 설정에서 켜기 안내. */
-  toggleOff: 'off — lockless station-passed 비활성 (설정에서 켜기)',
 } as const;
 
 /**

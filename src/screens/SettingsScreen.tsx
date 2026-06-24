@@ -13,7 +13,6 @@ import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
-import { emitLocklessToggleViewed } from '../features/settings/utils/locklessFunnel';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
@@ -37,10 +36,6 @@ export default function SettingsScreen() {
   const accessibilityMode = useSettingsStore((s) => s.accessibilityMode);
   const setAccessibilityMode = useSettingsStore((s) => s.setAccessibilityMode);
   const loadAccessibilityMode = useSettingsStore((s) => s.loadAccessibilityMode);
-  // #816 C — lockless station-passed opt-in 토글.
-  const infoModeEnabled = useSettingsStore((s) => s.infoModeEnabled);
-  const setInfoModeEnabled = useSettingsStore((s) => s.setInfoModeEnabled);
-  const loadInfoModeEnabled = useSettingsStore((s) => s.loadInfoModeEnabled);
   // #1038 follow-up — Sentry 오류 진단 정보 opt-in.
   const sentryOptIn = useSettingsStore((s) => s.sentryOptIn);
   const setSentryOptIn = useSettingsStore((s) => s.setSentryOptIn);
@@ -63,10 +58,7 @@ export default function SettingsScreen() {
     loadAllowSpeaker();
     loadAccessibilityMode();
     loadRoutePreference();
-    loadInfoModeEnabled();
     loadSentryOptIn();
-    // #1175 — lockless 토글 학습 funnel viewed step. SettingsScreen 진입 = 토글 노출.
-    emitLocklessToggleViewed();
   }, []);
 
   return (
@@ -166,26 +158,6 @@ export default function SettingsScreen() {
             />
           </View>
 
-          {/* #816 C — lockless station-passed opt-in. 기본 OFF + 명시 동의 후에만 lock 없는 trip의 station-passed 발사. */}
-          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
-            <View style={styles.settingInfo}>
-              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.locklessStationPassedLabel')}</Text>
-              <Text style={[styles.settingDesc, { color: colors.muted }]}>
-                {t('settings.locklessStationPassedDescription')}
-              </Text>
-            </View>
-            <Switch
-              value={infoModeEnabled}
-              onValueChange={setInfoModeEnabled}
-              trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={infoModeEnabled ? colors.onAccent : colors.subtle}
-              testID="lockless-station-passed-switch"
-              accessibilityRole="switch"
-              accessibilityLabel={t('settings.locklessStationPassedLabel')}
-              accessibilityHint={t('a11y.settings.locklessStationPassedHint')}
-              accessibilityState={{ checked: infoModeEnabled }}
-            />
-          </View>
         </View>
 
         {/* 접근성 — 알람 카드 아래에 배치. E2E smoke flow의 sleep-mode-switch 가시성을 깨지 않기 위함. */}
