@@ -32,6 +32,8 @@ interface ReceivedEntry {
   receivedAt: number;
   stationName: string;
   phase: string;
+  // #1768 — 권한별 도달률 집계. legacy device 누락 시 undefined.
+  permissionMode?: 'always' | 'whileInUse' | 'denied';
 }
 
 /**
@@ -52,6 +54,8 @@ export interface PushAckStatsResponse {
   received: number;
   receivedByPhase: Record<string, number>;
   receivedByStation: Record<string, number>;
+  // #1768 — 권한별 도달률. legacy device ack에 permissionMode 없으면 'unknown' 버킷으로 집계.
+  receivedByPermissionMode: { always: number; whileInUse: number; denied: number; unknown: number };
 }
 
 /**
@@ -69,9 +73,10 @@ export async function computePushAckStats(
   const windowStart = now - 60 * 60 * 1000; // 1h
   const windowEnd = now;
 
-  // received: prefix enumerate + JSON parse + phase/station bucket.
+  // received: prefix enumerate + JSON parse + phase/station/permissionMode bucket.
   const receivedByPhase: Record<string, number> = {};
   const receivedByStation: Record<string, number> = {};
+  const receivedByPermissionMode = { always: 0, whileInUse: 0, denied: 0, unknown: 0 };
   let receivedCount = 0;
   let pendingCount = 0;
 
@@ -99,6 +104,8 @@ export async function computePushAckStats(
       receivedCount += 1;
       receivedByPhase[entry.phase] = (receivedByPhase[entry.phase] ?? 0) + 1;
       receivedByStation[entry.stationName] = (receivedByStation[entry.stationName] ?? 0) + 1;
+      const pMode = entry.permissionMode ?? 'unknown';
+      receivedByPermissionMode[pMode] += 1;
     }
     receivedCursor = result.list_complete || enumerated >= limit ? undefined : result.cursor;
   } while (receivedCursor);
@@ -125,6 +132,7 @@ export async function computePushAckStats(
     received: receivedCount,
     receivedByPhase,
     receivedByStation: topN(receivedByStation, 10),
+    receivedByPermissionMode,
   };
 }
 

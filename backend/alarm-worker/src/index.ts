@@ -288,7 +288,7 @@ app.get('/admin/feedback/stats', async (c) => {
  * Auth: `Authorization: Bearer <ADMIN_TOKEN>` 필수 — admin 공통 정책.
  * Query: `?limit=N` (default 500, KV cost 보호).
  *
- * Response 200: { windowStart, windowEnd, pending, received, receivedByPhase, receivedByStation }
+ * Response 200: { windowStart, windowEnd, pending, received, receivedByPhase, receivedByStation, receivedByPermissionMode }
  * Response 401/503: 인증/binding 정책은 /admin/feedback과 동일.
  */
 app.get('/admin/push-ack-stats', async (c) => {
@@ -1143,6 +1143,7 @@ app.post('/push/ack', async (c) => {
       ack.pushId,
       ack.token,
       Date.now(),
+      ack.permissionMode,
     );
     return c.json({ ok: true, ...stampResult });
   }
@@ -1657,6 +1658,8 @@ interface PushAckPayload {
   // #1370 L5 — `received`는 도달률 stamp 전용. fired/skipped는 outcome 분리 후 pending entry 삭제.
   outcome: 'received' | 'fired' | 'skipped';
   reason?: string;
+  // #1768 — 권한별 도달률 집계. legacy device 미전송 시 undefined (backward compat).
+  permissionMode?: 'always' | 'whileInUse' | 'denied';
 }
 
 export function validatePushAck(input: unknown): PushAckPayload | null {
@@ -1669,6 +1672,13 @@ export function validatePushAck(input: unknown): PushAckPayload | null {
   }
   const out: PushAckPayload = { pushId: obj.pushId, token: obj.token, outcome: obj.outcome };
   if (typeof obj.reason === 'string') out.reason = obj.reason;
+  if (
+    obj.permissionMode === 'always' ||
+    obj.permissionMode === 'whileInUse' ||
+    obj.permissionMode === 'denied'
+  ) {
+    out.permissionMode = obj.permissionMode;
+  }
   return out;
 }
 

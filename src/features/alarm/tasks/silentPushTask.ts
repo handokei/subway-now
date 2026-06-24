@@ -25,6 +25,7 @@
 
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
+import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import {
@@ -676,20 +677,40 @@ function buildIntermediateContent(stationName: string): { title: string; body: s
 }
 
 /**
+ * #1768 — foreground + background 권한 조합에서 permissionMode를 파생한다.
+ * 실패 시 undefined 반환 — graceful, ack 전체를 block하지 않는다.
+ */
+async function resolvePermissionMode(): Promise<'always' | 'whileInUse' | 'denied' | undefined> {
+  try {
+    const [fg, bg] = await Promise.all([
+      Location.getForegroundPermissionsAsync(),
+      Location.getBackgroundPermissionsAsync(),
+    ]);
+    if (fg.status !== 'granted') return 'denied';
+    if (bg.status === 'granted') return 'always';
+    return 'whileInUse';
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 백엔드 P2c fallback에서 이 push가 alert로 재발사되지 않도록 처리 결과를 통보한다 (#568 P2b).
  * fire-and-forget — 실패해도 silent push 본 처리 흐름에는 영향 없음.
  * 누락 입력(pushId/token 중 하나라도 null/undefined)은 그대로 skip한다:
  *   - pushId 누락 = 구 백엔드 호환 경로
  *   - token 누락 = APNs 권한 미부여/저장 실패
+ * #1768 — permissionMode를 비동기로 resolve해 payload에 포함한다.
  */
-function ackOutcome(
+async function ackOutcome(
   pushId: string | undefined,
   token: string | null,
   outcome: 'received' | 'fired' | 'skipped',
   reason?: string,
-): void {
+): Promise<void> {
   if (!pushId || !token) return;
-  void sendPushAck({ pushId, token, outcome, reason });
+  const permissionMode = await resolvePermissionMode();
+  void sendPushAck({ pushId, token, outcome, reason, permissionMode });
 }
 
 async function loadApnsToken(): Promise<string | null> {
@@ -802,7 +823,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     //
     // pushId/token 둘 다 있어야 임의 echo 차단 정책을 지킬 수 있으므로 ackOutcome과 동일하게
     // 누락 시 skip한다 (구 backend 호환 경로).
-    ackOutcome(payload.pushId, apnsToken, 'received');
+    void ackOutcome(payload.pushId, apnsToken, 'received');
 
     // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
     // - 수신 신호는 받았다 알리고(`lastReceivedAt` 갱신)
@@ -825,7 +846,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         receivedAt,
       });
       await applyReschedule(payload, receivedAt);
-      ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
+      void ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
       return;
     }
 
@@ -851,7 +872,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
           logger.warn(
             `trip-ended skip: tripToken mismatch payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
           );
-          ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}:token-mismatch`);
+          void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}:token-mismatch`);
           return;
         }
       }
@@ -892,7 +913,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         // 동일 push 재전송(backend retry) 시 pushId 기준 dedup으로 중복 알림 차단.
         await surfaceTripEnded(payload.reason, payload.pushId);
       }
-      ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
+      void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
       return;
     }
 
@@ -932,7 +953,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         phaseId: payload.phase,
         reason: 'payload-missing-kind',
       });
-      ackOutcome(payload.pushId, apnsToken, 'skipped', 'payload-missing-kind');
+      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'payload-missing-kind');
       logger.info('kind missing — skip fire');
       return;
     }
@@ -1110,7 +1131,7 @@ async function fireWithGate(
         phaseId: payload.phase,
         reason: 'trip-token-mismatch',
       });
-      ackOutcome(payload.pushId, apnsToken, 'skipped', 'trip-token-mismatch');
+      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'trip-token-mismatch');
       logger.info(
         `trip-token mismatch skip: payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken?.slice(0, 8) ?? 'null'} station=${payload.nextWaypoint}`,
       );
@@ -1139,7 +1160,7 @@ async function fireWithGate(
         phaseId: payload.phase,
         reason: 'lock-line-mismatch',
       });
-      ackOutcome(payload.pushId, apnsToken, 'skipped', 'lock-line-mismatch');
+      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'lock-line-mismatch');
       logger.info(
         `lock line mismatch skip: nextWaypoint=${payload.nextWaypoint} boardingLine=${guardLine}`,
       );
@@ -1168,7 +1189,7 @@ async function fireWithGate(
         phaseId: payload.phase,
         reason: 'lockless-opt-out',
       });
-      ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
+      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
       logger.info(`lockless skip opt-out: station=${payload.nextWaypoint}`);
       return;
     }
@@ -1187,7 +1208,7 @@ async function fireWithGate(
           phaseId: payload.phase,
           reason: 'sleep-first-transfer',
         });
-        ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-first-transfer');
+        void ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-first-transfer');
         logger.info(`lockless skip sleep-first-transfer: station=${payload.nextWaypoint}`);
         return;
       }
@@ -1217,7 +1238,7 @@ async function fireWithGate(
       phaseId: payload.phase,
       reason,
     });
-    ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
     logger.info(`SSoT fire gate skip reason=${reason} station=${payload.nextWaypoint}`);
     return;
   }
@@ -1238,7 +1259,7 @@ async function fireWithGate(
       phaseId: payload.phase,
       reason: 'dismiss-silence',
     });
-    ackOutcome(payload.pushId, apnsToken, 'skipped', 'dismiss-silence');
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'dismiss-silence');
     logger.info(`dismiss-silence skip: station=${payload.nextWaypoint}`);
     return;
   }
@@ -1278,7 +1299,7 @@ async function fireWithGate(
       locationSource: gate.locationSource,
       locationAgeMs: gate.locationAgeMs,
     });
-    ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
     logger.info(`gate skip reason=${gate.reason} distance=${gate.distanceM ?? '-'}`);
     // #1356 E1 — silent fire가 suppress되는 동안 같은 station의 사전 예약(`tba:`/`bl:`)도 OS queue
     // 에서 cancel. backend는 정적/out-of-range를 인식해 다음 silent push를 발사하지 않지만, OS queue에
@@ -1317,7 +1338,7 @@ async function fireWithGate(
       locationSource: gate.locationSource,
       locationAgeMs: gate.locationAgeMs,
     });
-    ackOutcome(payload.pushId, apnsToken, 'skipped', movementReason);
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', movementReason);
     logger.info(
       `movement skip: reason=${movementReason} speed=${gate.speedMps ?? '-'} accuracy=${gate.accuracyM ?? '-'}`,
     );
@@ -1346,7 +1367,7 @@ async function fireWithGate(
     const fired = await getFiredAlarms(destinationId);
     if (fired.has(dedupKey)) {
       // 다른 채널(FG GPS 등)이 이미 발사 — backend 입장에선 fallback 불필요. ACK로 정리.
-      ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
+      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
       // P2e — 동일 pushId의 alert가 race로 도달하면 FG에서 중복 표시 차단되도록 기록.
       if (payload.pushId) void addFiredPushId(payload.pushId);
       logger.info(`dedup: ${dedupKey} already fired — skip`);
@@ -1382,7 +1403,7 @@ async function fireWithGate(
     locationSource: gate.locationSource!,
     locationAgeMs: gate.locationAgeMs!,
   });
-  ackOutcome(payload.pushId, apnsToken, 'fired');
+  void ackOutcome(payload.pushId, apnsToken, 'fired');
   // P2e — alert fallback이 race로 도달해도 FG에서 중복 표시 차단되도록 기록.
   if (payload.pushId) void addFiredPushId(payload.pushId);
   logger.info(

@@ -5,6 +5,14 @@ jest.mock('expo-task-manager', () => ({
   },
 }));
 
+// #1768 — 권한별 ack permissionMode. 기본: foreground=granted, background=granted → 'always'.
+const mockGetForegroundPermissions = jest.fn().mockResolvedValue({ status: 'granted' });
+const mockGetBackgroundPermissions = jest.fn().mockResolvedValue({ status: 'granted' });
+jest.mock('expo-location', () => ({
+  getForegroundPermissionsAsync: () => mockGetForegroundPermissions(),
+  getBackgroundPermissionsAsync: () => mockGetBackgroundPermissions(),
+}));
+
 const mockRegisterTaskAsync = jest.fn();
 const mockScheduleNotificationAsync = jest.fn();
 jest.mock('expo-notifications', () => ({
@@ -222,14 +230,21 @@ const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
 // #1370 L5 — sendPushAck 호출 매칭 헬퍼. ack outcome별로 같은 token/pushId 페이로드를 반복 검증하는
 // 패턴이 다발해 SonarCloud 중복으로 잡힘. 호출 한 줄로 압축해 중복 차단.
+// #1768 — permissionMode 기본값 'always' (기본 mock: foreground+background 모두 granted).
 function ackCall(
   pushId: string,
   outcome: 'received' | 'fired' | 'skipped',
   reason?: string,
-): { pushId: string; token: string; outcome: string; reason?: string } {
-  return reason === undefined
-    ? { pushId, token: DEFAULT_APNS_TOKEN, outcome }
-    : { pushId, token: DEFAULT_APNS_TOKEN, outcome, reason };
+  permissionMode: 'always' | 'whileInUse' | 'denied' | undefined = 'always',
+): { pushId: string; token: string; outcome: string; reason?: string; permissionMode?: string } {
+  const base: { pushId: string; token: string; outcome: string; reason?: string; permissionMode?: string } = {
+    pushId,
+    token: DEFAULT_APNS_TOKEN,
+    outcome,
+    permissionMode,
+  };
+  if (reason !== undefined) base.reason = reason;
+  return base;
 }
 
 const destStation = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
@@ -1298,6 +1313,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'skipped',
           reason: 'lock-line-mismatch',
+          permissionMode: 'always',
         });
       });
 
@@ -1450,6 +1466,7 @@ describe('silentPushTask', () => {
             token: DEFAULT_APNS_TOKEN,
             outcome: 'skipped',
             reason,
+            permissionMode: 'always',
           });
         }
       });
@@ -1584,6 +1601,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'skipped',
           reason: 'lock-line-mismatch',
+          permissionMode: 'always',
         });
       });
 
@@ -1808,6 +1826,7 @@ describe('silentPushTask', () => {
           pushId: 'p-hop-1',
           token: DEFAULT_APNS_TOKEN,
           outcome: 'fired',
+          permissionMode: 'always',
         });
       });
 
@@ -1828,6 +1847,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'skipped',
           reason: 'dedup-already-fired',
+          permissionMode: 'always',
         });
       });
 
@@ -1873,6 +1893,60 @@ describe('silentPushTask', () => {
         );
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
         expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
+
+      describe('#1768 — permissionMode 권한별 ack', () => {
+        it('foreground+background 모두 granted → permissionMode=always', async () => {
+          mockGetForegroundPermissions.mockResolvedValueOnce({ status: 'granted' });
+          mockGetBackgroundPermissions.mockResolvedValueOnce({ status: 'granted' });
+          await handleSilentPush(
+            payload({ kind: 'destination', phase: 'imminent', pushId: 'p-always' }),
+          );
+          expect(mockSendPushAck).toHaveBeenCalledWith(
+            expect.objectContaining({ pushId: 'p-always', permissionMode: 'always' }),
+          );
+        });
+
+        it('foreground granted + background denied → permissionMode=whileInUse', async () => {
+          mockGetForegroundPermissions.mockResolvedValueOnce({ status: 'granted' });
+          mockGetBackgroundPermissions.mockResolvedValueOnce({ status: 'denied' });
+          await handleSilentPush(
+            payload({ kind: 'destination', phase: 'imminent', pushId: 'p-whileInUse' }),
+          );
+          expect(mockSendPushAck).toHaveBeenCalledWith(
+            expect.objectContaining({ pushId: 'p-whileInUse', permissionMode: 'whileInUse' }),
+          );
+        });
+
+        it('foreground denied → permissionMode=denied (background 무관)', async () => {
+          mockGetForegroundPermissions.mockResolvedValueOnce({ status: 'denied' });
+          mockGetBackgroundPermissions.mockResolvedValueOnce({ status: 'granted' });
+          await handleSilentPush(
+            payload({ kind: 'destination', phase: 'imminent', pushId: 'p-denied' }),
+          );
+          expect(mockSendPushAck).toHaveBeenCalledWith(
+            expect.objectContaining({ pushId: 'p-denied', permissionMode: 'denied' }),
+          );
+        });
+
+        it('resolvePermissionMode throw → permissionMode 누락(undefined), ack는 계속 전송', async () => {
+          // 모든 resolvePermissionMode 호출에서 throw (received + fired 양쪽 ack).
+          mockGetForegroundPermissions.mockRejectedValue(new Error('location-api-fail'));
+          await handleSilentPush(
+            payload({ kind: 'destination', phase: 'imminent', pushId: 'p-throw-perm' }),
+          );
+          // fired ack가 전송됐는지 확인 — permissionMode는 undefined여야 한다.
+          const call = mockSendPushAck.mock.calls.find(
+            (c: unknown[]) =>
+              (c[0] as { pushId?: string }).pushId === 'p-throw-perm' &&
+              (c[0] as { outcome?: string }).outcome === 'fired',
+          );
+          expect(call).toBeDefined();
+          // permissionMode가 undefined이므로 sendPushAck payload에 포함되지 않는다.
+          expect((call![0] as Record<string, unknown>).permissionMode).toBeUndefined();
+          // 기본 mock 복원 (다른 테스트에 영향 없도록).
+          mockGetForegroundPermissions.mockResolvedValue({ status: 'granted' });
+        });
       });
     });
 
@@ -1941,6 +2015,7 @@ describe('silentPushTask', () => {
           pushId: 'rs-recv',
           token: DEFAULT_APNS_TOKEN,
           outcome: 'received',
+          permissionMode: 'always',
         });
       });
 
@@ -1960,6 +2035,7 @@ describe('silentPushTask', () => {
           pushId: 'te-recv',
           token: DEFAULT_APNS_TOKEN,
           outcome: 'received',
+          permissionMode: 'always',
         });
       });
     });
@@ -2033,6 +2109,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'skipped',
           reason: 'movement-static-speed',
+          permissionMode: 'always',
         });
       });
 
@@ -2095,6 +2172,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'skipped',
           reason: 'movement-motion-stationary',
+          permissionMode: 'always',
         });
       });
 
@@ -2248,6 +2326,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'fired',
           reason: 'reschedule-received',
+          permissionMode: 'always',
         });
       });
 
@@ -2671,6 +2750,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'fired',
           reason: 'trip-ended:expired',
+          permissionMode: 'always',
         });
       });
 
@@ -2709,6 +2789,7 @@ describe('silentPushTask', () => {
           token: DEFAULT_APNS_TOKEN,
           outcome: 'fired',
           reason: expect.stringContaining('token-mismatch') as unknown as string,
+          permissionMode: 'always',
         });
       });
 
@@ -2902,6 +2983,7 @@ describe('silentPushTask', () => {
             token: DEFAULT_APNS_TOKEN,
             outcome: 'fired',
             reason: 'trip-ended:expired',
+            permissionMode: 'always',
           });
         });
       });
@@ -2993,6 +3075,7 @@ describe('silentPushTask', () => {
             token: DEFAULT_APNS_TOKEN,
             outcome: 'fired',
             reason: 'trip-ended:destination-arrived',
+            permissionMode: 'always',
           });
         });
 
@@ -3014,6 +3097,7 @@ describe('silentPushTask', () => {
             token: DEFAULT_APNS_TOKEN,
             outcome: 'fired',
             reason: expect.stringContaining('token-mismatch') as unknown as string,
+            permissionMode: 'always',
           });
         });
       });

@@ -1278,6 +1278,29 @@ describe('validatePushAck (#566 P2a)', () => {
       outcome: 'received',
     });
   });
+
+  describe('#1768 — permissionMode', () => {
+    it.each([
+      { mode: 'always' as const },
+      { mode: 'whileInUse' as const },
+      { mode: 'denied' as const },
+    ])('permissionMode=$mode → payload에 포함', ({ mode }) => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', permissionMode: mode });
+      expect(ack).toEqual({ pushId: 'p1', token: 'tok', outcome: 'received', permissionMode: mode });
+    });
+
+    it('permissionMode 누락(legacy) → payload에 포함 안 됨', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received' });
+      expect(ack).toEqual({ pushId: 'p1', token: 'tok', outcome: 'received' });
+      expect(ack).not.toHaveProperty('permissionMode');
+    });
+
+    it('permissionMode 유효하지 않은 값 → payload에 포함 안 됨 (graceful 무시)', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', permissionMode: 'unknown-value' });
+      expect(ack).toEqual({ pushId: 'p1', token: 'tok', outcome: 'received' });
+      expect(ack).not.toHaveProperty('permissionMode');
+    });
+  });
 });
 
 describe('POST /push/ack (#566 P2a)', () => {
@@ -1398,6 +1421,34 @@ describe('POST /push/ack (#566 P2a)', () => {
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, stamped: false, reason: 'not-found' });
+    });
+
+    describe('#1768 — received ack에 permissionMode 포함 시 stamp에 저장', () => {
+      it('permissionMode=always → received stamp에 포함', async () => {
+        await kv.put(
+          pendingKey('p-pm'),
+          JSON.stringify({ pushId: 'p-pm', token: 'tok', stationName: '강남', phase: 'early' }),
+        );
+        const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+        await post('/push/ack', { pushId: 'p-pm', token: 'tok', outcome: 'received', permissionMode: 'always' }, env);
+        const raw = kv.store.get('received:p-pm');
+        expect(raw).toBeDefined();
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.permissionMode).toBe('always');
+      });
+
+      it('permissionMode 누락(legacy) → stamp에 permissionMode 없음', async () => {
+        await kv.put(
+          pendingKey('p-noperm'),
+          JSON.stringify({ pushId: 'p-noperm', token: 'tok', stationName: '강남', phase: 'early' }),
+        );
+        const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+        await post('/push/ack', { pushId: 'p-noperm', token: 'tok', outcome: 'received' }, env);
+        const raw = kv.store.get('received:p-noperm');
+        expect(raw).toBeDefined();
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.permissionMode).toBeUndefined();
+      });
     });
   });
 });

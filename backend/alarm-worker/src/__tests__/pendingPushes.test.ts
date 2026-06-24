@@ -252,5 +252,41 @@ describe('pendingPushes (#566 P2a)', () => {
     it('getReceivedStamp: kv === undefined면 null', async () => {
       expect(await getReceivedStamp(undefined, 'p1')).toBeNull();
     });
+
+    describe('#1768 — stampReceived permissionMode', () => {
+      it('permissionMode 전달 시 stamp에 포함된다', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-pm', token: 'tok', stationName: '강남', phase: 'imminent' }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-pm', 'tok', 1_700_000_000_000, 'always');
+        const raw = kv.store.get('received:p-pm');
+        expect(raw).toBeDefined();
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.permissionMode).toBe('always');
+      });
+
+      it('permissionMode=whileInUse 전달 시 stamp에 포함된다', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-wiu', token: 'tok', stationName: '강남', phase: 'imminent' }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-wiu', 'tok', 1_700_000_000_000, 'whileInUse');
+        const raw = kv.store.get('received:p-wiu');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.permissionMode).toBe('whileInUse');
+      });
+
+      it('permissionMode 미전달(legacy) → stamp에 permissionMode 필드 없음', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-legacy', token: 'tok', stationName: '강남', phase: 'imminent' }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-legacy', 'tok', 1_700_000_000_000);
+        const raw = kv.store.get('received:p-legacy');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.permissionMode).toBeUndefined();
+      });
+    });
   });
 });
