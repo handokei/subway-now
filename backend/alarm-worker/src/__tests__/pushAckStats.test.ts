@@ -14,10 +14,11 @@ function seedReceivedStamp(
   receivedAt: number,
   phase: string,
   stationName: string,
+  permissionMode?: 'always' | 'whileInUse' | 'denied',
 ): void {
-  kv.store.set(`received:${pushId}`, {
-    value: JSON.stringify({ pushId, receivedAt, stationName, phase }),
-  });
+  const entry: Record<string, unknown> = { pushId, receivedAt, stationName, phase };
+  if (permissionMode !== undefined) entry.permissionMode = permissionMode;
+  kv.store.set(`received:${pushId}`, { value: JSON.stringify(entry) });
 }
 
 function seedPending(kv: InMemoryKV, pushId: string): void {
@@ -34,6 +35,7 @@ describe('computePushAckStats', () => {
     expect(stats.pending).toBe(0);
     expect(stats.receivedByPhase).toEqual({});
     expect(stats.receivedByStation).toEqual({});
+    expect(stats.receivedByPermissionMode).toEqual({ always: 0, whileInUse: 0, denied: 0, unknown: 0 });
   });
 
   it('counts received stamps within 1h window', async () => {
@@ -120,5 +122,35 @@ describe('computePushAckStats', () => {
     seedReceivedStamp(kv, 'good', NOW - 1000, 'imminent', '중곡');
     const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
     expect(stats.received).toBe(1);
+  });
+
+  describe('#1768 — receivedByPermissionMode 집계', () => {
+    it('permissionMode 있는 stamp → 해당 버킷 증가', async () => {
+      const kv = new InMemoryKV();
+      seedReceivedStamp(kv, 'p1', NOW - 1000, 'imminent', '강남', 'always');
+      seedReceivedStamp(kv, 'p2', NOW - 1000, 'imminent', '강남', 'whileInUse');
+      seedReceivedStamp(kv, 'p3', NOW - 1000, 'imminent', '강남', 'denied');
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.receivedByPermissionMode).toEqual({ always: 1, whileInUse: 1, denied: 1, unknown: 0 });
+    });
+
+    it('permissionMode 없는 legacy stamp → unknown 버킷', async () => {
+      const kv = new InMemoryKV();
+      seedReceivedStamp(kv, 'p-legacy', NOW - 1000, 'imminent', '강남'); // permissionMode 없음
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.receivedByPermissionMode).toEqual({ always: 0, whileInUse: 0, denied: 0, unknown: 1 });
+    });
+
+    it.each([
+      { label: 'always 단독', modes: ['always', 'always'] as const, expected: { always: 2, whileInUse: 0, denied: 0, unknown: 0 } },
+      { label: '혼합', modes: ['always', 'whileInUse', 'denied'] as const, expected: { always: 1, whileInUse: 1, denied: 1, unknown: 0 } },
+    ])('$label → 버킷 정확히 집계', async ({ modes, expected }) => {
+      const kv = new InMemoryKV();
+      for (let i = 0; i < modes.length; i++) {
+        seedReceivedStamp(kv, `p-${i}`, NOW - 1000, 'imminent', '강남', modes[i]);
+      }
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.receivedByPermissionMode).toEqual(expected);
+    });
   });
 });

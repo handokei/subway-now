@@ -170,16 +170,24 @@ export async function stampReceived(
   pushId: string,
   token: string,
   receivedAt: number,
+  // #1768 — 권한별 도달률 집계. legacy device 미전송 시 undefined (graceful).
+  permissionMode?: 'always' | 'whileInUse' | 'denied',
 ): Promise<ReceivedAckResult> {
   if (!kv) return { stamped: false, reason: 'not-found' };
   const entry = await getPending(kv, pushId);
   if (!entry) return { stamped: false, reason: 'not-found' };
   if (entry.token !== token) return { stamped: false, reason: 'token-mismatch' };
-  await kv.put(
-    receivedKey(pushId),
-    JSON.stringify({ pushId, receivedAt, stationName: entry.stationName, phase: entry.phase }),
-    { expirationTtl: RECEIVED_TTL_SEC },
-  );
+  const stampValue: {
+    pushId: string;
+    receivedAt: number;
+    stationName: string;
+    phase: string;
+    permissionMode?: 'always' | 'whileInUse' | 'denied';
+  } = { pushId, receivedAt, stationName: entry.stationName, phase: entry.phase };
+  if (permissionMode !== undefined) stampValue.permissionMode = permissionMode;
+  await kv.put(receivedKey(pushId), JSON.stringify(stampValue), {
+    expirationTtl: RECEIVED_TTL_SEC,
+  });
   return { stamped: true };
 }
 

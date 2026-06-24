@@ -345,6 +345,9 @@ export interface PushAckPayload {
   //   RCA 시 pushed(backend tail) vs received(stamp) 1:1 비교 가능.
   outcome: 'received' | 'fired' | 'skipped';
   reason?: string;
+  // #1768 — 권한별 도달률 집계를 위해 foreground+background 권한 조합을 보고.
+  // legacy device가 누락 시 backend는 graceful skip (backward compat).
+  permissionMode?: 'always' | 'whileInUse' | 'denied';
 }
 
 export async function sendPushAck(payload: PushAckPayload): Promise<AlarmBackendResult> {
