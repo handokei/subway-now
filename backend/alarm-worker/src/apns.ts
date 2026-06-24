@@ -431,6 +431,11 @@ export interface SendAlertPushOptions {
    * 미지정 시 apns-thread-id 헤더를 omit (구 caller backward compat).
    */
   tripToken?: string;
+  /**
+   * #1798 P2 — iOS UNNotificationCategory 식별자. 지정 시 액션 버튼 노출.
+   * 미지정 시 aps.category 필드를 omit (구 caller backward compat).
+   */
+  category?: string;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -446,6 +451,8 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
     aps: {
       alert: { title: options.title, body: options.body },
       sound: 'default',
+      // #1798 P2 — category는 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락.
+      ...(options.category !== undefined ? { category: options.category } : {}),
     },
     data: { pushId: options.pushId },
   });
@@ -715,6 +722,11 @@ export interface SendBoardingPromptPushOptions {
    * 미지정(legacy / direction null) 시 payload에 포함하지 않아 device가 양방향 허용.
    */
   destinationDirection?: 'up' | 'down';
+  /**
+   * #1798 P3 — 호선 + 방향 subtitle. `"${line}호선 ${direction}방면"` 형태로 caller가 빌드해 전달.
+   * 미지정(direction 없는 경우 등) 시 aps.alert.subtitle을 omit해 구 device와 byte-level 호환.
+   */
+  subtitle?: string;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -742,7 +754,13 @@ export async function sendBoardingPromptPush(
 
   const body = JSON.stringify({
     aps: {
-      alert: { title: options.title, body: options.body },
+      alert: {
+        title: options.title,
+        body: options.body,
+        // #1798 P3 — subtitle(호선+방향)은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+        // 구 device(필드 무시) 및 subtitle 없는 케이스와 byte-level 호환.
+        ...(options.subtitle !== undefined ? { subtitle: options.subtitle } : {}),
+      },
       sound: 'default',
       category: BOARDING_PROMPT_CATEGORY,
     },

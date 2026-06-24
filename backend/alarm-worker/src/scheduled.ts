@@ -3353,6 +3353,11 @@ export async function evaluateAndMaybeFireBoardingPrompt(
         triggerKind: 'cron',
         // #1740 — geo.direction이 null이면 undefined 전달 → device 양방향 허용 (backward compat).
         destinationDirection: geo.direction ?? undefined,
+        // #1798 P3 — subtitle: "${line}호선 ${direction}방면". direction이 있을 때만 첨부.
+        subtitle:
+          geo.direction !== null
+            ? `${display.line}호선 ${geo.direction === 'up' ? '상행' : '하행'}방면`
+            : undefined,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,

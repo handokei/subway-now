@@ -205,7 +205,12 @@
     "transferEarlyTitle": "换乘提醒",
     "arrivalEarlyTitle": "到达提醒",
     "transferImminentTitle": "即将换乘",
-    "arrivalImminentTitle": "即将到达"
+    "arrivalImminentTitle": "即将到达",
+    "actions": {
+      "acknowledge": "确认",
+      "endTrip": "结束旅程",
+      "nextTrip": "开始下一段旅程"
+    }
   },
   "journey": {
     "transferNote": "换乘",

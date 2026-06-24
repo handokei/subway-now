@@ -205,7 +205,12 @@
     "transferEarlyTitle": "환승 알림",
     "arrivalEarlyTitle": "하차 알림",
     "transferImminentTitle": "환승 임박",
-    "arrivalImminentTitle": "도착 임박"
+    "arrivalImminentTitle": "도착 임박",
+    "actions": {
+      "acknowledge": "확인",
+      "endTrip": "trip 종료",
+      "nextTrip": "다음 여정 시작"
+    }
   },
   "journey": {
     "transferNote": "환승",
