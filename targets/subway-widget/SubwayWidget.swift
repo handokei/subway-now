@@ -80,7 +80,7 @@ struct SubwayProvider: TimelineProvider {
 
         return SubwayEntry(
             date: Date(),
-            stationName: isAvailable ? name : "감지 중",
+            stationName: isAvailable ? name : NSLocalizedString("widget.detecting", comment: "Placeholder station name while GPS detection is in progress"),
             lineColor: color,
             distanceM: distance,
             isAvailable: isAvailable,
@@ -118,8 +118,8 @@ struct SubwayWidgetView: View {
 
     var freshnessCaption: String? {
         switch freshness {
-        case .stale: return "갱신 지연"
-        case .expired: return "정보 오래됨"
+        case .stale: return NSLocalizedString("widget.freshness.stale", comment: "Caption shown when widget data is stale (2–10 min old)")
+        case .expired: return NSLocalizedString("widget.freshness.expired", comment: "Caption shown when widget data is expired (>10 min old)")
         case .fresh, .unknown: return nil
         }
     }
@@ -145,7 +145,7 @@ struct SubwayWidgetView: View {
                 Circle()
                     .fill(lineColor)
                     .frame(width: 10, height: 10)
-                Text("지하철")
+                Text(NSLocalizedString("widget.header", comment: "Header label shown above the station name in the widget"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -190,8 +190,8 @@ struct SubwayWidget: Widget {
         StaticConfiguration(kind: kind, provider: SubwayProvider()) { entry in
             SubwayWidgetView(entry: entry)
         }
-        .configurationDisplayName("지하철 현재 역")
-        .description("가장 가까운 지하철역을 홈 화면에서 확인하세요.")
+        .configurationDisplayName(NSLocalizedString("widget.displayName", comment: "Widget configuration display name shown in the widget picker"))
+        .description(NSLocalizedString("widget.description", comment: "Widget description shown in the widget picker"))
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
