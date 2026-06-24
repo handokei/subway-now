@@ -45,7 +45,7 @@ const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockIsLiveActivityEnabled = jest.fn().mockReturnValue(true);
 
-jest.mock('../../../../../modules/live-activity', () => ({
+jest.mock('live-activity', () => ({
   startLiveActivity: (...args: unknown[]) => mockStartLiveActivity(...args),
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
