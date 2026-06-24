@@ -581,12 +581,6 @@ export interface Env {
    */
   ADMIN_TOKEN?: string;
   /**
-   * 일일 요청 quota 80% 도달 시 경고 webhook URL (#1022).
-   * Slack incoming webhook 또는 호환 receiver. 미설정 시 콘솔 경고만 발사(graceful no-op).
-   * 등록: `wrangler secret put QUOTA_ALERT_WEBHOOK_URL`
-   */
-  QUOTA_ALERT_WEBHOOK_URL?: string;
-  /**
    * Device raw signal dump KV (#1520, ADR-015 §10 P5 / PR-B).
    * Trip 종료 시 device가 fusion raw signal ring buffer를 60일 TTL로 적재 →
    * 운영자가 `/admin/signals/export?corrId=`로 조회해 7일 회귀 사후 분석.

@@ -101,7 +101,6 @@ import {
   TRIP_STATUS_RETENTION_MS,
   readTripEndedStatus,
 } from './tripStatus';
-import { getQuotaStatus, incrementDailyRequestCount } from './quotaTracker';
 import type {
   AccelSummary,
   BoardingLockMeta,
@@ -143,19 +142,6 @@ app.use('*', async (c, next) => {
   return next();
 });
 
-/**
- * 일일 요청 카운트 미들웨어 (#1022).
- * 모든 요청에 대해 quota KV 카운터를 +1한다. 80% 도달 시 콘솔 경고 + 선택적 webhook.
- * KV 미바인딩(개발 환경) 시 graceful no-op.
- */
-app.use('*', async (c, next) => {
-  if (c.env.TRIPS) {
-    await incrementDailyRequestCount(c.env.TRIPS, Date.now(), c.env.QUOTA_ALERT_WEBHOOK_URL).catch(
-      () => { /* quota tracking failure는 트래픽에 영향 없이 swallow */ },
-    );
-  }
-  return next();
-});
 
 app.get('/health', (c) => c.json({ ok: true }));
 
@@ -287,24 +273,6 @@ app.get('/admin/feedback/stats', async (c) => {
   return c.json(stats);
 });
 
-/**
- * 운영자용 daily request quota 현황 (#1022).
- *
- * Auth: `Authorization: Bearer <ADMIN_TOKEN>` 필수.
- * Response 200: { date, count, limit, ratio, warning }
- *   - date: UTC YYYY-MM-DD
- *   - count: 오늘 요청 카운트
- *   - limit: 일일 한도 (100000)
- *   - ratio: 0~1 사용 비율
- *   - warning: ratio >= 0.8 여부
- * Response 401/503: 인증/binding 정책은 /admin/feedback과 동일.
- */
-app.get('/admin/quota', async (c) => {
-  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
-  if (authError) return c.json({ error: authError.code }, authError.status);
-  const status = await getQuotaStatus(c.env.TRIPS, Date.now());
-  return c.json(status);
-});
 
 /**
  * #1614 Phase D — silent push 도달률 측정 RCA (S4 #1537).
