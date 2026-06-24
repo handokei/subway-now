@@ -231,8 +231,22 @@ export interface TripPositionSSoT {
    * 기존 9-AND gate fallback (graceful, backward-compat).
    */
   lockSuggestion?: LockSuggestion;
-  /** schemaVersion. 향후 마이그레이션 분기용. v1 박제. */
-  schemaVersion: 1;
+  /**
+   * #1705 — backend가 advance한 station의 노선 (Waypoint.line과 동일 표기).
+   *
+   * device cascade picker의 lockless cross-line confusion 차단용. lock 미활성 trip에서
+   * `currentStationId`가 동명역(합정 2/6호선, 공덕 5/6호선 등)과 충돌할 때 device가 wrong line
+   * station을 cascade 채택하는 회귀(6호선 봉화산→신내 mislabel evidence) 방지.
+   *
+   * 구 backend 호환을 위해 optional — v1 row 부재 시 device는 기존 name-only fallback.
+   */
+  currentStationLine?: string;
+  /**
+   * schemaVersion. 향후 마이그레이션 분기용.
+   * v1: 최초 스키마.
+   * v2: currentStationLine 추가 (#1705).
+   */
+  schemaVersion: 1 | 2;
 }
 
 /** SSOT KV key 생성. */
@@ -314,7 +328,7 @@ export async function seedSsot(
   kv: KVNamespace,
   token: string,
   currentStationId: string,
-  options?: { expiresAt?: number; userIntentDeclared?: boolean },
+  options?: { expiresAt?: number; userIntentDeclared?: boolean; line?: string },
 ): Promise<TripPositionSSoT> {
   const ssot: TripPositionSSoT = {
     tripToken: token,
@@ -328,7 +342,9 @@ export async function seedSsot(
     userIntentDeclared: options?.userIntentDeclared ?? false,
     seedOverrideCount: 0,
     alarmEvents: [],
-    schemaVersion: 1,
+    // #1705 — line 지정 시 currentStationLine 박제 (cross-line confusion 차단).
+    ...(options?.line !== undefined ? { currentStationLine: options.line } : {}),
+    schemaVersion: 2,
   };
   await writeSsot(kv, ssot, { expiresAt: options?.expiresAt });
   return ssot;

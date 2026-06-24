@@ -377,3 +377,35 @@ describe('#1646 cascade picker — positionTrain 1순위 승격 (3-of-3 합의)'
     });
   });
 });
+
+describe('#1705 ssotStation — lockless + currentStationLine line-matched resolve', () => {
+  // 합정역은 2호선(line '2')과 6호선(line '6') 동명 환승역.
+  // currentStationLine='2' 지정 시 2호선 합정을 정확하게 resolve해야 한다.
+  const hapjeong2 = findStationByNameAndLine('합정', '2')!;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    jest.setSystemTime(T0);
+    // GPS는 청담(7호선)으로 세팅 — backend mirror가 다른 역을 권위 산출.
+    setupBaselineGpsAt('청담');
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('lockless + currentStationLine 있음 → line 정확 매칭으로 동명 환승역 cross-line confusion 차단', async () => {
+    // currentStationLine='2': 합정 2호선을 정확히 resolve해야 함.
+    mockRead.mockResolvedValue(
+      makeMirror({ currentStationId: '합정', currentStationLine: '2' }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.result?.station.id).toBe(hapjeong2.id);
+    expect(hook.result.current.result?.station.line).toBe('2');
+  });
+});

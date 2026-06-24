@@ -5,7 +5,7 @@ import { Station } from '../../../../shared/types/station';
 const mockSave = jest.fn().mockResolvedValue(undefined);
 const mockClear = jest.fn().mockResolvedValue(undefined);
 
-jest.mock('../../../../../modules/live-activity', () => ({
+jest.mock('live-activity', () => ({
   saveWidgetStation: (...args: unknown[]) => mockSave(...args),
   clearWidgetStation: () => mockClear(),
 }));

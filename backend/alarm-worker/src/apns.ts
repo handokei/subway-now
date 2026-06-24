@@ -184,6 +184,12 @@ export interface SilentPushSsotPayload {
   /** 통과 확인된 station 누적 (최근 5개만 forward). */
   passedStations: readonly string[];
   /**
+   * #1705 — backend advance한 station의 노선 (Waypoint.line과 동일 표기).
+   *
+   * 구 backend 호환 위해 optional. 부재 시 device는 name-only fallback (기존 동작).
+   */
+  currentStationLine?: string;
+  /**
    * #1534 (S1, T9b, ADR-016) — backend가 추론한 lock 제안.
    *
    * lockless trip + 강 evidence 합의 시 set. device `useLockSuggestion` reader가 1순위 채택해
@@ -363,6 +369,10 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
               lastAdvanceEvidence: options.payload.ssot.lastAdvanceEvidence,
               lastAdvanceAt: options.payload.ssot.lastAdvanceAt,
               passedStations: [...options.payload.ssot.passedStations],
+              // #1705 — currentStationLine 정의된 경우에만 wire (구 device 호환 위해 optional).
+              ...(options.payload.ssot.currentStationLine === undefined
+                ? {}
+                : { currentStationLine: options.payload.ssot.currentStationLine }),
               // #1572 (T9) — alarmEvents 정의된 경우에만 wire. 빈 배열도 wire(device 측 게이트가
               // 빈 list와 미정의를 구분하지 않으므로 동일 graceful — 단 backend 호환 위해 forward).
               // 같은 패턴: undefined는 omit, 정의됨(빈 배열 포함)은 forward.

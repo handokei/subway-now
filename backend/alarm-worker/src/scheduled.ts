@@ -1314,6 +1314,10 @@ export function toSilentPushSsot(
     // mirror에서 read해 5 fire path 게이트 A/B로 사용. SSOT_FORWARD_PASSED_STATIONS_MAX와 별개 cap —
     // alarmEvents는 source에서 이미 ALARM_EVENTS_CAP=50으로 제한돼 추가 slice 불필요.
     ...(ssot.alarmEvents ? { alarmEvents: ssot.alarmEvents } : {}),
+    // #1705 — currentStationLine forward. 부재(legacy v1 row) 시 wire 자연 누락.
+    ...(ssot.currentStationLine !== undefined
+      ? { currentStationLine: ssot.currentStationLine }
+      : {}),
   };
 }
 

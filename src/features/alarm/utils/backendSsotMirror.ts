@@ -64,6 +64,13 @@ export interface SilentPushSsotMirror {
   passedStations: readonly string[];
   lockSuggestion?: LockSuggestionMirror;
   alarmEvents?: readonly AlarmEventMirror[];
+  /**
+   * #1705 — backend advance한 station의 노선.
+   *
+   * 구 backend 호환 위해 optional (v1 row 부재 시 undefined). 부재 시 cascade picker는
+   * name-only fallback (`findStationByName`)으로 기존 동작 유지.
+   */
+  currentStationLine?: string;
 }
 
 /** #1561 (T8) — mirror entry에 receivedAt 추가. cascade picker가 자체 staleness 판정. */
@@ -140,6 +147,11 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
     // #1572 (T9) — alarmEvents parse (optional). 부재/형식 mismatch entry는 graceful drop —
     // 잔여만 채택 (passedStations와 동일 패턴).
     const alarmEvents = parseAlarmEventsMirror(parsed.alarmEvents);
+    // #1705 — currentStationLine parse (optional). non-empty string만 채택.
+    const currentStationLine =
+      typeof parsed.currentStationLine === 'string' && parsed.currentStationLine.length > 0
+        ? parsed.currentStationLine
+        : undefined;
     return {
       currentStationId: parsed.currentStationId,
       motionState: parsed.motionState,
@@ -151,6 +163,7 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
       receivedAt: parsed.receivedAt,
       ...(lockSuggestion ? { lockSuggestion } : {}),
       ...(alarmEvents !== undefined ? { alarmEvents } : {}),
+      ...(currentStationLine !== undefined ? { currentStationLine } : {}),
     };
   } catch {
     return null;
