@@ -446,6 +446,103 @@ describe('useStationAlarm', () => {
     });
   });
 
+  // #1773 (D) — fire path A confidence 화이트리스트 회귀 가드.
+  // gps-only-underground 강등 시 GPS 정확도 게이트(500m > 200m)가 already 차단하므로
+  // station-passed 알람(mockSendStationPassedNotification)과 phase 알람(mockSendAlarmNotification)
+  // 모두 발화 안 됨을 명시 검증. 지상(gps-only/detection-fused)은 정상 진입.
+  describe('#1773 (D) fire path A — confidence 기반 silence 검증', () => {
+    const route = makeDirectRoute(1, '2');
+    // 경로상 2호선 역 — isStationOnRoute 통과 조건.
+    const onRouteStation = makeStation('S2-ON', '역삼');
+
+    it('D1: gps-only-underground + accuracy=500m → station-passed 차단 (지하 GPS 정확도 게이트)', () => {
+      // 지하 GPS 환경: accuracy 500m > MAX_ACCURACY_M(200m) + arrivalConfidence 강등.
+      // !accuracyOk && !arrivalConfirmed → station-passed 효과 early return.
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+            arrivalConfidence: 'gps-only-underground',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('D2: gps-only (지상) + accuracy=100m → evaluateAlarmPhase 호출 + phase fire 경로 진입', async () => {
+      // 지상 GPS — accuracy 게이트 통과, degradedConfidence=false → phase 평가 정상 실행.
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            arrivalConfidence: 'gps-only',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+      // gps-only는 degraded=false → evaluateAlarmPhase에 degradedConfidence=false 전달.
+      expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+        expect.objectContaining({ degradedConfidence: false }),
+        expect.any(Set),
+        undefined,
+        expect.any(Array),
+      );
+    });
+
+    it('D3: detection-fused + accuracy=100m → evaluateAlarmPhase 호출 + degradedConfidence=false', async () => {
+      // detection-fused는 verdict ≥2 합의 + 근접 게이트 결합 — 지하에서도 알람 허용.
+      // degradedConfidence=false이므로 early/transfer도 차단 안 됨.
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            arrivalConfidence: 'detection-fused',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+      expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+        expect.objectContaining({ degradedConfidence: false }),
+        expect.any(Set),
+        undefined,
+        expect.any(Array),
+      );
+    });
+
+    it('D4: lockless trip + gps-only-underground + accuracy=500m → station-passed 차단 (lock 유무 무관)', () => {
+      // lock 없는 lockless trip도 GPS 정확도 게이트는 동일 적용.
+      // boardingLock=null이어도 !accuracyOk && !arrivalConfirmed → fire path A early return.
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+            arrivalConfidence: 'gps-only-underground',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+  });
+
   // Epic #1204 N8 — currentLine 소스 boardingLock 우선.
   // 5호선 답십리 lock 진행 중 fusion이 2호선 상왕십리 nearest로 jitter해도
   // currentLine은 lock.boardingLine을 유지해 다른 leg의 hop fire를 차단해야 한다.
