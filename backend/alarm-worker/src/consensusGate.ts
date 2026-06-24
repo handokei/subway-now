@@ -29,8 +29,8 @@
  *   + `signals` 만 받는 사실이 §7의 정적 보증. 토글 UI 라벨은 frontend 책임.
  *
  * §9 trainCode lock 정확성 게이트:
- *   `assertLockLineAllowed(lock, allowedLines)`로 별도 검증. caller(`attemptAutoLock` /
- *   `attachTrainCodeForLeg`)가 lock 합성 직후 본 검증을 통과시키지 못하면 null 반환.
+ *   `isLockLineAllowed(lock, allowedLines)`로 별도 검증. caller(`attachTrainCodeForLeg`)가
+ *   lock 합성 직후 본 검증을 통과시키지 못하면 null 반환.
  *   `computeAllowedLines(trip)`는 trip route의 모든 leg line을 union으로 산출한다.
  *
  * memory `feedback_user_intent_equal_protection.md` (사용자 의향 trip 동급 보장) 호환:
@@ -208,8 +208,8 @@ export function computeAllowedLines(
 /**
  * §9 lock 채택 시 trainCode lock의 line이 trip route allowedLines에 포함되는지 검증.
  *
- * caller는 `attemptAutoLock` 결과(또는 `attachTrainCodeForLeg` swap 결과)에 본 검증을 적용해
- * 외부 line(분당선 variant 등) 잘못된 매핑을 차단한다. 미통과 시 lock 없는 것과 동일하게 처리:
+ * caller는 `attachTrainCodeForLeg` swap 결과에 본 검증을 적용해 외부 line(분당선 variant 등)
+ * 잘못된 매핑을 차단한다. 미통과 시 lock 없는 것과 동일하게 처리:
  * boarding-prompt fallback 또는 silent skip.
  *
  * trip route가 정의되지 않은 케이스(이론상 발생 X)는 보수적으로 allow — 본 게이트는 trip route
