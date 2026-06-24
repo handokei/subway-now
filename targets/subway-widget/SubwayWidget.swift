@@ -16,6 +16,18 @@ struct SubwayEntry: TimelineEntry {
     let currentStationName: String?
     let destinationName: String?
     let nextTransferName: String?
+    // P4: staleDate — savedAt + 10분 초과 시 시스템 "stale" overlay 표시 차단 임계.
+    var staleDate: Date? { savedAt.map { $0.addingTimeInterval(EXPIRED_THRESHOLD_SECONDS) } }
+    // P3: Smart Stack relevance (iOS 17+). trip 활성+환승 임박 → 1.0, trip 활성 → 0.8, 평시 → 0.3.
+    var relevance: TimelineEntryRelevance? {
+        if tripActive && nextTransferName != nil {
+            return TimelineEntryRelevance(score: 1.0, duration: 60)
+        } else if tripActive {
+            return TimelineEntryRelevance(score: 0.8, duration: 60)
+        } else {
+            return TimelineEntryRelevance(score: 0.3, duration: 0)
+        }
+    }
 }
 
 // Freshness 3단계 임계. savedAt으로부터 경과 시간으로 tier를 결정한다.
@@ -146,14 +158,20 @@ struct SubwayWidgetView: View {
         freshness == .expired ? EXPIRED_CONTENT_OPACITY : 1.0
     }
 
+    // P4: 위젯 탭 시 앱 딥링크 — 현재역 상세 화면 진입.
+    private var deepLink: URL { URL(string: "subway-now://current-station")! }
+
     var body: some View {
         // iOS 17+는 위젯이 containerBackground를 채택하지 않으면
         // 시스템이 "Please adopt containerBackground API" placeholder를 대신 그린다.
         // 배포 타겟 15.1이라 availability 분기 필요.
         if #available(iOS 17.0, *) {
-            content.containerBackground(.background, for: .widget)
+            content
+                .containerBackground(.background, for: .widget)
+                .widgetURL(deepLink)
         } else {
             content
+                .widgetURL(deepLink)
         }
     }
 
