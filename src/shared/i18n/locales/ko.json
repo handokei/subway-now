@@ -356,5 +356,9 @@
       "dismiss": "나중에",
       "thanks": "응답 감사합니다."
     }
+  },
+  "lockless": {
+    "badge": "🔍 탐색 중",
+    "tapToConfirm": "탑승 확인하기"
   }
 }

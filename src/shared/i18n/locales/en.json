@@ -356,5 +356,9 @@
       "dismiss": "Later",
       "thanks": "Thanks for your feedback."
     }
+  },
+  "lockless": {
+    "badge": "🔍 Searching",
+    "tapToConfirm": "Confirm boarding"
   }
 }

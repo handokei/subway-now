@@ -79,6 +79,7 @@ import {
 import { getTransferSeconds } from '../shared/utils/transferTimes';
 import { BoardingTrainList } from '../features/alarm/components/BoardingTrainList';
 import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHopCard';
+import { LocklessBadge } from '../features/alarm/components/LocklessBadge';
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
 import { useCongestion } from '../features/congestion/hooks/useCongestion';
@@ -296,6 +297,12 @@ export default function HomeScreen() {
   // 위젯 currentStation을 강제 동기화. listener는 단일-바인딩이라 latest liveResult를 ref로 stamp.
   const liveResultRef = useRef(liveResult);
   liveResultRef.current = liveResult;
+  // #1755 — lockless badge tap → scroll to boarding list. ScrollView ref + target Y.
+  const scrollViewRef = useRef<ScrollView>(null);
+  const boardingListYRef = useRef<number>(0);
+  const handleLocklessBadgePress = useCallback(() => {
+    scrollViewRef.current?.scrollTo({ y: boardingListYRef.current, animated: true });
+  }, []);
   const isCustomOrigin = customOrigin !== null;
   // #1379: effectiveOrigin은 trip 생명선이다. GPS pause(BG 진입/지하 dead zone)로 result?.station이
   // 일시 null이 되면 아래 storage/effect들이 trip을 종료한 것으로 오인해 ROUTE_KEY removeItem →
@@ -935,6 +942,7 @@ export default function HomeScreen() {
       />
 
       <ScrollView
+        ref={scrollViewRef}
         contentContainerStyle={{ paddingBottom: 80 }}
         refreshControl={<RefreshControl refreshing={isManualRefreshing} onRefresh={handleRefresh} />}
       >
@@ -1026,6 +1034,13 @@ export default function HomeScreen() {
                 )}
               </View>
             </View>
+
+            {/* #1755 — lockless badge: trip 활성 + lock 미부착 상태를 사용자에게 알림. 탭하면 boarding list로 스크롤. */}
+            {destination && !boardingLock && (
+              <View style={{ paddingHorizontal: spacing.xxl, paddingBottom: spacing.md }}>
+                <LocklessBadge onPress={handleLocklessBadgePress} />
+              </View>
+            )}
 
             <Hr />
 
@@ -1174,19 +1189,25 @@ export default function HomeScreen() {
                               // #897 Seam A: 이 분기는 `!boardingLock` 가드 안 — lock이 없으므로 지연 칩 비교 기준이 없다.
                               // 사용자가 BoardingTrainList에서 열차를 탭해야 lock이 생성되고, 이후 폴링에서 칩이 활성화된다.
                               return (
-                                <BoardingTrainList
-                                  arrivals={boardingListArrivals}
-                                  // #797: approachLine 우선 — 환승역에서 effectiveOrigin.line이 trip 방향과
-                                  // 어긋날 때 BoardingLock·route SSOT로 정확한 호선 표시.
-                                  line={approachLine ?? effectiveOrigin.line}
-                                  onSelect={createLockFromTrain}
-                                  compact
-                                  nextStationLabel={label}
-                                  // #1166: 낙관적 탭 → backend 정정 UX. lockedTrainCode를 prop으로 넘겨야
-                                  // pending 일치/정정 effect가 발화한다. fusionBoardingLock 기반 SSOT 사용.
-                                  lockedTrainCode={lockedTrainCode}
-                                  onLockCorrected={handleLockCorrected}
-                                />
+                                // #1755 — lockless badge 탭 시 scrollTo 기준점. onLayout에서 y를 캡처.
+                                <View
+                                  onLayout={(e) => { boardingListYRef.current = e.nativeEvent.layout.y; }}
+                                  testID="boarding-list-anchor"
+                                >
+                                  <BoardingTrainList
+                                    arrivals={boardingListArrivals}
+                                    // #797: approachLine 우선 — 환승역에서 effectiveOrigin.line이 trip 방향과
+                                    // 어긋날 때 BoardingLock·route SSOT로 정확한 호선 표시.
+                                    line={approachLine ?? effectiveOrigin.line}
+                                    onSelect={createLockFromTrain}
+                                    compact
+                                    nextStationLabel={label}
+                                    // #1166: 낙관적 탭 → backend 정정 UX. lockedTrainCode를 prop으로 넘겨야
+                                    // pending 일치/정정 effect가 발화한다. fusionBoardingLock 기반 SSOT 사용.
+                                    lockedTrainCode={lockedTrainCode}
+                                    onLockCorrected={handleLockCorrected}
+                                  />
+                                </View>
                               );
                             }
                             // #649 — transfer hop slot: 현재 활성 transfer 시점에만 노출.
