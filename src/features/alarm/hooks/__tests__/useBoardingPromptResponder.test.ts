@@ -108,6 +108,13 @@ function makeArrivalWithUp(entries: Partial<UpEntry>[]): StationArrival {
   return { up: entries.map(makeUpEntry), down: [] };
 }
 
+function makeArrivalBothDirections(
+  upEntries: Partial<UpEntry>[],
+  downEntries: Partial<UpEntry>[],
+): StationArrival {
+  return { up: upEntries.map(makeUpEntry), down: downEntries.map(makeUpEntry) };
+}
+
 // 두 후보 같은 priority 케이스 — ambiguity fallback 측정용 (행동 + telemetry 양쪽 공유).
 const AMBIGUOUS_TRAINS: Partial<UpEntry>[] = [
   { arrivalMinutes: 1, arrivalSeconds: 60, trainCode: 'T1' },
@@ -152,7 +159,48 @@ describe('extractBoardingPromptPayload', () => {
       originStation: '강남',
       line: '2',
       tripToken: 'tok',
+      destinationDirection: undefined,
     });
+  });
+
+  it('#1740 — destinationDirection: "up" 포함 → 보존', () => {
+    expect(
+      extractBoardingPromptPayload({
+        kind: 'boarding-prompt',
+        originStation: '강남',
+        line: '2',
+        tripToken: 'tok',
+        destinationDirection: 'up',
+      }),
+    ).toEqual({
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      destinationDirection: 'up',
+    });
+  });
+
+  it('#1740 — destinationDirection: "down" 포함 → 보존', () => {
+    const result = extractBoardingPromptPayload({
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      destinationDirection: 'down',
+    });
+    expect(result?.destinationDirection).toBe('down');
+  });
+
+  it('#1740 — destinationDirection 잘못된 값 → undefined (backward compat)', () => {
+    const result = extractBoardingPromptPayload({
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      destinationDirection: 'invalid',
+    });
+    expect(result?.destinationDirection).toBeUndefined();
   });
 
   it.each([
@@ -262,6 +310,68 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
+  });
+
+  // #1740 — destination 방향 filter 강화 테스트.
+  it('#1740 — destinationDirection "up" → up 후보만 추림, down 후보 무시', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
+    const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () =>
+        makeArrivalBothDirections([upTrain], [downTrain]),
+      ),
+    });
+    const payload = { ...PAYLOAD, destinationDirection: 'up' as const };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+    // up 단일 후보 → lock 생성, trainCode = 'UP1'
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: 'UP1' }),
+    );
+  });
+
+  it('#1740 — destinationDirection "down" → down 후보만 추림, up 후보 무시', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
+    const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () =>
+        makeArrivalBothDirections([upTrain], [downTrain]),
+      ),
+    });
+    const payload = { ...PAYLOAD, destinationDirection: 'down' as const };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+    // down 단일 후보 → lock 생성, trainCode = 'DOWN1'
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: 'DOWN1' }),
+    );
+  });
+
+  it('#1740 — destinationDirection "up" 지정 + up 후보 없음 → lock 안 함 (반대 방향만 존재)', async () => {
+    const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () =>
+        makeArrivalBothDirections([], [downTrain]),
+      ),
+    });
+    const payload = { ...PAYLOAD, destinationDirection: 'up' as const };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+    expect(createLockMock).not.toHaveBeenCalled();
+  });
+
+  it('#1740 — destinationDirection undefined → 양방향 모두 후보 (backward compat)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () =>
+        makeArrivalBothDirections([upTrain], []),
+      ),
+    });
+    // destinationDirection 미지정 — 기존 동작 유지
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: 'UP1' }),
+    );
   });
 
   // #1167 — autoLock telemetry. 모든 케이스가 같은 형태로 logBoardingPromptAutoLock을 호출한다.

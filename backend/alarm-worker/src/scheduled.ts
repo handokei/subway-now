@@ -3263,6 +3263,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
         sentAt: now,
         // #1536 (S3, T13) — cron loop 경로. POST /trips instant path 와 source 구분.
         triggerKind: 'cron',
+        // #1740 — geo.direction이 null이면 undefined 전달 → device 양방향 허용 (backward compat).
+        destinationDirection: geo.direction ?? undefined,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,

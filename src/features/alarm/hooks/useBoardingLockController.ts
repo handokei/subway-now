@@ -434,7 +434,10 @@ export function useBoardingLockController({
     if (directionalArrivals.length === 0) return;
     const originKey = `${destinationId ?? FREE_TRIP_DESTINATION_SENTINEL}|${currentStation.id}`;
     if (lastOriginAutoLockKeyRef.current === originKey) return;
-    const chosen = pickAutoTrainCodeFromArrivals(directionalArrivals);
+    // #1740 — direction이 확정된 경우 pickAutoTrainCodeFromArrivals에 전달.
+    // directionalArrivals는 이미 direction 필터 적용됐지만, helper 인자로 명시해 일관성 보장.
+    const destinationDirection = direction === 'up' || direction === 'down' ? direction : undefined;
+    const chosen = pickAutoTrainCodeFromArrivals(directionalArrivals, destinationDirection);
     if (!chosen) return;
     // 강 evidence 게이트: arvlCd가 ENTERING/ARRIVED/DEPARTED 중 하나일 때만 진행.
     // `pickAutoTrainCodeFromArrivals`는 receivedAt 정렬 첫 후보로 fallback하지만, 본 effect는

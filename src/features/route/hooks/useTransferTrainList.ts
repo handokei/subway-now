@@ -154,7 +154,12 @@ export function useTransferTrainList({
     if (!transferKey) return;
     if (autoLockedTransferKeyRef.current === transferKey) return;
     if (arrivals.length === 0) return;
-    const chosen = pickAutoTrainCodeFromArrivals(arrivals);
+    // #1740 — arrivals는 이미 context.direction 필터 적용됨. 일관성을 위해 helper에도 전달.
+    const destinationDirection =
+      context?.direction === 'up' || context?.direction === 'down'
+        ? context.direction
+        : undefined;
+    const chosen = pickAutoTrainCodeFromArrivals(arrivals, destinationDirection);
     if (!chosen) return;
     autoLockedTransferKeyRef.current = transferKey;
     createTransferLock(chosen);

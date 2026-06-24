@@ -57,6 +57,11 @@ export interface BoardingPromptPayload {
   originStation: string;
   line: string;
   tripToken: string;
+  /**
+   * #1740 — 목적지 방향 filter. backend가 forward하는 경우 'up' | 'down'.
+   * 미지정 시 양방향 모두 후보로 허용 (backward compat).
+   */
+  destinationDirection?: 'up' | 'down';
 }
 
 export function extractBoardingPromptPayload(
@@ -68,11 +73,16 @@ export function extractBoardingPromptPayload(
   if (typeof o.originStation !== 'string' || o.originStation.length === 0) return null;
   if (typeof o.line !== 'string' || o.line.length === 0) return null;
   if (typeof o.tripToken !== 'string' || o.tripToken.length === 0) return null;
+  const destinationDirection =
+    o.destinationDirection === 'up' || o.destinationDirection === 'down'
+      ? (o.destinationDirection as 'up' | 'down')
+      : undefined;
   return {
     kind: 'boarding-prompt',
     originStation: o.originStation,
     line: o.line,
     tripToken: o.tripToken,
+    destinationDirection,
   };
 }
 
@@ -180,13 +190,17 @@ async function tryAutoLock(
     return;
   }
 
-  // 같은 line 후보만 추림 (BoardingLockController.directionalArrivals 정책 — 방향은 푸시 시점
-  // 알 수 없으므로 양방향 허용, 노선 매칭은 client.line 일치로). arvlCd 우선순위는
-  // pickAutoTrainCodeFromArrivals에서 처리.
-  const sameLine = ([] as ArrivalInfo[])
-    .concat(arrival.up, arrival.down)
-    .filter((a) => a.line === payload.line && a.arrivalSeconds > 0);
-  const chosen = pickAutoTrainCodeFromArrivals(sameLine);
+  // #1740 — destination 방향 filter. payload.destinationDirection이 있으면 해당 방향만 선택.
+  // 없으면 양방향 모두 후보 (backward compat). 이후 line + arrivalSeconds 필터 적용.
+  const { destinationDirection } = payload;
+  const directionSlice: readonly ArrivalInfo[] =
+    destinationDirection === 'up' || destinationDirection === 'down'
+      ? arrival[destinationDirection]
+      : ([] as ArrivalInfo[]).concat(arrival.up, arrival.down);
+  const sameLine = directionSlice.filter(
+    (a) => a.line === payload.line && a.arrivalSeconds > 0,
+  );
+  const chosen = pickAutoTrainCodeFromArrivals(sameLine, destinationDirection);
   if (!chosen) {
     log.info('ambiguity or empty — auto lock skipped');
     // 빈 후보와 ambiguity 구분: sameLine이 1개 이상인데 chosen이 null이면 ambiguity.

@@ -514,6 +514,12 @@ export interface BoardingPromptPushPayload {
    * 부재(legacy) = 'cron' 으로 해석. device 는 telemetry 적재 시 source 분포 측정에 사용.
    */
   triggerKind?: 'cron' | 'instant';
+  /**
+   * #1740 — 목적지 방향. Seoul API isUp/isDown 기준 'up' | 'down'.
+   * device가 이 방향에 해당하는 arrival 후보만 추려 trainCode 자동 pick 오류를 줄인다.
+   * 미지정(legacy / direction 산출 불가) 시 device가 양방향을 허용 (backward compat).
+   */
+  destinationDirection?: 'up' | 'down';
 }
 
 /**
