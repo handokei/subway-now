@@ -107,6 +107,7 @@ import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
 import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
+import { RegressionsSection } from './RegressionsSection';
 // #1421 — PR-AutoLock-1 측정 인프라. DebugModal이 SSOT consensus → stability buffer → direction verify
 // → inferAutoLockCandidate 결과를 dump에 노출. 동작 변경 0: lock 산출/sync 호출 없음.
 import { createConsensusStabilityBuffer } from '../../nearest-station/utils/consensusStabilityBuffer';
@@ -2179,6 +2180,9 @@ function DebugModalInner({
             entryTestId="debug-raw-signal-entry"
             colors={colors}
           />
+
+          {/* #1263 (Epic #1204 그룹 0 PR C): Regressions 4종 추이 */}
+          <RegressionsSection />
 
           {/* #1022: Worker Quota admin view */}
           <Section title="Worker Quota" colors={colors}>
