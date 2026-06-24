@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { LineBadge } from '../../../shared/ui/LineBadge';
@@ -263,6 +264,7 @@ export function BoardingTrainList({
       if (isReleasingRef.current) return;
       // 이미 다른 row가 pending이면 무시(중복 탭 방지). 같은 row 재탭도 무시.
       if (pendingTrainCode != null) return;
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setPendingTrainCode(train.trainCode);
       clearRollbackTimer();
       rollbackTimerRef.current = setTimeout(() => {

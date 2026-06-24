@@ -1,4 +1,5 @@
 import { act, fireEvent } from '@testing-library/react-native';
+import * as Haptics from 'expo-haptics';
 import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
@@ -8,6 +9,13 @@ import {
   getLockCorrectionMetrics,
   resetLockCorrectionMetrics,
 } from '../../utils/lockCorrectionMetrics';
+
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn().mockResolvedValue(undefined),
+  ImpactFeedbackStyle: { Light: 'Light', Medium: 'Medium', Heavy: 'Heavy' },
+  NotificationFeedbackType: { Success: 'Success', Warning: 'Warning', Error: 'Error' },
+  notificationAsync: jest.fn().mockResolvedValue(undefined),
+}));
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
@@ -26,6 +34,10 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
 }
 
 describe('BoardingTrainList', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('arrivals 비어있을 때 placeholder 렌더 (#915 후속: i18n 키 사용)', () => {
     const { getByTestId, getByText } = renderWithTheme(
       <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} />,
@@ -1161,6 +1173,29 @@ describe('BoardingTrainList', () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe('#1777 햅틱 피드백', () => {
+    it('열차 row 탭 시 Medium 햅틱이 발사된다', () => {
+      const train = makeTrain({ trainCode: 'T-HAPTIC' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-HAPTIC'));
+      expect(Haptics.impactAsync).toHaveBeenCalledWith(Haptics.ImpactFeedbackStyle.Medium);
+    });
+
+    it('pending 중 탭은 햅틱을 발사하지 않는다 (중복 탭 방지)', () => {
+      const a = makeTrain({ trainCode: 'T-A' });
+      const b = makeTrain({ trainCode: 'T-B' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[a, b]} line="2" onSelect={() => {}} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-A'));
+      jest.clearAllMocks();
+      fireEvent.press(getByTestId('boarding-train-row-T-B'));
+      expect(Haptics.impactAsync).not.toHaveBeenCalled();
     });
   });
 });
