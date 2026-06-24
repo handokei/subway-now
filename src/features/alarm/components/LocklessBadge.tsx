@@ -2,6 +2,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
+import { withAlpha } from '../../../shared/theme/colorUtils';
 
 interface Props {
   /** 탭 시 BoardingTrainList / boardingPrompt 수동 진입 (Path A). */
@@ -26,7 +27,7 @@ export function LocklessBadge({ onPress }: Props) {
   return (
     <Pressable
       onPress={handlePress}
-      style={[styles.badge, { backgroundColor: colors.warn + '22', borderColor: colors.warn }]}
+      style={[styles.badge, { backgroundColor: withAlpha(colors.warn, 0.13), borderColor: colors.warn }]}
       testID="lockless-badge"
       accessibilityRole="button"
       accessibilityLabel={t('lockless.tapToConfirm')}

@@ -72,7 +72,12 @@ export function CurrentStationConfirmModal({
             <Text style={[typography.label, { color: colors.muted }]}>
               {t('currentStationConfirm.title')}
             </Text>
-            <Pressable onPress={onClose} testID="current-station-confirm-close">
+            <Pressable
+              onPress={onClose}
+              testID="current-station-confirm-close"
+              accessibilityRole="button"
+              accessibilityLabel={t('currentStationConfirm.close')}
+            >
               <Text style={[typography.body, { color: colors.accent, fontWeight: '600' }]}>
                 {t('currentStationConfirm.close')}
               </Text>

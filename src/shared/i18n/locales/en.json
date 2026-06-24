@@ -39,6 +39,9 @@
     "previousDestination": "Previous destination",
     "sleepMode": "Sleep mode",
     "sleepModeDescription": "Vibrate and notify 1 stop before transfer or arrival",
+    "sleepModeLabel": "Toggle sleep mode",
+    "favAdd": "Add to favorites",
+    "favRemove": "Remove from favorites",
     "arrivalInfoTitle": "Train arrivals",
     "loading": "Loading...",
     "mockNotice": "Showing estimated data — real-time unavailable",
@@ -191,7 +194,8 @@
   },
   "arrival": {
     "upbound": "Upbound",
-    "downbound": "Downbound"
+    "downbound": "Downbound",
+    "rowLabel": "{{line}} {{direction}} arriving in {{mm}} min {{ss}} sec"
   },
   "notifications": {
     "channelStation": "Current station",

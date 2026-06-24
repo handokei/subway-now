@@ -26,6 +26,8 @@ export function StationSuggestionList({ suggestions, onSelect, listTestID, itemT
           style={[styles.item, { borderBottomColor: colors.hair }]}
           onPress={() => onSelect(s)}
           testID={`${itemTestIDPrefix}${s.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`${getStationDisplayName(s)} ${LINE_NAMES[s.line]}`}
         >
           <Text style={[styles.name, { color: colors.ink }]}>{getStationDisplayName(s)}</Text>
           <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
