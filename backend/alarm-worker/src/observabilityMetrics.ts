@@ -40,12 +40,22 @@ const METRICS_KEY_PREFIX = 'obs-metrics:24h:';
 /** 1h TTL — rolling window 다음 집계 전까지 캐시. */
 const METRICS_KV_TTL_SEC = 60 * 60;
 
+/** accel pattern 4종 분포 bucket. */
+export interface AccelPatternBucket {
+  automotive: { count: number; ratio: number };
+  walking: { count: number; ratio: number };
+  stationary: { count: number; ratio: number };
+  unknown: { count: number; ratio: number };
+}
+
 /** /v1/observability/metrics 응답 shape. */
 export interface ObservabilityMetricsResponse {
   accuracyRatio: { value: number; total: number; ratio: number };
   silentPushDeliveryRatio: { value: number; total: number; ratio: number };
   locklessMissRatio: { value: number; total: number; ratio: number };
   boardableMissRatio: { value: number; total: number; ratio: number };
+  /** #1769 — accelerometer pattern 4종 분포 (24h rolling window). */
+  accelPatternHitRatio: AccelPatternBucket;
   window: '24h';
   timestamp: number;
 }
@@ -94,11 +104,16 @@ export async function computeObservabilityMetrics(
   // 3. boardableMissRatio — placeholder (향후 데이터 소스 확보 후 실구현)
   const boardableMissRatio = buildMetricBucket(0, 0);
 
+  // 4. accelPatternHitRatio — #1769. alarmLog source='accel-pattern-observed' 엔트리의
+  // stationName 슬롯에 인코딩된 pattern(automotive/walking/stationary/unknown) 분포 산출.
+  const accelPatternHitRatio = buildAccelPatternBucket(alarmStats.accelPatternCounts);
+
   return {
     accuracyRatio,
     silentPushDeliveryRatio,
     locklessMissRatio,
     boardableMissRatio,
+    accelPatternHitRatio,
     window: '24h',
     timestamp: now,
   };
@@ -151,5 +166,23 @@ function buildMetricBucket(
     value,
     total,
     ratio: total === 0 ? 0 : value / total,
+  };
+}
+
+/**
+ * #1769 — accel pattern 4종 분포 bucket 산출.
+ * 입력: alarmLogStats.accelPatternCounts (source='accel-pattern-observed' 기반).
+ * total = 4종 합계. ratio = 각 pattern / total (total=0이면 0).
+ */
+function buildAccelPatternBucket(
+  counts: { automotive: number; walking: number; stationary: number; unknown: number },
+): AccelPatternBucket {
+  const total = counts.automotive + counts.walking + counts.stationary + counts.unknown;
+  const ratio = (n: number): number => (total === 0 ? 0 : n / total);
+  return {
+    automotive: { count: counts.automotive, ratio: ratio(counts.automotive) },
+    walking: { count: counts.walking, ratio: ratio(counts.walking) },
+    stationary: { count: counts.stationary, ratio: ratio(counts.stationary) },
+    unknown: { count: counts.unknown, ratio: ratio(counts.unknown) },
   };
 }

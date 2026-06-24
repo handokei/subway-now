@@ -73,11 +73,19 @@ function setupStore(responses: { outcome: 'accurate' | 'inaccurate' | 'unanswere
   );
 }
 
+const DEFAULT_ACCEL_PATTERN: observabilityClient.AccelPatternBucket = {
+  automotive: { count: 5, ratio: 0.5 },
+  walking: { count: 2, ratio: 0.2 },
+  stationary: { count: 2, ratio: 0.2 },
+  unknown: { count: 1, ratio: 0.1 },
+};
+
 function makeSuccessResult(
   locklessValue = 2,
   locklessTotal = 10,
   boardableValue = 0,
   boardableTotal = 0,
+  accelPattern: observabilityClient.AccelPatternBucket = DEFAULT_ACCEL_PATTERN,
 ): observabilityClient.FetchMetricsResult {
   return {
     kind: 'ok',
@@ -86,6 +94,7 @@ function makeSuccessResult(
       silentPushDeliveryRatio: { value: 5, total: 6, ratio: 0.833 },
       locklessMissRatio: { value: locklessValue, total: locklessTotal, ratio: locklessValue / locklessTotal },
       boardableMissRatio: { value: boardableValue, total: boardableTotal, ratio: boardableTotal === 0 ? 0 : boardableValue / boardableTotal },
+      accelPatternHitRatio: accelPattern,
       window: '24h',
       timestamp: 1_700_000_000_000,
     },
@@ -333,6 +342,46 @@ describe('OperationDashboardSection', () => {
       // 다른 metric 클릭 → 여전히 view 보임 (key만 바뀜)
       fireEvent.press(screen.getByTestId('operation-metric-locklessMiss'));
       expect(screen.getByTestId('metric-drilldown-view')).toBeTruthy();
+    });
+  });
+
+  // ── #1769 Accel pattern section ──────────────────────────────────────────────
+
+  describe('#1769 — accelPattern section', () => {
+    it('backend 미수신 상태에서 accelPattern row가 렌더되며 (no data) 표시', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      expect(screen.getByTestId('operation-metric-accelPattern')).toBeTruthy();
+      expect(screen.getByTestId('accel-pattern-na')).toBeTruthy();
+    });
+
+    it('fetch 성공 → 4 pattern bar가 렌더된다', async () => {
+      mockFetchMetrics.mockResolvedValue(makeSuccessResult());
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('accel-pattern-bar-automotive')).toBeTruthy();
+        expect(screen.getByTestId('accel-pattern-bar-walking')).toBeTruthy();
+        expect(screen.getByTestId('accel-pattern-bar-stationary')).toBeTruthy();
+        expect(screen.getByTestId('accel-pattern-bar-unknown')).toBeTruthy();
+      });
+    });
+
+    it('fetch 성공 시 accel-pattern-na는 사라진다', async () => {
+      mockFetchMetrics.mockResolvedValue(makeSuccessResult());
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.queryByTestId('accel-pattern-na')).toBeNull();
+      });
+    });
+
+    it('unconfigured 상태에서 accelPattern row가 (no data) 유지', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('accel-pattern-na')).toBeTruthy();
+      });
     });
   });
 });

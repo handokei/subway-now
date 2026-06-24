@@ -31,6 +31,7 @@ import { countSilentPushOutcomes, type AlarmLogEntry } from '../../alarm/utils/a
 import {
   fetchObservabilityMetrics,
   type ObservabilityMetricsBucket,
+  type AccelPatternBucket,
   type FetchMetricsResult,
 } from '../../observability/api/observabilityMetricsClient';
 import {
@@ -61,7 +62,7 @@ interface MetricData {
 type BackendLoadState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket }
+  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket; accelPattern: AccelPatternBucket }
   | { kind: 'unconfigured' }
   | { kind: 'error'; message: string };
 
@@ -188,6 +189,50 @@ const rowStyles = StyleSheet.create({
   },
 });
 
+// ─── Accel Pattern Row ────────────────────────────────────────────────────────
+
+const ACCEL_PATTERN_KEYS = ['automotive', 'walking', 'stationary', 'unknown'] as const;
+type AccelPatternKey = (typeof ACCEL_PATTERN_KEYS)[number];
+
+/**
+ * #1769 — accelerometer pattern 4종 분포 ratio bar.
+ * null(backend 미수신) 시 "(no data)" 표시, 수신 시 4 bar를 세로 목록으로 표시.
+ */
+function AccelPatternRow({
+  accelPattern,
+  colors,
+}: {
+  accelPattern: AccelPatternBucket | null;
+  colors: ReturnType<typeof useTheme>['colors'];
+}) {
+  return (
+    <View style={rowStyles.container} testID="operation-metric-accelPattern">
+      <Text style={[typography.mono, { color: colors.ink }]}>accelPattern</Text>
+      {accelPattern === null ? (
+        <Text style={[typography.mono, { color: colors.muted }]} testID="accel-pattern-na">
+          (no data)
+        </Text>
+      ) : (
+        ACCEL_PATTERN_KEYS.map((key: AccelPatternKey) => {
+          const { count, ratio } = accelPattern[key];
+          const pct = `${Math.round(ratio * 100)}%`;
+          return (
+            <View key={key} testID={`accel-pattern-bar-${key}`}>
+              <View style={rowStyles.header}>
+                <Text style={[typography.mono, { color: colors.subtle }]}>{key}</Text>
+                <Text style={[typography.mono, { color: colors.subtle }]}>
+                  {pct} ({count})
+                </Text>
+              </View>
+              <RatioBar ratio={ratio} colors={colors} />
+            </View>
+          );
+        })
+      )}
+    </View>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 export interface OperationDashboardSectionProps {
@@ -221,6 +266,7 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
         kind: 'ok',
         locklessMiss: result.metrics.locklessMissRatio,
         boardableMiss: result.metrics.boardableMissRatio,
+        accelPattern: result.metrics.accelPatternHitRatio,
       });
     } else if (result.kind === 'unconfigured') {
       setBackendState({ kind: 'unconfigured' });
@@ -267,6 +313,10 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
       ? bucketToMetric('boardableMiss', 'boardableMiss', backendState.boardableMiss)
       : { key: 'boardableMiss', label: 'boardableMiss', ratio: null, numerator: 0, denominator: 0, isMock: true };
 
+  // Metric 5 — Accel pattern distribution (#1769, backend 수신 시만 유효)
+  const accelPatternData: AccelPatternBucket | null =
+    backendState.kind === 'ok' ? backendState.accelPattern : null;
+
   const metrics: MetricData[] = [alarmAccuracy, silentPushReach, locklessMiss, boardableMiss];
 
   const handleMetricPress = useCallback((key: DrillDownMetricKey) => {
@@ -296,6 +346,9 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
           colors={colors}
         />
       ))}
+
+      {/* Metric 5 — Accel pattern distribution (#1769) */}
+      <AccelPatternRow accelPattern={accelPatternData} colors={colors} />
 
       {/* Drill-down expanded view */}
       {drillDownKey !== null && (

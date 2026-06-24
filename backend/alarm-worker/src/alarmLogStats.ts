@@ -36,6 +36,7 @@ interface AlarmLogEntryLike {
   source?: string;
   outcome?: string;
   reason?: string;
+  stationName?: string;
 }
 
 /**
@@ -47,6 +48,7 @@ interface AlarmLogEntryLike {
  * - `reasons`: AlarmLogReason 분포 — top-20 정렬
  * - `sources`: AlarmLogSource 분포 — top-20 정렬
  * - `tripsScanned`: 윈도우 안 scan된 trip-evidence object 수
+ * - `accelPatternCounts`: #1769 — source='accel-pattern-observed' 엔트리의 pattern별 카운트.
  */
 export interface AlarmLogStatsResponse {
   windowStart: number;
@@ -58,14 +60,20 @@ export interface AlarmLogStatsResponse {
   reasons: Record<string, number>;
   sources: Record<string, number>;
   tripsScanned: number;
+  /** #1769 — accelerometer pattern 4종 카운트. source='accel-pattern-observed'의 stationName 집계. */
+  accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number };
 }
 
-/** parse 결과를 outcome/source/reason 카운터에 누적. shape mismatch entry는 silent drop. */
+const ACCEL_PATTERNS = ['automotive', 'walking', 'stationary', 'unknown'] as const;
+type AccelPattern = (typeof ACCEL_PATTERNS)[number];
+
+/** parse 결과를 outcome/source/reason/accelPattern 카운터에 누적. shape mismatch entry는 silent drop. */
 function accumulateEntry(
   entry: AlarmLogEntryLike,
   outcomeCounts: Record<string, number>,
   reasonCounts: Record<string, number>,
   sourceCounts: Record<string, number>,
+  accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number },
 ): void {
   if (typeof entry.outcome === 'string' && entry.outcome.length > 0) {
     outcomeCounts[entry.outcome] = (outcomeCounts[entry.outcome] ?? 0) + 1;
@@ -75,6 +83,14 @@ function accumulateEntry(
   }
   if (typeof entry.reason === 'string' && entry.reason.length > 0) {
     reasonCounts[entry.reason] = (reasonCounts[entry.reason] ?? 0) + 1;
+  }
+  // #1769 — accel pattern 집계: source='accel-pattern-observed', stationName = pattern.
+  if (
+    entry.source === 'accel-pattern-observed' &&
+    typeof entry.stationName === 'string' &&
+    (ACCEL_PATTERNS as readonly string[]).includes(entry.stationName)
+  ) {
+    accelPatternCounts[entry.stationName as AccelPattern] += 1;
   }
 }
 
@@ -127,11 +143,12 @@ function topN(dict: Record<string, number>, n: number): Record<string, number> {
   return Object.fromEntries(sorted);
 }
 
-/** scan loop 누적 카운터 — outcome/reason/source dict + totalEvents/tripsScanned. */
+/** scan loop 누적 카운터 — outcome/reason/source/accelPattern dict + totalEvents/tripsScanned. */
 interface ScanAccumulator {
   outcomeCounts: Record<string, number>;
   reasonCounts: Record<string, number>;
   sourceCounts: Record<string, number>;
+  accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number };
   totalEvents: number;
   tripsScanned: number;
 }
@@ -153,7 +170,7 @@ async function scanTripEvidenceObject(
   acc.tripsScanned += 1;
   for (const e of entries) {
     acc.totalEvents += 1;
-    accumulateEntry(e, acc.outcomeCounts, acc.reasonCounts, acc.sourceCounts);
+    accumulateEntry(e, acc.outcomeCounts, acc.reasonCounts, acc.sourceCounts, acc.accelPatternCounts);
   }
 }
 
@@ -180,6 +197,7 @@ export async function computeAlarmLogStats(
     outcomeCounts: {},
     reasonCounts: {},
     sourceCounts: {},
+    accelPatternCounts: { automotive: 0, walking: 0, stationary: 0, unknown: 0 },
     totalEvents: 0,
     tripsScanned: 0,
   };
@@ -210,5 +228,6 @@ export async function computeAlarmLogStats(
     reasons: topN(acc.reasonCounts, 20),
     sources: topN(acc.sourceCounts, 20),
     tripsScanned: acc.tripsScanned,
+    accelPatternCounts: acc.accelPatternCounts,
   };
 }

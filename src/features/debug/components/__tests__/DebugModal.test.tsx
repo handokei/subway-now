@@ -3895,6 +3895,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     kind: 'cycle',
     gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3 },
     motion: 'automotive',
+    accelPattern: 'automotive',
     subsurface: false,
     arvlCd: 99,
     line: '7',

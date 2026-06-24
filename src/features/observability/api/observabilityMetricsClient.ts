@@ -16,11 +16,21 @@ export interface ObservabilityMetricsBucket {
   ratio: number;
 }
 
+/** #1769 — accelerometer pattern 4종 분포 (count + ratio). */
+export interface AccelPatternBucket {
+  automotive: { count: number; ratio: number };
+  walking: { count: number; ratio: number };
+  stationary: { count: number; ratio: number };
+  unknown: { count: number; ratio: number };
+}
+
 export interface ObservabilityMetrics {
   accuracyRatio: ObservabilityMetricsBucket;
   silentPushDeliveryRatio: ObservabilityMetricsBucket;
   locklessMissRatio: ObservabilityMetricsBucket;
   boardableMissRatio: ObservabilityMetricsBucket;
+  /** #1769 — accelerometer pattern 4종 분포 (24h rolling window). */
+  accelPatternHitRatio: AccelPatternBucket;
   window: '24h';
   timestamp: number;
 }

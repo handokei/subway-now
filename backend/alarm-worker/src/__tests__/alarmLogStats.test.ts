@@ -336,4 +336,68 @@ describe('computeAlarmLogStats', () => {
     expect(stats.sources['']).toBeUndefined();
     expect(stats.reasons['']).toBeUndefined();
   });
+
+  // ── #1769 accelPatternCounts ─────────────────────────────────────────────────
+
+  it('#1769 — accel-pattern-observed entries → accelPatternCounts 집계', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/accel-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'automotive' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'automotive' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'walking' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'stationary' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'unknown' },
+            { source: 'fg', outcome: 'fired' }, // 다른 source → accelPattern 집계 제외
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.accelPatternCounts.automotive).toBe(2);
+    expect(stats.accelPatternCounts.walking).toBe(1);
+    expect(stats.accelPatternCounts.stationary).toBe(1);
+    expect(stats.accelPatternCounts.unknown).toBe(1);
+  });
+
+  it('#1769 — accel-pattern-observed entries 없으면 accelPatternCounts 모두 0', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/no-accel-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [{ source: 'fg', outcome: 'fired' }],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.accelPatternCounts).toEqual({ automotive: 0, walking: 0, stationary: 0, unknown: 0 });
+  });
+
+  it('#1769 — 알 수 없는 stationName은 accelPatternCounts에 포함 안 됨', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/invalid-accel-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'invalid-pattern' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'automotive' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.accelPatternCounts.automotive).toBe(1);
+    // 'invalid-pattern'은 포함되지 않아야 하므로 나머지 합계는 1
+    const total = stats.accelPatternCounts.automotive + stats.accelPatternCounts.walking +
+      stats.accelPatternCounts.stationary + stats.accelPatternCounts.unknown;
+    expect(total).toBe(1);
+  });
 });
