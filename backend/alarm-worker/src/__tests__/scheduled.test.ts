@@ -946,152 +946,20 @@ describe('runScheduled', () => {
         expect(stored.waypoints[0].stationName).toBe('강남');
       });
 
-      // trainCode 바인딩: 9단 게이트 통과(이동 + 단일 후보) → lock 부착, 이번 cycle은 station-passed
-      // 발사 안 함(다음 cron 사이클이 lock 경로로 *그 trainCode*만 추적 — lockless 안정성 핵심).
-      function geoLocklessTrip(overrides: Partial<Trip> = {}): Trip {
-        return makeTrip({
-          waypoints: [
-            { stationName: '역삼', line: '2', kind: 'intermediate' },
-            { stationName: '선릉', line: '2', kind: 'destination' },
-          ],
-          infoModeEnabled: true,
-          promptGeoContext: {
-            origin: { lat: 0, lng: 0 },
-            nextStation: { lat: 0, lng: 0.01 },
-            direction: 'up',
-          },
-          promptDisplay: { originStation: '강남', line: '2' },
-          ...overrides,
-        });
-      }
+      // #1729 paradigm shift — maybeBindLocklessTrainCode(Path B') 제거.
+      // lockless trip은 bare-arvlCd 경로만 사용. 이동 + ARRIVED/ENTERING → station-passed 발사.
+      // promptGeoContext / autoLock 관련 테스트 제거됨.
 
-      it('이동 + 단일 후보 trainCode → auto-lock 부착 + 이번 cycle 발사 안 함', async () => {
-        const { kv, stats, apnsFetch } = await runLocklessCycle({
-          trip: geoLocklessTrip(),
-          arrivals: [ARVL_ARRIVED], // trainCode=7246 단일 후보, arvlCd=ARRIVED.
-          apnsOk: false,
-          motion: 'automotive',
-        });
-        expect(stats.autoLockSuccess).toBe(1);
-        expect(stats.locklessIntermediateFired).toBe(0);
-        expect(apnsFetch).not.toHaveBeenCalled();
-        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
-        expect(stored.boardingLock?.trainCode).toBe('7246');
-        expect(stored.boardingLock?.autoLockedAt).toBe(NOW);
-        // 바인딩만 — waypoint는 아직 advance 안 함(다음 cycle lock 경로가 처리).
-        expect(stored.waypoints[0].stationName).toBe('역삼');
-      });
-
-      it('바인딩된 trainCode의 ARRIVED → 다음 cycle lock 경로(runTrainCodeTracking)가 그 열차로 추적', async () => {
-        // 1 cycle: 바인딩. 2 cycle: lock 활성 → trainCode 매칭 도착 시 매역 fire.
-        const kv = new InMemoryKV();
-        await putTrip(kv as unknown as KVNamespace, geoLocklessTrip());
-        await seedHappyGateSeries(kv, 'tok');
-        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
-        const deps = {
-          seoul: makeSeoul([ARVL_ARRIVED]),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: apnsFetch as unknown as typeof fetch,
-          now: () => NOW,
-        };
-        const first = await runScheduled(makeEnv(kv), deps);
-        expect(first.autoLockSuccess).toBe(1);
-        const second = await runScheduled(makeEnv(kv), deps);
-        // lock 활성이므로 lockMissing/lockless 경로가 아니라 trainCode 추적 경로로 polled.
-        expect(second.polled).toBe(1);
-        expect(second.lockMissing).toBe(0);
-        // trainCode=7246의 ARRIVED → 매역 arvlCd fire (lock 경로 SSOT).
-        expect(second.arvlCdFireSuccess).toBe(1);
-      });
-
-      it('promptGeoContext 부재면 바인딩 시도 안 함 → 이동 시 기존 bare-arvlCd 발사 유지', async () => {
-        const { stats } = await runLocklessCycle({
-          trip: intermediateTrip(), // geo 컨텍스트 없음.
-          arrivals: [ARVL_ARRIVED],
-          apnsOk: true,
-          motion: 'automotive',
-        });
-        expect(stats.autoLockSuccess).toBe(0);
-        expect(stats.locklessIntermediateFired).toBe(1);
-      });
-
-      it('geo 있음 + 9단 게이트 실패(정적) → 바인딩 안 함 + motion 게이트로 보류', async () => {
+      it('이동 + ARRIVED → bare-arvlCd station-passed 발사 (auto-lock 없음)', async () => {
         const { stats, apnsFetch } = await runLocklessCycle({
-          trip: geoLocklessTrip(),
+          trip: intermediateTrip(),
           arrivals: [ARVL_ARRIVED],
-          apnsOk: false,
-          motion: 'stationary', // 게이트 #8 motion-not-moving로 차단.
-        });
-        expect(stats.autoLockSuccess).toBe(0);
-        expect(stats.locklessIntermediateFired).toBe(0);
-        expect(stats.locklessMotionGateBlocked).toBe(1);
-        expect(apnsFetch).not.toHaveBeenCalled();
-      });
-
-      it('geo 있음 + 게이트 통과 + 후보 ambiguity → 바인딩 null, 이동이므로 bare-arvlCd 발사', async () => {
-        // 같은 방향(up) line-2 ARRIVED 후보 2개 → pickAutoTrainCode ambiguity → autoLock null.
-        const { stats } = await runLocklessCycle({
-          trip: geoLocklessTrip(),
-          arrivals: [
-            { ...ARVL_ARRIVED, trainCode: 'A1' },
-            { ...ARVL_ARRIVED, trainCode: 'A2' },
-          ],
           apnsOk: true,
           motion: 'automotive',
         });
-        expect(stats.autoLockSuccess).toBe(0);
+        expect(stats.autoLockSuccess).toBe(0); // paradigm shift: auto-lock 없음
         expect(stats.locklessIntermediateFired).toBe(1);
-      });
-
-      it('arvlCd=2(출발) 단일 후보 + origin 확인 → confidence trace를 TELEMETRY에 적재', async () => {
-        // RC1 confidence gate(arvlCd=2 branch) 평가 → trace set → recordAutoLockConfidence 호출.
-        const kv = new InMemoryKV();
-        await putTrip(kv as unknown as KVNamespace, geoLocklessTrip());
-        await seedHappyGateSeries(kv, 'tok');
-        // 역삼(next-waypoint): T2 arvlCd=2(출발). 강남(origin): 동일 T2 → confidence +2 → 통과.
-        const seoul = new SeoulArrivalClient({
-          apiKey: 'K',
-          host: 'h',
-          now: () => NOW,
-          fetchImpl: (async (url: string) => {
-            const station = decodeURIComponent(url).includes('강남') ? '강남' : '역삼';
-            return new Response(
-              JSON.stringify({
-                realtimeArrivalList: [
-                  {
-                    barvlDt: '30',
-                    recptnDt: '',
-                    updnLine: '상행',
-                    trainLineNm: station,
-                    btrainNo: 'T2',
-                    subwayNm: '지하철2호선',
-                    arvlCd: 2,
-                  },
-                ],
-              }),
-              { status: 200 },
-            );
-          }) as unknown as typeof fetch,
-        });
-        const points: { blobs?: string[]; doubles?: number[] }[] = [];
-        const env: Env = {
-          ...makeEnv(kv),
-          TELEMETRY: { writeDataPoint: (p) => points.push(p) },
-        };
-        const stats = await runScheduled(env, {
-          seoul,
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-          now: () => NOW,
-        });
-        expect(stats.autoLockSuccess).toBe(1);
-        // autoLockConfidenceBreakdown histogram이 적재됐는지(=recordAutoLockConfidence 호출) 확인.
-        const confidencePoints = points.filter((p) =>
-          p.blobs?.some((b) => b.includes('autoLockConfidenceBreakdown')),
-        );
-        expect(confidencePoints.length).toBeGreaterThan(0);
+        expect(apnsFetch).toHaveBeenCalled();
       });
     });
   });
@@ -4769,11 +4637,11 @@ function arrivalListResponse(rows: RawArrivalRowInput[]): Response {
 /**
  * #902 Seam F — 환승 자동 trainCode swap 통합 테스트.
  *
- * 시나리오: 7호선 trainCode "7327"으로 건대입구(transfer) ARRIVED → lock 해제 + 다음 cycle
- * 안에 같은 polling으로 2호선 성수 arrivals에서 후보 trainCode "2227"을 자동 attach.
- * 옛 동작: lock 비어있는 다음 cycle이 boarding-prompt 경로로 떨어져 사용자가 manual 선택 필요.
+ * #1729 paradigm shift — 환승 직후 자동 swap 제거(Path B' 환승 버전).
+ * 환승 시 lock 해제 후 다음 cron cycle이 lockMissing → boardingPrompt push 발사.
+ * 사용자가 BoardingTrainList에서 명시 탭해야 lock 부착.
  */
-describe('runScheduled — Seam F 환승 자동 swap (#902)', () => {
+describe('runScheduled — Seam F 환승 자동 swap (#902) → #1729 paradigm', () => {
   /** transfer→destination waypoints + line 7 boardingLock(건대입구로 ARRIVED 예정)의 trip 빌더. */
   function makeTransferTrip(overrides: Partial<Trip> = {}): Trip {
     return makeTrip({
@@ -4795,10 +4663,6 @@ describe('runScheduled — Seam F 환승 자동 swap (#902)', () => {
     });
   }
 
-  /**
-   * 라인별 응답 분기 fetch — 7호선 건대입구는 ARRIVED, 2호선 성수는 후보 1개(2227 arvlCd=1).
-   * Seoul API URL은 stationName query를 포함 — encode된 stationName으로 분기.
-   */
   function makeTransferSeoul(): SeoulArrivalClient {
     return new SeoulArrivalClient({
       apiKey: 'K',
@@ -4806,13 +4670,11 @@ describe('runScheduled — Seam F 환승 자동 swap (#902)', () => {
       now: () => NOW,
       fetchImpl: (async (url: string) => {
         if (url.includes(encodeURIComponent('건대입구'))) {
-          // 7호선 trainCode 7327이 건대입구에 ARRIVED(arvlCd=1).
           return arrivalListResponse([
             { trainCode: '7327', arrivalSeconds: 0, arvlCd: 1, subwayNm: '지하철7호선' },
           ]);
         }
         if (url.includes(encodeURIComponent('성수'))) {
-          // 2호선 성수: 후보 trainCode 2227 ARRIVED 1대만 → pickAutoTrainCode 1순위로 결정.
           return arrivalListResponse([
             { trainCode: '2227', arrivalSeconds: 60, arvlCd: 1, subwayNm: '지하철2호선', destination: '성수' },
           ]);
@@ -4822,31 +4684,26 @@ describe('runScheduled — Seam F 환승 자동 swap (#902)', () => {
     });
   }
 
-  it('attaches new trainCode on transfer release within the same cycle', async () => {
+  // #1729: 환승 직후 자동 swap X. 다음 cycle boardingPrompt fallback.
+  it('transfer release 후 lock은 undefined — boardingPrompt fallback 경로', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTransferTrip());
     const fetchImpl = makeOkFetch();
     await runLaScheduled(kv, { seoul: makeTransferSeoul(), fetchImpl });
 
-    // trip은 KV에 남아 있어야 한다 (transfer는 trip 종료가 아님).
     const raw = await kv.get('trip:transfer-tok');
     expect(raw).not.toBeNull();
     const stored = JSON.parse(raw as string) as Trip;
     // waypoint shift: 건대입구 제거 → 첫 waypoint=성수
     expect(stored.waypoints[0].stationName).toBe('성수');
     expect(stored.waypoints[0].line).toBe('2');
-    // 자동 swap된 lock: trainCode 2227 + line 2 + segmentStations=[성수]
-    expect(stored.boardingLock).toBeDefined();
-    expect(stored.boardingLock?.trainCode).toBe('2227');
-    expect(stored.boardingLock?.line).toBe('2');
-    expect(stored.boardingLock?.subwayId).toBe('1002');
-    expect(stored.boardingLock?.segmentStations).toEqual(['성수']);
+    // #1729 paradigm: 자동 swap 없음 → boardingLock undefined (다음 cycle에서 boardingPrompt push)
+    expect(stored.boardingLock).toBeUndefined();
   });
 
-  it('leaves lock undefined when no candidate matches (boarding-prompt fallback path)', async () => {
+  it('candidates 없어도 동일 — transfer 후 lock undefined, boardingPrompt fallback', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTransferTrip());
-    // 7호선 건대입구는 ARRIVED 정상, 2호선 성수는 빈 응답 → swap 실패 → 기존 lockMissing 흐름.
     const seoul = new SeoulArrivalClient({
       apiKey: 'K',
       host: 'h',
@@ -4949,15 +4806,14 @@ describe('runScheduled — Seam F 사라짐 후 재attach (#902)', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// #916 A1 — auto-lock 통합 (evaluateAndMaybeFireBoardingPrompt 분기)
+// #1729 paradigm shift — Path B (attemptAutoLock) 제거.
+// 9단 게이트 통과 시 boardingPrompt push 항상 발사. autoLockSuccess는 항상 0.
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('runScheduled — #916 A1 auto-lock', () => {
-  // 모듈 레벨 makePromptTrip / seedHappyGateSeries 재사용 (boarding-prompt / kalman 테스트와 공통).
+describe('runScheduled — #916 A1 → #1729 paradigm: 9단 통과 = boardingPrompt push 항상', () => {
   const seedHappySeries = (kv: InMemoryKV, token: string) => seedHappyGateSeries(kv, token);
 
-  // 4 tests 공통 setup. 9단 게이트 통과 trip 시드 + GPS series + runScheduled 실행.
-  async function runAutoLockCron(opts: {
+  async function runPromptCron(opts: {
     kv: InMemoryKV;
     token: string;
     arrivals: ArrivalEntry[];
@@ -4981,66 +4837,34 @@ describe('runScheduled — #916 A1 auto-lock', () => {
     return { stats, fetchImpl };
   }
 
-  // 9단 게이트 통과 시점에 backend가 arvlCd=2 단일 후보로 trainCode를 결정 → 자동 lock 부착.
-  it('9단 통과 + arrivals 단일 후보 → auto-lock 성공, boardingPrompt push 미발사', async () => {
+  // #1729: 단일 후보여도 auto-lock X. boardingPrompt push 발사.
+  it('9단 통과 + arrivals 단일 후보 → auto-lock 없음, boardingPrompt push 발사', async () => {
     const kv = new InMemoryKV();
-    const token = 'auto-lock-tok';
-    const { stats, fetchImpl } = await runAutoLockCron({
+    const token = 'prompt-tok';
+    const { stats, fetchImpl } = await runPromptCron({
       kv,
       token,
       arrivals: [
-        { destination: '선릉', arrivalSeconds: 60, trainCode: 'AUTO-T1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+        { destination: '선릉', arrivalSeconds: 60, trainCode: 'T1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
       ],
     });
 
-    expect(stats.autoLockSuccess).toBe(1);
-    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.autoLockSuccess).toBe(0); // paradigm shift: auto-lock X
+    expect(stats.boardingPromptFired).toBe(1);
     expect(stats.boardingPromptEvaluated).toBe(1);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalled(); // boardingPrompt push 발사됨
 
     const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
-    expect(stored.boardingLock?.trainCode).toBe('AUTO-T1');
-    expect(stored.boardingLock?.segmentStations).toEqual(['강남', '역삼', '선릉']);
-    expect(stored.boardingPromptState?.fired).toBe(true);
-    expect(stored.consecutiveEtaMissing).toBe(0);
-  });
-
-  // ambiguity면 자동 lock 안 함 → 기존 boarding-prompt push fallback.
-  it('arvlCd 우선순위 ambiguity → auto-lock 실패 → boarding-prompt push 발사', async () => {
-    const kv = new InMemoryKV();
-    const token = 'auto-amb-tok';
-    const { stats } = await runAutoLockCron({
-      kv,
-      token,
-      pushId: 'amb-1',
-      arrivals: [
-        { destination: 'A', arrivalSeconds: 60, trainCode: 'X1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-        { destination: 'B', arrivalSeconds: 90, trainCode: 'X2', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-      ],
-    });
-
-    expect(stats.autoLockSuccess).toBe(0);
-    expect(stats.boardingPromptFired).toBe(1);
-
-    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
-    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.boardingLock).toBeUndefined(); // 사용자 명시 탭 전까지 lock 없음
     expect(stored.boardingPromptState?.fired).toBe(true);
   });
 
-  // arrivals 비어있어도 9단 통과(arrivals API와 promptGeoContext는 독립) → auto-lock skip → fallback.
-  it('arrivals 비어있음 → auto-lock 실패 → boarding-prompt push 발사', async () => {
+  // 게이트 차단 → boardingPrompt 미발사
+  it('게이트 차단(window-too-small) → boardingPrompt 미발사', async () => {
     const kv = new InMemoryKV();
-    const { stats } = await runAutoLockCron({ kv, token: 'auto-empty-tok', arrivals: [], pushId: 'empty-1' });
-    expect(stats.autoLockSuccess).toBe(0);
-    expect(stats.boardingPromptFired).toBe(1);
-  });
-
-  // 9단 게이트 차단 → auto-lock 자체에 진입하지 않음.
-  it('게이트 차단(window-too-small) → auto-lock 미시도', async () => {
-    const kv = new InMemoryKV();
-    const { stats } = await runAutoLockCron({
+    const { stats } = await runPromptCron({
       kv,
-      token: 'auto-gate-block',
+      token: 'gate-block',
       seedSeries: false, // series 미시드 → window-too-small 게이트 차단
       pushId: 'gate-1',
       arrivals: [
@@ -5052,10 +4876,10 @@ describe('runScheduled — #916 A1 auto-lock', () => {
     expect(stats.boardingPromptFired).toBe(0);
   });
 
-  // 이미 fired 상태(같은 trip 재호출)면 게이트 #9가 차단하므로 auto-lock 미시도.
-  it('boardingPromptState.fired=true → 게이트 #9 차단으로 auto-lock 미시도', async () => {
+  // 이미 fired 상태면 게이트 #9가 차단
+  it('boardingPromptState.fired=true → 게이트 #9 차단으로 boardingPrompt 미발사', async () => {
     const kv = new InMemoryKV();
-    const token = 'auto-fired';
+    const token = 'already-fired';
     await putTrip(
       kv as unknown as KVNamespace,
       makePromptTrip({
@@ -5080,48 +4904,11 @@ describe('runScheduled — #916 A1 auto-lock', () => {
     expect(stats.autoLockSuccess).toBe(0);
     expect(stats.boardingPromptBlocked).toBe(1);
   });
-
-  // 다음 cycle에서 client가 다른 lock을 등록하면 #864/#704 분기로 자연 교체된다.
-  // (본 PR에서는 그 분기 자체는 변경하지 않으므로 회귀 보존만 확인)
-  it('auto-lock 성공한 trip에 client가 다른 trainCode lock POST → 새 lock으로 교체', async () => {
-    const kv = new InMemoryKV();
-    const token = 'auto-swap';
-    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
-    await seedHappySeries(kv, token);
-    const fetchImpl1 = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-
-    // 1st cycle: auto-lock 부착
-    await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([
-        { destination: '선릉', arrivalSeconds: 60, trainCode: 'AUTO-X', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-      ]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      now: () => NOW,
-      fetchImpl: fetchImpl1,
-      generatePushId: () => 'auto-x',
-    });
-    const afterAuto = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
-    expect(afterAuto.boardingLock?.trainCode).toBe('AUTO-X');
-
-    // client가 다른 trainCode로 새 lock 등록 — putTrip으로 직접 시뮬레이션.
-    const userChosen = {
-      ...afterAuto,
-      boardingLock: {
-        ...afterAuto.boardingLock!,
-        trainCode: 'USER-Y',
-      },
-    };
-    await putTrip(kv as unknown as KVNamespace, userChosen);
-
-    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
-    expect(stored.boardingLock?.trainCode).toBe('USER-Y');
-  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// #916 follow-up B — fired+clear 분기 회복. auto-lock 후 lock이 클리어돼 lockMissing으로
-// 돌아온 trip의 auto-prompt 재발사를 `lastAutoPromptedAt` 윈도우로 차단.
+// #916 follow-up B — lastAutoPromptedAt dedup.
+// #1729 paradigm shift: auto-lock 제거로 이제 boardingPrompt push 발사가 마커를 stamp.
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
@@ -5145,7 +4932,8 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
     });
   }
 
-  it('auto-lock 성공 시 lastAutoPromptedAt이 stamp된다', async () => {
+  // #1729: boardingPrompt push 발사 시 lastAutoPromptedAt stamp
+  it('boardingPrompt push 발사 시 lastAutoPromptedAt이 stamp된다', async () => {
     const kv = new InMemoryKV();
     const token = 'fub-stamp';
     await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
@@ -5153,31 +4941,16 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
     const stats = await runOneCycle(kv, [
       { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
     ]);
-    expect(stats.autoLockSuccess).toBe(1);
-    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
-    expect(stored.lastAutoPromptedAt).toBe(NOW);
-  });
-
-  it('prompt push 발사 시에도 lastAutoPromptedAt stamp (auto-lock 실패 fallback)', async () => {
-    const kv = new InMemoryKV();
-    const token = 'fub-stamp-push';
-    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
-    await seedHappySeries(kv, token);
-    // ambiguity → auto-lock 실패 → push 발사 path
-    const stats = await runOneCycle(kv, [
-      { destination: 'A', arrivalSeconds: 60, trainCode: 'X1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-      { destination: 'B', arrivalSeconds: 90, trainCode: 'X2', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-    ]);
+    expect(stats.autoLockSuccess).toBe(0); // paradigm shift: auto-lock X
     expect(stats.boardingPromptFired).toBe(1);
     const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
     expect(stored.lastAutoPromptedAt).toBe(NOW);
   });
 
-  it('lastAutoPromptedAt 윈도우 안(=lock 클리어된 직후) → 재평가 자체 차단 (dedup)', async () => {
+  it('lastAutoPromptedAt 윈도우 안(=push 직후) → 재평가 자체 차단 (dedup)', async () => {
     const kv = new InMemoryKV();
     const token = 'fub-dedup';
-    // 시뮬레이션: 직전 cycle에서 auto-prompt가 발사된 trip이 lock 클리어 + boardingPromptState도
-    // 외부 분기(isSameSession=false)로 리셋된 상태로 lockMissing으로 돌아왔다.
+    // 시뮬레이션: 직전 cycle에서 boardingPrompt push 발사 후 lock 클리어 + boardingPromptState 리셋.
     await putTrip(
       kv as unknown as KVNamespace,
       makePromptTrip({
@@ -5201,7 +4974,7 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
     expect(stored.boardingLock).toBeUndefined();
   });
 
-  it('lastAutoPromptedAt 윈도우 밖 → 정상 평가 (새 trip 효과)', async () => {
+  it('lastAutoPromptedAt 윈도우 밖 → 정상 평가 + boardingPrompt push 발사', async () => {
     const kv = new InMemoryKV();
     const token = 'fub-window-expired';
     await putTrip(
@@ -5217,7 +4990,8 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
       { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
     ]);
     expect(stats.boardingPromptAutoDeduped).toBe(0);
-    expect(stats.autoLockSuccess).toBe(1);
+    expect(stats.autoLockSuccess).toBe(0); // paradigm shift
+    expect(stats.boardingPromptFired).toBe(1);
     const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
     // 새 발사로 마커 갱신.
     expect(stored.lastAutoPromptedAt).toBe(NOW);
