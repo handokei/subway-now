@@ -1457,6 +1457,12 @@ export function useFusedNearestStation(
   // 정적 판정이라 trainProgressing 우회와 모순되지 않게, 강등 *입력*으로 미리 판정.
   // (모순 회피: trainProgressing=true → shouldDowngradeFusion=false → 강등 X.
   //  trainProgressing=false → 기존 정책 그대로 동작.)
+  //
+  // #1808 — 시간 적분 strategy(lockless-route-hop / default-hop / reanchored-hop) 활성 시
+  // trainProgressing=false 강제. 실측 신호 없이 시간 적분만 active일 때 GPS 좌표 jitter로
+  // arc idx가 advance하면 trainProgressing=true가 되어 motion-stationary 가드가 우회 →
+  // ADR-014 §4 위반(fire path 진입). 실관측(boarding-lock / backend-ssot / position-train /
+  // wifi-ssid / fused / route-progress) 기반 advance만 trainProgressing=true 허용.
   const currentResultArcIdx =
     result != null && arcStations.length > 0
       ? arcIndexOfStation(arcStations, result.station)
@@ -1464,6 +1470,7 @@ export function useFusedNearestStation(
   const prevArcIdxRef = useRef<number>(-1);
   const prevArcKeyForProgressRef = useRef<string | null>(null);
   const trainProgressing =
+    !estimatorIsTimeIntegration &&
     arcStations.length > 0 &&
     arcKey === prevArcKeyForProgressRef.current &&
     prevArcIdxRef.current !== -1 &&

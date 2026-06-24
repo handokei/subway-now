@@ -6,7 +6,7 @@
 /**
  * useFusedNearestStation fusion 통합 테스트.
  *
- * 두 시나리오를 한 파일에 묶음 (mock 블록 중복 제거 — SonarCloud CPD 6.2% → 0).
+ * 세 시나리오를 한 파일에 묶음 (mock 블록 중복 제거 — SonarCloud CPD 6.2% → 0).
  *
  * 1) #1401 (Epic #1396 sub 5/6) — trainProgressing 신호 검증.
  *    arc 위 fusion result.station idx가 prev → cur로 증가했는지(forward-only) 호출자에게 export.
@@ -19,6 +19,10 @@
  * 2) #1015 — fusion forward-only 검증.
  *    boardingLock + arc(arcStations) 활성 시 positionTrainResult의 station이
  *    boarding index보다 backward(이전)면 null 반환 → fusion이 GPS fallback으로 내려가는지 검증.
+ *
+ * 3) #1808 (ADR-014 §4) — lockless-route-hop 시간 적분 활성 시 trainProgressing=false 강제.
+ *    실측 신호 없이 시간 적분만 active일 때 GPS jitter arc advance가 trainProgressing=true로
+ *    motion-stationary 가드를 우회하는 회귀 차단.
  *
  * positionTrainResult / fusionDistanceGate / pickFusedStation / trackTrainProgress를 mock해
  * 시나리오별 station만 격리.
@@ -44,7 +48,7 @@ jest.mock('../../../arrival/utils/pickCandidateTrains', () => ({
 jest.mock('../../../route/utils/stationProgressEstimator', () => ({
   arcIndexOfStation: jest.requireActual('../../../route/utils/stationProgressEstimator')
     .arcIndexOfStation,
-  estimateStationProgress: () => null,
+  estimateStationProgress: jest.fn().mockReturnValue(null),
 }));
 jest.mock('../../../route/utils/routeProgress', () => ({
   computeRouteArc: jest.fn(),
@@ -64,6 +68,7 @@ import { findActiveLines } from '../../../route/utils/findActiveLines';
 import { trackTrainProgress } from '../../../route/utils/trackTrainProgress';
 import { pickCandidateTrains } from '../../../arrival/utils/pickCandidateTrains';
 import { computeRouteArc } from '../../../route/utils/routeProgress';
+import { estimateStationProgress } from '../../../route/utils/stationProgressEstimator';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeArcFixture, makeArcGpsBase, makeTrainProgressFor } from '../../../../testUtils/arcTestFixtures';
@@ -76,6 +81,7 @@ const mockFindLines = findActiveLines as jest.Mock;
 const mockTrackProgress = trackTrainProgress as jest.Mock;
 const mockPickCandidates = pickCandidateTrains as jest.Mock;
 const mockComputeRouteArc = computeRouteArc as jest.Mock;
+const mockEstimateStationProgress = estimateStationProgress as jest.Mock;
 
 /**
  * arc: [역A(idx=0, 탑승역), 역B(idx=1), 역C(idx=2)]
@@ -416,5 +422,113 @@ describe('useFusedNearestStation — #1015 forward-only 검증', () => {
       // boardingIdx=-1 → 가드 조건 미충족 → position-train 또는 boarding-lock 채택
       expect(['position-train', 'boarding-lock']).toContain(result.current.source);
     });
+  });
+});
+
+/**
+ * #1808 (ADR-014 §4) — lockless-route-hop 시간 적분 활성 시 trainProgressing=false 강제.
+ *
+ * 시나리오 (2026-06-25 03:17 evidence):
+ *   - 사용자 정지 (motion=stationary) trip
+ *   - 실측 신호 없음 (boarding-lock / backend-ssot / position-train / wifi-ssid 모두 null)
+ *   - estimator strategy = 'lockless-route-hop' (시간 적분)
+ *   - GPS 좌표 jitter → arc idx advance → 기존 코드 trainProgressing=true
+ *   - motion-stationary 가드 우회 → station-passed false fire (X1 위반)
+ *
+ * Fix: estimatorIsTimeIntegration=true이면 trainProgressing=false 강제.
+ * 실관측(boarding-lock / backend-ssot / position-train / wifi-ssid / fused / route-progress)
+ * 기반 advance만 trainProgressing=true 허용.
+ */
+describe('useFusedNearestStation — #1808 lockless-route-hop 시 trainProgressing 억제', () => {
+  const { ARC_STATIONS: LRH_ARC_STATIONS, routeContext: lrhRouteContext } = makeArcFixture('lrh-', 0);
+  const [LRH_STATION_A, LRH_STATION_B] = LRH_ARC_STATIONS;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // GPS — arc idx=0(A)에 머뭄. 실측 신호 없음(position-train null).
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.0 } });
+    mockFindTop.mockReturnValue([{ station: LRH_STATION_A, distanceKm: 0.05 }]);
+    mockFindLines.mockReturnValue(['2']);
+    mockUseArrival.mockReturnValue({ arrival: null, loading: false, isMock: false });
+    mockUsePositions.mockReturnValue({ positions: null, loading: false, isMock: false });
+    mockPickCandidates.mockReturnValue([]);
+    mockTrackProgress.mockReturnValue(null);
+    mockComputeRouteArc.mockReturnValue({ stations: LRH_ARC_STATIONS });
+    // estimator: null(기본 값) — 각 케이스에서 override.
+    mockEstimateStationProgress.mockReturnValue(null);
+  });
+
+  it('lockless-route-hop 활성 시 GPS result advance 있어도 trainProgressing=false', () => {
+    // 첫 tick: estimator null, GPS=A.
+    const { result, rerender } = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, lrhRouteContext, null, null),
+    );
+    expect(result.current.trainProgressing).toBe(false);
+
+    // 두번째 tick: estimator=lockless-route-hop(B), GPS도 B로 advance.
+    // 기존 코드: trainProgressing=true → motion-stationary 우회 가능. Fix 후: false.
+    mockEstimateStationProgress.mockReturnValue({
+      station: LRH_STATION_B,
+      index: 1,
+      strategy: 'lockless-route-hop',
+    });
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.05 } });
+    mockFindTop.mockReturnValue([{ station: LRH_STATION_B, distanceKm: 0.05 }]);
+    act(() => { rerender({}); });
+
+    // estimatorIsTimeIntegration=true → trainProgressing 강제 false (ADR-014 §4).
+    expect(result.current.trainProgressing).toBe(false);
+  });
+
+  it('default-hop 활성 시에도 trainProgressing=false', () => {
+    const { result, rerender } = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, lrhRouteContext, null, null),
+    );
+    expect(result.current.trainProgressing).toBe(false);
+
+    mockEstimateStationProgress.mockReturnValue({
+      station: LRH_STATION_B,
+      index: 1,
+      strategy: 'default-hop',
+    });
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.05 } });
+    mockFindTop.mockReturnValue([{ station: LRH_STATION_B, distanceKm: 0.05 }]);
+    act(() => { rerender({}); });
+
+    expect(result.current.trainProgressing).toBe(false);
+  });
+
+  it('estimator null(시간 적분 비활성)이면 position-train arc advance → trainProgressing=true 유지', () => {
+    // estimator=null → estimatorIsTimeIntegration=false → position-train advance → trainProgressing=true.
+    // reanchored-hop/default-hop 미활성 상태에서 실관측(position-train) advance는 허용.
+    const { LRH_BOARDING_LOCK } = (() => ({
+      LRH_BOARDING_LOCK: {
+        destinationId: 'dest-lrh',
+        trainCode: 'T-LRH',
+        boardingStationId: LRH_STATION_A.id,
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 1_800_000,
+      },
+    }))();
+
+    // 첫 tick: position-train = A.
+    mockTrackProgress.mockReturnValue({ trainNo: 'T-LRH', currentStation: LRH_STATION_A, trainStatus: 1, confidence: 'single' });
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.0 } });
+    mockFindTop.mockReturnValue([{ station: LRH_STATION_A, distanceKm: 0.05 }]);
+    // estimator null — isTimeIntegration=false.
+
+    const { result, rerender } = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, lrhRouteContext, 'T-LRH', LRH_BOARDING_LOCK),
+    );
+    expect(result.current.trainProgressing).toBe(false);
+
+    // 두번째 tick: position-train = B → result advance → trainProgressing=true.
+    mockTrackProgress.mockReturnValue({ trainNo: 'T-LRH', currentStation: LRH_STATION_B, trainStatus: 1, confidence: 'single' });
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.05 } });
+    act(() => { rerender({}); });
+
+    // estimator null(isTimeIntegration=false) → 실관측 advance → trainProgressing=true 정상.
+    expect(result.current.trainProgressing).toBe(true);
   });
 });
