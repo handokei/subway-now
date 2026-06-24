@@ -86,6 +86,7 @@ function makeSuccessResult(
   boardableValue = 0,
   boardableTotal = 0,
   accelPattern: observabilityClient.AccelPatternBucket = DEFAULT_ACCEL_PATTERN,
+  pushLatency: { p50: number; p95: number; totalSamples: number } | null = null,
 ): observabilityClient.FetchMetricsResult {
   return {
     kind: 'ok',
@@ -95,6 +96,7 @@ function makeSuccessResult(
       locklessMissRatio: { value: locklessValue, total: locklessTotal, ratio: locklessValue / locklessTotal },
       boardableMissRatio: { value: boardableValue, total: boardableTotal, ratio: boardableTotal === 0 ? 0 : boardableValue / boardableTotal },
       accelPatternHitRatio: accelPattern,
+      silentPushLatency: pushLatency,
       window: '24h',
       timestamp: 1_700_000_000_000,
     },
@@ -381,6 +383,45 @@ describe('OperationDashboardSection', () => {
       await act(async () => { jest.runAllTimers(); });
       await waitFor(() => {
         expect(screen.getByTestId('accel-pattern-na')).toBeTruthy();
+      });
+    });
+  });
+
+  // ── #1772 Push Latency section ────────────────────────────────────────────────
+
+  describe('#1772 — pushLatency section', () => {
+    it('backend 미수신 상태에서 pushLatency row가 렌더되며 (no data) 표시', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      expect(screen.getByTestId('operation-metric-pushLatency')).toBeTruthy();
+      expect(screen.getByTestId('push-latency-na')).toBeTruthy();
+    });
+
+    it('fetch 성공 but silentPushLatency=null → (no samples yet) 표시', async () => {
+      mockFetchMetrics.mockResolvedValue(makeSuccessResult(2, 10, 0, 0, DEFAULT_ACCEL_PATTERN, null));
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('push-latency-empty')).toBeTruthy();
+      });
+    });
+
+    it('fetch 성공 + silentPushLatency 있음 → p50/p95/n 표시', async () => {
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(2, 10, 0, 0, DEFAULT_ACCEL_PATTERN, { p50: 350, p95: 800, totalSamples: 42 }),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('push-latency-values')).toBeTruthy();
+      });
+    });
+
+    it('unconfigured 상태에서 pushLatency row (no data) 유지', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('push-latency-na')).toBeTruthy();
       });
     });
   });

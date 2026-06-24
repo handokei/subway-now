@@ -174,7 +174,7 @@ describe('pendingPushes (#566 P2a)', () => {
     it('token 매칭 시 stamp 적재 + pending entry는 보존 + stamped=true', async () => {
       await putPending(
         kv as unknown as KVNamespace,
-        makeEntry({ pushId: 'p1', token: 'devicetoken-hex', stationName: '강남', phase: 'early' }),
+        makeEntry({ pushId: 'p1', token: 'devicetoken-hex', stationName: '강남', phase: 'early', sentAt: 1_700_000_000_000 }),
       );
       const result = await stampReceived(
         kv as unknown as KVNamespace,
@@ -186,11 +186,13 @@ describe('pendingPushes (#566 P2a)', () => {
       expect(kv.store.has('pending:p1')).toBe(true);
       const entry = kv.store.get('received:p1');
       expect(entry).toBeDefined();
-      const parsed = JSON.parse(entry!.value) as { pushId: string; receivedAt: number; stationName: string; phase: string };
+      const parsed = JSON.parse(entry!.value) as { pushId: string; receivedAt: number; stationName: string; phase: string; latencyMs: number };
       expect(parsed.pushId).toBe('p1');
       expect(parsed.receivedAt).toBe(1_700_000_001_000);
       expect(parsed.stationName).toBe('강남');
       expect(parsed.phase).toBe('early');
+      // #1772 — latencyMs fallback: receivedAt(1_700_000_001_000) - sentAt(1_700_000_000_000) = 1000.
+      expect(parsed.latencyMs).toBe(1000);
     });
 
     it('token 불일치면 stamp 미적재 + reason=token-mismatch', async () => {
@@ -228,11 +230,11 @@ describe('pendingPushes (#566 P2a)', () => {
     it('getReceivedStamp: stamp 존재 시 parsed entry 반환', async () => {
       await putPending(
         kv as unknown as KVNamespace,
-        makeEntry({ pushId: 'p1', token: 'tok', stationName: '시청', phase: 'imminent' }),
+        makeEntry({ pushId: 'p1', token: 'tok', stationName: '시청', phase: 'imminent', sentAt: 1_700_000_000_000 }),
       );
       await stampReceived(kv as unknown as KVNamespace, 'p1', 'tok', 1_700_000_500_000);
       const stamp = await getReceivedStamp(kv as unknown as KVNamespace, 'p1');
-      expect(stamp).toEqual({
+      expect(stamp).toMatchObject({
         pushId: 'p1',
         receivedAt: 1_700_000_500_000,
         stationName: '시청',
@@ -288,5 +290,65 @@ describe('pendingPushes (#566 P2a)', () => {
         expect(parsed.permissionMode).toBeUndefined();
       });
     });
+
+    describe('#1772 — stampReceived latencyMs + batteryState', () => {
+      it('device가 latencyMs 전달 시 stamp에 해당 값 사용', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-lat', token: 'tok', sentAt: 1_700_000_000_000 }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-lat', 'tok', 1_700_000_002_000, undefined, 1500);
+        const raw = kv.store.get('received:p-lat');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.latencyMs).toBe(1500);
+      });
+
+      it('latencyMs 미전달 → KV sentAt 기반 fallback 계산', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-fallback', token: 'tok', sentAt: 1_700_000_000_000 }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-fallback', 'tok', 1_700_000_003_000);
+        const raw = kv.store.get('received:p-fallback');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        // fallback: receivedAt(1_700_000_003_000) - sentAt(1_700_000_000_000) = 3000.
+        expect(parsed.latencyMs).toBe(3000);
+      });
+
+      it('batteryState 전달 시 stamp에 포함', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-batt', token: 'tok', sentAt: 1_700_000_000_000 }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-batt', 'tok', 1_700_000_001_000, undefined, undefined, 'lowPowerMode');
+        const raw = kv.store.get('received:p-batt');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.batteryState).toBe('lowPowerMode');
+      });
+
+      it('batteryState 미전달(legacy) → stamp에 batteryState 필드 없음', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-nobatt', token: 'tok', sentAt: 1_700_000_000_000 }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-nobatt', 'tok', 1_700_000_001_000);
+        const raw = kv.store.get('received:p-nobatt');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        expect(parsed.batteryState).toBeUndefined();
+      });
+
+      it('음수 latencyMs 미허용 → KV sentAt fallback 사용', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-neg', token: 'tok', sentAt: 1_700_000_000_000 }),
+        );
+        await stampReceived(kv as unknown as KVNamespace, 'p-neg', 'tok', 1_700_000_001_000, undefined, -100);
+        const raw = kv.store.get('received:p-neg');
+        const parsed = JSON.parse(raw!.value) as Record<string, unknown>;
+        // fallback: 1_700_000_001_000 - 1_700_000_000_000 = 1000.
+        expect(parsed.latencyMs).toBe(1000);
+      });
+    });
   });
 });
+

@@ -57,6 +57,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         stationary: { count: 1, ratio: 0.25 },
         unknown: { count: 0, ratio: 0 },
       },
+      silentPushLatency: null,
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -92,6 +93,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         stationary: { count: 0, ratio: 0 },
         unknown: { count: 0, ratio: 0 },
       },
+      silentPushLatency: null,
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -288,6 +290,44 @@ describe('computeObservabilityMetrics — response shape', () => {
     const r2 = makeEmptyFakeR2();
     const result = await computeObservabilityMetrics(r2, undefined, NOW);
     expect(result.timestamp).toBe(NOW);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — silentPushLatency (#1772)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — silentPushLatency (#1772)', () => {
+  it('undefined pendingPushesKv → silentPushLatency=null', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.silentPushLatency).toBeNull();
+  });
+
+  it('KV에 latencyMs stamp 있으면 p50/p95 집계 결과 반환', async () => {
+    const kv = new InMemoryKV();
+    // 3개 샘플: 100, 200, 300ms. sorted p50=index1=200, p95=index2=300.
+    for (const [i, ms] of [100, 200, 300].entries()) {
+      kv.store.set(`received:p-lat-${i}`, {
+        value: JSON.stringify({ pushId: `p-lat-${i}`, receivedAt: NOW - 1000, stationName: 'A', phase: 'imminent', latencyMs: ms }),
+      });
+    }
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, kv as unknown as KVNamespace, NOW);
+    expect(result.silentPushLatency).not.toBeNull();
+    expect(result.silentPushLatency!.totalSamples).toBe(3);
+    expect(result.silentPushLatency!.p50).toBe(200);
+    expect(result.silentPushLatency!.p95).toBe(300);
+  });
+
+  it('KV에 latencyMs stamp 없으면 silentPushLatency=null', async () => {
+    const kv = new InMemoryKV();
+    kv.store.set('received:p-no-lat', {
+      value: JSON.stringify({ pushId: 'p-no-lat', receivedAt: NOW - 1000, stationName: 'A', phase: 'imminent' }),
+    });
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, kv as unknown as KVNamespace, NOW);
+    expect(result.silentPushLatency).toBeNull();
   });
 });
 

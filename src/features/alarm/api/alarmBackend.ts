@@ -348,6 +348,10 @@ export interface PushAckPayload {
   // #1768 — 권한별 도달률 집계를 위해 foreground+background 권한 조합을 보고.
   // legacy device가 누락 시 backend는 graceful skip (backward compat).
   permissionMode?: 'always' | 'whileInUse' | 'denied';
+  // #1772 — silent push latency (receivedAt - sentAt, ms). legacy 누락 시 backend KV fallback.
+  latencyMs?: number;
+  // #1772 — battery state. legacy device 미전송 시 backend graceful skip.
+  batteryState?: 'normal' | 'lowPowerMode' | 'unknown';
 }
 
 export async function sendPushAck(payload: PushAckPayload): Promise<AlarmBackendResult> {

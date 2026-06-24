@@ -31,6 +31,11 @@ export interface ObservabilityMetrics {
   boardableMissRatio: ObservabilityMetricsBucket;
   /** #1769 — accelerometer pattern 4종 분포 (24h rolling window). */
   accelPatternHitRatio: AccelPatternBucket;
+  /**
+   * #1772 — silent push latency 분포 (1h 윈도우 근사치).
+   * latencyMs stamp 있는 샘플만 집계. 샘플 0건이면 null.
+   */
+  silentPushLatency?: { p50: number; p95: number; totalSamples: number } | null;
   window: '24h';
   timestamp: number;
 }

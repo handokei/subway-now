@@ -56,6 +56,11 @@ export interface ObservabilityMetricsResponse {
   boardableMissRatio: { value: number; total: number; ratio: number };
   /** #1769 — accelerometer pattern 4종 분포 (24h rolling window). */
   accelPatternHitRatio: AccelPatternBucket;
+  /**
+   * #1772 — silent push latency 분포 (1h 윈도우 근사치 — PENDING_PUSHES KV TTL 제약).
+   * latencyMs stamp 있는 샘플만 집계. 샘플 0건이면 null.
+   */
+  silentPushLatency: { p50: number; p95: number; totalSamples: number } | null;
   window: '24h';
   timestamp: number;
 }
@@ -90,12 +95,14 @@ export async function computeObservabilityMetrics(
   const locklessMissCount = alarmStats.reasons['lockless-forward-only-block'] ?? 0;
   const locklessMissRatio = buildMetricBucket(locklessMissCount, alarmTotal);
 
-  // 2. PENDING_PUSHES KV 1h 근사치 — silentPushDeliveryRatio 원천
+  // 2. PENDING_PUSHES KV 1h 근사치 — silentPushDeliveryRatio + silentPushLatency 원천
   let silentPushDeliveryRatio: ObservabilityMetricsResponse['silentPushDeliveryRatio'];
+  let silentPushLatency: ObservabilityMetricsResponse['silentPushLatency'] = null;
   if (pendingPushesKv !== undefined) {
     const pushStats = await computePushAckStats(pendingPushesKv, now, 500);
     const pushTotal = pushStats.received + pushStats.pending;
     silentPushDeliveryRatio = buildMetricBucket(pushStats.received, pushTotal);
+    silentPushLatency = pushStats.silentPushLatency;
   } else {
     // binding 미설정 — graceful placeholder
     silentPushDeliveryRatio = buildMetricBucket(0, 0);
@@ -114,6 +121,7 @@ export async function computeObservabilityMetrics(
     locklessMissRatio,
     boardableMissRatio,
     accelPatternHitRatio,
+    silentPushLatency,
     window: '24h',
     timestamp: now,
   };

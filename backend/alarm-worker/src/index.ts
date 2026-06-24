@@ -1144,6 +1144,9 @@ app.post('/push/ack', async (c) => {
       ack.token,
       Date.now(),
       ack.permissionMode,
+      // #1772 — latencyMs / batteryState forward. legacy device 미전송 시 undefined (graceful).
+      ack.latencyMs,
+      ack.batteryState,
     );
     return c.json({ ok: true, ...stampResult });
   }
@@ -1660,6 +1663,10 @@ interface PushAckPayload {
   reason?: string;
   // #1768 — 권한별 도달률 집계. legacy device 미전송 시 undefined (backward compat).
   permissionMode?: 'always' | 'whileInUse' | 'denied';
+  // #1772 — silent push latency (device 계산: receivedAt - sentAt). legacy 누락 시 undefined.
+  latencyMs?: number;
+  // #1772 — battery state. legacy device 미전송 시 undefined (backward compat).
+  batteryState?: 'normal' | 'lowPowerMode' | 'unknown';
 }
 
 export function validatePushAck(input: unknown): PushAckPayload | null {
@@ -1678,6 +1685,17 @@ export function validatePushAck(input: unknown): PushAckPayload | null {
     obj.permissionMode === 'denied'
   ) {
     out.permissionMode = obj.permissionMode;
+  }
+  // #1772 — latencyMs: 양의 finite number만 허용. 음수/Infinity는 측정 오류.
+  if (typeof obj.latencyMs === 'number' && obj.latencyMs >= 0 && Number.isFinite(obj.latencyMs)) {
+    out.latencyMs = obj.latencyMs;
+  }
+  if (
+    obj.batteryState === 'normal' ||
+    obj.batteryState === 'lowPowerMode' ||
+    obj.batteryState === 'unknown'
+  ) {
+    out.batteryState = obj.batteryState;
   }
   return out;
 }

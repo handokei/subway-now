@@ -15,9 +15,13 @@ function seedReceivedStamp(
   phase: string,
   stationName: string,
   permissionMode?: 'always' | 'whileInUse' | 'denied',
+  latencyMs?: number,
+  batteryState?: 'normal' | 'lowPowerMode' | 'unknown',
 ): void {
   const entry: Record<string, unknown> = { pushId, receivedAt, stationName, phase };
   if (permissionMode !== undefined) entry.permissionMode = permissionMode;
+  if (latencyMs !== undefined) entry.latencyMs = latencyMs;
+  if (batteryState !== undefined) entry.batteryState = batteryState;
   kv.store.set(`received:${pushId}`, { value: JSON.stringify(entry) });
 }
 
@@ -36,6 +40,8 @@ describe('computePushAckStats', () => {
     expect(stats.receivedByPhase).toEqual({});
     expect(stats.receivedByStation).toEqual({});
     expect(stats.receivedByPermissionMode).toEqual({ always: 0, whileInUse: 0, denied: 0, unknown: 0 });
+    expect(stats.silentPushLatency).toBeNull();
+    expect(stats.receivedByBatteryState).toEqual({ normal: 0, lowPowerMode: 0, unknown: 0 });
   });
 
   it('counts received stamps within 1h window', async () => {
@@ -153,4 +159,53 @@ describe('computePushAckStats', () => {
       expect(stats.receivedByPermissionMode).toEqual(expected);
     });
   });
+
+  describe('#1772 — silentPushLatency 집계', () => {
+    it('latencyMs 있는 샘플만 집계 → p50/p95/totalSamples 반환', async () => {
+      const kv = new InMemoryKV();
+      // 5개 샘플: 100, 200, 300, 400, 500ms
+      for (let i = 0; i < 5; i++) {
+        seedReceivedStamp(kv, `p-lat-${i}`, NOW - 1000, 'imminent', '강남', undefined, (i + 1) * 100);
+      }
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.silentPushLatency).not.toBeNull();
+      expect(stats.silentPushLatency!.totalSamples).toBe(5);
+      // sorted: [100, 200, 300, 400, 500]. p50 = index floor(5*0.5)=2 → 300, p95 = index min(floor(5*0.95)=4,4) → 500.
+      expect(stats.silentPushLatency!.p50).toBe(300);
+      expect(stats.silentPushLatency!.p95).toBe(500);
+    });
+
+    it('latencyMs 없는 stamps → silentPushLatency null', async () => {
+      const kv = new InMemoryKV();
+      seedReceivedStamp(kv, 'p-no-lat', NOW - 1000, 'imminent', '강남'); // latencyMs 없음
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.silentPushLatency).toBeNull();
+    });
+
+    it('단일 샘플 → p50=p95=해당값', async () => {
+      const kv = new InMemoryKV();
+      seedReceivedStamp(kv, 'p-single', NOW - 1000, 'imminent', '강남', undefined, 750);
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.silentPushLatency).toEqual({ p50: 750, p95: 750, totalSamples: 1 });
+    });
+  });
+
+  describe('#1772 — receivedByBatteryState 집계', () => {
+    it('batteryState 있는 stamp → 버킷 증가', async () => {
+      const kv = new InMemoryKV();
+      seedReceivedStamp(kv, 'p1', NOW - 1000, 'imminent', '강남', undefined, undefined, 'normal');
+      seedReceivedStamp(kv, 'p2', NOW - 1000, 'imminent', '강남', undefined, undefined, 'lowPowerMode');
+      seedReceivedStamp(kv, 'p3', NOW - 1000, 'imminent', '강남', undefined, undefined, 'unknown');
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.receivedByBatteryState).toEqual({ normal: 1, lowPowerMode: 1, unknown: 1 });
+    });
+
+    it('batteryState 없는 legacy stamp → 버킷 증가 없음', async () => {
+      const kv = new InMemoryKV();
+      seedReceivedStamp(kv, 'p-legacy', NOW - 1000, 'imminent', '강남'); // batteryState 없음
+      const stats = await computePushAckStats(kv as unknown as KVNamespace, NOW);
+      expect(stats.receivedByBatteryState).toEqual({ normal: 0, lowPowerMode: 0, unknown: 0 });
+    });
+  });
 });
+

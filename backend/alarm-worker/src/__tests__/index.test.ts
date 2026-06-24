@@ -1301,6 +1301,52 @@ describe('validatePushAck (#566 P2a)', () => {
       expect(ack).not.toHaveProperty('permissionMode');
     });
   });
+
+  describe('#1772 — latencyMs + batteryState', () => {
+    it('양의 latencyMs → payload에 포함', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', latencyMs: 350 });
+      expect(ack).toMatchObject({ latencyMs: 350 });
+    });
+
+    it('0ms latencyMs → payload에 포함 (0은 유효)', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', latencyMs: 0 });
+      expect(ack).toMatchObject({ latencyMs: 0 });
+    });
+
+    it('음수 latencyMs → payload에 포함 안 됨 (graceful)', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', latencyMs: -100 });
+      expect(ack).not.toHaveProperty('latencyMs');
+    });
+
+    it('Infinity latencyMs → payload에 포함 안 됨', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', latencyMs: Infinity });
+      expect(ack).not.toHaveProperty('latencyMs');
+    });
+
+    it('latencyMs 누락 → payload에 포함 안 됨 (legacy backward compat)', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received' });
+      expect(ack).not.toHaveProperty('latencyMs');
+    });
+
+    it.each([
+      { state: 'normal' as const },
+      { state: 'lowPowerMode' as const },
+      { state: 'unknown' as const },
+    ])('batteryState=$state → payload에 포함', ({ state }) => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', batteryState: state });
+      expect(ack).toMatchObject({ batteryState: state });
+    });
+
+    it('batteryState 유효하지 않은 값 → payload에 포함 안 됨', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received', batteryState: 'charging' });
+      expect(ack).not.toHaveProperty('batteryState');
+    });
+
+    it('batteryState 누락 → payload에 포함 안 됨 (legacy)', () => {
+      const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received' });
+      expect(ack).not.toHaveProperty('batteryState');
+    });
+  });
 });
 
 describe('POST /push/ack (#566 P2a)', () => {
