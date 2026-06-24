@@ -8,6 +8,7 @@ import type { AlarmType } from '../../../shared/types/alarm';
 import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { TRIP_BOUND_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
+import { TBA_WINDOW_SIZE } from '../../../shared/constants/iosScheduledLimit';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordScheduledAlarm } from './prescheduledMetrics';
 // #1357 (S1) — preschedule 진입 시 motion gate. silentPushTask와 같은 evaluateMovement 재사용.
@@ -43,14 +44,16 @@ const ALARM_CHANNEL_ID = 'station-alarm';
  * #918 A3 PR3 — rolling window 64 cap 회피용 윈도우 크기 (stop 단위).
  *
  * iOS는 앱당 pending local notification 64개 한도. 한 stop당 (early, imminent) 2개씩 예약되므로
- * `TRIPBOUND_WINDOW_SIZE * 2`가 tba: 채널이 OS 큐에서 점유하는 상한이다. 20 stop으로 둔 이유:
- *  - tba: 40개 + bl: 채널 6~8개(현재 windowSize 3 × 2 phase, 다음 leg 진입 시 일시적 중복 포함)
- *    + 시스템(silent push delivery 1~2건) ≈ 50개 — 64 cap 안쪽 안전 마진.
- *  - 평균 trip 길이(서울 1~9호선 30~40 stop) 대비 절반 이상 커버해, 사용자 통과 1회당 top-up 1회로
- *    rolling이 매끄럽게 진행된다 — 너무 작으면(예: 5) top-up이 매역 발생해 storage I/O 부담.
- *  - 64 cap에 너무 가까우면(예: 30) bl: 채널이 lock 전환기에 일시적으로 부풀 때 cap 초과 위험.
+ * `TRIPBOUND_WINDOW_SIZE * 2`가 tba: 채널이 OS 큐에서 점유하는 상한이다.
+ *
+ * #1757 (#1538 Sub 2) — TBA_WINDOW_SIZE(12 stop = TBA_QUOTA 24건 / 2 phase)로 변경.
+ * Sub 1 (#1756)에서 BL 채널이 Infinity window로 route 전체를 예약하게 되어 기존 20 stop 가정이
+ * 무효화됐다. iosScheduledLimit.ts의 quota 분배(BL 30 + TBA 24 + 버퍼 6 = 60)에 맞춰 조정.
+ * 이전 20 stop × 2 phase = 40건 → 12 stop × 2 phase = 24건.
+ *
+ * @see TBA_WINDOW_SIZE in iosScheduledLimit.ts
  */
-export const TRIPBOUND_WINDOW_SIZE = 20;
+export const TRIPBOUND_WINDOW_SIZE = TBA_WINDOW_SIZE;
 
 /**
  * 사전 예약 대상 단일 stop. lock-free — boarding lock 메타에 의존하지 않고,
