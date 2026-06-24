@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { DevSettings } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Redirect, Stack, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { I18nextProvider, useTranslation } from 'react-i18next';
@@ -114,11 +114,8 @@ function RootContent() {
   const hasCompletedOnboarding = useOnboardingStore((s) => s.hasCompletedOnboarding);
   const loadOnboardingState = useOnboardingStore((s) => s.loadOnboardingState);
   const segments = useSegments();
-  const router = useRouter();
 
-  // #1780 — 첫 실행 온보딩 redirect.
-  // storage hydrate 완료 후 미완료 사용자는 onboarding으로 보낸다.
-  // 이미 onboarding 화면에 있으면 재진입하지 않는다.
+  // #1780 — 첫 실행 온보딩: storage에서 완료 여부 로드.
   useEffect(() => {
     let cancelled = false;
     loadOnboardingState().then(() => {
@@ -126,13 +123,6 @@ function RootContent() {
     });
     return () => { cancelled = true; };
   }, []);
-
-  useEffect(() => {
-    const isOnOnboarding = segments[0] === 'onboarding';
-    if (!hasCompletedOnboarding && !isOnOnboarding) {
-      router.replace('/onboarding');
-    }
-  }, [hasCompletedOnboarding, segments]);
 
   // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아
   // arvlCd 우선순위로 trainCode 자동 lock 또는 5분 silence POST. 미bound trip(destinationId=null)에서도
@@ -176,6 +166,14 @@ function RootContent() {
   useEffect(() => {
     refreshNotificationChannels().catch((e) => layoutLogger.error('알림 채널 갱신 실패:', e));
   }, [i18nInstance.language]);
+
+  // #1780 — 첫 실행 온보딩 redirect.
+  // router.replace(useEffect) 대신 Redirect 컴포넌트로 render path 안에서 처리.
+  // Stack 마운트 전 navigate 호출로 인한 "Attempted to navigate before mounting the Root Layout" crash 방지.
+  const isOnOnboarding = segments[0] === 'onboarding';
+  if (!hasCompletedOnboarding && !isOnOnboarding) {
+    return <Redirect href="/onboarding" />;
+  }
 
   return (
     <>
