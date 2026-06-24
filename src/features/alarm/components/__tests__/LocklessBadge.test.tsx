@@ -1,8 +1,20 @@
 import { fireEvent } from '@testing-library/react-native';
+import * as Haptics from 'expo-haptics';
 import { LocklessBadge } from '../LocklessBadge';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn().mockResolvedValue(undefined),
+  ImpactFeedbackStyle: { Light: 'Light', Medium: 'Medium', Heavy: 'Heavy' },
+  NotificationFeedbackType: { Success: 'Success', Warning: 'Warning', Error: 'Error' },
+  notificationAsync: jest.fn().mockResolvedValue(undefined),
+}));
+
 describe('LocklessBadge (#1755)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('badge와 "탑승 확인하기" 텍스트를 렌더한다', () => {
     const { getByTestId, getByText } = renderWithTheme(
       <LocklessBadge onPress={() => {}} />,
@@ -19,6 +31,14 @@ describe('LocklessBadge (#1755)', () => {
     );
     fireEvent.press(getByTestId('lockless-badge'));
     expect(onPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('탭 시 Light 햅틱이 발사된다 (#1777)', () => {
+    const { getByTestId } = renderWithTheme(
+      <LocklessBadge onPress={() => {}} />,
+    );
+    fireEvent.press(getByTestId('lockless-badge'));
+    expect(Haptics.impactAsync).toHaveBeenCalledWith(Haptics.ImpactFeedbackStyle.Light);
   });
 
   it('accessibilityRole이 button이다', () => {

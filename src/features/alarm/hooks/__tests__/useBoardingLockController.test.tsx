@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import {
   useBoardingLockController,
   type UseBoardingLockControllerInputs,
@@ -12,6 +13,13 @@ import {
   makeDirectRoute,
   makeTransferRoute,
 } from '../../../../testUtils/routeFixtures';
+
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn().mockResolvedValue(undefined),
+  ImpactFeedbackStyle: { Light: 'Light', Medium: 'Medium', Heavy: 'Heavy' },
+  NotificationFeedbackType: { Success: 'Success', Warning: 'Warning', Error: 'Error' },
+  notificationAsync: jest.fn().mockResolvedValue(undefined),
+}));
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
@@ -392,6 +400,30 @@ describe('useBoardingLockController', () => {
           expect.objectContaining({ trainCode: 'T-9', boardingLine: '9' }),
         );
       });
+    });
+
+    it('#1777 lock 생성 성공 시 Success 햅틱이 발사된다', async () => {
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-HAPTIC' }));
+      });
+      await waitFor(() => {
+        expect(Haptics.notificationAsync).toHaveBeenCalledWith(
+          Haptics.NotificationFeedbackType.Success,
+        );
+      });
+    });
+
+    it('#1777 lock 생성 실패(store rejection) 시 햅틱 미발사 — graceful no-op', async () => {
+      mockSetBoardingLock.mockRejectedValueOnce(new Error('storage fail'));
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-FAIL' }));
+      });
+      await waitFor(() => {
+        expect(mockSetBoardingLock).toHaveBeenCalled();
+      });
+      expect(Haptics.notificationAsync).not.toHaveBeenCalled();
     });
   });
 

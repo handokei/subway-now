@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
@@ -17,9 +18,14 @@ export function LocklessBadge({ onPress }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
 
+  const handlePress = (): void => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onPress();
+  };
+
   return (
     <Pressable
-      onPress={onPress}
+      onPress={handlePress}
       style={[styles.badge, { backgroundColor: colors.warn + '22', borderColor: colors.warn }]}
       testID="lockless-badge"
       accessibilityRole="button"

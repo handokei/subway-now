@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
@@ -289,6 +290,10 @@ export function useBoardingLockController({
         // #897 Seam A: 탑승 시점 ETA 스냅샷. 동일 trainCode가 유지되는 동안 새 폴링의 arrivalSeconds가
         // 이 값보다 크게 늘면 그 차이가 지연(분). BoardingTrainList가 "+N분 지연" 칩으로 노출.
         initialEtaSeconds: train.arrivalSeconds,
+      }).then(() => {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }).catch(() => {
+        // store action rejection은 graceful — 다음 polling cycle에서 자연 재시도.
       });
     },
     [destinationId, currentStation, expectedDurationMinutes, createLock, allowedLines],
