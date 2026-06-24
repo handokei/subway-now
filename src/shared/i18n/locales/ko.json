@@ -382,5 +382,12 @@
       "grant": "권한 허용하기",
       "requesting": "요청 중..."
     }
+  },
+  "widget": {
+    "header": "지하철",
+    "headerTrip": "탑승 중",
+    "detecting": "감지 중",
+    "nextTransfer": "다음 환승",
+    "destination": "도착 예정"
   }
 }

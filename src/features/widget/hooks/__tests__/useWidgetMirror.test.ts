@@ -1,5 +1,6 @@
 import { renderHook } from '@testing-library/react-native';
 import type { Station } from '../../../../shared/types/station';
+import type { WidgetTripContext } from '../../api/widgetStorage';
 
 const mockSave = jest.fn().mockResolvedValue(undefined);
 const mockClear = jest.fn().mockResolvedValue(undefined);
@@ -38,9 +39,9 @@ beforeEach(() => {
 });
 
 describe('useWidgetMirror', () => {
-  it('station 감지 시 saveStationToWidget을 호출한다', () => {
+  it('station 감지 시 saveStationToWidget을 호출한다 (tripContext 없음)', () => {
     renderHook(() => useWidgetMirror(station, 0.1));
-    expect(mockSave).toHaveBeenCalledWith(station, 0.1);
+    expect(mockSave).toHaveBeenCalledWith(station, 0.1, undefined, undefined, undefined);
     expect(mockClear).not.toHaveBeenCalled();
   });
 
@@ -84,7 +85,7 @@ describe('useWidgetMirror', () => {
     );
     rerender({ s: other });
     expect(mockSave).toHaveBeenCalledTimes(2);
-    expect(mockSave).toHaveBeenLastCalledWith(other, 0.1);
+    expect(mockSave).toHaveBeenLastCalledWith(other, 0.1, undefined, undefined, undefined);
   });
 
   it('station → null 전환 시에도 clear 호출하지 않음 (위젯은 마지막 역 유지)', () => {
@@ -103,5 +104,62 @@ describe('useWidgetMirror', () => {
     renderHook(() => useWidgetMirror(station, 0.1));
     await new Promise((r) => setImmediate(r));
     expect(mockLoggerError).toHaveBeenCalledWith('save 실패:', expect.any(Error));
+  });
+
+  // #1781 — tripContext 전달 시 saveStationToWidget에 context 포함
+  describe('#1781 — tripContext mirror', () => {
+    const tripFull: WidgetTripContext = {
+      currentStationName: '강남',
+      destinationName: '잠실',
+      nextTransferName: '건대입구',
+      tripActive: true,
+    };
+
+    const tripDirect: WidgetTripContext = {
+      currentStationName: '강남',
+      destinationName: '잠실',
+      tripActive: true,
+    };
+
+    it('tripContext 전달 시 saveStationToWidget에 context가 포함된다', () => {
+      renderHook(() => useWidgetMirror(station, 0.1, tripFull));
+      expect(mockSave).toHaveBeenCalledWith(station, 0.1, undefined, undefined, tripFull);
+    });
+
+    it('tripContext 없으면 undefined 전달 (backward compat)', () => {
+      renderHook(() => useWidgetMirror(station, 0.1));
+      expect(mockSave).toHaveBeenCalledWith(station, 0.1, undefined, undefined, undefined);
+    });
+
+    it('tripContext.destinationName이 바뀌면 effect 재실행', () => {
+      const tripAlt: WidgetTripContext = { ...tripFull, destinationName: '선릉' };
+      const { rerender } = renderHook(
+        ({ ctx }: { ctx: WidgetTripContext }) => useWidgetMirror(station, 0.1, ctx),
+        { initialProps: { ctx: tripFull } },
+      );
+      rerender({ ctx: tripAlt });
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave).toHaveBeenLastCalledWith(station, 0.1, undefined, undefined, tripAlt);
+    });
+
+    it('tripContext.nextTransferName이 바뀌면 effect 재실행', () => {
+      const tripNoTransfer: WidgetTripContext = { ...tripFull, nextTransferName: undefined };
+      const { rerender } = renderHook(
+        ({ ctx }: { ctx: WidgetTripContext }) => useWidgetMirror(station, 0.1, ctx),
+        { initialProps: { ctx: tripFull } },
+      );
+      rerender({ ctx: tripNoTransfer });
+      expect(mockSave).toHaveBeenCalledTimes(2);
+    });
+
+    it('trip 활성 → 비활성 전환 시 effect 재실행', () => {
+      const { rerender } = renderHook(
+        ({ ctx }: { ctx: WidgetTripContext | undefined }) => useWidgetMirror(station, 0.1, ctx),
+        { initialProps: { ctx: tripDirect as WidgetTripContext | undefined } },
+      );
+      rerender({ ctx: undefined });
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave).toHaveBeenLastCalledWith(station, 0.1, undefined, undefined, undefined);
+    });
   });
 });

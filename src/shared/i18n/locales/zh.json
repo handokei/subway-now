@@ -382,5 +382,12 @@
       "grant": "允许权限",
       "requesting": "请求中..."
     }
+  },
+  "widget": {
+    "header": "地铁",
+    "headerTrip": "乘车中",
+    "detecting": "检测中",
+    "nextTransfer": "下次换乘",
+    "destination": "到站预计"
   }
 }

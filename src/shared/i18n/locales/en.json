@@ -382,5 +382,12 @@
       "grant": "Allow permissions",
       "requesting": "Requesting..."
     }
+  },
+  "widget": {
+    "header": "Subway",
+    "headerTrip": "On Board",
+    "detecting": "Detecting",
+    "nextTransfer": "Next Transfer",
+    "destination": "Destination"
   }
 }

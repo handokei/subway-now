@@ -73,6 +73,27 @@ export function saveWidgetStation(
   );
 }
 
+/**
+ * #1781 — trip 활성 시 위젯에 추가 맥락(현재역/환승역/도착역)을 전달.
+ * `saveWidgetStation`과 분리해 backward compat를 유지한다.
+ * - tripActive=false 또는 호출 생략 시 Swift 위젯이 기존 nearest station UI로 폴백.
+ */
+export function saveWidgetTripContext(
+  currentStationName: string | null,
+  destinationName: string | null,
+  nextTransferName: string | null,
+  tripActive: boolean,
+): Promise<void> {
+  return (
+    LiveActivityModule?.saveWidgetTripContext(
+      currentStationName,
+      destinationName,
+      nextTransferName,
+      tripActive,
+    ) ?? Promise.resolve()
+  );
+}
+
 export function clearWidgetStation(): Promise<void> {
   return LiveActivityModule?.clearWidgetStation() ?? Promise.resolve();
 }

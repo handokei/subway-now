@@ -11,6 +11,11 @@ struct SubwayEntry: TimelineEntry {
     let isAvailable: Bool
     // 앱이 마지막으로 위젯 데이터를 기록한 시각. nil이면 freshness 표시 생략 (legacy 데이터).
     let savedAt: Date?
+    // #1781 — trip 활성 시 추가 필드. nil이면 기존 nearest station UI 유지 (backward compat).
+    let tripActive: Bool
+    let currentStationName: String?
+    let destinationName: String?
+    let nextTransferName: String?
 }
 
 // Freshness 3단계 임계. savedAt으로부터 경과 시간으로 tier를 결정한다.
@@ -50,7 +55,11 @@ struct SubwayProvider: TimelineProvider {
             lineColor: "#009933",
             distanceM: 120,
             isAvailable: true,
-            savedAt: Date()
+            savedAt: Date(),
+            tripActive: false,
+            currentStationName: nil,
+            destinationName: nil,
+            nextTransferName: nil
         )
     }
 
@@ -77,6 +86,11 @@ struct SubwayProvider: TimelineProvider {
         // savedAt이 없는 레거시 설치 환경에서는 nil로 두어 freshness 표시를 생략한다.
         let savedAtSec = defaults?.object(forKey: "savedAt") as? Double
         let savedAt = savedAtSec.map { Date(timeIntervalSince1970: $0) }
+        // #1781 — trip 활성 필드. 키 없는 레거시 데이터에서는 false로 폴백.
+        let tripActive = defaults?.bool(forKey: "tripActive") ?? false
+        let currentStationName = defaults?.string(forKey: "currentStationName")
+        let destinationName = defaults?.string(forKey: "destinationName")
+        let nextTransferName = defaults?.string(forKey: "nextTransferName")
 
         return SubwayEntry(
             date: Date(),
@@ -84,7 +98,11 @@ struct SubwayProvider: TimelineProvider {
             lineColor: color,
             distanceM: distance,
             isAvailable: isAvailable,
-            savedAt: savedAt
+            savedAt: savedAt,
+            tripActive: tripActive,
+            currentStationName: currentStationName,
+            destinationName: destinationName,
+            nextTransferName: nextTransferName
         )
     }
 }
@@ -140,6 +158,17 @@ struct SubwayWidgetView: View {
     }
 
     private var content: some View {
+        Group {
+            if entry.tripActive, let currentStation = entry.currentStationName, let destination = entry.destinationName {
+                tripActiveContent(currentStation: currentStation, destination: destination)
+            } else {
+                nearestStationContent
+            }
+        }
+    }
+
+    // trip 비활성 — 기존 최근접 역 UI (backward compat)
+    private var nearestStationContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
                 Circle()
@@ -163,6 +192,64 @@ struct SubwayWidgetView: View {
                     .font(.subheadline)
                     .foregroundColor(lineColor)
                     .opacity(contentOpacity)
+            }
+
+            if let caption = freshnessCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Text(entry.date, style: .time)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(12)
+    }
+
+    // trip 활성 — 현재역 + 다음 환승역(있을 경우) + 도착역
+    private func tripActiveContent(currentStation: String, destination: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(lineColor)
+                    .frame(width: 10, height: 10)
+                Text("탑승 중")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Text(currentStation)
+                .font(.headline)
+                .fontWeight(.bold)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            if let transfer = entry.nextTransferName {
+                HStack(spacing: 2) {
+                    Text("다음 환승")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(transfer)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                }
+            }
+
+            HStack(spacing: 2) {
+                Text("도착 예정")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(destination)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(lineColor)
+                    .lineLimit(1)
             }
 
             if let caption = freshnessCaption {

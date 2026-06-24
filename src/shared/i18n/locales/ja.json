@@ -382,5 +382,12 @@
       "grant": "権限を許可する",
       "requesting": "リクエスト中..."
     }
+  },
+  "widget": {
+    "header": "地下鉄",
+    "headerTrip": "乗車中",
+    "detecting": "検出中",
+    "nextTransfer": "次の乗換",
+    "destination": "到着予定"
   }
 }
