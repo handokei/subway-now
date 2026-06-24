@@ -59,6 +59,9 @@ import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import {
   ARVL_CD_ARRIVED_MAX_AGE_MS,
   BACKEND_SSOT_MIRROR_MAX_AGE_MS,
+  CANDIDATE_ANCHOR_WINDOW_DEFAULT,
+  CANDIDATE_ANCHOR_WINDOW_EXPANDED,
+  CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD,
   DETECTION_FUSED_MAX_DISTANCE_KM,
   GPS_DERIVED_ACCURACY_MAX_M,
   GPS_DERIVED_FIX_MAX_AGE_MS,
@@ -67,9 +70,12 @@ import {
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
+  PICKER_HOP_ANOMALY_THRESHOLD,
+  PICKER_STUCK_MAX_AGE_MS,
   POSITION_TRAIN_TTL_MS,
   WIFI_SSID_MAX_DISTANCE_KM,
 } from '../../../shared/constants/realtime';
+import { hopsOnLine } from '../../../shared/utils/lineLoopPath';
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -78,6 +84,7 @@ import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
 import {
   allowedLinesFromRoute,
+  getStationById,
   getStationsOnLine,
   type Route,
 } from '../../../shared/utils/stationRoute';
@@ -542,6 +549,11 @@ export function useFusedNearestStation(
   // 후보 trainNo들(pickCandidateTrains) → trackTrainProgress로 단일 trainNo·현재역 결정.
   // anchor = 각 호선의 GPS 최근접 후보. 후보 1개로 단정되거나 GPS로 disambiguation되면 채택.
   const lastConfirmedTrainNoRef = useRef<string | undefined>(undefined);
+
+  // #1748 — candidate-reject 연속 카운트. 같은 noLine 5+ cycle 연속 reject → anchor window 2배 확장.
+  // key: LineNumber, value: 연속 reject 횟수. 채택 성공 시 해당 line 카운트 리셋.
+  const consecutiveRejectByLineRef = useRef<Map<string, number>>(new Map());
+
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
     const out: CandidateTrain[] = [];
@@ -555,29 +567,45 @@ export function useFusedNearestStation(
       const stationCoordinates = new Map<string, { lat: number; lng: number }>(
         lineStations.map((s) => [s.name, { lat: s.lat, lng: s.lng }]),
       );
-      out.push(
-        ...pickCandidateTrains({
-          positions: [lp],
-          line: lp.line,
-          anchorStationName: anchor,
-          userLocation: gps.userLocation,
-          stationCoordinates,
-          onCandidateDistanceReject: (info) => {
-            pushFusionDebugEntry({
-              kind: 'candidate-reject',
-              ts: Date.now(),
-              reason: 'candidate-distance',
-              trainNo: info.trainNo,
-              stationName: info.stationName,
-              line: info.line,
-              distanceKm: info.distanceKm,
-            });
-            // #1628 — alarmLog kind에도 mirror 적재. `/admin/alarm-log-stats`는 kind='alarmLog'만
-            // 카운트하므로 R12-a reject 효과를 측정하려면 alarmLog 적재가 필수.
-            logFusionCandidateDistanceReject({ stationName: info.stationName });
-          },
-        }),
-      );
+      // #1748 — 연속 reject 5+ cycle 시 anchor window 2배 확장.
+      const rejectCount = consecutiveRejectByLineRef.current.get(lp.line) ?? 0;
+      const windowStations =
+        rejectCount >= CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD
+          ? CANDIDATE_ANCHOR_WINDOW_EXPANDED
+          : CANDIDATE_ANCHOR_WINDOW_DEFAULT;
+      const picked = pickCandidateTrains({
+        positions: [lp],
+        line: lp.line,
+        anchorStationName: anchor,
+        windowStations,
+        userLocation: gps.userLocation,
+        stationCoordinates,
+        onCandidateDistanceReject: (info) => {
+          // #1748 — reject 카운트 누적 (useMemo 내부라 ref 직접 수정은 side-effect지만
+          // 이 값은 다음 render cycle의 window 계산에만 사용 — 현재 render에 영향 없음).
+          consecutiveRejectByLineRef.current.set(
+            info.line,
+            (consecutiveRejectByLineRef.current.get(info.line) ?? 0) + 1,
+          );
+          pushFusionDebugEntry({
+            kind: 'candidate-reject',
+            ts: Date.now(),
+            reason: 'candidate-distance',
+            trainNo: info.trainNo,
+            stationName: info.stationName,
+            line: info.line,
+            distanceKm: info.distanceKm,
+          });
+          // #1628 — alarmLog kind에도 mirror 적재. `/admin/alarm-log-stats`는 kind='alarmLog'만
+          // 카운트하므로 R12-a reject 효과를 측정하려면 alarmLog 적재가 필수.
+          logFusionCandidateDistanceReject({ stationName: info.stationName });
+        },
+      });
+      // #1748 — 이번 cycle에 후보가 채택됐으면(reject 없이 통과) 해당 line 카운트 리셋.
+      if (picked.length > 0) {
+        consecutiveRejectByLineRef.current.delete(lp.line);
+      }
+      out.push(...picked);
     }
     return out;
   }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation]);
@@ -1054,6 +1082,16 @@ export function useFusedNearestStation(
     ? null
     : gps.liveResult;
 
+  // #1747 — cascade picker stuck: 같은 station 5분 max 보유 추적.
+  // 같은 stationId가 이 ref에 기록된 시각으로부터 PICKER_STUCK_MAX_AGE_MS 초과 시:
+  //   - boardingLock 활성: lock.boardingStationId 역으로 강제 대체 (lock mitigation).
+  //   - lockless: null 반환(다음 cycle에서 재계산).
+  const pickerStuckRef = useRef<{ stationId: string; adoptedAt: number } | null>(null);
+
+  // #1749 — station hop > 5 detect: 직전 cycle result 추적.
+  // 같은 noLine에서 hop > PICKER_HOP_ANOMALY_THRESHOLD 이면 silent skip (prev 유지).
+  const prevCascadeResultRef = useRef<NearestStationResult | null>(null);
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
@@ -1456,6 +1494,95 @@ export function useFusedNearestStation(
     //   강등 후 source가 'gps'로 flip되므로 post-cascade 단계에서 놓친 transfer correction을
     //   본 분기에서 다시 적용해 환승역 line drift 회귀 차단 (lock 활성 trip 보호).
     result = applyTransferLineCorrection(gpsFallbackResult, 'gps');
+  }
+
+  // #1749 — station hop > 5 detect → silent skip.
+  //
+  // 종합운동장 → 역삼 10 station skip evidence (2026-06-24 14:02:00): cascade picker가
+  // 1 cycle 안에 10 hop을 점프해 잘못된 station-passed fire 발생.
+  //
+  // 적용 조건:
+  //   1. 같은 noLine 안에서 hop > PICKER_HOP_ANOMALY_THRESHOLD(5) — anomaly 판정.
+  //   2. 결과 source가 weak-only(gps / route-progress): 실측 강한 신호(boarding-lock /
+  //      backend-ssot / position-train / wifi-ssid / detection-fused)가 tier upgrade로
+  //      hop이 큰 것은 정상 advance — 면제. 약한 신호(gps / route-progress)만 hop 체크.
+  //      이유: 배경 GPS stuck 후 backend mirror가 다른 역을 권위 산출하면 큰 hop이
+  //      발생해도 tier 승격이므로 legitimate. gps / route-progress 는 GPS 좌표 drift
+  //      문제로 skip.
+  //
+  // 게이트 면제 조건:
+  //   - prevCascadeResultRef.current가 null (첫 cycle).
+  //   - result가 null.
+  //   - source가 강한 tier (boarding-lock / backend-ssot / position-train / wifi-ssid / detection-fused).
+  //   - 다른 노선으로 전환.
+  const hopCheckApplies =
+    result != null &&
+    prevCascadeResultRef.current != null &&
+    (source === 'gps' || source === 'route-progress');
+  if (hopCheckApplies) {
+    const prev = prevCascadeResultRef.current!;
+    if (result!.station.line === prev.station.line) {
+      const lineStationsForHop = getStationsOnLine(result!.station.line);
+      const nameToIdx = new Map<string, number>();
+      lineStationsForHop.forEach((s, i) => nameToIdx.set(s.name, i));
+      const fromIdx = nameToIdx.get(prev.station.name);
+      const toIdx = nameToIdx.get(result!.station.name);
+      /* istanbul ignore next -- getStationsOnLine에 존재하는 station은 nameToIdx에 반드시 있다는 invariant */
+      if (fromIdx !== undefined && toIdx !== undefined) {
+        const hop = hopsOnLine(lineStationsForHop, fromIdx, toIdx, result!.station.line);
+        if (hop > PICKER_HOP_ANOMALY_THRESHOLD) {
+          // silent skip — 이전 result 유지, 이번 cycle 건너뜀.
+          result = prev;
+        }
+      }
+    }
+  }
+  // #1749 — prev result 갱신 (hop 체크 후 result가 결정된 뒤 업데이트).
+  prevCascadeResultRef.current = result;
+
+  // #1747 — cascade picker stuck: 같은 station 5분 max + lock active mitigation.
+  //
+  // 종합운동장 8분 stuck evidence (2026-06-24 PM trip): cascade picker가 종합운동장에
+  // 8분간 lock → 사용자 실제 이동했지만 fusion picker가 고착 → 역삼 10 hop skip 유발.
+  //
+  // 적용 조건 (false positive 방어):
+  //   - boardingLock 활성 전용: boardingLock 없는 lockless trip은 GPS에서 user가 같은 역에
+  //     5분+ 있는 것이 완전히 정상(예: 역 대기, 갈아타기). lockless stuck은 별도 신호 없이
+  //     time-based invalidate X → false null 회피.
+  //   - weak source 전용 (gps / route-progress): 실측 강한 tier가 이미 stuck을 방지하므로
+  //     boarding-lock / backend-ssot / position-train / wifi-ssid source는 면제.
+  //
+  // boardingLock 활성 + weak source + 5분+ 같은 stationId:
+  //   → lock.boardingStationId 역으로 대체 (lock mitigation).
+  //     lock.boardingStation = 사용자 탑승역 — 적어도 탑승역에서 다시 시작.
+  //
+  // 면제 → ref 리셋:
+  //   - result가 null: 이미 cascade가 null.
+  //   - boardingLock 없음 (lockless).
+  //   - 강력한 tier (source 화이트리스트).
+  const pickerStuckImmune =
+    !boardingLock ||
+    source === 'boarding-lock' ||
+    source === 'backend-ssot' ||
+    source === 'position-train' ||
+    source === 'wifi-ssid';
+  if (result != null && !pickerStuckImmune) {
+    const now = Date.now();
+    const stationId = result.station.id;
+    if (pickerStuckRef.current?.stationId !== stationId) {
+      // 새 station — timestamp 갱신.
+      pickerStuckRef.current = { stationId, adoptedAt: now };
+    } else if (now - pickerStuckRef.current.adoptedAt > PICKER_STUCK_MAX_AGE_MS) {
+      // boardingLock 활성 + 같은 station 5분+ stuck → lock.boardingStationId 역으로 대체.
+      const lockStation = getStationById(boardingLock!.boardingStationId);
+      if (lockStation) {
+        result = { station: lockStation, distanceKm: result.distanceKm };
+        pickerStuckRef.current = { stationId: lockStation.id, adoptedAt: now };
+      }
+    }
+  } else {
+    // result null 또는 면제 조건 → stuck ref 리셋 (else = ¬(result != null && !pickerStuckImmune)).
+    pickerStuckRef.current = null;
   }
 
   // #1401 — prev arc idx 갱신. 최종 result 결정 후(강등 후 station이 바뀌었을 수 있음) idx 다시 계산.
