@@ -94,6 +94,11 @@ import {
 } from './regressionTelemetry';
 import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
 import { deleteSsot, readSsot } from './tripPositionSsot';
+import {
+  computeObservabilityMetrics,
+  readObservabilityMetrics,
+  storeObservabilityMetrics,
+} from './observabilityMetrics';
 import { getTrip, putTrip } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
@@ -1079,6 +1084,37 @@ app.get('/metrics/recall/summary', (c) => {
 });
 
 /**
+ * Observability metrics endpoint (#1752, #1503 M3 Sub 2).
+ *
+ * DebugModal(Sub 1)이 1h cron이 미리 집계한 4 KPI를 읽어 표시한다.
+ * 집계 결과가 없으면(cron 미실행/첫 배포) 실시간으로 계산해 반환하고 KV에 적재.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` 필수 — admin 공통 정책.
+ * Query: `?window=24h` (현재 24h만 지원 — 추후 확장 가능 구조)
+ *
+ * Response 200:
+ *   { accuracyRatio, silentPushDeliveryRatio, locklessMissRatio, boardableMissRatio, window, timestamp }
+ * Response 401/503: 인증/binding 정책 동일 (TELEMETRY_R2 미바인딩 시 503 graceful)
+ */
+app.get('/v1/observability/metrics', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const r2 = c.env.TELEMETRY_R2;
+  if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
+
+  const now = Date.now();
+
+  // KV에 최신 집계가 있으면 그대로 반환 — R2 scan 비용 절감.
+  const cached = await readObservabilityMetrics(c.env.TRIPS, now);
+  if (cached) return c.json(cached);
+
+  // 첫 요청 또는 KV TTL 만료(1h) 시 실시간 계산 후 KV 적재.
+  const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now);
+  await storeObservabilityMetrics(c.env.TRIPS, metrics, now);
+  return c.json(metrics);
+});
+
+/**
  * silent push 처리 결과 ACK (#566 P2a).
  * 디바이스가 push를 받고 처리(fired 또는 skipped)하면 pushId + 자신의 device token을 함께 보낸다.
  * 백엔드는 KV에 저장된 pending.token과 비교 후 매칭 시에만 entry를 삭제 — 임의 echo로 인한
@@ -2050,6 +2086,18 @@ export default {
       const result = await maybeRunDailyFeedbackStats(env.FEEDBACK, Date.now());
       if (result.ran) {
         log('feedback daily stats aggregated', { date: result.date });
+      }
+    }
+    // #1752 — observability metrics 1h 주기 집계. cron이 매분 실행되지만 1h bucket 키가
+    // 이미 KV에 있으면 readObservabilityMetrics가 null을 반환하지 않으므로 computeAndStore는
+    // 실행되지 않음. TELEMETRY_R2 미바인딩 시 graceful no-op.
+    if (env.TELEMETRY_R2) {
+      const now = Date.now();
+      const existing = await readObservabilityMetrics(env.TRIPS, now);
+      if (!existing) {
+        const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now);
+        await storeObservabilityMetrics(env.TRIPS, metrics, now);
+        log('observability metrics aggregated', { window: '24h', timestamp: now });
       }
     }
   },
