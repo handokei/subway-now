@@ -71,3 +71,25 @@ describe('pickAutoTrainCodeFromArrivals (#819 arvlCd 우선순위)', () => {
     expect(pickAutoTrainCodeFromArrivals(list)).toBeNull();
   });
 });
+
+describe('pickAutoTrainCodeFromArrivals — #1740 destinationDirection (signature + backward compat)', () => {
+  it('destinationDirection undefined → 기존 동작 유지 (전체 후보)', () => {
+    const list = [arr({ trainCode: 'A', arrivalCode: 2 })];
+    expect(pickAutoTrainCodeFromArrivals(list, undefined)?.trainCode).toBe('A');
+  });
+
+  it('destinationDirection "up" 지정, 후보 있음 → 정상 pick', () => {
+    const list = [arr({ trainCode: 'A', arrivalCode: 2 })];
+    expect(pickAutoTrainCodeFromArrivals(list, 'up')?.trainCode).toBe('A');
+  });
+
+  it('destinationDirection "down" 지정, 후보 있음 → 정상 pick', () => {
+    const list = [arr({ trainCode: 'B', arrivalCode: 2 })];
+    expect(pickAutoTrainCodeFromArrivals(list, 'down')?.trainCode).toBe('B');
+  });
+
+  it('destinationDirection "up" 지정, 후보 없음 (반대 방향만 전달됨) → null', () => {
+    // caller가 방향 기준으로 빈 배열을 넘기는 시나리오 (call site pre-filter 후 null 검증)
+    expect(pickAutoTrainCodeFromArrivals([], 'up')).toBeNull();
+  });
+});

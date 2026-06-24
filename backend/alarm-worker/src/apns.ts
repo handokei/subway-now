@@ -686,6 +686,11 @@ export interface SendBoardingPromptPushOptions {
    * device 는 telemetry 적재 시 source 분포 측정에 사용.
    */
   triggerKind?: 'cron' | 'instant';
+  /**
+   * #1740 — 목적지 방향. PromptGeoContext.direction 에서 도출.
+   * 미지정(legacy / direction null) 시 payload에 포함하지 않아 device가 양방향 허용.
+   */
+  destinationDirection?: 'up' | 'down';
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -707,6 +712,8 @@ export async function sendBoardingPromptPush(
     tripToken: options.tripToken,
     sentAt: options.sentAt,
     triggerKind: options.triggerKind,
+    // #1740 — undefined면 payload에 키 자체가 생략됨 (JSON.stringify 동작). device backward compat.
+    destinationDirection: options.destinationDirection,
   };
 
   const body = JSON.stringify({
