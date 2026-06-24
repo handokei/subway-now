@@ -133,3 +133,30 @@ export const ARVL_CD_ARRIVED_MAX_AGE_MS = 35_000;
  * 살아있으면 자연 채택되므로 본 게이트 미진입.
  */
 export const GPS_FALLBACK_STALE_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * #1747 — cascade picker stuck: 같은 station이 이 시간을 초과해 연속 채택되면
+ * boardingLock 없을 때 강제 invalidate, boardingLock 활성 시 lock.boardingStation 우선.
+ *
+ * 종합운동장 8분 stuck evidence (2026-06-24 PM trip) 기반. 5분이면 3+ stop 통과 가능 —
+ * 실제 이동 중에도 cascade가 고착되는 문제를 차단한다.
+ */
+export const PICKER_STUCK_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * #1748 — candidate-reject 연속 카운트 임계.
+ * 같은 노선에서 이 횟수 이상 연속 reject 시 anchor 탐색 window를 2배(±3 → ±6)로 확장한다.
+ * 종합운동장 stuck 8분: fusion log 200줄 중 150줄이 reject — 5+ cycle 확장 트리거 적합.
+ */
+export const CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD = 5;
+export const CANDIDATE_ANCHOR_WINDOW_DEFAULT = 3;
+export const CANDIDATE_ANCHOR_WINDOW_EXPANDED = 6;
+
+/**
+ * #1749 — station hop > 5 detect: 1 cycle 안에 이 hop 이상 점프 시 anomaly로 간주해
+ * silent skip (이전 result 유지). 정상 환승 hop (최대 2~3)은 통과한다.
+ *
+ * 종합운동장 → 역삼 10 station skip evidence (2026-06-24 14:02:00).
+ * 같은 노선이어야 hop 계산 대상 — 다른 노선 전환(환승)은 skip 계산 X.
+ */
+export const PICKER_HOP_ANOMALY_THRESHOLD = 5;
