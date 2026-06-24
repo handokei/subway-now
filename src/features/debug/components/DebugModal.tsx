@@ -105,6 +105,8 @@ import {
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
+// #1751 (M3 Sub 1) — Operation Dashboard 섹션.
+import { OperationDashboardSection } from './OperationDashboardSection';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
 import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
 import { RegressionsSection } from './RegressionsSection';
@@ -1775,6 +1777,11 @@ function DebugModalInner({
         </View>
 
         <ScrollView contentContainerStyle={{ padding: spacing.xl }}>
+          {/* #1751 (M3 Sub 1) — Operation Dashboard. toggle/opt-in 없이 항상 렌더. */}
+          <Section title="Operation Dashboard" colors={colors} testID="operation-dashboard-section-wrapper">
+            <OperationDashboardSection logs={logs} />
+          </Section>
+
           <Section title="GPS" colors={colors}>
             {userLocation ? (
               buildGpsRows({
