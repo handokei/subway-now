@@ -360,5 +360,27 @@
   "lockless": {
     "badge": "🔍 탐색 중",
     "tapToConfirm": "탑승 확인하기"
+  },
+  "onboarding": {
+    "skip": "건너뛰기",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "지하철, 이제 자동으로",
+      "description": "GPS로 현재 탑승 역을 실시간 감지하고\n환승·도착 알람을 자동으로 보내드려요.\n앱을 켜두지 않아도 괜찮아요.",
+      "next": "다음"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "두 가지 권한이 필요해요",
+      "description": "권한은 알람 발송에만 사용되며\n외부에 전달되지 않아요."
+    },
+    "permissions": {
+      "locationLabel": "위치 권한",
+      "locationReason": "현재 탑승 중인 역을 감지하기 위해 필요해요",
+      "notificationLabel": "알림 권한",
+      "notificationReason": "환승·도착 알람을 받기 위해 필요해요",
+      "grant": "권한 허용하기",
+      "requesting": "요청 중..."
+    }
   }
 }

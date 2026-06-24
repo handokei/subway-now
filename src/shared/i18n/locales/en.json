@@ -360,5 +360,27 @@
   "lockless": {
     "badge": "🔍 Searching",
     "tapToConfirm": "Confirm boarding"
+  },
+  "onboarding": {
+    "skip": "Skip",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "Subway, now automatic",
+      "description": "We detect your current station via GPS and send transfer and arrival alerts automatically — even when the app is in the background.",
+      "next": "Next"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "Two permissions needed",
+      "description": "Permissions are used only for alarms and are never shared externally."
+    },
+    "permissions": {
+      "locationLabel": "Location",
+      "locationReason": "Needed to detect the station you are currently on",
+      "notificationLabel": "Notifications",
+      "notificationReason": "Needed to send transfer and arrival alerts",
+      "grant": "Allow permissions",
+      "requesting": "Requesting..."
+    }
   }
 }

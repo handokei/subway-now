@@ -360,5 +360,27 @@
   "lockless": {
     "badge": "🔍 探索中",
     "tapToConfirm": "乗車を確認する"
+  },
+  "onboarding": {
+    "skip": "スキップ",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "地下鉄、自動で管理",
+      "description": "GPSで現在乗車中の駅をリアルタイム検知し、乗換・到着アラームを自動でお届けします。アプリを開いたままにしなくて大丈夫です。",
+      "next": "次へ"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "2つの権限が必要です",
+      "description": "権限はアラームの送信のみに使用され、外部に提供されません。"
+    },
+    "permissions": {
+      "locationLabel": "位置情報",
+      "locationReason": "現在乗車中の駅を検知するために必要です",
+      "notificationLabel": "通知",
+      "notificationReason": "乗換・到着アラームを受け取るために必要です",
+      "grant": "権限を許可する",
+      "requesting": "リクエスト中..."
+    }
   }
 }

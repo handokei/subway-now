@@ -360,5 +360,27 @@
   "lockless": {
     "badge": "🔍 搜索中",
     "tapToConfirm": "确认乘车"
+  },
+  "onboarding": {
+    "skip": "跳过",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "地铁，现在自动化",
+      "description": "通过GPS实时检测您当前乘坐的车站，自动发送换乘和到站提醒。即使在后台运行也没问题。",
+      "next": "下一步"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "需要两项权限",
+      "description": "权限仅用于发送提醒，不会对外共享。"
+    },
+    "permissions": {
+      "locationLabel": "位置权限",
+      "locationReason": "用于检测您当前乘坐的车站",
+      "notificationLabel": "通知权限",
+      "notificationReason": "用于接收换乘和到站提醒",
+      "grant": "允许权限",
+      "requesting": "请求中..."
+    }
   }
 }

@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { DevSettings } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { I18nextProvider, useTranslation } from 'react-i18next';
 import { ThemeProvider, useTheme } from '../src/shared/theme';
+import { useOnboardingStore } from '../src/features/onboarding/store/useOnboardingStore';
 import { setupNotificationHandler, refreshNotificationChannels } from '../src/features/alarm/utils/stationNotification';
 import { setMinLevel, createLogger } from '../src/shared/utils/logger';
 import { i18n } from '../src/shared/i18n';
@@ -98,6 +99,28 @@ function RootContent() {
   const setDebugVisible = useDebugStore((s) => s.setDebugVisible);
   const destinationId = useDestinationStore((s) => s.destination?.id ?? null);
   const { i18n: i18nInstance } = useTranslation();
+  const hasCompletedOnboarding = useOnboardingStore((s) => s.hasCompletedOnboarding);
+  const loadOnboardingState = useOnboardingStore((s) => s.loadOnboardingState);
+  const segments = useSegments();
+  const router = useRouter();
+
+  // #1780 — 첫 실행 온보딩 redirect.
+  // storage hydrate 완료 후 미완료 사용자는 onboarding으로 보낸다.
+  // 이미 onboarding 화면에 있으면 재진입하지 않는다.
+  useEffect(() => {
+    let cancelled = false;
+    loadOnboardingState().then(() => {
+      if (cancelled) return;
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const isOnOnboarding = segments[0] === 'onboarding';
+    if (!hasCompletedOnboarding && !isOnOnboarding) {
+      router.replace('/onboarding');
+    }
+  }, [hasCompletedOnboarding, segments]);
 
   // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아
   // arvlCd 우선순위로 trainCode 자동 lock 또는 5분 silence POST. 미bound trip(destinationId=null)에서도
