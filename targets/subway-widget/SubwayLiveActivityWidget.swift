@@ -51,15 +51,22 @@ struct SubwayLiveActivityWidget: Widget {
                     .frame(width: 10, height: 10)
                     .padding(.leading, 2)
             } compactTrailing: {
-                Text(context.state.stationName)
+                let alarmType = context.state.alarmType
+                let trailingColor: Color = {
+                    if alarmType == "destination" { return .red }
+                    if alarmType == "transfer" { return .orange }
+                    return .white
+                }()
+                Text(alarmType == "destination" ? "🔴" : alarmType == "transfer" ? "🟠" : context.state.stationName)
                     .font(.caption2)
                     .fontWeight(.semibold)
-                    .foregroundColor(.white)
+                    .foregroundColor(trailingColor)
                     .lineLimit(1)
             } minimal: {
+                let alarmTypeMin = context.state.alarmType
                 Circle()
-                    .fill(context.state.alarmType != nil
-                          ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                    .fill(alarmTypeMin == "destination" ? Color.red
+                          : alarmTypeMin == "transfer" ? Color.orange
                           : (Color(hex: context.state.lineColorHex) ?? .gray))
                     .frame(width: 10, height: 10)
             }
