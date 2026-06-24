@@ -1,6 +1,7 @@
-import { StyleSheet, Text, View, Pressable } from 'react-native';
+import { Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { useTheme, spacing, radius, typography } from '../../../shared/theme';
+import { useTheme, typography } from '../../../shared/theme';
+import { OnboardingSplashBase, splashBaseStyles } from './OnboardingSplashBase';
 import type { PermissionStep } from '../hooks/useOnboardingPermissions';
 
 interface Props {
@@ -18,99 +19,38 @@ export function OnboardingSplash2({ step, onGrantPermissions, onSkip }: Props) {
   const { t } = useTranslation();
 
   const isRequesting = step === 'requesting-location' || step === 'requesting-notification';
+  const buttonLabel = isRequesting
+    ? t('onboarding.permissions.requesting')
+    : t('onboarding.permissions.grant');
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.bg }]} testID="onboarding-splash2">
-      <View style={styles.content}>
-        <Text style={[typography.hero, { color: colors.accent }]}>
-          {t('onboarding.splash2.emoji')}
+    <OnboardingSplashBase
+      testID="onboarding-splash2"
+      emoji={t('onboarding.splash2.emoji')}
+      title={t('onboarding.splash2.title')}
+      primaryButtonTestID="onboarding-splash2-grant"
+      primaryButtonLabel={buttonLabel}
+      primaryButtonDisabled={isRequesting}
+      onPrimaryAction={onGrantPermissions}
+      onSkip={onSkip}
+    >
+      <View style={[splashBaseStyles.permissionCard, { backgroundColor: colors.card }]}>
+        <Text style={[typography.bodySm, splashBaseStyles.permissionLabel, { color: colors.muted }]}>
+          {t('onboarding.permissions.locationLabel')}
         </Text>
-        <Text style={[typography.title, styles.title, { color: colors.ink }]}>
-          {t('onboarding.splash2.title')}
+        <Text style={[typography.bodySm, { color: colors.ink }]}>
+          {t('onboarding.permissions.locationReason')}
         </Text>
-
-        <View style={[styles.permissionCard, { backgroundColor: colors.card }]}>
-          <Text style={[typography.bodySm, styles.permissionLabel, { color: colors.muted }]}>
-            {t('onboarding.permissions.locationLabel')}
-          </Text>
-          <Text style={[typography.bodySm, { color: colors.ink }]}>
-            {t('onboarding.permissions.locationReason')}
-          </Text>
-        </View>
-
-        <View style={[styles.permissionCard, { backgroundColor: colors.card }]}>
-          <Text style={[typography.bodySm, styles.permissionLabel, { color: colors.muted }]}>
-            {t('onboarding.permissions.notificationLabel')}
-          </Text>
-          <Text style={[typography.bodySm, { color: colors.ink }]}>
-            {t('onboarding.permissions.notificationReason')}
-          </Text>
-        </View>
       </View>
 
-      <View style={styles.actions}>
-        <Pressable
-          style={[
-            styles.primaryButton,
-            { backgroundColor: isRequesting ? colors.muted : colors.accent },
-          ]}
-          onPress={onGrantPermissions}
-          disabled={isRequesting}
-          testID="onboarding-splash2-grant"
-        >
-          <Text style={[typography.body, { color: colors.onAccent }]}>
-            {isRequesting
-              ? t('onboarding.permissions.requesting')
-              : t('onboarding.permissions.grant')}
-          </Text>
-        </Pressable>
-        <Pressable onPress={onSkip} testID="onboarding-splash2-skip">
-          <Text style={[typography.bodySm, styles.skipText, { color: colors.subtle }]}>
-            {t('onboarding.skip')}
-          </Text>
-        </Pressable>
+      <View style={[splashBaseStyles.permissionCard, { backgroundColor: colors.card }]}>
+        <Text style={[typography.bodySm, splashBaseStyles.permissionLabel, { color: colors.muted }]}>
+          {t('onboarding.permissions.notificationLabel')}
+        </Text>
+        <Text style={[typography.bodySm, { color: colors.ink }]}>
+          {t('onboarding.permissions.notificationReason')}
+        </Text>
       </View>
-    </View>
+    </OnboardingSplashBase>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.xxxl,
-    justifyContent: 'space-between',
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: spacing.lg,
-  },
-  title: {
-    textAlign: 'center',
-    marginTop: spacing.md,
-  },
-  permissionCard: {
-    width: '100%',
-    padding: spacing.lg,
-    borderRadius: spacing.md,
-    gap: spacing.xs,
-  },
-  permissionLabel: {
-    fontWeight: '600',
-  },
-  actions: {
-    gap: spacing.md,
-    alignItems: 'center',
-  },
-  primaryButton: {
-    width: '100%',
-    paddingVertical: spacing.lg,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-  },
-  skipText: {
-    textDecorationLine: 'underline',
-  },
-});

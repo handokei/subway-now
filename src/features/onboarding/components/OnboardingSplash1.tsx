@@ -1,6 +1,7 @@
-import { StyleSheet, Text, View, Pressable } from 'react-native';
+import { Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { useTheme, spacing, radius, typography } from '../../../shared/theme';
+import { useTheme, typography } from '../../../shared/theme';
+import { OnboardingSplashBase } from './OnboardingSplashBase';
 
 interface Props {
   readonly onNext: () => void;
@@ -16,71 +17,18 @@ export function OnboardingSplash1({ onNext, onSkip }: Props) {
   const { t } = useTranslation();
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.bg }]} testID="onboarding-splash1">
-      <View style={styles.content}>
-        <Text style={[typography.hero, { color: colors.accent }]}>
-          {t('onboarding.splash1.emoji')}
-        </Text>
-        <Text style={[typography.title, styles.title, { color: colors.ink }]}>
-          {t('onboarding.splash1.title')}
-        </Text>
-        <Text style={[typography.body, styles.description, { color: colors.muted }]}>
-          {t('onboarding.splash1.description')}
-        </Text>
-      </View>
-
-      <View style={styles.actions}>
-        <Pressable
-          style={[styles.primaryButton, { backgroundColor: colors.accent }]}
-          onPress={onNext}
-          testID="onboarding-splash1-next"
-        >
-          <Text style={[typography.body, { color: colors.onAccent }]}>
-            {t('onboarding.splash1.next')}
-          </Text>
-        </Pressable>
-        <Pressable onPress={onSkip} testID="onboarding-splash1-skip">
-          <Text style={[typography.bodySm, styles.skipText, { color: colors.subtle }]}>
-            {t('onboarding.skip')}
-          </Text>
-        </Pressable>
-      </View>
-    </View>
+    <OnboardingSplashBase
+      testID="onboarding-splash1"
+      emoji={t('onboarding.splash1.emoji')}
+      title={t('onboarding.splash1.title')}
+      primaryButtonTestID="onboarding-splash1-next"
+      primaryButtonLabel={t('onboarding.splash1.next')}
+      onPrimaryAction={onNext}
+      onSkip={onSkip}
+    >
+      <Text style={[typography.body, { color: colors.muted, textAlign: 'center', lineHeight: 26 }]}>
+        {t('onboarding.splash1.description')}
+      </Text>
+    </OnboardingSplashBase>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.xxxl,
-    justifyContent: 'space-between',
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: spacing.lg,
-  },
-  title: {
-    textAlign: 'center',
-    marginTop: spacing.md,
-  },
-  description: {
-    textAlign: 'center',
-    lineHeight: 26,
-  },
-  actions: {
-    gap: spacing.md,
-    alignItems: 'center',
-  },
-  primaryButton: {
-    width: '100%',
-    paddingVertical: spacing.lg,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-  },
-  skipText: {
-    textDecorationLine: 'underline',
-  },
-});
