@@ -104,8 +104,8 @@ describe('buildLiveActivityContentState (#613)', () => {
     expect(cs).not.toHaveProperty('alarmStationName');
   });
 
-  // #1658 — 환승역 waypoint 추적 시 다음 leg의 line을 LA에 즉시 반영 (60s lag 차단).
-  describe('transfer waypoint → new leg line forward (#1658)', () => {
+  // #1654 / #1658 — 환승역 waypoint 추적 시 다음 leg의 line을 LA에 즉시 반영 (60s lag 차단).
+  describe('transfer waypoint → new leg line forward (#1654 / #1658)', () => {
     /** 경의중앙선(K) → 2호선 환승 trip: 홍대입구(transfer, K) → 신촌(intermediate, 2) → 강남(dest, 2). */
     function makeTransferTrip(): Trip {
       return makeTrip({

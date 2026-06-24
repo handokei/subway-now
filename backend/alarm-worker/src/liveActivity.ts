@@ -86,7 +86,7 @@ export interface LiveActivityDeps {
  * stopsFromTransfer)를 함께 emit해 ActivityKit 전체 교체 후도 JS init이 채운 "전체 trip 여정"
  * UI가 유지된다. 누락 시 (legacy 호출) 기존 5 필드만 emit — 회귀 0 / backward compat.
  *
- * **환승 호선 forward (#1658)**: `waypoint.kind === 'transfer'`이고 `trip.waypoints[1]`이 존재하면
+ * **환승 호선 forward (#1654 / #1658)**: `waypoint.kind === 'transfer'`이고 `trip.waypoints[1]`이 존재하면
  * 다음 leg의 line(`trip.waypoints[1].line`)을 `lineName`/`lineColorHex`로 사용한다.
  * 환승역 waypoint는 현재 leg(경의중앙선 등)의 line을 갖지만, 사용자가 환승역에 도착하거나
  * 도착 중인 시점에는 이미 새 호선(2호선 등)으로 탑승 준비 중이므로 새 leg의 호선을 즉시 노출한다.
@@ -98,7 +98,7 @@ export function buildLiveActivityContentState(
   stopsRemaining: number,
   trip?: Trip,
 ): LiveActivityContentState {
-  // #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
+  // #1654 / #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
   // waypoint.kind==='transfer' + trip.waypoints[1]이 존재하면 새 leg의 line을 우선 사용.
   // trip이 없거나(legacy 호출) waypoints[1] 부재(직접 환승 도착)이면 waypoint.line으로 fallback.
   const displayLine =

@@ -2758,8 +2758,8 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(stored.lastLaPushEpoch).toBeUndefined();
   });
 
-  // #1658 — 환승 leg 전환 감지 + LA content-state 즉시 갱신 통합 테스트.
-  describe('transfer waypoint → LA shows new leg line (#1658)', () => {
+  // #1654 / #1658 — 환승 leg 전환 감지 + LA content-state 즉시 갱신 통합 테스트.
+  describe('transfer waypoint → LA shows new leg line (#1654 / #1658)', () => {
     /**
      * 7호선(군자, transfer) → 5호선(아차산, destination) trip.
      * boardingLock은 7호선으로 군자를 추적 중. LA token 활성.
@@ -2822,7 +2822,7 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       const laCalls = getLaCalls(fetchImpl);
       expect(laCalls).toHaveLength(1);
       const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
-      // #1658 — 환승 waypoint는 7호선이지만 다음 leg(아차산, 5호선)의 line을 LA에 즉시 노출
+      // #1654 / #1658 — 환승 waypoint는 7호선이지만 다음 leg(아차산, 5호선)의 line을 LA에 즉시 노출
       expect(contentState.lineName).toBe('5호선');
       expect(contentState.lineColorHex).toBe('#996CAC');
       // stationName은 transfer station(군자) 그대로 유지
