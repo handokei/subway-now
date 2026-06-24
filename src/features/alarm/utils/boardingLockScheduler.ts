@@ -14,6 +14,7 @@ import {
 } from './scheduledNotificationsStorage';
 import { createLogger } from '../../../shared/utils/logger';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
+import { BL_MAX_WAYPOINTS } from '../../../shared/constants/iosScheduledLimit';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { logScheduleSkipped, logSuppressedSleepFirstTransfer } from './alarmLog';
 import { BOARDING_LOCK_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
@@ -341,7 +342,10 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
 
   const allTargets = resolveAllTargets(route, destinationName);
   const timings = computeHopTimings(lock, route, allTargets);
-  const lastIdx = Math.min(windowSize, allTargets.length);
+  // #1757 (Sub 2) — iOS 64 한도 분배. BL_MAX_WAYPOINTS(15)로 OS 예약 수를 cap.
+  // DEFAULT_WINDOW_SIZE=Infinity(Sub 1)는 "route 끝까지 advance" 의미를 유지하되,
+  // 실제 OS 예약 건수는 BL_QUOTA(30건) = BL_MAX_WAYPOINTS × 2 phase 이내로 제한.
+  const lastIdx = Math.min(windowSize, allTargets.length, BL_MAX_WAYPOINTS);
 
   const scheduledIds: string[] = [];
   for (let hopIndex = 0; hopIndex < lastIdx; hopIndex++) {
@@ -512,7 +516,13 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   const observedMs = now ?? lock.boardedAt;
   const timings = computeHopTimings(lock, route, allTargets);
   const scheduledIds: string[] = [];
-  const windowEnd = Math.min(passedIndex + windowSize, allTargets.length - 1);
+  // #1757 (Sub 2) — BL_MAX_WAYPOINTS cap. advanceHopWindow도 동일 정책 적용.
+  // passedIndex 기준 앞으로 최대 BL_MAX_WAYPOINTS개 waypoint까지만 OS 예약.
+  const windowEnd = Math.min(
+    passedIndex + windowSize,
+    passedIndex + BL_MAX_WAYPOINTS,
+    allTargets.length - 1,
+  );
   for (let hopIndex = passedIndex + 1; hopIndex <= windowEnd; hopIndex++) {
     if (existingHopIndexes.has(hopIndex)) continue;
     if (
