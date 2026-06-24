@@ -182,6 +182,38 @@ describe('resolveAllTargets', () => {
   });
 });
 
+// V/X acceptance 임계 직접 검증 (feedback_v_x_acceptance_full_table)
+describe('V2 — 직접 경로 transfer 알람 없음 (hop=0, transfer type 미발사)', () => {
+  const destinationName = '강남';
+
+  // V2: hop ≤ 1 (direct) → transfer 타입 알람은 어떤 stops 값에서도 나오지 않는다.
+  it.each([0, 1, 2, 5])(
+    'DirectRoute stops=%i → evaluateAlarmPhase 결과 type이 transfer가 아님',
+    (stops) => {
+      const route = makeDirectRoute(stops, '2');
+      const result = evaluateAlarmPhase(source({ route, destinationName }), new Set());
+      expect(result?.type).not.toBe('transfer');
+    },
+  );
+});
+
+describe('V2 — 환승 경로 transfer 알람 정확히 1회 (idempotent)', () => {
+  const destinationName = '강남';
+
+  // V2: hop ≥ 2 (transfer) → early:transfer 는 fired set에 적재 후 재호출 시 null
+  it('TransferRoute early:transfer가 이미 fired set에 있으면 동일 phase 재발사 X', () => {
+    const route = makeTransferRoute(1, 5);
+    const fired = new Set<string>();
+    const first = evaluateAlarmPhase(source({ route, destinationName }), fired);
+    expect(first).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+    // 실제 훅은 발사 후 alarmKey를 fired에 추가한다.
+    fired.add(alarmKey(first!));
+    const second = evaluateAlarmPhase(source({ route, destinationName }), fired);
+    // 같은 phase 재호출은 null — 중복 fire 없음 (X2 보조 검증).
+    expect(second?.phaseId).not.toBe('early');
+  });
+});
+
 describe('evaluateAlarmPhase', () => {
   const destinationName = '강남';
 

@@ -4633,4 +4633,72 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
     });
   });
+
+  // V/X acceptance 임계 직접 검증 (feedback_v_x_acceptance_full_table)
+  // NOTE: mockEvaluateSsotFireGate는 jest.clearAllMocks() 후 구현이 초기화되므로
+  //       각 describe에서 명시적으로 no-block 응답으로 재설정한다.
+  describe('V4 — N개 역 통과 → station-passed 정확히 N회 (count == 통과 역 수)', () => {
+    beforeEach(() => {
+      mockEvaluateSsotFireGate.mockResolvedValue({ blocked: false, reason: 'mirror-missing' as const });
+    });
+
+    it('3개 역 순차 통과 → sendStationPassedNotification 정확히 3회', async () => {
+      const route = makeDirectRoute(3, '2');
+      const nextTarget = {
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      };
+      const stations = [
+        makeStation('S1', '역삼'),
+        makeStation('S2', '선릉'),
+        makeStation('S3', '삼성'),
+      ];
+      mockResolveNextTarget.mockReturnValue(nextTarget);
+
+      const { rerender } = renderHook(
+        ({ s }: { s: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
+        { initialProps: { s: stations[0] } },
+      );
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1));
+
+      rerender({ s: stations[1] });
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2));
+
+      rerender({ s: stations[2] });
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(3));
+
+      // 정확히 3회 — 초과 없음 (X4 spam 보조 검증).
+      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('X4 — 같은 역 re-render 시 station-passed 중복 발사 없음 (lastNotifiedStationId dedup)', () => {
+    beforeEach(() => {
+      mockEvaluateSsotFireGate.mockResolvedValue({ blocked: false, reason: 'mirror-missing' as const });
+    });
+
+    it('lastNotifiedStationId가 이미 현재 역 ID면 station-passed 추가 발사 없음', async () => {
+      const route = makeDirectRoute(3, '2');
+      const station = makeStation('S1', '역삼');
+      const nextTarget = {
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      };
+      mockResolveNextTarget.mockReturnValue(nextTarget);
+      // storage에 이미 S1이 통지된 것으로 설정 — 즉시 dedup 적용.
+      mockGetLastNotifiedStationId.mockResolvedValue('S1');
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+      await waitFor(() => expect(mockGetLastNotifiedStationId).toHaveBeenCalled());
+      // dedup 적용 → 발사 없음.
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
 });
