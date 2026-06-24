@@ -24,6 +24,7 @@ import { useTrainPositions } from '../../../route/hooks/useTrainPositions';
 import { findTopNearestStations } from '../../utils/findNearestStation';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
 import { TRAIN_STATUS } from '../../../../shared/constants/trainStatus';
+import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../../shared/constants/realtime';
 import {
   arrivalRet,
   positionRet,
@@ -407,5 +408,100 @@ describe('#1705 ssotStation — lockless + currentStationLine line-matched resol
     });
     expect(hook.result.current.result?.station.id).toBe(hapjeong2.id);
     expect(hook.result.current.result?.station.line).toBe('2');
+  });
+});
+
+describe('#1773 (E) SSoT mirror staleness × stale GPS 겹침 회귀 가드', () => {
+  // GPS lastFixAtMs=T0-200_000: 200s old. GPS_FALLBACK_STALE_MAX_AGE_MS(300s) 이내라 GPS 게이트 통과.
+  // BACKEND_SSOT_MIRROR_MAX_AGE_MS = 180s. lastAdvanceAt으로 SSoT mirror 신선도 판정.
+  //
+  // 시나리오:
+  //   E1. mirror 60s old (fresh) + GPS 200s old → backend-ssot 채택 OK.
+  //   E2. mirror 170s old (한계 직전, 여전히 fresh) + GPS 200s old → backend-ssot 채택 OK.
+  //   E3. mirror 200s old (stale, >180s) + GPS 200s old → backend-ssot 채택 거부 → GPS fallback.
+
+  function setupBaselineGpsWithLastFix(stationName: string, lastFixAtMs: number) {
+    const stn = findStationByNameAndLine(stationName, '7')!;
+    const live = { station: stn, distanceKm: 0 };
+    (useNearestStation as jest.Mock).mockReturnValue({
+      result: live,
+      liveResult: live,
+      stickyDisplayOnly: null,
+      variants: [stn],
+      userLocation: { lat: stn.lat, lng: stn.lng },
+      ...GPS_BASE_DEFAULTS,
+      accuracyMeters: 14,
+      lastFixAtMs,
+      refresh: jest.fn(),
+    });
+    (findTopNearestStations as jest.Mock).mockReturnValue([{ station: stn, distanceKm: 0 }]);
+    (useArrivalInfo as jest.Mock).mockReturnValue(arrivalRet(null));
+    (useTrainPositions as jest.Mock).mockReturnValue(positionRet(null));
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    jest.setSystemTime(T0);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('E1: mirror 60s old(fresh) + GPS 200s old → backend-ssot 채택 OK', async () => {
+    // lastAdvanceAt = T0 - 60_000 (60s old). 60s < BACKEND_SSOT_MIRROR_MAX_AGE_MS(180s) → fresh.
+    // GPS 200s old는 GPS_FALLBACK_STALE_MAX_AGE_MS(300s) 이내 → GPS 게이트 통과.
+    // 결과: backend-ssot가 cascade 1순위로 채택됨.
+    setupBaselineGpsWithLastFix('청담', T0 - 200_000);
+    (readBackendSsotMirror as jest.Mock).mockResolvedValue(
+      makeBackendSsotMirrorEntry({
+        currentStationId: yongmasan.name,
+        lastAdvanceAt: T0 - 60_000,
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.confidence).toBe('backend-ssot');
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+  });
+
+  it('E2: mirror 170s old(한계 직전, still fresh) + GPS 200s old → backend-ssot 채택 OK', async () => {
+    // lastAdvanceAt = T0 - 170_000 (170s old). 170s < 180s → 아직 fresh(경계 직전).
+    // 이 edge case는 stale 직전 구간 — 채택 허용 확인.
+    setupBaselineGpsWithLastFix('청담', T0 - 200_000);
+    (readBackendSsotMirror as jest.Mock).mockResolvedValue(
+      makeBackendSsotMirrorEntry({
+        currentStationId: yongmasan.name,
+        lastAdvanceAt: T0 - 170_000,
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
+  });
+
+  it('E3: mirror 200s old(stale, >180s) + GPS 200s old → backend-ssot 채택 거부 → GPS fallback', async () => {
+    // lastAdvanceAt = T0 - 200_000 (200s old). 200s > 180s → stale → ssotFresh=false → 채택 거부.
+    // GPS 200s old는 GPS gate 통과 → GPS fallback으로 cascade 진행 (source='gps').
+    // mirror stale + GPS not stale → fusion이 GPS tier로 fallback (source != 'backend-ssot').
+    setupBaselineGpsWithLastFix('청담', T0 - 200_000);
+    (readBackendSsotMirror as jest.Mock).mockResolvedValue(
+      makeBackendSsotMirrorEntry({
+        currentStationId: yongmasan.name,
+        lastAdvanceAt: T0 - 200_000,
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushBackendSsotMirrorTick();
+    expect(hook.result.current.source).not.toBe('backend-ssot');
+    // GPS fallback으로 청담 채택 (GPS는 stale 아님 — 200s < 300s).
+    expect(hook.result.current.result?.station.name).toBe('청담');
   });
 });
