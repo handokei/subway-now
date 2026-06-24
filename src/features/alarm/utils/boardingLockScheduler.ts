@@ -48,22 +48,18 @@ const PHASE_INTERRUPTION: Record<AlarmPhaseId, 'active' | 'timeSensitive'> = {
 };
 
 /**
- * Per-Hop Adaptive Scheduling: 한 번에 큐에 두는 waypoint 수 (iOS 64 한도 안전).
+ * Per-Hop Adaptive Scheduling: 한 번에 큐에 두는 waypoint 수.
  *
- * #1399 — 3 → 10. 기존 3은 lock 활성 trip의 "다음 3 hop"만 floor로 깔아 destination/transfer 까지
- * 사전 예약이 도달하지 못했다 (S6/S8 14:10 군자/용마산 vanish + GPS 동결 시 device floor 부족).
- * 10으로 확장하면 평균 환승 trip(편당 hop 5~8)의 destination 까지 사전 예약이 깔린다.
+ * #1756 (#1538 S5 Sub 1) — 10 → Infinity. route의 남은 waypoint 전체를 한 번에 예약해
+ * GPS 동결 / backend silent push 끊김 상황에서도 destination / transfer 알람이
+ * 사전 예약 없이 누락되는 회귀를 원천 차단한다.
  *
- * iOS 한도(64) 분배:
- *  - bl:  10 stop × 2 phase = 20개
- *  - tba: 20 stop × 2 phase = 40개 (TRIPBOUND_WINDOW_SIZE)
- *  - 시스템 silent push delivery(1~2건) ≈ 4개
- *  - 합 ≈ 64 — 안전 마진 좁지만 advance 시 cancel/refill로 rolling 유지.
+ * iOS 64 한도 분배 조정은 Sub 2 (#1757)에서 별도 처리.
+ * 본 sub 단독 머지 시 iOS 64 한도를 초과할 수 있음 — Sub 2 의존.
  *
- * advance 시 `advanceHopWindow`가 다음 windowSize 만큼 채워 floor가 항상 유지된다. backend
- * silent push가 끊겨도 device 측 OS local notification이 시간기반으로 매역/하차 알림을 발사한다.
+ * advance 시 `advanceHopWindow`가 통과 hop cancel + 나머지 전체를 refill해 floor가 항상 유지된다.
  */
-const DEFAULT_WINDOW_SIZE = 10;
+const DEFAULT_WINDOW_SIZE = Infinity;
 
 export interface BoardingLockAlarmIdParts {
   trainCode: string;
