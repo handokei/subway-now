@@ -10,9 +10,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
+import type { Route } from '../../../shared/utils/stationRoute';
+import type { FusedRouteContext } from '../../../features/nearest-station/hooks/useFusedNearestStation';
 import {
   getTripStartedAt,
   tripLifecyclePhase,
@@ -1383,6 +1387,37 @@ function DebugModalInner({
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
   // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
   const insets = useSafeAreaInsets();
+  // #1812 — routeContext 빌드: HomeScreen이 ROUTE_KEY에 영속화한 route + destinationStore의
+  // tripOrigin + destination으로 routeContext를 구성한다. destination 변경 시 재조회.
+  // tripStartedAt과 동일 패턴 (AsyncStorage SSOT, destination 의존 effect).
+  const destination = useDestinationStore((s) => s.destination);
+  const tripOrigin = useDestinationStore((s) => s.tripOrigin);
+  const [persistedRoute, setPersistedRoute] = useState<Route>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!destination) {
+      setPersistedRoute(null);
+      return;
+    }
+    void AsyncStorage.getItem(ROUTE_KEY).then((raw) => {
+      if (cancelled) return;
+      try {
+        setPersistedRoute(raw ? (JSON.parse(raw) as Route) : null);
+      } catch {
+        setPersistedRoute(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [destination]);
+  const routeContext = useMemo<FusedRouteContext | undefined>(
+    () =>
+      persistedRoute && tripOrigin && destination
+        ? { route: persistedRoute, origin: tripOrigin, destination }
+        : undefined,
+    [persistedRoute, tripOrigin, destination],
+  );
   const {
     result,
     gpsResult,
@@ -1412,7 +1447,7 @@ function DebugModalInner({
     // #1678 — S9 accelerometer fingerprint vote 상태. 'automotive' = train 진동 env 1표.
     // 'unknown' = 60s window 미수렴 또는 네이티브 모듈 미지원(EAS rebuild 전).
     accelerometerPattern,
-  } = useFusedNearestStation();
+  } = useFusedNearestStation(undefined, undefined, routeContext);
   // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
   const routeHopCount = arcStations.length;
   const stationName = result?.station.name ?? null;
@@ -1470,8 +1505,8 @@ function DebugModalInner({
 
   // #1235 (D9 wire) — fusionDetection/trip/sleep SSOT 도출.
   // 호출자가 props로 명시 전달하면 그 값이 우선(테스트/외부 주입). 미전달이면 내부 SSOT 사용.
+  // destination은 routeContext 빌드 블록에서 이미 선언됨 (#1812).
   const sleepMode = useSettingsStore((s) => s.sleepMode);
-  const destination = useDestinationStore((s) => s.destination);
   const lockActive = lock !== null && !isBoardingLockExpired(lock, Date.now());
   // lockless trip = destination 설정됐고 boardingLock 비활성.
   const locklessTrip = destination !== null && !lockActive;
