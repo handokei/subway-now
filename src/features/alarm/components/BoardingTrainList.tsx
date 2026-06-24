@@ -594,7 +594,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     borderWidth: 1,
   },
-  delayChipText: { fontSize: 11, fontWeight: '700', letterSpacing: 0 },
+  delayChipText: { ...typography.micro, fontWeight: '700', letterSpacing: 0 },
   // #1165 — pending 상태 visual은 row outline border로 처리. 별도 marker는 0×0 invisible View.
   // 테스트에서 testID로 pending 진입을 확인하기 위함이며, layout/접근성에 영향을 주지 않는다.
   pendingMarker: { width: 0, height: 0 },

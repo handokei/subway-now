@@ -114,5 +114,5 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     borderWidth: 1,
   },
-  delayChipText: { fontSize: 11, fontWeight: '700', letterSpacing: 0 },
+  delayChipText: { ...typography.micro, fontWeight: '700', letterSpacing: 0 },
 });

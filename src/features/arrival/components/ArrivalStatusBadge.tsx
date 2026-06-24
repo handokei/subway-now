@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme } from '../../../shared/theme';
+import { useTheme, typography } from '../../../shared/theme';
 import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import {
   TRAIN_TYPE_LABEL,
@@ -121,7 +121,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   // 한글/영문 혼용(ITX)이라 typography.label의 uppercase/letterSpacing은 적용하지 않는다.
-  text: { fontSize: 10, fontWeight: '700', letterSpacing: 0 },
+  text: { ...typography.badge, fontWeight: '700', letterSpacing: 0 },
   // filled variant는 안전성 직결 정보(급행) → 한 단계 더 키워 시선 끌어옴.
-  textFilled: { fontSize: 11 },
+  textFilled: { ...typography.micro },
 });

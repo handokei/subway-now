@@ -13,7 +13,7 @@ import { Station } from '../../../shared/types/station';
 import { haversine } from '../../../shared/utils/haversine';
 import { LINE_BADGE_LABEL } from '../../../shared/constants/lineColors';
 import { groupStationsByName } from '../../nearest-station/utils/groupStationsByName';
-import { useTheme } from '../../../shared/theme';
+import { useTheme, typography } from '../../../shared/theme';
 
 interface StationMapProps {
   userLat: number;
@@ -99,11 +99,11 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   emptyText: {
-    fontSize: 14,
+    ...typography.bodySm,
     textAlign: 'center',
   },
   header: {
-    fontSize: 12,
+    ...typography.captionSm,
     letterSpacing: 1,
     textTransform: 'uppercase',
     marginBottom: 16,
@@ -128,16 +128,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   badgeText: {
-    fontSize: 11,
+    ...typography.micro,
     fontWeight: '700',
     color: '#ffffff',
   },
   name: {
     flex: 1,
-    fontSize: 16,
+    ...typography.bodyMd,
     fontWeight: '600',
   },
   distance: {
-    fontSize: 13,
+    ...typography.caption,
   },
 });

@@ -33,7 +33,7 @@ export function EditorialArrivalRow({ train }: Props) {
       <View style={{ minWidth: 90 }}>
         <Text>
           <Text style={[typography.countMM, { color: colors.ink }]}>{mm}</Text>
-          <Text style={{ fontSize: 20, color: colors.subtle }}> : </Text>
+          <Text style={[typography.titleXs, { color: colors.subtle }]}> : </Text>
           <Text style={[typography.countSS, { color: colors.muted }]}>{ss}</Text>
         </Text>
       </View>

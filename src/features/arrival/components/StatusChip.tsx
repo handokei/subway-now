@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useTheme, spacing } from '../../../shared/theme';
+import { useTheme, typography, spacing } from '../../../shared/theme';
 
 interface StatusChipProps {
   label: string;
@@ -31,16 +31,16 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   label: {
-    fontSize: 12,
+    ...typography.captionSm,
     fontWeight: '700',
   },
   name: {
-    fontSize: 14,
+    ...typography.bodySm,
     fontWeight: '600',
     flex: 1,
   },
   close: {
-    fontSize: 16,
+    ...typography.bodyMd,
     paddingHorizontal: spacing.xs,
   },
 });

@@ -59,14 +59,23 @@ export const font = {
 };
 
 export const typography = {
-  hero:    { fontFamily: font.bold,     fontSize: 44, letterSpacing: -1.4, lineHeight: 44 * 0.95 },
-  title:   { fontFamily: font.bold,     fontSize: 26, letterSpacing: -0.7, lineHeight: 26 },
-  countMM: { fontFamily: font.bold,     fontSize: 32, letterSpacing: -0.8 },
-  countSS: { fontFamily: font.semibold, fontSize: 24, letterSpacing: -0.8 },
-  body:    { fontFamily: font.medium,   fontSize: 17, letterSpacing: -0.3 },
-  bodySm:  { fontFamily: font.medium,   fontSize: 14 },
-  label:   { fontFamily: font.medium,   fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase' as const },
-  mono:    { fontFamily: font.mono,     fontSize: 11, letterSpacing: 0.6 },
+  hero:      { fontFamily: font.bold,     fontSize: 44, letterSpacing: -1.4, lineHeight: 44 * 0.95 },
+  title:     { fontFamily: font.bold,     fontSize: 26, letterSpacing: -0.7, lineHeight: 26 },
+  titleSm:   { fontFamily: font.bold,     fontSize: 22, letterSpacing: -0.5 },
+  titleXs:   { fontFamily: font.bold,     fontSize: 20 },
+  countMM:   { fontFamily: font.bold,     fontSize: 32, letterSpacing: -0.8 },
+  countSS:   { fontFamily: font.semibold, fontSize: 24, letterSpacing: -0.8 },
+  body:      { fontFamily: font.medium,   fontSize: 17, letterSpacing: -0.3 },
+  bodyLg:    { fontFamily: font.medium,   fontSize: 18 },
+  bodyMd:    { fontFamily: font.medium,   fontSize: 16 },
+  bodyBase:  { fontFamily: font.medium,   fontSize: 15 },
+  bodySm:    { fontFamily: font.medium,   fontSize: 14 },
+  caption:   { fontFamily: font.medium,   fontSize: 13 },
+  captionSm: { fontFamily: font.medium,   fontSize: 12 },
+  micro:     { fontFamily: font.medium,   fontSize: 11 },
+  badge:     { fontFamily: font.medium,   fontSize: 10 },
+  label:     { fontFamily: font.medium,   fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase' as const },
+  mono:      { fontFamily: font.mono,     fontSize: 11, letterSpacing: 0.6 },
 };
 
 export const spacing = {

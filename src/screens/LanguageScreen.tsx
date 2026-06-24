@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Stack, useRouter } from 'expo-router';
 import { useLocaleStore, type LocalePreference } from '../shared/i18n/store/useLocaleStore';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
-import { useTheme, spacing } from '../shared/theme';
+import { useTheme, typography, spacing } from '../shared/theme';
 
 export default function LanguageScreen() {
   const localePreference = useLocaleStore((s) => s.localePreference);
@@ -95,7 +95,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   localeRowLabel: {
-    fontSize: 16,
+    ...typography.bodyMd,
     fontWeight: '500',
   },
   localeRadio: {

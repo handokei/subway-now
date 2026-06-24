@@ -3,7 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { Station } from '../../../shared/types/station';
 import { LINE_NAMES } from '../../../shared/constants/lineColors';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
-import { useTheme, spacing, radius } from '../../../shared/theme';
+import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
 interface Props {
   readonly suggestions: readonly Station[];
@@ -54,7 +54,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   name: {
-    fontSize: 15,
+    ...typography.bodyBase,
   },
   lineBadge: {
     borderRadius: 4,
@@ -63,7 +63,7 @@ const styles = StyleSheet.create({
   },
   lineText: {
     color: '#ffffff',
-    fontSize: 12,
+    ...typography.captionSm,
     fontWeight: 'bold',
   },
 });

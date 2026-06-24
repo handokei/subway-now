@@ -1055,14 +1055,14 @@ export default function HomeScreen() {
                       <Text style={[typography.label, { color: colors.muted, marginBottom: 4 }]}>
                         {t('home.routeTo')}
                       </Text>
-                      <Text style={{ fontSize: 32, fontWeight: '900', letterSpacing: -0.8, color: colors.ink }}>{getStationDisplayName(destination)}</Text>
+                      <Text style={[typography.countMM, { fontWeight: '900', color: colors.ink }]}>{getStationDisplayName(destination)}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
                       {displayEta != null && (
                         <>
                           <Text style={[typography.countMM, { color: colors.ink }]}>
                             {displayEta}
-                            <Text style={{ fontSize: 13, color: colors.muted }}> min</Text>
+                            <Text style={[typography.caption, { color: colors.muted }]}> min</Text>
                           </Text>
                           <Text style={[typography.label, { color: colors.subtle, marginTop: 4 }]}>
                             {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {journey?.totalStops ?? 0} STOPS
@@ -1413,7 +1413,7 @@ export default function HomeScreen() {
           </>
         ) : locationUncertain ? (
           <View style={styles.center} testID="location-uncertain">
-            <Text style={styles.icon}>📍</Text>
+            <Text style={styles.icon} allowFontScaling={false}>📍</Text>
             <Text style={[styles.title, { color: colors.ink }]}>{t('home.locationUncertainTitle')}</Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.locationUncertainDescription')}</Text>
             <TouchableOpacity
@@ -1426,7 +1426,7 @@ export default function HomeScreen() {
           </View>
         ) : (
           <View style={styles.center} testID="home-not-near-station">
-            <Text style={styles.icon}>🚶</Text>
+            <Text style={styles.icon} allowFontScaling={false}>🚶</Text>
             <Text
               style={[styles.title, { color: colors.ink }]}
               testID="home-not-near-station-title"
@@ -1601,7 +1601,7 @@ const styles = StyleSheet.create({
   },
   arrivedBannerText: {
     color: '#ffffff', // success 배경 위 텍스트 — 항상 흰색 유지
-    fontSize: 18,
+    ...typography.bodyLg,
     fontWeight: '700',
   },
   center: {
@@ -1617,7 +1617,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   favoriteIcon: {
-    fontSize: 26,
+    ...typography.title,
     marginLeft: spacing.md,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
@@ -1634,11 +1634,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   routePillText: {
-    fontSize: 13,
+    ...typography.caption,
     fontWeight: '600',
   },
   routePillSub: {
-    fontSize: 11,
+    ...typography.micro,
     marginTop: 2,
   },
   actionsRow: {
@@ -1693,11 +1693,11 @@ const styles = StyleSheet.create({
     marginLeft: spacing.sm,
   },
   recentDestinationDeleteText: {
-    fontSize: 16,
+    ...typography.bodyMd,
     fontWeight: '700',
   },
   recentDestinationLabel: {
-    fontSize: 11,
+    ...typography.micro,
     fontWeight: '600',
     letterSpacing: 0.5,
     marginBottom: 4,
@@ -1708,7 +1708,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   recentDestinationName: {
-    fontSize: 16,
+    ...typography.bodyMd,
     fontWeight: '700',
   },
   recentLineBadge: {
@@ -1718,7 +1718,7 @@ const styles = StyleSheet.create({
   },
   recentLineText: {
     color: '#fff', // 노선색(lineColor) 배경 위 텍스트 — 항상 흰색 유지
-    fontSize: 11,
+    ...typography.micro,
     fontWeight: 'bold',
   },
   destinationButton: {
@@ -1727,7 +1727,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   destinationButtonText: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '700',
   },
   arrivalSection: {
@@ -1738,7 +1738,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   sectionTitle: {
-    fontSize: 14,
+    ...typography.bodySm,
     marginBottom: spacing.lg,
     letterSpacing: 1,
     textTransform: 'uppercase',
@@ -1749,34 +1749,34 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   arrivalLabel: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '600',
     marginBottom: spacing.xs,
   },
   arrivalItem: {
-    fontSize: 15,
+    ...typography.bodyBase,
   },
   icon: {
-    fontSize: 48,
+    fontSize: 48, // emoji icon — allowFontScaling={false} applied at render
     marginBottom: 16,
   },
   title: {
-    fontSize: 22,
+    ...typography.titleSm,
     fontWeight: '700',
     marginBottom: 12,
     textAlign: 'center',
   },
   subtitle: {
-    fontSize: 15,
+    ...typography.bodyBase,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
   },
   loadingText: {
-    fontSize: 16,
+    ...typography.bodyMd,
   },
   errorText: {
-    fontSize: 16,
+    ...typography.bodyMd,
     marginBottom: 16,
   },
   button: {
@@ -1785,7 +1785,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   buttonText: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '700',
   },
 });

@@ -24,7 +24,7 @@ import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../shared/utils/formatTime';
 import { getStationDisplayName, matchesStationQuery } from '../shared/utils/stationDisplay';
-import { useTheme, type ThemeColors } from '../shared/theme';
+import { useTheme, typography, type ThemeColors } from '../shared/theme';
 import stationsData from '../data/stations.json';
 import { ArrivalSourceNotice } from '../features/arrival/components/ArrivalSourceNotice';
 import type { StationArrival } from '../features/arrival/api/arrivalApi';
@@ -130,7 +130,7 @@ export default function FavoritesScreen() {
             </View>
             {generalFavorites.length === 0 ? (
               <View style={styles.empty} testID="favorites-empty">
-                <Text style={styles.emptyIcon}>⭐</Text>
+                <Text style={styles.emptyIcon} allowFontScaling={false}>⭐</Text>
                 <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.empty')}</Text>
                 <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
                   {t('favorites.emptyDescription')}
@@ -478,7 +478,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
   },
   header: {
-    fontSize: 14,
+    ...typography.bodySm,
     marginBottom: 16,
     letterSpacing: 2,
     textTransform: 'uppercase',
@@ -487,7 +487,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    fontSize: 15,
+    ...typography.bodyBase,
     marginBottom: 16,
     borderWidth: 1,
   },
@@ -498,16 +498,16 @@ const styles = StyleSheet.create({
     paddingTop: 60,
   },
   emptyIcon: {
-    fontSize: 48,
+    fontSize: 48, // emoji icon — allowFontScaling={false} applied at render
     marginBottom: 16,
   },
   emptyTitle: {
-    fontSize: 18,
+    ...typography.bodyLg,
     fontWeight: '700',
     marginBottom: 8,
   },
   emptySubtitle: {
-    fontSize: 14,
+    ...typography.bodySm,
     textAlign: 'center',
     lineHeight: 22,
   },
@@ -533,7 +533,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   expandIcon: {
-    fontSize: 12,
+    ...typography.captionSm,
   },
   badge: {
     alignSelf: 'flex-start',
@@ -544,15 +544,15 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     color: '#ffffff', // 노선색(lineColor) 배경은 항상 진한색 — 흰 텍스트 유지
-    fontSize: 12,
+    ...typography.captionSm,
     fontWeight: '700',
   },
   stationName: {
-    fontSize: 20,
+    ...typography.titleXs,
     fontWeight: '700',
   },
   subStationName: {
-    fontSize: 13,
+    ...typography.caption,
     marginTop: 2,
   },
   labelEditor: {
@@ -568,7 +568,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    fontSize: 14,
+    ...typography.bodySm,
     borderWidth: 1,
   },
   labelButton: {
@@ -577,7 +577,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   labelButtonText: {
-    fontSize: 13,
+    ...typography.caption,
     fontWeight: '600',
   },
   removeButton: {
@@ -586,7 +586,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   removeText: {
-    fontSize: 13,
+    ...typography.caption,
     fontWeight: '600',
   },
   addButton: {
@@ -597,7 +597,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   addButtonText: {
-    fontSize: 18,
+    ...typography.bodyLg,
     fontWeight: '700',
     lineHeight: 20,
   },
@@ -612,21 +612,21 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   arrivalLabel: {
-    fontSize: 14,
+    ...typography.bodySm,
     fontWeight: '600',
   },
   arrivalItem: {
-    fontSize: 14,
+    ...typography.bodySm,
     textAlign: 'right',
   },
   statusMessage: {
-    fontSize: 11,
+    ...typography.micro,
     textAlign: 'right',
     marginTop: 1,
     marginBottom: 2,
   },
   noArrival: {
-    fontSize: 13,
+    ...typography.caption,
     textAlign: 'center',
     paddingVertical: 4,
   },
@@ -652,18 +652,18 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   slotIcon: {
-    fontSize: 18,
+    ...typography.bodyLg,
   },
   slotLabel: {
-    fontSize: 15,
+    ...typography.bodyBase,
     fontWeight: '700',
   },
   slotHint: {
-    fontSize: 12,
+    ...typography.captionSm,
     flexShrink: 1,
   },
   slotStation: {
-    fontSize: 13,
+    ...typography.caption,
     flexShrink: 1,
   },
   slotClear: {
@@ -671,7 +671,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   slotClearText: {
-    fontSize: 22,
+    ...typography.titleSm,
     fontWeight: '700',
     lineHeight: 24,
   },
@@ -683,10 +683,10 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   slotModalTitle: {
-    fontSize: 18,
+    ...typography.bodyLg,
     fontWeight: '700',
   },
   slotModalClose: {
-    fontSize: 16,
+    ...typography.bodyMd,
   },
 });
