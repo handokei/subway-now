@@ -211,9 +211,9 @@ describe('scheduleHopsForLock', () => {
     expect(ids).toContain('bl:T-100:1:imminent:오금');
   });
 
-  it('multi-transfer: windowSize 기본=10이라 4 waypoint 모두 예약됨 (#1399)', async () => {
+  it('multi-transfer: windowSize 기본=Infinity라 4 waypoint 모두 예약됨 (#1756)', async () => {
     await scheduleHopsForLock({ lock, route: multiRoute, destinationName: '온수' });
-    // targets = 교대, 약수, 한강진, 온수. window=10 (#1399) → 모두 예약 → destination floor 보장.
+    // targets = 교대, 약수, 한강진, 온수. window=Infinity (#1756) → 모두 예약 → destination floor 보장.
     const ids = mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
     expect(ids.some((id) => id.includes(':2:'))).toBe(true); // 한강진(idx=2)
     expect(ids.some((id) => id.includes(':3:'))).toBe(true); // 온수(idx=3) destination도 floor
@@ -527,15 +527,15 @@ describe('advanceHopWindow', () => {
     });
     expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:교대');
     const newIds = mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
-    // 1은 이미 있으므로 skip, 2(한강진)와 3(온수)는 채움. (windowSize=3 → 범위 [1..3])
+    // 1은 이미 있으므로 skip, 2(한강진)와 3(온수)는 채움. (windowSize=Infinity → 범위 [1..3])
     expect(newIds.some((id) => id.startsWith('bl:T-100:1:'))).toBe(false);
     expect(newIds.some((id) => id.startsWith('bl:T-100:2:'))).toBe(true);
     expect(newIds.some((id) => id.startsWith('bl:T-100:3:'))).toBe(true);
   });
 
   it('정상 호출(0 → 1): hopIndex 0 cancel + window 끝 hop만 새로 예약', async () => {
-    // multiRoute targets: 교대(0), 약수(1), 한강진(2), 온수(3). window=3 → 0,1,2 예약됨.
-    // 교대 통과 시: hopIndex 0 cancel + 새 hop = passedIndex(0) + window(3) = 3 (온수) 예약.
+    // multiRoute targets: 교대(0), 약수(1), 한강진(2), 온수(3). window=Infinity → 0,1,2,3 예약됨.
+    // 교대 통과 시: hopIndex 0 cancel + 새 hop = 남은 미예약 = 3 (온수) 예약.
     mockedGet.mockResolvedValueOnce([
       'bl:T-100:0:early:교대',
       'bl:T-100:0:imminent:교대',
