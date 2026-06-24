@@ -37,6 +37,8 @@ export interface RawSignalEntry {
   kind: RawSignalKind;
   gps: RawSignalGps | null;
   motion: MotionLabel | null;
+  /** #1769 — accelerometer fingerprint 분류 결과 (classifyAccelerometerPattern). motion(CMMotionActivity)과 별도 채널. */
+  accelPattern: MotionLabel | null;
   subsurface: boolean | null;
   arvlCd: number | null;
   line: string | null;

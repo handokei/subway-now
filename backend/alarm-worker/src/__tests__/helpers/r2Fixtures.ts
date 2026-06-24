@@ -24,7 +24,7 @@ export interface FakeR2Archive {
  * deviceMetadata)이지만 stats 산출엔 alarmLog만 필요하므로 최소 2 line으로 축약.
  */
 export function buildAlarmLogNdjsonFixture(
-  entries: Array<{ source?: string; outcome?: string; reason?: string }>,
+  entries: Array<{ source?: string; outcome?: string; reason?: string; stationName?: string }>,
   tripEndedAt: number,
 ): string {
   return [

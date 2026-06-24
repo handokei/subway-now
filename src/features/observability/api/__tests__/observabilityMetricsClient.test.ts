@@ -35,6 +35,12 @@ function makeMetrics(): ObservabilityMetrics {
     silentPushDeliveryRatio: { value: 5, total: 6, ratio: 0.833 },
     locklessMissRatio: { value: 1, total: 10, ratio: 0.1 },
     boardableMissRatio: { value: 0, total: 0, ratio: 0 },
+    accelPatternHitRatio: {
+      automotive: { count: 5, ratio: 0.5 },
+      walking: { count: 2, ratio: 0.2 },
+      stationary: { count: 2, ratio: 0.2 },
+      unknown: { count: 1, ratio: 0.1 },
+    },
     window: '24h',
     timestamp: 1_700_000_000_000,
   };

@@ -69,7 +69,10 @@ export type AlarmLogSource =
   //   'cross-trip-mirror-launch'   : R11-c (useLaunchTripReconciliation.ts:89, active trip 없을 때 clear)
   | 'cross-trip-mirror-register'
   | 'cross-trip-mirror-mismatch'
-  | 'cross-trip-mirror-launch';
+  | 'cross-trip-mirror-launch'
+  // #1769 — accelerometer pattern 관찰 stamp. automotive/walking/stationary/unknown 4 pattern.
+  // 1s dedup으로 같은 pattern 연속 시 1건만 적재 — 폴링 cycle마다 중복 log spam 방지.
+  | 'accel-pattern-observed';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1021,6 +1024,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'cross-trip-mirror-register': null,
   'cross-trip-mirror-mismatch': null,
   'cross-trip-mirror-launch': null,
+  'accel-pattern-observed': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1568,6 +1572,38 @@ export function logBoardingPromptResponded(input: {
 }
 
 
+
+// #1769 — accel-pattern-observed dedup: 같은 pattern 연속 1s 이내 repeat 시 drop.
+// 4 pattern 각각 별도 타임스탬프. Map key = MotionLabel('automotive'|'walking'|'stationary'|'unknown').
+export const ACCEL_PATTERN_DEDUP_MS = 1_000;
+const lastAccelPatternTs = new Map<string, number>();
+
+/**
+ * #1769 — accelerometer pattern 관찰 1건 적재.
+ *
+ * accelerometer fingerprint cycle에서 pattern이 결정될 때 호출된다.
+ * pattern: 'automotive' | 'walking' | 'stationary' | 'unknown'
+ * 1s dedup — 같은 pattern이 연속 발생해도 1건만 적재. 다른 pattern으로 전환되면 즉시 새 엔트리.
+ * source='accel-pattern-observed', outcome='received' (관찰 신호).
+ */
+export function logAccelPatternObserved(pattern: 'automotive' | 'walking' | 'stationary' | 'unknown'): void {
+  const now = Date.now();
+  const last = lastAccelPatternTs.get(pattern);
+  if (last !== undefined && now - last < ACCEL_PATTERN_DEDUP_MS) return;
+  lastAccelPatternTs.set(pattern, now);
+  appendAlarmLog({
+    ts: now,
+    source: 'accel-pattern-observed',
+    outcome: 'received',
+    // stationName 슬롯에 pattern 인코딩 — 기존 schema 확장 없이 DebugModal에서 가시화.
+    stationName: pattern,
+  });
+}
+
+/** 테스트용 — accel-pattern dedup 윈도우 리셋. */
+export function _resetAccelPatternWindowForTests(): void {
+  lastAccelPatternTs.clear();
+}
 
 // ── CRUD ──
 

@@ -23,6 +23,7 @@ function entry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     kind: 'cycle',
     gps: { lat: 37.5, lng: 127, accM: 30, speedMps: 1.2 },
     motion: null,
+    accelPattern: null,
     subsurface: false,
     arvlCd: null,
     line: '2',
@@ -225,6 +226,27 @@ describe('rawSignalBuffer (#1501 PR-A)', () => {
       // pending timer 없는지 advance로 확인
       jest.advanceTimersByTime(RAW_SIGNAL_WRITE_THROTTLE_MS * 2);
       expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── #1769 accelPattern 필드 ──────────────────────────────────────────────────
+
+  describe('accelPattern field (#1769)', () => {
+    it('accelPattern=automotive 값이 push/get에 보존된다', () => {
+      pushRawSignal(entry({ accelPattern: 'automotive' }));
+      expect(getRawSignalEntries()[0].accelPattern).toBe('automotive');
+    });
+
+    it('accelPattern=null 값이 push/get에 보존된다', () => {
+      pushRawSignal(entry({ accelPattern: null }));
+      expect(getRawSignalEntries()[0].accelPattern).toBeNull();
+    });
+
+    it('accelPattern이 hydration 후 복원된다', async () => {
+      const stored = [entry({ accelPattern: 'walking' })];
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(stored));
+      await hydrateRawSignalBuffer();
+      expect(getRawSignalEntries()[0].accelPattern).toBe('walking');
     });
   });
 });

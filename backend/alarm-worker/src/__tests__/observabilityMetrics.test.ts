@@ -51,6 +51,12 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       silentPushDeliveryRatio: { value: 3, total: 4, ratio: 0.75 },
       locklessMissRatio: { value: 1, total: 8, ratio: 1 / 8 },
       boardableMissRatio: { value: 0, total: 0, ratio: 0 },
+      accelPatternHitRatio: {
+        automotive: { count: 2, ratio: 0.5 },
+        walking: { count: 1, ratio: 0.25 },
+        stationary: { count: 1, ratio: 0.25 },
+        unknown: { count: 0, ratio: 0 },
+      },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -80,6 +86,12 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       silentPushDeliveryRatio: { value: 0, total: 0, ratio: 0 },
       locklessMissRatio: { value: 0, total: 0, ratio: 0 },
       boardableMissRatio: { value: 0, total: 0, ratio: 0 },
+      accelPatternHitRatio: {
+        automotive: { count: 0, ratio: 0 },
+        walking: { count: 0, ratio: 0 },
+        stationary: { count: 0, ratio: 0 },
+        unknown: { count: 0, ratio: 0 },
+      },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -276,5 +288,75 @@ describe('computeObservabilityMetrics — response shape', () => {
     const r2 = makeEmptyFakeR2();
     const result = await computeObservabilityMetrics(r2, undefined, NOW);
     expect(result.timestamp).toBe(NOW);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — accelPatternHitRatio (#1769)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — accelPatternHitRatio (#1769)', () => {
+  it('empty R2 → all pattern count=0, ratio=0', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.accelPatternHitRatio.automotive.count).toBe(0);
+    expect(result.accelPatternHitRatio.walking.count).toBe(0);
+    expect(result.accelPatternHitRatio.stationary.count).toBe(0);
+    expect(result.accelPatternHitRatio.unknown.count).toBe(0);
+    expect(result.accelPatternHitRatio.automotive.ratio).toBe(0);
+  });
+
+  it('accel-pattern-observed entries → 4 pattern 분포 계산', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/accel-x.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'automotive' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'automotive' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'walking' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'stationary' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    const { accelPatternHitRatio } = result;
+    expect(accelPatternHitRatio.automotive.count).toBe(2);
+    expect(accelPatternHitRatio.walking.count).toBe(1);
+    expect(accelPatternHitRatio.stationary.count).toBe(1);
+    expect(accelPatternHitRatio.unknown.count).toBe(0);
+    // total = 4, automotive ratio = 2/4 = 0.5
+    expect(accelPatternHitRatio.automotive.ratio).toBeCloseTo(0.5);
+    expect(accelPatternHitRatio.walking.ratio).toBeCloseTo(0.25);
+    expect(accelPatternHitRatio.stationary.ratio).toBeCloseTo(0.25);
+    expect(accelPatternHitRatio.unknown.ratio).toBe(0);
+  });
+
+  it('ratio 합계는 1.0 (혼합 패턴)', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/accel-y.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'automotive' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'walking' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'stationary' },
+            { source: 'accel-pattern-observed', outcome: 'received', stationName: 'unknown' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    const { accelPatternHitRatio } = result;
+    const ratioSum = accelPatternHitRatio.automotive.ratio +
+      accelPatternHitRatio.walking.ratio +
+      accelPatternHitRatio.stationary.ratio +
+      accelPatternHitRatio.unknown.ratio;
+    expect(ratioSum).toBeCloseTo(1.0);
   });
 });

@@ -78,6 +78,9 @@ import {
   countBoardingPromptAutoLockOutcomes,
   countAutoLockReasonsByWindow,
   logScheduleSkipped,
+  logAccelPatternObserved,
+  _resetAccelPatternWindowForTests,
+  ACCEL_PATTERN_DEDUP_MS,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -130,6 +133,7 @@ describe('alarmLog', () => {
     _resetRefMismatchWindowForTests();
     _resetBurstSuppressWindowForTests();
     _resetFusionPickerTierWindowForTests();
+    _resetAccelPatternWindowForTests();
     // #735 — 모듈 스코프 pending/timer 격리.
     resetAlarmLogForTest();
   });
@@ -2676,6 +2680,71 @@ describe('alarmLog', () => {
         { ts: nowMs - ONE_HOUR_MS - 1, tier: 'gpsFallback' },
       ];
       expect(formatFusionPickerTierDistribution(entries, nowMs)).toBe('(none)');
+    });
+  });
+
+  // ── #1769 logAccelPatternObserved ───────────────────────────────────────────
+
+  describe('logAccelPatternObserved (#1769)', () => {
+    it('첫 호출은 source=accel-pattern-observed / outcome=received / stationName=pattern으로 적재', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logAccelPatternObserved('automotive');
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('accel-pattern-observed');
+      expect(stored[0].outcome).toBe('received');
+      expect(stored[0].stationName).toBe('automotive');
+    });
+
+    it('4 pattern 모두 지원 (automotive/walking/stationary/unknown)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      for (const pattern of ['automotive', 'walking', 'stationary', 'unknown'] as const) {
+        logAccelPatternObserved(pattern);
+      }
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const names = stored.map((e) => e.stationName);
+      expect(names).toContain('automotive');
+      expect(names).toContain('walking');
+      expect(names).toContain('stationary');
+      expect(names).toContain('unknown');
+    });
+
+    it(`같은 pattern ${ACCEL_PATTERN_DEDUP_MS}ms 이내 반복 호출 → 1건만 적재`, async () => {
+      jest.useFakeTimers();
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logAccelPatternObserved('automotive');
+      logAccelPatternObserved('automotive');
+      logAccelPatternObserved('automotive');
+      jest.advanceTimersByTime(ACCEL_PATTERN_DEDUP_MS + 1);
+      jest.useRealTimers();
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const automotiveEntries = stored.filter((e) => e.stationName === 'automotive');
+      expect(automotiveEntries).toHaveLength(1);
+    });
+
+    it('다른 pattern으로 전환 시 즉시 새 엔트리 적재', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logAccelPatternObserved('automotive');
+      logAccelPatternObserved('walking'); // 다른 pattern → dedup 윈도우 무관
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(2);
+      expect(stored[0].stationName).toBe('automotive');
+      expect(stored[1].stationName).toBe('walking');
+    });
+
+    it('_resetAccelPatternWindowForTests 후 같은 pattern 재적재 가능', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logAccelPatternObserved('automotive');
+      _resetAccelPatternWindowForTests();
+      logAccelPatternObserved('automotive');
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const automotiveEntries = stored.filter((e) => e.stationName === 'automotive');
+      expect(automotiveEntries).toHaveLength(2);
     });
   });
 });

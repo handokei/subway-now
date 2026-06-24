@@ -30,6 +30,7 @@ function makeEntry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     kind: 'cycle',
     gps: null,
     motion: null,
+    accelPattern: null,
     subsurface: null,
     arvlCd: null,
     line: '2',
