@@ -21,6 +21,13 @@ const mockUseArrival = useArrivalInfo as jest.Mock;
 const mockPrefetchArrival = prefetchArrival as jest.Mock;
 const mockRefetch = jest.fn();
 
+jest.mock('../../utils/findActiveTransferContext', () => {
+  const actual = jest.requireActual('../../utils/findActiveTransferContext');
+  return { ...actual, findActiveTransferContext: jest.fn(actual.findActiveTransferContext) };
+});
+import { findActiveTransferContext } from '../../utils/findActiveTransferContext';
+const mockFindActiveTransferContext = findActiveTransferContext as jest.Mock;
+
 const mockCreateLock = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../../alarm/store/useBoardingLockStore', () => {
   const actual = jest.requireActual('../../../alarm/store/useBoardingLockStore');
@@ -296,6 +303,9 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
     jest.clearAllMocks();
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
+    // clearAllMocks resets mock implementation — restore real behavior as default.
+    const actual = jest.requireActual<typeof import('../../utils/findActiveTransferContext')>('../../utils/findActiveTransferContext');
+    mockFindActiveTransferContext.mockImplementation(actual.findActiveTransferContext);
   });
 
   const gondeokOn5Id = (findStationByNameAndLine('공덕', '5') as Station).id;
@@ -486,6 +496,31 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
     // 다시 환승역 진입 — autoLock 재발사.
     rerender({ currentStation: gondeokOn6 });
     expect(mockCreateLock).toHaveBeenCalledTimes(2);
+  });
+
+  it('#1740 — context.direction=null (방향 미확정) → destinationDirection=undefined, 양방향 합산 후 autoLock 정상 발사', () => {
+    // context.direction === null은 resolveDirectionInLine이 index 비교에 실패한 edge-case.
+    // pickAutoTrainCodeFromArrivals에 destinationDirection=undefined가 전달되고,
+    // filterArrivalsByDirection가 양방향을 합산한 arrivals에서 단일 train을 선정해 lock이 생성된다.
+    const arrived = makeTrain({ trainCode: 'T-DIR-NULL', arrivalCode: 2, arrivalSeconds: 15 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    mockFindActiveTransferContext.mockReturnValueOnce({
+      transferStationInToLine: findStationByNameAndLine('공덕', '5') as Station,
+      nextLine: '5' as const,
+      nextWaypointName: '여의나루',
+      direction: null,
+      completedTransferIdx: 0,
+    });
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+    expect(mockCreateLock).toHaveBeenCalledWith(expect.objectContaining({ trainCode: 'T-DIR-NULL' }));
   });
 });
 

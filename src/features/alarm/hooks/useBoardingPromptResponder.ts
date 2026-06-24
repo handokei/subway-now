@@ -192,14 +192,15 @@ async function tryAutoLock(
 
   // #1740 — destination 방향 filter. payload.destinationDirection이 있으면 해당 방향만 선택.
   // 없으면 양방향 모두 후보 (backward compat). 이후 line + arrivalSeconds 필터 적용.
+  const { destinationDirection } = payload;
   const directionSlice: readonly ArrivalInfo[] =
-    payload.destinationDirection != null
-      ? arrival[payload.destinationDirection]
+    destinationDirection === 'up' || destinationDirection === 'down'
+      ? arrival[destinationDirection]
       : ([] as ArrivalInfo[]).concat(arrival.up, arrival.down);
   const sameLine = directionSlice.filter(
     (a) => a.line === payload.line && a.arrivalSeconds > 0,
   );
-  const chosen = pickAutoTrainCodeFromArrivals(sameLine, payload.destinationDirection);
+  const chosen = pickAutoTrainCodeFromArrivals(sameLine, destinationDirection);
   if (!chosen) {
     log.info('ambiguity or empty — auto lock skipped');
     // 빈 후보와 ambiguity 구분: sameLine이 1개 이상인데 chosen이 null이면 ambiguity.
