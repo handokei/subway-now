@@ -399,6 +399,11 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       'apns-push-type': 'background',
       'apns-priority': '5',
       'content-type': 'application/json',
+      // #1788 — thread-id groups notifications by trip. iOS collapses same-thread banners in
+      // Notification Center. undefined(미전달) 시 헤더 자체를 omit해 구 device와 byte-level 호환.
+      ...(options.payload.tripToken !== undefined
+        ? { 'apns-thread-id': options.payload.tripToken }
+        : {}),
     },
     body,
   });
@@ -421,6 +426,11 @@ export interface SendAlertPushOptions {
   title: string;
   body: string;
   pushId: string;
+  /**
+   * #1788 — apns-thread-id grouping. 알림 센터에서 같은 trip의 alert들을 묶는다.
+   * 미지정 시 apns-thread-id 헤더를 omit (구 caller backward compat).
+   */
+  tripToken?: string;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -448,6 +458,8 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
       'apns-push-type': 'alert',
       'apns-priority': '10',
       'content-type': 'application/json',
+      // #1788 — thread-id groups notifications by trip.
+      ...(options.tripToken !== undefined ? { 'apns-thread-id': options.tripToken } : {}),
     },
     body,
   });
@@ -592,6 +604,8 @@ export async function sendTripEndedAlertPush(
       'apns-push-type': 'alert',
       'apns-priority': '10',
       'content-type': 'application/json',
+      // #1788 — thread-id groups notifications by trip.
+      'apns-thread-id': options.tripToken,
     },
     body,
   });
@@ -743,6 +757,8 @@ export async function sendBoardingPromptPush(
       'apns-push-type': 'alert',
       'apns-priority': '10',
       'content-type': 'application/json',
+      // #1788 — thread-id groups notifications by trip.
+      'apns-thread-id': options.tripToken,
     },
     body,
   });
