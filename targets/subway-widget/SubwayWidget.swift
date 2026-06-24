@@ -268,18 +268,123 @@ struct SubwayWidgetView: View {
     }
 }
 
+// MARK: - Lock Screen Widget Views (iOS 16+)
+
+@available(iOS 16.0, *)
+struct LockScreenRectangularView: View {
+    var entry: SubwayEntry
+
+    var lineColor: Color {
+        Color(hex: entry.lineColor) ?? .gray
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // 노선 색 stripe
+            RoundedRectangle(cornerRadius: 2)
+                .fill(lineColor)
+                .frame(width: 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(NSLocalizedString("widget.lockscreen.title", comment: "Title shown in lock screen rectangular widget"))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(entry.stationName)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .widgetAccentable()
+    }
+}
+
+@available(iOS 16.0, *)
+struct LockScreenCircularView: View {
+    var entry: SubwayEntry
+
+    var lineColor: Color {
+        Color(hex: entry.lineColor) ?? .gray
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(lineColor)
+            Text(entry.stationName.prefix(2))
+                .font(.caption2)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .widgetAccentable()
+    }
+}
+
+// MARK: - Lock Screen Widget Entry View Router
+
+struct SubwayLockScreenWidgetView: View {
+    @Environment(\.widgetFamily) var family
+    var entry: SubwayEntry
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            switch family {
+            case .accessoryRectangular:
+                LockScreenRectangularView(entry: entry)
+            case .accessoryCircular:
+                LockScreenCircularView(entry: entry)
+            default:
+                EmptyView()
+            }
+        }
+    }
+}
+
 // MARK: - Widget Configuration
 
 struct SubwayWidget: Widget {
     let kind = "SubwayWidget"
 
+    private var supportedFamilies: [WidgetFamily] {
+        if #available(iOS 16.0, *) {
+            return [.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular]
+        }
+        return [.systemSmall, .systemMedium]
+    }
+
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: SubwayProvider()) { entry in
-            SubwayWidgetView(entry: entry)
+            if #available(iOS 16.0, *) {
+                SubwayWidgetEntryView(entry: entry)
+            } else {
+                SubwayWidgetView(entry: entry)
+            }
         }
         .configurationDisplayName(NSLocalizedString("widget.displayName", comment: "Widget configuration display name shown in the widget picker"))
         .description(NSLocalizedString("widget.description", comment: "Widget description shown in the widget picker"))
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies(supportedFamilies)
+    }
+}
+
+// Routes between home-screen and lock-screen families (iOS 16+).
+@available(iOS 16.0, *)
+private struct SubwayWidgetEntryView: View {
+    @Environment(\.widgetFamily) var family
+    var entry: SubwayEntry
+
+    var body: some View {
+        switch family {
+        case .accessoryRectangular, .accessoryCircular:
+            SubwayLockScreenWidgetView(entry: entry)
+        default:
+            SubwayWidgetView(entry: entry)
+        }
     }
 }
 

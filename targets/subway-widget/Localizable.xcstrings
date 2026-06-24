@@ -1,6 +1,35 @@
 {
   "sourceLanguage" : "ko",
   "strings" : {
+    "widget.lockscreen.title" : {
+      "comment" : "Title shown in lock screen rectangular widget",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Subway"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "地下鉄"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지하철"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "地铁"
+          }
+        }
+      }
+    },
     "widget.detecting" : {
       "comment" : "Placeholder station name while GPS detection is in progress",
       "localizations" : {

@@ -78,6 +78,9 @@ struct SubwayLiveActivityWidget: Widget {
 private struct LockScreenView: View {
     let state: SubwayActivityAttributes.ContentState
 
+    // AOD (Always-On Display) 환경 감지 — isLuminanceReduced=true 시 명도 최소화
+    @Environment(\.isLuminanceReduced) var isLuminanceReduced
+
     var lineColor: Color {
         Color(hex: state.lineColorHex) ?? .gray
     }
@@ -87,19 +90,24 @@ private struct LockScreenView: View {
     }
 
     var urgentColor: Color {
-        state.alarmType == "destination" ? .red : .orange
+        // AOD 시 accent(색조)만 유지하되 배경을 거의 블랙으로 낮춘다
+        if isLuminanceReduced {
+            return state.alarmType == "destination" ? .red.opacity(0.7) : .orange.opacity(0.7)
+        }
+        return state.alarmType == "destination" ? .red : .orange
     }
 
     var urgentText: String {
         return state.alarmBody ?? ""
     }
 
+
     var body: some View {
         if isUrgent {
             // 긴급 모드
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(.white.opacity(0.3))
+                    .fill(.white.opacity(isLuminanceReduced ? 0.15 : 0.3))
                     .frame(width: 6)
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -109,7 +117,7 @@ private struct LockScreenView: View {
                         .foregroundColor(.white.opacity(0.9))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(.white.opacity(0.2))
+                        .background(.white.opacity(isLuminanceReduced ? 0.1 : 0.2))
                         .cornerRadius(10)
 
                     Text(state.stationName)
@@ -131,28 +139,29 @@ private struct LockScreenView: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(.white.opacity(0.2))
+                    .background(.white.opacity(isLuminanceReduced ? 0.1 : 0.2))
                     .cornerRadius(8)
             }
             .padding(16)
-            .background(urgentColor)
+            // AOD 시 배경은 블랙(.opacity 0.9) + urgentColor accent strip
+            .background(isLuminanceReduced ? .black.opacity(0.9) : urgentColor)
         } else {
             // 일반 모드
             HStack(spacing: 16) {
-                // 노선 색상 바
+                // 노선 색상 바 — AOD 시 opacity 낮춤
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(lineColor)
+                    .fill(lineColor.opacity(isLuminanceReduced ? 0.5 : 1.0))
                     .frame(width: 6)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    // 노선 배지
+                    // 노선 배지 — AOD 시 배경 opacity 낮춤
                     Text(state.lineName)
                         .font(.caption2)
                         .fontWeight(.bold)
                         .foregroundColor(.white)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(lineColor)
+                        .background(lineColor.opacity(isLuminanceReduced ? 0.4 : 1.0))
                         .cornerRadius(10)
 
                     // 역 이름
@@ -167,7 +176,7 @@ private struct LockScreenView: View {
                     } else {
                         Text(state.resolvedDistanceText ?? "")
                             .font(.subheadline)
-                            .foregroundColor(lineColor)
+                            .foregroundColor(lineColor.opacity(isLuminanceReduced ? 0.6 : 1.0))
                     }
 
                     // 데이터 출처 자백 (#327). 없으면 표시 생략.
@@ -194,7 +203,11 @@ private struct LockScreenView: View {
                 }
             }
             .padding(16)
-            .background(.black.opacity(0.85))
+            // AOD 시 배경: 거의 블랙 + 노선색 약한 tint / 일반: 기존 반투명 블랙
+            .background(
+                Color.black.opacity(isLuminanceReduced ? 0.9 : 0.85)
+                    .overlay(isLuminanceReduced ? lineColor.opacity(0.08) : Color.clear)
+            )
         }
     }
 }
