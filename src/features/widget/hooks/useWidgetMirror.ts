@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { Station } from '../../../shared/types/station';
-import { saveStationToWidget } from '../api/widgetStorage';
+import { saveStationToWidget, type WidgetTripContext } from '../api/widgetStorage';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('WidgetMirror');
@@ -26,24 +26,30 @@ function distanceBucket(distanceKm: number | undefined | null): number | null {
  *   회귀가 발생한다 (#1239). 명시적 clear 가 필요한 경로(알람 종료 등)는 별도
  *   `clearWidgetStation` caller(`stationNotification`, `SharedGroupAdapter`)가 담당.
  *
- * 위젯 lifecycle은 destination/route 상태와 분리되어 항상 nearest station을 반영한다(#1094).
- * deps는 50m bucket으로 정규화해 GPS tick마다 불필요한 effect 재실행을 막는다.
+ * #1781 — trip 활성 시 `tripContext`를 전달하면 현재역·환승역·도착역을 위젯에 추가 표시.
+ * trip 비활성(tripContext=undefined)이면 기존 nearest station UI 유지 (regression 차단).
+ * deps는 50m bucket + tripContext 식별자로 정규화해 GPS tick마다 불필요한 effect 재실행을 막는다.
  */
 export function useWidgetMirror(
   station: Station | null | undefined,
   distanceKm: number | null | undefined,
+  tripContext?: WidgetTripContext,
 ): void {
   const bucket = distanceBucket(distanceKm);
   const stationId = station?.id ?? null;
+  // deps 식별자: trip 활성 여부 + 목적지 + 환승역. 값이 바뀔 때만 effect 재실행.
+  const tripKey = tripContext
+    ? `${String(tripContext.tripActive)}:${tripContext.currentStationName}:${tripContext.destinationName}:${tripContext.nextTransferName ?? ''}`
+    : null;
 
   useEffect(() => {
     if (!station || distanceKm == null) {
       return;
     }
-    saveStationToWidget(station, distanceKm).catch((e) =>
+    saveStationToWidget(station, distanceKm, undefined, undefined, tripContext ?? undefined).catch((e) =>
       logger.error('save 실패:', e),
     );
-    // station/distanceKm은 ref로만 사용. stationId/bucket이 effect 재실행 트리거.
+    // station/distanceKm/tripContext은 ref로만 사용. stationId/bucket/tripKey가 effect 재실행 트리거.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stationId, bucket]);
+  }, [stationId, bucket, tripKey]);
 }

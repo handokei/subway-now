@@ -1,6 +1,22 @@
 import { Platform } from 'react-native';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 import * as LiveActivity from 'live-activity';
 import { Station } from '../../../shared/types/station';
+
+// #1781 — trip 맥락 write를 위한 native module 직접 참조.
+// live-activity/index.ts의 4-param saveWidgetStation 시그니처를 변경하지 않고
+// saveWidgetTripContext를 네이티브에 직접 호출한다 (backward compat 보존).
+const LiveActivityNative =
+  Platform.OS === 'ios'
+    ? (requireOptionalNativeModule('LiveActivity') as {
+        saveWidgetTripContext?: (
+          currentStationName: string | null,
+          destinationName: string | null,
+          nextTransferName: string | null,
+          tripActive: boolean,
+        ) => Promise<void>;
+      } | null)
+    : null;
 
 // 위젯 거리 표시는 50m 단위로 의미가 있다고 보고, 같은 역 + 같은 50m 버킷일 때만
 // WidgetCenter.reloadAllTimelines 호출을 dedupe 한다. 같은 역이라도 버킷이
@@ -31,11 +47,28 @@ export interface SaveStationToWidgetOptions {
   force?: boolean;
 }
 
+/**
+ * #1781 — trip 활성 시 위젯에 추가로 전달하는 맥락 정보.
+ * trip 비활성 시에는 생략하면 위젯이 기존 nearest station UI를 유지한다.
+ *
+ * - `currentStationName`: 현재 탑승 중인 역 이름 (nearest station과 별개 표시용).
+ * - `destinationName`: 목적지 역 이름.
+ * - `nextTransferName`: 다음 환승역 이름. 직통 경로면 undefined.
+ * - `tripActive`: trip 활성 여부 — Swift UI 분기 신호.
+ */
+export interface WidgetTripContext {
+  currentStationName: string;
+  destinationName: string;
+  nextTransferName?: string;
+  tripActive: boolean;
+}
+
 export async function saveStationToWidget(
   station: Station,
   distanceKm: number,
   savedAt: number = Date.now(),
   options?: SaveStationToWidgetOptions,
+  tripContext?: WidgetTripContext,
 ): Promise<void> {
   if (Platform.OS !== 'ios') return;
   const key = `${station.id}:${distanceBucket(distanceKm)}`;
@@ -52,6 +85,13 @@ export async function saveStationToWidget(
     station.lineColor,
     Math.max(0, Math.round(distanceKm * 1000)),
     savedAt,
+  );
+  // #1781 — trip 맥락 별도 write. saveWidgetStation 4-param 시그니처 보존.
+  await LiveActivityNative?.saveWidgetTripContext?.(
+    tripContext?.currentStationName ?? null,
+    tripContext?.destinationName ?? null,
+    tripContext?.nextTransferName ?? null,
+    tripContext?.tripActive ?? false,
   );
 }
 
