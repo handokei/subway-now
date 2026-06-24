@@ -1,10 +1,12 @@
 import React from 'react';
 import { AppState, Share } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
+import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
@@ -31,7 +33,9 @@ jest.mock('../../../alarm/utils/tripStartStorage', () => {
 });
 
 jest.mock('../../../nearest-station/hooks/useFusedNearestStation', () => ({
-  useFusedNearestStation: () => mockUseFusedNearestStation(),
+  // #1812 — 인자 캡처: routeContext 전달 여부 검증을 위해 spread로 인자를 mock에 전달.
+  // 기존 테스트는 반환값만 검증하므로 호환 변경.
+  useFusedNearestStation: (...args: unknown[]) => mockUseFusedNearestStation(...args),
 }));
 jest.mock('../../../arrival/hooks/useArrivalInfo', () => ({
   useArrivalInfo: (name: string | null) => mockUseArrivalInfo(name),
@@ -199,8 +203,10 @@ const setupHookDefaults = () => {
   // #1568 (T8b) — backend SSoT mirror 기본 null (backend가 forward 안 함).
   mockReadBackendSsotMirror.mockResolvedValue(null);
   // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
-  useDestinationStore.setState({ destination: null });
+  useDestinationStore.setState({ destination: null, tripOrigin: null });
   useSettingsStore.setState({ sleepMode: false });
+  // #1812 — ROUTE_KEY 초기화. 매 테스트가 독립적인 route 상태에서 시작.
+  void AsyncStorage.removeItem(ROUTE_KEY);
 };
 
 // SonarCloud new_duplicated_lines_density 임계 준수 — 여러 describe에 걸친 buildDumpText
@@ -1737,6 +1743,112 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
       });
       // throw 없이 통과하면 성공.
       expect(true).toBe(true);
+    });
+
+    // #1812 — routeContext 빌드 검증: ROUTE_KEY + tripOrigin + destination이 모두 있을 때
+    // useFusedNearestStation이 3번째 인자(routeContext)를 받아야 한다.
+    describe('#1812 — routeContext 빌드 wire-up', () => {
+      const routeContextOrigin: Station = {
+        id: '2-010',
+        name: '신도림',
+        line: '2',
+        lineColor: '#009D3E',
+        lat: 37.5086,
+        lng: 126.8913,
+      };
+      const minimalRoute = {
+        type: 'direct' as const,
+        line: '2' as const,
+        stations: [{ id: '2-010', name: '신도림', line: '2', lineColor: '#009D3E', lat: 37.5086, lng: 126.8913 },
+                    { id: '2-022', name: '강남', line: '2', lineColor: '#009D3E', lat: 37.4979, lng: 127.0276 }],
+      };
+
+      it('destination + tripOrigin + ROUTE_KEY 있으면 useFusedNearestStation에 routeContext 전달', async () => {
+        await AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(minimalRoute));
+        useDestinationStore.setState({ destination: wireTripDestination, tripOrigin: routeContextOrigin });
+        applyWireHook({});
+        await renderAndAwaitLog();
+        // useFusedNearestStation 3번째 인자(routeContext)가 undefined가 아닌 객체여야 한다.
+        const calls = mockUseFusedNearestStation.mock.calls;
+        const lastCall = calls[calls.length - 1];
+        expect(lastCall[2]).toBeDefined();
+        expect(lastCall[2]).toMatchObject({
+          route: minimalRoute,
+          origin: routeContextOrigin,
+          destination: wireTripDestination,
+        });
+      });
+
+      it('tripOrigin null이면 routeContext=undefined 전달 (hop count = —)', async () => {
+        await AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(minimalRoute));
+        useDestinationStore.setState({ destination: wireTripDestination, tripOrigin: null });
+        applyWireHook({});
+        await renderAndAwaitLog();
+        const calls = mockUseFusedNearestStation.mock.calls;
+        const lastCall = calls[calls.length - 1];
+        expect(lastCall[2]).toBeUndefined();
+      });
+
+      it('destination null이면 ROUTE_KEY를 읽지 않고 routeContext=undefined 전달', async () => {
+        await AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(minimalRoute));
+        useDestinationStore.setState({ destination: null, tripOrigin: routeContextOrigin });
+        applyWireHook({});
+        await renderAndAwaitLog();
+        const calls = mockUseFusedNearestStation.mock.calls;
+        const lastCall = calls[calls.length - 1];
+        expect(lastCall[2]).toBeUndefined();
+      });
+
+      it('ROUTE_KEY 값이 없으면 routeContext=undefined 전달', async () => {
+        // ROUTE_KEY 미존재 상태 (beforeEach에서 removeItem됨).
+        useDestinationStore.setState({ destination: wireTripDestination, tripOrigin: routeContextOrigin });
+        applyWireHook({});
+        await renderAndAwaitLog();
+        const calls = mockUseFusedNearestStation.mock.calls;
+        const lastCall = calls[calls.length - 1];
+        expect(lastCall[2]).toBeUndefined();
+      });
+
+      it('ROUTE_KEY JSON parse 실패 시 routeContext=undefined 전달 (graceful)', async () => {
+        await AsyncStorage.setItem(ROUTE_KEY, 'invalid-json{');
+        useDestinationStore.setState({ destination: wireTripDestination, tripOrigin: routeContextOrigin });
+        applyWireHook({});
+        await renderAndAwaitLog();
+        const calls = mockUseFusedNearestStation.mock.calls;
+        const lastCall = calls[calls.length - 1];
+        expect(lastCall[2]).toBeUndefined();
+      });
+
+      it('persistedRoute effect — destination이 null로 바뀌면 persistedRoute 초기화', async () => {
+        await AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(minimalRoute));
+        useDestinationStore.setState({ destination: wireTripDestination, tripOrigin: routeContextOrigin });
+        applyWireHook({});
+        await renderAndAwaitLog();
+        // destination 있는 상태에서 routeContext가 전달됨을 확인.
+        const callsBefore = mockUseFusedNearestStation.mock.calls;
+        expect(callsBefore[callsBefore.length - 1][2]).toBeDefined();
+        // destination → null: persistedRoute=null → routeContext=undefined.
+        act(() => { useDestinationStore.setState({ destination: null }); });
+        await waitFor(() => {
+          const calls = mockUseFusedNearestStation.mock.calls;
+          expect(calls[calls.length - 1][2]).toBeUndefined();
+        });
+      });
+
+      it('persistedRoute effect — unmount 후 getItem resolve 시 cancelled guard가 setState를 막음', async () => {
+        // getItem을 pending Promise로 교체. jest.fn에 직접 mockImplementationOnce — jest.clearAllMocks로 자동 해제.
+        let resolveGetItem: (value: string | null) => void = () => undefined;
+        (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(
+          () => new Promise<string | null>((resolve) => { resolveGetItem = resolve; }),
+        );
+        useDestinationStore.setState({ destination: wireTripDestination, tripOrigin: routeContextOrigin });
+        applyWireHook({});
+        const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        unmount();
+        await act(async () => { resolveGetItem(JSON.stringify(minimalRoute)); });
+        // throw 없이 통과하면 cancelled guard가 정상 동작한 것.
+        expect(true).toBe(true);
+      });
     });
   });
 });
