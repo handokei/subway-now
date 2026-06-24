@@ -3477,6 +3477,61 @@ describe('useStationAlarm', () => {
       );
     });
 
+    it('#1806 fast-path 60s dedup — no-source가 60s 내 재발사 시 두 번째 적재 skip', async () => {
+      const T1 = 1_700_000_000_000;
+      const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(T1);
+      mockGetBoardingLock.mockResolvedValue(activeLock1266);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+      // currentStationArrival 객체 참조를 매 rerender마다 교체해 fg-arvlcd effect deps 재발사 유도.
+      // GPS path는 currentStationArrival을 dep으로 사용하지 않으므로 재발사 여부에 영향 없음.
+      const makeInputs = (tick: number) =>
+        inputs1266({
+          nearestStation: arcLine2[0],
+          currentHopIndex: null,
+          arcStations: arcLine2,
+          // 새 객체 참조 → currentStationArrival dep 변경 → fg-arvlcd effect 재실행.
+          currentStationArrival: { ...dummyArrival, _tick: tick } as unknown as typeof dummyArrival,
+        });
+      const { rerender } = renderHook((tick: number) => useStationAlarm(makeInputs(tick)), {
+        initialProps: 0,
+      });
+      try {
+        // 첫 번째 cycle: T1 - 0(초기ref) >= 60_000 → fg-arvlcd path 적재됨.
+        await waitFor(() =>
+          expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalledWith({
+            source: 'fg-arvlcd',
+            stationName: arcLine2[0].name,
+          }),
+        );
+        const callCountAfterFirst =
+          mockLogSuppressedHopWindowNoSource.mock.calls.filter(
+            (c) => c[0].source === 'fg-arvlcd',
+          ).length;
+        // T1 + 30s (60s 이내) → fg-arvlcd dedup skip.
+        dateNowSpy.mockReturnValue(T1 + 30_000);
+        rerender(1);
+        await new Promise<void>((r) => setTimeout(r, 50));
+        expect(
+          mockLogSuppressedHopWindowNoSource.mock.calls.filter(
+            (c) => c[0].source === 'fg-arvlcd',
+          ).length,
+        ).toBe(callCountAfterFirst);
+        // T1 + 61s (60s 초과) → fg-arvlcd 새 적재.
+        dateNowSpy.mockReturnValue(T1 + 61_000);
+        rerender(2);
+        await waitFor(() =>
+          expect(
+            mockLogSuppressedHopWindowNoSource.mock.calls.filter(
+              (c) => c[0].source === 'fg-arvlcd',
+            ).length,
+          ).toBeGreaterThan(callCountAfterFirst),
+        );
+      } finally {
+        dateNowSpy.mockRestore();
+      }
+    });
+
     it('arcStations 빈 배열 → 게이트 자체 미적용 (기존 동작 보존)', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock1266);
       mockGetLastNotifiedStationId.mockResolvedValue(null);
@@ -3828,6 +3883,48 @@ describe('useStationAlarm', () => {
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalled();
       });
+    });
+
+    it('#1806 60s dedup — no-source가 60s 내 재발사 시 두 번째 적재 skip', async () => {
+      const T1 = 1_700_000_000_000;
+      const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(T1);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 1,
+      });
+      // userLocation.lat 변경으로 GPS station-passed effect deps 재발사 유도.
+      const makeInputs = (lat: number) =>
+        defaultInputs({
+          route: directRouteOnLine2,
+          destination,
+          nearestStation: arc[0],
+          currentHopIndex: null,
+          arcStations: arc,
+          userLocation: { lat, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 50,
+        });
+      const { rerender } = renderHook((lat: number) => useStationAlarm(makeInputs(lat)), {
+        initialProps: 37.5,
+      });
+      try {
+        // 첫 번째 cycle: T1 - 0(초기ref) = T1 >= 60_000 → 적재됨.
+        await waitFor(() => expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalledTimes(1));
+        // T1 + 30s (60s 이내) → dedup skip.
+        dateNowSpy.mockReturnValue(T1 + 30_000);
+        rerender(37.501);
+        // 30s 후 재발사해도 여전히 1건만.
+        await new Promise<void>((r) => setTimeout(r, 50));
+        expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalledTimes(1);
+        // T1 + 61s (60s 초과) → 새 적재.
+        dateNowSpy.mockReturnValue(T1 + 61_000);
+        rerender(37.502);
+        await waitFor(() => expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalledTimes(2));
+      } finally {
+        dateNowSpy.mockRestore();
+      }
     });
 
     it('firedAlarms fallback — fired set의 max station이 arc 마지막이면 inferred는 arc 마지막에 cap', async () => {

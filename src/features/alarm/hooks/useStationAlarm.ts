@@ -496,6 +496,12 @@ export function useStationAlarm({
     );
 
   const firedAlarmsRef = useRef<Set<string>>(new Set());
+  // #1806 — gate-hop-window-no-source 60s dedup. lockless trip + firedAlarms 빈 상태에서 매 5s
+  // FG cycle마다 suppression이 적재돼 V9(100/h/trip) 위반(실측 1157/h). 같은 reason은 60s 1회만
+  // 적재해 감시 신호는 보존하되 spam을 차단한다.
+  // fg / fg-arvlcd path는 독립적인 ref를 가져 서로 dedup하지 않는다 (경로별 독립 감시).
+  const lastHopWindowNoSourceFgTsRef = useRef<number>(0);
+  const lastHopWindowNoSourceFgArvlcdTsRef = useRef<number>(0);
   // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
   // destination 변경 직후엔 hydrate effect가 hydrationPhase를 'pre-hydrate'로 리셋하지만,
   // 같은 render cycle의 ETA/API effect는 React state 전파 전이라 hydrationPhase='ready'(stale)
@@ -1072,7 +1078,13 @@ export function useStationAlarm({
         const effectiveHopIndex =
           currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
         if (effectiveHopIndex < 0) {
-          logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
+          // #1806 — 60s dedup: 같은 reason을 매 5s cycle마다 적재하면 V9 위반(실측 1157/h).
+          // 감시 신호는 보존하되 60s 이내 중복은 skip한다.
+          const now = Date.now();
+          if (now - lastHopWindowNoSourceFgTsRef.current >= 60_000) {
+            lastHopWindowNoSourceFgTsRef.current = now;
+            logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
+          }
         } else if (isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
           // hop window 통과 — origin hop 케이스만 추가 표식 (lockless 차단은 IIFE 내부).
           // #1630 — effectiveHopIndex AND 조건 제거. lockless mode는 estimator(시간 적분)가
@@ -1245,10 +1257,16 @@ export function useStationAlarm({
         const effectiveHopIndex =
           currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
         if (effectiveHopIndex < 0) {
-          logSuppressedHopWindowNoSource({
-            source: 'fg-arvlcd',
-            stationName: candidateStation.name,
-          });
+          // #1806 — 60s dedup: 같은 reason을 매 cycle마다 적재하면 V9 위반. fg와 독립 ref로
+          // fg-arvlcd 경로를 별도 감시한다.
+          const now = Date.now();
+          if (now - lastHopWindowNoSourceFgArvlcdTsRef.current >= 60_000) {
+            lastHopWindowNoSourceFgArvlcdTsRef.current = now;
+            logSuppressedHopWindowNoSource({
+              source: 'fg-arvlcd',
+              stationName: candidateStation.name,
+            });
+          }
         } else if (!isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
           logSuppressedHopWindow({
             source: 'fg-arvlcd',
