@@ -13,6 +13,12 @@ jest.mock('expo-location', () => ({
   getBackgroundPermissionsAsync: () => mockGetBackgroundPermissions(),
 }));
 
+// #1772 — battery state. 기본: lowPowerMode=false → 'normal'.
+const mockGetPowerStateAsync = jest.fn().mockResolvedValue({ lowPowerMode: false });
+jest.mock('expo-battery', () => ({
+  getPowerStateAsync: () => mockGetPowerStateAsync(),
+}));
+
 const mockRegisterTaskAsync = jest.fn();
 const mockScheduleNotificationAsync = jest.fn();
 jest.mock('expo-notifications', () => ({
@@ -231,19 +237,25 @@ const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 // #1370 L5 — sendPushAck 호출 매칭 헬퍼. ack outcome별로 같은 token/pushId 페이로드를 반복 검증하는
 // 패턴이 다발해 SonarCloud 중복으로 잡힘. 호출 한 줄로 압축해 중복 차단.
 // #1768 — permissionMode 기본값 'always' (기본 mock: foreground+background 모두 granted).
+// #1772 — 'received' outcome은 batteryState 포함. latencyMs는 expect.any(Number)로 유연 검증.
 function ackCall(
   pushId: string,
   outcome: 'received' | 'fired' | 'skipped',
   reason?: string,
   permissionMode: 'always' | 'whileInUse' | 'denied' | undefined = 'always',
-): { pushId: string; token: string; outcome: string; reason?: string; permissionMode?: string } {
-  const base: { pushId: string; token: string; outcome: string; reason?: string; permissionMode?: string } = {
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
     pushId,
     token: DEFAULT_APNS_TOKEN,
     outcome,
     permissionMode,
   };
   if (reason !== undefined) base.reason = reason;
+  // #1772 — 'received' ack는 batteryState 포함 (기본 mock: lowPowerMode=false → 'normal').
+  // latencyMs는 테스트 실행 타이밍에 따라 달라지므로 expect.objectContaining으로 검증.
+  if (outcome === 'received') {
+    base.batteryState = 'normal';
+  }
   return base;
 }
 
@@ -1955,7 +1967,10 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv' }),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv', 'received'));
+        // #1772 — received ack는 batteryState 포함. latencyMs는 sentAt 없으면 undefined.
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          expect.objectContaining(ackCall('p-recv', 'received')),
+        );
         // 후속 outcome(fired) ack도 그대로 발사 — 별개 호출.
         expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv', 'fired'));
       });
@@ -1970,7 +1985,9 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv-skip' }),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv-skip', 'received'));
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          expect.objectContaining(ackCall('p-recv-skip', 'received')),
+        );
         expect(mockSendPushAck).toHaveBeenCalledWith(
           ackCall('p-recv-skip', 'skipped', 'gate-out-of-range'),
         );
@@ -2011,12 +2028,16 @@ describe('silentPushTask', () => {
             },
           },
         });
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'rs-recv',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'received',
-          permissionMode: 'always',
-        });
+        // #1772 — received ack는 batteryState 포함. latencyMs는 sentAt 없을 때 undefined.
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pushId: 'rs-recv',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'received',
+            permissionMode: 'always',
+            batteryState: 'normal',
+          }),
+        );
       });
 
       it('trip-ended payload도 received ack 발사', async () => {
@@ -2031,12 +2052,88 @@ describe('silentPushTask', () => {
             },
           },
         });
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'te-recv',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'received',
-          permissionMode: 'always',
-        });
+        // #1772 — received ack는 batteryState 포함.
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pushId: 'te-recv',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'received',
+            permissionMode: 'always',
+            batteryState: 'normal',
+          }),
+        );
+      });
+    });
+
+    describe('#1772 — latencyMs + batteryState in received ack', () => {
+      it('sentAt 있는 payload → latencyMs = receivedAt - sentAt (양수)', async () => {
+        const sentAt = Date.now() - 2000; // 2초 전 발사
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-latency', sentAt }),
+        );
+        const receivedCall = mockSendPushAck.mock.calls.find(
+          (c: unknown[]) =>
+            (c[0] as { pushId?: string }).pushId === 'p-latency' &&
+            (c[0] as { outcome?: string }).outcome === 'received',
+        );
+        expect(receivedCall).toBeDefined();
+        const ackPayload = receivedCall![0] as { latencyMs?: number };
+        expect(typeof ackPayload.latencyMs).toBe('number');
+        expect(ackPayload.latencyMs).toBeGreaterThanOrEqual(0);
+      });
+
+      it('sentAt 없으면 latencyMs = undefined (구 backend 호환)', async () => {
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-no-sentat' }),
+        );
+        const receivedCall = mockSendPushAck.mock.calls.find(
+          (c: unknown[]) =>
+            (c[0] as { pushId?: string }).pushId === 'p-no-sentat' &&
+            (c[0] as { outcome?: string }).outcome === 'received',
+        );
+        expect(receivedCall).toBeDefined();
+        expect((receivedCall![0] as { latencyMs?: number }).latencyMs).toBeUndefined();
+      });
+
+      it('lowPowerMode=true → batteryState=lowPowerMode', async () => {
+        mockGetPowerStateAsync.mockResolvedValueOnce({ lowPowerMode: true });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-lowpwr' }),
+        );
+        const receivedCall = mockSendPushAck.mock.calls.find(
+          (c: unknown[]) =>
+            (c[0] as { pushId?: string }).pushId === 'p-lowpwr' &&
+            (c[0] as { outcome?: string }).outcome === 'received',
+        );
+        expect(receivedCall).toBeDefined();
+        expect((receivedCall![0] as { batteryState?: string }).batteryState).toBe('lowPowerMode');
+      });
+
+      it('getPowerStateAsync throw → batteryState=unknown (graceful)', async () => {
+        mockGetPowerStateAsync.mockRejectedValueOnce(new Error('battery-fail'));
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-batt-fail' }),
+        );
+        const receivedCall = mockSendPushAck.mock.calls.find(
+          (c: unknown[]) =>
+            (c[0] as { pushId?: string }).pushId === 'p-batt-fail' &&
+            (c[0] as { outcome?: string }).outcome === 'received',
+        );
+        expect(receivedCall).toBeDefined();
+        expect((receivedCall![0] as { batteryState?: string }).batteryState).toBe('unknown');
+      });
+
+      it('fired/skipped ack에는 batteryState 포함 안 됨', async () => {
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-fired-nobatt' }),
+        );
+        const firedCall = mockSendPushAck.mock.calls.find(
+          (c: unknown[]) =>
+            (c[0] as { pushId?: string }).pushId === 'p-fired-nobatt' &&
+            (c[0] as { outcome?: string }).outcome === 'fired',
+        );
+        expect(firedCall).toBeDefined();
+        expect((firedCall![0] as { batteryState?: string }).batteryState).toBeUndefined();
       });
     });
 

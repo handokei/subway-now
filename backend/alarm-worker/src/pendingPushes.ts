@@ -172,19 +172,30 @@ export async function stampReceived(
   receivedAt: number,
   // #1768 — 권한별 도달률 집계. legacy device 미전송 시 undefined (graceful).
   permissionMode?: 'always' | 'whileInUse' | 'denied',
+  // #1772 — latency stamp. device가 receivedAt - sentAt을 계산해 전달. legacy 누락 시 KV 기반 계산.
+  latencyMs?: number,
+  // #1772 — battery state. legacy device 미전송 시 undefined (graceful).
+  batteryState?: 'normal' | 'lowPowerMode' | 'unknown',
 ): Promise<ReceivedAckResult> {
   if (!kv) return { stamped: false, reason: 'not-found' };
   const entry = await getPending(kv, pushId);
   if (!entry) return { stamped: false, reason: 'not-found' };
   if (entry.token !== token) return { stamped: false, reason: 'token-mismatch' };
+  // #1772 — latency 계산: device가 명시 전달한 값 우선, 누락 시 KV sentAt 기반 fallback.
+  const resolvedLatencyMs = typeof latencyMs === 'number' && latencyMs >= 0
+    ? latencyMs
+    : receivedAt - entry.sentAt;
   const stampValue: {
     pushId: string;
     receivedAt: number;
     stationName: string;
     phase: string;
+    latencyMs: number;
     permissionMode?: 'always' | 'whileInUse' | 'denied';
-  } = { pushId, receivedAt, stationName: entry.stationName, phase: entry.phase };
+    batteryState?: 'normal' | 'lowPowerMode' | 'unknown';
+  } = { pushId, receivedAt, stationName: entry.stationName, phase: entry.phase, latencyMs: resolvedLatencyMs };
   if (permissionMode !== undefined) stampValue.permissionMode = permissionMode;
+  if (batteryState !== undefined) stampValue.batteryState = batteryState;
   await kv.put(receivedKey(pushId), JSON.stringify(stampValue), {
     expirationTtl: RECEIVED_TTL_SEC,
   });

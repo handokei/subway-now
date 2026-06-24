@@ -26,6 +26,7 @@
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
+import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import {
@@ -695,21 +696,41 @@ async function resolvePermissionMode(): Promise<'always' | 'whileInUse' | 'denie
 }
 
 /**
+ * #1772 — expo-battery로 battery state를 조회한다.
+ * lowPowerMode ON → 'lowPowerMode', OFF → 'normal'. 실패 시 'unknown'.
+ */
+async function resolveBatteryState(): Promise<'normal' | 'lowPowerMode' | 'unknown'> {
+  try {
+    const state = await Battery.getPowerStateAsync();
+    return state.lowPowerMode ? 'lowPowerMode' : 'normal';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * 백엔드 P2c fallback에서 이 push가 alert로 재발사되지 않도록 처리 결과를 통보한다 (#568 P2b).
  * fire-and-forget — 실패해도 silent push 본 처리 흐름에는 영향 없음.
  * 누락 입력(pushId/token 중 하나라도 null/undefined)은 그대로 skip한다:
  *   - pushId 누락 = 구 백엔드 호환 경로
  *   - token 누락 = APNs 권한 미부여/저장 실패
  * #1768 — permissionMode를 비동기로 resolve해 payload에 포함한다.
+ * #1772 — latencyMs(sentAt 기반 계산) + batteryState를 'received' ack에 포함한다.
  */
 async function ackOutcome(
   pushId: string | undefined,
   token: string | null,
   outcome: 'received' | 'fired' | 'skipped',
   reason?: string,
+  latencyMs?: number,
 ): Promise<void> {
   if (!pushId || !token) return;
   const permissionMode = await resolvePermissionMode();
+  if (outcome === 'received') {
+    const batteryState = await resolveBatteryState();
+    void sendPushAck({ pushId, token, outcome, reason, permissionMode, latencyMs, batteryState });
+    return;
+  }
   void sendPushAck({ pushId, token, outcome, reason, permissionMode });
 }
 
@@ -823,7 +844,11 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     //
     // pushId/token 둘 다 있어야 임의 echo 차단 정책을 지킬 수 있으므로 ackOutcome과 동일하게
     // 누락 시 skip한다 (구 backend 호환 경로).
-    void ackOutcome(payload.pushId, apnsToken, 'received');
+    // #1772 — latencyMs: sentAt이 valid number인 경우만 계산. 구 backend(sentAt 누락) graceful.
+    const latencyMs = typeof payload.sentAt === 'number' && Number.isFinite(payload.sentAt)
+      ? Math.max(0, receivedAt - payload.sentAt)
+      : undefined;
+    void ackOutcome(payload.pushId, apnsToken, 'received', undefined, latencyMs);
 
     // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
     // - 수신 신호는 받았다 알리고(`lastReceivedAt` 갱신)

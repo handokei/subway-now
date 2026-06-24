@@ -62,7 +62,7 @@ interface MetricData {
 type BackendLoadState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket; accelPattern: AccelPatternBucket }
+  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket; accelPattern: AccelPatternBucket; pushLatency: { p50: number; p95: number; totalSamples: number } | null }
   | { kind: 'unconfigured' }
   | { kind: 'error'; message: string };
 
@@ -233,6 +233,41 @@ function AccelPatternRow({
   );
 }
 
+// ─── Push Latency Row ─────────────────────────────────────────────────────────
+
+/**
+ * #1772 — silent push latency p50/p95 행.
+ * undefined: backend 미수신 → "(no data)" 표시.
+ * null: backend 수신됐지만 latency 샘플 없음 → "(no samples yet)" 표시.
+ * 데이터 있으면 p50/p95/n 표시.
+ */
+function PushLatencyRow({
+  latency,
+  colors,
+}: {
+  latency: { p50: number; p95: number; totalSamples: number } | null | undefined;
+  colors: ReturnType<typeof useTheme>['colors'];
+}) {
+  return (
+    <View style={rowStyles.container} testID="operation-metric-pushLatency">
+      <Text style={[typography.mono, { color: colors.ink }]}>silentPushLatency</Text>
+      {latency === undefined ? (
+        <Text style={[typography.mono, { color: colors.muted }]} testID="push-latency-na">
+          (no data)
+        </Text>
+      ) : latency === null ? (
+        <Text style={[typography.mono, { color: colors.muted }]} testID="push-latency-empty">
+          (no samples yet)
+        </Text>
+      ) : (
+        <Text style={[typography.mono, { color: colors.subtle }]} testID="push-latency-values">
+          {`p50=${latency.p50}ms  p95=${latency.p95}ms  n=${latency.totalSamples}`}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 export interface OperationDashboardSectionProps {
@@ -267,6 +302,7 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
         locklessMiss: result.metrics.locklessMissRatio,
         boardableMiss: result.metrics.boardableMissRatio,
         accelPattern: result.metrics.accelPatternHitRatio,
+        pushLatency: result.metrics.silentPushLatency ?? null,
       });
     } else if (result.kind === 'unconfigured') {
       setBackendState({ kind: 'unconfigured' });
@@ -317,6 +353,12 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
   const accelPatternData: AccelPatternBucket | null =
     backendState.kind === 'ok' ? backendState.accelPattern : null;
 
+  // Metric 6 — Silent push latency (#1772, backend 수신 시만 유효)
+  // undefined: backend 미수신 (idle/loading/error/unconfigured) — (no data) 표시
+  // null: backend 수신됐지만 샘플 없음 — (no samples yet) 표시
+  const pushLatencyData: { p50: number; p95: number; totalSamples: number } | null | undefined =
+    backendState.kind === 'ok' ? backendState.pushLatency : undefined;
+
   const metrics: MetricData[] = [alarmAccuracy, silentPushReach, locklessMiss, boardableMiss];
 
   const handleMetricPress = useCallback((key: DrillDownMetricKey) => {
@@ -349,6 +391,9 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
 
       {/* Metric 5 — Accel pattern distribution (#1769) */}
       <AccelPatternRow accelPattern={accelPatternData} colors={colors} />
+
+      {/* Metric 6 — Silent push latency (#1772) */}
+      <PushLatencyRow latency={pushLatencyData} colors={colors} />
 
       {/* Drill-down expanded view */}
       {drillDownKey !== null && (

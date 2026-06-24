@@ -34,6 +34,10 @@ interface ReceivedEntry {
   phase: string;
   // #1768 — 권한별 도달률 집계. legacy device 누락 시 undefined.
   permissionMode?: 'always' | 'whileInUse' | 'denied';
+  // #1772 — latency stamp (receivedAt - sentAt). legacy device 누락 시 undefined.
+  latencyMs?: number;
+  // #1772 — battery state. legacy device 누락 시 undefined.
+  batteryState?: 'normal' | 'lowPowerMode' | 'unknown';
 }
 
 /**
@@ -44,6 +48,7 @@ interface ReceivedEntry {
  * - `received`: 본 윈도우 내 ack 카운트
  * - `receivedByPhase`: phase 별 ack 분포 (imminent/etc)
  * - `receivedByStation`: station 별 ack 분포 (top 10)
+ * - `silentPushLatency`: #1772 — latency 분포 (p50/p95/totalSamples). 샘플 없으면 null.
  *
  * 비율(도달률) 계산은 client에서 — 본 endpoint는 raw count만 제공.
  */
@@ -56,6 +61,10 @@ export interface PushAckStatsResponse {
   receivedByStation: Record<string, number>;
   // #1768 — 권한별 도달률. legacy device ack에 permissionMode 없으면 'unknown' 버킷으로 집계.
   receivedByPermissionMode: { always: number; whileInUse: number; denied: number; unknown: number };
+  // #1772 — latency 분포. latencyMs stamp 있는 샘플만 집계. 샘플 0건이면 null.
+  silentPushLatency: { p50: number; p95: number; totalSamples: number } | null;
+  // #1772 — battery state 별 ack 분포. stamp 있는 샘플만.
+  receivedByBatteryState: { normal: number; lowPowerMode: number; unknown: number };
 }
 
 /**
@@ -73,10 +82,12 @@ export async function computePushAckStats(
   const windowStart = now - 60 * 60 * 1000; // 1h
   const windowEnd = now;
 
-  // received: prefix enumerate + JSON parse + phase/station/permissionMode bucket.
+  // received: prefix enumerate + JSON parse + phase/station/permissionMode/latency bucket.
   const receivedByPhase: Record<string, number> = {};
   const receivedByStation: Record<string, number> = {};
   const receivedByPermissionMode = { always: 0, whileInUse: 0, denied: 0, unknown: 0 };
+  const receivedByBatteryState = { normal: 0, lowPowerMode: 0, unknown: 0 };
+  const latencySamples: number[] = [];
   let receivedCount = 0;
   let pendingCount = 0;
 
@@ -106,6 +117,15 @@ export async function computePushAckStats(
       receivedByStation[entry.stationName] = (receivedByStation[entry.stationName] ?? 0) + 1;
       const pMode = entry.permissionMode ?? 'unknown';
       receivedByPermissionMode[pMode] += 1;
+      // #1772 — latency + battery state 집계.
+      if (typeof entry.latencyMs === 'number' && entry.latencyMs >= 0) {
+        latencySamples.push(entry.latencyMs);
+      }
+      if (entry.batteryState === 'normal' || entry.batteryState === 'lowPowerMode') {
+        receivedByBatteryState[entry.batteryState] += 1;
+      } else if (entry.batteryState === 'unknown') {
+        receivedByBatteryState.unknown += 1;
+      }
     }
     receivedCursor = result.list_complete || enumerated >= limit ? undefined : result.cursor;
   } while (receivedCursor);
@@ -133,6 +153,8 @@ export async function computePushAckStats(
     receivedByPhase,
     receivedByStation: topN(receivedByStation, 10),
     receivedByPermissionMode,
+    silentPushLatency: computeLatencyPercentiles(latencySamples),
+    receivedByBatteryState,
   };
 }
 
@@ -142,4 +164,19 @@ function topN(dict: Record<string, number>, n: number): Record<string, number> {
     .sort((a, b) => b[1] - a[1])
     .slice(0, n);
   return Object.fromEntries(sorted);
+}
+
+/**
+ * #1772 — latency 샘플 배열에서 P50 / P95 산출.
+ * 샘플 없으면 null. 오름차순 정렬 후 nearest-rank method.
+ */
+function computeLatencyPercentiles(
+  samples: number[],
+): { p50: number; p95: number; totalSamples: number } | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const n = sorted.length;
+  const p50 = sorted[Math.floor(n * 0.5)];
+  const p95 = sorted[Math.min(Math.floor(n * 0.95), n - 1)];
+  return { p50, p95, totalSamples: n };
 }
