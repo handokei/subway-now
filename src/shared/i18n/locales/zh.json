@@ -356,5 +356,9 @@
       "dismiss": "稍后",
       "thanks": "感谢您的反馈。"
     }
+  },
+  "lockless": {
+    "badge": "🔍 搜索中",
+    "tapToConfirm": "确认乘车"
   }
 }

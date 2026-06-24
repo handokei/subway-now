@@ -356,5 +356,9 @@
       "dismiss": "あとで",
       "thanks": "ご回答ありがとうございます。"
     }
+  },
+  "lockless": {
+    "badge": "🔍 探索中",
+    "tapToConfirm": "乗車を確認する"
   }
 }
