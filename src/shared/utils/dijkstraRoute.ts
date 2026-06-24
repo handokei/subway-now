@@ -1,9 +1,8 @@
 /**
  * #1499 — 자체 Dijkstra 최단경로 알고리즘.
  *
- * 3종 type:
+ * 2종 type:
  *   - `min-transfer`: 환승 횟수 최소화. line edge=1, transfer edge=1000.
- *   - `min-distance`: 운행 거리(m) 최단. transfer edge는 거리 0으로 산정.
  *   - `min-time`: 운행 + 환승 도보 시간(초) 합산 최단.
  *
  * 결과는 `Route` 객체로 leg + transfer 정보를 모두 포함, downstream
@@ -12,11 +11,10 @@
 import { buildRouteGraph, type RouteEdge } from './buildRouteGraph';
 import type { LineNumber } from '../types/station';
 
-export type RouteOptimizationType = 'min-transfer' | 'min-distance' | 'min-time';
+export type RouteOptimizationType = 'min-transfer' | 'min-time';
 
 export const ROUTE_OPTIMIZATION_TYPES: readonly RouteOptimizationType[] = [
   'min-transfer',
-  'min-distance',
   'min-time',
 ];
 
@@ -114,12 +112,10 @@ class MinHeap<T> {
 function edgeWeight(edge: RouteEdge, type: RouteOptimizationType): number {
   if (edge.kind === 'line') {
     if (type === 'min-transfer') return 1;
-    if (type === 'min-distance') return edge.distanceMeters;
     return edge.durationSeconds;
   }
   // transfer
   if (type === 'min-transfer') return 1000;
-  if (type === 'min-distance') return 0;
   return edge.walkingSeconds;
 }
 
@@ -287,7 +283,7 @@ function reconstructRoute(
 }
 
 /**
- * 3종 type 한 번에 산출. UI/DebugModal에서 비교 표시용.
+ * 2종 type 한 번에 산출. UI/DebugModal에서 비교 표시용.
  */
 export function findRoutes(
   fromId: string,
@@ -295,7 +291,6 @@ export function findRoutes(
 ): Record<RouteOptimizationType, Route | null> {
   return {
     'min-transfer': findRouteByType(fromId, toId, 'min-transfer'),
-    'min-distance': findRouteByType(fromId, toId, 'min-distance'),
     'min-time': findRouteByType(fromId, toId, 'min-time'),
   };
 }

@@ -26,7 +26,7 @@ describe('dijkstraRoute (#1499)', () => {
   });
 
   it('finds a direct same-line route without transfers (2-001 → 2-003)', () => {
-    const r = findRouteByType('2-001', '2-003', 'min-distance');
+    const r = findRouteByType('2-001', '2-003', 'min-time');
     expect(r).not.toBeNull();
     expect(r?.transferCount).toBe(0);
     expect(r?.legs).toHaveLength(1);
@@ -49,9 +49,9 @@ describe('dijkstraRoute (#1499)', () => {
     }
   });
 
-  it('min-transfer prefers fewer transfers than min-distance', () => {
+  it('min-transfer prefers fewer transfers than min-time', () => {
     const a = findRouteByType('2-011', '5-032', 'min-transfer');
-    const b = findRouteByType('2-011', '5-032', 'min-distance');
+    const b = findRouteByType('2-011', '5-032', 'min-time');
     expect(a).not.toBeNull();
     expect(b).not.toBeNull();
     if (a && b) {
@@ -59,7 +59,7 @@ describe('dijkstraRoute (#1499)', () => {
     }
   });
 
-  it('findRoutes returns all three types', () => {
+  it('findRoutes returns all two types', () => {
     const result = findRoutes('2-001', '2-003');
     for (const type of ROUTE_OPTIMIZATION_TYPES) {
       expect(result[type]).not.toBeNull();
@@ -86,16 +86,6 @@ describe('dijkstraRoute (#1499)', () => {
     // 9-001(개화) → 2-001 라인 외 연결 없음
     const r = findRouteByType('9-001', '2-001', 'min-time');
     expect(r).toBeNull();
-  });
-
-  it('min-distance excludes walking distance for transfers', () => {
-    const r = findRouteByType('2-011', '5-032', 'min-distance');
-    expect(r).not.toBeNull();
-    if (r) {
-      // totalDistanceMeters should be sum of leg distances only
-      const sumLeg = r.legs.reduce((s, l) => s + l.distanceMeters, 0);
-      expect(r.totalDistanceMeters).toBe(sumLeg);
-    }
   });
 
   it('heap correctness — large random pair stress', () => {
