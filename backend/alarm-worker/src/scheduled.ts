@@ -3189,7 +3189,7 @@ export function buildBoardingPromptMessage(
     return { title, body: `${line} · ${originStation}` };
   }
   const timeStr =
-    etaSeconds !== null ? ` ${toKstHhmm(now + etaSeconds * 1000)} 진입` : '';
+    etaSeconds === null ? '' : ` ${toKstHhmm(now + etaSeconds * 1000)} 진입`;
   return { title, body: `${originStation} [${line}] → ${nextStation} 방면${timeStr}` };
 }
 
@@ -3299,7 +3299,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     );
     const pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, display.line));
     if (pool.length > 0) {
-      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min));
+      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
       etaSeconds = best.arrivalSeconds;
     }
   } catch {
