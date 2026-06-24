@@ -108,6 +108,7 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.useRealTimers();
+  jest.restoreAllMocks();
 });
 
 describe('cron jitter 흡수 — pre-scheduled 알람 발사 시각 불변성', () => {
