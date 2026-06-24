@@ -3155,6 +3155,44 @@ function isUnrecoverableApnsError(status: number, _reason: string | undefined): 
   return false;
 }
 
+/** KST(UTC+9) HH:MM 문자열로 변환 (#1739). */
+function toKstHhmm(epochMs: number): string {
+  const kstMs = epochMs + 9 * 60 * 60 * 1000;
+  const d = new Date(kstMs);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/**
+ * boardingPrompt push 메시지 빌드 (#1739 — 방면 + 시간 명시).
+ *
+ * title: 항상 영문 raw (backend raw 원칙 — i18n는 client 담당).
+ * body:  nextStation이 있으면 "출발역 [호선] → 다음역 방면 HH:MM 진입",
+ *        없으면 기존 포맷 "${line} · ${originStation}" fallback.
+ *
+ * @param originStation  display.originStation (출발역 표시명)
+ * @param line           display.line ("2", "gyeongui" 등)
+ * @param nextStation    trip.waypoints[0].stationName (다음 정거장 — 방면 표시)
+ * @param etaSeconds     arrivals에서 추출한 도착 잔여 초 (null = 정보 없음)
+ * @param now            현재 epoch ms (ETA 절대 시각 계산용)
+ */
+export function buildBoardingPromptMessage(
+  originStation: string,
+  line: string,
+  nextStation: string | null,
+  etaSeconds: number | null,
+  now: number,
+): { title: string; body: string } {
+  const title = 'Are you on board?';
+  if (!nextStation) {
+    return { title, body: `${line} · ${originStation}` };
+  }
+  const timeStr =
+    etaSeconds !== null ? ` ${toKstHhmm(now + etaSeconds * 1000)} 진입` : '';
+  return { title, body: `${originStation} [${line}] → ${nextStation} 방면${timeStr}` };
+}
+
 /**
  * APNs 토큰 환경(sandbox/production)과 host가 어긋났을 때 Apple이 내는 시그널.
  * 이 조건에 한해서만 self-heal retry를 시도한다.
@@ -3248,6 +3286,33 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // #1729 paradigm shift — attemptAutoLock(Path B) 제거.
   // 9단 게이트 통과 시 backend가 자동 trainCode 결정 X. boardingPrompt push 발사 → 사용자 인지 요구.
 
+  // #1739 — 방면 + 시간 명시. 출발역 arrivals를 fetch해 방향 일치 최소 ETA 추출.
+  // 실패 시 graceful fallback (메시지 없이 push는 항상 발사).
+  const nextStation = trip.waypoints[0]?.stationName ?? null;
+  let etaSeconds: number | null = null;
+  try {
+    const arrivals = await deps.seoul.fetchArrivals(display.originStation);
+    const directional = arrivals.filter(
+      (a) =>
+        matchLine(a.subwayNm, display.line) &&
+        (geo.direction === null || (geo.direction === 'up' ? a.isUp : !a.isUp)),
+    );
+    const pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, display.line));
+    if (pool.length > 0) {
+      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min));
+      etaSeconds = best.arrivalSeconds;
+    }
+  } catch {
+    // Seoul API 장애 시 ETA 없이 push 발사 — 메시지 degradation만 발생, push 자체는 보존.
+  }
+  const { title, body } = buildBoardingPromptMessage(
+    display.originStation,
+    display.line,
+    nextStation,
+    etaSeconds,
+    now,
+  );
+
   // 9단 통과 — alert push 발사.
   const pushId = generatePushId();
   const heal = await sendWithEnvHeal(
@@ -3255,8 +3320,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       sendBoardingPromptPush({
         deviceToken: trip.token,
         pushId,
-        title: 'Are you on board?',
-        body: `${display.line} · ${display.originStation}`,
+        title,
+        body,
         originStation: display.originStation,
         line: display.line,
         tripToken: trip.token,

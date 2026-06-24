@@ -33,6 +33,7 @@ import {
   pickBestArrivalSignal,
   pickLatestCurrentStationName,
   resolveEtaMissingThreshold,
+  buildBoardingPromptMessage,
   runScheduled,
   tripLifecyclePhase,
   appendPassedStation,
@@ -7132,6 +7133,55 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
     // trip 보존 — KV에 잔존.
     expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
     expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+  });
+});
+
+describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시)', () => {
+  const BASE_NOW = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z → KST 07:13
+
+  it('nextStation + etaSeconds 둘 다 있음 → "출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
+    // BASE_NOW + 120s → KST 07:15:20 → HH:MM = 07:15
+    const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW);
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
+  });
+
+  it('nextStation 없음 (null) → 기존 포맷 fallback "${line} · ${originStation}"', () => {
+    const { title, body } = buildBoardingPromptMessage('왕십리', '5', null, 90, BASE_NOW);
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('5 · 왕십리');
+  });
+
+  it('nextStation 있지만 etaSeconds null → 시간 없이 방면만 표시', () => {
+    const { title, body } = buildBoardingPromptMessage('합정', '6', '마포구청', null, BASE_NOW);
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('합정 [6] → 마포구청 방면');
+  });
+
+  it('환승 leg — 다른 호선 nextStation + ETA', () => {
+    // BASE_NOW + 180s → KST 07:16:20 → HH:MM = 07:16
+    const { title, body } = buildBoardingPromptMessage('왕십리', '5', '마장', 180, BASE_NOW);
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('왕십리 [5] → 마장 방면 07:16 진입');
+  });
+
+  it('etaSeconds=0 → now 시각 그대로 표시 (즉시 진입)', () => {
+    const { title, body } = buildBoardingPromptMessage('시청', '2', '을지로입구', 0, BASE_NOW);
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('시청 [2] → 을지로입구 방면 07:13 진입');
+  });
+
+  it('자정 경계 넘어가는 ETA — HH:MM 포맷 정상', () => {
+    // 23:59 KST = 14:59 UTC → epoch 1_699_973_940_000
+    // +120s → 2023-11-15 00:01 KST
+    const midnight = 1_699_973_940_000; // 2023-11-14 23:59 KST
+    const { body } = buildBoardingPromptMessage('시청', '2', '강남', 120, midnight);
+    expect(body).toBe('시청 [2] → 강남 방면 00:01 진입');
+  });
+
+  it('non-numeric line name (gyeongui) — fallback 포맷 정상', () => {
+    const { body } = buildBoardingPromptMessage('회기', 'gyeongui', null, null, BASE_NOW);
+    expect(body).toBe('gyeongui · 회기');
   });
 });
 
