@@ -1628,7 +1628,14 @@ function DebugModalInner({
   }, [refreshLogs]);
 
   const handleClear = useCallback(async () => {
-    await clearAlarmLog();
+    await Promise.all([
+      clearAlarmLog(),
+      clearEstimatorEntries(),
+      clearFusionDebugEntries(),
+      clearGpsDropEntries(),
+      clearBackendCallEntries(),
+      clearRawSignalEntries(),
+    ]);
     await refreshLogs();
   }, [refreshLogs]);
 
@@ -2194,7 +2201,7 @@ function DebugModalInner({
               onPress={handleClear}
               testID="debug-clear-log"
             >
-              <Text style={[styles.actionText, { color: colors.accent }]}>Clear log</Text>
+              <Text style={[styles.actionText, { color: colors.accent }]}>Clear all logs</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.actionButton, { backgroundColor: colors.accent }]}
