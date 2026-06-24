@@ -896,9 +896,20 @@ export function useFusedNearestStation(
   const ssotStation = useMemo<Station | null>(() => {
     if (!backendSsotMirror) return null;
     if (boardingLock) {
+      // lock 활성: lock.boardingLine으로 단일화 (기존 동작).
       return findStationByNameAndLine(
         backendSsotMirror.currentStationId,
         boardingLock.boardingLine,
+      );
+    }
+    // #1705 — lockless trip: backend가 forward한 currentStationLine이 있으면 line 정확 매칭.
+    // 동명 환승역(합정 2/6호선, 공덕 5/6호선 등) cross-line confusion 차단.
+    // currentStationLine 부재(legacy v1 mirror) 시 name-only fallback (기존 동작).
+    // cast: backend의 Waypoint.line 어휘는 device LineNumber union과 동일 값 집합.
+    if (backendSsotMirror.currentStationLine !== undefined) {
+      return findStationByNameAndLine(
+        backendSsotMirror.currentStationId,
+        backendSsotMirror.currentStationLine as LineNumber,
       );
     }
     return findStationByName(backendSsotMirror.currentStationId);

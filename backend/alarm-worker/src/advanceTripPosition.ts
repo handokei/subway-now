@@ -458,6 +458,7 @@ export async function advanceTripPosition(
   }
 
   // Advance — SSoT mutate + write
+  const candidateLine = trip.waypoints[0]?.line;
   const next: TripPositionSSoT = {
     ...ssot,
     passedStations: appendUnique(ssot.passedStations, ssot.currentStationId),
@@ -466,6 +467,9 @@ export async function advanceTripPosition(
     lastAdvanceEvidence: evidence.type,
     // alarmEvents는 ssot에서 inherit — 아래 appendAlarmEvent로 in-place mutate.
     alarmEvents: ssot.alarmEvents ? [...ssot.alarmEvents] : [],
+    // #1705 — advance 시 현재 waypoint 노선으로 갱신 (cross-line confusion 차단).
+    ...(candidateLine !== undefined ? { currentStationLine: candidateLine } : {}),
+    schemaVersion: 2,
   };
 
   applyLockSuggestion(next, ssot, {

@@ -210,6 +210,50 @@ describe('readBackendSsotMirror alarmEvents parse (#1572 T9)', () => {
   });
 });
 
+// #1705 — readBackendSsotMirror currentStationLine parse (cross-line guard).
+describe('readBackendSsotMirror currentStationLine parse (#1705)', () => {
+  const baseEntry = {
+    currentStationId: '합정',
+    motionState: 'moving',
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: 1_700_000_000_000,
+    passedStations: [],
+    receivedAt: 1_700_000_010_000,
+  };
+
+  beforeEach(() => {
+    mockGetItem.mockReset();
+  });
+
+  it('valid currentStationLine forward 시 결과에 포함', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, currentStationLine: '2' }));
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBe('2');
+  });
+
+  it('currentStationLine 부재 → undefined (legacy v1 row graceful)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(baseEntry));
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBeUndefined();
+    // 본체는 살아 있음.
+    expect(got?.currentStationId).toBe('합정');
+  });
+
+  it('currentStationLine 빈 문자열 → undefined (graceful drop)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, currentStationLine: '' }));
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBeUndefined();
+    expect(got?.currentStationId).toBe('합정');
+  });
+
+  it('currentStationLine 비-string → undefined (graceful drop)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, currentStationLine: 6 }));
+    const got = await readBackendSsotMirror();
+    expect(got?.currentStationLine).toBeUndefined();
+    expect(got?.currentStationId).toBe('합정');
+  });
+});
+
 describe('persistBackendSsotMirror (#1568 T8b)', () => {
   beforeEach(() => {
     mockSetItem.mockReset();
