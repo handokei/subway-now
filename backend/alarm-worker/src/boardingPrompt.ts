@@ -64,6 +64,7 @@ export type GateSkipReason =
   | 'direction-mismatch'
   | 'speed-too-low'
   | 'motion-not-moving'
+  | 'motion-stationary'
   | 'silenced'
   | 'already-fired';
 
@@ -225,9 +226,6 @@ export function evaluateBoardingPromptGates(
   const gpsDependentBypass = isGpsDependentBypassEnv(inputs.environment);
 
   // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면 결과 재사용.
-  // #1536 — series 가 비어 있을 수 있는 지하 환경에서도 metrics 자체는 산출 가능
-  // (count=0). GPS bypass 분기는 motion 평가에 metrics.motion 가 'unknown'(window-too-small의
-  // 자연 결과)이라도 #8 motion 게이트가 자연 차단.
   const metrics = inputs.metrics ?? evaluateWindow(inputs.series, inputs.now);
 
   // surface / undefined 만 GPS 의존 게이트 평가 — underground/mixed/unknown 은 byPass.
@@ -236,11 +234,30 @@ export function evaluateBoardingPromptGates(
     if (geomOutcome) return geomOutcome;
   }
 
-  // #8 — motion ∈ {walking, automotive}. GPS bypass 분기에서도 평가 — CMMotionActivity
-  // 기반 신호는 지하에서도 작동 (mem `lesson_motion_activity_intermittent_signal` 의 5~10분
-  // 주기 뒤집힘 한계는 caller 의 consensusGate 가 arrival+lockAttachable 합의로 보완).
-  if (metrics.motion !== 'walking' && metrics.motion !== 'automotive') {
-    return { pass: false, reason: 'motion-not-moving', metrics };
+  // #8 — motion 게이트. 환경에 따라 정책이 다르다.
+  //
+  // GPS-bypass 환경(underground/mixed/unknown):
+  //   iOS CMMotionActivity는 trip 시작 직후 5~10분 lag으로 unknown 상태가 normal.
+  //   지하에서는 walking/automotive 수렴까지 시간이 더 필요하므로 unknown 허용.
+  //   단, count=0(series 완전 비어 있음)은 "warmup lag"이 아닌 "데이터 전무" — window-too-small로 차단.
+  //   stationary만 차단 — 이동 중 아님이 확실한 경우만.
+  //   caller consensusGate(arrival+lockAttachable 2-of-2)가 false positive를 추가 차단.
+  //   (#1820: Day 2 production 36건 evidence — environment=unknown + motion=unknown 100% 차단)
+  //
+  // GPS 환경(surface/undefined):
+  //   기존 정책 유지 — walking/automotive만 통과.
+  if (gpsDependentBypass) {
+    if (metrics.count === 0) {
+      return { pass: false, reason: 'window-too-small', metrics };
+    }
+    if (metrics.motion === 'stationary') {
+      return { pass: false, reason: 'motion-stationary', metrics };
+    }
+    // walking / automotive / unknown 모두 통과
+  } else {
+    if (metrics.motion !== 'walking' && metrics.motion !== 'automotive') {
+      return { pass: false, reason: 'motion-not-moving', metrics };
+    }
   }
 
   // #7 — fused speed. GPS bypass 분기는 fusedSpeed 산출 자체가 의미 없어 0 으로 표기.

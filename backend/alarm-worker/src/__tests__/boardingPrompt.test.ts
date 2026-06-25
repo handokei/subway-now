@@ -419,7 +419,7 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
     if (r.pass) expect(r.fusedSpeedKmh).toBe(0);
   });
 
-  it('underground: motion=stationary 면 #8 게이트로 차단 (motion-not-moving)', () => {
+  it('underground: motion=stationary 면 #8 게이트로 차단 (motion-stationary)', () => {
     const stationary = staleGpsSeries(now).map((p) => ({
       ...p,
       motion: 'stationary' as const,
@@ -432,7 +432,7 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
       environment: 'underground',
     });
     expect(r.pass).toBe(false);
-    if (!r.pass) expect(r.reason).toBe('motion-not-moving');
+    if (!r.pass) expect(r.reason).toBe('motion-stationary');
   });
 
   it('underground: 이미 fired = already-fired (게이트 #9 우선 평가)', () => {
@@ -503,6 +503,89 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
     });
     expect(r.pass).toBe(true);
     if (r.pass) expect(r.fusedSpeedKmh).toBeGreaterThan(5);
+  });
+});
+
+/**
+ * #1820 — GPS-bypass 환경(underground/mixed/unknown)에서 motion=unknown 허용.
+ * Day 2 production 36건 evidence: environment=unknown + motion=unknown → 100% 차단 회귀.
+ * 옵션 A: bypass 환경에서 stationary만 차단, walking/automotive/unknown 통과.
+ */
+describe('evaluateBoardingPromptGates — #1820 motion grace (GPS-bypass 환경)', () => {
+  const now = 1_000_000;
+
+  // underground stale GPS series (모든 motion=unknown 로 덮어쓸 것)
+  function unknownMotionSeries(n: number): PositionPoint[] {
+    return staleGpsSeries(n).map((p) => ({ ...p, motion: 'unknown' as const }));
+  }
+
+  it('underground + motion=unknown → pass (warmup grace)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: unknownMotionSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.fusedSpeedKmh).toBe(0);
+  });
+
+  it('underground + motion=stationary → fail (motion-stationary)', () => {
+    const stationary = staleGpsSeries(now).map((p) => ({
+      ...p,
+      motion: 'stationary' as const,
+    }));
+    const r = evaluateBoardingPromptGates({
+      series: stationary,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('motion-stationary');
+  });
+
+  it('underground + motion=walking → pass', () => {
+    const walking = staleGpsSeries(now).map((p) => ({
+      ...p,
+      motion: 'walking' as const,
+    }));
+    const r = evaluateBoardingPromptGates({
+      series: walking,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('surface + motion=unknown → fail (motion-not-moving, 기존 정책 유지)', () => {
+    const unknown = happySeries(now).map((p) => ({ ...p, motion: 'unknown' as const }));
+    const r = evaluateBoardingPromptGates({
+      series: unknown,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'surface',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('motion-not-moving');
+  });
+
+  it('surface + motion=walking → pass (기존 정책 유지)', () => {
+    // happySeries는 이미 motion=automotive이므로 walking으로 교체
+    const walking = happySeries(now).map((p) => ({ ...p, motion: 'walking' as const }));
+    const r = evaluateBoardingPromptGates({
+      series: walking,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'surface',
+    });
+    expect(r.pass).toBe(true);
   });
 });
 
