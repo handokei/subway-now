@@ -87,6 +87,7 @@ const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
+const mockLogSuppressedLocklessNoUserIntent = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -119,6 +120,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedPhaseToPhaseDedup(...args),
   logSuppressedSsotFireGate: (...args: unknown[]) =>
     mockLogSuppressedSsotFireGate(...args),
+  logSuppressedLocklessNoUserIntent: (...args: unknown[]) =>
+    mockLogSuppressedLocklessNoUserIntent(...args),
 }));
 
 // #1572 (T9) — evaluateSsotFireGate mock. 기본 no-block (mirror-missing graceful).
@@ -180,6 +183,17 @@ const earlyDest: AlarmEvent = { phaseId: 'early', type: 'destination', stationNa
 const earlyTransfer: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '시청' };
 const imminentDest: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: '강남' };
 
+// #1816 — 테스트 기본 lock. lock 활성 trip은 paradigm shift 가드를 통과해 fire path에 진입.
+// lock=null(lockless)을 명시적으로 테스트하는 케이스는 개별적으로 mockGetBoardingLock.mockResolvedValue(null) 재설정.
+const DEFAULT_LOCK = {
+  destinationId: 'D1',
+  trainCode: 'T-DEFAULT',
+  boardingStationId: 'S-DEFAULT',
+  boardingLine: '2' as const,
+  boardedAt: 0,
+  expectedDurationMs: 60_000,
+};
+
 function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStationAlarmInputs {
   return {
     route: null,
@@ -210,7 +224,8 @@ describe('useStationAlarm', () => {
     mockIsImminentByArrivalCode.mockReturnValue(false);
     mockGetStoredTripTrainCode.mockResolvedValue(null);
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
-    mockGetBoardingLock.mockResolvedValue(null);
+    // #1816 — 기본 lock 활성. lockless(lock=null) 케이스는 개별 테스트에서 명시적으로 재설정.
+    mockGetBoardingLock.mockResolvedValue(DEFAULT_LOCK);
     mockFindFgArvlCdFireSignal.mockReturnValue(null);
     mockAwaitInitialScheduledAlarmDrain.mockResolvedValue(undefined);
     // #1515 — cross-category dedup 모듈 in-memory 상태 리셋. mock하지 않은 실모듈 사용.
@@ -944,15 +959,10 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
-    // Sonar cpd 통합 — sleep OFF는 lock 유무와 무관하게 게이트 비활성 → 정상 발사.
-    // #1214 (Epic #1204 D8): lock=null 조기 종료가 제거됐으므로 "sleep ON + lock null" 케이스는
-    // 별도 신규 케이스(아래)에서 suppress=true 로 검증.
-    it.each([
-      { name: 'sleep OFF + lock 활성 + 첫 hop transfer → 정상 발사', sleepMode: false, lockValue: lock },
-      { name: 'sleep OFF + lock null + 첫 hop transfer → 정상 발사', sleepMode: false, lockValue: null },
-    ])('$name', async ({ sleepMode, lockValue }) => {
-      useSettingsStore.setState({ sleepMode });
-      mockGetBoardingLock.mockResolvedValue(lockValue);
+    // #1816 — sleep OFF + lock 활성 + 첫 hop transfer → 정상 발사 (lock 활성 trip은 sleep 게이트 비활성).
+    it('sleep OFF + lock 활성 + 첫 hop transfer → 정상 발사', async () => {
+      useSettingsStore.setState({ sleepMode: false });
+      mockGetBoardingLock.mockResolvedValue(lock);
       const route = makeTransferRoute({
         transferName: '시청',
         fromLine: '2',
@@ -967,9 +977,9 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
 
-    it('sleep ON + lock null + 첫 hop transfer → suppress (#1214 lockless 적용)', async () => {
-      // #1214 (Epic #1204 D8): 사용자 명시 의향 trip(lockless)도 lock 활성과 동급 정확도 보장.
-      // getFirstLeg.endName === stationName 이면 lockless에서도 isFirstHop=true → suppress.
+    it('sleep ON + lock null + 첫 hop transfer → lockless-no-user-intent suppress (#1816)', async () => {
+      // #1816 — lock=null(lockless trip) 시 sleep 게이트에 도달하기 전에 lockless-no-user-intent로 차단.
+      // 기존 #1214: sleep ON + lockless → sleep-first-transfer 차단 → 이제 lockless guard가 앞서 차단.
       useSettingsStore.setState({ sleepMode: true });
       mockGetBoardingLock.mockResolvedValue(null);
       const route = makeTransferRoute({
@@ -983,16 +993,19 @@ describe('useStationAlarm', () => {
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
       await waitFor(() =>
-        expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalledWith(
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
           expect.objectContaining({
-            source: 'fg',
+            source: 'fg-evaluated',
             stationName: '시청',
+            kind: 'transfer',
             phaseId: 'early',
           }),
         ),
       );
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+      // lockless guard가 앞서 차단하므로 sleep gate는 호출 안 됨.
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
 
     it('sleep ON + lock 활성 + destination 카테고리 → 정상 발사 (transfer 외 영향 없음)', async () => {
@@ -2146,7 +2159,15 @@ describe('useStationAlarm', () => {
     it('조기 발사로 오염되지 않아 window 경과 후 실제 도착에서 destination 정상 발사', async () => {
       const baseTs = 1_700_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
-      mockGetBoardingLock.mockResolvedValue(null);
+      // #1816 — lock 활성 trip: lockless-no-user-intent 가드를 통과해야 warmup 이후 발사 검증 가능.
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-WARMUP',
+        boardingStationId: 'S-BOARD',
+        boardingLine: '2' as const,
+        boardedAt: baseTs,
+        expectedDurationMs: 60_000,
+      });
       // 트립 시작 시점: early destination 조건 매칭(조기 발사 시도).
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
 
@@ -2705,8 +2726,16 @@ describe('useStationAlarm', () => {
       // race 시뮬레이션: evaluateAlarmPhase mock이 firedAlarms를 honor 안 함으로써 같은
       // rawEvent를 매 evaluation마다 반환 (production race에서 in-flight fireAndLog가 add 전에
       // 다음 evaluation이 들어오는 상황과 동치). fireAndLog 진입 가드가 차단해야 한다.
+      // #1816 — lock 활성 trip: lockless-no-user-intent 가드를 통과해야 in-flight dedup 검증 가능.
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-      mockGetBoardingLock.mockResolvedValue(null);
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-DEDUP',
+        boardingStationId: 'S-BOARD',
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 60_000,
+      });
       const route = makeDirectRoute(1, '2');
 
       const { rerender } = renderHook(
@@ -4027,17 +4056,24 @@ describe('useStationAlarm', () => {
       });
     };
 
-    it('lockless + currentHopIndex=0 + candidate arc[0] → suppressed (gate-origin-hop-lockless)', async () => {
+    it('lockless + currentHopIndex=0 + candidate arc[0] → suppressed (lockless-no-user-intent, #1816 broad guard)', async () => {
+      // #1816 — lock=null 시 origin hop 여부와 무관하게 lockless-no-user-intent 가드로 차단.
+      // 기존 gate-origin-hop-lockless(#1514)는 lockless-no-user-intent broad guard의 subset이 됨.
       mockGetBoardingLock.mockResolvedValue(null);
       renderOriginHopCase(0, 0);
       await waitFor(() => {
-        expect(mockLogSuppressedOriginHopLockless).toHaveBeenCalledWith({
-          source: 'fg',
-          stationName: arcOrigin[0].name,
-        });
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: arcOrigin[0].name,
+            kind: 'station-passed',
+          }),
+        );
       });
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogFiredStationPassed).not.toHaveBeenCalledWith('fg', arcOrigin[0]);
+      // broad guard가 앞서 차단하므로 narrow origin-hop guard는 호출 안 됨.
+      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
     });
 
     // #1630 — lockless mode는 estimator(시간 적분)가 idx를 임의 진행할 수 있으므로 출발역
@@ -4045,16 +4081,21 @@ describe('useStationAlarm', () => {
     // candidate가 arc[0]이면 effectiveHopIndex 값과 무관하게 차단해야 한다 (ADR-014 §4).
     // effectiveHopIndex가 hop window 범위(±1)를 넘으면 별도 gate-hop-window 가드가 먼저 차단하므로
     // 본 가드 직접 cover는 effectiveHopIndex=1 케이스 (직전 trip evidence와 정합).
-    it('#1630 lockless + currentHopIndex=1 + candidate arc[0] → suppressed (estimator overshoot, 2026-06-22 용마산 evidence)', async () => {
+    it('#1630 lockless + currentHopIndex=1 + candidate arc[0] → suppressed (lockless-no-user-intent, #1816 broad guard)', async () => {
+      // #1816 — lock=null 시 candidate index와 무관하게 lockless-no-user-intent 가드로 차단.
       mockGetBoardingLock.mockResolvedValue(null);
       renderOriginHopCase(0, 1);
       await waitFor(() => {
-        expect(mockLogSuppressedOriginHopLockless).toHaveBeenCalledWith({
-          source: 'fg',
-          stationName: arcOrigin[0].name,
-        });
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: arcOrigin[0].name,
+            kind: 'station-passed',
+          }),
+        );
       });
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
     });
 
     // #1630 회귀 가드 — lock 활성 + currentHopIndex=1 + candidate arc[0]: isOriginHopCandidate=true이지만
@@ -4105,24 +4146,31 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
     });
 
-    it('lockless + currentHopIndex=0 + candidate arc[1] (다음 hop) → 통과 (정상 진행 신호)', async () => {
+    it('lockless + currentHopIndex=0 + candidate arc[1] (다음 hop) → lockless-no-user-intent 차단 (#1816)', async () => {
+      // #1816 — lock=null이면 candidate index와 무관하게 lockless-no-user-intent 가드로 차단.
+      // 기존: 다음 hop은 통과(origin hop만 차단). 변경: lockless trip 자체가 fire X.
       mockGetBoardingLock.mockResolvedValue(null);
       mockNextTargetStops(3);
       renderOriginHopCase(1, 0);
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ source: 'fg', kind: 'station-passed' }),
+        );
       });
-      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('lockless + currentHopIndex=2 + candidate arc[2] (중간 hop origin 아님) → 통과 (기존 동작 보존)', async () => {
+    it('lockless + currentHopIndex=2 + candidate arc[2] (중간 hop) → lockless-no-user-intent 차단 (#1816)', async () => {
+      // #1816 — lock=null이면 중간 hop도 lockless-no-user-intent 가드로 차단.
       mockGetBoardingLock.mockResolvedValue(null);
       mockNextTargetStops(2);
       renderOriginHopCase(2, 2);
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ source: 'fg', kind: 'station-passed' }),
+        );
       });
-      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -4157,14 +4205,16 @@ describe('useStationAlarm', () => {
       });
     }
 
-    type ExpectGate = 'sleep' | 'lock-origin' | 'none';
+    type ExpectGate = 'lockless' | 'lock-origin' | 'none';
     it.each([
       {
-        name: 'FG GPS path — lockless + sleep ON + currentHopIndex=0 → station-passed 차단 (사가정 22:11:56 evidence)',
+        // #1816 — lockless trip은 sleep gate 진입 전에 lockless-no-user-intent 가드가 먼저 차단.
+        // 기존: 'sleep gate로 차단' → 변경: 'lockless-no-user-intent로 차단'.
+        name: 'FG GPS path — lockless + sleep ON + currentHopIndex=0 → lockless-no-user-intent 차단 (#1816)',
         sleepMode: true,
-        lockValue: null,
+        lockValue: null as typeof lockOnSagajeong | null,
         currentHopIndex: 0 as number | null,
-        expectGate: 'sleep' as ExpectGate,
+        expectGate: 'lockless' as ExpectGate,
       },
       {
         // #1599 band-aid — lock 활성 + candidate=boardingStation은 sleep gate 진입 전에
@@ -4176,18 +4226,20 @@ describe('useStationAlarm', () => {
         expectGate: 'lock-origin' as ExpectGate,
       },
       {
-        name: 'FG GPS path — sleep OFF + lockless + currentHopIndex=0 → 정상 발사',
+        // #1816 — lockless trip은 sleep OFF여도 lockless-no-user-intent 가드로 차단.
+        name: 'FG GPS path — sleep OFF + lockless + currentHopIndex=0 → lockless-no-user-intent 차단 (#1816)',
         sleepMode: false,
-        lockValue: null,
+        lockValue: null as typeof lockOnSagajeong | null,
         currentHopIndex: 0 as number | null,
-        expectGate: 'none' as ExpectGate,
+        expectGate: 'lockless' as ExpectGate,
       },
       {
-        name: 'FG GPS path — sleep ON + lockless + currentHopIndex=3 → 정상 발사 (첫 hop 아님)',
+        // #1816 — lockless trip은 hop index와 무관하게 lockless-no-user-intent 가드로 차단.
+        name: 'FG GPS path — sleep ON + lockless + currentHopIndex=3 → lockless-no-user-intent 차단 (#1816)',
         sleepMode: true,
-        lockValue: null,
+        lockValue: null as typeof lockOnSagajeong | null,
         currentHopIndex: 3 as number | null,
-        expectGate: 'none' as ExpectGate,
+        expectGate: 'lockless' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep ON + lock 활성 + candidate≠boardingStation → 정상 발사',
@@ -4208,15 +4260,16 @@ describe('useStationAlarm', () => {
 
       renderHook(() => useStationAlarm(withSleepGateInputs({ currentHopIndex })));
 
-      if (expectGate === 'sleep') {
+      if (expectGate === 'lockless') {
         await waitFor(() =>
-          expect(mockLogSuppressedSleepStationPassed).toHaveBeenCalledWith({
-            source: 'fg',
-            stationName: onRouteStation.name,
-          }),
+          expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+            expect.objectContaining({ source: 'fg', kind: 'station-passed' }),
+          ),
         );
         expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
         expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+        // lockless guard가 앞서 차단하므로 sleep gate는 호출 안 됨.
+        expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
       } else if (expectGate === 'lock-origin') {
         await waitFor(() =>
           expect(mockLogSuppressedPassedEventOnLockOrigin).toHaveBeenCalledWith({
@@ -4979,6 +5032,206 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
       // phase alarm은 차단.
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 FG device fire path 차단.
+  // Acceptance:
+  //   1. lockless + 사용자 명시 의향 X → station-passed / transfer / destination fire = 0건
+  //   2. lock 활성 trip → 기존 fire 흐름 유지 (backward compat)
+  describe('#1816 lockless-no-user-intent 가드 (paradigm shift Phase 1 보강)', () => {
+    const onRouteStation = makeStation('S-PASS', '한양대', 37.5, 127.0);
+    const routeDirect = makeDirectRoute(3, '2');
+
+    it('lockless + 사용자 명시 의향 X → station-passed FG GPS path fire X (logSuppressedLocklessNoUserIntent)', async () => {
+      // Day 1 trip evidence: 13:46:32 fg fired station-passed 한양대 (lock=null, boardingPrompt=0).
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '왕십리',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('lockless + 사용자 명시 의향 X → transfer phase ETA fire X (logSuppressedLocklessNoUserIntent)', async () => {
+      // Day 1 trip evidence: 13:46:37 fg fired transfer early 왕십리 (lock=null, boardingPrompt=0).
+      // earlyTransfer mock은 stationName='시청'으로 고정 — evaluateAlarmPhase mock이 반환하는 값.
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer); // earlyTransfer.stationName = '시청'
+
+      const route = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '5',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg-evaluated',
+            stationName: '시청',
+            kind: 'transfer',
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('lockless + 사용자 명시 의향 X → destination phase ETA fire X (logSuppressedLocklessNoUserIntent)', async () => {
+      // Day 1 trip evidence: 13:49:38 fg fired destination early 마장 (lock=null, boardingPrompt=0).
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            userLocation: { lat: 37.498, lng: 127.028 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg-evaluated',
+            stationName: destination.name,
+            kind: 'destination',
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('lock 활성 trip → station-passed FG GPS path 정상 발사 (backward compat)', async () => {
+      // lock !== null = 사용자 명시 의향(BoardingTrainList 탭 / boardingPrompt 응답).
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-ACTIVE',
+        boardingStationId: 'S-BOARD',
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 60_000,
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
+    });
+
+    it('lock 활성 trip → destination phase ETA 정상 발사 (backward compat)', async () => {
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-ACTIVE',
+        boardingStationId: 'S-BOARD',
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 60_000,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            userLocation: { lat: 37.498, lng: 127.028 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
+    });
+
+    it('lockless + 사용자 명시 의향 X → subsurface station-passed fire X (subsurface path guard)', async () => {
+      // subsurface verdict path: subsurfaceStationDetected=true 시 lock=null 차단.
+      mockGetBoardingLock.mockResolvedValue(null);
+      const subsurfaceStation = makeStation('S-SUB', '지하역', 37.5, 127.0);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: subsurfaceStation,
+            subsurfaceStationDetected: true,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: subsurfaceStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 });
