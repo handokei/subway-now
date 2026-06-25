@@ -1,17 +1,23 @@
 /**
  * selfPollPosition.test.ts — #1614 Phase A (S4 #1537) backend self-poll KV stamp + helper.
+ * #1828 Phase 5 — station-level arrivals polling.
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryKV } from './inMemoryKv';
 import {
+  N_STATION_LOOKAHEAD,
   pollLinesAndStamp,
+  pollStationsAndStamp,
   readSelfPollPosition,
+  readSelfPollStationArrivals,
   selfPollKey,
+  selfPollStationKey,
   SELF_POLL_TTL_SEC,
   writeSelfPollPosition,
+  writeSelfPollStationArrivals,
 } from '../selfPollPosition';
-import { SeoulArrivalClient, type PositionEntry } from '../seoul';
+import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 
 const NOW = 1_700_000_000_000;
 
@@ -26,7 +32,24 @@ function makePosition(overrides: Partial<PositionEntry> = {}): PositionEntry {
   };
 }
 
-function makeSeoulClient(positions: PositionEntry[]): SeoulArrivalClient {
+function makeArrival(overrides: Partial<ArrivalEntry> = {}): ArrivalEntry {
+  return {
+    destination: '성수행',
+    arrivalSeconds: 90,
+    trainCode: '7246',
+    isUp: true,
+    subwayNm: '지하철2호선',
+    arvlCd: 2,
+    ...overrides,
+  };
+}
+
+function makeSeoulClient(options: {
+  positions?: PositionEntry[];
+  arrivals?: ArrivalEntry[];
+} = {}): SeoulArrivalClient {
+  const positions = options.positions ?? [];
+  const arrivals = options.arrivals ?? [];
   return new SeoulArrivalClient({
     apiKey: 'K',
     host: 'h',
@@ -46,6 +69,22 @@ function makeSeoulClient(positions: PositionEntry[]): SeoulArrivalClient {
           { status: 200 },
         );
       }
+      if (url.includes('/realtimeStationArrival/')) {
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: arrivals.map((a) => ({
+              barvlDt: String(a.arrivalSeconds),
+              recptnDt: '',
+              updnLine: a.isUp ? '상행' : '하행',
+              trainLineNm: a.destination,
+              btrainNo: a.trainCode,
+              subwayNm: a.subwayNm,
+              arvlCd: a.arvlCd,
+            })),
+          }),
+          { status: 200 },
+        );
+      }
       return new Response('not found', { status: 404 });
     }) as unknown as typeof fetch,
   });
@@ -55,6 +94,21 @@ describe('selfPollKey', () => {
   it('builds stable key for line', () => {
     expect(selfPollKey('7')).toBe('realtime-position:7');
     expect(selfPollKey('bundang')).toBe('realtime-position:bundang');
+  });
+});
+
+describe('selfPollStationKey (#1828)', () => {
+  it('builds stable key for station name', () => {
+    expect(selfPollStationKey('신도림')).toBe('selfPoll:station:신도림');
+    expect(selfPollStationKey('강남')).toBe('selfPoll:station:강남');
+  });
+});
+
+describe('N_STATION_LOOKAHEAD (#1828)', () => {
+  it('is a positive integer between 3 and 10', () => {
+    expect(N_STATION_LOOKAHEAD).toBeGreaterThanOrEqual(3);
+    expect(N_STATION_LOOKAHEAD).toBeLessThanOrEqual(10);
+    expect(Number.isInteger(N_STATION_LOOKAHEAD)).toBe(true);
   });
 });
 
@@ -97,10 +151,48 @@ describe('readSelfPollPosition / writeSelfPollPosition round-trip', () => {
   });
 });
 
+describe('readSelfPollStationArrivals / writeSelfPollStationArrivals round-trip (#1828)', () => {
+  it('returns null when no stamp', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    expect(await readSelfPollStationArrivals(kv, '신도림')).toBeNull();
+  });
+
+  it('round-trips arrivals + fetchedAt', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const arrivals = [makeArrival()];
+    await writeSelfPollStationArrivals(kv, '신도림', arrivals, NOW);
+    const stamp = await readSelfPollStationArrivals(kv, '신도림');
+    expect(stamp).not.toBeNull();
+    expect(stamp?.arrivals).toEqual(arrivals);
+    expect(stamp?.fetchedAt).toBe(NOW);
+  });
+
+  it('returns null when JSON is malformed', async () => {
+    const kv = new InMemoryKV();
+    kv.store.set(selfPollStationKey('신도림'), { value: '{broken-json' });
+    expect(await readSelfPollStationArrivals(kv as unknown as KVNamespace, '신도림')).toBeNull();
+  });
+
+  it('writes with 30s expirationTtl', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await writeSelfPollStationArrivals(kv, '신도림', [makeArrival()], NOW);
+    const entry = (kv as unknown as InMemoryKV).store.get(selfPollStationKey('신도림'));
+    expect(entry?.expiresAt).toBeDefined();
+    expect(entry!.expiresAt! - Date.now()).toBeGreaterThan(25 * 1000);
+  });
+
+  it('stamps empty arrivals gracefully (fallback path)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await writeSelfPollStationArrivals(kv, '강남', [], NOW);
+    const stamp = await readSelfPollStationArrivals(kv, '강남');
+    expect(stamp?.arrivals).toEqual([]);
+  });
+});
+
 describe('pollLinesAndStamp', () => {
   it('returns zero counts for empty line set', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
-    const seoul = makeSeoulClient([]);
+    const seoul = makeSeoulClient();
     const stats = await pollLinesAndStamp(kv, seoul, new Set(), NOW);
     expect(stats).toEqual({ fetched: 0, cacheHit: 0, error: 0 });
   });
@@ -111,7 +203,7 @@ describe('pollLinesAndStamp', () => {
     { lines: ['7', '5', '2'], expectedFetched: 3 },
   ])('fetches each line once on cache miss (lines=$lines)', async ({ lines, expectedFetched }) => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
-    const seoul = makeSeoulClient([makePosition()]);
+    const seoul = makeSeoulClient({ positions: [makePosition()] });
     const stats = await pollLinesAndStamp(kv, seoul, new Set(lines), NOW);
     expect(stats.fetched).toBe(expectedFetched);
     expect(stats.cacheHit).toBe(0);
@@ -120,7 +212,7 @@ describe('pollLinesAndStamp', () => {
 
   it('skips fetch when KV stamp exists (cacheHit++)', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
-    const seoul = makeSeoulClient([makePosition()]);
+    const seoul = makeSeoulClient({ positions: [makePosition()] });
     // First call — fetches.
     await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
     // Second call — KV hit (stamp still alive).
@@ -131,7 +223,7 @@ describe('pollLinesAndStamp', () => {
   it('stamps fetched positions into KV (caller can readSelfPollPosition)', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
     const positions = [makePosition({ trainCode: '7246' }), makePosition({ trainCode: '7248' })];
-    const seoul = makeSeoulClient(positions);
+    const seoul = makeSeoulClient({ positions });
     await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
     const stamp = await readSelfPollPosition(kv, '7');
     expect(stamp).not.toBeNull();
@@ -173,7 +265,7 @@ describe('pollLinesAndStamp', () => {
 
   it('writes through canonicalLineName — unmapped line returns empty positions (counts as fetched)', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
-    const seoul = makeSeoulClient([]);
+    const seoul = makeSeoulClient();
     // unmapped line — SeoulArrivalClient returns empty array (not throw).
     const stats = await pollLinesAndStamp(kv, seoul, new Set(['unmapped-line']), NOW);
     expect(stats.fetched).toBe(1);
@@ -185,12 +277,126 @@ describe('pollLinesAndStamp', () => {
 
   it('counts error when KV write fails after successful fetch', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
-    const seoul = makeSeoulClient([makePosition()]);
+    const seoul = makeSeoulClient({ positions: [makePosition()] });
     // Spy on KV.put to throw on second call (first call from cron, no second normally).
     const spy = vi.spyOn(kv, 'put').mockRejectedValueOnce(new Error('KV write failed'));
     const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
     expect(stats.error).toBe(1);
     expect(stats.fetched).toBe(0);
     spy.mockRestore();
+  });
+});
+
+describe('pollStationsAndStamp (#1828 Phase 5)', () => {
+  it('returns zero counts for empty station set', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = makeSeoulClient();
+    const stats = await pollStationsAndStamp(kv, seoul, new Set(), NOW);
+    expect(stats).toEqual({ fetched: 0, cacheHit: 0, error: 0 });
+  });
+
+  it.each([
+    { stations: ['신도림'], expectedFetched: 1 },
+    { stations: ['신도림', '강남'], expectedFetched: 2 },
+    { stations: ['신도림', '강남', '홍대입구'], expectedFetched: 3 },
+  ])('fetches each station once on cache miss (stations=$stations)', async ({ stations, expectedFetched }) => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = makeSeoulClient({ arrivals: [makeArrival()] });
+    const stats = await pollStationsAndStamp(kv, seoul, new Set(stations), NOW);
+    expect(stats.fetched).toBe(expectedFetched);
+    expect(stats.cacheHit).toBe(0);
+    expect(stats.error).toBe(0);
+  });
+
+  it('skips fetch when KV stamp exists (cacheHit++)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = makeSeoulClient({ arrivals: [makeArrival()] });
+    // First call — fetches.
+    await pollStationsAndStamp(kv, seoul, new Set(['신도림']), NOW);
+    // Second call — KV hit.
+    const second = await pollStationsAndStamp(kv, seoul, new Set(['신도림']), NOW + 1000);
+    expect(second).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
+  });
+
+  it('stamps fetched arrivals into KV (caller can readSelfPollStationArrivals)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const arrivals = [makeArrival({ trainCode: 'A' }), makeArrival({ trainCode: 'B' })];
+    const seoul = makeSeoulClient({ arrivals });
+    await pollStationsAndStamp(kv, seoul, new Set(['신도림']), NOW);
+    const stamp = await readSelfPollStationArrivals(kv, '신도림');
+    expect(stamp).not.toBeNull();
+    expect(stamp?.arrivals.map((a) => a.trainCode).sort()).toEqual(['A', 'B']);
+  });
+
+  it('stamps empty arrivals on Seoul empty response (graceful fallback)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = makeSeoulClient({ arrivals: [] });
+    const stats = await pollStationsAndStamp(kv, seoul, new Set(['신도림']), NOW);
+    expect(stats.fetched).toBe(1);
+    expect(stats.error).toBe(0);
+    const stamp = await readSelfPollStationArrivals(kv, '신도림');
+    expect(stamp?.arrivals).toEqual([]);
+  });
+
+  it('counts error when Seoul fetchArrivals throws', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () => {
+        throw new Error('network-error');
+      }) as unknown as typeof fetch,
+    });
+    const stats = await pollStationsAndStamp(kv, seoul, new Set(['신도림']), NOW);
+    expect(stats.error).toBe(1);
+    expect(stats.fetched).toBe(0);
+  });
+
+  it('Promise.allSettled — one station failure does not block others', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes(encodeURIComponent('강남'))) throw new Error('boom');
+        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const stats = await pollStationsAndStamp(kv, seoul, new Set(['신도림', '강남']), NOW);
+    expect(stats.fetched).toBe(1);
+    expect(stats.error).toBe(1);
+  });
+
+  it('counts error when KV write fails after successful fetch', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = makeSeoulClient({ arrivals: [makeArrival()] });
+    const spy = vi.spyOn(kv, 'put').mockRejectedValueOnce(new Error('KV write failed'));
+    const stats = await pollStationsAndStamp(kv, seoul, new Set(['신도림']), NOW);
+    expect(stats.error).toBe(1);
+    expect(stats.fetched).toBe(0);
+    spy.mockRestore();
+  });
+
+  it('dedup across multiple stations in same set — each station fetched once', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const fetchSpy = vi.fn(async () =>
+      new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 }),
+    );
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+    });
+    const stats = await pollStationsAndStamp(
+      kv,
+      seoul,
+      new Set(['신도림', '강남', '홍대입구']),
+      NOW,
+    );
+    expect(stats.fetched).toBe(3);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 });
