@@ -194,6 +194,12 @@ interface UseFusedNearestStationReturn {
    */
   subsurfaceStationDetected: boolean;
   /**
+   * #1817 — 현재 estimator strategy가 시간 적분(lockless-route-hop / default-hop / reanchored-hop)인지.
+   * true이면 fusion station이 GPS 실관측 station과 다를 수 있어 destination/transfer early fire 차단.
+   * useStationAlarm이 phase ETA effect 진입 게이트로 사용한다.
+   */
+  estimatorIsTimeIntegration: boolean;
+  /**
    * #1401 (Epic #1396 sub 5/6) — 직전 tick 대비 fusion result가 arc 위에서 advance(idx 증가)했는지.
    * true일 때 호출자(useStationAlarm/silentPushTask/backgroundLocationTask)는 evaluateMovement에
    * trainProgressing=true로 전달해 device 모션/GPS speed 정적 신호 가드를 우회시킨다.
@@ -1907,6 +1913,8 @@ export function useFusedNearestStation(
     detectionSignalMask: detectionVerdict.signalMask,
     subsurface: barometerSubsurface,
     subsurfaceStationDetected,
+    // #1817 — phase alarm false fire 차단 입력. useStationAlarm이 시간 적분 활성 시 ETA phase 진입을 차단.
+    estimatorIsTimeIntegration,
     trainProgressing,
     environment,
     surfaceSSOTActive: surfaceSSOT !== null,

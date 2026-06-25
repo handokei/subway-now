@@ -129,6 +129,9 @@ export type AlarmLogReason =
   | 'dismiss-silence'
   | 'gate-phase-accuracy'
   | 'gate-phase-warmup'
+  // #1817 — 시간 적분 estimator(lockless-route-hop / default-hop / reanchored-hop) 활성 시
+  // fusion station이 GPS station과 mismatch될 수 있어 destination/transfer early fire 차단.
+  | 'gate-phase-time-integration'
   // #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사.
   | 'gate-station-passed-warmup'
   // #1208 (Epic #1204 D2) — station-passed가 trip 진행도 hop window 밖이라 차단된 발사.
@@ -1096,9 +1099,10 @@ export function logSuppressedGate(
  * FG phase ETA effect의 진입 게이트 차단 1건 적재 (#1019).
  * 'gate-phase-accuracy': isAccuracyAcceptable(accuracyMeters) 실패.
  * 'gate-phase-warmup': 첫 trigger suppress (warmup window).
+ * 'gate-phase-time-integration': 시간 적분 estimator 활성 시 fusion/GPS mismatch 가드 (#1817).
  * isBurstDuplicate로 DEDUP_LOG_WINDOW_MS 안의 같은 reason+station 중복 drop.
  */
-export function logSuppressedPhaseGate(reason: 'gate-phase-accuracy' | 'gate-phase-warmup', stationName: string | undefined): void {
+export function logSuppressedPhaseGate(reason: 'gate-phase-accuracy' | 'gate-phase-warmup' | 'gate-phase-time-integration', stationName: string | undefined): void {
   const name = stationName ?? '(unknown)';
   if (isBurstDuplicate(reason, name)) return;
   appendAlarmLog({ ts: Date.now(), source: 'fg-evaluated', outcome: 'suppressed', reason, stationName: name });

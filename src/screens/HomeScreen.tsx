@@ -198,7 +198,7 @@ export default function HomeScreen() {
   // #1677 — silent push 60s+ 미수신 감지. FG 시 backendSsotAccepts 강제 false → device tier fallback.
   // 신규 폴링 없음 — 기존 arrival/position 30s cycle 재사용.
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, backendSsotCurrentStationId } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, backendSsotCurrentStationId } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -472,6 +472,8 @@ export default function HomeScreen() {
     // #1401 — 열차 진행 신호. fusion arc advance가 확인되면 evaluateMovement가 device 모션/GPS
     // speed 정적 가드를 우회 — 지하철 내부에서 device 신호 불신뢰성 보완(역삼 13:37 미발사 회귀).
     trainProgressing,
+    // #1817 — 시간 적분 estimator 활성 시 fusion/GPS mismatch로 destination/transfer early 조기 발사 차단.
+    estimatorIsTimeIntegration,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
