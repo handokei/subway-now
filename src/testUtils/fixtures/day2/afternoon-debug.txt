@@ -1,0 +1,75 @@
+[Subway debug] 2026-06-25T05:24:43.576Z
+
+## GPS
+lat=37.58, lng=127.08, speed=0.6499999761581421 m/s, accuracy=38.27341410100971 m
+fused=(no fused signal)
+state=fg, lastFix=14:24:41
+subsurface=false (reason=readings, readings=30)
+
+## Nearest
+사가정 · 86 m
+variants: 사가정(7)
+
+## Fusion
+confidence=gps-only, source=gps
+fused: 사가정(7) · 86m
+gps:   사가정(7) · 86m
+tier=low
+signalMask=UUF
+
+## Trip
+lockless=false
+tripStartedAt=—
+currentHopIndex=—
+route hop count=—
+displayOnlyEstimate=(none)
+lifecyclePhase=none
+
+## Sleep
+sleepMode=off
+firstHopApproaching=false
+
+## Arrival
+up: 도봉산행 - 면목방면 · 145s (3분 후 (중곡))
+down: 온수행 - 용마산방면 · 155s (3분 후 (상봉))
+
+## Silent Push
+permission=granted
+apnsToken=…35b3502c
+activeTrip=(none)
+apnsEnv=production
+taskRegistration=success
+route=(none)
+destination=(none)
+currentStation=(none)
+received=0 (last (never))
+receivedByKind=stn=0 xfer=0 dst=0 unk=0
+fired=0 (last (never))
+lastSkipped=(never)
+lowPowerMode=off
+
+## Backend SSoT
+(no recent SSoT push)
+
+## Scheduled queue (0)
+
+## Gates
+candidate-distance-reject=53, dedup-alarm=30, movement-static-position=18, movement-low-accuracy=10, cross-trip-mirror-skip=6, gate-hop-window=6, gate-station-passed-warmup=5, movement-motion-stationary=3, revalidate-route-sig-mismatch=3, gate-phase-accuracy=2, gate-phase-warmup=2, dedup-cross-category-recent=1, dedup-station=1, dedup-station-unified=1, gate-hop-window-no-source=1, revalidate-no-trip=1
+
+## BoardingLock
+active=no
+
+## Estimator State (3)
+14:24:27 | none | - idx=-
+14:24:19 | lockless-route-hop | 사가정(7) idx=0
+14:24:18 | none | - idx=-
+
+## Notifications fired (4)
+13:51:19 | fg | fired | station-passed | 왕십리(성동구청)
+13:49:38 | fg | fired | destination | early | 마장
+13:46:37 | fg | fired | transfer | early | 왕십리(성동구청)
+13:46:32 | fg | fired | station-passed | 한양대
+
+## Alarm log (169)
+sources: bg-scheduled=4, cross-trip-mirror-launch=1, cross-trip-mirror-register=5, fg=80, fg-evaluated=4, fg-hydrate=22, fusion-candidate-reject=53
+14:24:30 | bg-scheduled | suppressed | revalidate-no-trip | imminent | 마장
