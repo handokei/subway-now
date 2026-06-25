@@ -68,6 +68,11 @@
       "undo": "되돌리기"
     },
     "lockCorrectionToast": "탑승 열차가 {{prev}} → {{next}}로 정정되었어요",
+    "coldStartMismatch": {
+      "title": "탑승역 확인",
+      "message": "탑승역이 현재 위치와 다릅니다. 다시 선택해 주세요.",
+      "reselect": "재선택"
+    },
     "congestion": {
       "level": {
         "low": "여유",

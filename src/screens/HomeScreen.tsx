@@ -5,6 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
 import { useFusedNearestStation } from '../features/nearest-station/hooks/useFusedNearestStation';
 import { useV1MismatchDetector } from '../features/nearest-station/hooks/useV1MismatchDetector';
+import { useStationMismatchDetector } from '../features/nearest-station/hooks/useStationMismatchDetector';
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
@@ -39,6 +40,7 @@ import { ROUTE_KEY } from '../shared/constants/storageKeys';
 import { AlarmOverlay } from '../features/alarm/components/AlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
+import { ActionBanner } from '../shared/ui/ActionBanner';
 import { LineBadge } from '../shared/ui/LineBadge';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { ServiceWindowBanner } from '../shared/ui/ServiceWindowBanner';
@@ -207,6 +209,17 @@ export default function HomeScreen() {
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
   // R2 archive 후 `/admin/alarm-log-stats` 응답으로 1주 production 측정.
   useV1MismatchDetector(result?.station.id ?? null, backendSsotCurrentStationId);
+
+  // #1844 (Phase 6.1 Sub-step 5) — cold start 선택 역과 진행 중 신호 mismatch 감지.
+  // lock.boardingLine / arc / environment와 observed 신호가 3회 연속 불일치 시 detected=true.
+  // detected=true 시 배너로 재확인 prompt (ActionBanner). alarmLog reason='cold-start-mismatch'로 측정.
+  const coldStartMismatch = useStationMismatchDetector({
+    boardingLock: fusionBoardingLock,
+    fusedResult: result,
+    arcStations,
+    currentHopIndex,
+    environment,
+  });
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용.
@@ -564,6 +577,10 @@ export default function HomeScreen() {
     motionStationary,
     speedMps,
   });
+  // #1844 — cold start mismatch 재확인: lock 해제 → 사용자가 다시 탑승 선택 가능.
+  const handleColdStartMismatchReselect = useCallback(() => {
+    releaseBoardingLock?.();
+  }, [releaseBoardingLock]);
   // #915 (C1 destination-only baseline UX) — destination 설정 직후 backend로 좋은 fix sync 발사.
   // backend cron이 9단 게이트 통과 시 autoLockCandidate 응답에 부착(#916) → 사용자 명시 탭 없이
   // boardingLock hydrate. lock 활성 여부와 무관하게 trip 활성 동안 폴링.
@@ -1107,6 +1124,28 @@ export default function HomeScreen() {
             {destination && !boardingLock && (
               <View style={{ paddingHorizontal: spacing.xxl, paddingBottom: spacing.md }}>
                 <LocklessBadge onPress={handleLocklessBadgePress} />
+              </View>
+            )}
+
+            {/* #1844 (Phase 6.1 Sub-step 5) — cold start mismatch 재확인 배너.
+                 lock 활성 + mismatch 감지 시 노출. 탑승역 재선택 → lock 해제. */}
+            {boardingLock && coldStartMismatch.detected && (
+              <View style={{ paddingHorizontal: spacing.xxl, paddingBottom: spacing.md }}>
+                <ActionBanner
+                  accent={colors.warn}
+                  actionLabel={t('home.coldStartMismatch.reselect', { defaultValue: '재선택' })}
+                  onActionPress={handleColdStartMismatchReselect}
+                  testID="cold-start-mismatch-banner"
+                  actionTestID="cold-start-mismatch-banner-action"
+                  accessibilityLabel={t('home.coldStartMismatch.message', { defaultValue: '탑승역이 현재 위치와 다릅니다. 다시 선택해 주세요.' })}
+                >
+                  <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
+                    {t('home.coldStartMismatch.title', { defaultValue: '탑승역 확인' })}
+                  </Text>
+                  <Text style={[typography.caption, { color: colors.muted }]}>
+                    {t('home.coldStartMismatch.message', { defaultValue: '탑승역이 현재 위치와 다릅니다. 다시 선택해 주세요.' })}
+                  </Text>
+                </ActionBanner>
               </View>
             )}
 
