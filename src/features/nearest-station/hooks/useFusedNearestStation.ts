@@ -1285,10 +1285,13 @@ export function useFusedNearestStation(
     // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
     tripStartedAt: boardingLock?.boardedAt,
   });
-  const environment: Environment = inferEnvironment({
+  const { environment } = inferEnvironment({
     subsurface: barometerSubsurface,
     surfaceSSOT: surfaceSSOT !== null,
     undergroundSSOT: undergroundSSOT !== null,
+    // #1872 — barometer-stop hint: "이미 지하" 사용자 보완 신호.
+    tripActive,
+    barometerStop: barometerSignal?.stop,
   });
 
   // S13(#1546) — 환경 전환 Sentry breadcrumb. delta-only emit.
