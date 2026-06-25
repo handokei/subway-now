@@ -181,6 +181,14 @@
     "close": "閉じる",
     "autoConfirmed": "{{name}}に確定しました"
   },
+  "coldStartPicker": {
+    "title": "今どの駅にいますか？",
+    "subtitle": "近くの駅を選ぶと乗車情報をすぐに繋げます",
+    "distanceKm": "{{km}}km",
+    "tooManyCandidates": "近くに駅が多すぎます。\n駅名を検索して選んでください。",
+    "searchFallback": "駅を検索",
+    "close": "閉じる"
+  },
   "sleepModeGuide": {
     "title": "おやすみモードのご案内",
     "message": "イヤホンが接続されていない場合、アラームがスピーカーで再生されることがあります。\n\nスピーカー出力を希望しない場合は、設定 > アラームで「スピーカー出力を許可」をオフにしてください。",

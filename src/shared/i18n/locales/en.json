@@ -181,6 +181,14 @@
     "close": "Close",
     "autoConfirmed": "Confirmed as {{name}}"
   },
+  "coldStartPicker": {
+    "title": "Which station are you at?",
+    "subtitle": "Select a nearby station to start tracking",
+    "distanceKm": "{{km}} km",
+    "tooManyCandidates": "Too many nearby stations.\nPlease search for your station.",
+    "searchFallback": "Search station",
+    "close": "Close"
+  },
   "sleepModeGuide": {
     "title": "Sleep mode notice",
     "message": "If earphones are not connected, the alarm may play through the speaker.\n\nIf you do not want speaker output, turn off 'Allow speaker output' under Settings > Alarm.",

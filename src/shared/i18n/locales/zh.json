@@ -181,6 +181,14 @@
     "close": "关闭",
     "autoConfirmed": "已确认为{{name}}"
   },
+  "coldStartPicker": {
+    "title": "您现在在哪个车站？",
+    "subtitle": "选择附近的车站即可开始追踪",
+    "distanceKm": "{{km}}公里",
+    "tooManyCandidates": "附近车站太多了。\n请搜索车站名称进行选择。",
+    "searchFallback": "搜索车站",
+    "close": "关闭"
+  },
   "sleepModeGuide": {
     "title": "睡眠模式提示",
     "message": "如果未连接耳机,提醒可能通过扬声器播放。\n\n如不希望扬声器输出,请在 设置 > 提醒 中关闭'允许扬声器输出'。",
