@@ -2868,6 +2868,132 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       expect(contentState.stationName).toBe('아차산');
     });
   });
+
+  describe('#1826 — lockless trip + activityPushToken → LA BG update 발사', () => {
+    /** lockless intermediate trip with LA token */
+    function makeLocklessLaTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeTrip({
+        token: 'la-lockless',
+        route: { type: 'direct', line: '2', stops: 2 },
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '역삼', line: '2', kind: 'destination' },
+        ],
+        infoModeEnabled: true,
+        activityPushToken: 'la-lockless-token',
+        activityState: 'live',
+        apnsEnv: 'sandbox',
+        ...overrides,
+      });
+    }
+
+    /** lockless trip 사이클 실행 + LA push 포함 fetch mock */
+    async function runLocklessLaCycle(trip: Trip, arrivalSeconds: number) {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      // motion=automotive → lockless intermediate advance 허용
+      await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+      const seoulArrivals: ArrivalEntry[] = [
+        {
+          destination: '역삼행',
+          arrivalSeconds,
+          trainCode: '7246',
+          isUp: true,
+          subwayNm: '지하철2호선',
+          arvlCd: 1, // ARRIVED → 발사 조건
+        },
+      ];
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoul(seoulArrivals),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      return { kv, stats, fetchImpl };
+    }
+
+    it('lockless intermediate + activityPushToken 있으면 LA update push 발사', async () => {
+      const { stats, fetchImpl } = await runLocklessLaCycle(makeLocklessLaTrip(), 120);
+      // station-passed silent push 1건 + LA update 1건
+      expect(stats.locklessIntermediateFired).toBe(1);
+      expect(stats.laPushSent).toBe(1);
+      const laCalls = getLaCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const body = parseLaBody(laCalls[0]);
+      expect(body.aps.event).toBe('update');
+      const contentState = body.aps['content-state'] as Record<string, unknown>;
+      expect(contentState.stationName).toBe('강남');
+    });
+
+    it('lockless intermediate + activityPushToken 없으면 LA push 없음', async () => {
+      const trip = makeLocklessLaTrip({ activityPushToken: undefined, activityState: undefined });
+      const { stats, fetchImpl } = await runLocklessLaCycle(trip, 120);
+      expect(stats.locklessIntermediateFired).toBe(1);
+      expect(stats.laPushSent).toBe(0);
+      expect(getLaCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    it('lock 없는 trip(boarding-prompt 대기) + activityPushToken → LA heartbeat 발사', async () => {
+      // infoModeEnabled=false: lockless opt-in 아님 → boarding-prompt 대기 경로
+      const trip = makeTrip({
+        token: 'la-prompt-wait',
+        route: { type: 'direct', line: '2', stops: 3 },
+        waypoints: [
+          { stationName: '역삼', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        infoModeEnabled: false,
+        activityPushToken: 'la-prompt-token',
+        activityState: 'live',
+        apnsEnv: 'sandbox',
+      });
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoul([]), // 응답 없음 — Seoul 폴링은 boarding-prompt 경로
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      // boarding-prompt 대기(lockMissing) 경로 + LA heartbeat 발사
+      expect(stats.lockMissing).toBeGreaterThan(0);
+      expect(stats.laPushSent).toBe(1);
+      const laCalls = getLaCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      expect(parseLaBody(laCalls[0]).aps.event).toBe('update');
+    });
+
+    it('lock 없는 trip + activityPushToken 없으면 LA push 없음', async () => {
+      const trip = makeTrip({
+        token: 'la-prompt-no-token',
+        route: { type: 'direct', line: '2', stops: 3 },
+        waypoints: [
+          { stationName: '역삼', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        infoModeEnabled: false,
+        activityPushToken: undefined,
+        activityState: undefined,
+        apnsEnv: 'sandbox',
+      });
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoul([]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.laPushSent).toBe(0);
+      expect(getLaCalls(fetchImpl)).toHaveLength(0);
+    });
+  });
 });
 
 // #1337 — server-side trip auto-end 경로에서 클라 state sync용 trip-ended alert push가 발사되는지.
