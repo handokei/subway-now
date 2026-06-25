@@ -133,6 +133,19 @@ function logClearFailure(e: unknown): void {
 }
 
 /**
+ * #1816 — lockless trip + 사용자 명시 의향 없음 시 station-passed 억제 로그 헬퍼.
+ * fg / fg-subsurface 두 경로에서 동일한 4행 블록이 반복되어 SonarCloud CPD 해소.
+ * lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭.
+ */
+function logSuppressedStationPassedLockless(stationName: string): void {
+  logSuppressedLocklessNoUserIntent({
+    source: 'fg',
+    stationName,
+    kind: 'station-passed',
+  });
+}
+
+/**
  * #917 follow-up — station-passed 알림 dedup → resolve → send → setLast → log 시퀀스 추출.
  * GPS station-passed effect와 FG arvlCd fast-path effect가 동일한 5단 시퀀스를 반복하던 것
  * (Sonar cpd 27/25 line 블록)을 단일 함수로 통합. source 라벨만 다르고 dedup 키는
@@ -1089,9 +1102,6 @@ export function useStationAlarm({
       //   1. currentHopIndex prop (D1 estimator 또는 lock 활성 시 interp 결과 — 호출자가 결정)
       //   2. firedAlarms set 기반 fallback (graceful, false negative risk)
       //   3. 둘 다 부재 + arcStations 없음 → 게이트 미적용 (gate-hop-window-no-source)
-      // #1514 — 출발역(arc[0]) origin hop fire 차단. lock 활성 trip은 boardingStationId 기준
-      // origin 알림이 정당 신호이므로 IIFE 안에서 추가 검사 (lock fetch 후).
-      let isOriginHopCandidate = false;
       if (arcStations && arcStations.length > 0) {
         const effectiveHopIndex =
           currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
@@ -1104,14 +1114,11 @@ export function useStationAlarm({
             logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
           }
         } else if (isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
-          // hop window 통과 — origin hop 케이스만 추가 표식 (lockless 차단은 IIFE 내부).
+          // hop window 통과 — lockless origin hop 차단은 IIFE 내부의 broad !lock 가드가 담당.
           // #1630 — effectiveHopIndex AND 조건 제거. lockless mode는 estimator(시간 적분)가
           // idx를 임의 진행 — 출발역에 머물러도 idx>=1 정상 산출(2026-06-22 08:34:18 용마산
-          // evidence: estimator idx=1, 사용자는 출발 직후 = X1 위반). candidate가 arc[0]이면
-          // effectiveHopIndex 값과 무관하게 origin hop으로 판정 (ADR-014 §4: 출발역 자체에
-          // station-passed fire는 X1). lock 활성 trip은 line 1042 `!lock` 가드가 별도 차단.
-          const candidateIndex = arcIndexOf(arcStations, candidateStation);
-          isOriginHopCandidate = candidateIndex === 0;
+          // evidence: estimator idx=1, 사용자는 출발 직후 = X1 위반). lock 활성 trip은
+          // boardingStationId 기준 origin 검사를 IIFE lock 가드가 처리.
         } else {
           logSuppressedHopWindow({
             source: 'fg',
@@ -1149,11 +1156,7 @@ export function useStationAlarm({
         // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. paradigm shift 정합.
         // #1514 — origin hop lockless 차단(용마산 evidence)은 본 broad guard의 subset이 되어 하나로 통합.
         if (!lock) {
-          logSuppressedLocklessNoUserIntent({
-            source: 'fg',
-            stationName: candidateStation.name,
-            kind: 'station-passed',
-          });
+          logSuppressedStationPassedLockless(candidateStation.name);
           return;
         }
         // #1572 (T9) — backend SSoT 권위 게이트 (Path A). mirror.alarmEvents에 같은 alarmId가
@@ -1380,11 +1383,7 @@ export function useStationAlarm({
       // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 subsurface station-passed 차단.
       // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. paradigm shift 정합.
       if (!lock) {
-        logSuppressedLocklessNoUserIntent({
-          source: 'fg',
-          stationName: candidateStation.name,
-          kind: 'station-passed',
-        });
+        logSuppressedStationPassedLockless(candidateStation.name);
         return;
       }
       // #1572 (T9) — backend SSoT 권위 게이트 (Path C subsurface verdict). subsurface fusion이
