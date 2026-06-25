@@ -51,7 +51,13 @@ import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
-import { addValidateRejectBreadcrumb, sentryInit } from './sentry';
+import * as Sentry from '@sentry/cloudflare';
+import {
+  addValidateRejectBreadcrumb,
+  captureBackendException,
+  sentryInit,
+  sentryOptions,
+} from './sentry';
 import {
   recordRecallUpload,
   validateRecallUpload,
@@ -964,7 +970,12 @@ app.post('/signals/dump', async (c) => {
   const payload = validateSignalDumpUpload(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  await storeSignalDump(kv, payload, Date.now());
+  try {
+    await storeSignalDump(kv, payload, Date.now());
+  } catch (err) {
+    captureBackendException(err, { path: 'signals/dump', corrId: payload.corrId });
+    return c.json({ error: 'store_failed' }, 500);
+  }
 
   console.log(
     JSON.stringify({
@@ -2080,7 +2091,7 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
   };
 }
 
-export default {
+const handler = {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     sentryInit(env);
@@ -2098,7 +2109,12 @@ export default {
     const log = (msg: string, meta?: Record<string, unknown>) =>
       console.log(JSON.stringify({ msg, ...meta }));
 
-    await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
+    try {
+      await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
+    } catch (err) {
+      captureBackendException(err, { path: 'scheduled/runScheduled' });
+      throw err;
+    }
     // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
     await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
     // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
@@ -2130,3 +2146,10 @@ export default {
     }
   },
 };
+
+/**
+ * #1829 — withSentry HOC bind.
+ * DSN 미설정(sentryOptions가 undefined 반환) 시 HOC no-op — production 동작 그대로.
+ * SENTRY_DSN secret 등록 즉시 자동 활성 (redeploy 필요 없음 — wrangler secret은 실시간 반영).
+ */
+export default Sentry.withSentry(sentryOptions, handler);
