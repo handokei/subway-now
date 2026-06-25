@@ -103,6 +103,9 @@ module.exports = {
       './plugins/with-fmt-consteval-patch.js',
       '@sentry/react-native/expo',
       '@bacons/apple-targets',
+      // #1861 — iCloud KV entitlement 자동 주입 (NSUbiquitousKeyValueStore).
+      // App Store Connect에서 iCloud Capability 수동 활성화 후 expo prebuild 필요 (L15).
+      './plugins/with-icloud-kv',
     ],
     extra: {
       publicDataApiKey: '',
