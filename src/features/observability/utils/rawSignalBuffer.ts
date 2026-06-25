@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RAW_SIGNAL_BUFFER_KEY } from '../../../shared/constants/storageKeys';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
+import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellularTech';
 
 export const RAW_SIGNAL_BUFFER_CAPACITY = 120;
 export const RAW_SIGNAL_WRITE_THROTTLE_MS = 1000;
@@ -31,6 +32,16 @@ export interface RawSignalGps {
   speedMps: number | null;
 }
 
+/**
+ * #1859 — CTRadioAccessTechnology 스냅샷. rawSignalBuffer entry당 1회 기록.
+ * tech: native가 반환한 raw 상수 문자열 (예: 'CTRadioAccessTechnologyLTE') 또는 null(미확정).
+ * vote: classifyCellularEnvironment 결과 ('surface'|'underground'|'unknown').
+ */
+export interface RawSignalCellular {
+  tech: string | null;
+  vote: CellularEnvironmentVote;
+}
+
 export interface RawSignalEntry {
   ts: number;
   corrId: string | null;
@@ -39,6 +50,8 @@ export interface RawSignalEntry {
   motion: MotionLabel | null;
   /** #1769 — accelerometer fingerprint 분류 결과 (classifyAccelerometerPattern). motion(CMMotionActivity)과 별도 채널. */
   accelPattern: MotionLabel | null;
+  /** #1859 — CTRadioAccessTechnology 스냅샷 + 환경 vote. null이면 미지원(Android/jest/old 엔트리). */
+  cellular: RawSignalCellular | null;
   subsurface: boolean | null;
   arvlCd: number | null;
   line: string | null;

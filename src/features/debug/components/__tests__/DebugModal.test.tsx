@@ -127,6 +127,8 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   displayOnlyEstimate: null,
   // #1678 — S9 accelerometer fingerprint. 기본값은 unknown(미지원/미수렴).
   accelerometerPattern: 'unknown' as const,
+  // #1859 — environmentHintReason. 기본값은 null(hint 없음).
+  environmentHintReason: null as string | null,
   ...overrides,
 });
 const arrivalDefaults = {
@@ -173,6 +175,8 @@ const setupHookDefaults = () => {
     displayOnlyEstimate: null,
     // #1678 — S9 accelerometer fingerprint. 기본값은 unknown(미지원/미수렴).
     accelerometerPattern: 'unknown',
+    // #1859 — environmentHintReason. 기본값은 null(hint 없음).
+    environmentHintReason: null,
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({
@@ -366,6 +370,17 @@ describe('DebugModal', () => {
     expect(screen.getByText('surface')).toBeTruthy();
     // 'active' 라벨이 surfaceSSOT/undergroundSSOT row에 노출.
     expect(screen.getAllByText('active').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('#1859 — environmentHintReason 있을 때 environment 값에 hint 부가 표시', () => {
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        environment: 'underground',
+        environmentHintReason: 'barometer-stop',
+      }),
+    );
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('underground (hint:barometer-stop)')).toBeTruthy();
   });
 
   // #1421 — render-time auto-lock 측정 인프라가 SSOT 객체를 받아 share dump에 흘러간다.
@@ -3982,6 +3997,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3 },
     motion: 'automotive',
     accelPattern: 'automotive',
+    cellular: null,
     subsurface: false,
     arvlCd: 99,
     line: '7',
@@ -4187,6 +4203,97 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(msg).toContain('## Raw Signal (1)');
       expect(msg).toContain('SHARE-INTEGRATION');
       shareSpy.mockRestore();
+    });
+  });
+
+  // #1859 — cellular 필드 + computeCellularTechDistribution
+  describe('#1859 cellular 필드 + Cellular Tech Distribution', () => {
+    const { computeCellularTechDistribution } = jest.requireActual('../DebugModal') as typeof import('../DebugModal');
+
+    describe('formatRawSignalLine — cellular 토큰', () => {
+      it('cellular=null → cell=- 표기', () => {
+        const line = formatRawSignalLine(makeRawEntry({ cellular: null }));
+        expect(line).toContain('cell=-');
+      });
+
+      it('cellular LTE surface → cell=LTE/surface (prefix 제거)', () => {
+        const line = formatRawSignalLine(
+          makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyLTE', vote: 'surface' } }),
+        );
+        expect(line).toContain('cell=LTE/surface');
+      });
+
+      it('cellular NRNSA surface → cell=NRNSA/surface', () => {
+        const line = formatRawSignalLine(
+          makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyNRNSA', vote: 'surface' } }),
+        );
+        expect(line).toContain('cell=NRNSA/surface');
+      });
+
+      it('cellular WCDMA underground → cell=WCDMA/underground', () => {
+        const line = formatRawSignalLine(
+          makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyWCDMA', vote: 'underground' } }),
+        );
+        expect(line).toContain('cell=WCDMA/underground');
+      });
+
+      it('cellular tech=null unknown → cell=-/unknown', () => {
+        const line = formatRawSignalLine(
+          makeRawEntry({ cellular: { tech: null, vote: 'unknown' } }),
+        );
+        expect(line).toContain('cell=-/unknown');
+      });
+    });
+
+    describe('computeCellularTechDistribution', () => {
+      it('빈 배열 → (empty)', () => {
+        expect(computeCellularTechDistribution([])).toEqual(['(empty)']);
+      });
+
+      it('cellular=null 엔트리만 → legacy 버킷만 + total 라인', () => {
+        const entries = [makeRawEntry({ cellular: null }), makeRawEntry({ cellular: null })];
+        const lines = computeCellularTechDistribution(entries);
+        expect(lines.some((l) => l.startsWith('legacy(no field): 2x'))).toBe(true);
+        expect(lines[lines.length - 1]).toContain('total=2');
+        expect(lines[lines.length - 1]).toContain('legacy=2');
+        expect(lines[lines.length - 1]).toContain('measured=0');
+      });
+
+      it('LTE surface 3건 + WCDMA underground 1건 → 빈도 내림차순 + summary', () => {
+        const lteEntry = makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyLTE', vote: 'surface' } });
+        const wcdmaEntry = makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyWCDMA', vote: 'underground' } });
+        const entries = [lteEntry, lteEntry, lteEntry, wcdmaEntry];
+        const lines = computeCellularTechDistribution(entries);
+        expect(lines[0]).toContain('LTE: 3x (vote=surface)');
+        expect(lines[1]).toContain('WCDMA: 1x (vote=underground)');
+        const summary = lines[lines.length - 1];
+        expect(summary).toContain('total=4');
+        expect(summary).toContain('surface=3');
+        expect(summary).toContain('underground=1');
+        expect(summary).toContain('unknown=0');
+        expect(summary).toContain('legacy=0');
+      });
+
+      it('cellular null 혼합 → legacy 버킷 분리 + measured 정확', () => {
+        const entries = [
+          makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyLTE', vote: 'surface' } }),
+          makeRawEntry({ cellular: null }),
+          makeRawEntry({ cellular: { tech: null, vote: 'unknown' } }),
+        ];
+        const lines = computeCellularTechDistribution(entries);
+        expect(lines.some((l) => l.startsWith('legacy(no field): 1x'))).toBe(true);
+        const summary = lines[lines.length - 1];
+        expect(summary).toContain('total=3');
+        expect(summary).toContain('measured=2');
+        expect(summary).toContain('legacy=1');
+      });
+
+      it('share dump에 ## Cellular Tech Distribution 섹션 포함', () => {
+        const lteEntry = makeRawEntry({ cellular: { tech: 'CTRadioAccessTechnologyLTE', vote: 'surface' } });
+        const dump = buildDumpText(makeDumpArgs({ rawSignalLog: [lteEntry] }));
+        expect(dump).toContain('## Cellular Tech Distribution');
+        expect(dump).toContain('LTE: 1x (vote=surface)');
+      });
     });
   });
 

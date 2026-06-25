@@ -30,6 +30,7 @@ function entry(ts: number, kind: RawSignalEntry['kind'] = 'cycle'): RawSignalEnt
     gps: null,
     motion: null,
     accelPattern: null,
+    cellular: null,
     subsurface: null,
     arvlCd: null,
     line: null,

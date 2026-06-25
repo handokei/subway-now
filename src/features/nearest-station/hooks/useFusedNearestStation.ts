@@ -12,6 +12,7 @@ import {
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
 import { pushRawSignal, type MotionLabel } from '../../observability/utils/rawSignalBuffer';
+import { getCurrentCellularTech } from '../utils/cellularTech';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
@@ -41,7 +42,7 @@ import { findStationByName, findStationByNameAndLine } from '../../../shared/uti
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { surfaceSSOTConsensus } from '../utils/surfaceSSotConsensus';
 import { undergroundSSOTConsensus } from '../utils/undergroundSSotConsensus';
-import { inferEnvironment, type Environment } from '../utils/inferEnvironment';
+import { inferEnvironment, type Environment, type InferEnvironmentResult } from '../utils/inferEnvironment';
 import { recordEnvironmentTransition } from '../../../shared/infra/monitoring/breadcrumb';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
@@ -225,6 +226,12 @@ interface UseFusedNearestStationReturn {
    * 'surface' / 'underground' / 'unknown'. DebugModal Environment Inference 섹션 표시용.
    */
   environment: Environment;
+  /**
+   * #1860 — 옵션 C barometer-stop 힌트 발동 원인.
+   * 'barometer-stop' = tripActive + barometerStop=true + subsurface=false + SSOT 없음 조합.
+   * undefined이면 힌트 없음. DebugModal environment 라인에 함께 노출.
+   */
+  environmentHintReason: InferEnvironmentResult['hintReason'];
   /** #1418 — 지상 Tier 1 SSOT(GPS+Arrival) 합의 활성 여부. */
   surfaceSSOTActive: boolean;
   /** #1418 — 지하 Tier 1 SSOT(WiFi/Position-Train + Arrival) 합의 활성 여부. */
@@ -1285,11 +1292,15 @@ export function useFusedNearestStation(
     // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
     tripStartedAt: boardingLock?.boardedAt,
   });
-  const environment: Environment = inferEnvironment({
+  // #1860 — 옵션 C barometer-stop 힌트. tripActive + barometerStop 전달.
+  const environmentResult: InferEnvironmentResult = inferEnvironment({
     subsurface: barometerSubsurface,
     surfaceSSOT: surfaceSSOT !== null,
     undergroundSSOT: undergroundSSOT !== null,
+    tripActive,
+    barometerStop: barometerSignal?.stop,
   });
+  const environment: Environment = environmentResult.label;
 
   // S13(#1546) — 환경 전환 Sentry breadcrumb. delta-only emit.
   // dedup은 recordEnvironmentTransition 내부에서 처리(prev === next 시 no-op).
@@ -1825,6 +1836,9 @@ export function useFusedNearestStation(
       fusionArrival?.up[0]?.arrivalCode ?? fusionArrival?.down[0]?.arrivalCode ?? null;
     const arcProgressForDump = progress.progressM ?? null;
     const ts = Date.now();
+    // #1859 — CTRadioAccessTechnology 스냅샷. tech는 native 캐시에서 동기 읽기.
+    // vote는 useCellularTech()가 이미 산출한 값을 그대로 사용(재분류 없음).
+    const cellularForDump = { tech: getCurrentCellularTech(), vote: cellularEnvironmentVote };
     const prevStationId = lastStationIdRef.current;
     const nextStationId = resultStationId;
     if (prevStationId !== null && result !== null && nextStationId !== null && prevStationId !== nextStationId) {
@@ -1835,6 +1849,7 @@ export function useFusedNearestStation(
         gps: gpsForDump,
         motion: motionForDump,
         accelPattern: accelerometerPattern,
+        cellular: cellularForDump,
         subsurface: barometerSubsurface ?? null,
         arvlCd: arvlCdForDump,
         line: null,
@@ -1852,6 +1867,7 @@ export function useFusedNearestStation(
         gps: gpsForDump,
         motion: motionForDump,
         accelPattern: accelerometerPattern,
+        cellular: cellularForDump,
         subsurface: barometerSubsurface ?? null,
         arvlCd: arvlCdForDump,
         line: result.station.line,
@@ -1871,6 +1887,7 @@ export function useFusedNearestStation(
       gps: gpsForDump,
       motion: motionForDump,
       accelPattern: accelerometerPattern,
+      cellular: cellularForDump,
       subsurface: barometerSubsurface ?? null,
       arvlCd: arvlCdForDump,
       line: result?.station.line ?? null,
@@ -1920,6 +1937,7 @@ export function useFusedNearestStation(
     estimatorIsTimeIntegration,
     trainProgressing,
     environment,
+    environmentHintReason: environmentResult.hintReason,
     surfaceSSOTActive: surfaceSSOT !== null,
     undergroundSSOTActive: undergroundSSOT !== null,
     // #1421 — DebugModal Auto-lock 측정 섹션이 SSOT 객체를 inferAutoLockCandidate에 직접 전달.

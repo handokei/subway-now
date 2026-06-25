@@ -324,9 +324,9 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
 
 /**
  * #1501 — Raw signal ring buffer entry를 한 줄 텍스트로. 필드 순서:
- *   `HH:MM:SS | kind | stationId | source/confidence | gps(acc/speed) | motion | subsurface | arvlCd | arcProgress`
- * 누락 필드는 `-`로 출력 — Fusion log와 동일 컨벤션. line/dir/corrId는 share dump 본문에
- * 추가 정보가 필요할 때 별도 PR로 확장한다(본 PR-C는 필수 9필드만 노출).
+ *   `HH:MM:SS | kind | stationId | source/confidence | gps(acc/speed) | motion | sub | arvlCd | arc | cell`
+ * 누락 필드는 `-`로 출력 — Fusion log와 동일 컨벤션.
+ * #1859 — cellular 필드 추가: `cell=<tech_short>/<vote>` (예: `cell=LTE/surface`, `cell=-/unknown`).
  */
 function formatRawSignalLine(entry: RawSignalEntry): string {
   const time = formatTime(entry.ts);
@@ -342,7 +342,11 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
   const arvlCd = entry.arvlCd != null ? String(entry.arvlCd) : '-';
   const progress =
     entry.arcProgress != null ? entry.arcProgress.toFixed(2) : '-';
-  return `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress}`;
+  // #1859 — tech 상수에서 'CTRadioAccessTechnology' prefix를 제거해 라인 압축.
+  const cellular = entry.cellular != null
+    ? `cell=${(entry.cellular.tech ?? '').replace('CTRadioAccessTechnology', '') || '-'}/${entry.cellular.vote}`
+    : 'cell=-';
+  return `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular}`;
 }
 
 /**
@@ -823,6 +827,58 @@ function buildRawSignalSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #1859 — Cellular Tech Distribution 집계 순수 함수. rawSignalLog entries에서 cellular 필드를
+ * 집계해 tech별 발생 빈도와 vote 분포 라인 목록을 반환.
+ *
+ * 구버전 엔트리(cellular=null): 'legacy' 버킷으로 분리 집계.
+ *
+ * 출력 형식 (tech 빈도 내림차순):
+ *   LTE: 45x (vote=surface)
+ *   NRNSA: 12x (vote=surface)
+ *   WCDMA: 3x (vote=underground)
+ *   legacy(no field): 5x
+ *   total=65 measured=60 surface=57 underground=3 unknown=0 legacy=5
+ */
+export function computeCellularTechDistribution(entries: readonly RawSignalEntry[]): string[] {
+  if (entries.length === 0) return ['(empty)'];
+
+  const techStats = new Map<string, { count: number; vote: string }>();
+  let legacyCount = 0;
+  let surfaceCount = 0;
+  let undergroundCount = 0;
+  let unknownCount = 0;
+
+  for (const entry of entries) {
+    if (entry.cellular == null) {
+      legacyCount += 1;
+      continue;
+    }
+    const { tech, vote } = entry.cellular;
+    const techKey = tech != null ? tech.replace('CTRadioAccessTechnology', '') : '(null)';
+    const existing = techStats.get(techKey);
+    techStats.set(techKey, { count: (existing?.count ?? 0) + 1, vote });
+    if (vote === 'surface') surfaceCount += 1;
+    else if (vote === 'underground') undergroundCount += 1;
+    else unknownCount += 1;
+  }
+
+  const lines: string[] = [];
+  const sorted = [...techStats.entries()].sort((a, b) => b[1].count - a[1].count);
+  for (const [tech, { count, vote }] of sorted) {
+    lines.push(`${tech}: ${count}x (vote=${vote})`);
+  }
+  if (legacyCount > 0) lines.push(`legacy(no field): ${legacyCount}x`);
+  const measured = entries.length - legacyCount;
+  lines.push(`total=${entries.length} measured=${measured} surface=${surfaceCount} underground=${undergroundCount} unknown=${unknownCount} legacy=${legacyCount}`);
+  return lines;
+}
+
+/** #1859 — SHARE_SECTIONS builder wrapper. */
+function buildCellularTechDistributionSection(args: BuildDumpArgs): string[] {
+  return computeCellularTechDistribution(args.rawSignalLog ?? []);
+}
+
+/**
  * #1346 — Fusion log 섹션. 빈 buffer일 때 (empty)로 명시 출력해 "한 번도 push 안 됨"과
  * "load 안 함"을 구분한다(scheduled queue 컨벤션 따라).
  */
@@ -1272,6 +1328,12 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildRawSignalSection,
     suffix: (args) => ` (${args.rawSignalLog?.length ?? 0})`,
   },
+  // #1859 — Cellular Tech Distribution. rawSignalLog에서 cellular 분포 집계.
+  // 1주 측정 → LTE/NRNSA surface hard-reject 재검토 evidence.
+  {
+    title: 'Cellular Tech Distribution',
+    build: buildCellularTechDistributionSection,
+  },
 ];
 
 function buildDumpText(args: BuildDumpArgs): string {
@@ -1433,6 +1495,8 @@ function DebugModalInner({
     detectionSignalMask,
     // #1418 — 환경 인지 fusion arbitration. Tier 1 SSOT 합의 활성 + 추정 환경 노출.
     environment,
+    // #1860 — 옵션 C barometer-stop 힌트 원인. DebugModal environment 라인에 함께 노출.
+    environmentHintReason,
     surfaceSSOTActive,
     undergroundSSOTActive,
     // #1421 — PR-AutoLock-1 측정 인프라. SSOT 객체 직접 받아 inferAutoLockCandidate에 전달.
@@ -1857,7 +1921,12 @@ function DebugModalInner({
             <KeyValue label="gps" value={gpsLabel} colors={colors} />
             {/* #1418 — 환경 인지 fusion arbitration. surface/underground SSOT 합의 활성 여부와
                 추정 환경. Tier 5(시간 적분) reject 게이트가 어느 신호에 막혔는지 사후 재구성 가능. */}
-            <KeyValue label="environment" value={environment} colors={colors} />
+            {/* #1860 — 옵션 C 힌트 발동 시 hintReason 부가 표시. "이미 지하" 보완 신호 관측용. */}
+            <KeyValue
+              label="environment"
+              value={environmentHintReason ? `${environment} (hint:${environmentHintReason})` : environment}
+              colors={colors}
+            />
             <KeyValue
               label="surfaceSSOT"
               value={surfaceSSOTActive ? 'active' : 'null'}
@@ -2213,6 +2282,26 @@ function DebugModalInner({
             entryTestId="debug-raw-signal-entry"
             colors={colors}
           />
+
+          {/* #1859 — Cellular Tech Distribution. rawSignalLog cellular 분포 집계.
+              1주 측정 → LTE/NRNSA surface hard-reject 재검토 결정 evidence. */}
+          <Section
+            title="Cellular Tech Distribution"
+            colors={colors}
+            testID="debug-cellular-tech-distribution"
+          >
+            {computeCellularTechDistribution(rawSignalLog).map((line, idx) => (
+              <Text
+                // eslint-disable-next-line react/no-array-index-key
+                key={idx}
+                style={[typography.mono, { color: colors.ink }]}
+                selectable
+                testID="debug-cellular-tech-entry"
+              >
+                {line}
+              </Text>
+            ))}
+          </Section>
 
           {/* #1263 (Epic #1204 그룹 0 PR C): Regressions 4종 추이 */}
           <RegressionsSection />
