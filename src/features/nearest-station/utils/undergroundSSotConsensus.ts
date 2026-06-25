@@ -43,8 +43,16 @@ import type { AccelerometerPattern } from './accelerometerFingerprint';
 /** arvlCd "정착한 위치 보고" 코드 집합. surfaceSSotConsensus와 동일 — 향후 공용 추출 여지. */
 const ARVL_CD_STATIONARY = new Set<number>([1, 2, 3, 5]);
 
-/** 2-of-N quorum 임계 — 4 input 중 2개 이상 통과 시 합의 채택. */
+/** 2-of-N quorum 임계 — trip 안정화(60s 이후) 기본 임계. */
 const CONSENSUS_QUORUM = 2;
+/**
+ * Warmup quorum — trip 시작 후 60s 이내 완화 임계.
+ * station pair 단독 1개로 underground 채택 허용.
+ * 이유: BG 첫 60s는 WiFi nil + arrival 미수렴 + barometer 미정착 상태로 quorum 달성 불가 → unknown 고착.
+ */
+const CONSENSUS_QUORUM_WARMUP = 1;
+/** Warmup 윈도우 ms. */
+const WARMUP_WINDOW_MS = 60_000;
 
 export interface UndergroundSSOTInput {
   /** useWifiStation 매칭 결과. null이면 SSID 미매칭(또는 BG nil). */
@@ -75,6 +83,12 @@ export interface UndergroundSSOTInput {
    * iOS BG에서도 동작 (Background Location piggyback으로 raw 가속도 수신).
    */
   accelerometerPattern?: AccelerometerPattern | undefined;
+  /**
+   * #1821 — trip 시작 Unix ms 타임스탬프. undefined이면 warmup 완화 미적용(steady 모드).
+   * 첫 60s(WARMUP_WINDOW_MS) 이내 → CONSENSUS_QUORUM_WARMUP(1) 적용.
+   * 60s 이후 또는 미전달 → CONSENSUS_QUORUM(2) 기본 임계 적용.
+   */
+  tripStartedAt?: number | undefined;
 }
 
 export interface UndergroundSSOT {
@@ -97,7 +111,10 @@ function findStationaryTrain(
   return null;
 }
 
-export function undergroundSSOTConsensus(input: UndergroundSSOTInput): UndergroundSSOT | null {
+export function undergroundSSOTConsensus(
+  input: UndergroundSSOTInput,
+  nowMs: number = Date.now(),
+): UndergroundSSOT | null {
   const {
     wifiStation,
     positionTrainResult,
@@ -105,6 +122,7 @@ export function undergroundSSOTConsensus(input: UndergroundSSOTInput): Undergrou
     barometerStop,
     cellularEnvironmentVote,
     accelerometerPattern,
+    tripStartedAt,
   } = input;
 
   // 환경 확정 모순 — cellular가 surface면 underground SSOT 자체 candidate X.
@@ -131,9 +149,15 @@ export function undergroundSSOTConsensus(input: UndergroundSSOTInput): Undergrou
   if (cellularEnvironmentVote === 'underground') envVotes += 1;
   if (accelerometerPattern === 'automotive') envVotes += 1;
 
-  // 2-of-N quorum. station pair ≥ 1 필수 (env vote만으로는 station 채택 불가).
+  // Station pair ≥ 1 필수 (env vote만으로는 station 채택 불가).
   if (stationPairs.length === 0) return null;
-  if (stationPairs.length + envVotes < CONSENSUS_QUORUM) return null;
+
+  // Warmup 60s 이내 → quorum=1 (station pair 단독 채택 허용). 60s 이후 → steady quorum=2.
+  const isWarmup =
+    tripStartedAt !== undefined && nowMs - tripStartedAt < WARMUP_WINDOW_MS;
+  const quorum = isWarmup ? CONSENSUS_QUORUM_WARMUP : CONSENSUS_QUORUM;
+
+  if (stationPairs.length + envVotes < quorum) return null;
 
   // station 채택: position-train > wifi (stationPairs는 우선순위 순서로 push됨).
   return stationPairs[0];

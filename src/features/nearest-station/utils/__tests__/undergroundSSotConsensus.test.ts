@@ -6,6 +6,10 @@
  *   - station pair ≥ 1 + (station pair + env vote) ≥ 2 통과 시 채택
  *   - cellular surface vote → reject (환경 확정 모순)
  *   - station 우선순위: position > wifi
+ * #1821 — warmup quorum 완화:
+ *   - trip 시작 후 60s 이내 + station pair 1개 → underground 채택 (quorum=1)
+ *   - 60s 이후 + station pair 1개 → null (steady quorum=2)
+ *   - 60s 이내 + env vote 1개만 (station pair 0) → null (station pair ≥ 1 필수)
  */
 
 import { undergroundSSOTConsensus } from '../undergroundSSotConsensus';
@@ -316,5 +320,117 @@ describe('undergroundSSOTConsensus — accelerometer fingerprint (#1542 ADR-016 
       arrival: arrivalLine2,
     });
     expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+});
+
+describe('undergroundSSOTConsensus — warmup quorum (#1821)', () => {
+  const NOW = 1_750_000_000_000;
+  const WARMUP_START = NOW - 30_000; // trip 시작 30s 전 → 아직 warmup 60s 이내
+  const STEADY_START = NOW - 90_000; // trip 시작 90s 전 → steady 모드
+
+  it('warmup 60s 이내 + station pair 1개 → underground 채택 (quorum=1)', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus(
+      {
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        tripStartedAt: WARMUP_START,
+      },
+      NOW,
+    );
+    expect(result?.station.id).toBe(positionTrain.station.id);
+    expect(result?.trainCode).toBe('T1');
+  });
+
+  it('warmup 60s 이내 + WiFi station pair 단독 → underground 채택', () => {
+    const wifi = MOCK_STATIONS.gangnam;
+    const result = undergroundSSOTConsensus(
+      {
+        wifiStation: wifi,
+        positionTrainResult: null,
+        arrival: arrivalLine2,
+        tripStartedAt: WARMUP_START,
+      },
+      NOW,
+    );
+    expect(result?.station.id).toBe(wifi.id);
+  });
+
+  it('steady 60s 이후 + station pair 1개 → null (quorum=2 미달)', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus(
+        {
+          wifiStation: null,
+          positionTrainResult: positionTrain,
+          arrival: arrivalLine2,
+          tripStartedAt: STEADY_START,
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('warmup 이내 + env vote 1개만 (station pair 0) → null (station pair ≥ 1 필수)', () => {
+    expect(
+      undergroundSSOTConsensus(
+        {
+          wifiStation: null,
+          positionTrainResult: null,
+          arrival: arrivalLine2,
+          barometerStop: true,
+          tripStartedAt: WARMUP_START,
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('tripStartedAt undefined (미탑승) → steady quorum=2 적용', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    // station pair 1개만, env vote 0 → steady quorum=2 미달 → null
+    expect(
+      undergroundSSOTConsensus(
+        {
+          wifiStation: null,
+          positionTrainResult: positionTrain,
+          arrival: arrivalLine2,
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('warmup 경계 정확히 60s → steady 전환 (quorum=2)', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const exactBoundary = NOW - 60_000; // exactly 60s elapsed → NOT warmup
+    expect(
+      undergroundSSOTConsensus(
+        {
+          wifiStation: null,
+          positionTrainResult: positionTrain,
+          arrival: arrivalLine2,
+          tripStartedAt: exactBoundary,
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('warmup + cellular surface → reject (환경 확정 모순이 warmup보다 우선)', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus(
+        {
+          wifiStation: null,
+          positionTrainResult: positionTrain,
+          arrival: arrivalLine2,
+          cellularEnvironmentVote: 'surface',
+          tripStartedAt: WARMUP_START,
+        },
+        NOW,
+      ),
+    ).toBeNull();
   });
 });

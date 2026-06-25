@@ -1281,6 +1281,9 @@ export function useFusedNearestStation(
     // #1542 (ADR-016 S9) — accelerometer fingerprint env vote. 'automotive' = train 진동 1표,
     // 'stationary'/'walking'/'unknown'은 vote 미투표. 미지원/warmup 60s 동안 'unknown' fallback.
     accelerometerPattern,
+    // #1821 — warmup quorum 완화: trip 시작 후 60s 이내 station pair 단독 채택 허용.
+    // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
+    tripStartedAt: boardingLock?.boardedAt,
   });
   const environment: Environment = inferEnvironment({
     subsurface: barometerSubsurface,

@@ -2,6 +2,7 @@
  * #1430 — 환경 분포 측정 인프라 단위 테스트.
  *
  * State 4종 누적 정확성 + 전환 카운트 + 진행분 포함 snapshot + observedMs=0 시 percentage 0%.
+ * #1821 — unknown_warmup state 추가 테스트.
  */
 
 import {
@@ -15,8 +16,8 @@ describe('createEnvironmentDistributionCounter', () => {
   it('첫 snapshot은 totals/transitions/observedMs 모두 0', () => {
     const counter = createEnvironmentDistributionCounter();
     const snap = counter.snapshot(T0);
-    expect(snap.totals).toEqual({ surface: 0, underground: 0, hybrid: 0, unknown: 0 });
-    expect(snap.percentages).toEqual({ surface: 0, underground: 0, hybrid: 0, unknown: 0 });
+    expect(snap.totals).toEqual({ surface: 0, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 });
+    expect(snap.percentages).toEqual({ surface: 0, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 });
     expect(snap.transitions).toBe(0);
     expect(snap.observedMs).toBe(0);
   });
@@ -169,14 +170,60 @@ describe('createEnvironmentDistributionCounter', () => {
     const counter = createEnvironmentDistributionCounter();
     counter.tick('surface', T0);
     const snap: EnvironmentDistributionSnapshot = counter.snapshot(T0 + 1000);
-    // 컴파일 타임 타입 보장 + 런타임 키 존재 확인.
+    // 컴파일 타임 타입 보장 + 런타임 키 존재 확인 (#1821: unknown_warmup 포함).
     expect(Object.keys(snap.totals).sort((a, b) => a.localeCompare(b))).toEqual(
-      ['hybrid', 'surface', 'underground', 'unknown'],
+      ['hybrid', 'surface', 'underground', 'unknown', 'unknown_warmup'],
     );
     expect(Object.keys(snap.percentages).sort((a, b) => a.localeCompare(b))).toEqual(
-      ['hybrid', 'surface', 'underground', 'unknown'],
+      ['hybrid', 'surface', 'underground', 'unknown', 'unknown_warmup'],
     );
     expect(typeof snap.transitions).toBe('number');
     expect(typeof snap.observedMs).toBe('number');
+  });
+});
+
+describe('createEnvironmentDistributionCounter — unknown_warmup (#1821)', () => {
+  it('unknown_warmup state 누적', () => {
+    const counter = createEnvironmentDistributionCounter();
+    counter.tick('unknown_warmup', T0);
+    counter.tick('unknown_warmup', T0 + 5000);
+    const snap = counter.snapshot(T0 + 5000);
+    expect(snap.totals.unknown_warmup).toBe(5000);
+    expect(snap.totals.unknown).toBe(0);
+    expect(snap.observedMs).toBe(5000);
+  });
+
+  it('unknown_warmup → unknown 전환 시 transitions++', () => {
+    const counter = createEnvironmentDistributionCounter();
+    counter.tick('unknown_warmup', T0);
+    counter.tick('unknown', T0 + 30_000); // 30s warmup 누적
+    counter.tick('underground', T0 + 60_000); // unknown 30s 누적
+    const snap = counter.snapshot(T0 + 60_000);
+    expect(snap.totals.unknown_warmup).toBe(30_000);
+    expect(snap.totals.unknown).toBe(30_000);
+    expect(snap.transitions).toBe(2);
+  });
+
+  it('unknown_warmup percentage 합산에 포함', () => {
+    const counter = createEnvironmentDistributionCounter();
+    counter.tick('unknown_warmup', T0);
+    counter.tick('unknown', T0 + 5000); // unknown_warmup 5000ms
+    const snap = counter.snapshot(T0 + 10_000); // unknown 5000ms
+    expect(snap.percentages.unknown_warmup).toBeCloseTo(50, 5);
+    expect(snap.percentages.unknown).toBeCloseTo(50, 5);
+    const total =
+      snap.percentages.surface +
+      snap.percentages.underground +
+      snap.percentages.hybrid +
+      snap.percentages.unknown +
+      snap.percentages.unknown_warmup;
+    expect(total).toBeCloseTo(100, 5);
+  });
+
+  it('unknown_warmup 초기값 0', () => {
+    const counter = createEnvironmentDistributionCounter();
+    const snap = counter.snapshot(T0);
+    expect(snap.totals.unknown_warmup).toBe(0);
+    expect(snap.percentages.unknown_warmup).toBe(0);
   });
 });
