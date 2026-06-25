@@ -24,6 +24,7 @@ function entry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     gps: { lat: 37.5, lng: 127, accM: 30, speedMps: 1.2 },
     motion: null,
     accelPattern: null,
+    cellular: null,
     subsurface: false,
     arvlCd: null,
     line: '2',
@@ -247,6 +248,41 @@ describe('rawSignalBuffer (#1501 PR-A)', () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(stored));
       await hydrateRawSignalBuffer();
       expect(getRawSignalEntries()[0].accelPattern).toBe('walking');
+    });
+  });
+
+  // ── #1859 cellular 필드 ──────────────────────────────────────────────────────
+
+  describe('cellular field (#1859)', () => {
+    it('cellular=null 값이 push/get에 보존된다', () => {
+      pushRawSignal(entry({ cellular: null }));
+      expect(getRawSignalEntries()[0].cellular).toBeNull();
+    });
+
+    it('cellular LTE surface 값이 push/get에 보존된다', () => {
+      const cellular = { tech: 'CTRadioAccessTechnologyLTE', vote: 'surface' } as const;
+      pushRawSignal(entry({ cellular }));
+      expect(getRawSignalEntries()[0].cellular).toEqual(cellular);
+    });
+
+    it('cellular WCDMA underground 값이 push/get에 보존된다', () => {
+      const cellular = { tech: 'CTRadioAccessTechnologyWCDMA', vote: 'underground' } as const;
+      pushRawSignal(entry({ cellular }));
+      expect(getRawSignalEntries()[0].cellular).toEqual(cellular);
+    });
+
+    it('cellular tech=null unknown 값이 push/get에 보존된다', () => {
+      const cellular = { tech: null, vote: 'unknown' } as const;
+      pushRawSignal(entry({ cellular }));
+      expect(getRawSignalEntries()[0].cellular).toEqual(cellular);
+    });
+
+    it('cellular이 hydration 후 복원된다', async () => {
+      const cellular = { tech: 'CTRadioAccessTechnologyNRNSA', vote: 'surface' } as const;
+      const stored = [entry({ cellular })];
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(stored));
+      await hydrateRawSignalBuffer();
+      expect(getRawSignalEntries()[0].cellular).toEqual(cellular);
     });
   });
 });
