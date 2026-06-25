@@ -47,14 +47,13 @@ import {
   logSuppressedDismissSilence,
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
-  logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
   logSuppressedMovement,
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
-  logSuppressedSleepStationPassed,
   logSuppressedSsotFireGate,
   logSuppressedStationPassedWarmup,
+  logSuppressedLocklessNoUserIntent,
   type HydrationPhase,
 } from '../utils/alarmLog';
 import { evaluateSsotFireGate } from '../utils/ssotFireGate';
@@ -69,7 +68,7 @@ import { getBoardingLock } from '../utils/boardingLockStorage';
 import { resolveCurrentLine } from '../utils/resolveCurrentLine';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LineNumber } from '../../../shared/types/station';
-import { isStationPassedFirstHop, shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
+import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
@@ -257,11 +256,7 @@ async function runSilenceGateAndDispatch(params: {
   dismissSilence: import('../utils/dismissSilenceStorage').DismissSilenceState | null;
   userLocation: { lat: number; lng: number } | null;
   clearDismissSilenceAction: () => Promise<void>;
-  // #1236 (Epic #1204 D8 wire) — station-passed sleep 룰 게이트 context.
-  // 호출자가 lock/sleepMode/currentHopIndex를 수집해 전달한다. 게이트 통과 시 dispatch.
-  sleepMode: boolean;
-  currentHopIndex: number | null;
-  /** lock=null이면 lockless trip — currentHopIndex===0으로 판정. lock 활성이면 boardingStationId 비교. */
+  /** #1816 — lock 활성 trip만 진입. gate-passed-event-on-lock-origin에서 boardingStationId 비교. */
   lock: import('../../../shared/types/boardingLock').BoardingLock | null;
 }): Promise<void> {
   // #1599 — boardingLock active 시 candidate가 lock origin(= boardingStationId)이면 station-passed 차단.
@@ -275,26 +270,10 @@ async function runSilenceGateAndDispatch(params: {
     });
     return;
   }
-  // #1236 — sleep 룰 게이트. dismiss silence 위 — silence 만료/위치 무관하게 sleep 첫 hop은 정책상 차단.
-  // sleep 룰은 정확성 게이트(ADR-013 §B3 / ADR-014)라 silence 만료 부수효과(clear)를 막아도 무방.
-  if (
-    shouldSuppressBySleepRule({
-      lock: params.lock,
-      event: { type: 'station-passed', stationName: params.candidateStation.name },
-      sleepMode: params.sleepMode,
-      isFirstHop: isStationPassedFirstHop({
-        lock: params.lock,
-        candidateStationId: params.candidateStation.id,
-        currentHopIndex: params.currentHopIndex,
-      }),
-    })
-  ) {
-    logSuppressedSleepStationPassed({
-      source: params.source,
-      stationName: params.candidateStation.name,
-    });
-    return;
-  }
+  // #1816 — #1236 sleep 룰 게이트(station-passed 첫 hop lockless 차단)가 이 경로에 도달하려면
+  // lock=null + currentHopIndex=0이 필요하다. #1816 broad guard가 먼저 차단해 이 함수는
+  // lock 활성 trip만 진입하므로 sleep-station-passed 분기는 도달 불가 — 제거.
+  // (lock 활성 + candidate=boardingStation은 위 gate-passed-event-on-lock-origin이 먼저 차단)
   const silenceGate = applySilenceGate(
     params.dismissSilence,
     Date.now(),
@@ -667,6 +646,20 @@ export function useStationAlarm({
     // 모두 첫 hop과 일치 (transferName 또는 collapsed destination).
     const isFirstHop = isSameStationName(getFirstLeg(activeRoute, activeDestination.name).endName, rawEvent.stationName);
     const lock = await getBoardingLock();
+    // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 ETA/imminent phase 발사 차단.
+    // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. 이 상태에서 transfer/destination
+    // phase 알람(ETA 기반 early/imminent + API imminent)을 fire하면 paradigm shift 위반.
+    // firedAlarmsRef.current.delete(key): 진입부 add를 복구해 storage net-zero 유지 (sleep/cross-category 차단과 동일 패턴).
+    if (!lock) {
+      firedAlarmsRef.current.delete(key);
+      logSuppressedLocklessNoUserIntent({
+        source: 'fg-evaluated',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
     if (
       shouldSuppressBySleepRule({
         lock,
@@ -1152,12 +1145,14 @@ export function useStationAlarm({
       void (async () => {
         const lock = await getBoardingLock();
         if (cancelled) return;
-        // #1514 — lockless origin hop 차단 (2026-06-19 용마산 evidence).
-        // lock 활성 시는 boardingStationId 기준 origin 알림이 정당이므로 우회 (ADR-014 §4 동급 보장).
-        if (isOriginHopCandidate && !lock) {
-          logSuppressedOriginHopLockless({
+        // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 station-passed 차단.
+        // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. paradigm shift 정합.
+        // #1514 — origin hop lockless 차단(용마산 evidence)은 본 broad guard의 subset이 되어 하나로 통합.
+        if (!lock) {
+          logSuppressedLocklessNoUserIntent({
             source: 'fg',
             stationName: candidateStation.name,
+            kind: 'station-passed',
           });
           return;
         }
@@ -1186,8 +1181,6 @@ export function useStationAlarm({
           dismissSilence,
           userLocation,
           clearDismissSilenceAction,
-          sleepMode: sleepModeRef.current,
-          currentHopIndex,
           lock,
         });
       })();
@@ -1331,8 +1324,6 @@ export function useStationAlarm({
         dismissSilence,
         userLocation,
         clearDismissSilenceAction,
-        sleepMode: sleepModeRef.current,
-        currentHopIndex,
         lock,
       });
     })();
@@ -1386,6 +1377,16 @@ export function useStationAlarm({
     void (async () => {
       const lock = await getBoardingLock();
       if (cancelled) return;
+      // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 subsurface station-passed 차단.
+      // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. paradigm shift 정합.
+      if (!lock) {
+        logSuppressedLocklessNoUserIntent({
+          source: 'fg',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+        });
+        return;
+      }
       // #1572 (T9) — backend SSoT 권위 게이트 (Path C subsurface verdict). subsurface fusion이
       // backend가 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. dispatch helper 진입 직전 평가.
       // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
@@ -1410,8 +1411,6 @@ export function useStationAlarm({
         dismissSilence,
         userLocation,
         clearDismissSilenceAction,
-        sleepMode: sleepModeRef.current,
-        currentHopIndex,
         lock,
       });
     })();

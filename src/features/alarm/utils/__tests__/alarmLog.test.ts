@@ -61,6 +61,7 @@ import {
   logCrossTripMirrorSkip,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
+  logSuppressedLocklessNoUserIntent,
   logSuppressedSsotFireGate,
   logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
@@ -985,6 +986,27 @@ describe('alarmLog', () => {
         reason: 'gate-passed-event-on-lock-origin',
         stationName: '용마산',
         kind: 'station-passed',
+      });
+    });
+
+    it('#1816 logSuppressedLocklessNoUserIntent: reason=lockless-no-user-intent + kind/phaseId 보존', async () => {
+      logSuppressedLocklessNoUserIntent({
+        source: 'fg-evaluated',
+        stationName: '한양대',
+        kind: 'transfer',
+        phaseId: 'early',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-evaluated',
+        outcome: 'suppressed',
+        reason: 'lockless-no-user-intent',
+        stationName: '한양대',
+        kind: 'transfer',
+        phaseId: 'early',
       });
     });
 

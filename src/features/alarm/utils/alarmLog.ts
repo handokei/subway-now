@@ -240,7 +240,12 @@ export type AlarmLogReason =
   // #1656 — phase↔phase cross-station 즉시 cascade 윈도우(PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS=3s)
   // 안에서 다른 station에 두 phase 알람(transfer + destination 또는 역방향)이 leg 전환 race로
   // 연이어 발사되는 회귀 차단(2026-06-20 12:32 건대+성수, 2026-06-19 15:37 이수+사당).
-  | 'dedup-phase-to-phase';
+  | 'dedup-phase-to-phase'
+  // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 FG device fire 차단.
+  // lock=null + boardingPrompt 미응답 + BoardingTrainList 미탭 = 사용자가 열차 선택 의향을 밝히지 않은 상태.
+  // 이 상태에서 FG fg/fg-phase/subsurface 3 path가 역 통과·환승·도착 알람을 발사하던 회귀 차단.
+  // lock 활성(lock !== null) trip은 fire 허용 — 사용자 명시 의향 = lock 동급 (ADR-010 §1, ADR-014 §B3).
+  | 'lockless-no-user-intent';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -1289,6 +1294,36 @@ export function logSuppressedOriginHopLockless(input: {
     reason: 'gate-origin-hop-lockless',
     stationName: input.stationName,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음으로 FG device fire 차단.
+ *
+ * lock=null 상태(boardingPrompt 미응답 + BoardingTrainList 미탭)에서 FG 3 path
+ * (GPS station-passed / ETA phase / subsurface verdict)가 역 통과·환승·도착 알람을 발사하던 회귀 차단.
+ * lock 활성(lock !== null) trip은 gate 미통과 — ADR-010 §1, ADR-014 §B3 동급 보장.
+ *
+ * source는 호출 path별로:
+ *   'fg'         : GPS station-passed / subsurface verdict
+ *   'fg-evaluated': ETA phase / API imminent (fireAndLog 내부)
+ *
+ * kind는 호출자가 명시 — station-passed / transfer / destination 분포 측정.
+ */
+export function logSuppressedLocklessNoUserIntent(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'lockless-no-user-intent',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
   });
 }
 
