@@ -600,6 +600,18 @@ export interface Env {
    */
   SENTRY_DSN?: string;
   /**
+   * Cloudflare D1 — backend 오류 로그 + trip 메타 (#1835).
+   * Phase 1: backend_errors 테이블. Phase 2: trip_metrics 테이블.
+   * 미바인딩 시 모든 D1 적재 경로는 graceful no-op (`if (!db) return` 패턴).
+   *
+   * 운영자 1회성 등록 절차:
+   *   1) `wrangler d1 create subway-now-db`
+   *   2) 출력된 database_id를 wrangler.toml [[d1_databases]] 에 채운다
+   *   3) `wrangler d1 migrations apply subway-now-db --remote`
+   *   4) `wrangler deploy`
+   */
+  DB?: D1Database;
+  /**
    * Phase 0 측정 인프라 — Cloudflare Analytics Engine dataset (#1577, Epic #1576).
    *
    * V/X acceptance (ADR-017/016) 검증용 시계열. advance / fire / suppress /
