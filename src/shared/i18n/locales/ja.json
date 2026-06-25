@@ -68,6 +68,11 @@
       "undo": "元に戻す"
     },
     "lockCorrectionToast": "乗車中の列車を {{prev}} → {{next}} に修正しました",
+    "coldStartMismatch": {
+      "title": "乗車駅を確認",
+      "message": "乗車駅が現在地と一致しません。再選択してください。",
+      "reselect": "再選択"
+    },
     "congestion": {
       "level": {
         "low": "余裕",

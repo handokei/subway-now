@@ -245,7 +245,12 @@ export type AlarmLogReason =
   // lock=null + boardingPrompt 미응답 + BoardingTrainList 미탭 = 사용자가 열차 선택 의향을 밝히지 않은 상태.
   // 이 상태에서 FG fg/fg-phase/subsurface 3 path가 역 통과·환승·도착 알람을 발사하던 회귀 차단.
   // lock 활성(lock !== null) trip은 fire 허용 — 사용자 명시 의향 = lock 동급 (ADR-010 §1, ADR-014 §B3).
-  | 'lockless-no-user-intent';
+  | 'lockless-no-user-intent'
+  // #1844 (Phase 6.1 Sub-step 5) — cold start 선택 역과 진행 중 신호 mismatch 감지.
+  // useStationMismatchDetector가 3회 연속 불일치 확인 시 적재. expectedStationAtFire 슬롯에
+  // reason 문자열(route-diverged / line-mismatch / environment-mismatch) stamp.
+  // 1주 production 빈도 측정 — `/admin/alarm-log-stats` reason='cold-start-mismatch' 카운트.
+  | 'cold-start-mismatch';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

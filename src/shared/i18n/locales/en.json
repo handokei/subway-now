@@ -68,6 +68,11 @@
       "undo": "Undo"
     },
     "lockCorrectionToast": "Boarding train corrected: {{prev}} → {{next}}",
+    "coldStartMismatch": {
+      "title": "Check boarding station",
+      "message": "Your boarding station does not match your current location. Please reselect.",
+      "reselect": "Reselect"
+    },
     "congestion": {
       "level": {
         "low": "Light",
