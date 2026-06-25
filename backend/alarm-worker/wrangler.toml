@@ -49,14 +49,16 @@ preview_id = "d38f190e3f7f4fd3b6e7f6485dd1733d"
 # `GET /admin/signals/export?corrId=`로 운영자가 7일 회귀 사후 분석.
 # 코드는 `if (env.RAW_SIGNALS)` 분기로 graceful — binding 없으면 endpoint가 503 반환.
 #
-# 운영자 1회성 등록 절차:
+# 운영자 1회성 등록 절차 (PR #1829):
 #   1) `wrangler kv namespace create RAW_SIGNALS`
+#      → 출력된 id를 아래 id = "..." 에 채운다.
 #   2) `wrangler kv namespace create RAW_SIGNALS --preview`
-#   3) 출력된 id / preview_id를 아래 두 줄에 채워 binding 활성화.
-# [[kv_namespaces]]
-# binding = "RAW_SIGNALS"
-# id = ""
-# preview_id = ""
+#      → 출력된 id를 아래 preview_id = "..." 에 채운다.
+#   3) `wrangler deploy`
+[[kv_namespaces]]
+binding = "RAW_SIGNALS"
+id = "FILL_IN_AFTER_wrangler_kv_namespace_create_RAW_SIGNALS"
+preview_id = "FILL_IN_AFTER_wrangler_kv_namespace_create_RAW_SIGNALS_preview"
 
 # Analytics Engine: V/X acceptance 시계열 dataset (#1577, Phase 0 epic #1576)
 # advance / fire / suppress / motion-transition / position-upload / trip-mutation 6 event를

@@ -1,5 +1,5 @@
 /**
- * #1578 — Phase 0 P0-2: Backend Sentry wire.
+ * #1578/#1829 — Backend Sentry wire (Phase 1 완성).
  *
  * V/X acceptance 표(X3 stale, X8 6h+ 좀비 등)의 backend-side 실시간 alert.
  *
@@ -11,14 +11,14 @@
  *   - `env.SENTRY_DSN` 미설정 시 init/capture 모두 no-op.
  *   - SDK 호출 실패 시 swallow + console.warn (cron path 영향 X).
  *
- * **Cloudflare SDK 사용 방식 (Phase 0 minimal)**:
- *   `@sentry/cloudflare`는 `withSentry` HOC + `CloudflareClient` 패턴을 권장한다.
- *   Phase 0에서는 `captureMessage` (from `@sentry/core` re-export)와 자체 bound flag만
- *   사용한다. 정식 `withSentry` 적용은 후속 PR(Phase 1 측정 인프라 통합)에서.
- *   현재 모듈은 DSN 부재 시 100% no-op이라 production runtime 영향 없음.
+ * **Cloudflare SDK 사용 방식 (#1829 Phase 1)**:
+ *   `withSentry` HOC + `CloudflareClient` 패턴.
+ *   `index.ts`의 `export default`를 `Sentry.withSentry(sentryOptions, handler)` 로 wrap.
+ *   `sentryInit`은 하위 호환 유지 (middleware + scheduled에서 idempotent 호출).
  */
 
-import { addBreadcrumb, captureMessage } from '@sentry/cloudflare';
+import { addBreadcrumb, captureException, captureMessage } from '@sentry/cloudflare';
+import type { CloudflareOptions } from '@sentry/cloudflare';
 import {
   hashTripToken,
   sanitizeContext,
@@ -44,16 +44,49 @@ let initialized = false;
 let configuredDsn: string | null = null;
 
 /**
- * cron `scheduled()` / `fetch` 진입부에서 1회 호출. DSN 부재 시 no-op.
+ * `withSentry` HOC에 전달하는 options 콜백. DSN 미설정 시 undefined 반환 → HOC no-op.
  *
- * Phase 0: DSN 존재 여부만 stamp + console.info. 실제 `withSentry` HOC bind는 후속 PR.
- * 본 구현은 captureMessage 호출 시 SDK 내부에서 active client가 없으면 no-op이므로 안전.
+ * `index.ts`의 `export default`를 `Sentry.withSentry(sentryOptions, handler)` 로 wrap한다.
+ * environment: APNS_HOST_SANDBOX 포함 여부로 sandbox 추론 (별도 APNS_ENV 필드 없음).
+ * APNS_HOST가 sandbox.push.apple.com 이면 'sandbox', 아니면 'production'.
+ */
+export function sentryOptions(env: Env): CloudflareOptions | undefined {
+  if (!env.SENTRY_DSN) return undefined;
+  const isSandbox = env.APNS_HOST.includes('sandbox');
+  return {
+    dsn: env.SENTRY_DSN,
+    environment: isSandbox ? 'sandbox' : 'production',
+  };
+}
+
+/**
+ * cron `scheduled()` / `fetch` middleware 에서 1회 호출. DSN 부재 시 no-op.
+ * `withSentry` HOC가 SDK를 초기화하므로, 본 함수는 모듈 스코프 flag만 stamp한다.
+ * captureXEvent / addValidateRejectBreadcrumb 의 guard로 계속 사용.
  */
 export function sentryInit(env: Env): void {
   if (initialized) return;
   if (!env.SENTRY_DSN) return;
   configuredDsn = env.SENTRY_DSN;
   initialized = true;
+}
+
+/**
+ * 예외를 Sentry로 포착. DSN 미설정 / initialized 이전 시 no-op.
+ *
+ * 핵심 path(cron, /trips, /signals/dump, /live-activity/register)의 catch block에서 사용.
+ * SDK 자체 throw 시 swallow — cron path 영향 없음.
+ */
+export function captureBackendException(
+  err: unknown,
+  context?: BackendXEventContext,
+): void {
+  if (!initialized) return;
+  try {
+    captureException(err, context ? { extra: sanitizeContext(context) } : undefined);
+  } catch (e) {
+    console.warn(JSON.stringify({ msg: 'sentry captureException failed', err: String(e) }));
+  }
 }
 
 /**
