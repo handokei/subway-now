@@ -657,6 +657,13 @@ export interface ScheduledStats extends LiveActivityStats {
     reschedule: number;
   };
   /**
+   * #1824 — Seoul API outage 시 arrivals + positions 모두 없어 FALLBACK_HOP_SEC 기반
+   * 스케줄 ETA 추정을 사용한 누적 횟수. 0이 아니면 Seoul API 장애로 실시간 신호 대신
+   * hop 추정값으로 reschedule push / LA heartbeat가 유지된 기간 = outage 진단 신호.
+   * cron tail에서 1주 0건이면 Seoul API가 정상 작동 중임을 확인.
+   */
+  scheduleEtaFallback: number;
+  /**
    * #1707 — destination 도달 자동 종료 시 device GPS cross-check 결과 분포.
    *
    * - `within`         : GPS 좌표 ≤ 500m → 정상 종료
@@ -790,6 +797,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       boardingPrompt: 0,
       reschedule: 0,
     },
+    // #1824 — Seoul API outage 시 schedule hop ETA fallback 사용 횟수.
+    scheduleEtaFallback: 0,
     // #1707 — destination 도달 cross-check 결과 분포 (회귀 차단 측정).
     destinationCrossCheck: {
       within: 0,
@@ -2237,6 +2246,19 @@ export async function runTrainCodeTracking(
     }
   }
   if (estimate === null) {
+    // #1824 — Seoul API outage 시 arrivals + positions 모두 없어도 FALLBACK_HOP_SEC(90s) 기반
+    // 스케줄 ETA로 LA heartbeat를 유지한다. consecutiveEtaMissing 카운터는 그대로 증가
+    // (auto-end 로직 보존). reschedule push는 trip.lastTrackedArrivalEpoch side-effect가
+    // handleEtaMissing time-based fallback과 충돌하므로 skip — LA만 유지.
+    const scheduleHopEpoch = now + FALLBACK_HOP_SEC * 1000;
+    stats.scheduleEtaFallback += 1;
+    log('boarding-lock: schedule-hop-fallback used (Seoul outage)', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+      epochOffset: FALLBACK_HOP_SEC,
+    });
+    // LA heartbeat는 trip.lastLaPushEpoch 기준이라 handleEtaMissing과 충돌하지 않음.
+    await maybeFireLiveActivityUpdate(trip, waypoint, scheduleHopEpoch, deps, stats, now, log);
     await handleEtaMissing({
       trip,
       waypoint,

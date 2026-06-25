@@ -1116,6 +1116,47 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stats.pushed).toBe(0);
   });
 
+  it('#1824 Seoul outage(arrivals+positions 모두 empty) → scheduleEtaFallback 증가 + consecutiveEtaMissing 증가 (auto-end 로직 보존)', async () => {
+    // Seoul API outage 시: arrivals 빈 응답 + positions 빈 응답 → schedule-hop fallback.
+    // scheduleEtaFallback stat 증가 + etaMissing 증가 (auto-end 로직 보존).
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: makeOkFetch() as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p1824',
+    });
+    // schedule-hop fallback 발동 확인.
+    expect(stats.scheduleEtaFallback).toBe(1);
+    // consecutiveEtaMissing은 기존대로 증가 (auto-end 보존).
+    expect(stats.etaMissing).toBe(1);
+  });
+
+  it('#1824 Seoul outage + LA live trip → schedule-hop LA heartbeat 발사', async () => {
+    // LA live trip에서 Seoul outage → schedule-hop ETA로 LA heartbeat 발사.
+    const kv = new InMemoryKV();
+    // makeLockedLaTrip: 2호선 강남 lock + activityPushToken + activityState='live'.
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const apnsFetch = makeOkFetch();
+    const stats = await runLaScheduled(kv, {
+      // arrivals + positions 모두 empty (Seoul outage 시뮬레이션).
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K', host: 'h', now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [], realtimePositionList: [] }), { status: 200 })
+        ) as unknown as typeof fetch,
+      }),
+      fetchImpl: apnsFetch,
+    });
+    // LA heartbeat 발사 확인.
+    expect(stats.laPushSent).toBe(1);
+    // schedule-hop fallback 발동 확인.
+    expect(stats.scheduleEtaFallback).toBe(1);
+  });
+
   // #706 — 운행 시간대 외(새벽 등)에 trainCode가 사라지면 trip이 무한 폴링됐던 회귀 방지.
   // 연속 etaMissing 카운트 + 임계 초과 시 cleanupTripWithLa로 자동 종료.
   describe('#706 consecutiveEtaMissing auto-end', () => {
@@ -5131,6 +5172,28 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
     expect(result?.arvlCd).toBeNull();
     expect(result?.arrived).toBe(true);
   });
+
+  it('#1824 arrivals + positions 모두 훈련 코드 없음 → null 반환 (schedule-hop은 runTrainCodeTracking 레벨에서 처리)', async () => {
+    // Seoul API outage 시: arrivals 빈 응답 + positions 빈 응답 → estimateBoardingLockArrival은 null.
+    // schedule-hop ETA 발사는 runTrainCodeTracking에서 stats.scheduleEtaFallback 누적과 함께 처리됨.
+    const emptySeoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({ realtimeArrivalList: [], realtimePositionList: [] }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(emptySeoul),
+      lock,
+      waypoint,
+      NOW,
+    );
+    expect(result).toBeNull();
+  });
 });
 
 describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
@@ -6652,6 +6715,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
         boardingPrompt: 0,
         reschedule: 0,
       },
+      // #1824 — Seoul API outage schedule hop fallback.
+      scheduleEtaFallback: 0,
       // #1707 — destination cross-check 결과 분포.
       destinationCrossCheck: {
         within: 0,
