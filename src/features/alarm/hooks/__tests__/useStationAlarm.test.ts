@@ -4895,4 +4895,90 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
+
+  describe('#1817 — estimatorIsTimeIntegration gate (destination/transfer early false fire 차단)', () => {
+    it('estimatorIsTimeIntegration=true → evaluateAlarmPhase 미호출 + gate 로그 기록 (phase ETA effect 차단)', async () => {
+      // Day 1 evidence: 13:49:38 fu=마장 gp=왕십리 mismatch → 마장 destination early false fire (1m 36s).
+      // lockless-route-hop 시간 적분으로 fusion=마장이 됐지만 GPS=왕십리인 상황.
+      // hydration 완료 후 estimatorIsTimeIntegration 게이트가 phase ETA effect를 차단한다.
+      const route = makeDirectRoute(3, '2');
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            estimatorIsTimeIntegration: true,
+          }),
+        ),
+      );
+      // hydration 완료 후 gate 로그 확인 — 게이트 차단 시 evaluateAlarmPhase 미호출.
+      await waitFor(() =>
+        expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith(
+          'gate-phase-time-integration',
+          expect.any(String),
+        ),
+      );
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('estimatorIsTimeIntegration=false → evaluateAlarmPhase 정상 호출 (실관측 advance)', async () => {
+      // 시간 적분 비활성 — 실관측(boarding-lock / backend-ssot 등) advance 시 phase fire 허용.
+      const route = makeDirectRoute(3, '2');
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            estimatorIsTimeIntegration: false,
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+    });
+
+    it('estimatorIsTimeIntegration 미전달(기본=false) → evaluateAlarmPhase 정상 호출 (기존 동작 유지)', async () => {
+      // 기존 caller에 prop 미전달 시 기존 동작 보존 — graceful fallback.
+      const route = makeDirectRoute(3, '2');
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+    });
+
+    it('estimatorIsTimeIntegration=true → station-passed(GPS path)는 차단되지 않음 (phase 게이트만 적용)', async () => {
+      // phase ETA 게이트는 station-passed effect에 영향 없음. 독립적 차단.
+      const route = makeDirectRoute(1, '2');
+      const onRouteStation = makeStation('S2-DST', '강남');
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 100,
+            estimatorIsTimeIntegration: true,
+          }),
+        ),
+      );
+      // station-passed는 별도 effect — 시간 적분 게이트 영향 없이 발화.
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // phase alarm은 차단.
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -459,6 +459,17 @@ export interface UseStationAlarmInputs {
    * 회귀(역삼 13:37) 차단. 미전달/false면 기존 동작 유지.
    */
   trainProgressing?: boolean;
+  /**
+   * #1817 — useFusedNearestStation.estimatorIsTimeIntegration 패스스루.
+   * true이면 현재 fusion station이 lockless-route-hop / default-hop / reanchored-hop 시간 적분으로
+   * 산출된 것 — GPS station(실관측)과 mismatch될 수 있다.
+   * destination early / transfer early fire는 fusion station 기반 ETA 계산이므로,
+   * 시간 적분 활성 시 GPS 실측과 다른 역을 목표로 발사할 위험이 있다.
+   * true면 phase ETA effect를 차단. 미전달/false면 기존 동작 유지.
+   *
+   * Day 1 evidence: 13:49:38 fu=마장 gp=왕십리 mismatch → 마장 destination early false fire (1m 36s).
+   */
+  estimatorIsTimeIntegration?: boolean;
 }
 
 export function useStationAlarm({
@@ -479,6 +490,7 @@ export function useStationAlarm({
   arcStations,
   subsurfaceStationDetected = false,
   trainProgressing = false,
+  estimatorIsTimeIntegration = false,
 }: UseStationAlarmInputs): void {
   // #1405 — 동일 5-arg evaluateMovement 호출 helper. Phase ETA / API imminent / movementSuppressionReason
   // 3곳에서 같은 인자로 호출돼 SonarCloud CPD가 dup 검출. helper로 추출해 회피.
@@ -830,6 +842,17 @@ export function useStationAlarm({
       return;
     }
 
+    // #1817 — 시간 적분 estimator(lockless-route-hop / default-hop / reanchored-hop) 활성 시
+    // fusion station이 GPS 실관측 station과 다를 수 있다. destination/transfer early는
+    // fusion station 기반 ETA 계산을 사용하므로, GPS station과 mismatch인 상황에서 조기 fire를
+    // 차단한다. Day 1 evidence: fu=마장 gp=왕십리 → 왕십리 대기 중 마장 destination early false fire.
+    // 실관측(boarding-lock / backend-ssot / position-train / wifi-ssid / fused / route-progress)
+    // 기반 advance만 phase fire 허용 — #1813과 동일 원칙의 phase alarm 확장.
+    if (estimatorIsTimeIntegration) {
+      logSuppressedPhaseGate('gate-phase-time-integration', destination.name);
+      return;
+    }
+
     let etaSeconds: number | null = null;
     if (userLocation) {
       const distM = distanceMetersBetween(
@@ -932,6 +955,8 @@ export function useStationAlarm({
     // #903 — degraded 평가는 arrivalConfidence에서 파생. 지하 진입으로 'gps-only'→
     // 'gps-only-underground' 단독 전환 시(다른 deps 정적) 본 effect 재실행되어 차단 정책 즉시 반영.
     arrivalConfidence,
+    // #1817 — 시간 적분 → 실관측 전환 시(estimatorIsTimeIntegration false→true→false) 즉시 재평가.
+    estimatorIsTimeIntegration,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
