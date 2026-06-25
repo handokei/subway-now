@@ -17,6 +17,7 @@ function makeCandidate(
     lat: 37.5,
     lng: 127.0,
     stations: [],
+    weight: 0,
   };
 }
 
