@@ -13,7 +13,8 @@
  *
  * 반환:
  *   - `'unknown'`       : 미지원 / 권한 거절 / native null — vote 미투표
- *   - `'surface'`       : 4G/5G — 지상 vote
+ *   - `'surface'`       : NR (5G SA) — 지상 hard-reject
+ *   - `'surface-weak'`  : LTE / NRNSA — 지하 DAS 중계 가능, soft downgrade (#1876)
  *   - `'underground'`   : 2G/3G — 지하 vote
  */
 

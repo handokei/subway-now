@@ -4,12 +4,17 @@
  *   station pair: wifi+arrival, position+arrival
  *   env vote: barometer-stop, cellular-underground
  *   - station pair ≥ 1 + (station pair + env vote) ≥ 2 통과 시 채택
- *   - cellular surface vote → reject (환경 확정 모순)
+ *   - cellular 'surface' (NR SA) vote → reject (환경 확정 모순 — hard-reject)
+ *   - cellular 'surface-weak' (LTE/NRNSA) vote → envVotes −1 (soft downgrade, #1876)
  *   - station 우선순위: position > wifi
  * #1821 — warmup quorum 완화:
  *   - trip 시작 후 60s 이내 + station pair 1개 → underground 채택 (quorum=1)
  *   - 60s 이후 + station pair 1개 → null (steady quorum=2)
  *   - 60s 이내 + env vote 1개만 (station pair 0) → null (station pair ≥ 1 필수)
+ * #1876 — 'surface-weak' soft downgrade:
+ *   - 'surface-weak' 단독: envVotes=−1 → 다른 신호 없으면 quorum 미달
+ *   - barometer+accelerometer+surface-weak: 1+1−1=1 → steady quorum=2 미달
+ *   - barometer+accelerometer+surface-weak+position pair: 1+1−1=1 → 2-of-N pass (pair 1 + env 1 ≥ 2)
  */
 
 import { undergroundSSOTConsensus } from '../undergroundSSotConsensus';
@@ -145,7 +150,7 @@ describe('undergroundSSOTConsensus — 4-signal 2-of-N (#1574 ADR-017 T11)', () 
     expect(result?.trainCode).toBe('T1');
   });
 
-  it('Cellular surface → underground SSOT reject (환경 확정 모순)', () => {
+  it("Cellular 'surface' (NR SA) → underground SSOT hard-reject (환경 확정 모순)", () => {
     expect(
       undergroundSSOTConsensus({
         wifiStation: MOCK_STATIONS.gangnam,
@@ -284,7 +289,7 @@ describe('undergroundSSOTConsensus — accelerometer fingerprint (#1542 ADR-016 
     },
   );
 
-  it('accelerometer automotive + cellular surface → reject (환경 확정 모순 우선)', () => {
+  it("accelerometer automotive + cellular 'surface' (NR SA) → reject (환경 확정 모순 우선)", () => {
     const positionTrain = makeNearestResult('gangnam', 0.05);
     expect(
       undergroundSSOTConsensus({
@@ -418,7 +423,7 @@ describe('undergroundSSOTConsensus — warmup quorum (#1821)', () => {
     ).toBeNull();
   });
 
-  it('warmup + cellular surface → reject (환경 확정 모순이 warmup보다 우선)', () => {
+  it("warmup + cellular 'surface' (NR SA) → reject (환경 확정 모순이 warmup보다 우선)", () => {
     const positionTrain = makeNearestResult('gangnam', 0.05);
     expect(
       undergroundSSOTConsensus(
@@ -432,5 +437,131 @@ describe('undergroundSSOTConsensus — warmup quorum (#1821)', () => {
         NOW,
       ),
     ).toBeNull();
+  });
+});
+
+describe("undergroundSSOTConsensus — 'surface-weak' soft downgrade (#1876)", () => {
+  // 'surface-weak' (LTE/NRNSA) = envVotes −1. hard-reject 아님.
+  // 다른 신호가 충분하면 underground 채택 가능.
+
+  it("'surface-weak' 단독 (position pair 1 + envVotes=−1) → steady quorum=2 미달 → null", () => {
+    // position pair: 1. envVotes: 0−1=−1. total: 1+(−1)=0 < 2 → null.
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'surface-weak',
+      }),
+    ).toBeNull();
+  });
+
+  it("position + barometer + 'surface-weak' → 1+1−1=1 → steady quorum=2 미달 → null", () => {
+    // barometer+1, surface-weak−1 → envVotes=0. total: pair 1 + env 0 = 1 < 2 → null.
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        barometerStop: true,
+        cellularEnvironmentVote: 'surface-weak',
+      }),
+    ).toBeNull();
+  });
+
+  it("position + barometer + accelerometer + 'surface-weak' → pair 1 + (1+1−1)=1 → 2-of-N pass", () => {
+    // envVotes: baro+1 + accel+1 + surface-weak−1 = 1. total: pair 1 + env 1 = 2 ≥ 2 → pass.
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      barometerStop: true,
+      accelerometerPattern: 'automotive',
+      cellularEnvironmentVote: 'surface-weak',
+    });
+    expect(result?.station.id).toBe(positionTrain.station.id);
+    expect(result?.trainCode).toBe('T1');
+  });
+
+  it("wifi + position + 'surface-weak' → pair 2 + env −1 = 1 < 2 → null", () => {
+    // station pair 2이지만 env 감산으로 total=1 → quorum=2 미달.
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: wifi,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'surface-weak',
+      }),
+    ).toBeNull();
+  });
+
+  it("wifi + position + barometer + 'surface-weak' → 2+1−1=2 ≥ 2 → pass (position 우선)", () => {
+    // pair: 2. envVotes: baro+1 + surface-weak−1 = 0. total: 2+0 = 2 ≥ 2 → pass.
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: wifi,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      barometerStop: true,
+      cellularEnvironmentVote: 'surface-weak',
+    });
+    // position 우선 → positionTrain.station
+    expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+
+  it("'surface-weak' hard-reject 아님 — 'surface' (NR SA)와 달리 즉시 null 반환 X", () => {
+    // 'surface' → 즉시 null. 'surface-weak' → quorum 계산 진행.
+    // station pair 0이면 어차피 null이지만 이유는 'hard-reject'가 아닌 'station pair 0'.
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: null,
+      arrival: arrivalLine2,
+      cellularEnvironmentVote: 'surface-weak',
+    });
+    expect(result).toBeNull(); // station pair 0 → null (hard-reject X, quorum X)
+  });
+
+  it("warmup 60s 이내 + 'surface-weak' → quorum=1, pair=1, envVotes=−1 → total=0 < 1 → null", () => {
+    // warmup quorum=1. pair: 1. envVotes: −1. total: 1+(−1)=0 < 1 → null.
+    const NOW = 1_750_000_000_000;
+    const WARMUP_START = NOW - 30_000;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus(
+        {
+          wifiStation: null,
+          positionTrainResult: positionTrain,
+          arrival: arrivalLine2,
+          cellularEnvironmentVote: 'surface-weak',
+          tripStartedAt: WARMUP_START,
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it("warmup 60s 이내 + 'surface-weak' + barometer → pair=1, envVotes=1−1=0 → total=1 ≥ quorum=1 → pass", () => {
+    // warmup quorum=1. pair: 1. envVotes: baro+1 + surface-weak−1 = 0. total: 1+0=1 ≥ 1 → pass.
+    const NOW = 1_750_000_000_000;
+    const WARMUP_START = NOW - 30_000;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus(
+      {
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        barometerStop: true,
+        cellularEnvironmentVote: 'surface-weak',
+        tripStartedAt: WARMUP_START,
+      },
+      NOW,
+    );
+    expect(result?.station.id).toBe(positionTrain.station.id);
   });
 });
