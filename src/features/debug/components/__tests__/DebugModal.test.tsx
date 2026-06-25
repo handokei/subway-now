@@ -118,6 +118,8 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   detectionSignalMask: '',
   // #1418 — 환경 인지 fusion arbitration 신규 노출 필드 기본값.
   environment: 'unknown' as const,
+  // #1860 — 옵션 C barometer-stop 힌트 원인. 기본값은 undefined(힌트 없음).
+  environmentHintReason: undefined as 'barometer-stop' | undefined,
   surfaceSSOTActive: false,
   undergroundSSOTActive: false,
   // #1421 — PR-AutoLock-1 측정 인프라 신규 노출 필드 기본값.
@@ -164,6 +166,8 @@ const setupHookDefaults = () => {
     detectionSignalMask: '',
     // #1418 — 환경 인지 fusion arbitration 신규 필드.
     environment: 'unknown',
+    // #1860 — 옵션 C barometer-stop 힌트. 기본 setup은 힌트 없음.
+    environmentHintReason: undefined,
     surfaceSSOTActive: false,
     undergroundSSOTActive: false,
     // #1421 — PR-AutoLock-1 측정 인프라.
@@ -366,6 +370,18 @@ describe('DebugModal', () => {
     expect(screen.getByText('surface')).toBeTruthy();
     // 'active' 라벨이 surfaceSSOT/undergroundSSOT row에 노출.
     expect(screen.getAllByText('active').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('#1860 — environmentHintReason 있을 때 environment 라벨에 hint 부가 표시', () => {
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        environment: 'unknown',
+        environmentHintReason: 'barometer-stop' as const,
+      }),
+    );
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('environment')).toBeTruthy();
+    expect(screen.getByText('unknown (hint:barometer-stop)')).toBeTruthy();
   });
 
   // #1421 — render-time auto-lock 측정 인프라가 SSOT 객체를 받아 share dump에 흘러간다.

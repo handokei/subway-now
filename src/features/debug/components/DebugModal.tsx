@@ -1433,6 +1433,8 @@ function DebugModalInner({
     detectionSignalMask,
     // #1418 — 환경 인지 fusion arbitration. Tier 1 SSOT 합의 활성 + 추정 환경 노출.
     environment,
+    // #1860 — 옵션 C barometer-stop 힌트 원인. DebugModal environment 라인에 함께 노출.
+    environmentHintReason,
     surfaceSSOTActive,
     undergroundSSOTActive,
     // #1421 — PR-AutoLock-1 측정 인프라. SSOT 객체 직접 받아 inferAutoLockCandidate에 전달.
@@ -1857,7 +1859,12 @@ function DebugModalInner({
             <KeyValue label="gps" value={gpsLabel} colors={colors} />
             {/* #1418 — 환경 인지 fusion arbitration. surface/underground SSOT 합의 활성 여부와
                 추정 환경. Tier 5(시간 적분) reject 게이트가 어느 신호에 막혔는지 사후 재구성 가능. */}
-            <KeyValue label="environment" value={environment} colors={colors} />
+            {/* #1860 — 옵션 C 힌트 발동 시 hintReason 부가 표시. "이미 지하" 보완 신호 관측용. */}
+            <KeyValue
+              label="environment"
+              value={environmentHintReason ? `${environment} (hint:${environmentHintReason})` : environment}
+              colors={colors}
+            />
             <KeyValue
               label="surfaceSSOT"
               value={surfaceSSOTActive ? 'active' : 'null'}
