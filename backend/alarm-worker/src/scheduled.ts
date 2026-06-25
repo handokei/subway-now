@@ -933,6 +933,24 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           token: trip.token.slice(0, 8),
         });
       }
+      // #1826 — lock 없는 trip에서도 LA BG update heartbeat 발사.
+      // ETA 미지 → newArrivalEpoch=now: ΔETA 게이트는 첫 call에서 통과(last===undefined),
+      // 이후 heartbeat(90s) 게이트만 적용. putTrip dirty 여부와 무관하게 별도 persist.
+      if (trip.activityPushToken && trip.activityState === 'live') {
+        try {
+          const laHeartbeatDirty = await maybeFireLiveActivityUpdate(
+            trip, waypoint, now, deps, stats, now, log,
+          );
+          if (laHeartbeatDirty) {
+            await putTrip(env.TRIPS, trip);
+          }
+        } catch (e) {
+          log('la-heartbeat: error (lock-missing path)', {
+            error: String(e),
+            token: trip.token.slice(0, 8),
+          });
+        }
+      }
       continue;
     }
 
@@ -3096,6 +3114,11 @@ export async function runLocklessIntermediate(
   // #1539 (S6) — lockless intermediate 통과 시점도 동일하게 stationName 누적. lock 경로와 동등
   // 정확도 보장 의무(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).
   appendPassedStation(trip, waypoint.stationName);
+  // #1826 — lockless intermediate 경로에서도 LA BG update 발사.
+  // signal.etaSeconds를 ETA로 전달 — station-passed push와 동일 시점의 ETA 추정값.
+  // maybeFireLiveActivityUpdate 내 dedup(30s) + heartbeat(90s) 게이트가 중복 발사를 차단한다.
+  // 반환 dirty=true여도 trip의 lastLaPushEpoch/lastLaPushAt 갱신분은 아래 putTrip으로 일괄 persist.
+  await maybeFireLiveActivityUpdate(trip, waypoint, now + signal.etaSeconds * 1000, deps, stats, now, log);
   trip.waypoints.shift();
   if (trip.waypoints.length === 0) {
     // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
