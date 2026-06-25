@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-IGNORE_PATTERN='app/|modules/|providers/index\.ts|providers/types\.ts|providers/progress/index\.ts|theme/index\.ts|src/shared/types/|src/shared/constants/(e2e|storageKeys)\.ts|silentPushTask\.ts|movementGate\.ts'
+IGNORE_PATTERN='app/|modules/|providers/index\.ts|providers/types\.ts|providers/progress/index\.ts|theme/index\.ts|src/shared/types/|src/shared/constants/(e2e|storageKeys)\.ts|silentPushTask\.ts|movementGate\.ts|useColdStartCandidates\.ts'
 
 OUTPUT=$(npx --no-install ts-prune --ignore "$IGNORE_PATTERN" 2>&1 | grep -v "(used in module)" || true)
 
