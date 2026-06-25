@@ -3634,10 +3634,13 @@ describe('DebugModal helpers — #1430 environment distribution', () => {
 
   describe('deriveEnvironmentState', () => {
     it.each([
-      [{ surfaceSSOTActive: true, undergroundSSOTActive: true }, 'hybrid'],
-      [{ surfaceSSOTActive: true, undergroundSSOTActive: false }, 'surface'],
-      [{ surfaceSSOTActive: false, undergroundSSOTActive: true }, 'underground'],
-      [{ surfaceSSOTActive: false, undergroundSSOTActive: false }, 'unknown'],
+      [{ surfaceSSOTActive: true, undergroundSSOTActive: true, observedMs: 0 }, 'hybrid'],
+      [{ surfaceSSOTActive: true, undergroundSSOTActive: false, observedMs: 0 }, 'surface'],
+      [{ surfaceSSOTActive: false, undergroundSSOTActive: true, observedMs: 0 }, 'underground'],
+      // observedMs < 60s → unknown_warmup (#1821)
+      [{ surfaceSSOTActive: false, undergroundSSOTActive: false, observedMs: 30_000 }, 'unknown_warmup'],
+      // observedMs >= 60s → unknown
+      [{ surfaceSSOTActive: false, undergroundSSOTActive: false, observedMs: 60_000 }, 'unknown'],
     ] as const)('%j → %p', (input, expected) => {
       expect(deriveEnvironmentState(input)).toBe(expected);
     });
@@ -3710,14 +3713,14 @@ describe('DebugModal buildDumpText — #1430 Environment Distribution 섹션', (
     {
       name: 'observedMs=0 + 빈 totals → 모든 state 0.0% + observed=0s',
       envDistribution: {
-        totals: { surface: 0, underground: 0, hybrid: 0, unknown: 0 },
-        percentages: { surface: 0, underground: 0, hybrid: 0, unknown: 0 },
+        totals: { surface: 0, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 },
+        percentages: { surface: 0, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 },
         transitions: 0,
         observedMs: 0,
       },
       contains: [
-        'surface=0.0% underground=0.0% hybrid=0.0% unknown=0.0%',
-        'totals: surface=0s underground=0s hybrid=0s unknown=0s',
+        'surface=0.0% underground=0.0% hybrid=0.0% unknown=0.0% unknown_warmup=0.0%',
+        'totals: surface=0s underground=0s hybrid=0s unknown=0s unknown_warmup=0s',
         'transitions=0',
         'observed=0s',
       ],
@@ -3730,14 +3733,15 @@ describe('DebugModal buildDumpText — #1430 Environment Distribution 섹션', (
           underground: 5 * 60_000 + 24_000, // 5m24s
           hybrid: 58_000, // 58s
           unknown: 10 * 60_000 + 54_000, // 10m54s
+          unknown_warmup: 0,
         },
-        percentages: { surface: 42.3, underground: 18.1, hybrid: 3.2, unknown: 36.4 },
+        percentages: { surface: 42.3, underground: 18.1, hybrid: 3.2, unknown: 36.4, unknown_warmup: 0 },
         transitions: 5,
         observedMs: 30 * 60_000 + 46_000, // 30m46s
       },
       contains: [
-        'surface=42.3% underground=18.1% hybrid=3.2% unknown=36.4%',
-        'totals: surface=12m30s underground=5m24s hybrid=58s unknown=10m54s',
+        'surface=42.3% underground=18.1% hybrid=3.2% unknown=36.4% unknown_warmup=0.0%',
+        'totals: surface=12m30s underground=5m24s hybrid=58s unknown=10m54s unknown_warmup=0s',
         'transitions=5',
         'observed=30m46s',
       ],
@@ -3745,12 +3749,12 @@ describe('DebugModal buildDumpText — #1430 Environment Distribution 섹션', (
     {
       name: 'surface 100% 단일 state → 다른 state 0.0%',
       envDistribution: {
-        totals: { surface: 60_000, underground: 0, hybrid: 0, unknown: 0 },
-        percentages: { surface: 100, underground: 0, hybrid: 0, unknown: 0 },
+        totals: { surface: 60_000, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 },
+        percentages: { surface: 100, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 },
         transitions: 0,
         observedMs: 60_000,
       },
-      contains: ['surface=100.0% underground=0.0% hybrid=0.0% unknown=0.0%', 'transitions=0'],
+      contains: ['surface=100.0% underground=0.0% hybrid=0.0% unknown=0.0% unknown_warmup=0.0%', 'transitions=0'],
     },
   ])('$name', ({ envDistribution, contains }) => {
     const section = dumpEnvSection(envDistribution);

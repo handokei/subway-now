@@ -1018,8 +1018,8 @@ function buildEnvironmentDistributionSection(args: BuildDumpArgs): string[] {
   const pct = snap.percentages;
   const t = snap.totals;
   return [
-    `surface=${formatPercentage(pct.surface)} underground=${formatPercentage(pct.underground)} hybrid=${formatPercentage(pct.hybrid)} unknown=${formatPercentage(pct.unknown)}`,
-    `totals: surface=${formatDurationMs(t.surface)} underground=${formatDurationMs(t.underground)} hybrid=${formatDurationMs(t.hybrid)} unknown=${formatDurationMs(t.unknown)}`,
+    `surface=${formatPercentage(pct.surface)} underground=${formatPercentage(pct.underground)} hybrid=${formatPercentage(pct.hybrid)} unknown=${formatPercentage(pct.unknown)} unknown_warmup=${formatPercentage(pct.unknown_warmup)}`,
+    `totals: surface=${formatDurationMs(t.surface)} underground=${formatDurationMs(t.underground)} hybrid=${formatDurationMs(t.hybrid)} unknown=${formatDurationMs(t.unknown)} unknown_warmup=${formatDurationMs(t.unknown_warmup)}`,
     `transitions=${snap.transitions}`,
     `observed=${formatDurationMs(snap.observedMs)}`,
   ];
@@ -1046,19 +1046,24 @@ function formatDurationMs(ms: number): string {
   return `${minutes}m${seconds}s`;
 }
 
+/** Warmup 윈도우 ms (#1821) — unknown 분류 시 60s 이내는 unknown_warmup으로 표기. */
+const ENV_WARMUP_WINDOW_MS = 60_000;
+
 /**
  * #1430 — SSOT 활성 cascade로 환경 state 결정. PR #1427의 `surfaceSSOTActive`/`undergroundSSOTActive`를
  * 그대로 입력으로 받아 1줄로 분류.
+ * #1821 — unknown 구간이 observedMs < 60s이면 'unknown_warmup'으로 분류 (가시화만, 분류 변경 없음).
  */
 function deriveEnvironmentState(input: {
   readonly surfaceSSOTActive: boolean;
   readonly undergroundSSOTActive: boolean;
+  readonly observedMs: number;
 }): EnvironmentDistributionState {
-  const { surfaceSSOTActive, undergroundSSOTActive } = input;
+  const { surfaceSSOTActive, undergroundSSOTActive, observedMs } = input;
   if (surfaceSSOTActive && undergroundSSOTActive) return 'hybrid';
   if (surfaceSSOTActive) return 'surface';
   if (undergroundSSOTActive) return 'underground';
-  return 'unknown';
+  return observedMs < ENV_WARMUP_WINDOW_MS ? 'unknown_warmup' : 'unknown';
 }
 
 /**
@@ -1071,9 +1076,12 @@ function buildEnvironmentDistributionMeta(input: {
   readonly counter: ReturnType<typeof createEnvironmentDistributionCounter>;
   readonly nowMs: number;
 }): EnvironmentDistributionSnapshot {
+  // observedMs는 현재 snapshot 기준 시간 기준 — tick 전 현재값 산출로 unknown_warmup 판정.
+  const currentObservedMs = input.counter.snapshot(input.nowMs).observedMs;
   const state = deriveEnvironmentState({
     surfaceSSOTActive: input.surfaceSSOTActive,
     undergroundSSOTActive: input.undergroundSSOTActive,
+    observedMs: currentObservedMs,
   });
   input.counter.tick(state, input.nowMs);
   return input.counter.snapshot(input.nowMs);

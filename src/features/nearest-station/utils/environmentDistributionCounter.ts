@@ -1,20 +1,20 @@
 /**
  * #1430 — 환경 분포 측정 인프라. 동작 변경 0: 측정만.
  *
- * Time-based counter — state(`surface` | `underground` | `hybrid` | `unknown`)별 누적 ms를
- * 적분한다. Tier 1 surface/underground SSOT 합의 활성 여부를 기반으로 호출자가 매 render time
- * tick을 push, snapshot은 dump 시 한 번씩 조회.
+ * Time-based counter — state(`surface` | `underground` | `hybrid` | `unknown` | `unknown_warmup`)별
+ * 누적 ms를 적분한다. Tier 1 surface/underground SSOT 합의 활성 여부를 기반으로 호출자가 매 render
+ * time tick을 push, snapshot은 dump 시 한 번씩 조회.
  *
  * 환경 결정 정책 (호출자가 결정 후 tick 인자로 전달):
  *   - surfaceSSOTActive && undergroundSSOTActive → 'hybrid'
  *   - surfaceSSOTActive only                     → 'surface'
  *   - undergroundSSOTActive only                 → 'underground'
- *   - 둘 다 미합의                                 → 'unknown'
+ *   - 둘 다 미합의 + observedMs < 60s             → 'unknown_warmup' (#1821)
+ *   - 둘 다 미합의 + observedMs ≥ 60s             → 'unknown'
  *
  * Transition 정책:
  *   - 동일 state 연속 tick: 누적만, transitions 증가 X.
- *   - 다른 state로 전환: transitions++ (`unknown` 경유 포함). 단순 정책 — barometer warmup
- *     일시 unknown으로 inflate 가능성이 있으나 별도 카운트 분리는 후속 작업.
+ *   - 다른 state로 전환: transitions++ (`unknown`/`unknown_warmup` 경유 포함). 단순 정책.
  *
  * 메모리: 모달 인스턴스마다 1개. 관찰자 효과 최소화를 위해 모달이 열려있는 동안만 동작.
  *
@@ -25,7 +25,12 @@ export type EnvironmentDistributionState =
   | 'surface'
   | 'underground'
   | 'hybrid'
-  | 'unknown';
+  | 'unknown'
+  /**
+   * #1821 — trip 시작 후 60s 이내 unknown 구간. "warmup 중"과 "진짜 unknown"을 caller가 구분
+   * 가능하게 한다. backend boardingPrompt 게이트가 warmup grace 적용 가능.
+   */
+  | 'unknown_warmup';
 
 export interface EnvironmentDistributionSnapshot {
   /** state별 누적 ms (snapshot 시점 진행분 포함). */
@@ -50,10 +55,11 @@ const ALL_STATES: readonly EnvironmentDistributionState[] = [
   'underground',
   'hybrid',
   'unknown',
+  'unknown_warmup',
 ];
 
 function emptyTotals(): Record<EnvironmentDistributionState, number> {
-  return { surface: 0, underground: 0, hybrid: 0, unknown: 0 };
+  return { surface: 0, underground: 0, hybrid: 0, unknown: 0, unknown_warmup: 0 };
 }
 
 function computePercentages(
@@ -61,7 +67,7 @@ function computePercentages(
   observedMs: number,
 ): Record<EnvironmentDistributionState, number> {
   if (observedMs <= 0) {
-    return { surface: 0, underground: 0, hybrid: 0, unknown: 0 };
+    return emptyTotals();
   }
   const pct = emptyTotals();
   for (const state of ALL_STATES) {
@@ -104,11 +110,8 @@ export function createEnvironmentDistributionCounter(): EnvironmentDistributionC
       if (currentState !== null && lastTickMs !== null && nowMs > lastTickMs) {
         snapshotTotals[currentState] += nowMs - lastTickMs;
       }
-      const observedMs =
-        snapshotTotals.surface +
-        snapshotTotals.underground +
-        snapshotTotals.hybrid +
-        snapshotTotals.unknown;
+      let observedMs = 0;
+      for (const state of ALL_STATES) observedMs += snapshotTotals[state];
       return {
         totals: snapshotTotals,
         percentages: computePercentages(snapshotTotals, observedMs),
