@@ -1,16 +1,15 @@
-// ICloudKVModule.swift — NSUbiquitousKeyValueStore 래핑 (PoC placeholder, #1851).
+// ICloudKVModule.swift — NSUbiquitousKeyValueStore 래핑 (#1861 Phase 1).
 //
-// 현재 상태: 모듈 선언만. 실제 NSUbiquitousKeyValueStore 구현은 별 PR에서 진행.
+// Phase 1 구현 내용:
+//  - NSUbiquitousKeyValueStore RPC: getItem / setItem / removeItem / isAvailable
+//  - synchronize() — setItem/removeItem 후 즉시 flush 시도 (best-effort)
+//  - isAvailable — FileManager.default.ubiquityIdentityToken 으로 Apple ID 로그인 판정
 //
-// 구현 시 필요 사항:
-//  1. App Store Connect → Certificates, Identifiers & Profiles → com.subwaynow.app → iCloud Capability 활성화
-//  2. app.config.js entitlements: 'com.apple.developer.ubiquity-kvstore-identifier': 'com.subwaynow.app' 추가
-//  3. expo prebuild 재실행 (L15 Lesson 적용)
-//  4. NSUbiquitousKeyValueStoreDidChangeExternallyNotification 구독 + JS 이벤트 emit
+// 실기기 사전 준비 (사용자 책임):
+//  1. App Store Connect → Identifiers → com.subwaynow.app → iCloud Capability 활성화
+//  2. KV Store identifier: $(CFBundleIdentifier)
+//  3. expo prebuild 재실행 (entitlement 변경 반영, L15 Lesson 적용)
 
-// 실제 구현 시 아래 주석을 해제하고 ExpoModule 구현체를 완성한다.
-
-/*
 import ExpoModulesCore
 import Foundation
 
@@ -18,25 +17,30 @@ public class ICloudKVModule: Module {
   public func definition() -> ModuleDefinition {
     Name("ICloudKVModule")
 
+    // iCloud KV에서 문자열 값을 읽는다.
+    // Apple ID 미로그인 / 키 없음 시 nil 반환.
     AsyncFunction("getItem") { (key: String) -> String? in
       return NSUbiquitousKeyValueStore.default.string(forKey: key)
     }
 
+    // iCloud KV에 문자열 값을 저장한다.
+    // synchronize()는 OS에 즉시 flush를 요청 (best-effort — 실패해도 JS에 throw X).
     AsyncFunction("setItem") { (key: String, value: String) in
       NSUbiquitousKeyValueStore.default.set(value, forKey: key)
       NSUbiquitousKeyValueStore.default.synchronize()
     }
 
+    // iCloud KV에서 키를 삭제한다.
     AsyncFunction("removeItem") { (key: String) in
       NSUbiquitousKeyValueStore.default.removeObject(forKey: key)
       NSUbiquitousKeyValueStore.default.synchronize()
     }
 
+    // Apple ID 로그인 + iCloud KV 사용 가능 여부.
+    // FileManager.ubiquityIdentityToken — non-nil = Apple ID 로그인 상태.
+    // NSUbiquitousKeyValueStore.synchronize()를 availability check로 쓰지 않음 (side-effect).
     Function("isAvailable") { () -> Bool in
-      // Apple ID 로그인 여부는 NSUbiquitousKeyValueStore.default.synchronize() 결과로 간접 판정.
-      // 실제 판정 로직은 별 PR에서 FileManager.default.url(forUbiquityContainerIdentifier:) 등 활용.
       return FileManager.default.ubiquityIdentityToken != nil
     }
   }
 }
-*/
