@@ -53,7 +53,7 @@ export async function recordTripMetrics(
         0, // fired_count: 현재 trip 객체에 누적 카운터 없음 — Phase 2 follow-up에서 추가
         0, // suppressed_count: 동상
         boardingPromptState?.fired ? 1 : 0,
-        boardingPromptState?.fired && boardingPromptState.silencedUntil === undefined ? 0 : 0, // responded 여부: 현재 필드 없음, Phase 2 follow-up
+        0, // boarding_prompt_responded: 현재 Trip 타입에 responded 필드 없음 — Phase 2 follow-up에서 추가
         boardingLock ? 1 : 0,
         chainComplete ? 1 : 0,
       )
