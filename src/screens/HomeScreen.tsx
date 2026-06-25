@@ -62,6 +62,9 @@ import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks
 import { isStrongFusionConfidence } from '../shared/constants/fusionConfidenceStrength';
 import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
+import { ColdStartCandidatePicker } from '../features/nearest-station/components/ColdStartCandidatePicker';
+import { useColdStartCandidates } from '../features/nearest-station/hooks/useColdStartCandidates';
+import type { ColdStartCandidate } from '../features/nearest-station/hooks/useColdStartCandidates';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { ShareTripButton } from '../features/route/components/ShareTripButton';
@@ -198,7 +201,7 @@ export default function HomeScreen() {
   // #1677 — silent push 60s+ 미수신 감지. FG 시 backendSsotAccepts 강제 false → device tier fallback.
   // 신규 폴링 없음 — 기존 arrival/position 30s cycle 재사용.
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, backendSsotCurrentStationId } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, backendSsotCurrentStationId, environment } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -277,6 +280,72 @@ export default function HomeScreen() {
     [setCustomOrigin],
   );
   const handleOriginPickerClose = useCallback(() => setOriginPickerVisible(false), []);
+
+  // #1842 Phase 6.1 Sub-step 4 — cold start 다중 후보 선택 UI.
+  // trip 활성 중 / customOrigin 확정 후에는 picker를 표시하지 않는다.
+  const coldStartCandidates = useColdStartCandidates({
+    gps: userLocation && accuracyMeters != null
+      ? { lat: userLocation.lat, lng: userLocation.lng, accuracy: accuracyMeters }
+      : null,
+    environment,
+    hasTrip: destination !== null,
+  });
+  const [coldStartPickerVisible, setColdStartPickerVisible] = useState(false);
+  // cold start 조건이 충족되고 2개 이상 후보가 나타나면 picker 자동 표시.
+  // 이미 customOrigin이 설정됐거나 picker가 닫힌 후 재오픈하지 않도록 dismissedRef로 가드.
+  const coldStartPickerDismissedRef = useRef(false);
+  useEffect(() => {
+    if (!coldStartCandidates) {
+      // cold start 조건 해제 시 가드 리셋 (다음 cold start 에피소드를 위해)
+      coldStartPickerDismissedRef.current = false;
+      setColdStartPickerVisible(false);
+      return;
+    }
+    if (coldStartPickerDismissedRef.current) return;
+    if (customOrigin) return;
+    if (destination !== null) return;
+    // 2개 이상 후보가 있을 때만 picker 표시 (1개는 boardingPrompt 흐름, 0개는 표시 안 함)
+    if (coldStartCandidates.length >= 2) {
+      setColdStartPickerVisible(true);
+    }
+  }, [coldStartCandidates, customOrigin, destination]);
+
+  const handleColdStartSelectCandidate = useCallback(
+    (candidate: ColdStartCandidate) => {
+      // 가장 가까운 entry의 stations[0]으로 setCustomOrigin 호출 → trip chain 시작.
+      const firstStation = candidate.stations[0];
+      if (firstStation) {
+        setCustomOrigin(firstStation);
+      }
+      coldStartPickerDismissedRef.current = true;
+      setColdStartPickerVisible(false);
+    },
+    [setCustomOrigin],
+  );
+
+  const handleColdStartSingleCandidate = useCallback(
+    (candidate: ColdStartCandidate) => {
+      // 1개 케이스: boardingPrompt 흐름과 동일하게 setCustomOrigin 적용.
+      const firstStation = candidate.stations[0];
+      if (firstStation) {
+        setCustomOrigin(firstStation);
+      }
+      coldStartPickerDismissedRef.current = true;
+      setColdStartPickerVisible(false);
+    },
+    [setCustomOrigin],
+  );
+
+  const handleColdStartSearchFallback = useCallback(() => {
+    coldStartPickerDismissedRef.current = true;
+    setColdStartPickerVisible(false);
+    setOriginPickerVisible(true);
+  }, []);
+
+  const handleColdStartPickerClose = useCallback(() => {
+    coldStartPickerDismissedRef.current = true;
+    setColdStartPickerVisible(false);
+  }, []);
 
 
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
@@ -1458,6 +1527,16 @@ export default function HomeScreen() {
           }}
         />
       )}
+
+      {/* #1842 Phase 6.1 Sub-step 4 — cold start 다중 후보 선택 UI. */}
+      <ColdStartCandidatePicker
+        visible={coldStartPickerVisible}
+        candidates={coldStartCandidates ?? []}
+        onSelectCandidate={handleColdStartSelectCandidate}
+        onSingleCandidate={handleColdStartSingleCandidate}
+        onSearchFallback={handleColdStartSearchFallback}
+        onClose={handleColdStartPickerClose}
+      />
 
       {/* #914 (F4) — 1탭 현재역 확정. wifi 단일 매칭은 자동 확정 + toast 노출,
            GPS 다중 후보는 모달 1탭 확정, 후보 0개는 검색 fallback 안내(#977 wire). */}
