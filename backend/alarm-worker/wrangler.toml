@@ -102,7 +102,7 @@ bucket_name = "subway-now-telemetry"
 [[d1_databases]]
 binding = "DB"
 database_name = "subway-now-db"
-database_id = "FILL_IN_AFTER_wrangler_d1_create"
+database_id = "a2c04254-6bde-4b70-a31f-97ada2940b50"
 
 # 1분마다 활성 트립 폴링
 [triggers]

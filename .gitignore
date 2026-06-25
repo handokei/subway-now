@@ -94,3 +94,6 @@ tasks/launchd-stdout.log
 tasks/launchd-stderr.log
 tasks/launchd-prune-stdout.log
 tasks/launchd-prune-stderr.log
+
+# Xcode build log (EAS rebuild 산출물)
+Building workspace *.txt
