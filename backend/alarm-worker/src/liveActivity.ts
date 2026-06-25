@@ -19,6 +19,7 @@ import {
   type LiveActivityContentState,
 } from './apns';
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
+import { recordTripMetrics } from './d1TripMetrics';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { computeMultiHopContext } from './tripMultiHop';
@@ -297,6 +298,9 @@ export async function cleanupTripWithLa(
       error: String(e),
     });
   }
+  // #1835 — D1 trip_metrics 적재. 미바인딩(env.DB undefined) 시 내부에서 graceful no-op.
+  // cleanup 흐름 차단 없음 — recordTripMetrics 자체가 try/catch로 swallow.
+  await recordTripMetrics(env.DB, trip, reason, now);
 }
 
 /**

@@ -57,8 +57,8 @@ preview_id = "d38f190e3f7f4fd3b6e7f6485dd1733d"
 #   3) `wrangler deploy`
 [[kv_namespaces]]
 binding = "RAW_SIGNALS"
-id = "FILL_IN_AFTER_wrangler_kv_namespace_create_RAW_SIGNALS"
-preview_id = "FILL_IN_AFTER_wrangler_kv_namespace_create_RAW_SIGNALS_preview"
+id = "65ed2ed2bbc64e62bf04a65c5ba7040e"
+preview_id = "81c2617b485a466e904202fda70b45bc"
 
 # Analytics Engine: V/X acceptance 시계열 dataset (#1577, Phase 0 epic #1576)
 # advance / fire / suppress / motion-transition / position-upload / trip-mutation 6 event를
@@ -85,6 +85,24 @@ preview_id = "FILL_IN_AFTER_wrangler_kv_namespace_create_RAW_SIGNALS_preview"
 [[r2_buckets]]
 binding = "TELEMETRY_R2"
 bucket_name = "subway-now-telemetry"
+
+# D1 SQLite — backend 오류 로그 + trip 메타 (#1835)
+# Phase 1: backend_errors 테이블. Phase 2: trip_metrics 테이블.
+# Phase 3 (station_signals) 는 별도 PR — 사용자 ≥10명 후 진행.
+#
+# 운영자 1회성 등록 절차:
+#   1) `wrangler d1 create subway-now-db`
+#   2) 출력된 database_id를 아래 binding에 채운다
+#   3) `wrangler d1 migrations apply subway-now-db --remote` (Phase 1+2 schema 적용)
+#   4) `wrangler deploy`
+#   5) verify: `wrangler d1 execute subway-now-db --command "SELECT name FROM sqlite_master WHERE type='table'"`
+#      출력: backend_errors, trip_metrics
+#
+# 미바인딩 시 모든 D1 적재 경로는 graceful no-op (코드 if (!db) return 패턴).
+[[d1_databases]]
+binding = "DB"
+database_name = "subway-now-db"
+database_id = "FILL_IN_AFTER_wrangler_d1_create"
 
 # 1분마다 활성 트립 폴링
 [triggers]
