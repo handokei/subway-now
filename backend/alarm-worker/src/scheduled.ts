@@ -63,7 +63,12 @@ import { buildAlarmKey, putPending } from './pendingPushes';
 import { enqueueRetryIfTransient } from './retryPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
-import { pollLinesAndStamp, readSelfPollPosition } from './selfPollPosition';
+import {
+  N_STATION_LOOKAHEAD,
+  pollLinesAndStamp,
+  pollStationsAndStamp,
+  readSelfPollPosition,
+} from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
 import {
@@ -610,6 +615,21 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   realtimePositionFetchError: number;
   /**
+   * #1828 Phase 5 — station-level Seoul fetchArrivals fetch 횟수 (KV cache miss).
+   * trip route 다음 N개 역 union에 대해 Seoul realtimeStationArrival 1회 호출.
+   * line call(max 100 trains) 대신 station call(max 10 arrivals)로 API 비용 1/10 이하.
+   */
+  stationPollFetch: number;
+  /**
+   * #1828 Phase 5 — station arrivals KV stamp 살아있어 fetch skip한 횟수.
+   */
+  stationPollCacheHit: number;
+  /**
+   * #1828 Phase 5 — station arrivals fetch 실패 횟수.
+   * 0이 아니면 Seoul API 오류 또는 KV write 실패 신호.
+   */
+  stationPollError: number;
+  /**
    * #1614 Phase C — `fireArvlCdStationPush` 진입 시 SSoT.lastAdvanceAt이 stale(>3분 경과)이라
    * fire를 차단한 누적 횟수. transferDestinationGate(60s)보다 보수적이지만 모든 fire kind에
    * 동일 적용. 정상 운영에서는 0에 가깝고, 0이 아니면 motion 추적 cascade fail 또는 stale lock
@@ -736,6 +756,27 @@ async function collectActiveLines(env: Env, now: number): Promise<Set<LineNumber
   return lines;
 }
 
+/**
+ * #1828 Phase 5 — 활성 trip route의 다음 N개 역 name union 수집.
+ *
+ * `trip.waypoints`는 이미 shift된 잔여 waypoints 배열 — 맨 앞이 다음 알람 대상 역.
+ * 각 trip에서 `N_STATION_LOOKAHEAD`개(최대)를 추출해 union dedup. 같은 역을 여러 trip이
+ * 공유해도 Set으로 자연 dedup — Seoul fetchArrivals 중복 호출 방지.
+ *
+ * #1652 line-union과 동일 필터 — 만료 / lifecycle-abnormal trip은 skip.
+ */
+async function collectActiveStations(env: Env, now: number): Promise<Set<string>> {
+  const stations = new Set<string>();
+  for await (const trip of listTrips(env.TRIPS)) {
+    if (trip.expiresAt <= now) continue;
+    if (tripLifecyclePhase(trip, now) !== 'normal') continue;
+    for (const waypoint of trip.waypoints.slice(0, N_STATION_LOOKAHEAD)) {
+      stations.add(waypoint.stationName);
+    }
+  }
+  return stations;
+}
+
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
@@ -782,6 +823,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     realtimePositionFetch: 0,
     selfPollCacheHit: 0,
     realtimePositionFetchError: 0,
+    // #1828 Phase 5 — station-level arrivals self-poll stats.
+    stationPollFetch: 0,
+    stationPollCacheHit: 0,
+    stationPollError: 0,
     // #1614 Phase C — stale SSoT 가드 fire 차단.
     staleLockFireSkipped: 0,
     // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
@@ -826,6 +871,23 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       fetched: selfPollStats.fetched,
       cacheHit: selfPollStats.cacheHit,
       error: selfPollStats.error,
+    });
+  }
+
+  // #1828 Phase 5 — 활성 trip route 다음 N개 역 union 추출 + Seoul fetchArrivals station-level stamp.
+  // line-unit polling(max 100 trains/call) 대신 station-unit(max 10 arrivals/call)으로 전환.
+  // route bound 폴링으로 trip 무관 trains candidate-reject 감소 (Day 2 evidence: 53건/시간).
+  const activeStations = await collectActiveStations(env, now);
+  const stationPollStats = await pollStationsAndStamp(env.TRIPS, deps.seoul, activeStations, now);
+  stats.stationPollFetch += stationPollStats.fetched;
+  stats.stationPollCacheHit += stationPollStats.cacheHit;
+  stats.stationPollError += stationPollStats.error;
+  if (activeStations.size > 0) {
+    log('self-poll: stationArrivals', {
+      stations: activeStations.size,
+      fetched: stationPollStats.fetched,
+      cacheHit: stationPollStats.cacheHit,
+      error: stationPollStats.error,
     });
   }
 

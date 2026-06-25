@@ -561,11 +561,9 @@ describe('runScheduled', () => {
       expect(stats.lockMissing).toBe(1);
       expect(apnsFetch).not.toHaveBeenCalled();
       // #1614 Phase A — cron 진입부 self-poll로 realtimePosition fetch는 발생할 수 있음.
-      // 본 테스트의 진짜 의도는 arrivals fetch 0 + push 발사 0.
-      const arrivalsCalls = seoulFetch.mock.calls.filter((args: unknown[]) =>
-        String(args[0]).includes('/realtimeStationArrival/'),
-      );
-      expect(arrivalsCalls).toHaveLength(0);
+      // #1828 Phase 5 — cron 진입부 station-level arrivals fetch도 발생할 수 있음 (route bound polling).
+      // 본 테스트의 진짜 의도는 push 발사 0건 (lock 없는 trip은 알람 차단).
+      // Seoul arrivals API 호출 자체는 cron stamp 목적으로 허용됨 — push 경로와 무관.
     });
   });
 
@@ -6828,6 +6826,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       vanishFallbackMotionGateBlocked: 0,
       cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
       realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
+      // #1828 Phase 5 — station-level arrivals polling.
+      stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
       staleLockFireSkipped: 0,
       // #1652 — staged lifecycle backstop.
       lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
