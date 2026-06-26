@@ -106,6 +106,12 @@ export interface RegisterTripPayload {
    * false/미설정은 기존 동작 그대로 — 기압계 미지원/권한 거절 환경 graceful.
    */
   subsurface?: boolean;
+  /**
+   * #1895 — device locale (ko/en/ja/zh). backend가 boarding-prompt push 본문을
+   * 4언어 분기 (`backend/alarm-worker/src/i18n.ts`)에 사용한다. 미지정/비지원은
+   * backend가 ko로 fallback (한국 운영 기본). 디바이스 i18next.language 값을 그대로 송신.
+   */
+  locale?: 'ko' | 'en' | 'ja' | 'zh';
 }
 
 export interface AlarmBackendResult {
@@ -160,6 +166,7 @@ function buildRegisterHash(body: {
   boardingLock?: AlarmBoardingLock;
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
+  locale?: 'ko' | 'en' | 'ja' | 'zh';
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -182,6 +189,9 @@ function buildRegisterHash(body: {
     // #903 (Seam G) — subsurface 토글이 바뀌면 backend threshold가 즉시 갱신되도록 dedup 키 포함.
     // 빈번한 ON/OFF jitter는 useBarometer의 60s 윈도우 평가가 자체 흡수하므로 폭주 위험 낮음.
     subsurface: body.subsurface === true,
+    // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
+    // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
+    locale: body.locale ?? null,
   });
 }
 
@@ -245,6 +255,9 @@ async function performRegisterFetch(
     ...(payload.promptDisplay ? { promptDisplay: payload.promptDisplay } : {}),
     // #903 (Seam G) — 지하 진입 신호. ON일 때만 송신. backend는 부재 시 false default로 기존 threshold(5) 적용.
     ...(payload.subsurface === true ? { subsurface: true } : {}),
+    // #1895 — device locale. 송신 시 backend가 boarding-prompt 본문을 4언어 분기 (ko/en/ja/zh).
+    // 미송신 시 backend는 ko fallback.
+    ...(payload.locale ? { locale: payload.locale } : {}),
   };
 
   try {
@@ -292,6 +305,8 @@ export function registerActiveTrip(
     boardingLock: payload.boardingLock,
     promptDisplay: payload.promptDisplay,
     subsurface: payload.subsurface,
+    // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
+    locale: payload.locale,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });

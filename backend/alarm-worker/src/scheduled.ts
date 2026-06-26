@@ -89,6 +89,7 @@ import type {
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
+import { t, type SupportedLocale } from './i18n';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -3297,15 +3298,19 @@ function toKstHhmm(epochMs: number): string {
 /**
  * boardingPrompt push 메시지 빌드 (#1739 — 방면 + 시간 명시).
  *
- * title: 항상 영문 raw (backend raw 원칙 — i18n는 client 담당).
- * body:  nextStation이 있으면 "출발역 [호선] → 다음역 방면 HH:MM 진입",
- *        없으면 기존 포맷 "${line} · ${originStation}" fallback.
+ * #1895 — i18n 4언어 분기 (ko/en/ja/zh). trip.locale 기반으로 `t(locale)` lookup해 본문 생성.
+ * locale 미지정/비지원 시 ko fallback (한국 운영 기본).
+ *
+ * title: locale별 분기 ("탑승하셨나요?" / "Are you on board?" / "ご乗車されましたか?" / "您已乘车了吗?").
+ * body:  nextStation이 있으면 "출발역 [호선] → 다음역 방면 HH:MM 진입" (locale별 어미 분기),
+ *        없으면 fallback "${line} · ${originStation}".
  *
  * @param originStation  display.originStation (출발역 표시명)
  * @param line           display.line ("2", "gyeongui" 등)
  * @param nextStation    trip.waypoints[0].stationName (다음 정거장 — 방면 표시)
  * @param etaSeconds     arrivals에서 추출한 도착 잔여 초 (null = 정보 없음)
  * @param now            현재 epoch ms (ETA 절대 시각 계산용)
+ * @param locale         #1895 — trip.locale (ko/en/ja/zh). 미지정 시 ko fallback.
  */
 export function buildBoardingPromptMessage(
   originStation: string,
@@ -3313,14 +3318,15 @@ export function buildBoardingPromptMessage(
   nextStation: string | null,
   etaSeconds: number | null,
   now: number,
+  locale?: SupportedLocale,
 ): { title: string; body: string } {
-  const title = 'Are you on board?';
-  if (!nextStation) {
-    return { title, body: `${line} · ${originStation}` };
-  }
-  const timeStr =
-    etaSeconds === null ? '' : ` ${toKstHhmm(now + etaSeconds * 1000)} 진입`;
-  return { title, body: `${originStation} [${line}] → ${nextStation} 방면${timeStr}` };
+  const strings = t(locale);
+  const etaTimeStr =
+    etaSeconds === null ? null : toKstHhmm(now + etaSeconds * 1000);
+  return {
+    title: strings.boardingPromptTitle,
+    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr }),
+  };
 }
 
 /**
@@ -3441,6 +3447,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     nextStation,
     etaSeconds,
     now,
+    trip.locale,
   );
 
   // 9단 통과 — alert push 발사.

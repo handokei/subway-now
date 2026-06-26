@@ -48,6 +48,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import i18next from 'i18next';
 import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../../../shared/types/station';
 import type { Route } from '../../../../shared/utils/stationRoute';
@@ -1017,6 +1018,53 @@ describe('useApnsTripRegistration', () => {
         (c) => (c[0] as { token: string }).token === 'token-NEW2',
       );
       expect(refreshed?.[0].subsurface).toBe(true);
+    });
+  });
+
+  describe('#1895 i18n locale 송신 (4언어 boarding-prompt)', () => {
+    const baseInputs = {
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+    };
+
+    afterEach(async () => {
+      // i18next 전역 상태 복원 — 다른 describe 블록과 격리.
+      await i18next.changeLanguage('ko');
+    });
+
+    it.each(['ko', 'en', 'ja', 'zh'] as const)(
+      'i18next.language=%s → registerActiveTrip payload.locale에 동일 값 송신',
+      async (lang) => {
+        await i18next.changeLanguage(lang);
+        renderHook(() => useApnsTripRegistration(baseInputs));
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+        expect(mockRegister.mock.calls[0][0].locale).toBe(lang);
+      },
+    );
+
+    it('i18next.language=비지원 string (fallbackLng 미작동 강제) → payload.locale 미포함', async () => {
+      // 실제 production에서 i18next는 fallbackLng='en'으로 비지원 locale을 'en'으로 떨어뜨린다.
+      // 본 테스트는 resolveLocaleForBackend()의 strict guard만 검증 — i18next 내부 fallback 동작과
+      // 무관하게 비지원 코드 그 자체가 들어왔을 때 undefined 반환하는지 본다. 직접 language 필드를
+      // override해 i18next의 fallback 동작을 우회한다.
+      const original = i18next.language;
+      Object.defineProperty(i18next, 'language', {
+        value: 'fr',
+        writable: true,
+        configurable: true,
+      });
+      try {
+        renderHook(() => useApnsTripRegistration(baseInputs));
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+        expect(mockRegister.mock.calls[0][0].locale).toBeUndefined();
+      } finally {
+        Object.defineProperty(i18next, 'language', {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
     });
   });
 

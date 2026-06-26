@@ -7327,38 +7327,38 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
   });
 });
 
-describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시)', () => {
+describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 — i18n 4언어)', () => {
   const BASE_NOW = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z → KST 07:13
 
-  it('nextStation + etaSeconds 둘 다 있음 → "출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
+  it('nextStation + etaSeconds 둘 다 있음 → "출발역 [호선] → 다음역 방면 HH:MM 진입" (ko 기본)', () => {
     // BASE_NOW + 120s → KST 07:15:20 → HH:MM = 07:15
     const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
   });
 
   it('nextStation 없음 (null) → 기존 포맷 fallback "${line} · ${originStation}"', () => {
     const { title, body } = buildBoardingPromptMessage('왕십리', '5', null, 90, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('5 · 왕십리');
   });
 
   it('nextStation 있지만 etaSeconds null → 시간 없이 방면만 표시', () => {
     const { title, body } = buildBoardingPromptMessage('합정', '6', '마포구청', null, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('합정 [6] → 마포구청 방면');
   });
 
   it('환승 leg — 다른 호선 nextStation + ETA', () => {
     // BASE_NOW + 180s → KST 07:16:20 → HH:MM = 07:16
     const { title, body } = buildBoardingPromptMessage('왕십리', '5', '마장', 180, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('왕십리 [5] → 마장 방면 07:16 진입');
   });
 
   it('etaSeconds=0 → now 시각 그대로 표시 (즉시 진입)', () => {
     const { title, body } = buildBoardingPromptMessage('시청', '2', '을지로입구', 0, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('시청 [2] → 을지로입구 방면 07:13 진입');
   });
 
@@ -7373,6 +7373,40 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시)', () => 
   it('non-numeric line name (gyeongui) — fallback 포맷 정상', () => {
     const { body } = buildBoardingPromptMessage('회기', 'gyeongui', null, null, BASE_NOW);
     expect(body).toBe('gyeongui · 회기');
+  });
+
+  it('#1895 — locale=en → 영어 본문 ("Are you on board?" / "bound" suffix)', () => {
+    const { title, body } = buildBoardingPromptMessage('City Hall', '2', 'Gangnam', 120, BASE_NOW, 'en');
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('City Hall [2] → Gangnam bound 07:15 arrival');
+  });
+
+  it('#1895 — locale=ja → 일본어 본문', () => {
+    const { title, body } = buildBoardingPromptMessage('市庁', '2', '江南', 120, BASE_NOW, 'ja');
+    expect(title).toBe('ご乗車されましたか?');
+    expect(body).toBe('市庁 [2] → 江南方面 07:15進入');
+  });
+
+  it('#1895 — locale=zh → 중국어 본문', () => {
+    const { title, body } = buildBoardingPromptMessage('市厅', '2', '江南', 120, BASE_NOW, 'zh');
+    expect(title).toBe('您已乘车了吗?');
+    expect(body).toBe('市厅 [2] → 江南方向 07:15到达');
+  });
+
+  it('#1895 — locale=ko 명시 → 한국어 본문 (DEFAULT_LOCALE과 동일)', () => {
+    const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW, 'ko');
+    expect(title).toBe('탑승하셨나요?');
+    expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
+  });
+
+  it('#1895 — locale 미지정 → ko fallback', () => {
+    const { title } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW, undefined);
+    expect(title).toBe('탑승하셨나요?');
+  });
+
+  it('#1895 — locale=en + nextStation null → fallback 포맷 (locale 무관 공통 포맷)', () => {
+    const { body } = buildBoardingPromptMessage('City Hall', '2', null, 90, BASE_NOW, 'en');
+    expect(body).toBe('2 · City Hall');
   });
 });
 
