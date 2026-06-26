@@ -76,19 +76,57 @@ struct SubwayProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SubwayEntry) -> Void) {
-        completion(makeEntry())
+        completion(makeEntry(at: Date()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SubwayEntry>) -> Void) {
-        let entry = makeEntry()
+        let now = Date()
+        let entry = makeEntry(at: now)
         // 앱이 종료된 상태에서도 freshness 표시(10분 임계)가 비교적 빨리 반영되도록
         // 5분 간격으로 재평가한다. 앱이 살아있으면 saveWidgetStation이 호출되며 즉시 reload.
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date()
-        let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
+        var entries: [SubwayEntry] = [entry]
+        // #1890 (RC-15) — savedAt 기반 stale/expired 전이 시점에 추가 entry를 삽입해,
+        // 앱이 종료되어 reloadAllTimelines가 호출되지 않는 상황에서도 OS가 freshness 변화 직후
+        // UI를 재구성하도록 한다. tripActive trip 컨텍스트가 expired로 진입하는 시점이 핵심 경계 —
+        // 사용자는 trip 정보 stale을 가장 즉시 인식한다.
+        if let savedAt = entry.savedAt {
+            let staleAt = savedAt.addingTimeInterval(STALE_THRESHOLD_SECONDS)
+            if staleAt > now {
+                entries.append(SubwayEntry(
+                    date: staleAt,
+                    stationName: entry.stationName,
+                    lineColor: entry.lineColor,
+                    distanceM: entry.distanceM,
+                    isAvailable: entry.isAvailable,
+                    savedAt: entry.savedAt,
+                    tripActive: entry.tripActive,
+                    currentStationName: entry.currentStationName,
+                    destinationName: entry.destinationName,
+                    nextTransferName: entry.nextTransferName
+                ))
+            }
+            let expiredAt = savedAt.addingTimeInterval(EXPIRED_THRESHOLD_SECONDS)
+            if expiredAt > now {
+                entries.append(SubwayEntry(
+                    date: expiredAt,
+                    stationName: entry.stationName,
+                    lineColor: entry.lineColor,
+                    distanceM: entry.distanceM,
+                    isAvailable: entry.isAvailable,
+                    savedAt: entry.savedAt,
+                    tripActive: entry.tripActive,
+                    currentStationName: entry.currentStationName,
+                    destinationName: entry.destinationName,
+                    nextTransferName: entry.nextTransferName
+                ))
+            }
+        }
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: now) ?? now
+        let timeline = Timeline(entries: entries, policy: .after(nextUpdate))
         completion(timeline)
     }
 
-    private func makeEntry() -> SubwayEntry {
+    private func makeEntry(at date: Date) -> SubwayEntry {
         let defaults = UserDefaults(suiteName: appGroup)
         let name = defaults?.string(forKey: "stationName") ?? ""
         let color = defaults?.string(forKey: "lineColor") ?? "#888888"
@@ -105,7 +143,7 @@ struct SubwayProvider: TimelineProvider {
         let nextTransferName = defaults?.string(forKey: "nextTransferName")
 
         return SubwayEntry(
-            date: Date(),
+            date: date,
             stationName: isAvailable ? name : NSLocalizedString("widget.detecting", comment: "Placeholder station name while GPS detection is in progress"),
             lineColor: color,
             distanceM: distance,
@@ -177,7 +215,15 @@ struct SubwayWidgetView: View {
 
     private var content: some View {
         Group {
-            if entry.tripActive, let currentStation = entry.currentStationName, let destination = entry.destinationName {
+            // #1890 (RC-15) — trip 분기는 freshness가 expired가 아닐 때만 사용한다.
+            // backend trip-ended silent push가 device에 도달하지 못한 경우(예: APNs 지연/네트워크 단절/
+            // 앱 종료), trip 정보가 19분 이상 stale로 위젯에 그대로 노출되는 회귀(2026-06-26 T4 evidence)를
+            // 차단한다. expired tier에 진입하면 trip 컨텍스트를 숨기고 nearestStation 분기의 placeholder/
+            // dim UI로 폴백 — savedAt 기반 자율 stale 감지라 push가 dropped여도 device 단독으로 회복한다.
+            if entry.tripActive,
+               let currentStation = entry.currentStationName,
+               let destination = entry.destinationName,
+               freshness != .expired {
                 tripActiveContent(currentStation: currentStation, destination: destination)
             } else {
                 nearestStationContent
