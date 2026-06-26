@@ -12,6 +12,14 @@
  *   - V1 BG 지하 천장 70 → 90% (Transit App 90% / SubwayPS 학술 85% baseline)
  *   - patternClass='automotive' (RMS ≥ 2.0 m/s² 진동) = train 진행 신호 환경 vote 1표
  *
+ * #1884 (ADR-015 RC-3, Option A) — Weighted vote 4-signal fusion fallback.
+ *   - T3 trip 충정로→용마산 (lockless, 지하) 회귀: env-consensus-fail로 26분 stuck
+ *   - 원인: lockless trip + 지하에서 station pair가 끊기면 (warmup 60s 이후) 2-of-N quorum
+ *     달성 불가, env vote 누적도 station 채택 불가
+ *   - 해결: 기존 quorum 미달 시 `weightedVoteFusion` fallback. positional(1.0/0.6) + radio(0.5)
+ *     + motion(0.4) + time(0.3) 합산이 임계 1.1 이상이면 accept
+ *   - "신호 1개 죽어도 진행" paradigm — backend silent push 없이 device가 자체 판정
+ *
  * 합의 구조 — station-providing pair + environment-confirming vote:
  *   - Station pair (station 채택 가능, arrival 호선 매칭 필수):
  *       (a) WiFi SSID    + Arrival  (FG only — BG에선 SSID nil)
@@ -24,11 +32,12 @@
  *       envVotes −1. 다른 신호 우세 시 underground 채택 허용 (hard-reject 아님).
  *
  * 합의 임계:
- *   - 2-of-N 통과 시 SSOT 채택 (station pair + env vote 어떤 조합이든 OK)
+ *   - Primary path: 2-of-N 통과 시 SSOT 채택 (station pair + env vote 어떤 조합이든 OK)
  *   - 단, 채택 station이 필요하므로 station pair ≥ 1 필수 (env vote만 2개로는 불가)
  *   - Cellular `surface` vote (NR SA) 시 underground SSOT 자체 reject (환경 확정 모순)
  *   - Cellular `surface-weak` vote (LTE/NRNSA) 시 envVotes −1 (soft downgrade)
  *   - GPS는 input set에서 reject (ADR-015 §5, backend `consensusGate.ts` 동일 정책)
+ *   - Fallback path (#1884): primary 미달 시 weighted vote 임계 평가
  *
  * station 채택 우선순위: Position-Train > WiFi (강 → 약 신호).
  *
@@ -36,12 +45,14 @@
  *   - barometerStop/cellularEnvironmentVote/accelerometerPattern 미전달 → 기존 호출자 동작 유지
  *   - 단, 2-of-N quorum이 강화되어 단일 station pair만으로는 통과 불가 (의도된 tightening).
  *     기존 wifi-only / position-only 통과 케이스는 barometer/cellular/accelerometer 보강으로 회복.
+ *   - Weighted vote fallback은 기존 통과 케이스를 깨지 않는다 (primary path가 먼저 시도).
  */
 
 import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { StationArrival } from '../../../shared/types/arrival';
 import type { CellularEnvironmentVote } from './cellularTech';
 import type { AccelerometerPattern } from './accelerometerFingerprint';
+import { weightedVoteFusion } from './weightedVoteFusion';
 
 /** arvlCd "정착한 위치 보고" 코드 집합. surfaceSSotConsensus와 동일 — 향후 공용 추출 여지. */
 const ARVL_CD_STATIONARY = new Set<number>([1, 2, 3, 5]);
@@ -156,16 +167,32 @@ export function undergroundSSOTConsensus(
   if (cellularEnvironmentVote === 'surface-weak') envVotes -= 1;
   if (accelerometerPattern === 'automotive') envVotes += 1;
 
-  // Station pair ≥ 1 필수 (env vote만으로는 station 채택 불가).
-  if (stationPairs.length === 0) return null;
-
   // Warmup 60s 이내 → quorum=1 (station pair 단독 채택 허용). 60s 이후 → steady quorum=2.
   const isWarmup =
     tripStartedAt !== undefined && nowMs - tripStartedAt < WARMUP_WINDOW_MS;
   const quorum = isWarmup ? CONSENSUS_QUORUM_WARMUP : CONSENSUS_QUORUM;
 
-  if (stationPairs.length + envVotes < quorum) return null;
+  // Primary path — station pair ≥ 1 + (station pair + env vote) ≥ quorum.
+  if (stationPairs.length >= 1 && stationPairs.length + envVotes >= quorum) {
+    // station 채택: position-train > wifi (stationPairs는 우선순위 순서로 push됨).
+    return stationPairs[0];
+  }
 
-  // station 채택: position-train > wifi (stationPairs는 우선순위 순서로 push됨).
-  return stationPairs[0];
+  // #1884 (ADR-015 RC-3) — Fallback: weighted vote.
+  // Primary 미달 시 카테고리별 weight 합산으로 station 채택 시도. positional 미매칭(arrival 부재)
+  // 도 partial weight로 후보 유지하고 env vote와 합산해 임계(1.1)를 넘으면 accept.
+  // 기존 통과 케이스는 primary에서 이미 return되었으므로 본 경로가 깨지 않는다.
+  const voteResult = weightedVoteFusion({
+    wifiStation,
+    positionTrainResult,
+    arrival,
+    barometerStop,
+    cellularEnvironmentVote,
+    accelerometerPattern,
+  });
+  if (voteResult.accepted && voteResult.winner !== null) {
+    return voteResult.winner;
+  }
+
+  return null;
 }

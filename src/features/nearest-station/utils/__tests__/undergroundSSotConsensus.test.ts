@@ -84,17 +84,38 @@ describe('undergroundSSOTConsensus — base behavior (#1418)', () => {
     ).toBeNull();
   });
 
-  it.each([0, 4, 99, -1])('비정착 arvlCd=%i는 합의 미성립 (station pair 0)', (arvlCd) => {
+  it.each([0, 4, 99, -1])(
+    '비정착 arvlCd=%i는 primary 합의 미성립 — #1884 weighted vote fallback로 channel 보강 (partial 0.6 + env 0.8)',
+    (arvlCd) => {
+      // #1884 이전: 비정착 arvlCd → primary stationPairs=0 + envVotes 누적 → null.
+      // #1884 이후: weighted vote fallback에서 positional partial(0.6) + radio(0.5) + time(0.3) = 1.4 ≥ 1.1.
+      // station 채택은 가능하지만 trainCode는 빈 문자열 (arrival 미수렴).
+      // 비정착 arrival이 발생해도 positional + env 3 신호가 강하면 station 채택 — silent 비용 차단.
+      const arrivalMoving = makeArrival([
+        makeArrivalInfo({ destination: '', arrivalSeconds: 0, line: '2', arrivalCode: arvlCd }),
+      ]);
+      const result = undergroundSSOTConsensus({
+        wifiStation: MOCK_STATIONS.gangnam,
+        positionTrainResult: makeNearestResult('gangnam', 0.05),
+        arrival: arrivalMoving,
+        barometerStop: true,
+        cellularEnvironmentVote: 'underground',
+      });
+      expect(result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+      expect(result?.trainCode).toBe('');
+    },
+  );
+
+  it('비정착 arvlCd + env vote 없음 (weighted vote 미달) → primary + fallback 둘 다 reject', () => {
+    // env vote 없으면 positional partial 0.6 만 → 0.6 < 1.1 → fallback도 reject.
     const arrivalMoving = makeArrival([
-      makeArrivalInfo({ destination: '', arrivalSeconds: 0, line: '2', arrivalCode: arvlCd }),
+      makeArrivalInfo({ destination: '', arrivalSeconds: 0, line: '2', arrivalCode: 0 }),
     ]);
     expect(
       undergroundSSOTConsensus({
         wifiStation: MOCK_STATIONS.gangnam,
         positionTrainResult: makeNearestResult('gangnam', 0.05),
         arrival: arrivalMoving,
-        barometerStop: true,
-        cellularEnvironmentVote: 'underground',
       }),
     ).toBeNull();
   });
@@ -563,5 +584,104 @@ describe("undergroundSSOTConsensus — 'surface-weak' soft downgrade (#1876)", (
       NOW,
     );
     expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+});
+
+describe('undergroundSSOTConsensus — weighted vote fallback (#1884 RC-3)', () => {
+  // T3 시나리오 — primary path 미달 시 weighted vote가 station 채택.
+  // 'positional partial(0.6) + env vote 합산 ≥ 1.1' 조건.
+
+  it('positional partial(arrival 미매칭) + cellular underground + barometer → fallback accept', () => {
+    // T3 stuck 시나리오: position-train (line=3 청대) 있고 arrival은 line=2 (호선 불일치).
+    // primary: stationPairs=0 + envVotes=2 → stationPairs.length<1 fail.
+    // fallback: positional partial 0.6 + radio 0.5 + time 0.3 = 1.4 ≥ 1.1 → accept.
+    const positionTrain = makeNearestResult('chungmuro', 0.05); // line=3
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2, // line=2, 호선 불일치
+      cellularEnvironmentVote: 'underground',
+      barometerStop: true,
+    });
+    expect(result?.station.id).toBe(positionTrain.station.id);
+    expect(result?.trainCode).toBe(''); // arrival 미매칭이라 trainCode 미수렴
+  });
+
+  it('positional partial + 환경 vote 1개만(radio) = 1.1 fallback accept', () => {
+    const positionTrain = makeNearestResult('chungmuro', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      cellularEnvironmentVote: 'underground',
+    });
+    expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+
+  it('positional partial + 단일 약 vote (time) = 0.9 → fallback reject (임계 미달)', () => {
+    const positionTrain = makeNearestResult('chungmuro', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2, // mismatch
+        barometerStop: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('station 후보 부재 + env vote 누적 → fallback에서도 reject (station 가드 보존)', () => {
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: null,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'underground',
+        barometerStop: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('primary path 통과 시 fallback 미진입 (기존 동작 보존)', () => {
+    // wifi + position + arrival 매칭 → primary 통과 → fallback 호출 X.
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: wifi,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+    });
+    // primary stationPairs=2, envVotes=0, quorum=2 → 2+0>=2 pass → stationPairs[0] = position-train
+    expect(result?.station.id).toBe(positionTrain.station.id);
+    expect(result?.trainCode).toBe('T1');
+  });
+
+  it('cellular surface → fallback 진입 전 reject (환경 모순 절대 우선)', () => {
+    // weighted vote 함수 자체는 cellular surface를 입력으로 받을 수 있으나, 호출자가 먼저 reject.
+    const positionTrain = makeNearestResult('chungmuro', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2, // partial
+        cellularEnvironmentVote: 'surface',
+        barometerStop: true,
+        accelerometerPattern: 'automotive',
+      }),
+    ).toBeNull();
+  });
+
+  it('wifi station partial(arrival 미매칭) + env vote → fallback accept', () => {
+    // wifi만 있고 position-train 없음 + arrival 호선 불일치.
+    // primary: stationPairs=0 → fail. fallback: positional partial(wifi) 0.6 + env 0.5 = 1.1 ✓.
+    const wifi = MOCK_STATIONS.gangnam; // line=2
+    const result = undergroundSSOTConsensus({
+      wifiStation: wifi,
+      positionTrainResult: null,
+      arrival: arrivalLine3, // line=3 mismatch
+      cellularEnvironmentVote: 'underground',
+    });
+    expect(result?.station.id).toBe(wifi.id);
+    expect(result?.trainCode).toBe('');
   });
 });
