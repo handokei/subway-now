@@ -113,11 +113,31 @@ export interface CandidateRejectEntry {
   distanceKm: number;
 }
 
+/**
+ * #1896 (RC-8) — boarding-lock GPS displacement gate trigger 측정.
+ *
+ * lock 활성 + lockMatch이지만 GPS와 1km 이상 차이 시 lock 1순위 승격 포기한 이벤트.
+ * fusionDebugBuffer를 통해 DebugModal `## Fusion Tier (1h)`에서 사후 확인 가능.
+ */
+export interface BoardingLockDriftEntry {
+  kind: 'boarding-lock-drift';
+  ts: number;
+  /** 트리거된 분기 — positionTrainBoardingLockMatch 또는 arvlCdArrivedMatch. */
+  branch: 'positionTrain' | 'arvlCdArrived';
+  /** lock station name (lock 결과 역). */
+  lockStationName: string;
+  /** lock station line. */
+  lockStationLine: string;
+  /** GPS와 lock station 간 거리(m). null이면 GPS 없음(이 분기는 미도달이지만 타입 안정용). */
+  driftMeters: number | null;
+}
+
 export type FusionDebugEntry =
   | FusionDecisionEntry
   | GpsFixEntry
   | StickyStationEntry
-  | CandidateRejectEntry;
+  | CandidateRejectEntry
+  | BoardingLockDriftEntry;
 
 const db = createDebugBuffer<FusionDebugEntry>(FUSION_DEBUG_BUFFER_CAPACITY);
 

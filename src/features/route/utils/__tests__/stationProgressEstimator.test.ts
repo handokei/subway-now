@@ -1,5 +1,6 @@
 import { arcIndexOfStation, estimateStationProgress } from '../stationProgressEstimator';
 import { HOP_TIME_MS } from '../../../../shared/constants/boardingLock';
+import { ESTIMATOR_STUCK_TIMEOUT_MS } from '../../../../shared/constants/realtime';
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
@@ -753,6 +754,129 @@ describe('estimateStationProgress', () => {
         currentIdxHint: 1,
       });
       expect(r?.strategy).toBe('live-position');
+    });
+  });
+
+  describe('#1896 (RC-8) Strategy ④ DefaultHop — stuck timeout', () => {
+    // ①②③ 모두 실패한 dead zone(DefaultHop만 활성)에서
+    // ESTIMATOR_STUCK_TIMEOUT_MS(5분) 경과 + raw 적분 = boardingIdx (0 hop = 진짜 고착)이면 null 반환.
+    // rawIdx = boardingIdx+1 (1 hop 진행)은 정상 진행이므로 null 반환 안 함.
+
+    it('5분+ 경과 + 0 hop dead zone → null (stuck timeout)', () => {
+      // ARC = [용마산, 중곡, 군자, 어린이대공원, 건대입구]. boardingIdx=0.
+      // slowHop = elapsed+1 → 0 hops (stepMs > elapsedMs → break immediately) → rawIdx=0 → stuck.
+      const elapsedMs = ESTIMATOR_STUCK_TIMEOUT_MS + 1;
+      const slowHop = (_fromIdx: number) => elapsedMs + 1; // hop이 elapsed보다 더 걸림 → 0 hops
+      const r = estimateStationProgress({
+        lock: makeLock({ boardedAt: T0 }),
+        arcStations: ARC, // 탑승역=ARC[0], arc 2개 이상
+        now: T0 + elapsedMs,
+        trainProgress: null, // ① dead
+        lockedTrainCode: null, // ② dead
+        lastObserved: null, // ③ dead
+        hopTimeMsForHop: slowHop,
+        ...NO_ARRIVAL_INPUT,
+      });
+      // 5분+ + rawIdx=0 = boardingIdx → 진짜 고착 → null
+      expect(r).toBeNull();
+    });
+
+    it('5분+ 경과 + rawIdx = boardingIdx+1 (1 hop 완료) → 정상 반환 (고착 아님)', () => {
+      // 1 hop이 정확히 5분+1ms 걸리는 세그먼트. 5분+1ms 경과 후 rawIdx=1=boardingIdx+1.
+      // rawIdx <= boardingIdx (=0) → false → stuck 미판정 → 정상 반환.
+      const oneHopSlowMs = ESTIMATOR_STUCK_TIMEOUT_MS + 1;
+      // elapsedMs = oneHopSlowMs + 1 → 정확히 1hop 완료
+      const r = estimateStationProgress({
+        lock: makeLock({ boardedAt: T0 }),
+        arcStations: ARC,
+        now: T0 + oneHopSlowMs + 1,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: (_fromIdx: number) => oneHopSlowMs, // 정확히 1hop = timeout+1ms
+        ...NO_ARRIVAL_INPUT,
+      });
+      // elapsed = oneHopSlowMs+1 ≥ oneHopSlowMs → 1 hop 완료 → rawIdx=1 > boardingIdx=0 → 정상
+      expect(r).not.toBeNull();
+      expect(r?.strategy).toBe('default-hop');
+      expect(r?.index).toBe(1); // Seam B cap at boardingIdx+1
+    });
+
+    it('5분 미만 → 고착이어도 null 반환 안 함 (timeout 미충족)', () => {
+      const slowHop = (_fromIdx: number) => ESTIMATOR_STUCK_TIMEOUT_MS + 1;
+      const r = estimateStationProgress({
+        lock: makeLock({ boardedAt: T0 }),
+        arcStations: ARC,
+        now: T0 + ESTIMATOR_STUCK_TIMEOUT_MS - 1, // 5분 미만
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: slowHop,
+        ...NO_ARRIVAL_INPUT,
+      });
+      // 5분 미만 → timeout 미충족 → Seam B cap 후 boardingIdx 반환
+      expect(r).not.toBeNull();
+      expect(r?.strategy).toBe('default-hop');
+      expect(r?.index).toBe(0);
+    });
+
+    it('5분+ 경과 + rawIdx ≥ boardingIdx+1 → 정상 반환 (hop 1+ 진행 = 고착 아님)', () => {
+      // rawIdx >= boardingIdx+1이면 stuck 미판정. UNIFORM_HOP=90s, 5분30초 = 330s → 3 hops.
+      // rawIdx=3 > boardingIdx=0 → not stuck → Seam B cap → boardingIdx+1=1.
+      const r = estimateStationProgress({
+        lock: makeLock({ boardedAt: T0 }),
+        arcStations: ARC,
+        now: T0 + ESTIMATOR_STUCK_TIMEOUT_MS + 30_000, // 5분 30초 elapsed, 90s/hop → 3 hops
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP, // 90s per hop
+        ...NO_ARRIVAL_INPUT,
+      });
+      // rawIdx=3 > boardingIdx=0 → not stuck → Seam B cap → boardingIdx+1=1
+      expect(r).not.toBeNull();
+      expect(r?.strategy).toBe('default-hop');
+      expect(r?.index).toBe(1); // Seam B cap
+    });
+
+    it('boardingIdx가 arc 마지막이면 stuck timeout 게이트 미진입 — over-terminal grace가 자연 차단', () => {
+      // boardingIdx+1 >= arcStations.length이면 stuck timeout 게이트 자체를 skip.
+      // 그러나 arc 경계에서 hopsElapsedFrom이 HOP_TIME_MS(90s) fallback으로 over-terminal grace를
+      // 초과하면 projectIndexByHopTime이 null → tryDefaultHop도 null — stuck timeout 게이트와 무관.
+      // 본 테스트는 "게이트 skip → 기존 over-terminal 동작 유지"를 검증.
+      const singleArc = [ARC[0], ARC[1]]; // boardingIdx=1이 마지막
+      const slowHop = (_fromIdx: number) => ESTIMATOR_STUCK_TIMEOUT_MS + 1;
+      const r = estimateStationProgress({
+        lock: makeLock({ boardingStationId: ARC[1].id, boardedAt: T0 }),
+        arcStations: singleArc,
+        now: T0 + ESTIMATOR_STUCK_TIMEOUT_MS + 1,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: slowHop,
+        ...NO_ARRIVAL_INPUT,
+      });
+      // boardingIdx=1, arcStations.length=2 → 게이트 skip.
+      // hopsElapsedFrom(2, 1, 300001, slowHop): arc 경계에서 HOP_TIME_MS(90s) fallback → 3 hops → idx=4
+      // over-terminal check: 4 > lastIdx(1) + GRACE(2) = 3 → projectIndexByHopTime null → tryDefaultHop null.
+      expect(r).toBeNull();
+    });
+
+    it('Strategy ① LivePosition 활성이면 stuck timeout 도달 안 함', () => {
+      // ①이 살아있으면 tryLivePosition에서 반환 → tryDefaultHop 미도달 → timeout gate 미진입.
+      const r = estimateStationProgress({
+        lock: makeLock({ boardedAt: T0 }),
+        arcStations: ARC,
+        now: T0 + ESTIMATOR_STUCK_TIMEOUT_MS + 1,
+        trainProgress: makeTrainProgress({ stationIdx: 2, trainNo: '7093' }),
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      // ① 채택 → live-position, index=2
+      expect(r?.strategy).toBe('live-position');
+      expect(r?.index).toBe(2);
     });
   });
 });

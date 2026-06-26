@@ -325,6 +325,12 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     const d = `${Math.round(entry.distanceKm * 1000)}m`;
     return `${time} | reject:${entry.reason} | ${entry.trainNo} ${entry.stationName}(${entry.line}) d=${d}`;
   }
+  if (entry.kind === 'boarding-lock-drift') {
+    // #1896 (RC-8) — boarding-lock GPS displacement gate trigger.
+    // lock 활성 + GPS 1km+ drift로 lock 1순위 승격을 포기한 이벤트.
+    const d = entry.driftMeters != null ? `${Math.round(entry.driftMeters)}m` : '-';
+    return `${time} | boarding-lock-drift:${entry.branch} | ${entry.lockStationName}(${entry.lockStationLine}) drift=${d}`;
+  }
   const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
   const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
   const acc =

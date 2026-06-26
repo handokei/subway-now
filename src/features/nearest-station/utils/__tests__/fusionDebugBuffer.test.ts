@@ -122,4 +122,36 @@ describe('fusionDebugBuffer', () => {
     expect((entries[0] as { event: string }).event).toBe('gps-fix');
     expect((entries[1] as { event: string }).event).toBe('gps-drop');
   });
+
+  it('#1896 (RC-8) accepts boarding-lock-drift entries with branch/drift fields', () => {
+    // GPS drift > 1km 시 lock 1순위 포기 이벤트 타입 회귀 방지.
+    pushFusionDebugEntry({
+      kind: 'boarding-lock-drift',
+      ts: 1_700_000_000_000,
+      branch: 'positionTrain',
+      lockStationName: '동대문역사문화공원',
+      lockStationLine: '2',
+      driftMeters: 1020,
+    });
+    pushFusionDebugEntry({
+      kind: 'boarding-lock-drift',
+      ts: 1_700_000_001_000,
+      branch: 'arvlCdArrived',
+      lockStationName: '신당',
+      lockStationLine: '2',
+      driftMeters: null, // GPS 없는 케이스
+    });
+    const entries = getFusionDebugEntries();
+    expect(entries).toHaveLength(2);
+
+    const first = entries[0] as { kind: string; branch: string; driftMeters: number | null };
+    expect(first.kind).toBe('boarding-lock-drift');
+    expect(first.branch).toBe('positionTrain');
+    expect(first.driftMeters).toBe(1020);
+
+    const second = entries[1] as { kind: string; branch: string; driftMeters: number | null };
+    expect(second.kind).toBe('boarding-lock-drift');
+    expect(second.branch).toBe('arvlCdArrived');
+    expect(second.driftMeters).toBeNull();
+  });
 });

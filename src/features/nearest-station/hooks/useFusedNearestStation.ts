@@ -68,6 +68,7 @@ import {
   GPS_DERIVED_FIX_MAX_AGE_MS,
   GPS_DERIVED_ROUTE_MATCH_MAX_KM,
   GPS_FALLBACK_STALE_MAX_AGE_MS,
+  LOCK_GPS_DRIFT_THRESHOLD_M,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
@@ -1105,13 +1106,81 @@ export function useFusedNearestStation(
   // 같은 noLine에서 hop > PICKER_HOP_ANOMALY_THRESHOLD 이면 silent skip (prev 유지).
   const prevCascadeResultRef = useRef<NearestStationResult | null>(null);
 
+  // #1896 (RC-8) — boarding-lock GPS displacement gate.
+  //
+  // positionTrainBoardingLockMatch / arvlCdArrivedMatch 두 분기에서 lock 활성 + lockMatch라도
+  // GPS와 lock 결과 station의 거리가 LOCK_GPS_DRIFT_THRESHOLD_M(1000m)을 초과하면
+  // lock 1순위 승격을 포기하고 하위 cascade tier(backendSsotAccepts → wifi → positionTrain …)로 fallback.
+  //
+  // "GPS 결정 권한 X" 룰 정합 (memory/feedback_no_gps_for_decision.md):
+  //   - 본 gate는 lock 무효화(1순위 강등) 판단만. station 선택 자체는 cascade에 위임.
+  //   - GPS 없는 dead zone(gps.userLocation=null)은 drift 계산 불가 → gate 통과 (lock 유지).
+  //     GPS dead zone에서 lock이 유일한 신호인 경우를 보호.
+  //
+  // Evidence: T2 trip 12:19 GPS=신당(979m), lock=동대문역사문화공원(78m) → lock stuck 8분.
+  const lockGpsDriftMeters = (lockStation: Station): number | null => {
+    // 호출자는 positionTrainBoardingLockMatch(positionTrainResult != null → userLocation 필수) 또는
+    // arvlCdArrivedMatch(candidates != null → userLocation 필수) 조건 하에서만 호출 —
+    // userLocation=null은 실용적으로 도달 불가. 방어적 guard 유지, 커버리지 면제.
+    /* istanbul ignore next */
+    if (!gps.userLocation) return null;
+    return (
+      haversine(
+        gps.userLocation.lat,
+        gps.userLocation.lng,
+        lockStation.lat,
+        lockStation.lng,
+      ) * 1000
+    );
+  };
+
+  // positionTrainBoardingLockMatch drift 사전 계산 — 두 곳(gate + debug log)에서 재사용.
+  const positionTrainDriftM =
+    positionTrainBoardingLockMatch && positionTrainResult
+      ? lockGpsDriftMeters(positionTrainResult.station)
+      : null;
+  const positionTrainDriftBlocked =
+    positionTrainDriftM !== null && positionTrainDriftM > LOCK_GPS_DRIFT_THRESHOLD_M;
+
+  // arvlCdArrivedMatch drift 사전 계산.
+  const arvlCdDriftM =
+    arvlCdArrivedMatch ? lockGpsDriftMeters(arvlCdArrivedMatch.station) : null;
+  const arvlCdDriftBlocked =
+    arvlCdDriftM !== null && arvlCdDriftM > LOCK_GPS_DRIFT_THRESHOLD_M;
+
+  // drift block 발생 시 debug entry push (gate trigger 1회만 — 최초 조건이 true일 때).
+  // positionTrainBoardingLockMatch 분기의 drift block은 positionTrainResult의 거리 게이트(0.6km) 때문에
+  // 실용적으로 도달 불가능하다 (거리 게이트 < drift threshold). 보존성 구현이지만 단위 테스트 커버 불가.
+  /* istanbul ignore next */
+  if (positionTrainBoardingLockMatch && positionTrainDriftBlocked && positionTrainResult) {
+    pushFusionDebugEntry({
+      kind: 'boarding-lock-drift',
+      ts: Date.now(),
+      branch: 'positionTrain',
+      lockStationName: positionTrainResult.station.name,
+      lockStationLine: positionTrainResult.station.line,
+      driftMeters: positionTrainDriftM,
+    });
+  }
+  if (arvlCdArrivedMatch && arvlCdDriftBlocked) {
+    pushFusionDebugEntry({
+      kind: 'boarding-lock-drift',
+      ts: Date.now(),
+      branch: 'arvlCdArrived',
+      lockStationName: arvlCdArrivedMatch.station.name,
+      lockStationLine: arvlCdArrivedMatch.station.line,
+      driftMeters: arvlCdDriftM,
+    });
+  }
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
-  if (positionTrainBoardingLockMatch) {
+  if (positionTrainBoardingLockMatch && !positionTrainDriftBlocked) {
     // #1646 — 사용자 명시 의향 + 지하 + lockMatch 3-of-3 합의 시 positionTrain 1순위.
     // backend SSoT mirror lag(10-30s)에 의한 현재역 1역 뒤쳐짐 회귀 차단.
     // confidence/source는 #584 PR D2와 동일한 'boarding-lock' (lockMatch 매칭 경로).
+    // #1896 — GPS drift > 1km 시 본 분기 미진입 → cascade fallback.
     result = positionTrainResult!;
     confidence = 'boarding-lock';
     source = 'boarding-lock';
@@ -1122,11 +1191,12 @@ export function useFusedNearestStation(
     result = gpsTopCandidate!;
     confidence = 'gps-only';
     source = 'gps';
-  } else if (arvlCdArrivedMatch) {
+  } else if (arvlCdArrivedMatch && !arvlCdDriftBlocked) {
     // #1668 — ARRIVED + trainCode 매칭 + 신선 3-of-3 합의 시 arrival-ssot 1순위.
     // Seoul API 직접 도착 확정 신호 — backend SSoT mirror 10-30s lag 우회.
     // boardingLock.boardingLine 일치 + 거리 기준 가장 가까운 candidates 슬롯 station 채택.
     // confidence='boarding-lock' (사용자 탭한 열차가 도착 확정된 가장 강한 신호).
+    // #1896 — GPS drift > 1km 시 본 분기 미진입 → cascade fallback.
     result = arvlCdArrivedMatch;
     confidence = 'boarding-lock';
     source = 'boarding-lock';
@@ -1192,11 +1262,13 @@ export function useFusedNearestStation(
   // #1693 — cascade picker가 채택한 tier를 alarmLog에 적재 (측정 보강 3차).
   // dedup 1s — 같은 tier 연속 폴링 cycle에서 1건만 적재.
   // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd tier 채택률) 검증.
-  if (positionTrainBoardingLockMatch) {
+  // #1896 — drift-blocked 케이스는 실제 채택 tier(backendSsot 등)로 기록됨 — drift 자체는
+  //   fusionDebugBuffer boarding-lock-drift entry로 별도 측정.
+  if (positionTrainBoardingLockMatch && !positionTrainDriftBlocked) {
     logFusionPickerTier('positionTrainBoardingLockMatch');
   } else if (gpsDerivedFastPath) {
     logFusionPickerTier('gpsDerivedFastPath');
-  } else if (arvlCdArrivedMatch) {
+  } else if (arvlCdArrivedMatch && !arvlCdDriftBlocked) {
     logFusionPickerTier('arvlCdArrivedMatch');
   } else if (backendSsotAccepts) {
     logFusionPickerTier('backendSsotAccepts');

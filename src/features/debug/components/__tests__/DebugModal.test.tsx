@@ -2117,6 +2117,33 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('d=5400m');
   });
 
+  it('#1896 (RC-8) boarding-lock-drift 엔트리: branch/station/drift 포함', () => {
+    const ts = new Date('2026-06-26T12:19:00Z').getTime();
+    const lineWithDrift = formatFusionDebugLine({
+      kind: 'boarding-lock-drift',
+      ts,
+      branch: 'positionTrain',
+      lockStationName: '동대문역사문화공원',
+      lockStationLine: '2',
+      driftMeters: 979,
+    });
+    expect(lineWithDrift).toContain('boarding-lock-drift:positionTrain');
+    expect(lineWithDrift).toContain('동대문역사문화공원(2)');
+    expect(lineWithDrift).toContain('drift=979m');
+
+    // driftMeters=null 시 '-' 표기
+    const lineNullDrift = formatFusionDebugLine({
+      kind: 'boarding-lock-drift',
+      ts,
+      branch: 'arvlCdArrived',
+      lockStationName: '신당',
+      lockStationLine: '2',
+      driftMeters: null,
+    });
+    expect(lineNullDrift).toContain('boarding-lock-drift:arvlCdArrived');
+    expect(lineNullDrift).toContain('drift=-');
+  });
+
   it('gps 엔트리: nearestStation/distance/accuracy 누락 시 "-" 표기', () => {
     const line = formatFusionDebugLine({
       kind: 'gps',

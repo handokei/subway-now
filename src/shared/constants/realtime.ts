@@ -160,3 +160,37 @@ export const CANDIDATE_ANCHOR_WINDOW_EXPANDED = 6;
  * 같은 노선이어야 hop 계산 대상 — 다른 노선 전환(환승)은 skip 계산 X.
  */
 export const PICKER_HOP_ANOMALY_THRESHOLD = 5;
+
+/**
+ * #1896 (RC-8) — boarding-lock GPS displacement gate.
+ *
+ * `positionTrainBoardingLockMatch` 또는 `arvlCdArrivedMatch` 분기에서 lock 활성 + lockMatch라도
+ * GPS와 lock 결과 station의 거리가 이 임계를 초과하면 lock 1순위 승격을 포기하고
+ * cascade fallback(backendSsotAccepts → wifi → positionTrain …)으로 넘긴다.
+ *
+ * 1000m 임계의 근거:
+ *   - Evidence: T2 trip 12:19 GPS=신당(979m), lock=동대문역사문화공원(78m) → 약 900m 이상 차이.
+ *   - 인접역 평균 거리 800m. 1km 초과 시 lock과 실제 GPS 위치가 서로 다른 역 권역임이 명백.
+ *   - 지하 GPS 정확도 불확실성(~300m)을 반영해 500m(issue 본문 초안)보다 여유 있는 1km.
+ *   - "GPS 결정 권한 X" 룰: 본 gate는 lock 무효화 판단만 — station 선택은 cascade에 위임.
+ *
+ * 지하/지상 동일 임계:
+ *   - 지하 GPS는 정확도가 낮으나 1km 이상 drift는 명백한 위치 불일치. 지상은 GPS 정확도 높아
+ *     더 작은 임계도 가능하나 단일 상수로 단순화 — 지상은 gpsDerivedFastPath가 우선 처리.
+ */
+export const LOCK_GPS_DRIFT_THRESHOLD_M = 1000;
+
+/**
+ * #1896 (RC-8) — estimator stuck timeout.
+ *
+ * `estimateStationProgress`가 lock.boardedAt 기준 이 시간 이상 경과해도 탑승역(boardingIdx)에서
+ * 벗어나지 못하면 stuck으로 간주하고 null을 반환한다. 호출자(useFusedNearestStation)가 다른
+ * cascade tier로 fallback하도록 유도.
+ *
+ * 5분 임계:
+ *   - 지하철 인접역 평균 hop time ~90s. 5분이면 3+ stop 통과 가능 — 이 이상 boarding station
+ *     반복은 estimator dead zone 신호.
+ *   - PICKER_STUCK_MAX_AGE_MS(5분)와 동일 기준으로 전역 일관성 유지.
+ *   - tryLivePosition/ArrivalEta가 살아있으면 이 분기 미도달 — tryDefaultHop(dead zone)에서만 적용.
+ */
+export const ESTIMATOR_STUCK_TIMEOUT_MS = 5 * 60_000;
