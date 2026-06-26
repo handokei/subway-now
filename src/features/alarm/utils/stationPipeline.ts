@@ -17,6 +17,7 @@ import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificati
 import {
   logFiredAlarm,
   logFiredStationPassed,
+  logSuppressedChannelAgnosticDedup,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
   logSuppressedPhaseToPhaseDedup,
@@ -28,6 +29,7 @@ import {
   type AlarmLogSource,
 } from './alarmLog';
 import {
+  isAnyChannelRecentlyFired,
   isStationRecentlyFired,
   isPhaseToPhaseCrossStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
@@ -359,8 +361,32 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         kind: alarmEvent.type,
         phaseId: alarmEvent.phaseId,
       });
+    } else if (
+      isAnyChannelRecentlyFired(
+        destination.id,
+        alarmEvent.stationName,
+        alarmEvent.type,
+        Date.now(),
+        alarmEvent.phaseId,
+      )
+    ) {
+      // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. silent state push + LA dirty
+      // update의 cross-channel 같은 kind+phase 중복(2026-06-26 trip-3 동대문역사문화공원
+      // 12:17:58/12:26:12)을 정확 매칭으로 차단. 정상 phase 진행(early→imminent)은 phaseId 다름 → 통과.
+      logSuppressedChannelAgnosticDedup({
+        source,
+        stationName: alarmEvent.stationName,
+        kind: alarmEvent.type,
+        phaseId: alarmEvent.phaseId,
+      });
     } else {
-      markStationFired(destination.id, alarmEvent.stationName, alarmEvent.type, Date.now());
+      markStationFired(
+        destination.id,
+        alarmEvent.stationName,
+        alarmEvent.type,
+        Date.now(),
+        alarmEvent.phaseId,
+      );
       await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
       logFiredAlarm(source, alarmEvent);
     }
@@ -429,6 +455,23 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         // 직후 어대 station-passed 발사 같은 회귀 차단. same-category(SP→SP) cross-station은 통과 —
         // 정상 trip 폴링 진행 보존.
         logSuppressedCrossCategoryRecent({
+          source,
+          stationName: nearest.station.name,
+          kind: 'station-passed',
+        });
+      } else if (
+        isAnyChannelRecentlyFired(
+          destination.id,
+          nearest.station.name,
+          'station-passed',
+          Date.now(),
+        )
+      ) {
+        // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop (BG path 동등 가드).
+        // 같은 station + 같은 kind(station-passed)가 8분 안에 cross-channel(silent state push +
+        // LA dirty update)로 재발사되는 회귀(2026-06-26 trip-3 동대문역사문화공원 12:17:58/12:26:12)
+        // 를 BG path에서도 동등 차단. lock 활성/lockless 동급 (ADR-014).
+        logSuppressedChannelAgnosticDedup({
           source,
           stationName: nearest.station.name,
           kind: 'station-passed',

@@ -1,9 +1,11 @@
 import {
+  CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS,
   CROSS_CATEGORY_DEDUP_WINDOW_MS,
   PHASE_TO_PHASE_CROSS_STATION_WINDOW_MS,
   TRIP_SCOPED_CROSS_CATEGORY_WINDOW_MS,
   _resetCrossCategoryDedupForTests,
   clearCrossCategoryDedup,
+  isAnyChannelRecentlyFired,
   isStationRecentlyFired,
   isPhaseToPhaseCrossStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
@@ -108,6 +110,150 @@ describe('crossCategoryStationDedup (#1515)', () => {
     expect(isStationRecentlyFired('dest-1', '강남', 'station-passed', 2_000)).toBe(true);
     await expect(clearCrossCategoryDedup()).resolves.toBeUndefined();
     expect(isStationRecentlyFired('dest-1', '강남', 'station-passed', 2_000)).toBe(false);
+  });
+
+  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. silent state push + LA dirty update
+  // 같은 kind cross-channel 중복(2026-06-26 trip-3 동대문역사문화공원 8분 차) 회귀 차단용.
+  describe('isAnyChannelRecentlyFired (#1901/#1900)', () => {
+    it('returns false when no fire has been recorded', () => {
+      expect(isAnyChannelRecentlyFired('dest-1', '성수', 'destination', 1_000)).toBe(false);
+    });
+
+    // 같은 station + 같은 category가 8분 안에 fire됐으면 차단. 다른 category는 cross-category gate가 담당.
+    it.each<[Category, Category, boolean, string]>([
+      ['destination', 'destination', true, 'same-kind D→D within 8m blocked (cross-channel evidence)'],
+      ['transfer', 'transfer', true, 'same-kind T→T within 8m blocked'],
+      ['station-passed', 'station-passed', true, 'same-kind SP→SP within 8m blocked (cross-channel)'],
+      // 다른 kind는 cross-category gate(30s)가 cover하므로 본 backstop은 통과 — phase 진행이나
+      // cross-category(D ↔ SP)는 다른 gate에서 dedup.
+      ['destination', 'station-passed', false, 'cross-kind D→SP NOT blocked here (handled by 30s gate)'],
+      ['station-passed', 'destination', false, 'cross-kind SP→D NOT blocked here (handled by 30s gate)'],
+      ['destination', 'transfer', false, 'cross-kind D→T NOT blocked here'],
+    ])('first=%s, second=%s: blocked=%s (%s)', (firstCat, secondCat, blocked) => {
+      markStationFired('dest-1', '동대문역사문화공원', firstCat, 1_000);
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', secondCat, 1_000 + 60_000),
+      ).toBe(blocked);
+    });
+
+    it('blocks within 8m window edge (just under window)', () => {
+      markStationFired('dest-1', '성수', 'destination', 1_000);
+      expect(
+        isAnyChannelRecentlyFired(
+          'dest-1',
+          '성수',
+          'destination',
+          1_000 + CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS - 1,
+        ),
+      ).toBe(true);
+    });
+
+    it('unblocks once 8m window has elapsed', () => {
+      markStationFired('dest-1', '성수', 'destination', 1_000);
+      expect(
+        isAnyChannelRecentlyFired(
+          'dest-1',
+          '성수',
+          'destination',
+          1_000 + CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS,
+        ),
+      ).toBe(false);
+    });
+
+    it('isolates entries by destinationId', () => {
+      markStationFired('dest-1', '성수', 'destination', 1_000);
+      expect(isAnyChannelRecentlyFired('dest-2', '성수', 'destination', 1_500)).toBe(false);
+    });
+
+    it('isolates entries by stationName', () => {
+      markStationFired('dest-1', '성수', 'destination', 1_000);
+      expect(isAnyChannelRecentlyFired('dest-1', '왕십리', 'destination', 1_500)).toBe(false);
+    });
+
+    it('normalizes station name (parenthetical suffix)', () => {
+      markStationFired('dest-1', '왕십리(성동구청)', 'destination', 1_000);
+      expect(isAnyChannelRecentlyFired('dest-1', '왕십리', 'destination', 1_500)).toBe(true);
+    });
+
+    it('accepts custom window override (override < default window)', () => {
+      markStationFired('dest-1', '성수', 'destination', 1_000);
+      // 100ms override — 200ms 후 query는 통과.
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '성수', 'destination', 1_200, undefined, 100),
+      ).toBe(false);
+      // 50ms 후 query는 차단.
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '성수', 'destination', 1_050, undefined, 100),
+      ).toBe(true);
+    });
+
+    // phaseId 비교 — 같은 station + 같은 kind + 다른 phaseId는 정상 phase 진행이라 통과.
+    it('passes when phaseId differs (정상 phase 진행 early→imminent)', () => {
+      markStationFired('dest-1', '동대문역사문화공원', 'destination', 1_000, 'early');
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', 'destination', 1_100, 'imminent'),
+      ).toBe(false);
+    });
+
+    it('blocks when phaseId matches (same phase cross-channel)', () => {
+      markStationFired('dest-1', '동대문역사문화공원', 'destination', 1_000, 'early');
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', 'destination', 1_100, 'early'),
+      ).toBe(true);
+    });
+
+    // record phaseId 미정의 + query phaseId 정의 — 보수적 차단 (markStationFired 호출자가 phaseId
+    // 안 전달한 케이스. SP path 등 phaseId 자체가 없을 때 backstop이 작동해야 함).
+    it('blocks when record phaseId is undefined (conservative)', () => {
+      markStationFired('dest-1', '동대문역사문화공원', 'station-passed', 1_000);
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', 'station-passed', 1_100),
+      ).toBe(true);
+    });
+
+    // query phaseId 미정의 — record가 정의돼 있어도 query 미정의면 보수적 차단.
+    it('blocks when query phaseId is undefined (conservative)', () => {
+      markStationFired('dest-1', '동대문역사문화공원', 'destination', 1_000, 'early');
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', 'destination', 1_100),
+      ).toBe(true);
+    });
+
+    it('is cleared by clearCrossCategoryDedup (TRIP_BOUND_CLEANUPS wiring)', async () => {
+      markStationFired('dest-1', '동대문역사문화공원', 'destination', 1_000);
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', 'destination', 2_000),
+      ).toBe(true);
+      await clearCrossCategoryDedup();
+      expect(
+        isAnyChannelRecentlyFired('dest-1', '동대문역사문화공원', 'destination', 2_000),
+      ).toBe(false);
+    });
+
+    // 2026-06-26 trip-3 evidence 회귀 재현: 동일 station + 동일 kind(station-passed)가 8분 차로
+    // cross-channel(silent state + LA dirty update) 발사된 경우. 8분 윈도우 안 차단.
+    it('blocks 8m gap cross-channel duplicate (trip-3 동대문역사문화공원 evidence)', () => {
+      const t1 = 1_000;
+      markStationFired('dest-1', '동대문역사문화공원', 'station-passed', t1);
+      // 윈도우 끝 1ms 전 — 차단.
+      expect(
+        isAnyChannelRecentlyFired(
+          'dest-1',
+          '동대문역사문화공원',
+          'station-passed',
+          t1 + CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS - 1,
+        ),
+      ).toBe(true);
+      // 8분 1ms 지나서 — 통과(같은 station 재방문은 윈도우 후 정상 발사).
+      expect(
+        isAnyChannelRecentlyFired(
+          'dest-1',
+          '동대문역사문화공원',
+          'station-passed',
+          t1 + CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS + 1,
+        ),
+      ).toBe(false);
+    });
   });
 
   // #1643 — trip-scoped cross-category + cross-station 즉시 cascade window (5s).

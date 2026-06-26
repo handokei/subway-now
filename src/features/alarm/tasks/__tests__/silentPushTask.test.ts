@@ -38,6 +38,7 @@ const mockLogSilentPushTripEndedReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 const mockLogCrossTripMirrorSkip = jest.fn();
+const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
@@ -48,7 +49,19 @@ jest.mock('../../utils/alarmLog', () => ({
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
+  logSuppressedChannelAgnosticDedup: (...args: unknown[]) =>
+    mockLogSuppressedChannelAgnosticDedup(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
+}));
+
+// #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. silent push fire 직전 gate +
+// fire 직후 markStationFired. FG fireAndLog / stationPipeline과 lastFire Map 공유.
+const mockIsAnyChannelRecentlyFired = jest.fn<boolean, unknown[]>(() => false);
+const mockMarkStationFired = jest.fn<void, unknown[]>();
+jest.mock('../../utils/crossCategoryStationDedup', () => ({
+  isAnyChannelRecentlyFired: (...args: unknown[]) =>
+    mockIsAnyChannelRecentlyFired(...args),
+  markStationFired: (...args: unknown[]) => mockMarkStationFired(...args),
 }));
 
 // #868 — trip-ended payload 수신 시 trip-bound storage cleanup.
@@ -1630,6 +1643,121 @@ describe('silentPushTask', () => {
           reason: 'dedup-already-fired',
           permissionMode: 'always',
         });
+      });
+
+      // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. FIRED_ALARMS dedup이 통과해도
+      // lastFire Map에 같은 station이 8분 안에 적재돼 있으면 silent push 발사 차단.
+      // backend가 같은 station-pass 1건에 silent state push + LA dirty update 2채널 발사 →
+      // device가 silent push로 같은 station을 2회 받는 회귀(2026-06-26 trip-3 동대문역사문화공원).
+      it('#1901/#1900 isAnyChannelRecentlyFired=true 시 silent push 발사 차단 + skipped ack', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set()); // FIRED_ALARMS는 비어 있음
+        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(true);
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            pushId: 'p-channel-agnostic',
+          }),
+        );
+        expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
+          source: 'silent-push-skipped',
+          stationName: '강남',
+          kind: 'destination',
+          phaseId: 'imminent',
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-channel-agnostic', 'skipped', 'dedup-already-fired'),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        // markStationFired는 fire 직후에만 호출 — skip 분기에서 호출 안 됨.
+        expect(mockMarkStationFired).not.toHaveBeenCalled();
+      });
+
+      // #1901/#1900 — intermediate(station-passed) 분기도 channel-agnostic gate 적용.
+      // FIRED_ALARMS dedup은 dedupKey=null이라 우회되지만 8분 backstop은 차단.
+      it('#1901/#1900 intermediate kind도 channel-agnostic gate로 차단됨', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set());
+        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(true);
+        await handleSilentPush(
+          payload({
+            kind: 'intermediate',
+            phase: 'imminent',
+            pushId: 'p-intermediate-agnostic',
+          }),
+        );
+        expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
+          source: 'silent-push-skipped',
+          stationName: '강남',
+          kind: 'station-passed',
+          phaseId: 'imminent',
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-intermediate-agnostic', 'skipped', 'dedup-already-fired'),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockMarkStationFired).not.toHaveBeenCalled();
+      });
+
+      // #1901/#1900 — channel-agnostic dedup skip branch에서 pushId 미정의 케이스. addFiredPushId
+      // 조건부 호출의 falsy 분기 커버.
+      it('#1901/#1900 channel-agnostic skip + pushId 부재 시 addFiredPushId 미호출', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set());
+        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(true);
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            // pushId 명시 안 함 — undefined.
+          }),
+        );
+        expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalled();
+        // pushId 부재라 addFiredPushId 미호출 검증.
+        expect(mockAddFiredPushId).not.toHaveBeenCalled();
+      });
+
+      // #1901/#1900 — fire 직후 markStationFired 호출 → FG fireAndLog / stationPipeline이 같은
+      // station 8분 backstop으로 cross-channel 중복 차단 (lastFire Map 공유).
+      it('#1901/#1900 fire 후 markStationFired 호출 (lastFire Map 갱신)', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set());
+        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(false);
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            pushId: 'p-mark',
+          }),
+        );
+        // intermediate가 아닌 destination → category='destination'으로 mark. phaseId도 stamp.
+        expect(mockMarkStationFired).toHaveBeenCalledWith(
+          destStation.id,
+          '강남',
+          'destination',
+          expect.any(Number),
+          'imminent',
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-mark', 'fired'),
+        );
+      });
+
+      // #1901/#1900 — intermediate fire는 'station-passed' category로 mark.
+      it('#1901/#1900 intermediate fire 후 markStationFired는 station-passed category로 호출', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set());
+        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(false);
+        await handleSilentPush(
+          payload({
+            kind: 'intermediate',
+            phase: 'imminent',
+            pushId: 'p-intermediate-mark',
+          }),
+        );
+        expect(mockMarkStationFired).toHaveBeenCalledWith(
+          destStation.id,
+          '강남',
+          'station-passed',
+          expect.any(Number),
+          'imminent',
+        );
       });
 
       it('payload-missing-kind 시 sendPushAck(outcome=skipped, reason=payload-missing-kind)', async () => {

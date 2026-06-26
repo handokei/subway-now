@@ -79,6 +79,7 @@ const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
+const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -95,6 +96,8 @@ jest.mock('../alarmLog', () => ({
     mockLogSuppressedCrossCategoryRecent(...args),
   logSuppressedPhaseToPhaseDedup: (...args: unknown[]) =>
     mockLogSuppressedPhaseToPhaseDedup(...args),
+  logSuppressedChannelAgnosticDedup: (...args: unknown[]) =>
+    mockLogSuppressedChannelAgnosticDedup(...args),
 }));
 
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -1023,6 +1026,106 @@ describe('processLocationUpdate', () => {
       await call({ source: 'bg' });
       // phase↔phase dedup은 발동 안 됨 — same station은 firedAlarms가 담당.
       expect(mockLogSuppressedPhaseToPhaseDedup).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. silent state push + LA dirty update
+  // cross-channel 중복(2026-06-26 trip-3 동대문역사문화공원 8분 차) BG path 동등 차단.
+  describe('#1901/#1900 channel-agnostic 8분 backstop dedup (BG path)', () => {
+    const stationA: Station = { ...mockStation, name: '동대문역사문화공원', id: 'station-1' };
+    let nowSpy: jest.SpyInstance<number, []>;
+
+    beforeEach(() => {
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    });
+
+    afterEach(() => {
+      nowSpy.mockRestore();
+    });
+
+    it('phase 알람 발사 후 31s~8분 사이 같은 station 같은 phase 재발사는 channel-agnostic backstop으로 차단', async () => {
+      mockFindNearestStation.mockReturnValue({ station: stationA, distanceKm: 0.05 });
+      // 1st: imminent destination 발사 (t=1_000_000).
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: stationA.name,
+      });
+      mockIsStationOnRoute.mockReturnValueOnce(false);
+      await call({ source: 'fg-evaluated' });
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+
+      // t = 1_000_000 + 60_000 (1분 후) — 30s cross-category window는 만료, 8분 backstop은 활성.
+      nowSpy.mockReturnValue(1_000_000 + 60_000);
+
+      // 2nd: 같은 station 같은 phase imminent — cross-channel 중복 시뮬레이션. cross-category 30s
+      // 만료 후 8분 backstop만 활성. phaseId 정확 매칭이라 차단.
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: stationA.name,
+      });
+      mockIsStationOnRoute.mockReturnValueOnce(false);
+      await call({ source: 'fg-evaluated' });
+      expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
+        source: 'fg-evaluated',
+        stationName: stationA.name,
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+      // 두 번째 발사 없음.
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('phase 알람 발사 후 같은 station 다른 phase는 정상 phase 진행이라 통과', async () => {
+      mockFindNearestStation.mockReturnValue({ station: stationA, distanceKm: 0.05 });
+      // 1st: early destination 발사.
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: stationA.name,
+      });
+      mockIsStationOnRoute.mockReturnValueOnce(false);
+      await call({ source: 'fg-evaluated' });
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+
+      // 2nd: 같은 station imminent destination — 다른 phaseId라 channel-agnostic backstop 통과.
+      // cross-category 30s window는 만료시켜 phase 변경만 backstop 영향 받는지 격리.
+      nowSpy.mockReturnValue(1_000_000 + 60_000);
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: stationA.name,
+      });
+      mockIsStationOnRoute.mockReturnValueOnce(false);
+      await call({ source: 'fg-evaluated' });
+      // 두 번째 발사가 진행됨 — channel-agnostic dedup은 phase 진행 통과.
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
+      expect(mockLogSuppressedChannelAgnosticDedup).not.toHaveBeenCalled();
+    });
+
+    it('station-passed 발사 후 31s~8분 사이 같은 station station-passed는 channel-agnostic backstop으로 차단', async () => {
+      mockFindNearestStation.mockReturnValue({ station: stationA, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockIsStationOnRoute.mockReturnValue(true);
+      // 1st: station-passed 발사 → markStationFired (t=1_000_000).
+      await call({ source: 'bg' });
+      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+
+      // t = 1_000_000 + 60_000 — 30s cross-category 만료, lastNotifiedStationId가 다른 stationId면
+      // 그 dedup도 통과 → channel-agnostic 8분 backstop이 차단해야 함.
+      nowSpy.mockReturnValue(1_000_000 + 60_000);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      await call({ source: 'bg' });
+      expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: stationA.name,
+        kind: 'station-passed',
+      });
+      // 두 번째 발사 없음.
+      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
     });
   });
 

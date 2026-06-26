@@ -250,7 +250,20 @@ export type AlarmLogReason =
   // useStationMismatchDetector가 3회 연속 불일치 확인 시 적재. expectedStationAtFire 슬롯에
   // reason 문자열(route-diverged / line-mismatch / environment-mismatch) stamp.
   // 1주 production 빈도 측정 — `/admin/alarm-log-stats` reason='cold-start-mismatch' 카운트.
-  | 'cold-start-mismatch';
+  | 'cold-start-mismatch'
+  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic station dedup 차단 1건.
+  // 같은 (destinationId, stationName)이 CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS(8분) 안에 어떤
+  // channel/category로든 이미 fire됐을 때 후속 발사 차단(2026-06-26 trip-3 동대문역사문화공원
+  // 8분 차 cross-channel 중복 회귀). 기존 'dedup-station-unified'(30s, cross-category 한정)는
+  // phase↔SP만 dedup해 silent state push + LA dirty update 같은 cross-channel 중복을 통과
+  // 시켰음. burst dedup으로 같은 (source, stationName) 반복 로그는 1건만 적재.
+  | 'dedup-channel-agnostic'
+  // #1893 (RC-17) — trip 경계에서 firedAlarmsRef in-memory Set이 reset된 1건. 같은 destinationId
+  // 로 trip 재시작 시 BG가 storage(FIRED_ALARMS_KEY)는 비웠지만 FG React useRef는 이전 trip의
+  // fired key를 유지해 새 trip의 첫 fire가 dedup으로 차단되거나 dump가 cross-trip carry-over로
+  // 오염되던 회귀(2026-06-26 T4 dump에 T3 fired 2건 carry-over evidence). tripStartedAt 변경
+  // detection을 기준으로 1회 적재 — 운영에서 trip 경계 reset 적중 횟수 측정.
+  | 'fired-alarms-trip-boundary-reset';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -456,6 +469,60 @@ export function logSuppressedPhaseToPhaseDedup(input: {
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #1901/#1900 (RC-7/RC-10a) — channel-agnostic station dedup 차단 1건 적재.
+ *
+ * 같은 (destinationId, stationName)이 CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS(8분) 안에 channel/category
+ * 무관 fire됐을 때 후속 발사를 차단한 case. 'dedup-station-unified'(30s, phase↔SP 한정)와 다른
+ * 신호 — cross-channel(silent state push + LA dirty update) 중복 fire를 station 단위 8분 backstop
+ * 으로 잡는다. 2026-06-26 trip-3 동대문역사문화공원 8분 차 fired 2건 evidence.
+ *
+ * burst dedup 윈도우로 같은 (source, stationName) 반복 로그는 1건만 적재.
+ */
+export function logSuppressedChannelAgnosticDedup(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  if (isBurstDuplicate('dedup-channel-agnostic', input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'dedup-channel-agnostic',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #1893 (RC-17) — trip 경계 firedAlarmsRef in-memory Set reset 1건 적재.
+ *
+ * 같은 destinationId로 trip 재시작 detection 시점에 호출. 운영에서 trip 경계 reset 적중 횟수를
+ * 측정 — backend trip-ended 신호 (storage clear) 대비 FG ref reset 1:1 매칭 확인용. burst dedup 미적용
+ * (trip 경계는 trip당 1회만 적재되므로 자연 dedup).
+ */
+export function logFiredAlarmsTripBoundaryReset(input: {
+  source: AlarmLogSource;
+  destinationId: string;
+  previousTripStartedAt: number | null;
+  nextTripStartedAt: number;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'fired-alarms-trip-boundary-reset',
+    destinationId: input.destinationId,
+    // sentAt/receivedAt 슬롯을 재사용해 prev/next tripStartedAt epoch 보존 — DebugModal/admin
+    // dashboard에서 trip 경계 시각 추적 가능.
+    sentAt: input.previousTripStartedAt ?? undefined,
+    receivedAt: input.nextTripStartedAt,
   });
 }
 
