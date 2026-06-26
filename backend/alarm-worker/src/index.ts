@@ -569,11 +569,16 @@ app.post('/trips', async (c) => {
 
   const existing = await getTrip(c.env.TRIPS, incoming.token);
   const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
-  // #916 follow-up B — auto-prompt dedup 마커 보존. boardingPromptState와 달리 isSameSession=false
-  // 분기에서도 같은 token + AUTO_PROMPT_DEDUP_WINDOW_MS 안이면 보존한다. 사용자가 lock 클리어 후
-  // 목적지를 살짝 바꿔 새 createdAt으로 재등록하는 케이스에서 prompt 재발사를 차단 (fired+clear
-  // 분기 회복). 윈도우 만료/필드 부재면 undefined로 자연 리셋 — 새 trip은 fresh prompt 평가.
+  // #916 follow-up B — auto-prompt dedup 마커 보존. isSameSession=true(같은 trip 재등록)인 경우만
+  // window 안이면 보존한다. 사용자가 lock 클리어 후 같은 trip context로 재등록하는 케이스에서
+  // 중복 prompt 재발사를 차단 (fired+clear 분기 회복).
+  //
+  // #1886 RC-2 옵션 D — trip-scoped dedup reset.
+  // isSameSession=false(새 trip 등록: 다른 경로/목적지)는 lastAutoPromptedAt을 보존하지 않는다.
+  // T1→T2 연속 trip에서 T1의 dedup이 T2로 carry-over하던 회귀 차단.
+  // 윈도우 만료/필드 부재면 undefined로 자연 리셋.
   const preservedLastAutoPromptedAt =
+    isSameSession &&
     existing?.lastAutoPromptedAt !== undefined &&
     incoming.createdAt - existing.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
       ? existing.lastAutoPromptedAt
@@ -2157,7 +2162,7 @@ const handler = {
       captureBackendException(err, { path: 'scheduled/runScheduled' });
       throw err;
     }
-    // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
+    // #572 P2c — silent push 60s 미ACK entry를 alert로 fallback (#1894 30s→60s 완화). 같은 cron 사이클에서 실행.
     await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
     // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
     // 시 재발사. KV binding 부재 시 graceful no-op (개발/테스트 환경 호환).

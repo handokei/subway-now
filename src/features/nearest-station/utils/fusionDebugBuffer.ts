@@ -92,52 +92,24 @@ export interface StickyStationEntry {
 }
 
 /**
- * #1616 (R12-a) — candidate별 GPS 거리 hard gate가 reject한 entry.
+ * #1616 (R12-a) candidate distance reject + #1902 (RC-18) candidate line reject는
+ * 별 buffer로 분리됐다. `candidateRejectBuffer.ts` 참조.
  *
- * pickCandidateTrains에서 anchorIdx ± window 통과 후 candidate.currentStation의 GPS 좌표가
- * 사용자 마지막 known location 기준 CANDIDATE_DISTANCE_THRESHOLD_KM(3.0km)을 초과해 reject된
- * 케이스. anchor GPS drift 시 잘못된 영역 train이 후보 진입하는 cascade(2026-06-19 trip evidence:
- * pt/fu/gp 다 이수) 차단을 사후 측정.
- *
- * fusion decision과 분리한 이유: reject 자체는 결정 entry가 아니라 입력 단계 reject. fusion
- * decision 이력과 합치면 DebugModal 시각화에서 둘이 섞여 신호 구분 어려움.
+ * 배경: 단일 ring buffer가 reject entry 점령으로 fusion decision/sticky/gps-fix 진단을
+ * 잃는 자기 파괴 회귀(T4 evidence: 66건 / 200 cap = 33%). cap 분리로 진단 1순위 보호.
  */
-export interface CandidateRejectEntry {
-  kind: 'candidate-reject';
-  ts: number;
-  /** reject 사유 — 후속 확장 가능 (예: 'lockless-direction-reject' 등). */
-  reason: 'candidate-distance';
-  trainNo: string;
-  stationName: string;
-  line: string;
-  distanceKm: number;
-}
 
 /**
- * #1896 (RC-8) — boarding-lock GPS displacement gate trigger 측정.
- *
- * lock 활성 + lockMatch이지만 GPS와 1km 이상 차이 시 lock 1순위 승격 포기한 이벤트.
- * fusionDebugBuffer를 통해 DebugModal `## Fusion Tier (1h)`에서 사후 확인 가능.
+ * #1896 (RC-8) — boarding-lock GPS displacement gate trigger entry는 별 buffer로 분리됐다.
+ * `boardingLockDriftBuffer.ts` 참조. 동기: `candidateRejectBuffer`(#1902, RC-18)와 동일한
+ * self-pollution 방지 — stuck 시나리오에서 매 cycle drift entry가 push되어 fusionDebugBuffer
+ * 200~500 cap을 점령하면 fusion decision/sticky/gps-fix 진단 1순위 entry가 evict된다.
  */
-export interface BoardingLockDriftEntry {
-  kind: 'boarding-lock-drift';
-  ts: number;
-  /** 트리거된 분기 — positionTrainBoardingLockMatch 또는 arvlCdArrivedMatch. */
-  branch: 'positionTrain' | 'arvlCdArrived';
-  /** lock station name (lock 결과 역). */
-  lockStationName: string;
-  /** lock station line. */
-  lockStationLine: string;
-  /** GPS와 lock station 간 거리(m). null이면 GPS 없음(이 분기는 미도달이지만 타입 안정용). */
-  driftMeters: number | null;
-}
 
 export type FusionDebugEntry =
   | FusionDecisionEntry
   | GpsFixEntry
-  | StickyStationEntry
-  | CandidateRejectEntry
-  | BoardingLockDriftEntry;
+  | StickyStationEntry;
 
 const db = createDebugBuffer<FusionDebugEntry>(FUSION_DEBUG_BUFFER_CAPACITY);
 

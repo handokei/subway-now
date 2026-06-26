@@ -7,7 +7,7 @@
  *   3. GPS accuracy < 50m (윈도우 평균 기준)
  *   4. 출발역 100m 이내 (마지막 sample 기준 haversine)
  *   5. 방향 cosine ≥ 0.7 (velocity vector vs 출발역→다음역)
- *   6. 60s 윈도우 sample N≥3
+ *   6. 60s 윈도우 sample N≥1 (#1886 RC-2 옵션 D: 사용자 paradigm 1정거장 이내 발사)
  *   7. fused speed ≥ 5 km/h AND confidence ≠ 'low'
  *   8. motion ∈ {walking, automotive}
  *   9. trip당 1회 + 5분 silence
@@ -45,8 +45,12 @@ import type { BoardingPromptState, PositionPoint } from './types';
 export const ORIGIN_RADIUS_KM = 0.1;
 /** 게이트 #5 — 방향 cosine 임계. */
 export const DIRECTION_COSINE_THRESHOLD = 0.7;
-/** 게이트 #6 — 60s 윈도우 최소 sample. */
-export const MIN_WINDOW_SAMPLES = 3;
+/**
+ * 게이트 #6 — 60s 윈도우 최소 sample.
+ * #1886 RC-2 옵션 D: 3 → 1로 완화. 사용자 paradigm "1정거장 이내 발사" 충족을 위해
+ * 지하/지상 모두 sample 1개 이상이면 평가 진행. false positive는 #8 motion + consensusGate로 차단.
+ */
+export const MIN_WINDOW_SAMPLES = 1;
 /** 게이트 #7 — fused speed 임계 (km/h). */
 export const MIN_FUSED_SPEED_KMH = 5;
 /** 게이트 #9 — dismiss 후 silence 길이. */
@@ -59,6 +63,7 @@ export type GateOutcome =
 export type GateSkipReason =
   | 'no-series'
   | 'window-too-small'
+  | 'no-candidates'
   | 'accuracy-too-poor'
   | 'origin-too-far'
   | 'direction-mismatch'
@@ -140,12 +145,14 @@ function evaluateGpsGeometryGates(
   metrics: WindowedMetrics,
 ): GateOutcome | null {
   if (metrics.count < MIN_WINDOW_SAMPLES) {
-    return { pass: false, reason: 'window-too-small', metrics };
+    // #1886 RC-2 — MIN_WINDOW_SAMPLES=1이므로 count=0(데이터 전무) 만 여기서 차단.
+    // caller 및 GPS-bypass 분기의 count=0 체크와 동일 의미 — reason을 통일해 관측 편의 확보.
+    return { pass: false, reason: 'no-candidates', metrics };
   }
-  // window-too-small이 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 3).
+  // no-candidates가 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 1).
   // TypeScript narrowing을 위해 명시 assert로 진행.
   if (!metrics.start || !metrics.end) {
-    return { pass: false, reason: 'window-too-small', metrics };
+    return { pass: false, reason: 'no-candidates', metrics };
   }
   // #3 — accuracy. 평균 accuracy가 50m 이상이면 신뢰 불가.
   if (metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M) {
@@ -239,7 +246,8 @@ export function evaluateBoardingPromptGates(
   // GPS-bypass 환경(underground/mixed/unknown):
   //   iOS CMMotionActivity는 trip 시작 직후 5~10분 lag으로 unknown 상태가 normal.
   //   지하에서는 walking/automotive 수렴까지 시간이 더 필요하므로 unknown 허용.
-  //   단, count=0(series 완전 비어 있음)은 "warmup lag"이 아닌 "데이터 전무" — window-too-small로 차단.
+  //   단, count=0(series 완전 비어 있음)은 "warmup lag"이 아닌 "데이터 전무" — no-candidates로 차단.
+  //   (#1886 RC-2: window-too-small → no-candidates로 reason 통일)
   //   stationary만 차단 — 이동 중 아님이 확실한 경우만.
   //   caller consensusGate(arrival+lockAttachable 2-of-2)가 false positive를 추가 차단.
   //   (#1820: Day 2 production 36건 evidence — environment=unknown + motion=unknown 100% 차단)
@@ -248,7 +256,7 @@ export function evaluateBoardingPromptGates(
   //   기존 정책 유지 — walking/automotive만 통과.
   if (gpsDependentBypass) {
     if (metrics.count === 0) {
-      return { pass: false, reason: 'window-too-small', metrics };
+      return { pass: false, reason: 'no-candidates', metrics };
     }
     if (metrics.motion === 'stationary') {
       return { pass: false, reason: 'motion-stationary', metrics };

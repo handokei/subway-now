@@ -73,23 +73,9 @@ describe('fusionDebugBuffer', () => {
     expect(listener).toHaveBeenCalledTimes(3);
   });
 
-  it('#1616 (R12-a) accepts candidate-reject entries with distance/trainNo/reason', () => {
-    pushFusionDebugEntry({
-      kind: 'candidate-reject',
-      ts: 100,
-      reason: 'candidate-distance',
-      trainNo: 'T-9001',
-      stationName: '강변(동서울터미널)',
-      line: '2',
-      distanceKm: 5.4,
-    });
-    const entries = getFusionDebugEntries();
-    expect(entries).toHaveLength(1);
-    const entry = entries[0];
-    expect(entry.kind).toBe('candidate-reject');
-    expect((entry as { trainNo: string }).trainNo).toBe('T-9001');
-    expect((entry as { distanceKm: number }).distanceKm).toBe(5.4);
-  });
+  // #1902 (RC-18) — candidate-reject 별 buffer(candidateRejectBuffer.ts)로 이전.
+  // fusionDebugBuffer는 fusion/gps/sticky 3 kind만 다룬다. candidate-reject 테스트는
+  // utils/__tests__/candidateRejectBuffer.test.ts 참조.
 
   it('accepts gps-fix and gps-drop entries', () => {
     pushFusionDebugEntry({
@@ -123,35 +109,6 @@ describe('fusionDebugBuffer', () => {
     expect((entries[1] as { event: string }).event).toBe('gps-drop');
   });
 
-  it('#1896 (RC-8) accepts boarding-lock-drift entries with branch/drift fields', () => {
-    // GPS drift > 1km 시 lock 1순위 포기 이벤트 타입 회귀 방지.
-    pushFusionDebugEntry({
-      kind: 'boarding-lock-drift',
-      ts: 1_700_000_000_000,
-      branch: 'positionTrain',
-      lockStationName: '동대문역사문화공원',
-      lockStationLine: '2',
-      driftMeters: 1020,
-    });
-    pushFusionDebugEntry({
-      kind: 'boarding-lock-drift',
-      ts: 1_700_000_001_000,
-      branch: 'arvlCdArrived',
-      lockStationName: '신당',
-      lockStationLine: '2',
-      driftMeters: null, // GPS 없는 케이스
-    });
-    const entries = getFusionDebugEntries();
-    expect(entries).toHaveLength(2);
-
-    const first = entries[0] as { kind: string; branch: string; driftMeters: number | null };
-    expect(first.kind).toBe('boarding-lock-drift');
-    expect(first.branch).toBe('positionTrain');
-    expect(first.driftMeters).toBe(1020);
-
-    const second = entries[1] as { kind: string; branch: string; driftMeters: number | null };
-    expect(second.kind).toBe('boarding-lock-drift');
-    expect(second.branch).toBe('arvlCdArrived');
-    expect(second.driftMeters).toBeNull();
-  });
+  // #1896 (RC-8) boarding-lock-drift entries는 별 buffer(`boardingLockDriftBuffer`)로 분리됐다.
+  // 해당 테스트는 `boardingLockDriftBuffer.test.ts` 참조.
 });

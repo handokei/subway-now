@@ -2,13 +2,14 @@
  * KV CRUD for pending silent pushes (#566 P2a).
  *
  * 발사한 silent push 1건마다 `pending:<pushId>` entry를 기록한다.
- * P2c가 이 entry를 폴링해 30s 안에 디바이스 ACK가 안 오면 alert push fallback을 발사한다.
+ * P2c가 이 entry를 폴링해 60s 안에 디바이스 ACK가 안 오면 alert push fallback을 발사한다.
  * 디바이스 ACK 도달 시 P2a /push/ack 라우트가 entry를 삭제한다.
  *
  * 모든 함수는 `kv === undefined`(미바인딩)일 때 graceful no-op — 개발 환경 호환.
  *
  * Key format: pending:<pushId>
- * TTL: 60s (Cloudflare KV 최소값). P2c는 30s 임계는 sentAt 시각 기준으로 판단.
+ * TTL: 120s (#1894로 60s ACK 임계와 분리). P2c는 60s 임계는 sentAt 시각 기준으로 판단.
+ *   PENDING_TTL_SEC(120s) ≥ FALLBACK_THRESHOLD_MS(60s) + cron 1분 backstop 여유를 보장.
  */
 
 import type { AlarmPhase } from './alarm';
@@ -16,7 +17,14 @@ import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from '
 import type { ApnsEnv } from './types';
 
 const PENDING_PREFIX = 'pending:';
-export const PENDING_TTL_SEC = 60;
+/**
+ * KV TTL. #1894로 FALLBACK_THRESHOLD_MS가 30s → 60s로 완화되면서, cron(1분 주기) backstop을
+ * 더한 최악 시각 ≈ 120s에 fallback cron이 entry를 봐야 한다. TTL=60s이면 임계 도달 직후 KV가
+ * 자연 expire돼 후속 cron이 entry 못 보고 fallback 1회 누락 위험. 60s → 120s 상향.
+ *
+ * 정합: PENDING_TTL_SEC(120s) ≥ FALLBACK_THRESHOLD_MS(60s) + 최악 cron 지연(60s).
+ */
+export const PENDING_TTL_SEC = 120;
 
 /**
  * cron read의 KV cacheTtl (#766/#770). trips.ts와 같은 이유 — silent push 발사 직후 putPending된
