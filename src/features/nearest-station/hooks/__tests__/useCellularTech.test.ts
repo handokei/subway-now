@@ -49,9 +49,18 @@ describe('useCellularTech (#1543)', () => {
     expect(mockStop).not.toHaveBeenCalled();
   });
 
-  it('지원 — LTE 잡힘 시 surface vote', async () => {
+  it('지원 — LTE 잡힘 시 surface-weak vote (#1876 soft downgrade)', async () => {
     mockSupported.mockReturnValue(true);
     mockGet.mockReturnValue('CTRadioAccessTechnologyLTE');
+
+    const { result } = renderHook(() => useCellularTech());
+    await waitFor(() => expect(result.current).toBe('surface-weak'));
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('지원 — NR (5G SA) 잡힘 시 surface hard-reject vote', async () => {
+    mockSupported.mockReturnValue(true);
+    mockGet.mockReturnValue('CTRadioAccessTechnologyNR');
 
     const { result } = renderHook(() => useCellularTech());
     await waitFor(() => expect(result.current).toBe('surface'));
@@ -63,7 +72,7 @@ describe('useCellularTech (#1543)', () => {
     mockGet.mockReturnValue('CTRadioAccessTechnologyLTE');
 
     const { result } = renderHook(() => useCellularTech());
-    await waitFor(() => expect(result.current).toBe('surface'));
+    await waitFor(() => expect(result.current).toBe('surface-weak'));
 
     // 지하 진입 — native가 Edge로 떨어짐
     mockGet.mockReturnValue('CTRadioAccessTechnologyEdge');

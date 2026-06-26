@@ -4,7 +4,11 @@
  * 핵심 정책:
  *   - native module 부재 → 모든 API graceful (null / no-op / false)
  *   - 예외 → null / no-op (graceful)
- *   - classifyCellularEnvironment: 4G/5G→surface, 2G/3G→underground, 그 외→unknown
+ *   - classifyCellularEnvironment:
+ *       NR (5G SA) → 'surface' (hard-reject)
+ *       LTE / LTEAdvanced / NRNSA → 'surface-weak' (soft downgrade, #1876)
+ *       2G/3G → 'underground'
+ *       null / 미지 → 'unknown'
  */
 
 const mockNativeModule = {
@@ -137,14 +141,19 @@ describe('cellularTech native wrapper (#1543)', () => {
   });
 });
 
-describe('classifyCellularEnvironment (#1543)', () => {
+describe('classifyCellularEnvironment (#1543 + #1876 soft downgrade)', () => {
+  // NR (5G SA) — 지하 인프라 미비. hard-reject 유지 → 'surface'.
+  it('CTRadioAccessTechnologyNR → surface (5G SA hard-reject)', () => {
+    expect(classifyCellularEnvironment('CTRadioAccessTechnologyNR')).toBe('surface');
+  });
+
+  // LTE / LTEAdvanced / NRNSA — 서울 지하철 DAS 지하 중계. soft downgrade → 'surface-weak'.
   it.each([
     'CTRadioAccessTechnologyLTE',
     'CTRadioAccessTechnologyLTEAdvanced',
-    'CTRadioAccessTechnologyNR',
     'CTRadioAccessTechnologyNRNSA',
-  ])('%s → surface (4G/5G)', (tech) => {
-    expect(classifyCellularEnvironment(tech)).toBe('surface');
+  ])('%s → surface-weak (서울 DAS 지하 중계 — soft downgrade, #1876)', (tech) => {
+    expect(classifyCellularEnvironment(tech)).toBe('surface-weak');
   });
 
   it.each([

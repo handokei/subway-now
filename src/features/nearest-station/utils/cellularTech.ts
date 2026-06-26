@@ -8,8 +8,13 @@
  * 예외 모두 `null` / no-op로 처리. "모르는 상태"는 vote 미투표 (환경 판정 영향 0).
  *
  * 분류 정책 (Apple `CTRadioAccessTechnology*` 상수 기준):
- *   - `surface` (지상 vote)  : LTE, LTEAdvanced, NR(5G), NRNSA(5G NSA)
- *       → macro cell 안정 coverage. 지하 펨토셀로는 통상 NR/LTE 우선 안 잡힘.
+ *   - `surface` (지상 hard-reject): NR (5G SA)
+ *       → 2026년 기준 지하 인프라 거의 없음. hard-reject 유지.
+ *   - `surface-weak` (지상 soft downgrade): LTE, LTEAdvanced, NRNSA (5G NSA)
+ *       → 서울 지하철 DAS가 LTE/NRNSA를 지하에서도 중계 (100% 커버). 지하에서도 잡힘.
+ *       → hard-reject 대신 soft downgrade: undergroundSSOTConsensus에서 envVotes −1로 처리.
+ *       → 다른 신호(barometer/accelerometer)가 충분하면 underground 채택 허용.
+ *       (#1876 — plan-1846 §4.1 옵션 B 적용)
  *   - `underground` (지하 vote): GPRS, Edge, WCDMA, HSDPA, HSUPA, CDMA1x, eHRPD, CDMAEVDORev0/A/B
  *       → 지하 캐리어 펨토셀 / DAS 안테나가 흔히 fallback하는 2G/3G 신호.
  *   - `unknown`              : null / 빈 문자열 / 미지의 상수
@@ -74,8 +79,15 @@ export function getCurrentCellularTech(): string | null {
   }
 }
 
-/** 환경 vote 결과. consensusGate가 surface/underground 입력으로 사용. */
-export type CellularEnvironmentVote = 'surface' | 'underground' | 'unknown';
+/**
+ * 환경 vote 결과. consensusGate / undergroundSSOTConsensus 입력으로 사용.
+ *
+ * - `'surface'`      : NR (5G SA) — 지하 발생 낮음. hard-reject 유지.
+ * - `'surface-weak'` : LTE / LTEAdvanced / NRNSA — 지하에서도 잡힘(서울 DAS). soft downgrade.
+ * - `'underground'`  : 2G/3G — 지하 확정 1표.
+ * - `'unknown'`      : vote 미투표.
+ */
+export type CellularEnvironmentVote = 'surface' | 'surface-weak' | 'underground' | 'unknown';
 
 /**
  * Apple `CTRadioAccessTechnology` 상수 → 환경 vote 매핑.
@@ -85,10 +97,22 @@ export type CellularEnvironmentVote = 'surface' | 'underground' | 'unknown';
  *
  * 상수 prefix `CTRadioAccessTechnology`는 native가 그대로 string으로 반환한다.
  */
-const SURFACE_TECHS: ReadonlySet<string> = new Set([
+
+/**
+ * NR (5G SA) — 지하 인프라 미비 (2026년 기준). hard-reject 유지.
+ * 새 5G SA 기술이 지하 커버를 갖추기 전까지 이 분류를 유지한다.
+ */
+const SURFACE_HARD_TECHS: ReadonlySet<string> = new Set([
+  'CTRadioAccessTechnologyNR',
+]);
+
+/**
+ * LTE / LTEAdvanced / NRNSA — 서울 지하철 DAS 지하 중계로 지하에서도 흔히 수신.
+ * hard-reject 대신 soft downgrade (`'surface-weak'`).
+ */
+const SURFACE_WEAK_TECHS: ReadonlySet<string> = new Set([
   'CTRadioAccessTechnologyLTE',
   'CTRadioAccessTechnologyLTEAdvanced',
-  'CTRadioAccessTechnologyNR',
   'CTRadioAccessTechnologyNRNSA',
 ]);
 
@@ -108,13 +132,15 @@ const UNDERGROUND_TECHS: ReadonlySet<string> = new Set([
 /**
  * radio tech 코드 → 환경 vote 분류.
  *
- * - 4G/5G  → `'surface'`  (지상 vote)
- * - 2G/3G  → `'underground'` (지하 vote)
- * - null / 미지 코드 → `'unknown'` (vote 미투표)
+ * - NR (5G SA)       → `'surface'`      (hard-reject — 지하 발생 낮음)
+ * - LTE / NRNSA      → `'surface-weak'` (soft downgrade — 서울 지하 DAS 중계)
+ * - 2G/3G            → `'underground'`  (지하 1표)
+ * - null / 미지 코드  → `'unknown'`     (vote 미투표)
  */
 export function classifyCellularEnvironment(tech: string | null): CellularEnvironmentVote {
   if (!tech) return 'unknown';
-  if (SURFACE_TECHS.has(tech)) return 'surface';
+  if (SURFACE_HARD_TECHS.has(tech)) return 'surface';
+  if (SURFACE_WEAK_TECHS.has(tech)) return 'surface-weak';
   if (UNDERGROUND_TECHS.has(tech)) return 'underground';
   return 'unknown';
 }

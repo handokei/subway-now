@@ -20,11 +20,14 @@
  *       (c) Barometer `stop=true` (FG/BG) — #1574
  *       (d) Cellular `underground` vote (FG/BG) — #1574
  *       (e) Accelerometer `automotive` pattern (FG/BG, BG location piggyback) — #1542
+ *   - Cellular `surface-weak` (LTE/NRNSA) — #1876 soft downgrade:
+ *       envVotes −1. 다른 신호 우세 시 underground 채택 허용 (hard-reject 아님).
  *
  * 합의 임계:
  *   - 2-of-N 통과 시 SSOT 채택 (station pair + env vote 어떤 조합이든 OK)
  *   - 단, 채택 station이 필요하므로 station pair ≥ 1 필수 (env vote만 2개로는 불가)
- *   - Cellular `surface` vote 시 underground SSOT 자체 reject (환경 확정 모순)
+ *   - Cellular `surface` vote (NR SA) 시 underground SSOT 자체 reject (환경 확정 모순)
+ *   - Cellular `surface-weak` vote (LTE/NRNSA) 시 envVotes −1 (soft downgrade)
  *   - GPS는 input set에서 reject (ADR-015 §5, backend `consensusGate.ts` 동일 정책)
  *
  * station 채택 우선순위: Position-Train > WiFi (강 → 약 신호).
@@ -69,7 +72,8 @@ export interface UndergroundSSOTInput {
   barometerStop?: boolean | undefined;
   /**
    * #1574 — `useCellularTech()` 환경 vote (CTRadioAccessTechnology 분류).
-   * 'surface'면 underground SSOT 자체 reject (환경 확정 모순).
+   * 'surface' (NR SA)면 underground SSOT 자체 reject (환경 확정 모순 — hard-reject).
+   * 'surface-weak' (LTE/NRNSA)면 envVotes −1 (soft downgrade — #1876).
    * 'underground'면 환경-확정 1표.
    * 'unknown'/undefined → vote 미투표.
    * iOS BG에서도 동작 (CTServiceRadioAccessTechnologyDidChangeNotification observer).
@@ -125,7 +129,8 @@ export function undergroundSSOTConsensus(
     tripStartedAt,
   } = input;
 
-  // 환경 확정 모순 — cellular가 surface면 underground SSOT 자체 candidate X.
+  // 환경 확정 모순 — cellular 'surface' (NR SA)면 underground SSOT 자체 candidate X.
+  // 'surface-weak' (LTE/NRNSA)는 hard-reject 아님 — soft downgrade (envVotes −1, 하단 처리).
   if (cellularEnvironmentVote === 'surface') return null;
 
   // Station pair 후보 — 채택 우선순위 순서. position-train > wifi.
@@ -144,9 +149,11 @@ export function undergroundSSOTConsensus(
   }
 
   // Environment-confirming votes (station 미제공). 신규 #1574 — BG WiFi 갭 해소 + #1542 accelerometer.
+  // #1876 — 'surface-weak' soft downgrade: LTE/NRNSA는 envVotes −1 (지하에서도 잡히므로 hard-reject X).
   let envVotes = 0;
   if (barometerStop === true) envVotes += 1;
   if (cellularEnvironmentVote === 'underground') envVotes += 1;
+  if (cellularEnvironmentVote === 'surface-weak') envVotes -= 1;
   if (accelerometerPattern === 'automotive') envVotes += 1;
 
   // Station pair ≥ 1 필수 (env vote만으로는 station 채택 불가).
