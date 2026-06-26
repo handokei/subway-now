@@ -5287,6 +5287,55 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
     // 새 발사로 마커 갱신.
     expect(stored.lastAutoPromptedAt).toBe(NOW);
   });
+
+  // #1886 RC-2 옵션 D — trip-scoped dedup reset.
+  // 새 trip(lastAutoPromptedAt이 없음)은 30분 dedup이 없어 즉시 발사한다.
+  // index.ts에서 isSameSession=false 시 lastAutoPromptedAt을 reset하므로
+  // 다음 cron은 lastAutoPromptedAt=undefined인 trip을 받아 dedup 없이 평가.
+  it('#1886 RC-2 옵션 D: lastAutoPromptedAt=undefined(새 trip) → 30분 이내여도 dedup 없이 발사', async () => {
+    const kv = new InMemoryKV();
+    const token = 'fub-new-trip';
+    // 새 trip 시뮬레이션: index.ts가 isSameSession=false → lastAutoPromptedAt undefined로 reset.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makePromptTrip({
+        token,
+        lastAutoPromptedAt: undefined, // reset 상태 — 새 trip 첫 평가
+        boardingPromptState: undefined,
+      }),
+    );
+    await seedHappySeries(kv, token);
+    const stats = await runOneCycle(kv, [
+      { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+    ]);
+    // dedup 없이 정상 발사.
+    expect(stats.boardingPromptAutoDeduped).toBe(0);
+    expect(stats.boardingPromptFired).toBe(1);
+    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+    expect(stored.lastAutoPromptedAt).toBe(NOW);
+  });
+
+  // #1886 RC-2 옵션 D — 같은 trip 내 30분 dedup은 유지 (spam 방지).
+  // lastAutoPromptedAt이 있고 window 안이면 dedup 적용 — 이 동작은 변경 없음.
+  it('#1886 RC-2 옵션 D: 같은 trip 내 window 안 → dedup 유지 (spam 방지)', async () => {
+    const kv = new InMemoryKV();
+    const token = 'fub-same-trip-dedup';
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makePromptTrip({
+        token,
+        lastAutoPromptedAt: NOW - 2 * 60_000, // 2분 전 — 같은 trip 내 window 안
+        boardingPromptState: undefined,
+      }),
+    );
+    await seedHappySeries(kv, token);
+    const stats = await runOneCycle(kv, [
+      { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+    ]);
+    // 같은 trip 내 30분 dedup — spam 방지.
+    expect(stats.boardingPromptAutoDeduped).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

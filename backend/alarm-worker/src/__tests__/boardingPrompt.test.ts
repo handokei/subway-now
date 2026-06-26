@@ -101,16 +101,29 @@ describe('evaluateBoardingPromptGates — 9단 AND 게이트', () => {
     expect(r.pass).toBe(true);
   });
 
-  it('#6: N<3 → window-too-small', () => {
-    const small = happySeries(now).slice(-2);
+  it('#6: N≥1이면 통과 — sample 2개도 OK (#1886 RC-2: MIN_WINDOW_SAMPLES=1)', () => {
+    // 옵션 D: 후보 1개 이상이면 발사. N=2 sample은 통과해야 한다.
+    const twoSamples = happySeries(now).slice(-2);
     const r = evaluateBoardingPromptGates({
-      series: small,
+      series: twoSamples,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+    });
+    // 2 samples: accuracy/origin/direction/speed 조건 충족 시 통과.
+    // happySeries 2개는 direction cosine이 0.7 이상이고 accuracy/origin 조건도 충족.
+    expect(r.pass).toBe(true);
+  });
+
+  it('#6: N=0(빈 series) → no-candidates (#1886 RC-2: count=0만 차단)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: [],
       origin: ORIGIN,
       nextStation: NEXT,
       now,
     });
     expect(r.pass).toBe(false);
-    if (!r.pass) expect(r.reason).toBe('window-too-small');
+    if (!r.pass) expect(r.reason).toBe('no-candidates');
   });
 
   it('#3: 평균 accuracy ≥ 50m → accuracy-too-poor', () => {
