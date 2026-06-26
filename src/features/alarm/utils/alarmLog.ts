@@ -72,7 +72,12 @@ export type AlarmLogSource =
   | 'cross-trip-mirror-launch'
   // #1769 — accelerometer pattern 관찰 stamp. automotive/walking/stationary/unknown 4 pattern.
   // 1s dedup으로 같은 pattern 연속 시 1건만 적재 — 폴링 cycle마다 중복 log spam 방지.
-  | 'accel-pattern-observed';
+  | 'accel-pattern-observed'
+  // #1887 (RC-14 paradigm 4) — 환승역 도달 + motion stationary 30s + grace 충족 시 transfer
+  // 분기 자동 lock release 발생을 stamp. device-side self-contained evidence — push notification
+  // fire는 backend cascade(RC-13/RC-16) 의존이라 본 PR 범위 외. 7일 production 측정에서 detect
+  // 빈도(`leg_swap_prompt_fired` count)와 paradigm 1 회귀 점검(`autoLock_fired_count = 0`)을 같이 본다.
+  | 'leg-transition';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1038,6 +1043,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'cross-trip-mirror-mismatch': null,
   'cross-trip-mirror-launch': null,
   'accel-pattern-observed': null,
+  'leg-transition': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1647,6 +1653,27 @@ export function logAccelPatternObserved(pattern: 'automotive' | 'walking' | 'sta
 /** 테스트용 — accel-pattern dedup 윈도우 리셋. */
 export function _resetAccelPatternWindowForTests(): void {
   lastAccelPatternTs.clear();
+}
+
+/**
+ * #1887 (RC-14 paradigm 4) — 환승역 도달 + motion stationary 30s + 거리/grace 모두 충족 시
+ * transfer 분기 자동 lock release 발생을 1건 stamp.
+ *
+ * device-side self-contained evidence — push notification fire는 backend cascade(RC-13/RC-16)
+ * 의존이라 본 PR 범위 외. 7일 production 측정에서:
+ *   - `leg_swap_prompt_fired` count > 0 (= leg 전환 detect 성공 빈도)
+ *   - `autoLock_fired_count = 0` (= RC-1 paradigm 1 회귀 없음) 와 같이 본다.
+ *
+ * stationName 슬롯에 `fromLine·transferStationName` 인코딩 — 기존 schema 확장 없이 DebugModal
+ * 가시화 (logBoardingPromptFired 패턴 재사용).
+ */
+export function logLegTransition(input: { fromLine: string; transferStationName: string }): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'leg-transition',
+    outcome: 'fired',
+    stationName: `${input.fromLine}·${input.transferStationName}`,
+  });
 }
 
 // ── CRUD ──

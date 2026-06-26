@@ -5,9 +5,11 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,
+  LEG_TRANSITION_STATIONARY_GATE_MS,
 } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { getTransferLegs } from '../../../shared/utils/transferLegs';
+import { logLegTransition } from '../utils/alarmLog';
 
 const logger = createLogger('useBoardingLockAutoRelease');
 
@@ -27,6 +29,20 @@ export interface UseBoardingLockAutoReleaseInputs {
    * #899 (Seam C) — 환승 leg 도달 시 lock 자동 release을 위해 추가.
    */
   route?: Route;
+  /**
+   * #1887 (RC-14 paradigm 4 보강) — iOS CMMotionActivity stationary 신호.
+   *
+   * **transfer 분기에만** 적용되는 추가 게이트. 사용자 paradigm 4 "이동속도가 빠르지 않다면 판단 후에
+   * 자동 하차"의 정확 적용. 환승역 도달 + 거리/grace 조건이 충족돼도 motion stationary가
+   * `LEG_TRANSITION_STATIONARY_GATE_MS`(30s) 이상 지속되어야 leg 전환 release 발화.
+   *
+   * 도착(destination) 분기는 본 게이트 미적용 — 도착 시점에는 사용자가 짐 정리/하차 동작으로 motion이
+   * walking 변동 가능. transfer 분기는 환승 도보 전 정차 시간이 명확한 시그널이라 30s 이상 정지
+   * 신호를 release 조건에 추가해 paradigm 5 "1정거장 이내 deadline" 정확성 확보.
+   *
+   * `undefined`(미측정) 시 기존 동작(transfer 분기 release 즉시 평가) — backward-compat.
+   */
+  motionStationary?: boolean | undefined;
 }
 
 /**
@@ -70,19 +86,26 @@ export function useBoardingLockAutoRelease({
   distanceKm,
   releaseLock,
   route = null,
+  motionStationary,
 }: UseBoardingLockAutoReleaseInputs): void {
   const firstArrivedAtRef = useRef<number | null>(null);
   const lastTrainCodeRef = useRef<string | null>(null);
+  // #1887 (RC-14) — transfer 분기 진입 시점 ts 추적. motion stationary 30s gate에 사용.
+  // arrival ts와 별도 ref인 이유: 사용자가 환승역 진입 후 motion stationary가 늦게 latch되는
+  // 케이스에서 grace ms와 stationary gate ms가 독립 평가되어 각자 threshold를 채워야 fire.
+  const firstStationaryAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     const trainCode = lock?.trainCode ?? null;
     if (lastTrainCodeRef.current !== trainCode) {
       lastTrainCodeRef.current = trainCode;
       firstArrivedAtRef.current = null;
+      firstStationaryAtRef.current = null;
     }
 
     if (!lock || !destinationId || !currentStation || distanceKm == null) {
       firstArrivedAtRef.current = null;
+      firstStationaryAtRef.current = null;
       return;
     }
 
@@ -95,21 +118,51 @@ export function useBoardingLockAutoRelease({
     const proximityOk = distanceKm * 1000 < ARRIVAL_PROXIMITY_THRESHOLD_M;
     if (matchKind === null || !proximityOk) {
       firstArrivedAtRef.current = null;
+      firstStationaryAtRef.current = null;
       return;
     }
 
     const now = Date.now();
     if (firstArrivedAtRef.current === null) {
       firstArrivedAtRef.current = now;
-      return;
     }
 
-    if (now - firstArrivedAtRef.current >= AUTO_RELEASE_GRACE_MS) {
-      firstArrivedAtRef.current = null;
-      logger.info(`${matchKind} grace 충족 → lock 자동 release`);
-      releaseLock();
+    // #1887 (RC-14) — transfer 분기 motion stationary 30s gate.
+    // motionStationary가 false면 ref 리셋 — 다음 stationary=true 진입에서 새로 카운트.
+    // motionStationary가 undefined(미측정)면 ref 리셋 — 게이트 미적용 분기로 폴백.
+    if (matchKind === 'transfer') {
+      if (motionStationary === true) {
+        if (firstStationaryAtRef.current === null) firstStationaryAtRef.current = now;
+      } else {
+        firstStationaryAtRef.current = null;
+      }
     }
-  }, [lock, destinationId, currentStation, distanceKm, releaseLock, route]);
+
+    const arrivedFor = now - firstArrivedAtRef.current;
+    if (arrivedFor < AUTO_RELEASE_GRACE_MS) return;
+
+    // transfer 분기 + motion stationary 측정 시: 30s gate도 동시 충족 필요.
+    // 미측정(undefined)이면 기존 동작(grace만으로 release) — backward-compat.
+    if (matchKind === 'transfer' && motionStationary !== undefined) {
+      const stationaryFor =
+        firstStationaryAtRef.current !== null ? now - firstStationaryAtRef.current : 0;
+      if (stationaryFor < LEG_TRANSITION_STATIONARY_GATE_MS) return;
+    }
+
+    firstArrivedAtRef.current = null;
+    firstStationaryAtRef.current = null;
+    logger.info(`${matchKind} grace 충족 → lock 자동 release`);
+    releaseLock();
+    // #1887 (RC-14) — leg 전환 evidence 적재. transfer 분기 release만 leg-transition으로 분류.
+    // device-side self-contained evidence — push notification fire는 backend cascade(RC-13/RC-16)
+    // 의존이라 본 PR 범위 외. alarmLog로 detect 시점 + 정거장 컨텍스트만 stamp.
+    if (matchKind === 'transfer') {
+      logLegTransition({
+        fromLine: lock.boardingLine,
+        transferStationName: currentStation.name,
+      });
+    }
+  }, [lock, destinationId, currentStation, distanceKm, releaseLock, route, motionStationary]);
 }
 
 /**

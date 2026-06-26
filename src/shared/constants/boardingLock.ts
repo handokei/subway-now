@@ -56,6 +56,26 @@ export const ARRIVAL_PROXIMITY_THRESHOLD_M = 300;
 export const AUTO_RELEASE_GRACE_MS = 45_000;
 
 /**
+ * #1887 (RC-14 paradigm 4) — transfer 분기 자동 release에 추가되는 motion stationary 게이트(ms).
+ *
+ * 사용자 paradigm 4 "이동속도가 빠르지 않다면 판단 후에 자동 하차"의 정확 적용. 환승역 도달 +
+ * `ARRIVAL_PROXIMITY_THRESHOLD_M`(300m) 거리 + `AUTO_RELEASE_GRACE_MS`(45s) grace에 더해
+ * iOS CMMotionActivity stationary가 `LEG_TRANSITION_STATIONARY_GATE_MS` 이상 지속되어야 release.
+ *
+ * 30_000ms로 둔 이유:
+ *  - 사용자 paradigm 5 "1정거장 이내 deadline" 정합 — 환승역에서 도보 시작 직전 정차 시간이 짧으면
+ *    사용자가 곧바로 다음 leg로 이동한다는 신호이므로 release를 미뤄야 함.
+ *  - 30s는 사용자 issue body T4 시나리오의 "30초~수분 stationary" 정신 정확 매칭.
+ *  - 너무 짧으면(예: 10s) 정차 직전 한 사이클만 stationary로 잡혀도 release 발화 위험 — paradigm 4
+ *    의 "판단 후" 정신 위반.
+ *  - 너무 길면(예: 120s) 사용자가 이미 환승 통로로 이동했는데 lock이 남는 시간이 길어짐.
+ *
+ * 도착(destination) 분기에는 미적용 — 도착 시점에는 사용자가 짐 정리/하차 동작으로 motion이 walking
+ * 변동 가능. transfer 분기만 환승 도보 전 정차 시간이 명확한 시그널.
+ */
+export const LEG_TRANSITION_STATIONARY_GATE_MS = 30_000;
+
+/**
  * #767 — boardingLock 해제(non-null → null) 시 register POST를 지연하는 debounce(ms).
  *
  * 배경(PR #765 evidence): 사용자가 옛 lock을 release하고 즉시 새 lock을 잡는 swap 흐름에서

@@ -73,6 +73,7 @@ import {
   lastNReasons,
   logBoardingPromptFired,
   logBoardingPromptResponded,
+  logLegTransition,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
@@ -2080,6 +2081,28 @@ describe('alarmLog', () => {
       expect(saved[0].source).toBe('boarding-prompt');
       expect(saved[0].outcome).toBe('fired');
       expect(saved[0].stationName).toBe('2·강남');
+    });
+
+    it('#1887 (RC-14): logLegTransition가 leg-transition entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLegTransition({ fromLine: '2', transferStationName: '건대입구' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('leg-transition');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].stationName).toBe('2·건대입구');
+    });
+
+    it('#1887 (RC-14): leg-transition source는 silent push outcome 집계에서 제외 (null bucket)', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: now - 1000, source: 'leg-transition', outcome: 'fired' },
+        { ts: now - 2000, source: 'silent-push-fired', outcome: 'fired' },
+      ];
+      const counts = countSilentPushOutcomes(entries);
+      // leg-transition은 SILENT_PUSH_OUTCOME_SOURCES에서 null bucket — silent push 카운터에 미반영.
+      expect(counts).toEqual({ received: 0, fired: 1, skipped: 0 });
     });
 
     it('countBoardingPromptByWindow가 윈도우별 발사 횟수를 집계한다', () => {
