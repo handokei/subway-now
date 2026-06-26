@@ -102,8 +102,9 @@ import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
 import { deleteSsot, readSsot } from './tripPositionSsot';
 import {
   computeObservabilityMetrics,
+  readLastSuccessfulMetrics,
   readObservabilityMetrics,
-  storeObservabilityMetrics,
+  tryStoreObservabilityMetrics,
 } from './observabilityMetrics';
 import { getTrip, putTrip } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
@@ -696,7 +697,15 @@ app.post('/trips', async (c) => {
     hopIndex: trip.waypoints[0]?.hopIndex,
   });
 
-  return c.json({ ok: true, token: trip.token });
+  // #1897 (RC-5) — KV에 박힌 권위 apnsEnv 를 device로 echo. device 는 이를 stamp 해 다음
+  // register 시 build env 대신 송신 → backend self-heal(envCorrected) 발동을 0에 수렴.
+  // existing.apnsEnv 가 corrected 된 경우(#1370 L1) 그 값이 그대로 device 로 전달된다.
+  // 구 device는 응답에서 본 필드를 무시 (backward-compatible).
+  return c.json({
+    ok: true,
+    token: trip.token,
+    confirmedEnv: trip.apnsEnv ?? 'sandbox',
+  });
 });
 
 /**
@@ -1095,7 +1104,7 @@ app.get('/metrics/recall/summary', (c) => {
 });
 
 /**
- * Observability metrics endpoint (#1752, #1503 M3 Sub 2).
+ * Observability metrics endpoint (#1752, #1503 M3 Sub 2, #1889 RC-19).
  *
  * DebugModal(Sub 1)이 1h cron이 미리 집계한 4 KPI를 읽어 표시한다.
  * 집계 결과가 없으면(cron 미실행/첫 배포) 실시간으로 계산해 반환하고 KV에 적재.
@@ -1105,7 +1114,12 @@ app.get('/metrics/recall/summary', (c) => {
  *
  * Response 200:
  *   { accuracyRatio, silentPushDeliveryRatio, locklessMissRatio, boardableMissRatio, window, timestamp }
+ *   stale fallback 시 `X-Stale-Cache: true` + `X-Error: <reason>` header.
  * Response 401/503: 인증/binding 정책 동일 (TELEMETRY_R2 미바인딩 시 503 graceful)
+ *
+ * #1889 RC-19 — KV day-limit 초과 / compute throw 시 last-success cache로 fail-open.
+ *   사용자 dashboard가 "no data" 대신 stale 데이터를 보게 한다. 에러는 Sentry breadcrumb으로
+ *   forward되어 silent drop 되지 않는다.
  */
 app.get('/v1/observability/metrics', async (c) => {
   const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
@@ -1115,14 +1129,36 @@ app.get('/v1/observability/metrics', async (c) => {
 
   const now = Date.now();
 
-  // KV에 최신 집계가 있으면 그대로 반환 — R2 scan 비용 절감.
-  const cached = await readObservabilityMetrics(c.env.TRIPS, now);
-  if (cached) return c.json(cached);
+  // KV에 최신 1h bucket 집계가 있으면 그대로 반환 — R2 scan + list() 비용 0.
+  try {
+    const cached = await readObservabilityMetrics(c.env.TRIPS, now);
+    if (cached) return c.json(cached);
+  } catch (err) {
+    // KV read 자체 실패는 day-limit과는 별개. compute로 fallthrough하되 Sentry forward.
+    captureBackendException(err, { path: 'observability/metrics', stage: 'read-cache' });
+  }
 
   // 첫 요청 또는 KV TTL 만료(1h) 시 실시간 계산 후 KV 적재.
-  const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now, c.env.TRIPS);
-  await storeObservabilityMetrics(c.env.TRIPS, metrics, now);
-  return c.json(metrics);
+  try {
+    const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now, c.env.TRIPS);
+    const storeResult = await tryStoreObservabilityMetrics(c.env.TRIPS, metrics, now, {
+      onError: (err, key) =>
+        captureBackendException(err, { path: 'observability/metrics', stage: 'kv-put', key }),
+    });
+    // storeResult.stored=false라도 metrics 자체는 정상이므로 200 반환. fallback caching만 실패.
+    return c.json(metrics, 200, storeResult.stored ? {} : { 'X-Store-Failed': 'true' });
+  } catch (err) {
+    // compute 실패 (R2 outage / KV list day-limit) → last-success fallback.
+    captureBackendException(err, { path: 'observability/metrics', stage: 'compute' });
+    const fallback = await readLastSuccessfulMetrics(c.env.TRIPS);
+    if (fallback) {
+      return c.json(fallback, 200, {
+        'X-Stale-Cache': 'true',
+        'X-Error': err instanceof Error ? err.message : 'compute_failed',
+      });
+    }
+    return c.json({ error: 'metrics_unavailable' }, 503);
+  }
 });
 
 /**
@@ -2141,13 +2177,28 @@ const handler = {
     // #1752 — observability metrics 1h 주기 집계. cron이 매분 실행되지만 1h bucket 키가
     // 이미 KV에 있으면 readObservabilityMetrics가 null을 반환하지 않으므로 computeAndStore는
     // 실행되지 않음. TELEMETRY_R2 미바인딩 시 graceful no-op.
+    //
+    // #1889 RC-19 — KV day-limit 초과 / compute throw 시 swallow + Sentry forward.
+    //   cron 자체는 throw 없이 다음 minute에 재시도. endpoint는 last-success fallback으로 200.
     if (env.TELEMETRY_R2) {
       const now = Date.now();
-      const existing = await readObservabilityMetrics(env.TRIPS, now);
-      if (!existing) {
-        const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now, env.TRIPS);
-        await storeObservabilityMetrics(env.TRIPS, metrics, now);
-        log('observability metrics aggregated', { window: '24h', timestamp: now });
+      try {
+        const existing = await readObservabilityMetrics(env.TRIPS, now);
+        if (!existing) {
+          const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now, env.TRIPS);
+          const storeResult = await tryStoreObservabilityMetrics(env.TRIPS, metrics, now, {
+            onError: (err, key) =>
+              captureBackendException(err, { path: 'scheduled/observabilityMetrics', stage: 'kv-put', key }),
+          });
+          log('observability metrics aggregated', {
+            window: '24h',
+            timestamp: now,
+            stored: storeResult.stored,
+          });
+        }
+      } catch (err) {
+        // compute / read throw — swallow. cron이 매분 재시도하므로 transient 실패는 다음에 회복.
+        captureBackendException(err, { path: 'scheduled/observabilityMetrics', stage: 'compute' });
       }
     }
   },

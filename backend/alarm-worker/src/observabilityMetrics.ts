@@ -41,6 +41,20 @@ const METRICS_KEY_PREFIX = 'obs-metrics:24h:';
 /** 1h TTL — rolling window 다음 집계 전까지 캐시. */
 const METRICS_KV_TTL_SEC = 60 * 60;
 
+/**
+ * #1889 RC-19 — KV day-limit 도달 시 fallback용 long-TTL "last-success" 캐시 키.
+ *
+ * 1h bucket 캐시(`obs-metrics:24h:{bucket}`)는 매 시간 키가 바뀌어 fallback으로 사용 불가.
+ * 별도 고정 키에 24h TTL로 마지막 성공 응답을 보관 → KV write 실패/compute throw 시 endpoint가
+ * stale 데이터로 fail-open할 수 있다.
+ *
+ * 키 1개 + 24h TTL 이므로 day-limit 부담은 hourly bucket과 동일(1h마다 1 put). 추가 list 호출 X.
+ */
+const METRICS_LAST_SUCCESS_KEY = 'obs-metrics:last-success';
+
+/** 마지막 성공 캐시 TTL — 24h. day-limit 초과로 1h 연속 실패해도 fail-open 보장. */
+const METRICS_LAST_SUCCESS_TTL_SEC = 24 * 60 * 60;
+
 /** accel pattern 4종 분포 bucket. */
 export interface AccelPatternBucket {
   automotive: { count: number; ratio: number };
@@ -162,6 +176,74 @@ export async function storeObservabilityMetrics(
 ): Promise<void> {
   const key = hourBucketKey(now);
   await tripsKv.put(key, JSON.stringify(metrics), { expirationTtl: METRICS_KV_TTL_SEC });
+}
+
+/**
+ * #1889 RC-19 — KV write rate-limit gate + Sentry forward.
+ *
+ * 매분 cron / endpoint polling이 동시에 KV put을 호출하면 day-limit 초과 시 endpoint가 500
+ * 응답 → dashboard "no data". 본 helper는 두 단계로 보호한다.
+ *
+ * 1. 1h bucket 키 + last-success 키 둘 다 put 시도. Cloudflare KV가 day-limit으로 reject 시
+ *    swallow + breadcrumb. cron / endpoint 자체는 throw 없이 진행.
+ * 2. last-success 키는 1h bucket과 별도 24h TTL을 유지 → 후속 read fallback의 SSoT.
+ *
+ * silent drop 금지 — KV write 실패 시 `onError(err)` 콜백으로 Sentry forward를 caller가 수행한다.
+ * (sentry.ts는 backend-only이고 본 모듈을 unit test로 격리하려면 import 회피가 필요해 콜백 패턴.)
+ *
+ * @returns 두 키 모두 성공이면 `{ stored: true }`. 한 쪽이라도 실패면 `{ stored: false, error }`.
+ */
+export async function tryStoreObservabilityMetrics(
+  tripsKv: KVNamespace,
+  metrics: ObservabilityMetricsResponse,
+  now: number,
+  options?: { onError?: (err: unknown, key: string) => void },
+): Promise<{ stored: boolean; error?: unknown }> {
+  const onError = options?.onError;
+  let firstError: unknown;
+  // hourly bucket — 1h read cache.
+  try {
+    await storeObservabilityMetrics(tripsKv, metrics, now);
+  } catch (err) {
+    firstError = err;
+    if (onError) onError(err, hourBucketKey(now));
+  }
+  // last-success — 24h fallback. 한 쪽 실패해도 다른 쪽은 시도.
+  try {
+    await tripsKv.put(METRICS_LAST_SUCCESS_KEY, JSON.stringify(metrics), {
+      expirationTtl: METRICS_LAST_SUCCESS_TTL_SEC,
+    });
+  } catch (err) {
+    if (firstError === undefined) firstError = err;
+    if (onError) onError(err, METRICS_LAST_SUCCESS_KEY);
+  }
+  return firstError === undefined ? { stored: true } : { stored: false, error: firstError };
+}
+
+/**
+ * #1889 RC-19 — 마지막 성공 응답 fallback.
+ *
+ * 1h bucket cache miss + compute throw (KV list day-limit / R2 outage) 시 endpoint가
+ * dashboard "no data" 대신 stale 데이터를 응답할 수 있게 한다. KV read 자체가 throw 시 null
+ * 반환 (caller가 503 응답).
+ *
+ * @returns 마지막 성공 응답 또는 null.
+ */
+export async function readLastSuccessfulMetrics(
+  tripsKv: KVNamespace,
+): Promise<ObservabilityMetricsResponse | null> {
+  let raw: string | null;
+  try {
+    raw = await tripsKv.get(METRICS_LAST_SUCCESS_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ObservabilityMetricsResponse;
+  } catch {
+    return null;
+  }
 }
 
 /**

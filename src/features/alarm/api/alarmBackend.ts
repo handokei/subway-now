@@ -10,7 +10,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Route } from '../../../shared/utils/stationRoute';
-import type { ApnsEnv } from '../../../shared/utils/apnsEnv';
+import { type ApnsEnv, setConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
 import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
@@ -119,6 +119,12 @@ export interface AlarmBackendResult {
   /** URL 미설정 등으로 호출이 건너뛰어진 경우 true. */
   skipped?: boolean;
   status?: number;
+  /**
+   * #1897 (RC-5) — backend 가 응답으로 echo한 KV 권위 apnsEnv.
+   * `performRegisterFetch` 가 추출하여 호출자에게 노출. 구 backend 또는 parse 실패 시
+   * undefined (graceful — device 는 다음 register 시 build env fallback 사용).
+   */
+  confirmedEnv?: ApnsEnv;
 }
 
 /** 기본 트립 TTL — 2시간. 백엔드 KV expiration과 정렬. */
@@ -271,11 +277,34 @@ async function performRegisterFetch(
       return { ok: false, status: res.status };
     }
     lastRegisteredHash = hash;
-    return { ok: true, status: res.status };
+    // #1897 (RC-5) — backend 가 echo한 `confirmedEnv` 추출 + stamp.
+    // 구 backend 응답(confirmedEnv 부재) / parse 실패 시 graceful — device 는 다음 register
+    // 에서 build env(`resolveApnsEnv`)로 자연 fallback.
+    const confirmedEnv = await extractConfirmedEnv(res);
+    if (confirmedEnv) {
+      await setConfirmedApnsEnv(confirmedEnv);
+    }
+    return { ok: true, status: res.status, ...(confirmedEnv ? { confirmedEnv } : {}) };
   } catch (e) {
     log.warn('register error', e);
     return { ok: false };
   }
+}
+
+/**
+ * #1897 (RC-5) — register 응답에서 `confirmedEnv` 추출.
+ * JSON parse 실패 / 필드 부재 / 값 오류 모두 graceful undefined — device 는 build env fallback.
+ */
+async function extractConfirmedEnv(res: Response): Promise<ApnsEnv | undefined> {
+  try {
+    const body = (await res.json()) as { confirmedEnv?: unknown };
+    if (body.confirmedEnv === 'sandbox' || body.confirmedEnv === 'production') {
+      return body.confirmedEnv;
+    }
+  } catch {
+    // graceful — 구 backend 응답 또는 parse 실패
+  }
+  return undefined;
 }
 
 /**

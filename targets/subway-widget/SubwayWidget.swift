@@ -1,3 +1,9 @@
+// #1890 — SourceKit이 macOS target 인덱싱 시 `accessoryRectangular` / `accessoryCircular`
+// 같은 iOS-only WidgetFamily case를 'unavailable in macOS'로 진단한다. `#available(iOS 16.0, *)`
+// 는 런타임 가드일 뿐 compile-time 차단이 아니므로, 파일 전체를 `#if os(iOS)`로 감싸 SourceKit/
+// SwiftPM의 macOS 변형에서 이 파일을 통째로 건너뛰게 한다. SubwayLiveActivityWidget.swift와
+// 동일한 patten.
+#if os(iOS)
 import WidgetKit
 import SwiftUI
 
@@ -451,4 +457,6 @@ private struct SubwayWidgetEntryView: View {
         }
     }
 }
+
+#endif
 
