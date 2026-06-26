@@ -143,6 +143,16 @@ interface Props {
    * 미전달이면 내부 로직(pending 해제 + metric 적재)은 그대로 수행되고 callback만 skip.
    */
   onLockCorrected?: (pendingTrainCode: string, confirmedTrainCode: string) => void;
+  /**
+   * #1888 (RC-13) — fallback 모드 사유. set 상태에서 list가 empty가 되면 일반 empty placeholder 대신
+   * 더 명시적인 fallback 메시지("탑승 후보를 찾을 수 없어요")를 렌더한다.
+   *
+   * 호출자(HomeScreen / useBoardingPromptResponder 등)가 boarding-prompt 응답 후 자동 lock이
+   * ambiguity/empty/lookup 실패로 fallback된 컨텍스트에서 이 prop을 전달. set 안 됐거나 list가
+   * 비어있지 않으면 기존 동작 그대로(empty placeholder / 정상 list). loading/error state가 우선순위
+   * 더 높음 (error > loading > fallback-empty > empty > data).
+   */
+  fallbackReason?: 'autolock-empty' | 'autolock-ambiguity' | 'autolock-station-lookup' | null;
 }
 
 /**
@@ -187,6 +197,7 @@ export function BoardingTrainList({
   loading = false,
   error = null,
   onLockCorrected,
+  fallbackReason = null,
 }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -337,6 +348,28 @@ export function BoardingTrainList({
             <View style={[styles.skeletonBar, { backgroundColor: colors.muted, opacity: 0.15, width: '40%' }]} />
           </View>
         ))}
+      </View>
+    );
+  }
+
+  // #1888 (RC-13) — fallbackReason이 set + list가 empty면 더 명시적인 fallback 메시지.
+  // 일반 empty placeholder("도착 예정 열차가 없습니다 / 잠시 후 자동으로 다시 확인")는 polling 회복을
+  // 전제하는 일시적 상태인 반면, 본 분기는 boarding-prompt 응답 후 자동 lock 실패가 확정된 상태라
+  // 사용자에게 "역 근처에서 다시 시도하거나 직접 선택" 액션을 명확히 안내한다.
+  if (fallbackReason != null && filteredArrivals.length === 0) {
+    return (
+      <View
+        style={compact ? styles.emptyCompact : styles.empty}
+        testID="boarding-train-list-fallback"
+        accessibilityRole="alert"
+        accessibilityLabel={t('a11y.alarm.boardingTrainListFallbackLabel')}
+      >
+        <Text style={[typography.bodySm, { color: colors.muted, fontWeight: '600' }]}>
+          {t('home.boardingTrainListFallback')}
+        </Text>
+        <Text style={[typography.bodySm, { color: colors.subtle }]}>
+          {t('home.boardingTrainListFallbackHint')}
+        </Text>
       </View>
     );
   }
