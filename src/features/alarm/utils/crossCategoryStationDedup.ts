@@ -47,6 +47,34 @@ function normalizeStationName(name: string): string {
 export const CROSS_CATEGORY_DEDUP_WINDOW_MS = 30_000;
 
 /**
+ * #1901/#1900 (RC-7/RC-10a) — channel-agnostic station dedup 윈도우.
+ *
+ * 같은 (destinationId, stationName)에 대한 fire가 channel/category 무관하게 8분 안에 1회만 통과
+ * 하도록 잡는 backstop 윈도우. 기존 게이트들이 cover하지 못하는 회귀를 차단한다:
+ *
+ *   1) backend가 같은 station-pass 1건에 silent state push + LA dirty update 2채널을 발사 →
+ *      device가 FG handler/silent push handler/LA dismiss handler로 별개 path 진입 → 같은
+ *      station이 phase는 다르거나 channel만 다르면 기존 dedup(firedAlarms / lastNotifiedStationId
+ *      / cross-category 30s)를 통과해 8분 안에 2회 fire(2026-06-26 trip-3 12:17:58/12:26:12
+ *      동대문역사문화공원 evidence).
+ *   2) 같은 station을 backend가 trigger 두 번 발사하거나 device가 cross-channel로 받아도 8분 한
+ *      윈도우 안에서는 단 1회 fire를 보장.
+ *
+ * 윈도우 8분 산정 근거:
+ *   - 사용자 trip-3 evidence: 같은 station 2회 fire 간격 = 8m 14s. 8분 이상 두면 같은 station
+ *     재방문(루프선 등 정상 케이스)을 차단하지 않으면서 회귀 100% 커버.
+ *   - 정상 trip: 같은 station 진행은 30s cycle 단위 phase 변환(early→imminent) — 이는 `lastFire`
+ *     윈도우(30s)가 이미 처리 중. 8분은 그 위에 cross-channel/cross-trip race만 잡는 backstop.
+ *   - false positive 위험 평가: 같은 trip의 같은 stationName 8분 내 중복 fire가 "정상"인 케이스는
+ *     없음(환승 후 동일 stationName 재방문은 환승역 한정이고 그 환승은 markStationFired의
+ *     stationName normalize로 같은 키에 묶임).
+ *
+ * ADR-010 §1 (false positive ↔ miss 동급) 정합 — 회귀 evidence가 false positive(중복 fire)이고,
+ * 8분 윈도우는 정상 trip 진행에 영향을 주지 않는 conservative 값.
+ */
+export const CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS = 8 * 60_000;
+
+/**
  * #1643 — trip-scoped 즉시 cascade 윈도우.
  * 같은 trip(destinationId) 안에서 **다른 station + cross-category(phase↔SP)** 알람이 같은 cycle/
  * 즉시 cascade로 발사되는 회귀(2026-06-20 12:31 어대 "군자 도착"(SP)+"곧 성수 도착"(D imminent))를 차단한다.
@@ -84,6 +112,11 @@ export type FireCategory = 'destination' | 'transfer' | 'station-passed';
 interface FireRecord {
   ts: number;
   category: FireCategory;
+  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic backstop이 같은 phase 재발사만 차단하고
+  // phase 진행(예: early destination → imminent destination)은 통과시키도록 phase 식별자도
+  // 보관. 호출자가 phase를 알지 못하면 markStationFired에서 undefined로 적재 — 그 경우 본
+  // backstop은 phase 비교 skip(보수적 차단).
+  phaseId?: string;
 }
 
 const lastFire = new Map<string, FireRecord>();
@@ -184,8 +217,9 @@ export function markStationFired(
   stationName: string,
   category: FireCategory,
   now: number,
+  phaseId?: string,
 ): void {
-  lastFire.set(makeKey(destinationId, stationName), { ts: now, category });
+  lastFire.set(makeKey(destinationId, stationName), { ts: now, category, phaseId });
   lastTripFire.set(destinationId, {
     ts: now,
     category,
@@ -271,6 +305,47 @@ export function isPhaseToPhaseCrossStationRecentlyFired(
   // 같은 station 진행(early→imminent on same station)은 통과 — firedAlarms set이 dedup.
   if (rec.stationName === normalizeStationName(stationName)) return false;
   // 여기까지 오면: 직전=phase, 현재=phase, 다른 station, 윈도우 안 → 차단.
+  return true;
+}
+
+/**
+ * #1901/#1900 (RC-7/RC-10a) — channel-agnostic station+category+phase dedup 차단 판정.
+ *
+ * 같은 (destinationId, stationName) + 같은 category(kind) + 같은 phaseId가 windowMs(기본
+ * CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS=8분) 안에 fire됐다면 true. channel(silent state push / LA dirty
+ * update / FG / OS scheduled) 무관 backstop. 정상 phase 진행(예: early destination → imminent
+ * destination)은 다른 phaseId라 통과 — backstop은 **완전히 같은 phase 발사 중복**만 잡는다.
+ *
+ * 사용자 체감 회귀(2026-06-26 trip-3 동대문역사문화공원): 같은 station에 같은 phase + 같은 kind가
+ * 8분 차로 cross-channel(silent state push + LA dirty update) 발사. 위 cross-category gates는
+ * 30s/5s/3s 윈도우라 8분 차 중복은 통과시켰음.
+ *
+ * 다른 category(예: destination → station-passed)는 cross-category gate(30s)가 별도로 담당하므로
+ * 본 backstop은 통과 — 같은 kind 같은 phase 정확 매칭만.
+ *
+ * phaseId가 record에 stamp되지 않은 entry(legacy 또는 호출자 미전달)에 대해 query phaseId가
+ * 정의돼 있어도 보수적으로 차단 — 미정의 record는 채널 추적 의도 없음이라 8분 안 같은 station+
+ * category 재발사 자체를 회귀로 본다.
+ *
+ * fire 직전 호출 — true면 호출자는 발사 skip + 'dedup-channel-agnostic' 로그.
+ */
+export function isAnyChannelRecentlyFired(
+  destinationId: string,
+  stationName: string,
+  category: FireCategory,
+  now: number,
+  phaseId?: string,
+  windowMs: number = CHANNEL_AGNOSTIC_DEDUP_WINDOW_MS,
+): boolean {
+  const rec = lastFire.get(makeKey(destinationId, stationName));
+  if (rec === undefined) return false;
+  if (now - rec.ts >= windowMs) return false;
+  if (rec.category !== category) return false;
+  // 둘 다 phaseId 정의 & 다르면 정상 phase 진행 → 통과. 그 외(한쪽이라도 미정의 또는 둘 다 동일)는
+  // 같은 phase 재발사로 보고 차단.
+  if (rec.phaseId !== undefined && phaseId !== undefined && rec.phaseId !== phaseId) {
+    return false;
+  }
   return true;
 }
 

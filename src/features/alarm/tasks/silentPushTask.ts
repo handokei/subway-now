@@ -50,8 +50,13 @@ import {
   logSilentPushTripEndedReceived,
   logSilentPushFired,
   logSilentPushSkipped,
+  logSuppressedChannelAgnosticDedup,
   type AlarmLogReason,
 } from '../utils/alarmLog';
+import {
+  isAnyChannelRecentlyFired,
+  markStationFired,
+} from '../utils/crossCategoryStationDedup';
 import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import { setTripEndedSentinel } from '../utils/tripEndedSentinel';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
@@ -1335,6 +1340,39 @@ async function fireWithGate(
     await setFiredAlarms(destinationId, fired);
   }
 
+  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. FIRED_ALARMS dedup은
+  // `phaseId + stationName + hopIndex` 기반이라 backend가 같은 station-pass 1건에 silent state
+  // push + LA dirty update 2채널을 발사하거나 phase만 다른 cross-channel 중복을 통과시킨다.
+  // (lastFire) Map은 FG fireAndLog / stationPipeline 모두에서 markStationFired로 적재되므로
+  // 본 게이트가 silent push도 station-level 8분 backstop으로 cross-channel 중복을 차단한다.
+  // intermediate(station-passed) 분기는 dedupKey=null이라 destinationId만으로도 보호 필요 —
+  // intermediate도 같은 station 8분 차 cross-channel 중복 evidence(2026-06-26 trip-3 동대문역사문화공원).
+  const channelAgnosticKind: 'destination' | 'transfer' | 'station-passed' =
+    payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
+  if (
+    destinationId &&
+    isAnyChannelRecentlyFired(
+      destinationId,
+      payload.nextWaypoint,
+      channelAgnosticKind,
+      Date.now(),
+      payload.phase,
+    )
+  ) {
+    logSuppressedChannelAgnosticDedup({
+      source: 'silent-push-skipped',
+      stationName: payload.nextWaypoint,
+      kind: channelAgnosticKind,
+      phaseId: payload.phase,
+    });
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
+    if (payload.pushId) void addFiredPushId(payload.pushId);
+    logger.info(
+      `dedup channel-agnostic: ${payload.nextWaypoint} fired within 8m — skip`,
+    );
+    return;
+  }
+
   const content =
     payload.kind === 'intermediate'
       ? buildIntermediateContent(payload.nextWaypoint)
@@ -1351,6 +1389,20 @@ async function fireWithGate(
     content: { title: content.title, body: content.body },
     trigger: null,
   });
+
+  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic dedup window 갱신. silent push fire를 lastFire
+  // Map에 적재해 후속 FG fireAndLog / stationPipeline 발사가 같은 station+kind+phase 8분 backstop
+  // 으로 차단됨. intermediate는 'station-passed' 카테고리로 마킹(기존 cross-category dedup 의미 유지).
+  // phaseId(payload.phase)도 stamp해 정상 phase 진행은 통과시킴.
+  if (destinationId) {
+    markStationFired(
+      destinationId,
+      payload.nextWaypoint,
+      channelAgnosticKind,
+      Date.now(),
+      payload.phase,
+    );
+  }
 
   logSilentPushFired({
     stationName: payload.nextWaypoint,
