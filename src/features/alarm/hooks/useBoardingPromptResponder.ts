@@ -40,6 +40,7 @@ import {
 } from '../utils/notificationCategory';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { createLogger } from '../../../shared/utils/logger';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import {
   markBoardingPromptDisplayed,
   wasBoardingPromptDisplayed,
@@ -93,6 +94,16 @@ export interface UseBoardingPromptResponderDeps {
   destinationId: string | null;
   /** 사용자 trip의 expectedDurationMs — lock expiry 계산. null이면 fallback 30분. */
   expectedDurationMs: number;
+  /**
+   * #1888 (RC-13) — 사용자가 banner를 직접 탭한 경우($default action) 호출되는 navigation callback.
+   *
+   * banner 탭은 "list를 보고 싶다"는 사용자 의향 — 자동 lock 성공/실패와 무관하게 home 화면으로
+   * navigate해 BoardingTrainList를 노출한다. expo-router의 router.navigate('/') 등 caller가 주입.
+   *
+   * 미전달이면 navigation 없이 기존 동작(lock 시도 + dismiss 분기) 그대로. listener 호출은 sync 진입점
+   * 이라 router를 직접 import하면 테스트가 expo-router를 모킹해야 해서 caller injection 패턴 채택.
+   */
+  onBannerTap?: () => void;
 }
 
 /**
@@ -154,6 +165,15 @@ export async function handleResponse(
   payload: BoardingPromptPayload,
   deps: HandleDeps,
 ): Promise<void> {
+  // #1888 (RC-13) — Interactive UI 작동 evidence. 사용자가 액션 버튼을 탭했거나 banner를 직접 탭한
+  // 경로(BOARDED / NOT_BOARDED / $default)에서 1회 발사. UNNotificationCategory가 비활성이면 OS가
+  // 액션 자체를 노출하지 않으므로 이 breadcrumb의 존재 자체가 "Interactive UI 작동 확인" 신호.
+  // 1주 production 측정: fired vs interactive_tap 비율로 사용자 응답률 추적.
+  addDomainBreadcrumb('boarding', 'boarding_prompt_interactive_tap', {
+    action: actionIdentifier,
+    line: payload.line,
+  });
+
   if (
     actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
     actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
@@ -162,6 +182,15 @@ export async function handleResponse(
     // 응답했다"는 사실 기록. boardedRate = boarded / (boarded+dismissed)는 게이트 정확도 proxy.
     logBoardingPromptResponded({ outcome: 'boarded' });
     await tryAutoLock(payload, deps);
+    // #1888 (RC-13) — banner 탭($default) 케이스만 home 화면으로 navigate. 사용자가 list를 보고 싶다는
+    // 명시 의향(action button BOARDED는 silent autolock으로 끝, navigation은 surplus).
+    // tryAutoLock 성공/실패와 무관하게 호출 — 실패 시 BoardingTrainList의 fallback UI 노출 의도.
+    if (
+      actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER &&
+      deps.onBannerTap !== undefined
+    ) {
+      deps.onBannerTap();
+    }
     return;
   }
   // [미탑승] 또는 dismiss — 5분 silence.
@@ -187,6 +216,13 @@ async function tryAutoLock(
   if (!arrival) {
     log.info('arrivals fetch returned null — falling back to manual');
     logBoardingPromptAutoLock({ reason: 'autolock-arrivals-empty', ...telemetry });
+    // #1888 (RC-13) — 빈 후보 graceful skip evidence. arrivals null = API fetch 실패 또는 응답 빈 케이스.
+    // BoardingTrainList도 동시에 empty state로 진입하므로 사용자는 manual list에서 0건만 본다.
+    // 1주 production: empty_skip > 0 발생 시 candidate-generator(arrivals fetch) 추가 보강 신호.
+    addDomainBreadcrumb('boarding', 'boarding_prompt_empty_skip', {
+      reason: 'arrivals-null',
+      ...telemetry,
+    });
     return;
   }
 
@@ -206,6 +242,14 @@ async function tryAutoLock(
     // 빈 후보와 ambiguity 구분: sameLine이 1개 이상인데 chosen이 null이면 ambiguity.
     const reason = sameLine.length === 0 ? 'autolock-arrivals-empty' : 'autolock-ambiguity';
     logBoardingPromptAutoLock({ reason, ...telemetry });
+    // #1888 (RC-13) — 빈 후보(line + direction 필터 후 0건) graceful skip evidence.
+    // ambiguity는 후보가 있으나 자동 선택 불가 — empty와 별 신호이므로 empty case에서만 발사.
+    if (sameLine.length === 0) {
+      addDomainBreadcrumb('boarding', 'boarding_prompt_empty_skip', {
+        reason: 'line-filtered-empty',
+        ...telemetry,
+      });
+    }
     return;
   }
 

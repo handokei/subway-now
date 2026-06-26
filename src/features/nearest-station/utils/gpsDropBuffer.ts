@@ -12,11 +12,11 @@ import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
  *  - "low-accuracy fix도 사후 진단에 필요"라는 #443 주석은 유효하지만 다른 채널과
  *    cap을 공유하면 자기 목적(사후 진단)을 파괴한다.
  *
- * cap=100 — fusion(200)보다 작게 잡아 모듈 메모리 sum이 동일 수준에 머무르되 두 채널
- * 모두 충분한 history 확보. push 빈도 차이(drop ≫ fusion)를 감안해 별 buffer로 분리하면
- * 100건도 ~1분 진단 윈도우를 보장한다(rate limit 2/sec × 60s = 120 → 100 cap 약 50초).
+ * cap=200 (#1881) — 60분 trip 전체 커버. burst dedup(rate-limited)이 push 속도를 이미 제한하므로
+ * 200건은 충분한 진단 윈도우를 보장한다. fusionDebugBuffer(500)와 격리된 별 채널이라 메모리 합산
+ * 부담도 수용 범위 이내.
  */
-export const GPS_DROP_BUFFER_CAPACITY = 100;
+export const GPS_DROP_BUFFER_CAPACITY = 200;
 
 export interface GpsDropEntry {
   ts: number;

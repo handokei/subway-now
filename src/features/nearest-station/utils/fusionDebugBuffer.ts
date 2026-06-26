@@ -6,7 +6,8 @@ import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 // 콘솔 logger는 dev 빌드에서만 보이고 스탠드얼론 빌드/현장(지하철)에서는 확인 불가 —
 // 그 공백을 메우는 것이 목적.
 
-export const FUSION_DEBUG_BUFFER_CAPACITY = 200;
+// #1881 — 60분 trip × ~3 entry/tick(30s) = ~360 entry. 여유 확보 → 500.
+export const FUSION_DEBUG_BUFFER_CAPACITY = 500;
 
 /** 후보 신호 — 신호원이 늘면 key를 추가만 하면 됨(타입/포맷터 동시 수정 불필요). */
 export interface FusionCandidateMini {

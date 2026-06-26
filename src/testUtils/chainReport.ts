@@ -7,6 +7,14 @@
  * Day 2 evidence: received=0, environment=unknown, boardingPrompt=blocked.
  * 각 stage의 passed 판정 기준은 dumpParser.ts에서 파싱한 DumpFixture 필드를 기반으로
  * fixtureChainRunner.ts가 산출한다.
+ *
+ * Phase 6.1 (#1875) — cold start 경로 5 stages 추가:
+ *   cold-start-detected → candidates-extracted → weighted-narrowed
+ *   → picker-shown → user-selected → mismatch-detected
+ *
+ * 평가 방식: 기존 6 stages는 독립 평가. Phase 6.1 stages도 독립 평가.
+ * Phase 6.1 stages는 cold start 경로가 없는 dump에서는 대부분 false이나,
+ * ## Cold Start 섹션이 없는 기존 dump에서는 graceful fallback으로 평가한다.
  */
 
 /**
@@ -14,12 +22,20 @@
  * stage를 추가하거나 이름을 바꿀 때는 fixtureChainRunner.ts의 STAGE_CHECKERS도 갱신한다.
  */
 export const CHAIN_STAGE_IDS = [
+  // ── 기존 6 stages (지상·lock 활성 경로) ─────────────────────────────────
   'trip-registered',
   'environment-classified',
   'boardingPrompt-displayed',
   'lock-attach',
   'silent-push-received',
   'station-passed-fired',
+  // ── Phase 6.1 cold start 경로 5 stages (#1875) ──────────────────────────
+  'cold-start-detected',
+  'candidates-extracted',
+  'weighted-narrowed',
+  'picker-shown',
+  'user-selected',
+  'mismatch-detected',
 ] as const;
 
 export type ChainStageId = (typeof CHAIN_STAGE_IDS)[number];

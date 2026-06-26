@@ -79,6 +79,7 @@ import {
 import type {
   ApnsEnv,
   BoardingLockMeta,
+  BoardingPromptCandidate,
   Env,
   LineNumber,
   PositionPoint,
@@ -89,6 +90,7 @@ import type {
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
+import { t, type SupportedLocale } from './i18n';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -505,6 +507,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptAutoDeduped: number;
   /**
+   * #1888 (RC-13) — 9단 게이트는 통과했으나 line+direction 후보가 0건이라 발사를 skip한 누적 횟수.
+   * 사용자가 "탑승" 액션을 받아도 후보가 0이면 banner 탭 후 빈 BoardingTrainList만 보게 되는
+   * 사용자 가치 손실 시나리오(RC-13 IMG_9039/9040)를 차단. > 0이 자주 발생하면 Seoul API
+   * 응답 안정성 또는 line 매칭 정규화 보강 신호.
+   */
+  boardingPromptSkippedEmpty: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -803,6 +812,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     autoLockSuccess: 0,
     autoLockFalsePositive: 0,
     boardingPromptAutoDeduped: 0,
+    boardingPromptSkippedEmpty: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -3297,15 +3307,19 @@ function toKstHhmm(epochMs: number): string {
 /**
  * boardingPrompt push 메시지 빌드 (#1739 — 방면 + 시간 명시).
  *
- * title: 항상 영문 raw (backend raw 원칙 — i18n는 client 담당).
- * body:  nextStation이 있으면 "출발역 [호선] → 다음역 방면 HH:MM 진입",
- *        없으면 기존 포맷 "${line} · ${originStation}" fallback.
+ * #1895 — i18n 4언어 분기 (ko/en/ja/zh). trip.locale 기반으로 `t(locale)` lookup해 본문 생성.
+ * locale 미지정/비지원 시 ko fallback (한국 운영 기본).
+ *
+ * title: locale별 분기 ("탑승하셨나요?" / "Are you on board?" / "ご乗車されましたか?" / "您已乘车了吗?").
+ * body:  nextStation이 있으면 "출발역 [호선] → 다음역 방면 HH:MM 진입" (locale별 어미 분기),
+ *        없으면 fallback "${line} · ${originStation}".
  *
  * @param originStation  display.originStation (출발역 표시명)
  * @param line           display.line ("2", "gyeongui" 등)
  * @param nextStation    trip.waypoints[0].stationName (다음 정거장 — 방면 표시)
  * @param etaSeconds     arrivals에서 추출한 도착 잔여 초 (null = 정보 없음)
  * @param now            현재 epoch ms (ETA 절대 시각 계산용)
+ * @param locale         #1895 — trip.locale (ko/en/ja/zh). 미지정 시 ko fallback.
  */
 export function buildBoardingPromptMessage(
   originStation: string,
@@ -3313,14 +3327,15 @@ export function buildBoardingPromptMessage(
   nextStation: string | null,
   etaSeconds: number | null,
   now: number,
+  locale?: SupportedLocale,
 ): { title: string; body: string } {
-  const title = 'Are you on board?';
-  if (!nextStation) {
-    return { title, body: `${line} · ${originStation}` };
-  }
-  const timeStr =
-    etaSeconds === null ? '' : ` ${toKstHhmm(now + etaSeconds * 1000)} 진입`;
-  return { title, body: `${originStation} [${line}] → ${nextStation} 방면${timeStr}` };
+  const strings = t(locale);
+  const etaTimeStr =
+    etaSeconds === null ? null : toKstHhmm(now + etaSeconds * 1000);
+  return {
+    title: strings.boardingPromptTitle,
+    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr }),
+  };
 }
 
 /**
@@ -3418,8 +3433,11 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   // #1739 — 방면 + 시간 명시. 출발역 arrivals를 fetch해 방향 일치 최소 ETA 추출.
   // 실패 시 graceful fallback (메시지 없이 push는 항상 발사).
+  // #1888 (RC-13) — pool을 candidateTrains로 가공해 payload에 동봉. device의 BoardingTrainList가
+  // 자체 API 응답 0건일 때 이 배열로 fallback 렌더(IMG_9040 빈 리스트 회귀 차단).
   const nextStation = trip.waypoints[0]?.stationName ?? null;
   let etaSeconds: number | null = null;
+  let candidateTrains: BoardingPromptCandidate[] = [];
   try {
     const arrivals = await deps.seoul.fetchArrivals(display.originStation);
     const directional = arrivals.filter(
@@ -3432,18 +3450,45 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
       etaSeconds = best.arrivalSeconds;
     }
+    // #1888 (RC-13) — pool에서 최대 5건 후보 추출. arrivalSeconds 오름차순 정렬 후 slice.
+    // (a.arrivalSeconds - b.arrivalSeconds)는 음수/양수/0을 그대로 비교 — 정렬 안정성 확보.
+    candidateTrains = [...pool]
+      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .slice(0, 5)
+      .map<BoardingPromptCandidate>((entry) => ({
+        trainCode: entry.trainCode,
+        line: display.line,
+        direction: entry.isUp ? 'up' : 'down',
+        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+      }));
   } catch {
     // Seoul API 장애 시 ETA 없이 push 발사 — 메시지 degradation만 발생, push 자체는 보존.
   }
+
+  // #1888 (RC-13) — 후보 0건이면 발사 skip. 사용자가 banner를 받아도 빈 BoardingTrainList만 보게 되는
+  // 시나리오를 backend에서 차단. 게이트 통과 후 응답 fail은 회귀 신호 — stat counter로 가시화.
+  if (candidateTrains.length === 0) {
+    stats.boardingPromptSkippedEmpty += 1;
+    log('boarding-prompt: skipped empty candidates (#1888 RC-13)', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      direction: geo.direction,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
   const { title, body } = buildBoardingPromptMessage(
     display.originStation,
     display.line,
     nextStation,
     etaSeconds,
     now,
+    trip.locale,
   );
 
-  // 9단 통과 — alert push 발사.
+  // 9단 통과 + 후보 ≥1 — alert push 발사.
   const pushId = generatePushId();
   const heal = await sendWithEnvHeal(
     (host) =>
@@ -3465,6 +3510,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
           geo.direction !== null
             ? `${display.line}호선 ${geo.direction === 'up' ? '상행' : '하행'}방면`
             : undefined,
+        // #1888 (RC-13) — 후보 train 목록 동봉. device fallback 렌더.
+        candidateTrains,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,

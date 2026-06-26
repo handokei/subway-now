@@ -3330,9 +3330,21 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     });
   }
 
-  function makeBoardingPromptDeps(fetchImpl: typeof fetch) {
+  // #1888 (RC-13) — boardingPrompt fire는 candidateTrains ≥ 1을 요구하므로 기본 Seoul mock에
+  // line=2 up 방향 1건을 동봉. 기존 모든 케이스가 fire 경로(candidateTrains 채워짐)를 그대로 검증.
+  // 빈 후보 skip 시나리오는 별도 `it.each` 케이스가 makeSeoul([])를 명시 주입.
+  const DEFAULT_BP_ARRIVAL: ArrivalEntry = {
+    destination: '성수',
+    arrivalSeconds: 60,
+    trainCode: 'T1',
+    isUp: true,
+    subwayNm: '2호선',
+    arvlCd: 2,
+  };
+
+  function makeBoardingPromptDeps(fetchImpl: typeof fetch, seoul?: SeoulArrivalClient) {
     return {
-      seoul: makeSeoul([]),
+      seoul: seoul ?? makeSeoul([DEFAULT_BP_ARRIVAL]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       now: () => NOW,
@@ -3448,6 +3460,108 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
     expect(persisted.apnsEnv).toBe('production');
   });
+
+  // #1888 (RC-13) — Seoul API 응답이 empty이거나 line 매칭 후 0건이면 발사 skip.
+  // 사용자가 banner 탭 후 빈 BoardingTrainList만 보는 IMG_9039/9040 시나리오 차단.
+  describe('#1888 RC-13 candidateTrains skip-empty', () => {
+    const LINE_2_UP_ARRIVAL: ArrivalEntry = {
+      destination: '성수',
+      arrivalSeconds: 90,
+      trainCode: 'RC13-T1',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 2,
+    };
+    const LINE_9_UP_ARRIVAL: ArrivalEntry = {
+      destination: '종합운동장',
+      arrivalSeconds: 120,
+      trainCode: 'RC13-T2',
+      isUp: true,
+      subwayNm: '9호선', // line=2 trip이라 매칭 fail
+      arvlCd: 2,
+    };
+
+    it('Seoul API 응답 0건 → fire skip + boardingPromptSkippedEmpty +1', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.boardingPromptEvaluated).toBe(1);
+      expect(stats.boardingPromptFired).toBe(0);
+      expect(stats.boardingPromptSkippedEmpty).toBe(1);
+      // APNs fetch 호출 X (push 자체가 발사되지 않음).
+      expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    });
+
+    it('line 매칭 후 0건 (다른 호선만 응답) → fire skip + boardingPromptSkippedEmpty +1', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      // trip line=2이지만 Seoul mock은 9호선만 응답 — pool 결과 0건.
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([LINE_9_UP_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.boardingPromptFired).toBe(0);
+      expect(stats.boardingPromptSkippedEmpty).toBe(1);
+      expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    });
+
+    it('line 매칭 OK + 최소 1건 → fire (skip-empty 카운터 미증가)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([LINE_2_UP_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.boardingPromptFired).toBe(1);
+      expect(stats.boardingPromptSkippedEmpty).toBe(0);
+    });
+
+    it('candidateTrains payload wire — sorted by arrivalSeconds asc + max 5건', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+      await seedHappySeries(kv);
+      // 6건 — 정렬 후 slice(0,5) 검증. 의도적으로 역순으로 등록.
+      const arrivals: ArrivalEntry[] = [
+        { ...LINE_2_UP_ARRIVAL, trainCode: 'T6', arrivalSeconds: 600 },
+        { ...LINE_2_UP_ARRIVAL, trainCode: 'T5', arrivalSeconds: 500 },
+        { ...LINE_2_UP_ARRIVAL, trainCode: 'T4', arrivalSeconds: 400 },
+        { ...LINE_2_UP_ARRIVAL, trainCode: 'T3', arrivalSeconds: 300 },
+        { ...LINE_2_UP_ARRIVAL, trainCode: 'T2', arrivalSeconds: 200 },
+        { ...LINE_2_UP_ARRIVAL, trainCode: 'T1', arrivalSeconds: 100 },
+      ];
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul(arrivals));
+
+      await runScheduled(makeEnv(kv), deps);
+
+      const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, init] = fetchMock.mock.calls[0];
+      const body = JSON.parse((init as RequestInit).body as string);
+      // 5건만 wire + arrivalSeconds 오름차순.
+      expect(body.data.candidateTrains).toHaveLength(5);
+      expect(body.data.candidateTrains.map((c: { trainCode: string }) => c.trainCode)).toEqual([
+        'T1', 'T2', 'T3', 'T4', 'T5',
+      ]);
+      // 각 후보의 schema 검증 — line/direction/nextArrivalEta.
+      const first = body.data.candidateTrains[0];
+      expect(first).toEqual({
+        trainCode: 'T1',
+        line: '2',
+        direction: 'up',
+        nextArrivalEta: 100,
+      });
+    });
+  });
 });
 
 describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (#824)', () => {
@@ -3476,9 +3590,20 @@ describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (
 
   const seedHappySeries = (kv: InMemoryKV, token = 'kalman-tok') => seedHappyGateSeries(kv, token);
 
+  // #1888 (RC-13) — Kalman path도 fire 경로 검증이므로 candidateTrains ≥ 1 필요.
+  // line=2 up 방향 1건 동봉 — 기존 Kalman state/KV 검증 의도 보존.
+  const DEFAULT_KALMAN_ARRIVAL: ArrivalEntry = {
+    destination: '성수',
+    arrivalSeconds: 60,
+    trainCode: 'KT1',
+    isUp: true,
+    subwayNm: '2호선',
+    arvlCd: 2,
+  };
+
   function makeKalmanPromptDeps(fetchImpl: typeof fetch) {
     return {
-      seoul: makeSeoul([]),
+      seoul: makeSeoul([DEFAULT_KALMAN_ARRIVAL]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       now: () => NOW,
@@ -6819,6 +6944,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
+      boardingPromptSkippedEmpty: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -7327,38 +7453,38 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
   });
 });
 
-describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시)', () => {
+describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 — i18n 4언어)', () => {
   const BASE_NOW = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z → KST 07:13
 
-  it('nextStation + etaSeconds 둘 다 있음 → "출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
+  it('nextStation + etaSeconds 둘 다 있음 → "출발역 [호선] → 다음역 방면 HH:MM 진입" (ko 기본)', () => {
     // BASE_NOW + 120s → KST 07:15:20 → HH:MM = 07:15
     const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
   });
 
   it('nextStation 없음 (null) → 기존 포맷 fallback "${line} · ${originStation}"', () => {
     const { title, body } = buildBoardingPromptMessage('왕십리', '5', null, 90, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('5 · 왕십리');
   });
 
   it('nextStation 있지만 etaSeconds null → 시간 없이 방면만 표시', () => {
     const { title, body } = buildBoardingPromptMessage('합정', '6', '마포구청', null, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('합정 [6] → 마포구청 방면');
   });
 
   it('환승 leg — 다른 호선 nextStation + ETA', () => {
     // BASE_NOW + 180s → KST 07:16:20 → HH:MM = 07:16
     const { title, body } = buildBoardingPromptMessage('왕십리', '5', '마장', 180, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('왕십리 [5] → 마장 방면 07:16 진입');
   });
 
   it('etaSeconds=0 → now 시각 그대로 표시 (즉시 진입)', () => {
     const { title, body } = buildBoardingPromptMessage('시청', '2', '을지로입구', 0, BASE_NOW);
-    expect(title).toBe('Are you on board?');
+    expect(title).toBe('탑승하셨나요?');
     expect(body).toBe('시청 [2] → 을지로입구 방면 07:13 진입');
   });
 
@@ -7373,6 +7499,40 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시)', () => 
   it('non-numeric line name (gyeongui) — fallback 포맷 정상', () => {
     const { body } = buildBoardingPromptMessage('회기', 'gyeongui', null, null, BASE_NOW);
     expect(body).toBe('gyeongui · 회기');
+  });
+
+  it('#1895 — locale=en → 영어 본문 ("Are you on board?" / "bound" suffix)', () => {
+    const { title, body } = buildBoardingPromptMessage('City Hall', '2', 'Gangnam', 120, BASE_NOW, 'en');
+    expect(title).toBe('Are you on board?');
+    expect(body).toBe('City Hall [2] → Gangnam bound 07:15 arrival');
+  });
+
+  it('#1895 — locale=ja → 일본어 본문', () => {
+    const { title, body } = buildBoardingPromptMessage('市庁', '2', '江南', 120, BASE_NOW, 'ja');
+    expect(title).toBe('ご乗車されましたか?');
+    expect(body).toBe('市庁 [2] → 江南方面 07:15進入');
+  });
+
+  it('#1895 — locale=zh → 중국어 본문', () => {
+    const { title, body } = buildBoardingPromptMessage('市厅', '2', '江南', 120, BASE_NOW, 'zh');
+    expect(title).toBe('您已乘车了吗?');
+    expect(body).toBe('市厅 [2] → 江南方向 07:15到达');
+  });
+
+  it('#1895 — locale=ko 명시 → 한국어 본문 (DEFAULT_LOCALE과 동일)', () => {
+    const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW, 'ko');
+    expect(title).toBe('탑승하셨나요?');
+    expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
+  });
+
+  it('#1895 — locale 미지정 → ko fallback', () => {
+    const { title } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW, undefined);
+    expect(title).toBe('탑승하셨나요?');
+  });
+
+  it('#1895 — locale=en + nextStation null → fallback 포맷 (locale 무관 공통 포맷)', () => {
+    const { body } = buildBoardingPromptMessage('City Hall', '2', null, 90, BASE_NOW, 'en');
+    expect(body).toBe('2 · City Hall');
   });
 });
 

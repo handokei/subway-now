@@ -228,6 +228,38 @@ describe('alarmBackend', () => {
         expect(body.subsurface).toBeUndefined();
       });
 
+      it.each(['ko', 'en', 'ja', 'zh'] as const)(
+        '#1895 locale=%s 송신 시 body.locale에 포함',
+        async (locale) => {
+          await registerActiveTrip({ ...SAMPLE_PAYLOAD, locale });
+          const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+          expect(body.locale).toBe(locale);
+        },
+      );
+
+      it('#1895 locale 미지정이면 body에 미포함 (backend ko fallback)', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.locale).toBeUndefined();
+      });
+
+      it('#1895 locale 변경 시 hash 갱신 → 재등록', async () => {
+        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, locale: 'ko' });
+        expect(first.ok).toBe(true);
+        const second = await registerActiveTrip({ ...SAMPLE_PAYLOAD, locale: 'en' });
+        expect(second).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const secondBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+        expect(secondBody.locale).toBe('en');
+      });
+
+      it('#1895 동일 locale 재호출 시 dedup', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, locale: 'ja' });
+        const dedup = await registerActiveTrip({ ...SAMPLE_PAYLOAD, locale: 'ja' });
+        expect(dedup).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
       it('#701 in-flight dedup: 동일 페이로드 동시 호출 시 fetch는 1번만 발사된다', async () => {
         let resolveFetch: ((v: Response) => void) | null = null;
         (global.fetch as jest.Mock).mockImplementationOnce(

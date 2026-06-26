@@ -26,8 +26,8 @@ import {
   TRIP_STARTED_AT_KEY,
 } from '../constants/storageKeys';
 
-/** Ring buffer capacity. 100건은 1 trip(보통 ~30-50건) 한 사이클을 충분히 덮는다. */
-export const BACKEND_CALL_BUFFER_CAPACITY = 100;
+// #1881 — 60분 trip × ~100건 호출 → 2× 여유 확보. 200건은 연속 2 trip 분량.
+export const BACKEND_CALL_BUFFER_CAPACITY = 200;
 
 export type BackendCallEntryKind = 'call' | 'response' | 'error';
 

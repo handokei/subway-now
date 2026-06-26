@@ -31,6 +31,7 @@ import { useBoardingLockStore } from '../useBoardingLockStore';
 import { useAlarmEventStore } from '../useAlarmEventStore';
 
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
+const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
@@ -38,6 +39,10 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 jest.mock('expo-notifications');
 jest.mock('../../../widget/api/widgetStorage', () => ({
   clearWidgetStation: () => mockClearWidgetStation(),
+}));
+// #1892 / #1885 — Live Activity dismiss 호출 가드 (RC-9 cascade 회귀 차단).
+jest.mock('live-activity', () => ({
+  endLiveActivity: () => mockEndLiveActivity(),
 }));
 
 describe('tripBoundCleanups', () => {
@@ -414,9 +419,30 @@ describe('tripBoundCleanups', () => {
       // #1597 — triggerTripGroundTruthPrompt 제거 (trip-start 경로에서 false fire 회귀 차단).
       // 종료-only trigger이므로 4 trip-end 호출 경로(setDestination switch/silentPushTask trip-ended/
       // useLaunchTripReconciliation/useStateRehydration sentinel+force-end)에서 명시 호출.
-      const MIN_ITEMS = 25;
+      // #1892 / #1885 — endLiveActivityCleanup 1 신규 (RC-9 LA orphan 26분 cascade fix).
+      const MIN_ITEMS = 26;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
     });
+  });
+
+  // #1892 / #1885 — silent push trip-ended 경로에서 LA dismiss wire 가드.
+  // RC-9 cascade root: Seoul outage → trip auto-end → runTripBoundCleanups → storage cleanup만,
+  // native LA 인스턴스 dismiss 없음 → 사용자 LA "건대입구→용마산" 26분 orphan.
+  // 본 케이스가 깨지면 cleanup 배열에서 endLiveActivityCleanup 누락 회귀.
+  it('#1892 / #1885 — runTripBoundCleanups 실행 시 Live Activity dismiss를 호출한다 (RC-9 orphan 차단)', async () => {
+    mockEndLiveActivity.mockClear();
+    await runTripBoundCleanups();
+    expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('#1892 / #1885 — LA dismiss가 reject해도 다른 cleanup이 진행되고 호출자에게 reject 전파 안 함', async () => {
+    // native LA module이 throw해도(예: 이미 ended 상태에서 race) 나머지 cleanup이 차단되면 안 됨.
+    // helper 내부 swallow + Promise.allSettled 2중 안전.
+    mockEndLiveActivity.mockClear();
+    mockEndLiveActivity.mockRejectedValueOnce(new Error('already-ended'));
+    (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+    expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
   });
 
   it('runTripBoundCleanups: 한 항목이 reject해도 나머지 항목이 모두 실행된다', async () => {
@@ -437,7 +463,8 @@ describe('tripBoundCleanups', () => {
     // module-level/memory 클리어라 removeItem 카운트에 기여하지 않는다. 신규 항목 수만큼
     // 임계값을 낮춰 기존 invariant(storage 기반 항목 모두 실행)는 유지.
     // #1597 — triggerTripGroundTruthPrompt 제거로 NON_STORAGE 5→4.
-    const NON_STORAGE_CLEANUPS = 4;
+    // #1892 / #1885 — endLiveActivityCleanup 신규 (native LA dismiss, storage write 없음) → 4→5.
+    const NON_STORAGE_CLEANUPS = 5;
     expect((AsyncStorage.removeItem as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
       TRIP_BOUND_CLEANUPS.length - NON_STORAGE_CLEANUPS,
     );

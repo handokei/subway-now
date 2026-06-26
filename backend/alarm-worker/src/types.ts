@@ -222,6 +222,13 @@ export interface Trip {
    * 부재(레거시 trip / 신규 trip 첫 cycle 전) → undefined → device는 backfill 자연 skip.
    */
   passedStations?: string[];
+  /**
+   * #1895 — 사용자 device locale (ko / en / ja / zh). 디바이스 register 시점에 송신.
+   * backend는 push 본문 생성 시 `t(trip.locale)`로 4언어 분기한다. 부재/비지원이면 ko
+   * fallback (한국 운영 기본). 본 필드는 alert push(boarding-prompt) 본문 생성에만 사용 —
+   * silent push payload는 device-side i18n이 처리하므로 영향 없음.
+   */
+  locale?: 'ko' | 'en' | 'ja' | 'zh';
 }
 
 /**
@@ -489,6 +496,26 @@ export interface BoardingPromptState {
 }
 
 /**
+ * #1888 (RC-13) — APNs payload에 동봉되는 후보 train 1건.
+ *
+ * device side가 Seoul API 호출 없이도 사용자에게 "탑승 가능 후보"를 즉시 보여주기 위한 fallback.
+ * device의 BoardingTrainList가 자체 API 응답 0건일 때 이 배열을 사용해 UI를 빈 상태에서 구해낸다.
+ *
+ * 필드는 SeoulArrivalClient의 `ArrivalEntry` 중 device가 list 한 줄을 그리는 데 필요한 최소 슬라이스.
+ * stationName / line / trainCode / direction / nextArrivalEta 5개로 한정 — payload 크기 보호.
+ */
+export interface BoardingPromptCandidate {
+  /** 사용자 입장에서 trainCode (Seoul btrainNo). */
+  trainCode: string;
+  /** 노선 (예: "2", "gyeongui"). */
+  line: string;
+  /** 방향 ('up' | 'down'). Seoul API isUp 기반. */
+  direction: 'up' | 'down';
+  /** 다음 도착 잔여 초 — UI에서 "N분 후 도착" 표시용. 0 이상의 정수. */
+  nextArrivalEta: number;
+}
+
+/**
  * boarding-prompt push payload (#819 B 슬라이스).
  * BOARDING_PROMPT iOS category 액션 [탑승]/[미탑승]을 함께 노출하기 위해
  * alert + category로 발사한다 (silent 아님).
@@ -520,6 +547,15 @@ export interface BoardingPromptPushPayload {
    * 미지정(legacy / direction 산출 불가) 시 device가 양방향을 허용 (backward compat).
    */
   destinationDirection?: 'up' | 'down';
+  /**
+   * #1888 (RC-13) — payload에 동봉되는 후보 train 목록(최대 5건).
+   *
+   * device의 BoardingTrainList가 자체 Seoul API 응답이 0건일 때 이 배열로 fallback 렌더.
+   * RC-13 사용자 시나리오("banner 탭 후 들어가니 탑승 열차 선택란이 아예 비어 있음") 완화.
+   *
+   * 미지정(0건 또는 legacy 빌드) 시 device는 기존 동작(자체 API + empty placeholder).
+   */
+  candidateTrains?: BoardingPromptCandidate[];
 }
 
 /**

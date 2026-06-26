@@ -7,6 +7,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as LiveActivity from 'live-activity';
 import {
   ROUTE_KEY,
   DESTINATION_KEY,
@@ -135,6 +136,16 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 저장하므로 trip 끝나도 위젯에는 trip 중 마지막 역이 남는다. clearWidgetStation으로 즉시
   // "감지 중" 상태로 전환해 다음 fresh fix가 들어올 때까지 정확하지 않은 현재역 노출을 막는다.
   clearWidgetStation,
+  // #1892 / #1885 — trip 종료 시 Live Activity dismiss. RC-9 cascade (Seoul outage → trip
+  // auto-end → LA orphan 26분) root cause. backend trip auto-end 시 silent push `trip-ended`
+  // 분기에서 runTripBoundCleanups가 호출되지만 기존엔 storage만 정리되고 native Live Activity
+  // 인스턴스는 dismiss되지 않아 사용자에게 "건대입구 → 용마산"이 26분 동안 stuck 노출됨.
+  // 4 entry point (FG setDestination(null/switch) / silent push trip-ended /
+  // useStateRehydration sentinel / useLaunchTripReconciliation)에서 LA dismiss가 자동 wire되며
+  // 멱등 — LA 비활성 또는 이미 ended 상태도 graceful 통과.
+  // refreshLiveActivityFromBackgroundContext는 destination 없으면 endLiveActivity를 호출하지만
+  // trip-ended 분기 자체는 이를 호출하지 않으므로 cleanup 배열로 wire가 본질 fix.
+  endLiveActivityCleanup,
   // #1545 (S12) — 모듈-level in-memory dedup 윈도우 클리어.
   // 같은 destination/같은 phase로 새 trip을 즉시 시작할 때 직전 trip의 fire 기록이
   // 새 trip 첫 fire를 silence하는 회귀 차단. BG silent push trip-ended 경로에서도
@@ -157,6 +168,24 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 본 wiring으로 BG 경로에서도 메모리/storage가 동시에 일관 상태가 된다.
   clearTripBoundStoreMemory,
 ];
+
+/**
+ * #1892 / #1885 — Live Activity 인스턴스 dismiss helper.
+ *
+ * silent push `trip-ended` 경로(silentPushTask.ts:889 runTripBoundCleanups 호출) +
+ * FG setDestination(null/switch) 경로 모두 LA를 명시적으로 dismiss하지 않으면 사용자가 trip
+ * 종료 후에도 "건대입구 → 용마산" 같은 stale LA를 26분 동안 보게 된다 (2026-06-26 T3/T4 회귀).
+ *
+ * `LiveActivity.endLiveActivity()`는 native module에서 이미 멱등 (활성 인스턴스 없으면
+ * graceful no-op, 비-iOS 또는 모듈 미설치 시 즉시 Promise.resolve()). LA가 비활성이거나
+ * 호출이 실패해도 reject를 swallow해 cleanup 흐름을 차단하지 않는다 — Promise.allSettled가
+ * 일관성 보강하지만 본 helper 자체가 swallow하므로 단독 호출(예: 테스트)에서도 안전.
+ */
+function endLiveActivityCleanup(): Promise<void> {
+  return LiveActivity.endLiveActivity().catch((e) => {
+    log.warn('endLiveActivity threw', e);
+  });
+}
 
 /**
  * #1545 (S12) — trip-bound zustand store의 in-memory mirror를 일괄 클리어.

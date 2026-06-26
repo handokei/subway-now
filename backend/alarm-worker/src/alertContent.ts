@@ -14,9 +14,12 @@
  *   - intermediate        ↔ ko.json route.intermediatePassedTitle + route.intermediatePassedBody
  *   - trip-ended          ↔ ko.json route.tripEndedTitle + route.tripEndedBody
  *
- * 백엔드에는 i18next가 없고 사용자 locale도 알 수 없어 한국어 정적 문자열로 고정.
- * 영문 locale 지원이 필요해지면 디바이스 register 시점에 locale을 trip에 함께 저장하고
- * 여기서 lookup하도록 확장한다.
+ * 본 파일의 alert 본문은 silent push fallback 채널 — 한국어 정적 문자열로 유지.
+ * #1895(boarding-prompt push) 이후 backend i18n 4언어 분기 인프라가 도입됐으나(`i18n.ts`),
+ * 본 fallback 본문은 디바이스 i18n과 byte-identical을 유지해야 silent push가 device에서
+ * 발사된 본문과 alert fallback이 어긋나지 않으므로 한국어 고정 — 변경 시 디바이스 ko.json도 함께 수정.
+ * 다른 push kind(station-passed, arrival, transfer, alighting)의 4언어 분기는 device-side
+ * stationNotification.ts가 처리한다(silent push payload → device가 본문 빌드).
  *
  * exitSide/quickHint suffix는 백엔드에 GPS 정보가 없어 생략 — alert는 보조 채널이라
  * "어느 문으로 하차" 같은 정밀 정보 없이도 충분히 의미를 전달한다.

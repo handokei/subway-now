@@ -5,7 +5,8 @@
 import type { StationProgressStrategy } from './stationProgressEstimator';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 
-export const ESTIMATOR_DEBUG_BUFFER_CAPACITY = 50;
+// #1881 — 60분 trip 분량 보존. estimator push 빈도는 낮지만(hop advance 시만) 여유 확보 → 150.
+export const ESTIMATOR_DEBUG_BUFFER_CAPACITY = 150;
 
 export interface EstimatorDebugEntry {
   ts: number;

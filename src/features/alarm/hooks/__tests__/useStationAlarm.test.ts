@@ -86,6 +86,8 @@ const mockLogSuppressedPassedEventOnLockOrigin = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
+const mockLogSuppressedChannelAgnosticDedup = jest.fn();
+const mockLogFiredAlarmsTripBoundaryReset = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
 const mockLogSuppressedLocklessNoUserIntent = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
@@ -118,10 +120,22 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedCrossCategoryRecent(...args),
   logSuppressedPhaseToPhaseDedup: (...args: unknown[]) =>
     mockLogSuppressedPhaseToPhaseDedup(...args),
+  logSuppressedChannelAgnosticDedup: (...args: unknown[]) =>
+    mockLogSuppressedChannelAgnosticDedup(...args),
+  logFiredAlarmsTripBoundaryReset: (...args: unknown[]) =>
+    mockLogFiredAlarmsTripBoundaryReset(...args),
   logSuppressedSsotFireGate: (...args: unknown[]) =>
     mockLogSuppressedSsotFireGate(...args),
   logSuppressedLocklessNoUserIntent: (...args: unknown[]) =>
     mockLogSuppressedLocklessNoUserIntent(...args),
+}));
+
+// #1893 (RC-17) — trip-boundary detection effect는 tripStartedAt storage를 read한다.
+// 기본: null (trip 미시작) — destination polling cycle에서 reset 시도 skip.
+// 개별 테스트는 mockGetTripStartedAt.mockResolvedValue(<epoch>)로 override.
+const mockGetTripStartedAt = jest.fn().mockResolvedValue(null);
+jest.mock('../../utils/tripStartStorage', () => ({
+  getTripStartedAt: () => mockGetTripStartedAt(),
 }));
 
 // #1572 (T9) — evaluateSsotFireGate mock. 기본 no-block (mirror-missing graceful).
@@ -847,6 +861,66 @@ describe('useStationAlarm', () => {
     expect(mockSendAlarmNotification).not.toHaveBeenCalled();
   });
 
+  it('#1901/#1900 channel-agnostic dedup — 같은 station + 같은 phase 8분 안 재발사는 차단', async () => {
+    // 2026-06-26 trip-3 동대문역사문화공원 evidence: silent state push + LA dirty update의
+    // cross-channel 중복(8m 14s 차)이 위 cross-category gates(30s/5s/3s) 모두 통과시킴 →
+    // channel-agnostic 8분 backstop만 차단. 본 테스트는 5분(=cross-cat 30s window 만료, 8분 backstop만 활성)
+    // 후 같은 station + 같은 phase 재발사 시도가 차단되는지 검증.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const dedup = require('../../utils/crossCategoryStationDedup');
+    const route = makeDirectRoute(1, '2');
+    const baseTime = 1_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTime);
+    // 직전 같은 station에 destination + early phase fire 시뮬레이션 (t=baseTime).
+    dedup.markStationFired(destination.id, earlyDest.stationName, 'destination', baseTime, 'early');
+    // 5분 후 — cross-cat 30s, trip-scoped 5s, phase-to-phase 3s 모두 만료. 8분 backstop만 활성.
+    nowSpy.mockReturnValue(baseTime + 5 * 60_000);
+
+    // 같은 station + 같은 phase(early) 재발사 시도. firedAlarms set 비어 있으면 진입부 add 후
+    // 8분 backstop에서 차단되어 delete 복구.
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127 }, speedMps: 5 }),
+      ),
+    );
+    await waitFor(() =>
+      expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
+        source: 'fg',
+        stationName: earlyDest.stationName,
+        kind: 'destination',
+        phaseId: 'early',
+      }),
+    );
+    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    nowSpy.mockRestore();
+  });
+
+  it('#1901/#1900 channel-agnostic dedup — 다른 phaseId(early→imminent)는 정상 진행이라 통과', async () => {
+    // early destination 발사 후 imminent destination 진행은 정상이어야 함. backstop은 같은 phase
+    // 매칭 시에만 차단.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const dedup = require('../../utils/crossCategoryStationDedup');
+    const route = makeDirectRoute(1, '2');
+    const baseTime = 1_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTime);
+    dedup.markStationFired(destination.id, earlyDest.stationName, 'destination', baseTime, 'early');
+    // 5분 후 — cross-cat gate 만료, 8분 backstop만 활성. imminent로 진행 시도.
+    nowSpy.mockReturnValue(baseTime + 5 * 60_000);
+
+    mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127 }, speedMps: 5 }),
+      ),
+    );
+    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    // imminent 정상 발사. channel-agnostic backstop이 잘못 차단하지 않음.
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(imminentDest, false, true, undefined);
+    expect(mockLogSuppressedChannelAgnosticDedup).not.toHaveBeenCalled();
+    nowSpy.mockRestore();
+  });
+
   it('destination 변경 시 새 destinationId로 re-hydrate 한다 (#462 destination scoped)', async () => {
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
@@ -1464,6 +1538,125 @@ describe('useStationAlarm', () => {
 
       releaseHydration!();
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+    });
+  });
+
+  // #1893 (RC-17) — firedAlarmsRef trip-boundary detection effect.
+  // 같은 destinationId로 trip 재시작 시(=목적지 그대로 두고 새 출발) hydration effect는 재실행되지
+  // 않는다. tripStartedAt이 ref stamp와 다르면 in-memory Set을 명시적으로 비우고 로그 1건 적재.
+  describe('#1893 firedAlarmsRef trip-boundary reset', () => {
+    const route = makeDirectRoute(1, '2');
+
+    it('tripStartedAt이 ref와 다르면 in-memory Set reset + 로그 1건 적재', async () => {
+      mockGetFiredAlarms.mockResolvedValue(new Set());
+      // 첫 hydration 시 tripStartedAt = 1_000_000 → ref에 stamp.
+      mockGetTripStartedAt.mockResolvedValueOnce(1_000_000);
+      // 첫 polling effect run (mount 시) — 같은 1_000_000 → ref stamp 후 비교 skip.
+      mockGetTripStartedAt.mockResolvedValueOnce(1_000_000);
+      // destinationArrival 변경으로 polling re-trigger 시 새 trip 2_000_000.
+      mockGetTripStartedAt.mockResolvedValueOnce(2_000_000);
+
+      const { rerender } = renderHook(
+        ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
+        { initialProps: { inputs: defaultInputs({ route, destination }) } },
+      );
+
+      // hydration 완료 + 첫 ref stamp.
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+
+      // destinationArrival 변경(useArrivalInfo가 새 arrival 반환) → polling effect 재실행.
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: { stationName: '강남', line: '2' as const, arrivals: [] },
+        loading: false,
+        isMock: false,
+      });
+      rerender({ inputs: defaultInputs({ route, destination, speedMps: 1 }) });
+
+      await waitFor(() =>
+        expect(mockLogFiredAlarmsTripBoundaryReset).toHaveBeenCalledWith({
+          source: 'fg',
+          destinationId: destination.id,
+          previousTripStartedAt: 1_000_000,
+          nextTripStartedAt: 2_000_000,
+        }),
+      );
+    });
+
+    it('tripStartedAt이 ref와 같으면 reset skip (정상 동일 trip 진행)', async () => {
+      mockGetFiredAlarms.mockResolvedValue(new Set());
+      // hydration과 polling 모두 같은 epoch.
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+
+      const { rerender } = renderHook(
+        ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
+        { initialProps: { inputs: defaultInputs({ route, destination }) } },
+      );
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: { stationName: '강남', line: '2' as const, arrivals: [] },
+        loading: false,
+        isMock: false,
+      });
+      rerender({ inputs: defaultInputs({ route, destination, speedMps: 1 }) });
+
+      await new Promise((r) => setImmediate(r));
+      expect(mockLogFiredAlarmsTripBoundaryReset).not.toHaveBeenCalled();
+    });
+
+    it('tripStartedAt=null(trip 종료) 분기에선 reset skip', async () => {
+      mockGetFiredAlarms.mockResolvedValue(new Set());
+      // 첫 hydration: ref에 1_000_000 stamp.
+      mockGetTripStartedAt.mockResolvedValueOnce(1_000_000);
+      // 첫 polling: hydration 미완료 OR same epoch (race graceful) — same epoch로 return.
+      mockGetTripStartedAt.mockResolvedValueOnce(1_000_000);
+      // re-trigger: trip 종료 → null → reset skip.
+      mockGetTripStartedAt.mockResolvedValueOnce(null);
+
+      const { rerender } = renderHook(
+        ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
+        { initialProps: { inputs: defaultInputs({ route, destination }) } },
+      );
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: { stationName: '강남', line: '2' as const, arrivals: [] },
+        loading: false,
+        isMock: false,
+      });
+      rerender({ inputs: defaultInputs({ route, destination, speedMps: 1 }) });
+
+      await new Promise((r) => setImmediate(r));
+      expect(mockLogFiredAlarmsTripBoundaryReset).not.toHaveBeenCalled();
+    });
+
+    it('destinationId=null 분기에선 polling effect 자체가 skip', async () => {
+      // destination 없음 → effect early return.
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination: null })));
+
+      await new Promise((r) => setImmediate(r));
+      expect(mockLogFiredAlarmsTripBoundaryReset).not.toHaveBeenCalled();
+    });
+
+    it('hydration ref가 아직 null이면 polling effect는 reset skip (race graceful)', async () => {
+      mockGetFiredAlarms.mockResolvedValue(new Set());
+      // hydration은 늦게 끝나도록 — getTripStartedAt 첫 호출은 pending.
+      let releaseHydration: ((v: number | null) => void) | undefined;
+      mockGetTripStartedAt.mockReturnValueOnce(
+        new Promise<number | null>((resolve) => {
+          releaseHydration = resolve;
+        }),
+      );
+      // polling effect는 즉시 returns 2_000_000(but ref still null).
+      mockGetTripStartedAt.mockResolvedValueOnce(2_000_000);
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      // polling effect는 ref=null 보고 return.
+      await new Promise((r) => setImmediate(r));
+      expect(mockLogFiredAlarmsTripBoundaryReset).not.toHaveBeenCalled();
+      // hydration 풀어줘서 cleanup.
+      releaseHydration!(1_000_000);
     });
   });
 

@@ -451,15 +451,29 @@ export default function HomeScreen() {
   const originVariants = !isCustomOrigin && variants.length > 1 ? variants : effectiveOrigin ? [effectiveOrigin] : [];
   const variantIds = originVariants.map((v) => v.id).join(',');
 
+  // #1883 (RC-11) — 마지막으로 route를 계산한 trip session id (`${destinationId}|${routePreference}`).
+  // trip session이 같으면 effectiveOrigin / variants 갱신으로 인한 mid-trip route mutation을 차단.
+  // 사용자가 destination 또는 routePreference를 명시적으로 바꾸면 다른 session id가 되어 가드 통과.
+  const lastComputedRouteSessionRef = useRef<string | null>(null);
   useEffect(() => {
     // #1379: destination 종료(=실제 trip 종료)일 때만 ROUTE_KEY removeItem.
     // effectiveOrigin null은 GPS 일시 누락일 수 있으므로 storage는 보존하고 계산만 skip한다.
     if (!destination) {
       setCategorized([]);
+      lastComputedRouteSessionRef.current = null;
       AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
       return;
     }
     if (!effectiveOrigin) {
+      return;
+    }
+    // #1883 (RC-11) — mid-trip route mutation 차단 (사용자 paradigm 2).
+    // trip이 시작된 후(이 session id로 이미 1회 계산 완료) effectiveOrigin 변화 / variants
+    // 갱신으로 route를 재계산하면 환승역이 바뀌어 "건대입구 → 군자" 같은 회귀가 발생한다.
+    // session id(`destinationId|routePreference`)가 동일하면 route는 freeze — 사용자 명시
+    // destination 또는 routePreference 변경 시에만 재계산. lockless / lock 활성 둘 다 동일 보호.
+    const sessionKey = `${destination.id}|${routePreference}`;
+    if (lastComputedRouteSessionRef.current === sessionKey) {
       return;
     }
     const interactionStart = performance.now();
@@ -474,6 +488,7 @@ export default function HomeScreen() {
       const preferred = result.find((r) => r.category.key === routePreference) ?? result[0];
       if (preferred) {
         setSelectedKey(preferred.category.key);
+        lastComputedRouteSessionRef.current = sessionKey;
         AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(preferred.candidate.route)).catch(() => {});
       } else {
         AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
@@ -640,6 +655,9 @@ export default function HomeScreen() {
     distanceKm: result?.distanceKm ?? null,
     releaseLock: releaseBoardingLock,
     route,
+    // #1887 (RC-14) — transfer 분기에 motion stationary 30s 게이트 추가.
+    // paradigm 4 "이동속도가 빠르지 않다면 판단 후에 자동 하차" 정확 적용.
+    motionStationary,
   });
   // #925 (C2 wire) — destination 자동 하차 감지. arvlCd=0/1 + 역 50m 이내 + 60s motion stationary
   // 4-신호 AND 게이트 통과 시 setDestination(null) 호출 → 후속 LA end / trip-end recall은

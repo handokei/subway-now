@@ -340,12 +340,15 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         useFusedNearestStation(undefined, undefined, subRouteContext, 'T-ARC-MISS'),
       );
 
-      // positionTrainResult = 용마산 → lockedTrainCode 매칭으로 source='boarding-lock' 채택.
+      // positionTrainResult = 용마산 → cascade가 positionTrain 분기로 채택.
       // #1207 (Epic #1204 D1): lock 없음 + routeCtx 있음 → lockless-route-hop estimator 활성.
       // #1418 — positionTrainResult(=Tier 4 실측)가 활성이면 lockless-route-hop(Tier 5)의 forward
-      //         ratchet은 차단된다. 결과는 cascade가 산출한 'boarding-lock'(lockedTrainCode 매칭).
-      //         앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신 — line 487 early return 유지.
-      expect(result.current.source).toBe('boarding-lock');
+      //         ratchet은 차단된다. 앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신
+      //         — line 487 early return 유지.
+      // #1891 (RC-1 paradigm 1): boardingLock=null 상태에서는 lockedTrainCode 매칭이 있어도
+      //         'boarding-lock' source 승격 차단 — 사용자 명시 의향 표명 없는 self-fire 방지.
+      //         lockless trip cascade는 'position-train' source로 떨어진다 (autoLock_fired_count=0 정합).
+      expect(result.current.source).toBe('position-train');
     });
   });
 

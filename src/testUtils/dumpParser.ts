@@ -26,6 +26,12 @@ export interface DumpFixture {
   fusionConfidence: string | undefined; // 'gps-only' | 'gps-only-underground' | ...
   subsurface: boolean | undefined;      // true = 지하
 
+  /** ## GPS 섹션 accuracy 값(m). cold start 감지(>50m)에 사용. */
+  gpsAccuracy: number | undefined;
+
+  /** ## Fusion 또는 ## Environment Distribution 섹션에서 추론된 environment. */
+  environment: 'surface' | 'underground' | 'unknown' | undefined;
+
   /** ## Silent Push 섹션 */
   silentPushReceived: number | undefined;  // 숫자 (received=N)
   silentPushFired: number | undefined;     // 숫자 (fired=N)
@@ -41,6 +47,38 @@ export interface DumpFixture {
 
   /** fired 알람 종류 집합. 예: ['station-passed', 'transfer'] */
   notificationKinds: string[];
+
+  /**
+   * ## Cold Start 섹션 (Phase 6.1 dump 확장). 섹션 부재 시 undefined.
+   * future dump에서 DebugModal이 cold start 상태를 이 섹션으로 출력한다.
+   */
+  coldStart: ColdStartDumpFields | undefined;
+}
+
+/**
+ * ## Cold Start dump 섹션 필드.
+ *
+ * DebugModal이 Phase 6.1 cold start 상태를 이 섹션으로 출력한다:
+ * ```
+ * ## Cold Start
+ * detected=yes
+ * candidatesCount=3
+ * weightedCount=3
+ * pickerShown=yes
+ * userSelected=yes
+ * ```
+ */
+export interface ColdStartDumpFields {
+  /** cold start 감지 여부 (yes → true). */
+  detected: boolean;
+  /** 후보 추출 개수. 0이면 candidates-extracted 실패. */
+  candidatesCount: number;
+  /** weight > 0 인 후보 수. weighted-narrowed 판정용. */
+  weightedCount: number;
+  /** picker 표시 여부. */
+  pickerShown: boolean;
+  /** 사용자 선택 완료 여부. */
+  userSelected: boolean;
 }
 
 /**
@@ -56,12 +94,15 @@ export function parseDumpFixture(text: string): DumpFixture {
     lifecyclePhase: parseTripField(text, 'lifecyclePhase'),
     fusionConfidence: parseFusionConfidence(text),
     subsurface: parseSubsurface(text),
+    gpsAccuracy: parseGpsAccuracy(text),
+    environment: parseEnvironment(text),
     silentPushReceived: parseSilentPushCount(text, 'received'),
     silentPushFired: parseSilentPushCount(text, 'fired'),
     boardingLockActive: parseBoardingLockActive(text),
     alarmLogSources: parseAlarmLogSources(text),
     notificationsFiredCount: parseNotificationsFiredCount(text),
     notificationKinds: parseNotificationKinds(text),
+    coldStart: parseColdStartSection(text),
   };
 }
 
@@ -148,6 +189,94 @@ function parseNotificationKinds(text: string): string[] {
     }
   }
   return [...kinds];
+}
+
+function parseGpsAccuracy(text: string): number | undefined {
+  const section = extractSection(text, 'GPS');
+  if (!section) return undefined;
+  // "lat=37.54, lng=127.05, speed=- m/s, accuracy=28.42 m"
+  const m = section.match(/accuracy=([\d.]+)\s*m/);
+  return m ? parseFloat(m[1]) : undefined;
+}
+
+/**
+ * environment 분류 추론. 우선순위:
+ * 1. ## Cold Start 섹션의 detected=yes + subsurface 신호 (가장 명시적)
+ * 2. ## GPS 섹션 subsurface=true → 'underground'
+ * 3. ## Fusion 섹션 confidence에 'underground' 포함 → 'underground'
+ * 4. ## Environment Distribution 섹션의 분포 (unknown=100%) → 'unknown'
+ * 5. subsurface=false → 'surface'
+ * 6. 기타 → undefined
+ */
+function parseEnvironment(text: string): 'surface' | 'underground' | 'unknown' | undefined {
+  // GPS subsurface 직접 확인
+  const gpsSec = extractSection(text, 'GPS');
+  if (gpsSec) {
+    const subM = gpsSec.match(/^subsurface=(true|false)/m);
+    if (subM) {
+      if (subM[1] === 'true') return 'underground';
+    }
+  }
+
+  // Fusion confidence에서 underground 신호
+  const fusionSec = extractSection(text, 'Fusion');
+  if (fusionSec) {
+    const confM = fusionSec.match(/^confidence=([^,\n]+)/m);
+    if (confM && confM[1].includes('underground')) return 'underground';
+  }
+
+  // Environment Distribution 섹션 확인
+  const envSec = extractSection(text, 'Environment Distribution');
+  if (envSec) {
+    const unknownM = envSec.match(/unknown=([\d.]+)%/);
+    if (unknownM && parseFloat(unknownM[1]) >= 80) return 'unknown';
+    const underM = envSec.match(/underground=([\d.]+)%/);
+    if (underM && parseFloat(underM[1]) >= 50) return 'underground';
+  }
+
+  // subsurface=false → surface
+  if (gpsSec) {
+    const subM = gpsSec.match(/^subsurface=(true|false)/m);
+    if (subM && subM[1] === 'false') return 'surface';
+  }
+
+  return undefined;
+}
+
+/**
+ * ## Cold Start 섹션 파싱.
+ * 섹션 부재 시 undefined 반환 — 기존 dump 호환.
+ *
+ * 예시 섹션:
+ * ```
+ * ## Cold Start
+ * detected=yes
+ * candidatesCount=3
+ * weightedCount=3
+ * pickerShown=yes
+ * userSelected=yes
+ * ```
+ */
+function parseColdStartSection(text: string): ColdStartDumpFields | undefined {
+  const section = extractSection(text, 'Cold Start');
+  if (!section) return undefined;
+
+  const getBool = (key: string): boolean => {
+    const m = section.match(new RegExp(`^${key}=(yes|no)$`, 'm'));
+    return m ? m[1] === 'yes' : false;
+  };
+  const getNum = (key: string): number => {
+    const m = section.match(new RegExp(`^${key}=(\\d+)$`, 'm'));
+    return m ? parseInt(m[1], 10) : 0;
+  };
+
+  return {
+    detected: getBool('detected'),
+    candidatesCount: getNum('candidatesCount'),
+    weightedCount: getNum('weightedCount'),
+    pickerShown: getBool('pickerShown'),
+    userSelected: getBool('userSelected'),
+  };
 }
 
 /**

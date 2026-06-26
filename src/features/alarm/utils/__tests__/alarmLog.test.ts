@@ -29,9 +29,11 @@ import {
   DEDUP_LOG_WINDOW_MS,
   FLUSH_DEBOUNCE_MS,
   FLUSH_MAX_DELAY_MS,
+  logSuppressedChannelAgnosticDedup,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
   logSuppressedPhaseToPhaseDedup,
+  logFiredAlarmsTripBoundaryReset,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedSleepFirstTransfer,
@@ -73,6 +75,7 @@ import {
   lastNReasons,
   logBoardingPromptFired,
   logBoardingPromptResponded,
+  logLegTransition,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
@@ -635,6 +638,78 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(lastJson);
       const p2p = saved.filter((e) => e.reason === 'dedup-phase-to-phase');
       expect(p2p).toHaveLength(1);
+    });
+
+    it('#1901/#1900 logSuppressedChannelAgnosticDedup: reason=dedup-channel-agnostic + kind/phase 보존', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedChannelAgnosticDedup({
+        source: 'fg',
+        stationName: '동대문역사문화공원',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+      await expectLastSavedEntryMatches({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'dedup-channel-agnostic',
+        stationName: '동대문역사문화공원',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('#1901/#1900 logSuppressedChannelAgnosticDedup: 윈도우 내 같은 stationName 재호출은 drop', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedChannelAgnosticDedup({
+        source: 'fg',
+        stationName: '동대문역사문화공원',
+        kind: 'destination',
+      });
+      logSuppressedChannelAgnosticDedup({
+        source: 'silent-push-skipped',
+        stationName: '동대문역사문화공원',
+        kind: 'station-passed',
+      });
+      await flushAlarmLog();
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      const lastJson = calls[calls.length - 1][1];
+      const saved: AlarmLogEntry[] = JSON.parse(lastJson);
+      const channelAgnostic = saved.filter((e) => e.reason === 'dedup-channel-agnostic');
+      expect(channelAgnostic).toHaveLength(1);
+    });
+
+    it('#1893 logFiredAlarmsTripBoundaryReset: reason=fired-alarms-trip-boundary-reset + epoch 슬롯 보존', async () => {
+      logFiredAlarmsTripBoundaryReset({
+        source: 'fg',
+        destinationId: 'dest-1',
+        previousTripStartedAt: 1_000_000,
+        nextTripStartedAt: 2_000_000,
+      });
+      await expectLastSavedEntryMatches({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'fired-alarms-trip-boundary-reset',
+        destinationId: 'dest-1',
+        sentAt: 1_000_000,
+        receivedAt: 2_000_000,
+      });
+    });
+
+    it('#1893 logFiredAlarmsTripBoundaryReset: previousTripStartedAt=null → sentAt=undefined', async () => {
+      logFiredAlarmsTripBoundaryReset({
+        source: 'fg',
+        destinationId: 'dest-1',
+        previousTripStartedAt: null,
+        nextTripStartedAt: 2_000_000,
+      });
+      await flushAlarmLog();
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      const lastJson = calls[calls.length - 1][1];
+      const saved: AlarmLogEntry[] = JSON.parse(lastJson);
+      const entry = saved.find((e) => e.reason === 'fired-alarms-trip-boundary-reset');
+      expect(entry?.destinationId).toBe('dest-1');
+      expect(entry?.sentAt).toBeUndefined();
+      expect(entry?.receivedAt).toBe(2_000_000);
     });
 
     it('logSuppressedDedupAlarm: reason=dedup-alarm, phase+type+stationName 적재 (#580)', async () => {
@@ -2080,6 +2155,28 @@ describe('alarmLog', () => {
       expect(saved[0].source).toBe('boarding-prompt');
       expect(saved[0].outcome).toBe('fired');
       expect(saved[0].stationName).toBe('2·강남');
+    });
+
+    it('#1887 (RC-14): logLegTransition가 leg-transition entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLegTransition({ fromLine: '2', transferStationName: '건대입구' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('leg-transition');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].stationName).toBe('2·건대입구');
+    });
+
+    it('#1887 (RC-14): leg-transition source는 silent push outcome 집계에서 제외 (null bucket)', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: now - 1000, source: 'leg-transition', outcome: 'fired' },
+        { ts: now - 2000, source: 'silent-push-fired', outcome: 'fired' },
+      ];
+      const counts = countSilentPushOutcomes(entries);
+      // leg-transition은 SILENT_PUSH_OUTCOME_SOURCES에서 null bucket — silent push 카운터에 미반영.
+      expect(counts).toEqual({ received: 0, fired: 1, skipped: 0 });
     });
 
     it('countBoardingPromptByWindow가 윈도우별 발사 횟수를 집계한다', () => {

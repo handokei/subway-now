@@ -218,10 +218,21 @@ export interface AutoLockDebugMeta {
 const UNKNOWN_LABEL = '—';
 
 /**
- * #1501 — Raw signal 섹션 UI/share dump에 노출할 최대 엔트리 수. PR-A의 buffer capacity(120)는
- * 7일 cold-launch 회귀 사후 재구성용이라 더 크고, 모달 진입 시점에는 직전 30건이면 충분.
+ * #1881 — DebugLogSection UI 표시 기본 cap. buffer 전체(최대 300~500)를 한 번에 렌더하면
+ * ScrollView 성능 저하. 100건이면 약 50분 분량 — 진단에 충분하고 UI 스크롤 부담도 적다.
+ * "더 보기" 버튼 탭 시 expanded state로 전환해 buffer 전체 표시.
+ * share dump는 별도 경로(buildDumpText)를 통해 buffer 전체를 그대로 포함.
  */
-const RAW_SIGNAL_DISPLAY_LIMIT = 30;
+const DEBUG_LOG_DISPLAY_LIMIT = 100;
+
+/**
+ * #1501 — Raw signal 섹션 share dump용 slice cap. build 섹션 함수가 share dump에 포함할 최대 수.
+ * UI는 DEBUG_LOG_DISPLAY_LIMIT(100)을 사용하고, share dump 섹션은 buffer 전체를 포함하도록
+ * buildRawSignalSection에서 slice 제거 (#1881).
+ *
+ * @deprecated 직접 사용 말 것 — 테스트 호환용으로만 export 유지. UI/dump 로직은 위 상수 참조.
+ */
+const RAW_SIGNAL_DISPLAY_LIMIT = DEBUG_LOG_DISPLAY_LIMIT;
 
 function formatOptionalBool(value: boolean | null | undefined): string {
   if (value === true) return 'true';
@@ -811,19 +822,14 @@ function buildAlarmLogReasonsSummarySection(args: BuildDumpArgs): string[] {
 }
 
 /**
- * #1501 — Raw signal 섹션. 직전 30건(혹은 그 이하)을 최신순으로 직렬화. 빈 buffer는
- * (empty)로 명시 — "한 번도 push 안 됨"과 "load 안 함"을 구분(Fusion log와 동일 컨벤션).
- *
- * 표시 범위는 buffer 전체가 아닌 상위 RAW_SIGNAL_DISPLAY_LIMIT — share dump가 모달
- * 모든 신호로 폭주하지 않도록. 사후 분석이 더 필요하면 PR-B의 dump 업로드 채널로.
+ * #1501 — Raw signal 섹션. buffer 전체를 최신순으로 직렬화해 share dump에 포함.
+ * #1881 — share dump는 buffer 전체를 포함 (UI는 별도 DEBUG_LOG_DISPLAY_LIMIT 적용).
+ * 빈 buffer는 (empty)로 명시 — "한 번도 push 안 됨"과 "load 안 함"을 구분.
  */
 function buildRawSignalSection(args: BuildDumpArgs): string[] {
   const entries = args.rawSignalLog ?? [];
   if (entries.length === 0) return ['(empty)'];
-  return [...entries]
-    .reverse()
-    .slice(0, RAW_SIGNAL_DISPLAY_LIMIT)
-    .map(formatRawSignalLine);
+  return [...entries].reverse().map(formatRawSignalLine);
 }
 
 /**
@@ -2268,11 +2274,12 @@ function DebugModalInner({
           {/* #1682 — Suppress Reasons: 1h 윈도우 top 5 suppress reason 분포 */}
           <SuppressReasonsSection logs={logs} colors={colors} />
 
-          {/* #1501 — PR-C. Raw signal 자동 표시 (toggle 없음). 직전 30건만 노출 — share dump에는
-              buffer 전체가 시간 역순으로 흐른다. Clear는 buffer + AsyncStorage 모두 wipe. */}
+          {/* #1501 — PR-C. Raw signal 자동 표시 (toggle 없음).
+              #1881 — 전체 buffer 전달. UI는 DebugLogSection의 DEBUG_LOG_DISPLAY_LIMIT(100) 적용.
+              Clear는 buffer + AsyncStorage 모두 wipe. */}
           <DebugLogSection
             title="Raw Signal"
-            logs={[...rawSignalLog].slice(-RAW_SIGNAL_DISPLAY_LIMIT)}
+            logs={rawSignalLog}
             formatLine={formatRawSignalLine}
             onClear={() => {
               clearRawSignalEntries();
@@ -2402,7 +2409,11 @@ function NotificationsFiredSection({
   );
 }
 
-/** 역방향(최신 → 오래된) 모노 로그 목록 섹션 — Estimator/Fusion 공통 패턴 (#1025). */
+/**
+ * #1025 — 역방향(최신 → 오래된) 모노 로그 목록 섹션 — Estimator/Fusion 공통 패턴.
+ * #1881 — DEBUG_LOG_DISPLAY_LIMIT(100) 기본 표시. 초과 시 "Show more (N)" 버튼 노출.
+ *          share dump는 호출부가 별도로 buffer 전체 주입(UI cap과 무관).
+ */
 function DebugLogSection<T extends { ts: number }>({
   title,
   logs,
@@ -2420,6 +2431,10 @@ function DebugLogSection<T extends { ts: number }>({
   entryTestId: string;
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
+  const [expanded, setExpanded] = useState(false);
+  const reversed = [...logs].reverse();
+  const displayed = expanded ? reversed : reversed.slice(0, DEBUG_LOG_DISPLAY_LIMIT);
+  const hidden = reversed.length - displayed.length;
   return (
     <Section
       title={`${title} (${logs.length})`}
@@ -2433,11 +2448,23 @@ function DebugLogSection<T extends { ts: number }>({
       {logs.length === 0 ? (
         <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
       ) : (
-        [...logs].reverse().map((entry, idx) => (
-          <MonoEntry key={`${entry.ts}-${idx}`} testID={entryTestId} colors={colors}>
-            {formatLine(entry)}
-          </MonoEntry>
-        ))
+        <>
+          {displayed.map((entry, idx) => (
+            <MonoEntry key={`${entry.ts}-${idx}`} testID={entryTestId} colors={colors}>
+              {formatLine(entry)}
+            </MonoEntry>
+          ))}
+          {hidden > 0 && (
+            <Pressable
+              onPress={() => setExpanded(true)}
+              testID={`${entryTestId}-show-more`}
+            >
+              <Text style={[typography.bodySm, { color: colors.accent, marginTop: spacing.xs }]}>
+                {`Show more (${hidden})`}
+              </Text>
+            </Pressable>
+          )}
+        </>
       )}
     </Section>
   );
@@ -2780,6 +2807,8 @@ export const __test__ = {
   buildBackendCallsSection,
   // #1501 — PR-C. Raw signal 라인 포맷 helper. share dump 단위 테스트에서 직접 호출.
   formatRawSignalLine,
+  // #1881 — UI 표시 cap (100). 기존 RAW_SIGNAL_DISPLAY_LIMIT alias로 테스트 호환 유지.
+  DEBUG_LOG_DISPLAY_LIMIT,
   RAW_SIGNAL_DISPLAY_LIMIT,
   // #1540 (S7) — gps-drop 별 buffer 포맷/섹션. 단위 테스트에서 직접 호출.
   formatGpsDropLine,

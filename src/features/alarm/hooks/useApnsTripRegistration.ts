@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import i18next from 'i18next';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { routeSignature, getStationById } from '../../../shared/utils/stationRoute';
@@ -34,6 +35,17 @@ import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boa
 import { createLogger } from '../../../shared/utils/logger';
 import { resolveApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
+
+/**
+ * #1895 — i18next.language를 backend가 인식하는 SupportedLocale로 정규화.
+ * SUPPORTED_LANGUAGES (`src/shared/i18n/types.ts`)와 1:1 매핑. 미지원/undefined는 backend가
+ * ko fallback 처리하므로 송신 자체를 skip해 트래픽 절약 (graceful — payload 미포함).
+ */
+function resolveLocaleForBackend(): 'ko' | 'en' | 'ja' | 'zh' | undefined {
+  const lang = i18next.language;
+  if (lang === 'ko' || lang === 'en' || lang === 'ja' || lang === 'zh') return lang;
+  return undefined;
+}
 
 const logger = createLogger('ApnsTripRegistration');
 
@@ -158,6 +170,10 @@ async function callRegister(input: RegisterCallInputs) {
   });
   const promptContext = freshContext ?? input.cachedPromptContext;
 
+  // #1895 — i18next.language를 backend가 인식하는 SupportedLocale로 정규화.
+  // backend는 미송신 시 ko fallback이므로 비지원 locale은 송신 자체 skip.
+  const locale = resolveLocaleForBackend();
+
   return registerActiveTrip({
     token: input.token,
     route: input.route,
@@ -176,6 +192,8 @@ async function callRegister(input: RegisterCallInputs) {
       : {}),
     // #903 (Seam G) — 기압계 subsurface ON일 때만 송신. OFF/false는 필드 누락(graceful).
     ...(input.subsurface ? { subsurface: true } : {}),
+    // #1895 — device locale (boarding-prompt push 본문 4언어 분기용). 미지원 locale은 송신 skip.
+    ...(locale ? { locale } : {}),
   });
 }
 

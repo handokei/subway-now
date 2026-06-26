@@ -107,14 +107,15 @@ export interface PositionUploadPayload {
   /**
    * #1543 (ADR-016 S10) — 디바이스 CTRadioAccessTechnology 환경 vote (`useCellularTech`).
    *
-   * - 'surface'      : 4G/5G 잡힘 → 지상 환경 vote
+   * - 'surface'      : NR (5G SA) — 지상 hard-reject
+   * - 'surface-weak' : LTE / NRNSA — 지하 DAS 중계 가능, soft downgrade (#1876)
    * - 'underground'  : 2G/3G fallback → 지하 환경 vote
    * - 'unknown' / 미전송 : vote 미투표 (게이트 영향 0)
    *
    * iOS only. Android / 미지원 디바이스 / native module 부재 시 omit (graceful).
    * backend `consensusGate`의 environment contradict 판정에 사용된다.
    */
-  cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
+  cellularEnvironmentVote?: 'surface' | 'surface-weak' | 'underground' | 'unknown';
   /**
    * #1667 (ADR-015 strongDB wire) — WiFi SSID 매핑으로 결정한 역명.
    *

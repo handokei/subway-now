@@ -33,12 +33,15 @@ import {
   setFiredAlarms,
 } from '../utils/notificationState';
 import { awaitInitialScheduledAlarmDrain } from '../utils/scheduledAlarmReceiver';
+import { getTripStartedAt } from '../utils/tripStartStorage';
 import {
   logFiredAlarm,
   logFiredAlarmsHydrate,
+  logFiredAlarmsTripBoundaryReset,
   logFiredStationPassed,
   logHydrationTransition,
   logRefMismatch,
+  logSuppressedChannelAgnosticDedup,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
   logSuppressedPhaseToPhaseDedup,
@@ -58,6 +61,7 @@ import {
 } from '../utils/alarmLog';
 import { evaluateSsotFireGate } from '../utils/ssotFireGate';
 import {
+  isAnyChannelRecentlyFired,
   isStationRecentlyFired,
   isPhaseToPhaseCrossStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
@@ -512,6 +516,13 @@ export function useStationAlarm({
   // 클로저로 진입한다. ref id가 현재 destinationId와 다르면 stale state — phase 평가를 보류해
   // 옛 ref로 새 destination에 잘못된 알람을 발사하는 race를 차단한다.
   const firedAlarmsRefDestIdRef = useRef<string | null>(null);
+  // #1893 (RC-17) — firedAlarmsRef 내용이 어느 trip(tripStartedAt epoch ms)에 속하는지 추적.
+  // 같은 destinationId로 trip 재시작 시(destinationId 변경 없음) 기존 destination hydrate
+  // effect는 재실행되지 않아 in-memory Set이 이전 trip의 fired key를 보존하던 회귀(2026-06-26
+  // T4 dump에 T3 fired 2건 carry-over). destination polling cycle(`destinationArrival` 30s)에서
+  // tripStartedAt 변동을 감지해 명시적 reset + alarmLog 적재한다. backend trip-ended cleanup이
+  // storage(FIRED_ALARMS_KEY)를 비우는 시점과 1:1 매칭.
+  const firedAlarmsRefTripStartedAtRef = useRef<number | null>(null);
   // #1010/#1316: 하이드레이션 완료 시각(ms). null이면 미완료.
   // warmup window(HYDRATE_WARMUP_MS) 동안 station-passed effect(#1010)와 phase 알람 effect(#1316)가
   // 즉시 차단된다. #1316 — phase 알람은 기존 isFirstAlarmEvalRef 단발 suppress(첫 eval만 차단)였으나,
@@ -617,6 +628,9 @@ export function useStationAlarm({
       if (cancelled) return;
       firedAlarmsRef.current = stored;
       firedAlarmsRefDestIdRef.current = destinationId;
+      // #1893 (RC-17) — hydration 시점의 tripStartedAt을 ref에 stamp. 이후 destinationArrival
+      // polling effect(아래)가 storage tripStartedAt과 비교해 같은 destinationId 재시작을 감지한다.
+      firedAlarmsRefTripStartedAtRef.current = await getTripStartedAt();
       // #580: hydration 시점 진단 — 같은 destinationId에서 size가 다시 0으로 떨어지면 storage race.
       logFiredAlarmsHydrate(destinationId, stored.size);
       // #1010/#1316: warmup 시작 — 하이드레이션 완료 시각 기록. station-passed/phase 알람 effect 공용.
@@ -629,6 +643,45 @@ export function useStationAlarm({
       cancelled = true;
     };
   }, [destinationId]);
+
+  // #1893 (RC-17) — trip 경계 detection + firedAlarmsRef in-memory Set reset.
+  //
+  // 같은 destinationId로 trip을 재시작한 경우(=목적지는 그대로 두고 새 출발) 위 hydration effect가
+  // 재실행되지 않아 React `firedAlarmsRef.current`는 이전 trip의 fired key를 보존한다. backend가
+  // trip-ended 시 storage(FIRED_ALARMS_KEY)는 비워지지만 in-memory ref와 storage가 unsync → 다음
+  // fire가 dedup으로 차단되거나 DebugModal dump가 cross-trip carry-over로 오염 (2026-06-26 T4
+  // dump L75-76에 T3 시각 fired 2건 carry-over evidence).
+  //
+  // destination polling cycle(`destinationArrival` 30s)에 hook해 storage tripStartedAt을 read,
+  // ref에 stamp한 epoch와 다르면 in-memory Set을 명시적으로 비우고 alarmLog 1건 적재. 동일 trip 안
+  // (epoch 동일)에서는 no-op — 정상 fire 흐름에 영향 0. destinationId 변경 분기는 위 hydration effect
+  // 가 hydrate 시점에 tripStartedAt도 함께 stamp하므로 중복 reset 발생 X.
+  useEffect(() => {
+    if (!destinationId) return;
+    let cancelled = false;
+    void (async () => {
+      const currentTripStartedAt = await getTripStartedAt();
+      if (cancelled) return;
+      // hydration effect가 ref에 stamp한 시점과 비교. ref가 null이면 hydration 미완료 — skip.
+      const prevTripStartedAt = firedAlarmsRefTripStartedAtRef.current;
+      if (prevTripStartedAt === null) return;
+      // 같은 trip(epoch 동일) 또는 trip 종료(currentTripStartedAt === null) → 후자는 hydration effect의
+      // destinationId=null 분기가 자연 처리. epoch가 다를 때만 새 trip 시작 → reset.
+      if (currentTripStartedAt === null) return;
+      if (currentTripStartedAt === prevTripStartedAt) return;
+      firedAlarmsRef.current = new Set();
+      firedAlarmsRefTripStartedAtRef.current = currentTripStartedAt;
+      logFiredAlarmsTripBoundaryReset({
+        source: 'fg',
+        destinationId,
+        previousTripStartedAt: prevTripStartedAt,
+        nextTripStartedAt: currentTripStartedAt,
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [destinationId, destinationArrival]);
 
   // 알람 발사 + 로깅 헬퍼. ETA effect와 API 신호 effect가 동일 시퀀스를 수행하므로 통합.
   // route/destination은 호출자가 가드 후 non-null로 전달 — 함수 내부 가드 중복 제거.
@@ -754,6 +807,31 @@ export function useStationAlarm({
       });
       return;
     }
+    // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. 위 cross-category gates는
+    // window가 짧거나(30s/5s/3s) phase↔SP 같은 cross-category 조합만 cover한다. silent state push +
+    // LA dirty update가 같은 station + 같은 kind를 8분 차로 cross-channel 발사하는 회귀(2026-06-26
+    // trip-3 동대문역사문화공원 12:17:58/12:26:12)는 윈도우 밖. 본 게이트는 station+kind level fire
+    // 자체를 8분 안에 단 1회만 통과시킨다 — channel(silent/FG/LA) 무관 backstop. 다른 kind는
+    // cross-category gate(30s)가 별도 차단. 같은 kind 안의 phase 진행(early→imminent)은 본 gate
+    // 가 차단할 수 있지만, 회귀 evidence는 정확히 같은 kind 중복이라 acceptance와 정합.
+    if (
+      isAnyChannelRecentlyFired(
+        activeDestination.id,
+        rawEvent.stationName,
+        rawEvent.type,
+        Date.now(),
+        rawEvent.phaseId,
+      )
+    ) {
+      firedAlarmsRef.current.delete(key);
+      logSuppressedChannelAgnosticDedup({
+        source: 'fg',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
     // #1572 (T9) — backend SSoT 권위 게이트 (Path D fireAndLog phase ETA / imminent).
     // AlarmEvent.type은 'transfer' | 'destination'만 (station-passed는 별도 effect).
     // Gate A(alarmId 매칭)만 적용 — transfer/destination은 환승역에서 같은 station이 여러 hop을
@@ -778,8 +856,15 @@ export function useStationAlarm({
       return;
     }
     // race 차단 reservation — send 전에 윈도우 갱신해 await 동안 다른 effect가 같은 station을 발사
-    // 못하게 한다. category=phase type → 후속 station-passed 차단.
-    markStationFired(activeDestination.id, rawEvent.stationName, rawEvent.type, Date.now());
+    // 못하게 한다. category=phase type → 후속 station-passed 차단. #1901 — phaseId도 stamp해
+    // channel-agnostic 8분 backstop이 정상 phase 진행(early→imminent)을 통과시킬 수 있도록 한다.
+    markStationFired(
+      activeDestination.id,
+      rawEvent.stationName,
+      rawEvent.type,
+      Date.now(),
+      rawEvent.phaseId,
+    );
     // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
     const direction = nearestStation
       ? resolveAlarmDirection(rawEvent, {
