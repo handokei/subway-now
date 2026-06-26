@@ -4,7 +4,11 @@
  * 목적: weight 값 변경 시 가드. 4 카테고리 합산이 임계 의미를 보존하는지 contract test.
  */
 
-import { FUSION_SIGNAL_WEIGHTS, STATION_ACCEPT_THRESHOLD } from '../fusion';
+import {
+  FUSION_SIGNAL_WEIGHTS,
+  STATION_ACCEPT_THRESHOLD,
+  STATION_ACCEPT_THRESHOLD_SURFACE_WEAK,
+} from '../fusion';
 
 describe('FUSION_SIGNAL_WEIGHTS — 4 카테고리 weight contract', () => {
   it('4 카테고리 모두 정의 (positional/radio/motion/time)', () => {
@@ -54,5 +58,43 @@ describe('STATION_ACCEPT_THRESHOLD — 임계 contract', () => {
     expect(envOnly).toBeGreaterThan(STATION_ACCEPT_THRESHOLD - 0.5);
     // 임계 자체는 양수
     expect(STATION_ACCEPT_THRESHOLD).toBeGreaterThan(0);
+  });
+});
+
+describe("STATION_ACCEPT_THRESHOLD_SURFACE_WEAK — D+A hybrid contract (#1876 cross-impact)", () => {
+  it('기본 임계보다 높다 — surface-weak 환경에서는 강한 multi-source 필수', () => {
+    expect(STATION_ACCEPT_THRESHOLD_SURFACE_WEAK).toBeGreaterThan(STATION_ACCEPT_THRESHOLD);
+  });
+
+  it('positional full + barometer(time) 만으로는 미달 (1.3 < 1.6) — #1876 보수 정책 보존', () => {
+    const positionalPlusBarometer =
+      FUSION_SIGNAL_WEIGHTS.positional + FUSION_SIGNAL_WEIGHTS.time;
+    expect(positionalPlusBarometer).toBeLessThan(STATION_ACCEPT_THRESHOLD_SURFACE_WEAK);
+  });
+
+  it('positional full + motion + time = 1.7 ≥ 1.6 → accept 가능 (lockless 진행 보존)', () => {
+    const strongCombo =
+      FUSION_SIGNAL_WEIGHTS.positional +
+      FUSION_SIGNAL_WEIGHTS.motion +
+      FUSION_SIGNAL_WEIGHTS.time;
+    expect(strongCombo).toBeGreaterThanOrEqual(STATION_ACCEPT_THRESHOLD_SURFACE_WEAK);
+  });
+
+  it('positional full + accelerometer만 (1.4) 으로는 미달 → 둘째 환경 신호 추가 필요', () => {
+    const positionalPlusMotion =
+      FUSION_SIGNAL_WEIGHTS.positional + FUSION_SIGNAL_WEIGHTS.motion;
+    expect(positionalPlusMotion).toBeLessThan(STATION_ACCEPT_THRESHOLD_SURFACE_WEAK);
+  });
+
+  it('1.8 미만 — 너무 보수적 회피 (motion+time+positional full=1.7도 fail 방지)', () => {
+    const strongCombo =
+      FUSION_SIGNAL_WEIGHTS.positional +
+      FUSION_SIGNAL_WEIGHTS.motion +
+      FUSION_SIGNAL_WEIGHTS.time;
+    expect(STATION_ACCEPT_THRESHOLD_SURFACE_WEAK).toBeLessThanOrEqual(strongCombo);
+  });
+
+  it('양수 임계 — 음수로는 의미 없음', () => {
+    expect(STATION_ACCEPT_THRESHOLD_SURFACE_WEAK).toBeGreaterThan(0);
   });
 });

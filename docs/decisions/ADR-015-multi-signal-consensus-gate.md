@@ -184,6 +184,61 @@ P5 (가중치 학습) 후속: 1주 raw signal dump → confusion matrix → 가�
 
 근거: 2026-06-17 17 PR 회귀가 모두 cross-layer 단일 fix 패턴. backend release vs device 잔존, frontend fusion vs route, scheduled queue dump vs trigger 등.
 
+### §12 Surface-weak cross-impact — RC-3 weighted vote ×  #1876 (D+A hybrid)
+
+#### 배경
+
+- **PR #1876** (`fix/#1876-cellular-soft-downgrade`, 2026-06-26 머지): cellularTech의 LTE/LTEAdvanced/NRNSA를 `'surface' hard-reject` → `'surface-weak' soft downgrade` 전환. `undergroundSSOTConsensus` primary path에서 `envVotes -= 1`로 보수 처리.
+- **PR #1884** (`fix/#1884-weighted-vote-fusion`, RC-3): primary quorum 미달 시 `weightedVoteFusion` fallback 호출.
+
+#### 발견된 logical conflict
+
+primary path 미달 케이스에서 fallback이 #1876의 `envVotes -= 1` 의도를 모르고 station을 채택하면 **#1876 보수 정책 무효화**. 예시 (`position(line=2 매칭) + barometer + 'surface-weak'`):
+
+| Path | Math | Result |
+|---|---|---|
+| Primary (#1876) | pair 1 + envVotes(baro+1 −1) = 1 < quorum 2 | reject (의도) |
+| Fallback (#1884, naive) | positional 1.0 + time 0.3 = 1.3 ≥ 1.1 | **accept (의도 무효화)** |
+
+#### 결정 (사용자, 2026-06-26)
+
+**D+A hybrid**:
+
+- **D** — `cellularEnvironmentVote === 'surface-weak'`일 때 `STATION_ACCEPT_THRESHOLD` **1.1 → 1.6 동적 상향**. 강한 multi-source 조합만 station 채택 허용.
+- **A** — `weightedVoteFusion`의 기존 `winner === null` 가드 (station 후보 ≥ 1 필수)를 **명시 유지**. env vote 누적이 아무리 커도 station 후보 없으면 reject.
+
+#### 옵션 비교 — false binary 회피 (memory `feedback-decision-no-false-binary`)
+
+| 옵션 | 설명 | 채택 여부 |
+|---|---|---|
+| A | Primary path에 fallback skip 가드 추가 | `weightedVoteFusion` station 가드로 이미 일부 보장. 명시 보존. |
+| B | radio 카테고리에 음수 weight 부여 | weight 음수 금지 (paradigm 위반) — 채택 X |
+| C | surface-weak 시 weighted vote 자체 skip | T3 stuck (lockless 진행 불가) 재발 — 채택 X |
+| **D** | **threshold 1.1 → 1.6 동적 상향** | **채택** — 보수성 + 진행 균형 |
+
+#### 1.6 선정 근거
+
+| 조합 | 점수 | 1.6 판정 | 의도 |
+|---|---|---|---|
+| positional full 단독 | 1.0 | reject | steady quorum=2 동등 보수 |
+| positional full + barometer | 1.3 | reject | 단일 약 vote는 부족 (의도된 보수) |
+| positional full + motion | 1.4 | reject | 단일 환경 vote도 부족 |
+| **positional full + motion + time** | **1.7** | **accept** | **multi-source 강한 조합 — lockless 진행 보장** |
+| positional partial + motion + time | 1.3 | reject | partial은 더 엄격 |
+| 1.8 이상으로 올리면 | — | — | motion+time+positional full=1.7도 fail → 너무 보수, 채택 X |
+
+#### Acceptance (§12 한정)
+
+- `useFusedNearestStation` 환경 'unknown' → 'underground' 전환 trip에서 surface-weak vote 발생 시: weighted vote fallback의 acceptThreshold=1.6 노출 (DebugModal)
+- 1주 production 측정: `silentPushFired / silentPushReceived` ratio surface-weak 환경에서도 ≥ 0.5 유지 (#1876 보수 정책 + #1884 fallback 둘 다 작동 시 균형)
+- T3 시나리오 (lockless 지하 충정로→용마산) stuck 재발 0건 (D 임계 상향으로 surface-weak 케이스 채택 보수화되더라도 underground primary 케이스는 영향 X)
+
+#### 코드 위치
+
+- `src/shared/constants/fusion.ts` — `STATION_ACCEPT_THRESHOLD_SURFACE_WEAK = 1.6` 상수
+- `src/features/nearest-station/utils/weightedVoteFusion.ts:selectAcceptThreshold` — 환경별 임계 데이터 표
+- 신규 환경 분기는 `THRESHOLD_BY_ENV` 표에만 한 줄 추가 (CLAUDE.md §3 데이터 주도)
+
 ## Acceptance
 
 본 ADR close 조건 — 1주 실기기 trip 누적 측정 (또는 production 측정):

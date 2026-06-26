@@ -355,3 +355,211 @@ describe('weightedVoteFusion — votes meta 노출 (DebugModal/Sentry)', () => {
     expect(timeVote?.contributed).toBe(false);
   });
 });
+
+describe("weightedVoteFusion — D+A hybrid (#1876 'surface-weak' cross-impact)", () => {
+  // D: 'surface-weak'일 때 threshold 1.1 → 1.6 상향.
+  // A: station 후보 0 → 항상 reject (env vote 무관).
+  //
+  // 사용자 결정: PR #1876 surface-weak (envVotes -= 1 보수 처리) 의도를 fallback에서도 보존.
+
+  describe('D: threshold 1.6 동적 상향', () => {
+    it("'surface-weak' + positional full(arrival 매칭, 1.0) 단독 → 1.0 < 1.6 → reject", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3, // full match
+        cellularEnvironmentVote: 'surface-weak',
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.acceptThreshold).toBe(1.6);
+      expect(result.totalScore).toBeCloseTo(1.0, 10);
+    });
+
+    it("'surface-weak' + positional full + barometer(0.3) → 1.3 < 1.6 → reject", () => {
+      // 1.1 임계 환경이라면 accept였을 케이스. surface-weak 환경에서는 약 신호 하나로는 부족.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak',
+        barometerStop: true,
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.acceptThreshold).toBe(1.6);
+      expect(result.totalScore).toBeCloseTo(1.3, 10);
+    });
+
+    it("'surface-weak' + positional full + barometer + accelerometer automotive → 1.7 ≥ 1.6 → accept", () => {
+      // 강한 multi-source 조합 (정착 + train 진동 + station). surface-weak이어도 채택 가능.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak',
+        barometerStop: true,
+        accelerometerPattern: 'automotive',
+      });
+      expect(result.accepted).toBe(true);
+      expect(result.acceptThreshold).toBe(1.6);
+      expect(result.winner?.station.id).toBe(positionTrain.station.id);
+      expect(result.totalScore).toBeCloseTo(1.7, 10);
+    });
+
+    it("'surface-weak' + positional partial + barometer + accelerometer → 0.6+0.3+0.4=1.3 < 1.6 → reject", () => {
+      // surface-weak에서는 partial positional + 환경 vote 둘만으로는 부족.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2, // mismatch → partial 0.6
+        cellularEnvironmentVote: 'surface-weak',
+        barometerStop: true,
+        accelerometerPattern: 'automotive',
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.acceptThreshold).toBe(1.6);
+      expect(result.totalScore).toBeCloseTo(1.3, 10);
+    });
+
+    it("'surface-weak' + radio vote 미참여 (cellular 자체가 surface-weak이므로 underground vote X)", () => {
+      // surface-weak일 때 radio evaluator는 'underground'와 매칭 안 됨 → contributed=false.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak',
+      });
+      const radioVote = result.votes.find((v) => v.category === 'radio');
+      expect(radioVote?.contributed).toBe(false);
+      expect(radioVote?.effectiveWeight).toBe(0);
+    });
+
+    it("'underground' (기본 환경)에서는 threshold 1.1 유지", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2, // partial
+        cellularEnvironmentVote: 'underground',
+      });
+      expect(result.acceptThreshold).toBe(1.1);
+      expect(result.accepted).toBe(true); // 0.6 + 0.5 = 1.1 ✓
+    });
+
+    it("cellularEnvironmentVote 미전달(undefined)에서는 threshold 1.1 유지", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        barometerStop: true,
+      });
+      expect(result.acceptThreshold).toBe(1.1);
+      expect(result.accepted).toBe(true); // 1.0 + 0.3 = 1.3 ≥ 1.1 ✓
+    });
+
+    it("'unknown' cellular에서도 threshold 1.1 유지 (vote 미투표일 뿐)", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'unknown',
+        barometerStop: true,
+      });
+      expect(result.acceptThreshold).toBe(1.1);
+      expect(result.accepted).toBe(true); // 1.0 + 0.3 = 1.3 ≥ 1.1 ✓
+    });
+
+    it("'surface' (NR SA hard-reject) 입력 시에도 threshold 1.1 유지 — 호출자가 본 함수 진입 전 reject", () => {
+      // 본 함수는 'surface' 입력을 받아도 reject 처리는 호출자(undergroundSSOTConsensus) 책임.
+      // 본 함수 자체는 'surface'에 특별 분기 없이 기본 threshold 적용.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface',
+      });
+      expect(result.acceptThreshold).toBe(1.1);
+    });
+  });
+
+  describe('A: station 후보 0 → 항상 reject (env 무관)', () => {
+    it("'surface-weak' + station 후보 0 → null (env 누적이 1.6 미달인 것과 무관, station 가드)", () => {
+      // env 누적: time(0.3) + motion(0.4) = 0.7. 둘 다 1.6 미달이지만 station 후보 0이 primary 가드.
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: null,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'surface-weak',
+        barometerStop: true,
+        accelerometerPattern: 'automotive',
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.winner).toBeNull();
+      expect(result.totalScore).toBeCloseTo(0.7, 10);
+    });
+
+    it("'underground' + station 후보 0 → null (A 가드는 환경 무관)", () => {
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: null,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'underground',
+        barometerStop: true,
+        accelerometerPattern: 'automotive',
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.winner).toBeNull();
+    });
+
+    it("'surface-weak' + station 후보 0 + 모든 env 누적 → null", () => {
+      // 모든 env vote (radio 'surface-weak'는 미참여, motion+time만 누적).
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: null,
+        arrival: null,
+        cellularEnvironmentVote: 'surface-weak',
+        barometerStop: true,
+        accelerometerPattern: 'automotive',
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.winner).toBeNull();
+    });
+  });
+
+  describe("integration: 'surface-weak' 정확 임계 boundary", () => {
+    it('positional full + accelerometer + time = 정확히 1.7 → accept', () => {
+      // 1.0 + 0.4 + 0.3 = 1.7. 1.6보다 큼.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak',
+        accelerometerPattern: 'automotive',
+        barometerStop: true,
+      });
+      expect(result.accepted).toBe(true);
+      expect(result.totalScore).toBeCloseTo(1.7, 10);
+    });
+
+    it('positional full + accelerometer만 → 1.4 < 1.6 → reject', () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak',
+        accelerometerPattern: 'automotive',
+      });
+      expect(result.accepted).toBe(false);
+      expect(result.totalScore).toBeCloseTo(1.4, 10);
+    });
+  });
+});

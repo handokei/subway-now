@@ -1,5 +1,5 @@
 /**
- * #1884 (ADR-015 RC-3) — Weighted vote 4-signal fusion (Option A 채택).
+ * #1884 (ADR-015 RC-3) — Weighted vote 4-signal fusion (Option A 채택 + D+A hybrid).
  *
  * 목적:
  *   `undergroundSSOTConsensus`의 2-of-N station-pair-required quorum이 lockless trip 지하
@@ -21,24 +21,36 @@
  *                  arrival 호선 매칭 = full weight(1.0), 매칭 없음 = partial weight(0.6) —
  *                  arrival API 일시 실패에도 station 후보 유지하며 env vote와 합산 채택 허용.
  *   - radio      : `cellularEnvironmentVote === 'underground'` (환경 확정 vote).
+ *                  'surface-weak'는 미투표 (호출자가 primary에서 envVotes −1로 처리 — #1876).
  *   - motion     : `accelerometerPattern === 'automotive'` (train 진동 fingerprint).
  *   - time       : `barometerStop === true` (dP/dt 정착 패턴).
  *
  * 환경 모순 reject (기존 정책 보존):
- *   `cellularEnvironmentVote === 'surface'` → vote 자체 불가. 본 함수 진입 전에 호출자가
- *   reject 처리 (기존 underground SSOT 첫 줄과 동일).
+ *   `cellularEnvironmentVote === 'surface'` (NR SA, hard-reject) → vote 자체 불가. 본 함수 진입
+ *   전에 호출자가 reject 처리 (기존 underground SSOT 첫 줄과 동일).
  *
- * 채택 임계 — `STATION_ACCEPT_THRESHOLD = 1.1`:
+ * D+A hybrid (#1876 cross-impact):
+ *   `cellularEnvironmentVote === 'surface-weak'` (LTE/NRNSA, 지상 가능성) → 임계 1.1 → 1.6 상향.
+ *   #1876 primary path `envVotes −1` 보수 처리 의도를 fallback에서도 보존. 강한 multi-source
+ *   조합만 station 채택 허용. 자세히는 `STATION_ACCEPT_THRESHOLD_SURFACE_WEAK` 참고.
+ *
+ * 채택 임계 (기본 underground — `STATION_ACCEPT_THRESHOLD = 1.1`):
  *   - positional full(1.0) 단독 → 미달 reject (기존 steady quorum=2 정책 보존).
  *   - positional full(1.0) + 어떤 env vote ≥ 0.3 → 1.1 이상 accept (multi-source confirm).
  *   - positional partial(0.6) + env vote ≥ 0.5 → 1.1 이상 accept — T3 stuck 해소.
  *     예: position-train(arrival 미매칭, 0.6) + cellular underground(0.5) = 1.1 ✓.
  *   - positional partial(0.6) + time(0.3) 만 → 0.9 reject.
- *   - station 후보 0 → 항상 reject (env vote 누적이 아무리 커도).
+ *   - station 후보 0 → 항상 reject (env vote 누적이 아무리 커도) — A 옵션 가드.
+ *
+ * 채택 임계 (surface-weak — `STATION_ACCEPT_THRESHOLD_SURFACE_WEAK = 1.6`, D 옵션):
+ *   - positional full(1.0) + barometer(0.3) = 1.3 → reject (단일 약 신호로는 부족).
+ *   - positional full(1.0) + motion(0.4) + time(0.3) = 1.7 ≥ 1.6 → accept.
+ *   - positional partial(0.6) + motion(0.4) + time(0.3) = 1.3 → reject.
  *
  * 데이터 주도(CLAUDE.md §3):
  *   - 신호별 평가는 `EVALUATORS` 배열 순회 — 신호 개수 하드코딩 X.
  *   - 새 신호 추가는 evaluator 객체 추가만으로 vote에 참여.
+ *   - 환경별 임계는 `selectAcceptThreshold` 데이터 표 분기 — 새 환경 vote는 표에만 추가.
  */
 
 import type { Station, NearestStationResult } from '../../../shared/types/station';
@@ -48,6 +60,7 @@ import type { AccelerometerPattern } from './accelerometerFingerprint';
 import {
   FUSION_SIGNAL_WEIGHTS,
   STATION_ACCEPT_THRESHOLD,
+  STATION_ACCEPT_THRESHOLD_SURFACE_WEAK,
   type FusionSignalCategory,
 } from '../../../shared/constants/fusion';
 
@@ -80,6 +93,12 @@ export interface WeightedVoteResult {
   winner: { station: Station; trainCode: string } | null;
   /** 채택 winner station 점수 + 환경 vote 점수 합산. accept 결정 기준값. */
   totalScore: number;
+  /**
+   * 평가에 사용된 채택 임계. D+A hybrid(#1876)로 환경별 동적 — DebugModal 노출용.
+   *   - 기본 (underground / unknown 등)        : 1.1
+   *   - cellularEnvironmentVote='surface-weak' : 1.6
+   */
+  acceptThreshold: number;
   /**
    * 카테고리별 weight 기여 — DebugModal/Sentry breadcrumb용.
    * `contributed=false`는 신호 부재 or arrival 미매칭으로 weight 0 누적.
@@ -219,6 +238,34 @@ const EVALUATORS: ReadonlyArray<CategoryEvaluator> = [
 ];
 
 /**
+ * 환경별 채택 임계 표 — 데이터 주도(CLAUDE.md §3): 신규 환경 분기는 표에 한 줄 추가.
+ *
+ * 매칭 우선순위 = 배열 순서. 첫 매칭 항목의 threshold 사용.
+ *   - 'surface-weak' (LTE/NRNSA, #1876 D+A hybrid) → 1.6 (강한 multi-source 강제).
+ *   - 그 외 → 1.1 (기본 underground).
+ */
+const THRESHOLD_BY_ENV: ReadonlyArray<{
+  matches(input: WeightedVoteInput): boolean;
+  threshold: number;
+}> = [
+  {
+    matches: (input) => input.cellularEnvironmentVote === 'surface-weak',
+    threshold: STATION_ACCEPT_THRESHOLD_SURFACE_WEAK,
+  },
+];
+
+/**
+ * 환경 vote에 따른 채택 임계 선택. 매칭 실패 시 기본 `STATION_ACCEPT_THRESHOLD`.
+ *
+ * D+A hybrid(#1876): cellularEnvironmentVote='surface-weak'면 1.1 → 1.6 상향. 다른 환경은
+ * 기본 1.1 유지. 신규 환경 분기는 `THRESHOLD_BY_ENV` 표 갱신만으로 추가.
+ */
+function selectAcceptThreshold(input: WeightedVoteInput): number {
+  const hit = THRESHOLD_BY_ENV.find((entry) => entry.matches(input));
+  return hit?.threshold ?? STATION_ACCEPT_THRESHOLD;
+}
+
+/**
  * Weighted vote 평가. 같은 station id의 weight를 합산, 최고점 station 선택. 환경 vote 점수와
  * 합산해 임계 이상이면 accept. station 후보 0이면 env 점수가 아무리 커도 reject.
  *
@@ -271,20 +318,24 @@ export function weightedVoteFusion(input: WeightedVoteInput): WeightedVoteResult
     ? null
     : winnerEntry.value;
 
-  // station 후보 0 → 항상 reject (env vote 누적이 아무리 커도).
+  const acceptThreshold = selectAcceptThreshold(input);
+
+  // station 후보 0 → 항상 reject (env vote 누적이 아무리 커도) — A 옵션 가드 명시.
+  // 호출자(undergroundSSOTConsensus)가 station 채택 없이 SSOT 발사하는 사고 차단.
   if (winner === null) {
-    return { accepted: false, winner: null, totalScore: envScore, votes };
+    return { accepted: false, winner: null, totalScore: envScore, acceptThreshold, votes };
   }
 
-  // totalScore = winner station score + 환경 vote. 임계 이상이면 accept.
-  // 부분 positional(0.6) + env vote (radio 0.5 + ...) ≥ 1.1 → accept (T3 stuck 해소).
+  // totalScore = winner station score + 환경 vote. 환경 기반 임계 이상이면 accept.
+  // 기본(underground/unknown): 1.1. surface-weak(LTE/NRNSA): 1.6 — #1876 보수 정책 보존.
   const totalScore = winner.score + envScore;
-  const accepted = totalScore >= STATION_ACCEPT_THRESHOLD;
+  const accepted = totalScore >= acceptThreshold;
 
   return {
     accepted,
     winner: accepted ? { station: winner.station, trainCode: winner.trainCode } : null,
     totalScore,
+    acceptThreshold,
     votes,
   };
 }
