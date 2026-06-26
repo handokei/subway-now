@@ -7,7 +7,7 @@
  * 용마산 trip)처럼 cold-launch 사이 데이터가 끊기는 사고를 막는다.
  *
  * 정책:
- *  - capacity 120 (cycle ~1Hz × 2분 windowfusion + enter/exit stamps)
+ *  - capacity 300 (#1881: 60분 trip × 1 entry/cycle(30s) = 120 tick → 2× 여유 확보)
  *  - boot 시 1회 hydrate (`hydrateRawSignalBuffer()`)
  *  - push 후 1초 idle throttle write — burst push에서 storage IO 폭주 차단
  *  - 손상 JSON / 키 부재 = 빈 buffer로 시작 (graceful)
@@ -18,7 +18,7 @@ import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellularTech';
 
-export const RAW_SIGNAL_BUFFER_CAPACITY = 120;
+export const RAW_SIGNAL_BUFFER_CAPACITY = 300;
 export const RAW_SIGNAL_WRITE_THROTTLE_MS = 1000;
 
 export type RawSignalKind = 'cycle' | 'enter' | 'exit';

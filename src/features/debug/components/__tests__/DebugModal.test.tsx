@@ -4108,18 +4108,21 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(stationBIdx).toBeLessThan(stationAIdx);
     });
 
-    it(`상위 ${RAW_SIGNAL_DISPLAY_LIMIT}건만 dump (overflow 분리)`, () => {
-      const entries: RawEntry[] = Array.from({ length: RAW_SIGNAL_DISPLAY_LIMIT + 5 }, (_, i) =>
+    it('#1881 share dump는 buffer 전체 포함 (UI cap 제한과 무관)', () => {
+      // #1881 — share dump(buildDumpText)는 buffer 전체를 포함. UI는 DEBUG_LOG_DISPLAY_LIMIT(100)
+      // 적용이지만, buildDumpText는 별도 경로(buildRawSignalSection)로 buffer 전체를 직렬화.
+      const total = RAW_SIGNAL_DISPLAY_LIMIT + 5;
+      const entries: RawEntry[] = Array.from({ length: total }, (_, i) =>
         makeRawEntry({ ts: i * 1000, stationId: `S${i}` }),
       );
       const dump = buildDumpText(makeDumpArgs({ rawSignalLog: entries }));
-      // suffix는 buffer 전체 (35) — display limit과 분리.
-      expect(dump).toContain(`## Raw Signal (${RAW_SIGNAL_DISPLAY_LIMIT + 5})`);
+      // suffix는 buffer 전체 카운트.
+      expect(dump).toContain(`## Raw Signal (${total})`);
       const section = dump.slice(dump.indexOf('## Raw Signal'));
-      // 가장 오래된 entry(S0)는 dump에서 잘림.
-      expect(section).not.toContain('| S0 |');
-      // 가장 최신(S34)은 포함.
-      expect(section).toContain(`| S${RAW_SIGNAL_DISPLAY_LIMIT + 4} |`);
+      // 가장 오래된 entry(S0)도 dump에 포함 — share dump는 전체 buffer.
+      expect(section).toContain('| S0 |');
+      // 가장 최신(S{total-1})도 포함.
+      expect(section).toContain(`| S${total - 1} |`);
     });
 
     it('SHARE_SECTIONS에 Raw Signal 헤더 1회 + Environment Distribution 다음에 위치', () => {
@@ -4203,6 +4206,70 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(msg).toContain('## Raw Signal (1)');
       expect(msg).toContain('SHARE-INTEGRATION');
       shareSpy.mockRestore();
+    });
+  });
+
+  // #1881 — DebugLogSection read-more 패턴
+  describe('#1881 DebugLogSection read-more 패턴', () => {
+    const {
+      pushRawSignal,
+      __resetRawSignalForTests__,
+    } = jest.requireActual('../../../observability/utils/rawSignalBuffer');
+    // DEBUG_LOG_DISPLAY_LIMIT은 __test__ export를 통해 접근 (module-level local 상수).
+    const { DEBUG_LOG_DISPLAY_LIMIT } = __test__;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      __resetRawSignalForTests__();
+      setupHookDefaults();
+      jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+        remove: jest.fn(),
+      } as unknown as ReturnType<typeof AppState.addEventListener>);
+    });
+
+    afterEach(() => {
+      __resetRawSignalForTests__();
+    });
+
+    it('entries가 DEBUG_LOG_DISPLAY_LIMIT 이하면 "Show more" 버튼이 노출되지 않는다', async () => {
+      for (let i = 0; i < DEBUG_LOG_DISPLAY_LIMIT; i++) {
+        pushRawSignal(makeRawEntry({ ts: i * 1000, stationId: `S${i}` }));
+      }
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(screen.getByText(`Raw Signal (${DEBUG_LOG_DISPLAY_LIMIT})`)).toBeTruthy());
+      expect(screen.queryByTestId('debug-raw-signal-entry-show-more')).toBeNull();
+    });
+
+    it('entries가 DEBUG_LOG_DISPLAY_LIMIT 초과 시 "Show more (N)" 버튼이 노출된다', async () => {
+      const total = DEBUG_LOG_DISPLAY_LIMIT + 10;
+      for (let i = 0; i < total; i++) {
+        pushRawSignal(makeRawEntry({ ts: i * 1000, stationId: `S${i}` }));
+      }
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(screen.getByText(`Raw Signal (${total})`)).toBeTruthy());
+      // UI 표시 개수는 DEBUG_LOG_DISPLAY_LIMIT
+      const entries = screen.getAllByTestId('debug-raw-signal-entry');
+      expect(entries).toHaveLength(DEBUG_LOG_DISPLAY_LIMIT);
+      // "Show more (10)" 버튼 표시
+      expect(screen.getByTestId('debug-raw-signal-entry-show-more')).toBeTruthy();
+      expect(screen.getByText('Show more (10)')).toBeTruthy();
+    });
+
+    it('"Show more" 탭 시 전체 entries가 노출된다', async () => {
+      const total = DEBUG_LOG_DISPLAY_LIMIT + 5;
+      for (let i = 0; i < total; i++) {
+        pushRawSignal(makeRawEntry({ ts: i * 1000, stationId: `S${i}` }));
+      }
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(screen.getByText(`Raw Signal (${total})`)).toBeTruthy());
+      act(() => {
+        fireEvent.press(screen.getByTestId('debug-raw-signal-entry-show-more'));
+      });
+      // expand 후 전체 entries 표시
+      const entries = screen.getAllByTestId('debug-raw-signal-entry');
+      expect(entries).toHaveLength(total);
+      // "Show more" 버튼이 사라짐
+      expect(screen.queryByTestId('debug-raw-signal-entry-show-more')).toBeNull();
     });
   });
 
