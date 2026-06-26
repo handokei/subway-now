@@ -659,6 +659,86 @@ describe('alarmBackend', () => {
     });
   });
 
+  // #1897 (RC-5) — backend register 응답의 confirmedEnv echo → device stamp.
+  describe('confirmedEnv echo (#1897)', () => {
+    const LAST_CONFIRMED_APNS_ENV_KEY = 'subway-now:last-confirmed-apns-env';
+
+    beforeEach(async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      await AsyncStorage.removeItem(LAST_CONFIRMED_APNS_ENV_KEY);
+    });
+
+    it.each(['sandbox', 'production'] as const)(
+      '응답 confirmedEnv=%s → AsyncStorage stamp + 결과에 echo',
+      async (env) => {
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, token: 'token-hex', confirmedEnv: env }),
+        } as unknown as Response);
+
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result.ok).toBe(true);
+        expect(result.confirmedEnv).toBe(env);
+        expect(await AsyncStorage.getItem(LAST_CONFIRMED_APNS_ENV_KEY)).toBe(env);
+      },
+    );
+
+    it('응답 confirmedEnv 부재 (구 backend) → stamp 없음 + 결과 confirmedEnv undefined (graceful)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, token: 'token-hex' }),
+      } as unknown as Response);
+
+      const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect(result.ok).toBe(true);
+      expect(result.confirmedEnv).toBeUndefined();
+      expect(await AsyncStorage.getItem(LAST_CONFIRMED_APNS_ENV_KEY)).toBeNull();
+    });
+
+    it('응답 confirmedEnv 값 오류 → stamp 없음 (strict guard)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, token: 'token-hex', confirmedEnv: 'bogus' }),
+      } as unknown as Response);
+
+      const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect(result.ok).toBe(true);
+      expect(result.confirmedEnv).toBeUndefined();
+      expect(await AsyncStorage.getItem(LAST_CONFIRMED_APNS_ENV_KEY)).toBeNull();
+    });
+
+    it('res.json throw → graceful (catch → undefined, stamp 없음)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('invalid json');
+        },
+      } as unknown as Response);
+
+      const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect(result.ok).toBe(true);
+      expect(result.confirmedEnv).toBeUndefined();
+      expect(await AsyncStorage.getItem(LAST_CONFIRMED_APNS_ENV_KEY)).toBeNull();
+    });
+
+    it('register 실패(non-2xx) → confirmedEnv 추출 skip (stamp 없음)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ confirmedEnv: 'production' }),
+      } as unknown as Response);
+
+      const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect(result.ok).toBe(false);
+      expect(result.confirmedEnv).toBeUndefined();
+      expect(await AsyncStorage.getItem(LAST_CONFIRMED_APNS_ENV_KEY)).toBeNull();
+    });
+  });
+
   // #1545 (S12) — TRIP_BOUND_CLEANUPS에 wiring될 production reset.
   describe('resetAlarmBackendDedup (#1545 S12)', () => {
     it('완료 hash를 초기화해 같은 페이로드 재등록 시 fetch가 다시 발사된다 (token 불필요)', async () => {

@@ -33,7 +33,7 @@ import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
-import { resolveApnsEnv } from '../../../shared/utils/apnsEnv';
+import { getRegisteringApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 
 /**
@@ -174,13 +174,17 @@ async function callRegister(input: RegisterCallInputs) {
   // backend는 미송신 시 ko fallback이므로 비지원 locale은 송신 자체 skip.
   const locale = resolveLocaleForBackend();
 
+  // #1897 (RC-5) — 마지막으로 backend가 confirm한 apnsEnv stamp 우선 사용. 부재 시 build env
+  // (`resolveApnsEnv()`)로 자연 fallback. self-heal 발동 횟수를 0에 수렴시키는 핵심 wire.
+  const apnsEnv = await getRegisteringApnsEnv();
+
   return registerActiveTrip({
     token: input.token,
     route: input.route,
     destination: input.destination.id,
     waypoints: routeToWaypoints(input.route, input.destination.name, input.currentStation),
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
-    apnsEnv: resolveApnsEnv(),
+    apnsEnv,
     createdAt: input.createdAt,
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
     // #819 / #1028 — boarding-prompt 평가/표시 컨텍스트. 짝으로만 송신.

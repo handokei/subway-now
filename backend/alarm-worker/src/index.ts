@@ -696,7 +696,15 @@ app.post('/trips', async (c) => {
     hopIndex: trip.waypoints[0]?.hopIndex,
   });
 
-  return c.json({ ok: true, token: trip.token });
+  // #1897 (RC-5) — KV에 박힌 권위 apnsEnv 를 device로 echo. device 는 이를 stamp 해 다음
+  // register 시 build env 대신 송신 → backend self-heal(envCorrected) 발동을 0에 수렴.
+  // existing.apnsEnv 가 corrected 된 경우(#1370 L1) 그 값이 그대로 device 로 전달된다.
+  // 구 device는 응답에서 본 필드를 무시 (backward-compatible).
+  return c.json({
+    ok: true,
+    token: trip.token,
+    confirmedEnv: trip.apnsEnv ?? 'sandbox',
+  });
 });
 
 /**

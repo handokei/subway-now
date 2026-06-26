@@ -19,6 +19,12 @@ export const SLEEP_MODE_GUIDE_SHOWN_KEY = 'subway-now:sleep-mode-guide-shown';
 export const LOCALE_PREFERENCE_KEY = 'subway-now:locale-preference';
 export const ALARM_LOG_KEY = 'subway-now:alarm-log';
 export const APNS_TOKEN_KEY = 'subway-now:apns-token';
+// #1897 (RC-5) — 마지막으로 backend가 confirm한 APNs env(sandbox/production).
+// register 응답에서 backend가 `existing.apnsEnv ?? incoming.apnsEnv`로 결정한 KV 값을 echo →
+// device가 stamp. 다음 register에서 device build env(`resolveApnsEnv()`) 대신 이 값을 우선 송신해
+// backend self-heal 발동 횟수를 0에 수렴시킨다. 부재(첫 register / parse 실패) 시 fallback.
+// 형식: 'sandbox' 또는 'production' string.
+export const LAST_CONFIRMED_APNS_ENV_KEY = 'subway-now:last-confirmed-apns-env';
 export const ACTIVE_TRIP_KEY = 'subway-now:active-trip';
 export const TRIP_TRAIN_CODE_KEY = 'subway-now:trip-train-code';
 // #700 — useTripOrigin이 destination set 순간 캡처하는 trip origin Station.
