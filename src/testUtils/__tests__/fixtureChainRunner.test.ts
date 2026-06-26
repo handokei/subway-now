@@ -121,16 +121,21 @@ describe('acceptance 4: silent push received=0 (오후 dump) → chain stuck at 
   });
 });
 
-describe('acceptance 5: Day 2 오전 trip (fix 적용 결과) → chain.allPassed=true', () => {
+describe('acceptance 5: Day 2 오전 trip (fix 적용 결과) → 기존 6 stages 모두 pass', () => {
   // boarding-prompt=1, lock=yes, received=6, station-passed fired
+  // Phase 6.1 stages는 cold-start 섹션 없음 → false. 기존 6 stages만 pass 확인.
   const report = loadAndRun('morning-trip.txt');
 
-  it('chain.allPassed=true', () => {
-    expect(report.allPassed).toBe(true);
+  it('기존 6 stages 모두 pass이다', () => {
+    const existingSix = report.stages.slice(0, 6);
+    for (const s of existingSix) {
+      expect(s.passed).toBe(true);
+    }
   });
 
-  it('firstStuck=null', () => {
-    expect(report.firstStuck).toBeNull();
+  it('firstStuck이 Phase 6.1 stage이다 (cold-start 섹션 없어 cold-start-detected가 막힘)', () => {
+    // Phase 6.1 stages는 섹션 없음 → false. firstStuck은 cold-start-detected.
+    expect(report.firstStuck).toBe('cold-start-detected');
   });
 
   it('모든 stage evidence가 채워져 있다', () => {
@@ -159,17 +164,24 @@ describe('acceptance 5: Day 2 오전 trip (fix 적용 결과) → chain.allPasse
 describe('runChainFromDump — stages 배열 길이 및 순서', () => {
   const report = loadAndRun('morning-trip.txt');
 
-  it('stages 배열이 CHAIN_STAGE_IDS 개수와 동일', () => {
-    // CHAIN_STAGE_IDS는 6개
-    expect(report.stages).toHaveLength(6);
+  it('stages 배열이 CHAIN_STAGE_IDS 개수와 동일 (기존 6 + Phase 6.1 6 = 12)', () => {
+    expect(report.stages).toHaveLength(12);
   });
 
   it('stages[0].stage=trip-registered', () => {
     expect(report.stages[0].stage).toBe('trip-registered');
   });
 
-  it('stages[5].stage=station-passed-fired', () => {
+  it('stages[5].stage=station-passed-fired (기존 6번째 = 인덱스 5)', () => {
     expect(report.stages[5].stage).toBe('station-passed-fired');
+  });
+
+  it('stages[6].stage=cold-start-detected (Phase 6.1 첫 stage)', () => {
+    expect(report.stages[6].stage).toBe('cold-start-detected');
+  });
+
+  it('stages[11].stage=mismatch-detected (Phase 6.1 마지막 stage)', () => {
+    expect(report.stages[11].stage).toBe('mismatch-detected');
   });
 });
 
@@ -181,12 +193,15 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       lifecyclePhase: undefined,
       fusionConfidence: undefined,
       subsurface: undefined,
+      gpsAccuracy: undefined,
+      environment: undefined,
       silentPushReceived: undefined,
       silentPushFired: undefined,
       boardingLockActive: undefined,
       alarmLogSources: {},
       notificationsFiredCount: undefined,
       notificationKinds: [],
+      coldStart: undefined,
     });
     expect(report.allPassed).toBe(false);
     const tripStage = report.stages.find((s) => s.stage === 'trip-registered');
@@ -201,12 +216,15 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       lifecyclePhase: 'active',
       fusionConfidence: 'gps-only-underground',
       subsurface: true,
+      gpsAccuracy: undefined,
+      environment: undefined,
       silentPushReceived: 0,
       silentPushFired: 0,
       boardingLockActive: false,
       alarmLogSources: {},
       notificationsFiredCount: 0,
       notificationKinds: [],
+      coldStart: undefined,
     });
     const envStage = report.stages.find((s) => s.stage === 'environment-classified');
     expect(envStage?.passed).toBe(true);
@@ -219,12 +237,15 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       lifecyclePhase: 'active',
       fusionConfidence: 'gps-only-underground',
       subsurface: false,
+      gpsAccuracy: undefined,
+      environment: undefined,
       silentPushReceived: 0,
       silentPushFired: 0,
       boardingLockActive: false,
       alarmLogSources: {},
       notificationsFiredCount: 0,
       notificationKinds: [],
+      coldStart: undefined,
     });
     const envStage = report.stages.find((s) => s.stage === 'environment-classified');
     expect(envStage?.passed).toBe(true);
@@ -237,12 +258,15 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       lifecyclePhase: undefined,
       fusionConfidence: undefined,
       subsurface: undefined,
+      gpsAccuracy: undefined,
+      environment: undefined,
       silentPushReceived: undefined,
       silentPushFired: undefined,
       boardingLockActive: undefined,
       alarmLogSources: {},
       notificationsFiredCount: undefined,
       notificationKinds: [],
+      coldStart: undefined,
     });
     const lockStage = report.stages.find((s) => s.stage === 'lock-attach');
     expect(lockStage?.evidence).toContain('?');
@@ -256,12 +280,15 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       lifecyclePhase: 'active',
       fusionConfidence: 'gps-only',
       subsurface: false,
+      gpsAccuracy: undefined,
+      environment: undefined,
       silentPushReceived: 5,
       silentPushFired: 1,
       boardingLockActive: true,
       alarmLogSources: { 'boarding-prompt': 1 },
       notificationsFiredCount: undefined,
       notificationKinds: [],
+      coldStart: undefined,
     });
     const spStage = report.stages.find((s) => s.stage === 'station-passed-fired');
     expect(spStage?.evidence).toContain('notificationsFiredCount=0');

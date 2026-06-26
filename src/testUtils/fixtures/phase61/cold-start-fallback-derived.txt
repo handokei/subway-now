@@ -1,0 +1,63 @@
+[Subway debug] 2026-06-26T08:45:00.000Z
+
+## GPS
+lat=37.56, lng=127.04, speed=- m/s, accuracy=600.0 m
+fused=(no fused signal)
+state=fg, lastFix=08:45:00
+subsurface=true (readings=4)
+
+## Nearest
+(no nearest — accuracy too low)
+
+## Fusion
+confidence=gps-only-underground, source=gps
+tier=low
+signalMask=UUU
+
+## Trip
+lockless=false
+tripStartedAt=—
+currentHopIndex=—
+route hop count=—
+displayOnlyEstimate=(none)
+lifecyclePhase=none
+
+## Sleep
+sleepMode=off
+firstHopApproaching=false
+
+## Arrival
+(no arrival data)
+
+## Silent Push
+permission=granted
+apnsToken=…ab12cd34
+activeTrip=(none)
+apnsEnv=production
+taskRegistration=success
+route=(none)
+destination=(none)
+currentStation=(none)
+received=0 (last (never))
+receivedByKind=stn=0 xfer=0 dst=0 unk=0
+fired=0 (last (never))
+lastSkipped=(never)
+lowPowerMode=off
+
+## Backend SSoT
+(no recent SSoT push)
+
+## Scheduled queue (0)
+
+## Gates
+movement-low-accuracy=2
+
+## BoardingLock
+active=no
+
+## Estimator State (0)
+
+## Notifications fired (0)
+
+## Alarm log (0)
+sources:
