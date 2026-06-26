@@ -12,6 +12,7 @@ import type { Station } from '../../../shared/types/station';
 import type { TrainProgressResult } from './trackTrainProgress';
 import { projectArrivalEtaStation } from '../../arrival/utils/arrivalEtaProjection';
 import { hopsElapsedFrom } from './hopTime';
+import { ESTIMATOR_STUCK_TIMEOUT_MS } from '../../../shared/constants/realtime';
 
 /**
  * ADR-008 — 탑승 진행 추정(BoardingLock 활성 trip 중 현재역) 합성기.
@@ -245,6 +246,10 @@ function tryReanchoredHop(
  * ①②③ 모두 fallback된 dead zone에서만 도달 (lastObserved도 없는 상태). Stage 3(#779)에서 ADR-008 §④
  * "per-line/segment 데이터 테이블"을 구현 — uniform 90s 가정 제거.
  *
+ * #1896 (RC-8) — stuck timeout: lock.boardedAt 기준 ESTIMATOR_STUCK_TIMEOUT_MS(5분) 초과 시
+ * 탑승역에서 벗어나지 못하면 null 반환해 호출자(useFusedNearestStation)가 cascade fallback하도록 유도.
+ * tryLivePosition/ArrivalEta/ReanchoredHop이 살아있으면 본 분기 미도달 — dead zone 전용.
+ *
  * 상위 가드(lock null, arc 비어있음, lock 만료)는 estimateStationProgress에서 차단되므로
  * 시그니처에 lock 비-null만 명시(NonNullable).
  */
@@ -255,10 +260,38 @@ function tryDefaultHop(
   const boardingIdx = arcStations.findIndex((s) => s.id === lock.boardingStationId);
   if (boardingIdx === -1) return null;
 
+  const elapsedMs = now - lock.boardedAt;
+
+  // #1896 (RC-8) — stuck timeout: dead zone(①②③ 모두 실패)에서 5분+ 경과했는데
+  // Seam B cap 후 결과가 탑승역에서 1역만 벗어난(boardingIdx+1) 상태로 고착이면 null 반환.
+  // 호출자(useFusedNearestStation)가 backendSsot / wifi / fused 등 다른 cascade tier로 재진입하도록 유도.
+  //
+  // 진짜 고착 판정: rawIdx === boardingIdx (0 hop = 탑승역에서 전혀 안 움직임).
+  //   - elapsedMs > ESTIMATOR_STUCK_TIMEOUT_MS(5분) — 3+ stop 통과 시간이 지났는데
+  //   - `projectIndexByHopTime` raw idx = boardingIdx (0 hop) — 진짜 고착.
+  //   → "Strategy①②③ 모두 죽고 DefaultHop이 탑승역 고착"이라는 dead zone 신호.
+  //   → null 반환해 cascade reentry. ①②③이 살아있으면 본 분기 미도달.
+  //
+  // rawIdx = boardingIdx+1 (1 hop 완료)은 고착이 아님 — Seam B cap과 무관하게 정상 진행.
+  // 롱 세그먼트 노선(hop time > 5min)에서 false positive를 막기 위해 strictly boardingIdx만 대상.
+  //
+  // false positive 방어:
+  //   - boardingIdx가 arc 마지막(단일 역 목적지)이면 cappedIdx == boardingIdx → 고착 아님(arc 자체가 1역).
+  //     단일 arc는 estimateStationProgress 상위가 arc 비어있으면 null로 막으므로 도달 보기 드물다.
+  //   - 5분 임계: PICKER_STUCK_MAX_AGE_MS와 동일 기준. 지하철 3+ 정차 시간.
+  if (elapsedMs > ESTIMATOR_STUCK_TIMEOUT_MS && boardingIdx + 1 < arcStations.length) {
+    const rawIdx = projectIndexByHopTime(arcStations, boardingIdx, elapsedMs, hopTimeMsForHop);
+    if (rawIdx !== null && rawIdx <= boardingIdx) {
+      // 5분+ 경과했는데 hop 적분이 여전히 탑승역(0 hop) → 진짜 고착 → null.
+      // rawIdx = boardingIdx+1(1 hop 진행)은 고착이 아님 — 정상 진행이므로 제외.
+      return null;
+    }
+  }
+
   const idx = projectIndexByHopTime(
     arcStations,
     boardingIdx,
-    now - lock.boardedAt,
+    elapsedMs,
     hopTimeMsForHop,
   );
   if (idx === null) return null;

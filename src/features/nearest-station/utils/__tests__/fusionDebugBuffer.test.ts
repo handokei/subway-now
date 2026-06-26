@@ -108,4 +108,7 @@ describe('fusionDebugBuffer', () => {
     expect((entries[0] as { event: string }).event).toBe('gps-fix');
     expect((entries[1] as { event: string }).event).toBe('gps-drop');
   });
+
+  // #1896 (RC-8) boarding-lock-drift entries는 별 buffer(`boardingLockDriftBuffer`)로 분리됐다.
+  // 해당 테스트는 `boardingLockDriftBuffer.test.ts` 참조.
 });

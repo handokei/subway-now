@@ -2036,7 +2036,7 @@ describe('DebugModal backend calls section — #1518', () => {
 });
 
 describe('formatFusionDebugLine', () => {
-  const { formatFusionDebugLine, formatCandidateRejectLine } = __test__;
+  const { formatFusionDebugLine, formatCandidateRejectLine, formatBoardingLockDriftLine } = __test__;
 
   it('gps-fix 엔트리: station/distance/accuracy 포함', () => {
     const line = formatFusionDebugLine({
@@ -2115,6 +2115,33 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('T-2099');
     expect(line).toContain('강변(동서울터미널)(2)');
     expect(line).toContain('d=5400m');
+  });
+
+  it('#1896 (RC-8) boarding-lock-drift 엔트리: branch/station/drift 포함', () => {
+    const ts = new Date('2026-06-26T12:19:00Z').getTime();
+    const lineWithDrift = formatBoardingLockDriftLine({
+      kind: 'boarding-lock-drift',
+      ts,
+      branch: 'positionTrain',
+      lockStationName: '동대문역사문화공원',
+      lockStationLine: '2',
+      driftMeters: 979,
+    });
+    expect(lineWithDrift).toContain('boarding-lock-drift:positionTrain');
+    expect(lineWithDrift).toContain('동대문역사문화공원(2)');
+    expect(lineWithDrift).toContain('drift=979m');
+
+    // driftMeters=null 시 '-' 표기
+    const lineNullDrift = formatBoardingLockDriftLine({
+      kind: 'boarding-lock-drift',
+      ts,
+      branch: 'arvlCdArrived',
+      lockStationName: '신당',
+      lockStationLine: '2',
+      driftMeters: null,
+    });
+    expect(lineNullDrift).toContain('boarding-lock-drift:arvlCdArrived');
+    expect(lineNullDrift).toContain('drift=-');
   });
 
   it('#1902 (RC-18) candidate-line reject: line만 포함 (enumerate 단계 reject)', () => {
@@ -4559,6 +4586,41 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## Candidate rejects (0)');
       const section = dump.slice(dump.indexOf('## Candidate rejects'));
       expect(section).toContain('(empty)');
+    });
+
+    it('buildBoardingLockDriftLogSection: 빈/entries cover + share dump 포함 (#1896)', () => {
+      const { buildBoardingLockDriftLogSection } = __test__;
+      expect(buildBoardingLockDriftLogSection(baselineDumpArgs)).toEqual(['(empty)']);
+      expect(
+        buildBoardingLockDriftLogSection({ ...baselineDumpArgs, boardingLockDriftLog: [] }),
+      ).toEqual(['(empty)']);
+      const entries = [
+        {
+          kind: 'boarding-lock-drift' as const,
+          ts: 1000,
+          branch: 'positionTrain' as const,
+          lockStationName: '강변',
+          lockStationLine: '2',
+          driftMeters: 1020,
+        },
+        {
+          kind: 'boarding-lock-drift' as const,
+          ts: 2000,
+          branch: 'arvlCdArrived' as const,
+          lockStationName: '신당',
+          lockStationLine: '2',
+          driftMeters: null,
+        },
+      ];
+      const result = buildBoardingLockDriftLogSection({
+        ...baselineDumpArgs,
+        boardingLockDriftLog: entries,
+      });
+      expect(result).toHaveLength(2);
+      expect(result[0]).toContain('arvlCdArrived');
+      expect(result[1]).toContain('drift=1020m');
+      const dump = buildDumpText(makeDumpArgs({ boardingLockDriftLog: entries }));
+      expect(dump).toContain('## Boarding-Lock Drift (2)');
     });
 
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {

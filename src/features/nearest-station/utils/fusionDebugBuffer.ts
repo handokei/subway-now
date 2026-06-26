@@ -99,6 +99,13 @@ export interface StickyStationEntry {
  * 잃는 자기 파괴 회귀(T4 evidence: 66건 / 200 cap = 33%). cap 분리로 진단 1순위 보호.
  */
 
+/**
+ * #1896 (RC-8) — boarding-lock GPS displacement gate trigger entry는 별 buffer로 분리됐다.
+ * `boardingLockDriftBuffer.ts` 참조. 동기: `candidateRejectBuffer`(#1902, RC-18)와 동일한
+ * self-pollution 방지 — stuck 시나리오에서 매 cycle drift entry가 push되어 fusionDebugBuffer
+ * 200~500 cap을 점령하면 fusion decision/sticky/gps-fix 진단 1순위 entry가 evict된다.
+ */
+
 export type FusionDebugEntry =
   | FusionDecisionEntry
   | GpsFixEntry

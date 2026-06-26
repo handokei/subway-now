@@ -93,6 +93,14 @@ import {
   subscribeCandidateReject,
   type CandidateRejectEntry,
 } from '../../../features/nearest-station/utils/candidateRejectBuffer';
+// #1896 (RC-8) — boarding-lock drift 전용 buffer. stuck 시나리오 매 cycle push가 fusionDebugBuffer
+// 점령하는 self-pollution 차단 (candidateRejectBuffer 패턴 동일).
+import {
+  clearBoardingLockDriftEntries,
+  getBoardingLockDriftEntries,
+  subscribeBoardingLockDrift,
+  type BoardingLockDriftEntry,
+} from '../../../features/nearest-station/utils/boardingLockDriftBuffer';
 // #1518 — device → backend HTTP 호출 ring buffer. 모든 backend fetch chokepoint가 entry를 push.
 import {
   clearBackendCallEntries,
@@ -327,6 +335,7 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
   }
   // #1902 (RC-18) — candidate-reject 분기는 candidateRejectBuffer로 이전(별 buffer + 별 섹션).
+  // #1896 (RC-8) — boarding-lock-drift 분기는 boardingLockDriftBuffer로 이전(별 buffer + 별 섹션).
   // fusion 분기는 fusion decision entry만 처리한다.
   const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
   const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
@@ -564,6 +573,8 @@ interface BuildDumpArgs {
    * 미전달 시 (empty)로 출력 — 단위 테스트에서 fusion log를 다루지 않는 경우 호환.
    */
   fusionLog?: readonly FusionDebugEntry[];
+  /** #1896 (RC-8) — boarding-lock-drift 별 buffer entries. 미전달/빈 배열은 (empty). */
+  boardingLockDriftLog?: readonly BoardingLockDriftEntry[];
   /**
    * #1413 — BoardingLock 섹션 dump 입력. lock 활성/trainCode/boardingLine/expiresAt.
    * 미전달이면 lock=null과 동일(active=no)로 출력.
@@ -1018,6 +1029,22 @@ function buildCandidateRejectLogSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #1896 (RC-8) — boarding-lock GPS displacement gate trigger 1줄 포맷.
+ * `time | boarding-lock-drift:branch | station(line) drift=Xm` — driftMeters null 시 '-'.
+ */
+function formatBoardingLockDriftLine(entry: BoardingLockDriftEntry): string {
+  const time = formatTime(entry.ts);
+  const d = entry.driftMeters != null ? `${Math.round(entry.driftMeters)}m` : '-';
+  return `${time} | boarding-lock-drift:${entry.branch} | ${entry.lockStationName}(${entry.lockStationLine}) drift=${d}`;
+}
+
+function buildBoardingLockDriftLogSection(args: BuildDumpArgs): string[] {
+  const entries = args.boardingLockDriftLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries].reverse().map(formatBoardingLockDriftLine);
+}
+
+/**
  * #1518 — Backend call ring buffer 1줄 포맷. call/response/error를 한 줄에 압축해
  * dump 분량을 줄인다. host 부분만 노출하고 path는 trim 안 함(진단 시 endpoint 식별).
  */
@@ -1459,6 +1486,12 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     title: 'Candidate rejects',
     build: buildCandidateRejectLogSection,
     suffix: (args) => ` (${args.candidateRejectLog?.length ?? 0})`,
+  },
+  // #1896 (RC-8) — boarding-lock-drift 별 buffer (GPS displacement gate trigger). fusionDebugBuffer 점령 회귀 차단.
+  {
+    title: 'Boarding-Lock Drift',
+    build: buildBoardingLockDriftLogSection,
+    suffix: (args) => ` (${args.boardingLockDriftLog?.length ?? 0})`,
   },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
@@ -3118,6 +3151,8 @@ export const __test__ = {
   buildDumpText,
   buildGpsRows,
   formatFusionDebugLine,
+  formatBoardingLockDriftLine,
+  buildBoardingLockDriftLogSection,
   formatTokenTail,
   formatAt,
   formatSourceCountsLine,
