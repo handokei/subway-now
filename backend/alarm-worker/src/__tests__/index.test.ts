@@ -645,14 +645,15 @@ describe('POST /trips — lastAutoPromptedAt 보존 (#916 follow-up B)', () => {
     expect(stored.lastAutoPromptedAt).toBe(stamp);
   });
 
-  it('new session(createdAt drift > 5s) — window 안이면 보존', async () => {
+  it('new session(createdAt drift > 5s) — window 안이어도 보존하지 않음(undefined) (#1886 RC-2 옵션 D)', async () => {
     const env = makeKvEnv();
     const stamp = CREATED - WITHIN_WINDOW_MS;
     await seedExisting(env, { lastAutoPromptedAt: stamp });
-    // boardingPromptState는 새 세션에서 리셋되지만 dedup 마커는 살아남아야 한다.
+    // #1886 RC-2 옵션 D: 새 trip(isSameSession=false)은 lastAutoPromptedAt를 reset.
+    // T1→T2 연속 trip에서 T1의 dedup이 T2로 carry-over하던 회귀 차단.
     await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
     const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
-    expect(stored.lastAutoPromptedAt).toBe(stamp);
+    expect(stored.lastAutoPromptedAt).toBeUndefined();
   });
 
   it('new session + window 밖 — 보존하지 않음(undefined)', async () => {
