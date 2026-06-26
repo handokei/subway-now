@@ -1149,8 +1149,16 @@ export function useFusedNearestStation(
     // #584 PR D2: position-train의 trainNo가 BoardingLock.trainCode와 일치하면 'boarding-lock'으로 승격.
     // 사용자가 탭한 바로 그 열차가 실시간 위치 API에 잡힌 상태 — 최고 신뢰 신호.
     // positionTrainResult가 non-null이면 trainProgress도 non-null (line 219 guard).
+    //
+    // #1891 (paradigm Phase 1 보강) — RC-1 autoLock self-fire 차단:
+    //   `boardingLock != null` gate 추가. 사용자 의향 표명(boardingPrompt 응답 / BoardingTrainList
+    //   직접 탭) 없이 lockedTrainCode가 stale로 남아 있을 때 'boarding-lock' source 승격을 금지.
+    //   lock=null이면 'position-train'으로 유지 → station-passed/transfer 알림의 src='boarding-lock'
+    //   자기 발화 chain을 끊는다. parent #1745 acceptance: `autoLock_fired_count = 0`.
     const lockMatch =
-      lockedTrainCode != null && trainProgress!.trainNo === lockedTrainCode;
+      boardingLock != null &&
+      lockedTrainCode != null &&
+      trainProgress!.trainNo === lockedTrainCode;
     confidence = lockMatch ? 'boarding-lock' : 'position-train';
     source = lockMatch ? 'boarding-lock' : 'position-train';
   } else if (fused && fusedPasses) {

@@ -255,15 +255,33 @@ describe('useFusedNearestStation', () => {
   describe('#584 PR D2: boarding-lock 라벨', () => {
     const setupPositionTrain = setupPositionTrainTransferStation;
 
-    it('lockedTrainCode가 position-train의 trainNo와 일치하면 boarding-lock으로 승격', () => {
+    it('lockedTrainCode가 position-train의 trainNo와 일치 + boardingLock 활성 → boarding-lock으로 승격', () => {
       // R13-a (#1612): setupPositionTrainTransferStation는 실 chungmuro GPS + accuracy=50으로
-      // 변경됐다 — strict 면제 가능. lock 미전달이라 boarding-lock 승격은 lockedTrainCode 매칭만.
+      // 변경됐다 — strict 면제 가능.
+      // #1891 (RC-1 paradigm 1) — boardingLock 인자 전달이 'boarding-lock' 승격의 필수 게이트.
+      // 사용자 명시 의향 trip(lock 활성)에서만 lockMatch 승격. lock 미전달 시 차단(아래 별도 케이스).
       setupPositionTrain('T-LOCKED');
+      const lockWithTrainCode: import('../../../../shared/types/boardingLock').BoardingLock = {
+        ...mockLockForUnderground,
+        trainCode: 'T-LOCKED',
+      };
       const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED'),
+        useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED', lockWithTrainCode),
       );
       expect(result.current.confidence).toBe('boarding-lock');
       expect(result.current.source).toBe('boarding-lock');
+    });
+
+    it('#1891 (RC-1): boardingLock=null + lockedTrainCode 매칭이어도 position-train 유지 (autoLock self-fire 차단)', () => {
+      // paradigm 1 (자동락 제거 유지) 보강 — lock 비활성 시 lockedTrainCode가 stale로 남아도
+      // 'boarding-lock' source 자기 발화 차단. parent #1745 acceptance: `autoLock_fired_count = 0`.
+      // station-passed / transfer 알림의 src='boarding-lock' self-attach chain 단절.
+      setupPositionTrain('T-LOCKED');
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED', null),
+      );
+      expect(result.current.confidence).toBe('position-train');
+      expect(result.current.source).toBe('position-train');
     });
 
     it('lockedTrainCode가 다르면 position-train 유지', () => {

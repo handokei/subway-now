@@ -640,6 +640,9 @@ export default function HomeScreen() {
     distanceKm: result?.distanceKm ?? null,
     releaseLock: releaseBoardingLock,
     route,
+    // #1887 (RC-14) — transfer 분기에 motion stationary 30s 게이트 추가.
+    // paradigm 4 "이동속도가 빠르지 않다면 판단 후에 자동 하차" 정확 적용.
+    motionStationary,
   });
   // #925 (C2 wire) — destination 자동 하차 감지. arvlCd=0/1 + 역 50m 이내 + 60s motion stationary
   // 4-신호 AND 게이트 통과 시 setDestination(null) 호출 → 후속 LA end / trip-end recall은

@@ -8,6 +8,7 @@ import type { Station } from '../../../../shared/types/station';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,
+  LEG_TRANSITION_STATIONARY_GATE_MS,
 } from '../../../../shared/constants/boardingLock';
 
 const mockLoggerInfo = jest.fn();
@@ -18,6 +19,11 @@ jest.mock('../../../../shared/utils/logger', () => ({
     warn: jest.fn(),
     error: jest.fn(),
   }),
+}));
+
+const mockLogLegTransition = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logLegTransition: (input: unknown) => mockLogLegTransition(input),
 }));
 
 const lockA: BoardingLock = {
@@ -383,5 +389,107 @@ describe('useBoardingLockAutoRelease', () => {
       rerender(baseInputs({ releaseLock, distanceKm: proximityKm - 0.01 }));
     });
     expect(releaseLock).not.toHaveBeenCalled();
+  });
+
+  // ── #1887 (RC-14 paradigm 4) — transfer 분기 motion stationary 30s gate + leg-transition log ──
+
+  it('transfer 분기 + motionStationary=true + grace + 30s gate 모두 충족 시 release + leg-transition log', () => {
+    const releaseLock = jest.fn();
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: transferRoute,
+      motionStationary: true,
+    });
+    const { rerender } = mountAtT0(inputs);
+    // grace 만료 시점에 30s gate도 같이 충족되어야 release.
+    // T0 진입 → grace+30s 모두 같은 ts0에서 카운트 시작하므로 max(grace, gate) 시점에 fire.
+    const fireAt = T0 + Math.max(AUTO_RELEASE_GRACE_MS, LEG_TRANSITION_STATIONARY_GATE_MS);
+    withDateNow(fireAt, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(mockLogLegTransition).toHaveBeenCalledWith({
+      fromLine: '2',
+      transferStationName: '왕십리',
+    });
+  });
+
+  it('transfer 분기 + motionStationary=false면 grace 충족돼도 release 안 함 (30s gate 미충족)', () => {
+    const releaseLock = jest.fn();
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: transferRoute,
+      motionStationary: false,
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS + LEG_TRANSITION_STATIONARY_GATE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).not.toHaveBeenCalled();
+    expect(mockLogLegTransition).not.toHaveBeenCalled();
+  });
+
+  it('transfer 분기 + motionStationary=true 늦게 latch — gate 시작 ts부터 30s 충족 시 release', () => {
+    const releaseLock = jest.fn();
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: transferRoute,
+      motionStationary: false,
+    });
+    const { rerender } = mountAtT0(inputs);
+    // T0 + grace 시점에 motion이 stationary로 latch — gate ref가 이때부터 시작.
+    const latchAt = T0 + AUTO_RELEASE_GRACE_MS;
+    withDateNow(latchAt, () => {
+      rerender({ ...inputs, motionStationary: true });
+    });
+    // gate ms 충족 안 됨 (29s) — 아직 release X.
+    withDateNow(latchAt + LEG_TRANSITION_STATIONARY_GATE_MS - 1, () => {
+      rerender({ ...inputs, motionStationary: true, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).not.toHaveBeenCalled();
+    // gate ms 충족 — release fire.
+    withDateNow(latchAt + LEG_TRANSITION_STATIONARY_GATE_MS, () => {
+      rerender({ ...inputs, motionStationary: true, distanceKm: proximityKm - 0.02 });
+    });
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(mockLogLegTransition).toHaveBeenCalledWith({
+      fromLine: '2',
+      transferStationName: '왕십리',
+    });
+  });
+
+  it('transfer 분기 + motionStationary=undefined(미측정)면 기존 동작 (grace만 충족 시 release, log 없음 X — log는 transfer 분기 release 시 항상 적재)', () => {
+    const releaseLock = jest.fn();
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: transferRoute,
+      // motionStationary 미전달 → undefined
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    // transfer 분기 release는 motionStationary 게이트와 무관하게 leg-transition log 적재.
+    expect(mockLogLegTransition).toHaveBeenCalledWith({
+      fromLine: '2',
+      transferStationName: '왕십리',
+    });
+  });
+
+  it('destination 분기는 motion stationary 게이트 미적용 (paradigm 4는 transfer 한정)', () => {
+    const releaseLock = jest.fn();
+    // destination 매칭 + motionStationary=false인데도 grace만으로 release 발화 — paradigm 4는 transfer 분기 전용.
+    const { rerender } = mountAtT0(baseInputs({ releaseLock, motionStationary: false }));
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender(baseInputs({ releaseLock, motionStationary: false, distanceKm: proximityKm - 0.01 }));
+    });
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    // destination 분기 release는 leg-transition log 미적재.
+    expect(mockLogLegTransition).not.toHaveBeenCalled();
   });
 });
