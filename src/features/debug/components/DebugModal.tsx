@@ -86,6 +86,13 @@ import {
   subscribeGpsDrop,
   type GpsDropEntry,
 } from '../../../features/nearest-station/utils/gpsDropBuffer';
+// #1902 (RC-18) — candidate-reject 전용 buffer. fusionDebugBuffer 200 cap 점령 자기 파괴 차단.
+import {
+  clearCandidateRejectEntries,
+  getCandidateRejectEntries,
+  subscribeCandidateReject,
+  type CandidateRejectEntry,
+} from '../../../features/nearest-station/utils/candidateRejectBuffer';
 // #1518 — device → backend HTTP 호출 ring buffer. 모든 backend fetch chokepoint가 entry를 push.
 import {
   clearBackendCallEntries,
@@ -319,12 +326,8 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
     return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
   }
-  if (entry.kind === 'candidate-reject') {
-    // #1616 (R12-a) — pickCandidateTrains에서 candidate.currentStation GPS 거리가 threshold 초과로
-    // reject된 case. trainNo / station / 측정 거리 같이 보여 사용자 trip 사후 misfire 차단 검증.
-    const d = `${Math.round(entry.distanceKm * 1000)}m`;
-    return `${time} | reject:${entry.reason} | ${entry.trainNo} ${entry.stationName}(${entry.line}) d=${d}`;
-  }
+  // #1902 (RC-18) — candidate-reject 분기는 candidateRejectBuffer로 이전(별 buffer + 별 섹션).
+  // fusion 분기는 fusion decision entry만 처리한다.
   const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
   const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
   const acc =
@@ -602,6 +605,11 @@ interface BuildDumpArgs {
    * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출한다.
    */
   gpsDropLog?: readonly GpsDropEntry[];
+  /**
+   * #1902 (RC-18) — candidate reject ring buffer entries (distance/line). 미전달/빈 배열은 (empty)로 출력.
+   * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출.
+   */
+  candidateRejectLog?: readonly CandidateRejectEntry[];
   /**
    * #1898 — RC-12 결함 A 가시화. trip route arcStations 목록. arcStations에서 distinct
    * line sequence를 도출해 dump/UI 양쪽에 trip line context 노출. 미전달 시 (no route).
@@ -985,6 +993,28 @@ function buildGpsDropLogSection(args: BuildDumpArgs): string[] {
   const entries = args.gpsDropLog ?? [];
   if (entries.length === 0) return ['(empty)'];
   return [...entries].reverse().map(formatGpsDropLine);
+}
+
+/**
+ * #1902 (RC-18) — candidate reject 한 줄 포맷. reason별로 다른 컬럼:
+ *   - candidate-distance: trainNo + station + 측정 거리 (R12-a, #1616).
+ *   - candidate-line: line만 노출 — enumerate 단계 reject라 train picking 전.
+ */
+function formatCandidateRejectLine(entry: CandidateRejectEntry): string {
+  const time = formatTime(entry.ts);
+  if (entry.reason === 'candidate-distance') {
+    const train = entry.trainNo ?? '-';
+    const station = entry.stationName ?? '-';
+    const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
+    return `${time} | reject:${entry.reason} | ${train} ${station}(${entry.line}) d=${d}`;
+  }
+  return `${time} | reject:${entry.reason} | line=${entry.line}`;
+}
+
+function buildCandidateRejectLogSection(args: BuildDumpArgs): string[] {
+  const entries = args.candidateRejectLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries].reverse().map(formatCandidateRejectLine);
 }
 
 /**
@@ -1424,6 +1454,12 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildGpsDropLogSection,
     suffix: (args) => ` (${args.gpsDropLog?.length ?? 0})`,
   },
+  // #1902 (RC-18) — candidate-reject 별 buffer (distance + line). fusionDebugBuffer 점령 회귀 차단.
+  {
+    title: 'Candidate rejects',
+    build: buildCandidateRejectLogSection,
+    suffix: (args) => ` (${args.candidateRejectLog?.length ?? 0})`,
+  },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
   {
@@ -1798,6 +1834,10 @@ function DebugModalInner({
   const [gpsDropLogs, setGpsDropLogs] = useState<readonly GpsDropEntry[]>(() =>
     getGpsDropEntries(),
   );
+  // #1902 (RC-18) — candidate-reject ring buffer. fusionLogs와 동일 패턴.
+  const [candidateRejectLogs, setCandidateRejectLogs] = useState<readonly CandidateRejectEntry[]>(() =>
+    getCandidateRejectEntries(),
+  );
   const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
     getEstimatorEntries(),
   );
@@ -1832,6 +1872,13 @@ function DebugModalInner({
   // #1540 (S7) — gps-drop buffer 구독. push/clear 어느 쪽이든 같은 listener로 반응.
   useEffect(() => {
     return subscribeGpsDrop(() => setGpsDropLogs([...getGpsDropEntries()]));
+  }, []);
+
+  // #1902 (RC-18) — candidate-reject buffer 구독. gps-drop과 동일 패턴.
+  useEffect(() => {
+    return subscribeCandidateReject(() =>
+      setCandidateRejectLogs([...getCandidateRejectEntries()]),
+    );
   }, []);
 
   useEffect(() => {
@@ -1934,6 +1981,8 @@ function DebugModalInner({
       fusionLog: fusionLogs,
       // #1540 (S7) — gps-drop entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
       gpsDropLog: gpsDropLogs,
+      // #1902 (RC-18) — candidate-reject entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
+      candidateRejectLog: candidateRejectLogs,
       // #1413 — UI에만 노출되던 BoardingLock/Estimator/Boarding Prompt(+Acceptance)/Counters를 share에 포함.
       boardingLock: lock,
       estimatorLog: estimatorLogs,
@@ -1985,6 +2034,8 @@ function DebugModalInner({
     fusionLogs,
     // #1540 (S7) — gps-drop entries 변경 시 share 텍스트 자동 갱신.
     gpsDropLogs,
+    // #1902 (RC-18) — candidate-reject entries 변경 시 share 텍스트 자동 갱신.
+    candidateRejectLogs,
     // #1413 — BoardingLock/Estimator 신규 캡쳐.
     lock,
     estimatorLogs,
@@ -2314,6 +2365,20 @@ function DebugModalInner({
             }}
             clearTestId="debug-gps-drop-log-clear"
             entryTestId="debug-gps-drop-log-entry"
+            colors={colors}
+          />
+
+          {/* #1902 (RC-18) — candidate-reject 별 buffer. fusion log cap 점령 회귀 차단용 별 채널 표시. */}
+          <DebugLogSection
+            title="Candidate rejects"
+            logs={candidateRejectLogs}
+            formatLine={formatCandidateRejectLine}
+            onClear={() => {
+              clearCandidateRejectEntries();
+              setCandidateRejectLogs([]);
+            }}
+            clearTestId="debug-candidate-reject-log-clear"
+            entryTestId="debug-candidate-reject-log-entry"
             colors={colors}
           />
 
@@ -3083,6 +3148,9 @@ export const __test__ = {
   // #1540 (S7) — gps-drop 별 buffer 포맷/섹션. 단위 테스트에서 직접 호출.
   formatGpsDropLine,
   buildGpsDropLogSection,
+  // #1902 (RC-18) — candidate-reject 별 buffer 포맷/섹션. 단위 테스트에서 직접 호출.
+  formatCandidateRejectLine,
+  buildCandidateRejectLogSection,
   // #1898 — RC-12 helper/builder. share dump 단위 테스트 + buildRouteLinesSummary 데이터 주도 검증.
   buildRouteLinesSummary,
   buildRouteLinesSection,

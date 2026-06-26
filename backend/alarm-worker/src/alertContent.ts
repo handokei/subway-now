@@ -1,7 +1,7 @@
 /**
  * Alert push 본문 생성 (#570 P2d).
  *
- * 채널 2(alert fallback)가 silent push 30s 미ACK 케이스에서 발사할 alert push의
+ * 채널 2(alert fallback)가 silent push 60s 미ACK 케이스에서 발사할 alert push의 (#1894 30s→60s 완화)
  * title/body를 만든다. 디바이스 측 `src/utils/stationNotification.ts:buildAlarmContent`
  * + `src/i18n/locales/ko.json`의 문자열과 **바이트 동일**.
  *

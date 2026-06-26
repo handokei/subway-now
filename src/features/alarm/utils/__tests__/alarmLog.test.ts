@@ -54,6 +54,7 @@ import {
   logSuppressedHopWindowNoSource,
   logSuppressedLocklessForwardOnly,
   logFusionCandidateDistanceReject,
+  logFusionCandidateLineReject,
   logFusionPickerTier,
   _resetFusionPickerTierWindowForTests,
   formatFusionPickerTierDistribution,
@@ -984,6 +985,47 @@ describe('alarmLog', () => {
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.reason === 'candidate-distance-reject');
+      expect(matching).toHaveLength(3);
+    });
+
+    it('#1902 logFusionCandidateLineReject: reason=candidate-line-reject + source=fusion-candidate-reject + line stamp in stationName', async () => {
+      _resetBurstSuppressWindowForTests();
+      logFusionCandidateLineReject({ line: '6' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fusion-candidate-reject',
+        outcome: 'suppressed',
+        reason: 'candidate-line-reject',
+        stationName: 'line:6',
+      });
+    });
+
+    it('#1902 logFusionCandidateLineReject: burst dedup per line — same line within window dropped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logFusionCandidateLineReject({ line: '6' });
+      logFusionCandidateLineReject({ line: '6' });
+      logFusionCandidateLineReject({ line: '6' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'candidate-line-reject');
+      expect(matching).toHaveLength(1);
+    });
+
+    it('#1902 logFusionCandidateLineReject: different lines are NOT deduped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logFusionCandidateLineReject({ line: '5' });
+      logFusionCandidateLineReject({ line: '6' });
+      logFusionCandidateLineReject({ line: '7' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'candidate-line-reject');
       expect(matching).toHaveLength(3);
     });
 

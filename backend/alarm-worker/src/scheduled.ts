@@ -1686,7 +1686,7 @@ export async function fireArvlCdStationPush(
   } else if (waypoint.kind === 'destination') {
     stats.silentPushFiredByKind.destination += 1;
   }
-  // #1402 — 30s alert fallback 안전망 등록. silent push가 30s 내 ACK되지 않으면
+  // #1402 — alert fallback 안전망 등록. silent push가 60s(#1894로 30s→60s 완화) 내 ACK되지 않으면
   // runFallbackPushes가 alert(소리) push를 발사. arvlCd 경로는 가장 흔한 발사 경로이므로
   // 여기서도 안전망을 가동해 "하차 침묵 0" acceptance를 보강한다.
   await putPending(env.PENDING_PUSHES, {
@@ -2053,7 +2053,7 @@ export async function fireVanishFallbackStationPush(
     hopIndex: waypoint.hopIndex,
     staleMs: ssot?.lastAdvanceAt ? now - ssot.lastAdvanceAt : undefined,
   });
-  // #1402 — 30s alert fallback 안전망 등록. listPending → runFallbackPushes가 30s 내 ACK
+  // #1402 — alert fallback 안전망 등록. listPending → runFallbackPushes가 60s(#1894로 30s→60s 완화) 내 ACK
   // 없으면 alert(소리) fallback 발사. vanish 경로는 silent push가 가장 잘 누락되는 경로라
   // 안전망 가동이 acceptance("하차 침묵 0")의 핵심. PENDING_PUSHES 미바인딩(dev/test 호환)
   // 시 putPending은 graceful no-op.
@@ -2243,7 +2243,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     // #1402 — lock release 전 floor station-passed push를 보장 발사한다. 종전 release 경로는
     // push 0건으로 device가 stale 채로 lockless 인계만 받았고, lockless 인계 직후 GPS가 잠시라도
     // 추가 누락되면 다음 station push까지 침묵 ≥ 1 cycle. release 직전 floor push 1건이
-    // PENDING_PUSHES에 등록되면 30s 내 ACK 없을 때 alert fallback이 자동 발사돼 "하차 침묵 0"
+    // PENDING_PUSHES에 등록되면 60s(#1894로 30s→60s 완화) 내 ACK 없을 때 alert fallback이 자동 발사돼 "하차 침묵 0"
     // acceptance를 충족(2026-06-17 군자/용마산 회귀). 발사 자체가 false positive를 만들 수
     // 있어 ADR-010 "false positive / miss 동급" 원칙에 따라 lock-active fallback과 같은
     // motion gate(`isFallbackAdvanceBlockedByMotion`)를 통과한 경우에만 fire.
@@ -3168,7 +3168,7 @@ export async function runLocklessIntermediate(
   stats.locklessIntermediateFired += 1;
   // #1683 — lockless intermediate kind 카운터.
   stats.silentPushFiredByKind.intermediate += 1;
-  // #1402 — 30s alert fallback 안전망 등록. shift 전 stationName으로 등록해 alert 본문이
+  // #1402 — alert fallback 안전망 등록 (60s 임계, #1894로 30s→60s 완화). shift 전 stationName으로 등록해 alert 본문이
   // 사용자가 실제로 통과한 station을 가리키게 한다. lockless intermediate는 lock 경로보다
   // device-side validation이 느슨해 silent push 누락 시 안전망 가동이 더 절실한 경로.
   await putPending(env.PENDING_PUSHES, {

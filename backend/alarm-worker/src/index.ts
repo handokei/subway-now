@@ -2157,7 +2157,7 @@ const handler = {
       captureBackendException(err, { path: 'scheduled/runScheduled' });
       throw err;
     }
-    // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
+    // #572 P2c — silent push 60s 미ACK entry를 alert로 fallback (#1894 30s→60s 완화). 같은 cron 사이클에서 실행.
     await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
     // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
     // 시 재발사. KV binding 부재 시 graceful no-op (개발/테스트 환경 호환).

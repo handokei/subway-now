@@ -11,6 +11,8 @@ import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
+// #1902 (RC-18) — candidate reject 별 buffer. fusionDebugBuffer 200 cap 점령 자기 파괴 차단.
+import { pushCandidateRejectEntry } from '../utils/candidateRejectBuffer';
 import { pushRawSignal, type MotionLabel } from '../../observability/utils/rawSignalBuffer';
 import { getCurrentCellularTech } from '../utils/cellularTech';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
@@ -34,6 +36,7 @@ import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
 import {
   logFusionCandidateDistanceReject,
+  logFusionCandidateLineReject,
   logFusionPickerTier,
   logSuppressedLocklessForwardOnly,
 } from '../../alarm/utils/alarmLog';
@@ -572,9 +575,28 @@ export function useFusedNearestStation(
     const out: CandidateTrain[] = [];
     // #1616 (R12-a): candidate별 GPS 거리 hard gate. userLocation + line별 station 좌표 lookup을
     // pickCandidateTrains에 전달해 anchor GPS drift 시 잘못된 영역 train 후보 진입을 차단.
-    // pushFusionDebugEntry로 reject 측정 — DebugModal에서 'reject:candidate-distance' 표시.
+    // candidateRejectBuffer로 reject 측정 — DebugModal에서 'reject:candidate-distance' 표시.
+    //
+    // #1902 (RC-18): trip route 활성 line 필터. allowedLines(`allowedLinesFromRoute`)에 없는
+    //   line은 enumerate 단계에서 차단해 무차별 후보 reject(T4 evidence: 5/6/7호선 + 공항철도 +
+    //   경의중앙선 18건 mega-blast)와 fusionDebugBuffer 자기 점령을 차단. allowedLines undefined
+    //   (trip 비활성/route 없음)일 때는 자유 화면 동작 보존(기존 fusion 흐름 그대로).
+    //   환승역 cross-line은 `allowedLinesFromRoute`가 transfer.fromLine + toLine을 모두 포함하므로
+    //   자연 허용 — paradigm Phase 4(호선 자동 전환) 정합.
     for (const lp of lps) {
       if (!lp) continue;
+      if (allowedLines && !allowedLines.has(lp.line)) {
+        // #1902 (RC-18) — trip route 외 line 후보를 enumerate 단계에서 차단.
+        pushCandidateRejectEntry({
+          kind: 'candidate-reject',
+          ts: Date.now(),
+          reason: 'candidate-line',
+          line: lp.line,
+        });
+        // alarmLog mirror — `/admin/alarm-log-stats` 운영 가시성용.
+        logFusionCandidateLineReject({ line: lp.line });
+        continue;
+      }
       const anchor = candidates.find((c) => c.station.line === lp.line)?.station.name;
       const lineStations = getStationsOnLine(lp.line);
       const stationCoordinates = new Map<string, { lat: number; lng: number }>(
@@ -600,7 +622,8 @@ export function useFusedNearestStation(
             info.line,
             (consecutiveRejectByLineRef.current.get(info.line) ?? 0) + 1,
           );
-          pushFusionDebugEntry({
+          // #1902 — candidate-reject 별 buffer로 이전. fusionDebugBuffer 200 cap 보호.
+          pushCandidateRejectEntry({
             kind: 'candidate-reject',
             ts: Date.now(),
             reason: 'candidate-distance',
@@ -621,7 +644,7 @@ export function useFusedNearestStation(
       out.push(...picked);
     }
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation, allowedLines]);
 
   // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
   // 기존 arcStations useMemo(ADR-008 estimator용)는 아래에서 이 값을 재사용한다.

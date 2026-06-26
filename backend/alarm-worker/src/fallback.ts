@@ -1,11 +1,20 @@
 /**
  * Alert push fallback 발사 (#572 P2c).
  *
- * silent push가 30s 안에 디바이스 ACK되지 않으면 alert push로 fallback 발사한다.
+ * silent push가 60s 안에 디바이스 ACK되지 않으면 alert push로 fallback 발사한다.
  * cron 1회 실행 = 한 trip을 처리하는 scheduled.ts의 한 사이클에 이어 runFallbackPushes를 호출.
  *
- * 30s 임계는 sentAt 시각 기준 — cron 자체는 1분 단위라 첫 폴링까지 최대 60s 지연 발생 가능.
- * 사용자 입장에선 알람 못 받는 것보단 60s 늦게라도 받는 게 낫다는 절충.
+ * #1894 (2026-06-26 RC-20) — 30s → 60s 완화.
+ *   iOS는 silent push 처리 시간을 약 30s 이내로 강제하며, BG suspended 상태에서 task 시작
+ *   직전 OS schedule 지연 + ACK fetch 네트워크 round-trip을 합치면 ageMs=63s 케이스가 관찰됨
+ *   (T1 trip 1.5h에 1건, ageMs=63319ms). 30s 임계는 정상 처리 push까지 false fallback을
+ *   유발해 사용자가 "silent + alert" 중복 알람을 받게 한다. silent push는 backend SSoT
+ *   forward 단일 채널(`lesson_silent_push_is_ssot_forward_channel`)이라 false fallback이
+ *   fusion tier 채택 0건과 cascade될 위험도 있다. iOS 처리 시간 상한(약 30s) + 네트워크
+ *   round-trip 여유(약 30s)를 더한 60s가 정상 trip의 ACK latency를 모두 흡수한다.
+ *
+ * 60s 임계는 sentAt 시각 기준 — cron 자체는 1분 단위라 첫 폴링까지 최대 60s 지연 발생 가능.
+ * 사용자 입장에선 알람 못 받는 것보단 늦게라도 받는 게 낫다는 절충(최대 약 2분).
  *
  * 발사 후 entry는 즉시 삭제 — 다음 cron에서 재발사 방지 (KV TTL 60s에 의존하지 않음).
  * 발사 실패도 entry 삭제 — 재시도 폭주 방지 (다음 silent push 사이클에서 자연 회복).
@@ -16,8 +25,13 @@ import { buildAlertContent } from './alertContent';
 import { listPending, removePending, type PendingPush } from './pendingPushes';
 import type { ApnsEnv, Env } from './types';
 
-/** silent push 발사 시점에서 30s 이상 지나면 fallback 후보. */
-export const FALLBACK_THRESHOLD_MS = 30_000;
+/**
+ * silent push 발사 시점에서 60s 이상 지나면 fallback 후보 (#1894 / 2026-06-26 RC-20).
+ *
+ * 30_000ms 시절 false fallback 회귀: iOS BG silent push 처리 약 30s + ACK round-trip ≥ 임계 → alert 중복 발사.
+ * 60_000ms 로 완화해 정상 trip의 ACK latency를 모두 흡수.
+ */
+export const FALLBACK_THRESHOLD_MS = 60_000;
 
 export interface FallbackDeps {
   apnsConfig: ApnsConfig;
