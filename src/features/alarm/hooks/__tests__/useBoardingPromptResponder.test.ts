@@ -35,6 +35,9 @@ jest.mock('../../utils/alarmLog', () => ({
   logBoardingPromptResponded: jest.fn(),
   logBoardingPromptFired: jest.fn(),
 }));
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addDomainBreadcrumb: jest.fn(),
+}));
 jest.mock('../useBoardingPromptDisplayLogger', () => {
   const seen = new Set<string>();
   return {
@@ -77,6 +80,9 @@ const {
   logBoardingPromptResponded,
   logBoardingPromptFired,
 } = jest.requireMock('../../utils/alarmLog');
+const { addDomainBreadcrumb } = jest.requireMock(
+  '../../../../shared/infra/monitoring/breadcrumb',
+);
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
@@ -644,5 +650,157 @@ describe('handleResponse — #1170 응답 telemetry (logBoardingPromptResponded)
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
     expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome });
+  });
+});
+
+// #1888 (RC-13) — Interactive UI 작동 확인 + 빈 후보 graceful skip evidence.
+// Sentry breadcrumb이 acceptance V/X dashboard 신호 (PR body 2단).
+describe('handleResponse — #1888 RC-13 Sentry breadcrumb evidence', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // V1: Interactive UI 작동. UNNotificationCategory가 노출되지 않았다면 OS가 액션 buttons를 그리지
+  // 못해 이 breadcrumb이 발사되지 않는다. 발사 자체가 "Interactive 작동 확인" 신호.
+  it.each<[string, string]>([
+    ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED],
+    ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER],
+    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
+    ['알 수 없는 액션', 'SOME_OTHER_ACTION'],
+  ])('%s → boarding_prompt_interactive_tap breadcrumb 발사', async (_label, action) => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_interactive_tap',
+      { action, line: '2' },
+    );
+  });
+
+  // X-skip: 빈 후보(arrivals null) graceful skip. 1주 production: > 0 발생 시 candidate-generator
+  // (arrivals fetch) 추가 보강 신호.
+  it('arrivals null → boarding_prompt_empty_skip breadcrumb 발사 (reason: arrivals-null)', async () => {
+    const deps = makeHandleResponseDeps({
+      fetchArrivalsForStation: jest.fn(async () => null),
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_empty_skip',
+      { reason: 'arrivals-null', originStation: '강남', line: '2' },
+    );
+  });
+
+  // X-skip: line 필터 후 0건 — 환승역에서 다른 호선만 도착해서 expected line 후보가 사라지는 케이스.
+  it('line 후보 0개 → boarding_prompt_empty_skip breadcrumb 발사 (reason: line-filtered-empty)', async () => {
+    const deps = makeHandleResponseDeps({
+      fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(LINE_MISMATCH_TRAIN)),
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_empty_skip',
+      { reason: 'line-filtered-empty', originStation: '강남', line: '2' },
+    );
+  });
+
+  // ambiguity는 후보가 있으나 자동 선택 불가 — empty와 별 신호이므로 empty_skip 발사 X.
+  it('ambiguity (same priority 2+) → empty_skip breadcrumb 발사 안 함', async () => {
+    const deps = makeHandleResponseDeps({
+      fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(addDomainBreadcrumb).not.toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_empty_skip',
+      expect.anything(),
+    );
+  });
+
+  // destinationId null + [탑승] 액션 → tryAutoLock 진입 전 dismiss path. empty_skip 발사 안 함.
+  it('destinationId null + [탑승] → empty_skip breadcrumb 발사 안 함 (dismiss path)', async () => {
+    const deps = makeHandleResponseDeps({ destinationId: null });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(addDomainBreadcrumb).not.toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_empty_skip',
+      expect.anything(),
+    );
+    // 단, interactive_tap는 발사된다 (사용자가 Interactive UI를 탭한 사실은 destinationId와 무관).
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_interactive_tap',
+      expect.objectContaining({ action: BOARDING_PROMPT_ACTION_BOARDED }),
+    );
+  });
+});
+
+// #1888 (RC-13) — banner tap($default action) navigation. 사용자가 list를 보고 싶다는 명시 의향에
+// home 화면 navigation. action button BOARDED는 silent autolock으로 끝나므로 navigation X.
+describe('handleResponse — #1888 RC-13 onBannerTap navigation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('$default action → onBannerTap 호출 (autolock 성공 케이스)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const onBannerTap = jest.fn();
+    const deps = makeHandleResponseDeps({ onBannerTap });
+    await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(onBannerTap).toHaveBeenCalledTimes(1);
+  });
+
+  it('$default action → onBannerTap 호출 (autolock 실패 케이스도 navigation)', async () => {
+    // arrivals 0건 → autolock empty fallback path. 사용자는 여전히 list를 보고 싶다.
+    const onBannerTap = jest.fn();
+    const deps = makeHandleResponseDeps({
+      fetchArrivalsForStation: jest.fn(async () => null),
+      onBannerTap,
+    });
+    await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(onBannerTap).toHaveBeenCalledTimes(1);
+    // 추가 확인 — lock은 생성 안 됨 (fallback path).
+    expect(createLockMock).not.toHaveBeenCalled();
+  });
+
+  it('[탑승] action → onBannerTap 호출 안 함 (action button은 silent autolock)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const onBannerTap = jest.fn();
+    const deps = makeHandleResponseDeps({ onBannerTap });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(onBannerTap).not.toHaveBeenCalled();
+  });
+
+  it('[미탑승] action → onBannerTap 호출 안 함 (dismiss path)', async () => {
+    const onBannerTap = jest.fn();
+    const deps = makeHandleResponseDeps({ onBannerTap });
+    await handleResponse(BOARDING_PROMPT_ACTION_NOT_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(onBannerTap).not.toHaveBeenCalled();
+  });
+
+  it('알 수 없는 action → onBannerTap 호출 안 함 (dismiss path)', async () => {
+    const onBannerTap = jest.fn();
+    const deps = makeHandleResponseDeps({ onBannerTap });
+    await handleResponse('SOME_OTHER_ACTION', HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(onBannerTap).not.toHaveBeenCalled();
+  });
+
+  it('$default action + onBannerTap 미전달 → no-op (회귀 보존)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const deps = makeHandleResponseDeps();
+    // onBannerTap 없이도 정상 진행.
+    await expect(
+      handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps),
+    ).resolves.toBeUndefined();
+    // autolock은 정상 실행.
+    expect(createLockMock).toHaveBeenCalled();
+  });
+
+  it('destinationId null + $default → dismiss path 진입. onBannerTap 호출 됨 (autolock 미진입과 무관)', async () => {
+    const onBannerTap = jest.fn();
+    const deps = makeHandleResponseDeps({ destinationId: null, onBannerTap });
+    await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
+    // destinationId null → tryAutoLock 진입 → dismiss POST → 그 뒤 onBannerTap 호출.
+    expect(onBannerTap).toHaveBeenCalledTimes(1);
   });
 });

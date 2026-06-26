@@ -9,6 +9,7 @@ import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
 import { TRIP_ENDED_ALERT_BODY, TRIP_ENDED_ALERT_TITLE } from './alertContent';
 import type {
+  BoardingPromptCandidate,
   BoardingPromptPushPayload,
   RescheduleChannel,
   ReschedulePushPayload,
@@ -727,6 +728,11 @@ export interface SendBoardingPromptPushOptions {
    * 미지정(direction 없는 경우 등) 시 aps.alert.subtitle을 omit해 구 device와 byte-level 호환.
    */
   subtitle?: string;
+  /**
+   * #1888 (RC-13) — 후보 train 목록(최대 5건 권장). device side fallback 렌더용.
+   * 미지정 또는 빈 배열이면 payload `data.candidateTrains` omit (구 device byte-level 호환).
+   */
+  candidateTrains?: BoardingPromptCandidate[];
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -750,6 +756,10 @@ export async function sendBoardingPromptPush(
     triggerKind: options.triggerKind,
     // #1740 — undefined면 payload에 키 자체가 생략됨 (JSON.stringify 동작). device backward compat.
     destinationDirection: options.destinationDirection,
+    // #1888 (RC-13) — candidateTrains는 0건이면 omit (구 device byte-level 호환 + payload 크기 보호).
+    ...(options.candidateTrains !== undefined && options.candidateTrains.length > 0
+      ? { candidateTrains: options.candidateTrains }
+      : {}),
   };
 
   const body = JSON.stringify({

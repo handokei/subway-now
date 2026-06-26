@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DevSettings } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { Redirect, Stack, useSegments } from 'expo-router';
+import { Redirect, router, Stack, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { I18nextProvider, useTranslation } from 'react-i18next';
@@ -136,10 +136,20 @@ function RootContent() {
   // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아
   // arvlCd 우선순위로 trainCode 자동 lock 또는 5분 silence POST. 미bound trip(destinationId=null)에서도
   // 마운트 — payload만 들어오면 silence POST는 동작.
+  // #1888 (RC-13) — banner를 직접 탭한 경우 home 화면으로 navigate해 BoardingTrainList를 노출.
+  // expo-router의 `router.navigate('/')` 사용 — useRouter는 effect 안에서만 안전하지만 router export는
+  // 모듈 레벨에서도 사용 가능(expo-router 6 패턴). 자동 lock 성공/실패 무관 호출 → 실패 시 fallback UI 노출.
   useBoardingPromptResponder({
     fetchArrivalsForStation: (stationName) => fetchArrivalInfo(stationName),
     destinationId,
     expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
+    onBannerTap: () => {
+      try {
+        router.navigate('/');
+      } catch (e) {
+        layoutLogger.warn('boarding-prompt banner tap navigate 실패(#1888):', e);
+      }
+    },
   });
 
   // #1385 — boardingPrompt displayed 카운트. FG에서 actionable notification 수신 시 즉시

@@ -1016,6 +1016,103 @@ describe('BoardingTrainList', () => {
     });
   });
 
+  // #1888 (RC-13) — fallback 모드. boarding-prompt 응답 후 자동 lock 실패 시 호출자가 prop으로 set.
+  describe('#1888 (RC-13) fallbackReason — 자동 lock 실패 fallback 표시', () => {
+    type FallbackReason = 'autolock-empty' | 'autolock-ambiguity' | 'autolock-station-lookup';
+
+    it.each<[string, FallbackReason]>([
+      ['autolock-empty', 'autolock-empty'],
+      ['autolock-ambiguity', 'autolock-ambiguity'],
+      ['autolock-station-lookup', 'autolock-station-lookup'],
+    ])('fallbackReason="%s" + arrivals=[] → fallback testID + fallback copy 노출', (_label, reason) => {
+      const { getByTestId, getByText, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          fallbackReason={reason}
+        />,
+      );
+      const container = getByTestId('boarding-train-list-fallback');
+      expect(container).toBeTruthy();
+      expect(container.props.accessibilityRole).toBe('alert');
+      expect(container.props.accessibilityLabel).toBe('탑승 후보 없음');
+      expect(getByText('탑승 후보를 찾을 수 없어요.')).toBeTruthy();
+      expect(getByText('역 근처에서 다시 시도하거나 직접 선택해주세요.')).toBeTruthy();
+      // 일반 empty placeholder는 미노출 (우선순위 검증).
+      expect(queryByTestId('boarding-train-list-empty')).toBeNull();
+    });
+
+    it('fallbackReason set + arrivals 1+ → 정상 list 렌더 (fallback 무시)', () => {
+      const train = makeTrain({ trainCode: 'T-FB-DATA' });
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          fallbackReason="autolock-empty"
+        />,
+      );
+      expect(getByTestId('boarding-train-list')).toBeTruthy();
+      expect(getByTestId('boarding-train-row-T-FB-DATA')).toBeTruthy();
+      expect(queryByTestId('boarding-train-list-fallback')).toBeNull();
+    });
+
+    it('fallbackReason null + arrivals=[] → 기존 empty placeholder (회귀 보존)', () => {
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          fallbackReason={null}
+        />,
+      );
+      expect(getByTestId('boarding-train-list-empty')).toBeTruthy();
+      expect(queryByTestId('boarding-train-list-fallback')).toBeNull();
+    });
+
+    it('우선순위 — error > fallback. error + fallbackReason 동시 set → error UI', () => {
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          fallbackReason="autolock-empty"
+          error={{ message: 'down' }}
+        />,
+      );
+      expect(getByTestId('boarding-train-list-error')).toBeTruthy();
+      expect(queryByTestId('boarding-train-list-fallback')).toBeNull();
+    });
+
+    it('우선순위 — loading > fallback. loading + fallbackReason 동시 set → skeleton', () => {
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          fallbackReason="autolock-empty"
+          loading
+        />,
+      );
+      expect(getByTestId('boarding-train-list-loading')).toBeTruthy();
+      expect(queryByTestId('boarding-train-list-fallback')).toBeNull();
+    });
+
+    it('compact 모드 — fallback 컨테이너에 emptyCompact 스타일 적용', () => {
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          fallbackReason="autolock-empty"
+          compact
+        />,
+      );
+      expect(getByTestId('boarding-train-list-fallback')).toBeTruthy();
+    });
+  });
+
   // #1366 Layer 1 — release-after-tap 보호 윈도우.
   // lockedTrainCode가 non-null → null로 전환된 직후 RELEASE_GUARD_MS(800ms) 동안 handlePress 차단.
   // 사용자가 빠르게 하차→재탑승하는 트립(8:33 환승역 즉시 재탑) race로 stale state POST → cron
