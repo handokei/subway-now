@@ -259,6 +259,56 @@ describe('liveActivityPushChannel', () => {
       await jest.advanceTimersByTimeAsync(500);
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
     });
+
+    // #1899 — 404 (trip_not_found)는 trip register propagate race. longer backoff(2s)로 흡수.
+    // 500ms backoff로 재시도해도 같은 race를 hit하면 retry 효과가 0이라 무의미하다.
+    it('register 404 응답 시 2s longer backoff (trip register race)', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken
+        .mockResolvedValueOnce({ ok: false, status: 404 })
+        .mockResolvedValueOnce({ ok: true });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      // 첫 호출 동기 발사
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+      // 500ms로는 재시도 안 됨 (404 backoff는 2s)
+      await jest.advanceTimersByTimeAsync(500);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+      // 2s 도달 후 재시도
+      await jest.advanceTimersByTimeAsync(1500);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+    });
+
+    // #1899 — 404가 3회 연속이면 8s까지 backoff 확장. 마지막은 silent log.
+    it('register 404 3회 연속 시 2s → 4s exponential backoff 후 포기', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken.mockResolvedValue({ ok: false, status: 404 });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
+    });
+
+    // 회귀 가드 — throw가 났을 때 lastStatus는 undefined로 reset되어 기본 backoff(500ms) 사용.
+    // 404 backoff가 stale하게 다음 throw 시 적용되면 graceful 보장 깨짐.
+    it('register throw 후 다음 attempt는 기본 500ms backoff (404 stale 안 됨)', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken
+        .mockResolvedValueOnce({ ok: false, status: 404 })
+        .mockRejectedValueOnce(new Error('net'))
+        .mockResolvedValueOnce({ ok: true });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      // 첫 404 → 2s 대기
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+      // 2번째 throw → 기본 1s(500*2) 대기. 1s 후 3번째 발사.
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
+    });
   });
 
   describe('ensureLiveActivityRegistered (#1288)', () => {
