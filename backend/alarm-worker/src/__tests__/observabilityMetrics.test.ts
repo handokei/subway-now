@@ -2,7 +2,7 @@
  * observabilityMetrics.test.ts — #1752 observabilityMetrics unit tests.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryKV } from './inMemoryKv';
 import {
   buildAlarmLogNdjsonFixture,
@@ -12,8 +12,10 @@ import {
 import {
   computeObservabilityMetrics,
   hourBucketKey,
+  readLastSuccessfulMetrics,
   readObservabilityMetrics,
   storeObservabilityMetrics,
+  tryStoreObservabilityMetrics,
 } from '../observabilityMetrics';
 
 const NOW = 1_700_000_000_000;
@@ -462,5 +464,199 @@ describe('computeObservabilityMetrics — laPushDeliveryRatio (#1779)', () => {
     const r2 = makeEmptyFakeR2();
     const result = await computeObservabilityMetrics(r2, undefined, NOW);
     expect('laPushDeliveryRatio' in result).toBe(true);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// tryStoreObservabilityMetrics + readLastSuccessfulMetrics (#1889 RC-19)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** 테스트용 ObservabilityMetricsResponse fixture (모든 필드 기본값 채움). */
+const SAMPLE_METRICS = {
+  accuracyRatio: { value: 1, total: 2, ratio: 0.5 },
+  silentPushDeliveryRatio: { value: 0, total: 0, ratio: 0 },
+  locklessMissRatio: { value: 0, total: 0, ratio: 0 },
+  boardableMissRatio: { value: 0, total: 0, ratio: 0 },
+  accelPatternHitRatio: {
+    automotive: { count: 0, ratio: 0 },
+    walking: { count: 0, ratio: 0 },
+    stationary: { count: 0, ratio: 0 },
+    unknown: { count: 0, ratio: 0 },
+  },
+  silentPushLatency: null,
+  laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
+  window: '24h' as const,
+  timestamp: NOW,
+};
+
+/**
+ * KV.put을 throw하도록 만든 stub. InMemoryKV는 put failure를 시뮬레이션하지 못해 별도 stub 사용.
+ * `failKeys`에 매칭되는 키만 throw, 나머지는 inner KV에 위임 — 부분 실패 시나리오 테스트용.
+ */
+class FailingPutKV {
+  inner = new InMemoryKV();
+  failKeys: (string | RegExp)[];
+  putErrors: { key: string; err: unknown }[] = [];
+  getThrows = false;
+
+  constructor(failKeys: (string | RegExp)[] = []) {
+    this.failKeys = failKeys;
+  }
+
+  async get(key: string): Promise<string | null> {
+    if (this.getThrows) throw new Error('KV GET failed');
+    return this.inner.get(key);
+  }
+
+  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
+    const shouldFail = this.failKeys.some((p) =>
+      typeof p === 'string' ? p === key : p.test(key),
+    );
+    if (shouldFail) {
+      const err = new Error(`KV PUT failed: 429 daily write limit exceeded (key=${key})`);
+      this.putErrors.push({ key, err });
+      throw err;
+    }
+    return this.inner.put(key, value, options);
+  }
+
+  async delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+}
+
+describe('tryStoreObservabilityMetrics (#1889 RC-19)', () => {
+  it('happy path — writes both hourly bucket and last-success key, returns stored=true', async () => {
+    const kv = new InMemoryKV();
+    const result = await tryStoreObservabilityMetrics(
+      kv as unknown as KVNamespace,
+      SAMPLE_METRICS,
+      NOW,
+    );
+    expect(result.stored).toBe(true);
+    expect(result.error).toBeUndefined();
+    // 1h bucket cache 존재
+    const bucketRaw = kv.store.get(hourBucketKey(NOW));
+    expect(bucketRaw).toBeDefined();
+    expect(JSON.parse(bucketRaw!.value)).toEqual(SAMPLE_METRICS);
+    // last-success fallback 존재
+    const lastSuccessRaw = kv.store.get('obs-metrics:last-success');
+    expect(lastSuccessRaw).toBeDefined();
+    expect(JSON.parse(lastSuccessRaw!.value)).toEqual(SAMPLE_METRICS);
+  });
+
+  it('last-success key uses 24h TTL (≫ 1h bucket TTL)', async () => {
+    const kv = new InMemoryKV();
+    const beforePut = Date.now();
+    await tryStoreObservabilityMetrics(kv as unknown as KVNamespace, SAMPLE_METRICS, NOW);
+    const lastSuccessEntry = kv.store.get('obs-metrics:last-success');
+    expect(lastSuccessEntry?.expiresAt).toBeGreaterThan(beforePut + 23 * 60 * 60 * 1000);
+    expect(lastSuccessEntry?.expiresAt).toBeLessThanOrEqual(beforePut + 25 * 60 * 60 * 1000);
+  });
+
+  it('hourly bucket write fails → stored=false + onError invoked + last-success still attempted', async () => {
+    const kv = new FailingPutKV([hourBucketKey(NOW)]);
+    const onError = vi.fn();
+    const result = await tryStoreObservabilityMetrics(
+      kv as unknown as KVNamespace,
+      SAMPLE_METRICS,
+      NOW,
+      { onError },
+    );
+    expect(result.stored).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), hourBucketKey(NOW));
+    // last-success key는 별도 시도 → 성공
+    const lastSuccess = kv.inner.store.get('obs-metrics:last-success');
+    expect(lastSuccess).toBeDefined();
+  });
+
+  it('last-success write fails → stored=false + onError invoked with last-success key', async () => {
+    const kv = new FailingPutKV(['obs-metrics:last-success']);
+    const onError = vi.fn();
+    const result = await tryStoreObservabilityMetrics(
+      kv as unknown as KVNamespace,
+      SAMPLE_METRICS,
+      NOW,
+      { onError },
+    );
+    expect(result.stored).toBe(false);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), 'obs-metrics:last-success');
+    // hourly bucket은 성공
+    expect(kv.inner.store.get(hourBucketKey(NOW))).toBeDefined();
+  });
+
+  it('both writes fail → stored=false + onError invoked twice + first error returned', async () => {
+    const kv = new FailingPutKV([/.*/]);
+    const onError = vi.fn();
+    const result = await tryStoreObservabilityMetrics(
+      kv as unknown as KVNamespace,
+      SAMPLE_METRICS,
+      NOW,
+      { onError },
+    );
+    expect(result.stored).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
+    expect(onError).toHaveBeenCalledTimes(2);
+    // 첫 onError 호출 키는 hourly bucket, 두 번째는 last-success
+    expect(onError.mock.calls[0]?.[1]).toBe(hourBucketKey(NOW));
+    expect(onError.mock.calls[1]?.[1]).toBe('obs-metrics:last-success');
+  });
+
+  it('onError 미제공 시에도 throw 없이 stored=false 반환', async () => {
+    const kv = new FailingPutKV([/.*/]);
+    const result = await tryStoreObservabilityMetrics(
+      kv as unknown as KVNamespace,
+      SAMPLE_METRICS,
+      NOW,
+    );
+    expect(result.stored).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
+  });
+});
+
+describe('readLastSuccessfulMetrics (#1889 RC-19)', () => {
+  it('key 부재 → null 반환', async () => {
+    const kv = new InMemoryKV();
+    const result = await readLastSuccessfulMetrics(kv as unknown as KVNamespace);
+    expect(result).toBeNull();
+  });
+
+  it('tryStore 후 즉시 read 가능 (round-trip)', async () => {
+    const kv = new InMemoryKV();
+    await tryStoreObservabilityMetrics(kv as unknown as KVNamespace, SAMPLE_METRICS, NOW);
+    const result = await readLastSuccessfulMetrics(kv as unknown as KVNamespace);
+    expect(result).toEqual(SAMPLE_METRICS);
+  });
+
+  it('malformed JSON → null 반환 (caller가 503 응답)', async () => {
+    const kv = new InMemoryKV();
+    kv.store.set('obs-metrics:last-success', { value: '{not-json' });
+    const result = await readLastSuccessfulMetrics(kv as unknown as KVNamespace);
+    expect(result).toBeNull();
+  });
+
+  it('KV.get throw → null 반환 (caller가 503 응답)', async () => {
+    const kv = new FailingPutKV();
+    kv.getThrows = true;
+    const result = await readLastSuccessfulMetrics(kv as unknown as KVNamespace);
+    expect(result).toBeNull();
+  });
+
+  it('1h bucket이 만료돼도 last-success는 24h TTL 동안 살아남음', async () => {
+    const kv = new InMemoryKV();
+    await tryStoreObservabilityMetrics(kv as unknown as KVNamespace, SAMPLE_METRICS, NOW);
+    // 1h bucket 만료 시뮬레이션
+    const bucketKey = hourBucketKey(NOW);
+    const bucketEntry = kv.store.get(bucketKey);
+    if (bucketEntry) bucketEntry.expiresAt = Date.now() - 1000;
+    // read는 cache miss
+    const cached = await readObservabilityMetrics(kv as unknown as KVNamespace, NOW);
+    expect(cached).toBeNull();
+    // 그러나 last-success는 여전히 유효
+    const fallback = await readLastSuccessfulMetrics(kv as unknown as KVNamespace);
+    expect(fallback).toEqual(SAMPLE_METRICS);
   });
 });
