@@ -3825,7 +3825,8 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
 
     const res = await post('/trips', base(), env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, token: 'tok' });
+    // #1897 (RC-5) — 응답에 confirmedEnv echo. base()는 apnsEnv 미설정이라 sandbox fallback.
+    expect(await res.json()).toEqual({ ok: true, token: 'tok', confirmedEnv: 'sandbox' });
     expect(await env.TRIPS.get('trip:tok')).not.toBeNull();
   });
 
@@ -3854,7 +3855,8 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
 
     const res = await post('/trips', base(), env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, token: 'tok' });
+    // #1897 (RC-5) — 응답에 confirmedEnv echo. base()는 apnsEnv 미설정이라 sandbox fallback.
+    expect(await res.json()).toEqual({ ok: true, token: 'tok', confirmedEnv: 'sandbox' });
     expect(await env.TRIPS.get('trip:tok')).not.toBeNull();
   });
 
@@ -3865,6 +3867,39 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
     const res = await post('/trips', base(), env);
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'trip-recently-ended' });
+  });
+});
+
+// #1897 (RC-5) — POST /trips 응답 confirmedEnv echo.
+// device 가 응답 confirmedEnv 를 stamp 해 다음 register POST 부터는 build env 대신 송신 →
+// backend self-heal(envCorrected) 발동 0 수렴.
+describe('POST /trips — #1897 confirmedEnv echo (RC-5)', () => {
+  it.each(['sandbox', 'production'] as const)(
+    'first register: incoming.apnsEnv=%s → 응답 confirmedEnv 동일 echo',
+    async (env) => {
+      const kvEnv = makeKvEnv();
+      const res = await post('/trips', { ...base(), apnsEnv: env }, kvEnv);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, token: 'tok', confirmedEnv: env });
+    },
+  );
+
+  it('first register: apnsEnv 누락 → 응답 confirmedEnv=sandbox fallback', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, token: 'tok', confirmedEnv: 'sandbox' });
+  });
+
+  it('existing.apnsEnv=sandbox + incoming.apnsEnv=production (build env drift) → existing 보존 echo', async () => {
+    const env = makeKvEnv();
+    // 첫 register: existing apnsEnv=sandbox (corrected 시뮬레이션)
+    await post('/trips', { ...base(), apnsEnv: 'sandbox' }, env);
+    // 둘째 register: device build env 가 production 으로 잘못 송신 → existing 우선 보존
+    const res = await post('/trips', { ...base(), apnsEnv: 'production' }, env);
+    expect(res.status).toBe(200);
+    // backend `existing.apnsEnv ?? incoming.apnsEnv` 정책 → sandbox 유지
+    expect(await res.json()).toEqual({ ok: true, token: 'tok', confirmedEnv: 'sandbox' });
   });
 });
 
