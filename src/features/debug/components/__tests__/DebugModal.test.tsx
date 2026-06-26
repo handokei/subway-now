@@ -57,6 +57,11 @@ const mockReadBackendSsotMirror = jest.fn();
 jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
   readBackendSsotMirror: () => mockReadBackendSsotMirror(),
 }));
+// #1898 — accelerometer raw snapshot polling. test에서는 default null로 mock — 미지원 환경 가정.
+const mockGetLatestAccelerometerSnapshot = jest.fn();
+jest.mock('../../../nearest-station/utils/accelerometerFingerprint', () => ({
+  getLatestAccelerometerSnapshot: () => mockGetLatestAccelerometerSnapshot(),
+}));
 jest.mock('../../../alarm/utils/alarmLog', () => {
   const actual = jest.requireActual('../../../alarm/utils/alarmLog');
   return {
@@ -206,6 +211,8 @@ const setupHookDefaults = () => {
   mockGetTripStartedAt.mockResolvedValue(null);
   // #1568 (T8b) — backend SSoT mirror 기본 null (backend가 forward 안 함).
   mockReadBackendSsotMirror.mockResolvedValue(null);
+  // #1898 — accelerometer raw snapshot 기본 null (native 모듈 미포함 / jest 환경).
+  mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
   // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
   useDestinationStore.setState({ destination: null, tripOrigin: null });
   useSettingsStore.setState({ sleepMode: false });
@@ -4461,6 +4468,317 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         fireEvent.press(screen.getByTestId('debug-gps-drop-log-clear'));
       });
       expect(screen.getByText('GPS drops (0)')).toBeTruthy();
+    });
+  });
+
+  describe('#1898 RC-12 — Trip Route Lines + Accel Fingerprint 섹션', () => {
+    const {
+      buildRouteLinesSummary,
+      buildRouteLinesSection,
+      buildAccelFingerprintSection,
+      buildDumpText,
+    } = __test__;
+
+    describe('buildRouteLinesSummary — arcStations 데이터 주도', () => {
+      it('빈 배열 → 빈 결과', () => {
+        expect(buildRouteLinesSummary([])).toEqual([]);
+      });
+
+      it('단독 line — 모든 station을 1개 segment로 묶고 first/last 추출', () => {
+        const result = buildRouteLinesSummary([
+          { name: '신도림', line: '2' },
+          { name: '교대', line: '2' },
+          { name: '강남', line: '2' },
+        ]);
+        expect(result).toEqual([
+          { line: '2', firstStation: '신도림', lastStation: '강남' },
+        ]);
+      });
+
+      it('환승 trip — 동일 line 연속 후 line 전환 시 segment 분리', () => {
+        const result = buildRouteLinesSummary([
+          { name: '신도림', line: '2' },
+          { name: '교대', line: '2' },
+          { name: '동대문역사문화공원', line: '2' },
+          { name: '동대문역사문화공원', line: '4' },
+          { name: '사당', line: '4' },
+          { name: '사당', line: '5' },
+          { name: '여의도', line: '5' },
+        ]);
+        expect(result).toEqual([
+          { line: '2', firstStation: '신도림', lastStation: '동대문역사문화공원' },
+          { line: '4', firstStation: '동대문역사문화공원', lastStation: '사당' },
+          { line: '5', firstStation: '사당', lastStation: '여의도' },
+        ]);
+      });
+    });
+
+    describe('buildRouteLinesSection — share dump 본문', () => {
+      it('routeLines 미전달 시 (no route)', () => {
+        expect(buildRouteLinesSection(baselineDumpArgs)).toEqual(['(no route)']);
+      });
+
+      it('빈 배열도 (no route)', () => {
+        expect(
+          buildRouteLinesSection({ ...baselineDumpArgs, routeLines: [] }),
+        ).toEqual(['(no route)']);
+      });
+
+      it('단독 line — summary + 1개 detail row', () => {
+        const result = buildRouteLinesSection({
+          ...baselineDumpArgs,
+          routeLines: [{ line: '2', firstStation: '신도림', lastStation: '강남' }],
+        });
+        expect(result).toEqual([
+          'summary=2',
+          'line=2 first=신도림 last=강남',
+        ]);
+      });
+
+      it('환승 — summary는 line sequence, detail은 각 line 별', () => {
+        const result = buildRouteLinesSection({
+          ...baselineDumpArgs,
+          routeLines: [
+            { line: '2', firstStation: '신도림', lastStation: '동대문역사문화공원' },
+            { line: '4', firstStation: '동대문역사문화공원', lastStation: '사당' },
+            { line: '5', firstStation: '사당', lastStation: '여의도' },
+          ],
+        });
+        expect(result[0]).toBe('summary=2 -> 4 -> 5');
+        expect(result).toHaveLength(4);
+        expect(result[1]).toContain('line=2');
+        expect(result[3]).toContain('last=여의도');
+      });
+    });
+
+    describe('buildAccelFingerprintSection — share dump 본문', () => {
+      it('snapshot 미전달 → (no snapshot)', () => {
+        expect(buildAccelFingerprintSection(baselineDumpArgs)).toEqual(['(no snapshot)']);
+      });
+
+      it('snapshot=null → (no snapshot)', () => {
+        expect(
+          buildAccelFingerprintSection({ ...baselineDumpArgs, accelSnapshot: null }),
+        ).toEqual(['(no snapshot)']);
+      });
+
+      it('snapshot 있음 → pattern/rms/sample/lastUpdate 4행', () => {
+        const ts = new Date('2026-06-26T03:24:09Z').getTime();
+        const result = buildAccelFingerprintSection({
+          ...baselineDumpArgs,
+          accelSnapshot: {
+            timestamp: ts,
+            rmsMagnitude: 2.345,
+            patternClass: 'automotive',
+            sampleCount: 287,
+          },
+        });
+        expect(result).toEqual([
+          'pattern=automotive',
+          'rmsMagnitude=2.35 m/s^2',
+          'sampleCount=287',
+          // formatTime은 en-GB locale로 HH:MM:SS — UTC가 아닌 환경 의존이라 prefix만 확인.
+          expect.stringMatching(/^lastUpdate=\d{2}:\d{2}:\d{2}$/),
+        ]);
+      });
+
+      it('sampleCount=0도 정상 출력 (60s window 미수렴 명시)', () => {
+        const result = buildAccelFingerprintSection({
+          ...baselineDumpArgs,
+          accelSnapshot: {
+            timestamp: 1_700_000_000_000,
+            rmsMagnitude: 0,
+            patternClass: 'unknown',
+            sampleCount: 0,
+          },
+        });
+        expect(result[0]).toBe('pattern=unknown');
+        expect(result[1]).toBe('rmsMagnitude=0.00 m/s^2');
+        expect(result[2]).toBe('sampleCount=0');
+      });
+    });
+
+    describe('SHARE_SECTIONS 통합 — Trip Route Lines / Accel Fingerprint 헤더 노출', () => {
+      it('routeLines 미전달 시 Trip Route Lines 헤더 + (no route)', () => {
+        const dump = buildDumpText(makeDumpArgs());
+        expect(dump).toContain('## Trip Route Lines');
+        const section = dump.slice(dump.indexOf('## Trip Route Lines'));
+        expect(section).toContain('(no route)');
+      });
+
+      it('routeLines 있을 때 summary가 dump에 포함', () => {
+        const dump = buildDumpText(
+          makeDumpArgs({
+            routeLines: [
+              { line: '2', firstStation: '신도림', lastStation: '동대문역사문화공원' },
+              { line: '4', firstStation: '동대문역사문화공원', lastStation: '사당' },
+            ],
+          }),
+        );
+        expect(dump).toContain('summary=2 -> 4');
+      });
+
+      it('accelSnapshot 미전달 시 Accel Fingerprint 헤더 + (no snapshot)', () => {
+        const dump = buildDumpText(makeDumpArgs());
+        expect(dump).toContain('## Accel Fingerprint');
+        const section = dump.slice(dump.indexOf('## Accel Fingerprint'));
+        expect(section).toContain('(no snapshot)');
+      });
+
+      it('accelSnapshot 있음 → pattern/sampleCount가 dump에 포함', () => {
+        const dump = buildDumpText(
+          makeDumpArgs({
+            accelSnapshot: {
+              timestamp: 1_700_000_000_000,
+              rmsMagnitude: 1.42,
+              patternClass: 'walking',
+              sampleCount: 150,
+            },
+          }),
+        );
+        expect(dump).toContain('pattern=walking');
+        expect(dump).toContain('sampleCount=150');
+      });
+    });
+
+    describe('UI 통합 — DebugModal 신규 섹션 렌더링', () => {
+      const variantStationLine4 = {
+        ...variantStation,
+        id: '4-022',
+        name: '동대문역사문화공원',
+        line: '4' as const,
+      };
+
+      it('arcStations 빈 배열 → Trip Route Lines 섹션 (no route) 노출', async () => {
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        expect(screen.getByTestId('debug-route-lines-empty').props.children).toBe('(no route)');
+      });
+
+      it('arcStations 환승 trip → summary row가 line sequence 노출', async () => {
+        mockUseFusedNearestStation.mockReturnValue(
+          fusedReturnFixture({
+            arcStations: [
+              { ...station, line: '2' },
+              { ...variantStationLine4, line: '2' },
+              { ...variantStationLine4, line: '4' },
+            ],
+          }),
+        );
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        expect(screen.getByTestId('debug-route-lines-summary').props.children).toBe('2 -> 4');
+        // testID는 idx suffix 포함 — 같은 line이 재방문 trip에서 두 segment를 unique 식별 가능.
+        expect(screen.getByTestId('debug-route-lines-leg-0-line-2')).toBeTruthy();
+        expect(screen.getByTestId('debug-route-lines-leg-1-line-4')).toBeTruthy();
+      });
+
+      it('same-line 재방문 trip (2 -> 4 -> 2) → leg index suffix로 두 segment 모두 unique 식별', async () => {
+        mockUseFusedNearestStation.mockReturnValue(
+          fusedReturnFixture({
+            arcStations: [
+              { ...station, line: '2', name: '강남' },
+              { ...variantStationLine4, line: '4' },
+              { ...variantStationLine4, line: '4', name: '사당' },
+              { ...station, line: '2', name: '신도림' },
+            ],
+          }),
+        );
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        // line=2가 두 번 등장 (leg 0, leg 2) — testID가 idx로 unique.
+        expect(screen.getByTestId('debug-route-lines-leg-0-line-2')).toBeTruthy();
+        expect(screen.getByTestId('debug-route-lines-leg-1-line-4')).toBeTruthy();
+        expect(screen.getByTestId('debug-route-lines-leg-2-line-2')).toBeTruthy();
+        // duplicate-key 회귀 방지 검증: 둘의 firstStation은 달라야 한다 (강남 vs 신도림).
+        expect(screen.getByTestId('debug-route-lines-leg-0-line-2').props.children).toContain(
+          '강남',
+        );
+        expect(screen.getByTestId('debug-route-lines-leg-2-line-2').props.children).toContain(
+          '신도림',
+        );
+      });
+
+      it('accelSnapshot 미지원 → Accel Fingerprint 섹션 (no snapshot) 노출', async () => {
+        mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        expect(screen.getByTestId('debug-accel-fingerprint-empty').props.children).toBe(
+          '(no snapshot)',
+        );
+      });
+
+      it('accelSnapshot 정상 → pattern/rms/samples row 노출', async () => {
+        mockGetLatestAccelerometerSnapshot.mockReturnValue({
+          timestamp: new Date('2026-06-26T03:24:09Z').getTime(),
+          rmsMagnitude: 2.34,
+          patternClass: 'automotive',
+          sampleCount: 287,
+        });
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        expect(screen.getByTestId('debug-accel-fingerprint-pattern').props.children).toBe(
+          'automotive',
+        );
+        expect(screen.getByTestId('debug-accel-fingerprint-rms').props.children).toBe(
+          '2.34 m/s^2',
+        );
+        expect(screen.getByTestId('debug-accel-fingerprint-samples').props.children).toBe('287');
+      });
+
+      it('snapshot 변경 시 5s 폴링으로 UI 갱신', async () => {
+        jest.useFakeTimers();
+        try {
+          mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
+          renderWithTheme(<DebugModal onClose={jest.fn()} />);
+          await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+          expect(screen.getByTestId('debug-accel-fingerprint-empty')).toBeTruthy();
+          // 폴링 tick 직전에 mock 반환값 swap → 5s 흐른 뒤 UI 갱신.
+          mockGetLatestAccelerometerSnapshot.mockReturnValue({
+            timestamp: 1_700_000_000_000,
+            rmsMagnitude: 1.5,
+            patternClass: 'walking',
+            sampleCount: 150,
+          });
+          act(() => {
+            jest.advanceTimersByTime(5_000);
+          });
+          expect(screen.getByTestId('debug-accel-fingerprint-pattern').props.children).toBe(
+            'walking',
+          );
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('share dump에 trip route lines + accel snapshot 모두 포함 (UI SSOT 동일)', async () => {
+        mockUseFusedNearestStation.mockReturnValue(
+          fusedReturnFixture({
+            arcStations: [
+              { ...station, line: '2' },
+              { ...variantStationLine4, line: '4' },
+            ],
+          }),
+        );
+        mockGetLatestAccelerometerSnapshot.mockReturnValue({
+          timestamp: 1_700_000_000_000,
+          rmsMagnitude: 2.1,
+          patternClass: 'automotive',
+          sampleCount: 200,
+        });
+        const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        fireEvent.press(screen.getByTestId('debug-share-dump'));
+        await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+        const { message } = shareSpy.mock.calls[0][0] as { message: string };
+        expect(message).toContain('## Trip Route Lines');
+        expect(message).toContain('summary=2 -> 4');
+        expect(message).toContain('## Accel Fingerprint');
+        expect(message).toContain('pattern=automotive');
+        expect(message).toContain('sampleCount=200');
+        shareSpy.mockRestore();
+      });
     });
   });
 });

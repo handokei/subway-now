@@ -114,6 +114,13 @@ import { OperationDashboardSection } from './OperationDashboardSection';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
 import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
 import { RegressionsSection } from './RegressionsSection';
+// #1898 — RC-12. accelerometerFingerprint raw snapshot을 DebugModal에 노출. useFusedNearestStation이
+// pattern 라벨만 노출(unknown/walking/automotive/...)하던 기존 wire-up에 추가로, dashboard에
+// rmsMagnitude / sampleCount / lastUpdate를 시각화해 사용자 의문("speed 감지 작동 중?")을 즉시 해소.
+import {
+  getLatestAccelerometerSnapshot,
+  type AccelerometerSnapshot,
+} from '../../nearest-station/utils/accelerometerFingerprint';
 // #1421 — PR-AutoLock-1 측정 인프라. DebugModal이 SSOT consensus → stability buffer → direction verify
 // → inferAutoLockCandidate 결과를 dump에 노출. 동작 변경 0: lock 산출/sync 호출 없음.
 import { createConsensusStabilityBuffer } from '../../nearest-station/utils/consensusStabilityBuffer';
@@ -595,6 +602,22 @@ interface BuildDumpArgs {
    * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출한다.
    */
   gpsDropLog?: readonly GpsDropEntry[];
+  /**
+   * #1898 — RC-12 결함 A 가시화. trip route arcStations 목록. arcStations에서 distinct
+   * line sequence를 도출해 dump/UI 양쪽에 trip line context 노출. 미전달 시 (no route).
+   *
+   * 환승 trip은 line 변경 순서를 보존해 "2 -> 4 -> 5" 형태로 표시 — modal 노선 추천 잘못
+   * (예: 4/5호선) 회귀 발생 시 사용자가 share dump만으로 trip line context 확인 가능.
+   */
+  routeLines?: readonly { line: string; firstStation: string; lastStation: string }[];
+  /**
+   * #1898 — RC-12 결함 B 가시화. accelerometer raw snapshot (rmsMagnitude/sampleCount).
+   * useFusedNearestStation의 accelerometerPattern은 분류 결과(stationary/walking/automotive)만
+   * 노출 → 사용자가 "측정값 자체가 있는가?" 즉시 확인 불가. raw snapshot으로 dashboard 보강.
+   *
+   * 미전달/null은 (no snapshot)로 명시 — "한 번도 측정 안 됨" / "미지원" / "load 안 함" 구분 가능.
+   */
+  accelSnapshot?: AccelerometerSnapshot | null;
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -726,6 +749,58 @@ function buildSleepSection(args: BuildDumpArgs): string[] {
   return [
     `sleepMode=${sleepModeText}`,
     `firstHopApproaching=${formatOptionalBool(args.sleep?.firstHopApproaching)}`,
+  ];
+}
+
+/**
+ * #1898 — RC-12 결함 A. trip route line sequence를 dump에 노출.
+ *
+ * 출력 형식 (단독 line):
+ *   summary=2
+ *   line=2 first=신도림 last=강남
+ *
+ * 출력 형식 (환승):
+ *   summary=2 -> 4 -> 5
+ *   line=2 first=신도림 last=동대문역사문화공원
+ *   line=4 first=동대문역사문화공원 last=사당
+ *   line=5 first=사당 last=여의도
+ *
+ * routeLines 미전달/빈 배열은 `(no route)` 1줄 — destination 미설정 또는 lockless trip 미시작.
+ */
+function buildRouteLinesSection(args: BuildDumpArgs): string[] {
+  const lines = args.routeLines ?? [];
+  if (lines.length === 0) return ['(no route)'];
+  const summary = lines.map((l) => l.line).join(' -> ');
+  const detail = lines.map(
+    (l) => `line=${l.line} first=${l.firstStation} last=${l.lastStation}`,
+  );
+  return [`summary=${summary}`, ...detail];
+}
+
+/**
+ * #1898 — RC-12 결함 B. accelerometer raw snapshot dashboard.
+ *
+ * 출력 형식 (snapshot 있음):
+ *   pattern=automotive
+ *   rmsMagnitude=2.34 m/s^2
+ *   sampleCount=287
+ *   lastUpdate=12:24:09
+ *
+ * 출력 형식 (snapshot null — 미지원/load 안 함):
+ *   (no snapshot)
+ *
+ * sampleCount=0 케이스도 정상 출력 — "한 번도 sample 수집 안 됨" 명시.
+ * useFusedNearestStation의 accelerometerPattern과 본 섹션의 pattern은 동일 SSOT(native cache)
+ * 에서 유래하지만, 본 섹션은 polling 시점 snapshot — UI/dump 양쪽 동일 raw 데이터 노출.
+ */
+function buildAccelFingerprintSection(args: BuildDumpArgs): string[] {
+  const snapshot = args.accelSnapshot ?? null;
+  if (!snapshot) return ['(no snapshot)'];
+  return [
+    `pattern=${snapshot.patternClass}`,
+    `rmsMagnitude=${snapshot.rmsMagnitude.toFixed(2)} m/s^2`,
+    `sampleCount=${snapshot.sampleCount}`,
+    `lastUpdate=${formatTime(snapshot.timestamp)}`,
   ];
 }
 
@@ -1235,6 +1310,39 @@ function buildAutoLockMeta(input: {
 }
 
 /**
+ * #1898 — RC-12 결함 A. arcStations에서 distinct line sequence 도출.
+ *
+ * 환승 trip은 같은 line이 연속 후 다음 line으로 전환되는 경계만 추출 — "2,2,2,4,4,5"는
+ * "2 -> 4 -> 5"로 압축. 호출자는 본 helper의 entries 길이로 환승 여부 판단 가능 (>1 = 환승).
+ *
+ * 각 entry는 line 구간의 firstStation/lastStation을 포함 — 사용자가 share dump만으로
+ * "2호선 신도림~강남, 4호선 사당~동대문" 식 trip 구조 재구성 가능.
+ *
+ * arcStations 빈 배열은 빈 결과 반환 → 호출자가 (no route) 표기.
+ *
+ * 데이터 주도: 노선 수에 의존하지 않고 arcStations 순회 (CLAUDE.md 글로벌 룰 3번).
+ */
+export function buildRouteLinesSummary(
+  arcStations: readonly { name: string; line: string }[],
+): { line: string; firstStation: string; lastStation: string }[] {
+  if (arcStations.length === 0) return [];
+  const segments: { line: string; firstStation: string; lastStation: string }[] = [];
+  for (const station of arcStations) {
+    const last = segments[segments.length - 1];
+    if (last && last.line === station.line) {
+      last.lastStation = station.name;
+      continue;
+    }
+    segments.push({
+      line: station.line,
+      firstStation: station.name,
+      lastStation: station.name,
+    });
+  }
+  return segments;
+}
+
+/**
  * #1346 — Share dump SSOT.
  *
  * 출력 형식: `## ${title}` + 본문 줄 + 다음 섹션 사이 빈 줄.
@@ -1259,7 +1367,15 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'GPS', build: buildGpsSection },
   { title: 'Nearest', build: buildNearestSection },
   { title: 'Fusion', build: buildFusionSection },
+  // #1898 — RC-12 결함 B 가시화. accelerometer raw snapshot dashboard (pattern/rms/sample/lastUpdate).
+  // Fusion 섹션의 accelPattern row와 동일 SSOT(native cache)지만 raw 값을 노출해 사용자가
+  // "sensor 작동 중인가" / "60s window 수렴 했는가" 즉시 판단 가능.
+  { title: 'Accel Fingerprint', build: buildAccelFingerprintSection },
   { title: 'Trip', build: buildTripSection },
+  // #1898 — RC-12 결함 A 가시화. arcStations 기반 trip line sequence. modal 노선 추천 회귀
+  // (예: 동대문 trip line=2인데 modal이 4/5호선 추천) 진단 시 share dump에서 trip line context
+  // 즉시 확인 가능. Trip 섹션 직후에 배치해 lockless/hopIndex 신호와 같이 읽힌다.
+  { title: 'Trip Route Lines', build: buildRouteLinesSection },
   { title: 'Sleep', build: buildSleepSection },
   { title: 'Arrival', build: buildArrivalSection },
   { title: 'Silent Push', build: buildSilentPushSection },
@@ -1649,6 +1765,26 @@ function DebugModalInner({
     nowMs: Date.now(),
   });
 
+  // #1898 — RC-12 결함 A. arcStations에서 trip route line sequence 산출. 매 render 호출이지만
+  // arcStations 참조 안정성(hook 메모) + 환승 trip도 30개 이하라 비용 무시 가능.
+  const routeLines = useMemo(
+    () => buildRouteLinesSummary(arcStations),
+    [arcStations],
+  );
+
+  // #1898 — RC-12 결함 B. accelerometer raw snapshot polling. useAccelerometerFingerprint hook이
+  // pattern 라벨만 노출 → DebugModal은 raw snapshot까지 직접 노출. 5s 주기는 fingerprint hook
+  // 폴링과 동일(native가 5Hz × 60s window를 캐시하므로 freshness 충분).
+  const [accelSnapshot, setAccelSnapshot] = useState<AccelerometerSnapshot | null>(() =>
+    getLatestAccelerometerSnapshot(),
+  );
+  useEffect(() => {
+    const tick = () => setAccelSnapshot(getLatestAccelerometerSnapshot());
+    tick();
+    const id = setInterval(tick, 5_000);
+    return () => clearInterval(id);
+  }, []);
+
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   // #1706 — fusion picker tier 별 ring buffer snapshot. alarmLog ring 점령 회귀 차단으로
   // 분리된 채널 (alarmLog와 다른 200 cap). refresh 사이클에 함께 snapshot.
@@ -1809,6 +1945,10 @@ function DebugModalInner({
       backendCalls,
       // #1501 — PR-C. Raw signal buffer entries (직전 N건). share dump가 모달 표시와 동일 SSOT.
       rawSignalLog,
+      // #1898 — RC-12. trip route line sequence + accelerometer raw snapshot. share dump가
+      // UI 표시와 동일 SSOT.
+      routeLines,
+      accelSnapshot,
     });
     void Share.share({ message });
   }, [
@@ -1856,6 +1996,9 @@ function DebugModalInner({
     backendCalls,
     // #1501 — PR-C. raw signal entries 변경 시 share 텍스트 자동 갱신.
     rawSignalLog,
+    // #1898 — routeLines/accelSnapshot 변경 시 share 텍스트 자동 갱신.
+    routeLines,
+    accelSnapshot,
   ]);
 
   return (
@@ -1981,6 +2124,11 @@ function DebugModalInner({
             />
           </Section>
 
+          {/* #1898 — RC-12 결함 B. accelerometer raw snapshot dashboard. Fusion 섹션의 accelPattern
+              라벨 row만으로는 "sensor 작동 중인가?" 구분 불가 — rmsMagnitude/sampleCount/lastUpdate
+              raw 값을 추가 노출. snapshot=null이면 (no snapshot) 단일 row. */}
+          <AccelFingerprintSection snapshot={accelSnapshot} colors={colors} />
+
           {/* #1215 (D9) — Trip 섹션: lockless/tripStartedAt/currentHopIndex/route hop count. */}
           <Section title="Trip" colors={colors} testID="debug-modal-trip-section">
             <KeyValue
@@ -2018,6 +2166,11 @@ function DebugModalInner({
               testID="debug-modal-lifecycle-phase"
             />
           </Section>
+
+          {/* #1898 — RC-12 결함 A. arcStations 기반 trip route line sequence. modal 노선 추천
+              회귀(예: 동대문 trip line=2인데 modal이 4/5호선 추천) 진단 시 사용자가 trip line
+              context를 즉시 확인 가능. arcStations 빈 배열이면 (no route) 단일 row. */}
+          <RouteLinesSection routeLines={routeLines} colors={colors} />
 
           {/* #1215 (D9) — Sleep 섹션: sleepMode + 첫 hop 향하는 중인가. */}
           <Section title="Sleep" colors={colors}>
@@ -2470,6 +2623,123 @@ function DebugLogSection<T extends { ts: number }>({
   );
 }
 
+/**
+ * #1898 — RC-12 결함 A. trip route line sequence 시각화.
+ *
+ * 환승 trip은 summary row + 각 line 구간(first/last station) row를 나열한다.
+ * `routeLines`가 빈 배열이면 (no route) 단일 row 노출.
+ *
+ * 데이터 주도: lines 수에 의존하지 않고 map 순회. 새 line 추가 / 환승 N회도 같은 코드.
+ */
+function RouteLinesSection({
+  routeLines,
+  colors,
+}: Readonly<{
+  routeLines: readonly { line: string; firstStation: string; lastStation: string }[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <Section title="Trip Route Lines" colors={colors} testID="debug-route-lines-section">
+      {routeLines.length === 0 ? (
+        <Text
+          style={[typography.mono, { color: colors.muted }]}
+          testID="debug-route-lines-empty"
+        >
+          (no route)
+        </Text>
+      ) : (
+        <>
+          <KeyValue
+            label="summary"
+            value={routeLines.map((l) => l.line).join(' -> ')}
+            colors={colors}
+            testID="debug-route-lines-summary"
+          />
+          {routeLines.map((entry, idx) => (
+            <KeyValue
+              // segment index를 key에 포함해 환승 trip의 같은 line 재등장(2→4→2, 분기 회귀)에서도
+              // React duplicate-key 경고 차단. firstStation을 함께 묶어 디버깅 친화적 식별자 유지.
+              key={`leg-${idx}-${entry.line}-${entry.firstStation}`}
+              label={`line=${entry.line}`}
+              value={`first=${entry.firstStation} last=${entry.lastStation}`}
+              colors={colors}
+              // testID도 idx suffix로 unique 보장 — getByTestId 충돌 방지. 같은 line 재방문 trip
+              // (예: 2호선→다른 노선→2호선)에서 두 segment를 별도로 조회 가능.
+              testID={`debug-route-lines-leg-${idx}-line-${entry.line}`}
+            />
+          ))}
+        </>
+      )}
+    </Section>
+  );
+}
+
+/**
+ * #1898 — RC-12 결함 B. accelerometer raw snapshot dashboard.
+ *
+ * Fusion 섹션의 accelPattern row는 분류 결과만 노출 → 사용자가 "sensor 작동 중인가?",
+ * "60s window 수렴 했는가?" 즉시 판단 불가. 본 섹션은 rmsMagnitude(중력 제거 RMS) /
+ * sampleCount(window 누적 sample 수) / lastUpdate(snapshot 갱신 시각)를 추가 노출.
+ *
+ * `snapshot=null`이면 (no snapshot) 단일 row + 안내 라인 — 미지원/native 모듈 미포함/load
+ * 안 함을 구분 가능. snapshot.patternClass='unknown' + sampleCount<50이면 60s window 미수렴
+ * 상태.
+ */
+function AccelFingerprintSection({
+  snapshot,
+  colors,
+}: Readonly<{
+  snapshot: AccelerometerSnapshot | null;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <Section title="Accel Fingerprint" colors={colors} testID="debug-accel-fingerprint-section">
+      {snapshot === null ? (
+        <>
+          <Text
+            style={[typography.mono, { color: colors.muted }]}
+            testID="debug-accel-fingerprint-empty"
+          >
+            (no snapshot)
+          </Text>
+          <Text
+            style={[typography.mono, { color: colors.subtle, marginTop: spacing.xs }]}
+          >
+            sensor 미지원 또는 native 모듈 미포함 (EAS rebuild 후 자연 채워짐)
+          </Text>
+        </>
+      ) : (
+        <>
+          <KeyValue
+            label="pattern"
+            value={snapshot.patternClass}
+            colors={colors}
+            testID="debug-accel-fingerprint-pattern"
+          />
+          <KeyValue
+            label="rmsMag"
+            value={`${snapshot.rmsMagnitude.toFixed(2)} m/s^2`}
+            colors={colors}
+            testID="debug-accel-fingerprint-rms"
+          />
+          <KeyValue
+            label="samples"
+            value={String(snapshot.sampleCount)}
+            colors={colors}
+            testID="debug-accel-fingerprint-samples"
+          />
+          <KeyValue
+            label="lastUpdate"
+            value={formatTime(snapshot.timestamp)}
+            colors={colors}
+            testID="debug-accel-fingerprint-last-update"
+          />
+        </>
+      )}
+    </Section>
+  );
+}
+
 /** BoardingLock 섹션 — lock 활성/trainCode/boardingLine/expiresAt 요약 (#1025). */
 function BoardingLockSection({
   lock,
@@ -2813,6 +3083,10 @@ export const __test__ = {
   // #1540 (S7) — gps-drop 별 buffer 포맷/섹션. 단위 테스트에서 직접 호출.
   formatGpsDropLine,
   buildGpsDropLogSection,
+  // #1898 — RC-12 helper/builder. share dump 단위 테스트 + buildRouteLinesSummary 데이터 주도 검증.
+  buildRouteLinesSummary,
+  buildRouteLinesSection,
+  buildAccelFingerprintSection,
 };
 
 const styles = StyleSheet.create({
