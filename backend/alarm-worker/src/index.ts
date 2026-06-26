@@ -2019,6 +2019,12 @@ export function validateTrip(input: unknown): Trip | null {
     // #903 (Seam G): 클라이언트 기압계가 보고한 지하 진입 신호. 미송신/비boolean이면 undefined(default OFF).
     // scheduled.ts가 이 값으로 consecutiveEtaMissing threshold(5 vs 10)를 분기한다.
     subsurface: typeof obj.subsurface === 'boolean' ? obj.subsurface : undefined,
+    // #1895: device locale (ko/en/ja/zh). boarding-prompt push 본문 생성에 사용.
+    // 미지원/undefined는 t() 호출 시점에 ko fallback (default).
+    locale:
+      obj.locale === 'ko' || obj.locale === 'en' || obj.locale === 'ja' || obj.locale === 'zh'
+        ? obj.locale
+        : undefined,
   };
 }
 
