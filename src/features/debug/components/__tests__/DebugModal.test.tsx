@@ -2029,7 +2029,7 @@ describe('DebugModal backend calls section — #1518', () => {
 });
 
 describe('formatFusionDebugLine', () => {
-  const { formatFusionDebugLine } = __test__;
+  const { formatFusionDebugLine, formatCandidateRejectLine } = __test__;
 
   it('gps-fix 엔트리: station/distance/accuracy 포함', () => {
     const line = formatFusionDebugLine({
@@ -2094,8 +2094,8 @@ describe('formatFusionDebugLine', () => {
     },
   );
 
-  it('#1616 (R12-a) candidate-reject 엔트리: reject reason / trainNo / station / distance 포함', () => {
-    const line = formatFusionDebugLine({
+  it('#1616/#1902 (R12-a + RC-18) candidate-distance reject: formatter는 별 buffer 포맷터 사용', () => {
+    const line = formatCandidateRejectLine({
       kind: 'candidate-reject',
       ts: new Date('2026-06-21T12:00:00Z').getTime(),
       reason: 'candidate-distance',
@@ -2108,6 +2108,33 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('T-2099');
     expect(line).toContain('강변(동서울터미널)(2)');
     expect(line).toContain('d=5400m');
+  });
+
+  it('#1902 (RC-18) candidate-line reject: line만 포함 (enumerate 단계 reject)', () => {
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-line',
+      line: '6',
+    });
+    expect(line).toContain('reject:candidate-line');
+    expect(line).toContain('line=6');
+    // candidate-line은 trainNo/distanceKm을 갖지 않는다.
+    expect(line).not.toContain('d=');
+  });
+
+  it('#1902 candidate-distance reject: 옵셔널 필드 누락 시 "-" fallback', () => {
+    // type상 optional이지만 useFusedNearestStation는 항상 채워 호출. defensive fallback 분기 커버.
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-distance',
+      line: '2',
+      // trainNo / stationName / distanceKm 모두 누락
+    });
+    expect(line).toContain('reject:candidate-distance');
+    expect(line).toContain('- -(2)');
+    expect(line).toContain('d=-');
   });
 
   it('gps 엔트리: nearestStation/distance/accuracy 누락 시 "-" 표기', () => {
@@ -4461,6 +4488,96 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         fireEvent.press(screen.getByTestId('debug-gps-drop-log-clear'));
       });
       expect(screen.getByText('GPS drops (0)')).toBeTruthy();
+    });
+  });
+
+  // #1902 (RC-18) — candidate-reject 별 buffer. fusion log cap 점령 회귀 차단용 별 채널.
+  describe('Candidate rejects 섹션 (#1902)', () => {
+    const { formatCandidateRejectLine, buildCandidateRejectLogSection, buildDumpText } = __test__;
+    type RejectEntry =
+      import('../../../nearest-station/utils/candidateRejectBuffer').CandidateRejectEntry;
+
+    const makeDistance = (overrides: Partial<RejectEntry> = {}): RejectEntry => ({
+      kind: 'candidate-reject',
+      ts: 1_700_000_000_000,
+      reason: 'candidate-distance',
+      trainNo: 'T-9001',
+      stationName: '강변',
+      line: '2',
+      distanceKm: 5.4,
+      ...overrides,
+    });
+
+    const makeLineReject = (overrides: Partial<RejectEntry> = {}): RejectEntry => ({
+      kind: 'candidate-reject',
+      ts: 1_700_000_000_000,
+      reason: 'candidate-line',
+      line: '6',
+      ...overrides,
+    });
+
+    it('buildCandidateRejectLogSection: 미전달/빈 배열 모두 (empty)', () => {
+      expect(buildCandidateRejectLogSection(baselineDumpArgs)).toEqual(['(empty)']);
+      expect(
+        buildCandidateRejectLogSection({ ...baselineDumpArgs, candidateRejectLog: [] }),
+      ).toEqual(['(empty)']);
+    });
+
+    it('buildCandidateRejectLogSection: 최신이 위로 정렬 + distance/line 동시 노출', () => {
+      const result = buildCandidateRejectLogSection({
+        ...baselineDumpArgs,
+        candidateRejectLog: [
+          makeDistance({ ts: 1000 }),
+          makeLineReject({ ts: 2000, line: '7' }),
+        ],
+      });
+      expect(result).toHaveLength(2);
+      expect(result[0]).toContain('reject:candidate-line');
+      expect(result[0]).toContain('line=7');
+      expect(result[1]).toContain('reject:candidate-distance');
+    });
+
+    it('share dump가 Candidate rejects 섹션을 포함한다 (suffix는 buffer 길이)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({
+          candidateRejectLog: [makeDistance({ distanceKm: 4.2 })],
+        }),
+      );
+      expect(dump).toContain('## Candidate rejects (1)');
+      expect(dump).toContain('d=4200m');
+    });
+
+    it('share dump: candidateRejectLog 미전달 시 헤더(0) + (empty)', () => {
+      const dump = buildDumpText(makeDumpArgs());
+      expect(dump).toContain('## Candidate rejects (0)');
+      const section = dump.slice(dump.indexOf('## Candidate rejects'));
+      expect(section).toContain('(empty)');
+    });
+
+    it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
+      const {
+        clearCandidateRejectEntries,
+        pushCandidateRejectEntry,
+      } = jest.requireActual('../../../nearest-station/utils/candidateRejectBuffer');
+      clearCandidateRejectEntries();
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText('Candidate rejects (0)')).toBeTruthy();
+      act(() => {
+        pushCandidateRejectEntry({
+          kind: 'candidate-reject',
+          ts: new Date('2026-06-26T13:00:00Z').getTime(),
+          reason: 'candidate-line',
+          line: '6',
+        });
+      });
+      expect(screen.getByText('Candidate rejects (1)')).toBeTruthy();
+      const entries = screen.getAllByTestId('debug-candidate-reject-log-entry');
+      expect(entries[0].props.children).toContain('line=6');
+      act(() => {
+        fireEvent.press(screen.getByTestId('debug-candidate-reject-log-clear'));
+      });
+      expect(screen.getByText('Candidate rejects (0)')).toBeTruthy();
     });
   });
 });

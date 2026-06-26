@@ -14,7 +14,7 @@
  * 기존 binding 을 prefix 로 재사용한다 (운영 manual step 0).
  *
  * 책임 분리:
- *   - `pendingPushes.ts` (`pending:` prefix): silent push 발사 직후 ACK 추적 (30s 미ACK alert fallback).
+ *   - `pendingPushes.ts` (`pending:` prefix): silent push 발사 직후 ACK 추적 (60s 미ACK alert fallback; #1894 30s→60s 완화).
  *   - `retryPushes.ts`   (`retry-push:` prefix): silent push 발사 자체 실패 시 transient retry 큐.
  *
  * 두 prefix 는 disjoint — 같은 pushId 가 두 큐에 동시 등록되지 않는다 (발사 성공 → pending, 실패 → retry).

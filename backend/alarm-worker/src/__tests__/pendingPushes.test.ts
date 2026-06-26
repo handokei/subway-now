@@ -48,20 +48,20 @@ describe('pendingPushes (#566 P2a)', () => {
   });
 
   describe('putPending', () => {
-    it('KV에 pending:<pushId> 키로 저장하고 TTL을 60초로 둔다', async () => {
+    it('KV에 pending:<pushId> 키로 저장하고 TTL을 PENDING_TTL_SEC로 둔다', async () => {
       const entry = makeEntry({ pushId: 'p1' });
       await putPending(kv as unknown as KVNamespace, entry);
       const raw = kv.store.get('pending:p1');
       expect(raw).toBeDefined();
       expect(JSON.parse(raw!.value)).toEqual(entry);
       expect(raw!.expiresAt).toBeDefined();
-      // TTL 정확히 60초 ± 1초 허용 (Date.now 시점 차이).
+      // PENDING_TTL_SEC 정확히 ± 1초 허용 (Date.now 시점 차이).
       expect(raw!.expiresAt! - Date.now()).toBeGreaterThan((PENDING_TTL_SEC - 1) * 1000);
       expect(raw!.expiresAt! - Date.now()).toBeLessThanOrEqual(PENDING_TTL_SEC * 1000);
     });
 
-    it('PENDING_TTL_SEC가 60초로 노출된다', () => {
-      expect(PENDING_TTL_SEC).toBe(60);
+    it('PENDING_TTL_SEC가 120초로 노출된다 (#1894 — FALLBACK_THRESHOLD_MS 60s + cron 60s backstop 정합)', () => {
+      expect(PENDING_TTL_SEC).toBe(120);
     });
 
     it('kv === undefined면 graceful no-op (throw 없음)', async () => {

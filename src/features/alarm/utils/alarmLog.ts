@@ -234,6 +234,10 @@ export type AlarmLogReason =
   // #1628 — fusion candidate distance hard gate(R12-a) reject 사유. distanceKm/trainNo/stationName/line은
   // 엔트리 컨텍스트로 별도 적재되지 않으므로 dedup 키는 (trainNo|stationName)으로 station 단위 burst 차단.
   | 'candidate-distance-reject'
+  // #1902 (RC-18) — fusion candidate line filter reject. trip route 활성 line 화이트리스트
+  // (`allowedLinesFromRoute`)와 무관한 line 후보가 enumerate 단계에서 차단됐을 때 적재.
+  // burst dedup 키는 line 단위 — 같은 line이 5s 안에 반복 reject되면 첫 1건만 적재.
+  | 'candidate-line-reject'
   // #1628 — R11 cross-trip mirror skip(PR #1613) 차단 1건. 같은 site에서 burst 발사하는 race 케이스를
   // 차단하기 위해 5s 윈도우 burst dedup 적용.
   | 'cross-trip-mirror-skip'
@@ -707,6 +711,32 @@ export function logFusionCandidateDistanceReject(input: { stationName: string })
     outcome: 'suppressed',
     reason: 'candidate-distance-reject',
     stationName: input.stationName,
+  });
+}
+
+/**
+ * #1902 (RC-18) — fusion candidate line filter reject 1건 적재.
+ *
+ * `useFusedNearestStation.ts`의 candidateTrains useMemo가 `allowedLinesFromRoute`로 trip 경로
+ * 외 line 후보를 enumerate 단계에서 차단할 때 호출. RC-18 evidence(T4 trip 18 line cross-blast)
+ * 회복 측정용 — `/admin/alarm-log-stats` reason='candidate-line-reject' 카운트로 line filter
+ * 효과 추적.
+ *
+ * burst dedup: line 키 — 같은 line이 5s 윈도우 안에 반복 reject되면 첫 1건만 적재. enumerate
+ * 단계라 polling cycle마다 같은 line이 다발로 들어와도 측정 의미는 line 단위 카운트.
+ *
+ * stationName slot에 `line:<n>` prefix로 line을 stamp — `appendAlarmLog`의 inline burst dedup이
+ * `stationName` key까지 비교하므로 line별 분포가 entry 단위로 보존된다(distance reject와 같은 패턴).
+ * dump에서도 line 정보가 가시.
+ */
+export function logFusionCandidateLineReject(input: { line: string }): void {
+  if (isBurstDuplicate('candidate-line-reject', input.line)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'fusion-candidate-reject',
+    outcome: 'suppressed',
+    reason: 'candidate-line-reject',
+    stationName: `line:${input.line}`,
   });
 }
 

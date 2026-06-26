@@ -59,7 +59,7 @@ export interface SilentPushPayload {
   /**
    * push 1건의 unique 식별자 (#566 P2a).
    * 디바이스는 처리 결과를 `POST /push/ack`로 보낼 때 이 id를 echo한다.
-   * P2c가 30s 미ACK push를 alert fallback으로 재발사할 때 dedup 키로도 사용.
+   * P2c가 60s 미ACK push를 alert fallback으로 재발사할 때 dedup 키로도 사용 (#1894 30s→60s 완화).
    */
   pushId: string;
   /**
@@ -262,7 +262,7 @@ export type LockReleasedReason = 'transfer' | 'vanish';
  * | `vanish-release`     | trainCode 소실 + hop 미경과 lock release 직전 floor fire   |
  * | `lockless`           | lockless intermediate fire                                  |
  * | `reschedule`         | ETA shift threshold 초과 reschedule push                    |
- * | `alert-fallback`     | 30s ACK 미수신 후 alert push fallback                       |
+ * | `alert-fallback`     | 60s ACK 미수신 후 alert push fallback (#1894 30s→60s 완화)  |
  *
  * 새 origin 추가 시 device alarmLog의 expected enum도 함께 갱신해야 한다.
  */
