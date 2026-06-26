@@ -7,6 +7,7 @@ import {
   cleanupTripWithLa,
   fireLiveActivityDismissal,
   fireLiveActivityUpdate,
+  isApnsTokenInvalid,
   staleDurationSecForKind,
   type LiveActivityDeps,
   type LiveActivityStats,
@@ -423,7 +424,7 @@ describe('fireLiveActivityUpdate', () => {
     expect(stats.laTokenCleared).toBe(1);
   });
 
-  it('does not clear on non-410 failure (dirty=false)', async () => {
+  it('does not clear on non-token-invalid failure (dirty=false)', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ reason: 'InternalServerError' }), { status: 500 }),
     );
@@ -440,6 +441,51 @@ describe('fireLiveActivityUpdate', () => {
     expect(r.dirty).toBe(false);
     expect(trip.activityPushToken).toBe('la-token');
     expect(stats.laPushFailed).toBe(1);
+    expect(stats.laTokenCleared).toBe(0);
+  });
+
+  // #1899 — trip 경계 rotation race에서 짧은 window 동안 옛 token이 400 BadDeviceToken으로
+  // 응답되는 패턴. 410으로 전환되기 전 cron이 stale token 재시도하면 BadDeviceToken 폭증 →
+  // 즉시 clear로 해결.
+  it('clears token + sets ended on 400 BadDeviceToken (dirty=true) (#1899)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const stats = makeStats();
+    const trip = makeTrip();
+    const r = await fireLiveActivityUpdate(
+      trip,
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(r.dirty).toBe(true);
+    expect(trip.activityPushToken).toBeUndefined();
+    expect(trip.activityState).toBe('ended');
+    expect(stats.laPushFailed).toBe(1);
+    expect(stats.laTokenCleared).toBe(1);
+  });
+
+  // 400 reason이 token error가 아니면(예: BadTopic — 백엔드 코드/구성 문제) clear하지 않는다.
+  // token 자체가 멀쩡한데 clear하면 정상 trip의 LA가 silent dead가 되어 회귀.
+  it('does not clear on 400 with non-BadDeviceToken reason (dirty=false) (#1899)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadTopic' }), { status: 400 }),
+    );
+    const stats = makeStats();
+    const trip = makeTrip();
+    const r = await fireLiveActivityUpdate(
+      trip,
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(r.dirty).toBe(false);
+    expect(trip.activityPushToken).toBe('la-token');
     expect(stats.laTokenCleared).toBe(0);
   });
 });
@@ -510,7 +556,7 @@ describe('fireLiveActivityDismissal', () => {
     expect(stats.laTokenCleared).toBe(1);
   });
 
-  it('increments laPushFailed but not laTokenCleared on non-410 failure', async () => {
+  it('increments laPushFailed but not laTokenCleared on non-token-invalid failure', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ reason: 'ServerUnavailable' }), { status: 503 }),
     );
@@ -525,6 +571,50 @@ describe('fireLiveActivityDismissal', () => {
     );
     expect(stats.laPushFailed).toBe(1);
     expect(stats.laTokenCleared).toBe(0);
+  });
+
+  // #1899 — dismissal 시 400 BadDeviceToken도 token-invalid 카운팅. update와 정렬.
+  it('counts laTokenCleared on 400 BadDeviceToken (#1899)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const stats = makeStats();
+    const trip = makeTrip();
+    await fireLiveActivityDismissal(
+      trip,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(stats.laPushFailed).toBe(1);
+    expect(stats.laTokenCleared).toBe(1);
+  });
+});
+
+// #1899 — APNs token-invalid 판정 단위 테스트. fireLiveActivityUpdate/Dismissal의
+// clear 분기 SSoT라 케이스가 분기 매트릭스 전부 커버되도록 한다.
+describe('isApnsTokenInvalid (#1899)', () => {
+  it('returns true for 410 regardless of reason', () => {
+    expect(isApnsTokenInvalid(410, 'Unregistered')).toBe(true);
+    expect(isApnsTokenInvalid(410, undefined)).toBe(true);
+  });
+
+  it('returns true for 400 + BadDeviceToken', () => {
+    expect(isApnsTokenInvalid(400, 'BadDeviceToken')).toBe(true);
+  });
+
+  it('returns false for 400 with other reasons (config error, not token error)', () => {
+    expect(isApnsTokenInvalid(400, 'BadTopic')).toBe(false);
+    expect(isApnsTokenInvalid(400, 'MissingTopic')).toBe(false);
+    expect(isApnsTokenInvalid(400, undefined)).toBe(false);
+  });
+
+  it('returns false for non-error / unrelated status codes', () => {
+    expect(isApnsTokenInvalid(200, undefined)).toBe(false);
+    expect(isApnsTokenInvalid(500, 'InternalServerError')).toBe(false);
+    expect(isApnsTokenInvalid(503, 'ServerUnavailable')).toBe(false);
+    expect(isApnsTokenInvalid(undefined, undefined)).toBe(false);
   });
 });
 

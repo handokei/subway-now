@@ -38,6 +38,16 @@ const PUSH_TOKEN_FIRST_EMIT_TIMEOUT_MS = 5000;
 const REGISTER_RETRY_MAX_ATTEMPTS = 3;
 const REGISTER_RETRY_BASE_DELAY_MS = 500;
 
+/**
+ * 404 (`trip_not_found`) 응답 시 longer backoff (#1899).
+ * device가 trip register POST를 보낸 직후 push token이 emit되면 backend KV write가
+ * 아직 propagate되지 않아 LA register가 404로 응답할 수 있다. 500ms 기본 backoff는 짧아
+ * 같은 race를 반복 hit하므로, 404 시에만 2s/4s/8s exponential로 늘려 trip register가
+ * 도착할 시간을 확보한다. 다른 status(5xx, network)는 기존 500ms/1s 유지 — 일시적
+ * 인프라 장애는 빠르게 재시도하는 편이 사용자 가치 손실이 적다.
+ */
+const REGISTER_RETRY_404_BASE_DELAY_MS = 2000;
+
 /** 현재 LA 세션의 teardown 함수. 단일 LA만 동시 운영한다는 전제. */
 let activeTeardown: (() => void) | null = null;
 /** 현재 활성 LA 세션의 tripToken. ensureLiveActivityRegistered가 start vs update 판정에 사용. */
@@ -56,16 +66,22 @@ async function registerWithRetry(
   tripToken: string,
   activityPushToken: string,
 ): Promise<void> {
+  let lastStatus: number | undefined;
   for (let attempt = 1; attempt <= REGISTER_RETRY_MAX_ATTEMPTS; attempt += 1) {
     try {
       const result = await registerLiveActivityToken(tripToken, activityPushToken);
       if (result.ok) return;
+      lastStatus = result.status;
       log.warn(`LA register attempt ${attempt} not ok status=${result.status ?? 'none'}`);
     } catch (e) {
+      lastStatus = undefined;
       log.warn(`LA register attempt ${attempt} threw`, e);
     }
     if (attempt < REGISTER_RETRY_MAX_ATTEMPTS) {
-      await sleep(REGISTER_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+      // #1899 — 404(trip_not_found)는 trip register propagate race이므로 longer backoff.
+      const base =
+        lastStatus === 404 ? REGISTER_RETRY_404_BASE_DELAY_MS : REGISTER_RETRY_BASE_DELAY_MS;
+      await sleep(base * 2 ** (attempt - 1));
     }
   }
   log.warn('LA register exhausted retries — giving up (will retry on next token emit)');

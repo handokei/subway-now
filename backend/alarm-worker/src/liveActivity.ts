@@ -130,11 +130,16 @@ export interface LiveActivityFireResult {
 
 /**
  * LA update push 발사. trip에 activity token이 없거나 state가 live가 아니면 no-op.
- * 410 응답 시 token clear + state='ended'로 전이 (dirty=true).
+ * APNs token-invalid 응답 시 token clear + state='ended'로 전이 (dirty=true).
  *
  * silent/reschedule push의 env-heal(#482)은 LA에 적용하지 않는다 — LA token은 register 시점에
  * 디바이스가 apnsEnv를 확정 통지(`POST /live-activity/register`가 trip의 apnsEnv를 신뢰)하므로,
- * 토큰/환경 불일치는 곧 토큰 자체 무효를 의미. 410 분기에서 단순 clear로 흡수.
+ * 토큰/환경 불일치는 곧 토큰 자체 무효를 의미. token-invalid 분기에서 단순 clear로 흡수.
+ *
+ * #1899 — token-invalid 판정 확장: 410 Unregistered + 400 BadDeviceToken 둘 다 처리.
+ * APNs는 rotation 직후 짧은 window에서 옛 token으로 400 BadDeviceToken을 반환하다가 410로
+ * 전환되는 패턴이 있다(T2/T3 trip 경계 race). 400을 clear 안 하면 다음 cron cycle도 같은
+ * stale token으로 재시도 → BadDeviceToken 폭증 + LA UI desync. reason 문자열이 SSoT.
  */
 export async function fireLiveActivityUpdate(
   trip: Trip,
@@ -169,13 +174,36 @@ export async function fireLiveActivityUpdate(
     status: result.status,
     reason: result.reason,
   });
-  if (result.status === 410) {
+  if (isApnsTokenInvalid(result.status, result.reason)) {
     trip.activityPushToken = undefined;
     trip.activityState = 'ended';
     stats.laTokenCleared += 1;
     return { dirty: true };
   }
   return { dirty: false };
+}
+
+/**
+ * APNs 응답이 LA token 무효(rotation/unregister/env mismatch)임을 의미하는지 판정 (#1899).
+ *
+ * - status=410: APNs가 token을 invalidated 처리 (가장 확정적인 신호)
+ * - status=400 + reason='BadDeviceToken': trip 경계 rotation race에서 짧은 window 동안
+ *   옛 token이 400으로 응답되는 패턴. 410으로 전환되기 전 cron cycle이 stale token으로
+ *   재시도하면 BadDeviceToken 폭증 + LA UI desync → 즉시 clear가 정답.
+ *
+ * Apple HTTP/2 APNs response reference:
+ *   https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns
+ *
+ * 다른 400 reason(`BadTopic`, `MissingTopic` 등 구성 오류)은 token 자체 문제가 아니라
+ * 백엔드 코드/구성 결함 → token clear가 아니라 코드 수정 대상이라 false. reason 명시 분기로 보호.
+ */
+export function isApnsTokenInvalid(
+  status: number | undefined,
+  reason: string | undefined,
+): boolean {
+  if (status === 410) return true;
+  if (status === 400 && reason === 'BadDeviceToken') return true;
+  return false;
 }
 
 /**
@@ -216,7 +244,7 @@ export async function fireLiveActivityDismissal(
       status: result.status,
       reason: result.reason,
     });
-    if (result.status === 410) stats.laTokenCleared += 1;
+    if (isApnsTokenInvalid(result.status, result.reason)) stats.laTokenCleared += 1;
   }
   // 결과 무관 — 로컬 trip 상태를 ended로 전이. dismissal은 best-effort이며 trip은 곧 삭제됨.
   trip.activityPushToken = undefined;
