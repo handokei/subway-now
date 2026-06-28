@@ -1,19 +1,29 @@
 /**
  * 환경(지상/지하/미확정) 추정. hybrid 모드 — 명시 분류 단계 없이 신호 가용성으로 추정.
  *
- * #1418 — Tier 1 cascade를 위한 환경 라벨 산출. DebugModal 표시용이 주 용도이며 fusion
- * cascade의 게이트는 두 SSOT(`surfaceSSOT`/`undergroundSSOT`)의 활성 여부로 직접 분기한다.
+ * #1418 — 환경 라벨 산출. DebugModal 표시용 + #1932(Epic #1927 G2)부터 fusion cascade
+ * tier 1/2 게이트로 승격. 호출자(`useFusedNearestStation`)는 본 결과를 환경 변수 직접 참조해
+ * cascade 분기에 사용 — 두 SSOT 직접 read하는 SSOT 우회 회귀 차단.
  *
  * 우선순위:
  *   1. `subsurface === true` 명시 → 'underground' (barometer 확정).
  *   2. `subsurface === false` 명시 + surfaceSSOT 활성 → 'surface'.
  *   3. `subsurface === false` + undergroundSSOT 활성 → 'underground' (지하상가/매핑 SSID).
- *   4. `subsurface === undefined` + 둘 다 활성 → 'unknown' (hybrid).
- *   5. 둘 다 활성 + barometer 미확정 → 'unknown'.
- *   6. 둘 다 null → 'unknown'.
+ *   4. `subsurface === false` + 두 SSOT 모두 null + barometer-stop hint 미발동 → 'surface'
+ *      (#1932 — barometer 명시 지상 신뢰. raw `subsurface === false` 동작 보존).
+ *      hint 발동(tripActive + barometerStop=true) 시는 우선 5번으로 흘러 unknown 유지.
+ *   5. `subsurface === false` + 두 SSOT 모두 null + tripActive + barometerStop=true →
+ *      'unknown' (with hint 'barometer-stop'). 지하상가 hint paradigm.
+ *   6. `subsurface === undefined` + surfaceSSOT만 활성 → 'surface' (hybrid).
+ *   7. `subsurface === undefined` + undergroundSSOT만 활성 → 'underground' (hybrid).
+ *   8. `subsurface === undefined` + 둘 다 활성/모두 null → 'unknown'.
  *
  * #1860 — hintReason 'barometer-stop': tripActive + barometerStop=true + subsurface=false
  * + 두 SSOT 없음 조합. DebugModal environment 라인에 함께 노출.
+ *
+ * #1932 — 우선순위 4가 추가됨. `subsurface === false` raw signal 신뢰가 회복돼 cascade tier 2
+ * (gpsDerivedFastPath)가 SSOT 비활성 환경에서도 진입 가능 — 기존 `barometerSubsurface === false`
+ * gate와 semantic equivalence 보존.
  */
 
 export type Environment = 'surface' | 'underground' | 'unknown';
@@ -48,10 +58,13 @@ export function inferEnvironment(input: InferEnvironmentInput): InferEnvironment
     if (surfaceSSOT) return { label: 'surface' };
     if (undergroundSSOT) return { label: 'underground' };
     // #1860 — barometer-stop 힌트: tripActive + barometerStop=true + SSOT 없음.
+    // 지하상가/매핑 SSID 미합의 정황 — environment 'unknown' + hint 노출.
     if (tripActive && barometerStop === true) {
       return { label: 'unknown', hintReason: 'barometer-stop' };
     }
-    return { label: 'unknown' };
+    // #1932 — barometer 명시 지상 신뢰. cascade tier 2(gpsDerivedFastPath)와의 semantic
+    // equivalence 보존: 두 SSOT 비활성이라도 `subsurface === false` raw signal을 surface로 인정.
+    return { label: 'surface' };
   }
   // subsurface === undefined (warmup / 미지원) — SSOT 신호로만 판단.
   if (surfaceSSOT && !undergroundSSOT) return { label: 'surface' };

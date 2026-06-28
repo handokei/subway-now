@@ -993,6 +993,71 @@ export function useFusedNearestStation(
   const backendSsotAccepts =
     ssotStation !== null && ssotFresh && silentPushHealthy !== false;
 
+  // #1932 (Epic #1927 G2) — environment SSOT 단일화 + cascade 직전 산출.
+  //
+  // 산출 시점이 cascade picker(L1206) 앞으로 이동돼 tier 1/2가 environment 변수 직접 참조 가능.
+  // 이동 전: surfaceSSOT/undergroundSSOT/inferEnvironment 호출이 cascade *뒤*에 있어 cascade가
+  // raw `barometerSubsurface`만 read하는 SSOT 우회 회귀 발생 — tasks/2026-06-27-bg-FG100-verify
+  // 15:49:35 evidence(barometer null + 4-signal 합의 surface인데 tier 1/2 미진입).
+  //
+  // 입력 의존성:
+  //   - arrivalSlots: c0/h0/a0~ (L535~543, cascade 앞에 이미 산출)
+  //   - surfaceSSOT: gps.liveResult/accuracyMeters (L448~ from useNearestStation)
+  //   - undergroundSSOT: wifiStationResolved(L875) + positionTrainResult(L656~) + arrivalSignal/cellular/accel
+  //   - inferEnvironment: 위 두 SSOT 결과 + barometerSubsurface raw + tripActive/barometerStop
+  // 모두 cascade picker(L1206) 앞에 이미 가용 — 시점 역전이 발생하지 않음.
+  const cascadeArrivalSlots = [
+    { stationName: c0, line: h0, arrival: a0.arrival },
+    { stationName: c1, line: h1, arrival: a1.arrival },
+    { stationName: c2, line: h2, arrival: a2.arrival },
+  ];
+  // #1486 (ADR-015 §2) — surface SSOT 산출도 sticky 격리. sticky:locked가 gps.result에 들어가면
+  // 잘못된 station의 arrival을 pick해 consensus가 sticky station을 SSOT로 산출할 수 있다.
+  // gps.liveResult는 sticky override 없는 live GPS 최근접 — Tier 1 SSOT 산출의 fire path 영향 차단.
+  const cascadeSurfaceArrival = gps.liveResult
+    ? pickArrivalForStationName(gps.liveResult.station.name, gps.liveResult.station.line, cascadeArrivalSlots)
+    : null;
+  const cascadeSurfaceSSOT = surfaceSSOTConsensus({
+    gpsResult: gps.liveResult,
+    gpsAccuracy: gps.accuracyMeters,
+    arrival: cascadeSurfaceArrival,
+  });
+  const cascadeUndergroundCandidate =
+    wifiStationResolved?.station ?? positionTrainResult?.station ?? null;
+  const cascadeUndergroundArrival = cascadeUndergroundCandidate
+    ? pickArrivalForStationName(
+        cascadeUndergroundCandidate.name,
+        cascadeUndergroundCandidate.line,
+        cascadeArrivalSlots,
+      )
+    : null;
+  const cascadeUndergroundSSOT = undergroundSSOTConsensus({
+    wifiStation: wifiStationResolved?.station ?? null,
+    positionTrainResult,
+    arrival: cascadeUndergroundArrival,
+    // #1574 (ADR-017 T11) — BG WiFi 갭 해소: barometer-stop + cellular env vote 보강.
+    // barometerSignal.stop=undefined(warmup) / cellular 'unknown'은 vote 미투표.
+    barometerStop: barometerSignal?.stop,
+    cellularEnvironmentVote,
+    // #1542 (ADR-016 S9) — accelerometer fingerprint env vote. 'automotive' = train 진동 1표,
+    // 'stationary'/'walking'/'unknown'은 vote 미투표. 미지원/warmup 60s 동안 'unknown' fallback.
+    accelerometerPattern,
+    // #1821 — warmup quorum 완화: trip 시작 후 60s 이내 station pair 단독 채택 허용.
+    // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
+    tripStartedAt: boardingLock?.boardedAt,
+  });
+  // #1860 — 옵션 C barometer-stop 힌트. tripActive + barometerStop 전달.
+  const cascadeEnvironmentResult: InferEnvironmentResult = inferEnvironment({
+    subsurface: barometerSubsurface,
+    surfaceSSOT: cascadeSurfaceSSOT !== null,
+    undergroundSSOT: cascadeUndergroundSSOT !== null,
+    tripActive,
+    barometerStop: barometerSignal?.stop,
+  });
+  // #1932 — cascade tier 1/2가 직접 read하는 environment 변수.
+  // 후속 cascade-wide post-section(L1378~)에서도 동일 값 재사용 (분산 산출 0건 SSOT).
+  const cascadeEnvironment: Environment = cascadeEnvironmentResult.label;
+
   // #1646 — positionTrain 1순위 승격 (3-of-3 합의 + positionTrainResult 전제).
   //
   // True일 때 positionTrain을 backend SSoT mirror보다 1순위로 승격한다.
@@ -1005,7 +1070,11 @@ export function useFusedNearestStation(
   //
   // 3-of-3 합의 (Strategy ① 6 fail mode 차단 — ADR-010 두 실패 모드 동급):
   //   1. lockMatch — trainProgress.trainNo === lockedTrainCode (trainCode 오선택 / API stale 차단)
-  //   2. barometerSubsurface === true (지하 환경 명시 — surface GPS 가용 시 GPS fast-path 우선)
+  //   2. cascadeEnvironment === 'underground' (지하 환경 SSOT — barometer 단독이 아닌 4-signal 합의)
+  //      — #1932 substitution. 기존 `barometerSubsurface === true` 대비 widening:
+  //        subsurface=false + undergroundSSOT 활성(지하상가/매핑 SSID) 시에도 underground 인정.
+  //        SSOT 합의를 cascade 1순위 승격 prereq로 사용 — V8 cycle 영향 미미(undergroundSSOT는
+  //        이미 산출됨).
   //   3. boardingLock != null (사용자 명시 의향 trip 한정 — lockless trip은 본 승격 적용 X)
   //
   // backward-compat: 합의 미충족 시 기존 cascade 그대로 (backendSsotAccepts → wifi → positionTrain ...).
@@ -1014,7 +1083,7 @@ export function useFusedNearestStation(
     positionTrainResult != null &&
     lockedTrainCode != null &&
     trainProgress!.trainNo === lockedTrainCode &&
-    barometerSubsurface === true &&
+    cascadeEnvironment === 'underground' &&
     boardingLock != null;
 
   // #1657 — GPS-derived advance fast-path (지상 lock 활성 보완).
@@ -1026,7 +1095,11 @@ export function useFusedNearestStation(
   //
   // 4-gate 3-of-3 합의 (false positive 방어 — ADR-010 두 실패 모드 동급):
   //   1. boardingLock != null — 사용자 명시 의향 trip 한정 (lockless trip 미적용).
-  //   2. barometerSubsurface === false — 지상 환경 명시. 지하에서는 PR #1646이 담당.
+  //   2. cascadeEnvironment === 'surface' — 지상 환경 SSOT — barometer 단독이 아닌 4-signal 합의.
+  //      #1932 substitution. 기존 `barometerSubsurface === false` 대비 narrowing:
+  //        subsurface=false만으로는 부족, surfaceSSOT 활성도 요구. 환경 widening risk를
+  //        cascade 1순위 승격 prereq로 제한 — GPS-only fast path 진입 빈도 감소(V8 cycle 보호).
+  //      지하에서는 PR #1646이 담당(cascadeEnvironment === 'underground').
   //   3. GPS 신선 — accuracy ≤ GPS_DERIVED_ACCURACY_MAX_M(50m) AND fix age ≤ 30s.
   //      stale GPS(lastFixAtMs === null)는 게이트 실패 → 기존 cascade.
   //   4. 노선 정합 — candidates[0].station.line === boardingLock.boardingLine AND
@@ -1037,18 +1110,18 @@ export function useFusedNearestStation(
   // boardingLine 일치 + 100m 이내이면 GPS 좌표가 해당 역에 있다고 판단 가능.
   //
   // GPS 결정 권한 X 룰 정합 (memory/feedback_no_gps_for_decision.md):
-  //   - 지상(subsurface===false 명시)에서만 적용 — 지하 GPS는 WiFi/cell 삼각측량 fallback일
+  //   - 지상(SSOT 'surface' 명시)에서만 적용 — 지하 GPS는 WiFi/cell 삼각측량 fallback일
   //     가능성이 높아 결정 권한 금지 룰 적용.
   //   - 이 tier는 지상 open-sky GPS fix에서만 활성되므로 룰 위반 아님.
   //
   // 트레이드오프 완화:
   //   - GPS drift false advance → accuracy 50m + boardingLine 정합 100m 이중 gate.
-  //   - 지상↔지하 환경 전환 race → subsurface false → cascade 진입 X (자연 fallback).
+  //   - 지상↔지하 환경 전환 race → cascadeEnvironment 'unknown' 시 진입 X (자연 fallback).
   //   - 사용자 하차 후 lock 잔존 → useMisBoardingDetector 90s absent 가드 (별도 seam).
   const gpsTopCandidate = candidates[0] ?? null;
   const gpsDerivedFastPath =
     boardingLock != null &&
-    barometerSubsurface === false &&
+    cascadeEnvironment === 'surface' &&
     gps.accuracyMeters !== null &&
     gps.accuracyMeters <= GPS_DERIVED_ACCURACY_MAX_M &&
     gps.lastFixAtMs !== null &&
@@ -1364,50 +1437,14 @@ export function useFusedNearestStation(
   // Tier 5 reject 게이트: Tier 5 advance는 Tier 1~4 모두 null일 때만 허용.
   // 실측 신호(SSOT/lastObserved/lock/position-train)가 하나라도 활성이면 시간 적분의 forward ratchet
   // 자체를 차단해 청담/중곡/사가정 류 false fire를 막는다.
-  const arrivalSlots = [
-    { stationName: c0, line: h0, arrival: a0.arrival },
-    { stationName: c1, line: h1, arrival: a1.arrival },
-    { stationName: c2, line: h2, arrival: a2.arrival },
-  ];
-  // #1486 (ADR-015 §2) — surface SSOT 산출도 sticky 격리. sticky:locked가 gps.result에 들어가면
-  // 잘못된 station의 arrival을 pick해 consensus가 sticky station을 SSOT로 산출할 수 있다.
-  // gps.liveResult는 sticky override 없는 live GPS 최근접 — Tier 1 SSOT 산출의 fire path 영향 차단.
-  const surfaceArrival = gps.liveResult
-    ? pickArrivalForStationName(gps.liveResult.station.name, gps.liveResult.station.line, arrivalSlots)
-    : null;
-  const surfaceSSOT = surfaceSSOTConsensus({
-    gpsResult: gps.liveResult,
-    gpsAccuracy: gps.accuracyMeters,
-    arrival: surfaceArrival,
-  });
-  const undergroundCandidate = wifiStationResolved?.station ?? positionTrainResult?.station ?? null;
-  const undergroundArrival = undergroundCandidate
-    ? pickArrivalForStationName(undergroundCandidate.name, undergroundCandidate.line, arrivalSlots)
-    : null;
-  const undergroundSSOT = undergroundSSOTConsensus({
-    wifiStation: wifiStationResolved?.station ?? null,
-    positionTrainResult,
-    arrival: undergroundArrival,
-    // #1574 (ADR-017 T11) — BG WiFi 갭 해소: barometer-stop + cellular env vote 보강.
-    // barometerSignal.stop=undefined(warmup) / cellular 'unknown'은 vote 미투표.
-    barometerStop: barometerSignal?.stop,
-    cellularEnvironmentVote,
-    // #1542 (ADR-016 S9) — accelerometer fingerprint env vote. 'automotive' = train 진동 1표,
-    // 'stationary'/'walking'/'unknown'은 vote 미투표. 미지원/warmup 60s 동안 'unknown' fallback.
-    accelerometerPattern,
-    // #1821 — warmup quorum 완화: trip 시작 후 60s 이내 station pair 단독 채택 허용.
-    // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
-    tripStartedAt: boardingLock?.boardedAt,
-  });
-  // #1860 — 옵션 C barometer-stop 힌트. tripActive + barometerStop 전달.
-  const environmentResult: InferEnvironmentResult = inferEnvironment({
-    subsurface: barometerSubsurface,
-    surfaceSSOT: surfaceSSOT !== null,
-    undergroundSSOT: undergroundSSOT !== null,
-    tripActive,
-    barometerStop: barometerSignal?.stop,
-  });
-  const environment: Environment = environmentResult.label;
+  //
+  // #1932 — surface/undergroundSSOT + environmentResult/environment는 cascade picker 직전 블록
+  // (cascade*SSOT, cascadeEnvironment*)에서 1회 산출됐다. SSOT 단일화: 본 post-section은 alias만 사용.
+  const arrivalSlots = cascadeArrivalSlots;
+  const surfaceSSOT = cascadeSurfaceSSOT;
+  const undergroundSSOT = cascadeUndergroundSSOT;
+  const environmentResult = cascadeEnvironmentResult;
+  const environment = cascadeEnvironment;
 
   // S13(#1546) — 환경 전환 Sentry breadcrumb. delta-only emit.
   // dedup은 recordEnvironmentTransition 내부에서 처리(prev === next 시 no-op).
