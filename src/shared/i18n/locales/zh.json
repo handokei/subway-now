@@ -215,6 +215,7 @@
     "channelTransferAlarm": "换乘/到达提醒",
     "channelTransferAlarmSilent": "换乘/到达提醒(静音)",
     "channelStationPass": "到达车站提醒",
+    "channelLastTrain": "末班车提醒",
     "transferEarlyTitle": "换乘提醒",
     "arrivalEarlyTitle": "到达提醒",
     "transferImminentTitle": "即将换乘",
@@ -289,7 +290,9 @@
     "exitSideRight": "请从右侧车门下车",
     "exitSideBoth": "两侧车门都会开启",
     "quickHintTransfer": "请在靠近换乘的位置下车",
-    "quickHintArrival": "请在靠近出口的位置下车"
+    "quickHintArrival": "请在靠近出口的位置下车",
+    "lastTrainTitle": "末班车还有{{minutes}}分钟",
+    "lastTrainBody": "{{origin}}→{{destination}}末班车{{time}}发车，请立即出发。"
   },
   "liveActivity": {
     "alarmShortTransfer": "换乘",

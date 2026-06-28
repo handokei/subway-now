@@ -215,6 +215,7 @@
     "channelTransferAlarm": "Transfer/arrival alert",
     "channelTransferAlarmSilent": "Transfer/arrival alert (silent)",
     "channelStationPass": "Station arrival alert",
+    "channelLastTrain": "Last train alert",
     "transferEarlyTitle": "Transfer alert",
     "arrivalEarlyTitle": "Arrival alert",
     "transferImminentTitle": "Transfer imminent",
@@ -289,7 +290,9 @@
     "exitSideRight": "Exit on the right",
     "exitSideBoth": "Doors open on both sides",
     "quickHintTransfer": "Stand near transfer exit",
-    "quickHintArrival": "Stand near station exit"
+    "quickHintArrival": "Stand near station exit",
+    "lastTrainTitle": "Last train in {{minutes}} min",
+    "lastTrainBody": "Last train from {{origin}} to {{destination}} departs at {{time}}. Head out now."
   },
   "liveActivity": {
     "alarmShortTransfer": "Transfer",

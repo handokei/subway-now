@@ -29,6 +29,7 @@ import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
 import { saveStationToWidget } from '../features/widget/api/widgetStorage';
 import { buildWidgetTripContext } from '../features/widget/utils/buildTripContext';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
+import { useLastTrainAlarm } from '../features/alarm/hooks/useLastTrainAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useAccelerometer } from '../features/nearest-station/hooks/useAccelerometer';
 import { useAccelerometerFingerprint } from '../features/nearest-station/hooks/useAccelerometerFingerprint';
@@ -600,6 +601,15 @@ export default function HomeScreen() {
     estimatorIsTimeIntegration,
     // #1922 (M1+M3) — station-passed hop window 동적 확장 입력(transfer leg estimator stuck 대응).
     currentHopStrategy: estimatorStrategy,
+  });
+
+  // #474 — 막차 임박 알람. 취침모드 ON + 활성 trip 있을 때만 매 cycle evaluate.
+  // origin = lock-safe tripOrigin (없으면 fused current station) — destination 설정 시점 캡처값.
+  useLastTrainAlarm({
+    sleepMode,
+    origin: tripOrigin ?? result?.station ?? null,
+    destination,
+    route,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,

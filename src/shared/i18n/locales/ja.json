@@ -215,6 +215,7 @@
     "channelTransferAlarm": "乗換・到着アラーム",
     "channelTransferAlarmSilent": "乗換・到着アラーム (無音)",
     "channelStationPass": "到着駅アラーム",
+    "channelLastTrain": "終電アラート",
     "transferEarlyTitle": "乗換アラーム",
     "arrivalEarlyTitle": "到着アラーム",
     "transferImminentTitle": "まもなく乗換",
@@ -289,7 +290,9 @@
     "exitSideRight": "右側のドアから降りてください",
     "exitSideBoth": "両側のドアが開きます",
     "quickHintTransfer": "乗り換えに近い位置で降りてください",
-    "quickHintArrival": "出口に近い位置で降りてください"
+    "quickHintArrival": "出口に近い位置で降りてください",
+    "lastTrainTitle": "終電まで{{minutes}}分",
+    "lastTrainBody": "{{origin}}→{{destination}}の終電は{{time}}発。今すぐ出発してください。"
   },
   "liveActivity": {
     "alarmShortTransfer": "乗換",

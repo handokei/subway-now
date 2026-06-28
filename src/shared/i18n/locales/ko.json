@@ -215,6 +215,7 @@
     "channelTransferAlarm": "하차/환승 알림",
     "channelTransferAlarmSilent": "하차/환승 알림 (무음)",
     "channelStationPass": "역 도착 알림",
+    "channelLastTrain": "막차 알림",
     "transferEarlyTitle": "환승 알림",
     "arrivalEarlyTitle": "하차 알림",
     "transferImminentTitle": "환승 임박",
@@ -289,7 +290,9 @@
     "exitSideRight": "오른쪽 문으로 하차하세요",
     "exitSideBoth": "양쪽 문이 열립니다",
     "quickHintTransfer": "환승이 빠른 위치에서 하차하세요",
-    "quickHintArrival": "출구가 빠른 위치에서 하차하세요"
+    "quickHintArrival": "출구가 빠른 위치에서 하차하세요",
+    "lastTrainTitle": "막차 {{minutes}}분 전",
+    "lastTrainBody": "{{origin}} → {{destination}} 막차 {{time}} 출발. 지금 출발하세요."
   },
   "liveActivity": {
     "alarmShortTransfer": "환승",
