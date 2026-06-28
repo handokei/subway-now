@@ -23,7 +23,11 @@ import { getStationById } from '../../../shared/utils/stationRoute';
  * ====================
  * - 'route-diverged'        : observed 역이 arc 위 expected window(±HOP_THRESHOLD) 밖 — 3회 연속
  * - 'line-mismatch'         : lock.boardingLine ≠ fusedResult.station.line — 3회 연속
- * - 'environment-mismatch'  : lock 탑승역 type=underground + observed environment=surface — 3회 연속
+ * - 'environment-mismatch'  : lock 탑승역 type=underground + observed environment=surface — 5회 연속
+ *   (#1951 — 옵션 C consensus 강화. PR #1949 (#1932 G2) inferEnvironment 우선순위 4로
+ *   subsurface=false + 두 SSOT null 조합이 'surface' 라벨을 발사할 수 있는데 — 지하 lock 활성
+ *   trip에서 barometer warmup race / 환승 통로 일시 지상 등으로 spurious 'surface'가 3 cycle
+ *   누적될 가능성이 있음. 5 cycle + barometer warmup quorum 충족 시만 트리거.)
  *
  * 한 번 일치 → 해당 reason 카운터 reset (false positive 차단).
  *
@@ -37,14 +41,22 @@ import { getStationById } from '../../../shared/utils/stationRoute';
  * =====================
  * - lock=null / fusedResult=null → 즉시 no-op(detected=false).
  * - arcStations 빈 배열 → route-diverged 감지 비활성 (arc 없으면 diverge 판단 불가).
+ * - barometerWarmupReady=false → environment-mismatch 카운터 증가 X (#1951 가드).
+ *   warmup 미합의 시 `subsurface=false` 신뢰도 낮음 → mismatch 판정 보류(neutral, 기존 카운터 유지).
  * - 1분 dedup 윈도우 — 같은 reason 연속 적재 차단.
  */
 
 /** line-mismatch 감지 연속 임계값. */
 export const LINE_MISMATCH_THRESHOLD = 3;
 
-/** environment-mismatch 감지 연속 임계값. */
-export const ENV_MISMATCH_THRESHOLD = 3;
+/**
+ * environment-mismatch 감지 연속 임계값.
+ *
+ * #1951 — 3 → 5 강화. PR #1949 (#1932 G2) inferEnvironment 우선순위 4 (subsurface=false +
+ * 두 SSOT null → 'surface') false positive 차단. barometer warmup race / 환승 통로 일시 지상
+ * 등으로 spurious 'surface'가 3 cycle 누적되더라도 reconfirm prompt 발사 X.
+ */
+export const ENV_MISMATCH_THRESHOLD = 5;
 
 /** route-diverged 감지 연속 임계값. */
 export const ROUTE_DIVERGE_THRESHOLD = 3;
@@ -75,6 +87,18 @@ export interface UseStationMismatchDetectorInput {
   currentHopIndex: number | null;
   /** 환경 분류. environment-mismatch 감지용. */
   environment: Environment;
+  /**
+   * #1951 — barometer warmup quorum 충족 여부. environment-mismatch 카운터 증가 prereq.
+   *
+   * - true  : barometer ring buffer가 `BAROMETER_MISMATCH_QUORUM_READINGS` 이상 누적 →
+   *           `subsurface` 신호 신뢰. environment-mismatch 정상 평가.
+   * - false : warmup 미충족 → spurious `subsurface=false` 가능성. environment-mismatch
+   *           카운터 증가 X, 기존 카운터 유지(neutral). reset도 안 함.
+   *
+   * 호출자는 `barometerSignal.readingCount`로 quorum 평가해 전달.
+   * 기본값 true — 기존 caller 호환 + 명시 안 한 시나리오에서는 평가 기존대로 진행.
+   */
+  barometerWarmupReady?: boolean;
 }
 
 const NO_MISMATCH: StationMismatchResult = { detected: false, reason: null };
@@ -92,7 +116,14 @@ export function computeMismatch(
   result: StationMismatchResult;
   next: { routeDiverged: number; lineMismatch: number; envMismatch: number };
 } {
-  const { boardingLock, fusedResult, arcStations, currentHopIndex, environment } = input;
+  const {
+    boardingLock,
+    fusedResult,
+    arcStations,
+    currentHopIndex,
+    environment,
+    barometerWarmupReady = true,
+  } = input;
 
   if (!boardingLock || !fusedResult) {
     return { result: NO_MISMATCH, next: { routeDiverged: 0, lineMismatch: 0, envMismatch: 0 } };
@@ -117,10 +148,16 @@ export function computeMismatch(
     observedLine !== boardingLock.boardingLine ? counters.lineMismatch + 1 : 0;
 
   // ── environment-mismatch ─────────────────────────────────────────────────────
-  // lock.boardingStationId로 탑승역 조회 → environment 확인
+  // lock.boardingStationId로 탑승역 조회 → environment 확인.
+  // #1951 — barometer warmup quorum 미충족 시 increment/reset 모두 보류(neutral).
+  //   spurious `subsurface=false` 가 우선순위 4(#1932)를 거쳐 surface로 평가될 수 있는 구간에서
+  //   카운터를 건드리지 않아 false positive 차단. 한 cycle 영향만 — warmup이 끝나면 다음 cycle부터
+  //   정상 평가 재개. 카운터 유지는 boardingStation 조회 실패와 동일 neutral 의미.
   const boardingStation = getStationById(boardingLock.boardingStationId);
   let envMismatch = counters.envMismatch;
-  if (boardingStation?.environment === 'underground' && environment === 'surface') {
+  if (!barometerWarmupReady) {
+    // neutral — 카운터 유지
+  } else if (boardingStation?.environment === 'underground' && environment === 'surface') {
     envMismatch = counters.envMismatch + 1;
   } else if (boardingStation !== undefined) {
     // 탑승역 조회 성공, 조건 미충족 → reset
@@ -156,11 +193,25 @@ export function useStationMismatchDetector(
   const lastLogRef = useRef<{ reason: MismatchReason; ts: number } | null>(null);
 
   // 입력 deps로 effect 재실행 — 매 polling tick마다 fusedResult/environment가 갱신됨
-  const { boardingLock, fusedResult, arcStations, currentHopIndex, environment } = input;
+  const {
+    boardingLock,
+    fusedResult,
+    arcStations,
+    currentHopIndex,
+    environment,
+    barometerWarmupReady,
+  } = input;
 
   useEffect(() => {
     const { result, next } = computeMismatch(
-      { boardingLock, fusedResult, arcStations, currentHopIndex, environment },
+      {
+        boardingLock,
+        fusedResult,
+        arcStations,
+        currentHopIndex,
+        environment,
+        barometerWarmupReady,
+      },
       countersRef.current,
     );
     countersRef.current = next;
@@ -185,7 +236,14 @@ export function useStationMismatchDetector(
       // expectedStationAtFire 슬롯에 reason 적재 — 기존 AlarmLogStamp 스키마 재사용
       expectedStationAtFire: result.reason,
     });
-  }, [boardingLock, fusedResult, arcStations, currentHopIndex, environment]);
+  }, [
+    boardingLock,
+    fusedResult,
+    arcStations,
+    currentHopIndex,
+    environment,
+    barometerWarmupReady,
+  ]);
 
   return resultRef.current;
 }

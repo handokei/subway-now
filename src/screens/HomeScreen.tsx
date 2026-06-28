@@ -66,6 +66,7 @@ import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync
 import { useFgPositionUpload } from '../features/alarm/hooks/useFgPositionUpload';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
 import { isStrongFusionConfidence } from '../shared/constants/fusionConfidenceStrength';
+import { BAROMETER_MISMATCH_QUORUM_READINGS } from '../shared/constants/barometer';
 import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { ColdStartCandidatePicker } from '../features/nearest-station/components/ColdStartCandidatePicker';
@@ -225,14 +226,20 @@ export default function HomeScreen() {
   useV1MismatchDetector(result?.station.id ?? null, backendSsotCurrentStationId);
 
   // #1844 (Phase 6.1 Sub-step 5) — cold start 선택 역과 진행 중 신호 mismatch 감지.
-  // lock.boardingLine / arc / environment와 observed 신호가 3회 연속 불일치 시 detected=true.
+  // lock.boardingLine / arc와 observed 신호가 3회 연속 불일치(line / route-diverged) 또는
+  // 환경 5회 연속 불일치(#1951 env consensus 강화) 시 detected=true.
   // detected=true 시 배너로 재확인 prompt (ActionBanner). alarmLog reason='cold-start-mismatch'로 측정.
+  // #1951 — barometer warmup quorum 충족 시만 environment-mismatch 평가 (false positive 가드).
+  //   ring buffer가 `BAROMETER_MISMATCH_QUORUM_READINGS` 이상 쌓였을 때만 신뢰 가능.
+  const barometerWarmupReady =
+    (barometerSignal.readingCount ?? 0) >= BAROMETER_MISMATCH_QUORUM_READINGS;
   const coldStartMismatch = useStationMismatchDetector({
     boardingLock: fusionBoardingLock,
     fusedResult: result,
     arcStations,
     currentHopIndex,
     environment,
+    barometerWarmupReady,
   });
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를

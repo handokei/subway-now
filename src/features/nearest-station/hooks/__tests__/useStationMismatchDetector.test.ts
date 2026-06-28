@@ -525,7 +525,7 @@ describe('§6 alarmLog 적재 + dedup', () => {
 describe('§7 상수 export', () => {
   it.each([
     ['LINE_MISMATCH_THRESHOLD', LINE_MISMATCH_THRESHOLD, 3],
-    ['ENV_MISMATCH_THRESHOLD', ENV_MISMATCH_THRESHOLD, 3],
+    ['ENV_MISMATCH_THRESHOLD', ENV_MISMATCH_THRESHOLD, 5],
     ['ROUTE_DIVERGE_THRESHOLD', ROUTE_DIVERGE_THRESHOLD, 3],
     ['ROUTE_DIVERGE_HOP_THRESHOLD', ROUTE_DIVERGE_HOP_THRESHOLD, 3],
     ['MISMATCH_LOG_DEDUP_WINDOW_MS', MISMATCH_LOG_DEDUP_WINDOW_MS, 60 * 1000],
@@ -533,3 +533,174 @@ describe('§7 상수 export', () => {
     expect(actual).toBe(expected);
   });
 });
+
+// ── §8 #1951 barometer warmup quorum 가드 ───────────────────────────────────
+//
+// 옵션 C — environment-mismatch 정확성 게이트 강화. PR #1949 (#1932 G2) inferEnvironment
+// 우선순위 4(`subsurface=false` + 두 SSOT null → 'surface')가 도입한 spurious 'surface'
+// false positive를 차단한다.
+
+describe('§8 #1951 barometer warmup quorum 가드', () => {
+  const lock = makeLock({ boardingStationId: 'STN-UNDERGROUND' });
+  const countersZero = { routeDiverged: 0, lineMismatch: 0, envMismatch: 0 };
+
+  beforeEach(() => {
+    mockGetStationById.mockImplementation((id: string) => {
+      if (id === 'STN-UNDERGROUND') return UNDERGROUND_BOARDING_STATION;
+      return undefined;
+    });
+  });
+
+  it('barometerWarmupReady=true: 정상 mismatch — 5 cycle 누적 + warmup 합의 → detected=true', () => {
+    let counters = countersZero;
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'surface',
+      barometerWarmupReady: true,
+    };
+    for (let i = 0; i < ENV_MISMATCH_THRESHOLD - 1; i++) {
+      counters = computeMismatch(input, counters).next;
+    }
+    expect(counters.envMismatch).toBe(ENV_MISMATCH_THRESHOLD - 1);
+    const { result, next } = computeMismatch(input, counters);
+    expect(next.envMismatch).toBe(ENV_MISMATCH_THRESHOLD);
+    expect(result.detected).toBe(true);
+    expect(result.reason).toBe('environment-mismatch');
+  });
+
+  it('barometerWarmupReady=true: 4 cycle만(5 미만) → detected=false', () => {
+    let counters = countersZero;
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'surface',
+      barometerWarmupReady: true,
+    };
+    for (let i = 0; i < ENV_MISMATCH_THRESHOLD - 1; i++) {
+      const out = computeMismatch(input, counters);
+      counters = out.next;
+      expect(out.result.detected).toBe(false);
+    }
+    expect(counters.envMismatch).toBe(4);
+  });
+
+  it('barometerWarmupReady=false: 5 cycle 누적 + warmup 미합의 → 카운터 0 유지, detected=false', () => {
+    let counters = countersZero;
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'surface',
+      barometerWarmupReady: false,
+    };
+    for (let i = 0; i < ENV_MISMATCH_THRESHOLD; i++) {
+      const out = computeMismatch(input, counters);
+      counters = out.next;
+      expect(out.result.detected).toBe(false);
+    }
+    // warmup 미합의 → 카운터 increment X
+    expect(counters.envMismatch).toBe(0);
+  });
+
+  it('false positive 시나리오: 지하 lock + spurious surface 3 cycle + warmup race → 트리거 X', () => {
+    // 이슈 본문 시나리오 재현:
+    //   1. 지하 station lock 활성 (boardingStation.environment='underground')
+    //   2. Barometer가 지하에서 spurious `subsurface=false` 발사 (보정 race / warmup jitter)
+    //   3. 두 SSOT 모두 warmup 미합의 → inferEnvironment 우선순위 4 → 'surface'
+    //   4. 본 detector가 3 cycle 누적해도 5 미만 + warmup quorum 미충족 → no trigger
+    let counters = countersZero;
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'surface', // spurious surface
+      barometerWarmupReady: false, // warmup race
+    };
+    for (let i = 0; i < 3; i++) {
+      const out = computeMismatch(input, counters);
+      counters = out.next;
+    }
+    expect(counters.envMismatch).toBe(0); // increment 자체 차단
+    const { result } = computeMismatch(input, counters);
+    expect(result.detected).toBe(false);
+  });
+
+  it('warmup 미합의 → 카운터 reset도 X (neutral). underground 관측이 와도 기존 카운터 유지', () => {
+    // 기존 카운터가 비어있지 않은 상태에서 warmup 미합의 underground 관측이 와도 reset 안 함.
+    const counters = { ...countersZero, envMismatch: 2 };
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'underground',
+      barometerWarmupReady: false,
+    };
+    const { next } = computeMismatch(input, counters);
+    expect(next.envMismatch).toBe(2); // neutral 유지
+  });
+
+  it('warmup 합의 → underground 관측 시 reset 정상 (기존 동작 보존)', () => {
+    const counters = { ...countersZero, envMismatch: 3 };
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'underground',
+      barometerWarmupReady: true,
+    };
+    const { next } = computeMismatch(input, counters);
+    expect(next.envMismatch).toBe(0);
+  });
+
+  it('barometerWarmupReady 미지정(기본 true) → 기존 호출자 호환', () => {
+    // barometerWarmupReady 키 자체를 빼면 기본값 true가 적용돼 평가 정상 진행.
+    const counters = { ...countersZero, envMismatch: ENV_MISMATCH_THRESHOLD - 1 };
+    const input: UseStationMismatchDetectorInput = {
+      boardingLock: lock,
+      fusedResult: makeResult('STN-X', '2'),
+      arcStations: [],
+      currentHopIndex: null,
+      environment: 'surface',
+      // barometerWarmupReady omitted
+    };
+    const { result, next } = computeMismatch(input, counters);
+    expect(next.envMismatch).toBe(ENV_MISMATCH_THRESHOLD);
+    expect(result.detected).toBe(true);
+    expect(result.reason).toBe('environment-mismatch');
+  });
+
+  it('useStationMismatchDetector hook도 barometerWarmupReady 전달 + deps 반영', () => {
+    // hook level integration: warmup ready false에서 시작 → true로 flip 시 effect 재실행.
+    mockGetStationById.mockImplementation((id: string) => {
+      if (id === 'STN-UNDERGROUND') return UNDERGROUND_BOARDING_STATION;
+      return undefined;
+    });
+    const { result, rerender } = renderHook(
+      ({ warmup }: { warmup: boolean }) =>
+        useStationMismatchDetector({
+          boardingLock: lock,
+          fusedResult: makeResult('STN-X', '2'),
+          arcStations: [],
+          currentHopIndex: null,
+          environment: 'surface',
+          barometerWarmupReady: warmup,
+        }),
+      { initialProps: { warmup: false } },
+    );
+    // warmup 미합의 시 cycle 5회 — increment 차단
+    for (let i = 0; i < ENV_MISMATCH_THRESHOLD; i++) {
+      act(() => { rerender({ warmup: false }); });
+    }
+    expect(result.current.detected).toBe(false);
+  });
+});
+
