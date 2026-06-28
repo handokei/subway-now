@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useUserIntentStore } from '../store/useUserIntentStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { allowedLinesFromRoute } from '../../../shared/utils/stationRoute';
@@ -271,6 +272,12 @@ export function useBoardingLockController({
       // train arrival을 directionalArrivals에 섞어 노출한 경우 lock 채택을 차단한다.
       // allowedLines === undefined는 trip 비활성 → 필터 미적용(free-trip 등 기존 UX 유지).
       if (allowedLines && !allowedLines.has(train.line)) return;
+      // #1923 — 사용자 명시 의향 stamp. BoardingTrainList 직접 탭은 lock 활성과 동급 의향 표명.
+      // ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
+      // setInfoModeEnabled는 memory + storage atomic — graceful 실패(다음 cycle에서 자연 재시도).
+      // lock 활성 trip은 backend가 boardingLock 분기로 처리하므로 본 stamp는 graceful surplus,
+      // 단 lock이 실패/만료해 lockless 전환되면 즉시 lockless intermediate gate 활성화 보장.
+      void useUserIntentStore.getState().setInfoModeEnabled(true);
       const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
       // #663: boardingLine은 사용자가 실제로 탭한 train의 line을 사용. currentStation.line은 fusion
       // 추정이라 환승역에서 옆 노선으로 잘못 잠긴 상태일 수 있다 (#662). train.line은 어댑터가 subwayId로

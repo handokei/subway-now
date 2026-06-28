@@ -68,6 +68,14 @@ export interface UseApnsTripRegistrationInputs {
    * 미설정/false면 기존 threshold(5) 유지 — 기압계 미지원 환경 graceful.
    */
   subsurface?: boolean;
+  /**
+   * #1923 — 사용자 명시 의향 토글 (C 토글 ON / boardingPrompt [탑승] 응답 /
+   * BoardingTrainList 직접 탭 중 하나라도 행하면 true). `useUserIntentStore`에서
+   * 읽어 전달. backend가 lockless intermediate station-passed silent push 발사
+   * 분기에 사용 (`trip.infoModeEnabled && waypoint.kind === 'intermediate'`).
+   * 미지정/false: 기존 동작 그대로 — boardingLock 부재 시 `lockMissing` skip.
+   */
+  infoModeEnabled?: boolean;
 }
 
 /**
@@ -91,6 +99,8 @@ interface RegisterCallInputs {
   boardingLock: BoardingLock | null;
   /** #903 (Seam G) — 기압계 subsurface 신호. true면 backend threshold 5→10. */
   subsurface: boolean;
+  /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
+  infoModeEnabled: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
   /**
@@ -202,6 +212,8 @@ async function callRegister(input: RegisterCallInputs) {
     ...(input.subsurface ? { subsurface: true } : {}),
     // #1895 — device locale (boarding-prompt push 본문 4언어 분기용). 미지원 locale은 송신 skip.
     ...(locale ? { locale } : {}),
+    // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
+    ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
   });
 }
 
@@ -212,6 +224,7 @@ export function useApnsTripRegistration({
   currentStation = null,
   boardingLock = null,
   subsurface = false,
+  infoModeEnabled = false,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -220,9 +233,9 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -305,6 +318,7 @@ export function useApnsTripRegistration({
           currentStation: cs,
           boardingLock: bl,
           subsurface: sub,
+          infoModeEnabled: ime,
         } = latestInputsRef.current;
         if (!r || !d) return;
         const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -316,6 +330,7 @@ export function useApnsTripRegistration({
           currentStation: cs,
           boardingLock: bl,
           subsurface: sub,
+          infoModeEnabled: ime,
           createdAt: resolveTripCreatedAt(sessionKey),
           cachedPromptContext: lastPromptContextRef.current,
         });
@@ -416,6 +431,7 @@ export function useApnsTripRegistration({
         currentStation,
         boardingLock,
         subsurface,
+        infoModeEnabled,
         createdAt: resolveTripCreatedAt(sessionKey),
         cachedPromptContext: lastPromptContextRef.current,
       });
@@ -468,6 +484,9 @@ export function useApnsTripRegistration({
     // #903 (Seam G): subsurface 변화 시 backend threshold(5→10)를 빨리 갱신해 지하 진입 직후
     // 일시 GPS/arrival 누락에 인내. useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로
     // deps churn 위험 낮음. alarmBackend의 dedup hash가 subsurface 미변화 사이클은 POST를 skip.
+    // #1923: infoModeEnabled 변화 시 backend lockless intermediate gate를 즉시 활성화해 다음 cron
+    // cycle부터 station-passed silent push 발사가 가능. 토글 빈도는 사용자 명시 의향 표명/trip 종료
+    // 시점만이므로 deps churn 위험 낮음. alarmBackend dedup hash가 미변화 사이클은 POST를 skip.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig, subsurface]);
+  }, [routeSig, destination?.id, boardingLockSig, subsurface, infoModeEnabled]);
 }

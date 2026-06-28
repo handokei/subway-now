@@ -112,6 +112,21 @@ export interface RegisterTripPayload {
    * backend가 ko로 fallback (한국 운영 기본). 디바이스 i18next.language 값을 그대로 송신.
    */
   locale?: 'ko' | 'en' | 'ja' | 'zh';
+  /**
+   * #1923 — 사용자 명시 의향 trip의 lockless intermediate station-passed
+   * silent push 발사 허용 토글. ADR-014 §X "사용자 명시 의향 trip = lock 활성과
+   * 동급 정확도 보장 의무" 정합. 사용자가 [C 토글 ON / boardingPrompt 응답 /
+   * BoardingTrainList 직접 탭] 중 하나라도 행하면 device SSoT(`useUserIntentStore`)가
+   * true로 stamp되며 본 필드를 통해 backend로 forward된다.
+   *
+   * backend 분기: `trip.infoModeEnabled && waypoint.kind === 'intermediate'`
+   *   → runLocklessIntermediate 진입 → station-passed silent push 발사
+   * (backend/alarm-worker/src/scheduled.ts:980)
+   *
+   * 미설정/false: 기존 동작 그대로 — boardingLock 부재 시 `lockMissing` skip.
+   * backend는 미송신 시 graceful undefined → false 처리 (backward-compat).
+   */
+  infoModeEnabled?: boolean;
 }
 
 export interface AlarmBackendResult {
@@ -173,6 +188,7 @@ function buildRegisterHash(body: {
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
+  infoModeEnabled?: boolean;
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -198,6 +214,10 @@ function buildRegisterHash(body: {
     // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
     // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
     locale: body.locale ?? null,
+    // #1923 — infoModeEnabled 토글 ON ↔ OFF 전환 시 즉시 재등록 보장 + dedup 폭주 차단.
+    // 사용자가 의향 표명 직후 backend lockless intermediate gate가 즉시 활성화되어야 다음
+    // cron cycle부터 station-passed silent push 발사가 가능. 같은 값 연속 호출은 hash 동일 → skip.
+    infoModeEnabled: body.infoModeEnabled === true,
   });
 }
 
@@ -264,6 +284,9 @@ async function performRegisterFetch(
     // #1895 — device locale. 송신 시 backend가 boarding-prompt 본문을 4언어 분기 (ko/en/ja/zh).
     // 미송신 시 backend는 ko fallback.
     ...(payload.locale ? { locale: payload.locale } : {}),
+    // #1923 — 사용자 명시 의향 토글. ON일 때만 송신. backend는 부재 시 false default 처리 (backward-compat).
+    // device SSoT 동기화 시점에 false로 명시 송신 vs 미송신 둘 다 backend 동일 처리 → 송신 skip로 트래픽 절약.
+    ...(payload.infoModeEnabled === true ? { infoModeEnabled: true } : {}),
   };
 
   try {
@@ -336,6 +359,8 @@ export function registerActiveTrip(
     subsurface: payload.subsurface,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
     locale: payload.locale,
+    // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).
+    infoModeEnabled: payload.infoModeEnabled,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });

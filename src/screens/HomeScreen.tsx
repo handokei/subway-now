@@ -15,6 +15,7 @@ import { useSettingsStore } from '../features/settings/store/useSettingsStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
+import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
@@ -130,6 +131,11 @@ export default function HomeScreen() {
   const alarmEvent = useAlarmEventStore((s) => s.alarmEvent);
   const clearAlarmEvent = useAlarmEventStore((s) => s.clearAlarmEvent);
   const loadAlarmEvent = useAlarmEventStore((s) => s.loadAlarmEvent);
+  // #1923 — 사용자 명시 의향 토글 SSoT. useApnsTripRegistration이 본 값을 backend로 forward해
+  // lockless intermediate gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`)를 통과시킨다.
+  // 트리거: tryAutoLock(boardingPrompt 응답) / createLockFromTrain(BoardingTrainList 탭) 양쪽에서 stamp.
+  const infoModeEnabled = useUserIntentStore((s) => s.infoModeEnabled);
+  const loadInfoModeEnabled = useUserIntentStore((s) => s.loadInfoModeEnabled);
   // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
   const setDismissSilence = useAlarmEventStore((s) => s.setDismissSilence);
   // #746 reviewer P1: cold-start hydration — storage에 살아있는 silence 상태를
@@ -799,6 +805,9 @@ export default function HomeScreen() {
     currentStation: result?.station ?? null,
     boardingLock,
     subsurface: barometerSubsurface,
+    // #1923 — 사용자 명시 의향 토글. backend가 lockless intermediate gate 진입에 사용 →
+    // station-passed silent push 발사. 미stamp(false) trip은 기존 lockMissing skip 동작.
+    infoModeEnabled,
   });
 
   useEffect(() => {
@@ -816,6 +825,11 @@ export default function HomeScreen() {
     loadRecentDestinations();
     loadAlarmEvent();
     loadDismissSilence();
+    // #1923 — cold start 시 사용자 명시 의향 토글 hydrate. 앱이 BG로 종료된 상태에서
+    // 의향 표명 후 재시작했을 때 토글이 false로 stale되지 않도록 storage에서 복원.
+    // trip 종료 시 runTripBoundCleanups가 storage를 정리하므로 cold start hydrate 결과는
+    // 의향이 살아있는 trip만 true. graceful — 키 부재/parse 실패는 false 유지.
+    void loadInfoModeEnabled();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
     // #700 — tripOrigin을 먼저 await으로 hydrate한 다음 destination을 set한다.

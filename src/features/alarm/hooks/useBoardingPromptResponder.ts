@@ -27,6 +27,7 @@ import * as Notifications from 'expo-notifications';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useUserIntentStore } from '../store/useUserIntentStore';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
 import {
   logBoardingPromptAutoLock,
@@ -181,6 +182,11 @@ export async function handleResponse(
     // #1170 — 응답률/탑승률 measurement. autolock 시도 성공/실패와 무관하게 "사용자가 boarded로
     // 응답했다"는 사실 기록. boardedRate = boarded / (boarded+dismissed)는 게이트 정확도 proxy.
     logBoardingPromptResponded({ outcome: 'boarded' });
+    // #1923 — 사용자 명시 의향 stamp. tryAutoLock 성공/실패와 무관하게 의향 표명 사실이 backend로
+    // forward되어야 lockless intermediate trip에서도 station-passed silent push가 발사된다.
+    // ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
+    // setInfoModeEnabled는 memory + storage atomic — graceful 실패(다음 cycle에서 재시도).
+    void useUserIntentStore.getState().setInfoModeEnabled(true);
     await tryAutoLock(payload, deps);
     // #1888 (RC-13) — banner 탭($default) 케이스만 home 화면으로 navigate. 사용자가 list를 보고 싶다는
     // 명시 의향(action button BOARDED는 silent autolock으로 끝, navigation은 surplus).

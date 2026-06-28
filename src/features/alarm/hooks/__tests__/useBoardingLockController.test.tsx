@@ -47,6 +47,20 @@ jest.mock('../../../nearest-station/utils/movementGate', () => ({
   STATIC_SPEED_THRESHOLD_MPS: 0.5,
 }));
 
+// #1923 — useUserIntentStore mock. createLockFromTrain 진입 시 setInfoModeEnabled(true) 호출 검증.
+jest.mock('../../store/useUserIntentStore', () => {
+  const mockSetInfoModeEnabled = jest.fn(() => Promise.resolve());
+  return {
+    useUserIntentStore: {
+      getState: () => ({ setInfoModeEnabled: mockSetInfoModeEnabled }),
+    },
+    __mockSetInfoModeEnabled: mockSetInfoModeEnabled,
+  };
+});
+const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
+  '../../store/useUserIntentStore',
+);
+
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '종착',
@@ -217,6 +231,7 @@ describe('useBoardingLockController', () => {
   describe('createLockFromTrain', () => {
     beforeEach(() => {
       jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      setInfoModeEnabledMock.mockClear();
     });
     afterEach(() => {
       (Date.now as jest.Mock).mockRestore();
@@ -424,6 +439,48 @@ describe('useBoardingLockController', () => {
         expect(mockSetBoardingLock).toHaveBeenCalled();
       });
       expect(Haptics.notificationAsync).not.toHaveBeenCalled();
+    });
+
+    // #1923 — BoardingTrainList 직접 탭은 lock 활성과 동급 사용자 명시 의향 표명.
+    // setInfoModeEnabled(true) stamp는 createLock 시도와 별경로로 발사되어
+    // lock 실패/만료해 lockless 전환되어도 backend lockless intermediate gate가 활성화된다.
+    describe('#1923 infoModeEnabled stamp (사용자 명시 의향)', () => {
+      it('createLockFromTrain 성공 시 setInfoModeEnabled(true) 1회 호출', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-INFO' }));
+        });
+        expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
+        expect(setInfoModeEnabledMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('createLock 실패해도 setInfoModeEnabled(true)는 여전히 stamp (의향 표명 사실은 store 실패와 무관)', async () => {
+        mockSetBoardingLock.mockRejectedValueOnce(new Error('store fail'));
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-INFO-FAIL' }));
+        });
+        expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
+      });
+
+      it('destinationId null이면 stamp 안 함 (createLock 진입 전 early return)', async () => {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, destinationId: null }),
+        );
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain());
+        });
+        expect(setInfoModeEnabledMock).not.toHaveBeenCalled();
+      });
+
+      it('#1449 trip route 외 line은 stamp 안 함 (createLock 진입 전 line filter reject)', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          // route는 line=2. line=9 train은 allowedLines filter에서 reject되어 stamp 도달 안 함.
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-WRONG', line: '9' }));
+        });
+        expect(setInfoModeEnabledMock).not.toHaveBeenCalled();
+      });
     });
   });
 

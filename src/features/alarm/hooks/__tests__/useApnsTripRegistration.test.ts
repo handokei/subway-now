@@ -1021,6 +1021,57 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #1923 — 사용자 명시 의향 토글 (infoModeEnabled) backend forward 검증.
+  describe('infoModeEnabled (#1923)', () => {
+    const baseInputs = (infoModeEnabled?: boolean) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      ...(infoModeEnabled === undefined ? {} : { infoModeEnabled }),
+    });
+    const renderInfo = (initial?: boolean) =>
+      renderHook(
+        ({ ime }: { ime?: boolean }) => useApnsTripRegistration(baseInputs(ime)),
+        { initialProps: { ime: initial } },
+      );
+
+    it.each([
+      { label: 'infoModeEnabled=true → payload에 포함', ime: true, expected: true },
+      { label: 'infoModeEnabled 미지정 → payload에 미포함 (graceful)', ime: undefined, expected: undefined },
+      { label: 'infoModeEnabled=false → payload에 미포함 (graceful)', ime: false, expected: undefined },
+    ])('$label', async ({ ime, expected }) => {
+      renderInfo(ime);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].infoModeEnabled).toBe(expected);
+    });
+
+    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend lockless intermediate gate 즉시 활성화)', async () => {
+      const { rerender } = renderInfo(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].infoModeEnabled).toBeUndefined();
+      rerender({ ime: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].infoModeEnabled).toBe(true);
+    });
+
+    it('token refresh 경로도 최신 infoModeEnabled 값을 송신', async () => {
+      const { rerender } = renderInfo(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ ime: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-INFO-NEW' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-INFO-NEW',
+      );
+      expect(refreshed?.[0].infoModeEnabled).toBe(true);
+    });
+  });
+
   describe('#1895 i18n locale 송신 (4언어 boarding-prompt)', () => {
     const baseInputs = {
       route: directRoute,
