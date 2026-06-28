@@ -124,3 +124,18 @@ export const BAROMETER_SUBSURFACE_CONFIRM_SAMPLES = 3;
  * 위해 2로 줄이는 식으로 각각 따로 조정 가능.
  */
 export const BAROMETER_STOP_CONFIRM_SAMPLES = 3;
+
+/**
+ * #1951 — environment-mismatch 가드용 barometer warmup quorum 최소 reading 수.
+ *
+ * 단위: 누적 sample 개수 (1Hz × 초).
+ *
+ * 근거:
+ *   - dP/dt 평가 윈도우(`BAROMETER_DPDT_WINDOW_MS` = 30_000ms) 정합.
+ *   - 1Hz polling 기준 30개 reading = 30s warmup 누적 → ring buffer가 윈도우를 채운 시점.
+ *   - 이 시점 이후의 `subsurface` 값은 warmup 노이즈가 빠진 신뢰 가능 신호.
+ *   - `useStationMismatchDetector`가 environment-mismatch 카운터 증가 prereq로 사용 —
+ *     warmup 미충족 시 spurious `subsurface=false` 가 우선순위 4(#1932)를 거쳐 surface로
+ *     평가되더라도 mismatch 트리거 X (false positive 차단).
+ */
+export const BAROMETER_MISMATCH_QUORUM_READINGS = 30;
