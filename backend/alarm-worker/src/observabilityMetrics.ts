@@ -38,6 +38,7 @@
  */
 
 import { computeAlarmLogStats } from './alarmLogStats';
+import { buildLocklessTripMissBucket } from './locklessMissMetric';
 import { computePushAckStats } from './pushAckStats';
 import { computeSilentPushReachRatio } from './silentPushReachMetric';
 import { sumLaPushCounters } from './laPushCounters';
@@ -99,6 +100,18 @@ export interface ObservabilityMetricsResponse {
    * 응답률(answeredTotal = yes+no+pending)은 별도 신호로 보존 (P5 가중치 학습 prereq #1763).
    */
   algorithmAccuracyRatio: { value: number; total: number; ratio: number; answeredTotal: number };
+  /**
+   * #1972 (#1503 잔여 3/3) — lockless trip 종료 fire 0건 분기 비율.
+   * device `logLocklessTripEnd` stamp(source='lockless-trip-end') outcome 분기 누적:
+   *   miss          (suppressed) — userIntent ON + fire 0건 (진짜 miss)
+   *   fired         (fired)      — fire ≥ 1건 (정상 동작)
+   *   paradigmIntent (received)  — userIntent OFF + fire 0건 (paradigm intent)
+   * ratio = miss / (miss + fired). paradigmIntent는 분모/분자 모두 제외
+   * ([[lesson_silent_push_zero_is_paradigm_intent]]). 분모 0이면 ratio=0.
+   * 기존 `locklessMissRatio`(event-level reason='lockless-forward-only-block')와 별도 metric —
+   * trip-level userIntent 분기 측정 ([[feedback_user_intent_equal_protection]]).
+   */
+  locklessTripMissRatio: { miss: number; fired: number; paradigmIntent: number; ratio: number };
   window: '24h';
   timestamp: number;
 }
@@ -202,6 +215,11 @@ export async function computeObservabilityMetrics(
       alarmStats.groundTruthCounts.pending,
   };
 
+  // 7. #1972 — locklessTripMissRatio. trip-level fire 0건 분기 비율.
+  //    miss / (miss + fired). paradigmIntent는 분모/분자 제외 (lesson_silent_push_zero_is_paradigm_intent).
+  //    buildLocklessTripMissBucket이 division-by-zero 방어 — 분모 0이면 ratio=0.
+  const locklessTripMissRatio = buildLocklessTripMissBucket(alarmStats.locklessTripCounts);
+
   return {
     accuracyRatio,
     silentPushDeliveryRatio,
@@ -212,6 +230,7 @@ export async function computeObservabilityMetrics(
     laPushDeliveryRatio,
     silentPushReachRatio,
     algorithmAccuracyRatio,
+    locklessTripMissRatio,
     window: '24h',
     timestamp: now,
   };

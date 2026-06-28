@@ -90,7 +90,16 @@ export type AlarmLogSource =
   //   'unanswered' → outcome='received'   (pending 회피/dismiss/자동 만료)
   // backend alarmLogStats가 source='ground-truth-response' + outcome로 groundTruthCounts 누적,
   // observabilityMetrics.algorithmAccuracyRatio = yes / (yes + no) 산출.
-  | 'ground-truth-response';
+  | 'ground-truth-response'
+  // #1972 (#1503 잔여 3/3) — lockless trip 종료 stamp. boarding-lock 미활성 trip 종료 시
+  // `triggerTripEndRecall`이 alarmLog ring fireCount + userIntentDeclared 분기로 1건 적재:
+  //   fireCount >= 1                              → outcome='fired'      (정상 동작)
+  //   fireCount == 0 && userIntentDeclared=true   → outcome='suppressed' (진짜 miss)
+  //   fireCount == 0 && userIntentDeclared=false  → outcome='received'   (paradigm intent)
+  // backend alarmLogStats가 source='lockless-trip-end' + outcome로 locklessTripCounts 누적,
+  // observabilityMetrics.locklessTripMissRatio = miss / (miss + fired) 산출.
+  // lesson_silent_push_zero_is_paradigm_intent: fire 0건이 본질적 의도(paradigm)인지 miss인지 구분.
+  | 'lockless-trip-end';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1156,6 +1165,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'leg-transition': null,
   'boardable-lookup': null,
   'ground-truth-response': null,
+  'lockless-trip-end': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1173,6 +1183,61 @@ export function countSilentPushOutcomes(
     if (bucket !== null) counts[bucket] += 1;
   }
   return counts;
+}
+
+/**
+ * #1972 (#1503 잔여 3/3) — 실제 사용자에게 노출된 알람 fire source 분류 (데이터 주도).
+ *
+ * fire 분모: 매역 안내/도착 임박/사전 예약 등 사용자에게 실제로 알림이 노출된 source만 카운트.
+ * Metadata source (boarding-prompt / hydrate / ref-mismatch / accel-pattern / leg-transition /
+ * boardable-lookup / ground-truth-response / fusion-candidate-reject / cross-trip-mirror /
+ * lifecycle-backstop / lockless-trip-end 자체)는 fire 분모에서 제외 — 실제 알람이 아니라 측정/진단 stamp.
+ *
+ * 새 source 추가 시 본 Record에 한 줄만 더하면 자동 반영 (글로벌 룰 3 — 데이터 주도).
+ */
+const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
+  fg: true,
+  bg: true,
+  'fg-evaluated': true,
+  'bg-scheduled': true,
+  'fg-arvlcd': true,
+  'silent-push-fired': true,
+  'alert-fallback-fired': true,
+  // metadata / 진단 / 측정 source — 실제 알람 아님.
+  'silent-push-received': false,
+  'silent-push-skipped': false,
+  'fg-hydrate': false,
+  'fg-ref-mismatch': false,
+  'boarding-prompt': false,
+  'lifecycle-backstop': false,
+  'fusion-candidate-reject': false,
+  'cross-trip-mirror-register': false,
+  'cross-trip-mirror-mismatch': false,
+  'cross-trip-mirror-launch': false,
+  'accel-pattern-observed': false,
+  'leg-transition': false,
+  'boardable-lookup': false,
+  'ground-truth-response': false,
+  'lockless-trip-end': false,
+};
+
+/**
+ * #1972 (#1503 잔여 3/3) — alarmLog ring scan으로 trip 동안 fired outcome 알람 수 산출.
+ *
+ * `triggerTripEndRecall`이 호출 — lockless trip 분기 stamp(`logLocklessTripEnd`)의 입력.
+ * FIRED_ALARM_SOURCES Record가 source를 데이터 주도로 분류해 metadata stamp가 분모를 오염하지 않게 한다.
+ *
+ * @param entries alarmLog ring buffer entries (getAlarmLog() snapshot).
+ * @returns outcome='fired' && FIRED_ALARM_SOURCES[source]=true 인 entries 수.
+ */
+export function countFiredAlarms(entries: readonly AlarmLogEntry[]): number {
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.outcome !== 'fired') continue;
+    if (!FIRED_ALARM_SOURCES[entry.source]) continue;
+    count += 1;
+  }
+  return count;
 }
 
 /**
@@ -1842,6 +1907,45 @@ export function logGroundTruthResult(input: {
     source: 'ground-truth-response',
     outcome: GROUND_TRUTH_OUTCOME_TO_ALARM_LOG_OUTCOME[input.outcome],
     stationName: input.corrId,
+  });
+}
+
+/**
+ * #1972 (#1503 잔여 3/3) — lockless trip 종료 시 fire counter == 0 분기 stamp.
+ *
+ * `triggerTripEndRecall`이 trip telemetry forward 직전에 호출한다. 입력 분기:
+ *   - fireCount >= 1                              → outcome='fired'      (정상 동작)
+ *   - fireCount == 0 && userIntentDeclared=true   → outcome='suppressed' (진짜 miss)
+ *   - fireCount == 0 && userIntentDeclared=false  → outcome='received'   (paradigm intent)
+ *
+ * `lesson_silent_push_zero_is_paradigm_intent` 패턴 — 사용자가 informational mode 토글을 끈 상태
+ * (infoModeEnabled=false)에서 lockless trip 종료 시 fire 0건은 본질적 동작(paradigm intent)이며
+ * miss로 분류해서는 안 된다. backend alarmLogStats가 outcome 분기로 locklessTripCounts
+ * { miss, fired, paradigmIntent }를 누적, observabilityMetrics.locklessTripMissRatio
+ * = miss / (miss + fired) 산출 (paradigmIntent는 분모/분자 모두 제외).
+ *
+ * stationName 슬롯에 `fireCount:userIntent` 인코딩 — DebugModal RCA용.
+ *
+ * dedup 없음 — trip 1건당 1 stamp가 1:1 신호. trip 종료 자체가 1회성 이벤트.
+ *
+ * @param input.fireCount alarmLog ring scan으로 산출한 trip 동안 fired outcome 알람 수.
+ * @param input.userIntentDeclared `useUserIntentStore.infoModeEnabled` 값. paradigm intent 분기 기준.
+ */
+export function logLocklessTripEnd(input: {
+  fireCount: number;
+  userIntentDeclared: boolean;
+}): void {
+  const outcome: AlarmLogOutcome =
+    input.fireCount >= 1
+      ? 'fired'
+      : input.userIntentDeclared
+        ? 'suppressed'
+        : 'received';
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'lockless-trip-end',
+    outcome,
+    stationName: `${input.fireCount}:${input.userIntentDeclared ? 'intent' : 'paradigm'}`,
   });
 }
 

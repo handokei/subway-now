@@ -35,6 +35,7 @@ import {
   type LaPushDeliveryBucket,
   type SilentPushReachBucket,
   type AlgorithmAccuracyBucket,
+  type LocklessTripMissBucket,
   type FetchMetricsResult,
 } from '../../observability/api/observabilityMetricsClient';
 import {
@@ -78,6 +79,8 @@ type BackendLoadState =
       silentPushReach: SilentPushReachBucket | null;
       /** #1957 — backend 24h algorithm accuracy. backend가 응답하지 않으면 null (구버전). */
       algorithmAccuracy: AlgorithmAccuracyBucket | null;
+      /** #1972 — backend 24h lockless trip miss (userIntent 분기). 구버전 backend는 null. */
+      locklessTripMiss: LocklessTripMissBucket | null;
     }
   | { kind: 'unconfigured' }
   | { kind: 'error'; message: string };
@@ -345,6 +348,7 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
         laPushDelivery: result.metrics.laPushDeliveryRatio,
         silentPushReach: result.metrics.silentPushReachRatio ?? null,
         algorithmAccuracy: result.metrics.algorithmAccuracyRatio ?? null,
+        locklessTripMiss: result.metrics.locklessTripMissRatio ?? null,
       });
     } else if (result.kind === 'unconfigured') {
       setBackendState({ kind: 'unconfigured' });
@@ -457,11 +461,40 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
           isMock: true,
         };
 
+  // Metric 9 — #1972 lockless trip miss (trip-level + userIntent 분기, backend SSoT).
+  // 기존 `locklessMiss` (event-level reason='lockless-forward-only-block')와 별도 metric —
+  // trip 종료 시점에 fire counter == 0 + userIntent 분기로 진짜 miss / paradigm intent 구분.
+  // miss/(miss+fired) 비율 + paradigmIntent 별도 노출 (lesson_silent_push_zero_is_paradigm_intent).
+  // backend가 locklessTripMissRatio 필드를 응답하지 않으면 placeholder.
+  const locklessTripMiss: MetricData =
+    backendState.kind === 'ok' && backendState.locklessTripMiss !== null
+      ? {
+          key: 'locklessMiss',
+          label: `locklessTripMiss (paradigm=${backendState.locklessTripMiss.paradigmIntent})`,
+          ratio: computeRatio(
+            backendState.locklessTripMiss.miss,
+            backendState.locklessTripMiss.miss + backendState.locklessTripMiss.fired,
+          ),
+          numerator: backendState.locklessTripMiss.miss,
+          denominator:
+            backendState.locklessTripMiss.miss + backendState.locklessTripMiss.fired,
+          isMock: false,
+        }
+      : {
+          key: 'locklessMiss',
+          label: 'locklessTripMiss',
+          ratio: null,
+          numerator: 0,
+          denominator: 0,
+          isMock: true,
+        };
+
   const metrics: MetricData[] = [
     alarmAccuracy,
     silentPushReach,
     silentPushReachBackend,
     locklessMiss,
+    locklessTripMiss,
     boardableMiss,
     laPushDelivery,
   ];

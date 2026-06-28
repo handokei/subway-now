@@ -521,4 +521,85 @@ describe('computeAlarmLogStats', () => {
     expect(stats.groundTruthCounts.no).toBe(0);
     expect(stats.groundTruthCounts.pending).toBe(0);
   });
+
+  // ── #1972 locklessTripCounts ─────────────────────────────────────────────────
+
+  it('#1972 — lockless-trip-end outcome="fired"=fired, "suppressed"=miss, "received"=paradigmIntent', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '3:intent' },
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '7:intent' },
+            { source: 'lockless-trip-end', outcome: 'suppressed', stationName: '0:intent' },
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+            // 다른 source → locklessTrip 집계 제외
+            { source: 'fg', outcome: 'fired' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.locklessTripCounts.fired).toBe(2);
+    expect(stats.locklessTripCounts.miss).toBe(1);
+    expect(stats.locklessTripCounts.paradigmIntent).toBe(2);
+  });
+
+  it('#1972 — lockless-trip-end entries 없으면 locklessTripCounts 모두 0', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/no-llte-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [{ source: 'fg', outcome: 'fired' }],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.locklessTripCounts).toEqual({ miss: 0, fired: 0, paradigmIntent: 0 });
+  });
+
+  it('#1972 — lockless-trip-end outcome 예상 외 값은 어느 슬롯에도 들어가지 않음', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/invalid-llte-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            // 'aborted'는 miss/fired/paradigmIntent 어느 슬롯에도 들어가지 않음
+            { source: 'lockless-trip-end', outcome: 'aborted', stationName: '0:x' },
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '2:intent' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.locklessTripCounts.fired).toBe(1);
+    expect(stats.locklessTripCounts.miss).toBe(0);
+    expect(stats.locklessTripCounts.paradigmIntent).toBe(0);
+  });
+
+  it('#1972 — lockless-trip-end outcome=string이 아니면 silent drop', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/no-outcome-llte-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            // outcome 필드 자체 누락 — typeof check가 silent drop으로 처리.
+            { source: 'lockless-trip-end', stationName: '0:intent' } as never,
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.locklessTripCounts).toEqual({ miss: 0, fired: 0, paradigmIntent: 0 });
+  });
 });

@@ -90,6 +90,8 @@ import {
   _resetBoardableLookupWindowForTests,
   BOARDABLE_LOOKUP_DEDUP_MS,
   logGroundTruthResult,
+  logLocklessTripEnd,
+  countFiredAlarms,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -3037,6 +3039,116 @@ describe('alarmLog', () => {
       const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
       const matches = stored.filter((e) => e.source === 'ground-truth-response');
       expect(matches).toHaveLength(2);
+    });
+  });
+
+  // ── #1972 logLocklessTripEnd ─────────────────────────────────────────────────
+
+  describe('logLocklessTripEnd (#1972)', () => {
+    it('fireCount >= 1 → outcome=fired (정상 동작)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLocklessTripEnd({ fireCount: 5, userIntentDeclared: true });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('lockless-trip-end');
+      expect(stored[0].outcome).toBe('fired');
+      expect(stored[0].stationName).toBe('5:intent');
+    });
+
+    it('fireCount=0 + userIntentDeclared=true → outcome=suppressed (진짜 miss)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLocklessTripEnd({ fireCount: 0, userIntentDeclared: true });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('lockless-trip-end');
+      expect(stored[0].outcome).toBe('suppressed');
+      expect(stored[0].stationName).toBe('0:intent');
+    });
+
+    it('fireCount=0 + userIntentDeclared=false → outcome=received (paradigm intent)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLocklessTripEnd({ fireCount: 0, userIntentDeclared: false });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('lockless-trip-end');
+      expect(stored[0].outcome).toBe('received');
+      expect(stored[0].stationName).toBe('0:paradigm');
+    });
+
+    it('fireCount=10 + userIntentDeclared=false → outcome=fired (fire ≥ 1이면 분기 무관)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLocklessTripEnd({ fireCount: 10, userIntentDeclared: false });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].outcome).toBe('fired');
+      expect(stored[0].stationName).toBe('10:paradigm');
+    });
+
+    it('연속 호출은 모두 적재 (trip 1건당 1 stamp, dedup 없음)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logLocklessTripEnd({ fireCount: 0, userIntentDeclared: true });
+      logLocklessTripEnd({ fireCount: 3, userIntentDeclared: true });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const matches = stored.filter((e) => e.source === 'lockless-trip-end');
+      expect(matches).toHaveLength(2);
+    });
+  });
+
+  // ── #1972 countFiredAlarms ───────────────────────────────────────────────────
+
+  describe('countFiredAlarms (#1972)', () => {
+    it('빈 entries → 0', () => {
+      expect(countFiredAlarms([])).toBe(0);
+    });
+
+    it('outcome=fired + FIRED_ALARM_SOURCES=true source만 카운트', () => {
+      const entries: AlarmLogEntry[] = [
+        { ts: 1, source: 'fg', outcome: 'fired' },
+        { ts: 2, source: 'bg', outcome: 'fired' },
+        { ts: 3, source: 'fg-arvlcd', outcome: 'fired' },
+        { ts: 4, source: 'silent-push-fired', outcome: 'fired' },
+        { ts: 5, source: 'alert-fallback-fired', outcome: 'fired' },
+        { ts: 6, source: 'fg-evaluated', outcome: 'fired' },
+        { ts: 7, source: 'bg-scheduled', outcome: 'fired' },
+      ];
+      expect(countFiredAlarms(entries)).toBe(7);
+    });
+
+    it('outcome=suppressed/received는 분모 제외', () => {
+      const entries: AlarmLogEntry[] = [
+        { ts: 1, source: 'fg', outcome: 'fired' },
+        { ts: 2, source: 'fg', outcome: 'suppressed' },
+        { ts: 3, source: 'fg', outcome: 'received' },
+      ];
+      expect(countFiredAlarms(entries)).toBe(1);
+    });
+
+    it('metadata source(boarding-prompt / accel-pattern-observed / boardable-lookup / ground-truth-response / lockless-trip-end 등)는 분모 제외', () => {
+      const entries: AlarmLogEntry[] = [
+        { ts: 1, source: 'boarding-prompt', outcome: 'fired' },
+        { ts: 2, source: 'accel-pattern-observed', outcome: 'fired' },
+        { ts: 3, source: 'boardable-lookup', outcome: 'fired' },
+        { ts: 4, source: 'ground-truth-response', outcome: 'fired' },
+        { ts: 5, source: 'lockless-trip-end', outcome: 'fired' },
+        { ts: 6, source: 'leg-transition', outcome: 'fired' },
+        { ts: 7, source: 'cross-trip-mirror-register', outcome: 'fired' },
+        { ts: 8, source: 'cross-trip-mirror-mismatch', outcome: 'fired' },
+        { ts: 9, source: 'cross-trip-mirror-launch', outcome: 'fired' },
+        { ts: 10, source: 'lifecycle-backstop', outcome: 'fired' },
+        { ts: 11, source: 'fusion-candidate-reject', outcome: 'fired' },
+        { ts: 12, source: 'fg-hydrate', outcome: 'fired' },
+        { ts: 13, source: 'fg-ref-mismatch', outcome: 'fired' },
+        { ts: 14, source: 'silent-push-received', outcome: 'fired' },
+        { ts: 15, source: 'silent-push-skipped', outcome: 'fired' },
+        // 실제 fire 1건
+        { ts: 16, source: 'fg', outcome: 'fired' },
+      ];
+      expect(countFiredAlarms(entries)).toBe(1);
     });
   });
 });
