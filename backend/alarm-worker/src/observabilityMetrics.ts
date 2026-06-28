@@ -92,6 +92,13 @@ export interface ObservabilityMetricsResponse {
    *  - PENDING_PUSHES binding 부재 시 placeholder { sent:0, received:0, joined:0, ratio:0 }.
    */
   silentPushReachRatio: { sent: number; received: number; joined: number; ratio: number };
+  /**
+   * #1957 (#1503 잔여 1/3) — 알고리즘 정확성 비율.
+   * M2 사용자 정답지(useTripGroundTruthStore) 응답에서 yes / (yes + no) — pending은 분모 제외.
+   * value=yes, total=yes+no. 분모 0이면 ratio=0 (graceful — 응답 0건 = 신뢰성 없음).
+   * 응답률(answeredTotal = yes+no+pending)은 별도 신호로 보존 (P5 가중치 학습 prereq #1763).
+   */
+  algorithmAccuracyRatio: { value: number; total: number; ratio: number; answeredTotal: number };
   window: '24h';
   timestamp: number;
 }
@@ -180,6 +187,21 @@ export async function computeObservabilityMetrics(
     laPushDeliveryRatio = { sent: 0, failed: 0, ratio: 0 };
   }
 
+  // 6. #1957 — algorithmAccuracyRatio. M2 정답지 응답 yes/no 비율 (pending 분모 제외).
+  //    alarmStats.groundTruthCounts = { yes, no, pending } (source='ground-truth-response').
+  //    pending은 응답률 신호(answeredTotal)로 노출, 정확도 분모에서는 제외.
+  const groundTruthDenominator =
+    alarmStats.groundTruthCounts.yes + alarmStats.groundTruthCounts.no;
+  const algorithmAccuracyRatio = {
+    value: alarmStats.groundTruthCounts.yes,
+    total: groundTruthDenominator,
+    ratio: groundTruthDenominator === 0 ? 0 : alarmStats.groundTruthCounts.yes / groundTruthDenominator,
+    answeredTotal:
+      alarmStats.groundTruthCounts.yes +
+      alarmStats.groundTruthCounts.no +
+      alarmStats.groundTruthCounts.pending,
+  };
+
   return {
     accuracyRatio,
     silentPushDeliveryRatio,
@@ -189,6 +211,7 @@ export async function computeObservabilityMetrics(
     silentPushLatency,
     laPushDeliveryRatio,
     silentPushReachRatio,
+    algorithmAccuracyRatio,
     window: '24h',
     timestamp: now,
   };

@@ -100,6 +100,8 @@ function makeSuccessResult(
     joined: 0,
     ratio: 0,
   },
+  // #1957 — backend 24h algorithm accuracy. undefined = 구 backend 응답 (필드 누락 simulating).
+  algorithmAccuracy: observabilityClient.AlgorithmAccuracyBucket | undefined = undefined,
 ): observabilityClient.FetchMetricsResult {
   const metrics: observabilityClient.ObservabilityMetrics = {
     accuracyRatio: { value: 8, total: 10, ratio: 0.8 },
@@ -109,6 +111,7 @@ function makeSuccessResult(
     accelPatternHitRatio: accelPattern,
     silentPushLatency: pushLatency,
     laPushDeliveryRatio: { sent: laSent, failed: laFailed, ratio: laSent / (laSent + laFailed) },
+    algorithmAccuracyRatio: algorithmAccuracy,
     window: '24h',
     timestamp: 1_700_000_000_000,
     ...(silentPushReach !== null ? { silentPushReachRatio: silentPushReach } : {}),
@@ -611,6 +614,62 @@ describe('OperationDashboardSection', () => {
         const naBars = screen.getAllByTestId('ratio-bar-na');
         expect(naBars.length).toBeGreaterThanOrEqual(1);
       });
+    });
+  });
+
+  // #1957 — backend algorithmAccuracyRatio metric 우선 사용, local store fallback
+  // 10번째 param algorithmAccuracy 사용 — #1958이 9번째 silentPushReach 추가 후 우리는 한 칸 밀려서 10번째.
+  describe('#1957 — algorithmAccuracyRatio metric (backend SSoT + local fallback)', () => {
+    it('backend algorithmAccuracyRatio 수신 → ratio bar 렌더 (mock 아님)', async () => {
+      // backend에서 yes=8, no=2, ratio=0.8, answeredTotal=12 수신.
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(
+          2,
+          10,
+          0,
+          0,
+          DEFAULT_ACCEL_PATTERN,
+          null,
+          10,
+          2,
+          null, // silentPushReach=null (구 backend simulating으로 필드 omit)
+          { value: 8, total: 10, ratio: 0.8, answeredTotal: 12 },
+        ),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        expect(screen.getByTestId('operation-metric-alarmAccuracy')).toBeTruthy();
+      });
+      // backend 수신 시 isMock=false → [mock] 라벨 없음. ratio bar 렌더 확인.
+      const tracks = screen.getAllByTestId('ratio-bar-track');
+      expect(tracks.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('backend algorithmAccuracyRatio 미수신 (구버전 backend) → local store fallback', async () => {
+      // makeSuccessResult 기본은 algorithmAccuracy=undefined → 구버전 응답 시나리오.
+      setupStore([
+        { outcome: 'accurate' },
+        { outcome: 'accurate' },
+        { outcome: 'inaccurate' },
+      ]);
+      mockFetchMetrics.mockResolvedValue(makeSuccessResult());
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      // store fallback: accurate=2, answered=3 → ratio bar 렌더.
+      const tracks = screen.getAllByTestId('ratio-bar-track');
+      expect(tracks.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('backend 응답 전 (idle/unconfigured) → local store fallback', async () => {
+      setupStore([{ outcome: 'accurate' }, { outcome: 'inaccurate' }]);
+      // unconfigured 응답: backend 미수신 → local fallback 사용.
+      mockFetchMetrics.mockResolvedValue({ kind: 'unconfigured' });
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      const tracks = screen.getAllByTestId('ratio-bar-track');
+      // 1/2 = 0.5 비율 ratio bar 1건 + 다른 metric bar들 포함.
+      expect(tracks.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

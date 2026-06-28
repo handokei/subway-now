@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TRIP_GROUND_TRUTH_KEY } from '../../../../shared/constants/storageKeys';
+import { logGroundTruthResult } from '../../../alarm/utils/alarmLog';
 import {
   RESPONSE_BUFFER_CAPACITY,
   getRecentResponses,
@@ -12,8 +13,15 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   setItem: jest.fn(),
 }));
 
+// #1957 — store.respond가 backend metric forward 위해 logGroundTruthResult를 호출.
+// 본 store unit test에서는 alarmLog 적재까지 검증하지 않고 호출 자체만 검증 (alarmLog 단위 테스트가 따로).
+jest.mock('../../../alarm/utils/alarmLog', () => ({
+  logGroundTruthResult: jest.fn(),
+}));
+
 const mockGetItem = AsyncStorage.getItem as jest.MockedFunction<typeof AsyncStorage.getItem>;
 const mockSetItem = AsyncStorage.setItem as jest.MockedFunction<typeof AsyncStorage.setItem>;
+const mockLogGroundTruthResult = logGroundTruthResult as jest.MockedFunction<typeof logGroundTruthResult>;
 
 describe('useTripGroundTruthStore (#1502 M2)', () => {
   beforeEach(() => {
@@ -25,6 +33,7 @@ describe('useTripGroundTruthStore (#1502 M2)', () => {
     mockGetItem.mockReset();
     mockSetItem.mockReset();
     mockSetItem.mockResolvedValue();
+    mockLogGroundTruthResult.mockReset();
   });
 
   describe('enqueuePrompt', () => {
@@ -102,6 +111,44 @@ describe('useTripGroundTruthStore (#1502 M2)', () => {
         .enqueuePrompt({ corrId: 'c2', endedAt: 200 });
       await useTripGroundTruthStore.getState().respond('unanswered');
       expect(useTripGroundTruthStore.getState().responses[1].outcome).toBe('unanswered');
+    });
+
+    // #1957 — backend algorithmAccuracyRatio metric wire
+    it('#1957 — pending 있을 때 응답 시 logGroundTruthResult(corrId, outcome) 호출', async () => {
+      await useTripGroundTruthStore
+        .getState()
+        .enqueuePrompt({ corrId: 'wire-c1', endedAt: 100 });
+      await useTripGroundTruthStore.getState().respond('accurate');
+      expect(mockLogGroundTruthResult).toHaveBeenCalledTimes(1);
+      expect(mockLogGroundTruthResult).toHaveBeenCalledWith({
+        corrId: 'wire-c1',
+        outcome: 'accurate',
+      });
+    });
+
+    it('#1957 — inaccurate / unanswered도 그대로 forward', async () => {
+      await useTripGroundTruthStore
+        .getState()
+        .enqueuePrompt({ corrId: 'wire-c2', endedAt: 200 });
+      await useTripGroundTruthStore.getState().respond('inaccurate');
+      expect(mockLogGroundTruthResult).toHaveBeenLastCalledWith({
+        corrId: 'wire-c2',
+        outcome: 'inaccurate',
+      });
+
+      await useTripGroundTruthStore
+        .getState()
+        .enqueuePrompt({ corrId: 'wire-c3', endedAt: 300 });
+      await useTripGroundTruthStore.getState().respond('unanswered');
+      expect(mockLogGroundTruthResult).toHaveBeenLastCalledWith({
+        corrId: 'wire-c3',
+        outcome: 'unanswered',
+      });
+    });
+
+    it('#1957 — pending 없을 때 응답 시 logGroundTruthResult 호출되지 않음', async () => {
+      await useTripGroundTruthStore.getState().respond('accurate');
+      expect(mockLogGroundTruthResult).not.toHaveBeenCalled();
     });
 
     it('ring buffer가 capacity를 넘으면 오래된 것부터 drop', async () => {

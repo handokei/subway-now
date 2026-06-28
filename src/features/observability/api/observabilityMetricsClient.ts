@@ -44,6 +44,18 @@ export interface SilentPushReachBucket {
   ratio: number;
 }
 
+/**
+ * #1957 (#1503 잔여 1/3) — 알고리즘 정확성 응답 bucket.
+ * value = yes(정답) 건수, total = yes+no, ratio = value/total (분모 0이면 0).
+ * answeredTotal = yes+no+pending — 응답률 신호 (1주 30%+ acceptance).
+ */
+export interface AlgorithmAccuracyBucket {
+  value: number;
+  total: number;
+  ratio: number;
+  answeredTotal: number;
+}
+
 export interface ObservabilityMetrics {
   accuracyRatio: ObservabilityMetricsBucket;
   silentPushDeliveryRatio: ObservabilityMetricsBucket;
@@ -63,6 +75,11 @@ export interface ObservabilityMetrics {
    * 구 backend(필드 미응답) 호환 위해 optional — UI는 누락 시 placeholder 표시.
    */
   silentPushReachRatio?: SilentPushReachBucket;
+  /**
+   * #1957 (#1503 잔여 1/3) — 알고리즘 정확성. M2 정답지 응답 yes/(yes+no).
+   * 신규 필드 — 구버전 backend는 미수신할 수 있으므로 optional.
+   */
+  algorithmAccuracyRatio?: AlgorithmAccuracyBucket;
   window: '24h';
   timestamp: number;
 }

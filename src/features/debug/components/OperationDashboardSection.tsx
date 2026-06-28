@@ -34,6 +34,7 @@ import {
   type AccelPatternBucket,
   type LaPushDeliveryBucket,
   type SilentPushReachBucket,
+  type AlgorithmAccuracyBucket,
   type FetchMetricsResult,
 } from '../../observability/api/observabilityMetricsClient';
 import {
@@ -75,6 +76,8 @@ type BackendLoadState =
       laPushDelivery: LaPushDeliveryBucket;
       /** #1958 — backend 5min corrId join 도달률. backend가 응답하지 않으면 null. */
       silentPushReach: SilentPushReachBucket | null;
+      /** #1957 — backend 24h algorithm accuracy. backend가 응답하지 않으면 null (구버전). */
+      algorithmAccuracy: AlgorithmAccuracyBucket | null;
     }
   | { kind: 'unconfigured' }
   | { kind: 'error'; message: string };
@@ -341,6 +344,7 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
         pushLatency: result.metrics.silentPushLatency ?? null,
         laPushDelivery: result.metrics.laPushDeliveryRatio,
         silentPushReach: result.metrics.silentPushReachRatio ?? null,
+        algorithmAccuracy: result.metrics.algorithmAccuracyRatio ?? null,
       });
     } else if (result.kind === 'unconfigured') {
       setBackendState({ kind: 'unconfigured' });
@@ -354,16 +358,34 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
     void doFetch();
   }, [doFetch]);
 
-  // Metric 1 — 알람 정확성 (M2 구현 기반)
-  const accurateCount = responses.filter((r) => r.outcome === 'accurate').length;
-  const answeredCount = responses.filter((r) => r.outcome !== 'unanswered').length;
-  const alarmAccuracy: MetricData = {
-    key: 'alarmAccuracy',
-    label: 'alarmAccuracy',
-    ratio: computeRatio(accurateCount, answeredCount),
-    numerator: accurateCount,
-    denominator: answeredCount,
-  };
+  // Metric 1 — 알람 정확성 (M2 구현 기반).
+  // #1957 — backend `algorithmAccuracyRatio` 우선, 미수신 시 local store(`responses`) fallback.
+  // backend는 24h R2 archive 집계로 다중 device 합산 신호 (SSoT), local store는 본 device
+  // 직전 50건만 — 응답 직후 즉시 갱신용 fallback. backend wire(`backendState.algorithmAccuracy`)가
+  // null이면 (구버전 응답 / 미수신) local store 사용해 라이브 응답을 즉시 반영.
+  const localAccurateCount = responses.filter((r) => r.outcome === 'accurate').length;
+  const localAnsweredCount = responses.filter((r) => r.outcome !== 'unanswered').length;
+  const backendAlgorithmAccuracy =
+    backendState.kind === 'ok' ? backendState.algorithmAccuracy : null;
+  const alarmAccuracy: MetricData =
+    backendAlgorithmAccuracy !== null
+      ? {
+          key: 'alarmAccuracy',
+          label: 'alarmAccuracy',
+          ratio: computeRatio(backendAlgorithmAccuracy.value, backendAlgorithmAccuracy.total),
+          numerator: backendAlgorithmAccuracy.value,
+          denominator: backendAlgorithmAccuracy.total,
+          isMock: false,
+        }
+      : {
+          key: 'alarmAccuracy',
+          label: 'alarmAccuracy',
+          ratio: computeRatio(localAccurateCount, localAnsweredCount),
+          numerator: localAccurateCount,
+          denominator: localAnsweredCount,
+          // backend 미수신 시 local store 기반 임시 표시 — [mock] suffix로 명시.
+          isMock: backendState.kind !== 'ok',
+        };
 
   // Metric 2 — Silent push 도달률 (received 중 fired 비율)
   const silentCounts = countSilentPushOutcomes(logs);
