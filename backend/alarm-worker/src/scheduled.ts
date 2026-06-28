@@ -128,6 +128,25 @@ export const LA_PUSH_THRESHOLD_MS = 30_000;
 export const LA_HEARTBEAT_INTERVAL_MS = 90_000;
 
 /**
+ * #1933 — LA push 침묵 자동 종료 임계 (5분).
+ *
+ * 회귀(2026-06-27 "건대 환승" 9분 stuck): 첫 LA push 후 advance evidence 0건이라 backend SSoT가
+ * `건대입구 transfer`로 frozen, `maybeFireLiveActivityUpdate`가 호출돼도 ΔETA=0 분기 dedup으로
+ * 새 push 미발사 → ActivityKit이 last content-state(staleDate 75s 무시)를 9분간 유지 →
+ * 사용자 도착 시점까지 Dynamic Island가 "건대 환승" 표시.
+ *
+ * heartbeat가 "새 push에 의존해 새 push를 보낸다"는 self-referential gap이라 새 evidence가
+ * 들어와도 SSoT가 바뀌지 않으면 영구 freeze. `lastLaPushAt + LA_STALE_AUTO_END_MS` 경과 시
+ * 자동 cleanup → `cleanupTripWithLa` 내부 `fireLiveActivityDismissal`로 ActivityKit dismiss →
+ * device의 stale 표시를 강제 정리한다. 5분은 보수적 — 정상 동작 시 90s heartbeat 3회 안에
+ * push가 발사돼 stamp가 갱신되므로 본 backstop은 발동되지 않는다.
+ *
+ * 6h staged lifecycle(`lifecycleForceEnded`)보다 일찍 발동 → safety net. B(silent push 정상화)
+ * + #10(infoModeEnabled 강화) 정상 동작 시 0건 기대 (V5/V6/X3 강화).
+ */
+export const LA_STALE_AUTO_END_MS = 5 * 60 * 1000;
+
+/**
  * #1671 — 환승/도착 임박 즉시 trigger 임계 (초).
  * `waypoint.kind === 'transfer'` (환승) 또는
  * `waypoint.kind === 'destination' && etaSeconds <= LA_IMMEDIATE_TRIGGER_ETA_SEC` (도착 임박)
@@ -453,6 +472,14 @@ export interface ScheduledStats extends LiveActivityStats {
    * 사용자가 열차 미선택 상태에서 noise push가 발사되지 않도록 차단된 결과.
    */
   lockMissing: number;
+  /**
+   * #1933 — `lastLaPushAt`이 `LA_STALE_AUTO_END_MS` 이상 침묵해 cron이 자동 cleanup한 trip 수.
+   * lockMissing 분기 진입 시 평가. 정상 운영(silent push + LA heartbeat 작동)에서 0건 기대 —
+   * 0이 아니면 `lockMissing` 분기 잔여 케이스(advance gate freeze + heartbeat self-referential gap)에서
+   * LA가 frozen된 채 5분+ 표류한 trip 수 = 사용자 가치 손실 미니 회귀 차단 효과 측정.
+   * 1주 0건이면 본 backstop이 dual safety net으로 동작 중임을 확인.
+   */
+  laStaleAutoEnded: number;
   /**
    * #816 C — lockless opt-in 토글 ON trip에서 station-passed(intermediate) push가 발사된 횟수.
    * false-positive 측정 인프라 — 사용자 dismiss/탭률은 client alarmLog로 별도 적재된다.
@@ -798,6 +825,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     etaMissing: 0,
     envCorrected: 0,
     lockMissing: 0,
+    laStaleAutoEnded: 0,
     locklessIntermediateFired: 0,
     locklessMotionGateBlocked: 0,
     laPushSent: 0,
@@ -973,6 +1001,28 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
     // lock 부재 상태에서의 phase-based push는 "탑승 전 노이즈"였다.
     if (!isBoardingLockActive(trip, now)) {
+      // #1933 — LA push 침묵 자동 종료 backstop. lockMissing 분기 진입 시 평가.
+      // backend SSoT가 advance 게이트로 frozen된 채 `maybeFireLiveActivityUpdate`가 ΔETA=0 분기
+      // dedup으로 새 push 미발사 → ActivityKit이 last content-state를 영구 유지하는
+      // heartbeat self-referential gap을 차단. lockless / lock-missing 둘 다 동일 보호.
+      // `lastLaPushAt === undefined`는 첫 push 전(또는 advance 직후 reset 직후) 상태 — skip.
+      //
+      // SSoT mirror cleanup은 `cleanupTripWithLa` 내부의 graceful `deleteSsot` 호출(try/catch
+      // swallow, liveActivity.ts:322)에 위임 — 외부 추가 호출은 redundant + KV throw 발생 시
+      // cron 루프 break-out 위험이라 두지 않는다.
+      if (
+        trip.lastLaPushAt !== undefined &&
+        now - trip.lastLaPushAt > LA_STALE_AUTO_END_MS
+      ) {
+        stats.laStaleAutoEnded += 1;
+        log('la-stale: auto-end after 5min push silence', {
+          token: trip.token.slice(0, 8),
+          elapsedMs: now - trip.lastLaPushAt,
+          station: pickActiveWaypoint(trip)?.stationName,
+        });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, 'la-stale-backstop');
+        continue;
+      }
       // #816 C — lockless opt-in trip은 게이트 우회. lock 없이도 intermediate waypoint 통과
       // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
       // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면

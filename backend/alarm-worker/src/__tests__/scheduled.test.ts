@@ -4253,6 +4253,259 @@ describe('runScheduled — #1652 staged lifecycle backstop', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1933 — LA stale auto-end backstop (heartbeat self-referential gap)
+// ---------------------------------------------------------------------------
+
+describe('runScheduled — #1933 LA stale auto-end backstop', () => {
+  it('lastLaPushAt + 5min 경과 + lockMissing 분기 진입 → cleanupTripWithLa + laStaleAutoEnded++', async () => {
+    const kv = new InMemoryKV();
+    // lockMissing 분기 진입 보장: boardingLock 없음 + infoModeEnabled false.
+    // lastLaPushAt이 6분 전 → 5분 임계 초과.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-stale-6m',
+        createdAt: NOW - 30 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        lastLaPushAt: NOW - 6 * 60_000,
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(1);
+    // cleanupTripWithLa가 trip-ended alert push를 발사 ('la-stale-backstop' reason).
+    expect(apnsFetch).toHaveBeenCalled();
+    // trip이 KV에서 제거됐는지 — listTrips로 enumerate 시 비어있어야.
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining).toHaveLength(0);
+    // lockMissing 카운터는 backstop이 먼저 `continue` 하므로 증가하지 않는다.
+    expect(stats.lockMissing).toBe(0);
+  });
+
+  it('lastLaPushAt + 5min 미경과 (4분 전) → backstop skip, 기존 lockMissing flow 진행', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-fresh-4m',
+        createdAt: NOW - 30 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        lastLaPushAt: NOW - 4 * 60_000,
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(0);
+    // 기존 lockMissing flow는 그대로 진행됐는지.
+    expect(stats.lockMissing).toBe(1);
+    // trip은 KV에 그대로 남아있어야.
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining).toHaveLength(1);
+  });
+
+  it('lastLaPushAt === undefined (첫 push 전) → backstop skip', async () => {
+    const kv = new InMemoryKV();
+    // lastLaPushAt 미설정 — 신규 trip이거나 첫 push 전.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-never',
+        createdAt: NOW - 30 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        // lastLaPushAt 미지정 — undefined.
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(0);
+    // 기존 lockMissing flow 진행.
+    expect(stats.lockMissing).toBe(1);
+  });
+
+  it('환승 직후 (advance reset) — lastLaPushAt이 undefined로 리셋된 trip은 lockMissing 진입해도 첫 5분간 보호', async () => {
+    // scheduled.ts:2654에서 waypoint advance 시 `trip.lastLaPushAt = undefined`로 reset.
+    // 그 다음 cycle에 boardingLock 만료/swap으로 lockMissing 분기 진입해도
+    // `lastLaPushAt === undefined` 분기에서 backstop이 skip되어 신규 trip처럼 첫 5분 보호.
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-reset',
+        createdAt: NOW - 2 * 60 * 60_000, // 환승 도중인 장거리 trip
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        lastLaPushAt: undefined, // advance reset 직후 상태
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(0);
+    expect(stats.lockMissing).toBe(1);
+  });
+
+  it('lockless opt-in trip + LA push 5min stale → backstop이 lockless 분기 진입 직전에 cleanup (lockless도 동일 보호)', async () => {
+    // 본문 회귀 정의 1번 "lock 활성 / lockless 둘 다 카테고리" 직접 매핑.
+    // infoModeEnabled true + lastLaPushAt 6분 전 → 정상 시 lockless intermediate push가
+    // 매 cycle 발사돼야 하지만 advance 게이트 차단으로 lockless도 fire 미발사 시나리오.
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-stale-lockless',
+        createdAt: NOW - 30 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        infoModeEnabled: true,
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '선릉', line: '2', kind: 'destination' },
+        ],
+        lastLaPushAt: NOW - 6 * 60_000,
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(1);
+    // lockless intermediate push 발사 분기 진입 전에 backstop이 잡혀 fire 0건.
+    expect(stats.locklessIntermediateFired).toBe(0);
+    // trip 자체가 cleanup되어 KV에서 사라짐.
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining).toHaveLength(0);
+  });
+
+  // 회귀 가드 — #1933 review finding. cleanupTripWithLa는 내부에서 deleteSsot을 try/catch로 감싸
+  // graceful swallow한다 (liveActivity.ts:322). 외부에서 추가 호출 시 비가드라 KV throw가 cron 루프를
+  // break-out 해 다음 trip이 평가되지 않는 회귀 위험. 본 가드 테스트는 ssot KV가 throw해도 backstop이
+  // 정상 cleanup하고 다음 trip이 평가되는지 검증.
+  it('ssot KV가 throw해도 backstop cleanup 정상 + 다음 trip이 평가 (cron break-out 차단)', async () => {
+    const kv = new InMemoryKV();
+    // Trip A — stale 대상 (cleanup 발동).
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-stale-a',
+        createdAt: NOW - 30 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        lastLaPushAt: NOW - 6 * 60_000,
+      }),
+    );
+    // Trip B — A 다음에 평가될 trip. backstop이 break-out하면 본 trip이 미평가됨.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'la-stale-b',
+        createdAt: NOW - 30 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        lastLaPushAt: NOW - 6 * 60_000,
+      }),
+    );
+
+    // ssot:* delete가 throw하는 broken KV — cleanupTripWithLa 내부 try/catch가 swallow해야.
+    const realKv = kv;
+    const brokenKv: KVNamespace = {
+      get: realKv.get.bind(realKv),
+      put: realKv.put.bind(realKv),
+      delete: vi.fn(async (key: string) => {
+        if (key.startsWith('ssot:')) throw new Error('ssot kv down');
+        return realKv.delete(key);
+      }),
+      list: realKv.list.bind(realKv),
+    } as unknown as KVNamespace;
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(
+      { TRIPS: brokenKv } as unknown as Env,
+      {
+        seoul: makeSeoul([]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+    );
+
+    // 두 trip 모두 backstop 평가 + cleanup. break-out 차단 확인.
+    expect(stats.laStaleAutoEnded).toBe(2);
+    expect(stats.scanned).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1933 — toTripStatusEndReason — la-stale-backstop external mapping
+// ---------------------------------------------------------------------------
+
+describe('toTripStatusEndReason — #1933 la-stale-backstop 외부 contract 매핑', () => {
+  it('la-stale-backstop → expired (client backward-compat)', async () => {
+    const { toTripStatusEndReason } = await import('../tripStatus');
+    expect(toTripStatusEndReason('la-stale-backstop')).toBe('expired');
+  });
+
+  it('destination-arrived → destination (기존 매핑 유지)', async () => {
+    const { toTripStatusEndReason } = await import('../tripStatus');
+    expect(toTripStatusEndReason('destination-arrived')).toBe('destination');
+  });
+
+  it('expired → expired (pass-through)', async () => {
+    const { toTripStatusEndReason } = await import('../tripStatus');
+    expect(toTripStatusEndReason('expired')).toBe('expired');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #1680 — V8d backend cron stationary skip
 // ---------------------------------------------------------------------------
 
@@ -6988,7 +7241,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, laStaleAutoEnded: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,

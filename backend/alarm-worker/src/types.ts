@@ -346,6 +346,9 @@ export interface ReschedulePushPayload {
  *   - 'destination-arrived' — 목적지 도착 또는 마지막 intermediate 통과로 trip 종료
  *   - 'expired' — trip.expiresAt 시각 초과로 자동 만료
  *   - 'push-unrecoverable' — APNs unrecoverable error로 trip 폐기
+ *   - 'la-stale-backstop' (#1933) — LA push가 LA_STALE_AUTO_END_MS(5분) 이상 침묵 시 자동 종료
+ *                       (Dynamic Island content-state freeze 차단). 외부 contract는 'expired'로
+ *                       매핑 (backward-compat) — `toTripStatusEndReason`이 처리한다.
  *
  * 클라가 명시적으로 trip을 끝낸 경로(HTTP DELETE /trips/:token)는 발사 대상이 아님 —
  * 사용자가 destination을 clear하면 이미 클라이언트 store가 정리된 상태이기 때문.
@@ -355,7 +358,8 @@ export type TripEndedReason =
   | 'seoul-outage'
   | 'destination-arrived'
   | 'expired'
-  | 'push-unrecoverable';
+  | 'push-unrecoverable'
+  | 'la-stale-backstop';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의

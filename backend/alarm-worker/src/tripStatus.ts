@@ -51,9 +51,13 @@ export function tripStatusKey(token: string): string {
  * 클라이언트 API 응답은 `destination`으로 축약 — `destination-arrived`는 backend 내부 식별자라
  * 외부 노출 표면에는 단축형이 깔끔하다.
  * `seoul-outage` (#1663) — 1:1 pass-through. POST /trips 핸들러가 cooldown 면제 분기에 사용.
+ * `la-stale-backstop` (#1933) — 외부 contract는 `expired`로 매핑 — client 기존 graceful handler가
+ *   그대로 동작 (#1652 force-end가 'expired' 재사용한 backward-compat 패턴과 동일).
+ *   backend log/stat은 `la-stale-backstop` 그대로 유지해 회귀 분석 가시성 보존.
  */
 export function toTripStatusEndReason(reason: TripEndedReason): TripStatusEndReason {
   if (reason === 'destination-arrived') return 'destination';
+  if (reason === 'la-stale-backstop') return 'expired';
   return reason;
 }
 

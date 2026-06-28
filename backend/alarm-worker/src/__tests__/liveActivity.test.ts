@@ -806,6 +806,8 @@ describe('cleanupTripWithLa', () => {
       { reason: 'eta-missing' as const, expected: 'eta-missing' },
       { reason: 'destination-arrived' as const, expected: 'destination' },
       { reason: 'push-unrecoverable' as const, expected: 'push-unrecoverable' },
+      // #1933 — la-stale-backstop은 외부 contract `'expired'`로 매핑 (backward-compat).
+      { reason: 'la-stale-backstop' as const, expected: 'expired' },
     ];
 
     for (const { reason, expected } of reasonMatrix) {
@@ -846,6 +848,61 @@ describe('cleanupTripWithLa', () => {
         () => undefined,
       );
       expect(kv.store.has('tripStatus:devtoken')).toBe(false);
+    });
+
+    // #1933 — alert push payload의 reason 필드도 외부 contract 매핑이 적용된다. 내부 식별자
+    // `'la-stale-backstop'`을 그대로 송신하면 client mirror enum이 `'unknown'`으로 normalize되어
+    // user-facing 알림 메시지가 generic해진다. force-end 패턴과 동일하게 `'expired'`로 매핑해
+    // client 기존 graceful handler가 그대로 동작하도록 한다.
+    it('la-stale-backstop 호출 시 alert push payload reason은 expired로 송신', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        'la-stale-backstop',
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const call = fetchImpl.mock.calls[0] as unknown as [string, { body: string }];
+      const body = JSON.parse(call[1].body) as { data: { reason: string } };
+      expect(body.data.reason).toBe('expired');
+    });
+
+    // 기존 reason은 그대로 송신되는지 회귀 가드 — la-stale-backstop 매핑이 다른 reason에 leak되면 회귀.
+    it('expired/eta-missing 등 기존 reason은 alert push payload에 그대로 송신 (회귀 가드)', async () => {
+      const cases: Array<TripEndedReason> = [
+        'expired',
+        'eta-missing',
+        'destination-arrived',
+        'push-unrecoverable',
+        'seoul-outage',
+      ];
+      for (const reason of cases) {
+        const kv = new InMemoryKV();
+        const trip = makeTrip({ activityPushToken: undefined });
+        await kv.put('trip:devtoken', JSON.stringify(trip));
+        const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+        const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+        await cleanupTripWithLa(
+          trip,
+          env,
+          makeDeps(fetchImpl as unknown as typeof fetch),
+          makeStats(),
+          NOW,
+          () => undefined,
+          reason,
+        );
+        const call = fetchImpl.mock.calls[0] as unknown as [string, { body: string }];
+        const body = JSON.parse(call[1].body) as { data: { reason: string } };
+        expect(body.data.reason).toBe(reason);
+      }
     });
 
     it('logs but does not throw when status write fails (cleanup continues)', async () => {
