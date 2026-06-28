@@ -139,6 +139,22 @@ jest.mock('../../utils/refreshLiveActivityFromBackgroundContext', () => ({
   refreshLiveActivityFromBackgroundContext: () => mockRefreshLa(),
 }));
 
+// #1935 — silent push finally에서 호출하는 widget update wire. mock로 호출 인자/횟수 검증.
+const mockUpdateWidget = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../widget/utils/updateWidgetFromSilentPush', () => ({
+  updateWidgetFromSilentPush: (...args: unknown[]) => mockUpdateWidget(...args),
+}));
+
+// #1935 — widget update 호출 전 storage context read. mock로 read 결과만 격리.
+const mockReadWidgetCtx = jest.fn().mockResolvedValue({
+  destination: null,
+  route: null,
+  bgContext: null,
+});
+jest.mock('../../utils/widgetRefreshContext', () => ({
+  readWidgetRefreshContext: () => mockReadWidgetCtx(),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -3150,6 +3166,108 @@ describe('silentPushTask', () => {
         mockGetDismissSilence.mockResolvedValue(null);
         await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
         expect(mockCheckGate).toHaveBeenCalled();
+      });
+    });
+
+    // #1935 — silent push finally 블록에서 widget update wire 호출 검증.
+    // WhileInUse paradigm 충족 — 권한 무관 채널에서 BG widget 갱신.
+    describe('#1935 — widget update wire (finally 블록)', () => {
+      it('valid payload면 finally에서 updateWidgetFromSilentPush 호출 (ssot/bgContext/destination/route 전달)', async () => {
+        const ctx = {
+          destination: { id: 'd1', name: '잠실', line: '2', lineColor: '#0', lat: 37.5, lng: 127.1 },
+          route: { type: 'direct', line: '2', stops: 3, travelSeconds: 240 },
+          bgContext: { station: { id: 's1', name: '강남' }, distanceKm: 0.15, timestamp: 0 },
+        };
+        mockReadWidgetCtx.mockResolvedValueOnce(ctx);
+        // validSsotMirror가 narrow하는 필드만 사용 — currentStationLine은 mirror entry에만 추가됨(#1705)
+        // 이라 silent push payload validator는 drop. widget update는 name-only fallback으로 동작.
+        const ssotPayload = {
+          currentStationId: '역삼',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arc-overshoot',
+          lastAdvanceAt: 1_700_000_000_000,
+          passedStations: [],
+        };
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', ssot: ssotPayload }),
+        );
+        expect(mockReadWidgetCtx).toHaveBeenCalledTimes(1);
+        expect(mockUpdateWidget).toHaveBeenCalledTimes(1);
+        const [ssotArg, bgArg, destArg, routeArg] = mockUpdateWidget.mock.calls[0];
+        expect(ssotArg).toEqual(ssotPayload);
+        expect(bgArg).toBe(ctx.bgContext);
+        expect(destArg).toBe(ctx.destination);
+        expect(routeArg).toBe(ctx.route);
+      });
+
+      it('reschedule payload는 ssot 필드 없음 — undefined로 전달, BG context fallback', async () => {
+        mockReadWidgetCtx.mockResolvedValueOnce({
+          destination: null,
+          route: null,
+          bgContext: null,
+        });
+        await handleSilentPush({
+          data: bgTaskData({
+            kind: 'reschedule',
+            nextStation: '잠실',
+            newArrivalTimeEpoch: Date.now() + 60_000,
+            trainCode: 'T-1',
+            pushId: 'rs-1',
+          }),
+        });
+        expect(mockUpdateWidget).toHaveBeenCalledTimes(1);
+        expect(mockUpdateWidget.mock.calls[0][0]).toBeUndefined();
+      });
+
+      it('trip-ended payload도 ssot 없음 — undefined로 전달', async () => {
+        mockReadWidgetCtx.mockResolvedValueOnce({
+          destination: null,
+          route: null,
+          bgContext: null,
+        });
+        await handleSilentPush({
+          data: bgTaskData({
+            kind: 'trip-ended',
+            reason: 'destination-arrived',
+            pushId: 'te-1',
+          }),
+        });
+        expect(mockUpdateWidget).toHaveBeenCalledTimes(1);
+        expect(mockUpdateWidget.mock.calls[0][0]).toBeUndefined();
+      });
+
+      it('invalid payload (extract null)면 readWidgetRefreshContext / updateWidgetFromSilentPush 호출 안 함', async () => {
+        await handleSilentPush({ data: undefined });
+        expect(mockReadWidgetCtx).not.toHaveBeenCalled();
+        expect(mockUpdateWidget).not.toHaveBeenCalled();
+      });
+
+      it('input.error 분기에서도 widget update 호출 안 함 (payload 미extract)', async () => {
+        await handleSilentPush({ error: { message: 'boom' } });
+        expect(mockReadWidgetCtx).not.toHaveBeenCalled();
+        expect(mockUpdateWidget).not.toHaveBeenCalled();
+      });
+
+      it('updateWidgetFromSilentPush throw해도 본 흐름은 graceful (LA refresh도 호출됨)', async () => {
+        mockReadWidgetCtx.mockResolvedValueOnce({
+          destination: null,
+          route: null,
+          bgContext: null,
+        });
+        mockUpdateWidget.mockRejectedValueOnce(new Error('widget-fail'));
+        await expect(
+          handleSilentPush(payload({ kind: 'destination', phase: 'imminent' })),
+        ).resolves.toBeUndefined();
+        // LA refresh와 격리되어 둘 다 호출
+        expect(mockRefreshLa).toHaveBeenCalled();
+      });
+
+      it('readWidgetRefreshContext throw해도 graceful (LA refresh 동작 보존)', async () => {
+        mockReadWidgetCtx.mockRejectedValueOnce(new Error('storage-fail'));
+        await expect(
+          handleSilentPush(payload({ kind: 'destination', phase: 'imminent' })),
+        ).resolves.toBeUndefined();
+        expect(mockRefreshLa).toHaveBeenCalled();
       });
     });
   });

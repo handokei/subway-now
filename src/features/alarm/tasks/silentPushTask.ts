@@ -86,6 +86,8 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent, sendTripEndedNotification } from '../utils/stationNotification';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
+import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
+import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
@@ -752,6 +754,9 @@ async function loadApnsToken(): Promise<string | null> {
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
+  // #1935 — finally 블록에서 widget update가 payload.ssot 또는 standard kind를 활용하려면
+  // payload가 outer scope에 있어야 한다. valid extract 후 assign; invalid면 null 유지.
+  let payload: ExtractedPayload | null = null;
   // #735 — BG task 시간 제약. 모든 종료 경로(early return, fire-with-gate, error)에서 적재된
   // alarmLog pending이 OS suspend로 손실되지 않도록 try/finally로 명시 flush.
   try {
@@ -760,7 +765,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
 
-    const payload = extractPayload(input.data);
+    payload = extractPayload(input.data);
     if (!payload) {
       logger.info('payload missing or invalid — skip');
       return;
@@ -967,11 +972,41 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     // update가 ActivityKit lock으로 수 초 stall 가능. BG task 시간 예산(~25s)을 LA가 잠식하면
     // alarmLog가 손실(#735 회귀). 측정 인프라(alarmLog)가 항상 보호되도록 LA를 뒤에 둔다.
     await flushAlarmLog();
-    try {
-      await refreshLiveActivityFromBackgroundContext();
-    } catch (e) {
-      logger.error('refreshLiveActivityFromBackgroundContext 실패:', e);
+    // #1935 — LA + widget refresh. 권한(Always/WhileInUse) 무관 채널.
+    //   - LA: `refreshLiveActivityFromBackgroundContext`가 처리 (#900 Seam D, 기존 동작)
+    //   - widget: `updateWidgetFromSilentPush`가 처리 — WhileInUse 사용자 BG widget 회복
+    //     (paradigm `feedback_whileinuse_must_work` 정신 충족).
+    //
+    // Promise.allSettled로 격리해 한 채널 실패가 다른 채널을 막지 않게 한다. payload가
+    // null(invalid extract)인 경우 widget update는 skip — 신호 부재로 더 stale을 유발하지 않는다.
+    const tasks: Array<Promise<unknown>> = [
+      refreshLiveActivityFromBackgroundContext().catch((e) => {
+        logger.error('refreshLiveActivityFromBackgroundContext 실패:', e);
+      }),
+    ];
+    if (payload !== null) {
+      tasks.push(refreshWidgetForPayload(payload));
     }
+    await Promise.allSettled(tasks);
+  }
+}
+
+/**
+ * #1935 — silent push 채널 widget update wrapper.
+ *
+ * payload가 standard SilentPushPayload(ssot 필드 가능)일 때 SSoT를 우선 사용,
+ * reschedule / trip-ended payload는 ssot가 없으므로 BG context fallback만 활용.
+ * trip-ended는 trip을 종료시키지만 widget도 같은 신호로 freshness 갱신.
+ *
+ * `readWidgetRefreshContext` + `updateWidgetFromSilentPush` 조합. 예외는 swallow.
+ */
+async function refreshWidgetForPayload(payload: ExtractedPayload): Promise<void> {
+  try {
+    const ctx = await readWidgetRefreshContext();
+    const ssot = 'ssot' in payload ? payload.ssot : undefined;
+    await updateWidgetFromSilentPush(ssot, ctx.bgContext, ctx.destination, ctx.route);
+  } catch (e) {
+    logger.error('updateWidgetFromSilentPush 실패:', e);
   }
 }
 
