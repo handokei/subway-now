@@ -21,7 +21,11 @@ import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useTripGroundTruthStore, type TripGroundTruthState } from '../../store/useTripGroundTruthStore';
 import type { AlarmLogEntry } from '../../../alarm/utils/alarmLog';
 import * as observabilityClient from '../../../observability/api/observabilityMetricsClient';
-import { __resetRawSignalForTests__ } from '../../../observability/utils/rawSignalBuffer';
+import {
+  __resetRawSignalForTests__,
+  pushRawSignal,
+  type RawSignalEntry,
+} from '../../../observability/utils/rawSignalBuffer';
 
 // ─── mock ─────────────────────────────────────────────────────────────────────
 
@@ -446,6 +450,99 @@ describe('OperationDashboardSection', () => {
       await waitFor(() => {
         expect(screen.getByTestId('operation-metric-laPushDelivery')).toBeTruthy();
       });
+    });
+  });
+
+  // ── #1956 onMetricClick wire ─────────────────────────────────────────────────
+
+  describe('#1956 — onMetricClick wire', () => {
+    it('metric 클릭 시 onMetricClick prop이 호출된다', async () => {
+      const onMetricClick = jest.fn();
+      renderWithTheme(
+        <OperationDashboardSection logs={[]} onMetricClick={onMetricClick} />,
+      );
+      await act(async () => { jest.runAllTimers(); });
+      fireEvent.press(screen.getByTestId('operation-metric-alarmAccuracy'));
+      expect(onMetricClick).toHaveBeenCalledTimes(1);
+      expect(onMetricClick).toHaveBeenCalledWith('alarmAccuracy', expect.any(String));
+    });
+
+    it('onMetricClick 미전달 시 기존 inline drill-down 토글만 작동한다', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      // crash 없이 토글 가능해야 함 (regression — prop 추가 후 기존 동작 보존)
+      fireEvent.press(screen.getByTestId('operation-metric-locklessMiss'));
+      expect(screen.getByTestId('metric-drilldown-view')).toBeTruthy();
+    });
+
+    it('rawSignal 없음 → tripToken="unknown" 전달', async () => {
+      const onMetricClick = jest.fn();
+      renderWithTheme(
+        <OperationDashboardSection logs={[]} onMetricClick={onMetricClick} />,
+      );
+      await act(async () => { jest.runAllTimers(); });
+      fireEvent.press(screen.getByTestId('operation-metric-silentPushReach'));
+      expect(onMetricClick).toHaveBeenCalledWith('silentPushReach', 'unknown');
+    });
+
+    it('rawSignal 최신 entry corrId 전달 (corrId 있음)', async () => {
+      const baseEntry: RawSignalEntry = {
+        ts: 1_000,
+        corrId: 'corr-recent',
+        kind: 'cycle',
+        gps: null,
+        motion: null,
+        accelPattern: null,
+        cellular: null,
+        subsurface: null,
+        arvlCd: null,
+        line: null,
+        dir: null,
+        arcIdx: null,
+        arcProgress: null,
+        stationId: null,
+        source: null,
+        confidence: null,
+      };
+      pushRawSignal(baseEntry);
+
+      const onMetricClick = jest.fn();
+      renderWithTheme(
+        <OperationDashboardSection logs={[]} onMetricClick={onMetricClick} />,
+      );
+      await act(async () => { jest.runAllTimers(); });
+      fireEvent.press(screen.getByTestId('operation-metric-locklessMiss'));
+      expect(onMetricClick).toHaveBeenCalledWith('locklessMiss', 'corr-recent');
+    });
+
+    it('rawSignal 최신 entry corrId=null → "unknown" 전달', async () => {
+      const baseEntry: RawSignalEntry = {
+        ts: 1_000,
+        corrId: null,
+        kind: 'cycle',
+        gps: null,
+        motion: null,
+        accelPattern: null,
+        cellular: null,
+        subsurface: null,
+        arvlCd: null,
+        line: null,
+        dir: null,
+        arcIdx: null,
+        arcProgress: null,
+        stationId: null,
+        source: null,
+        confidence: null,
+      };
+      pushRawSignal(baseEntry);
+
+      const onMetricClick = jest.fn();
+      renderWithTheme(
+        <OperationDashboardSection logs={[]} onMetricClick={onMetricClick} />,
+      );
+      await act(async () => { jest.runAllTimers(); });
+      fireEvent.press(screen.getByTestId('operation-metric-boardableMiss'));
+      expect(onMetricClick).toHaveBeenCalledWith('boardableMiss', 'unknown');
     });
   });
 });

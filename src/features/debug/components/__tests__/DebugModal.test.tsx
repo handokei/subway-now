@@ -4997,4 +4997,47 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       });
     });
   });
+
+  // ── #1956 — TripDetailModal wire ─────────────────────────────────────────────
+
+  describe('#1956 — Operation Dashboard metric → TripDetailModal', () => {
+    const { __resetRawSignalForTests__ } = jest.requireActual(
+      '../../../observability/utils/rawSignalBuffer',
+    );
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      __resetRawSignalForTests__();
+      setupHookDefaults();
+      jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+        remove: jest.fn(),
+      } as unknown as ReturnType<typeof AppState.addEventListener>);
+    });
+
+    afterEach(() => {
+      __resetRawSignalForTests__();
+    });
+
+    it('metric 클릭 시 TripDetailModal이 열린다 (handleMetricClick)', async () => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('operation-metric-alarmAccuracy'));
+      });
+      expect(screen.getByTestId('trip-detail-card')).toBeTruthy();
+    });
+
+    it('TripDetailModal 닫기 → modal 사라짐 (handleTripDetailClose)', async () => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('operation-metric-alarmAccuracy'));
+      });
+      expect(screen.getByTestId('trip-detail-card')).toBeTruthy();
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('trip-detail-close'));
+      });
+      expect(screen.queryByTestId('trip-detail-card')).toBeNull();
+    });
+  });
 });
