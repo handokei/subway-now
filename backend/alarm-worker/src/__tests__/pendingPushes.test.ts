@@ -67,6 +67,20 @@ describe('pendingPushes (#566 P2a)', () => {
     it('kv === undefined면 graceful no-op (throw 없음)', async () => {
       await expect(putPending(undefined, makeEntry())).resolves.toBeUndefined();
     });
+
+    it('#1958 — pending: 적재와 동시에 sent:<pushId> stamp 도 적재 (5min TTL)', async () => {
+      const entry = makeEntry({ pushId: 'p-reach', sentAt: 1_700_000_000_000 });
+      await putPending(kv as unknown as KVNamespace, entry);
+      const sentRaw = kv.store.get('sent:p-reach');
+      expect(sentRaw).toBeDefined();
+      const parsed = JSON.parse(sentRaw!.value) as { pushId: string; sentAt: number };
+      expect(parsed.pushId).toBe('p-reach');
+      expect(parsed.sentAt).toBe(1_700_000_000_000);
+      // TTL이 5 * 60s 안쪽 (pending의 120s 보다 김)
+      const ttlMs = sentRaw!.expiresAt! - Date.now();
+      expect(ttlMs).toBeGreaterThan(4 * 60 * 1000);
+      expect(ttlMs).toBeLessThanOrEqual(5 * 60 * 1000);
+    });
   });
 
   describe('getPending', () => {

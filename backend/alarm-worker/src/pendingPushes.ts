@@ -14,6 +14,7 @@
 
 import type { AlarmPhase } from './alarm';
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
+import { stampSent } from './silentPushReachMetric';
 import type { ApnsEnv } from './types';
 
 const PENDING_PREFIX = 'pending:';
@@ -74,6 +75,10 @@ export async function putPending(
   await kv.put(pendingKey(entry.pushId), JSON.stringify(entry), {
     expirationTtl: PENDING_TTL_SEC,
   });
+  // #1958 — silent push reach metric (5min 윈도우 corrId join) 용 sent stamp 동시 적재.
+  // `pending:` (120s TTL) 와 별도 prefix(`sent:`, 5min TTL)로 발사 fact 를 보존한다.
+  // 실패는 silent — `stampSent` 내부에서 swallow.
+  await stampSent(kv, { pushId: entry.pushId, sentAt: entry.sentAt });
 }
 
 export async function getPending(

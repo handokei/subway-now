@@ -31,6 +31,19 @@ export interface LaPushDeliveryBucket {
   ratio: number;
 }
 
+/**
+ * #1958 — silent push 5min 윈도우 corrId(pushId) join 도달률 응답 bucket.
+ *  - `sent` / `received` / `joined`: backend `silentPushReachMetric.ts` 참고.
+ *  - `silentPushDeliveryRatio` (1h, received/(received+pending))와 별도 metric.
+ *  - 미설정 backend는 `silentPushReachRatio` 필드 자체가 누락 — UI는 optional 로 가드.
+ */
+export interface SilentPushReachBucket {
+  sent: number;
+  received: number;
+  joined: number;
+  ratio: number;
+}
+
 export interface ObservabilityMetrics {
   accuracyRatio: ObservabilityMetricsBucket;
   silentPushDeliveryRatio: ObservabilityMetricsBucket;
@@ -45,6 +58,11 @@ export interface ObservabilityMetrics {
   silentPushLatency?: { p50: number; p95: number; totalSamples: number } | null;
   /** #1779 — LA push 도달률 (sent / (sent + failed), 24h rolling window). */
   laPushDeliveryRatio: LaPushDeliveryBucket;
+  /**
+   * #1958 — silent push 5min 윈도우 corrId(pushId) join 도달률.
+   * 구 backend(필드 미응답) 호환 위해 optional — UI는 누락 시 placeholder 표시.
+   */
+  silentPushReachRatio?: SilentPushReachBucket;
   window: '24h';
   timestamp: number;
 }

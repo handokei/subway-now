@@ -115,6 +115,29 @@ describe('fetchObservabilityMetrics', () => {
       }
     });
 
+    it('forwards silentPushReachRatio from response (#1958)', async () => {
+      const metrics = makeMetrics();
+      metrics.silentPushReachRatio = { sent: 7, received: 5, joined: 5, ratio: 5 / 7 };
+      mockFetchOk(metrics);
+      const result = await fetchObservabilityMetrics();
+      expect(result.kind).toBe('ok');
+      if (result.kind === 'ok') {
+        expect(result.metrics.silentPushReachRatio?.sent).toBe(7);
+        expect(result.metrics.silentPushReachRatio?.received).toBe(5);
+        expect(result.metrics.silentPushReachRatio?.joined).toBe(5);
+        expect(result.metrics.silentPushReachRatio?.ratio).toBeCloseTo(5 / 7);
+      }
+    });
+
+    it('silentPushReachRatio 누락 (구 backend) → undefined graceful', async () => {
+      mockFetchOk(makeMetrics());
+      const result = await fetchObservabilityMetrics();
+      expect(result.kind).toBe('ok');
+      if (result.kind === 'ok') {
+        expect(result.metrics.silentPushReachRatio).toBeUndefined();
+      }
+    });
+
     it('calls the correct endpoint URL with window=24h', async () => {
       mockFetchOk(makeMetrics());
       await fetchObservabilityMetrics();
