@@ -16,6 +16,7 @@ import { useDestinationStore } from '../features/route/store/useDestinationStore
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
 import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
+import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
@@ -140,7 +141,13 @@ export default function HomeScreen() {
   // lockless intermediate gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`)를 통과시킨다.
   // 트리거: tryAutoLock(boardingPrompt 응답) / createLockFromTrain(BoardingTrainList 탭) 양쪽에서 stamp.
   const infoModeEnabled = useUserIntentStore((s) => s.infoModeEnabled);
+  const setInfoModeEnabled = useUserIntentStore((s) => s.setInfoModeEnabled);
   const loadInfoModeEnabled = useUserIntentStore((s) => s.loadInfoModeEnabled);
+  // #1973 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
+  // BG GPS 지속 가능 (네이버 패턴). startNavigation은 setInfoModeEnabled(true) 자동 wire.
+  const navigationActive = useNavigationStore((s) => s.navigationActive);
+  const startNavigation = useNavigationStore((s) => s.startNavigation);
+  const stopNavigation = useNavigationStore((s) => s.stopNavigation);
   // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
   const setDismissSilence = useAlarmEventStore((s) => s.setDismissSilence);
   // #746 reviewer P1: cold-start hydration — storage에 살아있는 silence 상태를
@@ -384,6 +391,17 @@ export default function HomeScreen() {
 
 
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
+  // #1973 — 안내 시작/중단 명시 trigger. infoMode 자동 wire — backend lockless intermediate
+  // gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`) 통과 보장. useBackgroundLocation은
+  // useNavigationStore.navigationActive를 deps로 보고 BG GPS lifecycle을 따른다.
+  const handleStartNavigation = useCallback(() => {
+    startNavigation();
+    void setInfoModeEnabled(true);
+  }, [startNavigation, setInfoModeEnabled]);
+  const handleStopNavigation = useCallback(() => {
+    stopNavigation();
+    void setInfoModeEnabled(false);
+  }, [stopNavigation, setInfoModeEnabled]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
     distanceKm: result?.distanceKm,
@@ -1290,6 +1308,35 @@ export default function HomeScreen() {
                       })}
                     </View>
                   )}
+                  {/* #1973 — 안내 시작/중단 명시 trigger 버튼. categorized 보유 + route 선택됨 시 노출.
+                       네이버 패턴: 사용자가 명시적으로 안내 시작해야 BG GPS + 자동 lock chain 활성화.
+                       WhileInUse 권한 사용자도 안내 시작 후 BG GPS 지속 (iOS native 파란 알약 표시). */}
+                  {categorized.length > 0 && route && !navigationActive && (
+                    <Pressable
+                      testID="home-navigation-start"
+                      style={[styles.navigationButton, { backgroundColor: colors.accent }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('navigation.start')}
+                      onPress={handleStartNavigation}
+                    >
+                      <Text style={[typography.label, { color: colors.onAccent, fontWeight: '700' }]}>
+                        {t('navigation.start')}
+                      </Text>
+                    </Pressable>
+                  )}
+                  {navigationActive && (
+                    <Pressable
+                      testID="home-navigation-stop"
+                      style={[styles.navigationButton, { borderColor: colors.warn, borderWidth: 1 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('navigation.stop')}
+                      onPress={handleStopNavigation}
+                    >
+                      <Text style={[typography.label, { color: colors.warn, fontWeight: '700' }]}>
+                        {t('navigation.stop')}
+                      </Text>
+                    </Pressable>
+                  )}
                   {journey && (() => {
                     const stops = journeyDisplayToStops(journey, { expanded: routeExpanded });
                     const selectedCandidate = categorized.find((r) => r.category.key === selectedKey)?.candidate;
@@ -1843,6 +1890,13 @@ const styles = StyleSheet.create({
   routePillSub: {
     ...typography.micro,
     marginTop: 2,
+  },
+  // #1973 — 안내 시작/중단 버튼. segment control 직후 노출되는 명시 trigger CTA.
+  navigationButton: {
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    alignItems: 'center',
   },
   actionsRow: {
     flexDirection: 'row',

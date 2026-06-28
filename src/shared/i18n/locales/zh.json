@@ -205,6 +205,11 @@
     "title": "正在检测地铁位置",
     "body": "正在后台追踪当前车站"
   },
+  "navigation": {
+    "start": "开始导航",
+    "stop": "停止导航",
+    "permissionPrompt": "开始导航需要位置权限"
+  },
   "arrival": {
     "upbound": "上行",
     "downbound": "下行",

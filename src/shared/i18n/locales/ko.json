@@ -205,6 +205,11 @@
     "title": "지하철 위치 감지 중",
     "body": "백그라운드에서 현재 역을 추적하고 있습니다"
   },
+  "navigation": {
+    "start": "안내 시작",
+    "stop": "안내 중단",
+    "permissionPrompt": "안내를 시작하려면 위치 권한이 필요합니다"
+  },
   "arrival": {
     "upbound": "상행",
     "downbound": "하행",

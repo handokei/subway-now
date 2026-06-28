@@ -205,6 +205,11 @@
     "title": "Detecting subway location",
     "body": "Tracking your current station in the background"
   },
+  "navigation": {
+    "start": "Start guidance",
+    "stop": "Stop guidance",
+    "permissionPrompt": "Location permission is required to start guidance"
+  },
   "arrival": {
     "upbound": "Upbound",
     "downbound": "Downbound",

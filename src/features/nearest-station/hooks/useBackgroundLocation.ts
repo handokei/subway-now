@@ -1,3 +1,6 @@
+// 본 hook은 cross-feature orchestrator — useNavigationStore(`route` slice) +
+// LOCATION_TRACKING_OPTIONS / locationTracking constants(`shared`)를 같이 소비한다.
+// eslint-disable-next-line import/no-restricted-paths
 import { useEffect } from 'react';
 import { Alert, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,6 +12,8 @@ import { BACKGROUND_LOCATION_TASK } from '../tasks/backgroundLocationTask';
 import { LOCATION_TRACKING_OPTIONS } from '../../../shared/constants/locationTracking';
 import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+// eslint-disable-next-line import/no-restricted-paths
+import { useNavigationStore } from '../../route/store/useNavigationStore';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -36,11 +41,26 @@ async function markDeniedAlertDismissed(): Promise<void> {
   }
 }
 
+/**
+ * #1973 — 안내 시작 버튼 명시 trigger 패러다임 (네이버 지도 패턴).
+ *
+ * destination이 설정돼도 자동으로 BG GPS를 시작하지 않는다. 사용자가 명시적으로
+ * "안내 시작"을 탭해야 (`useNavigationStore.navigationActive=true`) BG 추적을 시작.
+ *
+ * 권한 단계화 (`requestForegroundPermissionsAsync` → `requestBackgroundPermissionsAsync`):
+ *  1. Foreground (WhileInUse) — 거부 시 영구 dismiss 안내 + BG 추적 skip.
+ *  2. Background (Always) — 선택 — 거부해도 진행. WhileInUse만 있어도 iOS는
+ *     `allowsBackgroundLocationUpdates=true` + `showsBackgroundLocationIndicator=true`로
+ *     명시 trigger 후 BG GPS 지속 + 파란 알약 표시를 허용한다.
+ *  3. `startLocationUpdatesAsync` — 권한 하나라도 granted + navigationActive면 시작.
+ */
 export function useBackgroundLocation(destination: Station | null): void {
   const { t } = useTranslation();
+  const navigationActive = useNavigationStore((s) => s.navigationActive);
 
   useEffect(() => {
-    if (!destination) {
+    // 자동 trigger 차단: destination만 있고 navigationActive=false면 BG GPS 미시작 (paradigm).
+    if (!destination || !navigationActive) {
       Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(noop);
       return;
     }
@@ -48,31 +68,35 @@ export function useBackgroundLocation(destination: Station | null): void {
     let cancelled = false;
 
     (async () => {
-      const { status } = await Location.requestBackgroundPermissionsAsync();
-      if (status !== 'granted' || cancelled) {
-        logger.info('백그라운드 위치 권한 거부 또는 취소됨');
-        if (status !== 'granted' && !cancelled) {
-          // #791: 영구 dismiss 플래그를 AsyncStorage에서 확인. 한 번 안내를 받은 사용자에게
-          // 매 destination 변경/앱 재시작마다 같은 Alert를 띄우는 것은 스팸 + WhileInUse 1차
-          // 시나리오 정책 위반. dismiss 이력이 있으면 silent.
-          const dismissed = await isDeniedAlertDismissed();
-          if (cancelled || dismissed) return;
-          await markDeniedAlertDismissed();
-          // setItem await 동안 cleanup이 실행됐을 수 있음. dismissed 플래그는 storage에 들어가도
-          // Alert 발사는 차단(정책: 누락 1회 허용 > 스팸).
-          if (cancelled) return;
-          Alert.alert(
-            t('permissions.backgroundDeniedTitle'),
-            t('permissions.backgroundDeniedBody'),
-            [
-              { text: t('common.close'), style: 'cancel' },
-              { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() },
-            ],
-          );
-        }
+      // Phase 1: Foreground (WhileInUse) — 최소 보장. 거부 시 BG 추적 자체 불가.
+      const fg = await Location.requestForegroundPermissionsAsync();
+      if (cancelled) return;
+      if (fg.status !== 'granted') {
+        logger.info('Foreground 위치 권한 거부됨 — BG 추적 skip');
+        const dismissed = await isDeniedAlertDismissed();
+        if (cancelled || dismissed) return;
+        await markDeniedAlertDismissed();
+        if (cancelled) return;
+        Alert.alert(
+          t('permissions.backgroundDeniedTitle'),
+          t('permissions.backgroundDeniedBody'),
+          [
+            { text: t('common.close'), style: 'cancel' },
+            { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() },
+          ],
+        );
         return;
       }
 
+      // Phase 2: Background (Always) — 선택. 거부해도 진행 (WhileInUse만 있어도 OK).
+      // iOS `allowsBackgroundLocationUpdates=true`로 명시 trigger 후 BG GPS 지속 가능.
+      const bg = await Location.requestBackgroundPermissionsAsync();
+      if (cancelled) return;
+      if (bg.status !== 'granted') {
+        logger.info('Background(Always) 권한 거부 — WhileInUse로 진행 (네이버 패턴)');
+      }
+
+      // Phase 3: startLocationUpdatesAsync — WhileInUse granted 시 시작.
       const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
       if (isRegistered || cancelled) return;
 
@@ -86,7 +110,7 @@ export function useBackgroundLocation(destination: Station | null): void {
           notificationBody: t('background.body'),
         },
       });
-      logger.info('백그라운드 위치 추적 시작');
+      logger.info('백그라운드 위치 추적 시작 (navigationActive)');
     })();
 
     return () => {
@@ -94,5 +118,5 @@ export function useBackgroundLocation(destination: Station | null): void {
       Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(noop);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destination?.id]);
+  }, [destination?.id, navigationActive]);
 }

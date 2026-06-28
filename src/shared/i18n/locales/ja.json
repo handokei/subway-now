@@ -205,6 +205,11 @@
     "title": "地下鉄の位置を検出中",
     "body": "バックグラウンドで現在駅を追跡しています"
   },
+  "navigation": {
+    "start": "案内を開始",
+    "stop": "案内を停止",
+    "permissionPrompt": "案内を開始するには位置情報の権限が必要です"
+  },
   "arrival": {
     "upbound": "上り",
     "downbound": "下り",
