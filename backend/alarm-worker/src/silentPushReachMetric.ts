@@ -87,10 +87,6 @@ export function sentKey(pushId: string): string {
   return `${SENT_PREFIX}${pushId}`;
 }
 
-function receivedKeyFor(pushId: string): string {
-  return `${RECEIVED_PREFIX}${pushId}`;
-}
-
 /**
  * silent push 발사 직후 호출 — sent stamp 1건 적재.
  *
