@@ -30,6 +30,15 @@ jest.mock('../../utils/findNearestStation', () => ({
 jest.mock('../useNearestStation');
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 jest.mock('../../../route/hooks/useTrainPositions');
+// #1926 — lockless 4-signal consensus는 positionTrainConsensus.test.ts에서 단위 검증.
+// 기본은 pass 상태로 mock해 기존 회귀 테스트(position-train 채택)를 보존. 본 파일
+// "#1926 lockless 4-signal consensus" describe에서 override해 reject 분기 검증.
+jest.mock('../useAccelerometerFingerprint', () => ({
+  useAccelerometerFingerprint: jest.fn(() => 'automotive'),
+}));
+jest.mock('../useCellularTech', () => ({
+  useCellularTech: jest.fn(() => 'surface'),
+}));
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
@@ -516,6 +525,91 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('motionStationary=false → fire path 미승격 (#1437 박탈)', () => {
       const result = runLockedMotionScenario(false);
       expect(result.current.source).not.toBe('boarding-lock-interp');
+    });
+  });
+
+  describe('#1926 (F-fix) lockless 4-signal consensus 가드 — positionTrainResult', () => {
+    // helper의 lockless 분기: barometer=true OR accel!==automotive OR cellular!==surface → reject.
+    // 본 통합 테스트는 wire-up 검증. 단위 분기는 positionTrainConsensus.test.ts에서 verify.
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const accelMock = require('../useAccelerometerFingerprint').useAccelerometerFingerprint as jest.Mock;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const cellularMock = require('../useCellularTech').useCellularTech as jest.Mock;
+
+    afterEach(() => {
+      // 본 describe 종료 시 default(automotive/surface) 복귀 — 다른 describe 회귀 차단.
+      accelMock.mockImplementation(() => 'automotive');
+      cellularMock.mockImplementation(() => 'surface');
+    });
+
+    it('lockless + accelerometerPattern=walking → position-train 미채택', () => {
+      accelMock.mockImplementation(() => 'walking');
+      const { result } = setup({
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-CONSENSUS' })] },
+        positionsOnce: true,
+        trainCode: 'T-CONSENSUS',
+        routeCtx: { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk },
+        // lock 없음 (lockless trip).
+      });
+      expect(result.current.source).not.toBe('position-train');
+    });
+
+    it('lockless + cellularEnvironmentVote=underground → position-train 미채택', () => {
+      cellularMock.mockImplementation(() => 'underground');
+      const { result } = setup({
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-CONSENSUS-2' })] },
+        positionsOnce: true,
+        trainCode: 'T-CONSENSUS-2',
+        routeCtx: { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk },
+      });
+      expect(result.current.source).not.toBe('position-train');
+    });
+
+    it('lockless + cellular surface-weak (non-surface) → position-train 미채택', () => {
+      // helper 분기: cellular === 'surface' 만 통과. 'surface-weak'은 보수적으로 reject.
+      cellularMock.mockImplementation(() => 'surface-weak');
+      const { result } = setup({
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-CONSENSUS-3' })] },
+        positionsOnce: true,
+        trainCode: 'T-CONSENSUS-3',
+        routeCtx: { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk },
+      });
+      expect(result.current.source).not.toBe('position-train');
+    });
+
+    it('lockless + station progression 2 hop+ jump → konkuk station 미선정 (checkStationProgression reject)', () => {
+      // helper checkStationProgression: ±1 hop만 허용. arc=[yongmasan, junggok, gunja, konkuk].
+      // 첫 render: GPS=yongmasan, train=yongmasan → prevCascadeResultRef = yongmasan(idx 0).
+      // 두번째 render: GPS=konkuk(=distance gate 통과), train=konkuk → |3-0|=3 → reject.
+      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+
+      // 첫 render: GPS=yongmasan, train=yongmasan → 채택.
+      mockNearest.mockReturnValueOnce(gpsBase());
+      mockFindTop.mockReturnValueOnce([{ station: yongmasan, distanceKm: 0 }]);
+      mockPos.mockReturnValueOnce(positionRet({
+        line: '7',
+        trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-JUMP' })],
+      }));
+      const { result, rerender } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeCtx, 'T-JUMP', null),
+      );
+
+      // 두번째 render: GPS=konkuk (distance gate 통과 시켜야 함), train=konkuk.
+      mockNearest.mockReturnValue({
+        ...gpsBase(),
+        userLocation: { lat: konkuk.lat, lng: konkuk.lng },
+        result: { station: konkuk, distanceKm: 0 },
+      });
+      mockFindTop.mockReturnValue([{ station: konkuk, distanceKm: 0 }]);
+      mockPos.mockReturnValue(positionRet({
+        line: '7',
+        trains: [train(konkuk.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-JUMP' })],
+      }));
+      rerender({});
+      // konkuk가 station progression check에 의해 position-train으로 채택되지 않아야 한다.
+      // (cascade는 GPS top-1 = konkuk로 fallback할 수 있지만 source !== 'position-train')
+      expect(result.current.source).not.toBe('position-train');
     });
   });
 });

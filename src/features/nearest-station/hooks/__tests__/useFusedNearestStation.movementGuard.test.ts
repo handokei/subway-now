@@ -17,6 +17,13 @@
 jest.mock('../useNearestStation');
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 jest.mock('../../../route/hooks/useTrainPositions');
+// #1926 — lockless 4-signal consensus는 positionTrainConsensus.test.ts에서 단위 검증.
+jest.mock('../useAccelerometerFingerprint', () => ({
+  useAccelerometerFingerprint: () => 'automotive',
+}));
+jest.mock('../useCellularTech', () => ({
+  useCellularTech: () => 'surface',
+}));
 jest.mock('../../utils/findNearestStation');
 jest.mock('../../../route/utils/findActiveLines');
 jest.mock('../../utils/fusionDistanceGate', () => ({

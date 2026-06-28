@@ -31,6 +31,15 @@ import { makeDirectRoute, makeTransferRoute, makeMultiTransferRoute } from '../.
 jest.mock('../useNearestStation');
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 jest.mock('../../../route/hooks/useTrainPositions');
+// #1926 — lockless 4-signal consensus 가드는 positionTrainConsensus.test.ts에서 단위 검증.
+// 기존 fusion 테스트는 consensus를 항상 pass 상태로 mock해 회귀 차단 의도(position-train 채택)를 보존.
+// jest.fn으로 export해 특정 케이스(예: motionForDump 'unknown' 경로)에서 override 가능.
+jest.mock('../useAccelerometerFingerprint', () => ({
+  useAccelerometerFingerprint: jest.fn(() => 'automotive'),
+}));
+jest.mock('../useCellularTech', () => ({
+  useCellularTech: jest.fn(() => 'surface'),
+}));
 jest.mock('../../utils/findNearestStation', () => ({
   findTopNearestStations: jest.fn(),
 }));
@@ -1586,11 +1595,20 @@ describe('useFusedNearestStation', () => {
   });
 
   describe('#963 fusionDebugBuffer decisionKey signal mask', () => {
+    // #1926 — 본 describe는 motionForDump fallback 분기(accelerometerPattern='unknown' →
+    // motionStationary boolean) 검증이 핵심이므로, 본 describe 동안 accelerometerPattern
+    // mock을 'unknown'으로 override해 fallback path를 노출.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const accelMockGlobal = require('../useAccelerometerFingerprint').useAccelerometerFingerprint as jest.Mock;
     beforeEach(() => {
       mockUseNearest.mockReturnValue(gpsBase());
       mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
       mockUseArrival.mockReturnValue(arrivalRet(null));
       mockUsePositions.mockReturnValue(positionRet(null));
+      accelMockGlobal.mockImplementation(() => 'unknown');
+    });
+    afterEach(() => {
+      accelMockGlobal.mockImplementation(() => 'automotive');
     });
 
     const renderWithMotion = (motionStationary: boolean | undefined) =>

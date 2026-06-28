@@ -46,6 +46,10 @@ import {
 import { haversine } from '../../../shared/utils/haversine';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
+import {
+  checkStationProgression,
+  requiresPositionTrainConsensus,
+} from '../utils/positionTrainConsensus';
 import { surfaceSSOTConsensus } from '../utils/surfaceSSotConsensus';
 import { undergroundSSOTConsensus } from '../utils/undergroundSSotConsensus';
 import { inferEnvironment, type Environment, type InferEnvironmentResult } from '../utils/inferEnvironment';
@@ -702,10 +706,15 @@ export function useFusedNearestStation(
     [candidateTrains, gps.userLocation, boardingLock, arcStations, locklessGuard],
   );
 
-  // #445: trainProgress 갱신 시각 추적 + TTL 만료 후 첫 갱신에서 sticky 락 해제.
+  // #445: trainProgress 갱신 시각 추적 + TTL 만료 후 first 갱신에서 sticky 락 해제.
   // 폴링 정지로 TTL이 지난 뒤 재개되면 trackTrainProgress가 stale sticky를 다시 픽업해
   // 잘못된 락이 반복되는 사이클을 끊는다 — 다음 사이클은 새 후보로 정상 disambiguation.
   const lastProgressTsRef = useRef<number>(0);
+
+  // #1749 — station hop 추적: 직전 cycle result. #1926 (F-fix) lockless position-train
+  // station progression check도 동일 ref 재사용. 같은 noLine에서 hop > PICKER_HOP_ANOMALY_THRESHOLD면
+  // silent skip (prev 유지). update는 cascade 채택 직후(아래 cascadePicker 분기).
+  const prevCascadeResultRef = useRef<NearestStationResult | null>(null);
   useEffect(() => {
     if (!trainProgress) return;
     const now = Date.now();
@@ -775,6 +784,31 @@ export function useFusedNearestStation(
     ) {
       return null;
     }
+    // #1926 (F-fix): lockless 4-signal consensus.
+    // lockless trip은 기존 L782/786/797 boardingLock-conditional 게이트가 모두 비활성이라
+    // distance gate(0.6km)만으로 채택되는 hole이 있다 (6/27 15:49:35 trip evidence: pt=강남 jump).
+    // 사용자 명시 의향 신호(boardingLock)가 없으면 device-side self-contained 4-signal consensus
+    // (barometer / accelerometer / cellular) 필수 — GPS는 의사결정에 미사용
+    // (`feedback_no_gps_for_decision`).
+    if (
+      !requiresPositionTrainConsensus(
+        { barometerSubsurface, accelerometerPattern, cellularEnvironmentVote },
+        boardingLock ?? null,
+      )
+    ) {
+      return null;
+    }
+    // #1926 (F-fix): lockless 시 station progression check (±1 hop).
+    // 직전 cascade result 기준 candidate 역이 2 hop+ jump면 X10 위반(fusion picker output ≠ input).
+    // boardingLock 활성 시는 기존 forward-only / arc-window 가드(L807~)가 boarding index 기준으로
+    // 더 정확한 진행 제약을 강제하므로 본 progression check를 우회한다 (false negative 차단).
+    // arc 밖(cross-line) 또는 prev null(첫 cycle) 시 helper 내부에서 면제.
+    if (
+      boardingLock == null &&
+      !checkStationProgression(station.id, prevCascadeResultRef.current, arcStations)
+    ) {
+      return null;
+    }
     // #662: BoardingLock 활성 시 trainProgress가 lock의 노선과 다르면 강등.
     // 환승역 정지(speed≈0)에서 trackTrainProgress가 옆 노선 통과 열차에 잠기는 케이스 방어 —
     // 사용자가 명시적으로 탭한 열차(lock.boardingLine, #663으로 정확)를 source of truth로 신뢰.
@@ -800,7 +834,19 @@ export function useFusedNearestStation(
       }
     }
     return candidate;
-  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations, lockedTrainCodeAlive]);
+  }, [
+    trainProgress,
+    gps.userLocation,
+    gps.accuracyMeters,
+    candidates,
+    boardingLock,
+    arcStations,
+    lockedTrainCodeAlive,
+    // #1926 (F-fix) — lockless 4-signal consensus deps.
+    barometerSubsurface,
+    accelerometerPattern,
+    cellularEnvironmentVote,
+  ]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {
@@ -1128,9 +1174,8 @@ export function useFusedNearestStation(
   //   - lockless: null 반환(다음 cycle에서 재계산).
   const pickerStuckRef = useRef<{ stationId: string; adoptedAt: number } | null>(null);
 
-  // #1749 — station hop > 5 detect: 직전 cycle result 추적.
-  // 같은 noLine에서 hop > PICKER_HOP_ANOMALY_THRESHOLD 이면 silent skip (prev 유지).
-  const prevCascadeResultRef = useRef<NearestStationResult | null>(null);
+  // #1749 — station hop > 5 detect는 prevCascadeResultRef(상단 선언) 사용.
+  // #1926 (F-fix) lockless position-train station progression check가 동일 ref를 공유.
 
   // #1896 (RC-8) — boarding-lock GPS displacement gate.
   //

@@ -29,6 +29,9 @@ import type { LockSuggestionMirror } from '../utils/backendSsotMirror';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
 import { logBoardingPromptAutoLock } from '../utils/alarmLog';
 import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
+import { requiresPositionTrainConsensus } from '../../nearest-station/utils/positionTrainConsensus';
+import type { AccelerometerPattern } from '../../nearest-station/utils/accelerometerFingerprint';
+import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellularTech';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -53,6 +56,19 @@ export interface UseBoardingLockControllerInputs {
    * null은 미측정(게이트에서 motionStationary로 fallback).
    */
   speedMps?: number | null;
+  /**
+   * #1926 (A-fix) — device-side autoLock fast path 4-signal consensus 가드.
+   *
+   * `useBoardingLockController` autoLock effect는 source label='position-train' 자체 발사
+   * (BoardingTrainList 탭 / boardingPrompt 응답 같은 사용자 명시 의향 X)이므로 lockless 시
+   * `position-train` 채택 동일 paradigm을 적용해야 한다 (`feedback_user_intent_equal_protection`).
+   *
+   * 모두 미전달(undefined) 시 helper가 보수적으로 consensus 미달 판정 → createLock 차단.
+   * 다른 path(`createLockFromTrain` / `hydrateLockFromCandidate`)에는 영향 없음 (사용자 의향 source).
+   */
+  barometerSubsurface?: boolean | null | undefined;
+  accelerometerPattern?: AccelerometerPattern | null;
+  cellularEnvironmentVote?: CellularEnvironmentVote | null;
 }
 
 export interface UseBoardingLockControllerResult {
@@ -129,6 +145,9 @@ export function useBoardingLockController({
   expectedDurationMinutes,
   motionStationary,
   speedMps,
+  barometerSubsurface,
+  accelerometerPattern,
+  cellularEnvironmentVote,
 }: UseBoardingLockControllerInputs): UseBoardingLockControllerResult {
   const lock = useBoardingLockStore((s) => s.lock);
   const loadLock = useBoardingLockStore((s) => s.loadLock);
@@ -463,6 +482,28 @@ export function useBoardingLockController({
     }
     // allowedLines 검증 — useBoardingPromptResponder.tryAutoLock과 createLockFromTrain의 정책을 그대로 반영.
     if (allowedLines && !allowedLines.has(chosen.line)) return;
+    // #1926 (A-fix): device-side autoLock fast path 4-signal consensus.
+    //
+    // 본 effect는 source label='position-train' 자체 발사 — 사용자 명시 의향(BoardingTrainList 탭 /
+    // boardingPrompt 응답 / lockSuggestion / hydrateLockFromCandidate)이 모두 부재한 device-side 자체
+    // 결정 path. 따라서 lockless `position-train` 채택과 동일 paradigm으로 4-signal consensus 필수
+    // (`ADR-014` 첫 줄 / `feedback_device_self_contained_fusion`).
+    //
+    // 본 effect 진입 시 `if (lock) return` 가드로 lock은 항상 null — helper 두 번째 인자 = null.
+    // consensus 미달 시 `lastOriginAutoLockKeyRef.current`는 set하지 않아 다음 cycle 재시도가 가능하다
+    // (graceful — 환경 신호가 늦게 합의되는 케이스 흡수).
+    if (
+      !requiresPositionTrainConsensus(
+        {
+          barometerSubsurface: barometerSubsurface ?? null,
+          accelerometerPattern: accelerometerPattern ?? null,
+          cellularEnvironmentVote: cellularEnvironmentVote ?? null,
+        },
+        null,
+      )
+    ) {
+      return;
+    }
     // idempotency ref는 시도 직전에 set — store action이 race/storage 실패해도 다음 cycle 재시도하지 않도록.
     // graceful 실패는 ref reset 없이 그대로 두고, 사용자 release 시 자연 재진입(다른 key로) 시점에 재시도된다.
     lastOriginAutoLockKeyRef.current = originKey;
@@ -521,6 +562,11 @@ export function useBoardingLockController({
     expectedDurationMinutes,
     allowedLines,
     createLock,
+    direction,
+    // #1926 (A-fix) — 4-signal consensus deps.
+    barometerSubsurface,
+    accelerometerPattern,
+    cellularEnvironmentVote,
   ]);
 
   return {

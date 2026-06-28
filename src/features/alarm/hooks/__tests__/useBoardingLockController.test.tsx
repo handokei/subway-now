@@ -99,6 +99,12 @@ const defaultInputs: UseBoardingLockControllerInputs = {
   arrival,
   currentStation: stationA,
   expectedDurationMinutes: 20,
+  // #1926 (A-fix) — default 4-signal consensus를 pass 상태로 설정. autoLock 기존 시나리오는
+  // consensus 가드가 추가되기 전과 동일하게 동작해야 한다. consensus reject 케이스는
+  // 'autoLock fast path consensus' describe 블록에서 별도 검증.
+  barometerSubsurface: false,
+  accelerometerPattern: 'automotive',
+  cellularEnvironmentVote: 'surface',
 };
 
 describe('useBoardingLockController', () => {
@@ -1547,6 +1553,90 @@ describe('useBoardingLockController', () => {
           reason: 'autolock-lock-failed',
           originStation: '강남',
           line: '2',
+        });
+      });
+    });
+
+    describe('#1926 (A-fix) autoLock fast path 4-signal consensus', () => {
+      // 4-signal consensus 미달 시 createLock 호출 0건 + idempotency ref 미설정(다음 cycle 재시도).
+      // helper(requiresPositionTrainConsensus)의 lockless 분기는 positionTrainConsensus.test.ts에서
+      // 단위로 검증. 본 블록은 useBoardingLockController wire가 helper에 올바르게 위임하는지 검증.
+
+      it('barometerSubsurface=true (지하 확정) → createLock 호출 0건 (consensus reject)', async () => {
+        const createLockMock = jest.fn().mockResolvedValue(undefined);
+        useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+        renderHook(() =>
+          useBoardingLockController({
+            ...defaultInputs,
+            arrival: singleArrival,
+            barometerSubsurface: true,
+          }),
+        );
+        // helper logic은 sync — pickAutoTrainCodeFromArrivals + consensus gate 모두 sync.
+        // wait 후에도 호출이 발생하지 않음을 검증.
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        expect(createLockMock).not.toHaveBeenCalled();
+      });
+
+      it.each(['walking', 'stationary', 'unknown'] as const)(
+        'accelerometerPattern=%s (non-automotive) → createLock 호출 0건',
+        async (pattern) => {
+          const createLockMock = jest.fn().mockResolvedValue(undefined);
+          useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+          renderHook(() =>
+            useBoardingLockController({
+              ...defaultInputs,
+              arrival: singleArrival,
+              accelerometerPattern: pattern,
+            }),
+          );
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+          expect(createLockMock).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each(['surface-weak', 'underground', 'unknown'] as const)(
+        'cellularEnvironmentVote=%s (non-surface) → createLock 호출 0건',
+        async (vote) => {
+          const createLockMock = jest.fn().mockResolvedValue(undefined);
+          useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+          renderHook(() =>
+            useBoardingLockController({
+              ...defaultInputs,
+              arrival: singleArrival,
+              cellularEnvironmentVote: vote,
+            }),
+          );
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+          expect(createLockMock).not.toHaveBeenCalled();
+        },
+      );
+
+      it('모든 신호 undefined (default) → createLock 호출 0건 (보수 reject)', async () => {
+        const createLockMock = jest.fn().mockResolvedValue(undefined);
+        useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+        renderHook(() =>
+          useBoardingLockController({
+            ...defaultInputs,
+            arrival: singleArrival,
+            barometerSubsurface: undefined,
+            accelerometerPattern: undefined,
+            cellularEnvironmentVote: undefined,
+          }),
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        expect(createLockMock).not.toHaveBeenCalled();
+      });
+
+      it('4-signal consensus 통과 → 기존 createLock 호출 (회귀 차단)', async () => {
+        // defaultInputs는 이미 consensus pass 상태(barometerSubsurface=false / automotive / surface).
+        const createLockMock = jest.fn().mockResolvedValue(undefined);
+        useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+        renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, arrival: singleArrival }),
+        );
+        await waitFor(() => {
+          expect(createLockMock).toHaveBeenCalled();
         });
       });
     });

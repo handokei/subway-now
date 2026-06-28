@@ -31,6 +31,8 @@ import { buildWidgetTripContext } from '../features/widget/utils/buildTripContex
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useAccelerometer } from '../features/nearest-station/hooks/useAccelerometer';
+import { useAccelerometerFingerprint } from '../features/nearest-station/hooks/useAccelerometerFingerprint';
+import { useCellularTech } from '../features/nearest-station/hooks/useCellularTech';
 import { useBarometer } from '../shared/hooks/useBarometer';
 import { useTripOrigin } from '../features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../features/nearest-station/hooks/useBackgroundLocation';
@@ -197,6 +199,11 @@ export default function HomeScreen() {
   // 조회하는 ambient state를 채운다. 반환값 없음 — useMotionActivity/useBarometer와 동일 패턴.
   // 미지원/권한 거절은 accelMotionState가 null을 유지해 BG task가 graceful fallback.
   useAccelerometer();
+  // #1926 (A-fix) — autoLock fast path 4-signal consensus 가드용 fingerprint + cellular vote.
+  // useFusedNearestStation 내부에서도 동일 hook을 호출하지만 React는 component-level 격리이므로
+  // 두 hook instance는 독립. native module은 module-level cache라 비용 미미.
+  const accelerometerPattern = useAccelerometerFingerprint();
+  const cellularEnvironmentVote = useCellularTech();
   // #903 (Seam G) — 기압계 dP/dt 신호. 미지원/권한 거절은 subsurface=false 고정(graceful).
   //   1) useFusedNearestStation: 'gps-only' → 'gps-only-underground' 강등 + sticky automotive 트리거.
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
@@ -606,6 +613,10 @@ export default function HomeScreen() {
     expectedDurationMinutes: staticEtaMinutes,
     motionStationary,
     speedMps,
+    // #1926 (A-fix) — 4-signal consensus 가드 신호.
+    barometerSubsurface,
+    accelerometerPattern,
+    cellularEnvironmentVote,
   });
   // #1844 — cold start mismatch 재확인: lock 해제 → 사용자가 다시 탑승 선택 가능.
   const handleColdStartMismatchReselect = useCallback(() => {
