@@ -33,6 +33,7 @@ import { evaluateMovement } from '../utils/movementGate';
 // #1237 — BG tick에서도 위젯 SSOT(App Groups UserDefaults)를 갱신해 FG 진입 전까지 stale로 남지 않게 한다.
 // cross-feature import는 파일 헤더의 file-level eslint-disable로 옵트인 (orchestrator 본질).
 import { saveStationToWidget } from '../../widget/api/widgetStorage';
+import { buildWidgetTripContext } from '../../widget/utils/buildTripContext';
 // #1281 — BG 환승 자동 detect. FG `useTransferAutoDetect`와 같은 `evaluateTransferSwap` pure 결정을
 // 공유하는 route 슬라이스 orchestrator. cross-feature import는 본 파일 헤더 file-level disable로 옵트인.
 import { evaluateBackgroundTransferSwap } from '../../route/utils/backgroundTransferSwap';
@@ -288,7 +289,15 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       // #1237 (Phase 2) — 위젯 SSOT 갱신. saveStationToWidget의 module-level 50m bucket dedupe
       // + FRESHNESS_REFRESH_MS는 FG/BG 같은 인스턴스라 자연 동작. null nearest는 호출 X
       // (FG/BG transient null로 widget zap 방지, Phase 3 clear 정책 완화와 정합성).
-      await saveStationToWidget(nearest.station, nearest.distanceKm);
+      // #1929 (F-W3) — tripContext stamp로 SubwayWidget.swift:229 RC-15 expired-gate 활성화.
+      // BG는 React state 없으므로 위에서 hydrate된 destination + storedRoute로 helper 호출.
+      // currentStation은 BG에서 sticky lock이 없어 nearest로 근사 (위젯은 SSoT mirror, FG fusion이 정확성 보장).
+      const bgTripContext = buildWidgetTripContext({
+        destination,
+        currentStation: nearest.station,
+        route: storedRoute,
+      });
+      await saveStationToWidget(nearest.station, nearest.distanceKm, undefined, undefined, bgTripContext);
     }
 
     // #1281 — BG 환승 자동 detect. 주머니 속 환승에서 FG hook 진입점이 없어 옛 노선 lock이
