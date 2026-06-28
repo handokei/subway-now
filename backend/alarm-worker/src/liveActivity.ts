@@ -358,6 +358,12 @@ async function fireTripEndedAlertPush(
     return;
   }
   const pushId = crypto.randomUUID();
+  // #1933 — 외부 contract 보호. `'la-stale-backstop'`은 backend 내부 식별자로만 사용하고
+  // alert push payload에는 client가 인식하는 기존 reason(`'expired'`)으로 매핑한다 —
+  // force-end(9h) 패턴과 동일한 backward-compat. client는 새 enum 분기를 추가하지 않아도
+  // `'unknown'`으로 normalize되지 않고 기존 graceful handler가 그대로 동작한다.
+  const externalReason: TripEndedReason =
+    reason === 'la-stale-backstop' ? 'expired' : reason;
   // JWT 서명 / network reject 등의 throw가 cleanup 흐름을 차단하지 않도록 swallow.
   // trip-ended push는 graceful fail-soft — graceful loss 시 클라는 다음 FG hydrate에서 회복.
   try {
@@ -369,7 +375,7 @@ async function fireTripEndedAlertPush(
         sendTripEndedAlertPush({
           deviceToken: trip.token,
           pushId,
-          reason,
+          reason: externalReason,
           sentAt: now,
           // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
           tripToken: trip.token,
