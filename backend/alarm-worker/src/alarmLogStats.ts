@@ -50,6 +50,7 @@ interface AlarmLogEntryLike {
  * - `tripsScanned`: 윈도우 안 scan된 trip-evidence object 수
  * - `accelPatternCounts`: #1769 — source='accel-pattern-observed' 엔트리의 pattern별 카운트.
  * - `boardableLookupCounts`: #1503 (M3 Sub C wire) — source='boardable-lookup' outcome 분포.
+ * - `groundTruthCounts`: #1957 (#1503 잔여 1/3) — source='ground-truth-response' outcome 분포.
  */
 export interface AlarmLogStatsResponse {
   windowStart: number;
@@ -69,12 +70,22 @@ export interface AlarmLogStatsResponse {
    * `observabilityMetrics.boardableMissRatio = miss / (ok + miss)` 산출 원천.
    */
   boardableLookupCounts: { ok: number; miss: number };
+  /**
+   * #1957 (#1503 잔여 1/3) — M2 사용자 정답지(useTripGroundTruthStore) 응답 분포.
+   * source='ground-truth-response' + outcome 분기 누적:
+   *   outcome='fired'      → yes (정답 — "이번 trip 알람 정확했어요")
+   *   outcome='suppressed' → no  (오답 — "틀린 알람이 있었어요")
+   *   outcome='received'   → pending (응답 회피 / dismiss / 자동 만료)
+   * `observabilityMetrics.algorithmAccuracyRatio = yes / (yes + no)` 산출 원천.
+   * pending은 분모 제외 — 응답률(1주 30%+) 측정용 신호로 별도 보존.
+   */
+  groundTruthCounts: { yes: number; no: number; pending: number };
 }
 
 const ACCEL_PATTERNS = ['automotive', 'walking', 'stationary', 'unknown'] as const;
 type AccelPattern = (typeof ACCEL_PATTERNS)[number];
 
-/** parse 결과를 outcome/source/reason/accelPattern/boardableLookup 카운터에 누적. shape mismatch entry는 silent drop. */
+/** parse 결과를 outcome/source/reason/accelPattern/boardableLookup/groundTruth 카운터에 누적. shape mismatch entry는 silent drop. */
 function accumulateEntry(
   entry: AlarmLogEntryLike,
   outcomeCounts: Record<string, number>,
@@ -82,6 +93,7 @@ function accumulateEntry(
   sourceCounts: Record<string, number>,
   accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number },
   boardableLookupCounts: { ok: number; miss: number },
+  groundTruthCounts: { yes: number; no: number; pending: number },
 ): void {
   if (typeof entry.outcome === 'string' && entry.outcome.length > 0) {
     outcomeCounts[entry.outcome] = (outcomeCounts[entry.outcome] ?? 0) + 1;
@@ -108,6 +120,18 @@ function accumulateEntry(
       boardableLookupCounts.ok += 1;
     } else if (entry.outcome === 'suppressed') {
       boardableLookupCounts.miss += 1;
+    }
+  }
+  // #1957 (#1503 잔여 1/3) — ground truth 응답 집계: source='ground-truth-response', outcome 분기.
+  // outcome='fired'=yes(정답), 'suppressed'=no(오답), 'received'=pending(응답 회피/dismiss).
+  // 그 외 outcome은 schema 진화 방어로 silent drop.
+  if (entry.source === 'ground-truth-response') {
+    if (entry.outcome === 'fired') {
+      groundTruthCounts.yes += 1;
+    } else if (entry.outcome === 'suppressed') {
+      groundTruthCounts.no += 1;
+    } else if (entry.outcome === 'received') {
+      groundTruthCounts.pending += 1;
     }
   }
 }
@@ -161,13 +185,14 @@ function topN(dict: Record<string, number>, n: number): Record<string, number> {
   return Object.fromEntries(sorted);
 }
 
-/** scan loop 누적 카운터 — outcome/reason/source/accelPattern/boardableLookup dict + totalEvents/tripsScanned. */
+/** scan loop 누적 카운터 — outcome/reason/source/accelPattern/boardableLookup/groundTruth dict + totalEvents/tripsScanned. */
 interface ScanAccumulator {
   outcomeCounts: Record<string, number>;
   reasonCounts: Record<string, number>;
   sourceCounts: Record<string, number>;
   accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number };
   boardableLookupCounts: { ok: number; miss: number };
+  groundTruthCounts: { yes: number; no: number; pending: number };
   totalEvents: number;
   tripsScanned: number;
 }
@@ -196,6 +221,7 @@ async function scanTripEvidenceObject(
       acc.sourceCounts,
       acc.accelPatternCounts,
       acc.boardableLookupCounts,
+      acc.groundTruthCounts,
     );
   }
 }
@@ -225,6 +251,7 @@ export async function computeAlarmLogStats(
     sourceCounts: {},
     accelPatternCounts: { automotive: 0, walking: 0, stationary: 0, unknown: 0 },
     boardableLookupCounts: { ok: 0, miss: 0 },
+    groundTruthCounts: { yes: 0, no: 0, pending: 0 },
     totalEvents: 0,
     tripsScanned: 0,
   };
@@ -257,5 +284,6 @@ export async function computeAlarmLogStats(
     tripsScanned: acc.tripsScanned,
     accelPatternCounts: acc.accelPatternCounts,
     boardableLookupCounts: acc.boardableLookupCounts,
+    groundTruthCounts: acc.groundTruthCounts,
   };
 }

@@ -82,7 +82,15 @@ export type AlarmLogSource =
   // computeBoardableWaitsForRoute가 transfer leg마다 calculateBoardableTrainETA 호출 후
   // status에 따라 outcome='received'(ok) 또는 outcome='suppressed'(miss) 적재. backend
   // alarmLogStats가 source='boardable-lookup' + outcome로 boardableMissRatio 산출.
-  | 'boardable-lookup';
+  | 'boardable-lookup'
+  // #1957 (#1503 잔여 1/3) — M2 사용자 정답지 응답 stamp. useTripGroundTruthStore.respond()가
+  // 호출 후 outcome 분기로 적재:
+  //   'accurate'   → outcome='fired'      (yes 정답)
+  //   'inaccurate' → outcome='suppressed' (no 오답)
+  //   'unanswered' → outcome='received'   (pending 회피/dismiss/자동 만료)
+  // backend alarmLogStats가 source='ground-truth-response' + outcome로 groundTruthCounts 누적,
+  // observabilityMetrics.algorithmAccuracyRatio = yes / (yes + no) 산출.
+  | 'ground-truth-response';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1147,6 +1155,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'accel-pattern-observed': null,
   'leg-transition': null,
   'boardable-lookup': null,
+  'ground-truth-response': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1799,6 +1808,41 @@ export function logBoardableLookupResult(input: {
 /** 테스트용 — boardable lookup dedup 윈도우 리셋. */
 export function _resetBoardableLookupWindowForTests(): void {
   lastBoardableLookupTs.clear();
+}
+
+// #1957 (#1503 잔여 1/3) — ground-truth-response outcome 매핑.
+// useTripGroundTruthStore의 outcome union('accurate'/'inaccurate'/'unanswered')을 alarmLog
+// outcome 슬롯('fired'/'suppressed'/'received')으로 변환. backend alarmLogStats가 outcome 분기로
+// groundTruthCounts(yes/no/pending) 누적. 데이터 주도 매핑 — 새 outcome 추가 시 이 record만 수정.
+const GROUND_TRUTH_OUTCOME_TO_ALARM_LOG_OUTCOME: Readonly<
+  Record<'accurate' | 'inaccurate' | 'unanswered', AlarmLogOutcome>
+> = {
+  accurate: 'fired', // yes (정답)
+  inaccurate: 'suppressed', // no (오답)
+  unanswered: 'received', // pending (회피/dismiss/자동 만료)
+};
+
+/**
+ * #1957 (#1503 잔여 1/3) — M2 사용자 정답지 응답 1건 적재.
+ *
+ * `useTripGroundTruthStore.respond()`가 호출 직후 alarmLog에 stamp한다.
+ * trip corrId가 stationName 슬롯에 인코딩 — backend alarmLogStats가 outcome 분기만 보고
+ * groundTruthCounts(yes/no/pending) 누적, observabilityMetrics.algorithmAccuracyRatio
+ * = yes / (yes + no) 산출. corrId는 RCA용 (어느 trip에서 inaccurate 빈발).
+ *
+ * dedup 없음 — 응답 1건당 1 stamp가 1:1 신호. 사용자가 동일 trip에 대해 두 번 응답할 수
+ * 없으므로 (store.respond가 pendingPrompt를 null로 비워서 차단) burst 가능성 없음.
+ */
+export function logGroundTruthResult(input: {
+  corrId: string;
+  outcome: 'accurate' | 'inaccurate' | 'unanswered';
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'ground-truth-response',
+    outcome: GROUND_TRUTH_OUTCOME_TO_ALARM_LOG_OUTCOME[input.outcome],
+    stationName: input.corrId,
+  });
 }
 
 /**

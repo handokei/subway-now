@@ -459,4 +459,66 @@ describe('computeAlarmLogStats', () => {
     expect(stats.boardableLookupCounts.ok).toBe(1);
     expect(stats.boardableLookupCounts.miss).toBe(0);
   });
+
+  // ── #1957 groundTruthCounts ──────────────────────────────────────────────────
+
+  it('#1957 — ground-truth-response outcome="fired"=yes, "suppressed"=no, "received"=pending', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/gt-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'suppressed', stationName: 'gt-no' },
+            { source: 'ground-truth-response', outcome: 'received', stationName: 'gt-pending' },
+            // 다른 source → groundTruth 집계 제외
+            { source: 'fg', outcome: 'fired' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.groundTruthCounts.yes).toBe(2);
+    expect(stats.groundTruthCounts.no).toBe(1);
+    expect(stats.groundTruthCounts.pending).toBe(1);
+  });
+
+  it('#1957 — ground-truth-response entries 없으면 groundTruthCounts 모두 0', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/no-gt-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [{ source: 'fg', outcome: 'fired' }],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.groundTruthCounts).toEqual({ yes: 0, no: 0, pending: 0 });
+  });
+
+  it('#1957 — ground-truth-response outcome 예상 외 값은 어느 슬롯에도 들어가지 않음', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/invalid-gt-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            // 'aborted'는 yes/no/pending 어느 슬롯에도 들어가지 않음
+            { source: 'ground-truth-response', outcome: 'aborted', stationName: 'gt-x' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.groundTruthCounts.yes).toBe(1);
+    expect(stats.groundTruthCounts.no).toBe(0);
+    expect(stats.groundTruthCounts.pending).toBe(0);
+  });
 });

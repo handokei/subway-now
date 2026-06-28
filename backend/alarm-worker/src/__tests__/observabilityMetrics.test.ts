@@ -62,6 +62,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       silentPushLatency: null,
       laPushDeliveryRatio: { sent: 10, failed: 2, ratio: 10 / 12 },
       silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
+      algorithmAccuracyRatio: { value: 7, total: 9, ratio: 7 / 9, answeredTotal: 12 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -100,6 +101,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       silentPushLatency: null,
       laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
       silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
+      algorithmAccuracyRatio: { value: 0, total: 0, ratio: 0, answeredTotal: 0 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -595,6 +597,134 @@ describe('computeObservabilityMetrics — laPushDeliveryRatio (#1779)', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — algorithmAccuracyRatio (#1957, #1503 잔여 1/3)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — algorithmAccuracyRatio (#1957)', () => {
+  it('empty R2 → 0/0 ratio=0, answeredTotal=0', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.algorithmAccuracyRatio).toEqual({
+      value: 0,
+      total: 0,
+      ratio: 0,
+      answeredTotal: 0,
+    });
+  });
+
+  it('ground-truth-response outcome="fired"(yes) + "suppressed"(no) → ratio = yes / (yes + no)', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/gt-x.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'suppressed', stationName: 'gt-no' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    // 3 yes + 1 no = 4 total, ratio = 3/4 = 0.75. pending 0 → answeredTotal = 4.
+    expect(result.algorithmAccuracyRatio.value).toBe(3);
+    expect(result.algorithmAccuracyRatio.total).toBe(4);
+    expect(result.algorithmAccuracyRatio.ratio).toBeCloseTo(0.75, 5);
+    expect(result.algorithmAccuracyRatio.answeredTotal).toBe(4);
+  });
+
+  it('pending(received)은 분모 제외, answeredTotal에는 포함', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/gt-y.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'suppressed', stationName: 'gt-no' },
+            { source: 'ground-truth-response', outcome: 'received', stationName: 'gt-pending' },
+            { source: 'ground-truth-response', outcome: 'received', stationName: 'gt-pending' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    // yes=1, no=1, pending=2. ratio = 1 / (1+1) = 0.5. answeredTotal = 4.
+    expect(result.algorithmAccuracyRatio.value).toBe(1);
+    expect(result.algorithmAccuracyRatio.total).toBe(2);
+    expect(result.algorithmAccuracyRatio.ratio).toBe(0.5);
+    expect(result.algorithmAccuracyRatio.answeredTotal).toBe(4);
+  });
+
+  it('전부 yes → ratio=1', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/gt-allyes.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.algorithmAccuracyRatio.ratio).toBe(1);
+    expect(result.algorithmAccuracyRatio.value).toBe(2);
+  });
+
+  it('전부 pending이면 분모 0 → ratio=0, answeredTotal>0', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/gt-allpending.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'ground-truth-response', outcome: 'received', stationName: 'gt-pending' },
+            { source: 'ground-truth-response', outcome: 'received', stationName: 'gt-pending' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    // division-by-zero 방어: yes+no=0 → ratio=0. answeredTotal=2 (pending만 있어도 응답률 시그널은 잡힌다).
+    expect(result.algorithmAccuracyRatio.total).toBe(0);
+    expect(result.algorithmAccuracyRatio.ratio).toBe(0);
+    expect(result.algorithmAccuracyRatio.answeredTotal).toBe(2);
+  });
+
+  it('다른 source는 algorithmAccuracyRatio에 영향 X', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/gt-mixed.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'fg-arvlcd', outcome: 'fired', stationName: '강남' },
+            { source: 'silent-push-fired', outcome: 'fired', stationName: '서초' },
+            { source: 'boardable-lookup', outcome: 'received', stationName: '왕십리' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'ground-truth-response', outcome: 'suppressed', stationName: 'gt-no' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.algorithmAccuracyRatio.value).toBe(1);
+    expect(result.algorithmAccuracyRatio.total).toBe(2);
+    expect(result.algorithmAccuracyRatio.ratio).toBe(0.5);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
 // tryStoreObservabilityMetrics + readLastSuccessfulMetrics (#1889 RC-19)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -613,6 +743,7 @@ const SAMPLE_METRICS = {
   silentPushLatency: null,
   laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
   silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
+  algorithmAccuracyRatio: { value: 0, total: 0, ratio: 0, answeredTotal: 0 },
   window: '24h' as const,
   timestamp: NOW,
 };

@@ -18,6 +18,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { TRIP_GROUND_TRUTH_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+// #1957 (#1503 잔여 1/3) — M2 정답지 응답을 alarmLog로 stamp해 P0-3 forward → R2 archive →
+// backend alarmLogStats.groundTruthCounts 누적 → observabilityMetrics.algorithmAccuracyRatio.
+// debug 슬라이스의 정답지 응답 1건이 backend 정확도 metric의 원천 신호. cross-feature wire이지만
+// OperationDashboardSection.tsx 패턴과 동일하게 alarm/utils import 사용.
+import { logGroundTruthResult } from '../../alarm/utils/alarmLog';
 
 const logger = createLogger('tripGroundTruth');
 
@@ -123,6 +128,9 @@ export const useTripGroundTruthStore = create<TripGroundTruthState>((set, get) =
     ]);
     set({ pendingPrompt: null, responses: nextResponses });
     await persist({ pendingPrompt: null, responses: nextResponses });
+    // #1957 — 응답 1건을 alarmLog로 stamp해 backend algorithmAccuracyRatio metric의 원천 신호로
+    // forward. AsyncStorage persist와 무관하게 best-effort (graceful, throw 없음).
+    logGroundTruthResult({ corrId: pendingPrompt.corrId, outcome });
   },
 
   hydrate: async () => {

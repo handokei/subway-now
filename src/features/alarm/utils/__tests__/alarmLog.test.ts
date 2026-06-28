@@ -89,6 +89,7 @@ import {
   logBoardableLookupResult,
   _resetBoardableLookupWindowForTests,
   BOARDABLE_LOOKUP_DEDUP_MS,
+  logGroundTruthResult,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -2985,6 +2986,56 @@ describe('alarmLog', () => {
       await flushAlarmLog();
       const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
       const matches = stored.filter((e) => e.source === 'boardable-lookup');
+      expect(matches).toHaveLength(2);
+    });
+  });
+
+  // ── #1957 logGroundTruthResult ──────────────────────────────────────────────
+
+  describe('logGroundTruthResult (#1957)', () => {
+    it('outcome="accurate" → source=ground-truth-response / outcome=fired / corrId in stationName', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logGroundTruthResult({ corrId: 'trip-abc-1234', outcome: 'accurate' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('ground-truth-response');
+      expect(stored[0].outcome).toBe('fired');
+      expect(stored[0].stationName).toBe('trip-abc-1234');
+    });
+
+    it('outcome="inaccurate" → outcome=suppressed', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logGroundTruthResult({ corrId: 'trip-def-5678', outcome: 'inaccurate' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('ground-truth-response');
+      expect(stored[0].outcome).toBe('suppressed');
+      expect(stored[0].stationName).toBe('trip-def-5678');
+    });
+
+    it('outcome="unanswered" → outcome=received', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logGroundTruthResult({ corrId: 'trip-ghi-9012', outcome: 'unanswered' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('ground-truth-response');
+      expect(stored[0].outcome).toBe('received');
+      expect(stored[0].stationName).toBe('trip-ghi-9012');
+    });
+
+    it('연속 호출은 모두 적재 (dedup 없음)', async () => {
+      // 같은 corrId 동일 outcome으로 두 번 호출해도 dedup 없이 둘 다 적재되는지 검증.
+      // 실제 운영에서는 store.respond가 pendingPrompt를 null로 비워 두 번째 호출 차단하지만,
+      // 본 함수 단위에서는 raw 호출 1:1을 보장한다.
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logGroundTruthResult({ corrId: 'trip-abc', outcome: 'accurate' });
+      logGroundTruthResult({ corrId: 'trip-abc', outcome: 'accurate' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const matches = stored.filter((e) => e.source === 'ground-truth-response');
       expect(matches).toHaveLength(2);
     });
   });
