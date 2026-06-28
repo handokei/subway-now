@@ -65,6 +65,14 @@ const mockedGetAll = Notifications.getAllScheduledNotificationsAsync as jest.Moc
 const mockedCancel = Notifications.cancelScheduledNotificationAsync as jest.MockedFunction<
   typeof Notifications.cancelScheduledNotificationAsync
 >;
+// #1924 — cancelTripBoundAlarms가 delivered tray cleanup도 수행하므로 두 API mock 필요.
+// 기본은 빈 배열 / no-op resolve — 기존 테스트가 delivered tray entry 없음을 가정.
+const mockedGetPresented = Notifications.getPresentedNotificationsAsync as jest.MockedFunction<
+  typeof Notifications.getPresentedNotificationsAsync
+>;
+const mockedDismiss = Notifications.dismissNotificationAsync as jest.MockedFunction<
+  typeof Notifications.dismissNotificationAsync
+>;
 
 const NOW = new Date('2026-06-05T09:00:00Z').getTime();
 
@@ -387,6 +395,10 @@ describe('cancelTripBoundAlarms', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockLoggerInfo.mockClear();
+    // #1924 — delivered tray cleanup 기본은 entry 없음 + dismiss no-op (tray cleanup이
+    // 기존 cancel 동작 회귀 없게 보장).
+    mockedGetPresented.mockResolvedValue([]);
+    mockedDismiss.mockResolvedValue(undefined);
   });
 
   it('tba: prefix 알람만 취소하고 다른 prefix는 건드리지 않는다', async () => {
@@ -408,7 +420,7 @@ describe('cancelTripBoundAlarms', () => {
     expect(mockedCancel).not.toHaveBeenCalledWith('bl:T1:0:early:강남');
     expect(mockedCancel).not.toHaveBeenCalledWith('current-station');
     expect(mockLoggerInfo).toHaveBeenCalledWith(
-      expect.stringContaining('cancelled 2 trip-bound alarms'),
+      expect.stringContaining('cancelled 2 pending + dismissed 0 delivered trip-bound alarms'),
     );
   });
 
@@ -470,7 +482,7 @@ describe('cancelTripBoundAlarms', () => {
       // Fix 3 — reject된 id 재시도 후 success → cancelled 카운트 3건 모두 반영.
       expect(gangNamCallCount).toBe(2);
       expect(mockLoggerInfo).toHaveBeenCalledWith(
-        expect.stringContaining('cancelled 3 trip-bound alarms'),
+        expect.stringContaining('cancelled 3 pending + dismissed 0 delivered trip-bound alarms'),
       );
       // Fix 3 — pass-1 rejected 명시 로그.
       expect(mockLoggerWarn).toHaveBeenCalledWith(
@@ -504,7 +516,7 @@ describe('cancelTripBoundAlarms', () => {
       expect(gangnamCalls).toHaveLength(2);
       // fulfilled 1건만 카운트.
       expect(mockLoggerInfo).toHaveBeenCalledWith(
-        expect.stringContaining('cancelled 1 trip-bound alarms'),
+        expect.stringContaining('cancelled 1 pending + dismissed 0 delivered trip-bound alarms'),
       );
       // pass-1 + pass-2 warn 로그 둘 다 적재.
       expect(mockLoggerWarn).toHaveBeenCalledWith(
@@ -542,6 +554,163 @@ describe('cancelTripBoundAlarms', () => {
     } finally {
       mockedCancel.mockReset();
     }
+  });
+
+  // #1924 — delivered tray cleanup. pending queue cancel과 직교 채널이므로 함께 정리해야
+  // trip end 직후 stale entry가 다음 FG 복귀 drain에 또 read 되어 alarm log를 오염시키지 않는다.
+  describe('#1924 delivered tray cleanup', () => {
+    it('tba: prefix delivered notification만 dismiss하고 다른 prefix는 건드리지 않는다', async () => {
+      mockedGetAll.mockResolvedValue([]);
+      mockedGetPresented.mockResolvedValue([
+        { request: { identifier: 'tba:early:강남' } },
+        { request: { identifier: 'tba:imminent:서울역' } },
+        { request: { identifier: 'alarm:early:강남' } },
+        { request: { identifier: 'bl:T1:0:early:강남' } },
+        { request: { identifier: 'current-station' } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+
+      await cancelTripBoundAlarms();
+
+      expect(mockedDismiss).toHaveBeenCalledTimes(2);
+      expect(mockedDismiss).toHaveBeenCalledWith('tba:early:강남');
+      expect(mockedDismiss).toHaveBeenCalledWith('tba:imminent:서울역');
+      expect(mockedDismiss).not.toHaveBeenCalledWith('alarm:early:강남');
+      expect(mockedDismiss).not.toHaveBeenCalledWith('bl:T1:0:early:강남');
+      expect(mockedDismiss).not.toHaveBeenCalledWith('current-station');
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('cancelled 0 pending + dismissed 2 delivered trip-bound alarms'),
+      );
+    });
+
+    it('pending + delivered 둘 다 있으면 둘 다 cleanup하고 합산 로그 발화', async () => {
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:early:강남' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      mockedGetPresented.mockResolvedValue([
+        { request: { identifier: 'tba:imminent:서울역' } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+
+      await cancelTripBoundAlarms();
+
+      expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
+      expect(mockedDismiss).toHaveBeenCalledWith('tba:imminent:서울역');
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('cancelled 1 pending + dismissed 1 delivered trip-bound alarms'),
+      );
+    });
+
+    it('delivered tray가 비어 있으면 dismiss를 호출하지 않는다', async () => {
+      mockedGetAll.mockResolvedValue([]);
+      mockedGetPresented.mockResolvedValue([]);
+
+      await cancelTripBoundAlarms();
+
+      expect(mockedDismiss).not.toHaveBeenCalled();
+      // pending 0 + dismissed 0 → info 로그도 없음.
+      expect(mockLoggerInfo).not.toHaveBeenCalled();
+    });
+
+    it('per-identifier dismiss reject가 나머지 dismiss를 막지 않는다 (Promise.allSettled)', async () => {
+      mockedGetAll.mockResolvedValue([]);
+      mockedGetPresented.mockResolvedValue([
+        { request: { identifier: 'tba:early:A' } },
+        { request: { identifier: 'tba:early:B' } },
+        { request: { identifier: 'tba:early:C' } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      // 첫 항목 reject, 나머지 fulfilled.
+      mockedDismiss
+        .mockRejectedValueOnce(new Error('OS busy'))
+        .mockResolvedValue(undefined);
+
+      await expect(cancelTripBoundAlarms()).resolves.toBeUndefined();
+
+      expect(mockedDismiss).toHaveBeenCalledTimes(3);
+      // 2건 success → dismissed 카운트 2.
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('cancelled 0 pending + dismissed 2 delivered trip-bound alarms'),
+      );
+    });
+
+    // F3.1 — getPresentedNotificationsAsync 자체 실패 시 pending cancel은 보존하고 sig clear까지 진행.
+    it('F3.1 getPresentedNotificationsAsync가 throw해도 pending cancel + sig clear는 진행', async () => {
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:early:강남' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      mockedGetPresented.mockRejectedValueOnce(new Error('OS unavailable'));
+      const removeSpy = jest.spyOn(AsyncStorage, 'removeItem');
+
+      await expect(cancelTripBoundAlarms()).resolves.toBeUndefined();
+
+      // pending cancel은 이미 완료 — 1건 발사됨.
+      expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
+      // dismiss는 호출되지 않음 (조회 실패로 skip).
+      expect(mockedDismiss).not.toHaveBeenCalled();
+      // tray 조회 실패 warn 로그.
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('delivered tray 조회 실패'),
+      );
+      // sig storage clear는 부분 진행 보존을 위해 항상 실행.
+      expect(removeSpy).toHaveBeenCalledWith(TRIP_BOUND_ROUTE_SIG_KEY);
+      // pending cancel 1건은 로그 발화.
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('cancelled 1 pending + dismissed 0 delivered trip-bound alarms'),
+      );
+      removeSpy.mockRestore();
+    });
+
+    it('cancel 호출 순서: pending cancel 먼저 완료 후 delivered cleanup 진입', async () => {
+      const callOrder: string[] = [];
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:early:강남' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      mockedCancel.mockImplementation(async () => {
+        callOrder.push('cancel');
+      });
+      mockedGetPresented.mockImplementation(async () => {
+        callOrder.push('getPresented');
+        return [
+          { request: { identifier: 'tba:early:서울역' } },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ] as any;
+      });
+      mockedDismiss.mockImplementation(async () => {
+        callOrder.push('dismiss');
+      });
+
+      try {
+        await cancelTripBoundAlarms();
+
+        // pending cancel이 delivered cleanup 진입 전에 완료되어야 한다.
+        expect(callOrder).toEqual(['cancel', 'getPresented', 'dismiss']);
+      } finally {
+        mockedCancel.mockReset();
+      }
+    });
+
+    // 멱등성 — 동일 입력으로 두 번 호출해도 같은 cleanup이 반복 가능 (no side-effect leak).
+    it('멱등성: 두 번 연속 호출해도 같은 결과 (cleanup 후 다시 호출)', async () => {
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:early:강남' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      mockedGetPresented.mockResolvedValue([
+        { request: { identifier: 'tba:imminent:서울역' } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+
+      await cancelTripBoundAlarms();
+      await cancelTripBoundAlarms();
+
+      // 두 번 호출 = cancel + dismiss 각 2회.
+      expect(mockedCancel).toHaveBeenCalledTimes(2);
+      expect(mockedDismiss).toHaveBeenCalledTimes(2);
+    });
   });
 });
 
