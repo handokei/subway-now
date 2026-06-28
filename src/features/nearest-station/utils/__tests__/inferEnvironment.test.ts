@@ -25,10 +25,12 @@ describe('inferEnvironment', () => {
     ).toBe('underground');
   });
 
-  it('subsurface=false + 둘 다 null → unknown', () => {
+  it('#1932 — subsurface=false + 두 SSOT 모두 null + hint 미발동 → surface (raw barometer 신뢰)', () => {
+    // cascade tier 2(gpsDerivedFastPath)와의 semantic equivalence 보존.
+    // 기존: 'unknown' (DebugModal 표시 전용 시기). 변경: barometer 명시 지상 신뢰 → 'surface'.
     expect(
       inferEnvironment({ subsurface: false, surfaceSSOT: false, undergroundSSOT: false }).label,
-    ).toBe('unknown');
+    ).toBe('surface');
   });
 
   it('subsurface=undefined + surfaceSSOT만 활성 → surface (hybrid)', () => {
