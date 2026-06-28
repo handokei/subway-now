@@ -753,6 +753,13 @@ export async function rescheduleTripBoundAlarm(
  * 예약 알람을 OS 큐에서 제거한다. 다른 prefix(alarm:, bl:)는 건드리지 않는다.
  *
  * cancelScheduledNotificationAsync는 idempotent — 이미 발사된 알람도 안전하게 통과한다.
+ *
+ * #1924 — pending queue cancel 후 delivered tray(이미 fire 된 알람)도 함께 cleanup.
+ * cancelScheduledNotificationAsync(=removePendingNotificationRequests)는 pending queue만
+ * 대상이라 OS가 ETA 도달로 자체 fire 한 `tba:` 알람은 trip end 시점에도 delivered tray에 그대로
+ * 남는다. tray entry는 사용자가 직접 swipe-dismiss 하지 않는 한 영구 보존 → 다음 FG 복귀 시
+ * scheduledAlarmReceiver의 drain 경로가 stale entry를 또 read → suppress → 알람 로그 재적재
+ * 무한 루프 (2026-06-27 14:03 trip end 후 14:04~15:48 7 FG 복귀 × 8 entry = 56회 evidence).
  */
 export async function cancelTripBoundAlarms(): Promise<void> {
   const all = await Notifications.getAllScheduledNotificationsAsync();
@@ -770,8 +777,35 @@ export async function cancelTripBoundAlarms(): Promise<void> {
     targets.map((req) => req.identifier),
     'tba',
   );
-  if (cancelled > 0) {
-    logger.info(`cancelled ${cancelled} trip-bound alarms`);
+
+  // #1924 — delivered tray cleanup. getPresentedNotificationsAsync는 OS의 delivered
+  // notifications()를 조회 — pending queue와는 직교 채널이다. tray 조회 자체가 실패하면
+  // pending cancel은 이미 완료된 상태이므로 부분 진행을 보존하고 sig clear까지만 수행한다
+  // (drainDeliveredScheduledAlarms의 try/catch 패턴과 동형 — scheduledAlarmReceiver.ts:432).
+  let dismissedCount = 0;
+  try {
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    const tbaDelivered = presented.filter((n) =>
+      n.request.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX),
+    );
+    if (tbaDelivered.length > 0) {
+      // per-identifier reject가 나머지 dismiss를 막지 않도록 Promise.allSettled 사용
+      // (#1525 cancel 패턴과 동형).
+      const results = await Promise.allSettled(
+        tbaDelivered.map((n) => Notifications.dismissNotificationAsync(n.request.identifier)),
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled') dismissedCount++;
+      }
+    }
+  } catch (e) {
+    logger.warn(`cancelTripBoundAlarms: delivered tray 조회 실패, pending cancel만 적용: ${e}`);
+  }
+
+  if (cancelled > 0 || dismissedCount > 0) {
+    logger.info(
+      `cancelled ${cancelled} pending + dismissed ${dismissedCount} delivered trip-bound alarms`,
+    );
   }
   // #918 A3 PR2: sig storage도 함께 cleanup — 다음 reconcile 시 stale sig가 남지 않게.
   await clearRegisteredTripRouteSig();

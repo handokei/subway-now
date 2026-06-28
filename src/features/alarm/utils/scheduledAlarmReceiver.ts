@@ -402,6 +402,12 @@ export async function reconcileScheduledAlarmDelivery(
     // 발사되어 정적 misfire가 영구 재발한다. 사전 예약은 fire-and-forget이므로 명시 cancel 필요.
     // cancelScheduledNotificationAsync는 이미 발사된 항목에도 안전 (tripBoundScheduler.ts:681).
     await Notifications.cancelScheduledNotificationAsync(identifier);
+    // #1924 — delivered tray에서도 제거. cancelScheduledNotificationAsync는 pending queue
+    // (removePendingNotificationRequests) 만 대상이라 이미 OS가 자체 fire 한 항목은 delivered
+    // tray(removeDeliveredNotifications) 에 그대로 남는다. 사용자가 swipe-dismiss 하지 않는 한
+    // 다음 FG 복귀 drain 시 같은 identifier를 또 read → 같은 reason으로 다시 suppress →
+    // alarm log "revalidate-*" 무한 재적재 (2026-06-27 dump 56회 evidence).
+    await Notifications.dismissNotificationAsync(identifier);
     return;
   }
 
@@ -456,6 +462,11 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
       // #1354 — drain 경로도 reconcile과 동형으로 suppress 시 OS queue cancel. 같은 identifier를
       // OS가 보존하면 다음 ETA마다 재발사되어 영구 misfire 재발.
       await Notifications.cancelScheduledNotificationAsync(n.request.identifier);
+      // #1924 — drain은 직전 getPresentedNotificationsAsync로 delivered tray를 read한 항목을
+      // 처리한다. suppress 시 pending queue 만 cancel하면 같은 tray entry가 정리되지 않아 다음
+      // FG 복귀 drain 시 또 read → 같은 reason으로 또 suppress → alarm log 재적재
+      // (2026-06-27 14:03 trip end 후 14:04~15:48 사이 7 FG 복귀 × 8 entry = 56회 evidence).
+      await Notifications.dismissNotificationAsync(n.request.identifier);
       continue;
     }
     accepted.push(parsed);

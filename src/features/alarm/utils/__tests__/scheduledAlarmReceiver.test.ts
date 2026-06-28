@@ -6,6 +6,9 @@ jest.mock('expo-notifications', () => ({
   addNotificationReceivedListener: jest.fn(),
   getPresentedNotificationsAsync: jest.fn(),
   cancelScheduledNotificationAsync: jest.fn(),
+  // #1924 — suppress 분기가 delivered tray entry도 정리해 다음 FG 복귀 drain이
+  // 같은 stale identifier를 다시 read 하지 않게 한다.
+  dismissNotificationAsync: jest.fn(),
 }));
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -101,6 +104,8 @@ const mockSetLastFiredAlarmStationName = setLastFiredAlarmStationName as jest.Mo
 const mockAddListener = Notifications.addNotificationReceivedListener as jest.Mock;
 const mockGetPresented = Notifications.getPresentedNotificationsAsync as jest.Mock;
 const mockCancelScheduled = Notifications.cancelScheduledNotificationAsync as jest.Mock;
+// #1924 — suppress 분기가 dismissNotificationAsync로 delivered tray entry도 cleanup.
+const mockDismissNotification = Notifications.dismissNotificationAsync as jest.Mock;
 const mockAsyncGetItem = AsyncStorage.getItem as jest.Mock;
 
 const DEST_JSON = JSON.stringify({ id: 'dest-1', name: '강남' });
@@ -170,6 +175,9 @@ beforeEach(async () => {
   mockAsyncGetItem.mockResolvedValue(DEST_JSON);
   mockCancelScheduled.mockReset();
   mockCancelScheduled.mockResolvedValue(undefined);
+  // #1924 — suppress 분기가 dismissNotificationAsync로 delivered tray entry 제거.
+  mockDismissNotification.mockReset();
+  mockDismissNotification.mockResolvedValue(undefined);
   // 모든 케이스 공통: addNotificationReceivedListener 기본 핸들. 콜백 캡쳐가 필요한 케이스는 mockImplementationOnce로 override.
   mockAddListener.mockReturnValue({ remove: jest.fn() });
 });
@@ -1295,5 +1303,126 @@ describe('#1354 suppress 시 OS scheduled queue cancel', () => {
     expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
     // cancel만 발생.
     expect(mockCancelScheduled).toHaveBeenCalledWith('tba:imminent:강남');
+  });
+});
+
+// #1924 — suppress 분기가 OS pending queue cancel과 함께 delivered tray entry도 dismiss.
+// cancelScheduledNotificationAsync(=removePendingNotificationRequests)와
+// dismissNotificationAsync(=removeDeliveredNotifications)는 OS API 상 완전 직교 — pending cancel은
+// delivered tray에 silent no-op. 둘 다 호출하지 않으면 이미 fire 된 stale entry가 tray에 남아
+// 다음 FG 복귀마다 같은 항목이 drain에 read → suppress → alarm log 무한 재적재.
+// (2026-06-27 14:03 trip end 후 14:04~15:48 사이 revalidate-no-trip 56회 evidence.)
+describe('#1924 suppress 시 delivered tray dismiss', () => {
+  beforeEach(() => {
+    setStorageMap({
+      'subway-now:destination': DEST_JSON,
+      'subway-now:route': ROUTE_JSON,
+    });
+  });
+
+  it('F1 reconcile suppress 시 dismissNotificationAsync(identifier) 1회 호출', async () => {
+    mockGetRegisteredTripRouteSig.mockResolvedValueOnce('SIG-OLD');
+    mockRouteSignature.mockReturnValueOnce('SIG-NEW');
+
+    await reconcileScheduledAlarmDelivery('tba:imminent:강남');
+
+    expect(mockDismissNotification).toHaveBeenCalledTimes(1);
+    expect(mockDismissNotification).toHaveBeenCalledWith('tba:imminent:강남');
+    // cancel과 dismiss 둘 다 호출 (pending + delivered 직교 채널).
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:imminent:강남');
+  });
+
+  it("F1 'pass' 경로에는 dismiss 호출 0회 (회귀 가드)", async () => {
+    await reconcileScheduledAlarmDelivery('tba:early:강남');
+
+    expect(mockDismissNotification).not.toHaveBeenCalled();
+    expect(mockCancelScheduled).not.toHaveBeenCalled();
+  });
+
+  it('F2 drain suppress 시 dismissNotificationAsync(identifier) 각 항목별 호출', async () => {
+    mockGetRegisteredTripRouteSig
+      .mockResolvedValueOnce('SIG-OLD') // 첫 suppress
+      .mockResolvedValueOnce('SIG-OLD'); // 두 번째 suppress
+    mockRouteSignature
+      .mockReturnValueOnce('SIG-NEW')
+      .mockReturnValueOnce('SIG-NEW');
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1, request: { identifier: 'tba:early:역A' } },
+      { date: 2, request: { identifier: 'tba:imminent:역B' } },
+    ]);
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockDismissNotification).toHaveBeenCalledTimes(2);
+    expect(mockDismissNotification).toHaveBeenCalledWith('tba:early:역A');
+    expect(mockDismissNotification).toHaveBeenCalledWith('tba:imminent:역B');
+    handle.remove();
+  });
+
+  it("F2 drain 'pass' 항목에는 dismiss 호출 0회 (회귀 가드)", async () => {
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1, request: { identifier: 'tba:early:강남' } },
+    ]);
+    mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockDismissNotification).not.toHaveBeenCalled();
+    expect(mockCancelScheduled).not.toHaveBeenCalled();
+    handle.remove();
+  });
+
+  it('F2 drain — suppress + pass 혼합 시 suppress된 항목만 dismiss', async () => {
+    mockGetRegisteredTripRouteSig
+      .mockResolvedValueOnce('SIG-OLD') // suppress
+      .mockResolvedValueOnce('SIG-A'); // pass
+    mockRouteSignature
+      .mockReturnValueOnce('SIG-NEW')
+      .mockReturnValueOnce('SIG-A');
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1, request: { identifier: 'tba:early:잘못된역' } },
+      { date: 2, request: { identifier: 'tba:imminent:강남' } },
+    ]);
+    mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockDismissNotification).toHaveBeenCalledTimes(1);
+    expect(mockDismissNotification).toHaveBeenCalledWith('tba:early:잘못된역');
+    expect(mockDismissNotification).not.toHaveBeenCalledWith('tba:imminent:강남');
+    handle.remove();
+  });
+
+  // 호출 순서: pending cancel 먼저, delivered dismiss 다음 — drain의 자기-목적 차단을 위해
+  // dismiss는 cancel 직후 실행되어 다음 FG 복귀까지 stale entry가 남지 않음을 보장.
+  it('F1 호출 순서: cancelScheduledNotificationAsync → dismissNotificationAsync', async () => {
+    const callOrder: string[] = [];
+    mockGetRegisteredTripRouteSig.mockResolvedValueOnce('SIG-OLD');
+    mockRouteSignature.mockReturnValueOnce('SIG-NEW');
+    mockCancelScheduled.mockImplementationOnce(async () => {
+      callOrder.push('cancel');
+    });
+    mockDismissNotification.mockImplementationOnce(async () => {
+      callOrder.push('dismiss');
+    });
+
+    await reconcileScheduledAlarmDelivery('tba:imminent:강남');
+
+    expect(callOrder).toEqual(['cancel', 'dismiss']);
+  });
+
+  // 멱등성 — 같은 identifier로 두 번 호출해도 reject 없이 통과 (OS dismiss는 idempotent).
+  it('F1 멱등성: 같은 identifier 두 번 호출해도 dismiss 두 번 안전 호출', async () => {
+    mockGetRegisteredTripRouteSig.mockResolvedValue('SIG-OLD');
+    mockRouteSignature.mockReturnValue('SIG-NEW');
+
+    await reconcileScheduledAlarmDelivery('tba:imminent:강남');
+    await reconcileScheduledAlarmDelivery('tba:imminent:강남');
+
+    expect(mockDismissNotification).toHaveBeenCalledTimes(2);
+    expect(mockDismissNotification).toHaveBeenCalledWith('tba:imminent:강남');
   });
 });
