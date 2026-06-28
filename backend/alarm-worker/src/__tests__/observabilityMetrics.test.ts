@@ -63,6 +63,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       laPushDeliveryRatio: { sent: 10, failed: 2, ratio: 10 / 12 },
       silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
       algorithmAccuracyRatio: { value: 7, total: 9, ratio: 7 / 9, answeredTotal: 12 },
+      locklessTripMissRatio: { miss: 0, fired: 0, paradigmIntent: 0, ratio: 0 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -102,6 +103,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
       silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
       algorithmAccuracyRatio: { value: 0, total: 0, ratio: 0, answeredTotal: 0 },
+      locklessTripMissRatio: { miss: 0, fired: 0, paradigmIntent: 0, ratio: 0 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -725,6 +727,155 @@ describe('computeObservabilityMetrics — algorithmAccuracyRatio (#1957)', () =>
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — locklessTripMissRatio (#1972, #1503 잔여 3/3)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — locklessTripMissRatio (#1972)', () => {
+  it('empty R2 → 0/0 ratio=0, paradigmIntent=0', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.locklessTripMissRatio).toEqual({
+      miss: 0,
+      fired: 0,
+      paradigmIntent: 0,
+      ratio: 0,
+    });
+  });
+
+  it('userIntent ON + lockless + fire ≥ 1 → fired 카운터 증가', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-fired.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '5:intent' },
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '2:intent' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.locklessTripMissRatio.fired).toBe(2);
+    expect(result.locklessTripMissRatio.miss).toBe(0);
+    expect(result.locklessTripMissRatio.ratio).toBe(0);
+  });
+
+  it('userIntent ON + lockless + fire 0건 → miss 카운터 (진짜 miss)', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-miss.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'lockless-trip-end', outcome: 'suppressed', stationName: '0:intent' },
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '3:intent' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    // miss=1, fired=1 → ratio = 1 / (1+1) = 0.5
+    expect(result.locklessTripMissRatio.miss).toBe(1);
+    expect(result.locklessTripMissRatio.fired).toBe(1);
+    expect(result.locklessTripMissRatio.ratio).toBe(0.5);
+  });
+
+  it('userIntent OFF + lockless + fire 0건 → paradigmIntent 카운터 (분모/분자 제외)', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-paradigm.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+            // fired 1건 추가 — paradigmIntent가 ratio에 영향 X 검증
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '4:intent' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.locklessTripMissRatio.paradigmIntent).toBe(3);
+    expect(result.locklessTripMissRatio.fired).toBe(1);
+    expect(result.locklessTripMissRatio.miss).toBe(0);
+    // miss=0, fired=1 → ratio=0. paradigmIntent는 분모/분자 모두 제외.
+    expect(result.locklessTripMissRatio.ratio).toBe(0);
+  });
+
+  it('전부 paradigmIntent → ratio=0 (division-by-zero 방어, dashboard "no data" 차단)', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-allparadigm.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+            { source: 'lockless-trip-end', outcome: 'received', stationName: '0:paradigm' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.locklessTripMissRatio.miss).toBe(0);
+    expect(result.locklessTripMissRatio.fired).toBe(0);
+    expect(result.locklessTripMissRatio.paradigmIntent).toBe(2);
+    expect(result.locklessTripMissRatio.ratio).toBe(0);
+  });
+
+  it('전부 miss → ratio=1', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-allmiss.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'lockless-trip-end', outcome: 'suppressed', stationName: '0:intent' },
+            { source: 'lockless-trip-end', outcome: 'suppressed', stationName: '0:intent' },
+            { source: 'lockless-trip-end', outcome: 'suppressed', stationName: '0:intent' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.locklessTripMissRatio.miss).toBe(3);
+    expect(result.locklessTripMissRatio.fired).toBe(0);
+    expect(result.locklessTripMissRatio.ratio).toBe(1);
+  });
+
+  it('다른 source는 locklessTripMissRatio에 영향 X', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/28/llte-mixed.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'fg-arvlcd', outcome: 'fired', stationName: '강남' },
+            { source: 'silent-push-fired', outcome: 'fired', stationName: '서초' },
+            { source: 'ground-truth-response', outcome: 'fired', stationName: 'gt-yes' },
+            { source: 'lockless-trip-end', outcome: 'fired', stationName: '7:intent' },
+            { source: 'lockless-trip-end', outcome: 'suppressed', stationName: '0:intent' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    // fg-arvlcd / silent-push-fired / ground-truth-response는 lockless 분기 제외.
+    expect(result.locklessTripMissRatio.fired).toBe(1);
+    expect(result.locklessTripMissRatio.miss).toBe(1);
+    expect(result.locklessTripMissRatio.ratio).toBe(0.5);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
 // tryStoreObservabilityMetrics + readLastSuccessfulMetrics (#1889 RC-19)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -744,6 +895,7 @@ const SAMPLE_METRICS = {
   laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
   silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
   algorithmAccuracyRatio: { value: 0, total: 0, ratio: 0, answeredTotal: 0 },
+  locklessTripMissRatio: { miss: 0, fired: 0, paradigmIntent: 0, ratio: 0 },
   window: '24h' as const,
   timestamp: NOW,
 };

@@ -102,6 +102,8 @@ function makeSuccessResult(
   },
   // #1957 — backend 24h algorithm accuracy. undefined = 구 backend 응답 (필드 누락 simulating).
   algorithmAccuracy: observabilityClient.AlgorithmAccuracyBucket | undefined = undefined,
+  // #1972 — backend 24h lockless trip miss. undefined = 구 backend 응답.
+  locklessTripMiss: observabilityClient.LocklessTripMissBucket | undefined = undefined,
 ): observabilityClient.FetchMetricsResult {
   const metrics: observabilityClient.ObservabilityMetrics = {
     accuracyRatio: { value: 8, total: 10, ratio: 0.8 },
@@ -115,6 +117,7 @@ function makeSuccessResult(
     window: '24h',
     timestamp: 1_700_000_000_000,
     ...(silentPushReach !== null ? { silentPushReachRatio: silentPushReach } : {}),
+    ...(locklessTripMiss !== undefined ? { locklessTripMissRatio: locklessTripMiss } : {}),
   };
   return { kind: 'ok', metrics };
 }
@@ -670,6 +673,65 @@ describe('OperationDashboardSection', () => {
       const tracks = screen.getAllByTestId('ratio-bar-track');
       // 1/2 = 0.5 비율 ratio bar 1건 + 다른 metric bar들 포함.
       expect(tracks.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('#1972 — locklessTripMiss metric', () => {
+    it('backend 미수신 (구버전) → locklessTripMiss row가 (no data) 표시', async () => {
+      // unconfigured / kind!=ok → locklessTripMiss placeholder mock 상태.
+      mockFetchMetrics.mockResolvedValue({ kind: 'unconfigured' });
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      // label은 'locklessTripMiss' (paradigm suffix 미포함).
+      expect(screen.getByTestId('operation-metric-locklessTripMiss')).toBeTruthy();
+    });
+
+    it('backend 수신 + miss=3, fired=7, paradigmIntent=5 → ratio=0.3 + paradigm 표시', async () => {
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(
+          0, 0, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2,
+          { sent: 0, received: 0, joined: 0, ratio: 0 },
+          undefined,
+          { miss: 3, fired: 7, paradigmIntent: 5, ratio: 0.3 },
+        ),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      // paradigm count는 label에 인코딩.
+      expect(
+        screen.getByTestId('operation-metric-locklessTripMiss (paradigm=5)'),
+      ).toBeTruthy();
+    });
+
+    it('backend 수신 + miss=0, fired=0 (paradigm만) → ratio bar (no data) 유지', async () => {
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(
+          0, 0, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2,
+          { sent: 0, received: 0, joined: 0, ratio: 0 },
+          undefined,
+          { miss: 0, fired: 0, paradigmIntent: 3, ratio: 0 },
+        ),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      // miss=0+fired=0 → ratio=null (computeRatio가 0/0=null), na 1건 이상.
+      const naTexts = screen.getAllByTestId('ratio-bar-na');
+      expect(naTexts.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('backend 수신 + miss=2, fired=8 → ratio=0.2 fill bar', async () => {
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(
+          0, 0, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2,
+          { sent: 0, received: 0, joined: 0, ratio: 0 },
+          undefined,
+          { miss: 2, fired: 8, paradigmIntent: 0, ratio: 0.2 },
+        ),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      const fills = screen.getAllByTestId('ratio-bar-fill');
+      expect(fills.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

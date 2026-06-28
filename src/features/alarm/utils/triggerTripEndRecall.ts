@@ -53,10 +53,17 @@ import {
   buildDeviceMetadata,
   forwardTripTelemetry,
 } from '../api/telemetryForward';
-import { getAlarmLog, getFusionTierLog } from './alarmLog';
+import {
+  countFiredAlarms,
+  getAlarmLog,
+  getFusionTierLog,
+  logLocklessTripEnd,
+} from './alarmLog';
 import { getFusionDebugEntries } from '../../nearest-station/utils/fusionDebugBuffer';
 import { getGpsDropEntries } from '../../nearest-station/utils/gpsDropBuffer';
 import { readBackendSsotMirror } from './backendSsotMirror';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useUserIntentStore } from '../store/useUserIntentStore';
 
 const log = createLogger('triggerTripEndRecall');
 
@@ -220,11 +227,19 @@ async function triggerAlarmLogForward(tripStart: number): Promise<void> {
       getAlarmLog(),
       readBackendSsotMirror(),
     ]);
+    // #1972 (#1503 잔여 3/3) — lockless trip 분기 stamp. boarding-lock 미활성 trip이
+    // 종료될 때만 1건 적재. 이 stamp는 본 함수의 alarmLog snapshot에는 포함되지 않지만
+    // appendAlarmLog의 동기 push로 ring에 즉시 들어가 다음 trip의 forward에 반영된다 —
+    // 본 PR의 R2 forward 기준 시점에서는 한 cycle 지연. backend는 R2 ndjson 도착 순서로
+    // window 집계하므로 정합. paradigm shift 기록을 forward와 떼지 않기 위해 동기 호출.
+    stampLocklessTripEndIfApplicable(alarmLog);
+    // stamp 직후 다시 getAlarmLog()를 부르면 동기 ring 에 막 추가된 entry가 포함된다.
+    const alarmLogWithStamp = await getAlarmLog();
     await forwardTripTelemetry({
       token,
       tripStartedAt: tripStart,
       tripEndedAt: Date.now(),
-      alarmLog,
+      alarmLog: alarmLogWithStamp,
       fusionLog: getFusionDebugEntries(),
       // #1706 — fusion picker tier 별 ring buffer. alarmLog ring 점령 회귀 차단용 채널 분리.
       fusionTierLog: getFusionTierLog(),
@@ -235,6 +250,28 @@ async function triggerAlarmLogForward(tripStart: number): Promise<void> {
   } catch (e) {
     log.warn('alarm log forward trigger error', e);
   }
+}
+
+/**
+ * #1972 (#1503 잔여 3/3) — lockless trip 종료 분기 stamp helper.
+ *
+ * boarding-lock 활성 trip은 분류 X (early return) — backendSsotSnapshot의 lock 정보는
+ * 이미 R2 forward에 포함되며, lockless miss는 lock 없는 trip만의 metric.
+ *
+ * fireCount는 trip 동안 사용자에게 노출된 알람 수 (countFiredAlarms 기반).
+ * userIntentDeclared는 `useUserIntentStore.infoModeEnabled` 현재 값.
+ *
+ * stamp 자체는 fire-and-forget — 실패해도 forward critical path 차단 안 함.
+ */
+function stampLocklessTripEndIfApplicable(
+  alarmLog: readonly Parameters<typeof countFiredAlarms>[0][number][],
+): void {
+  // lock 활성 trip은 lockless 분류 X — silent return.
+  const lockActive = useBoardingLockStore.getState().lock !== null;
+  if (lockActive) return;
+  const userIntentDeclared = useUserIntentStore.getState().infoModeEnabled;
+  const fireCount = countFiredAlarms(alarmLog);
+  logLocklessTripEnd({ fireCount, userIntentDeclared });
 }
 
 /**

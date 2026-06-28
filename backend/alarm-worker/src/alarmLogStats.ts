@@ -27,6 +27,11 @@
  * 개별 trip identifier/원문 미포함.
  */
 
+import {
+  LOCKLESS_TRIP_END_OUTCOME_TO_BUCKET,
+  LOCKLESS_TRIP_END_SOURCE,
+} from './locklessMissMetric';
+
 const TRIP_EVIDENCE_PREFIX = 'trip-evidence/';
 const MS_PER_HOUR = 60 * 60 * 1000;
 
@@ -80,12 +85,22 @@ export interface AlarmLogStatsResponse {
    * pending은 분모 제외 — 응답률(1주 30%+) 측정용 신호로 별도 보존.
    */
   groundTruthCounts: { yes: number; no: number; pending: number };
+  /**
+   * #1972 (#1503 잔여 3/3) — lockless trip 종료 stamp 분포.
+   * source='lockless-trip-end' + outcome 분기 누적 ([[locklessMissMetric.ts]] 참고):
+   *   outcome='fired'      → fired         (정상 — fire ≥ 1)
+   *   outcome='suppressed' → miss          (진짜 miss — fire 0 + userIntent ON)
+   *   outcome='received'   → paradigmIntent (paradigm — fire 0 + userIntent OFF)
+   * `observabilityMetrics.locklessTripMissRatio = miss / (miss + fired)` 산출 원천.
+   * paradigmIntent는 분모/분자 제외 ([[lesson_silent_push_zero_is_paradigm_intent]]).
+   */
+  locklessTripCounts: { miss: number; fired: number; paradigmIntent: number };
 }
 
 const ACCEL_PATTERNS = ['automotive', 'walking', 'stationary', 'unknown'] as const;
 type AccelPattern = (typeof ACCEL_PATTERNS)[number];
 
-/** parse 결과를 outcome/source/reason/accelPattern/boardableLookup/groundTruth 카운터에 누적. shape mismatch entry는 silent drop. */
+/** parse 결과를 outcome/source/reason/accelPattern/boardableLookup/groundTruth/locklessTrip 카운터에 누적. shape mismatch entry는 silent drop. */
 function accumulateEntry(
   entry: AlarmLogEntryLike,
   outcomeCounts: Record<string, number>,
@@ -94,6 +109,7 @@ function accumulateEntry(
   accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number },
   boardableLookupCounts: { ok: number; miss: number },
   groundTruthCounts: { yes: number; no: number; pending: number },
+  locklessTripCounts: { miss: number; fired: number; paradigmIntent: number },
 ): void {
   if (typeof entry.outcome === 'string' && entry.outcome.length > 0) {
     outcomeCounts[entry.outcome] = (outcomeCounts[entry.outcome] ?? 0) + 1;
@@ -132,6 +148,15 @@ function accumulateEntry(
       groundTruthCounts.no += 1;
     } else if (entry.outcome === 'received') {
       groundTruthCounts.pending += 1;
+    }
+  }
+  // #1972 (#1503 잔여 3/3) — lockless trip 종료 stamp 집계.
+  // outcome 분기는 LOCKLESS_TRIP_END_OUTCOME_TO_BUCKET Record가 SSoT (locklessMissMetric.ts).
+  // null bucket(미지원 outcome)은 silent drop — schema 진화 방어.
+  if (entry.source === LOCKLESS_TRIP_END_SOURCE && typeof entry.outcome === 'string') {
+    const bucket = LOCKLESS_TRIP_END_OUTCOME_TO_BUCKET[entry.outcome];
+    if (bucket !== null && bucket !== undefined) {
+      locklessTripCounts[bucket] += 1;
     }
   }
 }
@@ -185,7 +210,7 @@ function topN(dict: Record<string, number>, n: number): Record<string, number> {
   return Object.fromEntries(sorted);
 }
 
-/** scan loop 누적 카운터 — outcome/reason/source/accelPattern/boardableLookup/groundTruth dict + totalEvents/tripsScanned. */
+/** scan loop 누적 카운터 — outcome/reason/source/accelPattern/boardableLookup/groundTruth/locklessTrip dict + totalEvents/tripsScanned. */
 interface ScanAccumulator {
   outcomeCounts: Record<string, number>;
   reasonCounts: Record<string, number>;
@@ -193,6 +218,7 @@ interface ScanAccumulator {
   accelPatternCounts: { automotive: number; walking: number; stationary: number; unknown: number };
   boardableLookupCounts: { ok: number; miss: number };
   groundTruthCounts: { yes: number; no: number; pending: number };
+  locklessTripCounts: { miss: number; fired: number; paradigmIntent: number };
   totalEvents: number;
   tripsScanned: number;
 }
@@ -222,6 +248,7 @@ async function scanTripEvidenceObject(
       acc.accelPatternCounts,
       acc.boardableLookupCounts,
       acc.groundTruthCounts,
+      acc.locklessTripCounts,
     );
   }
 }
@@ -252,6 +279,7 @@ export async function computeAlarmLogStats(
     accelPatternCounts: { automotive: 0, walking: 0, stationary: 0, unknown: 0 },
     boardableLookupCounts: { ok: 0, miss: 0 },
     groundTruthCounts: { yes: 0, no: 0, pending: 0 },
+    locklessTripCounts: { miss: 0, fired: 0, paradigmIntent: 0 },
     totalEvents: 0,
     tripsScanned: 0,
   };
@@ -285,5 +313,6 @@ export async function computeAlarmLogStats(
     accelPatternCounts: acc.accelPatternCounts,
     boardableLookupCounts: acc.boardableLookupCounts,
     groundTruthCounts: acc.groundTruthCounts,
+    locklessTripCounts: acc.locklessTripCounts,
   };
 }

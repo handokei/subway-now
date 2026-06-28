@@ -24,6 +24,11 @@ const mockGetFusionTierLog = jest.fn();
 const mockGetFusionDebugEntries = jest.fn();
 const mockGetGpsDropEntries = jest.fn();
 const mockReadBackendSsotMirror = jest.fn();
+// #1972 — lockless trip-end stamp dependencies.
+const mockLogLocklessTripEnd = jest.fn();
+const mockCountFiredAlarms = jest.fn();
+const mockBoardingLockGetState = jest.fn();
+const mockUserIntentGetState = jest.fn();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -82,6 +87,21 @@ jest.mock('../alarmLog', () => ({
   getAlarmLog: (...args: unknown[]) => mockGetAlarmLog(...args),
   // #1706 — 별 ring reader. test가 명시적으로 entries 주입.
   getFusionTierLog: (...args: unknown[]) => mockGetFusionTierLog(...args),
+  // #1972 — lockless trip 분기 stamp + fire counter.
+  logLocklessTripEnd: (...args: unknown[]) => mockLogLocklessTripEnd(...args),
+  countFiredAlarms: (...args: unknown[]) => mockCountFiredAlarms(...args),
+}));
+
+jest.mock('../../store/useBoardingLockStore', () => ({
+  useBoardingLockStore: {
+    getState: () => mockBoardingLockGetState(),
+  },
+}));
+
+jest.mock('../../store/useUserIntentStore', () => ({
+  useUserIntentStore: {
+    getState: () => mockUserIntentGetState(),
+  },
 }));
 
 jest.mock('../../../nearest-station/utils/fusionDebugBuffer', () => ({
@@ -173,6 +193,15 @@ describe('triggerTripEndRecall', () => {
     mockGetGpsDropEntries.mockReturnValue([]);
     mockReadBackendSsotMirror.mockReset();
     mockReadBackendSsotMirror.mockResolvedValue(null);
+    // #1972 — lockless stamp defaults: lockless trip (lock=null) + infoModeEnabled=false +
+    // fireCount=0 → paradigm intent stamp.
+    mockLogLocklessTripEnd.mockReset();
+    mockCountFiredAlarms.mockReset();
+    mockCountFiredAlarms.mockReturnValue(0);
+    mockBoardingLockGetState.mockReset();
+    mockBoardingLockGetState.mockReturnValue({ lock: null });
+    mockUserIntentGetState.mockReset();
+    mockUserIntentGetState.mockReturnValue({ infoModeEnabled: false });
   });
 
   it('tripStart 부재 시 즉시 skip (no-trip-start)', async () => {
@@ -636,6 +665,81 @@ describe('triggerTripEndRecall', () => {
       const result = await triggerTripEndRecall();
       expect(result.uploaded).toBe(true);
       expect(mockForwardTripTelemetry).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── #1972 logLocklessTripEnd wire ────────────────────────────────────────────
+
+  describe('#1972 lockless trip-end stamp (FE wire)', () => {
+    it('lock=null + infoModeEnabled=true + fireCount>=1 → logLocklessTripEnd(fireCount, true)', async () => {
+      setupHappyPath();
+      mockBoardingLockGetState.mockReturnValue({ lock: null });
+      mockUserIntentGetState.mockReturnValue({ infoModeEnabled: true });
+      mockCountFiredAlarms.mockReturnValue(5);
+
+      await triggerTripEndRecall();
+
+      expect(mockLogLocklessTripEnd).toHaveBeenCalledTimes(1);
+      expect(mockLogLocklessTripEnd).toHaveBeenCalledWith({
+        fireCount: 5,
+        userIntentDeclared: true,
+      });
+    });
+
+    it('lock=null + infoModeEnabled=true + fireCount=0 → logLocklessTripEnd(0, true) (진짜 miss)', async () => {
+      setupHappyPath();
+      mockBoardingLockGetState.mockReturnValue({ lock: null });
+      mockUserIntentGetState.mockReturnValue({ infoModeEnabled: true });
+      mockCountFiredAlarms.mockReturnValue(0);
+
+      await triggerTripEndRecall();
+
+      expect(mockLogLocklessTripEnd).toHaveBeenCalledWith({
+        fireCount: 0,
+        userIntentDeclared: true,
+      });
+    });
+
+    it('lock=null + infoModeEnabled=false + fireCount=0 → logLocklessTripEnd(0, false) (paradigm intent)', async () => {
+      setupHappyPath();
+      mockBoardingLockGetState.mockReturnValue({ lock: null });
+      mockUserIntentGetState.mockReturnValue({ infoModeEnabled: false });
+      mockCountFiredAlarms.mockReturnValue(0);
+
+      await triggerTripEndRecall();
+
+      expect(mockLogLocklessTripEnd).toHaveBeenCalledWith({
+        fireCount: 0,
+        userIntentDeclared: false,
+      });
+    });
+
+    it('lock 활성 trip은 lockless 분류 X → logLocklessTripEnd 미호출', async () => {
+      setupHappyPath();
+      mockBoardingLockGetState.mockReturnValue({
+        lock: { trainCode: '0001', boardingLine: '2' },
+      });
+      mockUserIntentGetState.mockReturnValue({ infoModeEnabled: true });
+      mockCountFiredAlarms.mockReturnValue(3);
+
+      await triggerTripEndRecall();
+
+      expect(mockLogLocklessTripEnd).not.toHaveBeenCalled();
+    });
+
+    it('APNS token 부재 시 stamp 호출 안 함 (forward 자체가 skip)', async () => {
+      setupHappyPath();
+      setStorage({
+        [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+        [ROUTE_KEY]: ROUTE_JSON,
+        [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+        [DESTINATION_KEY]: DEST_JSON,
+        [APNS_TOKEN_KEY]: null,
+      });
+
+      await triggerTripEndRecall();
+
+      expect(mockLogLocklessTripEnd).not.toHaveBeenCalled();
     });
   });
 });

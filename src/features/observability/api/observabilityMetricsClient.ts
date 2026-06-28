@@ -56,6 +56,20 @@ export interface AlgorithmAccuracyBucket {
   answeredTotal: number;
 }
 
+/**
+ * #1972 (#1503 잔여 3/3) — lockless trip 종료 fire 0건 분기 응답 bucket.
+ * miss = userIntent ON + fire 0건 (진짜 miss).
+ * fired = fire ≥ 1건 (정상).
+ * paradigmIntent = userIntent OFF + fire 0건 (paradigm intent, 분모/분자 제외).
+ * ratio = miss / (miss + fired) — 분모 0이면 0.
+ */
+export interface LocklessTripMissBucket {
+  miss: number;
+  fired: number;
+  paradigmIntent: number;
+  ratio: number;
+}
+
 export interface ObservabilityMetrics {
   accuracyRatio: ObservabilityMetricsBucket;
   silentPushDeliveryRatio: ObservabilityMetricsBucket;
@@ -80,6 +94,12 @@ export interface ObservabilityMetrics {
    * 신규 필드 — 구버전 backend는 미수신할 수 있으므로 optional.
    */
   algorithmAccuracyRatio?: AlgorithmAccuracyBucket;
+  /**
+   * #1972 (#1503 잔여 3/3) — lockless trip 종료 fire 0건 분기 비율.
+   * source='lockless-trip-end' outcome 분기 누적. userIntent 분기로 진짜 miss vs paradigm 구분.
+   * 신규 필드 — 구버전 backend는 미수신할 수 있으므로 optional.
+   */
+  locklessTripMissRatio?: LocklessTripMissBucket;
   window: '24h';
   timestamp: number;
 }

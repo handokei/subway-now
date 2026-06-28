@@ -138,6 +138,34 @@ describe('fetchObservabilityMetrics', () => {
       }
     });
 
+    it('forwards locklessTripMissRatio from response (#1972)', async () => {
+      const metrics = makeMetrics();
+      metrics.locklessTripMissRatio = {
+        miss: 3,
+        fired: 7,
+        paradigmIntent: 5,
+        ratio: 0.3,
+      };
+      mockFetchOk(metrics);
+      const result = await fetchObservabilityMetrics();
+      expect(result.kind).toBe('ok');
+      if (result.kind === 'ok') {
+        expect(result.metrics.locklessTripMissRatio?.miss).toBe(3);
+        expect(result.metrics.locklessTripMissRatio?.fired).toBe(7);
+        expect(result.metrics.locklessTripMissRatio?.paradigmIntent).toBe(5);
+        expect(result.metrics.locklessTripMissRatio?.ratio).toBeCloseTo(0.3);
+      }
+    });
+
+    it('locklessTripMissRatio 누락 (구 backend) → undefined graceful', async () => {
+      mockFetchOk(makeMetrics());
+      const result = await fetchObservabilityMetrics();
+      expect(result.kind).toBe('ok');
+      if (result.kind === 'ok') {
+        expect(result.metrics.locklessTripMissRatio).toBeUndefined();
+      }
+    });
+
     it('calls the correct endpoint URL with window=24h', async () => {
       mockFetchOk(makeMetrics());
       await fetchObservabilityMetrics();
