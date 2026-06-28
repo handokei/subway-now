@@ -39,6 +39,7 @@
 
 import { computeAlarmLogStats } from './alarmLogStats';
 import { computePushAckStats } from './pushAckStats';
+import { computeSilentPushReachRatio } from './silentPushReachMetric';
 import { sumLaPushCounters } from './laPushCounters';
 
 /** 집계 KV 키 prefix. */
@@ -84,6 +85,13 @@ export interface ObservabilityMetricsResponse {
   silentPushLatency: { p50: number; p95: number; totalSamples: number } | null;
   /** #1779 — LA push 도달률 (sent / (sent + failed), 24h rolling window). */
   laPushDeliveryRatio: { sent: number; failed: number; ratio: number };
+  /**
+   * #1958 — silent push 도달률 5min 윈도우 corrId(pushId) join.
+   *  - `sent` / `received` / `joined` — `silentPushReachMetric.ts` 참고.
+   *  - `silentPushDeliveryRatio` 와 별도 metric: 도달 실패 검출이 목적 (window 5min, sent SSoT).
+   *  - PENDING_PUSHES binding 부재 시 placeholder { sent:0, received:0, joined:0, ratio:0 }.
+   */
+  silentPushReachRatio: { sent: number; received: number; joined: number; ratio: number };
   window: '24h';
   timestamp: number;
 }
@@ -123,14 +131,25 @@ export async function computeObservabilityMetrics(
   // 2. PENDING_PUSHES KV 1h 근사치 — silentPushDeliveryRatio + silentPushLatency 원천
   let silentPushDeliveryRatio: ObservabilityMetricsResponse['silentPushDeliveryRatio'];
   let silentPushLatency: ObservabilityMetricsResponse['silentPushLatency'] = null;
+  // #1958 — silent push 도달률 5min 윈도우 corrId join. computeSilentPushReachRatio가 PENDING_PUSHES
+  // KV의 `sent:` + `received:` prefix scan으로 산출. binding 부재 시 graceful placeholder.
+  let silentPushReachRatio: ObservabilityMetricsResponse['silentPushReachRatio'];
   if (pendingPushesKv !== undefined) {
     const pushStats = await computePushAckStats(pendingPushesKv, now, 500);
     const pushTotal = pushStats.received + pushStats.pending;
     silentPushDeliveryRatio = buildMetricBucket(pushStats.received, pushTotal);
     silentPushLatency = pushStats.silentPushLatency;
+    const reach = await computeSilentPushReachRatio(pendingPushesKv, now);
+    silentPushReachRatio = {
+      sent: reach.sent,
+      received: reach.received,
+      joined: reach.joined,
+      ratio: reach.ratio,
+    };
   } else {
     // binding 미설정 — graceful placeholder
     silentPushDeliveryRatio = buildMetricBucket(0, 0);
+    silentPushReachRatio = { sent: 0, received: 0, joined: 0, ratio: 0 };
   }
 
   // 3. boardableMissRatio — #1503 (M3 Sub C wire) — device boardable-lookup stamp 집계.
@@ -169,6 +188,7 @@ export async function computeObservabilityMetrics(
     accelPatternHitRatio,
     silentPushLatency,
     laPushDeliveryRatio,
+    silentPushReachRatio,
     window: '24h',
     timestamp: now,
   };

@@ -61,6 +61,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       },
       silentPushLatency: null,
       laPushDeliveryRatio: { sent: 10, failed: 2, ratio: 10 / 12 },
+      silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -98,6 +99,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       },
       silentPushLatency: null,
       laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
+      silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -264,6 +266,85 @@ describe('computeObservabilityMetrics — silentPushDeliveryRatio', () => {
     const r2 = makeEmptyFakeR2();
     const result = await computeObservabilityMetrics(r2, kv as unknown as KVNamespace, NOW);
     expect(result.silentPushDeliveryRatio).toEqual({ value: 0, total: 0, ratio: 0 });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — silentPushReachRatio (#1958)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — silentPushReachRatio (#1958)', () => {
+  it('undefined pendingPushesKv → graceful placeholder (0/0/0)', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.silentPushReachRatio).toEqual({ sent: 0, received: 0, joined: 0, ratio: 0 });
+  });
+
+  it('5min 윈도우 안 sent 3건 / received 2건 → joined=2 ratio=2/3', async () => {
+    const kv = new InMemoryKV();
+    // 5min 윈도우 안 sent stamps (corrId = pushId)
+    kv.store.set('sent:p1', {
+      value: JSON.stringify({ pushId: 'p1', sentAt: NOW - 60_000 }),
+    });
+    kv.store.set('sent:p2', {
+      value: JSON.stringify({ pushId: 'p2', sentAt: NOW - 90_000 }),
+    });
+    kv.store.set('sent:p3', {
+      value: JSON.stringify({ pushId: 'p3', sentAt: NOW - 120_000 }),
+    });
+    // received stamps — p1, p2 만 ack 도착
+    kv.store.set('received:p1', {
+      value: JSON.stringify({
+        pushId: 'p1',
+        receivedAt: NOW - 50_000,
+        stationName: 'A',
+        phase: 'imminent',
+      }),
+    });
+    kv.store.set('received:p2', {
+      value: JSON.stringify({
+        pushId: 'p2',
+        receivedAt: NOW - 80_000,
+        stationName: 'B',
+        phase: 'imminent',
+      }),
+    });
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, kv as unknown as KVNamespace, NOW);
+    expect(result.silentPushReachRatio.sent).toBe(3);
+    expect(result.silentPushReachRatio.received).toBe(2);
+    expect(result.silentPushReachRatio.joined).toBe(2);
+    expect(result.silentPushReachRatio.ratio).toBeCloseTo(2 / 3);
+  });
+
+  it('5min 윈도우 밖 sent → 분모에서 제외', async () => {
+    const kv = new InMemoryKV();
+    // 10min 전 sent — 윈도우 밖
+    kv.store.set('sent:old', {
+      value: JSON.stringify({ pushId: 'old', sentAt: NOW - 10 * 60_000 }),
+    });
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, kv as unknown as KVNamespace, NOW);
+    expect(result.silentPushReachRatio.sent).toBe(0);
+    expect(result.silentPushReachRatio.ratio).toBe(0);
+  });
+
+  it('sent 없이 received만 있는 case (legacy / 누락) → 분자 제외 ratio=0', async () => {
+    const kv = new InMemoryKV();
+    kv.store.set('received:orphan', {
+      value: JSON.stringify({
+        pushId: 'orphan',
+        receivedAt: NOW - 30_000,
+        stationName: 'C',
+        phase: 'imminent',
+      }),
+    });
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, kv as unknown as KVNamespace, NOW);
+    expect(result.silentPushReachRatio.sent).toBe(0);
+    expect(result.silentPushReachRatio.received).toBe(0);
+    expect(result.silentPushReachRatio.joined).toBe(0);
+    expect(result.silentPushReachRatio.ratio).toBe(0);
   });
 });
 
@@ -531,6 +612,7 @@ const SAMPLE_METRICS = {
   },
   silentPushLatency: null,
   laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
+  silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
   window: '24h' as const,
   timestamp: NOW,
 };

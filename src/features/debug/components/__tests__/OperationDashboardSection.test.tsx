@@ -93,21 +93,27 @@ function makeSuccessResult(
   pushLatency: { p50: number; p95: number; totalSamples: number } | null = null,
   laSent = 10,
   laFailed = 2,
+  // #1958 — backend 5min corrId join 도달률. null = 구 backend 응답 (필드 누락 simulating).
+  silentPushReach: observabilityClient.SilentPushReachBucket | null = {
+    sent: 0,
+    received: 0,
+    joined: 0,
+    ratio: 0,
+  },
 ): observabilityClient.FetchMetricsResult {
-  return {
-    kind: 'ok',
-    metrics: {
-      accuracyRatio: { value: 8, total: 10, ratio: 0.8 },
-      silentPushDeliveryRatio: { value: 5, total: 6, ratio: 0.833 },
-      locklessMissRatio: { value: locklessValue, total: locklessTotal, ratio: locklessValue / locklessTotal },
-      boardableMissRatio: { value: boardableValue, total: boardableTotal, ratio: boardableTotal === 0 ? 0 : boardableValue / boardableTotal },
-      accelPatternHitRatio: accelPattern,
-      silentPushLatency: pushLatency,
-      laPushDeliveryRatio: { sent: laSent, failed: laFailed, ratio: laSent / (laSent + laFailed) },
-      window: '24h',
-      timestamp: 1_700_000_000_000,
-    },
+  const metrics: observabilityClient.ObservabilityMetrics = {
+    accuracyRatio: { value: 8, total: 10, ratio: 0.8 },
+    silentPushDeliveryRatio: { value: 5, total: 6, ratio: 0.833 },
+    locklessMissRatio: { value: locklessValue, total: locklessTotal, ratio: locklessValue / locklessTotal },
+    boardableMissRatio: { value: boardableValue, total: boardableTotal, ratio: boardableTotal === 0 ? 0 : boardableValue / boardableTotal },
+    accelPatternHitRatio: accelPattern,
+    silentPushLatency: pushLatency,
+    laPushDeliveryRatio: { sent: laSent, failed: laFailed, ratio: laSent / (laSent + laFailed) },
+    window: '24h',
+    timestamp: 1_700_000_000_000,
+    ...(silentPushReach !== null ? { silentPushReachRatio: silentPushReach } : {}),
   };
+  return { kind: 'ok', metrics };
 }
 
 // ─── setup ────────────────────────────────────────────────────────────────────
@@ -129,11 +135,12 @@ afterEach(() => {
 
 describe('OperationDashboardSection', () => {
   describe('Sub 1 — 빈 데이터 상태 (4 metric 모두 0)', () => {
-    it('5개 metric row를 렌더한다 (laPushDelivery 포함)', async () => {
+    it('6개 metric row를 렌더한다 (laPushDelivery + silentPushReachBackend 포함)', async () => {
       renderWithTheme(<OperationDashboardSection logs={[]} />);
       await act(async () => { jest.runAllTimers(); });
       expect(screen.getByTestId('operation-metric-alarmAccuracy')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-silentPushReach')).toBeTruthy();
+      expect(screen.getByTestId('operation-metric-silentPushReachBackend')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-locklessMiss')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-boardableMiss')).toBeTruthy();
       expect(screen.getByTestId('operation-metric-laPushDelivery')).toBeTruthy();
@@ -543,6 +550,67 @@ describe('OperationDashboardSection', () => {
       await act(async () => { jest.runAllTimers(); });
       fireEvent.press(screen.getByTestId('operation-metric-boardableMiss'));
       expect(onMetricClick).toHaveBeenCalledWith('boardableMiss', 'unknown');
+    });
+  });
+
+  // ── #1958 silentPushReachBackend metric (5min corrId join) ───────────────────
+
+  describe('#1958 — silentPushReachBackend metric', () => {
+    it('backend 미수신(unconfigured) → silentPushReachBackend row가 (no data) 표시', async () => {
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      expect(screen.getByTestId('operation-metric-silentPushReachBackend')).toBeTruthy();
+      // unconfigured 상태에서는 isMock=true + ratio=null → ratio-bar-na 가 적어도 1개 있어야 함
+      const naBars = screen.getAllByTestId('ratio-bar-na');
+      expect(naBars.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('fetch 성공 + silentPushReachRatio 필드 있음 → ratio bar 렌더 (received/sent)', async () => {
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(2, 10, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2, {
+          sent: 5,
+          received: 4,
+          joined: 4,
+          ratio: 0.8,
+        }),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        const tracks = screen.getAllByTestId('ratio-bar-track');
+        expect(tracks.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    it('fetch 성공 but silentPushReachRatio 필드 누락 (구 backend) → (no data) 유지', async () => {
+      // silentPushReach=null → makeSuccessResult가 silentPushReachRatio 필드를 omit.
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(2, 10, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2, null),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        // silentPushReachBackend 가 isMock=true 로 fallback (필드 누락)
+        expect(screen.getByTestId('operation-metric-silentPushReachBackend')).toBeTruthy();
+      });
+    });
+
+    it('fetch 성공 + sent=0 → ratio=null (division-by-zero 방어) (no data) 표시', async () => {
+      mockFetchMetrics.mockResolvedValue(
+        makeSuccessResult(2, 10, 0, 0, DEFAULT_ACCEL_PATTERN, null, 10, 2, {
+          sent: 0,
+          received: 0,
+          joined: 0,
+          ratio: 0,
+        }),
+      );
+      renderWithTheme(<OperationDashboardSection logs={[]} />);
+      await act(async () => { jest.runAllTimers(); });
+      await waitFor(() => {
+        // sent=0 → numerator=0 denominator=0 → ratio=null → ratio-bar-na 적어도 1개
+        const naBars = screen.getAllByTestId('ratio-bar-na');
+        expect(naBars.length).toBeGreaterThanOrEqual(1);
+      });
     });
   });
 });

@@ -33,6 +33,7 @@ import {
   type ObservabilityMetricsBucket,
   type AccelPatternBucket,
   type LaPushDeliveryBucket,
+  type SilentPushReachBucket,
   type FetchMetricsResult,
 } from '../../observability/api/observabilityMetricsClient';
 import {
@@ -65,7 +66,16 @@ interface MetricData {
 type BackendLoadState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ok'; locklessMiss: ObservabilityMetricsBucket; boardableMiss: ObservabilityMetricsBucket; accelPattern: AccelPatternBucket; pushLatency: { p50: number; p95: number; totalSamples: number } | null; laPushDelivery: LaPushDeliveryBucket }
+  | {
+      kind: 'ok';
+      locklessMiss: ObservabilityMetricsBucket;
+      boardableMiss: ObservabilityMetricsBucket;
+      accelPattern: AccelPatternBucket;
+      pushLatency: { p50: number; p95: number; totalSamples: number } | null;
+      laPushDelivery: LaPushDeliveryBucket;
+      /** #1958 — backend 5min corrId join 도달률. backend가 응답하지 않으면 null. */
+      silentPushReach: SilentPushReachBucket | null;
+    }
   | { kind: 'unconfigured' }
   | { kind: 'error'; message: string };
 
@@ -330,6 +340,7 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
         accelPattern: result.metrics.accelPatternHitRatio,
         pushLatency: result.metrics.silentPushLatency ?? null,
         laPushDelivery: result.metrics.laPushDeliveryRatio,
+        silentPushReach: result.metrics.silentPushReachRatio ?? null,
       });
     } else if (result.kind === 'unconfigured') {
       setBackendState({ kind: 'unconfigured' });
@@ -399,7 +410,39 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
         }
       : { key: 'locklessMiss', label: 'laPushDelivery', ratio: null, numerator: 0, denominator: 0, isMock: true };
 
-  const metrics: MetricData[] = [alarmAccuracy, silentPushReach, locklessMiss, boardableMiss, laPushDelivery];
+  // Metric 8 — #1958 silent push 5min corrId join 도달률 (backend SSoT).
+  // 기존 client-side `silentPushReach`(local fired/received)와 별도 — backend가 `sent`를 권위 분모로 보유.
+  // backend가 silentPushReachRatio 필드를 응답하지 않으면(구 backend) placeholder.
+  const silentPushReachBackend: MetricData =
+    backendState.kind === 'ok' && backendState.silentPushReach !== null
+      ? {
+          key: 'silentPushReach',
+          label: 'silentPushReachBackend',
+          ratio: computeRatio(
+            backendState.silentPushReach.received,
+            backendState.silentPushReach.sent,
+          ),
+          numerator: backendState.silentPushReach.received,
+          denominator: backendState.silentPushReach.sent,
+          isMock: false,
+        }
+      : {
+          key: 'silentPushReach',
+          label: 'silentPushReachBackend',
+          ratio: null,
+          numerator: 0,
+          denominator: 0,
+          isMock: true,
+        };
+
+  const metrics: MetricData[] = [
+    alarmAccuracy,
+    silentPushReach,
+    silentPushReachBackend,
+    locklessMiss,
+    boardableMiss,
+    laPushDelivery,
+  ];
 
   const handleMetricPress = useCallback(
     (key: DrillDownMetricKey) => {
