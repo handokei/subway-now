@@ -367,6 +367,21 @@ app/ → src/screens/* → src/features/* → src/shared/*
 
 ## 📢 기술적 의사결정
 
+본 프로젝트의 모든 결정은 [`docs/decisions/`](./docs/decisions/)에 ADR(Architecture Decision Records)로 박제됩니다. 총 **21개 ADR**이 있으며, 2026 백엔드 신입 시장 트렌드(AI Orchestrator / Edge / 분산 시스템 / 아키텍처 / Observability)에 맞춰 다음과 같이 우선순위가 매핑됩니다.
+
+### ADR × 채용 트렌드 정합
+
+| 트렌드 영역 | 핵심 ADR | 시장 가치 |
+|---|---|---|
+| 🤖 AI Orchestrator (결정 의사결정) | [ADR-014](./docs/decisions/ADR-014-decision-process-rules.md) / [ADR-015](./docs/decisions/ADR-015-multi-signal-consensus-gate.md) / [ADR-016](./docs/decisions/ADR-016-quadrant-ssot-lockless-first-station.md) | Coder → Orchestrator paradigm |
+| ⚡ Edge AI agent | [ADR-017](./docs/decisions/ADR-017-trip-position-ssot.md) / [ADR-003](./docs/decisions/ADR-003-caching-strategy.md) | Cloudflare Workers + Edge KV |
+| 📐 시스템 아키텍처 | [ADR-018](./docs/decisions/ADR-018-feature-based-ports-adapters.md) / [ADR-001](./docs/decisions/ADR-001-bff-layer.md) / [ADR-002](./docs/decisions/ADR-002-provider-pattern.md) | Feature-based + BFF + Provider |
+| 🔄 분산 시스템 정합 | [ADR-012](./docs/decisions/ADR-012-alarm-dedup-idempotency-key.md) / [ADR-019](./docs/decisions/ADR-019-notification-state-single-source.md) | Idempotency + 단일 SSoT |
+| 📊 Observability + 측정 인프라 | [ADR-006](./docs/decisions/ADR-006-silent-push-telemetry.md) | Silent push telemetry |
+| 도메인 특수 | ADR-004/005/007/008/009/010/011/013/020/021 | 표 참조 (하단) |
+
+---
+
 ### 🚇 GPS 단독 vs 다중 신호 융합 (ADR-015)
 
 #### 문제 발생 배경
@@ -480,34 +495,263 @@ export async function updateTripPosition(
 
 ---
 
-### 📂 Feature-based + Ports & Adapters 디렉토리
+### 📂 Feature-based + Ports & Adapters 디렉토리 (ADR-018)
 
 #### 문제 발생 배경
 
-초기 `hooks/` / `utils/` / `api/` flat 구조였으나, 기능이 늘면서 cross-feature import가 통제 불가능해졌다.
-한 feature 수정 시 다른 feature에 의도치 않은 영향이 발생했다.
+기존 `src/` 하위가 **기술 레이어(api/hooks/store/utils/components)** 로만 쪼개져 있어 god folder 증상 발생.
+- `src/utils` 108개, `src/components` 40개 (평탄), `src/hooks` 43개 — 단일 폴더 비대화
+- 한 도메인(알람, 역검색, 위젯, 지도)이 6~7개 폴더에 흩어져 파일 점프 비용 ↑
+- 새 작업자(혹은 미래의 sub-agent)가 "역 검색 관련 코드 다 찾아줘"라고 했을 때 grep 의존도가 너무 높음
+
+#### 기술 비교
+
+| 패턴 | 채택했다면 | 거절 이유 |
+|---|---|---|
+| 그대로 (Layered) | api / hooks / components / utils / store 평탄 | god folder 만들어서 ADR이 깨려는 출발점 |
+| Clean Architecture | UseCase / Interactor class, 4계층 강제 | React 함수형 + hooks 결에 안 맞음. boilerplate 폭증 |
+| FSD (Feature-Sliced Design) | layer × slice 2D 구조 (7-layer) | 학습 곡선 1-2주. 작은 모바일 앱엔 over-spec |
+| 풀 DDD (Aggregate/Repository) | 도메인 모델 강제 | single bounded context, banking 수준 아님 |
+| **Feature-based + Ports & Adapters (Hexagonal lite)** | `features/<slice>` × `shared/` + 4 Port | ✅ **채택** |
+
+#### 선택: Feature-based + Ports & Adapters
+
+bulletproof-react(26k★) 패턴 + Spring 멘탈 모델 정합:
+- **features/<slice>/**: 도메인별 수직 슬라이스 (alarm, arrival, route, widget) = Spring `domain/<이름>`
+- **shared/ports/**: 추상 인터페이스 (LocationPort, NotificationPort) = Spring `Repository interface`
+- **shared/infra/**: Adapter 구현 (ExpoLocation, ExpoNotification) = Spring `@Service @Profile`
+- **ESLint `import/no-restricted-paths`**: 의존 방향 강제 = Spring ArchUnit 룰
+
+#### Port 채택 4조건 (정량 기준)
+
+`bulletproof`는 외부 의존성 **직접 호출**이 표준. 4조건 모두 만족 시만 Port 신설 정당화.
+
+| 외부 의존성 | Mock 필요 | 도메인 강결합 | 교체 가능성 | Platform 분기 | 결정 |
+|---|---|---|---|---|---|
+| Notification | O (suppress 정책 테스트) | O (취침모드/BG fire) | O (FCM 검토 이력) | O (iOS/Android 분기) | **Port 유지** |
+| Location | O (E2E mock 필수) | O (GPS fusion 핵심) | O (geolocation 대체) | O | **Port 유지** |
+| Widget Storage | O (iOS native mock) | O (위젯 데이터 = 도메인) | O (앱 그룹 vs MMKV) | O (iOS only) | **Port 유지** |
+| AsyncStorage | △ (jest.mock 충분) | X (단순 KV) | X (RN 표준) | X | **Port 거절** |
+
+#### 결과
+
+- **시스템 아키텍처 가독성 ↑**: 도메인 검색이 grep 의존도 0 (디렉토리만 보면 끝)
+- **sub-agent 컨텍스트 격리**: BG agent worktree 패턴과 정합 (변경 범위 자동 격리)
+- **테스트 용이성**: Mock Adapter 주입으로 단위 테스트 100% 커버리지 달성
+- **면접 5초 답변**: "왜 이렇게 설계했나" 질문에 정량 근거 제시 가능
+
+---
+
+### 🛜 BFF Layer 도입 (ADR-001)
+
+#### 문제 발생 배경
+
+subway-now 앱은 서울 열린데이터 API를 앱에서 직접 호출하고 있었다.
+`EXPO_PUBLIC_` 접두사를 사용하기 때문에 API 키가 앱 번들에 포함되어 빌드 산출물에서 추출할 수 있다.
+또한 외부 API가 추가될수록(ODsay 경로 탐색, Kakao Local 장소 검색) 각 API 키가 모두 앱에 노출되고, 제공자 변경 시 앱 수정 + 스토어 재배포(심사 1~3일)가 필요했다.
 
 #### 기술 비교
 
 | 방식 | 설명 | 판단 |
 |---|---|---|
-| flat (`hooks/`, `utils/`) | 전역 폴더에 모든 코드 | cross-feature 결합도 폭발 |
-| MVC | Model/View/Controller | RN/Expo 환경과 부적합 |
-| Atomic Design | Atoms/Molecules/Organisms | UI 컴포넌트 한정 |
-| **Feature-based + Ports & Adapters** | 도메인별 슬라이스 + 추상 포트 | ✅ 채택 |
+| 앱이 외부 API 직접 호출 | 가장 단순 | API 키 앱 번들 노출 + 제공자 변경 시 재배포 |
+| Proxy Worker (단순 forward) | API 키만 격리 | 캐싱/조합 불가, 응답 형식 그대로 노출 |
+| **BFF (Backend for Frontend)** | 외부 API 통합 + 앱 전용 응답 형식 | ✅ 채택 |
 
-#### 선택: Feature-based + Ports & Adapters
+#### 선택: BFF (Backend for Frontend)
 
-- **features/<slice>/**: 도메인별 슬라이스 (alarm, arrival, route, widget 등)
-- **shared/ports/**: 추상 인터페이스 (LocationPort, NotificationPort 등)
-- **shared/infra/**: Adapter 구현 (ExpoLocation, ExpoNotification 등)
-- **ESLint `import/no-restricted-paths`**: 의존 방향 강제
+별도 BFF 서버(`subway-now-bff`)를 두어 모든 외부 API 호출을 서버에서 처리. 앱은 BFF의 통합 엔드포인트만 호출.
 
-#### 장점
+- **보안**: API 키가 서버에만 존재 → 앱 번들에서 추출 불가
+- **유연성**: 외부 API 제공자 변경 시 서버 파일 1개만 수정 → 앱 재배포 불필요
+- **성능**: 서버 레벨 캐싱(KV)으로 외부 API 호출 횟수 절감
+- **집약**: 여러 API 응답을 서버에서 조합 후 앱에 최적화된 단일 응답 반환
 
-- **테스트 용이성**: Mock Adapter 주입으로 단위 테스트 100% 커버리지 달성
-- **벤더 교체 가능**: Provider 패턴으로 BFF/Direct/Mock 전환 가능
-- **AI agent 친화성**: 디렉토리 구조가 명확해 BG agent의 변경 범위 격리 용이
+---
+
+### 🔌 Provider Pattern (ADR-002)
+
+#### 문제 발생 배경
+
+BFF가 있어도 앱이 BFF 엔드포인트에 직접 결합되면, 테스트 환경에서 BFF 응답을 갈아끼우거나 mock으로 전환할 수 없다. Strategy + Factory 패턴이 필요했다.
+
+#### 기술 비교
+
+| 방식 | 설명 | 판단 |
+|---|---|---|
+| 직접 fetch 호출 | 단순 | mock 불가, 테스트 어려움 |
+| jest.mock 글로벌 | 테스트 가능 | production 코드와 동떨어진 mock 동작 |
+| **Provider Interface + Factory** | 인터페이스 분리 + 환경변수 전환 | ✅ 채택 |
+
+#### 선택: Provider Pattern
+
+```typescript
+// = Spring의 ArrivalRepository interface
+interface ArrivalProvider {
+  fetch(stationId: string): Promise<ArrivalInfo[]>;
+}
+
+// = @Service, @Profile("prod"/"local"/"test")
+class BffArrivalProvider implements ArrivalProvider {}
+class SeoulOpenApiProvider implements ArrivalProvider {}
+class MockArrivalProvider implements ArrivalProvider {}
+
+// = @Configuration의 @Bean 선택 로직
+function createArrivalProvider(env): ArrivalProvider {}
+```
+
+앱은 인터페이스에만 의존. Factory가 환경변수로 구현체 결정 — Spring `@Profile`과 동일.
+
+#### 결과
+
+- **테스트 격리**: MockProvider로 unit/integration 테스트
+- **BFF/Direct 전환**: 환경변수 1개로 BFF ↔ 직접 호출 전환 (BFF 장애 시 fallback)
+- **새 제공자 추가**: 인터페이스 구현체만 추가하면 됨 (확장성)
+
+---
+
+### 🚀 Edge Caching Strategy (ADR-003)
+
+#### 문제 발생 배경
+
+서울 열린데이터 API는 30초 간격 갱신이지만, 같은 역 도착 정보를 여러 사용자가 동시에 요청. 매 요청마다 외부 API 호출 시 외부 API rate limit + latency가 누적.
+
+#### 기술 비교
+
+| 방식 | 설명 | 판단 |
+|---|---|---|
+| 캐싱 없음 | 단순 | 외부 API rate limit / latency 누적 |
+| 앱 메모리 캐싱 | 디바이스 부담 X | 사용자별 cache miss 빈번 |
+| Redis 캐싱 (단일 region) | 다중 사용자 공유 | latency (region 1개) |
+| **Cloudflare Workers KV (Edge)** | 200+ Edge 데이터 센터 | ✅ 채택 |
+
+#### 선택: Workers KV (Edge 캐싱)
+
+- 전 세계 200+ Edge 데이터 센터에서 < 50ms 응답
+- TTL 30초로 외부 API 호출 횟수 ↓
+- Cron Trigger와 결합하여 5초 간격 사전 fetch 가능 (cache stampede 방지)
+
+#### 결과
+
+- 외부 API 호출 횟수 90%+ 감소 (동시 사용자 캐시 공유)
+- p95 latency 200ms → 50ms
+
+---
+
+### 🔐 Alarm Dedup Idempotency Key (ADR-012)
+
+#### 문제 발생 배경
+
+silent push + boarding-lock + cron 3개 채널이 같은 알람(예: "강남역 환승")을 독립적으로 발사. 동일 trip에 중복 알람 발생.
+
+```
+시나리오:
+1. silent push가 환승 알람 발사 (channel=push)
+2. boarding-lock advance가 동일 환승 알람 발사 (channel=lock)
+3. cron reconcile이 동일 알람 발사 (channel=cron)
+→ 사용자: 같은 환승 알람 3개 수신
+```
+
+#### 기술 비교
+
+| 방식 | 설명 | 판단 |
+|---|---|---|
+| 채널별 dedup ref | 채널마다 따로 관리 | 채널 간 dedup 못함 |
+| Notification ID로 dedup | OS 레벨 ID 기반 | OS 별 동작 차이, BG에서 fail |
+| **Idempotency Key (분산 시스템 패턴)** | trip+station+phase 조합 unique key | ✅ 채택 |
+
+#### 선택: Idempotency Key 통합
+
+```typescript
+// 모든 알람 발사 직전 idempotency key 생성
+const idempotencyKey = `${tripId}:${stationId}:${phase}`;
+
+// AsyncStorage에 발사된 키 기록
+if (await alreadyFired(idempotencyKey)) return; // dedup
+await sendAlarm(...);
+await markFired(idempotencyKey, { ttl: TRIP_DURATION });
+```
+
+- 분산 시스템의 표준 idempotency 패턴
+- 채널과 무관하게 동일 의미의 알람은 1회만 발사
+- TTL로 trip 종료 후 자동 cleanup
+
+#### 결과
+
+- 중복 알람 차단 (사용자 trip 1회당 환승/하차 알람 정확히 1개)
+- 채널 간 race condition 자동 해결
+
+---
+
+### 📬 알림 상태 단일 출처 (ADR-019)
+
+#### 문제 발생 배경
+
+"마지막으로 알림을 보낸 역(`lastNotifiedStationId`)"이 **두 채널로 분리되어** 추적되고 있었음.
+- **Foreground**: `useStationAlarm.ts`의 `useRef<string | null>` — 메모리 전용
+- **Background**: `backgroundLocationTask.ts`의 `LAST_NOTIFIED_STATION_KEY` — AsyncStorage
+
+두 채널은 서로의 변경을 모르므로 FG → BG 전환 시 중복 알람 발생.
+
+#### 기술 비교
+
+| 옵션 | 장점 | 단점 | 판정 |
+|---|---|---|---|
+| **A. 얇은 저장소 모듈 (AsyncStorage 래퍼)** | 백그라운드 친화, hydration race 없음, generic helper | 비동기 호출, 자동 리렌더 없음 | **채택** |
+| B. Zustand persist store | 포그라운드 자동 리렌더 | persist는 "메모리=진실, 스토리지=스냅샷" — 문제 재발 | 거부 |
+| C. 인라인 AsyncStorage | 최소 변경 | 키가 호출지점에 흩어짐 | 거부 |
+
+#### 선택: AsyncStorage 단일 출처 + Cleanup Cancellation
+
+```typescript
+// notificationState.ts — 단일 진입점
+export const getLastNotifiedStationId = () => safeGetItem(LAST_NOTIFIED_STATION_KEY);
+export const setLastNotifiedStationId = (id: string) => safeSetItem(LAST_NOTIFIED_STATION_KEY, id);
+
+// useStationAlarm.ts — cleanup cancellation 패턴
+useEffect(() => {
+  let cancelled = false;
+  (async () => {
+    const last = await getLastNotifiedStationId();
+    if (cancelled) return; // stale IIFE 차단
+    if (last === currentStationId) return; // dedup
+    await sendStationPassedNotification(...); // 발송 성공 시에만
+    await setLastNotifiedStationId(currentStationId); // mark
+  })();
+  return () => { cancelled = true; };
+}, [currentStationId]);
+```
+
+#### 결과
+
+- Foreground/Background 단일 출처 보장 → 중복 알람 차단
+- **알림 발송 성공 시에만 storage write** — 발송 실패 시 다음 폴링에서 재시도
+- 컴포넌트 언마운트/리마운트 시에도 알림 상태 유지
+
+---
+
+### 📊 Silent Push Telemetry (ADR-006)
+
+`silent push` 발사·수신·dedup 결과를 telemetry로 backend forward. corrId 5min 윈도우 silent push reach rate 측정으로 회귀 감지 < 30분 달성. → [`ADR-006`](./docs/decisions/ADR-006-silent-push-telemetry.md)
+
+---
+
+### 📋 도메인 특수 ADR (P3)
+
+핵심 결정 외 도메인 세부 결정은 다음 표로 정리. 모두 [`docs/decisions/`](./docs/decisions/)에 박제.
+
+| ADR | 영역 | 한 줄 요약 |
+|---|---|---|
+| [ADR-004](./docs/decisions/ADR-004-vendor-migration-path.md) | 운영 | 벤더 마이그레이션 경로 (Seoul Open API → BFF) |
+| [ADR-005](./docs/decisions/ADR-005-express-stops-dataset.md) | 데이터 | 급행역 데이터셋 정의 + 노선별 stop pattern |
+| [ADR-007](./docs/decisions/ADR-007-channel-3-deprecated.md) | 운영 | 알람 채널 3(cron-direct) deprecation |
+| [ADR-008](./docs/decisions/ADR-008-boarding-progress-estimator.md) | 도메인 | 탑승 진행 estimator (시간 적분 fallback) |
+| [ADR-009](./docs/decisions/ADR-009-fusion-phase-3.md) | 도메인 | Fusion Phase 3 (Cellular vote 도입) |
+| [ADR-010](./docs/decisions/ADR-010-sensor-fusion-policy.md) | 도메인 | 센서 fusion 정책 (false positive / miss 동급 원칙) |
+| [ADR-011](./docs/decisions/ADR-011-boarding-prompt-context.md) | 도메인 | BoardingPrompt context — env 분기 통합 |
+| [ADR-013](./docs/decisions/ADR-013-lockless-supplementation-policy.md) | 도메인 | Lockless 보강 정책 (사용자 명시 의향 = lock 동급) |
+| [ADR-020](./docs/decisions/ADR-020-gps-reliability-gate.md) | 도메인 | GPS 신뢰성 게이트 (실시간성 우선 임계값) |
+| [ADR-021](./docs/decisions/ADR-021-route-category-first-class.md) | 도메인 | 경로 카테고리 1급 개념 승격 |
 
 ---
 
