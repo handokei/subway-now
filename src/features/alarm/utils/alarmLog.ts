@@ -77,7 +77,12 @@ export type AlarmLogSource =
   // 분기 자동 lock release 발생을 stamp. device-side self-contained evidence — push notification
   // fire는 backend cascade(RC-13/RC-16) 의존이라 본 PR 범위 외. 7일 production 측정에서 detect
   // 빈도(`leg_swap_prompt_fired` count)와 paradigm 1 회귀 점검(`autoLock_fired_count = 0`)을 같이 본다.
-  | 'leg-transition';
+  | 'leg-transition'
+  // #1503 (M3 Sub C wire) — boardable train ETA timetable lookup 결과 stamp.
+  // computeBoardableWaitsForRoute가 transfer leg마다 calculateBoardableTrainETA 호출 후
+  // status에 따라 outcome='received'(ok) 또는 outcome='suppressed'(miss) 적재. backend
+  // alarmLogStats가 source='boardable-lookup' + outcome로 boardableMissRatio 산출.
+  | 'boardable-lookup';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1141,6 +1146,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'cross-trip-mirror-launch': null,
   'accel-pattern-observed': null,
   'leg-transition': null,
+  'boardable-lookup': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1750,6 +1756,49 @@ export function logAccelPatternObserved(pattern: 'automotive' | 'walking' | 'sta
 /** 테스트용 — accel-pattern dedup 윈도우 리셋. */
 export function _resetAccelPatternWindowForTests(): void {
   lastAccelPatternTs.clear();
+}
+
+// #1503 (M3 Sub C wire) — boardable lookup dedup: 같은 (status,line,stationName)
+// 연속 1s 이내 repeat 시 drop. computeBoardableWaitsForRoute는 stable 입력에 대해 idempotent
+// 결과를 내므로 매 cycle마다 같은 leg 결과 반복 적재되는 burst를 차단.
+export const BOARDABLE_LOOKUP_DEDUP_MS = 1_000;
+const lastBoardableLookupTs = new Map<string, number>();
+
+/**
+ * #1503 (M3 Sub C wire) — boardable train timetable lookup 결과 1건 적재.
+ *
+ * `calculateBoardableTrainETA` 후 호출: status='ok' → outcome='received',
+ * 그 외(no-timetable / station-missing / day-type-unknown / no-departures / direction-null)
+ * → outcome='suppressed'. backend `alarmLogStats`가 boardableLookupCounts 누적,
+ * `observabilityMetrics.boardableMissRatio`가 (miss / (ok + miss))로 계산.
+ *
+ * dedup key: `${status}|${line}|${stationName}` — 같은 leg 재계산 시 1s 윈도우 1건만.
+ * 다른 leg(line/stationName 다른) 또는 status 전환(ok↔miss)은 즉시 새 엔트리.
+ *
+ * stationName 슬롯은 dedup/forward 모두에서 raw station name을 그대로 사용 — backend
+ * 집계는 outcome 분기만 보고 stationName은 RCA용 (어느 환승역에서 miss 빈발).
+ */
+export function logBoardableLookupResult(input: {
+  status: 'ok' | 'miss';
+  line: string;
+  stationName: string;
+}): void {
+  const key = `${input.status}|${input.line}|${input.stationName}`;
+  const now = Date.now();
+  const last = lastBoardableLookupTs.get(key);
+  if (last !== undefined && now - last < BOARDABLE_LOOKUP_DEDUP_MS) return;
+  lastBoardableLookupTs.set(key, now);
+  appendAlarmLog({
+    ts: now,
+    source: 'boardable-lookup',
+    outcome: input.status === 'ok' ? 'received' : 'suppressed',
+    stationName: input.stationName,
+  });
+}
+
+/** 테스트용 — boardable lookup dedup 윈도우 리셋. */
+export function _resetBoardableLookupWindowForTests(): void {
+  lastBoardableLookupTs.clear();
 }
 
 /**

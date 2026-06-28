@@ -7,6 +7,7 @@ import {
   makeMultiTransferRoute,
   makeTransferRoute,
 } from '../../../../testUtils/routeFixtures';
+import * as alarmLogModule from '../../../alarm/utils/alarmLog';
 
 // KST 평일 12:00 = UTC 03:00 — 실 timetable에 다수 발차 보장.
 const KST_WEEKDAY_NOON = new Date('2026-06-09T03:00:00.000Z');
@@ -151,6 +152,98 @@ describe('computeBoardableWaitsForRoute', () => {
     });
     expect(result.length).toBe(1);
     expect(result[0]).toBeNull();
+  });
+});
+
+// #1503 — boardable lookup telemetry stamp wire-completion verify.
+// computeBoardableWaitsForRoute가 각 transfer leg마다 logBoardableLookupResult를 정확히
+// 호출하는지 검증. backend alarmLogStats.boardableLookupCounts가 forward chain의 종점.
+describe('computeBoardableWaitsForRoute — boardable lookup telemetry (#1503)', () => {
+  let logSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    alarmLogModule._resetBoardableLookupWindowForTests();
+    logSpy = jest.spyOn(alarmLogModule, 'logBoardableLookupResult');
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('direct route → telemetry 호출 안 함', () => {
+    computeBoardableWaitsForRoute({
+      route: makeDirectRoute(5, '1'),
+      startAt: KST_WEEKDAY_NOON,
+      initialWaitSeconds: 0,
+    });
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('lookup 성공 leg → status="ok" 로 1건 적재', () => {
+    const route = makeTransferRoute({
+      transferName: '종로3가',
+      fromLine: '1',
+      toLine: '3',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 1,
+    });
+    computeBoardableWaitsForRoute({
+      route,
+      startAt: KST_WEEKDAY_NOON,
+      initialWaitSeconds: 0,
+      destinationName: '충무로',
+    });
+    expect(logSpy).toHaveBeenCalledWith({
+      status: 'ok',
+      line: '3',
+      stationName: '종로3가',
+    });
+  });
+
+  it('direction inference 실패 leg → status="miss" 로 1건 적재', () => {
+    // 2호선 단조 화이트리스트 밖 → direction null → miss stamp.
+    const route = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '왕십리', fromLine: '5', toLine: '2', stopsToTransfer: 2 },
+        { transferName: '대림', fromLine: '2', toLine: '7', stopsToTransfer: 3 },
+      ],
+      stopsAfterLastTransfer: 1,
+    });
+    computeBoardableWaitsForRoute({
+      route,
+      startAt: KST_WEEKDAY_NOON,
+      initialWaitSeconds: 0,
+      destinationName: '청담',
+    });
+    // 첫 leg(2호선) miss stamp 발생 확인
+    const missCalls = logSpy.mock.calls.filter(([arg]) => arg.status === 'miss');
+    expect(missCalls.length).toBeGreaterThanOrEqual(1);
+    expect(missCalls[0][0]).toMatchObject({
+      status: 'miss',
+      line: '2',
+      stationName: '왕십리',
+    });
+  });
+
+  it('timetable 부재 leg(no-timetable) → status="miss" 로 1건 적재', () => {
+    // bundang은 timetable 부재 → calculateBoardableTrainETA가 no-timetable 반환 → miss stamp.
+    const route = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '왕십리', fromLine: '2', toLine: 'bundang', stopsToTransfer: 2 },
+      ],
+      stopsAfterLastTransfer: 3,
+    });
+    computeBoardableWaitsForRoute({
+      route,
+      startAt: KST_WEEKDAY_NOON,
+      initialWaitSeconds: 0,
+      destinationName: '서울숲',
+    });
+    expect(logSpy).toHaveBeenCalledWith({
+      status: 'miss',
+      line: 'bundang',
+      stationName: '왕십리',
+    });
   });
 });
 
