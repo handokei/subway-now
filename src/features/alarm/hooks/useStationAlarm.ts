@@ -13,6 +13,7 @@ import {
   isSameStationName,
   isStationWithinHopWindow,
   arcIndexOf,
+  LOCKLESS_HOP_WINDOW_DEFAULT,
 } from '../../../shared/utils/stationRoute';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
@@ -383,6 +384,70 @@ function inferHopIndexFromFiredAlarms(
   return Math.min(maxIdx + 1, arcStations.length - 1);
 }
 
+/**
+ * #1922 (M1+M3) — station-passed hop window 동적 확장.
+ *
+ * 환승 leg에서 estimator가 시간 적분 strategy로 stuck됐을 때 (live-position이 아닌 strategy +
+ * effectiveHopIndex와 candidateIndex 사이에 transfer point가 끼어 있음), 기본 windowSize(1)로는
+ * 정상 진행 candidate(실측)도 reject된다. 본 helper가 동적으로 windowSize를 확장해 dump line
+ * 169~244의 61회 suppress 회귀를 차단한다.
+ *
+ * 게이트:
+ *   1. route.type이 'transfer' 또는 'multi-transfer' — direct route는 환승 없음, 동적 확장 의미 X.
+ *   2. currentHopStrategy !== 'live-position' — live-position에서 격차 큰 경우는 GPS jitter / wrong
+ *      train 같은 abnormal jump 신호. 확장하면 false positive 알람 발생. (M3 신뢰도 게이트)
+ *   3. effectiveHopIndex와 candidateIndex 사이 arc에 transfer point가 끼어 있음 — 인접 station이
+ *      같은 name + 다른 line이면 transfer point (computeRouteArc는 양쪽 노선 entry 모두 보존).
+ *
+ * 모두 충족 시 windowSize = max(LOCKLESS_HOP_WINDOW_DEFAULT, |candidateIndex - effectiveHopIndex|)로
+ * 확장. 한 가지라도 미충족이면 기본 windowSize 유지.
+ *
+ * arc에 candidate가 없으면 (-1), 호출자가 어차피 isStationWithinHopWindow에서 false 반환하므로
+ * 본 helper는 -1을 받아도 안전(기본 windowSize 반환).
+ */
+function computeHopWindowSize(
+  arcStations: readonly Station[],
+  route: Route,
+  effectiveHopIndex: number,
+  candidateIndex: number,
+  currentHopStrategy:
+    | import('../../route/utils/stationProgressEstimator').StationProgressStrategy
+    | null,
+): number {
+  // M1 게이트 1: transfer/multi-transfer route만 동적 확장 대상.
+  if (!route || route.type === 'direct') return LOCKLESS_HOP_WINDOW_DEFAULT;
+  // M3 신뢰도 게이트: live-position 실측 strategy에서는 확장 X (abnormal jump 신호).
+  if (currentHopStrategy === 'live-position') return LOCKLESS_HOP_WINDOW_DEFAULT;
+  // 인덱스 가드: candidate가 arc 밖이면 default — isStationWithinHopWindow가 어차피 false.
+  if (candidateIndex < 0 || effectiveHopIndex < 0) return LOCKLESS_HOP_WINDOW_DEFAULT;
+  /* istanbul ignore next -- 호출 시점 invariant: arcIndexOf 결과 candidate는 arc 내부.
+     effectiveHopIndex도 currentHopIndex(estimator 또는 firedAlarms inferred, 둘 다 clamp) 후
+     사용되므로 out-of-bounds 도달 불가. 방어적 가드 — 직접 호출자 추가 시 안전. */
+  if (candidateIndex >= arcStations.length || effectiveHopIndex >= arcStations.length) {
+    return LOCKLESS_HOP_WINDOW_DEFAULT;
+  }
+
+  // M1 게이트 3: effectiveHopIndex와 candidateIndex 사이 transfer crossover 감지.
+  // computeRouteArc는 환승 시 fromLine 쪽 + toLine 쪽 entry 둘 다 push하므로
+  // 인접 station이 같은 name + 다른 line이면 transfer crossover 표지다.
+  const lo = Math.min(effectiveHopIndex, candidateIndex);
+  const hi = Math.max(effectiveHopIndex, candidateIndex);
+  let crossesTransfer = false;
+  for (let i = lo; i < hi; i++) {
+    const a = arcStations[i];
+    const b = arcStations[i + 1];
+    if (isSameStationName(a.name, b.name) && a.line !== b.line) {
+      crossesTransfer = true;
+      break;
+    }
+  }
+  if (!crossesTransfer) return LOCKLESS_HOP_WINDOW_DEFAULT;
+
+  // 모든 게이트 통과 → windowSize를 격차만큼 확장.
+  const gap = hi - lo;
+  return Math.max(LOCKLESS_HOP_WINDOW_DEFAULT, gap);
+}
+
 export interface UseStationAlarmInputs {
   route: Route;
   destination: Station | null;
@@ -466,6 +531,20 @@ export interface UseStationAlarmInputs {
    * Day 1 evidence: 13:49:38 fu=마장 gp=왕십리 mismatch → 마장 destination early false fire (1m 36s).
    */
   estimatorIsTimeIntegration?: boolean;
+  /**
+   * #1922 (M1+M3) — useFusedNearestStation.estimatorStrategy 패스스루.
+   *
+   * station-passed gate(`isStationWithinHopWindow`)의 동적 windowSize 계산 입력.
+   * route.type이 transfer/multi-transfer + strategy가 live-position이 아닐 때 환승 leg 진입 직후
+   * stuck된 effectiveHopIndex와 candidate idx 사이에 transfer point가 끼어 있으면 windowSize를
+   * 동적으로 확장해 dump line 169~244의 61회 suppress 회귀를 차단한다.
+   *
+   * M3 신뢰도 게이트: strategy === 'live-position'은 실측 신호이므로 격차가 크면 abnormal jump(=
+   * GPS jitter / wrong train) 신호라 windowSize 확장 X. 시간 적분 strategy일 때만 확장 허용.
+   *
+   * 미전달/null이면 기본 windowSize(LOCKLESS_HOP_WINDOW_DEFAULT=1) 유지 → backward-compat.
+   */
+  currentHopStrategy?: import('../../route/utils/stationProgressEstimator').StationProgressStrategy | null;
 }
 
 export function useStationAlarm({
@@ -487,6 +566,7 @@ export function useStationAlarm({
   subsurfaceStationDetected = false,
   trainProgressing = false,
   estimatorIsTimeIntegration = false,
+  currentHopStrategy = null,
 }: UseStationAlarmInputs): void {
   // #1405 — 동일 5-arg evaluateMovement 호출 helper. Phase ETA / API imminent / movementSuppressionReason
   // 3곳에서 같은 인자로 호출돼 SonarCloud CPD가 dup 검출. helper로 추출해 회피.
@@ -1198,20 +1278,31 @@ export function useStationAlarm({
             lastHopWindowNoSourceFgTsRef.current = now;
             logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
           }
-        } else if (isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
-          // hop window 통과 — lockless origin hop 차단은 IIFE 내부의 broad !lock 가드가 담당.
-          // #1630 — effectiveHopIndex AND 조건 제거. lockless mode는 estimator(시간 적분)가
-          // idx를 임의 진행 — 출발역에 머물러도 idx>=1 정상 산출(2026-06-22 08:34:18 용마산
-          // evidence: estimator idx=1, 사용자는 출발 직후 = X1 위반). lock 활성 trip은
-          // boardingStationId 기준 origin 검사를 IIFE lock 가드가 처리.
         } else {
-          logSuppressedHopWindow({
-            source: 'fg',
-            stationName: candidateStation.name,
-            currentHopIndex: effectiveHopIndex,
-            candidateIndex: arcIndexOf(arcStations, candidateStation),
-          });
-          return;
+          // #1922 (M1+M3) — transfer leg에서 estimator stuck 시 windowSize 동적 확장.
+          const candidateIndex = arcIndexOf(arcStations, candidateStation);
+          const windowSize = computeHopWindowSize(
+            arcStations,
+            route,
+            effectiveHopIndex,
+            candidateIndex,
+            currentHopStrategy,
+          );
+          if (isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex, windowSize)) {
+            // hop window 통과 — lockless origin hop 차단은 IIFE 내부의 broad !lock 가드가 담당.
+            // #1630 — effectiveHopIndex AND 조건 제거. lockless mode는 estimator(시간 적분)가
+            // idx를 임의 진행 — 출발역에 머물러도 idx>=1 정상 산출(2026-06-22 08:34:18 용마산
+            // evidence: estimator idx=1, 사용자는 출발 직후 = X1 위반). lock 활성 trip은
+            // boardingStationId 기준 origin 검사를 IIFE lock 가드가 처리.
+          } else {
+            logSuppressedHopWindow({
+              source: 'fg',
+              stationName: candidateStation.name,
+              currentHopIndex: effectiveHopIndex,
+              candidateIndex,
+            });
+            return;
+          }
         }
       }
 
@@ -1292,6 +1383,8 @@ export function useStationAlarm({
     userLocation?.lng,
     currentHopIndex,
     arcStations,
+    // #1922 (M1+M3) — strategy 변동 시 windowSize 재계산.
+    currentHopStrategy,
   ]);
 
   // #917 A2 follow-up — FG fast path: lock.trainCode가 currentStationArrival의 row에
@@ -1373,14 +1466,25 @@ export function useStationAlarm({
               stationName: candidateStation.name,
             });
           }
-        } else if (!isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
-          logSuppressedHopWindow({
-            source: 'fg-arvlcd',
-            stationName: candidateStation.name,
-            currentHopIndex: effectiveHopIndex,
-            candidateIndex: arcIndexOf(arcStations, candidateStation),
-          });
-          return;
+        } else {
+          // #1922 (M1+M3) — fg-arvlcd 경로도 동일하게 transfer leg windowSize 동적 확장 적용.
+          const candidateIndex = arcIndexOf(arcStations, candidateStation);
+          const windowSize = computeHopWindowSize(
+            arcStations,
+            route,
+            effectiveHopIndex,
+            candidateIndex,
+            currentHopStrategy,
+          );
+          if (!isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex, windowSize)) {
+            logSuppressedHopWindow({
+              source: 'fg-arvlcd',
+              stationName: candidateStation.name,
+              currentHopIndex: effectiveHopIndex,
+              candidateIndex,
+            });
+            return;
+          }
         }
       }
 
@@ -1438,6 +1542,8 @@ export function useStationAlarm({
     currentHopIndex,
     // #1266 — fast-path hop window 게이트 입력. arcStations 변화 시(환승 후 leg 전환 등) 재평가.
     arcStations,
+    // #1922 (M1+M3) — fg-arvlcd 경로 동적 windowSize 재계산.
+    currentHopStrategy,
   ]);
 
   // #1290/#1298 — subsurface verdict 기반 station-passed 발사.

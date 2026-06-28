@@ -54,4 +54,95 @@ describe('resolveTripDirection', () => {
     });
     expect(resolveTripDirection(route, '강남', '1-001')).toBe('down');
   });
+
+  describe('#1922 — closed loop (2호선 환상선) direction', () => {
+    // 2호선 본선 closed loop은 id 사전순 정렬이 wraparound와 일치하지 않을 수 있으므로
+    // shortestLinePathIndices로 짧은 쪽 path를 산출해 방향 결정.
+    // 강변(2-014) → 잠실나루(2-015)는 short forward (path[1] > currIdx) → 'down'.
+    // 잠실나루(2-015) → 강변(2-014)는 short backward (path[1] < currIdx) → 'up'.
+
+    it('환승 후 leg(2호선) — 강변 → 잠실나루 = down (외선)', () => {
+      // 7→2 transfer route. 현재 위치가 강변(2-014)일 때 두 번째 leg(2호선)으로 direction 산출.
+      const route = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 5,
+        stopsFromTransfer: 3,
+      });
+      // destination = 잠실나루(2-015), current = 강변(2-014) → 'down' (외선 방향)
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+    });
+
+    it('환승 후 leg(2호선) — 잠실나루 → 강변 = up (내선)', () => {
+      // 7→2 transfer route. destination = 강변(2-014), current = 잠실나루(2-015) → 'up'
+      const route = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 5,
+        stopsFromTransfer: 1,
+      });
+      expect(resolveTripDirection(route, '강변(동서울터미널)', '2-015')).toBe('up');
+    });
+
+    it('direct 2호선 환상선 leg 내 정상 방향 결정', () => {
+      // direct route on line 2: 강변 → 잠실나루 = down (외선)
+      const route = makeDirectRoute(1, '2');
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+    });
+  });
+
+  describe('#1922 — multi-transfer post-transfer leg direction', () => {
+    // multi-transfer route에서도 current.line이 두 번째 또는 마지막 leg에 진입한 경우
+    // pickLegForCurrentLine이 해당 leg을 선택해 direction 결정.
+
+    it('multi-transfer 마지막 leg(current.line === last.toLine) 진입 후 direction 결정', () => {
+      // 1호선 → 4호선 → 2호선 multi-transfer. current가 2호선(마지막 leg toLine)에 있으면
+      // 마지막 leg(toLine=2)로 direction 결정. 강변(2-014) → 잠실나루(2-015) = down.
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 5 },
+          { transferName: '동대문역사문화공원', fromLine: '4', toLine: '2', stopsToTransfer: 3 },
+        ],
+        stopsAfterLastTransfer: 5,
+      });
+      // current 강변(2-014, 2호선), destination 잠실나루
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+    });
+
+    it('current가 어느 leg에도 없으면 first-leg fallback', () => {
+      // 1호선 → 4호선 multi-transfer. current가 7호선(어느 leg에도 없음) → 첫 leg fallback.
+      // 첫 leg은 line 1, endName='서울역'. current가 line 7이라 currIdx=-1 → null 반환 (정상).
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 5 },
+          { transferName: '동대문역사문화공원', fromLine: '4', toLine: '2', stopsToTransfer: 3 },
+        ],
+        stopsAfterLastTransfer: 5,
+      });
+      // 7-015는 line 7 station. 어느 leg에도 없는 line → first-leg(line 1)로 fallback → currIdx=-1 → null.
+      expect(resolveTripDirection(route, '잠실나루', '7-015')).toBeNull();
+    });
+
+    it('transfer route 두 번째 leg(toLine) 진입 후 direction 결정', () => {
+      // 1호선 → 2호선 transfer. current가 2호선에 있으면 toLine으로 direction 결정.
+      const route = makeTransferRoute({
+        transferName: '서울역',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 5,
+        stopsFromTransfer: 3,
+      });
+      // current 강변(2-014, 2호선), destination 잠실나루(2-015) → 'down'
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+    });
+
+    it('currentStationId가 stations.json에 없으면 first-leg fallback (방어 분기)', () => {
+      // getStationById가 undefined를 반환하면 pickLegForCurrentLine을 건너뛰고 getFirstLeg 사용.
+      // first-leg(line 1) + non-existent id → currIdx=-1 → null.
+      const route = makeDirectRoute(5, '1');
+      expect(resolveTripDirection(route, '서울역', 'NON-EXISTENT-XYZ')).toBeNull();
+    });
+  });
 });

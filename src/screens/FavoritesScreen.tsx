@@ -26,7 +26,7 @@ import { formatArrivalTime } from '../shared/utils/formatTime';
 import { getStationDisplayName, matchesStationQuery } from '../shared/utils/stationDisplay';
 import { useTheme, typography, type ThemeColors } from '../shared/theme';
 import stationsData from '../data/stations.json';
-import { ArrivalSourceNotice } from '../features/arrival/components/ArrivalSourceNotice';
+import { ArrivalSourceNotice, shouldHideArrivalEta } from '../features/arrival/components/ArrivalSourceNotice';
 import type { StationArrival } from '../features/arrival/api/arrivalApi';
 
 const allStations = stationsData as Station[];
@@ -226,7 +226,8 @@ function FavoriteCard({
   const { station, label } = entry;
   const [editing, setEditing] = useState(false);
   const [draftLabel, setDraftLabel] = useState(label ?? '');
-  const showRows = arrival != null && arrival.source !== 'closed';
+  // #1922 — MOCK_ARRIVALS는 ETA 자체 비공개(데모용 정적값). schedule/realtime은 노출.
+  const showRows = arrival != null && !shouldHideArrivalEta(arrival);
   const emptyArrival =
     showRows && arrival.up.length === 0 && arrival.down.length === 0;
   const stationDisplay = getStationDisplayName(station);

@@ -45,7 +45,7 @@
     "arrivalInfoTitle": "列车到达信息",
     "loading": "加载中...",
     "mockNotice": "无法获取实时数据,显示预测数据",
-    "scheduleNotice": "按时刻表显示 · 正在加载实时信息",
+    "scheduleNotice": "基于时刻表 · 无实时响应",
     "closedNotice": "已超出运营时间",
     "noArrivalInfo": "无到达信息",
     "notNearStationTitle": "附近没有地铁站",

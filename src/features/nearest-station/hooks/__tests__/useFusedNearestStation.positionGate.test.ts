@@ -419,7 +419,9 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
 
     it('#1437 lock 없음 + routeCtx + 시간 경과 → lockless-route-hop이 displayOnly 채널에 노출', () => {
       // estimator closure 호출 경로 커버는 유지 — 다만 fire path는 GPS, estimator는 displayOnly.
-      const result = runEstimatorScenario({ elapsedMs: 5 * 60_000 });
+      // #1922 (M2) — elapsedMs는 LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS(90s) 이내로 유지해야
+      // tryLocklessRouteHop의 stuck guard에 걸리지 않는다 (lastObserved 부재 시 trip 초기 90s 허용).
+      const result = runEstimatorScenario({ elapsedMs: 60_000 });
       expect(result.current.source).not.toBe('boarding-lock-interp');
       expect(result.current.displayOnlyEstimate?.strategy).toBe('lockless-route-hop');
     });
@@ -463,7 +465,8 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         useFusedNearestStation(undefined, undefined, routeCtx),
       );
 
-      jest.setSystemTime(T0 + 5 * 60_000);
+      // #1922 (M2) — 90s 이내 경과로 stuck guard 우회 (lastObserved 부재 시 trip 초기 90s 허용).
+      jest.setSystemTime(T0 + 60_000);
       rerender({});
 
       jest.useRealTimers();

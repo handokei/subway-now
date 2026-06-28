@@ -194,3 +194,25 @@ export const LOCK_GPS_DRIFT_THRESHOLD_M = 1000;
  *   - tryLivePosition/ArrivalEta가 살아있으면 이 분기 미도달 — tryDefaultHop(dead zone)에서만 적용.
  */
 export const ESTIMATOR_STUCK_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * #1922 (M2) — lockless route-hop / re-anchored time-integration "stuck" 가드.
+ *
+ * `tryLocklessRouteHop`은 실측 신호(lastObserved) 없이 `tripStartedAt`만으로 시간 적분을 진행한다.
+ * 환승 leg 진입 직후 estimator가 시간 적분으로 fall-through되면 candidate idx가 더 진행해도
+ * `effectiveHopIndex`가 stuck하여 station-passed gate(`isStationWithinHopWindow`)가 매역 reject
+ * 한다 (#1922 dump line 169~244: 61회 suppress evidence).
+ *
+ * 본 임계 이상 실측 신호 부재가 지속되면 시간 적분 자체를 null 반환 → useFusedNearestStation
+ * cascade가 fusion fallback(실측 idx)을 forward하도록 유도. estimator stale 값이 silent하게
+ * forward되는 회귀를 차단한다.
+ *
+ * 90s 임계 (인접역 평균 hop time ~90s):
+ *   - 한 hop 통과 시간 동안 실측 신호(SSoT mirror / lastObserved / arrivalCode arrived) 없으면
+ *     "estimator가 stuck하기에 충분히 stale"이라 판단.
+ *   - 90s 초과 시 시간 적분 자체를 null 반환 → 다음 tier가 결정 권한 회수.
+ *   - lastObserved.observedAtMs가 부재하면 tripStartedAt 기준 90s 경과 시 null (lockless trip 초기
+ *     "아직 첫 실측 신호 전" 구간만 시간 적분 허용).
+ *   - reanchored-hop / default-hop은 lock 기반이므로 본 게이트는 lockless 전략에만 적용.
+ */
+export const LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS = 90_000;

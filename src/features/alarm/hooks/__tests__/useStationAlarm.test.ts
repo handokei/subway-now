@@ -4214,6 +4214,213 @@ describe('useStationAlarm', () => {
     });
   });
 
+  // #1922 (M1+M3) — transfer route에서 시간 적분 estimator가 stuck돼도 candidate(실측)는 fire 허용.
+  // 환승 leg 진입 직후 estimator가 idx=2 (1번째 leg 마지막)로 stuck하고, 실제 사용자는 leg 2 진행해
+  // candidate idx=4(2번째 leg 1정거장 진행)인 경우, 기본 windowSize=1로는 |4-2|=2 > 1이라 reject.
+  // computeHopWindowSize가 transfer crossover를 감지해 windowSize를 동적 확장해 통과.
+  describe('#1922 (M1+M3) transfer leg hop window 동적 확장', () => {
+    // arc 구성: [S0, S1, T(line=2), T(line=4), S4, S5]
+    // S0~T(line=2)는 line 2, T(line=4)~S5는 line 4. T가 transfer crossover.
+    const buildTransferArc = (): Station[] => [
+      { id: 'X-0', name: 'S0', line: '2', lineColor: '#x', lat: 37.5, lng: 127.0 },
+      { id: 'X-1', name: 'S1', line: '2', lineColor: '#x', lat: 37.501, lng: 127.001 },
+      { id: 'X-2', name: 'TP', line: '2', lineColor: '#x', lat: 37.502, lng: 127.002 },
+      { id: 'X-3', name: 'TP', line: '4', lineColor: '#x', lat: 37.502, lng: 127.002 },
+      { id: 'X-4', name: 'S4', line: '4', lineColor: '#x', lat: 37.503, lng: 127.003 },
+      { id: 'X-5', name: 'S5', line: '4', lineColor: '#x', lat: 37.504, lng: 127.004 },
+    ];
+    const transferRoute = makeTransferRoute({
+      transferName: 'TP',
+      fromLine: '2',
+      toLine: '4',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 2,
+    });
+
+    it('M1: transfer route + estimator stuck(time-integration) + crossover → windowSize 확장으로 통과', async () => {
+      // estimator stuck at idx=2 (1번째 leg 마지막), candidate at idx=4 (2번째 leg 진행).
+      // 기본 windowSize=1로는 |4-2|=2 > 1 → reject. M1으로 확장 후 통과.
+      const arcWithTransfer = buildTransferArc();
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: transferRoute,
+            destination,
+            nearestStation: arcWithTransfer[4],
+            currentHopIndex: 2,
+            arcStations: arcWithTransfer,
+            currentHopStrategy: 'lockless-route-hop',
+            userLocation: { lat: 37.503, lng: 127.003 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('M3 신뢰도 게이트: live-position strategy면 확장 X → 격차 ≥ 2일 때 정상 reject', async () => {
+      // live-position(실측)에서 격차 2 = abnormal jump 신호 (GPS jitter / wrong train) → 확장 금지.
+      const arcWithTransfer = buildTransferArc();
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: transferRoute,
+            destination,
+            nearestStation: arcWithTransfer[4],
+            currentHopIndex: 2,
+            arcStations: arcWithTransfer,
+            currentHopStrategy: 'live-position',
+            userLocation: { lat: 37.503, lng: 127.003 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arcWithTransfer[4].name,
+          currentHopIndex: 2,
+          candidateIndex: 4,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('direct route → 확장 X (M1 게이트 조건 미충족) → 격차 ≥ 2일 때 정상 reject', async () => {
+      // direct route는 환승 없음 → 확장 의미 없음. 기존 동작 보존.
+      const arc7 = Array.from({ length: 7 }, (_, i) =>
+        makeStation(`DR-A${i}`, `DRname${i}`, 37.5 + i * 0.001, 127.0 + i * 0.001),
+      );
+      const directRoute = makeDirectRoute(6, '2');
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRoute,
+            destination,
+            nearestStation: arc7[4],
+            currentHopIndex: 2,
+            arcStations: arc7,
+            currentHopStrategy: 'lockless-route-hop',
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arc7[4].name,
+          currentHopIndex: 2,
+          candidateIndex: 4,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('transfer route + crossover 없음(같은 leg 내 격차) → 확장 X', async () => {
+      // 같은 leg 내 격차는 정상 estimator 진행으로 처리해야 함. transfer point 끼어 있지 않음.
+      // arc[1] → arc[3] 사이에는 transfer 있지만, arc[0] → arc[1]은 leg 1 내. estimator 0 + candidate 1
+      // 은 격차 1이라 windowSize=1로도 통과 (M1 트리거 자체 안 됨).
+      // 격차 ≥ 2 + 같은 leg 격차 케이스: candidate=arc[1] (leg 1) + estimator=arc[0] (leg 1) — 격차 1 통과.
+      // 격차 2 + 같은 leg: 환승 leg는 4 stops밖에 안 되므로 leg 1 내 격차 2가 nontrivial.
+      // 검증: arc 길이 6 (S0~S5), candidate=arc[5] (leg 2 끝), estimator=arc[3] (leg 2 시작). 격차 2.
+      // arc[3]과 arc[5] 사이에 transfer crossover 없음 → 확장 X → reject.
+      const arcWithTransfer = buildTransferArc();
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: transferRoute,
+            destination,
+            nearestStation: arcWithTransfer[5],
+            currentHopIndex: 3,
+            arcStations: arcWithTransfer,
+            currentHopStrategy: 'lockless-route-hop',
+            userLocation: { lat: 37.504, lng: 127.004 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arcWithTransfer[5].name,
+          currentHopIndex: 3,
+          candidateIndex: 5,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('currentHopStrategy 미전달 → 기본 windowSize 유지 (backward-compat)', async () => {
+      // currentHopStrategy=null → live-position 검사도 안 되지만, 동시에 dynamic 확장 자체 트리거 안 됨.
+      // 실제로는 strategy unset이면 M3 게이트 통과해서 M1 격차 확장 가능.
+      // 본 테스트는 backward-compat 확인 — strategy 없이 transfer route + crossover이면 확장 동작.
+      const arcWithTransfer = buildTransferArc();
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: transferRoute,
+            destination,
+            nearestStation: arcWithTransfer[4],
+            currentHopIndex: 2,
+            arcStations: arcWithTransfer,
+            // currentHopStrategy 생략
+            userLocation: { lat: 37.503, lng: 127.003 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      // strategy 미전달은 live-position 아니므로 M3 게이트 통과 → M1 확장 적용 → 통과.
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('candidate가 arc 밖(arcIndexOf=-1) → 기본 windowSize → isStationWithinHopWindow가 false 처리', async () => {
+      // candidate가 route line에는 있지만 arc 안에는 없는 케이스(예: boarding 이전 / destination 이후 역).
+      // computeHopWindowSize의 candidateIndex < 0 가드가 LOCKLESS_HOP_WINDOW_DEFAULT 반환.
+      // isStationWithinHopWindow가 candidate가 arc에 없으면 false → reject 정상 처리.
+      const arcWithTransfer = buildTransferArc();
+      const offArcButOnLine: Station = {
+        id: 'X-99',
+        name: 'OffArc',
+        line: '2',
+        lineColor: '#x',
+        lat: 37.6,
+        lng: 127.1,
+      };
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: transferRoute,
+            destination,
+            nearestStation: offArcButOnLine,
+            currentHopIndex: 2,
+            arcStations: arcWithTransfer,
+            currentHopStrategy: 'lockless-route-hop',
+            userLocation: { lat: 37.6, lng: 127.1 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      // candidate is off-arc → isStationWithinHopWindow false → suppress.
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
   // #1514 — 2026-06-19 용마산 회귀: lockless trip 출발역(arc[0]) station-passed false fire 차단.
   // GPS path에서 currentHopIndex=0 + candidateIndex=0이면 estimator default-hop 신호이므로
   // lock 부재 시 fire 차단. lock 활성은 boardingStationId 기준 origin 알림이 정당이라 우회.
