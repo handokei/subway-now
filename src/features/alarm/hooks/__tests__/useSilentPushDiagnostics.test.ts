@@ -7,8 +7,10 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 const mockResolveApnsEnv = jest.fn();
+const mockWarmupConfirmedApnsEnv = jest.fn();
 jest.mock('../../../../shared/utils/apnsEnv', () => ({
   resolveApnsEnv: () => mockResolveApnsEnv(),
+  warmupConfirmedApnsEnv: () => mockWarmupConfirmedApnsEnv(),
 }));
 
 const mockGetAlarmLog = jest.fn();
@@ -41,6 +43,7 @@ describe('useSilentPushDiagnostics', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockResolveApnsEnv.mockReturnValue('sandbox');
+    mockWarmupConfirmedApnsEnv.mockResolvedValue(null);
     mockGetRegistrationStatus.mockReturnValue({ state: 'unknown', error: null });
     mockGetAlarmLog.mockResolvedValue([]);
     mockGetItem.mockResolvedValue(null);
@@ -82,6 +85,23 @@ describe('useSilentPushDiagnostics', () => {
     expect(result.current.apnsEnv).toBe('sandbox');
     expect(result.current.taskRegistrationState).toBe('success');
     expect(result.current.taskRegistrationError).toBeNull();
+  });
+
+  // #1931 — RC-5 stamp self-verify. cold start 직후 사용자가 DebugModal에서 stamp 반영 확인.
+  it.each(['sandbox', 'production'] as const)(
+    'apnsEnvStamped=%s 일 때 cache(warmupConfirmedApnsEnv) 결과를 그대로 노출',
+    async (stamp) => {
+      mockWarmupConfirmedApnsEnv.mockResolvedValue(stamp);
+      const { result } = renderHook(() => useSilentPushDiagnostics());
+      await waitFor(() => expect(result.current.apnsEnvStamped).toBe(stamp));
+    },
+  );
+
+  it('stamp 부재(cold start 직후 미반영) → apnsEnvStamped=null', async () => {
+    mockWarmupConfirmedApnsEnv.mockResolvedValue(null);
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(result.current.apnsEnvStamped).toBeNull();
   });
 
   it('alarmLog에서 source별 최신 ts 추출 (순서 무관, 동일 source 다중 엔트리)', async () => {

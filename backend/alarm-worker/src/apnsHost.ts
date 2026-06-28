@@ -101,6 +101,16 @@ export async function sendWithEnvHeal(
     from: currentEnv ?? 'sandbox',
     to: corrected,
   });
+  // #1931 — race evidence 적재. Cloudflare Dashboard에서 `kind=apns AND reason=env-mismatch-race`
+  // 쿼리로 cold start race window 발생 빈도(baseline 6/26 6건 + 6/27 1건 → target <1건/주)를
+  // 1주 단위로 측정한다. 정정 자체는 기존 retry path가 처리하므로 본 라인은 측정 채널 추가만.
+  log('apns env mismatch (race evidence)', {
+    kind: 'apns',
+    reason: 'env-mismatch-race',
+    token: tokenForLog,
+    from: currentEnv ?? 'sandbox',
+    to: corrected,
+  });
   const retry = await sender(apnsHosts[corrected]);
   if (retry.ok) {
     log('apns env corrected', { token: tokenForLog, to: corrected });

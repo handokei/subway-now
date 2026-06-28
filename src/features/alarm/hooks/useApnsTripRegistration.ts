@@ -33,7 +33,7 @@ import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
-import { getRegisteringApnsEnv } from '../../../shared/utils/apnsEnv';
+import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 
 /**
@@ -262,6 +262,11 @@ export function useApnsTripRegistration({
   useEffect(() => {
     let cancelled = false;
     let subscription: { remove: () => void } | null = null;
+
+    // #1931 — cold start race window 차단. token 발급보다 먼저 AsyncStorage stamp read를
+    // priming해 첫 register 시점에는 cache가 이미 해소된 상태가 되도록 한다. fire-and-forget —
+    // 실패해도 `getRegisteringApnsEnv()`가 build env로 graceful fallback.
+    void warmupConfirmedApnsEnv();
 
     (async () => {
       try {

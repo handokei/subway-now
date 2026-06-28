@@ -26,7 +26,11 @@ import {
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,
 } from '../../../shared/constants/storageKeys';
-import { resolveApnsEnv, type ApnsEnv } from '../../../shared/utils/apnsEnv';
+import {
+  resolveApnsEnv,
+  warmupConfirmedApnsEnv,
+  type ApnsEnv,
+} from '../../../shared/utils/apnsEnv';
 import { getAlarmLog, type AlarmLogSource } from '../utils/alarmLog';
 import {
   getSilentPushRegistrationStatus,
@@ -37,6 +41,11 @@ export interface SilentPushDiagnostics {
   apnsToken: string | null;
   activeTripToken: string | null;
   apnsEnv: ApnsEnv;
+  /**
+   * #1931 — RC-5 stamp(`LAST_CONFIRMED_APNS_ENV_KEY`) 표시. cold start 직후 register가
+   * stamp 반영 전이면 null로 표시되어 사용자가 race window 발생 여부를 self-verify할 수 있다.
+   */
+  apnsEnvStamped: ApnsEnv | null;
   /** iOS 알림 권한 상태 — 'undetermined'는 권한 요청 자체가 안 됐다는 신호. */
   permissionStatus: Notifications.PermissionStatus | null;
   taskRegistrationState: SilentPushRegistrationState;
@@ -58,6 +67,7 @@ const EMPTY: SilentPushDiagnostics = {
   apnsToken: null,
   activeTripToken: null,
   apnsEnv: 'sandbox',
+  apnsEnvStamped: null,
   permissionStatus: null,
   taskRegistrationState: 'unknown',
   taskRegistrationError: null,
@@ -89,6 +99,7 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
       routeJson,
       destinationJson,
       lastNotifiedStationId,
+      apnsEnvStamped,
     ] = await Promise.all([
       AsyncStorage.getItem(APNS_TOKEN_KEY),
       AsyncStorage.getItem(ACTIVE_TRIP_KEY),
@@ -97,6 +108,8 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
+      // #1931 — RC-5 stamp 표시. warmup cache 사용으로 추가 round-trip 없음.
+      warmupConfirmedApnsEnv(),
     ]);
     const reg = getSilentPushRegistrationStatus();
     // alarmLog는 최신순이 보장되지 않으므로 source별 최신 ts를 데이터 주도로 골라낸다.
@@ -136,6 +149,7 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
       apnsToken,
       activeTripToken,
       apnsEnv: resolveApnsEnv(),
+      apnsEnvStamped,
       permissionStatus: permission?.status ?? null,
       taskRegistrationState: reg.state,
       taskRegistrationError: reg.error,
