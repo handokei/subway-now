@@ -443,6 +443,22 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
   });
 
+  it('#1925: getLastKnownPositionAsync에 MAX_LOCATION_AGE_MS를 maxAge로 전달한다', async () => {
+    // 회귀: 무인자 호출 시 expo-location 내부 기본값이 `.greatestFiniteMagnitude`라
+    // OS가 1h+ stale cached fix를 그대로 반환. JS-level isLocationFresh 게이트 외에
+    // OS-level maxAge로도 차단해 defense-in-depth. silentPushLocationGate.ts:140과 동일 패턴.
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277);
+
+    renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.getLastKnownPositionAsync).toHaveBeenCalled());
+
+    expect(Location.getLastKnownPositionAsync).toHaveBeenCalledWith({
+      maxAge: MAX_LOCATION_AGE_MS,
+    });
+  });
+
   it('캐시된 위치가 없으면 watchPositionAsync 시작 후 loading이 false가 된다', async () => {
     mockGranted();
     mockNoLastKnownLocation();

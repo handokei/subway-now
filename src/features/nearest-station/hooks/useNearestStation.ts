@@ -15,6 +15,7 @@ import {
 import {
   MAX_ACCURACY_M,
   MAX_ACCURACY_M_DISPLAY,
+  MAX_LOCATION_AGE_MS,
   MAX_STATION_DISTANCE_KM,
   FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
@@ -334,7 +335,14 @@ export function useNearestStation(
       //   - 표시 게이트 초과 → 진단 로그 + 무시 (오정보 방지)
       // watch가 fresh fix를 보내면 uncertain이 false로 복귀하며 정정 가능.
       // 사용자 정책 "실시간성 우선, 나쁜 좌표 거부"와 일치 — 250m도 거부, 그 이하만 hydrate.
-      const lastKnown = await Location.getLastKnownPositionAsync();
+      //
+      // #1925 — maxAge 명시. 무인자 호출은 expo-location 내부 기본값이
+      // `.greatestFiniteMagnitude`라 OS가 1h+ stale cached fix를 그대로 반환할 수 있어
+      // (LastKnownLocationRequirements.swift:6), JS 게이트는 통과하지만 timestamp 자체가
+      // 1h 전인 fix가 hydrate되는 회귀를 만든다. OS-level + JS-level 두 게이트로 defense-in-depth.
+      const lastKnown = await Location.getLastKnownPositionAsync({
+        maxAge: MAX_LOCATION_AGE_MS,
+      });
       if (lastKnown) {
         const fresh = isLocationFresh(lastKnown.timestamp);
         const strictlyAcceptable = isAccuracyAcceptable(lastKnown.coords.accuracy);
