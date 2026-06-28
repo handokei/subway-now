@@ -1,3 +1,9 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature observability: accelerometer pattern 관찰을 alarm slice의
+ * alarmLog ring(`logAccelPatternObserved`)에 적재해 backend R2 forward로 전달한다.
+ * #1928 — production caller 0건 회귀 차단. `logAccelPatternObserved` 자체에 1s
+ * dedup 내장이라 polling 5s tick과 무관하게 같은 pattern 폭주 위험 없음.
+ */
 /**
  * #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint React hook.
  *
@@ -24,6 +30,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { logAccelPatternObserved } from '../../alarm/utils/alarmLog';
 import {
   classifyAccelerometerPattern,
   getLatestAccelerometerSnapshot,
@@ -58,6 +65,14 @@ export function useAccelerometerFingerprint(): AccelerometerPattern {
       stopAccelerometerFingerprint();
     };
   }, []);
+
+  // #1928 F-E3 — pattern 상태 변화 시 alarmLog 윈도우에 1건 적재. logAccelPatternObserved
+  // 자체에 1s dedup이 있어 동일 pattern 연속 호출은 자동 흡수, 다른 pattern으로 전환되면
+  // 즉시 새 entry. forward source인 alarmLog 윈도우에 누적되어 backend R2 ndjson →
+  // `/admin/alarm-log-stats` `accelPatternCounts` non-zero 보장.
+  useEffect(() => {
+    logAccelPatternObserved(pattern);
+  }, [pattern]);
 
   return pattern;
 }

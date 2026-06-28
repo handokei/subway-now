@@ -85,6 +85,11 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
   try {
     const tripStart = await getTripStartedAt();
     if (tripStart === null) {
+      // #1928 F-E1 — tripStart 부재 fallback. 9h+ force-end / silent push trip-ended
+      // 단독 경로에서 tripStartedAt이 이미 정리된 상태로 진입한 케이스. alarmLog 윈도우 자체는
+      // 살아있을 수 있으므로 24h backstop으로 forward 발사. token 부재 / payload 빈은
+      // triggerAlarmLogForward 내부에서 graceful skip.
+      await triggerAlarmLogForward(Date.now() - 24 * 60 * 60 * 1000);
       return { uploaded: false, skipped: 'no-trip-start' };
     }
 
@@ -98,6 +103,11 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
 
     const routeStops = await loadRouteStops();
     if (routeStops === null) {
+      // #1928 F-E2 — ROUTE_KEY race fallback. HomeScreen.tsx:464의 fire-and-forget
+      // removeItem이 trigger의 loadRouteStops보다 먼저 끝나면 routeStops=null이지만
+      // alarmLog/fusionLog 등 in-memory ring buffer는 살아있다. recall은 route arc
+      // 계산 불가로 skip이 맞지만 telemetry forward는 R2 dashboard 회복 critical path.
+      await triggerAlarmLogForward(tripStart);
       return { uploaded: false, skipped: 'route-arc-failed' };
     }
 
