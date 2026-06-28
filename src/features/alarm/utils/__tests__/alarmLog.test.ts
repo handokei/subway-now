@@ -86,6 +86,9 @@ import {
   logAccelPatternObserved,
   _resetAccelPatternWindowForTests,
   ACCEL_PATTERN_DEDUP_MS,
+  logBoardableLookupResult,
+  _resetBoardableLookupWindowForTests,
+  BOARDABLE_LOOKUP_DEDUP_MS,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -2906,6 +2909,83 @@ describe('alarmLog', () => {
       const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
       const automotiveEntries = stored.filter((e) => e.stationName === 'automotive');
       expect(automotiveEntries).toHaveLength(2);
+    });
+  });
+
+  // ── #1503 logBoardableLookupResult ──────────────────────────────────────────
+
+  describe('logBoardableLookupResult (#1503)', () => {
+    beforeEach(() => {
+      _resetBoardableLookupWindowForTests();
+    });
+
+    it('status="ok" → source=boardable-lookup / outcome=received / stationName 전달', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('boardable-lookup');
+      expect(stored[0].outcome).toBe('received');
+      expect(stored[0].stationName).toBe('종로3가');
+    });
+
+    it('status="miss" → outcome=suppressed', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardableLookupResult({ status: 'miss', line: '2', stationName: '사당' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].outcome).toBe('suppressed');
+      expect(stored[0].stationName).toBe('사당');
+    });
+
+    it(`같은 (status,line,stationName) ${BOARDABLE_LOOKUP_DEDUP_MS}ms 이내 반복 → 1건만 적재`, async () => {
+      jest.useFakeTimers();
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      jest.advanceTimersByTime(BOARDABLE_LOOKUP_DEDUP_MS + 1);
+      jest.useRealTimers();
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const matches = stored.filter((e) => e.source === 'boardable-lookup' && e.stationName === '종로3가');
+      expect(matches).toHaveLength(1);
+    });
+
+    it('다른 line 또는 stationName이면 즉시 새 엔트리 (dedup 안 됨)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      logBoardableLookupResult({ status: 'ok', line: '4', stationName: '충무로' });
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '왕십리' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const matches = stored.filter((e) => e.source === 'boardable-lookup');
+      expect(matches).toHaveLength(3);
+    });
+
+    it('status 전환(ok→miss)은 즉시 새 엔트리 (dedup 안 됨)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      logBoardableLookupResult({ status: 'miss', line: '3', stationName: '종로3가' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const matches = stored.filter((e) => e.source === 'boardable-lookup');
+      expect(matches).toHaveLength(2);
+      expect(matches[0].outcome).toBe('received');
+      expect(matches[1].outcome).toBe('suppressed');
+    });
+
+    it('_resetBoardableLookupWindowForTests 후 같은 key 재적재 가능', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      _resetBoardableLookupWindowForTests();
+      logBoardableLookupResult({ status: 'ok', line: '3', stationName: '종로3가' });
+      await flushAlarmLog();
+      const stored = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1] as string) as AlarmLogEntry[];
+      const matches = stored.filter((e) => e.source === 'boardable-lookup');
+      expect(matches).toHaveLength(2);
     });
   });
 });

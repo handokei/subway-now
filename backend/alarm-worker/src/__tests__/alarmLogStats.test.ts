@@ -400,4 +400,63 @@ describe('computeAlarmLogStats', () => {
       stats.accelPatternCounts.stationary + stats.accelPatternCounts.unknown;
     expect(total).toBe(1);
   });
+
+  // ── #1503 boardableLookupCounts ──────────────────────────────────────────────
+
+  it('#1503 — boardable-lookup outcome="received" → boardableLookupCounts.ok, "suppressed" → miss', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/boardable-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'boardable-lookup', outcome: 'received', stationName: '왕십리' },
+            { source: 'boardable-lookup', outcome: 'received', stationName: '종로3가' },
+            { source: 'boardable-lookup', outcome: 'suppressed', stationName: '사당' },
+            // 다른 source → boardable 집계 제외
+            { source: 'fg', outcome: 'fired' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.boardableLookupCounts.ok).toBe(2);
+    expect(stats.boardableLookupCounts.miss).toBe(1);
+  });
+
+  it('#1503 — boardable-lookup entries 없으면 boardableLookupCounts 모두 0', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/no-boardable-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [{ source: 'fg', outcome: 'fired' }],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    expect(stats.boardableLookupCounts).toEqual({ ok: 0, miss: 0 });
+  });
+
+  it('#1503 — boardable-lookup outcome="fired" 등 예상 외 값은 집계 제외', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/invalid-boardable-1000.ndjson',
+        tripEndedAt: NOW - 5 * 60 * 1000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'boardable-lookup', outcome: 'fired', stationName: '종로3가' },
+            { source: 'boardable-lookup', outcome: 'received', stationName: '왕십리' },
+          ],
+          NOW - 5 * 60 * 1000,
+        ),
+      },
+    ]);
+    const stats = await computeAlarmLogStats(r2, NOW);
+    // 'fired'는 ok/miss 어느 슬롯에도 들어가지 않음
+    expect(stats.boardableLookupCounts.ok).toBe(1);
+    expect(stats.boardableLookupCounts.miss).toBe(0);
+  });
 });

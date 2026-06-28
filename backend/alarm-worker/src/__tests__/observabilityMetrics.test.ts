@@ -268,14 +268,60 @@ describe('computeObservabilityMetrics — silentPushDeliveryRatio', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// computeObservabilityMetrics — boardableMissRatio (placeholder)
+// computeObservabilityMetrics — boardableMissRatio (#1503 M3 Sub C wire)
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe('computeObservabilityMetrics — boardableMissRatio', () => {
-  it('always returns placeholder 0/0', async () => {
+describe('computeObservabilityMetrics — boardableMissRatio (#1503)', () => {
+  it('empty R2 → 0/0 ratio=0 (transfer 없는 trip + 빈 archive)', async () => {
     const r2 = makeEmptyFakeR2();
     const result = await computeObservabilityMetrics(r2, undefined, NOW);
     expect(result.boardableMissRatio).toEqual({ value: 0, total: 0, ratio: 0 });
+  });
+
+  it('boardable-lookup outcome="received"(ok) + "suppressed"(miss) 집계 → miss / (ok + miss)', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/boardable-x.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'boardable-lookup', outcome: 'received', stationName: '왕십리' },
+            { source: 'boardable-lookup', outcome: 'received', stationName: '종로3가' },
+            { source: 'boardable-lookup', outcome: 'received', stationName: '충무로' },
+            { source: 'boardable-lookup', outcome: 'suppressed', stationName: '사당' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    // 3 ok + 1 miss = 4 total, ratio = 1/4 = 0.25
+    expect(result.boardableMissRatio.value).toBe(1);
+    expect(result.boardableMissRatio.total).toBe(4);
+    expect(result.boardableMissRatio.ratio).toBeCloseTo(0.25, 5);
+  });
+
+  it('boardable-lookup outcome 외 source는 ratio에 영향 X', async () => {
+    const r2 = makeFakeR2([
+      {
+        key: 'trip-evidence/2026/06/24/mixed-y.ndjson',
+        tripEndedAt: NOW - 60_000,
+        body: buildAlarmLogNdjsonFixture(
+          [
+            { source: 'fg-arvlcd', outcome: 'fired', stationName: '강남' },
+            { source: 'silent-push-fired', outcome: 'fired', stationName: '서초' },
+            // boardable 1 ok 1 miss
+            { source: 'boardable-lookup', outcome: 'received', stationName: '종로3가' },
+            { source: 'boardable-lookup', outcome: 'suppressed', stationName: '왕십리' },
+          ],
+          NOW - 60_000,
+        ),
+      },
+    ]);
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.boardableMissRatio.value).toBe(1);
+    expect(result.boardableMissRatio.total).toBe(2);
+    expect(result.boardableMissRatio.ratio).toBe(0.5);
   });
 });
 

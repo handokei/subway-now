@@ -1,3 +1,10 @@
+/* eslint-disable import/no-restricted-paths --
+ * #1503 (M3 Sub C wire) — boardable train timetable lookup 결과를 alarmLog ring buffer로 stamp
+ * 한다. forward chain: device alarmLog → R2 archive(trip 종료 시) → backend alarmLogStats →
+ * observabilityMetrics.boardableMissRatio → /v1/observability/metrics → DebugModal Operation
+ * Dashboard Metric 4. 다른 cross-feature 적재 사이트(useAccelerometerFingerprint, useBoarding-
+ * LockAutoRelease 등)와 같은 패턴.
+ */
 import type { Route, TransferSegment } from '../../../shared/utils/stationRoute';
 import { getTransferSeconds } from '../../../shared/utils/transferTimes';
 import { resolveTravelDirection } from './travelDirection';
@@ -6,6 +13,7 @@ import {
   decideBufferSeconds,
 } from './calculateBoardableTrainETA';
 import type { LineNumber } from '../../../shared/types/station';
+import { logBoardableLookupResult } from '../../alarm/utils/alarmLog';
 
 /**
  * 환승 leg별 boardable train 대기 시간(초) 리스트를 산출 (#1480).
@@ -76,6 +84,12 @@ export function computeBoardableWaitsForRoute(
 
     if (direction === null) {
       // 단조 노선 화이트리스트(2호선 순환 등) 밖이면 boardable lookup 불가 → 다음 fallback.
+      // #1503 — direction inference 실패 = miss (timetable이 있어도 단조 가정 못함).
+      logBoardableLookupResult({
+        status: 'miss',
+        line: segment.toLine,
+        stationName: segment.transferName,
+      });
       result.push(null);
       // 다음 leg 계산을 위해 도착 시각만 갱신 — boardable wait는 모름.
       cursorSeconds +=
@@ -91,6 +105,15 @@ export function computeBoardableWaitsForRoute(
         line: segment.toLine,
         direction,
       },
+    });
+
+    // #1503 — telemetry stamp: status='ok' → received, 그 외(no-timetable / station-missing /
+    // day-type-unknown / no-departures) → suppressed. backend alarmLogStats가 boardableLookup-
+    // Counts 누적, observabilityMetrics.boardableMissRatio = miss / (ok + miss).
+    logBoardableLookupResult({
+      status: lookup.status === 'ok' ? 'ok' : 'miss',
+      line: segment.toLine,
+      stationName: segment.transferName,
     });
 
     if (lookup.status === 'ok') {

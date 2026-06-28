@@ -11,7 +11,10 @@
  * 1. accuracyRatio     — alarmLog fired / (fired + suppressed) 비율 (last 24h R2 scan)
  * 2. silentPushDeliveryRatio — PENDING_PUSHES KV received / (received + pending) 근사치
  * 3. locklessMissRatio — alarmLog 중 lockless-forward-only-block reason 비율
- * 4. boardableMissRatio — placeholder (실효성 모호, 향후 데이터 소스 확보 후 실구현)
+ * 4. boardableMissRatio — #1503 (M3 Sub C wire) — device `computeBoardableWaitsForRoute`가
+ *    transfer leg마다 emit한 source='boardable-lookup' alarmLog entry(outcome='received'=ok,
+ *    'suppressed'=miss)를 R2 scan으로 집계. miss / (ok + miss). transfer 없는 trip(direct
+ *    route 또는 route 없음)은 stamp 없어 분모 0 → ratio 0.
  *
  * 데이터 소스
  * ===========
@@ -27,8 +30,11 @@
  * ====
  * - silentPushDeliveryRatio: PENDING_PUSHES KV TTL이 60s(pending)/1h(received)라
  *   정확한 24h 집계가 불가. 현재 창(1h) 기준 근사치.
- * - boardableMissRatio: device가 boardable train 가시성을 명시 forward하지 않아
- *   placeholder(0, total:0)으로 두고 0으로 반환.
+ * - boardableMissRatio: 1s dedup으로 같은 (status,line,stationName) burst 1건만 적재되므로
+ *   transfer가 잦은 trip도 leg 수만큼만 stamp. computeBoardableWaitsForRoute가 호출되지 않는
+ *   경로(arrival fallback 등)는 측정 갭 — `sourceCounts['boardable-lookup']`이 0인 trip은
+ *   본 metric에서 보이지 않으나, transfer route가 있는 trip은 반드시 호출됨을 wire-completion
+ *   audit으로 보장.
  */
 
 import { computeAlarmLogStats } from './alarmLogStats';
@@ -127,8 +133,15 @@ export async function computeObservabilityMetrics(
     silentPushDeliveryRatio = buildMetricBucket(0, 0);
   }
 
-  // 3. boardableMissRatio — placeholder (향후 데이터 소스 확보 후 실구현)
-  const boardableMissRatio = buildMetricBucket(0, 0);
+  // 3. boardableMissRatio — #1503 (M3 Sub C wire) — device boardable-lookup stamp 집계.
+  //    alarmStats.boardableLookupCounts = { ok, miss }. transfer 없는 trip은 stamp 없으므로
+  //    ok+miss=0 → ratio=0 (buildMetricBucket의 division-by-zero 방어).
+  const boardableLookupTotal =
+    alarmStats.boardableLookupCounts.ok + alarmStats.boardableLookupCounts.miss;
+  const boardableMissRatio = buildMetricBucket(
+    alarmStats.boardableLookupCounts.miss,
+    boardableLookupTotal,
+  );
 
   // 4. accelPatternHitRatio — #1769. alarmLog source='accel-pattern-observed' 엔트리의
   // stationName 슬롯에 인코딩된 pattern(automotive/walking/stationary/unknown) 분포 산출.
