@@ -1,3 +1,6 @@
+// #1973 — useBackgroundLocation은 cross-feature orchestrator로 route/store/useNavigationStore를
+// 명시적으로 소비. 테스트에서도 같은 store를 직접 set/read해야 navigationActive lifecycle을 검증할 수 있다.
+/* eslint-disable import/no-restricted-paths */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { Alert, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,11 +12,14 @@ const mockAlertAlert = jest.spyOn(Alert, 'alert').mockImplementation(() => undef
 const mockOpenSettings = jest.spyOn(Linking, 'openSettings').mockResolvedValue();
 
 // ── expo-location 모킹 ──
+const mockRequestForegroundPermissionsAsync = jest.fn();
 const mockRequestBackgroundPermissionsAsync = jest.fn();
 const mockStartLocationUpdatesAsync = jest.fn();
 const mockStopLocationUpdatesAsync = jest.fn();
 
 jest.mock('expo-location', () => ({
+  requestForegroundPermissionsAsync: (...args: unknown[]) =>
+    mockRequestForegroundPermissionsAsync(...args),
   requestBackgroundPermissionsAsync: (...args: unknown[]) =>
     mockRequestBackgroundPermissionsAsync(...args),
   startLocationUpdatesAsync: (...args: unknown[]) =>
@@ -51,6 +57,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
 
 import { useBackgroundLocation } from '../useBackgroundLocation';
 import { LOCATION_TRACKING_OPTIONS } from '../../../../shared/constants/locationTracking';
+import { useNavigationStore } from '../../../route/store/useNavigationStore';
 
 // ── 픽스처 ──
 
@@ -72,15 +79,84 @@ const mockDestination2: Station = {
   lng: 127.028,
 };
 
-describe('useBackgroundLocation', () => {
+describe('useBackgroundLocation (#1973 명시 trigger)', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     // #791: dismiss flag는 AsyncStorage(영속)에 저장되므로 매 테스트마다 초기화.
     await AsyncStorage.clear();
     mockStopLocationUpdatesAsync.mockResolvedValue(undefined);
+    // 기본: Always granted (호환 — 기존 시나리오)
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockIsTaskRegisteredAsync.mockResolvedValue(false);
     mockStartLocationUpdatesAsync.mockResolvedValue(undefined);
+    // #1973 — 매 테스트 navigationActive=true로 set (명시 trigger 후 시나리오가 default).
+    useNavigationStore.setState({ navigationActive: true });
+  });
+
+  afterEach(() => {
+    useNavigationStore.setState({ navigationActive: false });
+  });
+
+  // ── #1973 — navigationActive=false 시 자동 trigger 차단 ──
+
+  describe('#1973 — 명시 trigger 패러다임', () => {
+    it('navigationActive=false이면 destination 있어도 startLocationUpdatesAsync 미호출 (자동 trigger 차단)', async () => {
+      useNavigationStore.setState({ navigationActive: false });
+
+      renderHook(() => useBackgroundLocation(mockDestination));
+
+      await waitFor(() => {
+        expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith('background-location-task');
+      });
+
+      expect(mockRequestForegroundPermissionsAsync).not.toHaveBeenCalled();
+      expect(mockRequestBackgroundPermissionsAsync).not.toHaveBeenCalled();
+      expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
+    });
+
+    it('navigationActive false→true 전환 시 effect 재실행되어 startLocationUpdatesAsync 호출', async () => {
+      useNavigationStore.setState({ navigationActive: false });
+
+      const { rerender } = renderHook(() => useBackgroundLocation(mockDestination));
+
+      await waitFor(() => {
+        expect(mockStopLocationUpdatesAsync).toHaveBeenCalled();
+      });
+      expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
+
+      jest.clearAllMocks();
+      mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
+      mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
+      mockIsTaskRegisteredAsync.mockResolvedValue(false);
+      mockStartLocationUpdatesAsync.mockResolvedValue(undefined);
+
+      useNavigationStore.setState({ navigationActive: true });
+      rerender({});
+
+      await waitFor(() => {
+        expect(mockStartLocationUpdatesAsync).toHaveBeenCalled();
+      });
+    });
+
+    it('navigationActive true→false 전환 시 stopLocationUpdatesAsync 호출 (안내 중단)', async () => {
+      const { rerender } = renderHook(() => useBackgroundLocation(mockDestination));
+
+      await waitFor(() => {
+        expect(mockStartLocationUpdatesAsync).toHaveBeenCalled();
+      });
+
+      jest.clearAllMocks();
+      mockStopLocationUpdatesAsync.mockResolvedValue(undefined);
+
+      useNavigationStore.setState({ navigationActive: false });
+      rerender({});
+
+      await waitFor(() => {
+        expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith('background-location-task');
+      });
+      expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
+    });
   });
 
   // ── destination이 null인 경우 ──
@@ -92,6 +168,7 @@ describe('useBackgroundLocation', () => {
       expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith('background-location-task');
     });
 
+    expect(mockRequestForegroundPermissionsAsync).not.toHaveBeenCalled();
     expect(mockRequestBackgroundPermissionsAsync).not.toHaveBeenCalled();
     expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
     unmount();
@@ -110,24 +187,22 @@ describe('useBackgroundLocation', () => {
     unmount();
   });
 
-  // ── 권한 허용 + 태스크 미등록: 정상 시작 ──
+  // ── #1973 권한 단계화: WhileInUse + Always 둘 다 granted (Always 사용자) ──
 
-  it('권한이 granted이고 태스크 미등록이면 startLocationUpdatesAsync를 호출한다', async () => {
+  it('Foreground granted + Background granted (Always 사용자) → startLocationUpdatesAsync 호출', async () => {
     renderHook(() => useBackgroundLocation(mockDestination));
 
     await waitFor(() => {
       expect(mockStartLocationUpdatesAsync).toHaveBeenCalled();
     });
 
+    expect(mockRequestForegroundPermissionsAsync).toHaveBeenCalled();
+    expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
     expect(mockStartLocationUpdatesAsync).toHaveBeenCalledWith(
       'background-location-task',
       expect.any(Object),
     );
 
-    // 회귀 가드: 추적 옵션 형태를 LOCATION_TRACKING_OPTIONS 상수와 strict 비교.
-    // - 임의 키 추가(예: deferredUpdatesInterval 재유입) → toEqual 실패
-    // - 키 제거/변경 → toEqual 실패
-    // foregroundService는 i18n 의존이라 분리 검증.
     const callArgs = mockStartLocationUpdatesAsync.mock.calls[0]?.[1] as Record<string, unknown>;
     const { foregroundService, ...trackingOpts } = callArgs;
     expect(trackingOpts).toEqual(LOCATION_TRACKING_OPTIONS);
@@ -137,22 +212,38 @@ describe('useBackgroundLocation', () => {
     });
   });
 
-  // ── 권한 거부 ──
+  // ── #1973 권한 단계화: WhileInUse granted + Always denied (네이버 패턴 핵심) ──
 
-  it('권한이 denied이면 startLocationUpdatesAsync를 호출하지 않는다', async () => {
+  it('Foreground granted + Background denied (WhileInUse 사용자) → 그래도 startLocationUpdatesAsync 호출 (네이버 패턴)', async () => {
+    mockRequestForegroundPermissionsAsync.mockResolvedValueOnce({ status: 'granted' });
     mockRequestBackgroundPermissionsAsync.mockResolvedValueOnce({ status: 'denied' });
 
     renderHook(() => useBackgroundLocation(mockDestination));
 
     await waitFor(() => {
-      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
+      expect(mockStartLocationUpdatesAsync).toHaveBeenCalled();
+    });
+    // Background denied여도 Alert 띄우지 않음 (WhileInUse만으로 진행 — 네이버 패턴)
+    expect(mockAlertAlert).not.toHaveBeenCalled();
+  });
+
+  // ── #1973 권한 단계화: WhileInUse denied → 권한 안내 Alert + startLocationUpdatesAsync 미호출 ──
+
+  it('Foreground denied → startLocationUpdatesAsync 미호출 + Alert 노출 (#387 보존)', async () => {
+    mockRequestForegroundPermissionsAsync.mockResolvedValueOnce({ status: 'denied' });
+
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockAlertAlert).toHaveBeenCalled();
     });
 
+    expect(mockRequestBackgroundPermissionsAsync).not.toHaveBeenCalled();
     expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
   });
 
-  it('권한이 denied이면 안내 Alert를 띄우고 "설정 열기" 탭 시 Linking.openSettings를 호출한다 (#387)', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValueOnce({ status: 'denied' });
+  it('Foreground denied 시 "설정 열기" 탭 → Linking.openSettings 호출', async () => {
+    mockRequestForegroundPermissionsAsync.mockResolvedValueOnce({ status: 'denied' });
 
     renderHook(() => useBackgroundLocation(mockDestination));
 
@@ -162,14 +253,13 @@ describe('useBackgroundLocation', () => {
 
     const [, , buttons] = mockAlertAlert.mock.calls[0]!;
     expect(buttons).toHaveLength(2);
-    // 첫 번째 버튼은 닫기(cancel), 두 번째 버튼은 설정 열기.
     const openSettingsBtn = (buttons as Array<{ onPress?: () => void }>)[1];
     openSettingsBtn?.onPress?.();
     expect(mockOpenSettings).toHaveBeenCalled();
   });
 
-  it('같은 hook 라이프타임에서 denied가 반복돼도 Alert는 한 번만 노출한다 (#387)', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+  it('Foreground denied 반복 시 dismiss flag로 Alert 한 번만 노출', async () => {
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
 
     const { rerender } = renderHook(
       ({ dest }: { dest: Station | null }) => useBackgroundLocation(dest),
@@ -183,7 +273,7 @@ describe('useBackgroundLocation', () => {
     rerender({ dest: mockDestination2 });
 
     await waitFor(() => {
-      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalledTimes(2);
+      expect(mockRequestForegroundPermissionsAsync).toHaveBeenCalledTimes(2);
     });
 
     expect(mockAlertAlert).toHaveBeenCalledTimes(1);
@@ -191,7 +281,7 @@ describe('useBackgroundLocation', () => {
 
   // #791: dismiss 플래그가 AsyncStorage에 영속 저장되어 앱 재시작 후에도 Alert가 다시 뜨지 않는다.
   it('#791 첫 denied Alert 후 dismiss 플래그가 AsyncStorage에 저장된다', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
 
     renderHook(() => useBackgroundLocation(mockDestination));
 
@@ -203,20 +293,19 @@ describe('useBackgroundLocation', () => {
   });
 
   it('#791 새 hook instance(앱 재시작 시나리오)에서도 dismiss 플래그가 있으면 Alert 미노출', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
     await AsyncStorage.setItem(BG_PERMISSION_DENIED_DISMISSED_KEY, 'true');
 
     renderHook(() => useBackgroundLocation(mockDestination));
 
     await waitFor(() => {
-      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
+      expect(mockRequestForegroundPermissionsAsync).toHaveBeenCalled();
     });
-    // 권한 요청은 여전히 일어나지만 Alert는 띄우지 않는다.
     expect(mockAlertAlert).not.toHaveBeenCalled();
   });
 
   it('#791 AsyncStorage getItem 오류는 "미노출 이력 없음"으로 처리 → Alert 정상 노출', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
     const getItemSpy = jest
       .spyOn(AsyncStorage, 'getItem')
       .mockRejectedValueOnce(new Error('storage corrupt'));
@@ -231,7 +320,7 @@ describe('useBackgroundLocation', () => {
   });
 
   it('#791 AsyncStorage setItem 오류는 silent — Alert는 여전히 노출', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
     const setItemSpy = jest
       .spyOn(AsyncStorage, 'setItem')
       .mockRejectedValueOnce(new Error('disk full'));
@@ -246,7 +335,7 @@ describe('useBackgroundLocation', () => {
   });
 
   it('#791 hydrate 도중 unmount되면 Alert를 띄우지 않는다 (cancelled 가드)', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
     let resolveGetItem!: (value: string | null) => void;
     const getItemSpy = jest.spyOn(AsyncStorage, 'getItem').mockReturnValueOnce(
       new Promise<string | null>((resolve) => {
@@ -257,7 +346,7 @@ describe('useBackgroundLocation', () => {
     const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
 
     await waitFor(() => {
-      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
+      expect(mockRequestForegroundPermissionsAsync).toHaveBeenCalled();
     });
 
     unmount();
@@ -271,7 +360,7 @@ describe('useBackgroundLocation', () => {
   });
 
   it('#791 setItem(dismiss 저장) 도중 unmount되면 storage는 갱신되지만 Alert는 미노출', async () => {
-    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
     let resolveSetItem!: () => void;
     const setItemSpy = jest.spyOn(AsyncStorage, 'setItem').mockReturnValueOnce(
       new Promise<void>((resolve) => {
@@ -295,9 +384,9 @@ describe('useBackgroundLocation', () => {
     setItemSpy.mockRestore();
   });
 
-  it('cancelled(unmount race) 상태에서는 denied여도 Alert를 띄우지 않는다 (#387)', async () => {
+  it('cancelled(unmount race) 상태에서는 Foreground denied여도 Alert를 띄우지 않는다', async () => {
     let resolvePermission!: (value: { status: string }) => void;
-    mockRequestBackgroundPermissionsAsync.mockReturnValueOnce(
+    mockRequestForegroundPermissionsAsync.mockReturnValueOnce(
       new Promise<{ status: string }>((resolve) => {
         resolvePermission = resolve;
       }),
@@ -311,6 +400,29 @@ describe('useBackgroundLocation', () => {
     await Promise.resolve();
 
     expect(mockAlertAlert).not.toHaveBeenCalled();
+  });
+
+  it('#1973 — Background permission 응답 전 unmount 시 startLocationUpdatesAsync 미호출', async () => {
+    mockRequestForegroundPermissionsAsync.mockResolvedValueOnce({ status: 'granted' });
+    let resolveBackground!: (value: { status: string }) => void;
+    mockRequestBackgroundPermissionsAsync.mockReturnValueOnce(
+      new Promise<{ status: string }>((resolve) => {
+        resolveBackground = resolve;
+      }),
+    );
+
+    const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
+    });
+    unmount();
+    resolveBackground({ status: 'granted' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
   });
 
   // ── 태스크가 이미 등록된 경우: GPS 추적 공백 방지를 위해 재시작하지 않음 ──
@@ -330,9 +442,8 @@ describe('useBackgroundLocation', () => {
   // ── cleanup: cancelled 플래그로 경쟁 조건 방지 ──
 
   it('useEffect 클린업이 실행되면 cancelled=true로 startLocationUpdatesAsync를 호출하지 않는다', async () => {
-    // 권한 요청이 느리게 resolve되는 동안 컴포넌트가 unmount된 경우를 시뮬레이션
     let resolvePermission!: (value: { status: string }) => void;
-    mockRequestBackgroundPermissionsAsync.mockReturnValueOnce(
+    mockRequestForegroundPermissionsAsync.mockReturnValueOnce(
       new Promise<{ status: string }>((resolve) => {
         resolvePermission = resolve;
       }),
@@ -340,11 +451,9 @@ describe('useBackgroundLocation', () => {
 
     const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
 
-    // unmount로 cleanup(cancelled=true) 실행 후 권한 응답
     unmount();
     resolvePermission({ status: 'granted' });
 
-    // 마이크로태스크가 처리될 시간을 준다
     await Promise.resolve();
     await Promise.resolve();
 
@@ -352,7 +461,7 @@ describe('useBackgroundLocation', () => {
   });
 
   it('isTaskRegisteredAsync 응답 전 unmount되면 startLocationUpdatesAsync를 호출하지 않는다', async () => {
-    // 권한은 즉시 허용되지만 isTaskRegistered가 느린 경우
+    mockRequestForegroundPermissionsAsync.mockResolvedValueOnce({ status: 'granted' });
     mockRequestBackgroundPermissionsAsync.mockResolvedValueOnce({ status: 'granted' });
     let resolveRegistered!: (value: boolean) => void;
     mockIsTaskRegisteredAsync.mockReturnValueOnce(
@@ -363,12 +472,11 @@ describe('useBackgroundLocation', () => {
 
     const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
 
-    // 권한 응답까지 기다린 후 unmount
     await waitFor(() => {
       expect(mockIsTaskRegisteredAsync).toHaveBeenCalled();
     });
     unmount();
-    resolveRegistered(false); // 등록 안 됨으로 응답 — 하지만 이미 cancelled
+    resolveRegistered(false);
 
     await Promise.resolve();
     await Promise.resolve();
@@ -389,6 +497,7 @@ describe('useBackgroundLocation', () => {
     });
 
     jest.clearAllMocks();
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockIsTaskRegisteredAsync.mockResolvedValue(false);
     mockStartLocationUpdatesAsync.mockResolvedValue(undefined);
@@ -411,6 +520,7 @@ describe('useBackgroundLocation', () => {
     });
 
     jest.clearAllMocks();
+    mockRequestForegroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockIsTaskRegisteredAsync.mockResolvedValue(false);
     mockStartLocationUpdatesAsync.mockResolvedValue(undefined);
