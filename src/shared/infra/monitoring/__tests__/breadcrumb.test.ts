@@ -1,5 +1,10 @@
 import * as Sentry from '@sentry/react-native';
-import { addDomainBreadcrumb, addLogBreadcrumb, recordEnvironmentTransition } from '../breadcrumb';
+import {
+  addDomainBreadcrumb,
+  addLogBreadcrumb,
+  recordEnvironmentTransition,
+  recordFusionTierAdopted,
+} from '../breadcrumb';
 import { setSentryEnabled } from '../sentryState';
 
 const addBreadcrumbMock = Sentry.addBreadcrumb as jest.Mock;
@@ -148,6 +153,58 @@ describe('recordEnvironmentTransition (S13 #1546)', () => {
   it('opt-in 비활성이면 no-op', () => {
     setSentryEnabled(false);
     recordEnvironmentTransition('surface', 'underground');
+    expect(addBreadcrumbMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('recordFusionTierAdopted (#1936 G4)', () => {
+  beforeEach(() => {
+    setSentryEnabled(true);
+  });
+
+  it('prev === next 시 no-op (dedup)', () => {
+    recordFusionTierAdopted('fused', 'fused', 'surface', 0.05);
+    expect(addBreadcrumbMock).not.toHaveBeenCalled();
+  });
+
+  it('prev=null + next 첫 채택 시 breadcrumb 발사 (from=none)', () => {
+    recordFusionTierAdopted(null, 'gps-fast-path', 'surface', 0.1);
+    expect(addBreadcrumbMock).toHaveBeenCalledWith({
+      level: 'info',
+      category: 'lifecycle',
+      message: 'fusion.tier_adopted',
+      data: { from: 'none', to: 'gps-fast-path', environment: 'surface', distanceKm: 0.1 },
+    });
+  });
+
+  it('tier 전환 시 breadcrumb 발사 + distanceKm round 보존', () => {
+    recordFusionTierAdopted('fused', 'gps-fallback', 'underground', 0.123456);
+    expect(addBreadcrumbMock).toHaveBeenCalledWith({
+      level: 'info',
+      category: 'lifecycle',
+      message: 'fusion.tier_adopted',
+      data: {
+        from: 'fused',
+        to: 'gps-fallback',
+        environment: 'underground',
+        distanceKm: 0.123,
+      },
+    });
+  });
+
+  it('distanceKm=null이면 data에서 누락', () => {
+    recordFusionTierAdopted('position-train', 'wifi', 'underground', null);
+    expect(addBreadcrumbMock).toHaveBeenCalledWith({
+      level: 'info',
+      category: 'lifecycle',
+      message: 'fusion.tier_adopted',
+      data: { from: 'position-train', to: 'wifi', environment: 'underground' },
+    });
+  });
+
+  it('opt-in 비활성이면 no-op', () => {
+    setSentryEnabled(false);
+    recordFusionTierAdopted(null, 'fused', 'surface', 0.05);
     expect(addBreadcrumbMock).not.toHaveBeenCalled();
   });
 });

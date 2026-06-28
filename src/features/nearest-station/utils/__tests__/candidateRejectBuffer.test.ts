@@ -66,6 +66,26 @@ describe('candidateRejectBuffer (#1902 RC-18)', () => {
     expect(entries[0].distanceKm).toBeUndefined();
   });
 
+  it('#1934 G3 option B + #1936 G4 — candidate-env reject entry (env vote 카운터 가시화)', () => {
+    pushCandidateRejectEntry({
+      kind: 'candidate-reject',
+      ts: 300,
+      reason: 'candidate-env',
+      stationName: '강남',
+      line: '2',
+      cascadeEnvironment: 'underground',
+      candidateEnvironment: 'surface',
+    });
+    const entries = getCandidateRejectEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].reason).toBe('candidate-env');
+    expect(entries[0].cascadeEnvironment).toBe('underground');
+    expect(entries[0].candidateEnvironment).toBe('surface');
+    expect(entries[0].stationName).toBe('강남');
+    expect(entries[0].distanceKm).toBeUndefined();
+    expect(entries[0].trainNo).toBeUndefined();
+  });
+
   it('CAP=50 ring buffer — overwrite로 fusion log cap 점령 회귀 차단', () => {
     expect(CANDIDATE_REJECT_BUFFER_CAPACITY).toBe(50);
     for (let i = 0; i < CANDIDATE_REJECT_BUFFER_CAPACITY + 5; i += 1) {

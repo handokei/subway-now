@@ -112,3 +112,29 @@ export function recordEnvironmentTransition(
   if (prev === next) return;
   addDomainBreadcrumb('lifecycle', 'environment-transition', { from: prev, to: next });
 }
+
+/**
+ * #1936 (Epic #1927 G4) — cascade tier 채택 breadcrumb. delta-only 발사.
+ *
+ * `prev === next`(같은 tier 연속 채택)이면 no-op. 호출자는 이전 tier를 ref로 보존하고 매 cycle
+ * 결과를 본 함수에 전달 — 본 함수가 dedup 책임.
+ *
+ * cascade picker의 tier 분포(어떤 tier가 cascade 결정에 가장 많이 기여했는지) 1주 측정용.
+ * V7 (지하 station-passed 정확) + X10 (fusion picker output ≠ input) acceptance 분석 인프라.
+ *
+ * data payload는 PII 정책 준수 — station 좌표 X, station name X (tier + environment + distanceKm만).
+ */
+export function recordFusionTierAdopted(
+  prev: string | null,
+  next: string,
+  environment: 'surface' | 'underground' | 'unknown',
+  distanceKm: number | null,
+): void {
+  if (prev === next) return;
+  addDomainBreadcrumb('lifecycle', 'fusion.tier_adopted', {
+    from: prev ?? 'none',
+    to: next,
+    environment,
+    ...(distanceKm != null ? { distanceKm: Math.round(distanceKm * 1000) / 1000 } : {}),
+  });
+}

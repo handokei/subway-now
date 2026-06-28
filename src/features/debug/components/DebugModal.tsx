@@ -1026,6 +1026,13 @@ function formatCandidateRejectLine(entry: CandidateRejectEntry): string {
     const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
     return `${time} | reject:${entry.reason} | ${train} ${station}(${entry.line}) d=${d}`;
   }
+  // #1934 G3 option B + #1936 G4 — candidate-env: cascade/candidate env 비교 노출.
+  if (entry.reason === 'candidate-env') {
+    const station = entry.stationName ?? '-';
+    const cascade = entry.cascadeEnvironment ?? '-';
+    const cand = entry.candidateEnvironment ?? '-';
+    return `${time} | reject:${entry.reason} | ${station}(${entry.line}) cascade=${cascade} candidate=${cand}`;
+  }
   return `${time} | reject:${entry.reason} | line=${entry.line}`;
 }
 

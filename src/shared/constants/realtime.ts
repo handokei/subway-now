@@ -135,6 +135,20 @@ export const ARVL_CD_ARRIVED_MAX_AGE_MS = 35_000;
 export const GPS_FALLBACK_STALE_MAX_AGE_MS = 5 * 60_000;
 
 /**
+ * #1936 (Epic #1927 G4) — environment === 'underground' 분기에서 사용하는 stricter GPS fallback
+ * stale 임계. 일반 5분 대비 15초로 축소 — 지하 환경에서는 GPS 좌표 의존도를 강등 (ADR-015 §3
+ * "GPS reject in underground"). cascade tier 10(gps-fallback)이 underground 시 본 임계 적용.
+ */
+export const GPS_FALLBACK_STALE_UNDERGROUND_MAX_AGE_MS = 15_000;
+
+/**
+ * #1936 (Epic #1927 G4) — environment === 'underground' 분기에서 사용하는 stricter fusion 거리
+ * delta. 일반 `MAX_FUSION_DELTA_KM`(0.2km) 대비 0.05km로 강화. cascade tier 7(fused)이 underground
+ * 시 본 임계 적용 — GPS 좌표 의존도 강등 (지하 GPS drift candidates 함정 차단).
+ */
+export const MAX_FUSION_DELTA_UNDERGROUND_KM = 0.05;
+
+/**
  * #1747 — cascade picker stuck: 같은 station이 이 시간을 초과해 연속 채택되면
  * boardingLock 없을 때 강제 invalidate, boardingLock 활성 시 lock.boardingStation 우선.
  *
