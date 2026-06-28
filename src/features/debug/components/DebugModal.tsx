@@ -126,6 +126,8 @@ import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 // #1751 (M3 Sub 1) — Operation Dashboard 섹션.
 import { OperationDashboardSection } from './OperationDashboardSection';
+// #1956 (S-m3-1) — Operation Dashboard 4 metric → TripDetailModal drill-down 진입.
+import { TripDetailModal } from './TripDetailModal';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
 import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
 import { RegressionsSection } from './RegressionsSection';
@@ -1901,6 +1903,16 @@ function DebugModalInner({
   // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
   const [scheduledDump, setScheduledDump] = useState<ScheduledNotificationDumpEntry[] | null>(null);
 
+  // #1956 — Operation Dashboard metric 클릭 시 진입할 TripDetailModal state.
+  // tripToken=null이면 modal 닫힘. set 시 visible+token이 함께 갱신된다.
+  const [tripDetailToken, setTripDetailToken] = useState<string | null>(null);
+  const handleMetricClick = useCallback((_key: string, token: string) => {
+    setTripDetailToken(token);
+  }, []);
+  const handleTripDetailClose = useCallback(() => {
+    setTripDetailToken(null);
+  }, []);
+
   const refreshScheduledDump = useCallback(async () => {
     setScheduledDump(await dumpScheduledNotifications());
   }, []);
@@ -2100,6 +2112,7 @@ function DebugModalInner({
   ]);
 
   return (
+    <>
     <Modal visible animationType="slide" onRequestClose={onClose} testID="debug-modal">
       <View style={[styles.container, { backgroundColor: colors.bg, paddingTop: insets.top }]}>
         <View style={[styles.header, { borderBottomColor: colors.hair }]}>
@@ -2115,8 +2128,9 @@ function DebugModalInner({
 
         <ScrollView contentContainerStyle={{ padding: spacing.xl }}>
           {/* #1751 (M3 Sub 1) — Operation Dashboard. toggle/opt-in 없이 항상 렌더. */}
+          {/* #1956 — onMetricClick wire: metric 클릭 → TripDetailModal 진입. */}
           <Section title="Operation Dashboard" colors={colors} testID="operation-dashboard-section-wrapper">
-            <OperationDashboardSection logs={logs} />
+            <OperationDashboardSection logs={logs} onMetricClick={handleMetricClick} />
           </Section>
 
           <Section title="GPS" colors={colors}>
@@ -2612,6 +2626,13 @@ function DebugModalInner({
         </ScrollView>
       </View>
     </Modal>
+    {/* #1956 — Operation Dashboard metric drill-down. visible은 token 유무로 결정. */}
+    <TripDetailModal
+      visible={tripDetailToken !== null}
+      tripToken={tripDetailToken}
+      onClose={handleTripDetailClose}
+    />
+    </>
   );
 }
 

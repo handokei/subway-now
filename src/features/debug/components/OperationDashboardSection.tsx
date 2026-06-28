@@ -39,6 +39,8 @@ import {
   MetricDrillDownView,
   type DrillDownMetricKey,
 } from './MetricDrillDownView';
+import { getRawSignalEntries } from '../../observability/utils/rawSignalBuffer';
+import { UNKNOWN_CORR_ID_BUCKET } from '../utils/buildTripDetail';
 
 // ─── 상수 ─────────────────────────────────────────────────────────────────────
 
@@ -274,6 +276,29 @@ function PushLatencyRow({
 export interface OperationDashboardSectionProps {
   /** alarmLog entries — Silent push 도달률 계산에 사용. */
   logs: readonly AlarmLogEntry[];
+  /**
+   * #1956 — metric 차트 클릭 시 부모(DebugModal)에게 trip drill-down 진입 신호.
+   * 부모는 본 콜백을 받아 TripDetailModal을 열고 tripToken을 전달한다.
+   *
+   * tripToken은 rawSignalBuffer의 가장 최근 entry corrId — 매칭 entry가 없으면
+   * 'unknown' 버킷이 전달된다. caller(TripDetailModal)가 null fallback 렌더.
+   *
+   * 미전달 시 기존 inline MetricDrillDownView 토글만 동작(backward-compat).
+   */
+  onMetricClick?: (metricKey: DrillDownMetricKey, tripToken: string) => void;
+}
+
+/**
+ * 클릭된 metric에 대해 rawSignalBuffer 최신 entry의 corrId를 추출.
+ * corrId=null → UNKNOWN_CORR_ID_BUCKET 버킷.
+ * entries 0건 → UNKNOWN_CORR_ID_BUCKET 반환 (caller가 null fallback 렌더).
+ */
+function pickLatestTripToken(): string {
+  const entries = getRawSignalEntries();
+  if (entries.length === 0) return UNKNOWN_CORR_ID_BUCKET;
+  // 마지막 entry가 최신 (rawSignalBuffer는 ring buffer로 append 순서 유지).
+  const latest = entries[entries.length - 1];
+  return latest.corrId ?? UNKNOWN_CORR_ID_BUCKET;
 }
 
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
@@ -284,7 +309,7 @@ export interface OperationDashboardSectionProps {
  * 4 metric을 ratio bar로 표시.
  * Sub 3: 마운트 시 backend polling + Refresh 버튼 + metric 클릭 drill-down.
  */
-export function OperationDashboardSection({ logs }: OperationDashboardSectionProps) {
+export function OperationDashboardSection({ logs, onMetricClick }: OperationDashboardSectionProps) {
   const { colors } = useTheme();
   const responses = useTripGroundTruthStore((s) => s.responses);
   const [backendState, setBackendState] = useState<BackendLoadState>({ kind: 'idle' });
@@ -376,9 +401,17 @@ export function OperationDashboardSection({ logs }: OperationDashboardSectionPro
 
   const metrics: MetricData[] = [alarmAccuracy, silentPushReach, locklessMiss, boardableMiss, laPushDelivery];
 
-  const handleMetricPress = useCallback((key: DrillDownMetricKey) => {
-    setDrillDownKey((prev) => (prev === key ? null : key));
-  }, []);
+  const handleMetricPress = useCallback(
+    (key: DrillDownMetricKey) => {
+      // 기존 inline drill-down 토글 — backward-compat 보존.
+      setDrillDownKey((prev) => (prev === key ? null : key));
+      // #1956 — 부모 TripDetailModal 진입 신호. tripToken은 rawSignalBuffer 최신 entry corrId.
+      if (onMetricClick !== undefined) {
+        onMetricClick(key, pickLatestTripToken());
+      }
+    },
+    [onMetricClick],
+  );
 
   const handleDrillDownClose = useCallback(() => {
     setDrillDownKey(null);
