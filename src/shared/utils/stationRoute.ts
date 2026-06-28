@@ -1140,7 +1140,7 @@ export function calculateETA(nextTrainMinutes: number, route: Route): number {
   return nextTrainMinutes + getTravelMinutes(route) + transferWait;
 }
 
-function getNextStationOnLine(
+export function getNextStationOnLine(
   line: LineNumber,
   currentName: string,
   targetName: string,

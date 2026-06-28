@@ -5,7 +5,21 @@ import {
   makeTransferRoute,
 } from '../../../../testUtils/routeFixtures';
 import { getStationById } from '../../../../shared/utils/stationRoute';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import type { Station } from '../../../../shared/types/station';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
+
+function makeLock(overrides: Partial<BoardingLock>): BoardingLock {
+  return {
+    destinationId: '2-022',
+    trainCode: '7246',
+    boardingStationId: '2-022',
+    boardingLine: '2',
+    boardedAt: 1_700_000_000_000,
+    expectedDurationMs: 600_000,
+    ...overrides,
+  };
+}
 
 function st(id: string): Station {
   const s = getStationById(id);
@@ -194,6 +208,217 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptDisplay.line).toBe('3');
       const next = st('3-002');
       expect(ctx?.promptGeoContext.nextStation).toEqual({ lat: next.lat, lng: next.lng });
+    });
+  });
+
+  // #1921 — lock 활성 분기. cross-trip 자동 전환 시 route 원본 line이 현재 leg와 어긋나도
+  // lock.boardingLine 기준으로 정확한 stamp를 빌드해 stale lastPromptContextRef fallback을 차단.
+  describe('#1921 lock 활성 분기', () => {
+    it('lock 활성 + lock.boardingLine === route.firstLeg.line → 기존 path와 동등 stamp 결과 (보존)', () => {
+      const current = st('3-001'); // 대화
+      const dest = st('3-003'); // 정발산
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '3',
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(2, '3'),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptDisplay.line).toBe('3');
+      expect(ctx?.promptDisplay.originStation).toBe('대화');
+      const next = st('3-002');
+      expect(ctx?.promptGeoContext.nextStation).toEqual({ lat: next.lat, lng: next.lng });
+      expect(ctx?.promptGeoContext.direction).toBe('down');
+    });
+
+    it('cross-trip 자동 전환: route 원본 line=3 multi-transfer, lock.boardingLine=2, currentStation=line2 → lock line으로 stamp', () => {
+      // route: 3호선 대화 → ... → 교대 (transfer) → 2호선 강남. 사용자가 교대 환승 후 lock=2 leg로 진입.
+      // currentStation: 서초(2-024)에서 교대(2-023)로 통과 후 다음 역(강남=2-022)이 next-station 예상.
+      const current = st('2-024'); // 서초 (line 2)
+      const dest = st('2-022'); // 강남 (line 2)
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '2',
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeMultiTransferRoute({
+          transfers: [
+            // 첫 leg: 3호선 firstLeg(line=3). lock이 line=2이라 기존 path는 line=3 기준으로 동작.
+            { transferName: canonicalStationName('교대', '3'), fromLine: '3', toLine: '2', stopsToTransfer: 31 },
+            { transferName: '강남', fromLine: '2', toLine: 'sinbundang', stopsToTransfer: 1 },
+          ],
+          stopsAfterLastTransfer: 0,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      expect(ctx).not.toBeNull();
+      // lock.boardingLine=2 우선 stamp. 기존 path가 line='3'을 stamp하던 회귀 차단.
+      expect(ctx?.promptDisplay.line).toBe('2');
+      expect(ctx?.promptDisplay.originStation).toBe('서초');
+      // 서초(2-024) → 강남(2-022) 방향 다음 역은 교대(2-023).
+      const next = st('2-023');
+      expect(ctx?.promptGeoContext.nextStation).toEqual({ lat: next.lat, lng: next.lng });
+    });
+
+    it('lock 활성 + currentStation이 lock.boardingLine 위에 없음 → null (라인 일관성 깨짐)', () => {
+      const current = st('3-001'); // 대화 (line 3)
+      const dest = st('2-022'); // 강남
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: '2-024',
+        boardingLine: '2', // 사용자는 line 2에 lock 했는데 현재는 line 3 station — 비정상 상태
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeMultiTransferRoute({
+          transfers: [
+            { transferName: '교대', fromLine: '3', toLine: '2', stopsToTransfer: 31 },
+            { transferName: '강남', fromLine: '2', toLine: 'sinbundang', stopsToTransfer: 1 },
+          ],
+          stopsAfterLastTransfer: 0,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      // lock.boardingLine=2 위에 "대화"가 없음 → next-station lookup fail → null
+      expect(ctx).toBeNull();
+    });
+
+    it('lock 활성 + lock.boardingLine이 TransferRoute segment 어느 것에도 일치 안 함 → null', () => {
+      const current = st('3-001'); // 대화 (line 3)
+      const dest = st('2-022'); // 강남
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '5' as const, // route fromLine=3, toLine=2인데 lock은 line=5
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeTransferRoute({
+          transferName: canonicalStationName('교대', '3'),
+          fromLine: '3',
+          toLine: '2',
+          stopsToTransfer: 31,
+          stopsFromTransfer: 2,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      // findSegmentEndStationName이 line=5를 매칭 못 함 → segmentEndName=null → ctx=null
+      expect(ctx).toBeNull();
+    });
+
+    it('lock 활성 + lock.boardingLine이 MultiTransferRoute segment 어느 것에도 일치 안 함 → null', () => {
+      const current = st('3-001');
+      const dest = st('2-022');
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '5' as const,
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeMultiTransferRoute({
+          transfers: [
+            { transferName: canonicalStationName('교대', '3'), fromLine: '3', toLine: '2', stopsToTransfer: 31 },
+            { transferName: '강남', fromLine: '2', toLine: 'sinbundang', stopsToTransfer: 1 },
+          ],
+          stopsAfterLastTransfer: 0,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      // multi-transfer 어느 segment에도 line=5 없음 → null
+      expect(ctx).toBeNull();
+    });
+
+    it('lock 활성 + currentStation === segmentEnd → null (이미 leg 끝 도달)', () => {
+      const current = st('3-003'); // 정발산 = destination
+      const dest = st('3-003'); // 정발산
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '3',
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(0, '3'),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      // current === segmentEnd → getNextStationOnLine returns null → context null
+      expect(ctx).toBeNull();
+    });
+
+    it('lock null이면 기존 getFirstLeg path 호출 (회귀 방지)', () => {
+      const current = st('3-001');
+      const dest = st('3-003');
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(2, '3'),
+        currentStation: current,
+        destination: dest,
+        lock: null,
+      });
+      // lock null이면 기존 path와 동등
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptDisplay.line).toBe('3');
+      expect(ctx?.promptDisplay.originStation).toBe('대화');
+    });
+
+    it('lock 활성 + TransferRoute boardingLine === toLine → destination을 segmentEnd로 사용', () => {
+      // route: 3호선 대화 → 교대(transfer) → 2호선 강남(destination)
+      // lock은 toLine=2 leg에 진입한 상태 (교대 환승 후, 사용자는 서초까지 진행)
+      const current = st('2-024'); // 서초 (line 2)
+      const dest = st('2-022'); // 강남 (line 2)
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '2',
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeTransferRoute({
+          transferName: canonicalStationName('교대', '3'),
+          fromLine: '3',
+          toLine: '2',
+          stopsToTransfer: 31,
+          stopsFromTransfer: 2,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptDisplay.line).toBe('2');
+      expect(ctx?.promptDisplay.originStation).toBe('서초');
+    });
+
+    it('lock 활성 + 순환선(2호선) → inferLoopDirection fallback이 direction 채움', () => {
+      // 시청(2-001) → 을지로3가(2-003) 구간에 lock. 순환선이라 resolveTravelDirection null이지만
+      // inferLoopDirection이 down(외선순환)을 채워야 함.
+      const current = st('2-001');
+      const dest = st('2-003');
+      const lock = makeLock({
+        destinationId: dest.id,
+        boardingStationId: current.id,
+        boardingLine: '2',
+      });
+      const ctx = buildBoardingPromptContext({
+        route: makeDirectRoute(2, '2'),
+        currentStation: current,
+        destination: dest,
+        lock,
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptGeoContext.direction).toBe('down');
+      expect(ctx?.promptDisplay.line).toBe('2');
     });
   });
 });

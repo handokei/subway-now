@@ -28,15 +28,18 @@
  * `currentStation === null`이거나 next/lookup 실패 시 null 반환 — backend는 자동 skip.
  */
 
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import {
   findStationByNameAndLine,
   getFirstLeg,
   getNextStationName,
+  getNextStationOnLine,
 } from '../../../shared/utils/stationRoute';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
 import { inferLoopDirection } from '../../route/utils/loopDirection';
+import { findSegmentEndStationName } from './buildBoardingLockMeta';
 
 export interface BoardingPromptContext {
   promptGeoContext: {
@@ -54,15 +57,36 @@ interface BuildInputs {
   route: Route;
   currentStation: Station | null;
   destination: Station | null;
+  /**
+   * #1921 — 활성 BoardingLock이 있으면 lock.boardingLine + currentStation 기준으로 컨텍스트를 빌드.
+   *
+   * cross-trip 자동 전환 시 route는 RC-11 #1883 freeze 정책에 따라 원본 trip의 line을 유지하지만
+   * (예: 7호선 용마산→…→강변→2호선 잠실 multi-transfer) lock은 현재 진행 중인 leg의 line(2)을
+   * 가리킨다. 기존 `getFirstLeg(route, destination.name)` 경로는 route 원본 line(7)을 따라가서
+   * currentStation(2-012 강변)이 7호선에 없으면 nextName=null로 빠지고, 호출자(useApnsTripRegistration)
+   * 가 stale lastPromptContextRef로 fallback → backend KV가 옛 line/originStation으로 영원히 고정.
+   *
+   * lock이 있으면 line의 모호함이 사라지므로 우선 분기 — lock metadata는 별 wire(buildBoardingLockMeta)가
+   * 담당하고 본 컨텍스트는 prompt 전용 stamp만 갱신한다.
+   */
+  lock?: BoardingLock | null;
 }
 
 export function buildBoardingPromptContext({
   route,
   currentStation,
   destination,
+  lock,
 }: BuildInputs): BoardingPromptContext | null {
   if (!route || !currentStation || !destination) return null;
 
+  // #1921 — lock 활성 분기. route 원본 line이 lock leg와 어긋난 cross-trip 자동 전환에서
+  // currentStation 기준으로 lock.boardingLine 위의 다음 역 좌표 + direction을 stamp.
+  if (lock != null) {
+    return buildLockActiveContext({ route, currentStation, destination, lock });
+  }
+
+  // lock 미활성 — 기존 first-leg 기반 path 보존.
   const leg = getFirstLeg(route, destination.name);
   const nextName = getNextStationName(currentStation.id, destination.id, route);
   if (!nextName) return null;
@@ -87,6 +111,54 @@ export function buildBoardingPromptContext({
     promptDisplay: {
       originStation: currentStation.name,
       line: leg.line,
+    },
+  };
+}
+
+/**
+ * #1921 — lock 활성 분기. lock.boardingLine + currentStation을 기준 좌표로 사용해
+ * route의 어느 segment가 lock leg인지 찾고 그 segment의 끝 역(다음 환승역 or 최종 도착역)을
+ * direction 산출 anchor로 쓴다.
+ *
+ * 실패 조건 (모두 null 반환 — backend는 자동 skip):
+ *   - lock.boardingLine이 route segment 어느 것에도 일치 안 함 (비정상 schema)
+ *   - currentStation이 lock.boardingLine 위에 없음 (라인 일관성 깨짐)
+ *   - currentStation === segmentEnd (이미 leg 끝 도달 — 본 cycle은 prompt 대상 아님)
+ */
+function buildLockActiveContext({
+  route,
+  currentStation,
+  destination,
+  lock,
+}: {
+  route: NonNullable<Route>;
+  currentStation: Station;
+  destination: Station;
+  lock: BoardingLock;
+}): BoardingPromptContext | null {
+  const segmentEndName = findSegmentEndStationName(route, lock.boardingLine, destination.name);
+  if (segmentEndName == null) return null;
+
+  const nextName = getNextStationOnLine(lock.boardingLine, currentStation.name, segmentEndName);
+  if (nextName == null) return null;
+
+  const nextStation = findStationByNameAndLine(nextName, lock.boardingLine);
+  /* istanbul ignore next -- getNextStationOnLine이 lock.boardingLine 위에서 찾은 name이므로 재조회 실패 불가 */
+  if (nextStation == null) return null;
+
+  const direction =
+    resolveTravelDirection(lock.boardingLine, currentStation.name, segmentEndName)?.direction ??
+    inferLoopDirection(lock.boardingLine, currentStation.name, segmentEndName);
+
+  return {
+    promptGeoContext: {
+      origin: { lat: currentStation.lat, lng: currentStation.lng },
+      nextStation: { lat: nextStation.lat, lng: nextStation.lng },
+      direction,
+    },
+    promptDisplay: {
+      originStation: currentStation.name,
+      line: lock.boardingLine,
     },
   };
 }
