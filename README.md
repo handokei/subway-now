@@ -105,6 +105,10 @@
 - `modules/live-activity/` 자체 네이티브 모듈 (expo-modules-core 기반)
 - 위젯 데이터는 위치 변경 시점에만 업데이트 (배터리 최적화)
 
+![Widget Screenshot](./docs/images/widget-screenshot.png)
+
+![Live Activity Screenshot](./docs/images/live-activity-screenshot.png)
+
 </details>
 
 <details>
@@ -152,6 +156,41 @@
 **아키텍처**
 
 ![Architecture](./docs/images/architecture.png)
+
+![System Architecture](./docs/images/system-architecture.png)
+
+### 시스템 전체 흐름 (sequenceDiagram)
+
+사용자 destination 설정부터 trip 등록, 자동 lock, 알람 발사, 위젯/LA 갱신까지의 전 구간 흐름.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 🧑 사용자
+    participant App as 📱 RN App
+    participant BFF as ☁️ Workers BFF
+    participant KV as 🗄️ Workers KV
+    participant APNs as 🍎 APNs
+    participant Widget as 📊 위젯/LA
+
+    User->>App: destination 설정
+    App->>BFF: POST /trips (origin, dest)
+    BFF->>KV: trip token 저장
+    BFF-->>App: tripId
+
+    Note over App: 4 신호 수집<br/>(GPS+가속도+기압+Cell)
+    App->>App: 합의 게이트 (ADR-015)
+    App->>BFF: PATCH /trips/:id (advance)
+    BFF->>KV: position 갱신
+    BFF->>APNs: silent push (corrId)
+    APNs-->>App: silent push 수신
+    App->>Widget: SharedGroup 갱신
+
+    Note over App: 환승역 도달
+    App->>User: 환승 알람 발사
+    App->>BFF: POST /trips/:id/complete
+    BFF->>KV: trip 종료
+```
 
 ### 4 신호 융합 cascade flow
 
@@ -408,6 +447,45 @@ subway-now의 핵심 가치인 "지하에서도 끊김 없는 안내"를 위해 
 3. **합의 게이트**: 4 신호 합의 시만 자동 lock + station progression
 4. **±1 hop 가드**: station progression은 ±1 hop 이내만 허용 (false positive 차단)
 
+![4-signal Fusion Flow](./docs/images/4-signal-fusion-flow.png)
+
+#### 4 신호 가중치 + 책임 매트릭스
+
+각 신호가 단독 결정 권한을 가지지 않고, 책임 영역만 분담한 뒤 vote를 합산한다.
+
+| 신호 | 1차 책임 | 환경 vote 가중치 | 자동 lock vote 가중치 | 폴링 주기 | 실패 모드 |
+|---|---|---|---|---|---|
+| GPS (expo-location) | 위치 + accuracy | 보조 | 보조 | 30s (지상) / 60s (지하) | 지하 stale 좌표 freeze |
+| 가속도 (motion-activity) | 정차/주행 fingerprint | 보조 | **핵심** | 5s (continuous) | iOS 5~10분 뒤집힘 |
+| 기압계 (barometer) | 지하/지상 판별 | **핵심** | 보조 | 10s | iPhone < 6 미지원 |
+| Cellular tech (5G/LTE/3G) | 지하/지상 보조 | 보조 | 보조 | 30s | 무신호 지역 누락 |
+
+#### 자동 lock 합의 게이트 매트릭스
+
+4 신호 각각의 vote 조합에 따른 자동 lock 진행/거부 결정. ADR-015 합의 게이트의 단일 차단점.
+
+| GPS vote | 가속도 vote | 기압계 vote | Cellular vote | 환경 추정 | 자동 lock | 비고 |
+|---|---|---|---|---|---|---|
+| train | train | underground | underground | 지하 | ✅ 진행 | 4 신호 합의 |
+| train | train | aboveground | aboveground | 지상 | ✅ 진행 | 4 신호 합의 |
+| train | walking | underground | underground | 지하 | ❌ 거부 | 가속도 불일치 |
+| stop | train | underground | underground | 지하 | ❌ 거부 | GPS 불일치 |
+| train | train | underground | aboveground | mixed | ❌ 거부 | 환경 불일치 |
+| (없음) | train | underground | underground | 지하 | ✅ lockless 보강 | 사용자 명시 의향 시만 |
+| (없음) | (없음) | (없음) | (없음) | unknown | ❌ 거부 | 신호 부족 |
+
+#### 환경 분류 표
+
+`inferEnvironment.ts` 단일 SSOT가 반환하는 환경 카테고리. 모든 fusion 단계가 이 값을 참조 (ADR-016 deterministic).
+
+| 환경 | 정의 | 진입 조건 | fusion 동작 |
+|---|---|---|---|
+| `aboveground` | 지상 | 기압계 OR Cellular vote = 지상 + GPS accuracy < 100m | GPS 우선, 가속도 보조 |
+| `underground` | 지하 | 기압계 vote = 지하 OR (Cellular vote = 지하 + GPS accuracy > 500m) | 가속도+기압계 우선, GPS 무시 |
+| `mixed` | 환승 통로 / 출입구 | 기압계와 Cellular vote 불일치 | 양 신호 vote 모두 검증 |
+| `unknown` | 신호 부족 | 4 신호 모두 vote 부재 | 합의 게이트 자동 거부 |
+| `unknown_warmup` | 앱 부팅 직후 5초 | 첫 신호 수집 전 | trip 진행 보류 |
+
 #### 구현 포인트
 
 **1. Deterministic Environment SSOT (ADR-016)**
@@ -492,6 +570,75 @@ export async function updateTripPosition(
 
 - **Silent push 신뢰성**: iOS는 silent push가 throttle될 수 있음 (시간당 2~3개)
 - **Backend deploy 의존**: BFF deploy 누락 시 trip token forward 중단 (학습됨, lesson 박제)
+
+#### APNs Silent Push 흐름 (corrId 5min 윈도우)
+
+Silent push가 backend에서 발사되어 device에 도달하기까지 corrId로 reach rate를 측정.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant BFF as ☁️ Workers BFF
+    participant KV as 🗄️ Workers KV
+    participant APNs as 🍎 APNs
+    participant iOS as 📱 iOS Device
+    participant App as 🚇 RN App
+
+    Note over BFF: trip advance 감지
+    BFF->>BFF: corrId = tripId_timestamp
+    BFF->>KV: corrId sent 기록 (TTL 5min)
+    BFF->>APNs: silent push + headers.corr-id
+    APNs->>iOS: silent push 전달 (BG 가능)
+    iOS->>App: BackgroundTask wake
+    App->>App: corrId 추출
+    App->>BFF: POST /telemetry/silent-push-ack
+    BFF->>KV: corrId received 기록
+
+    Note over BFF: 5min 후 reach rate 계산<br/>(received / sent)
+```
+
+#### Silent Push 4 Path 매트릭스
+
+silent push가 발사되는 4 채널 + 각 발사 조건. 모두 같은 corrId 윈도우로 측정.
+
+| Path | 발사 조건 | 발사 주체 | 우선순위 | 주요 acceptance |
+|---|---|---|---|---|
+| arvlcd-fire | Seoul API arvlcd 0/1 (도착/진입) | BFF cron (30s) | 최우선 | V2 (lock 활성 시 환승 정확) |
+| vanish-fallback | trainCode가 응답에서 사라짐 | BFF cron (30s) | 보조 | V3 (transient outage 대응) |
+| transfer-release | 환승 시 lock 해제 신호 | BFF (trip advance) | 보조 | V4 (환승 후 새 lock 등록) |
+| lockless | 명시 의향 trip + 자동 lock 없음 | BFF cron (60s) | 보조 | V6 (사용자 명시 의향 동급 보장) |
+
+#### Trip Lifecycle Mermaid
+
+Trip 시작부터 종료까지의 5 단계. 각 단계는 backend KV와 device storage 양쪽에 SSoT가 기록된다.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Pending: destination 설정
+    Pending --> Active: 자동 lock OR 명시 의향
+    Active --> Advancing: 매역 advance (silent push)
+    Advancing --> Active: lock 유지
+    Active --> Completed: destination 도착
+    Active --> LocklessFallback: lock 5분 무신호
+    LocklessFallback --> Active: 신호 복구
+    LocklessFallback --> Completed: backstop timeout
+    Active --> UserEnded: 사용자 명시 종료
+    Completed --> [*]
+    UserEnded --> [*]
+```
+
+#### Trip 종료 사유 매트릭스
+
+각 종료 사유별 트리거 + 위젯/LA cleanup 동작.
+
+| 종료 사유 | 트리거 | 알람 발사 | 위젯 cleanup | LA cleanup |
+|---|---|---|---|---|
+| destination 도착 | 마지막 hop의 alarm advance | ✅ 도착 알람 | 즉시 비움 | 즉시 dismiss |
+| lockless backstop | 5분 무신호 + 사용자 명시 의향 없음 | ❌ | 즉시 비움 | 즉시 dismiss |
+| 사용자 명시 종료 | "안내 중단" 탭 | ❌ | 즉시 비움 | 즉시 dismiss |
+| cron heartbeat | BFF heartbeat 30분 무응답 | ❌ | 다음 polling 비움 | 다음 polling dismiss |
+| app kill (process) | OS kill signal | ❌ | 위젯 그대로 유지 (마지막 snapshot) | 자동 dismiss (BG fail) |
 
 ---
 
@@ -635,6 +782,32 @@ function createArrivalProvider(env): ArrivalProvider {}
 
 - 외부 API 호출 횟수 90%+ 감소 (동시 사용자 캐시 공유)
 - p95 latency 200ms → 50ms
+
+#### Edge KV 캐싱 흐름
+
+사용자 요청이 Edge에 도달했을 때 KV 캐시 hit/miss에 따라 외부 API 호출 여부가 분기된다. TTL 30s + cron 사전 fetch로 cache stampede 차단.
+
+```mermaid
+flowchart TD
+    User["📱 사용자 요청<br/>(역 도착 정보)"] --> Edge["☁️ Cloudflare Edge<br/>(가장 가까운 데이터센터)"]
+    Edge --> KV{"Workers KV<br/>cache hit?"}
+    KV -->|"hit (TTL ≥ 30s)"| Return["✅ 캐시 응답<br/>p95 < 50ms"]
+    KV -->|"miss"| External["🌐 서울 열린데이터 API<br/>외부 호출"]
+    External --> Write["KV write<br/>(TTL 30s)"]
+    Write --> Return
+    Cron["⏰ Cron Trigger<br/>(5s 간격)"] --> Prefetch["사전 fetch<br/>(주요 역)"]
+    Prefetch --> Write
+    Return --> User
+```
+
+#### Edge Caching 다른 방식 비교
+
+| 방식 | latency (p95) | 캐시 공유 | 운영 비용 | 운영 복잡도 | 비고 |
+|---|---|---|---|---|---|
+| **Cloudflare Workers KV** | < 50ms (200+ Edge POP) | 모든 사용자 공유 | 무료 tier | 낮음 (wrangler 1줄) | ✅ 채택 |
+| Redis (단일 region) | 100~200ms (지역 의존) | 모든 사용자 공유 | 인스턴스 비용 | 보통 (VPC + 모니터링) | 거부 |
+| 디바이스 메모리 캐싱 | < 5ms | 사용자별 격리 | 0 | 낮음 | 거부 (cache miss 빈발) |
+| 캐싱 없음 | 200~500ms (외부 API 의존) | N/A | 0 | N/A | 거부 (rate limit 누적) |
 
 ---
 
@@ -1169,6 +1342,57 @@ await sendSilentPush({ ..., headers: { 'corr-id': correlationId } });
 - **메타 측정의 중요성**: 측정 인프라 자체가 실패하면 알지 못함. corrId silent push reach가 메타 측정 역할
 - **명시 의향 UX의 가치**: 네이버 지도 "안내 시작" 패턴 도입으로 사용자 의향을 명시적으로 캡처 → trip 정확도 보장 의무 명확화
 
+![DebugModal Dashboard Screenshot](./docs/images/debug-modal-dashboard.png)
+
+#### DebugModal Operation Dashboard
+
+4 metric 라이브 표시 → 드릴다운으로 회귀 원인 분석. 단일 화면에서 측정 ↔ 원인 연결.
+
+```mermaid
+flowchart TD
+    Modal["🔍 DebugModal<br/>(개발자 전용)"] --> M1["📊 Silent Push Reach<br/>5min 윈도우"]
+    Modal --> M2["📊 Fusion Consensus<br/>5min 통과율"]
+    Modal --> M3["📊 Station Progression Miss<br/>1h 윈도우"]
+    Modal --> M4["📊 API Outage<br/>Seoul API 5xx 비율"]
+
+    M1 -->|"drill-down"| D1["corrId 매칭 로그<br/>(sent vs received)"]
+    M2 -->|"drill-down"| D2["vote 충돌 매트릭스<br/>(GPS/가속도/기압/Cell)"]
+    M3 -->|"drill-down"| D3["±1 hop 가드 거부 로그<br/>(시간 적분 false advance)"]
+    M4 -->|"drill-down"| D4["Seoul API 호출 history<br/>(5xx + latency)"]
+
+    D1 --> Action["원인 분석 + 회귀 박제"]
+    D2 --> Action
+    D3 --> Action
+    D4 --> Action
+```
+
+#### V/X acceptance 매트릭스
+
+V (사용자 가치 보장) / X (회귀 차단) 카테고리로 분리. 모든 epic close 조건이 이 표에 매핑됨.
+
+| ID | 카테고리 | acceptance 정의 |
+|---|---|---|
+| V1 | 가치 | lock 활성 trip = 환승역에서 100% 알람 |
+| V2 | 가치 | lock 활성 trip = 하차역에서 100% 알람 |
+| V3 | 가치 | Seoul API outage 23분 내 fallback 진행 |
+| V4 | 가치 | 환승 후 새 노선 lock 자동 등록 |
+| V5 | 가치 | 위젯 / LA / 메인 앱 단일 SSoT |
+| V6 | 가치 | 사용자 명시 의향 trip = lock 활성과 동급 보장 |
+| V7 | 가치 | 지하/터널 환경에서 자동 lock 진행 |
+| V8 | 가치 | 배터리 소모 < 5%/hour (Adaptive polling) |
+| V9 | 가치 | 측정 인프라 자체 회귀 < 30분 감지 |
+| X1 | 회귀 | 중복 알람 0건 (Idempotency Key) |
+| X2 | 회귀 | ±1 hop 가드 초과 진행 0건 |
+| X3 | 회귀 | trip 종료 후 알림 발사 0건 |
+| X4 | 회귀 | lockless trip false positive 0건 |
+| X5 | 회귀 | 환경 vote drift 0건 (deterministic SSOT) |
+| X6 | 회귀 | silent push throttle 시 reach rate < 50% 알람 |
+| X7 | 회귀 | BG GPS leak > 5%/hour 0건 |
+| X8 | 회귀 | trip 종료 후 BG GPS 정지 (배터리 보호) |
+| X9 | 회귀 | 위젯 stale data > 5min 0건 |
+| X10 | 회귀 | Live Activity dismiss 누락 0건 |
+| X11 | 회귀 | Lockless persistent state > 5min 0건 |
+
 ---
 
 ## 🤖 AI 협업 paradigm
@@ -1208,6 +1432,55 @@ await sendSilentPush({ ..., headers: { 'corr-id': correlationId } });
 4. **측정 plan**: 1주 회귀 감지 방법 명시
 5. **Device verify**: 실기기 검증 시나리오 명시
 
+#### Wire-completion 5단 체크 흐름
+
+PR 작성 → 5단 체크 → CI 게이트 → 머지까지의 자동화된 흐름. 한 단계라도 fail 시 머지 차단.
+
+```mermaid
+flowchart TD
+    PR["📝 PR 작성"] --> Step1{"1️⃣ Orphan 없음<br/>npm run lint:orphan"}
+    Step1 -->|"fail"| Fix1["caller 추가 OR<br/>ignore pattern 갱신"]
+    Step1 -->|"pass"| Step2{"2️⃣ V/X dashboard<br/>관측 지점 명시?"}
+    Fix1 --> Step1
+    Step2 -->|"fail"| Fix2["DebugModal / wrangler tail /<br/>Sentry 명시"]
+    Step2 -->|"pass"| Step3{"3️⃣ 의존 PR 명시"}
+    Fix2 --> Step2
+    Step3 -->|"fail"| Fix3["backend/device/infra<br/>PR 번호 OR N/A"]
+    Step3 -->|"pass"| Step4{"4️⃣ 측정 plan"}
+    Fix3 --> Step3
+    Step4 -->|"fail"| Fix4["1주 시나리오 + log query<br/>OR N/A"]
+    Step4 -->|"pass"| Step5{"5️⃣ Device verify"}
+    Fix4 --> Step4
+    Step5 -->|"fail"| Fix5["실기기 시나리오 명시<br/>OR N/A — type+unit only"]
+    Step5 -->|"pass"| CI["CI 게이트<br/>(Type Check / Test / Data Validation /<br/>Orphan / SonarCloud)"]
+    Fix5 --> Step5
+    CI -->|"all green"| Merge["✅ 머지"]
+    CI -->|"fail"| Fix6["CI 결과 분석 → 재push"]
+    Fix6 --> CI
+```
+
+#### 권한 매트릭스 (확장)
+
+iOS 위치 권한 × 앱 상태 매트릭스. 각 조합에서 fusion 동작 / 알람 fire 가능 여부.
+
+| 권한 | Foreground | Background | 취침 모드 | 비고 |
+|---|---|---|---|---|
+| **Always** | 4 신호 + auto-lock + alarm | 4 신호 + auto-lock + alarm | silent push + LA fire | 최강 기능 |
+| **WhileInUse** | 4 신호 + auto-lock + alarm | GPS 5min (iOS limit) + 명시 의향 trip만 | silent push + LA fire | 1차 시나리오 |
+| **Denied** | Mock GPS + 즐겨찾기만 | 동작 X | 동작 X | UX downgrade 화면 |
+
+#### CI 게이트 매트릭스
+
+PR 머지 전 통과해야 하는 5 CI 게이트. branch protection의 required status check.
+
+| CI Job | 범위 | 통과 조건 | 비고 |
+|---|---|---|---|
+| Type Check & Test | type-check + jest unit | coverage 100% + 0 type error | required status |
+| Data Validation | stations.json + lineGeometry.json | 정합성 0 drift | required status |
+| Orphan Export Detection | `npm run lint:orphan` | 0 orphan export | Wire-completion 1단 |
+| SonarCloud | code quality | dup < 3% + bug 0 | informational |
+| Maestro E2E | mock smoke | 미사용 (#1335 제거) | N/A |
+
 ### Cross-impact audit + 후속 issue 자동 생성
 
 PR 머지 후 자동으로 다음 audit 수행:
@@ -1230,6 +1503,27 @@ audit 결과 → 후속 issue 자동 생성 → backlog에 박제
 
 - **MEMORY.md 24KB 한도**: index 형태로 진입점 관리
 - **자가 진화**: 사용자 피드백 받을 때마다 lesson 박제 → 같은 실수 차단
+
+```mermaid
+flowchart TD
+    MemIdx["📚 MEMORY.md<br/>(index, 24KB 한도)"] --> Lesson["🛑 lesson_*.md<br/>실수 박제 + 재발 차단"]
+    MemIdx --> Feedback["🗣️ feedback_*.md<br/>사용자 피드백 룰"]
+    MemIdx --> Project["📌 project_*.md<br/>세션 진입점"]
+    MemIdx --> Reference["📖 reference_*.md<br/>도메인/시장 reference"]
+
+    User["🧑 사용자 피드백"] -->|"발생"| Detect["패턴 감지"]
+    Detect -->|"실수 재발 가능"| Lesson
+    Detect -->|"운영 룰 추가"| Feedback
+    Detect -->|"새 세션 진입점"| Project
+    Detect -->|"외부 정보 학습"| Reference
+
+    Lesson -->|"새 세션 시작 시 로드"| Session["🤖 새 세션"]
+    Feedback --> Session
+    Project --> Session
+    Reference --> Session
+
+    Session -->|"같은 실수 차단"| User
+```
 
 ### Sub-agent 활용
 
