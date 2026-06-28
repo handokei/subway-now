@@ -193,3 +193,11 @@ export const NOTIFICATION_DELIVERY_LOG_KEY = 'subway-now:notification-delivery-l
 // 응답을 누적. ADR-015 §10 P5 가중치 자동 학습의 label(=ground truth)이다.
 // 형식: { pendingPrompt: { corrId, endedAt } | null, responses: TripGroundTruthResponse[] } JSON.
 export const TRIP_GROUND_TRUTH_KEY = 'subway-now:trip-ground-truth';
+// #1923 — 사용자 명시 의향 토글 (infoModeEnabled) SSoT.
+// boardingPrompt [탑승] 응답 / BoardingTrainList 직접 탭 시 true로 stamp.
+// useApnsTripRegistration이 본 키를 읽어 RegisterTripPayload.infoModeEnabled로 backend에 송신 →
+// backend lockless intermediate gate가 통과되어 station-passed silent push가 발사된다
+// (backend/alarm-worker/src/scheduled.ts:980 `trip.infoModeEnabled && waypoint.kind === 'intermediate'`).
+// trip 종료 시 runTripBoundCleanups에서 false로 reset (이전 trip의 의향 신호가 새 trip에 leak 차단).
+// 형식: 'true' 또는 키 부재(=false). ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
+export const USER_INTENT_INFO_MODE_KEY = 'subway-now:user-intent-info-mode';

@@ -48,6 +48,7 @@ import { getNotificationRouter } from '../api/notificationRouter';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from './useBoardingLockStore';
 import { useAlarmEventStore } from './useAlarmEventStore';
+import { resetUserIntentInfoMode } from './useUserIntentStore';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('tripBoundCleanups');
@@ -167,6 +168,11 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // useStateRehydration이 sentinel을 보고 destination/lock만 reset — alarmEvent 등은 누락).
   // 본 wiring으로 BG 경로에서도 메모리/storage가 동시에 일관 상태가 된다.
   clearTripBoundStoreMemory,
+  // #1923 — trip 종료 시 사용자 명시 의향 토글 reset.
+  // 이전 trip의 의향 신호가 새 trip에 leak되지 않도록 memory + storage 동시 false 처리.
+  // 4 cleanup 경로 (FG setDestination(null/switch) / silent push trip-ended /
+  // useStateRehydration sentinel / useLaunchTripReconciliation cold-launch) 모두 자동 wire.
+  resetUserIntentInfoMode,
 ];
 
 /**

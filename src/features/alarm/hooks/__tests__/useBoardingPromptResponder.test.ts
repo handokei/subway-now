@@ -74,6 +74,17 @@ jest.mock('../../store/useBoardingLockStore', () => {
   };
 });
 
+// #1923 — useUserIntentStore mock. tryAutoLock 진입 시 setInfoModeEnabled(true) 호출 검증.
+jest.mock('../../store/useUserIntentStore', () => {
+  const mockSetInfoModeEnabled = jest.fn(() => Promise.resolve());
+  return {
+    useUserIntentStore: {
+      getState: () => ({ setInfoModeEnabled: mockSetInfoModeEnabled }),
+    },
+    __mockSetInfoModeEnabled: mockSetInfoModeEnabled,
+  };
+});
+
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
 const {
   logBoardingPromptAutoLock,
@@ -85,6 +96,9 @@ const { addDomainBreadcrumb } = jest.requireMock(
 );
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
+);
+const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
+  '../../store/useUserIntentStore',
 );
 const displayLoggerMock = jest.requireMock('../useBoardingPromptDisplayLogger');
 
@@ -650,6 +664,45 @@ describe('handleResponse — #1170 응답 telemetry (logBoardingPromptResponded)
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
     expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome });
+  });
+});
+
+// #1923 — 사용자 명시 의향 stamp. boarded path 진입 시 setInfoModeEnabled(true) 호출 검증.
+// dismissed path는 stamp 안 함 (의향 표명 없음).
+describe('handleResponse — #1923 infoModeEnabled stamp (사용자 명시 의향)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each<[string, string]>([
+    ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED],
+    ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER],
+  ])('%s → useUserIntentStore.setInfoModeEnabled(true) 호출', async (_label, action) => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
+  });
+
+  it.each<[string, string]>([
+    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
+    ['알 수 없는 액션', 'SOME_OTHER_ACTION'],
+  ])('%s → setInfoModeEnabled 호출 안 함 (dismissed path는 의향 표명 없음)', async (_label, action) => {
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(setInfoModeEnabledMock).not.toHaveBeenCalled();
+  });
+
+  it('tryAutoLock 실패(arrivals null)해도 setInfoModeEnabled(true)는 호출 (의향 표명 사실은 실패와 무관)', async () => {
+    const deps = makeHandleResponseDeps({
+      fetchArrivalsForStation: jest.fn(async () => null),
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
+  });
+
+  it('destinationId null + [탑승] → setInfoModeEnabled(true)는 여전히 호출 (사용자가 boarded로 응답한 사실은 stamp)', async () => {
+    const deps = makeHandleResponseDeps({ destinationId: null });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
   });
 });
 

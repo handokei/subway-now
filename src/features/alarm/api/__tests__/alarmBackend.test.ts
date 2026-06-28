@@ -260,6 +260,36 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
+      // #1923 — 사용자 명시 의향 토글 (infoModeEnabled) 송신/dedup
+      it('#1923 infoModeEnabled=true 송신 시 body에 포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: true });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.infoModeEnabled).toBe(true);
+      });
+
+      it('#1923 infoModeEnabled=false/미설정이면 body에 미포함 (graceful, backend false default)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: false });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.infoModeEnabled).toBeUndefined();
+      });
+
+      it('#1923 infoModeEnabled OFF→ON 전환 시 hash 갱신 → 재등록 (의향 표명 직후 backend gate 즉시 활성화)', async () => {
+        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: false });
+        expect(first.ok).toBe(true);
+        const second = await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: true });
+        expect(second).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const secondBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+        expect(secondBody.infoModeEnabled).toBe(true);
+      });
+
+      it('#1923 동일 infoModeEnabled 값 연속 호출 시 dedup (skipped=true)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: true });
+        const dedup = await registerActiveTrip({ ...SAMPLE_PAYLOAD, infoModeEnabled: true });
+        expect(dedup).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
       it('#701 in-flight dedup: 동일 페이로드 동시 호출 시 fetch는 1번만 발사된다', async () => {
         let resolveFetch: ((v: Response) => void) | null = null;
         (global.fetch as jest.Mock).mockImplementationOnce(
