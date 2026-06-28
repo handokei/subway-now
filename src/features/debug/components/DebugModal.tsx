@@ -426,6 +426,13 @@ function silentPushDiagRows(
     { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
     { uiLabel: 'activeTrip', dumpKey: 'activeTrip', value: formatTokenTail(d.activeTripToken) },
     { uiLabel: 'apnsEnv', dumpKey: 'apnsEnv', value: d.apnsEnv },
+    // #1931 — RC-5 stamp(`LAST_CONFIRMED_APNS_ENV_KEY`) self-verify. cold start 직후 register가
+    // stamp 반영 전이면 '(none)'으로 표시되어 사용자가 race window 발생 여부를 즉시 확인 가능.
+    {
+      uiLabel: 'apnsEnvStamped',
+      dumpKey: 'apnsEnvStamped',
+      value: d.apnsEnvStamped ?? '(none)',
+    },
     { uiLabel: 'task', dumpKey: 'taskRegistration', value: task },
     { uiLabel: 'route', dumpKey: 'route', value: d.hasRoute ? 'set' : '(none)' },
     { uiLabel: 'dest', dumpKey: 'destination', value: d.destinationId ?? '(none)' },

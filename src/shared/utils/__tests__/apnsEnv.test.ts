@@ -9,6 +9,8 @@ import {
   resolveApnsEnv,
   getRegisteringApnsEnv,
   setConfirmedApnsEnv,
+  warmupConfirmedApnsEnv,
+  _resetApnsEnvCacheForTesting,
 } from '../apnsEnv';
 import { LAST_CONFIRMED_APNS_ENV_KEY } from '../../constants/storageKeys';
 
@@ -50,6 +52,8 @@ describe('getRegisteringApnsEnv / setConfirmedApnsEnv (#1897)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // #1931 — module cache 격리. 매 case가 fresh warmup으로 시작.
+    _resetApnsEnvCacheForTesting();
   });
 
   afterEach(() => {
@@ -101,5 +105,72 @@ describe('getRegisteringApnsEnv / setConfirmedApnsEnv (#1897)', () => {
   it('setConfirmedApnsEnv: AsyncStorage 실패 → graceful (throw 없음)', async () => {
     (AsyncStorage.setItem as jest.Mock).mockRejectedValue(new Error('disk'));
     await expect(setConfirmedApnsEnv('sandbox')).resolves.toBeUndefined();
+  });
+});
+
+// #1931 — cold start race window 차단. warmup priming + cache 동작 검증.
+describe('warmupConfirmedApnsEnv (#1931)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetApnsEnvCacheForTesting();
+  });
+
+  it.each(['sandbox', 'production'] as const)(
+    'stamp=%s 일 때 첫 호출 → AsyncStorage read + 동일 값 반환',
+    async (stamp) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(stamp);
+      await expect(warmupConfirmedApnsEnv()).resolves.toBe(stamp);
+      expect(AsyncStorage.getItem).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('stamp 부재 → null 반환', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+    await expect(warmupConfirmedApnsEnv()).resolves.toBeNull();
+  });
+
+  it('stamp 값 오류 (legacy/오타) → null 반환', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue('bogus');
+    await expect(warmupConfirmedApnsEnv()).resolves.toBeNull();
+  });
+
+  it('AsyncStorage 실패 → graceful null 반환 (throw 없음)', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('disk'));
+    await expect(warmupConfirmedApnsEnv()).resolves.toBeNull();
+  });
+
+  it('multiple 호출 → 동일 promise cache (AsyncStorage.getItem 1회만)', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue('production');
+    const [a, b, c] = await Promise.all([
+      warmupConfirmedApnsEnv(),
+      warmupConfirmedApnsEnv(),
+      warmupConfirmedApnsEnv(),
+    ]);
+    expect(a).toBe('production');
+    expect(b).toBe('production');
+    expect(c).toBe('production');
+    expect(AsyncStorage.getItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('warmup 후 getRegisteringApnsEnv → 동일 cache 사용 (AsyncStorage 추가 read 없음)', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue('sandbox');
+    await warmupConfirmedApnsEnv();
+    await expect(getRegisteringApnsEnv()).resolves.toBe('sandbox');
+    expect(AsyncStorage.getItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('setConfirmedApnsEnv → cache invalidate + 다음 read 즉시 신규 값 반영', async () => {
+    // 1차: warmup이 'sandbox' 반환.
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue('sandbox');
+    await expect(warmupConfirmedApnsEnv()).resolves.toBe('sandbox');
+
+    // 2차: backend가 'production'으로 정정 → setConfirmedApnsEnv 호출.
+    (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+    await setConfirmedApnsEnv('production');
+
+    // cache 가 신규 값으로 교체되어 추가 AsyncStorage read 없이 production 반환.
+    await expect(warmupConfirmedApnsEnv()).resolves.toBe('production');
+    // setItem 1회 + 최초 warmup의 getItem 1회 (cache 교체로 추가 read 없음).
+    expect(AsyncStorage.getItem).toHaveBeenCalledTimes(1);
   });
 });
