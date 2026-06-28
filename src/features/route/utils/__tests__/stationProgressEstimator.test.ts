@@ -531,15 +531,17 @@ describe('estimateStationProgress', () => {
   describe('Strategy ⑤ LocklessRouteHop — lock 없는 trip 시간 적분 (#1207, Epic #1204 D1)', () => {
     it('lock null + locklessTrip 5분 경과 + 60s/hop → hop index 5 (종착으로 clamp, arc 길이 5)', () => {
       // arcLength=5, lastIdx=4. 300_000ms / 60_000ms = 5 hop → idx 5 > 4 → clamp to 4.
+      // #1922 (M2) — 5분 경과지만 lastObserved를 fresh(now-10s)로 줘서 stuck guard 통과.
       const hop60s = (_fromIdx: number) => 60_000;
+      const now = T0 + 5 * 60_000;
       const r = estimateStationProgress({
         lock: null,
         locklessTrip: { tripStartedAt: T0 },
         arcStations: ARC,
-        now: T0 + 5 * 60_000,
+        now,
         trainProgress: null,
         lockedTrainCode: null,
-        lastObserved: null,
+        lastObserved: { arcIndex: 4, observedAtMs: now - 10_000 },
         hopTimeMsForHop: hop60s,
         ...NO_ARRIVAL_INPUT,
       });
@@ -552,6 +554,7 @@ describe('estimateStationProgress', () => {
 
     it('lock null + locklessTrip + arc 충분히 길고 60s/hop → 정확한 hop index (5분에 5번째 hop)', () => {
       // 긴 arc로 종착 clamp가 아닌 정확한 hop index 검증.
+      // #1922 (M2) — lastObserved 신선해야 5분 경과해도 stuck guard 통과.
       const longArc: Station[] = Array.from({ length: 10 }, (_v, i) => ({
         id: `7-${i}`,
         name: `역${i}`,
@@ -561,14 +564,15 @@ describe('estimateStationProgress', () => {
         lng: 0,
       }));
       const hop60s = (_fromIdx: number) => 60_000;
+      const now = T0 + 5 * 60_000;
       const r = estimateStationProgress({
         lock: null,
         locklessTrip: { tripStartedAt: T0 },
         arcStations: longArc,
-        now: T0 + 5 * 60_000,
+        now,
         trainProgress: null,
         lockedTrainCode: null,
-        lastObserved: null,
+        lastObserved: { arcIndex: 5, observedAtMs: now - 10_000 },
         hopTimeMsForHop: hop60s,
         ...NO_ARRIVAL_INPUT,
       });
@@ -630,14 +634,16 @@ describe('estimateStationProgress', () => {
 
     it('lock null + locklessTrip + elapsed가 arc 전체 길이 초과 → 마지막 인덱스로 clamp', () => {
       // arcLength=5, 100 hop 경과 → idx 100을 lastIdx=4로 clamp.
+      // #1922 (M2) — lastObserved fresh로 stuck guard 통과 후 종착 clamp 검증.
+      const now = T0 + 100 * HOP_TIME_MS;
       const r = estimateStationProgress({
         lock: null,
         locklessTrip: { tripStartedAt: T0 },
         arcStations: ARC,
-        now: T0 + 100 * HOP_TIME_MS,
+        now,
         trainProgress: null,
         lockedTrainCode: null,
-        lastObserved: null,
+        lastObserved: { arcIndex: 4, observedAtMs: now - 10_000 },
         hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
@@ -699,21 +705,93 @@ describe('estimateStationProgress', () => {
     it('lock null + locklessTrip + variable hop time (환승 leg) → segment별 적분', () => {
       // arc에 환승 leg 가정. fromIdx 0,1: 60s, fromIdx 2,3: 120s.
       // 240s 경과 → 60+60+120=240 정확히 → 3 hop → idx 3.
+      // #1922 (M2) — lastObserved fresh로 stuck guard 통과 후 segment별 적분 검증.
       const variableHop = (fromIdx: number) =>
         fromIdx >= 2 ? 120_000 : 60_000;
+      const now = T0 + 240_000;
       const r = estimateStationProgress({
         lock: null,
         locklessTrip: { tripStartedAt: T0 },
         arcStations: ARC,
-        now: T0 + 240_000,
+        now,
         trainProgress: null,
         lockedTrainCode: null,
-        lastObserved: null,
+        lastObserved: { arcIndex: 2, observedAtMs: now - 10_000 },
         hopTimeMsForHop: variableHop,
         ...NO_ARRIVAL_INPUT,
       });
       expect(r?.strategy).toBe('lockless-route-hop');
       expect(r?.index).toBe(3);
+    });
+
+    describe('#1922 (M2) — 실측 신호 부재 90s+ stuck guard', () => {
+      // 환승 leg 진입 후 lastObserved 끊긴 상태로 90s+ 지속되면 시간 적분 자체를 null 반환.
+      // dump line 169~244의 estimator stuck → station-passed gate 매역 reject(61회) 회귀 차단.
+
+      it('lastObserved 없음 + tripStartedAt 기준 90s 초과 → null', () => {
+        const now = T0 + 91_000;
+        const r = estimateStationProgress({
+          lock: null,
+          locklessTrip: { tripStartedAt: T0 },
+          arcStations: ARC,
+          now,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: null, // 실측 신호 부재
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r).toBeNull();
+      });
+
+      it('lastObserved 없음 + tripStartedAt 기준 90s 이내 → 정상 lockless-route-hop', () => {
+        // lockless trip 초기 90s 안에는 시간 적분 허용 (첫 실측 신호 도착 전 grace window).
+        const now = T0 + 60_000;
+        const r = estimateStationProgress({
+          lock: null,
+          locklessTrip: { tripStartedAt: T0 },
+          arcStations: ARC,
+          now,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r?.strategy).toBe('lockless-route-hop');
+      });
+
+      it('lastObserved 있지만 90s 초과 stale → null', () => {
+        const now = T0 + 200_000;
+        const r = estimateStationProgress({
+          lock: null,
+          locklessTrip: { tripStartedAt: T0 },
+          arcStations: ARC,
+          now,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: { arcIndex: 1, observedAtMs: now - 95_000 }, // 95s 전 = stale
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r).toBeNull();
+      });
+
+      it('lastObserved fresh (90s 이내) → 정상 lockless-route-hop', () => {
+        const now = T0 + 5 * 60_000; // 5분 경과 (오래)
+        const r = estimateStationProgress({
+          lock: null,
+          locklessTrip: { tripStartedAt: T0 },
+          arcStations: ARC,
+          now,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: { arcIndex: 3, observedAtMs: now - 30_000 }, // 30s 전 = fresh
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r?.strategy).toBe('lockless-route-hop');
+      });
     });
   });
 

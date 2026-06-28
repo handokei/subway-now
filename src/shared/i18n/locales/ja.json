@@ -45,7 +45,7 @@
     "arrivalInfoTitle": "列車到着情報",
     "loading": "読み込み中...",
     "mockNotice": "リアルタイムデータが取得できないため予想データを表示しています",
-    "scheduleNotice": "ダイヤに基づく表示 · リアルタイム情報を取得中",
+    "scheduleNotice": "ダイヤに基づく表示 · リアルタイム応答なし",
     "closedNotice": "運行時間外です",
     "noArrivalInfo": "到着情報なし",
     "notNearStationTitle": "地下鉄駅の近くではありません",

@@ -48,7 +48,7 @@ import { PermissionChangeBanner } from '../shared/ui/PermissionChangeBanner';
 import { useLocationPermissionWatcher } from '../shared/hooks/useLocationPermissionWatcher';
 import { SourceBadge } from '../features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../features/alarm/utils/notificationSource';
-import { ArrivalSourceNotice } from '../features/arrival/components/ArrivalSourceNotice';
+import { ArrivalSourceNotice, shouldHideArrivalEta } from '../features/arrival/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
 import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushHealthCheck';
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
@@ -203,7 +203,7 @@ export default function HomeScreen() {
   // #1677 — silent push 60s+ 미수신 감지. FG 시 backendSsotAccepts 강제 false → device tier fallback.
   // 신규 폴링 없음 — 기존 arrival/position 30s cycle 재사용.
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, backendSsotCurrentStationId, environment } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -571,6 +571,8 @@ export default function HomeScreen() {
     trainProgressing,
     // #1817 — 시간 적분 estimator 활성 시 fusion/GPS mismatch로 destination/transfer early 조기 발사 차단.
     estimatorIsTimeIntegration,
+    // #1922 (M1+M3) — station-passed hop window 동적 확장 입력(transfer leg estimator stuck 대응).
+    currentHopStrategy: estimatorStrategy,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
@@ -1513,7 +1515,8 @@ export default function HomeScreen() {
                   <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
                 )}
                 <ArrivalSourceNotice arrival={arrival} />
-                {arrival && arrival.source !== 'closed' && (
+                {/* #1922 — MOCK_ARRIVALS(source 미지정 + isMock=true)는 데모용 정적값이라 ETA 자체 비공개. */}
+                {arrival && !shouldHideArrivalEta(arrival) && (
                   <>
                     <ArrivalDirectionGroup
                       label={t('arrival.upbound')}

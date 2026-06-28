@@ -12,7 +12,10 @@ import type { Station } from '../../../shared/types/station';
 import type { TrainProgressResult } from './trackTrainProgress';
 import { projectArrivalEtaStation } from '../../arrival/utils/arrivalEtaProjection';
 import { hopsElapsedFrom } from './hopTime';
-import { ESTIMATOR_STUCK_TIMEOUT_MS } from '../../../shared/constants/realtime';
+import {
+  ESTIMATOR_STUCK_TIMEOUT_MS,
+  LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS,
+} from '../../../shared/constants/realtime';
 
 /**
  * ADR-008 — 탑승 진행 추정(BoardingLock 활성 trip 중 현재역) 합성기.
@@ -327,6 +330,7 @@ function tryLocklessRouteHop(
   tripStartedAt: number,
   now: number,
   hopTimeMsForHop: (fromIdx: number) => number,
+  lastObserved: { arcIndex: number; observedAtMs: number } | null,
 ): StationProgressEstimate | null {
   // 상위 estimateStationProgress가 arcStations.length === 0을 미리 차단하므로 본 가드는
   // 도달 불가하지만 방어적 유지 — 직접 호출자가 추가될 때 안전.
@@ -340,6 +344,19 @@ function tryLocklessRouteHop(
   if (arcStations.length === 1) return null;
   const elapsedMs = now - tripStartedAt;
   if (elapsedMs < 0) return null;
+
+  // #1922 (M2) — 실측 신호 부재가 LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS(90s) 이상 지속되면
+  // 시간 적분 자체를 null 반환. estimator stale 값이 silent forward되어 station-passed gate가
+  // 매역 reject(dump line 169~244, 61회)되는 회귀 차단.
+  //
+  // 신선도 source 우선순위:
+  //   1) lastObserved.observedAtMs — LivePosition 직전 관측. 있으면 그 시점 기준 age 계산.
+  //   2) tripStartedAt — lastObserved 없으면 trip 시작 시점 기준 age 계산 (lockless trip 초기 90s 허용).
+  //
+  // 임계 초과 시 null → useFusedNearestStation cascade가 fusion fallback(실측 idx)을 forward.
+  const stalenessAnchorMs = lastObserved?.observedAtMs ?? tripStartedAt;
+  if (now - stalenessAnchorMs > LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS) return null;
+
   const hops = hopsElapsedFrom(arcStations.length, 0, elapsedMs, hopTimeMsForHop);
   const lastIdx = arcStations.length - 1;
   const idx = Math.min(hops, lastIdx);
@@ -371,13 +388,20 @@ export function arcIndexOfStation(
 export function estimateStationProgress(
   input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
-  const { lock, locklessTrip, arcStations, now, hopTimeMsForHop } = input;
+  const { lock, locklessTrip, arcStations, now, hopTimeMsForHop, lastObserved } = input;
   if (arcStations.length === 0) return null;
   // Lockless 분기 (#1207): lock이 null이고 locklessTrip 컨텍스트가 제공되면 LocklessRouteHop으로 적분.
   // locklessTrip 미제공이면 기존 동작 유지(null) — 호출자가 명시적으로 lockless 활성을 옵트인.
   if (!lock) {
     if (locklessTrip) {
-      return tryLocklessRouteHop(arcStations, locklessTrip.tripStartedAt, now, hopTimeMsForHop);
+      // #1922 (M2) — lastObserved를 stuck guard 신선도 source로 전달.
+      return tryLocklessRouteHop(
+        arcStations,
+        locklessTrip.tripStartedAt,
+        now,
+        hopTimeMsForHop,
+        lastObserved,
+      );
     }
     return null;
   }

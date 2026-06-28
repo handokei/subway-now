@@ -1,28 +1,98 @@
+import type { LineNumber } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
-import { getFirstLeg, getStationsOnLine } from '../../../shared/utils/stationRoute';
+import { getFirstLeg, getStationsOnLine, getStationById } from '../../../shared/utils/stationRoute';
+import { isClosedLoopMainStation, shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 
 export type TripDirection = 'up' | 'down';
 
 /**
- * 현재 위치 station id와 경로의 첫 구간을 비교해 진행 방향(상행/하행)을 유도한다.
+ * #1922 — currentStationId의 노선에 맞는 leg의 line + endName을 산출한다.
+ *
+ * 기본은 `getFirstLeg`(첫 leg)이지만, 환승 후 leg에 진입하면 current station은 다른 line이 된다.
+ * 본 함수가 current 노선에 일치하는 leg를 선택해 환승 후에도 direction 추론을 가능하게 한다.
+ *
+ * 산출 규칙:
+ *   - direct: 항상 첫 leg(=유일 leg).
+ *   - transfer: current.line === fromLine → 첫 leg(fromLine, transferName).
+ *               current.line === toLine → 두 번째 leg(toLine, destinationName).
+ *               그 외 → 첫 leg fallback(기존 동작 유지).
+ *   - multi-transfer: 첫 leg부터 순회해 current.line이 일치하는 leg를 채택. fromLine은
+ *     transfers[i].fromLine, endName은 transfers[i].transferName. 마지막 leg는 toLine,
+ *     endName=destinationName.
+ */
+function pickLegForCurrentLine(
+  route: NonNullable<Route>,
+  destinationName: string,
+  currentLine: LineNumber,
+): { line: LineNumber; endName: string } {
+  if (route.type === 'direct') {
+    return { line: route.line, endName: destinationName };
+  }
+  if (route.type === 'transfer') {
+    if (currentLine === route.toLine) {
+      return { line: route.toLine, endName: destinationName };
+    }
+    return { line: route.fromLine, endName: route.transferName };
+  }
+  // multi-transfer
+  const { transfers } = route;
+  for (let i = 0; i < transfers.length; i++) {
+    if (currentLine === transfers[i].fromLine) {
+      return { line: transfers[i].fromLine, endName: transfers[i].transferName };
+    }
+  }
+  const last = transfers[transfers.length - 1];
+  if (currentLine === last.toLine) {
+    return { line: last.toLine, endName: destinationName };
+  }
+  // current가 어느 leg에도 없으면 첫 leg fallback (기존 동작).
+  return getFirstLeg(route, destinationName);
+}
+
+/**
+ * 현재 위치 station id와 경로의 활성 leg(=current.line에 일치하는 leg)을 비교해 진행 방향(상행/하행)을 유도한다.
  *
  * 노선별 station id 정렬상의 index를 기준으로 판정:
  *   - 다음 waypoint index > 현재 station index → 'down'
  *   - 그 반대 → 'up'
- *   - 현재가 다른 노선이거나 인덱스 동일 → null (호출자는 양방향 합산으로 폴백)
+ *   - 현재가 leg line에 없거나 인덱스 동일 → null (호출자는 양방향 합산으로 폴백)
  *
- * 환상선(2호선 등)은 index 단방향성이 깨질 수 있으므로 정확하지 않을 수 있다.
- * 정확한 방향 정보를 강제할 수 없는 경계 케이스는 null로 안전 폴백한다.
+ * #1922 — 2호선 본선처럼 closed loop(환상선)인 경우, 단순 index 비교로는 wraparound 방향을
+ * 잘못 판정할 수 있다. 양 끝점이 모두 closed loop 본선이면 `shortestLinePathIndices`로 wraparound
+ * 짧은 쪽 경로를 산출해 첫 step의 방향(idx 증가/감소)으로 'up'/'down'을 결정한다.
+ *
+ * #1922 — 환승 후 leg(current.line이 route 두 번째 이후 leg)에서도 direction을 결정할 수 있다.
+ * 기존엔 첫 leg(`getFirstLeg`)만 봐서 환승 후엔 current.id가 첫 leg line에 없어 null이었다.
+ * `pickLegForCurrentLine`이 current.line과 일치하는 leg을 선택해 환상선 leg에서도 direction을 산출.
+ *
+ * 정확한 방향 정보를 강제할 수 없는 경계 케이스(다른 노선/같은 idx)는 null로 안전 폴백한다.
  */
 export function resolveTripDirection(
   route: NonNullable<Route>,
   destinationName: string,
   currentStationId: string,
 ): TripDirection | null {
-  const { line, endName } = getFirstLeg(route, destinationName);
+  // #1922 — current.line에 맞는 leg을 선택. current가 stations.json에 없으면 기존 first-leg fallback.
+  const currentStation = getStationById(currentStationId);
+  const { line, endName } = currentStation
+    ? pickLegForCurrentLine(route, destinationName, currentStation.line)
+    : getFirstLeg(route, destinationName);
   const lineStations = getStationsOnLine(line);
   const currIdx = lineStations.findIndex((s) => s.id === currentStationId);
   const nextIdx = lineStations.findIndex((s) => s.name === endName);
   if (currIdx < 0 || nextIdx < 0 || currIdx === nextIdx) return null;
+
+  // #1922 — closed loop 본선 양 끝점: wraparound 짧은 쪽 path의 첫 step 방향으로 결정.
+  // 2호선 강변 → 잠실나루 같은 short forward path는 path[1] > currIdx → 'down'(외선 외향).
+  // 신촌 → 시청 같은 wraparound는 path[1] < currIdx → 'up'(내선 외향).
+  const currId = lineStations[currIdx].id;
+  const nextId = lineStations[nextIdx].id;
+  if (isClosedLoopMainStation(line, currId) && isClosedLoopMainStation(line, nextId)) {
+    const path = shortestLinePathIndices(lineStations, currIdx, nextIdx, line);
+    // shortestLinePathIndices invariant: currIdx !== nextIdx → path.length >= 2
+    const firstStepIdx = path[1];
+    return firstStepIdx > currIdx ? 'down' : 'up';
+  }
+
   return nextIdx > currIdx ? 'down' : 'up';
 }
