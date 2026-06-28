@@ -2161,6 +2161,34 @@ describe('formatFusionDebugLine', () => {
     expect(line).not.toContain('d=');
   });
 
+  it('#1934 G3 + #1936 G4 candidate-env reject: cascade/candidate env 노출', () => {
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-env',
+      stationName: '강남',
+      line: '2',
+      cascadeEnvironment: 'underground',
+      candidateEnvironment: 'surface',
+    });
+    expect(line).toContain('reject:candidate-env');
+    expect(line).toContain('강남(2)');
+    expect(line).toContain('cascade=underground');
+    expect(line).toContain('candidate=surface');
+  });
+
+  it('#1934 G3 + #1936 G4 candidate-env reject: 옵셔널 env 누락 시 "-" fallback', () => {
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-env',
+      line: '2',
+    });
+    expect(line).toContain('reject:candidate-env');
+    expect(line).toContain('cascade=-');
+    expect(line).toContain('candidate=-');
+  });
+
   it('#1902 candidate-distance reject: 옵셔널 필드 누락 시 "-" fallback', () => {
     // type상 optional이지만 useFusedNearestStation는 항상 채워 호출. defensive fallback 분기 커버.
     const line = formatCandidateRejectLine({

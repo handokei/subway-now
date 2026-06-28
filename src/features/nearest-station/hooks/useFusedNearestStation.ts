@@ -42,6 +42,7 @@ import {
   logFusionCandidateLineReject,
   logFusionPickerTier,
   logSuppressedLocklessForwardOnly,
+  type FusionPickerTier,
 } from '../../alarm/utils/alarmLog';
 import { haversine } from '../../../shared/utils/haversine';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
@@ -53,7 +54,16 @@ import {
 import { surfaceSSOTConsensus } from '../utils/surfaceSSotConsensus';
 import { undergroundSSOTConsensus } from '../utils/undergroundSSotConsensus';
 import { inferEnvironment, type Environment, type InferEnvironmentResult } from '../utils/inferEnvironment';
-import { recordEnvironmentTransition } from '../../../shared/infra/monitoring/breadcrumb';
+import {
+  isCandidateEnvMismatch,
+  pickFusionTier,
+  type FusionSignals,
+  type FusionTierName,
+} from '../utils/pickFusionTier';
+import {
+  recordEnvironmentTransition,
+  recordFusionTierAdopted,
+} from '../../../shared/infra/monitoring/breadcrumb';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
   arcIndexOfStation,
@@ -78,9 +88,11 @@ import {
   GPS_DERIVED_FIX_MAX_AGE_MS,
   GPS_DERIVED_ROUTE_MATCH_MAX_KM,
   GPS_FALLBACK_STALE_MAX_AGE_MS,
+  GPS_FALLBACK_STALE_UNDERGROUND_MAX_AGE_MS,
   LOCK_GPS_DRIFT_THRESHOLD_M,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
+  MAX_FUSION_DELTA_UNDERGROUND_KM,
   MAX_FUSION_DISTANCE_KM,
   PICKER_HOP_ANOMALY_THRESHOLD,
   PICKER_STUCK_MAX_AGE_MS,
@@ -108,6 +120,25 @@ import {
  * 호출 비용은 모듈 스코프 캐시(arrivalCache/positionCache)가 station name·line 단위로 dedup.
  */
 const FUSION_CANDIDATE_LIMIT = MAX_ACTIVE_LINES;
+
+/**
+ * #1936 (Epic #1927 G4) — `pickFusionTier` 산출 `FusionTierName`을 기존 alarmLog
+ * `FusionPickerTier` 라벨로 매핑. dashboard/Sentry/alarmLog query backward-compat 보존.
+ *
+ * 신규 라벨 추가 시 본 표만 갱신 — caller가 직접 string 변환 X (lint으로 단일 SSOT 강제).
+ */
+const LEGACY_TIER_LABEL_MAP: Record<FusionTierName, FusionPickerTier> = {
+  'position-train-lock': 'positionTrainBoardingLockMatch',
+  'gps-fast-path': 'gpsDerivedFastPath',
+  'arvl-arrived-match': 'arvlCdArrivedMatch',
+  'backend-ssot': 'backendSsotAccepts',
+  wifi: 'wifiStationResolved',
+  'position-train': 'positionTrain',
+  fused: 'fused',
+  'detection-verdict': 'detectionVerdictAccepts',
+  route: 'routeResult',
+  'gps-fallback': 'gpsFallback',
+};
 
 interface UseFusedNearestStationReturn {
   /** GPS+arrival+position fusion으로 결정된 현재역. */
@@ -243,6 +274,12 @@ interface UseFusedNearestStationReturn {
    * undefined이면 힌트 없음. DebugModal environment 라인에 함께 노출.
    */
   environmentHintReason: InferEnvironmentResult['hintReason'];
+  /**
+   * #1936 (Epic #1927 G4) — cascade picker가 채택한 tier 이름.
+   * DebugModal cascade tier 표시 + Sentry breadcrumb `fusion.tier_adopted` payload SSOT.
+   * 1주 tier 분포(어떤 tier가 cascade 결정에 기여) acceptance 측정용.
+   */
+  fusionTierAdopted: FusionTierName;
   /** #1418 — 지상 Tier 1 SSOT(GPS+Arrival) 합의 활성 여부. */
   surfaceSSOTActive: boolean;
   /** #1418 — 지하 Tier 1 SSOT(WiFi/Position-Train + Arrival) 합의 활성 여부. */
@@ -880,6 +917,12 @@ export function useFusedNearestStation(
   const gpsFallbackStale =
     typeof gps.lastFixAtMs === 'number' &&
     nowForGpsFallback - gps.lastFixAtMs > GPS_FALLBACK_STALE_MAX_AGE_MS;
+  // #1936 (Epic #1927 G4) — underground 분기 stricter stale 게이트(≤15s).
+  // 지하에서 GPS 좌표가 stale일 가능성이 높아 cascade tier 10 채택 빈도를 빠르게 차단.
+  // pickFusionTier가 environment==='underground'일 때 본 변수를 read.
+  const gpsFallbackStaleUnderground =
+    typeof gps.lastFixAtMs === 'number' &&
+    nowForGpsFallback - gps.lastFixAtMs > GPS_FALLBACK_STALE_UNDERGROUND_MAX_AGE_MS;
 
   // #662: BoardingLock 활성 시 fused도 lock.boardingLine과 다른 노선이면 강등 — positionTrain과
   // 동일 정신. 환승역에서 GPS 후보가 두 노선 모두 잡아 fused가 옆 노선으로 fusion되는 케이스 방어.
@@ -890,6 +933,17 @@ export function useFusedNearestStation(
   const fusedPasses =
     fused != null &&
     passesFusionDistanceGate({ ...gateOpts, candidate: fused.result }) &&
+    (!boardingLock || fused.result.station.line === boardingLock.boardingLine) &&
+    !(fused.confidence === 'gps-only' && gpsFallbackStale);
+  // #1936 (Epic #1927 G4) — underground 분기 stricter fusion 거리 delta 게이트(0.05km).
+  // 지하 GPS drift candidates 함정 차단 — pickFusionTier가 environment==='underground'일 때 본 변수를 read.
+  const fusedPassesStrict =
+    fused != null &&
+    passesFusionDistanceGate({
+      ...gateOpts,
+      candidate: fused.result,
+      maxDeltaKm: MAX_FUSION_DELTA_UNDERGROUND_KM,
+    }) &&
     (!boardingLock || fused.result.station.line === boardingLock.boardingLine) &&
     !(fused.confidence === 'gps-only' && gpsFallbackStale);
   // routeResult는 route arc(단일 노선 segment) 위 진행도라 옆 노선 station이 들어올 수 없음 → 가드 불필요.
@@ -1240,6 +1294,11 @@ export function useFusedNearestStation(
   const gpsFallbackResult: NearestStationResult | null = gpsFallbackStale
     ? null
     : gps.liveResult;
+  // #1936 (Epic #1927 G4) — underground 분기 strict GPS fallback (stale ≤15s).
+  // pickFusionTier가 environment==='underground'일 때 본 변수를 read해 빠른 stale GPS 거부 적용.
+  const gpsFallbackResultStrict: NearestStationResult | null = gpsFallbackStaleUnderground
+    ? null
+    : gps.liveResult;
 
   // #1747 — cascade picker stuck: 같은 station 5분 max 보유 추적.
   // 같은 stationId가 이 ref에 기록된 시각으로부터 PICKER_STUCK_MAX_AGE_MS 초과 시:
@@ -1318,118 +1377,47 @@ export function useFusedNearestStation(
     });
   }
 
-  let result: NearestStationResult | null;
-  let confidence: FusionConfidence;
-  let source: FusionSource;
-  if (positionTrainBoardingLockMatch && !positionTrainDriftBlocked) {
-    // #1646 — 사용자 명시 의향 + 지하 + lockMatch 3-of-3 합의 시 positionTrain 1순위.
-    // backend SSoT mirror lag(10-30s)에 의한 현재역 1역 뒤쳐짐 회귀 차단.
-    // confidence/source는 #584 PR D2와 동일한 'boarding-lock' (lockMatch 매칭 경로).
-    // #1896 — GPS drift > 1km 시 본 분기 미진입 → cascade fallback.
-    result = positionTrainResult!;
-    confidence = 'boarding-lock';
-    source = 'boarding-lock';
-  } else if (gpsDerivedFastPath) {
-    // #1657 — 지상 + GPS 신선 + 노선 정합 4-gate 합의 시 GPS-derived station 1순위.
-    // backend SSoT mirror lag(10-30s)를 지상 open-sky GPS 실시간 신호로 우회한다.
-    // candidates[0]는 이미 boardingLine + 100m 게이트를 통과 — gps-only와 달리 노선 정합 강화.
-    result = gpsTopCandidate!;
-    confidence = 'gps-only';
-    source = 'gps';
-  } else if (arvlCdArrivedMatch && !arvlCdDriftBlocked) {
-    // #1668 — ARRIVED + trainCode 매칭 + 신선 3-of-3 합의 시 arrival-ssot 1순위.
-    // Seoul API 직접 도착 확정 신호 — backend SSoT mirror 10-30s lag 우회.
-    // boardingLock.boardingLine 일치 + 거리 기준 가장 가까운 candidates 슬롯 station 채택.
-    // confidence='boarding-lock' (사용자 탭한 열차가 도착 확정된 가장 강한 신호).
-    // #1896 — GPS drift > 1km 시 본 분기 미진입 → cascade fallback.
-    result = arvlCdArrivedMatch;
-    confidence = 'boarding-lock';
-    source = 'boarding-lock';
-  } else if (backendSsotAccepts) {
-    // #1568 (T8b) — backend SSoT 권위 mirror. backend advance 게이트가
-    // ADR-017 6단(seed/repeat/motion-stop/cross-validation 등)을 이미 통과한 결과이므로
-    // device-side cascade tier보다 신뢰도가 높다. lock 활성/lockless 모두 동일 우선순위.
-    // #1646 — 3-of-3 합의(lock+지하+lockMatch) 시 positionTrain에 양보 (위 분기).
-    // #1657 — 지상 GPS 신선 합의 시 gpsDerivedFastPath에 양보 (위 분기).
-    // #1668 — ARRIVED+trainCode 합의 시 arvlCdArrivedMatch에 양보 (위 분기).
-    result = { station: ssotStation!, distanceKm: 0 };
-    confidence = 'backend-ssot';
-    source = 'backend-ssot';
-  } else if (wifiStationResolved) {
-    result = wifiStationResolved;
-    confidence = 'wifi-ssid';
-    source = 'wifi-ssid';
-  } else if (positionTrainResult) {
-    result = positionTrainResult;
-    // #584 PR D2: position-train의 trainNo가 BoardingLock.trainCode와 일치하면 'boarding-lock'으로 승격.
-    // 사용자가 탭한 바로 그 열차가 실시간 위치 API에 잡힌 상태 — 최고 신뢰 신호.
-    // positionTrainResult가 non-null이면 trainProgress도 non-null (line 219 guard).
-    //
-    // #1891 (paradigm Phase 1 보강) — RC-1 autoLock self-fire 차단:
-    //   `boardingLock != null` gate 추가. 사용자 의향 표명(boardingPrompt 응답 / BoardingTrainList
-    //   직접 탭) 없이 lockedTrainCode가 stale로 남아 있을 때 'boarding-lock' source 승격을 금지.
-    //   lock=null이면 'position-train'으로 유지 → station-passed/transfer 알림의 src='boarding-lock'
-    //   자기 발화 chain을 끊는다. parent #1745 acceptance: `autoLock_fired_count = 0`.
-    const lockMatch =
-      boardingLock != null &&
-      lockedTrainCode != null &&
-      trainProgress!.trainNo === lockedTrainCode;
-    confidence = lockMatch ? 'boarding-lock' : 'position-train';
-    source = lockMatch ? 'boarding-lock' : 'position-train';
-  } else if (fused && fusedPasses) {
-    result = fused.result;
-    confidence = fused.confidence;
-    source = fused.source;
-  } else if (detectionVerdictAccepts) {
-    // #1513 — fusedPasses 거리 게이트가 거부했어도 multi-signal verdict 합의로 fused 후보 채택.
-    // 지하 GPS drop 환경에서 currentStation 확정 경로. 우선순위: arrival-confirmed > 본 슬롯 > routeProgress > GPS.
-    result = fused!.result;
-    confidence = 'detection-fused';
-    source = fused!.source;
-  } else if (routeResult && routePasses) {
-    result = routeResult;
-    confidence = 'route-progress';
-    source = 'route-progress';
-  } else {
-    // #1486 (ADR-015 §2) — sticky:locked fire 권한 영구 박탈.
-    // useNearestStation은 sticky lock 활성 시 exposed.result를 sticky station으로 override한다
-    // (useNearestStation:487-504). 그대로 gps.result를 사용하면 sticky station이 fire path
-    // cascade fallback에 들어가 station-passed/imminent fire의 nearestStation 입력이 된다.
-    // gps.liveResult는 sticky override 없는 GPS 최근접 결과 — sticky:locked가 fire path 진입 차단.
-    // 표시 채널은 gps.stickyDisplayOnly로 별 노출(아래 return).
-    // #1723 — stale GPS 거부 + 환승역 line 보정 (gpsFallbackResult helper).
-    //   gps.liveResult를 직접 쓰지 않고 정제된 helper를 사용해 stale fix stuck + cross-line drift 회귀 차단.
-    result = gpsFallbackResult;
-    confidence = 'gps-only';
-    source = 'gps';
-  }
+  // #1936 (Epic #1927 G4) — cascade tier picker 추출.
+  //
+  // 기존: 11분기 if/else가 hook 본체에 inline. environment 변수가 caller pre-computed gate에만
+  //   반영되어 cascade picker가 환경 변수를 *직접* read하지 않는 SSOT 우회 회귀.
+  // 변경: `pickFusionTier(environment, signals)` 단일 pure function 추출. environment + 11 signal
+  //   pre-compute를 데이터 주도로 평가해 tier 채택. underground/surface tier 7/10 strict 변형 적용.
+  // backward-compat: tier 결정 결과는 surface/mixed/unknown 환경에서는 inline cascade와 동일 (strict
+  //   변형 미적용 — fusedPasses, gpsFallbackResult 기존 동작 보존).
+  const fusionSignals: FusionSignals = {
+    positionTrainBoardingLockMatch,
+    positionTrainDriftBlocked,
+    gpsDerivedFastPath,
+    gpsTopCandidate,
+    arvlCdArrivedMatch,
+    arvlCdDriftBlocked,
+    backendSsotAccepts,
+    ssotStation,
+    wifiStationResolved,
+    positionTrainResult,
+    trainProgressTrainNo: trainProgress?.trainNo ?? null,
+    fused,
+    fusedPasses,
+    fusedPassesStrict,
+    detectionVerdictAccepts,
+    routeResult,
+    routePasses,
+    gpsFallbackResult,
+    gpsFallbackResultStrict,
+    hasBoardingLock: boardingLock != null,
+    lockedTrainCode,
+  };
+  const cascadeTierPick = pickFusionTier(cascadeEnvironment, fusionSignals);
+  let result: NearestStationResult | null = cascadeTierPick.result;
+  let confidence: FusionConfidence = cascadeTierPick.confidence;
+  let source: FusionSource = cascadeTierPick.source;
 
   // #1693 — cascade picker가 채택한 tier를 alarmLog에 적재 (측정 보강 3차).
   // dedup 1s — 같은 tier 연속 폴링 cycle에서 1건만 적재.
-  // PR #1650/#1662/#1674 효과(지하 positionTrain/GPS-derived/arvlCd tier 채택률) 검증.
-  // #1896 — drift-blocked 케이스는 실제 채택 tier(backendSsot 등)로 기록됨 — drift 자체는
-  //   fusionDebugBuffer boarding-lock-drift entry로 별도 측정.
-  if (positionTrainBoardingLockMatch && !positionTrainDriftBlocked) {
-    logFusionPickerTier('positionTrainBoardingLockMatch');
-  } else if (gpsDerivedFastPath) {
-    logFusionPickerTier('gpsDerivedFastPath');
-  } else if (arvlCdArrivedMatch && !arvlCdDriftBlocked) {
-    logFusionPickerTier('arvlCdArrivedMatch');
-  } else if (backendSsotAccepts) {
-    logFusionPickerTier('backendSsotAccepts');
-  } else if (wifiStationResolved) {
-    logFusionPickerTier('wifiStationResolved');
-  } else if (positionTrainResult) {
-    logFusionPickerTier('positionTrain');
-  } else if (fused && fusedPasses) {
-    logFusionPickerTier('fused');
-  } else if (detectionVerdictAccepts) {
-    logFusionPickerTier('detectionVerdictAccepts');
-  } else if (routeResult && routePasses) {
-    logFusionPickerTier('routeResult');
-  } else {
-    logFusionPickerTier('gpsFallback');
-  }
+  // #1936 — FusionTierName(pickFusionTier 산출) → 기존 FusionPickerTier 라벨 매핑.
+  //   기존 dashboard/Sentry/alarmLog query backward-compat 유지.
+  logFusionPickerTier(LEGACY_TIER_LABEL_MAP[cascadeTierPick.tier]);
 
   // #1723 — 환승역 line drift 보정 (post-cascade + 강등 후 fallback 공통).
   //
@@ -1498,6 +1486,47 @@ export function useFusedNearestStation(
     recordEnvironmentTransition(prevEnvironmentRef.current, environment);
     prevEnvironmentRef.current = environment;
   }, [environment]);
+
+  // #1934 (Epic #1927 G3) option B + #1936 G4 통합 — candidate env vote reject counter.
+  //
+  // 후보 station.environment가 cascade environment SSOT와 불일치 시 candidateRejectBuffer에
+  // 'candidate-env' reason으로 카운트만 push. filter는 #1950 consensus 게이트가 처리하므로
+  // 본 카운터는 진단 가시화 전용 — DebugModal '(N)' 분포 + Sentry breadcrumb로 cascade 회귀 진단.
+  //
+  // dedup: 매 candidates 갱신 cycle에 한 번만 push (useEffect deps에 [candidates, environment]).
+  // environment === 'unknown' 또는 candidate.station.environment 미정의/mixed인 entry는 보수적
+  // 무시 — `isCandidateEnvMismatch`가 false 반환.
+  useEffect(() => {
+    if (candidates.length === 0) return;
+    for (const cand of candidates) {
+      if (!isCandidateEnvMismatch(environment, cand)) continue;
+      pushCandidateRejectEntry({
+        kind: 'candidate-reject',
+        ts: Date.now(),
+        reason: 'candidate-env',
+        stationName: cand.station.name,
+        line: cand.station.line,
+        cascadeEnvironment: environment,
+        candidateEnvironment: cand.station.environment,
+      });
+    }
+  }, [candidates, environment]);
+
+  // #1936 (Epic #1927 G4) — cascade tier 채택 Sentry breadcrumb. delta-only emit.
+  // dedup은 recordFusionTierAdopted 내부에서 처리(prev === next 시 no-op).
+  // 1주 tier 분포(어떤 tier가 cascade 결정에 가장 많이 기여) 측정용.
+  const prevFusionTierRef = useRef<FusionTierName | null>(null);
+  const adoptedTier = cascadeTierPick.tier;
+  const adoptedDistanceKm = cascadeTierPick.result?.distanceKm ?? null;
+  useEffect(() => {
+    recordFusionTierAdopted(
+      prevFusionTierRef.current,
+      adoptedTier,
+      environment,
+      adoptedDistanceKm,
+    );
+    prevFusionTierRef.current = adoptedTier;
+  }, [adoptedTier, environment, adoptedDistanceKm]);
 
   // ADR-008 stationProgressEstimator — 시간 적분 → 관측 구동 전환 (#739).
   // arc상 추정 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
@@ -2127,6 +2156,8 @@ export function useFusedNearestStation(
     trainProgressing,
     environment,
     environmentHintReason: environmentResult.hintReason,
+    // #1936 — cascade picker가 채택한 tier 이름 (DebugModal + Sentry tier 분포 측정 SSOT).
+    fusionTierAdopted: adoptedTier,
     surfaceSSOTActive: surfaceSSOT !== null,
     undergroundSSOTActive: undergroundSSOT !== null,
     // #1421 — DebugModal Auto-lock 측정 섹션이 SSOT 객체를 inferAutoLockCandidate에 직접 전달.
