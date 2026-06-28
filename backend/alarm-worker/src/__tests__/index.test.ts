@@ -4176,6 +4176,22 @@ describe('GET /admin/push-ack-stats (#1614 Phase D)', () => {
     const body = (await res.json()) as { received: number };
     expect(body.received).toBe(0);
   });
+
+  // #1928 F-E4 — kv.list / kv.get / JSON parse throw 시 1101 HTML 대신 503 JSON 반환.
+  it('returns 503 JSON when computePushAckStats throws (#1928 F-E4)', async () => {
+    const env = makePushAckEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const pendingKv = env.PENDING_PUSHES as unknown as InMemoryKV;
+    // kv.list가 throw하도록 override → computePushAckStats 내부 cascade 실패.
+    pendingKv.list = async () => {
+      throw new Error('KV list 503 simulated');
+    };
+
+    const res = await getAdminPushAckStats(env, 'Bearer secret');
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('push_ack_stats_failed');
+  });
 });
 
 // ─── GET /admin/alarm-log-stats (#1621 Phase A) ───────────────────────────────

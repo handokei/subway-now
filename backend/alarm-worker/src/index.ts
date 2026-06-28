@@ -306,8 +306,16 @@ app.get('/admin/push-ack-stats', async (c) => {
   const kv = c.env.PENDING_PUSHES;
   if (!kv) return c.json({ error: 'pending_pushes_unavailable' }, 503);
   const limit = parseQueryNumber(c.req.query('limit'));
-  const stats = await computePushAckStats(kv, Date.now(), limit);
-  return c.json(stats);
+  // #1928 F-E4 — kv.list / kv.get / JSON parse throw 시 Hono error handler가
+  // Cloudflare 1101 HTML response 반환하던 회귀 차단. 503 JSON으로 호출자 graceful
+  // 처리 보장. observability/metrics handler(index.ts:1129~) 패턴과 정합.
+  try {
+    const stats = await computePushAckStats(kv, Date.now(), limit);
+    return c.json(stats);
+  } catch (err) {
+    captureBackendException(err, { path: 'admin/push-ack-stats' });
+    return c.json({ error: 'push_ack_stats_failed' }, 503);
+  }
 });
 
 /**

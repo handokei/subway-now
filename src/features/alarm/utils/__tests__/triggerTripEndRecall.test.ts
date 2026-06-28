@@ -184,6 +184,24 @@ describe('triggerTripEndRecall', () => {
     expect(mockComputeAndUploadTripRecall).not.toHaveBeenCalled();
   });
 
+  // #1928 F-E1 — tripStart 부재 fallback. 9h+ force-end / silent push trip-ended
+  // 단독 경로에서 alarmLog 윈도우는 살아있을 수 있으므로 24h backstop forward 발사.
+  it('#1928 F-E1 — tripStart 부재 시 24h backstop forward 발사 (alarmLog 회복 critical path)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(null);
+    setStorage({ [APNS_TOKEN_KEY]: 'apns-token-xyz' });
+    mockGetAlarmLog.mockResolvedValue([{ ts: 1, source: 'fg' }]);
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(2_000_000_000_000);
+
+    const result = await triggerTripEndRecall();
+
+    expect(result).toEqual({ uploaded: false, skipped: 'no-trip-start' });
+    expect(mockForwardTripTelemetry).toHaveBeenCalledTimes(1);
+    const payload = mockForwardTripTelemetry.mock.calls[0][0];
+    // 24h backstop = now - 24h
+    expect(payload.tripStartedAt).toBe(2_000_000_000_000 - 24 * 60 * 60 * 1000);
+    nowSpy.mockRestore();
+  });
+
   it('idempotency — 같은 tripStart 로 이미 upload 됐으면 skip (duplicate)', async () => {
     mockGetTripStartedAt.mockResolvedValue(100);
     setStorage({ [LAST_UPLOADED_RECALL_TRIP_START_KEY]: '100' });
@@ -236,6 +254,29 @@ describe('triggerTripEndRecall', () => {
     const result = await triggerTripEndRecall();
 
     expect(result).toEqual({ uploaded: false, skipped: 'route-arc-failed' });
+  });
+
+  // #1928 F-E2 — ROUTE_KEY race(HomeScreen.tsx:464 parallel removeItem) fallback.
+  // recall은 skip이 맞지만 alarmLog forward는 R2 dashboard 회복 critical path.
+  it('#1928 F-E2 — routeStops null + token 존재 시 forward(tripStart) 호출 (recall skip / forward 발사)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: null, // ROUTE_KEY race 시뮬레이션
+      [DESTINATION_KEY]: DEST_JSON,
+      [APNS_TOKEN_KEY]: 'apns-token-xyz',
+    });
+    mockGetAlarmLog.mockResolvedValue([{ ts: 1, source: 'fg' }]);
+
+    const result = await triggerTripEndRecall();
+
+    expect(result).toEqual({ uploaded: false, skipped: 'route-arc-failed' });
+    // recall은 skip
+    expect(mockComputeAndUploadTripRecall).not.toHaveBeenCalled();
+    // forward는 발사 (tripStart=100 그대로)
+    expect(mockForwardTripTelemetry).toHaveBeenCalledTimes(1);
+    expect(mockForwardTripTelemetry.mock.calls[0][0].tripStartedAt).toBe(100);
   });
 
   it('정상 흐름 — routeStops 이름 배열을 computeAndUploadTripRecall 에 전달 + 성공 시 LAST_UPLOADED 기록', async () => {
