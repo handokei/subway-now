@@ -3525,6 +3525,57 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
       expect(stats.boardingPromptSkippedEmpty).toBe(0);
     });
 
+    // #1921 — F2 backend defense. boarding-prompt는 boarding 이전 게이트 — lock이 이미 활성/존재인
+    // trip은 cron 진입 자체가 의미 없음. lockMissing 분기로 진입한다면 race(예: lock 만료 직후) —
+    // counter로 측정 + return.
+    it('#1921 F2 — trip.boardingLock 존재 시 즉시 return + boardingPromptSkippedLockActive +1', async () => {
+      const kv = new InMemoryKV();
+      // expired boardingLock 부착 → isBoardingLockActive=false (lockMissing 분기 진입) 보장,
+      // 그러나 trip.boardingLock !== undefined이므로 F2 defense가 즉시 return.
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({
+          boardingLock: {
+            trainCode: 'T-expired',
+            line: '2',
+            subwayId: '1002',
+            selectedDepartureTime: NOW - 60_000,
+            segmentStations: ['역삼', '강남'],
+            expiresAt: NOW - 1, // 만료
+          },
+        }),
+      );
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([LINE_2_UP_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      // F2 defense — 즉시 return → evaluated/fired/blocked/skippedEmpty 모두 0.
+      expect(stats.boardingPromptEvaluated).toBe(0);
+      expect(stats.boardingPromptFired).toBe(0);
+      expect(stats.boardingPromptBlocked).toBe(0);
+      expect(stats.boardingPromptSkippedEmpty).toBe(0);
+      // F2 counter +1.
+      expect(stats.boardingPromptSkippedLockActive).toBe(1);
+      // APNs fetch X.
+      expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    });
+
+    it('#1921 F2 — trip.boardingLock 없으면 F2 defense 미발동, 정상 fire 경로 진행', async () => {
+      // 정상 unlocked trip — F2 counter 0, 기존 fire 경로 그대로.
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([LINE_2_UP_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.boardingPromptSkippedLockActive).toBe(0);
+      expect(stats.boardingPromptFired).toBe(1);
+    });
+
     it('candidateTrains payload wire — sorted by arrivalSeconds asc + max 5건', async () => {
       const kv = new InMemoryKV();
       await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
@@ -6993,7 +7044,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-      boardingPromptSkippedEmpty: 0,
+      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,

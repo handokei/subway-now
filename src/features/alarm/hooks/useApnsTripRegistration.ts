@@ -163,10 +163,14 @@ async function callRegister(input: RegisterCallInputs) {
   // #1028 / #1284: boarding-prompt 평가 컨텍스트 (#819). 둘 다 있어야 backend가 9단 게이트를
   // 돌리므로 항상 함께 송신. currentStation이 BG GPS 누락으로 일시 null이면 캐시된 컨텍스트를
   // fallback으로 사용 — backend cron 진입 전 최소 한 번은 컨텍스트가 stamped되도록 보장.
+  //
+  // #1921 — lock 활성 시 lock.boardingLine + currentStation 우선 stamp. cross-trip 자동 전환에서
+  // route 원본 line이 현재 leg와 어긋나도 stale stamp 회귀 차단.
   const freshContext = buildBoardingPromptContext({
     route: input.route,
     currentStation: input.currentStation,
     destination: input.destination,
+    lock: input.boardingLock,
   });
   const promptContext = freshContext ?? input.cachedPromptContext;
 
@@ -388,7 +392,8 @@ export function useApnsTripRegistration({
       const sessionKey = `${token}:${routeSig}:${destination.id}`;
       // #1284 — buildBoardingPromptContext가 성공하면 캐시 갱신. 이후 currentStation이
       // 일시 null이 돼도 cachedPromptContext로 fallback하여 backend 9단 게이트가 계속 진입 가능.
-      const freshCtx = buildBoardingPromptContext({ route, currentStation, destination });
+      // #1921 — lock 동봉. cross-trip 자동 전환 시 stale stamp 차단(callRegister 분기와 동일 입력).
+      const freshCtx = buildBoardingPromptContext({ route, currentStation, destination, lock: boardingLock });
       if (freshCtx) lastPromptContextRef.current = freshCtx;
       // R11-a (#1612): trip register 직전 backend SSoT mirror 강제 clean.
       // 스펙 docs/requirements/15-trip-alarm-notification.md:89 명시 요구사항 — "trip 등록(new)

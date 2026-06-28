@@ -514,6 +514,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedEmpty: number;
   /**
+   * #1921 — boarding-prompt는 boarding 이전 게이트(사용자 인지 요구 → lock 생성). lock이 이미
+   * 활성인 trip은 이미 탑승 확정 상태이므로 cron이 진입 자체가 의미 없다. 진입 시 즉시 return
+   * + counter +1 — F1(frontend stamp 정확화)이 완전히 wire되면 0에 수렴. 0이 아니면 frontend KV
+   * `boardingLock` 갱신 race 또는 lockMissing→lock 부착 transient cycle 잔재.
+   */
+  boardingPromptSkippedLockActive: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -813,6 +820,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     autoLockFalsePositive: 0,
     boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0,
+    boardingPromptSkippedLockActive: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -3368,6 +3376,20 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   log: Logger,
   generatePushId: () => string,
 ): Promise<void> {
+  // #1921 — F2 defense. boarding-prompt는 boarding 이전 게이트 — lock이 이미 활성인 trip은
+  // cron 진입 자체가 의미 없음. 호출 시점에서 lockMissing 분기를 통과했다는 사실은
+  // `isBoardingLockActive(trip, now) === false`라는 invariant이므로 정상 케이스에서 본 분기는
+  // 발동되지 않는다. lock-active trip이 lockMissing 분기로 진입한다면 race(예: lock 만료 직후
+  // 같은 cycle) 또는 isBoardingLockActive 판정 변경 — counter로 측정해 회귀 진단.
+  if (trip.boardingLock !== undefined) {
+    stats.boardingPromptSkippedLockActive += 1;
+    log('boarding-prompt: skip (lock active, F2 defense)', {
+      token: trip.token.slice(0, 8),
+      boardingLine: trip.boardingLock.line,
+    });
+    return;
+  }
+
   const geo = trip.promptGeoContext;
   const display = trip.promptDisplay;
   if (!geo || !display) return;
