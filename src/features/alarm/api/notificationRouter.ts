@@ -8,6 +8,7 @@
  */
 
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createNotificationRouter,
   type RouterSsotMirror,
@@ -18,9 +19,30 @@ import {
   clearWidgetStation,
   saveStationToWidget,
 } from '../../widget/api/widgetStorage';
+import { buildWidgetTripContext } from '../../widget/utils/buildTripContext';
+import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
+import type { Route } from '../../../shared/utils/stationRoute';
 import { readBackendSsotMirror } from '../utils/backendSsotMirror';
 import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import type { AlarmEvent } from '../../../shared/types/alarm';
+import type { Station } from '../../../shared/types/station';
+
+/**
+ * #1929 — notification widget surface(F-W4)에서 ROUTE_KEY storage를 hydrate.
+ * router는 store에 route slice가 없어 async storage access가 유일한 경로.
+ * 미존재 / parse 실패는 graceful null — buildWidgetTripContext가 route undefined로 처리해
+ * nextTransferName undefined로 stamp (trip은 여전히 활성, 환승 정보만 누락).
+ */
+async function readRouteFromStorage(): Promise<Route | null> {
+  try {
+    const raw = await AsyncStorage.getItem(ROUTE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as Route;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * SSoT mirror reader adapter — notice 슬라이스가 alarm의 backendSsotMirror를 직접 못 import하므로
@@ -71,9 +93,22 @@ function buildDefaultSurfaces(): RouterSurfaceFns {
         typeof station === 'object' &&
         typeof distanceKm === 'number'
       ) {
+        // #1929 (F-W4) — tripContext stamp로 SubwayWidget.swift:229 RC-15 expired-gate 활성화.
+        // notification surface는 async caller — destination은 store sync access,
+        // route는 ROUTE_KEY storage에서 async hydrate. 모두 graceful (실패 시 undefined tripContext).
+        const destination = useDestinationStore.getState().destination;
+        const route = await readRouteFromStorage();
+        const tripContext = buildWidgetTripContext({
+          destination,
+          currentStation: station as Station,
+          route,
+        });
         await saveStationToWidget(
-          station as Parameters<typeof saveStationToWidget>[0],
+          station as Station,
           distanceKm,
+          undefined,
+          undefined,
+          tripContext,
         );
       }
     },

@@ -26,6 +26,7 @@ import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../features/alarm/utils/stationNotification';
 import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
 import { saveStationToWidget } from '../features/widget/api/widgetStorage';
+import { buildWidgetTripContext } from '../features/widget/utils/buildTripContext';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useAccelerometer } from '../features/nearest-station/hooks/useAccelerometer';
@@ -376,6 +377,12 @@ export default function HomeScreen() {
   // 위젯 currentStation을 강제 동기화. listener는 단일-바인딩이라 latest liveResult를 ref로 stamp.
   const liveResultRef = useRef(liveResult);
   liveResultRef.current = liveResult;
+  // #1929 (F-W2) — AppState force 경로에서 tripContext stamp 위해 destination/route 최신값 ref.
+  // useEffect [] 안에 위치한 listener는 destination/route를 직접 못 잡으므로 ref로 forward.
+  const destinationRef = useRef(destination);
+  destinationRef.current = destination;
+  const routeRef = useRef(route);
+  routeRef.current = route;
   // #1755 — lockless badge tap → scroll to boarding list. ScrollView ref + target Y.
   const scrollViewRef = useRef<ScrollView>(null);
   const boardingListYRef = useRef<number>(0);
@@ -839,9 +846,15 @@ export default function HomeScreen() {
         // useWidgetMirror가 같은 bucket/station이면 reload skip이라 BG에서 FG 복귀 시 위젯이
         // 잘못된 station에 stuck되는 회귀(2026-06-19 반포 stuck) 발생. force=true로 dedupe 우회.
         // liveResult는 raw GPS 최근접(sticky override 없음) — useWidgetMirror와 동일 SSoT.
+        // #1929 (F-W2) — tripContext를 5th arg로 forward해 RC-15 widget expired-gate(SubwayWidget.swift:229) 활성화.
         const live = liveResultRef.current;
         if (live) {
-          void saveStationToWidget(live.station, live.distanceKm, Date.now(), { force: true }).catch((e) =>
+          const tripContext = buildWidgetTripContext({
+            destination: destinationRef.current,
+            currentStation: live.station,
+            route: routeRef.current,
+          });
+          void saveStationToWidget(live.station, live.distanceKm, Date.now(), { force: true }, tripContext).catch((e) =>
             logger.error('R9-a force-save 실패:', e),
           );
         }
@@ -862,7 +875,19 @@ export default function HomeScreen() {
   // #1568 (T8b, Epic ADR-017 #1553) — sticky 격리: fused result는 sticky:locked override가 들어가
   // 위젯에 stuck되는 회귀("반포 stuck") 회피하려고 raw GPS 최근접(liveResult)을 전달한다.
   // 위젯은 boardingLock·trip context와 무관한 ambient display 채널이라 sticky override 의무 없음.
-  useWidgetMirror(liveResult?.station ?? null, liveResult?.distanceKm ?? null);
+  //
+  // #1929 (F-W1) — trip 활성 시 tripContext를 forward해 SubwayWidget.swift:229 RC-15 expired-gate 진입.
+  // trip 비활성(destination/currentStation null)이면 helper가 undefined 반환 → 기존 nearest UI 유지.
+  const widgetTripContext = useMemo(
+    () =>
+      buildWidgetTripContext({
+        destination,
+        currentStation: liveResult?.station ?? null,
+        route,
+      }),
+    [destination, liveResult?.station, route],
+  );
+  useWidgetMirror(liveResult?.station ?? null, liveResult?.distanceKm ?? null, widgetTripContext);
 
   useEffect(() => {
     const prevDestId = prevDestIdRef.current;

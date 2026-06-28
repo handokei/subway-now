@@ -804,7 +804,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   // ── #1237 Phase 2: BG widget writer ──
 
   describe('#1237 — BG tick에서 위젯 SSOT(saveStationToWidget) 갱신', () => {
-    it('nearest 정상 → saveStationToWidget(station, distanceKm) 호출', async () => {
+    it('nearest 정상 → saveStationToWidget(station, distanceKm, undefined, undefined, tripContext) 호출 (#1929 F-W3)', async () => {
       mockStorageValues(JSON.stringify(mockDestination));
       mockProcessLocationUpdate.mockResolvedValue({
         alarmEvent: null,
@@ -816,7 +816,82 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         error: null,
       });
 
-      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.42);
+      // #1929 F-W3: tripContext stamp — destination 있고 currentStation=nearest이면 tripActive: true
+      expect(mockSaveStationToWidget).toHaveBeenCalledWith(
+        mockStation,
+        0.42,
+        undefined,
+        undefined,
+        expect.objectContaining({
+          tripActive: true,
+          destinationName: mockDestination.name,
+          currentStationName: mockStation.name,
+        }),
+      );
+    });
+
+    it('#1929 F-W3 — direct route(transfer 0개) → nextTransferName undefined로 stamp', async () => {
+      const directRoute = {
+        type: 'direct',
+        stops: 5,
+        line: '2',
+        travelSeconds: 600,
+      };
+      mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(directRoute), null);
+      mockProcessLocationUpdate.mockResolvedValue({
+        alarmEvent: null,
+        nearest: { station: mockStation, distanceKm: 0.42 },
+      });
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028)] },
+        error: null,
+      });
+
+      expect(mockSaveStationToWidget).toHaveBeenCalledWith(
+        mockStation,
+        0.42,
+        undefined,
+        undefined,
+        expect.objectContaining({
+          tripActive: true,
+          nextTransferName: undefined,
+        }),
+      );
+    });
+
+    it('#1929 F-W3 — transfer route → nextTransferName으로 transferName stamp', async () => {
+      const transferRoute = {
+        type: 'transfer',
+        transferName: '교대',
+        fromLine: '2',
+        toLine: '3',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 4,
+        secondsToTransfer: 360,
+        secondsFromTransfer: 480,
+      };
+      mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(transferRoute), null);
+      mockProcessLocationUpdate.mockResolvedValue({
+        alarmEvent: null,
+        nearest: { station: mockStation, distanceKm: 0.42 },
+      });
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028)] },
+        error: null,
+      });
+
+      expect(mockSaveStationToWidget).toHaveBeenCalledWith(
+        mockStation,
+        0.42,
+        undefined,
+        undefined,
+        expect.objectContaining({
+          tripActive: true,
+          nextTransferName: '교대',
+        }),
+      );
     });
 
     it('nearest가 null이면 saveStationToWidget 호출 X (clearWidgetStation도 호출 X)', async () => {
