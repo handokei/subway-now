@@ -2,10 +2,23 @@ import {
   lookupStationBySsid,
   __resetWifiSsidLookupCacheForTest,
 } from '../wifiSsidLookup';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
+
+const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
 
 describe('lookupStationBySsid', () => {
   beforeEach(() => {
     __resetWifiSsidLookupCacheForTest();
+    // #2006 — 각 테스트가 명시적으로 flag 를 셋하지 않는 한 dormant 기본값 유지 (flag OFF).
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ARCH_ENV === undefined) {
+      delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+    } else {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = ORIGINAL_ARCH_ENV;
+    }
   });
 
   describe('정상 매칭', () => {
@@ -100,6 +113,27 @@ describe('lookupStationBySsid', () => {
       __resetWifiSsidLookupCacheForTest();
       const result = lookupStationBySsid('T_subway_용마산');
       expect(result?.name).toBe('용마산');
+    });
+  });
+
+  // #2006 (ADR-022 Phase 4-4) — flag ON 시 dormant. arrival API SSOT 로 지하 커버.
+  describe('flag guard (#2006)', () => {
+    it('flag ON — 정상 매칭 가능 SSID 라도 null 반환 (dormant)', () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      expect(lookupStationBySsid('T_subway_용마산')).toBeNull();
+      expect(lookupStationBySsid('Gangnam_Station')).toBeNull();
+    });
+
+    it('flag ON — null/empty/whitespace 입력도 null (기존 방어 동작 유지)', () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      expect(lookupStationBySsid(null as unknown as string)).toBeNull();
+      expect(lookupStationBySsid('')).toBeNull();
+      expect(lookupStationBySsid('   ')).toBeNull();
+    });
+
+    it('flag OFF 명시 — 기존 매칭 동작 그대로', () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'false';
+      expect(lookupStationBySsid('T_subway_용마산')?.name).toBe('용마산');
     });
   });
 });

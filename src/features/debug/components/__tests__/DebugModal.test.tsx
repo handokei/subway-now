@@ -1473,6 +1473,21 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(screen.getAllByText('45').length).toBeGreaterThan(0);
   });
 
+  // #2006 (ADR-022 Phase 4-4) — flag ON 시 useBarometer 가 dormant 반환.
+  // DebugModal 은 unavailableReason 을 그대로 렌더링 → 'flag-on-dormant' 노출.
+  it('#2006 GPS 섹션: unavailableReason="flag-on-dormant" 노출 (arrival API SSOT dormant)', async () => {
+    mockUseBarometer.mockReturnValue({
+      subsurface: false,
+      stop: undefined,
+      unavailableReason: 'flag-on-dormant',
+      readingCount: 0,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('subsurface reason')).toBeTruthy();
+    expect(screen.getAllByText('flag-on-dormant').length).toBeGreaterThan(0);
+  });
+
   it('fusionDetection 미전달 시 tier/signalMask = —', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());

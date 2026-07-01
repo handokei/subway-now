@@ -37,6 +37,7 @@ import {
   BAROMETER_STOP_CONFIRM_SAMPLES,
   BAROMETER_SUBSURFACE_CONFIRM_SAMPLES,
 } from '../constants/barometer';
+import { isSimpleArchEnabled } from '../config/archFlag';
 
 /**
  * #1398 — 기압계 unavailable 원인 분해.
@@ -44,12 +45,17 @@ import {
  * `stop=undefined`(평가 불가) 원인을 device dump에 노출하기 위한 진단 필드.
  * 원인을 모르면 SPOF 회피 방향(WiFi 분리 / fusion verdict 결합) 튜닝이 불가능하다.
  *
- * - 'sensor'      : `Barometer.isAvailableAsync()` false (iPhone 6 이하 등 기기 미지원)
- * - 'permission'  : NSMotionUsageDescription 권한 거절
- * - 'readings'    : 센서 활성이지만 30s 윈도우를 채울 reading 부족 (warm-up 초기)
- * - undefined     : 정상 (stop이 true|false로 결정됨)
+ * - 'sensor'          : `Barometer.isAvailableAsync()` false (iPhone 6 이하 등 기기 미지원)
+ * - 'permission'      : NSMotionUsageDescription 권한 거절
+ * - 'readings'        : 센서 활성이지만 30s 윈도우를 채울 reading 부족 (warm-up 초기)
+ * - 'flag-on-dormant' : #2006 — arrival-api-ssot-v1 flag ON. 기압계 SPOF 배터리 절약.
+ * - undefined         : 정상 (stop이 true|false로 결정됨)
  */
-export type BarometerUnavailableReason = 'sensor' | 'permission' | 'readings';
+export type BarometerUnavailableReason =
+  | 'sensor'
+  | 'permission'
+  | 'readings'
+  | 'flag-on-dormant';
 
 /**
  * #903 — 외부 소비자에 노출되는 보조 신호 스냅샷.
@@ -95,14 +101,21 @@ export interface BarometerSignal {
  * sticky automotive · fusion confidence · backend payload를 한 신호로 일관되게 분기한다.
  */
 export function useBarometer(): BarometerSignal {
+  // #2006 (ADR-022 Phase 4-4) — arrival-api-ssot-v1 flag ON 시 dormant.
+  // mount time 판정 — flag toggle 은 재빌드/remount 이 트리거. hook 반환값 자체를 flag ON
+  // 시 dormant 상수 객체로 굳혀 useEffect / useState / useRef 오버헤드도 skip 한다.
+  // subsurface=false, stop=undefined, readingCount=0, unavailableReason='flag-on-dormant'.
+  const flagDormant = isSimpleArchEnabled();
+
   const [subsurface, setSubsurface] = useState<boolean>(false);
   // #921 — readings 부족 또는 unmount 직후는 undefined. fusion 입력 unavailable로 흘러간다.
   const [stop, setStop] = useState<boolean | undefined>(undefined);
   // #1398 — stop=undefined일 때의 원인. 초기값 'sensor'(아직 게이트 미통과). 게이트 단계별로
   // 'sensor' → 'permission' → 'readings' → undefined(정상)로 좁혀진다.
+  // #2006 — flag ON 시 초기값은 'flag-on-dormant' — listener 미등록이라 이후 갱신 없음.
   const [unavailableReason, setUnavailableReason] = useState<
     BarometerUnavailableReason | undefined
-  >('sensor');
+  >(flagDormant ? 'flag-on-dormant' : 'sensor');
   // #1398 — ring buffer 누적 reading 수. listener tick마다 갱신.
   const [readingCount, setReadingCount] = useState<number>(0);
   // #903 — hysteresis: 임계 부근 노이즈 진동 흡수. lastEmitted와 다른 verdict가 N회 연속
@@ -116,6 +129,11 @@ export function useBarometer(): BarometerSignal {
   const stopPendingRef = useRef<number>(0);
 
   useEffect(() => {
+    // #2006 — flag ON 시 native listener 등록 skip. 배터리 · 권한 prompt · ring buffer 비용 0.
+    // 초기 state 가 이미 dormant 조합이라 별도 setState 호출 불필요.
+    if (flagDormant) {
+      return;
+    }
     let cancelled = false;
     let subscription: { remove(): void } | null = null;
 

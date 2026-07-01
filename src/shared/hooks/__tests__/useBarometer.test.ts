@@ -21,6 +21,7 @@ jest.mock('../../utils/subsurfaceState', () => ({
 }));
 
 import { useBarometer } from '../useBarometer';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../config/archFlag';
 import {
   BAROMETER_SAMPLE_INTERVAL_MS,
   BAROMETER_DPDT_WINDOW_MS,
@@ -34,6 +35,8 @@ import {
 
 type Listener = (m: { pressure: number; timestamp: number }) => void;
 
+const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+
 beforeEach(() => {
   mockIsAvailable.mockReset();
   mockRequestPermissions.mockReset();
@@ -44,6 +47,16 @@ beforeEach(() => {
   mockSetSubsurfaceState.mockResolvedValue(undefined);
   mockAddListener.mockReturnValue({ remove: mockRemove });
   resetBarometerState();
+  // #2006 — 각 테스트 전 flag 초기화 (기본 OFF).
+  delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+});
+
+afterAll(() => {
+  if (ORIGINAL_ARCH_ENV === undefined) {
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+  } else {
+    process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = ORIGINAL_ARCH_ENV;
+  }
 });
 
 async function flush(): Promise<void> {
@@ -440,6 +453,52 @@ describe('useBarometer (#875)', () => {
       expect(result.current.stop).toBeUndefined();
       expect(result.current.unavailableReason).toBe('readings');
       nowSpy.mockRestore();
+    });
+  });
+
+  // #2006 (ADR-022 Phase 4-4) — arrival-api-ssot-v1 flag ON 시 dormant. arrival API 가 지하도
+  // 커버하므로 기압계 SPOF 신호를 배터리 절약을 위해 listener 등록 자체를 skip.
+  describe('flag guard (#2006)', () => {
+    it('flag ON — Barometer.isAvailableAsync 호출 0 (native gate skip)', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      // isAvailable 은 pending 상태로 유지 — 실제로 native 호출이 있었다면 등록될 것.
+      mockIsAvailable.mockImplementation(() => new Promise(() => {}));
+
+      const { result } = renderHook(() => useBarometer());
+      await flush();
+
+      expect(mockIsAvailable).not.toHaveBeenCalled();
+      expect(mockRequestPermissions).not.toHaveBeenCalled();
+      expect(mockSetUpdateInterval).not.toHaveBeenCalled();
+      expect(mockAddListener).not.toHaveBeenCalled();
+      // dormant 반환값 계약.
+      expect(result.current.subsurface).toBe(false);
+      expect(result.current.stop).toBeUndefined();
+      expect(result.current.readingCount).toBe(0);
+      expect(result.current.unavailableReason).toBe('flag-on-dormant');
+    });
+
+    it('flag ON — unmount 시에도 크래시 없이 종료 (subscription null)', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      const { unmount } = renderHook(() => useBarometer());
+      await flush();
+      // native subscription 미등록 → remove 호출 없어야 함.
+      unmount();
+      expect(mockRemove).not.toHaveBeenCalled();
+    });
+
+    it('flag OFF 명시 — 기존 sensor 게이트 진입 (backward-compat)', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'false';
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: true });
+
+      const { result } = renderHook(() => useBarometer());
+      await flush();
+
+      expect(mockIsAvailable).toHaveBeenCalled();
+      expect(mockAddListener).toHaveBeenCalledTimes(1);
+      // 정상 등록 후 첫 tick 전 warmup: reason 'readings'.
+      expect(result.current.unavailableReason).toBe('readings');
     });
   });
 });
