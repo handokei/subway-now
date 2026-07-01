@@ -498,6 +498,222 @@ describe('pickFusionTier — cascade tier 결정', () => {
   });
 });
 
+describe('pickFusionTier — #2004 (Phase 4-1, ADR-022 A6) simpleArch flag dormant', () => {
+  describe('flag OFF (기본) — 기존 10-tier cascade 그대로', () => {
+    it('backendSsotAccepts=true → tier 4 채택 (flag OFF backward-compat)', () => {
+      const ssot = makeStation();
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({ backendSsotAccepts: true, ssotStation: ssot }),
+        false,
+      );
+      expect(r.tier).toBe('backend-ssot');
+    });
+
+    it('wifiStationResolved 활성 → tier 5 채택 (flag OFF)', () => {
+      const wifi = makeResult();
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({ wifiStationResolved: wifi }),
+        false,
+      );
+      expect(r.tier).toBe('wifi');
+    });
+
+    it('positionTrainResult 활성 → tier 6 채택 (flag OFF)', () => {
+      const pt = makeResult();
+      const r = pickFusionTier(
+        'surface',
+        makeSignals({ positionTrainResult: pt }),
+        false,
+      );
+      expect(r.tier).toBe('position-train');
+    });
+
+    it('flag param 미전달(default false) → 기존 cascade 그대로', () => {
+      const wifi = makeResult();
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({ wifiStationResolved: wifi }),
+        // no third arg → default false
+      );
+      expect(r.tier).toBe('wifi');
+    });
+  });
+
+  describe('flag ON — arrival(fused) + gps-fallback 2-tier 만 활성', () => {
+    it('flag ON + fused 활성 → tier 7 채택', () => {
+      const fused = makeFused();
+      const r = pickFusionTier(
+        'surface',
+        makeSignals({ fused, fusedPasses: true, fusedPassesStrict: true }),
+        true,
+      );
+      expect(r.tier).toBe('fused');
+      expect(r.confidence).toBe('arrival-confirmed');
+    });
+
+    it('flag ON + backendSsotAccepts=true(skip 대상) + fused 활성 → tier 7 채택 (backend-ssot skip)', () => {
+      const ssot = makeStation({ name: 'backend-ssot-station' });
+      const fused = makeFused({ name: 'fused-station' });
+      const r = pickFusionTier(
+        'surface',
+        makeSignals({
+          backendSsotAccepts: true,
+          ssotStation: ssot,
+          fused,
+          fusedPasses: true,
+          fusedPassesStrict: true,
+        }),
+        true,
+      );
+      expect(r.tier).toBe('fused');
+      expect(r.result?.station.name).toBe('fused-station');
+    });
+
+    it('flag ON + wifi/positionTrain/route 활성(skip 대상) + gps-fallback → tier 10 채택', () => {
+      const wifi = makeResult({ name: 'wifi-station' });
+      const pt = makeResult({ name: 'pt-station' });
+      const route = makeResult({ name: 'route-station' });
+      const fallback = makeResult({ name: 'gps-station' });
+      const r = pickFusionTier(
+        'surface',
+        makeSignals({
+          wifiStationResolved: wifi,
+          positionTrainResult: pt,
+          routeResult: route,
+          routePasses: true,
+          gpsFallbackResult: fallback,
+        }),
+        true,
+      );
+      expect(r.tier).toBe('gps-fallback');
+      expect(r.result?.station.name).toBe('gps-station');
+      expect(r.confidence).toBe('gps-only');
+    });
+
+    it('flag ON + 모든 skip tier 활성(position-train-lock/gps-fast-path/arvl-arrived/backend-ssot/wifi/position-train/detection-verdict/route) + fused=null + fallback → tier 10 gps-fallback 채택', () => {
+      const ptResult = makeResult({ name: 'pt-lock' });
+      const gpsTop = makeResult({ name: 'gps-fast' });
+      const arvl = makeResult({ name: 'arvl' });
+      const ssot = makeStation({ name: 'backend' });
+      const wifi = makeResult({ name: 'wifi' });
+      const pt = makeResult({ name: 'pt' });
+      const route = makeResult({ name: 'route' });
+      const fallback = makeResult({ name: 'gps-fallback' });
+      const r = pickFusionTier(
+        'surface',
+        makeSignals({
+          positionTrainBoardingLockMatch: true,
+          positionTrainResult: ptResult,
+          gpsDerivedFastPath: true,
+          gpsTopCandidate: gpsTop,
+          arvlCdArrivedMatch: arvl,
+          backendSsotAccepts: true,
+          ssotStation: ssot,
+          wifiStationResolved: wifi,
+          hasBoardingLock: true,
+          lockedTrainCode: 'T1',
+          trainProgressTrainNo: 'T1',
+          routeResult: route,
+          routePasses: true,
+          gpsFallbackResult: fallback,
+          // fused null → tier 7 미진입 → sink 로 gps-fallback 채택
+        }),
+        true,
+      );
+      expect(r.tier).toBe('gps-fallback');
+      expect(r.result?.station.name).toBe('gps-fallback');
+    });
+
+    it('flag ON + detection-verdict 활성(skip 대상) → tier 8 미진입', () => {
+      const fused = makeFused();
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({
+          fused,
+          fusedPasses: false,
+          fusedPassesStrict: false, // tier 7 게이트 미통과
+          detectionVerdictAccepts: true, // tier 8 활성이나 flag ON 시 skip
+        }),
+        true,
+      );
+      expect(r.tier).not.toBe('detection-verdict');
+      expect(r.tier).toBe('gps-fallback');
+    });
+
+    it('flag ON + arvlCdArrivedMatch(tier 3, skip) 활성 + fused → tier 7 fused 채택', () => {
+      const arvl = makeResult({ name: 'arvl-lock' });
+      const fused = makeFused({ name: 'fused-station' });
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({
+          arvlCdArrivedMatch: arvl,
+          arvlCdDriftBlocked: false,
+          fused,
+          fusedPasses: true,
+          fusedPassesStrict: true,
+        }),
+        true,
+      );
+      expect(r.tier).toBe('fused');
+      expect(r.result?.station.name).toBe('fused-station');
+    });
+
+    it('flag ON + 모든 tier null → tier 10 gps-fallback sink (result=null)', () => {
+      const r = pickFusionTier('unknown', makeSignals(), true);
+      expect(r.tier).toBe('gps-fallback');
+      expect(r.result).toBeNull();
+    });
+
+    it('flag ON + fusedPasses=false + detectionVerdictAccepts=true(skip) + route+routePasses(skip) → gps-fallback', () => {
+      const fused = makeFused();
+      const route = makeResult();
+      const r = pickFusionTier(
+        'surface',
+        makeSignals({
+          fused,
+          fusedPasses: false,
+          fusedPassesStrict: false,
+          detectionVerdictAccepts: true,
+          routeResult: route,
+          routePasses: true,
+        }),
+        true,
+      );
+      expect(r.tier).toBe('gps-fallback');
+    });
+
+    it('flag ON + underground fused strict gate 통과 → tier 7 채택 (env 분기 유지)', () => {
+      const fused = makeFused();
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({
+          fused,
+          fusedPasses: true,
+          fusedPassesStrict: true,
+        }),
+        true,
+      );
+      expect(r.tier).toBe('fused');
+    });
+
+    it('flag ON + underground gps-fallback strict → strict 변형 그대로 사용 (env 분기 유지)', () => {
+      const fb = makeResult({ name: 'strict-fb' });
+      const r = pickFusionTier(
+        'underground',
+        makeSignals({
+          gpsFallbackResult: null,
+          gpsFallbackResultStrict: fb,
+        }),
+        true,
+      );
+      expect(r.tier).toBe('gps-fallback');
+      expect(r.result?.station.name).toBe('strict-fb');
+    });
+  });
+});
+
 describe('isCandidateEnvMismatch — #1934 G3 option B 통합', () => {
   function candidateWithEnv(env?: StationEnvironment): NearestStationResult {
     return { station: makeStation({ environment: env }), distanceKm: 0.05 };
