@@ -3,6 +3,7 @@ import {
   assertKvCacheTtl,
   CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL,
 } from './kvConsistency';
+import { listPending, pendingKey } from './pendingPushes';
 import type { Trip } from './types';
 
 /**
@@ -13,6 +14,22 @@ import type { Trip } from './types';
  */
 
 const TRIP_PREFIX = 'trip:';
+
+/**
+ * ADR-022 B4 — 새 route = 새 token 강제 (Phase 1-3 인프라).
+ *
+ * 2026-06-17 ~ 2026-07-01 15일 회귀: `trip token e25e1158` 재사용으로 사용자가 새 route
+ * 등록해도 old destination(용마산) silent push가 계속 발사되고 device는
+ * `trip-token-mismatch`로 skip → backend/device state sync 완전 붕괴.
+ *
+ * Root cause: `POST /trips`가 incoming token(=APNs device token)을 그대로 KV key로 사용.
+ * device 수명 동안 token이 안정하므로 route/destination이 바뀌어도 같은 KV entry에 덮어써짐.
+ * `isSameSession`은 trainCode/createdAt 기준 → route/destination 차이가 있어도 같은 token 유지.
+ *
+ * Phase 1-3 정책: flag OFF일 때 기존 동작 유지. Phase 2 dogfood 시점에 flag ON 전환.
+ * Rollback: 상수를 `false`로 되돌리면 즉시 기존 동작 복귀 (배포 없음).
+ */
+export const SIMPLE_ARCH_ENABLED = false;
 
 /**
  * cron read의 KV cacheTtl (#766/#770 → #1364 → #1381).
@@ -121,4 +138,103 @@ export function clearStaleBoardingLock(trip: Trip): Trip {
   if (!head) return trip;
   if (trip.boardingLock.line === head.line) return trip;
   return { ...trip, boardingLock: undefined };
+}
+
+/**
+ * ADR-022 B4 — route/destination 시그니처.
+ *
+ * 두 trip이 "같은 route"인지 판정하는 content-based key. destination + waypoints sequence
+ * (stationName + line + kind + occurrenceIdx)로 계산. `route` 필드 자체를 쓰지 않는 이유는
+ * `POST /trips` 핸들러가 legacy `[destination]` waypoints를 Dijkstra로 재추론(#1604)하는
+ * 경로에서 route 필드가 stale일 수 있기 때문. waypoints가 SSOT.
+ */
+export function computeRouteSignature(trip: Trip): string {
+  const waypointSig = trip.waypoints
+    .map(
+      (w) =>
+        `${w.stationName}|${w.line}|${w.kind}|${w.occurrenceIdx ?? 0}`,
+    )
+    .join('/');
+  return `${trip.destination}::${waypointSig}`;
+}
+
+/**
+ * ADR-022 B4 — 새 route = 새 token 강제 결정.
+ *
+ * `POST /trips`가 호출하는 진입점. incoming trip과 existing trip의 route/destination
+ * 시그니처를 비교해 다르면 새 token 발급 + old token cleanup, 같으면 incoming token 유지.
+ *
+ * Flag OFF (`SIMPLE_ARCH_ENABLED === false`): 기존 동작 유지 — incoming.token 그대로 반환,
+ * KV cleanup 없음. Phase 1-3 인프라만 병존.
+ *
+ * Flag ON (Phase 2+): existing 있고 route sig 다르면
+ *   1. `crypto.randomUUID()`로 새 token 생성
+ *   2. `trip:<oldToken>` KV delete
+ *   3. `pending:*` 중 `entry.token === oldToken` 인 entry 모두 delete
+ *   4. 새 token 반환 (`rotated: true`)
+ *
+ * existing 없음 또는 같은 route: incoming.token 그대로 반환 (`rotated: false`).
+ *
+ * Testability: `deps.simpleArchEnabled` / `deps.generateToken` DI로 flag 강제 + token 결정성
+ * 확보. 기본은 모듈 상수(`SIMPLE_ARCH_ENABLED`) + `crypto.randomUUID`. 테스트가 옵션 명시.
+ */
+export interface TokenRotationResult {
+  token: string;
+  rotated: boolean;
+}
+
+export interface TokenRotationDeps {
+  /** flag override — 미지정 시 모듈 상수 `SIMPLE_ARCH_ENABLED`. */
+  simpleArchEnabled?: boolean;
+  /** 새 token 발급 함수 — 미지정 시 `crypto.randomUUID`. */
+  generateToken?: () => string;
+}
+
+export async function rotateTripTokenForNewRoute(
+  kv: KVNamespace,
+  incoming: Trip,
+  existing: Trip | null,
+  deps?: TokenRotationDeps,
+): Promise<TokenRotationResult> {
+  const flagEnabled = deps?.simpleArchEnabled ?? SIMPLE_ARCH_ENABLED;
+  // Flag OFF: 기존 동작 유지. incoming token 그대로.
+  if (!flagEnabled) {
+    return { token: incoming.token, rotated: false };
+  }
+  // existing 없음 (신규 trip): incoming token 그대로 등록.
+  if (existing === null) {
+    return { token: incoming.token, rotated: false };
+  }
+  // 같은 route (destination + waypoints 시그니처 일치): incoming token 유지 → same-session merge.
+  const existingSig = computeRouteSignature(existing);
+  const incomingSig = computeRouteSignature(incoming);
+  if (existingSig === incomingSig) {
+    return { token: incoming.token, rotated: false };
+  }
+  // 다른 route: 새 token 발급 + old 정리.
+  const generateToken = deps?.generateToken ?? (() => crypto.randomUUID());
+  const newToken = generateToken();
+  const oldToken = existing.token;
+  await deleteTrip(kv, oldToken);
+  await cleanupPendingPushesForToken(kv, oldToken);
+  return { token: newToken, rotated: true };
+}
+
+/**
+ * ADR-022 B4 — old token 소유의 pending push entry cleanup.
+ *
+ * `listPending`으로 enumerate → `entry.token === oldToken` 인 것만 delete. token mismatch
+ * entry는 다른 device 소유이므로 건드리지 않는다. 손상된 entry는 listPending이 자동 skip.
+ */
+export async function cleanupPendingPushesForToken(
+  kv: KVNamespace,
+  oldToken: string,
+): Promise<number> {
+  let removed = 0;
+  for await (const entry of listPending(kv)) {
+    if (entry.token !== oldToken) continue;
+    await kv.delete(pendingKey(entry.pushId));
+    removed += 1;
+  }
+  return removed;
 }
