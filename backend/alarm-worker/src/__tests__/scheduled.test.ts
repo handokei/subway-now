@@ -3906,6 +3906,75 @@ describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (
     // boarding-prompt 게이트는 통과 — kalmanKmh=null이라 fusedSpeed는 GPS+map only 합산
     expect(stats.boardingPromptEvaluated).toBe(1);
   });
+
+  // ─────────────────────────────────────────────────────
+  // #2007 — ADR-022 Phase 4-5: archFlag='on' 시 Kalman dormant
+  // ─────────────────────────────────────────────────────
+
+  // flag=on 시 runKalmanStep 은 null 을 반환하고 runFusionStep 은 writeKalmanState 를 skip.
+  // fusion.kalmanKmh=null → boardingPrompt 게이트 #7 (fusedSpeed) 은 weight=0 으로 자연 skip.
+  it('#2007 — archFlag=on 시 boarding-prompt 경로에서 kalman KV write skip (dormant)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip({ token: 'dormant-tok' }));
+    await seedHappySeries(kv, 'dormant-tok');
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), {
+      ...makeKalmanPromptDeps(fetchImpl),
+      archFlag: 'on',
+    });
+
+    // Kalman state KV 미작성 — flag=on 이면 계산 자체 skip
+    expect(await kv.get('kalman:dormant-tok')).toBeNull();
+    // boarding-prompt 평가는 여전히 진행 (kalman 은 게이트 #7 의 optional 입력일 뿐)
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    // drift/reset 카운터 모두 0 — hot path 전체가 dormant
+    expect(stats.kalmanReset).toBe(0);
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+
+  it('#2007 — archFlag=on + KV prior 존재 → prior 무시하고 write skip (drift/reset 0)', async () => {
+    const kv = new InMemoryKV();
+    // prior state 를 미리 넣어도 flag=on 이면 read 결과와 무관하게 계산 skip.
+    const staleTs = NOW - 5_000;
+    await kv.put(
+      'kalman:dormant-tok-2',
+      JSON.stringify({ v: 100, P: 400, ts: staleTs }),
+    );
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip({ token: 'dormant-tok-2' }));
+    await seedHappySeries(kv, 'dormant-tok-2');
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), {
+      ...makeKalmanPromptDeps(fetchImpl),
+      archFlag: 'on',
+    });
+
+    // prior 는 그대로 남아 있어야 함 (write 자체가 skip → 갱신 없음). ts 도 원본 유지.
+    const state = await readKalmanState(kv as unknown as KVNamespace, 'dormant-tok-2');
+    expect(state).not.toBeNull();
+    expect(state!.ts).toBe(staleTs); // NOW 로 갱신되지 않았어야 함
+    expect(state!.v).toBe(100);
+    expect(stats.kalmanReset).toBe(0);
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+
+  it('#2007 — archFlag=off (default) 는 기존 동작 유지 (state 정상 write, drift/reset 정상 카운트)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip({ token: 'active-tok' }));
+    await seedHappySeries(kv, 'active-tok');
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    await runScheduled(makeEnv(kv), {
+      ...makeKalmanPromptDeps(fetchImpl),
+      archFlag: 'off',
+    });
+
+    // Kalman state 는 정상 작성 (기존 회귀 보존)
+    const state = await readKalmanState(kv as unknown as KVNamespace, 'active-tok');
+    expect(state).not.toBeNull();
+    expect(state!.ts).toBe(NOW);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5085,6 +5154,54 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
     expect(kalmanState?.v).toBe(0);
     expect(kalmanState?.P).toBe(R_LOW);
   });
+
+  // ─────────────────────────────────────────────────────
+  // #2007 — ADR-022 Phase 4-5: archFlag='on' 시 lockless reset dormant
+  // ─────────────────────────────────────────────────────
+
+  it('#2007 — archFlag=on + arvlCd=ARRIVED → Kalman reset 자체 skip (kalmanReset=0, prior 유지)', async () => {
+    // ARRIVED 신호로 fires=true 여도 flag=on 이면 writeKalmanState + kalmanReset++ 둘 다 skip.
+    // 신 아키텍처(arvlCd SSoT)에서는 Kalman state 자체가 dormant.
+    const kv = new InMemoryKV();
+    const token = 'dormant-lock-1';
+    await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
+    // 기존 prior state 심기 — flag=on 이면 read 하지만 write 는 skip.
+    const priorState = { v: 40, P: 100, ts: NOW - 5_000 };
+    await kv.put(`kalman:${token}`, JSON.stringify(priorState));
+
+    const stats = await runScheduled(makeEnv(kv), {
+      ...makeKalmanResetDeps(makeSeoul([makeArrivedSignal(1)]), 'd-lk1'),
+      archFlag: 'on',
+    });
+
+    // reset write + counter 둘 다 skip
+    expect(stats.kalmanReset).toBe(0);
+    // prior state 그대로 (v=0/P=R_LOW 로 갈아치우지 않아야 함)
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState).not.toBeNull();
+    expect(kalmanState!.v).toBe(40);
+    expect(kalmanState!.P).toBe(100);
+    expect(kalmanState!.ts).toBe(NOW - 5_000);
+  });
+
+  it('#2007 — archFlag=off (default) + arvlCd=ARRIVED → 기존 reset 동작 유지 (회귀 방어)', async () => {
+    // 명시 archFlag='off' 도 기존 회귀 보존 확인용 — 위 arvlCd=ARRIVED 케이스와 동일 shape.
+    const kv = new InMemoryKV();
+    const token = 'active-lock-1';
+    await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
+
+    const stats = await runScheduled(makeEnv(kv), {
+      ...makeKalmanResetDeps(makeSeoul([makeArrivedSignal(1)]), 'a-lk1'),
+      archFlag: 'off',
+    });
+
+    expect(stats.kalmanReset).toBe(1);
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(0);
+    expect(kalmanState?.P).toBe(R_LOW);
+    expect(kalmanState?.ts).toBe(NOW);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5241,6 +5358,33 @@ describe('runScheduled — #826 runTrainCodeTracking Kalman reset', () => {
       // arrived=false이면 kalman reset이 없어야 함 — v=0 아님을 확인
       expect(kalmanState.v).not.toBe(0);
     }
+  });
+
+  // ─────────────────────────────────────────────────────
+  // #2007 — ADR-022 Phase 4-5: archFlag='on' 시 lock arrived reset dormant
+  // ─────────────────────────────────────────────────────
+
+  it('#2007 — archFlag=on + boardingLock 활성 + arvlCd=ARRIVED → reset skip (kalmanReset=0, prior 유지)', async () => {
+    // arvlCd=1(ARRIVED) 신호로도 flag=on 이면 writeKalmanState + kalmanReset++ 둘 다 skip.
+    // 신 아키텍처(arvlCd SSoT)에서는 Kalman state 자체가 dormant.
+    const kv = new InMemoryKV();
+    const token = 'dormant-tc-1';
+    await putTrip(kv as unknown as KVNamespace, makeLockWithKalmanTrip(token));
+    const priorState = { v: 40, P: 100, ts: NOW - 5_000 };
+    await kv.put(`kalman:${token}`, JSON.stringify(priorState));
+
+    const stats = await runScheduled(makeEnv(kv), {
+      ...makeKalmanResetDeps(makeSeoulWithArvl('중곡', 0, 1), 'd-tc1'),
+      archFlag: 'on',
+    });
+
+    expect(stats.kalmanReset).toBe(0);
+    // prior state 그대로 (v=0/P=R_LOW 로 갈아치우지 않아야 함).
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState).not.toBeNull();
+    expect(kalmanState!.v).toBe(40);
+    expect(kalmanState!.P).toBe(100);
+    expect(kalmanState!.ts).toBe(NOW - 5_000);
   });
 });
 

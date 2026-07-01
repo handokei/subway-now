@@ -230,9 +230,10 @@ describe('runKalmanStep — predict + update 통합', () => {
       accelMagnitudeStd: 0.1,
       now,
     });
-    expect(result.v).toBe(35);
-    expect(result.P).toBe(R_LOW); // accuracy=10 → R_LOW=4
-    expect(result.ts).toBe(now);
+    expect(result).not.toBeNull();
+    expect(result!.v).toBe(35);
+    expect(result!.P).toBe(R_LOW); // accuracy=10 → R_LOW=4
+    expect(result!.ts).toBe(now);
   });
 
   it('prior=null + accuracy=50m → P=R_HIGH=100', () => {
@@ -243,7 +244,7 @@ describe('runKalmanStep — predict + update 통합', () => {
       accelMagnitudeStd: 0.5,
       now,
     });
-    expect(result.P).toBe(R_HIGH); // accuracy=50 → R_HIGH=100
+    expect(result!.P).toBe(R_HIGH); // accuracy=50 → R_HIGH=100
   });
 
   it('stale prior (Δt > STATE_STALE_THRESHOLD_MS) → observation 직접 초기화', () => {
@@ -259,9 +260,9 @@ describe('runKalmanStep — predict + update 통합', () => {
       accelMagnitudeStd: 0.1,
       now,
     });
-    expect(result.v).toBe(40);
-    expect(result.P).toBe(R_LOW);
-    expect(result.ts).toBe(now);
+    expect(result!.v).toBe(40);
+    expect(result!.P).toBe(R_LOW);
+    expect(result!.ts).toBe(now);
   });
 
   it('경계값: Δt === STATE_STALE_THRESHOLD_MS → predict+update 실행 (stale 아님)', () => {
@@ -285,9 +286,9 @@ describe('runKalmanStep — predict + update 통합', () => {
     // update: K = P_pred / (P_pred + R_LOW)
     const k = pPred / (pPred + R_LOW);
     const vExpected = 20 + k * (30 - 20);
-    expect(result.v).toBeCloseTo(vExpected, 4);
+    expect(result!.v).toBeCloseTo(vExpected, 4);
     // observation 직접 초기화가 아님 (v ≠ gpsAvgKmh=30 이여야 함, 블렌딩 값)
-    expect(result.v).not.toBe(30);
+    expect(result!.v).not.toBe(30);
   });
 
   it('정상 prior → predict → update 결합 결과', () => {
@@ -306,8 +307,71 @@ describe('runKalmanStep — predict + update 통합', () => {
     const pPred = 100 + Q_LOW * dtSec;
     const k = pPred / (pPred + R_MID);
     const vExpected = 20 + k * (40 - 20);
-    expect(result.v).toBeCloseTo(vExpected, 4);
-    expect(result.ts).toBe(now);
+    expect(result!.v).toBeCloseTo(vExpected, 4);
+    expect(result!.ts).toBe(now);
+  });
+
+  // ─────────────────────────────────────────────────────
+  // #2007 archFlag guard (ADR-022 Phase 4-5)
+  // ─────────────────────────────────────────────────────
+
+  it('#2007 — archFlag="on" → null (계산 skip, prior/observation 무관)', () => {
+    const prior: KalmanState = { v: 20, P: 100, ts: now - 10_000 };
+    const result = runKalmanStep(
+      {
+        prior,
+        gpsAvgKmh: 40,
+        gpsAccuracyMeters: 10,
+        accelMagnitudeStd: 0.1,
+        now,
+      },
+      'on',
+    );
+    expect(result).toBeNull();
+  });
+
+  it('#2007 — archFlag="on" + prior=null 도 null (초기화 자체를 skip)', () => {
+    const result = runKalmanStep(
+      {
+        prior: null,
+        gpsAvgKmh: 35,
+        gpsAccuracyMeters: 10,
+        accelMagnitudeStd: 0.1,
+        now,
+      },
+      'on',
+    );
+    expect(result).toBeNull();
+  });
+
+  it('#2007 — archFlag="off" → 기존 동작 유지 (dormant 아님)', () => {
+    const result = runKalmanStep(
+      {
+        prior: null,
+        gpsAvgKmh: 35,
+        gpsAccuracyMeters: 10,
+        accelMagnitudeStd: 0.1,
+        now,
+      },
+      'off',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.v).toBe(35);
+  });
+
+  it('#2007 — archFlag=undefined (legacy caller) → 기존 동작 유지', () => {
+    const result = runKalmanStep(
+      {
+        prior: null,
+        gpsAvgKmh: 42,
+        gpsAccuracyMeters: 10,
+        accelMagnitudeStd: 0.1,
+        now,
+      },
+      undefined,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.v).toBe(42);
   });
 });
 
@@ -583,7 +647,8 @@ describe('수치 회귀 — Kalman RMSE vs 단순 평균', () => {
         accelMagnitudeStd: 0.1, // 정속 → Q_LOW=1
         now: s.ts,
       });
-      kalmanResults.push(state.v);
+      // archFlag 미전달 시 runKalmanStep 은 항상 non-null 반환.
+      kalmanResults.push(state!.v);
       rawResults.push(s.v);
     }
 
@@ -629,7 +694,8 @@ describe('수치 회귀 — Kalman RMSE vs 단순 평균', () => {
         accelMagnitudeStd: 0.3,
         now: s.ts,
       });
-      kalmanResults.push(state.v);
+      // archFlag 미전달 시 runKalmanStep 은 항상 non-null 반환.
+      kalmanResults.push(state!.v);
       rawResults.push(s.v);
     }
 

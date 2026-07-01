@@ -8,6 +8,10 @@
  *
  * ADR: https://app.notion.com/p/37430c0194b6819c8323e37d4c31a777 Section 5 (Phase 3).
  *
+ * #2007 (ADR-022 Phase 4-5) — 신 아키텍처 (arvlCd SSoT) 에서 Kalman 은 불필요.
+ * `runKalmanStep` 에 optional `archFlag` 를 전달해 flag=on 시 항상 null 반환(계산 skip).
+ * 파일 자체는 Phase 4b 삭제 대상 — 본 Phase 는 dormant guard 만.
+ *
  * # State
  *  - `v`  scalar velocity (km/h)
  *  - `P`  uncertainty covariance (km/h)²
@@ -46,6 +50,8 @@
  *  - prior 부재 또는 Δt > STATE_STALE_THRESHOLD_MS → observation 직접 초기화.
  *  - Δt ≤ 0 → predict skip (시계 역행 보호; prior 그대로 update만).
  */
+
+import type { ArchFlagValue } from './archFlag';
 
 /** KV 키 prefix — device token 1개당 1 state. */
 const KALMAN_STATE_PREFIX = 'kalman:';
@@ -160,8 +166,18 @@ export function updateKalman(
  *   2. 정상 prior → predict → update.
  *
  * 반환된 state는 호출자가 fusedSpeed에 `kalmanKmh = state.v`로 전달하고 KV에 persist.
+ *
+ * #2007 (ADR-022 Phase 4-5) — optional `archFlag='on'` 시 계산 skip, null 반환.
+ * 신 아키텍처 (arvlCd SSoT) 는 smoothed velocity 를 사용하지 않으므로 hot path 에서
+ * KV read 를 지불한 뒤에도 pure computation 을 skip 해 CPU 를 절감한다. 호출자는 null
+ * 을 받으면 `writeKalmanState` 도 skip 해야 한다 (KV write 자체는 함수 밖 책임).
+ * 미전달 (legacy caller / 테스트) 시 undefined → 기존 동작 100% 유지.
  */
-export function runKalmanStep(inputs: KalmanStepInputs): KalmanState {
+export function runKalmanStep(
+  inputs: KalmanStepInputs,
+  archFlag?: ArchFlagValue,
+): KalmanState | null {
+  if (archFlag === 'on') return null;
   const { prior, gpsAvgKmh, gpsAccuracyMeters, accelMagnitudeStd, now } = inputs;
   if (!prior || now - prior.ts > STATE_STALE_THRESHOLD_MS) {
     return { v: gpsAvgKmh, P: computeNoiseR(gpsAccuracyMeters), ts: now };
