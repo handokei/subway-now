@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import {
-  SIMPLE_ARCH_ENABLED,
   cleanupPendingPushesForToken,
   clearStaleBoardingLock,
   computeRouteSignature,
@@ -239,9 +239,18 @@ describe('trips KV CRUD', () => {
       };
     }
 
-    describe('SIMPLE_ARCH_ENABLED flag (Phase 1-3)', () => {
-      it('module 상수는 기본 OFF (false) — Phase 1-3 인프라만 병존', () => {
-        expect(SIMPLE_ARCH_ENABLED).toBe(false);
+    describe('arch flag default (Phase 1-3, #2002 real helper wire)', () => {
+      it('KV 미설정 → default OFF: `rotateTripTokenForNewRoute` 기존 동작 유지', async () => {
+        // KV 에 arch flag 미설정 → getArchFlag 는 default 'off' 반환 → rotation 없음.
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+        );
+        expect(result).toEqual({ token: 'tok-old', rotated: false });
       });
     });
 
@@ -343,7 +352,7 @@ describe('trips KV CRUD', () => {
     });
 
     describe('rotateTripTokenForNewRoute (flag OFF)', () => {
-      it('flag OFF (default): 항상 incoming token 그대로 반환 + KV 변경 없음', async () => {
+      it('flag OFF (KV 미설정 default): 항상 incoming token 그대로 반환 + KV 변경 없음', async () => {
         const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
         await putTrip(kv as unknown as KVNamespace, existing);
         const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
@@ -367,7 +376,9 @@ describe('trips KV CRUD', () => {
         expect(result).toEqual({ token: 'tok-new', rotated: false });
       });
 
-      it('flag OFF: deps.simpleArchEnabled=false 명시도 동일', async () => {
+      it('flag OFF: deps.simpleArchEnabled=false 명시도 동일 (DI 우선)', async () => {
+        // #2002 — KV 에 flag=on 있어도 deps 명시가 우선 → OFF 동작.
+        await kv.put(ARCH_FLAG_KV_KEY, 'on');
         const existing = makeTrip({ token: 'tok-A', destination: 'D-1' });
         const incoming = makeTrip({ token: 'tok-A', destination: 'D-2' });
         const result = await rotateTripTokenForNewRoute(
@@ -377,6 +388,20 @@ describe('trips KV CRUD', () => {
           { simpleArchEnabled: false },
         );
         expect(result).toEqual({ token: 'tok-A', rotated: false });
+      });
+
+      it('flag OFF: KV value 오타 (default fallback)도 OFF 동작', async () => {
+        // #2002 — getArchFlag 는 'on' | 'off' 외 값을 default 'off' 로 정규화 → rotation 없음.
+        await kv.put(ARCH_FLAG_KV_KEY, 'invalid-value');
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+        );
+        expect(result).toEqual({ token: 'tok-old', rotated: false });
       });
     });
 
@@ -512,6 +537,23 @@ describe('trips KV CRUD', () => {
         );
         expect(result.rotated).toBe(true);
         spy.mockRestore();
+      });
+
+      it('#2002 — deps 미지정 + KV `arch:simple-arrival-v1`=on: 실제 helper 로 flag ON 동작', async () => {
+        // #2002 — real helper `getArchFlag(kv)` wire 검증. deps 미명시하면 KV 값으로 결정.
+        await kv.put(ARCH_FLAG_KV_KEY, 'on');
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { generateToken: () => 'new-token-from-kv-flag' },
+        );
+        expect(result).toEqual({ token: 'new-token-from-kv-flag', rotated: true });
+        // Old KV entry 삭제됨
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
       });
     });
   });

@@ -5,7 +5,6 @@
  */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import {
-  __setSimpleArchEnabledForTests,
   useStationAlarm,
   type UseStationAlarmInputs,
 } from '../useStationAlarm';
@@ -13,6 +12,7 @@ import {
   _resetFireAlarmOnceForTests,
   fireAlarmOnce,
 } from '../../utils/fireAlarmOnce';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../../store/useAlarmEventStore';
 import type { Station } from '../../../../shared/types/station';
@@ -256,9 +256,11 @@ describe('useStationAlarm', () => {
     // #1515 — cross-category dedup 모듈 in-memory 상태 리셋. mock하지 않은 실모듈 사용.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     require('../../utils/crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
-    // #1984 — fire-once ledger + flag OFF 리셋. 각 테스트가 필요한 경우 명시적으로 flag ON.
+    // #1984 — fire-once ledger 리셋. 각 테스트가 필요한 경우 env 로 flag ON.
+    // #2002 — 임시 setter (`__setSimpleArchEnabledForTests`) 제거. real helper wire —
+    // `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH` env 값으로 게이트.
     _resetFireAlarmOnceForTests();
-    __setSimpleArchEnabledForTests(false);
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
   });
 
   it('does not evaluate when route is null', () => {
@@ -5649,15 +5651,16 @@ describe('useStationAlarm', () => {
     });
   });
 
-  // #1984 (Phase 1-4, ADR-022 B3) — simpleArchEnabled=true 시 unified fire ledger가 Phase ETA +
+  // #1984 (Phase 1-4, ADR-022 B3) — flag ON 시 unified fire ledger가 Phase ETA +
   // API imminent 두 useEffect의 동일 (station+line+kind+phase) 재발사를 sync entry-guard로 차단.
   // 회귀 evidence: 2026-07-01 08:32:09 성수 fg fired station-passed 2건 (#1980 코멘트 케이스 1).
-  describe('#1984 simpleArchEnabled unified fire path', () => {
+  // #2002 — 임시 setter 대신 `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH` env 로 flag 게이트.
+  describe('#1984 isSimpleArchEnabled unified fire path', () => {
     const route = makeDirectRoute(3, '2');
     const station = makeStation('S1', '시청');
 
     it('flag OFF (기본): Phase ETA fire 정상 — fireAlarmOnce dedup 미적용 (backward-compat)', async () => {
-      __setSimpleArchEnabledForTests(false);
+      delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
       mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
 
       renderHook(() =>
@@ -5678,7 +5681,7 @@ describe('useStationAlarm', () => {
     });
 
     it('flag ON: 첫 fire 정상 발사 + logFiredAlarm', async () => {
-      __setSimpleArchEnabledForTests(true);
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
       mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
 
       renderHook(() =>
@@ -5708,7 +5711,7 @@ describe('useStationAlarm', () => {
       // 같은 초 race 시나리오 재현: ledger가 다른 fire path(예: 앞서 실행된 다른 useEffect 또는
       // 채널)로 이미 stamp된 상태에서 Phase ETA useEffect가 같은 조합으로 dispatch 시도 → 차단.
       // 사용자 evidence(2026-07-01 08:32:09 성수 fg fired 2건)의 두 번째 fire 차단 검증.
-      __setSimpleArchEnabledForTests(true);
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
       // ledger에 imminent destination 강남 (line=2) fire를 사전 stamp — 다른 채널이 먼저 발사한 상황.
       await fireAlarmOnce(
         {
@@ -5753,7 +5756,7 @@ describe('useStationAlarm', () => {
     });
 
     it('flag ON: 다른 phase(early → imminent) 진행은 정상 통과 (정상 phase 진행 보존)', async () => {
-      __setSimpleArchEnabledForTests(true);
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
       const { rerender } = renderHook(
         ({ input }: { input: UseStationAlarmInputs }) => useStationAlarm(input),
         {
@@ -5811,7 +5814,7 @@ describe('useStationAlarm', () => {
     });
 
     it('flag ON: rawEvent에 line=null 상황도 방어적 stringify로 정상 dedup', async () => {
-      __setSimpleArchEnabledForTests(true);
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
       // nearestStation 미제공 + lock.boardingLine 미설정 → resolveCurrentLine = null.
       mockGetBoardingLock.mockResolvedValue({
         destinationId: 'D1',

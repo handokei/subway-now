@@ -17,8 +17,8 @@
  *   진행(early → imminent)은 phase 필드가 달라 별도 키 → 통과.
  * - **In-memory only**: AsyncStorage roundtrip race가 본 회귀 원인이라 의도적으로 storage 배제.
  *   앱 재시작 시 reset되고 그 직후엔 hydration warmup(#1010/#1316)이 발사를 차단한다.
- * - **flag guard**: 호출부(`useStationAlarm.ts`)의 `SIMPLE_ARCH_ENABLED` 상수 OFF 시 본 ledger는
- *   dead code — 기존 fire 흐름이 그대로 동작 (backward-compat).
+ * - **flag guard**: 호출부(`useStationAlarm.ts`)의 `isSimpleArchEnabled()` OFF 시 본 ledger는
+ *   dead code — 기존 fire 흐름이 그대로 동작 (backward-compat). #2002 — Phase 0 real helper wire.
  *
  * ## API
  * - `fireAlarmOnce(payload, fire)` — sync in-flight reservation → fire callback 실행 → 성공 시만

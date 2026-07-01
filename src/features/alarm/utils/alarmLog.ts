@@ -298,7 +298,8 @@ export type AlarmLogReason =
   // #1984 (Phase 1-4, ADR-022 B3) — client 채널 통합 fire ledger가 catch한 재발사 1건.
   // Phase ETA + API imminent 두 useEffect가 같은 초에 동일 (station+line+kind+phase) 조합으로
   // dispatch 시도한 케이스를 sync entry-guard로 차단. evidence: 2026-07-01 08:32:09 fg fired
-  // station-passed 성수 2건. SIMPLE_ARCH_ENABLED=true 상태에서만 발생 (flag OFF 시 dead code).
+  // station-passed 성수 2건. `isSimpleArchEnabled()` ON (env=true / KV=on) 상태에서만 발생
+  // — flag OFF 시 unified gate 는 dead code.
   | 'dedup-simple-arch-fire-once';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
@@ -543,7 +544,7 @@ export function logSuppressedChannelAgnosticDedup(input: {
  * 에서 Phase ETA 또는 API imminent useEffect가 재발사를 시도한 case. sync entry-guard로 fire
  * callback 실행 자체를 차단 — 사용자 체감 "같은 초 2건" 회귀 근본 차단.
  *
- * SIMPLE_ARCH_ENABLED=true(useStationAlarm) 상태에서만 발생. flag OFF 시 본 helper는 호출 X
+ * `isSimpleArchEnabled()` ON (useStationAlarm) 상태에서만 발생. flag OFF 시 본 helper는 호출 X
  * (dead code). burst dedup으로 같은 (source, stationName) 반복 로그는 1건만 적재.
  */
 export function logSuppressedFireAlarmOnce(input: {

@@ -1,3 +1,4 @@
+import { getArchFlag } from './archFlag';
 import {
   assertCronCacheTtl,
   assertKvCacheTtl,
@@ -16,7 +17,7 @@ import type { Trip } from './types';
 const TRIP_PREFIX = 'trip:';
 
 /**
- * ADR-022 B4 — 새 route = 새 token 강제 (Phase 1-3 인프라).
+ * ADR-022 B4 — 새 route = 새 token 강제 (Phase 1-3, #2002 wire).
  *
  * 2026-06-17 ~ 2026-07-01 15일 회귀: `trip token e25e1158` 재사용으로 사용자가 새 route
  * 등록해도 old destination(용마산) silent push가 계속 발사되고 device는
@@ -26,10 +27,10 @@ const TRIP_PREFIX = 'trip:';
  * device 수명 동안 token이 안정하므로 route/destination이 바뀌어도 같은 KV entry에 덮어써짐.
  * `isSameSession`은 trainCode/createdAt 기준 → route/destination 차이가 있어도 같은 token 유지.
  *
- * Phase 1-3 정책: flag OFF일 때 기존 동작 유지. Phase 2 dogfood 시점에 flag ON 전환.
- * Rollback: 상수를 `false`로 되돌리면 즉시 기존 동작 복귀 (배포 없음).
+ * #2002 — 임시 상수 `SIMPLE_ARCH_ENABLED` 제거. Phase 0 (#1988) 머지 후 real helper
+ * `getArchFlag(kv)` 로 교체. flag 값은 KV `arch:simple-arrival-v1` 로 관리 (rollback = KV write).
+ * Rollback: `POST /admin/arch-flag {value:'off'}` 로 즉시 되돌린다 (배포 없음).
  */
-export const SIMPLE_ARCH_ENABLED = false;
 
 /**
  * cron read의 KV cacheTtl (#766/#770 → #1364 → #1381).
@@ -164,10 +165,10 @@ export function computeRouteSignature(trip: Trip): string {
  * `POST /trips`가 호출하는 진입점. incoming trip과 existing trip의 route/destination
  * 시그니처를 비교해 다르면 새 token 발급 + old token cleanup, 같으면 incoming token 유지.
  *
- * Flag OFF (`SIMPLE_ARCH_ENABLED === false`): 기존 동작 유지 — incoming.token 그대로 반환,
- * KV cleanup 없음. Phase 1-3 인프라만 병존.
+ * Flag OFF (default, KV `arch:simple-arrival-v1` !== 'on'): 기존 동작 유지 — incoming.token
+ * 그대로 반환, KV cleanup 없음. Phase 1-3 인프라만 병존.
  *
- * Flag ON (Phase 2+): existing 있고 route sig 다르면
+ * Flag ON (Phase 2+, KV `arch:simple-arrival-v1` === 'on'): existing 있고 route sig 다르면
  *   1. `crypto.randomUUID()`로 새 token 생성
  *   2. `trip:<oldToken>` KV delete
  *   3. `pending:*` 중 `entry.token === oldToken` 인 entry 모두 delete
@@ -176,7 +177,9 @@ export function computeRouteSignature(trip: Trip): string {
  * existing 없음 또는 같은 route: incoming.token 그대로 반환 (`rotated: false`).
  *
  * Testability: `deps.simpleArchEnabled` / `deps.generateToken` DI로 flag 강제 + token 결정성
- * 확보. 기본은 모듈 상수(`SIMPLE_ARCH_ENABLED`) + `crypto.randomUUID`. 테스트가 옵션 명시.
+ * 확보. 기본은 real helper `getArchFlag(kv)` + `crypto.randomUUID`. 테스트가 옵션 명시.
+ * #2002 — 임시 상수 대신 real helper wire. KV 미바인딩 / 미설정 견해는 `getArchFlag` 가
+ * default `'off'` 로 fallback → 기존 동작 유지.
  */
 export interface TokenRotationResult {
   token: string;
@@ -184,7 +187,7 @@ export interface TokenRotationResult {
 }
 
 export interface TokenRotationDeps {
-  /** flag override — 미지정 시 모듈 상수 `SIMPLE_ARCH_ENABLED`. */
+  /** flag override — 미지정 시 `getArchFlag(kv) === 'on'` 조회. */
   simpleArchEnabled?: boolean;
   /** 새 token 발급 함수 — 미지정 시 `crypto.randomUUID`. */
   generateToken?: () => string;
@@ -196,7 +199,11 @@ export async function rotateTripTokenForNewRoute(
   existing: Trip | null,
   deps?: TokenRotationDeps,
 ): Promise<TokenRotationResult> {
-  const flagEnabled = deps?.simpleArchEnabled ?? SIMPLE_ARCH_ENABLED;
+  // #2002 — real helper wire. deps.simpleArchEnabled DI 명시가 우선; 미지정 시 KV 조회.
+  // `getArchFlag` 는 KV 미바인딩/미설정/오타 모두 default `'off'` 로 fallback (dormant).
+  // 명시적 괄호: `??` 가 `===` 보다 tighter 로 파싱되므로 DI boolean 값 우선 사용을 보장한다.
+  const flagEnabled =
+    deps?.simpleArchEnabled ?? ((await getArchFlag(kv)) === 'on');
   // Flag OFF: 기존 동작 유지. incoming token 그대로.
   if (!flagEnabled) {
     return { token: incoming.token, rotated: false };

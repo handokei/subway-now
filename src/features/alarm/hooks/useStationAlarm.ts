@@ -84,39 +84,27 @@ import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import { resolveNotificationSource, type NotificationSource } from '../utils/notificationSource';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 
 const logger = createLogger('StationAlarm');
 
 /**
- * #1984 (Phase 1-4, ADR-022 B3) — client 채널 통합 fire path flag.
+ * #1984 (Phase 1-4, ADR-022 B3) — client 채널 통합 fire path.
  *
- * `false` (기본): 기존 fire 흐름 유지 (Phase ETA + API imminent 두 useEffect가 각각 `fireAndLog`
- * 직접 호출). backward-compat 보장 — 본 PR은 flag OFF 상태로 머지.
+ * flag OFF (default, `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH !== 'true'`): 기존 fire 흐름 유지
+ * (Phase ETA + API imminent 두 useEffect가 각각 `fireAndLog` 직접 호출). backward-compat 보장.
  *
- * `true`: 두 useEffect가 `fireAlarmOnce` unified ledger를 통과한 뒤에만 `fireAndLog` 호출.
- * ledger key = `${stationName}|${line}|${kind}|${phase}` — 같은 초 동시 dispatch race 차단.
- * Phase 5 실기기 검증 후 별도 이슈에서 true로 전환 예정 (staged rollout).
+ * flag ON (`EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH === 'true'` — dogfood 빌드): 두 useEffect가
+ * `fireAlarmOnce` unified ledger를 통과한 뒤에만 `fireAndLog` 호출. ledger key =
+ * `${stationName}|${line}|${kind}|${phase}` — 같은 초 동시 dispatch race 차단.
  *
  * 회귀 evidence (2026-07-01 08:32:09 성수 fg fired station-passed 2건, #1980 코멘트 케이스 1).
  *
- * 테스트 전용 override: `__setSimpleArchEnabledForTests(true|false)`. production 호출 금지.
+ * #2002 — 임시 module-scope `let simpleArchEnabled` + `__setSimpleArchEnabledForTests` 삭제.
+ * Phase 0 real helper `isSimpleArchEnabled()` (`src/shared/config/archFlag.ts`) 로 교체 —
+ * env `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH === 'true'` 또는 caller 가 remote flag 전달 시 활성.
+ * fire 시점에 매번 조회 — 매 시점 최신 flag 반영 (테스트에서 env 조작만으로 flag 전환 가능).
  */
-let simpleArchEnabled = false;
-
-/**
- * 테스트 전용 — SIMPLE_ARCH_ENABLED flag override.
- * `useStationAlarm.test.ts`의 unified fire ledger 검증에서만 사용. production 코드는 호출 X.
- *
- * Finding #4 review 반영: production NODE_ENV 오호출 방지 guard. debug menu / accidental
- * import 경로로 flag 우발 전환 차단.
- */
-export function __setSimpleArchEnabledForTests(value: boolean): void {
-  /* istanbul ignore next -- production guard. jest는 NODE_ENV='test'이라 도달 불가. */
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('__setSimpleArchEnabledForTests must not be called in production');
-  }
-  simpleArchEnabled = value;
-}
 
 // #1010/#1316/#1645 — 하이드레이션 warmup. lock hydrate 완료 후 이 기간 동안 알람 발사를 차단한다.
 // 하이드레이션 직후 firedAlarms가 복원되기 전 GPS/ETA 신호와 동기화되는 과도 구간 false alarm 방지.
@@ -1012,14 +1000,17 @@ export function useStationAlarm({
   /**
    * #1984 (Phase 1-4, ADR-022 B3) — client 채널 통합 fire ledger gate.
    *
-   * `simpleArchEnabled=false` (기본): 바로 `fireAndLog` 호출 — 기존 흐름 그대로.
-   * `simpleArchEnabled=true`: `fireAlarmOnce` ledger를 sync entry-guard로 통과한 뒤에만
+   * flag OFF (default): 바로 `fireAndLog` 호출 — 기존 흐름 그대로.
+   * flag ON: `fireAlarmOnce` ledger를 sync entry-guard로 통과한 뒤에만
    * `fireAndLog` 호출. 같은 (stationName, line, kind, phase) 조합이 30s 안에 이미 fire됐으면
    * skip + `logSuppressedFireAlarmOnce` 적재. Phase ETA + API imminent 두 useEffect가 같은
    * 초에 dispatch 시도한 회귀(2026-07-01 08:32:09 성수 fg fired station-passed 2건)를 차단.
    *
    * currentLine = lock.boardingLine 우선(currentLockLine) → nearestStation.line fallback.
    * `resolveCurrentLine` SSOT와 동일 규약.
+   *
+   * #2002 — fire 시점에 `isSimpleArchEnabled()` 호출 (env `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH`
+   * 값 기반). remote flag 반영이 필요한 caller 는 후속 PR 에서 arg 로 전달 예정.
    */
   async function fireViaUnifiedGate(
     rawEvent: AlarmEvent,
@@ -1027,7 +1018,7 @@ export function useStationAlarm({
     activeRoute: NonNullable<Route>,
     activeDestination: Station,
   ): Promise<void> {
-    if (!simpleArchEnabled) {
+    if (!isSimpleArchEnabled()) {
       await fireAndLog(rawEvent, trigger, activeRoute, activeDestination);
       return;
     }
@@ -1138,7 +1129,7 @@ export function useStationAlarm({
     // #699: fireAndLog가 setFiredAlarms를 await하므로 promise를 명시적으로 흘려보낸다.
     // #754: in-flight dedup은 fireAndLog 진입부의 sync firedAlarmsRef.current.add(key) 가
     // 보장한다 (await getBoardingLock 전에 set에 들어가므로 같은 키의 동시 호출은 즉시 return).
-    // #1984: simpleArchEnabled=true 시 unified fire ledger(fireAlarmOnce)가 sync entry-guard로
+    // #1984: flag ON 시 unified fire ledger(fireAlarmOnce)가 sync entry-guard로
     // 같은 (station+line+kind+phase) 조합의 동일 초 재발사를 차단한 뒤에만 fireAndLog로 진행.
     if (rawEvent) {
       // #746 — dismiss silence 게이트. 사용자 dismiss 후 5분/200m 이내라면 모든 카테고리 차단.
@@ -1268,7 +1259,7 @@ export function useStationAlarm({
     const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
     // #699: setFiredAlarms 영속화 완료를 await — silent push BG 핸들러가 같은 imminent를
     // 재발사하지 않도록 storage가 sync된 후 다음 cycle 진입.
-    // #1984: simpleArchEnabled=true 시 unified fire ledger가 Phase ETA effect와의 동일 초
+    // #1984: flag ON 시 unified fire ledger가 Phase ETA effect와의 동일 초
     // 재발사 race를 sync entry-guard로 차단.
     void fireViaUnifiedGate(rawEvent, 'api', route, destination);
   }, [
