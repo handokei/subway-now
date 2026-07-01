@@ -2226,7 +2226,10 @@ const handler = {
       console.log(JSON.stringify({ msg, ...meta, archFlag }));
 
     try {
-      await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
+      // #1995 (ADR-022 Phase 1-2) — archFlag 를 runScheduled deps 로 forward.
+      // 각 caller (arvlcd / vanish / transfer-release / lockless) 가 putPending / enqueueRetryIfTransient
+      // 호출 시 이 값을 전달해 flag=on 시 destination 이외 kind 는 skip.
+      await runScheduled(env, { seoul, apnsConfig, apnsHosts, log, archFlag });
     } catch (err) {
       captureBackendException(err, { path: 'scheduled/runScheduled' });
       throw err;
@@ -2235,7 +2238,8 @@ const handler = {
     await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
     // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
     // 시 재발사. KV binding 부재 시 graceful no-op (개발/테스트 환경 호환).
-    await runRetryPushes(env, { apnsConfig, apnsHosts, log });
+    // #1995 (ADR-022 Phase 1-2) — runRetryPushes 자체 재 enqueue 도 flag=on 시 destination 만 유지.
+    await runRetryPushes(env, { apnsConfig, apnsHosts, log, archFlag });
     // #972 — low-recall trip ratio 임계 위반 시 운영 webhook 발사. dedup KV(1h)로 spam 차단.
     // binding/secret 미설정 환경에서는 graceful no-op이라 회귀 없음.
     await evaluateAndMaybeAlert(env, { fetchImpl: fetch, now: () => Date.now(), log });

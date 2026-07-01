@@ -13,6 +13,7 @@
  */
 
 import type { AlarmPhase } from './alarm';
+import type { ArchFlagValue } from './archFlag';
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
 import { stampSent } from './silentPushReachMetric';
 import type { ApnsEnv } from './types';
@@ -67,11 +68,34 @@ export function buildAlarmKey(stationName: string, phase: AlarmPhase): string {
   return `${phase}:${stationName}`;
 }
 
+/**
+ * #1995 (ADR-022 Phase 1-2) — archFlag=on 시 등록 대상 kind 필터.
+ *
+ * 반복 알림 조사 코멘트 case 4: silent push 발사 실패 시 alert fallback 이 station-passed /
+ * transfer / intermediate 알림까지 모두 재발사해 사용자에게 "이미 지난 알림"이 반복 노출됨.
+ * 신규 아키텍처 (ADR-022) 는 destination(하차) 알림만 사용자에게 필수 재발사 가치가 있다고
+ * 판단해 pending 등록 자체를 destination 으로 제한한다.
+ *
+ * flag=off (default) 시 이 함수는 항상 true 반환 — 기존 동작 100% 유지.
+ * flag=on 시 kind !== 'destination' 이면 false → putPending 이 no-op.
+ */
+export function shouldRegisterPendingForKind(
+  archFlag: ArchFlagValue | undefined,
+  kind: PendingPush['kind'],
+): boolean {
+  if (archFlag !== 'on') return true;
+  return kind === 'destination';
+}
+
 export async function putPending(
   kv: KVNamespace | undefined,
   entry: PendingPush,
+  // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 등록. 미전달 (legacy caller) 은
+  // undefined 로 처리되어 기존 동작 100% 유지.
+  archFlag?: ArchFlagValue,
 ): Promise<void> {
   if (!kv) return;
+  if (!shouldRegisterPendingForKind(archFlag, entry.kind)) return;
   await kv.put(pendingKey(entry.pushId), JSON.stringify(entry), {
     expirationTtl: PENDING_TTL_SEC,
   });

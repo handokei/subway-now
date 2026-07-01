@@ -27,6 +27,7 @@ import {
   sendWithEnvHeal,
 } from './apnsHost';
 import { sendSilentPush, type ApnsConfig, type SilentPushPayload } from './apns';
+import type { ArchFlagValue } from './archFlag';
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
 import type { ApnsEnv, Env } from './types';
 
@@ -77,10 +78,33 @@ export function retryPushKey(pushId: string): string {
 }
 
 /**
+ * #1995 (ADR-022 Phase 1-2) — archFlag=on 시 재발사 대상 kind 필터.
+ *
+ * 반복 알림 조사 코멘트 case 4: silent push 발사 실패 시 backend 재발사가 station-passed /
+ * transfer / intermediate 알림까지 모두 반복 발사해 사용자에게 "이미 지난 알림"이 반복 노출됨.
+ * 신규 아키텍처 (ADR-022) 는 destination(하차) 알림만 사용자에게 필수 재발사 가치가 있다고
+ * 판단해 retry queue 적재 자체를 destination 으로 제한한다.
+ *
+ * flag=off (default) 시 이 함수는 항상 true 반환 — 기존 동작 100% 유지.
+ * flag=on 시 kind !== 'destination' 이면 false → enqueueRetryIfTransient 가 no-op.
+ */
+export function shouldRetryForKind(
+  archFlag: ArchFlagValue | undefined,
+  kind: SilentPushPayload['kind'],
+): boolean {
+  if (archFlag !== 'on') return true;
+  return kind === 'destination';
+}
+
+/**
  * 발사 실패가 retryable 인지 검사 + retry queue 등록. status 가 retryable 이 아니거나 KV 미바인딩이면 no-op.
  *
  * `attemptCount` 미지정 시 0 (첫 enqueue). 호출자가 fire path 실패 직후 한 번 호출하면 충분 —
  * 다음 cron `runRetryPushes` 가 backoff 후 재발사 + 추가 실패 시 attemptCount 증가 + 재 enqueue.
+ *
+ * #1995 (ADR-022 Phase 1-2) — `archFlag` 파라미터 (optional). flag=on 시 payload.kind !==
+ * 'destination' 이면 no-op. 미전달 (legacy caller / retry loop 자기 재 enqueue) 시 undefined
+ * 로 처리 → 기존 동작 100% 유지.
  */
 export async function enqueueRetryIfTransient(
   kv: KVNamespace | undefined,
@@ -95,9 +119,11 @@ export async function enqueueRetryIfTransient(
     attemptCount?: number;
     originalSentAt?: number;
   },
+  archFlag?: ArchFlagValue,
 ): Promise<boolean> {
   if (!kv) return false;
   if (!isRetryableApnsError(input.status)) return false;
+  if (!shouldRetryForKind(archFlag, input.payload.kind)) return false;
   const attemptCount = input.attemptCount ?? 0;
   const nextAttemptAt = computeNextRetryAt(attemptCount, input.now);
   if (nextAttemptAt === null) return false; // 영구 폐기 — caller 가 별도 cleanup
@@ -159,6 +185,11 @@ export interface RetryPushDeps {
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: Logger;
+  /**
+   * #1995 (ADR-022 Phase 1-2) — archFlag=on 시 재실패 재 enqueue 도 destination 만 유지.
+   * 미전달 시 undefined 로 처리되어 기존 동작 100% 유지.
+   */
+  archFlag?: ArchFlagValue;
 }
 
 export interface RetryPushStats {
@@ -220,18 +251,23 @@ export async function runRetryPushes(env: Env, deps: RetryPushDeps): Promise<Ret
       continue;
     }
     // 실패. retryable 이면 다음 backoff 로 재 enqueue, 아니면 폐기.
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 재 enqueue.
     const nextAttempt = entry.attemptCount + 1;
-    const rescheduled = await enqueueRetryIfTransient(env.PENDING_PUSHES, {
-      pushId: entry.pushId,
-      token: entry.token,
-      payload: entry.payload,
-      apnsEnv: heal.correctedEnv ?? entry.apnsEnv,
-      status: heal.result.status,
-      reason: heal.result.reason,
-      now,
-      attemptCount: nextAttempt,
-      originalSentAt: entry.originalSentAt,
-    });
+    const rescheduled = await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId: entry.pushId,
+        token: entry.token,
+        payload: entry.payload,
+        apnsEnv: heal.correctedEnv ?? entry.apnsEnv,
+        status: heal.result.status,
+        reason: heal.result.reason,
+        now,
+        attemptCount: nextAttempt,
+        originalSentAt: entry.originalSentAt,
+      },
+      deps.archFlag,
+    );
     if (rescheduled) {
       stats.rescheduled += 1;
       log('retry-push rescheduled', {
