@@ -975,3 +975,118 @@ describe('arcIndexOfStation', () => {
     ).toBe(-1);
   });
 });
+
+/**
+ * Phase 1-7 (#1996, ADR-022 A4) — boardingStationId 불변 회귀 가드.
+ *
+ * estimator는 arc 위 hop index만 계산한다. reanchored-hop / default-hop / arrival-eta /
+ * lockless-route-hop 등 모든 strategy가 `lock.boardingStationId` 자체를 mutate하지 않아야 한다
+ * (route 등록 시 확정된 boardingStationId는 auto-swap / reanchored / fusion cascade에서 절대 자동 변경 금지).
+ *
+ * 회귀 신호: 사용자 관찰 `reanchored-hop | 어린이대공원 idx=3` (Estimator State) —
+ * 정상은 lock.boardingStationId 유지 + arc 위 idx=3 station을 return. 만약 미래 어떤 refactor에서
+ * estimator가 lock 객체를 직접 mutate하거나 새 boardingStationId를 담은 lock 객체를 wrap해 반환하면 본 test가 실패.
+ */
+describe('Phase 1-7 (#1996) — boardingStationId 불변 (estimator)', () => {
+  it('reanchored-hop 전략은 lock.boardingStationId를 mutate하지 않는다', () => {
+    const lock = makeLock({ boardingStationId: '7-001' });
+    const originalBoardingStationId = lock.boardingStationId;
+    const observedAt = T0 + 200_000;
+
+    // reanchored-hop 채택 조건: lastObserved 있음 + hop 진행.
+    const r = estimateStationProgress({
+      lock,
+      arcStations: ARC,
+      now: observedAt + 3 * HOP_TIME_MS,
+      trainProgress: null,
+      lockedTrainCode: '7093',
+      lastObserved: { arcIndex: 1, observedAtMs: observedAt },
+      hopTimeMsForHop: UNIFORM_HOP,
+      ...NO_ARRIVAL_INPUT,
+    });
+
+    // estimator는 arc 위 앞 station으로 hop 진행 결과를 return.
+    expect(r?.strategy).toBe('reanchored-hop');
+    expect(r?.index).toBe(4); // idx 1 + 3 hop
+    expect(r?.station).toBe(ARC[4]);
+
+    // 핵심: lock 객체 자체는 어떤 필드도 변경되지 않아야 한다.
+    expect(lock.boardingStationId).toBe(originalBoardingStationId);
+    expect(lock.boardingStationId).toBe('7-001');
+  });
+
+  it('default-hop 전략은 lock.boardingStationId를 mutate하지 않는다', () => {
+    const lock = makeLock({ boardingStationId: '7-001' });
+    const originalBoardingStationId = lock.boardingStationId;
+
+    // default-hop 채택 조건: lastObserved 없음.
+    const r = estimateStationProgress({
+      lock,
+      arcStations: ARC,
+      now: T0 + HOP_TIME_MS,
+      trainProgress: null,
+      lockedTrainCode: '7093',
+      lastObserved: null,
+      hopTimeMsForHop: UNIFORM_HOP,
+      ...NO_ARRIVAL_INPUT,
+    });
+
+    expect(r?.strategy).toBe('default-hop');
+    expect(r?.index).toBe(1);
+    // lock 객체 immutable.
+    expect(lock.boardingStationId).toBe(originalBoardingStationId);
+  });
+
+  it('live-position 전략은 lock.boardingStationId를 mutate하지 않는다', () => {
+    const lock = makeLock({ boardingStationId: '7-001' });
+    const originalBoardingStationId = lock.boardingStationId;
+
+    // live-position 채택 조건: trainProgress + lockedTrainCode 매칭.
+    const r = estimateStationProgress({
+      lock,
+      arcStations: ARC,
+      now: T0 + HOP_TIME_MS,
+      trainProgress: makeTrainProgress({ stationIdx: 2 }),
+      lockedTrainCode: '7093',
+      lastObserved: null,
+      hopTimeMsForHop: UNIFORM_HOP,
+      ...NO_ARRIVAL_INPUT,
+    });
+
+    expect(r?.strategy).toBe('live-position');
+    expect(r?.index).toBe(2);
+    // lock 객체 immutable.
+    expect(lock.boardingStationId).toBe(originalBoardingStationId);
+  });
+
+  it('estimator 다수 tick 반복해도 lock 원본 객체가 mutate되지 않는다 (frozen 동작)', () => {
+    const lock = makeLock({ boardingStationId: '7-001' });
+    // Object.freeze로 실제 write attempt 시 strict mode에서 throw — estimator가 write 시도 자체를 하지 않음을 강제.
+    Object.freeze(lock);
+
+    // 다양한 시점의 tick을 반복 — reanchored-hop / default-hop / live-position 모두 순회.
+    const inputs = [
+      { now: T0, lastObserved: null, trainProgress: null },
+      { now: T0 + HOP_TIME_MS, lastObserved: null, trainProgress: null },
+      { now: T0 + 2 * HOP_TIME_MS, lastObserved: { arcIndex: 0, observedAtMs: T0 }, trainProgress: null },
+      { now: T0 + 3 * HOP_TIME_MS, lastObserved: { arcIndex: 1, observedAtMs: T0 }, trainProgress: null },
+      { now: T0 + HOP_TIME_MS, lastObserved: null, trainProgress: makeTrainProgress({ stationIdx: 3 }) },
+    ];
+
+    // 각 tick에서 exception 없이 estimator가 결과를 return + lock은 여전히 원본 boardingStationId 유지.
+    expect(() => {
+      for (const input of inputs) {
+        estimateStationProgress({
+          lock,
+          arcStations: ARC,
+          hopTimeMsForHop: UNIFORM_HOP,
+          lockedTrainCode: '7093',
+          ...NO_ARRIVAL_INPUT,
+          ...input,
+        });
+      }
+    }).not.toThrow();
+
+    expect(lock.boardingStationId).toBe('7-001');
+  });
+});
