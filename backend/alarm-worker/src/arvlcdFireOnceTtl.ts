@@ -1,0 +1,112 @@
+/**
+ * arvlCd fire-once TTL helper — ADR-022 Phase 1-1 (#1985).
+ *
+ * ## 배경
+ *
+ * ADR-022 (#1980) — Seoul TOPIS `realtimeStationArrival` API (arvlCd) 를 알림 SSOT 로 단일화하는
+ * 아키텍처 재설계. Issue #1980 코멘트 "동일 알림 반복 발사 근본 원인" 케이스 2:
+ *
+ *   13:31:14 silent-push-received 어린이대공원
+ *   13:32:14 silent-push-received 어린이대공원   ← 1분 후 또
+ *   13:37:14 silent-push-received 어린이대공원   ← 5분 후 또
+ *   13:38:14 silent-push-received station-passed imminent 어린이대공원
+ *
+ * Backend cron 60s 폴링 + arvlCd=1 지속(~30초) — 매 폴링마다 감지 시 push 재발사. 기존
+ * `arvlCdFireKey` dedup 은 `arvlCd` 값을 key 에 포함해 0(진입) 과 1(도착) 을 별 entry 로 분리
+ * stamp → 같은 train 이 한 station 을 지나가는 동안 최소 2번 fire 가능.
+ *
+ * ## 정책
+ *
+ * 같은 (`tripToken`, `stationName`) 에서 한 arvlCd cycle (0진입→1도착→2출발→5전역도착 monotone
+ * 시퀀스) 동안 fire 를 **1회로 강제**. 5분 TTL 로 자연 회수 — TTL 만료 시 다음 관측이 새 cycle
+ * 시작 (train 이 물리적으로 같은 station 을 5분 안에 재방문할 수 없음).
+ *
+ * `cycle` 파라미터는 미래-확장 slot — 현재는 `0` 고정 상수 caller 가 전달. 5분 TTL 이 사실상
+ * cycle 경계를 처리하므로 stateful cycle counter 는 불필요. 후속 PR 에서 cross-cron cycle
+ * 추적이 필요해지면 slot 을 활용해 정수 카운터로 확장 가능.
+ *
+ * ## Feature flag
+ *
+ * 본 helper 자체는 flag 를 알지 않는다 — caller (`fireArvlCdStationPush`) 가 `isSimpleArchEnabled()`
+ * 로 게이트한다. Phase 0 (#1982) 머지 후속 PR 에서 real `getArchFlag(env.KV)` wire.
+ *
+ * ## 관측
+ *
+ * skip 발생 시 caller 가 `writeMetric(env, { eventType: 'suppress', reason: 'fire-once-cycle-already' })`
+ * 로 wrangler tail 관측. `arvlCdFireOnceSkipped` stat 카운터도 별도 누적.
+ */
+
+/**
+ * 5분 (300s). Train 이 같은 station 을 5분 안에 재방문할 수 없다는 실제 운영 특성 기반.
+ * `ARVLCD_FIRE_DEDUP_TTL_SEC` (1시간, per-arvlCd key) 와 별개 정책 — 이 TTL 은 cycle 단위
+ * 전체를 커버하며 flag=ON 시에만 적용된다.
+ */
+export const ARVLCD_FIRE_ONCE_TTL_SEC = 5 * 60;
+
+/**
+ * KV key prefix. 형식: `fireOnce:{tripToken}:{stationName}:{arvlCdCycle}`.
+ *
+ * 주의: `arvlCdFireKey` (`arvlcd-fire:` prefix, per-arvlCd 분리) 와 namespace 격리 —
+ * 두 dedup layer 가 동일 KV 에서 서로 오염하지 않는다.
+ */
+export const ARVLCD_FIRE_ONCE_KEY_PREFIX = 'fireOnce:';
+
+/**
+ * Fire-once KV key 빌더.
+ *
+ * @param token       trip token (per-trip isolation — cross-trip leak 차단).
+ * @param stationName waypoint station name (표준 어휘, `stations.json` BLDN_NM).
+ * @param cycle       arvlCd cycle bucket (현재는 `0` 고정 slot, 5분 TTL 이 cycle 경계 처리).
+ */
+export function arvlCdFireOnceKey(
+  token: string,
+  stationName: string,
+  cycle: number,
+): string {
+  return `${ARVLCD_FIRE_ONCE_KEY_PREFIX}${token}:${stationName}:${cycle}`;
+}
+
+/**
+ * KV 에 이미 fire-once stamp 가 있는지 확인.
+ *
+ * @returns true — 이미 fire 됨 (skip 필요). false — 미stamp (fire 진행 가능).
+ */
+export async function checkArvlCdFireOnce(
+  kv: KVNamespace,
+  token: string,
+  stationName: string,
+  cycle: number,
+): Promise<boolean> {
+  const key = arvlCdFireOnceKey(token, stationName, cycle);
+  const existing = await kv.get(key);
+  return existing !== null;
+}
+
+/**
+ * Fire-once stamp 를 5분 TTL 로 write. 성공 fire 직후 caller 가 호출.
+ *
+ * value 는 stamp 시각 ms — 관측 시 몇 초 전에 stamp 됐는지 tail 에서 즉시 확인.
+ */
+export async function stampArvlCdFireOnce(
+  kv: KVNamespace,
+  token: string,
+  stationName: string,
+  cycle: number,
+  now: number,
+): Promise<void> {
+  const key = arvlCdFireOnceKey(token, stationName, cycle);
+  await kv.put(key, String(now), { expirationTtl: ARVLCD_FIRE_ONCE_TTL_SEC });
+}
+
+/**
+ * ADR-022 Phase 1-1 임시 flag. `false` = 기존 로직 (per-arvlCd dedup) 그대로.
+ * Phase 0 (#1982) 머지 후속 PR 에서 `getArchFlag(env.KV)` 로 real wire — 그 시점 이전엔
+ * production 무영향.
+ *
+ * 함수로 노출한 이유: 테스트에서 `vi.spyOn(module, 'isSimpleArchEnabled')` 로 flag=ON 시나리오
+ * 검증. Phase 1-2 follow-up PR 에서 signature 를 `isSimpleArchEnabled(env: Env)` 로 확장하고
+ * 내부를 `await getArchFlag(env.KV)` 로 교체 (call site 는 이미 `env` 를 갖고 있음).
+ */
+export function isSimpleArchEnabled(): boolean {
+  return false;
+}
