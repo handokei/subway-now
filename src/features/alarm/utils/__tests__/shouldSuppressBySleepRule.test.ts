@@ -278,4 +278,63 @@ describe('shouldSuppressBySleepRule', () => {
       ).toBe(expected);
     });
   });
+
+  // #1987 (ADR-022 B6) — "안내시작 = 취침모드 강제" 회귀 방지.
+  // 사용자 관찰 (2026-06-30, 2026-07-01) : 건대 알림 도착 시 "계속되는 진동은 취침모드에서만
+  // 동작해야 함". 안내 시작 후에도 sleepMode=false 인 한 환승 억제 게이트가 발동하지 않아야 함.
+  //
+  // 게이트 SSOT는 오직 `input.sleepMode` — navigation 상태 (`navigationActive`) 나
+  // 사용자 명시 의향 (`infoModeEnabled`) 이 sleepMode 을 뒤집는 결합은 시스템 어디에도
+  // 없어야 한다. 본 describe는 정책 boundary 를 명시 박제한다.
+  describe('#1987 (B6) — 취침모드 OFF 시 억제 로직 동작 X (안내 시작과 무관)', () => {
+    it.each<{
+      label: string;
+      lock: BoardingLock | null;
+      eventType: SleepRuleEventType;
+    }>([
+      { label: 'lock 활성 + transfer + sleep OFF → fire (안내 시작 여부 무관)', lock, eventType: 'transfer' },
+      { label: 'lock 활성 + station-passed + sleep OFF → fire (안내 시작 여부 무관)', lock, eventType: 'station-passed' },
+      { label: 'lock 활성 + destination + sleep OFF → fire (도착 알람)', lock, eventType: 'destination' },
+      { label: 'lockless + transfer + sleep OFF → fire (사용자 명시 의향 trip 포함)', lock: null, eventType: 'transfer' },
+      { label: 'lockless + station-passed + sleep OFF → fire (사용자 명시 의향 trip 포함)', lock: null, eventType: 'station-passed' },
+      { label: 'lockless + destination + sleep OFF → fire (도착 알람)', lock: null, eventType: 'destination' },
+    ])('$label', ({ lock: lockInput, eventType }) => {
+      expect(
+        shouldSuppressBySleepRule(
+          makeInput({
+            lock: lockInput,
+            eventType,
+            sleepMode: false,     // 사용자가 취침 모드 OFF
+            isFirstHop: true,     // 안내 시작 직후 첫 hop 시나리오
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    // 취침 모드 ON 정책 preservation — 기존 억제 동작이 사라지지 않도록 회귀 방지.
+    it.each<{
+      label: string;
+      lock: BoardingLock | null;
+      eventType: SleepRuleEventType;
+      expected: boolean;
+    }>([
+      { label: 'lock 활성 + transfer + sleep ON + firstHop → suppress (기존 #750 정책)', lock, eventType: 'transfer', expected: true },
+      { label: 'lock 활성 + station-passed + sleep ON + firstHop → suppress (기존 D8 정책)', lock, eventType: 'station-passed', expected: true },
+      { label: 'lock 활성 + destination + sleep ON + firstHop → fire (도착 항상 보존)', lock, eventType: 'destination', expected: false },
+      { label: 'lockless + transfer + sleep ON + firstHop → suppress (D8 lockless 확장)', lock: null, eventType: 'transfer', expected: true },
+      { label: 'lockless + station-passed + sleep ON + firstHop → suppress (D8 lockless 확장)', lock: null, eventType: 'station-passed', expected: true },
+      { label: 'lockless + destination + sleep ON + firstHop → fire (도착 항상 보존)', lock: null, eventType: 'destination', expected: false },
+    ])('$label', ({ lock: lockInput, eventType, expected }) => {
+      expect(
+        shouldSuppressBySleepRule(
+          makeInput({
+            lock: lockInput,
+            eventType,
+            sleepMode: true,
+            isFirstHop: true,
+          }),
+        ),
+      ).toBe(expected);
+    });
+  });
 });
