@@ -57,13 +57,18 @@ const GPS_DROP_WINDOW_MS = 1000;
 // useStationAlarm effect short-circuit으로 별개 layer에서 해소됐으므로 GPS callback throttle을
 // 제거해도 cascade가 재발하지 않는다.
 // subsurface는 동일하게 distanceInterval=0 — 지하 indoor positioning 보강 동안에는 매 fix가 필요.
+// #1983 (ADR-022 A3) — subsurface에서도 Accuracy.High. 이전엔 Balanced로 배터리 세이빙(#1313)
+// 이었으나 Balanced(100m~수km, cellular triangulation)는 지상 fix까지 1000~1600m 저정확도로
+// 오염시키는 회귀(7/1 오후, 6/30 여러 로그) 발생. subsurface는 timeInterval 12s로만 throttle하고
+// accuracy는 High 통일 — 지하에서 GPS fix 자체가 없을 땐 OS가 자연스레 fallback하므로 High도
+// 배터리 부담 크지 않다. 배터리 실측 회귀 시 별도 이슈로 대응.
 const FG_WATCH_OPTIONS_SURFACE: Location.LocationOptions = {
   accuracy: Location.Accuracy.High,
   distanceInterval: 0,
   timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
 };
 const FG_WATCH_OPTIONS_SUBSURFACE: Location.LocationOptions = {
-  accuracy: Location.Accuracy.Balanced,
+  accuracy: Location.Accuracy.High,
   distanceInterval: 0,
   timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
 };
@@ -379,9 +384,11 @@ export function useNearestStation(
       //  좌표를 최대한 자주 흘려보낸다 (foreground 한정, 화면 켜진 동안만).
       //  High는 GPS hardware fix가 없으면 WiFi BSSID / Cell tower triangulation으로 fallback
       //  → 지하 구간에서도 ~50~100m 위치가 들어옴 (BestForNavigation은 fallback 없이 stale).
-      // 지하(subsurface 확정, #1313): Balanced + timeInterval:12000으로 throttle — GPS가 무의미한
-      //  구간에서 full-power watch가 배터리를 태우는 것을 막는다. throttledRef가 현재 throttle 여부를
-      //  들고 있어 flip 시 effect가 stopWatch→startWatch로 재구성한다(아래 useEffect).
+      // 지하(subsurface 확정, #1313 + #1983): High + timeInterval:12000으로 throttle. accuracy는
+      //  지상과 동일하게 High 유지 (#1983 ADR-022 A3) — Balanced는 지상 fix까지 1000~1600m로
+      //  오염시키는 회귀 발생. GPS fix 자체가 없을 때는 OS가 자연 fallback하므로 High도 지하 배터리
+      //  부담 크지 않다. throttledRef가 현재 throttle 여부를 들고 있어 flip 시 effect가
+      //  stopWatch→startWatch로 재구성한다(아래 useEffect).
       // 참고: pausesUpdatesAutomatically / activityType은 expo-location foreground 옵션에
       //  노출되지 않아 적용 불가. background task 옵션에서만 사용 가능.
       subscriptionRef.current = await Location.watchPositionAsync(

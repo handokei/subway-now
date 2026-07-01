@@ -152,8 +152,12 @@ async function resolveUserPosition(): Promise<UserPosition | null> {
     logger.warn('getLastKnownPositionAsync 실패 — fresh fetch 시도:', e);
   }
   try {
+    // #1983 (ADR-022 A3) — Balanced(100m~수km, cellular triangulation)는 지상 fix까지 1000~1600m
+    // 저정확도로 오염시키는 회귀 발생 (7/1 오후, 6/30 여러). silent push imminent 게이트가 잘못된
+    // 좌표로 거리 판정하면 out-of-range 오거부/오통과 모두 회귀 요인이라 Accuracy.High 통일한다.
+    // BG 3s 타임아웃 유지 — High도 OS 캐시 hit이면 즉답, 콜드 fetch면 timeout으로 안전 skip.
     const fresh = await withTimeout(
-      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
       FRESH_FETCH_TIMEOUT_MS,
     );
     return {
