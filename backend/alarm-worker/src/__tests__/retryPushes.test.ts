@@ -8,6 +8,7 @@ import {
   retryPushKey,
   RETRY_PUSH_TTL_SEC,
   runRetryPushes,
+  shouldRetryForKind,
   type RetryPush,
 } from '../retryPushes';
 import { RETRY_BACKOFF_SCHEDULE_MS } from '../apnsHost';
@@ -219,6 +220,147 @@ describe('retryPushes (#1721)', () => {
       });
       const entry = JSON.parse((await kv.get('retry-push:p-no-reason')) as string) as RetryPush;
       expect('lastErrorReason' in entry).toBe(false);
+    });
+
+    describe('#1995 (ADR-022 Phase 1-2) — archFlag kind 필터', () => {
+      it('archFlag 미전달 (legacy) → 모든 kind 적재', async () => {
+        const q1 = await enqueueRetryIfTransient(kv as unknown as KVNamespace, {
+          pushId: 'p-legacy-tr',
+          token: 'tok',
+          payload: makePayload({ pushId: 'p-legacy-tr', kind: 'transfer' }),
+          apnsEnv: 'sandbox',
+          status: 429,
+          now: NOW,
+        });
+        const q2 = await enqueueRetryIfTransient(kv as unknown as KVNamespace, {
+          pushId: 'p-legacy-im',
+          token: 'tok',
+          payload: makePayload({ pushId: 'p-legacy-im', kind: 'intermediate' }),
+          apnsEnv: 'sandbox',
+          status: 429,
+          now: NOW,
+        });
+        const q3 = await enqueueRetryIfTransient(kv as unknown as KVNamespace, {
+          pushId: 'p-legacy-de',
+          token: 'tok',
+          payload: makePayload({ pushId: 'p-legacy-de', kind: 'destination' }),
+          apnsEnv: 'sandbox',
+          status: 429,
+          now: NOW,
+        });
+        expect([q1, q2, q3]).toEqual([true, true, true]);
+      });
+
+      it('archFlag=off (default) → 모든 kind 적재 (기존 동작 유지)', async () => {
+        const q1 = await enqueueRetryIfTransient(
+          kv as unknown as KVNamespace,
+          {
+            pushId: 'p-off-tr',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-off-tr', kind: 'transfer' }),
+            apnsEnv: 'sandbox',
+            status: 429,
+            now: NOW,
+          },
+          'off',
+        );
+        const q2 = await enqueueRetryIfTransient(
+          kv as unknown as KVNamespace,
+          {
+            pushId: 'p-off-im',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-off-im', kind: 'intermediate' }),
+            apnsEnv: 'sandbox',
+            status: 429,
+            now: NOW,
+          },
+          'off',
+        );
+        const q3 = await enqueueRetryIfTransient(
+          kv as unknown as KVNamespace,
+          {
+            pushId: 'p-off-de',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-off-de', kind: 'destination' }),
+            apnsEnv: 'sandbox',
+            status: 429,
+            now: NOW,
+          },
+          'off',
+        );
+        expect([q1, q2, q3]).toEqual([true, true, true]);
+      });
+
+      it('archFlag=on + kind=destination → 적재 (사용자 가치 유지)', async () => {
+        const queued = await enqueueRetryIfTransient(
+          kv as unknown as KVNamespace,
+          {
+            pushId: 'p-on-de',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-on-de', kind: 'destination' }),
+            apnsEnv: 'sandbox',
+            status: 429,
+            now: NOW,
+          },
+          'on',
+        );
+        expect(queued).toBe(true);
+        expect(await kv.get('retry-push:p-on-de')).not.toBeNull();
+      });
+
+      it('archFlag=on + kind=transfer → skip (반복 알림 case 4 fix, station-passed/transfer retry 0건)', async () => {
+        const queued = await enqueueRetryIfTransient(
+          kv as unknown as KVNamespace,
+          {
+            pushId: 'p-on-tr',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-on-tr', kind: 'transfer' }),
+            apnsEnv: 'sandbox',
+            status: 429,
+            now: NOW,
+          },
+          'on',
+        );
+        expect(queued).toBe(false);
+        expect(await kv.get('retry-push:p-on-tr')).toBeNull();
+      });
+
+      it('archFlag=on + kind=intermediate → skip (반복 알림 case 4 fix)', async () => {
+        const queued = await enqueueRetryIfTransient(
+          kv as unknown as KVNamespace,
+          {
+            pushId: 'p-on-im',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-on-im', kind: 'intermediate' }),
+            apnsEnv: 'sandbox',
+            status: 500,
+            now: NOW,
+          },
+          'on',
+        );
+        expect(queued).toBe(false);
+        expect(await kv.get('retry-push:p-on-im')).toBeNull();
+      });
+    });
+  });
+
+  describe('#1995 shouldRetryForKind', () => {
+    it('archFlag=undefined (legacy) → true (모든 kind)', () => {
+      expect(shouldRetryForKind(undefined, 'transfer')).toBe(true);
+      expect(shouldRetryForKind(undefined, 'intermediate')).toBe(true);
+      expect(shouldRetryForKind(undefined, 'destination')).toBe(true);
+    });
+
+    it('archFlag=off → true (모든 kind)', () => {
+      expect(shouldRetryForKind('off', 'transfer')).toBe(true);
+      expect(shouldRetryForKind('off', 'intermediate')).toBe(true);
+      expect(shouldRetryForKind('off', 'destination')).toBe(true);
+    });
+
+    it('archFlag=on → destination 만 true', () => {
+      expect(shouldRetryForKind('on', 'transfer')).toBe(false);
+      expect(shouldRetryForKind('on', 'intermediate')).toBe(false);
+      expect(shouldRetryForKind('on', 'destination')).toBe(true);
     });
   });
 
@@ -512,6 +654,95 @@ describe('retryPushes (#1721)', () => {
         fetchImpl: apnsFetch as unknown as typeof fetch,
       });
       expect(stats.resent).toBe(1);
+    });
+
+    describe('#1995 (ADR-022 Phase 1-2) — deps.archFlag 재 enqueue 필터', () => {
+      it('deps.archFlag=on + entry.kind=transfer + 재실패 → 재 enqueue 되지 않음 (exhausted)', async () => {
+        // 이미 enqueue 된 transfer entry (flag off 시절 or self-retry).
+        await kv.put(
+          'retry-push:p-loop-tr',
+          JSON.stringify({
+            pushId: 'p-loop-tr',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-loop-tr', kind: 'transfer' }),
+            apnsEnv: 'sandbox',
+            attemptCount: 0,
+            nextAttemptAt: NOW,
+            originalSentAt: NOW,
+            lastErrorStatus: 429,
+          }),
+        );
+        // 재시도 시 500 응답 → 원래 재 enqueue 될 상황.
+        const apnsFetch = vi.fn(async () =>
+          new Response(JSON.stringify({ reason: 'InternalServerError' }), { status: 500 }),
+        );
+        const stats = await runRetryPushes(makeEnv(kv), {
+          apnsConfig: makeApnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW + 1,
+          archFlag: 'on',
+        });
+        expect(stats.rescheduled).toBe(0);
+        expect(stats.exhausted).toBe(1);
+        expect(await kv.get('retry-push:p-loop-tr')).toBeNull();
+      });
+
+      it('deps.archFlag=on + entry.kind=destination + 재실패 → 재 enqueue (사용자 가치 유지)', async () => {
+        await kv.put(
+          'retry-push:p-loop-de',
+          JSON.stringify({
+            pushId: 'p-loop-de',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-loop-de', kind: 'destination' }),
+            apnsEnv: 'sandbox',
+            attemptCount: 0,
+            nextAttemptAt: NOW,
+            originalSentAt: NOW,
+            lastErrorStatus: 429,
+          }),
+        );
+        const apnsFetch = vi.fn(async () =>
+          new Response(JSON.stringify({ reason: 'InternalServerError' }), { status: 500 }),
+        );
+        const stats = await runRetryPushes(makeEnv(kv), {
+          apnsConfig: makeApnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW + 1,
+          archFlag: 'on',
+        });
+        expect(stats.rescheduled).toBe(1);
+        const stored = JSON.parse((await kv.get('retry-push:p-loop-de')) as string) as RetryPush;
+        expect(stored.attemptCount).toBe(1);
+      });
+
+      it('deps.archFlag=off (default) → 재 enqueue 정책 기존 유지', async () => {
+        await kv.put(
+          'retry-push:p-off-loop',
+          JSON.stringify({
+            pushId: 'p-off-loop',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-off-loop', kind: 'transfer' }),
+            apnsEnv: 'sandbox',
+            attemptCount: 0,
+            nextAttemptAt: NOW,
+            originalSentAt: NOW,
+            lastErrorStatus: 429,
+          }),
+        );
+        const apnsFetch = vi.fn(async () =>
+          new Response(JSON.stringify({ reason: 'InternalServerError' }), { status: 500 }),
+        );
+        const stats = await runRetryPushes(makeEnv(kv), {
+          apnsConfig: makeApnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW + 1,
+          archFlag: 'off',
+        });
+        expect(stats.rescheduled).toBe(1);
+      });
     });
   });
 });

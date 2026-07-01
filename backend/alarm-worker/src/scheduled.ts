@@ -13,6 +13,7 @@ import {
   type SilentPushPayload,
 } from './apns';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
+import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
@@ -781,6 +782,13 @@ export interface ScheduledDeps {
   log?: (message: string, meta?: Record<string, unknown>) => void;
   /** pushId 발급 — 테스트에선 결정적 값을 주입한다. 기본은 crypto.randomUUID. */
   generatePushId?: () => string;
+  /**
+   * #1995 (ADR-022 Phase 1-2) — arrival API SSOT 아키텍처 활성화 여부.
+   * flag=on 시 pending/retry queue 등록을 destination(하차) 알림 kind 로 제한한다.
+   * index.ts scheduled handler 가 매 cron cycle `getArchFlag(env.TRIPS)` 로 read 해 forward.
+   * 미전달 (테스트/legacy) 시 undefined → 기존 동작 100% 유지.
+   */
+  archFlag?: ArchFlagValue;
 }
 
 /**
@@ -1778,15 +1786,20 @@ export async function fireArvlCdStationPush(
     // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. envHeal 양 env 모두 실패해도 영구 lost
     // 차단. 410/400 BadDeviceToken 같은 unrecoverable 은 enqueueRetryIfTransient 가 자연 skip
     // (caller 가 이미 dedup/cleanup 책임).
-    await enqueueRetryIfTransient(env.PENDING_PUSHES, {
-      pushId,
-      token: trip.token,
-      payload: arvlcdPayload,
-      apnsEnv: trip.apnsEnv ?? 'sandbox',
-      status: heal.result.status,
-      reason: heal.result.reason,
-      now,
-    });
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry queue 적재.
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId,
+        token: trip.token,
+        payload: arvlcdPayload,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+        status: heal.result.status,
+        reason: heal.result.reason,
+        now,
+      },
+      deps.archFlag,
+    );
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
   }
@@ -1803,17 +1816,22 @@ export async function fireArvlCdStationPush(
   // #1402 — alert fallback 안전망 등록. silent push가 60s(#1894로 30s→60s 완화) 내 ACK되지 않으면
   // runFallbackPushes가 alert(소리) push를 발사. arvlCd 경로는 가장 흔한 발사 경로이므로
   // 여기서도 안전망을 가동해 "하차 침묵 0" acceptance를 보강한다.
-  await putPending(env.PENDING_PUSHES, {
-    pushId,
-    token: trip.token,
-    alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
-    sentAt: now,
-    stationName: waypoint.stationName,
-    kind: waypoint.kind,
-    phase: 'imminent',
-    etaSeconds: 0,
-    apnsEnv: trip.apnsEnv ?? 'sandbox',
-  });
+  // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록.
+  await putPending(
+    env.PENDING_PUSHES,
+    {
+      pushId,
+      token: trip.token,
+      alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+      sentAt: now,
+      stationName: waypoint.stationName,
+      kind: waypoint.kind,
+      phase: 'imminent',
+      etaSeconds: 0,
+      apnsEnv: trip.apnsEnv ?? 'sandbox',
+    },
+    deps.archFlag,
+  );
   // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
@@ -2138,15 +2156,20 @@ export async function fireVanishFallbackStationPush(
       token: trip.token.slice(0, 8),
     });
     // #1721 — vanish 경로는 silent push 가 가장 잘 누락되는 경로라 retry queue 적재 우선순위 1순위.
-    await enqueueRetryIfTransient(env.PENDING_PUSHES, {
-      pushId,
-      token: trip.token,
-      payload: vanishPayload,
-      apnsEnv: trip.apnsEnv ?? 'sandbox',
-      status: heal.result.status,
-      reason: heal.result.reason,
-      now,
-    });
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry queue 적재.
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId,
+        token: trip.token,
+        payload: vanishPayload,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+        status: heal.result.status,
+        reason: heal.result.reason,
+        now,
+      },
+      deps.archFlag,
+    );
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
   }
@@ -2177,17 +2200,22 @@ export async function fireVanishFallbackStationPush(
   // 없으면 alert(소리) fallback 발사. vanish 경로는 silent push가 가장 잘 누락되는 경로라
   // 안전망 가동이 acceptance("하차 침묵 0")의 핵심. PENDING_PUSHES 미바인딩(dev/test 호환)
   // 시 putPending은 graceful no-op.
-  await putPending(env.PENDING_PUSHES, {
-    pushId,
-    token: trip.token,
-    alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
-    sentAt: now,
-    stationName: waypoint.stationName,
-    kind: waypoint.kind,
-    phase: 'imminent',
-    etaSeconds: 0,
-    apnsEnv: trip.apnsEnv ?? 'sandbox',
-  });
+  // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록.
+  await putPending(
+    env.PENDING_PUSHES,
+    {
+      pushId,
+      token: trip.token,
+      alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+      sentAt: now,
+      stationName: waypoint.stationName,
+      kind: waypoint.kind,
+      phase: 'imminent',
+      etaSeconds: 0,
+      apnsEnv: trip.apnsEnv ?? 'sandbox',
+    },
+    deps.archFlag,
+  );
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
 }
 
@@ -2844,15 +2872,20 @@ export async function advanceBoardingLockWaypoint(
     } else {
       // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. transfer-release 도 silent push 누락 시
       // leg 2 boardingPrompt 재요청이 차단되는 회귀(2026-06-18 evidence)가 발생하므로 retry 필요.
-      await enqueueRetryIfTransient(env.PENDING_PUSHES, {
-        pushId,
-        token: trip.token,
-        payload: transferPayload,
-        apnsEnv: trip.apnsEnv ?? 'sandbox',
-        status: transferHeal.result.status,
-        reason: transferHeal.result.reason,
-        now,
-      });
+      // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry (transfer-release payload.kind='transfer' → flag=on 시 skip).
+      await enqueueRetryIfTransient(
+        env.PENDING_PUSHES,
+        {
+          pushId,
+          token: trip.token,
+          payload: transferPayload,
+          apnsEnv: trip.apnsEnv ?? 'sandbox',
+          status: transferHeal.result.status,
+          reason: transferHeal.result.reason,
+          now,
+        },
+        deps.archFlag,
+      );
     }
   }
   // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
@@ -3271,15 +3304,20 @@ export async function runLocklessIntermediate(
     // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
     // 분기 이후이므로 본 경로는 transient 또는 기타 비치명 실패. enqueueRetryIfTransient 가 retryable
     // 만 적재한다.
-    await enqueueRetryIfTransient(env.PENDING_PUSHES, {
-      pushId,
-      token: trip.token,
-      payload: locklessPayload,
-      apnsEnv: trip.apnsEnv ?? 'sandbox',
-      status: heal.result.status,
-      reason: heal.result.reason,
-      now,
-    });
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry (lockless intermediate payload.kind='intermediate' → flag=on 시 skip).
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId,
+        token: trip.token,
+        payload: locklessPayload,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+        status: heal.result.status,
+        reason: heal.result.reason,
+        now,
+      },
+      deps.archFlag,
+    );
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
@@ -3291,17 +3329,22 @@ export async function runLocklessIntermediate(
   // #1402 — alert fallback 안전망 등록 (60s 임계, #1894로 30s→60s 완화). shift 전 stationName으로 등록해 alert 본문이
   // 사용자가 실제로 통과한 station을 가리키게 한다. lockless intermediate는 lock 경로보다
   // device-side validation이 느슨해 silent push 누락 시 안전망 가동이 더 절실한 경로.
-  await putPending(env.PENDING_PUSHES, {
-    pushId,
-    token: trip.token,
-    alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
-    sentAt: now,
-    stationName: waypoint.stationName,
-    kind: 'intermediate',
-    phase: 'imminent',
-    etaSeconds: signal.etaSeconds,
-    apnsEnv: trip.apnsEnv ?? 'sandbox',
-  });
+  // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록 (본 경로 kind='intermediate' → flag=on 시 skip).
+  await putPending(
+    env.PENDING_PUSHES,
+    {
+      pushId,
+      token: trip.token,
+      alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+      sentAt: now,
+      stationName: waypoint.stationName,
+      kind: 'intermediate',
+      phase: 'imminent',
+      etaSeconds: signal.etaSeconds,
+      apnsEnv: trip.apnsEnv ?? 'sandbox',
+    },
+    deps.archFlag,
+  );
   trip.lastFiredPhase = 'imminent';
   // #1539 (S6) — lockless intermediate 통과 시점도 동일하게 stationName 누적. lock 경로와 동등
   // 정확도 보장 의무(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).

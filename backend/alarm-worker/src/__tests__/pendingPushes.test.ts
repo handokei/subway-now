@@ -11,6 +11,7 @@ import {
   receivedKey,
   RECEIVED_TTL_SEC,
   removePending,
+  shouldRegisterPendingForKind,
   stampReceived,
   type PendingPush,
 } from '../pendingPushes';
@@ -80,6 +81,78 @@ describe('pendingPushes (#566 P2a)', () => {
       const ttlMs = sentRaw!.expiresAt! - Date.now();
       expect(ttlMs).toBeGreaterThan(4 * 60 * 1000);
       expect(ttlMs).toBeLessThanOrEqual(5 * 60 * 1000);
+    });
+
+    describe('#1995 (ADR-022 Phase 1-2) — archFlag kind 필터', () => {
+      it('archFlag 미전달 (legacy caller) → 기존 동작 유지, 모든 kind 등록', async () => {
+        await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-legacy-tr', kind: 'transfer' }));
+        await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-legacy-im', kind: 'intermediate' }));
+        await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-legacy-de', kind: 'destination' }));
+        expect(kv.store.has('pending:p-legacy-tr')).toBe(true);
+        expect(kv.store.has('pending:p-legacy-im')).toBe(true);
+        expect(kv.store.has('pending:p-legacy-de')).toBe(true);
+      });
+
+      it('archFlag=off (default) → 모든 kind 등록 (기존 동작 유지)', async () => {
+        await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-off-tr', kind: 'transfer' }), 'off');
+        await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-off-im', kind: 'intermediate' }), 'off');
+        await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-off-de', kind: 'destination' }), 'off');
+        expect(kv.store.has('pending:p-off-tr')).toBe(true);
+        expect(kv.store.has('pending:p-off-im')).toBe(true);
+        expect(kv.store.has('pending:p-off-de')).toBe(true);
+      });
+
+      it('archFlag=on + kind=destination → 등록 (사용자 가치 유지)', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-on-de', kind: 'destination' }),
+          'on',
+        );
+        expect(kv.store.has('pending:p-on-de')).toBe(true);
+        // #1958 sent stamp 도 동반 적재.
+        expect(kv.store.has('sent:p-on-de')).toBe(true);
+      });
+
+      it('archFlag=on + kind=transfer → skip (반복 알림 case 4 fix)', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-on-tr', kind: 'transfer' }),
+          'on',
+        );
+        expect(kv.store.has('pending:p-on-tr')).toBe(false);
+        // sent stamp 도 등록되지 않음 (pending 자체가 skip).
+        expect(kv.store.has('sent:p-on-tr')).toBe(false);
+      });
+
+      it('archFlag=on + kind=intermediate → skip (반복 알림 case 4 fix)', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makeEntry({ pushId: 'p-on-im', kind: 'intermediate' }),
+          'on',
+        );
+        expect(kv.store.has('pending:p-on-im')).toBe(false);
+        expect(kv.store.has('sent:p-on-im')).toBe(false);
+      });
+    });
+  });
+
+  describe('#1995 shouldRegisterPendingForKind', () => {
+    it('archFlag=undefined (legacy) → true (모든 kind)', () => {
+      expect(shouldRegisterPendingForKind(undefined, 'transfer')).toBe(true);
+      expect(shouldRegisterPendingForKind(undefined, 'intermediate')).toBe(true);
+      expect(shouldRegisterPendingForKind(undefined, 'destination')).toBe(true);
+    });
+
+    it('archFlag=off → true (모든 kind)', () => {
+      expect(shouldRegisterPendingForKind('off', 'transfer')).toBe(true);
+      expect(shouldRegisterPendingForKind('off', 'intermediate')).toBe(true);
+      expect(shouldRegisterPendingForKind('off', 'destination')).toBe(true);
+    });
+
+    it('archFlag=on → destination 만 true', () => {
+      expect(shouldRegisterPendingForKind('on', 'transfer')).toBe(false);
+      expect(shouldRegisterPendingForKind('on', 'intermediate')).toBe(false);
+      expect(shouldRegisterPendingForKind('on', 'destination')).toBe(true);
     });
   });
 
