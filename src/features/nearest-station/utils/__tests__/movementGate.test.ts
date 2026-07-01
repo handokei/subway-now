@@ -9,6 +9,27 @@ import {
   STALE_AGE_MS,
   STATIC_SPEED_THRESHOLD_MPS,
 } from '../movementGate';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
+
+const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+
+/** ADR-022 Phase 4-3 (#2005) — flag ON 상태에서 evaluateMovement 가 항상 reliable=true 를 반환하는지 검증. */
+function enableArchFlag(): void {
+  process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+}
+
+/** flag OFF (기본) — 명시적 해제해 다른 테스트 격리. */
+function disableArchFlag(): void {
+  delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+}
+
+afterEach(() => {
+  if (ORIGINAL_ARCH_ENV === undefined) {
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+  } else {
+    process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = ORIGINAL_ARCH_ENV;
+  }
+});
 
 describe('movementGate', () => {
   describe('evaluateMovement', () => {
@@ -799,6 +820,82 @@ describe('movementGate', () => {
 
     it('reason=undefined(reliable=true 결과)에 대해 false', () => {
       expect(isStaticMovementResult(undefined)).toBe(false);
+    });
+  });
+
+  // ADR-022 Phase 4-3 (#2005) — arrival API SSoT flag guard 검증.
+  // flag ON 시 evaluateMovement 가 loc/신호와 무관하게 { reliable: true } 를 반환해
+  // motion gate 를 전면 bypass 하는지 확인. flag OFF (기본) 시 기존 로직 100% 유지.
+  describe('evaluateMovement — arch flag guard (Phase 4-3)', () => {
+    describe('flag OFF (기본) — 기존 로직 유지', () => {
+      beforeEach(() => {
+        disableArchFlag();
+      });
+
+      it('flag OFF + loc=null → 기존 no-location 판정 유지', () => {
+        expect(evaluateMovement(null)).toEqual({ reliable: false, reason: 'no-location' });
+      });
+
+      it('flag OFF + motionStationary=true → 기존 motion-stationary 판정 유지', () => {
+        const m = evaluateMovement({}, undefined, undefined, true);
+        expect(m).toEqual({ reliable: false, reason: 'motion-stationary' });
+      });
+
+      it('flag OFF + speedMps < 임계 → 기존 static-speed 판정 유지', () => {
+        const m = evaluateMovement({ speedMps: 0 });
+        expect(m.reliable).toBe(false);
+        expect(m.reason).toBe('static-speed');
+      });
+    });
+
+    describe('flag ON — motion gate 전면 bypass (arrival API SSoT)', () => {
+      beforeEach(() => {
+        enableArchFlag();
+      });
+
+      it('flag ON + loc=null → no-location 대신 reliable=true', () => {
+        expect(evaluateMovement(null)).toEqual({ reliable: true });
+      });
+
+      it('flag ON + motionStationary=true → motion-stationary 대신 reliable=true', () => {
+        const m = evaluateMovement({}, undefined, undefined, true);
+        expect(m).toEqual({ reliable: true });
+      });
+
+      it('flag ON + speedMps=0 (정적) → static-speed 대신 reliable=true', () => {
+        const m = evaluateMovement({ speedMps: 0 });
+        expect(m).toEqual({ reliable: true });
+      });
+
+      it('flag ON + positionStability=static → static-position 대신 reliable=true', () => {
+        const m = evaluateMovement({}, undefined, 'static');
+        expect(m).toEqual({ reliable: true });
+      });
+
+      it('flag ON + warmup 조건 (motion=undefined + speed=null + positionStability=unknown) → motion-warmup 대신 reliable=true', () => {
+        const m = evaluateMovement({}, undefined, 'unknown', undefined);
+        expect(m).toEqual({ reliable: true });
+      });
+
+      it('flag ON + stale timestamp → stale-timestamp 대신 reliable=true', () => {
+        const now = 2_000_000;
+        const m = evaluateMovement({ timestamp: now - STALE_AGE_MS - 1 }, now);
+        expect(m).toEqual({ reliable: true });
+      });
+
+      it('flag ON + accuracyM > MAX_ACCURACY_M → low-accuracy 대신 reliable=true', () => {
+        const m = evaluateMovement({ accuracyM: MAX_ACCURACY_M + 1 });
+        expect(m).toEqual({ reliable: true });
+      });
+
+      it('flag ON + 모든 신호 정상 (기존에도 reliable=true) → reliable=true 유지', () => {
+        const now = 1_000_000;
+        const m = evaluateMovement(
+          { timestamp: now - 5_000, accuracyM: 50, speedMps: 3 },
+          now,
+        );
+        expect(m).toEqual({ reliable: true });
+      });
     });
   });
 });
