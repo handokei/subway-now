@@ -2,10 +2,26 @@ import { arcIndexOfStation, estimateStationProgress } from '../stationProgressEs
 import { HOP_TIME_MS } from '../../../../shared/constants/boardingLock';
 import { ESTIMATOR_STUCK_TIMEOUT_MS } from '../../../../shared/constants/realtime';
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import type { TrainProgressResult } from '../trackTrainProgress';
+
+const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+
+beforeEach(() => {
+  // 각 테스트가 명시적으로 flag 를 셋하지 않는 한 dormant 기본값 유지 (flag OFF).
+  delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+});
+
+afterAll(() => {
+  if (ORIGINAL_ARCH_ENV === undefined) {
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+  } else {
+    process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = ORIGINAL_ARCH_ENV;
+  }
+});
 
 // 기존 테스트들이 HOP_TIME_MS uniform 가정을 그대로 사용 — Stage 3에서도 estimator의 시간 적분
 // 로직 회귀를 검증하려면 동일한 시간 단위가 필요. lookup closure로 감싸 시그니처만 신규 형태로 맞춘다.
@@ -955,6 +971,148 @@ describe('estimateStationProgress', () => {
       // ① 채택 → live-position, index=2
       expect(r?.strategy).toBe('live-position');
       expect(r?.index).toBe(2);
+    });
+  });
+
+  describe('#2012 (Phase 4-2) SIMPLE_ARRIVAL_ARCH flag guard', () => {
+    // flag ON 시 arrival API (`arvlCd` 조합) 가 SSoT 이므로 estimator 내부 두 strategy 를 dormant.
+    //   - tryLivePosition skip → ArrivalEta / ReanchoredHop / DefaultHop 만
+    //   - tryLocklessRouteHop skip → null 반환 (arvlCd SSoT 가 lockless 진행 담당)
+    // flag OFF (기본) 은 기존 4단 + LocklessRouteHop 100% 유지.
+
+    describe('lock 활성 — live-position dormant', () => {
+      it('flag OFF: LivePosition 매칭 시나리오 → live-position 채택', () => {
+        // 기존 우선순위 합성 시나리오와 동일 — flag 명시 OFF 도 default 와 같음.
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'false';
+        const r = estimateStationProgress({
+          lock: makeLock(),
+          arcStations: ARC,
+          now: T0,
+          trainProgress: makeTrainProgress({ stationIdx: 2 }),
+          lockedTrainCode: '7093',
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r).toEqual({
+          station: ARC[2],
+          index: 2,
+          strategy: 'live-position',
+        });
+      });
+
+      it('flag ON: 동일 시나리오 → live-position skip → default-hop fallback (② ③ 입력 없음)', () => {
+        // trainProgress 완비 + lockedTrainCode 매칭이지만 flag ON 이라 ① skip.
+        // ② ArrivalEta 입력 없음(NO_ARRIVAL_INPUT), ③ ReanchoredHop 앵커 없음(lastObserved null)
+        // → ④ DefaultHop 이 boardedAt 앵커로 fallback (elapsed=0 → boardingIdx=0).
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+        const r = estimateStationProgress({
+          lock: makeLock(),
+          arcStations: ARC,
+          now: T0,
+          trainProgress: makeTrainProgress({ stationIdx: 2 }),
+          lockedTrainCode: '7093',
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r?.strategy).toBe('default-hop');
+        expect(r?.index).toBe(0);
+      });
+
+      it('flag ON: ① skip 후 ② ArrivalEta 가능하면 arrival-eta 채택', () => {
+        // flag ON 에서도 ArrivalEta 는 유효 — arrival API 응답 자체를 소비하는 strategy.
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+        const r = estimateStationProgress({
+          lock: makeLock(),
+          arcStations: ARC,
+          now: T0,
+          trainProgress: makeTrainProgress({ stationIdx: 1 }), // ① 매칭됐어도 flag ON 이라 skip
+          lockedTrainCode: '7093',
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          nextStationArrivals: [
+            makeArrival({ arrivalCode: ARRIVAL_CODE.ENTERING, arrivalSeconds: 14 }),
+          ],
+          arrivalEtaTtlMs: ARRIVAL_TTL_MS,
+          currentIdxHint: 2,
+        });
+        expect(r?.strategy).toBe('arrival-eta');
+        expect(r?.index).toBe(3);
+      });
+
+      it('flag ON: ① skip 후 ③ ReanchoredHop 가능하면 reanchored-hop 채택', () => {
+        // lastObserved 있고 ② 입력 없음 → ③ ReanchoredHop 채택 (flag 와 무관하게 유지).
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+        const observedAt = T0 + 200_000;
+        const r = estimateStationProgress({
+          lock: makeLock(),
+          arcStations: ARC,
+          now: observedAt + 2 * HOP_TIME_MS,
+          trainProgress: makeTrainProgress({ stationIdx: 0 }), // ① 매칭됐어도 flag ON 이라 skip
+          lockedTrainCode: '7093',
+          lastObserved: { arcIndex: 2, observedAtMs: observedAt },
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r).toEqual({
+          station: ARC[4],
+          index: 4,
+          strategy: 'reanchored-hop',
+        });
+      });
+    });
+
+    describe('lockless — lockless-route-hop dormant', () => {
+      it('flag OFF: lockless trip 진행 → lockless-route-hop 채택', () => {
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'false';
+        const now = T0 + 60_000;
+        const r = estimateStationProgress({
+          lock: null,
+          locklessTrip: { tripStartedAt: T0 },
+          arcStations: ARC,
+          now,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r?.strategy).toBe('lockless-route-hop');
+      });
+
+      it('flag ON: lockless trip 제공돼도 null 반환 (arvlCd SSoT 담당)', () => {
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+        const now = T0 + 60_000;
+        const r = estimateStationProgress({
+          lock: null,
+          locklessTrip: { tripStartedAt: T0 },
+          arcStations: ARC,
+          now,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r).toBeNull();
+      });
+
+      it('flag ON: locklessTrip 미제공 시 여전히 null (기존 동작 유지)', () => {
+        // locklessTrip 미제공은 원래도 null → flag 와 무관.
+        process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+        const r = estimateStationProgress({
+          lock: null,
+          arcStations: ARC,
+          now: T0 + 60_000,
+          trainProgress: null,
+          lockedTrainCode: null,
+          lastObserved: null,
+          hopTimeMsForHop: UNIFORM_HOP,
+          ...NO_ARRIVAL_INPUT,
+        });
+        expect(r).toBeNull();
+      });
     });
   });
 });

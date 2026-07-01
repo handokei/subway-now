@@ -16,6 +16,7 @@ import {
   ESTIMATOR_STUCK_TIMEOUT_MS,
   LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS,
 } from '../../../shared/constants/realtime';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 
 /**
  * ADR-008 — 탑승 진행 추정(BoardingLock 활성 trip 중 현재역) 합성기.
@@ -384,16 +385,29 @@ export function arcIndexOfStation(
  *
  * Stage 3(#779) 기준 ①(LivePosition) → ②(ArrivalEta) → ③(ReanchoredHop) → ④(DefaultHop) 순.
  * ③은 `lastObserved` 유효 시만 동작, ④는 `lock.boardedAt + boardingStationId` 앵커로 fallback.
+ *
+ * #2012 (ADR-022 A6 Phase 4-2) — simple arrival arch flag ON 시 arrival API (`arvlCd` 조합) 가
+ * SSoT 이므로 estimator 내부 두 strategy 를 dormant 처리한다:
+ *   - `live-position`: `arvlCd` 가 진입/도착/출발 상태를 SSoT 로 제공하므로 fusion cascade 에서
+ *     별도로 realtimePosition 매칭을 취할 필요가 없다 → `tryLivePosition` skip.
+ *   - `lockless-route-hop`: lockless trip 의 현재역 진행도 arrival API 가 SSoT 로 담당 →
+ *     `tryLocklessRouteHop` skip, null 반환.
+ *
+ * flag OFF 는 기존 4단 + LocklessRouteHop 100% 유지. Phase 4b 에서 완전 제거 예정.
  */
 export function estimateStationProgress(
   input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
   const { lock, locklessTrip, arcStations, now, hopTimeMsForHop, lastObserved } = input;
   if (arcStations.length === 0) return null;
+  // #2012 (Phase 4-2) — flag 조회 1 회. 두 분기(lockless / lock 활성)에서 재사용.
+  const simpleArch = isSimpleArchEnabled();
   // Lockless 분기 (#1207): lock이 null이고 locklessTrip 컨텍스트가 제공되면 LocklessRouteHop으로 적분.
   // locklessTrip 미제공이면 기존 동작 유지(null) — 호출자가 명시적으로 lockless 활성을 옵트인.
   if (!lock) {
     if (locklessTrip) {
+      // #2012 (Phase 4-2) — flag ON 시 LocklessRouteHop 자체 dormant. arvlCd SSoT 가 담당.
+      if (simpleArch) return null;
       // #1922 (M2) — lastObserved를 stuck guard 신선도 source로 전달.
       return tryLocklessRouteHop(
         arcStations,
@@ -411,8 +425,12 @@ export function estimateStationProgress(
   // 이미 lock 비-null을 보장해 호출 트리 전체가 active trip context. tryDefaultHop만 lock.boardedAt/
   // boardingStationId를 사용하므로 시그니처에 명시(NonNullable)한다.
   const lockedInput = { ...input, lock };
+  // #2012 (Phase 4-2) — flag ON 시 tryLivePosition skip (arvlCd SSoT 가 담당).
+  // tryArrivalEta/tryReanchoredHop/tryDefaultHop 은 유지: arrival API 응답 자체를 소비하는
+  // strategy(② ArrivalEta) 는 dogfood 단계에서 여전히 필요, ③/④ 는 dead zone fallback 유지.
+  const livePosition = simpleArch ? null : tryLivePosition(input);
   return (
-    tryLivePosition(input) ??
+    livePosition ??
     tryArrivalEta(input) ??
     tryReanchoredHop(input) ??
     tryDefaultHop(lockedInput)
