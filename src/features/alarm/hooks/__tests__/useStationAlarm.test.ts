@@ -5843,4 +5843,90 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
     });
   });
+
+  // ADR-022 Phase 4-3 (#2005) — motion gate dormant 통합 검증.
+  // flag OFF (기본) 시 motion=stationary 로 발사 차단 (#728) — 기존 동작 유지.
+  // flag ON 시 evaluateMovement 가 항상 reliable=true 를 반환해 motion gate 를 전면 bypass.
+  // 정적 상태(motion=stationary, speed=0)에서도 알람이 정상 발사되어야 한다 — arrival API SSoT.
+  describe('#2005 Phase 4-3 motionGate dormant flag', () => {
+    const route = makeDirectRoute(1, '2');
+    const onRouteStation = makeStation('S2-DST', '강남');
+
+    it('flag OFF (기본) + motionStationary=true → 기존 동작 (motion gate 차단 + movement-motion-stationary 적재)', async () => {
+      delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 0,
+            accuracyMeters: 50,
+            motionStationary: true,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reason: 'movement-motion-stationary',
+          }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('flag ON + motionStationary=true → motion gate bypass → 정상 발사 (arrival API SSoT)', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 0, // 정적
+            accuracyMeters: 50,
+            motionStationary: true, // OS 가속도계 정적 확정
+          }),
+        ),
+      );
+
+      // motion=stationary인데도 알람 발사 — arrival API SSoT 아키텍처는 arvlCd 단독 신호로 판정.
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      // movement 게이트 skip 로그 미적재 (dormant).
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'movement-motion-stationary' }),
+      );
+    });
+
+    it('flag ON + speed=0 + station-passed → motion gate bypass → 정상 발사', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 0, // 정적
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      // speed=0인데도 station-passed 알람 발사 — flag ON 이면 movement gate 미적용.
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'movement-static-speed' }),
+      );
+    });
+  });
 });

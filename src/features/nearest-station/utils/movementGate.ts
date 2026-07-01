@@ -49,8 +49,21 @@
  *
  * 입력 필드는 모두 옵션 — 호출자가 측정 가능한 신호만 전달하면 된다. 누락된 신호는
  * 해당 분기 검증을 skip (false negative보다 false positive 차단 우선).
+ *
+ * ADR-022 Phase 4-3 (#2005) — flag guard (dormant):
+ *   `isSimpleArchEnabled()` (env `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH` OR backend KV
+ *   `arch:simple-arrival-v1`) 가 ON 이면 `evaluateMovement` 는 즉시 `{ reliable: true }` 를
+ *   반환한다. arrival API SSoT 아키텍처에서는 fire 판정이 backend `arvlCd` 만으로 결정되며
+ *   device motion / GPS speed / positionStability 는 오히려 정확한 알림을 억제한다
+ *   (예: 지하 깊은 구간에서 speed=-1 + motion=stationary 오검출로 정상 알림 miss).
+ *   flag OFF (기본) 시에는 기존 로직 100% 유지 — dormant.
+ *
+ *   `shouldDowngradeFusion` / `isStaticSpeedSignal` / `isStaticMovementResult` 는 fusion
+ *   downgrade layer 별개로 flag guard 미적용 — Phase 4 다른 sub-issue 에서 결정한다.
+ *   `accelMotion.ts` 의 pattern 판정도 DebugModal / backend 송신용으로 유지 (dormant).
  */
 
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import type { PositionStability } from './positionStaticDetector';
 
 /** 30s 이전 좌표는 stale로 간주 (Bumble Tech 권고). 새 location이 timestamp 동반일 때만 검증. */
@@ -298,6 +311,13 @@ export function evaluateMovement(
    */
   trainProgressing?: boolean,
 ): MovementSignal {
+  // ADR-022 Phase 4-3 (#2005) — arrival API SSoT flag ON 시 motion gate 전면 bypass.
+  // fire 판정을 backend arvlCd 로 단일화하므로 device motion / GPS speed / warmup 게이트가
+  // 알림을 억제하면 오히려 miss 유발. flag OFF (기본) 시엔 이 분기 skip → 기존 로직 100% 유지.
+  if (isSimpleArchEnabled()) {
+    return { reliable: true };
+  }
+
   if (!loc) return { reliable: false, reason: 'no-location' };
 
   if (loc.timestamp != null) {
