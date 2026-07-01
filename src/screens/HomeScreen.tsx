@@ -1160,8 +1160,21 @@ export default function HomeScreen() {
                   : t('home.originNearest')}
               </Text>
               <View style={styles.heroRow}>
+                {/* #1994 Phase 1-9 — hero fontSize 44 → 36으로 축소 (사용자 관찰: 위 잘림).
+                    lineHeight를 fontSize보다 크게(36 * 1.1) 잡아 상단 clip 방지. 전역
+                    typography.hero 토큰은 AlarmOverlay/OnboardingSplashBase에서도 쓰이므로
+                    본 사용처만 인라인 override로 국한. */}
                 <Text
-                  style={[typography.hero, { color: colors.ink, flex: 1, fontWeight: '900' }]}
+                  style={[
+                    typography.hero,
+                    {
+                      color: colors.ink,
+                      flex: 1,
+                      fontWeight: '900',
+                      fontSize: 36,
+                      lineHeight: 36 * 1.1,
+                    },
+                  ]}
                   testID="home-origin-station-name"
                 >
                   {getStationDisplayName(effectiveOrigin)}
