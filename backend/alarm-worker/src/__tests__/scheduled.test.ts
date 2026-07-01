@@ -7,6 +7,7 @@ import type { WindowedMetrics } from '../positionSeries';
 import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
   ARVLCD_FIRE_KEY_PREFIX,
+  ARVLCD_FIRE_ONCE_CYCLE_SLOT,
   SAME_PHASE_STATION_DEDUP_WINDOW_MS,
   FALLBACK_ADVANCE_GRACE_CYCLES,
   FALLBACK_HOP_SEC,
@@ -46,6 +47,7 @@ import {
   type ScheduledStats,
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
+import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTtl';
 import { putTrip } from '../trips';
 import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
@@ -120,6 +122,51 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
     apnsConfig,
     apnsHosts: APNS_HOSTS,
     fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+  };
+}
+
+/**
+ * `fireArvlCdStationPush` 등 직접 호출 테스트용 full-shape stats. `ScheduledStats` 필드 추가 시
+ * runScheduled 초기값과 동시에 갱신 필요 — 두 사이트가 drift 하지 않도록 헬퍼화. 기존 fixture 인
+ * `makeEmptyStats` (partial cast, kalmanDriftWarning만 참조) 와는 별개 목적.
+ */
+function makeFullEmptyStats(): ScheduledStats {
+  return {
+    scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
+    lockMissing: 0, laStaleAutoEnded: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
+    boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
+    phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
+    autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
+    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0,
+    arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
+    arvlCdFireBlocked: 0, arvlCdFireFired: 0,
+    boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
+    vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
+    vanishFallbackMotionGateBlocked: 0,
+    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
+    realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
+    stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
+    staleLockFireSkipped: 0,
+    // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=OFF 시 항상 0).
+    arvlCdFireOnceSkipped: 0,
+    lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
+    lifecycleStationarySkipped: 0,
+    silentPushFiredByKind: {
+      intermediate: 0,
+      transfer: 0,
+      destination: 0,
+      boardingPrompt: 0,
+      reschedule: 0,
+    },
+    scheduleEtaFallback: 0,
+    destinationCrossCheck: {
+      within: 0,
+      gpsFar: 0,
+      staleGps: 0,
+      noGps: 0,
+      stationUnknown: 0,
+    },
   };
 }
 
@@ -6121,6 +6168,256 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
 });
 
 
+/**
+ * ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=ON 시).
+ *
+ * `isSimpleArchEnabled` 는 `arvlcdFireOnceTtl.ts` 의 임시 flag (현재 항상 false 반환). 본 describe
+ * 블록은 `vi.spyOn` 으로 flag=ON 을 강제 → 동일 (trip, station, cycle) 조합의 2회 이상 fire 가
+ * 차단되는지 검증. Phase 0 (#1982) 머지 후속 PR 에서 real `getArchFlag(env.KV)` 로 wire 되면
+ * 본 flag mock 은 자연스럽게 KV 시드 방식으로 교체 예정.
+ */
+describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985)', () => {
+  const TOKEN = 'arvl-fireonce-tok';
+  const makeLockTrip = (overrides: Partial<Trip> = {}) => makeLockTripFixture(TOKEN, overrides);
+  const makeArrivalSeoul = makeArvlCdFireSeoul;
+  const getStationPassedCalls = getArvlCdStationPassedCalls;
+
+  async function runWithFlagOn(opts: {
+    seoul: SeoulArrivalClient;
+    trip?: Trip;
+    apnsFetch?: ReturnType<typeof vi.fn>;
+    pushId?: string;
+    seedKv?: (kv: InMemoryKV) => Promise<void>;
+  }): Promise<{
+    stats: ScheduledStats;
+    kv: InMemoryKV;
+    apnsFetch: ReturnType<typeof vi.fn>;
+  }> {
+    // flag=ON 을 spy 로 강제. `isSimpleArchEnabled` 를 * as import 하지 않고 destructured 로
+    // scheduled.ts 가 import 하지만, vitest 는 ESM live bindings 를 통해 spy 를 적용한다.
+    const mod = await import('../arvlcdFireOnceTtl');
+    const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockReturnValue(true);
+    try {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, opts.trip ?? makeLockTrip());
+      if (opts.seedKv) await opts.seedKv(kv);
+      const apnsFetch = opts.apnsFetch ?? vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: opts.seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => opts.pushId ?? 'p-fireonce-1',
+      });
+      return { stats, kv, apnsFetch };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('flag=OFF (default) → 기존 로직 그대로. 새 stat 카운터는 항상 0', async () => {
+    // 별도 spy 없이 실행 = default flag=OFF. 기존 동작 (arvlCdFireSuccess=1) 그대로.
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-flag-off',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    // fire-once 게이트는 flag=OFF 이므로 관여 X — 카운터 0.
+    expect(stats.arvlCdFireOnceSkipped).toBe(0);
+    // fireOnce KV key 도 stamp 되지 않음.
+    expect(await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_CYCLE_SLOT))).toBeNull();
+  });
+
+  it('flag=ON, 첫 관측 → fire 진행 + fireOnce KV stamp', async () => {
+    const { stats, kv, apnsFetch } = await runWithFlagOn({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-fireonce-first',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    expect(stats.arvlCdFireOnceSkipped).toBe(0);
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
+    // 5분 TTL stamp 확인 (InMemoryKV 는 value 를 그대로 보존).
+    const stamped = await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_CYCLE_SLOT));
+    expect(stamped).toBe(String(NOW));
+  });
+
+  it('flag=ON, 같은 (trip, station, cycle) 2회 fire → 2번째는 skip (arvlCdFireOnceSkipped++)', async () => {
+    const { stats, apnsFetch } = await runWithFlagOn({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-fireonce-dup',
+      seedKv: async (kv) => {
+        // 이전 cycle 에서 이미 fire-once stamp 된 상태.
+        await kv.put(
+          arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_CYCLE_SLOT),
+          String(NOW - 30_000),
+          { expirationTtl: ARVLCD_FIRE_ONCE_TTL_SEC },
+        );
+      },
+    });
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.arvlCdFireOnceSkipped).toBe(1);
+    // 매역 push 발사 X.
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+
+  it('flag=ON, arvlCd=0 fire 후 같은 cycle 이내 arvlCd=1 재관측 → 통합 게이트 skip', async () => {
+    // 기존 `arvlCdFireKey` dedup 은 arvlCd=0 과 arvlCd=1 을 별 entry 로 stamp 해 둘 다 fire 하지만,
+    // fire-once TTL 은 cycle 통합 → 같은 (trip, station, cycle) 조합은 통합 skip.
+    // 이는 어린이대공원 반복 4회 fire (#1980) 회귀 차단의 핵심 정책.
+    //
+    // 검증 방식: `fireArvlCdStationPush` 를 직접 호출 (waypoint advance 부작용 격리) — 첫 호출 =
+    // arvlCd=0 fire + fire-once stamp, 두 번째 호출 = arvlCd=1 통합 skip.
+    const mod = await import('../arvlcdFireOnceTtl');
+    const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockReturnValue(true);
+    try {
+      const kv = new InMemoryKV();
+      const trip = makeLockTrip();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const commonInputs = {
+        trip,
+        waypoint: trip.waypoints[0],
+        lock: trip.boardingLock!,
+        env: makeEnv(kv),
+        deps: {
+          seoul: makeArrivalSeoul('중곡', 0, 1),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+        },
+        now: NOW,
+        log: () => undefined,
+        generatePushId: () => 'p-direct-cycle',
+      };
+      const statsFirst = makeFullEmptyStats();
+      await fireArvlCdStationPush({ ...commonInputs, stats: statsFirst, arvlCd: 0 });
+      expect(statsFirst.arvlCdFireSuccess).toBe(1);
+      expect(statsFirst.arvlCdFireOnceSkipped).toBe(0);
+      // fire-once stamp 확인.
+      expect(
+        await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_CYCLE_SLOT)),
+      ).toBe(String(NOW));
+      // 두 번째 호출: 같은 station 에서 arvlCd=1 재관측 (cycle 안 monotone 진행).
+      const statsSecond = makeFullEmptyStats();
+      const { dirty } = await fireArvlCdStationPush({
+        ...commonInputs,
+        stats: statsSecond,
+        arvlCd: 1,
+      });
+      // arvlCd=1 은 fire-once TTL 로 통합 skip — push 미발사.
+      expect(statsSecond.arvlCdFireSuccess).toBe(0);
+      expect(statsSecond.arvlCdFireOnceSkipped).toBe(1);
+      expect(dirty).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('flag=ON, cross-trip 격리 — trip A stamp 는 trip B fire 를 차단하지 X', async () => {
+    // 두 사용자가 같은 station 을 같은 cycle 에 통과. token 이 key 에 포함되므로 각 trip 이 각각 fire.
+    const { stats, apnsFetch } = await runWithFlagOn({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: makeLockTrip({ token: 'user-a' }),
+      pushId: 'p-fireonce-cross',
+      seedKv: async (kv) => {
+        await putTrip(kv as unknown as KVNamespace, makeLockTripFixture('user-b'));
+      },
+    });
+    // 두 trip 모두 각각 fire (fire-once 는 trip 단위 격리).
+    expect(stats.arvlCdFireSuccess).toBe(2);
+    expect(stats.arvlCdFireOnceSkipped).toBe(0);
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(2);
+  });
+
+  it('flag=ON, cross-station 격리 — 다른 station 은 각각 fire (fire-once 는 station 단위)', async () => {
+    // 첫 fire: 중곡. KV stamp 후 다른 station (건대입구) 관측 → 각 station 은 별 fire-once entry.
+    // (참고: `SAME_PHASE_STATION_DEDUP_WINDOW_MS` cross-station 게이트가 걸리므로 별 fire 검증은
+    // trip fixture 를 조정해 SAME_PHASE 윈도우 밖에 두어 확인.)
+    const tripOldFire = makeLockTrip({
+      lastFiredStation: {
+        stationName: '건대입구',
+        epochMs: NOW - SAME_PHASE_STATION_DEDUP_WINDOW_MS - 1,
+      },
+    });
+    const { stats, kv } = await runWithFlagOn({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: tripOldFire,
+      pushId: 'p-fireonce-station-x',
+      seedKv: async (kv) => {
+        // 이전 station(건대입구) fire-once 는 stamp 되어 있어도 중곡 fire 는 진행 가능해야 함.
+        await kv.put(
+          arvlCdFireOnceKey(TOKEN, '건대입구', ARVLCD_FIRE_ONCE_CYCLE_SLOT),
+          String(NOW - 30_000),
+          { expirationTtl: ARVLCD_FIRE_ONCE_TTL_SEC },
+        );
+      },
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    expect(stats.arvlCdFireOnceSkipped).toBe(0);
+    // 중곡은 새로 stamp.
+    expect(
+      await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_CYCLE_SLOT)),
+    ).toBe(String(NOW));
+    // 건대입구 stamp 는 그대로 유지.
+    expect(
+      await kv.get(arvlCdFireOnceKey(TOKEN, '건대입구', ARVLCD_FIRE_ONCE_CYCLE_SLOT)),
+    ).toBe(String(NOW - 30_000));
+  });
+
+  it('flag=ON, fire-once TTL 만료 → 다음 cycle fire 진행 (자연 회수)', async () => {
+    // TTL 5분 만료 시나리오 — InMemoryKV 는 Date.now() 로 만료 판정. vi.useFakeTimers 사용.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(NOW);
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+      // 5분+1ms 전 stamp — 만료된 상태.
+      await kv.put(
+        arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_CYCLE_SLOT),
+        String(NOW - ARVLCD_FIRE_ONCE_TTL_SEC * 1000 - 1),
+        { expirationTtl: 1 }, // 즉시 만료 처리 (Date.now() > expiresAt).
+      );
+      // 만료 시점 진행.
+      vi.setSystemTime(NOW + 10_000);
+      const mod = await import('../arvlcdFireOnceTtl');
+      const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockReturnValue(true);
+      try {
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeArrivalSeoul('중곡', 0, 1),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => 'p-fireonce-ttl-expire',
+        });
+        // TTL 만료로 첫 관측 취급 → fire 진행.
+        expect(stats.arvlCdFireSuccess).toBe(1);
+        expect(stats.arvlCdFireOnceSkipped).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ARVLCD_FIRE_ONCE_CYCLE_SLOT (#1985)', () => {
+  it('is 0 — 현재는 미래-확장 slot placeholder (5분 TTL 이 cycle 경계 처리)', () => {
+    expect(ARVLCD_FIRE_ONCE_CYCLE_SLOT).toBe(0);
+  });
+});
+
 describe('#1363 — pickLatestCurrentStationName (log 진단 이원화 helper)', () => {
   const base = { lat: 37.5, lng: 127.0, accuracy: 10, ts: 1000, motion: 'walking' } as const;
 
@@ -7308,6 +7605,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       // #1828 Phase 5 — station-level arrivals polling.
       stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
       staleLockFireSkipped: 0,
+      // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=OFF 시 항상 0).
+      arvlCdFireOnceSkipped: 0,
       // #1652 — staged lifecycle backstop.
       lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
       // #1680 — stationary cron skip.

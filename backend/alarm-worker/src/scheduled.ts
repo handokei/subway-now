@@ -91,6 +91,11 @@ import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
 import { t, type SupportedLocale } from './i18n';
+import {
+  checkArvlCdFireOnce,
+  isSimpleArchEnabled,
+  stampArvlCdFireOnce,
+} from './arvlcdFireOnceTtl';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -680,6 +685,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   staleLockFireSkipped: number;
   /**
+   * ADR-022 Phase 1-1 (#1985) — flag=ON 시 fire-once TTL 게이트가 차단한 누적 횟수.
+   * 같은 (tripToken, stationName, arvlCd cycle) 조합에서 이미 5분 이내 fire 된 경우 skip.
+   * flag=OFF (default) 상태에서는 항상 0 — Phase 0 (#1982) 머지 후속 PR 에서 실제 wire.
+   * 0이 아니면 arvlCd 반복 노출로 인한 중복 발사가 차단된 케이스 수 = ADR-022 정책 발동 신호.
+   */
+  arvlCdFireOnceSkipped: number;
+  /**
    * #1652 — staged lifecycle backstop. trip이 createdAt > 6h이라 silence cycle로 skip된 누적 횟수.
    * Seoul polling + push 발사 모두 skip된 cycle 수 = 6h+ 잔존 trip × 분당 1 cycle. 정상 운영에선
    * 일반적으로 0에 수렴 (대부분 trip이 6h 이내 종료). 0이 아니면 KTX/장거리 trip 또는 좀비 trip이
@@ -875,6 +887,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     stationPollError: 0,
     // #1614 Phase C — stale SSoT 가드 fire 차단.
     staleLockFireSkipped: 0,
+    // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 차단 (flag=OFF 시 항상 0).
+    arvlCdFireOnceSkipped: 0,
     // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
     lifecycleSilenceSkipped: 0,
     lifecycleForceEnded: 0,
@@ -1382,6 +1396,16 @@ export const SAME_PHASE_STATION_DEDUP_WINDOW_MS = 45_000;
 export const ARVLCD_FIRE_KEY_PREFIX = 'arvlcd-fire:';
 
 /**
+ * ADR-022 Phase 1-1 (#1985) — fire-once TTL key 의 cycle slot 값.
+ *
+ * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 현재
+ * backend cron 은 stateful cycle counter 를 유지하지 않고 5분 TTL 로 cycle 경계를 자연 처리
+ * 하므로, key 의 cycle slot 은 미래-확장 자리 표시자로 `0` 고정. 후속 PR 에서 cross-cron
+ * cycle 추적이 필요해지면 slot 을 정수 카운터로 확장 가능하다.
+ */
+export const ARVLCD_FIRE_ONCE_CYCLE_SLOT = 0;
+
+/**
  * dedup KV key 빌더. arvlCd 0(ENTERING) vs 1(ARRIVED)은 별 entry로 분리(둘 다 신호).
  * token은 trip 단위 격리 — 같은 train 다른 trip이 서로 silence하지 않도록.
  */
@@ -1616,6 +1640,38 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
+  // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트.
+  // flag=ON 시 같은 (tripToken, stationName, arvlCd cycle) 조합에서 5분 이내 이미 fire 된 경우
+  // skip. arvlCd 0/1 을 별 entry 로 stamp 하던 기존 `arvlCdFireKey` dedup 과 달리, cycle 전체
+  // (0→1→2→5) 를 하나의 fire 이벤트로 통합 — 어린이대공원 반복 4회 fire (#1980) 회귀 차단.
+  // flag=OFF (default, Phase 0 #1982 미머지 상태) 에서는 조기 return 으로 무영향.
+  const fireOnceCycle = ARVLCD_FIRE_ONCE_CYCLE_SLOT;
+  if (isSimpleArchEnabled()) {
+    const alreadyFired = await checkArvlCdFireOnce(
+      env.TRIPS,
+      trip.token,
+      waypoint.stationName,
+      fireOnceCycle,
+    );
+    if (alreadyFired) {
+      stats.arvlCdFireOnceSkipped += 1;
+      log('arvlcd-fire: fire-once cycle already', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        arvlCd,
+        cycle: fireOnceCycle,
+      });
+      writeMetric(env, {
+        eventType: 'suppress',
+        tripToken: trip.token,
+        stationId: waypoint.stationName,
+        reason: 'fire-once-cycle-already',
+        hopIndex: waypoint.hopIndex,
+      });
+      return { dirty: false };
+    }
+  }
   const key = arvlCdFireKey(trip.token, lock.trainCode, waypoint.stationName, arvlCd);
   const existing = await env.TRIPS.get(key);
   if (existing !== null) {
@@ -1760,6 +1816,12 @@ export async function fireArvlCdStationPush(
   });
   // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
+  // 해 다음 cycle 이내 arvlCd 재노출을 통합 차단. flag=OFF 시 이 write 는 실행되지 않아
+  // production 무영향.
+  if (isSimpleArchEnabled()) {
+    await stampArvlCdFireOnce(env.TRIPS, trip.token, waypoint.stationName, fireOnceCycle, now);
+  }
   // #1367 — cross-station dedup용 마지막 fire 마커. 성공 시에만 stamp(실패는 다음 cycle 재시도 허용).
   trip.lastFiredStation = { stationName: waypoint.stationName, epochMs: now };
   dirty = true;
