@@ -1,5 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearStaleBoardingLock, deleteTrip, getTrip, listTrips, putTrip, tripKey } from '../trips';
+import {
+  SIMPLE_ARCH_ENABLED,
+  cleanupPendingPushesForToken,
+  clearStaleBoardingLock,
+  computeRouteSignature,
+  deleteTrip,
+  getTrip,
+  listTrips,
+  putTrip,
+  rotateTripTokenForNewRoute,
+  tripKey,
+} from '../trips';
+import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
 import type { Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -208,5 +220,299 @@ describe('trips KV CRUD', () => {
     }
     expect(yielded).toHaveLength(1);
     expect(yielded[0].boardingLock).toBeUndefined();
+  });
+
+  // ADR-022 B4 — 새 route = 새 token 강제 (#1986).
+  describe('ADR-022 B4 — trip token rotation (#1986)', () => {
+    function makePending(overrides: Partial<PendingPush> = {}): PendingPush {
+      return {
+        pushId: 'push-1',
+        token: 'tok-A',
+        alarmKey: 'early:강남',
+        sentAt: Date.now(),
+        stationName: '강남',
+        kind: 'destination',
+        phase: 'early',
+        etaSeconds: 300,
+        apnsEnv: 'sandbox',
+        ...overrides,
+      };
+    }
+
+    describe('SIMPLE_ARCH_ENABLED flag (Phase 1-3)', () => {
+      it('module 상수는 기본 OFF (false) — Phase 1-3 인프라만 병존', () => {
+        expect(SIMPLE_ARCH_ENABLED).toBe(false);
+      });
+    });
+
+    describe('computeRouteSignature', () => {
+      it('destination + waypoints 시퀀스로 시그니처 생성', () => {
+        const trip = makeTrip({
+          destination: 'D-1',
+          waypoints: [
+            { stationName: 'A', line: '2', kind: 'intermediate', occurrenceIdx: 0 },
+            { stationName: 'B', line: '2', kind: 'destination', occurrenceIdx: 1 },
+          ],
+        });
+        expect(computeRouteSignature(trip)).toBe(
+          'D-1::A|2|intermediate|0/B|2|destination|1',
+        );
+      });
+
+      it('occurrenceIdx 부재는 0으로 fallback (backward compat)', () => {
+        const trip = makeTrip({
+          destination: 'D-2',
+          waypoints: [{ stationName: 'A', line: '1', kind: 'destination' }],
+        });
+        expect(computeRouteSignature(trip)).toBe('D-2::A|1|destination|0');
+      });
+
+      it('같은 destination + waypoints → 시그니처 동일', () => {
+        const a = makeTrip({
+          destination: 'D',
+          waypoints: [{ stationName: 'S', line: '2', kind: 'destination' }],
+        });
+        const b = makeTrip({
+          token: 'other-token',
+          destination: 'D',
+          waypoints: [{ stationName: 'S', line: '2', kind: 'destination' }],
+        });
+        expect(computeRouteSignature(a)).toBe(computeRouteSignature(b));
+      });
+
+      it('다른 destination → 다른 시그니처', () => {
+        const a = makeTrip({ destination: 'D-1' });
+        const b = makeTrip({ destination: 'D-2' });
+        expect(computeRouteSignature(a)).not.toBe(computeRouteSignature(b));
+      });
+
+      it('waypoints 순서 다름 → 다른 시그니처', () => {
+        const a = makeTrip({
+          waypoints: [
+            { stationName: 'A', line: '2', kind: 'intermediate' },
+            { stationName: 'B', line: '2', kind: 'destination' },
+          ],
+        });
+        const b = makeTrip({
+          waypoints: [
+            { stationName: 'B', line: '2', kind: 'intermediate' },
+            { stationName: 'A', line: '2', kind: 'destination' },
+          ],
+        });
+        expect(computeRouteSignature(a)).not.toBe(computeRouteSignature(b));
+      });
+    });
+
+    describe('cleanupPendingPushesForToken', () => {
+      it('oldToken 소유의 pending entry만 delete + removed count 반환', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p1', token: 'tok-old' }),
+        );
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p2', token: 'tok-old' }),
+        );
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p3', token: 'tok-other' }),
+        );
+        const removed = await cleanupPendingPushesForToken(
+          kv as unknown as KVNamespace,
+          'tok-old',
+        );
+        expect(removed).toBe(2);
+        expect(await kv.get(pendingKey('p1'))).toBeNull();
+        expect(await kv.get(pendingKey('p2'))).toBeNull();
+        // 다른 device 소유는 보존
+        expect(await kv.get(pendingKey('p3'))).not.toBeNull();
+      });
+
+      it('매칭 entry 없음 → 0 반환', async () => {
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p1', token: 'tok-other' }),
+        );
+        const removed = await cleanupPendingPushesForToken(
+          kv as unknown as KVNamespace,
+          'tok-none',
+        );
+        expect(removed).toBe(0);
+        expect(await kv.get(pendingKey('p1'))).not.toBeNull();
+      });
+    });
+
+    describe('rotateTripTokenForNewRoute (flag OFF)', () => {
+      it('flag OFF (default): 항상 incoming token 그대로 반환 + KV 변경 없음', async () => {
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+        );
+        expect(result).toEqual({ token: 'tok-old', rotated: false });
+        // KV cleanup 없음
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).not.toBeNull();
+      });
+
+      it('flag OFF: existing null이어도 동일 (incoming 그대로)', async () => {
+        const incoming = makeTrip({ token: 'tok-new' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          null,
+        );
+        expect(result).toEqual({ token: 'tok-new', rotated: false });
+      });
+
+      it('flag OFF: deps.simpleArchEnabled=false 명시도 동일', async () => {
+        const existing = makeTrip({ token: 'tok-A', destination: 'D-1' });
+        const incoming = makeTrip({ token: 'tok-A', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: false },
+        );
+        expect(result).toEqual({ token: 'tok-A', rotated: false });
+      });
+    });
+
+    describe('rotateTripTokenForNewRoute (flag ON)', () => {
+      it('existing 없음 (신규 trip): incoming 그대로 (rotated=false)', async () => {
+        const incoming = makeTrip({ token: 'tok-new' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          null,
+          { simpleArchEnabled: true },
+        );
+        expect(result).toEqual({ token: 'tok-new', rotated: false });
+      });
+
+      it('같은 route (시그니처 일치): incoming token 유지 (rotated=false)', async () => {
+        const existing = makeTrip({
+          token: 'tok-same',
+          destination: 'D-1',
+          waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+        });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({
+          token: 'tok-same',
+          destination: 'D-1',
+          waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+        });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true },
+        );
+        expect(result).toEqual({ token: 'tok-same', rotated: false });
+        // 같은 route → cleanup 없음
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-same')).not.toBeNull();
+      });
+
+      it('다른 destination: 새 token 발급 + old trip:<token> delete + rotated=true', async () => {
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          {
+            simpleArchEnabled: true,
+            generateToken: () => 'new-uuid',
+          },
+        );
+        expect(result).toEqual({ token: 'new-uuid', rotated: true });
+        // Old KV entry 삭제됨
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
+      });
+
+      it('다른 waypoints (같은 destination): 새 token + rotated=true', async () => {
+        const existing = makeTrip({
+          token: 'tok-old',
+          destination: 'D-1',
+          waypoints: [{ stationName: 'A', line: '2', kind: 'destination' }],
+        });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({
+          token: 'tok-old',
+          destination: 'D-1',
+          waypoints: [
+            { stationName: 'B', line: '2', kind: 'intermediate' },
+            { stationName: 'A', line: '2', kind: 'destination' },
+          ],
+        });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          {
+            simpleArchEnabled: true,
+            generateToken: () => 'new-token-xyz',
+          },
+        );
+        expect(result.rotated).toBe(true);
+        expect(result.token).toBe('new-token-xyz');
+      });
+
+      it('다른 route: old token 소유 pending push cleanup (다른 token 보존)', async () => {
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p-old-1', token: 'tok-old' }),
+        );
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p-old-2', token: 'tok-old' }),
+        );
+        await putPending(
+          kv as unknown as KVNamespace,
+          makePending({ pushId: 'p-other', token: 'tok-different-device' }),
+        );
+
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          {
+            simpleArchEnabled: true,
+            generateToken: () => 'new-token',
+          },
+        );
+
+        expect(await kv.get(pendingKey('p-old-1'))).toBeNull();
+        expect(await kv.get(pendingKey('p-old-2'))).toBeNull();
+        // 다른 device 소유는 보존
+        expect(await kv.get(pendingKey('p-other'))).not.toBeNull();
+      });
+
+      it('generateToken 미지정: crypto.randomUUID로 생성 (default)', async () => {
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const spy = vi.spyOn(crypto, 'randomUUID');
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true },
+        );
+        expect(spy).toHaveBeenCalledOnce();
+        // UUID 포맷 (8-4-4-4-12)
+        expect(result.token).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+        );
+        expect(result.rotated).toBe(true);
+        spy.mockRestore();
+      });
+    });
   });
 });
