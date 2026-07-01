@@ -60,6 +60,7 @@ import {
   type FusionSignals,
   type FusionTierName,
 } from '../utils/pickFusionTier';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import {
   recordEnvironmentTransition,
   recordFusionTierAdopted,
@@ -1408,7 +1409,17 @@ export function useFusedNearestStation(
     hasBoardingLock: boardingLock != null,
     lockedTrainCode,
   };
-  const cascadeTierPick = pickFusionTier(cascadeEnvironment, fusionSignals);
+  // #2004 (Phase 4-1, ADR-022 A6) — flag ON 시 cascade 를 fused + gps-fallback 2-tier 로 축소.
+  //   arrival API SSoT 아키텍처: 다른 tier (position-train, backend-ssot, wifi, route,
+  //   detection-verdict, gps-fast-path, arvl-arrived-match, position-train-lock) 는 arrival
+  //   API 로 대체/중복이라 dormant. skip 은 진단용 debug 로그로만 관측 (완전 제거는 Phase 4b).
+  //
+  //   remote flag 반영은 후속 PR 에서 arg 로 전달 예정 (`useStationAlarm` 와 동일 정책, #2002).
+  const cascadeTierPick = pickFusionTier(
+    cascadeEnvironment,
+    fusionSignals,
+    isSimpleArchEnabled(),
+  );
   let result: NearestStationResult | null = cascadeTierPick.result;
   let confidence: FusionConfidence = cascadeTierPick.confidence;
   let source: FusionSource = cascadeTierPick.source;

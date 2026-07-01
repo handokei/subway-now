@@ -24,12 +24,23 @@
  *
  * #1934 (Epic #1927 G3) option B 통합 — candidate enumeration 단계 env vote reject counter는
  * caller(`useFusedNearestStation`) 책임. 본 picker는 cascade 단계만 담당.
+ *
+ * #2004 (Phase 4-1, ADR-022 A6) — `simpleArch` flag dormant.
+ *   - flag OFF: 기존 10-tier cascade 그대로 (backward-compat).
+ *   - flag ON: arrival API SSoT 아키텍처에서는 arrival 결과(fused = arrival-confirmed/
+ *     arrival-arriving) 와 GPS fallback (gps-only) 두 tier 만 신뢰. 다른 tier (position-train,
+ *     backend-ssot, wifi, route, detection-verdict) 는 arrival API 로 중복/대체되므로 skip.
+ *     skip 된 tier 는 진단용으로 `logger.debug('cascade-skip: flag-on', tier)` 로만 관측.
+ *   완전 제거는 Phase 4b (dogfood 검증 후) 로 분리.
  */
 
 import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { FusedStationResult } from './pickFusedStation';
 import type { Environment } from './inferEnvironment';
+import { createLogger } from '../../../shared/utils/logger';
+
+const logger = createLogger('pickFusionTier');
 
 /**
  * cascade tier 이름. 채택 trace + Sentry breadcrumb + DebugModal에서 단일 식별자.
@@ -297,6 +308,19 @@ const TIER_DEFINITIONS: readonly TierDefinition[] = [
 ] as const;
 
 /**
+ * #2004 (Phase 4-1, ADR-022 A6) — flag ON 시 활성 tier 화이트리스트.
+ *
+ * `fused` (arrival-confirmed / arrival-arriving) 와 `gps-fallback` (gps-only) 만 유지.
+ * 다른 tier 는 arrival API SSoT 로 대체 (dormant, skip). 완전 삭제는 Phase 4b.
+ *
+ * 신규 tier 를 이 목록에 추가할 때는 arrival API SSoT 원칙(다른 신호 X)이 유지되는지 확인.
+ */
+const SIMPLE_ARCH_ALLOWED_TIERS: ReadonlySet<FusionTierName> = new Set([
+  'fused',
+  'gps-fallback',
+]);
+
+/**
  * cascade tier picker — environment + 사전 계산된 신호로 채택 tier 결정.
  *
  * 순서 규칙:
@@ -309,14 +333,26 @@ const TIER_DEFINITIONS: readonly TierDefinition[] = [
  * 마지막 tier(`gps-fallback`)는 항상 평가되며 `result`가 null이어도 tier만 채택 (caller가 fallback
  * 처리). `pickFusionTier`는 절대 null 반환하지 않는다 (gps-fallback이 sink).
  *
+ * #2004 (Phase 4-1, ADR-022 A6) — `simpleArch` flag ON 시:
+ *   - `SIMPLE_ARCH_ALLOWED_TIERS` 화이트리스트(`fused`, `gps-fallback`) 만 evaluate.
+ *   - 다른 tier 는 skip + `logger.debug('cascade-skip: flag-on', name)` 진단 로그.
+ *   - `TIER_DEFINITIONS` 순서는 그대로 유지 — 낮은 index tier 만 skip 대상.
+ *   - gps-fallback 은 sink 로 항상 마지막에 평가되므로 flag ON 이어도 sink 동작 보존.
+ *
  * @param environment cascadeEnvironment SSOT (`inferEnvironment` 결과)
  * @param signals caller pre-computed tier별 신호 묶음
+ * @param simpleArch true 시 flag ON — arrival + gps 2-tier 만 활성. 기본 false (backward-compat).
  */
 export function pickFusionTier(
   environment: Environment,
   signals: FusionSignals,
+  simpleArch = false,
 ): FusionTierResult {
   for (const def of TIER_DEFINITIONS) {
+    if (simpleArch && !SIMPLE_ARCH_ALLOWED_TIERS.has(def.name)) {
+      logger.debug('cascade-skip: flag-on', def.name);
+      continue;
+    }
     const picked = def.evaluate(environment, signals);
     if (picked != null) return picked;
   }
