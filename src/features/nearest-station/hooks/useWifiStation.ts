@@ -15,11 +15,17 @@
  *   - native 부재 / 권한 없음 → 결과 항상 null (suppress 안 함, GPS fallback)
  *   - SSID 매칭 실패 → null (다른 신호로 fallback)
  *   - unmount 시 polling cleanup
+ *
+ * #2006 (ADR-022 Phase 4-4) — `isSimpleArchEnabled()` 활성 시 폴링 자체 skip. arrival API 가
+ * 지하도 SSOT 로 커버하므로 WiFi 대체 신호는 dormant. native SSID 조회는 배터리·권한 비용이
+ * 있어 `lookupStationBySsid` 게이트만으로는 부족 — hook 자체가 tick 을 skip 한다.
+ * flag OFF (default) 시 기존 15s 폴링 그대로.
  */
 
 import { useEffect, useState } from 'react';
 import { getCurrentWifiSsid } from '../utils/wifiSsidNative';
 import { lookupStationBySsid } from '../utils/wifiSsidLookup';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import type { Station } from '../../../shared/types/station';
 
 /** 폴링 주기 — 알람 평가(30s)의 절반. native 부하와 갱신 지연의 절충점. */
@@ -29,6 +35,11 @@ export function useWifiStation(): Station | null {
   const [station, setStation] = useState<Station | null>(null);
 
   useEffect(() => {
+    // #2006 (ADR-022 Phase 4-4) — flag ON 시 폴링 자체 skip. 배터리·권한 비용 0.
+    // flag toggle 은 재빌드/remount 이 트리거하므로 effect deps 는 유지 (mount time 판정).
+    if (isSimpleArchEnabled()) {
+      return;
+    }
     let cancelled = false;
 
     const tick = async () => {

@@ -21,20 +21,33 @@ jest.mock('../../utils/wifiSsidLookup', () => ({
 
 import { renderHook, act, waitFor } from '@testing-library/react-native';
 import { useWifiStation } from '../useWifiStation';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
 import type { Station } from '../../../../shared/types/station';
 
 const yongmasan: Station = { id: '7-yongmasan', name: '용마산', line: '7', lineColor: '#747F00', lat: 37.5, lng: 127 };
 const junggok: Station = { id: '7-junggok', name: '중곡', line: '7', lineColor: '#747F00', lat: 37.5, lng: 127.1 };
+
+const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
 
 describe('useWifiStation (#913)', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockGetSsid.mockReset();
     mockLookup.mockReset();
+    // #2006 — 각 테스트 전 flag 초기화 (기본 OFF).
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
   });
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_ARCH_ENV === undefined) {
+      delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+    } else {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = ORIGINAL_ARCH_ENV;
+    }
   });
 
   it('초기 1회 호출 — SSID 매칭 시 station 반환', async () => {
@@ -161,5 +174,41 @@ describe('useWifiStation (#913)', () => {
       jest.advanceTimersByTime(15_000);
     });
     await waitFor(() => expect(result.current).toBe(yongmasan));
+  });
+
+  // #2006 (ADR-022 Phase 4-4) — flag ON 시 폴링 자체 skip. 배터리·권한 비용 0.
+  describe('flag guard (#2006)', () => {
+    it('flag ON — mount 시 getCurrentWifiSsid 호출 0 (폴링 skip)', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      const { result } = renderHook(() => useWifiStation());
+
+      // mount 직후 즉시 확인 — flag ON 이면 tick 이 등록되지 않아 getCurrentWifiSsid 호출 0.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockGetSsid).not.toHaveBeenCalled();
+      expect(mockLookup).not.toHaveBeenCalled();
+      expect(result.current).toBeNull();
+    });
+
+    it('flag ON — 15s / 60s 경과 후에도 폴링 호출 0 (인터벌 skip)', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+      renderHook(() => useWifiStation());
+
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSsid).not.toHaveBeenCalled();
+    });
+
+    it('flag OFF 명시 — 기존 폴링 동작 유지', async () => {
+      process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'false';
+      mockGetSsid.mockResolvedValue('T_subway_용마산');
+      mockLookup.mockReturnValue(yongmasan);
+
+      const { result } = renderHook(() => useWifiStation());
+      await waitFor(() => expect(result.current).toBe(yongmasan));
+      expect(mockGetSsid).toHaveBeenCalled();
+    });
   });
 });

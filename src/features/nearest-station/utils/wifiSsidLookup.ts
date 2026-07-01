@@ -8,10 +8,15 @@
  *
  * 본 유틸은 pure JS layer. 네이티브 SSID 조회 브릿지(NEHotspotNetwork / WifiManager)와
  * useNearestStation cascade wire는 후속 PR에서 추가한다.
+ *
+ * #2006 (ADR-022 Phase 4-4) — `isSimpleArchEnabled()` 활성 시 매칭 skip.
+ *   flag ON 시 arrival API 가 지하도 SSOT 로 커버하므로 WiFi 대체 신호는 dormant.
+ *   flag OFF (default) 시 기존 정규식 매칭 그대로 (backward-compat).
  */
 import wifiSsidMapRaw from '../../../data/subwayWifiSsidMap.json';
 import { applyStationAlias } from '../../../data/stationAliases';
 import { findStationByName } from '../../../shared/utils/stationLookup';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import type { Station } from '../../../shared/types/station';
 
 interface WifiSsidEntry {
@@ -43,9 +48,15 @@ function getCompiledEntries(): CompiledEntry[] {
 
 /**
  * 현재 wifi SSID 문자열을 받아 매칭되는 Station을 반환한다.
+ *
+ * #2006 — `isSimpleArchEnabled()` 활성 시 항상 null 반환 (매칭 skip). arrival API 가
+ * 지하도 커버하므로 WiFi 대체 신호는 dormant. flag OFF 시 기존 정규식 매칭 그대로.
+ *
  * @param ssid - 네이티브에서 조회한 현재 연결된 wifi SSID. null/empty/매칭 실패 시 null.
  */
 export function lookupStationBySsid(ssid: string | null | undefined): Station | null {
+  // #2006 (ADR-022 Phase 4-4) — flag ON 시 매칭 skip. arrival API SSOT dormant.
+  if (isSimpleArchEnabled()) return null;
   if (typeof ssid !== 'string') return null;
   const trimmed = ssid.trim();
   if (trimmed.length === 0) return null;
