@@ -1467,14 +1467,15 @@ describe('useNearestStation — #903 Seam G barometer→sticky', () => {
 });
 
 describe('useNearestStation — #1313 subsurface GPS throttle', () => {
-  // 지상 기본값: High@2s. 지하 throttle: Balanced@12s. interval은 상수에서 가져와 매직넘버 회피.
+  // 지상 기본값: High@2s. 지하 throttle: High@12s (#1983 ADR-022 A3 — Balanced→High 통일).
+  // accuracy는 지상/지하 동일 High, interval만 subsurface에서 확장. 상수에서 가져와 매직넘버 회피.
   const SURFACE_OPTIONS = {
     accuracy: Location.Accuracy.High,
     distanceInterval: 0,
     timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   };
   const SUBSURFACE_OPTIONS = {
-    accuracy: Location.Accuracy.Balanced,
+    accuracy: Location.Accuracy.High,
     distanceInterval: 0,
     timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
   };
@@ -1509,10 +1510,12 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
   });
 
   // 마운트 시 subsurface 값에 따른 초기 watch 옵션 — undefined/false는 절대 throttle하지 않는다(안전 기본값).
+  // #1983 (ADR-022 A3): subsurface=true도 accuracy=High로 통일. 이전엔 Balanced였으나 지상 fix까지
+  // 1000~1600m 오염 회귀로 High 통일. subsurface 차이는 timeInterval만(2s→12s).
   it.each([
     { label: 'subsurface 미전달(undefined) → High@2s', props: {}, expected: () => SURFACE_OPTIONS },
     { label: 'subsurface=false → High@2s', props: { barometerSubsurface: false }, expected: () => SURFACE_OPTIONS },
-    { label: 'subsurface=true → Balanced@12s', props: { barometerSubsurface: true }, expected: () => SUBSURFACE_OPTIONS },
+    { label: 'subsurface=true → High@12s (#1983 Balanced→High 통일)', props: { barometerSubsurface: true }, expected: () => SUBSURFACE_OPTIONS },
   ])('마운트 $label', async ({ props, expected }) => {
     renderHook(() => useNearestStation(props));
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
@@ -1521,7 +1524,7 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
     expect(lastWatchOptions()).toEqual(expected());
   });
 
-  it('subsurface false→true flip 시 watch를 teardown 후 Balanced@12s로 재시작한다', async () => {
+  it('subsurface false→true flip 시 watch를 teardown 후 High@12s로 재시작한다 (#1983)', async () => {
     const { rerender } = renderHook(
       ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
       { initialProps: { sub: false } },
@@ -1580,10 +1583,21 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
     expect(mockSubscription.remove).not.toHaveBeenCalled();
 
-    // FG 복귀 시 'active' 핸들러 refresh→startWatch가 throttledRef를 읽어 Balanced@12s로 반영.
+    // FG 복귀 시 'active' 핸들러 refresh→startWatch가 throttledRef를 읽어 High@12s로 반영.
     (AppState as { currentState: string }).currentState = 'active';
     await act(async () => { appStateCallback?.('active'); });
     await waitFor(() => expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS));
+  });
+
+  // #1983 (ADR-022 A3) — subsurface에서도 accuracy=High. Balanced로 회귀하면 지상 fix까지
+  // 1000~1600m 저정확도로 오염되므로 accuracy 값 자체를 pin해 회귀를 조기 차단한다.
+  it.each([
+    { label: 'surface(subsurface=false)', props: { barometerSubsurface: false } },
+    { label: 'subsurface(subsurface=true)', props: { barometerSubsurface: true } },
+  ])('#1983 $label 에서 watch accuracy는 High (Balanced 회귀 차단)', async ({ props }) => {
+    renderHook(() => useNearestStation(props));
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    expect(lastWatchOptions().accuracy).toBe(Location.Accuracy.High);
   });
 });
 

@@ -4,7 +4,9 @@ const mockGetCurrentPositionAsync = jest.fn();
 jest.mock('expo-location', () => ({
   getLastKnownPositionAsync: (...args: unknown[]) => mockGetLastKnownPositionAsync(...args),
   getCurrentPositionAsync: (...args: unknown[]) => mockGetCurrentPositionAsync(...args),
-  Accuracy: { Balanced: 3 },
+  // expo-location Accuracy enum 실측값 mirror. Balanced=3, High=4 (expo-location 소스). #1983에서
+  // fresh fetch를 Balanced→High로 통일하며 both 값을 노출해 regression test가 두 값 모두 참조 가능.
+  Accuracy: { Balanced: 3, High: 4 },
 }));
 
 const mockFindStationByName = jest.fn();
@@ -144,6 +146,24 @@ describe('checkSilentPushLocationGate', () => {
     expect(result.pass).toBe(true);
     expect(result.locationSource).toBe('fresh');
     expect(result.locationAgeMs).toBe(0);
+  });
+
+  // #1983 (ADR-022 A3) — fresh fetch accuracy는 High. 이전엔 Balanced였으나 (100m~수km,
+  // cellular triangulation) 지상 fix까지 1000~1600m 저정확도로 오염되는 회귀 발생. 값 자체를
+  // pin해 Balanced 회귀를 조기 차단한다.
+  it('#1983 fresh fetch는 Accuracy.High로 호출한다 (Balanced 회귀 차단)', async () => {
+    mockGetLastKnownPositionAsync.mockResolvedValue(null);
+    mockGetCurrentPositionAsync.mockResolvedValue(
+      makePosition(NEAR_GANGNAM.lat, NEAR_GANGNAM.lng, 0),
+    );
+    await checkSilentPushLocationGate({
+      stationName: '강남',
+      kind: 'destination',
+      phase: 'imminent',
+    });
+    expect(mockGetCurrentPositionAsync).toHaveBeenCalledWith({
+      accuracy: (jest.requireMock('expo-location') as { Accuracy: { High: number } }).Accuracy.High,
+    });
   });
 
   it('캐시 throw 시에도 fresh fetch fallback', async () => {
