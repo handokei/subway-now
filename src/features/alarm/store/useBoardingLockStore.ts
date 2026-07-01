@@ -8,6 +8,7 @@ import {
 } from '../utils/boardingLockStorage';
 import { clearDismissSilence } from '../utils/dismissSilenceStorage';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 
 /**
  * #1438 (E5) — release 사유 식별자.
@@ -59,6 +60,39 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
   lock: null,
 
   createLock: async (lock: BoardingLock) => {
+    // #1996 (Phase 1-7, ADR-022 A4) — boardingStationId 불변 정책 (flag ON 시).
+    //
+    // route 등록 시 확정된 boardingStationId는 절대 자동 변경 금지 (auto-swap / reanchored /
+    // fusion cascade 금지). 예외는 정당한 route 재등록:
+    //   1) trainCode 변경 (환승 leg 진입 → 새 열차 = 사실상 새 route)
+    //   2) boardingLine 변경 (환승 → 다른 노선 leg 진입)
+    //   3) destinationId 변경 (다른 trip)
+    // 위 3가지가 모두 동일한데 boardingStationId만 다른 createLock은 auto-swap 시도로 간주 → skip.
+    //
+    // Flag OFF (default) 시 기존 동작 유지 — 어떤 createLock이든 기존 lock을 교체.
+    // Flag ON 시 위 정책을 강제해 회귀 방어.
+    if (isSimpleArchEnabled()) {
+      const prev = get().lock;
+      if (
+        prev &&
+        prev.destinationId === lock.destinationId &&
+        prev.trainCode === lock.trainCode &&
+        prev.boardingLine === lock.boardingLine &&
+        prev.boardingStationId !== lock.boardingStationId
+      ) {
+        // 동일 route/leg에서 boardingStationId만 다른 lock 재생성 시도 → auto-swap 차단.
+        // 사용자 명시 route 재등록은 (trainCode 또는 boardingLine 변경)으로 감지되므로 정당한
+        // 환승/재탑승 경로는 그대로 통과. 본 분기는 순수 "같은 leg 안에서 boardingStationId만
+        // silently overwrite" 회귀 만 차단한다.
+        addDomainBreadcrumb('boarding', 'lock-create-skip-immutable', {
+          trainCode: lock.trainCode,
+          line: lock.boardingLine,
+          prevBoardingStationId: prev.boardingStationId,
+          attemptedBoardingStationId: lock.boardingStationId,
+        });
+        return;
+      }
+    }
     set({ lock });
     await setBoardingLock(lock);
     // #746: 새 lock 생성 = 사용자가 새 leg에 탑승 의사 명시 → 이전 dismiss silence는 무효.
