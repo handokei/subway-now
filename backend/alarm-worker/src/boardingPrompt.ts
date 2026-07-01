@@ -28,6 +28,7 @@
  */
 
 import { ARRIVAL_CODE } from './alarm';
+import type { ArchFlagValue } from './archFlag';
 import type { StationEnvironment } from './consensusGate';
 import { fusedSpeed } from './fusedSpeed';
 import { matchLine } from './lineAlias';
@@ -114,6 +115,19 @@ export interface EvaluateBoardingPromptInputs {
    * lockAttachable 2-of-2 합의를 검증해야 한다(false positive 차단).
    */
   environment?: StationEnvironment;
+  /**
+   * #2014 (ADR-022 B8) — arrival API SSoT 아키텍처 활성화 여부.
+   *
+   * `'on'` 이면 GPS/motion/speed 게이트(#3~#8) 전부 skip, #9 (fired/silenced) 만 평가한다.
+   * B8 정책: "boardingPrompt 발사 = arvlCd=1 도착 시 즉시. motion / speed 게이트 없음".
+   * arvlCd=1 관측 자체는 caller(scheduled.ts) 가 fetchArrivals 후 별도 검사 — 본 게이트는
+   * `promptState.fired` / `silencedUntil` 만으로 dedup + silence 정책을 유지해 false-positive
+   * repeat push 를 차단한다.
+   *
+   * `'off'` 또는 undefined(legacy 호출자) 는 기존 9단 AND 게이트(또는 environment 분기) 그대로
+   * 평가 — 회귀 방어.
+   */
+  archFlag?: ArchFlagValue;
 }
 
 /**
@@ -222,6 +236,12 @@ function isGpsDependentBypassEnv(env: StationEnvironment | undefined): boolean {
  * fail 회귀 차단. 이 분기에서는 #8 motion + #9 silence/fired 만 평가하며, caller(scheduled.ts)
  * 가 evaluateConsensusGate(environment, signals) 로 arrival + lockAttachable 합의를 별도 검증해
  * false positive 를 차단해야 한다. `environment` 미지정 또는 'surface' 면 기존 9단 AND 평가.
+ *
+ * #2014 (ADR-022 B8) — `inputs.archFlag === 'on'` 시 GPS/motion/speed 게이트(#3~#8) 전부 skip.
+ * #9 (fired/silenced) 만 평가해 dedup + silence 만 유지. B8 정책 "arvlCd=1 도착 시 즉시 발사"
+ * 를 지원 — arvlCd 관측 자체는 caller 가 별도로 fetchArrivals + `pickAutoTrainCode` 로 검증.
+ * `fusedSpeedKmh=0` 으로 반환 (bypass 분기와 동일) — 호출자는 fusedSpeed 를 로깅 외 용도로
+ * 신뢰하지 않는다.
  */
 export function evaluateBoardingPromptGates(
   inputs: EvaluateBoardingPromptInputs,
@@ -230,10 +250,16 @@ export function evaluateBoardingPromptGates(
   const silenceOutcome = evaluateSilenceGate(inputs.promptState, inputs.now);
   if (silenceOutcome) return silenceOutcome;
 
-  const gpsDependentBypass = isGpsDependentBypassEnv(inputs.environment);
-
   // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면 결과 재사용.
   const metrics = inputs.metrics ?? evaluateWindow(inputs.series, inputs.now);
+
+  // #2014 (ADR-022 B8) — archFlag=on 시 #9 만 평가 후 즉시 pass. 나머지 게이트는 skip.
+  // arvlCd=1 관측 기반 fire 정책은 caller(scheduled.ts) 가 별도 검증한다.
+  if (inputs.archFlag === 'on') {
+    return { pass: true, metrics, fusedSpeedKmh: 0 };
+  }
+
+  const gpsDependentBypass = isGpsDependentBypassEnv(inputs.environment);
 
   // surface / undefined 만 GPS 의존 게이트 평가 — underground/mixed/unknown 은 byPass.
   if (!gpsDependentBypass) {

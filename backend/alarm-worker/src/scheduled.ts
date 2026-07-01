@@ -18,6 +18,7 @@ import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
   markPromptFired,
+  pickAutoTrainCode,
   type GateSkipReason,
 } from './boardingPrompt';
 import {
@@ -3614,6 +3615,10 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // #1536 (S3) — 환경 분기. underground/unknown 은 GPS 의존 게이트(#3~#7) 를 byPass.
   // 결과(outcome.pass) 는 motion+silence/fired 만 보장하므로 caller 는 별도 consensusGate
   // 로 arrival+lockAttachable 합의를 검증해야 false positive 차단.
+  //
+  // #2014 (ADR-022 B8) — deps.archFlag='on' 시 GPS/motion/speed 게이트(#3~#8) 전부 skip,
+  // #9 (fired/silenced) 만 평가. arvlCd=1 관측 기반 fire 판정은 아래 fetchArrivals 후
+  // `pickAutoTrainCode` 로 별도 진행. 즉 gate 통과 = "silence/fired dedup OK"만 의미.
   const environment = deriveTripEnvironment(trip);
   const outcome = evaluateBoardingPromptGates({
     series: fusion.series,
@@ -3626,6 +3631,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     // 그 결과를 그대로 재사용해 trip당 redundant window 평가를 제거 (동작 동치).
     metrics: fusion.posMetrics,
     environment,
+    archFlag: deps.archFlag,
   });
 
   if (!outcome.pass) {
@@ -3649,6 +3655,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   const nextStation = trip.waypoints[0]?.stationName ?? null;
   let etaSeconds: number | null = null;
   let candidateTrains: BoardingPromptCandidate[] = [];
+  // #2014 — pool 을 catch 밖으로 export 해 archFlag=on ambiguity guard 에서 재사용.
+  let poolForArchFlagCheck: readonly ArrivalEntry[] = [];
   try {
     const arrivals = await deps.seoul.fetchArrivals(display.originStation);
     const directional = arrivals.filter(
@@ -3657,6 +3665,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
         (geo.direction === null || (geo.direction === 'up' ? a.isUp : !a.isUp)),
     );
     const pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, display.line));
+    poolForArchFlagCheck = pool;
     if (pool.length > 0) {
       const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
       etaSeconds = best.arrivalSeconds;
@@ -3674,6 +3683,28 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       }));
   } catch {
     // Seoul API 장애 시 ETA 없이 push 발사 — 메시지 degradation만 발생, push 자체는 보존.
+  }
+
+  // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 우선순위 기반 단일 trainCode 수렴 검증.
+  // ambiguity(같은 우선순위 후보 2+) 면 fire skip — false positive 방어(기존 B9 게이트 유지).
+  // pool 이 비어 있으면 (Seoul API 실패 / 매칭 0건) 아래 candidateTrains 0건 guard 로 skip 됨 —
+  // 여기서는 pool.length > 0 인데 pickAutoTrainCode 가 null 인 케이스만 명시 차단해 counter 로
+  // 가시화한다.
+  if (
+    deps.archFlag === 'on' &&
+    poolForArchFlagCheck.length > 0 &&
+    pickAutoTrainCode(poolForArchFlagCheck, display.line, geo.direction) === null
+  ) {
+    stats.boardingPromptBlocked += 1;
+    log('boarding-prompt: skipped ambiguity (#2014 archFlag=on)', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      direction: geo.direction,
+      poolSize: poolForArchFlagCheck.length,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
   }
 
   // #1888 (RC-13) — 후보 0건이면 발사 skip. 사용자가 banner를 받아도 빈 BoardingTrainList만 보게 되는
