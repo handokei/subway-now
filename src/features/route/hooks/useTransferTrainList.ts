@@ -15,6 +15,7 @@ import {
   findUpcomingTransferPrefetch,
 } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
+import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import { calculateRemainingLegETA } from '../../../shared/utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -149,7 +150,13 @@ export function useTransferTrainList({
   );
 
   // #1211 D5 — autoLock 실제 트리거. createTransferLock 정의 이후에 effect 배치(클로저 캡처).
+  //
+  // #2016 (ADR-022 D5 dormant) — `isSimpleArchEnabled()` 활성 시 effect 자체 skip.
+  // 관찰 11 fix (#2015) 로 arvlCd=1 즉시 boardingPrompt 가 fire 되면서 D5 autoLock 이 메꾸려던
+  // lockless gap 자체가 사라짐. flag ON 에서는 사용자 명시 의향(boardingPrompt 응답 /
+  // BoardingTrainList 직접 탭) 만이 락 트리거. flag OFF (default) 시 기존 D5 100% 동작 유지.
   useEffect(() => {
+    if (isSimpleArchEnabled()) return;
     // transferKey가 truthy면 context도 활성 (transferKey가 context에서 도출).
     if (!transferKey) return;
     if (autoLockedTransferKeyRef.current === transferKey) return;

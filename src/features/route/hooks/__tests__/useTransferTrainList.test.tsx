@@ -11,10 +11,26 @@ import { useTransferTrainList, filterArrivalsByDirection } from '../useTransferT
 import { prefetchArrival, useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
 import { useBoardingLockStore } from '../../../alarm/store/useBoardingLockStore';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
+import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
 import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arrival';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
+
+// #2016 — 각 테스트가 명시적으로 flag 를 셋하지 않는 한 dormant 기본값 유지 (flag OFF, 기존 D5 동작).
+const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+
+beforeEach(() => {
+  delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+});
+
+afterAll(() => {
+  if (ORIGINAL_ARCH_ENV === undefined) {
+    delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+  } else {
+    process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = ORIGINAL_ARCH_ENV;
+  }
+});
 
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 const mockUseArrival = useArrivalInfo as jest.Mock;
@@ -521,6 +537,89 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
     );
     expect(mockCreateLock).toHaveBeenCalledTimes(1);
     expect(mockCreateLock).toHaveBeenCalledWith(expect.objectContaining({ trainCode: 'T-DIR-NULL' }));
+  });
+});
+
+/**
+ * #2016 (ADR-022 D5 dormant) — `isSimpleArchEnabled()` 활성 시 D5 autoLock effect skip.
+ *
+ * 배경: 관찰 11 fix (#2015) 로 arvlCd=1 즉시 boardingPrompt 가 fire 되면서 D5 autoLock 이
+ * 메꾸려던 lockless gap 자체가 사라짐. flag ON 시 사용자 명시 의향(boardingPrompt 응답 /
+ * BoardingTrainList 직접 탭) 만이 락 트리거.
+ *
+ * flag OFF (기본) 시 기존 D5 동작 100% 유지는 위 '#1211 D5' describe 가 이미 검증.
+ * 본 describe 는 flag ON 시 dormant + 수동 flow 정상 발동 만 박제.
+ */
+describe('#2016 (autoLock dormant) archFlag ON 시 D5 autoLock skip', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+    process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
+  });
+
+  it('flag ON + context 활성 + arvlCd 단일 train(ARRIVED=1) → autoLock 발동 0건 (dormant)', () => {
+    // #1211 D5 baseline 시나리오. flag OFF 였으면 autoLock 1회 호출됐을 조건.
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + BoardingTrainList 직접 탭 (createTransferLock) → 정상 락 발동 (수동 flow 유지)', () => {
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({ trainCode: 'NEW' })], down: [] }));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    // 자동 autoLock 은 dormant.
+    expect(mockCreateLock).not.toHaveBeenCalled();
+    // 사용자 명시 탭 → createTransferLock 직접 호출 시 정상 락 생성.
+    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'NEW', arrivalSeconds: 240 })));
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+    expect(mockCreateLock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destinationId: 'dest-X',
+        trainCode: 'NEW',
+        boardingLine: '5',
+        expectedDurationMs: 6 * 60_000,
+        initialEtaSeconds: 240,
+      }),
+    );
+  });
+
+  it('flag ON + polling 반복(arrival 새 객체) → autoLock 0건 유지 (dormant 안정성)', () => {
+    // flag OFF 였으면 idempotency ref 로 1회만 호출. flag ON 이면 항상 0회.
+    const makeFreshArrival = (): { arrival: StationArrival; loading: boolean; isMock: boolean; refetch: jest.Mock } =>
+      arrivalRet({
+        up: [makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 })],
+        down: [],
+      }) as { arrival: StationArrival; loading: boolean; isMock: boolean; refetch: jest.Mock };
+    mockUseArrival.mockImplementation(() => makeFreshArrival());
+    const { rerender } = renderHook(
+      (props: { lock: BoardingLock }) =>
+        useTransferTrainList({
+          lock: props.lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      { initialProps: { lock } },
+    );
+    rerender({ lock });
+    rerender({ lock });
+    expect(mockCreateLock).not.toHaveBeenCalled();
   });
 });
 
