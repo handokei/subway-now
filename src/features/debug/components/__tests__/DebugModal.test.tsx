@@ -81,6 +81,12 @@ jest.mock('../../../alarm/utils/scheduledNotificationsDump', () => {
     dumpScheduledNotifications: () => mockDumpScheduledNotifications(),
   };
 });
+// #1982 (ADR-022 Phase 0) — DebugModal 이 Feature Flag remote 조회 hook 을 마운트한다.
+// 실제 fetch 를 막고 반환값을 case 별로 override 하기 위해 mock 함수를 노출한다.
+const mockUseArchFlagRemote = jest.fn();
+jest.mock('../../../../shared/config/useArchFlagRemote', () => ({
+  useArchFlagRemote: () => mockUseArchFlagRemote(),
+}));
 const station: Station = {
   id: '2-022',
   name: '강남',
@@ -214,6 +220,12 @@ const setupHookDefaults = () => {
   mockReadBackendSsotMirror.mockResolvedValue(null);
   // #1898 — accelerometer raw snapshot 기본 null (native 모듈 미포함 / jest 환경).
   mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
+  // #1982 (ADR-022 Phase 0) — Feature Flag remote 기본 unconfigured (테스트 env 에는 backend URL 없음).
+  mockUseArchFlagRemote.mockReturnValue({
+    value: undefined,
+    kind: 'unconfigured',
+    lastFetchedAt: null,
+  });
   // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
   useDestinationStore.setState({ destination: null, tripOrigin: null });
   useSettingsStore.setState({ sleepMode: false });
@@ -286,6 +298,54 @@ describe('DebugModal', () => {
     const { toJSON } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(toJSON()).toBeNull();
     g.__DEV__ = original;
+  });
+
+  // #1982 (ADR-022 Phase 0) — Feature Flag 섹션이 env / remote / 최종 판정을 표시한다.
+  describe('Feature Flag section (#1982)', () => {
+    const ARCH_ENV_KEY = 'EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH';
+    const originalEnv = process.env[ARCH_ENV_KEY];
+
+    afterEach(() => {
+      if (originalEnv === undefined) {
+        delete process.env[ARCH_ENV_KEY];
+      } else {
+        process.env[ARCH_ENV_KEY] = originalEnv;
+      }
+    });
+
+    it('remote unconfigured + env unset → OFF (dormant default)', async () => {
+      delete process.env[ARCH_ENV_KEY];
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      expect(await screen.findByTestId('feature-flag-section')).toBeTruthy();
+      expect(screen.getByText('Feature Flag')).toBeTruthy();
+      // 최종 판정 라인.
+      const active = screen.getByText('simple-arrival active');
+      expect(active).toBeTruthy();
+      // "OFF" 텍스트가 화면에 나타나야 한다.
+      expect(screen.getByText('OFF')).toBeTruthy();
+    });
+
+    it('remote on → ON (rollout stage)', async () => {
+      delete process.env[ARCH_ENV_KEY];
+      mockUseArchFlagRemote.mockReturnValue({
+        value: 'on',
+        kind: 'ok',
+        lastFetchedAt: 1_700_000_000_000,
+      });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(screen.getByText('ON')).toBeTruthy());
+    });
+
+    it('env=true → ON (dogfood build)', async () => {
+      process.env[ARCH_ENV_KEY] = 'true';
+      mockUseArchFlagRemote.mockReturnValue({
+        value: 'off',
+        kind: 'ok',
+        lastFetchedAt: 1_700_000_000_000,
+      });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(screen.getByText('ON')).toBeTruthy());
+    });
   });
 
   it('GPS / Nearest / Arrival / Alarm log 섹션을 모두 표시한다', async () => {

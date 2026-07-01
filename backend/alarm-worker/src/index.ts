@@ -44,6 +44,12 @@ import { ackPending, stampReceived } from './pendingPushes';
 import { computePushAckStats } from './pushAckStats';
 import { computeAlarmLogStats } from './alarmLogStats';
 import { computeBaselineCheck } from './baselineCheck';
+import {
+  ARCH_FLAG_DEFAULT,
+  getArchFlag,
+  isArchFlagValue,
+  setArchFlag,
+} from './archFlag';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -374,6 +380,57 @@ app.get('/admin/baseline-check', async (c) => {
   if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
   const result = await computeBaselineCheck(kv, r2, tripToken, Date.now());
   return c.json(result);
+});
+
+/**
+ * #1982 (ADR-022 Phase 0) — Arrival API SSOT 아키텍처 Feature Flag 조회 endpoint.
+ *
+ * Phase 0 시점의 flag 값은 어떤 동작도 바꾸지 않는다(dormant). Phase 1 이후 caller 가
+ * 결과 값을 새/구 아키텍처 분기 조건으로 사용한다. 본 endpoint 는 device DebugModal /
+ * 운영자 진단에서 현재 KV 상태를 조회하는 read-only 창구.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Response 200: `{ value: 'on' | 'off' }`
+ * Response 401/503: 인증/binding 정책 동일 (TRIPS 미바인딩 시 503).
+ */
+app.get('/admin/arch-flag', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.TRIPS;
+  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  const value = await getArchFlag(kv);
+  return c.json({ value });
+});
+
+/**
+ * #1982 (ADR-022 Phase 0) — Arrival API SSOT 아키텍처 Feature Flag 설정 endpoint.
+ *
+ * Rollback 채널: `on` 상태에서 회귀 발견 시 `off` write 만으로 즉시 되돌린다(배포 없음).
+ * 유효 값은 `on` / `off` 만. 그 외 body 는 400 으로 거절 — 잘못된 KV 진입 차단.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Body: `{ value: 'on' | 'off' }`
+ * Response 200: `{ value: 'on' | 'off' }`
+ * Response 400: `{ error: 'invalid_body' }` — body 파싱 실패 / 유효하지 않은 value.
+ * Response 401/503: 인증/binding 정책 동일.
+ */
+app.post('/admin/arch-flag', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.TRIPS;
+  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const raw = (body as { value?: unknown } | null)?.value;
+  if (!isArchFlagValue(raw)) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  await setArchFlag(kv, raw);
+  return c.json({ value: raw });
 });
 
 interface AdminAuthError {
@@ -2161,8 +2218,12 @@ const handler = {
       bundleId: env.APNS_BUNDLE_ID,
     };
     const apnsHosts = { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX };
+    // #1982 (ADR-022 Phase 0) — 매 cron cycle log 에 archFlag on/off 를 포함한다.
+    // KV 미바인딩 / 미설정 케이스는 `getArchFlag` 가 default 로 fallback (dormant).
+    // meta 에 우연히 같은 키가 실려 있어도 archFlag SSOT 가 이기도록 spread 순서를 뒤로 둔다.
+    const archFlag = await getArchFlag(env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
     const log = (msg: string, meta?: Record<string, unknown>) =>
-      console.log(JSON.stringify({ msg, ...meta }));
+      console.log(JSON.stringify({ msg, ...meta, archFlag }));
 
     try {
       await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });

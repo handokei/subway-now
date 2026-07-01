@@ -27,6 +27,12 @@ import {
   type BackendSsotMirrorEntry,
 } from '../../alarm/utils/backendSsotMirror';
 import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
+import {
+  SIMPLE_ARRIVAL_ARCH_ENV_KEY,
+  isSimpleArchEnabled,
+  isSimpleArchEnvEnabled,
+} from '../../../shared/config/archFlag';
+import { useArchFlagRemote } from '../../../shared/config/useArchFlagRemote';
 import type { GpsActiveState } from '../../../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../../../shared/utils/formatTime';
 import { useFusedNearestStation } from '../../../features/nearest-station/hooks/useFusedNearestStation';
@@ -1653,6 +1659,9 @@ function DebugModalInner({
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
   // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
   const insets = useSafeAreaInsets();
+  // #1982 (ADR-022 Phase 0) — arrival-api-ssot-v1 Feature Flag remote 조회.
+  // ADMIN_TOKEN / ALARM_BACKEND_URL 미설정 환경은 kind=unconfigured 로 그대로 표시.
+  const archFlagRemote = useArchFlagRemote();
   // #1812 — routeContext 빌드: HomeScreen이 ROUTE_KEY에 영속화한 route + destinationStore의
   // tripOrigin + destination으로 routeContext를 구성한다. destination 변경 시 재조회.
   // tripStartedAt과 동일 패턴 (AsyncStorage SSOT, destination 의존 effect).
@@ -2131,6 +2140,26 @@ function DebugModalInner({
           {/* #1956 — onMetricClick wire: metric 클릭 → TripDetailModal 진입. */}
           <Section title="Operation Dashboard" colors={colors} testID="operation-dashboard-section-wrapper">
             <OperationDashboardSection logs={logs} onMetricClick={handleMetricClick} />
+          </Section>
+
+          {/* #1982 (ADR-022 Phase 0) — arrival-api-ssot-v1 Feature Flag.
+              env 값 + remote 값 + 최종 판정을 각각 표시. Phase 0 시점에는 dormant. */}
+          <Section title="Feature Flag" colors={colors} testID="feature-flag-section">
+            <KeyValue
+              label={SIMPLE_ARRIVAL_ARCH_ENV_KEY}
+              value={isSimpleArchEnvEnabled() ? 'true' : 'false'}
+              colors={colors}
+            />
+            <KeyValue
+              label="arch:simple-arrival-v1 (remote)"
+              value={archFlagRemote.value ?? `(${archFlagRemote.kind})`}
+              colors={colors}
+            />
+            <KeyValue
+              label="simple-arrival active"
+              value={isSimpleArchEnabled(archFlagRemote.value) ? 'ON' : 'OFF'}
+              colors={colors}
+            />
           </Section>
 
           <Section title="GPS" colors={colors}>

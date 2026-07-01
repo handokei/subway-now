@@ -4364,3 +4364,152 @@ describe('GET /admin/baseline-check (#1621 Phase C)', () => {
     expect(body.signals.v1Mismatch).toBe(0);
   });
 });
+
+// #1982 (ADR-022 Phase 0) — Arrival API SSOT Feature Flag admin endpoints.
+describe('GET/POST /admin/arch-flag (#1982)', () => {
+  async function getFlag(env: Env, authHeader?: string): Promise<Response> {
+    return app.fetch(
+      new Request('http://example.com/admin/arch-flag', {
+        method: 'GET',
+        headers: authHeader ? { authorization: authHeader } : {},
+      }),
+      env,
+    );
+  }
+
+  async function postFlag(
+    env: Env,
+    body: unknown,
+    authHeader?: string,
+    { rawBody }: { rawBody?: string } = {},
+  ): Promise<Response> {
+    return app.fetch(
+      new Request('http://example.com/admin/arch-flag', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(authHeader ? { authorization: authHeader } : {}),
+        },
+        body: rawBody ?? JSON.stringify(body),
+      }),
+      env,
+    );
+  }
+
+  function makeAuthEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'], ADMIN_TOKEN: 'secret' });
+  }
+
+  describe('GET', () => {
+    it('returns 503 when ADMIN_TOKEN not configured', async () => {
+      const env = makeKvEnv();
+      const res = await getFlag(env, 'Bearer x');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+    });
+
+    it('returns 401 without bearer header', async () => {
+      const env = makeAuthEnv();
+      const res = await getFlag(env);
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 with wrong token', async () => {
+      const env = makeAuthEnv();
+      const res = await getFlag(env, 'Bearer wrong');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 503 when TRIPS binding unavailable', async () => {
+      // ADMIN_TOKEN 은 있지만 TRIPS 미바인딩 케이스. Env type 은 non-null 이지만
+      // wrangler.toml 에 KV binding 이 없는 환경(개발/최초 배포)에서 undefined 가 넘어온다.
+      const env = makeEnv({
+        ADMIN_TOKEN: 'secret',
+        TRIPS: undefined as unknown as Env['TRIPS'],
+      });
+      const res = await getFlag(env, 'Bearer secret');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'trips_unavailable' });
+    });
+
+    it('returns default (off) when key never set', async () => {
+      const env = makeAuthEnv();
+      const res = await getFlag(env, 'Bearer secret');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ value: 'off' });
+    });
+
+    it('reflects value previously written via POST', async () => {
+      const env = makeAuthEnv();
+      await postFlag(env, { value: 'on' }, 'Bearer secret');
+      const res = await getFlag(env, 'Bearer secret');
+      expect(await res.json()).toEqual({ value: 'on' });
+    });
+  });
+
+  describe('POST', () => {
+    it('returns 503 when ADMIN_TOKEN not configured', async () => {
+      const env = makeKvEnv();
+      const res = await postFlag(env, { value: 'on' }, 'Bearer x');
+      expect(res.status).toBe(503);
+    });
+
+    it('returns 401 without bearer header', async () => {
+      const env = makeAuthEnv();
+      const res = await postFlag(env, { value: 'on' });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 with wrong token', async () => {
+      const env = makeAuthEnv();
+      const res = await postFlag(env, { value: 'on' }, 'Bearer wrong');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 503 when TRIPS binding unavailable', async () => {
+      const env = makeEnv({
+        ADMIN_TOKEN: 'secret',
+        TRIPS: undefined as unknown as Env['TRIPS'],
+      });
+      const res = await postFlag(env, { value: 'on' }, 'Bearer secret');
+      expect(res.status).toBe(503);
+    });
+
+    it('returns 400 when body is not JSON', async () => {
+      const env = makeAuthEnv();
+      const res = await postFlag(env, null, 'Bearer secret', { rawBody: 'not-json' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_body' });
+    });
+
+    it('returns 400 when body has no value field', async () => {
+      const env = makeAuthEnv();
+      const res = await postFlag(env, {}, 'Bearer secret');
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when value is invalid literal', async () => {
+      const env = makeAuthEnv();
+      const res = await postFlag(env, { value: 'true' }, 'Bearer secret');
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts value=on and persists to KV', async () => {
+      const env = makeAuthEnv();
+      const res = await postFlag(env, { value: 'on' }, 'Bearer secret');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ value: 'on' });
+      const readBack = await getFlag(env, 'Bearer secret');
+      expect(await readBack.json()).toEqual({ value: 'on' });
+    });
+
+    it('accepts value=off (rollback) and persists to KV', async () => {
+      const env = makeAuthEnv();
+      // 사전에 on 으로 설정된 상태를 off 로 되돌리는 rollback 시나리오.
+      await postFlag(env, { value: 'on' }, 'Bearer secret');
+      const res = await postFlag(env, { value: 'off' }, 'Bearer secret');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ value: 'off' });
+    });
+  });
+});
