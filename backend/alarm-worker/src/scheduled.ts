@@ -1206,11 +1206,18 @@ interface FusionStepResult {
  *   - series는 본 함수가 fetched한 raw KV 값 — 추가 read 불필요
  *   - #837 P2-3 — drift 카운트(stats.kalmanDriftWarning)는 호출자가 maybeCountDrift(prior, posMetrics, stats, now)
  *     로 수행. fusion 자체는 stats를 받지 않아 SRP 유지(HTTP path 등에서 stats 없이 재사용 가능).
+ *
+ * #2007 (ADR-022 Phase 4-5) — `archFlag='on'` 시 Kalman 계산/write/phase 전부 skip.
+ * runKalmanStep 이 null 반환 → writeKalmanState skip → kalmanKmh/kalmanPrior/kalmanState/phaseState
+ * 모두 null 로 downstream 에 전달 (observation 무효 cycle 과 동일 shape). 호출자의
+ * maybeCountDrift, boardingPrompt 게이트 #7 등 downstream 은 이미 null-safe 하므로
+ * flag 배선만으로 dormant. flag=off (기본) 또는 archFlag 미전달 시 기존 동작 100% 유지.
  */
 async function runFusionStep(
   trip: Trip,
   env: Env,
   now: number,
+  archFlag?: ArchFlagValue,
 ): Promise<FusionStepResult> {
   const [series, accelSeries, kalmanPrior] = await Promise.all([
     readSeries(env.TRIPS, trip.token),
@@ -1234,13 +1241,31 @@ async function runFusionStep(
     };
   }
 
-  const kalmanState = runKalmanStep({
-    prior: kalmanPrior,
-    gpsAvgKmh: posMetrics.gpsAvgKmh,
-    gpsAccuracyMeters: posMetrics.avgAccuracyMeters,
-    accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
-    now,
-  });
+  const kalmanState = runKalmanStep(
+    {
+      prior: kalmanPrior,
+      gpsAvgKmh: posMetrics.gpsAvgKmh,
+      gpsAccuracyMeters: posMetrics.avgAccuracyMeters,
+      accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
+      now,
+    },
+    archFlag,
+  );
+
+  // #2007 — flag=on 이면 runKalmanStep 이 null. writeKalmanState skip + phaseState 도 null
+  // (station phase 는 kalmanKmh 신호에 의존 — 신 아키텍처에서 smoothed velocity 자체가 dormant).
+  // maybeCountDrift 는 kalmanPrior=null 시 skip 되므로 여기서도 null 로 forward.
+  if (kalmanState === null) {
+    return {
+      series,
+      posMetrics,
+      kalmanKmh: null,
+      phaseState: null,
+      kalmanPrior: null,
+      kalmanState: null,
+    };
+  }
+
   await writeKalmanState(env.TRIPS, trip.token, kalmanState);
 
   // P2-3 정합 — 첫 cycle은 v=gpsAvg라 fusion에 합류 시 같은 GPS 2회 가중 → confidence 가짜
@@ -2520,8 +2545,11 @@ export async function runTrainCodeTracking(
   if (estimate.arrived) {
     // #826 — arvlCd=ARRIVED ground truth → Kalman state hard reset.
     // 정거장 도착은 가장 강한 신호 (실제 정차) — v=0/P=R_LOW로 drift 누적 차단.
-    await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
-    stats.kalmanReset += 1;
+    // #2007 (ADR-022 Phase 4-5) — archFlag=on 시 Kalman state 자체가 dormant → reset write + counter skip.
+    if (deps.archFlag !== 'on') {
+      await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
+      stats.kalmanReset += 1;
+    }
     // #917 A2 — 매역 알림 1차 source는 arvlCd∈{0(ENTERING), 1(ARRIVED)}.
     // positions-fallback arrived(arvlCd=null)는 SSOT 다름 — mismatch로 분류해 push X.
     // prereq 게이트(레거시): lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
@@ -3151,7 +3179,8 @@ export async function runLocklessIntermediate(
   // arvlCd=ARRIVED/ENTERING은 phase보다 강한 ground truth 신호이므로, 이미 imminent 발사한
   // waypoint라도 reset은 수행해야 한다(state drift 누적 차단). push 발사만 dedup으로 차단.
   // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
-  const fusion = await runFusionStep(trip, env, now);
+  // #2007 — archFlag=on 시 runFusionStep 이 Kalman 계산/write/phase 를 skip (fusion.kalmanKmh=null 등).
+  const fusion = await runFusionStep(trip, env, now, deps.archFlag);
   // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
   maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
   let dirty = false;
@@ -3178,8 +3207,11 @@ export async function runLocklessIntermediate(
   // #826 — fires=true(ARRIVED/ENTERING)는 ground truth 신호. push 발사 여부(phase 가드/dedup)와
   // 무관하게 Kalman state를 reset해 drift 누적을 차단한다. arvlCd가 가장 강한 신호 — phase
   // 분류는 휴리스틱이라 contradiction 시 arvlCd를 신뢰. KV write는 idempotent(v=0/P=R_LOW).
-  await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
-  stats.kalmanReset += 1;
+  // #2007 (ADR-022 Phase 4-5) — archFlag=on 시 Kalman state 자체가 dormant → reset write + counter skip.
+  if (deps.archFlag !== 'on') {
+    await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
+    stats.kalmanReset += 1;
+  }
   // #837 P2-1 — dedup gate (reset 이후, push 발사 직전). 같은 waypoint에서 이미 발사했으면
   // push만 skip하고 dirty 저장 후 return (lockless 흐름은 phase 개념이 없으니 imminent 단일 stamp 사용).
   if (trip.lastFiredPhase === 'imminent') {
@@ -3567,7 +3599,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   stats.boardingPromptEvaluated += 1;
 
-  const fusion = await runFusionStep(trip, env, now);
+  // #2007 — archFlag=on 시 runFusionStep 이 Kalman 계산/write/phase 를 skip.
+  // fusion.kalmanKmh=null → boardingPrompt 게이트 #7 fusedSpeed 에서 weight=0 → 자연 참조 skip.
+  const fusion = await runFusionStep(trip, env, now, deps.archFlag);
   // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
   maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
   let dirty = false;
