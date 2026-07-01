@@ -32,6 +32,7 @@ import {
   logSuppressedChannelAgnosticDedup,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
+  logSuppressedFireAlarmOnce,
   logSuppressedPhaseToPhaseDedup,
   logFiredAlarmsTripBoundaryReset,
   logSuppressedDedupStation,
@@ -683,6 +684,36 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(lastJson);
       const channelAgnostic = saved.filter((e) => e.reason === 'dedup-channel-agnostic');
       expect(channelAgnostic).toHaveLength(1);
+    });
+
+    it('#1984 logSuppressedFireAlarmOnce: reason=dedup-simple-arch-fire-once + kind/phase 보존', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedFireAlarmOnce({
+        source: 'fg',
+        stationName: '성수',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+      await expectLastSavedEntryMatches({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'dedup-simple-arch-fire-once',
+        stationName: '성수',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('#1984 logSuppressedFireAlarmOnce: 윈도우 내 같은 stationName 재호출은 drop', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedFireAlarmOnce({ source: 'fg', stationName: '성수', kind: 'destination' });
+      logSuppressedFireAlarmOnce({ source: 'fg', stationName: '성수', kind: 'destination' });
+      await flushAlarmLog();
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      const lastJson = calls[calls.length - 1][1];
+      const saved: AlarmLogEntry[] = JSON.parse(lastJson);
+      const fireOnce = saved.filter((e) => e.reason === 'dedup-simple-arch-fire-once');
+      expect(fireOnce).toHaveLength(1);
     });
 
     it('#1893 logFiredAlarmsTripBoundaryReset: reason=fired-alarms-trip-boundary-reset + epoch 슬롯 보존', async () => {

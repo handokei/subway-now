@@ -4,7 +4,15 @@
  * ADR Phase 5 (#890) orchestration 컨벤션.
  */
 import { renderHook, waitFor } from '@testing-library/react-native';
-import { useStationAlarm, type UseStationAlarmInputs } from '../useStationAlarm';
+import {
+  __setSimpleArchEnabledForTests,
+  useStationAlarm,
+  type UseStationAlarmInputs,
+} from '../useStationAlarm';
+import {
+  _resetFireAlarmOnceForTests,
+  fireAlarmOnce,
+} from '../../utils/fireAlarmOnce';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../../store/useAlarmEventStore';
 import type { Station } from '../../../../shared/types/station';
@@ -90,6 +98,7 @@ const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogFiredAlarmsTripBoundaryReset = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
 const mockLogSuppressedLocklessNoUserIntent = jest.fn();
+const mockLogSuppressedFireAlarmOnce = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -128,6 +137,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedSsotFireGate(...args),
   logSuppressedLocklessNoUserIntent: (...args: unknown[]) =>
     mockLogSuppressedLocklessNoUserIntent(...args),
+  logSuppressedFireAlarmOnce: (...args: unknown[]) =>
+    mockLogSuppressedFireAlarmOnce(...args),
 }));
 
 // #1893 (RC-17) — trip-boundary detection effect는 tripStartedAt storage를 read한다.
@@ -245,6 +256,9 @@ describe('useStationAlarm', () => {
     // #1515 — cross-category dedup 모듈 in-memory 상태 리셋. mock하지 않은 실모듈 사용.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     require('../../utils/crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
+    // #1984 — fire-once ledger + flag OFF 리셋. 각 테스트가 필요한 경우 명시적으로 flag ON.
+    _resetFireAlarmOnceForTests();
+    __setSimpleArchEnabledForTests(false);
   });
 
   it('does not evaluate when route is null', () => {
@@ -5632,6 +5646,198 @@ describe('useStationAlarm', () => {
         ),
       );
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1984 (Phase 1-4, ADR-022 B3) — simpleArchEnabled=true 시 unified fire ledger가 Phase ETA +
+  // API imminent 두 useEffect의 동일 (station+line+kind+phase) 재발사를 sync entry-guard로 차단.
+  // 회귀 evidence: 2026-07-01 08:32:09 성수 fg fired station-passed 2건 (#1980 코멘트 케이스 1).
+  describe('#1984 simpleArchEnabled unified fire path', () => {
+    const route = makeDirectRoute(3, '2');
+    const station = makeStation('S1', '시청');
+
+    it('flag OFF (기본): Phase ETA fire 정상 — fireAlarmOnce dedup 미적용 (backward-compat)', async () => {
+      __setSimpleArchEnabledForTests(false);
+      mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      // fire ledger 미개입 확인 — logSuppressedFireAlarmOnce 미호출.
+      expect(mockLogSuppressedFireAlarmOnce).not.toHaveBeenCalled();
+    });
+
+    it('flag ON: 첫 fire 정상 발사 + logFiredAlarm', async () => {
+      __setSimpleArchEnabledForTests(true);
+      mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+          'fg',
+          expect.objectContaining({ phaseId: 'imminent', stationName: '강남', type: 'destination' }),
+          'eta',
+        ),
+      );
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockLogSuppressedFireAlarmOnce).not.toHaveBeenCalled();
+    });
+
+    it('flag ON: ledger에 이미 stamp된 (station+line+kind+phase) 조합의 Phase ETA fire는 차단', async () => {
+      // 같은 초 race 시나리오 재현: ledger가 다른 fire path(예: 앞서 실행된 다른 useEffect 또는
+      // 채널)로 이미 stamp된 상태에서 Phase ETA useEffect가 같은 조합으로 dispatch 시도 → 차단.
+      // 사용자 evidence(2026-07-01 08:32:09 성수 fg fired 2건)의 두 번째 fire 차단 검증.
+      __setSimpleArchEnabledForTests(true);
+      // ledger에 imminent destination 강남 (line=2) fire를 사전 stamp — 다른 채널이 먼저 발사한 상황.
+      await fireAlarmOnce(
+        {
+          stationName: '강남',
+          line: '2',
+          kind: 'destination',
+          phase: 'imminent',
+        },
+        () => Promise.resolve(),
+      );
+
+      // Phase ETA useEffect가 같은 조합의 imminentDest를 evaluate → fireViaUnifiedGate → ledger dedup.
+      mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      // 두 번째 fire는 ledger dedup → logSuppressedFireAlarmOnce 적재.
+      await waitFor(() =>
+        expect(mockLogSuppressedFireAlarmOnce).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'imminent',
+          }),
+        ),
+      );
+      // 사용자에게 노출된 알람 0건 — ledger가 fire callback 실행 자체를 차단.
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      // logFiredAlarm도 미호출 (fireAndLog 진입 X).
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('flag ON: 다른 phase(early → imminent) 진행은 정상 통과 (정상 phase 진행 보존)', async () => {
+      __setSimpleArchEnabledForTests(true);
+      const { rerender } = renderHook(
+        ({ input }: { input: UseStationAlarmInputs }) => useStationAlarm(input),
+        {
+          initialProps: {
+            input: defaultInputs({
+              route,
+              destination,
+              userLocation: { lat: 37.4, lng: 127.0 },
+              speedMps: 10,
+              accuracyMeters: 50,
+            }),
+          },
+        },
+      );
+
+      // 첫 fire: early destination.
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      rerender({
+        input: defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.401, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 50,
+        }),
+      });
+      await waitFor(() =>
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+          'fg',
+          expect.objectContaining({ phaseId: 'early' }),
+          'eta',
+        ),
+      );
+
+      // 두 번째 fire: imminent destination — phase 다르므로 unified ledger 통과.
+      mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
+      rerender({
+        input: defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.402, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 50,
+        }),
+      });
+      await waitFor(() =>
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+          'fg',
+          expect.objectContaining({ phaseId: 'imminent' }),
+          'eta',
+        ),
+      );
+      // 정상 progression — dedup 로그 없어야 함.
+      expect(mockLogSuppressedFireAlarmOnce).not.toHaveBeenCalled();
+    });
+
+    it('flag ON: rawEvent에 line=null 상황도 방어적 stringify로 정상 dedup', async () => {
+      __setSimpleArchEnabledForTests(true);
+      // nearestStation 미제공 + lock.boardingLine 미설정 → resolveCurrentLine = null.
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: 'D1',
+        trainCode: 'T-DEFAULT',
+        boardingStationId: 'S-DEFAULT',
+        boardingLine: null as unknown as '2',
+        boardedAt: 0,
+        expectedDurationMs: 60_000,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(imminentDest);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            // nearestStation 없음
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      // line=null이어도 fire 정상 진행 — 방어적 stringify로 dedup key 산출.
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
     });
   });
 });
