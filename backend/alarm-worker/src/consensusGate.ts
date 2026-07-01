@@ -39,6 +39,7 @@
  *   trip도 fire 권한이 자동 박탈되지 않는다.
  */
 
+import type { ArchFlagValue } from './archFlag';
 import type { GateOutcome } from './boardingPrompt';
 import type { BoardingLockMeta, LineNumber, Route, Trip, Waypoint } from './types';
 
@@ -134,7 +135,14 @@ function cellularContradictsEnvironment(
 export function evaluateConsensusGate(
   environment: StationEnvironment,
   signals: ConsensusSignals,
+  archFlag?: ArchFlagValue,
 ): ConsensusOutcome {
+  // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 자체가 SSoT. 환경 분기 / GPS 합의 / cellular vote
+  // 모두 우회한다. arrival API 신호(=arvlCd) 를 유일한 진실로 삼는다는 B8 정책 정합.
+  // caller(scheduled.ts) 가 실제 arvlCd 관측 + `pickAutoTrainCode` 로 별도 검증.
+  if (archFlag === 'on') {
+    return { pass: true, environment };
+  }
   // S10 #1543 — cellular vote가 환경과 정면 충돌하면 즉시 reject.
   // 본 게이트는 base 통과/미통과와 무관하게 적용 — 환경 자체가 신뢰 불가하다는 강한 신호.
   if (cellularContradictsEnvironment(environment, signals.cellularEnvironmentVote)) {

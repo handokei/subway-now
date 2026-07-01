@@ -170,6 +170,70 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
     });
   });
 
+  describe('#2014 (ADR-022 B8) — archFlag=on 시 환경 분기 우회', () => {
+    it('archFlag=on + surface + base 실패 → pass (base 게이트 무시)', () => {
+      // legacy 경로에선 base-gate-failed 로 reject. archFlag=on 은 arvlCd SSoT 로 우회.
+      expect(
+        evaluateConsensusGate(
+          'surface',
+          signals({ gateOutcome: FAIL_GATE }),
+          'on',
+        ).pass,
+      ).toBe(true);
+    });
+
+    it('archFlag=on + underground + arrival/lockAttachable 모두 없음 → pass', () => {
+      // legacy 경로에선 environment-no-gps-consensus. archFlag=on 은 우회.
+      expect(
+        evaluateConsensusGate(
+          'underground',
+          signals({
+            gateOutcome: FAIL_GATE,
+            arrivalSignalPresent: false,
+            lockAttachable: false,
+          }),
+          'on',
+        ).pass,
+      ).toBe(true);
+    });
+
+    it('archFlag=on + cellular contradict → pass (cellular vote 도 무시)', () => {
+      // legacy 경로에선 cellular-environment-contradicts. archFlag=on 은 우회.
+      expect(
+        evaluateConsensusGate(
+          'surface',
+          signals({ cellularEnvironmentVote: 'underground' }),
+          'on',
+        ).pass,
+      ).toBe(true);
+    });
+
+    it('archFlag=off → 기존 정책 유지 (base 실패 시 reject)', () => {
+      expect(
+        evaluateConsensusGate(
+          'surface',
+          signals({ gateOutcome: FAIL_GATE }),
+          'off',
+        ),
+      ).toEqual({
+        pass: false,
+        environment: 'surface',
+        reason: 'base-gate-failed',
+      });
+    });
+
+    it('archFlag undefined (legacy) → 기존 정책 유지', () => {
+      // 3-arg overload 없이 호출한 케이스와 동일.
+      expect(
+        evaluateConsensusGate('surface', signals({ gateOutcome: FAIL_GATE })),
+      ).toEqual({
+        pass: false,
+        environment: 'surface',
+        reason: 'base-gate-failed',
+      });
+    });
+  });
+
   describe('§7 토글 input X — backend는 trip 등록만 본다', () => {
     it.each<StationEnvironment>(['surface', 'underground', 'mixed'])(
       '%s: 동일 signals → 토글 ON/OFF / boardingPrompt 응답 유무와 무관하게 동일 결과',

@@ -3662,6 +3662,210 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
   });
 });
 
+/**
+ * #2014 (ADR-022 B8) — deps.archFlag='on' 시 boardingPrompt 게이트 축소.
+ *
+ * 관찰 11 root cause: `MIN_WINDOW_SAMPLES=1` 게이트가 60s window sample 0건 시 no-candidates 로 100% 차단.
+ * B8 정책: "arvlCd=1 도착 시 즉시 발사. motion / speed 게이트 없음".
+ *
+ * 본 describe 는 archFlag='on' 배선 시 실제 fire 경로가 열리는지 + FP 방어 유지되는지 검증.
+ */
+describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
+  function makeUnlockedTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 'b8-tok',
+      promptGeoContext: {
+        origin: { lat: 0, lng: 0 },
+        nextStation: { lat: 0, lng: 0.01 },
+        direction: 'up',
+      },
+      promptDisplay: { originStation: '강남', line: '2' },
+      ...overrides,
+    });
+  }
+
+  // arvlCd=1 (ARRIVED) 도착 신호 — 단일 후보 (pickAutoTrainCode 통과).
+  const ARVL_ARRIVED_SINGLE: ArrivalEntry = {
+    destination: '성수',
+    arrivalSeconds: 0,
+    trainCode: 'B8-T1',
+    isUp: true,
+    subwayNm: '2호선',
+    arvlCd: 1,
+  };
+
+  function makeArchFlagDeps(
+    fetchImpl: typeof fetch,
+    seoul?: SeoulArrivalClient,
+    archFlag: 'on' | 'off' | undefined = 'on',
+  ) {
+    return {
+      seoul: seoul ?? makeSeoul([ARVL_ARRIVED_SINGLE]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'b8-push-1',
+      archFlag,
+    };
+  }
+
+  it('archFlag=on + series=[] + arvlCd=1 → fire (관찰 11 회귀 fix)', async () => {
+    // 관찰 11 재현: series 0건 → legacy 는 no-candidates 로 100% blocked.
+    // archFlag=on 은 게이트 skip → 정상 fire.
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    // series 시드하지 않음 → 빈 series.
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeArchFlagDeps(fetchImpl));
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(1);
+    expect(stats.boardingPromptBlocked).toBe(0);
+    // APNs fetch 1회 호출.
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse((await kv.get('trip:b8-tok'))!);
+    expect(persisted.boardingPromptState).toEqual({ fired: true, lastFiredAt: NOW });
+  });
+
+  it('archFlag=off + series=[] → 기존 no-candidates 차단 유지 (회귀 방어)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeArchFlagDeps(fetchImpl, undefined, 'off'),
+    );
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('archFlag undefined + series=[] → 기존 no-candidates 차단 유지 (legacy 호환)', async () => {
+    // deps 에 archFlag 키 자체를 넣지 않음 (`makeArchFlagDeps` 기본값 'on' 회피).
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const legacyDeps = {
+      seoul: makeSeoul([ARVL_ARRIVED_SINGLE]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'b8-push-1',
+    };
+
+    const stats = await runScheduled(makeEnv(kv), legacyDeps);
+
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+  });
+
+  it('archFlag=on + already fired → skip (게이트 #9 유지)', async () => {
+    // silence/fired dedup 은 archFlag=on 에서도 반드시 평가.
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 },
+      }),
+    );
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeArchFlagDeps(fetchImpl));
+
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('archFlag=on + pickAutoTrainCode ambiguity → skip (FP guard 유지)', async () => {
+    // 같은 arvlCd=1 후보 2건 → pickAutoTrainCode null → fire skip.
+    const AMBIGUOUS_TRAIN_A: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'AMB-A',
+    };
+    const AMBIGUOUS_TRAIN_B: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'AMB-B',
+    };
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(
+      fetchImpl,
+      makeSeoul([AMBIGUOUS_TRAIN_A, AMBIGUOUS_TRAIN_B]),
+    );
+
+    const stats = await runScheduled(makeEnv(kv), deps);
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+    // ambiguity guard 로 skip — APNs fetch X.
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('archFlag=on + Seoul API 응답 0건 → boardingPromptSkippedEmpty (기존 guard 유지)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(fetchImpl, makeSeoul([]));
+
+    const stats = await runScheduled(makeEnv(kv), deps);
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptSkippedEmpty).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('archFlag=on + AUTO_PROMPT_DEDUP_WINDOW_MS 내부 → dedup skip', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ lastAutoPromptedAt: NOW - 1_000 }), // 5분 미만
+    );
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeArchFlagDeps(fetchImpl));
+
+    // dedup skip — evaluated/fired/blocked 미증가.
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptAutoDeduped).toBe(1);
+  });
+
+  it('archFlag=on + boardingLock 활성 → F2 defense skip (기존 정책 유지)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        boardingLock: {
+          trainCode: 'T-expired',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW - 60_000,
+          segmentStations: ['역삼', '강남'],
+          expiresAt: NOW - 1, // 만료 → lockMissing 분기 진입
+        },
+      }),
+    );
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeArchFlagDeps(fetchImpl));
+
+    expect(stats.boardingPromptSkippedLockActive).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+  });
+});
+
 describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (#824)', () => {
   /**
    * boarding-prompt 경로에서 Kalman state가 KV에 persist/read되는지 검증.

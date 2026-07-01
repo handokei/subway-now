@@ -602,6 +602,96 @@ describe('evaluateBoardingPromptGates — #1820 motion grace (GPS-bypass 환경)
   });
 });
 
+/**
+ * #2014 (ADR-022 B8) — archFlag='on' 시 GPS/motion/speed 게이트(#3~#8) 전부 skip.
+ * #9 (fired/silenced) 만 평가. arvlCd=1 관측 자체는 caller 가 fetchArrivals + pickAutoTrainCode 로 별도 검증.
+ * archFlag='off' 또는 undefined 은 기존 게이트 동작 100% 유지 (회귀 방어).
+ */
+describe('evaluateBoardingPromptGates — #2014 (ADR-022 B8) archFlag', () => {
+  const now = 1_000_000;
+
+  it('archFlag=on: stale GPS + motion=stationary 여도 pass (모든 GPS/motion 게이트 skip)', () => {
+    const stationary = staleGpsSeries(now).map((p) => ({
+      ...p,
+      motion: 'stationary' as const,
+    }));
+    const r = evaluateBoardingPromptGates({
+      series: stationary,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'surface',
+      archFlag: 'on',
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.fusedSpeedKmh).toBe(0);
+  });
+
+  it('archFlag=on: series=[] 여도 pass (window-too-small 차단 우회)', () => {
+    // 관찰 11 root cause 재현: 60s window sample 0건이라 legacy path 에선 no-candidates 로 100% 차단.
+    // archFlag=on 은 이 게이트를 skip 해야 한다.
+    const r = evaluateBoardingPromptGates({
+      series: [],
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      archFlag: 'on',
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('archFlag=on: 이미 fired = already-fired (게이트 #9 는 여전히 평가)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      promptState: { fired: true, lastFiredAt: now - 1000 },
+      archFlag: 'on',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('already-fired');
+  });
+
+  it('archFlag=on: silencedUntil 미래 = silenced (게이트 #9 는 여전히 평가)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      promptState: { silencedUntil: now + 60_000 },
+      archFlag: 'on',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('silenced');
+  });
+
+  it('archFlag=off: stale GPS + surface → 기존 9단 AND (origin-too-far)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'surface',
+      archFlag: 'off',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('origin-too-far');
+  });
+
+  it('archFlag=off: happy series → 기존 통과 동작 유지 (fusedSpeedKmh > 0)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      archFlag: 'off',
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.fusedSpeedKmh).toBeGreaterThan(5);
+  });
+});
+
 describe('markPromptFired / markPromptSilenced', () => {
   it('markPromptFired는 fired=true + lastFiredAt 설정', () => {
     expect(markPromptFired(1234)).toEqual({ fired: true, lastFiredAt: 1234 });
