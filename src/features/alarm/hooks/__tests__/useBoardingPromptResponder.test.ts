@@ -62,15 +62,17 @@ jest.mock('../../../../shared/utils/logger', () => ({
 // 만들고, 테스트는 requireMock으로 접근한다.
 jest.mock('../../store/useBoardingLockStore', () => {
   const mockCreateLock = jest.fn();
+  const mockReleaseLock = jest.fn(() => Promise.resolve());
   return {
     useBoardingLockStore: Object.assign(
-      (selector: (state: { createLock: jest.Mock }) => unknown) =>
-        selector({ createLock: mockCreateLock }),
+      (selector: (state: { createLock: jest.Mock; releaseLock: jest.Mock }) => unknown) =>
+        selector({ createLock: mockCreateLock, releaseLock: mockReleaseLock }),
       {
-        getState: () => ({ createLock: mockCreateLock }),
+        getState: () => ({ createLock: mockCreateLock, releaseLock: mockReleaseLock }),
       },
     ),
     __mockCreateLock: mockCreateLock,
+    __mockReleaseLock: mockReleaseLock,
   };
 });
 
@@ -94,7 +96,7 @@ const {
 const { addDomainBreadcrumb } = jest.requireMock(
   '../../../../shared/infra/monitoring/breadcrumb',
 );
-const { __mockCreateLock: createLockMock } = jest.requireMock(
+const { __mockCreateLock: createLockMock, __mockReleaseLock: releaseLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
 const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
@@ -723,10 +725,11 @@ describe('handleResponse — #1888 RC-13 Sentry breadcrumb evidence', () => {
   ])('%s → boarding_prompt_interactive_tap breadcrumb 발사', async (_label, action) => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    // #2034 — hopEndKind='boarding' 은 승차 prompt 기본값. hop-end 는 'disembark' 로 별개 test.
     expect(addDomainBreadcrumb).toHaveBeenCalledWith(
       'boarding',
       'boarding_prompt_interactive_tap',
-      { action, line: '2' },
+      { action, line: '2', hopEndKind: 'boarding' },
     );
   });
 
@@ -855,5 +858,169 @@ describe('handleResponse — #1888 RC-13 onBannerTap navigation', () => {
     await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
     // destinationId null → tryAutoLock 진입 → dismiss POST → 그 뒤 onBannerTap 호출.
     expect(onBannerTap).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #2034 — hop-end (환승역 "하차했나요?") 응답 처리.
+describe('handleResponse — #2034 hop-end', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const HOP_END_PAYLOAD = {
+    kind: 'boarding-prompt' as const,
+    originStation: '성수',
+    line: '2',
+    tripToken: 'tok-hop',
+    hopEndKind: 'disembark' as const,
+    nextLine: 'K',
+    nextStation: '왕십리',
+  };
+
+  it('extractBoardingPromptPayload — hopEndKind + nextLine + nextStation 보존', () => {
+    expect(
+      extractBoardingPromptPayload({
+        kind: 'boarding-prompt',
+        originStation: '성수',
+        line: '2',
+        tripToken: 'tok-hop',
+        hopEndKind: 'disembark',
+        nextLine: 'K',
+        nextStation: '왕십리',
+      }),
+    ).toEqual({
+      kind: 'boarding-prompt',
+      originStation: '성수',
+      line: '2',
+      tripToken: 'tok-hop',
+      destinationDirection: undefined,
+      hopEndKind: 'disembark',
+      nextLine: 'K',
+      nextStation: '왕십리',
+    });
+  });
+
+  it('extractBoardingPromptPayload — hopEndKind 이 아닌 값이면 undefined 로 정규화', () => {
+    const r = extractBoardingPromptPayload({
+      kind: 'boarding-prompt',
+      originStation: '성수',
+      line: '2',
+      tripToken: 'tok-hop',
+      hopEndKind: 'invalid',
+    });
+    expect(r?.hopEndKind).toBeUndefined();
+  });
+
+  it('[하차함] (BOARDED action) → releaseLock 호출 + tryAutoLock 진입 X + logBoardingPromptResponded(boarded)', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(releaseLockMock).toHaveBeenCalledTimes(1);
+    expect(releaseLockMock).toHaveBeenCalledWith('user');
+    // hop-end 는 autoLock 시도 안 함 — createLock 는 호출되면 안 됨.
+    expect(createLockMock).not.toHaveBeenCalled();
+    expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome: 'boarded' });
+    // dismiss POST 는 호출 안 함 — 이미 backend 가 fired stamp 완료.
+    expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+  });
+
+  it('[아직] (NOT_BOARDED action) → dismissBoardingPrompt POST + logBoardingPromptResponded(dismissed)', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-hop');
+    expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome: 'dismissed' });
+    // releaseLock 은 [아직] 응답 시 호출 안 함 — lock 유지.
+    expect(releaseLockMock).not.toHaveBeenCalled();
+  });
+
+  it('$default (banner tap) → releaseLock + onBannerTap 호출', async () => {
+    const onBannerTap = jest.fn();
+    await handleResponse(
+      Notifications.DEFAULT_ACTION_IDENTIFIER,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps({ onBannerTap }),
+    );
+    expect(releaseLockMock).toHaveBeenCalledTimes(1);
+    expect(onBannerTap).toHaveBeenCalledTimes(1);
+  });
+
+  it('알 수 없는 action → dismiss path 진입', async () => {
+    await handleResponse(
+      'UNKNOWN_ACTION',
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-hop');
+    expect(releaseLockMock).not.toHaveBeenCalled();
+  });
+
+  it('breadcrumb "boarding_prompt_interactive_tap" 에 hopEndKind=disembark 스탬프', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'boarding_prompt_interactive_tap',
+      { action: BOARDING_PROMPT_ACTION_BOARDED, line: '2', hopEndKind: 'disembark' },
+    );
+  });
+
+  it('breadcrumb "hop_end_prompt_confirmed" ([하차함] 시)', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'hop_end_prompt_confirmed',
+      { line: '2', nextLine: 'K' },
+    );
+  });
+
+  it('breadcrumb "hop_end_prompt_dismissed" ([아직] 시)', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'hop_end_prompt_dismissed',
+      { line: '2' },
+    );
+  });
+
+  it('releaseLock 실패해도 응답 처리 계속 진행 (graceful)', async () => {
+    releaseLockMock.mockImplementationOnce(() => Promise.reject(new Error('release failed')));
+    await expect(
+      handleResponse(
+        BOARDING_PROMPT_ACTION_BOARDED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      ),
+    ).resolves.not.toThrow();
+    expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome: 'boarded' });
+  });
+
+  it('nextLine 없음 → breadcrumb 에 nextLine="" 로 stamp (undefined 회피)', async () => {
+    const payloadNoNext = { ...HOP_END_PAYLOAD, nextLine: undefined };
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      payloadNoNext,
+      makeHandleResponseDeps(),
+    );
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'hop_end_prompt_confirmed',
+      { line: '2', nextLine: '' },
+    );
   });
 });

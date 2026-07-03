@@ -36,6 +36,8 @@ import {
   pickLatestCurrentStationName,
   resolveEtaMissingThreshold,
   buildBoardingPromptMessage,
+  buildHopEndPromptMessage,
+  maybeFireHopEndPrompt,
   runScheduled,
   tripLifecyclePhase,
   appendPassedStation,
@@ -141,6 +143,7 @@ function makeFullEmptyStats(): ScheduledStats {
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -8327,6 +8330,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
       boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0,
+      hopEndPromptFired: 0, hopEndPromptBlocked: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -8917,6 +8921,212 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
   it('#1895 — locale=en + nextStation null → fallback 포맷 (locale 무관 공통 포맷)', () => {
     const { body } = buildBoardingPromptMessage('City Hall', '2', null, 90, BASE_NOW, 'en');
     expect(body).toBe('2 · City Hall');
+  });
+});
+
+describe('buildHopEndPromptMessage (#2034 — 환승역 하차 4언어)', () => {
+  it('ko 기본 — nextLine + nextStation 모두 있음', () => {
+    const { title, body } = buildHopEndPromptMessage('성수', '2', 'K', '왕십리');
+    expect(title).toBe('성수에서 하차하셨나요?');
+    expect(body).toBe('2호선 성수에서 내려주세요. 다음은 K호선 왕십리 방면입니다.');
+  });
+
+  it('ko — nextLine 있고 nextStation 없음 → line 만 노출', () => {
+    const { body } = buildHopEndPromptMessage('성수', '2', 'K', null);
+    expect(body).toBe('2호선 성수에서 내려주세요. 다음은 K호선 방면입니다.');
+  });
+
+  it('ko — nextLine null → 다음 leg 안내 생략', () => {
+    const { body } = buildHopEndPromptMessage('성수', '2', null, null);
+    expect(body).toBe('2호선 성수에서 내려주세요.');
+  });
+
+  it('en locale', () => {
+    const { title, body } = buildHopEndPromptMessage('Seongsu', '2', 'K', 'Wangsimni', 'en');
+    expect(title).toBe('Getting off at Seongsu?');
+    expect(body).toBe('Please transfer from line 2 at Seongsu. Next: line K toward Wangsimni.');
+  });
+
+  it('en — nextStation null', () => {
+    const { body } = buildHopEndPromptMessage('Seongsu', '2', 'K', null, 'en');
+    expect(body).toBe('Please transfer from line 2 at Seongsu. Next: line K.');
+  });
+
+  it('ja locale', () => {
+    const { title, body } = buildHopEndPromptMessage('聖水', '2', 'K', '往十里', 'ja');
+    expect(title).toBe('聖水で降りますか?');
+    expect(body).toBe('2号線 聖水で降車してください。 次はK号線 往十里方面です。');
+  });
+
+  it('ja — nextStation null', () => {
+    const { body } = buildHopEndPromptMessage('聖水', '2', 'K', null, 'ja');
+    expect(body).toBe('2号線 聖水で降車してください。 次はK号線です。');
+  });
+
+  it('zh locale', () => {
+    const { title, body } = buildHopEndPromptMessage('圣水', '2', 'K', '往十里', 'zh');
+    expect(title).toBe('您在圣水下车了吗?');
+    expect(body).toBe('请在2号线 圣水下车。 下一段: K号线 往十里方向。');
+  });
+
+  it('zh — nextStation null', () => {
+    const { body } = buildHopEndPromptMessage('圣水', '2', 'K', null, 'zh');
+    expect(body).toBe('请在2号线 圣水下车。 下一段: K号线。');
+  });
+
+  it('locale 미지정 → ko fallback', () => {
+    const { title } = buildHopEndPromptMessage('성수', '2', null, null, undefined);
+    expect(title).toBe('성수에서 하차하셨나요?');
+  });
+});
+
+describe('maybeFireHopEndPrompt (#2034)', () => {
+  function makeStats(): ScheduledStats {
+    return makeFullEmptyStats();
+  }
+
+  function makeDeps(fetchImpl: typeof fetch): ScheduledDeps {
+    return {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl,
+      seoul: new SeoulArrivalClient({
+        host: 'seoul.api',
+        key: 'KEY',
+        fetchImpl,
+      }),
+      archFlag: 'off',
+    };
+  }
+
+  const transferWaypoint: Waypoint = {
+    stationName: '성수',
+    line: '2',
+    kind: 'transfer',
+  };
+
+  function makeTrip(): Trip {
+    return {
+      token: 'trip-hop-end',
+      createdAt: NOW,
+      waypoints: [
+        { stationName: '왕십리', line: 'K', kind: 'intermediate' },
+        { stationName: '수원', line: 'K', kind: 'destination' },
+      ],
+      apnsEnv: 'production',
+      registeredAt: NOW,
+    } as unknown as Trip;
+  }
+
+  it('promptState 없음 + APNs 200 → fired 카운터 증가 + hopEndPromptState[legKey] set', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-hop',
+    });
+    expect(stats.hopEndPromptFired).toBe(1);
+    expect(stats.hopEndPromptBlocked).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // legKey = "성수|K"
+    expect(trip.hopEndPromptState?.['성수|K']?.fired).toBe(true);
+    // payload wire 검증
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.hopEndKind).toBe('disembark');
+    expect(body.data.nextLine).toBe('K');
+    expect(body.data.nextStation).toBe('왕십리');
+  });
+
+  it('promptState.fired=true → blocked 카운터 증가 + push 미발사', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const trip = makeTrip();
+    trip.hopEndPromptState = { '성수|K': { fired: true, lastFiredAt: NOW - 60_000 } };
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-block',
+    });
+    expect(stats.hopEndPromptFired).toBe(0);
+    expect(stats.hopEndPromptBlocked).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('APNs 5xx → errors 카운터 증가 + hopEndPromptState 미갱신', async () => {
+    const fetchImpl = vi.fn(async () => new Response('bad', { status: 503 }));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-err',
+    });
+    expect(stats.errors).toBe(1);
+    expect(stats.hopEndPromptFired).toBe(0);
+    expect(trip.hopEndPromptState).toBeUndefined();
+  });
+
+  it('trip.waypoints 소진 (다음 leg 없음) → nextLine=null + nextStation=null', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const trip = makeTrip();
+    trip.waypoints = [];
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-empty',
+    });
+    expect(stats.hopEndPromptFired).toBe(1);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect('nextLine' in body.data).toBe(false);
+    expect('nextStation' in body.data).toBe(false);
+    // legKey = "성수|"
+    expect(trip.hopEndPromptState?.['성수|']?.fired).toBe(true);
+  });
+
+  it('leg-key 별 dedup — 다른 nextLine 은 독립 발사', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const trip = makeTrip();
+    // 첫 번째 leg (2 → K) 는 이미 fired.
+    trip.hopEndPromptState = { '성수|K': { fired: true, lastFiredAt: NOW - 60_000 } };
+    // 다음 leg 를 다른 노선 (5호선) 으로 변경.
+    trip.waypoints = [
+      { stationName: '아차산', line: '5', kind: 'intermediate' },
+    ];
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-diff-leg',
+    });
+    expect(stats.hopEndPromptFired).toBe(1);
+    // 기존 legKey 는 유지, 새 legKey (`성수|5`) 는 신규 fired.
+    expect(trip.hopEndPromptState?.['성수|K']?.fired).toBe(true);
+    expect(trip.hopEndPromptState?.['성수|5']?.fired).toBe(true);
   });
 });
 

@@ -733,6 +733,17 @@ export interface SendBoardingPromptPushOptions {
    * 미지정 또는 빈 배열이면 payload `data.candidateTrains` omit (구 device byte-level 호환).
    */
   candidateTrains?: BoardingPromptCandidate[];
+  /**
+   * #2034 — hop-end (환승역 하차) 프롬프트 분기 신호. 미지정 = 일반 boarding prompt (승차).
+   * 'disembark' = "하차했나요?" 프롬프트. device 가 payload 를 파싱해 title/body/버튼 액션 매핑을
+   * 분기 처리. hop-end 시 caller 는 `nextLine` / `nextStation` 도 함께 전달해 UI 에 "다음 열차:
+   * X 호선 Y 역" 정보 노출.
+   */
+  hopEndKind?: 'disembark';
+  /** #2034 — hop-end 시 다음 leg 노선. 미지정이면 device 가 `line` 을 fallback. */
+  nextLine?: string;
+  /** #2034 — hop-end 시 다음 leg 출발역. 미지정이면 device UI 에서 next-line 만 표시. */
+  nextStation?: string;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -779,6 +790,11 @@ function buildBoardingPromptPushData(
     ...bodyFragment,
     // #1888 (RC-13) — candidateTrains는 0건이면 omit (구 device byte-level 호환 + payload 크기 보호).
     ...candidatesFragment,
+    // #2034 — hop-end 프롬프트 (환승역 하차) 필드. 미지정이면 payload 에서 자연 누락 →
+    // 기존 boarding-prompt 소비 device 와 byte-level 호환.
+    ...(options.hopEndKind !== undefined ? { hopEndKind: options.hopEndKind } : {}),
+    ...(options.nextLine !== undefined ? { nextLine: options.nextLine } : {}),
+    ...(options.nextStation !== undefined ? { nextStation: options.nextStation } : {}),
   };
 }
 

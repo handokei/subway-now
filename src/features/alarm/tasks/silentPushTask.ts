@@ -282,9 +282,14 @@ export interface RescheduleSilentPushPayload {
  */
 export interface BoardingPromptSilentPushPayload {
   kind: 'boarding-prompt';
-  /** 사용자 출발역 (BoardingPrompt 응답 flow에서 lock 생성 시 boardingStation으로 사용). */
+  /**
+   * 사용자 출발역. hop-end 분기(#2034) 에서는 "환승 지점 역명" (=사용자가 하차해야 하는 station)
+   * 으로 재해석. hopEndKind 필드로 분기 처리.
+   */
   originStation: string;
-  /** 출발 노선 (lock 생성 시 boardingLine으로 사용). */
+  /**
+   * 노선. hop-end(#2034) 시엔 직전 leg 노선 (하차 대상). 일반 boarding-prompt 는 승차 대상 노선.
+   */
   line: string;
   /** trip 토큰 — dedup key + boarding-prompt 응답 시 trip 컨텍스트 복원용. */
   tripToken: string;
@@ -307,6 +312,15 @@ export interface BoardingPromptSilentPushPayload {
    * backend `sendBoardingPromptPush`의 body와 동형.
    */
   body?: string;
+  /**
+   * #2034 — hop-end (환승역 하차) 프롬프트 분기. 미지정(legacy) = 승차 프롬프트. 'disembark'
+   * = "하차했나요?" UI. device 는 이 필드로 title/body/응답 처리를 분기.
+   */
+  hopEndKind?: 'disembark';
+  /** #2034 — hop-end 시 다음 leg 노선. 미지정이면 UI 에서 line 만 fallback 노출. */
+  nextLine?: string;
+  /** #2034 — hop-end 시 다음 leg 출발역. 미지정이면 UI 에서 next-line 만 표시. */
+  nextStation?: string;
 }
 
 /**
@@ -684,7 +698,19 @@ function extractTripEndedPayload(
 function extractBoardingPromptPayload(
   obj: Record<string, unknown>,
 ): BoardingPromptSilentPushPayload | null {
-  const { originStation, line, tripToken, pushId, sentAt, destinationDirection, title, body } = obj;
+  const {
+    originStation,
+    line,
+    tripToken,
+    pushId,
+    sentAt,
+    destinationDirection,
+    title,
+    body,
+    hopEndKind,
+    nextLine,
+    nextStation,
+  } = obj;
   if (typeof originStation !== 'string' || originStation.length === 0) return null;
   if (typeof line !== 'string' || line.length === 0) return null;
   if (typeof tripToken !== 'string' || tripToken.length === 0) return null;
@@ -701,6 +727,11 @@ function extractBoardingPromptPayload(
         : undefined,
     title: typeof title === 'string' && title.length > 0 ? title : undefined,
     body: typeof body === 'string' && body.length > 0 ? body : undefined,
+    // #2034 — hop-end 필드. 미지정 시 undefined (legacy = 승차 prompt).
+    hopEndKind: hopEndKind === 'disembark' ? 'disembark' : undefined,
+    nextLine: typeof nextLine === 'string' && nextLine.length > 0 ? nextLine : undefined,
+    nextStation:
+      typeof nextStation === 'string' && nextStation.length > 0 ? nextStation : undefined,
   };
 }
 
@@ -1261,6 +1292,19 @@ function parseDestinationName(raw: string | null): string | null {
 }
 
 /**
+ * #2034 — hop-end (환승역 하차) prompt 의 device fallback body. backend title/body 가 없을 때만
+ * 사용. nextLine/nextStation 이 있으면 "다음: N호선 S 방면" 포함, 없으면 하차 안내만.
+ */
+function buildHopEndFallbackBody(payload: BoardingPromptSilentPushPayload): string {
+  const from = `${payload.line}호선 ${payload.originStation}에서 내려주세요.`;
+  if (!payload.nextLine) return from;
+  const next = payload.nextStation
+    ? `${payload.nextLine}호선 ${payload.nextStation}`
+    : `${payload.nextLine}호선`;
+  return `${from} 다음은 ${next} 방면입니다.`;
+}
+
+/**
  * #2028 — boarding-prompt silent push 수신 시 gate 무관 local notification schedule.
  *
  * 도달률 우선 — location / silence / motion / FIRED_ALARMS dedup 모두 skip. 사용자에게 UI가
@@ -1276,30 +1320,44 @@ function parseDestinationName(raw: string | null): string | null {
  *
  * title/body는 backend payload에서 우선 사용 (backend가 사용자 locale로 i18n resolve).
  * 미지정 시 device fallback — "탑승하셨나요?" 정적 문자열. graceful — 어떤 값이 오든 알림 발사 보장.
+ *
+ * #2034 — hop-end (환승역 하차) 분기. payload.hopEndKind === 'disembark' 이면 title/body/dedup-key
+ * 를 hop-end 시나리오로 분기. 응답 처리는 `useBoardingPromptResponder` 가 hopEndKind 필드로 분기.
  */
 async function fireBoardingPromptLocalNotification(
   payload: BoardingPromptSilentPushPayload,
   apnsToken: string | null,
 ): Promise<void> {
-  // tripToken 세션 dedup — 이미 발사됐으면 skip. dedup 목적: backend cron 재시도(3회) 시 중복 방지.
-  if (boardingPromptFiredTripTokens.has(payload.tripToken)) {
+  // dedup key — hop-end 는 leg 단위이므로 tripToken 만으로는 다중 환승을 놓친다. hopEndKind
+  // 필드가 있으면 `${tripToken}|hop-end|${line}` 를 사용해 leg 별 dedup, 없으면 tripToken 그대로.
+  const dedupKey = payload.hopEndKind === 'disembark'
+    ? `${payload.tripToken}|hop-end|${payload.line}`
+    : payload.tripToken;
+  // tripToken (혹은 leg key) 세션 dedup — 이미 발사됐으면 skip. dedup 목적: backend cron 재시도(3회) 시 중복 방지.
+  if (boardingPromptFiredTripTokens.has(dedupKey)) {
     logger.info(
-      `boarding-prompt dedup: tripToken=${payload.tripToken.slice(0, 8)} already fired in session — skip`,
+      `boarding-prompt dedup: key=${dedupKey.slice(0, 24)} already fired in session — skip`,
     );
     void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-dedup');
     return;
   }
 
   // dedup 등록 먼저 — scheduleNotificationAsync 실패해도 재시도로 반복 발사되지 않도록.
-  boardingPromptFiredTripTokens.add(payload.tripToken);
+  boardingPromptFiredTripTokens.add(dedupKey);
 
   // 사용자 표시 문구. backend 우선 → device fallback (backend가 locale resolve해서 넘겨줌).
-  const title = payload.title ?? '탑승하셨나요?';
-  const body =
-    payload.body ?? `${payload.line}호선 ${payload.originStation}에서 열차가 곧 도착합니다.`;
+  const isHopEnd = payload.hopEndKind === 'disembark';
+  const fallbackTitle = isHopEnd
+    ? `${payload.originStation}에서 하차하셨나요?`
+    : '탑승하셨나요?';
+  const fallbackBody = isHopEnd
+    ? buildHopEndFallbackBody(payload)
+    : `${payload.line}호선 ${payload.originStation}에서 열차가 곧 도착합니다.`;
+  const title = payload.title ?? fallbackTitle;
+  const body = payload.body ?? fallbackBody;
 
   // data payload는 `useBoardingPromptResponder`의 extractBoardingPromptPayload가 파싱하는 schema.
-  // kind + originStation + line + tripToken 필수, destinationDirection optional.
+  // kind + originStation + line + tripToken 필수, destinationDirection + hopEndKind + nextLine + nextStation optional.
   const data: Record<string, unknown> = {
     kind: 'boarding-prompt',
     originStation: payload.originStation,
@@ -1308,6 +1366,15 @@ async function fireBoardingPromptLocalNotification(
   };
   if (payload.destinationDirection !== undefined) {
     data.destinationDirection = payload.destinationDirection;
+  }
+  if (payload.hopEndKind !== undefined) {
+    data.hopEndKind = payload.hopEndKind;
+  }
+  if (payload.nextLine !== undefined) {
+    data.nextLine = payload.nextLine;
+  }
+  if (payload.nextStation !== undefined) {
+    data.nextStation = payload.nextStation;
   }
 
   try {

@@ -1094,6 +1094,57 @@ describe('sendBoardingPromptPush (#819)', () => {
     const body = JSON.parse(call[1].body as string);
     expect('subtitle' in body.aps.alert).toBe(false);
   });
+
+  // #2034 — hop-end (환승역 하차) prompt payload 검증.
+  it('hopEndKind + nextLine + nextStation 을 payload 로 wire 한다 (#2034)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-hop-end',
+      title: '성수에서 하차하셨나요?',
+      body: '2호선 성수에서 내려주세요. 다음은 수인분당선 왕십리 방면입니다.',
+      originStation: '성수',
+      line: '2',
+      tripToken: 'trip-hop',
+      sentAt: 0,
+      hopEndKind: 'disembark',
+      nextLine: 'K',
+      nextStation: '왕십리',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.hopEndKind).toBe('disembark');
+    expect(body.data.nextLine).toBe('K');
+    expect(body.data.nextStation).toBe('왕십리');
+    // 기존 필드는 그대로 유지
+    expect(body.data.kind).toBe('boarding-prompt');
+    expect(body.data.originStation).toBe('성수');
+  });
+
+  it('hopEndKind 미지정 시 payload 에서 hop-end 필드 자연 누락 (#2034)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-legacy',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('hopEndKind' in body.data).toBe(false);
+    expect('nextLine' in body.data).toBe(false);
+    expect('nextStation' in body.data).toBe(false);
+  });
 });
 
 // #2037 (Issue M / Wave 1 완결) — Focus / DND / 취침 fallback 채널. alert push 와 병렬 발사.

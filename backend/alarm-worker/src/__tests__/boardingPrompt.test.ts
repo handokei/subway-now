@@ -3,6 +3,7 @@ import { ARRIVAL_CODE } from '../alarm';
 import {
   DISMISS_SILENCE_MS,
   evaluateBoardingPromptGates,
+  evaluateHopEndPromptGates,
   markPromptFired,
   markPromptSilenced,
   pickAutoTrainCode,
@@ -784,5 +785,41 @@ describe('pickAutoTrainCode — arvlCd 우선순위', () => {
   it('trainCode 빈 문자열 후보 → null', () => {
     const arrivals = [entry({ trainCode: '', arvlCd: 2 })];
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBeNull();
+  });
+});
+
+describe('evaluateHopEndPromptGates (#2034)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('promptState 없음 → pass=true', () => {
+    const r = evaluateHopEndPromptGates({ now: NOW });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.fusedSpeedKmh).toBe(0);
+  });
+
+  it('promptState.fired=true → already-fired 차단', () => {
+    const r = evaluateHopEndPromptGates({
+      promptState: { fired: true, lastFiredAt: NOW - 60_000 },
+      now: NOW,
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('already-fired');
+  });
+
+  it('promptState.silencedUntil 이 미래 → silenced 차단', () => {
+    const r = evaluateHopEndPromptGates({
+      promptState: { silencedUntil: NOW + 30_000 },
+      now: NOW,
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('silenced');
+  });
+
+  it('promptState.silencedUntil 이 과거 → pass', () => {
+    const r = evaluateHopEndPromptGates({
+      promptState: { silencedUntil: NOW - 30_000 },
+      now: NOW,
+    });
+    expect(r.pass).toBe(true);
   });
 });

@@ -18,6 +18,7 @@ import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
+  evaluateHopEndPromptGates,
   markPromptFired,
   pickAutoTrainCode,
   type GateSkipReason,
@@ -557,6 +558,17 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedLockActive: number;
   /**
+   * #2034 — 환승 waypoint advance 시점에 hop-end ("하차했나요?") prompt 게이트를 통과해 alert
+   * push 가 발사된 누적 횟수. leg 단위 dedup 이라 같은 trip 내 여러 환승도 각각 카운트.
+   * dashboard: `hop_end_prompt_fired`.
+   */
+  hopEndPromptFired: number;
+  /**
+   * #2034 — hop-end prompt 게이트가 dedup/silence 로 차단해 미발사한 누적 횟수. 사용자 [아직]
+   * 응답 후 5 분 silence 윈도우가 정상 동작하는지 관측용.
+   */
+  hopEndPromptBlocked: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -872,6 +884,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0,
     boardingPromptSkippedLockActive: 0,
+    hopEndPromptFired: 0,
+    hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -2981,6 +2995,21 @@ export async function advanceBoardingLockWaypoint(
       );
     }
   }
+  // #2034 — 환승 waypoint advance = "환승역 도착". 사용자에게 "하차했나요?" hop-end 프롬프트를
+  // 발사해 다음 leg 진입을 명시 확인하도록 유도. lock 활성 여부와 무관 (transfer 직후 lock 은 이미
+  // release 됐거나 애초에 lockless leg 였다). 게이트는 leg-key (`${transferStation}|${nextLine}`)
+  // 로 fired/silence dedup 만 유지 — GPS/motion 검증 없이 waypoint advance = ground truth.
+  if (waypoint.kind === 'transfer') {
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint: waypoint,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId: () => crypto.randomUUID(),
+    });
+  }
   // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
   // 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
   // 다음 cron cycle에서 lockMissing → evaluateAndMaybeFireBoardingPrompt → boardingPrompt push 발사.
@@ -3600,6 +3629,26 @@ export function buildBoardingPromptMessage(
 }
 
 /**
+ * #2034 — 환승역 hop-end ("하차했나요?") 알림 title/body 를 4언어 (ko/en/ja/zh) 로 빌드.
+ *
+ * caller (환승 waypoint advance 시점) 는 `transferStation` / `line` (직전 leg) / `nextLine` /
+ * `nextStation` 을 넘긴다. i18n 는 locale 자동 fallback.
+ */
+export function buildHopEndPromptMessage(
+  transferStation: string,
+  line: string,
+  nextLine: string | null,
+  nextStation: string | null,
+  locale?: SupportedLocale,
+): { title: string; body: string } {
+  const strings = t(locale);
+  return {
+    title: strings.hopEndPromptTitle({ transferStation }),
+    body: strings.hopEndPromptBody({ transferStation, line, nextLine, nextStation }),
+  };
+}
+
+/**
  * APNs 토큰 환경(sandbox/production)과 host가 어긋났을 때 Apple이 내는 시그널.
  * 이 조건에 한해서만 self-heal retry를 시도한다.
  */
@@ -3953,5 +4002,113 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   if (dirty) {
     await putTrip(env.TRIPS, trip);
+  }
+}
+
+/**
+ * #2034 — hop-end (환승역 "하차했나요?") prompt 평가 + 발사.
+ *
+ * caller: 환승 waypoint advance 직후 (waypoint.kind === 'transfer' 로 shift 된 시점).
+ * transferWaypoint 는 방금 통과한 (직전 leg 끝) waypoint — trip.waypoints[0] 은 이미 다음 leg
+ * 첫 정거장. leg-key (`${transferStation}|${nextLine ?? ''}`) 로 dedup — 같은 trip 에 여러 환승이
+ * 있어도 각 환승은 독립적으로 발사.
+ *
+ * 게이트: `evaluateHopEndPromptGates` (fired dedup + silencedUntil 만). transfer waypoint advance
+ * 자체가 ground truth 이므로 GPS/motion/speed 재검증 없음. false-positive 방어는 caller (advance
+ * gate) + silence dedup 로 충분.
+ *
+ * 발사 성공:
+ *   - alert push (BOARDING_PROMPT category, hopEndKind='disembark') → device 가 payload 를 파싱해
+ *     "하차했나요?" 프롬프트 노출.
+ *   - trip.hopEndPromptState[key] = markPromptFired(now).
+ *   - stats.hopEndPromptFired += 1.
+ * 차단: stats.hopEndPromptBlocked += 1 + reason log.
+ */
+export async function maybeFireHopEndPrompt(inputs: {
+  trip: Trip;
+  transferWaypoint: Waypoint;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}): Promise<void> {
+  const { trip, transferWaypoint, deps, stats, now, log, generatePushId } = inputs;
+  const nextWaypoint = trip.waypoints[0];
+  const nextLine = nextWaypoint?.line ?? null;
+  const nextStation = nextWaypoint?.stationName ?? null;
+  const legKey = `${transferWaypoint.stationName}|${nextLine ?? ''}`;
+  const stateMap = trip.hopEndPromptState ?? {};
+  const outcome = evaluateHopEndPromptGates({ promptState: stateMap[legKey], now });
+  if (!outcome.pass) {
+    stats.hopEndPromptBlocked += 1;
+    log('hop-end-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      legKey,
+      reason: outcome.reason,
+    });
+    return;
+  }
+  const { title, body } = buildHopEndPromptMessage(
+    transferWaypoint.stationName,
+    transferWaypoint.line,
+    nextLine,
+    nextStation,
+    trip.locale,
+  );
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        deviceToken: trip.token,
+        pushId,
+        title,
+        body,
+        // originStation 필드는 hop-end 시 "하차 대상 역 (환승역)" 으로 재해석 — device 가
+        // hopEndKind='disembark' 를 보고 이 의미로 파싱.
+        originStation: transferWaypoint.stationName,
+        line: transferWaypoint.line,
+        tripToken: trip.token,
+        sentAt: now,
+        triggerKind: 'cron',
+        hopEndKind: 'disembark',
+        ...(nextLine !== null ? { nextLine } : {}),
+        ...(nextStation !== null ? { nextStation } : {}),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    stats.hopEndPromptFired += 1;
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    trip.hopEndPromptState = {
+      ...stateMap,
+      [legKey]: markPromptFired(now),
+    };
+    log('hop-end-prompt: fired', {
+      token: trip.token.slice(0, 8),
+      transferStation: transferWaypoint.stationName,
+      line: transferWaypoint.line,
+      nextLine,
+      nextStation,
+    });
+  } else {
+    stats.errors += 1;
+    log('hop-end-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      legKey,
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
   }
 }
