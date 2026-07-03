@@ -795,6 +795,77 @@ export async function sendBoardingPromptPush(
   return parseApnsError(response);
 }
 
+/**
+ * #2037 (Issue M / Wave 1 완결) — boarding-prompt silent push fallback 채널.
+ *
+ * 배경: `sendBoardingPromptPush`는 alert push(`apns-push-type: alert`)로 iOS 시스템 banner 를
+ * 직접 노출한다. 하지만 사용자 Focus / DND / 취침 등으로 alert 가 도달하지 않으면
+ * boardingPrompt 응답률이 0% 로 떨어진다(7일 evidence). silent push 는 `content-available: 1`
+ * 로 device silentPushTask BG handler 에 도달해 gate 무관 local notification 을 강제 발사한다.
+ *
+ * caller(scheduled.ts)는 alert push 완료 후 이 함수를 순차 발사한다. alert push 의 self-heal
+ * 이 정정한 env(sandbox↔production)를 그대로 재사용해 이중 self-heal 을 회피한다. alert 실패해도
+ * 이 silent push 는 독립적으로 발사되며 (역방향도 마찬가지), 두 채널 중 하나라도 도달하면 UX 회귀 없음.
+ *
+ * payload shape 은 `BoardingPromptPushPayload` 를 그대로 재사용해 device
+ * `extractBoardingPromptPayload` 파서 schema(kind + originStation + line + tripToken 필수,
+ * 나머지 optional)와 1:1 정합. title / body 도 data 에 실어 device 가 local notification
+ * 발사 시 사용 (없으면 device 정적 fallback).
+ *
+ * apns-push-type: 'background', priority: 5 — Apple silent push 표준.
+ * apns-thread-id: tripToken — alert push 와 같은 trip 으로 그룹핑.
+ */
+export async function sendBoardingPromptSilentPush(
+  options: SendBoardingPromptPushOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const data: BoardingPromptPushPayload = {
+    pushId: options.pushId,
+    kind: 'boarding-prompt',
+    originStation: options.originStation,
+    line: options.line,
+    tripToken: options.tripToken,
+    sentAt: options.sentAt,
+    triggerKind: options.triggerKind,
+    // #1740 — undefined면 payload에 키 자체가 생략됨 (JSON.stringify 동작). device backward compat.
+    destinationDirection: options.destinationDirection,
+    // #2037 — title / body 는 device 가 local notification 발사 시 사용. 미지정 시 device fallback.
+    ...(options.title !== undefined ? { title: options.title } : {}),
+    ...(options.body !== undefined ? { body: options.body } : {}),
+    // #1888 (RC-13) — candidateTrains는 0건이면 omit (device fallback 렌더용).
+    ...(options.candidateTrains !== undefined && options.candidateTrains.length > 0
+      ? { candidateTrains: options.candidateTrains }
+      : {}),
+  };
+
+  const body = JSON.stringify({
+    aps: {
+      'content-available': 1,
+    },
+    data,
+  });
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': options.config.bundleId,
+      'apns-push-type': 'background',
+      'apns-priority': '5',
+      'content-type': 'application/json',
+      // alert push 와 같은 trip 그룹핑.
+      'apns-thread-id': options.tripToken,
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
 async function parseApnsError(response: Response): Promise<SendPushResult> {
   let reason: string | undefined;
   try {
