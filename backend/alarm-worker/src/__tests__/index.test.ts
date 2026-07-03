@@ -3904,6 +3904,191 @@ describe('POST /trips — #1897 confirmedEnv echo (RC-5)', () => {
   });
 });
 
+// ADR-022 B4 (#2019 wire) — POST /trips 에서 rotateTripTokenForNewRoute 실제 호출.
+//
+// #1986 이 helper 정의를 도입했지만 프로덕션 caller 0개 (테스트 파일에서만 호출) 였고 2026-07-03
+// 사용자 실기기 trip(중곡→성수)에서 이전 trip 잔재 pending push 가 계속 발사돼 device 는
+// `BoardingLock active=no + boardingPrompt(all)=0` 상태였음에도 `08:37:25 bg fired
+// station-passed 성수` 관측. 원인: 새 route 등록 시 `trip:<oldToken>` KV entry 와
+// `pending:*` 잔재가 rotation helper 호출 부재로 정리되지 않음.
+//
+// 본 describe 는 wire 완결(POST handler 가 helper 호출) 을 검증한다. Helper 자체의 rotation
+// 로직 (route sig 계산 / KV delete / pending cleanup) 은 `trips.test.ts` 에서 커버.
+describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', () => {
+  const TOKEN = 'tok-2019';
+  const ARCH_FLAG_KV_KEY = 'arch:simple-arrival-v1';
+
+  // Helper: incoming trip body 를 다른 destination/waypoints 로 변형.
+  function tripBodyFor(destination: string, stationName: string): Record<string, unknown> {
+    return {
+      ...base(),
+      token: TOKEN,
+      destination,
+      waypoints: [{ stationName, line: '2', kind: 'destination' }],
+    };
+  }
+
+  async function seedExistingTrip(
+    env: Env,
+    destination: string,
+    stationName: string,
+  ): Promise<void> {
+    const trip = {
+      token: TOKEN,
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination,
+      waypoints: [{ stationName, line: '2', kind: 'destination' }],
+      expiresAt: FUTURE,
+      createdAt: Date.now(),
+      alarmAtEpochMs: FUTURE - 30 * 60 * 1000,
+    };
+    await env.TRIPS.put(`trip:${TOKEN}`, JSON.stringify(trip));
+  }
+
+  async function seedPending(env: Env, pushId: string, token: string): Promise<void> {
+    const entry = {
+      pushId,
+      token,
+      alarmKey: `early:${pushId}`,
+      sentAt: Date.now(),
+      stationName: '용마산',
+      kind: 'destination',
+      phase: 'early',
+      etaSeconds: 300,
+      apnsEnv: 'sandbox',
+    };
+    await env.TRIPS.put(`pending:${pushId}`, JSON.stringify(entry));
+  }
+
+  describe('archFlag=off (default) — dormant', () => {
+    it('existing + 다른 destination → 회전 없음 (`trip:<TOKEN>` 유지 + 응답 token 동일)', async () => {
+      const env = makeKvEnv();
+      await seedExistingTrip(env, '용마산-id', '용마산');
+      // KV 에 archFlag 미설정 → getArchFlag 는 default 'off' 반환.
+      const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      expect(res.status).toBe(200);
+      // 응답 token 은 그대로 (rotation 미발동).
+      expect(await res.json()).toEqual({
+        ok: true,
+        token: TOKEN,
+        confirmedEnv: 'sandbox',
+      });
+      // 기존 KV key 유지 — putTrip 이 같은 key 로 덮어씀.
+      const stored = await env.TRIPS.get(`trip:${TOKEN}`);
+      expect(stored).not.toBeNull();
+      // 새 destination 으로 갱신됐지만 token 은 그대로.
+      expect(JSON.parse(stored as string).destination).toBe('성수-id');
+    });
+
+    it('existing + pending push 잔재 + 다른 destination → pending 유지 (cleanup 미발동)', async () => {
+      // Wire dormant 상태에서 pending cleanup 이 발동하지 않는지 회귀 가드.
+      const env = makeKvEnv();
+      await seedExistingTrip(env, '용마산-id', '용마산');
+      await seedPending(env, 'p-legacy', TOKEN);
+      await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      // flag=off → helper no-op → pending 잔재는 그대로 (기존 회귀 재현 시나리오).
+      expect(await env.TRIPS.get('pending:p-legacy')).not.toBeNull();
+    });
+  });
+
+  describe('archFlag=on — rotation active', () => {
+    beforeEach(async () => {
+      // 각 테스트는 자체 env 를 만들고 setup 에서 flag 를 KV 에 set 한다.
+    });
+
+    it('existing 없음 (신규 trip) → 회전 없음, incoming token 유지', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+      const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        token: TOKEN,
+        confirmedEnv: 'sandbox',
+      });
+      expect(await env.TRIPS.get(`trip:${TOKEN}`)).not.toBeNull();
+    });
+
+    it('existing + 같은 route (destination/waypoints 동일) → 회전 없음', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+      await seedExistingTrip(env, '성수-id', '성수');
+      const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      expect(res.status).toBe(200);
+      // 같은 route sig → rotation dormant → token 유지.
+      expect(await res.json()).toEqual({
+        ok: true,
+        token: TOKEN,
+        confirmedEnv: 'sandbox',
+      });
+      expect(await env.TRIPS.get(`trip:${TOKEN}`)).not.toBeNull();
+    });
+
+    it('existing + 다른 destination → 회전 발동: 응답 token 이 새 UUID + trip:<oldToken> 삭제', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+      await seedExistingTrip(env, '용마산-id', '용마산');
+      const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: true; token: string; confirmedEnv: string };
+      expect(body.ok).toBe(true);
+      // 응답 token 은 새 UUID (helper 가 crypto.randomUUID 사용).
+      expect(body.token).not.toBe(TOKEN);
+      expect(body.token).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      // 기존 KV entry 삭제됨.
+      expect(await env.TRIPS.get(`trip:${TOKEN}`)).toBeNull();
+      // 새 UUID key 에 새 destination 저장.
+      const newStored = await env.TRIPS.get(`trip:${body.token}`);
+      expect(newStored).not.toBeNull();
+      expect(JSON.parse(newStored as string).destination).toBe('성수-id');
+    });
+
+    it('evidence 재현 (2026-07-03) — 이전 trip pending push 잔재 존재 상태에서 새 route 등록 → pending cleanup', async () => {
+      // 오늘 evidence: 사용자 중곡→용마산 trip 후 새 중곡→성수 trip 시작. 이전 trip 관련 pending
+      // push (station-passed 성수) 가 남아있어 새 trip 이후에도 계속 발사.
+      // Wire 가 helper 의 `cleanupPendingPushesForToken` 호출을 발동시켜 잔재 pending 삭제.
+      const env = makeKvEnv();
+      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+      await seedExistingTrip(env, '용마산-id', '용마산');
+      // 이전 trip 관련 pending push 3건.
+      await seedPending(env, 'p-old-1', TOKEN);
+      await seedPending(env, 'p-old-2', TOKEN);
+      // 다른 device 소유 pending — 보존돼야 함.
+      await seedPending(env, 'p-other-device', 'tok-different');
+
+      const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      expect(res.status).toBe(200);
+
+      // 이전 token 소유 pending push 삭제됨 (jae재발사 차단).
+      expect(await env.TRIPS.get('pending:p-old-1')).toBeNull();
+      expect(await env.TRIPS.get('pending:p-old-2')).toBeNull();
+      // 다른 device pending 은 보존.
+      expect(await env.TRIPS.get('pending:p-other-device')).not.toBeNull();
+    });
+
+    it('archFlag=on 이 KV set → 회전 활성 (읽기 지점 검증)', async () => {
+      // Wire 가 실제로 `rotateTripTokenForNewRoute` 를 호출하는지 (getArchFlag → KV read)
+      // 간접 검증. KV 에 값을 넣기 전에는 회전 안 되지만 넣은 후 회전한다는 대비.
+      const env = makeKvEnv();
+      await seedExistingTrip(env, '용마산-id', '용마산');
+      // Round 1: flag 미설정 → default off → 회전 없음.
+      const res1 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      const body1 = (await res1.json()) as { token: string };
+      expect(body1.token).toBe(TOKEN);
+
+      // Reset: 새 existing 을 다시 seed 하고 flag on.
+      await seedExistingTrip(env, '용마산-id', '용마산');
+      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+      // Round 2: flag on → 회전 발동 → 새 UUID.
+      const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+      const body2 = (await res2.json()) as { token: string };
+      expect(body2.token).not.toBe(TOKEN);
+    });
+  });
+});
+
 function rawSignalsEnv(): Env {
   return makeEnv({ RAW_SIGNALS: new InMemoryKV() as unknown as KVNamespace });
 }

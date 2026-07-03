@@ -112,7 +112,7 @@ import {
   readObservabilityMetrics,
   tryStoreObservabilityMetrics,
 } from './observabilityMetrics';
-import { getTrip, putTrip } from './trips';
+import { getTrip, putTrip, rotateTripTokenForNewRoute } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
@@ -632,7 +632,42 @@ app.post('/trips', async (c) => {
     }
   }
 
-  const existing = await getTrip(c.env.TRIPS, incoming.token);
+  const rawExisting = await getTrip(c.env.TRIPS, incoming.token);
+
+  // ADR-022 B4 (#2019 wire, #1986 rotation helper) — 새 route 감지 시 token rotation.
+  //
+  // archFlag=on + existing 있음 + route sig 다름 → 새 UUID 발급 + `trip:<oldToken>` delete +
+  // `pending:*` 중 oldToken 소유 entry cleanup (helper 내부 로직).
+  //
+  // archFlag=off (default): helper 는 `{ token: incoming.token, rotated: false }` no-op 반환
+  // → 기존 동작 100% 유지 (Phase 1-3 dormant).
+  //
+  // rotated=true 케이스 처리:
+  //   - `existing = null` 로 강등해 downstream `isSameSession=false` + progress skip 경로 진입
+  //     (helper 가 이미 `trip:<oldToken>` 을 delete 했으므로 same-session merge 는 무의미).
+  //   - `incoming.token` 을 새 UUID 로 갱신 → 후속 `putTrip` 이 `trip:<newToken>` 키로 쓴다.
+  //   - progress/SSoT KV(oldToken 키) 는 TTL 로 자연 만료 — 후속 cron push 는 새 token trip
+  //     기준 waypoints/destination 을 참조하므로 사용자에게 이전 목적지 push 재발사 없음.
+  //
+  // 오늘 evidence(2026-07-03): 사용자 중곡→성수 trip 시작 시 이전 trip(중곡→용마산) 잔재
+  // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. rotation 이
+  // helper 의 `cleanupPendingPushesForToken` 을 실제 호출해 잔재 pending 제거.
+  const rotation = await rotateTripTokenForNewRoute(
+    c.env.TRIPS,
+    incoming,
+    rawExisting,
+  );
+  if (rotation.rotated) {
+    console.log(
+      JSON.stringify({
+        msg: 'trip-register: route rotation (#2019, ADR-022 B4)',
+        oldTokenPrefix: tokenPrefix(incoming.token),
+        newTokenPrefix: tokenPrefix(rotation.token),
+      }),
+    );
+    incoming.token = rotation.token;
+  }
+  const existing = rotation.rotated ? null : rawExisting;
   const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
   // #916 follow-up B — auto-prompt dedup 마커 보존. isSameSession=true(같은 trip 재등록)인 경우만
   // window 안이면 보존한다. 사용자가 lock 클리어 후 같은 trip context로 재등록하는 케이스에서
