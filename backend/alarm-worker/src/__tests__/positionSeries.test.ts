@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACCURACY_CUTOFF_M,
+  ARC_OVERSHOOT_MIN_ARC_DELTA_M,
+  ARC_OVERSHOOT_RATIO_DEFAULT,
   appendPositionPoint,
   clearSeries,
   cosineDirection,
+  detectArcOvershoot,
   evaluateWindow,
   haversineKm,
   pickMotionMode,
@@ -519,6 +522,172 @@ describe('positionSeries — cellularEnvironmentVote field validation (#1543)', 
     const series = await readSeries(kv, 'tok');
     expect(series).toHaveLength(1);
     expect(series[0].cellularEnvironmentVote).toBeUndefined();
+  });
+});
+
+describe('detectArcOvershoot (#2023 arc time-integration overshoot guard)', () => {
+  /**
+   * arc 델타 vs 실제 haversine 이동 거리 비율로 device 시간 적분 폭주 감지.
+   *
+   * 2026-07-03 evidence 재현: device velocity=0 판단인데 arc가 시간 적분으로 계속 누적 →
+   * 성수 조기 발사. arc 델타 > haversine × 2 시 overshoot=true.
+   *
+   * 정책: series 부족 / arc 미부착 / 낮은 arc 델타는 false (graceful, false positive 차단).
+   */
+
+  const line = '2';
+
+  function makeSeries(
+    start: { arcM: number; lat: number; lng: number; ts: number },
+    end: { arcM: number; lat: number; lng: number; ts: number },
+  ): PositionPoint[] {
+    return [
+      {
+        lat: start.lat,
+        lng: start.lng,
+        accuracy: 10,
+        ts: start.ts,
+        motion: 'walking',
+        mapMatchedLine: line,
+        mapMatchedArcM: start.arcM,
+      },
+      {
+        lat: end.lat,
+        lng: end.lng,
+        accuracy: 10,
+        ts: end.ts,
+        motion: 'walking',
+        mapMatchedLine: line,
+        mapMatchedArcM: end.arcM,
+      },
+    ];
+  }
+
+  it('arc 델타 > haversine × 2 → overshoot=true (오늘 evidence 재현)', () => {
+    // 2026-07-03 evidence: 08:32:45 arc=3998 → 08:37:25 arc=4710 (Δ=712m)
+    // 실 이동 haversine ≈ 100m (사용자 정지 판단 상태에서 device 시간 적분만 증가)
+    // 712 / 100 = 7.12배 → overshoot=true (ratio 2 초과)
+    const series = makeSeries(
+      { arcM: 3998, lat: 37.5, lng: 127.0, ts: 0 },
+      { arcM: 4710, lat: 37.5009, lng: 127.0, ts: 4 * 60_000 + 40_000 },
+    );
+    expect(detectArcOvershoot(series)).toBe(true);
+  });
+
+  it('arc 델타 ≈ haversine → overshoot=false (정상 이동)', () => {
+    // 정상 이동: arc 델타와 haversine 거리 비슷.
+    // ~200m 이동, arc 델타 200m (ratio ~1) → false
+    const series = makeSeries(
+      { arcM: 1000, lat: 37.5, lng: 127.0, ts: 0 },
+      { arcM: 1200, lat: 37.5018, lng: 127.0, ts: 30_000 },
+    );
+    expect(detectArcOvershoot(series)).toBe(false);
+  });
+
+  it('arc 델타 = 0 → overshoot=false (변화 없음)', () => {
+    // arc 델타 0이면 폭주 아님. (기존 mapMatchedKmh 정책과 정렬)
+    const series = makeSeries(
+      { arcM: 500, lat: 37.5, lng: 127.0, ts: 0 },
+      { arcM: 500, lat: 37.5, lng: 127.0, ts: 30_000 },
+    );
+    expect(detectArcOvershoot(series)).toBe(false);
+  });
+
+  it('arc 델타 < min threshold → overshoot=false (신호 부족)', () => {
+    // 작은 arc 델타는 GPS/arc 노이즈 범위 — 판단 유보.
+    // ratio는 초과해도 절대값이 작으면 false positive 위험.
+    const series = makeSeries(
+      { arcM: 100, lat: 37.5, lng: 127.0, ts: 0 },
+      { arcM: 100 + ARC_OVERSHOOT_MIN_ARC_DELTA_M - 1, lat: 37.5, lng: 127.0, ts: 30_000 },
+    );
+    expect(detectArcOvershoot(series)).toBe(false);
+  });
+
+  it('series 길이 < 2 → overshoot=false (graceful)', () => {
+    expect(detectArcOvershoot([])).toBe(false);
+    expect(
+      detectArcOvershoot([
+        {
+          lat: 37.5,
+          lng: 127.0,
+          accuracy: 10,
+          ts: 0,
+          motion: 'walking',
+          mapMatchedLine: line,
+          mapMatchedArcM: 100,
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  it('arc 미부착 (mapMatchedArcM=undefined) → overshoot=false (graceful)', () => {
+    // arc 없으면 판단 유보 (Phase 1 회귀 없음 정책과 정렬).
+    const series: PositionPoint[] = [
+      { lat: 37.5, lng: 127.0, accuracy: 10, ts: 0, motion: 'walking' },
+      { lat: 37.501, lng: 127.0, accuracy: 10, ts: 30_000, motion: 'walking' },
+    ];
+    expect(detectArcOvershoot(series)).toBe(false);
+  });
+
+  it('한쪽만 arc 있음 → overshoot=false (짝 정책과 정렬)', () => {
+    const series: PositionPoint[] = [
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 10,
+        ts: 0,
+        motion: 'walking',
+        mapMatchedLine: line,
+        mapMatchedArcM: 1000,
+      },
+      { lat: 37.501, lng: 127.0, accuracy: 10, ts: 30_000, motion: 'walking' },
+    ];
+    expect(detectArcOvershoot(series)).toBe(false);
+  });
+
+  it('환승역 disambiguate — 두 sample line이 다르면 false (mapMatchedKmh 정책과 정렬)', () => {
+    // 노선이 다르면 arc 자체를 신뢰 X → 폭주 판단 유보.
+    const series: PositionPoint[] = [
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 10,
+        ts: 0,
+        motion: 'walking',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 1000,
+      },
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 10,
+        ts: 30_000,
+        motion: 'walking',
+        mapMatchedLine: '3',
+        mapMatchedArcM: 5000,
+      },
+    ];
+    expect(detectArcOvershoot(series)).toBe(false);
+  });
+
+  it('custom ratio threshold 지원 (더 엄격/느슨 config)', () => {
+    // arc 델타 = 700m, haversine ≈ 200m → ratio ≈ 3.5
+    const series = makeSeries(
+      { arcM: 1000, lat: 37.5, lng: 127.0, ts: 0 },
+      { arcM: 1700, lat: 37.5018, lng: 127.0, ts: 30_000 },
+    );
+    // 기본 ratio 2 → overshoot=true
+    expect(detectArcOvershoot(series)).toBe(true);
+    // 더 느슨한 ratio 5 → overshoot=false
+    expect(detectArcOvershoot(series, { ratioThreshold: 5 })).toBe(false);
+  });
+
+  it('ARC_OVERSHOOT_RATIO_DEFAULT 상수 노출 (caller 참조용)', () => {
+    expect(ARC_OVERSHOOT_RATIO_DEFAULT).toBeGreaterThan(1);
+  });
+
+  it('ARC_OVERSHOOT_MIN_ARC_DELTA_M 상수 노출 (caller 참조용)', () => {
+    expect(ARC_OVERSHOOT_MIN_ARC_DELTA_M).toBeGreaterThan(0);
   });
 });
 

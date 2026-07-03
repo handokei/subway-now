@@ -54,6 +54,7 @@ import {
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import {
+  detectArcOvershoot,
   evaluateWindow,
   haversineKm,
   readSeries,
@@ -1976,6 +1977,10 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       return { dirty: false };
     }
   }
+  // #2023 — device `mapMatchedArcM` 시간 적분 폭주 감지. archFlag='on' 시 게이트 #8이 hop pause.
+  // series read + 감지 결과를 evidence에 stamp. archFlag='off' 시 dormant (기존 동작 유지).
+  const arcOvershootSeries = await readSeries(env.TRIPS, trip.token);
+  const arcOvershootDetected = detectArcOvershoot(arcOvershootSeries);
   const outcome = await advanceTripPosition(
     env.TRIPS,
     trip.token,
@@ -1987,6 +1992,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       environment: deriveEvidenceEnvironment(trip),
       arvlcdTrainCode: lock.trainCode,
       arvlCd,
+      arcOvershootDetected,
     },
     {
       // lock 활성 = base 합의 surrogate. consensusGate가 surface는 base만으로, underground는
@@ -1994,6 +2000,8 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       // 검증. lock 활성 trip에서 lockAttachable 단일 trainCode 수렴은 lock 부착 자체가 증거.
       gatePassed: true,
       lockAttachable: true,
+      // #2023 (ADR-022) — archFlag='on' 시 arc 게이트 활성. 미wire caller는 dormant.
+      archFlag: deps.archFlag,
     },
   );
   if (outcome.result !== 'advanced') {
@@ -2770,15 +2778,29 @@ export async function advanceBoardingLockWaypoint(
         currentStationId: waypoint.stationName,
       });
     }
+    // #2023 — evidence.arcOvershootDetected 가 이미 stamp되어 있으면 그대로 유지(caller가
+    // 감지한 값 존중). 미stamp이면 series read + detectArcOvershoot로 채워 넣는다. 게이트 #8은
+    // options.archFlag='on'일 때만 활성(archFlag=off/미제공 dormant → backward compat).
+    const advanceEvidence: AdvanceEvidence =
+      evidence.arcOvershootDetected !== undefined
+        ? evidence
+        : {
+            ...evidence,
+            arcOvershootDetected: detectArcOvershoot(
+              await readSeries(env.TRIPS, trip.token),
+            ),
+          };
     const outcome = await advanceTripPosition(
       env.TRIPS,
       trip.token,
       waypoint.stationName,
-      evidence,
+      advanceEvidence,
       {
         // lock 활성 = base 합의 surrogate (T4 `tryAdvanceAndFireArvlcd` 와 같은 정책).
         gatePassed: true,
         lockAttachable: trip.boardingLock !== undefined,
+        // #2023 (ADR-022) — archFlag='on' 시 arc overshoot 게이트 활성. off/미제공 dormant.
+        archFlag: deps.archFlag,
       },
     );
     if (outcome.result !== 'advanced') {

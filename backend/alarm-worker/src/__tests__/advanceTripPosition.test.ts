@@ -18,6 +18,8 @@ import {
   type AdvanceStats,
   type WifiSsidEntry,
 } from '../advanceTripPosition';
+import { detectArcOvershoot } from '../positionSeries';
+import type { PositionPoint } from '../types';
 import {
   readSsot,
   seedSsot,
@@ -537,6 +539,227 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
     );
     const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
     expect(after?.passedStations.filter((s) => s === '용마산').length).toBe(1);
+  });
+});
+
+describe('advanceTripPosition — #8 arc-overshoot 게이트 (#2023, archFlag)', () => {
+  /**
+   * #2023 — device arc 시간 적분 폭주 감지 → hop 진행 pause.
+   *
+   * 2026-07-03 evidence: 08:24 승차 후 08:32:45 arc=3998, 08:37:25 arc=4710 (Δ=712m 폭주,
+   * 실 이동 hop=1). 성수 조기 발사 여러 회. archFlag=on 시 arc overshoot 감지 시 hop pause,
+   * off 시 기존 동작 유지.
+   *
+   * 정책:
+   *   - archFlag='on' + evidence.arcOvershootDetected=true → blocked('arc-overshoot')
+   *   - archFlag='off' (또는 미제공) → 기존 동작 유지 (dormant, backward compat)
+   *   - archFlag='on' + arcOvershoot=false → 정상 advance
+   *   - archFlag='on' + arcOvershoot=undefined → dormant (caller가 stamp 안 함, backward compat)
+   */
+
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  async function seedForAdvance(): Promise<void> {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+  }
+
+  it("archFlag='on' + arcOvershoot=true → blocked('arc-overshoot')", async () => {
+    await seedForAdvance();
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ arcOvershootDetected: true }),
+      { gatePassed: true, lockAttachable: true, archFlag: 'on' },
+    );
+    expect(out.result).toBe('blocked');
+    expect(out.blockReason).toBe('arc-overshoot');
+    // SSoT mutate 없음
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.currentStationId).toBe('용마산');
+  });
+
+  it("archFlag='off' + arcOvershoot=true → 기존 동작 유지 (advanced, backward compat)", async () => {
+    await seedForAdvance();
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ arcOvershootDetected: true }),
+      { gatePassed: true, lockAttachable: true, archFlag: 'off' },
+    );
+    expect(out.result).toBe('advanced');
+    expect(out.blockReason).toBeUndefined();
+  });
+
+  it('archFlag 미제공 + arcOvershoot=true → 기존 동작 유지 (dormant, backward compat)', async () => {
+    await seedForAdvance();
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ arcOvershootDetected: true }),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(out.result).toBe('advanced');
+  });
+
+  it("archFlag='on' + arcOvershoot=false → 정상 advance", async () => {
+    await seedForAdvance();
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ arcOvershootDetected: false }),
+      { gatePassed: true, lockAttachable: true, archFlag: 'on' },
+    );
+    expect(out.result).toBe('advanced');
+  });
+
+  it("archFlag='on' + arcOvershoot 미stamp → dormant (caller migration 전 backward compat)", async () => {
+    await seedForAdvance();
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence(), // arcOvershootDetected 미stamp
+      { gatePassed: true, lockAttachable: true, archFlag: 'on' },
+    );
+    expect(out.result).toBe('advanced');
+  });
+});
+
+describe('#2023 evidence replay — 2026-07-03 arc 폭주 시계열 통합', () => {
+  /**
+   * 2026-07-03 evidence 시계열 replay: 08:32:45 arc=3998 → 08:37:25 arc=4710 (Δ=712m),
+   * 사용자 실 이동 distance haversine ≈ 100m (device 정지 판단 상태에서 arc 시간 적분만 누적).
+   *
+   * 통합 검증:
+   *   1. positionSeries.detectArcOvershoot이 폭주를 감지 (true)
+   *   2. 감지 결과를 evidence에 stamp → advanceTripPosition 게이트 #8이 hop pause
+   *   3. archFlag='off' 시 dormant → 조기 발사 회귀 그대로 (기존 동작 유지)
+   */
+
+  const EVIDENCE_TS_START = 1_720_000_000_000;
+  const TS_08_32_45 = EVIDENCE_TS_START;
+  // 08:37:25 = 08:32:45 + 4m 40s = +280_000ms
+  const TS_08_37_25 = EVIDENCE_TS_START + 4 * 60_000 + 40_000;
+
+  function buildTodayEvidenceSeries(): PositionPoint[] {
+    // 실 이동 ≈ 100m (약 0.001° lat 차이 ≈ 111m). arc 델타는 712m로 폭주.
+    return [
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 15,
+        ts: TS_08_32_45,
+        motion: 'stationary',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 3998,
+      },
+      {
+        lat: 37.5009,
+        lng: 127.0,
+        accuracy: 15,
+        ts: TS_08_37_25,
+        motion: 'stationary',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 4710,
+      },
+    ];
+  }
+
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('시계열 replay → detectArcOvershoot=true (evidence 재현)', () => {
+    const series = buildTodayEvidenceSeries();
+    expect(detectArcOvershoot(series)).toBe(true);
+  });
+
+  it("archFlag='on' + arc overshoot evidence stamp → 조기 발사 차단 (blocked arc-overshoot)", async () => {
+    // Trip + SSoT seed (moving으로 두어 motion 게이트 통과)
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '어린이대공원');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        boardingLock: makeLock(),
+        waypoints: [
+          { stationName: '뚝섬', line: '2', kind: 'intermediate' },
+          { stationName: '성수', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+
+    // caller가 감지 후 stamp
+    const arcOvershoot = detectArcOvershoot(buildTodayEvidenceSeries());
+    expect(arcOvershoot).toBe(true);
+
+    const evidence = makeEvidence({
+      ts: TS_08_37_25,
+      arcOvershootDetected: arcOvershoot,
+      stationId: '성수',
+    });
+
+    // 성수(destination) advance 시도 — arc overshoot로 차단
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '성수',
+      evidence,
+      { gatePassed: true, lockAttachable: true, archFlag: 'on' },
+    );
+    expect(out.result).toBe('blocked');
+    expect(out.blockReason).toBe('arc-overshoot');
+
+    // SSoT 미 mutate — 조기 발사 회귀 차단
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.currentStationId).toBe('어린이대공원');
+    expect(after?.passedStations).not.toContain('어린이대공원');
+  });
+
+  it("archFlag='off' + arc overshoot evidence → 기존 동작 유지 (advance) — rollback 안전", async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '어린이대공원');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        boardingLock: makeLock(),
+        waypoints: [
+          { stationName: '뚝섬', line: '2', kind: 'intermediate' },
+          { stationName: '성수', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+
+    const arcOvershoot = detectArcOvershoot(buildTodayEvidenceSeries());
+    const evidence = makeEvidence({
+      ts: TS_08_37_25,
+      arcOvershootDetected: arcOvershoot,
+      stationId: '성수',
+    });
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '성수',
+      evidence,
+      { gatePassed: true, lockAttachable: true, archFlag: 'off' },
+    );
+    // archFlag=off이므로 arc 게이트 dormant → advance 통과 (기존 회귀 그대로)
+    expect(out.result).toBe('advanced');
+    expect(out.blockReason).toBeUndefined();
   });
 });
 
