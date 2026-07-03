@@ -273,6 +273,64 @@ export function pickMotionMode(
 }
 
 /**
+ * #2023 — arc time-integration overshoot 감지 기본 비율 임계.
+ *
+ * device의 `mapMatchedArcM` 시간 적분 값이 실제 이동 haversine 거리 대비 이 배수를 초과하면
+ * overshoot으로 판정. 2026-07-03 evidence: 실 이동 ≈ 1km인데 arc 3998→4710 폭주 → 성수 조기
+ * 발사. ratio 2는 GPS jitter/urban canyon 여유를 남기면서 실질 폭주(3배 이상)를 잡는 임계.
+ */
+export const ARC_OVERSHOOT_RATIO_DEFAULT = 2;
+
+/**
+ * #2023 — overshoot 판정에 필요한 최소 arc 델타 (m).
+ *
+ * 절대값이 작으면 GPS/arc 산출 노이즈 범위이므로 판정 유보 (false positive 차단). 250m는 서울
+ * 지하철 한 정거장 평균 hop(700~1200m)의 1/3 정도 — 노이즈와 실 신호를 구분하는 하한.
+ */
+export const ARC_OVERSHOOT_MIN_ARC_DELTA_M = 250;
+
+/**
+ * #2023 — device의 `mapMatchedArcM` 시간 적분 폭주 감지.
+ *
+ * 배경: device velocity=0 판단 상태에서도 시간 적분 방식으로 arc가 지속 누적되는 회귀
+ * ([[lesson_arc_time_integration_overshoot]]). 실 이동은 미미한데 arc 값만 폭주 → backend
+ * fusedSpeed/hop advance 판단이 왜곡되어 사용자 실 위치보다 여러 정거장 조기 판정.
+ *
+ * 정의: 첫 sample과 마지막 sample 사이 arc 델타가 haversine 거리 × ratioThreshold를 초과하면
+ * overshoot=true. arc 절대 델타 < ARC_OVERSHOOT_MIN_ARC_DELTA_M 은 노이즈 범위로 유보(false).
+ *
+ * Graceful 정책 (false positive 우선):
+ *   - series.length < 2 → false
+ *   - arc 미부착 (mapMatchedArcM=undefined) → false
+ *   - 한쪽만 arc 있음 → false (짝 정책, mapMatchedKmh와 정렬)
+ *   - 두 sample line 다름 → false (환승 disambiguate, mapMatchedKmh와 정렬)
+ *   - arc 델타 = 0 → false
+ *   - arc 델타 절대값 < 최소 임계 → false
+ *   - haversine 거리 = 0 (동일 좌표) 이지만 arc 델타 ≥ 최소 임계 → true (완전 정지인데 arc 폭주 = 명백한 시간 적분 회귀)
+ */
+export function detectArcOvershoot(
+  series: readonly PositionPoint[],
+  options?: { ratioThreshold?: number },
+): boolean {
+  if (series.length < 2) return false;
+  const start = series[0];
+  const end = series[series.length - 1];
+  const { mapMatchedLine: startLine, mapMatchedArcM: startArc } = start;
+  const { mapMatchedLine: endLine, mapMatchedArcM: endArc } = end;
+  if (startLine === undefined || startArc === undefined) return false;
+  if (endLine === undefined || endArc === undefined) return false;
+  if (startLine !== endLine) return false;
+  const arcDeltaM = Math.abs(endArc - startArc);
+  if (arcDeltaM === 0) return false;
+  if (arcDeltaM < ARC_OVERSHOOT_MIN_ARC_DELTA_M) return false;
+  const ratioThreshold = options?.ratioThreshold ?? ARC_OVERSHOOT_RATIO_DEFAULT;
+  const haversineM = haversineKm(start.lat, start.lng, end.lat, end.lng) * 1000;
+  // haversine = 0 (완전 정지) 인데 arc 델타가 최소 임계 이상 = 명백한 시간 적분 회귀 → true
+  if (haversineM === 0) return true;
+  return arcDeltaM > haversineM * ratioThreshold;
+}
+
+/**
  * 진행 방향 cosine — `velocity vector(start→end)` 대 `expected vector(origin→nextStation)` (게이트 #5).
  *
  * 길이 0(정지/동일점)은 0으로 강등해 게이트 ≥ 0.7 차단. atan2 vs degree 변환 노이즈를

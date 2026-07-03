@@ -13,7 +13,7 @@
  * 본 T2는 단일 진입점 `advanceTripPosition`을 도입해 6단 게이트를 강제한다.
  * 본 PR은 함수 + 테스트만 추가하고 기존 fire path를 변경하지 않는다 (T4~T7가 reader migration).
  *
- * 6단 게이트 (순서 강제, ADR-017)
+ * 게이트 (순서 강제, ADR-017 / ADR-022)
  * ===============================
  *   #1 Seed 게이트         — SSoT 미존재 / currentStationId 없으면 blocked('no-seed')
  *   #2 Motion 게이트       — motionState==='stationary' 이고 userIntentDeclared=false면 blocked('motion-stationary')
@@ -26,6 +26,11 @@
  *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train evidence면 trainCode 일치 필수
  *   #6 Lockless arvlcd 단독 게이트 — lock 없는 trip에서 arvlcd-lockless 단독은 60s 윈도우 내
  *                                    strong evidence 1+개가 추가로 있어야 통과
+ *   #8 arc-overshoot 게이트 (#2023, ADR-022) — device `mapMatchedArcM` 시간 적분 폭주 감지.
+ *      options.archFlag='on' + evidence.arcOvershootDetected=true 시 blocked('arc-overshoot').
+ *      archFlag='off' / 미제공 시 dormant — backward compat 및 rollback 안전.
+ *      #7보다 먼저 배치: position-train jump/stale은 특수 evidence type 케이스, arc overshoot은
+ *      모든 evidence type의 신호 신뢰도 회귀이므로 광범위 게이트가 우선.
  *   #7 position-train jump/stale 게이트 — position-train evidence에만 적용 (#1665):
  *      (a) Jump 가드: candidate stationId가 ssot.currentStationId 기준 hop 거리 ≥ 3 → blocked
  *          ('position-train-jump'). express 9호선은 1-2 hop이 전형 → 3 미만 임계는 보수적.
@@ -50,6 +55,7 @@
  *   payload에 `wifiSsid` 추가 + backend wire) 또는 별도 데이터 module로 분리한다.
  */
 
+import type { ArchFlagValue } from './archFlag';
 import { evaluateConsensusGate, type StationEnvironment } from './consensusGate';
 import type { ArrivalEntry, PositionEntry } from './seoul';
 import {
@@ -132,6 +138,14 @@ export interface AdvanceEvidence {
   cellularTechVote?: CellularTechVote;
   /** accel fingerprint 식별자 (S9, type='accel-fingerprint' 시). */
   accelFingerprint?: string;
+  /**
+   * #2023 — device `mapMatchedArcM` 시간 적분 폭주 감지 결과 (`positionSeries.detectArcOvershoot`).
+   *
+   * caller가 미리 계산해 stamp. 값이 true + options.archFlag='on' 시 게이트 #8이
+   * blocked('arc-overshoot')을 반환한다. undefined(미stamp)면 게이트 dormant — backward compat.
+   * archFlag='off' 시에도 dormant — flag rollback 안전.
+   */
+  arcOvershootDetected?: boolean;
 }
 
 /** advance 시도 결과. */
@@ -147,7 +161,8 @@ export type AdvanceBlockReason =
   | 'train-mismatch'
   | 'lockless-arvlcd-alone'
   | 'position-train-jump'
-  | 'position-train-stale';
+  | 'position-train-stale'
+  | 'arc-overshoot';
 
 /** advance 호출 결과 — caller가 SSoT 후속 작업(fire 발사 등)을 진행할지 결정. */
 export interface AdvanceOutcome {
@@ -369,7 +384,7 @@ export async function advanceTripPosition(
   token: string,
   candidateStationId: string,
   evidence: AdvanceEvidence,
-  options: { gatePassed: boolean; lockAttachable: boolean },
+  options: { gatePassed: boolean; lockAttachable: boolean; archFlag?: ArchFlagValue },
 ): Promise<AdvanceOutcome> {
   const ssot = await readSsot(kv, token);
 
@@ -421,6 +436,19 @@ export async function advanceTripPosition(
     if (otherStrong < 1) {
       return { result: 'blocked', blockReason: 'lockless-arvlcd-alone', ssot };
     }
+  }
+
+  // #8 arc-overshoot 게이트 (#2023)
+  // device `mapMatchedArcM` 시간 적분 폭주 감지 시 hop 진행 pause. archFlag='on' 시에만 활성.
+  // 미stamp 또는 archFlag != 'on' 시 dormant (backward compat).
+  //
+  // Rationale: 2026-07-03 evidence — device velocity=0 판단인데 arc 시간 적분만 계속 누적 →
+  // fusedSpeed/hop 판정 왜곡 → 실 위치보다 여러 정거장 조기 발사. arc guard로 hop pause 후
+  // GPS/다른 신호가 회복될 때까지 대기.
+  //
+  // ADR-022 rollback 안전: archFlag='off'로 KV write 시 즉시 dormant.
+  if (options.archFlag === 'on' && evidence.arcOvershootDetected === true) {
+    return { result: 'blocked', blockReason: 'arc-overshoot', ssot };
   }
 
   // #7 position-train jump / stale 게이트 (#1665)
