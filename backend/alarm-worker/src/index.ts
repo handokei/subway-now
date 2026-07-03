@@ -46,6 +46,7 @@ import { computeAlarmLogStats } from './alarmLogStats';
 import { computeBaselineCheck } from './baselineCheck';
 import {
   ARCH_FLAG_DEFAULT,
+  type ArchFlagValue,
   getArchFlag,
   isArchFlagValue,
   setArchFlag,
@@ -1586,8 +1587,13 @@ app.post('/boarding-lock/sync', async (c) => {
   // autoLockCandidate에 `from: 'transfer-swap'` hint 첨부. client는 hint가 있으면
   // motion gate(#1014 RC2 Gate #2)를 우회한다 — 환승 직후 사용자가 이동 중인 상태에서
   // hydrate가 영구 차단되는 회귀(피드백 7, 22:53 transfer skip)를 차단.
+  //
+  // #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 을 무시해 device 가 backend lock
+  // 의 line 을 임의로 갱신하지 못하도록 봉인. flag 로드 실패 (KV race) 는 default('off') 로
+  // fallback → 기존 동작 유지 (사용자에게 dogfood 회귀 대신 legacy 동작 노출).
+  const archFlag = await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
   const preSwapTrainCode = working.boardingLock?.trainCode;
-  working = applyBoardingLockTrainCodeSwap(working, payload);
+  working = applyBoardingLockTrainCodeSwap(working, payload, archFlag);
   const transferSwapApplied =
     preSwapTrainCode !== undefined &&
     working.boardingLock !== undefined &&
@@ -1737,10 +1743,17 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
  * Seam E sync로 새 trainCode를 보내면 KV를 즉시 갱신해 자동 종료를 차단한다.
  *
  * 순수 함수 — 호출자(handler)가 putTrip으로 영속화한다.
+ *
+ * #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 을 무시하고 기존 lock.line 을 그대로
+ * 유지한다. Seam E 는 device 가 지상 GPS 관측을 backend 로 sync 하는 채널인데, flag=on 정책은
+ * "trainCode 확정 없이는 어떤 알림도 발사 X" 이므로 device 가 보낸 line 값이 backend lock 을
+ * 임의로 갱신하지 못하도록 봉인. flag=off (기본) / archFlag 미전달 시 기존 동작 100% 유지.
+ * trainCode swap 자체는 flag 무관 유지 — 환승 leg 자동 종료 차단 목적은 flag on/off 공통.
  */
 export function applyBoardingLockTrainCodeSwap(
   trip: Trip,
   payload: BoardingLockSyncPayload,
+  archFlag?: ArchFlagValue,
 ): Trip {
   const incomingTrainCode = payload.trainCode;
   if (!incomingTrainCode) return trip;
@@ -1748,13 +1761,17 @@ export function applyBoardingLockTrainCodeSwap(
   if (!lock) return trip;
   if (lock.trainCode === incomingTrainCode) return trip;
   // 환승 leg 감지 → lock 교체 + 카운터 reset.
+  // #2021 — flag=on 시 payload.boardingLine 무시, 기존 lock.line 유지. flag=off (기본) 는
+  //   payload.boardingLine ?? lock.line (기존 D4 정책).
+  const nextLine =
+    archFlag === 'on' ? lock.line : payload.boardingLine ?? lock.line;
   return {
     ...trip,
     boardingLock: {
       ...lock,
       trainCode: incomingTrainCode,
       // boardingLine은 optional payload — 미제공 시 기존 line 유지.
-      line: payload.boardingLine ?? lock.line,
+      line: nextLine,
     },
     consecutiveEtaMissing: 0,
   };
