@@ -236,6 +236,7 @@ function shouldSkipFirstTransferForSleep(
   hop: CurrentTarget,
   lock: BoardingLock,
 ): boolean {
+  // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
   const suppress = shouldSuppressBySleepRule({
     lock,
     event: { type: hop.alarmType, stationName: hop.name },
