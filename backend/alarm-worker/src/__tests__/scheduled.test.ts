@@ -8992,7 +8992,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       fetchImpl,
       seoul: new SeoulArrivalClient({
         host: 'seoul.api',
-        key: 'KEY',
+        apiKey: 'KEY',
         fetchImpl,
       }),
       archFlag: 'off',
