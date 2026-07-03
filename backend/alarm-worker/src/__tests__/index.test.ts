@@ -11,6 +11,7 @@ import {
   validateTrip,
   verifyBoardingLockPersisted,
 } from '../index';
+import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { progressKey, type TripProgress } from '../progress';
 import { pendingKey, putPending, stampReceived } from '../pendingPushes';
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
@@ -2978,6 +2979,75 @@ describe('POST /boarding-lock/sync (#901)', () => {
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
       expect(stored.boardingLock).toBeUndefined();
     });
+
+    // #2021 (ADR-022) — archFlag='on' 시 handler 가 payload.boardingLine 을 무시하고 KV lock.line
+    // 을 유지한다. trainCode / consecutiveEtaMissing 갱신은 유지 (환승 leg 자동 종료 차단 목적은 flag 무관).
+    describe('#2021 archFlag boardingLine seal (ADR-022)', () => {
+      it("archFlag='on' KV 세팅 상태 → payload.boardingLine='7' 무시, KV lock.line='2' 유지", async () => {
+        const env = makeKvEnv();
+        await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+        await post('/trips', tripWithLock(), env);
+        const res = await post(
+          '/boarding-lock/sync',
+          {
+            token: 'tok-sync',
+            observedStationName: '신촌',
+            observedAtMs: 1,
+            accuracy: 5,
+            trainCode: 'T-NEW',
+            boardingLine: '7',
+          },
+          env,
+        );
+        expect(res.status).toBe(200);
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+        expect(stored.boardingLock.trainCode).toBe('T-NEW');
+        // 봉인 정책: 기존 line 유지.
+        expect(stored.boardingLock.line).toBe('2');
+      });
+
+      it("archFlag='off' KV 세팅 상태 → 기존 동작 (payload.boardingLine='7' 반영)", async () => {
+        const env = makeKvEnv();
+        await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'off');
+        await post('/trips', tripWithLock(), env);
+        const res = await post(
+          '/boarding-lock/sync',
+          {
+            token: 'tok-sync',
+            observedStationName: '신촌',
+            observedAtMs: 1,
+            accuracy: 5,
+            trainCode: 'T-NEW',
+            boardingLine: '7',
+          },
+          env,
+        );
+        expect(res.status).toBe(200);
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+        expect(stored.boardingLock.line).toBe('7');
+      });
+
+      it('archFlag 미설정 → default(off) 로 fallback (기존 동작 유지)', async () => {
+        const env = makeKvEnv();
+        // KV 에 archFlag key 를 두지 않음 — getArchFlag 가 default 로 fallback.
+        await post('/trips', tripWithLock(), env);
+        const res = await post(
+          '/boarding-lock/sync',
+          {
+            token: 'tok-sync',
+            observedStationName: '신촌',
+            observedAtMs: 1,
+            accuracy: 5,
+            trainCode: 'T-NEW',
+            boardingLine: '7',
+          },
+          env,
+        );
+        expect(res.status).toBe(200);
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+        expect(stored.boardingLock.line).toBe('7');
+      });
+    });
   });
 
   // #1364 — read-after-write verification + expiresAt response field.
@@ -3227,6 +3297,43 @@ describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
     const result = applyBoardingLockTrainCodeSwap(
       trip,
       buildD4SwapPayload({ trainCode: 'T-NEW' }),
+    );
+    expect(result.boardingLock?.line).toBe('2');
+  });
+
+  // #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 무시, 기존 lock.line 유지.
+  // trainCode swap 자체는 flag 무관 유지 (환승 leg 자동 종료 차단은 공통 정책).
+  it("#2021 archFlag='on' → payload.boardingLine 무시, lock.line 유지 (trainCode/counter 는 갱신)", () => {
+    const trip = buildD4SwapBaseTrip();
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-NEW', boardingLine: '7' }),
+      'on',
+    );
+    // trainCode 및 counter reset 은 유지 — 환승 leg 자동 종료 차단 목적은 flag 무관.
+    expect(result.boardingLock?.trainCode).toBe('T-NEW');
+    expect(result.consecutiveEtaMissing).toBe(0);
+    // line 은 device 가 sync 로 보낸 '7' 을 무시하고 기존 '2' 유지 — 봉인 정책.
+    expect(result.boardingLock?.line).toBe('2');
+  });
+
+  it("#2021 archFlag='off' → 기존 D4 동작 (payload.boardingLine 반영)", () => {
+    const trip = buildD4SwapBaseTrip();
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-NEW', boardingLine: '7' }),
+      'off',
+    );
+    expect(result.boardingLock?.trainCode).toBe('T-NEW');
+    expect(result.boardingLock?.line).toBe('7');
+  });
+
+  it("#2021 archFlag='on' + boardingLine 미제공 → 기존 lock.line 유지 (no-op 동등)", () => {
+    const trip = buildD4SwapBaseTrip();
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-NEW' }),
+      'on',
     );
     expect(result.boardingLock?.line).toBe('2');
   });

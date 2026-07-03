@@ -43,6 +43,7 @@ import {
   CRON_NOMINAL_INTERVAL_MS,
   toSilentPushSsot,
   shouldSkipStationary,
+  resolveBoardingLinePayload,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -1487,6 +1488,75 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(stats.vanishFallbackFired).toBe(1);
     });
 
+    // #2021 (ADR-022) — vanish-fallback 경로도 archFlag='on' 시 boardingLine 봉인.
+    // vanish-fallback 은 arvlCd 관측 없이 시간 경과로 발사되는 경로라 flag=on 정책 우회 위험이
+    // 높다 (arvlcd fire-once TTL 게이트에 걸리지 않음). 명시 매트릭스로 확인.
+    it('#2021 archFlag=on 시 vanish-fallback payload.boardingLine 봉인', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p2021-vanish-on',
+        archFlag: 'on',
+      });
+      const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
+      const stationPassedCall = calls.find((c) => {
+        const body = JSON.parse(c[1].body as string);
+        return body.data?.nextWaypoint === '중곡' && body.data?.phase === 'imminent';
+      });
+      expect(stationPassedCall).toBeDefined();
+      const data = JSON.parse(stationPassedCall![1].body as string).data as Record<
+        string,
+        unknown
+      >;
+      expect('boardingLine' in data).toBe(false);
+      expect(data.trainCode).toBe('7246');
+    });
+
+    // #2021 — archFlag='off' (default) 명시 시 vanish-fallback 도 기존 동작 유지 회귀 가드.
+    it('#2021 archFlag=off 시 vanish-fallback payload.boardingLine=lock.line 유지', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p2021-vanish-off',
+        archFlag: 'off',
+      });
+      const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
+      const stationPassedCall = calls.find((c) => {
+        const body = JSON.parse(c[1].body as string);
+        return body.data?.nextWaypoint === '중곡' && body.data?.phase === 'imminent';
+      });
+      expect(stationPassedCall).toBeDefined();
+      const data = JSON.parse(stationPassedCall![1].body as string).data as Record<
+        string,
+        unknown
+      >;
+      expect(data.boardingLine).toBe('7');
+    });
+
     it('#1370 L2 — vanish fallback push dedup (같은 station 두 번 발사 안 됨)', async () => {
       // 같은 waypoint에 대해 다시 vanish fallback이 trigger돼도 dedup KV로 차단.
       const kv = new InMemoryKV();
@@ -1968,6 +2038,92 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     const body = JSON.parse(transferReleaseCall![1].body as string);
     expect(body.data.lockReleasedReason).toBe('transfer');
     expect(body.data.origin).toBe('transfer-release');
+  });
+
+  // #2021 (ADR-022) — transfer-release 경로도 archFlag='on' 시 boardingLine 봉인.
+  // advanceBoardingLockWaypoint 안의 buildStationPassedImminentPayload 호출이 deps.archFlag 를
+  // 그대로 forward 하는지 매트릭스로 회귀 차단.
+  it('#2021 archFlag=on 시 transfer-release payload.boardingLine 봉인', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p2021-transfer-on',
+      archFlag: 'on',
+    });
+    const transferReleaseCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        const init = call[1];
+        if (!init?.body) return false;
+        try {
+          const body = JSON.parse(init.body as string);
+          return body?.data?.origin === 'transfer-release';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(transferReleaseCall).toBeDefined();
+    const data = JSON.parse(transferReleaseCall![1].body as string).data as Record<
+      string,
+      unknown
+    >;
+    expect('boardingLine' in data).toBe(false);
+    expect(data.trainCode).toBe('7246');
+  });
+
+  it('#2021 archFlag=off 시 transfer-release payload.boardingLine=lock.line 유지', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p2021-transfer-off',
+      archFlag: 'off',
+    });
+    const transferReleaseCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        const init = call[1];
+        if (!init?.body) return false;
+        try {
+          const body = JSON.parse(init.body as string);
+          return body?.data?.origin === 'transfer-release';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(transferReleaseCall).toBeDefined();
+    const data = JSON.parse(transferReleaseCall![1].body as string).data as Record<
+      string,
+      unknown
+    >;
+    expect(data.boardingLine).toBe('7');
   });
 
   it('#864 — intermediate waypoint advance 시 boardingLock은 유지 (같은 train 계속 추적)', async () => {
@@ -6307,6 +6463,54 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.trainCode).toBe('7246');
   });
 
+  // #2021 (ADR-022) — archFlag='on' 시 arvlCd fire 경로에서 boardingLine 봉인. device 의
+  // lockless-opt-out gate 존중. trainCode 는 유지 (device 가 진단/UI 에서 참조하는 필드).
+  // 2026-07-03 08:24 성수 오발사 evidence 회귀 차단.
+  it('#2021 archFlag=on 시 payload.boardingLine 봉인, boardingLine 필드 자체 누락', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-flag-on',
+      archFlag: 'on',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]) as Record<
+      string,
+      unknown
+    >;
+    // boardingLine 은 payload 에서 자연 누락 (apns.ts JSON serializer 가 undefined 필드 omit).
+    expect('boardingLine' in data).toBe(false);
+    // trainCode 는 유지 — device 진단/UI 참조 필드로 flag 무관.
+    expect(data.trainCode).toBe('7246');
+  });
+
+  // #2021 — archFlag='off' (default) 시 기존 동작 100% 유지 회귀 방지 가드.
+  it('#2021 archFlag=off (명시) → 기존 동작 (boardingLine=lock.line) 유지', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-flag-off',
+      archFlag: 'off',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]) as Record<
+      string,
+      unknown
+    >;
+    expect(data.boardingLine).toBe('7');
+    expect(data.trainCode).toBe('7246');
+  });
+
   it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {
     const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 0),
@@ -7144,6 +7348,24 @@ describe('runScheduled cron jitter stat (#1539 S6)', () => {
     expect(stats.cronJitterMs).toBe(expectedJitter);
     expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter' && l.meta?.jitterMs === expectedJitter))
       .toBe(true);
+  });
+});
+
+// #2021 (ADR-022) — payload.boardingLine 정책 게이트 단위 테스트.
+//
+// 검증 범위: archFlag='on' → undefined (device lockless-opt-out gate 존중), else → lockLine
+// (기존 #1322 동작 유지). 3개 fire 경로 + Seam E swap 이 모두 본 helper 를 통과한다.
+describe('resolveBoardingLinePayload (#2021 ADR-022)', () => {
+  it("returns undefined when archFlag='on'", () => {
+    expect(resolveBoardingLinePayload('on', '7')).toBeUndefined();
+  });
+
+  it("returns lockLine when archFlag='off'", () => {
+    expect(resolveBoardingLinePayload('off', '7')).toBe('7');
+  });
+
+  it('returns lockLine when archFlag is undefined (legacy / test / no KV binding)', () => {
+    expect(resolveBoardingLinePayload(undefined, '2')).toBe('2');
   });
 });
 

@@ -1519,6 +1519,34 @@ interface BuildStationPassedImminentPayloadInputs {
    * 부재한 trip(seed 전 / KV race)도 push 발사 자체는 막지 않는다(graceful).
    */
   ssot?: TripPositionSSoT | null;
+  /**
+   * #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 을 undefined 로 실어 device 의
+   * `lockless-opt-out` gate 를 존중한다. flag=off (기본) / 미전달 시 기존 동작 (lock.line forward)
+   * 100% 유지 — Phase 4-x 이하 legacy 배선에서 회귀 발생 없음.
+   *
+   * device 는 payload.boardingLine !== undefined 를 "backend authoritative" 신호로 간주해
+   * lockless-opt-out gate 를 우회하므로, boardingPrompt 응답 없이 lock 이 null 인 상태에서
+   * backend push 가 boardingLine 을 실으면 알림이 잘못 fire 된다 (2026-07-03 08:24 evidence,
+   * 중곡→성수 trip 의 성수 알림). flag=on 배포 시 이 경로를 봉인.
+   */
+  archFlag?: ArchFlagValue;
+}
+
+/**
+ * #2021 (ADR-022) — payload.boardingLine 실는 정책 게이트.
+ *
+ * archFlag='on' → undefined (device 의 lockless-opt-out gate 존중, "trainCode 확정 없이는
+ * 어떤 알림도 발사 X" 사용자 명시 flow 유지). archFlag='off' 또는 undefined → 기존 동작
+ * (lock.line 그대로 forward, #1322 "지하 auto-lock hydration window" 용도).
+ *
+ * 순수 함수 — flag 정책 변경 시 단일 지점 갱신. 3개 fire 경로(arvlcd / vanish-fallback /
+ * transfer-release) + Seam E swap 이 모두 본 helper 를 통과한다.
+ */
+export function resolveBoardingLinePayload(
+  archFlag: ArchFlagValue | undefined,
+  lockLine: string,
+): string | undefined {
+  return archFlag === 'on' ? undefined : lockLine;
 }
 /**
  * #1561 (T8) — silent push payload에 forward되는 SSoT 스냅샷의 passedStations 최근 N개 한도.
@@ -1558,7 +1586,7 @@ export function toSilentPushSsot(
 function buildStationPassedImminentPayload(
   inputs: BuildStationPassedImminentPayloadInputs,
 ): Parameters<typeof sendSilentPush>[0]['payload'] {
-  const { trip, waypoint, lock, pushId, now, origin, lockReleasedReason, ssot } = inputs;
+  const { trip, waypoint, lock, pushId, now, origin, lockReleasedReason, ssot, archFlag } = inputs;
   return {
     nextWaypoint: waypoint.stationName,
     // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
@@ -1579,7 +1607,9 @@ function buildStationPassedImminentPayload(
     subsurface: trip.subsurface === true,
     // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
     // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
-    boardingLine: lock.line,
+    // #2021 (ADR-022) — archFlag=on 시 undefined 로 forward 하여 device 의
+    // lockless-opt-out gate 를 존중. `resolveBoardingLinePayload` 단일 지점 정책 게이트.
+    boardingLine: resolveBoardingLinePayload(archFlag, lock.line),
     trainCode: lock.trainCode,
     // #1399 — 좀비 알림 cleanup. push 발사 시점의 active trip token을 stamp해 device가
     // ACTIVE_TRIP_KEY와 비교해 만료 token push를 drop. trip-ended cleanup 후 늦게 도착한
@@ -1774,6 +1804,8 @@ export async function fireArvlCdStationPush(
     now,
     origin: 'arvlcd',
     ssot: ssotForStale,
+    // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
+    archFlag: deps.archFlag,
   });
   const heal = await sendWithEnvHeal(
     (host) =>
@@ -2150,6 +2182,8 @@ export async function fireVanishFallbackStationPush(
     origin,
     lockReleasedReason,
     ssot,
+    // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
+    archFlag: deps.archFlag,
   });
   const heal = await sendWithEnvHeal(
     (host) =>
@@ -2870,6 +2904,8 @@ export async function advanceBoardingLockWaypoint(
       origin: 'transfer-release',
       lockReleasedReason: 'transfer',
       ssot: ssotForTransfer,
+      // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
+      archFlag: deps.archFlag,
     });
     const transferHeal = await sendWithEnvHeal(
       (host) =>
