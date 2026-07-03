@@ -3574,6 +3574,21 @@ export function buildBoardingPromptMessage(
  * APNs 토큰 환경(sandbox/production)과 host가 어긋났을 때 Apple이 내는 시그널.
  * 이 조건에 한해서만 self-heal retry를 시도한다.
  */
+
+/**
+ * #2022 (ADR-022 B8 caller 완결) — archFlag=on 분기의 fire trigger.
+ *
+ * Seoul API pool 안에 arvlCd=1(ARRIVED) 신호가 최소 1개 이상 존재하는지 검사.
+ * 사용자 확정 flow "A역 도착 판정 → boardingPrompt" 정합 — arvlCd=0(진입 중)/
+ * arvlCd=2(출발)/기타 상태에서는 fire trigger 미충족 (UI 오탐 방지).
+ *
+ * caller 는 archFlag=on 분기에서만 호출. archFlag=off 는 기존 9-AND gate 가
+ * fire trigger 이므로 이 함수를 통과하지 않는다 (회귀 방어).
+ */
+export function hasArrivedSignal(pool: readonly ArrivalEntry[]): boolean {
+  return pool.some((entry) => entry.arvlCd === ARRIVAL_CODE.ARRIVED);
+}
+
 /**
  * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
  *
@@ -3719,6 +3734,35 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       }));
   } catch {
     // Seoul API 장애 시 ETA 없이 push 발사 — 메시지 degradation만 발생, push 자체는 보존.
+  }
+
+  // #2022 (ADR-022 B8 caller 완결) — archFlag=on 시 arvlCd=1(ARRIVED) 관측 explicit check.
+  //
+  // #2014 는 게이트 skip 만 구현 — GPS/motion/speed 없이 통과. 그러나 사용자 확정 flow
+  // "A역 도착 판정 → boardingPrompt" 는 arvlCd=1 관측 시점에만 발사가 정합.
+  // arvlCd=0(진입 중) / arvlCd=2(출발) 상태에서 발사하면 UI 오탐 — "이미 출발한 열차에
+  // 탑승했나?" 같은 잘못된 프롬프트. hasArrivedSignal 이 archFlag=on 분기의 fire trigger.
+  //
+  // pool.length===0 케이스는 아래 candidateTrains 0건 guard 가 `boardingPromptSkippedEmpty`
+  // 로 별도 관측 (RC-13 카운터 의미론 유지) — 여기서는 pool 이 있는데도 arvlCd=1 이 없는
+  // 케이스만 명시 차단해 arvlCd 관점 skip 을 별도 counter 로 가시화.
+  //
+  // archFlag=off 는 기존 9-AND gate 통과가 fire trigger — 여기 check 는 skip (회귀 방어).
+  if (
+    deps.archFlag === 'on' &&
+    poolForArchFlagCheck.length > 0 &&
+    !hasArrivedSignal(poolForArchFlagCheck)
+  ) {
+    stats.boardingPromptBlocked += 1;
+    log('boarding-prompt: skipped no-arvlcd-arrived (#2022 archFlag=on)', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      direction: geo.direction,
+      poolSize: poolForArchFlagCheck.length,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
   }
 
   // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 우선순위 기반 단일 trainCode 수렴 검증.

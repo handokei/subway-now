@@ -8,6 +8,7 @@ import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
   ARVLCD_FIRE_KEY_PREFIX,
   ARVLCD_FIRE_ONCE_CYCLE_SLOT,
+  hasArrivedSignal,
   SAME_PHASE_STATION_DEDUP_WINDOW_MS,
   FALLBACK_ADVANCE_GRACE_CYCLES,
   FALLBACK_HOP_SEC,
@@ -4020,6 +4021,100 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     expect(stats.boardingPromptSkippedLockActive).toBe(1);
     expect(stats.boardingPromptFired).toBe(0);
   });
+
+  /**
+   * #2022 — archFlag=on 시 arvlCd=1(ARRIVED) 관측 explicit check.
+   *
+   * 이슈 core: #2014 는 게이트 skip 만 구현. caller 에 "arvlCd=1 관측 시에만 fire"
+   * explicit check 가 없어 arvlCd=0(진입)/2(출발)/기타 상태에서도 fire 됨 → 사용자
+   * flow "A역 도착 판정 → boardingPrompt" 정합 어긋남. 아래 케이스로 갭 확정.
+   */
+  it('#2022 archFlag=on + arvlCd=0(ENTERING) 만 → fire skip (도착 안 함, 진입 중)', async () => {
+    // pool 에 arvlCd=1 없음 → boardingPrompt UI 노출 부적절.
+    const ENTERING_ONLY: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'ENT-1',
+      arvlCd: 0, // ENTERING
+    };
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(fetchImpl, makeSeoul([ENTERING_ONLY]));
+
+    const stats = await runScheduled(makeEnv(kv), deps);
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+    // fire skip → APNs fetch X.
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2022 archFlag=on + arvlCd=2(DEPARTED) 만 → fire skip (열차 이미 출발)', async () => {
+    // 열차 이미 출발 = 사용자가 승차 못 함. boardingPrompt 발사 시 UI 오탐.
+    const DEPARTED_ONLY: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'DEP-1',
+      arvlCd: 2, // DEPARTED
+    };
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(fetchImpl, makeSeoul([DEPARTED_ONLY]));
+
+    const stats = await runScheduled(makeEnv(kv), deps);
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2022 archFlag=on + pool 에 arvlCd=1 포함 (다른 값과 혼재) → fire (도착 신호 존재)', async () => {
+    // arvlCd=0 후보 + arvlCd=1 후보 혼재 → arvlCd=1 존재하므로 fire.
+    // pickAutoTrainCode 우선순위(2 > 1 > 0)에서 arvlCd=1 후보가 단일이면 정상 fire.
+    const ENTERING_TRAIN: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'ENT-x',
+      arvlCd: 0,
+    };
+    const ARRIVED_TRAIN: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'ARR-y',
+      arvlCd: 1,
+    };
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(fetchImpl, makeSeoul([ENTERING_TRAIN, ARRIVED_TRAIN]));
+
+    const stats = await runScheduled(makeEnv(kv), deps);
+
+    expect(stats.boardingPromptFired).toBe(1);
+    expect(stats.boardingPromptBlocked).toBe(0);
+  });
+
+  it('#2022 archFlag=off + pool 에 arvlCd=1 없음 (arvlCd=0 만) → 기존 9-AND gate 로 진행 (arvlCd explicit check 비활성)', async () => {
+    // 회귀 방어: archFlag=off 시 arvlCd 값에 의존한 explicit check 는 적용 X.
+    // 기존 9단 AND 게이트에 의해 series 0건 → no-candidates 로 blocked 되는 기존 경로 그대로.
+    const ENTERING_ONLY: ArrivalEntry = {
+      ...ARVL_ARRIVED_SINGLE,
+      trainCode: 'ENT-legacy',
+      arvlCd: 0,
+    };
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(fetchImpl, makeSeoul([ENTERING_ONLY]), 'off');
+
+    const stats = await runScheduled(makeEnv(kv), deps);
+
+    // 9단 게이트 → 기존 no-candidates 로 차단 (arvlCd explicit check 로 차단된 것 아님).
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+  });
 });
 
 describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (#824)', () => {
@@ -6198,6 +6293,60 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
 // realtimeArrivalList에서 추적해 next waypoint에서 ARRIVED/ENTERING 첫 관찰 시
 // station-passed silent push를 발사. dedup KV로 같은 신호 중복 차단.
 // ---------------------------------------------------------------------------
+
+describe('hasArrivedSignal (#2022 ADR-022 B8 caller fire trigger)', () => {
+  function entry(overrides: Partial<ArrivalEntry>): ArrivalEntry {
+    return {
+      destination: '성수',
+      arrivalSeconds: 60,
+      trainCode: 'T1',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 1,
+      ...overrides,
+    };
+  }
+
+  it('빈 pool → false (관측 없음)', () => {
+    expect(hasArrivedSignal([])).toBe(false);
+  });
+
+  it('arvlCd=1(ARRIVED) 단일 → true (도착 신호 존재)', () => {
+    expect(hasArrivedSignal([entry({ arvlCd: 1 })])).toBe(true);
+  });
+
+  it('arvlCd=0(ENTERING) 단일 → false (진입 중, 아직 도착 X)', () => {
+    expect(hasArrivedSignal([entry({ arvlCd: 0 })])).toBe(false);
+  });
+
+  it('arvlCd=2(DEPARTED) 단일 → false (열차 이미 출발)', () => {
+    expect(hasArrivedSignal([entry({ arvlCd: 2 })])).toBe(false);
+  });
+
+  it('arvlCd=4/5(PREV_*) → false (1정거장 전 신호, 도착 아님)', () => {
+    expect(hasArrivedSignal([entry({ arvlCd: 4 })])).toBe(false);
+    expect(hasArrivedSignal([entry({ arvlCd: 5 })])).toBe(false);
+  });
+
+  it('혼합 pool 안에 arvlCd=1 이 최소 1개 존재 → true', () => {
+    expect(
+      hasArrivedSignal([
+        entry({ trainCode: 'A', arvlCd: 0 }),
+        entry({ trainCode: 'B', arvlCd: 1 }),
+        entry({ trainCode: 'C', arvlCd: 2 }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('혼합 pool 안에 arvlCd=1 없음 → false', () => {
+    expect(
+      hasArrivedSignal([
+        entry({ trainCode: 'A', arvlCd: 0 }),
+        entry({ trainCode: 'B', arvlCd: 2 }),
+      ]),
+    ).toBe(false);
+  });
+});
 
 describe('arvlCdFireKey / ARVLCD_FIRE_KEY_PREFIX (#917 A2)', () => {
   it('prefix는 arvlcd-fire:', () => {
