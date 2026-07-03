@@ -39,6 +39,7 @@ const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 const mockLogCrossTripMirrorSkip = jest.fn();
 const mockLogSuppressedChannelAgnosticDedup = jest.fn();
+const mockLogBoardingPromptFired = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
@@ -51,6 +52,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
   logSuppressedChannelAgnosticDedup: (...args: unknown[]) =>
     mockLogSuppressedChannelAgnosticDedup(...args),
+  logBoardingPromptFired: (...args: unknown[]) => mockLogBoardingPromptFired(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
 }));
 
@@ -242,6 +244,7 @@ jest.mock('i18next', () => ({
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  __resetBoardingPromptSilentPushDedup,
   extractPayload,
   getSilentPushRegistrationStatus,
   handleSilentPush,
@@ -1083,6 +1086,143 @@ describe('silentPushTask', () => {
         expect(
           extractPayload(bgTaskData({ kind: 'trip-ended', reason: 'expired', tripToken: '' })),
         ).toMatchObject({ tripToken: undefined });
+      });
+    });
+
+    // #2028 — boarding-prompt silent push payload (Layer 2 도달 채널).
+    describe('boarding-prompt kind (#2028)', () => {
+      it('정상 boarding-prompt payload → BoardingPromptSilentPushPayload', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: 'tok-bp',
+              sentAt: 1_780_000_000_000,
+              pushId: 'uuid-bp',
+              destinationDirection: 'up',
+              title: '탑승하셨나요?',
+              body: '2호선 강남에서 열차가 곧 도착합니다.',
+            }),
+          ),
+        ).toEqual({
+          kind: 'boarding-prompt',
+          originStation: '강남',
+          line: '2',
+          tripToken: 'tok-bp',
+          sentAt: 1_780_000_000_000,
+          pushId: 'uuid-bp',
+          destinationDirection: 'up',
+          title: '탑승하셨나요?',
+          body: '2호선 강남에서 열차가 곧 도착합니다.',
+        });
+      });
+
+      it('originStation 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'boarding-prompt', line: '2', tripToken: 'T' }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '',
+              line: '2',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('line 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'boarding-prompt', originStation: '강남', tripToken: 'T' }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('tripToken 누락/빈 문자열이면 null (dedup key 필수)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'boarding-prompt', originStation: '강남', line: '2' }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: '',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('optional 필드(sentAt/pushId/destinationDirection/title/body) 누락 시 undefined', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: 'T',
+            }),
+          ),
+        ).toEqual({
+          kind: 'boarding-prompt',
+          originStation: '강남',
+          line: '2',
+          tripToken: 'T',
+          sentAt: undefined,
+          pushId: undefined,
+          destinationDirection: undefined,
+          title: undefined,
+          body: undefined,
+        });
+      });
+
+      it('destinationDirection이 up/down이 아니면 undefined로 정규화', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: 'T',
+              destinationDirection: 'sideways',
+            }),
+          ),
+        ).toMatchObject({ destinationDirection: undefined });
+      });
+
+      it('title/body가 빈 문자열이면 undefined로 정규화 (fallback 트리거)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: 'T',
+              title: '',
+              body: '',
+            }),
+          ),
+        ).toMatchObject({ title: undefined, body: undefined });
       });
     });
   });
@@ -3110,6 +3250,202 @@ describe('silentPushTask', () => {
             permissionMode: 'always',
           });
         });
+      });
+    });
+
+    // #2028 — boarding-prompt silent push: gate 무관 local notification schedule.
+    describe('boarding-prompt kind (#2028) — Layer 2 도달 채널', () => {
+      function boardingPromptPayload(extra: Record<string, unknown> = {}) {
+        return {
+          data: {
+            data: {
+              data: {
+                kind: 'boarding-prompt',
+                originStation: '강남',
+                line: '2',
+                tripToken: 'tok-bp',
+                ...extra,
+              },
+              dataString: null,
+            },
+            notification: null,
+            aps: { 'content-available': 1 },
+          },
+        };
+      }
+
+      beforeEach(() => {
+        __resetBoardingPromptSilentPushDedup();
+      });
+
+      it('boarding-prompt 수신 → scheduleNotificationAsync 즉시 호출 (gate 무관)', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        // standard 발사 경로는 호출되지 않아야 함.
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+      });
+
+      it('scheduleNotificationAsync 호출 시 content에 title/body/sound/category/data 포함', async () => {
+        await handleSilentPush(
+          boardingPromptPayload({
+            pushId: 'bp-1',
+            title: '탑승하셨나요?',
+            body: '2호선 강남 도착',
+            destinationDirection: 'up',
+          }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledWith({
+          identifier: 'boarding-prompt-silent-push',
+          content: {
+            title: '탑승하셨나요?',
+            body: '2호선 강남 도착',
+            sound: 'default',
+            categoryIdentifier: 'BOARDING_PROMPT',
+            data: {
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: 'tok-bp',
+              destinationDirection: 'up',
+            },
+            interruptionLevel: 'timeSensitive',
+          },
+          trigger: null,
+        });
+      });
+
+      it('title/body 누락 시 device fallback 문자열 사용 (도달률 우선)', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+          content: { title: string; body: string };
+        };
+        expect(call.content.title).toBe('탑승하셨나요?');
+        expect(call.content.body).toContain('강남');
+        expect(call.content.body).toContain('2호선');
+      });
+
+      it('destinationDirection 미지정 시 data에 필드 자체가 없음 (구 backend 호환)', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+          content: { data: Record<string, unknown> };
+        };
+        expect(call.content.data).not.toHaveProperty('destinationDirection');
+      });
+
+      it('같은 tripToken 세션 내 두 번째 수신은 dedup skip', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-2' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      });
+
+      it('다른 tripToken 수신은 각각 발사', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1', tripToken: 'tok-A' }));
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-2', tripToken: 'tok-B' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
+      });
+
+      it('gate/location 등 다른 mock은 호출 안 됨 (unconditional path)', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockGetDismissSilence).not.toHaveBeenCalled();
+        expect(mockGetMotionStationary).not.toHaveBeenCalled();
+        expect(mockGetFiredAlarms).not.toHaveBeenCalled();
+      });
+
+      it('pushId 있으면 ack(fired, boarding-prompt) 전송', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'bp-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+          reason: 'boarding-prompt',
+          permissionMode: 'always',
+        });
+      });
+
+      it('pushId 없으면 fired ack 호출 안 함 (구 backend 호환) — schedule은 진행', async () => {
+        await handleSilentPush(boardingPromptPayload());
+        // received ack도 fired ack도 없음 (pushId 부재).
+        const firedCalls = mockSendPushAck.mock.calls.filter(
+          (call) => (call[0] as { outcome?: string }).outcome === 'fired',
+        );
+        expect(firedCalls).toHaveLength(0);
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      });
+
+      it('dedup skip 시 ack(skipped, boarding-prompt-dedup) 전송', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        mockSendPushAck.mockClear();
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-2' }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'bp-2',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'boarding-prompt-dedup',
+          permissionMode: 'always',
+        });
+      });
+
+      it('scheduleNotificationAsync throw해도 후속 흐름 차단 안 함 + ack skipped 전송', async () => {
+        mockScheduleNotificationAsync.mockRejectedValueOnce(new Error('schedule fail'));
+        await expect(
+          handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' })),
+        ).resolves.toBeUndefined();
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'bp-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'boarding-prompt-schedule-failed',
+          permissionMode: 'always',
+        });
+      });
+
+      it('schedule 실패로 dedup registered 상태 — 재시도가 새 알림을 발사하지 않음', async () => {
+        mockScheduleNotificationAsync.mockRejectedValueOnce(new Error('schedule fail'));
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        mockScheduleNotificationAsync.mockClear();
+        // 두번째 backend 재시도 (같은 tripToken) → dedup으로 재발사 안 함.
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-2' }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('domain breadcrumb 발사 (dashboard 관측)', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+          'push',
+          'boarding-prompt-silent-fired',
+          { line: '2', originStation: '강남' },
+        );
+      });
+
+      // #1935 — silent push finally 블록에서 refreshLA는 항상 호출.
+      it('boarding-prompt 발사 후에도 refreshLiveActivityFromBackgroundContext 1회 호출', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+      });
+
+      // Layer 2 사용자 도달 KPI — Acceptance dashboard의 boardingPromptFired 카운트로 반영.
+      it('발사 시 logBoardingPromptFired 호출 (Acceptance dashboard 반영)', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockLogBoardingPromptFired).toHaveBeenCalledWith({
+          originStation: '강남',
+          line: '2',
+        });
+      });
+
+      it('dedup skip 시 logBoardingPromptFired 호출 안 함', async () => {
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        mockLogBoardingPromptFired.mockClear();
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-2' }));
+        expect(mockLogBoardingPromptFired).not.toHaveBeenCalled();
+      });
+
+      it('schedule 실패 시 logBoardingPromptFired 호출 안 함 (실패는 KPI 반영 X)', async () => {
+        mockScheduleNotificationAsync.mockRejectedValueOnce(new Error('schedule fail'));
+        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
+        expect(mockLogBoardingPromptFired).not.toHaveBeenCalled();
       });
     });
 

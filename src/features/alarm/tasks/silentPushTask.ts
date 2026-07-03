@@ -44,6 +44,7 @@ import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
 import {
   flushAlarmLog,
+  logBoardingPromptFired,
   logCrossTripMirrorSkip,
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
@@ -85,6 +86,7 @@ import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent, sendTripEndedNotification } from '../utils/stationNotification';
+import { BOARDING_PROMPT_CATEGORY } from '../utils/notificationCategory';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
 import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
@@ -103,6 +105,25 @@ const SILENT_PUSH_SOURCE: NotificationSource = 'positionTrain';
 const logger = createLogger('SilentPushTask');
 
 export const SILENT_PUSH_TASK = 'silent-push-reschedule';
+
+/**
+ * #2028 — boarding-prompt silent push local notification identifier.
+ * 같은 identifier로 schedule하면 iOS가 이전 알림을 대체(dismiss + 재발사)해 사용자 tray에 1건만 유지.
+ */
+const BOARDING_PROMPT_NOTIFICATION_ID = 'boarding-prompt-silent-push';
+
+/**
+ * #2028 — tripToken 세션 스코프 dedup. 같은 tripToken으로 여러 backend cron 재시도가 도달해도
+ * 로컬 알림을 1회만 발사한다. in-memory Set — 앱 재시작(cold-launch) 시 자연 초기화되지만
+ * backend `boardingPromptState.promptedAt` dedup이 자체 재발사를 차단하므로 회귀 없음.
+ * 사용자 응답 시 backend는 dismiss/lock 처리로 새 push를 발사하지 않는다.
+ */
+const boardingPromptFiredTripTokens = new Set<string>();
+
+/** 테스트 격리용 — dedup set을 비운다. production 코드에서는 호출하지 않는다. */
+export function __resetBoardingPromptSilentPushDedup(): void {
+  boardingPromptFiredTripTokens.clear();
+}
 
 export interface SilentPushPayload {
   nextWaypoint: string;
@@ -243,6 +264,52 @@ export interface RescheduleSilentPushPayload {
 }
 
 /**
+ * Boarding-prompt silent push payload (#2028) — Layer 2 사용자 도달 채널.
+ *
+ * 상황: backend는 boarding-prompt를 alert push(`aps.alert` + BOARDING_PROMPT category)로
+ * 발사해 iOS가 native로 표시하지만, 사용자 Focus / DND / 취침 등으로 alert가 사용자에게
+ * 도달하지 않으면 boardingPrompt 응답률이 0%가 된다(7일 evidence: displayed=0 / responded=0).
+ *
+ * 본 payload는 backend가 alert push와 함께(또는 alert 실패 시 fallback으로) `content-available:1`
+ * silent push를 보낼 때 도달률을 확보하기 위한 채널이다. device silentPushTask가 수신하면
+ * gate 무관(location / silence / motion / dedup 모두 skip) 즉시 local notification을 schedule해
+ * 사용자에게 소리 + 진동 + 배너로 노출한다.
+ *
+ * 도달률 우선 정책 — ADR-022 정합. gate 실패로 UI 미노출이 되는 것은 회귀보다 크므로 무조건 발사.
+ * dedup은 tripToken 세션 스코프 in-memory Set으로 관리해 backend cron 재시도(3회)로 인한 중복
+ * 알림만 차단한다. 세션(앱 재시작)이 바뀌면 dedup은 자연 초기화 — 사용자가 실제로 응답하지 않은
+ * 이전 trip의 prompt는 재발사되지 않는다(pushId 기준 backend가 이미 정지).
+ */
+export interface BoardingPromptSilentPushPayload {
+  kind: 'boarding-prompt';
+  /** 사용자 출발역 (BoardingPrompt 응답 flow에서 lock 생성 시 boardingStation으로 사용). */
+  originStation: string;
+  /** 출발 노선 (lock 생성 시 boardingLine으로 사용). */
+  line: string;
+  /** trip 토큰 — dedup key + boarding-prompt 응답 시 trip 컨텍스트 복원용. */
+  tripToken: string;
+  /**
+   * push의 unique 식별자. dedup은 tripToken 스코프이지만 pushId도 backend `/push/ack`에 필요.
+   * 구 backend 호환 위해 optional — 누락 시 ACK skip.
+   */
+  pushId?: string;
+  /** 백엔드 발사 시점 epoch ms. 구 backend 호환 위해 optional. */
+  sentAt?: number;
+  /** 목적지 방향 filter (#1740). BoardingPrompt 응답 flow에서 arrival 후보 필터에 사용. */
+  destinationDirection?: 'up' | 'down';
+  /**
+   * 사용자 표시 title (backend가 i18n resolve해서 넣어줌). 미지정 시 device fallback.
+   * backend `sendBoardingPromptPush`의 title과 동형.
+   */
+  title?: string;
+  /**
+   * 사용자 표시 body (backend가 i18n resolve해서 넣어줌). 미지정 시 device fallback.
+   * backend `sendBoardingPromptPush`의 body와 동형.
+   */
+  body?: string;
+}
+
+/**
  * Trip ended silent push payload (#868). 백엔드가 server-side로 trip을 자동 종료했을 때
  * 클라이언트의 route/destination/lock state를 동기화하라는 신호. backend `apns.ts`의
  * `TripEndedPushPayload`와 1:1.
@@ -276,11 +343,12 @@ export type TripEndedReason =
   | 'push-unrecoverable'
   | 'unknown';
 
-/** extractPayload 결과 — standard silent push / reschedule push / trip-ended push. */
+/** extractPayload 결과 — standard silent push / reschedule push / trip-ended push / boarding-prompt push. */
 export type ExtractedPayload =
   | SilentPushPayload
   | RescheduleSilentPushPayload
-  | TripEndedSilentPushPayload;
+  | TripEndedSilentPushPayload
+  | BoardingPromptSilentPushPayload;
 
 /**
  * expo-notifications iOS의 `BackgroundEventTransformer.swift`가 APNs payload를
@@ -340,6 +408,10 @@ function isTripEndedCandidate(rec: Record<string, unknown>): boolean {
   return rec.kind === 'trip-ended';
 }
 
+function isBoardingPromptCandidate(rec: Record<string, unknown>): boolean {
+  return rec.kind === 'boarding-prompt';
+}
+
 function findFieldsLayer(
   taskData: NotificationBackgroundTaskData['data'],
 ): Record<string, unknown> | null {
@@ -358,7 +430,8 @@ function findFieldsLayer(
     if (
       isStandardCandidate(rec) ||
       isRescheduleCandidate(rec) ||
-      isTripEndedCandidate(rec)
+      isTripEndedCandidate(rec) ||
+      isBoardingPromptCandidate(rec)
     ) {
       return rec;
     }
@@ -382,6 +455,8 @@ export function extractPayload(
   if (obj.kind === 'reschedule') return extractReschedulePayload(obj);
   // trip-ended 분기 (#868) — schema는 단순 (reason만). discriminator는 kind === 'trip-ended'.
   if (obj.kind === 'trip-ended') return extractTripEndedPayload(obj);
+  // boarding-prompt 분기 (#2028) — Layer 2 사용자 도달. discriminator는 kind === 'boarding-prompt'.
+  if (obj.kind === 'boarding-prompt') return extractBoardingPromptPayload(obj);
   return extractStandardPayload(obj);
 }
 
@@ -596,6 +671,36 @@ function extractTripEndedPayload(
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
     tripToken: typeof tripToken === 'string' && tripToken.length > 0 ? tripToken : undefined,
+  };
+}
+
+/**
+ * boarding-prompt payload 추출 (#2028). schema — kind + originStation + line + tripToken은 필수,
+ * pushId / sentAt / destinationDirection / title / body는 optional (구 backend 호환).
+ *
+ * originStation / line / tripToken 중 하나라도 비어 있으면 null → 발사 skip. 발사에 필요한
+ * 최소 정보를 갖추지 못한 payload는 wire fallback으로 backend가 별도 신호를 보낼 것.
+ */
+function extractBoardingPromptPayload(
+  obj: Record<string, unknown>,
+): BoardingPromptSilentPushPayload | null {
+  const { originStation, line, tripToken, pushId, sentAt, destinationDirection, title, body } = obj;
+  if (typeof originStation !== 'string' || originStation.length === 0) return null;
+  if (typeof line !== 'string' || line.length === 0) return null;
+  if (typeof tripToken !== 'string' || tripToken.length === 0) return null;
+  return {
+    kind: 'boarding-prompt',
+    originStation,
+    line,
+    tripToken,
+    pushId: validPushId(pushId),
+    sentAt: validSentAt(sentAt),
+    destinationDirection:
+      destinationDirection === 'up' || destinationDirection === 'down'
+        ? destinationDirection
+        : undefined,
+    title: typeof title === 'string' && title.length > 0 ? title : undefined,
+    body: typeof body === 'string' && body.length > 0 ? body : undefined,
   };
 }
 
@@ -917,6 +1022,23 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
 
+    // boarding-prompt 분기 (#2028) — Layer 2 사용자 도달 채널. gate 무관 즉시 local notification schedule.
+    //
+    // 배경: backend는 boarding-prompt를 alert push로 발사하지만 사용자 Focus / DND / 취침 등으로
+    // OS가 alert를 사용자에게 노출하지 않으면 boardingPrompt 응답률이 0% (7일 evidence). silent push
+    // 채널로도 fallback을 받아 gate 무관 로컬 알림 schedule해 도달률을 확보한다.
+    //
+    // 정책: gate skip 없음 (location / silence / dedup 모두 우회). 사용자에게 UI 노출이 최우선 —
+    // ADR-022 boardingPrompt 도달률 우선 정합. dedup은 tripToken 세션 스코프 in-memory Set으로
+    // 관리해 backend cron 재시도(3회)의 중복 알림만 차단.
+    if (payload.kind === 'boarding-prompt') {
+      logger.info(
+        `boarding-prompt received: originStation=${payload.originStation} line=${payload.line} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+      );
+      await fireBoardingPromptLocalNotification(payload, apnsToken);
+      return;
+    }
+
     logger.info(
       `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
     );
@@ -1135,6 +1257,92 @@ function parseDestinationName(raw: string | null): string | null {
     return parsed && typeof parsed.name === 'string' ? parsed.name : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * #2028 — boarding-prompt silent push 수신 시 gate 무관 local notification schedule.
+ *
+ * 도달률 우선 — location / silence / motion / FIRED_ALARMS dedup 모두 skip. 사용자에게 UI가
+ * 노출되지 않는 회귀가 gate false positive보다 크므로 무조건 발사.
+ *
+ * 유일한 dedup: tripToken 세션 스코프 in-memory Set. 같은 tripToken으로 backend cron 재시도
+ * (3회)가 도달해도 로컬 알림 1건만 노출. 앱 재시작 시 자연 초기화되지만 backend가 사용자 응답
+ * 후 재발사하지 않으므로 사용자 반복 노출 회귀 없음.
+ *
+ * data payload는 `useBoardingPromptResponder`가 `extractBoardingPromptPayload`로 파싱해
+ * [탑승]/[미탑승]/banner tap 응답을 분기 처리. `categoryIdentifier: BOARDING_PROMPT_CATEGORY`로
+ * 응답 액션 버튼을 노출 (iOS UNNotificationCategory 등록 필요 — `setupBoardingPromptCategory`).
+ *
+ * title/body는 backend payload에서 우선 사용 (backend가 사용자 locale로 i18n resolve).
+ * 미지정 시 device fallback — "탑승하셨나요?" 정적 문자열. graceful — 어떤 값이 오든 알림 발사 보장.
+ */
+async function fireBoardingPromptLocalNotification(
+  payload: BoardingPromptSilentPushPayload,
+  apnsToken: string | null,
+): Promise<void> {
+  // tripToken 세션 dedup — 이미 발사됐으면 skip. dedup 목적: backend cron 재시도(3회) 시 중복 방지.
+  if (boardingPromptFiredTripTokens.has(payload.tripToken)) {
+    logger.info(
+      `boarding-prompt dedup: tripToken=${payload.tripToken.slice(0, 8)} already fired in session — skip`,
+    );
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-dedup');
+    return;
+  }
+
+  // dedup 등록 먼저 — scheduleNotificationAsync 실패해도 재시도로 반복 발사되지 않도록.
+  boardingPromptFiredTripTokens.add(payload.tripToken);
+
+  // 사용자 표시 문구. backend 우선 → device fallback (backend가 locale resolve해서 넘겨줌).
+  const title = payload.title ?? '탑승하셨나요?';
+  const body =
+    payload.body ?? `${payload.line}호선 ${payload.originStation}에서 열차가 곧 도착합니다.`;
+
+  // data payload는 `useBoardingPromptResponder`의 extractBoardingPromptPayload가 파싱하는 schema.
+  // kind + originStation + line + tripToken 필수, destinationDirection optional.
+  const data: Record<string, unknown> = {
+    kind: 'boarding-prompt',
+    originStation: payload.originStation,
+    line: payload.line,
+    tripToken: payload.tripToken,
+  };
+  if (payload.destinationDirection !== undefined) {
+    data.destinationDirection = payload.destinationDirection;
+  }
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: BOARDING_PROMPT_NOTIFICATION_ID,
+      content: {
+        title,
+        body,
+        sound: 'default',
+        // BOARDING_PROMPT category로 [탑승]/[미탑승] 액션 버튼 노출 (setupBoardingPromptCategory 등록).
+        categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+        data,
+        // Focus / DND 관통 — 사용자 명시 의향 확인 UI라 timeSensitive 등급.
+        interruptionLevel: 'timeSensitive',
+      },
+      trigger: null,
+    });
+    // #1021 Acceptance 채널 — Layer 2 발사 카운트가 dashboard에 반영되도록 적재.
+    // useBoardingPromptDisplayLogger가 native alert push 발사분을 적재하는 것과 동일 채널이라
+    // silent push fallback 발사분도 boarding-prompt fired 카운트에 누적된다.
+    logBoardingPromptFired({
+      originStation: payload.originStation,
+      line: payload.line,
+    });
+    addDomainBreadcrumb('push', 'boarding-prompt-silent-fired', {
+      line: payload.line,
+      originStation: payload.originStation,
+    });
+    logger.info(
+      `boarding-prompt fired: line=${payload.line} originStation=${payload.originStation} tripToken=${payload.tripToken.slice(0, 8)}`,
+    );
+    void ackOutcome(payload.pushId, apnsToken, 'fired', 'boarding-prompt');
+  } catch (e) {
+    logger.error('boarding-prompt local notification schedule 실패:', e);
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-schedule-failed');
   }
 }
 
