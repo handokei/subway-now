@@ -290,6 +290,36 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
+      // #2032 (Issue D) — device 취침모드 상태 forward. backend monitoring 전용 (ADR-023 결정 gate 미사용).
+      it('#2032 sleepModeEnabled=true 송신 시 body에 포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: true });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.sleepModeEnabled).toBe(true);
+      });
+
+      it('#2032 sleepModeEnabled=false/미설정이면 body에 미포함 (graceful, backend undefined 유지)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: false });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.sleepModeEnabled).toBeUndefined();
+      });
+
+      it('#2032 sleepModeEnabled OFF→ON 전환 시 hash 갱신 → 재등록 (backend monitoring 값 즉시 동기화)', async () => {
+        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: false });
+        expect(first.ok).toBe(true);
+        const second = await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: true });
+        expect(second).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const secondBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+        expect(secondBody.sleepModeEnabled).toBe(true);
+      });
+
+      it('#2032 동일 sleepModeEnabled 값 연속 호출 시 dedup (skipped=true)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: true });
+        const dedup = await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: true });
+        expect(dedup).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
       it('#701 in-flight dedup: 동일 페이로드 동시 호출 시 fetch는 1번만 발사된다', async () => {
         let resolveFetch: ((v: Response) => void) | null = null;
         (global.fetch as jest.Mock).mockImplementationOnce(

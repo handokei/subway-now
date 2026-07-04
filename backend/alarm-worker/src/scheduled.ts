@@ -999,6 +999,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       log('lifecycle: force-end (>9h)', {
         token: trip.token.slice(0, 8),
         elapsedMs: now - trip.createdAt,
+        // #2032 (Issue D) — monitoring dimension. skip 원인 분류 시 device sleep 상태 참조.
+        // ADR-023: backend는 이 값으로 발사 결정 X (log 전용).
+        sleepMode: trip.sleepModeEnabled,
       });
       await cleanupTripWithLa(trip, env, deps, stats, now, log, 'expired');
       continue;
@@ -1008,6 +1011,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       log('lifecycle: silence cycle skipped (>6h)', {
         token: trip.token.slice(0, 8),
         elapsedMs: now - trip.createdAt,
+        // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+        sleepMode: trip.sleepModeEnabled,
       });
       continue;
     }
@@ -1040,6 +1045,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           token: trip.token.slice(0, 8),
           station: waypoint.stationName,
           kind: waypoint.kind,
+          // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+          sleepMode: trip.sleepModeEnabled,
         });
         continue;
       }
@@ -1067,6 +1074,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           token: trip.token.slice(0, 8),
           elapsedMs: now - trip.lastLaPushAt,
           station: pickActiveWaypoint(trip)?.stationName,
+          // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+          sleepMode: trip.sleepModeEnabled,
         });
         await cleanupTripWithLa(trip, env, deps, stats, now, log, 'la-stale-backstop');
         continue;
@@ -1090,6 +1099,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         station: waypoint.stationName,
         locklessOptIn: trip.infoModeEnabled === true,
         waypointKind: waypoint.kind,
+        // #2032 (Issue D) — monitoring dimension. skip 원인 분류(정상 sleep skip vs 회귀 skip)의 핵심 dimension.
+        // ADR-023: backend 발사 결정 X — device의 `shouldSuppressBySleepRule`가 실제 suppress gate.
+        sleepMode: trip.sleepModeEnabled,
       });
       // #819 — lock 미발생 trip에 boarding-prompt 9단 게이트 평가 분기. 게이트 통과 시 alert
       // push로 "탑승 중이세요?"를 묻고, 클라이언트가 사용자 응답으로 lock을 자동 생성한다.
@@ -1810,6 +1822,10 @@ export async function fireArvlCdStationPush(
     station: waypoint.stationName,
     arvlCd,
     kind: waypoint.kind,
+    // #2032 (Issue D) — monitoring dimension. backend fire 시 device sleep 상태 기록.
+    // ADR-023: backend는 sleep 무관 발사 (arvlCd 신호 기반). device의 shouldSuppressBySleepRule이 UI suppress 판정.
+    // fire log ↔ device suppress log를 sleepMode dimension으로 대조해 skip 원인 자동 분류.
+    sleepMode: trip.sleepModeEnabled,
   });
   // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward.
   // #1614 Phase C — stale guard 단계에서 이미 read한 ssotForStale 재사용 (KV read 1회 절약).
@@ -3408,6 +3424,9 @@ export async function runLocklessIntermediate(
     ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
     arvlCd: signal.arvlCd,
     etaSeconds: signal.etaSeconds,
+    // #2032 (Issue D) — monitoring dimension. lockless fire 시 device sleep 상태 기록.
+    // ADR-023: backend는 sleep 무관 발사. device의 shouldSuppressBySleepRule이 UI suppress 판정.
+    sleepMode: trip.sleepModeEnabled,
   });
   // #1561 (T8, ADR-017 / S2 흡수) — lockless fire 직전 SSoT 권위 스냅샷 forward.
   const locklessSsot = await readSsot(env.TRIPS, trip.token, {
@@ -3757,6 +3776,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     log('boarding-prompt: skip (lock active, F2 defense)', {
       token: trip.token.slice(0, 8),
       boardingLine: trip.boardingLock.line,
+      // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+      sleepMode: trip.sleepModeEnabled,
     });
     return;
   }
@@ -3823,6 +3844,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       token: trip.token.slice(0, 8),
       reason: outcome.reason satisfies GateSkipReason,
       environment,
+      // #2032 (Issue D) — monitoring dimension. gate block 원인 분류 시 device sleep 상태 참조.
+      sleepMode: trip.sleepModeEnabled,
     });
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
@@ -4000,6 +4023,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       line: display.line,
       originStation: display.originStation,
       fusedSpeedKmh: Math.round(outcome.fusedSpeedKmh * 10) / 10,
+      // #2032 (Issue D) — monitoring dimension. fire 시 device sleep 상태 기록 (device suppress 여부와 대조 가능).
+      // ADR-023: backend는 sleep 무관 발사 유지. device의 shouldSuppressBySleepRule이 UI suppress 판정.
+      sleepMode: trip.sleepModeEnabled,
     });
   } else {
     stats.errors += 1;

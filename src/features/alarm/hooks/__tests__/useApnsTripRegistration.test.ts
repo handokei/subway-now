@@ -1072,6 +1072,57 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #2032 (Issue D) — device 취침모드 상태 backend forward (monitoring 전용, ADR-023 결정 gate 미사용).
+  describe('sleepMode (#2032)', () => {
+    const baseInputs = (sleepMode?: boolean) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      ...(sleepMode === undefined ? {} : { sleepMode }),
+    });
+    const renderSleep = (initial?: boolean) =>
+      renderHook(
+        ({ sm }: { sm?: boolean }) => useApnsTripRegistration(baseInputs(sm)),
+        { initialProps: { sm: initial } },
+      );
+
+    it.each([
+      { label: 'sleepMode=true → payload sleepModeEnabled=true 포함', sm: true, expected: true },
+      { label: 'sleepMode 미지정 → payload 미포함 (graceful)', sm: undefined, expected: undefined },
+      { label: 'sleepMode=false → payload 미포함 (graceful, backend legacy graceful 처리)', sm: false, expected: undefined },
+    ])('$label', async ({ sm, expected }) => {
+      renderSleep(sm);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].sleepModeEnabled).toBe(expected);
+    });
+
+    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend monitoring 값 즉시 동기화)', async () => {
+      const { rerender } = renderSleep(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].sleepModeEnabled).toBeUndefined();
+      rerender({ sm: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].sleepModeEnabled).toBe(true);
+    });
+
+    it('token refresh 경로도 최신 sleepMode 값을 송신', async () => {
+      const { rerender } = renderSleep(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ sm: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-SLEEP-NEW' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-SLEEP-NEW',
+      );
+      expect(refreshed?.[0].sleepModeEnabled).toBe(true);
+    });
+  });
+
   describe('#1895 i18n locale 송신 (4언어 boarding-prompt)', () => {
     const baseInputs = {
       route: directRoute,
