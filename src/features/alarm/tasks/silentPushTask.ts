@@ -29,6 +29,7 @@ import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
+import { AppState } from 'react-native';
 import {
   persistBackendSsotMirror,
   parseAlarmEventsMirror,
@@ -59,7 +60,10 @@ import {
   markStationFired,
 } from '../utils/crossCategoryStationDedup';
 import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
-import { setTripEndedSentinel } from '../utils/tripEndedSentinel';
+import {
+  setTripEndedSentinel,
+  clearTripEndedSentinel,
+} from '../utils/tripEndedSentinel';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
@@ -94,6 +98,7 @@ import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { getSubsurfaceState } from '../../../shared/utils/subsurfaceState';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
@@ -1038,6 +1043,29 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
       // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
       await setTripEndedSentinel(receivedAt);
+      // #2018 γ' — FG 상태에서는 useStateRehydration의 AppState 'active' 이벤트가
+      // 발생하지 않아 sentinel이 다음 BG/FG cycle까지 처리되지 않는다. 그동안 in-memory
+      // destination store가 stale로 남아 UI가 "현재역 → 현재역 0정거장" 형태로 잔존
+      // (2026-07-02 dogfood 관찰 20 성수→성수 evidence). FG 진행 중이면 setState를
+      // 여기서 즉시 수행해 store를 정리하고 sentinel을 그 자리에서 clear한다.
+      // BG 상태에서는 zustand runtime 접근이 불확실하므로 sentinel만 남기고 기존
+      // useStateRehydration 경로에 의존 — 기존 회귀 표면 없음.
+      if (AppState.currentState === 'active') {
+        try {
+          useDestinationStore.setState({
+            destination: null,
+            customOrigin: null,
+            tripOrigin: null,
+          });
+          addDomainBreadcrumb('trip', 'end', {
+            reason: 'silent-push-fg-immediate',
+          });
+          await useBoardingLockStore.getState().releaseLock();
+          await clearTripEndedSentinel();
+        } catch (e) {
+          logger.warn('FG 즉시 store reset 실패 (graceful — sentinel 유지):', e);
+        }
+      }
       // #1323 — trip 종료 user-facing surface. running/backgrounded 앱 backstop 경로.
       // #1337 PR1 — alert payload는 iOS가 시스템 banner를 직접 표시하므로 surface skip;
       // 단 동일 pushId의 silent backstop이 race로 도달해도 중복 surface 안 되도록 dedup store에는 기록.
