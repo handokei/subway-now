@@ -76,9 +76,13 @@ jest.mock('../../store/tripBoundCleanups', () => ({
 }));
 
 // #899 (Seam C) — trip-ended 분기는 FG 복귀를 위한 sentinel을 작성한다.
+// #2018 γ' — FG 상태 시 sentinel 처리 완료 후 clearTripEndedSentinel 즉시 호출.
 const mockSetTripEndedSentinel = jest.fn().mockResolvedValue(undefined);
+const mockClearTripEndedSentinel = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/tripEndedSentinel', () => ({
   setTripEndedSentinel: (...args: unknown[]) => mockSetTripEndedSentinel(...args),
+  clearTripEndedSentinel: (...args: unknown[]) =>
+    mockClearTripEndedSentinel(...args),
 }));
 
 // #919 — trip-ended 분기는 cleanup 직전에 recall trigger를 호출한다.
@@ -188,6 +192,27 @@ const mockStoreReleaseLock = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../store/useBoardingLockStore', () => ({
   useBoardingLockStore: {
     getState: () => ({ releaseLock: mockStoreReleaseLock }),
+  },
+}));
+
+// #2018 γ' — FG 상태에서 즉시 destination store setState. mock으로 호출 인자 검증.
+const mockDestinationSetState = jest.fn();
+jest.mock('../../../route/store/useDestinationStore', () => ({
+  useDestinationStore: {
+    setState: (...args: unknown[]) => mockDestinationSetState(...args),
+  },
+}));
+
+// #2018 γ' — FG/BG 조건 분기 검증을 위해 AppState.currentState를 테스트에서 조작한다.
+// 기본값 'background' — 기존 테스트가 γ' 분기에 진입하지 않도록 보수적 초기화.
+const mockAppStateHolder: { currentState: 'active' | 'background' | 'inactive' } = {
+  currentState: 'background',
+};
+jest.mock('react-native', () => ({
+  AppState: {
+    get currentState() {
+      return mockAppStateHolder.currentState;
+    },
   },
 }));
 
@@ -406,6 +431,11 @@ describe('silentPushTask', () => {
     mockSendTripEndedNotification.mockResolvedValue(undefined);
     mockHasFiredPushId.mockResolvedValue(false);
     mockAddFiredPushId.mockResolvedValue(undefined);
+    // #2018 γ' — 기본 BG로 설정해 기존 테스트가 FG 분기 진입하지 않도록.
+    mockAppStateHolder.currentState = 'background';
+    // clearAllMocks가 mockImplementation을 reset하지 않으므로 명시 복구.
+    mockSetTripEndedSentinel.mockResolvedValue(undefined);
+    mockClearTripEndedSentinel.mockResolvedValue(undefined);
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -2972,6 +3002,87 @@ describe('silentPushTask', () => {
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
         expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
         expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number));
+      });
+
+      // #2018 γ' — FG 상태(active)에서 trip-ended 수신 시 sentinel 저장 후 즉시 in-memory
+      // store를 reset해야 한다. useStateRehydration은 AppState 'active' 이벤트 시에만 실행되므로
+      // FG dogfood 시나리오(관찰 20, 성수→성수)에서 sentinel이 저장돼도 재수화가 트리거되지 않아
+      // destination store가 stale로 남는 회귀 차단.
+      describe('#2018 γ\' — FG 상태 즉시 in-memory store reset', () => {
+        it('AppState=active 시 destination store setState({destination:null, customOrigin:null, tripOrigin:null}) 호출', async () => {
+          mockAppStateHolder.currentState = 'active';
+          await handleSilentPush(tripEndedPayload({ reason: 'destination-arrived' }));
+          expect(mockDestinationSetState).toHaveBeenCalledTimes(1);
+          expect(mockDestinationSetState).toHaveBeenCalledWith({
+            destination: null,
+            customOrigin: null,
+            tripOrigin: null,
+          });
+        });
+
+        it('AppState=active 시 boardingLockStore.releaseLock 호출', async () => {
+          mockAppStateHolder.currentState = 'active';
+          mockStoreReleaseLock.mockClear();
+          await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+          expect(mockStoreReleaseLock).toHaveBeenCalledTimes(1);
+        });
+
+        it('AppState=active 시 setTripEndedSentinel 이후 clearTripEndedSentinel 호출 (중복 처리 방지)', async () => {
+          mockAppStateHolder.currentState = 'active';
+          const callOrder: string[] = [];
+          mockSetTripEndedSentinel.mockImplementation(async () => {
+            callOrder.push('set-sentinel');
+          });
+          mockClearTripEndedSentinel.mockImplementation(async () => {
+            callOrder.push('clear-sentinel');
+          });
+          await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
+          expect(mockClearTripEndedSentinel).toHaveBeenCalledTimes(1);
+          expect(callOrder).toEqual(['set-sentinel', 'clear-sentinel']);
+        });
+
+        it('AppState=background 시 setState / releaseLock / clearSentinel 호출 안 함 (기존 BG 경로 유지)', async () => {
+          mockAppStateHolder.currentState = 'background';
+          mockStoreReleaseLock.mockClear();
+          await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
+          expect(mockDestinationSetState).not.toHaveBeenCalled();
+          expect(mockStoreReleaseLock).not.toHaveBeenCalled();
+          expect(mockClearTripEndedSentinel).not.toHaveBeenCalled();
+        });
+
+        it('AppState=inactive 시 FG 분기 미진입 (active 조건 strict)', async () => {
+          mockAppStateHolder.currentState = 'inactive';
+          await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+          expect(mockDestinationSetState).not.toHaveBeenCalled();
+          expect(mockClearTripEndedSentinel).not.toHaveBeenCalled();
+        });
+
+        it('AppState=active setState throw 시 graceful — 전체 흐름 계속 (sentinel은 유지)', async () => {
+          mockAppStateHolder.currentState = 'active';
+          mockDestinationSetState.mockImplementation(() => {
+            throw new Error('store boom');
+          });
+          await expect(
+            handleSilentPush(tripEndedPayload({ reason: 'expired', pushId: 'te-uuid' })),
+          ).resolves.toBeUndefined();
+          // 다음 흐름(surface + ack)은 그대로 진행.
+          expect(mockSendTripEndedNotification).toHaveBeenCalledTimes(1);
+        });
+
+        it('AppState=active tripToken mismatch 시 setState도 호출 안 함 (cleanup skip 경로)', async () => {
+          mockAppStateHolder.currentState = 'active';
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+            if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+            return null;
+          });
+          await handleSilentPush(
+            tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+          );
+          expect(mockDestinationSetState).not.toHaveBeenCalled();
+        });
       });
 
       it('#899 (Seam C) — tripToken mismatch로 cleanup skip 시 sentinel도 작성 안 함', async () => {
