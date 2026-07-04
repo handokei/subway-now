@@ -40,6 +40,7 @@ const mockLogSilentPushSkipped = jest.fn();
 const mockLogCrossTripMirrorSkip = jest.fn();
 const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogBoardingPromptFired = jest.fn();
+const mockLogSleepTransferAlarmFired = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
@@ -53,7 +54,14 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedChannelAgnosticDedup: (...args: unknown[]) =>
     mockLogSuppressedChannelAgnosticDedup(...args),
   logBoardingPromptFired: (...args: unknown[]) => mockLogBoardingPromptFired(...args),
+  logSleepTransferAlarmFired: (...args: unknown[]) => mockLogSleepTransferAlarmFired(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
+}));
+
+// #2036 (Issue I γ) — sleep-transfer-alarm 발사 시 vibrateAlarm(true) 호출. mock으로 호출 횟수 검증.
+const mockVibrateAlarm = jest.fn();
+jest.mock('../../utils/alarmSound', () => ({
+  vibrateAlarm: (...args: unknown[]) => mockVibrateAlarm(...args),
 }));
 
 // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. silent push fire 직전 gate +
@@ -270,6 +278,7 @@ jest.mock('i18next', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   __resetBoardingPromptSilentPushDedup,
+  __resetSleepTransferAlarmSilentPushDedup,
   extractPayload,
   getSilentPushRegistrationStatus,
   handleSilentPush,
@@ -285,6 +294,7 @@ import {
   BACKEND_SSOT_MIRROR_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
+  SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
@@ -1310,6 +1320,173 @@ describe('silentPushTask', () => {
             }),
           ),
         ).toMatchObject({ nextLine: undefined, nextStation: undefined });
+      });
+    });
+
+    // #2036 (Issue I γ) — sleep-transfer-alarm silent push payload (취침모드 환승 알람 채널).
+    describe('sleep-transfer-alarm kind (#2036)', () => {
+      it('정상 sleep-transfer-alarm payload → SleepTransferAlarmSilentPushPayload', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: 'tok-sta',
+              sentAt: 1_780_000_000_000,
+              pushId: 'uuid-sta',
+              title: '곧 환승역입니다',
+              body: '성수에서 2호선 뚝섬으로 환승',
+            }),
+          ),
+        ).toEqual({
+          kind: 'sleep-transfer-alarm',
+          originStation: '성수',
+          nextLine: '2',
+          nextStation: '뚝섬',
+          tripToken: 'tok-sta',
+          sentAt: 1_780_000_000_000,
+          pushId: 'uuid-sta',
+          title: '곧 환승역입니다',
+          body: '성수에서 2호선 뚝섬으로 환승',
+        });
+      });
+
+      it('originStation 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('nextLine 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextStation: '뚝섬',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '',
+              nextStation: '뚝섬',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('nextStation 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '',
+              tripToken: 'T',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('tripToken 누락/빈 문자열이면 null (dedup key 필수)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '뚝섬',
+            }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: '',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('optional 필드(sentAt/pushId/title/body) 누락 시 undefined', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: 'T',
+            }),
+          ),
+        ).toEqual({
+          kind: 'sleep-transfer-alarm',
+          originStation: '성수',
+          nextLine: '2',
+          nextStation: '뚝섬',
+          tripToken: 'T',
+          sentAt: undefined,
+          pushId: undefined,
+          title: undefined,
+          body: undefined,
+        });
+      });
+
+      it('title/body가 빈 문자열이면 undefined로 정규화 (fallback 트리거)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: 'T',
+              title: '',
+              body: '',
+            }),
+          ),
+        ).toMatchObject({ title: undefined, body: undefined });
       });
     });
   });
@@ -3707,6 +3884,267 @@ describe('silentPushTask', () => {
           await handleSilentPush(hopEndPayload({ pushId: 'hop-q' }));
           expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
         });
+      });
+    });
+
+    // #2036 (Issue I γ) — sleep-transfer-alarm silent push: gate 무관 로컬 알림 (sleepMode=true 시).
+    describe('sleep-transfer-alarm kind (#2036) — 취침모드 환승 알람 채널', () => {
+      function sleepTransferPayload(extra: Record<string, unknown> = {}) {
+        return {
+          data: {
+            data: {
+              data: {
+                kind: 'sleep-transfer-alarm',
+                originStation: '성수',
+                nextLine: '2',
+                nextStation: '뚝섬',
+                tripToken: 'tok-sta',
+                ...extra,
+              },
+              dataString: null,
+            },
+            notification: null,
+            aps: { 'content-available': 1 },
+          },
+        };
+      }
+
+      /** sleepMode=true를 AsyncStorage에 세팅한다. 기본 destStation/APNS token 유지. */
+      function setSleepMode(enabled: boolean): void {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === SLEEP_MODE_KEY) return JSON.stringify(enabled);
+          return null;
+        });
+      }
+
+      beforeEach(() => {
+        __resetSleepTransferAlarmSilentPushDedup();
+      });
+
+      it('sleepMode=true 수신 → scheduleNotificationAsync 즉시 호출 (gate 무관)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        // standard 발사 경로는 호출되지 않아야 함.
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+      });
+
+      it('sleepMode=false 수신 → 알림 발사 안 함 + ack(skipped, not-sleep-mode)', async () => {
+        setSleepMode(false);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockVibrateAlarm).not.toHaveBeenCalled();
+        expect(mockLogSleepTransferAlarmFired).not.toHaveBeenCalled();
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'sta-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'sleep-transfer-not-sleep-mode',
+          permissionMode: 'always',
+        });
+      });
+
+      it('SLEEP_MODE_KEY 저장값 없음 → 취침 아님으로 판정 (fail-closed)', async () => {
+        // 기본 mock — SLEEP_MODE_KEY 는 null 반환.
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'skipped', reason: 'sleep-transfer-not-sleep-mode' }),
+        );
+      });
+
+      it('SLEEP_MODE_KEY read throw → 취침 아님으로 판정 (fail-closed graceful)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === SLEEP_MODE_KEY) throw new Error('storage-fail');
+          return null;
+        });
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('scheduleNotificationAsync content: title/body/sound/data/interruptionLevel 포함', async () => {
+        setSleepMode(true);
+        await handleSilentPush(
+          sleepTransferPayload({
+            pushId: 'sta-1',
+            title: '곧 환승역입니다',
+            body: '성수에서 2호선 뚝섬으로 환승',
+          }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledWith({
+          identifier: 'sleep-transfer-alarm-silent-push',
+          content: {
+            title: '곧 환승역입니다',
+            body: '성수에서 2호선 뚝섬으로 환승',
+            sound: 'alarm.wav',
+            data: {
+              kind: 'sleep-transfer-alarm',
+              originStation: '성수',
+              nextLine: '2',
+              nextStation: '뚝섬',
+              tripToken: 'tok-sta',
+            },
+            interruptionLevel: 'timeSensitive',
+          },
+          trigger: null,
+        });
+      });
+
+      it('title/body 누락 시 device fallback 문자열 사용', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+          content: { title: string; body: string };
+        };
+        expect(call.content.title).toBe('곧 환승역입니다');
+        expect(call.content.body).toContain('성수');
+        expect(call.content.body).toContain('2호선');
+        expect(call.content.body).toContain('뚝섬');
+      });
+
+      it('발사 시 vibrateAlarm(true) 호출 (사용자 확정 flow: 소리+진동)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
+      });
+
+      it('발사 시 logSleepTransferAlarmFired 호출 (Acceptance dashboard 반영)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockLogSleepTransferAlarmFired).toHaveBeenCalledWith({
+          originStation: '성수',
+          nextStation: '뚝섬',
+          nextLine: '2',
+        });
+      });
+
+      it('같은 tripToken + nextStation 세션 내 두 번째 수신은 dedup skip', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-2' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        expect(mockVibrateAlarm).toHaveBeenCalledTimes(1);
+      });
+
+      it('같은 tripToken + 다른 nextStation은 각각 발사 (다음 환승 hop 커버)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1', nextStation: '뚝섬' }));
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-2', nextStation: '한양대' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
+      });
+
+      it('다른 tripToken 수신은 각각 발사', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1', tripToken: 'tok-A' }));
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-2', tripToken: 'tok-B' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
+      });
+
+      it('gate/location 등 다른 mock은 호출 안 됨 (unconditional path)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockGetDismissSilence).not.toHaveBeenCalled();
+        expect(mockGetMotionStationary).not.toHaveBeenCalled();
+        expect(mockGetFiredAlarms).not.toHaveBeenCalled();
+      });
+
+      it('pushId 있으면 ack(fired, sleep-transfer-alarm) 전송', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'sta-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+          reason: 'sleep-transfer-alarm',
+          permissionMode: 'always',
+        });
+      });
+
+      it('pushId 없으면 fired ack 호출 안 함 (구 backend 호환) — schedule은 진행', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload());
+        const firedCalls = mockSendPushAck.mock.calls.filter(
+          (call) => (call[0] as { outcome?: string }).outcome === 'fired',
+        );
+        expect(firedCalls).toHaveLength(0);
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      });
+
+      it('dedup skip 시 ack(skipped, sleep-transfer-dedup) 전송', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        mockSendPushAck.mockClear();
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-2' }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'sta-2',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'sleep-transfer-dedup',
+          permissionMode: 'always',
+        });
+      });
+
+      it('scheduleNotificationAsync throw해도 후속 흐름 차단 안 함 + ack skipped 전송', async () => {
+        setSleepMode(true);
+        mockScheduleNotificationAsync.mockRejectedValueOnce(new Error('schedule fail'));
+        await expect(
+          handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' })),
+        ).resolves.toBeUndefined();
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'sta-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'sleep-transfer-schedule-failed',
+          permissionMode: 'always',
+        });
+      });
+
+      it('schedule 실패로 dedup 등록 상태 — 재시도가 새 알림을 발사하지 않음', async () => {
+        setSleepMode(true);
+        mockScheduleNotificationAsync.mockRejectedValueOnce(new Error('schedule fail'));
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        mockScheduleNotificationAsync.mockClear();
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-2' }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('domain breadcrumb 발사 (dashboard 관측)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+          'push',
+          'sleep-transfer-alarm-fired',
+          { nextLine: '2', originStation: '성수', nextStation: '뚝섬' },
+        );
+      });
+
+      it('sleepMode=false 시 dedup 등록 안 함 → 이후 sleepMode=true 전환 재시도는 정상 발사', async () => {
+        setSleepMode(false);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        // 사용자가 취침모드 ON 후 backend 재시도.
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-2' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      });
+
+      it('sleep-transfer-alarm 발사 후에도 refreshLiveActivityFromBackgroundContext 1회 호출 (#1935 정합)', async () => {
+        setSleepMode(true);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+      });
+
+      it('sleepMode=false skip 후에도 refreshLA 1회 호출 (#1935 정합)', async () => {
+        setSleepMode(false);
+        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
+        expect(mockRefreshLa).toHaveBeenCalledTimes(1);
       });
     });
 

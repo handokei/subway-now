@@ -9,6 +9,7 @@ import {
   sendBoardingPromptSilentPush,
   sendReschedulePush,
   sendSilentPush,
+  sendSleepTransferAlarmPush,
   type ApnsConfig,
   type PushOrigin,
   type SilentPushPayload,
@@ -3009,6 +3010,59 @@ export async function advanceBoardingLockWaypoint(
       log,
       generatePushId: () => crypto.randomUUID(),
     });
+  }
+  // #2036 (Issue I γ) — 취침모드 환승 알람 silent push. 사용자 확정 flow:
+  //   "환승역 → 취침모드 시 알람 발사, 일반모드는 일반 상황과 동일".
+  //
+  // 정책 (ADR-023 정합):
+  //   - Backend는 취침 무관 발사 (본 블록은 sleepMode 조회하지 않음).
+  //   - Device silentPushTask가 payload 수신 → SLEEP_MODE_KEY read → sleepMode=true 시에만 발사.
+  //   - waypoint.kind === 'transfer' + 다음 waypoint(=leg 2 첫 역) 존재해야 발사 대상.
+  //   - waypoint 소진(waypoints.length === 0) 케이스는 destination-arrived path로 위임 (본 push 미발사).
+  //
+  // dedup은 device 측 in-memory Set(`${tripToken}::${nextStation}`)가 담당 — backend는 idempotent 발사.
+  // 실패해도 별 채널(transfer-release, LA update)이 leg-transition sync를 지속하므로 retry queue 미적재.
+  if (waypoint.kind === 'transfer' && trip.waypoints.length > 0) {
+    const nextHop = trip.waypoints[0];
+    const sleepPushId = crypto.randomUUID();
+    const sleepHeal = await sendWithEnvHeal(
+      (host) =>
+        sendSleepTransferAlarmPush({
+          deviceToken: trip.token,
+          pushId: sleepPushId,
+          originStation: waypoint.stationName,
+          nextLine: nextHop.line,
+          nextStation: nextHop.stationName,
+          tripToken: trip.token,
+          sentAt: now,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+    );
+    if (sleepHeal.correctedEnv) {
+      trip.apnsEnv = sleepHeal.correctedEnv;
+      stats.envCorrected += 1;
+    }
+    if (sleepHeal.result.ok) {
+      log('boarding-lock: sleep-transfer-alarm fired', {
+        token: trip.token.slice(0, 8),
+        originStation: waypoint.stationName,
+        nextLine: nextHop.line,
+        nextStation: nextHop.stationName,
+      });
+    } else {
+      log('boarding-lock: sleep-transfer-alarm push failed', {
+        token: trip.token.slice(0, 8),
+        status: sleepHeal.result.status,
+        reason: sleepHeal.result.reason,
+      });
+    }
   }
   // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
   // 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.

@@ -10,6 +10,7 @@ import {
   sendLiveActivityUpdate,
   sendReschedulePush,
   sendSilentPush,
+  sendSleepTransferAlarmPush,
   sendTripEndedAlertPush,
   type ApnsConfig,
 } from '../apns';
@@ -1442,5 +1443,147 @@ describe('sendTripEndedAlertPush (#1337)', () => {
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const headers = call[1].headers as Record<string, string>;
     expect(headers['apns-thread-id']).toBe('trip-ended-tok');
+  });
+});
+
+// #2036 (Issue I γ) — sleep-transfer-alarm silent push. 취침모드에서 환승 임박 시 device UI 발사용.
+// ADR-023: backend는 취침 무관 발사, device가 sleepMode read 후 결정.
+describe('sendSleepTransferAlarmPush (#2036)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  it('background silent push headers + data payload byte-level contract', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const result = await sendSleepTransferAlarmPush({
+      deviceToken: 'device-hex',
+      pushId: 'sta-1',
+      originStation: '성수',
+      nextLine: '2',
+      nextStation: '뚝섬',
+      tripToken: 'tok-sta',
+      sentAt: 1_700_000_000_000,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST}/3/device/device-hex`);
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('background');
+    expect(headers['apns-priority']).toBe('5');
+    expect(headers['apns-thread-id']).toBe('tok-sta');
+    expect(headers['apns-topic']).toBe('com.example.app');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps).toEqual({ 'content-available': 1 });
+    expect(body.data).toEqual({
+      kind: 'sleep-transfer-alarm',
+      originStation: '성수',
+      nextLine: '2',
+      nextStation: '뚝섬',
+      tripToken: 'tok-sta',
+      pushId: 'sta-1',
+      sentAt: 1_700_000_000_000,
+    });
+  });
+
+  it('title/body 지정 시 data payload에 forward', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendSleepTransferAlarmPush({
+      deviceToken: 'device-hex',
+      pushId: 'sta-1',
+      originStation: '성수',
+      nextLine: '2',
+      nextStation: '뚝섬',
+      tripToken: 'tok-sta',
+      sentAt: 0,
+      title: '곧 환승역입니다',
+      body: '성수에서 2호선 뚝섬으로 환승',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.title).toBe('곧 환승역입니다');
+    expect(body.data.body).toBe('성수에서 2호선 뚝섬으로 환승');
+  });
+
+  it('title/body 미지정 시 data payload에 omit (구 device fallback trigger)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendSleepTransferAlarmPush({
+      deviceToken: 'device-hex',
+      pushId: 'sta-1',
+      originStation: '성수',
+      nextLine: '2',
+      nextStation: '뚝섬',
+      tripToken: 'tok-sta',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('title' in body.data).toBe(false);
+    expect('body' in body.data).toBe(false);
+  });
+
+  it('non-OK 응답은 status/reason을 그대로 반환', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 }),
+    );
+    const result = await sendSleepTransferAlarmPush({
+      deviceToken: 'device-hex',
+      pushId: 'sta-1',
+      originStation: 'O',
+      nextLine: '2',
+      nextStation: 'N',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
+  });
+
+  it('5xx non-json body → reason undefined (parseApnsError branch)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('upstream broken', { status: 503 }));
+    const result = await sendSleepTransferAlarmPush({
+      deviceToken: 'device-hex',
+      pushId: 'sta-1',
+      originStation: 'O',
+      nextLine: '2',
+      nextStation: 'N',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(503);
+    expect(result.reason).toBeUndefined();
+  });
+
+  // #1788 — apns-thread-id 헤더로 trip 알림 group.
+  it('apns-thread-id 헤더에 tripToken이 그대로 전달된다 (#1788)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendSleepTransferAlarmPush({
+      deviceToken: 'device-hex',
+      pushId: 'sta-thread',
+      originStation: 'O',
+      nextLine: '2',
+      nextStation: 'N',
+      tripToken: 'trip-sleep-999',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-thread-id']).toBe('trip-sleep-999');
   });
 });
