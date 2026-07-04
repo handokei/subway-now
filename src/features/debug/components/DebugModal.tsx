@@ -132,6 +132,10 @@ import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 // #1751 (M3 Sub 1) — Operation Dashboard 섹션.
 import { OperationDashboardSection } from './OperationDashboardSection';
+// Operation Dashboard alarmAccuracy(local) metric — share dump 재사용.
+// Modal UI 는 `useTripGroundTruthStore((s) => s.responses)` 를 통해 mount 시점 스냅샷 + subscribe.
+// share dump 는 handleShare 호출 시점 스냅샷만 필요하므로 store selector 로 참조 안정성 확보.
+import { useTripGroundTruthStore } from '../store/useTripGroundTruthStore';
 // #1956 (S-m3-1) — Operation Dashboard 4 metric → TripDetailModal drill-down 진입.
 import { TripDetailModal } from './TripDetailModal';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
@@ -652,6 +656,47 @@ interface BuildDumpArgs {
    * 미전달/null은 (no snapshot)로 명시 — "한 번도 측정 안 됨" / "미지원" / "load 안 함" 구분 가능.
    */
   accelSnapshot?: AccelerometerSnapshot | null;
+  /**
+   * ADR-022 Feature Flag (arch:simple-arrival-v1) 상태. Modal render에 노출되는 3 값을
+   * share dump에도 포함 — 사용자가 dogfood 판정(env vs remote vs 최종 active)을 dump만으로
+   * 사후 재구성 가능.
+   *
+   * 미전달 시 (n/a)로 표기.
+   */
+  archFlag?: {
+    /** `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH` env 값. */
+    env: boolean;
+    /** `arch:simple-arrival-v1` KV remote 값. undefined = 미조회/실패. */
+    remote: 'on' | 'off' | undefined;
+    /** remote fetch 결과 kind (`ok` / `unconfigured` / `error` / `loading`). */
+    remoteKind: string;
+    /** 최종 판정 — `isSimpleArchEnabled(remote)`. env=true 시 remote 무관 ON. */
+    active: boolean;
+  };
+  /**
+   * Operation Dashboard 4 metric 중 device-local 계산 가능한 것만 share dump에 포함.
+   * backend polling 결과(locklessMiss / boardableMiss / accelPattern / latency / laPush)는
+   * dump 시점에 sync 접근 불가 → dump에서는 (backend metrics: n/a in dump) 안내로 대체.
+   *
+   * 노출 metric:
+   *  - alarmAccuracy (local): tripGroundTruth store `responses` accurate/answered 비율
+   *  - silentPushReach (local): `countSilentPushOutcomes(logs)` fired/received
+   *
+   * 미전달 시 (n/a) — DebugModalInner 이 store snapshot 을 주입하지 않은 케이스 graceful.
+   */
+  operationDashboard?: {
+    /** 사용자 "정확했어요" 응답 수. */
+    groundTruthAccurateCount: number;
+    /** 응답 총 개수(unanswered 제외). */
+    groundTruthAnsweredCount: number;
+  };
+  /**
+   * Fusion picker tier 별 ring buffer entries. 최근 1h 윈도우 집계를 dump에 노출 —
+   * Modal render(line 2552)과 동일 SSOT(`formatFusionPickerTierDistribution`) 재사용.
+   *
+   * 미전달/빈 배열은 (none) 반환(포맷터 컨벤션 따라).
+   */
+  fusionTierLog?: readonly FusionTierLogEntry[];
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -836,6 +881,62 @@ function buildAccelFingerprintSection(args: BuildDumpArgs): string[] {
     `sampleCount=${snapshot.sampleCount}`,
     `lastUpdate=${formatTime(snapshot.timestamp)}`,
   ];
+}
+
+/**
+ * ADR-022 Phase 0 — Feature Flag(arch:simple-arrival-v1) 상태 dump 라인.
+ *
+ * Modal render(line 2147-2163)의 3 KeyValue row와 동일 SSOT — dogfood 판정 사후 재구성:
+ *  - env      : `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH` 환경변수 (true/false)
+ *  - remote   : `arch:simple-arrival-v1` KV 값 (`on` / `off`) 또는 kind fallback (`unconfigured` / `error` 등)
+ *  - active   : 최종 판정 (env OR remote='on')
+ *
+ * 미전달 시 (n/a) — hook 을 마운트하지 않은 호출자(단위 테스트 baseline) graceful.
+ */
+function buildFeatureFlagSection(args: BuildDumpArgs): string[] {
+  const flag = args.archFlag;
+  if (!flag) return ['(n/a)'];
+  const remoteLabel = flag.remote ?? `(${flag.remoteKind})`;
+  return [
+    `env=${flag.env ? 'true' : 'false'}`,
+    `remote=${remoteLabel}`,
+    `active=${flag.active ? 'ON' : 'OFF'}`,
+  ];
+}
+
+/**
+ * Operation Dashboard(Modal render line 2141-2143)의 device-local 계산 가능 metric dump.
+ *
+ * Modal이 노출하는 6+ metric 중 backend polling 결과(locklessMiss / boardableMiss / accelPattern /
+ * pushLatency / laPushDelivery / silentPushReachBackend / locklessTripMiss)는 dump 시점에 sync
+ * 접근 불가 → 본 섹션은 device-local snapshot 만 노출하고 backend metric 은 명시적으로 안내.
+ *
+ * 노출 metric:
+ *  - alarmAccuracy (local): tripGroundTruth store `responses` accurate/answered 비율
+ *  - silentPushReach (local): `countSilentPushOutcomes(logs)` fired/received
+ *
+ * 미전달 시 (n/a) — DebugModalInner 가 store snapshot 을 주입하지 않은 호출자 graceful.
+ */
+function buildOperationDashboardSection(args: BuildDumpArgs): string[] {
+  const op = args.operationDashboard;
+  if (!op) return ['(n/a)'];
+  const silentCounts = countSilentPushOutcomes(args.logs);
+  return [
+    `alarmAccuracy(local)=${op.groundTruthAccurateCount}/${op.groundTruthAnsweredCount}`,
+    `silentPushReach(local)=${silentCounts.fired}/${silentCounts.received}`,
+    '(backend metrics: locklessMiss/boardableMiss/accelPattern/pushLatency/laPush — see Modal UI, not dumped)',
+  ];
+}
+
+/**
+ * Fusion picker tier 채택 분포 dump (최근 1h). Modal render(line 2552-2560)와 동일 SSOT —
+ * `formatFusionPickerTierDistribution(fusionTierLog, nowMs)` 재사용해 UI/dump 정합성 보장.
+ *
+ * 미전달/빈 배열은 (none)로 명시(포맷터 컨벤션 따라).
+ */
+function buildFusionTierSection(args: BuildDumpArgs): string[] {
+  const entries = args.fusionTierLog ?? [];
+  return [formatFusionPickerTierDistribution(entries, args.nowMs ?? Date.now())];
 }
 
 function buildArrivalSection(args: BuildDumpArgs): string[] {
@@ -1443,6 +1544,13 @@ interface ShareSectionSpec {
 }
 
 const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
+  // ADR-022 Phase 0 — Feature Flag(arch:simple-arrival-v1) 상태. Modal render(line 2147-2163)와
+  // 동일 SSOT (env / remote / active). dogfood 판정을 dump 만으로 사후 재구성 가능.
+  // 최상단 배치 — Modal 첫 섹션(Operation Dashboard, Feature Flag) 순서 그대로.
+  { title: 'Feature Flag', build: buildFeatureFlagSection },
+  // #1751 (M3 Sub 1) — Operation Dashboard(Modal render line 2141-2143)의 device-local metric.
+  // backend polling metric 은 dump 시점 sync 접근 불가라 안내 라인만 포함.
+  { title: 'Operation Dashboard', build: buildOperationDashboardSection },
   { title: 'GPS', build: buildGpsSection },
   { title: 'Nearest', build: buildNearestSection },
   { title: 'Fusion', build: buildFusionSection },
@@ -1497,6 +1605,9 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildFusionLogSection,
     suffix: (args) => ` (${args.fusionLog?.length ?? 0})`,
   },
+  // #1693/#1706 — Fusion picker tier 채택 분포 (최근 1h). Modal render(line 2552-2560)와 동일
+  // SSOT (`formatFusionPickerTierDistribution`). 별 ring buffer(fusionTierLog) — alarmLog 점령 회귀 차단.
+  { title: 'Fusion Tier (1h)', build: buildFusionTierSection },
   // #1540 (S7) — gps-drop 채널. fusionDebugBuffer 점령 회귀 차단용 별 buffer를 dump에 그대로 노출.
   {
     title: 'GPS drops',
@@ -1662,6 +1773,10 @@ function DebugModalInner({
   // #1982 (ADR-022 Phase 0) — arrival-api-ssot-v1 Feature Flag remote 조회.
   // ADMIN_TOKEN / ALARM_BACKEND_URL 미설정 환경은 kind=unconfigured 로 그대로 표시.
   const archFlagRemote = useArchFlagRemote();
+  // Operation Dashboard(local alarmAccuracy) 계산용 tripGroundTruth 응답 subscribe.
+  // Modal render 는 OperationDashboardSection 이 자체 store subscribe, share dump 는 handleShare
+  // 호출 시점 스냅샷만 필요하므로 responses 참조가 안정적으로 갱신되면 dump 도 갱신된다.
+  const groundTruthResponses = useTripGroundTruthStore((s) => s.responses);
   // #1812 — routeContext 빌드: HomeScreen이 ROUTE_KEY에 영속화한 route + destinationStore의
   // tripOrigin + destination으로 routeContext를 구성한다. destination 변경 시 재조회.
   // tripStartedAt과 동일 패턴 (AsyncStorage SSOT, destination 의존 effect).
@@ -2066,6 +2181,21 @@ function DebugModalInner({
       // UI 표시와 동일 SSOT.
       routeLines,
       accelSnapshot,
+      // ADR-022 Phase 0 — Feature Flag 상태(env / remote / active). Modal render 와 동일 SSOT.
+      archFlag: {
+        env: isSimpleArchEnvEnabled(),
+        remote: archFlagRemote.value,
+        remoteKind: archFlagRemote.kind,
+        active: isSimpleArchEnabled(archFlagRemote.value),
+      },
+      // Operation Dashboard 의 device-local metric (alarmAccuracy local). backend polling metric 은
+      // dump 시점 sync 접근 불가라 안내 라인으로 대체 (buildOperationDashboardSection 참조).
+      operationDashboard: {
+        groundTruthAccurateCount: groundTruthResponses.filter((r) => r.outcome === 'accurate').length,
+        groundTruthAnsweredCount: groundTruthResponses.filter((r) => r.outcome !== 'unanswered').length,
+      },
+      // Fusion Tier (1h) — Modal render 와 동일 별 ring buffer(alarmLog 점령 회귀 차단).
+      fusionTierLog: fusionTierLogs,
     });
     void Share.share({ message });
   }, [
@@ -2118,6 +2248,12 @@ function DebugModalInner({
     // #1898 — routeLines/accelSnapshot 변경 시 share 텍스트 자동 갱신.
     routeLines,
     accelSnapshot,
+    // ADR-022 Phase 0 — archFlag remote 갱신 시 dump 텍스트 자동 갱신.
+    archFlagRemote,
+    // Operation Dashboard alarmAccuracy(local) — 사용자가 정답지 응답 시 dump 텍스트 자동 갱신.
+    groundTruthResponses,
+    // Fusion Tier (1h) — fusion picker tier 별 ring buffer 변경 시 dump 텍스트 자동 갱신.
+    fusionTierLogs,
   ]);
 
   return (
@@ -3254,6 +3390,11 @@ export const __test__ = {
   buildRouteLinesSummary,
   buildRouteLinesSection,
   buildAccelFingerprintSection,
+  // Share dump 누락 3 섹션(#2044-scope) — Feature Flag(ADR-022) + Operation Dashboard(#1751) +
+  // Fusion Tier (1h)(#1693/#1706). 단위 테스트에서 각 builder 직접 검증.
+  buildFeatureFlagSection,
+  buildOperationDashboardSection,
+  buildFusionTierSection,
 };
 
 const styles = StyleSheet.create({
