@@ -1672,6 +1672,7 @@ export interface FireArvlCdStationPushInputs {
  */
 export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
 
+// Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
 export async function fireArvlCdStationPush(
   inputs: FireArvlCdStationPushInputs,
 ): Promise<{ dirty: boolean }> {
@@ -2033,6 +2034,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
     environment: deriveEvidenceEnvironment(trip),
     hopIndex: waypoint.hopIndex,
   });
+  // Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
   return fireArvlCdStationPush({
     trip,
     waypoint,
@@ -2119,6 +2121,7 @@ export function vanishReleaseFireKey(
   return `${VANISH_RELEASE_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
 }
 
+// Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
 export async function fireVanishFallbackStationPush(
   inputs: FireVanishFallbackStationPushInputs,
 ): Promise<void> {
@@ -2423,6 +2426,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       // 사용자는 종착역 하차 알림을 받지 못한다. station-passed imminent push를 destination에도
       // 발사해 device 측 banner 발사 경로(채널 2)도 확보한다. surface 중복은 device 측
       // pushId/firedPushIds dedup으로 흡수.
+      // Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
       await fireVanishFallbackStationPush({
         trip,
         waypoint,
@@ -2466,6 +2470,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     const releaseMotionSeries = await readSeries(env.TRIPS, trip.token);
     const releaseMotion = evaluateWindow(releaseMotionSeries, now).motion;
     if (!isFallbackAdvanceBlockedByMotion(releaseMotion)) {
+      // Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
       await fireVanishFallbackStationPush({
         trip,
         waypoint,
@@ -3224,6 +3229,7 @@ export async function maybeReschedulePush(
  * 발사 성공 시: waypoint shift + lastFiredPhase reset + trip 저장. waypoint 0이면 trip cleanup.
  * 사양상 transfer/destination kind는 호출 전에 분기로 차단됨 — 이 함수는 intermediate에 한정.
  */
+// Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
 export async function runLocklessIntermediate(
   trip: Trip,
   waypoint: Waypoint,

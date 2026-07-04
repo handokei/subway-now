@@ -827,6 +827,7 @@ export function useStationAlarm({
       });
       return;
     }
+    // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
     if (
       shouldSuppressBySleepRule({
         lock,

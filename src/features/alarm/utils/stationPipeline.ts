@@ -301,6 +301,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     // #750: 공통 sleep 룰 게이트. scheduler 사전 예약이 skip한 transfer를 BG 즉시 발사 path가
     // 우회 발사하던 회귀 차단. 첫 hop 판정은 route의 첫 waypoint와 stationName 일치로 — lock
     // 활성 동안 leg가 갱신되면 lock도 갱신되므로 route 첫 leg의 endName이 곧 현재 leg의 첫 hop.
+    // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
     const isFirstHop = isSameStationName(getFirstLeg(route, destination.name).endName, alarmEvent.stationName);
     const suppressBySleep = shouldSuppressBySleepRule({
       lock: lockForLineGuard,
@@ -409,6 +410,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     // lockless BG: estimator output 부재 → currentHopIndex null로 전달, 게이트는 자동 비적용(보수적).
     // dedup(lastNotifiedStationId) 위에 위치 — sleep으로 차단되면 lastNotifiedStationId 갱신 안 함
     // → sleep OFF 토글 후 정상 첫 hop 알림이 재발사 가능.
+    // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
     if (
       shouldSuppressBySleepRule({
         lock: lockForLineGuard,
