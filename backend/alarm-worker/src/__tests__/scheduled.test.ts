@@ -2130,6 +2130,123 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(data.boardingLine).toBe('7');
   });
 
+  // #2036 (Issue I γ) — 취침모드 환승 알람 silent push. transfer waypoint advance 시 device로
+  // sleep-transfer-alarm kind push를 발사해 device가 sleepMode=true 시 gate 무관 로컬 알림 발사.
+  // ADR-023 정합: backend는 취침 무관 발사 (본 caller는 sleepMode 조회하지 않음).
+  it('#2036 — transfer waypoint advance 시 sleep-transfer-alarm silent push 발사 (kind + originStation + nextLine + nextStation + tripToken)', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-sleep-transfer',
+    });
+    const sleepTransferCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        const init = call[1];
+        if (!init?.body) return false;
+        try {
+          const body = JSON.parse(init.body as string);
+          return body?.data?.kind === 'sleep-transfer-alarm';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(sleepTransferCall).toBeDefined();
+    const data = JSON.parse(sleepTransferCall![1].body as string).data as Record<string, unknown>;
+    expect(data.kind).toBe('sleep-transfer-alarm');
+    expect(data.originStation).toBe('군자');
+    expect(data.nextLine).toBe('5');
+    expect(data.nextStation).toBe('아차산');
+    expect(data.tripToken).toBe('lock-tok');
+    // background silent push headers (사용자 UI는 device fallback + gate 무관 발사가 담당).
+    const headers = sleepTransferCall![1].headers as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('background');
+    expect(headers['apns-priority']).toBe('5');
+  });
+
+  it('#2036 — waypoints 소진(마지막 intermediate 통과) 시 sleep-transfer-alarm 미발사 (destination path 위임)', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    // 유일 waypoint가 transfer지만 이후 waypoint 없음 → 발사 대상 X (다음 leg 없음).
+    // 실제로는 transfer kind는 destination이 뒤에 있어야 정상 route지만, 방어적으로 nextWaypoint 부재 시 skip 검증.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [{ stationName: '군자', line: '7', kind: 'transfer' }],
+      }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-sleep-transfer-only',
+    });
+    const sleepTransferCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        const init = call[1];
+        if (!init?.body) return false;
+        try {
+          const body = JSON.parse(init.body as string);
+          return body?.data?.kind === 'sleep-transfer-alarm';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(sleepTransferCall).toBeUndefined();
+  });
+
+  it('#2036 — intermediate waypoint advance 시 sleep-transfer-alarm 미발사 (transfer 전용)', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-sleep-intermediate',
+    });
+    const sleepTransferCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        const init = call[1];
+        if (!init?.body) return false;
+        try {
+          const body = JSON.parse(init.body as string);
+          return body?.data?.kind === 'sleep-transfer-alarm';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(sleepTransferCall).toBeUndefined();
+  });
+
   it('#864 — intermediate waypoint advance 시 boardingLock은 유지 (같은 train 계속 추적)', async () => {
     const kv = new InMemoryKV();
     await runArrivedScenario(

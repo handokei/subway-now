@@ -894,6 +894,89 @@ export async function sendBoardingPromptSilentPush(
   return parseApnsError(response);
 }
 
+/**
+ * 취침모드 환승 알람 silent push (#2036 Issue I γ).
+ *
+ * 사용자 확정 flow: "환승역 → 취침모드 시 알람 발사, 일반모드는 일반 상황과 동일".
+ * device silentPushTask가 payload 수신 → `SLEEP_MODE_KEY` AsyncStorage read → sleepMode=true 시
+ * gate 무관 로컬 알림(alarm.wav sound + repeat vibration + timeSensitive interruptionLevel) 발사.
+ *
+ * ADR-023 정합: backend는 취침 무관 발사 (본 함수 호출부는 사용자 sleep 상태 조회하지 않음).
+ *
+ * headers는 일반 silent push와 동일 (background + priority 5). data payload는 discriminator
+ * `kind: 'sleep-transfer-alarm'` + originStation + nextLine + nextStation + tripToken 필수.
+ * pushId / sentAt / title / body 는 optional (구 device 호환).
+ *
+ * dedup은 device 측 in-memory Set(`${tripToken}::${nextStation}`)이 담당 — backend는 idempotent 발사.
+ */
+export interface SendSleepTransferAlarmPushOptions {
+  deviceToken: string;
+  pushId: string;
+  /** 사용자가 지금 있는 역(환승 waypoint 도달 시점). */
+  originStation: string;
+  /** 환승 후 다음 leg의 노선. 알림 본문 노출용. */
+  nextLine: string;
+  /** 환승 후 첫 도착역. 알림 본문 + dedup key. */
+  nextStation: string;
+  /** trip 토큰 — device dedup key + `apns-thread-id` grouping. */
+  tripToken: string;
+  sentAt: number;
+  /**
+   * 사용자 표시용 제목. 미지정 시 device fallback ('곧 환승역입니다').
+   * i18n resolve는 backend caller가 담당 (locale 정보 전파 시).
+   */
+  title?: string;
+  /**
+   * 사용자 표시용 본문. 미지정 시 device fallback (`${originStation}에서 ${nextLine}호선 ${nextStation}으로 환승`).
+   */
+  body?: string;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendSleepTransferAlarmPush(
+  options: SendSleepTransferAlarmPushOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const body = JSON.stringify({
+    aps: { 'content-available': 1 },
+    data: {
+      kind: 'sleep-transfer-alarm',
+      originStation: options.originStation,
+      nextLine: options.nextLine,
+      nextStation: options.nextStation,
+      tripToken: options.tripToken,
+      pushId: options.pushId,
+      sentAt: options.sentAt,
+      // title/body 는 정의된 경우만 wire (미지정 시 device fallback).
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.body !== undefined ? { body: options.body } : {}),
+    },
+  });
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': options.config.bundleId,
+      'apns-push-type': 'background',
+      'apns-priority': '5',
+      'content-type': 'application/json',
+      // #1788 — thread-id groups notifications by trip.
+      'apns-thread-id': options.tripToken,
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
 async function parseApnsError(response: Response): Promise<SendPushResult> {
   let reason: string | undefined;
   try {
