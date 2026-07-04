@@ -324,6 +324,29 @@ export function markPromptSilenced(
 }
 
 /**
+ * #2034 — hop-end (환승역 "하차했나요?") 프롬프트 게이트.
+ *
+ * 발사 조건은 boarding-prompt 대비 훨씬 단순하다 — transfer waypoint advance = "환승역 도착 판정"
+ * 은 이미 caller (scheduled.ts) 의 boarding-lock waypoint advance 게이트가 통과된 상태이므로
+ * ground truth 로 다뤄지고, GPS/motion/speed 는 재검증하지 않는다. false-positive 방어는:
+ *   - fired dedup (같은 leg 는 1회만 발사)
+ *   - silencedUntil (사용자 [아직] 응답 시 5 분 재발사 차단)
+ *
+ * caller 는 leg-key (예: `${originStation}|${nextLine}`) 로 `trip.hopEndPromptState[key]` 를 조회해
+ * 이 함수에 전달한다.
+ */
+export function evaluateHopEndPromptGates(inputs: {
+  promptState?: BoardingPromptState;
+  now: number;
+}): GateOutcome {
+  const silenceOutcome = evaluateSilenceGate(inputs.promptState, inputs.now);
+  if (silenceOutcome) return silenceOutcome;
+  // GPS/motion 게이트 없이 통과. fusedSpeed 는 caller 가 사용하지 않는 필드지만 GateOutcome
+  // 계약 준수를 위해 0 을 반환 (evaluateBoardingPromptGates bypass 분기와 동일 정책).
+  return { pass: true, metrics: evaluateWindow([], inputs.now), fusedSpeedKmh: 0 };
+}
+
+/**
  * arvlCd 우선순위로 trainCode 자동 선택 (ADR Section 1.2).
  *
  * 같은 line + 진행 방향 매칭하는 후보 중:

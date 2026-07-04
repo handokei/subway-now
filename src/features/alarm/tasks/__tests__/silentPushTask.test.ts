@@ -1116,6 +1116,9 @@ describe('silentPushTask', () => {
           destinationDirection: 'up',
           title: '탑승하셨나요?',
           body: '2호선 강남에서 열차가 곧 도착합니다.',
+          hopEndKind: undefined,
+          nextLine: undefined,
+          nextStation: undefined,
         });
       });
 
@@ -1193,6 +1196,9 @@ describe('silentPushTask', () => {
           destinationDirection: undefined,
           title: undefined,
           body: undefined,
+          hopEndKind: undefined,
+          nextLine: undefined,
+          nextStation: undefined,
         });
       });
 
@@ -1223,6 +1229,57 @@ describe('silentPushTask', () => {
             }),
           ),
         ).toMatchObject({ title: undefined, body: undefined });
+      });
+
+      // #2034 — hop-end (환승역 하차) payload 확장.
+      it('hopEndKind + nextLine + nextStation 을 payload 로 정규화 (#2034)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '성수',
+              line: '2',
+              tripToken: 'tok-hop',
+              hopEndKind: 'disembark',
+              nextLine: 'K',
+              nextStation: '왕십리',
+            }),
+          ),
+        ).toMatchObject({
+          hopEndKind: 'disembark',
+          nextLine: 'K',
+          nextStation: '왕십리',
+        });
+      });
+
+      it('hopEndKind 이 disembark 이 아니면 undefined 로 정규화 (#2034)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '성수',
+              line: '2',
+              tripToken: 'tok',
+              hopEndKind: 'invalid',
+            }),
+          ),
+        ).toMatchObject({ hopEndKind: undefined });
+      });
+
+      it('nextLine/nextStation 이 빈 문자열이면 undefined 로 정규화 (#2034)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '성수',
+              line: '2',
+              tripToken: 'tok',
+              hopEndKind: 'disembark',
+              nextLine: '',
+              nextStation: '',
+            }),
+          ),
+        ).toMatchObject({ nextLine: undefined, nextStation: undefined });
       });
     });
   });
@@ -3446,6 +3503,99 @@ describe('silentPushTask', () => {
         mockScheduleNotificationAsync.mockRejectedValueOnce(new Error('schedule fail'));
         await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
         expect(mockLogBoardingPromptFired).not.toHaveBeenCalled();
+      });
+
+      // #2034 — hop-end (환승역 하차) 시나리오.
+      describe('#2034 hop-end (환승역 "하차했나요?")', () => {
+        function hopEndPayload(extra: Record<string, unknown> = {}) {
+          return boardingPromptPayload({
+            hopEndKind: 'disembark',
+            originStation: '성수',
+            line: '2',
+            tripToken: 'tok-hop',
+            nextLine: 'K',
+            nextStation: '왕십리',
+            ...extra,
+          });
+        }
+
+        it('hopEndKind=disembark → fallback title "성수에서 하차하셨나요?"', async () => {
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-1' }));
+          const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+            content: { title: string; body: string };
+          };
+          expect(call.content.title).toBe('성수에서 하차하셨나요?');
+          expect(call.content.body).toContain('성수에서 내려주세요');
+          expect(call.content.body).toContain('K호선 왕십리');
+        });
+
+        it('hopEndKind=disembark + nextStation 없음 → line 만 fallback body', async () => {
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-2', nextStation: undefined }));
+          const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+            content: { body: string };
+          };
+          expect(call.content.body).toContain('K호선');
+          expect(call.content.body).not.toContain('왕십리');
+        });
+
+        it('hopEndKind=disembark + nextLine 없음 → 다음 leg 안내 생략', async () => {
+          await handleSilentPush(
+            hopEndPayload({ pushId: 'hop-3', nextLine: undefined, nextStation: undefined }),
+          );
+          const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+            content: { body: string };
+          };
+          expect(call.content.body).toBe('2호선 성수에서 내려주세요.');
+        });
+
+        it('backend title/body 우선 (backend i18n resolve 정합)', async () => {
+          await handleSilentPush(
+            hopEndPayload({
+              pushId: 'hop-4',
+              title: 'Getting off at Seongsu?',
+              body: 'Transfer here.',
+            }),
+          );
+          const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+            content: { title: string; body: string };
+          };
+          expect(call.content.title).toBe('Getting off at Seongsu?');
+          expect(call.content.body).toBe('Transfer here.');
+        });
+
+        it('data payload 에 hopEndKind + nextLine + nextStation 전달', async () => {
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-5' }));
+          const call = mockScheduleNotificationAsync.mock.calls[0][0] as {
+            content: { data: Record<string, unknown> };
+          };
+          expect(call.content.data.hopEndKind).toBe('disembark');
+          expect(call.content.data.nextLine).toBe('K');
+          expect(call.content.data.nextStation).toBe('왕십리');
+        });
+
+        it('hop-end dedup 은 leg-key (tripToken|hop-end|line) — 같은 tripToken 다른 line 은 각 발사', async () => {
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-a', line: '2' }));
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-b', line: '5' }));
+          expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
+        });
+
+        it('hop-end 이후 승차 prompt (같은 tripToken) 은 별개 dedup 채널 → 각 발사', async () => {
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-x' }));
+          await handleSilentPush(
+            boardingPromptPayload({
+              pushId: 'bp-x',
+              tripToken: 'tok-hop', // 같은 trip
+              // hopEndKind 없음 → 승차 prompt
+            }),
+          );
+          expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
+        });
+
+        it('같은 leg-key 두 번째 발사는 dedup skip', async () => {
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-p' }));
+          await handleSilentPush(hopEndPayload({ pushId: 'hop-q' }));
+          expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        });
       });
     });
 

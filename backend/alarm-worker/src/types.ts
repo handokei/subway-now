@@ -183,6 +183,13 @@ export interface Trip {
    */
   lastAutoPromptedAt?: number;
   /**
+   * #2034 — 환승역 "하차했나요?" hop-end 프롬프트 발사 상태. `boardingPromptState` 와 분리해
+   * 동일 trip 내에서 boarding 응답 후에도 hop-end 는 별도로 발사되도록 보장 (한 trip 에 여러 leg 가
+   * 있을 때 각 leg 종료마다 발사). key = `${originStation}|${nextLine ?? ''}` 로 leg 별 dedup.
+   * 미지정 = 아직 발사 안 됨.
+   */
+  hopEndPromptState?: Record<string, BoardingPromptState>;
+  /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
    * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.
@@ -527,13 +534,38 @@ export interface BoardingPromptCandidate {
 export interface BoardingPromptPushPayload {
   pushId: string;
   kind: 'boarding-prompt';
-  /** 사용자 출발역 (lock 생성 시 boardingStation으로 사용). */
+  /**
+   * 사용자 출발역. hop-end 프롬프트(#2034) 일 때는 "환승 지점 역명" 으로 재해석되며 (=사용자가
+   * 하차해야 하는 station). 일반 boarding-prompt 시엔 boardingStation 으로 그대로 사용.
+   */
   originStation: string;
-  /** 출발 노선 (lock 생성 시 boardingLine으로 사용). */
+  /**
+   * 노선. hop-end 프롬프트(#2034) 일 때는 "직전 leg 노선" (하차 대상). 일반 boarding-prompt 는
+   * 승차 대상 노선. `nextLine` 을 별도로 붙여 다음 leg 노선을 표시.
+   */
   line: string;
   /** trip 토큰 — 푸시 응답 시점에 trip 컨텍스트 복원용. */
   tripToken: string;
   sentAt: number;
+  /**
+   * #2034 — hop-end (환승역 하차) 프롬프트 분기. 미지정(legacy) = 기존 boarding (승차) 프롬프트.
+   * 'disembark' = 환승역 도착 → "하차했나요?" UI. device 는 이 필드로 title/body/response 처리를
+   * 분기하며, 응답이 hop-end 확정([하차함]) 시 다음 leg 로 진입.
+   *
+   * 확장 여지: 'destination-arrival' 등 도착 전 prompt 유형을 추가하는 경우에도 같은 payload 스키마
+   * 를 재사용할 수 있도록 union 형태로 유지.
+   */
+  hopEndKind?: 'disembark';
+  /**
+   * #2034 — hop-end 프롬프트에서 사용자가 [하차함] 시 다음에 탑승해야 하는 노선. line 과 다른 값 (환승).
+   * 미지정이면 device 가 line 을 그대로 fallback (동일 노선 계속).
+   */
+  nextLine?: string;
+  /**
+   * #2034 — hop-end 프롬프트에서 사용자가 [하차함] 시 다음에 탑승해야 하는 역. 다음 leg 의 출발역.
+   * 미지정이면 device 가 UI 에 next-line 만 표시.
+   */
+  nextStation?: string;
   /**
    * #1536 (S3, T13) — trigger source 구분.
    *

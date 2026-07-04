@@ -64,6 +64,15 @@ export interface BoardingPromptPayload {
    * 미지정 시 양방향 모두 후보로 허용 (backward compat).
    */
   destinationDirection?: 'up' | 'down';
+  /**
+   * #2034 — hop-end (환승역 하차) 분기 신호. 미지정 = 승차 프롬프트 (기존 동작).
+   * 'disembark' = "하차했나요?" — [탑승] 액션은 하차 확인 (다음 leg 진입), [미탑승] = 아직 도착 안 함.
+   */
+  hopEndKind?: 'disembark';
+  /** #2034 — hop-end 시 다음 leg 노선 (UI 표시 + 후속 동작 힌트). */
+  nextLine?: string;
+  /** #2034 — hop-end 시 다음 leg 출발역. */
+  nextStation?: string;
 }
 
 export function extractBoardingPromptPayload(
@@ -79,12 +88,20 @@ export function extractBoardingPromptPayload(
     o.destinationDirection === 'up' || o.destinationDirection === 'down'
       ? (o.destinationDirection as 'up' | 'down')
       : undefined;
+  const hopEndKind = o.hopEndKind === 'disembark' ? 'disembark' : undefined;
+  const nextLine =
+    typeof o.nextLine === 'string' && o.nextLine.length > 0 ? o.nextLine : undefined;
+  const nextStation =
+    typeof o.nextStation === 'string' && o.nextStation.length > 0 ? o.nextStation : undefined;
   return {
     kind: 'boarding-prompt',
     originStation: o.originStation,
     line: o.line,
     tripToken: o.tripToken,
     destinationDirection,
+    hopEndKind,
+    nextLine,
+    nextStation,
   };
 }
 
@@ -173,7 +190,15 @@ export async function handleResponse(
   addDomainBreadcrumb('boarding', 'boarding_prompt_interactive_tap', {
     action: actionIdentifier,
     line: payload.line,
+    hopEndKind: payload.hopEndKind ?? 'boarding',
   });
+
+  // #2034 — hop-end (환승역 하차) 분기 처리. 기존 boarding 승차 prompt 처리와 완전 분리해
+  // autoLock 시도를 skip 하고 [하차함]/[아직] 만 처리한다.
+  if (payload.hopEndKind === 'disembark') {
+    await handleHopEndResponse(actionIdentifier, payload, deps);
+    return;
+  }
 
   if (
     actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
@@ -202,6 +227,56 @@ export async function handleResponse(
   // [미탑승] 또는 dismiss — 5분 silence.
   // #1170 — dismissed 측정. dismiss POST 결과(네트워크 성공/실패)와 무관하게 사용자 인지 기준 적재.
   logBoardingPromptResponded({ outcome: 'dismissed' });
+  await dismissBoardingPrompt(payload.tripToken);
+}
+
+/**
+ * #2034 — hop-end (환승역 "하차했나요?") 응답 처리.
+ *
+ * - BOARDED action / $default (banner tap): [하차함] 확정. 기존 lock 을 clear (직전 leg 종료).
+ *   backend 는 이미 hop-end fire 성공 시 hopEndPromptState[legKey].fired=true 로 stamp 했으므로
+ *   추가 backend call 은 불필요. 다음 leg boardingPrompt 는 backend cron 이 다음 cycle 에 자연 발사.
+ * - NOT_BOARDED / dismiss: [아직] 응답. 5 분 silence 를 위해 dismissBoardingPrompt POST — backend
+ *   가 boardingPromptState.silencedUntil 로 재발사 차단.
+ *
+ * banner tap ($default) 은 사용자가 다음 leg 정보를 보고 싶다는 신호 → onBannerTap 으로 navigate.
+ */
+async function handleHopEndResponse(
+  actionIdentifier: string,
+  payload: BoardingPromptPayload,
+  deps: HandleDeps,
+): Promise<void> {
+  if (
+    actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
+    actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
+  ) {
+    logBoardingPromptResponded({ outcome: 'boarded' });
+    addDomainBreadcrumb('boarding', 'hop_end_prompt_confirmed', {
+      line: payload.line,
+      nextLine: payload.nextLine ?? '',
+    });
+    // 기존 lock 이 남아 있으면 clear — backend 는 transfer waypoint advance 시 이미 release 했지만
+    // race 방어. releaseLock 은 idempotent (lock 없으면 no-op). reason='user' 로 stamp — 사용자
+    // 명시 [하차함] 응답이 트리거이므로 breadcrumb 상 user-initiated 로 분류.
+    // 참고: 승차 prompt 와 달리 hop-end 는 setInfoModeEnabled(true) 를 호출하지 않는다 — 다음 leg
+    // 는 새 승차 prompt 를 통해 사용자 명시 의향을 별도로 stamp 해야 함.
+    try {
+      await useBoardingLockStore.getState().releaseLock('user');
+    } catch (err) {
+      log.warn('hop-end releaseLock failed', err as Error);
+    }
+    if (
+      actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER &&
+      deps.onBannerTap !== undefined
+    ) {
+      deps.onBannerTap();
+    }
+    return;
+  }
+  logBoardingPromptResponded({ outcome: 'dismissed' });
+  addDomainBreadcrumb('boarding', 'hop_end_prompt_dismissed', {
+    line: payload.line,
+  });
   await dismissBoardingPrompt(payload.tripToken);
 }
 
