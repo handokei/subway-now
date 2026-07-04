@@ -169,6 +169,22 @@ export const LA_STALE_AUTO_END_MS = 5 * 60 * 1000;
 export const LA_IMMEDIATE_TRIGGER_ETA_SEC = 60;
 
 /**
+ * #2027 (Issue K) — archFlag='on' 시 환승 후 다음 hop 조기 도착 알림 방지용 임계 (초).
+ *
+ * 배경 (2026-07-03 08:24 KST 중곡→성수 trip):
+ *   08:32:17 사용자 건대입구 실제 도착 → 08:32:45 backend가 성수 waypoint(다음 hop, 2호선) 로 advance.
+ *   08:33-34 다음 cron cycle 에서 Seoul API 성수 arvlCd=4/5 (early), etaSeconds ≤ 60 →
+ *   destination-imminent LA push 조기 발사. 실제 성수 도착 08:37 (5분 이상 조기).
+ *
+ * 환승 직후 leg 전환 시점의 arvlCd=4/5(early) 신호는 물리적으로 아직 새 leg 열차가 대상 역 근처에
+ * 도착하지 않은 상태에서도 나올 수 있다 (Seoul API 는 line 별 pool 이라 stale). 60s → 90s 상향으로
+ * 사용자 체감 관점에서 도착 임박 판정 시점을 뒤로 밀어 조기 발사를 방지한다.
+ *
+ * archFlag='off' 시 기존 60s 유지 (regression 방어). archFlag='on' 시에만 90s 적용.
+ */
+export const LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH = 90;
+
+/**
  * 연속 etaMissing 임계치 (#706). 한 trip이 N회 연속 trainCode 매칭 실패면 자동 종료.
  * 운행 시간대 외(새벽)에 trainCode가 Seoul API에서 사라지면 무한 폴링하던 회귀(8h × 1/min) 방지.
  * cron 주기 60s × 5회 = 5분 — 일시적 API 누락은 흡수하고 운행 종료/탈선 신호는 잡는다.
@@ -3153,9 +3169,13 @@ export async function maybeFireLiveActivityUpdate(
   // #1671 — 즉시 trigger 여부 판정. dedup window(30s)는 통과해야 발사.
   // transfer: leg 전환 시점 — 중요도 최상, etaSeconds 무관.
   // destination: 도착 1분 이내 — 사용자가 내릴 준비를 해야 하는 시점.
+  // #2027 (Issue K) — archFlag='on' 시 환승 후 조기 발사 방지 위해 60s → 90s 상향.
+  // archFlag='off' 는 기존 60s 유지 (regression 방어).
+  const immediateTriggerEtaSec =
+    deps.archFlag === 'on' ? LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH : LA_IMMEDIATE_TRIGGER_ETA_SEC;
   const isImmediateTrigger =
     waypoint.kind === 'transfer' ||
-    (waypoint.kind === 'destination' && etaSeconds <= LA_IMMEDIATE_TRIGGER_ETA_SEC);
+    (waypoint.kind === 'destination' && etaSeconds <= immediateTriggerEtaSec);
 
   // #1671 — wall-clock dedup guard (즉시 trigger / heartbeat 공통).
   // lastLaPushAt 기준 LA_PUSH_THRESHOLD_MS(30s) 이내에 이미 발사했으면 모든 경로 차단.
@@ -3356,9 +3376,19 @@ export async function runLocklessIntermediate(
   // #1729 paradigm shift — maybeBindLocklessTrainCode(Path B') 제거됨.
   // lockless trip은 boardingPrompt push 경로로 사용자 인지 후 BoardingTrainList에서 명시 탭.
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  const signal = pickBestArrivalSignal(arrivals, waypoint);
+  // #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 차단 (환승 후 stale 신호 방지).
+  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
+    // #2027 — line mismatch 로 인해 archFlag='on' 에서 null 이 반환된 경우 skip reason stamp.
+    if (deps.archFlag === 'on' && arrivals.length > 0 && signal === null) {
+      log('lockless: pickBestArrivalSignal skipped (line-mismatch-transfer)', {
+        token: trip.token.slice(0, 8),
+        waypoint: waypoint.stationName,
+        waypointLine: waypoint.line,
+        arrivalsCount: arrivals.length,
+      });
+    }
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
@@ -3618,13 +3648,24 @@ export interface ArrivalSignal {
  *   3. 위 둘 모두 없으면 min ETA의 train을 채택 (ETA fallback 경로)
  *
  * 라인 매칭 실패 시 전체 arrivals로 fallback. 모두 없으면 null.
+ *
+ * #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 제거. 환승 직후 (waypoint 가 새 line
+ * 으로 전환) Seoul API 가 이전 line 의 stale 신호만 반환하면 다른 line 의 train 이 대상 역에 도착
+ * 임박으로 판정돼 조기 알림이 발사되는 회귀 (2026-07-03 성수 8분 조기) 를 차단한다. archFlag='on'
+ * + matchingLine.length===0 이면 null 반환 → caller 는 arc / ETA fallback 경로로 자연 전환.
+ * archFlag='off' 시 기존 fallback 동작 유지 (regression 방어).
  */
 export function pickBestArrivalSignal(
   arrivals: readonly ArrivalEntry[],
   waypoint: Waypoint,
+  archFlag?: ArchFlagValue,
 ): ArrivalSignal | null {
   if (arrivals.length === 0) return null;
   const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, waypoint.line));
+  // #2027 (Issue K) — archFlag='on' 시 line mismatch 시 fallback 차단.
+  if (matchingLine.length === 0 && archFlag === 'on') {
+    return null;
+  }
   const pool = matchingLine.length > 0 ? matchingLine : arrivals;
 
   // 1순위: imminent 실측 신호 (해당 역 진입/도착).
