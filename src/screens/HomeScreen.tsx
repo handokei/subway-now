@@ -890,6 +890,9 @@ export default function HomeScreen() {
     // #1923 — 사용자 명시 의향 토글. backend가 lockless intermediate gate 진입에 사용 →
     // station-passed silent push 발사. 미stamp(false) trip은 기존 lockMissing skip 동작.
     infoModeEnabled,
+    // #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 저장 (ADR-023 결정 gate 미사용).
+    // skip 원인 분류 + evidence 재구성 자동화용. Device의 `shouldSuppressBySleepRule`이 실제 suppress gate.
+    sleepMode,
   });
 
   useEffect(() => {

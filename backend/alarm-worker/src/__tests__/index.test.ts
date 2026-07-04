@@ -212,6 +212,19 @@ describe('validateTrip', () => {
     expect(validateTrip(base())?.subsurface).toBeUndefined();
   });
 
+  // #2032 (Issue D) — sleepModeEnabled 필드 (monitoring 전용, ADR-023 결정 gate 미사용)
+  it('preserves boolean sleepModeEnabled (#2032)', () => {
+    expect(validateTrip({ ...base(), sleepModeEnabled: true })?.sleepModeEnabled).toBe(true);
+    expect(validateTrip({ ...base(), sleepModeEnabled: false })?.sleepModeEnabled).toBe(false);
+  });
+
+  it('drops non-boolean sleepModeEnabled and absent field stays undefined (#2032, legacy client graceful)', () => {
+    expect(validateTrip({ ...base(), sleepModeEnabled: 'yes' })?.sleepModeEnabled).toBeUndefined();
+    expect(validateTrip({ ...base(), sleepModeEnabled: 1 })?.sleepModeEnabled).toBeUndefined();
+    // Legacy client (필드 미송신) — 기존 동작 완전 보존.
+    expect(validateTrip(base())?.sleepModeEnabled).toBeUndefined();
+  });
+
   // #1193 — 중복역 trip의 waypoint occurrenceIdx stamping.
   describe('occurrenceIdx stamping (#1193)', () => {
     it('단일 등장 waypoints는 모두 occurrenceIdx=0', () => {
@@ -868,6 +881,38 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
     expect(finalTrip.consecutiveEtaMissing).toBe(expectedCount);
     expect(finalTrip.subsurface).toBe(expectedSubsurface);
+  });
+
+  // #2032 (Issue D) — sleepModeEnabled 저장 및 재등록 시 incoming 값 반영.
+  // ADR-023: monitoring 전용 필드 — merge는 `...incoming` spread로 자연 갱신 (별도 preserve 로직 불필요).
+  it('persists sleepModeEnabled on register (monitoring 전용, ADR-023)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...tripBody(), sleepModeEnabled: true }, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.sleepModeEnabled).toBe(true);
+  });
+
+  it('updates sleepModeEnabled on same-session re-register (user toggled sleep)', async () => {
+    const env = makeKvEnv();
+    // 1) initial register: sleep OFF
+    await post('/trips', tripBody(), env);
+    const initial = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(initial.sleepModeEnabled).toBeUndefined();
+    // 2) user turns sleep ON — same createdAt (same session)
+    await post('/trips', { ...tripBody(), sleepModeEnabled: true }, env);
+    const afterOn = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(afterOn.sleepModeEnabled).toBe(true);
+    // 3) user turns sleep OFF again — same session
+    await post('/trips', { ...tripBody(), sleepModeEnabled: false }, env);
+    const afterOff = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(afterOff.sleepModeEnabled).toBe(false);
+  });
+
+  it('legacy client (no sleepModeEnabled) 는 undefined 저장 (backward-compat 완전 보존)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env); // legacy client — 필드 미송신
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.sleepModeEnabled).toBeUndefined();
   });
 
   // POST /trips 거부 케이스 — 동일한 400 + error-code shape를 테이블로 검증(중복 제거).

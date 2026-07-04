@@ -236,6 +236,23 @@ export interface Trip {
    * silent push payload는 device-side i18n이 처리하므로 영향 없음.
    */
   locale?: 'ko' | 'en' | 'ja' | 'zh';
+  /**
+   * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **monitoring 전용 (ADR-023)**.
+   *
+   * 저장 목적:
+   *   1) skip 원인 자동 분류 — cron/silent push log에 취침 여부 dimension을 얹어 "정상 sleep skip"과
+   *      "회귀 skip"을 backend 로그에서 즉시 구분 가능하게 한다.
+   *   2) evidence 재구성 자동화 — 사용자 trip 사후 분석 시 device sleep 상태를 backend 관점에서 재구성.
+   *
+   * **backend push 발사 결정에 사용 금지** — ADR-023 첫 원칙("Backend는 arvlCd 신호 기반 silent push를
+   * 무조건 발사, 취침모드 무관"). Device의 `shouldSuppressBySleepRule.ts`가 단일 gate. 이 필드로
+   * `if (trip.sleepModeEnabled)` 분기를 추가하면 backend가 정책 state를 소유하게 되어 device 토글 ↔
+   * backend KV 동기화 race window가 정확성 리스크로 전환된다(ADR-023 §"Backend 안 보냄 대안 미채택").
+   *
+   * 미송신/미지원(legacy client)은 `undefined`로 graceful 처리 — 기존 동작 완전 보존.
+   * `infoModeEnabled` / `subsurface` / `locale`과 동일 저장 전용 패턴.
+   */
+  sleepModeEnabled?: boolean;
 }
 
 /**

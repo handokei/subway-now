@@ -76,6 +76,14 @@ export interface UseApnsTripRegistrationInputs {
    * 미지정/false: 기존 동작 그대로 — boardingLock 부재 시 `lockMissing` skip.
    */
   infoModeEnabled?: boolean;
+  /**
+   * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **monitoring 전용 (ADR-023)**.
+   * `useSettingsStore.sleepMode`를 그대로 전달. backend는 이 값으로 push 발사 결정을
+   * 바꾸지 않으며(오로지 저장/로그), skip 원인 자동 분류 + evidence 재구성에만 사용한다.
+   * ADR-023 §"Backend 발사 경로 5개 (모두 sleep 무관)" 유지.
+   * 미지정/false: 필드 미송신 (graceful) — backend 저장값 undefined 유지.
+   */
+  sleepMode?: boolean;
 }
 
 /**
@@ -101,6 +109,8 @@ interface RegisterCallInputs {
   subsurface: boolean;
   /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
   infoModeEnabled: boolean;
+  /** #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 (ADR-023 결정 gate 미사용). */
+  sleepMode: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
   /**
@@ -214,6 +224,9 @@ async function callRegister(input: RegisterCallInputs) {
     ...(locale ? { locale } : {}),
     // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
     ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
+    // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
+    // false/미설정은 필드 누락(graceful) — backend Trip.sleepModeEnabled=undefined 유지.
+    ...(input.sleepMode ? { sleepModeEnabled: true } : {}),
   });
 }
 
@@ -225,6 +238,7 @@ export function useApnsTripRegistration({
   boardingLock = null,
   subsurface = false,
   infoModeEnabled = false,
+  sleepMode = false,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -233,9 +247,9 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled, sleepMode });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled, sleepMode };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -319,6 +333,7 @@ export function useApnsTripRegistration({
           boardingLock: bl,
           subsurface: sub,
           infoModeEnabled: ime,
+          sleepMode: sm,
         } = latestInputsRef.current;
         if (!r || !d) return;
         const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -331,6 +346,7 @@ export function useApnsTripRegistration({
           boardingLock: bl,
           subsurface: sub,
           infoModeEnabled: ime,
+          sleepMode: sm,
           createdAt: resolveTripCreatedAt(sessionKey),
           cachedPromptContext: lastPromptContextRef.current,
         });
@@ -432,6 +448,7 @@ export function useApnsTripRegistration({
         boardingLock,
         subsurface,
         infoModeEnabled,
+        sleepMode,
         createdAt: resolveTripCreatedAt(sessionKey),
         cachedPromptContext: lastPromptContextRef.current,
       });
@@ -487,6 +504,9 @@ export function useApnsTripRegistration({
     // #1923: infoModeEnabled 변화 시 backend lockless intermediate gate를 즉시 활성화해 다음 cron
     // cycle부터 station-passed silent push 발사가 가능. 토글 빈도는 사용자 명시 의향 표명/trip 종료
     // 시점만이므로 deps churn 위험 낮음. alarmBackend dedup hash가 미변화 사이클은 POST를 skip.
+    // #2032 (Issue D): sleepMode 변화 시 backend 저장값이 즉시 갱신되어 이후 log/skip 원인 분류가
+    // 정확해진다. **backend 발사 결정은 미영향 (ADR-023)** — device의 `shouldSuppressBySleepRule`만
+    // suppress 판정. 토글 빈도는 사용자 명시 설정 시점만이므로 deps churn 위험 낮음.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig, subsurface, infoModeEnabled]);
+  }, [routeSig, destination?.id, boardingLockSig, subsurface, infoModeEnabled, sleepMode]);
 }

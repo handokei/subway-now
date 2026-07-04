@@ -2183,6 +2183,11 @@ export function validateTrip(input: unknown): Trip | null {
       obj.locale === 'ko' || obj.locale === 'en' || obj.locale === 'ja' || obj.locale === 'zh'
         ? obj.locale
         : undefined,
+    // #2032 (Issue D): device 취침모드 상태 저장 — monitoring 전용 (ADR-023).
+    // backend push 발사 결정에 사용 금지 (types.ts sleepModeEnabled 주석 + ADR-023).
+    // Legacy client (필드 미송신) 또는 비boolean은 undefined로 graceful — 기존 동작 완전 보존.
+    sleepModeEnabled:
+      typeof obj.sleepModeEnabled === 'boolean' ? obj.sleepModeEnabled : undefined,
   };
 }
 

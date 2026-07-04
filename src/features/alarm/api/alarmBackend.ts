@@ -127,6 +127,17 @@ export interface RegisterTripPayload {
    * backend는 미송신 시 graceful undefined → false 처리 (backward-compat).
    */
   infoModeEnabled?: boolean;
+  /**
+   * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **backend monitoring 전용 (ADR-023)**.
+   *
+   * backend는 이 값을 저장(Trip.sleepModeEnabled)해 cron/silent push log에 dimension으로
+   * 얹는다 — skip 원인 자동 분류(정상 sleep skip vs 회귀 skip)와 evidence 재구성 자동화에 사용.
+   * backend push 발사 결정에는 사용하지 않는다(ADR-023: Backend는 arvlCd 신호 기반 silent push
+   * 무조건 발사, 취침모드 무관). Device의 `shouldSuppressBySleepRule`이 단일 gate.
+   *
+   * 미설정/false: 필드 미송신(graceful) — backend Trip.sleepModeEnabled는 undefined 유지.
+   */
+  sleepModeEnabled?: boolean;
 }
 
 export interface AlarmBackendResult {
@@ -189,6 +200,7 @@ function buildRegisterHash(body: {
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   infoModeEnabled?: boolean;
+  sleepModeEnabled?: boolean;
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -218,6 +230,10 @@ function buildRegisterHash(body: {
     // 사용자가 의향 표명 직후 backend lockless intermediate gate가 즉시 활성화되어야 다음
     // cron cycle부터 station-passed silent push 발사가 가능. 같은 값 연속 호출은 hash 동일 → skip.
     infoModeEnabled: body.infoModeEnabled === true,
+    // #2032 (Issue D) — sleepMode 토글 ON ↔ OFF 전환 시 즉시 재등록 보장.
+    // backend monitoring 값(Trip.sleepModeEnabled)이 즉시 갱신되어 이후 skip 원인 log가 정확.
+    // ADR-023: backend push 발사 결정에는 미영향(저장/log 전용). 같은 값 연속 호출은 hash 동일 → skip.
+    sleepModeEnabled: body.sleepModeEnabled === true,
   });
 }
 
@@ -287,6 +303,9 @@ async function performRegisterFetch(
     // #1923 — 사용자 명시 의향 토글. ON일 때만 송신. backend는 부재 시 false default 처리 (backward-compat).
     // device SSoT 동기화 시점에 false로 명시 송신 vs 미송신 둘 다 backend 동일 처리 → 송신 skip로 트래픽 절약.
     ...(payload.infoModeEnabled === true ? { infoModeEnabled: true } : {}),
+    // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용 저장 (ADR-023).
+    // 미송신 시 backend Trip.sleepModeEnabled는 undefined 유지 — 기존 동작 완전 보존.
+    ...(payload.sleepModeEnabled === true ? { sleepModeEnabled: true } : {}),
   };
 
   try {
@@ -361,6 +380,8 @@ export function registerActiveTrip(
     locale: payload.locale,
     // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).
     infoModeEnabled: payload.infoModeEnabled,
+    // #2032 (Issue D) — sleepMode 변경 시 hash 갱신해 재등록 보장 (backend 저장값 즉시 동기화).
+    sleepModeEnabled: payload.sleepModeEnabled,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });
