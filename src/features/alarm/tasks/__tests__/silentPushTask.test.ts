@@ -93,6 +93,15 @@ jest.mock('../../utils/tripEndedSentinel', () => ({
     mockClearTripEndedSentinel(...args),
 }));
 
+// #2045 (Signal 4) — silent push 수신 시각 stamp. handleSilentPush가 유효 payload 진입 시점에 write.
+const mockSetLastSilentPushReceivedAt = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/lastSilentPushReceivedAt', () => ({
+  setLastSilentPushReceivedAt: (...args: unknown[]) =>
+    mockSetLastSilentPushReceivedAt(...args),
+  getLastSilentPushReceivedAt: jest.fn(),
+  clearLastSilentPushReceivedAt: jest.fn(),
+}));
+
 // #919 — trip-ended 분기는 cleanup 직전에 recall trigger를 호출한다.
 const mockTriggerTripEndRecall = jest.fn().mockResolvedValue({ uploaded: false });
 jest.mock('../../utils/triggerTripEndRecall', () => ({
@@ -1519,6 +1528,26 @@ describe('silentPushTask', () => {
       const arg = mockLogSilentPushReceived.mock.calls[0][0];
       expect(arg.sentAt).toBe(1_700_000_000_000);
       expect(typeof arg.receivedAt).toBe('number');
+    });
+
+    // #2045 (Signal 4) — 유효 payload 진입 시점에 last-received stamp 갱신 (kind 무관).
+    // useLaunchTripReconciliation이 launch 시 read해 backend-timeout self-end 판정 (관찰 22 BG kill 커버).
+    describe('#2045 Signal 4 — setLastSilentPushReceivedAt wire', () => {
+      it('유효 standard payload → setLastSilentPushReceivedAt 1회 호출 (숫자 인자)', async () => {
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
+        expect(mockSetLastSilentPushReceivedAt).toHaveBeenCalledTimes(1);
+        expect(typeof mockSetLastSilentPushReceivedAt.mock.calls[0][0]).toBe('number');
+      });
+
+      it('invalid payload → setLastSilentPushReceivedAt 호출 안 함 (유효 payload 진입점에서만 stamp)', async () => {
+        await handleSilentPush({ data: bgTaskData({ trigger: 'other' }) });
+        expect(mockSetLastSilentPushReceivedAt).not.toHaveBeenCalled();
+      });
+
+      it('input.error → setLastSilentPushReceivedAt 호출 안 함', async () => {
+        await handleSilentPush({ error: { message: 'boom' } });
+        expect(mockSetLastSilentPushReceivedAt).not.toHaveBeenCalled();
+      });
     });
 
     // #1438 (E5) — backend → device lock release sync 채널 통합.

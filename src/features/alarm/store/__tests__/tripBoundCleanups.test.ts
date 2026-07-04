@@ -26,6 +26,7 @@ import {
 import { clearAlarmLogWindows } from '../../utils/alarmLog';
 import { resetAlarmBackendDedup } from '../../api/alarmBackend';
 import { clearBackendSsotMirror } from '../../utils/backendSsotMirror';
+import { clearLastSilentPushReceivedAt } from '../../utils/lastSilentPushReceivedAt';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../useBoardingLockStore';
 import { useAlarmEventStore } from '../useAlarmEventStore';
@@ -410,6 +411,13 @@ describe('tripBoundCleanups', () => {
       expect(TRIP_BOUND_CLEANUPS).toContain(clearBackendSsotMirror);
     });
 
+    // #2045 (Signal 4) — 새 trip 시작 or 종료 시 last-silent-push-received stamp도 함께 제거.
+    // 누락 시 이전 trip의 stamp가 남아 새 trip의 backend-timeout 판정(useLaunchTripReconciliation)에서
+    // 오탐 발생 가능(가장 오래된 stamp 기준 30분+ 무음 판정 조기 발동).
+    it('#2045 (Signal 4): clearLastSilentPushReceivedAt가 TRIP_BOUND_CLEANUPS에 포함된다 (backend-timeout 판정 오염 차단)', () => {
+      expect(TRIP_BOUND_CLEANUPS).toContain(clearLastSilentPushReceivedAt);
+    });
+
     it('S12-8: enumeration 가드 — TRIP_BOUND_CLEANUPS 길이가 baseline 이하로 떨어지면 회귀', () => {
       // 새 cleanup 항목이 추가될 때마다 baseline을 한 줄로 갱신. 누군가 실수로 항목을 제거하면
       // 본 assertion이 빨갛게 깨져 의도된 제거인지 코드리뷰에서 확인하도록 강제한다.
@@ -420,7 +428,8 @@ describe('tripBoundCleanups', () => {
       // 종료-only trigger이므로 4 trip-end 호출 경로(setDestination switch/silentPushTask trip-ended/
       // useLaunchTripReconciliation/useStateRehydration sentinel+force-end)에서 명시 호출.
       // #1892 / #1885 — endLiveActivityCleanup 1 신규 (RC-9 LA orphan 26분 cascade fix).
-      const MIN_ITEMS = 26;
+      // #2045 — clearLastSilentPushReceivedAt 1 신규 (Signal 4 판정 오염 차단).
+      const MIN_ITEMS = 27;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
     });
   });

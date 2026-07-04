@@ -67,6 +67,7 @@ import {
   setTripEndedSentinel,
   clearTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
+import { setLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
@@ -1024,6 +1025,10 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     }
     const receivedAt = Date.now();
     addDomainBreadcrumb('push', 'silent-push', { kind: payload.kind ?? 'fire' });
+    // #2045 (Signal 4) — 유효 payload 진입 시점에 last-received stamp 갱신.
+    // useLaunchTripReconciliation이 launch 시 read해 backend-timeout self-end 판정 (관찰 22 BG kill 커버).
+    // fire-and-forget — write 실패해도 다음 push 수신에서 재갱신, 판정 실패는 9h force-end backstop 흡수.
+    void setLastSilentPushReceivedAt(receivedAt);
     const apnsToken = await loadApnsToken();
 
     // #1561 (T8, ADR-017 / S2 #1535 흡수) — backend SSoT 권위 mirror 저장.

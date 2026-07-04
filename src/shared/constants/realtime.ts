@@ -210,6 +210,31 @@ export const LOCK_GPS_DRIFT_THRESHOLD_M = 1000;
 export const ESTIMATOR_STUCK_TIMEOUT_MS = 5 * 60_000;
 
 /**
+ * #2045 (Signal 4, Issue #2043 β 후속) — backend-timeout self-end 임계.
+ *
+ * 관찰 22 시나리오: BG 6h+ 방치 또는 앱 kill 상태에서 backend silent push가 도달하지 못한
+ * trip을 다음 launch 시점에 device가 자체 종료. `useLaunchTripReconciliation`이 판정.
+ *
+ * 두 임계 모두 동시 만족해야 self-end 발동:
+ *   - 마지막 silent push 수신 후 SILENT_PUSH_TIMEOUT_MS 초과 (backend 무음 확정)
+ *   - trip 시작 후 KTX_ETA_UPPER_BOUND_MS 미만 (KTX/장거리 실 trip 보호)
+ *
+ * 30분 SILENT_PUSH_TIMEOUT_MS:
+ *   - Backend cron ~30s cycle × 60 = 30분 무음이면 backend outage/kv 문제/route 무효 확정.
+ *   - 정상 trip은 매 hop마다 silent push 발사 → 30분 무음 = trip이 실질적으로 dead.
+ *   - PR #2044 β 3-signal ETA 임계(20-30분)와 정렬 — FG는 3-signal, BG는 본 signal.
+ *
+ * 10h KTX_ETA_UPPER_BOUND_MS:
+ *   - KTX 서울→부산 최장 ETA ~5-6h + 지연/환승 여유 → 10h. 이 이상 trip은 실질적 fake 잔재.
+ *   - TRIP_LIFECYCLE_FORCE_END_MS(9h)와 다른 목적 — 본 상수는 self-end 활성 상한(과잉 종료 방지),
+ *     force-end는 절대 종료 backstop. 10h > 9h 순서 유지 → force-end backstop이 self-end를 흡수.
+ *
+ * ADR-023 정합: device가 종료 결정 권한, backend는 정보 source (silent push 유무).
+ */
+export const SIGNAL_4_SILENT_PUSH_TIMEOUT_MS = 30 * 60_000;
+export const SIGNAL_4_KTX_ETA_UPPER_BOUND_MS = 10 * 60 * 60_000;
+
+/**
  * #1922 (M2) — lockless route-hop / re-anchored time-integration "stuck" 가드.
  *
  * `tryLocklessRouteHop`은 실측 신호(lastObserved) 없이 `tripStartedAt`만으로 시간 적분을 진행한다.

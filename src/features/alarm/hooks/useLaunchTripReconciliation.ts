@@ -14,14 +14,19 @@
  * 흐름:
  *   1) ACTIVE_TRIP_KEY 조회. 없으면 미트립 — skip.
  *   2) tripEndedSentinel 확인. 이미 기록 있음 = silent push가 잘 도달한 케이스 — skip.
- *   3) `fetchTripStatus` 호출.
+ *   3) #2045 (Signal 4) — backend-timeout self-end 판정. 마지막 silent push 수신 후
+ *      SIGNAL_4_SILENT_PUSH_TIMEOUT_MS(30분) 초과 + trip 시작 후 SIGNAL_4_KTX_ETA_UPPER_BOUND_MS
+ *      (10h) 미만이면 backend가 실질적으로 이 trip을 놓친 것으로 간주 → 즉시 self-end.
+ *      status=ended 분기와 동일한 cleanup 시퀀스 (notification 미발사 — backend 무음 상태에서
+ *      "trip 종료" 알림은 사용자에게 잘못된 신호). 관찰 22 BG kill 6h+ 방치 후 launch 시나리오 커버.
+ *   4) `fetchTripStatus` 호출.
  *      - status='ended' → notification 발사 + trip-end recall + storage cleanup + sentinel 기록 +
  *        active trip clear. silent push handler와 같은 cleanup 시퀀스를 그대로 따라
  *        사전예약/route/destination 잔존을 차단한다 (#1351 R1).
  *      - null(404/410) → active trip clear만. notification은 발사하지 않는다 (이미 정리됨,
  *        과거 notification은 다른 채널로 도달했을 가능성 또는 retention 만료).
  *      - status='active' → 변경 없음.
- *   4) 네트워크 에러 → silent fail. 다음 launch에서 재시도.
+ *   5) 네트워크 에러 → silent fail. 다음 launch에서 재시도.
  *
  * 멱등성: sentinel이 기록되면 step 2에서 skip되므로 같은 trip에 대해 notification은 최대 1회.
  * triggerTripEndRecall/runTripBoundCleanups 자체도 멱등이라 silent push handler와 중복 호출 안전.
@@ -40,9 +45,15 @@ import { useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import {
+  SIGNAL_4_KTX_ETA_UPPER_BOUND_MS,
+  SIGNAL_4_SILENT_PUSH_TIMEOUT_MS,
+} from '../../../shared/constants/realtime';
+import {
   getTripEndedSentinel,
   setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
+import { getLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
+import { getTripStartedAt } from '../utils/tripStartStorage';
 import { sendTripEndedNotification } from '../utils/stationNotification';
 import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
@@ -96,6 +107,50 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     const sentinel = await getTripEndedSentinel();
     if (sentinel !== null) {
       logger.info('skip — sentinel already recorded');
+      return;
+    }
+
+    // #2045 (Signal 4, Issue #2043 β 후속) — backend-timeout self-end 판정.
+    //
+    // 마지막 silent push 수신 후 30분+ 무음 AND trip 시작 후 10h 미만이면 backend가
+    // 실질적으로 이 trip을 놓친 것으로 판단해 device가 자체 종료. 관찰 22 시나리오
+    // (BG 6h+ 방치 or 앱 kill 후 launch) 커버 — #2044 FG 3-signal과 상호 보완.
+    //
+    // 두 임계 모두 만족 필요:
+    //   - lastReceivedAt !== null: silent push 한 번도 없으면 (첫 launch or 새 trip 직후)
+    //     판정 skip. 정상 silent push wire 확인 후에만 무음 판정.
+    //   - startedAt !== null: trip 시작 시각 없으면 판정 skip (기존 recall 처리에 위임).
+    //   - now - lastReceivedAt > 30분: backend 무음 확정 (cron ~30s cycle × 60).
+    //   - now - startedAt < 10h: KTX/장거리 실 trip 보호. 10h 이상은 force-end backstop(9h)에 위임.
+    //
+    // Sentinel 이후 배치: 위에서 sentinel !== null 이미 skip. 여기 도달 = sentinel 부재 상태.
+    // Self-end 성공 시 setTripEndedSentinel(now)로 다음 launch에서는 sentinel skip로 즉시 return.
+    //
+    // Notification 미발사: sendTripEndedNotification 호출 안 함. Backend가 무음 상태에서
+    // "trip 종료" 알림은 사용자에게 잘못된 신호(백엔드 outage인지 정상 종료인지 모름).
+    // status=ended 분기와 다른 점: cleanup + sentinel만 수행. UI는 다음 FG mount 시
+    // useStateRehydration이 sentinel 감지해 destination/lock reset하는 기존 chain에 위임.
+    const now = Date.now();
+    const [lastReceivedAt, startedAt] = await Promise.all([
+      getLastSilentPushReceivedAt(),
+      getTripStartedAt(),
+    ]);
+    if (
+      lastReceivedAt !== null &&
+      startedAt !== null &&
+      now - lastReceivedAt > SIGNAL_4_SILENT_PUSH_TIMEOUT_MS &&
+      now - startedAt < SIGNAL_4_KTX_ETA_UPPER_BOUND_MS
+    ) {
+      logger.info(
+        `Signal 4 backend-timeout self-end: silentPushGap=${now - lastReceivedAt}ms tripAge=${now - startedAt}ms`,
+      );
+      // 기존 status=ended 분기와 동일한 순서 — recall이 cleanup 이전이어야 storage 입력 유지.
+      await triggerTripEndRecall();
+      const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+      await runTripBoundCleanups();
+      await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
+      await setTripEndedSentinel(now);
+      await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
       return;
     }
 
