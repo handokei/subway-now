@@ -739,14 +739,31 @@ export interface SendBoardingPromptPushOptions {
   now?: number;
 }
 
-export async function sendBoardingPromptPush(
+/**
+ * #2037 — boarding-prompt payload data 는 alert push(`sendBoardingPromptPush`)와
+ * silent push(`sendBoardingPromptSilentPush`) 두 채널 모두 같은 `BoardingPromptPushPayload`
+ * schema 를 wire 한다(device `extractBoardingPromptPayload` 파서 재사용). alert push 는
+ * title/body 를 `aps.alert` 에 실어 시스템 banner 를 노출하고, silent push 는 title/body 를
+ * data 에도 실어 device 가 local notification 을 재구성한다. 공용 builder 를 통해 두 채널의
+ * data schema 를 강제 정합시켜 payload drift 회귀를 차단한다.
+ *
+ * `includeAlertContent` 가 true 이면 title/body 도 data 에 embed (silent 전용). alert push 는
+ * data 에 title/body 를 넣지 않아 payload 크기를 아낀다(iOS 는 aps.alert 에서 렌더).
+ */
+function buildBoardingPromptPushData(
   options: SendBoardingPromptPushOptions,
-): Promise<SendPushResult> {
-  const jwt = await buildApnsJwt(options.config, options.now);
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const url = `https://${options.host}/3/device/${options.deviceToken}`;
-
-  const data: BoardingPromptPushPayload = {
+  includeAlertContent: boolean,
+): BoardingPromptPushPayload {
+  const hasCandidates =
+    options.candidateTrains === undefined ? false : options.candidateTrains.length > 0;
+  const embedTitle = includeAlertContent && options.title !== undefined;
+  const embedBody = includeAlertContent && options.body !== undefined;
+  const titleFragment = embedTitle ? { title: options.title } : {};
+  const bodyFragment = embedBody ? { body: options.body } : {};
+  const candidatesFragment = hasCandidates
+    ? { candidateTrains: options.candidateTrains }
+    : {};
+  return {
     pushId: options.pushId,
     kind: 'boarding-prompt',
     originStation: options.originStation,
@@ -756,11 +773,23 @@ export async function sendBoardingPromptPush(
     triggerKind: options.triggerKind,
     // #1740 — undefined면 payload에 키 자체가 생략됨 (JSON.stringify 동작). device backward compat.
     destinationDirection: options.destinationDirection,
+    // #2037 — silent 채널(includeAlertContent=true)에서만 title / body 를 data 에 embed.
+    // device local notification 재구성용. alert 채널은 aps.alert 에서 렌더하므로 data 제외.
+    ...titleFragment,
+    ...bodyFragment,
     // #1888 (RC-13) — candidateTrains는 0건이면 omit (구 device byte-level 호환 + payload 크기 보호).
-    ...(options.candidateTrains !== undefined && options.candidateTrains.length > 0
-      ? { candidateTrains: options.candidateTrains }
-      : {}),
+    ...candidatesFragment,
   };
+}
+
+export async function sendBoardingPromptPush(
+  options: SendBoardingPromptPushOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const data = buildBoardingPromptPushData(options, false);
 
   const body = JSON.stringify({
     aps: {
@@ -822,24 +851,7 @@ export async function sendBoardingPromptSilentPush(
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = `https://${options.host}/3/device/${options.deviceToken}`;
 
-  const data: BoardingPromptPushPayload = {
-    pushId: options.pushId,
-    kind: 'boarding-prompt',
-    originStation: options.originStation,
-    line: options.line,
-    tripToken: options.tripToken,
-    sentAt: options.sentAt,
-    triggerKind: options.triggerKind,
-    // #1740 — undefined면 payload에 키 자체가 생략됨 (JSON.stringify 동작). device backward compat.
-    destinationDirection: options.destinationDirection,
-    // #2037 — title / body 는 device 가 local notification 발사 시 사용. 미지정 시 device fallback.
-    ...(options.title !== undefined ? { title: options.title } : {}),
-    ...(options.body !== undefined ? { body: options.body } : {}),
-    // #1888 (RC-13) — candidateTrains는 0건이면 omit (device fallback 렌더용).
-    ...(options.candidateTrains !== undefined && options.candidateTrains.length > 0
-      ? { candidateTrains: options.candidateTrains }
-      : {}),
-  };
+  const data = buildBoardingPromptPushData(options, true);
 
   const body = JSON.stringify({
     aps: {
