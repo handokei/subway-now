@@ -201,3 +201,10 @@ export const TRIP_GROUND_TRUTH_KEY = 'subway-now:trip-ground-truth';
 // trip 종료 시 runTripBoundCleanups에서 false로 reset (이전 trip의 의향 신호가 새 trip에 leak 차단).
 // 형식: 'true' 또는 키 부재(=false). ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
 export const USER_INTENT_INFO_MODE_KEY = 'subway-now:user-intent-info-mode';
+// #2045 (Signal 4, Issue #2043 β 후속) — 마지막 silent push 수신 시각 (epoch ms).
+// silentPushTask.handleSilentPush가 유효 payload 진입점(handleSilentPush)에서 stamp,
+// useLaunchTripReconciliation이 launch 시점에 read해 backend-timeout self-end 판정에 사용.
+// 관찰 22 (BG kill 6h+ 방치 후 launch) 커버. FG-전용 3-signal(#2044)과 상호 보완.
+// trip 종료 시 runTripBoundCleanups에서 제거 — 이전 trip의 수신 시각이 새 trip 판정 오염 차단.
+// 형식: 숫자 (epoch ms) 문자열. 키 부재 = silent push 미수신(첫 launch or 새 trip 시작 직후).
+export const LAST_SILENT_PUSH_RECEIVED_AT_KEY = 'subway-now:last-silent-push-received-at';

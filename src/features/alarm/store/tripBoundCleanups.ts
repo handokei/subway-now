@@ -30,6 +30,7 @@ import { clearFiredPushIds } from '../utils/firedPushIds';
 import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
+import { clearLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import {
   getRegisteredBlRouteSig,
@@ -173,6 +174,11 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 4 cleanup 경로 (FG setDestination(null/switch) / silent push trip-ended /
   // useStateRehydration sentinel / useLaunchTripReconciliation cold-launch) 모두 자동 wire.
   resetUserIntentInfoMode,
+  // #2045 (Signal 4) — trip 종료 시 last-silent-push-received stamp 제거.
+  // 새 trip의 첫 launch reconciliation 시점에 이전 trip의 last-received가 남아 있으면
+  // (직전 trip이 정상 종료 후 새 trip 시작 X → 앱 launch) → 새 trip 판정 오염 방지.
+  // 새 trip 등록 후 첫 silent push 수신 시점부터 stamp 재갱신 → clean baseline.
+  clearLastSilentPushReceivedAt,
 ];
 
 /**
