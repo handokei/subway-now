@@ -64,6 +64,7 @@ import { useTripBoundAlarmScheduler } from '../features/alarm/hooks/useTripBound
 import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
+import { useDeviceSelfEnd } from '../features/alarm/hooks/useDeviceSelfEnd';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { useFgPositionUpload } from '../features/alarm/hooks/useFgPositionUpload';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
@@ -719,6 +720,32 @@ export default function HomeScreen() {
     // #1887 (RC-14) — transfer 분기에 motion stationary 30s 게이트 추가.
     // paradigm 4 "이동속도가 빠르지 않다면 판단 후에 자동 하차" 정확 적용.
     motionStationary,
+  });
+  // #2043 (β 옵션) — device self-contained 자동종료 3-signal fusion.
+  //   Signal 1 fusion-destination: fusion === destination + 강 confidence + 30s 지속
+  //   Signal 2 arc-completion:     arcProgress ≥ 0.95 + stationary 60s 지속
+  //   Signal 3 eta-backstop:       elapsed > expectedEta × 2 + stationary 5분 지속
+  // Idempotent guard: getTripEndedSentinel non-null 시 skip. backend가 먼저 발사하면 no-op.
+  // 관찰 22 backstop: silent push 미도달 + 6h+ 방치 케이스에서 9h+ lifecycle backstop 전에 자연 정리.
+  const arcProgress = useMemo<number | null>(() => {
+    if (arcStations.length < 2) return null;
+    if (currentHopIndex === null) return null;
+    // arcStations = [origin, ..., destination]. index 0 → 0%, index length-1 → 100%.
+    return currentHopIndex / (arcStations.length - 1);
+  }, [arcStations.length, currentHopIndex]);
+  const expectedTripDurationMs = useMemo<number | null>(() => {
+    const selectedCandidate = categorized.find(
+      (r) => r.category.key === selectedKey,
+    )?.candidate;
+    if (!selectedCandidate) return null;
+    return selectedCandidate.travelMinutes * 60_000;
+  }, [categorized, selectedKey]);
+  useDeviceSelfEnd({
+    currentStation: result?.station ?? null,
+    confidence,
+    arcProgress,
+    positionStability,
+    expectedTripDurationMs,
   });
   // #925 (C2 wire) — destination 자동 하차 감지. arvlCd=0/1 + 역 50m 이내 + 60s motion stationary
   // 4-신호 AND 게이트 통과 시 setDestination(null) 호출 → 후속 LA end / trip-end recall은
