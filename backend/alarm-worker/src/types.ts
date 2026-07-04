@@ -560,6 +560,24 @@ export interface BoardingPromptPushPayload {
    * 미지정(0건 또는 legacy 빌드) 시 device는 기존 동작(자체 API + empty placeholder).
    */
   candidateTrains?: BoardingPromptCandidate[];
+  /**
+   * #2037 (Issue M) — silent push fallback 채널에서 device 가 local notification 발사 시
+   * 그대로 사용할 title. backend 가 사용자 locale 로 i18n resolve 해서 넣어준다.
+   *
+   * silent push(`sendBoardingPromptSilentPush`)의 `data.title` 로 wire.
+   * alert push(`sendBoardingPromptPush`)는 `aps.alert.title` 를 사용하므로 payload 상 무의미하지만,
+   * 두 push 가 동일 payload 를 공유해 caller 가 한 번의 옵션 객체로 dual fire 하도록 형태 통일.
+   *
+   * 미지정 시 device 가 정적 fallback(`탑승하셨나요?`) 표시 (backward compat).
+   */
+  title?: string;
+  /**
+   * #2037 (Issue M) — silent push fallback 채널의 body. title 과 동일 규칙.
+   *
+   * silent push 의 `data.body` 로 wire. 미지정 시 device fallback
+   * (`${line}호선 ${originStation}에서 열차가 곧 도착합니다.`) 표시.
+   */
+  body?: string;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   resetApnsJwtCache,
   sendAlertPush,
   sendBoardingPromptPush,
+  sendBoardingPromptSilentPush,
   sendLiveActivityUpdate,
   sendReschedulePush,
   sendSilentPush,
@@ -1092,6 +1093,206 @@ describe('sendBoardingPromptPush (#819)', () => {
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(call[1].body as string);
     expect('subtitle' in body.aps.alert).toBe(false);
+  });
+});
+
+// #2037 (Issue M / Wave 1 완결) — Focus / DND / 취침 fallback 채널. alert push 와 병렬 발사.
+// device silentPushTask 가 gate 무관 local notification 을 발사해 UI 도달률을 확보한다.
+describe('sendBoardingPromptSilentPush (#2037)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  it('silent push 전용 headers (background + priority 5 + content-available)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const result = await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-silent-1',
+      title: 'Are you on board?',
+      body: '2 · 강남',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok-silent',
+      sentAt: 4321,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST}/3/device/device-hex`);
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('background');
+    expect(headers['apns-priority']).toBe('5');
+    expect(headers['apns-topic']).toBe('com.example.app');
+    const body = JSON.parse(call[1].body as string);
+    // silent push — aps.alert / aps.category / aps.sound 없이 content-available 1.
+    expect(body.aps).toEqual({ 'content-available': 1 });
+    // required 필드는 data 로 wire — device extractBoardingPromptPayload 정합.
+    expect(body.data).toEqual({
+      pushId: 'p-silent-1',
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok-silent',
+      sentAt: 4321,
+      title: 'Are you on board?',
+      body: '2 · 강남',
+    });
+  });
+
+  it('non-OK 응답은 status/reason 을 그대로 반환', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 }),
+    );
+    const result = await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: 'L',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
+  });
+
+  it('non-json error body 처리 (reason undefined)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('plain text', { status: 500 }));
+    const result = await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: 'L',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(500);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it('apns-thread-id 헤더에 tripToken 이 그대로 전달된다 (alert push 와 같은 trip 그룹핑)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-thread',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: 'L',
+      tripToken: 'trip-boarding-silent-123',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-thread-id']).toBe('trip-boarding-silent-123');
+  });
+
+  it.each([['cron' as const], ['instant' as const]])(
+    'triggerKind=%s payload.data.triggerKind forward',
+    async (triggerKind) => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+      await sendBoardingPromptSilentPush({
+        deviceToken: 'device-hex',
+        pushId: 'p-trigger',
+        title: 'T',
+        body: 'B',
+        originStation: 'O',
+        line: 'L',
+        tripToken: 't',
+        sentAt: 0,
+        triggerKind,
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.data.triggerKind).toBe(triggerKind);
+    },
+  );
+
+  it('destinationDirection 지정 시 data 에 wire (#1740 정합)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-dir',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      destinationDirection: 'up',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.destinationDirection).toBe('up');
+  });
+
+  it('candidateTrains 1건 이상이면 data 에 배열로 wire (#1888 RC-13)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const candidateTrains = [
+      {
+        trainCode: '1234',
+        line: '2',
+        direction: 'up' as const,
+        nextArrivalEta: 60,
+      },
+    ];
+    await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-cand',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      candidateTrains,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.candidateTrains).toEqual(candidateTrains);
+  });
+
+  it('candidateTrains 빈 배열이면 data 에서 omit (구 device byte-level 호환)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptSilentPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-empty',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      candidateTrains: [],
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('candidateTrains' in body.data).toBe(false);
   });
 });
 
