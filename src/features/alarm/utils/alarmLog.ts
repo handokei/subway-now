@@ -240,6 +240,17 @@ export type AlarmLogReason =
   //   'trip-lifecycle-force-ended'    : 9h+ 잔존 trip 강제 종료 (runTripBoundCleanups + sentinel).
   | 'trip-lifecycle-silence'
   | 'trip-lifecycle-force-ended'
+  // #2043 (β 옵션) — device self-contained 자동종료 3-signal fusion 발화 stamp.
+  // silent push miss + 9h+ 만 유일 backup이던 기존 backstop을 device 신호로 확장.
+  //   'trip-device-self-end-fusion-destination': fusion nearestStation === destination + 강 confidence 30s 지속.
+  //   'trip-device-self-end-arc-completion'   : routeProgress arc ≥ 0.95 + stationary 60s 지속.
+  //   'trip-device-self-end-eta-backstop'     : elapsed > expectedEta × 2 + stationary 5분 지속.
+  // source='lifecycle-backstop'로 적재해 FIRED_ALARM_SOURCES에서 자동으로 fire 분모 제외
+  // (측정/진단 stamp이지 사용자 노출 알람 아님). backend timeout signal은 4-way 편집 충돌
+  // 회피 위해 후속 이슈로 분리 — 초기 스코프 3-signal.
+  | 'trip-device-self-end-fusion-destination'
+  | 'trip-device-self-end-arc-completion'
+  | 'trip-device-self-end-eta-backstop'
   // #1572 (T9, ADR-017) — device fire path SSoT 게이트 차단 사유.
   //   'gate-alarm-already-decided' : backend mirror.alarmEvents에 같은 alarmId가 이미 있어 fire 차단(X2).
   //   'gate-station-already-passed': backend mirror.passedStations/alarmEvents에 같은 stationId가
