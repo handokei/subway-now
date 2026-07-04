@@ -355,8 +355,8 @@ export const REGRESSION_TABLE: readonly RegressionAssertion[] = [
   },
   {
     issue: 'K',
-    description: 'ETA 조기 발사 (arc + destination-early)',
-    observedToday: '성수 destination-early 발사 08:29부터 (실 도착 08:37) — 8분 조기',
-    expected: 'archFlag=on + arc guard 통과 시에만 destination-early 발사 (실 도착 - ETA 기준 발사)',
+    description: '환승 후 다음 hop 조기 도착 알림 방지 (#2027)',
+    observedToday: '성수 destination-early 발사 08:29부터 (실 도착 08:37) — 8분 조기. 환승 직후 stale 신호 채택 + LA_IMMEDIATE_TRIGGER=60s 짧아 조기 발사',
+    expected: 'archFlag=on 시 (1) pickBestArrivalSignal line mismatch fallback 차단 (2) LA_IMMEDIATE_TRIGGER_ETA_SEC 60s→90s 상향',
   },
 ];

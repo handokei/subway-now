@@ -24,6 +24,12 @@ import {
   pickAutoTrainCode,
 } from '../boardingPrompt';
 import { getArchFlag, setArchFlag, ARCH_FLAG_DEFAULT } from '../archFlag';
+import {
+  LA_IMMEDIATE_TRIGGER_ETA_SEC,
+  LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH,
+  pickBestArrivalSignal,
+} from '../scheduled';
+import type { ArrivalEntry } from '../seoul';
 import { InMemoryKV } from './inMemoryKv';
 import {
   AM_ALARM_LOG_ENTRIES,
@@ -241,16 +247,21 @@ describe('Issue J (#2023) — arc(time-integration) 폭주 조기 발사 방지'
   );
 });
 
-describe('Issue K (#2023 흡수) — ETA 조기 발사 (arc + destination-early)', () => {
+describe('Issue K (#2027) — 환승 후 다음 hop 조기 도착 알림 방지', () => {
   /**
    * 사용자 오늘 evidence: 성수 destination-early 발사 08:29 무렵 (실 도착 08:37:25) — 8분 조기.
    * `08:37:00 fg-evaluated destination-early 성수 suppressed lockless-no-user-intent` 알람 log 반복 —
    * 발사 자체는 gate 로 막혔지만 스팸 반복이 관측됨.
    *
-   * 재발 조건: destination arvlCd=1 아닌 상태 (arvlCd=2/5/-1) 에서 destination-early 스팸.
-   * fix 후 예상: archFlag=on + arc guard 통과 시에만 destination-early 발사.
+   * 재발 조건: 환승 직후 다음 hop 대상 역에서 Seoul API arvlCd=4/5 (early) 신호 즉시 채택 +
+   * LA_IMMEDIATE_TRIGGER_ETA_SEC=60s 임계 짧아 destination-imminent 조기 발사.
+   *
+   * K fix (2 axes):
+   *   1. pickBestArrivalSignal — archFlag='on' + line mismatch 시 fallback 차단
+   *      (환승 후 이전 line stale 신호 무시)
+   *   2. LA_IMMEDIATE_TRIGGER_ETA_SEC 60s → 90s (archFlag=on) — 환승 버퍼 30s 확대
    */
-  it('destination early 스팸 반복 pattern 재현 (lockless-no-user-intent 게이트 41회 suppressed)', () => {
+  it('destination early 스팸 반복 pattern 재현 (lockless-no-user-intent 게이트 15+회 suppressed)', () => {
     const spam = AM_ALARM_LOG_ENTRIES.filter(
       (e) =>
         e.kind === 'destination' &&
@@ -262,14 +273,47 @@ describe('Issue K (#2023 흡수) — ETA 조기 발사 (arc + destination-early)
     expect(spam.length).toBeGreaterThan(5);
   });
 
-  it.fails(
-    'archFlag=on + arvlCd=1 이 아닌 상태에서 destination-early 발사 skip (미구현)',
-    () => {
-      // fix 후 예상: destination arvlCd 관측 실패 상태에서는 early 발사 skip.
-      // 현재 코드에는 arvlCd 기반 early skip gate 자체가 없음. Issue J arc guard 와 연동.
-      expect(false).toBe(true);
-    },
-  );
+  it('LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH=90s (archFlag=on) — 60s 대비 30s 확대', () => {
+    // fix 후 예상: archFlag=on 시 destination-imminent 판정 임계 60s → 90s.
+    // 환승 후 다음 hop 짧은 leg 에서 즉시 발사 판정 시점을 30s 뒤로 밀어 조기 발사 방지.
+    expect(LA_IMMEDIATE_TRIGGER_ETA_SEC).toBe(60);
+    expect(LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH).toBe(90);
+    expect(LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH).toBeGreaterThan(LA_IMMEDIATE_TRIGGER_ETA_SEC);
+  });
+
+  it('archFlag=on + line mismatch (성수 waypoint=2호선 vs 7호선 stale arrivals): null 반환 → 조기 발사 방지', () => {
+    // 환승 직후 성수(2호선) waypoint 상태에서 Seoul API 가 이전 7호선 stale 신호만 반환하는 시나리오.
+    // 현재 시나리오 재현: 실 evidence 에서는 성수 arrivals 가 2호선 (지하철2호선) 이지만
+    // 환승 timing race 시 이전 line 인 7호선 pool 이 stale 로 반환될 수 있음.
+    const staleTransferArrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 50, trainCode: '7-stale', isUp: true, subwayNm: '지하철7호선', arvlCd: 4 },
+      { destination: 'B', arrivalSeconds: 30, trainCode: '7-stale2', isUp: true, subwayNm: '지하철7호선', arvlCd: 5 },
+    ];
+    const seongsu = { stationName: '성수', line: '2', kind: 'destination' as const };
+    // archFlag=on: null 반환 → caller skip → destination-imminent 발사 회피.
+    expect(pickBestArrivalSignal(staleTransferArrivals, seongsu, 'on')).toBeNull();
+  });
+
+  it('archFlag=off (regression 방어): line mismatch 시 fallback 유지 (기존 동작)', () => {
+    // 회귀 방어: archFlag=off 는 기존 fallback 동작 유지 (모든 arrivals 로 fallback).
+    const staleTransferArrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 50, trainCode: '7-stale', isUp: true, subwayNm: '지하철7호선', arvlCd: 4 },
+    ];
+    const seongsu = { stationName: '성수', line: '2', kind: 'destination' as const };
+    const result = pickBestArrivalSignal(staleTransferArrivals, seongsu, 'off');
+    expect(result).not.toBeNull();
+    expect(result?.arvlCd).toBe(4);
+  });
+
+  it('archFlag=on + 성수 arrivals 2호선 (실 도착) → 정상 pick (matching line 필터 통과)', () => {
+    // 실 도착 시점: 성수 arrivals arvlCd=1 (2호선) → 정상 pick.
+    // Wave 1 완결 시 이 assertion 은 그대로 통과 — fix 로 인한 정상 케이스 회귀 없음.
+    const seongsuWp = { stationName: '성수', line: '2', kind: 'destination' as const };
+    const result = pickBestArrivalSignal(AM_SEONGSU_ARRIVALS_ARVLCD_1, seongsuWp, 'on');
+    expect(result).not.toBeNull();
+    expect(result?.arvlCd).toBe(1);
+    expect(result?.etaSeconds).toBe(0);
+  });
 });
 
 describe('archFlag production state 재현 — dump 시점 실 배포 상태', () => {

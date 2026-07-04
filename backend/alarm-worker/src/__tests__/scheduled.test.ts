@@ -477,6 +477,50 @@ describe('pickBestArrivalSignal (#409)', () => {
     ];
     expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 100, arvlCd: 0 });
   });
+
+  describe('#2027 (Issue K) — archFlag=on 시 line mismatch fallback 차단', () => {
+    // 환승 후 waypoint line=2, Seoul API 는 7호선 stale 신호만 반환하는 시나리오.
+    // archFlag='off' (기존 동작): fallback 으로 7호선 신호 채택 → 조기 발사 회귀.
+    // archFlag='on' (Issue K fix): null 반환 → caller 는 arc / ETA fallback 경로로 자연 전환.
+    const staleTransferArrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 50, trainCode: '7-stale', isUp: true, subwayNm: '지하철7호선', arvlCd: 4 },
+      { destination: 'B', arrivalSeconds: 30, trainCode: '7-stale2', isUp: true, subwayNm: '지하철7호선', arvlCd: 5 },
+    ];
+
+    it('archFlag=off (기본): line mismatch 시 전체 arrivals fallback (기존 동작 유지)', () => {
+      // 회귀 방어: archFlag 미지정 시 기존 동작(모든 arrivals 로 fallback) 유지.
+      const result = pickBestArrivalSignal(staleTransferArrivals, wp);
+      expect(result).not.toBeNull();
+      // arvlCd=4/5 중 arvlCd=4 가 pool.find 순서상 먼저 발견 → early 신호로 선택.
+      expect(result?.arvlCd).toBe(4);
+    });
+
+    it('archFlag=off 명시: line mismatch 시 fallback 동작 유지', () => {
+      const result = pickBestArrivalSignal(staleTransferArrivals, wp, 'off');
+      expect(result).not.toBeNull();
+      expect(result?.arvlCd).toBe(4);
+    });
+
+    it('archFlag=on: line mismatch 시 null 반환 (fallback 차단)', () => {
+      const result = pickBestArrivalSignal(staleTransferArrivals, wp, 'on');
+      expect(result).toBeNull();
+    });
+
+    it('archFlag=on: matching line 이 있으면 정상 선택 (필터 통과)', () => {
+      const arrivals: ArrivalEntry[] = [
+        { destination: 'A', arrivalSeconds: 100, trainCode: '2', isUp: true, subwayNm: '지하철2호선', arvlCd: 0 },
+        { destination: 'B', arrivalSeconds: 30, trainCode: '7', isUp: true, subwayNm: '지하철7호선', arvlCd: 5 },
+      ];
+      const result = pickBestArrivalSignal(arrivals, wp, 'on');
+      expect(result).not.toBeNull();
+      expect(result?.arvlCd).toBe(0); // 2호선 imminent
+      expect(result?.etaSeconds).toBe(100);
+    });
+
+    it('archFlag=on: 빈 arrivals 는 null (동일)', () => {
+      expect(pickBestArrivalSignal([], wp, 'on')).toBeNull();
+    });
+  });
 });
 
 describe('flipApnsEnv (#482 self-heal)', () => {
@@ -2916,6 +2960,169 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(90), fetchImpl });
     expect(stats.laPushSent).toBe(0);
     expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  // #2027 (Issue K) — archFlag='on' 시 destination-imminent 임계 60s → 90s 상향.
+  // 환승 후 다음 hop 조기 도착 알림 방지 (2026-07-03 성수 8분 조기 발사 회귀 차단).
+  describe('#2027 (Issue K) — archFlag=on 시 LA_IMMEDIATE_TRIGGER 임계 90s 상향', () => {
+    it('archFlag=on + destination + ETA=75s (60s<x<=90s): 즉시 발사 (기존 60s 였으면 skip)', async () => {
+      const kv = new InMemoryKV();
+      // destination, ETA=75s (>60s but <=90s), ΔETA=5s < 30s, heartbeat 미달.
+      // archFlag=on 시 90s 임계로 상향 → 즉시 발사.
+      const etaMs = 75_000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockedLaTrip({
+          lastTrackedArrivalEpoch: NOW + etaMs + 5_000,
+          lastLaPushEpoch: NOW + etaMs + 5_000,
+          lastLaPushAt: NOW - 30_000, // 30s 전 — heartbeat(90s) 미달
+        }),
+      );
+      const fetchImpl = makeOkFetch();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeLockedSeoul(75),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        archFlag: 'on',
+      });
+      expect(stats.laPushSent).toBe(1);
+      expect(getLaCalls(fetchImpl)).toHaveLength(1);
+    });
+
+    it('archFlag=off + destination + ETA=75s: 기존 60s 임계 → skip (regression 방어)', async () => {
+      const kv = new InMemoryKV();
+      // 같은 상황에서 archFlag=off 는 기존 60s 임계 유지 → 즉시 발사 안 함.
+      const etaMs = 75_000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockedLaTrip({
+          lastTrackedArrivalEpoch: NOW + etaMs + 5_000,
+          lastLaPushEpoch: NOW + etaMs + 5_000,
+          lastLaPushAt: NOW - 30_000,
+        }),
+      );
+      const fetchImpl = makeOkFetch();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeLockedSeoul(75),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        archFlag: 'off',
+      });
+      expect(stats.laPushSent).toBe(0);
+      expect(getLaCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    it('archFlag=on + destination + ETA=95s (>90s): 즉시 발사 skip (임계 상향해도 95s 는 초과)', async () => {
+      const kv = new InMemoryKV();
+      const etaMs = 95_000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockedLaTrip({
+          lastTrackedArrivalEpoch: NOW + etaMs + 5_000,
+          lastLaPushEpoch: NOW + etaMs + 5_000,
+          lastLaPushAt: NOW - 30_000,
+        }),
+      );
+      const fetchImpl = makeOkFetch();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeLockedSeoul(95),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        archFlag: 'on',
+      });
+      expect(stats.laPushSent).toBe(0);
+      expect(getLaCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    it('archFlag=off + destination + ETA=45s: 기존 60s 임계 통과 → 즉시 발사 (short hop regression 방어)', async () => {
+      const kv = new InMemoryKV();
+      // 짧은 hop(ETA<60s) 상황 — archFlag=off 시 즉시 발사 유지.
+      const etaMs = 45_000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockedLaTrip({
+          lastTrackedArrivalEpoch: NOW + etaMs + 5_000,
+          lastLaPushEpoch: NOW + etaMs + 5_000,
+          lastLaPushAt: NOW - 30_000,
+        }),
+      );
+      const fetchImpl = makeOkFetch();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeLockedSeoul(45),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        archFlag: 'off',
+      });
+      expect(stats.laPushSent).toBe(1);
+      expect(getLaCalls(fetchImpl)).toHaveLength(1);
+    });
+
+    it('archFlag=on + transfer waypoint: etaSeconds 무관 즉시 발사 유지 (transfer 는 임계 gate 대상 아님)', async () => {
+      const kv = new InMemoryKV();
+      // transfer 는 kind==='transfer' 즉시 발사이며 etaSeconds 임계 무관.
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTrip({
+          token: 'la-tok',
+          route: { type: 'transfer', fromLine: '2', toLine: '7', transferName: '건대입구', stopsToTransfer: 1, stopsFromTransfer: 2 },
+          waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
+          activityPushToken: 'la-token',
+          activityState: 'live',
+          apnsEnv: 'sandbox',
+          boardingLock: {
+            trainCode: 'T',
+            line: '2',
+            subwayId: '1002',
+            selectedDepartureTime: NOW,
+            segmentStations: ['강변', '건대입구'],
+            expiresAt: NOW + 60 * 60_000,
+          },
+          lastTrackedArrivalEpoch: NOW + 200_000,
+          lastLaPushEpoch: NOW + 200_000,
+          lastLaPushAt: NOW - 45_000,
+        }),
+      );
+      const fetchImpl = makeOkFetch();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: new SeoulArrivalClient({
+          apiKey: 'K',
+          host: 'h',
+          now: () => NOW,
+          fetchImpl: (async () =>
+            new Response(
+              JSON.stringify({
+                realtimeArrivalList: [
+                  {
+                    barvlDt: '200',
+                    recptnDt: '',
+                    updnLine: '상행',
+                    trainLineNm: '건대입구',
+                    btrainNo: 'T',
+                    subwayNm: '지하철2호선',
+                    arvlCd: null,
+                  },
+                ],
+              }),
+              { status: 200 },
+            )) as unknown as typeof fetch,
+        }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        archFlag: 'on',
+      });
+      expect(stats.laPushSent).toBe(1);
+      expect(getLaCalls(fetchImpl)).toHaveLength(1);
+    });
   });
 
   it('dedup window still prevents immediate trigger when lastLaPushEpoch is within 30s', async () => {
