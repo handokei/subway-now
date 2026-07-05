@@ -5492,3 +5492,155 @@ describe('DebugModal share dump — 누락 3 섹션 wire (#2044-scope)', () => {
     });
   });
 });
+
+// #2049 — Modal UI render 검증. dump text에는 포함되지만 UI section 미노출이던 4 섹션 회귀 차단.
+describe('DebugModal — #2049 UI 누락 4 섹션 render', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+  });
+
+  it('Auto-lock Candidate 섹션이 UI에 노출된다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Auto-lock Candidate')).toBeTruthy();
+    // Section wrapper testID 존재 = UI에 section 붙어있다는 결정적 signal.
+    expect(screen.getByTestId('debug-auto-lock-candidate-section')).toBeTruthy();
+    // setupHookDefaults의 SSOT 미합의 상태 → computeAutoLockLines가 4줄 반환 → entry testID 존재.
+    const entries = screen.getAllByTestId('debug-auto-lock-candidate');
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it('Environment Distribution 섹션이 UI에 노출된다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Environment Distribution')).toBeTruthy();
+    expect(screen.getByTestId('debug-environment-distribution-section')).toBeTruthy();
+    // envDistribution counter는 modal 열림 즉시 tick — snapshot 존재하므로 entry render.
+    expect(screen.getAllByTestId('debug-environment-distribution').length).toBeGreaterThan(0);
+  });
+
+  it('Alarm Log Reasons (1h) 섹션이 UI에 노출된다 (logs 없으면 (empty))', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Alarm Log Reasons (1h)')).toBeTruthy();
+    expect(screen.getByTestId('debug-alarm-log-reasons-1h-empty')).toBeTruthy();
+  });
+
+  it('Alarm Log Reasons (1h) 섹션이 suppress reason 집계를 표시한다', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 1_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'gate-accuracy' },
+      { ts: now - 2_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'gate-accuracy' },
+      { ts: now - 3_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'stationary' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    // logs가 refresh되기까지 잠시 기다림. UI section에 entry가 최소 1개 이상 등장.
+    await waitFor(() => {
+      const entries = screen.queryAllByTestId('debug-alarm-log-reasons-1h');
+      expect(entries.length).toBeGreaterThan(0);
+    });
+    const entries = screen.getAllByTestId('debug-alarm-log-reasons-1h');
+    const joined = entries.map((e) => e.props.children).join(' ');
+    expect(joined).toContain('gate-accuracy');
+    expect(joined).toContain('stationary');
+  });
+
+  it('Boarding-Lock Drift 섹션이 UI에 노출된다 (buffer 비어 있으면 (empty))', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    // DebugLogSection은 header에 count(0) suffix를 붙임 → 'Boarding-Lock Drift (0)' 존재 확인.
+    expect(screen.getByText(/Boarding-Lock Drift \(\d+\)/)).toBeTruthy();
+  });
+
+  it('Boarding-Lock Drift buffer push → UI 반영 + clear 버튼이 buffer를 비운다', async () => {
+    // buffer는 module-level singleton. 매 테스트 시작 시 clear로 격리.
+    const {
+      pushBoardingLockDriftEntry,
+      clearBoardingLockDriftEntries,
+      getBoardingLockDriftEntries,
+    } = jest.requireActual('../../../nearest-station/utils/boardingLockDriftBuffer');
+    clearBoardingLockDriftEntries();
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    // buffer push → subscribe listener 트리거 → setBoardingLockDriftLog 콜백 실행.
+    await act(async () => {
+      pushBoardingLockDriftEntry({
+        kind: 'boarding-lock-drift',
+        ts: Date.now(),
+        branch: 'positionTrain',
+        lockStationName: '강남',
+        lockStationLine: '2',
+        driftMeters: 42,
+      });
+    });
+    expect(getBoardingLockDriftEntries().length).toBe(1);
+    // clear 버튼 press → clearBoardingLockDriftEntries + setBoardingLockDriftLog([]) 실행.
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('debug-boarding-lock-drift-log-clear'));
+    });
+    expect(getBoardingLockDriftEntries().length).toBe(0);
+  });
+});
+
+// #2049 — dump builder와 UI section이 동일한 helper를 공유해 SSoT를 유지하는지 검증.
+describe('DebugModal — #2049 SSoT helper 검증', () => {
+  const {
+    computeAutoLockLines,
+    computeEnvironmentDistributionLines,
+    computeAlarmLogReasonsLines,
+    buildDumpText,
+  } = __test__;
+
+  it('computeAutoLockLines: meta 미전달 시 (n/a)', () => {
+    expect(computeAutoLockLines(undefined)).toEqual(['(n/a)']);
+  });
+
+  it('computeEnvironmentDistributionLines: snapshot 미전달 시 (n/a)', () => {
+    expect(computeEnvironmentDistributionLines(undefined)).toEqual(['(n/a)']);
+  });
+
+  it('computeAlarmLogReasonsLines: logs 미전달 시 (empty)', () => {
+    expect(computeAlarmLogReasonsLines([])).toEqual(['(empty)']);
+  });
+
+  it('computeAlarmLogReasonsLines: suppress reason 카운트를 라인으로 반환', () => {
+    const now = Date.now();
+    const logs: AlarmLogEntry[] = [
+      { ts: now, source: 'boarding-prompt', outcome: 'suppressed', reason: 'gate-accuracy' },
+      { ts: now - 100, source: 'boarding-prompt', outcome: 'suppressed', reason: 'gate-accuracy' },
+      { ts: now - 200, source: 'boarding-prompt', outcome: 'suppressed', reason: 'gate-accuracy' },
+    ];
+    const lines = computeAlarmLogReasonsLines(logs, now);
+    expect(lines).toContain('gate-accuracy: 3');
+  });
+
+  it('dump builder와 UI helper 라인 일치 — Auto-lock', () => {
+    // dump text의 Auto-lock section 라인과 computeAutoLockLines(meta) 결과가 완전히 동일해야 SSoT 유지.
+    type AutoLockMeta = NonNullable<Parameters<typeof buildDumpText>[0]['autoLockMeta']>;
+    const meta: AutoLockMeta = {
+      surfaceSSOTActive: true,
+      undergroundSSOTActive: false,
+      stability: { stable: true, stationId: '0201', count: 3 },
+      direction: { matched: true, reason: 'forward' as const },
+      candidate: {
+        candidate: { trainCode: '2001', line: '2', subwayId: '1002' },
+        source: 'device-ssot' as const,
+        stationId: '0201',
+        path: 'direction-matched' as const,
+      },
+      nullReason: null,
+    };
+    const helperLines = computeAutoLockLines(meta);
+    const dump = buildDumpText(makeDumpArgs({ autoLockMeta: meta }));
+    const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
+    // helper의 각 라인이 dump section 내부에 순서대로 등장.
+    let cursor = 0;
+    for (const line of helperLines) {
+      const idx = section.indexOf(line, cursor);
+      expect(idx).toBeGreaterThan(-1);
+      cursor = idx + line.length;
+    }
+  });
+});

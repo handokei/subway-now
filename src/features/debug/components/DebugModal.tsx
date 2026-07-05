@@ -1023,12 +1023,22 @@ function buildAlarmLogSection(args: BuildDumpArgs): string[] {
  *
  * nowMs 미전달 시 Date.now() 사용 — 테스트 결정적 출력 확보.
  * 1h 윈도우 내 suppressed 항목이 없으면 (empty) 반환.
+ *
+ * #2049 — dump builder(#1692)와 UI section이 공유하는 SSoT helper로 추출.
+ * `buildAlarmLogReasonsSummarySection`는 args unpack만 담당하는 thin wrapper.
  */
-function buildAlarmLogReasonsSummarySection(args: BuildDumpArgs): string[] {
-  const now = args.nowMs ?? Date.now();
-  const counters = countAlarmLogReasonsByWindow(args.logs, 60 * 60 * 1000, now);
+function computeAlarmLogReasonsLines(
+  logs: readonly AlarmLogEntry[],
+  nowMs?: number,
+): string[] {
+  const now = nowMs ?? Date.now();
+  const counters = countAlarmLogReasonsByWindow(logs, 60 * 60 * 1000, now);
   if (counters.length === 0) return ['(empty)'];
   return counters.map(({ reason, count }) => `${reason}: ${count}`);
+}
+
+function buildAlarmLogReasonsSummarySection(args: BuildDumpArgs): string[] {
+  return computeAlarmLogReasonsLines(args.logs, args.nowMs);
 }
 
 /**
@@ -1291,17 +1301,23 @@ function buildSuppressReasonsSection(args: BuildDumpArgs): string[] {
  * device-side auto-lock 측정 상태를 dump.
  *
  * meta 미전달 시 (n/a) — 호출자가 측정 비활성 또는 SSOT 객체 미주입.
+ *
+ * #2049 — dump builder(#1421)와 UI section이 공유하는 SSoT helper로 추출.
+ * `buildAutoLockSection`는 args unpack만 담당하는 thin wrapper.
  */
-function buildAutoLockSection(args: BuildDumpArgs): string[] {
-  const m = args.autoLockMeta;
-  if (!m) return ['(n/a)'];
-  const ssotLine = `ssot=${formatSSOTLabel(m.surfaceSSOTActive, m.undergroundSSOTActive)}`;
-  const stabilityLine = `stability=${m.stability.stable ? 'stable' : 'pending'} count=${m.stability.count} stationId=${m.stability.stationId ?? UNKNOWN_LABEL}`;
-  const directionLine = formatDirectionLine(m.direction);
-  const candidateLine = m.candidate
-    ? `candidate=trainCode=${m.candidate.candidate.trainCode} line=${m.candidate.candidate.line} source=${m.candidate.source} path=${m.candidate.path}`
-    : `candidate=null reason=${m.nullReason ?? UNKNOWN_LABEL}`;
+function computeAutoLockLines(meta: AutoLockDebugMeta | undefined): string[] {
+  if (!meta) return ['(n/a)'];
+  const ssotLine = `ssot=${formatSSOTLabel(meta.surfaceSSOTActive, meta.undergroundSSOTActive)}`;
+  const stabilityLine = `stability=${meta.stability.stable ? 'stable' : 'pending'} count=${meta.stability.count} stationId=${meta.stability.stationId ?? UNKNOWN_LABEL}`;
+  const directionLine = formatDirectionLine(meta.direction);
+  const candidateLine = meta.candidate
+    ? `candidate=trainCode=${meta.candidate.candidate.trainCode} line=${meta.candidate.candidate.line} source=${meta.candidate.source} path=${meta.candidate.path}`
+    : `candidate=null reason=${meta.nullReason ?? UNKNOWN_LABEL}`;
   return [ssotLine, stabilityLine, directionLine, candidateLine];
+}
+
+function buildAutoLockSection(args: BuildDumpArgs): string[] {
+  return computeAutoLockLines(args.autoLockMeta);
 }
 
 function formatDirectionLine(direction: VerifyTrainDirectionResult | null): string {
@@ -1328,9 +1344,13 @@ function formatSSOTLabel(surface: boolean, underground: boolean): string {
  *   totals: surface=12m30s underground=5m24s hybrid=58s unknown=10m54s
  *   transitions=5
  *   observed=30m0s
+ *
+ * #2049 — dump builder(#1430)와 UI section이 공유하는 SSoT helper로 추출.
+ * `buildEnvironmentDistributionSection`는 args unpack만 담당하는 thin wrapper.
  */
-function buildEnvironmentDistributionSection(args: BuildDumpArgs): string[] {
-  const snap = args.envDistribution;
+function computeEnvironmentDistributionLines(
+  snap: EnvironmentDistributionSnapshot | undefined,
+): string[] {
   if (!snap) return ['(n/a)'];
   const pct = snap.percentages;
   const t = snap.totals;
@@ -1340,6 +1360,10 @@ function buildEnvironmentDistributionSection(args: BuildDumpArgs): string[] {
     `transitions=${snap.transitions}`,
     `observed=${formatDurationMs(snap.observedMs)}`,
   ];
+}
+
+function buildEnvironmentDistributionSection(args: BuildDumpArgs): string[] {
+  return computeEnvironmentDistributionLines(args.envDistribution);
 }
 
 /** Percentage 표기 — 소수 1자리 고정. */
@@ -2011,6 +2035,11 @@ function DebugModalInner({
   const [candidateRejectLogs, setCandidateRejectLogs] = useState<readonly CandidateRejectEntry[]>(() =>
     getCandidateRejectEntries(),
   );
+  // #2049 — boarding-lock-drift ring buffer. #1896 (RC-8) 별 buffer를 UI/dump에 노출.
+  // fusionLogs와 동일 패턴 (snapshot + subscribe + clear button).
+  const [boardingLockDriftLog, setBoardingLockDriftLog] = useState<readonly BoardingLockDriftEntry[]>(() =>
+    getBoardingLockDriftEntries(),
+  );
   const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
     getEstimatorEntries(),
   );
@@ -2061,6 +2090,13 @@ function DebugModalInner({
   useEffect(() => {
     return subscribeCandidateReject(() =>
       setCandidateRejectLogs([...getCandidateRejectEntries()]),
+    );
+  }, []);
+
+  // #2049 — boarding-lock-drift buffer 구독. candidate-reject와 동일 패턴.
+  useEffect(() => {
+    return subscribeBoardingLockDrift(() =>
+      setBoardingLockDriftLog([...getBoardingLockDriftEntries()]),
     );
   }, []);
 
@@ -2166,6 +2202,8 @@ function DebugModalInner({
       gpsDropLog: gpsDropLogs,
       // #1902 (RC-18) — candidate-reject entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
       candidateRejectLog: candidateRejectLogs,
+      // #2049 (#1896 RC-8) — boarding-lock-drift entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
+      boardingLockDriftLog,
       // #1413 — UI에만 노출되던 BoardingLock/Estimator/Boarding Prompt(+Acceptance)/Counters를 share에 포함.
       boardingLock: lock,
       estimatorLog: estimatorLogs,
@@ -2234,6 +2272,8 @@ function DebugModalInner({
     gpsDropLogs,
     // #1902 (RC-18) — candidate-reject entries 변경 시 share 텍스트 자동 갱신.
     candidateRejectLogs,
+    // #2049 (#1896 RC-8) — boarding-lock-drift entries 변경 시 share 텍스트 자동 갱신.
+    boardingLockDriftLog,
     // #1413 — BoardingLock/Estimator 신규 캡쳐.
     lock,
     estimatorLogs,
@@ -2608,6 +2648,20 @@ function DebugModalInner({
             colors={colors}
           />
 
+          {/* #2049 (#1896 RC-8) — boarding-lock-drift 별 buffer. candidate-reject와 동일 표시 패턴. */}
+          <DebugLogSection
+            title="Boarding-Lock Drift"
+            logs={boardingLockDriftLog}
+            formatLine={formatBoardingLockDriftLine}
+            onClear={() => {
+              clearBoardingLockDriftEntries();
+              setBoardingLockDriftLog([]);
+            }}
+            clearTestId="debug-boarding-lock-drift-log-clear"
+            entryTestId="debug-boarding-lock-drift-log-entry"
+            colors={colors}
+          />
+
           {/* #1518 — device → backend HTTP 호출 ring buffer. 토글 없이 직전 entries 자동 표시. */}
           <DebugLogSection
             title="Backend Calls"
@@ -2717,6 +2771,18 @@ function DebugModalInner({
 
           {/* #1682 — Suppress Reasons: 1h 윈도우 top 5 suppress reason 분포 */}
           <SuppressReasonsSection logs={logs} colors={colors} />
+
+          {/* #2049 (#1692) — Alarm Log Reasons (1h): suppress reason 집계 요약.
+              buildAlarmLogReasonsSummarySection과 동일 SSOT (내부 helper 재사용). */}
+          <AlarmLogReasonsSummarySection logs={logs} colors={colors} />
+
+          {/* #2049 (#1421) — Auto-lock Candidate: SSOT/stability/direction/candidate 4줄.
+              buildAutoLockSection과 동일 SSOT (내부 helper 재사용). */}
+          <AutoLockCandidateSection meta={autoLockMeta} colors={colors} />
+
+          {/* #2049 (#1430) — Environment Distribution: SSOT 활성 cascade state별 누적 시간.
+              buildEnvironmentDistributionSection과 동일 SSOT (내부 helper 재사용). */}
+          <EnvironmentDistributionSection snapshot={envDistribution} colors={colors} />
 
           {/* #1501 — PR-C. Raw signal 자동 표시 (toggle 없음).
               #1881 — 전체 buffer 전달. UI는 DebugLogSection의 DEBUG_LOG_DISPLAY_LIMIT(100) 적용.
@@ -3290,6 +3356,114 @@ function SuppressReasonsSection({
 }
 
 /**
+ * #2049 — dump builder가 return하는 sentinel line. UI에서 empty state로 렌더한다.
+ * dump builder는 항상 최소 1개 라인 반환 (empty buffer도 `['(empty)']`) — sentinel 매칭만으로 판정.
+ */
+const DUMP_EMPTY_LINES: ReadonlySet<string> = new Set(['(n/a)', '(empty)']);
+
+/**
+ * #2049 — dump text section 공통 표시. 각 dump builder(string[])의 결과를 그대로 monospace로 노출.
+ * builder를 UI와 share dump 둘 다에서 재사용해 SSoT 유지 — UI/dump가 어긋날 여지가 없다.
+ * 단일 sentinel 라인(`(n/a)` / `(empty)`)이면 muted 톤으로 표시.
+ */
+function DumpTextSection({
+  title,
+  lines,
+  entryTestId,
+  colors,
+}: Readonly<{
+  title: string;
+  lines: readonly string[];
+  entryTestId: string;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const firstLine = lines[0];
+  const isEmpty = firstLine !== undefined && lines.length === 1 && DUMP_EMPTY_LINES.has(firstLine);
+  return (
+    <Section title={title} colors={colors} testID={`${entryTestId}-section`}>
+      {isEmpty ? (
+        <Text
+          style={[typography.mono, { color: colors.muted }]}
+          testID={`${entryTestId}-empty`}
+        >
+          {firstLine}
+        </Text>
+      ) : (
+        lines.map((line, idx) => (
+          <MonoEntry
+            key={`${entryTestId}-${idx}`}
+            testID={entryTestId}
+            colors={colors}
+          >
+            {line}
+          </MonoEntry>
+        ))
+      )}
+    </Section>
+  );
+}
+
+/**
+ * #2049 (#1421) — Auto-lock Candidate UI section. computeAutoLockLines helper를 dump builder와 공유.
+ */
+function AutoLockCandidateSection({
+  meta,
+  colors,
+}: Readonly<{
+  meta: AutoLockDebugMeta | undefined;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <DumpTextSection
+      title="Auto-lock Candidate"
+      lines={computeAutoLockLines(meta)}
+      entryTestId="debug-auto-lock-candidate"
+      colors={colors}
+    />
+  );
+}
+
+/**
+ * #2049 (#1430) — Environment Distribution UI section. computeEnvironmentDistributionLines helper를 공유.
+ */
+function EnvironmentDistributionSection({
+  snapshot,
+  colors,
+}: Readonly<{
+  snapshot: EnvironmentDistributionSnapshot | undefined;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <DumpTextSection
+      title="Environment Distribution"
+      lines={computeEnvironmentDistributionLines(snapshot)}
+      entryTestId="debug-environment-distribution"
+      colors={colors}
+    />
+  );
+}
+
+/**
+ * #2049 (#1692) — Alarm Log Reasons (1h) UI section. computeAlarmLogReasonsLines helper를 공유.
+ */
+function AlarmLogReasonsSummarySection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <DumpTextSection
+      title="Alarm Log Reasons (1h)"
+      lines={computeAlarmLogReasonsLines(logs)}
+      entryTestId="debug-alarm-log-reasons-1h"
+      colors={colors}
+    />
+  );
+}
+
+/**
  * #1170 — boarding-prompt acceptance dashboard.
  *
  * 표시: displayed / responded / 응답률 / 탑승률 + 최근 7일 일별 표 (export 진입점).
@@ -3395,6 +3569,10 @@ export const __test__ = {
   buildFeatureFlagSection,
   buildOperationDashboardSection,
   buildFusionTierSection,
+  // #2049 — dump builder와 UI section이 공유하는 SSoT helper. UI/dump 라인 일치 검증에 사용.
+  computeAutoLockLines,
+  computeEnvironmentDistributionLines,
+  computeAlarmLogReasonsLines,
 };
 
 const styles = StyleSheet.create({
