@@ -70,6 +70,7 @@ docs/*
 !docs/agents/
 !docs/ci/
 !docs/decisions/
+!docs/images/
 !docs/observability/
 !docs/ops/
 handoff/
