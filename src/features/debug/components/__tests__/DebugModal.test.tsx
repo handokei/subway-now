@@ -6,6 +6,8 @@ import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
+// Operation Dashboard alarmAccuracy(local) 계산 store — share dump payload 자동 wire 검증.
+import { useTripGroundTruthStore } from '../../store/useTripGroundTruthStore';
 import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
@@ -3245,6 +3247,11 @@ describe('DebugModal share SSOT (#1346)', () => {
     expect(dump).toContain('## Auto-lock Candidate');
     // #1682 — suppress reason 1h 윈도우 섹션.
     expect(dump).toContain('## Suppress Reasons (1h)');
+    // 누락 3 섹션 wire (#2044 스코프) — Feature Flag(ADR-022) + Operation Dashboard(#1751) +
+    // Fusion Tier (1h)(#1693/#1706). Modal render 만 있고 dump 누락되던 회귀 차단.
+    expect(dump).toContain('## Feature Flag');
+    expect(dump).toContain('## Operation Dashboard');
+    expect(dump).toContain('## Fusion Tier (1h)');
     // suppressed reason 없으면 Gates 헤더 자체 생략(omitIfEmpty=true).
     expect(dump).not.toContain('## Gates');
   });
@@ -5113,6 +5120,375 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         fireEvent.press(screen.getByTestId('trip-detail-close'));
       });
       expect(screen.queryByTestId('trip-detail-card')).toBeNull();
+    });
+  });
+});
+
+// Share dump 누락 3 섹션 wire (#2044-scope) — Feature Flag(ADR-022) + Operation Dashboard(#1751) +
+// Fusion Tier (1h)(#1693/#1706). Modal render 는 있었지만 SHARE_SECTIONS 미등록 회귀 차단.
+describe('DebugModal share dump — 누락 3 섹션 wire (#2044-scope)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // handleShare 통합 테스트가 Modal 마운트 → 실제 hook 을 호출하므로 default fixture 재설정.
+    setupHookDefaults();
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+      remove: jest.fn(),
+    } as unknown as ReturnType<typeof AppState.addEventListener>);
+  });
+
+  // outer scope factory — SonarCloud nested function 회피(공통 baseline 패턴).
+  type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+  const dumpBaseline: DumpArgs = {
+    userLocation: null,
+    speedMps: null,
+    accuracyMeters: null,
+    nearestName: null,
+    nearestDistanceM: null,
+    variants: [],
+    fusion: {
+      confidence: 'gps-only' as const,
+      source: 'gps' as const,
+      fusedLabel: '-',
+      gpsLabel: '-',
+      differs: false,
+      candidateTrains: null,
+    },
+    arrivalSummary: '-',
+    isMock: false,
+    silentPush: {
+      apnsToken: null,
+      activeTripToken: null,
+      apnsEnv: 'sandbox' as const,
+      apnsEnvStamped: null,
+      permissionStatus: null,
+      taskRegistrationState: 'unknown' as const,
+      taskRegistrationError: null,
+      lastReceivedAt: null,
+      lastFiredAt: null,
+      lastSkippedAt: null,
+      hasRoute: false,
+      destinationId: null,
+      lastNotifiedStationId: null,
+    },
+    logs: [],
+  };
+  const makeArgs = (overrides: Partial<DumpArgs> = {}): DumpArgs => ({
+    ...dumpBaseline,
+    ...overrides,
+  });
+
+  describe('buildFeatureFlagSection (ADR-022)', () => {
+    it('archFlag 미전달 시 (n/a) 반환 — hook 을 마운트하지 않은 baseline graceful', () => {
+      expect(__test__.buildFeatureFlagSection(makeArgs())).toEqual(['(n/a)']);
+    });
+
+    it('remote unconfigured — env=false / remote=(unconfigured) / active=OFF', () => {
+      expect(
+        __test__.buildFeatureFlagSection(
+          makeArgs({
+            archFlag: {
+              env: false,
+              remote: undefined,
+              remoteKind: 'unconfigured',
+              active: false,
+            },
+          }),
+        ),
+      ).toEqual(['env=false', 'remote=(unconfigured)', 'active=OFF']);
+    });
+
+    it('remote on — env=false / remote=on / active=ON (rollout 시나리오)', () => {
+      expect(
+        __test__.buildFeatureFlagSection(
+          makeArgs({
+            archFlag: {
+              env: false,
+              remote: 'on',
+              remoteKind: 'ok',
+              active: true,
+            },
+          }),
+        ),
+      ).toEqual(['env=false', 'remote=on', 'active=ON']);
+    });
+
+    it('env=true — dogfood 빌드 환경변수 override', () => {
+      expect(
+        __test__.buildFeatureFlagSection(
+          makeArgs({
+            archFlag: {
+              env: true,
+              remote: 'off',
+              remoteKind: 'ok',
+              active: true,
+            },
+          }),
+        ),
+      ).toEqual(['env=true', 'remote=off', 'active=ON']);
+    });
+
+    it('remote error — kind fallback 표기', () => {
+      expect(
+        __test__.buildFeatureFlagSection(
+          makeArgs({
+            archFlag: {
+              env: false,
+              remote: undefined,
+              remoteKind: 'error',
+              active: false,
+            },
+          }),
+        ),
+      ).toEqual(['env=false', 'remote=(error)', 'active=OFF']);
+    });
+  });
+
+  describe('buildOperationDashboardSection (#1751)', () => {
+    it('operationDashboard 미전달 시 (n/a) 반환 — store snapshot 미주입 graceful', () => {
+      expect(__test__.buildOperationDashboardSection(makeArgs())).toEqual(['(n/a)']);
+    });
+
+    it('alarmAccuracy(local) 0/0 + silentPushReach(local) 0/0 + backend 안내 라인', () => {
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
+        }),
+      );
+      expect(result).toEqual([
+        'alarmAccuracy(local)=0/0',
+        'silentPushReach(local)=0/0',
+        '(backend metrics: locklessMiss/boardableMiss/accelPattern/pushLatency/laPush — see Modal UI, not dumped)',
+      ]);
+    });
+
+    it('alarmAccuracy(local) 3/5 반영 — 사용자 정답지 응답 반영', () => {
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 3, groundTruthAnsweredCount: 5 },
+        }),
+      );
+      expect(result[0]).toBe('alarmAccuracy(local)=3/5');
+    });
+
+    it('silentPushReach(local) 은 args.logs 로 계산 — fired/received 반영', () => {
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
+          logs: [
+            { ts: 1, source: 'silent-push-received', outcome: 'received' },
+            { ts: 2, source: 'silent-push-received', outcome: 'received' },
+            { ts: 3, source: 'silent-push-fired', outcome: 'fired' },
+          ],
+        }),
+      );
+      expect(result[1]).toBe('silentPushReach(local)=1/2');
+    });
+  });
+
+  describe('buildFusionTierSection (#1693/#1706)', () => {
+    it('fusionTierLog 미전달 시 (none) 반환 — formatFusionPickerTierDistribution 컨벤션', () => {
+      expect(__test__.buildFusionTierSection(makeArgs())).toEqual(['(none)']);
+    });
+
+    it('빈 배열도 (none) 표기', () => {
+      expect(__test__.buildFusionTierSection(makeArgs({ fusionTierLog: [] }))).toEqual(['(none)']);
+    });
+
+    it('tier 3건 분포를 count 내림차순으로 노출', () => {
+      const now = 1_700_000_000_000;
+      const result = __test__.buildFusionTierSection(
+        makeArgs({
+          fusionTierLog: [
+            { ts: now - 100, tier: 'gpsFallback' },
+            { ts: now - 200, tier: 'gpsFallback' },
+            { ts: now - 300, tier: 'backendSsotAccepts' },
+          ],
+          nowMs: now,
+        }),
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toContain('tier-gpsFallback=2');
+      expect(result[0]).toContain('tier-backendSsotAccepts=1');
+    });
+
+    it('1h 윈도우 밖 entries 는 집계에서 제외', () => {
+      const now = 1_700_000_000_000;
+      const result = __test__.buildFusionTierSection(
+        makeArgs({
+          fusionTierLog: [
+            { ts: now - 100, tier: 'gpsFallback' },
+            // 2h 이전 — 윈도우 밖.
+            { ts: now - 2 * 60 * 60 * 1000, tier: 'positionTrain' },
+          ],
+          nowMs: now,
+        }),
+      );
+      expect(result[0]).toContain('tier-gpsFallback=1');
+      expect(result[0]).not.toContain('positionTrain');
+    });
+  });
+
+  describe('SHARE_SECTIONS 등록 — buildDumpText 통합', () => {
+    it('archFlag 전달 시 dump 에 Feature Flag 섹션이 env/remote/active 라인으로 노출', () => {
+      const dump = __test__.buildDumpText(
+        makeArgs({
+          archFlag: {
+            env: true,
+            remote: 'on',
+            remoteKind: 'ok',
+            active: true,
+          },
+        }),
+      );
+      expect(dump).toContain('## Feature Flag');
+      const section = dump.slice(dump.indexOf('## Feature Flag'));
+      expect(section).toContain('env=true');
+      expect(section).toContain('remote=on');
+      expect(section).toContain('active=ON');
+    });
+
+    it('operationDashboard 전달 시 dump 에 alarmAccuracy(local) + silentPushReach(local) 노출', () => {
+      const dump = __test__.buildDumpText(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 2, groundTruthAnsweredCount: 3 },
+          logs: [
+            { ts: 1, source: 'silent-push-received', outcome: 'received' },
+            { ts: 2, source: 'silent-push-fired', outcome: 'fired' },
+          ],
+        }),
+      );
+      expect(dump).toContain('## Operation Dashboard');
+      const section = dump.slice(dump.indexOf('## Operation Dashboard'));
+      expect(section).toContain('alarmAccuracy(local)=2/3');
+      expect(section).toContain('silentPushReach(local)=1/1');
+    });
+
+    it('fusionTierLog 전달 시 dump 에 Fusion Tier (1h) 섹션이 분포 라인으로 노출', () => {
+      const now = 1_700_000_000_000;
+      const dump = __test__.buildDumpText(
+        makeArgs({
+          fusionTierLog: [
+            { ts: now - 100, tier: 'gpsFallback' },
+            { ts: now - 200, tier: 'gpsFallback' },
+          ],
+          nowMs: now,
+        }),
+      );
+      expect(dump).toContain('## Fusion Tier (1h)');
+      const section = dump.slice(dump.indexOf('## Fusion Tier (1h)'));
+      expect(section).toContain('tier-gpsFallback=2');
+    });
+
+    it('3 섹션 순서 — Feature Flag / Operation Dashboard 는 상단, Fusion Tier (1h) 는 Fusion log 다음', () => {
+      const dump = __test__.buildDumpText(makeArgs());
+      const featureFlagIdx = dump.indexOf('## Feature Flag');
+      const operationDashboardIdx = dump.indexOf('## Operation Dashboard');
+      const gpsIdx = dump.indexOf('## GPS');
+      const fusionLogIdx = dump.indexOf('## Fusion log');
+      const fusionTierIdx = dump.indexOf('## Fusion Tier (1h)');
+      // Feature Flag / Operation Dashboard 는 GPS 앞 (Modal render 첫 두 섹션 순서 그대로).
+      expect(featureFlagIdx).toBeGreaterThan(-1);
+      expect(operationDashboardIdx).toBeGreaterThan(featureFlagIdx);
+      expect(gpsIdx).toBeGreaterThan(operationDashboardIdx);
+      // Fusion Tier (1h) 는 Fusion log 다음(공통 fusion 도메인 그루핑).
+      expect(fusionTierIdx).toBeGreaterThan(fusionLogIdx);
+    });
+  });
+
+  describe('handleShare 통합 — Modal 마운트 → 실제 Share.share 호출 payload', () => {
+    it('remote unconfigured (기본 test env) → dump 에 Feature Flag env=false / remote=(unconfigured) / active=OFF', async () => {
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('## Feature Flag');
+      const section = message.slice(message.indexOf('## Feature Flag'));
+      expect(section).toContain('env=false');
+      expect(section).toContain('remote=(unconfigured)');
+      expect(section).toContain('active=OFF');
+      shareSpy.mockRestore();
+    });
+
+    it('handleShare payload 에 Operation Dashboard 섹션이 항상 포함(자동 wire)', async () => {
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('## Operation Dashboard');
+      // groundTruth store 기본 [] → 0/0 표기.
+      const section = message.slice(message.indexOf('## Operation Dashboard'));
+      expect(section).toContain('alarmAccuracy(local)=0/0');
+      expect(section).toContain('silentPushReach(local)=0/0');
+      shareSpy.mockRestore();
+    });
+
+    it('handleShare payload 에 Fusion Tier (1h) 섹션이 항상 포함(자동 wire)', async () => {
+      const now = Date.now();
+      mockGetFusionTierLog.mockReturnValue([
+        { ts: now - 100, tier: 'gpsFallback' },
+      ]);
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('## Fusion Tier (1h)');
+      const section = message.slice(message.indexOf('## Fusion Tier (1h)'));
+      expect(section).toContain('tier-gpsFallback=1');
+      shareSpy.mockRestore();
+    });
+
+    it('remote on 시 dump active=ON — archFlagRemote hook 결과가 payload 로 흘러감', async () => {
+      mockUseArchFlagRemote.mockReturnValue({
+        value: 'on',
+        kind: 'ok',
+        lastFetchedAt: 1_700_000_000_000,
+      });
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      const section = message.slice(message.indexOf('## Feature Flag'));
+      expect(section).toContain('remote=on');
+      expect(section).toContain('active=ON');
+      shareSpy.mockRestore();
+    });
+
+    it('groundTruth store 응답 반영 — alarmAccuracy(local)=1/2 (1 accurate + 1 inaccurate)', async () => {
+      // .filter((r) => r.outcome === 'accurate') / (r) => r.outcome !== 'unanswered' 두 콜백을
+      // 실제 데이터로 실행 — coverage 100% 확보.
+      useTripGroundTruthStore.setState({
+        hydrated: true,
+        pendingPrompt: null,
+        responses: [
+          { corrId: 'a', endedAt: 1, respondedAt: 2, outcome: 'accurate' },
+          { corrId: 'b', endedAt: 3, respondedAt: 4, outcome: 'inaccurate' },
+          { corrId: 'c', endedAt: 5, respondedAt: 6, outcome: 'unanswered' },
+        ],
+      });
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      const section = message.slice(message.indexOf('## Operation Dashboard'));
+      // 1 accurate / 2 answered (inaccurate + accurate, unanswered 제외).
+      expect(section).toContain('alarmAccuracy(local)=1/2');
+      shareSpy.mockRestore();
+      // 다른 테스트에 영향 없도록 store 리셋.
+      useTripGroundTruthStore.setState({
+        hydrated: false,
+        pendingPrompt: null,
+        responses: [],
+      });
     });
   });
 });
