@@ -320,7 +320,7 @@ app.get('/admin/push-ack-stats', async (c) => {
     const stats = await computePushAckStats(kv, Date.now(), limit);
     return c.json(stats);
   } catch (err) {
-    captureBackendException(err, { path: 'admin/push-ack-stats' });
+    void captureBackendException(c.env, err, { path: 'admin/push-ack-stats' });
     return c.json({ error: 'push_ack_stats_failed' }, 503);
   }
 });
@@ -1088,7 +1088,7 @@ app.post('/signals/dump', async (c) => {
   try {
     await storeSignalDump(kv, payload, Date.now());
   } catch (err) {
-    captureBackendException(err, { path: 'signals/dump', corrId: payload.corrId });
+    void captureBackendException(c.env, err, { path: 'signals/dump', corrId: payload.corrId });
     return c.json({ error: 'store_failed' }, 500);
   }
 
@@ -1241,7 +1241,7 @@ app.get('/v1/observability/metrics', async (c) => {
     if (cached) return c.json(cached);
   } catch (err) {
     // KV read 자체 실패는 day-limit과는 별개. compute로 fallthrough하되 Sentry forward.
-    captureBackendException(err, { path: 'observability/metrics', stage: 'read-cache' });
+    void captureBackendException(c.env, err, { path: 'observability/metrics', stage: 'read-cache' });
   }
 
   // 첫 요청 또는 KV TTL 만료(1h) 시 실시간 계산 후 KV 적재.
@@ -1249,13 +1249,13 @@ app.get('/v1/observability/metrics', async (c) => {
     const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now, c.env.TRIPS);
     const storeResult = await tryStoreObservabilityMetrics(c.env.TRIPS, metrics, now, {
       onError: (err, key) =>
-        captureBackendException(err, { path: 'observability/metrics', stage: 'kv-put', key }),
+        void captureBackendException(c.env, err, { path: 'observability/metrics', stage: 'kv-put', key }),
     });
     // storeResult.stored=false라도 metrics 자체는 정상이므로 200 반환. fallback caching만 실패.
     return c.json(metrics, 200, storeResult.stored ? {} : { 'X-Store-Failed': 'true' });
   } catch (err) {
     // compute 실패 (R2 outage / KV list day-limit) → last-success fallback.
-    captureBackendException(err, { path: 'observability/metrics', stage: 'compute' });
+    void captureBackendException(c.env, err, { path: 'observability/metrics', stage: 'compute' });
     const fallback = await readLastSuccessfulMetrics(c.env.TRIPS);
     if (fallback) {
       return c.json(fallback, 200, {
@@ -2288,7 +2288,7 @@ const handler = {
       // 호출 시 이 값을 전달해 flag=on 시 destination 이외 kind 는 skip.
       await runScheduled(env, { seoul, apnsConfig, apnsHosts, log, archFlag });
     } catch (err) {
-      captureBackendException(err, { path: 'scheduled/runScheduled' });
+      void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
       throw err;
     }
     // #572 P2c — silent push 60s 미ACK entry를 alert로 fallback (#1894 30s→60s 완화). 같은 cron 사이클에서 실행.
@@ -2323,7 +2323,7 @@ const handler = {
           const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now, env.TRIPS);
           const storeResult = await tryStoreObservabilityMetrics(env.TRIPS, metrics, now, {
             onError: (err, key) =>
-              captureBackendException(err, { path: 'scheduled/observabilityMetrics', stage: 'kv-put', key }),
+              void captureBackendException(env, err, { path: 'scheduled/observabilityMetrics', stage: 'kv-put', key }),
           });
           log('observability metrics aggregated', {
             window: '24h',
@@ -2333,7 +2333,7 @@ const handler = {
         }
       } catch (err) {
         // compute / read throw — swallow. cron이 매분 재시도하므로 transient 실패는 다음에 회복.
-        captureBackendException(err, { path: 'scheduled/observabilityMetrics', stage: 'compute' });
+        void captureBackendException(env, err, { path: 'scheduled/observabilityMetrics', stage: 'compute' });
       }
     }
   },

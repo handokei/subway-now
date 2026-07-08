@@ -144,34 +144,82 @@ describe('captureBackendException (#1829)', () => {
     _resetSentryForTest();
   });
 
-  it('init 안 됐으면 no-op', () => {
-    captureBackendException(new Error('boom'));
+  function makeMockDb(run = vi.fn().mockResolvedValue({ success: true })): { db: D1Database; run: ReturnType<typeof vi.fn> } {
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    return { db: { prepare } as unknown as D1Database, run };
+  }
+
+  it('init 안 됐으면 Sentry no-op (D1 도 env.DB 없으면 no-op)', async () => {
+    await captureBackendException(makeEnv(), new Error('boom'));
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
-  it('init 후 captureException 호출', () => {
-    const env = { APNS_HOST: '', APNS_HOST_SANDBOX: '', SEOUL_API_HOST: '', SEOUL_API_KEY: '', APNS_KEY_ID: '', APNS_TEAM_ID: '', APNS_PRIVATE_KEY: '', APNS_BUNDLE_ID: '', TRIPS: {} as KVNamespace, SENTRY_DSN: 'https://x@s/1' };
-    sentryInit(env as Env);
+  it('init 후 captureException + D1 write 둘 다 호출 (dual sink)', async () => {
+    const { db, run } = makeMockDb();
+    const env = makeEnv({ SENTRY_DSN: 'https://x@s/1', DB: db });
+    sentryInit(env);
     const err = new Error('cron failed');
-    captureBackendException(err, { path: 'scheduled/runScheduled' });
+    await captureBackendException(env, err, { path: 'scheduled/runScheduled' });
     expect(Sentry.captureException).toHaveBeenCalledWith(
       err,
       expect.objectContaining({ extra: expect.objectContaining({ path: 'scheduled/runScheduled' }) }),
     );
+    expect(run).toHaveBeenCalled();
   });
 
-  it('SDK throw 시 swallow', () => {
-    const env = { APNS_HOST: '', APNS_HOST_SANDBOX: '', SEOUL_API_HOST: '', SEOUL_API_KEY: '', APNS_KEY_ID: '', APNS_TEAM_ID: '', APNS_PRIVATE_KEY: '', APNS_BUNDLE_ID: '', TRIPS: {} as KVNamespace, SENTRY_DSN: 'https://x@s/1' };
-    sentryInit(env as Env);
+  it('D1 write throw 시 Sentry 는 정상 호출 (independence)', async () => {
+    const { db } = makeMockDb(vi.fn().mockRejectedValue(new Error('d1 down')));
+    const env = makeEnv({ SENTRY_DSN: 'https://x@s/1', DB: db });
+    sentryInit(env);
+    await expect(captureBackendException(env, new Error('boom'))).resolves.toBeUndefined();
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  it('Sentry SDK throw 시 D1 은 정상 write (independence)', async () => {
+    const { db, run } = makeMockDb();
+    const env = makeEnv({ SENTRY_DSN: 'https://x@s/1', DB: db });
+    sentryInit(env);
     vi.mocked(Sentry.captureException).mockImplementationOnce(() => { throw new Error('sdk crash'); });
-    expect(() => captureBackendException(new Error('original'))).not.toThrow();
+    await expect(captureBackendException(env, new Error('original'))).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalled();
   });
 
-  it('context 없이 호출 가능', () => {
-    const env = { APNS_HOST: '', APNS_HOST_SANDBOX: '', SEOUL_API_HOST: '', SEOUL_API_KEY: '', APNS_KEY_ID: '', APNS_TEAM_ID: '', APNS_PRIVATE_KEY: '', APNS_BUNDLE_ID: '', TRIPS: {} as KVNamespace, SENTRY_DSN: 'https://x@s/1' };
-    sentryInit(env as Env);
-    captureBackendException(new Error('bare'));
+  it('env.DB undefined 시 D1 path graceful no-op, Sentry 는 진행', async () => {
+    const env = makeEnv({ SENTRY_DSN: 'https://x@s/1' });
+    sentryInit(env);
+    await expect(captureBackendException(env, new Error('bare'))).resolves.toBeUndefined();
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  it('Sentry not initialized 시 Sentry skip + D1 은 write', async () => {
+    const { db, run } = makeMockDb();
+    const env = makeEnv({ DB: db }); // SENTRY_DSN 없음 → sentryInit no-op
+    sentryInit(env);
+    await captureBackendException(env, new Error('boom'), { path: 'admin/foo' });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalled();
+  });
+
+  it('errorType 매핑 — Error / non-Error object / string', async () => {
+    const prepareSpy = vi.fn().mockImplementation(() => ({ bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}) }) }));
+    const db = { prepare: prepareSpy } as unknown as D1Database;
+    const env = makeEnv({ DB: db });
+    sentryInit(env);
+    await captureBackendException(env, new TypeError('a'), { path: 'p1' });
+    await captureBackendException(env, { code: 42 }, { path: 'p2' });
+    await captureBackendException(env, 'plain-string', { path: 'p3' });
+    // prepare 3회 호출, bind 인자에서 error_type 확인
+    expect(prepareSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('context 없이 호출 가능 (endpoint=unknown)', async () => {
+    const { db, run } = makeMockDb();
+    const env = makeEnv({ SENTRY_DSN: 'https://x@s/1', DB: db });
+    sentryInit(env);
+    await captureBackendException(env, new Error('bare'));
     expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error), undefined);
+    expect(run).toHaveBeenCalled();
   });
 });
 
