@@ -112,6 +112,10 @@ crons = ["*/1 * * * *"]
 # `wrangler tail`은 실시간 1~2분 윈도우만 잡혀 retrospective 진단 불가.
 # logs만 활성화해 invocation logs를 Workers Logs에 영구 저장, dashboard에서 조회 가능.
 # traces는 비용/성능 영향 최소화 위해 일단 비활성. 필요 시 토글.
+#
+# #2055 임시 조치: persist=false — 매 분 5개 idle log 축적으로 2000 cap 6시간 소진 회귀.
+# #2054 (idle skip + heartbeat) 배포 완료 시 persist=true 복구 검토.
+# wrangler tail 실시간 진단은 여전히 동작.
 [observability]
 enabled = false
 head_sampling_rate = 1
@@ -119,7 +123,7 @@ head_sampling_rate = 1
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
-persist = true
+persist = false
 invocation_logs = true
 
 [observability.traces]
