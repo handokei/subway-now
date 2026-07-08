@@ -287,6 +287,10 @@ export async function runRetryPushes(env: Env, deps: RetryPushDeps): Promise<Ret
       });
     }
   }
-  log('retry-push run complete', { ...stats });
+  // #2054 — idle skip. scanned=0 (retry queue empty) 시 로그 억제. Cloudflare Workers Logs
+  // cap(2000/cycle 5 로그) 소진 방지. 활성 retry 있을 땐 기존대로 상세 log.
+  if (stats.scanned > 0) {
+    log('retry-push run complete', { ...stats });
+  }
   return stats;
 }

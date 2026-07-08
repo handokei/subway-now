@@ -7811,8 +7811,8 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
   });
 });
 
-describe('runScheduled cron jitter stat (#1539 S6)', () => {
-  it('stamps cronJitterMs on stats + logs it', async () => {
+describe('runScheduled cron jitter stat (#1539 S6 / #2054)', () => {
+  it('stamps cronJitterMs on stats without raw log (#2054 raw log 제거)', async () => {
     const kv = new InMemoryKV();
     const env = makeEnv(kv);
     const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
@@ -7835,8 +7835,124 @@ describe('runScheduled cron jitter stat (#1539 S6)', () => {
     });
     const expectedJitter = computeCronJitterMs(NOW + 7_321);
     expect(stats.cronJitterMs).toBe(expectedJitter);
-    expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter' && l.meta?.jitterMs === expectedJitter))
-      .toBe(true);
+    // #2054 — raw `scheduled: cron jitter` log 제거. spike 임계(45s) 미만이라 spike log 도 없음.
+    expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter')).toBe(false);
+    expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter spike')).toBe(false);
+  });
+
+  it('#2054 — emits `scheduled: cron jitter spike` when jitter exceeds 45s threshold', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    // 60s boundary 로부터 46_000ms 지난 시각을 강제. computeCronJitterMs 가 46_000 을 반환.
+    const spikeNow = Math.floor((NOW + 60_000) / 60_000) * 60_000 + 46_000;
+    await runScheduled(env, {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => spikeNow,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => spikeNow,
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter spike')).toBe(true);
+  });
+
+  it('#2054 — idle cycle (scanned=0) suppresses `scheduled run complete` log', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(env, {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    expect(stats.scanned).toBe(0);
+    expect(logMessages.some((l) => l.msg === 'scheduled run complete')).toBe(false);
+  });
+
+  it('#2054 — idle cycle emits `scheduled heartbeat` on first entry (no last-heartbeat stamp)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(env, {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    const hb = logMessages.find((l) => l.msg === 'scheduled heartbeat');
+    expect(hb).toBeDefined();
+    expect(hb?.meta?.alive).toBe(true);
+    expect(hb?.meta).toHaveProperty('jitterP50');
+    expect(hb?.meta).toHaveProperty('jitterP99');
+    expect(hb?.meta).toHaveProperty('samples');
+  });
+
+  it('#2054 — second idle cycle within 1h skips heartbeat (KV gate)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const makeSeoul = (nowFn: () => number) =>
+      new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: nowFn,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      });
+    // 1차 cycle: heartbeat 발화.
+    await runScheduled(env, {
+      seoul: makeSeoul(() => NOW),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // 2차 cycle: 60s 후 — heartbeat gate 로 skip.
+    const secondLogs: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    await runScheduled(env, {
+      seoul: makeSeoul(() => NOW + 60_000),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW + 60_000,
+      log: (msg, meta) => {
+        secondLogs.push({ msg, meta });
+      },
+    });
+    expect(secondLogs.some((l) => l.msg === 'scheduled heartbeat')).toBe(false);
   });
 });
 

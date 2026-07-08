@@ -90,7 +90,11 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
     }
   }
 
-  log('fallback run complete', { ...stats });
+  // #2054 — idle skip. scanned=0 (pending queue empty) 시 로그 억제. Cloudflare Workers Logs
+  // cap 소진 방지. 활성 pending 있을 땐 기존대로 상세 log.
+  if (stats.scanned > 0) {
+    log('fallback run complete', { ...stats });
+  }
   return stats;
 }
 

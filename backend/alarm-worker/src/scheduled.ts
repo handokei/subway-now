@@ -102,6 +102,15 @@ import {
   isSimpleArchEnabled,
   stampArvlCdFireOnce,
 } from './arvlcdFireOnceTtl';
+import {
+  appendJitterSample,
+  computeJitterPercentiles,
+  JITTER_SPIKE_THRESHOLD_MS,
+  readJitterSamples,
+  resetJitterSamples,
+  shouldEmitHeartbeat,
+  stampHeartbeat,
+} from './cronJitterAggregate';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -955,8 +964,16 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       stationUnknown: 0,
     },
   };
-  // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
-  log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
+  // #2054 — jitter raw log 제거. spike 임계 초과 시만 즉시 로그, 정상 값은 KV samples append 후
+  // heartbeat 시 P50/P99 산출. Cloudflare Workers Logs cap(2000 events / cycle 5 로그) 소진 방지.
+  if (stats.cronJitterMs > JITTER_SPIKE_THRESHOLD_MS) {
+    log('scheduled: cron jitter spike', {
+      jitterMs: stats.cronJitterMs,
+      thresholdMs: JITTER_SPIKE_THRESHOLD_MS,
+    });
+  } else {
+    await appendJitterSample(env.TRIPS, stats.cronJitterMs);
+  }
 
   // #1614 Phase A (S4 #1537) — 활성 trip line union 추출 + Seoul realtimePosition 전수 self-poll.
   // 1차 iterate: 활성 trip의 route + waypoints에서 line set 수집 (computeAllowedLines 활용 — 환승
@@ -1174,10 +1191,25 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     }
   }
 
-  log('scheduled run complete', {
-    ...stats,
-    seoulCalls: deps.seoul.stats.callCount,
-  });
+  // #2054 — idle skip + heartbeat. scanned=0 (활성 trip 없음) 시 매 cycle 로그를 억제하고,
+  // 시간당 1회 `scheduled heartbeat` 로 halt 감지 능력만 유지. 활성 trip 있을 땐 기존대로 상세 log.
+  if (stats.scanned > 0) {
+    log('scheduled run complete', {
+      ...stats,
+      seoulCalls: deps.seoul.stats.callCount,
+    });
+  } else if (await shouldEmitHeartbeat(env.TRIPS, now)) {
+    const samples = await readJitterSamples(env.TRIPS);
+    const percentiles = computeJitterPercentiles(samples);
+    log('scheduled heartbeat', {
+      alive: true,
+      jitterP50: percentiles?.p50 ?? null,
+      jitterP99: percentiles?.p99 ?? null,
+      samples: samples.length,
+    });
+    await stampHeartbeat(env.TRIPS, now);
+    await resetJitterSamples(env.TRIPS);
+  }
 
   // #1779 — LA push 도달률 Analytics Engine forward.
   // cron cycle 합산(laPushSent / laPushFailed)을 단일 la-push 이벤트로 적재.
