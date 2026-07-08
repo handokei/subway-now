@@ -229,4 +229,34 @@ describe('runFallbackPushes (#572 P2c)', () => {
     });
     expect(stats.scanned).toBe(0);
   });
+
+  it('#2054 — idle cycle (scanned=0) suppresses `fallback run complete` log', async () => {
+    const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    await runFallbackPushes(makeEnv(kv), {
+      apnsConfig: apnsConfig(),
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    expect(logMessages.some((l) => l.msg === 'fallback run complete')).toBe(false);
+  });
+
+  it('#2054 — non-idle cycle still emits `fallback run complete` log', async () => {
+    await putPending(
+      kv as unknown as KVNamespace,
+      makeEntry({ sentAt: NOW - (FALLBACK_THRESHOLD_MS - 1) }),
+    );
+    const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    await runFallbackPushes(makeEnv(kv), {
+      apnsConfig: apnsConfig(),
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    expect(logMessages.some((l) => l.msg === 'fallback run complete')).toBe(true);
+  });
 });

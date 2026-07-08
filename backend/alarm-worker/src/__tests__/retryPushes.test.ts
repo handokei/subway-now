@@ -744,5 +744,51 @@ describe('retryPushes (#1721)', () => {
         expect(stats.rescheduled).toBe(1);
       });
     });
+
+    describe('#2054 — idle skip log', () => {
+      it('idle cycle (scanned=0) suppresses `retry-push run complete` log', async () => {
+        const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+        const apnsFetch = vi.fn();
+        const stats = await runRetryPushes(makeEnv(kv), {
+          apnsConfig: makeApnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          log: (msg, meta) => {
+            logMessages.push({ msg, meta });
+          },
+        });
+        expect(stats.scanned).toBe(0);
+        expect(logMessages.some((l) => l.msg === 'retry-push run complete')).toBe(false);
+      });
+
+      it('non-idle cycle still emits `retry-push run complete` log', async () => {
+        await kv.put(
+          'retry-push:p-log',
+          JSON.stringify({
+            pushId: 'p-log',
+            token: 'tok',
+            payload: makePayload({ pushId: 'p-log', kind: 'destination' }),
+            apnsEnv: 'sandbox',
+            attemptCount: 0,
+            nextAttemptAt: NOW,
+            originalSentAt: NOW,
+            lastErrorStatus: 429,
+          }),
+        );
+        const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+        await runRetryPushes(makeEnv(kv), {
+          apnsConfig: makeApnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW + 1,
+          log: (msg, meta) => {
+            logMessages.push({ msg, meta });
+          },
+        });
+        expect(logMessages.some((l) => l.msg === 'retry-push run complete')).toBe(true);
+      });
+    });
   });
 });
