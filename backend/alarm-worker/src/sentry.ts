@@ -23,6 +23,7 @@ import {
   hashTripToken,
   sanitizeContext,
 } from '../../../src/shared/infra/monitoring/tripTokenHash';
+import { logBackendError } from './d1ErrorLog';
 import type { Env } from './types';
 
 export { hashTripToken };
@@ -72,20 +73,51 @@ export function sentryInit(env: Env): void {
 }
 
 /**
- * 예외를 Sentry로 포착. DSN 미설정 / initialized 이전 시 no-op.
+ * 예외를 Sentry + D1 `backend_errors` 두 sink 로 포착 (#2058).
  *
  * 핵심 path(cron, /trips, /signals/dump, /live-activity/register)의 catch block에서 사용.
- * SDK 자체 throw 시 swallow — cron path 영향 없음.
+ * 두 sink 는 각자 try/catch 로 독립 — 한 쪽이 throw/skip 되어도 다른 쪽은 계속 진행.
+ *
+ * - Sentry: `initialized=false` 시 skip. SDK throw 시 swallow.
+ * - D1: `env.DB` 미바인딩 시 `logBackendError` 내부에서 graceful no-op. write throw 시 swallow.
+ *
+ * `context` 에서 `path` 를 endpoint 로 재사용한다 (없으면 'unknown').
+ * `errorType` 은 Error 인스턴스면 constructor 이름, 아니면 `typeof err`.
+ *
+ * fire-and-forget 컨텍스트에서는 `void captureBackendException(env, err, ctx)` 로 호출 가능.
  */
-export function captureBackendException(
+export async function captureBackendException(
+  env: Env,
   err: unknown,
   context?: BackendXEventContext,
-): void {
-  if (!initialized) return;
+): Promise<void> {
+  // Sentry sink — 독립 try/catch.
+  if (initialized) {
+    try {
+      captureException(err, context ? { extra: sanitizeContext(context) } : undefined);
+    } catch (e) {
+      console.warn(JSON.stringify({ msg: 'sentry captureException failed', err: String(e) }));
+    }
+  }
+
+  // D1 sink — 독립 try/catch. logBackendError 자체가 db=undefined + write throw 를 swallow 하지만
+  // 방어적으로 한 번 더 wrap 해 Sentry 성공 후 D1 실패로 caller 가 throw 받는 회귀를 차단한다.
   try {
-    captureException(err, context ? { extra: sanitizeContext(context) } : undefined);
+    const endpoint =
+      typeof context?.path === 'string' && context.path.length > 0 ? context.path : 'unknown';
+    const errorType =
+      err instanceof Error ? err.constructor.name : typeof err;
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    await logBackendError(env.DB, {
+      endpoint,
+      errorType,
+      message,
+      stack,
+      context: context ? sanitizeContext(context) : undefined,
+    });
   } catch (e) {
-    console.warn(JSON.stringify({ msg: 'sentry captureException failed', err: String(e) }));
+    console.warn(JSON.stringify({ msg: 'd1 backend_errors sink failed', err: String(e) }));
   }
 }
 
