@@ -36,6 +36,11 @@ export const CHAIN_STAGE_IDS = [
   'picker-shown',
   'user-selected',
   'mismatch-detected',
+  // ── #2068 mode-aware stages (sleepMode 회귀 재현) ───────────────────────
+  // Phase 1(#2063/#2064)·Phase 2(#2066/#2067) 완료 전에는 fail이 정상 —
+  // fixtureChainRunnerSleepMode.test.ts에서 it.failing으로 마킹.
+  'general-mode-no-alarm-sound',
+  'sleep-mode-no-per-station-notification',
 ] as const;
 
 export type ChainStageId = (typeof CHAIN_STAGE_IDS)[number];

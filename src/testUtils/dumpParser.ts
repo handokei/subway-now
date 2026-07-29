@@ -39,6 +39,13 @@ export interface DumpFixture {
   /** ## BoardingLock 섹션 */
   boardingLockActive: boolean | undefined; // active=yes → true
 
+  /**
+   * #2068 — ## Sleep 섹션 sleepMode=on|off. 섹션 부재/파싱 불가 시 undefined.
+   * mode-aware chain stage (일반 모드 알람류 발사 / 취침 모드 매역 notification 발사 회귀
+   * 재현)에서 사용.
+   */
+  sleepMode: 'on' | 'off' | undefined;
+
   /** ## Alarm log 섹션 sources 행. 예: "boarding-prompt=1, fg=30, ..." */
   alarmLogSources: Record<string, number>;
 
@@ -99,6 +106,7 @@ export function parseDumpFixture(text: string): DumpFixture {
     silentPushReceived: parseSilentPushCount(text, 'received'),
     silentPushFired: parseSilentPushCount(text, 'fired'),
     boardingLockActive: parseBoardingLockActive(text),
+    sleepMode: parseSleepMode(text),
     alarmLogSources: parseAlarmLogSources(text),
     notificationsFiredCount: parseNotificationsFiredCount(text),
     notificationKinds: parseNotificationKinds(text),
@@ -150,6 +158,20 @@ function parseBoardingLockActive(text: string): boolean | undefined {
   const m = section.match(/^active=(yes|no)$/m);
   if (!m) return undefined;
   return m[1] === 'yes';
+}
+
+/**
+ * #2068 — `## Sleep` 섹션 `sleepMode=on|off` 파싱.
+ *
+ * DebugModal `buildSleepSection`(components/DebugModal.tsx)이 `sleepMode=${on|off}` 또는
+ * (sleep prop 미전달 시) `sleepMode=—`(UNKNOWN_LABEL)를 출력한다. `on`/`off` 이외 값(또는
+ * 섹션 부재)은 undefined로 graceful 반환.
+ */
+function parseSleepMode(text: string): 'on' | 'off' | undefined {
+  const section = extractSection(text, 'Sleep');
+  if (!section) return undefined;
+  const m = section.match(/^sleepMode=(on|off)$/m);
+  return m ? (m[1] as 'on' | 'off') : undefined;
 }
 
 function parseAlarmLogSources(text: string): Record<string, number> {

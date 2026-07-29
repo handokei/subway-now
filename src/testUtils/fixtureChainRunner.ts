@@ -56,6 +56,13 @@ const COLD_START_ACCURACY_THRESHOLD_M = 50;
  *   - picker-shown: coldStart.pickerShown=yes (섹션 필요)
  *   - user-selected: coldStart.userSelected=yes (섹션 필요)
  *   - mismatch-detected: alarmLogSources['cold-start-mismatch'] >= 1
+ *
+ * #2068 mode-aware stages (Phase 1·2 완료 전 fail이 정상, expected-fail):
+ *   - general-mode-no-alarm-sound: sleepMode=off 인데 alarm류(transfer/destination) kind가
+ *     fired에 존재 → fail. 일반 모드에서는 alarm.wav 발사 0건이어야 한다(ADR 확정 스펙,
+ *     #2061 epic 본문 표).
+ *   - sleep-mode-no-per-station-notification: sleepMode=on 인데 station-passed kind가
+ *     fired에 존재 → fail. 취침 모드에서는 매역 notification이 mute돼야 한다.
  */
 const STAGE_CHECKERS: Record<ChainStageId, StageChecker> = {
   // ── 기존 6 stages ─────────────────────────────────────────────────────────
@@ -236,6 +243,35 @@ const STAGE_CHECKERS: Record<ChainStageId, StageChecker> = {
     return {
       passed: count >= 1,
       evidence: `alarmLog.cold-start-mismatch=${count}`,
+    };
+  },
+
+  // ── #2068 mode-aware stages ──────────────────────────────────────────────
+
+  /**
+   * general-mode-no-alarm-sound: 일반 모드(sleepMode=off)에서 alarm류(transfer/destination)
+   * kind가 발사되면 fail. sleepMode 미확인(undefined)이면 판정 불가 → pass(신호 없음, 보수적
+   * 미차단) — 기존 dump(## Sleep 섹션 없음)가 이 새 stage로 인해 잘못 fail 처리되지 않도록.
+   */
+  'general-mode-no-alarm-sound': (f) => {
+    const alarmKinds = f.notificationKinds.filter((k) => k === 'transfer' || k === 'destination');
+    const passed = f.sleepMode !== 'off' || alarmKinds.length === 0;
+    return {
+      passed,
+      evidence: `sleepMode=${f.sleepMode ?? '?'} alarmKinds=[${alarmKinds.join(',')}]`,
+    };
+  },
+
+  /**
+   * sleep-mode-no-per-station-notification: 취침 모드(sleepMode=on)에서 station-passed kind가
+   * 발사되면 fail. sleepMode 미확인(undefined)이면 판정 불가 → pass(보수적 미차단).
+   */
+  'sleep-mode-no-per-station-notification': (f) => {
+    const stationPassedFired = f.notificationKinds.includes('station-passed');
+    const passed = f.sleepMode !== 'on' || !stationPassedFired;
+    return {
+      passed,
+      evidence: `sleepMode=${f.sleepMode ?? '?'} station-passed-fired=${stationPassedFired}`,
     };
   },
 };

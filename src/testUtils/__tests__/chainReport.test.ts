@@ -31,8 +31,13 @@ describe('CHAIN_STAGE_IDS', () => {
     expect(CHAIN_STAGE_IDS).toContain('mismatch-detected');
   });
 
-  it('총 12개 (기존 6 + Phase 6.1 6)', () => {
-    expect(CHAIN_STAGE_IDS).toHaveLength(12);
+  it('Phase 6.1 stages를 포함한다 (#2068 mode-aware)', () => {
+    expect(CHAIN_STAGE_IDS).toContain('general-mode-no-alarm-sound');
+    expect(CHAIN_STAGE_IDS).toContain('sleep-mode-no-per-station-notification');
+  });
+
+  it('총 14개 (기존 6 + Phase 6.1 6 + #2068 mode-aware 2)', () => {
+    expect(CHAIN_STAGE_IDS).toHaveLength(14);
   });
 
   it('중복 없음', () => {
@@ -76,8 +81,8 @@ describe('buildChainReport', () => {
     expect(report.allPassed).toBe(false);
   });
 
-  it('마지막 stage만 실패 → firstStuck=mismatch-detected (Phase 6.1 마지막 stage)', () => {
-    // Phase 6.1 (#1875) 확장 후 마지막 stage는 mismatch-detected
+  it('마지막 stage만 실패 → firstStuck=sleep-mode-no-per-station-notification (#2068 마지막 stage)', () => {
+    // #2068 mode-aware stages 확장 후 마지막 stage는 sleep-mode-no-per-station-notification
     const last = CHAIN_STAGE_IDS.length - 1;
     const stages: ChainStageResult[] = CHAIN_STAGE_IDS.map((stage, i) => ({
       stage,
@@ -85,7 +90,7 @@ describe('buildChainReport', () => {
       evidence: 'test',
     }));
     const report = buildChainReport(stages);
-    expect(report.firstStuck).toBe('mismatch-detected');
+    expect(report.firstStuck).toBe('sleep-mode-no-per-station-notification');
   });
 
   it('stages 배열이 CHAIN_STAGE_IDS 순서와 동일하다', () => {

@@ -41,12 +41,12 @@ describe('regression: 기존 6 stages 회귀 zero — morning-trip allPassed + �
     }
   });
 
-  it('CHAIN_STAGE_IDS 총 12개', () => {
-    expect(CHAIN_STAGE_IDS).toHaveLength(12);
+  it('CHAIN_STAGE_IDS 총 14개 (기존 6 + Phase 6.1 6 + #2068 mode-aware 2)', () => {
+    expect(CHAIN_STAGE_IDS).toHaveLength(14);
   });
 
-  it('stages 배열 총 12개', () => {
-    expect(report.stages).toHaveLength(12);
+  it('stages 배열 총 14개', () => {
+    expect(report.stages).toHaveLength(14);
   });
 
   it('stages[0].stage=trip-registered (기존 순서 유지)', () => {
@@ -61,7 +61,7 @@ describe('regression: 기존 6 stages 회귀 zero — morning-trip allPassed + �
     expect(report.stages[6].stage).toBe('cold-start-detected');
   });
 
-  it('stages[11].stage=mismatch-detected (Phase 6.1 마지막 stage)', () => {
+  it('stages[11].stage=mismatch-detected (Phase 6.1 마지막 stage, #2068 mode-aware 앞)', () => {
     expect(report.stages[11].stage).toBe('mismatch-detected');
   });
 });
@@ -212,6 +212,7 @@ describe('Phase 6.1 graceful: 모든 필드 undefined → cold start stages fals
     silentPushReceived: undefined,
     silentPushFired: undefined,
     boardingLockActive: undefined,
+    sleepMode: undefined,
     alarmLogSources: {},
     notificationsFiredCount: undefined,
     notificationKinds: [],
@@ -274,6 +275,7 @@ describe('매트릭스: cold start section 존재 시 각 필드 독립 판정',
     silentPushReceived: undefined,
     silentPushFired: undefined,
     boardingLockActive: undefined,
+    sleepMode: undefined,
     alarmLogSources: {},
     notificationsFiredCount: undefined,
     notificationKinds: [],
@@ -338,6 +340,7 @@ describe('매트릭스: cold-start-detected fallback 파생 (## Cold Start 섹�
     silentPushReceived: undefined,
     silentPushFired: undefined,
     boardingLockActive: undefined,
+    sleepMode: undefined,
     alarmLogSources: {},
     notificationsFiredCount: undefined,
     notificationKinds: [],
