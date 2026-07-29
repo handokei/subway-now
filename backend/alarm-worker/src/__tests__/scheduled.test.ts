@@ -81,6 +81,12 @@ const APNS_HOSTS = {
   sandbox: 'api.sandbox.push.apple.com',
 } as const;
 
+// #2086 — APNs apns-collapse-id 64B 한도 검증용 실물 길이(64 hex) mock device token.
+// 짧은 mock token('lock-tok' 등)은 slice(0, 16)가 no-op이라 축약 로직을 실제로 exercise하지
+// 못한다 — runtime constraint 시뮬 원칙(lesson_test_mock_must_validate_runtime)에 따라
+// 실제 device token 길이를 반영한 별도 상수를 collapse-id 전용 테스트에서 사용한다.
+const HEX64_TOKEN = '0123456789abcdef'.repeat(4);
+
 function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
   return {
     TRIPS: kv as unknown as KVNamespace,
@@ -2267,7 +2273,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       });
     }
 
-    it('sleepModeEnabled=true + legHopIndex>=1 + 직전역 arvlCd 진입 → visible alert + companion silent push 2건 발사', async () => {
+    it('sleepModeEnabled=true + 직전역 arvlCd 진입 → visible alert + companion silent push 2건 발사', async () => {
       const kv = new InMemoryKV();
       const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
       await putTrip(kv as unknown as KVNamespace, makeSleepAlarmTrip());
@@ -2306,6 +2312,30 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(companionData.tripToken).toBe('lock-tok');
       const companionHeaders = companionCall![1].headers as Record<string, string>;
       expect(companionHeaders['apns-push-type']).toBe('background');
+    });
+
+    // #2086 — 짧은 mock token('lock-tok')은 `slice(0, 16)`가 no-op이라 apns-collapse-id
+    // 축약 로직을 실제로 exercise하지 못한다. 실물 길이(64 hex) device token으로
+    // `alarm-<token16>-<station>` 형태 + APNs 64B 한도 준수를 직접 검증한다.
+    it('#2086 실물 길이(64 hex) device token → apns-collapse-id가 16 hex prefix로 축약되고 64B 이하', async () => {
+      const kv = new InMemoryKV();
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await putTrip(kv as unknown as KVNamespace, makeSleepAlarmTrip({ token: HEX64_TOKEN }));
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-sleep-alarm-hex64',
+      });
+
+      const alertCall = findPushByKindOrAlert(fetchImpl, (body) => body.aps?.alert !== undefined);
+      expect(alertCall).toBeDefined();
+      const alertHeaders = alertCall![1].headers as Record<string, string>;
+      const collapseId = alertHeaders['apns-collapse-id'];
+      expect(collapseId).toBe(`alarm-${HEX64_TOKEN.slice(0, 16)}-군자`);
+      expect(new TextEncoder().encode(collapseId).length).toBeLessThanOrEqual(64);
     });
 
     // PR #2085 리뷰 P1-1 — leg-relative hop 카운터(legHopIndex) 게이트는 전면 제거됐다.
@@ -7144,6 +7174,23 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.sentAt).toBe(NOW);
     // dedup KV stamp 확인 (TTL은 InMemoryKV가 그대로 보관 — expiration 무시)
     expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBe('1');
+  });
+
+  // #2086 — 짧은 mock token('arvl-tok')은 `slice(0, 16)`가 no-op이라 apns-collapse-id
+  // 축약 로직을 실제로 exercise하지 못한다. 실물 길이(64 hex) device token으로
+  // `station-<token16>` 형태 + APNs 64B 한도 준수를 직접 검증한다.
+  it('#2086 실물 길이(64 hex) device token → apns-collapse-id가 16 hex prefix로 축약되고 64B 이하', async () => {
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: makeLockTripFixture(HEX64_TOKEN),
+      pushId: 'p-arvl-hex64',
+    });
+    const calls = getStationPassedCalls(apnsFetch);
+    expect(calls).toHaveLength(1);
+    const headers = calls[0][1].headers as Record<string, string>;
+    const collapseId = headers['apns-collapse-id'];
+    expect(collapseId).toBe(`station-${HEX64_TOKEN.slice(0, 16)}`);
+    expect(new TextEncoder().encode(collapseId).length).toBeLessThanOrEqual(64);
   });
 
   // Epic #1204 그룹 2 D3 (#1273)
