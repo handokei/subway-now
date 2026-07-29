@@ -18,6 +18,14 @@
  *
  * 발사 후 entry는 즉시 삭제 — 다음 cron에서 재발사 방지 (KV TTL 60s에 의존하지 않음).
  * 발사 실패도 entry 삭제 — 재시도 폭주 방지 (다음 silent push 사이클에서 자연 회복).
+ *
+ * #2063 (ADR-023 개정) — 매역 알림(station-notif, arvlCd 기반 `fireArvlCdStationPush` /
+ * `fireVanishFallbackStationPush`)은 silent → visible alert push 직접 발사로 전환되며
+ * PENDING_PUSHES 등록 자체를 하지 않는다(호출부 참고) — 직접 alert를 발사하므로 60s ACK 기반
+ * fallback 개념이 불필요하기 때문. 본 모듈은 여전히 lockless intermediate 경로(silent push 유지,
+ * device-side validation이 느슨해 안전망이 더 절실)의 pending entry를 그대로 처리한다 — kind 값
+ * (transfer/destination/intermediate) 자체로는 origin을 구분할 수 없으므로, 매역 알림 계열의
+ * "제외"는 등록 시점(호출부)에서 이뤄지고 본 모듈의 처리 로직은 변경하지 않는다.
  */
 
 import { sendAlertPush, type ApnsConfig, type SendPushResult } from './apns';

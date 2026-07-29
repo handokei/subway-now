@@ -206,13 +206,17 @@ function makeArvlCdFireSeoul(
   });
 }
 
-/** arvlCd fire silent push (background, kind=intermediate/destination, phase=imminent) 호출만 추출. */
+/**
+ * arvlCd fire push (kind=intermediate/destination, phase=imminent) 호출만 추출.
+ * #2063 (ADR-023 개정) — silent(background) → visible(alert) 전환. apns-push-type 이 바뀌었지만
+ * data payload shape(phase/kind 포함)는 그대로 forward 되므로 헤더 조건만 갱신.
+ */
 function getArvlCdStationPassedCalls(
   fetchImpl: ReturnType<typeof vi.fn>,
 ): [string, RequestInit][] {
   return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
     const headers = (c[1]?.headers ?? {}) as Record<string, string>;
-    if (headers['apns-push-type'] !== 'background') return false;
+    if (headers['apns-push-type'] !== 'alert') return false;
     try {
       const body = JSON.parse(c[1]?.body as string) as {
         data?: { phase?: string; kind?: string };
@@ -1838,26 +1842,30 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.consecutiveEtaMissing).toBe(0);
       });
 
-      it('#1402 hop 시간 미경과 + motion=automotive → release floor fire 발사 + PENDING_PUSHES 등록', async () => {
+      it('#2063 (ADR-023 개정) hop 시간 미경과 + motion=automotive → release floor fire visible alert 직접 발사, PENDING_PUSHES 미등록', async () => {
         // release 경로의 floor fire는 motion gate(stationary 차단)를 통과한 경우에만 fire.
-        // 발사 성공 시 PENDING_PUSHES에 등록돼 30s 내 ACK 없으면 alert fallback 가동.
+        // #2063 — silent → visible alert 직접 발사로 전환돼 60s ACK 기반 PENDING_PUSHES 안전망이 불필요.
         const pending = new InMemoryKV();
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
         const { stats, stored } = await runFallbackMotionScenario({
           motion: 'automotive',
           hopElapsed: false,
           pushId: 'p1402-release',
           pending,
+          apnsFetch,
         });
         // floor fire 발사 (release 경로)
         expect(stats.vanishReleaseFired).toBe(1);
         expect(stats.vanishFallbackFired).toBe(0);
         expect(stats.pushed).toBeGreaterThanOrEqual(1);
-        // PENDING_PUSHES에 30s alert fallback 안전망 entry 등록
+        // visible alert push 직접 발사 확인 (apns-push-type: alert)
+        const alertCalls = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).filter(
+          (c) => (c[1]?.headers as Record<string, string>)['apns-push-type'] === 'alert',
+        );
+        expect(alertCalls.length).toBe(1);
+        // PENDING_PUSHES 등록 없음 (ACK 개념 불필요)
         const pendingEntry = await pending.get('pending:p1402-release');
-        expect(pendingEntry).not.toBeNull();
-        const parsed = JSON.parse(pendingEntry!) as { stationName: string; phase: string };
-        expect(parsed.stationName).toBe('중곡');
-        expect(parsed.phase).toBe('imminent');
+        expect(pendingEntry).toBeNull();
         // lock release는 정상 진행
         expect(stored.boardingLock).toBeUndefined();
       });
@@ -7530,22 +7538,22 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
     return JSON.parse(match![1].body as string);
   }
 
-  it('arvlCd 발사 성공 시 PENDING_PUSHES에 30s alert fallback entry 등록', async () => {
+  it('#2063 (ADR-023 개정) arvlCd 발사 성공 시 visible alert 직접 발사, PENDING_PUSHES 미등록', async () => {
     const pending = new InMemoryKV();
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     const { stats } = await runArvlCdScenario({
       token: 'arvl-1402',
       pushId: 'p1402-arvl',
       pending,
+      apnsFetch,
     });
     expect(stats.arvlCdFireSuccess).toBe(1);
     const entry = await pending.get('pending:p1402-arvl');
-    expect(entry).not.toBeNull();
-    const parsed = JSON.parse(entry!) as {
-      stationName: string; phase: string; kind: string; sentAt: number;
-    };
-    expect(parsed.stationName).toBe('중곡');
-    expect(parsed.phase).toBe('imminent');
-    expect(parsed.sentAt).toBe(NOW);
+    expect(entry).toBeNull();
+    const body = findApnsCallByPushId(apnsFetch, 'p1402-arvl');
+    expect((body.data as { nextWaypoint: string }).nextWaypoint).toBe('중곡');
+    expect((body.data as { phase: string }).phase).toBe('imminent');
+    expect((body.data as { sentAt: number }).sentAt).toBe(NOW);
   });
 
   it('arvlCd 페이로드에 origin=arvlcd stamp', async () => {

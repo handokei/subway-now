@@ -311,6 +311,83 @@ export interface SendPushResult {
   reason?: string;
 }
 
+/**
+ * #2063 (ADR-023 개정) — `SilentPushPayload` → wire `data` 필드 정규화. 기존 `sendSilentPush`
+ * 본문 빌드 로직을 추출해 station-notif(visible alert) 채널(`sendAlertPush`의 `data` 옵션)도
+ * 동일한 optional-field omission 규칙(undefined/false/빈 배열은 자연 누락)을 공유한다 — 채널이
+ * silent→alert로 바뀌어도 device 소비 코드(SSoT cascade picker 등)가 받는 wire shape은 불변.
+ */
+export function buildSilentPushData(payload: SilentPushPayload): Record<string, unknown> {
+  return {
+    nextWaypoint: payload.nextWaypoint,
+    etaSeconds: payload.etaSeconds,
+    phase: payload.phase,
+    kind: payload.kind,
+    sentAt: payload.sentAt,
+    pushId: payload.pushId,
+    // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex가 정의된 경우에만 wire.
+    // 구 backend 호환을 위해 optional이라 undefined일 땐 JSON에서 자연 누락된다.
+    ...(payload.hopIndex === undefined ? {} : { hopIndex: payload.hopIndex }),
+    // #1365 — occupiedLine은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+    // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+    ...(payload.occupiedLine === undefined ? {} : { occupiedLine: payload.occupiedLine }),
+    // #1307 — subsurface는 true일 때만 wire. false/undefined는 JSON에서 자연 누락 →
+    // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+    ...(payload.subsurface === true ? { subsurface: true } : {}),
+    // #1322 — boardingLine/trainCode는 정의된 경우에만 wire (lock-path fire). 미전달 시
+    // JSON에서 자연 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+    ...(payload.boardingLine === undefined ? {} : { boardingLine: payload.boardingLine }),
+    ...(payload.trainCode === undefined ? {} : { trainCode: payload.trainCode }),
+    // #1399 — tripToken은 정의된 경우에만 wire (좀비 알림 cleanup). 미전달 시 JSON에서 자연
+    // 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+    ...(payload.tripToken === undefined ? {} : { tripToken: payload.tripToken }),
+    // #1402 — origin은 정의된 경우에만 wire (좀비 알림 RCA). 구 backend 호환을 위해 optional —
+    // 미전달 시 JSON에서 자연 누락, device는 `'unknown'`으로 분류.
+    ...(payload.origin === undefined ? {} : { origin: payload.origin }),
+    // #1438 (E5) — lockReleasedReason은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+    // 구 device(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+    ...(payload.lockReleasedReason === undefined
+      ? {}
+      : { lockReleasedReason: payload.lockReleasedReason }),
+    // #1539 (S6) — passedStations는 non-empty 배열일 때만 wire. 빈 배열/누락은 JSON에서 자연
+    // 누락 → 구 device(필드 무시) 호환. device는 사전 예약 큐 backfill에 사용한다(후속 PR).
+    ...(payload.passedStations && payload.passedStations.length > 0
+      ? { passedStations: [...payload.passedStations] }
+      : {}),
+    // #1561 (T8, ADR-017 / S2 흡수) — ssot은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+    // 구 device(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환. device cascade picker가
+    // `backend-ssot` tier(최상위)로 채택한다.
+    ...(payload.ssot === undefined
+      ? {}
+      : {
+          ssot: {
+            currentStationId: payload.ssot.currentStationId,
+            motionState: payload.ssot.motionState,
+            lastAdvanceEvidence: payload.ssot.lastAdvanceEvidence,
+            lastAdvanceAt: payload.ssot.lastAdvanceAt,
+            passedStations: [...payload.ssot.passedStations],
+            // #1705 — currentStationLine 정의된 경우에만 wire (구 device 호환 위해 optional).
+            ...(payload.ssot.currentStationLine === undefined
+              ? {}
+              : { currentStationLine: payload.ssot.currentStationLine }),
+            // #1572 (T9) — alarmEvents 정의된 경우에만 wire. 빈 배열도 wire(device 측 게이트가
+            // 빈 list와 미정의를 구분하지 않으므로 동일 graceful — 단 backend 호환 위해 forward).
+            // 같은 패턴: undefined는 omit, 정의됨(빈 배열 포함)은 forward.
+            ...(payload.ssot.alarmEvents === undefined
+              ? {}
+              : {
+                  alarmEvents: payload.ssot.alarmEvents.map((e) => ({
+                    alarmId: e.alarmId,
+                    stationId: e.stationId,
+                    type: e.type,
+                    decidedAt: e.decidedAt,
+                  })),
+                }),
+          },
+        }),
+  };
+}
+
 export async function sendSilentPush(options: SendPushOptions): Promise<SendPushResult> {
   const jwt = await buildApnsJwt(options.config, options.now);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -318,78 +395,7 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
 
   const body = JSON.stringify({
     aps: { 'content-available': 1 },
-    data: {
-      nextWaypoint: options.payload.nextWaypoint,
-      etaSeconds: options.payload.etaSeconds,
-      phase: options.payload.phase,
-      kind: options.payload.kind,
-      sentAt: options.payload.sentAt,
-      pushId: options.payload.pushId,
-      // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex가 정의된 경우에만 wire.
-      // 구 backend 호환을 위해 optional이라 undefined일 땐 JSON에서 자연 누락된다.
-      ...(options.payload.hopIndex === undefined ? {} : { hopIndex: options.payload.hopIndex }),
-      // #1365 — occupiedLine은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
-      // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
-      ...(options.payload.occupiedLine === undefined
-        ? {}
-        : { occupiedLine: options.payload.occupiedLine }),
-      // #1307 — subsurface는 true일 때만 wire. false/undefined는 JSON에서 자연 누락 →
-      // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
-      ...(options.payload.subsurface === true ? { subsurface: true } : {}),
-      // #1322 — boardingLine/trainCode는 정의된 경우에만 wire (lock-path fire). 미전달 시
-      // JSON에서 자연 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
-      ...(options.payload.boardingLine === undefined
-        ? {}
-        : { boardingLine: options.payload.boardingLine }),
-      ...(options.payload.trainCode === undefined ? {} : { trainCode: options.payload.trainCode }),
-      // #1399 — tripToken은 정의된 경우에만 wire (좀비 알림 cleanup). 미전달 시 JSON에서 자연
-      // 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
-      ...(options.payload.tripToken === undefined ? {} : { tripToken: options.payload.tripToken }),
-      // #1402 — origin은 정의된 경우에만 wire (좀비 알림 RCA). 구 backend 호환을 위해 optional —
-      // 미전달 시 JSON에서 자연 누락, device는 `'unknown'`으로 분류.
-      ...(options.payload.origin === undefined ? {} : { origin: options.payload.origin }),
-      // #1438 (E5) — lockReleasedReason은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
-      // 구 device(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
-      ...(options.payload.lockReleasedReason === undefined
-        ? {}
-        : { lockReleasedReason: options.payload.lockReleasedReason }),
-      // #1539 (S6) — passedStations는 non-empty 배열일 때만 wire. 빈 배열/누락은 JSON에서 자연
-      // 누락 → 구 device(필드 무시) 호환. device는 사전 예약 큐 backfill에 사용한다(후속 PR).
-      ...(options.payload.passedStations && options.payload.passedStations.length > 0
-        ? { passedStations: [...options.payload.passedStations] }
-        : {}),
-      // #1561 (T8, ADR-017 / S2 흡수) — ssot은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
-      // 구 device(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환. device cascade picker가
-      // `backend-ssot` tier(최상위)로 채택한다.
-      ...(options.payload.ssot === undefined
-        ? {}
-        : {
-            ssot: {
-              currentStationId: options.payload.ssot.currentStationId,
-              motionState: options.payload.ssot.motionState,
-              lastAdvanceEvidence: options.payload.ssot.lastAdvanceEvidence,
-              lastAdvanceAt: options.payload.ssot.lastAdvanceAt,
-              passedStations: [...options.payload.ssot.passedStations],
-              // #1705 — currentStationLine 정의된 경우에만 wire (구 device 호환 위해 optional).
-              ...(options.payload.ssot.currentStationLine === undefined
-                ? {}
-                : { currentStationLine: options.payload.ssot.currentStationLine }),
-              // #1572 (T9) — alarmEvents 정의된 경우에만 wire. 빈 배열도 wire(device 측 게이트가
-              // 빈 list와 미정의를 구분하지 않으므로 동일 graceful — 단 backend 호환 위해 forward).
-              // 같은 패턴: undefined는 omit, 정의됨(빈 배열 포함)은 forward.
-              ...(options.payload.ssot.alarmEvents === undefined
-                ? {}
-                : {
-                    alarmEvents: options.payload.ssot.alarmEvents.map((e) => ({
-                      alarmId: e.alarmId,
-                      stationId: e.stationId,
-                      type: e.type,
-                      decidedAt: e.decidedAt,
-                    })),
-                  }),
-            },
-          }),
-    },
+    data: buildSilentPushData(options.payload),
   });
 
   const response = await fetchImpl(url, {
@@ -437,6 +443,34 @@ export interface SendAlertPushOptions {
    * 미지정 시 aps.category 필드를 omit (구 caller backward compat).
    */
   category?: string;
+  /**
+   * #2063 (ADR-023 개정) — sound 옵션화. undefined(생략) 시 기존 `'default'` 유지(구 caller
+   * backward compat). `null` 명시 시 aps.sound 필드 자체를 생략 — 매역 알림(station-notif)은
+   * 무소리 배너로 발사한다.
+   */
+  sound?: string | null;
+  /**
+   * #2063 — iOS interruption level. 매역 알림은 `'active'`. 미지정 시 aps에서 필드 생략
+   * (구 caller backward compat).
+   */
+  interruptionLevel?: 'active' | 'passive' | 'time-sensitive' | 'critical';
+  /**
+   * #2063 — `apns-collapse-id` 헤더. 같은 값의 후속 push가 알림센터에서 최신 것으로 교체된다.
+   * 매역 알림은 `station-<tripToken>`을 사용해 같은 trip의 매역 알림 스택을 방지한다.
+   * 미지정 시 헤더 생략 (구 caller backward compat).
+   */
+  collapseId?: string;
+  /**
+   * #2063 — `apns-expiration` 헤더 값(epoch seconds). 지하 데이터 순단 후 stale 알림이 뒤늦게
+   * 표시되는 것을 방지한다. 미지정 시 헤더 생략(APNs 기본 폐기 정책 유지, 구 caller backward compat).
+   */
+  expirationEpochSec?: number;
+  /**
+   * #2063 — `data` 필드에 `pushId` 외 추가로 실을 payload. 매역 알림은 기존 silent push가
+   * forward하던 SSoT/게이트 필드를 alert 채널에서도 동일하게 forward해 device 소비 코드(cascade
+   * picker 등)가 영향받지 않게 한다. 미지정 시 `data`는 `{ pushId }` 그대로(구 caller backward compat).
+   */
+  data?: Record<string, unknown>;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -451,11 +485,16 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
   const body = JSON.stringify({
     aps: {
       alert: { title: options.title, body: options.body },
-      sound: 'default',
+      // #2063 — sound===null이면 aps.sound 필드 자체를 생략(무소리). undefined면 기존 'default'.
+      ...(options.sound === null ? {} : { sound: options.sound ?? 'default' }),
       // #1798 P2 — category는 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락.
       ...(options.category !== undefined ? { category: options.category } : {}),
+      // #2063 — interruption-level은 정의된 경우에만 wire.
+      ...(options.interruptionLevel !== undefined
+        ? { 'interruption-level': options.interruptionLevel }
+        : {}),
     },
-    data: { pushId: options.pushId },
+    data: { pushId: options.pushId, ...options.data },
   });
 
   const response = await fetchImpl(url, {
@@ -468,6 +507,12 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
       'content-type': 'application/json',
       // #1788 — thread-id groups notifications by trip.
       ...(options.tripToken !== undefined ? { 'apns-thread-id': options.tripToken } : {}),
+      // #2063 — apns-collapse-id: 같은 trip의 매역 알림을 알림센터에서 최신으로 교체.
+      ...(options.collapseId !== undefined ? { 'apns-collapse-id': options.collapseId } : {}),
+      // #2063 — apns-expiration: stale 매역 알림이 뒤늦게 표시되는 것을 방지.
+      ...(options.expirationEpochSec !== undefined
+        ? { 'apns-expiration': String(options.expirationEpochSec) }
+        : {}),
     },
     body,
   });
