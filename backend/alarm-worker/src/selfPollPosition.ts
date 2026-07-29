@@ -65,6 +65,22 @@ const SELF_POLL_STATION_PREFIX = 'selfPoll:station:';
 export const SELF_POLL_TTL_SEC = 90;
 
 /**
+ * #2079 (P2, #2077 사후 리뷰 follow-up) — position consumer용 staleness 게이트(초).
+ *
+ * `SELF_POLL_TTL_SEC` 90s 상향(#2073) 이후 `pollLinesAndStamp`의 cache-hit 분기가 정상 동작하면
+ * KV entry가 최대 90s까지 재fetch 없이 살아남는다. 이 자체는 write 감축 의도대로지만, trainCode
+ * 재합성처럼 "현재 위치"를 근거로 판단하는 consumer(예: vanish-reattach `attachTrainCodeForLeg`)가
+ * 그 90s 전 snapshot을 staleness 게이트 없이 그대로 쓰면 이미 waypoint를 통과한 열차의 trainCode를
+ * 재합성해 잘못된 lock으로 이어질 수 있다(vanish-reattach 오lock).
+ *
+ * `readFreshSelfPollPosition`이 이 상수로 consumer 측에서만 게이트한다 — `pollLinesAndStamp`의
+ * 내부 cache-hit 체크(`readSelfPollPosition` 직접 사용)는 그대로 두어 TTL 90s의 write 감축 효과를
+ * 보존한다(게이트를 그 경로에도 적용하면 cron 60s 주기와 60s 임계값이 거의 겹쳐 매 tick 재fetch로
+ * 되돌아가 #2073 회귀가 재발한다).
+ */
+export const SELF_POLL_POSITION_MAX_AGE_SEC = 60;
+
+/**
  * Phase 5 (#1828) — trip waypoints 중 station-level polling 대상 최대 개수.
  *
  * N=5: 다음 역 + 1환승 + 2환승 + 종점 + 여분 1개. trip의 잔여 waypoints가 5개 미만이면
@@ -100,8 +116,12 @@ export function selfPollStationKey(stationName: string): string {
 /**
  * KV에서 line의 마지막 self-poll position 결과를 조회.
  *
- * `expirationTtl=30s` 안쪽이면 stamp가 살아 있고, 초과 시 KV가 자동 삭제 → null 반환.
- * caller(advanceTripPosition site들)가 trainCode cross-match 시도용.
+ * `expirationTtl=SELF_POLL_TTL_SEC`(90s) 안쪽이면 stamp가 살아 있고, 초과 시 KV가 자동 삭제 →
+ * null 반환. `pollLinesAndStamp`의 내부 cache-hit 체크가 이 raw 함수를 직접 사용한다 — staleness
+ * 게이트를 적용하지 않아 TTL 90s의 write 감축 효과를 그대로 보존한다.
+ *
+ * trainCode 재합성처럼 "현재 위치" 판단에 쓰는 consumer는 이 함수 대신
+ * `readFreshSelfPollPosition`(#2079 P2 staleness 게이트 적용)을 사용한다.
  *
  * @param kv TRIPS KV namespace
  * @param line `LineNumber` (canonicalLineName로 정규화된 값)
@@ -119,6 +139,34 @@ export async function readSelfPollPosition(
   } catch {
     return null;
   }
+}
+
+/**
+ * #2079 (P2) — position consumer(예: vanish-reattach `attachTrainCodeForLeg`)용 staleness
+ * 게이트가 적용된 `readSelfPollPosition` wrapper.
+ *
+ * `entry.fetchedAt`이 `now` 기준 `SELF_POLL_POSITION_MAX_AGE_SEC`(60s)를 초과하면 KV entry가
+ * TTL(90s) 안쪽에 살아 있어도 stale로 간주해 `null`을 반환한다. "현재 위치"를 근거로 trainCode를
+ * 재합성하는 모든 consumer는 이 함수를 사용해야 한다(단일 게이트 지점).
+ *
+ * `pollLinesAndStamp`의 내부 cache-hit 체크에는 적용하지 않는다 — write 감축 목적은 raw
+ * `readSelfPollPosition`으로 유지한다.
+ *
+ * @param kv TRIPS KV namespace
+ * @param line `LineNumber`
+ * @param now 판정 시점 epoch ms (caller의 tick `now`)
+ * @returns staleness 게이트를 통과한 stamp 또는 null(부재/malformed/stale)
+ */
+export async function readFreshSelfPollPosition(
+  kv: KVNamespace,
+  line: LineNumber,
+  now: number,
+): Promise<SelfPollEntry | null> {
+  const entry = await readSelfPollPosition(kv, line);
+  if (!entry) return null;
+  const ageSec = (now - entry.fetchedAt) / 1000;
+  if (ageSec > SELF_POLL_POSITION_MAX_AGE_SEC) return null;
+  return entry;
 }
 
 /**

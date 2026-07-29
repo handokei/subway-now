@@ -14,6 +14,8 @@
  * runRetryPushes 가 실제로 entry를 발견했을 때 재stamp해 backoff가 긴 retry도 커버한다.
  */
 
+import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
+
 const PUSH_ACTIVITY_KEY = 'cron:push-activity';
 
 /**
@@ -55,7 +57,10 @@ export async function stampPushActivity(
 export async function readPushActivityRecent(kv: KVNamespace | undefined): Promise<boolean> {
   if (!kv) return false;
   try {
-    const raw = await kv.get(PUSH_ACTIVITY_KEY);
+    // #2079 (P3-1) — 레포 컨벤션(assertCronCacheTtl)대로 cron KV read에 명시적 cacheTtl.
+    // marker TTL(120s) 대비 30s 안전 마진.
+    assertCronCacheTtl(CRON_READ_CACHE_TTL_SEC);
+    const raw = await kv.get(PUSH_ACTIVITY_KEY, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
     return raw !== null;
   } catch {
     return true;

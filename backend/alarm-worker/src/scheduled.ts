@@ -73,7 +73,7 @@ import {
   N_STATION_LOOKAHEAD,
   pollLinesAndStamp,
   pollStationsAndStamp,
-  readSelfPollPosition,
+  readFreshSelfPollPosition,
 } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
@@ -993,7 +993,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
   // 없으면 pending/retry push가 존재할 수 없다(모든 fire 경로가 trip 기반이므로 trip 부재 tick엔
   // 새 entry가 생기지 않는다). 이 tick엔 index.ts가 runFallbackPushes/runRetryPushes를 skip한다.
-  const activityRecent = await readPushActivityRecent(env.TRIPS);
+  // #2079 (P3-2) — trips.length > 0이면 idle이 어차피 false로 확정되므로 결과가 폐기된다.
+  // short-circuit으로 불필요한 KV read를 건너뛴다.
+  const activityRecent = trips.length === 0 ? await readPushActivityRecent(env.TRIPS) : false;
   const idle = trips.length === 0 && !activityRecent;
   stats.pendingActivityPossible = !idle;
   if (trips.length > 0) {
@@ -2430,7 +2432,9 @@ async function attemptVanishSwap(
   if (previousMissCount + 1 < VANISH_RE_ATTACH_THRESHOLD) return null;
   // #1702 (B2-A) — Seoul 단방향/0건 arrivals fallback. attachTrainCodeForLeg 가 candidate 를
   // 찾지 못하면 line 의 realtimePosition snapshot 에서 segmentStations 기반 합성을 시도.
-  const selfPollPositions = await readSelfPollPosition(env.TRIPS, waypoint.line);
+  // #2079 (P2) — staleness 게이트 적용 reader. 90s TTL 안쪽이어도 fetchedAt이 60s 초과면
+  // stale로 간주(vanish-reattach 오lock 방지).
+  const selfPollPositions = await readFreshSelfPollPosition(env.TRIPS, waypoint.line, now);
   const swapped = await attachTrainCodeForLeg({
     trip,
     targetWaypoint: waypoint,
