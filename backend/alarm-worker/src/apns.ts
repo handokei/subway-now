@@ -940,28 +940,34 @@ export async function sendBoardingPromptSilentPush(
 }
 
 /**
- * 취침모드 환승 알람 silent push (#2036 Issue I γ).
+ * 취침 알람 companion silent push (#2066 Phase 2-backend, #2036 Issue I γ 후속 개편).
  *
- * 사용자 확정 flow: "환승역 → 취침모드 시 알람 발사, 일반모드는 일반 상황과 동일".
- * device silentPushTask가 payload 수신 → `SLEEP_MODE_KEY` AsyncStorage read → sleepMode=true 시
- * gate 무관 로컬 알림(alarm.wav sound + repeat vibration + timeSensitive interruptionLevel) 발사.
+ * 사용자 확정 flow: "환승역/도착역 직전 역 → 취침모드 시 알람 발사, 일반모드는 일반 상황과 동일".
+ * 주 채널은 `sendAlertPush`(visible, `sound: alarm.wav` + `interruption-level: time-sensitive`)로
+ * 전환됐다(#2066) — 본 silent push는 device가 깨어있을 때 TTS/진동을 보강하고 OS 예약 알람을
+ * cancel하는 companion 채널이다 (Phase 2-device가 소비).
  *
  * ADR-023 정합: backend는 취침 무관 발사 (본 함수 호출부는 사용자 sleep 상태 조회하지 않음).
  *
  * headers는 일반 silent push와 동일 (background + priority 5). data payload는 discriminator
- * `kind: 'sleep-transfer-alarm'` + originStation + nextLine + nextStation + tripToken 필수.
- * pushId / sentAt / title / body 는 optional (구 device 호환).
+ * `kind: 'sleep-alarm-companion'` + originStation + targetKind + nextLine + nextStation +
+ * tripToken 필수. pushId / sentAt / title / body 는 optional (구 device 호환).
  *
- * dedup은 device 측 in-memory Set(`${tripToken}::${nextStation}`)이 담당 — backend는 idempotent 발사.
+ * dedup은 backend KV(`alarmFireKey:`)가 담당 — 본 함수는 idempotent 발사 (caller가 dedup 책임).
  */
-export interface SendSleepTransferAlarmPushOptions {
+export interface SendSleepAlarmCompanionPushOptions {
   deviceToken: string;
   pushId: string;
-  /** 사용자가 지금 있는 역(환승 waypoint 도달 시점). */
+  /** 사용자가 지금 있는 역(직전 역, arvlCd 진입/도착 확정 시점). */
   originStation: string;
-  /** 환승 후 다음 leg의 노선. 알림 본문 노출용. */
+  /**
+   * #2066 — 알람 대상이 환승역인지 도착역인지. device가 문구/UI를 분기하는 데 사용.
+   * 환승/도착은 target 종류만 다르고 로직은 동일하다(하드코딩 분기 최소화).
+   */
+  targetKind: 'transfer' | 'destination';
+  /** 알람 대상 역의 노선. 알림 본문 노출용. */
   nextLine: string;
-  /** 환승 후 첫 도착역. 알림 본문 + dedup key. */
+  /** 알람 대상 역(환승역 또는 도착역). 알림 본문 + dedup key. */
   nextStation: string;
   /** trip 토큰 — device dedup key + `apns-thread-id` grouping. */
   tripToken: string;
@@ -981,8 +987,8 @@ export interface SendSleepTransferAlarmPushOptions {
   now?: number;
 }
 
-export async function sendSleepTransferAlarmPush(
-  options: SendSleepTransferAlarmPushOptions,
+export async function sendSleepAlarmCompanionPush(
+  options: SendSleepAlarmCompanionPushOptions,
 ): Promise<SendPushResult> {
   const jwt = await buildApnsJwt(options.config, options.now);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -991,8 +997,9 @@ export async function sendSleepTransferAlarmPush(
   const body = JSON.stringify({
     aps: { 'content-available': 1 },
     data: {
-      kind: 'sleep-transfer-alarm',
+      kind: 'sleep-alarm-companion',
       originStation: options.originStation,
+      targetKind: options.targetKind,
       nextLine: options.nextLine,
       nextStation: options.nextStation,
       tripToken: options.tripToken,
