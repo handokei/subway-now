@@ -20,7 +20,6 @@ import type { Station } from '../../../shared/types/station';
 import { alarmKey, parseAlarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
-import { sendAlarmNotification } from '../utils/stationNotification';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
 import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
 import type { StationArrival } from '../../../shared/types/arrival';
@@ -81,7 +80,6 @@ import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
-import { resolveNotificationSource } from '../utils/notificationSource';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 
 const logger = createLogger('StationAlarm');
@@ -631,28 +629,17 @@ export function useStationAlarm({
   // destinationArrival 갱신)로 sync 한다. lock 부재면 null → resolveCurrentLine이
   // nearestStation.line으로 자연 fallback.
   const [currentLockLine, setCurrentLockLine] = useState<LineNumber | null>(null);
-  // fusion source → 알람 본문 라벨. 두 effect(phase / station-passed)가 공유.
-  const notificationSource = useMemo(
-    () => (fusionSource ? resolveNotificationSource(fusionSource, locationUncertain) : undefined),
-    [fusionSource, locationUncertain],
-  );
   const sleepMode = useSettingsStore((s) => s.sleepMode);
-  const allowSpeaker = useSettingsStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAlarmEventStore((s) => s.setAlarmEvent);
   // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
   // store action을 통해 호출(storage도 함께 정리). 게이트 자체는 pure 함수.
   const dismissSilence = useAlarmEventStore((s) => s.dismissSilence);
   const clearDismissSilenceAction = useAlarmEventStore((s) => s.clearDismissSilence);
   const sleepModeRef = useRef(sleepMode);
-  const allowSpeakerRef = useRef(allowSpeaker);
 
   useEffect(() => {
     sleepModeRef.current = sleepMode;
   }, [sleepMode]);
-
-  useEffect(() => {
-    allowSpeakerRef.current = allowSpeaker;
-  }, [allowSpeaker]);
 
   // #396: 트립 trainCode lock-in 상태를 destination 도착정보 갱신마다 재로드.
   // lock-in은 첫 valid arrival 캡처 시점에 일어나므로, arrival이 들어올 때마다 확인하면
@@ -959,16 +946,8 @@ export function useStationAlarm({
     if (sleepModeRef.current) {
       setAlarmEvent(event);
     }
-    try {
-      await sendAlarmNotification(
-        event,
-        sleepModeRef.current,
-        allowSpeakerRef.current,
-        notificationSource,
-      );
-    } catch (e) {
-      logger.error('알람 알림 실패:', e);
-    }
+    // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거. 알람 배너는 원격 visible push가
+    // 담당(Phase 2-backend). FG는 이제 dedup ledger 기록 + in-app store stamp만 수행한다.
     logFiredAlarm('fg', event, trigger);
   }
 
@@ -1572,7 +1551,6 @@ export function useStationAlarm({
     clearDismissSilenceAction,
     userLocation?.lat,
     userLocation?.lng,
-    notificationSource,
     // #1236 — currentHopIndex 변화가 sleep 룰 게이트 isFirstHop 판정에 영향.
     currentHopIndex,
     // #1266 — fast-path hop window 게이트 입력. arcStations 변화 시(환승 후 leg 전환 등) 재평가.
@@ -1649,7 +1627,6 @@ export function useStationAlarm({
     clearDismissSilenceAction,
     userLocation?.lat,
     userLocation?.lng,
-    notificationSource,
     currentHopIndex,
   ]);
 }

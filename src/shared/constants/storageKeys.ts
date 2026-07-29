@@ -208,3 +208,9 @@ export const USER_INTENT_INFO_MODE_KEY = 'subway-now:user-intent-info-mode';
 // trip 종료 시 runTripBoundCleanups에서 제거 — 이전 trip의 수신 시각이 새 trip 판정 오염 차단.
 // 형식: 숫자 (epoch ms) 문자열. 키 부재 = silent push 미수신(첫 launch or 새 trip 시작 직후).
 export const LAST_SILENT_PUSH_RECEIVED_AT_KEY = 'subway-now:last-silent-push-received-at';
+// #2067 (Phase 2-device) — AlarmLocalAuthority persisted dedup ledger.
+// 취침모드 companion silent push(kind `sleep-alarm-companion`)의 TTS/진동 부가 동작이 앱 재시작
+// (cold-launch) 후에도 중복 발사되지 않도록 in-memory Set 대신 AsyncStorage에 영속화한다.
+// entry TTL 1h — trip 하나가 1시간을 넘는 경우는 드물고, TTL이 지나면 자연 prune돼 무한 성장 방지.
+// 형식: { id: string; firedAt: number }[] JSON. id = `alarm-${tripToken}-${station}-${kind}`.
+export const ALARM_LOCAL_LEDGER_KEY = 'subway-now:alarm-local-ledger';

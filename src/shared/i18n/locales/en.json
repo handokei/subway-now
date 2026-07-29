@@ -70,6 +70,7 @@
       "undo": "Undo"
     },
     "lockCorrectionToast": "Boarding train corrected: {{prev}} → {{next}}",
+    "shortRouteToast": "This trip is too short for the alarm to sound",
     "coldStartMismatch": {
       "title": "Check boarding station",
       "message": "Your boarding station does not match your current location. Please reselect.",

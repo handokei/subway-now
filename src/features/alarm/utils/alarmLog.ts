@@ -100,11 +100,11 @@ export type AlarmLogSource =
   // observabilityMetrics.locklessTripMissRatio = miss / (miss + fired) 산출.
   // lesson_silent_push_zero_is_paradigm_intent: fire 0건이 본질적 의도(paradigm)인지 miss인지 구분.
   | 'lockless-trip-end'
-  // #2036 (Issue I γ) — 취침모드 환승 알람 발사 stamp. backend가 취침 무관 발사한 sleep-transfer
-  // silent push를 device silentPushTask가 sleepMode=true 확인 후 gate 무관 로컬 알림으로 발사한
-  // 경우 1건 적재. fireCount 분모에 포함(실제 사용자에게 노출되는 알람). ADR-023 정합 —
-  // backend 필터 없이 device 결정.
-  | 'sleep-transfer-alarm';
+  // #2036 (Issue I γ) → #2067 (Phase 2-device, D3)에서 companion으로 전환. backend가 취침 무관
+  // 발사한 sleep-alarm-companion silent push를 device silentPushTask가 sleepMode=true 확인 후
+  // AlarmLocalAuthority 경유로 TTS/진동만 부가(알림 생성 없음) — 그 시점 1건 적재. fireCount
+  // 분모에 포함(실제 사용자에게 노출되는 알람). ADR-023 정합 — backend 필터 없이 device 결정.
+  | 'companion';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1221,8 +1221,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'boardable-lookup': null,
   'ground-truth-response': null,
   'lockless-trip-end': null,
-  // #2036 (Issue I γ) — sleep-transfer-alarm은 device UI 발사이므로 silent push outcome 통계에서 제외.
-  'sleep-transfer-alarm': null,
+  // #2067 (Phase 2-device, D3) — companion은 device UI 발사이므로 silent push outcome 통계에서 제외.
+  companion: null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1276,8 +1276,8 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'boardable-lookup': false,
   'ground-truth-response': false,
   'lockless-trip-end': false,
-  // #2036 (Issue I γ) — sleep-transfer-alarm 은 실제 사용자에게 노출되는 알람이므로 fire 분모에 포함.
-  'sleep-transfer-alarm': true,
+  // #2067 (Phase 2-device, D3) — companion은 실제 사용자에게 노출되는 알람이므로 fire 분모에 포함.
+  companion: true,
 };
 
 /**
@@ -1733,22 +1733,22 @@ export function logBoardingPromptFired(input: { originStation: string; line: str
 }
 
 /**
- * #2036 (Issue I γ) — 취침모드 환승 알람 발사 1건 적재.
+ * #2067 (Phase 2-device, D3) — 취침모드 companion 알람(TTS/진동) 부가 1건 적재.
  *
- * device silentPushTask가 backend sleep-transfer-alarm silent push 수신 후 sleepMode=true
- * 확인 → gate 무관 로컬 알림 발사 시 호출. dashboard/observabilityMetrics는
- * `source='sleep-transfer-alarm' + outcome='fired'` 로 sleep-transfer wake count 산출.
+ * device silentPushTask가 backend sleep-alarm-companion silent push 수신 후 sleepMode=true
+ * 확인 → AlarmLocalAuthority 경유 TTS/진동 부가(알림 생성 없음) 시 호출. dashboard/observabilityMetrics는
+ * `source='companion' + outcome='fired'` 로 companion wake count 산출.
  *
  * stationName은 `${nextLine}·${nextStation}` 형태로 인코딩해 boarding-prompt 패턴과 동일.
  */
-export function logSleepTransferAlarmFired(input: {
+export function logCompanionAlarmFired(input: {
   originStation: string;
   nextStation: string;
   nextLine: string;
 }): void {
   appendAlarmLog({
     ts: Date.now(),
-    source: 'sleep-transfer-alarm',
+    source: 'companion',
     outcome: 'fired',
     stationName: `${input.nextLine}·${input.nextStation}`,
   });

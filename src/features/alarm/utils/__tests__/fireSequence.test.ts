@@ -43,11 +43,12 @@
  *       아님) 호출 → sound=alarm.wav 0건 기대, 실제는 allowSpeaker 기본값 때문에 sleepMode
  *       무관하게 sound='alarm.wav' → red.
  *
- * (a)(b)(c) 전부 `it.failing` — 현 코드 기준 red 재현. Phase 1(#2063/#2064)·Phase 2
- * (#2066/#2067)가 완료되면 unskip한다.
+ * (a)(b) `it.failing` — 현 코드 기준 red 재현. Phase 1(#2063/#2064)·Phase 2(#2066)가 완료되면
+ * unskip한다. (c)는 #2067(Phase 2-device D1)에서 `sendAlarmNotification` 자체를 삭제해 —
+ * "재구현 없이 실제 함수를 호출해 검증"하던 원래 harness 전제가 성립하지 않게 됐다. 함수가
+ * 없으므로 발사 경로 자체가 사라졌다는 것을 export 부재로 직접 확인하는 passing 테스트로 전환.
  */
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
 import {
   isStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
@@ -70,9 +71,8 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
-// stationNotification.ts는 sendAlarmNotification 시나리오(c)에서만 필요 — 무거운 의존성
-// (live-activity, tts, alarmSound, breadcrumb 등)을 stationNotification.test.ts와 동일한
-// 패턴으로 mock한다.
+// stationNotification.ts는 시나리오(c)에서만 필요 — 무거운 의존성(live-activity, tts,
+// alarmSound, breadcrumb 등)을 stationNotification.test.ts와 동일한 패턴으로 mock한다.
 const mockVibrateAlarm = jest.fn();
 const mockStopVibration = jest.fn();
 jest.mock('../alarmSound', () => ({
@@ -282,21 +282,12 @@ describe('시나리오 (b): 앱 재시작 시뮬 후 같은 이벤트 재주입 
 });
 
 describe('시나리오 (c): 일반 모드(sleepMode=off)에서 알람류(sound 있는 알림) 발사 0', () => {
-  it.failing('sendAlarmNotification(실제 production 함수)이 sleepMode=off에도 sound=alarm.wav 발사', async () => {
-    jest.replaceProperty(Platform, 'OS', 'ios');
+  it('#2067 (Phase 2-device D1) — sendAlarmNotification 자체가 제거되어 발사 경로가 존재하지 않는다', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- 무거운 의존성 체인을
     // 이 describe 블록에서만 로드하기 위해 지연 require.
-    const { sendAlarmNotification } = require('../stationNotification') as typeof import('../stationNotification');
-
-    await sendAlarmNotification(
-      { phaseId: 'imminent', type: 'transfer', stationName: stationName() },
-      /* sleepMode */ false,
-    );
-
-    const soundCalls = (Notifications.scheduleNotificationAsync as jest.Mock).mock.calls.filter(
-      ([arg]: [{ content?: { sound?: unknown } }]) => arg?.content?.sound === 'alarm.wav',
-    );
-    // 일반 모드(sleepMode=off)에서는 alarm.wav 발사가 0건이어야 한다(#2061 확정 스펙).
-    expect(soundCalls).toHaveLength(0);
+    const stationNotificationModule = require('../stationNotification') as Record<string, unknown>;
+    // 일반 모드(sleepMode=off)에서 alarm.wav를 쏘던 유일한 caller(sendAlarmNotification)가
+    // #2067 D1에서 삭제됐다 — export 자체가 없으므로 이 회귀는 재발 불가능.
+    expect(stationNotificationModule.sendAlarmNotification).toBeUndefined();
   });
 });

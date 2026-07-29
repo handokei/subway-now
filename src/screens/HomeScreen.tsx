@@ -18,7 +18,7 @@ import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockSto
 import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
 import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
-import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
+import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
 import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
@@ -260,6 +260,9 @@ export default function HomeScreen() {
   const [lockCorrectionToast, setLockCorrectionToast] = useState<string | null>(null);
   // #1324 — 목적지 == 현재역(degenerate trip) 선택을 차단했을 때 노출하는 경고 toast.
   const [sameOriginToast, setSameOriginToast] = useState<string | null>(null);
+  // #2067 (Phase 2-device, D5) — 취침모드 on + 등록 구간이 1-hop이면 companion/OS 안전망 알람이
+  // 울릴 lead time이 없다. trip 등록 시점에 1회 안내(정보성 — 등록 자체는 차단하지 않음).
+  const [shortRouteToast, setShortRouteToast] = useState<string | null>(null);
   const handleConfirmStation = useCallback(
     (station: Station) => {
       setCustomOrigin(station);
@@ -453,6 +456,7 @@ export default function HomeScreen() {
     null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
   const handleSameOriginToastDismiss = useCallback(() => setSameOriginToast(null), []);
+  const handleShortRouteToastDismiss = useCallback(() => setShortRouteToast(null), []);
   // #1324 — 목적지 선택 단일 진입점. 현재역(effectiveOrigin)과 같은 역이면 degenerate trip을
   // 만들지 않고 경고 toast만 노출한다. picker / 최근 목적지 tap 모두 이 핸들러를 거친다.
   // 반환값: 목적지를 실제로 설정했으면 true(picker가 닫아야 함), 차단했으면 false(picker 유지).
@@ -462,11 +466,19 @@ export default function HomeScreen() {
         setSameOriginToast(t('destinationPicker.sameAsOrigin'));
         return false;
       }
+      // #2067 (Phase 2-device, D5) — 취침모드 on + 1-hop 구간(전체 정거장 1개)이면 companion/OS
+      // 안전망 알람이 발화할 lead time이 없다. 등록은 그대로 진행하되 1회 안내만 덧붙인다.
+      if (sleepMode && effectiveOrigin) {
+        const totalStops = findRoutes(effectiveOrigin.id, station.id)[0]?.totalStops;
+        if (totalStops === 1) {
+          setShortRouteToast(t('home.shortRouteToast'));
+        }
+      }
       addRecentDestination(station);
       setDestination(station);
       return true;
     },
-    [effectiveOrigin, t, addRecentDestination, setDestination],
+    [effectiveOrigin, sleepMode, t, addRecentDestination, setDestination],
   );
   // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
   // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
@@ -1798,6 +1810,13 @@ export default function HomeScreen() {
         message={sameOriginToast ?? ''}
         onDismiss={handleSameOriginToastDismiss}
         testID="same-origin-toast"
+      />
+      {/* #2067 (Phase 2-device, D5) — 취침모드 1-hop 구간 안내. 5초 자동 dismiss + tap 닫기. */}
+      <Toast
+        visible={shortRouteToast !== null}
+        message={shortRouteToast ?? ''}
+        onDismiss={handleShortRouteToastDismiss}
+        testID="short-route-toast"
       />
 
       <DestinationPicker

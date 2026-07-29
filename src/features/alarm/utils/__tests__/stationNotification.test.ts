@@ -5,7 +5,6 @@ import {
   initStationNotification,
   updateStationNotification,
   clearStationNotification,
-  sendAlarmNotification,
   clearAlarmNotification,
   sendTripEndedNotification,
   buildAlarmContent,
@@ -141,14 +140,6 @@ function expectNotificationContent(title: string, body: string) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
     expect.objectContaining({ content: { title, body } }),
   );
-}
-
-function expectAlarmNotification(title: string, body: string, extra?: Record<string, unknown>) {
-  expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-    identifier: 'station-alarm',
-    content: { title, body, sound: 'alarm.wav', ...extra },
-    trigger: null,
-  });
 }
 
 describe('stationNotification', () => {
@@ -682,164 +673,105 @@ describe('stationNotification', () => {
     });
   });
 
-  describe('sendAlarmNotification', () => {
+  // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거(알람 배너는 원격 visible push가 담당).
+  // 본 함수가 감싸던 buildAlarmContent(exit side / quick hint / phase 문구 조립)는 여전히
+  // alarmScheduler/tripBoundScheduler/boardingLockScheduler(#2089 대상, 이번 PR 범위 밖)가
+  // 소비하므로 stationNotification.ts에 남아있다 — 아래는 그 로직을 직접 검증한다.
+  describe('buildAlarmContent', () => {
     const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
     const earlyTransfer = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청' };
     const imminentDest = { phaseId: 'imminent' as const, type: 'destination' as const, stationName: '강남' };
     const imminentTransfer = { phaseId: 'imminent' as const, type: 'transfer' as const, stationName: '시청' };
 
-    it('early destination이면 하차 알림을 보낸다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest);
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
-      expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
-    });
-
-    it('early transfer이면 환승 알림을 보낸다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyTransfer);
-      expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
-    });
-
-    it('sleepMode가 true이면 vibrateAlarm에 true를 전달한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest, true);
-      expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
-    });
-
-    it('Android에서는 channelId와 priority MAX가 포함된다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification(earlyDest);
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { channelId: 'station-alarm', priority: 'max' });
-    });
-
-    it('dismiss 실패해도 schedule은 호출된다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
-      await sendAlarmNotification(earlyDest);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
-    });
-
-    it('imminent destination이면 도착 임박 알림을 보낸다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(imminentDest);
-      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { interruptionLevel: 'timeSensitive' });
-    });
-
-    it('imminent transfer이면 환승 임박 알림을 보낸다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(imminentTransfer);
-      expectAlarmNotification('환승 임박', '곧 시청에 도착합니다. 환승 준비하세요!', { interruptionLevel: 'timeSensitive' });
-    });
-
-    it('imminent + sleepMode이면 vibrateAlarm에 true를 전달한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(imminentDest, true);
-      expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
-    });
-
-    it('imminent + Android에서는 channelId와 priority MAX가 포함된다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification(imminentDest);
-      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm', priority: 'max' });
-    });
-
-    it('allowSpeaker=false이면 iOS에서 sound를 false로 설정한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest, false, false);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-alarm',
-        content: { title: '하차 알림', body: '다음 역 강남에서 하차하세요!', sound: false, interruptionLevel: 'timeSensitive' },
-        trigger: null,
+    it('early destination이면 하차 문구를 만든다', () => {
+      expect(buildAlarmContent(earlyDest)).toEqual({
+        title: '하차 알림',
+        body: '다음 역 강남에서 하차하세요!',
       });
     });
 
-    it('allowSpeaker=false이면 Android에서 무음 채널을 사용한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification(earlyDest, false, false);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-alarm',
-        content: { title: '하차 알림', body: '다음 역 강남에서 하차하세요!', sound: false, channelId: 'station-alarm-silent', priority: 'max' },
-        trigger: null,
+    it('early transfer이면 환승 문구를 만든다', () => {
+      expect(buildAlarmContent(earlyTransfer)).toEqual({
+        title: '환승 알림',
+        body: '다음 역 시청에서 환승하세요!',
       });
     });
 
-    it('TTS는 알람 body를 sleepMode/allowSpeaker와 함께 호출한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest, false, true);
-      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 하차하세요!', {
-        sleepMode: false,
-        allowSpeaker: true,
+    it('imminent destination이면 도착 임박 문구를 만든다', () => {
+      expect(buildAlarmContent(imminentDest)).toEqual({
+        title: '도착 임박',
+        body: '곧 강남에 도착합니다. 하차 준비하세요!',
       });
     });
 
-    it('TTS는 silent 게이트(sleepMode/allowSpeaker)를 그대로 전달한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest, true, false);
-      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 하차하세요!', {
-        sleepMode: true,
-        allowSpeaker: false,
+    it('imminent transfer이면 환승 임박 문구를 만든다', () => {
+      expect(buildAlarmContent(imminentTransfer)).toEqual({
+        title: '환승 임박',
+        body: '곧 시청에 도착합니다. 환승 준비하세요!',
       });
     });
 
     describe('좌/우 하차 라인 (exitSide)', () => {
-      it('event.direction이 없으면 본문에 좌/우 라인을 추가하지 않는다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification(earlyDest);
-        expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
+      it('event.direction이 없으면 본문에 좌/우 라인을 추가하지 않는다', () => {
+        expect(buildAlarmContent(earlyDest).body).toBe('다음 역 강남에서 하차하세요!');
       });
 
-      it('event.direction이 있고 데이터가 매칭되면 좌측 라인이 추가된다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ ...earlyDest, direction: 'up' });
-        expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요', { interruptionLevel: 'timeSensitive' });
+      it('event.direction이 있고 데이터가 매칭되면 좌측 라인이 추가된다', () => {
+        expect(buildAlarmContent({ ...earlyDest, direction: 'up' }).body).toBe(
+          '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요',
+        );
       });
 
-      it('하행이면 오른쪽 라인이 추가된다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ ...earlyDest, direction: 'down' });
-        expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!\n오른쪽 문으로 하차하세요', { interruptionLevel: 'timeSensitive' });
+      it('하행이면 오른쪽 라인이 추가된다', () => {
+        expect(buildAlarmContent({ ...earlyDest, direction: 'down' }).body).toBe(
+          '다음 역 강남에서 하차하세요!\n오른쪽 문으로 하차하세요',
+        );
       });
 
-      it('섬식(both)이면 양쪽 라인이 추가된다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ ...earlyTransfer, direction: 'up' });
-        expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!\n양쪽 문이 열립니다', { interruptionLevel: 'timeSensitive' });
+      it('섬식(both)이면 양쪽 라인이 추가된다', () => {
+        expect(buildAlarmContent({ ...earlyTransfer, direction: 'up' }).body).toBe(
+          '다음 역 시청에서 환승하세요!\n양쪽 문이 열립니다',
+        );
       });
 
-      it('데이터에 없는 방향이면 본문에 좌/우 라인을 추가하지 않는다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ ...earlyTransfer, direction: 'down' });
-        expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
+      it('데이터에 없는 방향이면 본문에 좌/우 라인을 추가하지 않는다', () => {
+        expect(buildAlarmContent({ ...earlyTransfer, direction: 'down' }).body).toBe(
+          '다음 역 시청에서 환승하세요!',
+        );
       });
 
       // #1504 — direction-agnostic platformExitSide.json fallback.
       describe('platformExitSide fallback', () => {
-        it('direction이 없어도 platformExitSide에 등록된 역이면 fallback이 적용된다', async () => {
-          jest.replaceProperty(Platform, 'OS', 'ios');
-          await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '잠실' });
+        it('direction이 없어도 platformExitSide에 등록된 역이면 fallback이 적용된다', () => {
           // 잠실(2-016)='right' fixture. quickExit 힌트도 같이 등록돼 있어 함께 표시된다.
-          expectAlarmNotification('하차 알림', '다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+          expect(
+            buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '잠실' }).body,
+          ).toBe('다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요');
         });
 
-        it('primary가 매칭되면 fallback을 무시하고 primary 결과를 사용한다', async () => {
-          jest.replaceProperty(Platform, 'OS', 'ios');
+        it('primary가 매칭되면 fallback을 무시하고 primary 결과를 사용한다', () => {
           // 강남: primary up='left' / platformExitSide fixture 미등록 — primary 단독.
-          await sendAlarmNotification({ ...earlyDest, direction: 'up' });
-          expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요', { interruptionLevel: 'timeSensitive' });
+          expect(buildAlarmContent({ ...earlyDest, direction: 'up' }).body).toBe(
+            '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요',
+          );
         });
 
-        it('primary가 unmatched여도 platformExitSide에 매핑이 있으면 fallback이 적용된다', async () => {
-          jest.replaceProperty(Platform, 'OS', 'ios');
+        it('primary가 unmatched여도 platformExitSide에 매핑이 있으면 fallback이 적용된다', () => {
           // 왕십리(2-008): primary 미등록 / fallback='both'. direction이 있어도 primary null → fallback.
-          await sendAlarmNotification({ phaseId: 'early', type: 'transfer', stationName: '왕십리(성동구청)', direction: 'up' });
-          expectAlarmNotification('환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n양쪽 문이 열립니다\n환승이 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+          expect(
+            buildAlarmContent({
+              phaseId: 'early',
+              type: 'transfer',
+              stationName: '왕십리(성동구청)',
+              direction: 'up',
+            }).body,
+          ).toBe('다음 역 왕십리(성동구청)에서 환승하세요!\n양쪽 문이 열립니다\n환승이 빠른 위치에서 하차하세요');
         });
 
-        it('stations.json에 없는 역은 fallback도 발화하지 않는다', async () => {
-          jest.replaceProperty(Platform, 'OS', 'ios');
-          await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '없는역' });
-          expectAlarmNotification('하차 알림', '다음 역 없는역에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
+        it('stations.json에 없는 역은 fallback도 발화하지 않는다', () => {
+          expect(
+            buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '없는역' }).body,
+          ).toBe('다음 역 없는역에서 하차하세요!');
         });
       });
     });
@@ -874,39 +806,8 @@ describe('stationNotification', () => {
           'imminent', 'destination', '잠실',
           '도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
         ],
-      ] as const)('%s', async (_label, phaseId, type, stationName, title, body) => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ phaseId, type, stationName });
-        expectAlarmNotification(title, body, { interruptionLevel: 'timeSensitive' });
-      });
-    });
-
-    describe('domain breadcrumb', () => {
-      beforeEach(() => {
-        mockAddDomainBreadcrumb.mockClear();
-        jest.replaceProperty(Platform, 'OS', 'ios');
-      });
-
-      it('alarm fire 시 alarm 카테고리 breadcrumb 추가', async () => {
-        await sendAlarmNotification(earlyDest, true);
-        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire', {
-          type: 'destination',
-          phase: 'early',
-          station: '강남',
-          sleepMode: true,
-          source: undefined,
-        });
-      });
-
-      it('source가 있으면 breadcrumb data에 포함', async () => {
-        await sendAlarmNotification(earlyTransfer, false, true, 'positionTrain');
-        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire', {
-          type: 'transfer',
-          phase: 'early',
-          station: '시청',
-          sleepMode: false,
-          source: 'positionTrain',
-        });
+      ] as const)('%s', (_label, phaseId, type, stationName, title, body) => {
+        expect(buildAlarmContent({ phaseId, type, stationName })).toEqual({ title, body });
       });
     });
   });
@@ -999,16 +900,6 @@ describe('stationNotification', () => {
       });
     });
 
-    it('sendAlarmNotification(transfer/destination)은 sound: alarm.wav 유지', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '강남' });
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          identifier: 'station-alarm',
-          content: expect.objectContaining({ sound: 'alarm.wav' }),
-        }),
-      );
-    });
   });
 
   describe('clearAlarmNotification', () => {
@@ -1053,20 +944,16 @@ describe('stationNotification', () => {
     it.each([
       ['gpsOnly', 'GPS 추정'],
       ['uncertain', '위치 확인 중'],
-    ] as const)('sendAlarmNotification source=%s → body 끝에 "%s" 부착 (자백 대상)', async (source, label) => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest, false, true, source);
-      expectAlarmNotification('하차 알림', `${baseBody} · ${label}`, { interruptionLevel: 'timeSensitive' });
+    ] as const)('buildAlarmContent source=%s → body 끝에 "%s" 부착 (자백 대상)', (source, label) => {
+      expect(buildAlarmContent(earlyDest, source).body).toBe(`${baseBody} · ${label}`);
     });
 
     it.each<['positionTrain' | 'routeProgress' | undefined]>([
       ['positionTrain'],
       ['routeProgress'],
       [undefined],
-    ])('sendAlarmNotification source=%s → 라벨 부착 안 함 (정상 케이스 노이즈 회피)', async (source) => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification(earlyDest, false, true, source);
-      expectAlarmNotification('하차 알림', baseBody, { interruptionLevel: 'timeSensitive' });
+    ])('buildAlarmContent source=%s → 라벨 부착 안 함 (정상 케이스 노이즈 회피)', (source) => {
+      expect(buildAlarmContent(earlyDest, source).body).toBe(baseBody);
     });
 
     it.each([

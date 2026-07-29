@@ -21,8 +21,7 @@ import {
   ensureLiveActivityRegistered,
   endLiveActivityWithDeregister,
 } from './liveActivityPushChannel';
-import { vibrateAlarm, stopVibration } from './alarmSound';
-import { speakAlarm } from './tts';
+import { stopVibration } from './alarmSound';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
@@ -545,37 +544,6 @@ export function buildAlarmContent(
   const withHint = appendQuickHint(withSide, resolveQuickHint(event));
   const withSource = appendNotificationSource(withHint, source);
   return { title, body: withSource };
-}
-
-export async function sendAlarmNotification(
-  event: AlarmEvent,
-  sleepMode: boolean = false,
-  allowSpeaker: boolean = true,
-  source?: NotificationSource,
-): Promise<void> {
-  const { title, body } = buildAlarmContent(event, source);
-
-  await scheduleNotification(ALARM_NOTIFICATION_ID, {
-    title,
-    body,
-    sound: allowSpeaker ? 'alarm.wav' : false,
-    ...(Platform.OS === 'android' && {
-      channelId: allowSpeaker ? ALARM_CHANNEL_ID : ALARM_SILENT_CHANNEL_ID,
-      priority: Notifications.AndroidNotificationPriority.MAX,
-    }),
-    // NOTE: critical Entitlement 승인 후 'critical'로 변경 → Sleep Focus 완전 관통
-    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
-  });
-  vibrateAlarm(sleepMode);
-  speakAlarm(body, { sleepMode, allowSpeaker });
-  notifLogger.info('알람 알림:', title, body);
-  addDomainBreadcrumb('alarm', 'fire', {
-    type: event.type,
-    phase: event.phaseId,
-    station: event.stationName,
-    sleepMode,
-    source,
-  });
 }
 
 export async function clearAlarmNotification(): Promise<void> {
