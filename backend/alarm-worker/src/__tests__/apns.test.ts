@@ -10,7 +10,7 @@ import {
   sendLiveActivityUpdate,
   sendReschedulePush,
   sendSilentPush,
-  sendSleepTransferAlarmPush,
+  sendSleepAlarmCompanionPush,
   sendTripEndedAlertPush,
   type ApnsConfig,
 } from '../apns';
@@ -1622,17 +1622,18 @@ describe('sendTripEndedAlertPush (#1337)', () => {
   });
 });
 
-// #2036 (Issue I γ) — sleep-transfer-alarm silent push. 취침모드에서 환승 임박 시 device UI 발사용.
+// #2066 (Phase 2-backend) — sleep-alarm-companion silent push. 취침 알람 companion 채널(TTS/진동 보강 + OS 예약 cancel).
 // ADR-023: backend는 취침 무관 발사, device가 sleepMode read 후 결정.
-describe('sendSleepTransferAlarmPush (#2036)', () => {
+describe('sendSleepAlarmCompanionPush (#2066)', () => {
   beforeEach(() => resetApnsJwtCache());
 
   it('background silent push headers + data payload byte-level contract', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-    const result = await sendSleepTransferAlarmPush({
+    const result = await sendSleepAlarmCompanionPush({
       deviceToken: 'device-hex',
       pushId: 'sta-1',
       originStation: '성수',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: '뚝섬',
       tripToken: 'tok-sta',
@@ -1653,8 +1654,9 @@ describe('sendSleepTransferAlarmPush (#2036)', () => {
     const body = JSON.parse(call[1].body as string);
     expect(body.aps).toEqual({ 'content-available': 1 });
     expect(body.data).toEqual({
-      kind: 'sleep-transfer-alarm',
+      kind: 'sleep-alarm-companion',
       originStation: '성수',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: '뚝섬',
       tripToken: 'tok-sta',
@@ -1665,10 +1667,11 @@ describe('sendSleepTransferAlarmPush (#2036)', () => {
 
   it('title/body 지정 시 data payload에 forward', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-    await sendSleepTransferAlarmPush({
+    await sendSleepAlarmCompanionPush({
       deviceToken: 'device-hex',
       pushId: 'sta-1',
       originStation: '성수',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: '뚝섬',
       tripToken: 'tok-sta',
@@ -1687,10 +1690,11 @@ describe('sendSleepTransferAlarmPush (#2036)', () => {
 
   it('title/body 미지정 시 data payload에 omit (구 device fallback trigger)', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-    await sendSleepTransferAlarmPush({
+    await sendSleepAlarmCompanionPush({
       deviceToken: 'device-hex',
       pushId: 'sta-1',
       originStation: '성수',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: '뚝섬',
       tripToken: 'tok-sta',
@@ -1709,10 +1713,11 @@ describe('sendSleepTransferAlarmPush (#2036)', () => {
     const fetchImpl = vi.fn(
       async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 }),
     );
-    const result = await sendSleepTransferAlarmPush({
+    const result = await sendSleepAlarmCompanionPush({
       deviceToken: 'device-hex',
       pushId: 'sta-1',
       originStation: 'O',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: 'N',
       tripToken: 't',
@@ -1726,10 +1731,11 @@ describe('sendSleepTransferAlarmPush (#2036)', () => {
 
   it('5xx non-json body → reason undefined (parseApnsError branch)', async () => {
     const fetchImpl = vi.fn(async () => new Response('upstream broken', { status: 503 }));
-    const result = await sendSleepTransferAlarmPush({
+    const result = await sendSleepAlarmCompanionPush({
       deviceToken: 'device-hex',
       pushId: 'sta-1',
       originStation: 'O',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: 'N',
       tripToken: 't',
@@ -1746,10 +1752,11 @@ describe('sendSleepTransferAlarmPush (#2036)', () => {
   // #1788 — apns-thread-id 헤더로 trip 알림 group.
   it('apns-thread-id 헤더에 tripToken이 그대로 전달된다 (#1788)', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-    await sendSleepTransferAlarmPush({
+    await sendSleepAlarmCompanionPush({
       deviceToken: 'device-hex',
       pushId: 'sta-thread',
       originStation: 'O',
+      targetKind: 'transfer',
       nextLine: '2',
       nextStation: 'N',
       tripToken: 'trip-sleep-999',
