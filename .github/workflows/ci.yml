@@ -81,6 +81,6 @@ jobs:
         working-directory: backend/alarm-worker
         run: npm run type-check
 
-      - name: vitest 실행
+      - name: vitest 실행 (coverage 게이트 포함, #2081)
         working-directory: backend/alarm-worker
         run: npm test
