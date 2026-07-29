@@ -18,6 +18,7 @@ import {
   recordBoardingPromptOutcome,
   validateBoardingPromptOutcome,
 } from './boardingPromptOutcome';
+import { stampPushActivity } from './cronIdleGate';
 import { runFallbackPushes } from './fallback';
 import { runRetryPushes } from './retryPushes';
 import {
@@ -2260,7 +2261,9 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
   };
 }
 
-const handler = {
+// #2073 — named export(테스트 전용). default export는 Sentry.withSentry HOC로 감싸져 있어
+// `handler.scheduled`를 직접 단위 테스트하려면 HOC를 우회할 진입점이 필요하다.
+export const handler = {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     sentryInit(env);
@@ -2282,21 +2285,32 @@ const handler = {
     const log = (msg: string, meta?: Record<string, unknown>) =>
       console.log(JSON.stringify({ msg, ...meta, archFlag }));
 
+    let scheduledStats: Awaited<ReturnType<typeof runScheduled>>;
     try {
       // #1995 (ADR-022 Phase 1-2) — archFlag 를 runScheduled deps 로 forward.
       // 각 caller (arvlcd / vanish / transfer-release / lockless) 가 putPending / enqueueRetryIfTransient
       // 호출 시 이 값을 전달해 flag=on 시 destination 이외 kind 는 skip.
-      await runScheduled(env, { seoul, apnsConfig, apnsHosts, log, archFlag });
+      scheduledStats = await runScheduled(env, { seoul, apnsConfig, apnsHosts, log, archFlag });
     } catch (err) {
       void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
       throw err;
     }
-    // #572 P2c — silent push 60s 미ACK entry를 alert로 fallback (#1894 30s→60s 완화). 같은 cron 사이클에서 실행.
-    await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
-    // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
-    // 시 재발사. KV binding 부재 시 graceful no-op (개발/테스트 환경 호환).
-    // #1995 (ADR-022 Phase 1-2) — runRetryPushes 자체 재 enqueue 도 flag=on 시 destination 만 유지.
-    await runRetryPushes(env, { apnsConfig, apnsHosts, log, archFlag });
+    // #2073 (Issue A) — 진짜 idle tick(활성 trip 0 + 직전 tick 근방 fire/retry 기록 없음)엔
+    // pending/retry push가 존재할 수 없으므로 listPending/listRetryPushes KV list 호출 자체를
+    // skip한다(2026-07-29 quota audit: KV list 720%/write 144% 초과, idle-skip이 로그만
+    // 억제하던 회귀). scanned>0(실제 entry 발견)이면 marker를 재stamp해 backoff가 긴 retry도
+    // 다음 tick들이 계속 idle-skip 대상에서 제외되도록 한다.
+    if (scheduledStats.pendingActivityPossible) {
+      // #572 P2c — silent push 60s 미ACK entry를 alert로 fallback (#1894 30s→60s 완화). 같은 cron 사이클에서 실행.
+      const fallbackStats = await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
+      // #1721 — silent push 발사 실패(429 / 5xx) 영구 lost 차단. retry-push: prefix entry 를 backoff 만기
+      // 시 재발사. KV binding 부재 시 graceful no-op (개발/테스트 환경 호환).
+      // #1995 (ADR-022 Phase 1-2) — runRetryPushes 자체 재 enqueue 도 flag=on 시 destination 만 유지.
+      const retryStats = await runRetryPushes(env, { apnsConfig, apnsHosts, log, archFlag });
+      if (fallbackStats.scanned > 0 || retryStats.scanned > 0) {
+        await stampPushActivity(env.TRIPS, Date.now());
+      }
+    }
     // #972 — low-recall trip ratio 임계 위반 시 운영 webhook 발사. dedup KV(1h)로 spam 차단.
     // binding/secret 미설정 환경에서는 graceful no-op이라 회귀 없음.
     await evaluateAndMaybeAlert(env, { fetchImpl: fetch, now: () => Date.now(), log });

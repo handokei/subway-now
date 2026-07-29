@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   HEARTBEAT_INTERVAL_MS,
+  JITTER_SAMPLE_EVERY_N_TICKS,
   JITTER_SAMPLES_MAX_LEN,
   appendJitterSample,
   computeJitterPercentiles,
   readJitterSamples,
   resetJitterSamples,
   shouldEmitHeartbeat,
+  shouldSampleJitterTick,
   stampHeartbeat,
 } from '../cronJitterAggregate';
 import { InMemoryKV } from './inMemoryKv';
@@ -177,6 +179,31 @@ describe('cronJitterAggregate (#2054)', () => {
         },
       } as unknown as KVNamespace;
       await expect(stampHeartbeat(throwingKv, NOW)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('shouldSampleJitterTick (#2073 Issue D)', () => {
+    const TICK_MS = 60_000;
+
+    it('samples true on tick index 0 (and every JITTER_SAMPLE_EVERY_N_TICKS multiple)', () => {
+      expect(shouldSampleJitterTick(0, TICK_MS)).toBe(true);
+      const tenthTick = TICK_MS * JITTER_SAMPLE_EVERY_N_TICKS;
+      expect(shouldSampleJitterTick(tenthTick, TICK_MS)).toBe(true);
+      const twentiethTick = TICK_MS * JITTER_SAMPLE_EVERY_N_TICKS * 2;
+      expect(shouldSampleJitterTick(twentiethTick, TICK_MS)).toBe(true);
+    });
+
+    it('samples false on non-multiple tick indices', () => {
+      for (let tick = 1; tick < JITTER_SAMPLE_EVERY_N_TICKS; tick++) {
+        expect(shouldSampleJitterTick(tick * TICK_MS, TICK_MS)).toBe(false);
+      }
+    });
+
+    it('is deterministic — only depends on now/tickIntervalMs, not call order', () => {
+      const now = 1_700_000_000_000;
+      const first = shouldSampleJitterTick(now, TICK_MS);
+      const second = shouldSampleJitterTick(now, TICK_MS);
+      expect(first).toBe(second);
     });
   });
 });

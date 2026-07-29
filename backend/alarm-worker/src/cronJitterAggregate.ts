@@ -48,6 +48,23 @@ export const HEARTBEAT_KV_TTL_SEC = 7200;
  */
 export const JITTER_SAMPLES_KV_TTL_SEC = 24 * 60 * 60;
 
+/**
+ * #2073 — jitter sample write 스로틀 주기(tick 수). appendJitterSample이 매 정상 tick 실행돼
+ * write 1,440/일(한도 1,000, 144%)을 유발했다(2026-07-29 quota audit). 10 tick당 1회로
+ * 샘플링해도 P50/P99 관측(halt 감지)에는 충분한 정밀도 — 순수 관측용 지표라 정밀도 저하가
+ * 사용자 가치에 영향 없음.
+ */
+export const JITTER_SAMPLE_EVERY_N_TICKS = 10;
+
+/**
+ * 절대 tick index(now / tickIntervalMs) 기준 결정적 샘플링 gate. KV 상태 없이 `now`만으로
+ * 계산해 마지막 write 성공 여부와 무관하게 항상 같은 tick에서 true를 반환한다(재시작/장애
+ * 후에도 sampling 주기가 흔들리지 않음).
+ */
+export function shouldSampleJitterTick(now: number, tickIntervalMs: number): boolean {
+  return Math.floor(now / tickIntervalMs) % JITTER_SAMPLE_EVERY_N_TICKS === 0;
+}
+
 /** 정상 jitter sample 을 KV 배열에 append. graceful (KV 없음/실패 무시). */
 export async function appendJitterSample(
   kv: KVNamespace | undefined,

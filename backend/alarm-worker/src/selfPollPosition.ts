@@ -50,12 +50,19 @@ const SELF_POLL_PREFIX = 'realtime-position:';
 const SELF_POLL_STATION_PREFIX = 'selfPoll:station:';
 
 /**
- * KV expirationTtl — Cloudflare 런타임 floor(`CRON_READ_CACHE_TTL_SEC=30`).
+ * KV expirationTtl (초).
  *
- * 같은 cron cycle 내 dedup + 다음 cycle 시작 직전까지 stale snapshot 활용. Seoul API rate
- * limit 보호도 겸한다 — 호선당 30s에 1회 fetch 보장.
+ * #2073 (Issue TTL) — 30s(cron 60s 주기보다 짧음)라 매 tick마다 KV entry가 항상 만료돼 있어
+ * `existing` cache-hit이 절대 성립하지 않고 line/station마다 매 tick 강제 재fetch + 재write를
+ * 유발했다(활성 trip 1개 = write 600~900/시간, station stamp ×5가 지배적, 2026-07-29 quota audit).
+ *
+ * 90s로 상향(cron 60s의 1.5배)하면 direct 다음 tick(60s 후)엔 entry가 아직 살아있어
+ * `pollLinesAndStamp`/`pollStationsAndStamp`의 기존 `existing` 캐시-히트 분기가 자연스럽게
+ * fetch·write를 모두 skip한다("조건부 put" — TTL이 다음 tick까지 생존하므로 재기록 불필요).
+ * entry가 실제로 만료된 tick(값이 바뀌었을 가능성이 있는 시점)에만 재fetch + 즉시 put해
+ * 신선도를 유지한다. Seoul API rate limit 보호는 그대로 유지 — 90s에 1회 fetch 보장.
  */
-export const SELF_POLL_TTL_SEC = CRON_READ_CACHE_TTL_SEC;
+export const SELF_POLL_TTL_SEC = 90;
 
 /**
  * Phase 5 (#1828) — trip waypoints 중 station-level polling 대상 최대 개수.
