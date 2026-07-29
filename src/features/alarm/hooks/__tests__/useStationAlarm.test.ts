@@ -1978,14 +1978,11 @@ describe('useStationAlarm', () => {
     });
   });
 
-  describe('fusionSource 라벨 전파 (#327)', () => {
-    // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거로 notificationSource가 실제로
-    // 소비되던 유일한 경로가 사라졌다. notificationSource 계산 자체(useMemo)는 향후 재사용을
-    // 위해 보존하되, "sendAlarmNotification에 전달됨"을 검증하던 아래 두 테스트는 대상이 없어 제거.
-
-    // #2064 (Phase 1-device) — station-passed 로컬 알림 제거로 notificationSource 전파 대상도
-    // 사라짐(sendAlarmNotification 경로만 notificationSource를 계속 사용).
-    it('역 통과 감지에는 더 이상 notificationSource가 전달되지 않는다 (알림 자체가 없음)', async () => {
+  // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거로 fusionSource → notificationSource
+  // 라벨을 조립하던 useMemo 자체가 죽은 코드가 되어 제거됨(#2067 리뷰 P2-1, 투기적 보존 금지).
+  // fusionSource 입력값이 station-passed dedup bookkeeping을 깨지 않는지만 남겨 검증한다.
+  describe('fusionSource 입력 시 station-passed dedup bookkeeping (#327 잔여)', () => {
+    it('fusionSource 전달돼도 station-passed는 알림 없이 dedup bookkeeping만 수행', async () => {
       const route = makeDirectRoute(5, '2');
       const destination = makeStation('D1', '강남');
       const station = makeStation('S1', '역삼');

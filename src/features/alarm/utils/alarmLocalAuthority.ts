@@ -12,7 +12,11 @@
  * 달리 앱 재시작(cold-launch) 후에도 dedup 상태가 살아남는다.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ALARM_LOCAL_LEDGER_KEY, SLEEP_MODE_KEY } from '../../../shared/constants/storageKeys';
+import {
+  ALARM_LOCAL_LEDGER_KEY,
+  SLEEP_MODE_KEY,
+  ALLOW_SPEAKER_KEY,
+} from '../../../shared/constants/storageKeys';
 import { vibrateAlarm } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
@@ -96,6 +100,20 @@ async function readSleepMode(): Promise<boolean> {
   }
 }
 
+/**
+ * 사용자 설정(허용 스피커) 값 읽기. 저장값 부재/파싱 실패는 true(허용)로 보수적 fallback —
+ * 기존 sendAlarmNotification의 `allowSpeaker = true` 기본값과 동일 semantics를 보존한다.
+ */
+async function readAllowSpeaker(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(ALLOW_SPEAKER_KEY);
+    if (!raw) return true;
+    return JSON.parse(raw) === true;
+  } catch {
+    return true;
+  }
+}
+
 export interface FireCompanionAlarmParams {
   tripToken: string;
   station: string;
@@ -117,12 +135,15 @@ export interface FireCompanionAlarmResult {
  * 절차:
  *   1. sleepMode gate — off면 skip (일반 모드는 로컬 알람 0건 정책).
  *   2. ledger dedup — 이미 발사된 id면 skip (backend retry 등으로 인한 중복 방지).
- *   3. ledger 등록 → vibrateAlarm(repeat) + speakAlarm(강제 발화) — 알림(배너) 생성 없음.
+ *   3. ledger 등록 → vibrateAlarm(repeat, 항상) + speakAlarm(사용자 allowSpeaker 설정 반영) —
+ *      알림(배너) 생성 없음.
  *
  * speakAlarm은 `sleepMode: false`로 호출한다 — tts.ts의 게이트 의미가 "실제 기기 취침 여부"가
  * 아니라 "이 경로가 TTS를 원하는가"이기 때문(sendAlarmNotification 관례: sleepMode=true일 때
  * 원래는 loud alarm.wav가 대신 소리를 낸다). companion 경로는 배너/사운드가 없으므로 TTS가
- * 유일한 음성 신호라 항상 발화해야 한다.
+ * 유일한 음성 신호이며, `allowSpeaker`(사용자 설정)만 그대로 반영한다 — 진동은 allowSpeaker
+ * 무관하게 항상 발생(#2067 리뷰 P1: 하드코딩된 true로 인해 사용자가 스피커를 껐어도 TTS가
+ * 계속 나가던 dead toggle 회귀 차단).
  */
 export async function fireCompanionAlarm(
   params: FireCompanionAlarmParams,
@@ -138,8 +159,9 @@ export async function fireCompanionAlarm(
   }
 
   await markFiredLocally(id);
+  const allowSpeaker = await readAllowSpeaker();
   vibrateAlarm(true);
-  speakAlarm(params.body, { sleepMode: false, allowSpeaker: true });
+  speakAlarm(params.body, { sleepMode: false, allowSpeaker });
   logger.info(`companion alarm fired: id=${id}`);
   return { fired: true };
 }

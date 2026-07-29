@@ -31,7 +31,11 @@ import {
 } from '../alarmLocalAuthority';
 import { vibrateAlarm } from '../alarmSound';
 import { speakAlarm } from '../tts';
-import { ALARM_LOCAL_LEDGER_KEY, SLEEP_MODE_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  ALARM_LOCAL_LEDGER_KEY,
+  SLEEP_MODE_KEY,
+  ALLOW_SPEAKER_KEY,
+} from '../../../../shared/constants/storageKeys';
 
 const mockedGetItem = AsyncStorage.getItem as jest.Mock;
 const mockedSetItem = AsyncStorage.setItem as jest.Mock;
@@ -167,6 +171,77 @@ describe('fireCompanionAlarm', () => {
       ALARM_LOCAL_LEDGER_KEY,
       expect.stringContaining('alarm-trip-1-강남-transfer'),
     );
+  });
+
+  // speakAlarm 자체(mock)는 게이트 로직이 없다 — 실제 skip 동작은 tts.test.ts가 검증.
+  // 본 테스트는 fireCompanionAlarm이 저장된 사용자 설정을 speakAlarm에 정확히 전달하는지만 확인.
+  it('#2067 리뷰 P1: allowSpeaker=false → speakAlarm에 allowSpeaker:false 전달 + 진동은 그대로 발생', async () => {
+    mockStorage({
+      [SLEEP_MODE_KEY]: JSON.stringify(true),
+      [ALLOW_SPEAKER_KEY]: JSON.stringify(false),
+    });
+    const result = await fireCompanionAlarm({
+      tripToken: 'trip-2',
+      station: '역삼',
+      kind: 'transfer',
+      body: '곧 역삼입니다',
+    });
+    expect(result).toEqual({ fired: true });
+    expect(mockedVibrate).toHaveBeenCalledWith(true);
+    expect(mockedSpeak).toHaveBeenCalledWith('곧 역삼입니다', {
+      sleepMode: false,
+      allowSpeaker: false,
+    });
+  });
+
+  it('#2067 리뷰 P1: allowSpeaker=true → TTS 1회 발화 (사용자 설정 반영)', async () => {
+    mockStorage({
+      [SLEEP_MODE_KEY]: JSON.stringify(true),
+      [ALLOW_SPEAKER_KEY]: JSON.stringify(true),
+    });
+    const result = await fireCompanionAlarm({
+      tripToken: 'trip-3',
+      station: '선릉',
+      kind: 'destination',
+      body: '곧 선릉입니다',
+    });
+    expect(result).toEqual({ fired: true });
+    expect(mockedSpeak).toHaveBeenCalledWith('곧 선릉입니다', {
+      sleepMode: false,
+      allowSpeaker: true,
+    });
+  });
+
+  it('#2067 리뷰 P1: ALLOW_SPEAKER_KEY 저장값 없음 → true(허용)로 보수적 fallback', async () => {
+    mockStorage({ [SLEEP_MODE_KEY]: JSON.stringify(true) });
+    await fireCompanionAlarm({
+      tripToken: 'trip-4',
+      station: '삼성',
+      kind: 'transfer',
+      body: '곧 삼성입니다',
+    });
+    expect(mockedSpeak).toHaveBeenCalledWith('곧 삼성입니다', {
+      sleepMode: false,
+      allowSpeaker: true,
+    });
+  });
+
+  it('#2067 리뷰 P1: ALLOW_SPEAKER_KEY 읽기 실패 → true(허용)로 보수적 fallback', async () => {
+    mockedGetItem.mockImplementation(async (key: string) => {
+      if (key === SLEEP_MODE_KEY) return JSON.stringify(true);
+      if (key === ALLOW_SPEAKER_KEY) throw new Error('boom');
+      return null;
+    });
+    await fireCompanionAlarm({
+      tripToken: 'trip-5',
+      station: '종합운동장',
+      kind: 'destination',
+      body: '곧 종합운동장입니다',
+    });
+    expect(mockedSpeak).toHaveBeenCalledWith('곧 종합운동장입니다', {
+      sleepMode: false,
+      allowSpeaker: true,
+    });
   });
 
   it('같은 id 재수신 → dedup으로 skip', async () => {
