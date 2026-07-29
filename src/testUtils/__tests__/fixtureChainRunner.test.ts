@@ -164,8 +164,8 @@ describe('acceptance 5: Day 2 오전 trip (fix 적용 결과) → 기존 6 stage
 describe('runChainFromDump — stages 배열 길이 및 순서', () => {
   const report = loadAndRun('morning-trip.txt');
 
-  it('stages 배열이 CHAIN_STAGE_IDS 개수와 동일 (기존 6 + Phase 6.1 6 = 12)', () => {
-    expect(report.stages).toHaveLength(12);
+  it('stages 배열이 CHAIN_STAGE_IDS 개수와 동일 (기존 6 + Phase 6.1 6 + #2068 mode-aware 2 = 14)', () => {
+    expect(report.stages).toHaveLength(14);
   });
 
   it('stages[0].stage=trip-registered', () => {
@@ -180,7 +180,7 @@ describe('runChainFromDump — stages 배열 길이 및 순서', () => {
     expect(report.stages[6].stage).toBe('cold-start-detected');
   });
 
-  it('stages[11].stage=mismatch-detected (Phase 6.1 마지막 stage)', () => {
+  it('stages[11].stage=mismatch-detected (Phase 6.1 마지막 stage, #2068 mode-aware 앞)', () => {
     expect(report.stages[11].stage).toBe('mismatch-detected');
   });
 });
@@ -198,6 +198,7 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       silentPushReceived: undefined,
       silentPushFired: undefined,
       boardingLockActive: undefined,
+      sleepMode: undefined,
       alarmLogSources: {},
       notificationsFiredCount: undefined,
       notificationKinds: [],
@@ -221,6 +222,7 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       silentPushReceived: 0,
       silentPushFired: 0,
       boardingLockActive: false,
+      sleepMode: undefined,
       alarmLogSources: {},
       notificationsFiredCount: 0,
       notificationKinds: [],
@@ -242,6 +244,7 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       silentPushReceived: 0,
       silentPushFired: 0,
       boardingLockActive: false,
+      sleepMode: undefined,
       alarmLogSources: {},
       notificationsFiredCount: 0,
       notificationKinds: [],
@@ -263,6 +266,7 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       silentPushReceived: undefined,
       silentPushFired: undefined,
       boardingLockActive: undefined,
+      sleepMode: undefined,
       alarmLogSources: {},
       notificationsFiredCount: undefined,
       notificationKinds: [],
@@ -285,6 +289,7 @@ describe('runChainFromDump — undefined 필드 graceful (branch coverage)', () 
       silentPushReceived: 5,
       silentPushFired: 1,
       boardingLockActive: true,
+      sleepMode: undefined,
       alarmLogSources: { 'boarding-prompt': 1 },
       notificationsFiredCount: undefined,
       notificationKinds: [],
