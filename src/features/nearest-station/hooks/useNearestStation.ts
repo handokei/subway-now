@@ -386,6 +386,17 @@ export function useNearestStation(
   const stopWatch = useCallback(() => {
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
+    // #2076 P2-1 — watch가 멈추는 순간 품질 게이트 SSOT를 콜드스타트로 리셋한다. BG 30s+ 체류
+    // 후 FG 복귀 시(watch 재개 전) absence 독립 타이머가 먼저 tick하면, freeze된 lastPassAt
+    // 기준으로 "30s+ 부재"가 즉시 참으로 오판되어 일시적 false underground hint + FG watch
+    // subsurface↔surface 재시작 churn(hysteresis 2-pass 해제까지 최대 ~24s)이 발생했었다.
+    // lastPassAt=null이면 isGpsQualityAbsenceDegraded가 항상 false(콜드스타트 안전 원칙,
+    // gpsQualityGate.ts 참고)이므로 watch 재개 후 첫 게이트 통과 fix가 re-prime하기 전까지
+    // absence 판정이 보류된다. refresh()의 stopWatch→startWatch 경로, FG watch throttle 프로파일
+    // 전환 effect의 stopWatch→startWatch 경로 모두 이 함수를 거치므로 동일하게 안전하게
+    // 콜드스타트로 수렴한다 — resume 시나리오와 별도 분기를 두지 않는다.
+    qualityGateLastPassAtRef.current = null;
+    qualityGateConsecutivePassRef.current = 0;
   }, []);
 
   const startWatch = useCallback(async () => {

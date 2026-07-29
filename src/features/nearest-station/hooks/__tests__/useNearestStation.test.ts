@@ -1850,6 +1850,77 @@ describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독�
     // barometerSubsurface=true가 이미 throttle=true를 만들었으므로 추가 재시작 없음.
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
   });
+
+  // #2076 P2-1 — 앱이 30s+ 백그라운드(watch 정지, lastPassAt freeze)에 머문 뒤 FG로 복귀하면,
+  // fresh fix가 도착하기 전에 absence 독립 타이머가 먼저 tick해 stale lastPassAt 기준으로
+  // "30s+ 부재"를 즉시 오판할 위험이 있었다. stopWatch()가 lastPassAt/hysteresis 카운터를
+  // 콜드스타트로 리셋해 이를 차단한다(콜드스타트 안전 원칙과 동일 — lastPassAt=null이면
+  // isGpsQualityAbsenceDegraded는 항상 false).
+  it('P2-1: 백그라운드 30s+ 체류 후 FG 복귀 시 stale lastPassAt로 인한 즉시 false underground 오판이 없다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    // BG 진입 전 통과 fix로 lastPassAt을 세운다.
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    // BG 진입 — stopWatch()가 lastPassAt/hysteresis 카운터를 리셋한다.
+    act(() => {
+      appStateCallback?.('background');
+    });
+
+    // BG 체류 중 30s+ 경과(실제로는 watch/타이머 정지 상태가 기대되지만, lastPassAt이 이미
+    // null이므로 이 시점에 tick이 발생하더라도 absence 판정은 보류되어야 한다 — 리셋 자체가
+    // 회귀 방지의 핵심이다).
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    // FG 복귀. active 핸들러가 refresh()를 트리거하지만 fresh fix가 아직 도착하지 않은 시점에도
+    // degraded는 false를 유지해야 한다 — 리셋되지 않았다면 이 시점 absence 타이머 tick이 즉시
+    // true로 오판했을 것이다.
+    await act(async () => {
+      appStateCallback?.('active');
+    });
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+
+    expect(result.current.gpsQualityDegraded).toBe(false);
+  });
+
+  it('P2-1: FG 복귀 후 게이트 통과 fix가 lastPassAt을 재-prime하고, 그 이후 실제 30s 부재 시에만 degraded=true', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+    act(() => {
+      appStateCallback?.('background');
+    });
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
+    await act(async () => {
+      appStateCallback?.('active');
+    });
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    // 재개 후 fresh 통과 fix 도착 — lastPassAt re-prime.
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    // re-prime 기준 30s 미만 경과 — 아직 degraded 아님.
+    act(() => {
+      jest.advanceTimersByTime(20_000);
+    });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    // re-prime 기준 실제 30s+ 경과 시에만 degraded=true.
+    act(() => {
+      jest.advanceTimersByTime(20_000); // re-prime 이후 누적 40s
+    });
+    expect(result.current.gpsQualityDegraded).toBe(true);
+  });
 });
 
 describe('useNearestStation — #1363 sticky input memo 안정성 (cascade 차단)', () => {
