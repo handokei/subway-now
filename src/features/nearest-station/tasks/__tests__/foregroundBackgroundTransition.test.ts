@@ -116,6 +116,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
 import '../../tasks/backgroundLocationTask';
 import { processLocationUpdate } from '../../../alarm/utils/stationPipeline';
 import { alarmKey } from '../../../alarm/utils/stationAlarm';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,
@@ -127,6 +128,17 @@ import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 // ── 테스트 버퍼 상수: 임계값 안쪽/바깥쪽임을 이름으로 드러낸다 ──
 const FRESH_MARGIN_MS = 1_000;
 const STALE_MARGIN_MS = 5_000;
+
+// #2064 (Phase 1-device) — 매역 알림은 backend visible push 단일 채널로 전환되어 device가
+// sendStationPassedNotification을 더 이상 호출하지 않는다. 이 파일이 회귀 가드하던 "FG/BG dedup
+// 단일 출처" 계약은 여전히 유효 — station-passed 감지가 성공할 때마다 정확히 1회
+// setLastNotifiedStationId(AsyncStorage LAST_NOTIFIED_STATION_KEY write)가 일어나고, dedup으로
+// 차단되면 write가 일어나지 않는다. 이 헬퍼로 알림 호출 횟수 대신 write 횟수를 관찰한다.
+function countLastNotifiedStationWrites(): number {
+  return (AsyncStorage.setItem as jest.Mock).mock.calls.filter(
+    ([key]: [string]) => key === LAST_NOTIFIED_STATION_KEY,
+  ).length;
+}
 const NEAR_STATION_KM = 0.05;
 const ACCURATE_MARGIN_M = 50;
 
@@ -242,52 +254,65 @@ beforeEach(() => {
   mockSendStationPassedNotification.mockClear();
   mockSendAlarmNotification.mockClear();
   mockUpdateStationNotification.mockClear();
+  (AsyncStorage.setItem as jest.Mock).mockClear();
   // #1515 — cross-category dedup module 인메모리 상태 리셋(테스트 간 격리).
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../../alarm/utils/crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
 });
 
-describe('FG↔BG 통합: 알림 dedup (notificationState 단일 출처)', () => {
+// #2064 (Phase 1-device) — 매역 알림은 backend visible push 단일 채널로 전환되어 device는
+// sendStationPassedNotification을 더 이상 호출하지 않는다. 이 describe가 회귀 가드하던 "FG/BG
+// dedup 단일 출처" 계약(notificationState.setLastNotifiedStationId)은 여전히 유효하므로,
+// 알림 호출 횟수 대신 LAST_NOTIFIED_STATION_KEY write 횟수로 dedup을 관찰한다.
+describe('FG↔BG 통합: station-passed dedup bookkeeping (notificationState 단일 출처)', () => {
   beforeEach(() => {
     mockStorage.set(DESTINATION_KEY, JSON.stringify(fakeDestination));
   });
 
-  it('FG에서 알림 발사 후 BG가 같은 역 받으면 중복 발사하지 않는다', async () => {
+  it('FG에서 station-passed 감지 후 BG가 같은 역 받으면 dedup되어 재기록하지 않는다', async () => {
     await runFgPipelineAt(fakeStation);
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
 
     await runBgTaskAt(fakeStation);
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    // 같은 역 재감지는 dedup으로 차단 — write가 늘지 않는다.
+    expect(countLastNotifiedStationWrites()).toBe(1);
   });
 
-  it('BG에서 알림 발사 후 FG가 같은 역 받으면 중복 발사하지 않는다', async () => {
+  it('BG에서 station-passed 감지 후 FG가 같은 역 받으면 dedup되어 재기록하지 않는다', async () => {
     await runBgTaskAt(fakeStation);
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
 
     await runFgPipelineAt(fakeStation);
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
   });
 
-  it('FG 알림 후 다른 역으로 진입하면 FG/BG 어디서 받든 새 알림이 발사된다', async () => {
+  it('FG 감지 후 다른 역으로 진입하면 FG/BG 어디서 받든 새로 기록된다', async () => {
     await runFgPipelineAt(fakeStation);
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
 
     await runBgTaskAt(fakeNextStation);
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(2);
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeNextStation.id }));
   });
 
-  it('AsyncStorage가 비어 있는 cold start(swipe-kill 직후)에는 BG 첫 콜백이 알림을 발사한다', async () => {
+  it('AsyncStorage가 비어 있는 cold start(swipe-kill 직후)에는 BG 첫 콜백이 dedup 상태를 기록한다', async () => {
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBeUndefined();
 
     await runBgTaskAt(fakeStation);
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
   });
 });
@@ -328,10 +353,13 @@ describe('FG↔BG 통합: 게이트 비대칭 (BG timeInterval 30s × age 15s, a
     mockStorage.set(DESTINATION_KEY, JSON.stringify(fakeDestination));
   });
 
-  it('age < MAX_LOCATION_AGE_MS인 신선한 좌표는 BG 게이트를 통과해 알림으로 이어진다', async () => {
+  // #2064 — device는 station-passed 로컬 알림을 더 이상 발사하지 않으므로 게이트 통과 증거는
+  // dedup write(LAST_NOTIFIED_STATION_KEY) 발생 여부로 관찰한다.
+  it('age < MAX_LOCATION_AGE_MS인 신선한 좌표는 BG 게이트를 통과해 dedup 기록으로 이어진다', async () => {
     await runBgTaskAt(fakeStation, { ageMs: MAX_LOCATION_AGE_MS - FRESH_MARGIN_MS });
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
   });
 
   it('age > MAX_LOCATION_AGE_MS인 stale 좌표(BG timeInterval 30s로 인한 캐시 fix)는 게이트가 drop한다', async () => {
@@ -345,7 +373,8 @@ describe('FG↔BG 통합: 게이트 비대칭 (BG timeInterval 30s × age 15s, a
   it('accuracy <= MAX_ACCURACY_M인 좌표는 BG 게이트를 통과한다', async () => {
     await runBgTaskAt(fakeStation, { accuracy: MAX_ACCURACY_M - ACCURATE_MARGIN_M });
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
   });
 
   it('accuracy > MAX_ACCURACY_M인 저정확도 좌표는 BG 게이트가 drop한다', async () => {
@@ -357,14 +386,15 @@ describe('FG↔BG 통합: 게이트 비대칭 (BG timeInterval 30s × age 15s, a
   });
 
   // iOS deferred 배치에 stale + fresh 좌표가 섞여 들어올 때, BG task는 locations[length-1]만
-  // 처리한다. 마지막 좌표가 fresh면 통과해 알림, stale이면 drop — 이 계약을 회귀 가드한다.
-  it('multi-location 배치의 마지막 좌표가 fresh면 통과해 알림으로 이어진다', async () => {
+  // 처리한다. 마지막 좌표가 fresh면 통과해 dedup 기록, stale이면 drop — 이 계약을 회귀 가드한다.
+  it('multi-location 배치의 마지막 좌표가 fresh면 통과해 dedup 기록으로 이어진다', async () => {
     await runBgTaskBatch([
       { station: fakeStation, ageMs: MAX_LOCATION_AGE_MS + STALE_MARGIN_MS },
       { station: fakeStation, ageMs: MAX_LOCATION_AGE_MS - FRESH_MARGIN_MS },
     ]);
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
   });
 
   it('multi-location 배치의 마지막 좌표가 stale이면 drop된다 (앞쪽 fresh 무시)', async () => {
@@ -387,19 +417,23 @@ describe('FG↔BG 통합: swipe-kill 후 재진입 (AsyncStorage 영속성)', ()
     mockStorage.set(DESTINATION_KEY, JSON.stringify(fakeDestination));
   });
 
-  it('BG가 lastNotifiedStationId 기록 후 모듈 상태가 전부 리셋돼도 FG 재진입 시 중복 알림 없음', async () => {
+  // #2064 — device는 station-passed 로컬 알림을 더 이상 발사하지 않으므로 "재진입 후 재기록 없음"
+  // 증거는 LAST_NOTIFIED_STATION_KEY write 미발생으로 관찰한다.
+  it('BG가 lastNotifiedStationId 기록 후 모듈 상태가 전부 리셋돼도 FG 재진입 시 재기록 없음', async () => {
     await runBgTaskAt(fakeStation);
-    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(1);
     const persistedId = mockStorage.get(LAST_NOTIFIED_STATION_KEY);
     expect(persistedId).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
 
-    // swipe-kill 시뮬레이션: AsyncStorage는 보존, send mock 만 리셋해 "재진입 후 새 send" 검증.
-    mockSendStationPassedNotification.mockClear();
+    // swipe-kill 시뮬레이션: AsyncStorage는 보존, write 카운터만 리셋해 "재진입 후 새 write" 검증.
+    (AsyncStorage.setItem as jest.Mock).mockClear();
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(persistedId);
 
     await runFgPipelineAt(fakeStation);
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(countLastNotifiedStationWrites()).toBe(0);
   });
 
   it('BG 알람 발사 후 swipe-kill을 거쳐 FG 재진입해도 firedAlarms는 영속 dedup된다', async () => {

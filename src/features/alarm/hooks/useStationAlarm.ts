@@ -20,8 +20,7 @@ import type { Station } from '../../../shared/types/station';
 import { alarmKey, parseAlarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
-import { resolveNextTarget } from '../utils/stationPipeline';
-import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
+import { sendAlarmNotification } from '../utils/stationNotification';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
 import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
 import type { StationArrival } from '../../../shared/types/arrival';
@@ -39,7 +38,6 @@ import {
   logFiredAlarm,
   logFiredAlarmsHydrate,
   logFiredAlarmsTripBoundaryReset,
-  logFiredStationPassed,
   logHydrationTransition,
   logRefMismatch,
   logSuppressedChannelAgnosticDedup,
@@ -83,7 +81,7 @@ import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
-import { resolveNotificationSource, type NotificationSource } from '../utils/notificationSource';
+import { resolveNotificationSource } from '../utils/notificationSource';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 
 const logger = createLogger('StationAlarm');
@@ -183,20 +181,14 @@ function logSuppressedStationPassedLockless(stationName: string): void {
 async function dispatchStationPassed(params: {
   source: 'fg' | 'fg-arvlcd';
   candidateStation: Station;
-  capturedRoute: Route;
   capturedDestinationId: string;
-  capturedDestinationName: string;
-  notificationSource: NotificationSource | undefined;
   isCancelled: () => boolean;
   errorLogPrefix: string;
 }): Promise<void> {
   const {
     source,
     candidateStation,
-    capturedRoute,
     capturedDestinationId,
-    capturedDestinationName,
-    notificationSource,
     isCancelled,
     errorLogPrefix,
   } = params;
@@ -245,9 +237,9 @@ async function dispatchStationPassed(params: {
       });
       return;
     }
-    // race 차단: send 도중 동일 effect/다른 path가 진입해 같은 station을 발사하는 것을 막기 위해
-    // send 전에 윈도우 갱신(reservation). send 실패 시에도 30s 동안 cross-category 재발사 차단 —
-    // 이슈 acceptance "같은 station 30s 내 cross-category fire 1건 이하"에 정합.
+    // #2064 (Phase 1-device) — 매역 알림은 backend visible push 단일 채널로 전환. FG station-passed
+    // 감지는 이제 사용자 노출 알림을 발사하지 않고 cross-category dedup 윈도우 + lastNotifiedStationId
+    // bookkeeping만 수행한다(다른 카테고리 알람/게이트가 여전히 이 상태를 읽는다).
     // category='station-passed' → 후속 destination/transfer 발사 차단.
     markStationFired(
       capturedDestinationId,
@@ -255,22 +247,10 @@ async function dispatchStationPassed(params: {
       'station-passed',
       Date.now(),
     );
-    // #796: candidateStation.line을 전달해 multi-transfer 환승역 정확 식별.
-    const target = resolveNextTarget(
-      capturedRoute,
-      capturedDestinationName,
-      candidateStation.line,
-    );
-    // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
-    await sendStationPassedNotification(
-      candidateStation.name,
-      capturedDestinationName,
-      target,
-      notificationSource,
-    );
-    if (isCancelled()) return;
+    // #2064 — markStationFired부터 여기까지는 await 없는 순수 동기 구간이라 cancelled는 위
+    // isCancelled() 체크(getLastNotifiedStationId await 직후) 이후 바뀔 수 없다. 별도 재확인 불필요
+    // — await setLastNotifiedStationId 진입 시점에만 다시 확인하면 충분.
     await setLastNotifiedStationId(capturedDestinationId, candidateStation.id);
-    logFiredStationPassed(source, candidateStation);
   } catch (e) {
     logger.error(errorLogPrefix, e);
   }
@@ -286,10 +266,7 @@ async function dispatchStationPassed(params: {
 async function runSilenceGateAndDispatch(params: {
   source: 'fg' | 'fg-arvlcd';
   candidateStation: Station;
-  capturedRoute: Route;
   capturedDestinationId: string;
-  capturedDestinationName: string;
-  notificationSource: NotificationSource | undefined;
   isCancelled: () => boolean;
   errorLogPrefix: string;
   dismissSilence: import('../utils/dismissSilenceStorage').DismissSilenceState | null;
@@ -330,10 +307,7 @@ async function runSilenceGateAndDispatch(params: {
   await dispatchStationPassed({
     source: params.source,
     candidateStation: params.candidateStation,
-    capturedRoute: params.capturedRoute,
     capturedDestinationId: params.capturedDestinationId,
-    capturedDestinationName: params.capturedDestinationName,
-    notificationSource: params.notificationSource,
     isCancelled: params.isCancelled,
     errorLogPrefix: params.errorLogPrefix,
   });
@@ -1327,9 +1301,7 @@ export function useStationAlarm({
     // A→B→A 빠른 변동 시 이전 IIFE들이 cancelled로 차단되고 최신 candidate만 알림을 보낸다.
     if (nearestStation && isStationOnRoute(nearestStation, route)) {
       const candidateStation = nearestStation;
-      const capturedRoute = route;
       const capturedDestinationId = destination.id;
-      const capturedDestinationName = destination.name;
 
       // #1208 (Epic #1204 D2) — trip 진행도 hop window 게이트.
       // isStationOnRoute는 candidate가 route 노선 위에 있는지만 검사 → 이미 지나간 hop이나
@@ -1422,10 +1394,7 @@ export function useStationAlarm({
         await runSilenceGateAndDispatch({
           source: 'fg',
           candidateStation,
-          capturedRoute,
           capturedDestinationId,
-          capturedDestinationName,
-          notificationSource,
           isCancelled: () => cancelled,
           errorLogPrefix: '역 통과 알림 실패:',
           dismissSilence,
@@ -1491,9 +1460,7 @@ export function useStationAlarm({
     if (!isStationOnRoute(nearestStation, route)) return;
 
     const candidateStation = nearestStation;
-    const capturedRoute = route;
     const capturedDestinationId = destination.id;
-    const capturedDestinationName = destination.name;
 
     let cancelled = false;
     void (async () => {
@@ -1578,10 +1545,7 @@ export function useStationAlarm({
       await runSilenceGateAndDispatch({
         source: 'fg-arvlcd',
         candidateStation,
-        capturedRoute,
         capturedDestinationId,
-        capturedDestinationName,
-        notificationSource,
         isCancelled: () => cancelled,
         errorLogPrefix: 'FG arvlCd fast-path 알림 실패:',
         dismissSilence,
@@ -1634,9 +1598,7 @@ export function useStationAlarm({
     if (!isStationOnRoute(nearestStation, route)) return;
 
     const candidateStation = nearestStation;
-    const capturedRoute = route;
     const capturedDestinationId = destination.id;
-    const capturedDestinationName = destination.name;
 
     let cancelled = false;
     void (async () => {
@@ -1663,10 +1625,7 @@ export function useStationAlarm({
       await runSilenceGateAndDispatch({
         source: 'fg',
         candidateStation,
-        capturedRoute,
         capturedDestinationId,
-        capturedDestinationName,
-        notificationSource,
         isCancelled: () => cancelled,
         errorLogPrefix: 'subsurface station-passed 알림 실패:',
         dismissSilence,

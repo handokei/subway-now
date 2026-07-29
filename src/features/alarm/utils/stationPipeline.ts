@@ -9,14 +9,13 @@
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
 import { findRoute, calculateStaticETA, getFirstLeg, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
-import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
+import { sendAlarmNotification, updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
 import { advanceHopWindow } from './boardingLockScheduler';
 import { getBoardingLock } from './boardingLockStorage';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
 import {
   logFiredAlarm,
-  logFiredStationPassed,
   logSuppressedChannelAgnosticDedup,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
@@ -479,26 +478,19 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
           kind: 'station-passed',
         });
       } else {
-        // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
-        // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
-        // 잡아도 잘못된 다음-다음 transfer 안내를 차단. lock 없으면 nearest.station.line fallback.
+        // #2064 (Phase 1-device) — 매역 알림은 backend visible push 단일 채널로 전환. 이 station-passed
+        // 감지는 이제 사용자 노출 알림(sendStationPassedNotification)을 발사하지 않고 trip 진행
+        // 상태 bookkeeping(dedup 갱신 + hop advance)만 수행한다. #796 currentLine 결정은 advanceHopWindow가
+        // 정확한 통과 waypoint를 찾기 위해 여전히 필요.
         const target = resolveNextTarget(
           route,
           destination.name,
           lockForLineGuard?.boardingLine ?? nearest.station.line,
         );
         if (target) {
-          // #1515 — race reservation: send 전에 cross-category 윈도우 갱신. category='station-passed'.
+          // #1515 — cross-category 윈도우 갱신. category='station-passed'.
           markStationFired(destination.id, nearest.station.name, 'station-passed', Date.now());
-          // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
-          await sendStationPassedNotification(
-            nearest.station.name,
-            destination.name,
-            target,
-            notificationSource,
-          );
           await setLastNotifiedStationId(destination.id, nearest.station.id);
-          logFiredStationPassed(source, nearest.station);
 
           // #624 BG-safe stale alarm 차단 — 통과한 waypoint의 pre-scheduled bl:* 알람을
           // 능동 cancel. useBoardingLockAdvancer는 FG only(React hook)지만 stationPipeline은

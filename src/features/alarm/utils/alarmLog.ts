@@ -316,7 +316,12 @@ export type AlarmLogReason =
   // dispatch 시도한 케이스를 sync entry-guard로 차단. evidence: 2026-07-01 08:32:09 fg fired
   // station-passed 성수 2건. `isSimpleArchEnabled()` ON (env=true / KV=on) 상태에서만 발생
   // — flag OFF 시 unified gate 는 dead code.
-  | 'dedup-simple-arch-fire-once';
+  | 'dedup-simple-arch-fire-once'
+  // #2064 (Phase 1-device) — 매역 알림이 backend visible push 단일 채널로 전환됨에 따라
+  // silent push kind(transfer/destination/intermediate)가 도달해도 device는 더 이상 로컬
+  // 알림을 발사하지 않는다. 전환기 구버전 backend가 여전히 이 kind를 보내는 경우를 대비한
+  // no-op 처리 1건 적재 — 상태 sync(lock-release/widget/LA)는 정상 진행.
+  | 'legacy-station-kind-ignored';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

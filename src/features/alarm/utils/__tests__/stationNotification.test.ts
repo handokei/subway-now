@@ -7,7 +7,6 @@ import {
   clearStationNotification,
   sendAlarmNotification,
   clearAlarmNotification,
-  sendStationPassedNotification,
   sendTripEndedNotification,
   buildAlarmContent,
 } from '../stationNotification';
@@ -912,95 +911,9 @@ describe('stationNotification', () => {
     });
   });
 
-  describe('sendStationPassedNotification', () => {
-    it('마지막 구간(isTransfer=false)이면 목적지까지 남은 정거장 수를 body에 표시한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendStationPassedNotification('역삼', '강남', {
-        nextStationName: '강남',
-        stopsToNextStation: 3,
-        isTransfer: false,
-        stopsToDestination: 3,
-      });
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-passed',
-        content: { title: '역삼역 도착', body: '강남까지 3정거장 남음', sound: false },
-        trigger: null,
-      });
-    });
-
-    it('환승 전 구간(isTransfer=true)이면 환승역과 최종 목적지를 모두 표시한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendStationPassedNotification('용마산', '이대', {
-        nextStationName: '군자',
-        stopsToNextStation: 2,
-        isTransfer: true,
-        stopsToDestination: 11,
-      });
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-passed',
-        content: {
-          title: '용마산역 도착',
-          body: '군자 환승까지 2정거장 · 이대까지 11정거장',
-          sound: false,
-        },
-        trigger: null,
-      });
-    });
-
-    it('target이 null이면 현재 역만 표시한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendStationPassedNotification('역삼', '강남', null);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-passed',
-        content: { title: '역삼역 도착', body: '현재 역삼역', sound: false },
-        trigger: null,
-      });
-    });
-
-    it('Android에서는 channelId와 priority DEFAULT가 포함된다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'android');
-      await sendStationPassedNotification('역삼', '강남', {
-        nextStationName: '강남',
-        stopsToNextStation: 3,
-        isTransfer: false,
-        stopsToDestination: 3,
-      });
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-passed',
-        content: {
-          title: '역삼역 도착',
-          body: '강남까지 3정거장 남음',
-          sound: false,
-          channelId: 'station-passed',
-          priority: 'default',
-        },
-        trigger: null,
-      });
-    });
-
-    // #1224 — station-passed = 잠 깨우지 말 것. 진동 0 / 사운드 0 / 배너만
-    it('#1224 — iOS scheduleNotification 호출에 sound: false가 포함된다 (잠 안 깨우기)', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendStationPassedNotification('역삼', '강남', null);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.objectContaining({ sound: false }),
-        }),
-      );
-    });
-
-    it('#1224 — Android 채널은 sound: null + enableVibrate: false (진동/사운드 OFF)', async () => {
-      // refreshNotificationChannels는 initStationNotification에서 호출되어 별도 단위로 검증되지만,
-      // 정책 SSOT가 한 곳에 모이도록 동등 가드를 여기서도 명시한다.
-      jest.replaceProperty(Platform, 'OS', 'android');
-      (Notifications.deleteNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
-      await initStationNotification();
-      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith(
-        'station-passed',
-        expect.objectContaining({ sound: null, enableVibrate: false }),
-      );
-    });
-  });
+  // #2064 (Phase 1-device) — sendStationPassedNotification 제거(매역 알림 backend visible push 단일
+  // 채널 전환). STATION_PASSED_CHANNEL_ID 채널 설정 자체(sound:null/enableVibrate:false, #1224)는
+  // 'Android 채널 재생성' 테스트(위, refreshNotificationChannels 전체 assert)가 계속 커버한다.
 
   // #1323 — trip 종료 user-facing surface. backend trip-ended push가 silent라 알림이 안 뜨던 회귀 차단.
   describe('sendTripEndedNotification', () => {
@@ -1154,20 +1067,6 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification(earlyDest, false, true, source);
       expectAlarmNotification('하차 알림', baseBody, { interruptionLevel: 'timeSensitive' });
-    });
-
-    it.each([
-      ['gpsOnly' as const, '현재 역삼역 · GPS 추정'],
-      ['positionTrain' as const, '현재 역삼역'],
-      [undefined, '현재 역삼역'],
-    ])('sendStationPassedNotification source=%s → body=%s', async (source, expectedBody) => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendStationPassedNotification('역삼', '강남', null, source);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-passed',
-        content: { title: '역삼역 도착', body: expectedBody, sound: false },
-        trigger: null,
-      });
     });
 
     it.each([

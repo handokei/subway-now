@@ -38,7 +38,6 @@ const mockLogSilentPushTripEndedReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 const mockLogCrossTripMirrorSkip = jest.fn();
-const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogBoardingPromptFired = jest.fn();
 const mockLogSleepTransferAlarmFired = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
@@ -51,8 +50,6 @@ jest.mock('../../utils/alarmLog', () => ({
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
-  logSuppressedChannelAgnosticDedup: (...args: unknown[]) =>
-    mockLogSuppressedChannelAgnosticDedup(...args),
   logBoardingPromptFired: (...args: unknown[]) => mockLogBoardingPromptFired(...args),
   logSleepTransferAlarmFired: (...args: unknown[]) => mockLogSleepTransferAlarmFired(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
@@ -62,16 +59,6 @@ jest.mock('../../utils/alarmLog', () => ({
 const mockVibrateAlarm = jest.fn();
 jest.mock('../../utils/alarmSound', () => ({
   vibrateAlarm: (...args: unknown[]) => mockVibrateAlarm(...args),
-}));
-
-// #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. silent push fire 직전 gate +
-// fire 직후 markStationFired. FG fireAndLog / stationPipeline과 lastFire Map 공유.
-const mockIsAnyChannelRecentlyFired = jest.fn<boolean, unknown[]>(() => false);
-const mockMarkStationFired = jest.fn<void, unknown[]>();
-jest.mock('../../utils/crossCategoryStationDedup', () => ({
-  isAnyChannelRecentlyFired: (...args: unknown[]) =>
-    mockIsAnyChannelRecentlyFired(...args),
-  markStationFired: (...args: unknown[]) => mockMarkStationFired(...args),
 }));
 
 // #868 — trip-ended payload 수신 시 trip-bound storage cleanup.
@@ -119,32 +106,9 @@ jest.mock('../../../debug/utils/triggerTripGroundTruthPrompt', () => ({
     mockTriggerTripGroundTruthPrompt(...args),
 }));
 
-const mockCheckGate = jest.fn();
-jest.mock('../../utils/silentPushLocationGate', () => ({
-  checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),
-}));
-
-// #1307 — BG에서 stale 되는 로컬 subsurface stamp. 기본 false(미지하).
-const mockGetSubsurfaceState = jest.fn();
-jest.mock('../../../../shared/utils/subsurfaceState', () => ({
-  getSubsurfaceState: (...args: unknown[]) => mockGetSubsurfaceState(...args),
-}));
-
-const mockGetFiredAlarms = jest.fn();
-const mockSetFiredAlarms = jest.fn();
-jest.mock('../../utils/notificationState', () => ({
-  getFiredAlarms: (...args: unknown[]) => mockGetFiredAlarms(...args),
-  setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
-}));
-
-const mockBuildAlarmContent = jest.fn((event: { stationName: string; type: string; phaseId: string }, _source?: string) => ({
-  title: `[${event.type}/${event.phaseId}]`,
-  body: `${event.stationName} 알람`,
-}));
 // #1323 — trip 종료 user-facing surface. mock으로 호출 인자/횟수만 검증.
 const mockSendTripEndedNotification = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/stationNotification', () => ({
-  buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
   sendTripEndedNotification: (...args: unknown[]) => mockSendTripEndedNotification(...args),
 }));
 
@@ -190,12 +154,6 @@ jest.mock('../../../../shared/utils/logger', () => ({
 const mockSendPushAck = jest.fn();
 jest.mock('../../api/alarmBackend', () => ({
   sendPushAck: (...args: unknown[]) => mockSendPushAck(...args),
-}));
-
-// #728 — motionActivity 신호. 기본 false (=== "stationary 아님"), 특정 테스트에서만 true로 override.
-const mockGetMotionStationary = jest.fn(() => false);
-jest.mock('../../../nearest-station/utils/motionActivity', () => ({
-  getCurrentMotionStationary: () => mockGetMotionStationary(),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -251,20 +209,6 @@ const mockCancelTbaByStationPhase = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/tripBoundScheduler', () => ({
   rescheduleTripBoundAlarm: (...args: unknown[]) => mockRescheduleTripBoundAlarm(...args),
   cancelTbaByStationPhase: (...args: unknown[]) => mockCancelTbaByStationPhase(...args),
-}));
-
-const mockGetDismissSilence = jest.fn();
-const mockClearDismissSilence = jest.fn();
-jest.mock('../../utils/dismissSilenceStorage', () => ({
-  getDismissSilence: (...args: unknown[]) => mockGetDismissSilence(...args),
-  clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
-}));
-
-const mockFindStationByNameAndLine = jest.fn();
-const mockFindStationByName = jest.fn();
-jest.mock('../../../../shared/utils/stationLookup', () => ({
-  findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
-  findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -391,18 +335,9 @@ function bgTaskData(fields: Record<string, unknown>) {
   };
 }
 
-const PASSING_GATE = {
-  pass: true,
-  distanceM: 150,
-  thresholdM: 800,
-  locationSource: 'cache' as const,
-  locationAgeMs: 10_000,
-};
-
 describe('silentPushTask', () => {
-  // #816 C — 기본 lock을 부여해 기존 fire 테스트가 lockless 가드(lock null + non-intermediate 차단)에
-  // 막히지 않도록 한다. lockless 분기는 별도 describe에서 lock=null로 명시 override해 검증.
-  // line 가드는 lookup 반환값이 두 함수 모두 null이면 graceful pass (#707 — stations.json miss 케이스).
+  // #2064 (Phase 1-device) — reschedule의 applyRescheduleBl(#698)만 boardingLock을 여전히 읽는다.
+  // fire-path line 가드(#707)는 제거됐지만 reschedule bl 채널의 trainCode 매칭에는 lock이 필요.
   const defaultBoardingLock = {
     destinationId: '0228',
     trainCode: 'T-default',
@@ -415,24 +350,13 @@ describe('silentPushTask', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockScheduleNotificationAsync.mockResolvedValue('id');
-    mockCheckGate.mockResolvedValue(PASSING_GATE);
-    mockGetSubsurfaceState.mockResolvedValue(false);
-    mockGetFiredAlarms.mockResolvedValue(new Set<string>());
-    mockSetFiredAlarms.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === DESTINATION_KEY) return JSON.stringify(destStation);
       if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
       return null;
     });
     mockSendPushAck.mockResolvedValue({ ok: true });
-    // 기본: lock 활성. lockless 가드를 우회하려면 lock 부여가 필요(stations.json 미존재 가정).
     mockGetBoardingLock.mockResolvedValue(defaultBoardingLock);
-    // 기본 lookup 모두 null → line 가드는 graceful pass(stations.json 어디에도 없음 가정).
-    mockFindStationByNameAndLine.mockReturnValue(null);
-    mockFindStationByName.mockReturnValue(null);
-    // #746 — 기본 silence 없음.
-    mockGetDismissSilence.mockResolvedValue(null);
-    mockClearDismissSilence.mockResolvedValue(undefined);
     // #919 — recall trigger 기본 graceful skip.
     mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
     // #698 — 기본 graceful: 1건 cancel + 1건 schedule. 개별 테스트에서 override.
@@ -1501,16 +1425,14 @@ describe('silentPushTask', () => {
   });
 
   describe('handleSilentPush', () => {
-    it('error 있으면 즉시 종료 (gate 호출 안 됨)', async () => {
+    it('error 있으면 즉시 종료', async () => {
       await handleSilentPush({ error: { message: 'boom' } });
-      expect(mockCheckGate).not.toHaveBeenCalled();
       expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
     });
 
     it('payload 없으면 skip', async () => {
       await handleSilentPush({ data: undefined });
       expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
-      expect(mockCheckGate).not.toHaveBeenCalled();
     });
 
     it('invalid payload면 skip', async () => {
@@ -1590,8 +1512,10 @@ describe('silentPushTask', () => {
             lockReleasedReason: 'transfer',
           }),
         );
-        // gate 평가까지 도달 = 본 처리 흐름 차단되지 않음.
-        expect(mockCheckGate).toHaveBeenCalled();
+        // #2064 — releaseLock throw 이후에도 no-op skip 경로까지 도달 = 본 처리 흐름 차단되지 않음.
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
+        );
       });
     });
 
@@ -1603,612 +1527,69 @@ describe('silentPushTask', () => {
       expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'payload-missing-kind' }),
       );
-      expect(mockCheckGate).not.toHaveBeenCalled();
       expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
     });
 
-    it('게이트 통과 시 destination 즉시 발사 + fired 로그 + FIRED_ALARMS 갱신', async () => {
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-      expect(mockCheckGate).toHaveBeenCalledWith({
-        stationName: '강남',
-        kind: 'destination',
-        phase: 'imminent',
-        isLockless: false,
-        payloadHopIndex: undefined,
-        subsurface: false,
-        occupiedLine: undefined,
-        // #1365 — lock 활성 시 lock.boardingLine을 estimatorLine으로 전달.
-        estimatorLine: '2',
-      });
-      expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
-      const call = mockScheduleNotificationAsync.mock.calls[0][0];
-      expect(call.trigger).toBeNull();
-      expect(call.content.body).toContain('강남');
-      expect(mockLogSilentPushFired).toHaveBeenCalledWith(
-        expect.objectContaining({
+    // #2064 (Phase 1-device) — 매역 알림 backend visible push 단일 채널 전환.
+    // transfer/destination/intermediate kind는 device가 더 이상 로컬 알림을 발사하지 않는다
+    // (fireWithGate 전체 삭제 — line 가드/lockless/SSoT 게이트/location 게이트/movement 게이트/
+    // motion-stationary 게이트/dismiss-silence 게이트/FIRED_ALARMS dedup/channel-agnostic dedup
+    // 전부 제거). 수신 자체(logSilentPushReceived)와 상태 sync(lockReleasedReason/LA/widget)는
+    // 그대로 동작 — no-op이지 early-return이 아니다.
+    describe('#2064 (Phase 1-device) — legacy station kind no-op', () => {
+      it.each<['transfer' | 'destination' | 'intermediate', string]>([
+        ['transfer', 'transfer'],
+        ['destination', 'destination'],
+        ['intermediate', 'station-passed'],
+      ])('kind=%s → scheduleNotificationAsync 미호출 + logSilentPushSkipped(kind=%s, reason=legacy-station-kind-ignored)', async (kind, loggedKind) => {
+        await handleSilentPush(
+          payload({ kind, phase: 'imminent', nextWaypoint: '강남', pushId: `p-${kind}` }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith({
           stationName: '강남',
-          kind: 'destination',
+          kind: loggedKind,
           phaseId: 'imminent',
-          distanceM: 150,
-          thresholdM: 800,
-          locationSource: 'cache',
-          locationAgeMs: 10_000,
-        }),
-      );
-      expect(mockSetFiredAlarms).toHaveBeenCalledTimes(1);
-      const [, savedSet] = mockSetFiredAlarms.mock.calls[0];
-      expect(Array.from(savedSet as Set<string>)).toEqual(['imminent:강남']);
-    });
-
-    it('alarm 경로(destination/transfer)는 buildAlarmContent에 positionTrain source 전달 (#327)', async () => {
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-      expect(mockBuildAlarmContent).toHaveBeenCalledWith(
-        expect.objectContaining({ phaseId: 'imminent', type: 'destination' }),
-        'positionTrain',
-      );
-    });
-
-    it('intermediate는 i18n key로 본문 생성 + FIRED_ALARMS dedup 안 씀', async () => {
-      await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }));
-
-      const call = mockScheduleNotificationAsync.mock.calls[0][0];
-      expect(call.content.title).toBe('route.intermediatePassedTitle');
-      // positionTrain은 #327 UX 정책상 자백 대상이 아니라 suffix 미부착.
-      expect(call.content.body).toBe('route.intermediatePassedBody:중곡');
-      expect(mockGetFiredAlarms).not.toHaveBeenCalled();
-      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
-      expect(mockLogSilentPushFired).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'station-passed' }),
-      );
-    });
-
-    it('intermediate가 게이트 fail이면 skip 적재 kind=station-passed', async () => {
-      mockCheckGate.mockResolvedValue({ pass: false, reason: 'out-of-range' });
-      await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }));
-      expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'station-passed', reason: 'gate-out-of-range' }),
-      );
-    });
-
-    it('게이트 fail(out-of-range)이면 skip 적재 + 발사 안 함', async () => {
-      mockCheckGate.mockResolvedValue({
-        pass: false,
-        reason: 'out-of-range',
-        distanceM: 5_000,
-        thresholdM: 400,
-        locationSource: 'cache',
-        locationAgeMs: 5_000,
+          reason: 'legacy-station-kind-ignored',
+        });
       });
 
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-      expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-      expect(mockLogSilentPushFired).not.toHaveBeenCalled();
-      expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-        expect.objectContaining({
-          reason: 'gate-out-of-range',
-          distanceM: 5_000,
-          thresholdM: 400,
-        }),
-      );
-      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
-    });
-
-    it.each([
-      ['unknown-station', 'gate-unknown-station'],
-      ['no-location', 'gate-no-location'],
-      ['stale-location', 'gate-stale-location'],
-      ['out-of-range', 'gate-out-of-range'],
-      // #1365 — line-mismatch는 환승역 line cross-validation 실패로 차단된 케이스.
-      ['line-mismatch', 'gate-line-mismatch'],
-    ])('게이트 reason=%s → logSkipped reason=%s', async (gateReason, logReason) => {
-      mockCheckGate.mockResolvedValue({ pass: false, reason: gateReason });
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-      expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: logReason }),
-      );
-    });
-
-    it('FIRED_ALARMS에 이미 같은 키 있으면 발사 안 함 (dedup, GPS 발화와 키 공유)', async () => {
-      mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-      expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
-      expect(mockLogSilentPushFired).not.toHaveBeenCalled();
-    });
-
-    it('destination AsyncStorage 없으면 dedup 건너뛰고 발사 (보수적 진행)', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-      expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
-      expect(mockGetFiredAlarms).not.toHaveBeenCalled();
-    });
-
-    it('destination JSON 손상 시 dedup 건너뛰고 발사', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValue('not-json{');
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-      expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
-      expect(mockGetFiredAlarms).not.toHaveBeenCalled();
-    });
-
-    it('destination에 id 없으면 dedup 건너뛰고 발사', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify({ name: 'x' }));
-      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-      expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
-      expect(mockGetFiredAlarms).not.toHaveBeenCalled();
-    });
-
-    it('scheduleNotificationAsync throw 시 graceful (전체 throw 안 함)', async () => {
-      mockScheduleNotificationAsync.mockRejectedValue(new Error('boom'));
-      await expect(
-        handleSilentPush(payload({ kind: 'destination', phase: 'imminent' })),
-      ).resolves.toBeUndefined();
-    });
-
-    it('transfer + early — 기존 사전예약 호출(scheduleAlarmsForRoute) 없음', async () => {
-      await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
-      // 발사는 됨
-      expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-      // 사전예약은 import도 안 함 — 호출 검증은 import 부재로 충분하나, 추가 안전망:
-      // alarmScheduler 모듈을 jest.mock하지 않았기 때문에 호출 시 ReferenceError가 났을 것.
-    });
-
-    describe('#707 BoardingLock line 가드', () => {
-      const lockOnLine7 = {
-        destinationId: '0228',
-        trainCode: 'T-7',
-        boardingStationId: 'station-on-7',
-        boardingLine: '7' as const,
-        boardedAt: 1_700_000_000_000,
-        expectedDurationMs: 600_000,
-      };
-
-      it('lock 활성 + nextWaypoint가 lock.boardingLine에 정차 안 함 → skip + ack(lock-line-mismatch)', async () => {
-        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
-        // line 7에는 없음, 다른 line에는 존재 → 라인 mismatch.
-        mockFindStationByNameAndLine.mockReturnValue(null);
-        mockFindStationByName.mockReturnValue({ id: 'other-line-stop', name: '강남', line: '2' });
-
+      it('pushId + apnsToken 있으면 ackOutcome(skipped, legacy-station-kind-ignored) 전송', async () => {
         await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-mismatch' }),
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-legacy' }),
         );
-
-        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lock-line-mismatch', kind: 'destination' }),
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-legacy', 'skipped', 'legacy-station-kind-ignored'),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-mismatch',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'lock-line-mismatch',
-          permissionMode: 'always',
-        });
       });
 
-      it('lock 활성 + nextWaypoint가 lock.boardingLine에 정차(환승역 양쪽 호선 stop 존재) → 통과 후 발사', async () => {
-        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
-        // line 7 stop이 존재 → 환승역에서 line 7로도 정차하는 정상 케이스(transfer 등).
-        mockFindStationByNameAndLine.mockReturnValue({
-          id: 'stop-on-7',
-          name: '강남',
-          line: '7',
-        });
-
+      it('logSilentPushReceived는 no-op 이전에 그대로 적재 (수신 자체는 유지)', async () => {
         await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
-
-        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
+        expect(mockLogSilentPushReceived).toHaveBeenCalledTimes(1);
       });
 
-      it('lock 활성 + nextWaypoint가 stations.json 어디에도 없으면 line 가드는 통과시키고 일반 게이트가 unknown-station으로 처리', async () => {
-        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
-        mockFindStationByNameAndLine.mockReturnValue(null);
-        mockFindStationByName.mockReturnValue(null);
-        // 일반 게이트가 unknown-station 반환 가정.
-        mockCheckGate.mockResolvedValue({ pass: false, reason: 'unknown-station' });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-unknown' }),
-        );
-
-        // line 가드의 skip 사유가 아닌, 기존 게이트 사유로 분류돼야 한다.
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'gate-unknown-station' }),
-        );
-        expect(mockLogSilentPushSkipped).not.toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lock-line-mismatch' }),
-        );
-      });
-
-      it('lock 없음 + intermediate → line 가드 skip + lockless-opt-out (#1810 paradigm shift)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
+      it('finally 블록의 LA/widget refresh는 no-op 경로에서도 그대로 호출', async () => {
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
-        expect(mockFindStationByNameAndLine).not.toHaveBeenCalled();
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-opt-out' }),
-        );
+        expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+        expect(mockUpdateWidget).toHaveBeenCalledTimes(1);
       });
 
-      it('intermediate kind도 lock line mismatch 시 station-passed로 skip 적재', async () => {
-        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
-        mockFindStationByNameAndLine.mockReturnValue(null);
-        mockFindStationByName.mockReturnValue({ id: 'x', name: '중곡', line: '5' });
-
-        await handleSilentPush(
-          payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }),
-        );
-
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ kind: 'station-passed', reason: 'lock-line-mismatch' }),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-      });
-    });
-
-    // #1810 — paradigm shift Phase 1+2: lockless 분기는 항상 skip
-    describe('#1810 — lockless 분기 (lock 없음, 항상 skip)', () => {
-      type SkipCase = {
-        name: string;
-        kind: 'destination' | 'transfer' | 'intermediate';
-        pushId?: string;
-      };
-
-      const skipCases: SkipCase[] = [
-        { name: 'intermediate', kind: 'intermediate', pushId: 'p-int' },
-        { name: 'transfer', kind: 'transfer', pushId: 'p-tx' },
-        { name: 'destination', kind: 'destination', pushId: 'p-dst' },
-      ];
-
-      it.each(skipCases)('lock 없음 + $name → lockless-opt-out (#1810)', async ({ kind, pushId }) => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        await handleSilentPush(payload({ kind, phase: 'imminent', ...(pushId ? { pushId } : {}) }));
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-opt-out', kind: 'station-passed' }),
-        );
-        if (pushId) {
-          expect(mockSendPushAck).toHaveBeenCalledWith({
-            pushId,
-            token: DEFAULT_APNS_TOKEN,
-            outcome: 'skipped',
-            reason: 'lockless-opt-out',
-            permissionMode: 'always',
-          });
-        }
-      });
-    });
-
-    // #1322 — 로컬 lock 없이 payload.boardingLine(self-describing push)으로 line 가드 수행.
-    // 지하 auto-lock hydration window에서 backend lock-path push(transfer/destination)를 발사.
-    describe('#1322 — self-describing push (lock 없음 + payload.boardingLine)', () => {
-      beforeEach(() => {
-        mockGetBoardingLock.mockResolvedValue(null);
-      });
-
-      it('lock 없음 + payload.boardingLine에 정차하는 transfer → line 가드 통과 후 발사', async () => {
-        // payload.boardingLine='7'에 nextWaypoint가 정차 → 정상 lock-path fire.
-        mockFindStationByNameAndLine.mockReturnValue({ id: 'stop-on-7', name: '강남', line: '7' });
-
-        await handleSilentPush(
-          payload({ kind: 'transfer', phase: 'imminent', boardingLine: '7', pushId: 'p-self' }),
-        );
-
-        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('lock 없음 + payload.boardingLine line-mismatch → skip + ack(lock-line-mismatch)', async () => {
-        // line 7에는 없고 다른 line에만 존재 → mismatch.
-        mockFindStationByNameAndLine.mockReturnValue(null);
-        mockFindStationByName.mockReturnValue({ id: 'other', name: '강남', line: '2' });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', boardingLine: '7', pushId: 'p-mm' }),
-        );
-
-        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lock-line-mismatch', kind: 'destination' }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-mm',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'lock-line-mismatch',
-          permissionMode: 'always',
-        });
-      });
-
-      it('lock 없음 + payload.boardingLine + nextWaypoint가 stations.json 부재 → 가드 통과 후 발사', async () => {
-        // 양쪽 lookup 모두 null → graceful pass(일반 게이트로 위임), 게이트 통과 가정 → 발사.
-        mockFindStationByNameAndLine.mockReturnValue(null);
-        mockFindStationByName.mockReturnValue(null);
-
-        await handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', boardingLine: '7' }));
-
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('lock 없음 + payload.boardingLine 통과 시 발사 (#1322 lock-path fire)', async () => {
-        // backend가 lock을 보유한 lock-path fire이므로 lockless skip 없이 발사.
-        mockFindStationByNameAndLine.mockReturnValue({ id: 'stop-on-7', name: '강남', line: '7' });
-
-        await handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', boardingLine: '7' }));
-
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('lock 없음 + payload.boardingLine 부재 → lockless-opt-out skip (#1810)', async () => {
-        // #1810 — boardingLine 없으면 lockless 분기로 빠져 항상 skip.
-        await handleSilentPush(
-          payload({ kind: 'transfer', phase: 'imminent', pushId: 'p-nolock-noline' }),
-        );
-
-        expect(mockFindStationByNameAndLine).not.toHaveBeenCalled();
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-opt-out' }),
-        );
-      });
-    });
-
-    // #1399 — 좀비 알림 cleanup: tripToken stamp + ACTIVE_TRIP_KEY mismatch drop.
-    describe('#1399 — tripToken mismatch 가드 (좀비 알림 cleanup)', () => {
-      it('payload.tripToken === ACTIVE_TRIP_KEY → 가드 통과 후 발사', async () => {
-        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-123' });
+      it('lockReleasedReason sync는 no-op 이전에 그대로 수행', async () => {
         await handleSilentPush(
           payload({
             kind: 'destination',
             phase: 'imminent',
-            tripToken: 'active-token-123',
-            pushId: 'p-match',
+            lockReleasedReason: 'transfer',
           }),
         );
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('payload.tripToken 다른 token → trip-token-mismatch skip', async () => {
-        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-NEW' });
-        await handleSilentPush(
-          payload({
-            kind: 'intermediate',
-            phase: 'imminent',
-            tripToken: 'stale-token-OLD',
-            pushId: 'p-stale',
-          }),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockStoreReleaseLock).toHaveBeenCalledWith('transfer');
         expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'trip-token-mismatch', kind: 'station-passed' }),
+          expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-stale', 'skipped', 'trip-token-mismatch'),
-        );
-      });
-
-      it('ACTIVE_TRIP_KEY null (이미 cleanup됨) + payload.tripToken 있음 → drop', async () => {
-        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: null });
-        await handleSilentPush(
-          payload({
-            kind: 'transfer',
-            phase: 'imminent',
-            tripToken: 'orphan-token',
-            pushId: 'p-orphan',
-          }),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'trip-token-mismatch', kind: 'transfer' }),
-        );
-      });
-
-      it('payload.tripToken 미전달 (구 backend) → 가드 skip, 발사 진행', async () => {
-        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-x' });
-        // payload에 tripToken 미전달 → undefined → 가드 자연 skip.
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
       });
     });
 
     describe('#568 P2b — push ACK', () => {
-      it('fire 성공 시 sendPushAck(outcome=fired) 호출, reason 없음', async () => {
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-fire' }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-fire', 'fired'));
-      });
-
-      it('게이트 fail 시 sendPushAck(outcome=skipped, reason=게이트사유)', async () => {
-        mockCheckGate.mockResolvedValue({
-          pass: false,
-          reason: 'out-of-range',
-          distanceM: 5_000,
-          thresholdM: 400,
-        });
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-gate' }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-gate', 'skipped', 'gate-out-of-range'),
-        );
-      });
-
-      it('FIRED_ALARMS dedup 시 sendPushAck(outcome=skipped, reason=dedup-already-fired)', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-dedup' }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-dedup', 'skipped', 'dedup-already-fired'),
-        );
-      });
-
-      // #1367 — hopIndex>=1이면 alarmKey가 `phase:station#n` 형식이라 default(0) dedup과 collide하지 않는다.
-      it('#1367 hopIndex>=1 silent push는 default dedup key(`phase:station`)와 collide하지 않음 — 발사 진행', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
-        await handleSilentPush(
-          payload({
-            kind: 'destination',
-            phase: 'imminent',
-            pushId: 'p-hop-1',
-            hopIndex: 1,
-          }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-hop-1',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'fired',
-          permissionMode: 'always',
-        });
-      });
-
-      // #1367 cross-channel — OS scheduled receiver가 hopIndex=2로 fire 후 fired set에 등록되어 있을 때
-      // 같은 hopIndex의 silent push가 도달하면 dedup 적중 (silent push + OS queue 통합 공간).
-      it('#1367 cross-channel — fired set에 `phase:station#n` 등록 시 같은 hopIndex silent push는 dedup', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남#2']));
-        await handleSilentPush(
-          payload({
-            kind: 'destination',
-            phase: 'imminent',
-            pushId: 'p-cross-channel',
-            hopIndex: 2,
-          }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-cross-channel',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'dedup-already-fired',
-          permissionMode: 'always',
-        });
-      });
-
-      // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. FIRED_ALARMS dedup이 통과해도
-      // lastFire Map에 같은 station이 8분 안에 적재돼 있으면 silent push 발사 차단.
-      // backend가 같은 station-pass 1건에 silent state push + LA dirty update 2채널 발사 →
-      // device가 silent push로 같은 station을 2회 받는 회귀(2026-06-26 trip-3 동대문역사문화공원).
-      it('#1901/#1900 isAnyChannelRecentlyFired=true 시 silent push 발사 차단 + skipped ack', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set()); // FIRED_ALARMS는 비어 있음
-        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(true);
-        await handleSilentPush(
-          payload({
-            kind: 'destination',
-            phase: 'imminent',
-            pushId: 'p-channel-agnostic',
-          }),
-        );
-        expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
-          source: 'silent-push-skipped',
-          stationName: '강남',
-          kind: 'destination',
-          phaseId: 'imminent',
-        });
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-channel-agnostic', 'skipped', 'dedup-already-fired'),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        // markStationFired는 fire 직후에만 호출 — skip 분기에서 호출 안 됨.
-        expect(mockMarkStationFired).not.toHaveBeenCalled();
-      });
-
-      // #1901/#1900 — intermediate(station-passed) 분기도 channel-agnostic gate 적용.
-      // FIRED_ALARMS dedup은 dedupKey=null이라 우회되지만 8분 backstop은 차단.
-      it('#1901/#1900 intermediate kind도 channel-agnostic gate로 차단됨', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set());
-        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(true);
-        await handleSilentPush(
-          payload({
-            kind: 'intermediate',
-            phase: 'imminent',
-            pushId: 'p-intermediate-agnostic',
-          }),
-        );
-        expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalledWith({
-          source: 'silent-push-skipped',
-          stationName: '강남',
-          kind: 'station-passed',
-          phaseId: 'imminent',
-        });
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-intermediate-agnostic', 'skipped', 'dedup-already-fired'),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockMarkStationFired).not.toHaveBeenCalled();
-      });
-
-      // #1901/#1900 — channel-agnostic dedup skip branch에서 pushId 미정의 케이스. addFiredPushId
-      // 조건부 호출의 falsy 분기 커버.
-      it('#1901/#1900 channel-agnostic skip + pushId 부재 시 addFiredPushId 미호출', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set());
-        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(true);
-        await handleSilentPush(
-          payload({
-            kind: 'destination',
-            phase: 'imminent',
-            // pushId 명시 안 함 — undefined.
-          }),
-        );
-        expect(mockLogSuppressedChannelAgnosticDedup).toHaveBeenCalled();
-        // pushId 부재라 addFiredPushId 미호출 검증.
-        expect(mockAddFiredPushId).not.toHaveBeenCalled();
-      });
-
-      // #1901/#1900 — fire 직후 markStationFired 호출 → FG fireAndLog / stationPipeline이 같은
-      // station 8분 backstop으로 cross-channel 중복 차단 (lastFire Map 공유).
-      it('#1901/#1900 fire 후 markStationFired 호출 (lastFire Map 갱신)', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set());
-        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(false);
-        await handleSilentPush(
-          payload({
-            kind: 'destination',
-            phase: 'imminent',
-            pushId: 'p-mark',
-          }),
-        );
-        // intermediate가 아닌 destination → category='destination'으로 mark. phaseId도 stamp.
-        expect(mockMarkStationFired).toHaveBeenCalledWith(
-          destStation.id,
-          '강남',
-          'destination',
-          expect.any(Number),
-          'imminent',
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-mark', 'fired'),
-        );
-      });
-
-      // #1901/#1900 — intermediate fire는 'station-passed' category로 mark.
-      it('#1901/#1900 intermediate fire 후 markStationFired는 station-passed category로 호출', async () => {
-        mockGetFiredAlarms.mockResolvedValue(new Set());
-        mockIsAnyChannelRecentlyFired.mockReturnValueOnce(false);
-        await handleSilentPush(
-          payload({
-            kind: 'intermediate',
-            phase: 'imminent',
-            pushId: 'p-intermediate-mark',
-          }),
-        );
-        expect(mockMarkStationFired).toHaveBeenCalledWith(
-          destStation.id,
-          '강남',
-          'station-passed',
-          expect.any(Number),
-          'imminent',
-        );
-      });
-
       it('payload-missing-kind 시 sendPushAck(outcome=skipped, reason=payload-missing-kind)', async () => {
         await handleSilentPush({
           data: bgTaskData({
@@ -2249,7 +1630,10 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-throw' }),
         );
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        // apnsToken이 null로 fallback돼도 no-op skip 처리(로그 적재)는 그대로 진행.
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
+        );
         expect(mockSendPushAck).not.toHaveBeenCalled();
       });
 
@@ -2288,28 +1672,33 @@ describe('silentPushTask', () => {
         });
 
         it('resolvePermissionMode throw → permissionMode 누락(undefined), ack는 계속 전송', async () => {
-          // 모든 resolvePermissionMode 호출에서 throw (received + fired 양쪽 ack).
+          // 모든 resolvePermissionMode 호출에서 throw (received + skipped 양쪽 ack).
           mockGetForegroundPermissions.mockRejectedValue(new Error('location-api-fail'));
-          await handleSilentPush(
-            payload({ kind: 'destination', phase: 'imminent', pushId: 'p-throw-perm' }),
-          );
-          // fired ack가 전송됐는지 확인 — permissionMode는 undefined여야 한다.
-          const call = mockSendPushAck.mock.calls.find(
-            (c: unknown[]) =>
-              (c[0] as { pushId?: string }).pushId === 'p-throw-perm' &&
-              (c[0] as { outcome?: string }).outcome === 'fired',
-          );
-          expect(call).toBeDefined();
-          // permissionMode가 undefined이므로 sendPushAck payload에 포함되지 않는다.
-          expect((call![0] as Record<string, unknown>).permissionMode).toBeUndefined();
-          // 기본 mock 복원 (다른 테스트에 영향 없도록).
-          mockGetForegroundPermissions.mockResolvedValue({ status: 'granted' });
+          try {
+            await handleSilentPush(
+              payload({ kind: 'destination', phase: 'imminent', pushId: 'p-throw-perm' }),
+            );
+            // skipped(no-op) ack가 전송됐는지 확인 — permissionMode는 undefined여야 한다.
+            const call = mockSendPushAck.mock.calls.find(
+              (c: unknown[]) =>
+                (c[0] as { pushId?: string }).pushId === 'p-throw-perm' &&
+                (c[0] as { outcome?: string }).outcome === 'skipped',
+            );
+            expect(call).toBeDefined();
+            // permissionMode가 undefined이므로 sendPushAck payload에 포함되지 않는다.
+            expect((call![0] as Record<string, unknown>).permissionMode).toBeUndefined();
+          } finally {
+            // 기본 mock 복원 (다른 테스트에 영향 없도록) — assertion 실패로도 반드시 실행.
+            mockGetForegroundPermissions.mockResolvedValue({ status: 'granted' });
+          }
         });
       });
     });
 
     describe('#1370 L5 — silent push 도달 stamp (received outcome)', () => {
-      it('standard payload + pushId + apnsToken 모두 있으면 gate 평가 전 received ack 발사', async () => {
+      // #2064 — fire-with-gate가 제거돼 후속 outcome은 항상 skipped(legacy-station-kind-ignored)다.
+      // received ack가 그 이전에 먼저 발사된다는 순서 보장만 검증.
+      it('standard payload + pushId + apnsToken 모두 있으면 no-op 평가 전 received ack 발사', async () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv' }),
         );
@@ -2317,25 +1706,9 @@ describe('silentPushTask', () => {
         expect(mockSendPushAck).toHaveBeenCalledWith(
           expect.objectContaining(ackCall('p-recv', 'received')),
         );
-        // 후속 outcome(fired) ack도 그대로 발사 — 별개 호출.
-        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv', 'fired'));
-      });
-
-      it('게이트 fail로 outcome=skipped여도 received ack는 먼저 발사', async () => {
-        mockCheckGate.mockResolvedValue({
-          pass: false,
-          reason: 'out-of-range',
-          distanceM: 5_000,
-          thresholdM: 400,
-        });
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv-skip' }),
-        );
+        // 후속 outcome(skipped) ack도 그대로 발사 — 별개 호출.
         expect(mockSendPushAck).toHaveBeenCalledWith(
-          expect.objectContaining(ackCall('p-recv-skip', 'received')),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          ackCall('p-recv-skip', 'skipped', 'gate-out-of-range'),
+          ackCall('p-recv', 'skipped', 'legacy-station-kind-ignored'),
         );
       });
 
@@ -2473,257 +1846,13 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-fired-nobatt' }),
         );
-        const firedCall = mockSendPushAck.mock.calls.find(
+        const skippedCall = mockSendPushAck.mock.calls.find(
           (c: unknown[]) =>
             (c[0] as { pushId?: string }).pushId === 'p-fired-nobatt' &&
-            (c[0] as { outcome?: string }).outcome === 'fired',
+            (c[0] as { outcome?: string }).outcome === 'skipped',
         );
-        expect(firedCall).toBeDefined();
-        expect((firedCall![0] as { batteryState?: string }).batteryState).toBeUndefined();
-      });
-    });
-
-    describe('#727 정적 misfire 가드 (movement)', () => {
-      it('gate가 speed=0 노출하면 movement-static-speed로 skip + 발사 안 함', async () => {
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 0,
-          accuracyM: 30,
-        });
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({
-            reason: 'movement-static-speed',
-            stationName: '강남',
-            kind: 'destination',
-            phaseId: 'imminent',
-            distanceM: 150,
-            thresholdM: 800,
-          }),
-        );
-      });
-
-      it('gate가 accuracy=999 노출하면 movement-low-accuracy로 skip', async () => {
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 2,
-          accuracyM: 999,
-        });
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'movement-low-accuracy' }),
-        );
-      });
-
-      it('speed 미노출 + accuracy=999만 노출돼도 movement-low-accuracy로 skip', async () => {
-        // speedMps undefined → log line의 ?? '-' fallback 분기 커버
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          accuracyM: 999,
-        });
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'movement-low-accuracy' }),
-        );
-      });
-
-      it('movement skip은 pushId 있으면 ACK 전송', async () => {
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 0,
-        });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'movement-skip' }),
-        );
-
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'movement-skip',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'movement-static-speed',
-          permissionMode: 'always',
-        });
-      });
-
-      it('gate가 speed/accuracy 미노출(undefined)이면 movement 가드 통과해 정상 발사', async () => {
-        mockCheckGate.mockResolvedValue(PASSING_GATE); // speed/accuracy 없음
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('intermediate도 movement-static-speed 시 kind=station-passed로 매핑되어 skip', async () => {
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 0.1,
-        });
-
-        await handleSilentPush(
-          payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }),
-        );
-
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({
-            kind: 'station-passed',
-            reason: 'movement-static-speed',
-          }),
-        );
-      });
-    });
-
-    // #728 — CMMotionActivity motion=stationary가 BG silent push 발사도 차단.
-    // FG에서 useMotionActivity가 startUpdates를 호출했다면 native cache에 최신 activity가 있고,
-    // BG handleSilentPush 진입 시 getCurrentMotionStationary가 그 값을 보고한다.
-    describe('#728 motion-stationary 가드 (CMMotionActivity)', () => {
-      it('motionStationary=true + speed=0.69 (임계 우회) → movement-motion-stationary로 skip', async () => {
-        mockGetMotionStationary.mockReturnValue(true);
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 0.69, // STATIC_SPEED_THRESHOLD_MPS=0.5 우회
-          accuracyM: 30,
-        });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'motion-skip' }),
-        );
-
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({
-            reason: 'movement-motion-stationary',
-            stationName: '강남',
-            kind: 'destination',
-            phaseId: 'imminent',
-          }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'motion-skip',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'movement-motion-stationary',
-          permissionMode: 'always',
-        });
-      });
-
-      it('motionStationary=false (default) — 기존 speed/accuracy 가드만 동작', async () => {
-        // 명시적으로 false 설정 — speed/accuracy 정상이면 정상 발사
-        mockGetMotionStationary.mockReturnValue(false);
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 5,
-          accuracyM: 30,
-        });
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('motionStationary=true는 speed 정상값보다 우선 — 차단', async () => {
-        mockGetMotionStationary.mockReturnValue(true);
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 5, // 명백한 이동 신호인데 motion=stationary
-          accuracyM: 30,
-        });
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'movement-motion-stationary' }),
-        );
-      });
-    });
-
-    // #1356 E1 — silent push suppress 분기에서 같은 station+phase의 사전 예약(tba: / bl:)도 cancel.
-    // backend는 정적/out-of-range를 인식해 다음 silent push를 발사하지 않지만, 이미 OS queue에 있는
-    // 사전 예약은 시간이 되면 자체 발사 → stale "다음 역" 알람. 단건 cancel(해당 station+phase만).
-    describe('#1356 E1 — suppress 시 같은 station 사전 예약 cancel', () => {
-      it('motion=stationary suppress 시 cancelTbaByStationPhase + cancelBlByStationPhase가 1회씩 호출된다', async () => {
-        mockGetMotionStationary.mockReturnValue(true);
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 0.69,
-          accuracyM: 30,
-        });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'motion-cancel' }),
-        );
-
-        expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(1);
-        expect(mockCancelTbaByStationPhase).toHaveBeenCalledWith('강남', 'imminent');
-        expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(1);
-        expect(mockCancelBlByStationPhase).toHaveBeenCalledWith('강남', 'imminent');
-      });
-
-      it('gate-out-of-range suppress 시 cancelTbaByStationPhase + cancelBlByStationPhase가 1회씩 호출된다', async () => {
-        mockCheckGate.mockResolvedValue({
-          pass: false,
-          reason: 'out-of-range',
-          distanceM: 1500,
-          thresholdM: 800,
-          locationSource: 'cache' as const,
-          locationAgeMs: 10_000,
-        });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'early', pushId: 'gate-cancel' }),
-        );
-
-        expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(1);
-        expect(mockCancelTbaByStationPhase).toHaveBeenCalledWith('강남', 'early');
-        expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(1);
-        expect(mockCancelBlByStationPhase).toHaveBeenCalledWith('강남', 'early');
-      });
-
-      it('valid silent push pass (정상 발사) 시 cancel은 호출되지 않는다 (회귀)', async () => {
-        mockGetMotionStationary.mockReturnValue(false);
-        mockCheckGate.mockResolvedValue({
-          ...PASSING_GATE,
-          speedMps: 5,
-          accuracyM: 30,
-        });
-
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-
-        expect(mockLogSilentPushFired).toHaveBeenCalled();
-        expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
-        expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
-      });
-
-      it('line 가드 suppress(lock-line-mismatch) 등 다른 분기는 cancel 미호출 (out of scope 가드)', async () => {
-        // payload.boardingLine='3' 으로 lock(boardingLine='2') 노선과 mismatch.
-        // findStationByNameAndLine은 null, findStationByName은 어떤 station 반환.
-        mockFindStationByNameAndLine.mockReturnValue(null);
-        mockFindStationByName.mockReturnValue({ name: '강남', line: '3', lat: 37.5, lng: 127.0 });
-
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'line-mismatch' }),
-        );
-
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lock-line-mismatch' }),
-        );
-        // E1 cancel은 motion/gate suppress 분기만 적용. 다른 suppress는 변경 없음.
-        expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
-        expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
+        expect(skippedCall).toBeDefined();
+        expect((skippedCall![0] as { batteryState?: string }).batteryState).toBeUndefined();
       });
     });
 
@@ -2756,7 +1885,6 @@ describe('silentPushTask', () => {
         expect(typeof arg.receivedAt).toBe('number');
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
-        expect(mockCheckGate).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
         expect(mockLogSilentPushFired).not.toHaveBeenCalled();
         expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
@@ -3148,7 +2276,6 @@ describe('silentPushTask', () => {
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
-        expect(mockCheckGate).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
         expect(mockLogSilentPushFired).not.toHaveBeenCalled();
         expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
@@ -3656,7 +2783,6 @@ describe('silentPushTask', () => {
         await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
         expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
         // standard 발사 경로는 호출되지 않아야 함.
-        expect(mockCheckGate).not.toHaveBeenCalled();
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
         expect(mockLogSilentPushFired).not.toHaveBeenCalled();
       });
@@ -3720,13 +2846,6 @@ describe('silentPushTask', () => {
         expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
       });
 
-      it('gate/location 등 다른 mock은 호출 안 됨 (unconditional path)', async () => {
-        await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
-        expect(mockCheckGate).not.toHaveBeenCalled();
-        expect(mockGetDismissSilence).not.toHaveBeenCalled();
-        expect(mockGetMotionStationary).not.toHaveBeenCalled();
-        expect(mockGetFiredAlarms).not.toHaveBeenCalled();
-      });
 
       it('pushId 있으면 ack(fired, boarding-prompt) 전송', async () => {
         await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
@@ -3957,7 +3076,6 @@ describe('silentPushTask', () => {
         await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
         expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
         // standard 발사 경로는 호출되지 않아야 함.
-        expect(mockCheckGate).not.toHaveBeenCalled();
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
         expect(mockLogSilentPushFired).not.toHaveBeenCalled();
       });
@@ -4075,14 +3193,6 @@ describe('silentPushTask', () => {
         expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(2);
       });
 
-      it('gate/location 등 다른 mock은 호출 안 됨 (unconditional path)', async () => {
-        setSleepMode(true);
-        await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
-        expect(mockCheckGate).not.toHaveBeenCalled();
-        expect(mockGetDismissSilence).not.toHaveBeenCalled();
-        expect(mockGetMotionStationary).not.toHaveBeenCalled();
-        expect(mockGetFiredAlarms).not.toHaveBeenCalled();
-      });
 
       it('pushId 있으면 ack(fired, sleep-transfer-alarm) 전송', async () => {
         setSleepMode(true);
@@ -4174,62 +3284,6 @@ describe('silentPushTask', () => {
         setSleepMode(false);
         await handleSilentPush(sleepTransferPayload({ pushId: 'sta-1' }));
         expect(mockRefreshLa).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    describe('#746 dismiss silence 게이트 (BG silent push)', () => {
-      it('silence 활성이면 발사 차단 + logSilentPushSkipped(reason=dismiss-silence) + ACK skip', async () => {
-        mockGetDismissSilence.mockResolvedValue({
-          sinceTs: Date.now(),
-          sinceLat: null,
-          sinceLng: null,
-        });
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent', pushId: 'p1' }));
-        expect(mockCheckGate).not.toHaveBeenCalled();
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({
-            reason: 'dismiss-silence',
-            stationName: '강남',
-            kind: 'destination',
-            phaseId: 'imminent',
-          }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith(
-          expect.objectContaining({ outcome: 'skipped', reason: 'dismiss-silence' }),
-        );
-      });
-
-      it('silence 만료 시 clear 호출 + 정상 발사 path로 진입(checkGate 호출)', async () => {
-        mockGetDismissSilence.mockResolvedValue({
-          sinceTs: Date.now() - 10 * 60_000,
-          sinceLat: null,
-          sinceLng: null,
-        });
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-        expect(mockClearDismissSilence).toHaveBeenCalledTimes(1);
-        expect(mockCheckGate).toHaveBeenCalled();
-      });
-
-      it('intermediate 카테고리도 silence가 차단(kind=station-passed로 log)', async () => {
-        mockGetDismissSilence.mockResolvedValue({
-          sinceTs: Date.now(),
-          sinceLat: null,
-          sinceLng: null,
-        });
-        await handleSilentPush(payload({ kind: 'intermediate', phase: 'early', pushId: 'p2' }));
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({
-            reason: 'dismiss-silence',
-            kind: 'station-passed',
-          }),
-        );
-      });
-
-      it('silence state null이면 정상 path로 진입', async () => {
-        mockGetDismissSilence.mockResolvedValue(null);
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
-        expect(mockCheckGate).toHaveBeenCalled();
       });
     });
 
@@ -4379,30 +3433,16 @@ describe('silentPushTask', () => {
 
   describe('#900 Seam D — refreshLiveActivityFromBackgroundContext invocation', () => {
     // payload kind 전반에서 LA refresh가 정확히 1회 호출됨을 검증.
-    // 데이터 주도: 각 row가 (label, taskData, mock setup)을 정의해 동일 assertion 반복.
-    function lockMismatchPayload() {
-      mockFindStationByNameAndLine.mockReturnValueOnce(null);
-      mockFindStationByName.mockReturnValueOnce({} as never);
-      return payload({ kind: 'transfer' });
-    }
-    function gateSkipPayload() {
-      mockCheckGate.mockResolvedValueOnce({
-        pass: false,
-        reason: 'out-of-range',
-        distanceM: 5000,
-        thresholdM: 800,
-        locationSource: 'cache',
-        locationAgeMs: 5000,
-      });
-      return payload({ kind: 'transfer' });
-    }
+    // 데이터 주도: 각 row가 (label, taskData)를 정의해 동일 assertion 반복.
+    // #2064 — transfer/destination/intermediate는 모두 동일한 no-op skip 경로를 타므로
+    // 세 kind 모두 포함해 no-op이 LA refresh를 막지 않음을 증명한다.
     const cases: Array<{ label: string; build: () => unknown }> = [
-      { label: '정상 fire', build: () => payload({ kind: 'destination' }) },
+      { label: 'destination kind (no-op)', build: () => payload({ kind: 'destination' }) },
+      { label: 'transfer kind (no-op)', build: () => payload({ kind: 'transfer' }) },
+      { label: 'intermediate kind (no-op)', build: () => payload({ kind: 'intermediate' }) },
       { label: 'reschedule kind', build: () => payload({ kind: 'reschedule', nextStation: '강남', newArrivalTimeEpoch: 1, trainCode: 'T1' }) },
       { label: 'trip-ended kind', build: () => payload({ kind: 'trip-ended', reason: 'expired' }) },
       { label: 'payload missing(invalid)', build: () => ({ data: { data: { data: {}, dataString: null }, notification: null, aps: { 'content-available': 1 } } }) },
-      { label: 'lock-line-mismatch skip', build: () => lockMismatchPayload() },
-      { label: 'gate skip', build: () => gateSkipPayload() },
     ];
     it.each(cases)('$label 후에도 refreshLiveActivityFromBackgroundContext 1회 호출', async ({ build }) => {
       await handleSilentPush(build() as never);
@@ -4532,7 +3572,6 @@ describe('silentPushTask', () => {
     it('handleSilentPush persists SSoT mirror when payload.ssot is present', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
       (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
-      mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
       await handleSilentPush(
         bgTaskData({
           nextWaypoint: '강남',
@@ -4554,7 +3593,6 @@ describe('silentPushTask', () => {
     it('handleSilentPush does not persist mirror when payload.ssot is absent', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
       (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
-      mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
       await handleSilentPush(
         bgTaskData({
           nextWaypoint: '강남',
@@ -4592,7 +3630,6 @@ describe('silentPushTask', () => {
           if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
           return null;
         });
-        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
         // tripToken undefined일 때 'tripToken' in payload는 true가 되지만 코드 가드는
         // `payload.tripToken !== undefined`로 분기 — 구 backend 호환 path 그대로 검증.
         const fields: Record<string, unknown> = {
@@ -4668,126 +3705,6 @@ describe('silentPushTask', () => {
       expect(validSsotMirror(123)).toBeUndefined();
     });
 
-    // #1572 (T9, ADR-017) — Path E SSoT 게이트 통합 acceptance.
-    describe('Path E SSoT fire gate (#1572 T9)', () => {
-      const NOW = 1_700_000_000_000;
-
-      function makeFreshMirror(overrides: Record<string, unknown>): string {
-        return JSON.stringify({
-          currentStationId: '중곡',
-          motionState: 'moving',
-          lastAdvanceEvidence: 'arvlcd-confirmed-train',
-          lastAdvanceAt: NOW,
-          passedStations: [],
-          receivedAt: NOW,
-          ...overrides,
-        });
-      }
-
-      beforeEach(() => {
-        jest.spyOn(Date, 'now').mockReturnValue(NOW);
-      });
-
-      afterEach(() => {
-        jest.spyOn(Date, 'now').mockRestore();
-      });
-
-      it('mirror에 같은 stationId가 station-passed로 결정됨 → silent push fire 차단 (Gate B)', async () => {
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === BACKEND_SSOT_MIRROR_KEY)
-            return makeFreshMirror({ passedStations: ['용마산'] });
-          return null;
-        });
-        await handleSilentPush(
-          bgTaskData({
-            nextWaypoint: '용마산',
-            etaSeconds: 0,
-            phase: 'imminent',
-            kind: 'intermediate',
-            sentAt: NOW,
-            pushId: 'p1',
-          }),
-        );
-        // location gate 도달 전 SSoT gate가 block → checkSilentPushLocationGate 미호출.
-        expect(mockCheckGate).not.toHaveBeenCalled();
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-      });
-
-      it('mirror.alarmEvents에 같은 alarmId 결정됨 → fire 차단 (Gate A)', async () => {
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === BACKEND_SSOT_MIRROR_KEY)
-            return makeFreshMirror({
-              alarmEvents: [
-                {
-                  alarmId: 'transfer:군자',
-                  stationId: '군자',
-                  type: 'transfer',
-                  decidedAt: NOW,
-                },
-              ],
-            });
-          return null;
-        });
-        await handleSilentPush(
-          bgTaskData({
-            nextWaypoint: '군자',
-            etaSeconds: 0,
-            phase: 'imminent',
-            kind: 'transfer',
-            sentAt: NOW,
-            pushId: 'p2',
-          }),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-      });
-
-      it('mirror 부재 → SSoT 게이트 graceful no-block → 후속 게이트로 진행', async () => {
-        // 기본 mock(`(AsyncStorage.getItem ...) return null`)는 BACKEND_SSOT_MIRROR_KEY가 null이라
-        // readBackendSsotMirror가 null → mirror-missing graceful pass.
-        await handleSilentPush(
-          bgTaskData({
-            nextWaypoint: '강남',
-            etaSeconds: 0,
-            phase: 'imminent',
-            kind: 'intermediate',
-            sentAt: NOW,
-            pushId: 'p3',
-          }),
-        );
-        // 후속 location gate가 호출됐는지 — SSoT gate가 차단하지 않았다는 증거.
-        expect(mockCheckGate).toHaveBeenCalled();
-      });
-
-      it('mirror stale(>180s) → SSoT 게이트 graceful no-block', async () => {
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === BACKEND_SSOT_MIRROR_KEY)
-            return makeFreshMirror({
-              passedStations: ['용마산'],
-              receivedAt: NOW - 200_000,
-            });
-          return null;
-        });
-        await handleSilentPush(
-          bgTaskData({
-            nextWaypoint: '용마산',
-            etaSeconds: 0,
-            phase: 'imminent',
-            kind: 'intermediate',
-            sentAt: NOW,
-            pushId: 'p4',
-          }),
-        );
-        // SSoT gate가 mirror-stale로 no-block — location gate가 호출됨.
-        expect(mockCheckGate).toHaveBeenCalled();
-      });
-    });
-
     // #1572 (T9, ADR-017) — alarmEvents validator.
     describe('alarmEvents validator (#1572 T9)', () => {
       it('validSsotMirror: alarmEvents 정의된 valid 배열 → narrow 통과', () => {
@@ -4828,7 +3745,6 @@ describe('silentPushTask', () => {
       it('handleSilentPush persists alarmEvents in mirror when payload.ssot.alarmEvents present', async () => {
         (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
         (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
-        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
         const ssotWithEvents = {
           ...validSsot,
           alarmEvents: [

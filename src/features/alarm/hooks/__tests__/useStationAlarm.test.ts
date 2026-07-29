@@ -242,6 +242,11 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveAlarmDirection.mockReturnValue(undefined);
     mockResolveNextTarget.mockReturnValue(null);
+    // #2064 — jest.clearAllMocks()는 mockResolvedValueOnce 등으로 큐잉된 반환값을 비우지 않는다.
+    // 일부 race/cancel 테스트가 소비되지 않은 once 큐(cancelled 가드에 막혀 실제 호출이 발생하지
+    // 않는 IIFE)를 남길 수 있어, 다음 테스트로 새는 것을 막기 위해 명시적으로 mockReset 후
+    // 기본값을 재설정한다.
+    mockGetLastNotifiedStationId.mockReset();
     mockGetLastNotifiedStationId.mockResolvedValue(null);
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
@@ -310,7 +315,7 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     const onRouteStation = makeStation('S2-DST', '강남'); // route+dest 매칭
 
-    it('GPS 게이트 차단 + arrivalConfidence=arrival-confirmed → station-passed 알람 발화', async () => {
+    it('GPS 게이트 차단 + arrivalConfidence=arrival-confirmed → station-passed 감지 (#2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       renderHook(() =>
         useStationAlarm(
@@ -323,12 +328,15 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 (Phase 1-device) — station-passed 로컬 알림 제거. 감지 성공은 dedup bookkeeping
+      // (setLastNotifiedStationId) 호출로 검증한다.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       // Phase 알람은 GPS 필요하므로 호출 안 됨
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
 
-    it('GPS 게이트 차단 + arrivalConfidence=boarding-lock → station-passed 알람 발화 (#584 PR D2)', async () => {
+    it('GPS 게이트 차단 + arrivalConfidence=boarding-lock → station-passed 감지 (#584 PR D2, #2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       renderHook(() =>
         useStationAlarm(
@@ -341,7 +349,8 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('GPS 게이트 차단 + arrivalConfidence=arrival-arriving → 발화 안 함 (확정 아님)', () => {
@@ -391,7 +400,9 @@ describe('useStationAlarm', () => {
         ),
       );
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — station-passed 감지 성공은 dedup bookkeeping으로 검증(로컬 알림 미발사).
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('arrival-confirmed 트리거도 lastNotifiedStationId dedup 적용 (GPS와 중복 발화 방지)', async () => {
@@ -1149,16 +1160,18 @@ describe('useStationAlarm', () => {
       stopsToDestination: 3,
     };
 
-    it('fires when nearest station changes (notificationState dedup)', async () => {
+    // #2064 (Phase 1-device) — station-passed 로컬 알림 제거. 감지 성공은 notificationState
+    // dedup bookkeeping(setLastNotifiedStationId)만으로 검증한다.
+    it('records dedup bookkeeping when nearest station changes (does not send local notification)', async () => {
       const route = makeDirectRoute(3, '2');
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
 
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget, undefined);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, 'S1');
       });
-      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, 'S1');
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('does not fire when stored lastNotifiedStationId equals nearest station', async () => {
@@ -1176,7 +1189,7 @@ describe('useStationAlarm', () => {
       expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
-    it('fires again when nearest station changes to a different one', async () => {
+    it('records dedup bookkeeping again when nearest station changes to a different one', async () => {
       const route = makeDirectRoute(3, '2');
       const station1 = makeStation('S1', '역삼');
       const station2 = makeStation('S2', '선릉');
@@ -1187,7 +1200,7 @@ describe('useStationAlarm', () => {
         { initialProps: { s: station1 } },
       );
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1);
       });
 
       const nextTarget = {
@@ -1199,9 +1212,10 @@ describe('useStationAlarm', () => {
       mockResolveNextTarget.mockReturnValue(nextTarget);
       rerender({ s: station2 });
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(2);
       });
-      expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', nextTarget, undefined);
+      expect(mockSetLastNotifiedStationId).toHaveBeenLastCalledWith(destination.id, 'S2');
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('does not fire when nearestStation is null', () => {
@@ -1226,18 +1240,26 @@ describe('useStationAlarm', () => {
       expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
-    it('passes null target when resolveNextTarget returns null', async () => {
+    // #2064 — resolveNextTarget은 더 이상 dispatchStationPassed에서 호출되지 않는다(로컬 알림
+    // 본문 생성용이었던 호출부 자체가 제거됨). resolveNextTarget 고유 로직의 정확성은
+    // `stationPipeline.test.ts`의 별도 describe('resolveNextTarget', ...)가 계속 커버 — 여기서는
+    // resolveNextTarget이 무엇을 반환하든(null 포함) dedup bookkeeping이 영향받지 않음을 검증한다.
+    it('dedup bookkeeping proceeds regardless of resolveNextTarget return value (no longer consumed)', async () => {
       const route = makeDirectRoute(3, '2');
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(null);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', null, undefined);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, 'S1');
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('handles sendStationPassedNotification rejection gracefully', async () => {
-      mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 실패'));
+    // #2064 — 로컬 알림(sendStationPassedNotification)이 제거되어 그 rejection 경로도 함께
+    // 사라졌다. 남은 async 경계(setLastNotifiedStationId write)의 rejection도 hook이 throw 없이
+    // 흡수하는지 검증으로 대체.
+    it('handles setLastNotifiedStationId rejection gracefully', async () => {
+      mockSetLastNotifiedStationId.mockRejectedValueOnce(new Error('storage 실패'));
       const route = makeDirectRoute(3, '2');
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
@@ -1245,7 +1267,7 @@ describe('useStationAlarm', () => {
         renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station }))),
       ).not.toThrow();
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
     });
 
@@ -1348,46 +1370,19 @@ describe('useStationAlarm', () => {
 
       rerender({ s: onRouteStation });
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1);
       });
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', transferTarget, undefined);
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id);
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('알림 발송 후에만 notificationState에 저장한다 (실패 시 재시도 가능)', async () => {
-      const route = makeDirectRoute(3, '2');
-      const station = makeStation('S1', '역삼');
-      mockResolveNextTarget.mockReturnValue(directTarget);
-      mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 발송 실패'));
-
-      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
-
-      await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
-      });
-      // 알림 발송 실패 시 storage write를 하지 않아 다음 폴링에서 재시도 가능
-      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
-    });
-
-    it('알림 발송이 성공하면 그 후에 notificationState에 저장한다', async () => {
-      const route = makeDirectRoute(3, '2');
-      const station = makeStation('S1', '역삼');
-      mockResolveNextTarget.mockReturnValue(directTarget);
-
-      const callOrder: string[] = [];
-      mockSendStationPassedNotification.mockImplementationOnce(async () => {
-        callOrder.push('notify');
-      });
-      mockSetLastNotifiedStationId.mockImplementationOnce(async () => {
-        callOrder.push('write');
-      });
-
-      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
-
-      await waitFor(() => {
-        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
-      });
-      expect(callOrder).toEqual(['notify', 'write']);
-    });
+    // #2064 — 아래 두 테스트("알림 발송 후에만 저장" / "알림 발송이 성공하면 그 후에 저장")는
+    // dispatchStationPassed의 옛 notify→write 순차 구조(실패 시 storage write 스킵)를 검증했다.
+    // 로컬 알림(sendStationPassedNotification) 호출 자체가 제거되어 그 순차 구조가 더 이상
+    // 존재하지 않는다 — markStationFired(sync) → isCancelled() → setLastNotifiedStationId(write)
+    // 만 남았고, write를 막는 "실패 가능한 이전 단계"가 없다. 두 테스트 모두 관찰 목적을 잃어
+    // 제거. write 자체의 rejection-safety는 위 'handles setLastNotifiedStationId rejection
+    // gracefully'가 커버.
 
     function deferred<T>() {
       let resolve!: (value: T) => void;
@@ -1425,10 +1420,11 @@ describe('useStationAlarm', () => {
       readA2.resolve(null);
 
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1);
       });
-      // 처음 두 IIFE는 cancelled 가드에 막혀 마지막(A) 한 번만 알림 발사
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남A', '강남', directTarget, undefined);
+      // 처음 두 IIFE는 cancelled 가드에 막혀 마지막(A) 한 번만 dedup bookkeeping 수행.
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, stationA.id);
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('cancel 플래그: read 완료 전 언마운트되면 알림을 발송하지 않는다', async () => {
@@ -1454,31 +1450,14 @@ describe('useStationAlarm', () => {
       expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
-    it('cancel 플래그: notify 완료 전 언마운트되면 storage write를 하지 않는다', async () => {
-      const route = makeDirectRoute(3, '2');
-      const station = makeStation('S1', '역삼');
-      mockResolveNextTarget.mockReturnValue(directTarget);
-
-      const notify = deferred<void>();
-      mockSendStationPassedNotification.mockReturnValueOnce(notify.promise);
-
-      const { unmount } = renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      // notify가 시작될 때까지 기다림
-      await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
-      });
-
-      unmount();
-      notify.resolve();
-
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
-    });
+    // #2064 — 이 위치에 있던 'cancel 플래그: notify 완료 전 언마운트되면 storage write를 하지
+    // 않는다' 테스트는 옛 dispatchStationPassed의 notify await 경계(isCancelled() 재확인 지점이
+    // notify 이후에 있었음)를 이용했다. 새 코드는 markStationFired(sync) → isCancelled() →
+    // setLastNotifiedStationId(await)만 남았고, 이 cancelled 재확인은 setLastNotifiedStationId
+    // "이전"에 위치 — 즉 getLastNotifiedStationId await 직후의 cancelled 게이트(바로 위
+    // 'read 완료 전 언마운트' 테스트)와 완전히 동일한 경계다. setLastNotifiedStationId 호출
+    // "이후"에는 재확인 지점이 없어(가장 마지막 statement) 재현할 별도 race window가 없다 —
+    // 중복 커버라 제거.
   });
 
   // ── BG↔FG firedAlarms 단일 출처 (#336 회귀 가드) ──
@@ -1693,7 +1672,9 @@ describe('useStationAlarm', () => {
       });
     });
 
-    it('역 통과 알림 발사 시 logFiredStationPassed(fg, station)을 호출한다', async () => {
+    // #2064 (Phase 1-device) — station-passed 로컬 알림 제거로 logFiredStationPassed(alarmLog
+    // 'fired' 엔트리) 호출부도 함께 제거됨. dedup bookkeeping(setLastNotifiedStationId)은 유지.
+    it('역 통과 감지 시에도 logFiredStationPassed는 호출하지 않는다 (dedup bookkeeping만 수행)', async () => {
       mockEvaluateAlarmPhase.mockReturnValue(null);
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       mockSetLastNotifiedStationId.mockResolvedValue(undefined);
@@ -1709,8 +1690,9 @@ describe('useStationAlarm', () => {
       );
 
       await waitFor(() => {
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg', station);
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
       });
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
     });
 
     it('lastNotifiedStationId 일치로 skip 시 logSuppressedDedupStation(fg, station)을 호출한다', async () => {
@@ -2071,7 +2053,9 @@ describe('useStationAlarm', () => {
       );
     });
 
-    it('역 통과 알림에도 notificationSource가 전달된다', async () => {
+    // #2064 (Phase 1-device) — station-passed 로컬 알림 제거로 notificationSource 전파 대상도
+    // 사라짐(sendAlarmNotification 경로만 notificationSource를 계속 사용).
+    it('역 통과 감지에는 더 이상 notificationSource가 전달되지 않는다 (알림 자체가 없음)', async () => {
       const route = makeDirectRoute(5, '2');
       const destination = makeStation('D1', '강남');
       const station = makeStation('S1', '역삼');
@@ -2093,13 +2077,9 @@ describe('useStationAlarm', () => {
         ),
       );
       await waitFor(() =>
-        expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
-          '역삼',
-          '강남',
-          directTarget,
-          'routeProgress',
-        ),
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id),
       );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -2513,16 +2493,18 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('station-passed + 정적 신호 + arrivalConfirmed면 movement gate skip → 정상 발사', async () => {
+    it('station-passed + 정적 신호 + arrivalConfirmed면 movement gate skip → 정상 감지 (#2064 알림은 미발사)', async () => {
       renderStationPassedHook({ speedMps: 0, arrivalConfidence: 'arrival-confirmed' });
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('station-passed + 이동 신호(speed=5)면 정상 발사', async () => {
+    it('station-passed + 이동 신호(speed=5)면 정상 감지 (#2064 알림은 미발사)', async () => {
       renderStationPassedHook({ speedMps: 5 });
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -2623,7 +2605,7 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('motionStationary=false면 차단 안 함 (이동 신호 정상)', async () => {
+    it('motionStationary=false면 차단 안 함 (이동 신호 정상, #2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       renderHook(() =>
         useStationAlarm(
@@ -2638,10 +2620,11 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('motionStationary 미전달 — 기존 동작 유지 (graceful fallback)', async () => {
+    it('motionStationary 미전달 — 기존 동작 유지 (graceful fallback, #2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       renderHook(() =>
         useStationAlarm(
@@ -2655,10 +2638,11 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('station-passed + motionStationary=true + arrivalConfirmed면 motion gate skip → 정상 발사', async () => {
+    it('station-passed + motionStationary=true + arrivalConfirmed면 motion gate skip → 정상 감지 (#2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       // arrivalConfirmed는 motion gate 자체를 우회 (기존 정책 — arrival API 단독 신호 보호).
       renderHook(() =>
@@ -2675,7 +2659,8 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -2776,7 +2761,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
     });
 
-    it('station-passed + motionStationary=true + trainProgressing=true → 정상 발사', async () => {
+    it('station-passed + motionStationary=true + trainProgressing=true → 정상 감지 (#2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
 
       renderTrainProgressingAlarm({
@@ -2786,7 +2771,8 @@ describe('useStationAlarm', () => {
         trainProgressing: true,
       });
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('trainProgressing=false면 기존 동작 (motion=stationary 차단 그대로)', async () => {
@@ -2878,7 +2864,7 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedStationPassedWarmup).toHaveBeenCalledWith(station.name);
     });
 
-    it('skipWarmupGuard=true면 warmup window 안에서도 즉시 발사', async () => {
+    it('skipWarmupGuard=true면 warmup window 안에서도 즉시 감지 (#2064 알림은 미발사)', async () => {
       const baseTs = 1_700_000_000_000;
       jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
@@ -2895,10 +2881,11 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('warmup window 경과 후 발사 허용 (hydratedAt + 10s 이후)', async () => {
+    it('warmup window 경과 후 감지 허용 (hydratedAt + 10s 이후, #2064 알림은 미발사)', async () => {
       const baseTs = 1_700_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
@@ -2924,7 +2911,8 @@ describe('useStationAlarm', () => {
       nowSpy.mockReturnValue(baseTs + 10_001);
       rerender({ s: station });
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -3223,7 +3211,10 @@ describe('useStationAlarm', () => {
     // fast path 발사 여부만 가린다. GPS path는 sendStationPassedNotification을 'fg' source로 logFiredStationPassed
     // 호출하므로 mock 호출 인자로 식별 가능.
 
-    it('lock 활성 + arvlCd 신호 → station-passed 알림 발사 + lastNotifiedStationId 갱신', async () => {
+    // #2064 (Phase 1-device) — station-passed 로컬 알림(sendStationPassedNotification) +
+    // alarmLog 'fired' 엔트리(logFiredStationPassed) 모두 제거. 감지 성공은 dedup bookkeeping
+    // (setLastNotifiedStationId) 1회 호출로만 검증한다.
+    it('lock 활성 + arvlCd 신호 → station-passed 감지 + lastNotifiedStationId 갱신 (알림 미발사)', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock);
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
@@ -3231,15 +3222,13 @@ describe('useStationAlarm', () => {
       renderHook(() => useStationAlarm(fastPathInputs()));
 
       // #1515 — cross-category station-level dedup으로 GPS path와 fast-path 중 먼저 reservation을
-      // 점유한 쪽만 발사된다(같은 station, 같은 destination, 30s 윈도우). 발사 1회 + 호출 인자만 검증.
-      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
-      expect(mockLogFiredStationPassed).toHaveBeenCalledTimes(1);
-      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
-        expect.stringMatching(/^fg(-arvlcd)?$/),
-        onRouteStation,
+      // 점유한 쪽만 dedup bookkeeping을 완료한다(같은 station, 같은 destination, 30s 윈도우).
+      await waitFor(() =>
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id),
       );
-      expect(mockSendStationPassedNotification).toHaveBeenCalled();
-      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id);
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1);
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
     });
 
     // #640 회귀 가드 — 본 PR의 핵심.
@@ -3257,8 +3246,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
       await Promise.resolve();
       await Promise.resolve();
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('#640 회귀 가드 — findFgArvlCdFireSignal이 null 반환(trainCode 불일치/arvlCd 불일치)면 발사 X', async () => {
@@ -3270,8 +3258,7 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
       await Promise.resolve();
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('lastNotifiedStationId가 같은 station.id면 fast path dedup → fg-arvlcd dedup 로그', async () => {
@@ -3284,8 +3271,7 @@ describe('useStationAlarm', () => {
       await waitFor(() =>
         expect(mockLogSuppressedDedupStation).toHaveBeenCalledWith('fg-arvlcd', onRouteStation),
       );
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('currentStationArrival 미전달(undefined)이면 fast path no-op (arvlCd fire X)', async () => {
@@ -3299,8 +3285,7 @@ describe('useStationAlarm', () => {
       await Promise.resolve();
       // #1236 — GPS station-passed path도 sleep 룰 게이트 위해 getBoardingLock을 호출하므로
       // 'getBoardingLock 미호출' 대신 'fast path fire 미발생'으로 검증한다.
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('currentStationArrival null이면 fast path no-op', async () => {
@@ -3312,8 +3297,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
       await Promise.resolve();
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('nearestStation null이면 fast path no-op (fire 대상 station 결정 불가)', async () => {
@@ -3325,8 +3309,7 @@ describe('useStationAlarm', () => {
       await Promise.resolve();
       // #1272 (N8) — destinationId 기반 lock mirror effect가 destinationId 설정 시 lock을
       // 1회 prefetch 한다. fast path 발사 자체는 nearestStation null이므로 발생하지 않음.
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('nearestStation이 route 밖이면(line 불일치) fast path no-op', async () => {
@@ -3336,8 +3319,7 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('route 또는 destination 미설정이면 fast path no-op', async () => {
@@ -3347,8 +3329,7 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('destination 미설정이면 fast path no-op', async () => {
@@ -3379,8 +3360,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('dismiss silence 활성 시 fast path 발사 X + logSuppressedDismissSilence(fg-arvlcd)', async () => {
@@ -3408,8 +3388,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('hydration 미완료 시 fast path 보류 (firedHydrated=false)', async () => {
@@ -3424,8 +3403,7 @@ describe('useStationAlarm', () => {
       // #1272 (N8) — destinationId 기반 lock mirror effect는 hydration과 무관하게 destinationId
       // 설정 시 lock을 prefetch하므로 getBoardingLock 호출 자체는 발생할 수 있다. 단 fast path
       // 발사는 발생하지 않음(logFiredStationPassed fg-arvlcd 호출 0).
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('내부 storage read/send 실패 시 catch로 swallow (logger.error 분기 커버)', async () => {
@@ -3442,8 +3420,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetLastNotifiedStationId).toHaveBeenCalled());
       await Promise.resolve();
       await Promise.resolve();
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('effect cleanup (unmount) 후엔 후속 작업이 fast path 발사 안 함', async () => {
@@ -3468,8 +3445,7 @@ describe('useStationAlarm', () => {
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
       // fast path의 logFiredStationPassed('fg-arvlcd', ...)이 호출되지 않아야 한다.
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('getLastNotifiedStationId 후 cleanup 되면 dedup/send 분기 진입 안 함 (cancelled gate line 720)', async () => {
@@ -3495,39 +3471,19 @@ describe('useStationAlarm', () => {
       // resolve 후 microtask 충분히 돌려 `if (cancelled) return;` 진입(line 720).
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
       // dedup 로그도 호출되지 않아야 한다 (cancelled로 early return).
       const arvlCdDedups = mockLogSuppressedDedupStation.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
       expect(arvlCdDedups).toHaveLength(0);
     });
 
-    it('sendStationPassedNotification 후 cleanup 되면 setLastNotifiedStationId 미호출 (cancelled gate line 736)', async () => {
-      // send pending 동안 unmount → setLastNotifiedStationId 미호출 + logFiredStationPassed 미호출.
-      // GPS effect와 fast path effect 둘 다 send 호출하므로 mockImplementation으로 전체 pending.
-      const resolvers: Array<() => void> = [];
-      mockGetBoardingLock.mockResolvedValue(activeLock);
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
-      mockSendStationPassedNotification.mockImplementation(
-        () =>
-          new Promise<void>((r) => {
-            resolvers.push(r);
-          }),
-      );
-
-      const { unmount } = renderHook(() => useStationAlarm(fastPathInputs()));
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
-      unmount();
-      // 모든 pending send를 해제 — 각 effect는 cancelled=true를 보고 setLastNotifiedStationId skip.
-      resolvers.forEach((r) => r());
-      await Promise.resolve();
-      await Promise.resolve();
-
-      // setLastNotifiedStationId와 logFiredStationPassed('fg-arvlcd', ...) 모두 미호출.
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
-    });
+    // #2064 — 이 위치에 있던 'sendStationPassedNotification 후 cleanup 되면 setLastNotifiedStationId
+    // 미호출' 테스트는 옛 dispatchStationPassed의 notify await 경계를 이용해 cancel-mid-flight를
+    // 재현했다. 로컬 알림 호출 자체가 제거되어 그 경계가 사라졌고(mockSendStationPassedNotification이
+    // 더 이상 호출되지 않아 waitFor가 타임아웃), 새 코드의 유일한 cancelled 재확인 지점은
+    // getLastNotifiedStationId await 직후로 옮겨갔다 — 바로 위 'getLastNotifiedStationId 후
+    // cleanup 되면 dedup/send 분기 진입 안 함' 테스트가 GPS+fast-path 양쪽 모두에 대해 이미
+    // 이 경계를 검증하므로 중복 제거.
 
     it('destination 변경 직후 firedAlarmsRef.destId 미일치 시점에는 fast path 보류 (line 671)', async () => {
       // hydration mock: 첫 destination에 대해 hydrate 완료 → ref id 일치.
@@ -3550,13 +3506,15 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
 
       // destination 교체. 새 destination의 hydrate는 pending → firedHydrated=false 또는 ref.id 불일치.
-      mockLogFiredStationPassed.mockClear();
+      // #2064 — 첫 destination의 정상 dispatch가 이미 setLastNotifiedStationId를 1회 호출했을 수
+      // 있으므로(로컬 알림 대신 dedup bookkeeping이 proxy) rerender 전 호출 기록을 clear해
+      // "교체 직후에는 추가 호출이 없다"만 검증한다.
+      mockSetLastNotifiedStationId.mockClear();
       rerender({ dest: altDestination });
       await Promise.resolve();
       await Promise.resolve();
 
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
   });
@@ -3631,8 +3589,7 @@ describe('useStationAlarm', () => {
           candidateIndex: 4,
         });
       });
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('22:31 회귀 차단 — currentHopIndex=0 + nearestStation=arc[6] (+6 hop 미래) → fast-path suppressed', async () => {
@@ -3658,8 +3615,7 @@ describe('useStationAlarm', () => {
           candidateIndex: 6,
         });
       });
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('정상 case — currentHopIndex=3 + nearestStation=arc[3] (동일 hop) → fast-path fire (정상 동작 보존)', async () => {
@@ -3677,12 +3633,12 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      // #1515 — cross-category dedup으로 GPS path/fast-path 중 먼저 reservation 점유한 쪽만 발사.
-      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
-      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
-        expect.stringMatching(/^fg(-arvlcd)?$/),
-        arcLine2[3],
+      // #1515 — cross-category dedup으로 GPS path/fast-path 중 먼저 reservation 점유한 쪽만
+      // dedup bookkeeping 완료. #2064 — 로컬 알림(logFiredStationPassed)은 제거되어 미호출.
+      await waitFor(() =>
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, arcLine2[3].id),
       );
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
     });
 
@@ -3707,12 +3663,12 @@ describe('useStationAlarm', () => {
           stationName: arcLine2[0].name,
         });
       });
-      // 게이트 미적용이므로 정상 발사. #1515 — GPS path/fast-path 중 reservation을 먼저 잡은 쪽만 fire.
-      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
-      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
-        expect.stringMatching(/^fg(-arvlcd)?$/),
-        arcLine2[0],
+      // 게이트 미적용이므로 정상 감지. #1515 — GPS path/fast-path 중 reservation을 먼저 잡은 쪽만
+      // dedup bookkeeping 완료. #2064 — 로컬 알림은 제거되어 미호출.
+      await waitFor(() =>
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, arcLine2[0].id),
       );
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
     });
 
     it('#1806 fast-path 60s dedup — no-source가 60s 내 재발사 시 두 번째 적재 skip', async () => {
@@ -3784,12 +3740,12 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      // #1515 — GPS path/fast-path 중 reservation을 먼저 잡은 쪽만 fire.
-      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
-      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
-        expect.stringMatching(/^fg(-arvlcd)?$/),
-        arcLine2[0],
+      // #1515 — GPS path/fast-path 중 reservation을 먼저 잡은 쪽만 dedup bookkeeping 완료.
+      // #2064 — 로컬 알림은 제거되어 미호출.
+      await waitFor(() =>
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, arcLine2[0].id),
       );
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindowNoSource).not.toHaveBeenCalled();
     });
@@ -4025,9 +3981,11 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
     });
 
@@ -4059,9 +4017,11 @@ describe('useStationAlarm', () => {
         });
       });
       // 게이트 미적용이므로 알람은 정상 발사된다.
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('arcStations 빈 배열 → 게이트 자체 미적용 (기존 동작 보존)', async () => {
@@ -4085,9 +4045,11 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindowNoSource).not.toHaveBeenCalled();
     });
@@ -4118,9 +4080,11 @@ describe('useStationAlarm', () => {
         expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalled();
       });
       // 게이트 미적용 → 알람 정상 발사.
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
     it('#1806 60s dedup — no-source가 60s 내 재발사 시 두 번째 적재 skip', async () => {
@@ -4188,9 +4152,11 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
     });
 
@@ -4272,9 +4238,11 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
     });
 
@@ -4395,9 +4363,11 @@ describe('useStationAlarm', () => {
         ),
       );
       // strategy 미전달은 live-position 아니므로 M3 게이트 통과 → M1 확장 적용 → 통과.
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
     });
 
@@ -4698,7 +4668,9 @@ describe('useStationAlarm', () => {
         // lock-origin guard는 sleep gate보다 위에 있어 sleep stamp는 발생하지 않음.
         expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
       } else {
-        await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+        // #2064 — station-passed 감지 성공은 dedup bookkeeping으로 검증(로컬 알림 미발사).
+        await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+        expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
         expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
         expect(mockLogSuppressedPassedEventOnLockOrigin).not.toHaveBeenCalled();
       }
@@ -4733,10 +4705,7 @@ describe('useStationAlarm', () => {
           const calls = mockLogSuppressedPassedEventOnLockOrigin.mock.calls;
           expect(calls.some((c) => c[0]?.source === 'fg-arvlcd')).toBe(true);
         });
-        const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter(
-          (c) => c[0] === 'fg-arvlcd',
-        );
-        expect(arvlCdFires).toHaveLength(0);
+        expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
         expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
         // lock-origin guard가 sleep gate보다 위에 있어 sleep stamp는 발생하지 않음.
         expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
@@ -4801,7 +4770,9 @@ describe('useStationAlarm', () => {
 
       renderHook(() => useStationAlarm(subsurfaceInputs()));
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       // GPS phase 알람은 accuracyMeters=500으로 차단
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
@@ -4926,7 +4897,9 @@ describe('useStationAlarm', () => {
           useStationAlarm(subsurfaceInputs({ destination: dest })),
         { initialProps: { dest: destination } },
       );
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
 
       // 2) destination 교체 → hydration 리셋(pre-hydrate). pending getFiredAlarms로 ready 미진입.
       mockGetFiredAlarms.mockReturnValue(new Promise(() => {}));
@@ -5039,7 +5012,9 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedSsotFireGate).not.toHaveBeenCalled();
     });
 
@@ -5204,8 +5179,7 @@ describe('useStationAlarm', () => {
       for (let i = 0; i < 12; i++) await Promise.resolve();
 
       // arvlCd fast-path silent — dispatch X
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('Path C (subsurface) evaluateSsotFireGate pending 중 unmount → cancelled guard (line 1245)', async () => {
@@ -5305,7 +5279,10 @@ describe('useStationAlarm', () => {
       mockEvaluateSsotFireGate.mockResolvedValue({ blocked: false, reason: 'mirror-missing' as const });
     });
 
-    it('3개 역 순차 통과 → sendStationPassedNotification 정확히 3회', async () => {
+    // #2064 (Phase 1-device) — 로컬 알림(sendStationPassedNotification) 제거로 순차 통과 카운트
+    // 검증은 dedup bookkeeping(setLastNotifiedStationId) 호출 횟수로 대체한다. N개 역 순차 감지가
+    // 정확히 N회 bookkeeping을 수행하고(누락 없음) 초과 호출이 없음(spam 없음)을 그대로 보존한다.
+    it('3개 역 순차 통과 → setLastNotifiedStationId 정확히 3회 (알림은 항상 미발사)', async () => {
       const route = makeDirectRoute(3, '2');
       const nextTarget = {
         nextStationName: '강남',
@@ -5325,16 +5302,17 @@ describe('useStationAlarm', () => {
           useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
         { initialProps: { s: stations[0] } },
       );
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1));
 
       rerender({ s: stations[1] });
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(2));
 
       rerender({ s: stations[2] });
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(3));
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(3));
 
-      // 정확히 3회 — 초과 없음 (X4 spam 보조 검증).
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(3);
+      // 정확히 3회 — 초과 없음 (X4 spam 보조 검증). 로컬 알림은 한 번도 발사되지 않는다.
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(3);
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -5445,7 +5423,9 @@ describe('useStationAlarm', () => {
         ),
       );
       // station-passed는 별도 effect — 시간 적분 게이트 영향 없이 발화.
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       // phase alarm은 차단.
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
@@ -5591,7 +5571,9 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
     });
 
@@ -5923,7 +5905,9 @@ describe('useStationAlarm', () => {
       );
 
       // speed=0인데도 station-passed 알람 발사 — flag ON 이면 movement gate 미적용.
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'movement-static-speed' }),
       );

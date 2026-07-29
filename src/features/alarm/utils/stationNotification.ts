@@ -13,7 +13,6 @@ import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../../shared/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
-import type { NextTarget } from './stationPipeline';
 import type { TripEndedReason } from '../tasks/silentPushTask';
 import * as LiveActivity from 'live-activity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -484,46 +483,6 @@ export async function clearStationNotification(): Promise<void> {
   notifLogger.info('Android 알림 해제');
   await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
   await dismissStationPassedNotification();
-}
-
-export async function sendStationPassedNotification(
-  stationName: string,
-  destinationName: string,
-  target: NextTarget | null,
-  source?: NotificationSource,
-): Promise<void> {
-  // 사용자 노출 텍스트이므로 현재 언어로 변환. caller는 한글 역명을 그대로 전달.
-  const displayStation = getStationDisplayNameByName(stationName, allStations);
-  const displayDestination = getStationDisplayNameByName(destinationName, allStations);
-  let body: string;
-  if (target == null) {
-    body = i18next.t('route.atCurrentStation', { name: displayStation });
-  } else if (target.isTransfer) {
-    body = i18next.t('route.stopsRemainingViaTransfer', {
-      transfer: getStationDisplayNameByName(target.nextStationName, allStations),
-      transferStops: target.stopsToNextStation,
-      destination: displayDestination,
-      totalStops: target.stopsToDestination,
-    });
-  } else {
-    body = i18next.t('route.stopsRemainingToDestination', {
-      destination: displayDestination,
-      count: target.stopsToDestination,
-    });
-  }
-  body = appendNotificationSource(body, source);
-
-  // #1224 — 매역 알림은 잠을 깨우지 말 것: 진동 0 / 사운드 0 / 배너만
-  await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
-    title: i18next.t('route.stationPassed', { name: displayStation }),
-    body,
-    sound: false,
-    ...(Platform.OS === 'android' && {
-      channelId: STATION_PASSED_CHANNEL_ID,
-      priority: Notifications.AndroidNotificationPriority.DEFAULT,
-    }),
-  });
-  notifLogger.info('역 통과 알림:', stationName, body);
 }
 
 /**
