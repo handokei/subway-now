@@ -109,8 +109,10 @@ import {
   readJitterSamples,
   resetJitterSamples,
   shouldEmitHeartbeat,
+  shouldSampleJitterTick,
   stampHeartbeat,
 } from './cronJitterAggregate';
+import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -799,6 +801,14 @@ export interface ScheduledStats extends LiveActivityStats {
     noGps: number;
     stationUnknown: number;
   };
+  /**
+   * #2073 (Issue A) — 이번 tick에 pending/retry push entry가 존재할 가능성이 있는지.
+   * `병합 listTrips 결과가 비어있음 AND 직전 tick 근방 fire/retry 기록 없음`일 때만 false —
+   * 그 외(활성 trip 존재 또는 최근 활동 marker 有)엔 true(보수적 기본값). `index.ts`의
+   * scheduled handler가 이 값으로 `runFallbackPushes`/`runRetryPushes` 호출 여부를 게이트해
+   * 진짜 idle tick의 KV list/write를 0으로 줄인다 (cron KV quota audit, 2026-07-29).
+   */
+  pendingActivityPossible: boolean;
 }
 
 /**
@@ -835,9 +845,11 @@ export interface ScheduledDeps {
 /**
  * #1614 Phase A — 활성 trip의 line union 수집.
  *
- * 다음 메인 루프와 같은 `listTrips`를 한 번 더 iterate해 route + waypoints의 모든 line을
- * `computeAllowedLines`로 union. 환승 route는 fromLine/toLine 모두 포함되므로 leg마다 별도 fetch
- * 필요 없이 한 cron tick에 trip이 다닐 수 있는 모든 line이 stamp된다.
+ * #2073 (Issue B) — 이전엔 `listTrips`를 별도로 한 번 더 iterate했으나(3중 listTrips 호출의
+ * 한 축), `runScheduled`가 1회 병합 list한 `trips` 배열을 그대로 받아 순회하는 순수 함수로
+ * 전환했다. route + waypoints의 모든 line을 `computeAllowedLines`로 union — 환승 route는
+ * fromLine/toLine 모두 포함되므로 leg마다 별도 fetch 없이 한 cron tick에 trip이 다닐 수 있는
+ * 모든 line이 stamp된다.
  *
  * `expiresAt` 만료 trip은 skip — 메인 루프의 cleanup 분기가 어차피 처리하므로 self-poll 대상 X.
  * `alarmAtEpochMs - now > POLLING_WINDOW_MS`(아직 알람 윈도우 진입 전) trip은 포함 — 미리 line의
@@ -848,9 +860,9 @@ export interface ScheduledDeps {
  *   - force-end(9h+): cleanupTripWithLa로 cleanup → 다음 cycle에 line union에서 자연 빠짐
  *   둘 다 Seoul 호출을 미리 줄여 quota 절감 + cron throughput 보호.
  */
-async function collectActiveLines(env: Env, now: number): Promise<Set<LineNumber>> {
+function collectActiveLines(trips: readonly Trip[], now: number): Set<LineNumber> {
   const lines = new Set<LineNumber>();
-  for await (const trip of listTrips(env.TRIPS)) {
+  for (const trip of trips) {
     if (trip.expiresAt <= now) continue;
     if (tripLifecyclePhase(trip, now) !== 'normal') continue;
     for (const line of computeAllowedLines(trip.route, trip.waypoints)) {
@@ -863,15 +875,18 @@ async function collectActiveLines(env: Env, now: number): Promise<Set<LineNumber
 /**
  * #1828 Phase 5 — 활성 trip route의 다음 N개 역 name union 수집.
  *
+ * #2073 (Issue B) — `collectActiveLines`와 동일하게 병합된 `trips` 배열을 순회하는 순수
+ * 함수로 전환 (기존 별도 listTrips iterate 제거).
+ *
  * `trip.waypoints`는 이미 shift된 잔여 waypoints 배열 — 맨 앞이 다음 알람 대상 역.
  * 각 trip에서 `N_STATION_LOOKAHEAD`개(최대)를 추출해 union dedup. 같은 역을 여러 trip이
  * 공유해도 Set으로 자연 dedup — Seoul fetchArrivals 중복 호출 방지.
  *
  * #1652 line-union과 동일 필터 — 만료 / lifecycle-abnormal trip은 skip.
  */
-async function collectActiveStations(env: Env, now: number): Promise<Set<string>> {
+function collectActiveStations(trips: readonly Trip[], now: number): Set<string> {
   const stations = new Set<string>();
-  for await (const trip of listTrips(env.TRIPS)) {
+  for (const trip of trips) {
     if (trip.expiresAt <= now) continue;
     if (tripLifecyclePhase(trip, now) !== 'normal') continue;
     for (const waypoint of trip.waypoints.slice(0, N_STATION_LOOKAHEAD)) {
@@ -963,23 +978,48 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       noGps: 0,
       stationUnknown: 0,
     },
+    // #2073 (Issue A) — 아래 idle 판정 이후 실제 값으로 덮어쓴다. 기본 true = 보수적(항상 실행).
+    pendingActivityPossible: true,
   };
+
+  // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
+  // 1회 병합. 전체 trip을 배열로 확보해 아래 파생 함수 + main loop가 모두 이 배열을 재사용한다.
+  // 감축: list 5→3/tick, 활성 시 trip get 3N→N.
+  const trips: Trip[] = [];
+  for await (const trip of listTrips(env.TRIPS)) {
+    trips.push(trip);
+  }
+
+  // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
+  // 없으면 pending/retry push가 존재할 수 없다(모든 fire 경로가 trip 기반이므로 trip 부재 tick엔
+  // 새 entry가 생기지 않는다). 이 tick엔 index.ts가 runFallbackPushes/runRetryPushes를 skip한다.
+  const activityRecent = await readPushActivityRecent(env.TRIPS);
+  const idle = trips.length === 0 && !activityRecent;
+  stats.pendingActivityPossible = !idle;
+  if (trips.length > 0) {
+    // 다음 tick(들)의 idle 판정이 이번 활성 tick을 근방 활동으로 인지하도록 marker 갱신.
+    await stampPushActivity(env.TRIPS, now);
+  }
+
   // #2054 — jitter raw log 제거. spike 임계 초과 시만 즉시 로그, 정상 값은 KV samples append 후
   // heartbeat 시 P50/P99 산출. Cloudflare Workers Logs cap(2000 events / cycle 5 로그) 소진 방지.
+  // #2073 (Issue A+D) — idle tick은 write 0 목표라 append 자체를 skip. 활성 tick도
+  // JITTER_SAMPLE_EVERY_N_TICKS(10)당 1회로 샘플링해 write 1,440→144/일로 절감.
   if (stats.cronJitterMs > JITTER_SPIKE_THRESHOLD_MS) {
     log('scheduled: cron jitter spike', {
       jitterMs: stats.cronJitterMs,
       thresholdMs: JITTER_SPIKE_THRESHOLD_MS,
     });
-  } else {
+  } else if (!idle && shouldSampleJitterTick(now, CRON_NOMINAL_INTERVAL_MS)) {
     await appendJitterSample(env.TRIPS, stats.cronJitterMs);
   }
 
   // #1614 Phase A (S4 #1537) — 활성 trip line union 추출 + Seoul realtimePosition 전수 self-poll.
-  // 1차 iterate: 활성 trip의 route + waypoints에서 line set 수집 (computeAllowedLines 활용 — 환승
-  // route는 transfers의 fromLine/toLine 모두 포함). 2차 iterate(아래 메인 루프)는 그대로 폴링 ·
-  // push 발사 흐름 유지. KV stamp는 advanceTripPosition site들이 lock.trainCode cross-match에 사용.
-  const activeLines = await collectActiveLines(env, now);
+  // #2073 (Issue B) — 위에서 병합한 `trips` 배열에서 파생(순수 함수, KV 재호출 없음). 폴링 ·
+  // push 발사 흐름은 그대로 유지. KV stamp는 advanceTripPosition site들이 lock.trainCode
+  // cross-match에 사용. idle tick은 trips가 비어 있어 아래 두 collect가 empty Set을 반환하고
+  // pollLinesAndStamp/pollStationsAndStamp는 empty set에서 자연히 KV 호출 없이 조기 반환한다.
+  const activeLines = collectActiveLines(trips, now);
   const selfPollStats = await pollLinesAndStamp(env.TRIPS, deps.seoul, activeLines, now);
   stats.realtimePositionFetch += selfPollStats.fetched;
   stats.selfPollCacheHit += selfPollStats.cacheHit;
@@ -996,7 +1036,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // #1828 Phase 5 — 활성 trip route 다음 N개 역 union 추출 + Seoul fetchArrivals station-level stamp.
   // line-unit polling(max 100 trains/call) 대신 station-unit(max 10 arrivals/call)으로 전환.
   // route bound 폴링으로 trip 무관 trains candidate-reject 감소 (Day 2 evidence: 53건/시간).
-  const activeStations = await collectActiveStations(env, now);
+  const activeStations = collectActiveStations(trips, now);
   const stationPollStats = await pollStationsAndStamp(env.TRIPS, deps.seoul, activeStations, now);
   stats.stationPollFetch += stationPollStats.fetched;
   stats.stationPollCacheHit += stationPollStats.cacheHit;
@@ -1010,7 +1050,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     });
   }
 
-  for await (const trip of listTrips(env.TRIPS)) {
+  // #2073 (Issue B) — 병합된 trips 배열 순회(3번째이자 마지막 listTrips 소비). 로직은 기존과
+  // 동일 — dedup/advance/fire semantics 변경 없음.
+  for (const trip of trips) {
     stats.scanned += 1;
 
     if (trip.expiresAt <= now) {

@@ -117,6 +117,13 @@ describe('SELF_POLL_TTL_SEC', () => {
     // KV_MIN_CACHE_TTL_SEC=30 [[lesson_cron_cachettl_runtime_constraint]]
     expect(SELF_POLL_TTL_SEC).toBeGreaterThanOrEqual(30);
   });
+
+  it('#2073 (Issue TTL) — exceeds cron nominal interval (60s) so a stamp survives into the next tick', () => {
+    // 30s < 60s cron 주기라 매 tick 강제 재fetch/재write 를 유발하던 회귀(#2073) 방지.
+    const CRON_NOMINAL_INTERVAL_SEC = 60;
+    expect(SELF_POLL_TTL_SEC).toBeGreaterThan(CRON_NOMINAL_INTERVAL_SEC);
+    expect(SELF_POLL_TTL_SEC).toBe(90);
+  });
 });
 
 describe('readSelfPollPosition / writeSelfPollPosition round-trip', () => {
@@ -141,13 +148,12 @@ describe('readSelfPollPosition / writeSelfPollPosition round-trip', () => {
     expect(await readSelfPollPosition(kv as unknown as KVNamespace, '7')).toBeNull();
   });
 
-  it('writes with 30s expirationTtl', async () => {
+  it('writes with SELF_POLL_TTL_SEC (90s) expirationTtl', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
     await writeSelfPollPosition(kv, '7', [makePosition()], NOW);
     const entry = (kv as unknown as InMemoryKV).store.get(selfPollKey('7'));
     expect(entry?.expiresAt).toBeDefined();
-    // TTL 30s minimum.
-    expect(entry!.expiresAt! - Date.now()).toBeGreaterThan(25 * 1000);
+    expect(entry!.expiresAt! - Date.now()).toBeGreaterThan(85 * 1000);
   });
 });
 
@@ -173,12 +179,12 @@ describe('readSelfPollStationArrivals / writeSelfPollStationArrivals round-trip 
     expect(await readSelfPollStationArrivals(kv as unknown as KVNamespace, '신도림')).toBeNull();
   });
 
-  it('writes with 30s expirationTtl', async () => {
+  it('writes with SELF_POLL_TTL_SEC (90s) expirationTtl', async () => {
     const kv = new InMemoryKV() as unknown as KVNamespace;
     await writeSelfPollStationArrivals(kv, '신도림', [makeArrival()], NOW);
     const entry = (kv as unknown as InMemoryKV).store.get(selfPollStationKey('신도림'));
     expect(entry?.expiresAt).toBeDefined();
-    expect(entry!.expiresAt! - Date.now()).toBeGreaterThan(25 * 1000);
+    expect(entry!.expiresAt! - Date.now()).toBeGreaterThan(85 * 1000);
   });
 
   it('stamps empty arrivals gracefully (fallback path)', async () => {
@@ -284,6 +290,44 @@ describe('pollLinesAndStamp', () => {
     expect(stats.error).toBe(1);
     expect(stats.fetched).toBe(0);
     spy.mockRestore();
+  });
+
+  it('#2073 (Issue TTL) — re-received (within TTL) tick performs 0 KV puts', async () => {
+    // InMemoryKV expiry is wall-clock based — fake timers required to simulate tick spacing.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(NOW);
+      const kv = new InMemoryKV() as unknown as KVNamespace;
+      const seoul = makeSeoulClient({ positions: [makePosition()] });
+      await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
+      // Next cron tick (60s later) — well within SELF_POLL_TTL_SEC(90s), so entry is still alive:
+      // existing !== null → cache-hit → fetch and put both skipped (0 writes this tick).
+      vi.setSystemTime(NOW + 60_000);
+      const putSpy = vi.spyOn(kv, 'put');
+      const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 60_000);
+      expect(putSpy).not.toHaveBeenCalled();
+      expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('#2073 (Issue TTL) — tick after TTL expiry re-fetches and puts exactly once', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(NOW);
+      const kv = new InMemoryKV() as unknown as KVNamespace;
+      const seoul = makeSeoulClient({ positions: [makePosition()] });
+      await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
+      // 91s later — past SELF_POLL_TTL_SEC(90s), entry naturally expired → cache-miss → 1 put.
+      vi.setSystemTime(NOW + 91_000);
+      const putSpy = vi.spyOn(kv, 'put');
+      const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 91_000);
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(stats.fetched).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

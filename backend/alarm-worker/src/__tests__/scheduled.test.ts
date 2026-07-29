@@ -52,6 +52,8 @@ import {
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTtl';
+import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
+import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip } from '../trips';
 import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
@@ -172,6 +174,8 @@ function makeFullEmptyStats(): ScheduledStats {
       noGps: 0,
       stationUnknown: 0,
     },
+    // #2073 (Issue A) — pending/retry push 존재 가능성 게이트. 기본 true(보수적).
+    pendingActivityPossible: true,
   };
 }
 
@@ -8805,6 +8809,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
         noGps: 0,
         stationUnknown: 0,
       },
+      // #2073 (Issue A) — pending/retry push 존재 가능성 게이트. 기본 true(보수적).
+      pendingActivityPossible: true,
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,
@@ -9567,6 +9573,166 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     // 기존 legKey 는 유지, 새 legKey (`성수|5`) 는 신규 fired.
     expect(trip.hopEndPromptState?.['성수|K']?.fired).toBe(true);
     expect(trip.hopEndPromptState?.['성수|5']?.fired).toBe(true);
+  });
+});
+
+/**
+ * #2073 — cron KV quota fix (listTrips 병합 + 진짜 idle skip + jitter 스로틀).
+ *
+ * 2026-07-29 quota audit: 사용자 0명 상태에서도 KV list 720%/write 144% 초과.
+ *   - Issue B: listTrips가 collectActiveLines/collectActiveStations/main loop 각자 호출(3회) →
+ *     `runScheduled` 진입부에서 1회만 list해 배열로 공유.
+ *   - Issue A: #2054 idle-skip은 로그만 억제 — 진짜 idle(trip 0 + 직전 tick 근방 활동 없음)엔
+ *     `pendingActivityPossible=false`로 index.ts가 runFallbackPushes/runRetryPushes를 skip.
+ *   - Issue D: jitter sample write를 10 tick당 1회로 스로틀.
+ */
+describe('runScheduled — #2073 listTrips 병합 (Issue B)', () => {
+  it('활성 trip 1개 — trip: prefix kv.get 호출 횟수가 1회(=N)로 병합된다 (기존 3N 회귀 방지)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    const getSpy = vi.spyOn(kv, 'get');
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const tripGetCalls = getSpy.mock.calls.filter((c) => String(c[0]).startsWith('trip:'));
+    // 병합 전엔 collectActiveLines + collectActiveStations + main loop 각자 listTrips를 순회해
+    // trip 1개당 3회 kv.get('trip:tok')이 발생했다. 병합 후엔 1회.
+    expect(tripGetCalls.length).toBe(1);
+  });
+
+  it('활성 trip 2개 — trip: prefix kv.get 호출 횟수가 2회(=N)로 병합된다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'tok-a' }));
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'tok-b' }));
+    const getSpy = vi.spyOn(kv, 'get');
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const tripGetCalls = getSpy.mock.calls.filter((c) => String(c[0]).startsWith('trip:'));
+    expect(tripGetCalls.length).toBe(2);
+  });
+
+  it('collectActiveLines/collectActiveStations 파생 결과는 병합 전과 동등 — self-poll fetch가 여전히 발생한다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // line union(2호선) + station union(강남) 이 여전히 병합된 trips 배열에서 파생돼
+    // self-poll fetch/stationPollFetch가 발생한다(0이 아님) — collectActiveLines/Stations가
+    // 여전히 정상 동작함을 간접 검증.
+    expect(stats.realtimePositionFetch + stats.selfPollCacheHit).toBeGreaterThan(0);
+    expect(stats.stationPollFetch + stats.stationPollCacheHit).toBeGreaterThan(0);
+  });
+});
+
+describe('runScheduled — #2073 진짜 idle skip 게이트 (Issue A)', () => {
+  it('idle tick(활성 trip 0 + marker 없음) — kv.list 1회, kv.put 0회, pendingActivityPossible=false', async () => {
+    const kv = new InMemoryKV();
+    // heartbeat가 이번 tick에 발화하지 않도록 직전 heartbeat를 미리 stamp(첫 진입 heartbeat put을
+    // "idle write 0" 검증에서 배제 — 이슈 본문도 heartbeat 시간당 1 put은 예외로 명시).
+    await (kv as unknown as KVNamespace).put('scheduled:last-heartbeat', String(NOW));
+    const listSpy = vi.spyOn(kv, 'list');
+    const putSpy = vi.spyOn(kv, 'put');
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.scanned).toBe(0);
+    expect(stats.pendingActivityPossible).toBe(false);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('활성 trip 존재 — pendingActivityPossible=true + activity marker stamp', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pendingActivityPossible).toBe(true);
+    expect(await readPushActivityRecent(kv as unknown as KVNamespace)).toBe(true);
+  });
+
+  it('활성 trip 0이지만 직전 tick 근방 활동 marker 有 — pendingActivityPossible=true (idle 아님)', async () => {
+    const kv = new InMemoryKV();
+    await stampPushActivity(kv as unknown as KVNamespace, NOW - 30_000);
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.scanned).toBe(0);
+    expect(stats.pendingActivityPossible).toBe(true);
+  });
+});
+
+describe('runScheduled — #2073 jitter sample 10 tick당 1회 스로틀 (Issue D)', () => {
+  it('활성 trip 있는 tick도 sample tick이 아니면 jitter sample write를 skip한다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    // tick index 1 (10의 배수가 아님) — CRON_NOMINAL_INTERVAL_MS(60_000) 경계 기준.
+    const nonSampleNow = 60_000 * 1; // tickIndex=1 → 1 % 10 !== 0
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => nonSampleNow,
+    });
+    const samples = await readJitterSamples(kv as unknown as KVNamespace);
+    expect(samples.length).toBe(0);
+  });
+
+  it('sample tick(tick index가 JITTER_SAMPLE_EVERY_N_TICKS의 배수)엔 jitter sample을 write한다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    const sampleNow = 60_000 * JITTER_SAMPLE_EVERY_N_TICKS; // tickIndex=10 → 10 % 10 === 0
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => sampleNow,
+    });
+    const samples = await readJitterSamples(kv as unknown as KVNamespace);
+    expect(samples.length).toBe(1);
+  });
+
+  it('idle tick(활성 trip 없음)은 sample tick이어도 jitter sample write를 skip한다', async () => {
+    const kv = new InMemoryKV();
+    await (kv as unknown as KVNamespace).put('scheduled:last-heartbeat', String(60_000 * JITTER_SAMPLE_EVERY_N_TICKS));
+    const sampleNow = 60_000 * JITTER_SAMPLE_EVERY_N_TICKS;
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => sampleNow,
+    });
+    const samples = await readJitterSamples(kv as unknown as KVNamespace);
+    expect(samples.length).toBe(0);
   });
 });
 
