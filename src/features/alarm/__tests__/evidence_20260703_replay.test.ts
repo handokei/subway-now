@@ -319,9 +319,16 @@ describe('Issue B (#2021) — device lockless-opt-out gate 동작 검증', () =>
     mockRunTripBoundCleanups.mockResolvedValue(undefined);
   });
 
-  it('target payload (boardingLine=undefined) — lockless-opt-out skip 정상 동작', async () => {
-    // Wave 1 완결 후 backend 가 발사할 shape. lock=null + boardingLine=undefined →
-    // silentPushTask 의 lockless-opt-out gate 로 즉시 skip → scheduleNotificationAsync 호출 X.
+  // #2064 (Phase 1-device) — 매역 알림 backend visible push 단일 채널 전환으로 silentPushTask의
+  // fireWithGate(lockless-opt-out 포함 전체 gate 체계)가 제거됐다. transfer/destination/intermediate
+  // kind는 이제 lock 상태·boardingLine 유무와 무관하게 항상 'legacy-station-kind-ignored' no-op으로
+  // 처리된다 — 아래 세 테스트는 이 evidence replay가 여전히 "device 로컬 알림 0건"을 보장하는지
+  // 갱신된 reason으로 재확인한다. fixture 데이터(payload shape) 자체는 evidence 원본 그대로 보존.
+
+  it('target payload (boardingLine=undefined) — device는 로컬 알림 미발사(legacy-station-kind-ignored no-op)', async () => {
+    // Wave 1 완결 후 backend 가 발사할 shape. lock=null + boardingLine=undefined.
+    // #2064 이전: lockless-opt-out gate로 skip. #2064 이후: kind 유무만으로 무조건 no-op skip.
+    // 결과(알림 미발사)는 동일하게 유지 — reason만 새 스펙에 맞게 갱신.
     await handleSilentPush(
       makeBgTaskInput(TARGET_PUSH_STATION_PASSED_SEONGSU_LOCKLESS_OPT_OUT),
     );
@@ -331,23 +338,25 @@ describe('Issue B (#2021) — device lockless-opt-out gate 동작 검증', () =>
     expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
       expect.objectContaining({
         stationName: '성수',
-        reason: 'lockless-opt-out',
+        reason: 'legacy-station-kind-ignored',
       }),
     );
     // ack 는 skip reason 과 함께 (backend pending push cleanup 용).
     expect(mockSendPushAck).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: 'skipped',
-        reason: 'lockless-opt-out',
+        reason: 'legacy-station-kind-ignored',
       }),
     );
   });
 
-  it('destination-early payload — lock=null 상태에서 lockless-opt-out skip (정책 유지)', async () => {
+  it('destination-early payload — lock=null + boardingLine 실린 상태에서도 device는 로컬 알림 미발사 (#2064로 근본 차단)', async () => {
     // REGRESSION_PUSH_DESTINATION_EARLY_SEONGSU: boardingLine='2' 실린 상태.
-    // 하지만 device 는 destination kind 도 lockless-opt-out gate 를 통과해야 함.
-    // 오늘 dump 는 lockless-no-user-intent gate 로 fg-evaluated 에서 suppress → 스팸 반복.
-    // 이 test 는 silent push handler 단일 채널에서 lock=null + destination push 처리 시나리오 검증.
+    // #2064 이전(오늘 evidence): device가 payload.boardingLine을 authoritative로 받아 line guard를
+    // 통과시켜 fire — Issue B의 device-side 증상이었다(재발 재현 대상).
+    // #2064 이후: kind가 destination이면 lock/boardingLine 상태와 무관하게 fireWithGate 자체가
+    // 없으므로 항상 no-op. Issue B의 backend 근본 원인(boardingLine을 실어 보내는 것) 수정 여부와
+    // 무관하게, device 레이어의 증상(로컬 오발사)은 본 PR로 완전히 닫힌다.
     mockFindStationByNameAndLine.mockReturnValue({
       name: '성수',
       line: '2',
@@ -361,27 +370,20 @@ describe('Issue B (#2021) — device lockless-opt-out gate 동작 검증', () =>
 
     await handleSilentPush(makeBgTaskInput(REGRESSION_PUSH_DESTINATION_EARLY_SEONGSU));
 
-    // received 는 log 되지만 fire 되면 안 됨 (실 alarm log 에서는 dismiss-silence 로 suppress).
-    // 이 assertion 은 destination-early 스팸을 device layer 에서 잡는지 확인.
+    // received 는 여전히 log 됨(상태 sync 유지) — 로컬 알림만 발사되지 않는다.
     expect(mockLogSilentPushReceived).toHaveBeenCalled();
-    // lock=null + boardingLine 실린 destination push → device 는 payload.boardingLine 을 authoritative
-    // 로 받아 line guard 통과 → fire 시도. Issue J/K fix 후 backend 가 이 payload 를 발사하지 않게 됨.
-    // 지금은 device 층에서는 skip 하지 않고 통과 → 재발 재현.
-    expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+    expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
+    );
   });
 
-  it('regression payload (boardingLine 실린 상태) — 오늘 evidence 재현. Wave 1 완결 후 skip 이어야 함', async () => {
-    // 오늘 실 backend payload 상태 (Issue B fix 전).
-    // lock=null 인데도 backend 가 boardingLine='2' 를 실은 station-passed push 발사.
-    // 현재 device 코드: payload.boardingLine !== undefined → line guard 통과 → fire 시도.
-    //
-    // 이 test 는 "현재 회귀 재현" 을 assertion. Issue B fix 후 backend 가 boardingLine 을
-    // 실지 않도록 봉인하면 이 payload shape 자체가 발생하지 않게 됨.
-    //
-    // 검증: mockFindStationByNameAndLine 이 lock line ('2') 으로 성수 lookup → non-null 반환
-    // (성수는 실제 2호선 역) → line guard 통과 → intermediate kind → 이후 dismiss silence/location gate
-    // 모두 통과 → 최종 fire.
-    // (실 stations.json 검증은 다른 test 에서 커버 — 여기서는 mock 으로 lookup 성공 시나리오만 재현.)
+  it('regression payload (boardingLine 실린 상태) — 오늘 evidence 였던 fire가 #2064로 원천 차단됨', async () => {
+    // 오늘(evidence 채집 시점) 실 backend payload 상태 (Issue B fix 전, #2064 이전 device 코드).
+    // 당시 device: payload.boardingLine !== undefined → line guard 통과 → fire (`08:37:25 bg fired
+    // station-passed 성수` evidence). #2064로 fireWithGate 자체가 삭제되어 이 payload shape가 오늘도
+    // 재발한다 해도 device는 더 이상 로컬 알림을 발사하지 않는다 — Issue B의 device-side 증상은
+    // backend 근본 수정과 별개로 본 PR로 닫힌다.
     mockFindStationByNameAndLine.mockReturnValue({
       name: '성수',
       line: '2',
@@ -397,9 +399,11 @@ describe('Issue B (#2021) — device lockless-opt-out gate 동작 검증', () =>
       makeBgTaskInput(REGRESSION_PUSH_STATION_PASSED_SEONGSU_WITH_LINE),
     );
 
-    // 오늘 evidence 재현: fire 됨 (`08:37:25 bg fired station-passed 성수`).
-    // Issue B fix 후에는 backend 가 이 payload 를 발사하지 않게 되어 root cause 차단.
-    // 이 assertion 은 "device 는 boardingLine 실린 payload 를 authoritative 로 통과시킴" 을 명시.
+    // #2064 이전 evidence: fire 됨. #2064 이후: 항상 no-op skip.
+    expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
+    );
     expect(mockLogSilentPushSkipped).not.toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'lockless-opt-out' }),
     );

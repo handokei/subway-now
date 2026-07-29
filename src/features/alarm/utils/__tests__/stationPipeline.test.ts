@@ -239,7 +239,13 @@ describe('processLocationUpdate', () => {
     // #796 P1-1: resolveNextTarget도 같은 lock-degraded currentLine을 사용해야 함.
     // BG GPS jitter로 nearest가 옆 노선 station(예: 5호선 군자)을 잡아도 lock(7호선) SSOT로
     // segment 식별하여 다음-다음 transfer로 잘못 넘어가지 않는다.
-    it('#796 P1-1 lock 활성 시 resolveNextTarget의 currentLine도 lock.boardingLine 사용', async () => {
+    //
+    // #2064 (Phase 1-device) — sendStationPassedNotification 제거로 resolveNextTarget의 결과값이
+    // processLocationUpdate 밖으로 더 이상 노출되지 않는다(내부 dedup/hop-advance bookkeeping
+    // gate로만 소비). currentLine 선택 로직(lock.boardingLine 우선) 자체의 정확성은
+    // `resolveNextTarget` 직접 단위 테스트(아래 '#796 currentLine 기반 segment 식별' describe)가
+    // 계속 커버 — 여기서는 lock 활성 시 station-passed dedup bookkeeping이 정상 진행됨을 검증한다.
+    it('#796 P1-1 lock 활성 시에도 station-passed dedup bookkeeping이 정상 진행된다 (target resolve 성공)', async () => {
       // 7→5→8 multi-transfer route. GPS는 5호선 군자 station(line='5')으로 jitter됐지만
       // 실제 사용자는 7호선 탑승 중이라 lock.boardingLine='7'.
       const multiRoute = makeMultiTransferRoute({
@@ -258,14 +264,10 @@ describe('processLocationUpdate', () => {
 
       await call();
 
-      // raw GPS line이라면 transfer[1]=천호로 잘못 넘어갔을 것 (segment[1].fromLine='5'와 매칭).
-      // lock SSOT 적용으로 transfer[0]=군자 안내가 유지된다.
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(String),
-        expect.objectContaining({ nextStationName: '군자', isTransfer: true }),
-        undefined,
-      );
+      // target이 null이었다면(resolveNextTarget 실패) setLastNotifiedStationId가 호출되지 않는다.
+      // lock SSOT currentLine 적용으로 두 segment 중 하나가 정상 매칭돼 target이 resolve된다.
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-2', stationOn5.id);
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -436,19 +438,16 @@ describe('processLocationUpdate', () => {
     expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
   });
 
-  it('sends station-passed notification and writes to notificationState when station changes', async () => {
+  // #2064 (Phase 1-device) — 매역 알림은 backend visible push 단일 채널로 전환. station-passed 감지는
+  // 더 이상 사용자 노출 알림을 발사하지 않고 notificationState(dedup) bookkeeping만 수행한다.
+  it('does not send station-passed notification but still writes to notificationState when station changes', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
     mockGetLastNotifiedStationId.mockResolvedValue('other-station');
 
     await call();
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', {
-      nextStationName: '시청',
-      stopsToNextStation: 3,
-      isTransfer: false,
-      stopsToDestination: 3,
-    }, undefined);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, 'station-1');
   });
 
@@ -463,19 +462,14 @@ describe('processLocationUpdate', () => {
     expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
   });
 
-  it('sends station-passed notification when stored lastNotifiedStationId is null', async () => {
+  it('does not send station-passed notification but writes notificationState when stored lastNotifiedStationId is null', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
     mockGetLastNotifiedStationId.mockResolvedValue(null);
 
     await call();
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', {
-      nextStationName: '시청',
-      stopsToNextStation: 3,
-      isTransfer: false,
-      stopsToDestination: 3,
-    }, undefined);
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, 'station-1');
   });
 
@@ -618,14 +612,17 @@ describe('processLocationUpdate', () => {
       expect(mockLogFiredAlarm).toHaveBeenCalledWith('bg', mockAlarmEvent);
     });
 
-    it('역 통과 알림 발사 시 logFiredStationPassed(source, station)를 호출한다', async () => {
+    // #2064 (Phase 1-device) — station-passed 로컬 알림 제거로 logFiredStationPassed(alarmLog
+    // 'fired' 엔트리) 호출부도 함께 제거됨. dedup bookkeeping(setLastNotifiedStationId)은 유지.
+    it('역 통과 감지 시에도 logFiredStationPassed는 호출하지 않는다 (dedup bookkeeping만 수행)', async () => {
       mockFindNearestStation.mockReturnValue(mockNearestResult);
       mockFindRoute.mockReturnValue(mockRoute);
       mockGetLastNotifiedStationId.mockResolvedValue(null);
 
       await call();
 
-      expect(mockLogFiredStationPassed).toHaveBeenCalledWith('bg', mockStation);
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, mockStation.id);
     });
 
     it('lastNotifiedStationId 일치로 skip되면 logSuppressedDedupStation을 호출한다', async () => {
@@ -711,19 +708,16 @@ describe('processLocationUpdate', () => {
       );
     });
 
-    it('역 통과 알림에도 notificationSource가 전달된다', async () => {
+    // #2064 (Phase 1-device) — station-passed 로컬 알림 제거로 notificationSource 전파 대상도
+    // 사라짐(sendAlarmNotification 경로만 notificationSource를 계속 사용).
+    it('역 통과 감지에는 더 이상 notificationSource가 전달되지 않는다 (알림 자체가 없음)', async () => {
       mockFindNearestStation.mockReturnValue(mockNearestResult);
       mockFindRoute.mockReturnValue(mockRoute);
       mockGetLastNotifiedStationId.mockResolvedValue(null);
 
       await call({ fusionSource: 'route-progress' });
 
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
-        mockStation.name,
-        mockDestination.name,
-        expect.any(Object),
-        'routeProgress',
-      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -879,10 +873,11 @@ describe('processLocationUpdate', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('station-passed 발사 후 같은 station phase 알람은 cross-category dedup으로 차단', async () => {
-      // 1st: station-passed 발사 → mark.
+    it('station-passed 감지 후 같은 station phase 알람은 cross-category dedup으로 차단', async () => {
+      // 1st: station-passed 감지(#2064 — 로컬 알림은 미발사, markStationFired는 계속 mark).
       await call({ source: 'bg' });
-      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, passedStation.id);
 
       // 2nd: phase 알람 같은 station — cross-cat 차단. (다른 destination이라 lastNotifiedStationId
       // 게이트는 다른 키, isStationOnRoute false로 station-passed 분기 회피.)
@@ -916,12 +911,13 @@ describe('processLocationUpdate', () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
     });
 
-    it('station-passed 발사(군자) 후 5s 안 phase 알람(성수=다른 station, cross-cat)은 trip-scoped dedup으로 차단', async () => {
-      // 1st: 군자 station-passed 발사 → trip-scoped mark.
+    it('station-passed 감지(군자) 후 5s 안 phase 알람(성수=다른 station, cross-cat)은 trip-scoped dedup으로 차단', async () => {
+      // 1st: 군자 station-passed 감지 → trip-scoped mark(#2064 — 로컬 알림은 미발사).
       mockFindNearestStation.mockReturnValue({ station: passedStation, distanceKm: 0.05 });
       mockEvaluateAlarmPhase.mockReturnValue(null);
       await call({ source: 'bg' });
-      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, passedStation.id);
 
       // 2nd: 다른 station(성수) phase 알람 — cross-station + cross-cat이라 trip-scoped 차단.
       mockFindNearestStation.mockReturnValue({ station: otherStation, distanceKm: 0.05 });
@@ -1106,13 +1102,14 @@ describe('processLocationUpdate', () => {
       expect(mockLogSuppressedChannelAgnosticDedup).not.toHaveBeenCalled();
     });
 
-    it('station-passed 발사 후 31s~8분 사이 같은 station station-passed는 channel-agnostic backstop으로 차단', async () => {
+    it('station-passed 감지 후 31s~8분 사이 같은 station station-passed는 channel-agnostic backstop으로 차단', async () => {
       mockFindNearestStation.mockReturnValue({ station: stationA, distanceKm: 0.05 });
       mockEvaluateAlarmPhase.mockReturnValue(null);
       mockIsStationOnRoute.mockReturnValue(true);
-      // 1st: station-passed 발사 → markStationFired (t=1_000_000).
+      // 1st: station-passed 감지 → markStationFired (t=1_000_000). #2064 — 로컬 알림은 미발사.
       await call({ source: 'bg' });
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1);
 
       // t = 1_000_000 + 60_000 — 30s cross-category 만료, lastNotifiedStationId가 다른 stationId면
       // 그 dedup도 통과 → channel-agnostic 8분 backstop이 차단해야 함.
@@ -1124,8 +1121,10 @@ describe('processLocationUpdate', () => {
         stationName: stationA.name,
         kind: 'station-passed',
       });
-      // 두 번째 발사 없음.
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      // 알림은 두 호출 모두 미발사(#2064). 2nd call은 backstop 차단으로 setLastNotifiedStationId도
+      // 갱신되지 않는다 — 1st 호출분(1회)만 유지.
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1162,27 +1161,30 @@ describe('processLocationUpdate', () => {
       });
     });
 
-    it('sleep OFF + lock 활성 + candidate=boardingStation → 정상 발사 (sleep off 우선)', async () => {
+    it('sleep OFF + lock 활성 + candidate=boardingStation → 정상 진행 (sleep off 우선, #2064 알림은 미발사)', async () => {
       mockGetBoardingLock.mockResolvedValue(lockOnStation1);
       await call({ sleepMode: false });
-      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
     });
 
-    it('sleep ON + lock 활성 + candidate≠boardingStation → 정상 발사 (첫 hop 아님)', async () => {
+    it('sleep ON + lock 활성 + candidate≠boardingStation → 정상 진행 (첫 hop 아님, #2064 알림은 미발사)', async () => {
       const lockOnOther = { ...lockOnStation1, boardingStationId: 'station-other' };
       mockGetBoardingLock.mockResolvedValue(lockOnOther);
       await call({ sleepMode: true });
-      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
     });
 
-    it('sleep ON + lock null (lockless) → BG는 currentHopIndex SSOT 부재라 graceful 통과', async () => {
+    it('sleep ON + lock null (lockless) → BG는 currentHopIndex SSOT 부재라 graceful 통과 (#2064 알림은 미발사)', async () => {
       // BG path는 estimator hopIndex 입력이 없어 lockless trip을 차단하지 않는다(보수적 graceful).
       // FG path가 currentHopIndex로 동급 보장(useStationAlarm 테스트에서 검증).
       mockGetBoardingLock.mockResolvedValue(null);
       await call({ sleepMode: true });
-      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
       expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
     });
 

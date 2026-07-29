@@ -15,12 +15,12 @@
  * data: { nextWaypoint, etaSeconds, phase, kind, sentAt }
  * ```
  *
- * 동작 (#478 PR 1-2 — 사전예약 완전 폐기):
+ * 동작 (#2064 Phase 1-device — 매역 알림 backend visible push 단일 채널 전환):
  *   1. payload 검증 + 수신 로그 적재 (#478 측정 인프라)
- *   2. 위치 게이트(`silentPushLocationGate`) 통과 여부 확인
- *      - 통과: trigger:null 즉시 알림 발사 + FIRED_ALARMS dedup 갱신 + logSilentPushFired
- *      - 실패: logSilentPushSkipped(reason)
- *   3. 사전예약(scheduleAlarmsForRoute) 호출 없음
+ *   2. kind(transfer/destination/intermediate)는 device 로컬 알림을 발사하지 않는다.
+ *      logSilentPushSkipped(reason='legacy-station-kind-ignored') 적재 후 no-op.
+ *   3. boarding-prompt / sleep-transfer-alarm 등 별도 discriminator 채널은 기존대로 gate 무관 발사.
+ *   4. 상태 sync(lock-release/widget/LA refresh)는 kind 무관 항상 수행.
  */
 
 import * as Notifications from 'expo-notifications';
@@ -51,17 +51,12 @@ import {
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
   logSilentPushTripEndedReceived,
-  logSilentPushFired,
   logSilentPushSkipped,
   logSleepTransferAlarmFired,
   logSuppressedChannelAgnosticDedup,
   type AlarmLogReason,
 } from '../utils/alarmLog';
 import { vibrateAlarm } from '../utils/alarmSound';
-import {
-  isAnyChannelRecentlyFired,
-  markStationFired,
-} from '../utils/crossCategoryStationDedup';
 import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import {
   setTripEndedSentinel,
@@ -71,16 +66,7 @@ import { setLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
-import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
-import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
-import { evaluateSsotFireGate } from '../utils/ssotFireGate';
-import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
-import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
 import { addFiredPushId, hasFiredPushId } from '../utils/firedPushIds';
-import {
-  checkSilentPushLocationGate,
-  type GateSkipReason,
-} from '../utils/silentPushLocationGate';
 import {
   rescheduleHopForLock,
   cancelBlByStationPhase,
@@ -92,24 +78,15 @@ import {
 import { ALARM_PHASES } from '../utils/alarmPhases';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
-import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
-import { buildAlarmContent, sendTripEndedNotification } from '../utils/stationNotification';
+import { sendTripEndedNotification } from '../utils/stationNotification';
 import { BOARDING_PROMPT_CATEGORY } from '../utils/notificationCategory';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
 import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
-import { type NotificationSource } from '../utils/notificationSource';
-import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
-import { getSubsurfaceState } from '../../../shared/utils/subsurfaceState';
-import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
-
-// silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
-// 향후 GPS 게이트 경로 등 다른 출처가 생기면 인자화 한다.
-const SILENT_PUSH_SOURCE: NotificationSource = 'positionTrain';
 
 const logger = createLogger('SilentPushTask');
 
@@ -185,17 +162,14 @@ export interface SilentPushPayload {
   hopIndex?: number;
   /**
    * #1307 — 발사 시점 trip의 지하(subsurface) 판정. server-authoritative.
-   * 위치 게이트는 이 server flag를 우선하고, 부재 시 디바이스 로컬 stamp
-   * (`getSubsurfaceState`)로 fallback한다. true + intermediate면 GPS 거리 검증을 우회해
-   * 지하 stale/spoof GPS로 인한 out-of-range 오거부를 막는다. 구 backend 호환 위해 optional.
+   * #2064 (Phase 1-device) — 이 필드를 소비하던 device 위치 게이트(`fireWithGate`)가 매역
+   * 알림 backend visible push 전환으로 제거됨. 구 backend 호환을 위한 payload schema만 유지.
    */
   subsurface?: boolean;
   /**
    * #1322 — backend lock-path fire가 실어 보내는 boardingLock 노선 (server-authoritative).
-   * 로컬 lock이 없을 때(지하 auto-lock hydration window) 이 line으로 sanity-guard를 돌려
-   * non-intermediate push도 발사한다 (`fireWithGate`). backend가 선택해 발사한 push이므로
-   * authoritative — 디바이스는 자체 lock 없이도 honor한다. 구 backend 호환 위해 optional —
-   * 누락 시 기존 보수 동작(lock 없으면 non-intermediate skip)으로 fallback.
+   * #2064 (Phase 1-device) — 이 필드를 소비하던 device line sanity-guard(`fireWithGate`)가
+   * 매역 알림 backend visible push 전환으로 제거됨. 구 backend 호환을 위한 payload schema만 유지.
    */
   boardingLine?: string;
   /**
@@ -683,8 +657,7 @@ function validTripToken(value: unknown): string | undefined {
 
 /**
  * #1322 — payload.boardingLine 검증. 비어있지 않은 string만 통과 (LineNumber 표기).
- * backend는 lock-path fire에서만 wire하므로 누락/형식 오류는 undefined로 정규화 →
- * `fireWithGate`가 lock 없을 때 기존 보수 동작(non-intermediate skip)으로 fallback.
+ * #2064 (Phase 1-device) — 소비하던 device 게이트(`fireWithGate`) 제거됨. schema 파싱만 유지.
  */
 function validBoardingLine(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -901,38 +874,6 @@ function validSentAt(sentAt: unknown): number | undefined {
 
 function validPushId(pushId: unknown): string | undefined {
   return typeof pushId === 'string' && pushId.length > 0 ? pushId : undefined;
-}
-
-/**
- * 게이트 skip reason → alarmLog reason 매핑.
- * 1:1 매핑 — 다른 곳에서 재사용하지 않으므로 silentPushTask 내부에 둔다.
- */
-function mapGateReason(reason: GateSkipReason): AlarmLogReason {
-  switch (reason) {
-    case 'unknown-station':
-      return 'gate-unknown-station';
-    case 'no-location':
-      return 'gate-no-location';
-    case 'stale-location':
-      return 'gate-stale-location';
-    case 'out-of-range':
-      return 'gate-out-of-range';
-    case 'line-mismatch':
-      return 'gate-line-mismatch';
-  }
-}
-
-/**
- * intermediate(중간역 통과) 알림 content. AlarmEvent 모델에 없는 종류라
- * buildAlarmContent를 못 쓰고 별도 i18n 키로 빌드한다.
- */
-function buildIntermediateContent(stationName: string): { title: string; body: string } {
-  // SILENT_PUSH_SOURCE=positionTrain은 #327 UX 정책상 자백 대상이 아님 → suffix 미부착.
-  // shouldDiscloseNotificationSource이 false라 라벨 노이즈 회피.
-  return {
-    title: i18next.t('route.intermediatePassedTitle'),
-    body: i18next.t('route.intermediatePassedBody', { name: stationName }),
-  };
 }
 
 /**
@@ -1270,14 +1211,20 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
 
-    try {
-      await fireWithGate(
-        payload as Required<Pick<SilentPushPayload, 'kind'>> & SilentPushPayload,
-        apnsToken,
-      );
-    } catch (e) {
-      logger.error('silent push fire 실패:', e);
-    }
+    // #2064 (Phase 1-device) — 매역 알림 backend visible push 전환. transfer/destination/
+    // intermediate kind는 더 이상 device가 로컬 알림을 발사하지 않는다(이중 발사 제거).
+    // 수신 자체는 유지(위 logSilentPushReceived + finally의 LA/widget refresh)해 상태 sync는
+    // 그대로 동작한다. 전환기 구버전 backend가 여전히 이 kind를 보내는 경우를 대비한 no-op.
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
+      phaseId: payload.phase,
+      reason: 'legacy-station-kind-ignored',
+    });
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'legacy-station-kind-ignored');
+    logger.info(
+      `legacy station kind ignored: kind=${payload.kind} station=${payload.nextWaypoint}`,
+    );
   } finally {
     // #900 Seam D — 권한 무관 LA refresh. 모든 silent push 종료 경로(정상/early-return/error)
     // 끝에서 한 번 호출. **순서 중요**: flushAlarmLog 먼저 await — 지하 환경에서 native LA
@@ -1684,338 +1631,6 @@ async function fireSleepTransferAlarmLocalNotification(
   }
 }
 
-/**
- * 위치 게이트 통과 시 즉시 발사, 실패 시 logSilentPushSkipped.
- * kind/dedup/i18n을 한 곳에서 처리.
- */
-async function fireWithGate(
-  payload: SilentPushPayload & { kind: NonNullable<SilentPushPayload['kind']> },
-  apnsToken: string | null,
-): Promise<void> {
-  // #1399 — 좀비 알림 cleanup. backend가 push 발사 시점에 stamp한 active trip token이 device의
-  // ACTIVE_TRIP_KEY와 mismatch면 만료 token push로 판정해 drop. 시나리오: backend vanish + GPS
-  // 동결 + 트립 종료 → 종료 push 도착 → device cleanup → 지상 재진입 후 OS queue/네트워크에 잔존
-  // 하던 stale silent push가 늦게 도착해도 ACTIVE_TRIP_KEY가 null 또는 다른 token이면 발사 차단
-  // (S8 14:19 회귀). 구 backend(payload.tripToken 누락) 호환 — undefined면 가드 skip.
-  if (payload.tripToken !== undefined) {
-    const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
-    if (activeTripToken === null || activeTripToken !== payload.tripToken) {
-      const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-      logSilentPushSkipped({
-        stationName: payload.nextWaypoint,
-        kind: logKind,
-        phaseId: payload.phase,
-        reason: 'trip-token-mismatch',
-      });
-      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'trip-token-mismatch');
-      logger.info(
-        `trip-token mismatch skip: payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken?.slice(0, 8) ?? 'null'} station=${payload.nextWaypoint}`,
-      );
-      return;
-    }
-  }
-
-  // #707/#1322: line sanity-guard. nextWaypoint가 boarding 노선에 정차하는지 검증한다.
-  // 노선 출처는 (1) 로컬 BoardingLock, 또는 (2) #1322 — backend lock-path fire가 실어 보낸
-  // payload.boardingLine (지하 auto-lock hydration window 등으로 로컬 lock이 없는 경우).
-  // 환승역 등에서 같은 nextWaypoint name이 여러 line stop을 가질 수 있다 — stations.json 매칭으로
-  // 다른 line stop만 존재하면 다른 leg/노선의 silent push로 판정해 차단.
-  // station name 자체가 stations.json에 없으면 line 가드는 통과시키고 일반 게이트의 unknown-station로 위임.
-  const lock = await getBoardingLock();
-  // guardLine 출처가 로컬 lock(LineNumber)이거나 wire payload(string)라 타입은 string으로 합쳐진다.
-  // findStationByNameAndLine은 `s.line === line` 엄격 비교라 LineNumber가 아닌 임의 문자열은
-  // 어떤 station에도 매칭되지 않아 안전하게 no-match(null)된다 → LineNumber로 좁혀도 무해.
-  const guardLine = (lock ? lock.boardingLine : payload.boardingLine) as LineNumber | undefined;
-  if (guardLine !== undefined) {
-    const onBoardingLine = findStationByNameAndLine(payload.nextWaypoint, guardLine);
-    if (!onBoardingLine && findStationByName(payload.nextWaypoint)) {
-      const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-      logSilentPushSkipped({
-        stationName: payload.nextWaypoint,
-        kind: logKind,
-        phaseId: payload.phase,
-        reason: 'lock-line-mismatch',
-      });
-      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'lock-line-mismatch');
-      logger.info(
-        `lock line mismatch skip: nextWaypoint=${payload.nextWaypoint} boardingLine=${guardLine}`,
-      );
-      return;
-    }
-    // #1322 — 로컬 lock 없이 payload.boardingLine만으로 통과한 경우: backend가 train을 선택해
-    // 발사한 lock-path push이므로 authoritative. lockless opt-in 토글은 lock 없는 trip 전용이라
-    // 적용하지 않고(backend lock 보유) line 가드 통과 후 바로 위치/movement 게이트로 진행한다.
-  } else {
-    // #1810 — paradigm shift Phase 1+2: 사용자 명시 의향(lock 활성)만 알림.
-    // lockless trip에서는 station-passed silent push를 항상 skip.
-    logSilentPushSkipped({
-      stationName: payload.nextWaypoint,
-      kind: 'station-passed',
-      phaseId: payload.phase,
-      reason: 'lockless-opt-out',
-    });
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
-    logger.info(`lockless skip (paradigm shift #1810): station=${payload.nextWaypoint}`);
-    return;
-  }
-
-  // #1572 (T9, ADR-017) — backend SSoT 권위 게이트 (Path E silent push). BG 경로가 backend가
-  // 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. lock/lockless 분기 통과 후 dismiss silence
-  // 게이트 진입 직전 평가 — silence/위치/movement 게이트 전에 위치해 가장 강한 권위 정책 적용.
-  // intermediate payload는 'station-passed'로 매핑(device convention과 일치). fireWithGate signature
-  // 가 payload.kind NonNullable 강제 — undefined 케이스 없음.
-  const ssotGateKind: 'station-passed' | 'transfer' | 'destination' | 'imminent' =
-    payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-  const ssotGateOutcome = await evaluateSsotFireGate({
-    alarmId: `${ssotGateKind}:${payload.nextWaypoint}`,
-    stationId: payload.nextWaypoint,
-    type: ssotGateKind,
-  });
-  if (ssotGateOutcome.blocked) {
-    const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-    const reason = ssotGateOutcome.reason as
-      | 'gate-alarm-already-decided'
-      | 'gate-station-already-passed';
-    logSilentPushSkipped({
-      stationName: payload.nextWaypoint,
-      kind: logKind,
-      phaseId: payload.phase,
-      reason,
-    });
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
-    logger.info(`SSoT fire gate skip reason=${reason} station=${payload.nextWaypoint}`);
-    return;
-  }
-
-  // #746 — dismiss silence 게이트. BG path는 좌표 신뢰성이 낮아 시간 조건만 평가
-  //   (currentPosition=null). lock/lockless 분기 통과 후 위치 게이트보다 위에 위치해
-  //   사용자 정책이 데이터 정확성보다 우선되도록 한다.
-  const dismissSilenceState = await getDismissSilence();
-  const silenceDecision = evaluateDismissSilence(dismissSilenceState, Date.now(), null);
-  if (!silenceDecision.silenced && silenceDecision.expired) {
-    await clearDismissSilence();
-  }
-  if (silenceDecision.silenced) {
-    const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-    logSilentPushSkipped({
-      stationName: payload.nextWaypoint,
-      kind: logKind,
-      phaseId: payload.phase,
-      reason: 'dismiss-silence',
-    });
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'dismiss-silence');
-    logger.info(`dismiss-silence skip: station=${payload.nextWaypoint}`);
-    return;
-  }
-
-  // #1209 D3 — lockless 경로는 sticky station 좌표 drift 수용 위해 widened 임계값 사용.
-  // #1273 D3 — payloadHopIndex는 백엔드 silent push payload의 절대 시퀀스 SSOT. wire.
-  // currentHopIndex는 D1(#1207) hop estimator 미연결 단계라 undefined — 둘 중 하나라도
-  // 없으면 gate가 거리 기반 widened fallback 경로로 동작한다.
-  // #1307 — subsurface는 server flag(payload.subsurface)를 우선하고, 부재 시 디바이스
-  // 로컬 stamp로 fallback한다. server flag가 이겨야 FG-only stamp가 BG에서 stale 되어도
-  // 지하 intermediate 우회가 동작한다.
-  const subsurface = payload.subsurface ?? (await getSubsurfaceState());
-  // #1365 — estimatorLine. lock 활성 시 lock.boardingLine을 신뢰(사용자 명시 탭). lock 부재 시
-  // 디바이스에 결정적 line SSOT가 없으므로 undefined — gate cross-check 자연 skip(graceful).
-  // 추후 lockless도 fusion result line이 BG로 전파되면 그 값을 사용.
-  const estimatorLine = lock?.boardingLine;
-  const gate = await checkSilentPushLocationGate({
-    stationName: payload.nextWaypoint,
-    kind: payload.kind,
-    phase: payload.phase,
-    isLockless: !lock,
-    payloadHopIndex: payload.hopIndex,
-    subsurface,
-    occupiedLine: payload.occupiedLine,
-    estimatorLine,
-  });
-
-  if (!gate.pass) {
-    const reason = mapGateReason(gate.reason!);
-    logSilentPushSkipped({
-      stationName: payload.nextWaypoint,
-      kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
-      phaseId: payload.phase,
-      reason,
-      distanceM: gate.distanceM,
-      thresholdM: gate.thresholdM,
-      locationSource: gate.locationSource,
-      locationAgeMs: gate.locationAgeMs,
-    });
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
-    logger.info(`gate skip reason=${gate.reason} distance=${gate.distanceM ?? '-'}`);
-    // #1356 E1 — silent fire가 suppress되는 동안 같은 station의 사전 예약(`tba:`/`bl:`)도 OS queue
-    // 에서 cancel. backend는 정적/out-of-range를 인식해 다음 silent push를 발사하지 않지만, OS queue에
-    // 잔존한 사전 예약은 시간이 되면 자체 발사 → stale "다음 역" 알람. nextWaypoint/phase는 본 분기
-    // 에서 항상 존재(SilentPushPayload 필수 필드).
-    await cancelTbaByStationPhase(payload.nextWaypoint, payload.phase);
-    await cancelBlByStationPhase(payload.nextWaypoint, payload.phase);
-    return;
-  }
-
-  // #727 — 정적 misfire 가드. gate는 거리/freshness만 검증하지만 사용자가 정적이면 잘못된
-  // trainCode/fusion lock으로 잘못 발사될 수 있다. expo-location LocationObject의 speed/
-  // accuracy가 있으면 평가 — 미측정(`speed === -1` 등)이면 skip하고 graceful pass.
-  // #728 — CMMotionActivity motion=stationary 신호 동시 적용. BG에선 hook 못쓰니 직접 호출 — native
-  // module이 startUpdates된 상태(FG에서 useMotionActivity가 시작)에서 latest cache된 값을 반환.
-  // 권한 미부여/미지원/native fault 시 false → 기존 가드만 동작 (graceful fallback).
-  const motionStationary = getCurrentMotionStationary();
-  const movement = evaluateMovement(
-    {
-      speedMps: gate.speedMps,
-      accuracyM: gate.accuracyM,
-    },
-    undefined,
-    undefined,
-    motionStationary,
-  );
-  if (!movement.reliable && movement.reason) {
-    const movementReason = MOVEMENT_TO_ALARM_LOG_REASON[movement.reason];
-    logSilentPushSkipped({
-      stationName: payload.nextWaypoint,
-      kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
-      phaseId: payload.phase,
-      reason: movementReason,
-      distanceM: gate.distanceM,
-      thresholdM: gate.thresholdM,
-      locationSource: gate.locationSource,
-      locationAgeMs: gate.locationAgeMs,
-    });
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', movementReason);
-    logger.info(
-      `movement skip: reason=${movementReason} speed=${gate.speedMps ?? '-'} accuracy=${gate.accuracyM ?? '-'}`,
-    );
-    // #1356 E1 — motion=stationary suppress 동안 같은 station 사전 예약도 cancel. (gate 분기와 동일 의도)
-    await cancelTbaByStationPhase(payload.nextWaypoint, payload.phase);
-    await cancelBlByStationPhase(payload.nextWaypoint, payload.phase);
-    return;
-  }
-
-  // FIRED_ALARMS dedup — destination scope. intermediate는 dedup 대상 아님(통과는 1회성).
-  // dedup 키는 alarmKey({phaseId, stationName, occurrenceIdx}) — FG GPS·OS scheduled fire와 동일
-  // 출처 공유. #1367 — payload.hopIndex로 같은 stationName이 route에 중복 등장하는 trip에서
-  // hop별 dedup이 collide하지 않도록 occurrenceIdx로 분리. backend가 hopIndex를 보내지 않는 구
-  // 호환 분기는 occurrenceIdx=0 (legacy 동작 보존).
-  const destinationId = await loadDestinationId();
-  const dedupKey =
-    payload.kind === 'intermediate'
-      ? null
-      : alarmKey({
-          phaseId: payload.phase,
-          stationName: payload.nextWaypoint,
-          occurrenceIdx: payload.hopIndex ?? 0,
-        });
-
-  if (dedupKey && destinationId) {
-    const fired = await getFiredAlarms(destinationId);
-    if (fired.has(dedupKey)) {
-      // 다른 채널(FG GPS 등)이 이미 발사 — backend 입장에선 fallback 불필요. ACK로 정리.
-      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
-      // P2e — 동일 pushId의 alert가 race로 도달하면 FG에서 중복 표시 차단되도록 기록.
-      if (payload.pushId) void addFiredPushId(payload.pushId);
-      logger.info(`dedup: ${dedupKey} already fired — skip`);
-      return;
-    }
-    fired.add(dedupKey);
-    await setFiredAlarms(destinationId, fired);
-  }
-
-  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic 8분 backstop. FIRED_ALARMS dedup은
-  // `phaseId + stationName + hopIndex` 기반이라 backend가 같은 station-pass 1건에 silent state
-  // push + LA dirty update 2채널을 발사하거나 phase만 다른 cross-channel 중복을 통과시킨다.
-  // (lastFire) Map은 FG fireAndLog / stationPipeline 모두에서 markStationFired로 적재되므로
-  // 본 게이트가 silent push도 station-level 8분 backstop으로 cross-channel 중복을 차단한다.
-  // intermediate(station-passed) 분기는 dedupKey=null이라 destinationId만으로도 보호 필요 —
-  // intermediate도 같은 station 8분 차 cross-channel 중복 evidence(2026-06-26 trip-3 동대문역사문화공원).
-  const channelAgnosticKind: 'destination' | 'transfer' | 'station-passed' =
-    payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
-  if (
-    destinationId &&
-    isAnyChannelRecentlyFired(
-      destinationId,
-      payload.nextWaypoint,
-      channelAgnosticKind,
-      Date.now(),
-      payload.phase,
-    )
-  ) {
-    logSuppressedChannelAgnosticDedup({
-      source: 'silent-push-skipped',
-      stationName: payload.nextWaypoint,
-      kind: channelAgnosticKind,
-      phaseId: payload.phase,
-    });
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
-    if (payload.pushId) void addFiredPushId(payload.pushId);
-    logger.info(
-      `dedup channel-agnostic: ${payload.nextWaypoint} fired within 8m — skip`,
-    );
-    return;
-  }
-
-  const content =
-    payload.kind === 'intermediate'
-      ? buildIntermediateContent(payload.nextWaypoint)
-      : buildAlarmContent(
-          {
-            phaseId: payload.phase,
-            type: payload.kind,
-            stationName: payload.nextWaypoint,
-          } as AlarmEvent,
-          SILENT_PUSH_SOURCE,
-        );
-
-  await Notifications.scheduleNotificationAsync({
-    content: { title: content.title, body: content.body },
-    trigger: null,
-  });
-
-  // #1901/#1900 (RC-7/RC-10a) — channel-agnostic dedup window 갱신. silent push fire를 lastFire
-  // Map에 적재해 후속 FG fireAndLog / stationPipeline 발사가 같은 station+kind+phase 8분 backstop
-  // 으로 차단됨. intermediate는 'station-passed' 카테고리로 마킹(기존 cross-category dedup 의미 유지).
-  // phaseId(payload.phase)도 stamp해 정상 phase 진행은 통과시킴.
-  if (destinationId) {
-    markStationFired(
-      destinationId,
-      payload.nextWaypoint,
-      channelAgnosticKind,
-      Date.now(),
-      payload.phase,
-    );
-  }
-
-  logSilentPushFired({
-    stationName: payload.nextWaypoint,
-    kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
-    phaseId: payload.phase,
-    distanceM: gate.distanceM!,
-    thresholdM: gate.thresholdM!,
-    locationSource: gate.locationSource!,
-    locationAgeMs: gate.locationAgeMs!,
-  });
-  void ackOutcome(payload.pushId, apnsToken, 'fired');
-  // P2e — alert fallback이 race로 도달해도 FG에서 중복 표시 차단되도록 기록.
-  if (payload.pushId) void addFiredPushId(payload.pushId);
-  logger.info(
-    `fired: kind=${payload.kind} phase=${payload.phase} station=${payload.nextWaypoint} distance=${gate.distanceM}m`,
-  );
-}
-
-/**
- * AsyncStorage에서 destination.id만 안전하게 꺼낸다.
- * 파싱 실패/구조 손상 시 null — dedup 건너뜀(발사는 진행).
- */
-async function loadDestinationId(): Promise<string | null> {
-  try {
-    const json = await AsyncStorage.getItem(DESTINATION_KEY);
-    if (!json) return null;
-    const parsed = JSON.parse(json) as Partial<Station> | null;
-    return parsed && typeof parsed.id === 'string' ? parsed.id : null;
-  } catch {
-    return null;
-  }
-}
 
 /** Task 등록 — 모듈 로드 시점에 한 번 실행. */
 TaskManager.defineTask(SILENT_PUSH_TASK, handleSilentPush);
