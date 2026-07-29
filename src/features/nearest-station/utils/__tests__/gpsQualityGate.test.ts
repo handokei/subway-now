@@ -3,7 +3,7 @@ import {
   gpsQualityDropReason,
   isGpsQualityJumpDegraded,
   isGpsQualityAbsenceDegraded,
-  isGpsQualityDegradedTransition,
+  isGpsQualityHysteresisReleased,
 } from '../gpsQualityGate';
 
 describe('isGpsQualityGateAcceptable — #2070 경계값 (accuracy 99/100/101m x age 14/15/16s)', () => {
@@ -89,24 +89,20 @@ describe('isGpsQualityAbsenceDegraded', () => {
   });
 });
 
-describe('isGpsQualityDegradedTransition — #2070 급락/부재 발생·미발생', () => {
-  it('급락만 발생 → true', () => {
-    expect(isGpsQualityDegradedTransition(50, 0, 200, 1_000)).toBe(true);
+describe('isGpsQualityHysteresisReleased — #2076 degraded 해제 hysteresis', () => {
+  it('연속 통과 0회 → 해제 안 됨', () => {
+    expect(isGpsQualityHysteresisReleased(0)).toBe(false);
   });
 
-  it('부재만 발생 → true', () => {
-    expect(isGpsQualityDegradedTransition(50, 0, 60, 30_000)).toBe(true);
+  it('연속 통과 1회 → 해제 안 됨 (단발 fix 플랩 방지)', () => {
+    expect(isGpsQualityHysteresisReleased(1)).toBe(false);
   });
 
-  it('둘 다 발생 → true', () => {
-    expect(isGpsQualityDegradedTransition(50, 0, 300, 40_000)).toBe(true);
+  it('연속 통과 2회(임계) → 해제', () => {
+    expect(isGpsQualityHysteresisReleased(2)).toBe(true);
   });
 
-  it('둘 다 미발생 → false', () => {
-    expect(isGpsQualityDegradedTransition(50, 29_000, 80, 30_000)).toBe(false);
-  });
-
-  it('콜드스타트(통과 기록 없음) + 짧은 경과 → false', () => {
-    expect(isGpsQualityDegradedTransition(null, null, 300, 1_000)).toBe(false);
+  it('연속 통과 2회 초과 → 해제', () => {
+    expect(isGpsQualityHysteresisReleased(3)).toBe(true);
   });
 });

@@ -28,9 +28,12 @@
  * gate와 semantic equivalence 보존.
  *
  * #2070 — 우선순위 8이 추가됨. barometer warmup/미지원(subsurface===undefined) + SSOT 무판정
- * 구간에서 GPS 품질 저하 transition(급락 또는 게이트 통과 fix 30s 부재)이 관측되면 지하 진입
- * 후보로 간주한다. 기존 1~7 판정 로직은 그대로 유지되며 대체되지 않는다 — barometer/SSOT 명시
- * 신호가 있으면 항상 그 결과가 우선한다.
+ * 구간에서 GPS 품질 저하가 관측되면 지하 진입 후보로 간주한다. 기존 1~7 판정 로직은 그대로
+ * 유지되며 대체되지 않는다 — barometer/SSOT 명시 신호가 있으면 항상 그 결과가 우선한다.
+ *
+ * #2076 — GPS 품질 저하 입력(qualityDegraded)은 게이트 통과 fix가 30s 이상 부재(absence)할
+ * 때만 true다. accuracy 1회성 급락 단독으로는 true가 되지 않는다 — 지상 urban canyon(고층빌딩
+ * multipath)에서의 급락 1회가 지하로 오분류되던 결함(#2076 결함2) 차단.
  */
 
 export type Environment = 'surface' | 'underground' | 'unknown';
@@ -43,7 +46,7 @@ export interface InferEnvironmentResult {
    * 발동 조건: tripActive=true + barometerStop=true + subsurface=false + 두 SSOT 없음.
    *
    * #2070 — 'gps-quality-drop': subsurface===undefined + 두 SSOT 무판정 + GPS 품질 저하
-   * transition 관측 시 발동.
+   * (#2076 — absence 30s+ 단독. 급락 단독으로는 발동하지 않는다) 관측 시 발동.
    */
   hintReason?: 'barometer-stop' | 'gps-quality-drop';
 }
@@ -60,9 +63,9 @@ export interface InferEnvironmentInput {
   /** #1860 — BarometerSignal.stop. barometer-stop 힌트 발동 전제 조건. */
   barometerStop?: boolean;
   /**
-   * #2070 — GPS 품질 저하 transition(급락 또는 게이트 통과 fix 30s 부재) 관측 여부.
-   * subsurface===undefined + 두 SSOT 무판정 구간에서만 판정에 관여한다(우선순위 8).
-   * 미전달이면 false로 간주(기존 동작 보존).
+   * #2070 — GPS 품질 저하 관측 여부. #2076 — 게이트 통과 fix 30s+ 부재(absence)일 때만 true.
+   * 급락 단독으로는 true가 되지 않는다. subsurface===undefined + 두 SSOT 무판정 구간에서만
+   * 판정에 관여한다(우선순위 8). 미전달이면 false로 간주(기존 동작 보존).
    */
   qualityDegraded?: boolean;
 }

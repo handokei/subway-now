@@ -32,11 +32,15 @@ import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
 import { pushGpsDropEntry } from '../utils/gpsDropBuffer';
 import { haversine } from '../../../shared/utils/haversine';
 import { useStickyStation } from './useStickyStation';
+import { usePolling } from '../../../shared/hooks/usePolling';
 import {
   isGpsQualityGateAcceptable,
   gpsQualityDropReason,
-  isGpsQualityDegradedTransition,
+  isGpsQualityJumpDegraded,
+  isGpsQualityAbsenceDegraded,
+  isGpsQualityHysteresisReleased,
 } from '../utils/gpsQualityGate';
+import { GPS_QUALITY_GATE_TIMER_INTERVAL_MS } from '../../../shared/constants/gpsQualityGate';
 
 /** #876 — useNearestStation 표시값의 출처. sticky lock된 역이면 'sticky', 아니면 GPS live.
  *  알람 트리거에는 영향 없음 — 호출자가 출처별 UX(예: "탑승 전 추정")를 분기할 수 있게 노출. */
@@ -129,10 +133,14 @@ interface UseNearestStationReturn {
   // #852: 마지막 신뢰 fix epoch ms. BG 진입 후 새 fix가 없으면 이 시각은 정지.
   // null = 한 번도 fix 없음(cold start). 디버그 모달 표기용.
   lastFixAtMs: number | null;
-  // #2070 — fusion 결정 tier 품질 게이트(100m/15s) 저하 transition 여부. 직전 게이트 통과 fix
-  // 대비 accuracy 급락(>100m) 또는 게이트 통과 fix 30s 부재 시 true. 호출자(useFusedNearestStation)가
+  // #2070 — fusion 결정 tier 품질 게이트(100m/15s) 저하 여부. 호출자(useFusedNearestStation)가
   // inferEnvironment의 추가 입력으로 사용 — 지하 진입 후보 신호이며, FG watch 폴링 프로파일도
   // 이 값으로 지하 프로파일 전환/원복된다.
+  //
+  // #2076 — true는 오직 게이트 통과 fix가 GPS_QUALITY_GATE_ABSENCE_MS(30s) 이상 없을 때만
+  // (독립 타이머 구동, fix 도착 이벤트에 의존하지 않음 — 결함1). 급락(accuracy 1회성 급증) 단독으로는
+  // true가 되지 않는다(결함2 — 지상 urban canyon 오탐 차단). false 복귀(해제)는 게이트 통과 fix가
+  // 연속 2회 이상일 때만(hysteresis — 단발 fix 플랩 방지).
   gpsQualityDegraded: boolean;
   // #876: result 출처. sticky lock된 역이면 'sticky', live GPS 최근접이면 'live'.
   // 호출자가 출처별 UX(예: 라벨 "탑승 전 추정")로 분기 가능. 알람 트리거에는 영향 없음.
@@ -248,11 +256,72 @@ export function useNearestStation(
     skipped: 0,
   });
   // #2070 — fusion 결정 tier 품질 게이트(100m/15s) SSOT. 직전 게이트 통과 fix의 accuracy/시각을
-  // ref로 들고 있다가 급락(>100m)/30s 부재 판정에 사용한다. gpsQualityDegraded는 폴링 프로파일
-  // 전환 effect의 deps로 쓰여야 해서 state로 노출한다.
+  // ref로 들고 있다가 급락(>100m 진단용)/30s 부재 판정에 사용한다. gpsQualityDegraded는 폴링
+  // 프로파일 전환 effect의 deps로 쓰여야 해서 state로 노출한다.
   const qualityGateLastPassAccuracyRef = useRef<number | null>(null);
   const qualityGateLastPassAtRef = useRef<number | null>(null);
+  // #2076 — hysteresis 해제용 연속 게이트 통과 fix 카운터. 게이트 미달 fix(급락/부재 관계없이
+  // 어떤 사유든)가 한 번이라도 끼면 0으로 리셋된다.
+  const qualityGateConsecutivePassRef = useRef(0);
   const [gpsQualityDegraded, setGpsQualityDegraded] = useState(false);
+
+  // #2076 — 게이트 통과/미달 판정 자체는 applyLocation(표시 게이트 통과 fix)과 watch 콜백의
+  // 표시 게이트 drop 분기(>250m fix) 양쪽에서 공유한다. 표시 상태(setUserLocation 등)는 절대
+  // 건드리지 않고, 오직 품질 게이트 SSOT(ref/gpsQualityDegraded)만 갱신한다.
+  //
+  // degraded=true는 이 함수가 아니라 아래 absence 타이머(usePolling)가 단독으로 설정한다 — 급락
+  // 단독으로 즉시 true가 되던 #2070 동작을 결함2로 판정해 제거했다. 이 함수는 게이트 통과 시
+  // hysteresis 카운터를 올려 임계(2연속) 도달 시에만 false로 해제한다.
+  const evaluateGpsQuality = useCallback(
+    (
+      accuracy: number | null | undefined,
+      fixTimestamp: number,
+      lat: number,
+      lng: number,
+      speed: number | null | undefined,
+      // #2076 — 표시 게이트(250m)에서 이미 자체 dedup/rate-limit 로그(dropReason
+      // 'low-accuracy-display')를 남기는 호출 경로(watch 콜백)는 중복 로그를 막기 위해 false로
+      // 전달한다. 게이트 판정/hysteresis 카운터 갱신은 로그 여부와 무관하게 항상 수행된다.
+      logDrop: boolean = true,
+    ) => {
+      const now = Date.now();
+      const ageMs = now - fixTimestamp;
+      if (isGpsQualityGateAcceptable(accuracy, ageMs)) {
+        qualityGateLastPassAccuracyRef.current = accuracy;
+        qualityGateLastPassAtRef.current = now;
+        qualityGateConsecutivePassRef.current += 1;
+        if (isGpsQualityHysteresisReleased(qualityGateConsecutivePassRef.current)) {
+          setGpsQualityDegraded((prev) => (prev ? false : prev));
+        }
+        return;
+      }
+      // #2076 결함2 — 급락 여부는 진단 로그에만 반영. degraded 상태를 직접 바꾸지 않는다.
+      const jumpDegraded = isGpsQualityJumpDegraded(qualityGateLastPassAccuracyRef.current, accuracy);
+      qualityGateConsecutivePassRef.current = 0;
+      if (!logDrop) return;
+      pushGpsDropEntry({
+        ts: now,
+        lat,
+        lng,
+        accuracyMeters: accuracy ?? null,
+        speedMps: isValidGpsSpeedMps(speed) ? speed : null,
+        dropReason: `gps-quality-drop:${gpsQualityDropReason(accuracy, ageMs)}${jumpDegraded ? '-jump' : ''}`,
+      });
+    },
+    [],
+  );
+
+  // #2076 결함1 — absence 판정을 fix 도착 이벤트에서 분리한 독립 타이머. GPS가 완전히 유실되면
+  // (심부 지하) fix 자체가 안 들어와 evaluateGpsQuality가 호출되지 않으므로, fix-driven 평가만으로는
+  // absence 30s 판정이 영영 발동하지 못한다. 이 타이머가 마지막 게이트 통과 fix 시각을 주기적으로
+  // 재평가해 fix 도착 여부와 무관하게 degraded=true를 설정한다. 해제는 여기서 하지 않는다(위
+  // evaluateGpsQuality의 hysteresis 경로 전담) — 그래야 "판정 즉시 통과 fix로 해제" 같은 단발
+  // flip이 재발하지 않는다.
+  usePolling(() => {
+    if (isGpsQualityAbsenceDegraded(qualityGateLastPassAtRef.current, Date.now())) {
+      setGpsQualityDegraded((prev) => (prev ? prev : true));
+    }
+  }, GPS_QUALITY_GATE_TIMER_INTERVAL_MS);
 
   const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number) => {
     const { latitude, longitude, speed, accuracy } = coords;
@@ -293,29 +362,8 @@ export function useNearestStation(
     // 통과했지만 결정 tier 입력 기준(100m/15s)에는 못 미치는 fix를 판별한다. userLocation/
     // accuracyMeters/result 자체는 그대로 노출(표시 동작 불변) — 결정 tier 소비자
     // (useFusedNearestStation)가 gpsQualityDegraded를 별도로 참고해 판단한다.
-    const qualityGateNow = Date.now();
-    const qualityAgeMs = qualityGateNow - timestamp;
-    if (isGpsQualityGateAcceptable(accuracy, qualityAgeMs)) {
-      qualityGateLastPassAccuracyRef.current = accuracy;
-      qualityGateLastPassAtRef.current = qualityGateNow;
-      setGpsQualityDegraded((prev) => (prev ? false : prev));
-    } else {
-      pushGpsDropEntry({
-        ts: qualityGateNow,
-        lat: latitude,
-        lng: longitude,
-        accuracyMeters: accuracy ?? null,
-        speedMps: isValidGpsSpeedMps(speed) ? speed : null,
-        dropReason: `gps-quality-drop:${gpsQualityDropReason(accuracy, qualityAgeMs)}`,
-      });
-      const degraded = isGpsQualityDegradedTransition(
-        qualityGateLastPassAccuracyRef.current,
-        qualityGateLastPassAtRef.current,
-        accuracy,
-        qualityGateNow,
-      );
-      setGpsQualityDegraded((prev) => (prev === degraded ? prev : degraded));
-    }
+    // #2076 — 판정 로직은 evaluateGpsQuality로 추출(표시 게이트 drop 분기와 공유).
+    evaluateGpsQuality(accuracy, timestamp, latitude, longitude, speed);
 
     // 측정(#443): station 변화 시에만 push. 매 fix는 너무 자주 — 점프 시퀀스
     // (사가정→을지로4가→용마산) 재구성엔 station 단위면 충분.
@@ -333,7 +381,7 @@ export function useNearestStation(
         nearestDistanceKm: stationsResult?.distanceKm ?? null,
       });
     }
-  }, []);
+  }, [evaluateGpsQuality]);
 
   const stopWatch = useCallback(() => {
     subscriptionRef.current?.remove();
@@ -443,6 +491,18 @@ export function useNearestStation(
             // React 자동 bail-out은 hook 단위만 — 84+회/5분 reentry 시 useState reducer 호출
             // 자체가 reconcile 큐에 들어가는 부담을 명시 가드로 제거한다.
             setLocationUncertain((prev) => (prev ? prev : true));
+            // #2076 결함1 — 표시 게이트(250m)에서 drop되는 fix도 품질 게이트(100m/15s) 평가에는
+            // 반드시 공급한다. 표시 경로(setUserLocation/setResult 등)는 건드리지 않고 품질 게이트
+            // SSOT(ref/hysteresis 카운터/gps-drop 로그)만 갱신 — 심부 지하처럼 fix가 계속 >250m로만
+            // 들어오는 구간에서도 hysteresis 카운터가 정확히 리셋되고 진단 로그가 남는다.
+            evaluateGpsQuality(
+              location.coords.accuracy,
+              location.timestamp,
+              location.coords.latitude,
+              location.coords.longitude,
+              location.coords.speed,
+              false,
+            );
             // #443: 표시 게이트에 drop된 fix도 사후 진단에 필요(사가정 같은 부정확 fix로
             // 락된 의심 시점을 식별). 이 분기는 accuracy가 non-null 임계 초과인 경우만.
             const dropSpeed = location.coords.speed;
@@ -514,7 +574,7 @@ export function useNearestStation(
       setError('위치를 가져오는 데 실패했습니다.');
       setLoading(false);
     }
-  }, [applyLocation]);
+  }, [applyLocation, evaluateGpsQuality]);
 
   // 수동 새로고침: watch 중지 → one-shot → watch 재시작
   const refresh = useCallback(async () => {

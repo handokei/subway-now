@@ -3,6 +3,7 @@ import {
   GPS_QUALITY_GATE_MAX_AGE_MS,
   GPS_QUALITY_DEGRADE_JUMP_M,
   GPS_QUALITY_GATE_ABSENCE_MS,
+  GPS_QUALITY_GATE_HYSTERESIS_PASS_COUNT,
 } from '../../../shared/constants/gpsQualityGate';
 
 export type GpsQualityDropReason = 'accuracy' | 'stale';
@@ -38,6 +39,11 @@ export function gpsQualityDropReason(
 /**
  * #2070 — 직전 게이트 통과 fix 대비 accuracy가 GPS_QUALITY_DEGRADE_JUMP_M(100m) 초과로
  * 급락했는지. 직전 통과 기록이 없으면(콜드스타트 등) 판단 불가 → false.
+ *
+ * #2076 결함2 — 급락 단독은 더 이상 gpsQualityDegraded(underground hint)를 발동시키지 않는다.
+ * 지상 urban canyon(고층빌딩 사이 multipath)에서 accuracy가 1회성으로 급락해도 지하로
+ * 오분류되던 결함 차단. 이 함수의 결과는 진단 로그(gps-drop dropReason)에만 쓰이고, 게이트
+ * 미달 fix는 어차피 lastPassAt을 갱신하지 않으므로 absence 판정에 별도로 관여하지 않는다.
  */
 export function isGpsQualityJumpDegraded(
   lastPassAccuracyM: number | null,
@@ -61,18 +67,11 @@ export function isGpsQualityAbsenceDegraded(
 }
 
 /**
- * #2070 — 품질 저하 transition 이벤트. 급락 또는 30s 부재 중 하나라도 해당하면 true.
- * 기존 subsurface/environment 판정 로직(inferEnvironment)에 추가 입력으로 전달되며,
- * 판정 로직 자체를 대체하지 않는다.
+ * #2076 — degraded 해제(hysteresis) 판정. 연속 게이트 통과 fix 수가
+ * GPS_QUALITY_GATE_HYSTERESIS_PASS_COUNT(2) 이상이어야 해제로 인정한다. 통과 fix 1회만으로
+ * 해제하면 지하상가 틈에서 잠깐 잡힌 단발 fix에도 매번 플랩(degraded↔정상)해 FG watch
+ * 재시작 churn(#2076 개선3)을 유발한다.
  */
-export function isGpsQualityDegradedTransition(
-  lastPassAccuracyM: number | null,
-  lastPassAtMs: number | null,
-  currentAccuracyM: number | null | undefined,
-  nowMs: number,
-): boolean {
-  return (
-    isGpsQualityJumpDegraded(lastPassAccuracyM, currentAccuracyM) ||
-    isGpsQualityAbsenceDegraded(lastPassAtMs, nowMs)
-  );
+export function isGpsQualityHysteresisReleased(consecutivePassCount: number): boolean {
+  return consecutivePassCount >= GPS_QUALITY_GATE_HYSTERESIS_PASS_COUNT;
 }
