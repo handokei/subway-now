@@ -16,7 +16,6 @@ import {
   type PushOrigin,
   type SilentPushPayload,
 } from './apns';
-import { buildAlertContent } from './alertContent';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
@@ -1812,16 +1811,24 @@ export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
 
 /**
  * #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 title/body 빌더.
- * 디바이스가 기존 silent push 수신 시 렌더하던 것과 동일한 문구 체계
- * (`alertContent.buildAlertContent`, ko.json byte-identical)를 재사용한다.
- * arvlCd 기반 매역 fire는 항상 phase='imminent' — intermediate는 phase 자체가 없다
- * (discriminated union, `buildAlertContent` 참고).
+ *
+ * P1 수정(코드리뷰) — 최초 구현은 `alertContent.buildAlertContent`(한국어 고정, alert fallback
+ * 채널용)를 재사용해 en/ja/zh 사용자에게도 한국어 배너가 발사되는 i18n 회귀가 있었다. #1895
+ * boarding-prompt(`buildBoardingPromptMessage`)와 동일 패턴으로 `t(locale)` 4언어 lookup으로
+ * 전환 — locale 미지정/비지원 시 ko fallback(`t()`의 `DEFAULT_LOCALE` 처리에 위임).
+ *
+ * arvlCd 기반 매역 fire는 항상 phase='imminent' — `i18n.ts`의 `stationNotifTitle`/`stationNotifBody`도
+ * 그에 맞춰 kind 단일 분기만 제공한다(early phase 없음).
  */
-function buildStationNotifContent(waypoint: Waypoint): { title: string; body: string } {
-  if (waypoint.kind === 'intermediate') {
-    return buildAlertContent({ kind: 'intermediate', stationName: waypoint.stationName });
-  }
-  return buildAlertContent({ kind: waypoint.kind, phase: 'imminent', stationName: waypoint.stationName });
+function buildStationNotifContent(
+  waypoint: Waypoint,
+  locale: SupportedLocale | undefined,
+): { title: string; body: string } {
+  const strings = t(locale);
+  return {
+    title: strings.stationNotifTitle(waypoint.kind),
+    body: strings.stationNotifBody(waypoint.kind, waypoint.stationName),
+  };
 }
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
@@ -1979,7 +1986,7 @@ export async function fireArvlCdStationPush(
   // apns-collapse-id로 같은 trip의 매역 알림을 알림센터에서 최신으로 교체(스택 방지) + apns-expiration
   // 90s로 지하 데이터 순단 후 stale 알림 늦은 표시를 방지한다. data는 기존 silent payload를 그대로
   // forward해 device SSoT/게이트 소비 코드(cascade picker 등)가 영향받지 않게 한다.
-  const stationNotifContent = buildStationNotifContent(waypoint);
+  const stationNotifContent = buildStationNotifContent(waypoint, trip.locale);
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
@@ -2369,7 +2376,7 @@ export async function fireVanishFallbackStationPush(
     archFlag: deps.archFlag,
   });
   // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사 (fireArvlCdStationPush와 동일 정책).
-  const vanishStationNotifContent = buildStationNotifContent(waypoint);
+  const vanishStationNotifContent = buildStationNotifContent(waypoint, trip.locale);
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
