@@ -5,6 +5,8 @@
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
 import {
+  buildSilentPushData,
+  sendAlertPush,
   sendBoardingPromptPush,
   sendBoardingPromptSilentPush,
   sendReschedulePush,
@@ -14,6 +16,7 @@ import {
   type PushOrigin,
   type SilentPushPayload,
 } from './apns';
+import { buildAlertContent } from './alertContent';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
@@ -1790,11 +1793,51 @@ export interface FireArvlCdStationPushInputs {
  */
 export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
 
-// Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
+/**
+ * #2063 (ADR-023 개정) — 매역 알림(station-notif) apns-collapse-id prefix.
+ * 같은 trip 의 매역 알림은 알림센터에서 최신 것으로 교체(스택 방지).
+ */
+export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
+
+/** #2063 — 매역 알림 apns-collapse-id 빌더. */
+export function stationNotifCollapseId(tripToken: string): string {
+  return `${STATION_NOTIF_COLLAPSE_ID_PREFIX}${tripToken}`;
+}
+
+/**
+ * #2063 — 매역 알림 apns-expiration 유예(ms). 지하 데이터 순단 후 stale 알림이 뒤늦게
+ * 표시되는 것을 방지한다 (now + 90s 이후 APNs가 폐기).
+ */
+export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
+
+/**
+ * #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 title/body 빌더.
+ * 디바이스가 기존 silent push 수신 시 렌더하던 것과 동일한 문구 체계
+ * (`alertContent.buildAlertContent`, ko.json byte-identical)를 재사용한다.
+ * arvlCd 기반 매역 fire는 항상 phase='imminent' — intermediate는 phase 자체가 없다
+ * (discriminated union, `buildAlertContent` 참고).
+ */
+function buildStationNotifContent(waypoint: Waypoint): { title: string; body: string } {
+  if (waypoint.kind === 'intermediate') {
+    return buildAlertContent({ kind: 'intermediate', stationName: waypoint.stationName });
+  }
+  return buildAlertContent({ kind: waypoint.kind, phase: 'imminent', stationName: waypoint.stationName });
+}
+
+// #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
+// boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
+// path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
 export async function fireArvlCdStationPush(
   inputs: FireArvlCdStationPushInputs,
 ): Promise<{ dirty: boolean }> {
   const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
+  if (trip.sleepModeEnabled === true) {
+    log('station-notif skip: sleep', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    return { dirty: false };
+  }
   // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
   // transferDestinationGate (60s) 보다 보수적이지만 intermediate 까지 보호. lazy-seed (==0) 통과.
   // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
@@ -1931,11 +1974,25 @@ export async function fireArvlCdStationPush(
     // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
     archFlag: deps.archFlag,
   });
+  // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사. device silentPushTask 미기동
+  // (앱 kill/throttle) 상태에서도 OS가 직접 배너를 렌더한다. 무소리 + interruption-level=active +
+  // apns-collapse-id로 같은 trip의 매역 알림을 알림센터에서 최신으로 교체(스택 방지) + apns-expiration
+  // 90s로 지하 데이터 순단 후 stale 알림 늦은 표시를 방지한다. data는 기존 silent payload를 그대로
+  // forward해 device SSoT/게이트 소비 코드(cascade picker 등)가 영향받지 않게 한다.
+  const stationNotifContent = buildStationNotifContent(waypoint);
   const heal = await sendWithEnvHeal(
     (host) =>
-      sendSilentPush({
+      sendAlertPush({
         deviceToken: trip.token,
-        payload: arvlcdPayload,
+        title: stationNotifContent.title,
+        body: stationNotifContent.body,
+        pushId,
+        tripToken: trip.token,
+        sound: null,
+        interruptionLevel: 'active',
+        collapseId: stationNotifCollapseId(trip.token),
+        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+        data: buildSilentPushData(arvlcdPayload),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -1995,25 +2052,9 @@ export async function fireArvlCdStationPush(
   } else if (waypoint.kind === 'destination') {
     stats.silentPushFiredByKind.destination += 1;
   }
-  // #1402 — alert fallback 안전망 등록. silent push가 60s(#1894로 30s→60s 완화) 내 ACK되지 않으면
-  // runFallbackPushes가 alert(소리) push를 발사. arvlCd 경로는 가장 흔한 발사 경로이므로
-  // 여기서도 안전망을 가동해 "하차 침묵 0" acceptance를 보강한다.
-  // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록.
-  await putPending(
-    env.PENDING_PUSHES,
-    {
-      pushId,
-      token: trip.token,
-      alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
-      sentAt: now,
-      stationName: waypoint.stationName,
-      kind: waypoint.kind,
-      phase: 'imminent',
-      etaSeconds: 0,
-      apnsEnv: trip.apnsEnv ?? 'sandbox',
-    },
-    deps.archFlag,
-  );
+  // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
+  // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
+  // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
   // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
@@ -2156,7 +2197,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
     environment: deriveEvidenceEnvironment(trip),
     hopIndex: waypoint.hopIndex,
   });
-  // Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
+  // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
   return fireArvlCdStationPush({
     trip,
     waypoint,
@@ -2243,11 +2284,20 @@ export function vanishReleaseFireKey(
   return `${VANISH_RELEASE_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
 }
 
-// Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
+// #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. fireArvlCdStationPush와
+// 동일 분기 — sleep-transfer(B4)·boarding-prompt(B7/B8) 게이트와는 완전히 별개.
 export async function fireVanishFallbackStationPush(
   inputs: FireVanishFallbackStationPushInputs,
 ): Promise<void> {
   const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId, origin } = inputs;
+  if (trip.sleepModeEnabled === true) {
+    log('station-notif skip: sleep', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      origin,
+    });
+    return;
+  }
   const key =
     origin === 'vanish-release'
       ? vanishReleaseFireKey(trip.token, lock.trainCode, waypoint.stationName)
@@ -2318,11 +2368,21 @@ export async function fireVanishFallbackStationPush(
     // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
     archFlag: deps.archFlag,
   });
+  // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사 (fireArvlCdStationPush와 동일 정책).
+  const vanishStationNotifContent = buildStationNotifContent(waypoint);
   const heal = await sendWithEnvHeal(
     (host) =>
-      sendSilentPush({
+      sendAlertPush({
         deviceToken: trip.token,
-        payload: vanishPayload,
+        title: vanishStationNotifContent.title,
+        body: vanishStationNotifContent.body,
+        pushId,
+        tripToken: trip.token,
+        sound: null,
+        interruptionLevel: 'active',
+        collapseId: stationNotifCollapseId(trip.token),
+        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+        data: buildSilentPushData(vanishPayload),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -2389,26 +2449,9 @@ export async function fireVanishFallbackStationPush(
     hopIndex: waypoint.hopIndex,
     staleMs: ssot?.lastAdvanceAt ? now - ssot.lastAdvanceAt : undefined,
   });
-  // #1402 — alert fallback 안전망 등록. listPending → runFallbackPushes가 60s(#1894로 30s→60s 완화) 내 ACK
-  // 없으면 alert(소리) fallback 발사. vanish 경로는 silent push가 가장 잘 누락되는 경로라
-  // 안전망 가동이 acceptance("하차 침묵 0")의 핵심. PENDING_PUSHES 미바인딩(dev/test 호환)
-  // 시 putPending은 graceful no-op.
-  // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록.
-  await putPending(
-    env.PENDING_PUSHES,
-    {
-      pushId,
-      token: trip.token,
-      alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
-      sentAt: now,
-      stationName: waypoint.stationName,
-      kind: waypoint.kind,
-      phase: 'imminent',
-      etaSeconds: 0,
-      apnsEnv: trip.apnsEnv ?? 'sandbox',
-    },
-    deps.archFlag,
-  );
+  // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
+  // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
+  // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
 }
 
@@ -2548,7 +2591,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       // 사용자는 종착역 하차 알림을 받지 못한다. station-passed imminent push를 destination에도
       // 발사해 device 측 banner 발사 경로(채널 2)도 확보한다. surface 중복은 device 측
       // pushId/firedPushIds dedup으로 흡수.
-      // Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
+      // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
       await fireVanishFallbackStationPush({
         trip,
         waypoint,
@@ -2592,7 +2635,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     const releaseMotionSeries = await readSeries(env.TRIPS, trip.token);
     const releaseMotion = evaluateWindow(releaseMotionSeries, now).motion;
     if (!isFallbackAdvanceBlockedByMotion(releaseMotion)) {
-      // Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
+      // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
       await fireVanishFallbackStationPush({
         trip,
         waypoint,
