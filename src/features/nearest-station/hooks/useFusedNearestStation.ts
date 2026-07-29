@@ -1148,12 +1148,16 @@ export function useFusedNearestStation(
     tripStartedAt: boardingLock?.boardedAt,
   });
   // #1860 — 옵션 C barometer-stop 힌트. tripActive + barometerStop 전달.
+  // #2070 — GPS 품질 저하 transition(gps.gpsQualityDegraded) 추가 입력. useNearestStation이
+  // raw fix 스트림만으로 자체 판정한 값을 그대로 전달 — 기존 barometer/SSOT 판정을 대체하지 않고
+  // SSOT 무판정 구간(우선순위 8)에만 관여한다.
   const cascadeEnvironmentResult: InferEnvironmentResult = inferEnvironment({
     subsurface: barometerSubsurface,
     surfaceSSOT: cascadeSurfaceSSOT !== null,
     undergroundSSOT: cascadeUndergroundSSOT !== null,
     tripActive,
     barometerStop: barometerSignal?.stop,
+    qualityDegraded: gps.gpsQualityDegraded,
   });
   // #1932 — cascade tier 1/2가 직접 read하는 environment 변수.
   // 후속 cascade-wide post-section(L1378~)에서도 동일 값 재사용 (분산 산출 0건 SSOT).

@@ -1601,6 +1601,157 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
   });
 });
 
+describe('useNearestStation — #2070 GPS 품질 게이트 (결정 tier 입력)', () => {
+  // 지상 기본값: High@2s. 지하 throttle: High@12s. #1313 describe와 동일 값 — 매직넘버 회피 위해
+  // 상수에서 가져온다(#2070은 barometerSubsurface OR gpsQualityDegraded로 트리거를 확장).
+  const SURFACE_OPTIONS = {
+    accuracy: Location.Accuracy.High,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+  };
+  const SUBSURFACE_OPTIONS = {
+    accuracy: Location.Accuracy.High,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+  };
+  const originalCurrentState = AppState.currentState;
+
+  const lastWatchOptions = () => {
+    const calls = (Location.watchPositionAsync as jest.Mock).mock.calls;
+    return calls[calls.length - 1][0];
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    mockGranted();
+    (AppState as { currentState: string }).currentState = 'active';
+  });
+
+  afterEach(() => {
+    (AppState as { currentState: string }).currentState = originalCurrentState;
+  });
+
+  it('표시 게이트(250m)는 통과하지만 품질 게이트(100m) 미달 fix는 gps-quality-drop:accuracy를 남긴다', async () => {
+    const { clearGpsDropEntries, getGpsDropEntries } =
+      jest.requireActual('../../utils/gpsDropBuffer');
+    clearGpsDropEntries();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.498, 127.0277, { accuracy: 150 });
+
+    // 표시/결과는 그대로 갱신 — 결정 tier 제외는 gpsQualityDegraded/gps-drop 로그로 별도 노출.
+    expect(result.current.userLocation).not.toBeNull();
+    const drops = getGpsDropEntries();
+    expect(drops).toHaveLength(1);
+    expect(drops[0].dropReason).toBe('gps-quality-drop:accuracy');
+    // 콜드스타트(직전 통과 기록 없음) — false positive 방지로 아직 degraded=false.
+    expect(result.current.gpsQualityDegraded).toBe(false);
+  });
+
+  it('accuracy는 통과하지만 fix가 15s 이상 오래되면 gps-quality-drop:stale', async () => {
+    const { clearGpsDropEntries, getGpsDropEntries } =
+      jest.requireActual('../../utils/gpsDropBuffer');
+    clearGpsDropEntries();
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.498, 127.0277, { accuracy: 50, timestamp: Date.now() - 16_000 });
+
+    const drops = getGpsDropEntries();
+    expect(drops).toHaveLength(1);
+    expect(drops[0].dropReason).toBe('gps-quality-drop:stale');
+  });
+
+  it('게이트 통과 fix 이후 accuracy가 100m 초과 급락하면 gpsQualityDegraded=true', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    simulateGps(37.4981, 127.0278, { accuracy: 200 });
+    expect(result.current.gpsQualityDegraded).toBe(true);
+  });
+
+  it('급락 후 다시 게이트 통과 fix가 들어오면 gpsQualityDegraded=false로 원복된다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    simulateGps(37.4981, 127.0278, { accuracy: 200 });
+    expect(result.current.gpsQualityDegraded).toBe(true);
+
+    simulateGps(37.4982, 127.0279, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+  });
+
+  it('게이트 통과 fix가 30s 이상 없으면(부재) gpsQualityDegraded=true', async () => {
+    const { state, restore } = setupGpsDropFakeNow();
+    try {
+      const { result } = renderHook(() => useNearestStation());
+      await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+      simulateGps(37.498, 127.0277, { accuracy: 50, timestamp: state.fakeNow });
+      expect(result.current.gpsQualityDegraded).toBe(false);
+
+      state.fakeNow += 31_000;
+      // 급락은 아닌(70m 상승, 100m 미만) accuracy로도 부재 조건만으로 degraded 전이.
+      simulateGps(37.4981, 127.0278, { accuracy: 120, timestamp: state.fakeNow });
+
+      expect(result.current.gpsQualityDegraded).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('degraded 발생 시 FG watch가 지하 프로파일(High@12s)로 전환되고, 게이트 통과 fix 재등장 시 지상으로 원복된다', async () => {
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    simulateGps(37.4981, 127.0278, { accuracy: 200 }); // 급락 → degraded=true
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS);
+
+    simulateGps(37.4982, 127.0279, { accuracy: 50 }); // 게이트 통과 → 원복
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(3));
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+  });
+
+  it('barometerSubsurface=true가 이미 활성이면 gpsQualityDegraded 변화만으로는 재시작하지 않는다 (이미 지하 프로파일)', async () => {
+    const { rerender } = renderHook(
+      ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
+      { initialProps: { sub: true } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS);
+
+    await act(async () => {
+      rerender({ sub: true });
+    });
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    simulateGps(37.4981, 127.0278, { accuracy: 200 }); // degraded=true여도 이미 subsurface 프로파일
+
+    // barometerSubsurface=true가 이미 throttle=true를 만들었으므로 추가 재시작 없음.
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('useNearestStation — #1363 sticky input memo 안정성 (cascade 차단)', () => {
   // useStickyStation에 전달되는 fix/motion object가 inline literal이면 매 render 새 ref가 되어
   // sticky 평가 effect가 매 render 재실행 → 9시간 trip ~16만회 emit. useMemo로 안정화되면
