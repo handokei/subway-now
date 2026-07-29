@@ -253,17 +253,6 @@ export interface Trip {
    * `infoModeEnabled` / `subsurface` / `locale`과 동일 저장 전용 패턴.
    */
   sleepModeEnabled?: boolean;
-  /**
-   * #2066 (Phase 2-backend) — 현재 leg(가장 최근 transfer waypoint 소진 이후)에서 waypoint가
-   * 몇 번째 hop인지 (0-based). 취침 알람 "1역차 금지" 게이트가 사용 — 0이면 이 waypoint가
-   * leg의 첫 정거장(출발 직후)이라 "직전역"으로 삼기엔 사실상 출발과 다름없어 skip한다.
-   *
-   * 갱신: transfer waypoint 소진 시 0으로 reset. intermediate waypoint 소진 시 +1.
-   * destination 소진은 trip 종료라 의미 없음(갱신 불필요).
-   * 부재(레거시 trip / trip 등록 직후 첫 cycle) = 0으로 취급 — 사실상 leg 첫 hop과 동일 취급으로
-   * 보수적 skip이 기본값이라 회귀 없음.
-   */
-  legHopIndex?: number;
 }
 
 /**

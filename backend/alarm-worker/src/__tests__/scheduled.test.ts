@@ -178,8 +178,8 @@ function makeFullEmptyStats(): ScheduledStats {
     pendingActivityPossible: true,
     // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
     sleepAlarmFired: 0,
-    sleepAlarmOneHopSkipped: 0,
     sleepAlarmDedupSkipped: 0,
+    sleepAlarmRolledBack: 0,
   };
 }
 
@@ -1880,7 +1880,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
 
       // #2063 (ADR-023 개정) — vanish 경로(fireVanishFallbackStationPush) sleep mute 분기.
       describe('#2063 (ADR-023 개정) sleepModeEnabled 매역 알림 mute (vanish-fallback)', () => {
-        it('sleepModeEnabled=true → vanish-fallback 매역 push skip', async () => {
+        it('sleepModeEnabled=true → vanish-fallback 매역 push skip (단, #2066 취침 알람은 별 채널로 정상 발사)', async () => {
           const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
           const { stats } = await runFallbackMotionScenario({
             motion: 'automotive',
@@ -1889,9 +1889,14 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
             tripOverrides: { sleepModeEnabled: true },
             apnsFetch,
           });
+          // 매역 알림(vanish-fallback) 채널은 여전히 mute — 본 PR 접촉 금지 영역, 기존 동작 그대로.
           expect(stats.vanishFallbackFired).toBe(0);
           expect(stats.pushed).toBe(0);
-          expect(apnsFetch.mock.calls.length).toBe(0);
+          // #2066 — vanish-fallback advance도 waypoint(중곡, intermediate)의 nextWaypoint가
+          // destination(군자)인 "직전역 진입" ground truth라 취침 알람(별 채널)은 정상 발사된다.
+          // fixture 기본 waypoints=[중곡(intermediate), 군자(destination)] (makeLockTripFixture).
+          expect(stats.sleepAlarmFired).toBe(1);
+          expect(apnsFetch.mock.calls.length).toBe(2);
         });
 
         it('sleepModeEnabled=false → vanish-fallback 매역 push 정상 발사', async () => {
@@ -2235,11 +2240,9 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
   // ADR-023 정합: backend는 sleepModeEnabled === true trip에서만 발사한다(#2066부터 gate 도입 —
   // #2036/#2063과 달리 이 알람 채널 자체가 취침 전용이므로 mute가 아니라 발사 조건이다).
   describe('#2066 — 취침 알람(원격 visible) 발사 조건', () => {
-    // legHopIndex:1 = 직전역(중곡)이 leg의 2번째 hop 이상 → "1역차 금지" 통과.
     function makeSleepAlarmTrip(overrides: Partial<Trip> = {}) {
       return makeLockTrip({
         sleepModeEnabled: true,
-        legHopIndex: 1,
         waypoints: [
           { stationName: '중곡', line: '7', kind: 'intermediate' },
           { stationName: '군자', line: '7', kind: 'transfer' },
@@ -2305,12 +2308,47 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(companionHeaders['apns-push-type']).toBe('background');
     });
 
-    it('1역차 금지 — legHopIndex=0(직전역이 leg 첫 hop) → skip + stats.sleepAlarmOneHopSkipped, push 미발사', async () => {
+    // PR #2085 리뷰 P1-1 — leg-relative hop 카운터(legHopIndex) 게이트는 전면 제거됐다.
+    // `trip.waypoints`는 leg 출발역(방금 탑승/환승한 역) 자체를 포함하지 않으므로, 갓 등록된
+    // trip이든 여러 cron cycle을 거친 trip이든 waypoints=[I1, T] 형태(intermediate 1개 +
+    // transfer/destination)면 항상 발사돼야 한다 — 별도 카운터로 "몇 번째 hop인지" 추적할
+    // 필요가 없다(과거 legHopIndex 게이트는 이 케이스를 false-skip 시키는 버그였다).
+    it('갓 등록된 2역차 leg(waypoints=[I1, T]) — 추가 필드 하드코딩 없이 I1 진입 시 발사', async () => {
       const kv = new InMemoryKV();
       const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-      await putTrip(kv as unknown as KVNamespace, makeSleepAlarmTrip({ legHopIndex: 0 }));
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeSleepAlarmTrip({
+          waypoints: [
+            { stationName: '중곡', line: '7', kind: 'intermediate' },
+            { stationName: '군자', line: '7', kind: 'transfer' },
+          ],
+        }),
+      );
       const stats = await runScheduled(makeEnv(kv), {
         seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-sleep-alarm-2hop-fresh',
+      });
+      expect(stats.sleepAlarmFired).toBe(1);
+      const alertCall = findPushByKindOrAlert(fetchImpl, (body) => body.aps?.alert !== undefined);
+      expect(alertCall).toBeDefined();
+    });
+
+    it('1역차 leg(waypoints=[T]만, 직전역 자체가 transfer) — not-preceding으로 skip, push 미발사', async () => {
+      const kv = new InMemoryKV();
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeSleepAlarmTrip({
+          waypoints: [{ stationName: '군자', line: '7', kind: 'transfer' }],
+        }),
+      );
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
         apnsConfig,
         apnsHosts: APNS_HOSTS,
         fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -2318,8 +2356,11 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         generatePushId: () => 'p-sleep-alarm-onehop',
       });
       expect(stats.sleepAlarmFired).toBe(0);
-      expect(stats.sleepAlarmOneHopSkipped).toBe(1);
-      const alertCall = findPushByKindOrAlert(fetchImpl, (body) => body.aps?.alert !== undefined);
+      // waypoint 자체가 이미 kind='transfer'라 evaluateSleepAlarmTrigger가 not-preceding으로
+      // 차단한다 — 다만 그 transfer waypoint advance는 ADR-023에 따라 hop-end prompt
+      // (category BOARDING_PROMPT)를 sleep 무관하게 독립 발사하므로 "alert 전무"가 아니라
+      // "sleep-alarm 전용 alert(sound=alarm.wav) 전무"로 좁혀 검증한다.
+      const alertCall = findPushByKindOrAlert(fetchImpl, (body) => body.aps?.sound === 'alarm.wav');
       expect(alertCall).toBeUndefined();
       const companionCall = findPushByKindOrAlert(
         fetchImpl,
@@ -2363,7 +2404,6 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         generatePushId: () => 'p-sleep-alarm-off',
       });
       expect(stats.sleepAlarmFired).toBe(0);
-      expect(stats.sleepAlarmOneHopSkipped).toBe(0);
       expect(stats.sleepAlarmDedupSkipped).toBe(0);
       const companionCall = findPushByKindOrAlert(
         fetchImpl,
@@ -2394,7 +2434,6 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         generatePushId: () => 'p-sleep-alarm-not-preceding',
       });
       expect(stats.sleepAlarmFired).toBe(0);
-      expect(stats.sleepAlarmOneHopSkipped).toBe(0);
       expect(stats.sleepAlarmDedupSkipped).toBe(0);
       const companionCall = findPushByKindOrAlert(
         fetchImpl,
@@ -2427,6 +2466,82 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(stats.envCorrected).toBeGreaterThanOrEqual(1);
       const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
       expect(stored.apnsEnv).toBe('production');
+    });
+
+    // PR #2085 리뷰 P2-1 — 주 채널(visible alert) 발사 실패 시 dedup claim을 rollback해야
+    // 1시간 동안 알람이 영구 미스되지 않는다. transient(503) 실패는 retry-push: 큐에도 적재된다.
+    it('P2-1 — visible alert 503 실패 → dedup rollback + retry-push 큐 적재, companion은 독립 성공', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeSleepAlarmTrip());
+      let callCount = 0;
+      const fetchImpl = vi.fn(async () => {
+        callCount += 1;
+        // 1번째 호출 = visible alert(실패), 2번째 호출 = companion(성공).
+        return callCount === 1
+          ? new Response('', { status: 503 })
+          : new Response('', { status: 200 });
+      });
+      const stats = await runScheduled(makeEnv(kv, kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-sleep-alarm-rollback',
+      });
+      expect(stats.sleepAlarmFired).toBe(0);
+      expect(stats.sleepAlarmRolledBack).toBe(1);
+      // dedup claim이 rollback되어 KV에 남아있지 않다 — 다음 cron cycle 재시도 가능.
+      expect(await kv.get('alarmFireKey:lock-tok:군자')).toBeNull();
+      // transient(503) 실패라 retry-push: 큐에 적재된다.
+      const retryEntry = await kv.get('retry-push:p-sleep-alarm-rollback');
+      expect(retryEntry).not.toBeNull();
+      const entry = JSON.parse(retryEntry as string);
+      expect(entry.lastErrorStatus).toBe(503);
+      expect(entry.payload.nextWaypoint).toBe('군자');
+      // companion은 독립 채널이라 alert 실패와 무관하게 성공한다.
+      const companionCall = findPushByKindOrAlert(
+        fetchImpl,
+        (body) => body.data?.kind === 'sleep-alarm-companion',
+      );
+      expect(companionCall).toBeDefined();
+    });
+
+    // PR #2085 리뷰 P2-1 — companion(보조 채널) 실패는 dedup을 건드리지 않는다(alert이 주
+    // 채널이라 이미 성공 발사됨). transient 실패는 companion 자체 retry-push: 큐 적재.
+    it('P2-1 — companion push 500 실패 → alert dedup은 유지, companion만 retry-push 큐 적재', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeSleepAlarmTrip());
+      let callCount = 0;
+      const fetchImpl = vi.fn(async () => {
+        callCount += 1;
+        // 1번째 호출 = visible alert(성공), 2번째 호출 = companion(실패).
+        return callCount === 1
+          ? new Response('', { status: 200 })
+          : new Response('', { status: 500 });
+      });
+      // alert/companion 순서로 서로 다른 pushId 발급 — 같은 id면 retry-push: 키가 충돌한다.
+      let pushIdCount = 0;
+      const stats = await runScheduled(makeEnv(kv, kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => {
+          pushIdCount += 1;
+          return pushIdCount === 1 ? 'p-sleep-alarm-companion-fail-alert' : 'p-sleep-alarm-companion-fail-companion';
+        },
+      });
+      expect(stats.sleepAlarmFired).toBe(1);
+      expect(stats.sleepAlarmRolledBack).toBe(0);
+      // alert이 성공했으므로 dedup claim은 유지된다.
+      expect(await kv.get('alarmFireKey:lock-tok:군자')).not.toBeNull();
+      const retryEntry = await kv.get('retry-push:p-sleep-alarm-companion-fail-companion');
+      expect(retryEntry).not.toBeNull();
+      const entry = JSON.parse(retryEntry as string);
+      expect(entry.lastErrorStatus).toBe(500);
+      expect(entry.payload.nextWaypoint).toBe('군자');
     });
   });
 
@@ -9017,8 +9132,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       pendingActivityPossible: true,
       // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
       sleepAlarmFired: 0,
-      sleepAlarmOneHopSkipped: 0,
       sleepAlarmDedupSkipped: 0,
+      sleepAlarmRolledBack: 0,
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,

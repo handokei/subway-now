@@ -818,15 +818,16 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   sleepAlarmFired: number;
   /**
-   * #2066 — "1역차 금지" 게이트가 차단한 누적 횟수. 직전 역이 해당 leg의 첫 hop(사실상 출발역과
-   * 다름없음)이라 발사를 skip한 케이스. `alarm skip: 1-hop` 로그와 1:1.
-   */
-  sleepAlarmOneHopSkipped: number;
-  /**
    * #2066 — 같은 (tripToken, targetStation) 조합에 대해 1시간 이내 이미 발사한 KV dedup이
    * 있어 차단된 누적 횟수. `alarm skip: dedup` 로그와 1:1.
    */
   sleepAlarmDedupSkipped: number;
+  /**
+   * #2066 (PR #2085 리뷰 P2-1) — visible alert push 발사 실패로 dedup claim을 rollback한
+   * 누적 횟수. dedup KV를 claim-then-send로 선점하되, `sendAlertPush` 실패 시 즉시 삭제해
+   * 다음 cron tick에 재시도를 허용한다(전송 실패로 1h 동안 알람이 영구 미스되는 회귀 방지).
+   */
+  sleepAlarmRolledBack: number;
 }
 
 /**
@@ -998,8 +999,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     },
     // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
     sleepAlarmFired: 0,
-    sleepAlarmOneHopSkipped: 0,
     sleepAlarmDedupSkipped: 0,
+    sleepAlarmRolledBack: 0,
     // #2073 (Issue A) — 아래 idle 판정 이후 실제 값으로 덮어쓴다. 기본 true = 보수적(항상 실행).
     pendingActivityPossible: true,
   };
@@ -1868,7 +1869,7 @@ export function sleepAlarmFireKey(tripToken: string, targetStation: string): str
 /** #2066 — 취침 알람 dedup TTL (1h). */
 export const SLEEP_ALARM_FIRE_DEDUP_TTL_SEC = 60 * 60;
 
-export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding' | 'one-hop';
+export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding';
 
 /**
  * #2066 — 취침 알람 발사 조건 평가 (순수 함수, KV/네트워크 접근 없음).
@@ -1879,9 +1880,12 @@ export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding' | 'one-hop';
  *      — transfer/destination 자신은 "직전역"이 될 수 없다(그 경우는 이미 도착한 것).
  *   3. `nextWaypoint`(waypoint 바로 다음 대상)가 존재하고 `kind`가 'transfer' 또는 'destination'
  *      — waypoint가 정확히 그 환승/도착역의 "직전역"이어야 한다.
- *   4. "1역차 금지" — `trip.legHopIndex`(waypoint가 leg 내 몇 번째 hop인지, 0-based)가 0보다
- *      커야 한다. 0이면 waypoint가 leg의 첫 정거장(출발 직후)이라 직전역 ≠ 출발역 원칙을
- *      만족하지 못해 skip한다 (이슈 #2066 스펙 "그 직전 역 ≠ 해당 구간의 출발역").
+ *
+ * "1역차 금지"(이슈 #2066 스펙 "그 직전 역 ≠ 해당 구간의 출발역")는 별도 게이트가 필요 없다 —
+ * `trip.waypoints`는 leg의 출발역(방금 탑승/환승한 역) 자체를 포함하지 않으므로, 환승/도착이
+ * 출발역과 직접 인접한 1-hop leg에서는 currently-active waypoint가 이미 transfer/destination
+ * kind라 조건 2에서 자연히 차단된다(별도 leg-relative hop 카운터를 두면 오히려 2-hop 이상의
+ * 정상 leg에서 false-skip을 유발한다 — PR #2085 리뷰에서 제거).
  */
 export function evaluateSleepAlarmTrigger(
   trip: Trip,
@@ -1897,10 +1901,6 @@ export function evaluateSleepAlarmTrigger(
     (nextWaypoint.kind !== 'transfer' && nextWaypoint.kind !== 'destination')
   ) {
     return { fire: false, reason: 'not-preceding' };
-  }
-  const legHopIndex = trip.legHopIndex ?? 0;
-  if (legHopIndex <= 0) {
-    return { fire: false, reason: 'one-hop' };
   }
   return { fire: true, target: nextWaypoint };
 }
@@ -1920,12 +1920,51 @@ interface MaybeFireSleepAlarmInputs {
 }
 
 /**
+ * #2066 (Phase 2-backend) — visible alert push의 `apns-collapse-id` prefix.
+ * PR #2085 리뷰 P2-2 — device token(64 hex)을 통째로 넣으면 APNs `apns-collapse-id` 64B
+ * 한도를 초과할 수 있어(`alarm-<64hex>-<station>` ≈ 77~92B) `slice(0, 16)`로 축약한다.
+ * collapse는 같은 trip·station 내에서 최신으로 교체하는 용도라 16 hex prefix로 유니크성 충분.
+ */
+function sleepAlarmCollapseId(tripToken: string, targetStation: string): string {
+  return `alarm-${tripToken.slice(0, 16)}-${targetStation}`;
+}
+
+/**
+ * #2066 (Phase 2-backend) — 취침 알람 실패 시 retry queue 등록용 payload. `SilentPushPayload`의
+ * 필수 필드만 채운 최소 shape — companion(kind `sleep-alarm-companion`) 자체 필드(originStation
+ * 등)는 retry queue의 `SilentPushPayload` 타입에 없어 보존되지 않지만(Phase 2-device 소비 전이라
+ * 무해), station/tripToken 정보는 보존해 재발사 시 device가 최소한 "이 역 근처" 신호는 받는다.
+ */
+function buildSleepAlarmRetryPayload(
+  pushId: string,
+  target: Waypoint,
+  targetKind: 'transfer' | 'destination',
+  tripToken: string,
+  now: number,
+): SilentPushPayload {
+  return {
+    nextWaypoint: target.stationName,
+    etaSeconds: 0,
+    phase: 'imminent',
+    kind: targetKind,
+    sentAt: now,
+    pushId,
+    tripToken,
+  };
+}
+
+/**
  * #2066 (Phase 2-backend) — 취침 알람(원격 visible) 평가 + 발사.
  *
  * `evaluateSleepAlarmTrigger`로 조건을 평가하고, 통과 시 KV dedup(1h) 체크 후
  * visible alert push(주 채널, `sound: alarm.wav` + `interruption-level: time-sensitive`) +
  * companion silent push(kind `sleep-alarm-companion`, device TTS/진동 + OS 예약 cancel용)를
  * 같은 cron tick에서 동시 발사한다.
+ *
+ * PR #2085 리뷰 P2-1 — dedup은 claim-then-send(발사 전 선점)를 유지하되, 주 채널(visible alert)
+ * 발사가 실패하면 dedup claim을 즉시 rollback(delete)한다 — 그렇지 않으면 전송 실패가 1시간
+ * 동안 알람을 영구 미스시킨다. transient 실패(429/5xx)는 기존 `enqueueRetryIfTransient` 큐에
+ * 등록해 backoff 재발사 안전망을 확보한다(다른 fire path와 동일 패턴 재사용).
  *
  * "하지 말 것" 준수 — 매역 알림 경로(`fireArvlCdStationPush`/`fireVanishFallbackStationPush`)는
  * 건드리지 않는다. 본 함수는 별도 dedup namespace(`alarmFireKey:`)와 별도 push kind를 사용하는
@@ -1935,14 +1974,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
   const trigger = evaluateSleepAlarmTrigger(trip, waypoint, nextWaypoint);
   if (!trigger.fire) {
-    if (trigger.reason === 'one-hop') {
-      stats.sleepAlarmOneHopSkipped += 1;
-      log('alarm skip: 1-hop', {
-        token: trip.token.slice(0, 8),
-        station: waypoint.stationName,
-        target: nextWaypoint?.stationName,
-      });
-    }
+    // 'not-sleep' / 'not-preceding' 은 매 intermediate advance마다 정상적으로 대량 발생하는
+    // routine 분기라 로그 노이즈를 만들지 않는다 (매역 알림의 다른 skip 사유들과 동일 정책).
     return;
   }
   const target = trigger.target;
@@ -1958,20 +1991,22 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     return;
   }
   // claim 먼저 — cron tick 겹침(같은 trip이 동시 두 사이클로 평가되는 race)으로부터 보호.
+  // 실패 시 아래에서 rollback(delete) — 영구 dedup 미스 방지.
   await env.TRIPS.put(dedupKey, '1', { expirationTtl: SLEEP_ALARM_FIRE_DEDUP_TTL_SEC });
 
   const content = buildStationNotifContent(target, trip.locale);
-  const collapseId = `alarm-${trip.token}-${target.stationName}`;
+  const collapseId = sleepAlarmCollapseId(trip.token, target.stationName);
   const targetKind: 'transfer' | 'destination' =
     target.kind === 'destination' ? 'destination' : 'transfer';
 
+  const alertPushId = generatePushId();
   const alertHeal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
         deviceToken: trip.token,
         title: content.title,
         body: content.body,
-        pushId: generatePushId(),
+        pushId: alertPushId,
         tripToken: trip.token,
         sound: 'alarm.wav',
         interruptionLevel: 'time-sensitive',
@@ -1991,11 +2026,12 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     stats.envCorrected += 1;
   }
 
+  const companionPushId = generatePushId();
   const companionHeal = await sendWithEnvHeal(
     (host) =>
       sendSleepAlarmCompanionPush({
         deviceToken: trip.token,
-        pushId: generatePushId(),
+        pushId: companionPushId,
         originStation: waypoint.stationName,
         targetKind,
         nextLine: target.line,
@@ -2029,12 +2065,28 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       companionOk: companionHeal.result.ok,
     });
   } else {
-    log('sleep-alarm: visible push failed', {
+    // P2-1 — 주 채널 실패: dedup rollback(다음 재평가 기회 보존) + transient retry 큐 등록.
+    stats.sleepAlarmRolledBack += 1;
+    await env.TRIPS.delete(dedupKey);
+    log('sleep-alarm: visible push failed (dedup rolled back)', {
       token: trip.token.slice(0, 8),
       target: target.stationName,
       status: alertHeal.result.status,
       reason: alertHeal.result.reason,
     });
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId: alertPushId,
+        token: trip.token,
+        payload: buildSleepAlarmRetryPayload(alertPushId, target, targetKind, trip.token, now),
+        apnsEnv: alertHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
+        status: alertHeal.result.status,
+        reason: alertHeal.result.reason,
+        now,
+      },
+      deps.archFlag,
+    );
   }
   if (!companionHeal.result.ok) {
     log('sleep-alarm: companion push failed', {
@@ -2043,6 +2095,20 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       status: companionHeal.result.status,
       reason: companionHeal.result.reason,
     });
+    // companion은 보조 채널 — dedup은 (alert 성공 시) 유지하고 transient retry만 시도.
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId: companionPushId,
+        token: trip.token,
+        payload: buildSleepAlarmRetryPayload(companionPushId, target, targetKind, trip.token, now),
+        apnsEnv: companionHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
+        status: companionHeal.result.status,
+        reason: companionHeal.result.reason,
+        now,
+      },
+      deps.archFlag,
+    );
   }
 }
 
@@ -3296,11 +3362,6 @@ export async function advanceBoardingLockWaypoint(
     log,
     generatePushId,
   });
-  // #2066 — "1역차 금지" 게이트용 leg-relative hop 카운터. intermediate 소진만 +1 (transfer
-  // 소진 시 새 leg 시작이라 아래에서 0으로 reset).
-  if (waypoint.kind === 'intermediate') {
-    trip.legHopIndex = (trip.legHopIndex ?? 0) + 1;
-  }
   // #1539 (S6) — waypoint advance 시점 직전 station 누적. silent push payload로 forward되어
   // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
   // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
@@ -3416,12 +3477,9 @@ export async function advanceBoardingLockWaypoint(
       generatePushId: () => crypto.randomUUID(),
     });
   }
-  // #2066 (Phase 2-backend) — 환승 waypoint 소진 = 새 leg 시작. "1역차 금지" 게이트용
-  // leg-relative hop 카운터를 0으로 reset (이전엔 #2036이 여기서 직접 sleep-transfer-alarm을
-  // 발사했으나, #2066부터는 "환승/도착 직전역 진입" 시점(위 `maybeFireSleepAlarm`)으로 이관됐다).
-  if (waypoint.kind === 'transfer') {
-    trip.legHopIndex = 0;
-  }
+  // #2066 (Phase 2-backend) — 이전엔 #2036이 여기서(환승 waypoint 소진 시점) 직접
+  // sleep-transfer-alarm을 발사했으나, #2066부터는 "환승/도착 직전역 진입" 시점(위
+  // `maybeFireSleepAlarm`)으로 이관됐다.
   // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
   // 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
   // 다음 cron cycle에서 lockMissing → evaluateAndMaybeFireBoardingPrompt → boardingPrompt push 발사.
@@ -3924,9 +3982,6 @@ export async function runLocklessIntermediate(
     log,
     generatePushId,
   });
-  // #2066 — leg-relative hop 카운터. lockless는 intermediate만 advance(transfer/destination은
-  // lock 획득 후 `advanceBoardingLockWaypoint`가 이어받아 처리) — 여기선 +1만 필요.
-  trip.legHopIndex = (trip.legHopIndex ?? 0) + 1;
   trip.waypoints.shift();
   if (trip.waypoints.length === 0) {
     // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
