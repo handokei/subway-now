@@ -1874,6 +1874,46 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.boardingLock).toBeUndefined();
       });
 
+      // #2063 (ADR-023 개정) — vanish 경로(fireVanishFallbackStationPush) sleep mute 분기.
+      describe('#2063 (ADR-023 개정) sleepModeEnabled 매역 알림 mute (vanish-fallback)', () => {
+        it('sleepModeEnabled=true → vanish-fallback 매역 push skip', async () => {
+          const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+          const { stats } = await runFallbackMotionScenario({
+            motion: 'automotive',
+            hopElapsed: true,
+            pushId: 'p2063-vf-sleep',
+            tripOverrides: { sleepModeEnabled: true },
+            apnsFetch,
+          });
+          expect(stats.vanishFallbackFired).toBe(0);
+          expect(stats.pushed).toBe(0);
+          expect(apnsFetch.mock.calls.length).toBe(0);
+        });
+
+        it('sleepModeEnabled=false → vanish-fallback 매역 push 정상 발사', async () => {
+          const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+          const { stats } = await runFallbackMotionScenario({
+            motion: 'automotive',
+            hopElapsed: true,
+            pushId: 'p2063-vf-nosleep',
+            tripOverrides: { sleepModeEnabled: false },
+            apnsFetch,
+          });
+          expect(stats.vanishFallbackFired).toBe(1);
+        });
+
+        it('sleepModeEnabled 미지정(undefined) → vanish-fallback 매역 push 정상 발사 (기존 동작 보존)', async () => {
+          const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+          const { stats } = await runFallbackMotionScenario({
+            motion: 'automotive',
+            hopElapsed: true,
+            pushId: 'p2063-vf-undef',
+            apnsFetch,
+          });
+          expect(stats.vanishFallbackFired).toBe(1);
+        });
+      });
+
       // vanish-release/vanish-fallback 양 origin의 push payload 검증용 헬퍼.
       // SonarCloud duplication 차단: 시나리오 실행 + 매칭 call body 추출을 한 곳에 모음.
       async function capturePushBody(setup: {
@@ -7149,6 +7189,72 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(2);
   });
 
+  // #2063 (ADR-023 개정) — 매역 알림(station-notif) sleep mute 분기.
+  describe('#2063 (ADR-023 개정) sleepModeEnabled 매역 알림 mute', () => {
+    it('sleepModeEnabled=true → 매역 push skip (push 미발사, dedup KV 미stamp)', async () => {
+      const { stats, kv, apnsFetch } = await runArvlScheduled({
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        trip: makeLockTrip({ sleepModeEnabled: true }),
+        pushId: 'p-arvl-sleep',
+      });
+      expect(stats.arvlCdFireSuccess).toBe(0);
+      expect(stats.pushed).toBe(0);
+      expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+      expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
+    });
+
+    it('sleepModeEnabled=false → 매역 push 정상 발사', async () => {
+      const { stats, apnsFetch } = await runArvlScheduled({
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        trip: makeLockTrip({ sleepModeEnabled: false }),
+        pushId: 'p-arvl-nosleep',
+      });
+      expect(stats.arvlCdFireSuccess).toBe(1);
+      expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
+    });
+
+    it('sleepModeEnabled 미지정(undefined) → 매역 push 정상 발사 (기존 동작 보존)', async () => {
+      const { stats, apnsFetch } = await runArvlScheduled({
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        trip: makeLockTrip(),
+        pushId: 'p-arvl-undef-sleep',
+      });
+      expect(stats.arvlCdFireSuccess).toBe(1);
+      expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
+    });
+  });
+
+  // #2063 (ADR-023 개정) P1 — i18n 4언어 매역 알림 문구 (locale별).
+  describe('#2063 매역 알림 locale별 title/body 렌더', () => {
+    it.each<['ko' | 'en' | 'ja' | 'zh', string, string]>([
+      ['ko', '역 통과', '중곡역을 지나고 있어요'],
+      ['en', 'Passing station', 'Passing through 중곡'],
+      ['ja', '駅通過', '중곡駅を通過しています'],
+      ['zh', '经过站点', '正在经过중곡站'],
+    ])('locale=%s → intermediate title/body 4언어 렌더', async (locale, title, body) => {
+      const { apnsFetch } = await runArvlScheduled({
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        trip: makeLockTrip({ locale }),
+        pushId: `p-arvl-locale-${locale}`,
+      });
+      const call = getStationPassedCalls(apnsFetch)[0];
+      const parsedBody = JSON.parse(call[1].body as string) as { aps: { alert: { title: string; body: string } } };
+      expect(parsedBody.aps.alert.title).toBe(title);
+      expect(parsedBody.aps.alert.body).toBe(body);
+    });
+
+    it('locale 미지정 → ko fallback', async () => {
+      const { apnsFetch } = await runArvlScheduled({
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        trip: makeLockTrip(),
+        pushId: 'p-arvl-locale-fallback',
+      });
+      const call = getStationPassedCalls(apnsFetch)[0];
+      const parsedBody = JSON.parse(call[1].body as string) as { aps: { alert: { title: string; body: string } } };
+      expect(parsedBody.aps.alert.title).toBe('역 통과');
+    });
+  });
+
   it('arvlCd=1이지만 lock 만료된 trip은 lockMissing 게이트로 차단 (fire 경로 미진입)', async () => {
     const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
@@ -7574,6 +7680,7 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
   it('vanish-fallback advance(hop-elapsed) 페이로드에 origin=vanish-fallback stamp', async () => {
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     const kv = new InMemoryKV();
+    const pending = new InMemoryKV();
     await putTrip(
       kv as unknown as KVNamespace,
       makeLockTripFixture('lock-tok', {
@@ -7582,7 +7689,7 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
       }),
     );
     // arrivals/positions 모두 empty → vanish, hopElapsed=true → fallback advance fire
-    await runScheduled(makeEnv(kv), {
+    await runScheduled(makeEnv(kv, pending), {
       seoul: new SeoulArrivalClient({
         apiKey: 'K',
         host: 'h',
@@ -7598,6 +7705,8 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
     });
     const body = findApnsCallByPushId(apnsFetch, 'p1402-vf');
     expect((body.data as { origin: string }).origin).toBe('vanish-fallback');
+    // #2063 (ADR-023 개정) — visible alert 직접 발사이므로 PENDING_PUSHES 등록 없음.
+    expect(await pending.get('pending:p1402-vf')).toBeNull();
   });
 });
 

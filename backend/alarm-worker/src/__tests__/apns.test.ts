@@ -748,6 +748,182 @@ describe('sendAlertPush (#572 P2c)', () => {
     const body = JSON.parse(call[1].body as string);
     expect('category' in body.aps).toBe(false);
   });
+
+  // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 옵션 wire 검증.
+  describe('#2063 station-notif 옵션 (sound/interruptionLevel/collapseId/expiration/data)', () => {
+    it('sound 미지정 시 기존 default 유지 (backward compat)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.aps.sound).toBe('default');
+    });
+
+    it('sound=null 지정 시 aps.sound 필드 자체가 생략된다 (매역 알림 무소리)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        sound: null,
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect('sound' in body.aps).toBe(false);
+    });
+
+    it('interruptionLevel 지정 시 aps.interruption-level로 wire', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        interruptionLevel: 'active',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.aps['interruption-level']).toBe('active');
+    });
+
+    it('interruptionLevel 미지정 시 aps.interruption-level omit', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect('interruption-level' in body.aps).toBe(false);
+    });
+
+    it('collapseId 지정 시 apns-collapse-id 헤더로 wire (station-<tripToken> 형태)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        collapseId: 'station-trip-abc',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const headers = call[1].headers as Record<string, string>;
+      expect(headers['apns-collapse-id']).toBe('station-trip-abc');
+    });
+
+    it('collapseId 미지정 시 apns-collapse-id 헤더 omit', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const headers = call[1].headers as Record<string, string>;
+      expect('apns-collapse-id' in headers).toBe(false);
+    });
+
+    it('expirationEpochSec 지정 시 apns-expiration 헤더로 wire (epoch seconds, now+90s)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const now = 1_700_000_000_000;
+      const expirationEpochSec = Math.floor((now + 90_000) / 1000);
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        expirationEpochSec,
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        now,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const headers = call[1].headers as Record<string, string>;
+      expect(headers['apns-expiration']).toBe(String(expirationEpochSec));
+    });
+
+    it('expirationEpochSec 미지정 시 apns-expiration 헤더 omit', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const headers = call[1].headers as Record<string, string>;
+      expect('apns-expiration' in headers).toBe(false);
+    });
+
+    it('data 지정 시 pushId와 함께 병합돼 wire (SSoT/게이트 필드 forward)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        data: { nextWaypoint: '중곡', kind: 'intermediate', phase: 'imminent' },
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.data).toEqual({
+        pushId: 'p',
+        nextWaypoint: '중곡',
+        kind: 'intermediate',
+        phase: 'imminent',
+      });
+    });
+
+    it('data 미지정 시 data는 { pushId }만 (backward compat)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.data).toEqual({ pushId: 'p' });
+    });
+  });
 });
 
 describe('sendReschedulePush (#585)', () => {

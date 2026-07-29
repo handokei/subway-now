@@ -45,6 +45,14 @@ export interface HopEndPromptArgs {
   nextStation: string | null;
 }
 
+/**
+ * #2063 (ADR-023 개정) — 매역 알림(station-notif) waypoint kind. `Waypoint.kind`와 1:1.
+ * arvlCd 기반 매역 fire는 항상 phase='imminent'라 phase 분기는 두지 않는다
+ * (device `route.intermediatePassedTitle` / `notifications.arrivalImminentTitle` /
+ * `notifications.transferImminentTitle` 과 1:1 매핑, `alertContent.ts` byte-identical 문구 재사용).
+ */
+export type StationNotifKind = 'intermediate' | 'transfer' | 'destination';
+
 interface I18nStrings {
   boardingPromptTitle: string;
   boardingPromptBody: (args: BoardingPromptArgs) => string;
@@ -52,6 +60,10 @@ interface I18nStrings {
   hopEndPromptTitle: (args: { transferStation: string }) => string;
   /** #2034 — hop-end (환승역 하차) 알림 body. */
   hopEndPromptBody: (args: HopEndPromptArgs) => string;
+  /** #2063 — 매역 알림(station-notif) title. kind별 분기. */
+  stationNotifTitle: (kind: StationNotifKind) => string;
+  /** #2063 — 매역 알림(station-notif) body. kind별 분기 + station 삽입. */
+  stationNotifBody: (kind: StationNotifKind, stationName: string) => string;
 }
 
 /**
@@ -76,6 +88,19 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       const next = nextStation ? `${nextLine}호선 ${nextStation}` : `${nextLine}호선`;
       return `${from} 다음은 ${next} 방면입니다.`;
     },
+    // #2063 — device ko.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
+    // notifications.transferImminentTitle 과 byte-identical.
+    stationNotifTitle: (kind) => {
+      if (kind === 'intermediate') return '역 통과';
+      if (kind === 'transfer') return '환승 임박';
+      return '도착 임박';
+    },
+    // device ko.json route.intermediatePassedBody / alarms.imminentArrivalBody / alarms.imminentTransferBody.
+    stationNotifBody: (kind, stationName) => {
+      if (kind === 'intermediate') return `${stationName}역을 지나고 있어요`;
+      if (kind === 'transfer') return `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
+      return `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
+    },
   },
   en: {
     boardingPromptTitle: 'Are you on board?',
@@ -90,6 +115,18 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (!nextLine) return from;
       const next = nextStation ? `line ${nextLine} toward ${nextStation}` : `line ${nextLine}`;
       return `${from} Next: ${next}.`;
+    },
+    // #2063 — device en.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
+    // notifications.transferImminentTitle 과 byte-identical.
+    stationNotifTitle: (kind) => {
+      if (kind === 'intermediate') return 'Passing station';
+      if (kind === 'transfer') return 'Transfer imminent';
+      return 'Arrival imminent';
+    },
+    stationNotifBody: (kind, stationName) => {
+      if (kind === 'intermediate') return `Passing through ${stationName}`;
+      if (kind === 'transfer') return `Arriving at ${stationName} — transfer soon!`;
+      return `Arriving at ${stationName} — exit soon!`;
     },
   },
   ja: {
@@ -106,6 +143,18 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       const next = nextStation ? `${nextLine}号線 ${nextStation}方面` : `${nextLine}号線`;
       return `${from} 次は${next}です。`;
     },
+    // #2063 — device ja.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
+    // notifications.transferImminentTitle 과 byte-identical.
+    stationNotifTitle: (kind) => {
+      if (kind === 'intermediate') return '駅通過';
+      if (kind === 'transfer') return 'まもなく乗換';
+      return 'まもなく到着';
+    },
+    stationNotifBody: (kind, stationName) => {
+      if (kind === 'intermediate') return `${stationName}駅を通過しています`;
+      if (kind === 'transfer') return `まもなく${stationName}に到着します。乗換の準備をしてください!`;
+      return `まもなく${stationName}に到着します。下車の準備をしてください!`;
+    },
   },
   zh: {
     boardingPromptTitle: '您已乘车了吗?',
@@ -120,6 +169,18 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (!nextLine) return from;
       const next = nextStation ? `${nextLine}号线 ${nextStation}方向` : `${nextLine}号线`;
       return `${from} 下一段: ${next}。`;
+    },
+    // #2063 — device zh.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
+    // notifications.transferImminentTitle 과 byte-identical.
+    stationNotifTitle: (kind) => {
+      if (kind === 'intermediate') return '经过站点';
+      if (kind === 'transfer') return '即将换乘';
+      return '即将到达';
+    },
+    stationNotifBody: (kind, stationName) => {
+      if (kind === 'intermediate') return `正在经过${stationName}站`;
+      if (kind === 'transfer') return `即将到达${stationName}。请准备换乘!`;
+      return `即将到达${stationName}。请准备下车!`;
     },
   },
 };
