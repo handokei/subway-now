@@ -1,8 +1,7 @@
 /* eslint-disable import/no-restricted-paths --
  * Cross-feature orchestration: launch reconciliation은 alarm 슬라이스의 client(fetchTripStatus)와
- * notification(sendTripEndedNotification)·sentinel(tripEndedSentinel) + route 슬라이스의
- * destination/lock store를 한 곳에서 묶어 처리하는 본질적 orchestrator. useStateRehydration과
- * 동형이라 file-level disable 패턴을 따른다 (ADR Phase 5).
+ * sentinel(tripEndedSentinel) + route 슬라이스의 destination/lock store를 한 곳에서 묶어 처리하는
+ * 본질적 orchestrator. useStateRehydration과 동형이라 file-level disable 패턴을 따른다 (ADR Phase 5).
  */
 /**
  * Launch reconciliation hook (#1339 PR2 device).
@@ -20,19 +19,19 @@
  *      status=ended 분기와 동일한 cleanup 시퀀스 (notification 미발사 — backend 무음 상태에서
  *      "trip 종료" 알림은 사용자에게 잘못된 신호). 관찰 22 BG kill 6h+ 방치 후 launch 시나리오 커버.
  *   4) `fetchTripStatus` 호출.
- *      - status='ended' → notification 발사 + trip-end recall + storage cleanup + sentinel 기록 +
- *        active trip clear. silent push handler와 같은 cleanup 시퀀스를 그대로 따라
- *        사전예약/route/destination 잔존을 차단한다 (#1351 R1).
- *      - null(404/410) → active trip clear만. notification은 발사하지 않는다 (이미 정리됨,
- *        과거 notification은 다른 채널로 도달했을 가능성 또는 retention 만료).
+ *      - status='ended' → trip-end recall + storage cleanup + sentinel 기록 + active trip clear.
+ *        silent push handler와 같은 cleanup 시퀀스를 그대로 따라 사전예약/route/destination
+ *        잔존을 차단한다 (#1351 R1). #2069 (Phase 3) — D11(로컬 알림 재생성)은 제거, B12
+ *        원격 alert push 단일 채널.
+ *      - null(404/410) → active trip clear만 (이미 정리됨).
  *      - status='active' → 변경 없음.
  *   5) 네트워크 에러 → silent fail. 다음 launch에서 재시도.
  *
- * 멱등성: sentinel이 기록되면 step 2에서 skip되므로 같은 trip에 대해 notification은 최대 1회.
- * triggerTripEndRecall/runTripBoundCleanups 자체도 멱등이라 silent push handler와 중복 호출 안전.
+ * 멱등성: sentinel이 기록되면 step 2에서 skip. triggerTripEndRecall/runTripBoundCleanups 자체도
+ * 멱등이라 silent push handler와 중복 호출 안전.
  *
- * 호출 순서: sendTripEndedNotification → triggerTripEndRecall → runTripBoundCleanups →
- * setTripEndedSentinel → removeItem(ACTIVE_TRIP_KEY). recall이 cleanup보다 먼저여야 한다 —
+ * 호출 순서: triggerTripEndRecall → runTripBoundCleanups → setTripEndedSentinel →
+ * removeItem(ACTIVE_TRIP_KEY). recall이 cleanup보다 먼저여야 한다 —
  * cleanup이 ROUTE_KEY/DESTINATION_KEY/TRIP_ORIGIN_KEY/TRIP_STARTED_AT_KEY를 제거하므로
  * 그 뒤에 recall이 돌면 입력이 비어 'empty'/'no-trip-start'로 skip된다
  * (triggerTripEndRecall.ts 헤더 주석 명시).
@@ -54,7 +53,6 @@ import {
 } from '../utils/tripEndedSentinel';
 import { getLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { getTripStartedAt } from '../utils/tripStartStorage';
-import { sendTripEndedNotification } from '../utils/stationNotification';
 import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
@@ -178,10 +176,9 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     // status === 'ended'. silent push miss를 backstop으로 복구.
     const endedAt = result.endedAt ?? Date.now();
     const reason = result.endReason ?? 'unknown';
-    logger.info(
-      `trip ended on backend — surface notification reason=${reason} endedAt=${endedAt}`,
-    );
-    await sendTripEndedNotification(reason);
+    logger.info(`trip ended on backend — reconcile state reason=${reason} endedAt=${endedAt}`);
+    // #2069 (Phase 3) — D11(`sendTripEndedNotification`) 제거. B12가 원격 alert push 단일
+    // 채널이라 로컬 알림 재생성은 하지 않는다. state cleanup(recall/cleanups/sentinel)만 유지.
     // #1351 R1 — silent push handler와 동일한 cleanup 시퀀스. alert payload trip-ended가
     // BG handler를 호출하지 않아 cleanup이 누락된 경우 launch backstop으로 복구.
     // recall은 cleanup이 storage를 비우기 전에 호출되어야 입력을 읽을 수 있다.

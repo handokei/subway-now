@@ -13,7 +13,6 @@ import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../../shared/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
-import type { TripEndedReason } from '../tasks/silentPushTask';
 import * as LiveActivity from 'live-activity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
@@ -57,7 +56,6 @@ const ALARM_CHANNEL_ID = 'station-alarm';
 const ALARM_SILENT_CHANNEL_ID = 'station-alarm-silent';
 export const STATION_PASSED_NOTIFICATION_ID = 'station-passed';
 const STATION_PASSED_CHANNEL_ID = 'station-passed';
-export const TRIP_ENDED_NOTIFICATION_ID = 'trip-ended';
 
 
 async function scheduleNotification(
@@ -482,40 +480,6 @@ export async function clearStationNotification(): Promise<void> {
   notifLogger.info('Android 알림 해제');
   await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
   await dismissStationPassedNotification();
-}
-
-/**
- * #1323 — trip 종료 user-facing surface.
- *
- * backend trip-ended push(`kind: 'trip-ended'`)는 silent(`content-available`)라 디바이스가
- * 수신해도 알림이 뜨지 않았다(실기기 회귀: 종료 알림 누락). silent push BG handler가 state
- * cleanup 후 이 함수로 사용자 가시 알림을 1회 present한다.
- *
- * reason gate (#1323):
- *  - 'destination-arrived' → "목적지 도착" 제목 (도착 = 성취 신호).
- *  - 그 외(eta-missing/expired/push-unrecoverable/unknown) → 중립 "안내 종료" 제목.
- *  reason→title 매핑은 lookup table로 데이터 구동 — 신규 reason은 default(generic)로 graceful.
- *
- * 채널/사운드는 station-passed와 동일(진동 0 / 사운드 0 / 배너만) — 종료 통지는 취침을 깨우지
- * 않아야 한다(#1224 정책 연장). 잠금화면/배너로 노출되며 Notification Center에 잔류해
- * FG 재진입 시에도 사용자가 확인할 수 있다.
- */
-export async function sendTripEndedNotification(reason: TripEndedReason): Promise<void> {
-  const title = i18next.t(
-    reason === 'destination-arrived' ? 'route.tripEndedArrivedTitle' : 'route.tripEndedTitle',
-  );
-  const body = i18next.t('route.tripEndedBody');
-  await scheduleNotification(TRIP_ENDED_NOTIFICATION_ID, {
-    title,
-    body,
-    sound: false,
-    ...(Platform.OS === 'android' && {
-      channelId: STATION_PASSED_CHANNEL_ID,
-      priority: Notifications.AndroidNotificationPriority.DEFAULT,
-    }),
-  });
-  notifLogger.info('trip 종료 알림:', reason, title);
-  addDomainBreadcrumb('alarm', 'trip-ended-surface', { reason });
 }
 
 import type { AlarmPhaseId } from './alarmPhases';
