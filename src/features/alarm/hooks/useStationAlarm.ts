@@ -20,7 +20,6 @@ import type { Station } from '../../../shared/types/station';
 import { alarmKey, parseAlarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
-import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification } from '../utils/stationNotification';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
 import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
@@ -39,7 +38,6 @@ import {
   logFiredAlarm,
   logFiredAlarmsHydrate,
   logFiredAlarmsTripBoundaryReset,
-  logFiredStationPassed,
   logHydrationTransition,
   logRefMismatch,
   logSuppressedChannelAgnosticDedup,
@@ -83,7 +81,7 @@ import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
-import { resolveNotificationSource, type NotificationSource } from '../utils/notificationSource';
+import { resolveNotificationSource } from '../utils/notificationSource';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 
 const logger = createLogger('StationAlarm');
@@ -1303,9 +1301,7 @@ export function useStationAlarm({
     // A→B→A 빠른 변동 시 이전 IIFE들이 cancelled로 차단되고 최신 candidate만 알림을 보낸다.
     if (nearestStation && isStationOnRoute(nearestStation, route)) {
       const candidateStation = nearestStation;
-      const capturedRoute = route;
       const capturedDestinationId = destination.id;
-      const capturedDestinationName = destination.name;
 
       // #1208 (Epic #1204 D2) — trip 진행도 hop window 게이트.
       // isStationOnRoute는 candidate가 route 노선 위에 있는지만 검사 → 이미 지나간 hop이나
@@ -1464,9 +1460,7 @@ export function useStationAlarm({
     if (!isStationOnRoute(nearestStation, route)) return;
 
     const candidateStation = nearestStation;
-    const capturedRoute = route;
     const capturedDestinationId = destination.id;
-    const capturedDestinationName = destination.name;
 
     let cancelled = false;
     void (async () => {
@@ -1604,9 +1598,7 @@ export function useStationAlarm({
     if (!isStationOnRoute(nearestStation, route)) return;
 
     const candidateStation = nearestStation;
-    const capturedRoute = route;
     const capturedDestinationId = destination.id;
-    const capturedDestinationName = destination.name;
 
     let cancelled = false;
     void (async () => {

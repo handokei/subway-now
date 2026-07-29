@@ -28,7 +28,6 @@ import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import i18next from 'i18next';
 import { AppState } from 'react-native';
 import {
   persistBackendSsotMirror,
@@ -53,7 +52,6 @@ import {
   logSilentPushTripEndedReceived,
   logSilentPushSkipped,
   logSleepTransferAlarmFired,
-  logSuppressedChannelAgnosticDedup,
   type AlarmLogReason,
 } from '../utils/alarmLog';
 import { vibrateAlarm } from '../utils/alarmSound';
