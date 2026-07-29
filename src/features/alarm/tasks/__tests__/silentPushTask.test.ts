@@ -3539,6 +3539,9 @@ describe('silentPushTask', () => {
       const stored = JSON.parse(mirrorCall![1] as string);
       expect(stored).toMatchObject(validSsot);
       expect(typeof stored.receivedAt).toBe('number');
+      // #2092 — station kind는 no-op skip(#2064)이므로 로컬 배너 0건. alert는 OS가 직접
+      // 렌더하고, task는 content-available로 깨어나 mirror write만 수행한다 (이중 배너 없음).
+      expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
     });
 
     it('handleSilentPush does not persist mirror when payload.ssot is absent', async () => {

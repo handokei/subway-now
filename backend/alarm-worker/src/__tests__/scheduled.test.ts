@@ -1972,6 +1972,17 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect('lockReleasedReason' in body.data).toBe(false);
       });
 
+      // #2092 — vanish-fallback 매역 push도 aps.alert + content-available 동시 병기.
+      it('#2092 vanish-fallback push는 aps.alert + content-available===1 동시 wire (SSoT mirror·BG 위젯 채널)', async () => {
+        const body = (await capturePushBody({
+          hopElapsed: true,
+          pushId: 'p2092-vf-content-available',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        })) as any;
+        expect(body.aps.alert).toBeDefined();
+        expect(body.aps['content-available']).toBe(1);
+      });
+
       it('hop 시간 미경과 + motion=stationary → release floor fire 보류 + lock release 유지', async () => {
         // #1402 — release 경로도 ADR-010 "false positive / miss 동급" 게이트를 통과해야 fire.
         // motion=stationary이면 floor fire는 보류(motion gate 증가)되지만, lock release는
@@ -8393,6 +8404,22 @@ describe('silent push SSoT forward (#1561 T8 / S2 흡수)', () => {
     expect(arvlcdBody!.data.ssot).toBeDefined();
     expect(arvlcdBody!.data.ssot.currentStationId).toBe('중곡');
     expect(arvlcdBody!.data.ssot.motionState).toBe('unknown');
+  });
+
+  // #2092 — arvlcd-fire 매역 push도 aps.alert + content-available 동시 병기 + data.ssot 잔존.
+  it('#2092 arvlcd-fire push는 aps.alert + content-available===1 동시 wire (SSoT mirror·BG 위젯 채널)', async () => {
+    const { arvlcdBody } = await runArvlcdSsotFireScenario({
+      token: 'ssot-arvlcd-content-available',
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+      seedSsotStation: '중곡',
+    });
+    expect(arvlcdBody).toBeDefined();
+    expect(arvlcdBody!.aps.alert).toBeDefined();
+    expect(arvlcdBody!.aps['content-available']).toBe(1);
+    expect(arvlcdBody!.data.ssot).toBeDefined();
   });
 
   it('arvlcd-fire lazy-seeds SSoT from waypoint when absent (T4 #1557)', async () => {

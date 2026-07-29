@@ -471,6 +471,13 @@ export interface SendAlertPushOptions {
    * picker 등)가 영향받지 않게 한다. 미지정 시 `data`는 `{ pushId }` 그대로(구 caller backward compat).
    */
   data?: Record<string, unknown>;
+  /**
+   * #2092 — true면 `aps['content-available'] = 1`을 alert payload에 병기한다. iOS는 alert +
+   * content-available 동시 전달을 허용하며, 이 조합으로 device의 `handleSilentPush` background
+   * task가 깨어나 SSoT mirror(`persistBackendSsotMirror`)와 BG 위젯 갱신(`updateWidgetFromSilentPush`)이
+   * lock-active 매역 push에서도 계속 동작한다. 미지정 시 필드 생략 (구 caller backward compat).
+   */
+  contentAvailable?: boolean;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -493,6 +500,9 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
       ...(options.interruptionLevel !== undefined
         ? { 'interruption-level': options.interruptionLevel }
         : {}),
+      // #2092 — content-available은 true일 때만 wire. alert와 동시 병기해 device background
+      // task(handleSilentPush)를 깨워 SSoT mirror·BG 위젯 갱신을 유지한다.
+      ...(options.contentAvailable === true ? { 'content-available': 1 } : {}),
     },
     data: { pushId: options.pushId, ...options.data },
   });
