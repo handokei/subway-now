@@ -32,6 +32,11 @@ import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
 import { pushGpsDropEntry } from '../utils/gpsDropBuffer';
 import { haversine } from '../../../shared/utils/haversine';
 import { useStickyStation } from './useStickyStation';
+import {
+  isGpsQualityGateAcceptable,
+  gpsQualityDropReason,
+  isGpsQualityDegradedTransition,
+} from '../utils/gpsQualityGate';
 
 /** #876 — useNearestStation 표시값의 출처. sticky lock된 역이면 'sticky', 아니면 GPS live.
  *  알람 트리거에는 영향 없음 — 호출자가 출처별 UX(예: "탑승 전 추정")를 분기할 수 있게 노출. */
@@ -124,6 +129,11 @@ interface UseNearestStationReturn {
   // #852: 마지막 신뢰 fix epoch ms. BG 진입 후 새 fix가 없으면 이 시각은 정지.
   // null = 한 번도 fix 없음(cold start). 디버그 모달 표기용.
   lastFixAtMs: number | null;
+  // #2070 — fusion 결정 tier 품질 게이트(100m/15s) 저하 transition 여부. 직전 게이트 통과 fix
+  // 대비 accuracy 급락(>100m) 또는 게이트 통과 fix 30s 부재 시 true. 호출자(useFusedNearestStation)가
+  // inferEnvironment의 추가 입력으로 사용 — 지하 진입 후보 신호이며, FG watch 폴링 프로파일도
+  // 이 값으로 지하 프로파일 전환/원복된다.
+  gpsQualityDegraded: boolean;
   // #876: result 출처. sticky lock된 역이면 'sticky', live GPS 최근접이면 'live'.
   // 호출자가 출처별 UX(예: 라벨 "탑승 전 추정")로 분기 가능. 알람 트리거에는 영향 없음.
   source: NearestStationSource;
@@ -237,6 +247,12 @@ export function useNearestStation(
     timestamps: [],
     skipped: 0,
   });
+  // #2070 — fusion 결정 tier 품질 게이트(100m/15s) SSOT. 직전 게이트 통과 fix의 accuracy/시각을
+  // ref로 들고 있다가 급락(>100m)/30s 부재 판정에 사용한다. gpsQualityDegraded는 폴링 프로파일
+  // 전환 effect의 deps로 쓰여야 해서 state로 노출한다.
+  const qualityGateLastPassAccuracyRef = useRef<number | null>(null);
+  const qualityGateLastPassAtRef = useRef<number | null>(null);
+  const [gpsQualityDegraded, setGpsQualityDegraded] = useState(false);
 
   const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number) => {
     const { latitude, longitude, speed, accuracy } = coords;
@@ -273,6 +289,34 @@ export function useNearestStation(
       lastDistanceRef.current = newDistance;
       applyNearestResult(stationsResult, setResult, setVariants);
     }
+    // #2070 — fusion 결정 tier 품질 게이트. 기존 표시 게이트(MAX_ACCURACY_M_DISPLAY=250m)는
+    // 통과했지만 결정 tier 입력 기준(100m/15s)에는 못 미치는 fix를 판별한다. userLocation/
+    // accuracyMeters/result 자체는 그대로 노출(표시 동작 불변) — 결정 tier 소비자
+    // (useFusedNearestStation)가 gpsQualityDegraded를 별도로 참고해 판단한다.
+    const qualityGateNow = Date.now();
+    const qualityAgeMs = qualityGateNow - timestamp;
+    if (isGpsQualityGateAcceptable(accuracy, qualityAgeMs)) {
+      qualityGateLastPassAccuracyRef.current = accuracy;
+      qualityGateLastPassAtRef.current = qualityGateNow;
+      setGpsQualityDegraded((prev) => (prev ? false : prev));
+    } else {
+      pushGpsDropEntry({
+        ts: qualityGateNow,
+        lat: latitude,
+        lng: longitude,
+        accuracyMeters: accuracy ?? null,
+        speedMps: isValidGpsSpeedMps(speed) ? speed : null,
+        dropReason: `gps-quality-drop:${gpsQualityDropReason(accuracy, qualityAgeMs)}`,
+      });
+      const degraded = isGpsQualityDegradedTransition(
+        qualityGateLastPassAccuracyRef.current,
+        qualityGateLastPassAtRef.current,
+        accuracy,
+        qualityGateNow,
+      );
+      setGpsQualityDegraded((prev) => (prev === degraded ? prev : degraded));
+    }
+
     // 측정(#443): station 변화 시에만 push. 매 fix는 너무 자주 — 점프 시퀀스
     // (사가정→을지로4가→용마산) 재구성엔 station 단위면 충분.
     if (stationChanged || noStation) {
@@ -544,14 +588,19 @@ export function useNearestStation(
   //  - throttle boolean이 실제로 바뀐 경우만 동작 → mount 시 중복 start 방지 + warmup(undefined)→false no-op.
   //  - AppState 'active'일 때만 재시작 → BG 중 flip이 FG watch를 켜 'background'→stopWatch 규약을 깨는 것 방지.
   //    (FG 복귀 시 'active' 핸들러의 refresh→startWatch가 ref를 읽어 현재 옵션으로 자연 반영.)
+  //
+  // #2070 — 지하 프로파일 트리거를 barometerSubsurface OR gpsQualityDegraded로 확장. 기존
+  // FG_WATCH_OPTIONS_SUBSURFACE를 그대로 재사용한다(barometer 확정 지하와 배터리 절감 목적이
+  // 동일 — 신규 profile 값을 중복 정의하지 않는다). gpsQualityDegraded가 false로 복귀하면(품질
+  // 게이트 통과 fix 재등장) barometerSubsurface도 true가 아닌 한 지상 프로파일로 원복된다.
   useEffect(() => {
-    const next = inputs.barometerSubsurface === true;
+    const next = inputs.barometerSubsurface === true || gpsQualityDegraded;
     if (next === throttledRef.current) return;
     throttledRef.current = next;
     if (AppState.currentState !== 'active') return;
     stopWatch();
     void startWatch();
-  }, [inputs.barometerSubsurface, startWatch, stopWatch]);
+  }, [inputs.barometerSubsurface, gpsQualityDegraded, startWatch, stopWatch]);
 
   // #876 — 매 fix를 sticky 훅에 전달. lock된 역이 있으면 result를 그것으로 override.
   // fusion candidates는 useFusedNearestStation에서 userLocation 기반으로 별도 계산하므로 영향 없음.
@@ -629,6 +678,7 @@ export function useNearestStation(
     locationUncertain,
     gpsActive,
     lastFixAtMs,
+    gpsQualityDegraded,
     source: exposed.source,
     refresh,
     requestCurrentLocation,

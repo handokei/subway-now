@@ -57,6 +57,84 @@ describe('inferEnvironment', () => {
     ).toBe('unknown');
   });
 
+  describe('#2070 gps-quality-drop hintReason', () => {
+    it('subsurface=undefined + 둘 다 null + qualityDegraded=true → underground (hint gps-quality-drop)', () => {
+      const result = inferEnvironment({
+        subsurface: undefined,
+        surfaceSSOT: false,
+        undergroundSSOT: false,
+        qualityDegraded: true,
+      });
+      expect(result.label).toBe('underground');
+      expect(result.hintReason).toBe('gps-quality-drop');
+    });
+
+    it('subsurface=undefined + 둘 다 활성 + qualityDegraded=true → underground (분간 불가 구간 보강)', () => {
+      const result = inferEnvironment({
+        subsurface: undefined,
+        surfaceSSOT: true,
+        undergroundSSOT: true,
+        qualityDegraded: true,
+      });
+      expect(result.label).toBe('underground');
+      expect(result.hintReason).toBe('gps-quality-drop');
+    });
+
+    it('subsurface=undefined + 둘 다 null + qualityDegraded=false → unknown (기존 동작 보존)', () => {
+      const result = inferEnvironment({
+        subsurface: undefined,
+        surfaceSSOT: false,
+        undergroundSSOT: false,
+        qualityDegraded: false,
+      });
+      expect(result.label).toBe('unknown');
+      expect(result.hintReason).toBeUndefined();
+    });
+
+    it('qualityDegraded 미전달 시 기존 동작(unknown) 보존', () => {
+      const result = inferEnvironment({
+        subsurface: undefined,
+        surfaceSSOT: false,
+        undergroundSSOT: false,
+      });
+      expect(result.label).toBe('unknown');
+      expect(result.hintReason).toBeUndefined();
+    });
+
+    it('surfaceSSOT만 활성이면 qualityDegraded=true여도 surface 우선 (기존 판정 대체 아님)', () => {
+      const result = inferEnvironment({
+        subsurface: undefined,
+        surfaceSSOT: true,
+        undergroundSSOT: false,
+        qualityDegraded: true,
+      });
+      expect(result.label).toBe('surface');
+      expect(result.hintReason).toBeUndefined();
+    });
+
+    it('subsurface=true(barometer 확정)면 qualityDegraded=true여도 판정 불변', () => {
+      const result = inferEnvironment({
+        subsurface: true,
+        surfaceSSOT: false,
+        undergroundSSOT: false,
+        qualityDegraded: true,
+      });
+      expect(result.label).toBe('underground');
+      expect(result.hintReason).toBeUndefined();
+    });
+
+    it('subsurface=false + SSOT 없음이면 qualityDegraded=true여도 surface 우선 (raw barometer 신뢰)', () => {
+      const result = inferEnvironment({
+        subsurface: false,
+        surfaceSSOT: false,
+        undergroundSSOT: false,
+        qualityDegraded: true,
+      });
+      expect(result.label).toBe('surface');
+      expect(result.hintReason).toBeUndefined();
+    });
+  });
+
   describe('#1860 barometer-stop hintReason', () => {
     it('tripActive + barometerStop=true + subsurface=false + SSOT 없음 → hintReason 발동', () => {
       const result = inferEnvironment({

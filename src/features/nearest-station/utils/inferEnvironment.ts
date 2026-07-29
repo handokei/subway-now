@@ -16,7 +16,9 @@
  *      'unknown' (with hint 'barometer-stop'). 지하상가 hint paradigm.
  *   6. `subsurface === undefined` + surfaceSSOT만 활성 → 'surface' (hybrid).
  *   7. `subsurface === undefined` + undergroundSSOT만 활성 → 'underground' (hybrid).
- *   8. `subsurface === undefined` + 둘 다 활성/모두 null → 'unknown'.
+ *   8. `subsurface === undefined` + 둘 다 활성/모두 null + GPS 품질 저하 transition(#2070) →
+ *      'underground' (with hint 'gps-quality-drop').
+ *   9. 그 외(#8 미해당) → 'unknown'.
  *
  * #1860 — hintReason 'barometer-stop': tripActive + barometerStop=true + subsurface=false
  * + 두 SSOT 없음 조합. DebugModal environment 라인에 함께 노출.
@@ -24,6 +26,11 @@
  * #1932 — 우선순위 4가 추가됨. `subsurface === false` raw signal 신뢰가 회복돼 cascade tier 2
  * (gpsDerivedFastPath)가 SSOT 비활성 환경에서도 진입 가능 — 기존 `barometerSubsurface === false`
  * gate와 semantic equivalence 보존.
+ *
+ * #2070 — 우선순위 8이 추가됨. barometer warmup/미지원(subsurface===undefined) + SSOT 무판정
+ * 구간에서 GPS 품질 저하 transition(급락 또는 게이트 통과 fix 30s 부재)이 관측되면 지하 진입
+ * 후보로 간주한다. 기존 1~7 판정 로직은 그대로 유지되며 대체되지 않는다 — barometer/SSOT 명시
+ * 신호가 있으면 항상 그 결과가 우선한다.
  */
 
 export type Environment = 'surface' | 'underground' | 'unknown';
@@ -34,8 +41,11 @@ export interface InferEnvironmentResult {
   /**
    * 옵션 C barometer-stop 힌트 발동 시 'barometer-stop'. 힌트 없으면 undefined.
    * 발동 조건: tripActive=true + barometerStop=true + subsurface=false + 두 SSOT 없음.
+   *
+   * #2070 — 'gps-quality-drop': subsurface===undefined + 두 SSOT 무판정 + GPS 품질 저하
+   * transition 관측 시 발동.
    */
-  hintReason?: 'barometer-stop';
+  hintReason?: 'barometer-stop' | 'gps-quality-drop';
 }
 
 export interface InferEnvironmentInput {
@@ -49,10 +59,17 @@ export interface InferEnvironmentInput {
   tripActive?: boolean;
   /** #1860 — BarometerSignal.stop. barometer-stop 힌트 발동 전제 조건. */
   barometerStop?: boolean;
+  /**
+   * #2070 — GPS 품질 저하 transition(급락 또는 게이트 통과 fix 30s 부재) 관측 여부.
+   * subsurface===undefined + 두 SSOT 무판정 구간에서만 판정에 관여한다(우선순위 8).
+   * 미전달이면 false로 간주(기존 동작 보존).
+   */
+  qualityDegraded?: boolean;
 }
 
 export function inferEnvironment(input: InferEnvironmentInput): InferEnvironmentResult {
-  const { subsurface, surfaceSSOT, undergroundSSOT, tripActive, barometerStop } = input;
+  const { subsurface, surfaceSSOT, undergroundSSOT, tripActive, barometerStop, qualityDegraded } =
+    input;
   if (subsurface === true) return { label: 'underground' };
   if (subsurface === false) {
     if (surfaceSSOT) return { label: 'surface' };
@@ -69,5 +86,10 @@ export function inferEnvironment(input: InferEnvironmentInput): InferEnvironment
   // subsurface === undefined (warmup / 미지원) — SSOT 신호로만 판단.
   if (surfaceSSOT && !undergroundSSOT) return { label: 'surface' };
   if (undergroundSSOT && !surfaceSSOT) return { label: 'underground' };
+  // #2070 — SSOT 무판정(둘 다 활성 또는 둘 다 비활성) 구간 보강. 기존 판정을 대체하지 않고
+  // 판정 불가였던 이 구간에만 GPS 품질 저하 transition을 추가 입력으로 반영한다.
+  if (qualityDegraded === true) {
+    return { label: 'underground', hintReason: 'gps-quality-drop' };
+  }
   return { label: 'unknown' };
 }
