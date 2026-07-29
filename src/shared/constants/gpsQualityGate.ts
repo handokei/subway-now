@@ -16,3 +16,12 @@ export const GPS_QUALITY_GATE_MAX_AGE_MS = 15_000;
 export const GPS_QUALITY_DEGRADE_JUMP_M = 100;
 // 부재: 게이트 통과 fix가 이 시간(ms) 이상 없으면 부재로 판정.
 export const GPS_QUALITY_GATE_ABSENCE_MS = 30_000;
+
+// #2076 — absence 판정을 fix 도착 이벤트에서 분리하는 독립 타이머 주기. GPS 완전 유실(심부
+// 지하) 상태에서는 fix 자체가 안 들어와 fix-driven 평가가 영영 발동하지 못하는 결함(#2076
+// 결함1)을 차단한다. GPS_QUALITY_GATE_ABSENCE_MS(30s)보다 충분히 짧게 잡아 30~35s 내 판정.
+export const GPS_QUALITY_GATE_TIMER_INTERVAL_MS = 5_000;
+
+// #2076 — degraded 해제(hysteresis) 조건. 게이트 통과 fix 1회만으로 해제하면 단발성 fix
+// 플랩(지하상가 틈 GPS 한 번 잡힘 등)에 반복 flip한다 — 연속 통과 fix가 이 값 이상일 때만 해제.
+export const GPS_QUALITY_GATE_HYSTERESIS_PASS_COUNT = 2;

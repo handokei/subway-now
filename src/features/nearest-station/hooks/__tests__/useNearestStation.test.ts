@@ -1674,63 +1674,157 @@ describe('useNearestStation — #2070 GPS 품질 게이트 (결정 tier 입력)'
     expect(drops[0].dropReason).toBe('gps-quality-drop:stale');
   });
 
-  it('게이트 통과 fix 이후 accuracy가 100m 초과 급락하면 gpsQualityDegraded=true', async () => {
+  // #2076 결함2 — 급락(accuracy 1회성 급증) 단독은 더 이상 gpsQualityDegraded를 발동시키지
+  // 않는다. 지상 urban canyon(고층빌딩 사이 multipath)에서 accuracy가 1회 튀어도 지하로
+  // 오분류(inferEnvironment 우선순위 8 hint)되던 결함 차단.
+  it('급락(50→180m) 1회 단독으로는 gpsQualityDegraded=false 유지 (#2076 결함2 — urban canyon 오탐 차단)', async () => {
     const { result } = renderHook(() => useNearestStation());
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
     simulateGps(37.498, 127.0277, { accuracy: 50 });
     expect(result.current.gpsQualityDegraded).toBe(false);
 
-    simulateGps(37.4981, 127.0278, { accuracy: 200 });
-    expect(result.current.gpsQualityDegraded).toBe(true);
+    simulateGps(37.4981, 127.0278, { accuracy: 180 }); // 급락(130m > 100m 임계)
+    expect(result.current.gpsQualityDegraded).toBe(false);
+  });
+});
+
+describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독립 타이머 / hysteresis 해제)', () => {
+  const originalCurrentState = AppState.currentState;
+
+  const lastWatchOptionsAt = () => {
+    const calls = (Location.watchPositionAsync as jest.Mock).mock.calls;
+    return calls[calls.length - 1][0];
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    mockGranted();
+    (AppState as { currentState: string }).currentState = 'active';
+    jest.useFakeTimers();
   });
 
-  it('급락 후 다시 게이트 통과 fix가 들어오면 gpsQualityDegraded=false로 원복된다', async () => {
+  afterEach(() => {
+    (AppState as { currentState: string }).currentState = originalCurrentState;
+    jest.useRealTimers();
+  });
+
+  // #2076 결함1 — 심부 지하: fix가 완전히 끊겨도(watch 콜백 자체가 호출되지 않아도) 독립
+  // 타이머가 마지막 게이트 통과 fix 시각을 주기적으로 재평가해 absence 30s를 판정한다.
+  it('fix 완전 중단 30s+ → absence 독립 타이머가 gpsQualityDegraded=true로 전이시킨다 (심부 지하)', async () => {
     const { result } = renderHook(() => useNearestStation());
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
     simulateGps(37.498, 127.0277, { accuracy: 50 });
-    simulateGps(37.4981, 127.0278, { accuracy: 200 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+
+    // 이후 fix 없음(완전 유실) — 타이머만으로 30s+ 경과를 판정.
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
+
+    expect(result.current.gpsQualityDegraded).toBe(true);
+  });
+
+  // 표시 게이트(250m) drop fix도 품질 게이트 평가에는 공급돼야 hysteresis 카운터가 정확히
+  // 리셋된다 — 표시(userLocation)는 이 fix로 갱신되지 않는다(표시 경로 불변).
+  it('>250m fix는 표시(userLocation) 미갱신 + 품질 게이트 hysteresis 카운터를 리셋한다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // 최초 통과 fix로 lastPassAt 기준점을 세운다(콜드스타트에서는 absence 판정 자체가 보류된다).
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
+    // 연속 통과 카운터를 0으로 리셋(이후 hysteresis 카운트를 1부터 검증하기 위해).
+    simulateGps(37.51, 127.05, { accuracy: 300 });
+
+    // absence로 degraded=true 유도.
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
     expect(result.current.gpsQualityDegraded).toBe(true);
 
-    simulateGps(37.4982, 127.0279, { accuracy: 50 });
+    // 통과 fix 1회 — hysteresis 미충족(1/2), 아직 해제 안 됨.
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(true);
+    const locationAfterFirstPass = result.current.userLocation;
+
+    // >250m fix — 표시 미갱신 + 연속 통과 카운터 리셋(hysteresis 처음부터 다시 세야 함).
+    simulateGps(37.51, 127.05, { accuracy: 300 });
+    expect(result.current.userLocation).toEqual(locationAfterFirstPass);
+    expect(result.current.gpsQualityDegraded).toBe(true);
+
+    // 리셋되었으므로 통과 fix 1회로는 아직 해제 안 됨.
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(true);
+
+    // 연속 2회째 통과 fix → 해제.
+    simulateGps(37.4981, 127.0278, { accuracy: 50 });
     expect(result.current.gpsQualityDegraded).toBe(false);
   });
 
-  it('게이트 통과 fix가 30s 이상 없으면(부재) gpsQualityDegraded=true', async () => {
-    const { state, restore } = setupGpsDropFakeNow();
-    try {
-      const { result } = renderHook(() => useNearestStation());
-      await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+  it('hysteresis: 통과 fix 1회로는 해제 안 되고, 연속 2회째에 해제된다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
-      simulateGps(37.498, 127.0277, { accuracy: 50, timestamp: state.fakeNow });
-      expect(result.current.gpsQualityDegraded).toBe(false);
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+    // 연속 통과 카운터를 0으로 리셋(이후 hysteresis 카운트를 1부터 검증하기 위해).
+    simulateGps(37.51, 127.05, { accuracy: 300 });
 
-      state.fakeNow += 31_000;
-      // 급락은 아닌(70m 상승, 100m 미만) accuracy로도 부재 조건만으로 degraded 전이.
-      simulateGps(37.4981, 127.0278, { accuracy: 120, timestamp: state.fakeNow });
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
+    expect(result.current.gpsQualityDegraded).toBe(true);
 
-      expect(result.current.gpsQualityDegraded).toBe(true);
-    } finally {
-      restore();
-    }
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(true);
+
+    simulateGps(37.4981, 127.0278, { accuracy: 50 });
+    expect(result.current.gpsQualityDegraded).toBe(false);
   });
 
-  it('degraded 발생 시 FG watch가 지하 프로파일(High@12s)로 전환되고, 게이트 통과 fix 재등장 시 지상으로 원복된다', async () => {
+  it('degraded 발생(absence) 시 FG watch가 지하 프로파일(High@12s)로 전환되고, hysteresis 해제 시 지상으로 원복된다', async () => {
     renderHook(() => useNearestStation());
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
-    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+    expect(lastWatchOptionsAt()).toEqual({
+      accuracy: Location.Accuracy.High,
+      distanceInterval: 0,
+      timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+    });
 
-    simulateGps(37.498, 127.0277, { accuracy: 50 });
-    simulateGps(37.4981, 127.0278, { accuracy: 200 }); // 급락 → degraded=true
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
-    expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS);
+    expect(lastWatchOptionsAt()).toEqual({
+      accuracy: Location.Accuracy.High,
+      distanceInterval: 0,
+      timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+    });
 
-    simulateGps(37.4982, 127.0279, { accuracy: 50 }); // 게이트 통과 → 원복
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+    simulateGps(37.4981, 127.0278, { accuracy: 50 }); // 연속 2회 통과 → hysteresis 해제
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(3));
-    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+    expect(lastWatchOptionsAt()).toEqual({
+      accuracy: Location.Accuracy.High,
+      distanceInterval: 0,
+      timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+    });
   });
 
   it('barometerSubsurface=true가 이미 활성이면 gpsQualityDegraded 변화만으로는 재시작하지 않는다 (이미 지하 프로파일)', async () => {
@@ -1739,13 +1833,19 @@ describe('useNearestStation — #2070 GPS 품질 게이트 (결정 tier 입력)'
       { initialProps: { sub: true } },
     );
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
-    expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS);
+    expect(lastWatchOptionsAt()).toEqual({
+      accuracy: Location.Accuracy.High,
+      distanceInterval: 0,
+      timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+    });
 
     await act(async () => {
       rerender({ sub: true });
     });
-    simulateGps(37.498, 127.0277, { accuracy: 50 });
-    simulateGps(37.4981, 127.0278, { accuracy: 200 }); // degraded=true여도 이미 subsurface 프로파일
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+    act(() => {
+      jest.advanceTimersByTime(40_000); // degraded=true여도 이미 subsurface 프로파일
+    });
 
     // barometerSubsurface=true가 이미 throttle=true를 만들었으므로 추가 재시작 없음.
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
