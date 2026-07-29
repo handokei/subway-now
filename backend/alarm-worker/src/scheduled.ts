@@ -2273,6 +2273,9 @@ export async function fireArvlCdStationPush(
   // apns-collapse-id로 같은 trip의 매역 알림을 알림센터에서 최신으로 교체(스택 방지) + apns-expiration
   // 90s로 지하 데이터 순단 후 stale 알림 늦은 표시를 방지한다. data는 기존 silent payload를 그대로
   // forward해 device SSoT/게이트 소비 코드(cascade picker 등)가 영향받지 않게 한다.
+  // #2092 — contentAvailable:true를 병기해 alert와 동시에 device background task
+  // (handleSilentPush)를 깨운다. station kind는 배너 no-op(#2088)이라 이중 배너 없이 SSoT
+  // mirror(persistBackendSsotMirror)·BG 위젯 갱신(updateWidgetFromSilentPush)만 수행한다.
   const stationNotifContent = buildStationNotifContent(waypoint, trip.locale);
   const heal = await sendWithEnvHeal(
     (host) =>
@@ -2287,6 +2290,7 @@ export async function fireArvlCdStationPush(
         collapseId: stationNotifCollapseId(trip.token),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
         data: buildSilentPushData(arvlcdPayload),
+        contentAvailable: true,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -2663,6 +2667,8 @@ export async function fireVanishFallbackStationPush(
     archFlag: deps.archFlag,
   });
   // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사 (fireArvlCdStationPush와 동일 정책).
+  // #2092 — contentAvailable:true 병기로 device background task(handleSilentPush)를 깨워
+  // SSoT mirror·BG 위젯 갱신을 fireArvlCdStationPush와 동일하게 유지한다.
   const vanishStationNotifContent = buildStationNotifContent(waypoint, trip.locale);
   const heal = await sendWithEnvHeal(
     (host) =>
@@ -2677,6 +2683,7 @@ export async function fireVanishFallbackStationPush(
         collapseId: stationNotifCollapseId(trip.token),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
         data: buildSilentPushData(vanishPayload),
+        contentAvailable: true,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,

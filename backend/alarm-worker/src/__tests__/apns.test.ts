@@ -923,6 +923,58 @@ describe('sendAlertPush (#572 P2c)', () => {
       const body = JSON.parse(call[1].body as string);
       expect(body.data).toEqual({ pushId: 'p' });
     });
+
+    // #2092 — content-available 병기 (SSoT mirror·BG 위젯 채널 복원).
+    it('contentAvailable=true 지정 시 aps.alert와 content-available이 동시 wire', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        contentAvailable: true,
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.aps.alert).toEqual({ title: 'T', body: 'B' });
+      expect(body.aps['content-available']).toBe(1);
+    });
+
+    it('contentAvailable 미지정 시 aps[content-available] 필드 omit (backward compat)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect('content-available' in body.aps).toBe(false);
+    });
+
+    it('contentAvailable=false 지정 시 aps[content-available] 필드 omit', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await sendAlertPush({
+        deviceToken: 't',
+        title: 'T',
+        body: 'B',
+        pushId: 'p',
+        contentAvailable: false,
+        config: makeConfig(),
+        host: TEST_HOST_2,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect('content-available' in body.aps).toBe(false);
+    });
   });
 });
 
