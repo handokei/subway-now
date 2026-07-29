@@ -9696,6 +9696,37 @@ describe('runScheduled — #2073 진짜 idle skip 게이트 (Issue A)', () => {
   });
 });
 
+describe('runScheduled — #2079 (P3-2) readPushActivityRecent short-circuit', () => {
+  it('활성 trip 1개 tick — readPushActivityRecent 호출 0회 (idle 판정이 trips.length>0으로 이미 확정)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    const getSpy = vi.spyOn(kv, 'get');
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const activityGetCalls = getSpy.mock.calls.filter((c) => c[0] === 'cron:push-activity');
+    expect(activityGetCalls.length).toBe(0);
+  });
+
+  it('idle tick(활성 trip 0) — readPushActivityRecent 호출 1회', async () => {
+    const kv = new InMemoryKV();
+    const getSpy = vi.spyOn(kv, 'get');
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const activityGetCalls = getSpy.mock.calls.filter((c) => c[0] === 'cron:push-activity');
+    expect(activityGetCalls.length).toBe(1);
+  });
+});
+
 describe('runScheduled — #2073 jitter sample 10 tick당 1회 스로틀 (Issue D)', () => {
   it('활성 trip 있는 tick도 sample tick이 아니면 jitter sample write를 skip한다', async () => {
     const kv = new InMemoryKV();

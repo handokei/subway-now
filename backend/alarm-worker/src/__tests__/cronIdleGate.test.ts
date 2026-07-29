@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PUSH_ACTIVITY_TTL_SEC, readPushActivityRecent, stampPushActivity } from '../cronIdleGate';
+import { CRON_READ_CACHE_TTL_SEC } from '../kvConsistency';
 import { InMemoryKV } from './inMemoryKv';
 
 describe('cronIdleGate (#2073 Issue A)', () => {
@@ -41,6 +42,13 @@ describe('cronIdleGate (#2073 Issue A)', () => {
         },
       } as unknown as KVNamespace;
       expect(await readPushActivityRecent(throwingKv)).toBe(true);
+    });
+
+    // #2079 (P3-1) — 레포 컨벤션(assertCronCacheTtl)대로 명시적 cacheTtl 없이 kv.get하던 회귀.
+    it('#2079 (P3-1) reads with explicit cacheTtl (kvConsistency 컨벤션)', async () => {
+      const spy = vi.spyOn(kv, 'get');
+      await readPushActivityRecent(kv as unknown as KVNamespace);
+      expect(spy).toHaveBeenCalledWith('cron:push-activity', { cacheTtl: CRON_READ_CACHE_TTL_SEC });
     });
   });
 

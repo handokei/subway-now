@@ -9,10 +9,12 @@ import {
   N_STATION_LOOKAHEAD,
   pollLinesAndStamp,
   pollStationsAndStamp,
+  readFreshSelfPollPosition,
   readSelfPollPosition,
   readSelfPollStationArrivals,
   selfPollKey,
   selfPollStationKey,
+  SELF_POLL_POSITION_MAX_AGE_SEC,
   SELF_POLL_TTL_SEC,
   writeSelfPollPosition,
   writeSelfPollStationArrivals,
@@ -154,6 +156,55 @@ describe('readSelfPollPosition / writeSelfPollPosition round-trip', () => {
     const entry = (kv as unknown as InMemoryKV).store.get(selfPollKey('7'));
     expect(entry?.expiresAt).toBeDefined();
     expect(entry!.expiresAt! - Date.now()).toBeGreaterThan(85 * 1000);
+  });
+});
+
+describe('readFreshSelfPollPosition (#2079 P2 — staleness 게이트)', () => {
+  it('meets floor of 60s', () => {
+    expect(SELF_POLL_POSITION_MAX_AGE_SEC).toBe(60);
+  });
+
+  it('returns null when no stamp', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    expect(await readFreshSelfPollPosition(kv, '7', NOW)).toBeNull();
+  });
+
+  it('fetchedAt 59s 전 — positions 반환 (TTL 90s 안쪽이고 staleness 게이트도 통과)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const positions = [makePosition()];
+    await writeSelfPollPosition(kv, '7', positions, NOW);
+    const stamp = await readFreshSelfPollPosition(kv, '7', NOW + 59_000);
+    expect(stamp).not.toBeNull();
+    expect(stamp?.positions).toEqual(positions);
+  });
+
+  it('fetchedAt 61s 전 — undefined 취급 (KV TTL 90s 안쪽이라도 stale로 게이트)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await writeSelfPollPosition(kv, '7', [makePosition()], NOW);
+    const stamp = await readFreshSelfPollPosition(kv, '7', NOW + 61_000);
+    expect(stamp).toBeNull();
+  });
+
+  it('pollLinesAndStamp의 내부 cache-hit 체크(raw readSelfPollPosition)는 60s 게이트 영향 없음 — write 감축 유지', async () => {
+    // #2079 P2 doc — readFreshSelfPollPosition의 staleness 게이트를 pollLinesAndStamp의 내부
+    // existing 체크에 적용하면 cron 60s tick과 60s 임계값이 겹쳐 #2073 회귀(매 tick 재fetch)가
+    // 재발한다. raw readSelfPollPosition은 게이트 없이 TTL(90s)만 본다.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(NOW);
+      const kv = new InMemoryKV() as unknown as KVNamespace;
+      const seoul = makeSeoulClient({ positions: [makePosition()] });
+      await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
+      // 61s 후 — readFreshSelfPollPosition consumer 관점에선 stale이지만, raw reader는 여전히
+      // TTL(90s) 안쪽이라 cache-hit → 재fetch/재write 없음.
+      vi.setSystemTime(NOW + 61_000);
+      const putSpy = vi.spyOn(kv, 'put');
+      const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 61_000);
+      expect(putSpy).not.toHaveBeenCalled();
+      expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
