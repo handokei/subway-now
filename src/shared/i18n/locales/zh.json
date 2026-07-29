@@ -70,6 +70,7 @@
       "undo": "撤销"
     },
     "lockCorrectionToast": "已将乘车列车修正为 {{prev}} → {{next}}",
+    "shortRouteToast": "区间太短，闹钟不会响起",
     "coldStartMismatch": {
       "title": "确认乘车站",
       "message": "乘车站与当前位置不符，请重新选择。",

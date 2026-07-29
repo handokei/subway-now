@@ -19,7 +19,7 @@
  *   1. payload 검증 + 수신 로그 적재 (#478 측정 인프라)
  *   2. kind(transfer/destination/intermediate)는 device 로컬 알림을 발사하지 않는다.
  *      logSilentPushSkipped(reason='legacy-station-kind-ignored') 적재 후 no-op.
- *   3. boarding-prompt / sleep-transfer-alarm 등 별도 discriminator 채널은 기존대로 gate 무관 발사.
+ *   3. boarding-prompt / sleep-alarm-companion 등 별도 discriminator 채널은 기존대로 gate 무관 발사.
  *   4. 상태 sync(lock-release/widget/LA refresh)는 kind 무관 항상 수행.
  */
 
@@ -39,7 +39,6 @@ import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
-  SLEEP_MODE_KEY,
 } from '../../../shared/constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
@@ -51,10 +50,10 @@ import {
   logSilentPushRescheduleReceived,
   logSilentPushTripEndedReceived,
   logSilentPushSkipped,
-  logSleepTransferAlarmFired,
+  logCompanionAlarmFired,
   type AlarmLogReason,
 } from '../utils/alarmLog';
-import { vibrateAlarm } from '../utils/alarmSound';
+import { fireCompanionAlarm } from '../utils/alarmLocalAuthority';
 import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import {
   setTripEndedSentinel,
@@ -97,12 +96,6 @@ export const SILENT_PUSH_TASK = 'silent-push-reschedule';
 const BOARDING_PROMPT_NOTIFICATION_ID = 'boarding-prompt-silent-push';
 
 /**
- * #2036 (Issue I γ) — 취침모드 환승 알람 local notification identifier.
- * 같은 identifier로 schedule하면 iOS가 이전 알림을 대체 — 사용자 tray에 1건만 유지.
- */
-const SLEEP_TRANSFER_ALARM_NOTIFICATION_ID = 'sleep-transfer-alarm-silent-push';
-
-/**
  * #2028 — tripToken 세션 스코프 dedup. 같은 tripToken으로 여러 backend cron 재시도가 도달해도
  * 로컬 알림을 1회만 발사한다. in-memory Set — 앱 재시작(cold-launch) 시 자연 초기화되지만
  * backend `boardingPromptState.promptedAt` dedup이 자체 재발사를 차단하므로 회귀 없음.
@@ -110,29 +103,9 @@ const SLEEP_TRANSFER_ALARM_NOTIFICATION_ID = 'sleep-transfer-alarm-silent-push';
  */
 const boardingPromptFiredTripTokens = new Set<string>();
 
-/**
- * #2036 (Issue I γ) — 취침모드 환승 알람 dedup. tripToken + nextStation 조합 스코프.
- * 같은 trip의 다른 환승역(예: 강남→성수 후 성수→내방)은 별 hop이라 nextStation이 다르므로
- * 각각 발사됨. backend cron retry(같은 hop 재시도)만 dedup 대상. in-memory Set — 앱 재시작
- * 시 자연 초기화되지만 backend가 waypoint advance 후 재발사하지 않으므로 회귀 없음.
- */
-const sleepTransferAlarmFiredKeys = new Set<string>();
-
-function sleepTransferAlarmDedupKey(tripToken: string, nextStation: string): string {
-  return `${tripToken}::${nextStation}`;
-}
-
 /** 테스트 격리용 — dedup set을 비운다. production 코드에서는 호출하지 않는다. */
 export function __resetBoardingPromptSilentPushDedup(): void {
   boardingPromptFiredTripTokens.clear();
-}
-
-/**
- * #2036 (Issue I γ) — 테스트 격리용. sleep-transfer alarm dedup set을 비운다.
- * production 코드에서는 호출하지 않는다.
- */
-export function __resetSleepTransferAlarmSilentPushDedup(): void {
-  sleepTransferAlarmFiredKeys.clear();
 }
 
 export interface SilentPushPayload {
@@ -331,32 +304,31 @@ export interface BoardingPromptSilentPushPayload {
 }
 
 /**
- * 취침모드 환승 알람 silent push payload (#2036 Issue I γ).
+ * 취침모드 companion 알람 silent push payload (#2036 Issue I γ → #2067 Phase 2-device D3 전환).
  *
- * 사용자 확정 flow: "환승역 → 분기 → 취침모드 시 알람 발사, 일반모드는 일반 상황과 동일".
- * 즉 취침모드에서 환승 임박 시 소리+진동+잠금화면 알림이 필요.
+ * 사용자 확정 flow: "환승역/도착역 임박 → 취침모드 시 알람 발사, 일반모드는 일반 상황과 동일".
+ * 주 채널은 원격 visible push(`sound: alarm.wav`, #2066)로 전환됐고, 본 payload는 device가
+ * 깨어있을 때 TTS/진동으로 소리를 보강하고 OS 안전망 예약을 cancel하는 companion 채널이다.
  *
  * 정책 (ADR-023 정합):
  *  - **Backend는 취침 무관 발사** (기존 arvlCd/vanish/lockless 발사기가 취침 상태 조회하지 않음).
- *  - **Device가 sleepMode=true 확인 후 발사 결정** (`SLEEP_MODE_KEY` AsyncStorage read).
- *  - **destination은 별 채널** — 기존 station-passed dedup으로 처리, 본 payload는 transfer 전용.
- *  - gate 무관 (location / silence / motion / dedup 모두 skip) — 도달률 우선. boarding-prompt와 같은 정책.
+ *  - **Device가 sleepMode=true 확인 후 발사 결정** — `AlarmLocalAuthority.fireCompanionAlarm`이 게이트.
+ *  - 알림(배너) 생성 없음 — TTS + Haptics 진동만. dedup은 `AlarmLocalAuthority`의 persisted ledger(TTL 1h).
+ *  - gate 무관 (location / silence / motion 모두 skip) — 도달률 우선. boarding-prompt와 같은 정책.
  *
- * Critical alert entitlement 없이 최대 UX 근사: `interruptionLevel: 'timeSensitive'` + `sound: 'alarm.wav'`
- * + `vibrateAlarm(sleepMode=true)`(반복 진동). Focus/DND 완전 우회는 Apple entitlement 승인 필요 — 별 track.
- *
- * dedup: `${tripToken}::${nextStation}` 조합 — 같은 hop의 backend cron 재시도만 차단, trip 안의 다른
- * 환승 hop(강남→성수→내방 같은 케이스)은 각각 발사.
+ * targetKind — 알람 대상이 환승역인지 도착역인지(#2066). device는 문구/식별자 분기에 사용.
  */
-export interface SleepTransferAlarmSilentPushPayload {
-  kind: 'sleep-transfer-alarm';
-  /** 사용자가 지금 있는 역(환승 waypoint 도달 시점). 사용자 컨텍스트/dedup 기록용. */
+export interface SleepAlarmCompanionSilentPushPayload {
+  kind: 'sleep-alarm-companion';
+  /** 사용자가 지금 있는 역(직전 역, arvlCd 진입/도착 확정 시점). 사용자 컨텍스트/식별자 기록용. */
   originStation: string;
-  /** 환승 후 다음 leg의 노선. 알림 본문에 노출. */
+  /** 알람 대상이 환승역인지 도착역인지. device 문구/식별자 분기용. */
+  targetKind: 'transfer' | 'destination';
+  /** 알람 대상 역의 노선. 알림 본문에 노출. */
   nextLine: string;
-  /** 환승 후 첫 도착역. 알림 본문 + dedup key로 사용. */
+  /** 알람 대상 역(환승역 또는 도착역). 알림 본문 + 식별자로 사용. */
   nextStation: string;
-  /** trip 토큰 — dedup key. backend cron retry 차단용. */
+  /** trip 토큰 — 식별자 구성 + `AlarmLocalAuthority` ledger key로 사용. */
   tripToken: string;
   /**
    * push의 unique 식별자. backend `/push/ack`에 필요.
@@ -409,13 +381,13 @@ export type TripEndedReason =
   | 'push-unrecoverable'
   | 'unknown';
 
-/** extractPayload 결과 — standard silent push / reschedule / trip-ended / boarding-prompt / sleep-transfer-alarm. */
+/** extractPayload 결과 — standard silent push / reschedule / trip-ended / boarding-prompt / sleep-alarm-companion. */
 export type ExtractedPayload =
   | SilentPushPayload
   | RescheduleSilentPushPayload
   | TripEndedSilentPushPayload
   | BoardingPromptSilentPushPayload
-  | SleepTransferAlarmSilentPushPayload;
+  | SleepAlarmCompanionSilentPushPayload;
 
 /**
  * expo-notifications iOS의 `BackgroundEventTransformer.swift`가 APNs payload를
@@ -479,8 +451,8 @@ function isBoardingPromptCandidate(rec: Record<string, unknown>): boolean {
   return rec.kind === 'boarding-prompt';
 }
 
-function isSleepTransferAlarmCandidate(rec: Record<string, unknown>): boolean {
-  return rec.kind === 'sleep-transfer-alarm';
+function isSleepAlarmCompanionCandidate(rec: Record<string, unknown>): boolean {
+  return rec.kind === 'sleep-alarm-companion';
 }
 
 function findFieldsLayer(
@@ -503,7 +475,7 @@ function findFieldsLayer(
       isRescheduleCandidate(rec) ||
       isTripEndedCandidate(rec) ||
       isBoardingPromptCandidate(rec) ||
-      isSleepTransferAlarmCandidate(rec)
+      isSleepAlarmCompanionCandidate(rec)
     ) {
       return rec;
     }
@@ -529,8 +501,9 @@ export function extractPayload(
   if (obj.kind === 'trip-ended') return extractTripEndedPayload(obj);
   // boarding-prompt 분기 (#2028) — Layer 2 사용자 도달. discriminator는 kind === 'boarding-prompt'.
   if (obj.kind === 'boarding-prompt') return extractBoardingPromptPayload(obj);
-  // sleep-transfer-alarm 분기 (#2036 Issue I γ) — 취침 시 환승 알람. discriminator는 kind === 'sleep-transfer-alarm'.
-  if (obj.kind === 'sleep-transfer-alarm') return extractSleepTransferAlarmPayload(obj);
+  // sleep-alarm-companion 분기 (#2036 Issue I γ → #2067 D3) — 취침 시 companion 알람.
+  // discriminator는 kind === 'sleep-alarm-companion'.
+  if (obj.kind === 'sleep-alarm-companion') return extractSleepAlarmCompanionPayload(obj);
   return extractStandardPayload(obj);
 }
 
@@ -795,24 +768,28 @@ function extractBoardingPromptPayload(
 }
 
 /**
- * sleep-transfer-alarm payload 추출 (#2036 Issue I γ). schema — kind + originStation + nextLine +
- * nextStation + tripToken은 필수. pushId / sentAt / title / body 는 optional (구 backend 호환).
+ * sleep-alarm-companion payload 추출 (#2036 Issue I γ → #2067 D3). schema — kind + originStation +
+ * targetKind + nextLine + nextStation + tripToken은 필수. pushId / sentAt / title / body 는
+ * optional (구 backend 호환).
  *
- * 필수 필드(originStation/nextLine/nextStation/tripToken) 중 하나라도 비어 있으면 null → 발사 skip.
- * 발사에 필요한 최소 정보(사용자 컨텍스트/dedup)를 갖추지 못한 payload는 backend 정상 wire 문제로
+ * 필수 필드 중 하나라도 비어 있거나 targetKind가 'transfer'/'destination'이 아니면 null → 발사 skip.
+ * 발사에 필요한 최소 정보(사용자 컨텍스트/식별자)를 갖추지 못한 payload는 backend 정상 wire 문제로
  * 판정 — device는 조용히 drop.
  */
-function extractSleepTransferAlarmPayload(
+function extractSleepAlarmCompanionPayload(
   obj: Record<string, unknown>,
-): SleepTransferAlarmSilentPushPayload | null {
-  const { originStation, nextLine, nextStation, tripToken, pushId, sentAt, title, body } = obj;
+): SleepAlarmCompanionSilentPushPayload | null {
+  const { originStation, targetKind, nextLine, nextStation, tripToken, pushId, sentAt, title, body } =
+    obj;
   if (typeof originStation !== 'string' || originStation.length === 0) return null;
+  if (targetKind !== 'transfer' && targetKind !== 'destination') return null;
   if (typeof nextLine !== 'string' || nextLine.length === 0) return null;
   if (typeof nextStation !== 'string' || nextStation.length === 0) return null;
   if (typeof tripToken !== 'string' || tripToken.length === 0) return null;
   return {
-    kind: 'sleep-transfer-alarm',
+    kind: 'sleep-alarm-companion',
     originStation,
+    targetKind,
     nextLine,
     nextStation,
     tripToken,
@@ -1153,18 +1130,19 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
 
-    // sleep-transfer-alarm 분기 (#2036 Issue I γ) — 취침모드 환승 알람. gate 무관 로컬 알림 발사.
+    // sleep-alarm-companion 분기 (#2036 Issue I γ → #2067 Phase 2-device D3) — 취침모드 companion
+    // 알람. 알림(배너) 생성 없이 TTS/진동만 부가하고 OS 안전망 예약을 cancel한다.
     //
     // 정책 (ADR-023 정합):
     //  - Backend는 취침 무관 발사 (기존 arvlCd/vanish 경로는 sleep 조회 없음).
-    //  - Device가 `SLEEP_MODE_KEY` AsyncStorage read로 sleepMode=true 확인 후에만 발사.
-    //  - sleepMode=false면 일반모드 = 기존 station-passed silent push가 처리 → 본 분기는 no-op skip.
-    //  - dedup: `${tripToken}::${nextStation}` — 같은 hop의 backend cron retry 차단, trip 안 다른 환승 hop은 각각 발사.
-    if (payload.kind === 'sleep-transfer-alarm') {
+    //  - Device가 `AlarmLocalAuthority.fireCompanionAlarm`이 sleepMode=true 확인 후에만 발사.
+    //  - sleepMode=false면 일반모드 = 원격 visible push(#2066)가 주 채널 담당 → 본 분기는 no-op skip.
+    //  - dedup: `AlarmLocalAuthority`의 persisted ledger(TTL 1h) — 앱 재시작 생존.
+    if (payload.kind === 'sleep-alarm-companion') {
       logger.info(
-        `sleep-transfer-alarm received: originStation=${payload.originStation} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+        `sleep-alarm-companion received: originStation=${payload.originStation} targetKind=${payload.targetKind} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
       );
-      await fireSleepTransferAlarmLocalNotification(payload, apnsToken);
+      await fireSleepAlarmCompanion(payload, apnsToken);
       return;
     }
 
@@ -1518,115 +1496,66 @@ async function fireBoardingPromptLocalNotification(
 }
 
 /**
- * #2036 (Issue I γ) — AsyncStorage에서 sleepMode 값 읽기 (BG-safe).
- *
- * silent push handler는 BG task라 zustand store 접근 불가 — AsyncStorage 직접 read.
- * `useSettingsStore.setSleepMode`가 JSON.stringify(boolean)으로 저장하므로 그대로 파싱.
- * 저장값 부재 / 파싱 실패는 false 반환 — 취침 아님으로 판정해 발사 skip (보수적).
- */
-async function readSleepModeFromStorage(): Promise<boolean> {
-  try {
-    const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
-    if (!raw) return false;
-    return JSON.parse(raw) === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * #2036 (Issue I γ) — 취침모드 환승 알람 silent push 수신 시 로컬 알림 발사.
+ * #2067 (Phase 2-device, D3) — 취침모드 companion 알람 silent push 수신 시 처리.
  *
  * 절차:
- *   1. sleepMode=false → 일반모드 = 기존 station-passed silent push가 이미 처리 → skip.
- *   2. dedup key(`${tripToken}::${nextStation}`) 확인 → 이미 발사 시 skip (backend cron retry 차단).
- *   3. dedup 등록 + Notifications.scheduleNotificationAsync 발사.
- *      - sound: 'alarm.wav' (loud, boarding-prompt의 'default'보다 강함)
- *      - interruptionLevel: 'timeSensitive' (Focus 관통, DND 부분 관통)
- *      - vibrateAlarm(true) — 반복 진동 (사용자 확정 flow: 소리+진동)
- *   4. 실패 시 dedup 유지 + ack skipped — cron retry가 재발사하지 않도록 함.
+ *   1. `AlarmLocalAuthority.fireCompanionAlarm` 호출 — sleepMode gate + persisted ledger dedup +
+ *      TTS/진동 발사를 단일 진입점이 담당한다. 알림(배너) 생성 없음.
+ *   2. 발사 성공 시 해당 station의 OS 안전망 예약(tba/bl)을 cancel — companion 도달 = 사용자가
+ *      이미 소리/진동으로 인지했으므로 중복 안전망 알림이 불필요하다 (#2089로 분리된 통합 전까지는
+ *      기존 3종 스케줄러의 cancel 헬퍼를 그대로 재사용).
+ *   3. skip 사유(not-sleep-mode / dedup)에 따라 ack outcome을 분기.
  *
- * gate 무관 (location / silence / motion / dedup 모두 skip) — boarding-prompt와 같은 도달률 우선 정책.
- * 사용자 확정 flow (`project_2026_07_03_user_manual_action_flow`): "환승역 → 취침 시 알람 발사".
+ * gate 무관 (location / silence / motion 모두 skip) — boarding-prompt와 같은 도달률 우선 정책.
+ * 사용자 확정 flow (`project_2026_07_03_user_manual_action_flow`): "환승역/도착역 → 취침 시 알람 발사".
  *
- * ADR-023 정합: backend는 취침 무관 발사, device가 필터 → 본 함수가 device 필터의 결정 지점.
+ * ADR-023 정합: backend는 취침 무관 발사, device가 필터 → `fireCompanionAlarm`이 필터의 결정 지점.
  */
-async function fireSleepTransferAlarmLocalNotification(
-  payload: SleepTransferAlarmSilentPushPayload,
+async function fireSleepAlarmCompanion(
+  payload: SleepAlarmCompanionSilentPushPayload,
   apnsToken: string | null,
 ): Promise<void> {
-  // sleepMode=false → 일반모드. 기존 경로가 처리 — 본 채널은 no-op.
-  const sleepMode = await readSleepModeFromStorage();
-  if (!sleepMode) {
-    logger.info(
-      `sleep-transfer-alarm skip: sleepMode=false (일반모드는 기존 station-passed 경로 처리)`,
-    );
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-transfer-not-sleep-mode');
-    return;
-  }
-
-  // dedup — tripToken + nextStation 조합. 같은 hop의 backend cron retry만 차단.
-  const dedupKey = sleepTransferAlarmDedupKey(payload.tripToken, payload.nextStation);
-  if (sleepTransferAlarmFiredKeys.has(dedupKey)) {
-    logger.info(
-      `sleep-transfer-alarm dedup: tripToken=${payload.tripToken.slice(0, 8)} nextStation=${payload.nextStation} already fired in session — skip`,
-    );
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-transfer-dedup');
-    return;
-  }
-
-  // dedup 등록 먼저 — scheduleNotificationAsync 실패해도 재시도로 반복 발사되지 않도록.
-  sleepTransferAlarmFiredKeys.add(dedupKey);
-
-  // 사용자 표시 문구. backend 우선 → device fallback.
-  const title = payload.title ?? '곧 환승역입니다';
   const body =
     payload.body ??
     `${payload.originStation}에서 ${payload.nextLine}호선 ${payload.nextStation}으로 환승`;
 
-  const data: Record<string, unknown> = {
-    kind: 'sleep-transfer-alarm',
-    originStation: payload.originStation,
-    nextLine: payload.nextLine,
-    nextStation: payload.nextStation,
+  const result = await fireCompanionAlarm({
     tripToken: payload.tripToken,
-  };
+    station: payload.nextStation,
+    kind: payload.targetKind,
+    body,
+  });
 
-  try {
-    await Notifications.scheduleNotificationAsync({
-      identifier: SLEEP_TRANSFER_ALARM_NOTIFICATION_ID,
-      content: {
-        title,
-        body,
-        // 취침모드 알람 — loud sound. 일반 알람과 동일한 파일(`stationNotification.ts:602`) 사용.
-        sound: 'alarm.wav',
-        data,
-        // Focus 관통 (Sleep Focus 부분 관통). Critical alert entitlement 승인 시 'critical'로 승격 예정.
-        interruptionLevel: 'timeSensitive',
-      },
-      trigger: null,
-    });
-    // 사용자 확정 flow: 소리+진동. sleepMode=true → repeat 진동.
-    vibrateAlarm(true);
-    // #2036 Acceptance dashboard — sleep-transfer-alarm fired 카운트.
-    logSleepTransferAlarmFired({
-      originStation: payload.originStation,
-      nextStation: payload.nextStation,
-      nextLine: payload.nextLine,
-    });
-    addDomainBreadcrumb('push', 'sleep-transfer-alarm-fired', {
-      nextLine: payload.nextLine,
-      originStation: payload.originStation,
-      nextStation: payload.nextStation,
-    });
+  if (!result.fired) {
+    const reason =
+      result.reason === 'dedup' ? 'sleep-alarm-companion-dedup' : 'sleep-alarm-companion-not-sleep-mode';
     logger.info(
-      `sleep-transfer-alarm fired: originStation=${payload.originStation} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)}`,
+      `sleep-alarm-companion skip: reason=${result.reason} nextStation=${payload.nextStation}`,
     );
-    void ackOutcome(payload.pushId, apnsToken, 'fired', 'sleep-transfer-alarm');
-  } catch (e) {
-    logger.error('sleep-transfer-alarm local notification schedule 실패:', e);
-    void ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-transfer-schedule-failed');
+    void ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
+    return;
   }
+
+  // companion 도달 = 사용자가 이미 소리/진동으로 인지 → 남은 OS 안전망 예약(tba/bl)을 정리.
+  for (const phase of ALARM_PHASES) {
+    await cancelTbaByStationPhase(payload.nextStation, phase.id);
+    await cancelBlByStationPhase(payload.nextStation, phase.id);
+  }
+
+  logCompanionAlarmFired({
+    originStation: payload.originStation,
+    nextStation: payload.nextStation,
+    nextLine: payload.nextLine,
+  });
+  addDomainBreadcrumb('push', 'sleep-alarm-companion-fired', {
+    nextLine: payload.nextLine,
+    originStation: payload.originStation,
+    nextStation: payload.nextStation,
+  });
+  logger.info(
+    `sleep-alarm-companion fired: originStation=${payload.originStation} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)}`,
+  );
+  void ackOutcome(payload.pushId, apnsToken, 'fired', 'sleep-alarm-companion');
 }
 
 

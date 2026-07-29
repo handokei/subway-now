@@ -70,6 +70,7 @@
       "undo": "元に戻す"
     },
     "lockCorrectionToast": "乗車中の列車を {{prev}} → {{next}} に修正しました",
+    "shortRouteToast": "区間が短いためアラームは鳴りません",
     "coldStartMismatch": {
       "title": "乗車駅を確認",
       "message": "乗車駅が現在地と一致しません。再選択してください。",

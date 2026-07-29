@@ -23,13 +23,13 @@ import {
   makeTransferRoute,
 } from '../../../../testUtils/routeFixtures';
 
-const mockSendAlarmNotification = jest.fn().mockResolvedValue(undefined);
+// #2067 (Phase 2-device, D1) — sendAlarmNotification 제거로 useStationAlarm.ts는 더 이상
+// stationNotification.ts를 import하지 않는다. sendStationPassedNotification mock은 #2064에서
+// 이미 실제 export가 아니게 됐지만(레거시 잔재), 아래 mock 없이도 nothing require이 없어
+// 안전 — 기존 assertion(`mockSendStationPassedNotification).not.toHaveBeenCalled()`)은
+// "결코 wire되지 않은 mock"이라 항상 통과하는 vacuous 검증이 된다. 값 자체는 유지하되 real
+// module mock은 제거해 dead jest.mock을 남기지 않는다.
 const mockSendStationPassedNotification = jest.fn().mockResolvedValue(undefined);
-
-jest.mock('../../utils/stationNotification', () => ({
-  sendAlarmNotification: (...args: unknown[]) => mockSendAlarmNotification(...args),
-  sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
-}));
 
 const mockEvaluateAlarmPhase = jest.fn();
 jest.mock('../../utils/stationAlarm', () => {
@@ -504,7 +504,7 @@ describe('useStationAlarm', () => {
 
   // #1773 (D) — fire path A confidence 화이트리스트 회귀 가드.
   // gps-only-underground 강등 시 GPS 정확도 게이트(500m > 200m)가 already 차단하므로
-  // station-passed 알람(mockSendStationPassedNotification)과 phase 알람(mockSendAlarmNotification)
+  // station-passed 알람(mockSendStationPassedNotification)과 phase 알람(logFiredAlarm)
   // 모두 발화 안 됨을 명시 검증. 지상(gps-only/detection-fused)은 정상 진입.
   describe('#1773 (D) fire path A — confidence 기반 silence 검증', () => {
     const route = makeDirectRoute(1, '2');
@@ -526,7 +526,7 @@ describe('useStationAlarm', () => {
         ),
       );
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('D2: gps-only (지상) + accuracy=100m → evaluateAlarmPhase 호출 + phase fire 경로 진입', async () => {
@@ -595,7 +595,7 @@ describe('useStationAlarm', () => {
         ),
       );
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
   });
 
@@ -709,7 +709,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true, undefined),
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, expect.any(String)),
     );
   });
 
@@ -720,11 +720,10 @@ describe('useStationAlarm', () => {
     mockResolveAlarmDirection.mockReturnValue('up');
     renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+        'fg',
         { ...earlyDest, direction: 'up' },
-        false,
-        true,
-        undefined,
+        expect.any(String),
       ),
     );
   });
@@ -740,7 +739,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true, undefined),
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyTransfer, expect.any(String)),
     );
   });
 
@@ -755,7 +754,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true, undefined),
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyTransfer, expect.any(String)),
     );
   });
 
@@ -763,9 +762,9 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
     rerender({});
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
   });
 
   it('fires imminent after early for the same waypoint', async () => {
@@ -780,7 +779,7 @@ describe('useStationAlarm', () => {
       },
     );
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(earlyDest, false, true, undefined),
+      expect(mockLogFiredAlarm).toHaveBeenLastCalledWith('fg', earlyDest, expect.any(String)),
     );
 
     mockEvaluateAlarmPhase.mockReturnValueOnce(imminentDest);
@@ -788,9 +787,9 @@ describe('useStationAlarm', () => {
       inputs: defaultInputs({ route, destination, userLocation: { lat: 37.49, lng: 127.025 }, speedMps: 20 }),
     });
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(imminentDest, false, true, undefined),
+      expect(mockLogFiredAlarm).toHaveBeenLastCalledWith('fg', imminentDest, expect.any(String)),
     );
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(2);
   });
 
   it('#1515 cross-category dedup — 같은 station에 station-passed가 직전 fire됐다면 phase 알람 차단', async () => {
@@ -813,7 +812,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
       }),
     );
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    expect(mockLogFiredAlarm).not.toHaveBeenCalled();
   });
 
   it('#1643 trip-scoped dedup — 직전 5s 안 다른 station에서 station-passed fire됐다면 phase 알람 차단', async () => {
@@ -838,7 +837,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
       }),
     );
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    expect(mockLogFiredAlarm).not.toHaveBeenCalled();
   });
 
   it('#1643 trip-scoped dedup — 직전 5s 안 다른 station에서 phase fire됐다면 station-passed 차단', async () => {
@@ -885,7 +884,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
       }),
     );
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    expect(mockLogFiredAlarm).not.toHaveBeenCalled();
   });
 
   it('#1901/#1900 channel-agnostic dedup — 같은 station + 같은 phase 8분 안 재발사는 차단', async () => {
@@ -919,7 +918,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
       }),
     );
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     nowSpy.mockRestore();
   });
 
@@ -941,9 +940,9 @@ describe('useStationAlarm', () => {
         defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127 }, speedMps: 5 }),
       ),
     );
-    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
     // imminent 정상 발사. channel-agnostic backstop이 잘못 차단하지 않음.
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith(imminentDest, false, true, undefined);
+    expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', imminentDest, expect.any(String));
     expect(mockLogSuppressedChannelAgnosticDedup).not.toHaveBeenCalled();
     nowSpy.mockRestore();
   });
@@ -955,26 +954,16 @@ describe('useStationAlarm', () => {
       ({ dest }: { dest: Station }) => useStationAlarm(defaultInputs({ route, destination: dest })),
       { initialProps: { dest: destination } },
     );
-    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
     expect(mockGetFiredAlarms).toHaveBeenCalledWith(destination.id);
 
     const altEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '잠실' };
     mockEvaluateAlarmPhase.mockReturnValue(altEvent);
     rerender({ dest: altDestination });
-    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2));
-    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(altEvent, false, true, undefined);
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(2));
+    expect(mockLogFiredAlarm).toHaveBeenLastCalledWith('fg', altEvent, expect.any(String));
     // destination 변경 → 새 id로 storage 재읽기 (저장된 entry는 옛 destinationId라 빈 set 반환 → 자동 isolation).
     expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id);
-  });
-
-  it('passes sleepMode to sendAlarmNotification', async () => {
-    useSettingsStore.setState({ sleepMode: true });
-    const route = makeDirectRoute(1, '2');
-    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, true, true, undefined),
-    );
   });
 
   it('sets alarmEvent in store when sleepMode is on', async () => {
@@ -990,36 +979,19 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
     expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
-  });
-
-  it('passes allowSpeaker=false from store', async () => {
-    useSettingsStore.setState({ allowSpeaker: false });
-    const route = makeDirectRoute(1, '2');
-    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, false, undefined),
-    );
   });
 
   it('does not re-fire when sleepMode toggles after first fire', async () => {
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
 
     useSettingsStore.setState({ sleepMode: true });
     rerender({});
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
-  });
-
-  it('handles sendAlarmNotification rejection gracefully', () => {
-    mockSendAlarmNotification.mockRejectedValueOnce(new Error('알림 실패'));
-    const route = makeDirectRoute(1, '2');
-    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-    expect(() => renderHook(() => useStationAlarm(defaultInputs({ route, destination })))).not.toThrow();
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
   });
 
   // #750 — 공통 sleep 룰 게이트가 FG 즉시 발사 path도 차단한다.
@@ -1056,7 +1028,7 @@ describe('useStationAlarm', () => {
           phaseId: 'early',
         }),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
@@ -1074,7 +1046,7 @@ describe('useStationAlarm', () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
 
@@ -1103,7 +1075,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       // lockless guard가 앞서 차단하므로 sleep gate는 호출 안 됨.
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
@@ -1116,7 +1088,7 @@ describe('useStationAlarm', () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
 
@@ -1147,7 +1119,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
   });
@@ -1492,7 +1464,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       // hydrated 이후 evaluator가 호출되더라도 동일 키가 들어있어 null 반환 → 미발화.
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('FG에서 phase 발화 시 setFiredAlarms(destinationId, set)로 동기화한다 (#462)', async () => {
@@ -1501,7 +1473,7 @@ describe('useStationAlarm', () => {
 
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
       expect(mockSetFiredAlarms).toHaveBeenCalledWith(destination.id, expect.any(Set));
       // 발화된 alarmKey가 storage로 흘러갔는지 확인.
       const lastCall = mockSetFiredAlarms.mock.calls.at(-1)!;
@@ -1514,7 +1486,7 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
       // BG 적재로 인해 evaluator가 null 반환 → 미발화.
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('destination 변경 직후 hydration 완료 전에는 evaluator가 호출되지 않는다 (race guard, #462)', async () => {
@@ -1793,7 +1765,7 @@ describe('useStationAlarm', () => {
           'api',
         );
       });
-      expect(mockSendAlarmNotification).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
     });
 
     // #727 — speed/accuracy 가드. 정적 사용자의 잘못된 trainCode/fusion 신호로 인한 misfire 차단.
@@ -1824,7 +1796,7 @@ describe('useStationAlarm', () => {
           }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
       expect(apiCalls).toHaveLength(0);
     });
@@ -1850,7 +1822,7 @@ describe('useStationAlarm', () => {
           expect.objectContaining({ reason: 'movement-low-accuracy' }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('#727 speed/accuracy 모두 누락(null)이어도 API imminent 발사 (graceful pass)', async () => {
@@ -1920,7 +1892,7 @@ describe('useStationAlarm', () => {
         useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
       );
 
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('sleepMode면 setAlarmEvent도 함께 호출', async () => {
@@ -1951,11 +1923,10 @@ describe('useStationAlarm', () => {
       );
 
       await waitFor(() => {
-        expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+          'fg',
           expect.objectContaining({ direction: 'up' }),
-          expect.anything(),
-          expect.anything(),
-          undefined,
+          expect.any(String),
         );
       });
     });
@@ -1980,30 +1951,11 @@ describe('useStationAlarm', () => {
       );
 
       await waitFor(() => {
-        expect(mockSendAlarmNotification).toHaveBeenCalled();
+        expect(mockLogFiredAlarm).toHaveBeenCalled();
       });
       // nearestStation null이면 direction 분기를 거치지 않음
-      const apiSendCall = mockSendAlarmNotification.mock.calls[0];
-      expect(apiSendCall[0]).not.toHaveProperty('direction');
-    });
-
-    it('sendAlarmNotification rejection은 logger.error로 swallowed (회귀 가드)', async () => {
-      mockSendAlarmNotification.mockRejectedValueOnce(new Error('boom'));
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      await waitFor(() => {
-        expect(mockSendAlarmNotification).toHaveBeenCalled();
-      });
-      // rejection이 swallow돼 후속 로깅이 정상 호출되는지 확인
-      await waitFor(() => {
-        const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
-        expect(apiCalls.length).toBeGreaterThan(0);
-      });
+      const apiLogCall = mockLogFiredAlarm.mock.calls[0];
+      expect(apiLogCall[1]).not.toHaveProperty('direction');
     });
 
     it('destinationId 없으면 trackedTrainCode를 null로 리셋한다', async () => {
@@ -2027,31 +1979,9 @@ describe('useStationAlarm', () => {
   });
 
   describe('fusionSource 라벨 전파 (#327)', () => {
-    it('fusionSource=gps 전달 시 sendAlarmNotification에 gpsOnly가 4번째 인자로 전달된다', async () => {
-      const route = makeDirectRoute(5, '2');
-      const destination = makeStation('D1', '강남');
-      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, fusionSource: 'gps' })),
-      );
-      await waitFor(() =>
-        expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true, 'gpsOnly'),
-      );
-    });
-
-    it('locationUncertain=true 전달 시 source 무시하고 uncertain 전달', async () => {
-      const route = makeDirectRoute(5, '2');
-      const destination = makeStation('D1', '강남');
-      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({ route, destination, fusionSource: 'position-train', locationUncertain: true }),
-        ),
-      );
-      await waitFor(() =>
-        expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true, 'uncertain'),
-      );
-    });
+    // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거로 notificationSource가 실제로
+    // 소비되던 유일한 경로가 사라졌다. notificationSource 계산 자체(useMemo)는 향후 재사용을
+    // 위해 보존하되, "sendAlarmNotification에 전달됨"을 검증하던 아래 두 테스트는 대상이 없어 제거.
 
     // #2064 (Phase 1-device) — station-passed 로컬 알림 제거로 notificationSource 전파 대상도
     // 사라짐(sendAlarmNotification 경로만 notificationSource를 계속 사용).
@@ -2191,7 +2121,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       const etaCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'eta');
       expect(etaCalls).toHaveLength(1);
-      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
     });
 
     it('setFiredAlarms가 reject되어도 notification은 발사된다 (영속화 실패 graceful)', async () => {
@@ -2200,7 +2130,7 @@ describe('useStationAlarm', () => {
 
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta'));
     });
 
@@ -2342,7 +2272,7 @@ describe('useStationAlarm', () => {
       // 핵심: evaluate 진입 차단 → firedAlarms 슬롯 점유 없음(setFiredAlarms 미호출) → 발사 없음.
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('조기 발사로 오염되지 않아 window 경과 후 실제 도착에서 destination 정상 발사', async () => {
@@ -2370,13 +2300,13 @@ describe('useStationAlarm', () => {
       await waitFor(() =>
         expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-warmup', destination.name),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
 
       // 실제 도착 시점: window 경과 + 좌표 갱신. firedAlarms가 비어 있으므로 dedup 없이 발사돼야 한다.
       nowSpy.mockReturnValue(baseTs + 10_001);
       rerender({ loc: { lat: 37.498, lng: 127.028 } });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta');
     });
   });
@@ -2415,7 +2345,7 @@ describe('useStationAlarm', () => {
           }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('Phase rawEvent 있음 + speed=0이면 차단 + movement-static-speed 적재', async () => {
@@ -2432,14 +2362,14 @@ describe('useStationAlarm', () => {
           }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('Phase rawEvent 있음 + speed>=0.5(이동)이면 정상 발사 (positionStability=static 무시)', async () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderPhaseHook({ speedMps: 5, positionStability: 'static' });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
     });
   });
 
@@ -2542,7 +2472,7 @@ describe('useStationAlarm', () => {
           }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('Phase rawEvent (early destination) + motionStationary=true → 차단 + movement-motion-stationary 적재', async () => {
@@ -2575,7 +2505,7 @@ describe('useStationAlarm', () => {
           }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('station-passed + motionStationary=true → 차단 + movement-motion-stationary 적재', async () => {
@@ -2703,7 +2633,7 @@ describe('useStationAlarm', () => {
         trainProgressing: true,
       });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'movement-motion-stationary' }),
       );
@@ -2719,7 +2649,7 @@ describe('useStationAlarm', () => {
         trainProgressing: true,
       });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'movement-static-speed' }),
       );
@@ -2737,7 +2667,7 @@ describe('useStationAlarm', () => {
         trainProgressing: true,
       });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'movement-static-position' }),
       );
@@ -2758,7 +2688,7 @@ describe('useStationAlarm', () => {
         trainProgressing: true,
       });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
     });
 
     it('station-passed + motionStationary=true + trainProgressing=true → 정상 감지 (#2064 알림은 미발사)', async () => {
@@ -2791,7 +2721,7 @@ describe('useStationAlarm', () => {
           expect.objectContaining({ reason: 'movement-motion-stationary' }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('trainProgressing=undefined(기본값)면 기존 동작 (graceful fallback)', async () => {
@@ -2809,7 +2739,7 @@ describe('useStationAlarm', () => {
           expect.objectContaining({ reason: 'movement-static-speed' }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
   });
 
@@ -2948,7 +2878,7 @@ describe('useStationAlarm', () => {
       );
 
       // 첫 fire 완료까지 대기 — firedAlarmsRef에 'early:강남' 적재.
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
       expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
 
       // mock이 firedAlarms를 무시하므로 evaluateAlarmPhase는 다시 같은 rawEvent 반환 → fireAndLog 호출.
@@ -2960,7 +2890,7 @@ describe('useStationAlarm', () => {
       // microtask + effect 사이클 flush. setTimeout(0)으로 macrotask queue까지 비운다.
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
       expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
     });
 
@@ -2998,14 +2928,14 @@ describe('useStationAlarm', () => {
       );
 
       await waitFor(() => expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalled());
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
 
       // sleep OFF 토글 → firedAlarms.delete가 sync 적용됐다면 다음 evaluation은 정상 발사.
       // delete가 빠지면 같은 키가 firedAlarms에 남아 진입 가드가 영구 봉쇄 → 회귀.
       useSettingsStore.setState({ sleepMode: false });
       rerender({ lat: 37.50001 });
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
     });
   });
 
@@ -3058,7 +2988,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('API imminent path: silence 활성이면 imminent도 차단', async () => {
@@ -3074,7 +3004,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('station-passed path: silence 활성이면 알림 차단 + lastNotifiedStationId 갱신 보존', async () => {
@@ -3099,7 +3029,7 @@ describe('useStationAlarm', () => {
       seedExpiredSilence();
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderForSilence();
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(setStateSpy).toHaveBeenCalled();
       setStateSpy.mockRestore();
     });
@@ -3109,7 +3039,7 @@ describe('useStationAlarm', () => {
       seedExpiredSilence();
       setupApiImminent();
       renderForSilence();
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(clearSpy).toHaveBeenCalled();
       clearSpy.mockRestore();
     });
@@ -3127,14 +3057,14 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
     });
 
     it('silence state 없음 → 게이트 통과 (정상 발사)', async () => {
       useAlarmEventStore.setState({ dismissSilence: null });
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderForSilence();
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedDismissSilence).not.toHaveBeenCalled();
     });
 
@@ -3147,7 +3077,7 @@ describe('useStationAlarm', () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderForSilence();
       // reject되어도 silence는 통과되어 알람 정상 발사.
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(clearSpy).toHaveBeenCalled();
       clearSpy.mockRestore();
     });
@@ -3797,7 +3727,7 @@ describe('useStationAlarm', () => {
       expect(phases).not.toContain('storage-synced');
       expect(phases).not.toContain('ready');
       // 'ready' 미도달 → phase 알람 보류.
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
 
@@ -3808,7 +3738,7 @@ describe('useStationAlarm', () => {
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
       // 'ready' 도달 후 발사.
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
       const phases = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
       expect(phases[phases.length - 1]).toBe('ready');
     });
@@ -5093,7 +5023,7 @@ describe('useStationAlarm', () => {
         expect(phaseBlocks.length).toBeGreaterThan(0);
       });
       // phase 알람 dispatch(sendAlarmNotification) 미호출.
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('Path C (subsurface verdict): SSoT 게이트 block 시 dispatch X', async () => {
@@ -5509,7 +5439,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('lockless + 사용자 명시 의향 X → destination phase ETA fire X (logSuppressedLocklessNoUserIntent)', async () => {
@@ -5538,7 +5468,7 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('lock 활성 trip → station-passed FG GPS path 정상 발사 (backward compat)', async () => {
@@ -5600,7 +5530,7 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
     });
 
@@ -5657,7 +5587,7 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
       // fire ledger 미개입 확인 — logSuppressedFireAlarmOnce 미호출.
       expect(mockLogSuppressedFireAlarmOnce).not.toHaveBeenCalled();
     });
@@ -5685,7 +5615,7 @@ describe('useStationAlarm', () => {
           'eta',
         ),
       );
-      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
       expect(mockLogSuppressedFireAlarmOnce).not.toHaveBeenCalled();
     });
 
@@ -5732,7 +5662,7 @@ describe('useStationAlarm', () => {
         ),
       );
       // 사용자에게 노출된 알람 0건 — ledger가 fire callback 실행 자체를 차단.
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       // logFiredAlarm도 미호출 (fireAndLog 진입 X).
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
@@ -5822,7 +5752,7 @@ describe('useStationAlarm', () => {
       );
 
       // line=null이어도 fire 정상 진행 — 방어적 stringify로 dedup key 산출.
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
     });
   });
 
@@ -5859,7 +5789,7 @@ describe('useStationAlarm', () => {
           }),
         );
       });
-      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('flag ON + motionStationary=true → motion gate bypass → 정상 발사 (arrival API SSoT)', async () => {
@@ -5881,7 +5811,7 @@ describe('useStationAlarm', () => {
       );
 
       // motion=stationary인데도 알람 발사 — arrival API SSoT 아키텍처는 arvlCd 단독 신호로 판정.
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       // movement 게이트 skip 로그 미적재 (dormant).
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'movement-motion-stationary' }),

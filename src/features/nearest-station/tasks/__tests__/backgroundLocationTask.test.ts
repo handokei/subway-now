@@ -178,20 +178,20 @@ function getTaskCallback(): TaskCallback {
   return (global as any).__bgTaskCallback as TaskCallback;
 }
 
-/** AsyncStorage.getItem 4개를 순서대로 모킹한다 (dest, sleep, route, allowSpeaker)
+/** AsyncStorage.getItem 3개를 순서대로 모킹한다 (dest, sleep, route).
+ *  #2067 (Phase 2-device, D1) — allowSpeaker read는 processLocationUpdate가 더 이상 소비하지
+ *  않아 backgroundLocationTask.ts에서 제거됐다(dead read cleanup).
  *  firedAlarms는 notificationState helper로 분리되어 별도 mockGetFiredAlarms로 제어한다.
  *  lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈로 read/write 한다. */
 function mockStorageValues(
   dest: string | null,
   sleep: string | null = null,
   route: string | null = null,
-  allowSpeaker: string | null = null,
 ): void {
   (AsyncStorage.getItem as jest.Mock)
     .mockResolvedValueOnce(dest)
     .mockResolvedValueOnce(sleep)
-    .mockResolvedValueOnce(route)
-    .mockResolvedValueOnce(allowSpeaker);
+    .mockResolvedValueOnce(route);
 }
 
 describe('BACKGROUND_LOCATION_TASK 상수', () => {
@@ -293,7 +293,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       destination: mockDestination,
       firedAlarms: new Set(),
       sleepMode: false,
-      allowSpeaker: true,
       storedRoute: null,
     }));
     // alarmEvent가 없으므로 ALARM_EVENT_KEY는 기록되지 않는다.
@@ -331,38 +330,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
     expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
       sleepMode: false,
-    }));
-  });
-
-  // ── allowSpeaker 파싱 ──
-
-  it("allowSpeakerJson이 'false'이면 allowSpeaker=false로 processLocationUpdate를 호출한다", async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, 'false');
-
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
-
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028)] },
-      error: null,
-    });
-
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      allowSpeaker: false,
-    }));
-  });
-
-  it("allowSpeakerJson이 'true'이면 allowSpeaker=true로 processLocationUpdate를 호출한다", async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, 'true');
-
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
-
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028)] },
-      error: null,
-    });
-
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      allowSpeaker: true,
     }));
   });
 
@@ -607,10 +574,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it('비현실 점프(25km/8s)면 logSuppressedGate(gate-jump)를 호출하고 processLocationUpdate를 건너뛴다', async () => {
     const prevTs = Date.now() - 8_000;
     const prevFix = { lat: 37.5390, lng: 126.9610, timestamp: prevTs };
-    // dest, sleep, route, allowSpeaker, BG_LAST_FIX_KEY (readBgLastFix 5번째 호출)
+    // dest, sleep, route, BG_LAST_FIX_KEY (readBgLastFix 4번째 호출)
     (AsyncStorage.getItem as jest.Mock)
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(JSON.stringify(prevFix));
@@ -634,7 +600,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(JSON.stringify(prevFix));
 
     await taskCallback({
@@ -650,7 +615,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   it('BG_LAST_FIX_KEY가 없으면(콜드스타트) jump 게이트를 통과한다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
-    // mockStorageValues는 4개만 mockOnce → 5번째 호출은 default(null)
+    // mockStorageValues는 3개만 mockOnce → 4번째 호출(BG_LAST_FIX_KEY)은 default(null)
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -666,7 +631,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce('not-json');
 
     await taskCallback({
@@ -680,7 +644,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it('BG_LAST_FIX_KEY가 형식 불일치 객체면 prev=null로 처리하여 통과한다', async () => {
     (AsyncStorage.getItem as jest.Mock)
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(JSON.stringify({ foo: 'bar' }));
@@ -837,7 +800,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         line: '2',
         travelSeconds: 600,
       };
-      mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(directRoute), null);
+      mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(directRoute));
       mockProcessLocationUpdate.mockResolvedValue({
         alarmEvent: null,
         nearest: { station: mockStation, distanceKm: 0.42 },
@@ -871,7 +834,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         secondsToTransfer: 360,
         secondsFromTransfer: 480,
       };
-      mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(transferRoute), null);
+      mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(transferRoute));
       mockProcessLocationUpdate.mockResolvedValue({
         alarmEvent: null,
         nearest: { station: mockStation, distanceKm: 0.42 },
@@ -920,10 +883,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   describe('#819 — backend로 position + motion 송신', () => {
     /**
-     * mockStorageValues 4번 chain 후 task code는 readBgLastFix(`getItem(BG_LAST_FIX_KEY)`)를 한 번,
-     * 그 다음 `getItem(APNS_TOKEN_KEY)`를 한 번 호출한다. 따라서 5번째에 null(=fresh fix, 점프 검사
-     * 통과), 6번째에 token을 chain한다. 안 그러면 APNS_TOKEN_KEY 자리에 BG_LAST_FIX 값이 들어가
-     * uploadPosition 호출 안 됨.
+     * mockStorageValues 3번 chain(dest/sleep/route) 후 task code는
+     * readBgLastFix(`getItem(BG_LAST_FIX_KEY)`)를 한 번, 그 다음 `getItem(APNS_TOKEN_KEY)`를 한
+     * 번 호출한다. 따라서 4번째에 null(=fresh fix, 점프 검사 통과), 5번째에 token을 chain한다.
+     * 안 그러면 APNS_TOKEN_KEY 자리에 BG_LAST_FIX 값이 들어가 uploadPosition 호출 안 됨.
      */
     function stubApnsTokenAfterStorage(token: string | null): void {
       (AsyncStorage.getItem as jest.Mock)
@@ -975,7 +938,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
     it('AsyncStorage.getItem(APNS_TOKEN_KEY) throw → 무시하고 uploadPosition 미호출', async () => {
       mockStorageValues(JSON.stringify(mockDestination));
-      // 5번째 call: BG_LAST_FIX_KEY null, 6번째 call: APNS_TOKEN_KEY에서 throw
+      // 4번째 call: BG_LAST_FIX_KEY null, 5번째 call: APNS_TOKEN_KEY에서 throw
       (AsyncStorage.getItem as jest.Mock)
         .mockResolvedValueOnce(null)
         .mockRejectedValueOnce(new Error('boom'));
@@ -1108,7 +1071,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         .mockResolvedValueOnce(JSON.stringify(mockDestination))
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)  // BG_LAST_FIX_KEY
         .mockResolvedValueOnce('apns-tok-1'); // APNS_TOKEN_KEY
 
@@ -1125,7 +1087,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       function stubApnsToken(token: string): void {
         (AsyncStorage.getItem as jest.Mock)
           .mockResolvedValueOnce(JSON.stringify(mockDestination))
-          .mockResolvedValueOnce(null)
           .mockResolvedValueOnce(null)
           .mockResolvedValueOnce(null)
           .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY
@@ -1193,7 +1154,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       expectedDurationMs: 30 * 60_000,
     };
 
-    /** mockStorageValues 4개 후 BG_LAST_FIX(null) + APNS_TOKEN을 chain. */
+    /** mockStorageValues 3개 후 BG_LAST_FIX(null) + APNS_TOKEN을 chain. */
     function stubApnsTokenAfterStorage(token: string | null): void {
       (AsyncStorage.getItem as jest.Mock)
         .mockResolvedValueOnce(null)
@@ -1271,7 +1232,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   describe('#1542 (ADR-016 S9) — accelerometer fingerprint BG piggyback', () => {
-    /** Phase B 전용 token chain — APNS token after storage 4 + BG_LAST_FIX null. */
+    /** Phase B 전용 token chain — APNS token after storage 3 + BG_LAST_FIX null. */
     function stubApnsTokenAfterStorage(token: string | null): void {
       (AsyncStorage.getItem as jest.Mock)
         .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY — prevFix 없음

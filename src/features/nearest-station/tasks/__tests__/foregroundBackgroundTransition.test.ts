@@ -94,14 +94,28 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
   getFirstLeg: (_route: unknown, destinationName: string) => ({ line: '2', endName: destinationName }),
 }));
 
-const mockSendAlarmNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
 const mockSendStationPassedNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
 const mockUpdateStationNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
 jest.mock('../../../alarm/utils/stationNotification', () => ({
-  sendAlarmNotification: (...args: unknown[]) => mockSendAlarmNotification(...args),
   sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
   updateStationNotification: (...args: unknown[]) => mockUpdateStationNotification(...args),
 }));
+
+// #2067 (Phase 2-device, D1) — sendAlarmNotification 제거로 "알람 발사" 관측 지점이
+// logFiredAlarm(alarmLog.ts)으로 이동. 이 파일은 stationPipeline/backgroundLocationTask의
+// dedup 결합을 실제 모듈로 검증하는 것이 목적이라, alarmLog는 requireActual로 대부분 실제
+// 구현을 유지하고 logFiredAlarm만 spy로 감싸 "발사 횟수"를 관측한다.
+const mockLogFiredAlarm = jest.fn();
+jest.mock('../../../alarm/utils/alarmLog', () => {
+  const actual = jest.requireActual('../../../alarm/utils/alarmLog');
+  return {
+    ...actual,
+    logFiredAlarm: (...args: unknown[]) => {
+      mockLogFiredAlarm(...args);
+      return actual.logFiredAlarm(...args);
+    },
+  };
+});
 
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -252,7 +266,7 @@ beforeEach(() => {
   // 기본: 'early' phase가 트리거되지 않는 multi-stop direct route — 알림 발사만 검증
   mockFindRoute.mockReturnValue(makeDirectRoute(3, '2'));
   mockSendStationPassedNotification.mockClear();
-  mockSendAlarmNotification.mockClear();
+  mockLogFiredAlarm.mockClear();
   mockUpdateStationNotification.mockClear();
   (AsyncStorage.setItem as jest.Mock).mockClear();
   // #1515 — cross-category dedup module 인메모리 상태 리셋(테스트 간 격리).
@@ -326,25 +340,25 @@ describe('FG↔BG 통합: 알람 dedup (FIRED_ALARMS_KEY 단일 출처)', () => 
 
   it('FG에서 알람 발사 후 BG가 같은 phase 조건을 받으면 evaluateAlarmPhase가 dedup한다', async () => {
     await runFgPipelineAt(fakeStation);
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
     expect(mockStorage.get(FIRED_ALARMS_KEY)).toBeDefined();
 
     await runBgTaskAt(fakeStation);
 
     // BG가 FIRED_ALARMS_KEY를 읽어 firedAlarms Set으로 만들고,
-    // evaluateAlarmPhase가 동일 키를 보고 null 반환 → sendAlarmNotification 무호출.
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    // evaluateAlarmPhase가 동일 키를 보고 null 반환 → logFiredAlarm 무호출.
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
   });
 
   it('BG에서 알람 발사 후 FG가 같은 phase 조건을 받으면 dedup된다', async () => {
     await runBgTaskAt(fakeStation);
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
     const firedJson = mockStorage.get(FIRED_ALARMS_KEY);
     expect(firedJson).toBeDefined();
 
     await runFgPipelineAt(fakeStation);
 
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -439,15 +453,15 @@ describe('FG↔BG 통합: swipe-kill 후 재진입 (AsyncStorage 영속성)', ()
   it('BG 알람 발사 후 swipe-kill을 거쳐 FG 재진입해도 firedAlarms는 영속 dedup된다', async () => {
     mockFindRoute.mockReturnValue(makeDirectRoute(1, '2'));
     await runBgTaskAt(fakeStation);
-    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
     const firedJson = mockStorage.get(FIRED_ALARMS_KEY);
     expect(firedJson).toBeDefined();
 
-    mockSendAlarmNotification.mockClear();
+    mockLogFiredAlarm.mockClear();
     expect(mockStorage.get(FIRED_ALARMS_KEY)).toBe(firedJson);
 
     await runFgPipelineAt(fakeStation);
 
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    expect(mockLogFiredAlarm).not.toHaveBeenCalled();
   });
 });

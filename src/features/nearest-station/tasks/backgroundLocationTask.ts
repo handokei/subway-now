@@ -12,7 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../../alarm/utils/stationPipeline';
 import { alarmKey } from '../../alarm/utils/stationAlarm';
 import { createLogger } from '../../../shared/utils/logger';
-import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../../../shared/constants/storageKeys';
+import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import { getFiredAlarms, setFiredAlarms } from '../../alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
 import { logSuppressedGate } from '../../alarm/utils/alarmLog';
@@ -133,11 +133,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const speedMps = isValidGpsSpeedMps(speed) ? speed : null;
 
   try {
-    const [destJson, sleepJson, routeJson, allowSpeakerJson] = await Promise.all([
+    const [destJson, sleepJson, routeJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
-      AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
     ]);
 
     // 경로(목적지) 없으면 백그라운드에서도 실시간 현황 알림을 띄우지 않는다.
@@ -164,7 +163,6 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // 런타임 검증은 id 존재만 확인. Station 나머지 필드는 production write 시점에서 보장된다.
     const destination = destinationRaw as Station;
     const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
-    const allowSpeaker = allowSpeakerJson ? JSON.parse(allowSpeakerJson) === true : true;
 
     // #527: BG task 호출 간 직전 수용 fix를 AsyncStorage로 들고 시공간 일관성을 검증한다.
     // iOS deferred batch에서 stale 좌표가 섞여 들어오거나 OS가 부정확 fix를 보낼 때 발생하는
@@ -257,7 +255,6 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       destination,
       firedAlarms,
       sleepMode,
-      allowSpeaker,
       storedRoute,
       speedMps,
       source: 'bg',

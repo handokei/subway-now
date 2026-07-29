@@ -77,7 +77,7 @@ import {
   lastNReasons,
   logBoardingPromptFired,
   logBoardingPromptResponded,
-  logSleepTransferAlarmFired,
+  logCompanionAlarmFired,
   logLegTransition,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
@@ -2237,9 +2237,9 @@ describe('alarmLog', () => {
       expect(saved[0].stationName).toBe('2·강남');
     });
 
-    it('#2036 (Issue I γ): logSleepTransferAlarmFired가 sleep-transfer-alarm entry를 적재한다', async () => {
+    it('#2067 (Phase 2-device, D3): logCompanionAlarmFired가 companion entry를 적재한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
-      logSleepTransferAlarmFired({
+      logCompanionAlarmFired({
         originStation: '성수',
         nextStation: '뚝섬',
         nextLine: '2',
@@ -2247,29 +2247,29 @@ describe('alarmLog', () => {
       await flushAlarmLog();
       const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
       expect(saved).toHaveLength(1);
-      expect(saved[0].source).toBe('sleep-transfer-alarm');
+      expect(saved[0].source).toBe('companion');
       expect(saved[0].outcome).toBe('fired');
       expect(saved[0].stationName).toBe('2·뚝섬');
     });
 
-    it('#2036 (Issue I γ): sleep-transfer-alarm source는 silent push outcome 집계에서 제외 (null bucket)', () => {
+    it('#2067 (Phase 2-device, D3): companion source는 silent push outcome 집계에서 제외 (null bucket)', () => {
       const now = 1_700_000_000_000;
       const entries: AlarmLogEntry[] = [
-        { ts: now - 1000, source: 'sleep-transfer-alarm', outcome: 'fired' },
+        { ts: now - 1000, source: 'companion', outcome: 'fired' },
         { ts: now - 2000, source: 'silent-push-fired', outcome: 'fired' },
       ];
       const counts = countSilentPushOutcomes(entries);
-      // sleep-transfer-alarm은 SILENT_PUSH_OUTCOME_SOURCES에서 null bucket — silent push 카운터에 미반영.
+      // companion은 SILENT_PUSH_OUTCOME_SOURCES에서 null bucket — silent push 카운터에 미반영.
       expect(counts).toEqual({ received: 0, fired: 1, skipped: 0 });
     });
 
-    it('#2036 (Issue I γ): sleep-transfer-alarm은 fire 분모에 포함 (실제 사용자 노출 알람)', () => {
+    it('#2067 (Phase 2-device, D3): companion은 fire 분모에 포함 (실제 사용자 노출 알람)', () => {
       const now = 1_700_000_000_000;
       const entries: AlarmLogEntry[] = [
-        { ts: now - 1000, source: 'sleep-transfer-alarm', outcome: 'fired' },
+        { ts: now - 1000, source: 'companion', outcome: 'fired' },
         { ts: now - 2000, source: 'boarding-prompt', outcome: 'fired' },
       ];
-      // FIRED_ALARM_SOURCES: sleep-transfer-alarm=true, boarding-prompt=false → 1건만 카운트.
+      // FIRED_ALARM_SOURCES: companion=true, boarding-prompt=false → 1건만 카운트.
       expect(countFiredAlarms(entries)).toBe(1);
     });
 

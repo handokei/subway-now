@@ -9,7 +9,7 @@
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
 import { findRoute, calculateStaticETA, getFirstLeg, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
-import { sendAlarmNotification, updateStationNotification } from './stationNotification';
+import { updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
 import { advanceHopWindow } from './boardingLockScheduler';
 import { getBoardingLock } from './boardingLockStorage';
@@ -186,7 +186,6 @@ export interface ProcessLocationInputs {
   destination: Station;
   firedAlarms: Set<string>;
   sleepMode: boolean;
-  allowSpeaker?: boolean;
   storedRoute?: Route;
   speedMps?: number | null;
   // 알람 로그 적재 시 발사 컨텍스트 — 호출자가 명시한다.
@@ -218,7 +217,6 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     destination,
     firedAlarms,
     sleepMode,
-    allowSpeaker = true,
     storedRoute = null,
     speedMps = null,
     source,
@@ -387,7 +385,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         Date.now(),
         alarmEvent.phaseId,
       );
-      await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
+      // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거. 알람 배너는 원격 visible push가
+      // 담당(Phase 2-backend). BG pipeline은 dedup ledger 기록 + alarmLog 적재만 수행한다.
       logFiredAlarm(source, alarmEvent);
     }
   }
