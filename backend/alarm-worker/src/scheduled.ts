@@ -1821,9 +1821,15 @@ export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
  */
 export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
 
-/** #2063 — 매역 알림 apns-collapse-id 빌더. */
+/**
+ * #2063 — 매역 알림 apns-collapse-id 빌더.
+ * #2086 — device token(64 hex)을 통째로 넣으면 `station-<64hex>` ≈ 72B로 APNs
+ * `apns-collapse-id` 64B 한도를 초과할 수 있어 `slice(0, 16)`로 축약한다
+ * (`sleepAlarmCollapseId`와 동일 패턴, PR #2085 리뷰 P2-2). collapse는 같은 trip 내
+ * 최신으로 교체하는 용도라 16 hex prefix로 유니크성 충분.
+ */
 export function stationNotifCollapseId(tripToken: string): string {
-  return `${STATION_NOTIF_COLLAPSE_ID_PREFIX}${tripToken}`;
+  return `${STATION_NOTIF_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
 }
 
 /**
