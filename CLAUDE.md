@@ -76,7 +76,7 @@ Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 ### Domain docs
 
-Single-context — `docs/adr/` at repo root. See `docs/agents/domain.md`.
+Single-context — `docs/decisions/` at repo root (ADR-001~). See `docs/agents/domain.md`.
 
 ---
 
