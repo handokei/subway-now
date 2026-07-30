@@ -178,6 +178,26 @@ export function nearestArcPoint(arc: RouteArc, lat: number, lng: number): ArcPro
 }
 
 /**
+ * #2093 (item C) — progressM이 속한 현재 hop(인접 두 역 사이) 거리(m).
+ * arc time-integration overshoot gate가 "예측치가 현재 hop 거리 × N배 초과"를 판정할 때 사용.
+ *
+ * progressM을 포함하는 segment [arcM[i], arcM[i+1]]를 찾아 그 길이를 반환. progressM이 arc
+ * 범위를 벗어나면 clamp. stations.length < 2(단일 역 arc)면 hop 자체가 없으므로 0.
+ */
+export function currentHopDistanceM(arc: RouteArc, progressM: number): number {
+  const { arcM, totalLengthM } = arc;
+  if (arcM.length < 2) return 0;
+  // p는 [0, totalLengthM]로 clamp되고 arcM[arcM.length-1] === totalLengthM이므로
+  // 루프는 항상 마지막 인덱스(i = arcM.length-2) 이전에 조건을 만족해 반환한다 — fallthrough 없음.
+  const p = Math.max(0, Math.min(progressM, totalLengthM));
+  for (let i = 0; i < arcM.length - 1; i++) {
+    if (p <= arcM[i + 1]) return arcM[i + 1] - arcM[i];
+  }
+  /* istanbul ignore next -- 위 주석대로 도달 불가. TS 반환 타입 보장을 위한 방어 코드. */
+  return arcM[arcM.length - 1] - arcM[arcM.length - 2];
+}
+
+/**
  * progressM(경로 시작점부터 누적거리)에 해당하는 현재/다음/이전 역 정보.
  * current = arc 기준 최단 거리 역. next/prev = 해당 역의 다음/이전 인덱스 역(경로 진행 방향).
  */

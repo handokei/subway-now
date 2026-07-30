@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   computeRouteArc,
+  currentHopDistanceM,
   nearestArcPoint,
   stationAtProgress,
   type RouteArc,
@@ -13,6 +14,9 @@ import {
   MAX_PLAUSIBLE_MPS,
   ACCURACY_WEIGHT_SCALE_M,
   DEFAULT_ACCURACY_WEIGHT,
+  ARC_OVERSHOOT_HOP_MULTIPLIER,
+  ROUTE_PROGRESS_RESEED_STALE_MS,
+  ROUTE_PROGRESS_RESEED_ACCURACY_M,
 } from '../../../shared/constants/routeProgress';
 
 /**
@@ -126,9 +130,44 @@ export function useRouteProgress({
       return;
     }
 
+    // #2093 (item D) — 장기 무신호(마지막 신뢰 관측 이후 ROUTE_PROGRESS_RESEED_STALE_MS 이상 경과) 후
+    // 재기동 시, 정확도가 좋고(< ROUTE_PROGRESS_RESEED_ACCURACY_M) 경로 위에서 합의(perp ≤ MAX_PERP_M)되는
+    // fix라면 dead-reckoning/jump-reject 판정을 우회하고 그 지점으로 즉시 re-seed한다. lock_position_tier
+    // 8분 stuck류 회귀(원점=탑승역에 고착돼 표시가 플래핑)를 GPS 합의 지점 재앵커로 해소.
+    // 저품질(지하) 좌표로는 re-seed하지 않는다 — accuracyMeters 게이트가 GPS 결정 권한을 지상 고품질
+    // fix로만 제한(feedback_no_gps_for_decision).
+    const staleMs = now - current.lastTrustedTickMs;
+    const reseedEligible =
+      staleMs > ROUTE_PROGRESS_RESEED_STALE_MS &&
+      accuracyMeters != null &&
+      accuracyMeters < ROUTE_PROGRESS_RESEED_ACCURACY_M &&
+      proj.perpDistanceM <= MAX_PERP_M;
+    if (reseedEligible) {
+      stateRef.current = {
+        progressM: proj.arcM,
+        lastTickMs: now,
+        lastTrustedProgressM: proj.arcM,
+        lastTrustedTickMs: now,
+        speedMps: nextSpeed,
+        initialized: true,
+      };
+      setProgressM(proj.arcM);
+      return;
+    }
+
     // 모션 모델: 직전 tick부터 dead reckoning.
     const dt = (now - current.lastTickMs) / 1000;
-    const predicted = current.progressM + current.speedMps * dt;
+    const rawPredicted = current.progressM + current.speedMps * dt;
+
+    // #2093 (item C) — arc 시간적분 오버슛 gate. lastTrustedProgressM 대비 dead-reckoning 예측치가
+    // 현재 hop 거리 × ARC_OVERSHOOT_HOP_MULTIPLIER를 초과하면 무효화 — trusted anchor로 되돌려 재적분.
+    // 정지 상태에서도 시간 적분만 계속 누적되는 회귀(lesson_arc_time_integration_overshoot) 차단.
+    const hopDistanceM = currentHopDistanceM(arc, current.lastTrustedProgressM);
+    const overshotM = Math.abs(rawPredicted - current.lastTrustedProgressM);
+    const predicted =
+      hopDistanceM > 0 && overshotM > hopDistanceM * ARC_OVERSHOOT_HOP_MULTIPLIER
+        ? current.lastTrustedProgressM
+        : rawPredicted;
 
     // 경로 이탈: 관측 무시, dead reckoning만 적용. trusted baseline은 그대로.
     if (proj.perpDistanceM > MAX_PERP_M) {

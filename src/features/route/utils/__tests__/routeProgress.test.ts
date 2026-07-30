@@ -1,5 +1,6 @@
 import {
   computeRouteArc,
+  currentHopDistanceM,
   nearestArcPoint,
   stationAtProgress,
   type RouteArc,
@@ -319,5 +320,40 @@ describe('stationAtProgress', () => {
     const info = stationAtProgress(arc, arc.arcM[1]);
     expect(info.current.id).toBe(arc.stations[1].id);
     expect(info.distanceToNextM).toBe(arc.arcM[2] - arc.arcM[1]);
+  });
+});
+
+describe('currentHopDistanceM (#2093 item C)', () => {
+  const route = makeDirectRoute(4, '7');
+  const arc = computeRouteArc(route, sagajeong, childrenPark)!;
+
+  it('returns 0 for single-station arc (no hop)', () => {
+    const single = computeRouteArc(makeDirectRoute(0, '7'), gunja, gunja)!;
+    expect(currentHopDistanceM(single, 0)).toBe(0);
+  });
+
+  it('returns the segment length containing progressM=0', () => {
+    expect(currentHopDistanceM(arc, 0)).toBe(arc.arcM[1] - arc.arcM[0]);
+  });
+
+  it('returns the segment length for a mid-arc progress', () => {
+    const p = arc.arcM[2] + (arc.arcM[3] - arc.arcM[2]) * 0.3;
+    expect(currentHopDistanceM(arc, p)).toBe(arc.arcM[3] - arc.arcM[2]);
+  });
+
+  it('returns the last segment length when progress is at totalLengthM', () => {
+    expect(currentHopDistanceM(arc, arc.totalLengthM)).toBe(
+      arc.arcM[arc.arcM.length - 1] - arc.arcM[arc.arcM.length - 2],
+    );
+  });
+
+  it('clamps progress below 0 to the first segment', () => {
+    expect(currentHopDistanceM(arc, -5000)).toBe(arc.arcM[1] - arc.arcM[0]);
+  });
+
+  it('clamps progress above totalLengthM to the last segment', () => {
+    expect(currentHopDistanceM(arc, arc.totalLengthM + 5000)).toBe(
+      arc.arcM[arc.arcM.length - 1] - arc.arcM[arc.arcM.length - 2],
+    );
   });
 });
