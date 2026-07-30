@@ -4,6 +4,7 @@ import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute'
 import type { Route } from '../../../../shared/utils/stationRoute';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import { computeRouteArc, currentHopDistanceM, nearestArcPoint } from '../../utils/routeProgress';
 
 const sagajeong = findStationByNameAndLine('사가정', '7')!;
 const childrenPark = findStationByNameAndLine('어린이대공원', '7')!;
@@ -411,5 +412,347 @@ describe('useRouteProgress', () => {
 
     expect(result.current.position?.current.id).toBe(gunja.id);
     jest.useRealTimers();
+  });
+
+  // #2093 (item C) — arc 시간적분 오버슛 gate 경계값 검증.
+  describe('arc overshoot gate (item C)', () => {
+    it('does not invalidate dead-reckoning when overshoot stays within hop x2', () => {
+      jest.useFakeTimers();
+      const startTime = 1_000_000_000;
+      jest.setSystemTime(startTime);
+
+      const arcForHop = computeRouteArc(directRoute, sagajeong, childrenPark)!;
+      const hopM = currentHopDistanceM(arcForHop, 0);
+      const speedJustUnder = (hopM * 2 - 20) / 10; // 10초 뒤 예측 이동 = hopM×2 - 20m (임계 직전)
+
+      const { result, rerender } = renderHook(
+        (p: UseRouteProgressInputs) => useRouteProgress(p),
+        {
+          initialProps: makeProps({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: speedJustUnder,
+            accuracyMeters: 30,
+          }),
+        },
+      );
+      const baseline = result.current.progressM!;
+
+      jest.setSystemTime(startTime + 10_000);
+      act(() => {
+        rerender(
+          makeProps({
+            // 명백히 off-route(perp > 1.5km) — dead-reckoning 예측치가 그대로 progress에 반영된다.
+            userLocation: { lat: 37.5219, lng: 126.9244 },
+            speedMps: speedJustUnder,
+            accuracyMeters: 30,
+          }),
+        );
+      });
+
+      expect(result.current.progressM!).toBeGreaterThan(baseline);
+      expect(result.current.progressM!).toBeCloseTo(baseline + speedJustUnder * 10, 0);
+      jest.useRealTimers();
+    });
+
+    it('invalidates dead-reckoning and freezes at trusted anchor when overshoot exceeds hop x2', () => {
+      jest.useFakeTimers();
+      const startTime = 1_000_000_000;
+      jest.setSystemTime(startTime);
+
+      const arcForHop = computeRouteArc(directRoute, sagajeong, childrenPark)!;
+      const hopM = currentHopDistanceM(arcForHop, 0);
+      const speedOver = (hopM * 2 + 100) / 10; // 10초 뒤 예측 이동 = hopM×2 + 100m (임계 초과)
+
+      const { result, rerender } = renderHook(
+        (p: UseRouteProgressInputs) => useRouteProgress(p),
+        {
+          initialProps: makeProps({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: speedOver,
+            accuracyMeters: 30,
+          }),
+        },
+      );
+      const baseline = result.current.progressM!;
+
+      jest.setSystemTime(startTime + 10_000);
+      act(() => {
+        rerender(
+          makeProps({
+            userLocation: { lat: 37.5219, lng: 126.9244 },
+            speedMps: speedOver,
+            accuracyMeters: 30,
+          }),
+        );
+      });
+
+      // 오버슛 게이트 발동 — predicted가 lastTrustedProgressM(baseline)로 무효화되어 progress 변화 없음.
+      expect(result.current.progressM).toBe(baseline);
+      jest.useRealTimers();
+    });
+
+    // review P3-1 — 오버슛 게이트가 off-route 분기뿐 아니라 on-route(blend) 분기에도 적용되는지 검증.
+    it('applies the overshoot gate on the on-route blend branch, not only off-route', () => {
+      jest.useFakeTimers();
+      const startTime = 1_000_000_000;
+      jest.setSystemTime(startTime);
+
+      const arcForHop = computeRouteArc(directRoute, sagajeong, childrenPark)!;
+      const hopM = currentHopDistanceM(arcForHop, 0);
+      // 5초 뒤 rawPredicted = speedOver × 5 가 hopM×2를 명백히 초과하도록 큰 speed 설정.
+      const speedOver = (hopM * 2 + 1000) / 5;
+
+      const { result, rerender } = renderHook(
+        (p: UseRouteProgressInputs) => useRouteProgress(p),
+        {
+          initialProps: makeProps({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: speedOver,
+            accuracyMeters: 300,
+          }),
+        },
+      );
+      const baseline = result.current.progressM!;
+
+      jest.setSystemTime(startTime + 5_000);
+      act(() => {
+        rerender(
+          makeProps({
+            // 같은 위치(perp≈0, on-route) — off-route 분기가 아닌 정상 blend 분기를 탄다.
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: speedOver,
+            accuracyMeters: 300,
+          }),
+        );
+      });
+
+      // 게이트가 blend 분기에도 적용돼 predicted가 clamp됨 — 미적용 시 blended가
+      // (speedOver × 5) × 0.5 ≈ 수천 m로 튀지만, 적용 시 baseline 근처(수십 m)로 유지된다.
+      expect(Math.abs(result.current.progressM! - baseline)).toBeLessThan(100);
+      jest.useRealTimers();
+    });
+  });
+
+  // #2093 (item D) — route-progress 원점 stuck 해소용 GPS 합의 지점 re-seed 검증.
+  describe('stale re-seed (item D)', () => {
+    it('re-seeds to GPS consensus point after long stale period when fix is accurate and on-route', () => {
+      jest.useFakeTimers();
+      const startTime = 1_000_000_000;
+      jest.setSystemTime(startTime);
+
+      const { result, rerender } = renderHook(
+        (p: UseRouteProgressInputs) => useRouteProgress(p),
+        {
+          initialProps: makeProps({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: 0,
+            accuracyMeters: 30,
+          }),
+        },
+      );
+      const baseline = result.current.progressM!;
+
+      // 130초(> ROUTE_PROGRESS_RESEED_STALE_MS) 무신호 후 정확도 좋은(< 100m) fix가 경로 위(어린이대공원)에서
+      // 재포착. sagajeong→childrenPark 거리(~3,871m) ÷ 130s ≈ 29.8 m/s로 ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS
+      // (35 m/s) 이내라 물리적으로 타당 — implied speed(55 m/s) 기준으로는 거부될 큰 점프지만 re-seed가 우회한다.
+      jest.setSystemTime(startTime + 130_000);
+      act(() => {
+        rerender(
+          makeProps({
+            userLocation: { lat: childrenPark.lat, lng: childrenPark.lng },
+            speedMps: 0,
+            accuracyMeters: 30,
+          }),
+        );
+      });
+
+      expect(result.current.progressM!).toBeGreaterThan(baseline);
+      expect(result.current.position?.current.id).toBe(childrenPark.id);
+      jest.useRealTimers();
+    });
+
+    // review P2-1 — re-seed 물리적 타당성 가드 경계값 + 후진 multipath 시나리오.
+    describe('physical plausibility guard (review P2-1)', () => {
+      it('re-seeds when implied speed is just under the plausibility limit', () => {
+        jest.useFakeTimers();
+        const startTime = 1_000_000_000;
+        jest.setSystemTime(startTime);
+
+        const arcForHop = computeRouteArc(directRoute, sagajeong, childrenPark)!;
+        const gunjaProj = nearestArcPoint(arcForHop, gunja.lat, gunja.lng);
+        // 81초: maxPlausibleM = 35 × 81 = 2,835m > gunja 거리(~2,800.66m) — 임계 직전(허용).
+        const staleSec = 81;
+
+        const { result, rerender } = renderHook(
+          (p: UseRouteProgressInputs) => useRouteProgress(p),
+          {
+            initialProps: makeProps({
+              userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+              speedMps: 0,
+              accuracyMeters: 30,
+            }),
+          },
+        );
+
+        jest.setSystemTime(startTime + staleSec * 1000);
+        act(() => {
+          rerender(
+            makeProps({
+              userLocation: { lat: gunja.lat, lng: gunja.lng },
+              speedMps: 0,
+              accuracyMeters: 30,
+            }),
+          );
+        });
+
+        // re-seed가 발동하면 progressM이 GPS 사영점(proj.arcM)에 정확히 snap된다(blend가 아님).
+        expect(result.current.progressM!).toBeCloseTo(gunjaProj.arcM, 0);
+        expect(result.current.position?.current.id).toBe(gunja.id);
+        jest.useRealTimers();
+      });
+
+      it('does not re-seed when implied speed is just over the plausibility limit (falls back to normal blend)', () => {
+        jest.useFakeTimers();
+        const startTime = 1_000_000_000;
+        jest.setSystemTime(startTime);
+
+        const arcForHop = computeRouteArc(directRoute, sagajeong, childrenPark)!;
+        const gunjaProj = nearestArcPoint(arcForHop, gunja.lat, gunja.lng);
+        // 79초: maxPlausibleM = 35 × 79 = 2,765m < gunja 거리(~2,800.66m) — 임계 직후(거부).
+        const staleSec = 79;
+
+        const { result, rerender } = renderHook(
+          (p: UseRouteProgressInputs) => useRouteProgress(p),
+          {
+            initialProps: makeProps({
+              userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+              speedMps: 0,
+              accuracyMeters: 30,
+            }),
+          },
+        );
+
+        jest.setSystemTime(startTime + staleSec * 1000);
+        act(() => {
+          rerender(
+            makeProps({
+              userLocation: { lat: gunja.lat, lng: gunja.lng },
+              speedMps: 0,
+              accuracyMeters: 30,
+            }),
+          );
+        });
+
+        // re-seed skip → 기존 dead-reckoning/blend 경로로 처리되어 proj.arcM에 정확히 snap되지 않는다
+        // (predicted=0과 blend되어 gunjaProj.arcM보다 뚜렷이 작다 — implied speed 55m/s 미만이라
+        // jump-reject에는 안 걸리고 blend는 진행된다).
+        expect(result.current.progressM!).toBeLessThan(gunjaProj.arcM - 10);
+        jest.useRealTimers();
+      });
+
+      it('does not re-seed for backward multipath projection onto an already-passed station', () => {
+        jest.useFakeTimers();
+        const startTime = 1_000_000_000;
+        jest.setSystemTime(startTime);
+
+        const { result, rerender } = renderHook(
+          (p: UseRouteProgressInputs) => useRouteProgress(p),
+          {
+            initialProps: makeProps({
+              userLocation: { lat: childrenPark.lat, lng: childrenPark.lng },
+              speedMps: 0,
+              accuracyMeters: 30,
+            }),
+          },
+        );
+        const baseline = result.current.progressM!;
+
+        // 61초(> ROUTE_PROGRESS_RESEED_STALE_MS) 뒤 accuracy<100m·on-route인 multipath fix가
+        // 이미 지나온 sagajeong(원점)에 사영 — 물리적 타당성 가드(35 m/s × 61s ≈ 2,135m)가
+        // 실제 거리(~3,871m)를 초과 판정해 re-seed를 skip한다. 표시가 뒤로 튀는 사고 방지.
+        jest.setSystemTime(startTime + 61_000);
+        act(() => {
+          rerender(
+            makeProps({
+              userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+              speedMps: 0,
+              accuracyMeters: 30,
+            }),
+          );
+        });
+
+        // re-seed skip + implied speed(63.5 m/s)도 55 m/s 초과라 jump-reject까지 이중으로 막혀
+        // dead-reckoning(predicted, speed 0)만 적용 — progress가 baseline 근처에 머문다.
+        expect(Math.abs(result.current.progressM! - baseline)).toBeLessThan(100);
+        jest.useRealTimers();
+      });
+    });
+
+    it('does not re-seed when stale but accuracy fails the quality gate (underground low-quality fix)', () => {
+      jest.useFakeTimers();
+      const startTime = 1_000_000_000;
+      jest.setSystemTime(startTime);
+
+      const { result, rerender } = renderHook(
+        (p: UseRouteProgressInputs) => useRouteProgress(p),
+        {
+          initialProps: makeProps({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: 0,
+            accuracyMeters: 30,
+          }),
+        },
+      );
+      const baseline = result.current.progressM!;
+
+      jest.setSystemTime(startTime + 70_000);
+      act(() => {
+        rerender(
+          makeProps({
+            userLocation: { lat: childrenPark.lat, lng: childrenPark.lng },
+            speedMps: 0,
+            // ROUTE_PROGRESS_RESEED_ACCURACY_M(100m) 미달 — 지하 저품질 좌표로는 re-seed 금지.
+            accuracyMeters: 150,
+          }),
+        );
+      });
+
+      // reseed 게이트 실패 → implied speed 점프 거부 경로로 빠져 progress 거의 그대로(speed 0).
+      expect(Math.abs(result.current.progressM! - baseline)).toBeLessThan(100);
+      jest.useRealTimers();
+    });
+
+    it('does not re-seed when stale and accurate but off-route (perp > MAX_PERP_M)', () => {
+      jest.useFakeTimers();
+      const startTime = 1_000_000_000;
+      jest.setSystemTime(startTime);
+
+      const { result, rerender } = renderHook(
+        (p: UseRouteProgressInputs) => useRouteProgress(p),
+        {
+          initialProps: makeProps({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            speedMps: 0,
+            accuracyMeters: 30,
+          }),
+        },
+      );
+      const baseline = result.current.progressM!;
+
+      jest.setSystemTime(startTime + 70_000);
+      act(() => {
+        rerender(
+          makeProps({
+            // 명백히 off-route(perp > 1.5km) — 정확도가 좋아도 route 위 합의가 없어 re-seed 금지.
+            userLocation: { lat: 37.5219, lng: 126.9244 },
+            speedMps: 0,
+            accuracyMeters: 30,
+          }),
+        );
+      });
+
+      expect(Math.abs(result.current.progressM! - baseline)).toBeLessThan(100);
+      jest.useRealTimers();
+    });
   });
 });

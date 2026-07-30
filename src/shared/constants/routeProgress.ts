@@ -18,3 +18,27 @@ export const DEFAULT_ACCURACY_WEIGHT = 0.3;
 // defense-in-depth 가드. 실제 수도권 역간 최대 거리는 수인분당선 달월→사리 ~14km 정도이므로
 // 그 이상(예: 데이터 손상으로 다른 도시 좌표가 섞이는 경우)만 거른다.
 export const MAX_INTER_STATION_M = 20_000;
+
+// #2093 (item C) — arc 시간적분(dead-reckoning) 오버슛 gate 배수.
+// lesson_arc_time_integration_overshoot: 지하 등 무신호 구간에서 정지 상태여도 시간 적분(speed × dt)만
+// 계속 누적되어 실제 hop 거리를 훨씬 초과(evidence: 3,981→4,877m, 걷는 중)하는 회귀.
+// 마지막 신뢰 관측(lastTrustedProgressM) 대비 예측치가 "현재 hop 거리 × 이 배수"를 넘으면 무효화하고
+// trusted anchor로 되돌려 재적분한다.
+export const ARC_OVERSHOOT_HOP_MULTIPLIER = 2;
+
+// #2093 (item D) — route-progress 원점 stuck 해소용 re-seed 조건.
+// estimator가 장기 무신호(마지막 신뢰 관측 이후 이 시간 이상 경과) 후 재기동될 때, GPS가 이 정확도보다
+// 정밀하고(accuracy < 값) 경로 위에서 합의(perp ≤ MAX_PERP_M)되면 dead-reckoning/jump-reject를 우회해
+// 그 지점으로 즉시 re-seed한다. 저품질(지하) 좌표로는 re-seed하지 않기 위한 정확도 게이트
+// (feedback_no_gps_for_decision 원칙 — GPS는 지상 고품질 fix일 때만 결정 권한).
+export const ROUTE_PROGRESS_RESEED_STALE_MS = 60_000;
+export const ROUTE_PROGRESS_RESEED_ACCURACY_M = 100;
+
+// #2093 (item D, review P2-1) — re-seed 물리적 타당성 가드. 서울 지하철 최고 영업속도(9호선 급행
+// ~100km/h ≈ 28 m/s)에 가속/정차 여유를 더해 ~35 m/s로 설정. accuracy<100m 게이트를 통과해도
+// 역 근처 multipath로 "지나온 역"의 arc에 사영되면 re-seed가 표시를 뒤로 튕기는 사고
+// (이 PR이 원래 잡으려던 증상 그 자체)가 날 수 있다 — |proj.arcM - lastTrustedProgressM|가
+// 이 속도 × stale 경과초를 넘으면 물리적으로 불가능한 이동이므로 re-seed를 skip하고 기존
+// jump-reject/dead-reckoning 경로를 유지한다. 전진·후진 양방향 대칭 가드 — dead-reckoning
+// 과전진의 정당한 후진 보정(작은 Δ)은 이 가드를 통과한다.
+export const ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS = 35;
