@@ -1139,20 +1139,24 @@ function buildGpsDropLogSection(args: BuildDumpArgs): string[] {
  */
 function formatCandidateRejectLine(entry: CandidateRejectEntry): string {
   const time = formatTime(entry.ts);
+  // #2093 (G) — 집계 윈도우(candidateRejectBuffer.CANDIDATE_REJECT_AGGREGATION_WINDOW_MS) 안에
+  // 같은 reason이 반복 reject되면 entry.count가 2 이상 — "×N" suffix로 burst 집계를 노출.
+  // count 미설정/1은 기존 개별 entry와 동일 출력(하위 호환).
+  const suffix = entry.count != null && entry.count > 1 ? ` ×${entry.count}` : '';
   if (entry.reason === 'candidate-distance') {
     const train = entry.trainNo ?? '-';
     const station = entry.stationName ?? '-';
     const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
-    return `${time} | reject:${entry.reason} | ${train} ${station}(${entry.line}) d=${d}`;
+    return `${time} | reject:${entry.reason} | ${train} ${station}(${entry.line}) d=${d}${suffix}`;
   }
   // #1934 G3 option B + #1936 G4 — candidate-env: cascade/candidate env 비교 노출.
   if (entry.reason === 'candidate-env') {
     const station = entry.stationName ?? '-';
     const cascade = entry.cascadeEnvironment ?? '-';
     const cand = entry.candidateEnvironment ?? '-';
-    return `${time} | reject:${entry.reason} | ${station}(${entry.line}) cascade=${cascade} candidate=${cand}`;
+    return `${time} | reject:${entry.reason} | ${station}(${entry.line}) cascade=${cascade} candidate=${cand}${suffix}`;
   }
-  return `${time} | reject:${entry.reason} | line=${entry.line}`;
+  return `${time} | reject:${entry.reason} | line=${entry.line}${suffix}`;
 }
 
 function buildCandidateRejectLogSection(args: BuildDumpArgs): string[] {

@@ -2198,6 +2198,32 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('d=5400m');
   });
 
+  it('#2093 (G) candidate-distance reject: count 집계 시 "×N" suffix 표시', () => {
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-distance',
+      trainNo: 'T-2099',
+      stationName: '강변',
+      line: '2',
+      distanceKm: 43,
+      count: 28,
+    });
+    expect(line).toContain('d=43000m');
+    expect(line).toContain('×28');
+  });
+
+  it('#2093 (G) candidate-reject: count=1은 기존 개별 entry와 동일 (suffix 없음, 하위 호환)', () => {
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-line',
+      line: '6',
+      count: 1,
+    });
+    expect(line).not.toContain('×');
+  });
+
   it('#1896 (RC-8) boarding-lock-drift 엔트리: branch/station/drift 포함', () => {
     const ts = new Date('2026-06-26T12:19:00Z').getTime();
     const lineWithDrift = formatBoardingLockDriftLine({
