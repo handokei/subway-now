@@ -37,11 +37,6 @@ jest.mock('../../utils/tripStartStorage', () => ({
   getTripStartedAt: (...args: unknown[]) => mockGetTripStartedAt(...args),
 }));
 
-const mockSendTripEnded = jest.fn();
-jest.mock('../../utils/stationNotification', () => ({
-  sendTripEndedNotification: (...args: unknown[]) => mockSendTripEnded(...args),
-}));
-
 const mockTriggerTripEndRecall = jest.fn();
 jest.mock('../../utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: (...args: unknown[]) => mockTriggerTripEndRecall(...args),
@@ -94,7 +89,6 @@ beforeEach(async () => {
   await AsyncStorage.clear();
   mockGetSentinel.mockResolvedValue(null);
   mockSetSentinel.mockResolvedValue(undefined);
-  mockSendTripEnded.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
@@ -152,10 +146,9 @@ describe('runLaunchTripReconciliation', () => {
     mockGetSentinel.mockResolvedValue(1_700_000_000_000);
     await runLaunchTripReconciliation();
     expect(mockFetchTripStatus).not.toHaveBeenCalled();
-    expect(mockSendTripEnded).not.toHaveBeenCalled();
   });
 
-  it('status ended → notification + recall + cleanup + sentinel + active trip clear', async () => {
+  it('status ended → recall + cleanup + sentinel + active trip clear (#2069 — 로컬 알림 미발사)', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue({
       status: 'ended',
@@ -164,14 +157,13 @@ describe('runLaunchTripReconciliation', () => {
     });
     await runLaunchTripReconciliation();
     expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
-    expect(mockSendTripEnded).toHaveBeenCalledWith('destination-arrived');
     expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
     expect(mockSetSentinel).toHaveBeenCalledWith(1_700_000_000_000);
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
   });
 
-  it('status ended — 호출 순서: sendTripEndedNotification → triggerTripEndRecall → runTripBoundCleanups → setTripEndedSentinel → removeItem(ACTIVE_TRIP_KEY)', async () => {
+  it('status ended — 호출 순서: triggerTripEndRecall → runTripBoundCleanups → setTripEndedSentinel → removeItem(ACTIVE_TRIP_KEY)', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue({
       status: 'ended',
@@ -184,12 +176,10 @@ describe('runLaunchTripReconciliation', () => {
     // setSentinel 직후 storage가 비어 있음을 확인.
     await runLaunchTripReconciliation();
 
-    const notifyOrder = mockSendTripEnded.mock.invocationCallOrder[0];
     const recallOrder = mockTriggerTripEndRecall.mock.invocationCallOrder[0];
     const cleanupOrder = mockRunTripBoundCleanups.mock.invocationCallOrder[0];
     const sentinelOrder = mockSetSentinel.mock.invocationCallOrder[0];
 
-    expect(notifyOrder).toBeLessThan(recallOrder);
     expect(recallOrder).toBeLessThan(cleanupOrder);
     expect(cleanupOrder).toBeLessThan(sentinelOrder);
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
@@ -208,7 +198,7 @@ describe('runLaunchTripReconciliation', () => {
     jest.useRealTimers();
   });
 
-  it('status ended + endReason null → unknown fallback', async () => {
+  it('status ended + endReason null → unknown fallback (state cleanup은 그대로 진행)', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue({
       status: 'ended',
@@ -216,7 +206,9 @@ describe('runLaunchTripReconciliation', () => {
       endReason: null,
     });
     await runLaunchTripReconciliation();
-    expect(mockSendTripEnded).toHaveBeenCalledWith('unknown');
+    expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+    expect(mockSetSentinel).toHaveBeenCalledWith(1);
   });
 
   it('status active → 변경 없음 + cleanup/recall 호출 안 함 (회귀 0)', async () => {
@@ -227,18 +219,16 @@ describe('runLaunchTripReconciliation', () => {
       endReason: null,
     });
     await runLaunchTripReconciliation();
-    expect(mockSendTripEnded).not.toHaveBeenCalled();
     expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
     expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
     expect(mockSetSentinel).not.toHaveBeenCalled();
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
   });
 
-  it('404/410 (null) → active trip clear만, notification/cleanup/recall X (기존 동작 유지)', async () => {
+  it('404/410 (null) → active trip clear만, cleanup/recall X (기존 동작 유지)', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue(null);
     await runLaunchTripReconciliation();
-    expect(mockSendTripEnded).not.toHaveBeenCalled();
     expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
     expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
     expect(mockSetSentinel).not.toHaveBeenCalled();
@@ -249,7 +239,6 @@ describe('runLaunchTripReconciliation', () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockRejectedValue(new Error('network'));
     await expect(runLaunchTripReconciliation()).resolves.toBeUndefined();
-    expect(mockSendTripEnded).not.toHaveBeenCalled();
     expect(mockSetSentinel).not.toHaveBeenCalled();
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
   });
@@ -306,8 +295,6 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledTimes(1);
       expect(mockSetSentinel).toHaveBeenCalledWith(now);
       expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
-      // Notification 미발사 — backend 무음 상태에서 "trip 종료" 알림은 사용자에게 잘못된 신호.
-      expect(mockSendTripEnded).not.toHaveBeenCalled();
     });
 
     it('self-end 시 호출 순서: recall → cleanup → prompt → sentinel → active clear', async () => {

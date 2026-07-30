@@ -3948,9 +3948,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     const headers = (calls[0][1].headers ?? {}) as Record<string, string>;
     expect(headers['apns-push-type']).toBe('alert');
     expect(headers['apns-priority']).toBe('10');
-    const apsBody = JSON.parse(calls[0][1].body as string) as { aps: { alert: { title: string; body: string }; sound: string } };
+    const apsBody = JSON.parse(calls[0][1].body as string) as { aps: { alert: { title: string; body: string }; sound?: string } };
     expect(apsBody.aps.alert).toEqual({ title: '안내 종료', body: '경로 안내를 종료했어요' });
-    expect(apsBody.aps.sound).toBe('default');
+    // #2069 (Phase 3) — 무소리 배너. sound 필드 자체가 payload에서 생략된다.
+    expect('sound' in apsBody.aps).toBe(false);
     // trip은 KV에서 삭제돼야 함 (#706 cleanup).
     expect(await kv.get('trip:end-tok')).toBeNull();
     expect(await kv.get(`tripEndedAlert:end-tok:${NOW}`)).toBe('1');
@@ -4205,9 +4206,9 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.boardingPromptFired).toBe(1);
     expect(stats.boardingPromptBlocked).toBe(0);
 
-    // #2037 (Wave 1 완결) — alert + silent 이중 발사. 첫 call = alert, 두 번째 = silent fallback.
+    // #2069 (Phase 3) — B8(silent fallback) 제거. B7 원격 alert push 단일 채널 — 1회 fetch.
     const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, alertInit] = fetchMock.mock.calls[0];
     expect((alertInit as RequestInit).headers).toMatchObject({
       'apns-push-type': 'alert',
@@ -4218,18 +4219,6 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(alertBody.data.kind).toBe('boarding-prompt');
     expect(alertBody.data.originStation).toBe('강남');
     expect(alertBody.data.line).toBe('2');
-
-    // #2037 — silent fallback push. Focus / DND / 취침 시 device silentPushTask 가 gate 무관 발사.
-    const [, silentInit] = fetchMock.mock.calls[1];
-    expect((silentInit as RequestInit).headers).toMatchObject({
-      'apns-push-type': 'background',
-      'apns-priority': '5',
-    });
-    const silentBody = JSON.parse((silentInit as RequestInit).body as string);
-    expect(silentBody.aps).toEqual({ 'content-available': 1 });
-    expect(silentBody.data.kind).toBe('boarding-prompt');
-    expect(silentBody.data.originStation).toBe('강남');
-    expect(silentBody.data.line).toBe('2');
 
     const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
     expect(persisted.boardingPromptState).toEqual({ fired: true, lastFiredAt: NOW });
@@ -4433,8 +4422,8 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
       await runScheduled(makeEnv(kv), deps);
 
       const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
-      // #2037 — alert + silent 이중 발사. candidateTrains 는 두 payload 모두에 동일하게 wire.
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      // #2069 (Phase 3) — B8(silent fallback) 제거. B7 원격 alert push 단일 채널 — 1회 fetch.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       const [, init] = fetchMock.mock.calls[0];
       const body = JSON.parse((init as RequestInit).body as string);
       // 5건만 wire + arrivalSeconds 오름차순.
@@ -4517,8 +4506,8 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     expect(stats.boardingPromptEvaluated).toBe(1);
     expect(stats.boardingPromptFired).toBe(1);
     expect(stats.boardingPromptBlocked).toBe(0);
-    // #2037 (Wave 1 완결) — alert + silent 이중 발사. 2회 fetch.
-    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(2);
+    // #2069 (Phase 3) — B8(silent fallback) 제거. B7 원격 alert push 단일 채널 — 1회 fetch.
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
     const persisted = JSON.parse((await kv.get('trip:b8-tok'))!);
     expect(persisted.boardingPromptState).toEqual({ fired: true, lastFiredAt: NOW });
   });

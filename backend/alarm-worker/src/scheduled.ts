@@ -8,7 +8,6 @@ import {
   buildSilentPushData,
   sendAlertPush,
   sendBoardingPromptPush,
-  sendBoardingPromptSilentPush,
   sendReschedulePush,
   sendSilentPush,
   sendSleepAlarmCompanionPush,
@@ -4488,49 +4487,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     });
   }
 
-  // #2037 (Issue M / Wave 1 완결) — Focus / DND / 취침 등으로 alert push 가 사용자에게 도달하지
-  // 않는 경우를 대비한 silent push fallback. device silentPushTask 가 gate 무관 local notification
-  // 을 발사해 UI 도달률을 확보한다.
-  //
-  // alert push 완료 후 순차 발사 — 이유:
-  // 1. alert push 의 sendWithEnvHeal 이 정정한 env(heal.correctedEnv 반영)를 재사용해 이중
-  //    self-heal 을 회피 (silent push 는 alert 가 확정한 올바른 host 로 첫 시도부터 성공).
-  // 2. alert push 실패해도 silent push 는 독립적으로 발사 — 두 채널 중 하나만 도달해도 UX 회귀 없음.
-  // 3. alert push 결과가 stats.boardingPromptFired / dirty / boardingPromptState 를 결정 (기존 동작
-  //    보존). silent push 결과는 log 만 남기고 return path 를 바꾸지 않는다.
-  const silentPushHost = pickApnsHost(trip.apnsEnv, deps.apnsHosts);
-  const silentResult = await sendBoardingPromptSilentPush({
-    deviceToken: trip.token,
-    pushId,
-    title,
-    body,
-    originStation: display.originStation,
-    line: display.line,
-    tripToken: trip.token,
-    sentAt: now,
-    triggerKind: 'cron',
-    destinationDirection: geo.direction ?? undefined,
-    candidateTrains,
-    config: deps.apnsConfig,
-    host: silentPushHost,
-    fetchImpl: deps.fetchImpl,
-    now,
-  });
-  if (silentResult.ok) {
-    log('boarding-prompt: silent-fallback fired', {
-      token: trip.token.slice(0, 8),
-      line: display.line,
-      originStation: display.originStation,
-    });
-  } else {
-    // silent push 실패는 cron tail log 로 가시화 (V/X dashboard). alert push 만 성공해도 iOS
-    // 시스템 banner 로 사용자 도달 가능하므로 UX 회귀는 없다.
-    log('boarding-prompt: silent-fallback failed', {
-      token: trip.token.slice(0, 8),
-      status: silentResult.status,
-      reason: silentResult.reason,
-    });
-  }
+  // #2069 (Phase 3) — boarding-prompt silent push fallback(B8, #2037) 제거. visible alert push
+  // (B7)만 원격 단일 채널로 유지 — 이중 표시(원격+로컬 identifier 상이로 둘 다 뜨던 문제) 소멸.
 
   if (dirty) {
     await putTrip(env.TRIPS, trip);

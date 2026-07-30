@@ -617,7 +617,7 @@ export async function sendReschedulePush(
  * 헤더/payload:
  *   - apns-push-type: alert  (silent은 background)
  *   - apns-priority: 10      (silent은 5)
- *   - aps.alert: { title, body } + aps.sound: 'default'
+ *   - aps.alert: { title, body } — 무소리 배너(#2069 Phase 3: 정보류 알림, 응답 요구 없음)
  *   - data: { pushId, kind:'trip-ended', tripToken, reason, sentAt }
  *
  * dedup은 호출자(KV `tripEndedAlert:{tripToken}` 1h TTL)가 담당 — 같은 trip 종료가 cron
@@ -654,7 +654,6 @@ export async function sendTripEndedAlertPush(
   const body = JSON.stringify({
     aps: {
       alert: { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY },
-      sound: 'default',
     },
     data,
   });
@@ -806,26 +805,19 @@ export interface SendBoardingPromptPushOptions {
 }
 
 /**
- * #2037 — boarding-prompt payload data 는 alert push(`sendBoardingPromptPush`)와
- * silent push(`sendBoardingPromptSilentPush`) 두 채널 모두 같은 `BoardingPromptPushPayload`
- * schema 를 wire 한다(device `extractBoardingPromptPayload` 파서 재사용). alert push 는
- * title/body 를 `aps.alert` 에 실어 시스템 banner 를 노출하고, silent push 는 title/body 를
- * data 에도 실어 device 가 local notification 을 재구성한다. 공용 builder 를 통해 두 채널의
- * data schema 를 강제 정합시켜 payload drift 회귀를 차단한다.
+ * boarding-prompt alert push(`sendBoardingPromptPush`) data payload builder.
+ * device `extractBoardingPromptPayload` 파서 schema(kind + originStation + line + tripToken
+ * 필수, 나머지 optional)와 1:1 정합.
  *
- * `includeAlertContent` 가 true 이면 title/body 도 data 에 embed (silent 전용). alert push 는
- * data 에 title/body 를 넣지 않아 payload 크기를 아낀다(iOS 는 aps.alert 에서 렌더).
+ * #2069 (Phase 3) — silent push fallback(구 `sendBoardingPromptSilentPush`, #2037) 제거로
+ * title/body를 data에 embed하던 `includeAlertContent` 분기 소멸. alert push는 title/body를
+ * `aps.alert`에서만 렌더한다.
  */
 function buildBoardingPromptPushData(
   options: SendBoardingPromptPushOptions,
-  includeAlertContent: boolean,
 ): BoardingPromptPushPayload {
   const hasCandidates =
     options.candidateTrains === undefined ? false : options.candidateTrains.length > 0;
-  const embedTitle = includeAlertContent && options.title !== undefined;
-  const embedBody = includeAlertContent && options.body !== undefined;
-  const titleFragment = embedTitle ? { title: options.title } : {};
-  const bodyFragment = embedBody ? { body: options.body } : {};
   const candidatesFragment = hasCandidates
     ? { candidateTrains: options.candidateTrains }
     : {};
@@ -839,10 +831,6 @@ function buildBoardingPromptPushData(
     triggerKind: options.triggerKind,
     // #1740 — undefined면 payload에 키 자체가 생략됨 (JSON.stringify 동작). device backward compat.
     destinationDirection: options.destinationDirection,
-    // #2037 — silent 채널(includeAlertContent=true)에서만 title / body 를 data 에 embed.
-    // device local notification 재구성용. alert 채널은 aps.alert 에서 렌더하므로 data 제외.
-    ...titleFragment,
-    ...bodyFragment,
     // #1888 (RC-13) — candidateTrains는 0건이면 omit (구 device byte-level 호환 + payload 크기 보호).
     ...candidatesFragment,
     // #2034 — hop-end 프롬프트 (환승역 하차) 필드. 미지정이면 payload 에서 자연 누락 →
@@ -860,7 +848,7 @@ export async function sendBoardingPromptPush(
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = `https://${options.host}/3/device/${options.deviceToken}`;
 
-  const data = buildBoardingPromptPushData(options, false);
+  const data = buildBoardingPromptPushData(options);
 
   const body = JSON.stringify({
     aps: {
@@ -873,6 +861,10 @@ export async function sendBoardingPromptPush(
       },
       sound: 'default',
       category: BOARDING_PROMPT_CATEGORY,
+      // #2069 리뷰 P1-1 — B8(로컬 timeSensitive) 제거로 단일 채널이 된 원격 prompt가
+      // Focus/DND/Sleep Focus를 관통하도록 time-sensitive를 병기한다. prompt 응답은
+      // 사용자 확정 flow의 chain 전제라 도달성이 최우선 (결정 3-B와 동일 근거).
+      'interruption-level': 'time-sensitive',
     },
     data,
   });
@@ -886,60 +878,6 @@ export async function sendBoardingPromptPush(
       'apns-priority': '10',
       'content-type': 'application/json',
       // #1788 — thread-id groups notifications by trip.
-      'apns-thread-id': options.tripToken,
-    },
-    body,
-  });
-
-  if (response.ok) return { ok: true, status: response.status };
-  return parseApnsError(response);
-}
-
-/**
- * #2037 (Issue M / Wave 1 완결) — boarding-prompt silent push fallback 채널.
- *
- * 배경: `sendBoardingPromptPush`는 alert push(`apns-push-type: alert`)로 iOS 시스템 banner 를
- * 직접 노출한다. 하지만 사용자 Focus / DND / 취침 등으로 alert 가 도달하지 않으면
- * boardingPrompt 응답률이 0% 로 떨어진다(7일 evidence). silent push 는 `content-available: 1`
- * 로 device silentPushTask BG handler 에 도달해 gate 무관 local notification 을 강제 발사한다.
- *
- * caller(scheduled.ts)는 alert push 완료 후 이 함수를 순차 발사한다. alert push 의 self-heal
- * 이 정정한 env(sandbox↔production)를 그대로 재사용해 이중 self-heal 을 회피한다. alert 실패해도
- * 이 silent push 는 독립적으로 발사되며 (역방향도 마찬가지), 두 채널 중 하나라도 도달하면 UX 회귀 없음.
- *
- * payload shape 은 `BoardingPromptPushPayload` 를 그대로 재사용해 device
- * `extractBoardingPromptPayload` 파서 schema(kind + originStation + line + tripToken 필수,
- * 나머지 optional)와 1:1 정합. title / body 도 data 에 실어 device 가 local notification
- * 발사 시 사용 (없으면 device 정적 fallback).
- *
- * apns-push-type: 'background', priority: 5 — Apple silent push 표준.
- * apns-thread-id: tripToken — alert push 와 같은 trip 으로 그룹핑.
- */
-export async function sendBoardingPromptSilentPush(
-  options: SendBoardingPromptPushOptions,
-): Promise<SendPushResult> {
-  const jwt = await buildApnsJwt(options.config, options.now);
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const url = `https://${options.host}/3/device/${options.deviceToken}`;
-
-  const data = buildBoardingPromptPushData(options, true);
-
-  const body = JSON.stringify({
-    aps: {
-      'content-available': 1,
-    },
-    data,
-  });
-
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      authorization: `bearer ${jwt}`,
-      'apns-topic': options.config.bundleId,
-      'apns-push-type': 'background',
-      'apns-priority': '5',
-      'content-type': 'application/json',
-      // alert push 와 같은 trip 그룹핑.
       'apns-thread-id': options.tripToken,
     },
     body,

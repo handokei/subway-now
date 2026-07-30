@@ -16,7 +16,6 @@ import {
   getAlarmLog,
   clearAlarmLog,
   logFiredAlarm,
-  logFiredStationPassed,
   logScheduledAlarm,
   logFiredAlarmsHydrate,
   logRefMismatch,
@@ -45,7 +44,6 @@ import {
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
   logSilentPushTripEndedReceived,
-  logSilentPushFired,
   logSilentPushSkipped,
   logAlertFallbackFired,
   summarizeAlarmLogByReason,
@@ -530,20 +528,6 @@ describe('alarmLog', () => {
         phaseId: event.phaseId,
       });
       expect(saved[0].ts).toBeGreaterThan(0);
-    });
-
-    it('logFiredStationPassed: station.name과 kind=station-passed로 적재한다', async () => {
-      logFiredStationPassed('bg', station);
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'bg',
-        outcome: 'fired',
-        stationName: station.name,
-        kind: 'station-passed',
-      });
     });
 
     it('logSuppressedDedupStation: reason=dedup-station, kind=station-passed로 적재한다', async () => {
@@ -1701,33 +1685,6 @@ describe('alarmLog', () => {
         expect(saved[0].phaseId).toBeUndefined();
       },
     );
-
-    it('logSilentPushFired: 게이트 통과 후 발사 1건 적재 (#478 PR 1-2)', async () => {
-      logSilentPushFired({
-        stationName: '강남',
-        kind: 'destination',
-        phaseId: 'imminent',
-        distanceM: 150,
-        thresholdM: 400,
-        locationSource: 'cache',
-        locationAgeMs: 12_000,
-      });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'silent-push-fired',
-        outcome: 'fired',
-        stationName: '강남',
-        kind: 'destination',
-        phaseId: 'imminent',
-        distanceM: 150,
-        thresholdM: 400,
-        locationSource: 'cache',
-        locationAgeMs: 12_000,
-      });
-    });
 
     it('logSilentPushSkipped: reason + 거리/임계값 적재 (#478 PR 1-2)', async () => {
       logSilentPushSkipped({

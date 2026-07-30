@@ -442,16 +442,6 @@ export function logScheduledAlarm(event: AlarmEvent, stamp: AlarmLogStamp): void
   });
 }
 
-export function logFiredStationPassed(source: AlarmLogSource, station: Station): void {
-  appendAlarmLog({
-    ts: Date.now(),
-    source,
-    outcome: 'fired',
-    stationName: station.name,
-    kind: 'station-passed',
-  });
-}
-
 /**
  * #1515 — cross-category station-level dedup 적중 1건 적재.
  *
@@ -1012,32 +1002,6 @@ export function logSilentPushTripEndedReceived(input: {
     stationName: `trip-ended:${input.reason}`,
     sentAt: input.sentAt,
     receivedAt: input.receivedAt,
-  });
-}
-
-/**
- * silent push가 위치 게이트 통과 → 즉시 발사한 1건 (#478 PR 1-2).
- */
-export function logSilentPushFired(input: {
-  stationName: string;
-  kind: AlarmLogKind;
-  phaseId: AlarmPhaseId;
-  distanceM: number;
-  thresholdM: number;
-  locationSource: 'cache' | 'fresh';
-  locationAgeMs: number;
-}): void {
-  appendAlarmLog({
-    ts: Date.now(),
-    source: 'silent-push-fired',
-    outcome: 'fired',
-    stationName: input.stationName,
-    kind: input.kind,
-    phaseId: input.phaseId,
-    distanceM: input.distanceM,
-    thresholdM: input.thresholdM,
-    locationSource: input.locationSource,
-    locationAgeMs: input.locationAgeMs,
   });
 }
 

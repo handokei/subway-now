@@ -6,7 +6,6 @@ import {
   updateStationNotification,
   clearStationNotification,
   clearAlarmNotification,
-  sendTripEndedNotification,
   buildAlarmContent,
 } from '../stationNotification';
 import { Station } from '../../../../shared/types/station';
@@ -816,57 +815,8 @@ describe('stationNotification', () => {
   // 채널 전환). STATION_PASSED_CHANNEL_ID 채널 설정 자체(sound:null/enableVibrate:false, #1224)는
   // 'Android 채널 재생성' 테스트(위, refreshNotificationChannels 전체 assert)가 계속 커버한다.
 
-  // #1323 — trip 종료 user-facing surface. backend trip-ended push가 silent라 알림이 안 뜨던 회귀 차단.
-  describe('sendTripEndedNotification', () => {
-    it('destination-arrived → "목적지 도착" 제목 + 종료 본문 (iOS, sound: false)', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendTripEndedNotification('destination-arrived');
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'trip-ended',
-        content: { title: '목적지 도착', body: '경로 안내를 종료했어요', sound: false },
-        trigger: null,
-      });
-    });
-
-    it.each([
-      ['eta-missing'],
-      ['expired'],
-      ['push-unrecoverable'],
-      ['unknown'],
-    ] as const)('non-arrived reason %s → 중립 "안내 종료" 제목', async (reason) => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendTripEndedNotification(reason);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'trip-ended',
-        content: { title: '안내 종료', body: '경로 안내를 종료했어요', sound: false },
-        trigger: null,
-      });
-    });
-
-    it('Android에서는 station-passed 채널 + priority DEFAULT (잠 안 깨우기)', async () => {
-      jest.replaceProperty(Platform, 'OS', 'android');
-      await sendTripEndedNotification('destination-arrived');
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'trip-ended',
-        content: {
-          title: '목적지 도착',
-          body: '경로 안내를 종료했어요',
-          sound: false,
-          channelId: 'station-passed',
-          priority: 'default',
-        },
-        trigger: null,
-      });
-    });
-
-    it('종료 surface 시 domain breadcrumb(trip-ended-surface)를 남긴다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendTripEndedNotification('eta-missing');
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'trip-ended-surface', {
-        reason: 'eta-missing',
-      });
-    });
-  });
+  // #2069 (Phase 3) — sendTripEndedNotification(D11) 제거. B12가 원격 alert push 단일 채널이라
+  // 로컬 알림 재생성이 더 이상 필요 없다. 관련 테스트 전체 제거.
 
   // #1224 회귀 가드 — transfer/destination 알람 채널/페이로드는 변경 없음
   describe('#1224 회귀 가드 (transfer/destination 변경 없음)', () => {
