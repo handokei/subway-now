@@ -6,7 +6,7 @@ import { act, renderHook } from '@testing-library/react-native';
 import { useFgPositionUpload } from '../useFgPositionUpload';
 import { GOOD_FIX_ACCURACY_MAX_M } from '../useBoardingLockSync';
 import { uploadPosition } from '../../../nearest-station/api/positionUpload';
-import { FG_POSITION_UPLOAD_THROTTLE_MS } from '../../../../shared/constants/location';
+import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../../shared/constants/location';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 
 jest.mock('../../../nearest-station/api/positionUpload', () => ({
@@ -94,7 +94,7 @@ describe('useFgPositionUpload (#1280)', () => {
     expect(mockedUpload).toHaveBeenCalledTimes(1);
 
     // throttle 간격 미만에서 새 fix → 미발사
-    act(() => jest.advanceTimersByTime(FG_POSITION_UPLOAD_THROTTLE_MS - 1));
+    act(() => jest.advanceTimersByTime(POSITION_UPLOAD_MIN_INTERVAL_MS - 1));
     rerender({ userLocation: { lat: 37.51, lng: 127.01 } });
     await flushAsyncStorage();
     expect(mockedUpload).toHaveBeenCalledTimes(1);

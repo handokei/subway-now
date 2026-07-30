@@ -63,6 +63,7 @@ import {
   logCrossTripMirrorSkip,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
+  LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS,
   logSuppressedLocklessNoUserIntent,
   logSuppressedSsotFireGate,
   logSuppressedTbaRevalidation,
@@ -1126,6 +1127,39 @@ describe('alarmLog', () => {
         stationName: '용마산',
         kind: 'station-passed',
       });
+    });
+
+    it('#2093 (B) logSuppressedPassedEventOnLockOrigin: 30s 쿨다운 내 같은 station 재호출은 drop', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        logSuppressedPassedEventOnLockOrigin({ source: 'fg', stationName: '용마산' });
+        await flushAlarmLog();
+        const callsAfterFirst = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+
+        // 쿨다운 내 재호출 (fg-arvlcd 매초 재평가 busy-loop 시뮬레이션) — drop
+        nowSpy.mockReturnValue(baseTs + LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS - 1);
+        logSuppressedPassedEventOnLockOrigin({ source: 'fg-arvlcd', stationName: '용마산' });
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst);
+
+        // 쿨다운 경계 통과 — 재개
+        nowSpy.mockReturnValue(baseTs + LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS + 1);
+        logSuppressedPassedEventOnLockOrigin({ source: 'fg', stationName: '용마산' });
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst + 1);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('#2093 (B) logSuppressedPassedEventOnLockOrigin: 다른 station은 별개 쿨다운 — drop 안 됨', async () => {
+      logSuppressedPassedEventOnLockOrigin({ source: 'fg', stationName: '용마산' });
+      logSuppressedPassedEventOnLockOrigin({ source: 'fg', stationName: '건대입구' });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(2);
     });
 
     it('#1816 logSuppressedLocklessNoUserIntent: reason=lockless-no-user-intent + kind/phaseId 보존', async () => {

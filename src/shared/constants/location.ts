@@ -25,7 +25,13 @@ export const MIN_JUMP_DISTANCE_M = 100;
 // BG 위치 task가 못 도는 WhileInUse 권한에서 FG fix-watch가 ~10s마다 backend로 좌표를 송신해
 // POST /position 채널을 점등한다. BG `timeInterval`(30s)보다 짧아 FG 활성 동안은 더 촘촘히
 // 위치 지능을 먹인다. 연속 fix가 이 간격보다 자주 들어와도 1회로 묶인다.
-export const FG_POSITION_UPLOAD_THROTTLE_MS = 10_000;
+//
+// #2093 (A) — BG task(`backgroundLocationTask`)도 동일 상수를 공유한다. iOS가 신호 재포착 후
+// 배치 catch-up으로 짧은 간격에 연속 location update를 몰아 보내면 BG task invocation마다
+// 무조건 uploadPosition을 호출해 POST /position이 2Hz까지 폭주(evidence: 08:44:15~08:45:11
+// 59회)했다 — FG hook의 in-memory ref 쓰로틀과 달리 BG task는 invocation마다 새 컨텍스트라
+// AsyncStorage(`BG_LAST_POSITION_UPLOAD_AT_KEY`) 기반으로 같은 간격을 강제한다.
+export const POSITION_UPLOAD_MIN_INTERVAL_MS = 10_000;
 
 // #1313 — foreground GPS watch 샘플링 파라미터. subsurface(지하) 여부로 갈린다.
 // 지상/warmup/미지원에서는 High@2s를 그대로 유지(정확도 우선), 지하에서만 throttle.
