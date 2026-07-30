@@ -17,6 +17,7 @@ import {
   ARC_OVERSHOOT_HOP_MULTIPLIER,
   ROUTE_PROGRESS_RESEED_STALE_MS,
   ROUTE_PROGRESS_RESEED_ACCURACY_M,
+  ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS,
 } from '../../../shared/constants/routeProgress';
 
 /**
@@ -136,12 +137,24 @@ export function useRouteProgress({
     // 8분 stuck류 회귀(원점=탑승역에 고착돼 표시가 플래핑)를 GPS 합의 지점 재앵커로 해소.
     // 저품질(지하) 좌표로는 re-seed하지 않는다 — accuracyMeters 게이트가 GPS 결정 권한을 지상 고품질
     // fix로만 제한(feedback_no_gps_for_decision).
+    //
+    // review P2-1 — 물리적 타당성 가드. accuracy<100m 게이트를 통과해도 역 근처 multipath로
+    // "지나온 역"의 arc에 사영되면 re-seed가 표시를 뒤로 튕기는 사고(이 PR이 잡으려는 증상 그 자체)로
+    // 이어질 수 있다. |proj.arcM - lastTrustedProgressM|가 ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS ×
+    // stale 경과초를 넘으면 물리적으로 불가능한 이동이므로 re-seed를 skip — 전진/후진 양방향 대칭 가드.
+    // dead-reckoning 과전진의 정당한 후진 보정(작은 Δ)은 통과한다.
+    // review P3-2 — ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS(35)는 아래 jump-reject의 MAX_PLAUSIBLE_MPS(55)보다
+    // 보수적이다: re-seed는 jump-reject 자체를 우회하는 경로라 같은 임계를 쓰면 의미가 없다.
     const staleMs = now - current.lastTrustedTickMs;
+    const reseedDeltaM = Math.abs(proj.arcM - current.lastTrustedProgressM);
+    const reseedMaxPlausibleM =
+      ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS * (staleMs / 1000);
     const reseedEligible =
       staleMs > ROUTE_PROGRESS_RESEED_STALE_MS &&
       accuracyMeters != null &&
       accuracyMeters < ROUTE_PROGRESS_RESEED_ACCURACY_M &&
-      proj.perpDistanceM <= MAX_PERP_M;
+      proj.perpDistanceM <= MAX_PERP_M &&
+      reseedDeltaM <= reseedMaxPlausibleM;
     if (reseedEligible) {
       stateRef.current = {
         progressM: proj.arcM,

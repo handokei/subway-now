@@ -33,3 +33,12 @@ export const ARC_OVERSHOOT_HOP_MULTIPLIER = 2;
 // (feedback_no_gps_for_decision 원칙 — GPS는 지상 고품질 fix일 때만 결정 권한).
 export const ROUTE_PROGRESS_RESEED_STALE_MS = 60_000;
 export const ROUTE_PROGRESS_RESEED_ACCURACY_M = 100;
+
+// #2093 (item D, review P2-1) — re-seed 물리적 타당성 가드. 서울 지하철 최고 영업속도(9호선 급행
+// ~100km/h ≈ 28 m/s)에 가속/정차 여유를 더해 ~35 m/s로 설정. accuracy<100m 게이트를 통과해도
+// 역 근처 multipath로 "지나온 역"의 arc에 사영되면 re-seed가 표시를 뒤로 튕기는 사고
+// (이 PR이 원래 잡으려던 증상 그 자체)가 날 수 있다 — |proj.arcM - lastTrustedProgressM|가
+// 이 속도 × stale 경과초를 넘으면 물리적으로 불가능한 이동이므로 re-seed를 skip하고 기존
+// jump-reject/dead-reckoning 경로를 유지한다. 전진·후진 양방향 대칭 가드 — dead-reckoning
+// 과전진의 정당한 후진 보정(작은 Δ)은 이 가드를 통과한다.
+export const ROUTE_PROGRESS_RESEED_MAX_PLAUSIBLE_MPS = 35;
