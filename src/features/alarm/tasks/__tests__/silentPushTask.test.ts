@@ -35,7 +35,6 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 const mockLogSilentPushReceived = jest.fn();
 const mockLogSilentPushRescheduleReceived = jest.fn();
 const mockLogSilentPushTripEndedReceived = jest.fn();
-const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 const mockLogCrossTripMirrorSkip = jest.fn();
 const mockLogBoardingPromptFired = jest.fn();
@@ -47,7 +46,6 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSilentPushRescheduleReceived(...args),
   logSilentPushTripEndedReceived: (...args: unknown[]) =>
     mockLogSilentPushTripEndedReceived(...args),
-  logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
   logBoardingPromptFired: (...args: unknown[]) => mockLogBoardingPromptFired(...args),
@@ -1913,7 +1911,6 @@ describe('silentPushTask', () => {
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
         expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
       });
 
@@ -2304,7 +2301,6 @@ describe('silentPushTask', () => {
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
         expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
       });
 
@@ -2662,7 +2658,6 @@ describe('silentPushTask', () => {
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
         // standard 발사 경로도 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
         expect(mockLogBoardingPromptFired).not.toHaveBeenCalled();
       });
 
@@ -2756,7 +2751,6 @@ describe('silentPushTask', () => {
         });
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
-        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
       });
 
       it('body 지정 시 backend 문구 그대로 전달 (device fallback 미사용)', async () => {

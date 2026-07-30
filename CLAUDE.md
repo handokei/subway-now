@@ -183,8 +183,8 @@ ADR "Feature-based + Ports & Adapters 디렉토리 재정비" (https://app.notio
   - `theme/` — 테마 시스템 (`ThemeProvider`, `useTheme()`)
   - `constants/` — 상수 (`lineColors`, `lineApiNames`, `storageKeys`, `trainTypes`, `arrivalCodes`, `eta`, `labels`, `debugFlags`, `gpsStatus`, `trainStatus`, `barometer`)
   - `i18n/` — i18next 설정 + locales(ko/en/ja/zh)
-  - `infra/` — Adapter 구현 (`location/Expo*`, `notification/Expo*`, `storage/AsyncStorage*`, `storage/SharedGroup*`)
-  - `ports/` — Adapter가 구현하는 추상 인터페이스 (`LocationPort`, `NotificationPort`, `WidgetStoragePort`)
+  - `infra/` — Adapter 구현 (`location/Expo*`, `storage/AsyncStorage*`, `storage/SharedGroup*`)
+  - `ports/` — Adapter가 구현하는 추상 인터페이스 (`LocationPort`, `WidgetStoragePort`)
 - **`src/store/useAppStore.ts`** — Zustand 전역 상태 (즐겨찾기, 목적지, 취침모드 등). AsyncStorage 영속화. favorites slice 분해는 ADR Phase 5 follow-up.
 - **`src/testUtils/`** — 테스트 유틸리티 (`renderWithTheme`, `fixtures`, `routeFixtures`, `i18nLanguageOverride`)
 - **`modules/`** — 네이티브 모듈 (`live-activity`, `audio-route`, `motion-activity`)

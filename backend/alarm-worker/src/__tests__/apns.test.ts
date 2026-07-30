@@ -1154,6 +1154,8 @@ describe('sendBoardingPromptPush (#819)', () => {
     expect(body.aps.alert).toEqual({ title: 'Are you on board?', body: '2 · 강남' });
     expect(body.aps.category).toBe(BOARDING_PROMPT_CATEGORY);
     expect(body.aps.sound).toBe('default');
+    // #2069 리뷰 P1-1 — B8(로컬 timeSensitive) 제거 후 단일 채널의 Focus/DND 관통 보장.
+    expect(body.aps['interruption-level']).toBe('time-sensitive');
     expect(body.data).toEqual({
       pushId: 'p1',
       kind: 'boarding-prompt',

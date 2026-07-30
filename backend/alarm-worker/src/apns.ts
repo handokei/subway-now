@@ -851,6 +851,10 @@ export async function sendBoardingPromptPush(
       },
       sound: 'default',
       category: BOARDING_PROMPT_CATEGORY,
+      // #2069 리뷰 P1-1 — B8(로컬 timeSensitive) 제거로 단일 채널이 된 원격 prompt가
+      // Focus/DND/Sleep Focus를 관통하도록 time-sensitive를 병기한다. prompt 응답은
+      // 사용자 확정 flow의 chain 전제라 도달성이 최우선 (결정 3-B와 동일 근거).
+      'interruption-level': 'time-sensitive',
     },
     data,
   });
