@@ -16,8 +16,9 @@ import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE
 import { getFiredAlarms, setFiredAlarms } from '../../alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
 import { logSuppressedGate } from '../../alarm/utils/alarmLog';
-import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
+import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } from '../../../shared/constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
+import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../shared/constants/location';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
 // #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint (Background Location piggyback).
@@ -80,6 +81,22 @@ export function pickMotionLabel(
 ): PositionMotion {
   if (accelPattern !== 'unknown') return accelPattern;
   return motionStationary ? 'stationary' : 'unknown';
+}
+
+/**
+ * #2093 (A) — 마지막 POST /position 발사 시각(epoch ms) 조회. 파싱 실패/키 부재는 null(첫 fix
+ * 취급 → 즉시 발사). TaskManager invocation마다 새 컨텍스트라 in-memory ref 대신 AsyncStorage로
+ * invocation 간 상태를 공유한다.
+ */
+async function readBgLastPositionUploadAt(): Promise<number | null> {
+  try {
+    const raw = await AsyncStorage.getItem(BG_LAST_POSITION_UPLOAD_AT_KEY);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readBgLastFix(): Promise<FixSample | null> {
@@ -181,7 +198,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // 본 BG task 흐름에 영향 없음 (#640: zero trip = zero push 정책은 그대로, 좌표 누락은 게이트
     // 통과 못 하게 만들 뿐).
     const apnsToken = await AsyncStorage.getItem(APNS_TOKEN_KEY).catch(() => null);
-    if (apnsToken) {
+    // #2093 (A) — POST /position 최소 간격 가드. iOS가 신호 재포착 후 배치 catch-up으로 짧은
+    // 간격에 TaskManager invocation을 연속 발동시키면 게이트 없이는 uploadPosition이 매 invocation
+    // 마다 호출돼 2Hz까지 폭주(evidence: 08:44:15~08:45:11 59회)한다. FG hook과 동일 최소 간격
+    // (POSITION_UPLOAD_MIN_INTERVAL_MS)을 AsyncStorage 기반으로 강제 — accel/wifi lookup 등
+    // 업로드 준비 비용까지 함께 skip해 발열도 완화한다.
+    const lastUploadAt = apnsToken ? await readBgLastPositionUploadAt() : null;
+    const now = Date.now();
+    const withinUploadCooldown =
+      lastUploadAt !== null && now - lastUploadAt < POSITION_UPLOAD_MIN_INTERVAL_MS;
+    if (apnsToken && !withinUploadCooldown) {
+      await AsyncStorage.setItem(BG_LAST_POSITION_UPLOAD_AT_KEY, String(now));
       // #1542 (ADR-016 S9) — Background Location piggyback: BG task가 호출될 때마다
       // accelerometer fingerprint start를 no-op 보장으로 호출. native 모듈이 isUpdating 가드를
       // 갖고 있어 한 번만 시작되며, 이후 BG location updates 활성 동안 raw 가속도 5Hz가 계속 흐른다.

@@ -208,6 +208,12 @@ export const USER_INTENT_INFO_MODE_KEY = 'subway-now:user-intent-info-mode';
 // trip 종료 시 runTripBoundCleanups에서 제거 — 이전 trip의 수신 시각이 새 trip 판정 오염 차단.
 // 형식: 숫자 (epoch ms) 문자열. 키 부재 = silent push 미수신(첫 launch or 새 trip 시작 직후).
 export const LAST_SILENT_PUSH_RECEIVED_AT_KEY = 'subway-now:last-silent-push-received-at';
+// #2093 (A) — BG task(`backgroundLocationTask`)가 마지막으로 POST /position을 발사한 시각(epoch ms).
+// TaskManager invocation마다 새 컨텍스트라 in-memory ref 쓰로틀(FG hook의 `useFgPositionUpload`
+// 패턴)을 쓸 수 없다 — AsyncStorage로 invocation 간 상태를 공유해 POSITION_UPLOAD_MIN_INTERVAL_MS
+// (10s) 미만 간격의 연속 catch-up batch 배달에서도 uploadPosition 호출을 1회로 묶는다.
+// 형식: 숫자(epoch ms) 문자열. 키 부재 = 첫 fix(즉시 발사).
+export const BG_LAST_POSITION_UPLOAD_AT_KEY = 'subway-now:bg-last-position-upload-at';
 // #2067 (Phase 2-device) — AlarmLocalAuthority persisted dedup ledger.
 // 취침모드 companion silent push(kind `sleep-alarm-companion`)의 TTS/진동 부가 동작이 앱 재시작
 // (cold-launch) 후에도 중복 발사되지 않도록 in-memory Set 대신 AsyncStorage에 영속화한다.

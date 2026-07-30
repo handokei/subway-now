@@ -128,7 +128,11 @@ import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../backgroundLocationTask';
-import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../../../shared/constants/location';
+import {
+  MAX_ACCURACY_M,
+  MAX_LOCATION_AGE_MS,
+  POSITION_UPLOAD_MIN_INTERVAL_MS,
+} from '../../../../shared/constants/location';
 import { ALARM_EVENT_KEY } from '../../../../shared/constants/storageKeys';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
@@ -894,6 +898,17 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         .mockResolvedValueOnce(token); // APNS_TOKEN_KEY
     }
 
+    /**
+     * #2093 (A) — BG_LAST_FIX_KEY(prevFix 없음) + APNS_TOKEN_KEY + BG_LAST_POSITION_UPLOAD_AT_KEY
+     * 3단 체인. lastUploadAt을 명시 제어해 min-interval 쿨다운 분기를 검증한다.
+     */
+    function stubApnsTokenWithLastUploadAt(token: string | null, lastUploadAt: number | null): void {
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY — prevFix 없음
+        .mockResolvedValueOnce(token) // APNS_TOKEN_KEY
+        .mockResolvedValueOnce(lastUploadAt === null ? null : String(lastUploadAt)); // BG_LAST_POSITION_UPLOAD_AT_KEY
+    }
+
     it('APNs token 있고 motion stationary=false → uploadPosition(unknown) 호출', async () => {
       mockStorageValues(JSON.stringify(mockDestination));
       stubApnsTokenAfterStorage('apns-tok-1');
@@ -934,6 +949,78 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       await taskCallback({ data: { locations: [loc] }, error: null });
 
       expect(mockUploadPosition).not.toHaveBeenCalled();
+    });
+
+    describe('#2093 (A) — POST /position 최소 간격 가드', () => {
+      it('직전 업로드로부터 POSITION_UPLOAD_MIN_INTERVAL_MS 이내 → uploadPosition 미호출 (쿨다운)', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        const now = Date.now();
+        // 실행 지연(테스트 setup ↔ task 내부 Date.now() 사이 real elapsed ms)에 flaky해지지 않도록
+        // 경계값(-1ms)이 아닌 충분한 여유(-1s)를 둔다 — 여전히 min interval 이내임을 보장.
+        stubApnsTokenWithLastUploadAt('apns-tok-1', now - (POSITION_UPLOAD_MIN_INTERVAL_MS - 1_000));
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).not.toHaveBeenCalled();
+        // 쿨다운 중엔 준비 비용(accel fingerprint 시작)도 함께 skip.
+        expect(mockStartAccelerometerFingerprint).not.toHaveBeenCalled();
+        expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+          expect.stringContaining('bg-last-position-upload-at'),
+          expect.anything(),
+        );
+      });
+
+      it('직전 업로드로부터 POSITION_UPLOAD_MIN_INTERVAL_MS 경과 → uploadPosition 재개 + 타임스탬프 갱신', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        const now = Date.now();
+        stubApnsTokenWithLastUploadAt('apns-tok-1', now - (POSITION_UPLOAD_MIN_INTERVAL_MS + 1));
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledTimes(1);
+        expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+          'subway-now:bg-last-position-upload-at',
+          expect.any(String),
+        );
+      });
+
+      it('lastUploadAt 없음(최초 fix) → 즉시 업로드', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        stubApnsTokenWithLastUploadAt('apns-tok-1', null);
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledTimes(1);
+      });
+
+      it('BG_LAST_POSITION_UPLOAD_AT_KEY read throw → graceful null 취급(즉시 업로드)', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        (AsyncStorage.getItem as jest.Mock)
+          .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY
+          .mockResolvedValueOnce('apns-tok-1') // APNS_TOKEN_KEY
+          .mockRejectedValueOnce(new Error('boom')); // BG_LAST_POSITION_UPLOAD_AT_KEY
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledTimes(1);
+      });
+
+      it('BG_LAST_POSITION_UPLOAD_AT_KEY 값이 숫자로 파싱 불가 → null 취급(즉시 업로드)', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        (AsyncStorage.getItem as jest.Mock)
+          .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY
+          .mockResolvedValueOnce('apns-tok-1') // APNS_TOKEN_KEY
+          .mockResolvedValueOnce('not-a-number'); // BG_LAST_POSITION_UPLOAD_AT_KEY (손상값)
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('AsyncStorage.getItem(APNS_TOKEN_KEY) throw → 무시하고 uploadPosition 미호출', async () => {

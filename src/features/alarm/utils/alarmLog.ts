@@ -739,12 +739,12 @@ export function _resetDedupAlarmWindowForTests(): void {
  * 키: `${reason}|${stationName}` — 같은 역의 같은 reason 반복 스팸 차단.
  * stationName까지 구분해야 역이 바뀌었을 때 첫 신호를 drop하지 않는다.
  */
-const lastBurstSuppressTs = new Map<string, number>();
+const lastBurstSuppressTs = new Map<string, { ts: number; windowMs: number }>();
 
 function sweepExpiredBurstEntries(now: number): void {
   if (lastBurstSuppressTs.size <= DEDUP_LOG_MAP_CAP) return;
-  for (const [k, ts] of lastBurstSuppressTs) {
-    if (now - ts >= DEDUP_LOG_WINDOW_MS) lastBurstSuppressTs.delete(k);
+  for (const [k, entry] of lastBurstSuppressTs) {
+    if (now - entry.ts >= entry.windowMs) lastBurstSuppressTs.delete(k);
   }
 }
 
@@ -752,12 +752,20 @@ function sweepExpiredBurstEntries(now: number): void {
 // site label('register'/'mismatch'/'launch')이든 자유롭게 사용한다 (#1628). 키 구성은
 // `${reason}|${discriminator}` 단순 문자열 결합으로, 호출 간 의미 차이는 reason 단위로
 // 격리되므로 같은 reason에서 일관된 차원만 쓰면 충돌하지 않는다.
-function isBurstDuplicate(reason: string, discriminator: string): boolean {
+//
+// #2093 (B) — windowMs 옵션 파라미터. 기본은 DEDUP_LOG_WINDOW_MS(5s)지만 호출자가 더 긴
+// 쿨다운(예: LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS 30s)을 요구할 수 있어 per-entry windowMs를
+// 함께 저장 — sweep도 entry별 windowMs 기준으로 만료 판정한다.
+function isBurstDuplicate(
+  reason: string,
+  discriminator: string,
+  windowMs: number = DEDUP_LOG_WINDOW_MS,
+): boolean {
   const now = Date.now();
   const key = `${reason}|${discriminator}`;
   const last = lastBurstSuppressTs.get(key);
-  if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return true;
-  lastBurstSuppressTs.set(key, now);
+  if (last !== undefined && now - last.ts < last.windowMs) return true;
+  lastBurstSuppressTs.set(key, { ts: now, windowMs });
   sweepExpiredBurstEntries(now);
   return false;
 }
@@ -1584,11 +1592,22 @@ export function logSuppressedLocklessNoUserIntent(input: {
  *
  * 호출자는 lock 활성(lock !== null)이며 candidate.id === lock.boardingStationId일 때만 호출.
  * lockless 케이스는 'gate-origin-hop-lockless'(#1514)가 별도 담당.
+ *
+ * #2093 (B) — fg + fg-arvlcd 두 path가 매초 재평가 → 같은 (station, phase='station-passed')
+ * 조합이 suppress로 확정된 채 반복 재평가되는 busy-loop 관측(gate-passed-event-on-lock-origin
+ * 93회/70초, 2026-07-07 evidence). LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS 동안은 재적재를 skip해
+ * appendAlarmLog/Sentry breadcrumb 반복 비용을 제거한다 — 호출자는 이 함수 호출 전후로 이미
+ * 항상 return하므로 fire/advance semantics는 변경되지 않는다(빈도 제한만).
  */
+export const LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS = 30_000;
+
 export function logSuppressedPassedEventOnLockOrigin(input: {
   source: AlarmLogSource;
   stationName: string;
 }): void {
+  if (isBurstDuplicate('gate-passed-event-on-lock-origin', input.stationName, LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS)) {
+    return;
+  }
   appendAlarmLog({
     ts: Date.now(),
     source: input.source,
