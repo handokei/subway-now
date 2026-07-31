@@ -61,6 +61,7 @@ import {
   FUSION_SIGNAL_WEIGHTS,
   STATION_ACCEPT_THRESHOLD,
   STATION_ACCEPT_THRESHOLD_SURFACE_WEAK,
+  STATION_ACCEPT_THRESHOLD_SURFACE_WEAK_NRNSA,
   type FusionSignalCategory,
 } from '../../../shared/constants/fusion';
 
@@ -81,6 +82,13 @@ export interface WeightedVoteInput {
   barometerStop?: boolean | undefined;
   cellularEnvironmentVote?: CellularEnvironmentVote | undefined;
   accelerometerPattern?: AccelerometerPattern | undefined;
+  /**
+   * #2099 — trip 활성 중 barometer가 최근 subsurface=true를 확정한 적이 있으면 true.
+   * `cellularEnvironmentVote === 'surface-weak-nrnsa'`일 때 채택 임계를 완화된
+   * `STATION_ACCEPT_THRESHOLD_SURFACE_WEAK_NRNSA`(1.3)조차 적용하지 않고 기본
+   * `STATION_ACCEPT_THRESHOLD`(1.1)로 무효화한다 (`selectAcceptThreshold` 참고).
+   */
+  barometerRecentSubsurface?: boolean | undefined;
 }
 
 /**
@@ -241,7 +249,10 @@ const EVALUATORS: ReadonlyArray<CategoryEvaluator> = [
  * 환경별 채택 임계 표 — 데이터 주도(CLAUDE.md §3): 신규 환경 분기는 표에 한 줄 추가.
  *
  * 매칭 우선순위 = 배열 순서. 첫 매칭 항목의 threshold 사용.
- *   - 'surface-weak' (LTE/NRNSA, #1876 D+A hybrid) → 1.6 (강한 multi-source 강제).
+ *   - 'surface-weak' (LTE, #1876 D+A hybrid) → 1.6 (강한 multi-source 강제).
+ *   - 'surface-weak-nrnsa' (NRNSA) + barometerRecentSubsurface=true (#2099 옵션 1) →
+ *     매칭 제외 → 기본 1.1로 완전 무효화 (barometer 확정을 cellular NRNSA가 뒤집지 못하게).
+ *   - 'surface-weak-nrnsa' (NRNSA, #2099 옵션 2) → 1.3 (LTE보다 완화된 축소).
  *   - 그 외 → 1.1 (기본 underground).
  */
 const THRESHOLD_BY_ENV: ReadonlyArray<{
@@ -251,6 +262,12 @@ const THRESHOLD_BY_ENV: ReadonlyArray<{
   {
     matches: (input) => input.cellularEnvironmentVote === 'surface-weak',
     threshold: STATION_ACCEPT_THRESHOLD_SURFACE_WEAK,
+  },
+  {
+    matches: (input) =>
+      input.cellularEnvironmentVote === 'surface-weak-nrnsa' &&
+      !input.barometerRecentSubsurface,
+    threshold: STATION_ACCEPT_THRESHOLD_SURFACE_WEAK_NRNSA,
   },
 ];
 

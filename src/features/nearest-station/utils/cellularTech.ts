@@ -10,11 +10,18 @@
  * 분류 정책 (Apple `CTRadioAccessTechnology*` 상수 기준):
  *   - `surface` (지상 hard-reject): NR (5G SA)
  *       → 2026년 기준 지하 인프라 거의 없음. hard-reject 유지.
- *   - `surface-weak` (지상 soft downgrade): LTE, LTEAdvanced, NRNSA (5G NSA)
- *       → 서울 지하철 DAS가 LTE/NRNSA를 지하에서도 중계 (100% 커버). 지하에서도 잡힘.
+ *   - `surface-weak` (지상 soft downgrade): LTE, LTEAdvanced
+ *       → 서울 지하철 DAS가 LTE를 지하에서도 중계. 지하에서도 잡힘.
  *       → hard-reject 대신 soft downgrade: undergroundSSOTConsensus에서 envVotes −1로 처리.
  *       → 다른 신호(barometer/accelerometer)가 충분하면 underground 채택 허용.
  *       (#1876 — plan-1846 §4.1 옵션 B 적용)
+ *   - `surface-weak-nrnsa` (지상 soft downgrade, 추가 약화): NRNSA (5G NSA)
+ *       → #2099 (Part of #2093 E) — 7/7 trip 로그: 서울 지하철 전 구간이 NRNSA로 중계돼
+ *         barometer가 정확히 subsurface=true를 보고한 구간에서도 NRNSA가 surface-weak 투표로
+ *         undergroundSSOT quorum을 깎아 최종 environment가 surface로 오분류(89.9%)됐다.
+ *         LTE보다 한 단계 더 정보가치가 낮다고 보고 별도 분류 — envVotes 페널티를 LTE보다
+ *         약화(-1 → -0.5)하고, trip 활성 중 barometer가 최근 subsurface=true를 확정했으면
+ *         페널티를 0으로 완전 무효화한다 (`undergroundSSotConsensus.ts` 참고).
  *   - `underground` (지하 vote): GPRS, Edge, WCDMA, HSDPA, HSUPA, CDMA1x, eHRPD, CDMAEVDORev0/A/B
  *       → 지하 캐리어 펨토셀 / DAS 안테나가 흔히 fallback하는 2G/3G 신호.
  *   - `unknown`              : null / 빈 문자열 / 미지의 상수
@@ -82,12 +89,19 @@ export function getCurrentCellularTech(): string | null {
 /**
  * 환경 vote 결과. consensusGate / undergroundSSOTConsensus 입력으로 사용.
  *
- * - `'surface'`      : NR (5G SA) — 지하 발생 낮음. hard-reject 유지.
- * - `'surface-weak'` : LTE / LTEAdvanced / NRNSA — 지하에서도 잡힘(서울 DAS). soft downgrade.
- * - `'underground'`  : 2G/3G — 지하 확정 1표.
- * - `'unknown'`      : vote 미투표.
+ * - `'surface'`            : NR (5G SA) — 지하 발생 낮음. hard-reject 유지.
+ * - `'surface-weak'`       : LTE / LTEAdvanced — 지하에서도 잡힘(서울 DAS). soft downgrade.
+ * - `'surface-weak-nrnsa'` : NRNSA (5G NSA) — #2099. LTE보다 한 단계 더 약한 soft downgrade
+ *     (서울 지하철 전 구간 NRNSA 중계 — surface 신호로서 정보가치가 LTE보다도 낮음).
+ * - `'underground'`        : 2G/3G — 지하 확정 1표.
+ * - `'unknown'`            : vote 미투표.
  */
-export type CellularEnvironmentVote = 'surface' | 'surface-weak' | 'underground' | 'unknown';
+export type CellularEnvironmentVote =
+  | 'surface'
+  | 'surface-weak'
+  | 'surface-weak-nrnsa'
+  | 'underground'
+  | 'unknown';
 
 /**
  * Apple `CTRadioAccessTechnology` 상수 → 환경 vote 매핑.
@@ -107,12 +121,19 @@ const SURFACE_HARD_TECHS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * LTE / LTEAdvanced / NRNSA — 서울 지하철 DAS 지하 중계로 지하에서도 흔히 수신.
+ * LTE / LTEAdvanced — 서울 지하철 DAS 지하 중계로 지하에서도 흔히 수신.
  * hard-reject 대신 soft downgrade (`'surface-weak'`).
  */
 const SURFACE_WEAK_TECHS: ReadonlySet<string> = new Set([
   'CTRadioAccessTechnologyLTE',
   'CTRadioAccessTechnologyLTEAdvanced',
+]);
+
+/**
+ * NRNSA (5G NSA) — #2099. 서울 지하철 전 구간이 NRNSA로 중계돼 LTE보다도 surface 정보가치가
+ * 낮다. 별도 분류로 분리해 `'surface-weak'`(LTE)보다 약한 페널티를 적용한다.
+ */
+const SURFACE_WEAK_NRNSA_TECHS: ReadonlySet<string> = new Set([
   'CTRadioAccessTechnologyNRNSA',
 ]);
 
@@ -132,14 +153,16 @@ const UNDERGROUND_TECHS: ReadonlySet<string> = new Set([
 /**
  * radio tech 코드 → 환경 vote 분류.
  *
- * - NR (5G SA)       → `'surface'`      (hard-reject — 지하 발생 낮음)
- * - LTE / NRNSA      → `'surface-weak'` (soft downgrade — 서울 지하 DAS 중계)
- * - 2G/3G            → `'underground'`  (지하 1표)
- * - null / 미지 코드  → `'unknown'`     (vote 미투표)
+ * - NR (5G SA)       → `'surface'`            (hard-reject — 지하 발생 낮음)
+ * - LTE              → `'surface-weak'`       (soft downgrade — 서울 지하 DAS 중계)
+ * - NRNSA            → `'surface-weak-nrnsa'` (#2099 — LTE보다 약한 soft downgrade)
+ * - 2G/3G            → `'underground'`        (지하 1표)
+ * - null / 미지 코드  → `'unknown'`            (vote 미투표)
  */
 export function classifyCellularEnvironment(tech: string | null): CellularEnvironmentVote {
   if (!tech) return 'unknown';
   if (SURFACE_HARD_TECHS.has(tech)) return 'surface';
+  if (SURFACE_WEAK_NRNSA_TECHS.has(tech)) return 'surface-weak-nrnsa';
   if (SURFACE_WEAK_TECHS.has(tech)) return 'surface-weak';
   if (UNDERGROUND_TECHS.has(tech)) return 'underground';
   return 'unknown';

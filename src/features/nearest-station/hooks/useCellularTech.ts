@@ -12,10 +12,11 @@
  *   (useMotionActivity와 동일 주기 — 같은 알람 평가 사이클 30s보다 짧으면 stale 우려 적음.)
  *
  * 반환:
- *   - `'unknown'`       : 미지원 / 권한 거절 / native null — vote 미투표
- *   - `'surface'`       : NR (5G SA) — 지상 hard-reject
- *   - `'surface-weak'`  : LTE / NRNSA — 지하 DAS 중계 가능, soft downgrade (#1876)
- *   - `'underground'`   : 2G/3G — 지하 vote
+ *   - `'unknown'`             : 미지원 / 권한 거절 / native null — vote 미투표
+ *   - `'surface'`             : NR (5G SA) — 지상 hard-reject
+ *   - `'surface-weak'`        : LTE — 지하 DAS 중계 가능, soft downgrade (#1876)
+ *   - `'surface-weak-nrnsa'`  : NRNSA (5G NSA) — LTE보다 약한 soft downgrade (#2099)
+ *   - `'underground'`         : 2G/3G — 지하 vote
  */
 
 import { useEffect, useState } from 'react';

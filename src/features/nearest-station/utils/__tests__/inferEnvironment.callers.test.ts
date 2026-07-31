@@ -40,6 +40,7 @@ import {
   GPS_DERIVED_ACCURACY_MAX_M,
 } from '../../../../shared/constants/realtime';
 import { inferEnvironment } from '../inferEnvironment';
+import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('../findNearestStation', () => ({
   findTopNearestStations: jest.fn(),
@@ -194,6 +195,50 @@ describe('#1932 inferEnvironment 호출자 통합 (SSOT 단일화 + cascade 직�
       });
       // raw `subsurface === true` → inferEnvironment 우선순위 1 → 'underground'.
       // cascade tier 1 게이트(positionTrainBoardingLockMatch)가 이 변수를 직접 read.
+    });
+
+    it('#2099 (Part of #2093 E) — routeContext 활성(tripActive=true) 중 subsurface=true 관측 → barometer sticky 기억 산출(crash 없음) + environment "underground" 유지', async () => {
+      // 옵션 1(trip 중 barometer 우선 가중) sticky ref는 tripActive=true(routeContext 존재)일 때만
+      // 기억을 갱신한다 — routeContext undefined인 위 test는 sticky가 항상 리셋되는 경로만 exercise.
+      // 본 test는 routeContext를 채워 tripActive=true 경로에서 sticky 기억 산출 자체가 안전하게
+      // 동작하고, 기존 우선순위 1(subsurface===true 즉시 underground) 판정이 그대로 유지됨을 보장.
+      const live = { station: hanyangdae, distanceKm: 0.05 };
+      mockNearest.mockReturnValue({
+        result: live,
+        liveResult: live,
+        stickyDisplayOnly: null,
+        variants: [hanyangdae],
+        userLocation: { lat: hanyangdae.lat, lng: hanyangdae.lng },
+        ...GPS_BASE_DEFAULTS,
+        accuracyMeters: 200,
+        lastFixAtMs: T0,
+        refresh: jest.fn(),
+      });
+      mockFindTop.mockReturnValue([{ station: hanyangdae, distanceKm: 0.05 }]);
+      mockArrival.mockReturnValue(arrivalRet(null));
+      mockPos.mockReturnValue(positionRet({ line: '2', trains: [] }));
+
+      const routeContext = {
+        route: makeDirectRoute(3, '2'),
+        origin: hanyangdae,
+        destination: ttukssom,
+      };
+
+      const hook = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          routeContext, // tripActive=true — sticky ref 갱신 경로 활성화
+          undefined,
+          lockOn2,
+          undefined,
+          { subsurface: true },
+        ),
+      );
+      await flushBackendSsotMirrorTick();
+      await waitFor(() => {
+        expect(hook.result.current.environment).toBe('underground');
+      });
     });
   });
 

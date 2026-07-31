@@ -6,7 +6,8 @@
  *   - 예외 → null / no-op (graceful)
  *   - classifyCellularEnvironment:
  *       NR (5G SA) → 'surface' (hard-reject)
- *       LTE / LTEAdvanced / NRNSA → 'surface-weak' (soft downgrade, #1876)
+ *       LTE / LTEAdvanced → 'surface-weak' (soft downgrade, #1876)
+ *       NRNSA → 'surface-weak-nrnsa' (LTE보다 약한 soft downgrade, #2099)
  *       2G/3G → 'underground'
  *       null / 미지 → 'unknown'
  */
@@ -147,13 +148,19 @@ describe('classifyCellularEnvironment (#1543 + #1876 soft downgrade)', () => {
     expect(classifyCellularEnvironment('CTRadioAccessTechnologyNR')).toBe('surface');
   });
 
-  // LTE / LTEAdvanced / NRNSA — 서울 지하철 DAS 지하 중계. soft downgrade → 'surface-weak'.
+  // LTE / LTEAdvanced — 서울 지하철 DAS 지하 중계. soft downgrade → 'surface-weak'.
   it.each([
     'CTRadioAccessTechnologyLTE',
     'CTRadioAccessTechnologyLTEAdvanced',
-    'CTRadioAccessTechnologyNRNSA',
   ])('%s → surface-weak (서울 DAS 지하 중계 — soft downgrade, #1876)', (tech) => {
     expect(classifyCellularEnvironment(tech)).toBe('surface-weak');
+  });
+
+  // NRNSA — #2099. LTE와 별도 분류 → 'surface-weak-nrnsa' (더 약한 soft downgrade).
+  it('CTRadioAccessTechnologyNRNSA → surface-weak-nrnsa (LTE보다 약한 soft downgrade, #2099)', () => {
+    expect(classifyCellularEnvironment('CTRadioAccessTechnologyNRNSA')).toBe(
+      'surface-weak-nrnsa',
+    );
   });
 
   it.each([

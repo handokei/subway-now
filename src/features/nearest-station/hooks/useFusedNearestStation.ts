@@ -29,6 +29,7 @@ import { useRouteProgress } from '../../route/hooks/useRouteProgress';
 import { usePositionStability } from './usePositionStability';
 import { useFusedStationDetection } from './useFusedStationDetection';
 import type { BarometerSignal } from '../../../shared/hooks/useBarometer';
+import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
@@ -496,6 +497,28 @@ export function useFusedNearestStation(
   // (CTServiceRadioAccessTechnologyDidChangeNotification observer). underground SSOT 4-signal
   // 합의의 환경-확정 vote로 사용. 미지원(Android/jest/web) 시 'unknown' 고정 → vote 미투표.
   const cellularEnvironmentVote = useCellularTech();
+
+  // #2099 (Part of #2093 E, 옵션 1) — trip 활성 중 barometer subsurface=true 최근 확정 sticky
+  // 기억. barometer 30s dP/dt 윈도우는 "지하 진입" edge 신호라 진입 직후에만 잠깐 true이고
+  // steady 구간에서는 false로 돌아간다 — 이 기억이 없으면 cellular NRNSA soft downgrade가
+  // steady 구간마다 undergroundSSOT quorum을 깎아 barometer의 지하 확정을 뒤집을 수 있다
+  // (7/7 trip 로그: subsurface=true 13건인데 최종 environment는 surface 89.9%).
+  // trip 비활성(tripActive=false) 시 즉시 리셋 — 취소된/종료된 trip에 잔존 sticky 없음.
+  const barometerRecentSubsurfaceAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!tripActive) {
+      barometerRecentSubsurfaceAtRef.current = null;
+      return;
+    }
+    if (barometerSubsurface === true) {
+      barometerRecentSubsurfaceAtRef.current = Date.now();
+    }
+  }, [tripActive, barometerSubsurface]);
+  const barometerRecentSubsurface =
+    tripActive &&
+    barometerRecentSubsurfaceAtRef.current !== null &&
+    Date.now() - barometerRecentSubsurfaceAtRef.current <=
+      BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS;
 
   // #1542 (ADR-016 S9) — CMMotionManager raw accelerometer 60s window RMS magnitude 분류.
   // 'automotive' (RMS ≥ 2.0 m/s²)이면 train 진동 환경 vote 1표 — undergroundSSotConsensus 5번째 signal.
@@ -1146,6 +1169,9 @@ export function useFusedNearestStation(
     // #1821 — warmup quorum 완화: trip 시작 후 60s 이내 station pair 단독 채택 허용.
     // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
     tripStartedAt: boardingLock?.boardedAt,
+    // #2099 (옵션 1) — trip 중 barometer 최근 subsurface=true 확정 sticky. cellular NRNSA
+    // envVotes 페널티를 무효화해 barometer 확정을 뒤집지 못하게 한다.
+    barometerRecentSubsurface,
   });
   // #1860 — 옵션 C barometer-stop 힌트. tripActive + barometerStop 전달.
   // #2070 — GPS 품질 저하(gps.gpsQualityDegraded) 추가 입력. useNearestStation이
