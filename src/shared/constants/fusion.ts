@@ -118,3 +118,29 @@ export const STATION_ACCEPT_THRESHOLD = 1.1;
  *   - radio 카테고리는 입력 자체가 `surface-weak`이므로 weightedVoteFusion에서 vote 미참여.
  */
 export const STATION_ACCEPT_THRESHOLD_SURFACE_WEAK = 1.6;
+
+/**
+ * Station 채택 임계 (`'surface-weak-nrnsa'` cellular = NRNSA, #2099).
+ *
+ * 배경 (Part of #2093 E): 7/7 trip 로그 — 서울 지하철 전 구간이 NRNSA로 중계되며 barometer가
+ * 정확히 지하를 확정한 구간에서도 NRNSA가 LTE와 동일한 임계(1.6)로 station 채택을 과도하게
+ * 억제해 environment가 surface로 최종 오분류(89.9%)됐다.
+ *
+ * `STATION_ACCEPT_THRESHOLD`(1.1) < 본 값(1.3) < `STATION_ACCEPT_THRESHOLD_SURFACE_WEAK`(1.6):
+ *   - NRNSA는 서울 지하철 구조상 지하에서도 100% 중계되므로 surface 신호로서의 정보가치가
+ *     LTE보다 낮다 — 임계를 완화(1.6→1.3)해 "축소"(#2099 옵션 2) 적용.
+ *   - trip 활성 중 barometer가 최근 subsurface=true를 확정한 경우(`barometerRecentSubsurface`)는
+ *     본 임계조차 적용하지 않고 기본 `STATION_ACCEPT_THRESHOLD`(1.1)로 완전 무효화한다
+ *     (#2099 옵션 1 — 매칭 순서는 `weightedVoteFusion.ts`의 `THRESHOLD_BY_ENV` 참고).
+ */
+export const STATION_ACCEPT_THRESHOLD_SURFACE_WEAK_NRNSA = 1.3;
+
+/**
+ * `undergroundSSOTConsensus` envVotes 페널티 (`'surface-weak-nrnsa'` cellular = NRNSA, #2099).
+ *
+ * `'surface-weak'`(LTE)는 envVotes −1 (#1876). NRNSA는 서울 지하철 전 구간 중계 구조상 surface
+ * 신호로서의 정보가치가 LTE보다 낮으므로 페널티를 절반으로 축소한다 — "정보가 아니다" 원칙과
+ * 완전 무효화(0) 사이의 절충. trip 활성 중 barometer가 최근 subsurface=true를 확정했으면
+ * 본 페널티 자체를 0으로 무효화한다 (`barometerRecentSubsurface`, undergroundSSotConsensus.ts).
+ */
+export const SURFACE_WEAK_NRNSA_ENV_VOTE_PENALTY = -0.5;
