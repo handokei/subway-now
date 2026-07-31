@@ -16,14 +16,37 @@ export type TripDirection = 'up' | 'down';
  *   - transfer: current.line === fromLine → 첫 leg(fromLine, transferName).
  *               current.line === toLine → 두 번째 leg(toLine, destinationName).
  *               그 외 → 첫 leg fallback(기존 동작 유지).
- *   - multi-transfer: 첫 leg부터 순회해 current.line이 일치하는 leg를 채택. fromLine은
- *     transfers[i].fromLine, endName은 transfers[i].transferName. 마지막 leg는 toLine,
- *     endName=destinationName.
+ *   - multi-transfer: current.line이 일치하는 leg를 채택. fromLine은 transfers[i].fromLine,
+ *     endName은 transfers[i].transferName. 마지막 leg는 toLine, endName=destinationName.
+ *
+ * #1965 — multi-transfer route가 같은 line을 두 번 이상 지나면(예: 2호선 → 4호선 → 2호선
+ * → 7호선) 단순 "첫 매칭 leg" 채택은 실제로 나중 leg에 있는 사용자를 첫 leg로 오판한다.
+ * bounded leg(양 끝 경계가 모두 알려진 i>=1)는 진입/이탈 boundary 사이에 currentStationId가
+ * 실제로 있는지(arc 범위) 검증해 뒤(나중 leg)에서부터 먼저 매칭을 시도한다. i=0은 시작
+ * 경계(trip origin)를 알 수 없어 arc 검증이 불가능하므로 bounded leg 중 매칭이 없을 때만
+ * 마지막 fallback으로 채택한다.
  */
+function isStationInLegArc(
+  line: LineNumber,
+  currentStationId: string,
+  entryBoundaryName: string,
+  exitBoundaryName: string,
+): boolean {
+  const lineStations = getStationsOnLine(line);
+  const currIdx = lineStations.findIndex((s) => s.id === currentStationId);
+  const entryIdx = lineStations.findIndex((s) => s.name === entryBoundaryName);
+  const exitIdx = lineStations.findIndex((s) => s.name === exitBoundaryName);
+  if (currIdx < 0 || entryIdx < 0 || exitIdx < 0) return false;
+  const lo = Math.min(entryIdx, exitIdx);
+  const hi = Math.max(entryIdx, exitIdx);
+  return currIdx >= lo && currIdx <= hi;
+}
+
 function pickLegForCurrentLine(
   route: NonNullable<Route>,
   destinationName: string,
   currentLine: LineNumber,
+  currentStationId: string,
 ): { line: LineNumber; endName: string } {
   if (route.type === 'direct') {
     return { line: route.line, endName: destinationName };
@@ -34,12 +57,19 @@ function pickLegForCurrentLine(
     }
     return { line: route.fromLine, endName: route.transferName };
   }
-  // multi-transfer
+  // multi-transfer — bounded leg(i>=1)를 뒤에서부터 먼저 arc 검증.
   const { transfers } = route;
-  for (let i = 0; i < transfers.length; i++) {
-    if (currentLine === transfers[i].fromLine) {
+  for (let i = transfers.length - 1; i >= 1; i--) {
+    if (currentLine !== transfers[i].fromLine) continue;
+    const entryBoundaryName = transfers[i - 1].transferName;
+    const exitBoundaryName = transfers[i].transferName;
+    if (isStationInLegArc(transfers[i].fromLine, currentStationId, entryBoundaryName, exitBoundaryName)) {
       return { line: transfers[i].fromLine, endName: transfers[i].transferName };
     }
+  }
+  // 첫 leg(i=0) — 시작 경계 불명(unbounded), 남은 유일 후보로만 채택.
+  if (currentLine === transfers[0].fromLine) {
+    return { line: transfers[0].fromLine, endName: transfers[0].transferName };
   }
   const last = transfers[transfers.length - 1];
   if (currentLine === last.toLine) {
@@ -75,7 +105,7 @@ export function resolveTripDirection(
   // #1922 — current.line에 맞는 leg을 선택. current가 stations.json에 없으면 기존 first-leg fallback.
   const currentStation = getStationById(currentStationId);
   const { line, endName } = currentStation
-    ? pickLegForCurrentLine(route, destinationName, currentStation.line)
+    ? pickLegForCurrentLine(route, destinationName, currentStation.line, currentStationId)
     : getFirstLeg(route, destinationName);
   const lineStations = getStationsOnLine(line);
   const currIdx = lineStations.findIndex((s) => s.id === currentStationId);

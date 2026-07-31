@@ -145,4 +145,50 @@ describe('resolveTripDirection', () => {
       expect(resolveTripDirection(route, '서울역', 'NON-EXISTENT-XYZ')).toBeNull();
     });
   });
+
+  describe('#1965 — multi-transfer line 재사용 시 첫 매칭 leg false positive 차단', () => {
+    // 2호선 → 4호선 → 2호선(재사용) → 7호선 multi-transfer route.
+    // transfers[0].fromLine === transfers[2].fromLine === '2' (line 재사용).
+    // 사용자가 실제로는 transfers[2] 구간(동대문역사문화공원~건대입구 사이 성수)에 있는데도
+    // 첫 매칭(transfers[0], 시청~사당 구간)을 채택하면 잘못된 endName(사당)이 산출된다.
+    const route = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '사당', fromLine: '2', toLine: '4', stopsToTransfer: 10 },
+        { transferName: '동대문역사문화공원', fromLine: '4', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '건대입구', fromLine: '2', toLine: '7', stopsToTransfer: 7 },
+      ],
+      stopsAfterLastTransfer: 4,
+    });
+
+    it('bounded arc(동대문역사문화공원~건대입구) 안의 성수는 transfers[2]로 정확히 매칭된다', () => {
+      // 성수(2-011)는 동대문역사문화공원(idx4)~건대입구(idx11) 구간 안 → transfers[2] 채택.
+      // 성수(idx10) → 건대입구(idx11) = down.
+      expect(resolveTripDirection(route, '어린이대공원(세종대)', '2-011')).toBe('down');
+    });
+
+    it('transfers[0]의 bounded 되지 않은 구간(사당 이전) 내 역은 여전히 transfers[0]로 매칭된다', () => {
+      // 을지로입구(2-002)는 transfers[2]의 arc(동대문역사문화공원~건대입구, idx4~11) 밖 →
+      // bounded leg 미매칭 → 첫 leg(transfers[0], endName='사당', idx25) fallback 채택.
+      // 2호선 본선은 closed loop이므로 을지로입구(idx1)→사당(idx25)은 wraparound 짧은 쪽인
+      // 역방향(minusHops 19 < plusHops 24) 경로 → 'up'.
+      expect(resolveTripDirection(route, '어린이대공원(세종대)', '2-002')).toBe('up');
+    });
+
+    it('bounded leg의 entry/exit boundary 역명이 해당 line에 없으면 arc 검증 실패 → 다음 후보 fallback', () => {
+      // transfers[1].transferName이 오탈자(해당 line에 미존재)면 isStationInLegArc의
+      // entryIdx가 -1이 되어 arc 검증이 false를 반환 → transfers[2]는 건너뛰고 transfers[0]로 fallback.
+      const brokenRoute = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '사당', fromLine: '2', toLine: '4', stopsToTransfer: 10 },
+          { transferName: '존재하지않는역명XYZ', fromLine: '4', toLine: '2', stopsToTransfer: 3 },
+          { transferName: '건대입구', fromLine: '2', toLine: '7', stopsToTransfer: 7 },
+        ],
+        stopsAfterLastTransfer: 4,
+      });
+      // 성수(2-011)는 여전히 line 2 위에 있으나 transfers[2]의 entryBoundary 조회 실패로
+      // arc 검증 불가 → transfers[0](사당, idx25) fallback 채택.
+      // 성수(idx10) → 사당(idx25) = down.
+      expect(resolveTripDirection(brokenRoute, '어린이대공원(세종대)', '2-011')).toBe('down');
+    });
+  });
 });
