@@ -120,3 +120,37 @@ describe('handler.scheduled — #2073 idle-skip 게이트', () => {
     expect(await readPushActivityRecent(kv as unknown as KVNamespace)).toBe(false);
   });
 });
+
+// #1967 (Ff-1) — admin kill switch KV 상태가 runScheduled deps로 forward되는지 배선 검증.
+describe('handler.scheduled — #1967 (Ff-1) kill switch forward', () => {
+  beforeEach(() => {
+    runScheduledMock.mockReset();
+    runFallbackPushesMock.mockReset();
+    runRetryPushesMock.mockReset();
+    runScheduledMock.mockResolvedValue(baseScheduledStats({ pendingActivityPossible: false }));
+  });
+
+  it('KV 미설정 → killSwitchLocklessIntermediate=false 로 forward (dormant)', async () => {
+    const kv = new InMemoryKV();
+    await handler.scheduled(makeScheduledController(), makeEnv(kv), makeExecutionContext());
+    const [, deps] = runScheduledMock.mock.calls[0] as [unknown, { killSwitchLocklessIntermediate: boolean }];
+    expect(deps.killSwitchLocklessIntermediate).toBe(false);
+  });
+
+  it("KV='true' → killSwitchLocklessIntermediate=true 로 forward", async () => {
+    const kv = new InMemoryKV();
+    await kv.put('kill-switch:lockless-intermediate', 'true');
+    await handler.scheduled(makeScheduledController(), makeEnv(kv), makeExecutionContext());
+    const [, deps] = runScheduledMock.mock.calls[0] as [unknown, { killSwitchLocklessIntermediate: boolean }];
+    expect(deps.killSwitchLocklessIntermediate).toBe(true);
+  });
+
+  it("KV='false' → killSwitchLocklessIntermediate=false 로 forward (rollback 확인)", async () => {
+    const kv = new InMemoryKV();
+    await kv.put('kill-switch:lockless-intermediate', 'true');
+    await kv.put('kill-switch:lockless-intermediate', 'false');
+    await handler.scheduled(makeScheduledController(), makeEnv(kv), makeExecutionContext());
+    const [, deps] = runScheduledMock.mock.calls[0] as [unknown, { killSwitchLocklessIntermediate: boolean }];
+    expect(deps.killSwitchLocklessIntermediate).toBe(false);
+  });
+});

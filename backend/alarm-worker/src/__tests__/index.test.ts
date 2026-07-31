@@ -4850,3 +4850,191 @@ describe('GET/POST /admin/arch-flag (#1982)', () => {
     });
   });
 });
+
+// #1967 (Ff-1) — lockless intermediate 게이트 admin kill switch endpoints.
+describe('GET/POST /admin/kill-switch (#1967 Ff-1)', () => {
+  async function getSwitch(
+    env: Env,
+    key: string | undefined,
+    authHeader?: string,
+  ): Promise<Response> {
+    const url = key
+      ? `http://example.com/admin/kill-switch?key=${encodeURIComponent(key)}`
+      : 'http://example.com/admin/kill-switch';
+    return app.fetch(
+      new Request(url, {
+        method: 'GET',
+        headers: authHeader ? { authorization: authHeader } : {},
+      }),
+      env,
+    );
+  }
+
+  async function postSwitch(
+    env: Env,
+    key: string | undefined,
+    body: unknown,
+    authHeader?: string,
+    { rawBody }: { rawBody?: string } = {},
+  ): Promise<Response> {
+    const url = key
+      ? `http://example.com/admin/kill-switch?key=${encodeURIComponent(key)}`
+      : 'http://example.com/admin/kill-switch';
+    return app.fetch(
+      new Request(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(authHeader ? { authorization: authHeader } : {}),
+        },
+        body: rawBody ?? JSON.stringify(body),
+      }),
+      env,
+    );
+  }
+
+  function makeAuthEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'], ADMIN_TOKEN: 'secret' });
+  }
+
+  describe('GET', () => {
+    it('returns 503 when ADMIN_TOKEN not configured', async () => {
+      const env = makeKvEnv();
+      const res = await getSwitch(env, 'lockless_intermediate', 'Bearer x');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+    });
+
+    it('returns 401 without bearer header', async () => {
+      const env = makeAuthEnv();
+      const res = await getSwitch(env, 'lockless_intermediate');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 with wrong token', async () => {
+      const env = makeAuthEnv();
+      const res = await getSwitch(env, 'lockless_intermediate', 'Bearer wrong');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 400 when key is missing', async () => {
+      const env = makeAuthEnv();
+      const res = await getSwitch(env, undefined, 'Bearer secret');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_key' });
+    });
+
+    it('returns 400 when key is unsupported', async () => {
+      const env = makeAuthEnv();
+      const res = await getSwitch(env, 'unknown_gate', 'Bearer secret');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_key' });
+    });
+
+    it('returns 503 when TRIPS binding unavailable', async () => {
+      const env = makeEnv({
+        ADMIN_TOKEN: 'secret',
+        TRIPS: undefined as unknown as Env['TRIPS'],
+      });
+      const res = await getSwitch(env, 'lockless_intermediate', 'Bearer secret');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'trips_unavailable' });
+    });
+
+    it('returns default (false) when key never set', async () => {
+      const env = makeAuthEnv();
+      const res = await getSwitch(env, 'lockless_intermediate', 'Bearer secret');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ key: 'lockless_intermediate', value: 'false' });
+    });
+
+    it('reflects value previously written via POST', async () => {
+      const env = makeAuthEnv();
+      await postSwitch(env, 'lockless_intermediate', { value: 'true' }, 'Bearer secret');
+      const res = await getSwitch(env, 'lockless_intermediate', 'Bearer secret');
+      expect(await res.json()).toEqual({ key: 'lockless_intermediate', value: 'true' });
+    });
+  });
+
+  describe('POST', () => {
+    it('returns 503 when ADMIN_TOKEN not configured', async () => {
+      const env = makeKvEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'true' }, 'Bearer x');
+      expect(res.status).toBe(503);
+    });
+
+    it('returns 401 without bearer header', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'true' });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 with wrong token', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'true' }, 'Bearer wrong');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 400 when key is missing', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, undefined, { value: 'true' }, 'Bearer secret');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_key' });
+    });
+
+    it('returns 400 when key is unsupported', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'unknown_gate', { value: 'true' }, 'Bearer secret');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_key' });
+    });
+
+    it('returns 503 when TRIPS binding unavailable', async () => {
+      const env = makeEnv({
+        ADMIN_TOKEN: 'secret',
+        TRIPS: undefined as unknown as Env['TRIPS'],
+      });
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'true' }, 'Bearer secret');
+      expect(res.status).toBe(503);
+    });
+
+    it('returns 400 when body is not JSON', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', null, 'Bearer secret', {
+        rawBody: 'not-json',
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_body' });
+    });
+
+    it('returns 400 when body has no value field', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', {}, 'Bearer secret');
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when value is invalid literal', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'on' }, 'Bearer secret');
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts value=true and persists to KV', async () => {
+      const env = makeAuthEnv();
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'true' }, 'Bearer secret');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ key: 'lockless_intermediate', value: 'true' });
+      const readBack = await getSwitch(env, 'lockless_intermediate', 'Bearer secret');
+      expect(await readBack.json()).toEqual({ key: 'lockless_intermediate', value: 'true' });
+    });
+
+    it('accepts value=false (rollback) and persists to KV', async () => {
+      const env = makeAuthEnv();
+      // 사전에 true 로 설정된 상태를 false 로 되돌리는 rollback 시나리오(회귀 대응 종료).
+      await postSwitch(env, 'lockless_intermediate', { value: 'true' }, 'Bearer secret');
+      const res = await postSwitch(env, 'lockless_intermediate', { value: 'false' }, 'Bearer secret');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ key: 'lockless_intermediate', value: 'false' });
+    });
+  });
+});

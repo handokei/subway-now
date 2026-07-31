@@ -145,7 +145,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, laStaleAutoEnded: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -825,6 +825,65 @@ describe('runScheduled', () => {
         expect(apnsFetch).not.toHaveBeenCalled();
       }
       if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
+    });
+
+    // #1967 (Ff-1) — admin kill switch. 토글 ON + intermediate + arvlCd=1 (정상이면 발사)
+    // 조합이라도 kill switch가 활성이면 게이트 평가 자체를 건너뛰고 lockMissing 분기로 fall-through.
+    describe('#1967 (Ff-1) — admin kill switch', () => {
+      it('killSwitchLocklessIntermediate=true → 발사 0 + killSwitchLocklessIntermediateSkipped 카운트', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          killSwitchLocklessIntermediate: true,
+        });
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(1);
+        // kill switch는 intermediate fire만 차단 — lockMissing 분기(boarding-prompt 평가 등)는
+        // 기존과 동일하게 fall-through 진행된다.
+        expect(stats.lockMissing).toBe(1);
+        expect(apnsFetch).not.toHaveBeenCalled();
+      });
+
+      it('killSwitchLocklessIntermediate=false → 정상 발사 (dormant 확인)', async () => {
+        const { stats, apnsFetch } = await runLocklessCycle({
+          trip: intermediateTrip(),
+          arrivals: [ARVL_ARRIVED],
+          apnsOk: true,
+        });
+        expect(stats.pushed).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
+        expect(apnsFetch).toHaveBeenCalled();
+      });
+
+      it('killSwitchLocklessIntermediate 미전달(undefined) → 기존 동작 100% 유지 (dormant)', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          // killSwitchLocklessIntermediate 미전달
+        });
+        expect(stats.pushed).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
+        expect(apnsFetch).toHaveBeenCalled();
+      });
     });
 
     // Epic #1204 그룹 2 D3 (#1273)
@@ -9150,7 +9209,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, laStaleAutoEnded: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,

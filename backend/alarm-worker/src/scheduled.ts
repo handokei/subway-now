@@ -520,6 +520,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   laStaleAutoEnded: number;
   /**
+   * #1967 (Ff-1) — admin kill switch(`KILL_LOCKLESS_INTERMEDIATE`)가 활성 상태라 lockless
+   * intermediate 게이트(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`) 자체를
+   * 평가하지 않고 skip한 누적 횟수. 정상 운영(kill switch off)에서 0건 기대 — 0이 아니면
+   * 운영자가 device false alarm 회귀 대응으로 게이트를 의도적으로 차단 중이라는 신호.
+   * dashboard: `kill_switch_lockless_intermediate_skipped`.
+   */
+  killSwitchLocklessIntermediateSkipped: number;
+  /**
    * #816 C — lockless opt-in 토글 ON trip에서 station-passed(intermediate) push가 발사된 횟수.
    * false-positive 측정 인프라 — 사용자 dismiss/탭률은 client alarmLog로 별도 적재된다.
    * (lockMissing은 토글 OFF로 게이트 차단된 trip만 카운트되도록 유지 — 두 stat은 disjoint.)
@@ -858,6 +866,13 @@ export interface ScheduledDeps {
    * 미전달 (테스트/legacy) 시 undefined → 기존 동작 100% 유지.
    */
   archFlag?: ArchFlagValue;
+  /**
+   * #1967 (Ff-1) — admin kill switch(`KILL_LOCKLESS_INTERMEDIATE`) 활성 여부. true 시
+   * lockless intermediate 게이트(1186행 부근) 평가 자체를 건너뛴다. index.ts scheduled
+   * handler가 매 cron cycle `getKillSwitch(env.TRIPS, 'lockless_intermediate')`로 read해
+   * forward. 미전달(테스트/legacy) 시 undefined → falsy → 기존 동작 100% 유지(dormant).
+   */
+  killSwitchLocklessIntermediate?: boolean;
 }
 
 /**
@@ -927,6 +942,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     envCorrected: 0,
     lockMissing: 0,
     laStaleAutoEnded: 0,
+    killSwitchLocklessIntermediateSkipped: 0,
     locklessIntermediateFired: 0,
     locklessMotionGateBlocked: 0,
     laPushSent: 0,
@@ -1183,7 +1199,13 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
       // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면
       // 잘못된 leg/방향으로 갈 위험.
-      if (trip.infoModeEnabled && waypoint.kind === 'intermediate') {
+      // #1967 (Ff-1) — admin kill switch 활성 시 게이트 평가 자체를 건너뛴다. device false
+      // alarm 회귀 감지 시 backend deploy 없이 즉시 차단하는 emergency 채널(KV write만으로
+      // 되돌림). 미전달/false(default) 시 기존 동작 100% 유지(dormant).
+      if (deps.killSwitchLocklessIntermediate === true) {
+        stats.killSwitchLocklessIntermediateSkipped += 1;
+        log('lockless: skip (kill switch active)', { token: trip.token.slice(0, 8) });
+      } else if (trip.infoModeEnabled && waypoint.kind === 'intermediate') {
         try {
           await runLocklessIntermediate(trip, waypoint, env, deps, stats, now, log, generatePushId);
         } catch (e) {
