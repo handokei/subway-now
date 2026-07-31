@@ -9,6 +9,8 @@ jest.mock('expo-notifications', () => ({
   // #1924 — suppress 분기가 delivered tray entry도 정리해 다음 FG 복귀 drain이
   // 같은 stale identifier를 다시 read 하지 않게 한다.
   dismissNotificationAsync: jest.fn(),
+  // #2112 P3 — legacy prefix zombie sweep이 부팅 시 전체 pending을 조회한다.
+  getAllScheduledNotificationsAsync: jest.fn(),
 }));
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -83,6 +85,7 @@ const mockAddListener = Notifications.addNotificationReceivedListener as jest.Mo
 const mockGetPresented = Notifications.getPresentedNotificationsAsync as jest.Mock;
 const mockCancelScheduled = Notifications.cancelScheduledNotificationAsync as jest.Mock;
 const mockDismissNotification = Notifications.dismissNotificationAsync as jest.Mock;
+const mockGetAllScheduled = Notifications.getAllScheduledNotificationsAsync as jest.Mock;
 const mockAsyncGetItem = AsyncStorage.getItem as jest.Mock;
 
 const DEST_JSON = JSON.stringify({ id: 'dest-1', name: '강남' });
@@ -130,6 +133,9 @@ beforeEach(async () => {
   mockSetFiredAlarms.mockResolvedValue(undefined);
   mockSetLastFiredAlarmStationName.mockResolvedValue(undefined);
   mockGetPresented.mockResolvedValue([]);
+  // #2112 P3 — legacy sweep 기본: pending 없음 (개별 테스트가 override).
+  mockGetAllScheduled.mockReset();
+  mockGetAllScheduled.mockResolvedValue([]);
   setStorageMap({
     'subway-now:destination': DEST_JSON,
     'subway-now:route': ROUTE_JSON,
@@ -825,5 +831,49 @@ describe('#1704 position-mismatch 게이트', () => {
       expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
       handle.remove();
     });
+  });
+});
+
+// #2112 P3(1) — 구 3종 스케줄러 prefix(alarm:/bl:/tba:) zombie 예약을 리스너 등록 시 1회 sweep.
+describe('sweepLegacyScheduledAlarms (#2112 P3)', () => {
+  it('legacy prefix pending만 골라 cancel하고 신규(alarm-) 예약은 건드리지 않는다', async () => {
+    mockGetAllScheduled.mockResolvedValue([
+      makeRequest('alarm:legacy-1', null),
+      makeRequest('bl:legacy-2', null),
+      makeRequest('tba:legacy-3', null),
+      makeRequest(`alarm-${TRIP_TOKEN}-시청-transfer`, DEFAULT_PARSED),
+    ]);
+    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+    await Promise.resolve();
+    handle.remove();
+    expect(mockCancelScheduled).toHaveBeenCalledWith('alarm:legacy-1');
+    expect(mockCancelScheduled).toHaveBeenCalledWith('bl:legacy-2');
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:legacy-3');
+    expect(mockCancelScheduled).not.toHaveBeenCalledWith(`alarm-${TRIP_TOKEN}-시청-transfer`);
+  });
+
+  it('legacy가 없으면 cancel 미호출 (조기 반환)', async () => {
+    mockGetAllScheduled.mockResolvedValue([
+      makeRequest(`alarm-${TRIP_TOKEN}-시청-transfer`, DEFAULT_PARSED),
+    ]);
+    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+    await Promise.resolve();
+    handle.remove();
+    expect(mockCancelScheduled).not.toHaveBeenCalled();
+  });
+
+  it('조회 실패는 swallow (다른 초기화에 전파 금지)', async () => {
+    mockGetAllScheduled.mockRejectedValue(new Error('boom'));
+    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+    await Promise.resolve();
+    handle.remove();
+    expect(mockErrorSpy).toHaveBeenCalled();
+    expect(mockCancelScheduled).not.toHaveBeenCalled();
   });
 });
