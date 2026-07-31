@@ -8,13 +8,13 @@
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus } from 'react-native';
-import { parseScheduledAlarmIdentifier } from './alarmScheduler';
 import {
   getFiredAlarms,
   setFiredAlarms,
   setLastFiredAlarmStationName,
 } from './notificationState';
 import {
+  ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
   STICKY_STATION_KEY,
@@ -22,84 +22,45 @@ import {
 import { createLogger } from '../../../shared/utils/logger';
 import { recordFiredAlarm } from './prescheduledMetrics';
 import {
-  TRIP_BOUND_ALARM_PREFIX,
-  getRegisteredTripRouteSig,
-  parseTripBoundAlarmIdentifier,
-} from './tripBoundScheduler';
+  deriveSafetyNetWaypoints,
+  readSafetyNetData,
+  type SafetyNetNotificationData,
+} from './safetyNetScheduler';
 import { getTripStartedAt } from './tripStartStorage';
-import { alarmKey, resolveAllTargets } from './stationAlarm';
-import {
-  parseBoardingLockAlarmIdentifier,
-  routeSignature,
-  getRegisteredBlRouteSig,
-  BOARDING_LOCK_ALARM_PREFIX,
-} from './boardingLockScheduler';
-import { logSuppressedTbaRevalidation } from './alarmLog';
+import { alarmKey } from './stationAlarm';
+import { logSuppressedSafetyNetRevalidation } from './alarmLog';
 import { readBackendSsotMirror } from './backendSsotMirror';
-import {
-  getStationById,
-  isSameStationName,
-} from '../../../shared/utils/stationRoute';
+import { getStationById, isSameStationName } from '../../../shared/utils/stationRoute';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
-import type { AlarmPhaseId } from './alarmPhases';
 
 const logger = createLogger('ScheduledAlarmReceiver');
 
+interface DestinationMeta {
+  /** firedAlarms를 격리하는 데 쓰이는 destination id(#462). */
+  id: string | null;
+  /** safety-net waypoint 산출에 쓰이는 destination 역명. */
+  name: string | null;
+}
+
 /**
- * 현재 trip의 destinationId를 AsyncStorage에서 읽는다. firedAlarms를 destinationId로
- * 격리하기 위해(#462) 발화 reconcile 시점에 필요하다. 파싱 실패 또는 미설정이면 null.
+ * 현재 trip의 destination을 AsyncStorage에서 1회 읽고 파싱한다. id/name을 한 번의 parse로
+ * 함께 추출 — `revalidateSafetyNetAlarm`(name 필요)과 fired-set 격리(id 필요) 양쪽이 같은
+ * DESTINATION_KEY를 각자 다시 읽고 파싱하면 파싱 실패 조건이 항상 동일해 한쪽 catch 분기가
+ * 구조적으로 도달 불가능해진다 — 단일 파서로 통합해 그 문제를 원천 제거.
  */
-async function getCurrentDestinationId(): Promise<string | null> {
-  const raw = await AsyncStorage.getItem(DESTINATION_KEY);
-  if (!raw) return null;
+function parseDestinationMeta(raw: string | null): DestinationMeta {
+  if (!raw) return { id: null, name: null };
   try {
     const parsed = JSON.parse(raw);
-    return typeof parsed?.id === 'string' ? parsed.id : null;
+    return {
+      id: typeof parsed?.id === 'string' ? parsed.id : null,
+      name: typeof parsed?.name === 'string' ? parsed.name : null,
+    };
   } catch {
-    return null;
+    return { id: null, name: null };
   }
-}
-
-interface ParsedAlarmIdentifier {
-  prefix: 'alarm' | 'tba' | 'bl';
-  phaseId: string;
-  stationName: string;
-  /**
-   * #1367 — 같은 stationName이 route에 중복 등장하는 trip(순환선)에서 hop별 dedup이 collide하지
-   * 않도록 보존되는 0-based occurrence. `tba:` parser만 suffix를 분리해 채우고, `alarm:`/`bl:`는
-   * occurrence 표기가 없으므로 항상 0 — silent push 채널과 통합 dedup key 공간을 공유한다.
-   */
-  occurrenceIdx: number;
-}
-
-/**
- * `alarm:` / `tba:` / `bl:` 세 prefix 단일 진입점 (#918 A3 PR2, #1282).
- * 세 경로의 phaseId/stationName 추출 로직이 같으므로 호출자는 prefix 분기만 본다.
- */
-function parseAlarmIdentifier(identifier: string): ParsedAlarmIdentifier | null {
-  if (identifier.startsWith(BOARDING_LOCK_ALARM_PREFIX)) {
-    const p = parseBoardingLockAlarmIdentifier(identifier);
-    return p
-      ? { prefix: 'bl', phaseId: p.phase, stationName: p.stationName, occurrenceIdx: 0 }
-      : null;
-  }
-  if (identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) {
-    const p = parseTripBoundAlarmIdentifier(identifier);
-    return p
-      ? {
-          prefix: 'tba',
-          phaseId: p.phaseId,
-          stationName: p.stationName,
-          occurrenceIdx: p.occurrenceIdx,
-        }
-      : null;
-  }
-  const p = parseScheduledAlarmIdentifier(identifier);
-  return p
-    ? { prefix: 'alarm', phaseId: p.phaseId, stationName: p.stationName, occurrenceIdx: 0 }
-    : null;
 }
 
 function safeParseRoute(raw: string | null): Route {
@@ -111,49 +72,18 @@ function safeParseRoute(raw: string | null): Route {
   }
 }
 
-function parseDestinationName(raw: string | null): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed?.name === 'string' ? parsed.name : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * #1704 — position-mismatch 게이트 임계값. 사용자 currentStation에서 fire 대상 stationName까지
  * 이 hop 수 이상 떨어져 있으면 suppress.
  *
- * 5 hop 선택 근거: 2호선/1호선 환승 평균 2-3 hop 사이, BG fire 정상 임계(early phase=3 stops,
- * imminent=1 stop)보다 충분히 여유. evidence: 14:04 신촌(2-018) → 종로3가(1-027) trip에서
- * 사용자 신촌 위치인데 종로3가 미리 fire(약 6+ hop 미래) — 5 hop 임계로 차단.
+ * 5 hop 선택 근거: 2호선/1호선 환승 평균 2-3 hop 사이, BG fire 정상 임계(1역 전)보다 충분히 여유.
+ * evidence: 14:04 신촌(2-018) → 종로3가(1-027) trip에서 사용자 신촌 위치인데 종로3가 미리
+ * fire(약 6+ hop 미래) — 5 hop 임계로 차단.
  *
  * mirror가 5 min 이상 stale이면 게이트 자체를 skip(보수 fallback) — false negative 차단.
  */
 const POSITION_MISMATCH_HOP_THRESHOLD = 5;
 const POSITION_MISMATCH_MIRROR_STALE_MS = 5 * 60 * 1_000;
-
-/**
- * 사전 예약 알람(`tba:` / `bl:`)의 fire-time 재검증 공통 구현 (#918 A3 PR2, #729 흡수, #1282).
- *
- * OS가 예약된 시각에 발사한 알람이 *현재* 시점에도 유효한지 확인한다. 두 채널이 동일한
- * route-sig + waypoint 검증을 공유하므로 단일 헬퍼로 추출하고, 채널별 차이만 인자로 분리한다:
- *   - `requireTripStart`: `tba:`는 tripStart 존재를 선행 게이트로 요구한다(`true`). `bl:`은 lock
- *     scheduler가 SSOT이라 tripStart 게이트가 불필요하므로 `false`.
- *   - `getRegisteredSig`: 채널의 예약 시점 route-sig 영속화 getter.
- *
- * 검증 순서:
- *   1) (requireTripStart 시) tripStart 존재 — trip이 종료되지 않았다.
- *   2) ROUTE_KEY/DESTINATION_KEY 기반 현재 sig가 등록 시점 sig와 동일 — 목적지/환승 변경 없음.
- *   3) 파싱된 stationName이 현재 route waypoint 시퀀스 안에 있음 — 방어 검증.
- *   4) (#1704) 사용자 currentStation 대비 fire 대상이 N hop 미래가 아님 — backend SSoT mirror +
- *      sticky station fallback으로 위치 결정. 둘 다 부재/stale이면 보수적으로 게이트 skip.
- *
- * 한 가지라도 실패하면 reason과 함께 alarmLog에 적재하고 'suppress'를 반환한다.
- * 호출자는 fired set / lastStationName 갱신을 skip해 stale 알람이 후속 상태를 오염시키지 않게 한다.
- */
-type RevalidationSuppressReason = Parameters<typeof logSuppressedTbaRevalidation>[0]['reason'];
 
 /**
  * #1704 — sticky station 영속화 데이터에서 Station을 안전하게 추출.
@@ -259,175 +189,131 @@ async function evaluatePositionMismatch(input: {
   return hopDistance >= POSITION_MISMATCH_HOP_THRESHOLD ? 'suppress' : 'pass';
 }
 
-async function revalidatePrescheduledAlarm(
-  parsed: { phaseId: string; stationName: string },
-  options: {
-    requireTripStart: boolean;
-    getRegisteredSig: () => Promise<string | null>;
-  },
-): Promise<'pass' | 'suppress'> {
-  // phaseId는 'early'/'imminent' 둘 중 하나 — alarmLog에는 그대로 통과시켜도 안전.
-  const phaseId = parsed.phaseId as AlarmPhaseId;
-  const suppress = (reason: RevalidationSuppressReason): 'suppress' => {
-    logSuppressedTbaRevalidation({ reason, stationName: parsed.stationName, phaseId });
-    return 'suppress';
+/**
+ * safety-net 알람(#2089)의 fire-time 재검증.
+ *
+ * OS가 예약된 시각에 발사한 알람이 *현재* 시점에도 유효한지 확인한다.
+ *
+ * 검증 순서:
+ *   1) tripStart 존재 — trip이 종료되지 않았다.
+ *   2) parsed.tripToken이 현재 ACTIVE_TRIP_KEY와 일치 — 다른(이전/차기) trip의 잔여 발화가 아니다.
+ *      (구 route-sig 비교의 대체 — 2026-07-31 매트릭스 "route-sig staleness: trip 재등록 시
+ *      재예약으로 대체 가능"과 동형: safetyNetScheduler는 trip 전환마다 항상 전체 재예약하므로
+ *      tripToken이 다르면 그 자체로 stale 판정에 충분하다.)
+ *   3) 파싱된 stationName + kind가 현재 route waypoint 시퀀스 안에 있음 — 방어 검증.
+ *   4) (#1704) 사용자 currentStation 대비 fire 대상이 N hop 미래가 아님 — backend SSoT mirror +
+ *      sticky station fallback으로 위치 결정. 둘 다 부재/stale이면 보수적으로 게이트 skip.
+ *
+ * 한 가지라도 실패하면 reason과 함께 alarmLog에 적재하고 outcome='suppress'를 반환한다.
+ * 호출자는 fired set / lastStationName 갱신을 skip해 stale 알람이 후속 상태를 오염시키지 않게 한다.
+ *
+ * pass 시 `destinationId`도 함께 반환한다 — DESTINATION_KEY를 이 함수가 이미 읽고 파싱했으므로
+ * 호출자가 fired-set 격리(#462)를 위해 같은 키를 또 읽고 파싱할 필요가 없다({@link parseDestinationMeta}).
+ */
+interface RevalidateSafetyNetResult {
+  outcome: 'pass' | 'suppress';
+  /** outcome='pass'일 때만 non-null 의미 있음 — suppress 시 fired-set 작업을 하지 않으므로 null. */
+  destinationId: string | null;
+}
+
+async function revalidateSafetyNetAlarm(
+  parsed: SafetyNetNotificationData,
+): Promise<RevalidateSafetyNetResult> {
+  const suppress = (
+    reason: Parameters<typeof logSuppressedSafetyNetRevalidation>[0]['reason'],
+  ): RevalidateSafetyNetResult => {
+    logSuppressedSafetyNetRevalidation({ reason, stationName: parsed.station });
+    return { outcome: 'suppress', destinationId: null };
   };
 
-  if (options.requireTripStart && (await getTripStartedAt()) === null) {
+  const tripStart = await getTripStartedAt();
+  if (tripStart === null) {
     return suppress('revalidate-no-trip');
   }
 
-  const [routeRaw, destRaw, registeredSig] = await Promise.all([
+  const [routeRaw, destRaw, activeTripToken] = await Promise.all([
     AsyncStorage.getItem(ROUTE_KEY),
     AsyncStorage.getItem(DESTINATION_KEY),
-    options.getRegisteredSig(),
+    AsyncStorage.getItem(ACTIVE_TRIP_KEY),
   ]);
-  const route: Route = safeParseRoute(routeRaw);
-  const destinationName = parseDestinationName(destRaw);
-  const currentSig = routeSignature(route, destinationName);
-
-  // registeredSig 부재 / 현재 sig 미산출 / 두 값 불일치 모두 mismatch로 묶는다.
-  // (registeredSig 부재는 cancel* 직후 잔여 OS 발사 케이스.)
-  if (registeredSig === null || currentSig === null || registeredSig !== currentSig) {
-    return suppress('revalidate-route-sig-mismatch');
+  if (activeTripToken === null || activeTripToken !== parsed.tripToken) {
+    return suppress('revalidate-trip-token-mismatch');
   }
 
-  // 방어 검증: parsed stationName이 현재 waypoint 시퀀스에 존재해야 한다.
-  // currentSig !== null이면 route, destinationName 둘 다 non-null 보장됨.
-  const targets = resolveAllTargets(route as NonNullable<Route>, destinationName as string);
-  if (!targets.some((t) => t.name === parsed.stationName)) {
+  const route: Route = safeParseRoute(routeRaw);
+  const destMeta = parseDestinationMeta(destRaw);
+  if (!route || !destMeta.name) {
+    return suppress('revalidate-trip-token-mismatch');
+  }
+
+  // 방어 검증: parsed station+kind가 현재 waypoint 시퀀스에 존재해야 한다.
+  const waypoints = deriveSafetyNetWaypoints(route, destMeta.name);
+  if (
+    !waypoints.some(
+      (w) => w.kind === parsed.kind && isSameStationName(w.stationName, parsed.station),
+    )
+  ) {
     return suppress('revalidate-waypoint-mismatch');
   }
 
   // #1704 — 위치 게이트: 사용자 currentStation 대비 fire 대상이 N hop 이상 미래면 suppress.
-  // 기존 게이트 통과 후 진입 — backend SSoT mirror + sticky station 둘 다 부재/stale이면 skip(보수).
-  // 2026-06-23 사용자 trip evidence (14:04 신촌→종로3가 미리 fire, 14:18 합정→공덕/군자 미리 fire) 차단.
   const positionGate = await evaluatePositionMismatch({
     route: route as NonNullable<Route>,
-    destinationName: destinationName as string,
-    targetStationName: parsed.stationName,
+    destinationName: destMeta.name,
+    targetStationName: parsed.station,
   });
   if (positionGate === 'suppress') {
     return suppress('revalidate-position-mismatch');
   }
 
-  return 'pass';
-}
-
-/** `tba:` 알람 재검증 — tripStart 게이트 + trip-bound sig (#918 A3 PR2, #729 흡수). */
-function revalidateTbaAlarm(parsed: {
-  phaseId: string;
-  stationName: string;
-}): Promise<'pass' | 'suppress'> {
-  return revalidatePrescheduledAlarm(parsed, {
-    requireTripStart: true,
-    getRegisteredSig: getRegisteredTripRouteSig,
-  });
+  return { outcome: 'pass', destinationId: destMeta.id };
 }
 
 /**
- * `bl:` 알람 재검증 (#1282 → #1415/#1353 R1).
+ * 사전 예약된 safety-net 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
+ * 사전 예약 알람은 클라이언트 콜백을 거치지 않으므로, 이 함수가 FG/BG 양쪽 발화 모두에 대한
+ * 상태 동기화 단일 진입점이다.
  *
- * #1415/#1353 R1 (stale-fire cluster) — `requireTripStart=true`로 강화.
- *
- * 회귀 evidence (2026-06-22 / 2026-06-19 사용자 trip):
- *   - 6/22 14:19 사용자 을지로3가 위치인데 `bl:5호선:1:imminent:애오개` stale fire
- *   - 6/22 14:25 사용자 상왕십리 위치인데 `bl:2호선:1:imminent:아현` stale fire
- *   - 6/19 15:51 사용자 고속터미널 위치인데 `bl:7호선:N:imminent:용마산` stale fire (이전 trip의 destination)
- *
- * Root cause chain: backend cron auto-end → silent push trip-ended 도착 → device cleanup
- * (`purgeBoardingLockSchedulerQueue` + `runTripBoundCleanups`)이 OS queue cancel을 시도하지만,
- * race / 직렬 cancel reject / expo-notifications 내부 큐 반영 지연으로 일부 `bl:` 사전 예약이 OS
- * 큐에 잔존. 이후 ETA 도달 시 OS가 잔존 알람을 직접 발사 → 사용자 체감 "정적인데 다음역 stale fire".
- *
- * 기존 정책(`requireTripStart=false`)은 "lock SSOT이라 tripStart 게이트가 불필요"라는 가정에
- * 의존했으나, lock release / trip cleanup 후의 race window를 가드하지 못했다. tripStart 게이트는
- * 가장 강력한 trip-종료 신호이므로 `bl:` 채널에도 동일하게 적용한다 — `bl:` 사전 예약은 항상 trip
- * 컨텍스트 내에서 의미 있는 알람이고, trip이 끝났다면 lock 유무와 무관하게 stale.
- *
- * 트레이드오프 (의도적):
- *   - Trip 종료 직후 OS가 발사한 직전 `bl:` 알람이 race로 `tripStartedAt=null` 상태에서 도달하면
- *     `revalidate-no-trip`으로 suppress될 수 있다. 그러나 trip 종료 = lock 무효 = stale 알람이라
- *     이 silence는 의도적 — false positive (잘못 발사) 방지가 사용자 가치 직결 (ADR-010 동급).
- *   - 새 trip 시작 직후 backend가 새 `bl:` sig를 등록하기 전 race window에서 도달한 알람은 본
- *     게이트가 아닌 `revalidate-route-sig-mismatch`로 분류 — 새 trip의 sig가 다르기 때문.
- */
-function revalidateBlAlarm(parsed: {
-  phaseId: string;
-  stationName: string;
-}): Promise<'pass' | 'suppress'> {
-  return revalidatePrescheduledAlarm(parsed, {
-    requireTripStart: true,
-    getRegisteredSig: getRegisteredBlRouteSig,
-  });
-}
-
-/**
- * prefix별 사전 예약 알람 재검증 디스패처. `alarm:`은 BoardingLock scheduler cancel/reschedule이
- * SSOT이므로 재검증 없이 'pass'. `tba:` / `bl:`만 채널별 게이트를 거친다.
- * reconcile 단건/ drain batch 두 호출자가 공유한다.
- */
-function revalidateByPrefix(parsed: ParsedAlarmIdentifier): Promise<'pass' | 'suppress'> {
-  if (parsed.prefix === 'tba') return revalidateTbaAlarm(parsed);
-  if (parsed.prefix === 'bl') return revalidateBlAlarm(parsed);
-  return Promise.resolve('pass');
-}
-
-/**
- * 사전 예약된 `alarm:` / `tba:` / `bl:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
- * 사전 예약 알람은 클라이언트 콜백을 거치지 않으므로(`alarmScheduler.ts`), 이 함수가
- * FG/BG 양쪽 발화 모두에 대한 상태 동기화 단일 진입점이다.
- *
- * - FIRED_ALARMS_KEY에 `phaseId:stationName` 추가 → FG 복귀 시 useStationAlarm 하이드레이션이
- *   해당 phase를 이미 발화된 것으로 간주해 중복 발화를 막는다.
+ * - FIRED_ALARMS_KEY에 `early:station`/`imminent:station` 둘 다 추가 → FG 복귀 시 useStationAlarm
+ *   하이드레이션 및 후속 silent push 처리가 해당 station을 이미 발화된 것으로 간주해 중복 발화를
+ *   막는다. safetyNetScheduler는 phase 개념이 없는 단일 fire지만, dedup key 공간은 live GPS 기반
+ *   FG/BG 발화 경로(early/imminent 2 phase)와 공유되므로 둘 다 마킹해야 교차 dedup이 보장된다.
  * - LAST_FIRED_ALARM_STATION_NAME_KEY를 해당 역 이름으로 갱신 → BGAppRefreshTask가
  *   다음 사이클에서 Arrival API를 올바른 기준역으로 호출.
- *
- * `tba:` (#918 A3 PR2, #729 흡수): revalidateTbaAlarm이 stale/misfire를 차단한 뒤 위 동작 수행.
- * `alarm:` 경로는 BoardingLock scheduler cancel/reschedule이 SSOT이므로 별도 재검증 없이 통과.
  */
 export async function reconcileScheduledAlarmDelivery(
-  identifier: string,
+  request: Notifications.NotificationRequest,
   actualFireMs: number = Date.now(),
 ): Promise<void> {
-  // #918 A3 measurement — `tba:` prefix 사전 예약 알람 발사 시각 ledger 기록.
-  // `alarm:` prefix와 무관 — graceful no-op for non-tba identifier.
-  await recordFiredAlarm({ identifier, actualFireMs });
+  await recordFiredAlarm({ identifier: request.identifier, actualFireMs });
 
-  const parsed = parseAlarmIdentifier(identifier);
+  const parsed = readSafetyNetData(request);
   if (!parsed) return;
 
-  if ((await revalidateByPrefix(parsed)) === 'suppress') {
+  const result = await revalidateSafetyNetAlarm(parsed);
+  if (result.outcome === 'suppress') {
     // #1354 — suppress 시 OS scheduled queue에 동일 identifier가 남아 다음 ETA에 또
     // 발사되어 정적 misfire가 영구 재발한다. 사전 예약은 fire-and-forget이므로 명시 cancel 필요.
-    // cancelScheduledNotificationAsync는 이미 발사된 항목에도 안전 (tripBoundScheduler.ts:681).
-    await Notifications.cancelScheduledNotificationAsync(identifier);
-    // #1924 — delivered tray에서도 제거. cancelScheduledNotificationAsync는 pending queue
-    // (removePendingNotificationRequests) 만 대상이라 이미 OS가 자체 fire 한 항목은 delivered
-    // tray(removeDeliveredNotifications) 에 그대로 남는다. 사용자가 swipe-dismiss 하지 않는 한
-    // 다음 FG 복귀 drain 시 같은 identifier를 또 read → 같은 reason으로 다시 suppress →
-    // alarm log "revalidate-*" 무한 재적재 (2026-06-27 dump 56회 evidence).
-    await Notifications.dismissNotificationAsync(identifier);
+    // cancelScheduledNotificationAsync는 이미 발사된 항목에도 안전.
+    await Notifications.cancelScheduledNotificationAsync(request.identifier);
+    // #1924 — delivered tray에서도 제거. cancelScheduledNotificationAsync는 pending queue만
+    // 대상이라 이미 OS가 자체 fire 한 항목은 delivered tray에 그대로 남는다. 사용자가
+    // swipe-dismiss 하지 않는 한 다음 FG 복귀 drain 시 같은 identifier를 또 read → 같은
+    // reason으로 다시 suppress → alarm log 무한 재적재 (2026-06-27 dump 56회 evidence).
+    await Notifications.dismissNotificationAsync(request.identifier);
     return;
   }
 
-  const destinationId = await getCurrentDestinationId();
   // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
   // setLastFiredAlarmStationName은 trip 종속성이 약하므로 유지한다(다음 사이클 기준역 갱신용).
-  if (destinationId) {
-    const fired = await getFiredAlarms(destinationId);
-    // #1367 — alarmKey()로 silent push 채널과 동일 dedup key 공간 공유. occurrenceIdx>0 OS scheduled
-    // 알람도 phaseId:station#n 형식으로 등록 → 후속 silent push가 같은 hop 발사 시 dedup 적중.
-    fired.add(
-      alarmKey({
-        phaseId: parsed.phaseId,
-        stationName: parsed.stationName,
-        occurrenceIdx: parsed.occurrenceIdx,
-      }),
-    );
-    await setFiredAlarms(destinationId, fired);
+  if (result.destinationId) {
+    const fired = await getFiredAlarms(result.destinationId);
+    // early/imminent 둘 다 마킹 — silent push 채널/live GPS 채널과 동일 dedup key 공간 공유(#1367).
+    fired.add(alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
+    fired.add(alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
+    await setFiredAlarms(result.destinationId, fired);
   }
-  await setLastFiredAlarmStationName(parsed.stationName);
+  await setLastFiredAlarmStationName(parsed.station);
 }
 
 /**
@@ -443,22 +329,23 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     return;
   }
 
-  // #918 A3 — `tba:` prefix BG-fired 알람도 ledger에 fire ts 기록. Notification.date(epoch ms)
-  // 가 OS의 실제 발사 시각 — drain 시점(=FG resume)이 아닌 발사 시점을 정확히 측정.
+  // safety-net BG-fired 알람도 ledger에 fire ts 기록. Notification.date(epoch ms)가
+  // OS의 실제 발사 시각 — drain 시점(=FG resume)이 아닌 발사 시점을 정확히 측정.
   for (const n of presented) {
     const fireMs = typeof n.date === 'number' ? n.date : Date.now();
     await recordFiredAlarm({ identifier: n.request.identifier, actualFireMs: fireMs });
   }
 
-  // #918 A3 PR2 — `tba:` 항목은 발사 시점 재검증을 거친다. suppress인 경우 fired set /
-  // lastStationName 갱신에 포함하지 않아 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지
-  // 않게 한다. `alarm:` 경로는 기존 BoardingLock SSOT을 신뢰해 통과.
-  // #1282 — `bl:` 항목도 동일하게 route-sig 재검증을 거친다.
-  const accepted: ParsedAlarmIdentifier[] = [];
+  // safety-net 항목은 발사 시점 재검증을 거친다. suppress인 경우 fired set / lastStationName
+  // 갱신에 포함하지 않아 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지 않게 한다.
+  // destinationId는 pass 항목의 revalidate 결과에서 얻는다 — 모두 같은 시점의 DESTINATION_KEY를
+  // 읽으므로 항목 간 값은 동일하다(마지막 pass 항목 기준으로 충분).
+  const accepted: Array<{ parsed: SafetyNetNotificationData; destinationId: string | null }> = [];
   for (const n of presented) {
-    const parsed = parseAlarmIdentifier(n.request.identifier);
+    const parsed = readSafetyNetData(n.request);
     if (!parsed) continue;
-    if ((await revalidateByPrefix(parsed)) === 'suppress') {
+    const result = await revalidateSafetyNetAlarm(parsed);
+    if (result.outcome === 'suppress') {
       // #1354 — drain 경로도 reconcile과 동형으로 suppress 시 OS queue cancel. 같은 identifier를
       // OS가 보존하면 다음 ETA마다 재발사되어 영구 misfire 재발.
       await Notifications.cancelScheduledNotificationAsync(n.request.identifier);
@@ -469,32 +356,32 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
       await Notifications.dismissNotificationAsync(n.request.identifier);
       continue;
     }
-    accepted.push(parsed);
+    accepted.push({ parsed, destinationId: result.destinationId });
   }
 
-  const destinationId = await getCurrentDestinationId();
+  const destinationId = accepted.length > 0 ? accepted[accepted.length - 1].destinationId : null;
   let lastStationName: string | null = null;
   if (destinationId) {
     const fired = await getFiredAlarms(destinationId);
     let firedChanged = false;
-    for (const parsed of accepted) {
-      // #1367 — unified dedup key (silent push와 동일 공간). occurrenceIdx>0면 `#n` suffix.
-      const key = alarmKey({
-        phaseId: parsed.phaseId,
-        stationName: parsed.stationName,
-        occurrenceIdx: parsed.occurrenceIdx,
-      });
-      if (!fired.has(key)) {
-        fired.add(key);
-        firedChanged = true;
+    for (const { parsed } of accepted) {
+      const keys = [
+        alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }),
+        alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }),
+      ];
+      for (const key of keys) {
+        if (!fired.has(key)) {
+          fired.add(key);
+          firedChanged = true;
+        }
       }
-      lastStationName = parsed.stationName;
+      lastStationName = parsed.station;
     }
     if (firedChanged) await setFiredAlarms(destinationId, fired);
   } else {
     // destinationId 미설정 — fired set 갱신은 스킵하고 lastStationName만 추출.
-    for (const parsed of accepted) {
-      lastStationName = parsed.stationName;
+    for (const { parsed } of accepted) {
+      lastStationName = parsed.station;
     }
   }
   if (lastStationName) await setLastFiredAlarmStationName(lastStationName);
@@ -518,7 +405,7 @@ export function awaitInitialScheduledAlarmDrain(): Promise<void> {
 }
 
 /**
- * 사전 예약 `alarm:` 알림 수신 리스너 등록. 멱등 — 중복 호출은 첫 핸들을 그대로 반환한다.
+ * 사전 예약 safety-net 알림 수신 리스너 등록. 멱등 — 중복 호출은 첫 핸들을 그대로 반환한다.
  *
  * 두 발화 경로를 모두 커버한다:
  * 1) FG 수신 — addNotificationReceivedListener가 즉시 reconcile.
@@ -532,9 +419,8 @@ export function registerScheduledAlarmListener(): ScheduledAlarmListenerHandle {
   initialDrainPromise = drainDeliveredScheduledAlarms();
 
   const notifSub = Notifications.addNotificationReceivedListener((notification) => {
-    // #918 A3 — Notification.date는 OS가 기록한 실제 발사 시각(epoch ms). Date.now() 폴백.
     void reconcileScheduledAlarmDelivery(
-      notification.request.identifier,
+      notification.request,
       typeof notification.date === 'number' ? notification.date : Date.now(),
     );
   });

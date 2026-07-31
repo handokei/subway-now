@@ -191,9 +191,12 @@ export type AlarmLogReason =
   | 'hydration-hydrating'
   | 'hydration-storage-synced'
   | 'hydration-ready'
-  // #918 A3 PR2 (#729 흡수) — `tba:` 사전 예약 알람 fire-time 재검증 실패.
+  // #918 A3 PR2 (#729 흡수) → #2089 — safety-net(구 3종 통합) 사전 예약 알람 fire-time 재검증 실패.
   //   'revalidate-no-trip': tripStart 미존재(이미 종료된 trip의 잔여 발화).
-  //   'revalidate-route-sig-mismatch': 예약 시점 sig와 현재 sig 불일치(목적지 변경/환승 재산정).
+  //   'revalidate-trip-token-mismatch' (#2089): 예약 시점 tripToken과 현재 ACTIVE_TRIP_KEY 불일치
+  //     (구 'revalidate-route-sig-mismatch'의 대체 — route-sig staleness 하드닝은 폐기되고
+  //     tripToken 직접 비교로 대체됨. 2026-07-31 매트릭스 "route-sig staleness: trip 재등록 시
+  //     재예약으로 대체 가능").
   //   'revalidate-waypoint-mismatch': 파싱된 stationName이 현재 route waypoint에 없음.
   //   'revalidate-position-mismatch' (#1704): fire 대상 stationName이 사용자 currentStation보다
   //     N hop(POSITION_MISMATCH_HOP_THRESHOLD=5) 이상 미래라 fire 시점이 도래하지 않은 잔여 발화.
@@ -202,7 +205,7 @@ export type AlarmLogReason =
   //     위치가 fire 대상보다 한참 뒤. 기존 게이트가 사용자 위치를 검사하지 않아 OS DATE trigger
   //     도달 시 그냥 fire. backend SSoT mirror + sticky station fallback으로 위치 결정.
   | 'revalidate-no-trip'
-  | 'revalidate-route-sig-mismatch'
+  | 'revalidate-trip-token-mismatch'
   | 'revalidate-waypoint-mismatch'
   | 'revalidate-position-mismatch'
   // #1167 — boardingPrompt [탑승] 응답 → arvlCd 우선순위 autoLock 결과.
@@ -1654,16 +1657,17 @@ export function logHydrationTransition(
 }
 
 /**
- * #918 A3 PR2 (#729 흡수) — `tba:` 사전 예약 알람의 fire-time 재검증 실패 1건 적재.
+ * #918 A3 PR2 (#729 흡수) → #2089 — safety-net(구 3종 통합) 사전 예약 알람의 fire-time
+ * 재검증 실패 1건 적재.
  *
  * scheduledAlarmReceiver가 OS-fired identifier를 reconcile하기 직전에 호출 — 적재 후 fired set /
  * lastStationName 갱신을 skip해 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지 않게 한다.
  * source='bg-scheduled' 재사용 — preschedule path 출처 통일(stamp/fired log와 동일 source).
  */
-export function logSuppressedTbaRevalidation(input: {
+export function logSuppressedSafetyNetRevalidation(input: {
   reason:
     | 'revalidate-no-trip'
-    | 'revalidate-route-sig-mismatch'
+    | 'revalidate-trip-token-mismatch'
     | 'revalidate-waypoint-mismatch'
     | 'revalidate-position-mismatch';
   stationName: string;

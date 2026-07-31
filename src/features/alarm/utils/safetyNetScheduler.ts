@@ -77,7 +77,7 @@ interface SafetyNetWaypointWithOccurrence extends SafetyNetWaypoint {
   occurrenceIdx: number;
 }
 
-interface SafetyNetNotificationData {
+export interface SafetyNetNotificationData {
   channel: 'safety-net';
   tripToken: string;
   station: string;
@@ -321,7 +321,13 @@ export async function cancelAllSafetyNetAlarms(tripToken: string): Promise<void>
   }
 }
 
-function readSafetyNetData(
+/**
+ * OS 알림 request에서 safety-net 메타데이터(`content.data`)를 안전하게 추출한다.
+ * `scheduledAlarmReceiver`가 fire-time reconcile 시 재사용 — identifier 문자열 파싱 대신
+ * 구조화된 data를 신뢰(옛 3종 스케줄러의 identifier `:` split 파싱 방식과 달리 tripToken
+ * 자체가 dash를 포함할 수 있어 문자열 파싱이 본질적으로 불안전하기 때문).
+ */
+export function readSafetyNetData(
   req: Notifications.NotificationRequest,
 ): SafetyNetNotificationData | null {
   if (!req.identifier.startsWith(SAFETY_NET_ALARM_PREFIX)) return null;
