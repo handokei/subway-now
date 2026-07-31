@@ -69,10 +69,12 @@ export interface UseApnsTripRegistrationInputs {
    */
   subsurface?: boolean;
   /**
-   * #1923 — 사용자 명시 의향 토글 (C 토글 ON / boardingPrompt [탑승] 응답 /
-   * BoardingTrainList 직접 탭 중 하나라도 행하면 true). `useUserIntentStore`에서
-   * 읽어 전달. backend가 lockless intermediate station-passed silent push 발사
-   * 분기에 사용 (`trip.infoModeEnabled && waypoint.kind === 'intermediate'`).
+   * #1923 — 사용자 명시 의향 토글 (boardingPrompt [탑승] 응답 / BoardingTrainList
+   * 직접 탭 중 하나라도 행하면 true; "C 토글"이라는 별도 UI는 존재하지 않는다,
+   * #1961 정정). `useUserIntentStore`에서 읽어 전달. backend가 lockless
+   * intermediate station-passed silent push 발사 분기에 사용
+   * (`trip.infoModeEnabled && waypoint.kind === 'intermediate'`). admin kill
+   * switch(#1967)로 이 게이트 자체를 backend deploy 없이 우회 가능.
    * 미지정/false: 기존 동작 그대로 — boardingLock 부재 시 `lockMissing` skip.
    */
   infoModeEnabled?: boolean;
