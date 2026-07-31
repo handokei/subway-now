@@ -35,6 +35,17 @@ export interface BuildTripContextArgs {
    * null/undefined 또는 direct 타입이면 `nextTransferName` undefined.
    */
   route?: Route | null;
+  /**
+   * #1963 — destination null일 때 undefined 대신 `tripActive: false` stamp를 반환할지 여부.
+   *
+   * default false — 기존 4 호출자(useWidgetMirror / AppState force / backgroundLocationTask /
+   * notificationRouter)는 destination null 시 undefined를 그대로 5th arg에 forward하는 계약을
+   * 유지해야 하므로 옵트인 없이는 동작 변경이 없다.
+   *
+   * true면 silent push 채널(`updateWidgetFromSilentPush`)처럼 destination 없이도 위젯이
+   * nearest-station 모드로 fallback할 수 있도록 명시적 비활성 stamp를 반환한다.
+   */
+  allowInactive?: boolean;
 }
 
 /**
@@ -51,8 +62,16 @@ function extractNextTransferName(route: Route | null | undefined): string | unde
 export function buildWidgetTripContext(
   args: BuildTripContextArgs,
 ): WidgetTripContext | undefined {
-  const { destination, currentStation, route } = args;
-  if (!destination || !currentStation) return undefined;
+  const { destination, currentStation, route, allowInactive = false } = args;
+  if (!currentStation) return undefined;
+  if (!destination) {
+    if (!allowInactive) return undefined;
+    return {
+      currentStationName: currentStation.name,
+      destinationName: '',
+      tripActive: false,
+    };
+  }
   return {
     currentStationName: currentStation.name,
     destinationName: destination.name,
