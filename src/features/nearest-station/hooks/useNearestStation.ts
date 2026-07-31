@@ -683,6 +683,20 @@ export function useNearestStation(
   // (기존부터 hysteresis 없이 즉시 OR 입력).
   // 재시작 skip 가드(next === throttledRef.current)는 #2080에서 도입된 churn 방지 로직을 그대로
   // 재사용 — 동일 프로파일로 판정되면 stopWatch/startWatch를 호출하지 않는다.
+  //
+  // #2100 스펙 이탈 명시 — 이슈는 지상 복귀 트리거 3종(barometer surface 판정 / environment 전환 /
+  // 게이트 통과 fix 재등장)을 명시했으나, 이 훅은 inferEnvironment.ts의 Environment 라벨을 입력으로
+  // 받지 않는다(useFusedNearestStation이 gps.gpsQualityDegraded를 inferEnvironment에 넘겨 라벨을
+  // 산출하는 순서라 여기서 라벨을 역참조하면 순환 의존이 생긴다 — 이슈가 명시적으로 inferEnvironment.ts
+  // 접촉을 금지한 이유이기도 하다). 따라서 "environment 전환" 트리거는 이 훅이 이미 들고 있는 두
+  // 로컬 proxy로 대체했다: barometerSubsurface(명시 지상 판정)와 profileWatchDegraded(게이트 통과
+  // fix 재등장, eager). inferEnvironment의 라벨 산출 자체가 이 두 신호(+ SSOT)로 구성되므로 실질적
+  // 커버리지 손실은 없다고 판단했다.
+  // 잔여 케이스: barometer가 warmup/미지원(subsurface===undefined)이고 SSOT도 무판정인 채로
+  // backend position-SSOT만으로 지상 복귀가 먼저 확정되는 경우, 이 훅은 그 사실을 알 방법이 없어
+  // watch 프로파일이 즉시 반응하지 않는다 — 다만 이 경로도 지상에 실제로 진입하면 곧 High-등급
+  // GPS fix가 표시 게이트(250m)를 통과하게 되므로, profileWatchDegraded의 게이트 통과 fix
+  // eager-release로 짧은 지연 후 self-heal된다(별도 트리거 불필요).
   useEffect(() => {
     const next = inputs.barometerSubsurface === true || profileWatchDegraded;
     if (next === throttledRef.current) return;

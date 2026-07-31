@@ -1822,7 +1822,8 @@ describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독�
     });
 
     // 게이트 통과 fix 1회만으로 watch 프로파일은 즉시 원복된다(공개 gpsQualityDegraded는 아직
-    // hysteresis 미충족이라 true로 남을 수 있음 — 별개 신호, 아래 별도 describe에서 검증).
+    // hysteresis 미충족이라 true로 남을 수 있음 — 별개 신호. 이 divergence(profile=High +
+    // gpsQualityDegraded=true 동시 상태)는 아래 '#2100 divergence' 테스트에서 직접 assert한다).
     simulateGps(37.498, 127.0277, { accuracy: 50 });
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(3));
@@ -1831,6 +1832,39 @@ describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독�
       distanceInterval: 0,
       timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
     });
+  });
+
+  // #2100 divergence — watch 프로파일(eager 1회 release)과 공개 gpsQualityDegraded(hysteresis
+  // 2연속 release)는 서로 다른 신호라 일시적으로 어긋날 수 있다: 게이트 통과 fix 1회만 들어온
+  // 시점에는 watch가 이미 High로 선원복됐지만 gpsQualityDegraded는 아직 true(hysteresis 미충족)로
+  // 남는다. inferEnvironment 등 gpsQualityDegraded 소비자가 이 시점에도 여전히 "품질 저하"로
+  // 판정하는 것은 의도된 동작(품질 게이트/fusion 로직 불변 — #2100 "하지 말 것") — 두 신호가 같은
+  // fix 이벤트에서 동시에 diverge할 수 있음을 회귀 방지용으로 고정한다.
+  it('divergence: 게이트 통과 fix 1회 후 watch profile=High 이면서 공개 gpsQualityDegraded=true를 동시에 유지한다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    simulateGps(37.4979, 127.0276, { accuracy: 50 });
+    // 연속 통과 카운터를 0으로 리셋(이후 hysteresis 카운트를 1부터 검증하기 위해 — 다른 #2076
+    // 테스트와 동일 패턴).
+    simulateGps(37.51, 127.05, { accuracy: 300 });
+    act(() => {
+      jest.advanceTimersByTime(40_000);
+    });
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(result.current.gpsQualityDegraded).toBe(true);
+
+    // 게이트 통과 fix 1회 — watch profile은 즉시 High로 원복되지만, gpsQualityDegraded는
+    // hysteresis(연속 2회) 미충족이라 여전히 true.
+    simulateGps(37.498, 127.0277, { accuracy: 50 });
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(3));
+    expect(lastWatchOptionsAt()).toEqual({
+      accuracy: Location.Accuracy.High,
+      distanceInterval: 0,
+      timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+    });
+    expect(result.current.gpsQualityDegraded).toBe(true);
   });
 
   it('barometerSubsurface=true가 이미 활성이면 gpsQualityDegraded 변화만으로는 재시작하지 않는다 (이미 지하 프로파일)', async () => {
