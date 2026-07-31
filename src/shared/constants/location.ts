@@ -45,6 +45,9 @@ export const FG_WATCH_SURFACE_TIME_INTERVAL_MS = 2_000;
 //  별도 차단) — 표시 전용. 위치 지능은 WiFi SSID/기압계/backend dead-reckoning이 담당하므로
 //  FG watch는 12s로 늦춰 배터리를 아낀다. WiFi 역 DB가 ~19개 역만 커버해 표시 공백을 피하려고
 //  완전 정지가 아닌 보수적 throttle을 택했다. High→Balanced로 고정밀 측위 시도도 줄인다.
+//  #1983~#2100 히스토리: 한때 accuracy를 High로 통일(#1983, 지하 fix 정확도 확보 목적)했으나
+//  #2074 품질 게이트가 지하 fix를 전량 폐기하는 게 확인돼(#2100) Balanced로 재전환 — 상세 근거는
+//  useNearestStation.ts의 FG_WATCH_OPTIONS_SUBSURFACE 주석 참고.
 export const FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS = 12_000;
 
 // iOS CoreLocation은 속도를 측정할 수 없을 때 음수(보통 -1)를 반환한다.
