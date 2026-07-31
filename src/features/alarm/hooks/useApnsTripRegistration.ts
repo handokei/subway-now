@@ -26,7 +26,7 @@ import { routeSignature, getStationById } from '../../../shared/utils/stationRou
 import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
-import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
+import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip } from '../utils/alarmLog';
 import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils/boardingPromptContext';
@@ -394,12 +394,12 @@ export function useApnsTripRegistration({
         return;
       }
 
-      // #1264 (N3) + #1704 (d) — routeSig / destination.id / boardingLockSig 어느 하나라도
-      // 전환되면 사전 예약된 `tba:` 알람 cancel. backend 정정 silent push가 stale identifier에
-      // 매칭 실패하는 회귀 차단 + 같은 routeSig에서 destination/lock만 바뀐 cross-trip 잔재
-      // (2026-06-23 trip evidence: 14:18 2차 trip 등록 직후 1차 trip 공덕/군자 stale fire) 차단.
+      // #1264 (N3) + #1704 (d) → #2089 — routeSig / destination.id / boardingLockSig 어느
+      // 하나라도 전환되면 이전 trip의 안전망(safetyNetScheduler) 알람 cancel. backend 정정
+      // silent push가 stale identifier에 매칭 실패하는 회귀 차단 + 같은 routeSig에서
+      // destination/lock만 바뀐 cross-trip 잔재(2026-06-23 trip evidence) 차단.
       // 첫 register(이전 값 모두 null)에는 호출 X — 신규 trip은 cancel할 대상 없음.
-      // cancel 실패해도 후속 register는 진행 (graceful) — runTripBoundCleanups + useTripBoundAlarmScheduler
+      // cancel 실패해도 후속 register는 진행 (graceful) — runTripBoundCleanups + useSafetyNetScheduler
       // 가 별경로로 동일 cleanup을 시도하므로 본 호출은 belt-and-suspenders.
       const hasPrevTrip =
         lastRouteSigRef.current !== null ||
@@ -412,9 +412,12 @@ export function useApnsTripRegistration({
           lastBoardingLockSigRef.current !== boardingLockSig);
       if (tripSwitched) {
         try {
-          await cancelTripBoundAlarms();
+          const prevActiveTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+          if (prevActiveTripToken) {
+            await cancelAllSafetyNetAlarms(prevActiveTripToken);
+          }
         } catch (e) {
-          logger.warn('cancelTripBoundAlarms (trip switch) 실패:', e);
+          logger.warn('cancelAllSafetyNetAlarms (trip switch) 실패:', e);
         }
         if (cancelled) return;
       }

@@ -21,7 +21,6 @@ import { isDebugModalEnabled } from '../src/shared/constants/debugFlags';
 import '../src/features/nearest-station/tasks/backgroundLocationTask';
 import { registerSilentPushTask } from '../src/features/alarm/tasks/silentPushTask';
 import { registerScheduledAlarmListener } from '../src/features/alarm/utils/scheduledAlarmReceiver';
-import { cancelScheduledAlarms } from '../src/features/alarm/utils/alarmScheduler';
 import { unregisterAlarmRefreshTask } from '../src/features/alarm/tasks/alarmRefreshTask';
 import { stopVibration } from '../src/features/alarm/utils/alarmSound';
 import {
@@ -78,15 +77,11 @@ setupTripEndedCategory().catch((e) =>
 );
 // 사전 예약 alarm receiver는 잔존 예약 발사 시 FIRED_ALARMS 갱신만 담당.
 registerScheduledAlarmListener();
-// 부팅 시 1회 마이그레이션 — #478 PR 1-2 사전예약 폐기 시점:
-//   1) cancelScheduledAlarms: 이미 OS에 등록된 사전예약 DATE 트리거 해제
-//   2) unregisterAlarmRefreshTask: BGAppRefreshTask가 OS native level에 잔존해
-//      15분 주기로 scheduleAlarmsForRoute를 재호출하면 cleanup이 무력화됨.
-//      코드 import 여부와 무관하게 명시적으로 OS에서 unregister.
-// 두 호출 모두 stopgap 완전 제거(#411) 머지 시점에 같이 정리한다.
-cancelScheduledAlarms().catch((e) =>
-  layoutLogger.warn('잔존 사전예약 정리 실패(#478 마이그레이션):', e),
-);
+// 부팅 시 1회 마이그레이션 — #478 PR 1-2 사전예약 폐기 시점의 잔존 정리.
+// unregisterAlarmRefreshTask: BGAppRefreshTask가 OS native level에 잔존해 구 스케줄러를
+// 재호출하면 cleanup이 무력화됨 — 코드 import 여부와 무관하게 명시적으로 OS에서 unregister.
+// #2089 — cancelScheduledAlarms(구 alarm: prefix 정리) 호출은 alarmScheduler.ts 제거와 함께
+// 삭제(3종 스케줄러 통합, 이슈 코멘트 2026-07-31 매트릭스).
 unregisterAlarmRefreshTask().catch((e) =>
   layoutLogger.warn('잔존 alarmRefreshTask 정리 실패(#478 마이그레이션):', e),
 );

@@ -59,9 +59,7 @@ import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide'
 import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushHealthCheck';
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
-import { useBoardingLockScheduler } from '../features/alarm/hooks/useBoardingLockScheduler';
-import { useTripBoundAlarmScheduler } from '../features/alarm/hooks/useTripBoundAlarmScheduler';
-import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
+import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetScheduler';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useDeviceSelfEnd } from '../features/alarm/hooks/useDeviceSelfEnd';
@@ -698,26 +696,12 @@ export default function HomeScreen() {
     // #1363 — 사용자 추정 현재역 이름. backend 진단 log에서 trip waypoint와 명시 구분.
     currentStationName: result?.station.name ?? null,
   });
-  useBoardingLockScheduler({
-    lock: boardingLock,
+  // #2089 — OS 예약 스케줄러 3종(alarmScheduler/tripBoundScheduler/boardingLockScheduler)
+  // 통합 후속. sleepMode ON인 trip에 한해 backend-outage 안전망 알람을 등록한다(취침모드
+  // 한정 백업 — 일반 모드는 원격 visible push가 주 채널).
+  useSafetyNetScheduler({
     route,
     destinationName: destination?.name ?? null,
-  });
-  // #918 (A3 후속 wire) — boarding lock + route + destination이 모두 갖춰지면 OS local notification에
-  // 사전 예약. 네트워크 0 환경에서 silent push가 못 가는 trip의 fallback alarm 경로. `bl:` prefix와
-  // 분리된 `tba:` prefix를 사용해 lock-scheduler 큐와 충돌 없이 공존한다.
-  useTripBoundAlarmScheduler({
-    lock: boardingLock,
-    route,
-    destinationName: destination?.name ?? null,
-    // #918 A3 PR3 — Fusion 현재역 통과 시 rolling window top-up trigger (64 cap 회피).
-    currentStationName: result?.station.name ?? null,
-  });
-  useBoardingLockAdvancer({
-    lock: boardingLock,
-    route,
-    destinationName: destination?.name ?? null,
-    currentStationName: result?.station.name ?? null,
   });
   // #759 — 목적지역 도착 grace 후 lock 자동 release. 명시 "하차" 버튼은 그대로 유지하며,
   // 사용자가 누르지 않은 정상 도착 케이스만 처리. sleep mode와 무관.
