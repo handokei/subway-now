@@ -1,6 +1,11 @@
 import type { LineNumber } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
-import { getFirstLeg, getStationsOnLine, getStationById } from '../../../shared/utils/stationRoute';
+import {
+  getFirstLeg,
+  getStationsOnLine,
+  getStationById,
+  findStationByNameAndLine,
+} from '../../../shared/utils/stationRoute';
 import { isClosedLoopMainStation, shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 
 export type TripDirection = 'up' | 'down';
@@ -21,10 +26,10 @@ export type TripDirection = 'up' | 'down';
  *
  * #1965 — multi-transfer route가 같은 line을 두 번 이상 지나면(예: 2호선 → 4호선 → 2호선
  * → 7호선) 단순 "첫 매칭 leg" 채택은 실제로 나중 leg에 있는 사용자를 첫 leg로 오판한다.
- * bounded leg(양 끝 경계가 모두 알려진 i>=1)는 진입/이탈 boundary 사이에 currentStationId가
- * 실제로 있는지(arc 범위) 검증해 뒤(나중 leg)에서부터 먼저 매칭을 시도한다. i=0은 시작
- * 경계(trip origin)를 알 수 없어 arc 검증이 불가능하므로 bounded leg 중 매칭이 없을 때만
- * 마지막 fallback으로 채택한다.
+ * bounded leg(양 끝 경계가 모두 알려진, 최종 leg 포함 i>=1)는 진입/이탈 boundary 사이에
+ * currentStationId가 실제로 있는지(arc 범위) 검증해 뒤(나중 leg. 최종 leg가 가장 나중)에서부터
+ * 먼저 매칭을 시도한다. i=0(첫 leg)만 시작 경계(trip origin)를 알 수 없어 arc 검증이 불가능하므로
+ * bounded leg 전부(최종 leg 포함) 매칭이 없을 때만 마지막 fallback으로 채택한다.
  */
 function isStationInLegArc(
   line: LineNumber,
@@ -34,12 +39,22 @@ function isStationInLegArc(
 ): boolean {
   const lineStations = getStationsOnLine(line);
   const currIdx = lineStations.findIndex((s) => s.id === currentStationId);
-  const entryIdx = lineStations.findIndex((s) => s.name === entryBoundaryName);
-  const exitIdx = lineStations.findIndex((s) => s.name === exitBoundaryName);
-  if (currIdx < 0 || entryIdx < 0 || exitIdx < 0) return false;
-  const lo = Math.min(entryIdx, exitIdx);
-  const hi = Math.max(entryIdx, exitIdx);
-  return currIdx >= lo && currIdx <= hi;
+  // #1965 P3-1 — 정확 일치 대신 findStationByNameAndLine(정규화 fallback 내장)로 조회해
+  // stations.json BLDN_NM drift(#1410)를 흡수한다.
+  const entryStation = findStationByNameAndLine(entryBoundaryName, line);
+  const exitStation = findStationByNameAndLine(exitBoundaryName, line);
+  if (currIdx < 0 || !entryStation || !exitStation) return false;
+  const entryIdx = lineStations.findIndex((s) => s.id === entryStation.id);
+  const exitIdx = lineStations.findIndex((s) => s.id === exitStation.id);
+  /* istanbul ignore next -- findStationByNameAndLine과 getStationsOnLine은 같은
+     getLineStationsCached(line) 캐시를 공유하므로 entryStation/exitStation이 발견되면
+     lineStations 안에 항상 존재한다는 invariant (lineLoopPath.ts:65-66과 동일 패턴). */
+  if (entryIdx < 0 || exitIdx < 0) return false;
+  // #1965 P2-2 — naive min/max index 비교는 2호선 본선 closed loop seam(시청↔충정로)에서
+  // wraparound 실구간을 놓친다. resolveTripDirection과 동일하게 shortestLinePathIndices로
+  // wrap-aware 경로를 산출해 그 path 위에 currIdx가 있는지 검증한다.
+  const path = shortestLinePathIndices(lineStations, entryIdx, exitIdx, line);
+  return path.includes(currIdx);
 }
 
 function pickLegForCurrentLine(
@@ -57,8 +72,19 @@ function pickLegForCurrentLine(
     }
     return { line: route.fromLine, endName: route.transferName };
   }
-  // multi-transfer — bounded leg(i>=1)를 뒤에서부터 먼저 arc 검증.
+  // multi-transfer — bounded leg(최종 leg 포함, i>=1)를 뒤에서부터 먼저 arc 검증.
   const { transfers } = route;
+  const last = transfers[transfers.length - 1];
+
+  // #1965 P2-1 — 최종 leg(진입=last.transferName, 이탈=destinationName)도 양 끝 boundary가
+  // 모두 알려진 bounded leg다. 가장 나중 leg이므로 다른 bounded leg보다 먼저 arc 검증한다.
+  if (
+    currentLine === last.toLine &&
+    isStationInLegArc(last.toLine, currentStationId, last.transferName, destinationName)
+  ) {
+    return { line: last.toLine, endName: destinationName };
+  }
+
   for (let i = transfers.length - 1; i >= 1; i--) {
     if (currentLine !== transfers[i].fromLine) continue;
     const entryBoundaryName = transfers[i - 1].transferName;
@@ -71,7 +97,7 @@ function pickLegForCurrentLine(
   if (currentLine === transfers[0].fromLine) {
     return { line: transfers[0].fromLine, endName: transfers[0].transferName };
   }
-  const last = transfers[transfers.length - 1];
+  // 최종 leg — arc 데이터 조회 실패(boundary 역명 미존재 등) 방어용 unbounded fallback.
   if (currentLine === last.toLine) {
     return { line: last.toLine, endName: destinationName };
   }
