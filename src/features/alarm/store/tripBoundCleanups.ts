@@ -252,6 +252,12 @@ export function runTripBoundCleanups(): Promise<void> {
  * 읽어야 해 storage 정리는 그 뒤에 와야 함), 본 helper는 storage를 건드리지 않는다.
  *
  * 멱등 — runTripBoundCleanups가 후속에서 동일 OS API를 다시 호출해도 이미 비어 있어 안전.
+ *
+ * 호출자(silentPushTask trip-ended 분기)가 이 결과를 await한 뒤 triggerTripEndRecall/
+ * runTripBoundCleanups를 이어 호출하므로, OS reject(예: getAllScheduledNotificationsAsync
+ * throw)가 그대로 전파되면 뒤따르는 cleanup 체인 전체가 중단된다. #918 A3 통합 이전에는
+ * 두 채널을 Promise.allSettled로 묶어 이 전파를 흡수했으나, 단일 채널이 된 뒤에도 동일
+ * 보장을 유지하기 위해 여기서 명시적으로 흡수한다.
  */
 export function cancelTripBoundOsQueue(): Promise<void> {
   return AsyncStorage.getItem(ACTIVE_TRIP_KEY)
@@ -259,7 +265,9 @@ export function cancelTripBoundOsQueue(): Promise<void> {
     .then((tripToken) => {
       scheduleDefensiveCancel(tripToken);
       if (!tripToken) return undefined;
-      return cancelAllSafetyNetAlarms(tripToken);
+      return cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
+        log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
+      });
     });
 }
 
