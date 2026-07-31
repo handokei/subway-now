@@ -1993,6 +1993,32 @@ describe('silentPushTask', () => {
           expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
         });
 
+        // #2112 — parseRoute/parseDestinationName의 JSON.parse catch 분기 결정 커버.
+        it('route가 invalid JSON이면 호출 skip (parse catch)', async () => {
+          setStorage();
+          // setStorage는 값을 JSON.stringify로 감싸므로 invalid raw는 직접 override.
+          const base = (AsyncStorage.getItem as jest.Mock).getMockImplementation()!;
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) =>
+            key === ROUTE_KEY ? 'not-json{{' : base(key),
+          );
+          await handleSilentPush(
+            reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
+          );
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
+        });
+
+        it('destination이 invalid JSON이면 호출 skip (parse catch)', async () => {
+          setStorage();
+          const base = (AsyncStorage.getItem as jest.Mock).getMockImplementation()!;
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) =>
+            key === DESTINATION_KEY ? 'not-json{{' : base(key),
+          );
+          await handleSilentPush(
+            reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
+          );
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
+        });
+
         it('tripToken 없으면 호출 skip', async () => {
           setStorage({ tripToken: null });
           await handleSilentPush(

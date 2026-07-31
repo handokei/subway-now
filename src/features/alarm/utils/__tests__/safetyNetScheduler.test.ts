@@ -533,6 +533,22 @@ describe('rescheduleSafetyNetAlarm', () => {
     expect(scheduledFireMs()).toEqual([newArrival - expectedLead + SAFETY_NET_BUFFER_MS]);
   });
 
+  // #2112 P1-1 — 기존 armed 예약이 전혀 없으면(cancel-only 가드) 신규 예약을 만들지 않는다.
+  it('기존 armed 예약이 없으면 cancel-only no-op (신규 스케줄 금지)', async () => {
+    mockedGetAll.mockResolvedValueOnce([]);
+    const result = await rescheduleSafetyNetAlarm({
+      tripToken: TRIP_TOKEN,
+      route,
+      destinationName: GANGNAM,
+      stationName: GANGNAM,
+      newArrivalMs: START_TIME + 700_000,
+      now: START_TIME,
+    });
+    expect(result).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
   it('재예약 시각도 과거면 cancel만 하고 재스케줄 없음', async () => {
     // #2112 — cancel-only 가드(matches.length===0 조기 반환)가 fireMs 분기보다 앞에 있으므로,
     // "과거 시각" 분기(L473-477)에 결정적으로 도달하려면 매칭 예약을 seed해야 한다.
