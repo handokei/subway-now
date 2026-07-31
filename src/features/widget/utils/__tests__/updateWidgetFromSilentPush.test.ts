@@ -146,11 +146,11 @@ describe('updateWidgetFromSilentPush', () => {
       );
     });
 
-    it('direct route + destination → nextTransferName 미포함 (직통)', async () => {
+    it('direct route + destination → nextTransferName undefined (직통)', async () => {
       await updateWidgetFromSilentPush(ssot, bgContext, destination, directRoute, 1);
       const call = mockSaveStationToWidget.mock.calls[0];
       const tripContext = call[4];
-      expect(tripContext).not.toHaveProperty('nextTransferName');
+      expect(tripContext.nextTransferName).toBeUndefined();
       expect(tripContext.tripActive).toBe(true);
     });
 
@@ -176,10 +176,10 @@ describe('updateWidgetFromSilentPush', () => {
       });
     });
 
-    it('route null + destination 있음 → nextTransferName 미포함', async () => {
+    it('route null + destination 있음 → nextTransferName undefined', async () => {
       await updateWidgetFromSilentPush(ssot, bgContext, destination, null, 1);
       const call = mockSaveStationToWidget.mock.calls[0];
-      expect(call[4]).not.toHaveProperty('nextTransferName');
+      expect(call[4].nextTransferName).toBeUndefined();
       expect(call[4].tripActive).toBe(true);
     });
   });
@@ -208,5 +208,59 @@ describe('updateWidgetFromSilentPush', () => {
       updateWidgetFromSilentPush(ssot, bgContext, destination, directRoute, 1),
     ).resolves.toBeUndefined();
     expect(mockSaveStationToWidget).not.toHaveBeenCalled();
+  });
+
+  describe('#1963 통합 전후 byte-level 동등성 (buildWidgetTripContext allowInactive 전환)', () => {
+    /**
+     * PR #1945 시점 인라인 `buildTripContext`가 실제로 산출하던 값을 golden fixture로 고정.
+     * `JSON.stringify` 비교로 undefined-키 생략 여부와 무관하게 wire 상 전달되는 payload가
+     * 통합 전후 byte-level 동일함을 증명한다 (diff 0).
+     */
+    const goldenByRoute: Array<[string, Route, Record<string, unknown>]> = [
+      [
+        'direct',
+        directRoute,
+        { currentStationName: '역삼', destinationName: '잠실', tripActive: true },
+      ],
+      [
+        'transfer',
+        transferRoute,
+        {
+          currentStationName: '역삼',
+          destinationName: '잠실',
+          nextTransferName: '건대입구',
+          tripActive: true,
+        },
+      ],
+      [
+        'multi-transfer',
+        multiTransferRoute,
+        {
+          currentStationName: '역삼',
+          destinationName: '잠실',
+          nextTransferName: '왕십리',
+          tripActive: true,
+        },
+      ],
+      [
+        'null route',
+        null,
+        { currentStationName: '역삼', destinationName: '잠실', tripActive: true },
+      ],
+    ];
+
+    it.each(goldenByRoute)('%s route → JSON.stringify diff 0', async (_label, route, golden) => {
+      await updateWidgetFromSilentPush(ssot, bgContext, destination, route, 1);
+      const tripContext = mockSaveStationToWidget.mock.calls[0][4];
+      expect(JSON.stringify(tripContext)).toBe(JSON.stringify(golden));
+    });
+
+    it('destination null (비활성) → JSON.stringify diff 0', async () => {
+      await updateWidgetFromSilentPush(ssot, bgContext, null, directRoute, 1);
+      const tripContext = mockSaveStationToWidget.mock.calls[0][4];
+      expect(JSON.stringify(tripContext)).toBe(
+        JSON.stringify({ currentStationName: '역삼', destinationName: '', tripActive: false }),
+      );
+    });
   });
 });

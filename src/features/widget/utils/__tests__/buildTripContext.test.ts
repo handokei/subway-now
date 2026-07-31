@@ -36,6 +36,45 @@ describe('buildWidgetTripContext (#1929 RC-15 widget tripContext wire helper)', 
     });
   });
 
+  describe('#1963 allowInactive 옵션 — silent push 채널 통합', () => {
+    it('allowInactive: true + destination null → tripActive: false stamp 반환', () => {
+      const result = buildWidgetTripContext({
+        destination: null,
+        currentStation: MOCK_STATIONS.gangnam,
+        allowInactive: true,
+      });
+      expect(result).toEqual({
+        currentStationName: '강남',
+        destinationName: '',
+        tripActive: false,
+      });
+    });
+
+    it('allowInactive: true + currentStation null → undefined 반환 (안전 가드 유지)', () => {
+      expect(
+        buildWidgetTripContext({
+          destination: null,
+          currentStation: null,
+          allowInactive: true,
+        }),
+      ).toBeUndefined();
+    });
+
+    it('allowInactive: true + destination 존재 → 기존 활성 분기와 동일 (영향 없음)', () => {
+      const result = buildWidgetTripContext({
+        destination: MOCK_STATIONS.chungmuro,
+        currentStation: MOCK_STATIONS.gangnam,
+        allowInactive: true,
+      });
+      expect(result).toEqual({
+        currentStationName: '강남',
+        destinationName: '충무로',
+        nextTransferName: undefined,
+        tripActive: true,
+      });
+    });
+  });
+
   describe('활성 분기 — trip 활성 + tripActive: true stamp', () => {
     it('route undefined: nextTransferName undefined로 stamp', () => {
       const result = buildWidgetTripContext({
