@@ -197,6 +197,9 @@ export type AlarmLogReason =
   //     (구 'revalidate-route-sig-mismatch'의 대체 — route-sig staleness 하드닝은 폐기되고
   //     tripToken 직접 비교로 대체됨. 2026-07-31 매트릭스 "route-sig staleness: trip 재등록 시
   //     재예약으로 대체 가능").
+  //   'revalidate-route-missing' (#2089 리뷰 P3(2)): route/destination storage 파싱 실패
+  //     (trip-token-mismatch와 원인이 다름 — trip 자체는 맞는데 route 정보가 없는 케이스라
+  //     별도 라벨로 분리해 진단 가능성 확보).
   //   'revalidate-waypoint-mismatch': 파싱된 stationName이 현재 route waypoint에 없음.
   //   'revalidate-position-mismatch' (#1704): fire 대상 stationName이 사용자 currentStation보다
   //     N hop(POSITION_MISMATCH_HOP_THRESHOLD=5) 이상 미래라 fire 시점이 도래하지 않은 잔여 발화.
@@ -206,6 +209,7 @@ export type AlarmLogReason =
   //     도달 시 그냥 fire. backend SSoT mirror + sticky station fallback으로 위치 결정.
   | 'revalidate-no-trip'
   | 'revalidate-trip-token-mismatch'
+  | 'revalidate-route-missing'
   | 'revalidate-waypoint-mismatch'
   | 'revalidate-position-mismatch'
   // #1167 — boardingPrompt [탑승] 응답 → arvlCd 우선순위 autoLock 결과.
@@ -1668,6 +1672,9 @@ export function logSuppressedSafetyNetRevalidation(input: {
   reason:
     | 'revalidate-no-trip'
     | 'revalidate-trip-token-mismatch'
+    // #2089 리뷰 P3(2) — route/destination storage 파싱 실패는 trip-token-mismatch와 원인이
+    // 달라 분리(진단 시 "다른 trip 잔여 발화" vs "route 정보 없음"을 구분 가능해야 한다).
+    | 'revalidate-route-missing'
     | 'revalidate-waypoint-mismatch'
     | 'revalidate-position-mismatch';
   stationName: string;

@@ -9,6 +9,8 @@ import {
   cancelSafetyNetByStationKind,
   rescheduleSafetyNetAlarm,
   readSafetyNetData,
+  deviceLocalTripId,
+  resolveEffectiveTripToken,
 } from '../safetyNetScheduler';
 import { makeDirectRoute, makeTransferRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
@@ -531,8 +533,34 @@ describe('rescheduleSafetyNetAlarm', () => {
     expect(scheduledFireMs()).toEqual([newArrival - expectedLead + SAFETY_NET_BUFFER_MS]);
   });
 
-  it('재예약 시각도 과거면 cancel만 하고 재스케줄 없음', async () => {
+  // #2112 P1-1 — 기존 armed 예약이 전혀 없으면(cancel-only 가드) 신규 예약을 만들지 않는다.
+  it('기존 armed 예약이 없으면 cancel-only no-op (신규 스케줄 금지)', async () => {
     mockedGetAll.mockResolvedValueOnce([]);
+    const result = await rescheduleSafetyNetAlarm({
+      tripToken: TRIP_TOKEN,
+      route,
+      destinationName: GANGNAM,
+      stationName: GANGNAM,
+      newArrivalMs: START_TIME + 700_000,
+      now: START_TIME,
+    });
+    expect(result).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('재예약 시각도 과거면 cancel만 하고 재스케줄 없음', async () => {
+    // #2112 — cancel-only 가드(matches.length===0 조기 반환)가 fireMs 분기보다 앞에 있으므로,
+    // "과거 시각" 분기(L473-477)에 결정적으로 도달하려면 매칭 예약을 seed해야 한다.
+    mockedGetAll.mockResolvedValueOnce([
+      makeReq(`${SAFETY_NET_ALARM_PREFIX}${TRIP_TOKEN}-${GANGNAM}-destination`, {
+        channel: 'safety-net',
+        station: GANGNAM,
+        tripToken: TRIP_TOKEN,
+        kind: 'destination',
+        occurrenceIdx: 0,
+      }),
+    ]);
     // makeDirectRoute 픽스처는 legMs=stops*120_000이라 earlyLead가 항상 120_000(<버퍼 180_000)로
     // 고정돼 fireMs가 항상 newArrivalMs보다 미래 — "재예약 시각도 과거" 분기가 구조적으로 불가능.
     // earlyLead(=legMs/stops)가 버퍼보다 큰 route를 직접 구성해 fireMs < newArrivalMs를 만든다.
@@ -556,6 +584,17 @@ describe('rescheduleSafetyNetAlarm', () => {
 
   it('now 미지정 시 Date.now() 사용', async () => {
     const spy = jest.spyOn(Date, 'now').mockReturnValue(START_TIME);
+    // #2089 리뷰 P1-1 — reschedule은 기존 armed 예약이 있어야만 재예약(cancel-only 정책).
+    // Date.now() 기본값 검증이 목적이므로 매칭 예약 1건을 seed한다.
+    mockedGetAll.mockResolvedValueOnce([
+      makeReq(`${SAFETY_NET_ALARM_PREFIX}${TRIP_TOKEN}-${GANGNAM}-destination`, {
+        channel: 'safety-net',
+        station: GANGNAM,
+        tripToken: TRIP_TOKEN,
+        kind: 'destination',
+        occurrenceIdx: 0,
+      }),
+    ]);
     const result = await rescheduleSafetyNetAlarm({
       tripToken: TRIP_TOKEN,
       route,
@@ -595,5 +634,26 @@ describe('rescheduleSafetyNetAlarm', () => {
     });
     expect(result.cancelled).toBe(1);
     expect(scheduledIdentifiers()).toEqual([`alarm-${TRIP_TOKEN}-${GANGNAM}-transfer#1`]);
+  });
+});
+
+// #2112 P1-2 — device-local arming id의 결정성 + effective token 우선순위 3분기.
+// (환경 의존 없이 순수 함수로 직접 커버 — CI/로컬 커버리지 드리프트 방지)
+describe('deviceLocalTripId / resolveEffectiveTripToken (#2112 P1-2)', () => {
+  it('deviceLocalTripId는 tripStart 기반 결정적 id를 생성한다', () => {
+    expect(deviceLocalTripId(1_000_000)).toBe('local-1000000');
+    expect(deviceLocalTripId(1_000_000)).toBe(deviceLocalTripId(1_000_000));
+  });
+
+  it('backend token이 있으면 그대로 사용한다', () => {
+    expect(resolveEffectiveTripToken('BACKEND-TOK', 1_000_000)).toBe('BACKEND-TOK');
+  });
+
+  it('backend token이 없고 tripStart가 있으면 device-local id로 fallback', () => {
+    expect(resolveEffectiveTripToken(null, 1_000_000)).toBe('local-1000000');
+  });
+
+  it('둘 다 없으면 null (trip 미시작)', () => {
+    expect(resolveEffectiveTripToken(null, null)).toBeNull();
   });
 });

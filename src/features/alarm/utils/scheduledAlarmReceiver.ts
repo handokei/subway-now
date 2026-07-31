@@ -243,7 +243,10 @@ async function revalidateSafetyNetAlarm(
   const route: Route = safeParseRoute(routeRaw);
   const destMeta = parseDestinationMeta(destRaw);
   if (!route || !destMeta.name) {
-    return suppress('revalidate-trip-token-mismatch');
+    // #2089 리뷰 P3(2) — trip-token-mismatch(다른 trip)와 원인이 다른 실패이므로 별도 라벨로
+    // 분리. route/destination storage가 파싱되지 않는 경우(예: trip 종료 직후 storage 정리
+    // race)는 "trip 자체는 맞는데 route 정보가 없음"이라 diagnosability를 위해 구분한다.
+    return suppress('revalidate-route-missing');
   }
 
   // 방어 검증: parsed station+kind가 현재 waypoint 시퀀스에 존재해야 한다.
@@ -387,6 +390,33 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
   if (lastStationName) await setLastFiredAlarmStationName(lastStationName);
 }
 
+/**
+ * #2089 리뷰 P3(1) — 구 3종 스케줄러(alarmScheduler `alarm:` / boardingLockScheduler `bl:` /
+ * tripBoundScheduler `tba:`, 모두 콜론 구분)가 남긴 pending OS 예약을 부팅 시 1회 cancel한다.
+ *
+ * 신 safetyNetScheduler는 `alarm-`(대시) prefix라 콜론 prefix와 절대 충돌하지 않는다 — 구버전
+ * 앱이 예약해 둔 뒤 이 PR로 업그레이드한 사용자의 OS 큐에는 신 코드가 존재를 모르는 채로
+ * 예정 시각에 발사되는 "zombie" 알림이 남을 수 있다. `registerScheduledAlarmListener`가
+ * 앱 부팅 시 1회만 호출되므로(app/_layout.tsx 모듈 최상단) 본 sweep도 자연히 부팅당 1회.
+ */
+const LEGACY_ALARM_PREFIXES = ['alarm:', 'bl:', 'tba:'];
+
+async function sweepLegacyScheduledAlarms(): Promise<void> {
+  try {
+    const all = await Notifications.getAllScheduledNotificationsAsync();
+    const legacy = all.filter((req) =>
+      LEGACY_ALARM_PREFIXES.some((prefix) => req.identifier.startsWith(prefix)),
+    );
+    if (legacy.length === 0) return;
+    await Promise.allSettled(
+      legacy.map((req) => Notifications.cancelScheduledNotificationAsync(req.identifier)),
+    );
+    logger.info(`legacy scheduled alarm sweep: cancelled ${legacy.length}`);
+  } catch (e) {
+    logger.error('legacy scheduled alarm sweep 실패:', e);
+  }
+}
+
 export interface ScheduledAlarmListenerHandle {
   remove: () => void;
 }
@@ -416,6 +446,9 @@ export function awaitInitialScheduledAlarmDrain(): Promise<void> {
 export function registerScheduledAlarmListener(): ScheduledAlarmListenerHandle {
   if (registered) return registered;
 
+  // #2089 리뷰 P3(1) — legacy sweep은 drain과 독립적이라 병렬 실행. drain 완료 대기(hydration
+  // 게이트)는 그대로 유지 — sweep 실패는 흡수되므로 대기 시간에 영향 없음.
+  void sweepLegacyScheduledAlarms();
   initialDrainPromise = drainDeliveredScheduledAlarms();
 
   const notifSub = Notifications.addNotificationReceivedListener((notification) => {

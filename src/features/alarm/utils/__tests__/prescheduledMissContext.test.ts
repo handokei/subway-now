@@ -342,11 +342,11 @@ describe('collectMissContext', () => {
 
   it('ledger에서 actualFireMs 미기록 identifier 수집 (윈도우 필터)', () => {
     const ledger: PrescheduledLedgerEntry[] = [
-      { identifier: 'tba:early:A', scheduledFireMs: 1_000 }, // miss, in window
-      { identifier: 'tba:early:B', scheduledFireMs: 2_000, actualFireMs: 2_010 }, // fired
-      { identifier: 'tba:imminent:A', scheduledFireMs: 3_000 }, // miss, in window
-      { identifier: 'tba:early:OUT', scheduledFireMs: 100 }, // out of window
-      { identifier: 'tba:early:OUT2', scheduledFireMs: 9_999 }, // out of window
+      { identifier: 'tba:early:A', scheduledFireMs: 1_000, stationName: 'A' }, // miss, in window
+      { identifier: 'tba:early:B', scheduledFireMs: 2_000, actualFireMs: 2_010, stationName: 'B' }, // fired
+      { identifier: 'tba:imminent:A', scheduledFireMs: 3_000, stationName: 'A' }, // miss, in window
+      { identifier: 'tba:early:OUT', scheduledFireMs: 100, stationName: 'OUT' }, // out of window
+      { identifier: 'tba:early:OUT2', scheduledFireMs: 9_999, stationName: 'OUT2' }, // out of window
     ];
     const out = collectMissContext({
       tripStart: 1_000,
@@ -360,7 +360,7 @@ describe('collectMissContext', () => {
 
   it('missed 0건이면 missedIdentifiers 자체를 생성하지 않음', () => {
     const ledger: PrescheduledLedgerEntry[] = [
-      { identifier: 'tba:early:A', scheduledFireMs: 1_000, actualFireMs: 1_010 },
+      { identifier: 'tba:early:A', scheduledFireMs: 1_000, actualFireMs: 1_010, stationName: 'A' },
     ];
     const out = collectMissContext({
       tripStart: 0,
