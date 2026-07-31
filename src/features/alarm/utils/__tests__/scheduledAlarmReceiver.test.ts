@@ -306,7 +306,7 @@ describe('reconcileScheduledAlarmDelivery', () => {
       );
     });
 
-    it('destination 파싱 실패 시에도 revalidate-trip-token-mismatch로 suppress', async () => {
+    it('destination 파싱 실패 시에도 revalidate-route-missing으로 suppress (#2089 P3)', async () => {
       setStorageMap({
         'subway-now:destination': '{not json',
         'subway-now:route': ROUTE_JSON,
@@ -316,11 +316,11 @@ describe('reconcileScheduledAlarmDelivery', () => {
       await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
 
       expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'revalidate-trip-token-mismatch' }),
+        expect.objectContaining({ reason: 'revalidate-route-missing' }),
       );
     });
 
-    it('route 파싱 실패 시에도 revalidate-trip-token-mismatch로 suppress', async () => {
+    it('route 파싱 실패 시에도 revalidate-route-missing으로 suppress (#2089 P3)', async () => {
       setStorageMap({
         'subway-now:destination': DEST_JSON,
         'subway-now:route': '{not json',
@@ -330,11 +330,11 @@ describe('reconcileScheduledAlarmDelivery', () => {
       await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
 
       expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'revalidate-trip-token-mismatch' }),
+        expect.objectContaining({ reason: 'revalidate-route-missing' }),
       );
     });
 
-    it('destination 자체가 없으면(raw null) revalidate-trip-token-mismatch로 suppress', async () => {
+    it('destination 자체가 없으면(raw null) revalidate-route-missing으로 suppress (#2089 P3)', async () => {
       setStorageMap({
         'subway-now:destination': null,
         'subway-now:route': ROUTE_JSON,
@@ -344,11 +344,11 @@ describe('reconcileScheduledAlarmDelivery', () => {
       await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
 
       expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'revalidate-trip-token-mismatch' }),
+        expect.objectContaining({ reason: 'revalidate-route-missing' }),
       );
     });
 
-    it('route 자체가 없으면(raw null) revalidate-trip-token-mismatch로 suppress', async () => {
+    it('route 자체가 없으면(raw null) revalidate-route-missing으로 suppress (#2089 P3)', async () => {
       setStorageMap({
         'subway-now:destination': DEST_JSON,
         'subway-now:route': null,
@@ -358,11 +358,11 @@ describe('reconcileScheduledAlarmDelivery', () => {
       await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
 
       expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'revalidate-trip-token-mismatch' }),
+        expect.objectContaining({ reason: 'revalidate-route-missing' }),
       );
     });
 
-    it('destination.name 필드만 없으면(id는 존재) revalidate-trip-token-mismatch로 suppress', async () => {
+    it('destination.name 필드만 없으면(id는 존재) revalidate-route-missing으로 suppress (#2089 P3)', async () => {
       setStorageMap({
         'subway-now:destination': JSON.stringify({ id: 'dest-1' }),
         'subway-now:route': ROUTE_JSON,
@@ -372,7 +372,7 @@ describe('reconcileScheduledAlarmDelivery', () => {
       await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
 
       expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'revalidate-trip-token-mismatch' }),
+        expect.objectContaining({ reason: 'revalidate-route-missing' }),
       );
     });
 

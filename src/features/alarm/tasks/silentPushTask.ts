@@ -52,7 +52,7 @@ import {
   logCompanionAlarmFired,
   type AlarmLogReason,
 } from '../utils/alarmLog';
-import { fireCompanionAlarm } from '../utils/alarmLocalAuthority';
+import { fireCompanionAlarm, readSleepMode } from '../utils/alarmLocalAuthority';
 import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import {
   setTripEndedSentinel,
@@ -1128,6 +1128,12 @@ async function refreshWidgetForPayload(payload: ExtractedPayload): Promise<void>
  * #2089 — 3종 채널(bl/tba) 통합 이후 단일 안전망 채널만 정정한다. lock 상태와 무관
  * (tripToken 기반 lockless) — 옛 `applyRescheduleBl`의 trainCode/lock 매칭은 더 이상 필요 없다.
  *
+ * **#2089 리뷰 P1-1** — safetyNetScheduler는 sleepMode ON인 trip에만 등록되므로(정책 gate는
+ * 본 함수 책임 — `useSafetyNetScheduler`와 동일 원칙), reschedule도 sleepMode ON일 때만
+ * 적용한다. sleepMode가 꺼져 있으면 애초에 안전망이 armed 상태가 아니므로 적용 자체가 무의미
+ * (`rescheduleSafetyNetAlarm`의 "기존 매칭 없으면 cancel-only" 가드가 이중 방어하지만, 정책
+ * 게이트는 여기서 명시적으로 걸어야 호출 자체가 배경 OS 조회를 낭비하지 않는다).
+ *
  * 사전 조건 누락(`route`/`destination`/`tripToken` 중 하나라도 없음, 또는 newArrivalTimeEpoch
  * 과거)은 모두 graceful no-op — 신호가 도달했어도 SLA를 깨지 않는다(원본 사전 예약 유지).
  * 예외는 외부로 전파하지 않고 logger.error 후 swallow — 다른 silent push 흐름과 일관.
@@ -1143,11 +1149,16 @@ async function applyReschedule(
       );
       return;
     }
-    const [routeRaw, destRaw, tripToken] = await Promise.all([
+    const [sleepMode, routeRaw, destRaw, tripToken] = await Promise.all([
+      readSleepMode(),
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(ACTIVE_TRIP_KEY),
     ]);
+    if (!sleepMode) {
+      logger.info('reschedule skip: sleepMode off');
+      return;
+    }
     const route = parseRoute(routeRaw);
     const destinationName = parseDestinationName(destRaw);
     if (!route || !destinationName || !tripToken) {

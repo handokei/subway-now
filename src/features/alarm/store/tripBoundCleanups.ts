@@ -32,7 +32,7 @@ import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dism
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
-import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
+import { cancelAllSafetyNetAlarms, resolveEffectiveTripToken } from '../utils/safetyNetScheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
@@ -227,20 +227,26 @@ function clearTripBoundStoreMemory(): Promise<void> {
  * 다른 항목 실행이나 호출자에게 전파되지 않도록).
  */
 export function runTripBoundCleanups(): Promise<void> {
-  // #2089 — TRIP_BOUND_CLEANUPS가 ACTIVE_TRIP_KEY를 제거하기 전에 tripToken을 먼저 읽어야
-  // safetyNetScheduler의 tripToken-scoped cancel이 가능하다(제거 후에는 null).
-  return AsyncStorage.getItem(ACTIVE_TRIP_KEY)
-    .catch(() => null)
-    .then((tripToken) => {
-      // #1525 — FG setDestination(null) 경로의 zombie alarm backstop. 1차 cleanup이 in-flight인
-      // 동안 expo-notifications 내부 큐 race로 일부 사전 예약이 살아남는 사례를 1분 후 두번째
-      // cancel pass로 정리. 새 trip이 시작되면 tripStart 가드가 skip한다.
-      scheduleDefensiveCancel(tripToken);
-      const cleanups = tripToken
-        ? [...TRIP_BOUND_CLEANUPS, () => cancelAllSafetyNetAlarms(tripToken)]
-        : TRIP_BOUND_CLEANUPS;
-      return Promise.allSettled(cleanups.map((cleanup) => cleanup())).then(noop);
-    });
+  // #2089 — TRIP_BOUND_CLEANUPS가 ACTIVE_TRIP_KEY/TRIP_STARTED_AT_KEY를 제거하기 전에
+  // effective tripToken을 먼저 읽어야 safetyNetScheduler의 tripToken-scoped cancel이
+  // 가능하다(제거 후에는 둘 다 null). #2089 리뷰 P1-2 — backend 등록 없이 device-local id로
+  // armed된 trip도 동일하게 cancel 대상이어야 하므로 tripStart도 함께 읽어
+  // resolveEffectiveTripToken으로 실제 armed에 쓰인 id를 재구성한다(안 그러면 backend
+  // outage 내내 진행된 trip의 안전망 예약이 cleanup에서 누락되는 zombie alarm이 된다).
+  return Promise.all([
+    AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null),
+    getTripStartedAt(),
+  ]).then(([backendTripToken, tripStart]) => {
+    const tripToken = resolveEffectiveTripToken(backendTripToken, tripStart);
+    // #1525 — FG setDestination(null) 경로의 zombie alarm backstop. 1차 cleanup이 in-flight인
+    // 동안 expo-notifications 내부 큐 race로 일부 사전 예약이 살아남는 사례를 1분 후 두번째
+    // cancel pass로 정리. 새 trip이 시작되면 tripStart 가드가 skip한다.
+    scheduleDefensiveCancel(tripToken);
+    const cleanups = tripToken
+      ? [...TRIP_BOUND_CLEANUPS, () => cancelAllSafetyNetAlarms(tripToken)]
+      : TRIP_BOUND_CLEANUPS;
+    return Promise.allSettled(cleanups.map((cleanup) => cleanup())).then(noop);
+  });
 }
 
 /**
@@ -260,15 +266,19 @@ export function runTripBoundCleanups(): Promise<void> {
  * 보장을 유지하기 위해 여기서 명시적으로 흡수한다.
  */
 export function cancelTripBoundOsQueue(): Promise<void> {
-  return AsyncStorage.getItem(ACTIVE_TRIP_KEY)
-    .catch(() => null)
-    .then((tripToken) => {
-      scheduleDefensiveCancel(tripToken);
-      if (!tripToken) return undefined;
-      return cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
-        log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
-      });
+  // #2089 리뷰 P1-2 — device-local id로 armed된 trip도 대상이어야 하므로 tripStart도 함께
+  // 읽어 resolveEffectiveTripToken으로 재구성한다(runTripBoundCleanups와 동일 근거).
+  return Promise.all([
+    AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null),
+    getTripStartedAt(),
+  ]).then(([backendTripToken, tripStart]) => {
+    const tripToken = resolveEffectiveTripToken(backendTripToken, tripStart);
+    scheduleDefensiveCancel(tripToken);
+    if (!tripToken) return undefined;
+    return cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
+      log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
     });
+  });
 }
 
 /**

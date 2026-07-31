@@ -56,8 +56,15 @@ jest.mock('../../utils/alarmLog', () => ({
 // #2067 (Phase 2-device, D3) — sleep-alarm-companion 수신 시 AlarmLocalAuthority가 단일 진입점.
 // 기본은 sleepMode gate 통과 + dedup 미적중(fired=true)로 동작하도록 mock.
 const mockFireCompanionAlarm = jest.fn().mockResolvedValue({ fired: true });
+// #2089 리뷰 P1-1 — applyReschedule의 sleepMode 게이트가 readSleepMode를 경유. 기본은
+// SLEEP_MODE_KEY storage seed(setStorage)를 그대로 읽도록 실제 semantics(JSON true 비교)로 위임.
+const mockReadSleepMode = jest.fn(async () => {
+  const raw = await (AsyncStorage.getItem as jest.Mock)(SLEEP_MODE_KEY);
+  return raw === JSON.stringify(true);
+});
 jest.mock('../../utils/alarmLocalAuthority', () => ({
   fireCompanionAlarm: (...args: unknown[]) => mockFireCompanionAlarm(...args),
+  readSleepMode: () => mockReadSleepMode(),
 }));
 
 // #868 — trip-ended payload 수신 시 trip-bound storage cleanup.
@@ -226,6 +233,7 @@ import {
   BACKEND_SSOT_MIRROR_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
+  SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
@@ -1937,9 +1945,12 @@ describe('silentPushTask', () => {
           tripToken?: unknown;
           route?: unknown;
           destination?: unknown;
+          sleepMode?: boolean;
         } = {}) {
           (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
             if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            // #2089 리뷰 P1-1 — reschedule은 sleepMode ON일 때만 적용되므로 기본 seed는 ON.
+            if (key === SLEEP_MODE_KEY) return JSON.stringify(opts.sleepMode ?? true);
             if (key === ACTIVE_TRIP_KEY)
               return opts.tripToken === undefined ? TRIP_TOKEN : opts.tripToken;
             if (key === DESTINATION_KEY)
@@ -1969,6 +1980,17 @@ describe('silentPushTask', () => {
           expect(arg.stationName).toBe('사가정');
           expect(arg.newArrivalMs).toBe(9_999_999_999_999);
           expect(arg.destinationName).toBe(destStation.name);
+        });
+
+        // #2089 리뷰 P1-1 — 일반 모드(sleepMode OFF)에서는 reschedule이 신규 안전망을
+        // 만들지 못하게 게이트. 취침 OFF 토글 직후 도착한 reschedule push의 재생성도 차단.
+        it('sleepMode OFF면 rescheduleSafetyNetAlarm 미호출 (P1-1)', async () => {
+          setStorage({ sleepMode: false });
+          await handleSilentPush(
+            reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
+          );
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
+          expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
         });
 
         it('tripToken 없으면 호출 skip', async () => {

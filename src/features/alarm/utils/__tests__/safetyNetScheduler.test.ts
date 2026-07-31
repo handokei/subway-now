@@ -556,6 +556,17 @@ describe('rescheduleSafetyNetAlarm', () => {
 
   it('now 미지정 시 Date.now() 사용', async () => {
     const spy = jest.spyOn(Date, 'now').mockReturnValue(START_TIME);
+    // #2089 리뷰 P1-1 — reschedule은 기존 armed 예약이 있어야만 재예약(cancel-only 정책).
+    // Date.now() 기본값 검증이 목적이므로 매칭 예약 1건을 seed한다.
+    mockedGetAll.mockResolvedValueOnce([
+      makeReq(`${SAFETY_NET_ALARM_PREFIX}${TRIP_TOKEN}-${GANGNAM}-destination`, {
+        channel: 'safety-net',
+        station: GANGNAM,
+        tripToken: TRIP_TOKEN,
+        kind: 'destination',
+        occurrenceIdx: 0,
+      }),
+    ]);
     const result = await rescheduleSafetyNetAlarm({
       tripToken: TRIP_TOKEN,
       route,

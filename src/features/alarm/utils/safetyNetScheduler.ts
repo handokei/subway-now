@@ -42,6 +42,7 @@ import { isSameStationName, type Route } from '../../../shared/utils/stationRout
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { SAFETY_NET_MAX_WAYPOINTS } from '../../../shared/constants/iosScheduledLimit';
 import { createLogger } from '../../../shared/utils/logger';
+import { recordScheduledAlarm } from './prescheduledMetrics';
 
 const logger = createLogger('SafetyNetScheduler');
 
@@ -50,6 +51,37 @@ const logger = createLogger('SafetyNetScheduler');
  * prefix로 재사용한다 — trip 종료 시 prefix 매칭으로 일괄 cancel(#1924/#1415/#1525 보존)에 사용.
  */
 export const SAFETY_NET_ALARM_PREFIX = 'alarm-';
+
+/**
+ * #2089 리뷰 P1-2 — backend 등록(ACTIVE_TRIP_KEY)이 아직 없어도(register race/실패) 안전망이
+ * armed되도록, trip 시작 시각(tripStart)만으로 결정적 device-local trip id를 만든다.
+ *
+ * 옛 3종 스케줄러는 backend 등록과 무관하게 device-local 정보(route/destination/tripStart)만으로
+ * 동작했다 — safetyNetScheduler가 ACTIVE_TRIP_KEY(backend ack)를 arming 전제조건으로 삼으면,
+ * 정작 backend가 죽어 있을 때(=이 채널이 필요한 바로 그 상황) 안전망도 함께 죽는 모순이 생긴다.
+ * tripStart는 사용자 명시 trip 시작 시점에 기록되는 device-local 값이라 안전한 anchor다.
+ */
+export function deviceLocalTripId(tripStart: number): string {
+  return `local-${tripStart}`;
+}
+
+/**
+ * backend tripToken이 있으면 그것을 우선 사용(향후 reschedule/reconcile이 backend가 보내는
+ * tripToken과 identifier가 일치해야 하므로), 없으면 {@link deviceLocalTripId} fallback.
+ * tripStart조차 없으면(trip 자체가 없음) null — arming 자체를 skip해야 한다는 신호.
+ *
+ * backend tripToken이 나중에 도착하면 이 함수의 반환값이 바뀌어(local id → backend id)
+ * `useSafetyNetScheduler`의 identity diff가 자동으로 이전 예약을 cancel하고 새 tripToken
+ * 기준으로 재등록한다 — 별도 전환 로직 불필요.
+ */
+export function resolveEffectiveTripToken(
+  backendTripToken: string | null,
+  tripStart: number | null,
+): string | null {
+  if (backendTripToken) return backendTripToken;
+  if (tripStart !== null) return deviceLocalTripId(tripStart);
+  return null;
+}
 
 /** iOS interruption level — 백업 채널이지만 사용자 도달이 최우선이라 timeSensitive 고정. */
 const INTERRUPTION_LEVEL = 'timeSensitive';
@@ -190,6 +222,10 @@ async function scheduleOne(params: {
     },
     trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(fireMs) },
   });
+  // #2089 리뷰 P2-1 — A3 사전 예약 측정 ledger에 등록 stamp. 실패해도 알람 발사 흐름에는
+  // 무영향(prescheduledMetrics 내부에서 흡수) — fire-and-forget이 아니라 await하는 이유는
+  // register 호출 순서를 보존해 ledger idx 갱신 race를 피하기 위함.
+  await recordScheduledAlarm({ identifier, scheduledFireMs: fireMs, stationName });
 }
 
 export interface RegisterSafetyNetParams {
@@ -385,8 +421,14 @@ export interface RescheduleSafetyNetResult {
  * backend reschedule silent push 수신 시 호출 — 해당 waypoint의 기존 예약을 cancel하고
  * newArrivalMs 기준 "1역 전 + 버퍼"로 재예약한다.
  *
+ * **#2089 리뷰 P1-1** — reschedule은 "이미 armed된 예약의 시각 보정"만 수행한다. OS 큐에
+ * 매칭되는 기존 예약이 없으면(예: sleepMode가 그 사이 꺼져 애초에 등록되지 않은 waypoint,
+ * 또는 이미 지나가 cancel된 waypoint) 신규 예약을 만들지 않고 cancel-only(no-op)로 끝낸다 —
+ * reschedule 신호만으로 새 안전망을 arming하면 sleepMode 게이트를 우회하게 된다.
+ *
  * past-time / route 매칭 실패는 graceful no-op(정정 신호 폐기) — 옛 rescheduleTripBoundAlarm /
- * rescheduleHopForLock과 동일 정책.
+ * rescheduleHopForLock과 동일 정책. sleepMode 게이트 자체는 호출자(`silentPushTask.applyReschedule`)
+ * 책임 — 본 함수는 순수 메커니즘만 제공한다(모듈 헤더 정책 원칙과 동일).
  */
 export async function rescheduleSafetyNetAlarm(
   params: RescheduleSafetyNetParams,
@@ -419,8 +461,14 @@ export async function rescheduleSafetyNetAlarm(
       isSameStationName(data.station, target.stationName)
     );
   });
-  const cancelled =
-    matches.length > 0 ? await cancelIdentifiersWithRetry(matches.map((req) => req.identifier)) : 0;
+  if (matches.length === 0) {
+    // 이미 armed된 예약이 없으면 reschedule은 새 예약을 만들지 않는다(P1-1) — cancel-only no-op.
+    logger.info(
+      `reschedule cancel-only: no existing schedule for station=${target.stationName} occurrence=${occurrenceIdx}`,
+    );
+    return { cancelled: 0, scheduled: 0 };
+  }
+  const cancelled = await cancelIdentifiersWithRetry(matches.map((req) => req.identifier));
 
   const earlyLeadMs = target.legMs / target.stops;
   const fireMs = newArrivalMs - earlyLeadMs + SAFETY_NET_BUFFER_MS;

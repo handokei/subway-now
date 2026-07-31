@@ -90,7 +90,12 @@ async function markFiredLocally(id: string, now: number = Date.now()): Promise<v
   await writeLedger(entries);
 }
 
-async function readSleepMode(): Promise<boolean> {
+/**
+ * sleepMode 값을 storage에서 직접 읽는다(Zustand hydration 무관 — BG task 컨텍스트에서도
+ * 안전). #2089 리뷰 P1-1 — `silentPushTask.applyReschedule`도 동일 정책 게이트가 필요해
+ * export.
+ */
+export async function readSleepMode(): Promise<boolean> {
   try {
     const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
     if (!raw) return false;

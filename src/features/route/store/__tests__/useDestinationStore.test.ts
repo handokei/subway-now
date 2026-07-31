@@ -20,6 +20,8 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 // store 테스트에서는 호출 여부만 확인하면 충분. 실제 동작은 각 파일의 전용 테스트에서.
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   setTripStartedAt: jest.fn().mockResolvedValue(undefined),
+  // #2089 리뷰 P1-2 — runTripBoundCleanups가 device-local id 재구성을 위해 tripStart도 읽는다.
+  getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
 jest.mock('../../../alarm/utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: jest.fn().mockResolvedValue({ uploaded: false }),

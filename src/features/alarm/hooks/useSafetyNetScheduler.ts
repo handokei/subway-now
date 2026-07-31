@@ -12,6 +12,7 @@ import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import {
   cancelAllSafetyNetAlarms,
   registerSafetyNetAlarms,
+  deviceLocalTripId,
 } from '../utils/safetyNetScheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
@@ -34,8 +35,10 @@ export interface UseSafetyNetSchedulerInputs {
  *   sleepMode를 ref로만 캡처해 effect deps에서 제외했지만(#632, "이미 예약된 알람은 sleep
  *   토글에 영향받지 않는 trade-off"), 본 hook은 sleepMode 자체가 전체 게이트이므로 의도적으로
  *   effect dependency에 포함한다 — 토글 즉시 등록/취소가 반영돼야 새 역할과 정합.
- * - tripToken(=ACTIVE_TRIP_KEY, APNs 등록 성공 후 기록)과 tripStart(=trip 시작 시각) 둘 다
- *   있어야 등록 — 어느 하나라도 없으면(예: backend 등록 race) 이번 cycle은 cancel-only.
+ * - **#2089 리뷰 P1-2** — tripStart(=trip 시작 시각)만 있으면 등록한다. backend 등록
+ *   (ACTIVE_TRIP_KEY)이 아직 없어도(register race/실패) `deviceLocalTripId`로 fallback해
+ *   armed — 안전망이 "backend outage 백업"이라는 목적상 backend 등록 성공 여부에 arming을
+ *   종속시키면 정작 필요한 상황에 무력화된다. tripStart조차 없으면(trip 미시작) cancel-only.
  * - identity = `${tripToken}|${routeSig}|${destinationName}|sleep:${sleepMode}`. 이전과
  *   동일하면 no-op, 다르면 이전 등록을 cancel한 뒤 새로 등록한다.
  * - 언마운트 시에는 cancel하지 않는다 — trip 종료는 `tripBoundCleanups`가 담당(#1924/#1525
@@ -68,17 +71,20 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
         return;
       }
 
-      const [tripToken, tripStart] = await Promise.all([
+      const [backendTripToken, tripStart] = await Promise.all([
         AsyncStorage.getItem(ACTIVE_TRIP_KEY),
         getTripStartedAt(),
       ]);
       if (myToken !== inFlightTokenRef.current) return;
 
-      if (tripToken === null || tripStart === null) {
-        // 등록에 필요한 정보가 아직 준비되지 않음(backend register race 등) — 이번 cycle skip.
-        // 직전 등록이 있었다면 그대로 유지 — 정보 부재가 곧 trip 종료를 의미하지 않는다.
+      if (tripStart === null) {
+        // trip 시작 시각 자체가 없음(trip 미시작) — 이번 cycle skip. 직전 등록이 있었다면
+        // 그대로 유지 — 정보 부재가 곧 trip 종료를 의미하지 않는다.
         return;
       }
+      // #2089 리뷰 P1-2 — backend 등록(ACTIVE_TRIP_KEY) 여부와 무관하게 tripStart만 있으면
+      // device-local id로 armed(자세한 내용은 deviceLocalTripId 문서 참고).
+      const tripToken = backendTripToken ?? deviceLocalTripId(tripStart);
 
       const nextIdentity = `${tripToken}|${nextIdentityBase}`;
       if (registeredIdentityRef.current === nextIdentity) return;

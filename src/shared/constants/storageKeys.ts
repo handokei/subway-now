@@ -44,10 +44,6 @@ export const FIRED_PUSH_IDS_KEY = 'subway-now:fired-push-ids';
 // #584 PR A — 사용자가 명시적으로 확정한 탑승 열차/노선/시각. trip 종료 또는 자동 만료까지 유지.
 // 형식: BoardingLock JSON (src/types/boardingLock.ts).
 export const BOARDING_LOCK_KEY = 'subway-now:boarding-lock';
-// #584 PR C — boardingLockScheduler가 OS에 사전 예약한 알림 identifier 목록.
-// release/expiry 또는 새 Lock 시점에 일괄 cancel하기 위한 추적 큐.
-// 형식: string[] JSON.
-export const SCHEDULED_NOTIFICATIONS_KEY = 'subway-now:scheduled-notifications';
 // #791 — BG 위치 권한 거부 시 띄우는 안내 Alert를 사용자가 dismiss한 적이 있는지.
 // 'true' 또는 키 부재. 한 번 dismiss하면 앱 재시작 후에도 다시 노출하지 않는다.
 // 사용자는 첫 안내로 결정한 상태이므로 반복 노출은 스팸. (WhileInUse 1차 시나리오 정책 정렬)
