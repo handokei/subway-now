@@ -66,18 +66,24 @@ const GPS_DROP_WINDOW_MS = 1000;
 // useStationAlarm effect short-circuit으로 별개 layer에서 해소됐으므로 GPS callback throttle을
 // 제거해도 cascade가 재발하지 않는다.
 // subsurface는 동일하게 distanceInterval=0 — 지하 indoor positioning 보강 동안에는 매 fix가 필요.
-// #1983 (ADR-022 A3) — subsurface에서도 Accuracy.High. 이전엔 Balanced로 배터리 세이빙(#1313)
-// 이었으나 Balanced(100m~수km, cellular triangulation)는 지상 fix까지 1000~1600m 저정확도로
-// 오염시키는 회귀(7/1 오후, 6/30 여러 로그) 발생. subsurface는 timeInterval 12s로만 throttle하고
-// accuracy는 High 통일 — 지하에서 GPS fix 자체가 없을 땐 OS가 자연스레 fallback하므로 High도
-// 배터리 부담 크지 않다. 배터리 실측 회귀 시 별도 이슈로 대응.
+// #1983 (ADR-022 A3) — subsurface에서도 한때 Accuracy.High로 통일했었다. 원 근거: Balanced(100m~
+// 수km, cellular triangulation)는 지상 fix까지 1000~1600m 저정확도로 오염시키는 회귀(7/1 오후,
+// 6/30 여러 로그) 발생 — "지하 fix가 있을 때 정확도 확보"가 목적이었다(당시 결정 코멘트 원문).
+// #2100 (#2093 F) — 그 후 #2074 품질 게이트(100m/15s)가 지하 fix를 SSOT/알람 어디에도 쓰지 않고
+// 전량 폐기하는 것이 실측으로 확인(7/7 로그 gps-drop 84건, 최대 3,467m) — Balanced가 지하 구간에서
+// 만드는 저정확도 fix는 애초에 게이트가 다 버리므로 #1983의 "지하 fix 정확도 확보" 근거가 지하
+// 구간 자체에는 더 이상 적용되지 않는다. #1983이 막으려던 "지상 fix 오염"은 지상 복귀를 GPS 게이트
+// 통과 fix 재등장(hysteresis)에만 의존하지 않고 즉시 원복(아래 profileWatchDegraded eager release +
+// barometerSubsurface)하는 것으로 차단한다 — Balanced의 느린/부정확 첫 fix로 원복 감지 자체가
+// 늦어지는 악순환을 끊는다. subsurface는 timeInterval 12s throttle 유지, accuracy만 Balanced로
+// 재전환해 지하 무의미 GPS 삼각측량 재시도(발열 주범)를 낮춘다.
 const FG_WATCH_OPTIONS_SURFACE: Location.LocationOptions = {
   accuracy: Location.Accuracy.High,
   distanceInterval: 0,
   timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
 };
 const FG_WATCH_OPTIONS_SUBSURFACE: Location.LocationOptions = {
-  accuracy: Location.Accuracy.High,
+  accuracy: Location.Accuracy.Balanced,
   distanceInterval: 0,
   timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
 };
@@ -264,6 +270,14 @@ export function useNearestStation(
   // 어떤 사유든)가 한 번이라도 끼면 0으로 리셋된다.
   const qualityGateConsecutivePassRef = useRef(0);
   const [gpsQualityDegraded, setGpsQualityDegraded] = useState(false);
+  // #2100 — FG watch 프로파일(High/Balanced) 선택 전용 신호. 공개 gpsQualityDegraded(위)는
+  // inferEnvironment(useFusedNearestStation)가 소비하므로 hysteresis(연속 2회 통과) 해제를 그대로
+  // 유지한다 — 품질 게이트/fusion 판정 로직은 손대지 않는다(#2100 "하지 말 것"). 반면 지하에서
+  // accuracy를 Balanced로 낮추면 Balanced fix는 100m/15s 게이트를 잘 통과하지 못해 hysteresis 2연속
+  // 달성이 사실상 막혀 watch 프로파일이 영구 Balanced에 고착되는 악순환이 생긴다. profileWatchDegraded는
+  // 진입(degrade)은 gpsQualityDegraded와 동일 신호(absence 30s)를 공유하되, 해제는 게이트 통과 fix
+  // 단 1회만으로 즉시 반영(eager release)해 High로 선원복시킨 뒤 후속 fix로 실제 지상 복귀를 확인한다.
+  const [profileWatchDegraded, setProfileWatchDegraded] = useState(false);
 
   // #2076 — 게이트 통과/미달 판정 자체는 applyLocation(표시 게이트 통과 fix)과 watch 콜백의
   // 표시 게이트 drop 분기(>250m fix) 양쪽에서 공유한다. 표시 상태(setUserLocation 등)는 절대
@@ -293,6 +307,10 @@ export function useNearestStation(
         if (isGpsQualityHysteresisReleased(qualityGateConsecutivePassRef.current)) {
           setGpsQualityDegraded((prev) => (prev ? false : prev));
         }
+        // #2100 — watch 프로파일 전용 eager release. 게이트 통과 fix가 단 1회만 등장해도 즉시
+        // High로 선원복(위 gpsQualityDegraded의 2연속 hysteresis와 별개) — Balanced 지하 프로파일에서
+        // hysteresis 2연속 달성이 막혀 원복 자체가 지연되는 악순환을 끊는다.
+        setProfileWatchDegraded((prev) => (prev ? false : prev));
         return;
       }
       // #2076 결함2 — 급락 여부는 진단 로그에만 반영. degraded 상태를 직접 바꾸지 않는다.
@@ -320,6 +338,10 @@ export function useNearestStation(
   usePolling(() => {
     if (isGpsQualityAbsenceDegraded(qualityGateLastPassAtRef.current, Date.now())) {
       setGpsQualityDegraded((prev) => (prev ? prev : true));
+      // #2100 — watch 프로파일 진입(degrade) 신호는 공개 gpsQualityDegraded와 동일 absence 판정을
+      // 공유한다(품질 게이트 판정 로직 자체는 변경하지 않는다). 해제(release)만 위 evaluateGpsQuality의
+      // eager 경로로 분리된다.
+      setProfileWatchDegraded((prev) => (prev ? prev : true));
     }
   }, GPS_QUALITY_GATE_TIMER_INTERVAL_MS);
 
@@ -476,10 +498,12 @@ export function useNearestStation(
       //  좌표를 최대한 자주 흘려보낸다 (foreground 한정, 화면 켜진 동안만).
       //  High는 GPS hardware fix가 없으면 WiFi BSSID / Cell tower triangulation으로 fallback
       //  → 지하 구간에서도 ~50~100m 위치가 들어옴 (BestForNavigation은 fallback 없이 stale).
-      // 지하(subsurface 확정, #1313 + #1983): High + timeInterval:12000으로 throttle. accuracy는
-      //  지상과 동일하게 High 유지 (#1983 ADR-022 A3) — Balanced는 지상 fix까지 1000~1600m로
-      //  오염시키는 회귀 발생. GPS fix 자체가 없을 때는 OS가 자연 fallback하므로 High도 지하 배터리
-      //  부담 크지 않다. throttledRef가 현재 throttle 여부를 들고 있어 flip 시 effect가
+      // 지하(subsurface 확정, #1313 + #2100): Balanced + timeInterval:12000으로 throttle.
+      //  #1983 이후 한동안 High를 썼으나(지하 fix 정확도 확보 목적), #2074 품질 게이트가 지하 fix를
+      //  전량 폐기하는 게 실측 확인돼(7/7 gps-drop 84건) Balanced로 재전환 — 지하 무의미 GPS
+      //  삼각측량 재시도(발열 주범)를 낮춘다. 지상 복귀는 GPS 게이트 hysteresis에만 기대지 않고
+      //  profileWatchDegraded eager release + barometerSubsurface 즉시 원복으로 보강(아래 참고).
+      //  throttledRef가 현재 throttle 여부를 들고 있어 flip 시 effect가
       //  stopWatch→startWatch로 재구성한다(아래 useEffect).
       // 참고: pausesUpdatesAutomatically / activityType은 expo-location foreground 옵션에
       //  노출되지 않아 적용 불가. background task 옵션에서만 사용 가능.
@@ -649,18 +673,24 @@ export function useNearestStation(
   //  - AppState 'active'일 때만 재시작 → BG 중 flip이 FG watch를 켜 'background'→stopWatch 규약을 깨는 것 방지.
   //    (FG 복귀 시 'active' 핸들러의 refresh→startWatch가 ref를 읽어 현재 옵션으로 자연 반영.)
   //
-  // #2070 — 지하 프로파일 트리거를 barometerSubsurface OR gpsQualityDegraded로 확장. 기존
+  // #2070 — 지하 프로파일 트리거를 barometerSubsurface OR profileWatchDegraded로 확장. 기존
   // FG_WATCH_OPTIONS_SUBSURFACE를 그대로 재사용한다(barometer 확정 지하와 배터리 절감 목적이
-  // 동일 — 신규 profile 값을 중복 정의하지 않는다). gpsQualityDegraded가 false로 복귀하면(품질
-  // 게이트 통과 fix 재등장) barometerSubsurface도 true가 아닌 한 지상 프로파일로 원복된다.
+  // 동일 — 신규 profile 값을 중복 정의하지 않는다).
+  // #2100 — gpsQualityDegraded(hysteresis 2연속 해제, inferEnvironment 공용 SSOT) 대신
+  // profileWatchDegraded(eager 1회 해제)를 사용한다 — accuracy가 Balanced로 낮아진 지하에서는
+  // hysteresis 2연속 통과 fix 확보 자체가 어려워 원복이 지연/고착되는 것을 막기 위함(#2100 "선원복
+  // 후 fix 대기"). barometerSubsurface가 명시 지상(false)으로 바뀌는 것도 동일하게 즉시 반영된다
+  // (기존부터 hysteresis 없이 즉시 OR 입력).
+  // 재시작 skip 가드(next === throttledRef.current)는 #2080에서 도입된 churn 방지 로직을 그대로
+  // 재사용 — 동일 프로파일로 판정되면 stopWatch/startWatch를 호출하지 않는다.
   useEffect(() => {
-    const next = inputs.barometerSubsurface === true || gpsQualityDegraded;
+    const next = inputs.barometerSubsurface === true || profileWatchDegraded;
     if (next === throttledRef.current) return;
     throttledRef.current = next;
     if (AppState.currentState !== 'active') return;
     stopWatch();
     void startWatch();
-  }, [inputs.barometerSubsurface, gpsQualityDegraded, startWatch, stopWatch]);
+  }, [inputs.barometerSubsurface, profileWatchDegraded, startWatch, stopWatch]);
 
   // #876 — 매 fix를 sticky 훅에 전달. lock된 역이 있으면 result를 그것으로 override.
   // fusion candidates는 useFusedNearestStation에서 userLocation 기반으로 별도 계산하므로 영향 없음.

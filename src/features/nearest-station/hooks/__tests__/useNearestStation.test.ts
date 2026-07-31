@@ -1467,15 +1467,16 @@ describe('useNearestStation — #903 Seam G barometer→sticky', () => {
 });
 
 describe('useNearestStation — #1313 subsurface GPS throttle', () => {
-  // 지상 기본값: High@2s. 지하 throttle: High@12s (#1983 ADR-022 A3 — Balanced→High 통일).
-  // accuracy는 지상/지하 동일 High, interval만 subsurface에서 확장. 상수에서 가져와 매직넘버 회피.
+  // 지상 기본값: High@2s. 지하 throttle: Balanced@12s (#2100 — #1983 High 통일에서 재전환.
+  // #2074 품질 게이트가 지하 fix를 전량 폐기하는 게 확인돼 지하 accuracy를 다시 Balanced로 낮춘다).
+  // 상수에서 가져와 매직넘버 회피.
   const SURFACE_OPTIONS = {
     accuracy: Location.Accuracy.High,
     distanceInterval: 0,
     timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   };
   const SUBSURFACE_OPTIONS = {
-    accuracy: Location.Accuracy.High,
+    accuracy: Location.Accuracy.Balanced,
     distanceInterval: 0,
     timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
   };
@@ -1510,12 +1511,12 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
   });
 
   // 마운트 시 subsurface 값에 따른 초기 watch 옵션 — undefined/false는 절대 throttle하지 않는다(안전 기본값).
-  // #1983 (ADR-022 A3): subsurface=true도 accuracy=High로 통일. 이전엔 Balanced였으나 지상 fix까지
-  // 1000~1600m 오염 회귀로 High 통일. subsurface 차이는 timeInterval만(2s→12s).
+  // #2100: subsurface=true는 accuracy=Balanced@12s (#1983 High 통일에서 재전환 — 상세 근거는
+  // useNearestStation.ts FG_WATCH_OPTIONS_SUBSURFACE 주석 참고).
   it.each([
     { label: 'subsurface 미전달(undefined) → High@2s', props: {}, expected: () => SURFACE_OPTIONS },
     { label: 'subsurface=false → High@2s', props: { barometerSubsurface: false }, expected: () => SURFACE_OPTIONS },
-    { label: 'subsurface=true → High@12s (#1983 Balanced→High 통일)', props: { barometerSubsurface: true }, expected: () => SUBSURFACE_OPTIONS },
+    { label: 'subsurface=true → Balanced@12s (#2100)', props: { barometerSubsurface: true }, expected: () => SUBSURFACE_OPTIONS },
   ])('마운트 $label', async ({ props, expected }) => {
     renderHook(() => useNearestStation(props));
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
@@ -1524,7 +1525,7 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
     expect(lastWatchOptions()).toEqual(expected());
   });
 
-  it('subsurface false→true flip 시 watch를 teardown 후 High@12s로 재시작한다 (#1983)', async () => {
+  it('subsurface false→true flip 시 watch를 teardown 후 Balanced@12s로 재시작한다 (#2100)', async () => {
     const { rerender } = renderHook(
       ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
       { initialProps: { sub: false } },
@@ -1583,34 +1584,35 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
     expect(mockSubscription.remove).not.toHaveBeenCalled();
 
-    // FG 복귀 시 'active' 핸들러 refresh→startWatch가 throttledRef를 읽어 High@12s로 반영.
+    // FG 복귀 시 'active' 핸들러 refresh→startWatch가 throttledRef를 읽어 Balanced@12s로 반영.
     (AppState as { currentState: string }).currentState = 'active';
     await act(async () => { appStateCallback?.('active'); });
     await waitFor(() => expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS));
   });
 
-  // #1983 (ADR-022 A3) — subsurface에서도 accuracy=High. Balanced로 회귀하면 지상 fix까지
-  // 1000~1600m 저정확도로 오염되므로 accuracy 값 자체를 pin해 회귀를 조기 차단한다.
+  // #2100 — 지상은 accuracy=High, 지하(subsurface 확정)는 accuracy=Balanced로 갈린다.
+  // 지상 accuracy가 실수로 Balanced로 떨어지는 회귀(#1983이 막으려던 문제)를 조기 차단하기 위해
+  // accuracy 값 자체를 pin한다.
   it.each([
-    { label: 'surface(subsurface=false)', props: { barometerSubsurface: false } },
-    { label: 'subsurface(subsurface=true)', props: { barometerSubsurface: true } },
-  ])('#1983 $label 에서 watch accuracy는 High (Balanced 회귀 차단)', async ({ props }) => {
+    { label: 'surface(subsurface=false)', props: { barometerSubsurface: false }, expectedAccuracy: () => Location.Accuracy.High },
+    { label: 'subsurface(subsurface=true)', props: { barometerSubsurface: true }, expectedAccuracy: () => Location.Accuracy.Balanced },
+  ])('#2100 $label 에서 watch accuracy가 pin된 값과 일치한다', async ({ props, expectedAccuracy }) => {
     renderHook(() => useNearestStation(props));
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
-    expect(lastWatchOptions().accuracy).toBe(Location.Accuracy.High);
+    expect(lastWatchOptions().accuracy).toBe(expectedAccuracy());
   });
 });
 
 describe('useNearestStation — #2070 GPS 품질 게이트 (결정 tier 입력)', () => {
-  // 지상 기본값: High@2s. 지하 throttle: High@12s. #1313 describe와 동일 값 — 매직넘버 회피 위해
-  // 상수에서 가져온다(#2070은 barometerSubsurface OR gpsQualityDegraded로 트리거를 확장).
+  // 지상 기본값: High@2s. 지하 throttle: Balanced@12s(#2100). #1313 describe와 동일 값 — 매직넘버
+  // 회피 위해 상수에서 가져온다(#2070은 barometerSubsurface OR profileWatchDegraded로 트리거를 확장).
   const SURFACE_OPTIONS = {
     accuracy: Location.Accuracy.High,
     distanceInterval: 0,
     timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   };
   const SUBSURFACE_OPTIONS = {
-    accuracy: Location.Accuracy.High,
+    accuracy: Location.Accuracy.Balanced,
     distanceInterval: 0,
     timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
   };
@@ -1794,7 +1796,10 @@ describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독�
     expect(result.current.gpsQualityDegraded).toBe(false);
   });
 
-  it('degraded 발생(absence) 시 FG watch가 지하 프로파일(High@12s)로 전환되고, hysteresis 해제 시 지상으로 원복된다', async () => {
+  // #2100 — watch 프로파일 release는 eager(단 1회 통과 fix)라 공개 gpsQualityDegraded의 hysteresis
+  // (연속 2회)보다 먼저 지상 프로파일로 원복된다. Balanced 지하 프로파일에서 hysteresis 2연속
+  // 달성 자체가 지연되는 악순환을 끊기 위함(#2100 "선원복 후 fix 대기").
+  it('degraded 발생(absence) 시 FG watch가 지하 프로파일(Balanced@12s)로 전환되고, 게이트 통과 fix 1회만으로 즉시 지상으로 원복된다', async () => {
     renderHook(() => useNearestStation());
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
     expect(lastWatchOptionsAt()).toEqual({
@@ -1811,13 +1816,14 @@ describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독�
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
     expect(lastWatchOptionsAt()).toEqual({
-      accuracy: Location.Accuracy.High,
+      accuracy: Location.Accuracy.Balanced,
       distanceInterval: 0,
       timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
     });
 
+    // 게이트 통과 fix 1회만으로 watch 프로파일은 즉시 원복된다(공개 gpsQualityDegraded는 아직
+    // hysteresis 미충족이라 true로 남을 수 있음 — 별개 신호, 아래 별도 describe에서 검증).
     simulateGps(37.498, 127.0277, { accuracy: 50 });
-    simulateGps(37.4981, 127.0278, { accuracy: 50 }); // 연속 2회 통과 → hysteresis 해제
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(3));
     expect(lastWatchOptionsAt()).toEqual({
@@ -1834,7 +1840,7 @@ describe('useNearestStation — #2076 GPS 품질 게이트 후속 (absence 독�
     );
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
     expect(lastWatchOptionsAt()).toEqual({
-      accuracy: Location.Accuracy.High,
+      accuracy: Location.Accuracy.Balanced,
       distanceInterval: 0,
       timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
     });
