@@ -503,7 +503,13 @@ export function useFusedNearestStation(
   // steady 구간에서는 false로 돌아간다 — 이 기억이 없으면 cellular NRNSA soft downgrade가
   // steady 구간마다 undergroundSSOT quorum을 깎아 barometer의 지하 확정을 뒤집을 수 있다
   // (7/7 trip 로그: subsurface=true 13건인데 최종 environment는 surface 89.9%).
-  // trip 비활성(tripActive=false) 시 즉시 리셋 — 취소된/종료된 trip에 잔존 sticky 없음.
+  // 리셋 트리거:
+  //   1. trip 비활성(tripActive=false) — 즉시 리셋. 취소된/종료된 trip에 잔존 sticky 없음.
+  //   2. `BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS`(3분) 경과 — 아래 파생 boolean에서 자연 만료.
+  //   3. (P2-1, 리뷰 반영) surfaceSSOT 활성(진짜 지상 증거) — cascadeSurfaceSSOT 계산 직후 별도
+  //      effect에서 즉시 리셋 (L1148 인근). `subsurface===false` 단독으로는 리셋하지 않는다 —
+  //      steady 지하 구간에서 barometer edge-detector가 false로 돌아가는 것은 정상 동작이라
+  //      이를 리셋 트리거로 쓰면 sticky가 매 폴링마다 사라져 본 fix 자체가 무력화된다(원 버그 재발).
   const barometerRecentSubsurfaceAtRef = useRef<number | null>(null);
   useEffect(() => {
     if (!tripActive) {
@@ -1146,6 +1152,16 @@ export function useFusedNearestStation(
     gpsAccuracy: gps.accuracyMeters,
     arrival: cascadeSurfaceArrival,
   });
+  // #2099 (P2-1, 리뷰 반영) — surfaceSSOT 활성(GPS accuracy≤30m + arrival 정착 매칭 2-signal
+  // 합의 = 진짜 지상 증거)이면 barometer sticky 기억을 즉시 소거한다. 지하→지상 복귀 시
+  // sticky 잔존 창이 3분 타임아웃 대기 없이 surfaceSSOT 활성 시점으로 축소된다.
+  // `subsurface===false` 단독으로는 소거하지 않음 — 위 ref 선언부 doc 참고.
+  const surfaceSSOTActive = cascadeSurfaceSSOT !== null;
+  useEffect(() => {
+    if (surfaceSSOTActive) {
+      barometerRecentSubsurfaceAtRef.current = null;
+    }
+  }, [surfaceSSOTActive]);
   const cascadeUndergroundCandidate =
     wifiStationResolved?.station ?? positionTrainResult?.station ?? null;
   const cascadeUndergroundArrival = cascadeUndergroundCandidate

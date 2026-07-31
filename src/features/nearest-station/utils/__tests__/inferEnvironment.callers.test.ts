@@ -41,6 +41,7 @@ import {
 } from '../../../../shared/constants/realtime';
 import { inferEnvironment } from '../inferEnvironment';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import { useCellularTech } from '../../hooks/useCellularTech';
 
 jest.mock('../findNearestStation', () => ({
   findTopNearestStations: jest.fn(),
@@ -54,12 +55,18 @@ jest.mock('../../../alarm/utils/tripStartStorage', () => ({
 jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
   readBackendSsotMirror: jest.fn(),
 }));
+// #2099 (P2-2, 리뷰 반영) — 신규 steady-state 통합 테스트가 'surface-weak-nrnsa' vote를 주입하기
+// 위해 mock. 미지정 테스트는 기존 real-hook graceful fallback과 동등한 'unknown' 기본값 유지.
+jest.mock('../../hooks/useCellularTech', () => ({
+  useCellularTech: jest.fn(() => 'unknown'),
+}));
 
 const mockNearest = useNearestStation as jest.Mock;
 const mockArrival = useArrivalInfo as jest.Mock;
 const mockPos = useTrainPositions as jest.Mock;
 const mockFindTop = findTopNearestStations as jest.Mock;
 const mockRead = readBackendSsotMirror as jest.Mock;
+const mockCellularVote = useCellularTech as jest.Mock;
 
 const hanyangdae = findStationByNameAndLine('한양대', '2')!;
 const ttukssom = findStationByNameAndLine('뚝섬', '2')!;
@@ -317,6 +324,98 @@ describe('#1932 inferEnvironment 호출자 통합 (SSOT 단일화 + cascade 직�
         undergroundSSOT: true,
       });
       expect(result.label).toBe('unknown');
+    });
+  });
+
+  describe("#2099 P2-2 (리뷰 반영) — 진짜 steady-state 재현: subsurface=false + barometerRecentSubsurface fresh + cellular NRNSA → undergroundSSOT 경로로 'underground' 유지", () => {
+    // 기존 'cascade tier 1 semantic equivalence' 테스트는 subsurface=true로 inferEnvironment
+    // 우선순위 1(즉시 underground)을 short-circuit해 본 fix(undergroundSSOTConsensus의
+    // barometerRecentSubsurface 가중)를 전혀 exercise하지 못했다(tautology, 리뷰 지적).
+    // 본 테스트는 실제 7/7 trip 패턴대로 render 1에서 subsurface=true를 관측(sticky 기록)한 뒤,
+    // steady 구간처럼 subsurface=false로 돌아간 상태에서 cellular가 NRNSA(surface-weak-nrnsa)로
+    // 계속 surface 투표해도 sticky가 undergroundSSOT quorum을 지켜 environment가 'underground'로
+    // 유지됨을 SSOT 경로(우선순위 3, subsurface===false + undergroundSSOT 활성)로 검증한다.
+    it('render1 subsurface=true(sticky 기록) → render2 subsurface=false + barometerStop + NRNSA(steady quorum) → environment underground 유지', async () => {
+      mockCellularVote.mockReturnValue('surface-weak-nrnsa');
+
+      // 지하 GPS dead zone 시뮬 — accuracy 200m로 surfaceSSOT는 항상 비활성(P2-1 리셋 트리거 미발동).
+      const live = { station: hanyangdae, distanceKm: 0.05 };
+      mockNearest.mockReturnValue({
+        result: live,
+        liveResult: live,
+        stickyDisplayOnly: null,
+        variants: [hanyangdae],
+        userLocation: { lat: hanyangdae.lat, lng: hanyangdae.lng },
+        ...GPS_BASE_DEFAULTS,
+        accuracyMeters: 200,
+        lastFixAtMs: T0,
+        refresh: jest.fn(),
+      });
+      mockFindTop.mockReturnValue([{ station: hanyangdae, distanceKm: 0.05 }]);
+      // wifiStation(8번째 인자) station pair 채택을 위한 arvlCd 정착 매칭 (트레인코드 lockOn2와 동일).
+      mockArrival.mockReturnValue(
+        arrivalRet({
+          up: [
+            {
+              destination: 'dest',
+              arrivalMinutes: 0,
+              arrivalSeconds: 0,
+              statusMessage: '도착',
+              trainCode: 'T-LOCK',
+              line: '2',
+              receivedAtMs: T0,
+              arrivalCode: ARRIVAL_CODE.ARRIVED,
+              isLastTrain: false,
+              trainType: 'normal',
+            },
+          ],
+          down: [],
+        }),
+      );
+      mockPos.mockReturnValue(positionRet(null)); // positionTrainResult 없음 — wifi 단독 station pair.
+
+      const routeContext = {
+        route: makeDirectRoute(3, '2'),
+        origin: hanyangdae,
+        destination: ttukssom,
+      };
+
+      const hook = renderHook(
+        (props: { subsurface: boolean; stop?: boolean }) =>
+          useFusedNearestStation(
+            undefined,
+            undefined,
+            routeContext,
+            undefined,
+            lockOn2,
+            undefined,
+            { subsurface: props.subsurface, signal: { subsurface: props.subsurface, stop: props.stop } },
+            hanyangdae, // wifiStation
+          ),
+        { initialProps: { subsurface: true } },
+      );
+      await flushBackendSsotMirrorTick();
+      await waitFor(() => {
+        expect(hook.result.current.environment).toBe('underground');
+      });
+      // render1: subsurface=true → 우선순위 1 즉시 underground + barometerRecentSubsurfaceAtRef sticky 기록.
+
+      // steady quorum(warmup 60s 이후) 강제 — tripStartedAt=boardingLock.boardedAt=T0.
+      jest.setSystemTime(T0 + 90_000); // sticky window(3분) 이내, warmup(60s) 이후.
+      hook.rerender({ subsurface: false, stop: true });
+      await flushBackendSsotMirrorTick();
+      await waitFor(() => {
+        // subsurface=false(steady 지하 raw 신호) + cellular NRNSA surface 투표 + barometerStop=true.
+        // sticky(barometerRecentSubsurface=true)가 undergroundSSOTConsensus primary path의 NRNSA
+        // envVotes 페널티를 무효화해 quorum(steady=2)을 pair(1)+envVotes(baro+1, nrnsa 0)=2로
+        // 충족 → undergroundSSOT 활성 → inferEnvironment 우선순위 3(subsurface===false +
+        // undergroundSSOT 활성) 경로로 'underground' 유지. 이전 tautology 테스트(subsurface=true
+        // 우선순위 1 short-circuit)와 달리 본 테스트는 실제 SSOT 판정 경로를 exercise한다.
+        // (sticky 없이도 이 특정 조합은 옵션 2 단독 fallback 임계(1.3)로 구제되는 경계 케이스다 —
+        // sticky의 배타적 필요성은 undergroundSSotConsensus.test.ts의 wifi+position 2-pair,
+        // 추가 env vote 없는 시나리오에서 별도로 단위 검증됨: 그 케이스는 sticky 없이는 reject.)
+        expect(hook.result.current.environment).toBe('underground');
+      });
     });
   });
 
