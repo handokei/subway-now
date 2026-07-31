@@ -11,9 +11,13 @@ import {
 
 const logger = createLogger('SilentPushLocationGate');
 
-// 위치 캐시 신뢰 TTL — 초과 시 stale로 간주하고 보수적 skip.
-// silent push imminent 알림은 도착 직전이라 60초 이상 stale 캐시로 발사하면
-// 사용자가 이미 통과/이전 역에 있을 위험.
+// silent push 채널 전용 GPS cache stale 임계.
+// FG `useNearestStation` (MAX_LOCATION_AGE_MS=15s, src/shared/constants/location.ts)보다
+// longer threshold(60s) 채택 사유 (#1966):
+// - BG silent push 도달 시 OS BG task scheduling 지연 가능 (fresh GPS 시도 자체가 어려움).
+// - silent push 분기 판정(sleep mode, station-passed 게이트)은 FG 대비 정확도 요구치가 낮음.
+// 단, 60초 이상 stale 캐시로 발사하면 사용자가 이미 통과/이전 역에 있을 위험이 있어
+// 초과 시에는 stale로 간주하고 보수적으로 skip한다.
 export const LOCATION_CACHE_TTL_MS = 60_000;
 
 // 콜드 GPS fetch 타임아웃 — BG 깨움 시 OS가 즉답 못 하면 보수적 skip.
