@@ -21,9 +21,11 @@ jest.mock('../../api/alarmBackend', () => ({
   clearActiveTrip: (...args: unknown[]) => mockClear(...args),
 }));
 
+// #2089 — 옛 tripBoundScheduler.cancelTripBoundAlarms(무인자)가 safetyNetScheduler 단일 채널
+// 통합으로 tripToken 인자를 받는 cancelAllSafetyNetAlarms로 대체됐다.
 const mockCancelTripBoundAlarms = jest.fn();
-jest.mock('../../utils/tripBoundScheduler', () => ({
-  cancelTripBoundAlarms: (...args: unknown[]) => mockCancelTripBoundAlarms(...args),
+jest.mock('../../utils/safetyNetScheduler', () => ({
+  cancelAllSafetyNetAlarms: (...args: unknown[]) => mockCancelTripBoundAlarms(...args),
 }));
 
 // R11-a (#1612) — POST /trips 직전 backend SSoT mirror 강제 clean 검증.
@@ -1365,6 +1367,12 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('routeSig 전환 시 register 전에 cancelTripBoundAlarms 호출', async () => {
+      // #2089 — cancelAllSafetyNetAlarms(tripToken)은 ACTIVE_TRIP_KEY가 있어야 실제로 호출된다.
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
       expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
@@ -1388,6 +1396,11 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('cancelTripBoundAlarms 실패해도 register는 graceful 진행', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       mockCancelTripBoundAlarms.mockRejectedValueOnce(new Error('cancel failed'));
       const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
@@ -1420,6 +1433,11 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('destination 변경 시(routeSig 동일 가정 X — 다른 route 보낼 때) cancel 호출', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       const altStation: Station = { ...station, id: '2-023', name: '역삼' };
       const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
@@ -1430,6 +1448,11 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('cancelTripBoundAlarms in-flight 중 unmount되면 후속 register 미발사 (cancelled 가드)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       let resolveCancel!: () => void;
       mockCancelTripBoundAlarms.mockImplementation(
         () => new Promise<void>((res) => { resolveCancel = res; }),
@@ -1495,6 +1518,12 @@ describe('useApnsTripRegistration', () => {
     const altStation: Station = { ...station, id: '2-023', name: '역삼' };
 
     it('routeSig 동일 + destination.id 변경 시 cancelTripBoundAlarms 호출', async () => {
+      // #2089 — cancelAllSafetyNetAlarms(tripToken)은 ACTIVE_TRIP_KEY가 있어야 실제로 호출된다.
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       const { rerender } = renderTrip({
         route: makeDirectRoute(5, '2'),
         destination: station,
@@ -1510,6 +1539,11 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('routeSig 동일 + boardingLockSig 변경 시 cancelTripBoundAlarms 호출', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       const { rerender } = renderTrip({
         route: makeDirectRoute(5, '2'),
         destination: station,
@@ -1572,6 +1606,11 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('routeSig + destination + lock이 모두 동시에 바뀌어도 cancel 1회만 호출', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
       const { rerender } = renderTrip({
         route: makeDirectRoute(5, '2'),
         destination: station,

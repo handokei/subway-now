@@ -64,20 +64,14 @@ import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { addFiredPushId } from '../utils/firedPushIds';
 import {
-  rescheduleHopForLock,
-  cancelBlByStationPhase,
-} from '../utils/boardingLockScheduler';
-import {
-  rescheduleTripBoundAlarm,
-  cancelTbaByStationPhase,
-} from '../utils/tripBoundScheduler';
-import { ALARM_PHASES } from '../utils/alarmPhases';
+  rescheduleSafetyNetAlarm,
+  cancelSafetyNetByStationKind,
+} from '../utils/safetyNetScheduler';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
 import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
-import { getBoardingLock } from '../utils/boardingLockStorage';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
@@ -183,28 +177,13 @@ export {
 } from '../utils/backendSsotMirror';
 
 /**
- * Reschedule push channel discriminator (#918 A3 PR4). Backend `types.ts`의 `RescheduleChannel`과 정렬.
- *
- *  - 'bl' — boarding-lock scheduler (`bl:` prefix). #585 경로. `rescheduleHopForLock` 호출.
- *  - 'tba' — trip-bound scheduler (`tba:` prefix). lock-free. `rescheduleTripBoundAlarm` 호출.
- *
- * 한 payload는 두 채널을 동시에 정정할 수 있다 (둘 다 호출).
- */
-export type RescheduleChannel = 'bl' | 'tba';
-
-/** 구 backend 호환 default — `channels` 누락 시 'bl' 단독으로 해석 (기존 동작 보존). */
-const DEFAULT_RESCHEDULE_CHANNELS: ReadonlyArray<RescheduleChannel> = ['bl'];
-
-/** 신규 backend(#918 A3 PR4) default — 'bl' + 'tba' 동시 정정. payload 검증/테스트에서 재사용. */
-export const ALL_RESCHEDULE_CHANNELS: ReadonlyArray<RescheduleChannel> = ['bl', 'tba'];
-
-/**
  * Reschedule silent push payload (#725). 백엔드 `sendReschedulePush`가 일반 silent push와
  * 다른 schema(`nextStation` / `newArrivalTimeEpoch` / `trainCode`)를 보낸다 — 별도 인터페이스로
  * 모델링하고 `kind: 'reschedule'`을 discriminator로 사용해 union narrowing.
  *
- * `channels` (#918 A3 PR4): 정정 대상 scheduler 채널 배열. 누락 시 구 backend 호환을 위해
- * `DEFAULT_RESCHEDULE_CHANNELS`(=['bl'])로 해석한다. 신규 backend는 ['bl','tba']를 보낸다.
+ * #2089 — OS 예약 채널이 safetyNetScheduler 단일 모듈로 통합되며 `channels`(bl/tba 정정 대상
+ * 배열) 필드는 device에서 더 이상 의미가 없다. 구 backend가 여전히 필드를 보내도 무시 — parse
+ * 대상에서 제외해도 안전(추가 프로퍼티는 destructuring에서 자연 무시).
  */
 export interface RescheduleSilentPushPayload {
   kind: 'reschedule';
@@ -213,10 +192,9 @@ export interface RescheduleSilentPushPayload {
   trainCode: string;
   sentAt?: number;
   pushId?: string;
-  channels?: ReadonlyArray<RescheduleChannel>;
   /**
-   * #1193 — `tba:` 채널 정정 시, 같은 stationName이 route에 중복 등장하는 경우 정정 대상
-   * occurrence(0-based). 미지정 시 0(첫 등장)으로 해석 — 구 backend 호환 및 중복 없는 trip 동작 보존.
+   * #1193 — 같은 stationName이 route에 중복 등장하는 경우 정정 대상 occurrence(0-based).
+   * 미지정 시 0(첫 등장)으로 해석 — 구 backend 호환 및 중복 없는 trip 동작 보존.
    */
   occurrenceIdx?: number;
 }
@@ -618,8 +596,7 @@ function validHopIndex(value: unknown): number | undefined {
 function extractReschedulePayload(
   obj: Record<string, unknown>,
 ): RescheduleSilentPushPayload | null {
-  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId, channels, occurrenceIdx } =
-    obj;
+  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId, occurrenceIdx } = obj;
   if (typeof nextStation !== 'string' || nextStation.length === 0) return null;
   if (typeof newArrivalTimeEpoch !== 'number' || !Number.isFinite(newArrivalTimeEpoch)) return null;
   if (typeof trainCode !== 'string' || trainCode.length === 0) return null;
@@ -630,7 +607,6 @@ function extractReschedulePayload(
     trainCode,
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
-    channels: validChannels(channels),
     occurrenceIdx: validOccurrenceIdx(occurrenceIdx),
   };
 }
@@ -643,26 +619,6 @@ function validOccurrenceIdx(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   if (!Number.isInteger(value) || value < 0) return undefined;
   return value;
-}
-
-/**
- * payload.channels 검증. Array of 'bl'|'tba' 만 통과 — 그 외(누락/형식 오류/빈 배열)는 undefined로 정규화.
- * undefined 결과는 `resolveChannels`에서 `DEFAULT_RESCHEDULE_CHANNELS`로 fallback (구 backend 호환).
- */
-function validChannels(value: unknown): ReadonlyArray<RescheduleChannel> | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const filtered: RescheduleChannel[] = [];
-  for (const v of value) {
-    if (v === 'bl' || v === 'tba') filtered.push(v);
-  }
-  return filtered.length > 0 ? filtered : undefined;
-}
-
-/** 누락된 channels는 구 backend 호환 default(['bl'])로 해석. */
-function resolveChannels(
-  channels: ReadonlyArray<RescheduleChannel> | undefined,
-): ReadonlyArray<RescheduleChannel> {
-  return channels ?? DEFAULT_RESCHEDULE_CHANNELS;
 }
 
 /**
@@ -1166,11 +1122,14 @@ async function refreshWidgetForPayload(payload: ExtractedPayload): Promise<void>
 
 /**
  * reschedule silent push(#698) 적용 — 백엔드가 보낸 nextStation/newArrivalTimeEpoch로
- * 해당 hop의 사전 예약을 cancel + 재예약한다. 본 함수는 SLA 게이트가 아니라 정정 신호이므로
- * 결과 무관 ack(`reschedule-received`)는 호출자가 처리한다.
+ * 안전망(safetyNetScheduler) 사전 예약을 cancel + 재예약한다. 본 함수는 SLA 게이트가 아니라
+ * 정정 신호이므로 결과 무관 ack(`reschedule-received`)는 호출자가 처리한다.
  *
- * 사전 조건 누락(`lock`/`route`/`destination` 중 하나라도 없음, 또는 newArrivalTimeEpoch 과거)은
- * 모두 graceful no-op — 신호가 도달했어도 SLA를 깨지 않는다(원본 사전 예약 유지).
+ * #2089 — 3종 채널(bl/tba) 통합 이후 단일 안전망 채널만 정정한다. lock 상태와 무관
+ * (tripToken 기반 lockless) — 옛 `applyRescheduleBl`의 trainCode/lock 매칭은 더 이상 필요 없다.
+ *
+ * 사전 조건 누락(`route`/`destination`/`tripToken` 중 하나라도 없음, 또는 newArrivalTimeEpoch
+ * 과거)은 모두 graceful no-op — 신호가 도달했어도 SLA를 깨지 않는다(원본 사전 예약 유지).
  * 예외는 외부로 전파하지 않고 logger.error 후 swallow — 다른 silent push 흐름과 일관.
  */
 async function applyReschedule(
@@ -1184,93 +1143,32 @@ async function applyReschedule(
       );
       return;
     }
-    // route/destination은 두 채널 모두 사용 — 한 번만 read.
-    const [routeRaw, destRaw] = await Promise.all([
+    const [routeRaw, destRaw, tripToken] = await Promise.all([
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(DESTINATION_KEY),
+      AsyncStorage.getItem(ACTIVE_TRIP_KEY),
     ]);
     const route = parseRoute(routeRaw);
     const destinationName = parseDestinationName(destRaw);
-    if (!route || !destinationName) {
+    if (!route || !destinationName || !tripToken) {
       logger.info(
-        `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'}`,
+        `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'} tripToken=${tripToken ? 'ok' : 'null'}`,
       );
       return;
     }
-    const channels = resolveChannels(payload.channels);
-    // bl 채널 — 기존 lock-기반 hop 정정. lock 부재/trainCode mismatch 시 graceful skip.
-    if (channels.includes('bl')) {
-      await applyRescheduleBl(payload, route, destinationName, receivedAt);
-    }
-    // tba 채널 (#918 A3 PR4) — lock-free trip-bound 사전 예약 정정.
-    if (channels.includes('tba')) {
-      await applyRescheduleTba(payload, route, destinationName, receivedAt);
-    }
+    await rescheduleSafetyNetAlarm({
+      tripToken,
+      route,
+      destinationName,
+      stationName: payload.nextStation,
+      newArrivalMs: payload.newArrivalTimeEpoch,
+      // #1193 — 중복역 trip은 backend가 occurrenceIdx를 명시. 미지정 시 0(첫 등장).
+      occurrenceIdx: payload.occurrenceIdx,
+      now: receivedAt,
+    });
   } catch (e) {
     logger.error('reschedule apply 실패:', e);
   }
-}
-
-/**
- * bl(boarding-lock) 채널 정정 — lock + route + destination 필요. 사전 조건 미충족 시
- * graceful skip (정정 신호 폐기). tba 채널과 독립적으로 동작 — bl skip이 tba 정정을 막지 않는다.
- */
-async function applyRescheduleBl(
-  payload: RescheduleSilentPushPayload,
-  route: NonNullable<Route>,
-  destinationName: string,
-  receivedAt: number,
-): Promise<void> {
-  const lock = await getBoardingLock();
-  if (!lock) {
-    logger.info('reschedule bl skip: no boarding lock');
-    return;
-  }
-  if (lock.trainCode !== payload.trainCode) {
-    logger.info(
-      `reschedule bl skip: trainCode mismatch lock=${lock.trainCode} payload=${payload.trainCode}`,
-    );
-    return;
-  }
-  // #1355 D1 — cross-channel cancel: 같은 station+phase의 `tba:` 사전 예약 제거.
-  // bl 채널이 정정 신호의 source-of-truth가 되므로 반대 채널의 stale 항목이 OS 큐에 잔존해
-  // 같은 ETA에 중복 banner fire되는 회귀를 차단한다.
-  for (const phase of ALARM_PHASES) {
-    await cancelTbaByStationPhase(payload.nextStation, phase.id);
-  }
-  await rescheduleHopForLock({
-    lock,
-    route,
-    destinationName,
-    nextStation: payload.nextStation,
-    newArrivalMs: payload.newArrivalTimeEpoch,
-    now: receivedAt,
-  });
-}
-
-/**
- * tba(trip-bound) 채널 정정 — lock 의존 없음. cross-channel `bl:` 사전 예약을 먼저 cleanup하고
- * `rescheduleTripBoundAlarm`에 위임한다.
- */
-async function applyRescheduleTba(
-  payload: RescheduleSilentPushPayload,
-  route: NonNullable<Route>,
-  destinationName: string,
-  receivedAt: number,
-): Promise<void> {
-  // #1355 D1 — cross-channel cancel: 같은 station+phase의 `bl:` 사전 예약 제거.
-  for (const phase of ALARM_PHASES) {
-    await cancelBlByStationPhase(payload.nextStation, phase.id);
-  }
-  await rescheduleTripBoundAlarm({
-    stationName: payload.nextStation,
-    newArrivalMs: payload.newArrivalTimeEpoch,
-    route,
-    destinationName,
-    now: receivedAt,
-    // #1193 — 중복역 trip은 backend가 occurrenceIdx를 명시. 미지정 시 0(첫 등장).
-    occurrenceIdx: payload.occurrenceIdx,
-  });
 }
 
 function parseRoute(raw: string | null): Route | null {
@@ -1298,9 +1196,8 @@ function parseDestinationName(raw: string | null): string | null {
  * 절차:
  *   1. `AlarmLocalAuthority.fireCompanionAlarm` 호출 — sleepMode gate + persisted ledger dedup +
  *      TTS/진동 발사를 단일 진입점이 담당한다. 알림(배너) 생성 없음.
- *   2. 발사 성공 시 해당 station의 OS 안전망 예약(tba/bl)을 cancel — companion 도달 = 사용자가
- *      이미 소리/진동으로 인지했으므로 중복 안전망 알림이 불필요하다 (#2089로 분리된 통합 전까지는
- *      기존 3종 스케줄러의 cancel 헬퍼를 그대로 재사용).
+ *   2. 발사 성공 시 해당 station의 OS 안전망 예약(safetyNetScheduler)을 cancel — companion 도달 =
+ *      사용자가 이미 소리/진동으로 인지했으므로 중복 안전망 알림이 불필요하다.
  *   3. skip 사유(not-sleep-mode / dedup)에 따라 ack outcome을 분기.
  *
  * gate 무관 (location / silence / motion 모두 skip) — boarding-prompt와 같은 도달률 우선 정책.
@@ -1333,11 +1230,10 @@ async function fireSleepAlarmCompanion(
     return;
   }
 
-  // companion 도달 = 사용자가 이미 소리/진동으로 인지 → 남은 OS 안전망 예약(tba/bl)을 정리.
-  for (const phase of ALARM_PHASES) {
-    await cancelTbaByStationPhase(payload.nextStation, phase.id);
-    await cancelBlByStationPhase(payload.nextStation, phase.id);
-  }
+  // companion 도달 = 사용자가 이미 소리/진동으로 인지 → 남은 OS 안전망 예약을 정리(#2089
+  // cross-channel cancel의 대체 — 채널이 하나뿐이라 "반대 채널 cleanup"이 아니라 "companion으로
+  // 이미 전달된 waypoint의 안전망 제거"가 목적).
+  await cancelSafetyNetByStationKind(payload.nextStation, payload.targetKind);
 
   logCompanionAlarmFired({
     originStation: payload.originStation,

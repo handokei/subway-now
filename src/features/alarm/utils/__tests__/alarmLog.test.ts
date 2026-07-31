@@ -66,7 +66,7 @@ import {
   LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS,
   logSuppressedLocklessNoUserIntent,
   logSuppressedSsotFireGate,
-  logSuppressedTbaRevalidation,
+  logSuppressedSafetyNetRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
   countSilentPushKindBreakdown,
@@ -835,14 +835,14 @@ describe('alarmLog', () => {
 
     it.each([
       ['revalidate-no-trip' as const, '강남', 'early' as const],
-      ['revalidate-route-sig-mismatch' as const, '시청', 'imminent' as const],
+      ['revalidate-trip-token-mismatch' as const, '시청', 'imminent' as const],
       ['revalidate-waypoint-mismatch' as const, '서울역', 'early' as const],
       // #1704 — 사용자 위치 대비 fire 대상이 N hop 이상 미래 (2026-06-23 trip evidence backstop).
       ['revalidate-position-mismatch' as const, '종로3가', 'imminent' as const],
     ])(
-      '#918 A3 PR2 logSuppressedTbaRevalidation: %s — source=bg-scheduled 고정 + reason/stationName/phaseId 보존',
+      '#918 A3 PR2 logSuppressedSafetyNetRevalidation: %s — source=bg-scheduled 고정 + reason/stationName/phaseId 보존',
       async (reason, stationName, phaseId) => {
-        logSuppressedTbaRevalidation({ reason, stationName, phaseId });
+        logSuppressedSafetyNetRevalidation({ reason, stationName, phaseId });
         await expectLastSavedEntryMatches({
           source: 'bg-scheduled',
           outcome: 'suppressed',
@@ -853,8 +853,8 @@ describe('alarmLog', () => {
       },
     );
 
-    it('#918 A3 PR2 logSuppressedTbaRevalidation: phaseId 미전달 시에도 적재', async () => {
-      logSuppressedTbaRevalidation({
+    it('#918 A3 PR2 logSuppressedSafetyNetRevalidation: phaseId 미전달 시에도 적재', async () => {
+      logSuppressedSafetyNetRevalidation({
         reason: 'revalidate-no-trip',
         stationName: '약수',
       });

@@ -6,7 +6,6 @@ import {
   cancelTripBoundOsQueue,
   __resetDefensiveCancelForTest,
 } from '../tripBoundCleanups';
-import { TRIP_BOUND_ROUTE_SIG_KEY, BOARDING_LOCK_ROUTE_SIG_KEY } from '../../../../shared/constants/storageKeys';
 import {
   DESTINATION_KEY,
   ROUTE_KEY,
@@ -15,7 +14,6 @@ import {
   TRIP_STARTED_AT_KEY,
   LAST_UPLOADED_RECALL_TRIP_START_KEY,
   LA_DISMISSED_AT_KEY,
-  SCHEDULED_NOTIFICATIONS_KEY,
   STICKY_STATION_KEY,
 } from '../../../../shared/constants/storageKeys';
 import {
@@ -97,27 +95,37 @@ describe('tripBoundCleanups', () => {
     expect(mockClearWidgetStation).toHaveBeenCalledTimes(2);
   });
 
-  it('#773 — runTripBoundCleanups 실행 시 OS 사전 예약 큐를 cancel + storage clear한다 (옛 trip 알람 burst 차단)', async () => {
-    // trip release 시점에 추적 큐의 모든 `bl:` 사전 예약을 OS에서 cancel해야 한다.
+  it('#773/#2089 — runTripBoundCleanups 실행 시 tripToken 기준 safety-net OS 사전 예약을 cancel한다 (옛 trip 알람 burst 차단)', async () => {
+    // trip release 시점에 ACTIVE_TRIP_KEY(tripToken) 기준으로 OS 사전 예약을 cancel해야 한다.
     // storage만 비우면 iOS 사전 예약은 살아남아 새 trip 시작 후 옛 알람이 burst로 발사된다.
-    const scheduledIds = ['bl:T-100:0:early:강남', 'bl:T-100:0:imminent:강남'];
-    await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(scheduledIds));
+    (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+      Promise.resolve(k === ACTIVE_TRIP_KEY ? 'T-100' : null),
+    );
+    (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([
+      { identifier: 'alarm-T-100-강남-transfer' },
+      { identifier: 'alarm-T-100-강남-destination' },
+      // 다른 tripToken 소속 — cancel 대상 아님(prefix 미매칭).
+      { identifier: 'alarm-T-999-용마산-transfer' },
+    ]);
     const mockedCancel = Notifications.cancelScheduledNotificationAsync as jest.Mock;
     mockedCancel.mockResolvedValue(undefined);
     (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
 
     await runTripBoundCleanups();
 
-    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
-    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:imminent:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('alarm-T-100-강남-transfer');
+    expect(mockedCancel).toHaveBeenCalledWith('alarm-T-100-강남-destination');
+    expect(mockedCancel).not.toHaveBeenCalledWith('alarm-T-999-용마산-transfer');
   });
 
-  it('#773 — OS cancel이 reject해도 runTripBoundCleanups는 graceful 종료 (이미 발사된 알람 등)', async () => {
+  it('#773/#2089 — OS cancel이 reject해도 runTripBoundCleanups는 graceful 종료 (이미 발사된 알람 등)', async () => {
     // 이미 발사된 알람을 cancel 시 expo가 reject할 수 있다 — 나머지 cleanup에 전파되면 안 됨.
-    await AsyncStorage.setItem(
-      SCHEDULED_NOTIFICATIONS_KEY,
-      JSON.stringify(['bl:T-100:0:early:강남']),
+    (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+      Promise.resolve(k === ACTIVE_TRIP_KEY ? 'T-100' : null),
     );
+    (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([
+      { identifier: 'alarm-T-100-강남-transfer' },
+    ]);
     (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockRejectedValue(
       new Error('already fired'),
     );
@@ -150,13 +158,29 @@ describe('tripBoundCleanups', () => {
     await expect(runTripBoundCleanups()).resolves.toBeUndefined();
   });
 
-  it('#1370 L4 — cancelTripBoundOsQueue: bl:/tba: 사전 예약을 OS 큐에서 cancel한다 (종착역 burst 차단)', async () => {
+  it('#2089 — runTripBoundCleanups: ACTIVE_TRIP_KEY 조회 자체가 reject해도 tripToken=null로 graceful 진행', async () => {
+    // scheduleDefensiveCancel/safety-net cancel 부착 여부를 결정하기 위한 선행 조회이므로,
+    // 이 조회가 실패해도 나머지 storage-only cleanup은 정상 진행돼야 한다.
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('getItem boom'));
+    (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+  });
+
+  it('#2089 — cancelTripBoundOsQueue: ACTIVE_TRIP_KEY 조회 자체가 reject해도 tripToken=null로 graceful 진행', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('getItem boom'));
+    await expect(cancelTripBoundOsQueue()).resolves.toBeUndefined();
+    expect(Notifications.getAllScheduledNotificationsAsync).not.toHaveBeenCalled();
+  });
+
+  it('#1370 L4/#2089 — cancelTripBoundOsQueue: tripToken 기준 safety-net 사전 예약을 OS 큐에서 cancel한다 (종착역 burst 차단)', async () => {
     // backend trip-ended push 수신 즉시 호출되는 정밀 helper. storage는 건드리지 않고
-    // OS queue 두 채널만 우선 cancel — race window 차단.
-    const blIds = ['bl:T-7172:0:early:용마산', 'bl:T-7172:0:imminent:용마산'];
-    await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(blIds));
+    // OS queue만 우선 cancel — race window 차단.
+    (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+      Promise.resolve(k === ACTIVE_TRIP_KEY ? 'T-7172' : null),
+    );
     (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([
-      { identifier: 'tba:imminent:용마산' },
+      { identifier: 'alarm-T-7172-용마산-transfer' },
+      { identifier: 'alarm-T-7172-용마산-destination' },
     ]);
     (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
     (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
@@ -166,35 +190,37 @@ describe('tripBoundCleanups', () => {
     const cancelled = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls.map(
       (c) => c[0] as string,
     );
-    expect(cancelled).toContain('bl:T-7172:0:early:용마산');
-    expect(cancelled).toContain('bl:T-7172:0:imminent:용마산');
-    expect(cancelled).toContain('tba:imminent:용마산');
+    expect(cancelled).toContain('alarm-T-7172-용마산-transfer');
+    expect(cancelled).toContain('alarm-T-7172-용마산-destination');
+    // storage는 건드리지 않는다 — precision helper 계약.
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
   });
 
-  it('#1370 L4 — cancelTripBoundOsQueue: 한쪽 채널이 reject해도 다른 채널은 실행되고 호출자에 reject 전파 안 함', async () => {
-    // 두 cancel은 독립적 — allSettled로 묶여 한쪽 실패가 다른 쪽 또는 호출자(trip-ended handler)에
-    // 전파되면 안 된다.
-    await AsyncStorage.setItem(
-      SCHEDULED_NOTIFICATIONS_KEY,
-      JSON.stringify(['bl:T-7172:0:imminent:용마산']),
+  it('#1370 L4/#2089 — cancelTripBoundOsQueue: tripToken 없으면(활성 trip 없음) OS 조회 자체를 skip한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+
+    await expect(cancelTripBoundOsQueue()).resolves.toBeUndefined();
+    expect(Notifications.getAllScheduledNotificationsAsync).not.toHaveBeenCalled();
+  });
+
+  it('#2089 — cancelTripBoundOsQueue: OS 조회가 reject해도 흡수하고 호출자에 reject 전파 안 함', async () => {
+    // 단일 채널 통합 이후에도 OS reject가 뒤따르는 triggerTripEndRecall/runTripBoundCleanups
+    // 체인을 막지 않아야 한다 — 옛 dual-channel Promise.allSettled와 동등한 보장.
+    (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+      Promise.resolve(k === ACTIVE_TRIP_KEY ? 'T-7172' : null),
     );
     (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockRejectedValue(
       new Error('boom'),
     );
-    (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
-    (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
 
     await expect(cancelTripBoundOsQueue()).resolves.toBeUndefined();
-    // bl 채널은 정상 cancel 호출됐어야 함.
-    const cancelled = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls.map(
-      (c) => c[0] as string,
-    );
-    expect(cancelled).toContain('bl:T-7172:0:imminent:용마산');
   });
 
   describe('#1525 — defensive cancel (zombie alarm backstop)', () => {
     // sig 가드 테스트에서 getItem/setItem이 일관된 in-memory store처럼 동작해야 한다.
     const storage = new Map<string, string>();
+
+    const TRIP_TOKEN = 'T-9001';
 
     beforeEach(async () => {
       jest.useFakeTimers();
@@ -216,6 +242,10 @@ describe('tripBoundCleanups', () => {
         storage.set(k, v);
         return Promise.resolve();
       });
+      // #2089 — defensive cancel은 scheduleDefensiveCancel(tripToken) 시점에 캡처된
+      // ACTIVE_TRIP_KEY를 필요로 한다(route-sig staleness 폐기 이후 tripStart 존재 여부만으로
+      // "새 trip 진행 중"을 판별).
+      storage.set(ACTIVE_TRIP_KEY, TRIP_TOKEN);
       (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockReset();
       (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
       (Notifications.dismissNotificationAsync as jest.Mock).mockReset();
@@ -233,15 +263,12 @@ describe('tripBoundCleanups', () => {
       jest.useRealTimers();
     });
 
-    it('cancelTripBoundOsQueue 호출 1분 후 두 채널 cancel을 한 번 더 실행한다 (route sig 없으면)', async () => {
-      // 새 trip이 없을 때(sig=null) defensive retry가 한 번 더 cancel을 시도해 expo 내부
-      // race로 살아남은 사전 예약을 정리한다.
-      await AsyncStorage.removeItem(TRIP_BOUND_ROUTE_SIG_KEY);
-      await AsyncStorage.removeItem(BOARDING_LOCK_ROUTE_SIG_KEY);
+    it('cancelTripBoundOsQueue 호출 1분 후 안전망 cancel을 한 번 더 실행한다 (새 trip 없으면)', async () => {
+      // 새 trip이 시작되지 않았을 때(tripStart=null) defensive retry가 한 번 더 cancel을
+      // 시도해 expo 내부 race로 살아남은 사전 예약을 정리한다.
       (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([
-        { identifier: 'tba:imminent:용마산' },
+        { identifier: `alarm-${TRIP_TOKEN}-용마산-transfer` },
       ]);
-      (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
 
       await cancelTripBoundOsQueue();
       const firstCallCount = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock
@@ -255,35 +282,30 @@ describe('tripBoundCleanups', () => {
       expect(secondCallCount).toBeGreaterThan(firstCallCount);
     });
 
-    it('defensive timer fire 시점에 새 trip route sig가 기록돼 있으면 cancel을 skip한다', async () => {
-      // 새 trip이 시작돼 sig가 다시 쓰이면 사전 예약은 정상 — defensive가 정상 알람을
+    it('defensive timer fire 시점에 새 trip이 시작돼(tripStart 기록) 있으면 cancel을 skip한다', async () => {
+      // 새 trip이 시작돼 tripStart가 다시 쓰이면 사전 예약은 정상 — defensive가 정상 알람을
       // 지우면 안 된다.
       (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([]);
-      (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
 
       await cancelTripBoundOsQueue();
       const baseline = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls
         .length;
 
-      // 새 trip 시작 시뮬레이션 — sig 기록.
-      await AsyncStorage.setItem(TRIP_BOUND_ROUTE_SIG_KEY, 'new-trip-sig');
+      // 새 trip 시작 시뮬레이션 — tripStart 기록.
+      storage.set(TRIP_STARTED_AT_KEY, String(Date.now()));
 
       await jest.advanceTimersByTimeAsync(60_000);
 
-      // sig 가드로 두 번째 cancel은 skip — 새 호출이 없어야 한다.
+      // tripStart 가드로 두 번째 cancel은 skip — 새 호출이 없어야 한다.
       expect((Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls.length).toBe(
         baseline,
       );
     });
 
     it('runTripBoundCleanups도 defensive cancel을 1분 후 실행한다 (FG setDestination(null) 경로 backstop)', async () => {
-      await AsyncStorage.removeItem(TRIP_BOUND_ROUTE_SIG_KEY);
-      await AsyncStorage.removeItem(BOARDING_LOCK_ROUTE_SIG_KEY);
       (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([
-        { identifier: 'tba:early:강남' },
+        { identifier: `alarm-${TRIP_TOKEN}-강남-destination` },
       ]);
-      (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
-      (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
 
       await runTripBoundCleanups();
       const baseline = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls
@@ -297,10 +319,7 @@ describe('tripBoundCleanups', () => {
     });
 
     it('연속 호출 시 이전 defensive timer를 reset하고 새 timer만 fire한다 (중복 cancel pass 방지)', async () => {
-      await AsyncStorage.removeItem(TRIP_BOUND_ROUTE_SIG_KEY);
-      await AsyncStorage.removeItem(BOARDING_LOCK_ROUTE_SIG_KEY);
       (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([]);
-      (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
 
       await cancelTripBoundOsQueue();
       await jest.advanceTimersByTimeAsync(30_000);
@@ -321,17 +340,33 @@ describe('tripBoundCleanups', () => {
       ).toBeGreaterThan(baseline);
     });
 
-    it('defensive cancel 내부 OS reject는 Promise.allSettled가 흡수한다 (graceful)', async () => {
-      await AsyncStorage.removeItem(TRIP_BOUND_ROUTE_SIG_KEY);
-      await AsyncStorage.removeItem(BOARDING_LOCK_ROUTE_SIG_KEY);
+    it('#2089 — tripToken 없으면(활성 trip 없음) defensive cancel도 안전망 조회 없이 조기 반환한다', async () => {
+      storage.delete(ACTIVE_TRIP_KEY);
+      (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([]);
+
+      await cancelTripBoundOsQueue();
+      const baseline = (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mock.calls
+        .length;
+
+      await jest.advanceTimersByTimeAsync(60_000);
+
+      // tripToken=null이면 runDefensiveCancel이 안전망 조회 자체를 skip한다.
+      expect(
+        (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mock.calls.length,
+      ).toBe(baseline);
+    });
+
+    it('defensive cancel 내부 OS reject는 catch로 흡수된다 (graceful)', async () => {
+      // 1차 cancel은 정상 통과시켜 defensive timer만 예약한 뒤, defensive fire 시점에만
+      // OS reject를 발생시켜 runDefensiveCancel 내부 catch가 흡수하는지 검증.
+      (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValueOnce([]);
+      await cancelTripBoundOsQueue();
+
       (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockRejectedValue(
         new Error('os err'),
       );
-      (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
-
-      await cancelTripBoundOsQueue();
-      // getAllScheduledNotificationsAsync reject는 cancelTripBoundAlarms 내부에서 발생하지만
-      // runDefensiveCancel의 Promise.allSettled가 흡수 — unhandled rejection 발생 X.
+      // runDefensiveCancel의 cancelAllSafetyNetAlarms(...).catch(...)가 흡수 —
+      // unhandled rejection 발생 X.
       await expect(jest.advanceTimersByTimeAsync(60_000)).resolves.toBeUndefined();
     });
   });
@@ -473,7 +508,10 @@ describe('tripBoundCleanups', () => {
     // 임계값을 낮춰 기존 invariant(storage 기반 항목 모두 실행)는 유지.
     // #1597 — triggerTripGroundTruthPrompt 제거로 NON_STORAGE 5→4.
     // #1892 / #1885 — endLiveActivityCleanup 신규 (native LA dismiss, storage write 없음) → 4→5.
-    const NON_STORAGE_CLEANUPS = 5;
+    // #2089 — purgeBoardingLockSchedulerQueue(내부에서 SCHEDULED_NOTIFICATIONS_KEY removeItem
+    // 수행)가 배열에서 제거되며 storage 기반 항목이 하나 줄었다 → 5→6. tripToken 없는 이 테스트
+    // 경로에서는 cancelAllSafetyNetAlarms(순수 OS API, removeItem 없음)도 애초에 추가되지 않는다.
+    const NON_STORAGE_CLEANUPS = 6;
     expect((AsyncStorage.removeItem as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
       TRIP_BOUND_CLEANUPS.length - NON_STORAGE_CLEANUPS,
     );

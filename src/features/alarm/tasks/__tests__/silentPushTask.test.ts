@@ -182,24 +182,14 @@ jest.mock('react-native', () => ({
   },
 }));
 
-// #698 — reschedule silent push 분기에서 호출. mock으로 호출 인자/횟수만 검증.
-const mockRescheduleHopForLock = jest.fn();
-// #1356 E1 — suppress 분기에서 같은 station+phase의 bl: 사전 예약을 cancel.
-// #1355 D1 — cross-channel cancel helper (reschedule 분기에서 반대 채널 stale 사전 예약 정리).
-const mockCancelBlByStationPhase = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../utils/boardingLockScheduler', () => ({
-  rescheduleHopForLock: (...args: unknown[]) => mockRescheduleHopForLock(...args),
-  cancelBlByStationPhase: (...args: unknown[]) => mockCancelBlByStationPhase(...args),
-}));
-
-// #918 A3 PR4 — tba 채널 reschedule. mock으로 호출 인자/횟수만 검증.
-const mockRescheduleTripBoundAlarm = jest.fn();
-// #1356 E1 — suppress 분기에서 같은 station+phase의 tba: 사전 예약을 cancel.
-// #1355 D1 — cross-channel cancel helper (reschedule 분기에서 반대 채널 stale 사전 예약 정리).
-const mockCancelTbaByStationPhase = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../utils/tripBoundScheduler', () => ({
-  rescheduleTripBoundAlarm: (...args: unknown[]) => mockRescheduleTripBoundAlarm(...args),
-  cancelTbaByStationPhase: (...args: unknown[]) => mockCancelTbaByStationPhase(...args),
+// #698/#918 A3 PR4 → #2089 — 옛 bl/tba 이중 채널(rescheduleHopForLock/rescheduleTripBoundAlarm +
+// cancelBlByStationPhase/cancelTbaByStationPhase)이 safetyNetScheduler 단일 채널로 통합됐다.
+// reschedule 분기: rescheduleSafetyNetAlarm 1회. companion 발사 후 cleanup: cancelSafetyNetByStationKind 1회.
+const mockRescheduleSafetyNetAlarm = jest.fn();
+const mockCancelSafetyNetByStationKind = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/safetyNetScheduler', () => ({
+  rescheduleSafetyNetAlarm: (...args: unknown[]) => mockRescheduleSafetyNetAlarm(...args),
+  cancelSafetyNetByStationKind: (...args: unknown[]) => mockCancelSafetyNetByStationKind(...args),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -347,17 +337,12 @@ describe('silentPushTask', () => {
     mockGetBoardingLock.mockResolvedValue(defaultBoardingLock);
     // #919 — recall trigger 기본 graceful skip.
     mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
-    // #698 — 기본 graceful: 1건 cancel + 1건 schedule. 개별 테스트에서 override.
-    mockRescheduleHopForLock.mockResolvedValue({ cancelled: 1, scheduled: 1 });
-    // #918 A3 PR4 — tba reschedule 기본 graceful.
-    mockRescheduleTripBoundAlarm.mockResolvedValue({ cancelled: 0, scheduled: 0 });
+    // #698/#2089 — 기본 graceful: 1건 cancel + 1건 schedule. 개별 테스트에서 override.
+    mockRescheduleSafetyNetAlarm.mockResolvedValue({ cancelled: 1, scheduled: 1 });
     // #1370 L4 — trip-ended OS queue cancel 기본 graceful (mockImplementation 잔류 차단).
     mockCancelTripBoundOsQueue.mockResolvedValue(undefined);
     // #919 / #1370 — clearAllMocks가 mockImplementation을 reset하지 않으므로 명시 복구.
     mockRunTripBoundCleanups.mockResolvedValue(undefined);
-    // #1355 D1 — cross-channel cancel 기본 0건.
-    mockCancelTbaByStationPhase.mockResolvedValue(0);
-    mockCancelBlByStationPhase.mockResolvedValue(0);
     // #2069 — trip-ended dedup 기록 기본값.
     mockAddFiredPushId.mockResolvedValue(undefined);
     // #2018 γ' — 기본 BG로 설정해 기존 테스트가 FG 분기 진입하지 않도록.
@@ -1942,25 +1927,21 @@ describe('silentPushTask', () => {
         expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
       });
 
-      // #698 — reschedule kind: 사전 예약 cancel + 재예약 적용.
-      describe('applyReschedule (#698)', () => {
+      // #698 → #2089 — reschedule kind: safety-net 사전 예약 cancel + 재예약 적용.
+      // 옛 bl/tba 이중 채널 + lock 필수 게이트 + channels 배열은 폐기됐다 — 단일
+      // rescheduleSafetyNetAlarm(tripToken 기반 lockless) 호출로 통합.
+      describe('applyReschedule (#698/#2089)', () => {
         const route = { type: 'direct', stops: 2, line: '2', travelSeconds: 240 };
-        const lockMatch = {
-          destinationId: '0228',
-          trainCode: '7610',
-          boardingStationId: 'b',
-          boardingLine: '2',
-          boardedAt: 1_700_000_000_000,
-          expectedDurationMs: 600_000,
-        };
+        const TRIP_TOKEN = 'RESCHEDULE-TRIP-TOKEN';
         function setStorage(opts: {
-          lock?: unknown;
+          tripToken?: unknown;
           route?: unknown;
           destination?: unknown;
         } = {}) {
-          mockGetBoardingLock.mockResolvedValue(opts.lock === undefined ? lockMatch : opts.lock);
           (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
             if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY)
+              return opts.tripToken === undefined ? TRIP_TOKEN : opts.tripToken;
             if (key === DESTINATION_KEY)
               return opts.destination === undefined
                 ? JSON.stringify(destStation)
@@ -1977,35 +1958,27 @@ describe('silentPushTask', () => {
           });
         }
 
-        it('lock + route + destination 모두 있으면 rescheduleHopForLock 호출', async () => {
+        it('route + destination + tripToken 모두 있으면 rescheduleSafetyNetAlarm 호출', async () => {
           setStorage();
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-          const arg = mockRescheduleHopForLock.mock.calls[0][0];
-          expect(arg.lock).toBe(lockMatch);
-          expect(arg.nextStation).toBe('사가정');
+          expect(mockRescheduleSafetyNetAlarm).toHaveBeenCalledTimes(1);
+          const arg = mockRescheduleSafetyNetAlarm.mock.calls[0][0];
+          expect(arg.tripToken).toBe(TRIP_TOKEN);
+          expect(arg.stationName).toBe('사가정');
           expect(arg.newArrivalMs).toBe(9_999_999_999_999);
           expect(arg.destinationName).toBe(destStation.name);
         });
 
-        it('lock 없으면 호출 skip', async () => {
-          setStorage({ lock: null });
+        it('tripToken 없으면 호출 skip', async () => {
+          setStorage({ tripToken: null });
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
           // 로그/ack는 그대로 진행됐는지 확인
           expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
-        });
-
-        it('lock trainCode 불일치 시 skip', async () => {
-          setStorage({ lock: { ...lockMatch, trainCode: '다른코드' } });
-          await handleSilentPush(
-            reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
-          );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
         });
 
         it('route 없으면 skip', async () => {
@@ -2013,7 +1986,7 @@ describe('silentPushTask', () => {
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
         it('destination 없으면 skip', async () => {
@@ -2021,13 +1994,13 @@ describe('silentPushTask', () => {
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
         it('route JSON 파싱 실패 시 skip — 예외 전파 안 함', async () => {
-          mockGetBoardingLock.mockResolvedValue(lockMatch);
           (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
             if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY) return TRIP_TOKEN;
             if (key === DESTINATION_KEY) return JSON.stringify(destStation);
             if (key === ROUTE_KEY) return 'not-json';
             return null;
@@ -2035,13 +2008,13 @@ describe('silentPushTask', () => {
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
         it('destination JSON 파싱 실패 시 skip', async () => {
-          mockGetBoardingLock.mockResolvedValue(lockMatch);
           (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
             if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY) return TRIP_TOKEN;
             if (key === DESTINATION_KEY) return 'not-json';
             if (key === ROUTE_KEY) return JSON.stringify(route);
             return null;
@@ -2049,7 +2022,7 @@ describe('silentPushTask', () => {
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
         it('destination.name 없는 경우 skip', async () => {
@@ -2057,20 +2030,20 @@ describe('silentPushTask', () => {
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
-        it('newArrivalTimeEpoch가 과거이면 skip — rescheduleHopForLock 미호출', async () => {
+        it('newArrivalTimeEpoch가 과거이면 skip — rescheduleSafetyNetAlarm 미호출', async () => {
           setStorage();
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 1 }),
           );
-          expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
-        it('rescheduleHopForLock throw 해도 ack/log는 그대로 진행', async () => {
+        it('rescheduleSafetyNetAlarm throw 해도 ack/log는 그대로 진행', async () => {
           setStorage();
-          mockRescheduleHopForLock.mockRejectedValueOnce(new Error('boom'));
+          mockRescheduleSafetyNetAlarm.mockRejectedValueOnce(new Error('boom'));
           await handleSilentPush(
             reschedulePayload({ pushId: 'rs-uuid', newArrivalTimeEpoch: 9_999_999_999_999 }),
           );
@@ -2080,202 +2053,28 @@ describe('silentPushTask', () => {
           expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
         });
 
-        // #918 A3 PR4 — channels 분기 (bl + tba).
-        describe('channels (#918 A3 PR4)', () => {
-          it('channels=undefined (구 backend) → bl만 호출, tba 미호출', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
-            );
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
-          });
-
-          it("channels=['bl','tba'] → bl + tba 모두 호출", async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['bl', 'tba'],
-              }),
-            );
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-            const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
-            expect(tbaArg.stationName).toBe('사가정');
-            expect(tbaArg.newArrivalMs).toBe(9_999_999_999_999);
-            expect(tbaArg.destinationName).toBe(destStation.name);
-          });
-
-          it("channels=['tba'] → tba만 호출, bl 미호출 (lock skip 무관)", async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['tba'],
-              }),
-            );
-            expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-          });
-
-          it("channels=['tba'] + lock=null → tba는 여전히 호출 (lock-free 채널)", async () => {
-            setStorage({ lock: null });
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['tba'],
-              }),
-            );
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-          });
-
-          it('channels 빈 배열 → 구 backend 호환 default(bl)로 fallback', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: [],
-              }),
-            );
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
-          });
-
-          it('channels에 unknown 값만 있으면 default(bl)로 fallback', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['unknown'],
-              }),
-            );
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
-          });
-
-          it('channels에 mix(bl + unknown) → bl만 통과', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['bl', 'unknown', 'tba'],
-              }),
-            );
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-          });
-
-          it('channels가 배열이 아니면 default(bl)로 fallback', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: 'bl',
-              }),
-            );
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
-          });
-
-          // #1193 — 중복역 trip 정정. payload.occurrenceIdx를 그대로 forward.
-          it('occurrenceIdx는 rescheduleTripBoundAlarm으로 forward (#1193)', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['tba'],
-                occurrenceIdx: 1,
-              }),
-            );
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-            const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
-            expect(tbaArg.occurrenceIdx).toBe(1);
-          });
-
-          it('occurrenceIdx 누락 시 undefined로 전달 (클라가 0 fallback) (#1193)', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['tba'],
-              }),
-            );
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-            const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
-            expect(tbaArg.occurrenceIdx).toBeUndefined();
-          });
+        // #1193 — 중복역 trip 정정. payload.occurrenceIdx를 그대로 forward.
+        it('occurrenceIdx는 rescheduleSafetyNetAlarm으로 forward (#1193)', async () => {
+          setStorage();
+          await handleSilentPush(
+            reschedulePayload({
+              newArrivalTimeEpoch: 9_999_999_999_999,
+              occurrenceIdx: 1,
+            }),
+          );
+          expect(mockRescheduleSafetyNetAlarm).toHaveBeenCalledTimes(1);
+          const arg = mockRescheduleSafetyNetAlarm.mock.calls[0][0];
+          expect(arg.occurrenceIdx).toBe(1);
         });
 
-        // #1355 D1 — silent push reschedule cross-channel cancel.
-        // bl reschedule → 반대 채널(tba) 같은 station+phase 사전 예약 cancel,
-        // tba reschedule → 반대 채널(bl) 같은 station+phase 사전 예약 cancel.
-        // payload 한 건당 ALARM_PHASES(early + imminent) 모두에 대해 1회씩 호출되도록 fan-out.
-        describe('cross-channel cancel (#1355 D1)', () => {
-          it('applyRescheduleBl 진입 시 같은 station+phase의 tba 사전 예약을 phase별 1회씩 cancel', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['bl'],
-              }),
-            );
-            // ALARM_PHASES = [early, imminent] → 2회 호출, 모두 nextStation='사가정' 대상.
-            expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(2);
-            expect(mockCancelTbaByStationPhase).toHaveBeenNthCalledWith(1, '사가정', 'early');
-            expect(mockCancelTbaByStationPhase).toHaveBeenNthCalledWith(2, '사가정', 'imminent');
-            // 반대 채널(bl) cancel은 호출되지 않아야 함 (정밀성).
-            expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
-          });
-
-          it('applyRescheduleTba 진입 시 같은 station+phase의 bl 사전 예약을 phase별 1회씩 cancel', async () => {
-            setStorage();
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['tba'],
-              }),
-            );
-            expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(2);
-            expect(mockCancelBlByStationPhase).toHaveBeenNthCalledWith(1, '사가정', 'early');
-            expect(mockCancelBlByStationPhase).toHaveBeenNthCalledWith(2, '사가정', 'imminent');
-            // 반대 채널(tba) cancel은 호출되지 않아야 함.
-            expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
-          });
-
-          it('bl skip path(lock 없음)에서는 cross-cancel도 미호출 (정밀성)', async () => {
-            // lock null이면 applyRescheduleBl는 cross-cancel 전에 early-return.
-            // 다른 station/phase의 사전 예약이 잘못 cancel되지 않도록 보장.
-            setStorage({ lock: null });
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['bl'],
-              }),
-            );
-            expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
-            expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
-            expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
-          });
-
-          it('반대 채널 사전 예약이 없을 때 safe no-op (helper 0 반환에 대해 throw 없이 진행)', async () => {
-            setStorage();
-            // helper가 0건 cancel 반환 — 정상 reschedule 흐름이 그대로 이어져야 함.
-            mockCancelTbaByStationPhase.mockResolvedValue(0);
-            mockCancelBlByStationPhase.mockResolvedValue(0);
-            await handleSilentPush(
-              reschedulePayload({
-                newArrivalTimeEpoch: 9_999_999_999_999,
-                channels: ['bl', 'tba'],
-              }),
-            );
-            // 두 채널 모두 reschedule이 정상 진행됨.
-            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
-            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
-            // 각 reschedule이 두 phase에 대해 cross-cancel을 호출.
-            expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(2);
-            expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(2);
-          });
+        it('occurrenceIdx 누락 시 undefined로 전달 (클라가 0 fallback) (#1193)', async () => {
+          setStorage();
+          await handleSilentPush(
+            reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
+          );
+          expect(mockRescheduleSafetyNetAlarm).toHaveBeenCalledTimes(1);
+          const arg = mockRescheduleSafetyNetAlarm.mock.calls[0][0];
+          expect(arg.occurrenceIdx).toBeUndefined();
         });
       });
     });
@@ -2771,22 +2570,18 @@ describe('silentPushTask', () => {
         );
       });
 
-      it('fired=true → nextStation의 OS 안전망 예약(tba/bl)을 ALARM_PHASES 전체 cancel', async () => {
+      it('fired=true → nextStation의 safety-net 사전 예약을 cancelSafetyNetByStationKind로 cancel (#2089)', async () => {
+        // #1356 E1/#1355 D1 → #2089 — 옛 tba/bl 이중 채널 × ALARM_PHASES(early/imminent) fan-out은
+        // 채널 통합으로 단일 kind 기준 1회 호출로 collapse됐다(occurrence 무관 전부 cancel).
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
-        // ALARM_PHASES = [early, imminent] → 각 2회 호출, 모두 nextStation='뚝섬' 대상.
-        expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(2);
-        expect(mockCancelTbaByStationPhase).toHaveBeenNthCalledWith(1, '뚝섬', 'early');
-        expect(mockCancelTbaByStationPhase).toHaveBeenNthCalledWith(2, '뚝섬', 'imminent');
-        expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(2);
-        expect(mockCancelBlByStationPhase).toHaveBeenNthCalledWith(1, '뚝섬', 'early');
-        expect(mockCancelBlByStationPhase).toHaveBeenNthCalledWith(2, '뚝섬', 'imminent');
+        expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
+        expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledWith('뚝섬', 'transfer');
       });
 
       it('fired=false(not-sleep-mode) → OS 안전망 cancel 안 함 + ack(skipped, not-sleep-mode)', async () => {
         mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'not-sleep-mode' });
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
-        expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
-        expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
+        expect(mockCancelSafetyNetByStationKind).not.toHaveBeenCalled();
         expect(mockLogCompanionAlarmFired).not.toHaveBeenCalled();
         expect(mockSendPushAck).toHaveBeenCalledWith({
           pushId: 'sta-1',
@@ -2800,8 +2595,7 @@ describe('silentPushTask', () => {
       it('fired=false(dedup) → OS 안전망 cancel 안 함 + ack(skipped, dedup)', async () => {
         mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'dedup' });
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
-        expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
-        expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
+        expect(mockCancelSafetyNetByStationKind).not.toHaveBeenCalled();
         expect(mockSendPushAck).toHaveBeenCalledWith({
           pushId: 'sta-1',
           token: DEFAULT_APNS_TOKEN,

@@ -56,6 +56,22 @@ describe('pickNextArrival', () => {
     });
   });
 
+  it('동일 방향 내 이미 선택된 최소값보다 큰 후보는 건너뛴다 (순서 무관)', () => {
+    const arrival: StationArrival = {
+      up: [
+        info({ arrivalSeconds: 80, trainCode: 'U-soon' }),
+        info({ arrivalSeconds: 500, trainCode: 'U-late' }),
+      ],
+      down: [],
+    };
+    expect(pickNextArrival(arrival)).toEqual({
+      etaSeconds: 80,
+      direction: 'up',
+      trainCode: 'U-soon',
+      matchedByTrainCode: false,
+    });
+  });
+
   it('0 이하 arrivalSeconds는 후보에서 제외한다', () => {
     const arrival: StationArrival = {
       up: [info({ arrivalSeconds: 0 }), info({ arrivalSeconds: -5 })],

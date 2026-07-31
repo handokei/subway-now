@@ -197,7 +197,6 @@ describe('useDestinationStore', () => {
 
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:boarding-lock');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:scheduled-notifications');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:active-trip');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-alarms');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:route');
@@ -216,7 +215,6 @@ describe('useDestinationStore', () => {
 
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:boarding-lock');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:scheduled-notifications');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:active-trip');
   });
 
@@ -278,7 +276,6 @@ describe('useDestinationStore', () => {
       // #702 부수 storage
       'subway-now:custom-origin',
       'subway-now:boarding-lock',
-      'subway-now:scheduled-notifications',
       'subway-now:active-trip',
       'subway-now:fired-alarms',
       'subway-now:route',

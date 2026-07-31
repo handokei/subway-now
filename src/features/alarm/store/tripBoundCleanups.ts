@@ -32,14 +32,8 @@ import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dism
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
-import {
-  getRegisteredBlRouteSig,
-  purgeBoardingLockSchedulerQueue,
-} from '../utils/boardingLockScheduler';
-import {
-  cancelTripBoundAlarms,
-  getRegisteredTripRouteSig,
-} from '../utils/tripBoundScheduler';
+import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
+import { getTripStartedAt } from '../utils/tripStartStorage';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
@@ -88,16 +82,10 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   () => AsyncStorage.removeItem(DESTINATION_KEY),
   () => AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY),
   () => AsyncStorage.removeItem(BOARDING_LOCK_KEY),
-  // #773 — trip release 시점에 SCHEDULED_NOTIFICATIONS_KEY storage만 비우면 OS 사전 예약은
-  // 그대로 큐에 남아 새 trip 시작 후 옛 알람이 burst로 발사된다 (#918 A3 일반화의 선행 조건).
-  // purgeBoardingLockSchedulerQueue는 `bl:` prefix id를 모두 Notifications.cancelScheduledNotificationAsync
-  // + dismiss 처리한 뒤 storage 큐를 clear한다 — OS 큐 한도(64) 도달과 정정 신호 없는 옛 알람
-  // 발사 burst를 동시에 차단한다.
-  purgeBoardingLockSchedulerQueue,
-  // #918 A3 PR4 — `tba:` 채널의 OS 사전 예약도 cancel. 트립 종료 시점에 남아 있으면
-  // 다음 trip 시작 후 옛 알람이 burst로 발사된다 (purgeBoardingLockSchedulerQueue가 `bl:`만
-  // 제거하기 때문). cancelTripBoundAlarms는 graceful — 큐가 비어도 안전 통과.
-  cancelTripBoundAlarms,
+  // #773/#918 A3 PR4 → #2089 — safety-net(구 bl:/tba: 3종 통합) OS 사전 예약 cancel은
+  // ACTIVE_TRIP_KEY(tripToken)를 필요로 하므로 이 배열보다 먼저 읽어야 한다(아래에서
+  // ACTIVE_TRIP_KEY를 제거하기 전에). `runTripBoundCleanups`/`cancelTripBoundOsQueue`가
+  // 별도로 `cancelAllSafetyNetAlarms(tripToken)`을 선행 실행한다 — graceful, 큐가 비어도 안전.
   () => AsyncStorage.removeItem(ACTIVE_TRIP_KEY),
   () => AsyncStorage.removeItem(TRIP_ORIGIN_KEY),
   clearLastNotifiedStationId,
@@ -239,72 +227,88 @@ function clearTripBoundStoreMemory(): Promise<void> {
  * 다른 항목 실행이나 호출자에게 전파되지 않도록).
  */
 export function runTripBoundCleanups(): Promise<void> {
-  // #1525 — FG setDestination(null) 경로의 zombie alarm backstop. 1차 cleanup이 in-flight인
-  // 동안 expo-notifications 내부 race로 일부 사전 예약이 살아남는 사례를 1분 후 두번째
-  // cancel pass로 정리. 새 trip이 시작되면 route sig 가드가 skip한다.
-  scheduleDefensiveCancel();
-  return Promise.allSettled(TRIP_BOUND_CLEANUPS.map((cleanup) => cleanup())).then(noop);
+  // #2089 — TRIP_BOUND_CLEANUPS가 ACTIVE_TRIP_KEY를 제거하기 전에 tripToken을 먼저 읽어야
+  // safetyNetScheduler의 tripToken-scoped cancel이 가능하다(제거 후에는 null).
+  return AsyncStorage.getItem(ACTIVE_TRIP_KEY)
+    .catch(() => null)
+    .then((tripToken) => {
+      // #1525 — FG setDestination(null) 경로의 zombie alarm backstop. 1차 cleanup이 in-flight인
+      // 동안 expo-notifications 내부 큐 race로 일부 사전 예약이 살아남는 사례를 1분 후 두번째
+      // cancel pass로 정리. 새 trip이 시작되면 tripStart 가드가 skip한다.
+      scheduleDefensiveCancel(tripToken);
+      const cleanups = tripToken
+        ? [...TRIP_BOUND_CLEANUPS, () => cancelAllSafetyNetAlarms(tripToken)]
+        : TRIP_BOUND_CLEANUPS;
+      return Promise.allSettled(cleanups.map((cleanup) => cleanup())).then(noop);
+    });
 }
 
 /**
  * #1370 L4 — OS scheduled notification queue만 즉시 cancel하는 정밀 helper.
  *
  * 종착역 도착 silent push 수신 시 ROUTE_KEY/DESTINATION_KEY 등 storage 정리에 앞서
- * OS 큐의 `bl:` / `tba:` 사전 예약 알람을 우선 제거해 burst fire race를 좁힌다.
+ * OS 큐의 safety-net 사전 예약 알람을 우선 제거해 burst fire race를 좁힌다.
  * runTripBoundCleanups 전체 흐름은 그대로 유지하며(triggerTripEndRecall은 ROUTE_KEY를
  * 읽어야 해 storage 정리는 그 뒤에 와야 함), 본 helper는 storage를 건드리지 않는다.
  *
  * 멱등 — runTripBoundCleanups가 후속에서 동일 OS API를 다시 호출해도 이미 비어 있어 안전.
- * 두 cancel은 독립적이라 allSettled로 묶어 한쪽 실패가 다른 쪽 실행을 막지 않도록 한다.
+ *
+ * 호출자(silentPushTask trip-ended 분기)가 이 결과를 await한 뒤 triggerTripEndRecall/
+ * runTripBoundCleanups를 이어 호출하므로, OS reject(예: getAllScheduledNotificationsAsync
+ * throw)가 그대로 전파되면 뒤따르는 cleanup 체인 전체가 중단된다. #918 A3 통합 이전에는
+ * 두 채널을 Promise.allSettled로 묶어 이 전파를 흡수했으나, 단일 채널이 된 뒤에도 동일
+ * 보장을 유지하기 위해 여기서 명시적으로 흡수한다.
  */
 export function cancelTripBoundOsQueue(): Promise<void> {
-  scheduleDefensiveCancel();
-  return Promise.allSettled([
-    purgeBoardingLockSchedulerQueue(),
-    cancelTripBoundAlarms(),
-  ]).then(noop);
+  return AsyncStorage.getItem(ACTIVE_TRIP_KEY)
+    .catch(() => null)
+    .then((tripToken) => {
+      scheduleDefensiveCancel(tripToken);
+      if (!tripToken) return undefined;
+      return cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
+        log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
+      });
+    });
 }
 
 /**
- * #1525 — trip 종료 직후 1분 뒤 한 번 더 `tba:`/`bl:` OS 사전 예약을 cancel한다.
+ * #1525 — trip 종료 직후 1분 뒤 한 번 더 safety-net OS 사전 예약을 cancel한다.
  *
  * 1차 cancel 시점에 race로 schedule이 in-flight였거나, expo-notifications 내부 큐 반영
  * 지연으로 일부 identifier가 cancel을 빠져나가는 경우를 보강. 2026-06-19 trip 종료
  * 11분 후 "안내 종료" 알림이 사용자에게 도달한 사례(zombie alarm)의 backstop.
  *
- * 새 trip이 시작되어 routeSig가 다시 기록됐다면 정상 사전 예약을 지우면 안 되므로 skip.
+ * 새 trip이 시작되었으면(tripStart 갱신) 정상 사전 예약을 지우면 안 되므로 skip.
  * 이미 예약된 defensive timer가 있으면 새 호출이 reset(이전 timer cancel → 새 timer).
+ * tripToken은 호출 시점(=cleanup 시작 시점, ACTIVE_TRIP_KEY 제거 전)에 캡처해 1분 뒤에도
+ * 같은 트립을 대상으로 cancel한다(#918 route-sig staleness 폐기 이후 tripStart 존재 여부만으로
+ * "새 trip 진행 중"을 판별 — 2026-07-31 매트릭스 "route-sig staleness: trip 재등록 시 재예약으로
+ * 대체 가능" 근거와 동형).
  *
  * 별도 export 없이 cancelTripBoundOsQueue / runTripBoundCleanups 내부에서만 호출.
  */
-function scheduleDefensiveCancel(): void {
+function scheduleDefensiveCancel(tripToken: string | null): void {
   if (defensiveTimer !== null) {
     clearTimeout(defensiveTimer);
   }
   defensiveTimer = setTimeout(() => {
     defensiveTimer = null;
-    void runDefensiveCancel();
+    void runDefensiveCancel(tripToken);
   }, DEFENSIVE_CANCEL_DELAY_MS);
 }
 
-async function runDefensiveCancel(): Promise<void> {
-  // 새 trip이 시작되어 route sig가 기록됐으면 사전 예약은 정상 — defensive cancel skip.
-  // `tba:` / `bl:` 두 채널 중 하나라도 sig가 살아있으면 새 trip 진행 중으로 판단.
-  // getRegisteredXxxRouteSig는 storage 실패를 내부에서 catch해 null 반환 — 본 함수의
-  // try/catch 없이도 throw가 외부로 새지 않는다 (Promise.allSettled가 cancel 양쪽을 흡수).
-  const [tbaSig, blSig] = await Promise.all([
-    getRegisteredTripRouteSig(),
-    getRegisteredBlRouteSig(),
-  ]);
-  if (tbaSig !== null || blSig !== null) {
-    log.info(`defensive cancel skip: new trip active (tbaSig=${tbaSig !== null} blSig=${blSig !== null})`);
+async function runDefensiveCancel(tripToken: string | null): Promise<void> {
+  // 새 trip이 시작되어 tripStart가 다시 기록됐으면 사전 예약은 정상 — defensive cancel skip.
+  const tripStart = await getTripStartedAt();
+  if (tripStart !== null) {
+    log.info('defensive cancel skip: new trip active');
     return;
   }
+  if (!tripToken) return;
   log.info('defensive cancel: running second cancel pass (#1525)');
-  await Promise.allSettled([
-    purgeBoardingLockSchedulerQueue(),
-    cancelTripBoundAlarms(),
-  ]);
+  await cancelAllSafetyNetAlarms(tripToken).catch((e) => {
+    log.warn('defensive cancel 실패:', e);
+  });
 }
 
 /**

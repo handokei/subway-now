@@ -48,9 +48,11 @@ jest.mock('../dismissSilenceStorage', () => ({
   clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
 }));
 
-const mockAdvanceHopWindow = jest.fn().mockResolvedValue(undefined);
-jest.mock('../boardingLockScheduler', () => ({
-  advanceHopWindow: (...args: unknown[]) => mockAdvanceHopWindow(...args),
+// #624 → #2089 — BoardingLock 기반 advanceHopWindow는 tripToken 기반 lockless
+// cancelSafetyNetByStationKind로 대체됐다(safetyNetScheduler 단일 채널 통합).
+const mockCancelSafetyNetByStationKind = jest.fn().mockResolvedValue(undefined);
+jest.mock('../safetyNetScheduler', () => ({
+  cancelSafetyNetByStationKind: (...args: unknown[]) => mockCancelSafetyNetByStationKind(...args),
 }));
 
 const mockUpdateStationNotification = jest.fn();
@@ -498,59 +500,55 @@ describe('processLocationUpdate', () => {
     expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
   });
 
-  describe('#624 BG-safe stale alarm cancel (BoardingLock advance)', () => {
-    const mockLock = {
-      destinationId: 'station-2',
-      trainCode: 'T-100',
-      boardingStationId: 'station-0',
-      boardingLine: '2',
-      boardedAt: 1_700_000_000_000,
-      expectedDurationMs: 600_000,
-    };
-
-    it('lock 있고 nearest station이 waypoint이면 advanceHopWindow 호출', async () => {
+  describe('#624 → #2089 — BG-safe stale alarm cancel (safety-net cancel, lockless)', () => {
+    it('nearest station이 route waypoint이면 cancelSafetyNetByStationKind 호출', async () => {
       mockFindNearestStation.mockReturnValue(mockNearestResult);
       mockFindRoute.mockReturnValue(mockRoute);
       mockGetLastNotifiedStationId.mockResolvedValue('other-station');
-      mockGetBoardingLock.mockResolvedValue(mockLock);
+      mockGetBoardingLock.mockResolvedValue(null);
       mockResolveAllTargets.mockReturnValue([
         { name: '강남', stops: 1, alarmType: 'destination', approachLine: '2' },
       ]);
 
       await call();
 
-      expect(mockAdvanceHopWindow).toHaveBeenCalledWith({
-        lock: mockLock,
-        route: mockRoute,
-        destinationName: '시청',
-        passedStationName: '강남',
-        sleepMode: false,
-      });
+      expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledWith('강남', 'destination');
     });
 
-    it('lock 있고 nearest가 waypoint가 아니면 advanceHopWindow 호출 안 함 (no-op)', async () => {
+    it('nearest가 waypoint가 아니면 cancelSafetyNetByStationKind 호출 안 함 (no-op)', async () => {
       mockFindNearestStation.mockReturnValue(mockNearestResult);
       mockFindRoute.mockReturnValue(mockRoute);
       mockGetLastNotifiedStationId.mockResolvedValue('other-station');
-      mockGetBoardingLock.mockResolvedValue(mockLock);
+      mockGetBoardingLock.mockResolvedValue(null);
       mockResolveAllTargets.mockReturnValue([
         { name: '다른역', stops: 1, alarmType: 'destination', approachLine: '2' },
       ]);
 
       await call();
 
-      expect(mockAdvanceHopWindow).not.toHaveBeenCalled();
+      expect(mockCancelSafetyNetByStationKind).not.toHaveBeenCalled();
     });
 
-    it('lock 없으면 advanceHopWindow 호출 안 함', async () => {
+    it('BoardingLock 유무와 무관하게(lockless) waypoint 매치 시 호출된다', async () => {
+      // safetyNetScheduler는 tripToken 기반이라 lock 존재 여부는 게이트가 아니다 — #2089 통합.
       mockFindNearestStation.mockReturnValue(mockNearestResult);
       mockFindRoute.mockReturnValue(mockRoute);
       mockGetLastNotifiedStationId.mockResolvedValue('other-station');
-      mockGetBoardingLock.mockResolvedValue(null);
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: 'station-2',
+        trainCode: 'T-100',
+        boardingStationId: 'station-0',
+        boardingLine: '2',
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 600_000,
+      });
+      mockResolveAllTargets.mockReturnValue([
+        { name: '강남', stops: 1, alarmType: 'destination', approachLine: '2' },
+      ]);
 
       await call();
 
-      expect(mockAdvanceHopWindow).not.toHaveBeenCalled();
+      expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledWith('강남', 'destination');
     });
   });
 

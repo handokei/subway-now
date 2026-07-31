@@ -190,18 +190,13 @@ jest.mock('../store/useBoardingLockStore', () => ({
   },
 }));
 
-const mockRescheduleHopForLock = jest.fn();
-const mockCancelBlByStationPhase = jest.fn().mockResolvedValue(undefined);
-jest.mock('../utils/boardingLockScheduler', () => ({
-  rescheduleHopForLock: (...args: unknown[]) => mockRescheduleHopForLock(...args),
-  cancelBlByStationPhase: (...args: unknown[]) => mockCancelBlByStationPhase(...args),
-}));
-
-const mockRescheduleTripBoundAlarm = jest.fn();
-const mockCancelTbaByStationPhase = jest.fn().mockResolvedValue(undefined);
-jest.mock('../utils/tripBoundScheduler', () => ({
-  rescheduleTripBoundAlarm: (...args: unknown[]) => mockRescheduleTripBoundAlarm(...args),
-  cancelTbaByStationPhase: (...args: unknown[]) => mockCancelTbaByStationPhase(...args),
+// #2089 — 옛 boardingLockScheduler/tripBoundScheduler 3종 채널이 safetyNetScheduler 단일
+// 모듈로 통합되며 reschedule/cancel-by-station 진입점도 하나로 합쳐졌다.
+const mockRescheduleSafetyNetAlarm = jest.fn();
+const mockCancelSafetyNetByStationKind = jest.fn().mockResolvedValue(undefined);
+jest.mock('../utils/safetyNetScheduler', () => ({
+  rescheduleSafetyNetAlarm: (...args: unknown[]) => mockRescheduleSafetyNetAlarm(...args),
+  cancelSafetyNetByStationKind: (...args: unknown[]) => mockCancelSafetyNetByStationKind(...args),
 }));
 
 const mockGetDismissSilence = jest.fn();
@@ -313,8 +308,7 @@ describe('Issue B (#2021) — device lockless-opt-out gate 동작 검증', () =>
     mockFindStationByName.mockReturnValue(null);
     mockGetDismissSilence.mockResolvedValue(null);
     mockClearDismissSilence.mockResolvedValue(undefined);
-    mockRescheduleHopForLock.mockResolvedValue({ cancelled: 1, scheduled: 1 });
-    mockRescheduleTripBoundAlarm.mockResolvedValue({ cancelled: 0, scheduled: 0 });
+    mockRescheduleSafetyNetAlarm.mockResolvedValue({ cancelled: 1, scheduled: 1 });
     mockCancelTripBoundOsQueue.mockResolvedValue(undefined);
     mockRunTripBoundCleanups.mockResolvedValue(undefined);
   });
