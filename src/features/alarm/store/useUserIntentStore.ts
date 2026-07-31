@@ -1,12 +1,17 @@
 /**
  * #1923 — 사용자 명시 의향 토글 (infoModeEnabled) SSoT store.
  *
+ * 별도 "C 토글" UI는 존재하지 않는다 — ADR-014가 그 표현을 쓰던 시절의 doc 잔재이며
+ * #1961에서 정정됨. 실제 stamp 진입점은 2개뿐이다.
+ *
  * paradigm Phase 6 (단독 사용자 모드) device-only chain의 진원지. 사용자가
  * boardingPrompt [탑승] 응답 / BoardingTrainList 직접 탭 중 하나라도 행하면
  * 본 store에 `infoModeEnabled=true`로 stamp된다. `useApnsTripRegistration`이 이
  * 값을 읽어 `RegisterTripPayload.infoModeEnabled`로 backend에 송신하며, backend는
  * cron lockless intermediate gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`)
- * 가 통과되어 station-passed silent push를 발사한다.
+ * 가 통과되어 station-passed silent push를 발사한다. admin kill switch(#1967,
+ * `killSwitchLocklessIntermediate`)로 이 게이트 자체를 backend deploy 없이 즉시
+ * 우회할 수 있다. ADR-024가 정의하는 알림/알람 원격 visible 채널과는 별개 경로다.
  *
  * ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
  *

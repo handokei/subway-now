@@ -28,14 +28,19 @@
  *       (c) Barometer `stop=true` (FG/BG) — #1574
  *       (d) Cellular `underground` vote (FG/BG) — #1574
  *       (e) Accelerometer `automotive` pattern (FG/BG, BG location piggyback) — #1542
- *   - Cellular `surface-weak` (LTE/NRNSA) — #1876 soft downgrade:
+ *   - Cellular `surface-weak` (LTE) — #1876 soft downgrade:
  *       envVotes −1. 다른 신호 우세 시 underground 채택 허용 (hard-reject 아님).
+ *   - Cellular `surface-weak-nrnsa` (NRNSA) — #2099 soft downgrade (LTE보다 약함):
+ *       envVotes −0.5(`SURFACE_WEAK_NRNSA_ENV_VOTE_PENALTY`). trip 활성 중 barometer가 최근
+ *       subsurface=true를 확정했으면(`barometerRecentSubsurface`) 페널티 자체를 0으로 무효화.
  *
  * 합의 임계:
  *   - Primary path: 2-of-N 통과 시 SSOT 채택 (station pair + env vote 어떤 조합이든 OK)
  *   - 단, 채택 station이 필요하므로 station pair ≥ 1 필수 (env vote만 2개로는 불가)
  *   - Cellular `surface` vote (NR SA) 시 underground SSOT 자체 reject (환경 확정 모순)
- *   - Cellular `surface-weak` vote (LTE/NRNSA) 시 envVotes −1 (soft downgrade)
+ *   - Cellular `surface-weak` vote (LTE) 시 envVotes −1 (soft downgrade)
+ *   - Cellular `surface-weak-nrnsa` vote (NRNSA, #2099) 시 envVotes −0.5, trip 활성 중 barometer가
+ *     최근 subsurface=true를 확정했으면 0 (soft downgrade, LTE보다 약하고 무효화 가능)
  *   - GPS는 input set에서 reject (ADR-015 §5, backend `consensusGate.ts` 동일 정책)
  *   - Fallback path (#1884): primary 미달 시 weighted vote 임계 평가
  *
@@ -53,6 +58,7 @@ import type { StationArrival } from '../../../shared/types/arrival';
 import type { CellularEnvironmentVote } from './cellularTech';
 import type { AccelerometerPattern } from './accelerometerFingerprint';
 import { weightedVoteFusion } from './weightedVoteFusion';
+import { SURFACE_WEAK_NRNSA_ENV_VOTE_PENALTY } from '../../../shared/constants/fusion';
 
 /** arvlCd "정착한 위치 보고" 코드 집합. surfaceSSotConsensus와 동일 — 향후 공용 추출 여지. */
 const ARVL_CD_STATIONARY = new Set<number>([1, 2, 3, 5]);
@@ -84,12 +90,24 @@ export interface UndergroundSSOTInput {
   /**
    * #1574 — `useCellularTech()` 환경 vote (CTRadioAccessTechnology 분류).
    * 'surface' (NR SA)면 underground SSOT 자체 reject (환경 확정 모순 — hard-reject).
-   * 'surface-weak' (LTE/NRNSA)면 envVotes −1 (soft downgrade — #1876).
+   * 'surface-weak' (LTE)면 envVotes −1 (soft downgrade — #1876).
+   * 'surface-weak-nrnsa' (NRNSA)면 envVotes −0.5, `barometerRecentSubsurface`=true면 0
+   *   (soft downgrade, LTE보다 약함 — #2099).
    * 'underground'면 환경-확정 1표.
    * 'unknown'/undefined → vote 미투표.
    * iOS BG에서도 동작 (CTServiceRadioAccessTechnologyDidChangeNotification observer).
    */
   cellularEnvironmentVote?: CellularEnvironmentVote | undefined;
+  /**
+   * #2099 (Part of #2093 E, 옵션 1) — trip 활성 중 barometer가 최근 subsurface=true를
+   * 확정한 적이 있으면 true. barometer 30s dP/dt 윈도우는 "지하 진입" edge를 감지하는
+   * 신호라 진입 직후에만 잠깐 true이고 steady 구간에서는 false로 돌아간다 — 이 sticky 기억이
+   * 없으면 steady 구간에서 NRNSA soft downgrade가 undergroundSSOT quorum을 계속 깎는다.
+   * true면 `surface-weak-nrnsa` envVotes 페널티를 0으로 무효화(barometer 확정이 cellular
+   * surface 투표를 뒤집지 못하게). 호출자(`useFusedNearestStation`)가 trip 스코프 sticky
+   * 타이머로 산출 — 미전달(undefined)은 false와 동일(backward-compat).
+   */
+  barometerRecentSubsurface?: boolean;
   /**
    * #1542 (ADR-016 S9) — CMMotionManager 60s window RMS magnitude 분류 결과.
    * 'automotive' (RMS ≥ 2.0 m/s² 진동 — train 진행)이면 환경-확정 1표 추가.
@@ -138,10 +156,12 @@ export function undergroundSSOTConsensus(
     cellularEnvironmentVote,
     accelerometerPattern,
     tripStartedAt,
+    barometerRecentSubsurface,
   } = input;
 
   // 환경 확정 모순 — cellular 'surface' (NR SA)면 underground SSOT 자체 candidate X.
-  // 'surface-weak' (LTE/NRNSA)는 hard-reject 아님 — soft downgrade (envVotes −1, 하단 처리).
+  // 'surface-weak' (LTE) / 'surface-weak-nrnsa' (NRNSA, #2099)는 hard-reject 아님 —
+  // soft downgrade (envVotes 감산, 하단 처리).
   if (cellularEnvironmentVote === 'surface') return null;
 
   // Station pair 후보 — 채택 우선순위 순서. position-train > wifi.
@@ -160,11 +180,17 @@ export function undergroundSSOTConsensus(
   }
 
   // Environment-confirming votes (station 미제공). 신규 #1574 — BG WiFi 갭 해소 + #1542 accelerometer.
-  // #1876 — 'surface-weak' soft downgrade: LTE/NRNSA는 envVotes −1 (지하에서도 잡히므로 hard-reject X).
+  // #1876 — 'surface-weak'(LTE) soft downgrade: envVotes −1 (지하에서도 잡히므로 hard-reject X).
+  // #2099 — 'surface-weak-nrnsa'(NRNSA) soft downgrade: LTE보다 약한 −0.5. trip 활성 중
+  // barometer가 최근 subsurface=true를 확정했으면(barometerRecentSubsurface) 페널티를 0으로
+  // 무효화 — barometer 확정을 cellular NRNSA surface 투표가 뒤집지 못하게 한다 (옵션 1+2).
   let envVotes = 0;
   if (barometerStop === true) envVotes += 1;
   if (cellularEnvironmentVote === 'underground') envVotes += 1;
   if (cellularEnvironmentVote === 'surface-weak') envVotes -= 1;
+  if (cellularEnvironmentVote === 'surface-weak-nrnsa' && !barometerRecentSubsurface) {
+    envVotes += SURFACE_WEAK_NRNSA_ENV_VOTE_PENALTY;
+  }
   if (accelerometerPattern === 'automotive') envVotes += 1;
 
   // Warmup 60s 이내 → quorum=1 (station pair 단독 채택 허용). 60s 이후 → steady quorum=2.
@@ -189,6 +215,7 @@ export function undergroundSSOTConsensus(
     barometerStop,
     cellularEnvironmentVote,
     accelerometerPattern,
+    barometerRecentSubsurface,
   });
   if (voteResult.accepted && voteResult.winner !== null) {
     return voteResult.winner;

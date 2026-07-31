@@ -52,6 +52,13 @@ import {
   isArchFlagValue,
   setArchFlag,
 } from './archFlag';
+import {
+  getKillSwitch,
+  isKillSwitchKey,
+  isKillSwitchValue,
+  KILL_SWITCH_DEFAULT,
+  setKillSwitch,
+} from './killSwitch';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -433,6 +440,68 @@ app.post('/admin/arch-flag', async (c) => {
   }
   await setArchFlag(kv, raw);
   return c.json({ value: raw });
+});
+
+/**
+ * #1967 (Ff-1) — 게이트 kill switch 조회 endpoint.
+ *
+ * 2026-06-28 Wave 1-4 audit: lockless intermediate 게이트가 kill switch 없이 머지돼
+ * device 측 false alarm 회귀가 감지돼도 backend deploy(10~30분) 없이는 즉시 차단 수단이
+ * 없었다. `archFlag` 와 동일한 KV read/write 어댑터 패턴 — `key` 쿼리로 대상 게이트 선택.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Query: `key` — 현재 유효값은 `lockless_intermediate` 하나(#1967 스코프 = Ff-1).
+ * Response 200: `{ key, value: 'true' | 'false' }`
+ * Response 400: `{ error: 'invalid_key' }` — key 누락/미지원.
+ * Response 401/503: 인증/binding 정책 동일 (TRIPS 미바인딩 시 503).
+ */
+app.get('/admin/kill-switch', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const key = c.req.query('key');
+  if (!isKillSwitchKey(key)) {
+    return c.json({ error: 'invalid_key' }, 400);
+  }
+  const kv = c.env.TRIPS;
+  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  const value = await getKillSwitch(kv, key);
+  return c.json({ key, value });
+});
+
+/**
+ * #1967 (Ff-1) — 게이트 kill switch 설정 endpoint.
+ *
+ * Rollback 채널: `true` 상태에서 회귀 대응이 끝나면 `false` write 만으로 즉시 게이트를
+ * 되살린다(배포 없음). 유효 값은 `true` / `false` 만. 그 외 body 는 400 으로 거절.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Query: `key` — 현재 유효값은 `lockless_intermediate` 하나.
+ * Body: `{ value: 'true' | 'false' }`
+ * Response 200: `{ key, value: 'true' | 'false' }`
+ * Response 400: `{ error: 'invalid_key' }` | `{ error: 'invalid_body' }`
+ * Response 401/503: 인증/binding 정책 동일.
+ */
+app.post('/admin/kill-switch', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const key = c.req.query('key');
+  if (!isKillSwitchKey(key)) {
+    return c.json({ error: 'invalid_key' }, 400);
+  }
+  const kv = c.env.TRIPS;
+  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  const raw = (body as { value?: unknown } | null)?.value;
+  if (!isKillSwitchValue(raw)) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  await setKillSwitch(kv, key, raw);
+  return c.json({ key, value: raw });
 });
 
 interface AdminAuthError {
@@ -2282,15 +2351,30 @@ export const handler = {
     // KV 미바인딩 / 미설정 케이스는 `getArchFlag` 가 default 로 fallback (dormant).
     // meta 에 우연히 같은 키가 실려 있어도 archFlag SSOT 가 이기도록 spread 순서를 뒤로 둔다.
     const archFlag = await getArchFlag(env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
+    // #1967 (Ff-1) — 매 cron cycle kill switch KV 상태를 read해 log + runScheduled deps로
+    // forward. KV 미바인딩/미설정/read 실패는 모두 default(false, dormant)로 fallback —
+    // 게이트 판정 자체가 실패해 정상 push가 막히는 회귀를 방지한다.
+    const killSwitchLocklessIntermediate = await getKillSwitch(env.TRIPS, 'lockless_intermediate')
+      .then((value) => value === 'true')
+      .catch(() => KILL_SWITCH_DEFAULT === 'true');
     const log = (msg: string, meta?: Record<string, unknown>) =>
-      console.log(JSON.stringify({ msg, ...meta, archFlag }));
+      console.log(JSON.stringify({ msg, ...meta, archFlag, killSwitchLocklessIntermediate }));
 
     let scheduledStats: Awaited<ReturnType<typeof runScheduled>>;
     try {
       // #1995 (ADR-022 Phase 1-2) — archFlag 를 runScheduled deps 로 forward.
       // 각 caller (arvlcd / vanish / transfer-release / lockless) 가 putPending / enqueueRetryIfTransient
       // 호출 시 이 값을 전달해 flag=on 시 destination 이외 kind 는 skip.
-      scheduledStats = await runScheduled(env, { seoul, apnsConfig, apnsHosts, log, archFlag });
+      // #1967 (Ff-1) — killSwitchLocklessIntermediate 를 runScheduled deps 로 forward. true 시
+      // lockless intermediate 게이트 평가를 즉시 건너뛴다(backend deploy 없는 emergency 채널).
+      scheduledStats = await runScheduled(env, {
+        seoul,
+        apnsConfig,
+        apnsHosts,
+        log,
+        archFlag,
+        killSwitchLocklessIntermediate,
+      });
     } catch (err) {
       void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
       throw err;

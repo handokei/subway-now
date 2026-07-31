@@ -33,6 +33,7 @@ import { findNearestStation } from '../utils/findNearestStation';
 import type { LineNumber } from '../../../shared/types/station';
 import { createLogger } from '../../../shared/utils/logger';
 import type { AccelSummary } from '../utils/accelMotion';
+import type { CellularEnvironmentVote } from '../utils/cellularTech';
 import {
   persistBackendSsotMirror,
   type LockSuggestionMirror,
@@ -107,15 +108,22 @@ export interface PositionUploadPayload {
   /**
    * #1543 (ADR-016 S10) — 디바이스 CTRadioAccessTechnology 환경 vote (`useCellularTech`).
    *
-   * - 'surface'      : NR (5G SA) — 지상 hard-reject
-   * - 'surface-weak' : LTE / NRNSA — 지하 DAS 중계 가능, soft downgrade (#1876)
-   * - 'underground'  : 2G/3G fallback → 지하 환경 vote
-   * - 'unknown' / 미전송 : vote 미투표 (게이트 영향 0)
+   * - 'surface'            : NR (5G SA) — 지상 hard-reject
+   * - 'surface-weak'       : LTE — 지하 DAS 중계 가능, soft downgrade (#1876)
+   * - 'surface-weak-nrnsa' : NRNSA — LTE보다 약한 soft downgrade (#2099). device-side
+   *   `undergroundSSotConsensus`/`weightedVoteFusion` 전용 분류 — 현재 이 필드를 채워 보내는
+   *   caller가 없고(orphan 유사), 채워 보낼 경우 backend `consensusGate`가 5번째 값을 아직
+   *   인식하지 못하므로 별도 backend 대응 전까지는 device-local 판정에만 사용한다.
+   * - 'underground'        : 2G/3G fallback → 지하 환경 vote
+   * - 'unknown' / 미전송    : vote 미투표 (게이트 영향 0)
    *
    * iOS only. Android / 미지원 디바이스 / native module 부재 시 omit (graceful).
    * backend `consensusGate`의 environment contradict 판정에 사용된다.
+   *
+   * #2099 (P3-1, 리뷰 반영) — 손 복사 union 대신 `cellularTech.ts`의 `CellularEnvironmentVote`를
+   * import해 타입 drift 방지 (SSOT 단일화).
    */
-  cellularEnvironmentVote?: 'surface' | 'surface-weak' | 'underground' | 'unknown';
+  cellularEnvironmentVote?: CellularEnvironmentVote;
   /**
    * #1667 (ADR-015 strongDB wire) — WiFi SSID 매핑으로 결정한 역명.
    *

@@ -15,11 +15,11 @@
  */
 
 import type { Route } from '../../../shared/utils/stationRoute';
-import { getFirstLeg } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import type { BgLastStationContext, SsotStationInput } from '../../../shared/types/widgetRefresh';
 import { createLogger } from '../../../shared/utils/logger';
-import { saveStationToWidget, type WidgetTripContext } from '../api/widgetStorage';
+import { saveStationToWidget } from '../api/widgetStorage';
+import { buildWidgetTripContext } from './buildTripContext';
 import { lookupStationFromSsot } from './lookupStationFromSsot';
 
 const logger = createLogger('SilentPushWidget');
@@ -50,7 +50,12 @@ export async function updateWidgetFromSilentPush(
       logger.info('skip: station resolve failed (no SSoT, no BG context)');
       return;
     }
-    const tripContext = buildTripContext(resolved.station, destination, route);
+    const tripContext = buildWidgetTripContext({
+      destination,
+      currentStation: resolved.station,
+      route,
+      allowInactive: true,
+    });
     await saveStationToWidget(
       resolved.station,
       resolved.distanceKm,
@@ -58,53 +63,9 @@ export async function updateWidgetFromSilentPush(
       { force: true },
       tripContext,
     );
-    logger.info(`widget updated: ${resolved.station.name} (tripActive=${tripContext.tripActive})`);
+    // resolved.station은 항상 존재(Station) → currentStation null 분기로 undefined가 반환될 수 없다.
+    logger.info(`widget updated: ${resolved.station.name} (tripActive=${tripContext?.tripActive})`);
   } catch (e) {
     logger.warn('update failed:', e);
   }
-}
-
-/**
- * tripContext shape (#1781) — destination 부재 시 tripActive=false로 stamp.
- *
- * `nextTransferName`:
- *  - direct route → undefined (직통)
- *  - transfer / multi-transfer → 첫 환승역 이름 (`getFirstLeg`로 일관 추출)
- *
- * route helper(`getFirstLeg`)를 재사용해 route 형태별 분기를 본 모듈에서 반복하지 않는다
- * (글로벌 룰 3 — 확장성/재사용성).
- */
-function buildTripContext(
-  currentStation: Station,
-  destination: Station | null,
-  route: Route,
-): WidgetTripContext {
-  if (!destination) {
-    return {
-      currentStationName: currentStation.name,
-      destinationName: '',
-      tripActive: false,
-    };
-  }
-  const nextTransferName = resolveNextTransferName(route, destination.name);
-  return {
-    currentStationName: currentStation.name,
-    destinationName: destination.name,
-    ...(nextTransferName !== undefined ? { nextTransferName } : {}),
-    tripActive: true,
-  };
-}
-
-/**
- * direct route → undefined (직통, 환승 없음).
- * transfer / multi-transfer → 첫 환승역 이름.
- *
- * route null도 undefined (환승 정보 없음 → 위젯이 직통 표시).
- */
-function resolveNextTransferName(route: Route, destinationName: string): string | undefined {
-  if (!route) return undefined;
-  const firstLeg = getFirstLeg(route, destinationName);
-  // direct route는 endName이 destinationName 자체 → 환승 아님. undefined로 신호.
-  if (route.type === 'direct') return undefined;
-  return firstLeg.endName;
 }

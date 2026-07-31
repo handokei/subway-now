@@ -139,3 +139,21 @@ export const BAROMETER_STOP_CONFIRM_SAMPLES = 3;
  *     평가되더라도 mismatch 트리거 X (false positive 차단).
  */
 export const BAROMETER_MISMATCH_QUORUM_READINGS = 30;
+
+/**
+ * #2099 (Part of #2093 E) — trip 활성 중 barometer subsurface=true "최근 확정" sticky 기억
+ * 윈도우.
+ *
+ * 단위: ms.
+ *
+ * 근거:
+ *   - barometer subsurface는 30s dP/dt 윈도우 기반 "지하 진입 edge" 감지 신호다 — 지하철이
+ *     진입 직후 짧게 true를 보고하고 steady 구간(터널 내 정속 주행)에서는 다시 false로
+ *     돌아간다. 7/7 trip 로그도 이 패턴과 일치(subsurface=true 13건, 나머지 다수는 false).
+ *   - steady 구간에서 cellular NRNSA soft downgrade가 undergroundSSOT quorum을 계속 깎으면
+ *     barometer가 이미 확정한 지하 판정이 매 폴링마다 뒤집힐 수 있다.
+ *   - 인접 역간 평균 운행시간은 60~150s(`BAROMETER_ETA_TOLERANCE_SEC` 근거 참고). 3분(180s)은
+ *     한 hop 전체를 포괄하고도 여유가 있어, 사용자가 실제로 지상으로 나온 뒤에도 과도하게
+ *     오래 "지하 sticky" 상태를 유지하지 않는 균형점.
+ */
+export const BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS = 180_000;

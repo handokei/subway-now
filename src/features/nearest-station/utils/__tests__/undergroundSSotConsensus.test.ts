@@ -5,7 +5,9 @@
  *   env vote: barometer-stop, cellular-underground
  *   - station pair ≥ 1 + (station pair + env vote) ≥ 2 통과 시 채택
  *   - cellular 'surface' (NR SA) vote → reject (환경 확정 모순 — hard-reject)
- *   - cellular 'surface-weak' (LTE/NRNSA) vote → envVotes −1 (soft downgrade, #1876)
+ *   - cellular 'surface-weak' (LTE) vote → envVotes −1 (soft downgrade, #1876)
+ *   - cellular 'surface-weak-nrnsa' (NRNSA) vote → envVotes −0.5, trip 중 barometer 최근
+ *     subsurface=true 확정 시 0 (soft downgrade, LTE보다 약함 — #2099)
  *   - station 우선순위: position > wifi
  * #1821 — warmup quorum 완화:
  *   - trip 시작 후 60s 이내 + station pair 1개 → underground 채택 (quorum=1)
@@ -462,7 +464,7 @@ describe('undergroundSSOTConsensus — warmup quorum (#1821)', () => {
 });
 
 describe("undergroundSSOTConsensus — 'surface-weak' soft downgrade (#1876)", () => {
-  // 'surface-weak' (LTE/NRNSA) = envVotes −1. hard-reject 아님.
+  // 'surface-weak' (LTE) = envVotes −1. hard-reject 아님.
   // 다른 신호가 충분하면 underground 채택 가능.
 
   it("'surface-weak' 단독 (position pair 1 + envVotes=−1) → steady quorum=2 미달 → null", () => {
@@ -583,6 +585,104 @@ describe("undergroundSSOTConsensus — 'surface-weak' soft downgrade (#1876)", (
       },
       NOW,
     );
+    expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+});
+
+describe("undergroundSSOTConsensus — 'surface-weak-nrnsa' soft downgrade + barometer sticky override (#2099, Part of #2093 E)", () => {
+  // 7/7 trip 로그: barometer subsurface=true 13건(정확)인데 cellular가 전 구간 NRNSA로
+  // surface 투표 → 최종 environment surface 89.9%. 옵션 1(trip 중 barometer 우선 가중) +
+  // 옵션 2(NRNSA 투표 약화, envVotes −1 → −0.5)를 한 PR로 검증.
+
+  it("'surface-weak-nrnsa' 단독 (position pair 1 + envVotes=−0.5) → steady quorum=2 미달 → null", () => {
+    // position pair: 1. envVotes: 0−0.5=−0.5. total: 1+(−0.5)=0.5 < 2 → null.
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+      }),
+    ).toBeNull();
+  });
+
+  it("wifi + position + 'surface-weak-nrnsa' (barometerRecentSubsurface 없음) → pair 2 + env −0.5 = 1.5 < 2 → steady quorum 미달 → null", () => {
+    // pair: 2 (wifi+position 둘 다 arrival 매칭). envVotes: 0−0.5=−0.5. total: 2+(−0.5)=1.5 < 2.
+    // fallback(weightedVoteFusion)도 positional evaluator가 position>wifi 우선 1개만 반환하므로
+    // score=1.0(positional) + 0(envScore, nrnsa는 radio 미참여) = 1.0 < 1.3(threshold) → reject.
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: wifi,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+      }),
+    ).toBeNull();
+  });
+
+  it("#2099 재현 시나리오 — wifi + position + 'surface-weak-nrnsa' + barometerRecentSubsurface=true → pair 2 + env 0(무효화) = 2 ≥ 2 → underground 판정 (barometer가 cellular NRNSA surface 투표를 뒤집음)", () => {
+    // trip 활성 중 barometer가 최근 subsurface=true를 확정 → NRNSA envVotes 페널티 0 무효화.
+    // 같은 입력에서 barometerRecentSubsurface만 바뀌어 reject → accept로 전환됨을 증명(위 테스트 대비).
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: wifi,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      cellularEnvironmentVote: 'surface-weak-nrnsa',
+      barometerRecentSubsurface: true,
+    });
+    // position 우선 → positionTrain.station.
+    expect(result?.station.id).toBe(positionTrain.station.id);
+    expect(result?.trainCode).toBe('T1');
+  });
+
+  it('trip 비활성 시 가중 미적용 — barometerRecentSubsurface=false (호출자가 tripActive=false로 산출) → 기존 −0.5 페널티 그대로 → null', () => {
+    // 호출자(useFusedNearestStation)는 tripActive=false면 barometerRecentSubsurface를 항상 false로 산출.
+    // 본 함수 입장에서는 명시적 false 전달 — 위 accept 시나리오와 동일 입력이지만 가중 미적용 검증.
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: wifi,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+        barometerRecentSubsurface: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("barometerRecentSubsurface=true는 'surface-weak'(LTE)에는 적용되지 않음 (#2099는 NRNSA 전용, 스코프 경계 회귀 방지)", () => {
+    // LTE는 기존 #1876 정책(envVotes −1) 그대로 — barometerRecentSubsurface가 LTE 페널티를 건드리지 않음.
+    // envVotes: baro+1, surface-weak−1 = 0. total: pair 1 + env 0 = 1 < 2 → null.
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        barometerStop: true,
+        cellularEnvironmentVote: 'surface-weak',
+        barometerRecentSubsurface: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("position + accelerometer + barometer + 'surface-weak-nrnsa' (barometerRecentSubsurface 없음, 옵션 2 일반 약화만) → pair 1 + (1+1−0.5)=1.5 → total 2.5 ≥ 2 → pass", () => {
+    // 옵션 2(일반 약화, −0.5)만으로도 2개 이상의 다른 env vote가 있으면 채택 가능함을 증명.
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      barometerStop: true,
+      accelerometerPattern: 'automotive',
+      cellularEnvironmentVote: 'surface-weak-nrnsa',
+    });
     expect(result?.station.id).toBe(positionTrain.station.id);
   });
 });

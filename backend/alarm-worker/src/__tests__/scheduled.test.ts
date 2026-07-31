@@ -145,7 +145,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, laStaleAutoEnded: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -825,6 +825,106 @@ describe('runScheduled', () => {
         expect(apnsFetch).not.toHaveBeenCalled();
       }
       if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
+    });
+
+    // #1967 (Ff-1) — admin kill switch. 2026-07-31 리뷰(P1) — 게이트는 `runLocklessIntermediate`
+    // 함수 호출 전체가 아니라 함수 내부의 매역 station-passed push 발사 블록만 대상으로 한다.
+    // fusion advance 평가 / arvlCd Kalman reset / phase·motion 게이트 / 취침 알람 / waypoint 진행은
+    // kill switch와 무관하게 정상 실행된다 — trip advance와 취침 알람까지 함께 죽으면 그 자체가
+    // 새로운 사용자 가치 손실 회귀이기 때문이다(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).
+    describe('#1967 (Ff-1) — admin kill switch (push 블록만 게이트)', () => {
+      it('killSwitchLocklessIntermediate=true → push 0건 + killSwitchLocklessIntermediateSkipped 카운트 + waypoint는 정상 advance', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          killSwitchLocklessIntermediate: true,
+        });
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(1);
+        // P2-1 — over-count 해소 확인: 게이트가 push 블록으로 좁혀졌으므로 함수 호출 자체는
+        // 정상 진행돼 lockMissing 분기로 fall-through하지 않는다(intermediateTrip은 lock이
+        // 아예 없는 lockless 시나리오이므로 애초에 lockMissing 분기 대상도 아니다).
+        expect(stats.lockMissing).toBe(0);
+        expect(apnsFetch).not.toHaveBeenCalled();
+        // trip advance는 매역 통지 여부와 독립 — kill switch 활성 상태에서도 waypoint가 shift.
+        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
+        expect(stored.waypoints[0].stationName).toBe('역삼');
+      });
+
+      it('killSwitchLocklessIntermediate=false → 정상 발사 (dormant 확인)', async () => {
+        const { stats, apnsFetch } = await runLocklessCycle({
+          trip: intermediateTrip(),
+          arrivals: [ARVL_ARRIVED],
+          apnsOk: true,
+        });
+        expect(stats.pushed).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
+        expect(apnsFetch).toHaveBeenCalled();
+      });
+
+      it('killSwitchLocklessIntermediate 미전달(undefined) → 기존 동작 100% 유지 (dormant)', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          // killSwitchLocklessIntermediate 미전달
+        });
+        expect(stats.pushed).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
+        expect(apnsFetch).toHaveBeenCalled();
+      });
+
+      // P2-2 (리뷰 필수) — 취침 알람 생존 회귀 테스트. sleepModeEnabled + infoModeEnabled 둘 다
+      // ON인 lockless trip에서 kill switch가 활성이어도 취침 알람(별 채널, alert+companion)은
+      // 정상 발사되고 waypoint도 정상 advance해야 한다. #1967 P1 리뷰가 지적한 "매역 push만
+      // 죽이려다 취침 알람까지 죽이는" 회귀를 직접 재현/차단.
+      it('sleepModeEnabled + infoModeEnabled + kill switch ON → sleepAlarmFired 1 + 매역 push 0 + waypoint advance 정상', async () => {
+        const kv = new InMemoryKV();
+        // #2066 트리거 조건: waypoint(현재)=intermediate, nextWaypoint=transfer/destination.
+        // intermediateTrip() 기본 shape(강남 intermediate → 역삼 destination)이 그대로 부합.
+        const trip = intermediateTrip({ sleepModeEnabled: true });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => 'p-sleep-killswitch',
+          killSwitchLocklessIntermediate: true,
+        });
+        // 취침 알람(별 채널)은 kill switch 무관 정상 발사.
+        expect(stats.sleepAlarmFired).toBe(1);
+        // 매역 station-passed push(lockless intermediate)는 kill switch로 차단.
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(1);
+        // waypoint는 정상 advance (trip SSoT는 매역 통지 여부와 독립).
+        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
+        expect(stored.waypoints[0].stationName).toBe('역삼');
+        // 취침 알람 push(alert + companion silent)는 실제로 전송 시도됐어야 한다.
+        expect(apnsFetch).toHaveBeenCalled();
+      });
     });
 
     // Epic #1204 그룹 2 D3 (#1273)
@@ -4440,6 +4540,135 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
         nextArrivalEta: 100,
       });
     });
+  });
+
+  // #1964 (Cl-5) — PR #1941(F2 defense) + PR #1946(LA backstop)이 같은 lockMissing 분기
+  // 진입점을 mutate. 이슈 원문은 "F2가 lockMissing을 즉시 return해 LA backstop을 막는다"고
+  // 가정했으나, 현재 dev 코드(scheduled.ts:1157~1180)는 lockMissing 분기 진입 시 LA backstop을
+  // 먼저 평가하고(#1946), 그 continue를 통과해야만 `evaluateAndMaybeFireBoardingPrompt`가
+  // 호출돼 F2(#1941)가 평가된다 — 즉 LA backstop이 항상 F2보다 먼저 평가되는 순서.
+  // 본 describe는 이 실제 우선순위를 SSoT로 고정하고, 두 stat이 1 cycle에서 동시 증가하지
+  // 않음을 검증한다.
+  describe('#1964 (Cl-5) — lockMissing 통합: LA backstop vs F2 defense 우선순위', () => {
+    const CL5_ARRIVAL: ArrivalEntry = {
+      destination: '성수',
+      arrivalSeconds: 60,
+      trainCode: 'T1',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 2,
+    };
+
+    function expiredLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
+      return {
+        trainCode: 'T-expired',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW - 60_000,
+        segmentStations: ['역삼', '강남'],
+        expiresAt: NOW - 1, // 만료 → isBoardingLockActive=false, lockMissing 분기 진입
+        ...overrides,
+      };
+    }
+
+    it('case 1: boardingLock 존재(만료) + lastLaPushAt 6분 침묵 → LA backstop 우선 발동, F2 미평가', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({
+          boardingLock: expiredLock(),
+          lastLaPushAt: NOW - 6 * 60_000,
+        }),
+      );
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([CL5_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.laStaleAutoEnded).toBe(1);
+      // LA backstop이 continue로 cycle을 종료 — evaluateAndMaybeFireBoardingPrompt 자체가
+      // 호출되지 않으므로 F2 defense도 평가되지 않는다.
+      expect(stats.boardingPromptSkippedLockActive).toBe(0);
+      expect(stats.boardingPromptEvaluated).toBe(0);
+    });
+
+    it('case 2: boardingLock 존재(만료) + lastLaPushAt 4분(비침묵) → LA backstop 미발동, F2 발동', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({
+          boardingLock: expiredLock(),
+          lastLaPushAt: NOW - 4 * 60_000,
+        }),
+      );
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([CL5_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.laStaleAutoEnded).toBe(0);
+      expect(stats.boardingPromptSkippedLockActive).toBe(1);
+      // F2가 evaluateAndMaybeFireBoardingPrompt 진입 직후 즉시 return — 9단 게이트 미평가.
+      expect(stats.boardingPromptEvaluated).toBe(0);
+    });
+
+    it('case 3: boardingLock 완전 release(undefined) + lastLaPushAt 6분 침묵 → LA backstop 발동 (F2 무관)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({
+          lastLaPushAt: NOW - 6 * 60_000,
+        }),
+      );
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([CL5_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.laStaleAutoEnded).toBe(1);
+      expect(stats.boardingPromptSkippedLockActive).toBe(0);
+      expect(stats.boardingPromptEvaluated).toBe(0);
+    });
+
+    it('case 4: boardingLock 완전 release + lastLaPushAt 침묵 없음 → 두 분기 모두 미발동, 9단 게이트 진입/발사', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([CL5_ARRIVAL]));
+
+      const stats = await runScheduled(makeEnv(kv), deps);
+
+      expect(stats.laStaleAutoEnded).toBe(0);
+      expect(stats.boardingPromptSkippedLockActive).toBe(0);
+      expect(stats.boardingPromptEvaluated).toBe(1);
+      expect(stats.boardingPromptFired).toBe(1);
+    });
+
+    it.each([
+      ['case1 (lock 만료 + LA 침묵)', { boardingLock: expiredLock(), lastLaPushAt: NOW - 6 * 60_000 }],
+      ['case2 (lock 만료 + LA 비침묵)', { boardingLock: expiredLock(), lastLaPushAt: NOW - 4 * 60_000 }],
+      ['case3 (lock release + LA 침묵)', { lastLaPushAt: NOW - 6 * 60_000 }],
+      ['case4 (lock release + LA 비침묵)', {}],
+    ] as [string, Partial<Trip>][])(
+      '%s — laStaleAutoEnded / boardingPromptSkippedLockActive 동시 증가 0건 (acceptance #2)',
+      async (_label, overrides) => {
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip(overrides));
+        await seedHappySeries(kv);
+        const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+        const deps = makeBoardingPromptDeps(fetchImpl, makeSeoul([CL5_ARRIVAL]));
+
+        const stats = await runScheduled(makeEnv(kv), deps);
+
+        const bothIncrementedSameCycle =
+          stats.laStaleAutoEnded > 0 && stats.boardingPromptSkippedLockActive > 0;
+        expect(bothIncrementedSameCycle).toBe(false);
+      },
+    );
   });
 });
 
@@ -9150,7 +9379,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, laStaleAutoEnded: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,

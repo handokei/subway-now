@@ -489,6 +489,96 @@ describe("weightedVoteFusion — D+A hybrid (#1876 'surface-weak' cross-impact)"
     });
   });
 
+  describe("NRNSA: threshold 1.3 완화 + barometerRecentSubsurface 무효화 (#2099, Part of #2093 E)", () => {
+    // 7/7 trip 로그: NRNSA(surface-weak-nrnsa)는 LTE(surface-weak)와 같은 근거지만 서울 지하철
+    // 전 구간 중계 구조상 surface 정보가치가 더 낮다 — threshold를 1.6에서 1.3으로 완화(옵션 2).
+    // trip 활성 중 barometer가 최근 subsurface=true를 확정했으면 threshold조차 적용하지 않고
+    // 기본 1.1로 완전 무효화한다(옵션 1) — barometer 확정을 cellular NRNSA가 뒤집지 못하게.
+
+    it("'surface-weak-nrnsa' + positional full + barometer(0.3) = 1.3 ≥ 1.3 → accept (LTE였다면 1.3 < 1.6 → reject)", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+        barometerStop: true,
+      });
+      expect(result.acceptThreshold).toBe(1.3);
+      expect(result.accepted).toBe(true);
+      expect(result.totalScore).toBeCloseTo(1.3, 10);
+    });
+
+    it("'surface-weak-nrnsa' + positional full 단독 = 1.0 < 1.3 → reject", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+      });
+      expect(result.acceptThreshold).toBe(1.3);
+      expect(result.accepted).toBe(false);
+    });
+
+    it("#2099 재현 시나리오 — 'surface-weak-nrnsa' + barometerRecentSubsurface=true → threshold 기본 1.1로 무효화, positional full 단독(1.0)은 여전히 미달이나 partial+radio 조합은 기존 underground 정책과 동일하게 accept", () => {
+      // barometerRecentSubsurface=true → THRESHOLD_BY_ENV 매칭 제외 → 기본 1.1 적용.
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2, // partial (0.6)
+        cellularEnvironmentVote: 'underground',
+        barometerRecentSubsurface: true,
+      });
+      expect(result.acceptThreshold).toBe(1.1);
+      expect(result.accepted).toBe(true); // 0.6(partial) + 0.5(radio-underground) = 1.1 — 기본 정책과 동일
+    });
+
+    it("'surface-weak-nrnsa' + barometerRecentSubsurface=true → threshold 1.1로 무효화, positional full + barometer(1.3) → accept (기본 정책과 동등)", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+        barometerStop: true,
+        barometerRecentSubsurface: true,
+      });
+      expect(result.acceptThreshold).toBe(1.1);
+      expect(result.accepted).toBe(true);
+      expect(result.totalScore).toBeCloseTo(1.3, 10);
+    });
+
+    it("'surface-weak-nrnsa' + barometerRecentSubsurface=false → threshold 1.3 그대로 (가중 미적용, 회귀 없음)", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+        barometerStop: true,
+        barometerRecentSubsurface: false,
+      });
+      expect(result.acceptThreshold).toBe(1.3);
+      expect(result.totalScore).toBeCloseTo(1.3, 10);
+      expect(result.accepted).toBe(true); // 1.3 ≥ 1.3 threshold — 이 케이스는 accept
+    });
+
+    it("'surface-weak-nrnsa' + radio vote 미참여 (cellular 자체가 surface-weak-nrnsa이므로 underground vote X)", () => {
+      const positionTrain = makeNearestResult('chungmuro', 0.05);
+      const result = weightedVoteFusion({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine3,
+        cellularEnvironmentVote: 'surface-weak-nrnsa',
+      });
+      const radioVote = result.votes.find((v) => v.category === 'radio');
+      expect(radioVote?.contributed).toBe(false);
+      expect(radioVote?.effectiveWeight).toBe(0);
+    });
+  });
+
   describe('A: station 후보 0 → 항상 reject (env 무관)', () => {
     it("'surface-weak' + station 후보 0 → null (env 누적이 1.6 미달인 것과 무관, station 가드)", () => {
       // env 누적: time(0.3) + motion(0.4) = 0.7. 둘 다 1.6 미달이지만 station 후보 0이 primary 가드.

@@ -29,6 +29,7 @@ import { useRouteProgress } from '../../route/hooks/useRouteProgress';
 import { usePositionStability } from './usePositionStability';
 import { useFusedStationDetection } from './useFusedStationDetection';
 import type { BarometerSignal } from '../../../shared/hooks/useBarometer';
+import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
@@ -496,6 +497,34 @@ export function useFusedNearestStation(
   // (CTServiceRadioAccessTechnologyDidChangeNotification observer). underground SSOT 4-signal
   // 합의의 환경-확정 vote로 사용. 미지원(Android/jest/web) 시 'unknown' 고정 → vote 미투표.
   const cellularEnvironmentVote = useCellularTech();
+
+  // #2099 (Part of #2093 E, 옵션 1) — trip 활성 중 barometer subsurface=true 최근 확정 sticky
+  // 기억. barometer 30s dP/dt 윈도우는 "지하 진입" edge 신호라 진입 직후에만 잠깐 true이고
+  // steady 구간에서는 false로 돌아간다 — 이 기억이 없으면 cellular NRNSA soft downgrade가
+  // steady 구간마다 undergroundSSOT quorum을 깎아 barometer의 지하 확정을 뒤집을 수 있다
+  // (7/7 trip 로그: subsurface=true 13건인데 최종 environment는 surface 89.9%).
+  // 리셋 트리거:
+  //   1. trip 비활성(tripActive=false) — 즉시 리셋. 취소된/종료된 trip에 잔존 sticky 없음.
+  //   2. `BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS`(3분) 경과 — 아래 파생 boolean에서 자연 만료.
+  //   3. (P2-1, 리뷰 반영) surfaceSSOT 활성(진짜 지상 증거) — cascadeSurfaceSSOT 계산 직후 별도
+  //      effect에서 즉시 리셋 (L1148 인근). `subsurface===false` 단독으로는 리셋하지 않는다 —
+  //      steady 지하 구간에서 barometer edge-detector가 false로 돌아가는 것은 정상 동작이라
+  //      이를 리셋 트리거로 쓰면 sticky가 매 폴링마다 사라져 본 fix 자체가 무력화된다(원 버그 재발).
+  const barometerRecentSubsurfaceAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!tripActive) {
+      barometerRecentSubsurfaceAtRef.current = null;
+      return;
+    }
+    if (barometerSubsurface === true) {
+      barometerRecentSubsurfaceAtRef.current = Date.now();
+    }
+  }, [tripActive, barometerSubsurface]);
+  const barometerRecentSubsurface =
+    tripActive &&
+    barometerRecentSubsurfaceAtRef.current !== null &&
+    Date.now() - barometerRecentSubsurfaceAtRef.current <=
+      BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS;
 
   // #1542 (ADR-016 S9) — CMMotionManager raw accelerometer 60s window RMS magnitude 분류.
   // 'automotive' (RMS ≥ 2.0 m/s²)이면 train 진동 환경 vote 1표 — undergroundSSotConsensus 5번째 signal.
@@ -1123,6 +1152,16 @@ export function useFusedNearestStation(
     gpsAccuracy: gps.accuracyMeters,
     arrival: cascadeSurfaceArrival,
   });
+  // #2099 (P2-1, 리뷰 반영) — surfaceSSOT 활성(GPS accuracy≤30m + arrival 정착 매칭 2-signal
+  // 합의 = 진짜 지상 증거)이면 barometer sticky 기억을 즉시 소거한다. 지하→지상 복귀 시
+  // sticky 잔존 창이 3분 타임아웃 대기 없이 surfaceSSOT 활성 시점으로 축소된다.
+  // `subsurface===false` 단독으로는 소거하지 않음 — 위 ref 선언부 doc 참고.
+  const surfaceSSOTActive = cascadeSurfaceSSOT !== null;
+  useEffect(() => {
+    if (surfaceSSOTActive) {
+      barometerRecentSubsurfaceAtRef.current = null;
+    }
+  }, [surfaceSSOTActive]);
   const cascadeUndergroundCandidate =
     wifiStationResolved?.station ?? positionTrainResult?.station ?? null;
   const cascadeUndergroundArrival = cascadeUndergroundCandidate
@@ -1146,6 +1185,9 @@ export function useFusedNearestStation(
     // #1821 — warmup quorum 완화: trip 시작 후 60s 이내 station pair 단독 채택 허용.
     // lock 활성 시 boardedAt 사용. lockless는 locklessTripStartRef 선언 이후 별도 처리.
     tripStartedAt: boardingLock?.boardedAt,
+    // #2099 (옵션 1) — trip 중 barometer 최근 subsurface=true 확정 sticky. cellular NRNSA
+    // envVotes 페널티를 무효화해 barometer 확정을 뒤집지 못하게 한다.
+    barometerRecentSubsurface,
   });
   // #1860 — 옵션 C barometer-stop 힌트. tripActive + barometerStop 전달.
   // #2070 — GPS 품질 저하(gps.gpsQualityDegraded) 추가 입력. useNearestStation이

@@ -35,7 +35,10 @@ import type { CellularEnvironmentVote } from './cellularTech';
  *
  * - `barometerSubsurface` — `true=지하`, `false=지상`, `null|undefined=미확정(warmup/미지원)`.
  * - `accelerometerPattern` — `'automotive' | 'walking' | 'stationary' | 'unknown' | null`.
- * - `cellularEnvironmentVote` — `'surface' | 'surface-weak' | 'underground' | 'unknown'`.
+ * - `cellularEnvironmentVote` — `'surface' | 'surface-weak' | 'surface-weak-nrnsa' | 'underground'
+ *   | 'unknown'` (`'surface-weak-nrnsa'`는 #2099 — NRNSA 전용 분류, 본 함수 판정에서는 `'surface-weak'`와
+ *   동일하게 "그 외"(4번) 버킷으로 처리된다 — `=== 'surface'` 단독 매칭만 채택 신호이므로 아래 로직
+ *   변경 없음).
  */
 export interface PositionTrainConsensusSignals {
   barometerSubsurface: boolean | null | undefined;
@@ -55,7 +58,8 @@ export interface PositionTrainConsensusSignals {
  *      탑승 중이 아니면 `position-train` 채택 의미가 없다 (false positive 차단).
  *   3) `cellularEnvironmentVote === 'surface'` (지상 확정) → return true.
  *      barometer false-negative 보강 — surface 확정 시 채택 허용.
- *   4) 그 외 (cellular 'surface-weak' / 'underground' / 'unknown' / null / undefined) → return false.
+ *   4) 그 외 (cellular 'surface-weak' / 'surface-weak-nrnsa'(#2099) / 'underground' / 'unknown' /
+ *      null / undefined) → return false.
  *      환경 ambiguity = 보수적으로 채택 보류(false positive 우선 차단, ADR-014 첫 줄).
  */
 export function requiresPositionTrainConsensus(
