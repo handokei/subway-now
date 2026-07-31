@@ -827,10 +827,13 @@ describe('runScheduled', () => {
       if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
     });
 
-    // #1967 (Ff-1) — admin kill switch. 토글 ON + intermediate + arvlCd=1 (정상이면 발사)
-    // 조합이라도 kill switch가 활성이면 게이트 평가 자체를 건너뛰고 lockMissing 분기로 fall-through.
-    describe('#1967 (Ff-1) — admin kill switch', () => {
-      it('killSwitchLocklessIntermediate=true → 발사 0 + killSwitchLocklessIntermediateSkipped 카운트', async () => {
+    // #1967 (Ff-1) — admin kill switch. 2026-07-31 리뷰(P1) — 게이트는 `runLocklessIntermediate`
+    // 함수 호출 전체가 아니라 함수 내부의 매역 station-passed push 발사 블록만 대상으로 한다.
+    // fusion advance 평가 / arvlCd Kalman reset / phase·motion 게이트 / 취침 알람 / waypoint 진행은
+    // kill switch와 무관하게 정상 실행된다 — trip advance와 취침 알람까지 함께 죽으면 그 자체가
+    // 새로운 사용자 가치 손실 회귀이기 때문이다(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).
+    describe('#1967 (Ff-1) — admin kill switch (push 블록만 게이트)', () => {
+      it('killSwitchLocklessIntermediate=true → push 0건 + killSwitchLocklessIntermediateSkipped 카운트 + waypoint는 정상 advance', async () => {
         const kv = new InMemoryKV();
         const trip = intermediateTrip();
         await putTrip(kv as unknown as KVNamespace, trip);
@@ -847,10 +850,14 @@ describe('runScheduled', () => {
         expect(stats.pushed).toBe(0);
         expect(stats.locklessIntermediateFired).toBe(0);
         expect(stats.killSwitchLocklessIntermediateSkipped).toBe(1);
-        // kill switch는 intermediate fire만 차단 — lockMissing 분기(boarding-prompt 평가 등)는
-        // 기존과 동일하게 fall-through 진행된다.
-        expect(stats.lockMissing).toBe(1);
+        // P2-1 — over-count 해소 확인: 게이트가 push 블록으로 좁혀졌으므로 함수 호출 자체는
+        // 정상 진행돼 lockMissing 분기로 fall-through하지 않는다(intermediateTrip은 lock이
+        // 아예 없는 lockless 시나리오이므로 애초에 lockMissing 분기 대상도 아니다).
+        expect(stats.lockMissing).toBe(0);
         expect(apnsFetch).not.toHaveBeenCalled();
+        // trip advance는 매역 통지 여부와 독립 — kill switch 활성 상태에서도 waypoint가 shift.
+        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
+        expect(stored.waypoints[0].stationName).toBe('역삼');
       });
 
       it('killSwitchLocklessIntermediate=false → 정상 발사 (dormant 확인)', async () => {
@@ -882,6 +889,40 @@ describe('runScheduled', () => {
         expect(stats.pushed).toBe(1);
         expect(stats.locklessIntermediateFired).toBe(1);
         expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
+        expect(apnsFetch).toHaveBeenCalled();
+      });
+
+      // P2-2 (리뷰 필수) — 취침 알람 생존 회귀 테스트. sleepModeEnabled + infoModeEnabled 둘 다
+      // ON인 lockless trip에서 kill switch가 활성이어도 취침 알람(별 채널, alert+companion)은
+      // 정상 발사되고 waypoint도 정상 advance해야 한다. #1967 P1 리뷰가 지적한 "매역 push만
+      // 죽이려다 취침 알람까지 죽이는" 회귀를 직접 재현/차단.
+      it('sleepModeEnabled + infoModeEnabled + kill switch ON → sleepAlarmFired 1 + 매역 push 0 + waypoint advance 정상', async () => {
+        const kv = new InMemoryKV();
+        // #2066 트리거 조건: waypoint(현재)=intermediate, nextWaypoint=transfer/destination.
+        // intermediateTrip() 기본 shape(강남 intermediate → 역삼 destination)이 그대로 부합.
+        const trip = intermediateTrip({ sleepModeEnabled: true });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => 'p-sleep-killswitch',
+          killSwitchLocklessIntermediate: true,
+        });
+        // 취침 알람(별 채널)은 kill switch 무관 정상 발사.
+        expect(stats.sleepAlarmFired).toBe(1);
+        // 매역 station-passed push(lockless intermediate)는 kill switch로 차단.
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(stats.killSwitchLocklessIntermediateSkipped).toBe(1);
+        // waypoint는 정상 advance (trip SSoT는 매역 통지 여부와 독립).
+        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
+        expect(stored.waypoints[0].stationName).toBe('역삼');
+        // 취침 알람 push(alert + companion silent)는 실제로 전송 시도됐어야 한다.
         expect(apnsFetch).toHaveBeenCalled();
       });
     });
