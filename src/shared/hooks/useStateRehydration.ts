@@ -12,6 +12,7 @@ import { useBoardingLockStore } from '../../features/alarm/store/useBoardingLock
 import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
+  resolveTripEndedSentinelVerdict,
   setTripEndedSentinel,
 } from '../../features/alarm/utils/tripEndedSentinel';
 import { runTripBoundCleanups } from '../../features/alarm/store/tripBoundCleanups';
@@ -69,24 +70,44 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
   // sentinel 우선 — store reset이 hydrate된 stale state를 덮지 않도록 순서 보장.
   const sentinel = await getTripEndedSentinel();
   if (sentinel !== null) {
-    logger.info(`trigger=${trigger} trip-ended sentinel=${sentinel} → store reset`);
-    // #1351 R2 — 과거에는 setDestination(null)을 trigger로 사용했지만, prev=null인 경우
-    // isSwitch=false로 평가되어 cleanup chain이 실행되지 않는 버그가 있었다.
-    // isSwitch 의존 없이 storage cleanup을 직접 호출. 멱등이므로 Fix 1 / silent push handler와
-    // 중복 호출 안전. 메모리 store도 setState로 즉시 reset해 stale state가 노출되지 않게 한다.
-    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
-    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-    await runTripBoundCleanups();
-    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
-    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-    useDestinationStore.setState({
-      destination: null,
-      customOrigin: null,
-      tripOrigin: null,
-    });
-    addDomainBreadcrumb('trip', 'end', { reason: 'sentinel-rehydration' });
-    await useBoardingLockStore.getState().releaseLock();
-    await clearTripEndedSentinel();
+    // #2114 — sentinel이 현재 활성 trip과 다른 trip의 것이면(stale) reset 없이 sentinel만
+    // 폐기. 2026-08-03 건대 RCA: 밤샘 trip force-end sentinel이 그 직후 등록된 새 trip을
+    // FG 재진입 시 통째로 삭제하던 회귀. 판정은 corrId 1순위 + timestamp fallback
+    // (resolveTripEndedSentinelVerdict, 방안 C′).
+    const tripStartedAt = await getTripStartedAt();
+    const currentCorrId = getCurrentTripCorrIdSync();
+    const verdict = resolveTripEndedSentinelVerdict(sentinel, tripStartedAt, currentCorrId);
+    if (verdict === 'stale') {
+      logger.info(
+        `trigger=${trigger} trip-ended sentinel=${JSON.stringify(sentinel)} stale (tripStartedAt=${tripStartedAt}, currentCorrId=${currentCorrId}) → discard without reset`,
+      );
+      appendAlarmLog({
+        ts: Date.now(),
+        source: 'lifecycle-backstop',
+        outcome: 'suppressed',
+        reason: 'trip-sentinel-stale-discarded',
+      });
+      await clearTripEndedSentinel();
+    } else {
+      logger.info(`trigger=${trigger} trip-ended sentinel=${JSON.stringify(sentinel)} → store reset`);
+      // #1351 R2 — 과거에는 setDestination(null)을 trigger로 사용했지만, prev=null인 경우
+      // isSwitch=false로 평가되어 cleanup chain이 실행되지 않는 버그가 있었다.
+      // isSwitch 의존 없이 storage cleanup을 직접 호출. 멱등이므로 Fix 1 / silent push handler와
+      // 중복 호출 안전. 메모리 store도 setState로 즉시 reset해 stale state가 노출되지 않게 한다.
+      // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+      const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+      await runTripBoundCleanups();
+      // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+      await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
+      useDestinationStore.setState({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
+      addDomainBreadcrumb('trip', 'end', { reason: 'sentinel-rehydration' });
+      await useBoardingLockStore.getState().releaseLock();
+      await clearTripEndedSentinel();
+    }
   }
 
   // 항상 storage → memory hydrate (sentinel 분기에서 reset된 store는 빈 storage 그대로 유지).
@@ -188,7 +209,8 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     });
     addDomainBreadcrumb('trip', 'end', { reason: 'lifecycle-9h-force-end' });
     await useBoardingLockStore.getState().releaseLock();
-    await setTripEndedSentinel(now);
+    // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
+    await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
     logger.warn('lifecycle backstop 실패 (graceful)', e);
   }

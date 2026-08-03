@@ -328,7 +328,12 @@ export type AlarmLogReason =
   // silent push kind(transfer/destination/intermediate)가 도달해도 device는 더 이상 로컬
   // 알림을 발사하지 않는다. 전환기 구버전 backend가 여전히 이 kind를 보내는 경우를 대비한
   // no-op 처리 1건 적재 — 상태 sync(lock-release/widget/LA)는 정상 진행.
-  | 'legacy-station-kind-ignored';
+  | 'legacy-station-kind-ignored'
+  // #2114 (2026-08-03 건대 트립 종료 RCA) — trip-ended sentinel이 현재 활성 trip보다 이전
+  // trip의 것으로 판정(isTripEndedSentinelStale)돼 reset을 skip하고 폐기한 1건. sentinel만
+  // clear하고 store/storage는 유지 — 밤샘 trip force-end 직후 등록된 새 trip이 FG 재진입
+  // 시 통째로 사라지는 회귀 차단. source='lifecycle-backstop'로 적재해 fire 분모 제외 유지.
+  | 'trip-sentinel-stale-discarded';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

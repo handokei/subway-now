@@ -4,11 +4,18 @@ import type { Station } from '../../../../shared/types/station';
 
 const mockGetSentinel = jest.fn();
 const mockSetSentinel = jest.fn();
-jest.mock('../../utils/tripEndedSentinel', () => ({
-  getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
-  setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
-  clearTripEndedSentinel: jest.fn(),
-}));
+const mockClearSentinel = jest.fn();
+jest.mock('../../utils/tripEndedSentinel', () => {
+  const actual = jest.requireActual('../../utils/tripEndedSentinel');
+  return {
+    // #2114 — 순수 함수라 실제 구현 그대로 사용. storage I/O 함수만 mock.
+    isTripEndedSentinelStale: actual.isTripEndedSentinelStale,
+    resolveTripEndedSentinelVerdict: actual.resolveTripEndedSentinelVerdict,
+    getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
+    setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
+    clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
+  };
+});
 
 const mockGetTripStartedAt = jest.fn();
 jest.mock('../../utils/tripStartStorage', () => ({
@@ -25,7 +32,7 @@ jest.mock('../../utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: (...args: unknown[]) => mockTriggerTripEndRecall(...args),
 }));
 
-const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);
 jest.mock('../../../observability/utils/tripCorrId', () => ({
   getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
 }));
@@ -114,9 +121,12 @@ beforeEach(() => {
   mockDestinationState = null;
   mockGetSentinel.mockResolvedValue(null);
   mockSetSentinel.mockResolvedValue(undefined);
+  mockClearSentinel.mockResolvedValue(undefined);
   mockGetTripStartedAt.mockResolvedValue(null);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
+  // #2114 (방안 C′) — 기본은 null(corrId sync cache 미수화 → timestamp fallback). 각 test가 필요 시 override.
+  mockGetCurrentTripCorrIdSync.mockReturnValue(null);
 });
 
 describe('useDeviceSelfEnd', () => {
@@ -144,7 +154,7 @@ describe('useDeviceSelfEnd', () => {
   describe('idempotent guard (sentinel already recorded)', () => {
     it('sentinel non-null이면 signal trigger돼도 cleanup skip', async () => {
       mockDestinationState = DESTINATION;
-      mockGetSentinel.mockResolvedValue(T0 - 60_000);
+      mockGetSentinel.mockResolvedValue({ endedAt: T0 - 60_000, corrId: null });
       // Signal 1 트리거 조건: destination match + strong confidence + 30s 지속.
       // 각 rerender에 새 currentStation 객체를 전달해 useEffect deps 변경을 유도(production
       // 에서는 fusion result가 매 tick 새 객체).
@@ -172,6 +182,113 @@ describe('useDeviceSelfEnd', () => {
       // sentinel check가 async라 대기
       await waitFor(() => expect(mockGetSentinel).toHaveBeenCalled());
       // sentinel 존재 → cleanup chain 미호출
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#2114 stale sentinel guard', () => {
+    it('stale sentinel(활성 trip이 sentinel보다 나중 시작) → clear 후 self-end 계속 진행', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetSentinel.mockResolvedValue({ endedAt: T0 - 120_000, corrId: null });
+      mockGetTripStartedAt.mockResolvedValue(T0 - 60_000); // sentinel 이후 새 trip 시작 → stale.
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      await waitFor(() => expect(mockGetTripStartedAt).toHaveBeenCalled());
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalledTimes(1));
+      // sentinel stale → clear 후 self-end chain 계속 진행 (idempotent guard 우회 아님, stale 판정).
+      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      expect(mockSetSentinel).toHaveBeenCalled();
+    });
+  });
+
+  describe('#2114 방안 C′ — corrId 스코프 1순위 판정', () => {
+    it('corrId 불일치 → stale 확정 (timestamp상 fresh로 보여도 corrId mismatch가 우선) → clear 후 self-end 진행', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetSentinel.mockResolvedValue({
+        endedAt: T0 + 100_000, // timestamp만 보면 fresh(tripStartedAt < sentinelAt).
+        corrId: 'corr-old-trip',
+      });
+      mockGetTripStartedAt.mockResolvedValue(T0 - 60_000);
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-new-trip');
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      await waitFor(() => expect(mockGetTripStartedAt).toHaveBeenCalled());
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalledTimes(1));
+      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      expect(mockSetSentinel).toHaveBeenCalled();
+    });
+
+    it('corrId 일치 → fresh 확정 (timestamp상 stale로 보여도 corrId 일치가 우선) → idempotent skip 유지', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetSentinel.mockResolvedValue({
+        endedAt: T0 - 120_000, // timestamp만 보면 stale(tripStartedAt > sentinelAt).
+        corrId: 'corr-same-trip',
+      });
+      mockGetTripStartedAt.mockResolvedValue(T0 - 60_000);
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-same-trip');
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      await waitFor(() => expect(mockGetTripStartedAt).toHaveBeenCalled());
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockGetSentinel).toHaveBeenCalled());
+      expect(mockClearSentinel).not.toHaveBeenCalled();
       expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
       expect(mockSetSentinel).not.toHaveBeenCalled();
     });

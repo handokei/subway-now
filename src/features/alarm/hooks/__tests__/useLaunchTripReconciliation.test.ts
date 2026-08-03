@@ -17,11 +17,18 @@ jest.mock('../../api/tripStatus', () => ({
 
 const mockGetSentinel = jest.fn();
 const mockSetSentinel = jest.fn();
-jest.mock('../../utils/tripEndedSentinel', () => ({
-  getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
-  setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
-  clearTripEndedSentinel: jest.fn(),
-}));
+const mockClearSentinel = jest.fn();
+jest.mock('../../utils/tripEndedSentinel', () => {
+  const actual = jest.requireActual('../../utils/tripEndedSentinel');
+  return {
+    // #2114 — 순수 함수라 실제 구현 그대로 사용. storage I/O 함수만 mock.
+    isTripEndedSentinelStale: actual.isTripEndedSentinelStale,
+    resolveTripEndedSentinelVerdict: actual.resolveTripEndedSentinelVerdict,
+    getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
+    setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
+    clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
+  };
+});
 
 // #2045 Signal 4 — silent push last-received stamp + trip started at.
 const mockGetLastSilentPushReceivedAt = jest.fn();
@@ -65,7 +72,7 @@ jest.mock('../../utils/alarmLog', () => ({
 }));
 
 // #1597 — trip 종료 ended 경로에서 cleanup 직전에 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
-const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);
 jest.mock('../../../observability/utils/tripCorrId', () => ({
   getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
 }));
@@ -89,6 +96,7 @@ beforeEach(async () => {
   await AsyncStorage.clear();
   mockGetSentinel.mockResolvedValue(null);
   mockSetSentinel.mockResolvedValue(undefined);
+  mockClearSentinel.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
@@ -96,6 +104,8 @@ beforeEach(async () => {
   // #2045 Signal 4 — 기본은 null(판정 skip). 각 test가 필요 시 override.
   mockGetLastSilentPushReceivedAt.mockResolvedValue(null);
   mockGetTripStartedAt.mockResolvedValue(null);
+  // #2114 (방안 C′) — 기본은 null(corrId sync cache 미수화 → timestamp fallback). 각 test가 필요 시 override.
+  mockGetCurrentTripCorrIdSync.mockReturnValue(null);
   process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
 });
 
@@ -143,9 +153,42 @@ describe('runLaunchTripReconciliation', () => {
 
   it('sentinel 기록 있음 → fetch skip', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
-    mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+    mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: null });
     await runLaunchTripReconciliation();
     expect(mockFetchTripStatus).not.toHaveBeenCalled();
+  });
+
+  it('#2114 — stale sentinel(활성 trip이 sentinel보다 나중 시작) → clear 후 fetchTripStatus 진행', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: null });
+    mockGetTripStartedAt.mockResolvedValue(1_700_000_060_000); // sentinel 이후 새 trip 시작.
+    mockFetchTripStatus.mockResolvedValue({ status: 'active', endedAt: null, endReason: null });
+    await runLaunchTripReconciliation();
+    expect(mockClearSentinel).toHaveBeenCalledTimes(1);
+    expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
+  });
+
+  describe('#2114 방안 C′ — corrId 스코프 1순위 판정', () => {
+    it('corrId 불일치 → stale 확정 (timestamp상 fresh로 보여도 corrId mismatch가 우선)', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_100_000, corrId: 'corr-old-trip' });
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_000_000); // timestamp만 보면 fresh.
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-new-trip');
+      mockFetchTripStatus.mockResolvedValue({ status: 'active', endedAt: null, endReason: null });
+      await runLaunchTripReconciliation();
+      expect(mockClearSentinel).toHaveBeenCalledTimes(1);
+      expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
+    });
+
+    it('corrId 일치 → fresh 확정 (timestamp상 stale로 보여도 corrId 일치가 우선 → skip 유지)', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: 'corr-same-trip' });
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_060_000); // timestamp만 보면 stale.
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-same-trip');
+      await runLaunchTripReconciliation();
+      expect(mockClearSentinel).not.toHaveBeenCalled();
+      expect(mockFetchTripStatus).not.toHaveBeenCalled();
+    });
   });
 
   it('status ended → recall + cleanup + sentinel + active trip clear (#2069 — 로컬 알림 미발사)', async () => {
@@ -159,7 +202,7 @@ describe('runLaunchTripReconciliation', () => {
     expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
     expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
-    expect(mockSetSentinel).toHaveBeenCalledWith(1_700_000_000_000);
+    expect(mockSetSentinel).toHaveBeenCalledWith(1_700_000_000_000, null);
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
   });
 
@@ -194,7 +237,7 @@ describe('runLaunchTripReconciliation', () => {
       endReason: 'unknown',
     });
     await runLaunchTripReconciliation();
-    expect(mockSetSentinel).toHaveBeenCalledWith(Date.now());
+    expect(mockSetSentinel).toHaveBeenCalledWith(Date.now(), null);
     jest.useRealTimers();
   });
 
@@ -208,7 +251,7 @@ describe('runLaunchTripReconciliation', () => {
     await runLaunchTripReconciliation();
     expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
-    expect(mockSetSentinel).toHaveBeenCalledWith(1);
+    expect(mockSetSentinel).toHaveBeenCalledWith(1, null);
   });
 
   it('status active → 변경 없음 + cleanup/recall 호출 안 함 (회귀 0)', async () => {
@@ -293,7 +336,7 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
       expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
       expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledTimes(1);
-      expect(mockSetSentinel).toHaveBeenCalledWith(now);
+      expect(mockSetSentinel).toHaveBeenCalledWith(now, null);
       expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
     });
 
@@ -354,14 +397,16 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockSetSentinel).not.toHaveBeenCalled();
     });
 
-    it('sentinel 기록 있음 → Signal 4 미진입 (fetch/self-end 모두 skip)', async () => {
-      mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+    it('sentinel 기록 있음(신선, 현재 trip과 동일 시점) → Signal 4 미진입 (fetch/self-end 모두 skip)', async () => {
+      // sentinel=now(활성 trip 시작 시각 이후) — stale 아님 → 기존 skip 동작 유지.
+      mockGetSentinel.mockResolvedValue({ endedAt: now, corrId: null });
       mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
       mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
       await runLaunchTripReconciliation();
       expect(mockFetchTripStatus).not.toHaveBeenCalled();
       expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
       expect(mockSetSentinel).not.toHaveBeenCalled();
+      expect(mockClearSentinel).not.toHaveBeenCalled();
       // sentinel skip는 위 sentinel test에서도 커버 — Signal 4가 sentinel skip를 우회하지 않는지 검증.
     });
 

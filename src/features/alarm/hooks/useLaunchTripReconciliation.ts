@@ -48,7 +48,9 @@ import {
   SIGNAL_4_SILENT_PUSH_TIMEOUT_MS,
 } from '../../../shared/constants/realtime';
 import {
+  clearTripEndedSentinel,
   getTripEndedSentinel,
+  resolveTripEndedSentinelVerdict,
   setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
 import { getLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
@@ -104,8 +106,26 @@ export async function runLaunchTripReconciliation(): Promise<void> {
 
     const sentinel = await getTripEndedSentinel();
     if (sentinel !== null) {
-      logger.info('skip — sentinel already recorded');
-      return;
+      // #2114 — sentinel이 현재 활성 trip과 다른 trip의 것이면(stale) skip하지 않고
+      // clear 후 reconciliation을 계속 진행한다. stale sentinel이 정상 launch reconciliation을
+      // 영구히 막는 부수 결함(밤샘 trip force-end sentinel이 그 직후 등록된 새 trip을 계속
+      // "이미 처리됨"으로 오판)을 함께 수리. 판정은 corrId 1순위 + timestamp fallback
+      // (resolveTripEndedSentinelVerdict, 방안 C′).
+      const tripStartedAtForSentinel = await getTripStartedAt();
+      const currentCorrIdForSentinel = getCurrentTripCorrIdSync();
+      const sentinelVerdict = resolveTripEndedSentinelVerdict(
+        sentinel,
+        tripStartedAtForSentinel,
+        currentCorrIdForSentinel,
+      );
+      if (sentinelVerdict !== 'stale') {
+        logger.info('skip — sentinel already recorded');
+        return;
+      }
+      logger.info(
+        `sentinel=${JSON.stringify(sentinel)} stale (tripStartedAt=${tripStartedAtForSentinel}, currentCorrId=${currentCorrIdForSentinel}) → clear + continue`,
+      );
+      await clearTripEndedSentinel();
     }
 
     // #2045 (Signal 4, Issue #2043 β 후속) — backend-timeout self-end 판정.
@@ -147,7 +167,8 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
       await runTripBoundCleanups();
       await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-      await setTripEndedSentinel(now);
+      // #2114 (방안 C′) — sentinel에 corrId 동봉.
+      await setTripEndedSentinel(now, endedCorrIdSnapshot);
       await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
       return;
     }
@@ -189,7 +210,8 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     await runTripBoundCleanups();
     // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
     await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-    await setTripEndedSentinel(endedAt);
+    // #2114 (방안 C′) — sentinel에 corrId 동봉.
+    await setTripEndedSentinel(endedAt, endedCorrIdSnapshot);
     await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
   } catch (e) {
     logger.warn('reconciliation 실패 (graceful)', e);
