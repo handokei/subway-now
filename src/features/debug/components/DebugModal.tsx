@@ -346,6 +346,10 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
     return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
   }
+  // #2125 — 현재역 표시 고착 정직 강등 이벤트. 표시 계층 전용 관측.
+  if (entry.kind === 'display-demote') {
+    return `${time} | ${entry.reason} | ${entry.stationName}(${entry.line})`;
+  }
   // #1902 (RC-18) — candidate-reject 분기는 candidateRejectBuffer로 이전(별 buffer + 별 섹션).
   // #1896 (RC-8) — boarding-lock-drift 분기는 boardingLockDriftBuffer로 이전(별 buffer + 별 섹션).
   // fusion 분기는 fusion decision entry만 처리한다.

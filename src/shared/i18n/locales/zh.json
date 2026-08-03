@@ -28,6 +28,7 @@
     "originCurrent": "当前站",
     "originNearest": "最近站",
     "originEstimated": "当前推定站",
+    "originStaleDemote": "行驶中 · 正在确认当前站",
     "routeTo": "前往",
     "estimatedSuffix": "预计",
     "destinationChange": "更改目的地 →",

@@ -106,10 +106,26 @@ export interface StickyStationEntry {
  * 200~500 cap을 점령하면 fusion decision/sticky/gps-fix 진단 1순위 entry가 evict된다.
  */
 
+/**
+ * #2125 — 현재역 표시 고착 정직 강등 이벤트. sticky lock이 trip 시작역에 고정된 채
+ * CURRENT_STATION_STALE_DEMOTE_MS 이상 상위 tier advance 없이 경과하면 1건 push.
+ * 표시 계층 전용 관측 — fire/알람 경로는 본 entry를 읽지 않는다.
+ */
+export type DisplayDemoteReason = 'display-demote-sticky-stale';
+
+export interface DisplayDemoteEntry {
+  kind: 'display-demote';
+  reason: DisplayDemoteReason;
+  ts: number;
+  stationName: string;
+  line: string;
+}
+
 export type FusionDebugEntry =
   | FusionDecisionEntry
   | GpsFixEntry
-  | StickyStationEntry;
+  | StickyStationEntry
+  | DisplayDemoteEntry;
 
 const db = createDebugBuffer<FusionDebugEntry>(FUSION_DEBUG_BUFFER_CAPACITY);
 

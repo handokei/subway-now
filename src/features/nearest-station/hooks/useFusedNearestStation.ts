@@ -85,6 +85,7 @@ import {
   CANDIDATE_ANCHOR_WINDOW_DEFAULT,
   CANDIDATE_ANCHOR_WINDOW_EXPANDED,
   CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD,
+  CURRENT_STATION_STALE_DEMOTE_MS,
   DETECTION_FUSED_MAX_DISTANCE_KM,
   GPS_DERIVED_ACCURACY_MAX_M,
   GPS_DERIVED_FIX_MAX_AGE_MS,
@@ -129,6 +130,17 @@ const FUSION_CANDIDATE_LIMIT = MAX_ACTIVE_LINES;
  *
  * 신규 라벨 추가 시 본 표만 갱신 — caller가 직접 string 변환 X (lint으로 단일 SSOT 강제).
  */
+/**
+ * #2125 — 현재역 표시 고착 정직 강등 판정에서 "상위 tier advance 신호"로 인정하는 tier 집합.
+ * 이 중 하나가 채택되면 사용자가 실제로 전진 중이라 판단해 강등을 건너뛴다.
+ */
+const HIGHER_TIER_ADVANCED = new Set<FusionTierName>([
+  'position-train-lock',
+  'position-train',
+  'backend-ssot',
+  'wifi',
+]);
+
 const LEGACY_TIER_LABEL_MAP: Record<FusionTierName, FusionPickerTier> = {
   'position-train-lock': 'positionTrainBoardingLockMatch',
   'gps-fast-path': 'gpsDerivedFastPath',
@@ -303,6 +315,19 @@ interface UseFusedNearestStationReturn {
    * fire path SSOT(result/confidence/source)에서 분리되어 표시 채널로만 노출된다.
    */
   stickyDisplayOnly: import('../../../shared/types/station').Station | null;
+  /**
+   * #2125 — 현재역 표시 고착 정직 강등 (RCA (d) 옵션 1). 표시 계층 전용 — fire/알람 경로 무영향.
+   *
+   * true인 조건 (AND, 매 cycle 재평가 — 상위 tier 채택/sticky unlock/trip 종료 시 즉시 false):
+   *   1. lockless trip 활성 (routeContext 제공 — destination+route 존재)
+   *   2. `result.station`이 sticky lock 상태이고 그 역이 trip 시작역(routeContext.origin)과 동일
+   *   3. 상위 tier(position-train-lock/position-train/backend-ssot/wifi) 어느 것도 현재 미채택
+   *   4. lockless trip 시작 후 CURRENT_STATION_STALE_DEMOTE_MS 경과
+   *
+   * 호출자(HomeScreen)는 본 플래그가 true면 역명 대신 "이동 중 · 현재역 확인 중" 라벨을 노출한다.
+   * effectiveOrigin/journey/도착정보 등 다른 surface의 SSOT는 무변경 — 역명 표시 문구만 대체.
+   */
+  currentStationDisplayDemoted: boolean;
   /**
    * #1621 (Phase B) — backend SSoT mirror가 fresh일 때 currentStationId, 미존재/stale일 때 null.
    *
@@ -1706,6 +1731,50 @@ export function useFusedNearestStation(
     !boardingLock && locklessTripStartRef.current != null
       ? { tripStartedAt: locklessTripStartRef.current }
       : null;
+
+  // #2125 — 현재역 표시 고착 정직 강등 (RCA (d) 옵션 1). 표시 계층 전용.
+  //
+  // 신규 추정 로직 없이 기존 산출물만 재사용:
+  //   - gps.stickyDisplayOnly: sticky lock된 station (표시 채널, #1486)
+  //   - routeContext.origin: trip 시작역(tripOrigin) — HomeScreen이 destination 설정 시 캡처.
+  //   - adoptedTier: cascade가 채택한 tier (상위 tier advance 여부 판정)
+  //   - locklessTripStartRef: lockless trip 시작 시각 (#1207 앵커, 위에서 이미 산출)
+  //
+  // lock 활성 trip은 범위 밖 — RCA 시나리오(positionTrain은 lock 필요, 즉 lockless에서만
+  // positionTrain 자체가 dormant)가 lockless 전용이라 locklessTripStartRef가 자연 게이트 역할.
+  const tripOriginForDemote = routeContext?.origin ?? null;
+  const stickyLockedStation = gps.stickyDisplayOnly;
+  const resultStuckAtStickyOrigin =
+    routeContext != null &&
+    stickyLockedStation != null &&
+    tripOriginForDemote != null &&
+    stickyLockedStation.id === tripOriginForDemote.id &&
+    result?.station.id === stickyLockedStation.id;
+  const higherTierAdvanced = HIGHER_TIER_ADVANCED.has(adoptedTier);
+  const lockedElapsedMs =
+    locklessTrip != null ? Date.now() - locklessTrip.tripStartedAt : null;
+  const currentStationDisplayDemoted =
+    resultStuckAtStickyOrigin &&
+    !higherTierAdvanced &&
+    lockedElapsedMs != null &&
+    lockedElapsedMs >= CURRENT_STATION_STALE_DEMOTE_MS;
+
+  // #2125 — 강등 진입 1회만 fusion log 스탬프 (DebugModal Fusion log 빈도 측정).
+  // dedup: false→true 전환 시에만 push — 매 polling cycle 재적재로 buffer 점령 방지.
+  const wasDemotedRef = useRef(false);
+  useEffect(() => {
+    if (currentStationDisplayDemoted && !wasDemotedRef.current && stickyLockedStation) {
+      pushFusionDebugEntry({
+        kind: 'display-demote',
+        reason: 'display-demote-sticky-stale',
+        ts: Date.now(),
+        stationName: stickyLockedStation.name,
+        line: stickyLockedStation.line,
+      });
+    }
+    wasDemotedRef.current = currentStationDisplayDemoted;
+  }, [currentStationDisplayDemoted, stickyLockedStation]);
+
   const estimate = estimateStationProgress({
     lock: boardingLock ?? null,
     locklessTrip,
@@ -2228,6 +2297,8 @@ export function useFusedNearestStation(
     // #1486 (ADR-015 §2) — sticky 표시 채널 패스스루. useNearestStation이 sticky.locked를 노출하고
     // 본 hook은 그대로 통과. fire path는 본 필드는 읽지 않는다.
     stickyDisplayOnly: gps.stickyDisplayOnly,
+    // #2125 — 표시 계층 정직 강등 플래그. fire path는 본 필드를 읽지 않는다.
+    currentStationDisplayDemoted,
     // #1621 (Phase B) — V1 mismatch 자동 측정용. silent push handler가 영속화한 backend SSoT
     // currentStationId를 그대로 노출. mirror null/stale 시 null. consumer는
     // `useV1MismatchDetector(uiCurrentStationId, ssotCurrentStationId)` 한 줄로 wire.
