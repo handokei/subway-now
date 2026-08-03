@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 import { prefetchArrival, useArrivalInfo, __resetArrivalCacheForTests } from '../useArrivalInfo';
 import * as arrivalApiModule from '../../api/arrivalApi';
+import type { LineNumber } from '../../../../shared/types/station';
 
 jest.mock('../../api/arrivalApi');
 
@@ -554,6 +555,102 @@ describe('useArrivalInfo', () => {
       // fetch 완료 후 line=3 데이터로 표시.
       await act(async () => { resolveLine3(mockArrival); });
       expect(result.current.arrival).toEqual(mockArrival);
+    });
+  });
+
+  // #2124 — 건대입구 재등록 시 `건대입구|7 → 건대입구|2` 키 flip으로 arrival이 null 리셋되며
+  // 열차 리스트가 순간적으로 비는 회귀(#2115 RCA (a)) 차단. BFF 응답은 line-무관이므로 직전
+  // realtime arrival을 유지한 채 refetch만 트리거해 스켈레톤 창을 없앤다.
+  describe('same-station line-flip keeps previous arrival (#2124)', () => {
+    it('같은 역에서 line만 바뀌고 직전 데이터가 realtime이면 arrival을 유지한 채 refetch한다', async () => {
+      const realtimeLine7 = { ...mockArrival, source: 'realtime' as const };
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(realtimeLine7);
+
+      const { result, rerender } = renderHook(
+        ({ line }: { line: LineNumber | null }) => useArrivalInfo('건대입구', line),
+        { initialProps: { line: '7' as LineNumber | null } },
+      );
+
+      await waitFor(() => expect(result.current.arrival).toEqual(realtimeLine7));
+      expect(result.current.loading).toBe(false);
+
+      // line flip: 7호선 → 2호선, 같은 역. refetch는 pending 상태로 둬 유지 여부를 관찰한다.
+      let resolveLine2!: (value: typeof realtimeLine7) => void;
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockImplementation(
+        () => new Promise((r) => { resolveLine2 = r; }),
+      );
+      rerender({ line: '2' });
+
+      // 직전 arrival 유지 — null 리셋 없음. loading도 기존 semantics(false) 유지 → 리스트 즉시 렌더.
+      expect(result.current.arrival).toEqual(realtimeLine7);
+      expect(result.current.loading).toBe(false);
+
+      // 새 (station, line) 키로 refetch가 실제로 트리거됐는지 확인.
+      await waitFor(() =>
+        expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('건대입구', { lineHint: '2' }),
+      );
+
+      // refetch 완료 시 새 데이터로 교체된다.
+      const realtimeLine2 = {
+        up: [{ destination: '까치산행', arrivalMinutes: 1, arrivalSeconds: 60, statusMessage: '', trainCode: 'L2-X', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        down: [],
+        source: 'realtime' as const,
+      };
+      await act(async () => { resolveLine2(realtimeLine2); });
+      expect(result.current.arrival).toEqual(realtimeLine2);
+    });
+
+    it('직전 데이터가 schedule fallback 출처면 line flip 시 유지하지 않고 기존대로 reset한다', async () => {
+      const scheduleFallback = { ...mockArrival, source: 'schedule' as const };
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(scheduleFallback);
+
+      const { result, rerender } = renderHook(
+        ({ line }: { line: LineNumber | null }) => useArrivalInfo('교대', line),
+        { initialProps: { line: '2' as LineNumber | null } },
+      );
+
+      await waitFor(() => expect(result.current.arrival).toEqual(scheduleFallback));
+
+      rerender({ line: '3' });
+
+      // fallback 출처는 이월되지 않음 — 기존 null reset 동작 유지.
+      expect(result.current.arrival).toBeNull();
+      expect(result.current.loading).toBe(true);
+    });
+
+    it('직전 데이터가 isMock이면 line flip 시 유지하지 않고 기존대로 reset한다', async () => {
+      const mockRealtimeShaped = { ...mockArrival, source: 'realtime' as const, isMock: true };
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockRealtimeShaped);
+
+      const { result, rerender } = renderHook(
+        ({ line }: { line: LineNumber | null }) => useArrivalInfo('교대', line),
+        { initialProps: { line: '2' as LineNumber | null } },
+      );
+
+      await waitFor(() => expect(result.current.arrival).toEqual(mockRealtimeShaped));
+
+      rerender({ line: '3' });
+
+      expect(result.current.arrival).toBeNull();
+      expect(result.current.loading).toBe(true);
+    });
+
+    it('station이 바뀌면(line도 함께) 직전 arrival을 유지하지 않고 reset한다 — 다른 역 데이터 이월 금지', async () => {
+      const realtimeArrival = { ...mockArrival, source: 'realtime' as const };
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(realtimeArrival);
+
+      const { result, rerender } = renderHook(
+        ({ name, line }: { name: string; line: LineNumber | null }) => useArrivalInfo(name, line),
+        { initialProps: { name: '건대입구', line: '7' as LineNumber | null } },
+      );
+
+      await waitFor(() => expect(result.current.arrival).toEqual(realtimeArrival));
+
+      // 역과 line이 동시에 바뀜 — station 변경이므로 line-flip 유지 로직 적용 대상 아님.
+      rerender({ name: '성수', line: '2' });
+
+      expect(result.current.arrival).toBeNull();
+      expect(result.current.loading).toBe(true);
     });
   });
 });

@@ -104,6 +104,11 @@ export function useArrivalInfo(
   // fallback이 다르므로 (현재역 도착정보가 잘못된 호선/방면을 표시하는 회귀 차단).
   const lineHintRef = useRef(lineHint);
   lineHintRef.current = lineHint;
+  // #2124 — 키 변경 reset 분기가 "동일 station, line만 변경" 케이스를 구분하기 위한 직전 값.
+  const prevKeyRef = useRef<{ stationName: string | null; lineHint: LineNumber | null | undefined }>({
+    stationName: null,
+    lineHint: undefined,
+  });
 
   const updateArrival = useCallback((data: StationArrival) => {
     if (!arrivalEqual(arrivalRef.current, data)) {
@@ -113,6 +118,9 @@ export function useArrivalInfo(
   }, []);
 
   useEffect(() => {
+    const prevKey = prevKeyRef.current;
+    prevKeyRef.current = { stationName, lineHint };
+
     if (!stationName) {
       arrivalRef.current = null;
       setArrival(null);
@@ -124,11 +132,27 @@ export function useArrivalInfo(
     if (cached) {
       updateArrival(cached);
       setLoading(false);
-    } else {
-      arrivalRef.current = null;
-      setArrival(null);
-      setLoading(true);
+      return;
     }
+
+    // #2124 — station은 동일하고 line만 바뀐 경우(fusion 슬롯의 호선 재선정 등), BFF 실시간
+    // 응답은 호선 무관으로 전 호선 도착정보를 포함하므로 직전 realtime arrival을 그대로 유지한 채
+    // refetch만 트리거한다. arrival===null 순간(스켈레톤 창)을 없애 열차 리스트 선택 불가 구간을 제거.
+    // 직전 데이터가 mock/schedule fallback 출처면(호선별로 값이 달라짐) 유지하지 않고 기존 reset.
+    const sameStationLineFlip =
+      prevKey.stationName === stationName &&
+      prevKey.lineHint !== lineHint &&
+      arrivalRef.current !== null &&
+      arrivalRef.current.source === 'realtime' &&
+      !arrivalRef.current.isMock;
+
+    if (sameStationLineFlip) {
+      return;
+    }
+
+    arrivalRef.current = null;
+    setArrival(null);
+    setLoading(true);
     // lineHint가 바뀌면 새 (station, line) 키로 캐시 lookup. fusion 슬롯 교체 시 직전 호선
     // 캐시가 잔존해 잘못된 도착정보로 표시되는 회귀 차단(#1400).
   }, [stationName, lineHint, updateArrival]);
