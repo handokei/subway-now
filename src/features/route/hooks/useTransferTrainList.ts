@@ -37,6 +37,12 @@ export interface UseTransferTrainListResult {
   context: ActiveTransferContext | null;
   /** 다음 노선 + 환승역 기준 도착 list, direction으로 필터된 결과. */
   arrivals: ArrivalInfo[];
+  /**
+   * #2115 — (환승역, 다음 노선) 키의 첫 arrival fetch가 아직 완료되지 않았는지 여부.
+   * true인 동안 호출자(BoardingTrainList)는 "도착 예정 열차 없음" 대신 loading skeleton을
+   * 노출해야 한다. context 비활성(currentStation=null 등)이면 useArrivalInfo 자체가 idle이라 false.
+   */
+  loading: boolean;
   /** 사용자가 다음 열차 탭 시 호출 — 새 BoardingLock 생성 (기존 lock 자동 교체). */
   createTransferLock: (train: ArrivalInfo) => void;
 }
@@ -63,7 +69,7 @@ export function useTransferTrainList({
 
   const transferStationName = context?.transferStationInToLine.name ?? null;
   const transferLine = context?.nextLine ?? null;
-  const { arrival, refetch } = useArrivalInfo(transferStationName, transferLine, arrivalProvider);
+  const { arrival, loading, refetch } = useArrivalInfo(transferStationName, transferLine, arrivalProvider);
 
   // #814 — 환승 알람 imminent 시점부터 다음 노선 arrival을 사전 폴링한다.
   // findUpcomingTransferPrefetch는 lock 활성 + transfer 라우트 + 다음 환승까지 잔여 stops ≤ 1
@@ -172,7 +178,7 @@ export function useTransferTrainList({
     createTransferLock(chosen);
   }, [transferKey, arrivals, createTransferLock]);
 
-  return { context, arrivals, createTransferLock };
+  return { context, arrivals, loading, createTransferLock };
 }
 
 /** 테스트 노출용. 외부 호출자는 useTransferTrainList의 result.arrivals를 사용. */
