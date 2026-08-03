@@ -34,9 +34,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createLogger } from '../../../shared/utils/logger';
 import { PRESCHEDULED_LEDGER_KEY } from '../../../shared/constants/storageKeys';
-// NOTE: `safetyNetScheduler.ts`의 `SAFETY_NET_ALARM_PREFIX`와 동일 값 — 모듈 간 순환 import
-// 방지를 위해 로컬 상수로 보관. safetyNetScheduler에서 prefix가 바뀌면 본 파일도 동시 업데이트.
-const SAFETY_NET_ALARM_PREFIX = 'alarm-';
+// NOTE: `safetyNetScheduler.ts`의 `SAFETY_NET_ALARM_PREFIX` / `stationPrescheduler.ts`의
+// `PRESCHED_ALARM_PREFIX`와 동일 값 — 모듈 간 순환 import 방지를 위해 로컬 상수로 보관.
+// 두 스케줄러(sleepMode ON 전용 / OFF 전용)가 각각 등록하는 예약 채널 2종을 이 ledger가
+// 공통으로 측정한다(#918) — prefix가 둘 중 하나라도 바뀌면 본 파일도 동시 업데이트.
+const SCHEDULED_ALARM_PREFIXES = ['alarm-', 'presched-'];
+
+function hasKnownPrefix(identifier: string): boolean {
+  return SCHEDULED_ALARM_PREFIXES.some((prefix) => identifier.startsWith(prefix));
+}
 
 const log = createLogger('prescheduledMetrics');
 
@@ -80,7 +86,7 @@ async function readLedger(): Promise<PrescheduledLedger> {
 function isLedgerEntry(v: unknown): v is PrescheduledLedgerEntry {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
-  if (typeof o.identifier !== 'string' || !o.identifier.startsWith(SAFETY_NET_ALARM_PREFIX)) {
+  if (typeof o.identifier !== 'string' || !hasKnownPrefix(o.identifier)) {
     return false;
   }
   if (typeof o.stationName !== 'string' || o.stationName.length === 0) return false;
@@ -110,7 +116,7 @@ export async function recordScheduledAlarm(input: {
   scheduledFireMs: number;
   stationName: string;
 }): Promise<void> {
-  if (!input.identifier.startsWith(SAFETY_NET_ALARM_PREFIX)) return;
+  if (!hasKnownPrefix(input.identifier)) return;
   if (!Number.isFinite(input.scheduledFireMs)) return;
   if (input.stationName.length === 0) return;
   try {
@@ -140,7 +146,7 @@ export async function recordFiredAlarm(input: {
   identifier: string;
   actualFireMs: number;
 }): Promise<void> {
-  if (!input.identifier.startsWith(SAFETY_NET_ALARM_PREFIX)) return;
+  if (!hasKnownPrefix(input.identifier)) return;
   if (!Number.isFinite(input.actualFireMs)) return;
   try {
     const ledger = await readLedger();

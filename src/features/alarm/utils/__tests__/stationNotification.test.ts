@@ -268,13 +268,15 @@ describe('stationNotification', () => {
         expect(result.shouldShowAlert).toBe(true);
       });
 
-      it('data.kind가 매핑 대상(intermediate) 외이면 hasRecentLocalStationFire 호출 안 함 (정상 표시)', async () => {
+      it('data.kind가 매핑 대상(intermediate/transfer/destination) 외이면 hasRecentLocalStationFire 호출 안 함 (정상 표시)', async () => {
         setupNotificationHandler();
         const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
         const result = await handleNotification({
           request: {
             identifier: 'station-alarm',
-            content: { sound: null, data: { nextWaypoint: '중곡', kind: 'transfer' } },
+            // #918 — transfer/destination도 이제 매핑 대상에 포함(OS 사전예약 3-소스 dedup
+            // 확장)되므로, 매핑되지 않는 예시로는 두 채널 모두에 없는 임의 kind를 사용한다.
+            content: { sound: null, data: { nextWaypoint: '중곡', kind: 'boarding-prompt' } },
           },
         });
         expect(mockHasRecentLocalStationFire).not.toHaveBeenCalled();

@@ -286,7 +286,11 @@ export async function registerSafetyNetAlarms(
  * tripBoundScheduler.cancelIdentifiersWithRetry / boardingLockScheduler.cancelAndDismiss와
  * 동형 — 3종 통합으로 이 파일 한 곳에만 존재.
  */
-async function cancelIdentifiersWithRetry(identifiers: string[]): Promise<number> {
+/**
+ * #918 — `stationPrescheduler`(OS 사전 예약 2번째 채널)가 동일한 retry-cancel 정책을
+ * 재사용한다. export해 신규 중복 구현을 피한다.
+ */
+export async function cancelIdentifiersWithRetry(identifiers: string[]): Promise<number> {
   if (identifiers.length === 0) return 0;
   const firstPass = await Promise.allSettled(
     identifiers.map((id) => Notifications.cancelScheduledNotificationAsync(id)),

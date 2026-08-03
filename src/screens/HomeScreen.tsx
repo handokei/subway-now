@@ -60,6 +60,7 @@ import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushH
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
 import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetScheduler';
+import { useStationPrescheduler } from '../features/alarm/hooks/useStationPrescheduler';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useDeviceSelfEnd } from '../features/alarm/hooks/useDeviceSelfEnd';
@@ -702,6 +703,15 @@ export default function HomeScreen() {
   useSafetyNetScheduler({
     route,
     destinationName: destination?.name ?? null,
+  });
+  // #918 — OS-level 사전 예약 "매역" 일반화. boardingLock 활성 + sleepMode OFF인 trip에 한해
+  // 경로 위 모든 역(환승/도착 포함)에 앞 12역 rolling window로 예약한다. safetyNetScheduler와
+  // sleepMode로 상호 배타 — 취침모드는 안전망(1역 전 경보)이, 일반 모드는 본 채널(매역, backend
+  // APNs 지연 근본 수리)이 담당한다.
+  useStationPrescheduler({
+    arcStations,
+    currentHopIndex,
+    lock: boardingLock,
   });
   // #759 — 목적지역 도착 grace 후 lock 자동 release. 명시 "하차" 버튼은 그대로 유지하며,
   // 사용자가 누르지 않은 정상 도착 케이스만 처리. sleep mode와 무관.

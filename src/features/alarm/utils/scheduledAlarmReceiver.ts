@@ -24,11 +24,20 @@ import { recordFiredAlarm } from './prescheduledMetrics';
 import {
   deriveSafetyNetWaypoints,
   readSafetyNetData,
+  resolveEffectiveTripToken,
   type SafetyNetNotificationData,
 } from './safetyNetScheduler';
+import {
+  readPrescheduledData,
+  cancelPrescheduledByStationKind,
+  type PrescheduledNotificationData,
+} from './stationPrescheduler';
+import { readSleepMode } from './alarmLocalAuthority';
+import { mapBackendKindToLocalFireKind } from './stationNotification';
+import { markLocalStationFired } from './recentLocalStationFires';
 import { getTripStartedAt } from './tripStartStorage';
 import { alarmKey } from './stationAlarm';
-import { logSuppressedSafetyNetRevalidation } from './alarmLog';
+import { logSuppressedSafetyNetRevalidation, logSuppressedPrescheduledRevalidation } from './alarmLog';
 import { readBackendSsotMirror } from './backendSsotMirror';
 import { getStationById, isSameStationName } from '../../../shared/utils/stationRoute';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
@@ -273,16 +282,72 @@ async function revalidateSafetyNetAlarm(
 }
 
 /**
- * 사전 예약된 safety-net 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
- * 사전 예약 알람은 클라이언트 콜백을 거치지 않으므로, 이 함수가 FG/BG 양쪽 발화 모두에 대한
- * 상태 동기화 단일 진입점이다.
+ * #918 — stationPrescheduler(OS 사전예약 "매역" 채널) 알람의 fire-time 재검증.
  *
- * - FIRED_ALARMS_KEY에 `early:station`/`imminent:station` 둘 다 추가 → FG 복귀 시 useStationAlarm
- *   하이드레이션 및 후속 silent push 처리가 해당 station을 이미 발화된 것으로 간주해 중복 발화를
- *   막는다. safetyNetScheduler는 phase 개념이 없는 단일 fire지만, dedup key 공간은 live GPS 기반
- *   FG/BG 발화 경로(early/imminent 2 phase)와 공유되므로 둘 다 마킹해야 교차 dedup이 보장된다.
- * - LAST_FIRED_ALARM_STATION_NAME_KEY를 해당 역 이름으로 갱신 → BGAppRefreshTask가
+ * safetyNetScheduler의 4단 검증(tripStart/tripToken/waypoint/position)과 달리 본 채널은
+ * "waypoint 자체(kind+station)가 이미 content.data에 구조화되어 있어 별도 파싱이 필요 없다"는
+ * 점 + "sleepMode로 두 채널이 상호 배타"라는 정책을 반영해 더 가벼운 3단 검증만 수행한다:
+ *   1) sleepMode가 그 사이 켜졌으면 suppress — 켜진 순간부터는 safetyNetScheduler 전담이라
+ *      본 채널의 잔여 발화는 정책 밖 알람이다.
+ *   2) tripStart 존재 — trip이 종료되지 않았다.
+ *   3) parsed.tripToken이 현재 유효 trip(backend 등록 or device-local)과 일치.
+ */
+async function revalidatePrescheduledAlarm(
+  parsed: PrescheduledNotificationData,
+): Promise<'pass' | 'suppress'> {
+  const suppress = (
+    reason: Parameters<typeof logSuppressedPrescheduledRevalidation>[0]['reason'],
+  ): 'suppress' => {
+    logSuppressedPrescheduledRevalidation({ reason, stationName: parsed.station });
+    return 'suppress';
+  };
+
+  const sleepMode = await readSleepMode();
+  if (sleepMode) return suppress('revalidate-sleep-mode-on');
+
+  const tripStart = await getTripStartedAt();
+  if (tripStart === null) return suppress('revalidate-no-trip');
+
+  const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+  const effectiveTripToken = resolveEffectiveTripToken(activeTripToken, tripStart);
+  if (effectiveTripToken === null || effectiveTripToken !== parsed.tripToken) {
+    return suppress('revalidate-trip-token-mismatch');
+  }
+  return 'pass';
+}
+
+/**
+ * #918 — backend push(원격 station-notif)의 content.data에서 (station, kind)를 추출해,
+ * 그 역의 사전예약 pending을 취소한다("remote 선표시 → 해당 역 pending 로컬 cancel").
+ * 원격이 아닌(=우리 자신의 safetyNet/presched) request는 각각의 prefix로 이미 위에서
+ * 처리되므로, 본 helper는 두 채널 어느 쪽도 아닌 request에 대해서만 의미 있게 동작한다.
+ */
+async function cancelPrescheduledOnRemoteArrival(
+  request: Notifications.NotificationRequest,
+): Promise<void> {
+  const data = request.content.data as { nextWaypoint?: unknown; kind?: unknown } | undefined;
+  const stationName = data?.nextWaypoint;
+  const backendKind = data?.kind;
+  if (typeof stationName !== 'string' || stationName.length === 0) return;
+  if (typeof backendKind !== 'string') return;
+  const localKind = mapBackendKindToLocalFireKind(backendKind);
+  if (localKind !== 'transfer' && localKind !== 'destination' && localKind !== 'station-passed') return;
+  await cancelPrescheduledByStationKind(stationName, localKind);
+}
+
+/**
+ * 사전 예약된 safety-net/presched 알림이 OS에 의해 발사된 직후, 또는 backend가 보낸 원격
+ * station-notif가 도착한 직후 클라이언트 상태를 갱신하는 단일 진입점.
+ *
+ * - safety-net 발사: FIRED_ALARMS_KEY에 `early:station`/`imminent:station` 둘 다 추가 → FG 복귀 시
+ *   useStationAlarm 하이드레이션 및 후속 silent push 처리가 해당 station을 이미 발화된 것으로
+ *   간주해 중복 발화를 막는다. LAST_FIRED_ALARM_STATION_NAME_KEY도 갱신 → BGAppRefreshTask가
  *   다음 사이클에서 Arrival API를 올바른 기준역으로 호출.
+ * - presched(#918) 발사: fire-time 재검증 통과 시 `recentLocalStationFires`에 마킹 — 뒤늦게
+ *   도착하는 backend push의 표시를 억제하는 기존 2차 방어선(#2122)이 그대로 3-소스 dedup의
+ *   1선으로 승격된다.
+ * - 원격 도착(둘 다 아닌 request, `data.nextWaypoint` 보유): 같은 역의 presched pending을 즉시
+ *   cancel — "역당 배너 정확히 1개"의 남은 방향(remote가 먼저 도착 → 나중에 pending이 또 안 뜨게).
  */
 export async function reconcileScheduledAlarmDelivery(
   request: Notifications.NotificationRequest,
@@ -291,32 +356,49 @@ export async function reconcileScheduledAlarmDelivery(
   await recordFiredAlarm({ identifier: request.identifier, actualFireMs });
 
   const parsed = readSafetyNetData(request);
-  if (!parsed) return;
+  if (parsed) {
+    const result = await revalidateSafetyNetAlarm(parsed);
+    if (result.outcome === 'suppress') {
+      // #1354 — suppress 시 OS scheduled queue에 동일 identifier가 남아 다음 ETA에 또
+      // 발사되어 정적 misfire가 영구 재발한다. 사전 예약은 fire-and-forget이므로 명시 cancel 필요.
+      // cancelScheduledNotificationAsync는 이미 발사된 항목에도 안전.
+      await Notifications.cancelScheduledNotificationAsync(request.identifier);
+      // #1924 — delivered tray에서도 제거. cancelScheduledNotificationAsync는 pending queue만
+      // 대상이라 이미 OS가 자체 fire 한 항목은 delivered tray에 그대로 남는다. 사용자가
+      // swipe-dismiss 하지 않는 한 다음 FG 복귀 drain 시 같은 identifier를 또 read → 같은
+      // reason으로 다시 suppress → alarm log 무한 재적재 (2026-06-27 dump 56회 evidence).
+      await Notifications.dismissNotificationAsync(request.identifier);
+      return;
+    }
 
-  const result = await revalidateSafetyNetAlarm(parsed);
-  if (result.outcome === 'suppress') {
-    // #1354 — suppress 시 OS scheduled queue에 동일 identifier가 남아 다음 ETA에 또
-    // 발사되어 정적 misfire가 영구 재발한다. 사전 예약은 fire-and-forget이므로 명시 cancel 필요.
-    // cancelScheduledNotificationAsync는 이미 발사된 항목에도 안전.
-    await Notifications.cancelScheduledNotificationAsync(request.identifier);
-    // #1924 — delivered tray에서도 제거. cancelScheduledNotificationAsync는 pending queue만
-    // 대상이라 이미 OS가 자체 fire 한 항목은 delivered tray에 그대로 남는다. 사용자가
-    // swipe-dismiss 하지 않는 한 다음 FG 복귀 drain 시 같은 identifier를 또 read → 같은
-    // reason으로 다시 suppress → alarm log 무한 재적재 (2026-06-27 dump 56회 evidence).
-    await Notifications.dismissNotificationAsync(request.identifier);
+    // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
+    // setLastFiredAlarmStationName은 trip 종속성이 약하므로 유지한다(다음 사이클 기준역 갱신용).
+    if (result.destinationId) {
+      const fired = await getFiredAlarms(result.destinationId);
+      // early/imminent 둘 다 마킹 — silent push 채널/live GPS 채널과 동일 dedup key 공간 공유(#1367).
+      fired.add(alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
+      fired.add(alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
+      await setFiredAlarms(result.destinationId, fired);
+    }
+    await setLastFiredAlarmStationName(parsed.station);
     return;
   }
 
-  // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
-  // setLastFiredAlarmStationName은 trip 종속성이 약하므로 유지한다(다음 사이클 기준역 갱신용).
-  if (result.destinationId) {
-    const fired = await getFiredAlarms(result.destinationId);
-    // early/imminent 둘 다 마킹 — silent push 채널/live GPS 채널과 동일 dedup key 공간 공유(#1367).
-    fired.add(alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
-    fired.add(alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
-    await setFiredAlarms(result.destinationId, fired);
+  const prescheduled = readPrescheduledData(request);
+  if (prescheduled) {
+    const outcome = await revalidatePrescheduledAlarm(prescheduled);
+    if (outcome === 'suppress') {
+      await Notifications.cancelScheduledNotificationAsync(request.identifier);
+      await Notifications.dismissNotificationAsync(request.identifier);
+      return;
+    }
+    await markLocalStationFired(prescheduled.station, prescheduled.kind);
+    return;
   }
-  await setLastFiredAlarmStationName(parsed.station);
+
+  // 위 두 채널 어느 쪽도 아니면 원격(backend) station-notif일 가능성 — 그 역의 presched
+  // pending을 정리한다(BG 방향은 silentPushTask가 동일 역할을 담당).
+  await cancelPrescheduledOnRemoteArrival(request);
 }
 
 /**
@@ -388,6 +470,22 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     }
   }
   if (lastStationName) await setLastFiredAlarmStationName(lastStationName);
+
+  // #918 — presched(OS 사전예약 "매역") 항목도 동일 drain 사이클에서 reconcile한다.
+  // fired set/lastStationName 갱신 대상이 아니므로(그건 safety-net 전용 dedup key 공간)
+  // 위 accepted 누적과 독립적으로 처리 — revalidate pass 시 recentLocalStationFires에
+  // 마킹해 뒤늦게 도착하는 backend push의 중복 표시를 억제한다(#2122 2차 방어선 재사용).
+  for (const n of presented) {
+    const parsed = readPrescheduledData(n.request);
+    if (!parsed) continue;
+    const outcome = await revalidatePrescheduledAlarm(parsed);
+    if (outcome === 'suppress') {
+      await Notifications.cancelScheduledNotificationAsync(n.request.identifier);
+      await Notifications.dismissNotificationAsync(n.request.identifier);
+      continue;
+    }
+    await markLocalStationFired(parsed.station, parsed.kind);
+  }
 }
 
 /**

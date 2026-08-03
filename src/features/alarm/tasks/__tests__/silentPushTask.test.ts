@@ -194,9 +194,44 @@ jest.mock('react-native', () => ({
 // reschedule 분기: rescheduleSafetyNetAlarm 1회. companion 발사 후 cleanup: cancelSafetyNetByStationKind 1회.
 const mockRescheduleSafetyNetAlarm = jest.fn();
 const mockCancelSafetyNetByStationKind = jest.fn().mockResolvedValue(undefined);
+// #918 — resolveEffectiveTripToken은 applyReschedule의 presched 분기(sleepMode OFF)에서
+// backendTripToken/tripStart로부터 effective tripToken을 도출하는 데 쓰인다. safetyNetScheduler와
+// 동일한 실제 동작(backend 우선, 없으면 device-local id)을 mock에서도 재현해 케이스 분기가 실제
+// 모듈처럼 동작하게 한다.
+const mockResolveEffectiveTripToken = jest.fn(
+  (backendTripToken: string | null, tripStart: number | null) =>
+    backendTripToken ?? (tripStart !== null ? `local-${tripStart}` : null),
+);
 jest.mock('../../utils/safetyNetScheduler', () => ({
   rescheduleSafetyNetAlarm: (...args: unknown[]) => mockRescheduleSafetyNetAlarm(...args),
   cancelSafetyNetByStationKind: (...args: unknown[]) => mockCancelSafetyNetByStationKind(...args),
+  resolveEffectiveTripToken: (backendTripToken: string | null, tripStart: number | null) =>
+    mockResolveEffectiveTripToken(backendTripToken, tripStart),
+}));
+
+// #918 — stationPrescheduler(OS 사전예약 "매역" 채널)도 safetyNetScheduler와 동일하게 mock —
+// 실제 모듈이 stationNotification.ts(→ live-activity 네이티브 모듈)를 import해 이 테스트 파일의
+// jest-expo 환경에서 로드 실패를 유발하므로 반드시 mock 필요.
+const mockCancelPrescheduledByStationKind = jest.fn().mockResolvedValue(undefined);
+const mockReschedulePrescheduledAlarm = jest.fn().mockResolvedValue({ cancelled: 0, scheduled: 0 });
+jest.mock('../../utils/stationPrescheduler', () => ({
+  cancelPrescheduledByStationKind: (...args: unknown[]) => mockCancelPrescheduledByStationKind(...args),
+  reschedulePrescheduledAlarm: (...args: unknown[]) => mockReschedulePrescheduledAlarm(...args),
+}));
+
+// #918 — markLocalStationFired(recentLocalStationFires)도 mock. 실제 모듈은 AsyncStorage에
+// 직접 접근하는데, 본 테스트 파일의 AsyncStorage mock(위 라인 29)은 다른 계약이라 충돌 방지.
+const mockMarkLocalStationFired = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/recentLocalStationFires', () => ({
+  markLocalStationFired: (...args: unknown[]) => mockMarkLocalStationFired(...args),
+}));
+
+// #918 — silentPushTask.ts가 mapBackendKindToLocalFireKind만 stationNotification.ts에서 가져온다.
+// 실제 모듈 전체를 로드하면 live-activity 네이티브 모듈 체인까지 끌려온다 — 매핑 함수만 실제
+// 구현과 동일한 순수 로직으로 재현.
+jest.mock('../../utils/stationNotification', () => ({
+  mapBackendKindToLocalFireKind: (backendKind: string) =>
+    ({ intermediate: 'station-passed', transfer: 'transfer', destination: 'destination' })[backendKind] ?? null,
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -1579,6 +1614,33 @@ describe('silentPushTask', () => {
         expect(mockSendPushAck).toHaveBeenCalledWith(
           ackCall('p-legacy', 'skipped', 'legacy-station-kind-ignored'),
         );
+      });
+
+      // #918 — BG wake 시점에 presched(OS 사전예약) pending cancel + markLocalStationFired를
+      // 호출한다. 매핑되는 kind(transfer/destination/intermediate→station-passed)에서 정상 호출됨을
+      // 확인하고, 두 호출이 각각 reject해도(예: OS query 실패) 나머지 처리 흐름이 중단되지 않음을 검증한다.
+      it('kind=intermediate → cancelPrescheduledByStationKind + markLocalStationFired(station-passed)로 호출', async () => {
+        await handleSilentPush(
+          payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '건대입구' }),
+        );
+        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('건대입구', 'station-passed');
+        expect(mockMarkLocalStationFired).toHaveBeenCalledWith('건대입구', 'station-passed');
+      });
+
+      it('cancelPrescheduledByStationKind reject해도 흐름 계속 (logger.warn으로 흡수)', async () => {
+        mockCancelPrescheduledByStationKind.mockRejectedValueOnce(new Error('os query fail'));
+        await expect(
+          handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', nextWaypoint: '왕십리' })),
+        ).resolves.toBeUndefined();
+        expect(mockMarkLocalStationFired).toHaveBeenCalledWith('왕십리', 'transfer');
+      });
+
+      it('markLocalStationFired reject해도 흐름 계속 (logger.warn으로 흡수)', async () => {
+        mockMarkLocalStationFired.mockRejectedValueOnce(new Error('storage fail'));
+        await expect(
+          handleSilentPush(payload({ kind: 'destination', phase: 'imminent', nextWaypoint: '잠실' })),
+        ).resolves.toBeUndefined();
+        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('잠실', 'destination');
       });
 
       it('logSilentPushReceived는 no-op 이전에 그대로 적재 (수신 자체는 유지)', async () => {

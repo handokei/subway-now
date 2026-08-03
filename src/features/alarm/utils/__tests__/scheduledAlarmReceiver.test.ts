@@ -38,15 +38,44 @@ jest.mock('../tripStartStorage', () => ({
 // 반환값을 제어 — waypoint mismatch 게이트를 결정적으로 테스트하기 위함.
 const mockDeriveSafetyNetWaypoints = jest.fn();
 const mockReadSafetyNetData = jest.fn();
+const mockResolveEffectiveTripToken = jest.fn();
 jest.mock('../safetyNetScheduler', () => ({
   deriveSafetyNetWaypoints: (...args: unknown[]) => mockDeriveSafetyNetWaypoints(...args),
   readSafetyNetData: (...args: unknown[]) => mockReadSafetyNetData(...args),
+  resolveEffectiveTripToken: (...args: unknown[]) => mockResolveEffectiveTripToken(...args),
 }));
 
 const mockLogSuppressedSafetyNetRevalidation = jest.fn();
+const mockLogSuppressedPrescheduledRevalidation = jest.fn();
 jest.mock('../alarmLog', () => ({
   logSuppressedSafetyNetRevalidation: (...args: unknown[]) =>
     mockLogSuppressedSafetyNetRevalidation(...args),
+  logSuppressedPrescheduledRevalidation: (...args: unknown[]) =>
+    mockLogSuppressedPrescheduledRevalidation(...args),
+}));
+
+// #918 — stationPrescheduler(OS 사전예약 "매역" 채널) mock. readPrescheduledData는
+// readSafetyNetData와 동일하게 테스트가 직접 반환값을 제어(content.data를 그대로 통과).
+const mockReadPrescheduledData = jest.fn();
+const mockCancelPrescheduledByStationKind = jest.fn();
+jest.mock('../stationPrescheduler', () => ({
+  readPrescheduledData: (...args: unknown[]) => mockReadPrescheduledData(...args),
+  cancelPrescheduledByStationKind: (...args: unknown[]) => mockCancelPrescheduledByStationKind(...args),
+}));
+
+const mockReadSleepMode = jest.fn();
+jest.mock('../alarmLocalAuthority', () => ({
+  readSleepMode: (...args: unknown[]) => mockReadSleepMode(...args),
+}));
+
+const mockMapBackendKindToLocalFireKind = jest.fn();
+jest.mock('../stationNotification', () => ({
+  mapBackendKindToLocalFireKind: (...args: unknown[]) => mockMapBackendKindToLocalFireKind(...args),
+}));
+
+const mockMarkLocalStationFired = jest.fn();
+jest.mock('../recentLocalStationFires', () => ({
+  markLocalStationFired: (...args: unknown[]) => mockMarkLocalStationFired(...args),
 }));
 
 // #1704 — position-mismatch 게이트가 backend SSoT mirror를 read해 사용자 currentStation을 결정.
@@ -151,6 +180,24 @@ beforeEach(async () => {
       (req.content.data as unknown as SafetyNetNotificationData | undefined) ?? null,
   );
   mockLogSuppressedSafetyNetRevalidation.mockReset();
+  // #918 — presched 채널 기본값: readPrescheduledData는 null(safety-net도 아니고 presched도
+  // 아닌 request는 원격 도착 판정 분기로 흐름) — 개별 테스트가 override.
+  mockLogSuppressedPrescheduledRevalidation.mockReset();
+  mockReadPrescheduledData.mockReset();
+  mockReadPrescheduledData.mockReturnValue(null);
+  mockCancelPrescheduledByStationKind.mockReset();
+  mockCancelPrescheduledByStationKind.mockResolvedValue(undefined);
+  mockResolveEffectiveTripToken.mockReset();
+  mockResolveEffectiveTripToken.mockImplementation(
+    (backendTripToken: string | null, tripStart: number | null) =>
+      backendTripToken ?? (tripStart !== null ? `local-${tripStart}` : null),
+  );
+  mockReadSleepMode.mockReset();
+  mockReadSleepMode.mockResolvedValue(false);
+  mockMapBackendKindToLocalFireKind.mockReset();
+  mockMapBackendKindToLocalFireKind.mockReturnValue(null);
+  mockMarkLocalStationFired.mockReset();
+  mockMarkLocalStationFired.mockResolvedValue(undefined);
   // #1704 — 기본은 mirror null (위치 게이트 skip → 기존 동작 유지). 새 테스트는 mockResolvedValue로 override.
   mockReadBackendSsotMirror.mockReset();
   mockReadBackendSsotMirror.mockResolvedValue(null);
@@ -407,6 +454,161 @@ describe('reconcileScheduledAlarmDelivery', () => {
       );
     });
   });
+
+  describe('#918 presched(OS 사전예약 "매역") 채널', () => {
+    const PRESCHED_PARSED = {
+      channel: 'presched-station' as const,
+      tripToken: TRIP_TOKEN,
+      station: '역삼',
+      kind: 'station-passed' as const,
+      occurrenceIdx: 0,
+    };
+
+    beforeEach(() => {
+      mockReadSafetyNetData.mockReturnValue(null);
+    });
+
+    it('revalidate pass 시 markLocalStationFired만 호출하고 fired set은 건드리지 않는다', async () => {
+      mockReadPrescheduledData.mockReturnValue(PRESCHED_PARSED);
+
+      await reconcileScheduledAlarmDelivery(makeRequest('presched-id-1', null));
+
+      expect(mockReadSleepMode).toHaveBeenCalled();
+      expect(mockMarkLocalStationFired).toHaveBeenCalledWith('역삼', 'station-passed');
+      expect(mockGetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+      expect(mockCancelScheduled).not.toHaveBeenCalled();
+    });
+
+    it('sleepMode ON이면 revalidate-sleep-mode-on으로 suppress + cancel/dismiss', async () => {
+      mockReadPrescheduledData.mockReturnValue(PRESCHED_PARSED);
+      mockReadSleepMode.mockResolvedValue(true);
+
+      await reconcileScheduledAlarmDelivery(makeRequest('presched-id-1', null));
+
+      expect(mockLogSuppressedPrescheduledRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-sleep-mode-on',
+        stationName: '역삼',
+      });
+      expect(mockCancelScheduled).toHaveBeenCalledWith('presched-id-1');
+      expect(mockDismissNotification).toHaveBeenCalledWith('presched-id-1');
+      expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+    });
+
+    it('tripStart가 없으면 revalidate-no-trip으로 suppress', async () => {
+      mockReadPrescheduledData.mockReturnValue(PRESCHED_PARSED);
+      mockGetTripStartedAt.mockResolvedValue(null);
+
+      await reconcileScheduledAlarmDelivery(makeRequest('presched-id-1', null));
+
+      expect(mockLogSuppressedPrescheduledRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-no-trip',
+        stationName: '역삼',
+      });
+      expect(mockCancelScheduled).toHaveBeenCalledWith('presched-id-1');
+      expect(mockDismissNotification).toHaveBeenCalledWith('presched-id-1');
+    });
+
+    it('effectiveTripToken이 parsed.tripToken과 다르면 revalidate-trip-token-mismatch로 suppress', async () => {
+      mockReadPrescheduledData.mockReturnValue(PRESCHED_PARSED);
+      mockResolveEffectiveTripToken.mockReturnValue('OTHER-TOKEN');
+
+      await reconcileScheduledAlarmDelivery(makeRequest('presched-id-1', null));
+
+      expect(mockLogSuppressedPrescheduledRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-trip-token-mismatch',
+        stationName: '역삼',
+      });
+    });
+
+    it('effectiveTripToken이 null이면 revalidate-trip-token-mismatch로 suppress', async () => {
+      mockReadPrescheduledData.mockReturnValue(PRESCHED_PARSED);
+      mockResolveEffectiveTripToken.mockReturnValue(null);
+
+      await reconcileScheduledAlarmDelivery(makeRequest('presched-id-1', null));
+
+      expect(mockLogSuppressedPrescheduledRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-trip-token-mismatch',
+        stationName: '역삼',
+      });
+    });
+  });
+
+  describe('#918 원격(backend) station-notif 도착 시 presched pending cancel', () => {
+    beforeEach(() => {
+      mockReadSafetyNetData.mockReturnValue(null);
+      mockReadPrescheduledData.mockReturnValue(null);
+    });
+
+    it('data.nextWaypoint + kind가 유효하면 매핑된 localKind로 cancelPrescheduledByStationKind 호출', () => {
+      mockMapBackendKindToLocalFireKind.mockReturnValue('transfer');
+      const request = {
+        identifier: 'remote-id',
+        content: { data: { nextWaypoint: '역삼', kind: 'transfer-arrival' } },
+      } as unknown as Notifications.NotificationRequest;
+
+      return reconcileScheduledAlarmDelivery(request).then(() => {
+        expect(mockMapBackendKindToLocalFireKind).toHaveBeenCalledWith('transfer-arrival');
+        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('역삼', 'transfer');
+      });
+    });
+
+    it('data.nextWaypoint가 문자열이 아니면 cancelPrescheduledByStationKind를 호출하지 않는다', async () => {
+      const request = {
+        identifier: 'remote-id',
+        content: { data: { nextWaypoint: 42, kind: 'transfer-arrival' } },
+      } as unknown as Notifications.NotificationRequest;
+
+      await reconcileScheduledAlarmDelivery(request);
+
+      expect(mockCancelPrescheduledByStationKind).not.toHaveBeenCalled();
+    });
+
+    it('data.nextWaypoint가 빈 문자열이면 cancelPrescheduledByStationKind를 호출하지 않는다', async () => {
+      const request = {
+        identifier: 'remote-id',
+        content: { data: { nextWaypoint: '', kind: 'transfer-arrival' } },
+      } as unknown as Notifications.NotificationRequest;
+
+      await reconcileScheduledAlarmDelivery(request);
+
+      expect(mockCancelPrescheduledByStationKind).not.toHaveBeenCalled();
+    });
+
+    it('data.kind가 문자열이 아니면 cancelPrescheduledByStationKind를 호출하지 않는다', async () => {
+      const request = {
+        identifier: 'remote-id',
+        content: { data: { nextWaypoint: '역삼', kind: 42 } },
+      } as unknown as Notifications.NotificationRequest;
+
+      await reconcileScheduledAlarmDelivery(request);
+
+      expect(mockCancelPrescheduledByStationKind).not.toHaveBeenCalled();
+    });
+
+    it('mapBackendKindToLocalFireKind가 알 수 없는 kind를 반환하면 cancelPrescheduledByStationKind를 호출하지 않는다', async () => {
+      mockMapBackendKindToLocalFireKind.mockReturnValue(null);
+      const request = {
+        identifier: 'remote-id',
+        content: { data: { nextWaypoint: '역삼', kind: 'unknown-kind' } },
+      } as unknown as Notifications.NotificationRequest;
+
+      await reconcileScheduledAlarmDelivery(request);
+
+      expect(mockCancelPrescheduledByStationKind).not.toHaveBeenCalled();
+    });
+
+    it('content.data 자체가 없으면 cancelPrescheduledByStationKind를 호출하지 않는다', async () => {
+      const request = {
+        identifier: 'remote-id',
+        content: { data: undefined },
+      } as unknown as Notifications.NotificationRequest;
+
+      await reconcileScheduledAlarmDelivery(request);
+
+      expect(mockCancelPrescheduledByStationKind).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('drainDeliveredScheduledAlarms (via registerScheduledAlarmListener)', () => {
@@ -501,6 +703,52 @@ describe('drainDeliveredScheduledAlarms (via registerScheduledAlarmListener)', (
     expect(mockSetFiredAlarms).not.toHaveBeenCalled();
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
     handle.remove();
+  });
+
+  describe('#918 presched 항목 drain', () => {
+    const PRESCHED_PARSED = {
+      channel: 'presched-station' as const,
+      tripToken: TRIP_TOKEN,
+      station: '역삼',
+      kind: 'station-passed' as const,
+      occurrenceIdx: 0,
+    };
+
+    it('presched 데이터가 아닌 항목은 skip하고, presched pass 항목은 markLocalStationFired 호출', async () => {
+      mockReadPrescheduledData.mockImplementation((req: Notifications.NotificationRequest) => {
+        const data = req.content.data as typeof PRESCHED_PARSED | null;
+        return data?.channel === 'presched-station' ? data : null;
+      });
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'other', content: { data: null } } as unknown as Notifications.NotificationRequest } as unknown as Notifications.Notification,
+        { date: 2, request: makeRequest('presched-1', PRESCHED_PARSED as unknown as SafetyNetNotificationData) },
+      ]);
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockMarkLocalStationFired).toHaveBeenCalledWith('역삼', 'station-passed');
+      handle.remove();
+    });
+
+    it('presched suppress 항목은 cancel+dismiss하고 markLocalStationFired는 호출하지 않는다', async () => {
+      mockReadPrescheduledData.mockImplementation((req: Notifications.NotificationRequest) => {
+        const data = req.content.data as typeof PRESCHED_PARSED | null;
+        return data?.channel === 'presched-station' ? data : null;
+      });
+      mockReadSleepMode.mockResolvedValue(true);
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: makeRequest('presched-1', PRESCHED_PARSED as unknown as SafetyNetNotificationData) },
+      ]);
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockCancelScheduled).toHaveBeenCalledWith('presched-1');
+      expect(mockDismissNotification).toHaveBeenCalledWith('presched-1');
+      expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      handle.remove();
+    });
   });
 });
 
