@@ -28,6 +28,7 @@
     "originCurrent": "現在駅",
     "originNearest": "最寄り駅",
     "originEstimated": "現在の推定駅",
+    "originStaleDemote": "移動中・現在駅を確認中",
     "routeTo": "目的地まで",
     "estimatedSuffix": "予想",
     "destinationChange": "目的地を変更 →",

@@ -225,7 +225,7 @@ export default function HomeScreen() {
   // #1677 — silent push 60s+ 미수신 감지. FG 시 backendSsotAccepts 강제 false → device tier fallback.
   // 신규 폴링 없음 — 기존 arrival/position 30s cycle 재사용.
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -1204,7 +1204,11 @@ export default function HomeScreen() {
                   ]}
                   testID="home-origin-station-name"
                 >
-                  {getStationDisplayName(effectiveOrigin)}
+                  {/* #2125 — 현재역 표시 고착 정직 강등. 역명 표시만 대체 — effectiveOrigin
+                      자체(journey/도착정보/알람 SSOT)는 무변경. */}
+                  {currentStationDisplayDemoted
+                    ? t('home.originStaleDemote')
+                    : getStationDisplayName(effectiveOrigin)}
                 </Text>
                 <TouchableOpacity
                   onPress={() =>

@@ -255,3 +255,16 @@ export const SIGNAL_4_KTX_ETA_UPPER_BOUND_MS = 10 * 60 * 60_000;
  *   - reanchored-hop / default-hop은 lock 기반이므로 본 게이트는 lockless 전략에만 적용.
  */
 export const LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS = 90_000;
+
+/**
+ * #2125 — 현재역 표시 고착 정직 강등 임계 (RCA (d) 옵션 1).
+ *
+ * lockless trip에서 상위 tier(position-train/backend-ssot/wifi) advance 신호가 전멸하고
+ * sticky lock이 trip 시작역(tripOrigin)에 계속 고정된 채로 본 임계 이상 경과하면, 표시 계층이
+ * "이동 중 · 현재역 확인 중"으로 정직하게 강등한다 (표시 전용 — fire/알람 경로 무영향).
+ *
+ * 3분 임계: 인접역 평균 hop time(~90s~120s)의 1.5~2배. 정상 진행 중이면 이 시간 내 다음 역
+ * 신호(어떤 tier든)가 들어오는 것이 일반적 — 그 이상 원점 고착이면 사용자에게 "이동 중이지만
+ * 정확한 역은 모른다"고 정직하게 알리는 것이 잘못된 역명 표시보다 낫다.
+ */
+export const CURRENT_STATION_STALE_DEMOTE_MS = 3 * 60_000;

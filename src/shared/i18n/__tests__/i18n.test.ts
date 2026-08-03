@@ -84,4 +84,17 @@ describe('i18n instance', () => {
     expect(i18n.t('common.retry')).toBe('다시 시도');
     expect(i18n.t('common.close')).toBe('닫기');
   });
+
+  // #2125 — 현재역 표시 고착 정직 강등 라벨. 4언어 모두 키가 정의돼 있고 fallback(키 자체)이
+  // 아닌 실제 번역 문자열을 반환하는지 스냅샷 가드.
+  it.each(['ko', 'en', 'ja', 'zh'] as const)(
+    'resolves home.originStaleDemote for %s',
+    async (lang) => {
+      await i18n.changeLanguage(lang);
+      const label = i18n.t('home.originStaleDemote');
+      expect(label).not.toBe('home.originStaleDemote');
+      expect(typeof label).toBe('string');
+      expect(label.length).toBeGreaterThan(0);
+    },
+  );
 });

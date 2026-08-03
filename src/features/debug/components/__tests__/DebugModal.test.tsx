@@ -2044,6 +2044,25 @@ describe('DebugModal fusion log section', () => {
     expect(entries[0].props.children).toContain('gp=용마산');
   });
 
+  // #2125 — 현재역 표시 고착 정직 강등 entry (kind: 'display-demote') 포맷 가드.
+  it('display-demote entry를 reason + station(line) 포맷으로 노출한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    act(() => {
+      pushFusionDebugEntry({
+        kind: 'display-demote',
+        reason: 'display-demote-sticky-stale',
+        ts: new Date('2026-08-03T00:00:00Z').getTime(),
+        stationName: '용마산',
+        line: '7',
+      });
+    });
+    expect(screen.getByText('Fusion log (1)')).toBeTruthy();
+    const entries = screen.getAllByTestId('debug-fusion-log-entry');
+    expect(entries[0].props.children).toContain('display-demote-sticky-stale');
+    expect(entries[0].props.children).toContain('용마산(7)');
+  });
+
   it('Clear 버튼이 fusion 로그를 비운다', async () => {
     pushFusionDebugEntry({
       kind: 'gps',

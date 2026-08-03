@@ -27,6 +27,12 @@ import {
 import type { StationArrival, ArrivalInfo } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute, makeTransferRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
+import { CURRENT_STATION_STALE_DEMOTE_MS } from '../../../../shared/constants/realtime';
+import {
+  getFusionDebugEntries,
+  clearFusionDebugEntries,
+  type DisplayDemoteEntry,
+} from '../../utils/fusionDebugBuffer';
 
 jest.mock('../useNearestStation');
 jest.mock('../../../arrival/hooks/useArrivalInfo');
@@ -2029,6 +2035,162 @@ describe('useFusedNearestStation', () => {
 
       // DebugModal/UI는 stickyDisplayOnly로 sticky 정보 노출.
       expect(result.current.stickyDisplayOnly).toEqual(stickyStation);
+    });
+  });
+
+  // #2125 — 현재역 표시 고착 정직 강등 (RCA (d) 옵션 1). 표시 계층 전용 — 4조건 AND.
+  describe('#2125 현재역 표시 고착 정직 강등', () => {
+    const yongmasan = findStationByNameAndLine('용마산', '7')!;
+    const junggok = findStationByNameAndLine('중곡', '7')!;
+    const konkuk = findStationByNameAndLine('건대입구', '7')!;
+    const route = makeDirectRoute(4, '7');
+    const routeContext = { route, origin: yongmasan, destination: konkuk };
+    const T0 = 1_700_000_000_000;
+
+    beforeEach(() => {
+      clearFusionDebugEntries();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    // sticky가 tripOrigin(용마산)에 고정 + 다른 신호 미채택 상태로 렌더 후 elapsedMs만큼 경과시킨다.
+    // wifiStation을 지정하면 상위 tier(wifi) 채택 시나리오를 재현할 수 있다.
+    function renderStuckAtOrigin(opts?: { elapsedMs?: number; wifiStation?: Station | null }) {
+      const { elapsedMs = CURRENT_STATION_STALE_DEMOTE_MS, wifiStation = null } = opts ?? {};
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+          result: { station: yongmasan, distanceKm: 0 },
+          liveResult: { station: yongmasan, distanceKm: 0 },
+          stickyDisplayOnly: yongmasan,
+          source: 'sticky' as const,
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      jest.useFakeTimers();
+      jest.setSystemTime(T0);
+      const { result, rerender } = renderHook(
+        (wifi: Station | null) =>
+          useFusedNearestStation(
+            undefined,
+            undefined,
+            routeContext,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            wifi,
+          ),
+        { initialProps: wifiStation },
+      );
+      jest.setSystemTime(T0 + elapsedMs);
+      rerender(wifiStation);
+      return result;
+    }
+
+    it('4조건 충족 (trip 활성 + sticky==tripOrigin + 상위 tier 부재 + 3분 경과) → 강등 true + fusion log 1건', () => {
+      const result = renderStuckAtOrigin();
+
+      expect(result.current.currentStationDisplayDemoted).toBe(true);
+      const entries = getFusionDebugEntries().filter(
+        (e): e is DisplayDemoteEntry => e.kind === 'display-demote',
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0].reason).toBe('display-demote-sticky-stale');
+      expect(entries[0].stationName).toBe(yongmasan.name);
+      expect(entries[0].line).toBe(yongmasan.line);
+    });
+
+    it('조건1 미충족 — trip 비활성(routeContext 없음) → 강등하지 않음', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          result: { station: yongmasan, distanceKm: 0 },
+          liveResult: { station: yongmasan, distanceKm: 0 },
+          stickyDisplayOnly: yongmasan,
+          source: 'sticky' as const,
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+
+      const { result } = renderHook(() => useFusedNearestStation());
+
+      expect(result.current.currentStationDisplayDemoted).toBe(false);
+      expect(
+        getFusionDebugEntries().filter((e) => e.kind === 'display-demote'),
+      ).toHaveLength(0);
+    });
+
+    it('조건2 미충족 — result.station이 sticky 다른 역으로 전진(실제 이동 신호) → 강등하지 않음', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: junggok.lat, lng: junggok.lng },
+          result: { station: junggok, distanceKm: 0 },
+          liveResult: { station: junggok, distanceKm: 0 },
+          stickyDisplayOnly: yongmasan,
+          source: 'sticky' as const,
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: junggok, distanceKm: 0 }]);
+      jest.useFakeTimers();
+      jest.setSystemTime(T0);
+      const { result, rerender } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeContext),
+      );
+      jest.setSystemTime(T0 + CURRENT_STATION_STALE_DEMOTE_MS);
+      rerender(undefined);
+
+      expect(result.current.currentStationDisplayDemoted).toBe(false);
+    });
+
+    it('조건3 미충족 — 상위 tier(wifi) 채택 시 → 강등하지 않음', () => {
+      const result = renderStuckAtOrigin({ wifiStation: yongmasan });
+
+      expect(result.current.source).toBe('wifi-ssid');
+      expect(result.current.currentStationDisplayDemoted).toBe(false);
+    });
+
+    it('조건4 미충족 — 3분 미경과 → 강등하지 않음', () => {
+      const result = renderStuckAtOrigin({ elapsedMs: CURRENT_STATION_STALE_DEMOTE_MS - 1_000 });
+
+      expect(result.current.currentStationDisplayDemoted).toBe(false);
+    });
+
+    it('강등 해제 — 상위 tier 채택으로 전환되면 즉시 false로 복귀', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+          result: { station: yongmasan, distanceKm: 0 },
+          liveResult: { station: yongmasan, distanceKm: 0 },
+          stickyDisplayOnly: yongmasan,
+          source: 'sticky' as const,
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      jest.useFakeTimers();
+      jest.setSystemTime(T0);
+      const { result, rerender } = renderHook(
+        (wifi: Station | null) =>
+          useFusedNearestStation(
+            undefined,
+            undefined,
+            routeContext,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            wifi,
+          ),
+        { initialProps: null as Station | null },
+      );
+      jest.setSystemTime(T0 + CURRENT_STATION_STALE_DEMOTE_MS);
+      rerender(null);
+      expect(result.current.currentStationDisplayDemoted).toBe(true);
+
+      // 상위 tier(wifi) 신호 도착 — 즉시 정상 복귀.
+      rerender(yongmasan);
+      expect(result.current.currentStationDisplayDemoted).toBe(false);
     });
   });
 });
