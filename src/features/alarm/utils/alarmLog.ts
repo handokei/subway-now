@@ -333,7 +333,11 @@ export type AlarmLogReason =
   // trip의 것으로 판정(isTripEndedSentinelStale)돼 reset을 skip하고 폐기한 1건. sentinel만
   // clear하고 store/storage는 유지 — 밤샘 trip force-end 직후 등록된 새 trip이 FG 재진입
   // 시 통째로 사라지는 회귀 차단. source='lifecycle-backstop'로 적재해 fire 분모 제외 유지.
-  | 'trip-sentinel-stale-discarded';
+  | 'trip-sentinel-stale-discarded'
+  // #2120 (#2114 근본 수리 Phase 2) — trip-ended push의 corrId가 device 현재 corrId와
+  // 불일치해 cleanup 전체를 skip한 1건. tripToken(기기 고정)만으로는 못 막는 인스턴스 race
+  // (backend 자동종료 push in-flight 중 device 재등록) 차단 evidence.
+  | 'trip-ended-corr-mismatch';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -1029,11 +1033,15 @@ export function logSilentPushTripEndedReceived(input: {
  * silent push 위치 게이트 실패 → 발사 skip 한 1건 (#478 PR 1-2).
  * reason은 게이트 사유: gate-unknown-station / gate-no-location /
  * gate-stale-location / gate-out-of-range.
+ *
+ * phaseId는 대부분 호출부가 payload.phase를 그대로 넘기지만, trip-ended 분기(#2120)처럼
+ * phase 개념이 없는 skip 사유는 undefined로 생략한다 — appendAlarmLog 자체가 optional로
+ * 받으므로 여기서도 optional화해 호출부 강제 없이 자연 전달한다.
  */
 export function logSilentPushSkipped(input: {
   stationName: string;
   kind: AlarmLogKind | undefined;
-  phaseId: AlarmPhaseId;
+  phaseId?: AlarmPhaseId;
   reason: AlarmLogReason;
   distanceM?: number;
   thresholdM?: number;

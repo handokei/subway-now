@@ -379,6 +379,8 @@ async function fireTripEndedAlertPush(
           sentAt: now,
           // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
           tripToken: trip.token,
+          // #2120 — 인스턴스 corrId 동봉. trip.corrId 미보유(구 레코드)는 undefined → payload 필드 생략.
+          corrId: trip.corrId,
           config: deps.apnsConfig,
           host,
           fetchImpl: deps.fetchImpl,

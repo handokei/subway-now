@@ -1389,6 +1389,7 @@ describe('sendTripEndedAlertPush (#1337)', () => {
     reason: TripEndedReason;
     sentAt: number;
     tripToken: string;
+    corrId: string;
   }>;
   const runTripEndedAlertPush = (fetchImpl: ReturnType<typeof vi.fn>, o: TripEndedOverrides = {}) =>
     sendTripEndedAlertPush({
@@ -1397,6 +1398,7 @@ describe('sendTripEndedAlertPush (#1337)', () => {
       reason: o.reason ?? 'expired',
       sentAt: o.sentAt ?? 0,
       tripToken: o.tripToken ?? 'trip-x',
+      corrId: o.corrId,
       config: makeConfig(),
       host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -1473,6 +1475,23 @@ describe('sendTripEndedAlertPush (#1337)', () => {
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const headers = call[1].headers as Record<string, string>;
     expect(headers['apns-thread-id']).toBe('trip-ended-tok');
+  });
+
+  // #2120 — corrId echo (#2114 근본 수리 Phase 2).
+  it('corrId 지정 시 data.corrId로 echo된다', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await runTripEndedAlertPush(fetchImpl, { corrId: 'corr-xyz' });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.corrId).toBe('corr-xyz');
+  });
+
+  it('corrId 미지정 시 data에 corrId 필드 자체가 없다 (구 레코드/legacy 호환)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await runTripEndedAlertPush(fetchImpl);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('corrId' in body.data).toBe(false);
   });
 });
 

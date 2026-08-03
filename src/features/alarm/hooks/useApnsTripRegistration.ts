@@ -35,6 +35,7 @@ import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boa
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 
 /**
  * #1895 — i18next.language를 backend가 인식하는 SupportedLocale로 정규화.
@@ -212,6 +213,8 @@ async function callRegister(input: RegisterCallInputs) {
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
     apnsEnv,
     createdAt: input.createdAt,
+    // #2120 — trip 인스턴스 corrId. null 허용 — sync cache 미수화 시점에도 register 자체는 진행.
+    corrId: getCurrentTripCorrIdSync(),
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
     // #819 / #1028 — boarding-prompt 평가/표시 컨텍스트. 짝으로만 송신.
     ...(promptContext
