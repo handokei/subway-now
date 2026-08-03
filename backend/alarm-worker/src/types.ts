@@ -253,6 +253,19 @@ export interface Trip {
    * `infoModeEnabled` / `subsurface` / `locale`과 동일 저장 전용 패턴.
    */
   sleepModeEnabled?: boolean;
+  /**
+   * #2120 — trip 인스턴스 식별자 (device `tripCorrId`, `${epoch ms}-${8 hex}` 형식).
+   * tripToken(APNs device token)은 기기당 고정이라 backend가 보낸 옛 trip의 trip-ended push가
+   * 새 trip 등록 후 도착해도 token mismatch 가드(index.ts trip-token 비교)를 통과한다 — #2114
+   * RCA 잔여 hole. corrId는 trip **인스턴스** 단위로 매 등록마다 새로 발급되므로, trip-ended
+   * push payload에 echo해 device가 현재 진행 중인 trip의 corrId와 대조하면 이 race를 막을 수
+   * 있다. register 시 저장, 재등록(같은 세션 포함) 시 incoming 값으로 교체 — 클라가 매 register
+   * 마다 최신 corrId를 보내므로 trip.corrId는 항상 device의 현재 corrId와 정렬된다.
+   *
+   * 미송신(구버전 client)이면 undefined — trip-ended payload에서 필드 자체가 생략되어
+   * device 쪽 null-graceful 분기(양쪽 null이면 기존 동작 100% 유지)로 자연 fallback.
+   */
+  corrId?: string;
 }
 
 /**
@@ -403,6 +416,11 @@ export interface TripEndedAlertPushPayload {
   tripToken: string;
   reason: TripEndedReason;
   sentAt: number;
+  /**
+   * #2120 — 종료된 trip의 인스턴스 corrId echo. trip이 corrId를 보유하지 않은(구버전 client
+   * 또는 corrId 미수화) 경우 필드 자체를 생략한다 — device 쪽 null-graceful 분기와 정렬.
+   */
+  corrId?: string;
 }
 
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */

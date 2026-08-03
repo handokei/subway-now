@@ -687,6 +687,51 @@ describe('cleanupTripWithLa', () => {
     expect(await kv.get('trip:devtoken')).toBeNull();
   });
 
+  // #2120 (#2114 근본 수리 Phase 2) — trip.corrId가 trip-ended push payload에 echo된다.
+  it('trip.corrId 보유 시 trip-ended push data.corrId로 echo된다', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ activityPushToken: undefined, corrId: 'corr-live-1' });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    let capturedBody: string | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = init.body as string;
+      return new Response('', { status: 200 });
+    });
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      'eta-missing',
+    );
+    expect(JSON.parse(capturedBody ?? '{}').data.corrId).toBe('corr-live-1');
+  });
+
+  it('trip.corrId 미보유(구 레코드) 시 trip-ended push data에 corrId 필드가 없다', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ activityPushToken: undefined, corrId: undefined });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    let capturedBody: string | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = init.body as string;
+      return new Response('', { status: 200 });
+    });
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      'eta-missing',
+    );
+    expect('corrId' in JSON.parse(capturedBody ?? '{}').data).toBe(false);
+  });
+
   it('trip-ended push logs failure when both hosts reject (env mismatch exhausted)', async () => {
     const kv = new InMemoryKV();
     const trip = makeTrip({ activityPushToken: undefined, apnsEnv: 'sandbox' });

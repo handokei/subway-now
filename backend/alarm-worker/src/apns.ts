@@ -630,6 +630,11 @@ export interface SendTripEndedAlertPushOptions {
   sentAt: number;
   /** 종료된 trip의 token — 클라가 현재 ACTIVE_TRIP_KEY와 비교해 race 차단(#868 P1-2). */
   tripToken: string;
+  /**
+   * #2120 — 종료된 trip의 인스턴스 corrId. 있으면 payload에 echo — device가 자신의 현재
+   * corrId와 대조해 tripToken(기기 고정) 단독으로는 못 막는 인스턴스 race를 차단한다.
+   */
+  corrId?: string;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -649,6 +654,8 @@ export async function sendTripEndedAlertPush(
     tripToken: options.tripToken,
     reason: options.reason,
     sentAt: options.sentAt,
+    // #2120 — corrId 보유 trip만 echo. 미보유(구 레코드/legacy client)는 필드 생략.
+    ...(options.corrId ? { corrId: options.corrId } : {}),
   };
 
   const body = JSON.stringify({

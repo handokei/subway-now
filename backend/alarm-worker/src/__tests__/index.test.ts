@@ -153,6 +153,17 @@ describe('validateTrip', () => {
     expect(validateTrip(base())?.apnsEnv).toBeUndefined();
   });
 
+  // #2120 (#2114 근본 수리 Phase 2) — device trip 인스턴스 corrId 저장.
+  it('preserves valid corrId', () => {
+    expect(validateTrip({ ...base(), corrId: 'corr-abc' })?.corrId).toBe('corr-abc');
+  });
+
+  it('drops missing/non-string/empty corrId', () => {
+    expect(validateTrip(base())?.corrId).toBeUndefined();
+    expect(validateTrip({ ...base(), corrId: 42 })?.corrId).toBeUndefined();
+    expect(validateTrip({ ...base(), corrId: '' })?.corrId).toBeUndefined();
+  });
+
   it('rejects missing alarmAtEpochMs', () => {
     const b = base();
     delete b.alarmAtEpochMs;
@@ -735,6 +746,31 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.waypoints).toHaveLength(2);
     expect(finalTrip.waypoints[0].stationName).toBe('군자');
     expect(finalTrip.lastEtaSeconds).toBe(42);
+  });
+
+  // #2120 (#2114 근본 수리 Phase 2) — corrId는 재등록마다 incoming 값으로 교체된다.
+  it('replaces corrId with incoming value on re-register (same session)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ corrId: 'corr-1' }), env);
+    let stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.corrId).toBe('corr-1');
+    // 같은 세션(createdAt 동일) 재등록 — corrId 변경 없음 시나리오는 사실상 발생하지 않지만
+    // (같은 trip 동안 corrId 안정) 회귀 가드로 값이 유지되는지 확인.
+    await post('/trips', tripBody({ corrId: 'corr-1' }), env);
+    stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.corrId).toBe('corr-1');
+  });
+
+  it('replaces corrId with new value on new session register (different createdAt)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ corrId: 'corr-old' }), env);
+    await post(
+      '/trips',
+      tripBody({ createdAt: CREATED + 10_000, corrId: 'corr-new' }),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.corrId).toBe('corr-new');
   });
 
   it('replaces trip entirely when createdAt differs (new session)', async () => {

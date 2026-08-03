@@ -322,6 +322,14 @@ export interface TripEndedSilentPushPayload {
    * ACTIVE_TRIP_KEY와 비교해 불일치 시 cleanup skip. 구버전 backend 호환을 위해 optional.
    */
   tripToken?: string;
+  /**
+   * #2120 — 종료된 trip 인스턴스 corrId echo. tripToken(APNs 기기 토큰)은 기기당 고정이라
+   * 같은 기기의 옛 trip 종료 push가 새 trip 등록 후 도착해도 token 비교만으로는 못 막는다
+   * (#2114 RCA 잔여 hole). corrId는 trip 인스턴스 단위로 매 등록마다 새로 발급되므로, 클라의
+   * 현재 corrId(`getCurrentTripCorrIdSync()`)와 대조해 불일치 시 cleanup을 skip한다.
+   * 양쪽 중 하나라도 없으면(구버전 backend / cache 미수화) 기존 동작 100% 유지.
+   */
+  corrId?: string;
 }
 
 /**
@@ -628,13 +636,15 @@ function validOccurrenceIdx(value: unknown): number | undefined {
 function extractTripEndedPayload(
   obj: Record<string, unknown>,
 ): TripEndedSilentPushPayload | null {
-  const { reason, sentAt, pushId, tripToken } = obj;
+  const { reason, sentAt, pushId, tripToken, corrId } = obj;
   return {
     kind: 'trip-ended',
     reason: normalizeTripEndedReason(reason),
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
     tripToken: typeof tripToken === 'string' && tripToken.length > 0 ? tripToken : undefined,
+    // #2120 — corrId echo. 구버전 backend는 필드 미송신 → undefined (null-graceful).
+    corrId: typeof corrId === 'string' && corrId.length > 0 ? corrId : undefined,
   };
 }
 
@@ -932,6 +942,30 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
             `trip-ended skip: tripToken mismatch payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
           );
           void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}:token-mismatch`);
+          return;
+        }
+      }
+      // #2120 (#2114 근본 수리 Phase 2) — corrId 인스턴스 가드. tripToken(APNs 기기 토큰)은
+      // 기기당 고정이라 위 token 비교는 "같은 기기의 다른 trip" race를 못 잡는다. backend
+      // 자동종료(la-stale/eta-missing 등) push가 in-flight인 수 초 사이 device가 재등록하면,
+      // 새 trip의 ACTIVE_TRIP_KEY(=같은 token)를 그대로 통과해 옛 trip 종료 push가 새 trip을
+      // 즉시 cleanup해버린다. corrId는 register마다 새로 발급되는 trip 인스턴스 식별자이므로
+      // payload와 device 현재 값이 둘 다 있는데 다르면 그 사이 재등록이 있었다는 뜻 — cleanup
+      // 전체를 skip한다. 어느 한쪽이라도 없으면(구버전 backend / cache 미수화) 기존 동작 유지.
+      // payload.corrId가 없는(구버전 backend) 경로는 device corrId를 조회할 필요조차 없다 —
+      // 불필요한 sync cache read를 피해 이후 endedCorrIdSnapshot 캡처 시점과의 혼동도 방지한다.
+      if (payload.corrId !== undefined) {
+        const deviceCorrId = getCurrentTripCorrIdSync();
+        if (deviceCorrId !== null && payload.corrId !== deviceCorrId) {
+          logger.warn(
+            `trip-ended skip: corrId mismatch payload=${payload.corrId} device=${deviceCorrId}`,
+          );
+          logSilentPushSkipped({
+            stationName: `trip-ended:${payload.reason}`,
+            kind: undefined,
+            reason: 'trip-ended-corr-mismatch',
+          });
+          void ackOutcome(payload.pushId, apnsToken, 'skipped', `trip-ended:${payload.reason}:corr-mismatch`);
           return;
         }
       }

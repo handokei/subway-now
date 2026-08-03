@@ -2258,6 +2258,11 @@ export function validateTrip(input: unknown): Trip | null {
     // Legacy client (필드 미송신) 또는 비boolean은 undefined로 graceful — 기존 동작 완전 보존.
     sleepModeEnabled:
       typeof obj.sleepModeEnabled === 'boolean' ? obj.sleepModeEnabled : undefined,
+    // #2120 — device trip 인스턴스 corrId. 재등록마다 incoming 값으로 교체(다음 POST /trips
+    // 핸들러가 baseTrip을 `{...incoming, ...}`로 spread하며 corrId를 별도 보존하지 않으므로
+    // 자연스럽게 최신 값으로 갱신). 미송신/비string이면 undefined — trip-ended payload에서
+    // 필드 생략으로 이어져 구버전 client 호환 유지.
+    corrId: typeof obj.corrId === 'string' && obj.corrId.length > 0 ? obj.corrId : undefined,
   };
 }
 

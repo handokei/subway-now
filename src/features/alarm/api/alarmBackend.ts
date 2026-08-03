@@ -138,6 +138,15 @@ export interface RegisterTripPayload {
    * 미설정/false: 필드 미송신(graceful) — backend Trip.sleepModeEnabled는 undefined 유지.
    */
   sleepModeEnabled?: boolean;
+  /**
+   * #2120 (#2114 근본 수리 Phase 2) — trip 인스턴스 corrId (`getCurrentTripCorrIdSync()`).
+   * backend가 Trip에 저장했다가 trip-ended push payload에 echo — device가 대조해 같은
+   * tripToken(기기 고정)의 옛 trip 종료 push가 새 trip 등록 후 도착하는 race를 차단한다.
+   * null 허용 — sync cache 미수화 시점(cold start 등)에는 null 그대로 송신해 backend가
+   * corrId 없는 trip으로 저장하고, 이후 정상 register부터 값이 채워진다(graceful). optional —
+   * 기존 register 호출자(테스트 등)는 미지정 시 undefined로 자연 생략.
+   */
+  corrId?: string | null;
 }
 
 export interface AlarmBackendResult {
@@ -290,6 +299,9 @@ async function performRegisterFetch(
     expiresAt,
     alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
+    // #2120 — trip 인스턴스 corrId. null 허용 그대로 항상 동봉(sync cache 미수화 시 null) —
+    // backend는 string이 아니면 undefined로 저장해 trip-ended payload에서 필드를 생략한다.
+    corrId: payload.corrId ?? null,
     // boardingLock은 있을 때만 송신 (없으면 backend는 기존 anchor 폴링).
     ...(payload.boardingLock ? { boardingLock: payload.boardingLock } : {}),
     // #819 — boarding-prompt 평가 컨텍스트. 좌표/표시 둘 중 하나라도 없으면 backend는 자동 skip.

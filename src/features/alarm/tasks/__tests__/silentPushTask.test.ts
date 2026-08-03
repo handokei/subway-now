@@ -2272,6 +2272,60 @@ describe('silentPushTask', () => {
         expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number), 'corr-abc');
       });
 
+      // #2120 (#2114 근본 수리 Phase 2) — corrId 인스턴스 가드.
+      describe('#2120 — corrId 인스턴스 가드', () => {
+        it('payload.corrId와 device corrId가 둘 다 있는데 불일치하면 cleanup 전체 skip + reason=trip-ended-corr-mismatch', async () => {
+          mockGetCurrentTripCorrIdSync.mockReturnValueOnce('device-corr');
+          await handleSilentPush(
+            tripEndedPayload({ pushId: 'te-corr', reason: 'expired', corrId: 'payload-corr' }),
+          );
+          expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+          expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
+          expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+          expect(mockSetTripEndedSentinel).not.toHaveBeenCalled();
+          expect(mockLogSilentPushSkipped).toHaveBeenCalledWith({
+            stationName: 'trip-ended:expired',
+            kind: undefined,
+            reason: 'trip-ended-corr-mismatch',
+          });
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId: 'te-corr',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'skipped',
+            reason: expect.stringContaining('corr-mismatch') as unknown as string,
+            permissionMode: 'always',
+          });
+        });
+
+        it('payload.corrId와 device corrId가 일치하면 cleanup 정상 진행', async () => {
+          mockGetCurrentTripCorrIdSync.mockReturnValue('same-corr');
+          await handleSilentPush(
+            tripEndedPayload({ reason: 'expired', corrId: 'same-corr' }),
+          );
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        });
+
+        it('payload.corrId가 없으면(구버전 backend) device corrId 조회 없이 cleanup 진행', async () => {
+          mockGetCurrentTripCorrIdSync.mockReturnValueOnce('device-corr-unused');
+          await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+          // 게이트 자체가 device corrId를 조회하지 않으므로 endedCorrIdSnapshot 캡처용
+          // mockReturnValueOnce가 그대로 소비돼 sentinel에 전달된다 (혼동 방지 검증).
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(
+            expect.any(Number),
+            'device-corr-unused',
+          );
+        });
+
+        it('payload.corrId는 있지만 device corrId가 null이면(cache 미수화) cleanup 진행', async () => {
+          mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+          await handleSilentPush(
+            tripEndedPayload({ reason: 'expired', corrId: 'payload-corr' }),
+          );
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        });
+      });
+
       // #2018 γ' — FG 상태(active)에서 trip-ended 수신 시 sentinel 저장 후 즉시 in-memory
       // store를 reset해야 한다. useStateRehydration은 AppState 'active' 이벤트 시에만 실행되므로
       // FG dogfood 시나리오(관찰 20, 성수→성수)에서 sentinel이 저장돼도 재수화가 트리거되지 않아
