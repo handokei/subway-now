@@ -7,6 +7,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import {
   getFirstLeg,
   isStationOnRoute,
@@ -35,6 +36,7 @@ import { awaitInitialScheduledAlarmDrain } from '../utils/scheduledAlarmReceiver
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import {
   logFiredAlarm,
+  logFiredStationPassed,
   logFiredAlarmsHydrate,
   logFiredAlarmsTripBoundaryReset,
   logHydrationTransition,
@@ -81,6 +83,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
+import { fireFgAuxStationPassedNotification } from '../utils/stationNotification';
 
 const logger = createLogger('StationAlarm');
 
@@ -182,6 +185,9 @@ async function dispatchStationPassed(params: {
   capturedDestinationId: string;
   isCancelled: () => boolean;
   errorLogPrefix: string;
+  /** #2122 — FG 보조 발사 조건(AppState active && lock 활성) 판정용. 호출부가 항상 lock 활성 trip만
+   *  진입시키므로 실질적으로 non-null이지만, 타입은 방어적으로 nullable을 유지한다. */
+  lock: import('../../../shared/types/boardingLock').BoardingLock | null;
 }): Promise<void> {
   const {
     source,
@@ -189,6 +195,7 @@ async function dispatchStationPassed(params: {
     capturedDestinationId,
     isCancelled,
     errorLogPrefix,
+    lock,
   } = params;
   try {
     const lastId = await getLastNotifiedStationId(capturedDestinationId);
@@ -239,6 +246,9 @@ async function dispatchStationPassed(params: {
     // 감지는 이제 사용자 노출 알림을 발사하지 않고 cross-category dedup 윈도우 + lastNotifiedStationId
     // bookkeeping만 수행한다(다른 카테고리 알람/게이트가 여전히 이 상태를 읽는다).
     // category='station-passed' → 후속 destination/transfer 발사 차단.
+    // #2122 — 예외: FG 한정 보조 발사. backend APNs 전달 지연(실측 35~51s) 우회를 위해
+    // AppState==='active' && lock 활성일 때만 로컬 배너를 추가로 띄운다(바로 아래 블록).
+    // 봉인 자체는 유지 — BG/취침/transfer/destination 경로는 여전히 사용자 노출 알림을 발사하지 않는다.
     markStationFired(
       capturedDestinationId,
       candidateStation.name,
@@ -249,6 +259,18 @@ async function dispatchStationPassed(params: {
     // isCancelled() 체크(getLastNotifiedStationId await 직후) 이후 바뀔 수 없다. 별도 재확인 불필요
     // — await setLastNotifiedStationId 진입 시점에만 다시 확인하면 충분.
     await setLastNotifiedStationId(capturedDestinationId, candidateStation.id);
+    // #2122 (FG 보조 발사) — 위 모든 게이트(dedup/cross-category/hop-window/movement/silence/SSoT
+    // 등, 여기 도달했다는 것 자체가 전부 통과했다는 뜻)를 통과한 뒤에만, FG 한정으로 로컬
+    // station-passed 배너를 추가 발사한다. BG(AppState !=='active')는 이 블록에 도달해도 스킵 —
+    // #2064 봉인이 BG에는 그대로 유지된다.
+    if (AppState.currentState === 'active' && lock) {
+      try {
+        await fireFgAuxStationPassedNotification(candidateStation.name);
+        logFiredStationPassed(source, candidateStation.name);
+      } catch (e) {
+        logger.error('FG 보조 발사 실패:', e);
+      }
+    }
   } catch (e) {
     logger.error(errorLogPrefix, e);
   }
@@ -308,6 +330,7 @@ async function runSilenceGateAndDispatch(params: {
     capturedDestinationId: params.capturedDestinationId,
     isCancelled: params.isCancelled,
     errorLogPrefix: params.errorLogPrefix,
+    lock: params.lock,
   });
 }
 

@@ -7,7 +7,10 @@ import {
   clearStationNotification,
   clearAlarmNotification,
   buildAlarmContent,
+  fireFgAuxStationPassedNotification,
 } from '../stationNotification';
+import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
+import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
 import { Station } from '../../../../shared/types/station';
 import {
   makeDirectRoute,
@@ -64,6 +67,15 @@ import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 const mockHasFiredPushId = jest.fn();
 jest.mock('../firedPushIds', () => ({
   hasFiredPushId: (...args: unknown[]) => mockHasFiredPushId(...args),
+}));
+
+// #2122 (FG 보조 발사) — 로컬 station-passed 발사 기록/조회 store. 2b 억제 판정과
+// fireFgAuxStationPassedNotification 후처리 stamp를 분리 검증하기 위해 mock으로 격리.
+const mockMarkLocalStationFired = jest.fn().mockResolvedValue(undefined);
+const mockHasRecentLocalStationFire = jest.fn().mockResolvedValue(false);
+jest.mock('../recentLocalStationFires', () => ({
+  markLocalStationFired: (...args: unknown[]) => mockMarkLocalStationFired(...args),
+  hasRecentLocalStationFire: (...args: unknown[]) => mockHasRecentLocalStationFire(...args),
 }));
 
 const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
@@ -218,6 +230,80 @@ describe('stationNotification', () => {
       });
       expect(emptyPushId.shouldShowAlert).toBe(true);
       expect(mockHasFiredPushId).not.toHaveBeenCalled();
+    });
+
+    // #2122 (FG 보조 발사) — 2차 방어선. backend alert push data.nextWaypoint/kind가 최근 로컬
+    // 발사(station-passed)와 일치하면 표시를 억제한다(1차 방어선은 apns-collapse-id 문자열 일치).
+    describe('#2122 — 최근 로컬 발사(station,kind) 표시 억제 (2b)', () => {
+      it('data.kind=intermediate + hasRecentLocalStationFire=true → 표시 억제', async () => {
+        mockHasRecentLocalStationFire.mockResolvedValueOnce(true);
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const result = await handleNotification({
+          request: {
+            identifier: 'station-notif-abc',
+            content: { sound: null, data: { nextWaypoint: '중곡', kind: 'intermediate' } },
+          },
+        });
+        expect(mockHasRecentLocalStationFire).toHaveBeenCalledWith('중곡', 'station-passed');
+        expect(result).toEqual({
+          shouldShowAlert: false,
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        });
+      });
+
+      it('data.kind=intermediate + hasRecentLocalStationFire=false → 정상 표시', async () => {
+        mockHasRecentLocalStationFire.mockResolvedValueOnce(false);
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const result = await handleNotification({
+          request: {
+            identifier: 'station-notif-abc',
+            content: { sound: null, data: { nextWaypoint: '중곡', kind: 'intermediate' } },
+          },
+        });
+        expect(result.shouldShowAlert).toBe(true);
+      });
+
+      it('data.kind가 매핑 대상(intermediate) 외이면 hasRecentLocalStationFire 호출 안 함 (정상 표시)', async () => {
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const result = await handleNotification({
+          request: {
+            identifier: 'station-alarm',
+            content: { sound: null, data: { nextWaypoint: '중곡', kind: 'transfer' } },
+          },
+        });
+        expect(mockHasRecentLocalStationFire).not.toHaveBeenCalled();
+        expect(result.shouldShowAlert).toBe(true);
+      });
+
+      it('data 없거나 nextWaypoint/kind 누락이면 hasRecentLocalStationFire 호출 안 함 (정상 표시)', async () => {
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const noData = await handleNotification({
+          request: { identifier: 'station-notif-abc', content: { sound: null } },
+        });
+        expect(noData.shouldShowAlert).toBe(true);
+        const noKind = await handleNotification({
+          request: {
+            identifier: 'station-notif-abc',
+            content: { sound: null, data: { nextWaypoint: '중곡' } },
+          },
+        });
+        expect(noKind.shouldShowAlert).toBe(true);
+        const emptyStation = await handleNotification({
+          request: {
+            identifier: 'station-notif-abc',
+            content: { sound: null, data: { nextWaypoint: '', kind: 'intermediate' } },
+          },
+        });
+        expect(emptyStation.shouldShowAlert).toBe(true);
+        expect(mockHasRecentLocalStationFire).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -862,6 +948,45 @@ describe('stationNotification', () => {
     it('dismiss 실패해도 에러를 던지지 않는다', async () => {
       (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
       await expect(clearAlarmNotification()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('fireFgAuxStationPassedNotification (#2122 FG 보조 발사)', () => {
+    beforeEach(async () => {
+      await AsyncStorage.clear();
+    });
+
+    it('device token 보유 시 backend collapse-id와 동일한 identifier로 로컬 알림을 발사하고 markLocalStationFired를 stamp한다', async () => {
+      await AsyncStorage.setItem(APNS_TOKEN_KEY, 'a'.repeat(64));
+
+      await fireFgAuxStationPassedNotification('중곡');
+
+      const expectedId = buildStationNotifCollapseId('a'.repeat(64));
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          identifier: expectedId,
+          content: expect.objectContaining({
+            title: '역 통과',
+            body: '중곡역을 지나고 있어요',
+            sound: false,
+          }),
+          trigger: null,
+        }),
+      );
+      expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'station-passed');
+    });
+
+    it('기존 동일 identifier 알림을 dismiss한 뒤 재발사한다 (scheduleNotification 공용 helper 재사용)', async () => {
+      await AsyncStorage.setItem(APNS_TOKEN_KEY, 'b'.repeat(64));
+      await fireFgAuxStationPassedNotification('군자');
+      const expectedId = buildStationNotifCollapseId('b'.repeat(64));
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith(expectedId);
+    });
+
+    it('device token 미보유 시(등록 전) 스킵 — 알림 발사/stamp 모두 안 함', async () => {
+      await fireFgAuxStationPassedNotification('중곡');
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
     });
   });
 

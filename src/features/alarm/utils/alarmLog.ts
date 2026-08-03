@@ -438,6 +438,22 @@ export function logFiredAlarm(
 }
 
 /**
+ * #2122 (FG 보조 발사) — station-passed 로컬 발사 stamp.
+ * `logFiredAlarm`은 `AlarmEvent`(destination/transfer 전용, phaseId 필수)를 받는데
+ * station-passed는 phase 개념이 없어 재사용 대신 전용 helper로 kind 고정.
+ * DebugModal Alarm log `fg / fired` + `/admin/alarm-log-stats` `sources.fg`가 이 stamp를 관측한다.
+ */
+export function logFiredStationPassed(source: AlarmLogSource, stationName: string): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source,
+    outcome: 'fired',
+    stationName,
+    kind: 'station-passed',
+  });
+}
+
+/**
  * 사전 예약(BG) 알람 1건의 stamp 컨텍스트를 적재한다 (#372).
  * source는 항상 'bg-scheduled', outcome은 'fired'(사전 예약된 발사 예정 기록).
  * 발사 자체는 expo-notifications가 처리하므로 별도 fire-time 로그는 없다.

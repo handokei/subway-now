@@ -3,6 +3,15 @@
  * settings store(sleepMode/allowSpeaker)에 의존하는 분기를 검증하려면 같은 import 필요.
  * ADR Phase 5 (#890) orchestration 컨벤션.
  */
+// #2122 (FG 보조 발사) — 로컬 station-passed 배너 발사. 실제 expo-notifications 왕복 없이
+// 호출 여부/인자만 검증하기 위해 mock으로 격리.
+const mockFireFgAuxStationPassedNotification = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/stationNotification', () => ({
+  fireFgAuxStationPassedNotification: (...args: unknown[]) =>
+    mockFireFgAuxStationPassedNotification(...args),
+}));
+
+import { AppState } from 'react-native';
 import { renderHook, waitFor } from '@testing-library/react-native';
 import {
   useStationAlarm,
@@ -30,6 +39,14 @@ import {
 // "결코 wire되지 않은 mock"이라 항상 통과하는 vacuous 검증이 된다. 값 자체는 유지하되 real
 // module mock은 제거해 dead jest.mock을 남기지 않는다.
 const mockSendStationPassedNotification = jest.fn().mockResolvedValue(undefined);
+
+// #2122 (FG 보조 발사) — AppState.currentState를 테스트에서 조작한다. react-native jest preset의
+// 기본 mock(`node_modules/react-native/jest/mocks/AppState.js`)은 `currentState`를 plain
+// 필드로 두므로 getter 없이 직접 대입 가능. 기본값 'background' — 기존 테스트("#2064 알림은
+// 미발사")가 FG 보조 발사 분기에 진입하지 않도록 보수적 초기화.
+function setAppState(state: 'active' | 'background' | 'inactive'): void {
+  (AppState as unknown as { currentState: string }).currentState = state;
+}
 
 const mockEvaluateAlarmPhase = jest.fn();
 jest.mock('../../utils/stationAlarm', () => {
@@ -237,6 +254,8 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
 describe('useStationAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setAppState('background');
+    mockFireFgAuxStationPassedNotification.mockResolvedValue(undefined);
     useSettingsStore.setState({ sleepMode: false, allowSpeaker: true });
     useAlarmEventStore.setState({ alarmEvent: null, dismissSilence: null });
     mockEvaluateAlarmPhase.mockReturnValue(null);
@@ -1665,6 +1684,81 @@ describe('useStationAlarm', () => {
         expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
       });
       expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+    });
+
+    // #2122 — FG 보조 발사. backend APNs 전달 지연(실측 35~51s)을 FG에서 디바이스 자체 판정으로
+    // 우회. #2064 봉인은 유지하되 AppState==='active' && lock 활성일 때만 예외적으로 로컬
+    // station-passed 배너를 추가 발사한다.
+    describe('#2122 FG 보조 발사 (AppState active 한정)', () => {
+      function renderStationPassed() {
+        mockEvaluateAlarmPhase.mockReturnValue(null);
+        mockGetLastNotifiedStationId.mockResolvedValue(null);
+        mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+        mockResolveNextTarget.mockReturnValue({
+          nextStationName: '강남',
+          stopsToNextStation: 1,
+          isTransfer: false,
+          stopsToDestination: 1,
+        });
+        return renderHook(() =>
+          useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+        );
+      }
+
+      it('FG(active) + lock 활성 + 게이트 통과 → fireFgAuxStationPassedNotification 발사 + logFiredStationPassed(fg) 스탬프', async () => {
+        setAppState('active');
+
+        renderStationPassed();
+
+        await waitFor(() => {
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
+        });
+        await waitFor(() => {
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(station.name);
+        });
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg', station.name);
+      });
+
+      it('BG(background) → fireFgAuxStationPassedNotification 미호출 (#2064 봉인 유지)', async () => {
+        setAppState('background');
+
+        renderStationPassed();
+
+        await waitFor(() => {
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
+        });
+        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
+        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+      });
+
+      it('lock 없음(lockless) → FG(active)여도 dispatch 자체에 도달하지 못해 미호출', async () => {
+        setAppState('active');
+        mockGetBoardingLock.mockResolvedValue(null);
+
+        renderStationPassed();
+
+        await waitFor(() => {
+          expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalled();
+        });
+        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+      });
+
+      it('FG(active) + lock 활성이어도 fireFgAuxStationPassedNotification 실패 시 dedup bookkeeping은 유지되고 예외를 던지지 않는다', async () => {
+        setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockRejectedValueOnce(new Error('schedule 실패'));
+
+        renderStationPassed();
+
+        await waitFor(() => {
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
+        });
+        await waitFor(() => {
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(station.name);
+        });
+        // logFiredStationPassed는 fireFgAuxStationPassedNotification 성공 후에만 호출 — 실패 시 미호출.
+        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+      });
     });
 
     it('lastNotifiedStationId 일치로 skip 시 logSuppressedDedupStation(fg, station)을 호출한다', async () => {

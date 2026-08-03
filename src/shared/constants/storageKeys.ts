@@ -216,3 +216,9 @@ export const BG_LAST_POSITION_UPLOAD_AT_KEY = 'subway-now:bg-last-position-uploa
 // entry TTL 1h — trip 하나가 1시간을 넘는 경우는 드물고, TTL이 지나면 자연 prune돼 무한 성장 방지.
 // 형식: { id: string; firedAt: number }[] JSON. id = `alarm-${tripToken}-${station}-${kind}`.
 export const ALARM_LOCAL_LEDGER_KEY = 'subway-now:alarm-local-ledger';
+// #2122 — FG 보조 발사(로컬 station-passed 알림) 직후 (station, kind) 발사 기록.
+// setupNotificationHandler(FG 표시 핸들러)가 뒤늦게 도착한 backend alert push를 렌더하기 전
+// 이 기록을 참조해 같은 (station, kind)가 최근 로컬 발사됐으면 표시를 억제한다(2중 방어의 2b).
+// TTL RECENT_LOCAL_STATION_FIRE_TTL_MS(recentLocalStationFires.ts) 경과 항목은 add/read 시 cleanup.
+// 형식: { "<kind>:<stationName>": timestamp(epoch ms) } JSON.
+export const RECENT_LOCAL_STATION_FIRES_KEY = 'subway-now:recent-local-station-fires';
