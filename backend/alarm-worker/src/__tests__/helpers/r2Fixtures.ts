@@ -43,17 +43,33 @@ export function makeFakeR2(
   pageSize = Number.POSITIVE_INFINITY,
 ): R2Bucket {
   return {
-    async list({ prefix, cursor, limit }: { prefix?: string; cursor?: string; limit?: number }) {
+    async list({
+      prefix,
+      cursor,
+      limit,
+      include,
+    }: {
+      prefix?: string;
+      cursor?: string;
+      limit?: number;
+      include?: ('httpMetadata' | 'customMetadata')[];
+    }) {
       const matching = archives.filter((a) => !prefix || a.key.startsWith(prefix));
       const startIdx = cursor ? Number.parseInt(cursor, 10) : 0;
       const cap = Math.min(limit ?? matching.length, pageSize);
       const page = matching.slice(startIdx, startIdx + cap);
       const endIdx = startIdx + page.length;
       const truncated = endIdx < matching.length;
+      // #2116 — 실 Cloudflare R2 runtime은 `include: ['customMetadata']`를 명시하지
+      // 않으면 listed object에 customMetadata를 채우지 않는다. 이 mock도 동일 제약을
+      // 재현해야 alarmLogStats.ts가 include 누락 시 회귀를 테스트에서 잡을 수 있다.
+      const includeCustomMetadata = include?.includes('customMetadata') ?? false;
       return {
         objects: page.map((a) => ({
           key: a.key,
-          customMetadata: { tripEndedAt: String(a.tripEndedAt) },
+          ...(includeCustomMetadata
+            ? { customMetadata: { tripEndedAt: String(a.tripEndedAt) } }
+            : {}),
         })),
         truncated,
         cursor: truncated ? String(endIdx) : undefined,

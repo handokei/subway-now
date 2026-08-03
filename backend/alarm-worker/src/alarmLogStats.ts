@@ -291,6 +291,13 @@ export async function computeAlarmLogStats(
       prefix: TRIP_EVIDENCE_PREFIX,
       cursor,
       limit: Math.min(safeLimit - enumerated, 1000),
+      // #2116 — R2 list()는 `include: ['customMetadata']` 없이는 listed object에
+      // customMetadata를 채우지 않는다 (Cloudflare 런타임 제약). 이게 빠지면
+      // isObjectInWindow가 항상 meta undefined로 false 반환 → tripsScanned/totalEvents
+      // 항상 0 (실제 R2 archive 존재 여부와 무관). 로컬 fake R2 mock은 include를
+      // 무시하고 항상 customMetadata를 채워 이 회귀를 가려 왔다 (테스트 mock이 런타임
+      // 제약을 검증하지 못한 사례).
+      include: ['customMetadata'],
     });
     for (const obj of result.objects) {
       if (enumerated >= safeLimit) break;
