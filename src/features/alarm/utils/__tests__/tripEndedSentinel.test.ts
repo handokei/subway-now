@@ -3,6 +3,7 @@ import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
   isTripEndedSentinelStale,
+  resolveTripEndedSentinelVerdict,
   setTripEndedSentinel,
 } from '../tripEndedSentinel';
 import { TRIP_ENDED_BY_BACKEND_AT_KEY } from '../../../../shared/constants/storageKeys';
@@ -27,40 +28,106 @@ describe('tripEndedSentinel', () => {
     removeItemMock.mockResolvedValue(undefined);
   });
 
-  it('setTripEndedSentinel — at 인자를 문자열로 직렬화해 sentinel 키에 저장', async () => {
-    await setTripEndedSentinel(1_700_000_000_000);
-    expect(setItemMock).toHaveBeenCalledWith(TRIP_ENDED_BY_BACKEND_AT_KEY, '1700000000000');
+  describe('setTripEndedSentinel (#2114 방안 C′ — JSON {endedAt, corrId})', () => {
+    it('at + corrId를 JSON으로 직렬화해 sentinel 키에 저장', async () => {
+      await setTripEndedSentinel(1_700_000_000_000, 'corr-abc');
+      expect(setItemMock).toHaveBeenCalledWith(
+        TRIP_ENDED_BY_BACKEND_AT_KEY,
+        JSON.stringify({ endedAt: 1_700_000_000_000, corrId: 'corr-abc' }),
+      );
+    });
+
+    it('corrId 미전달 시 null로 저장 (legacy 호출부 하위호환)', async () => {
+      await setTripEndedSentinel(1_700_000_000_000);
+      expect(setItemMock).toHaveBeenCalledWith(
+        TRIP_ENDED_BY_BACKEND_AT_KEY,
+        JSON.stringify({ endedAt: 1_700_000_000_000, corrId: null }),
+      );
+    });
+
+    it('기본값은 Date.now()', async () => {
+      const now = 1_710_000_000_000;
+      const spy = jest.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        await setTripEndedSentinel();
+      } finally {
+        spy.mockRestore();
+      }
+      expect(setItemMock).toHaveBeenCalledWith(
+        TRIP_ENDED_BY_BACKEND_AT_KEY,
+        JSON.stringify({ endedAt: now, corrId: null }),
+      );
+    });
+
+    it('AsyncStorage 실패는 흡수 (graceful)', async () => {
+      setItemMock.mockRejectedValueOnce(new Error('disk full'));
+      await expect(setTripEndedSentinel(1)).resolves.toBeUndefined();
+    });
   });
 
-  it('setTripEndedSentinel — 기본값은 Date.now()', async () => {
-    const now = 1_710_000_000_000;
-    const spy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      await setTripEndedSentinel();
-    } finally {
-      spy.mockRestore();
-    }
-    expect(setItemMock).toHaveBeenCalledWith(TRIP_ENDED_BY_BACKEND_AT_KEY, String(now));
-  });
+  describe('getTripEndedSentinel', () => {
+    it('신규 JSON 스키마 파싱 — {endedAt, corrId} 그대로 반환', async () => {
+      getItemMock.mockResolvedValueOnce(
+        JSON.stringify({ endedAt: 1_700_000_000_000, corrId: 'corr-abc' }),
+      );
+      await expect(getTripEndedSentinel()).resolves.toEqual({
+        endedAt: 1_700_000_000_000,
+        corrId: 'corr-abc',
+      });
+    });
 
-  it('setTripEndedSentinel — AsyncStorage 실패는 흡수 (graceful)', async () => {
-    setItemMock.mockRejectedValueOnce(new Error('disk full'));
-    await expect(setTripEndedSentinel(1)).resolves.toBeUndefined();
-  });
+    it('신규 JSON 스키마 + corrId=null', async () => {
+      getItemMock.mockResolvedValueOnce(
+        JSON.stringify({ endedAt: 1_700_000_000_000, corrId: null }),
+      );
+      await expect(getTripEndedSentinel()).resolves.toEqual({
+        endedAt: 1_700_000_000_000,
+        corrId: null,
+      });
+    });
 
-  it.each<[string, unknown, number | null]>([
-    ['숫자 문자열', '1700000000000', 1_700_000_000_000],
-    ['키 부재(null)', null, null],
-    ['NaN 문자열', 'abc', null],
-    ['빈 문자열은 Number("")=0이라 0 반환', '', 0],
-  ])('getTripEndedSentinel — %s → %s', async (_label, raw, expected) => {
-    getItemMock.mockResolvedValueOnce(raw);
-    await expect(getTripEndedSentinel()).resolves.toBe(expected);
-  });
+    it('legacy plain-number 문자열 — corrId=null로 fallback 파싱', async () => {
+      getItemMock.mockResolvedValueOnce('1700000000000');
+      await expect(getTripEndedSentinel()).resolves.toEqual({
+        endedAt: 1_700_000_000_000,
+        corrId: null,
+      });
+    });
 
-  it('getTripEndedSentinel — AsyncStorage 실패 시 null', async () => {
-    getItemMock.mockRejectedValueOnce(new Error('boom'));
-    await expect(getTripEndedSentinel()).resolves.toBeNull();
+    it('JSON이지만 endedAt 필드가 숫자가 아니면 legacy 숫자 파싱으로 재시도 후 실패 시 null', async () => {
+      getItemMock.mockResolvedValueOnce(JSON.stringify({ endedAt: 'not-a-number' }));
+      await expect(getTripEndedSentinel()).resolves.toBeNull();
+    });
+
+    it('JSON이지만 corrId 필드가 문자열이 아니면 null로 정규화', async () => {
+      getItemMock.mockResolvedValueOnce(
+        JSON.stringify({ endedAt: 1_700_000_000_000, corrId: 123 }),
+      );
+      await expect(getTripEndedSentinel()).resolves.toEqual({
+        endedAt: 1_700_000_000_000,
+        corrId: null,
+      });
+    });
+
+    it('키 부재(null) → null', async () => {
+      getItemMock.mockResolvedValueOnce(null);
+      await expect(getTripEndedSentinel()).resolves.toBeNull();
+    });
+
+    it('NaN 문자열(legacy도 아님) → null', async () => {
+      getItemMock.mockResolvedValueOnce('abc');
+      await expect(getTripEndedSentinel()).resolves.toBeNull();
+    });
+
+    it('빈 문자열은 legacy Number("")=0으로 파싱 (corrId=null)', async () => {
+      getItemMock.mockResolvedValueOnce('');
+      await expect(getTripEndedSentinel()).resolves.toEqual({ endedAt: 0, corrId: null });
+    });
+
+    it('AsyncStorage 실패 시 null', async () => {
+      getItemMock.mockRejectedValueOnce(new Error('boom'));
+      await expect(getTripEndedSentinel()).resolves.toBeNull();
+    });
   });
 
   it('clearTripEndedSentinel — removeItem 호출', async () => {
@@ -73,7 +140,7 @@ describe('tripEndedSentinel', () => {
     await expect(clearTripEndedSentinel()).resolves.toBeUndefined();
   });
 
-  describe('isTripEndedSentinelStale (#2114)', () => {
+  describe('isTripEndedSentinelStale (#2114 방안 A)', () => {
     it('tripStartedAt이 sentinelAt보다 나중이면 stale=true', () => {
       expect(isTripEndedSentinelStale(1_000, 2_000)).toBe(true);
     });
@@ -88,6 +155,73 @@ describe('tripEndedSentinel', () => {
 
     it('tripStartedAt이 null이면 stale=false (활성 trip 없음)', () => {
       expect(isTripEndedSentinelStale(1_000, null)).toBe(false);
+    });
+  });
+
+  describe('resolveTripEndedSentinelVerdict (#2114 방안 C′ + A fallback)', () => {
+    it('corrId 둘 다 non-null + 불일치 → stale (timestamp 무관)', () => {
+      // timestamp만 보면 fresh로 보일 상황(tripStartedAt < sentinelAt)이어도 corrId mismatch면 stale.
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 2_000, corrId: 'corr-old' },
+        1_000,
+        'corr-new',
+      );
+      expect(verdict).toBe('stale');
+    });
+
+    it('corrId 둘 다 non-null + 일치 → fresh (timestamp 무관)', () => {
+      // timestamp만 보면 stale로 보일 상황(tripStartedAt > sentinelAt)이어도 corrId 일치면 fresh.
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 1_000, corrId: 'corr-same' },
+        2_000,
+        'corr-same',
+      );
+      expect(verdict).toBe('fresh');
+    });
+
+    it('sentinel.corrId=null (legacy) → timestamp fallback (stale)', () => {
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 1_000, corrId: null },
+        2_000,
+        'corr-new',
+      );
+      expect(verdict).toBe('stale');
+    });
+
+    it('sentinel.corrId=null (legacy) → timestamp fallback (fresh)', () => {
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 2_000, corrId: null },
+        1_000,
+        'corr-new',
+      );
+      expect(verdict).toBe('fresh');
+    });
+
+    it('currentCorrId=null(sync cache 미수화) → timestamp fallback (stale)', () => {
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 1_000, corrId: 'corr-old' },
+        2_000,
+        null,
+      );
+      expect(verdict).toBe('stale');
+    });
+
+    it('currentCorrId=null(sync cache 미수화) → timestamp fallback (fresh)', () => {
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 2_000, corrId: 'corr-old' },
+        1_000,
+        null,
+      );
+      expect(verdict).toBe('fresh');
+    });
+
+    it('둘 다 null → timestamp fallback (tripStartedAt null → fresh)', () => {
+      const verdict = resolveTripEndedSentinelVerdict(
+        { endedAt: 1_000, corrId: null },
+        null,
+        null,
+      );
+      expect(verdict).toBe('fresh');
     });
   });
 });

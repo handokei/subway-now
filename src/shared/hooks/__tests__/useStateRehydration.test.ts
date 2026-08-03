@@ -19,6 +19,7 @@ jest.mock('../../../features/alarm/utils/tripEndedSentinel', () => {
   return {
     // #2114 — 순수 함수라 실제 구현 그대로 사용. storage I/O 함수만 mock.
     isTripEndedSentinelStale: actual.isTripEndedSentinelStale,
+    resolveTripEndedSentinelVerdict: actual.resolveTripEndedSentinelVerdict,
     getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
     clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
     setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
@@ -56,7 +57,7 @@ jest.mock('../../../features/alarm/store/tripBoundCleanups', () => ({
 }));
 
 // #1597 — sentinel + force-end 경로에서 cleanup 직전 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
-const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);
 jest.mock('../../../features/observability/utils/tripCorrId', () => ({
   getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
 }));
@@ -156,7 +157,7 @@ describe('useStateRehydration', () => {
   });
 
   it('sentinel 있음 — runTripBoundCleanups 직접 호출 + setState로 메모리 reset + breadcrumb + releaseLock + sentinel clear', async () => {
-    mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+    mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: null });
     mockAppState();
     renderHook(() => useStateRehydration());
     await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
@@ -178,7 +179,7 @@ describe('useStateRehydration', () => {
   it('sentinel 있음 + prev destination null (isSwitch=false) — cleanup 정상 실행 (R2 핵심 회귀)', async () => {
     // 이전 동작: setDestination(null)을 호출하면 store의 isSwitch가 false라서 cleanup chain이
     // 실행되지 않았음. 새 동작은 runTripBoundCleanups를 직접 호출하므로 prev 상태 무관 cleanup 보장.
-    mockGetSentinel.mockResolvedValue(1_700_000_000_001);
+    mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_001, corrId: null });
     // destination=null 기본 상태 (prev=null) 시뮬레이션 — 기본 mockReturnValue는 setDestination만
     // 갖고 있어 prev 조회 불가하지만, runTripBoundCleanups가 store에 의존하지 않고 호출되는지가 핵심.
     mockAppState();
@@ -194,7 +195,7 @@ describe('useStateRehydration', () => {
   describe('#2114 stale sentinel guard (2026-08-03 건대 RCA)', () => {
     it('stale sentinel(활성 trip이 sentinel보다 나중 시작) — reset 미실행, destination 유지, sentinel clear, stamp 적재', async () => {
       // sentinel=07:26:29 force-end, 활성 trip 시작=07:27(sentinel 이후) — 새로 등록된 trip.
-      mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: null });
       mockGetTripStartedAt.mockResolvedValue(1_700_000_060_000);
       mockTripLifecyclePhase.mockReturnValue('normal');
       mockAppState();
@@ -223,7 +224,7 @@ describe('useStateRehydration', () => {
     });
 
     it('sentinel 존재 + tripStartedAt null — 기존 reset 동작 유지 (stale 아님)', async () => {
-      mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: null });
       mockGetTripStartedAt.mockResolvedValue(null);
       mockAppState();
       renderHook(() => useStateRehydration());
@@ -241,7 +242,7 @@ describe('useStateRehydration', () => {
     });
 
     it('신선한 sentinel(활성 trip이 sentinel보다 이전 시작) — 기존 reset+clear 동작 유지', async () => {
-      mockGetSentinel.mockResolvedValue(1_700_000_100_000);
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_100_000, corrId: null });
       mockGetTripStartedAt.mockResolvedValue(1_700_000_000_000);
       mockTripLifecyclePhase.mockReturnValue('normal');
       mockAppState();
@@ -254,6 +255,76 @@ describe('useStateRehydration', () => {
         tripOrigin: null,
       });
       expect(mockReleaseLock).toHaveBeenCalled();
+    });
+  });
+
+  describe('#2114 방안 C′ — corrId 스코프 1순위 판정', () => {
+    it('corrId 불일치 → stale 확정 (timestamp상 fresh로 보여도 corrId mismatch가 우선)', async () => {
+      // timestamp만 보면 fresh(tripStartedAt < sentinelAt)이지만 corrId가 다른 trip이면 stale.
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_100_000, corrId: 'corr-old-trip' });
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_000_000);
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-new-trip');
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
+
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetState).not.toHaveBeenCalled();
+      expect(mockReleaseLock).not.toHaveBeenCalled();
+      expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-sentinel-stale-discarded' }),
+      );
+    });
+
+    it('corrId 일치 → fresh 확정 (timestamp상 stale로 보여도 corrId 일치가 우선)', async () => {
+      // timestamp만 보면 stale(tripStartedAt > sentinelAt)이지만 corrId가 같은 trip이면 fresh.
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: 'corr-same-trip' });
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_060_000);
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-same-trip');
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
+
+      expect(mockSetState).toHaveBeenCalledWith({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-sentinel-stale-discarded' }),
+      );
+    });
+
+    it('legacy plain-number sentinel(corrId=null) → timestamp fallback (stale)', async () => {
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_000_000, corrId: null });
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_060_000);
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-new-trip');
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-sentinel-stale-discarded' }),
+      );
+    });
+
+    it('currentCorrId=null(sync cache 미수화) → timestamp fallback (fresh)', async () => {
+      mockGetSentinel.mockResolvedValue({ endedAt: 1_700_000_100_000, corrId: 'corr-old-trip' });
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_000_000);
+      mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
+      expect(mockSetState).toHaveBeenCalledWith({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
     });
   });
 
@@ -442,7 +513,7 @@ describe('useStateRehydration', () => {
     expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
     expect(mockSetState).not.toHaveBeenCalled();
 
-    mockGetSentinel.mockResolvedValueOnce(1_700_000_000_001);
+    mockGetSentinel.mockResolvedValueOnce({ endedAt: 1_700_000_000_001, corrId: null });
     app.emit('active');
     await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
     expect(mockSetState).toHaveBeenCalledWith({

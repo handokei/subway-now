@@ -102,7 +102,7 @@ jest.mock('../../utils/triggerTripEndRecall', () => ({
 }));
 
 // #1597 — trip-ended 경로에서 cleanup 직전에 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
-const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);
 jest.mock('../../../observability/utils/tripCorrId', () => ({
   getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
 }));
@@ -2261,7 +2261,15 @@ describe('silentPushTask', () => {
         await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
         expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
-        expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number));
+        // #2114 (방안 C′) — 두번째 인자로 종료 trip의 corrId snapshot 동봉.
+        expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number), null);
+      });
+
+      // #2114 (방안 C′) — corrId snapshot이 non-null이면 sentinel에 함께 저장.
+      it('#2114 — getCurrentTripCorrIdSync가 non-null이면 setTripEndedSentinel에 corrId 동봉', async () => {
+        mockGetCurrentTripCorrIdSync.mockReturnValueOnce('corr-abc');
+        await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+        expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number), 'corr-abc');
       });
 
       // #2018 γ' — FG 상태(active)에서 trip-ended 수신 시 sentinel 저장 후 즉시 in-memory

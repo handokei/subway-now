@@ -59,7 +59,7 @@ import { getTripStartedAt } from '../utils/tripStartStorage';
 import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
-  isTripEndedSentinelStale,
+  resolveTripEndedSentinelVerdict,
   setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
@@ -155,19 +155,29 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
       // cleanup이 실행됐거나 진행 중이라 재발화도 스킵되어야 정합.
       firedForDestinationIdRef.current = capturedDestinationId;
       try {
+        // #1597 — clearTripCorrId가 cache를 비우기 전에 (아직 살아있는) 현재 trip의 corrId
+        // snapshot 캡처. #2114 (방안 C′) — sentinel 판정의 currentCorrId로도 재사용.
+        const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+
         // Idempotent guard: sentinel 이미 있으면 backend cleanup 완료 상태 → skip.
-        // #2114 — sentinel이 현재 활성 trip보다 이전 trip의 것이면(stale) skip하지 않고
+        // #2114 — sentinel이 현재 활성 trip과 다른 trip의 것이면(stale) skip하지 않고
         // clear 후 self-end를 계속 진행한다. stale sentinel이 self-end를 영구 봉인하는
         // 부수 결함(밤샘 trip force-end sentinel이 그 직후 등록된 새 trip의 self-end를
-        // 계속 "이미 처리됨"으로 오판) 동시 수리.
+        // 계속 "이미 처리됨"으로 오판) 동시 수리. 판정은 corrId 1순위 + timestamp fallback
+        // (resolveTripEndedSentinelVerdict, 방안 C′).
         const sentinel = await getTripEndedSentinel();
         if (sentinel !== null) {
-          if (!isTripEndedSentinelStale(sentinel, tripStartedAt)) {
+          const verdict = resolveTripEndedSentinelVerdict(
+            sentinel,
+            tripStartedAt,
+            endedCorrIdSnapshot,
+          );
+          if (verdict !== 'stale') {
             logger.info(`skip — sentinel already recorded reason=${reason}`);
             return;
           }
           logger.info(
-            `sentinel=${sentinel} stale (tripStartedAt=${tripStartedAt}) reason=${reason} → clear + continue`,
+            `sentinel=${JSON.stringify(sentinel)} stale (tripStartedAt=${tripStartedAt}, currentCorrId=${endedCorrIdSnapshot}) reason=${reason} → clear + continue`,
           );
           await clearTripEndedSentinel();
         }
@@ -185,7 +195,6 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
         // silent push trip-ended / lifecycle-backstop force-end 와 동일 시퀀스.
         // recall이 cleanup 전에 호출돼야 ROUTE_KEY / DESTINATION_KEY / TRIP_STARTED_AT_KEY 를 읽을 수 있다.
         await triggerTripEndRecall();
-        const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
         await runTripBoundCleanups();
         await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
         useDestinationStore.setState({
@@ -194,7 +203,8 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
           tripOrigin: null,
         });
         await releaseLock();
-        await setTripEndedSentinel(now);
+        // #2114 (방안 C′) — sentinel에 corrId 동봉.
+        await setTripEndedSentinel(now, endedCorrIdSnapshot);
       } catch (e) {
         // graceful — 다음 tick 재평가에서 다시 시도. sentinel/refs 상태에 따라 자연 dedup.
         logger.warn('device self-end 실패 (graceful)', e);

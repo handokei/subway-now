@@ -960,7 +960,8 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
       // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
       // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
-      await setTripEndedSentinel(receivedAt);
+      // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
+      await setTripEndedSentinel(receivedAt, endedCorrIdSnapshot);
       // #2018 γ' — FG 상태에서는 useStateRehydration의 AppState 'active' 이벤트가
       // 발생하지 않아 sentinel이 다음 BG/FG cycle까지 처리되지 않는다. 그동안 in-memory
       // destination store가 stale로 남아 UI가 "현재역 → 현재역 0정거장" 형태로 잔존
