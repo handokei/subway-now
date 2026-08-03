@@ -124,11 +124,23 @@ async function isFallbackDuplicate(
 }
 
 // #2122 — backend push data.kind('intermediate' 등, backend `Waypoint.kind`)를
-// 로컬 dispatchStationPassed의 AlarmLogKind('station-passed')로 매핑. FG 보조 발사는
-// station-passed(=intermediate) 카테고리 한정이라 매핑 테이블도 그 범위만 갖는다.
+// 로컬 dispatchStationPassed의 AlarmLogKind('station-passed')로 매핑.
+// #918 — OS 사전예약(stationPrescheduler)이 transfer/destination kind도 커버하게 되면서
+// 매핑도 identity 항목 2개를 추가(로컬 kind 이름이 backend kind 이름과 동일).
 const BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND: Record<string, string> = {
   intermediate: 'station-passed',
+  transfer: 'transfer',
+  destination: 'destination',
 };
+
+/**
+ * backend push의 `data.kind`를 device local fire kind로 매핑. `scheduledAlarmReceiver`(#918)가
+ * "remote 선표시 시 해당 역 pending 사전예약 cancel" 판정에 재사용 — 매핑 테이블의 단일 owner.
+ * 매핑이 없는 kind(예: 'reschedule'/'trip-ended' 등 비-station 계열)는 null.
+ */
+export function mapBackendKindToLocalFireKind(backendKind: string): string | null {
+  return BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND[backendKind] ?? null;
+}
 
 /**
  * backend alert push의 data.nextWaypoint(station name) + data.kind가, 이 device가 방금 로컬로
@@ -145,7 +157,7 @@ async function isRecentLocalAuxFireDuplicate(
   const backendKind = data?.kind;
   if (typeof stationName !== 'string' || stationName.length === 0) return false;
   if (typeof backendKind !== 'string') return false;
-  const localKind = BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND[backendKind];
+  const localKind = mapBackendKindToLocalFireKind(backendKind);
   if (!localKind) return false;
   return hasRecentLocalStationFire(stationName, localKind);
 }
@@ -554,6 +566,20 @@ export async function clearAlarmNotification(): Promise<void> {
 }
 
 /**
+ * #918 — "역 통과" 알림 title/body 빌더. #2122 FG 보조 발사(`fireFgAuxStationPassedNotification`)와
+ * `stationPrescheduler`(#918 OS 사전예약, station-passed kind)가 동일 카피를 공유한다 —
+ * 발사 채널(FG 즉시 발사 vs OS 사전 예약)이 달라도 사용자가 보는 문구는 항상 같아야 한다.
+ */
+export function buildStationPassedContent(stationName: string): { title: string; body: string } {
+  return {
+    title: i18next.t('route.intermediatePassedTitle'),
+    body: i18next.t('route.intermediatePassedBody', {
+      name: getStationDisplayNameByName(stationName, allStations),
+    }),
+  };
+}
+
+/**
  * #2122 (FG 보조 발사) — FG 상태에서 backend alert push의 APNs 전달 지연(실측 35~51s)을
  * 디바이스 자체 arvlcd 판정으로 우회하는 로컬 station-passed 배너.
  *
@@ -569,12 +595,7 @@ export async function fireFgAuxStationPassedNotification(stationName: string): P
   const deviceToken = await AsyncStorage.getItem(APNS_TOKEN_KEY);
   if (!deviceToken) return;
   const identifier = buildStationNotifCollapseId(deviceToken);
-  await scheduleNotification(identifier, {
-    title: i18next.t('route.intermediatePassedTitle'),
-    body: i18next.t('route.intermediatePassedBody', {
-      name: getStationDisplayNameByName(stationName, allStations),
-    }),
-    sound: false,
-  });
+  const { title, body } = buildStationPassedContent(stationName);
+  await scheduleNotification(identifier, { title, body, sound: false });
   await markLocalStationFired(stationName, 'station-passed');
 }

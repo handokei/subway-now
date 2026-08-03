@@ -212,6 +212,9 @@ export type AlarmLogReason =
   | 'revalidate-route-missing'
   | 'revalidate-waypoint-mismatch'
   | 'revalidate-position-mismatch'
+  // #918 — stationPrescheduler(OS 사전예약 "매역" 채널) fire-time 재검증 전용 reason.
+  // sleepMode가 그 사이 켜지면 safetyNetScheduler 전담으로 정책이 넘어가므로 잔여 발화 suppress.
+  | 'revalidate-sleep-mode-on'
   // #1167 — boardingPrompt [탑승] 응답 → arvlCd 우선순위 autoLock 결과.
   //   'autolock-success': arvlCd 우선순위로 1대 확정 → createLock 성공.
   //   'autolock-no-trip': destinationId null (사용자 trip 종료 후 늦은 탭).
@@ -1697,6 +1700,43 @@ export function logHydrationTransition(
  * lastStationName 갱신을 skip해 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지 않게 한다.
  * source='bg-scheduled' 재사용 — preschedule path 출처 통일(stamp/fired log와 동일 source).
  */
+/**
+ * #918 — stationPrescheduler(OS 사전예약 "매역" 채널) 등록 1건 적재.
+ * source는 safetyNetScheduler와 동일하게 'bg-scheduled'로 통일 — 두 예약 채널 모두 같은
+ * reason/카운터 버킷에서 관측 가능해야 DebugModal/measurement가 한 곳만 보면 된다.
+ */
+export function logScheduledPrescheduledAlarm(input: {
+  stationName: string;
+  kind: 'transfer' | 'destination' | 'station-passed';
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-scheduled',
+    outcome: 'fired',
+    stationName: input.stationName,
+    kind: input.kind,
+  });
+}
+
+/**
+ * #918 — stationPrescheduler 알람의 fire-time 재검증 실패 1건 적재.
+ * `revalidatePrescheduledAlarm`이 suppress를 반환하기 직전에 호출한다.
+ * `logSuppressedSafetyNetRevalidation`과 동일 source/outcome 관례를 따르되, 재검증 항목이
+ * 다르므로(sleepMode 게이트 포함) 별도 reason union을 갖는 sibling 함수로 분리한다.
+ */
+export function logSuppressedPrescheduledRevalidation(input: {
+  reason: 'revalidate-no-trip' | 'revalidate-trip-token-mismatch' | 'revalidate-sleep-mode-on';
+  stationName: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-scheduled',
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+  });
+}
+
 export function logSuppressedSafetyNetRevalidation(input: {
   reason:
     | 'revalidate-no-trip'

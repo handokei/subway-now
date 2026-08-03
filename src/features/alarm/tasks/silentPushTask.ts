@@ -66,7 +66,15 @@ import { addFiredPushId } from '../utils/firedPushIds';
 import {
   rescheduleSafetyNetAlarm,
   cancelSafetyNetByStationKind,
+  resolveEffectiveTripToken,
 } from '../utils/safetyNetScheduler';
+import { getTripStartedAt } from '../utils/tripStartStorage';
+import {
+  cancelPrescheduledByStationKind,
+  reschedulePrescheduledAlarm,
+} from '../utils/stationPrescheduler';
+import { mapBackendKindToLocalFireKind } from '../utils/stationNotification';
+import { markLocalStationFired } from '../utils/recentLocalStationFires';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
@@ -1097,6 +1105,26 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
 
+    // #918 — BG wake = backend visible push 도착 시점("결정 evolve" 2026-08-03 2차 2항 BG 방향).
+    // 이 station의 presched(OS 사전예약) pending을 즉시 취소 + 이미 OS가 발사했다면 delivered
+    // tray에서도 제거 + recentLocalStationFires에 마킹 — FG willPresent 2차 방어선(#2122)이
+    // 뒤늦게 도착하는(사실상 이미 도착한) presched 발사를 억제하도록 갱신한다. 3-소스 중 하나가
+    // 먼저 도달하면 나머지 둘의 흔적을 정리하는 대칭 동작(FG 방향은 scheduledAlarmReceiver).
+    const localKind = mapBackendKindToLocalFireKind(payload.kind);
+    // istanbul ignore next -- 이 지점에 도달하는 payload.kind는 이미 위에서 reschedule/trip-ended/
+    // boarding-prompt/sleep-alarm-companion/missing-kind 분기로 전부 걸러진 뒤라
+    // 'transfer'|'destination'|'intermediate' 3종뿐이고, mapBackendKindToLocalFireKind는 이 3종을
+    // 전부 non-null로 매핑한다(stationNotification.ts BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND) — else
+    // 분기는 두 소스가 서로 어긋나는 회귀가 생기기 전까지는 도달 불가능한 방어 코드.
+    if (localKind === 'transfer' || localKind === 'destination' || localKind === 'station-passed') {
+      await cancelPrescheduledByStationKind(payload.nextWaypoint, localKind).catch((e: unknown) => {
+        logger.warn('presched cancel-on-remote-arrival 실패:', e);
+      });
+      await markLocalStationFired(payload.nextWaypoint, localKind).catch((e: unknown) => {
+        logger.warn('markLocalStationFired 실패:', e);
+      });
+    }
+
     // #2064 (Phase 1-device) — 매역 알림 backend visible push 전환. transfer/destination/
     // intermediate kind는 더 이상 device가 로컬 알림을 발사하지 않는다(이중 발사 제거).
     // 수신 자체는 유지(위 logSilentPushReceived + finally의 LA/widget refresh)해 상태 sync는
@@ -1157,17 +1185,20 @@ async function refreshWidgetForPayload(payload: ExtractedPayload): Promise<void>
 
 /**
  * reschedule silent push(#698) 적용 — 백엔드가 보낸 nextStation/newArrivalTimeEpoch로
- * 안전망(safetyNetScheduler) 사전 예약을 cancel + 재예약한다. 본 함수는 SLA 게이트가 아니라
+ * 사전 예약(안전망 또는 presched)을 cancel + 재예약한다. 본 함수는 SLA 게이트가 아니라
  * 정정 신호이므로 결과 무관 ack(`reschedule-received`)는 호출자가 처리한다.
  *
  * #2089 — 3종 채널(bl/tba) 통합 이후 단일 안전망 채널만 정정한다. lock 상태와 무관
  * (tripToken 기반 lockless) — 옛 `applyRescheduleBl`의 trainCode/lock 매칭은 더 이상 필요 없다.
  *
- * **#2089 리뷰 P1-1** — safetyNetScheduler는 sleepMode ON인 trip에만 등록되므로(정책 gate는
- * 본 함수 책임 — `useSafetyNetScheduler`와 동일 원칙), reschedule도 sleepMode ON일 때만
- * 적용한다. sleepMode가 꺼져 있으면 애초에 안전망이 armed 상태가 아니므로 적용 자체가 무의미
- * (`rescheduleSafetyNetAlarm`의 "기존 매칭 없으면 cancel-only" 가드가 이중 방어하지만, 정책
- * 게이트는 여기서 명시적으로 걸어야 호출 자체가 배경 OS 조회를 낭비하지 않는다).
+ * **#918** — sleepMode가 두 예약 채널의 상호 배타 게이트이므로, 본 함수도 sleepMode로 분기한다:
+ *   - sleepMode ON → safetyNetScheduler 정정(route/destination/backend tripToken 필요).
+ *   - sleepMode OFF → stationPrescheduler 정정. presched는 backend 등록 여부와 무관하게
+ *     device-local id로도 armed되므로(`resolveEffectiveTripToken`) route 재조회 없이
+ *     station+occurrence 매칭만으로 정정한다.
+ * 이전(#2089 P1-1)에는 safetyNetScheduler만 있어 `!sleepMode`가 곧 no-op이었지만, 이제는
+ * `!sleepMode`가 presched 경로로 이어진다(safetyNetScheduler가 armed 상태가 아니라는 의미는
+ * 동일 — `rescheduleSafetyNetAlarm`의 "기존 매칭 없으면 cancel-only" 가드도 그대로 유지).
  *
  * 사전 조건 누락(`route`/`destination`/`tripToken` 중 하나라도 없음, 또는 newArrivalTimeEpoch
  * 과거)은 모두 graceful no-op — 신호가 도달했어도 SLA를 깨지 않는다(원본 사전 예약 유지).
@@ -1184,26 +1215,42 @@ async function applyReschedule(
       );
       return;
     }
-    const [sleepMode, routeRaw, destRaw, tripToken] = await Promise.all([
+    const [sleepMode, routeRaw, destRaw, backendTripToken, tripStart] = await Promise.all([
       readSleepMode(),
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(ACTIVE_TRIP_KEY),
+      getTripStartedAt(),
     ]);
+
+    // #918 — sleepMode OFF는 stationPrescheduler(매역) 전담. 두 채널은 sleepMode로 상호
+    // 배타이므로 여기서 분기한다 — safetyNetScheduler와 동일하게 "이미 armed된 예약이 없으면
+    // cancel-only" 가드가 이중 방어(reschedulePrescheduledAlarm 내부).
     if (!sleepMode) {
-      logger.info('reschedule skip: sleepMode off');
+      const tripToken = resolveEffectiveTripToken(backendTripToken, tripStart);
+      if (!tripToken) {
+        logger.info('reschedule skip: no active trip (presched)');
+        return;
+      }
+      await reschedulePrescheduledAlarm({
+        tripToken,
+        stationName: payload.nextStation,
+        newArrivalMs: payload.newArrivalTimeEpoch,
+        occurrenceIdx: payload.occurrenceIdx,
+        now: receivedAt,
+      });
       return;
     }
     const route = parseRoute(routeRaw);
     const destinationName = parseDestinationName(destRaw);
-    if (!route || !destinationName || !tripToken) {
+    if (!route || !destinationName || !backendTripToken) {
       logger.info(
-        `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'} tripToken=${tripToken ? 'ok' : 'null'}`,
+        `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'} tripToken=${backendTripToken ? 'ok' : 'null'}`,
       );
       return;
     }
     await rescheduleSafetyNetAlarm({
-      tripToken,
+      tripToken: backendTripToken,
       route,
       destinationName,
       stationName: payload.nextStation,

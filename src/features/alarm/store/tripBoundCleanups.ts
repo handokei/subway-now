@@ -33,6 +33,7 @@ import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { cancelAllSafetyNetAlarms, resolveEffectiveTripToken } from '../utils/safetyNetScheduler';
+import { cancelAllPrescheduledAlarms } from '../utils/stationPrescheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
@@ -242,8 +243,15 @@ export function runTripBoundCleanups(): Promise<void> {
     // 동안 expo-notifications 내부 큐 race로 일부 사전 예약이 살아남는 사례를 1분 후 두번째
     // cancel pass로 정리. 새 trip이 시작되면 tripStart 가드가 skip한다.
     scheduleDefensiveCancel(tripToken);
+    // #918 — stationPrescheduler(OS 사전예약 "매역" 채널)도 safetyNetScheduler와 동일하게
+    // tripToken-scoped cancel 대상. 두 채널은 sleepMode로 상호 배타적이라 항상 한쪽만
+    // 실제로 pending을 갖지만, 나머지 한쪽 cancel은 큐가 비어있어도 안전(멱등)하므로 항상 같이 호출.
     const cleanups = tripToken
-      ? [...TRIP_BOUND_CLEANUPS, () => cancelAllSafetyNetAlarms(tripToken)]
+      ? [
+          ...TRIP_BOUND_CLEANUPS,
+          () => cancelAllSafetyNetAlarms(tripToken),
+          () => cancelAllPrescheduledAlarms(tripToken),
+        ]
       : TRIP_BOUND_CLEANUPS;
     return Promise.allSettled(cleanups.map((cleanup) => cleanup())).then(noop);
   });
@@ -275,9 +283,15 @@ export function cancelTripBoundOsQueue(): Promise<void> {
     const tripToken = resolveEffectiveTripToken(backendTripToken, tripStart);
     scheduleDefensiveCancel(tripToken);
     if (!tripToken) return undefined;
-    return cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
-      log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
-    });
+    // #918 — stationPrescheduler(OS 사전예약 "매역" 채널)도 같은 tripToken-scoped cancel 대상.
+    return Promise.all([
+      cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
+        log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
+      }),
+      cancelAllPrescheduledAlarms(tripToken).catch((e: unknown) => {
+        log.warn('cancelTripBoundOsQueue: prescheduled cancel 실패', e);
+      }),
+    ]).then(noop);
   });
 }
 
@@ -318,6 +332,10 @@ async function runDefensiveCancel(tripToken: string | null): Promise<void> {
   log.info('defensive cancel: running second cancel pass (#1525)');
   await cancelAllSafetyNetAlarms(tripToken).catch((e) => {
     log.warn('defensive cancel 실패:', e);
+  });
+  // #918 — prescheduled(매역) 채널도 동일 backstop 대상.
+  await cancelAllPrescheduledAlarms(tripToken).catch((e) => {
+    log.warn('defensive cancel (prescheduled) 실패:', e);
   });
 }
 

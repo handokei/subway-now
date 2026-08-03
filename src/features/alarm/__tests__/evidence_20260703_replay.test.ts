@@ -131,6 +131,22 @@ const mockSendTripEndedNotification = jest.fn().mockResolvedValue(undefined);
 jest.mock('../utils/stationNotification', () => ({
   buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
   sendTripEndedNotification: (...args: unknown[]) => mockSendTripEndedNotification(...args),
+  // #918 — silentPushTask.ts가 standard payload 경로에서 presched(OS 사전예약) 3-소스 dedup을
+  // 위해 호출. 실제 구현과 동일한 순수 매핑 로직 재현(신규 live-activity import 체인 회피).
+  mapBackendKindToLocalFireKind: (backendKind: string) =>
+    ({ intermediate: 'station-passed', transfer: 'transfer', destination: 'destination' } as Record<string, string>)[backendKind] ?? null,
+}));
+
+const mockCancelPrescheduledByStationKind = jest.fn().mockResolvedValue(undefined);
+const mockReschedulePrescheduledAlarm = jest.fn().mockResolvedValue({ cancelled: 0, scheduled: 0 });
+jest.mock('../utils/stationPrescheduler', () => ({
+  cancelPrescheduledByStationKind: (...args: unknown[]) => mockCancelPrescheduledByStationKind(...args),
+  reschedulePrescheduledAlarm: (...args: unknown[]) => mockReschedulePrescheduledAlarm(...args),
+}));
+
+const mockMarkLocalStationFired = jest.fn().mockResolvedValue(undefined);
+jest.mock('../utils/recentLocalStationFires', () => ({
+  markLocalStationFired: (...args: unknown[]) => mockMarkLocalStationFired(...args),
 }));
 
 const mockAddFiredPushId = jest.fn().mockResolvedValue(undefined);
@@ -194,9 +210,18 @@ jest.mock('../store/useBoardingLockStore', () => ({
 // 모듈로 통합되며 reschedule/cancel-by-station 진입점도 하나로 합쳐졌다.
 const mockRescheduleSafetyNetAlarm = jest.fn();
 const mockCancelSafetyNetByStationKind = jest.fn().mockResolvedValue(undefined);
+// #918 — applyReschedule의 presched 분기(sleepMode OFF)가 backendTripToken/tripStart로부터
+// effective tripToken을 도출하는 데 사용. 실제 모듈과 동일한 동작(backend 우선, 없으면
+// device-local id)을 재현.
+const mockResolveEffectiveTripToken = jest.fn(
+  (backendTripToken: string | null, tripStart: number | null) =>
+    backendTripToken ?? (tripStart !== null ? `local-${tripStart}` : null),
+);
 jest.mock('../utils/safetyNetScheduler', () => ({
   rescheduleSafetyNetAlarm: (...args: unknown[]) => mockRescheduleSafetyNetAlarm(...args),
   cancelSafetyNetByStationKind: (...args: unknown[]) => mockCancelSafetyNetByStationKind(...args),
+  resolveEffectiveTripToken: (backendTripToken: string | null, tripStart: number | null) =>
+    mockResolveEffectiveTripToken(backendTripToken, tripStart),
 }));
 
 const mockGetDismissSilence = jest.fn();
