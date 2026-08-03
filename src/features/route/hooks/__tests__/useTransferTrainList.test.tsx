@@ -71,8 +71,8 @@ const route = makeTransferRoute({
 });
 const gondeokOn6 = findStationByNameAndLine('공덕', '6') as Station;
 
-function arrivalRet(arrival: StationArrival | null) {
-  return { arrival, loading: false, isMock: false, refetch: mockRefetch };
+function arrivalRet(arrival: StationArrival | null, loading = false) {
+  return { arrival, loading, isMock: false, refetch: mockRefetch };
 }
 
 function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
@@ -655,6 +655,63 @@ describe('사용자 trip 2026-06-12 회귀 가드', () => {
       }),
     );
     expect(mockCreateLock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * #2115 — 환승 leg 재진입 직후 첫 arrival fetch 완료 전 loading이 그대로 노출되는지 검증.
+ *
+ * 근본 원인은 useArrivalInfo 자체(이미 useArrivalInfo.test.ts에서 키 변경 → loading 전이 검증됨)가
+ * 아니라, HomeScreen이 BoardingTrainList에 loading을 아예 전달하지 않던 wiring 누락이었다.
+ * 본 describe는 useTransferTrainList가 useArrivalInfo의 loading을 그대로 result에 노출하는지,
+ * 즉 wiring이 끊기지 않는지를 박제한다.
+ */
+describe('#2115 loading passthrough', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPrefetchArrival.mockResolvedValue(undefined);
+  });
+
+  it('키 변경(환승역 진입) 직후 첫 fetch 미완료 → loading=true', () => {
+    mockUseArrival.mockReturnValue(arrivalRet(null, true));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(result.current.loading).toBe(true);
+  });
+
+  it('fetch 완료 + 진짜 empty(도착 열차 없음) → loading=false', () => {
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }, false));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(result.current.loading).toBe(false);
+    expect(result.current.arrivals).toEqual([]);
+  });
+
+  it('fetch 완료 + data 도착 → loading=false + arrivals populated', () => {
+    const trains = [makeTrain({ trainCode: 'T-1' })];
+    mockUseArrival.mockReturnValue(arrivalRet({ up: trains, down: [] }, false));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(result.current.loading).toBe(false);
+    expect(result.current.arrivals.length).toBeGreaterThanOrEqual(1);
   });
 });
 

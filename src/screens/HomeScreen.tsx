@@ -832,6 +832,7 @@ export default function HomeScreen() {
   const {
     context: transferContext,
     arrivals: transferArrivals,
+    loading: transferLoading,
     createTransferLock,
   } = useTransferTrainList({
     lock: boardingLock,
@@ -1486,6 +1487,11 @@ export default function HomeScreen() {
                                     // pending 일치/정정 effect가 발화한다. fusionBoardingLock 기반 SSOT 사용.
                                     lockedTrainCode={lockedTrainCode}
                                     onLockCorrected={handleLockCorrected}
+                                    // #2115 — trip 재등록/origin 변경 직후 첫 arrival fetch 완료 전에는
+                                    // loading skeleton 노출. 이전에는 arrivalLoading이 useArrivalInfo에서
+                                    // 계산되고도 이 prop으로 전달되지 않아 fetch 완료 전 빈 배열이 그대로
+                                    // "도착 예정 열차 없음"으로 렌더됐다.
+                                    loading={arrivalLoading}
                                   />
                                 </View>
                               );
@@ -1529,6 +1535,8 @@ export default function HomeScreen() {
                                   // round-trip 정정 시 동일 toast UX 적용.
                                   lockedTrainCode={lockedTrainCode}
                                   onLockCorrected={handleLockCorrected}
+                                  // #2115 — 환승역 도달 직후 다음 노선 첫 arrival fetch 완료 전 loading 노출.
+                                  loading={transferLoading}
                                 />
                               );
                             }
