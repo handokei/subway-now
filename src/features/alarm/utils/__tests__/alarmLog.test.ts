@@ -16,6 +16,7 @@ import {
   getAlarmLog,
   clearAlarmLog,
   logFiredAlarm,
+  logFiredStationPassed,
   logScheduledAlarm,
   logFiredAlarmsHydrate,
   logRefMismatch,
@@ -528,6 +529,24 @@ describe('alarmLog', () => {
         kind: event.type,
         phaseId: event.phaseId,
       });
+      expect(saved[0].ts).toBeGreaterThan(0);
+    });
+
+    // #2122 (FG 보조 발사) — station-passed는 phase가 없어 logFiredAlarm(AlarmEvent 전용)을
+    // 재사용하지 않고 전용 helper로 kind='station-passed' 고정.
+    it('logFiredStationPassed: source + stationName을 outcome=fired, kind=station-passed로 적재한다', async () => {
+      logFiredStationPassed('fg', station.name);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'fired',
+        stationName: station.name,
+        kind: 'station-passed',
+      });
+      expect(saved[0].phaseId).toBeUndefined();
       expect(saved[0].ts).toBeGreaterThan(0);
     });
 

@@ -15,7 +15,7 @@ import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } 
 import type { AlarmEvent } from './stationAlarm';
 import * as LiveActivity from 'live-activity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import { ACTIVE_TRIP_KEY, APNS_TOKEN_KEY } from '../../../shared/constants/storageKeys';
 import {
   ensureLiveActivityRegistered,
   endLiveActivityWithDeregister,
@@ -36,6 +36,8 @@ import {
   shouldDiscloseNotificationSource,
   type NotificationSource,
 } from './notificationSource';
+import { buildStationNotifCollapseId } from './stationNotifCollapseId';
+import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
  *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
@@ -82,13 +84,12 @@ export function setupNotificationHandler(): void {
       // #574 P2e — silent push가 이미 fired한 pushId의 alert fallback이 race로 도달했을 때
       // FG에서 중복 표시 차단. BG에선 iOS가 직접 표시해 JS 개입 불가(P2e 한계 명시).
       if (await isFallbackDuplicate(notification)) {
-        return {
-          shouldShowAlert: false,
-          shouldShowBanner: false,
-          shouldShowList: false,
-          shouldPlaySound: false,
-          shouldSetBadge: false,
-        };
+        return SUPPRESSED_NOTIFICATION_BEHAVIOR;
+      }
+      // #2122 — FG 보조 발사(로컬 station-passed 알림) 직후 뒤늦게 도착한 backend alert push가
+      // 같은 (station, kind)면 2차 방어선으로 표시 억제(1차는 apns-collapse-id 문자열 일치).
+      if (await isRecentLocalAuxFireDuplicate(notification)) {
+        return SUPPRESSED_NOTIFICATION_BEHAVIOR;
       }
       return {
         shouldShowAlert: true,
@@ -101,6 +102,14 @@ export function setupNotificationHandler(): void {
   });
 }
 
+const SUPPRESSED_NOTIFICATION_BEHAVIOR: Notifications.NotificationBehavior = {
+  shouldShowAlert: false,
+  shouldShowBanner: false,
+  shouldShowList: false,
+  shouldPlaySound: false,
+  shouldSetBadge: false,
+};
+
 /**
  * notification.request.content.data.pushId가 silent에서 이미 처리한 pushId면 true.
  * APNs alert payload data 형식: `{ pushId: string }` (#572 sendAlertPush).
@@ -112,6 +121,33 @@ async function isFallbackDuplicate(
   const pushId = data?.pushId;
   if (typeof pushId !== 'string' || pushId.length === 0) return false;
   return hasFiredPushId(pushId);
+}
+
+// #2122 — backend push data.kind('intermediate' 등, backend `Waypoint.kind`)를
+// 로컬 dispatchStationPassed의 AlarmLogKind('station-passed')로 매핑. FG 보조 발사는
+// station-passed(=intermediate) 카테고리 한정이라 매핑 테이블도 그 범위만 갖는다.
+const BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND: Record<string, string> = {
+  intermediate: 'station-passed',
+};
+
+/**
+ * backend alert push의 data.nextWaypoint(station name) + data.kind가, 이 device가 방금 로컬로
+ * 발사한 (station, kind)와 일치하면 true. apns-collapse-id 문자열 일치(1차 방어선)가
+ * 성립하지 않는 케이스를 위한 2차 방어선(#2122 스펙 2b).
+ */
+async function isRecentLocalAuxFireDuplicate(
+  notification: Notifications.Notification,
+): Promise<boolean> {
+  const data = notification.request.content.data as
+    | { nextWaypoint?: unknown; kind?: unknown }
+    | undefined;
+  const stationName = data?.nextWaypoint;
+  const backendKind = data?.kind;
+  if (typeof stationName !== 'string' || stationName.length === 0) return false;
+  if (typeof backendKind !== 'string') return false;
+  const localKind = BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND[backendKind];
+  if (!localKind) return false;
+  return hasRecentLocalStationFire(stationName, localKind);
 }
 
 const STATION_CHANNEL_ID = 'station';
@@ -515,4 +551,30 @@ export async function clearAlarmNotification(): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(ALARM_NOTIFICATION_ID);
   } catch { /* 무시 */ }
+}
+
+/**
+ * #2122 (FG 보조 발사) — FG 상태에서 backend alert push의 APNs 전달 지연(실측 35~51s)을
+ * 디바이스 자체 arvlcd 판정으로 우회하는 로컬 station-passed 배너.
+ *
+ * identifier는 backend `stationNotifCollapseId`(backend/alarm-worker/src/scheduled.ts)와
+ * 동일한 문자열 규칙(#2063/#2086)으로 빌드한다 — 뒤늦게 도착하는 backend push가 이 로컬 알림을
+ * 알림센터에서 최신으로 교체하도록 유도한다(1차 방어선. 실기기 검증 항목, PR 본문 "알려진
+ * 잔여 윈도우" 참고. 2차 방어선은 setupNotificationHandler의 isRecentLocalAuxFireDuplicate).
+ *
+ * device token(APNS_TOKEN_KEY) 미보유 시(등록 전) backend와 동일한 collapse-id를 만들 수 없어
+ * 발사를 스킵한다 — 이 경우 사용자는 기존처럼 backend push만 받는다(회귀 아님).
+ */
+export async function fireFgAuxStationPassedNotification(stationName: string): Promise<void> {
+  const deviceToken = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+  if (!deviceToken) return;
+  const identifier = buildStationNotifCollapseId(deviceToken);
+  await scheduleNotification(identifier, {
+    title: i18next.t('route.intermediatePassedTitle'),
+    body: i18next.t('route.intermediatePassedBody', {
+      name: getStationDisplayNameByName(stationName, allStations),
+    }),
+    sound: false,
+  });
+  await markLocalStationFired(stationName, 'station-passed');
 }
