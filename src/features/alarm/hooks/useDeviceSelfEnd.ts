@@ -57,7 +57,9 @@ import {
 } from '../utils/deviceSelfEndSignals';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import {
+  clearTripEndedSentinel,
   getTripEndedSentinel,
+  isTripEndedSentinelStale,
   setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
@@ -154,10 +156,20 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
       firedForDestinationIdRef.current = capturedDestinationId;
       try {
         // Idempotent guard: sentinel 이미 있으면 backend cleanup 완료 상태 → skip.
+        // #2114 — sentinel이 현재 활성 trip보다 이전 trip의 것이면(stale) skip하지 않고
+        // clear 후 self-end를 계속 진행한다. stale sentinel이 self-end를 영구 봉인하는
+        // 부수 결함(밤샘 trip force-end sentinel이 그 직후 등록된 새 trip의 self-end를
+        // 계속 "이미 처리됨"으로 오판) 동시 수리.
         const sentinel = await getTripEndedSentinel();
         if (sentinel !== null) {
-          logger.info(`skip — sentinel already recorded reason=${reason}`);
-          return;
+          if (!isTripEndedSentinelStale(sentinel, tripStartedAt)) {
+            logger.info(`skip — sentinel already recorded reason=${reason}`);
+            return;
+          }
+          logger.info(
+            `sentinel=${sentinel} stale (tripStartedAt=${tripStartedAt}) reason=${reason} → clear + continue`,
+          );
+          await clearTripEndedSentinel();
         }
 
         const now = Date.now();
@@ -188,7 +200,7 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
         logger.warn('device self-end 실패 (graceful)', e);
       }
     },
-    [releaseLock],
+    [releaseLock, tripStartedAt],
   );
 
   // 매 render tick에서 fusion 신호 평가. 신호 변경마다 실행되며, 매 evaluation 시점의 fresh input으로

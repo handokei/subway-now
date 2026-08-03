@@ -42,3 +42,19 @@ export async function clearTripEndedSentinel(): Promise<void> {
     // graceful — 다음 reset 호출에서 재시도된다.
   }
 }
+
+/**
+ * sentinel이 현재 활성 trip보다 오래된(=이전 trip의) 것인지 판정 (#2114).
+ *
+ * sentinel은 timestamp만 있고 어느 trip의 종료인지 스코프가 없다. tripStartedAt이
+ * sentinelAt보다 나중이면 그 sentinel은 이미 종료 처리된 이전 trip의 잔재이고, 현재
+ * 활성 trip은 sentinel이 기록된 시점 이후 새로 시작된 것이므로 소비(reset)하면 안 된다.
+ *
+ * tripStartedAt이 null이면(활성 trip 없음) stale 판정 대상이 아니다 — 기존 reset 동작 유지.
+ */
+export function isTripEndedSentinelStale(
+  sentinelAt: number,
+  tripStartedAt: number | null,
+): boolean {
+  return tripStartedAt !== null && tripStartedAt > sentinelAt;
+}

@@ -4,11 +4,17 @@ import type { Station } from '../../../../shared/types/station';
 
 const mockGetSentinel = jest.fn();
 const mockSetSentinel = jest.fn();
-jest.mock('../../utils/tripEndedSentinel', () => ({
-  getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
-  setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
-  clearTripEndedSentinel: jest.fn(),
-}));
+const mockClearSentinel = jest.fn();
+jest.mock('../../utils/tripEndedSentinel', () => {
+  const actual = jest.requireActual('../../utils/tripEndedSentinel');
+  return {
+    // #2114 — 순수 함수라 실제 구현 그대로 사용. storage I/O 함수만 mock.
+    isTripEndedSentinelStale: actual.isTripEndedSentinelStale,
+    getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
+    setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
+    clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
+  };
+});
 
 const mockGetTripStartedAt = jest.fn();
 jest.mock('../../utils/tripStartStorage', () => ({
@@ -114,6 +120,7 @@ beforeEach(() => {
   mockDestinationState = null;
   mockGetSentinel.mockResolvedValue(null);
   mockSetSentinel.mockResolvedValue(undefined);
+  mockClearSentinel.mockResolvedValue(undefined);
   mockGetTripStartedAt.mockResolvedValue(null);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
@@ -174,6 +181,40 @@ describe('useDeviceSelfEnd', () => {
       // sentinel 존재 → cleanup chain 미호출
       expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
       expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#2114 stale sentinel guard', () => {
+    it('stale sentinel(활성 trip이 sentinel보다 나중 시작) → clear 후 self-end 계속 진행', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetSentinel.mockResolvedValue(T0 - 120_000);
+      mockGetTripStartedAt.mockResolvedValue(T0 - 60_000); // sentinel 이후 새 trip 시작 → stale.
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      await waitFor(() => expect(mockGetTripStartedAt).toHaveBeenCalled());
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalledTimes(1));
+      // sentinel stale → clear 후 self-end chain 계속 진행 (idempotent guard 우회 아님, stale 판정).
+      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      expect(mockSetSentinel).toHaveBeenCalled();
     });
   });
 

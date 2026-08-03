@@ -48,7 +48,9 @@ import {
   SIGNAL_4_SILENT_PUSH_TIMEOUT_MS,
 } from '../../../shared/constants/realtime';
 import {
+  clearTripEndedSentinel,
   getTripEndedSentinel,
+  isTripEndedSentinelStale,
   setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
 import { getLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
@@ -104,8 +106,19 @@ export async function runLaunchTripReconciliation(): Promise<void> {
 
     const sentinel = await getTripEndedSentinel();
     if (sentinel !== null) {
-      logger.info('skip — sentinel already recorded');
-      return;
+      // #2114 — sentinel이 현재 활성 trip보다 이전 trip의 것이면(stale) skip하지 않고
+      // clear 후 reconciliation을 계속 진행한다. stale sentinel이 정상 launch reconciliation을
+      // 영구히 막는 부수 결함(밤샘 trip force-end sentinel이 그 직후 등록된 새 trip을 계속
+      // "이미 처리됨"으로 오판)을 함께 수리.
+      const tripStartedAtForSentinel = await getTripStartedAt();
+      if (!isTripEndedSentinelStale(sentinel, tripStartedAtForSentinel)) {
+        logger.info('skip — sentinel already recorded');
+        return;
+      }
+      logger.info(
+        `sentinel=${sentinel} stale (tripStartedAt=${tripStartedAtForSentinel}) → clear + continue`,
+      );
+      await clearTripEndedSentinel();
     }
 
     // #2045 (Signal 4, Issue #2043 β 후속) — backend-timeout self-end 판정.

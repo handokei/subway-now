@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
+  isTripEndedSentinelStale,
   setTripEndedSentinel,
 } from '../tripEndedSentinel';
 import { TRIP_ENDED_BY_BACKEND_AT_KEY } from '../../../../shared/constants/storageKeys';
@@ -70,5 +71,23 @@ describe('tripEndedSentinel', () => {
   it('clearTripEndedSentinel — 실패는 흡수', async () => {
     removeItemMock.mockRejectedValueOnce(new Error('boom'));
     await expect(clearTripEndedSentinel()).resolves.toBeUndefined();
+  });
+
+  describe('isTripEndedSentinelStale (#2114)', () => {
+    it('tripStartedAt이 sentinelAt보다 나중이면 stale=true', () => {
+      expect(isTripEndedSentinelStale(1_000, 2_000)).toBe(true);
+    });
+
+    it('tripStartedAt이 sentinelAt과 같으면 stale=false', () => {
+      expect(isTripEndedSentinelStale(1_000, 1_000)).toBe(false);
+    });
+
+    it('tripStartedAt이 sentinelAt보다 이전이면 stale=false', () => {
+      expect(isTripEndedSentinelStale(2_000, 1_000)).toBe(false);
+    });
+
+    it('tripStartedAt이 null이면 stale=false (활성 trip 없음)', () => {
+      expect(isTripEndedSentinelStale(1_000, null)).toBe(false);
+    });
   });
 });

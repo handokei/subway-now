@@ -14,11 +14,16 @@ import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingL
 const mockGetSentinel = jest.fn();
 const mockClearSentinel = jest.fn();
 const mockSetSentinel = jest.fn();
-jest.mock('../../../features/alarm/utils/tripEndedSentinel', () => ({
-  getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
-  clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
-  setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
-}));
+jest.mock('../../../features/alarm/utils/tripEndedSentinel', () => {
+  const actual = jest.requireActual('../../../features/alarm/utils/tripEndedSentinel');
+  return {
+    // #2114 — 순수 함수라 실제 구현 그대로 사용. storage I/O 함수만 mock.
+    isTripEndedSentinelStale: actual.isTripEndedSentinelStale,
+    getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
+    clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
+    setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
+  };
+});
 
 const mockGetTripStartedAt = jest.fn();
 const mockTripLifecyclePhase = jest.fn();
@@ -183,6 +188,72 @@ describe('useStateRehydration', () => {
       destination: null,
       customOrigin: null,
       tripOrigin: null,
+    });
+  });
+
+  describe('#2114 stale sentinel guard (2026-08-03 건대 RCA)', () => {
+    it('stale sentinel(활성 trip이 sentinel보다 나중 시작) — reset 미실행, destination 유지, sentinel clear, stamp 적재', async () => {
+      // sentinel=07:26:29 force-end, 활성 trip 시작=07:27(sentinel 이후) — 새로 등록된 trip.
+      mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_060_000);
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
+
+      // reset 분기(store/storage) 전체 skip.
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetState).not.toHaveBeenCalled();
+      expect(mockReleaseLock).not.toHaveBeenCalled();
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalledWith(
+        'trip',
+        'end',
+        expect.anything(),
+      );
+      // sentinel만 clear + stamp 적재.
+      expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'lifecycle-backstop',
+          outcome: 'suppressed',
+          reason: 'trip-sentinel-stale-discarded',
+        }),
+      );
+      // 항상 storage → memory hydrate는 정상 진행되어 활성 trip이 유지된다.
+      expect(mockLoadDestination).toHaveBeenCalled();
+    });
+
+    it('sentinel 존재 + tripStartedAt null — 기존 reset 동작 유지 (stale 아님)', async () => {
+      mockGetSentinel.mockResolvedValue(1_700_000_000_000);
+      mockGetTripStartedAt.mockResolvedValue(null);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      expect(mockSetState).toHaveBeenCalledWith({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-sentinel-stale-discarded' }),
+      );
+    });
+
+    it('신선한 sentinel(활성 trip이 sentinel보다 이전 시작) — 기존 reset+clear 동작 유지', async () => {
+      mockGetSentinel.mockResolvedValue(1_700_000_100_000);
+      mockGetTripStartedAt.mockResolvedValue(1_700_000_000_000);
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      expect(mockSetState).toHaveBeenCalledWith({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
+      expect(mockReleaseLock).toHaveBeenCalled();
     });
   });
 
