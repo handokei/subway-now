@@ -121,7 +121,7 @@ import {
   readObservabilityMetrics,
   tryStoreObservabilityMetrics,
 } from './observabilityMetrics';
-import { getTrip, putTrip, rotateTripTokenForNewRoute } from './trips';
+import { getTrip, putTrip, rotateTripTokenForNewRoute, withTripRegisterLock } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
@@ -703,146 +703,159 @@ app.post('/trips', async (c) => {
     }
   }
 
-  const rawExisting = await getTrip(c.env.TRIPS, incoming.token);
+  // #2129 — per-token in-flight 직렬화. `getTrip → rotateTripTokenForNewRoute → putTrip` 사이
+  // TOCTOU window에서 같은 token의 동시 POST가 interleave하면 유령 trip 2개(원본 token +
+  // rotated UUID)가 모두 KV에 생존하는 회귀(2026-08-04 실탑승 evidence)가 발생한다. 이 구간
+  // 전체를 원본 incoming token 기준으로 직렬화 — rotation이 token을 바꿔도 lock key는 요청
+  // 도착 시점의 원본 token으로 고정해 같은 device의 두 요청이 반드시 같은 큐에서 대기한다.
+  const registerLockToken = incoming.token;
+  const { trip, isSameSession } = await withTripRegisterLock(
+    registerLockToken,
+    async () => {
+      const rawExisting = await getTrip(c.env.TRIPS, incoming.token);
 
-  // ADR-022 B4 (#2019 wire, #1986 rotation helper) — 새 route 감지 시 token rotation.
-  //
-  // archFlag=on + existing 있음 + route sig 다름 → 새 UUID 발급 + `trip:<oldToken>` delete +
-  // `pending:*` 중 oldToken 소유 entry cleanup (helper 내부 로직).
-  //
-  // archFlag=off (default): helper 는 `{ token: incoming.token, rotated: false }` no-op 반환
-  // → 기존 동작 100% 유지 (Phase 1-3 dormant).
-  //
-  // rotated=true 케이스 처리:
-  //   - `existing = null` 로 강등해 downstream `isSameSession=false` + progress skip 경로 진입
-  //     (helper 가 이미 `trip:<oldToken>` 을 delete 했으므로 same-session merge 는 무의미).
-  //   - `incoming.token` 을 새 UUID 로 갱신 → 후속 `putTrip` 이 `trip:<newToken>` 키로 쓴다.
-  //   - progress/SSoT KV(oldToken 키) 는 TTL 로 자연 만료 — 후속 cron push 는 새 token trip
-  //     기준 waypoints/destination 을 참조하므로 사용자에게 이전 목적지 push 재발사 없음.
-  //
-  // 오늘 evidence(2026-07-03): 사용자 중곡→성수 trip 시작 시 이전 trip(중곡→용마산) 잔재
-  // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. rotation 이
-  // helper 의 `cleanupPendingPushesForToken` 을 실제 호출해 잔재 pending 제거.
-  const rotation = await rotateTripTokenForNewRoute(
-    c.env.TRIPS,
-    incoming,
-    rawExisting,
-  );
-  if (rotation.rotated) {
-    console.log(
-      JSON.stringify({
-        msg: 'trip-register: route rotation (#2019, ADR-022 B4)',
-        oldTokenPrefix: tokenPrefix(incoming.token),
-        newTokenPrefix: tokenPrefix(rotation.token),
-      }),
-    );
-    incoming.token = rotation.token;
-  }
-  const existing = rotation.rotated ? null : rawExisting;
-  const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
-  // #916 follow-up B — auto-prompt dedup 마커 보존. isSameSession=true(같은 trip 재등록)인 경우만
-  // window 안이면 보존한다. 사용자가 lock 클리어 후 같은 trip context로 재등록하는 케이스에서
-  // 중복 prompt 재발사를 차단 (fired+clear 분기 회복).
-  //
-  // #1886 RC-2 옵션 D — trip-scoped dedup reset.
-  // isSameSession=false(새 trip 등록: 다른 경로/목적지)는 lastAutoPromptedAt을 보존하지 않는다.
-  // T1→T2 연속 trip에서 T1의 dedup이 T2로 carry-over하던 회귀 차단.
-  // 윈도우 만료/필드 부재면 undefined로 자연 리셋.
-  const preservedLastAutoPromptedAt =
-    isSameSession &&
-    existing?.lastAutoPromptedAt !== undefined &&
-    incoming.createdAt - existing.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
-      ? existing.lastAutoPromptedAt
-      : undefined;
-  // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
-  // 다른 trainCode/none이면 progress 폐기.
-  // #1285: lockless opt-in trip(boardingLock 없음 + infoModeEnabled===true)은
-  // token 기준 lockless progress로 보존 — trainCode 없이 lockless===true 마커로 매칭.
-  const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
-  const progressApplies =
-    progress !== null &&
-    ((incoming.boardingLock !== undefined &&
-      progress.trainCode === incoming.boardingLock.trainCode) ||
-      (progress.lockless === true && incoming.infoModeEnabled === true));
-  if (progress !== null && !progressApplies) {
-    await deleteProgress(c.env.TRIPS, incoming.token);
-  }
-  const baseTrip = isSameSession
-    ? {
-        ...incoming,
-        waypoints: existing.waypoints,
-        lastFiredPhase: existing.lastFiredPhase,
-        // #1367 — cross-station dedup marker는 token 단위로 보존돼야 같은 trip 재등록 race에서
-        // 윈도우 안 fire가 다시 통과하지 않는다.
-        lastFiredStation: existing.lastFiredStation,
-        lastEtaSeconds: existing.lastEtaSeconds,
-        apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
-        // #916 follow-up A — server-set auto-lock 보존.
-        // 9단 게이트 통과로 backend가 합성한 lock(autoLockedAt 마커 보유)은 client가 lock 필드
-        // 없이 재등록해도 silent하게 drop되지 않아야 한다 (cron 추적이 끊기는 회귀 차단).
-        // 마커가 없는 사용자 명시 lock은 기존 정책대로 incoming.boardingLock===undefined일 때 drop —
-        // 사용자가 명시적으로 lock을 해제했다는 신호로 간주.
-        // incoming.boardingLock이 truthy면 (사용자가 다른 trainCode 선택 또는 client가 같은 lock
-        // 재송신) 그대로 채택돼 swap 경로가 동작.
-        boardingLock:
-          incoming.boardingLock ??
-          (existing.boardingLock?.autoLockedAt !== undefined
-            ? existing.boardingLock
-            : undefined),
-        // boardingLock이 바뀌면(예: 환승 후 새 trainCode) 추적 baseline도 리셋.
-        // 양쪽 모두 boardingLock이 있고 trainCode가 같을 때만 baseline 유지 — 둘 다 undefined인
-        // 경우 비교가 true로 평가돼 stale epoch이 살아남는 회귀를 막는다.
-        //
-        // #916 follow-up A — incoming.boardingLock===undefined + existing auto-lock 보존 케이스도
-        // 같은 lock이 유지되므로 baseline 유지 (cron 추적 연속성). 사용자 명시 lock drop 케이스는
-        // 기존 정책대로 undefined로 리셋.
-        lastTrackedArrivalEpoch:
-          (incoming.boardingLock &&
-            existing.boardingLock?.trainCode === incoming.boardingLock.trainCode) ||
-          (incoming.boardingLock === undefined &&
-            existing.boardingLock?.autoLockedAt !== undefined)
-            ? existing.lastTrackedArrivalEpoch
-            : undefined,
-        // #586 C: Live Activity token/state는 별도 endpoint(`/live-activity/register`)로 관리.
-        // 디바이스가 trip을 re-POST해도 register/deregister로 채워둔 값을 유지한다.
-        activityPushToken: existing.activityPushToken,
-        activityState: existing.activityState,
-        // #706: 연속 etaMissing 카운터는 backend-only state — 디바이스가 같은 세션으로 re-register해도
-        // 누적치를 보존해야 자동 종료가 정상 동작 (re-register마다 0으로 초기화되면 무한 폴링 회귀).
-        // #903 (Seam G) — 지상 복귀(subsurface true→false) 시 누적 카운터 리셋. 지하 인내 임계(10)로
-        // 누적된 값이 지상 임계(5)에 곧장 걸려 trip이 즉시 자동 종료되는 회귀 방지. 신호 회복 = trust restored.
-        consecutiveEtaMissing:
-          existing.subsurface === true && incoming.subsurface !== true
-            ? 0
-            : existing.consecutiveEtaMissing,
-        // #819: boarding-prompt 발사 카운터는 backend-only state — 디바이스가 같은 세션으로
-        // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
-        // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
-        boardingPromptState: existing.boardingPromptState,
-        // #916 follow-up B — same session에선 같은 trip이므로 그대로 보존.
-        lastAutoPromptedAt: existing.lastAutoPromptedAt,
+      // ADR-022 B4 (#2019 wire, #1986 rotation helper) — 새 route 감지 시 token rotation.
+      //
+      // archFlag=on + existing 있음 + route sig 다름 → 새 UUID 발급 + `trip:<oldToken>` delete +
+      // `pending:*` 중 oldToken 소유 entry cleanup (helper 내부 로직).
+      //
+      // archFlag=off (default): helper 는 `{ token: incoming.token, rotated: false }` no-op 반환
+      // → 기존 동작 100% 유지 (Phase 1-3 dormant).
+      //
+      // rotated=true 케이스 처리:
+      //   - `existing = null` 로 강등해 downstream `isSameSession=false` + progress skip 경로 진입
+      //     (helper 가 이미 `trip:<oldToken>` 을 delete 했으므로 same-session merge 는 무의미).
+      //   - `incoming.token` 을 새 UUID 로 갱신 → 후속 `putTrip` 이 `trip:<newToken>` 키로 쓴다.
+      //   - progress/SSoT KV(oldToken 키) 는 TTL 로 자연 만료 — 후속 cron push 는 새 token trip
+      //     기준 waypoints/destination 을 참조하므로 사용자에게 이전 목적지 push 재발사 없음.
+      //
+      // 오늘 evidence(2026-07-03): 사용자 중곡→성수 trip 시작 시 이전 trip(중곡→용마산) 잔재
+      // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. rotation 이
+      // helper 의 `cleanupPendingPushesForToken` 을 실제 호출해 잔재 pending 제거.
+      const rotation = await rotateTripTokenForNewRoute(
+        c.env.TRIPS,
+        incoming,
+        rawExisting,
+      );
+      if (rotation.rotated) {
+        console.log(
+          JSON.stringify({
+            msg: 'trip-register: route rotation (#2019, ADR-022 B4)',
+            oldTokenPrefix: tokenPrefix(incoming.token),
+            newTokenPrefix: tokenPrefix(rotation.token),
+          }),
+        );
+        incoming.token = rotation.token;
       }
-    : {
-        ...incoming,
-        // #916 follow-up B — 새 세션(createdAt drift > 5s)으로 판정돼 incoming으로 전면 교체되더라도
-        // 같은 token + window 안이면 auto-prompt dedup 마커는 보존. backend가 직전에 auto-lock 시도/
-        // 발사한 trip 컨텍스트의 재발사 ping-pong을 차단한다.
-        lastAutoPromptedAt: preservedLastAutoPromptedAt,
-        // #1370 L1 — corrected apnsEnv 보존. 같은 token = 같은 디바이스 = 같은 APNs env이므로
-        // session 경계(환승 후 새 trainCode 등)와 무관하게 self-heal로 정정된 env가 유지돼야 한다.
-        // 보존 안 하면 새 session 첫 push마다 mismatch retry가 반복돼 첫 push latency + 일부 drop 위험
-        // (#1370 evidence: 환승 후 7호선 매역 silent push 손실).
-        // existing 부재(brand-new token) 또는 existing.apnsEnv 부재(legacy trip)면 incoming 값으로 자연 fallback.
-        apnsEnv: existing?.apnsEnv ?? incoming.apnsEnv,
-      };
+      const existing = rotation.rotated ? null : rawExisting;
+      const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
+    // #916 follow-up B — auto-prompt dedup 마커 보존. isSameSession=true(같은 trip 재등록)인 경우만
+    // window 안이면 보존한다. 사용자가 lock 클리어 후 같은 trip context로 재등록하는 케이스에서
+    // 중복 prompt 재발사를 차단 (fired+clear 분기 회복).
+    //
+    // #1886 RC-2 옵션 D — trip-scoped dedup reset.
+    // isSameSession=false(새 trip 등록: 다른 경로/목적지)는 lastAutoPromptedAt을 보존하지 않는다.
+    // T1→T2 연속 trip에서 T1의 dedup이 T2로 carry-over하던 회귀 차단.
+    // 윈도우 만료/필드 부재면 undefined로 자연 리셋.
+    const preservedLastAutoPromptedAt =
+      isSameSession &&
+      existing?.lastAutoPromptedAt !== undefined &&
+      incoming.createdAt - existing.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
+        ? existing.lastAutoPromptedAt
+        : undefined;
+    // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
+    // 다른 trainCode/none이면 progress 폐기.
+    // #1285: lockless opt-in trip(boardingLock 없음 + infoModeEnabled===true)은
+    // token 기준 lockless progress로 보존 — trainCode 없이 lockless===true 마커로 매칭.
+    const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
+    const progressApplies =
+      progress !== null &&
+      ((incoming.boardingLock !== undefined &&
+        progress.trainCode === incoming.boardingLock.trainCode) ||
+        (progress.lockless === true && incoming.infoModeEnabled === true));
+    if (progress !== null && !progressApplies) {
+      await deleteProgress(c.env.TRIPS, incoming.token);
+    }
+    const baseTrip = isSameSession
+      ? {
+          ...incoming,
+          waypoints: existing.waypoints,
+          lastFiredPhase: existing.lastFiredPhase,
+          // #1367 — cross-station dedup marker는 token 단위로 보존돼야 같은 trip 재등록 race에서
+          // 윈도우 안 fire가 다시 통과하지 않는다.
+          lastFiredStation: existing.lastFiredStation,
+          lastEtaSeconds: existing.lastEtaSeconds,
+          apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
+          // #916 follow-up A — server-set auto-lock 보존.
+          // 9단 게이트 통과로 backend가 합성한 lock(autoLockedAt 마커 보유)은 client가 lock 필드
+          // 없이 재등록해도 silent하게 drop되지 않아야 한다 (cron 추적이 끊기는 회귀 차단).
+          // 마커가 없는 사용자 명시 lock은 기존 정책대로 incoming.boardingLock===undefined일 때 drop —
+          // 사용자가 명시적으로 lock을 해제했다는 신호로 간주.
+          // incoming.boardingLock이 truthy면 (사용자가 다른 trainCode 선택 또는 client가 같은 lock
+          // 재송신) 그대로 채택돼 swap 경로가 동작.
+          boardingLock:
+            incoming.boardingLock ??
+            (existing.boardingLock?.autoLockedAt !== undefined
+              ? existing.boardingLock
+              : undefined),
+          // boardingLock이 바뀌면(예: 환승 후 새 trainCode) 추적 baseline도 리셋.
+          // 양쪽 모두 boardingLock이 있고 trainCode가 같을 때만 baseline 유지 — 둘 다 undefined인
+          // 경우 비교가 true로 평가돼 stale epoch이 살아남는 회귀를 막는다.
+          //
+          // #916 follow-up A — incoming.boardingLock===undefined + existing auto-lock 보존 케이스도
+          // 같은 lock이 유지되므로 baseline 유지 (cron 추적 연속성). 사용자 명시 lock drop 케이스는
+          // 기존 정책대로 undefined로 리셋.
+          lastTrackedArrivalEpoch:
+            (incoming.boardingLock &&
+              existing.boardingLock?.trainCode === incoming.boardingLock.trainCode) ||
+            (incoming.boardingLock === undefined &&
+              existing.boardingLock?.autoLockedAt !== undefined)
+              ? existing.lastTrackedArrivalEpoch
+              : undefined,
+          // #586 C: Live Activity token/state는 별도 endpoint(`/live-activity/register`)로 관리.
+          // 디바이스가 trip을 re-POST해도 register/deregister로 채워둔 값을 유지한다.
+          activityPushToken: existing.activityPushToken,
+          activityState: existing.activityState,
+          // #706: 연속 etaMissing 카운터는 backend-only state — 디바이스가 같은 세션으로 re-register해도
+          // 누적치를 보존해야 자동 종료가 정상 동작 (re-register마다 0으로 초기화되면 무한 폴링 회귀).
+          // #903 (Seam G) — 지상 복귀(subsurface true→false) 시 누적 카운터 리셋. 지하 인내 임계(10)로
+          // 누적된 값이 지상 임계(5)에 곧장 걸려 trip이 즉시 자동 종료되는 회귀 방지. 신호 회복 = trust restored.
+          consecutiveEtaMissing:
+            existing.subsurface === true && incoming.subsurface !== true
+              ? 0
+              : existing.consecutiveEtaMissing,
+          // #819: boarding-prompt 발사 카운터는 backend-only state — 디바이스가 같은 세션으로
+          // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
+          // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
+          boardingPromptState: existing.boardingPromptState,
+          // #916 follow-up B — same session에선 같은 trip이므로 그대로 보존.
+          lastAutoPromptedAt: existing.lastAutoPromptedAt,
+        }
+      : {
+          ...incoming,
+          // #916 follow-up B — 새 세션(createdAt drift > 5s)으로 판정돼 incoming으로 전면 교체되더라도
+          // 같은 token + window 안이면 auto-prompt dedup 마커는 보존. backend가 직전에 auto-lock 시도/
+          // 발사한 trip 컨텍스트의 재발사 ping-pong을 차단한다.
+          lastAutoPromptedAt: preservedLastAutoPromptedAt,
+          // #1370 L1 — corrected apnsEnv 보존. 같은 token = 같은 디바이스 = 같은 APNs env이므로
+          // session 경계(환승 후 새 trainCode 등)와 무관하게 self-heal로 정정된 env가 유지돼야 한다.
+          // 보존 안 하면 새 session 첫 push마다 mismatch retry가 반복돼 첫 push latency + 일부 drop 위험
+          // (#1370 evidence: 환승 후 7호선 매역 silent push 손실).
+          // existing 부재(brand-new token) 또는 existing.apnsEnv 부재(legacy trip)면 incoming 값으로 자연 fallback.
+          apnsEnv: existing?.apnsEnv ?? incoming.apnsEnv,
+        };
 
-  // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
-  // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.
-  const trip = progressApplies
-    ? applyProgress(baseTrip, incoming, progress)
-    : baseTrip;
+    // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
+    // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.
+    const trip = progressApplies
+      ? applyProgress(baseTrip, incoming, progress)
+      : baseTrip;
 
-  await putTrip(c.env.TRIPS, trip);
+      await putTrip(c.env.TRIPS, trip);
+
+      return { trip, isSameSession };
+    },
+  );
 
   // #1701 — 새 세션 분기에서는 SSoT mirror도 강제 cleanup. cleanupTripWithLa가 이미 4 종료
   // 경로에서 deleteSsot를 호출하지만, 종료 후 KV TTL 자연 만료를 기다리는 동안 같은 token으로
