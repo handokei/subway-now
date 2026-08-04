@@ -38,6 +38,7 @@ import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/stora
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
   CONTEXT_HEAL_TIER2_DELAY_MS,
+  REGISTER_RETRY_BACKOFF_MS,
 } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
@@ -379,6 +380,14 @@ export function useApnsTripRegistration({
   // #2130 (B-1 Tier 2) — 지하 fallback 타이머 핸들.
   const tier2TimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // #1960 (2026-08-04 RCA 보강) — register 실패/token 미가용 skip 재시도 상태. sessionKey는
+  // `${routeSig}:${destination.id}` — trip 전환/종료 시 무효화되도록 attempt 시점에 재검증한다.
+  const registerRetryRef = useRef<{
+    sessionKey: string | null;
+    attempt: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ sessionKey: null, attempt: 0, timer: null });
+
   /**
    * #2129 — 두 register 경로(main effect / token-refresh listener)가 거의 동시에 실행돼도
    * 동일 입력에서 동일 payload를 만들도록 `latestInputsRef` 단일 출처에서 register하는 helper.
@@ -467,6 +476,73 @@ export function useApnsTripRegistration({
     await registerFromLatestInputs(token, { promptContextOverride: overrideContext });
   };
 
+  /** #1960 — 대기 중인 register 재시도 타이머/상태를 모두 초기화. */
+  const clearRegisterRetry = (): void => {
+    if (registerRetryRef.current.timer !== null) {
+      clearTimeout(registerRetryRef.current.timer);
+    }
+    registerRetryRef.current = { sessionKey: null, attempt: 0, timer: null };
+  };
+
+  /**
+   * #1960 — `sessionKey`(activeTrip 세션) 기준으로 다음 backoff 시점에 재시도를 예약한다.
+   * 상한(`REGISTER_RETRY_BACKOFF_MS.length`) 도달 시 조용히 중단 — 다음 정상 effect cycle
+   * (route/destination/lock 변경)이 처리한다.
+   */
+  const scheduleRegisterRetry = (sessionKey: string): void => {
+    if (registerRetryRef.current.sessionKey !== sessionKey) {
+      // 다른 세션(트립 전환)으로 갈아탈 때 옛 세션의 대기 타이머가 살아남아 나중에 무의미하게
+      // 발화하지 않도록 명시적으로 clear — tier2TimerRef와 동일한 위생.
+      if (registerRetryRef.current.timer !== null) {
+        clearTimeout(registerRetryRef.current.timer);
+      }
+      registerRetryRef.current = { sessionKey, attempt: 0, timer: null };
+    }
+    const { attempt } = registerRetryRef.current;
+    if (attempt >= REGISTER_RETRY_BACKOFF_MS.length) {
+      logger.info(`register retry: 상한(${REGISTER_RETRY_BACKOFF_MS.length}) 도달 — 중단`, sessionKey);
+      return;
+    }
+    if (registerRetryRef.current.timer !== null) {
+      clearTimeout(registerRetryRef.current.timer);
+    }
+    const delay = REGISTER_RETRY_BACKOFF_MS[attempt];
+    registerRetryRef.current.attempt = attempt + 1;
+    registerRetryRef.current.timer = setTimeout(() => {
+      registerRetryRef.current.timer = null;
+      void attemptRegisterRetry(sessionKey);
+    }, delay);
+  };
+
+  /**
+   * #1960 — 예약된 재시도 실행. 활성 trip이 여전히 같은 세션인지 재검증(trip 전환/종료 시
+   * self-cancel) 후 token을 다시 조회해 register를 재시도한다. 성공(`ok:true`, dedup skip
+   * 포함)하면 재시도 상태를 초기화, 실패하면 다음 backoff를 예약한다.
+   */
+  const attemptRegisterRetry = async (sessionKey: string): Promise<void> => {
+    const { route: r, destination: d } = latestInputsRef.current;
+    /* istanbul ignore next -- trip 종료 경로("트립 없음" 분기, mount-once cleanup)와 trip 전환
+     * 경로(scheduleRegisterRetry의 세션 교체 분기) 모두 이 타이머 콜백이 실행되기 전에
+     * 대기 타이머를 동기적으로 clear하므로, 이 콜백 자체가 route/destination null 또는 세션
+     * 불일치 상태로 진입할 도달 경로가 현재 코드에 없다. Tier 2 heal의 동일 성격 가드
+     * (위 runTier2Heal)와 같은 방어적 처리. */
+    if (!r || !d || `${routeSignature(r)}:${d.id}` !== sessionKey) return; // trip 종료/전환됨 — 재시도 대상 아님
+
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) {
+      // 토큰 여전히 미가용 — 다음 backoff 예약.
+      scheduleRegisterRetry(sessionKey);
+      return;
+    }
+    const result = await registerFromLatestInputs(token);
+    if (result?.ok) {
+      clearRegisterRetry();
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
+    } else {
+      scheduleRegisterRetry(sessionKey);
+    }
+  };
+
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {
     let cancelled = false;
@@ -511,6 +587,8 @@ export function useApnsTripRegistration({
     return () => {
       cancelled = true;
       subscription?.remove();
+      // #1960 — 컴포넌트 unmount 시 대기 중인 register 재시도 타이머 정리(메모리 누수/좀비 POST 방지).
+      clearRegisterRetry();
     };
   }, []);
 
@@ -549,6 +627,8 @@ export function useApnsTripRegistration({
         lastRegisterMissingContextRef.current = false;
         healedSessionKeyRef.current = null;
         prevCurrentStationIdRef.current = null;
+        // #1960: trip 종료 시 register 재시도 상태도 초기화 — 다음 trip이 새로 재시도 3회 기회를 갖는다.
+        clearRegisterRetry();
         return;
       }
 
@@ -583,6 +663,9 @@ export function useApnsTripRegistration({
       // 트립 있음 → 토큰 없으면 graceful skip.
       if (!token) {
         logger.info('apns token not yet available — skip register');
+        // #1960 — deps(routeSig/destination.id/boardingLockSig 등) 불변이면 다음 재기회가
+        // 없으므로, 활성 trip 한정으로 token 재발급을 기다리며 재시도 예약.
+        scheduleRegisterRetry(`${routeSig}:${destination.id}`);
         return;
       }
 
@@ -620,6 +703,11 @@ export function useApnsTripRegistration({
       // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
       if (result?.ok) {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
+        // #1960 — 성공(dedup skip 포함, ok:true)했으면 이 세션에 대한 대기 재시도가 있다면 정리.
+        clearRegisterRetry();
+      } else {
+        // #1960 — register 실패({ok:false}) — deps 불변이면 재기회가 없으므로 활성 trip 한정 재시도.
+        scheduleRegisterRetry(`${routeSig}:${destination.id}`);
       }
       // #2130 (B-1 Tier 2) — 이번 register가 성공했으면 60초 타이머를 arm. 이 effect의
       // cleanup이 매 re-execution 전에 이전 타이머를 이미 cancel하므로(아래), 여기 도달한
