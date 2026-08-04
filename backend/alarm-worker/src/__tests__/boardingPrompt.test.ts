@@ -68,7 +68,9 @@ describe('evaluateBoardingPromptGates — 9단 AND 게이트', () => {
     }
   });
 
-  it('#9: 이미 fired된 trip은 차단', () => {
+  // #2130 (Part B-be-2) — "trip당 1회(fired 영구 차단)" 정책 폐기. `fired` 자체는 더 이상
+  // 검사하지 않고 `lastFiredAt` 기준 최소 발사 간격(5분)으로 dedup한다.
+  it('#9: 최근(5분 미만) 발사된 trip은 fired-too-recently로 차단', () => {
     const r = evaluateBoardingPromptGates({
       series: happySeries(now),
       origin: ORIGIN,
@@ -76,7 +78,29 @@ describe('evaluateBoardingPromptGates — 9단 AND 게이트', () => {
       now,
       promptState: { fired: true, lastFiredAt: now - 1000 },
     });
-    expect(r).toEqual(expect.objectContaining({ pass: false, reason: 'already-fired' }));
+    expect(r).toEqual(expect.objectContaining({ pass: false, reason: 'fired-too-recently' }));
+  });
+
+  it('#9: fired=true 여도 최소 간격(5분) 경과 + 최대 횟수 미달이면 통과 (반복 발사 A4)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      promptState: { fired: true, lastFiredAt: now - 5 * 60 * 1000, fireCount: 1 },
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('#9: fireCount가 최대 발사 횟수(3)에 도달하면 max-fires-reached로 차단', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      promptState: { fired: true, lastFiredAt: now - 10 * 60 * 1000, fireCount: 3 },
+    });
+    expect(r).toEqual(expect.objectContaining({ pass: false, reason: 'max-fires-reached' }));
   });
 
   it('#9: silencedUntil이 미래면 silenced 차단', () => {
@@ -449,7 +473,9 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
     if (!r.pass) expect(r.reason).toBe('motion-stationary');
   });
 
-  it('underground: 이미 fired = already-fired (게이트 #9 우선 평가)', () => {
+  // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. underground 분기에서도 반복 발사 게이트
+  // (fired-too-recently)가 #9로 우선 평가된다.
+  it('underground: 최근 발사(5분 미만) = fired-too-recently (게이트 #9 우선 평가)', () => {
     const r = evaluateBoardingPromptGates({
       series: staleGpsSeries(now),
       origin: ORIGIN,
@@ -459,7 +485,7 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
       promptState: { fired: true, lastFiredAt: now - 1000 },
     });
     expect(r.pass).toBe(false);
-    if (!r.pass) expect(r.reason).toBe('already-fired');
+    if (!r.pass) expect(r.reason).toBe('fired-too-recently');
   });
 
   it('mixed: GPS 의존 게이트 byPass (underground 와 동일 분기)', () => {
@@ -641,7 +667,9 @@ describe('evaluateBoardingPromptGates — #2014 (ADR-022 B8) archFlag', () => {
     expect(r.pass).toBe(true);
   });
 
-  it('archFlag=on: 이미 fired = already-fired (게이트 #9 는 여전히 평가)', () => {
+  // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. archFlag=on 에서도 반복 발사 게이트
+  // (fired-too-recently)가 #9로 여전히 평가된다.
+  it('archFlag=on: 최근 발사(5분 미만) = fired-too-recently (게이트 #9 는 여전히 평가)', () => {
     const r = evaluateBoardingPromptGates({
       series: happySeries(now),
       origin: ORIGIN,
@@ -651,7 +679,7 @@ describe('evaluateBoardingPromptGates — #2014 (ADR-022 B8) archFlag', () => {
       archFlag: 'on',
     });
     expect(r.pass).toBe(false);
-    if (!r.pass) expect(r.reason).toBe('already-fired');
+    if (!r.pass) expect(r.reason).toBe('fired-too-recently');
   });
 
   it('archFlag=on: silencedUntil 미래 = silenced (게이트 #9 는 여전히 평가)', () => {
@@ -694,8 +722,27 @@ describe('evaluateBoardingPromptGates — #2014 (ADR-022 B8) archFlag', () => {
 });
 
 describe('markPromptFired / markPromptSilenced', () => {
-  it('markPromptFired는 fired=true + lastFiredAt 설정', () => {
-    expect(markPromptFired(1234)).toEqual({ fired: true, lastFiredAt: 1234 });
+  it('markPromptFired는 fired=true + lastFiredAt 설정 (prev/trainCode 없으면 fireCount=1, firedTrainCodes 생략)', () => {
+    expect(markPromptFired(1234)).toEqual({ fired: true, lastFiredAt: 1234, fireCount: 1 });
+  });
+
+  // #2130 (Part B-be-2) — 반복 발사(A4) 상태 누적.
+  it('markPromptFired: prev + trainCode 전달 시 firedTrainCodes append + fireCount 증가', () => {
+    const prev = { fired: true, lastFiredAt: 1000, fireCount: 1, firedTrainCodes: ['A1'] };
+    const r = markPromptFired(2000, prev, 'B2');
+    expect(r).toEqual({
+      fired: true,
+      lastFiredAt: 2000,
+      fireCount: 2,
+      firedTrainCodes: ['A1', 'B2'],
+    });
+  });
+
+  it('markPromptFired: trainCode=null 이면 firedTrainCodes는 prev 그대로(append 없음)', () => {
+    const prev = { fired: true, lastFiredAt: 1000, fireCount: 1, firedTrainCodes: ['A1'] };
+    const r = markPromptFired(2000, prev, null);
+    expect(r.firedTrainCodes).toEqual(['A1']);
+    expect(r.fireCount).toBe(2);
   });
   it('markPromptSilenced는 silencedUntil = now + DISMISS_SILENCE_MS', () => {
     const r = markPromptSilenced(undefined, 1000);
