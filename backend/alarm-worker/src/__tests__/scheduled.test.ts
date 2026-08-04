@@ -150,7 +150,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0,
+    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0,
     hopEndPromptFired: 0, hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
@@ -4290,6 +4290,17 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
     expect(stats.boardingPromptEvaluated).toBe(0);
     expect(stats.boardingPromptFired).toBe(0);
+  });
+
+  // #2131 (Part A-1) — geo/display 부재 무음 skip 관측성. 기존 테스트는 boardingPromptEvaluated
+  // 미증가만 검증 — 본 테스트는 신규 counter로 "왜" evaluate에 못 미쳤는지 명시 관측.
+  it('#2131 — promptGeoContext/promptDisplay 부재 시 boardingPromptSkippedNoContext +1', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'no-geo' }));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedNoContext).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
   });
 
   it('9단 통과 + APNs 200 → alert push 발사 + state.fired 영구화', async () => {
@@ -9384,7 +9395,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0,
+      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0,
       hopEndPromptFired: 0, hopEndPromptBlocked: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,
