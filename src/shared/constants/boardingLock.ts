@@ -114,3 +114,14 @@ export const BOARDING_LOCK_RELEASE_DEBOUNCE_MS = 1500;
  * 값은 일반 destination id(`stn-*`, UUID 등)와 충돌하지 않도록 `__` prefix.
  */
 export const FREE_TRIP_DESTINATION_SENTINEL = '__free-trip-sentinel__';
+
+/**
+ * #2130 (B-1 Tier 2) — 지하 fallback context-heal 대기 시간(ms).
+ *
+ * trip 등록 후 이 시간 동안 `currentStation`이 여전히 미해소(GPS dead zone)이고 지하 판정
+ * (subsurface)이면 route 출발역 기준으로 boarding-prompt context를 heal한다. 60s로 둔 이유:
+ *  - GPS/fusion 폴링 주기(30s)의 2 tick — 일시적 fix 지연을 최소 1~2회 흡수한 뒤에만 fallback.
+ *  - 너무 짧으면(예: 15s) 정상 GPS 해소 중인 trip까지 route-origin 근사치로 stamp해 정밀도 손실.
+ *  - 너무 길면(예: 5분) 사용자가 이미 열차에 탑승한 뒤에야 prompt 평가가 시작돼 A1(≤3분) 위반.
+ */
+export const CONTEXT_HEAL_TIER2_DELAY_MS = 60_000;

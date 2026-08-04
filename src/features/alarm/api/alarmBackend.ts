@@ -90,6 +90,14 @@ export interface RegisterTripPayload {
     nextStation: { lat: number; lng: number };
     /** 출발역에서 trip 방향 (Seoul API의 isUp과 정합). 모르면 null — 양방향 허용. */
     direction: 'up' | 'down' | null;
+    /**
+     * #2130 (B-2) — origin과 등록 시점 GPS fix 사이 거리(m). backend 근접 게이트(B-backend,
+     * 별도 PR)가 원거리 오탑승 후보를 걸러내는 입력. GPS fix가 아예 없을 때만 생략 — backend는
+     * 부재를 관대하게(지하/구 클라 호환) 통과시킨다.
+     */
+    originDistanceM?: number;
+    /** #2130 (B-2) — GPS fix 정확도(m). originDistanceM과 항상 짝으로만 존재. */
+    originAccuracyM?: number;
   };
   /**
    * #819 — boarding-prompt push 본문에 노출할 출발역/노선 표시명.

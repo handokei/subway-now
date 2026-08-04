@@ -900,6 +900,16 @@ export default function HomeScreen() {
     // #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 저장 (ADR-023 결정 gate 미사용).
     // skip 원인 분류 + evidence 재구성 자동화용. Device의 `shouldSuppressBySleepRule`이 실제 suppress gate.
     sleepMode,
+    // #2130 (B-2) — 등록 시점 GPS fix. boarding-prompt 근접 게이트(backend B-backend) 입력.
+    // fix 없으면(GPS 미해소/권한거절) undefined 대신 null로 명시 전달 — 필드 자체 생략은 hook이 처리.
+    gpsFix:
+      userLocation && accuracyMeters != null
+        ? { lat: userLocation.lat, lng: userLocation.lng, accuracyM: accuracyMeters }
+        : null,
+    // #2130 (B-1 Tier 2) — 지하 fallback heal의 route 출발역. effectiveOrigin은 GPS pause에도
+    // customOrigin/lastFusedStation/boardingLockStation/tripOrigin 순으로 fallback해 currentStation이
+    // GPS dead zone으로 null일 때도 trip의 출발역을 그대로 보존한다(#1379).
+    routeOriginStation: effectiveOrigin,
   });
 
   useEffect(() => {
