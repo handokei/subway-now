@@ -620,6 +620,24 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedTooFar: number;
   /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — 반복 발사(A4) 최소 발사 간격(5분) 미달로
+   * `evaluateBoardingPromptGates`가 차단한 누적 횟수(`boardingPromptBlocked`의 부분집합을
+   * reason별로 재분류). 배차가 촘촘한 역에서 연발이 억제되고 있는지 관측.
+   */
+  boardingPromptSkippedMinInterval: number;
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — trip당 최대 발사 횟수(3회) hard cap 도달로
+   * `evaluateBoardingPromptGates`가 차단한 누적 횟수(`boardingPromptBlocked`의 부분집합).
+   * 0이 아니면 15분 창 내내 사용자가 무응답으로 3회 모두 소진한 케이스가 존재한다는 신호.
+   */
+  boardingPromptSkippedMaxFires: number;
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — 이번 cycle에 관측된 arvlCd=1 우선순위
+   * trainCode가 이미 `promptState.firedTrainCodes`에 있어 발사를 skip한 누적 횟수. 같은 열차가
+   * 플랫폼에 정차 중 cron 여러 tick에 걸쳐 재관측돼도 중복 발사하지 않는다는 방증.
+   */
+  boardingPromptSkippedTrainDuplicate: number;
+  /**
    * #2034 — 환승 waypoint advance 시점에 hop-end ("하차했나요?") prompt 게이트를 통과해 alert
    * push 가 발사된 누적 횟수. leg 단위 dedup 이라 같은 trip 내 여러 환승도 각각 카운트.
    * dashboard: `hop_end_prompt_fired`.
@@ -989,6 +1007,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptSkippedNoContext: 0,
     boardingPromptSkippedStale: 0,
     boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedMinInterval: 0,
+    boardingPromptSkippedMaxFires: 0,
+    boardingPromptSkippedTrainDuplicate: 0,
     hopEndPromptFired: 0,
     hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0,
@@ -1887,6 +1908,18 @@ export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
  */
 export function stationNotifCollapseId(tripToken: string): string {
   return `${STATION_NOTIF_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
+}
+
+/**
+ * #2130 (Part B-be-2) — boarding-prompt(반복 발사, A4) apns-collapse-id prefix.
+ * 새 열차의 prompt가 이전 무응답 배너를 알림센터에서 최신으로 교체(스택 금지) — #2086 규칙
+ * (`stationNotifCollapseId`/`sleepAlarmCollapseId`와 동일하게 `slice(0, 16)`로 64B 한도 방어).
+ */
+export const BOARDING_PROMPT_COLLAPSE_ID_PREFIX = 'boarding-prompt-';
+
+/** #2130 — boarding-prompt apns-collapse-id 빌더. */
+export function boardingPromptCollapseId(tripToken: string): string {
+  return `${BOARDING_PROMPT_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
 }
 
 /**
@@ -4279,7 +4312,8 @@ export function hasArrivedSignal(pool: readonly ArrivalEntry[]): boolean {
  *
  * 발사 성공:
  *   - alert push (BOARDING_PROMPT category)로 [탑승]/[미탑승] 액션 노출
- *   - trip.boardingPromptState = markPromptFired(now) → KV 저장 (게이트 #9 1회 정책)
+ *   - trip.boardingPromptState = markPromptFired(now, prev, trainCode) → KV 저장. #2130
+ *     (Part B-be-2) 이후 "trip당 1회" 정책 폐기 — 15분 창 내 trainCode별 반복 발사(A4).
  *   - boardingPromptFired stat +1
  *
  * 차단:
@@ -4357,7 +4391,14 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // 평가 자체를 skip — boardingPromptState가 isSameSession=false로 리셋됐거나 lock이 클리어된
   // 직후 같은 trip token이 lockMissing으로 돌아온 케이스. 같은 trip 컨텍스트의 중복 auto-prompt
   // 시도/푸시를 차단한다 (윈도우 만료 후엔 자연 재평가 — 새 leg/새 trip은 fresh).
+  //
+  // #2130 (Part B-be-2) — `trip.boardingPromptState !== undefined`(=같은 trip 내 반복 발사 상태가
+  // 살아있음)면 이 30분 게이트를 적용하지 않는다. 반복 발사(A4)는 그보다 촘촘한
+  // `evaluateBoardingPromptRepeatGate`(최소 간격 5분 + 최대 3회 + dismiss silence)가 이미 스팸을
+  // 막으므로, 이 게이트가 겹쳐 걸리면 같은 trip 안에서 2번째 열차조차 30분간 완전히 못 쏜다.
+  // 이 게이트는 원래 목적(boardingPromptState가 undefined로 리셋된 케이스)에서만 발동한다.
   if (
+    trip.boardingPromptState === undefined &&
     trip.lastAutoPromptedAt !== undefined &&
     now - trip.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
   ) {
@@ -4407,6 +4448,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   if (!outcome.pass) {
     stats.boardingPromptBlocked += 1;
+    // #2130 (Part B-be-2) — 반복 발사 게이트가 차단한 두 신규 reason은 전용 counter로도 집계.
+    if (outcome.reason === 'fired-too-recently') stats.boardingPromptSkippedMinInterval += 1;
+    if (outcome.reason === 'max-fires-reached') stats.boardingPromptSkippedMaxFires += 1;
     log('boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: outcome.reason satisfies GateSkipReason,
@@ -4492,11 +4536,15 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // pool 이 비어 있으면 (Seoul API 실패 / 매칭 0건) 아래 candidateTrains 0건 guard 로 skip 됨 —
   // 여기서는 pool.length > 0 인데 pickAutoTrainCode 가 null 인 케이스만 명시 차단해 counter 로
   // 가시화한다.
-  if (
-    deps.archFlag === 'on' &&
-    poolForArchFlagCheck.length > 0 &&
-    pickAutoTrainCode(poolForArchFlagCheck, display.line, geo.direction) === null
-  ) {
+  //
+  // #2130 (Part B-be-2) — 같은 호출로 산출한 selectedTrainCode를 아래 trainCode dedup(반복
+  // 발사, A4)에도 재사용한다. archFlag 무관(off 포함)하게 항상 계산 — GPS 9단 게이트로 발사되는
+  // legacy 경로도 같은 trainCode dedup 혜택을 받는다(pool이 비어 있으면 자연히 null).
+  const selectedTrainCode =
+    poolForArchFlagCheck.length > 0
+      ? pickAutoTrainCode(poolForArchFlagCheck, display.line, geo.direction)
+      : null;
+  if (deps.archFlag === 'on' && poolForArchFlagCheck.length > 0 && selectedTrainCode === null) {
     stats.boardingPromptBlocked += 1;
     log('boarding-prompt: skipped ambiguity (#2014 archFlag=on)', {
       token: trip.token.slice(0, 8),
@@ -4518,6 +4566,24 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       line: display.line,
       originStation: display.originStation,
       direction: geo.direction,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  // #2130 (Part B-be-2, A4) — 반복 발사 trainCode dedup. 이번 cycle에 선택된 trainCode가 이미
+  // 발사된 열차면 skip — 같은 열차가 cron 여러 tick에 걸쳐 재관측돼도 중복 발사하지 않는다.
+  // selectedTrainCode===null(ambiguity 기각 없이 통과한 archFlag=off 경로 등)이면 dedup 대상이
+  // 없어 자연 통과 — 기존 GPS 9단 게이트 기반 fire 는 이 신규 게이트로 인한 회귀가 없다.
+  if (
+    selectedTrainCode !== null &&
+    trip.boardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
+  ) {
+    stats.boardingPromptSkippedTrainDuplicate += 1;
+    log('boarding-prompt: skipped train duplicate (#2130 A4)', {
+      token: trip.token.slice(0, 8),
+      trainCode: selectedTrainCode,
+      firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
     });
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
@@ -4556,6 +4622,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
             : undefined,
         // #1888 (RC-13) — 후보 train 목록 동봉. device fallback 렌더.
         candidateTrains,
+        // #2130 (Part B-be-2, A4) — 반복 발사 시 이전 무응답 배너를 최신으로 교체(스택 방지).
+        collapseId: boardingPromptCollapseId(trip.token),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -4580,7 +4648,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     stats.boardingPromptFired += 1;
     // #1683 — boardingPrompt kind 카운터.
     stats.silentPushFiredByKind.boardingPrompt += 1;
-    trip.boardingPromptState = markPromptFired(now);
+    // #2130 (Part B-be-2, A4) — prev state + selectedTrainCode를 전달해 firedTrainCodes/fireCount를
+    // 누적한다(반복 발사 dedup + hard cap 입력).
+    trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
     // #916 follow-up B — prompt push도 같은 dedup 마커를 stamp한다. dismiss + 클리어 후
     // isSameSession=false 분기로 boardingPromptState가 사라져도 window 안에서 재발사 차단.
     trip.lastAutoPromptedAt = now;

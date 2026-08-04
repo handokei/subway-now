@@ -400,7 +400,10 @@ describe('boardingPrompt gate archFlag 매트릭스 — 회귀 방어', () => {
   /**
    * Wave 1 완결 후에도 archFlag=off 회귀는 없어야 함 (기존 9단 gate 유지).
    */
-  it('archFlag=off 시 기존 9단 gate 평가 (already-fired promptState 는 차단)', () => {
+  // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. makeBoardingPromptFiredState()는
+  // lastFiredAt=FIXTURE_NOW-60_000(1분 전)이라 최소 발사 간격(5분) 게이트로 여전히 차단된다 —
+  // reason만 already-fired → fired-too-recently로 바뀐다.
+  it('archFlag=off 시 기존 9단 gate 평가 (최근 발사 promptState 는 fired-too-recently로 차단)', () => {
     const firedState = makeBoardingPromptFiredState();
     const outcome = evaluateBoardingPromptGates({
       series: [],
@@ -411,10 +414,10 @@ describe('boardingPrompt gate archFlag 매트릭스 — 회귀 방어', () => {
       // archFlag 미지정 = 기존 동작
     });
     expect(outcome.pass).toBe(false);
-    if (!outcome.pass) expect(outcome.reason).toBe('already-fired');
+    if (!outcome.pass) expect(outcome.reason).toBe('fired-too-recently');
   });
 
-  it('archFlag=on 시 already-fired 상태는 여전히 차단 (dedup 정책 유지)', () => {
+  it('archFlag=on 시 최근 발사 상태는 여전히 차단 (반복 발사 최소 간격 정책 유지)', () => {
     const firedState = makeBoardingPromptFiredState();
     const outcome = evaluateBoardingPromptGates({
       series: [],
@@ -425,6 +428,6 @@ describe('boardingPrompt gate archFlag 매트릭스 — 회귀 방어', () => {
       archFlag: 'on',
     });
     expect(outcome.pass).toBe(false);
-    if (!outcome.pass) expect(outcome.reason).toBe('already-fired');
+    if (!outcome.pass) expect(outcome.reason).toBe('fired-too-recently');
   });
 });

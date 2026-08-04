@@ -549,8 +549,25 @@ export interface BoardingPromptState {
   lastFiredAt?: number;
   /** 사용자가 dismiss/미탑승으로 silence 요청한 시각 (epoch ms). */
   silencedUntil?: number;
-  /** 이 trip에 이미 발사 후 사용자 응답을 받았는지 — 한 trip 1회 정책. */
+  /**
+   * 이 trip에 최소 1회 발사됐는지 — 관측/D1 acceptance 전용 플래그.
+   *
+   * #2130 (Part B-be-2) 이후 boarding-prompt는 이 필드로 게이트하지 않는다("trip당 1회" 정책
+   * 폐기 — 반복 발사로 전환, `firedTrainCodes` + `fireCount` + `lastFiredAt` 참조). hop-end
+   * prompt(`evaluateHopEndPromptGates`)는 여전히 이 필드로 leg당 1회를 게이트한다(불변).
+   */
   fired?: boolean;
+  /**
+   * #2130 (Part B-be-2) — boarding-prompt 반복 발사(A4) trainCode dedup. arvlCd=1 관측마다
+   * 발사하되 같은 trainCode는 1회만 — 열차가 플랫폼에 정차 중 cron 여러 tick에 걸쳐도
+   * 재발사하지 않는다. hop-end prompt는 사용하지 않는다.
+   */
+  firedTrainCodes?: string[];
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — boarding-prompt 누적 발사 횟수.
+   * `MAX_FIRE_COUNT`(3)에 도달하면 15분 신선도 창이 남아 있어도 즉시 skip한다.
+   */
+  fireCount?: number;
 }
 
 /**
