@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   TRIP_STATUS_RETENTION_MS,
   TRIP_STATUS_TTL_SEC,
+  deleteTripEndedStatus,
   readTripEndedStatus,
   toTripStatusEndReason,
   tripStatusKey,
@@ -102,6 +103,34 @@ describe('readTripEndedStatus', () => {
       value: JSON.stringify({ endedAt: 1, endReason: 'made-up' }),
     });
     expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok')).toBeNull();
+  });
+});
+
+describe('deleteTripEndedStatus (#2144)', () => {
+  it('removes an existing record', async () => {
+    const kv = new InMemoryKV();
+    await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok', 'expired', 1000);
+    expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok')).not.toBeNull();
+
+    await deleteTripEndedStatus(kv as unknown as KVNamespace, 'tok');
+    expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok')).toBeNull();
+  });
+
+  it('is a no-op when no record exists', async () => {
+    const kv = new InMemoryKV();
+    await expect(
+      deleteTripEndedStatus(kv as unknown as KVNamespace, 'never-existed'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('does not affect a different token', async () => {
+    const kv = new InMemoryKV();
+    await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok-a', 'expired', 1000);
+    await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok-b', 'expired', 1000);
+
+    await deleteTripEndedStatus(kv as unknown as KVNamespace, 'tok-a');
+    expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok-a')).toBeNull();
+    expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok-b')).not.toBeNull();
   });
 });
 

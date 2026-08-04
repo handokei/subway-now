@@ -4108,6 +4108,54 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'trip-recently-ended' });
   });
+
+  // #2144 — register 성공 후 같은 token의 stale tripStatus 종료 마커 정리.
+  describe('#2144 — stale tripStatus cleanup on successful register', () => {
+    it('clears tripStatus after seoul-outage cooldown bypass succeeds (retention 윈도우 밖 진입 없이도 즉시 정리)', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'seoul-outage');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+      expect(await env.TRIPS.get('tripStatus:tok')).toBeNull();
+    });
+
+    it('clears tripStatus when retention window has elapsed and re-register succeeds', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - (60 * 60 * 1000 + 1_000), 'eta-missing');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+      expect(await env.TRIPS.get('tripStatus:tok')).toBeNull();
+    });
+
+    it('does not touch a different token tripStatus when unrelated token registers', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'ended-token', Date.now() - 5_000, 'destination');
+
+      const res = await post('/trips', { ...base(), token: 'fresh-token' }, env);
+      expect(res.status).toBe(200);
+      // 무관한 token의 종료 마커는 그대로 보존돼야 한다.
+      expect(await env.TRIPS.get('tripStatus:ended-token')).not.toBeNull();
+    });
+
+    it('is a no-op (no crash) when no tripStatus marker exists for the token', async () => {
+      const env = makeKvEnv();
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+      expect(await env.TRIPS.get('tripStatus:tok')).toBeNull();
+    });
+
+    it('still rejects (cooldown preserved) before any cleanup runs — no delete attempted on reject path', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'eta-missing');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(400);
+      // reject 경로에서는 cooldown 판정 유지가 우선 — 마커가 그대로 남아 재시도 시에도 reject된다.
+      expect(await env.TRIPS.get('tripStatus:tok')).not.toBeNull();
+    });
+  });
 });
 
 // #1897 (RC-5) — POST /trips 응답 confirmedEnv echo.

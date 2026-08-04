@@ -81,6 +81,15 @@ export async function writeTripEndedStatus(
 }
 
 /**
+ * #2144 — 같은 token으로 새 trip이 성공 등록되면 옛 종료 마커는 더 이상 유효하지 않다.
+ * 호출은 register 성공 경로에서 cooldown 판정(bypass 분기 포함) **뒤**에 실행해야 한다 —
+ * 먼저 지우면 `readTripEndedStatus` 기반 #1425 cooldown/#1663 bypass 판정이 무력화된다.
+ */
+export async function deleteTripEndedStatus(kv: KVNamespace, token: string): Promise<void> {
+  await kv.delete(tripStatusKey(token));
+}
+
+/**
  * 저장된 trip 종료 마커 조회. JSON parse 실패 또는 schema 불일치 시 null 반환 — KV 손상 엔트리는
  * 미존재와 동일하게 처리(launch reconciliation은 best-effort, fail-soft).
  */
