@@ -23,6 +23,7 @@ import {
 } from '../../utils/crossCategoryStationDedup';
 import { clearAlarmLogWindows } from '../../utils/alarmLog';
 import { resetAlarmBackendDedup } from '../../api/alarmBackend';
+import * as alarmBackend from '../../api/alarmBackend';
 import { clearBackendSsotMirror } from '../../utils/backendSsotMirror';
 import { clearLastSilentPushReceivedAt } from '../../utils/lastSilentPushReceivedAt';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
@@ -487,6 +488,69 @@ describe('tripBoundCleanups', () => {
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
     await expect(runTripBoundCleanups()).resolves.toBeUndefined();
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  // #2129 — lockless trip 종료 경로(silent push trip-ended / useStateRehydration sentinel /
+  // useLaunchTripReconciliation / useDeviceSelfEnd)가 runTripBoundCleanups만 호출하고 별도로
+  // backend DELETE를 발행하지 않아, ACTIVE_TRIP_KEY가 removeItem으로 지워진 뒤 어떤 후속 호출자도
+  // backend token을 읽을 수 없는 회귀(2026-08-04 유령 trip evidence). runTripBoundCleanups가
+  // ACTIVE_TRIP_KEY 제거 전에 이미 읽어둔 token으로 clearActiveTrip을 직접 발행해야 한다.
+  describe('#2129 — runTripBoundCleanups가 backend DELETE /trips를 발행한다', () => {
+    it('ACTIVE_TRIP_KEY(backend token)가 있으면 clearActiveTrip(token)을 호출한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+        Promise.resolve(k === ACTIVE_TRIP_KEY ? 'backend-tok-2129' : null),
+      );
+      const clearActiveTripSpy = jest
+        .spyOn(alarmBackend, 'clearActiveTrip')
+        .mockResolvedValue({ ok: true });
+
+      await runTripBoundCleanups();
+
+      expect(clearActiveTripSpy).toHaveBeenCalledWith('backend-tok-2129');
+      clearActiveTripSpy.mockRestore();
+    });
+
+    it('ACTIVE_TRIP_KEY가 없으면(활성 backend trip 없음) clearActiveTrip을 호출하지 않는다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      const clearActiveTripSpy = jest
+        .spyOn(alarmBackend, 'clearActiveTrip')
+        .mockResolvedValue({ ok: true });
+
+      await runTripBoundCleanups();
+
+      expect(clearActiveTripSpy).not.toHaveBeenCalled();
+      clearActiveTripSpy.mockRestore();
+    });
+
+    it('backend token 없이 device-local tripToken만 있으면(backend 등록 전 armed) clearActiveTrip을 호출하지 않는다', async () => {
+      // ACTIVE_TRIP_KEY(backend token)는 없지만 TRIP_STARTED_AT_KEY는 있어
+      // resolveEffectiveTripToken이 device-local synthetic id를 만드는 케이스.
+      // backend가 애초에 이 trip을 모르므로 DELETE 대상이 아니다.
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+        Promise.resolve(k === TRIP_STARTED_AT_KEY ? String(Date.now()) : null),
+      );
+      const clearActiveTripSpy = jest
+        .spyOn(alarmBackend, 'clearActiveTrip')
+        .mockResolvedValue({ ok: true });
+
+      await runTripBoundCleanups();
+
+      expect(clearActiveTripSpy).not.toHaveBeenCalled();
+      clearActiveTripSpy.mockRestore();
+    });
+
+    it('clearActiveTrip이 실패해도(네트워크 불가 등) runTripBoundCleanups는 graceful 종료한다 (BG force-end 안전망)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+        Promise.resolve(k === ACTIVE_TRIP_KEY ? 'backend-tok-2129' : null),
+      );
+      const clearActiveTripSpy = jest
+        .spyOn(alarmBackend, 'clearActiveTrip')
+        .mockRejectedValue(new Error('network unavailable'));
+
+      await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+
+      clearActiveTripSpy.mockRestore();
+    });
   });
 
   it('runTripBoundCleanups: 한 항목이 reject해도 나머지 항목이 모두 실행된다', async () => {

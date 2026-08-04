@@ -39,7 +39,7 @@ import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
 import { clearAlarmLogWindows } from '../utils/alarmLog';
-import { resetAlarmBackendDedup } from '../api/alarmBackend';
+import { clearActiveTrip, resetAlarmBackendDedup } from '../api/alarmBackend';
 import { getNotificationRouter } from '../api/notificationRouter';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from './useBoardingLockStore';
@@ -246,11 +246,21 @@ export function runTripBoundCleanups(): Promise<void> {
     // #918 — stationPrescheduler(OS 사전예약 "매역" 채널)도 safetyNetScheduler와 동일하게
     // tripToken-scoped cancel 대상. 두 채널은 sleepMode로 상호 배타적이라 항상 한쪽만
     // 실제로 pending을 갖지만, 나머지 한쪽 cancel은 큐가 비어있어도 안전(멱등)하므로 항상 같이 호출.
+    // #2129 — backend DELETE /trips wire. 이 배열의 ACTIVE_TRIP_KEY removeItem 항목이 먼저 돌면
+    // 이후 아무 호출자도 backend token을 읽을 수 없어 DELETE가 영구히 발행되지 않는 회귀
+    // (lockless trip 종료 경로 전부 — silent push trip-ended / useStateRehydration sentinel /
+    // useLaunchTripReconciliation / useDeviceSelfEnd — 모두 본 함수만 호출하고 별도로
+    // clearActiveTrip을 부르지 않았다). removeItem 전에 이미 읽어둔 backendTripToken(위)을
+    // 그대로 사용 — device-local synthetic id(tripToken)는 backend가 모르는 값이라 제외.
+    // fire-and-forget + 실패해도 흡수(allSettled) — backend TTL이 최종 안전망(현행 유지).
     const cleanups = tripToken
       ? [
           ...TRIP_BOUND_CLEANUPS,
           () => cancelAllSafetyNetAlarms(tripToken),
           () => cancelAllPrescheduledAlarms(tripToken),
+          ...(backendTripToken
+            ? [() => clearActiveTrip(backendTripToken).then(noop)]
+            : []),
         ]
       : TRIP_BOUND_CLEANUPS;
     return Promise.allSettled(cleanups.map((cleanup) => cleanup())).then(noop);
