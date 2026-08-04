@@ -127,6 +127,7 @@ import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
   TRIP_STATUS_RETENTION_MS,
   readTripEndedStatus,
+  deleteTripEndedStatus,
 } from './tripStatus';
 import type {
   AccelSummary,
@@ -856,6 +857,25 @@ app.post('/trips', async (c) => {
       return { trip, isSameSession };
     },
   );
+
+  // #2144 — register 성공(putTrip 완료) 후 같은 token의 옛 tripStatus 종료 마커를 정리한다.
+  // 위 cooldown 판정(#1425 reject / #1663 seoul-outage bypass)이 이미 끝난 뒤라 cooldown 의미는
+  // 보존된다. 정리하지 않으면 새 trip이 활성 중에도 옛 endedAt 기록이 TTL까지 KV에 남아
+  // 진단 혼선(활성 trip + '종료됨' 기록 공존)을 유발한다. KV delete 실패는 graceful —
+  // register 응답을 차단하지 않는다.
+  if (recentlyEnded !== null) {
+    try {
+      await deleteTripEndedStatus(c.env.TRIPS, registerLockToken);
+    } catch (e) {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-status delete on register success failed (#2144)',
+          tokenPrefix: tokenPrefix(registerLockToken),
+          error: String(e),
+        }),
+      );
+    }
+  }
 
   // #1701 — 새 세션 분기에서는 SSoT mirror도 강제 cleanup. cleanupTripWithLa가 이미 4 종료
   // 경로에서 deleteSsot를 호출하지만, 종료 후 KV TTL 자연 만료를 기다리는 동안 같은 token으로
