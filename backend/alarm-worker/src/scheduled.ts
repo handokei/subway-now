@@ -23,6 +23,8 @@ import {
   evaluateHopEndPromptGates,
   markPromptFired,
   pickAutoTrainCode,
+  PROMPT_FRESHNESS_MS,
+  PROMPT_PROXIMITY_MARGIN_M,
   type GateSkipReason,
 } from './boardingPrompt';
 import {
@@ -606,6 +608,18 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedNoContext: number;
   /**
+   * #2130 (Part B-be-1) — trip 등록(`createdAt`) 후 `PROMPT_FRESHNESS_MS`(15분)가 지나
+   * boarding-prompt 자격이 만료돼 skip한 누적 횟수. 오래된 lockMissing trip에 뒤늦게 발사되는
+   * stale prompt를 차단 — 0이 아니면 device 재등록 주기 또는 사용자 응답 지연 분포를 시사.
+   */
+  boardingPromptSkippedStale: number;
+  /**
+   * #2130 (Part B-be-1) — `promptGeoContext.originDistanceM - originAccuracyM > 150m`로 근접
+   * 게이트가 차단한 누적 횟수. 자택 등록(A2) 등 실제 미승차 시나리오에서 0이 아니게 나오는 것이
+   * 정상 — 지하/구 클라(필드 부재)는 이 게이트를 거치지 않아 관대하게 허용된다.
+   */
+  boardingPromptSkippedTooFar: number;
+  /**
    * #2034 — 환승 waypoint advance 시점에 hop-end ("하차했나요?") prompt 게이트를 통과해 alert
    * push 가 발사된 누적 횟수. leg 단위 dedup 이라 같은 trip 내 여러 환승도 각각 카운트.
    * dashboard: `hop_end_prompt_fired`.
@@ -973,6 +987,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptSkippedEmpty: 0,
     boardingPromptSkippedLockActive: 0,
     boardingPromptSkippedNoContext: 0,
+    boardingPromptSkippedStale: 0,
+    boardingPromptSkippedTooFar: 0,
     hopEndPromptFired: 0,
     hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0,
@@ -4307,6 +4323,32 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       hasDisplay: display !== undefined,
       // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
       sleepMode: trip.sleepModeEnabled,
+    });
+    return;
+  }
+
+  // #2130 (Part B-be-1) — 신선도 게이트. trip 등록 후 15분 경과 시 boarding-prompt 자격 만료.
+  if (now - trip.createdAt > PROMPT_FRESHNESS_MS) {
+    stats.boardingPromptSkippedStale += 1;
+    log('boarding-prompt: skip (stale, past freshness window)', {
+      token: trip.token.slice(0, 8),
+      ageMs: now - trip.createdAt,
+    });
+    return;
+  }
+
+  // #2130 (Part B-be-1) — 근접 게이트. distance/accuracy 둘 다 있을 때만 평가(부재 = 지하/구
+  // 클라 관대 허용). 오차 고려 보수적 차단 — distance - accuracy > 150m 이면 skip.
+  if (
+    geo.originDistanceM !== undefined &&
+    geo.originAccuracyM !== undefined &&
+    geo.originDistanceM - geo.originAccuracyM > PROMPT_PROXIMITY_MARGIN_M
+  ) {
+    stats.boardingPromptSkippedTooFar += 1;
+    log('boarding-prompt: skip (too far from origin)', {
+      token: trip.token.slice(0, 8),
+      originDistanceM: geo.originDistanceM,
+      originAccuracyM: geo.originAccuracyM,
     });
     return;
   }

@@ -299,6 +299,18 @@ export interface PromptGeoContext {
   nextStation: { lat: number; lng: number };
   /** 방향 게이트(#5)에서 어느 방향으로 가야 하는지 — Seoul API의 isUp과 정합. */
   direction: 'up' | 'down' | null;
+  /**
+   * #2130 (Part B-be-1) — device가 heal 시점에 GPS fix로 계산한 출발역까지 거리(m).
+   * fix가 있을 때만 스탬프(정확도가 나빠도 항상 동봉) — backend 근접 게이트(§단계3)의 입력.
+   * fix 자체가 없으면(지하 등) 필드 자체를 생략한다 — 부재는 게이트에서 "허용"으로 해석.
+   */
+  originDistanceM?: number;
+  /**
+   * #2130 (Part B-be-1) — 위 거리 계산에 사용된 GPS 정확도(m, `location.coords.accuracy`).
+   * backend 근접 게이트가 `originDistanceM - originAccuracyM > 150` 일 때만 차단한다
+   * (오차 고려 보수적 차단 — 정확도가 나쁜 실내 GPS의 false positive 방어).
+   */
+  originAccuracyM?: number;
 }
 
 /** boarding-prompt 사용자 표시 컨텍스트. */

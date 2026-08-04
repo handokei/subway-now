@@ -150,7 +150,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0,
+    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     hopEndPromptFired: 0, hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
@@ -4325,6 +4325,93 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
     expect(stats.boardingPromptSkippedNoContext).toBe(1);
     expect(stats.boardingPromptEvaluated).toBe(0);
+  });
+
+  // #2130 (Part B-be-1) — 신선도 게이트. trip 등록 후 15분 경과 시 evaluate 자체를 skip.
+  it('#2130 — trip 등록 후 15분 경과 시 boardingPromptSkippedStale +1, evaluate 미도달', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ createdAt: NOW - 15 * 60 * 1000 - 1 }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedStale).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2130 — 15분 경계(정확히 15분)는 신선도 게이트 통과', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ createdAt: NOW - 15 * 60 * 1000 }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedStale).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
+  // #2130 (Part B-be-1) — 근접 게이트. distance/accuracy 둘 다 있고 오차 고려해도 150m 밖이면 차단.
+  it('#2130 — originDistanceM/originAccuracyM 둘 다 존재 + 150m 초과 → boardingPromptSkippedTooFar +1', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          originDistanceM: 227,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2130 — 경계(distance - accuracy === 150) 는 근접 게이트 통과 (150 초과만 차단)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          originDistanceM: 300,
+          originAccuracyM: 150,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
+  it('#2130 — originDistanceM/originAccuracyM 부재(지하/구 클라) → 근접 게이트 관대 허용', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
   });
 
   it('9단 통과 + APNs 200 → alert push 발사 + state.fired 영구화', async () => {
@@ -9419,7 +9506,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0,
+      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
       hopEndPromptFired: 0, hopEndPromptBlocked: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,

@@ -56,6 +56,16 @@ export const MIN_WINDOW_SAMPLES = 1;
 export const MIN_FUSED_SPEED_KMH = 5;
 /** 게이트 #9 — dismiss 후 silence 길이. */
 export const DISMISS_SILENCE_MS = 5 * 60 * 1000;
+/**
+ * #2130 (Part B-be-1) — 근접 게이트 임계(m). `originDistanceM - originAccuracyM`가 이 값을
+ * 넘으면 차단(오차 고려 보수적 차단). 역사 반경 실측 100~180m 근거로 150m 채택(플랜 §2 D2).
+ */
+export const PROMPT_PROXIMITY_MARGIN_M = 150;
+/**
+ * #2130 (Part B-be-1) — 신선도 게이트. trip 등록(또는 heal) 후 이 시간이 지나면 boarding-prompt
+ * 자격이 만료된다 — 오래된 trip에 뒤늦게 발사되는 stale prompt 방지 + 반복 발사(A4) 창의 상한.
+ */
+export const PROMPT_FRESHNESS_MS = 15 * 60 * 1000;
 
 export type GateOutcome =
   | { pass: true; metrics: WindowedMetrics; fusedSpeedKmh: number }
