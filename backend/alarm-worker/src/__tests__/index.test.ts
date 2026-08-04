@@ -2415,6 +2415,57 @@ describe('validateTrip — #819 promptGeoContext / promptDisplay', () => {
     expect(trip?.promptGeoContext?.direction).toBeNull();
   });
 
+  // #2130 (Part B-be-1) — 근접 게이트 입력 필드 파싱.
+  it('originDistanceM/originAccuracyM 유효 숫자 → 보존', () => {
+    const trip = validateTrip(
+      withPrompt({
+        promptGeoContext: {
+          origin: { lat: 1, lng: 2 },
+          nextStation: { lat: 3, lng: 4 },
+          direction: 'up',
+          originDistanceM: 227,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    expect(trip?.promptGeoContext?.originDistanceM).toBe(227);
+    expect(trip?.promptGeoContext?.originAccuracyM).toBe(9);
+  });
+
+  it('originDistanceM/originAccuracyM 부재(지하/구 클라) → undefined로 graceful', () => {
+    const trip = validateTrip(
+      withPrompt({
+        promptGeoContext: {
+          origin: { lat: 1, lng: 2 },
+          nextStation: { lat: 3, lng: 4 },
+          direction: 'up',
+        },
+      }),
+    );
+    expect(trip?.promptGeoContext?.originDistanceM).toBeUndefined();
+    expect(trip?.promptGeoContext?.originAccuracyM).toBeUndefined();
+  });
+
+  it.each([
+    ['non-number', 'abc'],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+  ])('originDistanceM 비정상 값(%s) → undefined로 graceful (나머지 필드는 보존)', (_label, bad) => {
+    const trip = validateTrip(
+      withPrompt({
+        promptGeoContext: {
+          origin: { lat: 1, lng: 2 },
+          nextStation: { lat: 3, lng: 4 },
+          direction: 'up',
+          originDistanceM: bad,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    expect(trip?.promptGeoContext?.originDistanceM).toBeUndefined();
+    expect(trip?.promptGeoContext?.originAccuracyM).toBe(9);
+  });
+
   it.each([
     ['origin coord 누락', { promptGeoContext: { nextStation: { lat: 1, lng: 2 } } }],
     ['nextStation 누락', { promptGeoContext: { origin: { lat: 1, lng: 2 } } }],

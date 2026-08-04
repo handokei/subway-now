@@ -2294,10 +2294,22 @@ function parsePromptGeoContext(raw: unknown): PromptGeoContext | undefined {
   if (typeof nc.lng !== 'number' || !Number.isFinite(nc.lng)) return undefined;
   const direction = o.direction;
   const dir = direction === 'up' || direction === 'down' ? direction : null;
+  // #2130 (Part B-be-1) — device가 heal 시점 GPS fix로 계산해 동봉하는 근접 게이트 입력.
+  // fix가 없으면(지하 등) 필드 자체가 생략되어 undefined → backend 근접 게이트는 관대 허용.
+  const originDistanceM =
+    typeof o.originDistanceM === 'number' && Number.isFinite(o.originDistanceM)
+      ? o.originDistanceM
+      : undefined;
+  const originAccuracyM =
+    typeof o.originAccuracyM === 'number' && Number.isFinite(o.originAccuracyM)
+      ? o.originAccuracyM
+      : undefined;
   return {
     origin: { lat: oc.lat, lng: oc.lng },
     nextStation: { lat: nc.lat, lng: nc.lng },
     direction: dir,
+    ...(originDistanceM !== undefined ? { originDistanceM } : {}),
+    ...(originAccuracyM !== undefined ? { originAccuracyM } : {}),
   };
 }
 
