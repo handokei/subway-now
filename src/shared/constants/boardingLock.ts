@@ -125,3 +125,25 @@ export const FREE_TRIP_DESTINATION_SENTINEL = '__free-trip-sentinel__';
  *  - 너무 길면(예: 5분) 사용자가 이미 열차에 탑승한 뒤에야 prompt 평가가 시작돼 A1(≤3분) 위반.
  */
 export const CONTEXT_HEAL_TIER2_DELAY_MS = 60_000;
+
+/**
+ * #1960 (2026-08-04 RCA 보강) — trip register 실패({ok:false}) 또는 APNs token 미가용 skip 시
+ * 재시도 backoff 스케줄(ms). 활성 trip(route+destination 존재) 한정으로만 사용된다.
+ *
+ * 배경: `useApnsTripRegistration`의 register useEffect는 #703 의도(POST 폭주 방지)로
+ * `nextStationEtaSeconds`/`currentStation`을 deps에서 제외한다. 그 결과 register가 실패하거나
+ * token이 아직 발급 전이면 deps가 그대로인 한 재시도 기회 자체가 없어, lock이 활성인 짧은
+ * window(예: 2026-08-04 아침 trip evidence — lock 활성 07:26:33~07:30:10, 첫 register 성공은
+ * lock 해제 직후인 07:30:20) 동안 register가 한 번도 backend에 도달하지 못하면 그 trip은
+ * silent push 채널 전체가 하루 종일 비활성으로 남는다.
+ *
+ * 15s → 30s → 60s로 둔 이유:
+ *  - 15s는 APNs 토큰 발급(`getDevicePushTokenAsync`)이 완료되기까지의 전형적 지연을 커버.
+ *  - 30s/60s는 backend 일시 장애(cold start, 네트워크 hiccup) 복구 여유를 늘려가며 확인.
+ *  - 3회 상한(약 105s 총 대기) 이상 실패하면 실제 장애 가능성이 높아 무한 재시도로 배터리를
+ *    소모하기보다 다음 정상 effect cycle(route/destination/lock 변경)에 맡긴다.
+ *
+ * dedup hash 경로는 불변 — 성공한 register(`ok:true`, `skipped:true` 포함)는 재시도를
+ * 트리거하지 않아 #703(POST 폭주 방지) 의도를 보존한다.
+ */
+export const REGISTER_RETRY_BACKOFF_MS: readonly number[] = [15_000, 30_000, 60_000];

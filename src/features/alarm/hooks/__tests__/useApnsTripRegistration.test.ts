@@ -58,6 +58,7 @@ import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/st
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
   CONTEXT_HEAL_TIER2_DELAY_MS,
+  REGISTER_RETRY_BACKOFF_MS,
 } from '../../../../shared/constants/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
@@ -974,6 +975,308 @@ describe('useApnsTripRegistration', () => {
       );
       expect(refreshed?.[0].boardingLock).toBeDefined();
       expect(refreshed?.[0].boardingLock.trainCode).toBe('7246');
+    });
+  });
+
+  describe('#1960 (2026-08-04 RCA 보강) — register 실패/token 미가용 재시도', () => {
+    const lock = {
+      destinationId: station.id,
+      trainCode: '7246',
+      boardingStationId: station.id,
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('POST 실패({ok:false}) 시 backoff 후 재시도 — lock 활성 trip이 이후 lock 동봉으로 성공한다', async () => {
+      // 2026-08-04 아침 evidence 재현: lock 활성 중 첫 POST 실패 → 이전에는 재시도가 없어
+      // 다음 정상 register(주로 lock 해제 직후)에야 처음 backend에 도달했다.
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      mockRegister.mockResolvedValueOnce({ ok: true });
+
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: lock,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // 첫 backoff(15s) 전에는 재시도 없음.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0] - 100);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // 15s 경과 → 재시도 발사, lock이 여전히 동봉된 채로 성공.
+      await act(async () => {
+        jest.advanceTimersByTime(200);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7246');
+
+      // 성공 후 재시도 상태가 초기화돼 추가 backoff가 지나도 3번째 호출 없음.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[1] + 1000);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('APNs token 미가용 skip 시 재시도 — 토큰 발급 후 lock 동봉 register 성공', async () => {
+      let tokenAvailable = false;
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return tokenAvailable ? 'token-late' : null;
+        return null;
+      });
+
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: lock,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled(); // 토큰 없음 — graceful skip
+
+      tokenAvailable = true;
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(mockRegister.mock.calls[0][0].token).toBe('token-late');
+      expect(mockRegister.mock.calls[0][0].boardingLock.trainCode).toBe('7246');
+    });
+
+    it('상한(sessionKey당 3회) 도달 후 추가 재시도 없음 — 다음 정상 effect cycle에 위임', async () => {
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      for (const delay of REGISTER_RETRY_BACKOFF_MS) {
+        await act(async () => {
+          jest.advanceTimersByTime(delay);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+      // 최초 1회 + backoff 배열 길이(3)만큼 재시도 = 4회.
+      expect(mockRegister).toHaveBeenCalledTimes(1 + REGISTER_RETRY_BACKOFF_MS.length);
+
+      // 상한 도달 후 추가 시간이 지나도 더 이상 호출 없음.
+      await act(async () => {
+        jest.advanceTimersByTime(120_000);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1 + REGISTER_RETRY_BACKOFF_MS.length);
+    });
+
+    it('재시도 대기 중 trip 전환(destination 변경)되면 예약된 재시도는 self-cancel', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      mockRegister.mockResolvedValue({ ok: true });
+      const otherDestination: Station = { ...station, id: '2-023', name: '역삼' };
+
+      const { rerender } = renderHook(
+        ({ d }: { d: Station }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: d,
+            nextStationEtaSeconds: 120,
+            currentStation: d,
+          }),
+        { initialProps: { d: station } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // 실패 — 재시도 예약됨
+
+      // trip 전환 — 새 destination으로 즉시 register(성공).
+      rerender({ d: otherDestination });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const callsAfterSwitch = mockRegister.mock.calls.length;
+      expect(callsAfterSwitch).toBeGreaterThanOrEqual(2);
+
+      // 옛 세션의 backoff가 지나도 추가 register 없음(self-cancel) — 구 trip으로의 stale register 차단.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0] + 1000);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(callsAfterSwitch);
+    });
+
+    it('재시도 대기 중 다른 세션으로 실패 전환되면 옛 세션의 타이머를 clear하고 새 세션 attempt 0부터 시작', async () => {
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      const otherDestination: Station = { ...station, id: '2-023', name: '역삼' };
+
+      const { rerender } = renderHook(
+        ({ d }: { d: Station }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: d,
+            nextStationEtaSeconds: 120,
+            currentStation: d,
+          }),
+        { initialProps: { d: station } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // 세션 A 실패 — 15s 재시도 예약
+
+      // 세션 A의 재시도가 발화하기 전에 세션 B로 전환 — B도 즉시 실패.
+      rerender({ d: otherDestination });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // 세션 B 실패 — 새 15s 재시도 예약(attempt 0부터)
+
+      // 세션 A의 원래 15s 시점이 지나도 추가 호출 없음(A의 타이머는 세션 전환 시 clear됨) —
+      // 세션 B의 15s 재시도만 발화 — 총 3회.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+    });
+
+    it('token이 여러 backoff를 넘겨도 계속 미가용이면 재시도를 이어간다', async () => {
+      let tokenAvailable = false;
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return tokenAvailable ? 'token-late2' : null;
+        return null;
+      });
+
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+
+      // 첫 backoff(15s) 시점에도 토큰 여전히 없음 — 두 번째 backoff(30s)를 예약.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+
+      tokenAvailable = true;
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[1]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(mockRegister.mock.calls[0][0].token).toBe('token-late2');
+    });
+
+    it('대기 중인 재시도 타이머가 있는 상태에서 같은 세션이 다시 실패하면 타이머를 갈아치운다', async () => {
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      const { rerender } = renderHook(
+        ({ sub }: { sub: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            currentStation: station,
+            subsurface: sub,
+          }),
+        { initialProps: { sub: false } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // 실패 — 15s 재시도 예약
+
+      // 첫 backoff가 발화하기 전, 같은 세션에서 subsurface 토글로 즉시 재실행 → 다시 실패.
+      rerender({ sub: true });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // 실패 — 기존 15s 타이머를 clear하고 다음 backoff(30s)로 재schedule
+
+      // 원래 예정이던 첫 backoff(15s) 시점엔 아직 발화 안 함 — 옛 타이머가 clear되고
+      // attempt가 이미 1로 진행돼 있어 다음 예약은 backoff[1](30s) 기준.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0] + 100);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[1]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+    });
+
+    it('register 성공(ok:true)은 재시도를 트리거하지 않음 — dedup 폭주 방지(#703) 보존', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(
+          REGISTER_RETRY_BACKOFF_MS[REGISTER_RETRY_BACKOFF_MS.length - 1] * 5,
+        );
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
     });
   });
 
