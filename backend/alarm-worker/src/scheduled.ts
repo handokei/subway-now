@@ -1200,6 +1200,27 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         await cleanupTripWithLa(trip, env, deps, stats, now, log, 'la-stale-backstop');
         continue;
       }
+      // #2131 (Part A-2, ADR-014 동급 보장) — boarding-prompt 9단 게이트 평가를 lockless
+      // intermediate 분기보다 앞으로 hoist. 기존엔 `trip.infoModeEnabled && waypoint.kind ===
+      // 'intermediate'`인 trip이 이 지점에 도달하지 못하고 `runLocklessIntermediate` +
+      // `continue`로 빠져나가 boarding-prompt 평가가 영구 skip되는 회귀가 있었다 — C 토글
+      // ON(사용자 명시 의향) trip이 lock 활성 trip과 동급 정확도를 보장받지 못한 것.
+      // 조건: lock 없음(바깥 `if (!isBoardingLockActive(...))`가 이미 보장) +
+      // `promptState.fired` 아님 — 두 조건 모두 `evaluateAndMaybeFireBoardingPrompt` 내부에서
+      // 이미 강제된다(F2 lock-active 방어 + 게이트 #9 already-fired dedup). 여기서는 호출
+      // 위치만 앞으로 옮기고 별도 pre-check는 두지 않는다 — 이중 게이트로 인한 관측(counter)
+      // 손실을 피하기 위함(기존 boardingPromptBlocked/already-fired 회귀 신호 보존).
+      // `runLocklessIntermediate` 호출 자체와 순서는 아래에서 불변 유지 (#1967 kill switch 의미
+      // 보존 — kill switch는 그 함수 내부에서만 게이트한다).
+      try {
+        await evaluateAndMaybeFireBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
+      } catch (e) {
+        stats.errors += 1;
+        log('boarding-prompt: evaluation error', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
       // #816 C — lockless opt-in trip은 게이트 우회. lock 없이도 intermediate waypoint 통과
       // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
       // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면
@@ -1226,18 +1247,6 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         // ADR-023: backend 발사 결정 X — device의 `shouldSuppressBySleepRule`가 실제 suppress gate.
         sleepMode: trip.sleepModeEnabled,
       });
-      // #819 — lock 미발생 trip에 boarding-prompt 9단 게이트 평가 분기. 게이트 통과 시 alert
-      // push로 "탑승 중이세요?"를 묻고, 클라이언트가 사용자 응답으로 lock을 자동 생성한다.
-      // 게이트 자체가 false positive 9중 차단 (ADR Section 2)이라 phase-based 노이즈와 분리.
-      try {
-        await evaluateAndMaybeFireBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
-      } catch (e) {
-        stats.errors += 1;
-        log('boarding-prompt: evaluation error', {
-          error: String(e),
-          token: trip.token.slice(0, 8),
-        });
-      }
       // #1826 — lock 없는 trip에서도 LA BG update heartbeat 발사.
       // ETA 미지 → newArrivalEpoch=now: ΔETA 게이트는 첫 call에서 통과(last===undefined),
       // 이후 heartbeat(90s) 게이트만 적용. putTrip dirty 여부와 무관하게 별도 persist.
