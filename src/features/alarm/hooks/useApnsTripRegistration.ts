@@ -294,6 +294,51 @@ export function useApnsTripRegistration({
   const lastDestinationIdRef = useRef<string | null>(null);
   const lastBoardingLockSigRef = useRef<string | null>(null);
 
+  /**
+   * #2129 — 두 register 경로(main effect / token-refresh listener)가 거의 동시에 실행돼도
+   * 동일 입력에서 동일 payload를 만들도록 `latestInputsRef` 단일 출처에서 register하는 helper.
+   *
+   * 이전에는 main effect가 closure로 캡처한 route/currentStation 등을 직접 callRegister에 넘기고,
+   * token-refresh listener만 `latestInputsRef.current`를 읽어 두 경로가 서로 다른 입력 snapshot을
+   * 쓸 수 있었다. `latestInputsRef`는 매 렌더 후 동기 effect로 갱신되므로 두 경로 모두 "그 순간의
+   * 최신 상태"라는 같은 소스를 읽게 만들면, 시점 차이로 다른 waypoints(#918 매역 확장 분기가
+   * currentStation null 여부로 갈림)를 만들어 backend register dedup hash가 어긋나고 두 건의
+   * POST /trips가 모두 통과해버리는 회귀(2026-08-04 실탑승 evidence — 유령 trip 2개, waypoints
+   * 5개 vs 2개)를 구조적으로 차단한다.
+   */
+  const registerFromLatestInputs = async (
+    token: string,
+  ): Promise<Awaited<ReturnType<typeof callRegister>> | null> => {
+    const {
+      route: r,
+      destination: d,
+      nextStationEtaSeconds: eta,
+      currentStation: cs,
+      boardingLock: bl,
+      subsurface: sub,
+      infoModeEnabled: ime,
+      sleepMode: sm,
+    } = latestInputsRef.current;
+    if (!r || !d) return null;
+    const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
+    const result = await callRegister({
+      token,
+      route: r,
+      destination: d,
+      nextStationEtaSeconds: eta,
+      currentStation: cs,
+      boardingLock: bl,
+      subsurface: sub,
+      infoModeEnabled: ime,
+      sleepMode: sm,
+      createdAt: resolveTripCreatedAt(sessionKey),
+      cachedPromptContext: lastPromptContextRef.current,
+    });
+    // #767 — 두 경로 모두 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도 유지.
+    lastSentLockSigRef.current = lockSig(bl);
+    return result;
+  };
+
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {
     let cancelled = false;
@@ -329,35 +374,9 @@ export function useApnsTripRegistration({
         } catch (e) {
           logger.warn('persist refreshed token failed:', e);
         }
-        // 활성 트립이 있으면 새 토큰으로 재등록한다.
-        const {
-          route: r,
-          destination: d,
-          nextStationEtaSeconds: eta,
-          currentStation: cs,
-          boardingLock: bl,
-          subsurface: sub,
-          infoModeEnabled: ime,
-          sleepMode: sm,
-        } = latestInputsRef.current;
-        if (!r || !d) return;
-        const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
-        await callRegister({
-          token,
-          route: r,
-          destination: d,
-          nextStationEtaSeconds: eta,
-          currentStation: cs,
-          boardingLock: bl,
-          subsurface: sub,
-          infoModeEnabled: ime,
-          sleepMode: sm,
-          createdAt: resolveTripCreatedAt(sessionKey),
-          cachedPromptContext: lastPromptContextRef.current,
-        });
-        // #767 — main effect와 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도
-        // 유지. token-refresh는 deps cycle을 거치지 않는 별경로지만 backend엔 동일 POST를 보내므로.
-        lastSentLockSigRef.current = lockSig(bl);
+        // #2129 — 활성 트립이 있으면 latestInputsRef 단일 출처로 재등록 (main effect와 payload
+        // 빌드 경로 통일 — registerFromLatestInputs 내부에서 lock sig 추적까지 함께 처리).
+        await registerFromLatestInputs(token);
       })();
     });
 
@@ -433,7 +452,6 @@ export function useApnsTripRegistration({
         return;
       }
 
-      const sessionKey = `${token}:${routeSig}:${destination.id}`;
       // #1284 — buildBoardingPromptContext가 성공하면 캐시 갱신. 이후 currentStation이
       // 일시 null이 돼도 cachedPromptContext로 fallback하여 backend 9단 게이트가 계속 진입 가능.
       // #1921 — lock 동봉. cross-trip 자동 전환 시 stale stamp 차단(callRegister 분기와 동일 입력).
@@ -447,22 +465,11 @@ export function useApnsTripRegistration({
       await clearBackendSsotMirror();
       // #1628 — R11-a 차단 1건 측정. burst dedup으로 같은 site 반복은 첫 1건만 적재.
       logCrossTripMirrorSkip('register');
-      const result = await callRegister({
-        token,
-        route,
-        destination,
-        nextStationEtaSeconds,
-        currentStation,
-        boardingLock,
-        subsurface,
-        infoModeEnabled,
-        sleepMode,
-        createdAt: resolveTripCreatedAt(sessionKey),
-        cachedPromptContext: lastPromptContextRef.current,
-      });
-      // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
-      // 신규 = null" 패턴인지 판정해 race 차단.
-      lastSentLockSigRef.current = boardingLockSig;
+      // #2129 — token-refresh listener와 동일한 latestInputsRef 단일 출처로 register. 이 시점의
+      // ref는 이미 이번 render의 최신 값으로 동기화돼 있어(ref-sync effect가 이 effect보다 먼저
+      // 실행) closure의 route/currentStation을 직접 쓰는 것과 결과가 같지만, 두 register 경로가
+      // 구조적으로 같은 소스를 읽게 만들어 payload divergence를 원천 차단한다.
+      const result = await registerFromLatestInputs(token);
       // #1264 (N3) + #1704 (d) — POST 발사 직후 송신된 routeSig / destination.id / boardingLockSig
       // 를 기록. 다음 cycle이 trip 전환(어느 하나라도 변경) 시 cancel 트리거.
       lastRouteSigRef.current = routeSig;
@@ -471,7 +478,7 @@ export function useApnsTripRegistration({
       // #669: cancelled 가드 밖에서 setItem — backend register 성공이면 UI cleanup 여부와 무관하게
       // ACTIVE_TRIP_KEY를 동기화. 가드 안에 두면 nextStationEtaSeconds·currentStation 변경으로
       // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
-      if (result.ok) {
+      if (result?.ok) {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
       }
     };
