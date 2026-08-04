@@ -116,7 +116,10 @@ jest.mock('../backendSsotMirror', () => ({
   readBackendSsotMirror: (...args: unknown[]) => mockReadBackendSsotMirror(...args),
 }));
 
-import { triggerTripEndRecall } from '../triggerTripEndRecall';
+import {
+  triggerTripEndRecall,
+  _resetTripEndRecallGuardForTests,
+} from '../triggerTripEndRecall';
 import {
   APNS_TOKEN_KEY,
   DESTINATION_KEY,
@@ -162,6 +165,9 @@ function setupHappyPath(): void {
 
 describe('triggerTripEndRecall', () => {
   beforeEach(() => {
+    // #2129 — in-memory 동시 호출 가드 초기화. tripStart 값을 여러 it 블록이 재사용하므로
+    // 매 테스트 시작 전 리셋하지 않으면 두 번째 이후 호출이 'duplicate'로 오탐된다.
+    _resetTripEndRecallGuardForTests();
     mockGetItem.mockReset();
     mockSetItem.mockReset();
     mockComputeAndUploadTripRecall.mockReset();
@@ -239,6 +245,39 @@ describe('triggerTripEndRecall', () => {
 
     expect(result).toEqual({ uploaded: false, skipped: 'duplicate' });
     expect(mockComputeAndUploadTripRecall).not.toHaveBeenCalled();
+  });
+
+  // #2129 — 18:05 hydration storm evidence: 여러 독립 호출자(force-end 경로)가 같은 trip에 대해
+  // 거의 동시에 triggerTripEndRecall을 호출하면, AsyncStorage 기반 duplicate 체크만으로는
+  // read-then-write async window에서 race가 발생해 3중 실행됐다. 동기 in-memory 가드로 차단.
+  it('#2129 — 동일 tripStart 동시 호출 2건 → 1건만 실제 실행, 나머지는 duplicate skip', async () => {
+    setupHappyPath();
+
+    const [resultA, resultB] = await Promise.all([
+      triggerTripEndRecall(),
+      triggerTripEndRecall(),
+    ]);
+
+    // 둘 중 정확히 하나만 실제로 upload/stamp 경로를 탔다.
+    const results = [resultA, resultB];
+    const duplicates = results.filter((r) => r.skipped === 'duplicate');
+    const executed = results.filter((r) => r.skipped !== 'duplicate');
+    expect(duplicates).toHaveLength(1);
+    expect(executed).toHaveLength(1);
+    expect(mockComputeAndUploadTripRecall).toHaveBeenCalledTimes(1);
+    expect(mockLogLocklessTripEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('#2129 — 다른 tripStart의 동시 호출은 서로 차단하지 않는다', async () => {
+    setupHappyPath();
+    // 두 번째 호출은 다른 tripStart를 갖도록 순차 mock 전환.
+    mockGetTripStartedAt
+      .mockResolvedValueOnce(100)
+      .mockResolvedValueOnce(200);
+
+    await Promise.all([triggerTripEndRecall(), triggerTripEndRecall()]);
+
+    expect(mockComputeAndUploadTripRecall).toHaveBeenCalledTimes(2);
   });
 
   it('route/origin/destination 누락 시 skip (route-arc-failed)', async () => {
