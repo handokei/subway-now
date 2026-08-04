@@ -1,5 +1,6 @@
 import {
   buildFallbackSequenceLabel,
+  buildPrevTrainLabel,
   buildSilentPushCountValue,
   SILENT_PUSH_LABELS,
 } from '../labels';
@@ -38,6 +39,19 @@ describe('buildFallbackSequenceLabel (#855)', () => {
     it('arrivalSeconds 음수면 분 라벨 생략 (이론상 발생 안하지만 가드)', () => {
       expect(buildFallbackSequenceLabel(1, -10)).toBe('약 2정거장 전');
     });
+  });
+});
+
+describe('buildPrevTrainLabel (#2139)', () => {
+  it('60초 미만은 "방금 출발"', () => {
+    expect(buildPrevTrainLabel(0)).toBe('방금 출발');
+    expect(buildPrevTrainLabel(59)).toBe('방금 출발');
+  });
+
+  it('60초 이상은 "출발 약 N분 전" (반올림)', () => {
+    expect(buildPrevTrainLabel(60)).toBe('출발 약 1분 전');
+    expect(buildPrevTrainLabel(90)).toBe('출발 약 2분 전');
+    expect(buildPrevTrainLabel(150)).toBe('출발 약 3분 전');
   });
 });
 

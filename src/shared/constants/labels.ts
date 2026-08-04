@@ -37,6 +37,23 @@ export function buildFallbackSequenceLabel(index: number, arrivalSeconds?: numbe
 }
 
 /**
+ * BoardingTrainList "전열차" row 라벨 — #2139.
+ *
+ * 출발역을 방금 떠난 열차(도착 예정 목록에 없는 열차)를 선택 가능한 후보로 노출할 때 쓰는 라벨.
+ * elapsedSeconds는 "다음역까지 hop 소요 시간 − 다음역 도착까지 남은 초"로 추정한 경과 시간.
+ *
+ * 출력 예:
+ *   buildPrevTrainLabel(30)   → "방금 출발"      (1분 미만)
+ *   buildPrevTrainLabel(90)   → "출발 약 2분 전"  (반올림)
+ *   buildPrevTrainLabel(150)  → "출발 약 3분 전"
+ */
+export function buildPrevTrainLabel(elapsedSeconds: number): string {
+  if (elapsedSeconds < 60) return '방금 출발';
+  const minutes = Math.round(elapsedSeconds / 60);
+  return `출발 약 ${minutes}분 전`;
+}
+
+/**
  * #856 — DebugModal Silent Push 섹션 라벨.
  *
  * `lastReceivedAt`만 보고 "왜 안 울리지?" 묻는 사용자 의문 해결을 위해 received/fired
