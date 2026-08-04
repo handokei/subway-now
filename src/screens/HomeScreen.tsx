@@ -59,6 +59,7 @@ import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide'
 import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushHealthCheck';
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
+import { usePrevTrainCandidate } from '../features/alarm/hooks/usePrevTrainCandidate';
 import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetScheduler';
 import { useStationPrescheduler } from '../features/alarm/hooks/useStationPrescheduler';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
@@ -664,6 +665,17 @@ export default function HomeScreen() {
     barometerSubsurface,
     accelerometerPattern,
     cellularEnvironmentVote,
+  });
+  // #2139 — "전열차"(출발역을 방금 떠난 열차) 후보. lock이 없는 상태(=BoardingTrainList 노출 구간)에서만
+  // 의미가 있지만 Rules of Hooks 준수를 위해 항상 호출 — currentStation/nextStationName 부재 시
+  // hook 내부에서 graceful null 반환.
+  const { prevTrain } = usePrevTrainCandidate({
+    route,
+    destinationName: destination?.name ?? null,
+    currentStation: effectiveOrigin,
+    nextStationName,
+    line: approachLine ?? effectiveOrigin?.line ?? null,
+    currentArrivals: boardingListArrivals,
   });
   // #1844 — cold start mismatch 재확인: lock 해제 → 사용자가 다시 탑승 선택 가능.
   const handleColdStartMismatchReselect = useCallback(() => {
@@ -1516,6 +1528,9 @@ export default function HomeScreen() {
                                     // 계산되고도 이 prop으로 전달되지 않아 fetch 완료 전 빈 배열이 그대로
                                     // "도착 예정 열차 없음"으로 렌더됐다.
                                     loading={arrivalLoading}
+                                    // #2139 — 전열차(출발역을 방금 떠난 열차) 후보. 식별 불가 시 null이라
+                                    // 기존 [현열차 | 다음열차] 렌더가 그대로 보존된다.
+                                    prevTrain={prevTrain}
                                   />
                                 </View>
                               );

@@ -21,7 +21,8 @@ import { recordLockCorrection } from '../utils/lockCorrectionMetrics';
 import { buildDirectionMeta } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../../../shared/constants/lineColors';
-import { buildFallbackSequenceLabel } from '../../../shared/constants/labels';
+import { buildFallbackSequenceLabel, buildPrevTrainLabel } from '../../../shared/constants/labels';
+import type { PrevTrainCandidate } from '../hooks/usePrevTrainCandidate';
 import stationsData from '../../../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -153,6 +154,13 @@ interface Props {
    * 더 높음 (error > loading > fallback-empty > empty > data).
    */
   fallbackReason?: 'autolock-empty' | 'autolock-ambiguity' | 'autolock-station-lookup' | null;
+  /**
+   * "전열차" 후보 — #2139. 출발역을 방금 떠난(도착 예정 목록에서 이미 사라진) 열차.
+   * usePrevTrainCandidate가 다음역 arrivals 역산으로 산출해 호출자가 전달한다.
+   * null/미전달이면 기존 동작 100% 보존(전열차 row 미노출) — 식별 불가/기점 등 fallback 케이스.
+   * 탭 시 다른 row와 동일하게 onSelect(prevTrain.train) 호출 — 신규 분기 없이 기존 lock 생성 경로 재사용.
+   */
+  prevTrain?: PrevTrainCandidate | null;
 }
 
 /**
@@ -198,6 +206,7 @@ export function BoardingTrainList({
   error = null,
   onLockCorrected,
   fallbackReason = null,
+  prevTrain = null,
 }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -296,6 +305,113 @@ export function BoardingTrainList({
   // train.line은 어댑터가 subwayId로 row마다 정확히 결정한 값(#663). 일치하는 row만 표시.
   const filteredArrivals = arrivals.filter((train) => train.line === line);
 
+  /**
+   * row 렌더 — 일반 도착 row와 #2139 "전열차" row가 공유하는 Pressable 구조.
+   *
+   * @param arrivalText null이면 도착 시각 라인 자체를 생략(전열차는 다음역 ETA라 "도착 예정" 표기가
+   *   현재역 기준 사용자에게 오해를 줄 수 있어 표시하지 않음).
+   * @param testKeyPrefix testID 접두어 — 일반 row는 'boarding-train', 전열차는 'boarding-train-prev'.
+   *   같은 trainCode라도 testID가 겹치지 않게 분리(전열차는 currentArrivals에서 제외된 trainCode만
+   *   후보가 되므로 실제 충돌은 없지만, 접두어로 두 row 종류를 명확히 구분).
+   * @param isPrev true면 walkingBufferSeconds 기반 unreachable 판정을 적용하지 않는다 — 전열차는
+   *   이미 출발역을 떠난 열차라 "도보로 못 탄다" 개념이 적용되지 않는다(사용자가 이미 탑승 중인 상태).
+   */
+  const renderRow = (
+    train: ArrivalInfo,
+    sequenceText: string,
+    arrivalText: string | null,
+    testKeyPrefix: 'boarding-train' | 'boarding-train-prev',
+    isPrev = false,
+  ) => {
+    const unreachable = !isPrev && isUnreachable(train);
+    // #1165 — 다른 row가 pending이면 이 row는 disabled. 같은 row가 pending이면 highlight.
+    const isPending = pendingTrainCode === train.trainCode;
+    const isPendingBlocked = pendingTrainCode != null && !isPending;
+    const disabled = unreachable || isPendingBlocked;
+    // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
+    const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
+    return (
+      <Pressable
+        key={`${testKeyPrefix}-${train.trainCode}`}
+        onPress={() => handlePress(train)}
+        disabled={disabled}
+        style={[
+          compact ? styles.rowCompact : styles.row,
+          compact ? null : { backgroundColor: colors.card },
+          { borderLeftWidth: LINE_STRIPE_WIDTH, borderLeftColor: LINE_COLORS[train.line] },
+          isPending && {
+            borderWidth: PENDING_BORDER_WIDTH,
+            borderColor: colors.accent,
+          },
+          { opacity: unreachable ? 0.4 : isPendingBlocked ? 0.5 : 1 },
+        ]}
+        testID={`${testKeyPrefix}-row-${train.trainCode}`}
+        accessibilityRole="button"
+        accessibilityLabel={t('a11y.alarm.boardingTrainSelectLabel', {
+          meta: metaText,
+          sequence: sequenceText,
+          arrival: arrivalText ?? '',
+        })}
+        accessibilityHint={t('a11y.alarm.boardingTrainSelectHint')}
+        accessibilityState={{ disabled, busy: isPending }}
+      >
+        <View style={styles.rowContent}>
+          {/* #1165 pending marker — 테스트/스크린리더 접근용. 시각적 highlight는 outline border로 처리.
+              Pressable의 accessibilityState.busy=true가 이미 스크린리더에 pending을 전달하므로
+              marker 자체는 의미 없는 0×0 View. testID만 노출. */}
+          {isPending && (
+            <View
+              style={styles.pendingMarker}
+              testID={`${testKeyPrefix}-pending-${train.trainCode}`}
+            />
+          )}
+          <View style={styles.rowMetaLine}>
+            <Text
+              style={[
+                compact ? typography.bodySm : typography.body,
+                { color: colors.ink, flex: 1 },
+              ]}
+              testID={`${testKeyPrefix}-meta-${train.trainCode}`}
+            >
+              {metaText}
+            </Text>
+            {/* trainCode/시간표 배지는 일반 모드에서만 노출. compact는 timeline hop slot 안 inline이라 정보 밀도 최소화. */}
+            {!compact &&
+              (isScheduleFallbackTrainCode(train.trainCode) ? (
+                <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
+              ) : (
+                <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
+              ))}
+          </View>
+          {/* #805: sequence(거리/상태)와 시간 라벨은 별도 라인으로 분리.
+              sequenceText가 "전역 출발"/"당역 도착"/"4번째 전" 등 어떤 길이여도 시간 라벨이
+              같은 줄에서 가려지지 않는다. sequenceText가 비어 있으면 그 라인은 미렌더하지만
+              시간 라벨 라인은 항상 표시한다. */}
+          {sequenceText.length > 0 && (
+            <View style={styles.rowSequenceLine}>
+              <Text
+                style={[typography.bodySm, { color: colors.muted }]}
+                testID={`${testKeyPrefix}-sequence-${train.trainCode}`}
+              >
+                {sequenceText}
+              </Text>
+            </View>
+          )}
+          {arrivalText != null && (
+            <View style={styles.rowArrivalLine}>
+              <Text
+                style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}
+                testID={`${testKeyPrefix}-arrival-${train.trainCode}`}
+              >
+                {arrivalText}
+              </Text>
+            </View>
+          )}
+        </View>
+      </Pressable>
+    );
+  };
+
   // #897 Seam A: 가장 가까운 도착 ETA가 lock 시점보다 +180s 이상이면 누적 지연(분) 노출.
   // arrivals는 호출자가 도착시간 오름차순으로 전달한다는 컨벤션을 따른다(#749 카운터와 동일 가정).
   const delayMinutes = computeDelayMinutes(filteredArrivals, initialEtaSeconds);
@@ -374,7 +490,9 @@ export function BoardingTrainList({
     );
   }
 
-  if (filteredArrivals.length === 0) {
+  // #2139 — prevTrain(전열차)이 있으면 도착 예정 목록이 비어도 선택 가능한 row가 최소 1개 있으므로
+  // empty placeholder 대신 아래 정상 list 렌더(전열차 row만 노출)로 진행한다.
+  if (filteredArrivals.length === 0 && prevTrain == null) {
     return (
       <View
         style={compact ? styles.emptyCompact : styles.empty}
@@ -420,14 +538,16 @@ export function BoardingTrainList({
           </Text>
         </View>
       )}
+      {prevTrain != null &&
+        renderRow(
+          prevTrain.train,
+          buildPrevTrainLabel(prevTrain.elapsedSeconds),
+          null,
+          'boarding-train-prev',
+          true,
+        )}
       {filteredArrivals.map((train, index) => {
-        const unreachable = isUnreachable(train);
-        // #1165 — 다른 row가 pending이면 이 row는 disabled. 같은 row가 pending이면 highlight.
-        const isPending = pendingTrainCode === train.trainCode;
-        const isPendingBlocked = pendingTrainCode != null && !isPending;
-        const disabled = unreachable || isPendingBlocked;
         // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
-        const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
         // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 mock/schedule fallback 경로 —
         // #855에서 fallback 라벨을 "약 N정거장 전 (약 M분 후)"로 단위 명시. arrivalSeconds가 0
         // 이하면 분 라벨 생략.
@@ -437,84 +557,7 @@ export function BoardingTrainList({
             ? parsedDistance
             : buildFallbackSequenceLabel(index, train.arrivalSeconds);
         const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
-        return (
-          <Pressable
-            key={train.trainCode}
-            onPress={() => handlePress(train)}
-            disabled={disabled}
-            style={[
-              compact ? styles.rowCompact : styles.row,
-              compact ? null : { backgroundColor: colors.card },
-              { borderLeftWidth: LINE_STRIPE_WIDTH, borderLeftColor: LINE_COLORS[train.line] },
-              isPending && {
-                borderWidth: PENDING_BORDER_WIDTH,
-                borderColor: colors.accent,
-              },
-              { opacity: unreachable ? 0.4 : isPendingBlocked ? 0.5 : 1 },
-            ]}
-            testID={`boarding-train-row-${train.trainCode}`}
-            accessibilityRole="button"
-            accessibilityLabel={t('a11y.alarm.boardingTrainSelectLabel', {
-              meta: metaText,
-              sequence: sequenceText,
-              arrival: arrivalText,
-            })}
-            accessibilityHint={t('a11y.alarm.boardingTrainSelectHint')}
-            accessibilityState={{ disabled, busy: isPending }}
-          >
-            <View style={styles.rowContent}>
-              {/* #1165 pending marker — 테스트/스크린리더 접근용. 시각적 highlight는 outline border로 처리.
-                  Pressable의 accessibilityState.busy=true가 이미 스크린리더에 pending을 전달하므로
-                  marker 자체는 의미 없는 0×0 View. testID만 노출. */}
-              {isPending && (
-                <View
-                  style={styles.pendingMarker}
-                  testID={`boarding-train-pending-${train.trainCode}`}
-                />
-              )}
-              <View style={styles.rowMetaLine}>
-                <Text
-                  style={[
-                    compact ? typography.bodySm : typography.body,
-                    { color: colors.ink, flex: 1 },
-                  ]}
-                  testID={`boarding-train-meta-${train.trainCode}`}
-                >
-                  {metaText}
-                </Text>
-                {/* trainCode/시간표 배지는 일반 모드에서만 노출. compact는 timeline hop slot 안 inline이라 정보 밀도 최소화. */}
-                {!compact &&
-                  (isScheduleFallbackTrainCode(train.trainCode) ? (
-                    <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
-                  ) : (
-                    <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
-                  ))}
-              </View>
-              {/* #805: sequence(거리/상태)와 시간 라벨은 별도 라인으로 분리.
-                  sequenceText가 "전역 출발"/"당역 도착"/"4번째 전" 등 어떤 길이여도 시간 라벨이
-                  같은 줄에서 가려지지 않는다. sequenceText가 비어 있으면 그 라인은 미렌더하지만
-                  시간 라벨 라인은 항상 표시한다. */}
-              {sequenceText.length > 0 && (
-                <View style={styles.rowSequenceLine}>
-                  <Text
-                    style={[typography.bodySm, { color: colors.muted }]}
-                    testID={`boarding-train-sequence-${train.trainCode}`}
-                  >
-                    {sequenceText}
-                  </Text>
-                </View>
-              )}
-              <View style={styles.rowArrivalLine}>
-                <Text
-                  style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}
-                  testID={`boarding-train-arrival-${train.trainCode}`}
-                >
-                  {arrivalText}
-                </Text>
-              </View>
-            </View>
-          </Pressable>
-        );
+        return renderRow(train, sequenceText, arrivalText, 'boarding-train');
       })}
     </View>
   );

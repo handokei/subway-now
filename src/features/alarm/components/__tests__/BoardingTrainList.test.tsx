@@ -5,6 +5,7 @@ import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { LineNumber } from '../../../../shared/types/station';
+import type { PrevTrainCandidate } from '../../hooks/usePrevTrainCandidate';
 import {
   getLockCorrectionMetrics,
   resetLockCorrectionMetrics,
@@ -1293,6 +1294,106 @@ describe('BoardingTrainList', () => {
       jest.clearAllMocks();
       fireEvent.press(getByTestId('boarding-train-row-T-B'));
       expect(Haptics.impactAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#2139 전열차 row', () => {
+    function makePrevTrain(overrides: Partial<ArrivalInfo> = {}, elapsedSeconds = 90): PrevTrainCandidate {
+      return {
+        train: makeTrain({ trainCode: 'T-PREV', arrivalSeconds: 40, ...overrides }),
+        elapsedSeconds,
+      };
+    }
+
+    it('prevTrain 미전달(undefined) 시 기존 렌더 100% 보존 — 전열차 row 미노출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
+      expect(queryByTestId('boarding-train-prev-row-T-PREV')).toBeNull();
+    });
+
+    it('prevTrain=null 시 기존 렌더 100% 보존 — 전열차 row 미노출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} prevTrain={null} />,
+      );
+      expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
+      expect(queryByTestId('boarding-train-prev-row-T-PREV')).toBeNull();
+    });
+
+    it('prevTrain 전달 시 일반 row보다 먼저 전열차 row가 렌더된다', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const prevTrain = makePrevTrain();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+      );
+      expect(getByTestId('boarding-train-prev-row-T-PREV')).toBeTruthy();
+      expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
+    });
+
+    it('전열차 row는 buildPrevTrainLabel 라벨을 sequence 라인에 노출하고, 도착 시각 라인은 생략한다', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const prevTrain = makePrevTrain({}, 90); // 90s → "출발 약 2분 전"
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+      );
+      expect(getByTestId('boarding-train-prev-sequence-T-PREV').props.children).toBe('출발 약 2분 전');
+      expect(queryByTestId('boarding-train-prev-arrival-T-PREV')).toBeNull();
+    });
+
+    it('60초 미만 elapsedSeconds는 "방금 출발" 라벨', () => {
+      const prevTrain = makePrevTrain({}, 10);
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+      );
+      expect(getByTestId('boarding-train-prev-sequence-T-PREV').props.children).toBe('방금 출발');
+    });
+
+    it('전열차 row 탭 시 onSelect가 prevTrain.train으로 호출된다 (기존 lock 생성 경로 재사용)', () => {
+      const onSelect = jest.fn();
+      const prevTrain = makePrevTrain();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[]} line="2" onSelect={onSelect} prevTrain={prevTrain} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-prev-row-T-PREV'));
+      expect(onSelect).toHaveBeenCalledWith(prevTrain.train);
+    });
+
+    it('도착 예정 목록이 비어도 prevTrain이 있으면 empty placeholder 대신 전열차 row만 렌더한다', () => {
+      const prevTrain = makePrevTrain();
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+      );
+      expect(queryByTestId('boarding-train-list-empty')).toBeNull();
+      expect(getByTestId('boarding-train-list')).toBeTruthy();
+      expect(getByTestId('boarding-train-prev-row-T-PREV')).toBeTruthy();
+    });
+
+    it('walkingBufferSeconds가 커도 전열차 row는 unreachable(disabled) 처리되지 않는다', () => {
+      // train.arrivalSeconds(40) < walkingBufferSeconds(300) → 일반 row라면 disabled였을 조건.
+      const prevTrain = makePrevTrain({ arrivalSeconds: 40 });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          prevTrain={prevTrain}
+          walkingBufferSeconds={300}
+        />,
+      );
+      expect(getByTestId('boarding-train-prev-row-T-PREV').props.accessibilityState.disabled).toBe(false);
+    });
+
+    it('전열차 row 탭 시 pending 낙관적 UI가 동일하게 적용된다', () => {
+      const prevTrain = makePrevTrain();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-prev-row-T-PREV'));
+      expect(getByTestId('boarding-train-prev-pending-T-PREV')).toBeTruthy();
+      expect(getByTestId('boarding-train-list-pending-notice')).toBeTruthy();
     });
   });
 });
