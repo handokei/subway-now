@@ -80,7 +80,10 @@ export function usePrevTrainCandidate({
     );
     if (candidates.length === 0) return null;
 
-    const closest = candidates.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min));
+    const closest = candidates.reduce(
+      (min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min),
+      candidates[0],
+    );
     const stopSeconds = getStopSeconds(line, currentStation.id, nextStation.id);
     const elapsedSeconds = Math.max(0, stopSeconds - closest.arrivalSeconds);
     return { train: closest, elapsedSeconds };
