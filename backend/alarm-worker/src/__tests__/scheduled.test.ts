@@ -150,7 +150,8 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0,
+    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
     hopEndPromptFired: 0, hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
@@ -4327,6 +4328,93 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.boardingPromptEvaluated).toBe(0);
   });
 
+  // #2130 (Part B-be-1) — 신선도 게이트. trip 등록 후 15분 경과 시 evaluate 자체를 skip.
+  it('#2130 — trip 등록 후 15분 경과 시 boardingPromptSkippedStale +1, evaluate 미도달', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ createdAt: NOW - 15 * 60 * 1000 - 1 }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedStale).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2130 — 15분 경계(정확히 15분)는 신선도 게이트 통과', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ createdAt: NOW - 15 * 60 * 1000 }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedStale).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
+  // #2130 (Part B-be-1) — 근접 게이트. distance/accuracy 둘 다 있고 오차 고려해도 150m 밖이면 차단.
+  it('#2130 — originDistanceM/originAccuracyM 둘 다 존재 + 150m 초과 → boardingPromptSkippedTooFar +1', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          originDistanceM: 227,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2130 — 경계(distance - accuracy === 150) 는 근접 게이트 통과 (150 초과만 차단)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          originDistanceM: 300,
+          originAccuracyM: 150,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
+  it('#2130 — originDistanceM/originAccuracyM 부재(지하/구 클라) → 근접 게이트 관대 허용', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
   it('9단 통과 + APNs 200 → alert push 발사 + state.fired 영구화', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
@@ -4356,7 +4444,14 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(alertBody.data.line).toBe('2');
 
     const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
-    expect(persisted.boardingPromptState).toEqual({ fired: true, lastFiredAt: NOW });
+    // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. 반복 발사(A4) 상태(firedTrainCodes/fireCount)가
+    // 함께 stamp된다. DEFAULT_BP_ARRIVAL(arvlCd=2, trainCode='T1')이 단일 후보라 dedup 없이 선택된다.
+    expect(persisted.boardingPromptState).toEqual({
+      fired: true,
+      lastFiredAt: NOW,
+      fireCount: 1,
+      firedTrainCodes: ['T1'],
+    });
   });
 
   it('이미 fired된 trip은 미발사 + blocked 카운트', async () => {
@@ -4371,6 +4466,169 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
     expect(stats.boardingPromptFired).toBe(0);
     expect(stats.boardingPromptBlocked).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  // #2130 (Part B-be-2, A4) — 반복 발사. "trip당 1회" 정책 폐기 후 5분 최소 간격을 넘긴
+  // 새 trainCode는 재발사한다.
+  // #2130 (Part B-be-2) — AUTO_PROMPT_DEDUP_WINDOW_MS(30분) 게이트는 `boardingPromptState`가
+  // undefined(리셋)일 때만 발동해야 한다. 같은 trip 안에서 반복 발사 중(boardingPromptState
+  // 존재)이면 이 30분 게이트가 겹쳐 걸려 2번째 열차조차 못 쏘는 회귀를 방지한다.
+  it('#2130 — lastAutoPromptedAt이 30분 이내라도 boardingPromptState 존재 시 auto-dedup 미적용', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        lastAutoPromptedAt: NOW - 5 * 60 * 1000,
+        boardingPromptState: {
+          fired: true,
+          lastFiredAt: NOW - 5 * 60 * 1000,
+          fireCount: 1,
+          firedTrainCodes: ['T1'],
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const nextTrainArrival: ArrivalEntry = {
+      destination: '성수',
+      arrivalSeconds: 30,
+      trainCode: 'T2',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 2,
+    };
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeBoardingPromptDeps(fetchImpl, makeSeoul([nextTrainArrival])),
+    );
+    expect(stats.boardingPromptAutoDeduped).toBe(0);
+    expect(stats.boardingPromptFired).toBe(1);
+  });
+
+  it('#2130 A4 — 5분 경과 + 새 trainCode 관측 시 재발사 + collapse-id 고정', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        boardingPromptState: {
+          fired: true,
+          lastFiredAt: NOW - 5 * 60 * 1000,
+          fireCount: 1,
+          firedTrainCodes: ['T1'],
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const nextTrainArrival: ArrivalEntry = {
+      destination: '성수',
+      arrivalSeconds: 30,
+      trainCode: 'T2',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 2,
+    };
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeBoardingPromptDeps(fetchImpl, makeSeoul([nextTrainArrival])),
+    );
+    expect(stats.boardingPromptFired).toBe(1);
+    expect(stats.boardingPromptSkippedMinInterval).toBe(0);
+    expect(stats.boardingPromptSkippedTrainDuplicate).toBe(0);
+
+    const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({
+      'apns-collapse-id': 'boarding-prompt-bp-tok',
+    });
+
+    const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
+    expect(persisted.boardingPromptState).toEqual({
+      fired: true,
+      lastFiredAt: NOW,
+      fireCount: 2,
+      firedTrainCodes: ['T1', 'T2'],
+    });
+  });
+
+  it('#2130 A4 — 5분 미달이면 새 trainCode여도 boardingPromptSkippedMinInterval로 차단', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        boardingPromptState: {
+          fired: true,
+          lastFiredAt: NOW - 60_000,
+          fireCount: 1,
+          firedTrainCodes: ['T1'],
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const nextTrainArrival: ArrivalEntry = {
+      destination: '성수',
+      arrivalSeconds: 30,
+      trainCode: 'T2',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 2,
+    };
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeBoardingPromptDeps(fetchImpl, makeSeoul([nextTrainArrival])),
+    );
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptSkippedMinInterval).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2130 A4 — 5분 경과했지만 같은 trainCode면 boardingPromptSkippedTrainDuplicate로 차단', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        boardingPromptState: {
+          fired: true,
+          lastFiredAt: NOW - 5 * 60 * 1000,
+          fireCount: 1,
+          firedTrainCodes: ['T1'],
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    // DEFAULT_BP_ARRIVAL(trainCode='T1') 그대로 재관측 — 같은 열차가 cron 여러 tick에 걸림.
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptSkippedTrainDuplicate).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('#2130 A4 — fireCount가 최대 발사 횟수(3)에 도달하면 boardingPromptSkippedMaxFires로 차단', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        boardingPromptState: {
+          fired: true,
+          lastFiredAt: NOW - 10 * 60 * 1000,
+          fireCount: 3,
+          firedTrainCodes: ['T1', 'T2', 'T3'],
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptSkippedMaxFires).toBe(1);
     expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
@@ -4773,7 +5031,14 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     // #2069 (Phase 3) — B8(silent fallback) 제거. B7 원격 alert push 단일 채널 — 1회 fetch.
     expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
     const persisted = JSON.parse((await kv.get('trip:b8-tok'))!);
-    expect(persisted.boardingPromptState).toEqual({ fired: true, lastFiredAt: NOW });
+    // #2130 (Part B-be-2) — 반복 발사(A4) 상태 동시 stamp. ARVL_ARRIVED_SINGLE(arvlCd=1,
+    // trainCode='B8-T1')이 단일 후보라 dedup 없이 선택된다.
+    expect(persisted.boardingPromptState).toEqual({
+      fired: true,
+      lastFiredAt: NOW,
+      fireCount: 1,
+      firedTrainCodes: ['B8-T1'],
+    });
   });
 
   it('archFlag=off + series=[] → 기존 no-candidates 차단 유지 (회귀 방어)', async () => {
@@ -9419,7 +9684,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0,
+      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
       hopEndPromptFired: 0, hopEndPromptBlocked: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,

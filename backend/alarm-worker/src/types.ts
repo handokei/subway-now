@@ -299,6 +299,18 @@ export interface PromptGeoContext {
   nextStation: { lat: number; lng: number };
   /** 방향 게이트(#5)에서 어느 방향으로 가야 하는지 — Seoul API의 isUp과 정합. */
   direction: 'up' | 'down' | null;
+  /**
+   * #2130 (Part B-be-1) — device가 heal 시점에 GPS fix로 계산한 출발역까지 거리(m).
+   * fix가 있을 때만 스탬프(정확도가 나빠도 항상 동봉) — backend 근접 게이트(§단계3)의 입력.
+   * fix 자체가 없으면(지하 등) 필드 자체를 생략한다 — 부재는 게이트에서 "허용"으로 해석.
+   */
+  originDistanceM?: number;
+  /**
+   * #2130 (Part B-be-1) — 위 거리 계산에 사용된 GPS 정확도(m, `location.coords.accuracy`).
+   * backend 근접 게이트가 `originDistanceM - originAccuracyM > 150` 일 때만 차단한다
+   * (오차 고려 보수적 차단 — 정확도가 나쁜 실내 GPS의 false positive 방어).
+   */
+  originAccuracyM?: number;
 }
 
 /** boarding-prompt 사용자 표시 컨텍스트. */
@@ -537,8 +549,25 @@ export interface BoardingPromptState {
   lastFiredAt?: number;
   /** 사용자가 dismiss/미탑승으로 silence 요청한 시각 (epoch ms). */
   silencedUntil?: number;
-  /** 이 trip에 이미 발사 후 사용자 응답을 받았는지 — 한 trip 1회 정책. */
+  /**
+   * 이 trip에 최소 1회 발사됐는지 — 관측/D1 acceptance 전용 플래그.
+   *
+   * #2130 (Part B-be-2) 이후 boarding-prompt는 이 필드로 게이트하지 않는다("trip당 1회" 정책
+   * 폐기 — 반복 발사로 전환, `firedTrainCodes` + `fireCount` + `lastFiredAt` 참조). hop-end
+   * prompt(`evaluateHopEndPromptGates`)는 여전히 이 필드로 leg당 1회를 게이트한다(불변).
+   */
   fired?: boolean;
+  /**
+   * #2130 (Part B-be-2) — boarding-prompt 반복 발사(A4) trainCode dedup. arvlCd=1 관측마다
+   * 발사하되 같은 trainCode는 1회만 — 열차가 플랫폼에 정차 중 cron 여러 tick에 걸쳐도
+   * 재발사하지 않는다. hop-end prompt는 사용하지 않는다.
+   */
+  firedTrainCodes?: string[];
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — boarding-prompt 누적 발사 횟수.
+   * `MAX_FIRE_COUNT`(3)에 도달하면 15분 신선도 창이 남아 있어도 즉시 skip한다.
+   */
+  fireCount?: number;
 }
 
 /**

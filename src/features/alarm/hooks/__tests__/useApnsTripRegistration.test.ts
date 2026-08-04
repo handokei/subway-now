@@ -55,7 +55,10 @@ import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../../../shared/types/station';
 import type { Route } from '../../../../shared/utils/stationRoute';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
-import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../../shared/constants/boardingLock';
+import {
+  BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
+  CONTEXT_HEAL_TIER2_DELAY_MS,
+} from '../../../../shared/constants/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
 const station: Station = {
@@ -1345,6 +1348,447 @@ describe('useApnsTripRegistration', () => {
         // 캐시가 reset됐으므로 이전 origin 컨텍스트가 누출 안 됨
         expect(secondArgs.promptGeoContext).toBeUndefined();
         expect(secondArgs.promptDisplay).toBeUndefined();
+      });
+    });
+  });
+
+  // #2130 — context-heal (B-1 Tier 1/2) + GPS 근접 스탬프 (B-2)
+  describe('#2130 — context-heal 조건부 재등록 + GPS 근접 스탬프', () => {
+    // 단조 3호선 대화(3-001) → 정발산(3-003): buildBoardingPromptContext non-null 반환 보장.
+    const origin: Station = {
+      id: '3-001',
+      name: '대화',
+      line: '3',
+      lat: 37.676087,
+      lng: 126.747569,
+      lineColor: '#EF7C1C',
+    };
+    const dest: Station = {
+      id: '3-003',
+      name: '정발산',
+      line: '3',
+      lat: 37.659477,
+      lng: 126.773359,
+      lineColor: '#EF7C1C',
+    };
+    const route3 = makeDirectRoute(2, '3');
+
+    it('Tier 1 — cold-start(캐시 empty + currentStation=null)로 등록 후 station 해소 시 context를 포함해 재등록', async () => {
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      // cold-start 첫 register: 캐시도 없고 currentStation도 null → context 결손
+      expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeUndefined();
+      expect(mockRegister.mock.calls[0][0].promptDisplay).toBeUndefined();
+
+      // GPS/fusion이 station을 해소 — null → non-null 전환
+      rerender({ cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      const healed = mockRegister.mock.calls[1][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number } };
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+      expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+    });
+
+    it('Tier 1 — heal이 실패(context 여전히 결손)해도 같은 세션에서 재시도하지 않는다 (1회 가드)', async () => {
+      // currentStation === destination이면 buildBoardingPromptContext가 null 반환(기존 동작).
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // null → dest(=destination, context 여전히 결손) 전환 — heal 1회 시도
+      rerender({ cs: dest });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].promptGeoContext).toBeUndefined();
+
+      // 같은 세션 안에서 다시 null → origin(context 빌드 가능한 station) 전환이 와도
+      // 세션당 1회 가드로 추가 heal 없음.
+      rerender({ cs: null });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      rerender({ cs: origin });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('Tier 1 — heal 성공 후 station이 다시 흔들려도(null→non-null 재전환) 추가 heal 없음 (context 이미 보유)', async () => {
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeUndefined();
+
+      // 첫 heal 성공 — context 확보.
+      rerender({ cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].promptGeoContext).toBeDefined();
+
+      // GPS가 다시 흔들려 null이 됐다가 다른 유효 station으로 재전환돼도, 직전 register가
+      // 이미 context를 포함했으므로(lastRegisterMissingContextRef=false) heal을 재시도하지 않는다.
+      rerender({ cs: null });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      rerender({ cs: dest });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('Tier 1 — currentStation이 이미 non-null로 시작한 trip은 heal 대상 아님(정상 등록 경로)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: route3,
+          destination: dest,
+          nextStationEtaSeconds: 120,
+          currentStation: origin,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeDefined();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    describe('Tier 2 — 지하 fallback (route 출발역, 스탬프 없이)', () => {
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('60초 내 currentStation 미해소 + subsurface=true → route 출발역 기준 heal', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: null,
+            subsurface: true,
+            routeOriginStation: origin,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+        expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeUndefined();
+
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+        const healed = mockRegister.mock.calls[1][0] as {
+          promptGeoContext?: { origin: { lat: number; lng: number }; originDistanceM?: number };
+          promptDisplay?: { originStation: string; line: string };
+        };
+        expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+        // Tier 2는 스탬프 없이 송신 — GPS fix 여부와 무관하게 항상 생략.
+        expect(healed.promptGeoContext?.originDistanceM).toBeUndefined();
+        expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+      });
+
+      it('60초 후 currentStation이 이미 해소돼 있으면 Tier 2 heal 미발동', async () => {
+        const { rerender } = renderHook(
+          ({ cs }: { cs: Station | null }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: cs,
+              subsurface: true,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { cs: null as Station | null } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // Tier 1이 먼저 정상 해소 (currentStation resolve) — Tier 2는 그 뒤로 발동할 필요 없음.
+        rerender({ cs: origin });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        // currentStation이 non-null이므로 Tier 2 조건(cs 미해소) 불충족 — 추가 register 없음.
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+      });
+
+      it('subsurface=false면 60초가 지나도 Tier 2 heal 미발동', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: null,
+            subsurface: false,
+            routeOriginStation: origin,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+      });
+
+      it('트립 종료가 60초 전에 일어나면 대기 중인 Tier 2 타이머를 cancel', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return 'token-abc';
+          if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+          return null;
+        });
+        const { rerender } = renderHook(
+          ({ r, d }: { r: Route | null; d: Station | null }) =>
+            useApnsTripRegistration({
+              route: r,
+              destination: d,
+              nextStationEtaSeconds: 120,
+              currentStation: null,
+              subsurface: true,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { r: route3 as Route | null, d: dest as Station | null } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // 타이머가 발화하기 전에 trip 종료
+        rerender({ r: null, d: null });
+        await waitFor(() => expect(mockClear).toHaveBeenCalled());
+
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        // trip이 이미 종료돼 register가 추가로 호출되지 않는다 (타이머 cancel 확인).
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+      });
+
+      it('60초 전에 같은 trip이 재등록되면 직전 Tier 2 타이머를 clear하고 재arm', async () => {
+        const { rerender } = renderHook(
+          ({ sub }: { sub: boolean }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: null,
+              subsurface: sub,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { sub: true } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // subsurface deps 변경 → run() 재실행 → 이미 armed된 타이머를 clear 후 재arm.
+        act(() => {
+          jest.advanceTimersByTime(1000);
+        });
+        rerender({ sub: false });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+
+        // 재arm된 타이머 기준으로 CONTEXT_HEAL_TIER2_DELAY_MS 경과해야 발동 — subsurface가
+        // 이제 false이므로 Tier 2 조건 자체는 불충족(추가 register 없음)이지만, 옛 타이머가
+        // clear됐다면 이 시점(원래 예정보다 1000ms 늦게 도착)에 register가 정확히 몇 번인지로
+        // "clear+재arm"이 실제로 일어났음을 간접 확인한다.
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+      });
+
+      it('이미 heal된 세션에서 타이머가 다시 도착해도 재heal하지 않는다 (세션 공유 가드)', async () => {
+        const { rerender } = renderHook(
+          ({ ime }: { ime: boolean }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: null,
+              subsurface: true,
+              infoModeEnabled: ime,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { ime: false } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // 첫 Tier 2 heal 발동
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+
+        // infoModeEnabled 토글로 register가 다시 발생(deps 변경) — currentStation은 여전히
+        // null, subsurface도 여전히 true이므로 새 Tier 2 타이머가 재arm된다.
+        rerender({ ime: true });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+
+        // 재arm된 타이머가 도착해도 이미 healedSessionKeyRef가 이 세션으로 세팅돼 있어 skip.
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+      });
+
+      it('route 출발역 기준 context 빌드가 실패하면(예: origin===destination) heal을 조용히 skip', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: null,
+            subsurface: true,
+            // buildBoardingPromptContext는 currentStation===destination이면 null을 반환한다
+            // (기존 동작) — Tier 2가 이 케이스를 override context 빌드 실패로 만나는 fixture.
+            routeOriginStation: dest,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        // context 빌드 실패 — heal POST 없이 조용히 skip.
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+      });
+
+      it('routeOriginStation이 없으면 60초가 지나도 Tier 2 heal 미발동 (fallback 대상 없음)', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: null,
+            subsurface: true,
+            routeOriginStation: null,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('B-2 — GPS 근접 스탬프 (originDistanceM / originAccuracyM)', () => {
+      it('gpsFix 제공 시 promptGeoContext에 originDistanceM/originAccuracyM 동봉', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: origin,
+            gpsFix: { lat: origin.lat, lng: origin.lng, accuracyM: 12 },
+          }),
+        );
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+        const args = mockRegister.mock.calls[0][0] as {
+          promptGeoContext?: { originDistanceM?: number; originAccuracyM?: number };
+        };
+        // gpsFix가 origin과 동일 좌표이므로 거리는 0에 수렴.
+        expect(args.promptGeoContext?.originDistanceM).toBe(0);
+        expect(args.promptGeoContext?.originAccuracyM).toBe(12);
+      });
+
+      it('gpsFix가 아예 없으면(null) originDistanceM/originAccuracyM 필드 자체를 생략', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: origin,
+            gpsFix: null,
+          }),
+        );
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+        const args = mockRegister.mock.calls[0][0] as {
+          promptGeoContext?: { originDistanceM?: number; originAccuracyM?: number };
+        };
+        expect(args.promptGeoContext).toBeDefined();
+        expect(args.promptGeoContext?.originDistanceM).toBeUndefined();
+        expect(args.promptGeoContext?.originAccuracyM).toBeUndefined();
       });
     });
   });

@@ -805,6 +805,12 @@ export interface SendBoardingPromptPushOptions {
   nextLine?: string;
   /** #2034 — hop-end 시 다음 leg 출발역. 미지정이면 device UI 에서 next-line 만 표시. */
   nextStation?: string;
+  /**
+   * #2130 (Part B-be-2) — `apns-collapse-id` 헤더. 반복 발사(A4)로 새 열차의 prompt가 이전
+   * 무응답 배너를 알림센터에서 최신으로 교체(스택 방지). 미지정 시 헤더 생략(구 caller /
+   * hop-end 호출부 backward compat — hop-end는 leg별 1회라 collapse 불필요).
+   */
+  collapseId?: string;
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -886,6 +892,9 @@ export async function sendBoardingPromptPush(
       'content-type': 'application/json',
       // #1788 — thread-id groups notifications by trip.
       'apns-thread-id': options.tripToken,
+      // #2130 (Part B-be-2) — apns-collapse-id: 반복 발사(A4)로 새 열차 prompt가 이전 무응답
+      // 배너를 알림센터에서 최신으로 교체(스택 방지).
+      ...(options.collapseId !== undefined ? { 'apns-collapse-id': options.collapseId } : {}),
     },
     body,
   });

@@ -56,6 +56,28 @@ export const MIN_WINDOW_SAMPLES = 1;
 export const MIN_FUSED_SPEED_KMH = 5;
 /** 게이트 #9 — dismiss 후 silence 길이. */
 export const DISMISS_SILENCE_MS = 5 * 60 * 1000;
+/**
+ * #2130 (Part B-be-1) — 근접 게이트 임계(m). `originDistanceM - originAccuracyM`가 이 값을
+ * 넘으면 차단(오차 고려 보수적 차단). 역사 반경 실측 100~180m 근거로 150m 채택(플랜 §2 D2).
+ */
+export const PROMPT_PROXIMITY_MARGIN_M = 150;
+/**
+ * #2130 (Part B-be-1) — 신선도 게이트. trip 등록(또는 heal) 후 이 시간이 지나면 boarding-prompt
+ * 자격이 만료된다 — 오래된 trip에 뒤늦게 발사되는 stale prompt 방지 + 반복 발사(A4) 창의 상한.
+ */
+export const PROMPT_FRESHNESS_MS = 15 * 60 * 1000;
+/**
+ * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — 반복 발사(A4) 최소 발사 간격.
+ * 직전 발사로부터 이 시간 미만이면 새 열차(arvlCd=1)가 도착해도 재발사하지 않는다
+ * (배차 2~3분 역에서 연발 방지). `DISMISS_SILENCE_MS`와 값은 같지만 의미가 달라 별도 상수로 분리.
+ */
+export const MIN_FIRE_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — trip당 boarding-prompt 최대 발사 횟수 hard cap.
+ * "15분 창 ÷ 5분 간격 = 실효 최대 3회"와 정합 — `promptState.fireCount`가 이 값에 도달하면
+ * 신선도 게이트(15분) 만료 전이라도 즉시 skip한다.
+ */
+export const MAX_FIRE_COUNT = 3;
 
 export type GateOutcome =
   | { pass: true; metrics: WindowedMetrics; fusedSpeedKmh: number }
@@ -72,7 +94,9 @@ export type GateSkipReason =
   | 'motion-not-moving'
   | 'motion-stationary'
   | 'silenced'
-  | 'already-fired';
+  | 'already-fired'
+  | 'fired-too-recently'
+  | 'max-fires-reached';
 
 export interface OriginCoord {
   lat: number;
@@ -132,6 +156,10 @@ export interface EvaluateBoardingPromptInputs {
 
 /**
  * 게이트 #9 — silence / 1회 발사 dedup. promptState 부재 = 첫 시도, 통과 (null 반환).
+ *
+ * hop-end 전용(`evaluateHopEndPromptGates`)이 사용한다 — leg당 1회 정책은 불변.
+ * boarding-prompt는 #2130 Part B-be-2부터 `evaluateBoardingPromptRepeatGate`를 대신 사용한다
+ * (아래) — "trip당 1회(fired 영구 차단)" 정책 폐기.
  */
 function evaluateSilenceGate(
   promptState: BoardingPromptState | undefined,
@@ -146,6 +174,43 @@ function evaluateSilenceGate(
     promptState.silencedUntil > now
   ) {
     return { pass: false, reason: 'silenced' };
+  }
+  return null;
+}
+
+/**
+ * 게이트 #9 (boarding-prompt 전용, #2130 Part B-be-2, 2026-08-04 사용자 결정) — 반복 발사 정책.
+ *
+ * "trip당 1회(`fired` 영구 차단)" 정책 폐기 — 15분 창 내 arvlCd=1 열차 도착마다 재발사를
+ * 허용하되 다음 정지 조건으로 스팸을 막는다:
+ *   ① 응답 — caller(scheduled.ts)의 F2 defense(`trip.boardingLock !== undefined`)가 별도 차단.
+ *   ② 15분 신선도 만료 — caller가 `trip.createdAt` 기준으로 별도 게이트(Part B-be-1).
+ *   ③ dismiss 후 silence — `silencedUntil` (기존 `DISMISS_SILENCE_MS` 유지).
+ *   [신규] 최대 발사 횟수 hard cap(3회) — `promptState.fireCount`.
+ *   ④ 최소 발사 간격(5분) — `promptState.lastFiredAt`.
+ * `fired` 필드 자체는 더 이상 검사하지 않는다 — 관측 전용 플래그로만 유지된다(d1TripMetrics 등).
+ *
+ * hop-end는 여전히 `evaluateSilenceGate`(1회 정책)를 사용 — 이 함수는 boarding-prompt 전용.
+ */
+function evaluateBoardingPromptRepeatGate(
+  promptState: BoardingPromptState | undefined,
+  now: number,
+): GateOutcome | null {
+  if (!promptState) return null;
+  if (
+    promptState.silencedUntil !== undefined &&
+    promptState.silencedUntil > now
+  ) {
+    return { pass: false, reason: 'silenced' };
+  }
+  if ((promptState.fireCount ?? 0) >= MAX_FIRE_COUNT) {
+    return { pass: false, reason: 'max-fires-reached' };
+  }
+  if (
+    promptState.lastFiredAt !== undefined &&
+    now - promptState.lastFiredAt < MIN_FIRE_INTERVAL_MS
+  ) {
+    return { pass: false, reason: 'fired-too-recently' };
   }
   return null;
 }
@@ -246,8 +311,8 @@ function isGpsDependentBypassEnv(env: StationEnvironment | undefined): boolean {
 export function evaluateBoardingPromptGates(
   inputs: EvaluateBoardingPromptInputs,
 ): GateOutcome {
-  // #9 — silence / 1회 발사 dedup (가장 cheap한 가드 우선).
-  const silenceOutcome = evaluateSilenceGate(inputs.promptState, inputs.now);
+  // #9 — 반복 발사 정책(#2130 Part B-be-2, 가장 cheap한 가드 우선).
+  const silenceOutcome = evaluateBoardingPromptRepeatGate(inputs.promptState, inputs.now);
   if (silenceOutcome) return silenceOutcome;
 
   // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면 결과 재사용.
@@ -308,9 +373,28 @@ export function evaluateBoardingPromptGates(
 /**
  * trip의 boarding-prompt state를 발사 시점 또는 dismiss 시점에 갱신해 반환.
  * caller는 결과를 trip에 set 후 KV 저장.
+ *
+ * #2130 (Part B-be-2) — `prev` + `trainCode`를 전달하면 반복 발사(A4) 상태를 누적한다:
+ *   - `firedTrainCodes`: trainCode가 주어지면 prev 배열에 append (같은 trainCode 재추가는
+ *     caller가 사전에 dedup 체크로 걸러내므로 여기서는 단순 append).
+ *   - `fireCount`: 매 호출마다 +1 (최대 발사 횟수 hard cap 게이트의 입력).
+ * hop-end 호출부(`maybeFireHopEndPrompt`)는 `prev`/`trainCode` 없이 `markPromptFired(now)`만
+ * 호출한다 — 이 경우 `firedTrainCodes`는 생략되고 `fireCount`는 1로 시작(hop-end는 leg당 1회라
+ * 게이트에서 참조되지 않음, 값 존재 자체는 무해).
  */
-export function markPromptFired(now: number): BoardingPromptState {
-  return { fired: true, lastFiredAt: now };
+export function markPromptFired(
+  now: number,
+  prev?: BoardingPromptState,
+  trainCode?: string | null,
+): BoardingPromptState {
+  const firedTrainCodes =
+    trainCode != null ? [...(prev?.firedTrainCodes ?? []), trainCode] : prev?.firedTrainCodes;
+  return {
+    fired: true,
+    lastFiredAt: now,
+    fireCount: (prev?.fireCount ?? 0) + 1,
+    ...(firedTrainCodes !== undefined ? { firedTrainCodes } : {}),
+  };
 }
 
 export function markPromptSilenced(
