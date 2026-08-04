@@ -67,6 +67,29 @@ import { useUserIntentStore } from '../store/useUserIntentStore';
 
 const log = createLogger('triggerTripEndRecall');
 
+/**
+ * #2129 — trip당 1회 in-flight/완료 가드 (tripStart 기준, in-memory).
+ *
+ * 배경: 4개 독립 호출자(silent push trip-ended / useLaunchTripReconciliation Signal 4 +
+ * status=ended 분기 / useDeviceSelfEnd 3-signal / useDestinationStore FG setDestination(null))가
+ * 각자 인스턴스/cycle 가드만 갖고 공유 가드는 없었다. 18:05 hydration storm(FG 직후 3 cycle)에서
+ * 서로 다른 force-end 경로가 같은 trip에 대해 거의 동시에 진입하면, 기존 AsyncStorage 기반
+ * duplicate 체크(`LAST_UPLOADED_RECALL_TRIP_START_KEY`)는 read(await) → write(await) 사이 race
+ * window가 넓어(네트워크 upload를 포함한 전체 async 체인) 3건 모두 통과, `lockless-trip-end`
+ * stamp가 3중 적재됐다(#2129 evidence).
+ *
+ * 이 Set은 tripStart를 안 뒤 **동기적으로** 즉시 체크+등록한다 — 두 호출이 거의 동시에
+ * `getTripStartedAt()` await에서 깨어나도, 먼저 재개된 쪽이 add()까지 await 없이 끝내므로
+ * 뒤에 재개되는 쪽은 반드시 갱신된 Set을 본다(JS 단일 스레드 특성). AsyncStorage 기반
+ * duplicate 체크는 앱 재시작 간 지속성을 위해 그대로 유지 — 이 in-memory 가드는 같은 세션 내
+ * 동시 호출만 추가로 차단한다.
+ */
+const guardedTripStarts = new Set<number>();
+
+export function _resetTripEndRecallGuardForTests(): void {
+  guardedTripStarts.clear();
+}
+
 export type TriggerTripEndRecallSkipReason =
   | 'no-trip-start'
   | 'no-route'
@@ -99,6 +122,13 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
       await triggerAlarmLogForward(Date.now() - 24 * 60 * 60 * 1000);
       return { uploaded: false, skipped: 'no-trip-start' };
     }
+
+    // #2129 — 동시 호출 가드. AsyncStorage 기반 duplicate 체크보다 먼저, 동기적으로 체크+등록.
+    if (guardedTripStarts.has(tripStart)) {
+      log.info(`concurrent duplicate trip-end recall skip: tripStart=${tripStart}`);
+      return { uploaded: false, skipped: 'duplicate' };
+    }
+    guardedTripStarts.add(tripStart);
 
     // Idempotency 가드 (P2-2). silent push trip-ended → FG 복귀 → useStateRehydration의
     // setDestination(null) 재호출 같은 race에서도 중복 upload 차단.
