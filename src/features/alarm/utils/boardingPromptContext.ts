@@ -37,15 +37,30 @@ import {
   getNextStationName,
   getNextStationOnLine,
 } from '../../../shared/utils/stationRoute';
+import { haversine } from '../../../shared/utils/haversine';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
 import { inferLoopDirection } from '../../route/utils/loopDirection';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
+
+/** #2130 (B-2) — 등록 시점 GPS fix. 근접 스탬프 입력. */
+export interface GpsFix {
+  lat: number;
+  lng: number;
+  accuracyM: number;
+}
 
 export interface BoardingPromptContext {
   promptGeoContext: {
     origin: { lat: number; lng: number };
     nextStation: { lat: number; lng: number };
     direction: 'up' | 'down' | null;
+    /**
+     * #2130 (B-2) — origin과 GPS fix 사이 거리(m). backend 근접 게이트(B-backend, 별도 PR)의
+     * 입력. GPS fix가 아예 없을 때만 생략 — backend는 부재를 관대하게(지하/구 클라) 통과시킨다.
+     */
+    originDistanceM?: number;
+    /** #2130 (B-2) — GPS fix 정확도(m). originDistanceM과 항상 짝으로만 존재. */
+    originAccuracyM?: number;
   };
   promptDisplay: {
     originStation: string;
@@ -70,6 +85,21 @@ interface BuildInputs {
    * 담당하고 본 컨텍스트는 prompt 전용 stamp만 갱신한다.
    */
   lock?: BoardingLock | null;
+  /**
+   * #2130 (B-2) — 등록 시점 GPS fix. 제공되면 origin과의 거리를 계산해 promptGeoContext에
+   * 동봉한다. 미제공(undefined/null)이면 필드 자체를 생략(GPS fix 없음 — 지하/권한거절 graceful).
+   */
+  gpsFix?: GpsFix | null;
+}
+
+/** #2130 (B-2) — GPS fix가 있을 때만 origin 근접 스탬프 필드를 만든다. */
+function buildOriginGpsStamp(
+  origin: { lat: number; lng: number },
+  gpsFix: GpsFix | null | undefined,
+): { originDistanceM: number; originAccuracyM: number } | Record<string, never> {
+  if (gpsFix == null) return {};
+  const originDistanceM = Math.round(haversine(gpsFix.lat, gpsFix.lng, origin.lat, origin.lng) * 1000);
+  return { originDistanceM, originAccuracyM: gpsFix.accuracyM };
 }
 
 export function buildBoardingPromptContext({
@@ -77,13 +107,14 @@ export function buildBoardingPromptContext({
   currentStation,
   destination,
   lock,
+  gpsFix,
 }: BuildInputs): BoardingPromptContext | null {
   if (!route || !currentStation || !destination) return null;
 
   // #1921 — lock 활성 분기. route 원본 line이 lock leg와 어긋난 cross-trip 자동 전환에서
   // currentStation 기준으로 lock.boardingLine 위의 다음 역 좌표 + direction을 stamp.
   if (lock != null) {
-    return buildLockActiveContext({ route, currentStation, destination, lock });
+    return buildLockActiveContext({ route, currentStation, destination, lock, gpsFix });
   }
 
   // lock 미활성 — 기존 first-leg 기반 path 보존.
@@ -102,11 +133,13 @@ export function buildBoardingPromptContext({
     resolveTravelDirection(leg.line, currentStation.name, leg.endName)?.direction ??
     inferLoopDirection(leg.line, currentStation.name, leg.endName);
 
+  const origin = { lat: currentStation.lat, lng: currentStation.lng };
   return {
     promptGeoContext: {
-      origin: { lat: currentStation.lat, lng: currentStation.lng },
+      origin,
       nextStation: { lat: nextStation.lat, lng: nextStation.lng },
       direction,
+      ...buildOriginGpsStamp(origin, gpsFix),
     },
     promptDisplay: {
       originStation: currentStation.name,
@@ -130,11 +163,13 @@ function buildLockActiveContext({
   currentStation,
   destination,
   lock,
+  gpsFix,
 }: {
   route: NonNullable<Route>;
   currentStation: Station;
   destination: Station;
   lock: BoardingLock;
+  gpsFix?: GpsFix | null;
 }): BoardingPromptContext | null {
   const segmentEndName = findSegmentEndStationName(route, lock.boardingLine, destination.name);
   if (segmentEndName == null) return null;
@@ -150,11 +185,13 @@ function buildLockActiveContext({
     resolveTravelDirection(lock.boardingLine, currentStation.name, segmentEndName)?.direction ??
     inferLoopDirection(lock.boardingLine, currentStation.name, segmentEndName);
 
+  const origin = { lat: currentStation.lat, lng: currentStation.lng };
   return {
     promptGeoContext: {
-      origin: { lat: currentStation.lat, lng: currentStation.lng },
+      origin,
       nextStation: { lat: nextStation.lat, lng: nextStation.lng },
       direction,
+      ...buildOriginGpsStamp(origin, gpsFix),
     },
     promptDisplay: {
       originStation: currentStation.name,

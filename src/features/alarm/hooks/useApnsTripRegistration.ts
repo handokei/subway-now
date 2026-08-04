@@ -29,9 +29,16 @@ import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip } from '../utils/alarmLog';
-import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils/boardingPromptContext';
+import {
+  buildBoardingPromptContext,
+  type BoardingPromptContext,
+  type GpsFix,
+} from '../utils/boardingPromptContext';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
-import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
+import {
+  BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
+  CONTEXT_HEAL_TIER2_DELAY_MS,
+} from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -87,6 +94,20 @@ export interface UseApnsTripRegistrationInputs {
    * 미지정/false: 필드 미송신 (graceful) — backend 저장값 undefined 유지.
    */
   sleepMode?: boolean;
+  /**
+   * #2130 (B-2) — 등록 시점 GPS fix (lat/lng + accuracy). boarding-prompt 근접 게이트
+   * (backend B-backend, 별도 PR)의 입력으로 promptGeoContext에 동봉된다. GPS fix가 아예
+   * 없으면(GPS 미해소/권한 거절) 필드 자체를 생략 — backend는 부재를 관대하게(지하/구 클라
+   * 호환) 통과시킨다.
+   */
+  gpsFix?: GpsFix | null;
+  /**
+   * #2130 (B-1 Tier 2) — 등록 후 60초 내 `currentStation`이 여전히 미해소(지하 dead zone
+   * 등)이고 subsurface 판정일 때 fallback으로 사용할 route 출발역. 사용자가 역사 안에서
+   * route를 잡았다는 가정 — GPS 무관 persist 값(예: `useDestinationStore.tripOrigin`)을
+   * 그대로 전달한다.
+   */
+  routeOriginStation?: Station | null;
 }
 
 /**
@@ -122,6 +143,14 @@ interface RegisterCallInputs {
    * backend cron 진입 시점에 컨텍스트가 반드시 존재하도록 보장한다.
    */
   cachedPromptContext: BoardingPromptContext | null;
+  /**
+   * #2130 (B-1 Tier 2) — 미리 빌드된 context를 그대로 사용(currentStation 기반 fresh 빌드
+   * 및 cache fallback을 모두 건너뜀). `undefined`면 기존 fresh-build 경로, `null`이면
+   * "빌드 실패로 이번 사이클은 context 없음"을 명시.
+   */
+  promptContextOverride?: BoardingPromptContext | null;
+  /** #2130 (B-2) — 등록 시점 GPS fix. promptGeoContext 근접 스탬프 입력. */
+  gpsFix?: GpsFix | null;
 }
 
 /**
@@ -159,7 +188,16 @@ export function isLockConsistentWithRoute(lock: BoardingLock | null, route: Rout
 }
 
 /** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
-async function callRegister(input: RegisterCallInputs) {
+async function callRegister(
+  input: RegisterCallInputs,
+): Promise<
+  Awaited<ReturnType<typeof registerActiveTrip>> & {
+    hadPromptContext: boolean;
+    /** #2130 (B-1) — 실제로 송신된 context(있으면). 호출자가 캐시(`lastPromptContextRef`)에
+     * 반영해 Tier 1/Tier 2 heal 결과가 이후 register에도 이어지도록 한다. */
+    promptContext: BoardingPromptContext | null;
+  }
+> {
   // #622: BoardingLock metadata 빌드. lock의 boardingStationId로 station name 조회 후 schema 변환.
   // 조회/추론 실패 시 null → backend는 anchor waypoint 폴링으로 fallback (기존 동작).
   //
@@ -189,13 +227,21 @@ async function callRegister(input: RegisterCallInputs) {
   //
   // #1921 — lock 활성 시 lock.boardingLine + currentStation 우선 stamp. cross-trip 자동 전환에서
   // route 원본 line이 현재 leg와 어긋나도 stale stamp 회귀 차단.
-  const freshContext = buildBoardingPromptContext({
-    route: input.route,
-    currentStation: input.currentStation,
-    destination: input.destination,
-    lock: input.boardingLock,
-  });
-  const promptContext = freshContext ?? input.cachedPromptContext;
+  // #2130 (B-1 Tier 2) — 미리 빌드된 override가 있으면 fresh 빌드/cache fallback을 모두
+  // 건너뛰고 그대로 사용 (route 출발역 기준 heal — GPS 스탬프 없이 송신).
+  let promptContext: BoardingPromptContext | null;
+  if (input.promptContextOverride !== undefined) {
+    promptContext = input.promptContextOverride;
+  } else {
+    const freshContext = buildBoardingPromptContext({
+      route: input.route,
+      currentStation: input.currentStation,
+      destination: input.destination,
+      lock: input.boardingLock,
+      gpsFix: input.gpsFix,
+    });
+    promptContext = freshContext ?? input.cachedPromptContext;
+  }
 
   // #1895 — i18next.language를 backend가 인식하는 SupportedLocale로 정규화.
   // backend는 미송신 시 ko fallback이므로 비지원 locale은 송신 자체 skip.
@@ -205,7 +251,7 @@ async function callRegister(input: RegisterCallInputs) {
   // (`resolveApnsEnv()`)로 자연 fallback. self-heal 발동 횟수를 0에 수렴시키는 핵심 wire.
   const apnsEnv = await getRegisteringApnsEnv();
 
-  return registerActiveTrip({
+  const result = await registerActiveTrip({
     token: input.token,
     route: input.route,
     destination: input.destination.id,
@@ -233,6 +279,9 @@ async function callRegister(input: RegisterCallInputs) {
     // false/미설정은 필드 누락(graceful) — backend Trip.sleepModeEnabled=undefined 유지.
     ...(input.sleepMode ? { sleepModeEnabled: true } : {}),
   });
+  // #2130 (B-1) — 이번 register가 실제로 promptContext를 포함했는지 + 그 내용을 호출자에게 노출.
+  // Tier 1 heal 판정의 SSoT이자, 캐시(`lastPromptContextRef`) 갱신 입력.
+  return { ...result, hadPromptContext: promptContext != null, promptContext };
 }
 
 export function useApnsTripRegistration({
@@ -244,6 +293,8 @@ export function useApnsTripRegistration({
   subsurface = false,
   infoModeEnabled = false,
   sleepMode = false,
+  gpsFix = null,
+  routeOriginStation = null,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -252,9 +303,31 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled, sleepMode });
+  const latestInputsRef = useRef({
+    route,
+    destination,
+    nextStationEtaSeconds,
+    currentStation,
+    boardingLock,
+    subsurface,
+    infoModeEnabled,
+    sleepMode,
+    gpsFix,
+    routeOriginStation,
+  });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, subsurface, infoModeEnabled, sleepMode };
+    latestInputsRef.current = {
+      route,
+      destination,
+      nextStationEtaSeconds,
+      currentStation,
+      boardingLock,
+      subsurface,
+      infoModeEnabled,
+      sleepMode,
+      gpsFix,
+      routeOriginStation,
+    };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -294,6 +367,18 @@ export function useApnsTripRegistration({
   const lastDestinationIdRef = useRef<string | null>(null);
   const lastBoardingLockSigRef = useRef<string | null>(null);
 
+  // #2130 (B-1) — 직전 register가 promptContext 없이 나갔는지 여부. Tier 1 heal 트리거의
+  // SSoT — registerFromLatestInputs가 매 호출마다 callRegister의 실제 결과로 갱신한다.
+  const lastRegisterMissingContextRef = useRef(false);
+  // #2130 (B-1) — 이미 heal을 수행한 세션 key(`routeSig:destinationId`). Tier 1/Tier 2가
+  // 공유해 세션당 heal이 정확히 1회만 발동하도록 가드한다.
+  const healedSessionKeyRef = useRef<string | null>(null);
+  // #2130 (B-1 Tier 1) — 직전 렌더의 currentStation.id. null→non-null 전환 감지에 사용.
+  // lazy init으로 mount 시점 값을 그대로 캡처 — 이미 non-null로 시작한 trip은 전환 대상이 아니다.
+  const prevCurrentStationIdRef = useRef<string | null>(currentStation?.id ?? null);
+  // #2130 (B-1 Tier 2) — 지하 fallback 타이머 핸들.
+  const tier2TimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   /**
    * #2129 — 두 register 경로(main effect / token-refresh listener)가 거의 동시에 실행돼도
    * 동일 입력에서 동일 payload를 만들도록 `latestInputsRef` 단일 출처에서 register하는 helper.
@@ -308,6 +393,7 @@ export function useApnsTripRegistration({
    */
   const registerFromLatestInputs = async (
     token: string,
+    options?: { promptContextOverride?: BoardingPromptContext | null },
   ): Promise<Awaited<ReturnType<typeof callRegister>> | null> => {
     const {
       route: r,
@@ -318,6 +404,7 @@ export function useApnsTripRegistration({
       subsurface: sub,
       infoModeEnabled: ime,
       sleepMode: sm,
+      gpsFix: gf,
     } = latestInputsRef.current;
     if (!r || !d) return null;
     const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -333,10 +420,51 @@ export function useApnsTripRegistration({
       sleepMode: sm,
       createdAt: resolveTripCreatedAt(sessionKey),
       cachedPromptContext: lastPromptContextRef.current,
+      promptContextOverride: options?.promptContextOverride,
+      gpsFix: gf,
     });
     // #767 — 두 경로 모두 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도 유지.
     lastSentLockSigRef.current = lockSig(bl);
+    // #2130 (B-1) — 이번 register가 실제로 promptContext를 포함했는지 기록. 다음 currentStation
+    // null→non-null 전환 시 Tier 1 heal이 필요한지 판정하는 SSoT.
+    lastRegisterMissingContextRef.current = !result.hadPromptContext;
+    // #2130 (B-1) — 성공한 context(fresh/override 무관)를 캐시에 반영. Tier 2 heal의 route-origin
+    // 근사 context도 이 캐시를 통해 이후 정상 register(currentStation 여전히 null)에 이어져
+    // "heal 직후 다음 register가 다시 결손"되는 회귀를 막는다.
+    if (result.promptContext) lastPromptContextRef.current = result.promptContext;
     return result;
+  };
+
+  /**
+   * #2130 (B-1 Tier 2) — 지하 fallback heal. 등록 후 `CONTEXT_HEAL_TIER2_DELAY_MS` 시점에
+   * currentStation이 여전히 미해소 + subsurface 판정이면 route 출발역(`routeOriginStation`)
+   * 기준으로 promptContext를 빌드해 스탬프 없이 재등록한다.
+   *
+   * 발동 조건이 모두 충족되지 않으면 조용히 skip(graceful) — trip 종료, GPS 정상 해소, 지상
+   * 판정, 사용자가 route 미확정(routeOriginStation 없음) 등은 모두 정상 상태다.
+   */
+  const runTier2Heal = async (token: string, sessionKey: string): Promise<void> => {
+    const { route: r, destination: d, currentStation: cs, subsurface: sub, boardingLock: bl, routeOriginStation: origin } =
+      latestInputsRef.current;
+    /* istanbul ignore next -- route/destination이 null로 바뀌는 모든 경로(deps: routeSig,
+     * destination?.id)는 이 effect의 cleanup이 트립 종료 시점에 tier2TimerRef를 이미
+     * clearTimeout하므로, 이 콜백 자체가 trip 종료 후 실행될 도달 경로가 없다. 향후 리팩터로
+     * 그 보장이 깨질 경우를 대비한 방어적 가드. */
+    if (!r || !d) return; // trip 종료됨
+    if (cs != null) return; // 이미 GPS로 해소됨 — Tier 2 대상 아님
+    if (!sub) return; // 지하 판정 아님
+    if (origin == null) return; // fallback 대상 route 출발역 없음
+    if (healedSessionKeyRef.current === sessionKey) return; // 이미 heal 완료(Tier 1 포함)
+    const overrideContext = buildBoardingPromptContext({
+      route: r,
+      currentStation: origin,
+      destination: d,
+      lock: bl,
+      // gpsFix 미전달 — Tier 2는 스탬프 없이 송신(currentStation 자체가 GPS 미해소 상태).
+    });
+    if (overrideContext == null) return; // route 구조상 빌드 실패 — graceful skip
+    healedSessionKeyRef.current = sessionKey;
+    await registerFromLatestInputs(token, { promptContextOverride: overrideContext });
   };
 
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
@@ -415,6 +543,12 @@ export function useApnsTripRegistration({
         // #1284: trip 종료 시 prompt context 캐시 reset — 다음 trip이 이전 trip의
         // 출발역 컨텍스트를 stamp하는 오염 방지.
         lastPromptContextRef.current = null;
+        // #2130 (B-1): trip 종료 시 context-heal tracking 전부 reset — 다음 trip이 새로
+        // heal 1회 기회를 갖도록. (Tier 2 타이머는 이 effect의 cleanup이 이미 이전 execution
+        // 시점에 cancel했다 — 여기서 다시 clear할 필요 없음.)
+        lastRegisterMissingContextRef.current = false;
+        healedSessionKeyRef.current = null;
+        prevCurrentStationIdRef.current = null;
         return;
       }
 
@@ -455,7 +589,13 @@ export function useApnsTripRegistration({
       // #1284 — buildBoardingPromptContext가 성공하면 캐시 갱신. 이후 currentStation이
       // 일시 null이 돼도 cachedPromptContext로 fallback하여 backend 9단 게이트가 계속 진입 가능.
       // #1921 — lock 동봉. cross-trip 자동 전환 시 stale stamp 차단(callRegister 분기와 동일 입력).
-      const freshCtx = buildBoardingPromptContext({ route, currentStation, destination, lock: boardingLock });
+      const freshCtx = buildBoardingPromptContext({
+        route,
+        currentStation,
+        destination,
+        lock: boardingLock,
+        gpsFix: latestInputsRef.current.gpsFix,
+      });
       if (freshCtx) lastPromptContextRef.current = freshCtx;
       // R11-a (#1612): trip register 직전 backend SSoT mirror 강제 clean.
       // 스펙 docs/requirements/15-trip-alarm-notification.md:89 명시 요구사항 — "trip 등록(new)
@@ -481,6 +621,19 @@ export function useApnsTripRegistration({
       if (result?.ok) {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
       }
+      // #2130 (B-1 Tier 2) — 이번 register가 성공했으면 60초 타이머를 arm. 이 effect의
+      // cleanup이 매 re-execution 전에 이전 타이머를 이미 cancel하므로(아래), 여기 도달한
+      // 시점엔 tier2TimerRef가 항상 비어 있다 — "가장 최근 성공 register로부터 60초"가 기준.
+      if (result?.ok) {
+        // #2130 (B-1) — Tier 1과 동일한 `${routeSig}:${destination.id}` 포맷을 써야
+        // `healedSessionKeyRef` 가드가 두 tier에 걸쳐 세션당 1회를 정확히 보장한다(토큰은
+        // refresh로 바뀔 수 있어 세션 정체성에 포함하지 않는다).
+        const healSessionKey = `${routeSig}:${destination.id}`;
+        tier2TimerRef.current = setTimeout(() => {
+          tier2TimerRef.current = null;
+          void runTier2Heal(token, healSessionKey);
+        }, CONTEXT_HEAL_TIER2_DELAY_MS);
+      }
     };
 
     // #767 — lock 해제(non-null → null) 전환만 debounce. 다음 cycle이 새 lock을 들고 오면
@@ -503,6 +656,12 @@ export function useApnsTripRegistration({
       if (debounceTimer !== null) {
         clearTimeout(debounceTimer);
       }
+      // #2130 (B-1 Tier 2) — 이 effect cycle이 재실행(route/destination/lock 등 전환)되거나
+      // unmount되면 stale 세션 기준으로 예약된 타이머를 취소. 새 cycle의 run()이 필요 시 재arm.
+      if (tier2TimerRef.current !== null) {
+        clearTimeout(tier2TimerRef.current);
+        tier2TimerRef.current = null;
+      }
     };
     // route는 routeSig(내용 기반)로 비교 — 동일 경로 재등록으로 백엔드 trip
     // state(waypoints shift)가 reset되거나 워커 POST /trips가 분당 폭주하는 것을 방지.
@@ -524,4 +683,41 @@ export function useApnsTripRegistration({
     // suppress 판정. 토글 빈도는 사용자 명시 설정 시점만이므로 deps churn 위험 낮음.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeSig, destination?.id, boardingLockSig, subsurface, infoModeEnabled, sleepMode]);
+
+  // ── #2130 (B-1 Tier 1) — context-heal on currentStation null→non-null 전환 ──
+  //
+  // 위 main register effect는 #703 의도(POST 폭주 방지)로 currentStation을 deps에서 제외한다.
+  // 그 결과 cold-start register가 currentStation=null로 나가면(promptContext 결손) 이후
+  // GPS/fusion이 station을 해소해도 재등록 트리거가 없어 결손이 trip 내내 지속된다(#2130 근본
+  // 원인). 이 effect는 currentStation만을 deps로 갖는 별도 effect로 그 트리거를 신설한다 —
+  // main effect의 raw-deps 정책 자체는 건드리지 않는다.
+  //
+  // 조건: 활성 trip + 직전 register에 promptContext 없었음 + null→non-null 전환 + 세션당 미heal.
+  useEffect(() => {
+    const prevWasNull = prevCurrentStationIdRef.current == null;
+    prevCurrentStationIdRef.current = currentStation?.id ?? null;
+
+    if (!route || !destination) return; // trip 없음 — heal 대상 아님(trip-end 분기가 별도 reset).
+    if (!prevWasNull || currentStation == null) return; // null→non-null 전환만 대상.
+    if (!lastRegisterMissingContextRef.current) return; // 직전 register에 이미 context 있었음.
+
+    const sessionKey = `${routeSig}:${destination.id}`;
+    if (healedSessionKeyRef.current === sessionKey) return; // 세션당 1회 가드.
+
+    let cancelled = false;
+    void (async () => {
+      const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+      if (cancelled || !token) return;
+      // 가드를 먼저 세팅 — in-flight 중 동일 세션의 중복 heal 방지.
+      healedSessionKeyRef.current = sessionKey;
+      await registerFromLatestInputs(token);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // currentStation.id 전환만이 이 effect의 트리거 — route/destination 등은 closure로 최신값
+    // 참조(gate 조건 평가용)하되 deps에는 넣지 않는다: 위 main effect가 이미 그 변경들을
+    // 처리하므로 이 effect까지 반응하면 heal 판정이 중복 실행된다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStation?.id]);
 }
