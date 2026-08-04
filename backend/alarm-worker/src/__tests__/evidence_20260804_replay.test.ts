@@ -378,10 +378,67 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
 // ---------------------------------------------------------------------------
 
 describe('evidence 2026-08-04 — 종료 정리 stale tripStatus (#2144)', () => {
-  // #2144 PR이 이 replay 작성 시점에 아직 dev에 머지되지 않았다 (OPEN 상태 확인, 2026-08-04).
-  // 이슈 #2145 본문 4번 지시대로 충돌을 피하기 위해 `it.todo`로만 남긴다 — #2144 머지 후
-  // 별도 PR에서 아래 내용을 실 assertion으로 전환한다.
-  it.todo(
-    'trip DELETE 후 같은 token 재등록 시 tripStatus:<token> 이 register 성공 경로에서 정리된다 (#2144 머지 대기)',
-  );
+  // #2144 (PR #2146)가 dev에 머지됨 — it.todo에서 실 assertion으로 전환.
+  //
+  // #2144 이슈 본문 evidence: 아침 trip 종료 기록 `tripStatus:e25e1158…` = {endedAt: 08:47:11 KST,
+  // endReason: expired, TTL 8/11}가 같은 token의 새 trip이 20:06에 활성 등록된 뒤에도 잔존.
+  // register handler(index.ts)는 readTripEndedStatus로 read만 하고 성공 등록 후 clear하지
+  // 않았다 — 활성 trip과 '종료됨' 기록이 공존하는 상태 불일치가 관측됐다.
+  //
+  // writeTripEndedStatus는 production에서 cleanupTripWithLa(backend cron 종료 경로)를 통해서만
+  // 호출된다 — HTTP DELETE /trips/:token 경로는 tripStatus를 기록하지 않는다(types.ts:402~403
+  // 주석). 여기서는 그 종료 마커가 이미 KV에 존재하는 상태(백엔드 cron이 trip을 종료 처리한
+  // 직후)를 시드해 재등록 시 정리되는지를 관측 가능한 결과(KV의 tripStatus:<token> 키 존재
+  // 여부)로만 검증한다.
+  const TOKEN = 'e25e1158-evidence-tok';
+
+  function makeRegisterEnv(kv: InMemoryKV): Env {
+    return {
+      TRIPS: kv as unknown as Env['TRIPS'],
+      APNS_HOST: 'h',
+      APNS_HOST_SANDBOX: 'hs',
+      SEOUL_API_HOST: 'h',
+      SEOUL_API_KEY: 'k',
+      APNS_KEY_ID: 'k',
+      APNS_TEAM_ID: 't',
+      APNS_PRIVATE_KEY: 'p',
+      APNS_BUNDLE_ID: 'b',
+    };
+  }
+
+  function tripBody(): Record<string, unknown> {
+    const future = Date.now() + 60 * 60 * 1000;
+    return {
+      token: TOKEN,
+      route: { type: 'direct', line: '2', stops: 5 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: future,
+      alarmAtEpochMs: future - 30 * 60 * 1000,
+    };
+  }
+
+  it('trip 종료(cron 처리) 후 같은 token 재등록 시 tripStatus:<token> 이 register 성공 경로에서 정리된다', async () => {
+    const kv = new InMemoryKV();
+    const env = makeRegisterEnv(kv);
+
+    // 이슈 evidence 재현: 08:47:11 KST 'expired' 종료 마커 — 새 trip 재등록(20:06) 시점에는
+    // #1425 cooldown(1시간) 윈도우를 훌쩍 넘겨 재등록 자체는 허용되는 상태.
+    const endedAt = Date.now() - 12 * 60 * 60 * 1000; // 12시간 전 종료 (cooldown 윈도우 밖)
+    await kv.put(
+      `tripStatus:${TOKEN}`,
+      JSON.stringify({ endedAt, endReason: 'expired' }),
+      { expirationTtl: 7 * 24 * 60 * 60 },
+    );
+    expect(await kv.get(`tripStatus:${TOKEN}`)).not.toBeNull();
+
+    const res = await post('/trips', tripBody(), env);
+
+    expect(res.status).toBe(200);
+    // register 성공(활성 trip 등록) 후에도 옛 종료 마커가 남아있으면 "활성 trip + 종료됨 기록
+    // 공존"이라는 상태 불일치가 재발 — register 성공 경로에서 정리되어야 한다.
+    expect(await kv.get(`tripStatus:${TOKEN}`)).toBeNull();
+    // 새 trip은 정상 활성화됐어야 한다.
+    expect(await kv.get(`trip:${TOKEN}`)).not.toBeNull();
+  });
 });
