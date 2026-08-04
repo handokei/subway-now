@@ -598,6 +598,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedLockActive: number;
   /**
+   * #2131 (Part A-1) — `evaluateAndMaybeFireBoardingPrompt`가 `trip.promptGeoContext` 또는
+   * `trip.promptDisplay` 부재로 게이트 평가 자체를 시도하지 못하고 무음 return한 누적 횟수.
+   * 기존엔 counter/log 없이 조용히 skip돼 "boardingPromptEvaluated=0인데 이유를 알 수 없는" 관측
+   * 공백이 있었다 — F1(frontend geo/display stamp)가 아직 도달하지 않은 trip 비율 측정용.
+   * dashboard: `scheduled run complete` cron summary log (persist=false 환경에서도 조회 가능).
+   */
+  boardingPromptSkippedNoContext: number;
+  /**
    * #2034 — 환승 waypoint advance 시점에 hop-end ("하차했나요?") prompt 게이트를 통과해 alert
    * push 가 발사된 누적 횟수. leg 단위 dedup 이라 같은 trip 내 여러 환승도 각각 카운트.
    * dashboard: `hop_end_prompt_fired`.
@@ -964,6 +972,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0,
     boardingPromptSkippedLockActive: 0,
+    boardingPromptSkippedNoContext: 0,
     hopEndPromptFired: 0,
     hopEndPromptBlocked: 0,
     arvlCdFireSuccess: 0,
@@ -4281,7 +4290,17 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   const geo = trip.promptGeoContext;
   const display = trip.promptDisplay;
-  if (!geo || !display) return;
+  if (!geo || !display) {
+    stats.boardingPromptSkippedNoContext += 1;
+    log('boarding-prompt: skip (no geo/display context)', {
+      token: trip.token.slice(0, 8),
+      hasGeo: geo !== undefined,
+      hasDisplay: display !== undefined,
+      // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+      sleepMode: trip.sleepModeEnabled,
+    });
+    return;
+  }
 
   // #916 follow-up B — fired+clear 분기 회복. 직전 auto-prompt 발사 윈도우 안에 다시 들어왔다면
   // 평가 자체를 skip — boardingPromptState가 isSameSession=false로 리셋됐거나 lock이 클리어된
