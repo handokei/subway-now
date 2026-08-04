@@ -245,3 +245,50 @@ export async function cleanupPendingPushesForToken(
   }
   return removed;
 }
+
+/**
+ * #2129 — per-token in-flight 직렬화.
+ *
+ * `POST /trips`가 device의 같은 token으로 거의 동시에 2건 도착하면(2026-08-04 실탑승 evidence:
+ * 20:06:21 `msejyvj91`/`msejyvmt2` 2개 register), 각 요청이 독립적으로
+ * `getTrip → rotateTripTokenForNewRoute → putTrip` TOCTOU window를 통과하며 interleave할 수
+ * 있다: 요청 A가 `existing=null`로 읽어(rotated=false) 원본 token으로 진행하는 도중, 요청 B가
+ * A의 이미 landed된 write를 `existing`으로 읽고 route sig 차이로 새 UUID를 발급 +
+ * `trip:<oldToken>` delete까지 완료 → 그 뒤에 A의 원래 `putTrip`이 착지해 오히려 A가 방금 지워진
+ * 키를 되살린다. 결과: 유령 trip 2개(원본 token + rotated UUID) 모두 KV에 생존.
+ *
+ * 같은 isolate 안에서 같은 token의 register 처리를 순차 큐로 직렬화해 두 번째 요청이 첫 번째
+ * 요청의 read-rotate-write 사이클이 완전히 끝난 뒤에야 자신의 `getTrip`을 수행하도록 보장한다.
+ * `previous.then(fn, fn)` — 직전 요청이 성공/실패 무관하게 정착(settle)한 뒤 `fn`이 실행되며,
+ * 호출자는 자신의 `fn` 결과/에러를 그대로 받는다(큐 자체의 실패가 전파되지 않음).
+ *
+ * 한계: Cloudflare Workers는 요청을 여러 isolate로 분산할 수 있어 cross-isolate 완전 보장은
+ * 아니다 — 같은 device의 거의 동시 POST는 대개 같은 isolate/colo로 라우팅되므로 실질적 방어선.
+ * 완전한 분산 lock(Durable Object 등)은 #2129 금지사항(rotation 자체 재작성 금지) 범위 밖이며
+ * 별도 이슈 후보. 메모리 누적 방지를 위해 자신이 마지막 queued entry였으면 Map에서 제거한다.
+ */
+const registerLocks = new Map<string, Promise<void>>();
+
+export function withTripRegisterLock<T>(
+  token: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = registerLocks.get(token) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  registerLocks.set(token, settled);
+  void settled.finally(() => {
+    if (registerLocks.get(token) === settled) {
+      registerLocks.delete(token);
+    }
+  });
+  return run;
+}
+
+/** 테스트용 — register lock Map 상태 초기화. production 호출자 없음. */
+export function __resetTripRegisterLocksForTest(): void {
+  registerLocks.clear();
+}

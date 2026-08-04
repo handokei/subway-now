@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import {
+  __resetTripRegisterLocksForTest,
   cleanupPendingPushesForToken,
   clearStaleBoardingLock,
   computeRouteSignature,
@@ -10,6 +11,7 @@ import {
   putTrip,
   rotateTripTokenForNewRoute,
   tripKey,
+  withTripRegisterLock,
 } from '../trips';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
 import type { Trip } from '../types';
@@ -556,5 +558,91 @@ describe('trips KV CRUD', () => {
         expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
       });
     });
+  });
+});
+
+// #2129 — per-token in-flight 직렬화. 2026-08-04 실탑승 evidence: 같은 device token으로
+// 거의 동시에 도착한 POST /trips 2건이 getTrip → rotate → putTrip TOCTOU window에서 interleave해
+// 유령 trip 2개(원본 token + rotated UUID)가 모두 KV에 생존했다. withTripRegisterLock은 같은
+// token의 register 처리를 큐로 직렬화해 두 번째 요청이 첫 번째 요청의 read-rotate-write 사이클이
+// 완전히 끝난 뒤에만 시작하도록 보장한다.
+describe('withTripRegisterLock (#2129)', () => {
+  beforeEach(() => {
+    __resetTripRegisterLocksForTest();
+  });
+
+  it('같은 token의 두 번째 호출은 첫 번째 fn이 settle된 뒤에만 시작된다', async () => {
+    const order: string[] = [];
+    let resolveFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    const p1 = withTripRegisterLock('tok-race', async () => {
+      order.push('first-start');
+      await firstGate;
+      order.push('first-end');
+      return 'A';
+    });
+    const p2 = withTripRegisterLock('tok-race', async () => {
+      order.push('second-start');
+      return 'B';
+    });
+
+    // microtask 몇 tick을 흘려보내도 first가 아직 안 끝났으면 second는 시작하면 안 된다.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(['first-start']);
+
+    resolveFirst();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(order).toEqual(['first-start', 'first-end', 'second-start']);
+    expect(r1).toBe('A');
+    expect(r2).toBe('B');
+  });
+
+  it('다른 token은 서로 대기하지 않고 병렬 실행된다', async () => {
+    const order: string[] = [];
+    const [rA, rB] = await Promise.all([
+      withTripRegisterLock('tok-a', async () => {
+        order.push('a');
+        return 1;
+      }),
+      withTripRegisterLock('tok-b', async () => {
+        order.push('b');
+        return 2;
+      }),
+    ]);
+    expect(order.sort()).toEqual(['a', 'b']);
+    expect(rA).toBe(1);
+    expect(rB).toBe(2);
+  });
+
+  it('첫 fn이 reject해도 큐는 끊기지 않고 두 번째 fn이 정상 실행된다', async () => {
+    const order: string[] = [];
+    const p1 = withTripRegisterLock('tok-reject', async () => {
+      order.push('first');
+      throw new Error('boom');
+    });
+    const p2 = withTripRegisterLock('tok-reject', async () => {
+      order.push('second');
+      return 'ok';
+    });
+    await expect(p1).rejects.toThrow('boom');
+    await expect(p2).resolves.toBe('ok');
+    expect(order).toEqual(['first', 'second']);
+  });
+
+  it('큐 소진 후 같은 token을 재사용해도 Map 누적 없이 다시 즉시 실행된다', async () => {
+    await withTripRegisterLock('tok-cleanup', async () => 'first');
+    // 첫 체인이 settle + cleanup(microtask)까지 흘러가도록 tick 확보.
+    await Promise.resolve();
+    await Promise.resolve();
+    const order: string[] = [];
+    await withTripRegisterLock('tok-cleanup', async () => {
+      order.push('reused');
+    });
+    expect(order).toEqual(['reused']);
   });
 });
