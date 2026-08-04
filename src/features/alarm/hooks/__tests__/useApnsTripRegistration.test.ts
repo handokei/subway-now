@@ -60,7 +60,9 @@ import {
   CONTEXT_HEAL_TIER2_DELAY_MS,
   REGISTER_RETRY_BACKOFF_MS,
 } from '../../../../shared/constants/boardingLock';
-import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
+import { getStationById } from '../../../../shared/utils/stationRoute';
 
 const station: Station = {
   // stations.json 강남(2호선)과 id 일치 — #622 buildBoardingLockMeta가 boardingStationId로 조회.
@@ -73,6 +75,13 @@ const station: Station = {
 };
 
 const directRoute: Route = makeDirectRoute(5, '2');
+
+/** #1960 Acceptance 4 — stations.json 실제 역 조회 (없으면 fixture 오류로 즉시 fail). */
+function st(id: string): Station {
+  const s = getStationById(id);
+  if (!s) throw new Error(`fixture station not found: ${id}`);
+  return s;
+}
 
 describe('useApnsTripRegistration', () => {
   let listenerRemove: jest.Mock;
@@ -2374,6 +2383,79 @@ describe('useApnsTripRegistration', () => {
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
       // cancel은 한 effect cycle 안에 1회만.
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('#1960 Acceptance 4 — token refresh 경로도 lock 갱신 직후 cross-trip stamp 반영', () => {
+    // boardingPromptContext.test.ts #1921 cross-trip 시나리오와 동일 fixture: route 원본
+    // line=3 multi-transfer(3호선 → 2호선), lock.boardingLine=2로 갱신되면 promptDisplay가
+    // route 원본(line=3)이 아닌 lock line(2)을 stamp해야 한다(#1921 회귀 차단).
+    // 본 테스트는 그 갱신이 main effect뿐 아니라 token-refresh listener 경로에도 동일하게
+    // 반영되는지 검증 — #2129 payload 단일화(registerFromLatestInputs)로 두 경로가 같은
+    // buildBoardingPromptContext 재빌드를 타므로, token rotation이 lock 갱신 직후 발생해도
+    // stale route-line(3) stamp가 새지 않는다(#1960 원 스펙 Acceptance 1~2).
+    it('lock 갱신 직후 token refresh가 발생해도 lock line 기준 fresh context를 재빌드해 송신', async () => {
+      const current = st('2-024'); // 서초 (line 2)
+      const dest = st('2-022'); // 강남 (line 2)
+      const crossTripRoute = makeMultiTransferRoute({
+        transfers: [
+          { transferName: canonicalStationName('교대', '3'), fromLine: '3', toLine: '2', stopsToTransfer: 31 },
+          { transferName: '강남', fromLine: '2', toLine: 'sinbundang', stopsToTransfer: 1 },
+        ],
+        stopsAfterLastTransfer: 0,
+      });
+      const lockLine2 = {
+        destinationId: dest.id,
+        trainCode: '7246',
+        boardingStationId: current.id,
+        boardingLine: '2' as const,
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 600_000,
+      };
+
+      const { rerender } = renderHook(
+        ({ lock }: { lock: typeof lockLine2 | null }) =>
+          useApnsTripRegistration({
+            route: crossTripRoute,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: current,
+            boardingLock: lock,
+          }),
+        { initialProps: { lock: null as typeof lockLine2 | null } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // cross-trip 자동 전환 — lock=line2 부여. main effect가 lock line 기준으로 재stamp.
+      rerender({ lock: lockLine2 });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      const mainEffectArgs = mockRegister.mock.calls[1][0] as {
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(mainEffectArgs.promptDisplay).toEqual({ originStation: '서초', line: '2' });
+
+      // lock 갱신 직후 token rotation 발생 — token-refresh listener가 stale(route 원본 line=3)
+      // context를 forward하지 않고, 동일한 lock-aware fresh context를 재빌드해야 한다.
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-ROTATED' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-ROTATED',
+      );
+      expect(refreshed).toBeDefined();
+      const refreshedArgs = refreshed?.[0] as {
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(refreshedArgs.promptDisplay).toEqual({ originStation: '서초', line: '2' });
     });
   });
 });
