@@ -4292,6 +4292,30 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.boardingPromptFired).toBe(0);
   });
 
+  // #2131 (Part A-2) — infoModeEnabled=true + intermediate waypoint 조합은 기존엔
+  // `runLocklessIntermediate` + `continue`로 곧장 빠져나가 evaluateAndMaybeFireBoardingPrompt
+  // 자체가 호출되지 않았다(boardingPromptEvaluated 영구 0 회귀). hoist 이후 두 경로가 모두 실행돼야
+  // 한다 — ADR-014 "사용자 명시 의향(C 토글 ON) trip = lock 활성과 동급 정확도 보장" 준수.
+  it('#2131 — infoModeEnabled=true + intermediate waypoint + geo 있음 → prompt 평가 도달', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        infoModeEnabled: true,
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '역삼', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
   // #2131 (Part A-1) — geo/display 부재 무음 skip 관측성. 기존 테스트는 boardingPromptEvaluated
   // 미증가만 검증 — 본 테스트는 신규 counter로 "왜" evaluate에 못 미쳤는지 명시 관측.
   it('#2131 — promptGeoContext/promptDisplay 부재 시 boardingPromptSkippedNoContext +1', async () => {
