@@ -4274,6 +4274,27 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       const body2 = (await res2.json()) as { token: string };
       expect(body2.token).not.toBe(TOKEN);
     });
+
+    // #2129 — 2026-08-04 실탑승 evidence: 같은 device token으로 거의 동시에 도착한
+    // POST /trips 2건(waypoints 다름)이 getTrip → rotate → putTrip TOCTOU window에서
+    // interleave해 유령 trip 2개(원본 token + rotated UUID)가 모두 KV에 생존했다.
+    // withTripRegisterLock이 같은 token의 register 처리를 직렬화해 이 race를 차단한다.
+    it('#2129 동시 register 2건(같은 token, 다른 waypoints) → KV 활성 trip 정확히 1개', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+      const bodyA = tripBodyFor('용마산-id', '용마산');
+      const bodyB = tripBodyFor('성수-id', '성수');
+      const [resA, resB] = await Promise.all([
+        post('/trips', bodyA, env),
+        post('/trips', bodyB, env),
+      ]);
+      expect(resA.status).toBe(200);
+      expect(resB.status).toBe(200);
+      const allTripKeys = (await env.TRIPS.list({ prefix: 'trip:' })).keys;
+      // 두 요청 모두 성공 응답을 받아도, 직렬화 덕분에 KV에는 활성 trip이 정확히 1개만 남는다
+      // (원본 TOKEN 재사용이든 rotation으로 발급된 새 UUID든 — 유령 trip 2개 생존이 회귀).
+      expect(allTripKeys.length).toBe(1);
+    });
   });
 });
 
