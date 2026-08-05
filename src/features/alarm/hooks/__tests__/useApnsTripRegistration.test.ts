@@ -1551,6 +1551,65 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(2);
     });
 
+    it('P1 (재검증 리뷰) — override 적용 + POST 실패 반복 → 세션 미잠금 → 이후 Tier 1 재발동 가능', async () => {
+      // 회귀 배경: attemptRegisterRetry가 tier2Override를 적용할 때 await 이전(attempt 기준)에
+      // healedSessionKeyRef를 잠그면, backend 장애(Seoul outage류)로 register-retry 예산
+      // (3회)이 전부 network 실패로 소진될 때 "잠금은 걸려 있고 context는 한 번도 안 실린" 상태로
+      // 고착된다 — 이후 지상 재진입으로 currentStation이 다시 잡혀도 Tier 1이 이 잠금에 막혀
+      // 영구 결손이 재발한다(#2166이 Tier 1에서 이미 고친 것과 동일 클래스의 회귀).
+      const routeOrigin = st('3-002'); // 주엽 — routeOriginStation(Tier 2 override 기준).
+      const onRouteStation = origin; // 대화 — 이후 실제 GPS 해소로 Tier 1이 사용할 역(override와 다른 역).
+
+      mockRegister.mockResolvedValue({ ok: false, status: 500 }); // cold-start + 모든 재시도 network 실패
+
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+            subsurface: true,
+            routeOriginStation: routeOrigin,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start 실패 — 15s 재시도 예약
+
+      // REGISTER_RETRY_BACKOFF_MS 전체(3회)를 모두 network 실패로 소진 — 매 시도마다
+      // tier2Override 조건은 충족되지만(override != null) POST 자체가 실패한다.
+      for (const delay of REGISTER_RETRY_BACKOFF_MS) {
+        // eslint-disable-next-line no-loop-func -- delay는 매 반복 고정값 캡처, closure 문제 없음.
+        await act(async () => {
+          jest.advanceTimersByTime(delay);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+      // 최초 1회 + backoff 배열 길이(3)만큼 재시도 = 4회, 전부 실패 — 재시도 예산 소진.
+      expect(mockRegister).toHaveBeenCalledTimes(1 + REGISTER_RETRY_BACKOFF_MS.length);
+
+      // 재시도 예산이 소진된 뒤, GPS가 실제로 해소돼(같은 hook 인스턴스에서) currentStation이
+      // null→non-null로 전환. 버그(attempt 기준 잠금)가 있다면 healedSessionKeyRef가 이미
+      // 잠겨 있어 Tier 1이 skip — 수정 후에는 한 번도 성공하지 못했으므로 잠금이 없어 Tier 1이
+      // 정상 발동해야 한다.
+      mockRegister.mockResolvedValueOnce({ ok: true });
+      rerender({ cs: onRouteStation });
+      await waitFor(() =>
+        expect(mockRegister).toHaveBeenCalledTimes(1 + REGISTER_RETRY_BACKOFF_MS.length + 1),
+      );
+      const healedPayload = mockRegister.mock.calls[mockRegister.mock.calls.length - 1][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number } };
+      };
+      expect(healedPayload.promptGeoContext?.origin).toEqual({
+        lat: onRouteStation.lat,
+        lng: onRouteStation.lng,
+      });
+    });
+
     it('P2-1 (PR #2169 리뷰) — heal-busy 재예약은 register-retry의 attempt 예산을 소모하지 않는다', async () => {
       // 회귀 배경: heal-busy로 인한 재예약이 실제 register 실패와 동일하게 attempt를 증가시키면
       // 실제 POST 시도가 0회인 채로 3회 상한(REGISTER_RETRY_BACKOFF_MS.length)을 태워버릴 수

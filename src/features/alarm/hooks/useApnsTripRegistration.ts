@@ -696,15 +696,20 @@ export function useApnsTripRegistration({
       // 고착되는 회귀를 막는다 — buildTier2FallbackOverride가 조건 미충족/이미 heal 시 null을
       // 반환하므로 해당 없는 세션에는 영향 없다.
       const tier2Override = buildTier2FallbackOverride(sessionKey);
-      if (tier2Override != null) {
-        // Tier 2와 동일하게 성공 여부와 무관하게 즉시 세션을 잠근다(#2130 Tier 2 정책과 일치) —
-        // POST 네트워크가 계속 실패하는 상황에서 매 재시도마다 override 시도가 반복되지 않게.
-        healedSessionKeyRef.current = sessionKey;
-      }
       const result = await registerFromLatestInputs(
         token,
         tier2Override != null ? { promptContextOverride: tier2Override } : undefined,
       );
+      // #2167 (P1, 재검증 리뷰) — 세션 잠금은 override가 **실제로 backend에 전달됐을 때만**
+      // 건다(Tier 1/Tier 2와 동일한 성공 기준). attempt(시도) 기준으로 await 이전에 잠그면,
+      // backend 장애로 register-retry 예산(3회)이 전부 network 실패로 소진될 때 세션이
+      // 잠긴 채 context는 한 번도 전달되지 못하고 retry도 끝나버려 — 이후 지상 재진입으로
+      // currentStation이 다시 잡혀도 Tier 1이 이 잠금에 막혀 영구 결손이 재발한다(#2166이
+      // Tier 1에서 이미 고친 것과 동일 클래스의 회귀). 실패 시에는 잠그지 않아 다음 재시도/
+      // Tier 1 전환에서 다시 시도할 수 있게 둔다.
+      if (tier2Override != null && result?.ok && result.hadPromptContext) {
+        healedSessionKeyRef.current = sessionKey;
+      }
       if (result?.ok) {
         clearRegisterRetry();
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
