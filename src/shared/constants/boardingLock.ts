@@ -147,3 +147,22 @@ export const CONTEXT_HEAL_TIER2_DELAY_MS = 60_000;
  * 트리거하지 않아 #703(POST 폭주 방지) 의도를 보존한다.
  */
 export const REGISTER_RETRY_BACKOFF_MS: readonly number[] = [15_000, 30_000, 60_000];
+
+/**
+ * #2164 — Tier 1 context-heal(useApnsTripRegistration) 세션당 POST 상한 백스톱.
+ *
+ * 배경: #2130/#2150의 "세션당 1회 가드"는 heal **시도**(성공 여부 무관) 자체로 세션을 영구
+ * 잠갔다. 그 결과 cold-start 이후 첫 실질 전환이 또 다른 off-route 역(GPS 흔들림/인접역
+ * 플립)이면 그 1회 실패 시도로 잠기고, 이후 진짜 탑승역(on-route) 전환에도 heal이 재발동하지
+ * 않아 context 결손이 trip 내내 지속됐다.
+ *
+ * #2164 fix: 가드를 "성공 기준"으로 전환 — heal이 context 등록에 실제로 성공했을 때만 세션을
+ * 잠근다. 실패(build 실패 또는 POST 네트워크 실패) 시 다음 station 전환에서 재시도를 허용한다.
+ * 다만 무제한 재시도는 backend rate limit(10/10min)을 위협하므로, 세션당 heal POST 발사
+ * 횟수에 상한을 둔다. `REGISTER_RETRY_BACKOFF_MS.length`(3)와 동일한 상한으로 통일 — 실제
+ * 장애 상황이면 다음 정상 effect cycle(route/destination/lock 변경)에 맡긴다.
+ *
+ * context build 자체가 실패(off-route 역 등)한 경우는 이 상한에 포함하지 않는다 — POST를
+ * 내지 않으므로 backend 부담이 없고, 다음 전환에서 다시 시도할 기회를 줘야 하기 때문이다.
+ */
+export const CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION = 3;
