@@ -532,6 +532,11 @@ describe('useApnsTripRegistration', () => {
   });
 
   it('#703 — currentStation만 바뀌면 register 재호출 안 함', async () => {
+    // #2150 — cold-start currentStation을 route 위 유효 station(선릉, 2-020)으로 세팅해 첫
+    // register부터 promptContext를 확보한다(lastRegisterMissingContextRef=false 고정). 이렇게
+    // 하면 Tier 1 context-heal(별도 effect, #2130/#2150)이 전혀 발동하지 않아 이 테스트가 검증하려는
+    // "currentStation은 main register effect의 deps가 아니다" 항목만 순수하게 검증된다.
+    const initialStation: Station = { ...station, id: '2-020', name: '선릉' };
     const altStation: Station = { ...station, id: '2-023', name: '역삼' };
     const { rerender } = renderHook(
       ({ cs }: { cs: Station | null }) =>
@@ -541,9 +546,10 @@ describe('useApnsTripRegistration', () => {
           nextStationEtaSeconds: 120,
           currentStation: cs,
         }),
-      { initialProps: { cs: null as Station | null } },
+      { initialProps: { cs: initialStation as Station | null } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeDefined();
     rerender({ cs: station });
     rerender({ cs: altStation });
     await act(async () => {
@@ -1153,14 +1159,18 @@ describe('useApnsTripRegistration', () => {
     it('재시도 대기 중 다른 세션으로 실패 전환되면 옛 세션의 타이머를 clear하고 새 세션 attempt 0부터 시작', async () => {
       mockRegister.mockResolvedValue({ ok: false, status: 500 });
       const otherDestination: Station = { ...station, id: '2-023', name: '역삼' };
-
+      // #2150 — currentStation을 destination과 분리해 고정 null로 둔다. 이전에는 currentStation
+      // 이 destination(d)과 같은 값으로 묶여 있어, destination 전환이 곧 currentStation.id 전환도
+      // 발생시켜 Tier 1 context-heal effect가 추가 register를 유발했다(재시도 카운트 assertion과
+      // 무관한 관심사 충돌). 이 테스트의 목적은 순수 register-retry 세션 전환 검증이므로
+      // currentStation을 고정(null)해 Tier 1 heal effect 자체가 재실행되지 않게 한다.
       const { rerender } = renderHook(
         ({ d }: { d: Station }) =>
           useApnsTripRegistration({
             route: directRoute,
             destination: d,
             nextStationEtaSeconds: 120,
-            currentStation: d,
+            currentStation: null,
           }),
         { initialProps: { d: station } },
       );
@@ -1776,6 +1786,36 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(2);
     });
 
+    it('Tier 1 — #2150 off-route(non-null, context 결손) → on-route(non-null) 전환에도 heal 발동', async () => {
+      // 최초 등록 시 currentStation이 route 밖(=destination과 동일, getNextStationName이 null을
+      // 반환하는 기존 fixture 패턴 재사용)이라 context 결손 → 이후 실제 탑승역(origin, route 위)으로
+      // non-null→non-null 전환. #2150 이전에는 prevWasNull 게이트가 이 전환을 무시해 heal이
+      // 영구히 발동하지 않았다(promptContext 결손 영속).
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: dest as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      // cold-start 첫 register: currentStation === destination → context 결손(기존 동작)
+      expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeUndefined();
+
+      // 실제 탑승역(route 위 유효 station)으로 non-null → non-null 전환
+      rerender({ cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      const healed = mockRegister.mock.calls[1][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number } };
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+      expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+    });
+
     it('Tier 1 — currentStation이 이미 non-null로 시작한 trip은 heal 대상 아님(정상 등록 경로)', async () => {
       renderHook(() =>
         useApnsTripRegistration({
@@ -1790,6 +1830,50 @@ describe('useApnsTripRegistration', () => {
       await act(async () => {
         await Promise.resolve();
       });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('Tier 1 — heal in-flight 중 unmount되면 후속 register 미발사 (cancelled 가드)', async () => {
+      const { rerender, unmount } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // 첫 register(cold-start) 이후부터 APNS_TOKEN_KEY 조회를 의도적으로 지연시켜, heal의
+      // async IIFE가 `await AsyncStorage.getItem` 시점에 멈춰 있는 동안 unmount(cleanup)가
+      // 먼저 발생하도록 만든다.
+      let resolveToken!: (value: string) => void;
+      const deferredToken = new Promise<string>((resolve) => {
+        resolveToken = resolve;
+      });
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return deferredToken;
+        return null;
+      });
+
+      // null → origin(context 빌드 가능) 전환 — heal의 async IIFE가 시작돼 token 조회 시점에서
+      // 대기(deferredToken 미resolve)한다.
+      rerender({ cs: origin });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // 아직 heal register는 발사 안 됨(token 대기 중)
+
+      // heal의 token 조회가 완료되기 전에 unmount — effect cleanup이 cancelled=true를 세팅.
+      unmount();
+      resolveToken('token-abc');
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // cancelled 가드로 unmount 후 register가 추가로 발사되지 않는다.
       expect(mockRegister).toHaveBeenCalledTimes(1);
     });
 
