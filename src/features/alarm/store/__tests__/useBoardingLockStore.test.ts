@@ -1,6 +1,10 @@
 import { act } from '@testing-library/react-native';
 import { useBoardingLockStore } from '../useBoardingLockStore';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
+import {
+  clearLockLifecycleEntries,
+  getLockLifecycleEntries,
+} from '../../utils/boardingLockLifecycleBuffer';
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
@@ -39,6 +43,7 @@ describe('useBoardingLockStore', () => {
     mockClearBoardingLock.mockResolvedValue(undefined);
     mockClearDismissSilence.mockResolvedValue(undefined);
     useBoardingLockStore.setState({ lock: null });
+    clearLockLifecycleEntries();
   });
 
   it('초기 상태는 lock=null', () => {
@@ -72,6 +77,31 @@ describe('useBoardingLockStore', () => {
       });
       expect(mockClearDismissSilence).toHaveBeenCalledTimes(1);
     });
+
+    it('#2152 — source 미전달 시 lifecycle buffer에 create 엔트리 source=other로 적재', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().createLock(sample);
+      });
+      const entries = getLockLifecycleEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        kind: 'boarding-lock-lifecycle',
+        event: 'create',
+        source: 'other',
+        trainCode: sample.trainCode,
+        line: sample.boardingLine,
+        stationId: sample.boardingStationId,
+      });
+    });
+
+    it('#2152 — source 전달 시 lifecycle buffer에 그대로 stamp', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().createLock(sample, 'user-tap');
+      });
+      const entries = getLockLifecycleEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ event: 'create', source: 'user-tap' });
+    });
   });
 
   describe('releaseLock', () => {
@@ -101,6 +131,29 @@ describe('useBoardingLockStore', () => {
         await useBoardingLockStore.getState().releaseLock();
       });
       expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
+
+    it('#2152 — lock이 있을 때만 lifecycle buffer에 release 엔트리 적재 (reason 포함)', async () => {
+      useBoardingLockStore.setState({ lock: sample });
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock('transfer');
+      });
+      const entries = getLockLifecycleEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        kind: 'boarding-lock-lifecycle',
+        event: 'release',
+        reason: 'transfer',
+        trainCode: sample.trainCode,
+        line: sample.boardingLine,
+      });
+    });
+
+    it('#2152 — lock이 없으면 lifecycle buffer에도 적재 안 됨', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock();
+      });
+      expect(getLockLifecycleEntries()).toHaveLength(0);
     });
 
     it('#1438 (E5) — reason 인자가 breadcrumb 메타에 stamp된다 (transfer)', async () => {

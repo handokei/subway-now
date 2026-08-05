@@ -316,7 +316,7 @@ export function useBoardingLockController({
         // #897 Seam A: 탑승 시점 ETA 스냅샷. 동일 trainCode가 유지되는 동안 새 폴링의 arrivalSeconds가
         // 이 값보다 크게 늘면 그 차이가 지연(분). BoardingTrainList가 "+N분 지연" 칩으로 노출.
         initialEtaSeconds: train.arrivalSeconds,
-      }).then(() => {
+      }, 'user-tap').then(() => {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }).catch(() => {
         // store action rejection은 graceful — 다음 polling cycle에서 자연 재시도.
