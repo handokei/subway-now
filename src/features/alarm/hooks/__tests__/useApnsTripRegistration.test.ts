@@ -60,6 +60,8 @@ import {
   CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
   CONTEXT_HEAL_TIER2_DELAY_MS,
   REGISTER_RETRY_BACKOFF_MS,
+  REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES,
+  REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
 } from '../../../../shared/constants/boardingLock';
 import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
@@ -1491,6 +1493,329 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       });
       expect(mockRegister).toHaveBeenCalledTimes(4); // heal 완료 후 재예약된 재시도가 정상 발화
+    });
+
+    it('P1 (PR #2169 리뷰) — cold-start register 실패 + 지하 dead-zone 조건에서 retry가 성공할 때 Tier 2 fallback context를 함께 실어 보낸다 (영구 결손 회귀 재현)', async () => {
+      // 회귀 배경: Tier 2 fallback 타이머는 main effect의 register가 "직접" 성공했을 때만
+      // arm된다. cold-start register가 실패해 재시도가 예약되면 Tier 2는 애초에 armed되지
+      // 않고, 재시도가 나중에 성공해도(Tier 2 override 없이) currentStation이 계속 null인
+      // 지하 dead-zone 세션은 promptGeoContext/promptDisplay가 영구히 비어 있게 된다. 이
+      // 테스트는 그 결손을 재현하고, 수정 후에는 retry 자신이 Tier 2 override를 실어 보내야
+      // 한다.
+      const routeOrigin = st('3-002'); // 주엽 — origin/dest 사이 실제 3호선 역, build 항상 성공.
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 }); // cold-start 실패
+      mockRegister.mockResolvedValueOnce({ ok: true }); // retry 성공
+
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: route3,
+          destination: dest,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          subsurface: true,
+          routeOriginStation: routeOrigin,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start 실패 — 15s 재시도 예약
+
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // 재시도 성공
+
+      const retrySuccessPayload = mockRegister.mock.calls[1][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number } };
+        promptDisplay?: { originStation: string; line: string };
+      };
+      // 수정 전에는 이 두 필드가 모두 undefined(영구 결손). 수정 후엔 Tier 2 override가 함께 실린다.
+      expect(retrySuccessPayload.promptGeoContext?.origin).toEqual({
+        lat: routeOrigin.lat,
+        lng: routeOrigin.lng,
+      });
+      expect(retrySuccessPayload.promptDisplay).toEqual({
+        originStation: routeOrigin.name,
+        line: routeOrigin.line,
+      });
+
+      // 이미 이 재시도로 context를 확보했으므로(healedSessionKeyRef 잠금), Tier 2 지연 시점이
+      // 지나도 추가 register가 없어야 한다 — 중복 없이 정확히 1회로 충분.
+      await act(async () => {
+        jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS + 1000);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('P2-1 (PR #2169 리뷰) — heal-busy 재예약은 register-retry의 attempt 예산을 소모하지 않는다', async () => {
+      // 회귀 배경: heal-busy로 인한 재예약이 실제 register 실패와 동일하게 attempt를 증가시키면
+      // 실제 POST 시도가 0회인 채로 3회 상한(REGISTER_RETRY_BACKOFF_MS.length)을 태워버릴 수
+      // 있다. 이 테스트는 heal-busy 재예약 2회를 거친 뒤에도 정상 backoff 예산(15/30/60s)이
+      // 그대로 남아 있는지 검증한다.
+      //
+      // "반대 방향" 테스트와 동일한 순서로 heal을 in-flight 상태로 만든다 — retry가 pending인
+      // 동안에는 Tier 1이 스스로 발사하지 않으므로(#2167 P1 이전 가드), Tier 1이 먼저 정상
+      // 발사(retry 없는 상태)된 뒤 별개 dep(subsurface) 변경으로 main effect가 재실행돼 실패해야
+      // 그 세션에 재시도가 예약된다.
+      mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start 성공(currentStation=null → context 결손)
+
+      let resolveHealRegister!: (value: { ok: boolean }) => void;
+      const healDeferred = new Promise<{ ok: boolean }>((resolve) => {
+        resolveHealRegister = resolve;
+      });
+
+      const { rerender } = renderHook(
+        ({ cs, sub }: { cs: Station | null; sub: boolean }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+            subsurface: sub,
+          }),
+        { initialProps: { cs: null as Station | null, sub: false } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start 성공, context 결손 기록
+
+      // Tier 1 heal 트리거 — 응답을 오래 기다리도록 pending 상태로 둔다(healInFlightSessionKeyRef 세팅).
+      mockRegister.mockImplementationOnce(() => healDeferred);
+      rerender({ cs: origin, sub: false });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+
+      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도
+      // 예약(15s, attempt=1).
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      rerender({ cs: origin, sub: true });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+
+      // 15s 경과 — retry 타이머 발화하지만 heal이 여전히 in-flight라 heal-busy 재예약(recheck,
+      // attempt 미소모) 1회차.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3); // 실제 POST 없음 — recheck만 예약됨
+
+      // recheck 간격만큼 경과 — heal이 아직도 in-flight라 heal-busy 재예약 2회차.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3); // 여전히 실제 POST 없음
+
+      // heal이 이제 완료(성공) — in-flight 해제.
+      resolveHealRegister({ ok: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // recheck 간격 경과 — 이번엔 heal이 끝났으므로 retry가 실제로 발화한다. 실패시켜 다음
+      // backoff가 REGISTER_RETRY_BACKOFF_MS[1](30s)인지 확인 — attempt가 이미 소모돼 있었다면
+      // (P2-1 버그) 상한을 넘어 이 발화 자체가 없거나 다음 backoff가 훨씬 짧아진다.
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(4); // heal 종료 후 실제 재시도 발화(attempt=1 그대로 소모)
+
+      // attempt가 heal-busy 재예약으로 소모되지 않았다면, 다음 backoff는 REGISTER_RETRY_BACKOFF_MS[1]
+      // (30s) — 그 이전엔 발화하지 않고, 그 시점엔 발화해야 한다.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[1] - 100);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+
+      mockRegister.mockResolvedValueOnce({ ok: true });
+      await act(async () => {
+        jest.advanceTimersByTime(200);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(5); // 정상적으로 backoff[1] 시점에 재시도 발화
+    });
+
+    it(`P2-1 (PR #2169 리뷰) — heal-busy 재예약 상한(${REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES}회) 도달 시 일반 backoff로 전환한다`, async () => {
+      // 회귀 방지: heal이 비정상적으로 오래(recheck 상한을 넘길 만큼) in-flight 상태에 머물면
+      // recheck 루프가 무한히 반복될 수 있다 — 상한 도달 시 attempt 예산을 소모하는 일반
+      // backoff로 전환해 무한 대기를 막아야 한다.
+      mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start 성공(context 결손)
+
+      // 이 heal은 상한 도달 전까지는 resolve하지 않는다(heal이 "비정상적으로 오래" 걸리는
+      // 상황 재현) — 상한 전환이 실제로 적용됐는지 검증하기 위해 나중에 명시적으로 resolve한다.
+      let resolveHealForever!: (value: { ok: boolean }) => void;
+      const healForeverPending = new Promise<{ ok: boolean }>((resolve) => {
+        resolveHealForever = resolve;
+      });
+
+      const { rerender } = renderHook(
+        ({ cs, sub }: { cs: Station | null; sub: boolean }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+            subsurface: sub,
+          }),
+        { initialProps: { cs: null as Station | null, sub: false } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // Tier 1 heal 트리거 — 영영 응답하지 않는 상태로 in-flight 유지.
+      mockRegister.mockImplementationOnce(() => healForeverPending);
+      rerender({ cs: origin, sub: false });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+
+      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 실패해 재시도 예약(15s, attempt=1).
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      rerender({ cs: origin, sub: true });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+
+      // 15s 경과 — 1번째 heal-busy 재예약(recheck).
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // heal이 계속 in-flight인 채로 recheck 간격만큼씩 진행 — 상한(MAX_RESCHEDULES)에 도달할
+      // 때까지 반복(이미 1회 소모했으므로 나머지 상한만큼 더 진행).
+      for (let i = 1; i < REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES; i++) {
+        // eslint-disable-next-line no-loop-func -- REGISTER_RETRY_HEAL_BUSY_RECHECK_MS는 상수, closure 문제 없음.
+        await act(async () => {
+          jest.advanceTimersByTime(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+      expect(mockRegister).toHaveBeenCalledTimes(3); // 여전히 실제 POST 없음(모두 recheck로 skip)
+
+      // 상한 도달 트리거 — 이번엔 일반 backoff(REGISTER_RETRY_BACKOFF_MS[1]=30s)로 전환된다.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+
+      // heal을 여기서 성공시켜 in-flight를 해제 — 이제 다음 실제 시도는 recheck(2s)가 아니라
+      // 일반 backoff(30s) 시점에만 발화해야 한다(상한 전환이 실제로 적용됐는지 검증).
+      mockRegister.mockResolvedValueOnce({ ok: true });
+      resolveHealForever({ ok: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3); // recheck 간격만으로는 아직 발화 안 함(일반 backoff 대기 중)
+
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[1]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(4); // 일반 backoff(30s) 시점에 실제 재시도 발화
+    });
+
+    it('P2-2 (PR #2169 리뷰) — trip 종료 시 register-retry의 in-flight 추적이 초기화돼 동일 세션의 새 trip을 막지 않는다', async () => {
+      // 회귀 배경: 이전 trip의 retry가 in-flight인 채로 trip이 종료돼도
+      // registerRetryInFlightSessionKeyRef가 reset되지 않으면, 곧바로 같은 sessionKey(같은
+      // route+destination)로 시작된 새 trip의 context-heal(Tier 1)이 stale in-flight 플래그
+      // 때문에 영구히 차단된다.
+      // 이 deferred는 trip B의 heal이 성공할 때까지 resolve하지 않는다 — 만약 trip 종료 직후
+      // 바로 resolve하면 attemptRegisterRetry의 finally 블록이 sessionKey 일치를 보고
+      // registerRetryInFlightSessionKeyRef를 우연히 지워버려, "trip 종료 후에도 in-flight
+      // 플래그가 stale로 남는" 회귀 시나리오 자체가 재현되지 않는다(테스트가 우연히 통과하는
+      // false-negative). 응답이 늦게 도착하는 네트워크 상황을 시뮬레이션해 trip-end 시점의
+      // 명시적 reset(P2-2)만이 유일한 해제 경로가 되도록 한 뒤, 마지막에 resolve해 그 뒤늦은
+      // 응답이 trip B의 상태를 오염시키지 않는지(mismatch 가드)도 함께 검증한다.
+      let resolveTripARetry!: (value: { ok: boolean }) => void;
+      const retryDeferred = new Promise<{ ok: boolean }>((resolve) => {
+        resolveTripARetry = resolve;
+      });
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 }); // trip A cold-start 실패
+
+      const { rerender } = renderHook(
+        ({ route, destination, cs }: { route: Route; destination: Station | null; cs: Station | null }) =>
+          useApnsTripRegistration({
+            route,
+            destination,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { route: route3 as Route, destination: dest as Station | null, cs: null as Station | null } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // trip A: cold-start 실패 — 15s 재시도 예약
+
+      // 15s 경과 — trip A의 retry가 발화해 in-flight 상태로 pending.
+      mockRegister.mockImplementationOnce(() => retryDeferred);
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // trip A retry in-flight(pending, 응답 대기)
+
+      // retry가 응답을 받기 전에 trip A 종료(route/destination → null) — retryDeferred는 아직
+      // resolve되지 않는다(위 주석, 마지막에 resolve).
+      rerender({ route: null, destination: null, cs: null });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // 동일 route+destination(같은 sessionKey)으로 새 trip B 시작 — currentStation=null로
+      // cold-start.
+      mockRegister.mockResolvedValueOnce({ ok: true }); // trip B cold-start 성공(context 결손)
+      rerender({ route: route3, destination: dest, cs: null });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(3));
+      expect(mockRegister.mock.calls[2][0].promptGeoContext).toBeUndefined();
+
+      // GPS 해소 — currentStation null→non-null 전환. trip A의 stale in-flight 플래그가 남아
+      // 있었다면(P2-2 버그) isRegisterRetryBusy가 true로 평가돼 이 heal이 영구히 skip된다.
+      rerender({ route: route3, destination: dest, cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(4));
+      const healed = mockRegister.mock.calls[3][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number } };
+      };
+      expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+
+      // trip A의 뒤늦은 retry 응답이 지금 도착해도(trip B가 이미 진행 중) 별다른 부작용 없이
+      // 조용히 무시돼야 한다(finally의 mismatch 가드 — trip B 시작 이후 이 ref는 이미 trip A의
+      // sessionKey와 무관한 상태다).
+      resolveTripARetry({ ok: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(4); // 추가 register 없음 — 뒤늦은 응답은 무해
     });
   });
 

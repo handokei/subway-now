@@ -40,6 +40,8 @@ import {
   CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
   CONTEXT_HEAL_TIER2_DELAY_MS,
   REGISTER_RETRY_BACKOFF_MS,
+  REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES,
+  REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
 } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
@@ -405,6 +407,13 @@ export function useApnsTripRegistration({
   // timer는 backoff 타이머가 발화하는 순간 즉시 null로 비워지므로(그 시점부터 실제 POST가 끝날
   // 때까지의 창), "타이머 대기 중" 여부만으로는 이 창을 감지할 수 없다 — 별도 플래그로 추적한다.
   const registerRetryInFlightSessionKeyRef = useRef<string | null>(null);
+  // #2167 (P2-1, PR #2169 리뷰) — register-retry가 heal-busy로 인해 recheck 목적으로 재예약한
+  // 횟수. `registerRetryRef.current.attempt`(실제 backoff 예산)와 분리해 추적한다 — heal이 잠깐
+  // in-flight라 건너뛴 것은 실제 register 실패가 아니므로 attempt 예산을 소모하면 안 된다.
+  const registerRetryHealBusyRef = useRef<{ sessionKey: string | null; count: number }>({
+    sessionKey: null,
+    count: 0,
+  });
 
   /**
    * #2167 — context-heal(Tier 1/2)과 register-retry(#1960)는 같은 원인("register가 backend에
@@ -487,6 +496,39 @@ export function useApnsTripRegistration({
   };
 
   /**
+   * #2167 (P1, PR #2169 리뷰) — Tier 2 지하 fallback 발동 조건(currentStation 미해소 +
+   * subsurface + route 출발역 가용 + 세션 미heal)을 확인하고, 충족하면 override context를
+   * 빌드해 반환한다. Tier 2 자신의 setTimeout 콜백(`runTier2Heal`)뿐 아니라
+   * register-retry(#1960, `attemptRegisterRetry`)가 성공적으로 register를 완료하는 시점에도
+   * 이 조건을 함께 확인해야 한다 — Tier 2 타이머는 오직 main effect `run()`의 register가
+   * **직접** 성공했을 때만 arm되므로, 세션의 첫 register가 (실패 후) retry를 통해서만 성공하면
+   * Tier 2가 애초에 armed될 기회가 없어 지하 dead-zone 세션이 영구히 context 결손 상태로
+   * 고착되는 회귀가 있었다.
+   */
+  const buildTier2FallbackOverride = (sessionKey: string): BoardingPromptContext | null => {
+    const { route: r, destination: d, currentStation: cs, subsurface: sub, boardingLock: bl, routeOriginStation: origin } =
+      latestInputsRef.current;
+    /* istanbul ignore next -- route/destination이 null로 바뀌는 모든 경로(deps: routeSig,
+     * destination?.id)는 main register effect의 cleanup이 트립 종료 시점에 tier2TimerRef를
+     * 이미 clearTimeout하므로, Tier 2 콜백 경로에서 이 지점에 trip 종료 상태로 도달할 경로가
+     * 없다. register-retry(#1960) 경로(attemptRegisterRetry)는 자체적으로 route/destination
+     * null을 이미 상위에서 검증하고 리턴하므로 여기까지 오지 않는다. 향후 리팩터로 그 보장이
+     * 깨질 경우를 대비한 방어적 가드. */
+    if (!r || !d) return null; // trip 종료됨
+    if (cs != null) return null; // 이미 GPS로 해소됨 — Tier 2 대상 아님
+    if (!sub) return null; // 지하 판정 아님
+    if (origin == null) return null; // fallback 대상 route 출발역 없음
+    if (healedSessionKeyRef.current === sessionKey) return null; // 이미 heal 성공(Tier 1 포함)
+    return buildBoardingPromptContext({
+      route: r,
+      currentStation: origin,
+      destination: d,
+      lock: bl,
+      // gpsFix 미전달 — Tier 2 fallback은 스탬프 없이 송신(currentStation 자체가 GPS 미해소 상태).
+    });
+  };
+
+  /**
    * #2130 (B-1 Tier 2) — 지하 fallback heal. 등록 후 `CONTEXT_HEAL_TIER2_DELAY_MS` 시점에
    * currentStation이 여전히 미해소 + subsurface 판정이면 route 출발역(`routeOriginStation`)
    * 기준으로 promptContext를 빌드해 스탬프 없이 재등록한다.
@@ -495,44 +537,28 @@ export function useApnsTripRegistration({
    * 판정, 사용자가 route 미확정(routeOriginStation 없음) 등은 모두 정상 상태다.
    */
   const runTier2Heal = async (token: string, sessionKey: string): Promise<void> => {
-    const { route: r, destination: d, currentStation: cs, subsurface: sub, boardingLock: bl, routeOriginStation: origin } =
-      latestInputsRef.current;
-    /* istanbul ignore next -- route/destination이 null로 바뀌는 모든 경로(deps: routeSig,
-     * destination?.id)는 이 effect의 cleanup이 트립 종료 시점에 tier2TimerRef를 이미
-     * clearTimeout하므로, 이 콜백 자체가 trip 종료 후 실행될 도달 경로가 없다. 향후 리팩터로
-     * 그 보장이 깨질 경우를 대비한 방어적 가드. */
-    if (!r || !d) return; // trip 종료됨
-    if (cs != null) return; // 이미 GPS로 해소됨 — Tier 2 대상 아님
-    if (!sub) return; // 지하 판정 아님
-    if (origin == null) return; // fallback 대상 route 출발역 없음
-    if (healedSessionKeyRef.current === sessionKey) return; // 이미 heal 성공(Tier 1 포함)
     /* istanbul ignore next -- Tier 1은 currentStation이 non-null로 전환될 때만 in-flight를
-     * 세팅하는데, 바로 위 `cs != null` 가드가 이미 그 경우를 걸러낸다(이 지점 도달 시 cs는
-     * 항상 null). 또한 Tier 1의 effect cleanup은 currentStation.id가 바뀌는 매 렌더마다
-     * 동기적으로 in-flight를 지우므로, cs가 null로 유지되는 한 Tier 1의 in-flight가 이 시점까지
-     * 살아남는 경로가 현재 코드에 없다. 향후 리팩터로 그 보장이 깨질 경우를 대비한 방어적 가드
-     * (#2164 폭주 방지 belt-and-suspenders). */
+     * 세팅하는데, buildTier2FallbackOverride의 `cs != null` 가드가 이미 그 경우를 걸러낸다
+     * (이 지점 도달 시 cs는 항상 null). 또한 Tier 1의 effect cleanup은 currentStation.id가
+     * 바뀌는 매 렌더마다 동기적으로 in-flight를 지우므로, cs가 null로 유지되는 한 Tier 1의
+     * in-flight가 이 시점까지 살아남는 경로가 현재 코드에 없다. 향후 리팩터로 그 보장이 깨질
+     * 경우를 대비한 방어적 가드(#2164 폭주 방지 belt-and-suspenders). */
     if (healInFlightSessionKeyRef.current === sessionKey) return;
     /* istanbul ignore next -- #2167: Tier 2 fallback 타이머는 main effect의 직전 register가
-     * **성공**(ok:true)했을 때만 arm되고(위 주석 참조), main effect가 재실행될 때마다(deps 변경)
-     * 그 cleanup이 무조건 tier2TimerRef를 clearTimeout한다. register-retry(#1960)는 오직 main
-     * effect 자신의 register가 **실패**할 때만 예약되므로, "이 세션의 Tier 2 타이머가 여전히
-     * armed 상태"와 "이 세션에 재시도가 대기/진행 중"이 동시에 참인 경로가 현재 코드에 없다
-     * (재시도를 만든 실행이 반드시 Tier 2 타이머를 먼저 지운다). register-retry(#1960) ↔
-     * context-heal(Tier 1)의 실제 회귀 재현은 위 Tier 1 가드(및 그 반대 방향, attemptRegisterRetry의
-     * healInFlightSessionKeyRef 체크)로 커버된다 — 이 체크는 향후 Tier 2 스케줄링이 독립화될
-     * 경우를 대비한 belt-and-suspenders. */
+     * **성공**(ok:true)했을 때만 arm되고(buildTier2FallbackOverride 주석 참조), main effect가
+     * 재실행될 때마다(deps 변경) 그 cleanup이 무조건 tier2TimerRef를 clearTimeout한다.
+     * register-retry(#1960)는 오직 main effect 자신의 register가 **실패**할 때만 예약되므로,
+     * "이 세션의 Tier 2 타이머가 여전히 armed 상태"와 "이 세션에 재시도가 대기/진행 중"이
+     * 동시에 참인 경로가 현재 코드에 없다(재시도를 만든 실행이 반드시 Tier 2 타이머를 먼저
+     * 지운다). register-retry(#1960) ↔ context-heal(Tier 1)의 실제 회귀 재현은 위 Tier 1
+     * 가드(및 그 반대 방향, attemptRegisterRetry의 healInFlightSessionKeyRef 체크)로 커버된다
+     * — 이 체크는 향후 Tier 2 스케줄링이 독립화될 경우를 대비한 belt-and-suspenders. */
     // #2167 — register-retry(#1960)가 이 세션에 대해 대기/진행 중이면 Tier 2도 자체 POST를
-    // 쏘지 않는다. 재시도가 발화하면 latestInputsRef 기준 최신 context를 함께 실어 보낸다.
+    // 쏘지 않는다. 재시도가 발화하면 buildTier2FallbackOverride를 자체적으로 확인해(P1) 같은
+    // context를 함께 실어 보낸다.
     if (isRegisterRetryBusy(sessionKey)) return;
-    const overrideContext = buildBoardingPromptContext({
-      route: r,
-      currentStation: origin,
-      destination: d,
-      lock: bl,
-      // gpsFix 미전달 — Tier 2는 스탬프 없이 송신(currentStation 자체가 GPS 미해소 상태).
-    });
-    if (overrideContext == null) return; // route 구조상 빌드 실패 — graceful skip
+    const overrideContext = buildTier2FallbackOverride(sessionKey);
+    if (overrideContext == null) return; // 조건 미충족 또는 route 구조상 빌드 실패 — graceful skip
     healedSessionKeyRef.current = sessionKey;
     // #2167 — Tier 1과 동일하게 in-flight를 표시해야 register-retry(#1960)의 반대 방향 가드
     // (attemptRegisterRetry의 healInFlightSessionKeyRef 체크)가 Tier 2의 진행 중 POST도 감지해
@@ -590,6 +616,45 @@ export function useApnsTripRegistration({
   };
 
   /**
+   * #2167 (P2-1, PR #2169 리뷰) — register-retry가 같은 세션의 context-heal(Tier 1/2) POST와
+   * in-flight로 겹쳐 이번 backoff를 건너뛸 때 전용 recheck 예약. `scheduleRegisterRetry`(실제
+   * register 실패 전용, attempt 예산 소모)와 분리해 attempt를 소모하지 않는다 — heal-busy는
+   * register가 실패한 게 아니라 "잠깐 다른 루프가 같은 목적으로 이미 POST 중"이라는 신호일
+   * 뿐이라 backoff 예산을 태우면 안 된다(P2-1). heal이 비정상적으로 오래 걸리는 상황에 대비해
+   * 재예약 횟수 자체엔 별도 상한(`REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES`)을 둔다 — 상한
+   * 도달 시엔 일반 backoff(`scheduleRegisterRetry`, attempt 소모)로 전환해 무한 대기를 막는다.
+   */
+  const rescheduleRegisterRetryForHealBusy = (sessionKey: string): void => {
+    if (registerRetryHealBusyRef.current.sessionKey !== sessionKey) {
+      registerRetryHealBusyRef.current = { sessionKey, count: 0 };
+    }
+    if (registerRetryHealBusyRef.current.count >= REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES) {
+      logger.info(
+        `register retry: heal-busy 재예약 상한(${REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES}) 도달 — 일반 backoff로 전환`,
+        sessionKey,
+      );
+      scheduleRegisterRetry(sessionKey);
+      return;
+    }
+    registerRetryHealBusyRef.current.count += 1;
+    /* istanbul ignore next -- 이 함수는 attemptRegisterRetry 내부에서만 호출되고,
+     * attemptRegisterRetry는 오직 scheduleRegisterRetry 또는 이 함수 자신의 setTimeout
+     * 콜백을 통해서만 실행된다 — 두 콜백 모두 `attemptRegisterRetry` 호출 직전에 동기적으로
+     * `registerRetryRef.current.timer = null`을 세팅하므로, 이 지점에 도달했을 때 timer가
+     * non-null인 경로가 현재 코드에 없다. scheduleRegisterRetry의 동일 성격 가드와 같은
+     * 방어적 처리(향후 호출 경로가 늘어날 경우를 대비). */
+    if (registerRetryRef.current.timer !== null) {
+      clearTimeout(registerRetryRef.current.timer);
+    }
+    // sessionKey/attempt는 건드리지 않는다 — 이 재예약은 attempt 예산과 무관한 recheck다.
+    registerRetryRef.current.sessionKey = sessionKey;
+    registerRetryRef.current.timer = setTimeout(() => {
+      registerRetryRef.current.timer = null;
+      void attemptRegisterRetry(sessionKey);
+    }, REGISTER_RETRY_HEAL_BUSY_RECHECK_MS);
+  };
+
+  /**
    * #1960 — 예약된 재시도 실행. 활성 trip이 여전히 같은 세션인지 재검증(trip 전환/종료 시
    * self-cancel) 후 token을 다시 조회해 register를 재시도한다. 성공(`ok:true`, dedup skip
    * 포함)하면 재시도 상태를 초기화, 실패하면 다음 backoff를 예약한다.
@@ -603,12 +668,18 @@ export function useApnsTripRegistration({
      * (위 runTier2Heal)와 같은 방어적 처리. */
     if (!r || !d || `${routeSignature(r)}:${d.id}` !== sessionKey) return; // trip 종료/전환됨 — 재시도 대상 아님
 
-    // #2167 — 같은 세션에 대해 context-heal(Tier 1) POST가 이미 in-flight면 이번 backoff는
-    // 건너뛰고 다음 backoff로 재예약한다. heal의 결과(성공 시 context 확보 + lastRegisterMissingContextRef
-    // 갱신)를 본 뒤 재시도하면 heal과 동일 payload를 겹쳐 쏘지 않는다.
+    // #2167 — 같은 세션에 대해 context-heal(Tier 1/2) POST가 이미 in-flight면 이번 backoff는
+    // 건너뛰고 recheck를 예약한다(P2-1 — attempt 예산은 소모하지 않는다). heal의 결과(성공 시
+    // context 확보 + lastRegisterMissingContextRef 갱신)를 본 뒤 재시도하면 heal과 동일
+    // payload를 겹쳐 쏘지 않는다.
     if (healInFlightSessionKeyRef.current === sessionKey) {
-      scheduleRegisterRetry(sessionKey);
+      rescheduleRegisterRetryForHealBusy(sessionKey);
       return;
+    }
+    // heal-busy 대기가 끝나고 정상 진행하는 경로 — 이 세션의 recheck 카운터를 리셋해, 나중에
+    // 별개의 heal-busy 에피소드가 다시 생겨도 이전 에피소드의 재예약 횟수와 합산되지 않게 한다.
+    if (registerRetryHealBusyRef.current.sessionKey === sessionKey) {
+      registerRetryHealBusyRef.current = { sessionKey: null, count: 0 };
     }
 
     const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
@@ -619,7 +690,21 @@ export function useApnsTripRegistration({
     }
     registerRetryInFlightSessionKeyRef.current = sessionKey;
     try {
-      const result = await registerFromLatestInputs(token);
+      // #2167 (P1) — Tier 2 지하 fallback 조건이 충족되면 override를 함께 실어 보낸다. 세션의
+      // 첫 register가 (Tier 2를 arm하는) main effect run()이 아니라 이 retry로만 성공하면
+      // Tier 2 자체가 armed될 기회가 없어 지하 dead-zone 세션이 영구히 context 결손 상태로
+      // 고착되는 회귀를 막는다 — buildTier2FallbackOverride가 조건 미충족/이미 heal 시 null을
+      // 반환하므로 해당 없는 세션에는 영향 없다.
+      const tier2Override = buildTier2FallbackOverride(sessionKey);
+      if (tier2Override != null) {
+        // Tier 2와 동일하게 성공 여부와 무관하게 즉시 세션을 잠근다(#2130 Tier 2 정책과 일치) —
+        // POST 네트워크가 계속 실패하는 상황에서 매 재시도마다 override 시도가 반복되지 않게.
+        healedSessionKeyRef.current = sessionKey;
+      }
+      const result = await registerFromLatestInputs(
+        token,
+        tier2Override != null ? { promptContextOverride: tier2Override } : undefined,
+      );
       if (result?.ok) {
         clearRegisterRetry();
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
@@ -627,10 +712,6 @@ export function useApnsTripRegistration({
         scheduleRegisterRetry(sessionKey);
       }
     } finally {
-      /* istanbul ignore else -- registerRetryRef는 단일 타이머라 attemptRegisterRetry가
-       * 동시에 둘 이상 실행 중일 수 없고, 이 함수 안에서 sessionKey를 다른 값으로 바꿔치기하는
-       * 경로도 없어 이 finally 시점엔 항상 자신이 세팅한 sessionKey 그대로다. 향후 리팩터로 그
-       * 보장이 깨질 경우를 대비한 방어적 mismatch 분기. */
       if (registerRetryInFlightSessionKeyRef.current === sessionKey) {
         registerRetryInFlightSessionKeyRef.current = null;
       }
@@ -727,6 +808,13 @@ export function useApnsTripRegistration({
         prevCurrentStationIdRef.current = null;
         // #1960: trip 종료 시 register 재시도 상태도 초기화 — 다음 trip이 새로 재시도 3회 기회를 갖는다.
         clearRegisterRetry();
+        // #2167 (P2-2, PR #2169 리뷰) — healInFlightSessionKeyRef와 대칭으로 register-retry의
+        // in-flight/heal-busy 추적도 초기화. 초기화하지 않으면 이 trip의 retry가 여전히
+        // in-flight인 채로 trip이 종료되고, 곧바로 동일 sessionKey(같은 route+destination)로
+        // 새 trip이 시작될 때 stale in-flight 플래그가 `isRegisterRetryBusy`를 통해 새 trip의
+        // context-heal(Tier 1/2)을 영구히 차단하는 회귀가 있었다.
+        registerRetryInFlightSessionKeyRef.current = null;
+        registerRetryHealBusyRef.current = { sessionKey: null, count: 0 };
         return;
       }
 
