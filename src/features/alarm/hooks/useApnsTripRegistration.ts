@@ -772,21 +772,29 @@ export function useApnsTripRegistration({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeSig, destination?.id, boardingLockSig, subsurface, infoModeEnabled, sleepMode]);
 
-  // ── #2130 (B-1 Tier 1) — context-heal on currentStation null→non-null 전환 ──
+  // ── #2130 (B-1 Tier 1) — context-heal on currentStation 전환 (#2150: 결과 상태 기준) ──
   //
   // 위 main register effect는 #703 의도(POST 폭주 방지)로 currentStation을 deps에서 제외한다.
-  // 그 결과 cold-start register가 currentStation=null로 나가면(promptContext 결손) 이후
-  // GPS/fusion이 station을 해소해도 재등록 트리거가 없어 결손이 trip 내내 지속된다(#2130 근본
-  // 원인). 이 effect는 currentStation만을 deps로 갖는 별도 effect로 그 트리거를 신설한다 —
-  // main effect의 raw-deps 정책 자체는 건드리지 않는다.
+  // 그 결과 cold-start register가 currentStation=null(또는 route 밖 역)로 나가면(promptContext
+  // 결손) 이후 GPS/fusion이 station을 해소해도 재등록 트리거가 없어 결손이 trip 내내 지속된다
+  // (#2130 근본 원인). 이 effect는 currentStation만을 deps로 갖는 별도 effect로 그 트리거를
+  // 신설한다 — main effect의 raw-deps 정책 자체는 건드리지 않는다.
   //
-  // 조건: 활성 trip + 직전 register에 promptContext 없었음 + null→non-null 전환 + 세션당 미heal.
+  // #2150 — 최초 조건은 "null→non-null 전환"만 대상이었으나, 최초 등록 시 currentStation이
+  // route 밖 역(집 근처역 등, non-null이지만 context 빌드 실패)이면 이후 실제 탑승역(route 위,
+  // non-null)으로 전환돼도 non-null→non-null이라 heal이 영구히 미발동했다. 트리거를 "전환 종류"가
+  // 아니라 **결과 상태**(직전 register에 context 없었음 + currentStation이 바뀌어 non-null) 기준으로
+  // 재정의한다.
+  //
+  // 조건: 활성 trip + currentStation.id가 실제로 바뀜 + 새 값이 non-null + 직전 register에
+  // promptContext 없었음 + 세션당 미heal.
   useEffect(() => {
-    const prevWasNull = prevCurrentStationIdRef.current == null;
+    const prevStationId = prevCurrentStationIdRef.current;
     prevCurrentStationIdRef.current = currentStation?.id ?? null;
 
     if (!route || !destination) return; // trip 없음 — heal 대상 아님(trip-end 분기가 별도 reset).
-    if (!prevWasNull || currentStation == null) return; // null→non-null 전환만 대상.
+    if (currentStation == null) return; // 결과가 non-null인 전환만 대상.
+    if (prevStationId === currentStation.id) return; // 실질적 전환 없음(mount 시 lazy init 포함).
     if (!lastRegisterMissingContextRef.current) return; // 직전 register에 이미 context 있었음.
 
     const sessionKey = `${routeSig}:${destination.id}`;
