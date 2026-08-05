@@ -559,13 +559,20 @@ export function useApnsTripRegistration({
     if (isRegisterRetryBusy(sessionKey)) return;
     const overrideContext = buildTier2FallbackOverride(sessionKey);
     if (overrideContext == null) return; // 조건 미충족 또는 route 구조상 빌드 실패 — graceful skip
-    healedSessionKeyRef.current = sessionKey;
+    // #2164 (리뷰 P1, c18bbac6 — PR #2166 머지 이후 push돼 dev에 유실됐다가 #2167에서 재적용) —
+    // 세션 잠금은 heal이 **성공**(context build + POST 네트워크 모두 성공)했을 때만 건다.
+    // 이전에는(#2167 재작업 과정에서 재발) await 이전에 무조건 세팅해, 지하(네트워크 최악
+    // 구간)에서 POST가 실패해도 세션이 영구 잠기고 이후 Tier 1 heal이 재발동하지 못하는 회귀가
+    // Tier 2 경로로 존속했다 — Tier 1은 이미 성공 기준(#2164)이므로 Tier 2도 대칭 적용한다.
     // #2167 — Tier 1과 동일하게 in-flight를 표시해야 register-retry(#1960)의 반대 방향 가드
     // (attemptRegisterRetry의 healInFlightSessionKeyRef 체크)가 Tier 2의 진행 중 POST도 감지해
     // 겹쳐 쏘지 않는다.
     healInFlightSessionKeyRef.current = sessionKey;
     try {
-      await registerFromLatestInputs(token, { promptContextOverride: overrideContext });
+      const result = await registerFromLatestInputs(token, { promptContextOverride: overrideContext });
+      if (result?.ok && result.hadPromptContext) {
+        healedSessionKeyRef.current = sessionKey;
+      }
     } finally {
       /* istanbul ignore else -- Tier 2는 세션당 1회만 실행되고(healedSessionKeyRef 가드) 이
        * 함수 안에서 sessionKey를 다른 값으로 바꿔치기하는 경로가 없어, 이 finally 시점엔 항상

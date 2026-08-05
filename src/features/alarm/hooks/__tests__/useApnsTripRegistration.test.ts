@@ -2943,6 +2943,52 @@ describe('useApnsTripRegistration', () => {
         });
         expect(mockRegister).toHaveBeenCalledTimes(1);
       });
+
+      it('(#2167 재적용, 원래 c18bbac6/#2164 리뷰 P1) Tier 2 register 실패({ok:false}) 시 세션을 잠그지 않아 이후 Tier 1 heal이 재발동할 수 있다', async () => {
+        // 회귀 배경: c18bbac6(#2164 리뷰 P1)가 이 증상을 이미 고쳤으나, #2166 머지(21:48Z) 이후
+        // push돼 dev에 유실됐다 — #2167 작업 중 runTier2Heal을 재구성하며 "await 이전 무조건
+        // 잠금"으로 되돌아갔다. Tier 2 POST가 네트워크 레벨에서 실패하면(build/override context는
+        // 성공했지만 backend 전달에 실패) 세션이 잠기면 안 된다 — 잠기면 이후 Tier 1이 진짜
+        // currentStation을 해소해도 다시 시도할 수 없어 영구 결손으로 고착된다.
+        const { rerender } = renderHook(
+          ({ cs }: { cs: Station | null }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: cs,
+              subsurface: true,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { cs: null as Station | null } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start 성공, context 결손
+
+        // Tier 2 POST가 네트워크 레벨에서 실패.
+        mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2); // Tier 2 시도했지만 실패
+
+        // 세션이 잠기지 않았어야 하므로, currentStation이 실제로 해소되면(Tier 1) heal이
+        // 재시도돼 정상적으로 성공해야 한다. 버그(await 이전 무조건 잠금)가 있으면 이 register가
+        // 발사되지 않아 call count가 2에서 멈춘다.
+        mockRegister.mockResolvedValue({ ok: true });
+        rerender({ cs: origin });
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(3));
+        const healed = mockRegister.mock.calls[2][0] as {
+          promptGeoContext?: { origin: { lat: number; lng: number } };
+          promptDisplay?: { originStation: string; line: string };
+        };
+        expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+        expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+      });
     });
 
     describe('B-2 — GPS 근접 스탬프 (originDistanceM / originAccuracyM)', () => {
