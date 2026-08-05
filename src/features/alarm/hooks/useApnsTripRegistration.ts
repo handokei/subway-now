@@ -480,12 +480,8 @@ export function useApnsTripRegistration({
     if (!sub) return; // 지하 판정 아님
     if (origin == null) return; // fallback 대상 route 출발역 없음
     if (healedSessionKeyRef.current === sessionKey) return; // 이미 heal 성공(Tier 1 포함)
-    /* istanbul ignore next -- Tier 1은 currentStation이 non-null로 전환될 때만 in-flight를
-     * 세팅하는데, 바로 위 `cs != null` 가드가 이미 그 경우를 걸러낸다(이 지점 도달 시 cs는
-     * 항상 null). 또한 Tier 1의 effect cleanup은 currentStation.id가 바뀌는 매 렌더마다
-     * 동기적으로 in-flight를 지우므로, cs가 null로 유지되는 한 Tier 1의 in-flight가 이 시점까지
-     * 살아남는 경로가 현재 코드에 없다. 향후 리팩터로 그 보장이 깨질 경우를 대비한 방어적 가드
-     * (#2164 폭주 방지 belt-and-suspenders). */
+    // #2164 (리뷰 P2-1) — Tier 1이 같은 세션에 대해 build 성공 후 register 완료를 기다리는
+    // 중이면 중복 발사 방지. Tier 1/Tier 2가 대칭으로 이 ref를 세팅/해제한다.
     if (healInFlightSessionKeyRef.current === sessionKey) return;
     const overrideContext = buildBoardingPromptContext({
       route: r,
@@ -495,8 +491,17 @@ export function useApnsTripRegistration({
       // gpsFix 미전달 — Tier 2는 스탬프 없이 송신(currentStation 자체가 GPS 미해소 상태).
     });
     if (overrideContext == null) return; // route 구조상 빌드 실패 — graceful skip
-    healedSessionKeyRef.current = sessionKey;
-    await registerFromLatestInputs(token, { promptContextOverride: overrideContext });
+    // #2164 (리뷰 P1) — 세션 잠금은 heal이 **성공**(context build + POST 네트워크 모두 성공)
+    // 했을 때만. 이전에는 await 이전에 무조건 세팅해 지하(네트워크 최악 구간)에서 POST가
+    // 실패해도 세션이 영구 잠기고 이후 Tier 1 heal이 재발동하지 못하는 회귀가 Tier 2 경로로
+    // 존속했다(Tier 1은 이미 성공 기준으로 고쳤음, 이 fix로 Tier 2도 대칭 적용).
+    // #2164 (리뷰 P2-1) — Tier 1과 대칭으로 시작 시 in-flight 세팅 + 완료 시 해제.
+    healInFlightSessionKeyRef.current = sessionKey;
+    const result = await registerFromLatestInputs(token, { promptContextOverride: overrideContext });
+    healInFlightSessionKeyRef.current = null;
+    if (result?.ok && result.hadPromptContext) {
+      healedSessionKeyRef.current = sessionKey;
+    }
   };
 
   /** #1960 — 대기 중인 register 재시도 타이머/상태를 모두 초기화. */
@@ -831,10 +836,10 @@ export function useApnsTripRegistration({
 
     const sessionKey = `${routeSig}:${destination.id}`;
     if (healedSessionKeyRef.current === sessionKey) return; // 세션 이미 heal 성공.
-    /* istanbul ignore next -- currentStation.id가 바뀌어야만 이 effect가 재실행되는데, React는
-     * deps 변경 시 이전 effect의 cleanup(이 함수 하단, in-flight를 항상 지움)을 새 effect
-     * body보다 먼저 동기 실행한다. 따라서 이 effect 스스로 인해 in-flight가 살아있는 채로 다시
-     * 진입하는 경로가 현재 코드에 없다(Tier 2의 in-flight 체크와 동일 성격의 방어적 가드). */
+    // #2164 (리뷰 P2-1) — Tier 2가 같은 세션에 대해 in-flight 중(override context register
+    // 완료 대기)이면 중복 발사 방지. Tier 1 자기 자신의 in-flight는 React가 deps 변경 시 이전
+    // effect의 cleanup을 새 effect body보다 먼저 동기 실행해 원천 차단되지만, Tier 2가 세팅한
+    // in-flight는 이 체크가 아니면 걸러지지 않는다.
     if (healInFlightSessionKeyRef.current === sessionKey) return; // 동일 세션 heal 진행 중.
 
     // #2164 — build 성공 여부를 먼저 확인 — 실패하면 POST 자체를 내지 않는다(세션 미잠금,

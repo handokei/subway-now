@@ -2360,6 +2360,161 @@ describe('useApnsTripRegistration', () => {
         });
         expect(mockRegister).toHaveBeenCalledTimes(1);
       });
+
+      it('(리뷰 P1) Tier 2 register 실패({ok:false}) 시 세션을 잠그지 않아 이후 Tier 1 heal이 재발동할 수 있다', async () => {
+        const { rerender } = renderHook(
+          ({ cs }: { cs: Station | null }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: cs,
+              subsurface: true,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { cs: null as Station | null } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start, context 결손
+
+        // Tier 2 POST가 네트워크 레벨에서 실패 — build(override context)는 성공했지만 backend
+        // 전달에 실패했으므로 세션이 잠기면 안 된다(#2164가 고치려던 증상이 Tier 2 경로로 존속하면
+        // 여기서 세션이 영구 잠겨 아래 Tier 1 재시도가 막힌다).
+        mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2); // Tier 2 시도했지만 실패
+
+        // 세션이 잠기지 않았어야 하므로, currentStation이 실제로 해소되면(Tier 1) heal이
+        // 재시도돼 정상적으로 성공해야 한다.
+        mockRegister.mockResolvedValue({ ok: true });
+        rerender({ cs: origin });
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(3));
+        const healed = mockRegister.mock.calls[2][0] as {
+          promptGeoContext?: { origin: { lat: number; lng: number } };
+          promptDisplay?: { originStation: string; line: string };
+        };
+        expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+        expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+      });
+
+      it('(리뷰 P2-1) Tier 2 register가 in-flight인 동안 Tier 1이 동시 발사되지 않는다 (대칭 가드)', async () => {
+        let resolveTier2!: (value: { ok: boolean }) => void;
+        const deferred = new Promise<{ ok: boolean }>((resolve) => {
+          resolveTier2 = resolve;
+        });
+        mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start
+        mockRegister.mockImplementationOnce(() => deferred); // Tier 2 register — pending 유지.
+
+        const { rerender } = renderHook(
+          ({ cs }: { cs: Station | null }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: cs,
+              subsurface: true,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { cs: null as Station | null } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // Tier 2 타이머 발화 — register가 deferred라 pending 상태로 멈춘다(in-flight).
+        act(() => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2); // Tier 2 register 시작(pending)
+
+        // Tier 2가 아직 in-flight인 동안 currentStation이 resolve — Tier 1도 heal 조건을
+        // 만족하지만 in-flight 가드로 중복 발사하지 않아야 한다.
+        rerender({ cs: origin });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2); // Tier 1이 스킵 — 추가 호출 없음
+
+        // Tier 2가 완료(성공)되면 세션이 잠긴다 — in-flight 해제 후에도 Tier 1이 다시 나서지
+        // 않음(정상 종결, 재발사 없음).
+        resolveTier2({ ok: true });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+      });
+
+      it('(리뷰 P2-1) Tier 2 자신의 in-flight 재진입 방지 — 재arm된 두 번째 타이머가 첫 register 완료 전에 도착하면 skip', async () => {
+        let resolveFirstTier2!: (value: { ok: boolean }) => void;
+        const deferred = new Promise<{ ok: boolean }>((resolve) => {
+          resolveFirstTier2 = resolve;
+        });
+        mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start
+        mockRegister.mockImplementationOnce(() => deferred); // 첫 Tier 2 register — pending 유지.
+        mockRegister.mockResolvedValueOnce({ ok: true }); // infoModeEnabled 토글로 인한 재register.
+
+        const { rerender } = renderHook(
+          ({ ime }: { ime: boolean }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: null,
+              subsurface: true,
+              infoModeEnabled: ime,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { ime: false } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start
+
+        // 첫 Tier 2 타이머 발화 — register가 deferred라 pending(in-flight) 유지.
+        act(() => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2); // 첫 Tier 2 register 시작(pending)
+
+        // infoModeEnabled 토글 → main register effect 재실행 → 성공 → 새 Tier 2 타이머 재arm
+        // (subsurface는 계속 true — Tier 2 조건 자체는 그대로 유지).
+        rerender({ ime: true });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+
+        // 재arm된 두 번째 Tier 2 타이머 도착 — 첫 register가 아직 완료되지 않았으므로(in-flight)
+        // 두 번째 Tier 2 heal은 조용히 skip돼야 한다(추가 register 없음).
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+
+        // 첫 register가 뒤늦게 성공으로 완료되면 세션이 잠긴다.
+        resolveFirstTier2({ ok: true });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+      });
     });
 
     describe('B-2 — GPS 근접 스탬프 (originDistanceM / originAccuracyM)', () => {
