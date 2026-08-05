@@ -261,7 +261,7 @@ describe('registerPrescheduledStationAlarms', () => {
     expect((call.content as { interruptionLevel?: string }).interruptionLevel).toBeUndefined();
   });
 
-  it('station-passed kind는 sound=false, alarm kind(transfer/destination)는 sound=alarm.wav', async () => {
+  it('#2158 — station-passed/transfer/destination 모두 sound=false (일반모드는 loud 알람 금지)', async () => {
     const arc = makeArc();
     await registerPrescheduledStationAlarms({
       tripToken: TRIP_TOKEN,
@@ -272,7 +272,27 @@ describe('registerPrescheduledStationAlarms', () => {
     const calls = mockedSchedule.mock.calls;
     expect((calls[0][0].content as { sound?: unknown }).sound).toBe(false);
     const transferCallIdx = 2; // D역 transfer
-    expect((calls[transferCallIdx][0].content as { sound?: unknown }).sound).toBe('alarm.wav');
+    expect((calls[transferCallIdx][0].content as { sound?: unknown }).sound).toBe(false);
+    const destinationCallIdx = calls.length - 1; // F역 destination
+    expect((calls[destinationCallIdx][0].content as { sound?: unknown }).sound).toBe(false);
+  });
+
+  it('#2158 — ios에서 transfer/destination도 interruptionLevel=active (timeSensitive/alarm.wav 금지)', async () => {
+    jest.replaceProperty(Platform, 'OS', 'ios');
+    const arc = makeArc();
+    await registerPrescheduledStationAlarms({
+      tripToken: TRIP_TOKEN,
+      arcStations: arc,
+      currentIdx: 3, // transfer(D→E) + destination(E→F) 두 건
+      now: NOW,
+    });
+    const calls = mockedSchedule.mock.calls;
+    expect(calls.length).toBe(2);
+    for (const call of calls) {
+      const content = call[0].content as { sound?: unknown; interruptionLevel?: string };
+      expect(content.sound).toBe(false);
+      expect(content.interruptionLevel).toBe('active');
+    }
   });
 
   it('APNS_TOKEN_KEY가 있으면 collapseId를 content.data에 동봉', async () => {

@@ -55,7 +55,9 @@ export const PRESCHED_ALARM_PREFIX = 'presched-';
 
 /** Android channel — 기존 station-alarm 채널 재사용(safetyNetScheduler와 동일 정책). */
 const ALARM_CHANNEL_ID = 'station-alarm';
-const INTERRUPTION_LEVEL = 'timeSensitive';
+/** #2158 — prescheduler는 일반모드 전용 채널이라 loud(alarm.wav/timeSensitive)가 존재할 이유가
+ *  없다. backend의 매역 push(`sendAlertPush` interruption-level=active, 무소리)와 동일 정책. */
+const INTERRUPTION_LEVEL = 'active';
 
 /**
  * 역별 알림 종류. 경로의 마지막 역은 'destination', line이 바뀌는 경계 역은 'transfer',
@@ -153,10 +155,13 @@ async function scheduleOne(params: {
   collapseId: string | undefined;
 }): Promise<void> {
   const { identifier, tripToken, stationName, kind, occurrenceIdx, fireMs, collapseId } = params;
-  const isAlarmKind = kind === 'transfer' || kind === 'destination';
-  const { title, body } = isAlarmKind
-    ? buildAlarmContent({ phaseId: 'imminent', type: kind, stationName } as AlarmEvent)
-    : buildStationPassedContent(stationName);
+  // #2158 — 일반모드(취침모드 OFF) 전용 채널이므로 kind와 무관하게 항상 non-loud 알림으로
+  // 예약한다. transfer/destination도 backend 매역 push와 동일한 문구를 재사용하되(정보 전달
+  // 목적은 동일), 발사는 무소리 + interruption-level=active로 통일 — loud(alarm.wav +
+  // timeSensitive)는 safetyNetScheduler(취침모드 전용)만의 권한이다.
+  const { title, body } = kind === 'station-passed'
+    ? buildStationPassedContent(stationName)
+    : buildAlarmContent({ phaseId: 'imminent', type: kind, stationName } as AlarmEvent);
   const data: PrescheduledNotificationData = {
     channel: 'presched-station',
     tripToken,
@@ -171,12 +176,12 @@ async function scheduleOne(params: {
       title,
       body,
       data: data as unknown as Record<string, unknown>,
-      sound: isAlarmKind ? 'alarm.wav' : false,
+      sound: false,
       ...(Platform.OS === 'android' && {
         channelId: ALARM_CHANNEL_ID,
         priority: Notifications.AndroidNotificationPriority.MAX,
       }),
-      ...(Platform.OS === 'ios' && isAlarmKind && { interruptionLevel: INTERRUPTION_LEVEL }),
+      ...(Platform.OS === 'ios' && { interruptionLevel: INTERRUPTION_LEVEL }),
     },
     trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(fireMs) },
   });
