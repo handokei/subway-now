@@ -37,6 +37,7 @@ import {
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
+  CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
   CONTEXT_HEAL_TIER2_DELAY_MS,
   REGISTER_RETRY_BACKOFF_MS,
 } from '../../../shared/constants/boardingLock';
@@ -371,9 +372,22 @@ export function useApnsTripRegistration({
   // #2130 (B-1) — 직전 register가 promptContext 없이 나갔는지 여부. Tier 1 heal 트리거의
   // SSoT — registerFromLatestInputs가 매 호출마다 callRegister의 실제 결과로 갱신한다.
   const lastRegisterMissingContextRef = useRef(false);
-  // #2130 (B-1) — 이미 heal을 수행한 세션 key(`routeSig:destinationId`). Tier 1/Tier 2가
-  // 공유해 세션당 heal이 정확히 1회만 발동하도록 가드한다.
+  // #2130 (B-1) / #2164 — heal에 **성공**(context가 backend에 실제로 전달)한 세션
+  // key(`routeSig:destinationId`). Tier 1/Tier 2가 공유. #2164 이전에는 heal **시도**만으로
+  // (성공 여부 무관) 이 값을 세팅해, 실패한 시도가 세션을 영구 잠가 이후 진짜 탑승역 전환에도
+  // heal이 재발동하지 않는 회귀가 있었다 — 반드시 성공했을 때만 세팅한다.
   const healedSessionKeyRef = useRef<string | null>(null);
+  // #2164 — 세션당 heal POST 시도가 in-flight 중인지 추적. build 성공 후 register 완료까지의
+  // 짧은 창에서 같은 세션에 대해 Tier 1(currentStation 전환)과 Tier 2(60s 타이머)가 동시에
+  // 중복 발사하는 것을 막는다(healedSessionKeyRef는 완료 후에만 세팅되므로 그 사이엔 무방비).
+  const healInFlightSessionKeyRef = useRef<string | null>(null);
+  // #2164 — 세션당 heal POST 발사 횟수 백스톱. build는 성공했지만 POST 네트워크가 계속
+  // 실패하는 상황에서 station이 반복 전환돼도 무한 재시도로 backend rate limit(10/10min)을
+  // 위협하지 않도록 상한(`CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION`)을 둔다.
+  const healAttemptRef = useRef<{ sessionKey: string | null; count: number }>({
+    sessionKey: null,
+    count: 0,
+  });
   // #2130 (B-1 Tier 1) — 직전 렌더의 currentStation.id. null→non-null 전환 감지에 사용.
   // lazy init으로 mount 시점 값을 그대로 캡처 — 이미 non-null로 시작한 trip은 전환 대상이 아니다.
   const prevCurrentStationIdRef = useRef<string | null>(currentStation?.id ?? null);
@@ -434,9 +448,11 @@ export function useApnsTripRegistration({
     });
     // #767 — 두 경로 모두 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도 유지.
     lastSentLockSigRef.current = lockSig(bl);
-    // #2130 (B-1) — 이번 register가 실제로 promptContext를 포함했는지 기록. 다음 currentStation
-    // null→non-null 전환 시 Tier 1 heal이 필요한지 판정하는 SSoT.
-    lastRegisterMissingContextRef.current = !result.hadPromptContext;
+    // #2130 (B-1) / #2164 — 이번 register가 실제로 context를 backend에 성공적으로 전달했는지
+    // 기록. 다음 currentStation 전환 시 Tier 1 heal이 필요한지 판정하는 SSoT. "성공"은 context
+    // build 성공(hadPromptContext) **+** POST 네트워크 성공(ok) 둘 다를 요구 — build만 성공하고
+    // 네트워크가 실패하면 backend는 여전히 context가 없으므로 다음 전환에서 재시도가 필요하다.
+    lastRegisterMissingContextRef.current = !(result.hadPromptContext && result.ok);
     // #2130 (B-1) — 성공한 context(fresh/override 무관)를 캐시에 반영. Tier 2 heal의 route-origin
     // 근사 context도 이 캐시를 통해 이후 정상 register(currentStation 여전히 null)에 이어져
     // "heal 직후 다음 register가 다시 결손"되는 회귀를 막는다.
@@ -463,7 +479,14 @@ export function useApnsTripRegistration({
     if (cs != null) return; // 이미 GPS로 해소됨 — Tier 2 대상 아님
     if (!sub) return; // 지하 판정 아님
     if (origin == null) return; // fallback 대상 route 출발역 없음
-    if (healedSessionKeyRef.current === sessionKey) return; // 이미 heal 완료(Tier 1 포함)
+    if (healedSessionKeyRef.current === sessionKey) return; // 이미 heal 성공(Tier 1 포함)
+    /* istanbul ignore next -- Tier 1은 currentStation이 non-null로 전환될 때만 in-flight를
+     * 세팅하는데, 바로 위 `cs != null` 가드가 이미 그 경우를 걸러낸다(이 지점 도달 시 cs는
+     * 항상 null). 또한 Tier 1의 effect cleanup은 currentStation.id가 바뀌는 매 렌더마다
+     * 동기적으로 in-flight를 지우므로, cs가 null로 유지되는 한 Tier 1의 in-flight가 이 시점까지
+     * 살아남는 경로가 현재 코드에 없다. 향후 리팩터로 그 보장이 깨질 경우를 대비한 방어적 가드
+     * (#2164 폭주 방지 belt-and-suspenders). */
+    if (healInFlightSessionKeyRef.current === sessionKey) return;
     const overrideContext = buildBoardingPromptContext({
       route: r,
       currentStation: origin,
@@ -626,6 +649,10 @@ export function useApnsTripRegistration({
         // 시점에 cancel했다 — 여기서 다시 clear할 필요 없음.)
         lastRegisterMissingContextRef.current = false;
         healedSessionKeyRef.current = null;
+        // #2164 — trip 종료 시 heal in-flight/attempt 상한 추적도 초기화 — 다음 trip이 새로
+        // 세션당 상한(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION) 전체를 갖는다.
+        healInFlightSessionKeyRef.current = null;
+        healAttemptRef.current = { sessionKey: null, count: 0 };
         prevCurrentStationIdRef.current = null;
         // #1960: trip 종료 시 register 재시도 상태도 초기화 — 다음 trip이 새로 재시도 3회 기회를 갖는다.
         clearRegisterRetry();
@@ -786,8 +813,13 @@ export function useApnsTripRegistration({
   // 아니라 **결과 상태**(직전 register에 context 없었음 + currentStation이 바뀌어 non-null) 기준으로
   // 재정의한다.
   //
-  // 조건: 활성 trip + currentStation.id가 실제로 바뀜 + 새 값이 non-null + 직전 register에
-  // promptContext 없었음 + 세션당 미heal.
+  // 조건: 활성 trip + currentStation.id가 실제로 바뀜 + 새 값이 non-null + 직전 register가
+  // context를 backend에 성공적으로 전달하지 못함(build 실패 또는 POST 네트워크 실패) + 세션
+  // 미성공 + 세션당 POST 상한 미도달.
+  //
+  // #2164 — register 발사는 **context build가 성공할 때만**. build 실패(off-route 역 등)면
+  // POST 자체를 내지 않고 세션도 잠그지 않아 다음 전환에서 재시도를 허용한다(성공 기준 가드).
+  // 다만 build 성공 후 POST가 반복 실패하는 상황을 대비해 세션당 POST 발사 횟수에 상한을 둔다.
   useEffect(() => {
     const prevStationId = prevCurrentStationIdRef.current;
     prevCurrentStationIdRef.current = currentStation?.id ?? null;
@@ -795,21 +827,66 @@ export function useApnsTripRegistration({
     if (!route || !destination) return; // trip 없음 — heal 대상 아님(trip-end 분기가 별도 reset).
     if (currentStation == null) return; // 결과가 non-null인 전환만 대상.
     if (prevStationId === currentStation.id) return; // 실질적 전환 없음(mount 시 lazy init 포함).
-    if (!lastRegisterMissingContextRef.current) return; // 직전 register에 이미 context 있었음.
+    if (!lastRegisterMissingContextRef.current) return; // 직전 register가 이미 context 전달 성공.
 
     const sessionKey = `${routeSig}:${destination.id}`;
-    if (healedSessionKeyRef.current === sessionKey) return; // 세션당 1회 가드.
+    if (healedSessionKeyRef.current === sessionKey) return; // 세션 이미 heal 성공.
+    /* istanbul ignore next -- currentStation.id가 바뀌어야만 이 effect가 재실행되는데, React는
+     * deps 변경 시 이전 effect의 cleanup(이 함수 하단, in-flight를 항상 지움)을 새 effect
+     * body보다 먼저 동기 실행한다. 따라서 이 effect 스스로 인해 in-flight가 살아있는 채로 다시
+     * 진입하는 경로가 현재 코드에 없다(Tier 2의 in-flight 체크와 동일 성격의 방어적 가드). */
+    if (healInFlightSessionKeyRef.current === sessionKey) return; // 동일 세션 heal 진행 중.
+
+    // #2164 — build 성공 여부를 먼저 확인 — 실패하면 POST 자체를 내지 않는다(세션 미잠금,
+    // 상한도 소비하지 않음 — 다음 전환에서 다시 시도).
+    const healContext = buildBoardingPromptContext({
+      route,
+      currentStation,
+      destination,
+      lock: boardingLock,
+      gpsFix: latestInputsRef.current.gpsFix,
+    });
+    if (healContext == null) return; // build 실패 — graceful skip.
+
+    // #2164 — 세션당 POST 상한 백스톱(backend rate limit 보호).
+    if (healAttemptRef.current.sessionKey !== sessionKey) {
+      healAttemptRef.current = { sessionKey, count: 0 };
+    }
+    if (healAttemptRef.current.count >= CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION) {
+      logger.info(
+        `context-heal: 세션당 POST 상한(${CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION}) 도달 — 중단`,
+        sessionKey,
+      );
+      return;
+    }
 
     let cancelled = false;
+    healInFlightSessionKeyRef.current = sessionKey;
     void (async () => {
       const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
-      if (cancelled || !token) return;
-      // 가드를 먼저 세팅 — in-flight 중 동일 세션의 중복 heal 방지.
-      healedSessionKeyRef.current = sessionKey;
-      await registerFromLatestInputs(token);
+      if (cancelled) return;
+      if (!token) {
+        healInFlightSessionKeyRef.current = null;
+        return;
+      }
+      healAttemptRef.current.count += 1;
+      const result = await registerFromLatestInputs(token, { promptContextOverride: healContext });
+      if (cancelled) return;
+      healInFlightSessionKeyRef.current = null;
+      // #2164 — heal이 실제로 성공(context build + POST 네트워크 모두 성공)했을 때만 세션 잠금.
+      // 실패하면 잠그지 않아 다음 전환에서 재시도(상한까지) 허용.
+      if (result?.ok && result.hadPromptContext) {
+        healedSessionKeyRef.current = sessionKey;
+      }
     })();
     return () => {
       cancelled = true;
+      // #2164 — in-flight 도중 같은 세션의 다음 station 전환이 도착해 이 effect가 재실행/
+      // unmount되면, 아직 완료되지 않은 이번 시도의 in-flight 표시를 지워 다음 시도가 영구히
+      // 막히지 않게 한다(다른 세션으로 이미 갈아탄 값이면 조건 불일치로 건드리지 않음).
+      if (healInFlightSessionKeyRef.current === sessionKey) {
+        healInFlightSessionKeyRef.current = null;
+      }
     };
     // currentStation.id 전환만이 이 effect의 트리거 — route/destination 등은 closure로 최신값
     // 참조(gate 조건 평가용)하되 deps에는 넣지 않는다: 위 main effect가 이미 그 변경들을

@@ -57,6 +57,7 @@ import type { Route } from '../../../../shared/utils/stationRoute';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
+  CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
   CONTEXT_HEAL_TIER2_DELAY_MS,
   REGISTER_RETRY_BACKOFF_MS,
 } from '../../../../shared/constants/boardingLock';
@@ -1722,8 +1723,9 @@ describe('useApnsTripRegistration', () => {
       expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
     });
 
-    it('Tier 1 — heal이 실패(context 여전히 결손)해도 같은 세션에서 재시도하지 않는다 (1회 가드)', async () => {
-      // currentStation === destination이면 buildBoardingPromptContext가 null 반환(기존 동작).
+    it('Tier 1 (#2164) — register 발사는 context build 성공 시에만: build 실패(off-route) 전환은 POST 없이 skip, 세션도 잠기지 않는다', async () => {
+      // currentStation === destination이면 buildBoardingPromptContext가 null 반환(기존 동작) —
+      // "off-route" 전환의 fixture로 재사용.
       const { rerender } = renderHook(
         ({ cs }: { cs: Station | null }) =>
           useApnsTripRegistration({
@@ -1736,14 +1738,68 @@ describe('useApnsTripRegistration', () => {
       );
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
-      // null → dest(=destination, context 여전히 결손) 전환 — heal 1회 시도
+      // null → dest(=destination, context 빌드 실패) 전환 — build 실패로 POST 자체가 나가지
+      // 않아야 한다(#2164 이전에는 build 실패에도 무조건 register를 쐈다).
       rerender({ cs: dest });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-      expect(mockRegister.mock.calls[1][0].promptGeoContext).toBeUndefined();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
 
-      // 같은 세션 안에서 다시 null → origin(context 빌드 가능한 station) 전환이 와도
-      // 세션당 1회 가드로 추가 heal 없음.
-      rerender({ cs: null });
+      // dest → 강남(2호선, route 밖 — build 실패) 전환도 마찬가지로 POST 없이 skip.
+      rerender({ cs: station });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('Tier 1 (#2164) — off-route→off-route→on-route 전환에도 heal이 발동한다 (실패 시 세션 미잠금, 회귀 재현)', async () => {
+      // #2164 배경 재현: cold-start 이후 첫 실질 전환이 다시 off-route 역이면(GPS 흔들림 등)
+      // 구 코드는 그 1회 실패 "시도"만으로 세션을 영구 잠가, 이후 진짜 탑승역(on-route) 전환에
+      // heal이 재발동하지 않았다. 새 코드는 실패 시 세션을 잠그지 않아 이후 on-route 전환에서
+      // 정상적으로 heal이 성공해야 한다.
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeUndefined();
+
+      // off-route 전환 1: null → dest(=destination, build 실패) — POST 없이 skip.
+      rerender({ cs: dest });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // off-route 전환 2: dest → 강남(2호선, route 밖, build 실패) — 여전히 POST 없이 skip.
+      rerender({ cs: station });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // on-route 전환: 강남 → origin(route 위, build 성공) — heal이 정상 발동해 context를 포함한
+      // register가 발사돼야 한다. #2164 이전에는 위 두 실패 시도 중 첫 번째에서 이미 세션이
+      // 영구 잠겨 이 register가 발생하지 않았다.
+      rerender({ cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      const healed = mockRegister.mock.calls[1][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number } };
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+      expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+
+      // 성공 후 세션이 잠겨 추가 전환에도 재heal 없음(기존 보장 보존).
+      rerender({ cs: dest });
       await act(async () => {
         await Promise.resolve();
       });
@@ -1752,6 +1808,47 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       });
       expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it(`Tier 1 (#2164) — 세션당 POST 상한(${CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION}회) 도달 시 추가 heal 중단 (POST 네트워크 실패 반복)`, async () => {
+      // build는 매번 성공하지만 backend POST가 계속 실패({ok:false})하는 상황 — 폭주 방지
+      // 백스톱(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION)이 station 전환이 반복돼도 세션당
+      // heal POST 횟수를 제한해야 한다.
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      const mid = st('3-002'); // 주엽 — origin/dest 사이 실제 3호선 역, build 항상 성공.
+      const alternating = [origin, mid];
+
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1)); // cold-start, context 결손
+
+      // 상한만큼 heal POST 시도 — build는 매번 성공하지만 POST 네트워크는 계속 실패.
+      for (let i = 0; i < CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION; i++) {
+        const nextCallCount = i + 2; // cold-start(1) + 이번까지의 heal 시도 수
+        rerender({ cs: alternating[i % alternating.length] });
+        // eslint-disable-next-line no-loop-func -- nextCallCount는 매 반복 고정값 캡처, closure 문제 없음.
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(nextCallCount));
+      }
+      const cappedCallCount = CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION + 1;
+
+      // 상한 도달 — 이후 전환은 build가 성공해도 추가 POST 없음.
+      rerender({ cs: alternating[CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION % alternating.length] });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      rerender({ cs: alternating[(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION + 1) % alternating.length] });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(cappedCallCount);
     });
 
     it('Tier 1 — heal 성공 후 station이 다시 흔들려도(null→non-null 재전환) 추가 heal 없음 (context 이미 보유)', async () => {
@@ -1875,6 +1972,123 @@ describe('useApnsTripRegistration', () => {
       });
       // cancelled 가드로 unmount 후 register가 추가로 발사되지 않는다.
       expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('Tier 1 (#2164) — heal 시도 시 APNs token 미가용이면 in-flight만 해제하고 조용히 skip', async () => {
+      let tokenAvailable = true;
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return tokenAvailable ? 'token-abc' : null;
+        return null;
+      });
+
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1)); // cold-start, context 결손
+
+      // heal 시도 시점에 token이 미가용해지면(예: 토큰 만료/재발급 지연) build는 성공해도
+      // register 자체가 나가지 않고 in-flight 표시만 해제돼야 한다(세션 미잠금 유지).
+      tokenAvailable = false;
+      rerender({ cs: origin });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // token 없음 — heal register 미발사
+
+      // token이 다시 가용해지고 새 전환이 오면 heal이 정상 재시도된다(세션이 잠기지 않았으므로).
+      tokenAvailable = true;
+      rerender({ cs: dest });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      rerender({ cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].promptGeoContext).toBeDefined();
+    });
+
+    it('Tier 1 (#2164) — heal register 완료 직전 unmount되면 세션 잠금 등 부작용 없이 조용히 종료 (cancelled 가드)', async () => {
+      let resolveRegister!: (value: { ok: boolean }) => void;
+      const deferred = new Promise<{ ok: boolean }>((resolve) => {
+        resolveRegister = resolve;
+      });
+      mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start
+      mockRegister.mockImplementationOnce(() => deferred); // heal 시도 — pending 상태로 멈춤.
+
+      const { rerender, unmount } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      rerender({ cs: origin }); // heal 시도 시작 — registerActiveTrip이 deferred라 결과 대기.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+
+      // register 완료(resolve) 이전에 unmount — effect cleanup이 cancelled=true를 세팅.
+      unmount();
+      resolveRegister({ ok: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // cancelled 가드로 unmount 이후 추가 register/크래시 없이 조용히 종료.
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('Tier 1 (#2164) — 이미 heal 성공한 세션은 이후 register가 다시 실패해도 재heal하지 않는다 (성공 잠금 영속)', async () => {
+      const { rerender } = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1)); // cold-start, context 결손
+
+      // heal 성공 — 세션 잠금.
+      rerender({ cs: origin });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].promptGeoContext).toBeDefined();
+
+      // 이후 push token 갱신 경로(#2129)로 같은 입력이 재register되는데, 이번엔 backend가
+      // 일시 실패({ok:false})한다 — lastRegisterMissingContextRef가 다시 "결손"으로 flip된다.
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      const pushTokenHandler = mockAddPushTokenListener.mock.calls[0][0] as (event: {
+        data: string;
+      }) => void;
+      await act(async () => {
+        pushTokenHandler({ data: 'token-refreshed' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+
+      // 다른 station으로 전환해도 이미 이 세션은 heal에 성공한 적이 있으므로(healedSessionKeyRef
+      // 잠금 영속) 추가 heal register가 발사되지 않는다.
+      rerender({ cs: dest });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      rerender({ cs: origin });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
     });
 
     describe('Tier 2 — 지하 fallback (route 출발역, 스탬프 없이)', () => {
