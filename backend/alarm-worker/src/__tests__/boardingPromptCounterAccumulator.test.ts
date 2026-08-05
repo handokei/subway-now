@@ -46,7 +46,7 @@ describe('readBoardingPromptCounters', () => {
 });
 
 describe('accumulateBoardingPromptCounters — idle tick 0 write (#2160)', () => {
-  it('delta 전부 0(활성 trip 0인 idle tick) → KV write 없음', async () => {
+  it('delta 전부 0(lock 미형성 trip이 활성인 tick 없음 — idle tick 포함) → KV write 없음', async () => {
     const kv = new InMemoryKV();
     const result = await accumulateBoardingPromptCounters(kv as unknown as KVNamespace, ZERO_DELTA, NOW);
     expect(result).toBeNull();
@@ -78,7 +78,7 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
       skippedStale: 0,
       skippedTooFar: 0,
       skippedTrainDuplicate: 0,
-      window: '24h',
+      window: '24h-rolling-ttl',
       sampledAt: NOW,
     });
     const stored = await readBoardingPromptCounters(kv as unknown as KVNamespace);
@@ -106,7 +106,7 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
       skippedStale: 0,
       skippedTooFar: 0,
       skippedTrainDuplicate: 1,
-      window: '24h',
+      window: '24h-rolling-ttl',
       sampledAt: NOW + 60_000,
     });
   });
@@ -165,7 +165,7 @@ describe('EMPTY_BOARDING_PROMPT_COUNTERS', () => {
       skippedStale: 0,
       skippedTooFar: 0,
       skippedTrainDuplicate: 0,
-      window: '24h',
+      window: '24h-rolling-ttl',
       sampledAt: 0,
     });
   });

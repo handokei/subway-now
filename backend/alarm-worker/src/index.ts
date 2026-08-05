@@ -2438,9 +2438,16 @@ export const handler = {
       throw err;
     }
     // #2160 (follow-up of #2151) — boardingPrompt counter를 이번 tick의 delta로 누적 KV 키에
-    // read-modify-write. delta 전부 0(=활성 trip 0인 idle tick)이면 accumulate 함수 내부에서
-    // KV read/write 자체를 skip한다 — obs-metrics 1h 갱신 게이트와 독립적으로 매분 호출해야
-    // tick 간 delta 유실이 없다(scheduledStats는 tick마다 새로 생성되는 로컬 객체).
+    // read-modify-write. delta 전부 0이면 accumulate 함수 내부에서 KV read/write 자체를 skip
+    // 한다 — obs-metrics 1h 갱신 게이트와 독립적으로 매분 호출해야 tick 간 delta 유실이 없다
+    // (scheduledStats는 tick마다 새로 생성되는 로컬 객체).
+    //
+    // write 조건 정확한 서술: "활성 trip 0" 이 아니라 "lock 미형성 trip이 활성 tick에 존재".
+    // lockless 구간(C 토글=infoMode ON 등)이 유지되는 trip은 그 30~60분 내내 매분 write가
+    // 정상 케이스. X11(persistent lockless 회귀)이 발생하면 이 write도 함께 폭증하므로
+    // write 급증 자체가 X11 조기 탐지 신호가 될 수 있다(boardingPromptCounterAccumulator.ts
+    // 상단 doc-comment 참고). 단독 사용자 기준 최악 케이스도 하루 120~180 write 수준으로
+    // 무료 quota(1000 writes/day) 내 안전.
     try {
       await accumulateBoardingPromptCounters(
         env.TRIPS,

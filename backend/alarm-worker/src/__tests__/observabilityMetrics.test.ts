@@ -72,7 +72,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         skippedStale: 0,
         skippedTooFar: 0,
         skippedTrainDuplicate: 1,
-        window: '24h' as const,
+        window: '24h-rolling-ttl' as const,
         sampledAt: NOW,
       },
       window: '24h' as const,
@@ -123,7 +123,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         skippedStale: 0,
         skippedTooFar: 0,
         skippedTrainDuplicate: 0,
-        window: '24h' as const,
+        window: '24h-rolling-ttl' as const,
         sampledAt: NOW,
       },
       window: '24h' as const,
@@ -913,7 +913,7 @@ describe('computeObservabilityMetrics — boardingPromptCounters (#2151 → #216
       skippedStale: 0,
       skippedTooFar: 0,
       skippedTrainDuplicate: 0,
-      window: '24h',
+      window: '24h-rolling-ttl',
       sampledAt: 0,
     });
   });
@@ -928,7 +928,7 @@ describe('computeObservabilityMetrics — boardingPromptCounters (#2151 → #216
       skippedStale: 1,
       skippedTooFar: 2,
       skippedTrainDuplicate: 1,
-      window: '24h' as const,
+      window: '24h-rolling-ttl' as const,
       sampledAt: NOW,
     };
     const result = await computeObservabilityMetrics(r2, undefined, NOW, undefined, counters);
@@ -965,7 +965,7 @@ const SAMPLE_METRICS = {
     skippedStale: 0,
     skippedTooFar: 0,
     skippedTrainDuplicate: 0,
-    window: '24h' as const,
+    window: '24h-rolling-ttl' as const,
     sampledAt: NOW,
   },
   window: '24h' as const,
