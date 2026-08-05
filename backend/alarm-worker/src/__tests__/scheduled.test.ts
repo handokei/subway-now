@@ -4167,6 +4167,37 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     expect(storedTrip.boardingLock).toBeUndefined();
   });
 
+  // #2157 (PR #2162 리뷰 P1) — 같은 trip에서 두 번째 demotion이 발생해도 재확인 push가
+  // 발사돼야 한다. createdAt은 trip 재등록(isSameSession) 후에도 보존되므로 dedup 키를
+  // createdAt에 고정하면 두 번째 demotion이 첫 demotion의 dedup stamp에 막혀 조용히
+  // 미발사되는 회귀가 생긴다 — dedup은 demotion event(`etaMissingDemotedAt`) 단위여야 한다.
+  const SECOND_DEMOTION_NOW = NOW + 30 * 60_000;
+  it('fires train-reconfirm push again on a second demotion of the same trip (createdAt unchanged)', async () => {
+    const kv = new InMemoryKV();
+    // 첫 demotion이 이미 NOW 시점에 발생해 dedup stamp를 남긴 상태를 시뮬레이션.
+    // createdAt은 trip 생애 내내 불변(NOW) — 재선택 후 재등록해도 isSameSession으로 보존된다.
+    await kv.put(`trainReconfirmAlert:re-tok:${NOW}`, '1');
+    // 사용자가 재선택(boardingPrompt/직접 탭)해 lock이 재부착된 상태. 두 번째 demotion 직전:
+    // consecutiveEtaMissing이 threshold-1까지 다시 쌓인 상태로 seed.
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('re-tok', 4));
+    const fetchImpl = makeOkFetch();
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => SECOND_DEMOTION_NOW,
+      generatePushId: () => 'p-eta-second',
+    });
+    // 두 번째 demotion은 새 event이므로 push가 발사돼야 한다 (첫 demotion의 dedup stamp에
+    // 막히면 안 된다).
+    const calls = getTrainReconfirmCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    expect(parseTrainReconfirmData(calls[0]).sentAt).toBe(SECOND_DEMOTION_NOW);
+    // 새 demotion event 전용 dedup stamp가 남는다 (createdAt=NOW가 아니라 demotion 시점 기준).
+    expect(await kv.get(`trainReconfirmAlert:re-tok:${SECOND_DEMOTION_NOW}`)).toBe('1');
+  });
+
   it('fires trip-ended push (reason=destination-arrived) when destination waypoint ARRIVED', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());

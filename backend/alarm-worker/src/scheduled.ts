@@ -2914,22 +2914,32 @@ async function attemptVanishSwap(
 }
 
 /**
- * #2157 (2026-08-05 결정 A) — eta-missing 재확인 alert push의 KV dedup 키. (tripToken, createdAt)
- * 단위 — trip-ended alert dedup(`tripEndedAlertDedupKey`)과 동일 패턴이나 trip이 살아있는 채로
- * 반복 cron cycle을 도는 경로라 TTL을 trip 최대 수명(9h+) 이상으로 넉넉히 잡는다.
+ * #2157 (2026-08-05 결정 A, PR #2162 리뷰 P1) — eta-missing 재확인 alert push의 KV dedup 키.
+ * `(tripToken, demotedAt)` 단위 — `demotedAt`은 이 demotion event가 발생한 시점
+ * (`trip.etaMissingDemotedAt`, 호출 직전에 `now`로 stamp됨)이지 `trip.createdAt`이 아니다.
+ * trip-ended alert dedup(`tripEndedAlertDedupKey`)과 겉모양은 같지만 전제가 다르다 — trip-ended는
+ * 발사 직후 trip이 삭제되는 반면 본 강등은 trip이 **생존**하고 재등록해도 `createdAt`이 보존된다
+ * (`isSameSession`). `createdAt` 기준으로 잡으면 같은 trip의 두 번째 demotion이 첫 demotion의
+ * dedup stamp에 막혀 조용히 미발사된다 — event 단위 키로 "같은 demotion 중복 tick 차단 +
+ * 새 demotion 재발사 허용"을 동시에 만족한다. TTL은 trip이 살아있는 채로 반복 cron cycle을 도는
+ * 경로라 trip 최대 수명(9h+) 이상으로 넉넉히 잡는다.
  */
 const TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX = 'trainReconfirmAlert:';
 const TRAIN_RECONFIRM_ALERT_DEDUP_TTL_SEC = 12 * 60 * 60;
 
-function trainReconfirmAlertDedupKey(tripToken: string, createdAt: number): string {
-  return `${TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX}${tripToken}:${createdAt}`;
+function trainReconfirmAlertDedupKey(tripToken: string, demotedAt: number): string {
+  return `${TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX}${tripToken}:${demotedAt}`;
 }
 
 /**
  * #2157 — eta-missing 임계 도달로 lock을 해제할 때 "탑승 열차를 찾을 수 없어요 — 다시
- * 확인해주세요" alert push를 1 trip당 1회만 발사한다. KV set-if-absent 게이트로 cron race에
- * 의한 중복 발사를 차단(`fireTripEndedAlertPush`와 동일 패턴). 실패는 graceful — dedup stamp를
- * 남기지 않아 다음 cycle에서 재시도 허용.
+ * 확인해주세요" alert push를 1 demotion event당 1회만 발사한다. KV set-if-absent 게이트로 cron
+ * race에 의한 중복 발사를 차단(`fireTripEndedAlertPush`와 동일 패턴). 실패는 graceful — dedup
+ * stamp를 남기지 않아 다음 cycle에서 재시도 허용.
+ *
+ * 호출자(threshold 분기)가 `trip.etaMissingDemotedAt = now`를 이미 stamp한 뒤 호출한다 —
+ * 이 함수는 그 값을 그대로 dedup 키에 사용한다(직접 `now` 파라미터를 쓰지 않는 이유: 값의
+ * SSoT가 trip 객체여야 재진입/재시도 시에도 같은 demotion을 가리키는 키가 보장된다).
  */
 async function fireTrainReconfirmPush(
   trip: Trip,
@@ -2940,7 +2950,7 @@ async function fireTrainReconfirmPush(
   log: Logger,
   generatePushId: () => string,
 ): Promise<void> {
-  const dedupKey = trainReconfirmAlertDedupKey(trip.token, trip.createdAt);
+  const dedupKey = trainReconfirmAlertDedupKey(trip.token, trip.etaMissingDemotedAt ?? trip.createdAt);
   const existing = await env.TRIPS.get(dedupKey);
   if (existing !== null) {
     log('train-reconfirm: dedup skip', { token: trip.token.slice(0, 8) });
@@ -3211,7 +3221,14 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     });
     trip.boardingLock = undefined;
     trip.consecutiveEtaMissing = 0;
+    // #1370 L3 vanishLocklessTakeover 선례와 동일 패턴 — 시스템 fallback이 lockless 인계 경로를
+    // 강제 활성화한다. 사용자가 opt-in 토글을 OFF로 둔 trip이어도 register 시 device가 보낸
+    // 실제 값으로 다음 세션에 자연 정합화되므로, 이 강제 활성화가 사용자 설정을 영구 덮어쓰지
+    // 않는다(#1370 L3 코멘트와 동일 근거).
     trip.infoModeEnabled = true;
+    // #2157 (PR #2162 리뷰 P1) — dedup 키를 이 demotion event 시점으로 고정. trip.createdAt은
+    // trip 생애 전체에 불변이라 두 번째 demotion에서 재사용하면 재확인 push가 조용히 막힌다.
+    trip.etaMissingDemotedAt = now;
     stats.etaMissingDemoted += 1;
     await deleteProgress(env.TRIPS, trip.token);
     await putTrip(env.TRIPS, trip);

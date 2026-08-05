@@ -148,6 +148,17 @@ export interface Trip {
    */
   consecutiveEtaMissing?: number;
   /**
+   * #2157 (2026-08-05 결정 A, PR #2162 리뷰 P1) — eta-missing 임계 초과로 lock을 해제하며
+   * 재확인 alert push를 발사한 시점(demotion event epoch ms). trip-ended alert의 dedup
+   * 키(`tripToken:createdAt`)를 그대로 재사용하면 안 되는 이유: trip-ended는 발사 직후 trip이
+   * 삭제되지만 본 강등은 trip이 **생존**하고 재등록해도 `createdAt`이 보존된다(`isSameSession`).
+   * `createdAt` 기준 dedup은 같은 trip에서 두 번째 demotion이 발생해도 push가 조용히
+   * 미발사되는 회귀(사용자가 lock 상실을 통지받지 못함)를 낳는다. 매 demotion마다 이 필드를
+   * 새 `now`로 갱신해 dedup 키를 event 단위로 격리 — 같은 demotion의 중복 cron tick 발사는
+   * 막고, 새 demotion(재선택 후 재차 eta-missing)에 대한 재발사는 허용한다.
+   */
+  etaMissingDemotedAt?: number;
+  /**
    * #816 C — 사용자 opt-in lockless station-passed (UI: "전체역 보기").
    * BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 발사할지 여부.
    *
