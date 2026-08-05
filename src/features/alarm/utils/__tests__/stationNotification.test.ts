@@ -343,14 +343,16 @@ describe('stationNotification', () => {
         bypassDnd: true,
       });
       expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledWith('station-alarm-silent');
+      // #2158 P1 — stationPrescheduler(일반모드)가 이 채널을 재사용하므로 MAX+bypassDnd(취침용
+      // 강제 알림 속성)를 제거하고 HIGH 이하로 낮춘다. Android 8+에서는 채널 속성이 고정이라
+      // per-notification content.sound=false만으로는 loud를 막을 수 없다(채널 자체가 무음이어야 함).
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm-silent', {
         name: '하차/환승 알림 (무음)',
-        importance: Notifications.AndroidImportance.MAX,
+        importance: Notifications.AndroidImportance.HIGH,
         sound: null,
         enableVibrate: true,
         vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        bypassDnd: true,
       });
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-passed', {
         name: '역 도착 알림',
@@ -923,18 +925,17 @@ describe('stationNotification', () => {
       });
     });
 
-    it('ALARM_SILENT_CHANNEL_ID는 sound: null + enableVibrate: true 유지', async () => {
+    it('#2158 P1 — ALARM_SILENT_CHANNEL_ID는 sound: null + importance HIGH, bypassDnd 없음(stationPrescheduler 일반모드 재사용)', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       (Notifications.deleteNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
       await initStationNotification();
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm-silent', {
         name: '하차/환승 알림 (무음)',
-        importance: Notifications.AndroidImportance.MAX,
+        importance: Notifications.AndroidImportance.HIGH,
         sound: null,
         enableVibrate: true,
         vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        bypassDnd: true,
       });
     });
 

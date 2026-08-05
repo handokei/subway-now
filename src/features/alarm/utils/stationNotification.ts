@@ -55,7 +55,8 @@ const liveActivityLogger = createLogger('LiveActivity');
 export const NOTIFICATION_ID = 'current-station';
 export const ALARM_NOTIFICATION_ID = 'station-alarm';
 const ALARM_CHANNEL_ID = 'station-alarm';
-const ALARM_SILENT_CHANNEL_ID = 'station-alarm-silent';
+/** #2158 — 일반모드 stationPrescheduler가 재사용하는 무음 채널(sound:null, bypassDnd 없음). */
+export const ALARM_SILENT_CHANNEL_ID = 'station-alarm-silent';
 export const STATION_PASSED_NOTIFICATION_ID = 'station-passed';
 const STATION_PASSED_CHANNEL_ID = 'station-passed';
 
@@ -185,14 +186,16 @@ export async function refreshNotificationChannels(): Promise<void> {
     bypassDnd: true,
   });
   await Notifications.deleteNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID).catch(() => {});
+  // #2158 P1 — stationPrescheduler(일반모드, sleepMode OFF)가 이 채널을 재사용한다. Android 8+는
+  // 채널의 sound/importance/bypassDnd가 고정 속성이라 per-notification content.sound=false만으로
+  // loud를 막을 수 없다 — MAX+bypassDnd(취침용 강제 알림 속성)를 제거하고 HIGH 이하로 낮춘다.
   await Notifications.setNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID, {
     name: i18next.t('notifications.channelTransferAlarmSilent'),
-    importance: Notifications.AndroidImportance.MAX,
+    importance: Notifications.AndroidImportance.HIGH,
     sound: null,
     enableVibrate: true,
     vibrationPattern: [0, 1000, 500, 1000],
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-    bypassDnd: true,
   });
   await Notifications.deleteNotificationChannelAsync(STATION_PASSED_CHANNEL_ID).catch(() => {});
   // #1224 — 매역 알림은 잠을 깨우지 말 것: 진동 0 / 사운드 0 / 배너만

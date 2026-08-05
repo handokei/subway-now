@@ -37,7 +37,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Station, LineNumber } from '../../../shared/types/station';
-import { buildAlarmContent, buildStationPassedContent } from './stationNotification';
+import { buildAlarmContent, buildStationPassedContent, ALARM_SILENT_CHANNEL_ID } from './stationNotification';
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { cancelIdentifiersWithRetry } from './safetyNetScheduler';
 import { hopTimeMsAt } from '../../route/utils/hopTime';
@@ -53,8 +53,11 @@ const logger = createLogger('StationPrescheduler');
 /** OS 예약 identifier 접두 — `presched-<tripToken.slice(0,16)>-<station>-<kind>#<occurrence>`. */
 export const PRESCHED_ALARM_PREFIX = 'presched-';
 
-/** Android channel — 기존 station-alarm 채널 재사용(safetyNetScheduler와 동일 정책). */
-const ALARM_CHANNEL_ID = 'station-alarm';
+/** #2158 P1 — prescheduler는 일반모드 전용 채널이라 loud가 존재할 이유가 없다. Android 8+에서는
+ *  채널의 sound/importance/bypassDnd가 고정 속성이라 content.sound=false만으로는 loud를 막을 수
+ *  없으므로, safetyNetScheduler(취침 전용)가 쓰는 loud 채널('station-alarm', sound:'alarm.wav'
+ *  고정)이 아니라 무음 채널('station-alarm-silent')을 재사용한다. */
+const ANDROID_CHANNEL_ID = ALARM_SILENT_CHANNEL_ID;
 /** #2158 — prescheduler는 일반모드 전용 채널이라 loud(alarm.wav/timeSensitive)가 존재할 이유가
  *  없다. backend의 매역 push(`sendAlertPush` interruption-level=active, 무소리)와 동일 정책. */
 const INTERRUPTION_LEVEL = 'active';
@@ -178,8 +181,8 @@ async function scheduleOne(params: {
       data: data as unknown as Record<string, unknown>,
       sound: false,
       ...(Platform.OS === 'android' && {
-        channelId: ALARM_CHANNEL_ID,
-        priority: Notifications.AndroidNotificationPriority.MAX,
+        channelId: ANDROID_CHANNEL_ID,
+        priority: Notifications.AndroidNotificationPriority.HIGH,
       }),
       ...(Platform.OS === 'ios' && { interruptionLevel: INTERRUPTION_LEVEL }),
     },
