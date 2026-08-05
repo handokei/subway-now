@@ -609,9 +609,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedNoContext: number;
   /**
-   * #2130 (Part B-be-1) — trip 등록(`createdAt`) 후 `PROMPT_FRESHNESS_MS`(15분)가 지나
-   * boarding-prompt 자격이 만료돼 skip한 누적 횟수. 오래된 lockMissing trip에 뒤늦게 발사되는
-   * stale prompt를 차단 — 0이 아니면 device 재등록 주기 또는 사용자 응답 지연 분포를 시사.
+   * #2130 (Part B-be-1) — boarding-prompt 신선도 게이트(`PROMPT_FRESHNESS_MS`, 15분) 만료로 skip한
+   * 누적 횟수. 오래된 lockMissing trip에 뒤늦게 발사되는 stale prompt를 차단 — 0이 아니면 device
+   * 재등록 주기 또는 사용자 응답 지연 분포를 시사.
+   *
+   * #2153 — 기준 시각(anchor)은 route 설정 시각(`trip.createdAt`)이 아니라 출발역 근접을 처음
+   * 관측한 시각(`trip.originProximityAt`, 근접 관측 전엔 createdAt fallback)이다. 집/사무실에서
+   * 경로를 미리 설정하고 15분 뒤 탑승하는 패턴에서 이 게이트가 오차단하던 회귀를 닫는다.
    */
   boardingPromptSkippedStale: number;
   /**
@@ -4497,29 +4501,53 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     return;
   }
 
-  // #2130 (Part B-be-1) — 신선도 게이트. trip 등록 후 15분 경과 시 boarding-prompt 자격 만료.
-  if (now - trip.createdAt > PROMPT_FRESHNESS_MS) {
+  let dirty = false;
+
+  // #2153 — 근접 게이트 판정을 신선도 게이트보다 먼저 계산해 anchor 재정의에 재사용한다.
+  // distance/accuracy 둘 다 있을 때만 평가(부재 = 지하/구 클라 관대 허용). 오차 고려 보수적
+  // 판정 — distance - accuracy > 150m 이면 "너무 멀다"로 본다.
+  const { originDistanceM, originAccuracyM } = geo;
+  const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
+  const isTooFarFromOrigin =
+    originDistanceM !== undefined &&
+    originAccuracyM !== undefined &&
+    originDistanceM - originAccuracyM > PROMPT_PROXIMITY_MARGIN_M;
+  // 근접 관측 = distance/accuracy 존재 + margin 이내(=too-far 아님). 부재(지하 등)는 근접
+  // "관측"이 아니므로 anchor stamp 대상이 아니다 (기존 관대 허용 정책과는 별개 축).
+  const isNearOrigin = hasProximityReading && !isTooFarFromOrigin;
+
+  // #2153 — trip 등록 후 최초로 출발역 근접을 관측한 cycle의 시각을 1회만 stamp. 이후
+  // cycle에서는 이 anchor를 보존(재관측마다 now로 계속 갱신하면 게이트가 무력화된다).
+  if (isNearOrigin && trip.originProximityAt === undefined) {
+    trip.originProximityAt = now;
+    dirty = true;
+  }
+
+  // #2153 — 신선도 게이트 기준 시각(anchor) 재정의. route 설정 시각(`createdAt`)이 아니라
+  // "탑승 근접 시각"(`originProximityAt`) 기준으로 15분 창을 판정한다. 근접 관측 전(stamp
+  // 미존재)에는 fallback으로 createdAt을 그대로 쓴다 — 근접 전에는 아래 근접 게이트가 이미
+  // 발사를 차단하므로 창을 보수적으로 연장하는 효과가 없다(#2153 스펙).
+  const freshnessAnchor = trip.originProximityAt ?? trip.createdAt;
+  if (now - freshnessAnchor > PROMPT_FRESHNESS_MS) {
     stats.boardingPromptSkippedStale += 1;
     log('boarding-prompt: skip (stale, past freshness window)', {
       token: trip.token.slice(0, 8),
-      ageMs: now - trip.createdAt,
+      ageMs: now - freshnessAnchor,
+      anchoredToProximity: trip.originProximityAt !== undefined,
     });
+    if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
 
-  // #2130 (Part B-be-1) — 근접 게이트. distance/accuracy 둘 다 있을 때만 평가(부재 = 지하/구
-  // 클라 관대 허용). 오차 고려 보수적 차단 — distance - accuracy > 150m 이면 skip.
-  if (
-    geo.originDistanceM !== undefined &&
-    geo.originAccuracyM !== undefined &&
-    geo.originDistanceM - geo.originAccuracyM > PROMPT_PROXIMITY_MARGIN_M
-  ) {
+  // #2130 (Part B-be-1) — 근접 게이트. isTooFarFromOrigin이면 발사 skip.
+  if (isTooFarFromOrigin) {
     stats.boardingPromptSkippedTooFar += 1;
     log('boarding-prompt: skip (too far from origin)', {
       token: trip.token.slice(0, 8),
       originDistanceM: geo.originDistanceM,
       originAccuracyM: geo.originAccuracyM,
     });
+    if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
 
@@ -4543,6 +4571,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       token: trip.token.slice(0, 8),
       ageMs: now - trip.lastAutoPromptedAt,
     });
+    if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
 
@@ -4553,7 +4582,6 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   const fusion = await runFusionStep(trip, env, now, deps.archFlag);
   // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
   maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
-  let dirty = false;
   // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
   if (fusion.phaseState) {
     trip.stationPhase = fusion.phaseState;

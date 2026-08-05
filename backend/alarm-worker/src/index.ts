@@ -831,6 +831,10 @@ app.post('/trips', async (c) => {
           boardingPromptState: existing.boardingPromptState,
           // #916 follow-up B — same session에선 같은 trip이므로 그대로 보존.
           lastAutoPromptedAt: existing.lastAutoPromptedAt,
+          // #2153 — 신선도 게이트 anchor도 backend-only state. re-register마다 incoming(항상
+          // undefined — device가 보내지 않는 필드)으로 덮이면 매 재등록마다 anchor가 사라져
+          // createdAt fallback으로 되돌아가는 회귀가 생긴다. same session이면 그대로 보존.
+          originProximityAt: existing.originProximityAt,
         }
       : {
           ...incoming,
