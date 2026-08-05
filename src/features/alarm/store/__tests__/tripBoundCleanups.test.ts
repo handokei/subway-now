@@ -29,6 +29,10 @@ import { clearLastSilentPushReceivedAt } from '../../utils/lastSilentPushReceive
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../useBoardingLockStore';
 import { useAlarmEventStore } from '../useAlarmEventStore';
+import {
+  clearLockLifecycleEntries,
+  getLockLifecycleEntries,
+} from '../../utils/boardingLockLifecycleBuffer';
 
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
@@ -467,6 +471,54 @@ describe('tripBoundCleanups', () => {
       // #2045 — clearLastSilentPushReceivedAt 1 신규 (Signal 4 판정 오염 차단).
       const MIN_ITEMS = 27;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
+    });
+  });
+
+  // #2152 (P1 code-review) — clearTripBoundStoreMemory가 useBoardingLockStore.setState를 직접
+  // 호출해 lock을 비우면 releaseLock()의 lifecycle breadcrumb(pushLockLifecycleEntry)이 우회된다.
+  // silent push trip-ended / FG setDestination(null/switch) / useStateRehydration sentinel /
+  // cold-launch reconciliation 4개 trip 종료 경로가 모두 runTripBoundCleanups만 호출하므로,
+  // 이 경로에서 lock이 release돼도 DebugModal "BoardingLock Lifecycle" 섹션에 기록이 남지 않는
+  // 회귀였다. clearTripBoundStoreMemory는 releaseLock('trip-cleanup')을 재사용해야 한다.
+  describe('#2152 (P1) — clearTripBoundStoreMemory가 releaseLock을 경유해 lifecycle breadcrumb을 남긴다', () => {
+    beforeEach(() => {
+      clearLockLifecycleEntries();
+    });
+
+    it('lock이 활성일 때 runTripBoundCleanups 실행 시 lifecycle buffer에 release(reason=trip-cleanup) 엔트리가 적재된다', async () => {
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'stn-1',
+          trainCode: 'T-100',
+          boardingStationId: 'stn-0',
+          boardingLine: '7',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        },
+      });
+
+      await runTripBoundCleanups();
+
+      // 기존 동작(메모리 정리 자체)은 유지돼야 한다.
+      expect(useBoardingLockStore.getState().lock).toBeNull();
+
+      const releaseEntries = getLockLifecycleEntries().filter((e) => e.event === 'release');
+      expect(releaseEntries).toHaveLength(1);
+      expect(releaseEntries[0]).toMatchObject({
+        kind: 'boarding-lock-lifecycle',
+        event: 'release',
+        reason: 'trip-cleanup',
+        trainCode: 'T-100',
+        line: '7',
+      });
+    });
+
+    it('lock이 없으면 lifecycle buffer에 release 엔트리가 적재되지 않는다 (noise 방지)', async () => {
+      useBoardingLockStore.setState({ lock: null });
+
+      await runTripBoundCleanups();
+
+      expect(getLockLifecycleEntries()).toHaveLength(0);
     });
   });
 

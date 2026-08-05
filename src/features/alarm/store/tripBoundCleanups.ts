@@ -197,18 +197,28 @@ function endLiveActivityCleanup(): Promise<void> {
  * useDestinationStore.customOrigin / useBoardingLockStore.lock / useAlarmEventStore.alarmEvent /
  * useAlarmEventStore.dismissSilence를 한 번에 동기화한다. setState는 sync — Promise.resolve로
  * 반환해 TRIP_BOUND_CLEANUPS의 () => Promise<void> shape에 맞춘다.
+ *
+ * #2152 (P1 code-review) — boardingLock은 직접 `setState({ lock: null })`로 비우지 않고
+ * `useBoardingLockStore.releaseLock('trip-cleanup')`을 경유한다. 이 함수는 silent push
+ * trip-ended / FG setDestination(null/switch) / useStateRehydration sentinel /
+ * cold-launch reconciliation 4개 trip 종료 경로가 모두 거치는 사실상 유일한 lock release
+ * chokepoint인데, 직접 setState는 releaseLock 내부의 lifecycle breadcrumb
+ * (`pushLockLifecycleEntry`) + Sentry breadcrumb(`addDomainBreadcrumb`)을 우회해 DebugModal
+ * "BoardingLock Lifecycle" 섹션에 가장 흔한 release 경로가 전혀 기록되지 않는 관측 공백이었다.
+ * releaseLock은 멱등(호출 시점 lock=null이면 no-op)이고 storage clearBoardingLock 재호출도
+ * AsyncStorage.removeItem 멱등이라 이 배열의 다른 `BOARDING_LOCK_KEY` removeItem 항목과
+ * 병렬 실행돼도 안전하다.
  */
-function clearTripBoundStoreMemory(): Promise<void> {
+async function clearTripBoundStoreMemory(): Promise<void> {
   const destState = useDestinationStore.getState();
   // customOrigin: setDestination 경로는 이미 null로 동기화하지만, BG silent push 경로는
   // 누락. 사용자가 직접 지정한 출발역이 새 trip에 leak되지 않도록 비운다.
   if (destState.customOrigin !== null) {
     useDestinationStore.setState({ customOrigin: null });
   }
-  // boardingLock: storage(BOARDING_LOCK_KEY)는 이미 removeItem 됐지만 zustand snapshot이
-  // 메모리에 lock을 갖고 있으면 FG UI가 stale lock UI를 일시 노출한다.
+  // boardingLock: releaseLock을 경유해 lifecycle breadcrumb을 남긴다 (#2152 P1).
   if (useBoardingLockStore.getState().lock !== null) {
-    useBoardingLockStore.setState({ lock: null });
+    await useBoardingLockStore.getState().releaseLock('trip-cleanup');
   }
   // alarmEvent / dismissSilence: storage(ALARM_EVENT_KEY/dismissSilenceStorage)도 위에서
   // 이미 cleanup. 메모리만 추가 동기화 — 새 trip UI에 이전 alarm overlay/silence가 leak 차단.

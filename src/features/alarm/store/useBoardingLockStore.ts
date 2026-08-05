@@ -23,6 +23,11 @@ import {
  * - 'destination-change' — 화면에서 destination이 바뀌어 stale lock 자동 release (controller).
  * - 'expired'         — 자동 만료(`checkExpiry`).
  * - 'train-code-mismatch' — 같은 노선에서 다른 trainCode가 90s 지속 관찰 (useTrainCodeMismatchDetector, #1659).
+ * - 'trip-cleanup'    — #2152 (P1) `tripBoundCleanups.clearTripBoundStoreMemory`가 trip 종료
+ *   시 store 메모리를 정리하며 releaseLock을 경유하는 generic 사유. silent push trip-ended /
+ *   FG setDestination(null/switch) / useStateRehydration sentinel / cold-launch reconciliation
+ *   4개 진입점이 모두 `runTripBoundCleanups`만 호출하므로 개별 사유를 구분할 수 없다 — 그 지점에서
+ *   lock이 살아있었다는 사실 자체가 진단 가치(오토락 범인 소거법).
  */
 export type LockReleaseReason =
   | 'user'
@@ -30,7 +35,8 @@ export type LockReleaseReason =
   | 'vanish'
   | 'destination-change'
   | 'expired'
-  | 'train-code-mismatch';
+  | 'train-code-mismatch'
+  | 'trip-cleanup';
 
 /**
  * BoardingLock 전역 store (#584 PR A).
