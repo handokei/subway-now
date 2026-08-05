@@ -4,13 +4,16 @@ import {
   dismissBoardingPrompt,
   persistFromPositionResponse,
   readActiveBoardingLine,
+  readTripOriginCoords,
   uploadPosition,
   withMapMatched,
   withNearestStationDistance,
+  withOriginProximity,
 } from '../positionUpload';
 import {
   ACTIVE_BOARDING_LINE_KEY,
   BACKEND_SSOT_MIRROR_KEY,
+  TRIP_ORIGIN_KEY,
 } from '../../../../shared/constants/storageKeys';
 import type { LockSuggestionMirror } from '../../../alarm/utils/backendSsotMirror';
 
@@ -405,6 +408,107 @@ describe('withNearestStationDistance (#834)', () => {
       const mod = require('../positionUpload');
       expect(mod.defaultNearestStationResolver(0, 0)).toBeUndefined();
     });
+  });
+});
+
+// #2153 (리뷰 P1) — backend가 신선도 게이트 anchor(originProximityAt)를 real-time으로 stamp하려면
+// device가 매 /position cycle 신선한 GPS 기준 origin 근접 거리를 계산해 흘려야 한다. 기존
+// promptGeoContext.originDistanceM은 POST /trips 재등록 시점의 정적 스냅샷이라(useApnsTripRegistration
+// register effect deps에 currentStation 미포함 — #703), 재등록 트리거가 안 오면 그 값이 영원히
+// "route 설정 시점 거리"로 고정된다. TRIP_ORIGIN_KEY(#700, destination 설정 시 캡처된 고정 출발역)의
+// 좌표는 route 설정 후 바뀌지 않으므로, 매 cycle 이 좌표 대비 최신 GPS fix 거리를 재계산하면
+// "역에 실제로 근접했는가"를 항상 최신값으로 판정할 수 있다.
+describe('withOriginProximity (#2153)', () => {
+  it('red → green: TRIP_ORIGIN_KEY 좌표 대비 매 호출 신선한 거리를 계산해 첨부', async () => {
+    await AsyncStorage.setItem(
+      TRIP_ORIGIN_KEY,
+      JSON.stringify({ id: 'origin', name: '강남', line: '2', lat: 37.4979, lng: 127.0276 }),
+    );
+    // 같은 좌표(강남역) 근처 fix → distance는 작은 양수(수십 m 이내), accuracy는 payload.accuracy.
+    const out = await withOriginProximity({
+      token: 'tok',
+      lat: 37.498,
+      lng: 127.0277,
+      accuracy: 12,
+      ts: 0,
+      motion: 'walking',
+    });
+    expect(out.originDistanceM).toBeDefined();
+    expect(out.originDistanceM).toBeGreaterThanOrEqual(0);
+    expect(out.originDistanceM).toBeLessThan(200);
+    expect(out.originAccuracyM).toBe(12);
+  });
+
+  it('명시 originDistanceM/originAccuracyM이 이미 있으면 그대로 반환 (resolver 미호출)', async () => {
+    const resolver = jest.fn();
+    const out = await withOriginProximity(
+      {
+        token: 'tok',
+        lat: 37.4979,
+        lng: 127.0276,
+        accuracy: 5,
+        ts: 0,
+        motion: 'walking',
+        originDistanceM: 10,
+        originAccuracyM: 5,
+      },
+      resolver,
+    );
+    expect(out.originDistanceM).toBe(10);
+    expect(out.originAccuracyM).toBe(5);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('resolver가 null 반환(원본 미설정/파싱 실패) → 두 필드 모두 omit (graceful)', async () => {
+    const payload = {
+      token: 'tok',
+      lat: 37.4979,
+      lng: 127.0276,
+      accuracy: 5,
+      ts: 0,
+      motion: 'walking' as const,
+    };
+    const out = await withOriginProximity(payload, async () => null);
+    expect(out).toEqual(payload);
+    expect(out.originDistanceM).toBeUndefined();
+    expect(out.originAccuracyM).toBeUndefined();
+  });
+
+  it('resolver 주입 — 호출자가 지정한 origin 좌표로 계산 (확장성)', async () => {
+    const out = await withOriginProximity(
+      { token: 'tok', lat: 37.4979, lng: 127.0276, accuracy: 8, ts: 0, motion: 'walking' },
+      async () => ({ lat: 37.4979, lng: 127.0276 }),
+    );
+    expect(out.originDistanceM).toBe(0);
+    expect(out.originAccuracyM).toBe(8);
+  });
+});
+
+describe('readTripOriginCoords (#2153)', () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it('TRIP_ORIGIN_KEY 부재 → null', async () => {
+    expect(await readTripOriginCoords()).toBeNull();
+  });
+
+  it('유효한 Station JSON → { lat, lng }만 추출', async () => {
+    await AsyncStorage.setItem(
+      TRIP_ORIGIN_KEY,
+      JSON.stringify({ id: 'x', name: '강남', line: '2', lat: 1, lng: 2 }),
+    );
+    expect(await readTripOriginCoords()).toEqual({ lat: 1, lng: 2 });
+  });
+
+  it('lat/lng 누락된 형식 → null (graceful)', async () => {
+    await AsyncStorage.setItem(TRIP_ORIGIN_KEY, JSON.stringify({ name: '강남' }));
+    expect(await readTripOriginCoords()).toBeNull();
+  });
+
+  it('JSON 파싱 실패 → null (graceful)', async () => {
+    await AsyncStorage.setItem(TRIP_ORIGIN_KEY, '{invalid');
+    expect(await readTripOriginCoords()).toBeNull();
   });
 });
 

@@ -21,10 +21,10 @@ import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
   evaluateHopEndPromptGates,
+  isNearOrigin,
   markPromptFired,
   pickAutoTrainCode,
   PROMPT_FRESHNESS_MS,
-  PROMPT_PROXIMITY_MARGIN_M,
   type GateSkipReason,
 } from './boardingPrompt';
 import {
@@ -4503,22 +4503,23 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   let dirty = false;
 
-  // #2153 — 근접 게이트 판정을 신선도 게이트보다 먼저 계산해 anchor 재정의에 재사용한다.
-  // distance/accuracy 둘 다 있을 때만 평가(부재 = 지하/구 클라 관대 허용). 오차 고려 보수적
-  // 판정 — distance - accuracy > 150m 이면 "너무 멀다"로 본다.
+  // #2153 — 근접 게이트 판정(`isNearOrigin`, boardingPrompt.ts 공용 함수 — `/position` 핸들러와
+  // 재사용)을 신선도 게이트보다 먼저 계산해 anchor 재정의에 재사용한다. distance/accuracy 둘 다
+  // 있을 때만 "너무 멀다" 판정 가능 — 부재(지하/구 클라)는 관대 허용(too-far 아님).
   const { originDistanceM, originAccuracyM } = geo;
   const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
-  const isTooFarFromOrigin =
-    originDistanceM !== undefined &&
-    originAccuracyM !== undefined &&
-    originDistanceM - originAccuracyM > PROMPT_PROXIMITY_MARGIN_M;
-  // 근접 관측 = distance/accuracy 존재 + margin 이내(=too-far 아님). 부재(지하 등)는 근접
-  // "관측"이 아니므로 anchor stamp 대상이 아니다 (기존 관대 허용 정책과는 별개 축).
-  const isNearOrigin = hasProximityReading && !isTooFarFromOrigin;
+  const nearOrigin = isNearOrigin(originDistanceM, originAccuracyM);
+  const isTooFarFromOrigin = hasProximityReading && !nearOrigin;
 
   // #2153 — trip 등록 후 최초로 출발역 근접을 관측한 cycle의 시각을 1회만 stamp. 이후
   // cycle에서는 이 anchor를 보존(재관측마다 now로 계속 갱신하면 게이트가 무력화된다).
-  if (isNearOrigin && trip.originProximityAt === undefined) {
+  //
+  // #2153 (리뷰 P1) — 이 cron 경로는 `trip.promptGeoContext`가 register 시점의 정적 스냅샷이라
+  // 재등록 트리거(currentStation null→non-null 등)가 안 오면 값이 절대 갱신되지 않는 구조적
+  // 한계가 있다(집에서 route 설정 후 재등록 없이 도보 이동하는 케이스). 실시간 anchor의 주 경로는
+  // `/position`(10초 주기, index.ts stampOriginProximityIfNeeded) — 이 cron 분기는 register/heal로
+  // 이미 갱신된 케이스를 추가로 커버하는 보조 경로로 유지.
+  if (nearOrigin && trip.originProximityAt === undefined) {
     trip.originProximityAt = now;
     dirty = true;
   }
@@ -4535,7 +4536,10 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       ageMs: now - freshnessAnchor,
       anchoredToProximity: trip.originProximityAt !== undefined,
     });
-    if (dirty) await putTrip(env.TRIPS, trip);
+    // #2153 (리뷰 P1) — dirty는 이 cycle에 `nearOrigin`이 true일 때만 set되고(위 stamp 블록),
+    // 그 경우 freshnessAnchor는 방금 stamp된 `now`라 age=0 — 이 stale 분기는 같은 cycle에
+    // 도달 불가하다. dirty=true로 이 지점에 도달하는 경로가 없어 putTrip 호출을 넣지 않는다
+    // (도달 불가 dead code 방지).
     return;
   }
 
@@ -4547,7 +4551,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       originDistanceM: geo.originDistanceM,
       originAccuracyM: geo.originAccuracyM,
     });
-    if (dirty) await putTrip(env.TRIPS, trip);
+    // #2153 (리뷰 P1) — 위와 동일 이유. isTooFarFromOrigin=true는 nearOrigin=false를 함의하므로
+    // dirty=true(=nearOrigin true였던 cycle)와 동시에 성립할 수 없다 — dead code 방지.
     return;
   }
 
