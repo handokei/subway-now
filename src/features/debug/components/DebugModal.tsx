@@ -107,6 +107,14 @@ import {
   subscribeBoardingLockDrift,
   type BoardingLockDriftEntry,
 } from '../../../features/nearest-station/utils/boardingLockDriftBuffer';
+// #2152 — BoardingLock lifecycle(생성 source/해제 reason) 전용 buffer. drift buffer와 동일 패턴
+// (fusionDebugBuffer 점령 회귀 차단 위해 소형 cap 별도 buffer).
+import {
+  clearLockLifecycleEntries,
+  getLockLifecycleEntries,
+  subscribeLockLifecycle,
+  type LockLifecycleEntry,
+} from '../../../features/alarm/utils/boardingLockLifecycleBuffer';
 // #1518 — device → backend HTTP 호출 ring buffer. 모든 backend fetch chokepoint가 entry를 push.
 import {
   clearBackendCallEntries,
@@ -598,6 +606,8 @@ interface BuildDumpArgs {
   fusionLog?: readonly FusionDebugEntry[];
   /** #1896 (RC-8) — boarding-lock-drift 별 buffer entries. 미전달/빈 배열은 (empty). */
   boardingLockDriftLog?: readonly BoardingLockDriftEntry[];
+  /** #2152 — BoardingLock lifecycle(create/release) 별 buffer entries. 미전달/빈 배열은 (empty). */
+  lockLifecycleLog?: readonly LockLifecycleEntry[];
   /**
    * #1413 — BoardingLock 섹션 dump 입력. lock 활성/trainCode/boardingLine/expiresAt.
    * 미전달이면 lock=null과 동일(active=no)로 출력.
@@ -1186,6 +1196,25 @@ function buildBoardingLockDriftLogSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #2152 — BoardingLock lifecycle 1줄 포맷.
+ * create: `time | lock-create:source | trainCode(line) station=stationId`
+ * release: `time | lock-release:reason | trainCode(line)`
+ */
+function formatLockLifecycleLine(entry: LockLifecycleEntry): string {
+  const time = formatTime(entry.ts);
+  if (entry.event === 'create') {
+    return `${time} | lock-create:${entry.source} | ${entry.trainCode}(${entry.line}) station=${entry.stationId}`;
+  }
+  return `${time} | lock-release:${entry.reason} | ${entry.trainCode}(${entry.line})`;
+}
+
+function buildLockLifecycleSection(args: BuildDumpArgs): string[] {
+  const entries = args.lockLifecycleLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries].reverse().map(formatLockLifecycleLine);
+}
+
+/**
  * #1518 — Backend call ring buffer 1줄 포맷. call/response/error를 한 줄에 압축해
  * dump 분량을 줄인다. host 부분만 노출하고 path는 trim 안 함(진단 시 endpoint 식별).
  */
@@ -1658,6 +1687,12 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildBoardingLockDriftLogSection,
     suffix: (args) => ` (${args.boardingLockDriftLog?.length ?? 0})`,
   },
+  // #2152 — BoardingLock lifecycle 별 buffer (생성 source / 해제 reason / trainCode).
+  {
+    title: 'BoardingLock Lifecycle',
+    build: buildLockLifecycleSection,
+    suffix: (args) => ` (${args.lockLifecycleLog?.length ?? 0})`,
+  },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
   {
@@ -2048,6 +2083,10 @@ function DebugModalInner({
   const [boardingLockDriftLog, setBoardingLockDriftLog] = useState<readonly BoardingLockDriftEntry[]>(() =>
     getBoardingLockDriftEntries(),
   );
+  // #2152 — BoardingLock lifecycle ring buffer. boardingLockDriftLog와 동일 패턴.
+  const [lockLifecycleLog, setLockLifecycleLog] = useState<readonly LockLifecycleEntry[]>(() =>
+    getLockLifecycleEntries(),
+  );
   const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
     getEstimatorEntries(),
   );
@@ -2105,6 +2144,13 @@ function DebugModalInner({
   useEffect(() => {
     return subscribeBoardingLockDrift(() =>
       setBoardingLockDriftLog([...getBoardingLockDriftEntries()]),
+    );
+  }, []);
+
+  // #2152 — BoardingLock lifecycle buffer 구독. boardingLockDrift와 동일 패턴.
+  useEffect(() => {
+    return subscribeLockLifecycle(() =>
+      setLockLifecycleLog([...getLockLifecycleEntries()]),
     );
   }, []);
 
@@ -2212,6 +2258,8 @@ function DebugModalInner({
       candidateRejectLog: candidateRejectLogs,
       // #2049 (#1896 RC-8) — boarding-lock-drift entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
       boardingLockDriftLog,
+      // #2152 — BoardingLock lifecycle entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
+      lockLifecycleLog,
       // #1413 — UI에만 노출되던 BoardingLock/Estimator/Boarding Prompt(+Acceptance)/Counters를 share에 포함.
       boardingLock: lock,
       estimatorLog: estimatorLogs,
@@ -2282,6 +2330,8 @@ function DebugModalInner({
     candidateRejectLogs,
     // #2049 (#1896 RC-8) — boarding-lock-drift entries 변경 시 share 텍스트 자동 갱신.
     boardingLockDriftLog,
+    // #2152 — BoardingLock lifecycle entries 변경 시 share 텍스트 자동 갱신.
+    lockLifecycleLog,
     // #1413 — BoardingLock/Estimator 신규 캡쳐.
     lock,
     estimatorLogs,
@@ -2667,6 +2717,20 @@ function DebugModalInner({
             }}
             clearTestId="debug-boarding-lock-drift-log-clear"
             entryTestId="debug-boarding-lock-drift-log-entry"
+            colors={colors}
+          />
+
+          {/* #2152 — BoardingLock lifecycle(생성 source / 해제 reason) 별 buffer. drift와 동일 표시 패턴. */}
+          <DebugLogSection
+            title="BoardingLock Lifecycle"
+            logs={lockLifecycleLog}
+            formatLine={formatLockLifecycleLine}
+            onClear={() => {
+              clearLockLifecycleEntries();
+              setLockLifecycleLog([]);
+            }}
+            clearTestId="debug-lock-lifecycle-log-clear"
+            entryTestId="debug-lock-lifecycle-log-entry"
             colors={colors}
           />
 
@@ -3535,6 +3599,8 @@ export const __test__ = {
   formatFusionDebugLine,
   formatBoardingLockDriftLine,
   buildBoardingLockDriftLogSection,
+  formatLockLifecycleLine,
+  buildLockLifecycleSection,
   formatTokenTail,
   formatAt,
   formatSourceCountsLine,

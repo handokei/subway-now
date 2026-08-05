@@ -263,6 +263,8 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         // #897 Seam A: auto-lock 시점의 ETA(makeArrival 기본=60s) 스냅샷.
         initialEtaSeconds: 60,
       }),
+      // #2152 — boardingPrompt 응답 경로 lifecycle breadcrumb source.
+      'boarding-prompt-response',
     );
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
     // #1167 — autolock-success telemetry
@@ -349,6 +351,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     // up 단일 후보 → lock 생성, trainCode = 'UP1'
     expect(createLockMock).toHaveBeenCalledWith(
       expect.objectContaining({ trainCode: 'UP1' }),
+      'boarding-prompt-response',
     );
   });
 
@@ -366,6 +369,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     // down 단일 후보 → lock 생성, trainCode = 'DOWN1'
     expect(createLockMock).toHaveBeenCalledWith(
       expect.objectContaining({ trainCode: 'DOWN1' }),
+      'boarding-prompt-response',
     );
   });
 
@@ -393,6 +397,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).toHaveBeenCalledWith(
       expect.objectContaining({ trainCode: 'UP1' }),
+      'boarding-prompt-response',
     );
   });
 

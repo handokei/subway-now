@@ -2270,6 +2270,34 @@ describe('formatFusionDebugLine', () => {
     expect(lineNullDrift).toContain('drift=-');
   });
 
+  it('#2152 BoardingLock lifecycle 엔트리: create/release 포맷', () => {
+    const { formatLockLifecycleLine } = __test__;
+    const ts = new Date('2026-08-05T09:00:00Z').getTime();
+    const createLine = formatLockLifecycleLine({
+      kind: 'boarding-lock-lifecycle',
+      event: 'create',
+      ts,
+      source: 'user-tap',
+      trainCode: 'T-100',
+      line: '2',
+      stationId: 'stn-A',
+    });
+    expect(createLine).toContain('lock-create:user-tap');
+    expect(createLine).toContain('T-100(2)');
+    expect(createLine).toContain('station=stn-A');
+
+    const releaseLine = formatLockLifecycleLine({
+      kind: 'boarding-lock-lifecycle',
+      event: 'release',
+      ts,
+      reason: 'transfer',
+      trainCode: 'T-100',
+      line: '2',
+    });
+    expect(releaseLine).toContain('lock-release:transfer');
+    expect(releaseLine).toContain('T-100(2)');
+  });
+
   it('#1902 (RC-18) candidate-line reject: line만 포함 (enumerate 단계 reject)', () => {
     const line = formatCandidateRejectLine({
       kind: 'candidate-reject',
@@ -4787,6 +4815,42 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## Boarding-Lock Drift (2)');
     });
 
+    it('buildLockLifecycleSection: 빈/entries cover + share dump 포함 (#2152)', () => {
+      const { buildLockLifecycleSection } = __test__;
+      expect(buildLockLifecycleSection(baselineDumpArgs)).toEqual(['(empty)']);
+      expect(
+        buildLockLifecycleSection({ ...baselineDumpArgs, lockLifecycleLog: [] }),
+      ).toEqual(['(empty)']);
+      const entries = [
+        {
+          kind: 'boarding-lock-lifecycle' as const,
+          event: 'create' as const,
+          ts: 1000,
+          source: 'user-tap' as const,
+          trainCode: 'T-100',
+          line: '2',
+          stationId: 'stn-A',
+        },
+        {
+          kind: 'boarding-lock-lifecycle' as const,
+          event: 'release' as const,
+          ts: 2000,
+          reason: 'transfer' as const,
+          trainCode: 'T-100',
+          line: '2',
+        },
+      ];
+      const result = buildLockLifecycleSection({
+        ...baselineDumpArgs,
+        lockLifecycleLog: entries,
+      });
+      expect(result).toHaveLength(2);
+      expect(result[0]).toContain('lock-release:transfer');
+      expect(result[1]).toContain('lock-create:user-tap');
+      const dump = buildDumpText(makeDumpArgs({ lockLifecycleLog: entries }));
+      expect(dump).toContain('## BoardingLock Lifecycle (2)');
+    });
+
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
       const {
         clearCandidateRejectEntries,
@@ -5626,6 +5690,42 @@ describe('DebugModal — #2049 UI 누락 4 섹션 render', () => {
       fireEvent.press(screen.getByTestId('debug-boarding-lock-drift-log-clear'));
     });
     expect(getBoardingLockDriftEntries().length).toBe(0);
+  });
+
+  it('BoardingLock Lifecycle 섹션이 UI에 노출된다 (buffer 비어 있으면 (empty))', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText(/BoardingLock Lifecycle \(\d+\)/)).toBeTruthy();
+  });
+
+  it('BoardingLock Lifecycle buffer push → UI 반영 + clear 버튼이 buffer를 비운다', async () => {
+    // buffer는 module-level singleton. 매 테스트 시작 시 clear로 격리.
+    const {
+      pushLockLifecycleEntry,
+      clearLockLifecycleEntries,
+      getLockLifecycleEntries,
+    } = jest.requireActual('../../../alarm/utils/boardingLockLifecycleBuffer');
+    clearLockLifecycleEntries();
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    // buffer push → subscribe listener 트리거 → setLockLifecycleLog 콜백 실행.
+    await act(async () => {
+      pushLockLifecycleEntry({
+        kind: 'boarding-lock-lifecycle',
+        event: 'create',
+        ts: Date.now(),
+        source: 'user-tap',
+        trainCode: 'T-100',
+        line: '2',
+        stationId: 'stn-A',
+      });
+    });
+    expect(getLockLifecycleEntries().length).toBe(1);
+    // clear 버튼 press → clearLockLifecycleEntries + setLockLifecycleLog([]) 실행.
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('debug-lock-lifecycle-log-clear'));
+    });
+    expect(getLockLifecycleEntries().length).toBe(0);
   });
 });
 

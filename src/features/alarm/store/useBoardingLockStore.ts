@@ -9,6 +9,10 @@ import {
 import { clearDismissSilence } from '../utils/dismissSilenceStorage';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
+import {
+  pushLockLifecycleEntry,
+  type LockLifecycleCreateSource,
+} from '../utils/boardingLockLifecycleBuffer';
 
 /**
  * #1438 (E5) — release 사유 식별자.
@@ -19,6 +23,11 @@ import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
  * - 'destination-change' — 화면에서 destination이 바뀌어 stale lock 자동 release (controller).
  * - 'expired'         — 자동 만료(`checkExpiry`).
  * - 'train-code-mismatch' — 같은 노선에서 다른 trainCode가 90s 지속 관찰 (useTrainCodeMismatchDetector, #1659).
+ * - 'trip-cleanup'    — #2152 (P1) `tripBoundCleanups.clearTripBoundStoreMemory`가 trip 종료
+ *   시 store 메모리를 정리하며 releaseLock을 경유하는 generic 사유. silent push trip-ended /
+ *   FG setDestination(null/switch) / useStateRehydration sentinel / cold-launch reconciliation
+ *   4개 진입점이 모두 `runTripBoundCleanups`만 호출하므로 개별 사유를 구분할 수 없다 — 그 지점에서
+ *   lock이 살아있었다는 사실 자체가 진단 가치(오토락 범인 소거법).
  */
 export type LockReleaseReason =
   | 'user'
@@ -26,7 +35,8 @@ export type LockReleaseReason =
   | 'vanish'
   | 'destination-change'
   | 'expired'
-  | 'train-code-mismatch';
+  | 'train-code-mismatch'
+  | 'trip-cleanup';
 
 /**
  * BoardingLock 전역 store (#584 PR A).
@@ -37,8 +47,14 @@ export type LockReleaseReason =
  */
 export interface BoardingLockState {
   lock: BoardingLock | null;
-  /** Trip 진입 또는 환승 전환 시 호출. 기존 Lock은 자동 교체. */
-  createLock: (lock: BoardingLock) => Promise<void>;
+  /**
+   * Trip 진입 또는 환승 전환 시 호출. 기존 Lock은 자동 교체.
+   *
+   * #2152 — source는 lifecycle breadcrumb에 stamp되는 생성 경로 식별자. 사용자 명시 탭
+   * (BoardingTrainList)과 boardingPrompt 응답을 구분해 오토락 범인 특정을 소거법으로 가능하게
+   * 한다. 미전달(그 외 경로 — 자동 lock/backend suggestion 등)은 'other'로 기록.
+   */
+  createLock: (lock: BoardingLock, source?: LockLifecycleCreateSource) => Promise<void>;
   /**
    * 사용자가 "하차" 탭하거나 trip 종료 시 호출.
    *
@@ -59,7 +75,7 @@ export interface BoardingLockState {
 export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
   lock: null,
 
-  createLock: async (lock: BoardingLock) => {
+  createLock: async (lock: BoardingLock, source: LockLifecycleCreateSource = 'other') => {
     // #1996 (Phase 1-7, ADR-022 A4) — boardingStationId 불변 정책 (flag ON 시).
     //
     // route 등록 시 확정된 boardingStationId는 절대 자동 변경 금지 (auto-swap / reanchored /
@@ -102,6 +118,17 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
       trainCode: lock.trainCode,
       line: lock.boardingLine,
     });
+    // #2152 — lifecycle breadcrumb ring buffer. addDomainBreadcrumb(Sentry)는 device 밖 관측용,
+    // 본 push는 DebugModal 덤프(1차 evidence)에서 사후 재구성 가능하게 하는 별 채널.
+    pushLockLifecycleEntry({
+      kind: 'boarding-lock-lifecycle',
+      event: 'create',
+      ts: Date.now(),
+      source,
+      trainCode: lock.trainCode,
+      line: lock.boardingLine,
+      stationId: lock.boardingStationId,
+    });
   },
 
   releaseLock: async (reason: LockReleaseReason = 'user') => {
@@ -113,6 +140,15 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
         trainCode: prev.trainCode,
         line: prev.boardingLine,
         reason,
+      });
+      // #2152 — lifecycle breadcrumb ring buffer.
+      pushLockLifecycleEntry({
+        kind: 'boarding-lock-lifecycle',
+        event: 'release',
+        ts: Date.now(),
+        reason,
+        trainCode: prev.trainCode,
+        line: prev.boardingLine,
       });
     }
   },
