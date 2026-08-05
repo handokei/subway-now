@@ -63,6 +63,45 @@ const METRICS_LAST_SUCCESS_KEY = 'obs-metrics:last-success';
 /** 마지막 성공 캐시 TTL — 24h. day-limit 초과로 1h 연속 실패해도 fail-open 보장. */
 const METRICS_LAST_SUCCESS_TTL_SEC = 24 * 60 * 60;
 
+/**
+ * #2151 — boardingPrompt skip/fire counter obs-metrics 노출.
+ *
+ * `runScheduled`(scheduled.ts) 가 매 cron tick 마다 `ScheduledStats`에 누적하는
+ * boardingPrompt 계열 counter 중, obs-metrics 갱신 tick(1h 주기)의 스냅샷 값을 그대로 실어
+ * 사후 판별(evaluated=0인데 이유를 알 수 없는 관측 공백, #2130/#2131) 가능하게 한다.
+ *
+ * 24h 누적이 아니라 **obs-metrics 갱신이 발동된 그 1분 tick의 스냅샷**이다 — 다른 metric처럼
+ * R2 24h scan 기반 누적 집계가 아님(신규 KV 키/write 증가 없이 기존 tick에 필드만 추가하는
+ * 제약 때문). 다음 obs-metrics 갱신(최대 1h 후)까지 값이 유지된다.
+ */
+export interface BoardingPromptCounters {
+  /** `stats.boardingPromptEvaluated` — 9단 게이트 평가가 시도된 누적 횟수. */
+  evaluated: number;
+  /** `stats.boardingPromptFired` — alert push 발사 성공 누적 횟수. */
+  fired: number;
+  /** `stats.boardingPromptBlocked` — 게이트 차단 누적 횟수 (no-arvlcd / ambiguity 포함). */
+  blocked: number;
+  /** `stats.boardingPromptSkippedNoContext` — geo/display context 부재로 skip. */
+  skippedNoContext: number;
+  /** `stats.boardingPromptSkippedStale` — 15분 신선도 게이트로 skip. */
+  skippedStale: number;
+  /** `stats.boardingPromptSkippedTooFar` — 근접 게이트로 skip. */
+  skippedTooFar: number;
+  /** `stats.boardingPromptSkippedTrainDuplicate` — 같은 trainCode 반복 발사 dedup. */
+  skippedTrainDuplicate: number;
+}
+
+/** `boardingPromptCounters` 미제공 시(예: endpoint cold-compute) 사용하는 zero 기본값. */
+const EMPTY_BOARDING_PROMPT_COUNTERS: BoardingPromptCounters = {
+  evaluated: 0,
+  fired: 0,
+  blocked: 0,
+  skippedNoContext: 0,
+  skippedStale: 0,
+  skippedTooFar: 0,
+  skippedTrainDuplicate: 0,
+};
+
 /** accel pattern 4종 분포 bucket. */
 export interface AccelPatternBucket {
   automotive: { count: number; ratio: number };
@@ -112,6 +151,8 @@ export interface ObservabilityMetricsResponse {
    * trip-level userIntent 분기 측정 ([[feedback_user_intent_equal_protection]]).
    */
   locklessTripMissRatio: { miss: number; fired: number; paradigmIntent: number; ratio: number };
+  /** #2151 — boardingPrompt skip/fire counter 스냅샷. 위 doc-comment 참고 (24h 누적 아님). */
+  boardingPromptCounters: BoardingPromptCounters;
   window: '24h';
   timestamp: number;
 }
@@ -132,12 +173,16 @@ export function hourBucketKey(now: number): string {
  * @param pendingPushesKv PENDING_PUSHES KV namespace (optional)
  * @param now 현재 epoch ms
  * @param tripsKv TRIPS KV namespace — laPushDeliveryRatio 산출용 (optional, 미설정 시 placeholder)
+ * @param boardingPromptCounters #2151 — 같은 cron tick의 `ScheduledStats` boardingPrompt 계열
+ *   counter 스냅샷 (optional). 호출자(scheduled handler)가 같은 tick에서 이미 산출한 값을 넘긴다
+ *   — 미제공 시(예: `/v1/observability/metrics` endpoint의 cold-compute fallback) zero 기본값.
  */
 export async function computeObservabilityMetrics(
   r2: R2Bucket,
   pendingPushesKv: KVNamespace | undefined,
   now: number,
   tripsKv?: KVNamespace,
+  boardingPromptCounters?: BoardingPromptCounters,
 ): Promise<ObservabilityMetricsResponse> {
   // 1. R2 alarmLog 24h scan — accuracyRatio + locklessMissRatio 원천
   const alarmStats = await computeAlarmLogStats(r2, now, 24, 500);
@@ -231,6 +276,7 @@ export async function computeObservabilityMetrics(
     silentPushReachRatio,
     algorithmAccuracyRatio,
     locklessTripMissRatio,
+    boardingPromptCounters: boardingPromptCounters ?? EMPTY_BOARDING_PROMPT_COUNTERS,
     window: '24h',
     timestamp: now,
   };

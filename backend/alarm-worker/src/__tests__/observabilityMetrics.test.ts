@@ -64,6 +64,15 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
       algorithmAccuracyRatio: { value: 7, total: 9, ratio: 7 / 9, answeredTotal: 12 },
       locklessTripMissRatio: { miss: 0, fired: 0, paradigmIntent: 0, ratio: 0 },
+      boardingPromptCounters: {
+        evaluated: 4,
+        fired: 2,
+        blocked: 1,
+        skippedNoContext: 0,
+        skippedStale: 0,
+        skippedTooFar: 0,
+        skippedTrainDuplicate: 1,
+      },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -104,6 +113,15 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
       silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
       algorithmAccuracyRatio: { value: 0, total: 0, ratio: 0, answeredTotal: 0 },
       locklessTripMissRatio: { miss: 0, fired: 0, paradigmIntent: 0, ratio: 0 },
+      boardingPromptCounters: {
+        evaluated: 0,
+        fired: 0,
+        blocked: 0,
+        skippedNoContext: 0,
+        skippedStale: 0,
+        skippedTooFar: 0,
+        skippedTrainDuplicate: 0,
+      },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -876,6 +894,41 @@ describe('computeObservabilityMetrics — locklessTripMissRatio (#1972)', () => 
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
+// computeObservabilityMetrics — boardingPromptCounters (#2151)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('computeObservabilityMetrics — boardingPromptCounters (#2151)', () => {
+  it('boardingPromptCounters 미제공 → zero 기본값', async () => {
+    const r2 = makeEmptyFakeR2();
+    const result = await computeObservabilityMetrics(r2, undefined, NOW);
+    expect(result.boardingPromptCounters).toEqual({
+      evaluated: 0,
+      fired: 0,
+      blocked: 0,
+      skippedNoContext: 0,
+      skippedStale: 0,
+      skippedTooFar: 0,
+      skippedTrainDuplicate: 0,
+    });
+  });
+
+  it('boardingPromptCounters 제공 시 응답에 그대로 노출', async () => {
+    const r2 = makeEmptyFakeR2();
+    const counters = {
+      evaluated: 12,
+      fired: 5,
+      blocked: 6,
+      skippedNoContext: 3,
+      skippedStale: 1,
+      skippedTooFar: 2,
+      skippedTrainDuplicate: 1,
+    };
+    const result = await computeObservabilityMetrics(r2, undefined, NOW, undefined, counters);
+    expect(result.boardingPromptCounters).toEqual(counters);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
 // tryStoreObservabilityMetrics + readLastSuccessfulMetrics (#1889 RC-19)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -896,6 +949,15 @@ const SAMPLE_METRICS = {
   silentPushReachRatio: { sent: 0, received: 0, joined: 0, ratio: 0 },
   algorithmAccuracyRatio: { value: 0, total: 0, ratio: 0, answeredTotal: 0 },
   locklessTripMissRatio: { miss: 0, fired: 0, paradigmIntent: 0, ratio: 0 },
+  boardingPromptCounters: {
+    evaluated: 0,
+    fired: 0,
+    blocked: 0,
+    skippedNoContext: 0,
+    skippedStale: 0,
+    skippedTooFar: 0,
+    skippedTrainDuplicate: 0,
+  },
   window: '24h' as const,
   timestamp: NOW,
 };

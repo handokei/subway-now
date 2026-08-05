@@ -2468,7 +2468,25 @@ export const handler = {
       try {
         const existing = await readObservabilityMetrics(env.TRIPS, now);
         if (!existing) {
-          const metrics = await computeObservabilityMetrics(env.TELEMETRY_R2, env.PENDING_PUSHES, now, env.TRIPS);
+          // #2151 — 같은 tick의 runScheduled 결과(scheduledStats)에서 boardingPrompt 계열
+          // counter 스냅샷을 그대로 실어 obs-metrics 응답에 노출. 신규 KV 키/write 없이 기존
+          // obs-metrics 갱신 tick에 필드만 추가(CF 무료 quota 보호).
+          const boardingPromptCounters = {
+            evaluated: scheduledStats.boardingPromptEvaluated,
+            fired: scheduledStats.boardingPromptFired,
+            blocked: scheduledStats.boardingPromptBlocked,
+            skippedNoContext: scheduledStats.boardingPromptSkippedNoContext,
+            skippedStale: scheduledStats.boardingPromptSkippedStale,
+            skippedTooFar: scheduledStats.boardingPromptSkippedTooFar,
+            skippedTrainDuplicate: scheduledStats.boardingPromptSkippedTrainDuplicate,
+          };
+          const metrics = await computeObservabilityMetrics(
+            env.TELEMETRY_R2,
+            env.PENDING_PUSHES,
+            now,
+            env.TRIPS,
+            boardingPromptCounters,
+          );
           const storeResult = await tryStoreObservabilityMetrics(env.TRIPS, metrics, now, {
             onError: (err, key) =>
               void captureBackendException(env, err, { path: 'scheduled/observabilityMetrics', stage: 'kv-put', key }),
