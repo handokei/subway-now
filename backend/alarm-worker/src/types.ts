@@ -435,6 +435,19 @@ export interface TripEndedAlertPushPayload {
   corrId?: string;
 }
 
+/**
+ * #2157 (2026-08-05 결정 A) — eta-missing lock detach 시 발사되는 재확인 alert push의 `data`
+ * 필드. trip을 강제 종료하지 않고 lock만 해제 + lockless 강등하므로 `TripEndedAlertPushPayload`와
+ * 달리 `reason` 필드가 없다 — trip은 살아있고 종료 사유가 아니다. device는 `aps.alert`로 OS가
+ * 이미 banner를 띄우므로 `data`는 pushId dedup 용도로만 소비한다(trip-ended alert와 동일 패턴).
+ */
+export interface TrainReconfirmAlertPushPayload {
+  pushId: string;
+  kind: 'train-reconfirm';
+  tripToken: string;
+  sentAt: number;
+}
+
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */
 export type ApnsEnv = 'sandbox' | 'production';
 
