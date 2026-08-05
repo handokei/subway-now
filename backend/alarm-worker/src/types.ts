@@ -277,6 +277,21 @@ export interface Trip {
    * device 쪽 null-graceful 분기(양쪽 null이면 기존 동작 100% 유지)로 자연 fallback.
    */
   corrId?: string;
+  /**
+   * #2153 — boarding-prompt 신선도 게이트의 기준 시각(anchor). `evaluateAndMaybeFireBoardingPrompt`가
+   * `trip.promptGeoContext`로 출발역 근접(§근접 게이트, distance - accuracy ≤ margin)을 처음
+   * 관측한 cron cycle의 시각을 backend가 자체 stamp한다 — device가 별도로 송신하는 필드가 아니다.
+   *
+   * 배경(#2130 RCA): 기존엔 `trip.createdAt`(route 설정 시각) 기준 15분 창을 썼다. 집/사무실에서
+   * 경로를 미리 설정하고 15분 뒤 탑승하는 흔한 패턴에서 프롬프트 발사 자격이 탑승 전에 만료됐다.
+   * `originProximityAt`은 "탑승 근접 시각"을 별도로 anchor해 이 오차단을 막는다.
+   *
+   * 최초 근접 관측 시 1회만 stamp하고 이후 cycle에도 보존(재등록 시에도 `existing` 값 유지) —
+   * 매 cycle now로 계속 갱신하면 anchor가 끝없이 밀려 게이트가 사실상 무력화된다.
+   * 근접 관측 전(부재)에는 fallback으로 `trip.createdAt` 기준을 그대로 사용 — 근접 전에는
+   * 근접 게이트가 이미 발사를 차단하므로 창을 보수적으로 연장하는 효과가 없다.
+   */
+  originProximityAt?: number;
 }
 
 /**
