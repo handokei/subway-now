@@ -187,6 +187,8 @@ function makeFullEmptyStats(): ScheduledStats {
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
     sleepAlarmRolledBack: 0,
+    etaMissingDemoted: 0,
+    trainReconfirmFired: 0,
   };
 }
 
@@ -1422,12 +1424,17 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect((await readStoredTrip(kv))?.consecutiveEtaMissing).toBe(4);
     });
 
-    it('auto-ends trip when consecutiveEtaMissing reaches threshold', async () => {
-      // 임계치 -1 상태 → 한 번 더 miss → threshold 도달 → cleanup
+    // #2157 (2026-08-05 결정 A) — trip을 강제 종료하는 대신 lock만 해제 + lockless 강등.
+    it('demotes trip to lockless (lock detach, trip survives) when consecutiveEtaMissing reaches threshold', async () => {
+      // 임계치 -1 상태 → 한 번 더 miss → threshold 도달 → 강등 (trip 생존).
       const kv = new InMemoryKV();
       await seedLockTrip(kv, { consecutiveEtaMissing: MAX_CONSECUTIVE_ETA_MISSING - 1 });
       await runMissScenario(kv);
-      expect(await readStoredTrip(kv)).toBeNull();
+      const stored = await readStoredTrip(kv);
+      expect(stored).not.toBeNull();
+      expect(stored?.boardingLock).toBeUndefined();
+      expect(stored?.consecutiveEtaMissing).toBe(0);
+      expect(stored?.infoModeEnabled).toBe(true);
     });
 
     it('resets counter to 0 when arrival estimate succeeds', async () => {
@@ -4002,6 +4009,35 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     return body.data;
   }
 
+  // #2157 — train-reconfirm alert push (APNs alert push, kind='train-reconfirm') 호출만 추출.
+  function getTrainReconfirmCalls(
+    fetchImpl: ReturnType<typeof vi.fn>,
+  ): [string, RequestInit][] {
+    return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+      const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+      if (headers['apns-push-type'] !== 'alert') return false;
+      try {
+        const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
+        return body?.data?.kind === 'train-reconfirm';
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /** train-reconfirm push body의 data field 추출. */
+  function parseTrainReconfirmData(call: [string, RequestInit]): {
+    kind: string;
+    pushId: string;
+    sentAt: number;
+    tripToken: string;
+  } {
+    const body = JSON.parse(call[1].body as string) as {
+      data: { kind: string; pushId: string; sentAt: number; tripToken: string };
+    };
+    return body.data;
+  }
+
   // 본 describe 안에서만 쓰이는 fixture — makeLockTrip은 outer scope에 있어 재사용 불가.
   function makeEtaThresholdTrip(token: string, missCount: number) {
     return makeTrip({
@@ -4020,13 +4056,18 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     });
   }
 
-  it('fires trip-ended push (reason=eta-missing) when consecutiveEtaMissing exceeds threshold', async () => {
+  // #2157 (2026-08-05 결정 A) — 순수 eta-missing(Seoul API 정상 응답, trainCode만 매칭 실패)은
+  // 더 이상 trip을 강제 종료하지 않는다. 구 동작(trip-ended push + KV 삭제)을 재현하던 테스트를
+  // "lock 해제 + lockless 강등 + 재확인 push" 신규 동작으로 교체 — 결정1(#2154)과 일관되게
+  // 백엔드가 사용자 trip을 일방 종료하는 상황 자체를 제거한다.
+  it('demotes trip to lockless (lock detach, no trip-ended) when consecutiveEtaMissing exceeds threshold', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('end-tok', 4));
     const fetchImpl = makeOkFetch();
-    // arrivals 비어 있음 → estimate=null → miss 1 더 → 5 도달 → auto-end.
+    // arrivals 비어 있음 → estimate=null → miss 1 더 → 5 도달 → 구동작이면 auto-end, 신동작은 강등.
     // top-level makeSeoul은 positions endpoint도 같은 fetchImpl을 사용 — realtimePositionList 키가
-    // 없어 빈 배열로 처리되므로 fallback도 estimate=null로 떨어진다.
+    // 없어 빈 배열로 처리되므로 fallback도 estimate=null로 떨어진다. httpErrorCount=0(ok 응답)이라
+    // endReason 판정은 'eta-missing' 경로를 탄다.
     await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
       apnsConfig,
@@ -4035,27 +4076,126 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
       now: () => NOW,
       generatePushId: () => 'p-eta-end',
     });
-    const calls = getTripEndedCalls(fetchImpl);
+    // trip-ended push는 더 이상 발사되지 않는다.
+    expect(getTripEndedCalls(fetchImpl)).toHaveLength(0);
+    // 재확인(train-reconfirm) alert push가 1건 발사된다.
+    const calls = getTrainReconfirmCalls(fetchImpl);
     expect(calls).toHaveLength(1);
-    const data = parseTripEndedData(calls[0]);
-    expect(data.kind).toBe('trip-ended');
-    expect(data.reason).toBe('eta-missing');
+    const data = parseTrainReconfirmData(calls[0]);
+    expect(data.kind).toBe('train-reconfirm');
     expect(data.sentAt).toBe(NOW);
     expect(typeof data.pushId).toBe('string');
     expect(data.pushId.length).toBeGreaterThan(0);
-    // #868 P1-2 race 가드 — payload에 tripToken 포함되어야 클라가 ACTIVE_TRIP_KEY와 매칭 가능.
     expect(data.tripToken).toBe('end-tok');
-    // #1337 — alert push headers + KV dedup stamp.
     const headers = (calls[0][1].headers ?? {}) as Record<string, string>;
     expect(headers['apns-push-type']).toBe('alert');
     expect(headers['apns-priority']).toBe('10');
-    const apsBody = JSON.parse(calls[0][1].body as string) as { aps: { alert: { title: string; body: string }; sound?: string } };
-    expect(apsBody.aps.alert).toEqual({ title: '안내 종료', body: '경로 안내를 종료했어요' });
-    // #2069 (Phase 3) — 무소리 배너. sound 필드 자체가 payload에서 생략된다.
-    expect('sound' in apsBody.aps).toBe(false);
-    // trip은 KV에서 삭제돼야 함 (#706 cleanup).
-    expect(await kv.get('trip:end-tok')).toBeNull();
-    expect(await kv.get(`tripEndedAlert:end-tok:${NOW}`)).toBe('1');
+    const apsBody = JSON.parse(calls[0][1].body as string) as {
+      aps: { alert: { title: string; body: string } };
+    };
+    expect(apsBody.aps.alert).toEqual({
+      title: '탑승 열차를 찾을 수 없어요',
+      body: '다시 확인해주세요',
+    });
+    // trip은 KV에서 삭제되지 않고 살아있어야 함 — lockless로 강등만 된다.
+    const stored = await kv.get('trip:end-tok');
+    expect(stored).not.toBeNull();
+    const storedTrip = JSON.parse(stored as string) as {
+      boardingLock?: unknown;
+      consecutiveEtaMissing?: number;
+      infoModeEnabled?: boolean;
+    };
+    expect(storedTrip.boardingLock).toBeUndefined();
+    expect(storedTrip.consecutiveEtaMissing).toBe(0);
+    expect(storedTrip.infoModeEnabled).toBe(true);
+    expect(await kv.get(`trainReconfirmAlert:end-tok:${NOW}`)).toBe('1');
+  });
+
+  // #2157 — seoul-outage 분기 회귀 가드. httpErrorCount>0(Seoul API HTTP error 관측)이면 기존
+  // trip auto-end + trip-ended push 경로를 그대로 유지 — 강등 로직이 seoul-outage까지 흡수하면
+  // #1425 cooldown 면제 판정이 깨진다.
+  it('still ends trip (reason=seoul-outage) when Seoul API HTTP error observed this cycle', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('outage-tok', 4));
+    const erroredFetch = vi.fn(
+      async () => new Response('boom', { status: 500 }),
+    ) as unknown as typeof fetch;
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: erroredFetch,
+    });
+    const fetchImpl = makeOkFetch();
+    await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-outage-end',
+    });
+    const calls = getTripEndedCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    const data = parseTripEndedData(calls[0]);
+    expect(data.reason).toBe('seoul-outage');
+    // 재확인 push는 발사되지 않는다 — seoul-outage는 강등 경로를 타지 않는다.
+    expect(getTrainReconfirmCalls(fetchImpl)).toHaveLength(0);
+    expect(await kv.get('trip:outage-tok')).toBeNull();
+  });
+
+  // #2157 — 재확인 push는 1 trip 1회 dedup. 같은 trip이 두 번째 cron cycle에서도 threshold를
+  // 계속 초과하면(재선택 전까지 consecutiveEtaMissing이 다시 쌓이는 상황) 중복 발사를 막는다.
+  it('does not re-fire train-reconfirm push when dedup KV already stamped', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('dedup-tok', 4));
+    await kv.put(`trainReconfirmAlert:dedup-tok:${NOW}`, '1');
+    const fetchImpl = makeOkFetch();
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-eta-dedup',
+    });
+    expect(getTrainReconfirmCalls(fetchImpl)).toHaveLength(0);
+    // dedup으로 push는 skip돼도 lock detach + lockless 강등 자체는 여전히 일어난다.
+    const stored = await kv.get('trip:dedup-tok');
+    expect(stored).not.toBeNull();
+    const storedTrip = JSON.parse(stored as string) as { boardingLock?: unknown };
+    expect(storedTrip.boardingLock).toBeUndefined();
+  });
+
+  // #2157 (PR #2162 리뷰 P1) — 같은 trip에서 두 번째 demotion이 발생해도 재확인 push가
+  // 발사돼야 한다. createdAt은 trip 재등록(isSameSession) 후에도 보존되므로 dedup 키를
+  // createdAt에 고정하면 두 번째 demotion이 첫 demotion의 dedup stamp에 막혀 조용히
+  // 미발사되는 회귀가 생긴다 — dedup은 demotion event(`etaMissingDemotedAt`) 단위여야 한다.
+  const SECOND_DEMOTION_NOW = NOW + 30 * 60_000;
+  it('fires train-reconfirm push again on a second demotion of the same trip (createdAt unchanged)', async () => {
+    const kv = new InMemoryKV();
+    // 첫 demotion이 이미 NOW 시점에 발생해 dedup stamp를 남긴 상태를 시뮬레이션.
+    // createdAt은 trip 생애 내내 불변(NOW) — 재선택 후 재등록해도 isSameSession으로 보존된다.
+    await kv.put(`trainReconfirmAlert:re-tok:${NOW}`, '1');
+    // 사용자가 재선택(boardingPrompt/직접 탭)해 lock이 재부착된 상태. 두 번째 demotion 직전:
+    // consecutiveEtaMissing이 threshold-1까지 다시 쌓인 상태로 seed.
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('re-tok', 4));
+    const fetchImpl = makeOkFetch();
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => SECOND_DEMOTION_NOW,
+      generatePushId: () => 'p-eta-second',
+    });
+    // 두 번째 demotion은 새 event이므로 push가 발사돼야 한다 (첫 demotion의 dedup stamp에
+    // 막히면 안 된다).
+    const calls = getTrainReconfirmCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    expect(parseTrainReconfirmData(calls[0]).sentAt).toBe(SECOND_DEMOTION_NOW);
+    // 새 demotion event 전용 dedup stamp가 남는다 (createdAt=NOW가 아니라 demotion 시점 기준).
+    expect(await kv.get(`trainReconfirmAlert:re-tok:${SECOND_DEMOTION_NOW}`)).toBe('1');
   });
 
   it('fires trip-ended push (reason=destination-arrived) when destination waypoint ARRIVED', async () => {
@@ -4109,9 +4249,20 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     expect(await kv.get('trip:la-tok')).toBeNull();
   });
 
+  // #2157 — eta-missing 자체는 더 이상 trip-ended를 발사하지 않으므로(강등 경로), 본 회귀 가드는
+  // seoul-outage(httpErrorCount>0)로 trip-ended push를 여전히 발사하는 경로를 사용해 throw
+  // 흡수 동작을 검증한다. Seoul API fetch(끊긴 상태)와 APNs push fetch(trip-ended만 reject)는
+  // 서로 다른 fetchImpl이라 독립적으로 구성 가능 — `deps.seoul`은 client 내부에 캡슐화된 fetch를
+  // 쓰고, `deps.fetchImpl`은 push 발사에만 쓰인다.
   it('#868 P2-1 — trip-ended push fetch throw해도 cleanup 흐름 계속 (trip 삭제됨)', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('thr-tok', 4));
+    const erroredSeoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () => new Response('boom', { status: 500 })) as unknown as typeof fetch,
+    });
     // trip-ended push만 reject — reschedule/LA push는 정상.
     const throwingFetch = vi.fn((_url: unknown, init?: { body?: string }) => {
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -4121,7 +4272,7 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
       return Promise.resolve(new Response('', { status: 200 }));
     });
     await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([]),
+      seoul: erroredSeoul,
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: throwingFetch as unknown as typeof fetch,
@@ -9727,6 +9878,8 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       sleepAlarmFired: 0,
       sleepAlarmDedupSkipped: 0,
       sleepAlarmRolledBack: 0,
+      etaMissingDemoted: 0,
+      trainReconfirmFired: 0,
     };
     const { dirty } = await fireArvlCdStationPush({
       trip,

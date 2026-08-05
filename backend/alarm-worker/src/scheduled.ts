@@ -93,6 +93,7 @@ import type {
   LineNumber,
   PositionPoint,
   StationPhaseState,
+  TrainReconfirmAlertPushPayload,
   Trip,
   Waypoint,
 } from './types';
@@ -878,6 +879,20 @@ export interface ScheduledStats extends LiveActivityStats {
    * 다음 cron tick에 재시도를 허용한다(전송 실패로 1h 동안 알람이 영구 미스되는 회귀 방지).
    */
   sleepAlarmRolledBack: number;
+  /**
+   * #2157 (2026-08-05 결정 A) — eta-missing 임계(`resolveEtaMissingThreshold`) 도달 시 trip을
+   * 강제 종료하는 대신 lock만 해제하고 lockless로 강등한 누적 횟수. seoul-outage(httpErrorCount>0)
+   * 분기는 기존대로 `cleanupTripWithLa`를 타므로 본 카운터에 집계되지 않는다 — 순수 eta-missing만.
+   * dashboard: `trip_metrics` end_reason=eta-missing 분포와 역상관 — 배포 후 이 값이 늘고
+   * end_reason=eta-missing이 0에 수렴하면 fix가 의도대로 작동 중인 신호.
+   */
+  etaMissingDemoted: number;
+  /**
+   * #2157 — eta-missing 강등 시 재확인("탑승 열차를 찾을 수 없어요") alert push가 실제 발사된
+   * 누적 횟수. KV dedup(1 trip 1회)으로 `etaMissingDemoted`보다 작거나 같아야 정상 —
+   * dedup으로 skip된 케이스는 `etaMissingDemoted`에는 잡히되 본 카운터에는 잡히지 않는다.
+   */
+  trainReconfirmFired: number;
 }
 
 /**
@@ -1067,6 +1082,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
     sleepAlarmRolledBack: 0,
+    // #2157 — eta-missing 강등 + 재확인 push 카운터.
+    etaMissingDemoted: 0,
+    trainReconfirmFired: 0,
     // #2073 (Issue A) — 아래 idle 판정 이후 실제 값으로 덮어쓴다. 기본 true = 보수적(항상 실행).
     pendingActivityPossible: true,
   };
@@ -2896,6 +2914,95 @@ async function attemptVanishSwap(
 }
 
 /**
+ * #2157 (2026-08-05 결정 A, PR #2162 리뷰 P1) — eta-missing 재확인 alert push의 KV dedup 키.
+ * `(tripToken, demotedAt)` 단위 — `demotedAt`은 이 demotion event가 발생한 시점
+ * (`trip.etaMissingDemotedAt`, 호출 직전에 `now`로 stamp됨)이지 `trip.createdAt`이 아니다.
+ * trip-ended alert dedup(`tripEndedAlertDedupKey`)과 겉모양은 같지만 전제가 다르다 — trip-ended는
+ * 발사 직후 trip이 삭제되는 반면 본 강등은 trip이 **생존**하고 재등록해도 `createdAt`이 보존된다
+ * (`isSameSession`). `createdAt` 기준으로 잡으면 같은 trip의 두 번째 demotion이 첫 demotion의
+ * dedup stamp에 막혀 조용히 미발사된다 — event 단위 키로 "같은 demotion 중복 tick 차단 +
+ * 새 demotion 재발사 허용"을 동시에 만족한다. TTL은 trip이 살아있는 채로 반복 cron cycle을 도는
+ * 경로라 trip 최대 수명(9h+) 이상으로 넉넉히 잡는다.
+ */
+const TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX = 'trainReconfirmAlert:';
+const TRAIN_RECONFIRM_ALERT_DEDUP_TTL_SEC = 12 * 60 * 60;
+
+function trainReconfirmAlertDedupKey(tripToken: string, demotedAt: number): string {
+  return `${TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX}${tripToken}:${demotedAt}`;
+}
+
+/**
+ * #2157 — eta-missing 임계 도달로 lock을 해제할 때 "탑승 열차를 찾을 수 없어요 — 다시
+ * 확인해주세요" alert push를 1 demotion event당 1회만 발사한다. KV set-if-absent 게이트로 cron
+ * race에 의한 중복 발사를 차단(`fireTripEndedAlertPush`와 동일 패턴). 실패는 graceful — dedup
+ * stamp를 남기지 않아 다음 cycle에서 재시도 허용.
+ *
+ * 호출자(threshold 분기)가 `trip.etaMissingDemotedAt = now`를 이미 stamp한 뒤 호출한다 —
+ * 이 함수는 그 값을 그대로 dedup 키에 사용한다(직접 `now` 파라미터를 쓰지 않는 이유: 값의
+ * SSoT가 trip 객체여야 재진입/재시도 시에도 같은 demotion을 가리키는 키가 보장된다).
+ */
+async function fireTrainReconfirmPush(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const dedupKey = trainReconfirmAlertDedupKey(trip.token, trip.etaMissingDemotedAt ?? trip.createdAt);
+  const existing = await env.TRIPS.get(dedupKey);
+  if (existing !== null) {
+    log('train-reconfirm: dedup skip', { token: trip.token.slice(0, 8) });
+    return;
+  }
+  const pushId = generatePushId();
+  const strings = t(trip.locale);
+  const payload: TrainReconfirmAlertPushPayload = {
+    pushId,
+    kind: 'train-reconfirm',
+    tripToken: trip.token,
+    sentAt: now,
+  };
+  // sendAlertPush의 `data`는 Record<string, unknown> — payload를 spread해 index signature를 만족.
+  const data: Record<string, unknown> = { ...payload };
+  try {
+    const heal = await sendWithEnvHeal(
+      (host) =>
+        sendAlertPush({
+          deviceToken: trip.token,
+          title: strings.trainReconfirmTitle,
+          body: strings.trainReconfirmBody,
+          pushId,
+          tripToken: trip.token,
+          data,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+    );
+    if (!heal.result.ok) {
+      log('train-reconfirm push failed', {
+        token: trip.token.slice(0, 8),
+        status: heal.result.status,
+        pushReason: heal.result.reason,
+      });
+      return;
+    }
+  } catch (e) {
+    log('train-reconfirm push threw', { token: trip.token.slice(0, 8), error: String(e) });
+    return;
+  }
+  stats.trainReconfirmFired += 1;
+  await env.TRIPS.put(dedupKey, '1', { expirationTtl: TRAIN_RECONFIRM_ALERT_DEDUP_TTL_SEC });
+}
+
+/**
  * estimate가 null로 끝난 cycle 처리 — etaMissing 카운터 누적 + 임계 초과 시 trip 자동 종료.
  * runTrainCodeTracking의 cognitive complexity 분담용 추출 (Sonar S3776).
  *
@@ -3085,18 +3192,47 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     // httpErrorCount는 SeoulArrivalClient 인스턴스 수명(= cron 1 cycle) 범위라 cron scope 내에서만 유효.
     const endReason: import('./types').TripEndedReason =
       deps.seoul.stats.httpErrorCount > 0 ? 'seoul-outage' : 'eta-missing';
-    // #706 — 운행 시간대 외 무한 폴링 차단. cleanupTripWithLa가 LA dismissal + deleteTrip을 묶어 정리.
-    // #868 — 클라 state sync용 trip-ended silent push 발사.
-    log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
+    if (endReason === 'seoul-outage') {
+      // seoul-outage 분기는 기존 유지 (#1663) — Seoul API 장애가 원인이면 trip auto-end +
+      // #1425 cooldown 면제 경로를 그대로 탄다. cleanupTripWithLa가 LA dismissal + deleteTrip을
+      // 묶어 정리하고 trip-ended alert push를 발사한다.
+      log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        threshold,
+        subsurface: trip.subsurface === true,
+        endReason,
+        seoulHttpErrors: deps.seoul.stats.httpErrorCount,
+      });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, endReason);
+      return;
+    }
+    // #2157 (2026-08-05 결정 A) — 순수 eta-missing(Seoul API는 정상 응답, trainCode만
+    // 매칭 실패)은 더 이상 trip을 강제 종료하지 않는다. lock만 해제 + lockless로 강등해
+    // 사용자에게 재확인 alert push를 발사, boardingPrompt/직접 탭으로 재선택을 유도한다
+    // (결정1 #2154 "명시 확인 철학"과 일관 — 백엔드가 사용자 trip을 일방 종료하지 않음).
+    log('boarding-lock: eta-missing threshold — demoting to lockless (lock detached)', {
       token: trip.token.slice(0, 8),
       trainCode: activeLock.trainCode,
       station: waypoint.stationName,
       threshold,
       subsurface: trip.subsurface === true,
-      endReason,
-      seoulHttpErrors: deps.seoul.stats.httpErrorCount,
     });
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, endReason);
+    trip.boardingLock = undefined;
+    trip.consecutiveEtaMissing = 0;
+    // #1370 L3 vanishLocklessTakeover 선례와 동일 패턴 — 시스템 fallback이 lockless 인계 경로를
+    // 강제 활성화한다. 사용자가 opt-in 토글을 OFF로 둔 trip이어도 register 시 device가 보낸
+    // 실제 값으로 다음 세션에 자연 정합화되므로, 이 강제 활성화가 사용자 설정을 영구 덮어쓰지
+    // 않는다(#1370 L3 코멘트와 동일 근거).
+    trip.infoModeEnabled = true;
+    // #2157 (PR #2162 리뷰 P1) — dedup 키를 이 demotion event 시점으로 고정. trip.createdAt은
+    // trip 생애 전체에 불변이라 두 번째 demotion에서 재사용하면 재확인 push가 조용히 막힌다.
+    trip.etaMissingDemotedAt = now;
+    stats.etaMissingDemoted += 1;
+    await deleteProgress(env.TRIPS, trip.token);
+    await putTrip(env.TRIPS, trip);
+    await fireTrainReconfirmPush(trip, env, deps, stats, now, log, generatePushId);
     return;
   }
   trip.consecutiveEtaMissing = nextMissCount;

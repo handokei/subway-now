@@ -64,6 +64,13 @@ interface I18nStrings {
   stationNotifTitle: (kind: StationNotifKind) => string;
   /** #2063 — 매역 알림(station-notif) body. kind별 분기 + station 삽입. */
   stationNotifBody: (kind: StationNotifKind, stationName: string) => string;
+  /**
+   * #2157 — eta-missing lock detach 시 재확인 alert push title. trip을 강제 종료하는 대신
+   * lock만 해제하고 사용자에게 재선택(boardingPrompt/직접 탭)을 유도한다.
+   */
+  trainReconfirmTitle: string;
+  /** #2157 — 재확인 alert push body. */
+  trainReconfirmBody: string;
 }
 
 /**
@@ -101,6 +108,8 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
       return `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
     },
+    trainReconfirmTitle: '탑승 열차를 찾을 수 없어요',
+    trainReconfirmBody: '다시 확인해주세요',
   },
   en: {
     boardingPromptTitle: 'Are you on board?',
@@ -128,6 +137,8 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `Arriving at ${stationName} — transfer soon!`;
       return `Arriving at ${stationName} — exit soon!`;
     },
+    trainReconfirmTitle: "We couldn't find your train",
+    trainReconfirmBody: 'Please check again',
   },
   ja: {
     boardingPromptTitle: 'ご乗車されましたか?',
@@ -155,6 +166,8 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `まもなく${stationName}に到着します。乗換の準備をしてください!`;
       return `まもなく${stationName}に到着します。下車の準備をしてください!`;
     },
+    trainReconfirmTitle: '乗車列車が見つかりません',
+    trainReconfirmBody: 'もう一度ご確認ください',
   },
   zh: {
     boardingPromptTitle: '您已乘车了吗?',
@@ -182,6 +195,8 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `即将到达${stationName}。请准备换乘!`;
       return `即将到达${stationName}。请准备下车!`;
     },
+    trainReconfirmTitle: '未能找到您的乘车列车',
+    trainReconfirmBody: '请重新确认',
   },
 };
 
