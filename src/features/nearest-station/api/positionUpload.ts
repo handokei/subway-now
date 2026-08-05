@@ -26,12 +26,13 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchWithTimeout, getBackendUrl } from './backendHttp';
-import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
+import { ACTIVE_BOARDING_LINE_KEY, TRIP_ORIGIN_KEY } from '../../../shared/constants/storageKeys';
 import { snapToLinePolyline } from '../../route/utils/linePolyline';
 import { isLineNumber } from '../../route/utils/lineGuard';
 import { findNearestStation } from '../utils/findNearestStation';
 import type { LineNumber } from '../../../shared/types/station';
 import { createLogger } from '../../../shared/utils/logger';
+import { haversine } from '../../../shared/utils/haversine';
 import type { AccelSummary } from '../utils/accelMotion';
 import type { CellularEnvironmentVote } from '../utils/cellularTech';
 import {
@@ -135,6 +136,21 @@ export interface PositionUploadPayload {
    * - `reference_ios_wifi_api_constraint.md` — 사용자가 5G/LTE 전용 시 undefined (graceful).
    */
   wifiSsidStationName?: string;
+  /**
+   * #2153 (리뷰 P1) — 이 fix와 고정 출발역(`TRIP_ORIGIN_KEY`, #700) 사이 거리(m). backend
+   * boarding-prompt 신선도 게이트 anchor(`trip.originProximityAt`)의 실시간 입력.
+   *
+   * `promptGeoContext.originDistanceM`(POST /trips register 시점 스냅샷)과 달리, 이 필드는
+   * `withOriginProximity`가 **매 /position 호출마다** 신선한 GPS fix 기준으로 재계산한다 —
+   * 재등록 트리거(currentStation 전환 등)가 안 와도 "실제로 역에 근접했는가"가 항상 최신값으로
+   * backend에 전달된다(#2153 RCA: 집에서 route 설정 후 재등록 없이 도보 이동하는 케이스에서
+   * 정적 스냅샷이 anchor stamp 기회를 영구히 막던 회귀).
+   *
+   * TRIP_ORIGIN_KEY 부재(route 미설정) → undefined (graceful, position series 자체는 계속 적재).
+   */
+  originDistanceM?: number;
+  /** #2153 — 위 거리 계산에 쓰인 GPS 정확도(m) — 항상 `accuracy`와 동일값, origin 짝 필드. */
+  originAccuracyM?: number;
 }
 
 export interface PositionUploadResult {
@@ -218,6 +234,61 @@ export function withNearestStationDistance(
   };
 }
 
+/**
+ * #2153 — 고정 출발역 좌표를 반환하는 전략 함수. 기본 구현(`readTripOriginCoords`)은
+ * `TRIP_ORIGIN_KEY`(destination 설정 시점에 캡처된 route origin, #700)를 읽는다. 호출자는
+ * multi-trip / 측정 fixture 확장을 위해 자기만의 resolver를 주입할 수 있다.
+ * null 반환 시 근접 계산을 skip(graceful) — `withMapMatched`/`withNearestStationDistance`와 동형.
+ */
+export type OriginResolver = () => Promise<{ lat: number; lng: number } | null>;
+
+/**
+ * 기본 resolver — `TRIP_ORIGIN_KEY`에서 destination 설정 시점 캡처된 `Station`을 읽어
+ * lat/lng만 추출한다. 키 부재 / JSON 파싱 실패 / lat·lng 형식 불일치는 null(graceful).
+ */
+export const readTripOriginCoords: OriginResolver = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(TRIP_ORIGIN_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { lat?: unknown; lng?: unknown };
+    if (typeof parsed.lat !== 'number' || typeof parsed.lng !== 'number') return null;
+    return { lat: parsed.lat, lng: parsed.lng };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * #2153 (리뷰 P1) — resolver가 반환한 고정 출발역 좌표 대비 이 fix의 거리를 계산해 payload에
+ * 첨부한다. `withMapMatched`/`withNearestStationDistance`와 동형 패턴(override 우선, resolver
+ * 주입 가능, 실패 시 graceful omit) — 매 호출마다 신선한 GPS 기준으로 재계산되므로 route 설정
+ * 시점 스냅샷(promptGeoContext.originDistanceM)과 달리 실시간성이 보장된다.
+ *
+ * - 호출자가 `originDistanceM` + `originAccuracyM`을 명시 전달했으면 그대로 사용(override).
+ * - resolver가 null 반환(route 미설정 등) → 두 필드 모두 omit (graceful).
+ * - accuracy는 항상 이 fix의 `payload.accuracy` — origin 계산 자체의 오차가 아니라 GPS fix
+ *   정확도이므로 backend `isNearOrigin`의 margin 계산과 register 경로(promptGeoContext)가 동일
+ *   의미로 소비한다.
+ */
+export async function withOriginProximity(
+  payload: PositionUploadPayload,
+  resolveOrigin: OriginResolver = readTripOriginCoords,
+): Promise<PositionUploadPayload> {
+  if (payload.originDistanceM !== undefined && payload.originAccuracyM !== undefined) {
+    return payload;
+  }
+  const origin = await resolveOrigin();
+  if (!origin) return payload;
+  const originDistanceM = Math.round(
+    haversine(payload.lat, payload.lng, origin.lat, origin.lng) * METERS_PER_KM,
+  );
+  return {
+    ...payload,
+    originDistanceM,
+    originAccuracyM: payload.accuracy,
+  };
+}
+
 export async function uploadPosition(
   payload: PositionUploadPayload,
 ): Promise<PositionUploadResult> {
@@ -227,7 +298,9 @@ export async function uploadPosition(
     return { ok: false, skipped: true };
   }
   const mapMatched = await withMapMatched(payload);
-  const enriched = withNearestStationDistance(mapMatched);
+  const withNearest = withNearestStationDistance(mapMatched);
+  // #2153 — origin 근접 실시간 anchor 입력. AsyncStorage 1회 read 추가(다른 with* 헬퍼와 동일 비용).
+  const enriched = await withOriginProximity(withNearest);
   try {
     const res = await fetchWithTimeout(`${base}/position`, {
       method: 'POST',

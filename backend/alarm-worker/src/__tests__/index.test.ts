@@ -2186,6 +2186,144 @@ describe('POST /position (#819)', () => {
       expect(body.originStationId).toBeUndefined();
     });
   });
+
+  // #2153 (리뷰 P1) — trip.promptGeoContext.originDistanceM/originAccuracyM은 device가
+  // POST /trips 재등록할 때만 갱신되는 정적 스냅샷(useApnsTripRegistration.ts는 currentStation을
+  // register effect deps에서 제외 — #703). "집에서 route 설정 → 재등록 트리거 없이 도보로 출발역
+  // 근접" 시나리오에서 cron 경로(scheduled.ts)만으로는 anchor stamp 기회가 영영 안 올 수 있다.
+  // POST /position(10초 주기, 재등록과 무관)에도 근접 신호를 흘려 매 cycle 신선한 GPS 기준으로
+  // stamp 기회를 준다 — 이 describe가 그 경로를 검증한다.
+  describe('#2153 — /position originDistanceM/originAccuracyM → originProximityAt stamp', () => {
+    const CREATED = 1_700_000_000_000;
+    function tripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        token: 'tok-prox',
+        route: { type: 'direct', line: '2', stops: 3 },
+        destination: 'dst',
+        waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+        expiresAt: CREATED + 60 * 60_000,
+        alarmAtEpochMs: CREATED + 30 * 60_000,
+        createdAt: CREATED,
+        ...overrides,
+      };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('red → green: 재등록 없이 /position만으로 근접(margin 이내) 관측 시 originProximityAt stamp', async () => {
+      vi.useFakeTimers();
+      // route 설정(createdAt) 20분 후 — 재등록 없이 이 시각에 처음 /position이 근접을 보고한다.
+      const observedAt = CREATED + 20 * 60 * 1000;
+      vi.setSystemTime(observedAt);
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+
+      const res = await post(
+        '/position',
+        {
+          token: 'tok-prox',
+          lat: 1,
+          lng: 2,
+          accuracy: 10,
+          ts: observedAt,
+          motion: 'walking',
+          // margin(150m) 이내 근접 관측: distance - accuracy = 40m.
+          originDistanceM: 50,
+          originAccuracyM: 10,
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string);
+      expect(stored.originProximityAt).toBe(observedAt);
+    });
+
+    it('margin 초과(멀리 있음) → originProximityAt stamp 안 함', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(CREATED);
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      await post(
+        '/position',
+        {
+          token: 'tok-prox',
+          lat: 1,
+          lng: 2,
+          accuracy: 9,
+          ts: CREATED,
+          motion: 'walking',
+          // distance - accuracy = 218m > 150m margin → 근접 아님.
+          originDistanceM: 227,
+          originAccuracyM: 9,
+        },
+        env,
+      );
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string);
+      expect(stored.originProximityAt).toBeUndefined();
+    });
+
+    it('originDistanceM/originAccuracyM 부재 → stamp 안 함(기존 nearestStationDistanceM과 무관)', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(CREATED);
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      await post(
+        '/position',
+        { token: 'tok-prox', lat: 1, lng: 2, accuracy: 5, ts: CREATED, motion: 'walking' },
+        env,
+      );
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string);
+      expect(stored.originProximityAt).toBeUndefined();
+    });
+
+    it('trip 미존재 → no-op (KV에 trip:<token> 생성 안 됨, 200 응답)', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        {
+          token: 'no-such-trip',
+          lat: 1,
+          lng: 2,
+          accuracy: 10,
+          ts: CREATED,
+          motion: 'walking',
+          originDistanceM: 50,
+          originAccuracyM: 10,
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await env.TRIPS.get('trip:no-such-trip')).toBeNull();
+    });
+
+    it('이미 stamp된 trip은 재관측해도 최초 시각을 보존(계속 갱신 금지)', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(CREATED);
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      const nearPayload = {
+        token: 'tok-prox',
+        lat: 1,
+        lng: 2,
+        accuracy: 10,
+        ts: CREATED,
+        motion: 'walking' as const,
+        originDistanceM: 50,
+        originAccuracyM: 10,
+      };
+      await post('/position', nearPayload, env);
+      const firstStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
+      expect(firstStamp).toBe(CREATED);
+
+      // 5분 뒤 재관측(여전히 근접) — anchor가 최초 시각(CREATED)으로 그대로 유지돼야 한다.
+      vi.setSystemTime(CREATED + 5 * 60 * 1000);
+      await post('/position', { ...nearPayload, ts: CREATED + 5 * 60 * 1000 }, env);
+      const secondStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
+      expect(secondStamp).toBe(CREATED);
+    });
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {
