@@ -13,6 +13,7 @@ import {
   type LiveActivityStats,
 } from '../liveActivity';
 import { readSsot, seedSsot } from '../tripPositionSsot';
+import { getDeviceTripIndex, putDeviceTripIndex } from '../trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -654,6 +655,55 @@ describe('cleanupTripWithLa', () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(await kv.get('trip:devtoken')).toBeNull();
+  });
+
+  // 리뷰 P1 (#2175/#2186) — trip이 소유한 deviceToken 역인덱스도 함께 정리돼야 종료 후 인덱스가
+  // 죽은 token을 계속 가리키는 고아로 남지 않는다.
+  it('trip.deviceToken이 있고 인덱스가 여전히 이 trip.token을 가리키면 인덱스도 함께 삭제한다', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ deviceToken: 'device-devtoken' });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-devtoken',
+      'devtoken',
+      NOW + 3_600_000,
+    );
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+    );
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-devtoken')).toBeNull();
+  });
+
+  it('인덱스가 이미 다른(최신) token을 가리키면 지우지 않는다 (race guard)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ deviceToken: 'device-devtoken' });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    // 다른 요청이 이미 로테이션된 새 trip으로 인덱스를 갱신한 상태를 시뮬레이션.
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-devtoken',
+      'newer-uuid-token',
+      NOW + 3_600_000,
+    );
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+    );
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-devtoken')).toBe(
+      'newer-uuid-token',
+    );
   });
 
   // #1283 — trip-ended push도 다른 push 경로와 동일하게 env-heal 적용.

@@ -1627,6 +1627,69 @@ describe('DELETE /trips/:token — LA dismissal (#586 D)', () => {
     expect(await res.json()).toEqual({ ok: true, deleted: true });
     expect(await env.TRIPS.get('trip:tok-d')).toBeNull();
   });
+
+  // 리뷰 P1 (#2186) — 직접 삭제 성공 시에도 deviceToken 역인덱스를 함께 정리한다.
+  it('직접 삭제 시 deviceToken 역인덱스도 함께 정리한다', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-direct', createdAt: CREATED }, env);
+    expect(await env.TRIPS.get('device-trips:tok-direct')).toBe('tok-direct');
+    const res = await del('/trips/tok-direct', env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(await env.TRIPS.get('device-trips:tok-direct')).toBeNull();
+  });
+});
+
+// 리뷰 확정 P1 (#2186) — DELETE /trips/:token이 getTrip(token) 직접 키 조회만 해서, ADR-022 B4
+// 로테이션 이후 실토큰 DELETE가 miss → { ok:true, deleted:false } no-op → trip:<uuid> 고아가
+// 계속 push를 발사하는 회귀. GET /trips/:token/status(#2175)와 동일한 역인덱스 fallback을 DELETE
+// 에도 배선해 사용자의 명시적 clear가 실제로 orphan trip을 회수하도록 한다.
+describe('DELETE /trips/:token — deviceToken 역인덱스 fallback (리뷰 P1, #2186)', () => {
+  const TOKEN = 'tok-2186-real';
+
+  function tripBodyFor(destination: string, stationName: string): Record<string, unknown> {
+    return {
+      ...base(),
+      token: TOKEN,
+      destination,
+      waypoints: [{ stationName, line: '2', kind: 'destination' }],
+    };
+  }
+
+  it('로테이션 이후 실토큰 DELETE가 직접 키 miss여도 역인덱스로 UUID trip을 찾아 삭제한다', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+    await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
+    const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
+    const uuid1 = ((await res2.json()) as { token: string }).token;
+    expect(uuid1).not.toBe(TOKEN);
+    // 수정 전 회귀 재현: 직접 키(trip:TOKEN)는 로테이션이 이미 지웠고, orphan은 trip:<uuid1>에 산다.
+    expect(await env.TRIPS.get(`trip:${TOKEN}`)).toBeNull();
+    expect(await env.TRIPS.get(`trip:${uuid1}`)).not.toBeNull();
+
+    const res = await del(`/trips/${TOKEN}`, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    // orphan UUID trip이 실제로 삭제된다 — 수정 전엔 no-op으로 계속 생존해 push를 발사했다.
+    expect(await env.TRIPS.get(`trip:${uuid1}`)).toBeNull();
+    // 역인덱스도 함께 정리된다.
+    expect(await env.TRIPS.get(`device-trips:${TOKEN}`)).toBeNull();
+  });
+
+  it('역인덱스도 없으면 기존대로 idempotent 200 deleted:false', async () => {
+    const env = makeKvEnv();
+    const res = await del('/trips/never-registered', env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false });
+  });
+
+  it('역인덱스는 있지만 가리키는 trip도 이미 사라졌으면 idempotent 200 deleted:false', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(`device-trips:${TOKEN}`, 'ghost-uuid');
+    const res = await del(`/trips/${TOKEN}`, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false });
+  });
 });
 
 describe('Live Activity endpoints (#586 C)', () => {

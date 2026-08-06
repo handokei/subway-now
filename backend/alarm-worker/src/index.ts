@@ -2277,9 +2277,23 @@ app.get('/trips/:tripToken/status', async (c) => {
 app.delete('/trips/:token', async (c) => {
   const token = c.req.param('token');
   if (!token) return c.json({ error: 'missing_token' }, 400);
-  const existing = await getTrip(c.env.TRIPS, token);
+  const directExisting = await getTrip(c.env.TRIPS, token);
+
+  // 리뷰 P1 (#2186) — deviceToken 역인덱스 fallback. ADR-022 B4 로테이션 이후 device는 계속
+  // 실 deviceToken(=여기 token)으로 호출하지만 실제 trip은 rotated UUID 아래 살아있다
+  // (GET /trips/:token/status와 동일한 패턴, #2175 comment). 직접 키 조회가 miss일 때만
+  // 역인덱스로 재발견 — 직접 조회가 성공하면(대부분) 역인덱스 조회를 건너뛴다. 재발견 못하면
+  // (역인덱스도 없거나 이미 정리됨) 기존대로 idempotent 200 deleted:false.
+  const existing =
+    directExisting ??
+    (await (async () => {
+      const indexedToken = await getDeviceTripIndex(c.env.TRIPS, token);
+      if (indexedToken === null || indexedToken === token) return null;
+      return getTrip(c.env.TRIPS, indexedToken);
+    })());
   if (!existing) return c.json({ ok: true, deleted: false });
-  // 활성 LA가 있으면 dismissal push 발사 후 KV 삭제. cleanupTripWithLa가 두 동작을 묶는다.
+  // 활성 LA가 있으면 dismissal push 발사 후 KV 삭제. cleanupTripWithLa가 두 동작을 묶는다
+  // (deviceToken 역인덱스 정리도 그 안에서 함께 처리된다, 리뷰 P1).
   // logger는 worker console.log로 직결 — HTTP-driven cleanup의 dismissal 실패가 silent loss로
   // 사라지지 않게 운영 가시성 확보.
   await cleanupTripWithLa(

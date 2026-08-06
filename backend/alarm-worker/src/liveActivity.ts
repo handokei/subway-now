@@ -25,7 +25,7 @@ import { deleteProgress } from './progress';
 import { logPushFailure } from './pushFailureLog';
 import { computeMultiHopContext } from './tripMultiHop';
 import { deleteSsot } from './tripPositionSsot';
-import { deleteTrip, resolveTripDeviceToken } from './trips';
+import { deleteDeviceTripIndexIfCurrent, deleteTrip, resolveTripDeviceToken } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
 
@@ -310,6 +310,12 @@ export async function cleanupTripWithLa(
     }
   }
   await deleteTrip(env.TRIPS, trip.token);
+  // 리뷰 P1 (#2175) — 이 trip이 소유한 deviceToken 역인덱스도 함께 정리(현재도 이 trip.token을
+  // 가리킬 때만, race guard는 `deleteDeviceTripIndexIfCurrent` 참고). 정리하지 않으면 로테이션
+  // 이후 trip이 이 경로(만료/도착/HTTP DELETE 등)로 종료될 때마다 인덱스가 이미 사라진
+  // token을 계속 가리켜, 다음 재등록의 직접 키 조회 miss 시 무의미한 역인덱스 조회 1회가
+  // 추가된다(기능 회귀는 아니지만 방치된 고아 인덱스 — 명시 정리로 SSoT를 맞춘다).
+  await deleteDeviceTripIndexIfCurrent(env.TRIPS, trip);
   // #705 — trip을 폐기할 때 progress entry도 함께 제거. TTL이 자연 만료를 보장하지만
   // 즉시 cleanup해야 새 동일 token trip 등록 시 stale shiftedCount가 끼지 않는다.
   await deleteProgress(env.TRIPS, trip.token);

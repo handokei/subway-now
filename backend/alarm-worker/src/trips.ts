@@ -173,6 +173,28 @@ export async function deleteDeviceTripIndex(kv: KVNamespace, deviceToken: string
   await kv.delete(deviceTripIndexKey(deviceToken));
 }
 
+/**
+ * #2175 (리뷰 P1) — trip 삭제 시 그 trip이 소유한 deviceToken 역인덱스를 함께 정리한다.
+ *
+ * 모든 trip 종료 경로(`cleanupSupersededTrip`, `cleanupTripWithLa`)가 공유하는 단일 지점.
+ * `trip.deviceToken`이 없으면(legacy trip) no-op — 애초에 인덱스가 만들어지지 않았다.
+ *
+ * Race guard: 인덱스가 **지금도** 이 trip의 token을 가리킬 때만 삭제한다. 삭제 사이 다른 요청이
+ * 이미 같은 deviceToken으로 새로 등록해 인덱스를 새 token으로 갱신했다면(`POST /trips`가 매
+ * 등록마다 `putDeviceTripIndex`로 덮어씀) 그 갱신을 덮어쓰지 않는다 — 방금 등록된 활성 trip을
+ * 가리키는 인덱스를 지우면 그 trip이 역인덱스 fallback으로 재발견 불가능해지는 새 회귀가 된다.
+ */
+export async function deleteDeviceTripIndexIfCurrent(
+  kv: KVNamespace,
+  trip: Trip,
+): Promise<void> {
+  if (trip.deviceToken === undefined) return;
+  const current = await getDeviceTripIndex(kv, trip.deviceToken);
+  if (current === trip.token) {
+    await deleteDeviceTripIndex(kv, trip.deviceToken);
+  }
+}
+
 export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
   let cursor: string | undefined;
   do {
@@ -368,6 +390,9 @@ export async function cleanupSupersededTrip(
   }
   await deleteTrip(kv, orphan.token);
   await cleanupPendingPushesForToken(kv, orphan.token);
+  // 리뷰 P1 — orphan trip이 소유한 deviceToken 역인덱스도 함께 정리(현재도 orphan.token을
+  // 가리킬 때만, race guard는 `deleteDeviceTripIndexIfCurrent` 참고).
+  await deleteDeviceTripIndexIfCurrent(kv, orphan);
 }
 
 /**

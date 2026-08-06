@@ -8,6 +8,7 @@ import {
   computeRouteSignature,
   dedupeTripsByDeviceToken,
   deleteDeviceTripIndex,
+  deleteDeviceTripIndexIfCurrent,
   deleteTrip,
   deviceTripIndexKey,
   getDeviceTripIndex,
@@ -1076,6 +1077,91 @@ describe('cleanupSupersededTrip (#2175)', () => {
     );
     putSpy.mockRestore();
     expect(await getTrip(kv as unknown as KVNamespace, 'orphan-2')).toBeNull();
+  });
+
+  // 리뷰 P1 — deviceToken 역인덱스도 함께 정리돼야 orphan 종료 후 인덱스가 죽은 token을
+  // 계속 가리키지 않는다.
+  it('orphan.deviceToken이 있고 인덱스가 여전히 orphan.token을 가리키면 인덱스도 함께 삭제한다', async () => {
+    const orphan = makeTrip({ token: 'orphan-3', deviceToken: 'device-3' });
+    await putTrip(kv as unknown as KVNamespace, orphan);
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-3',
+      'orphan-3',
+      Date.now() + 60 * 60 * 1000,
+    );
+    await cleanupSupersededTrip(
+      kv as unknown as KVNamespace,
+      orphan,
+      'rotated',
+      Date.now(),
+    );
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-3')).toBeNull();
+  });
+
+  it('인덱스가 이미 다른(최신) token을 가리키면 지우지 않는다 (race guard)', async () => {
+    const orphan = makeTrip({ token: 'orphan-4', deviceToken: 'device-4' });
+    await putTrip(kv as unknown as KVNamespace, orphan);
+    // 다른 요청이 이미 새 trip으로 인덱스를 갱신한 상태를 시뮬레이션.
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-4',
+      'newer-token',
+      Date.now() + 60 * 60 * 1000,
+    );
+    await cleanupSupersededTrip(
+      kv as unknown as KVNamespace,
+      orphan,
+      'rotated',
+      Date.now(),
+    );
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-4')).toBe(
+      'newer-token',
+    );
+  });
+});
+
+describe('deleteDeviceTripIndexIfCurrent (#2175 리뷰 P1)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('trip.deviceToken이 undefined면 no-op', async () => {
+    const trip = makeTrip({ token: 'legacy-1', deviceToken: undefined });
+    await deleteDeviceTripIndexIfCurrent(kv as unknown as KVNamespace, trip);
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'legacy-1')).toBeNull();
+  });
+
+  it('인덱스가 없으면 no-op (에러 없이 통과)', async () => {
+    const trip = makeTrip({ token: 'tok-x', deviceToken: 'device-x' });
+    await expect(
+      deleteDeviceTripIndexIfCurrent(kv as unknown as KVNamespace, trip),
+    ).resolves.toBeUndefined();
+  });
+
+  it('인덱스가 이 trip.token을 가리키면 삭제한다', async () => {
+    const trip = makeTrip({ token: 'tok-y', deviceToken: 'device-y' });
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-y',
+      'tok-y',
+      Date.now() + 60 * 60 * 1000,
+    );
+    await deleteDeviceTripIndexIfCurrent(kv as unknown as KVNamespace, trip);
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-y')).toBeNull();
+  });
+
+  it('인덱스가 다른 token을 가리키면 보존한다', async () => {
+    const trip = makeTrip({ token: 'tok-z', deviceToken: 'device-z' });
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-z',
+      'tok-other',
+      Date.now() + 60 * 60 * 1000,
+    );
+    await deleteDeviceTripIndexIfCurrent(kv as unknown as KVNamespace, trip);
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-z')).toBe('tok-other');
   });
 });
 
