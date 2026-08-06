@@ -125,7 +125,15 @@ import {
   accumulateBoardingPromptCounters,
   readBoardingPromptCounters,
 } from './boardingPromptCounterAccumulator';
-import { getTrip, putTrip, rotateTripTokenForNewRoute, withTripRegisterLock } from './trips';
+import {
+  cleanupSupersededTrip,
+  getDeviceTripIndex,
+  getTrip,
+  putDeviceTripIndex,
+  putTrip,
+  rotateTripTokenForNewRoute,
+  withTripRegisterLock,
+} from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
@@ -681,12 +689,24 @@ app.post('/trips', async (c) => {
     // #1663 — Seoul outage로 강제 종료된 trip은 cooldown 면제. 사용자가 재등록하면 즉시 허용.
     // 원래 #1425 cooldown 목적(device race/자동 재시도 차단)과 충돌 없음 — outage false-end는
     // 사용자 명시 재등록이며, 같은 token의 device race가 아니다.
-    if (recentlyEnded.endReason === 'seoul-outage') {
+    //
+    // #2175 — 'rotated'/'superseded-by-reregister'도 같은 이유로 면제한다. ADR-022 B4 로테이션은
+    // `trip.token`(신원)만 UUID로 바꿀 뿐 device는 계속 실 deviceToken(=여기 incoming.token)으로
+    // 정상 재등록한다(#2174 comment 1) — 이건 device race/자동 재시도가 아니라 매 route 변경마다
+    // 발생하는 예상된 흐름이다. 면제하지 않으면 rotation이 스스로 남긴 'rotated' sentinel이 다음
+    // 실토큰 재-POST를 1시간 동안 400으로 차단해, 애초 이 이슈가 막으려는 "orphan 누적"보다 더
+    // 나쁜 "재등록 완전 차단" 회귀가 생긴다.
+    if (
+      recentlyEnded.endReason === 'seoul-outage' ||
+      recentlyEnded.endReason === 'rotated' ||
+      recentlyEnded.endReason === 'superseded-by-reregister'
+    ) {
       console.log(
         JSON.stringify({
-          msg: 'trip-recently-ended: bypass cooldown (seoul-outage) (#1663)',
+          msg: 'trip-recently-ended: bypass cooldown (#1663/#2175)',
           tokenPrefix: tokenPrefix(incoming.token),
           endedAt: recentlyEnded.endedAt,
+          endReason: recentlyEnded.endReason,
           ageMs: Date.now() - recentlyEnded.endedAt,
         }),
       );
@@ -714,10 +734,25 @@ app.post('/trips', async (c) => {
   // 전체를 원본 incoming token 기준으로 직렬화 — rotation이 token을 바꿔도 lock key는 요청
   // 도착 시점의 원본 token으로 고정해 같은 device의 두 요청이 반드시 같은 큐에서 대기한다.
   const registerLockToken = incoming.token;
-  const { trip, isSameSession } = await withTripRegisterLock(
+  const { trip, isSameSession, staleIndexedToken } = await withTripRegisterLock(
     registerLockToken,
     async () => {
-      const rawExisting = await getTrip(c.env.TRIPS, incoming.token);
+      const directExisting = await getTrip(c.env.TRIPS, incoming.token);
+
+      // #2175 — deviceToken 역인덱스 fallback. ADR-022 B4 로테이션이 `trip.token`을 UUID로
+      // 교체하면 직접 키 조회(`trip:<incoming.token>`, incoming.token은 항상 실 deviceToken)는
+      // 더 이상 그 trip을 찾지 못한다(#2174 comment: device가 응답의 rotated UUID를 채택하지
+      // 않고 계속 실 deviceToken으로 재-POST). 직접 조회가 miss일 때만 역인덱스로 재발견 —
+      // 직접 조회가 이미 성공했으면(대부분의 등록) 역인덱스 조회를 건너뛰어 오버헤드가 없다.
+      const priorIndexedToken =
+        directExisting === null && incoming.deviceToken !== undefined
+          ? await getDeviceTripIndex(c.env.TRIPS, incoming.deviceToken)
+          : null;
+      const rawExisting =
+        directExisting ??
+        (priorIndexedToken !== null && priorIndexedToken !== incoming.token
+          ? await getTrip(c.env.TRIPS, priorIndexedToken)
+          : null);
 
       // ADR-022 B4 (#2019 wire, #1986 rotation helper) — 새 route 감지 시 token rotation.
       //
@@ -730,7 +765,8 @@ app.post('/trips', async (c) => {
       // rotated=true 케이스 처리:
       //   - `existing = null` 로 강등해 downstream `isSameSession=false` + progress skip 경로 진입
       //     (helper 가 이미 `trip:<oldToken>` 을 delete 했으므로 same-session merge 는 무의미).
-      //   - `incoming.token` 을 새 UUID 로 갱신 → 후속 `putTrip` 이 `trip:<newToken>` 키로 쓴다.
+      //   - `incoming.token` 을 새 UUID(또는 #2175: 역인덱스로 재발견한 existing.token)로 갱신 →
+      //     후속 `putTrip` 이 그 키로 쓴다.
       //   - progress/SSoT KV(oldToken 키) 는 TTL 로 자연 만료 — 후속 cron push 는 새 token trip
       //     기준 waypoints/destination 을 참조하므로 사용자에게 이전 목적지 push 재발사 없음.
       //
@@ -753,8 +789,11 @@ app.post('/trips', async (c) => {
             newTokenPrefix: tokenPrefix(rotation.token),
           }),
         );
-        incoming.token = rotation.token;
       }
+      // #2175 — merge 분기(같은 route, `rawExisting`을 역인덱스로 재발견)도 이제
+      // `rotation.token === existing.token`을 반환하므로 항상 채택한다. brand-new 등록/
+      // 직접 키 매치처럼 `existing`이 `incoming`과 동일 token이면 무변화.
+      incoming.token = rotation.token;
       const existing = rotation.rotated ? null : rawExisting;
       const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
     // #916 follow-up B — auto-prompt dedup 마커 보존. isSameSession=true(같은 trip 재등록)인 경우만
@@ -865,9 +904,47 @@ app.post('/trips', async (c) => {
 
       await putTrip(c.env.TRIPS, trip);
 
-      return { trip, isSameSession };
+      // #2175 — deviceToken 역인덱스를 이번에 확정된 trip.token으로 갱신. 다음 등록(같은 route
+      // merge든 새 route rotation이든)이 이 값으로 직접 키 조회 miss를 해소한다. deviceToken이
+      // 없는(손상 payload) 경우는 기록하지 않는다 — index는 always-valid 64-hex 여부와 무관하게
+      // "등록 시점의 실 토큰"만 추적하면 되므로 `resolveTripDeviceToken`의 legacy fallback은
+      // 여기 적용하지 않는다.
+      if (trip.deviceToken !== undefined) {
+        await putDeviceTripIndex(c.env.TRIPS, trip.deviceToken, trip.token, trip.expiresAt);
+      }
+
+      // #2175 (P1-A #2184 리뷰) — 등록 성공 전 역인덱스가 가리키던 trip이 이번 확정 trip과
+      // 다르면(merge/rotation 모두 이미 그 trip을 채택하거나 정리했을 것이므로 정상 경로에선
+      // 이 시점에 이미 삭제돼 있다) 안전망으로 한 번 더 조회 후 잔존 시 정리한다. 스코프는
+      // 항상 같은 deviceToken(이 역인덱스 자체가 그 deviceToken 소유)이라 다른 device trip은
+      // 건드리지 않는다.
+      const staleIndexedToken =
+        priorIndexedToken !== null && priorIndexedToken !== trip.token ? priorIndexedToken : null;
+
+      return { trip, isSameSession, staleIndexedToken };
     },
   );
+
+  if (staleIndexedToken !== null) {
+    const staleTrip = await getTrip(c.env.TRIPS, staleIndexedToken);
+    if (staleTrip !== null) {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-register: superseded orphan cleanup (#2175)',
+          deviceTokenPrefix: tokenPrefix(registerLockToken),
+          staleTokenPrefix: tokenPrefix(staleIndexedToken),
+          finalTokenPrefix: tokenPrefix(trip.token),
+        }),
+      );
+      await cleanupSupersededTrip(
+        c.env.TRIPS,
+        staleTrip,
+        'superseded-by-reregister',
+        Date.now(),
+        c.env.DB,
+      );
+    }
+  }
 
   // #2144 — register 성공(putTrip 완료) 후 같은 token의 옛 tripStatus 종료 마커를 정리한다.
   // 위 cooldown 판정(#1425 reject / #1663 seoul-outage bypass)이 이미 끝난 뒤라 cooldown 의미는
@@ -2151,6 +2228,33 @@ app.get('/trips/:tripToken/status', async (c) => {
       endedAt: null,
       endReason: null,
     });
+  }
+
+  // #2175 — device는 항상 실 deviceToken(=최초 등록 시 token)으로 조회한다(#2174 comment 1).
+  // 직접 키 조회가 miss여도 ADR-022 B4 로테이션으로 trip.token이 UUID로 바뀌었을 수 있다.
+  // deviceToken 역인덱스가 "현재 실제 trip.token"을 추적하므로 그 값으로 재조회해 2회차 이상
+  // 로테이션(oldToken이 이미 UUID)에서도 active/ended를 정확히 해소한다(#2174 comment 2 escape
+  // hatch, PR #2184 P1 완결 지점).
+  const indexedToken = await getDeviceTripIndex(c.env.TRIPS, tripToken);
+  if (indexedToken !== null && indexedToken !== tripToken) {
+    const indexedTrip = await getTrip(c.env.TRIPS, indexedToken);
+    if (indexedTrip) {
+      return c.json({
+        tripToken,
+        status: 'active' as const,
+        endedAt: null,
+        endReason: null,
+      });
+    }
+    const indexedEnded = await readTripEndedStatus(c.env.TRIPS, indexedToken);
+    if (indexedEnded && now - indexedEnded.endedAt <= TRIP_STATUS_RETENTION_MS) {
+      return c.json({
+        tripToken,
+        status: 'ended' as const,
+        endedAt: indexedEnded.endedAt,
+        endReason: indexedEnded.endReason,
+      });
+    }
   }
 
   const ended = await readTripEndedStatus(c.env.TRIPS, tripToken);

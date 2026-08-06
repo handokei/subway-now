@@ -442,6 +442,10 @@ export interface ReschedulePushPayload {
  *                       old trip을 폐기한 사유. push-unrecoverable/user-delete와 구분되는 관측
  *                       전용 사유 — alert push는 발사하지 않는다(사용자 명시 route 변경 자체가
  *                       trip 전환의 정상 신호라 종료 알림 UX가 불필요).
+ *   - 'superseded-by-reregister' (#2175) — deviceToken 역인덱스로 재발견한 같은 deviceToken의
+ *                       다른 active trip을 신규 등록 성공 시 정리한 사유. `push-unrecoverable`
+ *                       (APNs 영구 실패)과 구분되는 관측 전용 사유 — 이 경로도 'rotated'와 동일하게
+ *                       alert push를 발사하지 않는다.
  *
  * 클라가 명시적으로 trip을 끝낸 경로(HTTP DELETE /trips/:token)는 발사 대상이 아님 —
  * 사용자가 destination을 clear하면 이미 클라이언트 store가 정리된 상태이기 때문.
@@ -453,7 +457,8 @@ export type TripEndedReason =
   | 'expired'
   | 'push-unrecoverable'
   | 'la-stale-backstop'
-  | 'rotated';
+  | 'rotated'
+  | 'superseded-by-reregister';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의
