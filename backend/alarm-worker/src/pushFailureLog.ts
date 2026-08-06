@@ -16,6 +16,16 @@
 import { hashTripToken } from './sentry';
 import type { ApnsEnv } from './types';
 
+/**
+ * 동일 (tokenHash, pushKind) 최종 실패 재기록 rate-limit 윈도우 (#2177 리뷰 P1).
+ *
+ * 배경: boardingPrompt/reschedule 재시도 로직 자체는 건드리지 않는다(재시도 억제=사용자 가치
+ * 손실, ADR-010 동급 보호). 대신 "기록"만 억제 — 같은 실패가 cron(1분)마다 재평가돼 매 tick
+ * insert되는 걸 막는다. D1 write quota는 귀하고 read(SELECT)는 여유가 커 write 전 SELECT
+ * 선확인 방식을 쓴다. KV는 write quota가 더 귀해 사용하지 않는다.
+ */
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+
 export interface PushFailureInput {
   /** APNs device token — 원본 노출 금지, FNV-1a hash만 저장. */
   token: string;
@@ -47,6 +57,14 @@ export async function logPushFailure(
   try {
     const tokenHash = hashTripToken(input.token);
     const tripTokenHash = input.tripToken !== undefined ? hashTripToken(input.tripToken) : tokenHash;
+
+    const since = Date.now() - RATE_LIMIT_WINDOW_MS;
+    const recent = await db
+      .prepare('SELECT 1 FROM push_failures WHERE token_hash = ? AND push_kind = ? AND ts >= ? LIMIT 1')
+      .bind(tokenHash, input.pushKind, since)
+      .first();
+    if (recent) return;
+
     await db
       .prepare(
         'INSERT INTO push_failures (ts, token_hash, trip_token_hash, push_kind, apns_status, apns_reason, apns_env, env_mismatch_exhausted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
