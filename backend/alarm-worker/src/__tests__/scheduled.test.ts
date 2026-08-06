@@ -6509,6 +6509,88 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2175 — cron dedupeTripsByDeviceToken 안전망 (#2184 리뷰 P1)
+//
+// register-time deviceToken 역인덱스 merge/cleanup이 KV eventual consistency 등으로 실패해
+// 같은 deviceToken의 active trip이 순간적으로 2개 이상 KV에 동시 존재해도, cron이 orphan에
+// 대해서도 실 deviceToken으로 push를 중복 발사하지 않도록 최신(createdAt) trip만 처리한다.
+// ---------------------------------------------------------------------------
+describe('#2175 — cron dedupeTripsByDeviceToken 안전망', () => {
+  it('같은 deviceToken의 active trip 2개(오래된 것 + 최신) 존재 시 최신 1개만 scanned/push 발사', async () => {
+    const kv = new InMemoryKV();
+    // 오래된 trip(orphan) — 같은 deviceToken, 먼저 등록됨.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'orphan-uuid',
+        deviceToken: 'dev-dup',
+        createdAt: NOW - 10 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        destination: 'dst-old',
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      }),
+    );
+    // 최신 trip — 같은 deviceToken, 나중에 등록됨(진짜 active).
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'current-uuid',
+        deviceToken: 'dev-dup',
+        createdAt: NOW,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+        destination: 'dst-new',
+        waypoints: [{ stationName: '성수', line: '2', kind: 'destination' }],
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    // 오래된 orphan은 이번 tick 처리 대상에서 제외 — scanned=1(최신만).
+    expect(stats.scanned).toBe(1);
+    // 두 trip 모두 KV에 남아있다 — cron은 register-time 정리를 대신하지 않는다(스캔 skip만).
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining.map((t) => t.token).sort()).toEqual(['current-uuid', 'orphan-uuid']);
+  });
+
+  it('deviceToken 없는(legacy) trip은 dedup 대상에서 제외되고 정상 scanned', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'legacy-trip',
+        deviceToken: undefined,
+        createdAt: NOW - 10 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 60_000,
+      }),
+    );
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.scanned).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #1933 — toTripStatusEndReason — la-stale-backstop external mapping
 // ---------------------------------------------------------------------------
 

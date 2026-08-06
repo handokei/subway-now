@@ -25,7 +25,10 @@ const TRIP_STATUS_PREFIX = 'tripStatus:';
  *   실 deviceToken으로 GET /trips/:token/status를 조회하는 device가(#2174 comment 1: 로테이션 직후
  *   trip.token이 바뀌어도 device는 여전히 실 deviceToken으로 조회) 첫 로테이션 한정으로 이 사유를
  *   확인해 'ended'로 사망 인지할 수 있다 — 2회차 이상 로테이션(oldToken이 이미 UUID)의 완전한
- *   deviceToken 역인덱스 조회는 #2175로 위임.
+ *   deviceToken 역인덱스 조회는 #2175가 `GET /trips/:token/status` 핸들러에 배선(trips.ts
+ *   `getDeviceTripIndex`)해 완결한다.
+ * `superseded-by-reregister` (#2175) — deviceToken 역인덱스로 발견한 같은 deviceToken의 다른
+ *   active trip을 신규 등록 성공 시 정리한 사유.
  */
 export type TripStatusEndReason =
   | 'expired'
@@ -33,7 +36,8 @@ export type TripStatusEndReason =
   | 'seoul-outage'
   | 'destination'
   | 'push-unrecoverable'
-  | 'rotated';
+  | 'rotated'
+  | 'superseded-by-reregister';
 
 export interface TripStatusRecord {
   endedAt: number;
@@ -119,7 +123,8 @@ export async function readTripEndedStatus(
       parsed.endReason !== 'seoul-outage' &&
       parsed.endReason !== 'destination' &&
       parsed.endReason !== 'push-unrecoverable' &&
-      parsed.endReason !== 'rotated'
+      parsed.endReason !== 'rotated' &&
+      parsed.endReason !== 'superseded-by-reregister'
     ) {
       return null;
     }

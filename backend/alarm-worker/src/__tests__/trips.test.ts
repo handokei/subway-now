@@ -3,11 +3,17 @@ import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import {
   __resetTripRegisterLocksForTest,
   cleanupPendingPushesForToken,
+  cleanupSupersededTrip,
   clearStaleBoardingLock,
   computeRouteSignature,
+  dedupeTripsByDeviceToken,
+  deleteDeviceTripIndex,
   deleteTrip,
+  deviceTripIndexKey,
+  getDeviceTripIndex,
   getTrip,
   listTrips,
+  putDeviceTripIndex,
   putTrip,
   resolveTripDeviceToken,
   rotateTripTokenForNewRoute,
@@ -486,6 +492,37 @@ describe('trips KV CRUD', () => {
         expect(await getTrip(kv as unknown as KVNamespace, 'tok-same')).not.toBeNull();
       });
 
+      // #2175 — deviceToken 역인덱스로 재발견한 existing은 incoming.token과 다른 값일 수 있다
+      // (ADR-022 B4 로테이션으로 이전에 UUID로 바뀐 trip). 같은 route라면 반드시 existing.token
+      // (기존 UUID)을 반환해야 한다 — incoming.token(실 deviceToken)을 반환하면 이미 존재하는
+      // UUID trip과 별개로 `trip:<incoming.token>`이 새로 생겨 유령 2개가 남는다(#2184 리뷰 P1).
+      it('#2175 — 같은 route, existing.token !== incoming.token (역인덱스 fallback): existing.token 채택', async () => {
+        const existing = makeTrip({
+          token: 'uuid-from-prior-rotation',
+          deviceToken: 'real-device-token',
+          destination: 'D-1',
+          waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+        });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({
+          token: 'real-device-token',
+          deviceToken: 'real-device-token',
+          destination: 'D-1',
+          waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+        });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true },
+        );
+        expect(result).toEqual({ token: 'uuid-from-prior-rotation', rotated: false });
+        // 정리 대상 없음 — merge이므로 existing trip 그대로 생존.
+        expect(
+          await getTrip(kv as unknown as KVNamespace, 'uuid-from-prior-rotation'),
+        ).not.toBeNull();
+      });
+
       it('#2174 — 다른 destination: rotation 발동 (새 token 발급 + old trip:<token> delete)', async () => {
         // #2173 P0 hotfix가 이 경로를 guard로 단락시켰던 이유(push가 UUID를 APNs deviceToken으로
         // 사용해 400 BadDeviceToken 즉사, Epic #2172)는 #2174가 `Trip.deviceToken` 필드 분리 +
@@ -927,5 +964,150 @@ describe('withTripRegisterLock (#2129)', () => {
       order.push('reused');
     });
     expect(order).toEqual(['reused']);
+  });
+});
+
+// #2175 — deviceToken → 현재 trip.token 역인덱스 KV CRUD.
+describe('deviceToken → trip 역인덱스 (#2175)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('deviceTripIndexKey builds prefix', () => {
+    expect(deviceTripIndexKey('abc')).toBe('device-trips:abc');
+  });
+
+  it('put + get round-trip', async () => {
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-1',
+      'trip-token-A',
+      Date.now() + 60 * 60 * 1000,
+    );
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-1')).toBe(
+      'trip-token-A',
+    );
+  });
+
+  it('get returns null for unknown deviceToken', async () => {
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'missing')).toBeNull();
+  });
+
+  it('put은 최신 값으로 덮어쓴다 (로테이션마다 갱신)', async () => {
+    const future = Date.now() + 60 * 60 * 1000;
+    await putDeviceTripIndex(kv as unknown as KVNamespace, 'device-1', 'trip-A', future);
+    await putDeviceTripIndex(kv as unknown as KVNamespace, 'device-1', 'trip-B', future);
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-1')).toBe('trip-B');
+  });
+
+  it('delete 이후 get은 null', async () => {
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-1',
+      'trip-A',
+      Date.now() + 60 * 60 * 1000,
+    );
+    await deleteDeviceTripIndex(kv as unknown as KVNamespace, 'device-1');
+    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-1')).toBeNull();
+  });
+
+  it('TTL은 최소 60s로 floor된다 (expiresAt이 과거/근접이어도)', async () => {
+    const putSpy = vi.spyOn(kv, 'put');
+    await putDeviceTripIndex(
+      kv as unknown as KVNamespace,
+      'device-1',
+      'trip-A',
+      Date.now() - 1000,
+    );
+    expect(putSpy).toHaveBeenCalledWith(
+      'device-trips:device-1',
+      'trip-A',
+      expect.objectContaining({ expirationTtl: 60 }),
+    );
+  });
+});
+
+// #2175 — 공유 orphan cleanup helper. rotateTripTokenForNewRoute의 route-변경 cleanup과
+// POST /trips 핸들러의 superseded-by-reregister cleanup이 공유한다.
+describe('cleanupSupersededTrip (#2175)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('trip 삭제 + tripStatus sentinel 기록 + pending cleanup을 모두 수행한다', async () => {
+    const orphan = makeTrip({ token: 'orphan-1' });
+    await putTrip(kv as unknown as KVNamespace, orphan);
+    await putPending(kv as unknown as KVNamespace, {
+      pushId: 'p1',
+      token: 'orphan-1',
+      alarmKey: 'early:p1',
+      sentAt: Date.now(),
+      stationName: '강남',
+      kind: 'destination',
+      phase: 'early',
+      etaSeconds: 300,
+      apnsEnv: 'sandbox',
+    });
+    const now = Date.now();
+    await cleanupSupersededTrip(
+      kv as unknown as KVNamespace,
+      orphan,
+      'superseded-by-reregister',
+      now,
+    );
+    expect(await getTrip(kv as unknown as KVNamespace, 'orphan-1')).toBeNull();
+    expect(await kv.get(pendingKey('p1'))).toBeNull();
+    const status = await readTripEndedStatus(kv as unknown as KVNamespace, 'orphan-1');
+    expect(status?.endReason).toBe('superseded-by-reregister');
+    expect(status?.endedAt).toBe(now);
+  });
+
+  it('writeTripEndedStatus 실패해도 삭제는 진행된다 (best-effort)', async () => {
+    const orphan = makeTrip({ token: 'orphan-2' });
+    await putTrip(kv as unknown as KVNamespace, orphan);
+    const putSpy = vi.spyOn(kv, 'put').mockRejectedValueOnce(new Error('kv down'));
+    await cleanupSupersededTrip(
+      kv as unknown as KVNamespace,
+      orphan,
+      'superseded-by-reregister',
+      Date.now(),
+    );
+    putSpy.mockRestore();
+    expect(await getTrip(kv as unknown as KVNamespace, 'orphan-2')).toBeNull();
+  });
+});
+
+// #2175 — cron 안전망 pure 함수.
+describe('dedupeTripsByDeviceToken (#2175)', () => {
+  it('deviceToken 없는 trip은 그대로 통과', () => {
+    const t1 = makeTrip({ token: 'a', deviceToken: undefined });
+    const t2 = makeTrip({ token: 'b', deviceToken: undefined });
+    expect(dedupeTripsByDeviceToken([t1, t2])).toEqual([t1, t2]);
+  });
+
+  it('같은 deviceToken 그룹에서 createdAt이 최신인 trip만 유지', () => {
+    const older = makeTrip({ token: 'old', deviceToken: 'dev-1', createdAt: 1000 });
+    const newer = makeTrip({ token: 'new', deviceToken: 'dev-1', createdAt: 2000 });
+    expect(dedupeTripsByDeviceToken([older, newer])).toEqual([newer]);
+    expect(dedupeTripsByDeviceToken([newer, older])).toEqual([newer]);
+  });
+
+  it('다른 deviceToken은 서로 영향 없이 모두 유지', () => {
+    const a = makeTrip({ token: 'a', deviceToken: 'dev-a', createdAt: 1000 });
+    const b = makeTrip({ token: 'b', deviceToken: 'dev-b', createdAt: 1000 });
+    expect(dedupeTripsByDeviceToken([a, b])).toEqual([a, b]);
+  });
+
+  it('deviceToken 있는 trip과 없는 trip이 섞여도 없는 쪽은 항상 유지', () => {
+    const legacy = makeTrip({ token: 'legacy', deviceToken: undefined, createdAt: 1000 });
+    const older = makeTrip({ token: 'old', deviceToken: 'dev-1', createdAt: 1000 });
+    const newer = makeTrip({ token: 'new', deviceToken: 'dev-1', createdAt: 2000 });
+    expect(dedupeTripsByDeviceToken([legacy, older, newer])).toEqual([legacy, newer]);
+  });
+
+  it('빈 배열은 빈 배열', () => {
+    expect(dedupeTripsByDeviceToken([])).toEqual([]);
   });
 });

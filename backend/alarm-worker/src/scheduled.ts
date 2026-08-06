@@ -80,7 +80,7 @@ import {
   readFreshSelfPollPosition,
 } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
-import { listTrips, putTrip, resolveTripDeviceToken } from './trips';
+import { dedupeTripsByDeviceToken, listTrips, putTrip, resolveTripDeviceToken } from './trips';
 import {
   evaluateTransferDestinationGate,
   isTransferOrDestination,
@@ -1097,10 +1097,16 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
   // 1회 병합. 전체 trip을 배열로 확보해 아래 파생 함수 + main loop가 모두 이 배열을 재사용한다.
   // 감축: list 5→3/tick, 활성 시 trip get 3N→N.
-  const trips: Trip[] = [];
+  const scannedTrips: Trip[] = [];
   for await (const trip of listTrips(env.TRIPS)) {
-    trips.push(trip);
+    scannedTrips.push(trip);
   }
+  // #2175 — register-time deviceToken 역인덱스 merge/cleanup(#2184 리뷰 P1)에 대한 cron
+  // 안전망. KV eventual consistency 등으로 같은 deviceToken의 active trip이 순간적으로 2개 이상
+  // 존재해도, cron이 orphan에 대해서도 실 deviceToken으로 push를 발사(#2184 resolveTripDeviceToken)
+  // 하는 중복 발송을 막기 위해 매 tick 최신(createdAt) trip만 처리 대상으로 남긴다. deviceToken이
+  // 없는(legacy) trip은 그대로 통과.
+  const trips: Trip[] = dedupeTripsByDeviceToken(scannedTrips);
 
   // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
   // 없으면 pending/retry push가 존재할 수 없다(모든 fire 경로가 trip 기반이므로 trip 부재 tick엔

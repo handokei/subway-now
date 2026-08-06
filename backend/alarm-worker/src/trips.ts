@@ -7,7 +7,7 @@ import {
 } from './kvConsistency';
 import { listPending, pendingKey } from './pendingPushes';
 import { writeTripEndedStatus } from './tripStatus';
-import type { Trip } from './types';
+import type { Trip, TripEndedReason } from './types';
 
 /**
  * KV CRUD for active trips.
@@ -126,6 +126,51 @@ export async function getTrip(
 
 export async function deleteTrip(kv: KVNamespace, token: string): Promise<void> {
   await kv.delete(tripKey(token));
+}
+
+/**
+ * #2175 — deviceToken → 현재 trip.token 역인덱스.
+ *
+ * ADR-022 B4 로테이션이 `trip.token`을 `crypto.randomUUID()`로 교체하면, `POST /trips`가
+ * `getTrip(incoming.token)`(incoming.token은 항상 실 deviceToken — 클라는 응답의 rotated UUID를
+ * 채택하지 않는다, #2174 코멘트)로 직전 로테이션의 UUID trip을 찾지 못해 매번 새 trip이 생성되고
+ * old UUID trip은 orphan으로 남는다. 이 역인덱스가 "실 deviceToken이 가리키는 현재 trip.token"을
+ * 별도 KV entry(`device-trips:<deviceToken>`)로 추적해, 직접 키 조회가 실패해도 로테이션된 trip을
+ * 재발견할 수 있게 한다.
+ *
+ * Key: `device-trips:<deviceToken>` (raw deviceToken을 그대로 키 접미사로 사용 — `trip:<token>`이
+ * 이미 raw token을 KV 키로 사용하는 기존 정책과 동일. `hashTripToken`(FNV-1a 32bit)은 Sentry/D1
+ * PII 마스킹 목적의 비가역 축약이라 KV lookup key로 쓰면 충돌 시 다른 device의 trip을 잘못
+ * 반환할 위험이 있어 부적합 — exact match가 필요한 이 경로는 raw 값을 쓴다).
+ * Value: 최신 trip.token (plain string, JSON 아님 — 단일 스칼라라 파싱 오버헤드 불필요).
+ *
+ * TTL은 가리키는 trip의 `expiresAt`과 정렬 — trip이 자연 만료되면 역인덱스도 함께 사라진다.
+ */
+const DEVICE_TRIP_INDEX_PREFIX = 'device-trips:';
+
+export function deviceTripIndexKey(deviceToken: string): string {
+  return `${DEVICE_TRIP_INDEX_PREFIX}${deviceToken}`;
+}
+
+export async function putDeviceTripIndex(
+  kv: KVNamespace,
+  deviceToken: string,
+  tripToken: string,
+  expiresAt: number,
+): Promise<void> {
+  const ttlSec = Math.max(60, Math.floor((expiresAt - Date.now()) / 1000));
+  await kv.put(deviceTripIndexKey(deviceToken), tripToken, { expirationTtl: ttlSec });
+}
+
+export async function getDeviceTripIndex(
+  kv: KVNamespace,
+  deviceToken: string,
+): Promise<string | null> {
+  return kv.get(deviceTripIndexKey(deviceToken));
+}
+
+export async function deleteDeviceTripIndex(kv: KVNamespace, deviceToken: string): Promise<void> {
+  await kv.delete(deviceTripIndexKey(deviceToken));
 }
 
 export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
@@ -270,16 +315,23 @@ export async function rotateTripTokenForNewRoute(
   if (existing === null) {
     return { token: incoming.token, rotated: false };
   }
-  // 같은 route (destination + waypoints 시그니처 일치): incoming token 유지 → same-session merge.
+  // 같은 route (destination + waypoints 시그니처 일치): existing token으로 merge.
+  //
+  // #2175 — 과거엔 여기서 `incoming.token`을 그대로 반환했다. `existing`이 항상 직접 키 조회
+  // (`getTrip(incoming.token)`)로만 발견되던 시절엔 `existing.token === incoming.token`이 항상
+  // 성립해 무해했지만, `POST /trips` 핸들러가 이제 deviceToken 역인덱스로 `existing`을 재발견할
+  // 수 있어(직접 키 조회 miss 시 fallback) 이 경우 `existing.token`(예: 이전 로테이션 UUID)이
+  // `incoming.token`(원본 실 deviceToken)과 달라진다. `incoming.token`을 반환하면 실 deviceToken
+  // 키로 새 trip이 또 생성돼 이미 존재하는 UUID trip과 함께 유령 2개가 남는다 — `existing.token`을
+  // 반환해 항상 같은 KV 레코드로 merge되도록 고정한다.
   const existingSig = computeRouteSignature(existing);
   const incomingSig = computeRouteSignature(incoming);
   if (existingSig === incomingSig) {
-    return { token: incoming.token, rotated: false };
+    return { token: existing.token, rotated: false };
   }
   // 다른 route: 새 token 발급 + old 정리.
   const generateToken = deps?.generateToken ?? (() => crypto.randomUUID());
   const newToken = generateToken();
-  const oldToken = existing.token;
   const rotatedAt = deps?.now ?? Date.now();
   // #2174 F2 — old trip 삭제가 관측 blind hole이었다(raw KV delete, D1/sentinel 미기록 →
   // 사후 RCA 완전 비가시, 2026-08-06 진단 지연 직접 원인). cleanupTripWithLa(liveActivity.ts)를
@@ -287,15 +339,61 @@ export async function rotateTripTokenForNewRoute(
   // route 변경(F1: 환승 waypoint trim/목적지 변경 재-POST)마다 로테이션이 발동하므로 매번 종료
   // alert가 뜨면 사용자 경험 회귀다. 여기서는 push-unrecoverable/user-delete와 구분되는 관측
   // 전용 사유 'rotated'로 D1 기록 + tripStatus sentinel만 남긴다(alert push 없음).
-  await recordTripMetrics(deps?.db, existing, 'rotated', rotatedAt);
-  try {
-    await writeTripEndedStatus(kv, oldToken, 'rotated', rotatedAt);
-  } catch {
-    // best-effort — sentinel 기록 실패가 rotation 자체를 막지 않는다(다른 tripStatus 호출자와 동일 정책).
-  }
-  await deleteTrip(kv, oldToken);
-  await cleanupPendingPushesForToken(kv, oldToken);
+  await cleanupSupersededTrip(kv, existing, 'rotated', rotatedAt, deps?.db);
   return { token: newToken, rotated: true };
+}
+
+/**
+ * #2175 — 다른(superseded) trip의 관측 기록 + KV 정리 단일 지점.
+ *
+ * `rotateTripTokenForNewRoute`의 route-변경 cleanup과, `POST /trips` 핸들러가 deviceToken 역인덱스로
+ * 발견한 orphan trip(같은 deviceToken의 다른 active trip, `superseded-by-reregister`)이 공유한다.
+ * D1 기록(`recordTripMetrics`) → tripStatus sentinel(`writeTripEndedStatus`, best-effort) →
+ * `trip:<token>` delete → `pending:*` 잔재 cleanup 순서로 동작한다. alert push는 발사하지 않는다
+ * (관측 전용 — `cleanupTripWithLa`와 달리 사용자향 UX 신호 없음, 두 호출자 모두 device 관점에서는
+ * "정상 재등록"이지 사용자에게 알릴 종료가 아니다).
+ */
+export async function cleanupSupersededTrip(
+  kv: KVNamespace,
+  orphan: Trip,
+  reason: TripEndedReason,
+  now: number,
+  db?: D1Database,
+): Promise<void> {
+  await recordTripMetrics(db, orphan, reason, now);
+  try {
+    await writeTripEndedStatus(kv, orphan.token, reason, now);
+  } catch {
+    // best-effort — sentinel 기록 실패가 cleanup 자체를 막지 않는다.
+  }
+  await deleteTrip(kv, orphan.token);
+  await cleanupPendingPushesForToken(kv, orphan.token);
+}
+
+/**
+ * #2175 — cron 안전망. register-time deviceToken 역인덱스 merge/cleanup이 실패하거나(KV
+ * eventual consistency, 예상 못한 race) 실행 전이라 같은 deviceToken의 active trip이 KV에 2개
+ * 이상 동시 존재하는 경우, cron이 둘 다에 push를 발사(#2184 `resolveTripDeviceToken`가 orphan도
+ * 실 deviceToken으로 발사)하는 회귀를 막는다. deviceToken 없는(legacy) trip은 그룹핑 대상에서
+ * 제외하고 그대로 통과시킨다 — 하위호환.
+ *
+ * 정책: 같은 deviceToken 그룹에서 `createdAt`이 가장 최신인 trip만 유지, 나머지는 이번 cron
+ * tick 처리에서 제외한다(스캔 skip — cron 자체가 KV를 수정하지는 않는다, register-time 경로가
+ * 최종 정리를 담당).
+ */
+export function dedupeTripsByDeviceToken(trips: readonly Trip[]): Trip[] {
+  const latestByDevice = new Map<string, Trip>();
+  for (const trip of trips) {
+    if (trip.deviceToken === undefined) continue;
+    const current = latestByDevice.get(trip.deviceToken);
+    if (!current || trip.createdAt > current.createdAt) {
+      latestByDevice.set(trip.deviceToken, trip);
+    }
+  }
+  return trips.filter((trip) => {
+    if (trip.deviceToken === undefined) return true;
+    return latestByDevice.get(trip.deviceToken) === trip;
+  });
 }
 
 /**
