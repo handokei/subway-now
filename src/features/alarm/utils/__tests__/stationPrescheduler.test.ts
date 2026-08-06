@@ -46,6 +46,7 @@ jest.mock('../stationNotification', () => ({
     title: 'passed-title',
     body: `passed:${stationName}`,
   }),
+  ALARM_SILENT_CHANNEL_ID: 'station-alarm-silent',
 }));
 
 jest.mock('../stationNotifCollapseId', () => ({
@@ -244,7 +245,7 @@ describe('registerPrescheduledStationAlarms', () => {
     expect(ids[2]).toBe(`${PRESCHED_ALARM_PREFIX}${TRIP_TOKEN.slice(0, 16)}-A역-station-passed#1`);
   });
 
-  it('AndroidNotificationPriority.MAX + channelId를 android에서 설정, ios에서는 interruptionLevel 설정(alarm kind)', async () => {
+  it('#2158 — android에서 무음 채널(station-alarm-silent) + HIGH priority 설정, ios에서는 interruptionLevel 설정', async () => {
     jest.replaceProperty(Platform, 'OS', 'android');
     const arc = makeArc();
     await registerPrescheduledStationAlarms({
@@ -254,9 +255,12 @@ describe('registerPrescheduledStationAlarms', () => {
       now: NOW,
     });
     const call = mockedSchedule.mock.calls[0][0];
-    expect((call.content as { channelId?: string }).channelId).toBe('station-alarm');
+    // #2158 P1 — 'station-alarm'(loud, sound:'alarm.wav' 채널 고정 속성)을 쓰면 Android 8+에서
+    // content.sound=false가 무시되고 여전히 loud 발사된다. 일반모드 전용 채널이므로 무음 채널을
+    // 써야 한다.
+    expect((call.content as { channelId?: string }).channelId).toBe('station-alarm-silent');
     expect((call.content as { priority?: number }).priority).toBe(
-      Notifications.AndroidNotificationPriority.MAX,
+      Notifications.AndroidNotificationPriority.HIGH,
     );
     expect((call.content as { interruptionLevel?: string }).interruptionLevel).toBeUndefined();
   });
