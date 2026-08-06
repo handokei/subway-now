@@ -8,10 +8,30 @@
  *   sandbox로 시작했으므로 production으로 뒤집는다.
  */
 
+import { isValidApnsToken } from './apnsToken';
+import { logPushFailure } from './pushFailureLog';
 import type { ApnsEnv } from './types';
 import type { SendPushResult } from './apns';
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
+
+/**
+ * #2176 (관측 전용, 축소 스펙) — 발사 직전 토큰 포맷 관측 컨텍스트.
+ *
+ * 08-06 로테이션 결함 RCA: `trip.token`이 UUID로 로테이션된 상태로 APNs에 발사돼도 아무도
+ * 감지하지 못했다. 이 컨텍스트를 `sendWithEnvHeal`에 넘기면 실제 발사 토큰(`deviceToken`)이
+ * 64-hex가 아닐 때 `push_failures`에 `invalid-token-format` 사유로 기록한다 — **발사 자체는
+ * 막지 않는다** (동작 불변, 1단계는 관측만). 강제 차단은 production 관측 0건 확인 후 별도 이슈.
+ */
+export interface ApnsTokenObserveContext {
+  /** 실제 APNs로 발사되는 토큰 (마스킹 없이 전체 값 — pushFailureLog가 내부에서 hash한다). */
+  deviceToken: string;
+  db: D1Database | undefined;
+  tripToken: string;
+}
+
+/** 관측 기록 시 pushFailureLog에 남기는 pushKind. 실제 push 종류와 무관 — 포맷 결함 자체를 버킷팅. */
+const TOKEN_FORMAT_OBSERVE_PUSH_KIND = 'apns-fire';
 
 export function pickApnsHost(apnsEnv: ApnsEnv | undefined, hosts: Record<ApnsEnv, string>): string {
   return hosts[apnsEnv ?? 'sandbox'];
@@ -90,7 +110,22 @@ export async function sendWithEnvHeal(
   apnsHosts: Record<ApnsEnv, string>,
   log: Logger,
   tokenForLog: string,
+  observe?: ApnsTokenObserveContext,
 ): Promise<EnvHealResult> {
+  // #2176 — 발사 전 토큰 포맷 관측 (기록만, 발사 흐름 차단 안 함). caller가 `observe`를
+  // 넘기지 않으면 완전히 no-op — 기존 caller/테스트는 동작 무변경.
+  if (observe !== undefined && !isValidApnsToken(observe.deviceToken)) {
+    log('apns invalid token format observed (#2176 — fire not blocked)', {
+      token: tokenForLog,
+    });
+    await logPushFailure(observe.db, {
+      token: observe.deviceToken,
+      tripToken: observe.tripToken,
+      pushKind: TOKEN_FORMAT_OBSERVE_PUSH_KIND,
+      apnsStatus: 0,
+      apnsReason: 'invalid-token-format',
+    });
+  }
   const initial = await sender(pickApnsHost(currentEnv, apnsHosts));
   if (initial.ok || !isApnsEnvMismatch(initial.status, initial.reason)) {
     return { result: initial, envMismatchExhausted: false };
