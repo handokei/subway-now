@@ -191,7 +191,29 @@ export interface TokenRotationDeps {
   simpleArchEnabled?: boolean;
   /** 새 token 발급 함수 — 미지정 시 `crypto.randomUUID`. */
   generateToken?: () => string;
+  /**
+   * #2173 — `TOKEN_ROTATION_DISABLED` guard override. 미지정 시 production 상수(`true`)를
+   * 그대로 사용한다. rotation 로직 자체(existing/route sig 비교, cleanup)는 삭제하지 않고
+   * 보존해야 하므로, 그 경로를 테스트가 커버할 수 있도록 기존 `simpleArchEnabled`/`generateToken`
+   * 과 동일한 DI 패턴으로 노출한다. 실제 호출부(`POST /trips`)는 이 값을 지정하지 않는다.
+   */
+  rotationDisabled?: boolean;
 }
+
+/**
+ * #2173 P0 hotfix — token rotation 전면 비활성 guard.
+ *
+ * `rotateTripTokenForNewRoute`가 route sig 변경 시 `crypto.randomUUID()`로 trip.token을
+ * 교체 → 이후 모든 push가 UUID를 APNs deviceToken으로 사용해 400 BadDeviceToken →
+ * 첫 due push에서 push-unrecoverable 즉사 (Epic #2172 물증).
+ *
+ * `arch:simple-arrival-v1` 플래그를 OFF로 끄는 방식은 금지 — 오토락 봉인 등 다른 게이트까지
+ * 함께 풀린다. 그래서 rotation 경로만 독립적으로 단락하는 전용 상수 guard를 둔다.
+ * KV/env 신규 플래그는 추가하지 않는다 (파생 복잡도 방지) — 배포 시점 코드 상수로만 제어.
+ *
+ * 로테이션 로직 자체는 삭제하지 않는다 — #P1-A에서 구조 수리 후 이 상수를 false로 되돌려 재활성.
+ */
+const TOKEN_ROTATION_DISABLED = true;
 
 export async function rotateTripTokenForNewRoute(
   kv: KVNamespace,
@@ -199,6 +221,10 @@ export async function rotateTripTokenForNewRoute(
   existing: Trip | null,
   deps?: TokenRotationDeps,
 ): Promise<TokenRotationResult> {
+  // #2173 — rotation 전면 guard. flag 상태와 무관하게 항상 incoming token 유지.
+  if (deps?.rotationDisabled ?? TOKEN_ROTATION_DISABLED) {
+    return { token: incoming.token, rotated: false };
+  }
   // #2002 — real helper wire. deps.simpleArchEnabled DI 명시가 우선; 미지정 시 KV 조회.
   // `getArchFlag` 는 KV 미바인딩/미설정/오타 모두 default `'off'` 로 fallback (dormant).
   // 명시적 괄호: `??` 가 `===` 보다 tighter 로 파싱되므로 DI boolean 값 우선 사용을 보장한다.
