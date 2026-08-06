@@ -166,3 +166,21 @@ export const REGISTER_RETRY_BACKOFF_MS: readonly number[] = [15_000, 30_000, 60_
  * 내지 않으므로 backend 부담이 없고, 다음 전환에서 다시 시도할 기회를 줘야 하기 때문이다.
  */
 export const CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION = 3;
+
+/**
+ * #2167 (P2-1, PR #2169 리뷰) — register-retry(#1960)가 발화했으나 같은 세션의
+ * context-heal(Tier 1/2) POST가 in-flight라 이번 backoff를 건너뛰고 재예약하는 경우 전용
+ * recheck 지연(ms) + 재예약 횟수 상한.
+ *
+ * 배경: 이 재예약은 실제 register 실패가 아니라 "잠깐 heal이 끝날 때까지 대기"일 뿐이므로
+ * `REGISTER_RETRY_BACKOFF_MS`의 attempt 예산을 소모하면 실제 POST 시도가 0회인 채로 3회
+ * 상한을 태워버릴 수 있다(P2-1). attempt와 분리된 짧은 recheck 간격을 쓰고, 그 recheck 자체도
+ * heal이 비정상적으로 오래 걸리는 상황(POST 응답 지연/네트워크 hang)에 대비해 별도 상한을 둔다
+ * — 상한 도달 시엔 일반 backoff(`scheduleRegisterRetry`, attempt 소모)로 전환해 무한 대기를
+ * 방지한다.
+ *
+ * 2s로 둔 이유: 일반적인 register POST 왕복(수백 ms~1~2s)을 커버하면서도 배터리 소모가
+ * 미미한 짧은 간격.
+ */
+export const REGISTER_RETRY_HEAL_BUSY_RECHECK_MS = 2_000;
+export const REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES = 5;
