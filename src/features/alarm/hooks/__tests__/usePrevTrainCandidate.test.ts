@@ -337,6 +337,42 @@ describe('usePrevTrainCandidate', () => {
     expect(result.current.prevTrain).toBeNull();
   });
 
+  it('#2179 — 환승역(origin과 다른 line) currentStation을 넘겨도 동일하게 전열차를 산출한다 (재사용 검증, 복제 구현 없음)', () => {
+    const transferStation: Station = {
+      id: 'stn-transfer',
+      name: '건대입구',
+      line: '7',
+      lat: 37.54,
+      lng: 127.07,
+    } as Station;
+    const transferNextStation: Station = {
+      id: 'stn-transfer-next',
+      name: '뚝섬유원지',
+      line: '7',
+      lat: 37.531,
+      lng: 127.066,
+    } as Station;
+    mockFindStationByNameAndLine.mockReturnValue(transferNextStation);
+    const nextArrival: StationArrival = {
+      up: [],
+      down: [makeTrain({ trainCode: 'T-TRANSFER-DEPARTED', arrivalSeconds: 30, line: '7' })],
+    };
+    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+
+    const { result } = renderHook(() =>
+      usePrevTrainCandidate({
+        route,
+        destinationName: '잠실',
+        currentStation: transferStation,
+        nextStationName: transferNextStation.name,
+        line: '7',
+        currentArrivals: [],
+      }),
+    );
+
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-TRANSFER-DEPARTED');
+  });
+
   it('route/destinationName이 없으면 direction 계산 없이(null) 진행 — resolveTripDirection 미호출', () => {
     const nextArrival: StationArrival = { up: [], down: [makeTrain({ trainCode: 'T-X', arrivalSeconds: 10 })] };
     mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
