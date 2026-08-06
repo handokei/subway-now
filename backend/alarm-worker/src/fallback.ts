@@ -31,6 +31,7 @@
 import { sendAlertPush, type ApnsConfig, type SendPushResult } from './apns';
 import { buildAlertContent } from './alertContent';
 import { listPending, removePending, type PendingPush } from './pendingPushes';
+import { logPushFailure } from './pushFailureLog';
 import type { ApnsEnv, Env } from './types';
 
 /**
@@ -93,6 +94,16 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
       // 영구 실패만 즉시 삭제 — transient 실패는 entry 유지하고 KV TTL(60s)이 자연 정리.
       // 다음 cron에서 1회 더 시도 기회를 보존 (사용자 알람 손실 최소화).
       if (isUnrecoverableAlertError(result.status, result.reason)) {
+        // #2177 — 영구 실패 판정 시점(=최종 실패)만 기록. transient는 entry가 KV에 남아 다음
+        // cron에서 재시도되므로 여기서 기록하면 매 cron tick 중복 기록되어 quota를 소진한다.
+        await logPushFailure(env.DB, {
+          token: entry.token,
+          tripToken: entry.token,
+          pushKind: 'fallback',
+          apnsStatus: result.status,
+          apnsReason: result.reason,
+          apnsEnv: entry.apnsEnv,
+        });
         await removePending(env.PENDING_PUSHES, entry.pushId);
       }
     }

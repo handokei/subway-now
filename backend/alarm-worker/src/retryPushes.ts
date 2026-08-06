@@ -29,6 +29,7 @@ import {
 import { sendSilentPush, type ApnsConfig, type SilentPushPayload } from './apns';
 import type { ArchFlagValue } from './archFlag';
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
+import { logPushFailure } from './pushFailureLog';
 import type { ApnsEnv, Env } from './types';
 
 const RETRY_PREFIX = 'retry-push:';
@@ -105,6 +106,11 @@ export function shouldRetryForKind(
  * #1995 (ADR-022 Phase 1-2) — `archFlag` 파라미터 (optional). flag=on 시 payload.kind !==
  * 'destination' 이면 no-op. 미전달 (legacy caller / retry loop 자기 재 enqueue) 시 undefined
  * 로 처리 → 기존 동작 100% 유지.
+ *
+ * #2177 — 본 함수는 거의 모든 push fire 경로(silent/alert 실패 직후) + retry loop 자기 재 enqueue
+ * (runRetryPushes)가 공유하는 "sendWithEnvHeal 결과 소비" 공통 지점이다. false를 반환하는 모든
+ * 분기(= 더는 재시도하지 않음 = 최종 실패)에서 D1 push_failures 1건을 기록한다. true 반환(재시도
+ * 예정)은 기록하지 않아 429/5xx backoff 중간 실패의 quota 소진을 막는다.
  */
 export async function enqueueRetryIfTransient(
   kv: KVNamespace | undefined,
@@ -118,15 +124,41 @@ export async function enqueueRetryIfTransient(
     now: number;
     attemptCount?: number;
     originalSentAt?: number;
+    /** #2177 — 양쪽 host 모두 BadDeviceToken이었는지 (D1 기록용, retry 판정에는 미사용). */
+    envMismatchExhausted?: boolean;
   },
   archFlag?: ArchFlagValue,
+  db?: D1Database,
 ): Promise<boolean> {
-  if (!kv) return false;
-  if (!isRetryableApnsError(input.status)) return false;
-  if (!shouldRetryForKind(archFlag, input.payload.kind)) return false;
+  const recordFinalFailure = () =>
+    logPushFailure(db, {
+      token: input.token,
+      tripToken: input.token,
+      pushKind: input.payload.kind,
+      apnsStatus: input.status,
+      apnsReason: input.reason,
+      apnsEnv: input.apnsEnv,
+      envMismatchExhausted: input.envMismatchExhausted,
+    });
+
+  if (!kv) {
+    await recordFinalFailure();
+    return false;
+  }
+  if (!isRetryableApnsError(input.status)) {
+    await recordFinalFailure();
+    return false;
+  }
+  if (!shouldRetryForKind(archFlag, input.payload.kind)) {
+    await recordFinalFailure();
+    return false;
+  }
   const attemptCount = input.attemptCount ?? 0;
   const nextAttemptAt = computeNextRetryAt(attemptCount, input.now);
-  if (nextAttemptAt === null) return false; // 영구 폐기 — caller 가 별도 cleanup
+  if (nextAttemptAt === null) {
+    await recordFinalFailure();
+    return false; // 영구 폐기 — caller 가 별도 cleanup
+  }
   const entry: RetryPush = {
     pushId: input.pushId,
     token: input.token,
@@ -265,8 +297,10 @@ export async function runRetryPushes(env: Env, deps: RetryPushDeps): Promise<Ret
         now,
         attemptCount: nextAttempt,
         originalSentAt: entry.originalSentAt,
+        envMismatchExhausted: heal.envMismatchExhausted,
       },
       deps.archFlag,
+      env.DB,
     );
     if (rescheduled) {
       stats.rescheduled += 1;

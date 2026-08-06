@@ -22,6 +22,7 @@ import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { recordTripMetrics } from './d1TripMetrics';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
+import { logPushFailure } from './pushFailureLog';
 import { computeMultiHopContext } from './tripMultiHop';
 import { deleteSsot } from './tripPositionSsot';
 import { deleteTrip } from './trips';
@@ -397,6 +398,17 @@ async function fireTripEndedAlertPush(
         reason,
         status: heal.result.status,
         pushReason: heal.result.reason,
+      });
+      // #2177 — trip-ended push는 retry queue를 타지 않는 fire-and-forget 경로(다음 cron
+      // cycle에 자연 재시도) — 직접 기록.
+      await logPushFailure(env.DB, {
+        token: trip.token,
+        tripToken: trip.token,
+        pushKind: 'trip-ended',
+        apnsStatus: heal.result.status,
+        apnsReason: heal.result.reason,
+        apnsEnv: trip.apnsEnv,
+        envMismatchExhausted: heal.envMismatchExhausted,
       });
       // 실패 시에는 dedup stamp를 남기지 않아 다음 cron cycle에서 재시도 허용.
       return;

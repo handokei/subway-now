@@ -40,6 +40,7 @@
 import { computeAlarmLogStats } from './alarmLogStats';
 import { buildLocklessTripMissBucket } from './locklessMissMetric';
 import { computePushAckStats } from './pushAckStats';
+import { computePushFailureMetrics, type PushFailureMetrics } from './pushFailureLog';
 import { computeSilentPushReachRatio } from './silentPushReachMetric';
 import { sumLaPushCounters } from './laPushCounters';
 import {
@@ -128,6 +129,11 @@ export interface ObservabilityMetricsResponse {
   locklessTripMissRatio: { miss: number; fired: number; paradigmIntent: number; ratio: number };
   /** #2151 — boardingPrompt skip/fire counter 스냅샷. 위 doc-comment 참고 (24h 누적 아님). */
   boardingPromptCounters: BoardingPromptCounters;
+  /**
+   * #2177 — push 발사 최종 실패(D1 push_failures) 24h 집계. total24h + 사유(status:reason)별
+   * 상위 5 bucket. `env.DB` 미바인딩 시 zero 기본값.
+   */
+  pushFailures: PushFailureMetrics;
   window: '24h';
   timestamp: number;
 }
@@ -152,6 +158,7 @@ export function hourBucketKey(now: number): string {
  *   누적 KV 키(`readBoardingPromptCounters`)의 최신 값 (optional). 호출자(scheduled handler)가
  *   읽어서 넘긴다 — 미제공 시(예: `/v1/observability/metrics` endpoint의 cold-compute fallback)
  *   zero 기본값.
+ * @param db #2177 — D1 binding. push_failures 24h 집계용 (optional, 미설정 시 zero 기본값).
  */
 export async function computeObservabilityMetrics(
   r2: R2Bucket,
@@ -159,6 +166,7 @@ export async function computeObservabilityMetrics(
   now: number,
   tripsKv?: KVNamespace,
   boardingPromptCounters?: BoardingPromptCounters,
+  db?: D1Database,
 ): Promise<ObservabilityMetricsResponse> {
   // 1. R2 alarmLog 24h scan — accuracyRatio + locklessMissRatio 원천
   const alarmStats = await computeAlarmLogStats(r2, now, 24, 500);
@@ -241,6 +249,9 @@ export async function computeObservabilityMetrics(
   //    buildLocklessTripMissBucket이 division-by-zero 방어 — 분모 0이면 ratio=0.
   const locklessTripMissRatio = buildLocklessTripMissBucket(alarmStats.locklessTripCounts);
 
+  // 8. #2177 — pushFailures. D1 push_failures 24h 집계 (total + 사유 top 5).
+  const pushFailures = await computePushFailureMetrics(db, now);
+
   return {
     accuracyRatio,
     silentPushDeliveryRatio,
@@ -253,6 +264,7 @@ export async function computeObservabilityMetrics(
     algorithmAccuracyRatio,
     locklessTripMissRatio,
     boardingPromptCounters: boardingPromptCounters ?? EMPTY_BOARDING_PROMPT_COUNTERS,
+    pushFailures,
     window: '24h',
     timestamp: now,
   };

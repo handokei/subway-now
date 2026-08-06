@@ -69,6 +69,7 @@ import {
 import { findStationCoordsByNameAndLine } from './stationsLookup';
 import { assertCronCacheTtl } from './kvConsistency';
 import { buildAlarmKey, putPending } from './pendingPushes';
+import { logPushFailure } from './pushFailureLog';
 import { enqueueRetryIfTransient } from './retryPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
@@ -2202,8 +2203,10 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
         status: alertHeal.result.status,
         reason: alertHeal.result.reason,
         now,
+        envMismatchExhausted: alertHeal.envMismatchExhausted,
       },
       deps.archFlag,
+      env.DB,
     );
   }
   if (!companionHeal.result.ok) {
@@ -2224,8 +2227,10 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
         status: companionHeal.result.status,
         reason: companionHeal.result.reason,
         now,
+        envMismatchExhausted: companionHeal.envMismatchExhausted,
       },
       deps.archFlag,
+      env.DB,
     );
   }
 }
@@ -2446,8 +2451,10 @@ export async function fireArvlCdStationPush(
         status: heal.result.status,
         reason: heal.result.reason,
         now,
+        envMismatchExhausted: heal.envMismatchExhausted,
       },
       deps.archFlag,
+      env.DB,
     );
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
@@ -2833,8 +2840,10 @@ export async function fireVanishFallbackStationPush(
         status: heal.result.status,
         reason: heal.result.reason,
         now,
+        envMismatchExhausted: heal.envMismatchExhausted,
       },
       deps.archFlag,
+      env.DB,
     );
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
@@ -2995,6 +3004,16 @@ async function fireTrainReconfirmPush(
         token: trip.token.slice(0, 8),
         status: heal.result.status,
         pushReason: heal.result.reason,
+      });
+      // #2177 — retry queue를 타지 않는 fire-and-forget 경로(다음 cycle 자연 재시도) — 직접 기록.
+      await logPushFailure(env.DB, {
+        token: trip.token,
+        tripToken: trip.token,
+        pushKind: payload.kind,
+        apnsStatus: heal.result.status,
+        apnsReason: heal.result.reason,
+        apnsEnv: trip.apnsEnv,
+        envMismatchExhausted: heal.envMismatchExhausted,
       });
       return;
     }
@@ -3700,8 +3719,10 @@ export async function advanceBoardingLockWaypoint(
           status: transferHeal.result.status,
           reason: transferHeal.result.reason,
           now,
+          envMismatchExhausted: transferHeal.envMismatchExhausted,
         },
         deps.archFlag,
+        env.DB,
       );
     }
   }
@@ -3718,6 +3739,7 @@ export async function advanceBoardingLockWaypoint(
       now,
       log,
       generatePushId: () => crypto.randomUUID(),
+      env,
     });
   }
   // #2066 (Phase 2-backend) — 이전엔 #2036이 여기서(환승 waypoint 소진 시점) 직접
@@ -3943,6 +3965,16 @@ export async function maybeReschedulePush(
       status: result.status,
       reason: result.reason,
       token: trip.token.slice(0, 8),
+    });
+    // #2177 — reschedule push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+    await logPushFailure(env.DB, {
+      token: trip.token,
+      tripToken: trip.token,
+      pushKind: 'reschedule',
+      apnsStatus: result.status,
+      apnsReason: result.reason,
+      apnsEnv: trip.apnsEnv,
+      envMismatchExhausted,
     });
     if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
       // #586 D — trip이 unrecoverable로 폐기되는 경로에서도 LA가 살아있으면 dismissal로 정리.
@@ -4171,6 +4203,17 @@ export async function runLocklessIntermediate(
         isUnrecoverableApnsError(heal.result.status, heal.result.reason) ||
         heal.envMismatchExhausted
       ) {
+        // #2177 — unrecoverable(410/mismatch exhausted)로 cleanup 분기하는 경로는 retry queue를
+        // 타지 않아 enqueueRetryIfTransient의 공통 D1 기록 지점을 지나지 않는다 — 직접 기록.
+        await logPushFailure(env.DB, {
+          token: trip.token,
+          tripToken: trip.token,
+          pushKind: locklessPayload.kind,
+          apnsStatus: heal.result.status,
+          apnsReason: heal.result.reason,
+          apnsEnv: trip.apnsEnv,
+          envMismatchExhausted: heal.envMismatchExhausted,
+        });
         // #868 — lockless push unrecoverable로 trip 폐기 시에도 클라 state sync push 발사.
         await cleanupTripWithLa(trip, env, deps, stats, now, log, 'push-unrecoverable');
         return;
@@ -4189,8 +4232,10 @@ export async function runLocklessIntermediate(
           status: heal.result.status,
           reason: heal.result.reason,
           now,
+          envMismatchExhausted: heal.envMismatchExhausted,
         },
         deps.archFlag,
+        env.DB,
       );
       if (dirty) await putTrip(env.TRIPS, trip);
       return;
@@ -4840,6 +4885,17 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       status: heal.result.status,
       reason: heal.result.reason,
     });
+    // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+    // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
+    await logPushFailure(env.DB, {
+      token: trip.token,
+      tripToken: trip.token,
+      pushKind: 'boarding-prompt',
+      apnsStatus: heal.result.status,
+      apnsReason: heal.result.reason,
+      apnsEnv: trip.apnsEnv,
+      envMismatchExhausted: heal.envMismatchExhausted,
+    });
   }
 
   // #2069 (Phase 3) — boarding-prompt silent push fallback(B8, #2037) 제거. visible alert push
@@ -4877,8 +4933,10 @@ export async function maybeFireHopEndPrompt(inputs: {
   now: number;
   log: Logger;
   generatePushId: () => string;
+  /** #2177 — push 최종 실패 D1 기록용. */
+  env: Env;
 }): Promise<void> {
-  const { trip, transferWaypoint, deps, stats, now, log, generatePushId } = inputs;
+  const { trip, transferWaypoint, deps, stats, now, log, generatePushId, env } = inputs;
   const nextWaypoint = trip.waypoints[0];
   const nextLine = nextWaypoint?.line ?? null;
   const nextStation = nextWaypoint?.stationName ?? null;
@@ -4954,6 +5012,16 @@ export async function maybeFireHopEndPrompt(inputs: {
       legKey,
       status: heal.result.status,
       reason: heal.result.reason,
+    });
+    // #2177 — hop-end-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+    await logPushFailure(env.DB, {
+      token: trip.token,
+      tripToken: trip.token,
+      pushKind: 'hop-end-prompt',
+      apnsStatus: heal.result.status,
+      apnsReason: heal.result.reason,
+      apnsEnv: trip.apnsEnv,
+      envMismatchExhausted: heal.envMismatchExhausted,
     });
   }
 }

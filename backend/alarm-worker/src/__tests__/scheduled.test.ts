@@ -2360,6 +2360,43 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(data.boardingLine).toBe('7');
   });
 
+  // #1721/#2177 — transfer-release push가 transient(503) 실패 시 retry-push: 큐에 적재된다.
+  // envMismatchExhausted 필드도 함께 stamp되는지 회귀 차단(#2177 신규 필드).
+  it('#2177 — transfer-release push 503 → retry-push: 큐 적재', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 503 }));
+    await runScheduled(makeEnv(kv, kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-transfer-503',
+    });
+    // arvlcd push는 injected generatePushId를 쓰지만, transfer-release push는 내부에서
+    // crypto.randomUUID()로 자체 pushId를 발급한다 — retry-push: prefix 전체를 스캔해
+    // payload.origin='transfer-release' 항목을 찾는다.
+    const allKeys = await kv.list({ prefix: 'retry-push:' });
+    let transferEntry: { lastErrorStatus: number; payload: { origin: string } } | undefined;
+    for (const { name } of allKeys.keys) {
+      const raw = await kv.get(name);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw as string);
+      if (parsed.payload?.origin === 'transfer-release') transferEntry = parsed;
+    }
+    expect(transferEntry).toBeDefined();
+    expect(transferEntry!.lastErrorStatus).toBe(503);
+  });
+
   // #2066 (Phase 2-backend) — 취침 알람 원격 visible 전환. "환승/도착역 직전 역" arvlCd 진입
   // 시점에 visible alert(주 채널) + companion silent push(kind sleep-alarm-companion)를 동시 발사.
   // ADR-023 정합: backend는 sleepModeEnabled === true trip에서만 발사한다(#2066부터 gate 도입 —
@@ -8920,6 +8957,84 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const stored = JSON.parse((await kv.get('trip:lockless-pass')) as string) as Trip;
     expect(stored.passedStations).toEqual(['강남']);
   });
+
+  // #2177 — lockless intermediate push가 unrecoverable(410 Unregistered)로 실패하면 retry queue를
+  // 타지 않고 cleanupTripWithLa('push-unrecoverable')로 즉시 trip 폐기된다.
+  it('#2177 — unrecoverable(410) push 실패 → retry-push 큐 적재 X + trip 폐기', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'lockless-410',
+      route: { type: 'direct', line: '2', stops: 2 },
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'intermediate' },
+      ],
+      infoModeEnabled: true,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
+    );
+    const arrived: ArrivalEntry = {
+      destination: '강남행',
+      arrivalSeconds: 30,
+      trainCode: '7246',
+      isUp: true,
+      subwayNm: '지하철2호선',
+      arvlCd: 1,
+    };
+    const stats = await runScheduled(makeEnv(kv, kv), {
+      seoul: makeSeoul([arrived]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-lockless-410',
+    });
+    expect(stats.errors).toBeGreaterThan(0);
+    expect(await kv.get('retry-push:p-lockless-410')).toBeNull();
+    expect(await kv.get('trip:lockless-410')).toBeNull();
+  });
+
+  // #2177 — lockless intermediate push가 transient(503)로 실패하면 retry-push 큐에 적재된다.
+  it('#2177 — transient(503) push 실패 → retry-push 큐 적재', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'lockless-503',
+      route: { type: 'direct', line: '2', stops: 2 },
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'intermediate' },
+      ],
+      infoModeEnabled: true,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 503 }));
+    const arrived: ArrivalEntry = {
+      destination: '강남행',
+      arrivalSeconds: 30,
+      trainCode: '7246',
+      isUp: true,
+      subwayNm: '지하철2호선',
+      arvlCd: 1,
+    };
+    await runScheduled(makeEnv(kv, kv), {
+      seoul: makeSeoul([arrived]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-lockless-503',
+    });
+    const stored = await kv.get('retry-push:p-lockless-503');
+    expect(stored).not.toBeNull();
+    const entry = JSON.parse(stored as string);
+    expect(entry.lastErrorStatus).toBe(503);
+    // trip은 폐기되지 않고 그대로 유지 (transient 실패는 다음 cycle 재시도).
+    expect(await kv.get('trip:lockless-503')).not.toBeNull();
+  });
 });
 
 describe('runScheduled cron jitter stat (#1539 S6 / #2054)', () => {
@@ -10606,6 +10721,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-hop',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(1);
     expect(stats.hopEndPromptBlocked).toBe(0);
@@ -10633,6 +10749,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-block',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(0);
     expect(stats.hopEndPromptBlocked).toBe(1);
@@ -10651,6 +10768,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-err',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.errors).toBe(1);
     expect(stats.hopEndPromptFired).toBe(0);
@@ -10670,6 +10788,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-empty',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(1);
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -10698,6 +10817,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-diff-leg',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(1);
     // 기존 legKey 는 유지, 새 legKey (`성수|5`) 는 신규 fired.
