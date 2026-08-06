@@ -9,11 +9,13 @@ import {
   getTrip,
   listTrips,
   putTrip,
+  resolveTripDeviceToken,
   rotateTripTokenForNewRoute,
   tripKey,
   withTripRegisterLock,
 } from '../trips';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
+import { readTripEndedStatus } from '../tripStatus';
 import type { Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -38,6 +40,32 @@ describe('trips KV CRUD', () => {
 
   it('tripKey builds prefix', () => {
     expect(tripKey('abc')).toBe('trip:abc');
+  });
+
+  // #2174 (P1-A) — push 발사용 실 deviceToken 단일 해석 지점.
+  describe('resolveTripDeviceToken (#2174)', () => {
+    it('deviceToken이 유효한 64-hex면 그대로 반환', () => {
+      const hex64 = 'a'.repeat(64);
+      const trip = makeTrip({ token: 'uuid-after-rotation', deviceToken: hex64 });
+      expect(resolveTripDeviceToken(trip)).toBe(hex64);
+    });
+
+    it('deviceToken 부재(legacy KV 레코드) + token이 64-hex면 token으로 fallback', () => {
+      const hex64 = 'b'.repeat(64);
+      const trip = makeTrip({ token: hex64, deviceToken: undefined });
+      expect(resolveTripDeviceToken(trip)).toBe(hex64);
+    });
+
+    it('deviceToken 부재 + token도 64-hex 아님(로테이션된 UUID legacy 레코드)이면 token을 그대로 반환 (기존 무효 상태 유지, 새 회귀 없음)', () => {
+      const trip = makeTrip({ token: 'not-a-hex-token-uuid', deviceToken: undefined });
+      expect(resolveTripDeviceToken(trip)).toBe('not-a-hex-token-uuid');
+    });
+
+    it('deviceToken이 64-hex 아닌 값이면(손상 데이터) token으로 fallback', () => {
+      const hex64 = 'c'.repeat(64);
+      const trip = makeTrip({ token: hex64, deviceToken: 'malformed' });
+      expect(resolveTripDeviceToken(trip)).toBe(hex64);
+    });
   });
 
   it('put + get round-trip', async () => {
@@ -407,7 +435,23 @@ describe('trips KV CRUD', () => {
       });
     });
 
-    describe('rotateTripTokenForNewRoute (flag ON, #2173 TOKEN_ROTATION_DISABLED guard가 단락)', () => {
+    describe('rotateTripTokenForNewRoute (flag ON, #2174 P1-A — TOKEN_ROTATION_DISABLED guard 해제로 rotation 재활성)', () => {
+      it('deps.rotationDisabled: true 명시 override — emergency 재차단 경로 보존 (coverage)', async () => {
+        // #2174가 production 상수(TOKEN_ROTATION_DISABLED)를 false로 되돌렸지만, #2173이
+        // 도입한 emergency override 자체는 삭제하지 않는다 — 재발 시 즉시 재차단 가능해야 한다.
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true, rotationDisabled: true, generateToken: () => 'new-uuid' },
+        );
+        expect(result).toEqual({ token: 'tok-old', rotated: false });
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).not.toBeNull();
+      });
+
       it('existing 없음 (신규 trip): incoming 그대로 (rotated=false)', async () => {
         const incoming = makeTrip({ token: 'tok-new' });
         const result = await rotateTripTokenForNewRoute(
@@ -442,13 +486,13 @@ describe('trips KV CRUD', () => {
         expect(await getTrip(kv as unknown as KVNamespace, 'tok-same')).not.toBeNull();
       });
 
-      it('#2173 guard — 다른 destination: rotation 단락으로 incoming token 유지, old KV 보존', async () => {
-        // Guard 적용 전(회귀) 재현: 이 경로가 crypto.randomUUID() 로 trip.token을 교체해
-        // 이후 push가 UUID를 APNs deviceToken으로 사용 → 400 BadDeviceToken 즉사 (Epic #2172).
-        // TOKEN_ROTATION_DISABLED guard가 flag ON이어도 rotation을 단락시켜 incoming token을 유지한다.
-        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+      it('#2174 — 다른 destination: rotation 발동 (새 token 발급 + old trip:<token> delete)', async () => {
+        // #2173 P0 hotfix가 이 경로를 guard로 단락시켰던 이유(push가 UUID를 APNs deviceToken으로
+        // 사용해 400 BadDeviceToken 즉사, Epic #2172)는 #2174가 `Trip.deviceToken` 필드 분리 +
+        // 모든 push 발사 사이트의 `resolveTripDeviceToken(trip)` 전환으로 해소했다 — guard 해제.
+        const existing = makeTrip({ token: 'tok-old', deviceToken: 'a'.repeat(64), destination: 'D-1' });
         await putTrip(kv as unknown as KVNamespace, existing);
-        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const incoming = makeTrip({ token: 'tok-old', deviceToken: 'a'.repeat(64), destination: 'D-2' });
         const result = await rotateTripTokenForNewRoute(
           kv as unknown as KVNamespace,
           incoming,
@@ -458,12 +502,11 @@ describe('trips KV CRUD', () => {
             generateToken: () => 'new-uuid',
           },
         );
-        expect(result).toEqual({ token: 'tok-old', rotated: false });
-        // guard로 rotation 자체가 단락되므로 old KV entry cleanup도 발생하지 않는다.
-        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).not.toBeNull();
+        expect(result).toEqual({ token: 'new-uuid', rotated: true });
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
       });
 
-      it('#2173 guard — 다른 waypoints (같은 destination): rotation 단락 (rotated=false)', async () => {
+      it('#2174 — 다른 waypoints (같은 destination): rotation 발동 (rotated=true)', async () => {
         const existing = makeTrip({
           token: 'tok-old',
           destination: 'D-1',
@@ -487,11 +530,11 @@ describe('trips KV CRUD', () => {
             generateToken: () => 'new-token-xyz',
           },
         );
-        expect(result.rotated).toBe(false);
-        expect(result.token).toBe('tok-old');
+        expect(result.rotated).toBe(true);
+        expect(result.token).toBe('new-token-xyz');
       });
 
-      it('#2173 guard — 다른 route: pending push cleanup도 미발생 (rotation 단락)', async () => {
+      it('#2174 — 다른 route: old token 소유 pending push cleanup (다른 token 소유는 보존)', async () => {
         const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
         await putTrip(kv as unknown as KVNamespace, existing);
         await putPending(
@@ -518,13 +561,12 @@ describe('trips KV CRUD', () => {
           },
         );
 
-        // rotation이 단락되므로 old token 소유 pending push도 건드리지 않는다.
-        expect(await kv.get(pendingKey('p-old-1'))).not.toBeNull();
-        expect(await kv.get(pendingKey('p-old-2'))).not.toBeNull();
+        expect(await kv.get(pendingKey('p-old-1'))).toBeNull();
+        expect(await kv.get(pendingKey('p-old-2'))).toBeNull();
         expect(await kv.get(pendingKey('p-other'))).not.toBeNull();
       });
 
-      it('#2173 guard — generateToken 미지정이어도 crypto.randomUUID 호출되지 않음', async () => {
+      it('#2174 — generateToken 미지정: crypto.randomUUID로 새 token 생성 (default)', async () => {
         const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
         await putTrip(kv as unknown as KVNamespace, existing);
         const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
@@ -535,13 +577,12 @@ describe('trips KV CRUD', () => {
           existing,
           { simpleArchEnabled: true },
         );
-        expect(spy).not.toHaveBeenCalled();
-        expect(result).toEqual({ token: 'tok-old', rotated: false });
+        expect(spy).toHaveBeenCalledOnce();
+        expect(result.rotated).toBe(true);
         spy.mockRestore();
       });
 
-      it('#2002/#2173 — deps 미지정 + KV `arch:simple-arrival-v1`=on 이어도 guard가 우선 → rotation 없음', async () => {
-        // #2002 — real helper `getArchFlag(kv)` wire. #2173 — guard가 flag 판정보다 먼저 단락.
+      it('#2002 — deps.simpleArchEnabled 미지정 + KV `arch:simple-arrival-v1`=on: getArchFlag fallback으로 rotation 발동', async () => {
         await kv.put(ARCH_FLAG_KV_KEY, 'on');
         const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
         await putTrip(kv as unknown as KVNamespace, existing);
@@ -552,15 +593,123 @@ describe('trips KV CRUD', () => {
           existing,
           { generateToken: () => 'new-token-from-kv-flag' },
         );
-        expect(result).toEqual({ token: 'tok-old', rotated: false });
-        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).not.toBeNull();
+        expect(result).toEqual({ token: 'new-token-from-kv-flag', rotated: true });
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
+      });
+
+      // #2174 F1 — 로테이션은 등록 시점 한정이 아니라 mid-trip route 변경(환승 waypoint trim
+      // 재-POST, 목적지 변경 등) 재-POST에서도 발동한다. 이 red 시나리오는 "실토큰 trip 활성 중
+      // route 변경 재-POST → 로테이션 → deviceToken이 여전히 실토큰"을 보장한다.
+      it('#2174 F1 — mid-trip route 변경 재-POST 로테이션 시에도 새 trip의 deviceToken은 실토큰 그대로', async () => {
+        const realDeviceToken = 'b'.repeat(64);
+        const existing = makeTrip({
+          token: realDeviceToken,
+          deviceToken: realDeviceToken,
+          destination: 'D-1',
+          waypoints: [{ stationName: 'A', line: '2', kind: 'destination' }],
+        });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        // 환승 후 waypoint trim + 새 목적지로 재-POST — deviceToken은 client가 매번 실 토큰을 보낸다.
+        const incoming = makeTrip({
+          token: realDeviceToken,
+          deviceToken: realDeviceToken,
+          destination: 'D-2',
+          waypoints: [{ stationName: 'C', line: '7', kind: 'destination' }],
+        });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true, generateToken: () => 'rotated-uuid' },
+        );
+        expect(result).toEqual({ token: 'rotated-uuid', rotated: true });
+        // 로테이션은 trip.token(신원)만 교체 — incoming.deviceToken은 rotation 결과와 무관하게
+        // 실토큰 그대로 보존된다(index.ts가 baseTrip = {...incoming, ...}으로 그대로 carry).
+        expect(incoming.deviceToken).toBe(realDeviceToken);
+      });
+
+      // #2174 F2 — old trip 삭제가 관측 blind hole이었다. 로테이션 시 old trip에 D1 기록 +
+      // tripStatus sentinel(reason='rotated')을 남겨야 한다.
+      describe('#2174 F2 — old trip 로테이션 관측 기록 (D1 + tripStatus sentinel)', () => {
+        it('rotation 시 old trip token으로 tripStatus sentinel이 reason=rotated로 기록된다', async () => {
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+          const now = 1_700_000_000_000;
+          await rotateTripTokenForNewRoute(
+            kv as unknown as KVNamespace,
+            incoming,
+            existing,
+            { simpleArchEnabled: true, generateToken: () => 'new-uuid', now },
+          );
+          const sentinel = await readTripEndedStatus(kv as unknown as KVNamespace, 'tok-old');
+          expect(sentinel).toEqual({ endedAt: now, endReason: 'rotated' });
+        });
+
+        it('rotation 시 D1 binding 이 있으면 recordTripMetrics 가 old trip 기준으로 호출된다', async () => {
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+          const run = vi.fn().mockResolvedValue(undefined);
+          const bind = vi.fn().mockReturnValue({ run });
+          const prepare = vi.fn().mockReturnValue({ bind });
+          const db = { prepare } as unknown as D1Database;
+          await rotateTripTokenForNewRoute(
+            kv as unknown as KVNamespace,
+            incoming,
+            existing,
+            { simpleArchEnabled: true, generateToken: () => 'new-uuid', db, now: 1_700_000_000_000 },
+          );
+          expect(prepare).toHaveBeenCalled();
+          // end_reason 인자(4번째 bind 인자, 0-based idx 3)가 'rotated' — SQL 컬럼 순서(d1TripMetrics.ts) 참고.
+          expect(bind).toHaveBeenCalledOnce();
+          expect(bind.mock.calls[0][3]).toBe('rotated');
+        });
+
+        it('db 미지정 시 recordTripMetrics no-op이어도 rotation 자체는 정상 완료', async () => {
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+          const result = await rotateTripTokenForNewRoute(
+            kv as unknown as KVNamespace,
+            incoming,
+            existing,
+            { simpleArchEnabled: true, generateToken: () => 'new-uuid' },
+          );
+          expect(result).toEqual({ token: 'new-uuid', rotated: true });
+        });
+
+        it('tripStatus sentinel 기록(KV put) 실패해도 rotation 자체는 정상 완료 (best-effort)', async () => {
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+          const failingKv = {
+            ...kv,
+            put: vi.fn(async (key: string, value: string, options?: unknown) => {
+              if (key.startsWith('tripStatus:')) throw new Error('KV put failed');
+              return kv.put(key, value, options as { expirationTtl?: number } | undefined);
+            }),
+            get: kv.get.bind(kv),
+            delete: kv.delete.bind(kv),
+            list: kv.list.bind(kv),
+          };
+          const result = await rotateTripTokenForNewRoute(
+            failingKv as unknown as KVNamespace,
+            incoming,
+            existing,
+            { simpleArchEnabled: true, generateToken: () => 'new-uuid' },
+          );
+          expect(result).toEqual({ token: 'new-uuid', rotated: true });
+          // rotation은 sentinel 기록 실패와 무관하게 old trip을 정상 삭제한다.
+          expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
+        });
       });
     });
 
-    describe('#2173 — 보존된 rotation 로직 (deps.rotationDisabled:false, #P1-A 재활성 대비 coverage)', () => {
-      // #2173 스펙: "로테이션 로직 자체는 삭제하지 않음(#P1-A에서 구조 수리 후 재활성)".
-      // production 호출부(`POST /trips`)는 이 deps를 절대 지정하지 않는다 — TOKEN_ROTATION_DISABLED
-      // 상수가 항상 우선한다. 아래는 guard를 우회한 underlying 로직 자체의 동작 검증(+coverage 보존)이다.
+    describe('#2174 P1-A — deps.rotationDisabled:false 명시 override (기존 default와 동치, 명시적 coverage 보존)', () => {
+      // #2173 스펙 잔재: "로테이션 로직 자체는 삭제하지 않음(#P1-A에서 구조 수리 후 재활성)".
+      // #2174가 TOKEN_ROTATION_DISABLED 상수를 false로 되돌려 이 override는 이제 default와
+      // 동치이지만, 테스트가 deps DI 경로 자체를 명시적으로 계속 검증하도록 보존한다.
       it('flag OFF (KV 미설정 default) + rotationDisabled:false: flagEnabled=false 분기로 incoming 그대로', async () => {
         // 리뷰 P2 — flagEnabled false 분기(line 235-236)는 guard(TOKEN_ROTATION_DISABLED)가 먼저
         // return하는 기존 '#2173 guard' 스위트에서는 도달 불가. rotationDisabled:false로 guard를

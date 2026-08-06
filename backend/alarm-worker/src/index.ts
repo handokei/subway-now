@@ -741,6 +741,9 @@ app.post('/trips', async (c) => {
         c.env.TRIPS,
         incoming,
         rawExisting,
+        // #2174 F2 — old trip 로테이션 관측 기록(D1 + tripStatus sentinel, reason='rotated').
+        // env.DB 미바인딩 시 recordTripMetrics 내부에서 graceful no-op.
+        { db: c.env.DB, now: Date.now() },
       );
       if (rotation.rotated) {
         console.log(
@@ -2315,6 +2318,10 @@ export function validateTrip(input: unknown): Trip | null {
 
   return {
     token: tokenRaw,
+    // #2174 — 등록 시점의 실 device token을 rotation-불변 필드로 고정. `incoming.token`은
+    // 이후 `rotateTripTokenForNewRoute`가 rotated=true 시 UUID로 덮어쓰지만, 이 필드는
+    // baseTrip이 `...incoming` spread로 그대로 carry한다 (POST /trips 핸들러 참고).
+    deviceToken: tokenRaw,
     route: obj.route as Trip['route'],
     destination: obj.destination as string,
     waypoints: stampedWaypoints,
