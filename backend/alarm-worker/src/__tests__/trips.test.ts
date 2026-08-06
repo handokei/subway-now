@@ -561,6 +561,23 @@ describe('trips KV CRUD', () => {
       // #2173 스펙: "로테이션 로직 자체는 삭제하지 않음(#P1-A에서 구조 수리 후 재활성)".
       // production 호출부(`POST /trips`)는 이 deps를 절대 지정하지 않는다 — TOKEN_ROTATION_DISABLED
       // 상수가 항상 우선한다. 아래는 guard를 우회한 underlying 로직 자체의 동작 검증(+coverage 보존)이다.
+      it('flag OFF (KV 미설정 default) + rotationDisabled:false: flagEnabled=false 분기로 incoming 그대로', async () => {
+        // 리뷰 P2 — flagEnabled false 분기(line 235-236)는 guard(TOKEN_ROTATION_DISABLED)가 먼저
+        // return하는 기존 '#2173 guard' 스위트에서는 도달 불가. rotationDisabled:false로 guard를
+        // 우회해야만 이 분기가 실행된다.
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { rotationDisabled: false },
+        );
+        expect(result).toEqual({ token: 'tok-old', rotated: false });
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).not.toBeNull();
+      });
+
       it('existing 없음 (신규 trip): incoming 그대로 (rotated=false)', async () => {
         const incoming = makeTrip({ token: 'tok-new' });
         const result = await rotateTripTokenForNewRoute(
@@ -609,6 +626,24 @@ describe('trips KV CRUD', () => {
           },
         );
         expect(result).toEqual({ token: 'new-uuid', rotated: true });
+        expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
+      });
+
+      it('deps.simpleArchEnabled 미지정 + KV `arch:simple-arrival-v1`=on: getArchFlag fallback으로 rotation 발동', async () => {
+        // 리뷰 P2 — `flagEnabled = deps?.simpleArchEnabled ?? ((await getArchFlag(kv)) === 'on')`의
+        // `??` 우변(getArchFlag 실호출)이 기존 스위트에서 전혀 실행되지 않던 gap. 여기서는
+        // simpleArchEnabled를 생략해 KV flag 실조회 경로를 태운다.
+        await kv.put(ARCH_FLAG_KV_KEY, 'on');
+        const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+        const result = await rotateTripTokenForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { generateToken: () => 'new-uuid-from-kv-flag', rotationDisabled: false },
+        );
+        expect(result).toEqual({ token: 'new-uuid-from-kv-flag', rotated: true });
         expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).toBeNull();
       });
 
