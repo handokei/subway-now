@@ -4449,7 +4449,10 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       expect(await env.TRIPS.get(`trip:${TOKEN}`)).not.toBeNull();
     });
 
-    it('existing + 다른 destination → 회전 발동: 응답 token 이 새 UUID + trip:<oldToken> 삭제', async () => {
+    it('#2173 guard — existing + 다른 destination: rotation 단락으로 응답 token 유지 + trip:<TOKEN> 보존', async () => {
+      // #2173 P0 hotfix — TOKEN_ROTATION_DISABLED guard가 flag ON이어도 rotation을 단락시킨다.
+      // guard 적용 전에는 이 경로가 crypto.randomUUID() 를 APNs deviceToken 자리에 저장해
+      // 400 BadDeviceToken 즉사를 유발했다 (Epic #2172).
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '용마산-id', '용마산');
@@ -4457,45 +4460,33 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       expect(res.status).toBe(200);
       const body = (await res.json()) as { ok: true; token: string; confirmedEnv: string };
       expect(body.ok).toBe(true);
-      // 응답 token 은 새 UUID (helper 가 crypto.randomUUID 사용).
-      expect(body.token).not.toBe(TOKEN);
-      expect(body.token).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-      );
-      // 기존 KV entry 삭제됨.
-      expect(await env.TRIPS.get(`trip:${TOKEN}`)).toBeNull();
-      // 새 UUID key 에 새 destination 저장.
-      const newStored = await env.TRIPS.get(`trip:${body.token}`);
-      expect(newStored).not.toBeNull();
-      expect(JSON.parse(newStored as string).destination).toBe('성수-id');
+      // guard 로 인해 응답 token 은 incoming token 그대로 (rotation 미발동).
+      expect(body.token).toBe(TOKEN);
+      // 기존 KV entry 도 보존 — 같은 key 에 새 destination 으로 덮어씀.
+      const stored = await env.TRIPS.get(`trip:${TOKEN}`);
+      expect(stored).not.toBeNull();
+      expect(JSON.parse(stored as string).destination).toBe('성수-id');
     });
 
-    it('evidence 재현 (2026-07-03) — 이전 trip pending push 잔재 존재 상태에서 새 route 등록 → pending cleanup', async () => {
-      // 오늘 evidence: 사용자 중곡→용마산 trip 후 새 중곡→성수 trip 시작. 이전 trip 관련 pending
-      // push (station-passed 성수) 가 남아있어 새 trip 이후에도 계속 발사.
-      // Wire 가 helper 의 `cleanupPendingPushesForToken` 호출을 발동시켜 잔재 pending 삭제.
+    it('#2173 guard — 이전 trip pending push 잔재 존재 상태에서 새 route 등록: cleanup도 미발동', async () => {
+      // guard가 rotation 자체를 단락하므로 `cleanupPendingPushesForToken` 도 호출되지 않는다.
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '용마산-id', '용마산');
-      // 이전 trip 관련 pending push 3건.
       await seedPending(env, 'p-old-1', TOKEN);
       await seedPending(env, 'p-old-2', TOKEN);
-      // 다른 device 소유 pending — 보존돼야 함.
       await seedPending(env, 'p-other-device', 'tok-different');
 
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       expect(res.status).toBe(200);
 
-      // 이전 token 소유 pending push 삭제됨 (jae재발사 차단).
-      expect(await env.TRIPS.get('pending:p-old-1')).toBeNull();
-      expect(await env.TRIPS.get('pending:p-old-2')).toBeNull();
-      // 다른 device pending 은 보존.
+      // rotation 단락 → pending 잔재도 그대로.
+      expect(await env.TRIPS.get('pending:p-old-1')).not.toBeNull();
+      expect(await env.TRIPS.get('pending:p-old-2')).not.toBeNull();
       expect(await env.TRIPS.get('pending:p-other-device')).not.toBeNull();
     });
 
-    it('archFlag=on 이 KV set → 회전 활성 (읽기 지점 검증)', async () => {
-      // Wire 가 실제로 `rotateTripTokenForNewRoute` 를 호출하는지 (getArchFlag → KV read)
-      // 간접 검증. KV 에 값을 넣기 전에는 회전 안 되지만 넣은 후 회전한다는 대비.
+    it('#2173 guard — archFlag=on 이어도 guard가 우선하여 회전 미발동 (읽기 지점 검증)', async () => {
       const env = makeKvEnv();
       await seedExistingTrip(env, '용마산-id', '용마산');
       // Round 1: flag 미설정 → default off → 회전 없음.
@@ -4506,10 +4497,10 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       // Reset: 새 existing 을 다시 seed 하고 flag on.
       await seedExistingTrip(env, '용마산-id', '용마산');
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-      // Round 2: flag on → 회전 발동 → 새 UUID.
+      // Round 2: flag on 이어도 guard가 단락 → token 동일.
       const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       const body2 = (await res2.json()) as { token: string };
-      expect(body2.token).not.toBe(TOKEN);
+      expect(body2.token).toBe(TOKEN);
     });
 
     // #2129 — 2026-08-04 실탑승 evidence: 같은 device token으로 거의 동시에 도착한
