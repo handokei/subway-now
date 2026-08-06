@@ -80,7 +80,7 @@ import {
   readFreshSelfPollPosition,
 } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
-import { listTrips, putTrip } from './trips';
+import { listTrips, putTrip, resolveTripDeviceToken } from './trips';
 import {
   evaluateTransferDestinationGate,
   isTransferOrDestination,
@@ -2122,7 +2122,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   const alertHeal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         title: content.title,
         body: content.body,
         pushId: alertPushId,
@@ -2149,7 +2150,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   const companionHeal = await sendWithEnvHeal(
     (host) =>
       sendSleepAlarmCompanionPush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         pushId: companionPushId,
         originStation: waypoint.stationName,
         targetKind,
@@ -2197,7 +2199,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       env.PENDING_PUSHES,
       {
         pushId: alertPushId,
-        token: trip.token,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
         payload: buildSleepAlarmRetryPayload(alertPushId, target, targetKind, trip.token, now),
         apnsEnv: alertHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
         status: alertHeal.result.status,
@@ -2221,7 +2224,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       env.PENDING_PUSHES,
       {
         pushId: companionPushId,
-        token: trip.token,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
         payload: buildSleepAlarmRetryPayload(companionPushId, target, targetKind, trip.token, now),
         apnsEnv: companionHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
         status: companionHeal.result.status,
@@ -2397,7 +2401,8 @@ export async function fireArvlCdStationPush(
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         title: stationNotifContent.title,
         body: stationNotifContent.body,
         pushId,
@@ -2445,7 +2450,8 @@ export async function fireArvlCdStationPush(
       env.PENDING_PUSHES,
       {
         pushId,
-        token: trip.token,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
         payload: arvlcdPayload,
         apnsEnv: trip.apnsEnv ?? 'sandbox',
         status: heal.result.status,
@@ -2792,7 +2798,8 @@ export async function fireVanishFallbackStationPush(
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         title: vanishStationNotifContent.title,
         body: vanishStationNotifContent.body,
         pushId,
@@ -2834,7 +2841,8 @@ export async function fireVanishFallbackStationPush(
       env.PENDING_PUSHES,
       {
         pushId,
-        token: trip.token,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
         payload: vanishPayload,
         apnsEnv: trip.apnsEnv ?? 'sandbox',
         status: heal.result.status,
@@ -2983,7 +2991,8 @@ async function fireTrainReconfirmPush(
     const heal = await sendWithEnvHeal(
       (host) =>
         sendAlertPush({
-          deviceToken: trip.token,
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
           title: strings.trainReconfirmTitle,
           body: strings.trainReconfirmBody,
           pushId,
@@ -3681,7 +3690,8 @@ export async function advanceBoardingLockWaypoint(
     const transferHeal = await sendWithEnvHeal(
       (host) =>
         sendSilentPush({
-          deviceToken: trip.token,
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
           payload: transferPayload,
           config: deps.apnsConfig,
           host,
@@ -3713,7 +3723,8 @@ export async function advanceBoardingLockWaypoint(
         env.PENDING_PUSHES,
         {
           pushId,
-          token: trip.token,
+          // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+          token: resolveTripDeviceToken(trip),
           payload: transferPayload,
           apnsEnv: trip.apnsEnv ?? 'sandbox',
           status: transferHeal.result.status,
@@ -3917,7 +3928,8 @@ export async function maybeReschedulePush(
   const heal = await sendWithEnvHeal(
     (host) =>
       sendReschedulePush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         pushId,
         trainCode: lock.trainCode,
         nextStation: waypoint.stationName,
@@ -4171,7 +4183,8 @@ export async function runLocklessIntermediate(
     const heal = await sendWithEnvHeal(
       (host) =>
         sendSilentPush({
-          deviceToken: trip.token,
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
           payload: locklessPayload,
           config: deps.apnsConfig,
           host,
@@ -4226,7 +4239,8 @@ export async function runLocklessIntermediate(
         env.PENDING_PUSHES,
         {
           pushId,
-          token: trip.token,
+          // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+          token: resolveTripDeviceToken(trip),
           payload: locklessPayload,
           apnsEnv: trip.apnsEnv ?? 'sandbox',
           status: heal.result.status,
@@ -4253,7 +4267,8 @@ export async function runLocklessIntermediate(
       env.PENDING_PUSHES,
       {
         pushId,
-        token: trip.token,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
         alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
         sentAt: now,
         stationName: waypoint.stationName,
@@ -4817,7 +4832,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   const heal = await sendWithEnvHeal(
     (host) =>
       sendBoardingPromptPush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         pushId,
         title,
         body,
@@ -4963,7 +4979,8 @@ export async function maybeFireHopEndPrompt(inputs: {
   const heal = await sendWithEnvHeal(
     (host) =>
       sendBoardingPromptPush({
-        deviceToken: trip.token,
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
         pushId,
         title,
         body,

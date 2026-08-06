@@ -1,10 +1,12 @@
 import { getArchFlag } from './archFlag';
+import { recordTripMetrics } from './d1TripMetrics';
 import {
   assertCronCacheTtl,
   assertKvCacheTtl,
   CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL,
 } from './kvConsistency';
 import { listPending, pendingKey } from './pendingPushes';
+import { writeTripEndedStatus } from './tripStatus';
 import type { Trip } from './types';
 
 /**
@@ -54,6 +56,33 @@ const CRON_READ_CACHE_TTL_SEC = SHARED_CRON_TTL;
 
 export function tripKey(token: string): string {
   return `${TRIP_PREFIX}${token}`;
+}
+
+/** #2174 — 64-hex APNs device token 포맷 검증. */
+const DEVICE_TOKEN_HEX64_RE = /^[0-9a-f]{64}$/i;
+
+/**
+ * #2174 (P1-A) — push 발사용 실 APNs deviceToken을 단일 지점에서 해석한다.
+ *
+ * 로테이션(`rotateTripTokenForNewRoute`)이 `trip.token`을 `crypto.randomUUID()`로 교체해도
+ * `trip.deviceToken`은 등록 시점의 실 토큰을 그대로 보존하므로(index.ts `validateTrip`이
+ * `incoming.deviceToken`을 rotation 이전에 고정), 정상 경로는 항상 `trip.deviceToken`을 반환한다.
+ *
+ * 하위호환(#2174 스펙 4): 본 필드 도입 이전 KV에 남은 legacy trip 레코드는 `deviceToken`이
+ * 없을 수 있다 — `trip.token`이 유효한 64-hex 포맷(로테이션 전 실토큰)일 때만 그 값으로
+ * fallback한다. `trip.token`이 UUID(로테이션된 신원, deviceToken 부재)면 애초에 P0 guard로
+ * 로테이션이 막혀 있던 구간의 산물이라 존재해서는 안 되는 조합 — 그런 경우도 fallback으로
+ * `trip.token`을 반환해 기존(로테이션 재활성 이전) 동작과 동일하게 유지한다(마이그레이션
+ * 배치 금지, 새 회귀 없음 — 이미 무효했던 push가 계속 무효할 뿐).
+ */
+export function resolveTripDeviceToken(trip: Trip): string {
+  if (
+    typeof trip.deviceToken === 'string' &&
+    DEVICE_TOKEN_HEX64_RE.test(trip.deviceToken)
+  ) {
+    return trip.deviceToken;
+  }
+  return trip.token;
 }
 
 export async function putTrip(kv: KVNamespace, trip: Trip): Promise<void> {
@@ -198,22 +227,25 @@ export interface TokenRotationDeps {
    * 과 동일한 DI 패턴으로 노출한다. 실제 호출부(`POST /trips`)는 이 값을 지정하지 않는다.
    */
   rotationDisabled?: boolean;
+  /** #2174 — F2 old-trip 관측 기록용 D1 binding. 미지정/undefined는 `recordTripMetrics` 내부 no-op. */
+  db?: D1Database;
+  /** #2174 — old-trip sentinel/D1 기록 시각(epoch ms). 미지정 시 `Date.now()`. */
+  now?: number;
 }
 
 /**
- * #2173 P0 hotfix — token rotation 전면 비활성 guard.
+ * #2174 (P1-A) — token rotation 재활성 guard.
  *
- * `rotateTripTokenForNewRoute`가 route sig 변경 시 `crypto.randomUUID()`로 trip.token을
- * 교체 → 이후 모든 push가 UUID를 APNs deviceToken으로 사용해 400 BadDeviceToken →
- * 첫 due push에서 push-unrecoverable 즉사 (Epic #2172 물증).
+ * #2173 P0 hotfix가 `deviceToken` 필드 분리 전까지 rotation을 전면 차단했다 — 로테이션이
+ * `trip.token`(APNs 발사 주소 겸용)을 UUID로 교체하면 이후 모든 push가 400 BadDeviceToken으로
+ * 즉사했기 때문(Epic #2172 물증). 이제 `Trip.deviceToken`이 로테이션과 무관하게 실 토큰을
+ * 보존하므로(모든 push 발사 사이트가 `resolveTripDeviceToken(trip)` 사용) rotation을 안전하게
+ * 재활성한다.
  *
- * `arch:simple-arrival-v1` 플래그를 OFF로 끄는 방식은 금지 — 오토락 봉인 등 다른 게이트까지
- * 함께 풀린다. 그래서 rotation 경로만 독립적으로 단락하는 전용 상수 guard를 둔다.
- * KV/env 신규 플래그는 추가하지 않는다 (파생 복잡도 방지) — 배포 시점 코드 상수로만 제어.
- *
- * 로테이션 로직 자체는 삭제하지 않는다 — #P1-A에서 구조 수리 후 이 상수를 false로 되돌려 재활성.
+ * `arch:simple-arrival-v1` 플래그가 여전히 최종 on/off 스위치 — 이 상수는 그 앞단의 이중 guard였고
+ * 이제 flag 판정에 그대로 위임한다(false = guard 해제).
  */
-const TOKEN_ROTATION_DISABLED = true;
+const TOKEN_ROTATION_DISABLED = false;
 
 export async function rotateTripTokenForNewRoute(
   kv: KVNamespace,
@@ -248,6 +280,19 @@ export async function rotateTripTokenForNewRoute(
   const generateToken = deps?.generateToken ?? (() => crypto.randomUUID());
   const newToken = generateToken();
   const oldToken = existing.token;
+  const rotatedAt = deps?.now ?? Date.now();
+  // #2174 F2 — old trip 삭제가 관측 blind hole이었다(raw KV delete, D1/sentinel 미기록 →
+  // 사후 RCA 완전 비가시, 2026-08-06 진단 지연 직접 원인). cleanupTripWithLa(liveActivity.ts)를
+  // 재사용하지 않는다 — 그 helper는 사용자향 trip-ended alert push를 함께 발사하는데, mid-trip
+  // route 변경(F1: 환승 waypoint trim/목적지 변경 재-POST)마다 로테이션이 발동하므로 매번 종료
+  // alert가 뜨면 사용자 경험 회귀다. 여기서는 push-unrecoverable/user-delete와 구분되는 관측
+  // 전용 사유 'rotated'로 D1 기록 + tripStatus sentinel만 남긴다(alert push 없음).
+  await recordTripMetrics(deps?.db, existing, 'rotated', rotatedAt);
+  try {
+    await writeTripEndedStatus(kv, oldToken, 'rotated', rotatedAt);
+  } catch {
+    // best-effort — sentinel 기록 실패가 rotation 자체를 막지 않는다(다른 tripStatus 호출자와 동일 정책).
+  }
   await deleteTrip(kv, oldToken);
   await cleanupPendingPushesForToken(kv, oldToken);
   return { token: newToken, rotated: true };

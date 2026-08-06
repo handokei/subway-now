@@ -72,8 +72,22 @@ export interface Waypoint {
 }
 
 export interface Trip {
-  /** APNs device token (hex) */
+  /**
+   * trip 신원 / KV 키 전용 (`trip:<token>`). #2174 이전에는 APNs device token과 겸용이었으나,
+   * 로테이션(ADR-022 B4)이 route 변경 시 이 값을 `crypto.randomUUID()`로 교체하므로 더 이상
+   * APNs 발사 주소로 사용할 수 없다. push 발사는 반드시 `deviceToken`을 사용할 것.
+   */
   token: string;
+  /**
+   * #2174 — 실 APNs device token (64-hex). 로테이션(`rotateTripTokenForNewRoute`)이 발생해도
+   * 이 값은 등록 시점의 실 토큰으로 불변 — 모든 push 발사 사이트는 `trip.token`이 아닌 이
+   * 필드를 deviceToken 인자로 사용해야 한다.
+   *
+   * optional인 이유: 본 필드 도입(#2174) 이전에 KV에 기록된 legacy trip 레코드는 이 필드가
+   * 없다. `trips.ts:resolveTripDeviceToken`이 read 경로에서 `deviceToken ?? token`(token이
+   * 64-hex일 때만) fallback을 적용한다 — 마이그레이션 배치는 하지 않는다(#2174 금지사항).
+   */
+  deviceToken?: string;
   route: Route;
   /** 목적지 역 ID (예: "0228" 같은 stations.json id) */
   destination: string;
@@ -424,6 +438,10 @@ export interface ReschedulePushPayload {
  *   - 'la-stale-backstop' (#1933) — LA push가 LA_STALE_AUTO_END_MS(5분) 이상 침묵 시 자동 종료
  *                       (Dynamic Island content-state freeze 차단). 외부 contract는 'expired'로
  *                       매핑 (backward-compat) — `toTripStatusEndReason`이 처리한다.
+ *   - 'rotated' (#2174 F2) — `rotateTripTokenForNewRoute`가 route sig 변경으로 new UUID를 발급하며
+ *                       old trip을 폐기한 사유. push-unrecoverable/user-delete와 구분되는 관측
+ *                       전용 사유 — alert push는 발사하지 않는다(사용자 명시 route 변경 자체가
+ *                       trip 전환의 정상 신호라 종료 알림 UX가 불필요).
  *
  * 클라가 명시적으로 trip을 끝낸 경로(HTTP DELETE /trips/:token)는 발사 대상이 아님 —
  * 사용자가 destination을 clear하면 이미 클라이언트 store가 정리된 상태이기 때문.
@@ -434,7 +452,8 @@ export type TripEndedReason =
   | 'destination-arrived'
   | 'expired'
   | 'push-unrecoverable'
-  | 'la-stale-backstop';
+  | 'la-stale-backstop'
+  | 'rotated';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의

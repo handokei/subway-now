@@ -25,7 +25,7 @@ import { deleteProgress } from './progress';
 import { logPushFailure } from './pushFailureLog';
 import { computeMultiHopContext } from './tripMultiHop';
 import { deleteSsot } from './tripPositionSsot';
-import { deleteTrip } from './trips';
+import { deleteTrip, resolveTripDeviceToken } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
 
@@ -374,7 +374,8 @@ async function fireTripEndedAlertPush(
     const heal = await sendWithEnvHeal(
       (host) =>
         sendTripEndedAlertPush({
-          deviceToken: trip.token,
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
           pushId,
           reason: externalReason,
           sentAt: now,

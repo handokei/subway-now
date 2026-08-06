@@ -21,8 +21,19 @@ const TRIP_STATUS_PREFIX = 'tripStatus:';
 /**
  * 외부 응답에 노출하는 endReason — `destination-arrived` → `destination`로 축약 (contract).
  * `seoul-outage` (#1663) — Seoul API HTTP error로 인한 false-end. #1425 cooldown 면제 대상.
+ * `rotated` (#2174 F2) — route sig 변경으로 token 로테이션되며 old trip이 폐기된 사유.
+ *   실 deviceToken으로 GET /trips/:token/status를 조회하는 device가(#2174 comment 1: 로테이션 직후
+ *   trip.token이 바뀌어도 device는 여전히 실 deviceToken으로 조회) 첫 로테이션 한정으로 이 사유를
+ *   확인해 'ended'로 사망 인지할 수 있다 — 2회차 이상 로테이션(oldToken이 이미 UUID)의 완전한
+ *   deviceToken 역인덱스 조회는 #2175로 위임.
  */
-export type TripStatusEndReason = 'expired' | 'eta-missing' | 'seoul-outage' | 'destination' | 'push-unrecoverable';
+export type TripStatusEndReason =
+  | 'expired'
+  | 'eta-missing'
+  | 'seoul-outage'
+  | 'destination'
+  | 'push-unrecoverable'
+  | 'rotated';
 
 export interface TripStatusRecord {
   endedAt: number;
@@ -107,7 +118,8 @@ export async function readTripEndedStatus(
       parsed.endReason !== 'eta-missing' &&
       parsed.endReason !== 'seoul-outage' &&
       parsed.endReason !== 'destination' &&
-      parsed.endReason !== 'push-unrecoverable'
+      parsed.endReason !== 'push-unrecoverable' &&
+      parsed.endReason !== 'rotated'
     ) {
       return null;
     }
