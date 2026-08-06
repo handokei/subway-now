@@ -13,7 +13,7 @@
 
 import { Hono } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
-import { markPromptSilenced } from './boardingPrompt';
+import { isNearOrigin, markPromptSilenced } from './boardingPrompt';
 import {
   recordBoardingPromptOutcome,
   validateBoardingPromptOutcome,
@@ -1439,6 +1439,20 @@ app.post('/position', async (c) => {
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
   await appendPositionPoint(c.env.TRIPS, payload.token, payload.point);
+  // #2153 (리뷰 P1) — boarding-prompt 신선도 게이트 anchor(`originProximityAt`)의 실시간 입력.
+  // `trip.promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips 재등록 시에만 갱신되는
+  // 정적 스냅샷이라(useApnsTripRegistration.ts는 currentStation을 register effect deps에서 제외),
+  // 재등록 트리거가 안 오면 anchor stamp 기회가 영영 안 올 수 있다(#2153 RCA). 이 10초 주기
+  // /position 채널은 재등록과 무관하게 매 cycle 신선한 GPS 기준 근접 신호를 흘려 stamp 기회를
+  // 보강한다 — position series/point 저장과는 독립된 side-effect(series에는 적재하지 않음).
+  const { originDistanceM, originAccuracyM } = parseOriginProximityFields(body);
+  await stampOriginProximityIfNeeded(
+    c.env.TRIPS,
+    payload.token,
+    originDistanceM,
+    originAccuracyM,
+    Date.now(),
+  );
   // #823 Phase 3 E1 — 가속도 옵션 필드. 부재 또는 invalid 시 skip (positionSeries는 이미 적재됨).
   if (payload.accelSummary) {
     await appendAccelSample(c.env.TRIPS, payload.token, payload.accelSummary);
@@ -1482,6 +1496,55 @@ app.post('/position', async (c) => {
     ...(ssot?.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),
   });
 });
+
+/**
+ * #2153 — POST /position body에서 origin 근접 필드(distance/accuracy)만 별도로 뽑는다.
+ * `parsePromptGeoContext`(POST /trips)의 originDistanceM/originAccuracyM 파싱과 동일 규칙
+ * (finite number만 허용, 둘 중 하나라도 무효면 둘 다 생략) — 두 경로가 같은 개념을 다른 채널로
+ * 보내므로 검증 규칙을 분기하지 않는다. 이 값은 position series(`PositionPoint`)에는 적재되지
+ * 않는다 — anchor stamp 판단에만 쓰이는 휘발성 입력이다.
+ */
+export function parseOriginProximityFields(input: unknown): {
+  originDistanceM?: number;
+  originAccuracyM?: number;
+} {
+  if (!input || typeof input !== 'object') return {};
+  const o = input as Record<string, unknown>;
+  const originDistanceM =
+    typeof o.originDistanceM === 'number' && Number.isFinite(o.originDistanceM)
+      ? o.originDistanceM
+      : undefined;
+  const originAccuracyM =
+    typeof o.originAccuracyM === 'number' && Number.isFinite(o.originAccuracyM)
+      ? o.originAccuracyM
+      : undefined;
+  if (originDistanceM === undefined || originAccuracyM === undefined) return {};
+  return { originDistanceM, originAccuracyM };
+}
+
+/**
+ * #2153 (리뷰 P1) — `trip.originProximityAt`(신선도 게이트 anchor)를 `/position` 채널에서도
+ * stamp할 수 있게 하는 진입점. cron(`scheduled.ts`)의 stamp 로직과 같은 `isNearOrigin` 판정을
+ * 공유하되, 이 경로는 근접이 아니면(멀거나 값 부재) trip을 아예 읽지 않는다 — 매 10초 호출되는
+ * 채널이므로 KV read/write 낭비를 근접 관측이 실제로 발생하는 순간으로 최소화한다.
+ *
+ * **KV write 최소화**: 이미 stamp된 trip(`originProximityAt !== undefined`)은 재관측해도
+ * write하지 않는다 — trip당 최초 1회만 write (CF KV free tier quota 보호, #2073 lesson).
+ * trip 미존재(register 전/만료)는 graceful no-op.
+ */
+export async function stampOriginProximityIfNeeded(
+  kv: KVNamespace,
+  token: string,
+  originDistanceM: number | undefined,
+  originAccuracyM: number | undefined,
+  now: number,
+): Promise<void> {
+  if (!isNearOrigin(originDistanceM, originAccuracyM)) return;
+  const trip = await getTrip(kv, token);
+  if (!trip) return;
+  if (trip.originProximityAt !== undefined) return;
+  await putTrip(kv, { ...trip, originProximityAt: now });
+}
 
 interface PositionUploadPayload {
   token: string;

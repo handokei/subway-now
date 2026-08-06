@@ -62,6 +62,18 @@ export const DISMISS_SILENCE_MS = 5 * 60 * 1000;
  */
 export const PROMPT_PROXIMITY_MARGIN_M = 150;
 /**
+ * #2153 — 근접 게이트 판정을 순수 함수로 분리(cron `evaluateAndMaybeFireBoardingPrompt`와
+ * `/position` 핸들러 양쪽이 재사용). distance/accuracy 둘 다 있고 오차 고려 후 margin 이내면
+ * "근접"으로 본다 — 부재(지하/구 클라)는 "근접 관측"이 아니므로 false(anchor stamp 대상 아님).
+ */
+export function isNearOrigin(
+  originDistanceM: number | undefined,
+  originAccuracyM: number | undefined,
+): boolean {
+  if (originDistanceM === undefined || originAccuracyM === undefined) return false;
+  return originDistanceM - originAccuracyM <= PROMPT_PROXIMITY_MARGIN_M;
+}
+/**
  * #2130 (Part B-be-1) — 신선도 게이트. trip 등록(또는 heal) 후 이 시간이 지나면 boarding-prompt
  * 자격이 만료된다 — 오래된 trip에 뒤늦게 발사되는 stale prompt 방지 + 반복 발사(A4) 창의 상한.
  */
