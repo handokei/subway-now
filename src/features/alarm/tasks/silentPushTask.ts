@@ -1198,6 +1198,14 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     } catch (e) {
       logger.warn('pull death backstop 실패 (graceful)', e);
     }
+
+    // 리뷰 P1 (PR #2189) — backstop이 내부적으로 적재하는 alarmLog 엔트리(trip-dead-pull-detected)는
+    // appendAlarmLog의 1초 debounce pending에 걸린다. 위 flushAlarmLog()는 backstop 실행 *전*이라
+    // 이 엔트리를 못 비우고, BG task가 곧 suspend되는 시나리오(=이 backstop의 존재 목적)에서 그대로
+    // 유실될 수 있었다 — 유일한 관측 채널(V/X: DebugModal alarm log) 상실. backstop 블록을 flush
+    // 앞으로 옮기는 대신(네트워크 GET이 기존 flush를 지연시켜 지하 LA stall 회귀 재현), 기존 flush
+    // 순서는 그대로 두고 backstop 산출 로그만 한 번 더 flush한다.
+    await flushAlarmLog();
   }
 }
 

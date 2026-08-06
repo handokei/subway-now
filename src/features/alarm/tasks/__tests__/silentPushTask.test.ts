@@ -3030,6 +3030,24 @@ describe('silentPushTask', () => {
         ).resolves.toBeUndefined();
       });
 
+      // 리뷰 P1 (PR #2189) — backstop이 내부적으로 적재하는 trip-dead-pull-detected 로그가
+      // 기존 flushAlarmLog() 뒤에서 발생해 BG task suspend 시 유실될 수 있었다. appendAlarmLog
+      // 호출 여부만 mock 검증하는 방식으론 이 타이밍 결함을 못 잡으므로, flushAlarmLog 호출
+      // "횟수"와 "순서"(backstop 실행 이후에도 한 번 더 flush)를 직접 검증한다.
+      it('backstop 트리거 후 flushAlarmLog가 재호출되어 신규 로그 유실을 막는다', async () => {
+        mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+        mockShouldCheckTripDeathOnSilentPush.mockReturnValue(true);
+        mockCheckTripDeathByPull.mockResolvedValueOnce(undefined);
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        // 기존 flush(BG 시간 예산 보호, LA/widget 이전) 1회 + backstop 이후 재flush 1회 = 2회.
+        expect(mockFlushAlarmLog).toHaveBeenCalledTimes(2);
+        const checkCallOrder = mockCheckTripDeathByPull.mock.invocationCallOrder[0];
+        const flushCallOrders = mockFlushAlarmLog.mock.invocationCallOrder;
+        expect(flushCallOrders.some((order) => order > checkCallOrder)).toBe(true);
+      });
+
       it('invalid payload(extract null) → payload=null이라 backstop 조건도 gracefully 평가(호출 안 함 보장 아님, baseUrl 없으면 skip)', async () => {
         mockGetTripDeathPullBackendUrl.mockReturnValue(null);
         await handleSilentPush({ data: undefined });
