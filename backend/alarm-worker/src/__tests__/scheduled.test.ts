@@ -10606,6 +10606,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-hop',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(1);
     expect(stats.hopEndPromptBlocked).toBe(0);
@@ -10633,6 +10634,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-block',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(0);
     expect(stats.hopEndPromptBlocked).toBe(1);
@@ -10651,6 +10653,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-err',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.errors).toBe(1);
     expect(stats.hopEndPromptFired).toBe(0);
@@ -10670,6 +10673,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-empty',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(1);
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -10698,6 +10702,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       now: NOW,
       log: () => {},
       generatePushId: () => 'pid-diff-leg',
+      env: makeEnv(new InMemoryKV()),
     });
     expect(stats.hopEndPromptFired).toBe(1);
     // 기존 legKey 는 유지, 새 legKey (`성수|5`) 는 신규 fired.

@@ -75,6 +75,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         window: '24h-rolling-ttl' as const,
         sampledAt: NOW,
       },
+      pushFailures: { total24h: 0, topReasons: [] },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -126,6 +127,7 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         window: '24h-rolling-ttl' as const,
         sampledAt: NOW,
       },
+      pushFailures: { total24h: 0, topReasons: [] },
       window: '24h' as const,
       timestamp: NOW,
     };
@@ -968,6 +970,7 @@ const SAMPLE_METRICS = {
     window: '24h-rolling-ttl' as const,
     sampledAt: NOW,
   },
+  pushFailures: { total24h: 0, topReasons: [] },
   window: '24h' as const,
   timestamp: NOW,
 };

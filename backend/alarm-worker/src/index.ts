@@ -1357,7 +1357,14 @@ app.get('/v1/observability/metrics', async (c) => {
 
   // 첫 요청 또는 KV TTL 만료(1h) 시 실시간 계산 후 KV 적재.
   try {
-    const metrics = await computeObservabilityMetrics(r2, c.env.PENDING_PUSHES, now, c.env.TRIPS);
+    const metrics = await computeObservabilityMetrics(
+      r2,
+      c.env.PENDING_PUSHES,
+      now,
+      c.env.TRIPS,
+      undefined,
+      c.env.DB,
+    );
     const storeResult = await tryStoreObservabilityMetrics(c.env.TRIPS, metrics, now, {
       onError: (err, key) =>
         void captureBackendException(c.env, err, { path: 'observability/metrics', stage: 'kv-put', key }),
@@ -2580,6 +2587,7 @@ export const handler = {
             now,
             env.TRIPS,
             boardingPromptCounters ?? undefined,
+            env.DB,
           );
           const storeResult = await tryStoreObservabilityMetrics(env.TRIPS, metrics, now, {
             onError: (err, key) =>
