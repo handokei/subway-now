@@ -72,6 +72,8 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         skippedStale: 0,
         skippedTooFar: 0,
         skippedTrainDuplicate: 1,
+        window: '24h-rolling-ttl' as const,
+        sampledAt: NOW,
       },
       window: '24h' as const,
       timestamp: NOW,
@@ -121,6 +123,8 @@ describe('storeObservabilityMetrics + readObservabilityMetrics', () => {
         skippedStale: 0,
         skippedTooFar: 0,
         skippedTrainDuplicate: 0,
+        window: '24h-rolling-ttl' as const,
+        sampledAt: NOW,
       },
       window: '24h' as const,
       timestamp: NOW,
@@ -897,7 +901,7 @@ describe('computeObservabilityMetrics — locklessTripMissRatio (#1972)', () => 
 // computeObservabilityMetrics — boardingPromptCounters (#2151)
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe('computeObservabilityMetrics — boardingPromptCounters (#2151)', () => {
+describe('computeObservabilityMetrics — boardingPromptCounters (#2151 → #2160)', () => {
   it('boardingPromptCounters 미제공 → zero 기본값', async () => {
     const r2 = makeEmptyFakeR2();
     const result = await computeObservabilityMetrics(r2, undefined, NOW);
@@ -909,6 +913,8 @@ describe('computeObservabilityMetrics — boardingPromptCounters (#2151)', () =>
       skippedStale: 0,
       skippedTooFar: 0,
       skippedTrainDuplicate: 0,
+      window: '24h-rolling-ttl',
+      sampledAt: 0,
     });
   });
 
@@ -922,6 +928,8 @@ describe('computeObservabilityMetrics — boardingPromptCounters (#2151)', () =>
       skippedStale: 1,
       skippedTooFar: 2,
       skippedTrainDuplicate: 1,
+      window: '24h-rolling-ttl' as const,
+      sampledAt: NOW,
     };
     const result = await computeObservabilityMetrics(r2, undefined, NOW, undefined, counters);
     expect(result.boardingPromptCounters).toEqual(counters);
@@ -957,6 +965,8 @@ const SAMPLE_METRICS = {
     skippedStale: 0,
     skippedTooFar: 0,
     skippedTrainDuplicate: 0,
+    window: '24h-rolling-ttl' as const,
+    sampledAt: NOW,
   },
   window: '24h' as const,
   timestamp: NOW,

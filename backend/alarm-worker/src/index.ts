@@ -121,6 +121,10 @@ import {
   readObservabilityMetrics,
   tryStoreObservabilityMetrics,
 } from './observabilityMetrics';
+import {
+  accumulateBoardingPromptCounters,
+  readBoardingPromptCounters,
+} from './boardingPromptCounterAccumulator';
 import { getTrip, putTrip, rotateTripTokenForNewRoute, withTripRegisterLock } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
@@ -2433,6 +2437,35 @@ export const handler = {
       void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
       throw err;
     }
+    // #2160 (follow-up of #2151) — boardingPrompt counter를 이번 tick의 delta로 누적 KV 키에
+    // read-modify-write. delta 전부 0이면 accumulate 함수 내부에서 KV read/write 자체를 skip
+    // 한다 — obs-metrics 1h 갱신 게이트와 독립적으로 매분 호출해야 tick 간 delta 유실이 없다
+    // (scheduledStats는 tick마다 새로 생성되는 로컬 객체).
+    //
+    // write 조건 정확한 서술: "활성 trip 0" 이 아니라 "lock 미형성 trip이 활성 tick에 존재".
+    // lockless 구간(C 토글=infoMode ON 등)이 유지되는 trip은 그 30~60분 내내 매분 write가
+    // 정상 케이스. X11(persistent lockless 회귀)이 발생하면 이 write도 함께 폭증하므로
+    // write 급증 자체가 X11 조기 탐지 신호가 될 수 있다(boardingPromptCounterAccumulator.ts
+    // 상단 doc-comment 참고). 단독 사용자 기준 최악 케이스도 하루 120~180 write 수준으로
+    // 무료 quota(1000 writes/day) 내 안전.
+    try {
+      await accumulateBoardingPromptCounters(
+        env.TRIPS,
+        {
+          evaluated: scheduledStats.boardingPromptEvaluated,
+          fired: scheduledStats.boardingPromptFired,
+          blocked: scheduledStats.boardingPromptBlocked,
+          skippedNoContext: scheduledStats.boardingPromptSkippedNoContext,
+          skippedStale: scheduledStats.boardingPromptSkippedStale,
+          skippedTooFar: scheduledStats.boardingPromptSkippedTooFar,
+          skippedTrainDuplicate: scheduledStats.boardingPromptSkippedTrainDuplicate,
+        },
+        Date.now(),
+      );
+    } catch (err) {
+      // KV read/put 실패 — swallow + Sentry forward. cron 자체는 throw 없이 다음 minute에 재시도.
+      void captureBackendException(env, err, { path: 'scheduled/boardingPromptCounterAccumulate' });
+    }
     // #2073 (Issue A) — 진짜 idle tick(활성 trip 0 + 직전 tick 근방 fire/retry 기록 없음)엔
     // pending/retry push가 존재할 수 없으므로 listPending/listRetryPushes KV list 호출 자체를
     // skip한다(2026-07-29 quota audit: KV list 720%/write 144% 초과, idle-skip이 로그만
@@ -2472,24 +2505,18 @@ export const handler = {
       try {
         const existing = await readObservabilityMetrics(env.TRIPS, now);
         if (!existing) {
-          // #2151 — 같은 tick의 runScheduled 결과(scheduledStats)에서 boardingPrompt 계열
-          // counter 스냅샷을 그대로 실어 obs-metrics 응답에 노출. 신규 KV 키/write 없이 기존
-          // obs-metrics 갱신 tick에 필드만 추가(CF 무료 quota 보호).
-          const boardingPromptCounters = {
-            evaluated: scheduledStats.boardingPromptEvaluated,
-            fired: scheduledStats.boardingPromptFired,
-            blocked: scheduledStats.boardingPromptBlocked,
-            skippedNoContext: scheduledStats.boardingPromptSkippedNoContext,
-            skippedStale: scheduledStats.boardingPromptSkippedStale,
-            skippedTooFar: scheduledStats.boardingPromptSkippedTooFar,
-            skippedTrainDuplicate: scheduledStats.boardingPromptSkippedTrainDuplicate,
-          };
+          // #2160 (follow-up of #2151) — 별도 누적 KV 키(`boardingPromptCounterAccumulator`)에서
+          // 최신 누적치를 읽어 obs-metrics 응답에 노출한다. 이전(#2151/#2156)엔 같은 tick의
+          // scheduledStats 스냅샷을 그대로 실었으나, 그 tick에 우연히 활성 trip이 없으면 0으로
+          // 덮여써 누적이 유실되는 문제가 있었다 — 누적은 위 accumulateBoardingPromptCounters
+          // 호출이 전담하고, 여기선 read-only로 최신 값을 가져온다.
+          const boardingPromptCounters = await readBoardingPromptCounters(env.TRIPS);
           const metrics = await computeObservabilityMetrics(
             env.TELEMETRY_R2,
             env.PENDING_PUSHES,
             now,
             env.TRIPS,
-            boardingPromptCounters,
+            boardingPromptCounters ?? undefined,
           );
           const storeResult = await tryStoreObservabilityMetrics(env.TRIPS, metrics, now, {
             onError: (err, key) =>
