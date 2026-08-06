@@ -49,6 +49,10 @@ import type { Station } from '../../../shared/types/station';
 // device가 lookup 후 역명만 송신 — backend는 stations.json 없으므로 lookup은 device 책임.
 import { getCurrentWifiSsid } from '../utils/wifiSsidNative';
 import { lookupStationBySsid } from '../utils/wifiSsidLookup';
+// #2178 — pull 기반 trip 死 backstop. 신규 폴링/타이머 없이 이미 깨어나는 BG location tick에
+// 편승해 저빈도(내부 쿨다운)로 backend trip status를 확인한다. alarm 슬라이스 cross-feature
+// import는 본 파일 헤더 file-level disable로 이미 옵트인.
+import { checkTripDeathByPull, getBackendUrl as getTripDeathPullBackendUrl } from '../../alarm/utils/tripDeathPullBackstop';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -129,6 +133,18 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { locations } = data as { locations: Location.LocationObject[] };
   const latest = locations[locations.length - 1];
   if (!latest) return;
+
+  // #2178 — pull 기반 trip 死 backstop. GPS fix 품질(age/accuracy)과 무관하게 "BG task가
+  // 깨어났다"는 사실 자체가 backend 생존 확인 기회다. fire-and-forget — 아래 알람 파이프라인의
+  // 타이밍을 막지 않는다. 내부 쿨다운(TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS)이 매 tick마다
+  // backend를 호출하지 않도록 빈도를 제한하고, baseUrl 미설정/active trip 없음/네트워크 실패는
+  // checkTripDeathByPull 내부에서 graceful skip.
+  const tripDeathPullBackendUrl = getTripDeathPullBackendUrl();
+  if (tripDeathPullBackendUrl !== null) {
+    void checkTripDeathByPull(tripDeathPullBackendUrl, 'bg-location-tick').catch((e: unknown) => {
+      logger.warn('pull death backstop 실패 (graceful)', e);
+    });
+  }
 
   // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.
   // 측정용으로 게이트 drop을 알람 로그에 fire-and-forget 적재 (B2 인프라).

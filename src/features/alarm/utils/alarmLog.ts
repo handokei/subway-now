@@ -340,7 +340,13 @@ export type AlarmLogReason =
   // #2120 (#2114 근본 수리 Phase 2) — trip-ended push의 corrId가 device 현재 corrId와
   // 불일치해 cleanup 전체를 skip한 1건. tripToken(기기 고정)만으로는 못 막는 인스턴스 race
   // (backend 자동종료 push in-flight 중 device 재등록) 차단 evidence.
-  | 'trip-ended-corr-mismatch';
+  | 'trip-ended-corr-mismatch'
+  // #2178 — pull 기반 trip 死 backstop이 backend `status: 'ended'` 명시 응답으로 death를
+  // 확정하고 cleanup을 수행한 1건. silentPushTask 처리 말미(trip 신원 불일치/접촉 staleness)
+  // 또는 BG location tick(저빈도 쿨다운) 두 진입점 공통 reason — source='lifecycle-backstop'로
+  // 적재해 기존 backstop 계열과 같은 분포로 관측한다. 404/410(trip 부재)은 death 확정이
+  // 아니므로 별도 reason 없이 무동작(ADR-010, false positive는 miss와 동급).
+  | 'trip-dead-pull-detected';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

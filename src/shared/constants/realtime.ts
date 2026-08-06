@@ -235,6 +235,22 @@ export const SIGNAL_4_SILENT_PUSH_TIMEOUT_MS = 30 * 60_000;
 export const SIGNAL_4_KTX_ETA_UPPER_BOUND_MS = 10 * 60 * 60_000;
 
 /**
+ * #2178 — pull 기반 trip 死 backstop(silentPushTask 처리 말미 + BG location tick)의
+ * 판단/호출 빈도 상수.
+ *
+ * - silentPushTask: 로컬 active trip이 있는데 수신 payload의 trip 신원이 불일치하거나,
+ *   마지막 backend 접촉(직전 silent push 수신)이 이 값 이상 지났으면 GET trip status 시도.
+ * - backgroundLocationTask: 같은 값을 호출 쿨다운으로 사용 — 신규 폴링/타이머를 추가하지
+ *   않고 기존 BG location tick(이미 깨어나는 지점)에 편승하되, 매 tick마다 backend를
+ *   호출하지 않도록 저빈도로 제한한다(V8 battery acceptance).
+ *
+ * 10분 — SIGNAL_4_SILENT_PUSH_TIMEOUT_MS(30분, launch-only backstop)보다 짧게 잡아
+ * BG 중에도 더 빠르게 death를 인지한다. 너무 짧으면 status GET 빈도가 배터리/backend
+ * 부담이 되므로 10분을 하한으로 둔다(스펙 "쿨다운 ≥10분").
+ */
+export const TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS = 10 * 60_000;
+
+/**
  * #1922 (M2) — lockless route-hop / re-anchored time-integration "stuck" 가드.
  *
  * `tryLocklessRouteHop`은 실측 신호(lastObserved) 없이 `tripStartedAt`만으로 시간 적분을 진행한다.

@@ -88,11 +88,26 @@ jest.mock('../../utils/tripEndedSentinel', () => ({
 
 // #2045 (Signal 4) — silent push 수신 시각 stamp. handleSilentPush가 유효 payload 진입 시점에 write.
 const mockSetLastSilentPushReceivedAt = jest.fn().mockResolvedValue(undefined);
+// #2178 — pull death backstop 트리거 조건(마지막 backend 접촉 staleness) 판정용 prior read.
+const mockGetLastSilentPushReceivedAt = jest.fn().mockResolvedValue(null);
 jest.mock('../../utils/lastSilentPushReceivedAt', () => ({
   setLastSilentPushReceivedAt: (...args: unknown[]) =>
     mockSetLastSilentPushReceivedAt(...args),
-  getLastSilentPushReceivedAt: jest.fn(),
+  getLastSilentPushReceivedAt: (...args: unknown[]) =>
+    mockGetLastSilentPushReceivedAt(...args),
   clearLastSilentPushReceivedAt: jest.fn(),
+}));
+
+// #2178 — pull 기반 trip 死 backstop. silentPushTask 처리 말미 wiring만 검증하는 것이 이 파일의
+// 책임 — 내부 판정/cleanup 로직 자체는 tripDeathPullBackstop.test.ts가 전담(중복 검증 회피).
+const mockGetTripDeathPullBackendUrl = jest.fn<string | null, []>(() => null);
+const mockShouldCheckTripDeathOnSilentPush = jest.fn<boolean, unknown[]>(() => false);
+const mockCheckTripDeathByPull = jest.fn().mockResolvedValue('skipped');
+jest.mock('../../utils/tripDeathPullBackstop', () => ({
+  getBackendUrl: () => mockGetTripDeathPullBackendUrl(),
+  shouldCheckTripDeathOnSilentPush: (...args: unknown[]) =>
+    mockShouldCheckTripDeathOnSilentPush(...args),
+  checkTripDeathByPull: (...args: unknown[]) => mockCheckTripDeathByPull(...args),
 }));
 
 // #919 — trip-ended 분기는 cleanup 직전에 recall trigger를 호출한다.
@@ -393,6 +408,12 @@ describe('silentPushTask', () => {
     // clearAllMocks가 mockImplementation을 reset하지 않으므로 명시 복구.
     mockSetTripEndedSentinel.mockResolvedValue(undefined);
     mockClearTripEndedSentinel.mockResolvedValue(undefined);
+    // #2178 — pull death backstop 기본값: baseUrl 없음(호출 안 함) + 트리거 조건 false.
+    // 개별 테스트에서 override.
+    mockGetLastSilentPushReceivedAt.mockResolvedValue(null);
+    mockGetTripDeathPullBackendUrl.mockReturnValue(null);
+    mockShouldCheckTripDeathOnSilentPush.mockReturnValue(false);
+    mockCheckTripDeathByPull.mockResolvedValue('skipped');
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -2936,6 +2957,83 @@ describe('silentPushTask', () => {
           handleSilentPush(payload({ kind: 'destination', phase: 'imminent' })),
         ).resolves.toBeUndefined();
         expect(mockRefreshLa).toHaveBeenCalled();
+      });
+    });
+
+    // #2178 — pull 기반 trip 死 backstop wiring. 내부 판정/cleanup 로직 자체는
+    // tripDeathPullBackstop.test.ts가 전담 — 여기서는 silentPushTask가 finally 말미에서
+    // 올바른 인자로 호출/생략하는지만 검증한다.
+    describe('#2178 — pull death backstop (finally 블록)', () => {
+      it('baseUrl 미설정 → shouldCheckTripDeathOnSilentPush/checkTripDeathByPull 모두 호출 안 함', async () => {
+        mockGetTripDeathPullBackendUrl.mockReturnValue(null);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockShouldCheckTripDeathOnSilentPush).not.toHaveBeenCalled();
+        expect(mockCheckTripDeathByPull).not.toHaveBeenCalled();
+      });
+
+      it('baseUrl 있음 + 트리거 조건 false → checkTripDeathByPull 호출 안 함', async () => {
+        mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+        mockShouldCheckTripDeathOnSilentPush.mockReturnValue(false);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockShouldCheckTripDeathOnSilentPush).toHaveBeenCalledTimes(1);
+        expect(mockCheckTripDeathByPull).not.toHaveBeenCalled();
+      });
+
+      it('baseUrl 있음 + 트리거 조건 true → checkTripDeathByPull(baseUrl, "silent-push") 호출', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'tk-active';
+          return null;
+        });
+        mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+        mockShouldCheckTripDeathOnSilentPush.mockReturnValue(true);
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', tripToken: 'tk-payload' }),
+        );
+
+        expect(mockShouldCheckTripDeathOnSilentPush).toHaveBeenCalledWith(
+          expect.objectContaining({
+            activeTripToken: 'tk-active',
+            payloadTripToken: 'tk-payload',
+          }),
+        );
+        expect(mockCheckTripDeathByPull).toHaveBeenCalledWith(
+          'https://api.test.dev',
+          'silent-push',
+        );
+      });
+
+      it('reschedule payload(tripToken 없음) → payloadTripToken undefined로 판정 위임', async () => {
+        mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+        mockShouldCheckTripDeathOnSilentPush.mockReturnValue(false);
+        await handleSilentPush({
+          data: bgTaskData({
+            kind: 'reschedule',
+            nextStation: '잠실',
+            newArrivalTimeEpoch: Date.now() + 60_000,
+            trainCode: 'T-1',
+          }),
+        });
+        expect(mockShouldCheckTripDeathOnSilentPush).toHaveBeenCalledWith(
+          expect.objectContaining({ payloadTripToken: undefined }),
+        );
+      });
+
+      it('checkTripDeathByPull throw해도 graceful (finally 흐름 차단 없음)', async () => {
+        mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+        mockShouldCheckTripDeathOnSilentPush.mockReturnValue(true);
+        mockCheckTripDeathByPull.mockRejectedValueOnce(new Error('backend-fail'));
+        await expect(
+          handleSilentPush(payload({ kind: 'destination', phase: 'imminent' })),
+        ).resolves.toBeUndefined();
+      });
+
+      it('invalid payload(extract null) → payload=null이라 backstop 조건도 gracefully 평가(호출 안 함 보장 아님, baseUrl 없으면 skip)', async () => {
+        mockGetTripDeathPullBackendUrl.mockReturnValue(null);
+        await handleSilentPush({ data: undefined });
+        expect(mockCheckTripDeathByPull).not.toHaveBeenCalled();
       });
     });
   });

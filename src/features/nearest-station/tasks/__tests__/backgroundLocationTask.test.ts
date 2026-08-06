@@ -123,6 +123,14 @@ jest.mock('../../utils/wifiSsidLookup', () => ({
   lookupStationBySsid: (ssid: string | null | undefined) => mockLookupStationBySsid(ssid),
 }));
 
+// ── #2178 pull death backstop 모킹 — wiring만 검증(내부 판정/cleanup은 tripDeathPullBackstop.test.ts 전담) ──
+const mockGetTripDeathPullBackendUrl = jest.fn<string | null, []>(() => null);
+const mockCheckTripDeathByPull = jest.fn().mockResolvedValue('skipped');
+jest.mock('../../../alarm/utils/tripDeathPullBackstop', () => ({
+  getBackendUrl: () => mockGetTripDeathPullBackendUrl(),
+  checkTripDeathByPull: (...args: unknown[]) => mockCheckTripDeathByPull(...args),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
@@ -231,6 +239,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     // #1667 기본값: WiFi 미연결(null) → wifiSsidStationName undefined
     mockGetCurrentWifiSsid.mockResolvedValue(null);
     mockLookupStationBySsid.mockReturnValue(null);
+    // #2178 — pull death backstop 기본값: baseUrl 없음(호출 안 함). 개별 테스트에서 override.
+    mockGetTripDeathPullBackendUrl.mockReturnValue(null);
+    mockCheckTripDeathByPull.mockResolvedValue('skipped');
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -1390,6 +1401,64 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       expect(mockUploadPosition).toHaveBeenCalledWith(
         expect.objectContaining({ motion: 'unknown' }),
       );
+    });
+  });
+
+  // #2178 — pull 기반 trip 死 backstop. 내부 판정/cleanup 로직 자체는 tripDeathPullBackstop.test.ts가
+  // 전담 — 여기서는 BG location tick이 GPS 게이트와 무관하게 wiring하는지만 검증한다.
+  describe('#2178 — pull death backstop (tick 진입 즉시)', () => {
+    it('baseUrl 미설정 → checkTripDeathByPull 호출 안 함', async () => {
+      mockGetTripDeathPullBackendUrl.mockReturnValue(null);
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+      expect(mockCheckTripDeathByPull).not.toHaveBeenCalled();
+    });
+
+    it('baseUrl 설정 → checkTripDeathByPull(baseUrl, "bg-location-tick") 호출', async () => {
+      mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+      expect(mockCheckTripDeathByPull).toHaveBeenCalledWith(
+        'https://api.test.dev',
+        'bg-location-tick',
+      );
+    });
+
+    it('저정확도/stale fix로 이후 게이트가 drop되는 fix라도 backstop은 호출됨(GPS 품질 무관)', async () => {
+      mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+      // gate-age에 걸리는 오래된 fix.
+      const staleLoc = makeLocation(37.498, 127.028, { ageMs: MAX_LOCATION_AGE_MS + 60_000 });
+      await taskCallback({ data: { locations: [staleLoc] }, error: null });
+      expect(mockCheckTripDeathByPull).toHaveBeenCalledWith(
+        'https://api.test.dev',
+        'bg-location-tick',
+      );
+      // 게이트 자체는 그대로 차단 — backstop 추가가 기존 게이트 동작을 바꾸지 않음을 함께 확인.
+      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+
+    it('checkTripDeathByPull throw해도 graceful (기존 알람 파이프라인 차단 없음)', async () => {
+      mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+      mockCheckTripDeathByPull.mockRejectedValueOnce(new Error('backend-fail'));
+      mockStorageValues(JSON.stringify(mockDestination));
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+
+      await expect(
+        taskCallback({ data: { locations: [loc] }, error: null }),
+      ).resolves.toBeUndefined();
+      expect(mockProcessLocationUpdate).toHaveBeenCalled();
+    });
+
+    it('error 분기 → checkTripDeathByPull 호출 안 함 (기존 early-return 유지)', async () => {
+      mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+      await taskCallback({ data: null, error: { message: '위치 오류' } });
+      expect(mockCheckTripDeathByPull).not.toHaveBeenCalled();
+    });
+
+    it('data 없음 분기 → checkTripDeathByPull 호출 안 함 (기존 early-return 유지)', async () => {
+      mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+      await taskCallback({ data: null, error: null });
+      expect(mockCheckTripDeathByPull).not.toHaveBeenCalled();
     });
   });
 });
