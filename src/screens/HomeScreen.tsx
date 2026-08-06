@@ -862,6 +862,27 @@ export default function HomeScreen() {
     destinationName: destination?.name ?? null,
     currentStation: result?.station ?? null,
   });
+  // #2179 — 환승 leg의 "전열차" 후보 nextStationName. origin 슬롯의 label 계산(#649)과 동일하게
+  // (환승 후 노선, 환승역, 다음 waypoint) 기준 진행 방향 바로 다음 인접역을 산출한다.
+  const transferNextStationName = useMemo(() => {
+    if (!transferContext) return null;
+    return resolveNextAdjacentStationName(
+      transferContext.nextLine,
+      transferContext.transferStationInToLine.name,
+      transferContext.nextWaypointName,
+    );
+  }, [transferContext]);
+  // #2179 — 환승 슬롯 전열차 후보. usePrevTrainCandidate는 origin/transfer 어느 leg든 (역, 노선)
+  // 파라미터만으로 동작하는 범용 hook이라(resolveTripDirection이 currentStation의 line에 맞는
+  // leg를 자동 선택) 별도 복제 구현 없이 재사용한다.
+  const { prevTrain: transferPrevTrain } = usePrevTrainCandidate({
+    route,
+    destinationName: destination?.name ?? null,
+    currentStation: transferContext?.transferStationInToLine ?? null,
+    nextStationName: transferNextStationName,
+    line: transferContext?.nextLine ?? null,
+    currentArrivals: transferArrivals,
+  });
   // #924 D1 — route 미설정 환승 자동 detect. 환승역 walking + 다른 노선 임박 ArrivalRow 신호 결합.
   // useFusedNearestStation은 NearestStationResult(단수)만 노출 — 본 hook 입력 NearestStationsResult로 재조합.
   const nearestStationsForDetect = useMemo(() => {
@@ -1576,6 +1597,9 @@ export default function HomeScreen() {
                                   onLockCorrected={handleLockCorrected}
                                   // #2115 — 환승역 도달 직후 다음 노선 첫 arrival fetch 완료 전 loading 노출.
                                   loading={transferLoading}
+                                  // #2179 — 전열차(환승역을 방금 떠난 열차) 후보. 식별 불가 시 null이라
+                                  // 기존 [현열차 | 다음열차] 렌더가 그대로 보존된다.
+                                  prevTrain={transferPrevTrain}
                                 />
                               );
                             }
