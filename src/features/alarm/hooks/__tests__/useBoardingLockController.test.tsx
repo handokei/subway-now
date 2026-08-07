@@ -1437,12 +1437,46 @@ describe('useBoardingLockController', () => {
       const createLockMock = jest.fn().mockResolvedValue(undefined);
       useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
       // route는 line 2, train은 line 7 (옆 노선 fusion 오류 시뮬레이션).
+      // #2209 — approachLine(확정, line=2) 사전필터가 line 7 후보를 originAutoLockArrivals
+      // 단계에서 먼저 걷어내(길이 0) skip. allowedLines 검증까지 도달하지 않아도 결과는 동일.
       const wrongLine: StationArrival = {
         up: [makeTrain({ trainCode: 'WRONG-LINE', arrivalCode: 1, line: '7' })],
         down: [],
       };
       renderHook(() =>
         useBoardingLockController({ ...defaultInputs, arrival: wrongLine }),
+      );
+      await waitFor(() => {
+        expect(mockGetBoardingLock).toHaveBeenCalled();
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('#2209 — approachLine이 #1325 desync fallback(currentStation.line)으로 떨어진 off-route line이면 allowedLines에서 여전히 reject', async () => {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      // stations.json에 없는 가짜 역명 — approachLine.ts의 실제 findStationByNameAndLine(stationRoute)가
+      // 조회 실패해 #1325 가드로 route 후보('2') 대신 currentStation.line('9', route 외 line)으로 fallback.
+      // originAutoLockArrivals가 그 line('9')으로 사전필터되어 chosen.line='9'가 산출되고, allowedLines({2})
+      // 검증이 여전히 최종 방어선으로 reject해야 한다(line 사전필터가 이 가드를 무력화하지 않음을 보장).
+      const desyncStation: Station = {
+        id: 'stn-desync',
+        name: '__nonexistent-station-2209__',
+        line: '9',
+        lineColor: '#000',
+        lat: 0,
+        lng: 0,
+      };
+      const offRouteLine: StationArrival = {
+        up: [makeTrain({ trainCode: 'OFF-ROUTE-9', arrivalCode: 1, line: '9' })],
+        down: [],
+      };
+      renderHook(() =>
+        useBoardingLockController({
+          ...defaultInputs,
+          currentStation: desyncStation,
+          arrival: offRouteLine,
+        }),
       );
       await waitFor(() => {
         expect(mockGetBoardingLock).toHaveBeenCalled();

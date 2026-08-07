@@ -22,20 +22,44 @@ import type { LineNumber, Station } from '../../../shared/types/station';
  * (잘못 탑승 / route 데시싱크로 다른 leg line이 샘) 현재역 라벨로 쓰지 않고 currentStation.line으로
  * fallback한다. upstream fusion(#1317)을 고치기 전에도 혼동 라벨을 차단하는 독립 가드.
  */
+export interface ApproachLineResult {
+  line: LineNumber | null;
+  /**
+   * #2209 (ADR-027 Decision 1) — true면 route/lock에서 산출된 확정값(위 우선순위 1·2번).
+   * false면 route/lock 후보가 없어 `currentStation?.line`(fusion 임의 선택, #797)로만 떨어진
+   * 상태 — boarding 후보 line 필터에 사용하면 정답 line을 통째로 지울 수 있어 미확정으로 취급한다.
+   */
+  confirmed: boolean;
+}
+
+/**
+ * #2209 (ADR-027 Decision 1) — line 필터 안전성을 위해 확정 여부를 함께 반환하는 버전.
+ * `getApproachLine`은 이 함수의 `.line`만 취하는 하위호환 wrapper.
+ */
+export function getApproachLineWithConfirmation(
+  route: Route,
+  boardingLock: BoardingLock | null,
+  currentStation: Station | null,
+): ApproachLineResult {
+  const candidate = resolveCandidateLine(route, boardingLock);
+  const confirmed = candidate !== null;
+
+  if (candidate && currentStation) {
+    const line = findStationByNameAndLine(currentStation.name, candidate)
+      ? candidate
+      : currentStation.line;
+    return { line, confirmed };
+  }
+
+  return { line: candidate ?? currentStation?.line ?? null, confirmed };
+}
+
 export function getApproachLine(
   route: Route,
   boardingLock: BoardingLock | null,
   currentStation: Station | null,
 ): LineNumber | null {
-  const candidate = resolveCandidateLine(route, boardingLock);
-
-  if (candidate && currentStation) {
-    return findStationByNameAndLine(currentStation.name, candidate)
-      ? candidate
-      : currentStation.line;
-  }
-
-  return candidate ?? currentStation?.line ?? null;
+  return getApproachLineWithConfirmation(route, boardingLock, currentStation).line;
 }
 
 /** route + BoardingLock SSOT로 우선순위에 따라 노선을 산출한다 (검증 전 raw 후보). */
