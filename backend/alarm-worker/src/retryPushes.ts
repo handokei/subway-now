@@ -116,7 +116,14 @@ export async function enqueueRetryIfTransient(
   kv: KVNamespace | undefined,
   input: {
     pushId: string;
+    /** APNs 재발사 주소(deviceToken). push_failures.token_hash가 이 값으로 해시된다. */
     token: string;
+    /**
+     * #2185 — trip 신원 토큰(로테이션 시 UUID로 교체될 수 있음). push_failures.trip_token_hash용.
+     * 미전달(fallback/retry-loop 자기 재 enqueue처럼 caller가 trip 객체 없이 deviceToken만
+     * 아는 경로) 시 token과 동일하게 취급 — 기존 동작 100% 유지.
+     */
+    tripToken?: string;
     payload: SilentPushPayload;
     apnsEnv: ApnsEnv;
     status: number;
@@ -133,7 +140,7 @@ export async function enqueueRetryIfTransient(
   const recordFinalFailure = () =>
     logPushFailure(db, {
       token: input.token,
-      tripToken: input.token,
+      tripToken: input.tripToken ?? input.token,
       pushKind: input.payload.kind,
       apnsStatus: input.status,
       apnsReason: input.reason,

@@ -2209,6 +2209,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
         pushId: alertPushId,
         // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
         token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
         payload: buildSleepAlarmRetryPayload(alertPushId, target, targetKind, trip.token, now),
         apnsEnv: alertHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
         status: alertHeal.result.status,
@@ -2234,6 +2236,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
         pushId: companionPushId,
         // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
         token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
         payload: buildSleepAlarmRetryPayload(companionPushId, target, targetKind, trip.token, now),
         apnsEnv: companionHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
         status: companionHeal.result.status,
@@ -2461,6 +2465,8 @@ export async function fireArvlCdStationPush(
         pushId,
         // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
         token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
         payload: arvlcdPayload,
         apnsEnv: trip.apnsEnv ?? 'sandbox',
         status: heal.result.status,
@@ -2853,6 +2859,8 @@ export async function fireVanishFallbackStationPush(
         pushId,
         // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
         token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
         payload: vanishPayload,
         apnsEnv: trip.apnsEnv ?? 'sandbox',
         status: heal.result.status,
@@ -3027,7 +3035,9 @@ async function fireTrainReconfirmPush(
       });
       // #2177 — retry queue를 타지 않는 fire-and-forget 경로(다음 cycle 자연 재시도) — 직접 기록.
       await logPushFailure(env.DB, {
-        token: trip.token,
+        // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+        // 별도로 trip_token_hash에 남긴다.
+        token: resolveTripDeviceToken(trip),
         tripToken: trip.token,
         pushKind: payload.kind,
         apnsStatus: heal.result.status,
@@ -3737,6 +3747,8 @@ export async function advanceBoardingLockWaypoint(
           pushId,
           // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
           token: resolveTripDeviceToken(trip),
+          // #2185 — trip_token_hash용 신원 토큰.
+          tripToken: trip.token,
           payload: transferPayload,
           apnsEnv: trip.apnsEnv ?? 'sandbox',
           status: transferHeal.result.status,
@@ -3993,7 +4005,9 @@ export async function maybeReschedulePush(
     });
     // #2177 — reschedule push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
     await logPushFailure(env.DB, {
-      token: trip.token,
+      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+      // 별도로 trip_token_hash에 남긴다.
+      token: resolveTripDeviceToken(trip),
       tripToken: trip.token,
       pushKind: 'reschedule',
       apnsStatus: result.status,
@@ -4233,7 +4247,9 @@ export async function runLocklessIntermediate(
         // #2177 — unrecoverable(410/mismatch exhausted)로 cleanup 분기하는 경로는 retry queue를
         // 타지 않아 enqueueRetryIfTransient의 공통 D1 기록 지점을 지나지 않는다 — 직접 기록.
         await logPushFailure(env.DB, {
-          token: trip.token,
+          // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+          // 별도로 trip_token_hash에 남긴다.
+          token: resolveTripDeviceToken(trip),
           tripToken: trip.token,
           pushKind: locklessPayload.kind,
           apnsStatus: heal.result.status,
@@ -4255,6 +4271,8 @@ export async function runLocklessIntermediate(
           pushId,
           // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
           token: resolveTripDeviceToken(trip),
+          // #2185 — trip_token_hash용 신원 토큰.
+          tripToken: trip.token,
           payload: locklessPayload,
           apnsEnv: trip.apnsEnv ?? 'sandbox',
           status: heal.result.status,
@@ -4919,7 +4937,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
     // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
     await logPushFailure(env.DB, {
-      token: trip.token,
+      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+      // 별도로 trip_token_hash에 남긴다.
+      token: resolveTripDeviceToken(trip),
       tripToken: trip.token,
       pushKind: 'boarding-prompt',
       apnsStatus: heal.result.status,
@@ -5048,7 +5068,9 @@ export async function maybeFireHopEndPrompt(inputs: {
     });
     // #2177 — hop-end-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
     await logPushFailure(env.DB, {
-      token: trip.token,
+      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+      // 별도로 trip_token_hash에 남긴다.
+      token: resolveTripDeviceToken(trip),
       tripToken: trip.token,
       pushKind: 'hop-end-prompt',
       apnsStatus: heal.result.status,
