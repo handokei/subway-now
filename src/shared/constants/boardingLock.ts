@@ -184,3 +184,21 @@ export const CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION = 3;
  */
 export const REGISTER_RETRY_HEAL_BUSY_RECHECK_MS = 2_000;
 export const REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES = 5;
+
+/**
+ * #2197 (ADR-025 client 절반) — 이미 등록된 trip의 route/destination 변경 재-POST를
+ * coalesce하는 debounce(ms).
+ *
+ * 배경: `useApnsTripRegistration`은 route/destination 변경을 즉시 발사한다(#767 lock-release
+ * debounce와 달리 미적용). GPS/fusion 재계산이 짧은 시간 안에 route를 연속 갱신하면(환승 hop
+ * 진입 직후 store 업데이트 race 등) 같은 세션에 대해 여러 POST /trips가 연쇄 발사되어 자체
+ * rate-limit(10/10min) 소진을 device가 스스로 가속한다.
+ *
+ * `BOARDING_LOCK_RELEASE_DEBOUNCE_MS`(1500ms)와 동일한 값을 사용 — 같은 성격의 "짧은 창의
+ * 연쇄 재등록을 흡수" 목적이며 근거(GPS 1 tick 이상 흡수)도 동일하다.
+ *
+ * **최초 등록(이전 trip 없음)에는 적용하지 않는다** — 신규 목적지 설정은 즉시성이 우선.
+ * `lastRouteSigRef`/`lastDestinationIdRef`가 모두 null(이전 register 없음)인 경우가 이에
+ * 해당하며, 이 상수는 오직 "이미 등록된 trip"의 이후 변경에만 쓰인다.
+ */
+export const ROUTE_CHANGE_DEBOUNCE_MS = 1500;

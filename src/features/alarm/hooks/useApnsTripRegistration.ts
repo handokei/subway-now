@@ -42,6 +42,7 @@ import {
   REGISTER_RETRY_BACKOFF_MS,
   REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES,
   REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
+  ROUTE_CHANGE_DEBOUNCE_MS,
 } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
@@ -371,6 +372,16 @@ export function useApnsTripRegistration({
   const lastDestinationIdRef = useRef<string | null>(null);
   const lastBoardingLockSigRef = useRef<string | null>(null);
 
+  // #2197 (ADR-025 client 절반) — 직전 register가 **성공**(ok:true)했을 때만 갱신되는
+  // routeSig/destination.id. lastRouteSigRef/lastDestinationIdRef(위)는 성공 여부와 무관하게
+  // "마지막으로 시도한" 값을 기록해 #1264/#1704 cancel 판정에 쓰인다 — 그 refs를 그대로 재사용하면
+  // "trip 등록이 한 번도 성공하지 못한 채 route/destination만 바뀌는" 케이스(예: register-retry
+  // 대기 중 사용자가 다른 destination으로 바로 전환)까지 "이미 등록된 trip의 변경"으로 오판해
+  // 불필요하게 debounce가 걸린다 — 아직 성공 등록이 없으면 즉시성을 유지해야 한다(신규 등록과
+  // 동일 취급). 성공 기준으로 별도 추적해야 "이미 등록된 trip"의 정의가 정확해진다.
+  const lastSuccessfulRouteSigRef = useRef<string | null>(null);
+  const lastSuccessfulDestinationIdRef = useRef<string | null>(null);
+
   // #2130 (B-1) — 직전 register가 promptContext 없이 나갔는지 여부. Tier 1 heal 트리거의
   // SSoT — registerFromLatestInputs가 매 호출마다 callRegister의 실제 결과로 갱신한다.
   const lastRegisterMissingContextRef = useRef(false);
@@ -414,6 +425,11 @@ export function useApnsTripRegistration({
     sessionKey: null,
     count: 0,
   });
+  // #2197 (ADR-025 client 절반) — 서버가 429(rate_limited)로 내려준 `retryAfterSeconds`까지
+  // register/heal POST를 억제할 epoch ms. 0이면 억제 없음. `registerFromLatestInputs`가
+  // 유일한 register 진입점이므로 여기 한 곳에서만 체크/갱신하면 main effect / token-refresh /
+  // Tier 1 / Tier 2 / register-retry 모든 경로가 일관되게 서버 힌트를 존중한다.
+  const registerSuppressedUntilRef = useRef<number>(0);
 
   /**
    * #2167 — context-heal(Tier 1/2)과 register-retry(#1960)는 같은 원인("register가 backend에
@@ -466,6 +482,22 @@ export function useApnsTripRegistration({
     } = latestInputsRef.current;
     if (!r || !d) return null;
     const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
+
+    // #2197 — 서버가 지시한 억제 구간이면 네트워크 호출 자체를 내지 않는다. 모든 register
+    // 경로(main effect / token-refresh / Tier 1 / Tier 2 / register-retry)가 이 함수를 통해서만
+    // 실제 POST를 발사하므로, 여기 한 곳의 skip이 storm 자기유발 억제를 전체 경로에 적용한다.
+    const suppressedRemainingMs = registerSuppressedUntilRef.current - Date.now();
+    if (suppressedRemainingMs > 0) {
+      logger.info(`register: 429 retryAfter 억제 중 — ${Math.ceil(suppressedRemainingMs / 1000)}s 남음`);
+      return {
+        ok: false,
+        status: 429,
+        retryAfterSeconds: Math.ceil(suppressedRemainingMs / 1000),
+        hadPromptContext: false,
+        promptContext: null,
+      };
+    }
+
     const result = await callRegister({
       token,
       route: r,
@@ -481,6 +513,12 @@ export function useApnsTripRegistration({
       promptContextOverride: options?.promptContextOverride,
       gpsFix: gf,
     });
+    // #2197 — 429(rate_limited) 응답이면 서버가 지시한 시간까지 이후 register/heal 호출을
+    // 억제한다. backend가 매 429 응답에 최신 window를 다시 계산해 내려주므로 항상 최신값으로
+    // 덮어쓴다(연장/단축 모두 반영).
+    if (result.status === 429 && typeof result.retryAfterSeconds === 'number') {
+      registerSuppressedUntilRef.current = Date.now() + result.retryAfterSeconds * 1000;
+    }
     // #767 — 두 경로 모두 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도 유지.
     lastSentLockSigRef.current = lockSig(bl);
     // #2130 (B-1) / #2164 — 이번 register가 실제로 context를 backend에 성공적으로 전달했는지
@@ -614,7 +652,12 @@ export function useApnsTripRegistration({
     if (registerRetryRef.current.timer !== null) {
       clearTimeout(registerRetryRef.current.timer);
     }
-    const delay = REGISTER_RETRY_BACKOFF_MS[attempt];
+    // #2197 — 서버 429 억제 구간이 기존 backoff보다 더 길게 남아 있으면 그 구간을 우선한다.
+    // (억제가 없거나 이미 만료된 정상 케이스는 음수/0이 되어 기존 backoff가 그대로 쓰인다.)
+    const delay = Math.max(
+      REGISTER_RETRY_BACKOFF_MS[attempt],
+      registerSuppressedUntilRef.current - Date.now(),
+    );
     registerRetryRef.current.attempt = attempt + 1;
     registerRetryRef.current.timer = setTimeout(() => {
       registerRetryRef.current.timer = null;
@@ -805,6 +848,10 @@ export function useApnsTripRegistration({
         lastRouteSigRef.current = null;
         lastDestinationIdRef.current = null;
         lastBoardingLockSigRef.current = null;
+        // #2197 — 성공 기준 추적도 함께 reset — 다음 trip의 첫 register는 "신규 목적지 최초
+        // 등록"으로 취급되어 route-change debounce가 적용되지 않는다.
+        lastSuccessfulRouteSigRef.current = null;
+        lastSuccessfulDestinationIdRef.current = null;
         // #1284: trip 종료 시 prompt context 캐시 reset — 다음 trip이 이전 trip의
         // 출발역 컨텍스트를 stamp하는 오염 방지.
         lastPromptContextRef.current = null;
@@ -903,6 +950,10 @@ export function useApnsTripRegistration({
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
         // #1960 — 성공(dedup skip 포함, ok:true)했으면 이 세션에 대한 대기 재시도가 있다면 정리.
         clearRegisterRetry();
+        // #2197 — 성공 기준 추적 갱신. 다음 cycle의 route-change debounce 판정이 "이미 등록된
+        // trip"인지 정확히 알 수 있도록 실제 성공한 routeSig/destination.id만 기록한다.
+        lastSuccessfulRouteSigRef.current = routeSig;
+        lastSuccessfulDestinationIdRef.current = destination.id;
       } else {
         // #1960 — register 실패({ok:false}) — deps 불변이면 재기회가 없으므로 활성 trip 한정 재시도.
         scheduleRegisterRetry(`${routeSig}:${destination.id}`);
@@ -929,10 +980,31 @@ export function useApnsTripRegistration({
     // 가드가 AsyncStorage.getItem 직후 추가 작업을 차단한다 (이중 방어).
     const isLockReleaseTransition =
       lastSentLockSigRef.current !== null && boardingLockSig === null && route !== null && destination !== null;
-    if (isLockReleaseTransition) {
+
+    // #2197 (ADR-025 client 절반) — "이미 등록된 trip"의 route/destination 변경만 debounce.
+    // lastSuccessfulRouteSigRef/lastSuccessfulDestinationIdRef는 직전 **성공** register에서만
+    // 갱신된다(lastRouteSigRef 등은 성공 여부와 무관하게 "마지막 시도"를 기록해 #1264/#1704 cancel
+    // 판정에 쓰이므로 재사용하지 않는다) — 아직 한 번도 성공하지 못한 trip(예: register-retry 대기
+    // 중 destination 전환)은 "이미 등록된 trip"이 아니므로 즉시성을 유지한다. 둘 다 null이면 이번이
+    // 신규 목적지 최초 등록 — debounce하지 않는다. lock-release 전환과는 상호 배타적으로 둔다
+    // (lock-release가 우선 처리되도록 위에서 이미 판정 완료).
+    const hasSuccessfullyRegisteredTrip =
+      lastSuccessfulRouteSigRef.current !== null || lastSuccessfulDestinationIdRef.current !== null;
+    const isRouteChangeForExistingTrip =
+      !isLockReleaseTransition &&
+      hasSuccessfullyRegisteredTrip &&
+      route !== null &&
+      destination !== null &&
+      (lastSuccessfulRouteSigRef.current !== routeSig ||
+        lastSuccessfulDestinationIdRef.current !== destination.id);
+
+    if (isLockReleaseTransition || isRouteChangeForExistingTrip) {
+      const debounceMs = isLockReleaseTransition
+        ? BOARDING_LOCK_RELEASE_DEBOUNCE_MS
+        : ROUTE_CHANGE_DEBOUNCE_MS;
       debounceTimer = setTimeout(() => {
         void run();
-      }, BOARDING_LOCK_RELEASE_DEBOUNCE_MS);
+      }, debounceMs);
     } else {
       void run();
     }

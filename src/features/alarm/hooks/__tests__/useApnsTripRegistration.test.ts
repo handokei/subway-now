@@ -62,6 +62,7 @@ import {
   REGISTER_RETRY_BACKOFF_MS,
   REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES,
   REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
+  ROUTE_CHANGE_DEBOUNCE_MS,
 } from '../../../../shared/constants/boardingLock';
 import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
@@ -574,7 +575,8 @@ describe('useApnsTripRegistration', () => {
 
     now = 1_700_000_500_000;
     rerender({ route: makeDirectRoute(6, '2') as Route });
-    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    // #2197 — 이미 등록된 trip의 route 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
     expect(mockRegister.mock.calls[1][0].createdAt).toBe(1_700_000_500_000);
     expect(mockRegister.mock.calls[1][0].createdAt).not.toBe(first);
     (Date.now as jest.Mock).mockRestore();
@@ -594,7 +596,8 @@ describe('useApnsTripRegistration', () => {
 
     now = 1_700_000_777_777;
     rerender({ d: altStation });
-    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    // #2197 — 이미 등록된 trip의 destination 변경도 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
     expect(mockRegister.mock.calls[1][0].createdAt).toBe(1_700_000_777_777);
     expect(mockRegister.mock.calls[1][0].createdAt).not.toBe(first);
     (Date.now as jest.Mock).mockRestore();
@@ -639,7 +642,8 @@ describe('useApnsTripRegistration', () => {
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
     rerender({ route: makeDirectRoute(6, '2') as Route });
-    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    // #2197 — 이미 등록된 trip의 route 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
   });
 
   describe('#622 boardingLock 송신', () => {
@@ -996,6 +1000,188 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #2197 (ADR-025 client 절반) — "이미 등록된 trip"의 route/destination 변경 재-POST를
+  // coalesce. 신규 목적지 최초 등록(이전 성공 register 없음)은 즉시성 유지 — debounce 미적용.
+  describe('#2197 route/destination 변경 debounce (이미 등록된 trip)', () => {
+    const altStation: Station = { ...station, id: '2-023', name: '역삼' };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const flushMicrotasks = async () => {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+
+    it('신규 목적지 최초 등록은 debounce 없이 즉시 발사', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('이미 등록된 trip의 route 변경은 debounce window 안에 POST 발사 안 함', async () => {
+      const { rerender } = renderHook(
+        ({ route }: { route: Route }) =>
+          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
+        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ route: makeDirectRoute(6, '2') as Route });
+      await flushMicrotasks();
+      // debounce window 안 — 아직 발사 안 됨.
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        jest.advanceTimersByTime(ROUTE_CHANGE_DEBOUNCE_MS - 100);
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('이미 등록된 trip의 route 변경은 debounce window 경과 후 발사', async () => {
+      const { rerender } = renderHook(
+        ({ route }: { route: Route }) =>
+          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
+        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ route: makeDirectRoute(6, '2') as Route });
+      act(() => {
+        jest.advanceTimersByTime(ROUTE_CHANGE_DEBOUNCE_MS + 100);
+      });
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('debounce window 안에 route가 다시 바뀌면 coalesce — 최종 route만 1회 발사', async () => {
+      const { rerender } = renderHook(
+        ({ route }: { route: Route }) =>
+          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
+        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ route: makeDirectRoute(6, '2') as Route });
+      act(() => {
+        jest.advanceTimersByTime(300);
+      });
+      // 아직 window 안 — 다시 route 변경 (연쇄 갱신 흡수 시나리오)
+      rerender({ route: makeDirectRoute(7, '2') as Route });
+      act(() => {
+        jest.advanceTimersByTime(ROUTE_CHANGE_DEBOUNCE_MS + 200);
+      });
+      await flushMicrotasks();
+
+      // 중간 route(6)는 POST 안 나가고 최종 route(7)만 발사 — 총 2회(최초 + coalesced 1회).
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('이미 등록된 trip의 destination 변경도 debounce', async () => {
+      const { rerender } = renderHook(
+        ({ d }: { d: Station }) =>
+          useApnsTripRegistration({ route: directRoute, destination: d, nextStationEtaSeconds: 120 }),
+        { initialProps: { d: station } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ d: altStation });
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1); // 아직 debounce window 안
+
+      act(() => {
+        jest.advanceTimersByTime(ROUTE_CHANGE_DEBOUNCE_MS + 100);
+      });
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('첫 register가 실패({ok:false})했으면 아직 "등록된 trip" 아님 — 다음 destination 변경은 즉시 발사', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
+      mockRegister.mockResolvedValue({ ok: true });
+      const { rerender } = renderHook(
+        ({ d }: { d: Station }) =>
+          useApnsTripRegistration({ route: directRoute, destination: d, nextStationEtaSeconds: 120 }),
+        { initialProps: { d: station } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ d: altStation });
+      await flushMicrotasks();
+      // 첫 register가 실패했으므로 "이미 등록된 trip"이 아니다 — 즉시 발사.
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('trip 종료 후 새 trip 시작은 debounce 미적용 (성공 기준 추적도 reset)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
+      const { rerender } = renderHook(
+        ({ route, destination }: { route: Route | null; destination: Station | null }) =>
+          useApnsTripRegistration({ route, destination, nextStationEtaSeconds: 120 }),
+        { initialProps: { route: directRoute as Route | null, destination: station as Station | null } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // trip 종료
+      rerender({ route: null, destination: null });
+      await flushMicrotasks();
+
+      // 새 trip 시작 — 성공 기준 추적도 reset되어 즉시 발사.
+      rerender({ route: makeDirectRoute(7, '2'), destination: altStation });
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('boardingLock만 변경(route/destination 동일)은 debounce 미적용 — 즉시 발사', async () => {
+      const lockA = {
+        destinationId: station.id,
+        trainCode: '7246',
+        boardingStationId: station.id,
+        boardingLine: '2' as const,
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 600_000,
+      };
+      const { rerender } = renderHook(
+        ({ lock }: { lock: typeof lockA | null }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            currentStation: station,
+            boardingLock: lock,
+          }),
+        { initialProps: { lock: null as typeof lockA | null } },
+      );
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ lock: lockA });
+      await flushMicrotasks();
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('#1960 (2026-08-04 RCA 보강) — register 실패/token 미가용 재시도', () => {
     const lock = {
       destinationId: station.id,
@@ -1299,6 +1485,81 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       });
       expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // #2197 (ADR-025 client 절반) — 429(rate_limited) 응답의 retryAfterSeconds를 존중해 device가
+  // 자체 재시도/heal POST로 storm을 스스로 키우지 않게 억제.
+  describe('#2197 429 retryAfterSeconds 존중 — register/재시도 억제', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('429 응답 후 retryAfterSeconds 이내 재시도는 네트워크 호출 없이 skip', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 429, retryAfterSeconds: 20 });
+      mockRegister.mockResolvedValue({ ok: true });
+
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // 첫 backoff(15s)는 REGISTER_RETRY_BACKOFF_MS[0]지만, 서버가 20s를 지시했으므로
+      // 15s 시점엔 아직 재시도 네트워크 호출이 없어야 한다.
+      await act(async () => {
+        jest.advanceTimersByTime(REGISTER_RETRY_BACKOFF_MS[0] + 500);
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // 20s 경과 후에는 재시도가 실제로 발화.
+      await act(async () => {
+        jest.advanceTimersByTime(20_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('429 억제 구간 중 route 변경이 와도 register 네트워크 호출 없이 skip(재시도 예약)', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 429, retryAfterSeconds: 30 });
+      mockRegister.mockResolvedValue({ ok: true });
+
+      const { rerender } = renderHook(
+        ({ d }: { d: Station }) =>
+          useApnsTripRegistration({ route: directRoute, destination: d, nextStationEtaSeconds: 120 }),
+        { initialProps: { d: station } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      // 첫 register가 429로 실패했으므로 "이미 등록된 trip" 아님 — route 변경은 즉시 시도되지만
+      // registerFromLatestInputs 내부에서 억제 구간이라 실제 네트워크(mockRegister)는 호출 안 됨.
+      const otherDestination: Station = { ...station, id: '2-023', name: '역삼' };
+      rerender({ d: otherDestination });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(30_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -3062,7 +3323,8 @@ describe('useApnsTripRegistration', () => {
 
       // route 내용 변경 — routeSig 전환
       rerender({ route: makeDirectRoute(6, '2'), destination: station });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // #2197 — 이미 등록된 trip의 route 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
     });
 
@@ -3089,7 +3351,8 @@ describe('useApnsTripRegistration', () => {
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
       rerender({ route: makeDirectRoute(6, '2'), destination: station });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // #2197 — 이미 등록된 trip의 route 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
       // register는 그대로 발사됨
       expect(mockRegister.mock.calls[1][0]).toMatchObject({ destination: station.id });
@@ -3126,7 +3389,8 @@ describe('useApnsTripRegistration', () => {
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
       rerender({ route: makeDirectRoute(6, '2'), destination: altStation });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // #2197 — 이미 등록된 trip의 route/destination 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
     });
 
@@ -3147,7 +3411,8 @@ describe('useApnsTripRegistration', () => {
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
       rerender({ route: makeDirectRoute(6, '2'), destination: station });
-      await waitFor(() => expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1));
+      // #2197 — 이미 등록된 trip의 route 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      await waitFor(() => expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1), { timeout: 3000 });
       // unmount 직후 cancel resolve — cancelled 가드로 후속 register 진행 안 함
       unmount();
       mockRegister.mockClear();
@@ -3217,7 +3482,8 @@ describe('useApnsTripRegistration', () => {
       // routeSig 동일 (같은 line·stops) + destination만 다른 역으로 변경.
       // 기존 #1264 게이트는 routeSig만 검사라 trigger 안 됐지만 #1704 (d)는 destination 변경도 잡는다.
       rerender({ route: makeDirectRoute(5, '2'), destination: altStation });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // #2197 — 이미 등록된 trip의 destination 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
     });
 
@@ -3307,7 +3573,8 @@ describe('useApnsTripRegistration', () => {
         destination: altStation,
         boardingLock: lockB,
       });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // #2197 — 이미 등록된 trip의 route/destination 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
       // cancel은 한 effect cycle 안에 1회만.
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
     });
