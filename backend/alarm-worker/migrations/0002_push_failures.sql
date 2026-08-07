@@ -7,7 +7,11 @@
 CREATE TABLE IF NOT EXISTS push_failures (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
+  -- #2185 — 실 APNs 발사 주소(resolveTripDeviceToken(trip) == trip.deviceToken) 해시.
+  -- 디바이스 단위 실패 추적/조회 키.
   token_hash TEXT NOT NULL,
+  -- #2185 — trip 신원 토큰(trip.token, 로테이션 시 crypto.randomUUID()로 교체) 해시.
+  -- token_hash와 별도로 남겨 "어느 trip 레코드가 이 실패를 냈는지" 역추적 가능.
   trip_token_hash TEXT,
   push_kind TEXT NOT NULL,
   apns_status INTEGER NOT NULL,

@@ -410,7 +410,9 @@ async function fireTripEndedAlertPush(
       // #2177 — trip-ended push는 retry queue를 타지 않는 fire-and-forget 경로(다음 cron
       // cycle에 자연 재시도) — 직접 기록.
       await logPushFailure(env.DB, {
-        token: trip.token,
+        // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+        // 별도로 trip_token_hash에 남긴다.
+        token: resolveTripDeviceToken(trip),
         tripToken: trip.token,
         pushKind: 'trip-ended',
         apnsStatus: heal.result.status,

@@ -12,6 +12,7 @@ import {
   type LiveActivityDeps,
   type LiveActivityStats,
 } from '../liveActivity';
+import { hashTripToken } from '../sentry';
 import { readSsot, seedSsot } from '../tripPositionSsot';
 import { getDeviceTripIndex, putDeviceTripIndex } from '../trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from '../types';
@@ -804,6 +805,47 @@ describe('cleanupTripWithLa', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(logs).toContain('trip-ended push failed');
     expect(await kv.get('trip:devtoken')).toBeNull();
+  });
+
+  // #2185 — 로테이션된 trip(token=UUID, deviceToken=실토큰) 실패 기록 시 push_failures.token_hash가
+  // 실제 APNs 발사 주소(deviceToken)의 hash여야 한다. trip.token(신원)의 hash가 아니다.
+  it('로테이션된 trip 실패 기록 시 token_hash가 실 deviceToken 해시다 (#2185)', async () => {
+    const kv = new InMemoryKV();
+    const rotatedIdentityToken = '11111111-2222-3333-4444-555555555555';
+    const realDeviceToken = 'a'.repeat(64);
+    const trip = makeTrip({
+      token: rotatedIdentityToken,
+      deviceToken: realDeviceToken,
+      activityPushToken: undefined,
+      apnsEnv: 'sandbox',
+    });
+    await kv.put(`trip:${rotatedIdentityToken}`, JSON.stringify(trip));
+    const insertBind = vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) });
+    const selectBind = vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue(null) });
+    const prepare = vi.fn().mockImplementation((sql: string) =>
+      sql.startsWith('SELECT') ? { bind: selectBind } : { bind: insertBind },
+    );
+    const db = { prepare } as unknown as D1Database;
+    const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      'eta-missing',
+    );
+
+    expect(insertBind).toHaveBeenCalled();
+    // bind 순서: ts, tokenHash, tripTokenHash, pushKind, status, reason, env, envMismatchExhausted
+    const [, tokenHash, tripTokenHash] = insertBind.mock.calls[0];
+    expect(tokenHash).toBe(hashTripToken(realDeviceToken));
+    expect(tokenHash).not.toBe(hashTripToken(rotatedIdentityToken));
+    expect(tripTokenHash).toBe(hashTripToken(rotatedIdentityToken));
   });
 
   // #1337 — KV `tripEndedAlert:{tripToken}:{createdAt}` set-if-absent gate. 같은 trip의 cleanup이 race로

@@ -27,9 +27,17 @@ import type { ApnsEnv } from './types';
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 
 export interface PushFailureInput {
-  /** APNs device token — 원본 노출 금지, FNV-1a hash만 저장. */
+  /**
+   * #2185 — 실 APNs 발사 주소(호출자가 `resolveTripDeviceToken(trip)`으로 해석한 값 전달 책임).
+   * `token_hash` 컬럼에 FNV-1a hash로 저장 — 원본 노출 금지. 디바이스 단위 실패 추적/조회 키.
+   */
   token: string;
-  /** trip 식별 토큰. 현재 시스템에서는 device token과 동일 값(`trip.token`)이지만 스키마상 분리. */
+  /**
+   * trip 신원 토큰(`trip.token`) — 로테이션(`rotateTripTokenForNewRoute`) 시 `crypto.randomUUID()`로
+   * 교체되므로 `token`(발사 주소)과 다를 수 있다. `trip_token_hash` 컬럼용. 미전달 시 `token`과
+   * 동일하게 취급(hash 재사용) — trip 객체 없이 deviceToken만 아는 caller(fallback/retry-loop
+   * 자기 재 enqueue)의 기존 동작 100% 유지.
+   */
   tripToken?: string;
   /** push 종류 (예: 'transfer' | 'destination' | 'intermediate' | 'reschedule' | 'boarding-prompt' 등). */
   pushKind: string;
