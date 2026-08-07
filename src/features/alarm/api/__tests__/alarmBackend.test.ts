@@ -108,6 +108,71 @@ describe('alarmBackend', () => {
       expect(result).toEqual({ ok: false, status: 500 });
     });
 
+    // #2197 (ADR-025 client 절반) — 429(rate_limited) 응답의 retryAfterSeconds echo.
+    // backend index.ts:584가 `{ error: 'rate_limited', retryAfterSeconds }`를 429 body에 담아
+    // 내려준다 — device가 자체 backoff 대신 이 값을 존중해야 storm을 스스로 키우지 않는다.
+    describe('429 rate_limited retryAfterSeconds echo (#2197)', () => {
+      it('429 응답 body의 retryAfterSeconds를 결과에 echo', async () => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 429,
+          json: async () => ({ error: 'rate_limited', retryAfterSeconds: 42 }),
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 429, retryAfterSeconds: 42 });
+      });
+
+      it('429 응답 body parse 실패 시 retryAfterSeconds 없이 graceful ok=false', async () => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 429,
+          json: async () => {
+            throw new Error('parse failed');
+          },
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 429 });
+        expect(result.retryAfterSeconds).toBeUndefined();
+      });
+
+      it('429 응답 body에 retryAfterSeconds 필드 부재 시 graceful ok=false', async () => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 429,
+          json: async () => ({ error: 'rate_limited' }),
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 429 });
+      });
+
+      it('429 응답 body의 retryAfterSeconds가 양수 아니면(0/음수/비-숫자) graceful 무시', async () => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 429,
+          json: async () => ({ error: 'rate_limited', retryAfterSeconds: 'bogus' }),
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 429 });
+      });
+
+      it('429가 아닌 다른 실패 status는 retryAfterSeconds 파싱 자체를 skip', async () => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        const jsonSpy = jest.fn(async () => ({ retryAfterSeconds: 99 }));
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 503,
+          json: jsonSpy,
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 503 });
+        expect(jsonSpy).not.toHaveBeenCalled();
+      });
+    });
+
     it('fetch throw 시 ok=false 반환(throw 안 함)', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockRejectedValue(new Error('network'));

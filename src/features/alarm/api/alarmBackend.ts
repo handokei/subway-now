@@ -168,6 +168,12 @@ export interface AlarmBackendResult {
    * undefined (graceful — device 는 다음 register 시 build env fallback 사용).
    */
   confirmedEnv?: ApnsEnv;
+  /**
+   * #2197 (ADR-025 client 절반) — status 429(rate_limited) 응답 body의 `retryAfterSeconds`
+   * echo (backend `index.ts:584`). device 는 이 값이 지날 때까지 자체 재시도/heal POST를
+   * 억제해 storm을 스스로 키우지 않는다. 구 backend/parse 실패 시 undefined (graceful).
+   */
+  retryAfterSeconds?: number;
 }
 
 /** 기본 트립 TTL — 2시간. 백엔드 KV expiration과 정렬. */
@@ -336,7 +342,15 @@ async function performRegisterFetch(
     });
     if (!res.ok) {
       log.warn(`register failed status=${res.status}`);
-      return { ok: false, status: res.status };
+      // #2197 — 429(rate_limited)는 body에 `retryAfterSeconds`를 담아 내려온다(index.ts:584).
+      // 다른 status는 body 형태가 다르므로 429일 때만 파싱 — parse 실패는 graceful undefined.
+      const retryAfterSeconds =
+        res.status === 429 ? await extractRetryAfterSeconds(res) : undefined;
+      return {
+        ok: false,
+        status: res.status,
+        ...(retryAfterSeconds != null ? { retryAfterSeconds } : {}),
+      };
     }
     lastRegisteredHash = hash;
     // #1897 (RC-5) — backend 가 echo한 `confirmedEnv` 추출 + stamp.
@@ -362,6 +376,23 @@ async function extractConfirmedEnv(res: Response): Promise<ApnsEnv | undefined> 
     const body = (await res.json()) as { confirmedEnv?: unknown };
     if (body.confirmedEnv === 'sandbox' || body.confirmedEnv === 'production') {
       return body.confirmedEnv;
+    }
+  } catch {
+    // graceful — 구 backend 응답 또는 parse 실패
+  }
+  return undefined;
+}
+
+/**
+ * #2197 (ADR-025 client 절반) — 429 register 응답에서 `retryAfterSeconds` 추출.
+ * JSON parse 실패 / 필드 부재 / 값 오류(양수 아님)는 모두 graceful undefined —
+ * 호출자는 기존 자체 backoff schedule([15/30/60s])로 fallback한다.
+ */
+async function extractRetryAfterSeconds(res: Response): Promise<number | undefined> {
+  try {
+    const body = (await res.json()) as { retryAfterSeconds?: unknown };
+    if (typeof body.retryAfterSeconds === 'number' && body.retryAfterSeconds > 0) {
+      return body.retryAfterSeconds;
     }
   } catch {
     // graceful — 구 backend 응답 또는 parse 실패
