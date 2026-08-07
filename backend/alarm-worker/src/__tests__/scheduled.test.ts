@@ -8439,10 +8439,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
 /**
  * ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=ON 시).
  *
- * `isSimpleArchEnabled` 는 `arvlcdFireOnceTtl.ts` 의 임시 flag (현재 항상 false 반환). 본 describe
+ * `isSimpleArchEnabled` 는 #2201 이후 real `getArchFlag(env.TRIPS)` 로 wire 되었다. 본 describe
  * 블록은 `vi.spyOn` 으로 flag=ON 을 강제 → 동일 (trip, station, cycle) 조합의 2회 이상 fire 가
- * 차단되는지 검증. Phase 0 (#1982) 머지 후속 PR 에서 real `getArchFlag(env.KV)` 로 wire 되면
- * 본 flag mock 은 자연스럽게 KV 시드 방식으로 교체 예정.
+ * 차단되는지 검증 (spy 방식은 KV 시드와 무관하게 격리 유지 목적으로 존속).
  */
 describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985)', () => {
   const TOKEN = 'arvl-fireonce-tok';
@@ -8464,7 +8463,7 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985)', () => {
     // flag=ON 을 spy 로 강제. `isSimpleArchEnabled` 를 * as import 하지 않고 destructured 로
     // scheduled.ts 가 import 하지만, vitest 는 ESM live bindings 를 통해 spy 를 적용한다.
     const mod = await import('../arvlcdFireOnceTtl');
-    const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockReturnValue(true);
+    const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
     try {
       const kv = new InMemoryKV();
       await putTrip(kv as unknown as KVNamespace, opts.trip ?? makeLockTrip());
@@ -8544,7 +8543,7 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985)', () => {
     // 검증 방식: `fireArvlCdStationPush` 를 직접 호출 (waypoint advance 부작용 격리) — 첫 호출 =
     // arvlCd=0 fire + fire-once stamp, 두 번째 호출 = arvlCd=1 통합 skip.
     const mod = await import('../arvlcdFireOnceTtl');
-    const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockReturnValue(true);
+    const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
     try {
       const kv = new InMemoryKV();
       const trip = makeLockTrip();
@@ -8657,7 +8656,7 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985)', () => {
       // 만료 시점 진행.
       vi.setSystemTime(NOW + 10_000);
       const mod = await import('../arvlcdFireOnceTtl');
-      const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockReturnValue(true);
+      const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
       try {
         const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
         const stats = await runScheduled(makeEnv(kv), {

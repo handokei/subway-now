@@ -2300,7 +2300,7 @@ export async function fireArvlCdStationPush(
   // (0→1→2→5) 를 하나의 fire 이벤트로 통합 — 어린이대공원 반복 4회 fire (#1980) 회귀 차단.
   // flag=OFF (default, Phase 0 #1982 미머지 상태) 에서는 조기 return 으로 무영향.
   const fireOnceCycle = ARVLCD_FIRE_ONCE_CYCLE_SLOT;
-  if (isSimpleArchEnabled()) {
+  if (await isSimpleArchEnabled(env)) {
     const alreadyFired = await checkArvlCdFireOnce(
       env.TRIPS,
       trip.token,
@@ -2498,7 +2498,7 @@ export async function fireArvlCdStationPush(
   // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
   // 해 다음 cycle 이내 arvlCd 재노출을 통합 차단. flag=OFF 시 이 write 는 실행되지 않아
   // production 무영향.
-  if (isSimpleArchEnabled()) {
+  if (await isSimpleArchEnabled(env)) {
     await stampArvlCdFireOnce(env.TRIPS, trip.token, waypoint.stationName, fireOnceCycle, now);
   }
   // #1367 — cross-station dedup용 마지막 fire 마커. 성공 시에만 stamp(실패는 다음 cycle 재시도 허용).

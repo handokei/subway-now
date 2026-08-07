@@ -27,14 +27,17 @@
  *
  * ## Feature flag
  *
- * 본 helper 자체는 flag 를 알지 않는다 — caller (`fireArvlCdStationPush`) 가 `isSimpleArchEnabled()`
- * 로 게이트한다. Phase 0 (#1982) 머지 후속 PR 에서 real `getArchFlag(env.KV)` wire.
+ * 본 helper 자체는 flag 를 알지 않는다 — caller (`fireArvlCdStationPush`) 가 `isSimpleArchEnabled(env)`
+ * 로 게이트한다. `isSimpleArchEnabled`는 real `getArchFlag(env.TRIPS)`를 조회한다 (#2201).
  *
  * ## 관측
  *
  * skip 발생 시 caller 가 `writeMetric(env, { eventType: 'suppress', reason: 'fire-once-cycle-already' })`
  * 로 wrangler tail 관측. `arvlCdFireOnceSkipped` stat 카운터도 별도 누적.
  */
+
+import { getArchFlag } from './archFlag';
+import type { Env } from './types';
 
 /**
  * 5분 (300s). Train 이 같은 station 을 5분 안에 재방문할 수 없다는 실제 운영 특성 기반.
@@ -99,14 +102,15 @@ export async function stampArvlCdFireOnce(
 }
 
 /**
- * ADR-022 Phase 1-1 임시 flag. `false` = 기존 로직 (per-arvlCd dedup) 그대로.
- * Phase 0 (#1982) 머지 후속 PR 에서 `getArchFlag(env.KV)` 로 real wire — 그 시점 이전엔
- * production 무영향.
+ * ADR-022 Phase 1-1 (#1985) → Phase 1-2 real wire (#2201, ADR-026 Decision 4).
+ *
+ * `env.TRIPS` KV 의 real `getArchFlag`를 조회 — 'on' 이면 true. 어린이대공원 13:31/13:32/13:37
+ * 재발사 (#2200 storm evidence) 는 이 flag가 remote='on' 인데도 항상 `false`를 반환하는
+ * 하드코딩 stub 이었던 것이 backend 기여분 근본 원인 — real wire 로 dormant 해제한다.
  *
  * 함수로 노출한 이유: 테스트에서 `vi.spyOn(module, 'isSimpleArchEnabled')` 로 flag=ON 시나리오
- * 검증. Phase 1-2 follow-up PR 에서 signature 를 `isSimpleArchEnabled(env: Env)` 로 확장하고
- * 내부를 `await getArchFlag(env.KV)` 로 교체 (call site 는 이미 `env` 를 갖고 있음).
+ * 검증 가능 유지.
  */
-export function isSimpleArchEnabled(): boolean {
-  return false;
+export async function isSimpleArchEnabled(env: Env): Promise<boolean> {
+  return (await getArchFlag(env.TRIPS)) === 'on';
 }
