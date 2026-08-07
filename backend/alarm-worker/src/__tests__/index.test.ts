@@ -1640,38 +1640,42 @@ describe('DELETE /trips/:token — LA dismissal (#586 D)', () => {
   });
 });
 
-// 리뷰 확정 P1 (#2186) — DELETE /trips/:token이 getTrip(token) 직접 키 조회만 해서, ADR-022 B4
-// 로테이션 이후 실토큰 DELETE가 miss → { ok:true, deleted:false } no-op → trip:<uuid> 고아가
+// 리뷰 확정 P1 (#2186) — DELETE /trips/:token이 getTrip(token) 직접 키 조회만 하면, 역인덱스가
+// 직접 키와 다른 trip을 가리키는 상태(예: ADR-025 이후 존치된 APNs refresh 복구 경로, ADR-025
+// Consequences)에서 실토큰 DELETE가 miss → { ok:true, deleted:false } no-op → orphan trip이
 // 계속 push를 발사하는 회귀. GET /trips/:token/status(#2175)와 동일한 역인덱스 fallback을 DELETE
 // 에도 배선해 사용자의 명시적 clear가 실제로 orphan trip을 회수하도록 한다.
 describe('DELETE /trips/:token — deviceToken 역인덱스 fallback (리뷰 P1, #2186)', () => {
   const TOKEN = 'tok-2186-real';
 
-  function tripBodyFor(destination: string, stationName: string): Record<string, unknown> {
-    return {
-      ...base(),
-      token: TOKEN,
-      destination,
-      waypoints: [{ stationName, line: '2', kind: 'destination' }],
-    };
-  }
-
-  it('로테이션 이후 실토큰 DELETE가 직접 키 miss여도 역인덱스로 UUID trip을 찾아 삭제한다', async () => {
+  it('직접 키 miss(역인덱스가 다른 trip을 가리킴, APNs refresh 시나리오)여도 역인덱스로 그 trip을 찾아 삭제한다', async () => {
+    // ADR-025(#2194) 하에서 신원은 rotation으로 갈리지 않지만, 역인덱스 자체는 APNs refresh
+    // 복구 용도로 존치된다(ADR-025 Consequences) — trip.token !== trip.deviceToken인 legacy
+    // 형태(과거 로테이션 시절 산물과 동일한 모양)를 raw KV put으로 직접 seed해 fallback wire를
+    // 검증한다(더 이상 rotation으로 자연 발생하지 않으므로 수동 seed).
     const env = makeKvEnv();
-    await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-    await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
-    const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    const uuid1 = ((await res2.json()) as { token: string }).token;
-    expect(uuid1).not.toBe(TOKEN);
-    // 수정 전 회귀 재현: 직접 키(trip:TOKEN)는 로테이션이 이미 지웠고, orphan은 trip:<uuid1>에 산다.
+    const orphanToken = 'orphan-trip-token';
+    const orphanTrip = {
+      token: orphanToken,
+      deviceToken: TOKEN,
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: '성수-id',
+      waypoints: [{ stationName: '성수', line: '2', kind: 'destination' }],
+      expiresAt: FUTURE,
+      createdAt: Date.now(),
+      alarmAtEpochMs: FUTURE - 30 * 60 * 1000,
+    };
+    await env.TRIPS.put(`trip:${orphanToken}`, JSON.stringify(orphanTrip));
+    // 역인덱스 — production과 동일한 형태(key=deviceToken, value=trip.token).
+    await env.TRIPS.put(`device-trips:${TOKEN}`, orphanToken);
     expect(await env.TRIPS.get(`trip:${TOKEN}`)).toBeNull();
-    expect(await env.TRIPS.get(`trip:${uuid1}`)).not.toBeNull();
+    expect(await env.TRIPS.get(`trip:${orphanToken}`)).not.toBeNull();
 
     const res = await del(`/trips/${TOKEN}`, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, deleted: true });
-    // orphan UUID trip이 실제로 삭제된다 — 수정 전엔 no-op으로 계속 생존해 push를 발사했다.
-    expect(await env.TRIPS.get(`trip:${uuid1}`)).toBeNull();
+    // 역인덱스가 가리키던 trip이 실제로 삭제된다 — 수정 전엔 no-op으로 계속 생존해 push를 발사했다.
+    expect(await env.TRIPS.get(`trip:${orphanToken}`)).toBeNull();
     // 역인덱스도 함께 정리된다.
     expect(await env.TRIPS.get(`device-trips:${TOKEN}`)).toBeNull();
   });
@@ -4392,17 +4396,19 @@ describe('POST /trips — #1897 confirmedEnv echo (RC-5)', () => {
   });
 });
 
-// ADR-022 B4 (#2019 wire) — POST /trips 에서 rotateTripTokenForNewRoute 실제 호출.
+// ADR-025 (#2194) — POST /trips 에서 resetTripStateForNewRoute 실제 호출. rotation(ADR-022 B4,
+// `rotateTripTokenForNewRoute`, #2019/#1986)을 대체 — trip 신원(token)은 트립 수명 동안 불변,
+// route sig가 바뀌면 같은 key(`trip:<TOKEN>`)를 in-place로 갱신하고 구 route의 잔재 pending push만
+// 정리한다.
 //
-// #1986 이 helper 정의를 도입했지만 프로덕션 caller 0개 (테스트 파일에서만 호출) 였고 2026-07-03
-// 사용자 실기기 trip(중곡→성수)에서 이전 trip 잔재 pending push 가 계속 발사돼 device 는
-// `BoardingLock active=no + boardingPrompt(all)=0` 상태였음에도 `08:37:25 bg fired
-// station-passed 성수` 관측. 원인: 새 route 등록 시 `trip:<oldToken>` KV entry 와
-// `pending:*` 잔재가 rotation helper 호출 부재로 정리되지 않음.
+// 2026-07-03 사용자 실기기 trip(중곡→성수) 회귀(이전 trip 잔재 pending push가 계속 발사돼
+// `08:37:25 bg fired station-passed 성수` 관측)의 근본 목표("route 변경 시 이전 route의 잔재
+// 상태를 지운다")는 이 wire가 그대로 달성한다 — 메커니즘만 rotation(신원 교체)에서 in-place
+// reset(신원 유지)으로 바뀌었다.
 //
-// 본 describe 는 wire 완결(POST handler 가 helper 호출) 을 검증한다. Helper 자체의 rotation
-// 로직 (route sig 계산 / KV delete / pending cleanup) 은 `trips.test.ts` 에서 커버.
-describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', () => {
+// 본 describe 는 wire 완결(POST handler 가 helper 호출) 을 검증한다. Helper 자체의 reset 로직
+// (route sig 계산 / pending cleanup) 은 `trips.test.ts` 에서 커버.
+describe('POST /trips — #2194 resetTripStateForNewRoute wire (ADR-025)', () => {
   const TOKEN = 'tok-2019';
   const ARCH_FLAG_KV_KEY = 'arch:simple-arrival-v1';
 
@@ -4449,13 +4455,13 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
   }
 
   describe('archFlag=off (default) — dormant', () => {
-    it('existing + 다른 destination → 회전 없음 (`trip:<TOKEN>` 유지 + 응답 token 동일)', async () => {
+    it('existing + 다른 destination → reset 없음 (`trip:<TOKEN>` 유지 + 응답 token 동일)', async () => {
       const env = makeKvEnv();
       await seedExistingTrip(env, '용마산-id', '용마산');
       // KV 에 archFlag 미설정 → getArchFlag 는 default 'off' 반환.
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       expect(res.status).toBe(200);
-      // 응답 token 은 그대로 (rotation 미발동).
+      // 응답 token 은 그대로 (신원 불변, reset 미발동 무관하게 항상 동일).
       expect(await res.json()).toEqual({
         ok: true,
         token: TOKEN,
@@ -4479,12 +4485,8 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
     });
   });
 
-  describe('archFlag=on — rotation active', () => {
-    beforeEach(async () => {
-      // 각 테스트는 자체 env 를 만들고 setup 에서 flag 를 KV 에 set 한다.
-    });
-
-    it('existing 없음 (신규 trip) → 회전 없음, incoming token 유지', async () => {
+  describe('archFlag=on — in-place reset active', () => {
+    it('existing 없음 (신규 trip) → reset 없음, incoming token 유지', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
@@ -4497,13 +4499,13 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       expect(await env.TRIPS.get(`trip:${TOKEN}`)).not.toBeNull();
     });
 
-    it('existing + 같은 route (destination/waypoints 동일) → 회전 없음', async () => {
+    it('existing + 같은 route (destination/waypoints 동일) → reset 없음', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '성수-id', '성수');
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       expect(res.status).toBe(200);
-      // 같은 route sig → rotation dormant → token 유지.
+      // 같은 route sig → reset dormant → token 유지.
       expect(await res.json()).toEqual({
         ok: true,
         token: TOKEN,
@@ -4512,11 +4514,9 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       expect(await env.TRIPS.get(`trip:${TOKEN}`)).not.toBeNull();
     });
 
-    it('#2174 P1-A — existing + 다른 destination: rotation 발동으로 응답에 새 UUID token + old trip:<TOKEN> 삭제', async () => {
-      // #2173 P0 hotfix가 guard로 이 경로를 단락시켰던 이유(crypto.randomUUID() 가 APNs
-      // deviceToken 자리에 저장돼 400 BadDeviceToken 즉사, Epic #2172)는 #2174의
-      // `Trip.deviceToken` 필드 분리로 해소됐다 — 모든 push 발사 사이트가 `resolveTripDeviceToken`
-      // 을 사용하므로 trip.token(신원) 로테이션이 더 이상 push 발사 주소에 영향을 주지 않는다.
+    it('#2194 — existing + 다른 destination: reset 발동해도 응답 token은 신원 불변(같은 TOKEN) + `trip:<TOKEN>` in-place 갱신 (삭제 없음)', async () => {
+      // ADR-025 핵심 — rotation(ADR-022 B4)이 새 UUID 발급 + old trip:<TOKEN> delete로
+      // 해결하던 문제를, 신원을 그대로 유지한 채 같은 key를 그 자리에서 갱신하는 방식으로 해결한다.
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '용마산-id', '용마산');
@@ -4524,17 +4524,15 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       expect(res.status).toBe(200);
       const body = (await res.json()) as { ok: true; token: string; confirmedEnv: string };
       expect(body.ok).toBe(true);
-      // rotation 발동 — 응답 token은 새 UUID (incoming token과 다름).
-      expect(body.token).not.toBe(TOKEN);
-      expect(body.token).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-      // old trip:<TOKEN> 은 삭제되고 새 trip:<newToken> 이 생성된다.
-      expect(await env.TRIPS.get(`trip:${TOKEN}`)).toBeNull();
-      const stored = await env.TRIPS.get(`trip:${body.token}`);
+      // 신원 불변 — 응답 token은 항상 원본 TOKEN.
+      expect(body.token).toBe(TOKEN);
+      // `trip:<TOKEN>` 레코드는 삭제되지 않고 그 자리에서 새 destination으로 갱신된다.
+      const stored = await env.TRIPS.get(`trip:${TOKEN}`);
       expect(stored).not.toBeNull();
       expect(JSON.parse(stored as string).destination).toBe('성수-id');
     });
 
-    it('#2174 P1-A — 이전 trip pending push 잔재 존재 상태에서 새 route 등록: old token 소유 cleanup 발동', async () => {
+    it('#2194 — 이전 trip pending push 잔재 존재 상태에서 새 route 등록: TOKEN 소유 cleanup 발동 (다른 device 소유는 보존)', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '용마산-id', '용마산');
@@ -4545,16 +4543,16 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       expect(res.status).toBe(200);
 
-      // rotation 발동 → old token 소유 pending은 cleanup, 다른 device 소유는 보존.
+      // reset 발동 → TOKEN 소유 pending은 cleanup, 다른 device 소유는 보존.
       expect(await env.TRIPS.get('pending:p-old-1')).toBeNull();
       expect(await env.TRIPS.get('pending:p-old-2')).toBeNull();
       expect(await env.TRIPS.get('pending:p-other-device')).not.toBeNull();
     });
 
-    it('#2174 P1-A — archFlag off→on 전환 시 두 번째 등록만 rotation 발동', async () => {
+    it('#2194 — archFlag off→on 전환과 무관하게 두 라운드 모두 같은 TOKEN으로 등록된다', async () => {
       const env = makeKvEnv();
       await seedExistingTrip(env, '용마산-id', '용마산');
-      // Round 1: flag 미설정 → default off → 회전 없음.
+      // Round 1: flag 미설정 → default off → reset 없음, 신원 유지.
       const res1 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       const body1 = (await res1.json()) as { token: string };
       expect(body1.token).toBe(TOKEN);
@@ -4562,26 +4560,22 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       // Reset: 새 existing 을 다시 seed 하고 flag on.
       await seedExistingTrip(env, '용마산-id', '용마산');
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-      // Round 2: flag on → rotation 발동 → token 변경.
+      // Round 2: flag on → reset 발동해도 신원은 여전히 같은 TOKEN.
       const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       const body2 = (await res2.json()) as { token: string };
-      expect(body2.token).not.toBe(TOKEN);
+      expect(body2.token).toBe(TOKEN);
     });
 
-    // #2174 F2 → #2175로 완결 — rotation 발동 후 old(실) token으로 GET /trips/:token/status를
-    // 조회하면 deviceToken 역인덱스가 새 UUID trip을 재발견해 'active'를 반환한다. 로테이션된
-    // trip은 실제로 여전히 살아있으므로(사용자가 그냥 route를 바꿨을 뿐) 'ended'로 보고하는 게
-    // 오히려 부정확했다 — #2175가 이 갭을 닫는다.
-    it('#2175 — rotation 발동 후 실 deviceToken으로 GET /trips/:token/status 조회 시 역인덱스로 새 UUID trip을 찾아 active를 반환한다', async () => {
+    // ADR-025 하에서 GET /trips/:token/status는 항상 직접 키(trip:<TOKEN>)로 조회에 성공한다 —
+    // 신원이 rotation으로 바뀌지 않으므로 #2175 deviceToken 역인덱스 fallback(APNs refresh 복구
+    // 용도로 존치)이 이 경로에서 발동할 필요가 없다.
+    it('reset 발동 후 실 deviceToken(=TOKEN)으로 GET /trips/:token/status 조회 시 active를 반환한다', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '용마산-id', '용마산');
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { token: string };
 
-      // #2174 comment 1 — device는 로테이션 이후에도 실 deviceToken(=최초 등록 시 TOKEN)으로
-      // GET /trips/:token/status를 조회한다.
       const statusRes = await app.fetch(
         new Request(`http://example.com/trips/${TOKEN}/status`, { method: 'GET' }),
         env,
@@ -4592,51 +4586,15 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
         status: string;
         endReason: string | null;
       };
-      // 응답의 tripToken은 device가 질의한 원래 값(TOKEN)을 echo — 내부적으로는 새 UUID(body.token)
-      // trip을 참조해 active로 판정했다.
       expect(statusBody.tripToken).toBe(TOKEN);
       expect(statusBody.status).toBe('active');
       expect(statusBody.endReason).toBeNull();
-      expect(body.token).not.toBe(TOKEN);
-    });
-
-    // #2175 — 로테이션된 trip이 실제로 종료(예: 만료)되면, 역인덱스가 여전히 그 UUID를 가리키는
-    // 상태에서 실 deviceToken 조회가 그 UUID의 종료 사유('rotated')를 그대로 노출한다.
-    it('#2175 — rotation 후 새 UUID trip마저 종료되면 실 deviceToken 조회가 그 종료 사유를 반환한다', async () => {
-      const env = makeKvEnv();
-      await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-      await seedExistingTrip(env, '용마산-id', '용마산');
-      const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-      const body = (await res.json()) as { token: string };
-      const newToken = body.token;
-      expect(newToken).not.toBe(TOKEN);
-
-      // 새 UUID trip을 직접 종료 상태로 전환 (cron 자동 종료를 시뮬레이션 — expired 사유).
-      await env.TRIPS.delete(`trip:${newToken}`);
-      await env.TRIPS.put(
-        `tripStatus:${newToken}`,
-        JSON.stringify({ endedAt: Date.now(), endReason: 'expired' }),
-      );
-
-      const statusRes = await app.fetch(
-        new Request(`http://example.com/trips/${TOKEN}/status`, { method: 'GET' }),
-        env,
-      );
-      expect(statusRes.status).toBe(200);
-      const statusBody = (await statusRes.json()) as {
-        tripToken: string;
-        status: string;
-        endReason: string | null;
-      };
-      expect(statusBody.tripToken).toBe(TOKEN);
-      expect(statusBody.status).toBe('ended');
-      expect(statusBody.endReason).toBe('expired');
     });
 
     // #2129 — 2026-08-04 실탑승 evidence: 같은 device token으로 거의 동시에 도착한
-    // POST /trips 2건(waypoints 다름)이 getTrip → rotate → putTrip TOCTOU window에서
-    // interleave해 유령 trip 2개(원본 token + rotated UUID)가 모두 KV에 생존했다.
-    // withTripRegisterLock이 같은 token의 register 처리를 직렬화해 이 race를 차단한다.
+    // POST /trips 2건(waypoints 다름)이 getTrip → reset → putTrip TOCTOU window에서
+    // interleave하면 유령 trip이 KV에 중복 생존할 수 있다. withTripRegisterLock이 같은 token의
+    // register 처리를 직렬화해 이 race를 차단한다.
     it('#2129 동시 register 2건(같은 token, 다른 waypoints) → KV 활성 trip 정확히 1개', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
@@ -4649,24 +4607,19 @@ describe('POST /trips — #2019 rotateTripTokenForNewRoute wire (ADR-022 B4)', (
       expect(resA.status).toBe(200);
       expect(resB.status).toBe(200);
       const allTripKeys = (await env.TRIPS.list({ prefix: 'trip:' })).keys;
-      // 두 요청 모두 성공 응답을 받아도, 직렬화 덕분에 KV에는 활성 trip이 정확히 1개만 남는다
-      // (원본 TOKEN 재사용이든 rotation으로 발급된 새 UUID든 — 유령 trip 2개 생존이 회귀).
+      // 두 요청 모두 성공 응답을 받아도, 직렬화 덕분에 KV에는 활성 trip이 정확히 1개만 남는다 —
+      // 신원이 항상 같은 TOKEN이므로 두 요청은 결국 같은 key로 수렴한다.
       expect(allTripKeys.length).toBe(1);
+      expect(allTripKeys[0]?.name).toBe(`trip:${TOKEN}`);
     });
   });
 });
 
-// #2175 — deviceToken → trip.token 역인덱스로 POST /trips 비멱등 회수 (#2184 리뷰 P1).
-//
-// Root cause(backend RCA #2175 코멘트): 같은 실토큰 재-POST + route 변경 → 매번 새 UUID trip
-// 생성, `getTrip`은 incoming.token(실토큰)으로만 조회(index.ts)라 직전 로테이션의 UUID trip을
-// 못 찾아 orphan이 누적된다. rotated UUID를 device가 채택하지 않는 것도 원인(발산 지속).
-//
-// #2184 리뷰 P1 시퀀스: (1) 실토큰 등록 → route 변경 재-POST → 로테이션(`trip:<실토큰>` 삭제 +
-// `trip:<UUID>` 생성) → (2) 클라가 또 실토큰으로 재-POST(route 동일, lock/ETA 변동 등) →
-// `getTrip(실토큰)` miss → 역인덱스 fallback 없이는 신규 `trip:<실토큰>` 생성 → `trip:<UUID>`
-// (route frozen 고아)와 `trip:<실토큰>`(현재) 둘 다 live.
-describe('POST /trips — #2175 deviceToken 역인덱스 (orphan 회수, #2184 리뷰 P1)', () => {
+// #2175 — deviceToken → trip.token 역인덱스. ADR-025(#2194) 하에서 신원이 트립 수명 동안 불변이라
+// 일반 route 변경 경로는 항상 직접 key 조회(`trip:<incoming.token>`)로 성공하므로, 이 역인덱스의
+// 값은 이제 늘 그 key(deviceToken) 자신과 같다(예전 rotation 시절엔 UUID로 갈라졌다). ADR-025
+// Consequences에 명시된 대로 "APNs token refresh 복구 용도로만 축소 존치" — 삭제는 #2196 소관.
+describe('POST /trips — #2175 deviceToken 역인덱스 (ADR-025 이후 항상 자기 자신을 가리킴, 축소 존치)', () => {
   const TOKEN = 'tok-2175-real';
 
   function tripBodyFor(destination: string, stationName: string): Record<string, unknown> {
@@ -4678,90 +4631,23 @@ describe('POST /trips — #2175 deviceToken 역인덱스 (orphan 회수, #2184 �
     };
   }
 
-  async function activeTripKeys(env: Env): Promise<string[]> {
-    const list = await env.TRIPS.list({ prefix: 'trip:' });
-    return list.keys.map((k) => k.name);
-  }
-
-  it('P1: 실토큰 재-POST(route 동일, 로테이션 이후) → 역인덱스로 기존 UUID trip에 merge, 신규 trip:<실토큰> 미생성', async () => {
-    const env = makeKvEnv();
-    await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-
-    // 1) 최초 등록.
-    const res1 = await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
-    expect(res1.status).toBe(200);
-    expect(await activeTripKeys(env)).toEqual([`trip:${TOKEN}`]);
-
-    // 2) route 변경 재-POST → rotation 발동 (`trip:<TOKEN>` 삭제 + `trip:<UUID>` 생성).
-    const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    expect(res2.status).toBe(200);
-    const body2 = (await res2.json()) as { token: string };
-    const uuid1 = body2.token;
-    expect(uuid1).not.toBe(TOKEN);
-    expect(await activeTripKeys(env)).toEqual([`trip:${uuid1}`]);
-
-    // 3) 클라는 rotated UUID를 채택하지 않고 계속 실토큰(TOKEN)으로 같은 route 재-POST.
-    //    수정 전: getTrip(TOKEN) miss → 신규 trip:<TOKEN> 생성 → trip:<uuid1>(고아) 동시 생존(2개).
-    //    수정 후: 역인덱스가 TOKEN → uuid1을 가리키므로 existing으로 재발견 → 같은 route → merge.
-    const res3 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    expect(res3.status).toBe(200);
-    const body3 = (await res3.json()) as { token: string };
-    expect(body3.token).toBe(uuid1);
-    const keysAfterMerge = await activeTripKeys(env);
-    expect(keysAfterMerge).toEqual([`trip:${uuid1}`]);
-    expect(keysAfterMerge).not.toContain(`trip:${TOKEN}`);
-  });
-
-  it('P1: 2회 연속 로테이션에도 orphan이 쌓이지 않는다 (역인덱스가 매번 최신 UUID로 갱신)', async () => {
-    const env = makeKvEnv();
-    await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-
-    await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
-    const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    const uuid1 = ((await res2.json()) as { token: string }).token;
-
-    // 다시 실토큰으로 두 번째 route 변경 재-POST → uuid1 → uuid2 로테이션.
-    const res3 = await post('/trips', tripBodyFor('중곡-id', '중곡'), env);
-    expect(res3.status).toBe(200);
-    const uuid2 = ((await res3.json()) as { token: string }).token;
-    expect(uuid2).not.toBe(uuid1);
-    expect(uuid2).not.toBe(TOKEN);
-
-    // 두 번의 로테이션이 지나도 KV에 활성 trip은 정확히 1개 — uuid1도 orphan으로 남지 않는다.
-    expect(await activeTripKeys(env)).toEqual([`trip:${uuid2}`]);
-  });
-
-  it('#2184 리뷰 P1 안전망: 역인덱스가 가리키던 trip이 최종 확정 trip과 다르면 superseded-by-reregister로 정리하고 D1/sentinel을 남긴다', async () => {
-    const env = makeKvEnv();
-    await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
-    await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
-    const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    const uuid1 = ((await res2.json()) as { token: string }).token;
-
-    const res3 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    expect(res3.status).toBe(200);
-    // merge 케이스라 정리 대상이 없다 — uuid1 자체가 그대로 유지된 최종 trip이므로 sentinel 미기록.
-    expect(await env.TRIPS.get(`tripStatus:${uuid1}`)).toBeNull();
-
-    // 이어서 route 변경 재-POST → uuid1 → uuid2 로테이션. rotateTripTokenForNewRoute 자체가
-    // 'rotated' sentinel을 남기므로(#2174 F2), superseded-by-reregister 중복 기록은 없어야 한다.
-    const res4 = await post('/trips', tripBodyFor('중곡-id', '중곡'), env);
-    const uuid2 = ((await res4.json()) as { token: string }).token;
-    const uuid1Status = await env.TRIPS.get(`tripStatus:${uuid1}`);
-    expect(uuid1Status).not.toBeNull();
-    expect(JSON.parse(uuid1Status as string).endReason).toBe('rotated');
-    expect(await activeTripKeys(env)).toEqual([`trip:${uuid2}`]);
-  });
-
-  it('deviceToken 역인덱스가 최종 trip.token으로 유지된다 (raw KV 값 검증)', async () => {
+  it('등록 시 deviceToken 역인덱스가 즉시 생성되고 값은 항상 TOKEN 자신이다', async () => {
     const env = makeKvEnv();
     await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
     await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
     expect(await env.TRIPS.get(`device-trips:${TOKEN}`)).toBe(TOKEN);
+  });
 
-    const res2 = await post('/trips', tripBodyFor('성수-id', '성수'), env);
-    const uuid1 = ((await res2.json()) as { token: string }).token;
-    expect(await env.TRIPS.get(`device-trips:${TOKEN}`)).toBe(uuid1);
+  it('route 변경 재-POST를 반복해도(신원 불변) 역인덱스 값은 계속 TOKEN 자신을 가리킨다', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
+    await post('/trips', tripBodyFor('용마산-id', '용마산'), env);
+    await post('/trips', tripBodyFor('성수-id', '성수'), env);
+    await post('/trips', tripBodyFor('중곡-id', '중곡'), env);
+    expect(await env.TRIPS.get(`device-trips:${TOKEN}`)).toBe(TOKEN);
+    // 활성 trip은 항상 정확히 1개, 항상 같은 key.
+    const keys = (await env.TRIPS.list({ prefix: 'trip:' })).keys.map((k) => k.name);
+    expect(keys).toEqual([`trip:${TOKEN}`]);
   });
 });
 

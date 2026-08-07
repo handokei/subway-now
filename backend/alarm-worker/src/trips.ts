@@ -254,120 +254,76 @@ export function computeRouteSignature(trip: Trip): string {
 }
 
 /**
- * ADR-022 B4 — 새 route = 새 token 강제 결정.
+ * ADR-025 (#2194) — trip 신원 안정화: route 변경은 rotation(새 token 발급) 대신 in-place reset.
  *
- * `POST /trips`가 호출하는 진입점. incoming trip과 existing trip의 route/destination
- * 시그니처를 비교해 다르면 새 token 발급 + old token cleanup, 같으면 incoming token 유지.
+ * ADR-022 B4가 채택했던 `rotateTripTokenForNewRoute`(새 route = 새 token 강제)를 대체한다.
+ * trip 식별자(`trip.token`)는 트립 수명 동안 **불변**(deviceToken 유도 안정값) — route가 바뀌어도
+ * 신원은 그대로 유지된다. `POST /trips`가 호출하는 진입점.
  *
- * Flag OFF (default, KV `arch:simple-arrival-v1` !== 'on'): 기존 동작 유지 — incoming.token
- * 그대로 반환, KV cleanup 없음. Phase 1-3 인프라만 병존.
+ * Flag OFF (default, KV `arch:simple-arrival-v1` !== 'on'): 기존 동작 유지 — existing 그대로
+ * 반환(`reset: false`), KV 변경 없음. downstream(index.ts)이 기존 `evaluateSameSession` 판정으로
+ * 세션 유지/교체를 결정한다. Phase 1-3 인프라만 병존.
  *
- * Flag ON (Phase 2+, KV `arch:simple-arrival-v1` === 'on'): existing 있고 route sig 다르면
- *   1. `crypto.randomUUID()`로 새 token 생성
- *   2. `trip:<oldToken>` KV delete
- *   3. `pending:*` 중 `entry.token === oldToken` 인 entry 모두 delete
- *   4. 새 token 반환 (`rotated: true`)
+ * Flag ON: existing 있고 route sig(`computeRouteSignature`) 다르면
+ *   1. `cleanupPendingPushesForToken(incoming.token)` 호출 — rotation의 유일한 실질 가치를 그대로
+ *      이관(구 route의 잔재 pending push 제거. incoming.token은 신원 불변 하에 항상 existing.token과
+ *      동일하므로 어느 쪽을 써도 같은 값).
+ *   2. `existing: null` 반환(`reset: true`) — downstream이 새 세션으로 취급해 trip-scoped dedup/
+ *      notification state(SSoT mirror 포함)를 리셋한다. `trip:<incoming.token>` 레코드 자체는
+ *      index.ts가 incoming 기준으로 그 자리에서 갱신(같은 key `putTrip`) — 새 key 생성/구 key 삭제
+ *      없음.
  *
- * existing 없음 또는 같은 route: incoming.token 그대로 반환 (`rotated: false`).
+ * existing 없음 또는 같은 route: existing 그대로 반환(`reset: false`).
  *
- * Testability: `deps.simpleArchEnabled` / `deps.generateToken` DI로 flag 강제 + token 결정성
- * 확보. 기본은 real helper `getArchFlag(kv)` + `crypto.randomUUID`. 테스트가 옵션 명시.
+ * Testability: `deps.simpleArchEnabled` DI로 flag 강제. 기본은 real helper `getArchFlag(kv)`.
  * #2002 — 임시 상수 대신 real helper wire. KV 미바인딩 / 미설정 견해는 `getArchFlag` 가
  * default `'off'` 로 fallback → 기존 동작 유지.
  */
-export interface TokenRotationResult {
-  token: string;
-  rotated: boolean;
+export interface RouteResetResult {
+  /** null이면 downstream이 새 세션(dedup/notification state 전면 리셋)으로 취급한다. */
+  existing: Trip | null;
+  /** true면 route sig 변경으로 in-place reset(pending purge)이 수행됐다. */
+  reset: boolean;
 }
 
-export interface TokenRotationDeps {
+export interface RouteResetDeps {
   /** flag override — 미지정 시 `getArchFlag(kv) === 'on'` 조회. */
   simpleArchEnabled?: boolean;
-  /** 새 token 발급 함수 — 미지정 시 `crypto.randomUUID`. */
-  generateToken?: () => string;
-  /**
-   * #2173 — `TOKEN_ROTATION_DISABLED` guard override. 미지정 시 production 상수(`true`)를
-   * 그대로 사용한다. rotation 로직 자체(existing/route sig 비교, cleanup)는 삭제하지 않고
-   * 보존해야 하므로, 그 경로를 테스트가 커버할 수 있도록 기존 `simpleArchEnabled`/`generateToken`
-   * 과 동일한 DI 패턴으로 노출한다. 실제 호출부(`POST /trips`)는 이 값을 지정하지 않는다.
-   */
-  rotationDisabled?: boolean;
-  /** #2174 — F2 old-trip 관측 기록용 D1 binding. 미지정/undefined는 `recordTripMetrics` 내부 no-op. */
-  db?: D1Database;
-  /** #2174 — old-trip sentinel/D1 기록 시각(epoch ms). 미지정 시 `Date.now()`. */
-  now?: number;
 }
 
-/**
- * #2174 (P1-A) — token rotation 재활성 guard.
- *
- * #2173 P0 hotfix가 `deviceToken` 필드 분리 전까지 rotation을 전면 차단했다 — 로테이션이
- * `trip.token`(APNs 발사 주소 겸용)을 UUID로 교체하면 이후 모든 push가 400 BadDeviceToken으로
- * 즉사했기 때문(Epic #2172 물증). 이제 `Trip.deviceToken`이 로테이션과 무관하게 실 토큰을
- * 보존하므로(모든 push 발사 사이트가 `resolveTripDeviceToken(trip)` 사용) rotation을 안전하게
- * 재활성한다.
- *
- * `arch:simple-arrival-v1` 플래그가 여전히 최종 on/off 스위치 — 이 상수는 그 앞단의 이중 guard였고
- * 이제 flag 판정에 그대로 위임한다(false = guard 해제).
- */
-const TOKEN_ROTATION_DISABLED = false;
-
-export async function rotateTripTokenForNewRoute(
+export async function resetTripStateForNewRoute(
   kv: KVNamespace,
   incoming: Trip,
   existing: Trip | null,
-  deps?: TokenRotationDeps,
-): Promise<TokenRotationResult> {
-  // #2173 — rotation 전면 guard. flag 상태와 무관하게 항상 incoming token 유지.
-  if (deps?.rotationDisabled ?? TOKEN_ROTATION_DISABLED) {
-    return { token: incoming.token, rotated: false };
-  }
+  deps?: RouteResetDeps,
+): Promise<RouteResetResult> {
   // #2002 — real helper wire. deps.simpleArchEnabled DI 명시가 우선; 미지정 시 KV 조회.
   // `getArchFlag` 는 KV 미바인딩/미설정/오타 모두 default `'off'` 로 fallback (dormant).
-  // 명시적 괄호: `??` 가 `===` 보다 tighter 로 파싱되므로 DI boolean 값 우선 사용을 보장한다.
-  const flagEnabled =
-    deps?.simpleArchEnabled ?? ((await getArchFlag(kv)) === 'on');
-  // Flag OFF: 기존 동작 유지. incoming token 그대로.
+  const flagEnabled = deps?.simpleArchEnabled ?? ((await getArchFlag(kv)) === 'on');
+  // Flag OFF: 기존 동작 유지. existing 그대로.
   if (!flagEnabled) {
-    return { token: incoming.token, rotated: false };
+    return { existing, reset: false };
   }
-  // existing 없음 (신규 trip): incoming token 그대로 등록.
+  // existing 없음 (신규 trip): reset 대상 없음.
   if (existing === null) {
-    return { token: incoming.token, rotated: false };
+    return { existing: null, reset: false };
   }
-  // 같은 route (destination + waypoints 시그니처 일치): existing token으로 merge.
-  //
-  // #2175 — 과거엔 여기서 `incoming.token`을 그대로 반환했다. `existing`이 항상 직접 키 조회
-  // (`getTrip(incoming.token)`)로만 발견되던 시절엔 `existing.token === incoming.token`이 항상
-  // 성립해 무해했지만, `POST /trips` 핸들러가 이제 deviceToken 역인덱스로 `existing`을 재발견할
-  // 수 있어(직접 키 조회 miss 시 fallback) 이 경우 `existing.token`(예: 이전 로테이션 UUID)이
-  // `incoming.token`(원본 실 deviceToken)과 달라진다. `incoming.token`을 반환하면 실 deviceToken
-  // 키로 새 trip이 또 생성돼 이미 존재하는 UUID trip과 함께 유령 2개가 남는다 — `existing.token`을
-  // 반환해 항상 같은 KV 레코드로 merge되도록 고정한다.
+  // 같은 route (destination + waypoints 시그니처 일치): 변화 없음 — 정상 merge 경로로 위임.
   const existingSig = computeRouteSignature(existing);
   const incomingSig = computeRouteSignature(incoming);
   if (existingSig === incomingSig) {
-    return { token: existing.token, rotated: false };
+    return { existing, reset: false };
   }
-  // 다른 route: 새 token 발급 + old 정리.
-  const generateToken = deps?.generateToken ?? (() => crypto.randomUUID());
-  const newToken = generateToken();
-  const rotatedAt = deps?.now ?? Date.now();
-  // #2174 F2 — old trip 삭제가 관측 blind hole이었다(raw KV delete, D1/sentinel 미기록 →
-  // 사후 RCA 완전 비가시, 2026-08-06 진단 지연 직접 원인). cleanupTripWithLa(liveActivity.ts)를
-  // 재사용하지 않는다 — 그 helper는 사용자향 trip-ended alert push를 함께 발사하는데, mid-trip
-  // route 변경(F1: 환승 waypoint trim/목적지 변경 재-POST)마다 로테이션이 발동하므로 매번 종료
-  // alert가 뜨면 사용자 경험 회귀다. 여기서는 push-unrecoverable/user-delete와 구분되는 관측
-  // 전용 사유 'rotated'로 D1 기록 + tripStatus sentinel만 남긴다(alert push 없음).
-  await cleanupSupersededTrip(kv, existing, 'rotated', rotatedAt, deps?.db);
-  return { token: newToken, rotated: true };
+  // 다른 route: 신원(token)은 그대로 유지, 구 route의 잔재 pending push만 제거.
+  await cleanupPendingPushesForToken(kv, incoming.token);
+  return { existing: null, reset: true };
 }
 
 /**
  * #2175 — 다른(superseded) trip의 관측 기록 + KV 정리 단일 지점.
  *
- * `rotateTripTokenForNewRoute`의 route-변경 cleanup과, `POST /trips` 핸들러가 deviceToken 역인덱스로
- * 발견한 orphan trip(같은 deviceToken의 다른 active trip, `superseded-by-reregister`)이 공유한다.
+ * `POST /trips` 핸들러가 deviceToken 역인덱스로 발견한 orphan trip(같은 deviceToken의 다른 active
+ * trip, `superseded-by-reregister`) 정리가 사용한다.
  * D1 기록(`recordTripMetrics`) → tripStatus sentinel(`writeTripEndedStatus`, best-effort) →
  * `trip:<token>` delete → `pending:*` 잔재 cleanup 순서로 동작한다. alert push는 발사하지 않는다
  * (관측 전용 — `cleanupTripWithLa`와 달리 사용자향 UX 신호 없음, 두 호출자 모두 device 관점에서는
