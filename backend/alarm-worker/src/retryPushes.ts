@@ -276,6 +276,7 @@ export async function runRetryPushes(env: Env, deps: RetryPushDeps): Promise<Ret
       deps.apnsHosts,
       log,
       entry.token.slice(0, 8),
+      { deviceToken: entry.token, db: env.DB, tripToken: entry.token },
     );
     if (heal.result.ok) {
       stats.resent += 1;

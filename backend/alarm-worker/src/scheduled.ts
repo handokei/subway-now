@@ -2146,6 +2146,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
   if (alertHeal.correctedEnv) {
     trip.apnsEnv = alertHeal.correctedEnv;
@@ -2176,6 +2177,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
   if (companionHeal.correctedEnv) {
     trip.apnsEnv = companionHeal.correctedEnv;
@@ -2428,6 +2430,7 @@ export async function fireArvlCdStationPush(
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
   let dirty = false;
   if (heal.correctedEnv) {
@@ -2825,6 +2828,7 @@ export async function fireVanishFallbackStationPush(
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
@@ -3013,6 +3017,7 @@ async function fireTrainReconfirmPush(
       deps.apnsHosts,
       log,
       trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
     );
     if (!heal.result.ok) {
       log('train-reconfirm push failed', {
@@ -3708,6 +3713,7 @@ export async function advanceBoardingLockWaypoint(
       deps.apnsHosts,
       log,
       trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
     );
     // #1633 — transfer-release fire의 corrected env capture. 종전엔 결과 discard로
     // trip.apnsEnv 가 in-memory mutate 되지 않아 line 2217 putTrip 이 OLD value 를 쓰고,
@@ -3957,6 +3963,7 @@ export async function maybeReschedulePush(
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
   let dirty = false;
   if (heal.correctedEnv) {
@@ -4201,6 +4208,7 @@ export async function runLocklessIntermediate(
       deps.apnsHosts,
       log,
       trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
     );
     if (heal.correctedEnv) {
       trip.apnsEnv = heal.correctedEnv;
@@ -4869,6 +4877,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
 
   if (heal.correctedEnv) {
@@ -5009,6 +5018,7 @@ export async function maybeFireHopEndPrompt(inputs: {
     deps.apnsHosts,
     log,
     trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
   );
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;

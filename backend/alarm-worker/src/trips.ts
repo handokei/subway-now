@@ -1,4 +1,5 @@
 import { getArchFlag } from './archFlag';
+import { isValidApnsToken } from './apnsToken';
 import { recordTripMetrics } from './d1TripMetrics';
 import {
   assertCronCacheTtl,
@@ -58,9 +59,6 @@ export function tripKey(token: string): string {
   return `${TRIP_PREFIX}${token}`;
 }
 
-/** #2174 — 64-hex APNs device token 포맷 검증. */
-const DEVICE_TOKEN_HEX64_RE = /^[0-9a-f]{64}$/i;
-
 /**
  * #2174 (P1-A) — push 발사용 실 APNs deviceToken을 단일 지점에서 해석한다.
  *
@@ -74,12 +72,12 @@ const DEVICE_TOKEN_HEX64_RE = /^[0-9a-f]{64}$/i;
  * 로테이션이 막혀 있던 구간의 산물이라 존재해서는 안 되는 조합 — 그런 경우도 fallback으로
  * `trip.token`을 반환해 기존(로테이션 재활성 이전) 동작과 동일하게 유지한다(마이그레이션
  * 배치 금지, 새 회귀 없음 — 이미 무효했던 push가 계속 무효할 뿐).
+ *
+ * #2176 — 포맷 검증 로직은 `apnsToken.ts:isValidApnsToken`으로 이전(공용화). 발사 경로
+ * (`apnsHost.ts`)도 같은 정의를 재사용해 "APNs 토큰은 64-hex" 불변식을 단일 지점에서 관리한다.
  */
 export function resolveTripDeviceToken(trip: Trip): string {
-  if (
-    typeof trip.deviceToken === 'string' &&
-    DEVICE_TOKEN_HEX64_RE.test(trip.deviceToken)
-  ) {
+  if (typeof trip.deviceToken === 'string' && isValidApnsToken(trip.deviceToken)) {
     return trip.deviceToken;
   }
   return trip.token;

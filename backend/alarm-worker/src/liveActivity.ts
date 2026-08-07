@@ -398,6 +398,7 @@ async function fireTripEndedAlertPush(
       deps.apnsHosts,
       log,
       trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
     );
     if (!heal.result.ok) {
       log('trip-ended push failed', {
