@@ -5,14 +5,14 @@
  * TDD 선행 — #2194(신원 안정화 core fix)보다 먼저 이 replay가 "현재 코드에서 실패(red)"함을
  * 증명했다(#2193, production 코드 미수정 — fixture + test만). #2194가 신원(rotation) 관련
  * `test.fails(...)` 2개를 `test(...)`로 flip했다(주석 "flipped in #2194"). 429 관련 1개는
- * rate-limit create/update 구분(#2195) 범위라 여전히 `test.fails`로 남아있다(주석 "flip in
- * #2195").
+ * rate-limit create/update 구분(#2195)이 `test(...)`로 flip했다(주석 "flipped in #2195").
  *
- * 재현 메커니즘: `POST /trips` rate-limit 게이트(`index.ts:567`, deviceToken 기준 10회/10분)가
- * route-change reset(#2194 이전엔 rotation, `index.ts:776`)보다 먼저 평가된다. #2194 이후에도
- * rate-limit 키는 여전히 원본 deviceToken이라 — 10번째 이후 재-POST는 429로 죽는다(#2195 대기).
- * 다만 신원이 더 이상 churn하지 않으므로(rotation 폐기) 성공한 요청들은 항상 같은 trip으로
- * 수렴한다(위 2개 flip된 assert가 검증).
+ * 재현 메커니즘(수리 전): `POST /trips` rate-limit 게이트(`index.ts` 상단, deviceToken 기준
+ * 10회/10분)가 route-change reset(#2194 이전엔 rotation)보다 먼저 평가되고, update 요청도
+ * create와 동일하게 카운트해 10번째 이후 재-POST는 429로 죽었다. #2195가 update(=동일
+ * deviceToken의 기존 trip 존재) 판정을 rate-limit 게이트 앞에 추가해 update는 카운터를
+ * 소진하지 않도록 면제했다. 신원도 더 이상 churn하지 않으므로(rotation 폐기, #2194) 성공한
+ * 요청들은 항상 같은 trip으로 수렴한다(아래 4개 flip된 assert가 검증).
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
@@ -88,7 +88,11 @@ async function runRotationStorm(env: Env): Promise<Response[]> {
 }
 
 describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', () => {
-  test('현재 코드: rotation storm 재-POST가 rate-limit(429)에 걸려 최신 route가 등록되지 않는다 (red 증명)', async () => {
+  // flipped in #2195 (rate-limit create/update 구분) — evidence 당시(#2193/#2194 이전)는 매
+  // route 변경 재-POST가 create budget을 소진해 마지막 요청이 429로 죽고 최신 route가 어떤
+  // trip에도 반영되지 않았다. #2195가 update(=기존 trip 존재) 요청을 create budget에서
+  // 면제해 이제 rotation storm 전체가 429 없이 성공하고 최신 route가 반영된다.
+  test('수리 후 기대치: rotation storm 재-POST가 rate-limit(429)에 걸리지 않고 최신 route가 등록된다', async () => {
     const kv = new InMemoryKV();
     await kv.put(ARCH_FLAG_KV_KEY, 'on');
     const env = makeEnv(kv);
@@ -96,15 +100,14 @@ describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', 
     const responses = await runRotationStorm(env);
     const statuses = responses.map((r) => r.status);
 
-    // evidence: 07:37:35 / 07:37:42 / 07:37:54 / 07:38:55(x2) 다중 429 관측.
-    // ROTATION_STORM_REQUEST_COUNT(11) = TRIP_REGISTER_MAX_PER_WINDOW(10) + 1이므로
-    // 마지막 요청은 현재 코드에서 반드시 429로 죽는다.
-    expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0);
-    expect(statuses[ROTATION_STORM_REQUEST_COUNT - 1]).toBe(429);
+    // evidence(수리 전): 07:37:35 / 07:37:42 / 07:37:54 / 07:38:55(x2) 다중 429 관측.
+    // 수리 후: update 요청은 create budget을 소진하지 않으므로 429가 전혀 발생하지 않는다.
+    expect(statuses.filter((s) => s === 429).length).toBe(0);
+    expect(statuses[ROTATION_STORM_REQUEST_COUNT - 1]).toBe(200);
 
-    // 429로 막힌 마지막 route(index=10, "evidence-dst-10")는 어떤 trip에도 반영되지 않는다 —
-    // KV에 남은 활성 trip 전체 중 그 destination을 가진 것이 하나도 없어야 "새 route 등록
-    // 실패" chain-death가 증명된다.
+    // 수리 전: 429로 막힌 마지막 route(index=10, "evidence-dst-10")는 어떤 trip에도 반영되지
+    // 않아 "새 route 등록 실패" chain-death가 증명됐다. 수리 후: 마지막 요청도 성공해 최신
+    // route가 활성 trip에 반영된다.
     const allTrips = await kv.list({ prefix: 'trip:' });
     const rawValues = await Promise.all(
       allTrips.keys.map((k) => kv.get(k.name)),
@@ -112,10 +115,11 @@ describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', 
     const destinations = rawValues
       .filter((v): v is string => v !== null)
       .map((v) => (JSON.parse(v) as { destination: string }).destination);
-    expect(destinations).not.toContain('evidence-dst-10');
+    expect(destinations).toContain('evidence-dst-10');
   });
 
-  test('현재 코드: rotation storm이 rate-limit 예산을 소진해 10회 초과 시 429 발생 (red 증명, cap SSOT 사용)', async () => {
+  // flipped in #2195 (rate-limit create/update 구분, cap SSOT 사용)
+  test('수리 후 기대치: rotation storm이 rate-limit 예산을 소진하지 않아 10회 초과에도 429가 발생하지 않는다', async () => {
     const kv = new InMemoryKV();
     await kv.put(ARCH_FLAG_KV_KEY, 'on');
     const env = makeEnv(kv);
@@ -126,8 +130,8 @@ describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', 
     const responses = await runRotationStorm(env);
     const last = responses[responses.length - 1];
     const body = (await last.json()) as { error?: string; retryAfterSeconds?: number };
-    expect(last.status).toBe(429);
-    expect(body.error).toBe('rate_limited');
+    expect(last.status).toBe(200);
+    expect(body.error).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -153,8 +157,8 @@ describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', 
     expect(uuidLikeKeys.length).toBe(0);
   });
 
-  // flip in #2195 (rate-limit create/update 구분 — 이 이슈 범위 밖, #2194는 신원 안정화만)
-  test.fails(
+  // flipped in #2195 (rate-limit create/update 구분)
+  test(
     '수리 후 기대치: rotation storm 재-POST가 create budget을 소진하지 않아 429 = 0',
     async () => {
       const kv = new InMemoryKV();
