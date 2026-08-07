@@ -2,17 +2,17 @@
  * 2026-08-07 오전 실탑승(corrId=tmsi34imn) rotation storm replay (Issue #2193,
  * Part of #2192 / ADR-025).
  *
- * TDD 선행 — #A1(신원 안정화 core fix)보다 먼저 이 replay가 "현재 코드에서 실패(red)"함을
- * 증명한다. #A1이 머지되면 아래 `test.fails(...)` 블록을 `test(...)`로 flip해 green
- * 전환을 검증한다 (각 블록에 "flip in #2194" 주석).
+ * TDD 선행 — #2194(신원 안정화 core fix)보다 먼저 이 replay가 "현재 코드에서 실패(red)"함을
+ * 증명했다(#2193, production 코드 미수정 — fixture + test만). #2194가 신원(rotation) 관련
+ * `test.fails(...)` 2개를 `test(...)`로 flip했다(주석 "flipped in #2194"). 429 관련 1개는
+ * rate-limit create/update 구분(#2195) 범위라 여전히 `test.fails`로 남아있다(주석 "flip in
+ * #2195").
  *
  * 재현 메커니즘: `POST /trips` rate-limit 게이트(`index.ts:567`, deviceToken 기준 10회/10분)가
- * route-change rotation(`index.ts:776`, `rotateTripTokenForNewRoute`)보다 먼저 평가된다.
- * 매 route 변경 재-POST가 rotation을 유발해도 rate-limit 키는 항상 원본 deviceToken —
- * 10번째 이후 재-POST는 429로 죽고 새 route trip이 등록되지 않는다.
- *
- * 금지: 이 이슈는 production 코드를 수정하지 않는다 (`src/index.ts` / `src/trips.ts` /
- * `src/tripRegisterRateLimit.ts` 등). Fixture + test만.
+ * route-change reset(#2194 이전엔 rotation, `index.ts:776`)보다 먼저 평가된다. #2194 이후에도
+ * rate-limit 키는 여전히 원본 deviceToken이라 — 10번째 이후 재-POST는 429로 죽는다(#2195 대기).
+ * 다만 신원이 더 이상 churn하지 않으므로(rotation 폐기) 성공한 요청들은 항상 같은 trip으로
+ * 수렴한다(위 2개 flip된 assert가 검증).
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
@@ -132,31 +132,28 @@ describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', 
 
   // -------------------------------------------------------------------------
   // 아래 3개는 "수리 후 기대치" — ADR-025(#2192) #A1 신원 안정화 적용 후 green이 되어야
-  // 한다. 지금은 버그가 존재하므로 assert가 실패해야 정상 — `test.fails`로 감싸 CI green을
-  // 유지한다(#2194에서 `test.fails` → `test`로 flip).
+  // 한다. #2194가 신원(rotation) 관련 2개를 green으로 flip했다. 429 관련 1개는 여전히
+  // `test.fails`로 감싸 CI green을 유지한다(#2195에서 rate-limit create/update 구분 후 flip).
   // -------------------------------------------------------------------------
 
-  // flip in #2194
-  test.fails(
-    '수리 후 기대치: route 변경 재-POST에서 rotated 발생 0 (신규 UUID trip 키 생성 없음)',
-    async () => {
-      const kv = new InMemoryKV();
-      await kv.put(ARCH_FLAG_KV_KEY, 'on');
-      const env = makeEnv(kv);
+  // flipped in #2194 (ADR-025 신원 안정화 — resetTripStateForNewRoute)
+  test('수리 후 기대치: route 변경 재-POST에서 rotated 발생 0 (신규 UUID trip 키 생성 없음)', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(ARCH_FLAG_KV_KEY, 'on');
+    const env = makeEnv(kv);
 
-      await runRotationStorm(env);
+    await runRotationStorm(env);
 
-      const allTrips = await kv.list({ prefix: 'trip:' });
-      const uuidLikeKeys = allTrips.keys.filter(
-        (k) => k.name !== `trip:${DEVICE_TOKEN}`,
-      );
-      // 수리 후: route 변경은 rotation(새 UUID 키) 없이 같은 신원(deviceToken 키) update로
-      // 처리되어야 한다 — 지금은 매 route 변경마다 새 UUID 키가 생성되어 실패한다.
-      expect(uuidLikeKeys.length).toBe(0);
-    },
-  );
+    const allTrips = await kv.list({ prefix: 'trip:' });
+    const uuidLikeKeys = allTrips.keys.filter(
+      (k) => k.name !== `trip:${DEVICE_TOKEN}`,
+    );
+    // 수리 후: route 변경은 rotation(새 UUID 키) 없이 같은 신원(deviceToken 키) update로
+    // 처리된다 — #2194가 rotateTripTokenForNewRoute를 resetTripStateForNewRoute로 대체.
+    expect(uuidLikeKeys.length).toBe(0);
+  });
 
-  // flip in #2194
+  // flip in #2195 (rate-limit create/update 구분 — 이 이슈 범위 밖, #2194는 신원 안정화만)
   test.fails(
     '수리 후 기대치: rotation storm 재-POST가 create budget을 소진하지 않아 429 = 0',
     async () => {
@@ -172,21 +169,19 @@ describe('evidence 2026-08-07 tmsi34imn — rotation storm red replay (#2193)', 
     },
   );
 
-  // flip in #2194
-  test.fails(
-    '수리 후 기대치: 트립 1건이 동일 신원(deviceToken 키)으로 지속 등록된다 (route 변경 = update)',
-    async () => {
-      const kv = new InMemoryKV();
-      await kv.put(ARCH_FLAG_KV_KEY, 'on');
-      const env = makeEnv(kv);
+  // flipped in #2194 (ADR-025 신원 안정화 — resetTripStateForNewRoute)
+  test('수리 후 기대치: 트립 1건이 동일 신원(deviceToken 키)으로 지속 등록된다 (route 변경 = update)', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(ARCH_FLAG_KV_KEY, 'on');
+    const env = makeEnv(kv);
 
-      await runRotationStorm(env);
+    await runRotationStorm(env);
 
-      const allTrips = await kv.list({ prefix: 'trip:' });
-      // 수리 후: 활성 trip은 정확히 1개, 그리고 그 키는 항상 원본 deviceToken이어야 한다 —
-      // 지금은 rotation이 매번 새 UUID 키로 옮겨가 이 조건을 만족하지 못한다.
-      expect(allTrips.keys.length).toBe(1);
-      expect(allTrips.keys[0]?.name).toBe(`trip:${DEVICE_TOKEN}`);
-    },
-  );
+    const allTrips = await kv.list({ prefix: 'trip:' });
+    // 수리 후: 활성 trip은 정확히 1개, 그리고 그 키는 항상 원본 deviceToken이다 — 11번째
+    // 요청은 여전히 429로 막히지만(#2195 대기), 그 요청은 어떤 trip도 mutate하지 않으므로
+    // 나머지 10건이 모두 같은 key로 수렴한 결과는 영향받지 않는다.
+    expect(allTrips.keys.length).toBe(1);
+    expect(allTrips.keys[0]?.name).toBe(`trip:${DEVICE_TOKEN}`);
+  });
 });

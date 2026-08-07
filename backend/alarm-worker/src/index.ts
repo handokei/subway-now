@@ -131,7 +131,7 @@ import {
   getTrip,
   putDeviceTripIndex,
   putTrip,
-  rotateTripTokenForNewRoute,
+  resetTripStateForNewRoute,
   withTripRegisterLock,
 } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
@@ -728,11 +728,11 @@ app.post('/trips', async (c) => {
     }
   }
 
-  // #2129 — per-token in-flight 직렬화. `getTrip → rotateTripTokenForNewRoute → putTrip` 사이
-  // TOCTOU window에서 같은 token의 동시 POST가 interleave하면 유령 trip 2개(원본 token +
-  // rotated UUID)가 모두 KV에 생존하는 회귀(2026-08-04 실탑승 evidence)가 발생한다. 이 구간
-  // 전체를 원본 incoming token 기준으로 직렬화 — rotation이 token을 바꿔도 lock key는 요청
-  // 도착 시점의 원본 token으로 고정해 같은 device의 두 요청이 반드시 같은 큐에서 대기한다.
+  // #2129 — per-token in-flight 직렬화. `getTrip → resetTripStateForNewRoute → putTrip` 사이
+  // TOCTOU window에서 같은 token의 동시 POST가 interleave하면 유령 trip이 KV에 중복 생존하는
+  // 회귀(2026-08-04 실탑승 evidence)가 발생한다. ADR-025(#2194) 하에서도 신원은 불변이지만
+  // 이 구간을 여전히 원본 incoming token 기준으로 직렬화 — 같은 device의 두 요청이 반드시 같은
+  // 큐에서 대기해 read-reset-write 사이클이 겹치지 않게 한다.
   const registerLockToken = incoming.token;
   const { trip, isSameSession, staleIndexedToken } = await withTripRegisterLock(
     registerLockToken,
@@ -754,47 +754,32 @@ app.post('/trips', async (c) => {
           ? await getTrip(c.env.TRIPS, priorIndexedToken)
           : null);
 
-      // ADR-022 B4 (#2019 wire, #1986 rotation helper) — 새 route 감지 시 token rotation.
+      // ADR-025 (#2194) — route 변경 시 in-place reset. trip 신원(`incoming.token`, 트립 수명
+      // 동안 불변)은 유지한 채, route sig(`computeRouteSignature`)가 달라지면 구 route의 잔재
+      // pending push만 제거(helper 내부 `cleanupPendingPushesForToken`)하고 downstream이
+      // `existing=null`로 세션을 새로 취급(dedup/notification state 리셋)하도록 한다.
       //
-      // archFlag=on + existing 있음 + route sig 다름 → 새 UUID 발급 + `trip:<oldToken>` delete +
-      // `pending:*` 중 oldToken 소유 entry cleanup (helper 내부 로직).
-      //
-      // archFlag=off (default): helper 는 `{ token: incoming.token, rotated: false }` no-op 반환
+      // archFlag=off (default): helper 는 `{ existing: rawExisting, reset: false }` no-op 반환
       // → 기존 동작 100% 유지 (Phase 1-3 dormant).
       //
-      // rotated=true 케이스 처리:
-      //   - `existing = null` 로 강등해 downstream `isSameSession=false` + progress skip 경로 진입
-      //     (helper 가 이미 `trip:<oldToken>` 을 delete 했으므로 same-session merge 는 무의미).
-      //   - `incoming.token` 을 새 UUID(또는 #2175: 역인덱스로 재발견한 existing.token)로 갱신 →
-      //     후속 `putTrip` 이 그 키로 쓴다.
-      //   - progress/SSoT KV(oldToken 키) 는 TTL 로 자연 만료 — 후속 cron push 는 새 token trip
-      //     기준 waypoints/destination 을 참조하므로 사용자에게 이전 목적지 push 재발사 없음.
+      // ADR-022 B4의 token rotation(`rotateTripTokenForNewRoute`, 새 UUID 발급 + `trip:<oldToken>`
+      // delete)은 폐기됐다 — 신원 churn이 rate-limit/역인덱스/dedup 키 전체를 sync 대상으로 만들어
+      // 실패 표면을 늘렸다(2026-08-07 실탑승 tmsi34imn RCA, ADR-025). `trip:<incoming.token>`
+      // 레코드는 항상 같은 key로 `putTrip`이 그 자리에서 갱신한다.
       //
       // 오늘 evidence(2026-07-03): 사용자 중곡→성수 trip 시작 시 이전 trip(중곡→용마산) 잔재
-      // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. rotation 이
+      // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. route reset이
       // helper 의 `cleanupPendingPushesForToken` 을 실제 호출해 잔재 pending 제거.
-      const rotation = await rotateTripTokenForNewRoute(
-        c.env.TRIPS,
-        incoming,
-        rawExisting,
-        // #2174 F2 — old trip 로테이션 관측 기록(D1 + tripStatus sentinel, reason='rotated').
-        // env.DB 미바인딩 시 recordTripMetrics 내부에서 graceful no-op.
-        { db: c.env.DB, now: Date.now() },
-      );
-      if (rotation.rotated) {
+      const routeReset = await resetTripStateForNewRoute(c.env.TRIPS, incoming, rawExisting);
+      if (routeReset.reset) {
         console.log(
           JSON.stringify({
-            msg: 'trip-register: route rotation (#2019, ADR-022 B4)',
-            oldTokenPrefix: tokenPrefix(incoming.token),
-            newTokenPrefix: tokenPrefix(rotation.token),
+            msg: 'trip-register: route reset in-place (ADR-025, #2194)',
+            tokenPrefix: tokenPrefix(incoming.token),
           }),
         );
       }
-      // #2175 — merge 분기(같은 route, `rawExisting`을 역인덱스로 재발견)도 이제
-      // `rotation.token === existing.token`을 반환하므로 항상 채택한다. brand-new 등록/
-      // 직접 키 매치처럼 `existing`이 `incoming`과 동일 token이면 무변화.
-      incoming.token = rotation.token;
-      const existing = rotation.rotated ? null : rawExisting;
+      const existing = routeReset.existing;
       const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
     // #916 follow-up B — auto-prompt dedup 마커 보존. isSameSession=true(같은 trip 재등록)인 경우만
     // window 안이면 보존한다. 사용자가 lock 클리어 후 같은 trip context로 재등록하는 케이스에서
@@ -2443,9 +2428,10 @@ export function validateTrip(input: unknown): Trip | null {
 
   return {
     token: tokenRaw,
-    // #2174 — 등록 시점의 실 device token을 rotation-불변 필드로 고정. `incoming.token`은
-    // 이후 `rotateTripTokenForNewRoute`가 rotated=true 시 UUID로 덮어쓰지만, 이 필드는
-    // baseTrip이 `...incoming` spread로 그대로 carry한다 (POST /trips 핸들러 참고).
+    // #2174 — 등록 시점의 실 device token을 고정. ADR-025(#2194) 하에서 `incoming.token`은
+    // 트립 수명 동안 불변(이 값과 항상 동일)이지만, 레이어 명확성(신원 vs push 주소)을 위해
+    // 필드 분리는 유지한다. baseTrip이 `...incoming` spread로 그대로 carry한다 (POST /trips
+    // 핸들러 참고).
     deviceToken: tokenRaw,
     route: obj.route as Trip['route'],
     destination: obj.destination as string,
