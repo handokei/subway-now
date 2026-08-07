@@ -58,8 +58,16 @@ import {
   setTripEndedSentinel,
   clearTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
-import { setLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
+import {
+  setLastSilentPushReceivedAt,
+  getLastSilentPushReceivedAt,
+} from '../utils/lastSilentPushReceivedAt';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
+import {
+  checkTripDeathByPull,
+  shouldCheckTripDeathOnSilentPush,
+  getBackendUrl as getTripDeathPullBackendUrl,
+} from '../utils/tripDeathPullBackstop';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { addFiredPushId } from '../utils/firedPushIds';
@@ -834,6 +842,9 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
   // #1935 — finally 블록에서 widget update가 payload.ssot 또는 standard kind를 활용하려면
   // payload가 outer scope에 있어야 한다. valid extract 후 assign; invalid면 null 유지.
   let payload: ExtractedPayload | null = null;
+  // #2178 — pull death backstop 트리거 조건(마지막 backend 접촉 staleness) 판정용. 이번
+  // push의 receivedAt으로 덮어쓰기 *전* 값을 캡처해야 의미가 있어 outer scope에 둔다.
+  let priorLastReceivedAt: number | null = null;
   // #735 — BG task 시간 제약. 모든 종료 경로(early return, fire-with-gate, error)에서 적재된
   // alarmLog pending이 OS suspend로 손실되지 않도록 try/finally로 명시 flush.
   try {
@@ -848,6 +859,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
     const receivedAt = Date.now();
+    priorLastReceivedAt = await getLastSilentPushReceivedAt();
     addDomainBreadcrumb('push', 'silent-push', { kind: payload.kind ?? 'fire' });
     // #2045 (Signal 4) — 유효 payload 진입 시점에 last-received stamp 갱신.
     // useLaunchTripReconciliation이 launch 시 read해 backend-timeout self-end 판정 (관찰 22 BG kill 커버).
@@ -1161,6 +1173,39 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       tasks.push(refreshWidgetForPayload(payload));
     }
     await Promise.allSettled(tasks);
+
+    // #2178 — pull 기반 trip 死 backstop. 처리 말미(모든 종료 경로 공통)에서 로컬 active
+    // trip이 있는데 이번 payload의 trip 신원이 불일치하거나 마지막 backend 접촉이 오래됐으면
+    // backend에 GET trip status로 생존을 직접 확인한다. baseUrl 미설정/네트워크 실패/404는
+    // checkTripDeathByPull 내부에서 graceful skip — 이 finally 블록을 절대 막지 않는다.
+    try {
+      const baseUrl = getTripDeathPullBackendUrl();
+      if (baseUrl !== null) {
+        const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+        const payloadTripToken =
+          payload !== null && 'tripToken' in payload ? payload.tripToken : undefined;
+        if (
+          shouldCheckTripDeathOnSilentPush({
+            activeTripToken,
+            payloadTripToken,
+            priorLastReceivedAt,
+            now: Date.now(),
+          })
+        ) {
+          await checkTripDeathByPull(baseUrl, 'silent-push');
+        }
+      }
+    } catch (e) {
+      logger.warn('pull death backstop 실패 (graceful)', e);
+    }
+
+    // 리뷰 P1 (PR #2189) — backstop이 내부적으로 적재하는 alarmLog 엔트리(trip-dead-pull-detected)는
+    // appendAlarmLog의 1초 debounce pending에 걸린다. 위 flushAlarmLog()는 backstop 실행 *전*이라
+    // 이 엔트리를 못 비우고, BG task가 곧 suspend되는 시나리오(=이 backstop의 존재 목적)에서 그대로
+    // 유실될 수 있었다 — 유일한 관측 채널(V/X: DebugModal alarm log) 상실. backstop 블록을 flush
+    // 앞으로 옮기는 대신(네트워크 GET이 기존 flush를 지연시켜 지하 LA stall 회귀 재현), 기존 flush
+    // 순서는 그대로 두고 backstop 산출 로그만 한 번 더 flush한다.
+    await flushAlarmLog();
   }
 }
 

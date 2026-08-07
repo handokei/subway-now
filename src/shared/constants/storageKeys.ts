@@ -210,6 +210,12 @@ export const LAST_SILENT_PUSH_RECEIVED_AT_KEY = 'subway-now:last-silent-push-rec
 // (10s) 미만 간격의 연속 catch-up batch 배달에서도 uploadPosition 호출을 1회로 묶는다.
 // 형식: 숫자(epoch ms) 문자열. 키 부재 = 첫 fix(즉시 발사).
 export const BG_LAST_POSITION_UPLOAD_AT_KEY = 'subway-now:bg-last-position-upload-at';
+// #2178 — pull 기반 trip 死 backstop 마지막 GET trip status 시도 시각(epoch ms).
+// silentPushTask/backgroundLocationTask 양쪽이 공유하는 쿨다운 게이트(TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS).
+// 신규 타이머 없이 기존 wake 지점(silent push 수신, BG location tick)에서만 이 키를 read/write —
+// 매 wake마다 backend를 호출하지 않도록 빈도를 제한한다(V8 battery acceptance).
+// trip 종료 시 별도 cleanup 불필요 — 다음 trip의 첫 wake에서 쿨다운을 지나면 자연 갱신.
+export const TRIP_DEATH_PULL_LAST_CHECK_AT_KEY = 'subway-now:trip-death-pull-last-check-at';
 // #2067 (Phase 2-device) — AlarmLocalAuthority persisted dedup ledger.
 // 취침모드 companion silent push(kind `sleep-alarm-companion`)의 TTS/진동 부가 동작이 앱 재시작
 // (cold-launch) 후에도 중복 발사되지 않도록 in-memory Set 대신 AsyncStorage에 영속화한다.
