@@ -1,6 +1,7 @@
 /**
  * 2026-08-07 07:38 KST 건대입구→뚝섬 phantom fire replay test — device side (Issue #2200,
- * ADR-026 #2199). TDD 선행 red fixture — 하위 fix 이슈(#2201/#2202/#2204)가 green으로 flip.
+ * ADR-026 #2199). TDD 선행 red fixture였음 — #2204가 movement gate를 BG 채널(stationPipeline)에
+ * 연결해 green으로 flip.
  *
  * ## 재현 대상 (오늘 실기기 dump evidence — fixtures/replay_20260807_phantom.ts 참고)
  * 07:38:19 GPS 22.1m/s automotive 스파이크 1개 후 급감(정지)했는데도 07:38:21
@@ -8,19 +9,15 @@
  *
  * ## RCA
  * `stationPipeline.processLocationUpdate` (BG 채널)는 `movementGate.ts`의 `evaluateMovement`/
- * `isStaticSpeedSignal`을 전혀 import하지 않는다. `useStationAlarm.ts`(FG 채널)만 이 gate로
- * 'movement-static-speed'/'movement-motion-stationary' suppress를 적용하며, 오늘 dump에서도 fg는
+ * `isStaticSpeedSignal`을 전혀 import하지 않았다. `useStationAlarm.ts`(FG 채널)만 이 gate로
+ * 'movement-static-speed'/'movement-motion-stationary' suppress를 적용해, 오늘 dump에서도 fg는
  * 반복 suppressed되는 반면 bg는 무방비로 fired — evidence L177~250 `fg | suppressed |
  * movement-static-speed / movement-motion-stationary` vs L252 `bg | fired`.
  *
- * ## Assert (수리 후 기대치, 지금 red)
- * 정지(GPS speed=0 + accel stationary) 상태에서 destination-early 발사 시도 → fire=0 기대
- * (현재 fire=1). `it.failing`으로 감싸 CI green 유지 — 이슈 fix가 movement gate를 BG 채널에
- * 연결하면 이 assertion이 통과하게 되고, 그 시점에 `it.failing`을 `it`로 교체한다.
- *
- * ## 금지
- * production 코드 수정 없음(테스트+fixture만). 아래 stationPipeline.test.ts의 mock 패턴을
- * 최소 subset으로 재사용해 격리.
+ * ## Fix (#2204)
+ * stationPipeline.processLocationUpdate가 이제 `evaluateMovement`를 speedMps 단독 입력으로
+ * 호출해 destination/transfer phase-fire와 station-passed 발사 직전에 게이팅한다(FG와 동등).
+ * 정지(GPS speed=0) 상태에서 destination-early 발사 시도 → fire=0 (green).
  */
 
 import type { Station, NearestStationResult } from '../../../shared/types/station';
@@ -107,6 +104,7 @@ const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 const mockLogSuppressedChannelAgnosticDedup = jest.fn();
+const mockLogSuppressedMovement = jest.fn();
 jest.mock('../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -117,6 +115,7 @@ jest.mock('../utils/alarmLog', () => ({
   logSuppressedSleepStationPassed: (...args: unknown[]) =>
     mockLogSuppressedSleepStationPassed(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
+  logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
   logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
@@ -161,11 +160,10 @@ describe('evidence 2026-08-07 07:38 device replay — 정지 상태 destination-
     mockEvaluateAlarmPhase.mockReturnValue(PHANTOM_ALARM_EVENT);
   });
 
-  it('오늘 evidence 재현 — BG 채널은 movement 신호와 무관하게 fire (회귀 확인)', async () => {
-    // evidence: 07:39:56 이후 GPS speed=0.0m/s(정지 확정) 구간 + accel pattern=stationary.
-    // processLocationUpdate는 movementGate.ts를 참조하지 않으므로 speedMps=0(정지)을 넣어도
-    // evaluateAlarmPhase 결과(destination/early)가 그대로 fire까지 통과한다 — 오늘 evidence의
-    // "bg fired destination early 뚝섬" (dump L252) 재현.
+  // #2204 — 수리 후 기대치. 정지(GPS speed=0) 상태에서는 movement gate가 destination-early
+  // fire를 차단한다. (구) `it.failing` red 테스트를 여기 green으로 교체 — "BG는 movement 신호와
+  // 무관하게 fire"라는 회귀 재현 테스트는 fix로 더 이상 참이 아니므로 제거.
+  it('정지(GPS speed=0) 상태에서 destination-early fire=0 (뚝섬 phantom fire 회귀 차단)', async () => {
     await processLocationUpdate({
       lat: PHANTOM_NEAREST_STATION.lat,
       lng: PHANTOM_NEAREST_STATION.lng,
@@ -176,26 +174,6 @@ describe('evidence 2026-08-07 07:38 device replay — 정지 상태 destination-
       speedMps: PHANTOM_STATIONARY_SPEED_MPS,
     });
 
-    expect(mockLogFiredAlarm).toHaveBeenCalledWith('bg', PHANTOM_ALARM_EVENT);
-  });
-
-  // Flip in #2201/#2202/#2204 — stationPipeline.processLocationUpdate가 movementGate.ts
-  // (evaluateMovement/isStaticSpeedSignal)를 참조해 정지 상태에서 destination-early fire를
-  // 차단하면, 아래 assertion이 통과하며 이 테스트를 `it.failing` → `it`로 교체한다.
-  it.failing('수리 후 기대치 — 정지(GPS speed=0 + accel stationary) 상태에서 destination-early fire=0', async () => {
-    await processLocationUpdate({
-      lat: PHANTOM_NEAREST_STATION.lat,
-      lng: PHANTOM_NEAREST_STATION.lng,
-      destination: PHANTOM_DESTINATION,
-      firedAlarms: new Set(),
-      sleepMode: false,
-      source: 'bg',
-      speedMps: PHANTOM_STATIONARY_SPEED_MPS,
-    });
-
-    // 수리 후: 정지 상태에서는 movement gate가 fire를 차단해 logFiredAlarm이 호출되지 않아야 한다.
-    // 현재(red): BG 채널에 movement gate가 없어 이 assertion이 실패한다(logFiredAlarm 호출됨) —
-    // it.failing이 그 실패를 삼켜 CI green 유지.
     expect(mockLogFiredAlarm).not.toHaveBeenCalled();
   });
 });

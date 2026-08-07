@@ -6,7 +6,7 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { renderHook } from '@testing-library/react-native';
+import { act, renderHook } from '@testing-library/react-native';
 import {
   useFusedNearestStation,
   pickArrivalForStationName,
@@ -214,13 +214,22 @@ describe('useFusedNearestStation', () => {
       { station: MOCK_STATIONS.yeouinaru, distanceKm: 0.5 },
     ]);
 
-    // 후보 0,1,2 순서대로 useArrivalInfo 호출됨
+    // 후보 0,1,2 순서대로 useArrivalInfo 호출됨. 같은 station(청무로)이 연속 2 cycle ARRIVED를
+    // 관측해야 #2204 temporal consensus가 'arrival-confirmed'로 확정한다 — 4개 mockReturnValueOnce는
+    // 렌더 1회차 + rerender 2회차 각각의 a0/a1/a2 호출을 순서대로 채운다.
     mockUseArrival
+      .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.RUNNING)], down: [] }))
+      .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }))
+      .mockReturnValueOnce(arrivalRet(null))
       .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.RUNNING)], down: [] }))
       .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }))
       .mockReturnValueOnce(arrivalRet(null));
 
-    const { result } = renderHook(() => useFusedNearestStation());
+    const { result, rerender } = renderHook(() => useFusedNearestStation());
+    expect(result.current.confidence).toBe('arrival-arriving');
+    act(() => {
+      rerender({});
+    });
 
     expect(result.current.result?.station.id).toBe(MOCK_STATIONS.chungmuro.id);
     expect(result.current.confidence).toBe('arrival-confirmed');
@@ -379,12 +388,19 @@ describe('useFusedNearestStation', () => {
       // arrival만 있는 케이스 — boarding-lock은 position-train 채택 전제
       mockUseNearest.mockReturnValue(gpsBase());
       mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }));
+      // #2204 — mockImplementation으로 매 호출 새 객체 반환. temporal consensus가 연속 2 cycle
+      // 같은 station의 ARRIVED를 요구하므로 rerender로 두 번째 cycle을 재현한다.
+      mockUseArrival.mockImplementation(() =>
+        arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }),
+      );
       mockUsePositions.mockReturnValue(positionRet(null));
 
-      const { result } = renderHook(() =>
+      const { result, rerender } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED'),
       );
+      act(() => {
+        rerender({});
+      });
       expect(result.current.confidence).toBe('arrival-confirmed');
       expect(result.current.source).toBe('arrival');
     });
@@ -536,10 +552,17 @@ describe('useFusedNearestStation', () => {
     mockUseNearest.mockReturnValue(gpsBase());
     mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
 
-    mockUseArrival.mockReturnValue(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }));
+    // #2204 — mockImplementation으로 매 호출 새 객체 반환. temporal consensus가 연속 2 cycle
+    // 같은 station의 ARRIVED를 요구하므로 rerender로 두 번째 cycle을 재현한다.
+    mockUseArrival.mockImplementation(() =>
+      arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }),
+    );
     mockUsePositions.mockReturnValue(positionRet(null));
 
-    const { result } = renderHook(() => useFusedNearestStation());
+    const { result, rerender } = renderHook(() => useFusedNearestStation());
+    act(() => {
+      rerender({});
+    });
     expect(result.current.confidence).toBe('arrival-confirmed');
     expect(result.current.source).toBe('arrival');
   });
@@ -1594,8 +1617,15 @@ describe('useFusedNearestStation', () => {
 
     it('subsurface=true이지만 confidence가 arrival-confirmed면 강등하지 않음', () => {
       // arrival-confirmed는 자체 검증 신호 — 기압계로 강등하지 않는다.
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }));
-      const { result } = renderWithSub(true);
+      // #2204 — mockImplementation으로 매 호출 새 객체 반환. temporal consensus가 연속 2 cycle
+      // 같은 station의 ARRIVED를 요구하므로 rerender로 두 번째 cycle을 재현한다.
+      mockUseArrival.mockImplementation(() =>
+        arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }),
+      );
+      const { result, rerender } = renderWithSub(true);
+      act(() => {
+        rerender({});
+      });
       expect(result.current.confidence).toBe('arrival-confirmed');
     });
   });

@@ -145,6 +145,9 @@ export type AlarmLogReason =
   | 'movement-static-position'
   | 'movement-motion-stationary'
   | 'movement-motion-warmup'
+  // #2204 — 직전 샘플 대비 비현실적 순간 속도 점프(예: 22.1m/s 단일 스파이크) 단독으로는
+  // "이동 확정" license를 주지 않는다. prevSpeedMps를 전달하는 호출자(FG)에서만 평가.
+  | 'movement-implausible-speed-spike'
   // #750 — 공통 sleep 룰 게이트(shouldSuppressBySleepRule)가 차단한 발사.
   // scheduler/FG/BG 3개 path 어디서든 같은 reason으로 적재 — 정책 단일 출처.
   | 'sleep-first-transfer'

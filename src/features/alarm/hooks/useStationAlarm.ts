@@ -82,6 +82,7 @@ import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
+import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import { fireFgAuxStationPassedNotification } from '../utils/stationNotification';
 
@@ -584,6 +585,13 @@ export function useStationAlarm({
   estimatorIsTimeIntegration = false,
   currentHopStrategy = null,
 }: UseStationAlarmInputs): void {
+  // #2204 — 직전 GPS 샘플의 speedMps. evaluateMovement의 단일샘플 속도 plausibility 가드 입력.
+  // useEffect([speedMps])에서 렌더 완료 후 갱신되므로 runMovementGate 호출 시점엔 항상 "직전" 값.
+  const prevSpeedMpsRef = useRef<number | null>(null);
+  useEffect(() => {
+    prevSpeedMpsRef.current = speedMps ?? null;
+  }, [speedMps]);
+
   // #1405 — 동일 5-arg evaluateMovement 호출 helper. Phase ETA / API imminent / movementSuppressionReason
   // 3곳에서 같은 인자로 호출돼 SonarCloud CPD가 dup 검출. helper로 추출해 회피.
   // 매 render에 새 클로저지만, callback 내부에서만 호출되므로 reference 안정성 불필요.
@@ -597,6 +605,7 @@ export function useStationAlarm({
       positionStability,
       motionStationary,
       trainProgressing,
+      prevSpeedMpsRef.current,
     );
 
   const firedAlarmsRef = useRef<Set<string>>(new Set());
@@ -1060,9 +1069,18 @@ export function useStationAlarm({
     // fusion station이 GPS 실관측 station과 다를 수 있다. destination/transfer early는
     // fusion station 기반 ETA 계산을 사용하므로, GPS station과 mismatch인 상황에서 조기 fire를
     // 차단한다. Day 1 evidence: fu=마장 gp=왕십리 → 왕십리 대기 중 마장 destination early false fire.
-    // 실관측(boarding-lock / backend-ssot / position-train / wifi-ssid / fused / route-progress)
+    // 실관측(boarding-lock / backend-ssot / position-train / wifi-ssid / fused)
     // 기반 advance만 phase fire 허용 — #1813과 동일 원칙의 phase alarm 확장.
-    if (estimatorIsTimeIntegration) {
+    //
+    // #2204 (ADR-026 ①잔여 적대적 검증 HOLE) — estimator 전략(#1817)만 보는 게이트는 fusion
+    // source가 route-progress/gps(추정, GPS 좌표 기반)인데 estimator strategy는 시간 적분이
+    // 아닌 조합을 놓친다. `fusionSource`(호출자가 전달한 이번 cycle의 실제 판정 source) 기준으로
+    // 게이팅 — source가 명시 전달되면 그 강/약 판정이 estimator 전략보다 우선(SSOT). route-progress
+    // 화이트리스트 제거: route-progress는 이제 약(추정) source로 분류돼 phase fire 차단 대상.
+    // fusionSource 미전달(레거시 호출자/테스트)이면 estimatorIsTimeIntegration으로 graceful fallback.
+    const phaseGateBlockedByWeakSource =
+      fusionSource !== undefined ? !isStrongFusionSource(fusionSource) : estimatorIsTimeIntegration;
+    if (phaseGateBlockedByWeakSource) {
       logSuppressedPhaseGate('gate-phase-time-integration', destination.name);
       return;
     }
@@ -1173,6 +1191,8 @@ export function useStationAlarm({
     arrivalConfidence,
     // #1817 — 시간 적분 → 실관측 전환 시(estimatorIsTimeIntegration false→true→false) 즉시 재평가.
     estimatorIsTimeIntegration,
+    // #2204 — fusionSource 전환(약→강/강→약) 시 즉시 재평가.
+    fusionSource,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
