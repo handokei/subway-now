@@ -1,14 +1,12 @@
 import { getArchFlag } from './archFlag';
 import { isValidApnsToken } from './apnsToken';
-import { recordTripMetrics } from './d1TripMetrics';
 import {
   assertCronCacheTtl,
   assertKvCacheTtl,
   CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL,
 } from './kvConsistency';
 import { listPending, pendingKey } from './pendingPushes';
-import { writeTripEndedStatus } from './tripStatus';
-import type { Trip, TripEndedReason } from './types';
+import type { Trip } from './types';
 
 /**
  * KV CRUD for active trips.
@@ -129,12 +127,13 @@ export async function deleteTrip(kv: KVNamespace, token: string): Promise<void> 
 /**
  * #2175 — deviceToken → 현재 trip.token 역인덱스.
  *
- * ADR-022 B4 로테이션이 `trip.token`을 `crypto.randomUUID()`로 교체하면, `POST /trips`가
- * `getTrip(incoming.token)`(incoming.token은 항상 실 deviceToken — 클라는 응답의 rotated UUID를
- * 채택하지 않는다, #2174 코멘트)로 직전 로테이션의 UUID trip을 찾지 못해 매번 새 trip이 생성되고
- * old UUID trip은 orphan으로 남는다. 이 역인덱스가 "실 deviceToken이 가리키는 현재 trip.token"을
- * 별도 KV entry(`device-trips:<deviceToken>`)로 추적해, 직접 키 조회가 실패해도 로테이션된 trip을
- * 재발견할 수 있게 한다.
+ * #2196 (ADR-025 cleanup) — ADR-022 B4 로테이션(폐기, #2194) 시절엔 `trip.token`이
+ * `crypto.randomUUID()`로 갈라져 `POST /trips`의 직접 키 조회(`getTrip(incoming.token)`)가 로테이션된
+ * trip을 못 찾는 문제를 이 역인덱스가 해소했다. ADR-025 하에서 신원은 트립 수명 동안 불변(항상
+ * deviceToken 자신)이라 그 register-time 소비자는 제거됐다(index.ts POST /trips 핸들러 참고) —
+ * 역인덱스는 이제 **APNs token refresh 복구 용도로만** 존치한다: OS가 deviceToken 자체를 드물게
+ * 갈아치우는 이벤트에서 `GET /trips/:token/status`·`DELETE /trips/:token` 핸들러가 옛 식별자로도
+ * 살아있는 trip을 재발견하도록 한다.
  *
  * Key: `device-trips:<deviceToken>` (raw deviceToken을 그대로 키 접미사로 사용 — `trip:<token>`이
  * 이미 raw token을 KV 키로 사용하는 기존 정책과 동일. `hashTripToken`(FNV-1a 32bit)은 Sentry/D1
@@ -174,7 +173,7 @@ export async function deleteDeviceTripIndex(kv: KVNamespace, deviceToken: string
 /**
  * #2175 (리뷰 P1) — trip 삭제 시 그 trip이 소유한 deviceToken 역인덱스를 함께 정리한다.
  *
- * 모든 trip 종료 경로(`cleanupSupersededTrip`, `cleanupTripWithLa`)가 공유하는 단일 지점.
+ * trip 종료 경로(`cleanupTripWithLa`)가 공유하는 단일 지점.
  * `trip.deviceToken`이 없으면(legacy trip) no-op — 애초에 인덱스가 만들어지지 않았다.
  *
  * Race guard: 인덱스가 **지금도** 이 trip의 token을 가리킬 때만 삭제한다. 삭제 사이 다른 요청이
@@ -317,36 +316,6 @@ export async function resetTripStateForNewRoute(
   // 다른 route: 신원(token)은 그대로 유지, 구 route의 잔재 pending push만 제거.
   await cleanupPendingPushesForToken(kv, incoming.token);
   return { existing: null, reset: true };
-}
-
-/**
- * #2175 — 다른(superseded) trip의 관측 기록 + KV 정리 단일 지점.
- *
- * `POST /trips` 핸들러가 deviceToken 역인덱스로 발견한 orphan trip(같은 deviceToken의 다른 active
- * trip, `superseded-by-reregister`) 정리가 사용한다.
- * D1 기록(`recordTripMetrics`) → tripStatus sentinel(`writeTripEndedStatus`, best-effort) →
- * `trip:<token>` delete → `pending:*` 잔재 cleanup 순서로 동작한다. alert push는 발사하지 않는다
- * (관측 전용 — `cleanupTripWithLa`와 달리 사용자향 UX 신호 없음, 두 호출자 모두 device 관점에서는
- * "정상 재등록"이지 사용자에게 알릴 종료가 아니다).
- */
-export async function cleanupSupersededTrip(
-  kv: KVNamespace,
-  orphan: Trip,
-  reason: TripEndedReason,
-  now: number,
-  db?: D1Database,
-): Promise<void> {
-  await recordTripMetrics(db, orphan, reason, now);
-  try {
-    await writeTripEndedStatus(kv, orphan.token, reason, now);
-  } catch {
-    // best-effort — sentinel 기록 실패가 cleanup 자체를 막지 않는다.
-  }
-  await deleteTrip(kv, orphan.token);
-  await cleanupPendingPushesForToken(kv, orphan.token);
-  // 리뷰 P1 — orphan trip이 소유한 deviceToken 역인덱스도 함께 정리(현재도 orphan.token을
-  // 가리킬 때만, race guard는 `deleteDeviceTripIndexIfCurrent` 참고).
-  await deleteDeviceTripIndexIfCurrent(kv, orphan);
 }
 
 /**

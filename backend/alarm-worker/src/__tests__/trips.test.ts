@@ -3,7 +3,6 @@ import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import {
   __resetTripRegisterLocksForTest,
   cleanupPendingPushesForToken,
-  cleanupSupersededTrip,
   clearStaleBoardingLock,
   computeRouteSignature,
   dedupeTripsByDeviceToken,
@@ -22,7 +21,6 @@ import {
   withTripRegisterLock,
 } from '../trips';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
-import { readTripEndedStatus } from '../tripStatus';
 import type { Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -735,98 +733,6 @@ describe('deviceToken → trip 역인덱스 (#2175)', () => {
       'device-trips:device-1',
       'trip-A',
       expect.objectContaining({ expirationTtl: 60 }),
-    );
-  });
-});
-
-// #2175 — 공유 orphan cleanup helper. POST /trips 핸들러의 superseded-by-reregister cleanup이
-// 사용한다.
-describe('cleanupSupersededTrip (#2175)', () => {
-  let kv: InMemoryKV;
-  beforeEach(() => {
-    kv = new InMemoryKV();
-  });
-
-  it('trip 삭제 + tripStatus sentinel 기록 + pending cleanup을 모두 수행한다', async () => {
-    const orphan = makeTrip({ token: 'orphan-1' });
-    await putTrip(kv as unknown as KVNamespace, orphan);
-    await putPending(kv as unknown as KVNamespace, {
-      pushId: 'p1',
-      token: 'orphan-1',
-      alarmKey: 'early:p1',
-      sentAt: Date.now(),
-      stationName: '강남',
-      kind: 'destination',
-      phase: 'early',
-      etaSeconds: 300,
-      apnsEnv: 'sandbox',
-    });
-    const now = Date.now();
-    await cleanupSupersededTrip(
-      kv as unknown as KVNamespace,
-      orphan,
-      'superseded-by-reregister',
-      now,
-    );
-    expect(await getTrip(kv as unknown as KVNamespace, 'orphan-1')).toBeNull();
-    expect(await kv.get(pendingKey('p1'))).toBeNull();
-    const status = await readTripEndedStatus(kv as unknown as KVNamespace, 'orphan-1');
-    expect(status?.endReason).toBe('superseded-by-reregister');
-    expect(status?.endedAt).toBe(now);
-  });
-
-  it('writeTripEndedStatus 실패해도 삭제는 진행된다 (best-effort)', async () => {
-    const orphan = makeTrip({ token: 'orphan-2' });
-    await putTrip(kv as unknown as KVNamespace, orphan);
-    const putSpy = vi.spyOn(kv, 'put').mockRejectedValueOnce(new Error('kv down'));
-    await cleanupSupersededTrip(
-      kv as unknown as KVNamespace,
-      orphan,
-      'superseded-by-reregister',
-      Date.now(),
-    );
-    putSpy.mockRestore();
-    expect(await getTrip(kv as unknown as KVNamespace, 'orphan-2')).toBeNull();
-  });
-
-  // 리뷰 P1 — deviceToken 역인덱스도 함께 정리돼야 orphan 종료 후 인덱스가 죽은 token을
-  // 계속 가리키지 않는다.
-  it('orphan.deviceToken이 있고 인덱스가 여전히 orphan.token을 가리키면 인덱스도 함께 삭제한다', async () => {
-    const orphan = makeTrip({ token: 'orphan-3', deviceToken: 'device-3' });
-    await putTrip(kv as unknown as KVNamespace, orphan);
-    await putDeviceTripIndex(
-      kv as unknown as KVNamespace,
-      'device-3',
-      'orphan-3',
-      Date.now() + 60 * 60 * 1000,
-    );
-    await cleanupSupersededTrip(
-      kv as unknown as KVNamespace,
-      orphan,
-      'rotated',
-      Date.now(),
-    );
-    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-3')).toBeNull();
-  });
-
-  it('인덱스가 이미 다른(최신) token을 가리키면 지우지 않는다 (race guard)', async () => {
-    const orphan = makeTrip({ token: 'orphan-4', deviceToken: 'device-4' });
-    await putTrip(kv as unknown as KVNamespace, orphan);
-    // 다른 요청이 이미 새 trip으로 인덱스를 갱신한 상태를 시뮬레이션.
-    await putDeviceTripIndex(
-      kv as unknown as KVNamespace,
-      'device-4',
-      'newer-token',
-      Date.now() + 60 * 60 * 1000,
-    );
-    await cleanupSupersededTrip(
-      kv as unknown as KVNamespace,
-      orphan,
-      'rotated',
-      Date.now(),
-    );
-    expect(await getDeviceTripIndex(kv as unknown as KVNamespace, 'device-4')).toBe(
-      'newer-token',
     );
   });
 });
