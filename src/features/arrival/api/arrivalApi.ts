@@ -42,6 +42,14 @@ const SEOUL_API_TZ_OFFSET = '+09:00';
 const MAX_RECPTN_DRIFT_SEC = 120;
 
 /**
+ * Seoul Open API 조회 window 크기 (startIndex=0 기준 endIndex).
+ * 환승역(예: 건대입구 2·7호선)은 한 응답에 여러 line의 row가 함께 온다. window가 좁으면
+ * 한 line의 row가 앞쪽을 채워 다른 line의 row 자체가 API 응답에서부터 빠질 수 있다
+ * (ADR-027 / #2208, evidence: 건대입구 실탑승 dump).
+ */
+const SEOUL_API_FETCH_WINDOW = 20;
+
+/**
  * recptnDt("YYYY-MM-DD HH:mm:ss", KST)를 epoch ms로 변환한다.
  * 파싱 실패/누락 시 0(=알 수 없음)을 반환한다.
  */
@@ -82,6 +90,32 @@ export function getFallbackArrival(
   return result;
 }
 
+/**
+ * 방향(up/down)별 후보를 line으로 그룹핑한 뒤 line별로 `maxPerDirection`을 적용한다
+ * (ADR-027 / #2208). 환승역에서 한 line의 row가 API 응답 앞쪽을 채우면 line 구분 없는
+ * 전역 `slice(0, maxPerDirection)`이 다른 line 후보를 통째로 truncation한다 — 건대입구
+ * (2·7호선) 실탑승 evidence. line별로 슬라이스한 뒤 합치면 각 line이 최소 노출을 보장받는다.
+ *
+ * 단일 line 역(환승역이 아닌 대다수)에서는 그룹이 하나뿐이라 기존 전역 slice와 동일한
+ * 결과를 낸다 — 일반 arrival 표시(비환승역)는 무영향.
+ */
+function sliceMaxPerLine(items: ArrivalInfo[], maxPerDirection: number): ArrivalInfo[] {
+  const byLine = new Map<LineNumber, ArrivalInfo[]>();
+  for (const item of items) {
+    const group = byLine.get(item.line);
+    if (group) {
+      group.push(item);
+    } else {
+      byLine.set(item.line, [item]);
+    }
+  }
+  const result: ArrivalInfo[] = [];
+  for (const group of byLine.values()) {
+    result.push(...group.slice(0, maxPerDirection));
+  }
+  return result;
+}
+
 export interface FetchArrivalOptions {
   timeoutMs?: number;
   maxPerDirection?: number;
@@ -103,7 +137,7 @@ export async function fetchArrivalInfo(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `http://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/10/${encodeURIComponent(stationName)}`;
+    const url = `http://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/${SEOUL_API_FETCH_WINDOW}/${encodeURIComponent(stationName)}`;
 
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
@@ -167,8 +201,8 @@ export async function fetchArrivalInfo(
     }
 
     const sliced: StationArrival = {
-      up: up.slice(0, maxPerDirection),
-      down: down.slice(0, maxPerDirection),
+      up: sliceMaxPerLine(up, maxPerDirection),
+      down: sliceMaxPerLine(down, maxPerDirection),
       source: 'realtime',
     };
     if (sliced.up.length === 0 && sliced.down.length === 0) {

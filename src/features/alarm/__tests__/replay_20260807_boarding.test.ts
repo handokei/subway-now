@@ -94,7 +94,7 @@ describe('#2207 건대입구(2·7) arrivalApi truncation red fixture — flip in
     jest.restoreAllMocks();
   });
 
-  it.failing(
+  it(
     '건대입구 전노선(2·7) 혼합 realtimeArrivalList — 상행 line-2 후보가 slice(0,2) truncation으로 0건',
     async () => {
       // evidence 재구성: Seoul API가 상행 방향에 7호선 3대 → 2호선 2대 순서로 응답. 앱은
