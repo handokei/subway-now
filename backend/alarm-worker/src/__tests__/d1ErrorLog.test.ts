@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { logBackendError } from '../d1ErrorLog';
+import { captureXEvent } from '../sentry';
+
+vi.mock('../sentry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sentry')>();
+  return { ...actual, captureXEvent: vi.fn() };
+});
 
 function makeMockDb(): D1Database {
   const run = vi.fn().mockResolvedValue({ success: true });
@@ -46,5 +52,19 @@ describe('logBackendError (#1835)', () => {
     await expect(
       logBackendError(db, { endpoint: '/trips', errorType: 'Error' }),
     ).resolves.toBeUndefined();
+  });
+
+  it('D1 write 실패 시 무음이 아니라 captureXEvent로 관측 승격된다 (#2227)', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('D1 write error'));
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    const db = { prepare } as unknown as D1Database;
+
+    await logBackendError(db, { endpoint: '/trips', errorType: 'Error' });
+
+    expect(captureXEvent).toHaveBeenCalledWith(
+      'D1-write-failure',
+      expect.objectContaining({ table: 'backend_errors' }),
+    );
   });
 });

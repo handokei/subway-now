@@ -13,7 +13,7 @@
  * `env.DB` 미바인딩 시 graceful no-op. 적재 실패는 push 발사 흐름을 차단하지 않는다(swallow).
  */
 
-import { hashTripToken } from './sentry';
+import { captureXEvent, hashTripToken } from './sentry';
 import type { ApnsEnv } from './types';
 
 /**
@@ -90,6 +90,8 @@ export async function logPushFailure(
       .run();
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'pushFailureLog write failed', err: String(e) }));
+    // #2227 — D1 write 무음 실패 관측 승격. D1 자체가 실패했으므로 Sentry-only 경로로 escalate.
+    captureXEvent('D1-write-failure', { table: 'push_failures', err: String(e) });
   }
 }
 
