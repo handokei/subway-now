@@ -80,6 +80,7 @@ const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 const mockLogSuppressedChannelAgnosticDedup = jest.fn();
+const mockLogSuppressedMovement = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -90,6 +91,7 @@ jest.mock('../alarmLog', () => ({
   logSuppressedSleepStationPassed: (...args: unknown[]) =>
     mockLogSuppressedSleepStationPassed(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
+  logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
   logSuppressedCrossCategoryRecent: (...args: unknown[]) =>

@@ -344,6 +344,54 @@ describe('movementGate', () => {
     });
   });
 
+  describe('#2204 — 단일샘플 속도 plausibility 가드 (isImplausibleSpeedSpike)', () => {
+    it('직전 정적(0) → 이번 22.1m/s 스파이크(evidence) → reliable=false implausible-speed-spike', () => {
+      const m = evaluateMovement(
+        { speedMps: 22.1 },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        0,
+      );
+      expect(m.reliable).toBe(false);
+      if (!m.reliable) expect(m.reason).toBe('implausible-speed-spike');
+    });
+
+    it('prevSpeedMps 미제공(undefined) → 가드 skip (기존 동작 유지, graceful)', () => {
+      const m = evaluateMovement({ speedMps: 22.1 }, undefined, undefined, undefined, undefined, undefined);
+      expect(m.reliable).toBe(true);
+    });
+
+    it('직전 speed가 이미 이동 중(정적 아님)이면 큰 점프도 스파이크로 보지 않음', () => {
+      const m = evaluateMovement({ speedMps: 30 }, undefined, undefined, undefined, undefined, 10);
+      expect(m.reliable).toBe(true);
+    });
+
+    it('점프가 임계값(IMPLAUSIBLE_SPEED_JUMP_MPS=15) 미달이면 스파이크 아님', () => {
+      const m = evaluateMovement({ speedMps: 14.9 }, undefined, undefined, undefined, undefined, 0);
+      expect(m.reliable).toBe(true);
+    });
+
+    it('trainProgressing=true여도 스파이크 가드는 우회 불가 (stale/low-accuracy와 동급)', () => {
+      const m = evaluateMovement(
+        { speedMps: 22.1 },
+        undefined,
+        undefined,
+        undefined,
+        true,
+        0,
+      );
+      expect(m.reliable).toBe(false);
+      if (!m.reliable) expect(m.reason).toBe('implausible-speed-spike');
+    });
+
+    it('speedMps 미측정(null)이면 스파이크 판정 skip', () => {
+      const m = evaluateMovement({}, undefined, undefined, undefined, undefined, 0);
+      expect(m.reliable).toBe(true);
+    });
+  });
+
   describe('#733 — evaluateMovement positionStability fallback', () => {
     it('speed 없음 + positionStability=static이면 reliable=false reason=static-position', () => {
       const m = evaluateMovement({ accuracyM: 50 }, undefined, 'static');

@@ -23,10 +23,12 @@ import {
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
+  logSuppressedMovement,
   logSuppressedSleepFirstTransfer,
   logSuppressedSleepStationPassed,
   type AlarmLogSource,
 } from './alarmLog';
+import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import {
   isAnyChannelRecentlyFired,
   isStationRecentlyFired,
@@ -244,6 +246,16 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   const distanceToDestM = distanceMetersBetween(lat, lng, destination.lat, destination.lng);
   const etaSeconds = estimateEtaSeconds(distanceToDestM, speedMps);
 
+  // #2204 (ADR-026 ①잔여, 적대적 검증 HOLE 대응) — BG 채널 movement 가드 누락 수정.
+  // FG(`useStationAlarm`/evaluateMovement)는 정적 misfire 가드(movement-static-speed /
+  // movement-motion-stationary 등)를 destination/transfer/station-passed 발사 전에 적용하지만,
+  // 이 파일(BG 채널 SSOT)은 movementGate.ts를 전혀 참조하지 않아 무가드로 발사했다 —
+  // 2026-08-07 07:38:21 `bg | fired | destination | early | 뚝섬` phantom fire evidence
+  // (같은 구간 fg는 movement-static-speed로 반복 suppressed).
+  // BG는 accuracyM/positionStability/motionStationary/trainProgressing/prevSpeedMps를
+  // 이 함수 입력으로 갖지 않으므로 speedMps 단독으로만 평가(graceful — 미제공 신호는 자동 skip).
+  const movementSignal = evaluateMovement({ speedMps: speedMps ?? undefined });
+
   // #707: BoardingLock 활성 시 currentLine을 lock.boardingLine으로 강등.
   // BG path는 fusion이 없어 nearest.station.line(raw GPS 최근접)이 환승역에서 옆 노선으로
   // 잘못 잡힐 수 있다. 사용자가 명시 탭한 lock.boardingLine을 source of truth로 신뢰 —
@@ -306,7 +318,17 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       sleepMode,
       isFirstHop,
     });
-    if (suppressBySleep) {
+    if (!movementSignal.reliable) {
+      // #2204 — FG와 동일 정적 misfire 가드. destination/transfer early가 정적 사용자에게
+      // 발사되던 phantom fire(뚝섬 evidence)를 차단.
+      logSuppressedMovement({
+        source,
+        stationName: alarmEvent.stationName,
+        kind: alarmEvent.type,
+        phaseId: alarmEvent.phaseId,
+        reason: MOVEMENT_TO_ALARM_LOG_REASON[movementSignal.reason],
+      });
+    } else if (suppressBySleep) {
       logSuppressedSleepFirstTransfer({
         source,
         stationName: alarmEvent.stationName,
@@ -409,7 +431,15 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     // dedup(lastNotifiedStationId) 위에 위치 — sleep으로 차단되면 lastNotifiedStationId 갱신 안 함
     // → sleep OFF 토글 후 정상 첫 hop 알림이 재발사 가능.
     // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
-    if (
+    if (!movementSignal.reliable) {
+      // #2204 — FG와 동일 정적 misfire 가드. 정적 사용자에게 station-passed가 발사되던 회귀 차단.
+      logSuppressedMovement({
+        source,
+        stationName: nearest.station.name,
+        kind: 'station-passed',
+        reason: MOVEMENT_TO_ALARM_LOG_REASON[movementSignal.reason],
+      });
+    } else if (
       shouldSuppressBySleepRule({
         lock: lockForLineGuard,
         event: { type: 'station-passed', stationName: nearest.station.name },

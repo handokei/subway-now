@@ -42,6 +42,8 @@ function makeFused(
     result: makeResult(stationOverrides, distanceKm),
     confidence: 'arrival-confirmed',
     source: 'arrival',
+    // #2204 — temporal consensus 추적 필드. 이 테스트는 tier 선택 로직만 검증하므로 무관(null).
+    highPriorityStationId: null,
   };
 }
 

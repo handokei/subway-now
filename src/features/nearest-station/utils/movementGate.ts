@@ -88,7 +88,12 @@ export type MovementReason =
   // #1013 — fg-hydrate 직후 warmup window(~30s) 동안 motion 신호가 아직 초기화되지 않은 상태.
   // motionStationary=undefined + speedMps=null + positionStability='unknown' 동시 발생 시 신호 부재
   // 구간으로 차단. positionStability 60s 수집 또는 motion 초기화 완료 후 자연 해소.
-  | 'motion-warmup';
+  | 'motion-warmup'
+  // #2204 (ADR-026 ①잔여 적대적 검증 HOLE) — 직전 샘플이 정적(< STATIC_SPEED_THRESHOLD_MPS)이었는데
+  // 이번 샘플이 IMPLAUSIBLE_SPEED_JUMP_MPS 이상 급증한 단일 스파이크. 2026-08-07 07:38:19 GPS
+  // 22.1m/s automotive 스파이크 1개 후 급감(정지) evidence — 실제 이동이 아니라 GPS/센서 노이즈일
+  // 가능성이 높으므로 이 샘플 단독으로는 "이동 확정" 발사 license를 주지 않는다.
+  | 'implausible-speed-spike';
 
 interface MovementSignalShared {
   speedMps?: number;
@@ -146,7 +151,29 @@ export const MOVEMENT_TO_ALARM_LOG_REASON = {
   'static-position': 'movement-static-position',
   'motion-stationary': 'movement-motion-stationary',
   'motion-warmup': 'movement-motion-warmup',
+  'implausible-speed-spike': 'movement-implausible-speed-spike',
 } as const satisfies Record<MovementReason, string>;
+
+/**
+ * #2204 — 직전 샘플 대비 비현실적 속도 점프 임계값(m/s). 22.1 m/s 단일 스파이크 evidence 기준으로
+ * 정지(직전 샘플 < STATIC_SPEED_THRESHOLD_MPS) 상태에서 이 값 이상 급증하면 실제 이동이 아니라
+ * GPS/센서 노이즈로 간주한다. 도보/지하철 정상 가속으로는 GPS 폴링 간격 안에 이 정도 점프가
+ * 발생하지 않는다.
+ */
+export const IMPLAUSIBLE_SPEED_JUMP_MPS = 15;
+
+/**
+ * 단일샘플 속도 plausibility 판정 — 직전 샘플이 정적이었는데 이번 샘플이 비현실적으로 급증했는지.
+ * prevSpeedMps 미제공(undefined)이면 항상 false — 이력 없는 호출자는 기존 동작 유지(graceful).
+ */
+function isImplausibleSpeedSpike(
+  speedMps: number | null | undefined,
+  prevSpeedMps: number | null | undefined,
+): boolean {
+  if (speedMps == null || prevSpeedMps == null) return false;
+  if (prevSpeedMps >= STATIC_SPEED_THRESHOLD_MPS) return false;
+  return speedMps - prevSpeedMps >= IMPLAUSIBLE_SPEED_JUMP_MPS;
+}
 
 /**
  * fusion downgrade(#727)용 빠른 정지 판정.
@@ -276,18 +303,22 @@ export interface LocationSignalInput {
  *   1. loc === null → 'no-location'
  *   2. timestamp 있으면서 (now - timestamp) > STALE_AGE_MS → 'stale-timestamp'
  *   3. accuracyM 있으면서 > MAX_ACCURACY_M → 'low-accuracy'
- *   4. (#1401) trainProgressing === true → 정적 가드 3종(4·5·6) 우회. fusion arc advance가 확인되면
+ *   4. (#2204) prevSpeedMps 제공 + 직전 샘플이 정적이었는데 이번 샘플이 비현실적으로 급증
+ *      (IMPLAUSIBLE_SPEED_JUMP_MPS 이상) → 'implausible-speed-spike'. trainProgressing으로도
+ *      우회 불가 — 단일 스파이크 샘플 자체가 오염됐을 가능성이 높은 물리적 신뢰성 분기라
+ *      stale/low-accuracy와 동급으로 취급.
+ *   5. (#1401) trainProgressing === true → 정적 가드 3종(6·7·8) 우회. fusion arc advance가 확인되면
  *      device 모션/GPS speed 정적 신호는 noise로 간주.
- *   5. (#728) motionStationary === true → 'motion-stationary'
+ *   6. (#728) motionStationary === true → 'motion-stationary'
  *      - speed/position 신호보다 우선. 16:14:22 회귀(speed=0.69 임계 우회)와
  *        destination/transfer 카테고리 무방비를 동시 차단하는 핵심 신호.
- *   6. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
- *   7. (#733) speedMps 없고 positionStability='static' → 'static-position'
- *   8. (#1013) motionStationary=undefined + speedMps=null + positionStability='unknown' → 'motion-warmup'
+ *   7. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
+ *   8. (#733) speedMps 없고 positionStability='static' → 'static-position'
+ *   9. (#1013) motionStationary=undefined + speedMps=null + positionStability='unknown' → 'motion-warmup'
  *      - fg-hydrate 직후 warmup window. 모든 신호가 부재할 때 한시적 차단.
- *      - trainProgressing=true여도 평가 도달 X — 평가 순서상 (4)에서 정적 가드만 우회되고
+ *      - trainProgressing=true여도 평가 도달 X — 평가 순서상 (5)에서 정적 가드만 우회되고
  *        warmup은 신호 부재(GPS lock도 안 잡힘) 분기라 별도 유지.
- *   9. 그 외 → reliable=true
+ *   10. 그 외 → reliable=true
  *
  * 호출자는 결과의 reason으로 logSuppressedGate/logSilentPushSkipped 등 적재.
  */
@@ -310,6 +341,11 @@ export function evaluateMovement(
    * fusion advance와 무관한 GPS 자체 신뢰성 분기라 그대로 유지.
    */
   trainProgressing?: boolean,
+  /**
+   * #2204 — 직전 GPS 샘플의 speedMps. 단일샘플 속도 plausibility 가드(isImplausibleSpeedSpike)
+   * 입력. 미제공(undefined)이면 가드 skip — 이력을 추적하지 않는 호출자는 기존 동작 유지(graceful).
+   */
+  prevSpeedMps?: number | null,
 ): MovementSignal {
   // ADR-022 Phase 4-3 (#2005) — arrival API SSoT flag ON 시 motion gate 전면 bypass.
   // fire 판정을 backend arvlCd 로 단일화하므로 device motion / GPS speed / warmup 게이트가
@@ -329,6 +365,13 @@ export function evaluateMovement(
 
   if (loc.accuracyM != null && loc.accuracyM > MAX_ACCURACY_M) {
     return { reliable: false, reason: 'low-accuracy', accuracyM: loc.accuracyM };
+  }
+
+  // #2204 — 단일샘플 속도 plausibility 가드. stale/low-accuracy와 동급으로 trainProgressing 우회
+  // 대상 밖에 둔다 — 스파이크 샘플 자체가 오염됐을 가능성이 높아, arc advance(trainProgressing)가
+  // 같은 오염된 fusion 결과에서 파생됐어도 이 샘플로 발사 license를 주면 안 된다.
+  if (isImplausibleSpeedSpike(loc.speedMps, prevSpeedMps)) {
+    return { reliable: false, reason: 'implausible-speed-spike', speedMps: loc.speedMps };
   }
 
   // #1401 — 열차 진행 확정 시 device 정적 신호 우회. fusion advance가 device 모션/GPS speed보다

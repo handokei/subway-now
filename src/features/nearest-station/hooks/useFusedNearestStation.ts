@@ -34,6 +34,7 @@ import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
 import { shouldDowngradeFusion } from '../utils/movementGate';
+import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
@@ -648,6 +649,11 @@ export function useFusedNearestStation(
   const p1 = useTrainPositions(l1, positionProvider);
   const p2 = useTrainPositions(l2, positionProvider);
 
+  // #2204 — arrival-confirmed temporal consensus 추적. 직전 cycle의 highPriorityStationId를
+  // 다음 cycle의 pickFusedStation 호출에 그대로 전달 — 연속 2 cycle 합의가 있어야 확정.
+  // useEffect([fused])에서 렌더 완료 후 갱신되므로 이 memo 실행 시점엔 항상 "직전" 값.
+  const prevHighPriorityStationIdRef = useRef<string | null>(null);
+
   const fused = useMemo(() => {
     if (candidates.length === 0) return null;
     const arrivals = [a0.arrival, a1.arrival, a2.arrival];
@@ -658,8 +664,13 @@ export function useFusedNearestStation(
         arrival: arrivals[i] ?? null,
         positionMatches: matchPositionsForCandidate(cand, positions),
       })),
+      prevHighPriorityStationIdRef.current,
     );
   }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
+
+  useEffect(() => {
+    prevHighPriorityStationIdRef.current = fused?.highPriorityStationId ?? null;
+  }, [fused]);
 
   // Phase 1C: Position-first fusion.
   // 후보 trainNo들(pickCandidateTrains) → trackTrainProgress로 단일 trainNo·현재역 결정.
@@ -1828,8 +1839,15 @@ export function useFusedNearestStation(
   // #1808 — 시간 적분 strategy(lockless-route-hop / default-hop / reanchored-hop) 활성 시
   // trainProgressing=false 강제. 실측 신호 없이 시간 적분만 active일 때 GPS 좌표 jitter로
   // arc idx가 advance하면 trainProgressing=true가 되어 motion-stationary 가드가 우회 →
-  // ADR-014 §4 위반(fire path 진입). 실관측(boarding-lock / backend-ssot / position-train /
-  // wifi-ssid / fused / route-progress) 기반 advance만 trainProgressing=true 허용.
+  // ADR-014 §4 위반(fire path 진입).
+  //
+  // #2204 (ADR-026 ①잔여 적대적 검증 HOLE) — estimator 전략(#1808)만 보는 게이트는 fusion
+  // `source`가 route-progress/gps(추정)인데 estimator strategy가 시간 적분이 아닌 조합(예:
+  // hop 추정은 live-position이지만 station fix 자체는 cascade weak-tier fallback)을 놓친다.
+  // 실제 이번 cycle의 station fix에 쓰인 신호인 `source`로 직접 게이팅 — estimator 전략보다
+  // SSOT. route-progress 화이트리스트 제거: route-progress는 GPS 좌표 기반 1D 추정일 뿐 실관측이
+  // 아니므로 더 이상 trainProgressing=true를 허용하는 강 신호 목록에 없다. 실관측(boarding-lock /
+  // backend-ssot / position-train / wifi-ssid / position / arrival) 기반 advance만 허용.
   const currentResultArcIdx =
     result != null && arcStations.length > 0
       ? arcIndexOfStation(arcStations, result.station)
@@ -1837,7 +1855,7 @@ export function useFusedNearestStation(
   const prevArcIdxRef = useRef<number>(-1);
   const prevArcKeyForProgressRef = useRef<string | null>(null);
   const trainProgressing =
-    !estimatorIsTimeIntegration &&
+    isStrongFusionSource(source) &&
     arcStations.length > 0 &&
     arcKey === prevArcKeyForProgressRef.current &&
     prevArcIdxRef.current !== -1 &&
