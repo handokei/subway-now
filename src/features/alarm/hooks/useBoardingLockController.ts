@@ -12,6 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
+import { getApproachLineWithConfirmation } from '../../route/utils/approachLine';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { allowedLinesFromRoute } from '../../../shared/utils/stationRoute';
 import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
@@ -263,12 +264,36 @@ export function useBoardingLockController({
   // BoardingLock store로 흘러드는 회귀를 차단한다.
   const allowedLines = useMemo(() => allowedLinesFromRoute(route), [route]);
 
+  // #2209 (ADR-027 Decision 1) — route/lock 확정값일 때만 신뢰할 수 있는 line 신호.
+  // `confirmed=false`(route/lock 후보 없음, fusion `currentStation.line` 임의값(#797))이면
+  // 어떤 candidate 필터에도 이 line을 쓰지 않는다(누락 방지) — origin auto-lock 전용
+  // `originAutoLockArrivals`(하단)에서만 소비한다.
+  const { line: approachLine, confirmed: approachLineConfirmed } = useMemo(
+    () => getApproachLineWithConfirmation(route, lock, currentStation),
+    [route, lock, currentStation],
+  );
+
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival) return [];
     if (direction === 'up') return arrival.up.filter(isReachable);
     if (direction === 'down') return arrival.down.filter(isReachable);
     return [...arrival.up, ...arrival.down].filter(isReachable);
   }, [arrival, direction]);
+
+  // #2209 (ADR-027 Decision 3) — origin leg device-side auto-lock(하단 effect) 전용 line 사전필터.
+  // `directionalArrivals`(hydrateLockFromCandidate Gate 1 / hook 반환값)는 backend가 이미
+  // evidence로 line을 신뢰한 candidate까지 line 불일치로 걷어내면 안 되므로 건드리지 않는다
+  // (예: 환승역에서 backend가 toLine candidate를 evidence 기반으로 확정 hydrate하는 케이스).
+  // 반대로 origin auto-lock effect는 device 자체 판단(source='position-train')이라 `allowedLines`
+  // (trip route 전체 line 집합, `{2,7}` 등)만으로는 옆 line 후보(예: 7377)를 걸러내지 못했던
+  // 회귀(증상④)를 approachLine(확정)으로 사전 차단한다 — `useBoardingPromptResponder.ts:314`의
+  // `sameLine` 필터와 동일 정책.
+  const originAutoLockArrivals = useMemo<ArrivalInfo[]>(() => {
+    if (approachLineConfirmed && approachLine) {
+      return directionalArrivals.filter((t) => t.line === approachLine);
+    }
+    return directionalArrivals;
+  }, [directionalArrivals, approachLine, approachLineConfirmed]);
 
   // #1326: BoardingTrainList 전용 — 방향 필터 결과가 비면 빈 목록 대신 양방향 합집합으로 폴백.
   //
@@ -462,13 +487,14 @@ export function useBoardingLockController({
     if (lock) return;
     if (!route) return;
     if (!currentStation) return;
-    if (directionalArrivals.length === 0) return;
+    if (originAutoLockArrivals.length === 0) return;
     const originKey = `${destinationId ?? FREE_TRIP_DESTINATION_SENTINEL}|${currentStation.id}`;
     if (lastOriginAutoLockKeyRef.current === originKey) return;
     // #1740 — direction이 확정된 경우 pickAutoTrainCodeFromArrivals에 전달.
-    // directionalArrivals는 이미 direction 필터 적용됐지만, helper 인자로 명시해 일관성 보장.
+    // originAutoLockArrivals는 이미 direction + (확정 시) line 필터가 적용됐지만, helper 인자로
+    // direction을 명시해 일관성 보장.
     const destinationDirection = direction === 'up' || direction === 'down' ? direction : undefined;
-    const chosen = pickAutoTrainCodeFromArrivals(directionalArrivals, destinationDirection);
+    const chosen = pickAutoTrainCodeFromArrivals(originAutoLockArrivals, destinationDirection);
     if (!chosen) return;
     // 강 evidence 게이트: arvlCd가 ENTERING/ARRIVED/DEPARTED 중 하나일 때만 진행.
     // `pickAutoTrainCodeFromArrivals`는 receivedAt 정렬 첫 후보로 fallback하지만, 본 effect는
@@ -557,7 +583,7 @@ export function useBoardingLockController({
     lock,
     route,
     currentStation,
-    directionalArrivals,
+    originAutoLockArrivals,
     destinationId,
     expectedDurationMinutes,
     allowedLines,

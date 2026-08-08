@@ -192,9 +192,9 @@ describe('#2207 건대입구(2·7) auto-lock 오노선 red fixture — flip in #
     useBoardingLockStore.setState({ lock: null });
   });
 
-  it.failing(
-    '건대입구 환승(2·7) 혼합 후보 — auto-lock이 line=2(2038) 대신 line=7(7377)을 선택 ' +
-      '(arvlCd 우선순위만으로 결정, line 미필터)',
+  it(
+    '건대입구 환승(2·7) 혼합 후보 — auto-lock이 line=7(7377) 대신 line=2(2038)을 선택 ' +
+      '(#2209: directionalArrivals가 approachLine 확정값으로 사전필터)',
     async () => {
       const createLockMock = jest.fn().mockResolvedValue(undefined);
       useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
