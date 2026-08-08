@@ -209,29 +209,18 @@ jest.mock('react-native', () => ({
 // reschedule 분기: rescheduleSafetyNetAlarm 1회. companion 발사 후 cleanup: cancelSafetyNetByStationKind 1회.
 const mockRescheduleSafetyNetAlarm = jest.fn();
 const mockCancelSafetyNetByStationKind = jest.fn().mockResolvedValue(undefined);
-// #918 — resolveEffectiveTripToken은 applyReschedule의 presched 분기(sleepMode OFF)에서
-// backendTripToken/tripStart로부터 effective tripToken을 도출하는 데 쓰인다. safetyNetScheduler와
-// 동일한 실제 동작(backend 우선, 없으면 device-local id)을 mock에서도 재현해 케이스 분기가 실제
-// 모듈처럼 동작하게 한다.
-const mockResolveEffectiveTripToken = jest.fn(
-  (backendTripToken: string | null, tripStart: number | null) =>
-    backendTripToken ?? (tripStart !== null ? `local-${tripStart}` : null),
-);
 jest.mock('../../utils/safetyNetScheduler', () => ({
   rescheduleSafetyNetAlarm: (...args: unknown[]) => mockRescheduleSafetyNetAlarm(...args),
   cancelSafetyNetByStationKind: (...args: unknown[]) => mockCancelSafetyNetByStationKind(...args),
-  resolveEffectiveTripToken: (backendTripToken: string | null, tripStart: number | null) =>
-    mockResolveEffectiveTripToken(backendTripToken, tripStart),
 }));
 
 // #918 — stationPrescheduler(OS 사전예약 "매역" 채널)도 safetyNetScheduler와 동일하게 mock —
 // 실제 모듈이 stationNotification.ts(→ live-activity 네이티브 모듈)를 import해 이 테스트 파일의
-// jest-expo 환경에서 로드 실패를 유발하므로 반드시 mock 필요.
+// jest-expo 환경에서 로드 실패를 유발하므로 반드시 mock 필요. #2202 — register/reschedule은
+// 채널 퇴역으로 삭제, cancelPrescheduledByStationKind만 잔존 소비(원격 도착 dedup).
 const mockCancelPrescheduledByStationKind = jest.fn().mockResolvedValue(undefined);
-const mockReschedulePrescheduledAlarm = jest.fn().mockResolvedValue({ cancelled: 0, scheduled: 0 });
 jest.mock('../../utils/stationPrescheduler', () => ({
   cancelPrescheduledByStationKind: (...args: unknown[]) => mockCancelPrescheduledByStationKind(...args),
-  reschedulePrescheduledAlarm: (...args: unknown[]) => mockReschedulePrescheduledAlarm(...args),
 }));
 
 // #918 — markLocalStationFired(recentLocalStationFires)도 mock. 실제 모듈은 AsyncStorage에
@@ -2067,7 +2056,8 @@ describe('silentPushTask', () => {
 
         // #2089 리뷰 P1-1 — 일반 모드(sleepMode OFF)에서는 reschedule이 신규 안전망을
         // 만들지 못하게 게이트. 취침 OFF 토글 직후 도착한 reschedule push의 재생성도 차단.
-        it('sleepMode OFF면 rescheduleSafetyNetAlarm 미호출 (P1-1)', async () => {
+        // #2202 — stationPrescheduler 채널 퇴역 후 sleepMode OFF는 정정 대상 자체가 없어 no-op.
+        it('sleepMode OFF면 rescheduleSafetyNetAlarm 미호출, presched 재예약도 없음 (P1-1 / #2202)', async () => {
           setStorage({ sleepMode: false });
           await handleSilentPush(
             reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
