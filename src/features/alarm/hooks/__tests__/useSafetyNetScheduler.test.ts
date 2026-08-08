@@ -21,6 +21,11 @@ jest.mock('../../utils/tripStartStorage', () => ({
   getTripStartedAt: (...args: unknown[]) => mockGetTripStartedAt(...args),
 }));
 
+const mockUseSilentPushHealthCheck = jest.fn();
+jest.mock('../useSilentPushHealthCheck', () => ({
+  useSilentPushHealthCheck: (...args: unknown[]) => mockUseSilentPushHealthCheck(...args),
+}));
+
 const mockErrorSpy = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -44,6 +49,9 @@ describe('useSafetyNetScheduler', () => {
     mockGetTripStartedAt.mockResolvedValue(1_000_000);
     mockRegisterSafetyNetAlarms.mockResolvedValue({ scheduled: 1 });
     mockCancelAllSafetyNetAlarms.mockResolvedValue(undefined);
+    // #2203 — 기본값은 backend outage 확인(healthy=false)으로 둬서 기존 테스트들의
+    // "등록된다" 기대를 그대로 보존. outage-only 게이트 자체 테스트는 healthy:true를 명시.
+    mockUseSilentPushHealthCheck.mockReturnValue({ healthy: false, lastReceivedAt: null });
   });
 
   it('sleepMode=false면 등록하지 않는다', async () => {
@@ -97,6 +105,7 @@ describe('useSafetyNetScheduler', () => {
         route: ROUTE,
         destinationName: GANGNAM,
         startTime: 1_000_000,
+        outageConfirmed: true,
       });
     });
   });
@@ -312,5 +321,71 @@ describe('useSafetyNetScheduler', () => {
     // stale run(OTHER1)의 register completion이 늦게 도착해도 register 호출 수는 늘지 않는다.
     expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(3);
     expect(mockErrorSpy).not.toHaveBeenCalled();
+  });
+
+  describe('#2203 — outage-only 무장 (ADR-026 Decision 3)', () => {
+    it('backend 정상(healthy=true)이면 무장하지 않는다', async () => {
+      mockUseSilentPushHealthCheck.mockReturnValue({ healthy: true, lastReceivedAt: Date.now() });
+      useSettingsStore.setState({ sleepMode: true });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+
+      await waitFor(() => expect(mockGetTripStartedAt).toHaveBeenCalled());
+      expect(mockRegisterSafetyNetAlarms).not.toHaveBeenCalled();
+      expect(mockCancelAllSafetyNetAlarms).not.toHaveBeenCalled();
+    });
+
+    it('outage 확인(healthy=false)이면 무장한다', async () => {
+      mockUseSilentPushHealthCheck.mockReturnValue({ healthy: false, lastReceivedAt: null });
+      useSettingsStore.setState({ sleepMode: true });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+
+      await waitFor(() =>
+        expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledWith({
+          tripToken: TRIP_TOKEN,
+          route: ROUTE,
+          destinationName: GANGNAM,
+          startTime: 1_000_000,
+          outageConfirmed: true,
+        }),
+      );
+    });
+
+    it('outage로 armed된 상태에서 backend가 회복(healthy=true)되면 armed 예약을 cancel한다', async () => {
+      mockUseSilentPushHealthCheck.mockReturnValue({ healthy: false, lastReceivedAt: null });
+      useSettingsStore.setState({ sleepMode: true });
+      const { rerender } = renderHook(
+        ({ healthy }: { healthy: boolean }) => {
+          mockUseSilentPushHealthCheck.mockReturnValue({ healthy, lastReceivedAt: null });
+          return useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM });
+        },
+        { initialProps: { healthy: false } },
+      );
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+
+      rerender({ healthy: true });
+
+      await waitFor(() => expect(mockCancelAllSafetyNetAlarms).toHaveBeenCalledWith(TRIP_TOKEN));
+      // backend가 정상으로 전환된 뒤에는 재등록하지 않는다.
+      expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('healthy=true(무장 없음) 상태에서 outage로 전환(healthy=false)되면 새로 무장한다', async () => {
+      useSettingsStore.setState({ sleepMode: true });
+      const { rerender } = renderHook(
+        ({ healthy }: { healthy: boolean }) => {
+          mockUseSilentPushHealthCheck.mockReturnValue({ healthy, lastReceivedAt: null });
+          return useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM });
+        },
+        { initialProps: { healthy: true } },
+      );
+      await waitFor(() => expect(mockGetTripStartedAt).toHaveBeenCalled());
+      expect(mockRegisterSafetyNetAlarms).not.toHaveBeenCalled();
+
+      rerender({ healthy: false });
+
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+      // 이전에 무장된 적이 없으므로 cancel은 호출되지 않는다.
+      expect(mockCancelAllSafetyNetAlarms).not.toHaveBeenCalled();
+    });
   });
 });

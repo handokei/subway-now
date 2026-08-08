@@ -16,6 +16,7 @@ import {
 } from '../utils/safetyNetScheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
+import { useSilentPushHealthCheck } from './useSilentPushHealthCheck';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useSafetyNetScheduler');
@@ -39,13 +40,19 @@ export interface UseSafetyNetSchedulerInputs {
  *   (ACTIVE_TRIP_KEY)이 아직 없어도(register race/실패) `deviceLocalTripId`로 fallback해
  *   armed — 안전망이 "backend outage 백업"이라는 목적상 backend 등록 성공 여부에 arming을
  *   종속시키면 정작 필요한 상황에 무력화된다. tripStart조차 없으면(trip 미시작) cancel-only.
- * - identity = `${tripToken}|${routeSig}|${destinationName}|sleep:${sleepMode}`. 이전과
- *   동일하면 no-op, 다르면 이전 등록을 cancel한 뒤 새로 등록한다.
+ * - identity = `${tripToken}|${routeSig}|${destinationName}|sleep:${sleepMode}|outage:${outageConfirmed}`.
+ *   이전과 동일하면 no-op, 다르면 이전 등록을 cancel한 뒤 새로 등록한다.
+ * - **#2203 (ADR-026 Decision 3) — outage-only 무장**: `useSilentPushHealthCheck`가 silent push
+ *   수신 이력으로 판정한 `healthy`의 반대(`outageConfirmed = !healthy`)를 매 identity에 포함한다.
+ *   backend가 정상(healthy=true)이면 무장하지 않는다(이중발사 방지, backend가 단일 emitter) —
+ *   `registerSafetyNetAlarms`를 호출하지 않고, 이전에 outage로 armed됐던 예약이 있으면 backend
+ *   회복 시 identity 변경으로 cancel된다. outage가 확인(healthy=false)되는 순간에만 실제 무장.
  * - 언마운트 시에는 cancel하지 않는다 — trip 종료는 `tripBoundCleanups`가 담당(#1924/#1525
  *   defensive cancel과 동일 소유 경계).
  */
 export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSchedulerInputs): void {
   const sleepMode = useSettingsStore((s) => s.sleepMode);
+  const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
   // 마지막으로 성공 등록(또는 명시적으로 cancel-only 처리)한 identity. null이면
   // "현재 큐에 안전망 알람 없음" 상태.
   const registeredIdentityRef = useRef<string | null>(null);
@@ -86,7 +93,9 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
       // device-local id로 armed(자세한 내용은 deviceLocalTripId 문서 참고).
       const tripToken = backendTripToken ?? deviceLocalTripId(tripStart);
 
-      const nextIdentity = `${tripToken}|${nextIdentityBase}`;
+      // #2203 — backend 침묵이 확인됐을 때만(outageConfirmed) 실제로 무장한다.
+      const outageConfirmed = !silentPushHealthy;
+      const nextIdentity = `${tripToken}|${nextIdentityBase}|outage:${outageConfirmed}`;
       if (registeredIdentityRef.current === nextIdentity) return;
 
       if (registeredIdentityRef.current !== null && registeredTripTokenRef.current) {
@@ -94,11 +103,21 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
       }
       if (myToken !== inFlightTokenRef.current) return;
 
+      if (!outageConfirmed) {
+        // backend 정상 수신 중 — 무장하지 않는다(이중발사 방지). identity만 마킹해 매
+        // effect마다 불필요한 재판정을 막고, backend가 outage로 전환되면 identity가 바뀌어
+        // 다음 run에서 무장한다.
+        registeredIdentityRef.current = nextIdentity;
+        registeredTripTokenRef.current = null;
+        return;
+      }
+
       const result = await registerSafetyNetAlarms({
         tripToken,
         route,
         destinationName,
         startTime: tripStart,
+        outageConfirmed: true,
       });
       if (myToken !== inFlightTokenRef.current) return;
       registeredIdentityRef.current = nextIdentity;
@@ -109,5 +128,5 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
     run().catch((e: unknown) => {
       logger.error('safetyNetScheduler 전환 실패:', e);
     });
-  }, [route, destinationName, sleepMode]);
+  }, [route, destinationName, sleepMode, silentPushHealthy]);
 }
