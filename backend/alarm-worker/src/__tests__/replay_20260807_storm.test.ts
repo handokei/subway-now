@@ -24,11 +24,11 @@
  * "단일 물리 이벤트 = 단일 backend emitter" 불변식이 remote flag=ON 상태에서도 깨져 있음을
  * 고정한다.)
  *
- * ## Assert (수리 후 기대치, 지금 red)
+ * ## Assert (수리 완료, #2201에서 green으로 flip)
  * 한 물리 도착 이벤트(같은 station의 arvlCd 0→1 monotone 진행)에 대해 backend가 실제로 발사하는
- * visible push 수 = 1 기대(현재 2). `it.fails`으로 감싸 CI green 유지 — #2201/#2202/#2204가
- * `isSimpleArchEnabled`를 real `getArchFlag(env.KV)`로 wire하면 이 assertion이 통과, 그 시점에
- * `it.fails`을 `it`로 교체한다.
+ * visible push 수 = 1 (수리 전 2). #2201이 `isSimpleArchEnabled`를 real
+ * `getArchFlag(env.TRIPS)`로 wire해 `it.fails`를 `it`로 교체 — remote flag=ON 상태에서
+ * fire-once 게이트가 실제로 관여한다.
  *
  * ## 금지
  * production 코드 수정 없음(테스트만). `scheduled.test.ts`의 fixture 패턴(`makeFullEmptyStats`,
@@ -164,57 +164,10 @@ function makeFullEmptyStats(): ScheduledStats {
 }
 
 describe('evidence 2026-08-07 07:38 뚝섬 storm — 단일 물리 이벤트 backend 중복 emit (#2200)', () => {
-  it('오늘 evidence 재현 — remote archFlag=on 상태에서도 fire-once 게이트가 관여하지 않아 같은 station에서 2회 push 발사 (회귀 확인)', async () => {
-    const kv = new InMemoryKV();
-    // dump Feature Flag 섹션: remote=on active=ON — 이 trip의 실제 KV 상태를 그대로 재현.
-    await kv.put(ARCH_FLAG_KV_KEY, 'on');
-    const trip = makeTrip();
-    await putTrip(kv as unknown as KVNamespace, trip);
-    const apnsFetch = async (): Promise<Response> => new Response('', { status: 200 });
-    const commonInputs = {
-      trip,
-      waypoint: trip.waypoints[0],
-      lock: trip.boardingLock!,
-      env: makeEnv(kv),
-      deps: {
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
-      } as ScheduledDeps,
-      now: NOW,
-      log: () => undefined,
-      generatePushId: () => 'p-storm-1',
-    };
-
-    // arvlCd=0(진입) 첫 관측 — 물리 도착 이벤트의 시작.
-    const statsFirst = makeFullEmptyStats();
-    const first = await fireArvlCdStationPush({ ...commonInputs, stats: statsFirst, arvlCd: 0 });
-    expect(first.dirty).toBe(true);
-    expect(statsFirst.arvlCdFireSuccess).toBe(1);
-
-    // 같은 monotone cycle 안에서 arvlCd=1(도착) 재관측 — 물리적으로는 같은 도착 이벤트.
-    // trip은 첫 fire에서 putTrip으로 lastFiredStation이 갱신되지 않았으므로(직접 호출은 caller가
-    // trip 객체를 재사용) 두 번째 호출도 같은 in-memory trip을 그대로 전달한다.
-    const statsSecond = makeFullEmptyStats();
-    const second = await fireArvlCdStationPush({
-      ...commonInputs,
-      stats: statsSecond,
-      arvlCd: 1,
-      generatePushId: () => 'p-storm-2',
-    });
-
-    // 회귀 확인: 실제로는 2번째도 fire 된다 — 같은 물리 이벤트에 대해 backend가 push를 2회 발사.
-    expect(second.dirty).toBe(true);
-    expect(statsSecond.arvlCdFireSuccess).toBe(1);
-    expect(statsSecond.arvlCdFireOnceSkipped).toBe(0);
-  });
-
-  // Flip in #2201/#2202/#2204 — `arvlcdFireOnceTtl.ts`의 `isSimpleArchEnabled()`가 real
-  // `getArchFlag(env.KV)`로 wire되면, remote flag='on' 상태에서 같은 (token, station) cycle의
-  // 두 번째 arvlCd 관측은 fire-once 게이트로 skip돼야 한다. 그 시점 이 테스트를
-  // `it.fails` → `it`로 교체한다.
-  it.fails(
+  // #2201 수리 완료 — `isSimpleArchEnabled`가 real `getArchFlag(env.TRIPS)`로 wire되어
+  // remote flag='on' 상태에서 같은 (token, station) cycle의 두 번째 arvlCd 관측은 fire-once
+  // 게이트로 skip된다. `it.fails` → `it`로 교체 (구 "회귀 확인" 테스트는 수리로 무효화되어 제거).
+  it(
     '수리 후 기대치 — 한 물리 도착 이벤트(arvlCd 0→1 monotone) = backend push 1회만 (remote archFlag=on 존중)',
     async () => {
       const kv = new InMemoryKV();

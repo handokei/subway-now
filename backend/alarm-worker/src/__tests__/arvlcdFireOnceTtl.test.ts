@@ -7,7 +7,13 @@ import {
   isSimpleArchEnabled,
   stampArvlCdFireOnce,
 } from '../arvlcdFireOnceTtl';
+import { ARCH_FLAG_KV_KEY } from '../archFlag';
+import type { Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
+
+function makeEnvWithKv(kv: InMemoryKV): Env {
+  return { TRIPS: kv as unknown as KVNamespace } as Env;
+}
 
 const NOW = 1_700_000_000_000;
 const TOKEN = 'trip-tok-1';
@@ -148,8 +154,21 @@ describe('stampArvlCdFireOnce (#1985)', () => {
   });
 });
 
-describe('isSimpleArchEnabled (#1985 임시 flag)', () => {
-  it('returns false — Phase 0 (#1982) 미머지 상태, production 무영향 default', () => {
-    expect(isSimpleArchEnabled()).toBe(false);
+describe('isSimpleArchEnabled (#2201 real getArchFlag(env.TRIPS) wire)', () => {
+  it('returns false — KV 미설정 default (getArchFlag default off)', async () => {
+    const kv = new InMemoryKV();
+    expect(await isSimpleArchEnabled(makeEnvWithKv(kv))).toBe(false);
+  });
+
+  it('returns true — remote KV flag="on"', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(ARCH_FLAG_KV_KEY, 'on');
+    expect(await isSimpleArchEnabled(makeEnvWithKv(kv))).toBe(true);
+  });
+
+  it('returns false — remote KV flag="off"', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(ARCH_FLAG_KV_KEY, 'off');
+    expect(await isSimpleArchEnabled(makeEnvWithKv(kv))).toBe(false);
   });
 });
