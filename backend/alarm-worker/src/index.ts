@@ -564,25 +564,44 @@ app.post('/trips', async (c) => {
   // 5~10회 POST되는 사례 차단. Cloudflare Worker quota(100K/day) 보호 + dedup state 안정.
   // 정상 사용자(<10 req/10min)는 영향 없음. checkTripRegisterRateLimit은 fixed-window KV
   // counter — best-effort atomic (KV는 strict atomic 없음). cap 근처에서만 race 가능.
-  const rateLimit = await checkTripRegisterRateLimit(
-    c.env.TRIPS,
-    incoming.token,
-    Date.now(),
-  );
-  if (!rateLimit.allowed) {
-    console.log(
-      JSON.stringify({
-        msg: 'trip-register: rate-limited (#1575 T12)',
-        tokenPrefix: tokenPrefix(incoming.token),
-        count: rateLimit.count,
-        retryAfterSeconds: rateLimit.retryAfterSeconds,
-      }),
+  //
+  // #2195 (ADR-025 Decision 3) — update 요청은 create budget에서 면제한다. 판정 = 동일
+  // deviceToken(incoming.token)의 기존 trip이 이미 존재하는가. #2194가 신원(rotation)을
+  // 폐기해 트립 레코드는 항상 같은 key(`trip:<incoming.token>`)에 in-place로 갱신되므로,
+  // 직접 조회 한 번으로 "이 POST가 route 변경 재등록(=update)인지" 판정할 수 있다(신규 UUID
+  // 발급이 없어 역인덱스 fallback도 불필요 — #2194 이전 rotation 잔재는 #2175 cooldown bypass
+  // 경로가 흡수).
+  //
+  // create 스팸 방어(Worker quota 보호)는 최초 등록(existing=null)에만 적용해 그대로 유지 —
+  // update는 스팸이 아니라 같은 device가 route를 갈아타는 정상 흐름이라 카운터를 소진하지
+  // 않는다(2026-08-07 tmsi34imn 실탑승 429 chain-death, ADR-025).
+  //
+  // client-aborted POST 카운터 선점(점검 항목): 증가는 이 시점(첫 create 시도)에만 발생하고
+  // 이후 재-POST는 전부 update 판정으로 아래 분기를 건너뛰므로, 하나의 trip 생애주기 동안
+  // 카운터를 소진하는 지점은 최초 create 1회로 줄어든다 — evidence의 다중 429는 매 route
+  // 변경이 create로 오분류되던 것이 원인이었고 그 경로가 여기서 제거된다.
+  const existingForRateLimit = await getTrip(c.env.TRIPS, incoming.token);
+  if (existingForRateLimit === null) {
+    const rateLimit = await checkTripRegisterRateLimit(
+      c.env.TRIPS,
+      incoming.token,
+      Date.now(),
     );
-    return c.json(
-      { error: 'rate_limited', retryAfterSeconds: rateLimit.retryAfterSeconds },
-      429,
-      { 'Retry-After': String(rateLimit.retryAfterSeconds) },
-    );
+    if (!rateLimit.allowed) {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-register: rate-limited (#1575 T12)',
+          tokenPrefix: tokenPrefix(incoming.token),
+          count: rateLimit.count,
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        }),
+      );
+      return c.json(
+        { error: 'rate_limited', retryAfterSeconds: rateLimit.retryAfterSeconds },
+        429,
+        { 'Retry-After': String(rateLimit.retryAfterSeconds) },
+      );
+    }
   }
 
   // #1604 — Route 미설정 trip(legacy collapse: waypoints=[destination only])에 대한 backend
