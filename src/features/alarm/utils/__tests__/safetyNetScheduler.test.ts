@@ -143,6 +143,21 @@ describe('registerSafetyNetAlarms', () => {
       route: makeDirectRoute(1, '2'),
       destinationName: GANGNAM,
       startTime: START_TIME,
+      outageConfirmed: true,
+    });
+    expect(result).toEqual({ scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('#2203 — outageConfirmed=false면 backend 정상으로 간주해 무장하지 않는다', async () => {
+    const route = makeDirectRoute(5, '2');
+    const result = await registerSafetyNetAlarms({
+      tripToken: TRIP_TOKEN,
+      route,
+      destinationName: GANGNAM,
+      startTime: START_TIME,
+      now: START_TIME,
+      outageConfirmed: false,
     });
     expect(result).toEqual({ scheduled: 0 });
     expect(mockedSchedule).not.toHaveBeenCalled();
@@ -156,6 +171,7 @@ describe('registerSafetyNetAlarms', () => {
       destinationName: GANGNAM,
       startTime: START_TIME,
       now: START_TIME,
+      outageConfirmed: true,
     });
     expect(result.scheduled).toBe(1);
     // arrival = start+600_000, earlyLeadMs = 600_000/5=120_000, fire = arrival-lead+buffer
@@ -173,6 +189,7 @@ describe('registerSafetyNetAlarms', () => {
       destinationName: GANGNAM,
       startTime: START_TIME,
       now: START_TIME + 10_000_000,
+      outageConfirmed: true,
     });
     expect(result.scheduled).toBe(0);
     expect(mockedSchedule).not.toHaveBeenCalled();
@@ -192,6 +209,7 @@ describe('registerSafetyNetAlarms', () => {
       destinationName: SEOUL_STATION,
       startTime: START_TIME,
       now: START_TIME,
+      outageConfirmed: true,
     });
     const ids = scheduledIdentifiers();
     expect(ids).toContain(`alarm-${TRIP_TOKEN}-${GANGNAM}-transfer`);
@@ -206,6 +224,7 @@ describe('registerSafetyNetAlarms', () => {
       route,
       destinationName: GANGNAM,
       startTime: START_TIME,
+      outageConfirmed: true,
     });
     expect(mockedSchedule).toHaveBeenCalledTimes(1);
     spy.mockRestore();
@@ -222,6 +241,7 @@ describe('scheduleOne content — platform 분기', () => {
       destinationName: GANGNAM,
       startTime: START_TIME,
       now: START_TIME,
+      outageConfirmed: true,
     });
     const content = mockedSchedule.mock.calls[0][0].content as Record<string, unknown>;
     expect(content.channelId).toBe('station-alarm');
@@ -237,6 +257,7 @@ describe('scheduleOne content — platform 분기', () => {
       destinationName: GANGNAM,
       startTime: START_TIME,
       now: START_TIME,
+      outageConfirmed: true,
     });
     const content = mockedSchedule.mock.calls[0][0].content as Record<string, unknown>;
     expect(content.interruptionLevel).toBe('timeSensitive');

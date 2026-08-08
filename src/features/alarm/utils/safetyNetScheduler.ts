@@ -9,8 +9,11 @@
  * visible push / sleep-alarm-companion이 먼저 도달하므로, 본 알람은 backend가 침묵했을 때만
  * 사용자에게 도달하는 최후 안전망이다.
  *
- * 정책 gate(sleepMode 확인 / trip 등록·해제)는 호출자(`useSafetyNetScheduler` 훅, `silentPushTask`)
- * 책임 — 본 모듈은 순수 예약/취소 메커니즘만 제공한다.
+ * 정책 gate(sleepMode 확인 / trip 등록·해제 / backend outage 확인)는 호출자(`useSafetyNetScheduler`
+ * 훅, `silentPushTask`) 책임 — 본 모듈은 순수 예약/취소 메커니즘만 제공한다. 다만 outage 확인
+ * 여부({@link RegisterSafetyNetParams.outageConfirmed})만은 {@link registerSafetyNetAlarms}가
+ * 직접 강제한다(#2203, ADR-026 Decision 3) — backend가 단일 emitter인 이상 "확인 안 됐으면
+ * 무장 안 함"이 호출자 실수로 깨지면 이중발사로 직결되므로 메커니즘 레벨 방어가 필요하다.
  *
  * **보존 하드닝** (2026-07-31 매트릭스):
  *   - 중복역 occurrenceIdx 정합 (#1193) — {@link withOccurrenceIndices}.
@@ -234,6 +237,16 @@ export interface RegisterSafetyNetParams {
   destinationName: string | null;
   /** 누적 ETA 기준점(trip 시작 시각, ms epoch). */
   startTime: number;
+  /**
+   * #2203 (ADR-026 Decision 3) — backend 침묵이 **확인됐을 때만** true. false(backend 정상
+   * 수신 중)면 본 함수는 무장하지 않고 즉시 `{ scheduled: 0 }`를 반환한다.
+   *
+   * 정상 시에도 매 trip마다 무조건 armed되면 backend(단일 emitter, ADR-026)와 safety-net이
+   * 같은 waypoint를 이중 발사할 위험이 생긴다 — outage 확인 여부를 호출자(`useSafetyNetScheduler`)가
+   * silent push 수신 이력으로 판정해 넘긴다(정책 gate는 호출자 책임 원칙, 모듈 헤더 참고). 본
+   * 함수는 그 판정을 신뢰해 "확인 안 됐으면 절대 무장 안 함"을 메커니즘으로 강제한다.
+   */
+  outageConfirmed: boolean;
   /** 현재 시각(ms epoch). past-time 가드용. 기본 Date.now(). */
   now?: number;
 }
@@ -245,11 +258,20 @@ export interface RegisterSafetyNetResult {
 /**
  * trip 등록 시점(sleepMode ON 확인은 호출자 책임) 호출 — destinationName까지 모든 waypoint에
  * 단일 안전망 알람을 예약한다. 과거 시각(`fireMs <= startTime` 또는 `<= now`)은 skip.
+ *
+ * #2203 — `outageConfirmed=false`(backend 정상 수신 중)면 waypoint 산출 자체를 skip하고
+ * `{ scheduled: 0 }`을 반환한다({@link RegisterSafetyNetParams.outageConfirmed} 참고).
  */
 export async function registerSafetyNetAlarms(
   params: RegisterSafetyNetParams,
 ): Promise<RegisterSafetyNetResult> {
-  const { tripToken, route, destinationName, startTime } = params;
+  const { tripToken, route, destinationName, startTime, outageConfirmed } = params;
+  if (!outageConfirmed) {
+    logger.info(
+      `arm skip: backend healthy(no confirmed outage) tripToken=${tripToken.slice(0, 8)}`,
+    );
+    return { scheduled: 0 };
+  }
   const nowMs = params.now ?? Date.now();
   const waypoints = withOccurrenceIndices(deriveSafetyNetWaypoints(route, destinationName));
   if (waypoints.length === 0) return { scheduled: 0 };
