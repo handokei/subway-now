@@ -438,17 +438,14 @@ export interface ReschedulePushPayload {
  *   - 'la-stale-backstop' (#1933) — LA push가 LA_STALE_AUTO_END_MS(5분) 이상 침묵 시 자동 종료
  *                       (Dynamic Island content-state freeze 차단). 외부 contract는 'expired'로
  *                       매핑 (backward-compat) — `toTripStatusEndReason`이 처리한다.
- *   - 'rotated' (#2174 F2) — `rotateTripTokenForNewRoute`가 route sig 변경으로 new UUID를 발급하며
- *                       old trip을 폐기한 사유. push-unrecoverable/user-delete와 구분되는 관측
- *                       전용 사유 — alert push는 발사하지 않는다(사용자 명시 route 변경 자체가
- *                       trip 전환의 정상 신호라 종료 알림 UX가 불필요).
- *   - 'superseded-by-reregister' (#2175) — deviceToken 역인덱스로 재발견한 같은 deviceToken의
- *                       다른 active trip을 신규 등록 성공 시 정리한 사유. `push-unrecoverable`
- *                       (APNs 영구 실패)과 구분되는 관측 전용 사유 — 이 경로도 'rotated'와 동일하게
- *                       alert push를 발사하지 않는다.
  *
  * 클라가 명시적으로 trip을 끝낸 경로(HTTP DELETE /trips/:token)는 발사 대상이 아님 —
  * 사용자가 destination을 clear하면 이미 클라이언트 store가 정리된 상태이기 때문.
+ *
+ * #2196 (ADR-025 cleanup) — 'rotated'(#2174)/'superseded-by-reregister'(#2175)는 rotation 폐기
+ * (#2194)로 발생부 자체가 사라져 제거했다. 두 값 모두 마지막 소비자(cooldown 면제 분기, register-time
+ * deviceToken 역인덱스 fallback)까지 함께 정리 — 남은 legacy KV 엔트리는 `readTripEndedStatus`가
+ * unknown value로 처리(null 반환)해 "trip 미발견"과 동등하게 degrade, 별도 회귀 없음.
  */
 export type TripEndedReason =
   | 'eta-missing'
@@ -456,9 +453,7 @@ export type TripEndedReason =
   | 'destination-arrived'
   | 'expired'
   | 'push-unrecoverable'
-  | 'la-stale-backstop'
-  | 'rotated'
-  | 'superseded-by-reregister';
+  | 'la-stale-backstop';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의

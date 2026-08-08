@@ -126,7 +126,6 @@ import {
   readBoardingPromptCounters,
 } from './boardingPromptCounterAccumulator';
 import {
-  cleanupSupersededTrip,
   getDeviceTripIndex,
   getTrip,
   putDeviceTripIndex,
@@ -709,20 +708,14 @@ app.post('/trips', async (c) => {
     // 원래 #1425 cooldown 목적(device race/자동 재시도 차단)과 충돌 없음 — outage false-end는
     // 사용자 명시 재등록이며, 같은 token의 device race가 아니다.
     //
-    // #2175 — 'rotated'/'superseded-by-reregister'도 같은 이유로 면제한다. ADR-022 B4 로테이션은
-    // `trip.token`(신원)만 UUID로 바꿀 뿐 device는 계속 실 deviceToken(=여기 incoming.token)으로
-    // 정상 재등록한다(#2174 comment 1) — 이건 device race/자동 재시도가 아니라 매 route 변경마다
-    // 발생하는 예상된 흐름이다. 면제하지 않으면 rotation이 스스로 남긴 'rotated' sentinel이 다음
-    // 실토큰 재-POST를 1시간 동안 400으로 차단해, 애초 이 이슈가 막으려는 "orphan 누적"보다 더
-    // 나쁜 "재등록 완전 차단" 회귀가 생긴다.
-    if (
-      recentlyEnded.endReason === 'seoul-outage' ||
-      recentlyEnded.endReason === 'rotated' ||
-      recentlyEnded.endReason === 'superseded-by-reregister'
-    ) {
+    // #2196 (ADR-025 cleanup) — 'rotated'/'superseded-by-reregister' 면제 분기는 rotation 폐기
+    // (#2194)로 두 사유의 발생부 자체가 사라져 제거했다. 남은 legacy KV 엔트리는
+    // `readTripEndedStatus`가 unknown value로 null 반환해 이 cooldown 블록 자체를 타지 않는다
+    // (아래 `if (recentlyEnded && ...)` 진입 전에 이미 걸러짐) — 별도 회귀 없이 동등하게 degrade.
+    if (recentlyEnded.endReason === 'seoul-outage') {
       console.log(
         JSON.stringify({
-          msg: 'trip-recently-ended: bypass cooldown (#1663/#2175)',
+          msg: 'trip-recently-ended: bypass cooldown (#1663)',
           tokenPrefix: tokenPrefix(incoming.token),
           endedAt: recentlyEnded.endedAt,
           endReason: recentlyEnded.endReason,
@@ -753,33 +746,26 @@ app.post('/trips', async (c) => {
   // 이 구간을 여전히 원본 incoming token 기준으로 직렬화 — 같은 device의 두 요청이 반드시 같은
   // 큐에서 대기해 read-reset-write 사이클이 겹치지 않게 한다.
   const registerLockToken = incoming.token;
-  const { trip, isSameSession, staleIndexedToken } = await withTripRegisterLock(
+  const { trip, isSameSession } = await withTripRegisterLock(
     registerLockToken,
     async () => {
       const directExisting = await getTrip(c.env.TRIPS, incoming.token);
 
-      // #2175 — deviceToken 역인덱스 fallback. ADR-022 B4 로테이션이 `trip.token`을 UUID로
-      // 교체하면 직접 키 조회(`trip:<incoming.token>`, incoming.token은 항상 실 deviceToken)는
-      // 더 이상 그 trip을 찾지 못한다(#2174 comment: device가 응답의 rotated UUID를 채택하지
-      // 않고 계속 실 deviceToken으로 재-POST). 직접 조회가 miss일 때만 역인덱스로 재발견 —
-      // 직접 조회가 이미 성공했으면(대부분의 등록) 역인덱스 조회를 건너뛰어 오버헤드가 없다.
-      const priorIndexedToken =
-        directExisting === null && incoming.deviceToken !== undefined
-          ? await getDeviceTripIndex(c.env.TRIPS, incoming.deviceToken)
-          : null;
-      const rawExisting =
-        directExisting ??
-        (priorIndexedToken !== null && priorIndexedToken !== incoming.token
-          ? await getTrip(c.env.TRIPS, priorIndexedToken)
-          : null);
-
+      // #2196 (ADR-025 cleanup) — deviceToken 역인덱스 register-time fallback을 제거했다.
+      // ADR-025(#2194) 하에서 `incoming.deviceToken`은 항상 `incoming.token`과 같은 값으로
+      // 고정되고(`validateTrip`), 역인덱스도 항상 자기 자신(같은 token)을 가리킨다(#2175 describe
+      // block, index.test.ts "ADR-025 이후 항상 자기 자신을 가리킴"). 즉 `directExisting===null`이면
+      // 역인덱스 조회도 구조적으로 같은 miss만 재확인할 뿐 — 로테이션이 있던 시절(trip.token이
+      // UUID로 갈라짐)에만 의미가 있던 트립-단위 소비자였다. 역인덱스 자체(쓰기 + GET/DELETE
+      // 핸들러의 legacy 조회)는 APNs token refresh 복구 용도로 그대로 존치한다(ADR-025 Consequences).
+      //
       // ADR-025 (#2194) — route 변경 시 in-place reset. trip 신원(`incoming.token`, 트립 수명
       // 동안 불변)은 유지한 채, route sig(`computeRouteSignature`)가 달라지면 구 route의 잔재
       // pending push만 제거(helper 내부 `cleanupPendingPushesForToken`)하고 downstream이
       // `existing=null`로 세션을 새로 취급(dedup/notification state 리셋)하도록 한다.
       //
-      // archFlag=off (default): helper 는 `{ existing: rawExisting, reset: false }` no-op 반환
-      // → 기존 동작 100% 유지 (Phase 1-3 dormant).
+      // archFlag=off (default): helper 는 `{ existing: directExisting, reset: false }` no-op
+      // 반환 → 기존 동작 100% 유지 (Phase 1-3 dormant).
       //
       // ADR-022 B4의 token rotation(`rotateTripTokenForNewRoute`, 새 UUID 발급 + `trip:<oldToken>`
       // delete)은 폐기됐다 — 신원 churn이 rate-limit/역인덱스/dedup 키 전체를 sync 대상으로 만들어
@@ -789,7 +775,7 @@ app.post('/trips', async (c) => {
       // 오늘 evidence(2026-07-03): 사용자 중곡→성수 trip 시작 시 이전 trip(중곡→용마산) 잔재
       // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. route reset이
       // helper 의 `cleanupPendingPushesForToken` 을 실제 호출해 잔재 pending 제거.
-      const routeReset = await resetTripStateForNewRoute(c.env.TRIPS, incoming, rawExisting);
+      const routeReset = await resetTripStateForNewRoute(c.env.TRIPS, incoming, directExisting);
       if (routeReset.reset) {
         console.log(
           JSON.stringify({
@@ -908,47 +894,17 @@ app.post('/trips', async (c) => {
 
       await putTrip(c.env.TRIPS, trip);
 
-      // #2175 — deviceToken 역인덱스를 이번에 확정된 trip.token으로 갱신. 다음 등록(같은 route
-      // merge든 새 route rotation이든)이 이 값으로 직접 키 조회 miss를 해소한다. deviceToken이
-      // 없는(손상 payload) 경우는 기록하지 않는다 — index는 always-valid 64-hex 여부와 무관하게
-      // "등록 시점의 실 토큰"만 추적하면 되므로 `resolveTripDeviceToken`의 legacy fallback은
-      // 여기 적용하지 않는다.
+      // #2175 — deviceToken 역인덱스를 이번에 확정된 trip.token으로 갱신. ADR-025(#2194) 하에서
+      // 신원=deviceToken이라 이 값은 항상 trip.token 자기 자신을 가리키지만(#2196), APNs token
+      // refresh로 deviceToken 자체가 바뀌는 드문 이벤트를 GET/DELETE 핸들러가 복구할 수 있도록
+      // 역인덱스는 그대로 존치·갱신한다. deviceToken이 없는(손상 payload) 경우는 기록하지 않는다.
       if (trip.deviceToken !== undefined) {
         await putDeviceTripIndex(c.env.TRIPS, trip.deviceToken, trip.token, trip.expiresAt);
       }
 
-      // #2175 (P1-A #2184 리뷰) — 등록 성공 전 역인덱스가 가리키던 trip이 이번 확정 trip과
-      // 다르면(merge/rotation 모두 이미 그 trip을 채택하거나 정리했을 것이므로 정상 경로에선
-      // 이 시점에 이미 삭제돼 있다) 안전망으로 한 번 더 조회 후 잔존 시 정리한다. 스코프는
-      // 항상 같은 deviceToken(이 역인덱스 자체가 그 deviceToken 소유)이라 다른 device trip은
-      // 건드리지 않는다.
-      const staleIndexedToken =
-        priorIndexedToken !== null && priorIndexedToken !== trip.token ? priorIndexedToken : null;
-
-      return { trip, isSameSession, staleIndexedToken };
+      return { trip, isSameSession };
     },
   );
-
-  if (staleIndexedToken !== null) {
-    const staleTrip = await getTrip(c.env.TRIPS, staleIndexedToken);
-    if (staleTrip !== null) {
-      console.log(
-        JSON.stringify({
-          msg: 'trip-register: superseded orphan cleanup (#2175)',
-          deviceTokenPrefix: tokenPrefix(registerLockToken),
-          staleTokenPrefix: tokenPrefix(staleIndexedToken),
-          finalTokenPrefix: tokenPrefix(trip.token),
-        }),
-      );
-      await cleanupSupersededTrip(
-        c.env.TRIPS,
-        staleTrip,
-        'superseded-by-reregister',
-        Date.now(),
-        c.env.DB,
-      );
-    }
-  }
 
   // #2144 — register 성공(putTrip 완료) 후 같은 token의 옛 tripStatus 종료 마커를 정리한다.
   // 위 cooldown 판정(#1425 reject / #1663 seoul-outage bypass)이 이미 끝난 뒤라 cooldown 의미는
@@ -2235,10 +2191,10 @@ app.get('/trips/:tripToken/status', async (c) => {
   }
 
   // #2175 — device는 항상 실 deviceToken(=최초 등록 시 token)으로 조회한다(#2174 comment 1).
-  // 직접 키 조회가 miss여도 ADR-022 B4 로테이션으로 trip.token이 UUID로 바뀌었을 수 있다.
-  // deviceToken 역인덱스가 "현재 실제 trip.token"을 추적하므로 그 값으로 재조회해 2회차 이상
-  // 로테이션(oldToken이 이미 UUID)에서도 active/ended를 정확히 해소한다(#2174 comment 2 escape
-  // hatch, PR #2184 P1 완결 지점).
+  // #2196(ADR-025 cleanup) 이후 이 fallback은 legacy(로테이션 시절 UUID 신원) trip 잔재 흡수 +
+  // APNs token refresh로 deviceToken 자체가 바뀌는 드문 이벤트 복구 용도로만 존치한다.
+  // deviceToken 역인덱스가 "현재 실제 trip.token"을 추적하므로 그 값으로 재조회해 active/ended를
+  // 정확히 해소한다(#2174 comment 2 escape hatch, PR #2184 P1 완결 지점).
   const indexedToken = await getDeviceTripIndex(c.env.TRIPS, tripToken);
   if (indexedToken !== null && indexedToken !== tripToken) {
     const indexedTrip = await getTrip(c.env.TRIPS, indexedToken);
@@ -2283,8 +2239,8 @@ app.delete('/trips/:token', async (c) => {
   if (!token) return c.json({ error: 'missing_token' }, 400);
   const directExisting = await getTrip(c.env.TRIPS, token);
 
-  // 리뷰 P1 (#2186) — deviceToken 역인덱스 fallback. ADR-022 B4 로테이션 이후 device는 계속
-  // 실 deviceToken(=여기 token)으로 호출하지만 실제 trip은 rotated UUID 아래 살아있다
+  // 리뷰 P1 (#2186) — deviceToken 역인덱스 fallback. #2196(ADR-025 cleanup) 이후 이 fallback은
+  // legacy(로테이션 시절 UUID 신원) trip 잔재 흡수 + APNs token refresh 복구 용도로만 존치한다
   // (GET /trips/:token/status와 동일한 패턴, #2175 comment). 직접 키 조회가 miss일 때만
   // 역인덱스로 재발견 — 직접 조회가 성공하면(대부분) 역인덱스 조회를 건너뛴다. 재발견 못하면
   // (역인덱스도 없거나 이미 정리됨) 기존대로 idempotent 200 deleted:false.

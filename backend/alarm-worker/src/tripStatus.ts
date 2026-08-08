@@ -21,23 +21,17 @@ const TRIP_STATUS_PREFIX = 'tripStatus:';
 /**
  * 외부 응답에 노출하는 endReason — `destination-arrived` → `destination`로 축약 (contract).
  * `seoul-outage` (#1663) — Seoul API HTTP error로 인한 false-end. #1425 cooldown 면제 대상.
- * `rotated` (#2174 F2) — route sig 변경으로 token 로테이션되며 old trip이 폐기된 사유.
- *   실 deviceToken으로 GET /trips/:token/status를 조회하는 device가(#2174 comment 1: 로테이션 직후
- *   trip.token이 바뀌어도 device는 여전히 실 deviceToken으로 조회) 첫 로테이션 한정으로 이 사유를
- *   확인해 'ended'로 사망 인지할 수 있다 — 2회차 이상 로테이션(oldToken이 이미 UUID)의 완전한
- *   deviceToken 역인덱스 조회는 #2175가 `GET /trips/:token/status` 핸들러에 배선(trips.ts
- *   `getDeviceTripIndex`)해 완결한다.
- * `superseded-by-reregister` (#2175) — deviceToken 역인덱스로 발견한 같은 deviceToken의 다른
- *   active trip을 신규 등록 성공 시 정리한 사유.
+ *
+ * #2196 (ADR-025 cleanup) — 'rotated'(#2174)/'superseded-by-reregister'(#2175)는 rotation 폐기
+ * (#2194)로 발생부가 없어져 제거. 남은 legacy KV 엔트리(TTL 7일 내 자연 만료)는
+ * `readTripEndedStatus`가 unknown value로 처리해 null 반환 — "trip 미발견"과 동등하게 degrade된다.
  */
 export type TripStatusEndReason =
   | 'expired'
   | 'eta-missing'
   | 'seoul-outage'
   | 'destination'
-  | 'push-unrecoverable'
-  | 'rotated'
-  | 'superseded-by-reregister';
+  | 'push-unrecoverable';
 
 export interface TripStatusRecord {
   endedAt: number;
@@ -122,9 +116,7 @@ export async function readTripEndedStatus(
       parsed.endReason !== 'eta-missing' &&
       parsed.endReason !== 'seoul-outage' &&
       parsed.endReason !== 'destination' &&
-      parsed.endReason !== 'push-unrecoverable' &&
-      parsed.endReason !== 'rotated' &&
-      parsed.endReason !== 'superseded-by-reregister'
+      parsed.endReason !== 'push-unrecoverable'
     ) {
       return null;
     }
