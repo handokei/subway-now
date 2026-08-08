@@ -34,7 +34,13 @@ export type BackendXEventName =
   | 'X4-spam-suppress'
   | 'X6-late-alarm'
   | 'X8-zombie-trip'
-  | 'X11-bg-scheduled-leak';
+  | 'X11-bg-scheduled-leak'
+  /**
+   * #2227 — push_failures/backend_errors D1 write 무음 실패 관측 승격.
+   * `pushFailureLog.ts` / `d1ErrorLog.ts`의 write catch block에서 사용. D1 write 자체가
+   * 실패한 상황이라 D1 sink(logBackendError)로는 escalate할 수 없어 Sentry-only.
+   */
+  | 'D1-write-failure';
 
 export type BackendXEventContext = Record<
   string,

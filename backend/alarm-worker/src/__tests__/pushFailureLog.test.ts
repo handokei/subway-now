@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { computePushFailureMetrics, EMPTY_PUSH_FAILURE_METRICS, logPushFailure } from '../pushFailureLog';
+import { captureXEvent } from '../sentry';
+
+vi.mock('../sentry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sentry')>();
+  return { ...actual, captureXEvent: vi.fn() };
+});
 
 const NOW = 1_700_000_000_000;
 
@@ -125,6 +131,17 @@ describe('logPushFailure (#2177)', () => {
     await expect(
       logPushFailure(dbFail, { token: 'tok', pushKind: 'destination', apnsStatus: 500 }),
     ).resolves.toBeUndefined();
+  });
+
+  it('D1 write 실패 시 무음이 아니라 captureXEvent로 관측 승격된다 (#2227)', async () => {
+    const { db: dbFail } = makeDb({ insertThrows: true });
+
+    await logPushFailure(dbFail, { token: 'tok', pushKind: 'destination', apnsStatus: 500 });
+
+    expect(captureXEvent).toHaveBeenCalledWith(
+      'D1-write-failure',
+      expect.objectContaining({ table: 'push_failures' }),
+    );
   });
 
   describe('rate-limit 가드 (#2177 리뷰 P1)', () => {

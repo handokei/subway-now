@@ -5,7 +5,13 @@
  * `env.DB` 미바인딩 시 graceful no-op — 모든 caller는 `if (env.DB)` 분기 불필요.
  *
  * 오류 적재가 실패해도 cron/request 흐름을 차단하지 않는다 (try/catch로 swallow).
+ *
+ * #2227 — write 자체가 throw할 때는 `captureXEvent`(Sentry-only, D1 미의존)로 escalate한다.
+ * `sentry.ts`가 이 모듈의 `logBackendError`를 D1 sink로 사용하므로, write 실패 escalate에
+ * D1을 다시 타는 `captureBackendException`은 순환 재시도라 부적합 — Sentry-only 경로를 쓴다.
  */
+
+import { captureXEvent } from './sentry';
 
 export interface BackendErrorInput {
   endpoint: string;
@@ -42,5 +48,7 @@ export async function logBackendError(
       .run();
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'd1ErrorLog write failed', err: String(e) }));
+    // #2227 — D1 write 무음 실패 관측 승격. D1 자체가 실패했으므로 Sentry-only 경로로 escalate.
+    captureXEvent('D1-write-failure', { table: 'backend_errors', err: String(e) });
   }
 }
