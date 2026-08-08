@@ -1710,24 +1710,6 @@ export function logHydrationTransition(
  * source='bg-scheduled' 재사용 — preschedule path 출처 통일(stamp/fired log와 동일 source).
  */
 /**
- * #918 — stationPrescheduler(OS 사전예약 "매역" 채널) 등록 1건 적재.
- * source는 safetyNetScheduler와 동일하게 'bg-scheduled'로 통일 — 두 예약 채널 모두 같은
- * reason/카운터 버킷에서 관측 가능해야 DebugModal/measurement가 한 곳만 보면 된다.
- */
-export function logScheduledPrescheduledAlarm(input: {
-  stationName: string;
-  kind: 'transfer' | 'destination' | 'station-passed';
-}): void {
-  appendAlarmLog({
-    ts: Date.now(),
-    source: 'bg-scheduled',
-    outcome: 'fired',
-    stationName: input.stationName,
-    kind: input.kind,
-  });
-}
-
-/**
  * #918 — stationPrescheduler 알람의 fire-time 재검증 실패 1건 적재.
  * `revalidatePrescheduledAlarm`이 suppress를 반환하기 직전에 호출한다.
  * `logSuppressedSafetyNetRevalidation`과 동일 source/outcome 관례를 따르되, 재검증 항목이

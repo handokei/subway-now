@@ -68,7 +68,6 @@ import {
   logSuppressedLocklessNoUserIntent,
   logSuppressedSsotFireGate,
   logSuppressedSafetyNetRevalidation,
-  logScheduledPrescheduledAlarm,
   logSuppressedPrescheduledRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
@@ -870,23 +869,6 @@ describe('alarmLog', () => {
           reason,
           stationName,
           phaseId,
-        });
-      },
-    );
-
-    it.each([
-      ['transfer' as const, '건대입구'],
-      ['destination' as const, '잠실'],
-      ['station-passed' as const, '군자'],
-    ])(
-      '#918 logScheduledPrescheduledAlarm: kind=%s — source=bg-scheduled, outcome=fired 고정',
-      async (kind, stationName) => {
-        logScheduledPrescheduledAlarm({ stationName, kind });
-        await expectLastSavedEntryMatches({
-          source: 'bg-scheduled',
-          outcome: 'fired',
-          stationName,
-          kind,
         });
       },
     );
