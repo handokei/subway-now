@@ -115,7 +115,11 @@ export type AlarmLogSource =
   // 발사한 sleep-alarm-companion silent push를 device silentPushTask가 sleepMode=true 확인 후
   // AlarmLocalAuthority 경유로 TTS/진동만 부가(알림 생성 없음) — 그 시점 1건 적재. fireCount
   // 분모에 포함(실제 사용자에게 노출되는 알람). ADR-023 정합 — backend 필터 없이 device 결정.
-  | 'companion';
+  | 'companion'
+  // #2243 (ADR-029 Phase 1) — push 계약 런타임 경계 위반(unknown-kind skew / semantic value
+  // drift) 관측 전용 source. 기존 silent-push-received/-skipped 분포와 분리해 A2("silent
+  // drop 대신 명시적 skew 로그") 달성 여부를 독립적으로 측정할 수 있게 한다.
+  | 'push-contract-skew';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -360,7 +364,20 @@ export type AlarmLogReason =
   // 또는 BG location tick(저빈도 쿨다운) 두 진입점 공통 reason — source='lifecycle-backstop'로
   // 적재해 기존 backstop 계열과 같은 분포로 관측한다. 404/410(trip 부재)은 death 확정이
   // 아니므로 별도 reason 없이 무동작(ADR-010, false positive는 miss와 동급).
-  | 'trip-dead-pull-detected';
+  | 'trip-dead-pull-detected'
+  // #2243 (ADR-029 Phase 1, G6) — push 계약 unknown-kind skew 처리 결과.
+  //   'push-contract-skew-station-fallback-fired': station-shaped(nextWaypoint 보유) payload가
+  //     STATION_WAYPOINT_KINDS 밖의 kind를 실었을 때, drop 대신 generic imminent fallback을
+  //     발사한 1건. `pushContract.UNKNOWN_KIND_POLICY.stationLike` 정책 적용 결과.
+  //   'push-contract-skew-control-fail-closed': control-shaped(nextWaypoint 없음) payload가
+  //     CONTROL_PUSH_KINDS 밖의 kind를 실었을 때 거부(발사 없음)한 1건.
+  //     `pushContract.UNKNOWN_KIND_POLICY.controlLike` 정책 적용 결과.
+  | 'push-contract-skew-station-fallback-fired'
+  | 'push-contract-skew-control-fail-closed'
+  // #2243 (ADR-029 Phase 1, G2) — kind는 알려진 값인데 그 아래 값(phase/etaSeconds 등)이 도메인
+  // semantics를 벗어난 drift(NaN etaSeconds, 상한 초과, 알 수 없는 phase 문자열 등)를 경계에서
+  // 포착해 적재. 처리 자체는 기존과 동일하게 skip(발사 안 함) — 관측만 추가.
+  | 'push-contract-skew-value-drift';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -1124,6 +1141,54 @@ export function logSilentPushSkipped(input: {
 }
 
 /**
+ * push 계약 unknown-kind skew 1건 적재 (#2243, ADR-029 Phase 1 G6).
+ *
+ * `pushContract.UNKNOWN_KIND_POLICY`가 판정한 결과를 적재한다 — station-like는 fallback fire
+ * (outcome='fired'), control-like는 fail-closed(outcome='suppressed'). `source`를
+ * 'push-contract-skew'로 분리해 기존 silent-push 분포와 섞이지 않게 하고, `pushKindRaw`에
+ * backend가 실제로 보낸 원본 kind 문자열을 보존해 어떤 값이 새로 나타났는지 바로 진단 가능하게
+ * 한다(A2 — silent drop 대신 명시적 관측).
+ */
+export function logPushContractKindSkew(input: {
+  category: 'station-like' | 'control-like';
+  rawKind: string;
+  stationName?: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'push-contract-skew',
+    outcome: input.category === 'station-like' ? 'fired' : 'suppressed',
+    reason:
+      input.category === 'station-like'
+        ? 'push-contract-skew-station-fallback-fired'
+        : 'push-contract-skew-control-fail-closed',
+    stationName: input.stationName,
+    pushKindRaw: input.rawKind,
+  });
+}
+
+/**
+ * push 계약 semantic value drift 1건 적재 (#2243, ADR-029 Phase 1 G2).
+ *
+ * kind는 SSoT에 있는 값인데 그 아래 값(phase/etaSeconds 등)이 도메인 범위를 벗어난 경우.
+ * 처리(발사 skip)는 기존과 동일 — 이 함수는 관측만 추가한다.
+ */
+export function logPushContractValueSkew(input: {
+  field: 'phase' | 'etaSeconds';
+  rawValue: unknown;
+  stationName?: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'push-contract-skew',
+    outcome: 'suppressed',
+    reason: 'push-contract-skew-value-drift',
+    stationName: input.stationName,
+    pushKindRaw: `${input.field}=${JSON.stringify(input.rawValue)}`,
+  });
+}
+
+/**
  * 채널 2 alert fallback 발사 1건 적재 (#564).
  * 백엔드 ACK 타임아웃 후 alert push가 전달돼 발사된 경우. silent push와 다르게
  * 클라 위치 게이트 없이 OS가 즉시 표시하므로 distance/threshold는 기록하지 않는다.
@@ -1275,6 +1340,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'lockless-trip-end': null,
   // #2067 (Phase 2-device, D3) — companion은 device UI 발사이므로 silent push outcome 통계에서 제외.
   companion: null,
+  // #2243 (ADR-029 Phase 1) — 계약 스큐는 별도 전용 counter(countPushContractSkew)로 집계.
+  'push-contract-skew': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1330,6 +1397,10 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'lockless-trip-end': false,
   // #2067 (Phase 2-device, D3) — companion은 실제 사용자에게 노출되는 알람이므로 fire 분모에 포함.
   companion: true,
+  // #2243 (ADR-029 Phase 1, G6) — station-shaped skew fallback은 실제 사용자에게 노출되는
+  // generic imminent 알림이므로 fire 분모에 포함(outcome='fired'인 항목만 카운트되므로
+  // control-like fail-closed 'suppressed' 항목은 자동 제외).
+  'push-contract-skew': true,
 };
 
 /**

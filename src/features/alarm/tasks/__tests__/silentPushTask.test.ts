@@ -40,6 +40,9 @@ const mockLogCrossTripMirrorSkip = jest.fn();
 const mockLogBoardingPromptFired = jest.fn();
 const mockLogCompanionAlarmFired = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
+// #2243 (ADR-029 Phase 1) — G6 kind skew / G2 value skew 관측 로거.
+const mockLogPushContractKindSkew = jest.fn();
+const mockLogPushContractValueSkew = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
   logSilentPushRescheduleReceived: (...args: unknown[]) =>
@@ -50,6 +53,8 @@ jest.mock('../../utils/alarmLog', () => ({
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
   logBoardingPromptFired: (...args: unknown[]) => mockLogBoardingPromptFired(...args),
   logCompanionAlarmFired: (...args: unknown[]) => mockLogCompanionAlarmFired(...args),
+  logPushContractKindSkew: (...args: unknown[]) => mockLogPushContractKindSkew(...args),
+  logPushContractValueSkew: (...args: unknown[]) => mockLogPushContractValueSkew(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
 }));
 
@@ -233,9 +238,15 @@ jest.mock('../../utils/recentLocalStationFires', () => ({
 // #918 — silentPushTask.ts가 mapBackendKindToLocalFireKind만 stationNotification.ts에서 가져온다.
 // 실제 모듈 전체를 로드하면 live-activity 네이티브 모듈 체인까지 끌려온다 — 매핑 함수만 실제
 // 구현과 동일한 순수 로직으로 재현.
+// #2243 (ADR-029 Phase 1, G6) — station-shaped skew fallback이 buildAlarmContent도 사용.
+const mockBuildAlarmContent = jest.fn((event: { phaseId: string; type: string; stationName: string }) => ({
+  title: `${event.phaseId}-title`,
+  body: `${event.stationName}-${event.type}-body`,
+}));
 jest.mock('../../utils/stationNotification', () => ({
   mapBackendKindToLocalFireKind: (backendKind: string) =>
     ({ intermediate: 'station-passed', transfer: 'transfer', destination: 'destination' })[backendKind] ?? null,
+  buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as [never])),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -1552,6 +1563,98 @@ describe('silentPushTask', () => {
       expect(mockLogSilentPushReceived).toHaveBeenCalledTimes(1);
       const arg = mockLogSilentPushReceived.mock.calls[0][0];
       expect(arg.rawKind).toBeUndefined();
+    });
+
+    describe('#2243 (ADR-029 Phase 1, G6) — station-shaped 계약 스큐 fallback fire', () => {
+      it('kind가 STATION_WAYPOINT_KINDS 밖의 값이면 generic imminent 알림을 즉시 발사한다', async () => {
+        await handleSilentPush(
+          payload({ kind: 'future-station-kind', phase: 'early', nextWaypoint: '강남', pushId: 'p-skew' }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledWith(
+          expect.objectContaining({
+            identifier: 'skew-fallback-강남',
+            trigger: null,
+          }),
+        );
+        expect(mockLogPushContractKindSkew).toHaveBeenCalledWith({
+          category: 'station-like',
+          rawKind: 'future-station-kind',
+          stationName: '강남',
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-skew', 'fired', 'push-contract-skew-station-fallback-fired'),
+        );
+        // legacy-station-kind-ignored skip은 발생하지 않는다 — fallback fire 분기에서 즉시 return.
+        expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
+      });
+
+      it('kind가 없으면(구버전 backend) 여전히 payload-missing-kind skip — fallback fire 아님', async () => {
+        await handleSilentPush(
+          payload({ kind: undefined, phase: 'early', nextWaypoint: '강남', pushId: 'p-legacy' }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogPushContractKindSkew).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'payload-missing-kind' }),
+        );
+      });
+    });
+
+    describe('#2243 (ADR-029 Phase 1, G2) — semantic value drift skew', () => {
+      it('etaSeconds가 음수면 payload가 null(skip)이고 value-drift skew가 적재된다', async () => {
+        await handleSilentPush({
+          data: bgTaskData({ nextWaypoint: '강남', etaSeconds: -1, phase: 'early', kind: 'transfer' }),
+        });
+        expect(mockLogPushContractValueSkew).toHaveBeenCalledWith(
+          expect.objectContaining({ field: 'etaSeconds', rawValue: -1, stationName: '강남' }),
+        );
+        expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+      });
+
+      it('phase가 early/imminent가 아니면 value-drift skew가 적재된다', async () => {
+        await handleSilentPush({
+          data: bgTaskData({ nextWaypoint: '강남', etaSeconds: 10, phase: 'late', kind: 'transfer' }),
+        });
+        expect(mockLogPushContractValueSkew).toHaveBeenCalledWith(
+          expect.objectContaining({ field: 'phase', rawValue: 'late', stationName: '강남' }),
+        );
+      });
+
+      it('정상 payload면 value-drift skew가 적재되지 않는다', async () => {
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
+        expect(mockLogPushContractValueSkew).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('#2243 (ADR-029 Phase 1, G6) — control-shaped 계약 스큐 fail-closed', () => {
+      it('nextWaypoint 없이 SSoT에 없는 kind만 있으면 fail-closed(발사 없음) + skew 로그', async () => {
+        await handleSilentPush({
+          data: bgTaskData({ kind: 'future-control-kind', pushId: 'p-control-skew' }),
+        });
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogPushContractKindSkew).toHaveBeenCalledWith({
+          category: 'control-like',
+          rawKind: 'future-control-kind',
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-control-skew', 'skipped', 'push-contract-skew-control-fail-closed'),
+        );
+      });
+
+      it('pushId가 없으면 ack 없이 skew 로그만 적재된다', async () => {
+        await handleSilentPush({ data: bgTaskData({ kind: 'future-control-kind' }) });
+        expect(mockLogPushContractKindSkew).toHaveBeenCalledWith({
+          category: 'control-like',
+          rawKind: 'future-control-kind',
+        });
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
+
+      it('완전히 malformed한 payload(kind 없음, nextWaypoint 없음)는 스큐 판정 없이 기존처럼 skip', async () => {
+        await handleSilentPush({ data: bgTaskData({ trigger: 'other' }) });
+        expect(mockLogPushContractKindSkew).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
     });
 
     // #2045 (Signal 4) — 유효 payload 진입 시점에 last-received stamp 갱신 (kind 무관).

@@ -96,6 +96,8 @@ import {
   logGroundTruthResult,
   logLocklessTripEnd,
   countFiredAlarms,
+  logPushContractKindSkew,
+  logPushContractValueSkew,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -2398,6 +2400,48 @@ describe('alarmLog', () => {
       expect(saved[0].source).toBe('companion');
       expect(saved[0].outcome).toBe('fired');
       expect(saved[0].stationName).toBe('2·뚝섬');
+    });
+
+    it('#2243 (ADR-029 Phase 1, G6): logPushContractKindSkew station-like → outcome=fired', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logPushContractKindSkew({
+        category: 'station-like',
+        rawKind: 'imminent-hop',
+        stationName: '성수',
+      });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('push-contract-skew');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].reason).toBe('push-contract-skew-station-fallback-fired');
+      expect(saved[0].pushKindRaw).toBe('imminent-hop');
+      expect(saved[0].stationName).toBe('성수');
+    });
+
+    it('#2243 (ADR-029 Phase 1, G6): logPushContractKindSkew control-like → outcome=suppressed', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logPushContractKindSkew({ category: 'control-like', rawKind: 'new-control-kind' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('push-contract-skew');
+      expect(saved[0].outcome).toBe('suppressed');
+      expect(saved[0].reason).toBe('push-contract-skew-control-fail-closed');
+      expect(saved[0].pushKindRaw).toBe('new-control-kind');
+    });
+
+    it('#2243 (ADR-029 Phase 1, G2): logPushContractValueSkew이 value drift entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logPushContractValueSkew({ field: 'etaSeconds', rawValue: -5, stationName: '강남' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('push-contract-skew');
+      expect(saved[0].outcome).toBe('suppressed');
+      expect(saved[0].reason).toBe('push-contract-skew-value-drift');
+      expect(saved[0].pushKindRaw).toBe('etaSeconds=-5');
+      expect(saved[0].stationName).toBe('강남');
     });
 
     it('#2067 (Phase 2-device, D3): companion source는 silent push outcome 집계에서 제외 (null bucket)', () => {

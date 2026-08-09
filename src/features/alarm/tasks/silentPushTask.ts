@@ -50,6 +50,8 @@ import {
   logSilentPushTripEndedReceived,
   logSilentPushSkipped,
   logCompanionAlarmFired,
+  logPushContractKindSkew,
+  logPushContractValueSkew,
   type AlarmLogReason,
 } from '../utils/alarmLog';
 import { fireCompanionAlarm, readSleepMode } from '../utils/alarmLocalAuthority';
@@ -76,7 +78,7 @@ import {
   cancelSafetyNetByStationKind,
 } from '../utils/safetyNetScheduler';
 import { cancelPrescheduledByStationKind } from '../utils/stationPrescheduler';
-import { mapBackendKindToLocalFireKind } from '../utils/stationNotification';
+import { mapBackendKindToLocalFireKind, buildAlarmContent } from '../utils/stationNotification';
 import { markLocalStationFired } from '../utils/recentLocalStationFires';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -88,8 +90,11 @@ import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import {
   assertNever,
+  isControlPushKind,
+  isPushAlarmPhase,
   isSleepAlarmTargetKind,
   isStationWaypointKind,
+  isValidEtaSeconds,
   type ControlPushKind,
   type SleepAlarmTargetKind,
   type StationWaypointKind,
@@ -428,8 +433,15 @@ function isSleepAlarmCompanionCandidate(rec: Record<string, unknown>): boolean {
   return rec.kind === 'sleep-alarm-companion';
 }
 
-function findFieldsLayer(
+/**
+ * `taskData` 안에서 `predicate`를 만족하는 첫 fields 레이어를 찾는다. 탐색 순서(level2 → level1 →
+ * root)는 `findFieldsLayer`와 동일 — layer 탐색 로직 자체는 predicate와 무관해 재사용한다
+ * (#2243, ADR-029 Phase 1 — control-shaped unknown-kind skew 탐지가 다른 predicate로 같은
+ * 탐색을 재사용).
+ */
+function findFieldsLayerBy(
   taskData: NotificationBackgroundTaskData['data'],
+  predicate: (rec: Record<string, unknown>) => boolean,
 ): Record<string, unknown> | null {
   const candidates: Array<Record<string, unknown>> = [];
   const root = asPlainObject(taskData);
@@ -443,17 +455,50 @@ function findFieldsLayer(
     candidates.push(root);
   }
   for (const rec of candidates) {
-    if (
+    if (predicate(rec)) return rec;
+  }
+  return null;
+}
+
+function findFieldsLayer(
+  taskData: NotificationBackgroundTaskData['data'],
+): Record<string, unknown> | null {
+  return findFieldsLayerBy(
+    taskData,
+    (rec) =>
       isStandardCandidate(rec) ||
       isRescheduleCandidate(rec) ||
       isTripEndedCandidate(rec) ||
       isBoardingPromptCandidate(rec) ||
-      isSleepAlarmCompanionCandidate(rec)
-    ) {
-      return rec;
-    }
-  }
-  return null;
+      isSleepAlarmCompanionCandidate(rec),
+  );
+}
+
+/**
+ * G6 (#2243, ADR-029 Phase 1) — control-shaped 계약 스큐 후보 판정. station-shaped(nextWaypoint
+ * 보유)가 아니면서 `kind`가 non-empty string인데 CONTROL_PUSH_KINDS 밖의 값인 경우만 true.
+ * `extractPayload`가 이미 알려진 control kind(reschedule/trip-ended/boarding-prompt/
+ * sleep-alarm-companion)는 먼저 처리하므로, 이 predicate는 그 분기들이 모두 실패한 뒤에만
+ * (findFieldsLayer 자체가 null을 반환한 뒤) 호출된다.
+ */
+function isUnknownControlKindCandidate(rec: Record<string, unknown>): boolean {
+  if (isStandardCandidate(rec)) return false;
+  const { kind } = rec;
+  return typeof kind === 'string' && kind.length > 0 && !isControlPushKind(kind);
+}
+
+/**
+ * `extractPayload`가 null을 반환했을 때만 호출한다 — 이미 알려진 kind(station/control 불문)는
+ * extractPayload가 먼저 처리하므로 여기 도달하는 것은 "SSoT에 없는 kind를 실은, station 형태가
+ * 아닌 payload"뿐이다. G6 정책(`pushContract.UNKNOWN_KIND_POLICY.controlLike` = fail-closed)의
+ * 판정 입력을 만든다 — 실제 fail-closed 처리(발사 안 함 + 로그)는 호출자(`handleSilentPush`)가 한다.
+ */
+function detectUnknownControlKindSkew(
+  taskData: NotificationBackgroundTaskData['data'],
+): { rawKind: string; pushId: string | undefined } | null {
+  const rec = findFieldsLayerBy(taskData, isUnknownControlKindCandidate);
+  if (!rec) return null;
+  return { rawKind: rec.kind as string, pushId: validPushId(rec.pushId) };
 }
 
 /**
@@ -503,8 +548,17 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
-  if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
-  if (phase !== 'early' && phase !== 'imminent') return null;
+  // G2 (#2243, ADR-029 Phase 1) — etaSeconds/phase는 SilentPushPayload에서 required 필드다.
+  // 타입은 맞아도 값이 도메인 semantics를 벗어나는 drift(NaN, 음수, 비정상 상한 초과, 알 수
+  // 없는 phase 문자열)는 조용히 drop하지 않고 skew로 관측한 뒤 기존과 동일하게 처리를 중단한다.
+  if (!isValidEtaSeconds(etaSeconds)) {
+    logPushContractValueSkew({ field: 'etaSeconds', rawValue: etaSeconds, stationName: nextWaypoint });
+    return null;
+  }
+  if (!isPushAlarmPhase(phase)) {
+    logPushContractValueSkew({ field: 'phase', rawValue: phase, stationName: nextWaypoint });
+    return null;
+  }
   const validKind = isStationWaypointKind(kind) ? kind : undefined;
   // #2231 — kind가 존재하지만(빈 문자열 제외) 알려진 값과 매치되지 않는 경우만 raw로 보존한다.
   // kind 자체가 없는(구버전 backend 단순 미지정) 경우는 계약 스큐가 아니므로 kindRaw를 남기지 않는다.
@@ -868,6 +922,25 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
 
     payload = extractPayload(input.data);
     if (!payload) {
+      // G6 (#2243, ADR-029 Phase 1) — extractPayload가 null을 반환한 것이 "완전히 malformed"인지
+      // "control-shaped인데 SSoT에 없는 kind"(계약 스큐)인지 구분한다. 후자만 fail-closed 정책
+      // 대상 — 조용한 drop 대신 skew를 명시적으로 관측한다(A2).
+      const controlSkew = detectUnknownControlKindSkew(input.data);
+      if (controlSkew) {
+        logPushContractKindSkew({ category: 'control-like', rawKind: controlSkew.rawKind });
+        addDomainBreadcrumb('push', 'contract-skew', {
+          category: 'control-like',
+          rawKind: controlSkew.rawKind,
+        });
+        logger.warn(
+          `push contract skew (control-like, fail-closed): kind=${controlSkew.rawKind}`,
+        );
+        if (controlSkew.pushId) {
+          const apnsToken = await loadApnsToken();
+          void ackOutcome(controlSkew.pushId, apnsToken, 'skipped', 'push-contract-skew-control-fail-closed');
+        }
+        return;
+      }
       logger.info('payload missing or invalid — skip');
       return;
     }
@@ -1146,6 +1219,32 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
 
     // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
     if (!payload.kind) {
+      // G6 (#2243, ADR-029 Phase 1) — kindRaw가 있으면 "kind가 아예 없는" 구버전 backend 호환
+      // 케이스가 아니라 "kind는 있는데 SSoT(STATION_WAYPOINT_KINDS) 밖의 값" 계약 스큐다.
+      // station-shaped(nextWaypoint 보유) payload이므로 정책은 fallback-imminent-fire — 조용히
+      // drop하는 대신 generic imminent 알림을 즉시 발사해 안전을 우선한다.
+      if (payload.kindRaw) {
+        await fireStationKindSkewFallback(payload);
+        logPushContractKindSkew({
+          category: 'station-like',
+          rawKind: payload.kindRaw,
+          stationName: payload.nextWaypoint,
+        });
+        addDomainBreadcrumb('push', 'contract-skew', {
+          category: 'station-like',
+          rawKind: payload.kindRaw,
+        });
+        void ackOutcome(
+          payload.pushId,
+          apnsToken,
+          'fired',
+          'push-contract-skew-station-fallback-fired',
+        );
+        logger.warn(
+          `push contract skew (station-like, fallback fire): kind=${payload.kindRaw} station=${payload.nextWaypoint}`,
+        );
+        return;
+      }
       logSilentPushSkipped({
         stationName: payload.nextWaypoint,
         kind: undefined,
@@ -1411,6 +1510,25 @@ async function fireSleepAlarmCompanion(
   void ackOutcome(payload.pushId, apnsToken, 'fired', 'sleep-alarm-companion');
 }
 
+/**
+ * G6 (#2243, ADR-029 Phase 1) — station-shaped 계약 스큐(backend가 STATION_WAYPOINT_KINDS 밖의
+ * kind를 실은 standard silent push) fallback. 정책 SSoT: `pushContract.UNKNOWN_KIND_POLICY.
+ * stationLike`. 어떤 세부 종류(환승/도착/통과)인지는 알 수 없지만 어느 역인지는 알고 있으므로,
+ * transfer/destination 공용 문구 빌더(`buildAlarmContent`)를 `type: 'destination'`(비-환승 문구,
+ * 더 일반적인 표현)으로 재사용해 generic "곧 도착" 알림을 즉시 발사한다.
+ */
+async function fireStationKindSkewFallback(payload: SilentPushPayload): Promise<void> {
+  const { title, body } = buildAlarmContent({
+    phaseId: 'imminent',
+    type: 'destination',
+    stationName: payload.nextWaypoint,
+  });
+  await Notifications.scheduleNotificationAsync({
+    identifier: `skew-fallback-${payload.nextWaypoint}`,
+    content: { title, body, sound: true },
+    trigger: null,
+  });
+}
 
 /** Task 등록 — 모듈 로드 시점에 한 번 실행. */
 TaskManager.defineTask(SILENT_PUSH_TASK, handleSilentPush);
