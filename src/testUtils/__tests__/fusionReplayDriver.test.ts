@@ -14,9 +14,9 @@ import {
   type ReplayCycleResult,
 } from '../fusionReplayDriver';
 import { parseRawSignalCycles } from '../rawSignalCycleParser';
-import { RED_FIXTURE_G4_ENV_LOCK_DUMP_TEXT } from '../fixtures/replay_20260809_g4_env_lock';
-import { SYNTHETIC_STALE_GPS_UNDERGROUND_DUMP_TEXT } from '../fixtures/replay_20260809_g4_stale_gps_synthetic';
-import { SYNTHETIC_SURFACE_DEADZONE_POSITIVE_DUMP_TEXT } from '../fixtures/replay_20260809_g4_surface_deadzone_positive';
+import { RED_FIXTURE_G4_ENV_LOCK_DUMP_TEXT } from '../fixtures/replay/replay_20260809_g4_env_lock';
+import { SYNTHETIC_STALE_GPS_UNDERGROUND_DUMP_TEXT } from '../fixtures/replay/replay_20260809_g4_stale_gps_synthetic';
+import { SYNTHETIC_SURFACE_DEADZONE_POSITIVE_DUMP_TEXT } from '../fixtures/replay/replay_20260809_g4_surface_deadzone_positive';
 
 beforeEach(() => {
   jest.useFakeTimers();

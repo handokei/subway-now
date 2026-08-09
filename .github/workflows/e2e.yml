@@ -9,6 +9,33 @@ on:
     - cron: '0 19 * * *'
 
 jobs:
+  fusion-replay-full-library:
+    name: Fusion Replay — Full Library (#2247, ADR-030 §CI 비용/게이팅)
+    # PR 게이트(`ci.yml` Type Check & Test)는 replay 라이브러리 중 tier=core만 재생한다
+    # (src/testUtils/fixtures/replay/index.ts). 라이브러리가 커져도 PR CI 비용을 고정하기
+    # 위해 tier=extended 전량 재생은 nightly로 미룬다 — REPLAY_FULL_LIBRARY=1로 활성화.
+    # macOS/Xcode 불필요(순수 jest) — ubuntu-latest로 비용 최소화.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps
+
+      - name: replay 라이브러리 전량 재생 (tier 무관, fake timer 강제)
+        env:
+          REPLAY_FULL_LIBRARY: '1'
+        run: npx jest src/testUtils/fixtures/replay/__tests__/replayLibrary.full.test.ts --ci --collectCoverage=false
+
   e2e:
     name: E2E Nightly
     runs-on: macos-14
