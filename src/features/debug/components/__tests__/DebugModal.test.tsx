@@ -12,6 +12,7 @@ import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
+import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime';
 
 const mockUseFusedNearestStation = jest.fn();
 const mockUseArrivalInfo = jest.fn();
@@ -4269,11 +4270,12 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     ts: new Date('2026-06-19T08:00:00Z').getTime(),
     corrId: null,
     kind: 'cycle',
-    gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3 },
+    gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3, fixAtMs: null },
     motion: 'automotive',
     accelPattern: 'automotive',
     cellular: null,
     subsurface: false,
+    barometerHpa: null,
     arvlCd: 99,
     line: '7',
     dir: 'up',
@@ -4325,7 +4327,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       {
         name: 'gps.accM/speedMps null → 개별 토큰만 -',
         entry: makeRawEntry({
-          gps: { lat: 37.5, lng: 127, accM: null, speedMps: null },
+          gps: { lat: 37.5, lng: 127, accM: null, speedMps: null, fixAtMs: null },
         }),
         contains: ['gps(-/-)'],
       },
@@ -4338,6 +4340,21 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         name: 'exit kind + arvlCd=0 → arvlCd=0 (truthy 분기 회귀 방지)',
         entry: makeRawEntry({ kind: 'exit', arvlCd: 0, arcProgress: 0 }),
         contains: ['exit', 'arvlCd=0', 'arc=0.00'],
+      },
+      {
+        // #2241 (ADR-030 §Replay harness backbone P0-1) — 기압계 원시 hPa + GPS 수신
+        // 타임스탬프. barometerHpa/gps.fixAtMs 모두 채워진 entry → 두 토큰 모두 노출.
+        name: 'barometerHpa=1013.2 + gps.fixAtMs 채워짐 → hpa=1013.2 / fix=<HH:mm:ss>',
+        entry: makeRawEntry({
+          barometerHpa: 1013.24,
+          gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3, fixAtMs: new Date('2026-06-19T08:00:05Z').getTime() },
+        }),
+        contains: ['hpa=1013.2', `fix=${formatClockTimeWithSeconds(new Date('2026-06-19T08:00:05Z').getTime())}`],
+      },
+      {
+        name: 'barometerHpa null + gps.fixAtMs null → hpa=-/fix=-',
+        entry: makeRawEntry({ barometerHpa: null, gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3, fixAtMs: null } }),
+        contains: ['hpa=-', 'fix=-'],
       },
     ])('$name', ({ entry, contains }) => {
       const line = formatRawSignalLine(entry);

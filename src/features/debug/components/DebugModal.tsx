@@ -404,7 +404,12 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
   const cellular = entry.cellular != null
     ? `cell=${(entry.cellular.tech ?? '').replace('CTRadioAccessTechnology', '') || '-'}/${entry.cellular.vote}`
     : 'cell=-';
-  return `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular}`;
+  // #2241 (ADR-030 §Replay harness backbone P0-1) — 기압계 원시 hPa + GPS 수신 타임스탬프.
+  // 두 필드 모두 dump 끝에 append — 기존 Raw Signal 파서/문서 column order 보존(surgical).
+  const hpa = entry.barometerHpa != null ? entry.barometerHpa.toFixed(1) : '-';
+  const gpsFixAt =
+    entry.gps?.fixAtMs != null ? formatTime(entry.gps.fixAtMs) : '-';
+  return `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt}`;
 }
 
 /**

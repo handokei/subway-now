@@ -39,6 +39,7 @@ import { pushRawSignal } from '../../../observability/utils/rawSignalBuffer';
 import { useAccelerometerFingerprint } from '../useAccelerometerFingerprint';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 import type { AccelerometerPattern } from '../../utils/accelerometerFingerprint';
+import { appendBarometerReading, resetBarometerState } from '../../../../shared/utils/barometerState';
 
 const mockUseNearest = useNearestStation as jest.Mock;
 const mockUseArrival = useArrivalInfo as jest.Mock;
@@ -149,5 +150,30 @@ describe('useFusedNearestStation — #1678 accelPattern 반환값 및 motionForD
       ([entry]: [{ motion: string | null }]) => entry.motion,
     );
     expect(allMotions.some((m) => m === 'stationary')).toBe(true);
+  });
+
+  // #2241 (ADR-030 §Replay harness backbone P0-1) — barometerHpaForDump: getBarometerReadings()
+  // 최신 reading의 pressureHpa를 rawSignalBuffer entry에 싣는다. readings 0건이면 null(다른
+  // 테스트가 이미 이 경로를 커버), 본 테스트는 readings.length > 0 분기를 커버한다.
+  it('barometer readings 존재 → pushRawSignal entry.barometerHpa = 최신 reading.pressureHpa', () => {
+    resetBarometerState();
+    appendBarometerReading({ t: Date.now(), pressureHpa: 1013.25 });
+    mockUseAccelPattern.mockReturnValue('unknown');
+    jest.useFakeTimers();
+
+    const { rerender } = renderHook(() => useFusedNearestStation());
+    act(() => { jest.advanceTimersByTime(0); });
+
+    mockUseNearest.mockReturnValue(chungmuroGps());
+    rerender({});
+    act(() => { jest.advanceTimersByTime(0); });
+
+    jest.useRealTimers();
+
+    const allHpa = mockPushRawSignal.mock.calls.map(
+      ([entry]: [{ barometerHpa: number | null }]) => entry.barometerHpa,
+    );
+    expect(allHpa.some((hpa) => hpa === 1013.25)).toBe(true);
+    resetBarometerState();
   });
 });

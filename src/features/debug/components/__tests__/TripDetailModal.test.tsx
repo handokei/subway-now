@@ -38,6 +38,7 @@ function makeEntry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     accelPattern: null,
     cellular: null,
     subsurface: null,
+    barometerHpa: null,
     arvlCd: null,
     line: null,
     dir: null,
