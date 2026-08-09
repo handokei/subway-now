@@ -99,6 +99,7 @@ import type {
   Waypoint,
 } from './types';
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
+import { assertNever } from '../../../src/shared/types/pushContract';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
 import { t, type SupportedLocale } from './i18n';
@@ -2515,12 +2516,20 @@ export async function fireArvlCdStationPush(
   stats.arvlCdFireSuccess += 1;
   stats.pushed += 1;
   // #1683 — kind별 발사 카운터. 'intermediate'는 station-passed 경로, 그 외 그대로.
-  if (waypoint.kind === 'intermediate') {
-    stats.silentPushFiredByKind.intermediate += 1;
-  } else if (waypoint.kind === 'transfer') {
-    stats.silentPushFiredByKind.transfer += 1;
-  } else if (waypoint.kind === 'destination') {
-    stats.silentPushFiredByKind.destination += 1;
+  // #2235 (ADR-029 Phase 0) — exhaustive switch + assertNever: StationWaypointKind에 새 값이
+  // 추가되면 이 switch가 default 분기로 떨어져 컴파일 에러가 난다(드리프트 = 빌드 실패).
+  switch (waypoint.kind) {
+    case 'intermediate':
+      stats.silentPushFiredByKind.intermediate += 1;
+      break;
+    case 'transfer':
+      stats.silentPushFiredByKind.transfer += 1;
+      break;
+    case 'destination':
+      stats.silentPushFiredByKind.destination += 1;
+      break;
+    default:
+      assertNever(waypoint.kind, 'scheduled.ts arvlCd silentPushFiredByKind');
   }
   // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
   // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
@@ -2913,12 +2922,19 @@ export async function fireVanishFallbackStationPush(
     stats.vanishFallbackFired += 1;
   }
   // #1683 — kind별 발사 카운터. vanish 경로는 waypoint.kind로 분류.
-  if (waypoint.kind === 'intermediate') {
-    stats.silentPushFiredByKind.intermediate += 1;
-  } else if (waypoint.kind === 'transfer') {
-    stats.silentPushFiredByKind.transfer += 1;
-  } else if (waypoint.kind === 'destination') {
-    stats.silentPushFiredByKind.destination += 1;
+  // #2235 (ADR-029 Phase 0) — exhaustive switch + assertNever(위 arvlCd 발사기와 동일 근거).
+  switch (waypoint.kind) {
+    case 'intermediate':
+      stats.silentPushFiredByKind.intermediate += 1;
+      break;
+    case 'transfer':
+      stats.silentPushFiredByKind.transfer += 1;
+      break;
+    case 'destination':
+      stats.silentPushFiredByKind.destination += 1;
+      break;
+    default:
+      assertNever(waypoint.kind, 'scheduled.ts vanish silentPushFiredByKind');
   }
   // P0-1 (#1577) — Site 4 of 6: vanish fire 적재 (transfer/destination imminent 포함).
   writeMetric(env, {

@@ -16,6 +16,11 @@ import type {
   TripEndedAlertPushPayload,
   TripEndedReason,
 } from './types';
+import type {
+  AlarmEventType,
+  SleepAlarmTargetKind,
+  StationWaypointKind,
+} from '../../../src/shared/types/pushContract';
 
 /**
  * iOS UNNotificationCategory 식별자 (#819 B 슬라이스). 클라이언트는 같은 식별자로
@@ -50,7 +55,7 @@ export interface SilentPushPayload {
   etaSeconds: number;
   phase: AlarmPhase;
   /** Waypoint 종류. 클라가 intermediate일 때만 즉시 알림 발사하도록 분기 (#416). */
-  kind: 'transfer' | 'destination' | 'intermediate';
+  kind: StationWaypointKind;
   /**
    * 백엔드 발사 시점 epoch ms (#478 측정 인프라).
    * 클라 수신 시각과 비교해 silent push 도달 지연 분포 측정용.
@@ -223,7 +228,7 @@ export interface SilentPushSsotPayload {
 export interface AlarmEventPayload {
   alarmId: string;
   stationId: string;
-  type: 'station-passed' | 'transfer' | 'destination' | 'imminent';
+  type: AlarmEventType;
   decidedAt: number;
 }
 
@@ -928,7 +933,7 @@ export interface SendSleepAlarmCompanionPushOptions {
    * #2066 — 알람 대상이 환승역인지 도착역인지. device가 문구/UI를 분기하는 데 사용.
    * 환승/도착은 target 종류만 다르고 로직은 동일하다(하드코딩 분기 최소화).
    */
-  targetKind: 'transfer' | 'destination';
+  targetKind: SleepAlarmTargetKind;
   /** 알람 대상 역의 노선. 알림 본문 노출용. */
   nextLine: string;
   /** 알람 대상 역(환승역 또는 도착역). 알림 본문 + dedup key. */

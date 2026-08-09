@@ -7,6 +7,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import type { AlarmEvent } from './stationAlarm';
 import type { AlarmPhaseId } from './alarmPhases';
 import type { Station } from '../../../shared/types/station';
+import type { StationWaypointKind } from '../../../shared/types/pushContract';
 
 // 알람 발사/억제 이벤트를 AsyncStorage ring buffer로 적재한다.
 // false alarm 인지(B2) 및 차후 임계값 측정 기반 재조정(A)·GPS+Arrival fusion(C)의
@@ -1006,7 +1007,7 @@ export function clearAlarmLogWindows(): Promise<void> {
  */
 export function logSilentPushReceived(input: {
   stationName: string;
-  kind: AlarmLogKind | 'intermediate' | undefined;
+  kind: StationWaypointKind | undefined;
   phaseId: AlarmPhaseId;
   sentAt: number | undefined;
   receivedAt: number;

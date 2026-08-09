@@ -86,6 +86,14 @@ import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import {
+  assertNever,
+  isSleepAlarmTargetKind,
+  isStationWaypointKind,
+  type ControlPushKind,
+  type SleepAlarmTargetKind,
+  type StationWaypointKind,
+} from '../../../shared/types/pushContract';
 
 const logger = createLogger('SilentPushTask');
 
@@ -96,7 +104,7 @@ export interface SilentPushPayload {
   etaSeconds: number;
   phase: 'early' | 'imminent';
   /** Waypoint 종류 (#416). transfer/destination/intermediate. 구 백엔드 호환 위해 optional. */
-  kind?: 'transfer' | 'destination' | 'intermediate';
+  kind?: StationWaypointKind;
   /**
    * #2231 — `kind`가 알려진 값(transfer/destination/intermediate)과 매치되지 않을 때 backend가
    * 실제로 보낸 원본 kind 문자열. 계약 스큐(backend가 새/변경된 kind를 보냈는데 device가 모르는 값)
@@ -203,7 +211,7 @@ export {
  * 대상에서 제외해도 안전(추가 프로퍼티는 destructuring에서 자연 무시).
  */
 export interface RescheduleSilentPushPayload {
-  kind: 'reschedule';
+  kind: Extract<ControlPushKind, 'reschedule'>;
   nextStation: string;
   newArrivalTimeEpoch: number;
   trainCode: string;
@@ -234,7 +242,7 @@ export interface RescheduleSilentPushPayload {
  * 이전 trip의 prompt는 재발사되지 않는다(pushId 기준 backend가 이미 정지).
  */
 export interface BoardingPromptSilentPushPayload {
-  kind: 'boarding-prompt';
+  kind: Extract<ControlPushKind, 'boarding-prompt'>;
   /**
    * 사용자 출발역. hop-end 분기(#2034) 에서는 "환승 지점 역명" (=사용자가 하차해야 하는 station)
    * 으로 재해석. hopEndKind 필드로 분기 처리.
@@ -292,11 +300,11 @@ export interface BoardingPromptSilentPushPayload {
  * targetKind — 알람 대상이 환승역인지 도착역인지(#2066). device는 문구/식별자 분기에 사용.
  */
 export interface SleepAlarmCompanionSilentPushPayload {
-  kind: 'sleep-alarm-companion';
+  kind: Extract<ControlPushKind, 'sleep-alarm-companion'>;
   /** 사용자가 지금 있는 역(직전 역, arvlCd 진입/도착 확정 시점). 사용자 컨텍스트/식별자 기록용. */
   originStation: string;
   /** 알람 대상이 환승역인지 도착역인지. device 문구/식별자 분기용. */
-  targetKind: 'transfer' | 'destination';
+  targetKind: SleepAlarmTargetKind;
   /** 알람 대상 역의 노선. 알림 본문에 노출. */
   nextLine: string;
   /** 알람 대상 역(환승역 또는 도착역). 알림 본문 + 식별자로 사용. */
@@ -330,7 +338,7 @@ export interface SleepAlarmCompanionSilentPushPayload {
  * (구버전 backend 호환 + 신규 reason 추가 시 회귀 없음.)
  */
 export interface TripEndedSilentPushPayload {
-  kind: 'trip-ended';
+  kind: Extract<ControlPushKind, 'trip-ended'>;
   reason: TripEndedReason;
   sentAt?: number;
   pushId?: string;
@@ -497,8 +505,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   } & Record<string, unknown>;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
-  const validKind =
-    kind === 'transfer' || kind === 'destination' || kind === 'intermediate' ? kind : undefined;
+  const validKind = isStationWaypointKind(kind) ? kind : undefined;
   // #2231 — kind가 존재하지만(빈 문자열 제외) 알려진 값과 매치되지 않는 경우만 raw로 보존한다.
   // kind 자체가 없는(구버전 backend 단순 미지정) 경우는 계약 스큐가 아니므로 kindRaw를 남기지 않는다.
   const kindRaw =
@@ -732,7 +739,7 @@ function extractSleepAlarmCompanionPayload(
   const { originStation, targetKind, nextLine, nextStation, tripToken, pushId, sentAt, title, body } =
     obj;
   if (typeof originStation !== 'string' || originStation.length === 0) return null;
-  if (targetKind !== 'transfer' && targetKind !== 'destination') return null;
+  if (!isSleepAlarmTargetKind(targetKind)) return null;
   if (typeof nextLine !== 'string' || nextLine.length === 0) return null;
   if (typeof nextStation !== 'string' || nextStation.length === 0) return null;
   if (typeof tripToken !== 'string' || tripToken.length === 0) return null;
@@ -935,151 +942,177 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     //
     // 사전 예약 자체의 시각 조정은 별도 follow-up에서 다룬다 — 본 PR은 schema mismatch로 drop되던
     // 수신을 회복시키는 것이 범위.
-    if (payload.kind === 'reschedule') {
-      logger.info(
-        `reschedule received: trainCode=${payload.trainCode} nextStation=${payload.nextStation} newEpoch=${payload.newArrivalTimeEpoch} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
-      );
-      logSilentPushRescheduleReceived({
-        nextStation: payload.nextStation,
-        sentAt: payload.sentAt,
-        receivedAt,
-      });
-      await applyReschedule(payload, receivedAt);
-      void ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
-      return;
-    }
-
-    // trip-ended 분기 (#868) — backend가 server-side trip 자동 종료를 알리는 신호.
-    // route/destination/lock 등 trip-bound storage를 일괄 cleanup해 다음 FG 진입 시
-    // store hydrate가 stale state를 그대로 재현하지 않도록 한다.
     //
-    // ack outcome='fired'는 backend pendingPushes 입장에서는 "처리 완료, alert fallback 발사 마라"
-    // 신호. trip-ended는 alert fallback 대상이 아니지만 호환을 위해 일반 silent push와 같은 의미로 ack.
-    if (payload.kind === 'trip-ended') {
-      logger.info(
-        `trip-ended received: reason=${payload.reason} tripToken=${payload.tripToken?.slice(0, 8) ?? 'unknown'} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
-      );
-      // race 가드(#868 P1-2). 신규 backend는 tripToken을 항상 보냄. 구버전(undefined)은
-      // 호환 위해 cleanup 진행 — race 가능성은 있지만 backend 배포 후 사라짐.
-      if (payload.tripToken !== undefined) {
-        const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
-        if (activeTripToken !== null && activeTripToken !== payload.tripToken) {
-          logger.warn(
-            `trip-ended skip: tripToken mismatch payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
-          );
-          void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}:token-mismatch`);
-          return;
-        }
+    // #2235 (ADR-029 Phase 0) — control-kind 분기를 if-체인에서 exhaustive switch + assertNever로
+    // 전환. ExtractedPayload는 `kind`를 discriminant로 하는 union이라 각 case에서 payload가
+    // 해당 payload 타입으로 narrow된다. station waypoint kind(transfer/destination/intermediate)와
+    // undefined(kind 미상)는 이 switch에서 처리하지 않고 break로 아래 standard 처리로 넘어간다.
+    // CONTROL_PUSH_KINDS에 새 값이 추가되면 이 switch의 default가 컴파일 에러를 낸다(A1 실증).
+    switch (payload.kind) {
+      case 'reschedule': {
+        logger.info(
+          `reschedule received: trainCode=${payload.trainCode} nextStation=${payload.nextStation} newEpoch=${payload.newArrivalTimeEpoch} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+        );
+        logSilentPushRescheduleReceived({
+          nextStation: payload.nextStation,
+          sentAt: payload.sentAt,
+          receivedAt,
+        });
+        await applyReschedule(payload, receivedAt);
+        void ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
+        return;
       }
-      // #2120 (#2114 근본 수리 Phase 2) — corrId 인스턴스 가드. tripToken(APNs 기기 토큰)은
-      // 기기당 고정이라 위 token 비교는 "같은 기기의 다른 trip" race를 못 잡는다. backend
-      // 자동종료(la-stale/eta-missing 등) push가 in-flight인 수 초 사이 device가 재등록하면,
-      // 새 trip의 ACTIVE_TRIP_KEY(=같은 token)를 그대로 통과해 옛 trip 종료 push가 새 trip을
-      // 즉시 cleanup해버린다. corrId는 register마다 새로 발급되는 trip 인스턴스 식별자이므로
-      // payload와 device 현재 값이 둘 다 있는데 다르면 그 사이 재등록이 있었다는 뜻 — cleanup
-      // 전체를 skip한다. 어느 한쪽이라도 없으면(구버전 backend / cache 미수화) 기존 동작 유지.
-      // payload.corrId가 없는(구버전 backend) 경로는 device corrId를 조회할 필요조차 없다 —
-      // 불필요한 sync cache read를 피해 이후 endedCorrIdSnapshot 캡처 시점과의 혼동도 방지한다.
-      if (payload.corrId !== undefined) {
-        const deviceCorrId = getCurrentTripCorrIdSync();
-        if (deviceCorrId !== null && payload.corrId !== deviceCorrId) {
-          logger.warn(
-            `trip-ended skip: corrId mismatch payload=${payload.corrId} device=${deviceCorrId}`,
-          );
-          logSilentPushSkipped({
-            stationName: `trip-ended:${payload.reason}`,
-            kind: undefined,
-            reason: 'trip-ended-corr-mismatch',
-          });
-          void ackOutcome(payload.pushId, apnsToken, 'skipped', `trip-ended:${payload.reason}:corr-mismatch`);
-          return;
-        }
-      }
-      logSilentPushTripEndedReceived({
-        reason: payload.reason,
-        sentAt: payload.sentAt,
-        receivedAt,
-      });
-      // #1370 L4 — OS scheduled queue burst fire 차단. 종착역 도착 시 backend trip-ended push가
-      // 도달할 때 device 로컬 OS queue(`bl:`/`tba:`)에 잔존한 사전 예약 알람이 동시에 발사돼
-      // 사용자가 "용마산 도착 후 한꺼번에 받음"으로 인지하는 회귀.
+
+      // trip-ended 분기 (#868) — backend가 server-side trip 자동 종료를 알리는 신호.
+      // route/destination/lock 등 trip-bound storage를 일괄 cleanup해 다음 FG 진입 시
+      // store hydrate가 stale state를 그대로 재현하지 않도록 한다.
       //
-      // runTripBoundCleanups가 결국 OS queue를 cancel하지만, 그 전에 triggerTripEndRecall이
-      // routeStops 구성 + network upload로 수 초 stall할 수 있어 race window가 열린다.
-      // OS queue cancel만 별도 helper로 분리해 trip-ended 진입 즉시 호출 — recall/cleanup 흐름은
-      // 그대로 유지. cancel 자체는 멱등하므로 runTripBoundCleanups의 중복 cancel은 안전 통과.
-      await cancelTripBoundOsQueue();
-      // #919 — trip-end recall KPI upload. *반드시* cleanup 전에 호출해야 한다 — trigger가
-      // ROUTE_KEY/DESTINATION_KEY/TRIP_STARTED_AT_KEY를 읽어 routeStops를 구성하기 때문.
-      // trigger는 throw하지 않으므로 후속 cleanup/sentinel 흐름 차단 없음.
-      await triggerTripEndRecall();
-      // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
-      const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-      await runTripBoundCleanups();
-      // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
-      await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-      // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
-      // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
-      // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
-      await setTripEndedSentinel(receivedAt, endedCorrIdSnapshot);
-      // #2018 γ' — FG 상태에서는 useStateRehydration의 AppState 'active' 이벤트가
-      // 발생하지 않아 sentinel이 다음 BG/FG cycle까지 처리되지 않는다. 그동안 in-memory
-      // destination store가 stale로 남아 UI가 "현재역 → 현재역 0정거장" 형태로 잔존
-      // (2026-07-02 dogfood 관찰 20 성수→성수 evidence). FG 진행 중이면 setState를
-      // 여기서 즉시 수행해 store를 정리하고 sentinel을 그 자리에서 clear한다.
-      // BG 상태에서는 zustand runtime 접근이 불확실하므로 sentinel만 남기고 기존
-      // useStateRehydration 경로에 의존 — 기존 회귀 표면 없음.
-      if (AppState.currentState === 'active') {
-        try {
-          useDestinationStore.setState({
-            destination: null,
-            customOrigin: null,
-            tripOrigin: null,
-          });
-          addDomainBreadcrumb('trip', 'end', {
-            reason: 'silent-push-fg-immediate',
-          });
-          await useBoardingLockStore.getState().releaseLock();
-          await clearTripEndedSentinel();
-        } catch (e) {
-          logger.warn('FG 즉시 store reset 실패 (graceful — sentinel 유지):', e);
+      // ack outcome='fired'는 backend pendingPushes 입장에서는 "처리 완료, alert fallback 발사 마라"
+      // 신호. trip-ended는 alert fallback 대상이 아니지만 호환을 위해 일반 silent push와 같은 의미로 ack.
+      case 'trip-ended': {
+        logger.info(
+          `trip-ended received: reason=${payload.reason} tripToken=${payload.tripToken?.slice(0, 8) ?? 'unknown'} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+        );
+        // race 가드(#868 P1-2). 신규 backend는 tripToken을 항상 보냄. 구버전(undefined)은
+        // 호환 위해 cleanup 진행 — race 가능성은 있지만 backend 배포 후 사라짐.
+        if (payload.tripToken !== undefined) {
+          const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+          if (activeTripToken !== null && activeTripToken !== payload.tripToken) {
+            logger.warn(
+              `trip-ended skip: tripToken mismatch payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
+            );
+            void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}:token-mismatch`);
+            return;
+          }
         }
+        // #2120 (#2114 근본 수리 Phase 2) — corrId 인스턴스 가드. tripToken(APNs 기기 토큰)은
+        // 기기당 고정이라 위 token 비교는 "같은 기기의 다른 trip" race를 못 잡는다. backend
+        // 자동종료(la-stale/eta-missing 등) push가 in-flight인 수 초 사이 device가 재등록하면,
+        // 새 trip의 ACTIVE_TRIP_KEY(=같은 token)를 그대로 통과해 옛 trip 종료 push가 새 trip을
+        // 즉시 cleanup해버린다. corrId는 register마다 새로 발급되는 trip 인스턴스 식별자이므로
+        // payload와 device 현재 값이 둘 다 있는데 다르면 그 사이 재등록이 있었다는 뜻 — cleanup
+        // 전체를 skip한다. 어느 한쪽이라도 없으면(구버전 backend / cache 미수화) 기존 동작 유지.
+        // payload.corrId가 없는(구버전 backend) 경로는 device corrId를 조회할 필요조차 없다 —
+        // 불필요한 sync cache read를 피해 이후 endedCorrIdSnapshot 캡처 시점과의 혼동도 방지한다.
+        if (payload.corrId !== undefined) {
+          const deviceCorrId = getCurrentTripCorrIdSync();
+          if (deviceCorrId !== null && payload.corrId !== deviceCorrId) {
+            logger.warn(
+              `trip-ended skip: corrId mismatch payload=${payload.corrId} device=${deviceCorrId}`,
+            );
+            logSilentPushSkipped({
+              stationName: `trip-ended:${payload.reason}`,
+              kind: undefined,
+              reason: 'trip-ended-corr-mismatch',
+            });
+            void ackOutcome(payload.pushId, apnsToken, 'skipped', `trip-ended:${payload.reason}:corr-mismatch`);
+            return;
+          }
+        }
+        logSilentPushTripEndedReceived({
+          reason: payload.reason,
+          sentAt: payload.sentAt,
+          receivedAt,
+        });
+        // #1370 L4 — OS scheduled queue burst fire 차단. 종착역 도착 시 backend trip-ended push가
+        // 도달할 때 device 로컬 OS queue(`bl:`/`tba:`)에 잔존한 사전 예약 알람이 동시에 발사돼
+        // 사용자가 "용마산 도착 후 한꺼번에 받음"으로 인지하는 회귀.
+        //
+        // runTripBoundCleanups가 결국 OS queue를 cancel하지만, 그 전에 triggerTripEndRecall이
+        // routeStops 구성 + network upload로 수 초 stall할 수 있어 race window가 열린다.
+        // OS queue cancel만 별도 helper로 분리해 trip-ended 진입 즉시 호출 — recall/cleanup 흐름은
+        // 그대로 유지. cancel 자체는 멱등하므로 runTripBoundCleanups의 중복 cancel은 안전 통과.
+        await cancelTripBoundOsQueue();
+        // #919 — trip-end recall KPI upload. *반드시* cleanup 전에 호출해야 한다 — trigger가
+        // ROUTE_KEY/DESTINATION_KEY/TRIP_STARTED_AT_KEY를 읽어 routeStops를 구성하기 때문.
+        // trigger는 throw하지 않으므로 후속 cleanup/sentinel 흐름 차단 없음.
+        await triggerTripEndRecall();
+        // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+        const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+        await runTripBoundCleanups();
+        // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+        await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
+        // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
+        // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
+        // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
+        await setTripEndedSentinel(receivedAt, endedCorrIdSnapshot);
+        // #2018 γ' — FG 상태에서는 useStateRehydration의 AppState 'active' 이벤트가
+        // 발생하지 않아 sentinel이 다음 BG/FG cycle까지 처리되지 않는다. 그동안 in-memory
+        // destination store가 stale로 남아 UI가 "현재역 → 현재역 0정거장" 형태로 잔존
+        // (2026-07-02 dogfood 관찰 20 성수→성수 evidence). FG 진행 중이면 setState를
+        // 여기서 즉시 수행해 store를 정리하고 sentinel을 그 자리에서 clear한다.
+        // BG 상태에서는 zustand runtime 접근이 불확실하므로 sentinel만 남기고 기존
+        // useStateRehydration 경로에 의존 — 기존 회귀 표면 없음.
+        if (AppState.currentState === 'active') {
+          try {
+            useDestinationStore.setState({
+              destination: null,
+              customOrigin: null,
+              tripOrigin: null,
+            });
+            addDomainBreadcrumb('trip', 'end', {
+              reason: 'silent-push-fg-immediate',
+            });
+            await useBoardingLockStore.getState().releaseLock();
+            await clearTripEndedSentinel();
+          } catch (e) {
+            logger.warn('FG 즉시 store reset 실패 (graceful — sentinel 유지):', e);
+          }
+        }
+        // #2069 (Phase 3) — B12 원격 alert push 단일 채널. iOS가 시스템 banner를 직접 표시하므로
+        // 로컬 알림 재생성(D11, 구 `surfaceTripEnded`)은 제거. dedup store에는 그대로 기록해 같은
+        // pushId의 backend retry가 도달해도(FIRED_PUSH_IDS 공유) 중복 처리를 막는다.
+        if (payload.pushId) await addFiredPushId(payload.pushId);
+        void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
+        return;
       }
-      // #2069 (Phase 3) — B12 원격 alert push 단일 채널. iOS가 시스템 banner를 직접 표시하므로
-      // 로컬 알림 재생성(D11, 구 `surfaceTripEnded`)은 제거. dedup store에는 그대로 기록해 같은
-      // pushId의 backend retry가 도달해도(FIRED_PUSH_IDS 공유) 중복 처리를 막는다.
-      if (payload.pushId) await addFiredPushId(payload.pushId);
-      void ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
-      return;
-    }
 
-    // boarding-prompt 분기 (#2069 Phase 3) — B7 원격 alert push 단일 채널로 정리되며 B8(silent
-    // fallback) 이 제거됐다. 이 kind 는 이 BG task 로 더 이상 발사되지 않지만, 롤아웃 중 구버전
-    // backend 재시도가 도달할 가능성에 대비해 no-op + 로그만 남긴다 (로컬 알림 재구성 X).
-    // 응답 버튼(BOARDING_PROMPT_CATEGORY)은 원격 alert push 자체의 category 로 노출되며, 등록은
-    // 앱 초기화(`app/_layout.tsx` → `setupBoardingPromptCategory`)에서 로컬 발사와 무관하게 이뤄진다.
-    if (payload.kind === 'boarding-prompt') {
-      logger.info(
-        `boarding-prompt received (remote-only, no local notification): originStation=${payload.originStation} line=${payload.line} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
-      );
-      void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-remote-only');
-      return;
-    }
+      // boarding-prompt 분기 (#2069 Phase 3) — B7 원격 alert push 단일 채널로 정리되며 B8(silent
+      // fallback) 이 제거됐다. 이 kind 는 이 BG task 로 더 이상 발사되지 않지만, 롤아웃 중 구버전
+      // backend 재시도가 도달할 가능성에 대비해 no-op + 로그만 남긴다 (로컬 알림 재구성 X).
+      // 응답 버튼(BOARDING_PROMPT_CATEGORY)은 원격 alert push 자체의 category 로 노출되며, 등록은
+      // 앱 초기화(`app/_layout.tsx` → `setupBoardingPromptCategory`)에서 로컬 발사와 무관하게 이뤄진다.
+      case 'boarding-prompt': {
+        logger.info(
+          `boarding-prompt received (remote-only, no local notification): originStation=${payload.originStation} line=${payload.line} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+        );
+        void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-remote-only');
+        return;
+      }
 
-    // sleep-alarm-companion 분기 (#2036 Issue I γ → #2067 Phase 2-device D3) — 취침모드 companion
-    // 알람. 알림(배너) 생성 없이 TTS/진동만 부가하고 OS 안전망 예약을 cancel한다.
-    //
-    // 정책 (ADR-023 정합):
-    //  - Backend는 취침 무관 발사 (기존 arvlCd/vanish 경로는 sleep 조회 없음).
-    //  - Device가 `AlarmLocalAuthority.fireCompanionAlarm`이 sleepMode=true 확인 후에만 발사.
-    //  - sleepMode=false면 일반모드 = 원격 visible push(#2066)가 주 채널 담당 → 본 분기는 no-op skip.
-    //  - dedup: `AlarmLocalAuthority`의 persisted ledger(TTL 1h) — 앱 재시작 생존.
-    if (payload.kind === 'sleep-alarm-companion') {
-      logger.info(
-        `sleep-alarm-companion received: originStation=${payload.originStation} targetKind=${payload.targetKind} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
-      );
-      await fireSleepAlarmCompanion(payload, apnsToken);
-      return;
+      // sleep-alarm-companion 분기 (#2036 Issue I γ → #2067 Phase 2-device D3) — 취침모드 companion
+      // 알람. 알림(배너) 생성 없이 TTS/진동만 부가하고 OS 안전망 예약을 cancel한다.
+      //
+      // 정책 (ADR-023 정합):
+      //  - Backend는 취침 무관 발사 (기존 arvlCd/vanish 경로는 sleep 조회 없음).
+      //  - Device가 `AlarmLocalAuthority.fireCompanionAlarm`이 sleepMode=true 확인 후에만 발사.
+      //  - sleepMode=false면 일반모드 = 원격 visible push(#2066)가 주 채널 담당 → 본 분기는 no-op skip.
+      //  - dedup: `AlarmLocalAuthority`의 persisted ledger(TTL 1h) — 앱 재시작 생존.
+      case 'sleep-alarm-companion': {
+        logger.info(
+          `sleep-alarm-companion received: originStation=${payload.originStation} targetKind=${payload.targetKind} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+        );
+        await fireSleepAlarmCompanion(payload, apnsToken);
+        return;
+      }
+
+      // station waypoint kind(standard silent push)와 kind 미상(구 백엔드)은 이 switch가 다루지
+      // 않는다 — 아래 standard 처리 경로로 넘어간다.
+      case 'transfer':
+      case 'destination':
+      case 'intermediate':
+      case undefined:
+        break;
+
+      /* istanbul ignore next -- 위 case들이 ExtractedPayload['kind']의 모든 값을 exhaustive하게
+       * 나열하므로(reschedule/trip-ended/boarding-prompt/sleep-alarm-companion/transfer/destination/
+       * intermediate/undefined) default는 컴파일 타임에만 의미가 있는 방어 코드다. CONTROL_PUSH_KINDS
+       * 또는 STATION_WAYPOINT_KINDS(pushContract SSoT)에 새 값이 추가되고 이 switch가 갱신되지
+       * 않으면 여기 도달 전에 이미 컴파일 에러가 난다(A1 실증) — 런타임 도달은 타입 시스템이 깨진
+       * 경우(예: any 캐스팅)뿐이라 테스트 불가능한 순수 방어 코드.
+       */
+      default:
+        assertNever(payload, 'handleSilentPush control-kind dispatch');
     }
 
     logger.info(
