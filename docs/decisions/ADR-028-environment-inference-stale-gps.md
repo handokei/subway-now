@@ -1,6 +1,6 @@
 # ADR-028 — Environment surface 고착 → 지하 stale-GPS over-accept (phantom 교차)
 
-- **Status**: Proposed — **구현 보류(deferred)**. ADR-026 ①(route-progress) 실기기 검증 후, phantom이 잔존할 때만 구현 착수.
+- **Status**: **G4 umbrella(ADR-030) Decision 코어로 승격** (트랙 un-defer, 2026-08-09). **단 A+C fix 착수는 여전히 gated** — ADR-026 ①(route-progress) 실기기 검증 후 phantom 잔존 시에만. Phase 0(RCA/측정)은 즉시 착수, Phase 1(A+C 구현)이 gate 대상. 상세 = ADR-030 §가드레일(c).
 - **관련**: ADR-026(fire 단일 권위, phantom과 교차), 원래 RCA finding #9(오진 정정)
 - **분석**: 2026-08-08 적대적 분석(read-only) 결과
 
