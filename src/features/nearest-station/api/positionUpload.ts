@@ -323,7 +323,10 @@ export async function uploadPosition(
     // res.json() 실패는 try/catch가 catch — 응답 자체는 ok=true로 caller에 회신.
     try {
       const body = (await res.json()) as Partial<PositionResponseBody> | null;
-      if (body && (body.lockSuggestion || body.originStationId)) {
+      // #2261 (ADR-031 Phase 0) — body.ssot도 트리거 조건에 추가. lockless·정지 trip은
+      // lockSuggestion/originStationId 없이 ssot만 forward될 수 있다(예: currentStationId는
+      // 있으나 아직 lock 합의 전).
+      if (body && (body.lockSuggestion || body.originStationId || body.ssot)) {
         await persistFromPositionResponse(body, Date.now());
       }
     } catch {
@@ -347,6 +350,15 @@ export interface PositionResponseBody {
   originStationId?: string;
   /** backend가 추론한 lock 제안. lockless trip + 강 evidence 합의 시 set. */
   lockSuggestion?: LockSuggestionMirror;
+  /**
+   * #2261 (ADR-031 Phase 0) — full SSoT (backend `toSilentPushSsot` 축소, silent push payload와
+   * 동일 schema). additive 필드 — 기존 originStationId/lockSuggestion과 병존.
+   *
+   * 존재 시 `persistFromPositionResponse`가 이 값을 그대로 mirror로 채택한다(motionState/
+   * lastAdvanceAt/passedStations/alarmEvents/currentStationLine까지 전체 forward) — legacy
+   * fallback(originStationId/lockSuggestion만으로 부분 mirror 합성)보다 우선.
+   */
+  ssot?: SilentPushSsotMirror;
 }
 
 /**
@@ -363,8 +375,19 @@ export async function persistFromPositionResponse(
   body: Partial<PositionResponseBody>,
   receivedAt: number,
 ): Promise<void> {
-  // currentStationId는 originStationId fallback. 둘 다 부재면 빈 문자열로 두는 게 적절하나
-  // SilentPushSsotMirror 형식 검증이 빈 문자열을 reject하므로 lockSuggestion.stationId fallback 시도.
+  // #2261 (ADR-031 Phase 0) — body.ssot(full SSoT)가 있으면 그대로 채택한다. 이전에는
+  // lockSuggestion 부재 시 lastAdvanceAt이 0으로 고정돼(never fresh) lockless·정지 trip이 이
+  // 채널만으로는 영원히 mirror를 갱신할 수 없었다(deadlock의 절반). full ssot는 backend가 실제
+  // 추적 중인 motionState/lastAdvanceAt/passedStations/alarmEvents/currentStationLine을 그대로
+  // 담고 있어 legacy 부분 합성보다 우선한다.
+  if (body.ssot) {
+    if (body.ssot.currentStationId.length === 0) return;
+    await persistBackendSsotMirror(body.ssot, receivedAt);
+    return;
+  }
+  // legacy fallback — 구 backend(ssot 필드 미forward) 호환. currentStationId는 originStationId
+  // fallback. 둘 다 부재면 빈 문자열로 두는 게 적절하나 SilentPushSsotMirror 형식 검증이 빈
+  // 문자열을 reject하므로 lockSuggestion.stationId fallback 시도.
   const currentStationId =
     body.originStationId ?? body.lockSuggestion?.stationId ?? '';
   if (currentStationId.length === 0) return;

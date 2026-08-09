@@ -6,7 +6,8 @@
  * 시나리오:
  *   1. backend SSoT mirror 존재 + fresh → cascade 1순위 채택, confidence/source='backend-ssot'.
  *   2. mirror 미존재 → 기존 tier(WiFi/position-train/...) fallback.
- *   3. mirror stale(lastAdvanceAt 180s 초과, #1573 T10) → cascade 채택 거부 → 기존 tier fallback.
+ *   3. mirror stale(receivedAt 180s 초과, #1573 T10 / #2261 ADR-031 Phase 0 receivedAt 재정의)
+ *      → cascade 채택 거부 → 기존 tier fallback.
  *   4. mirror lock 활성 + line mismatch → station resolve null → 채택 거부.
  *   5. mirror lockless + resolve 가능 → cascade 채택 (lockless도 lock과 동급 우선순위).
  *
@@ -134,17 +135,36 @@ describe('#1568 (T8b) cascade picker — backend-ssot tier', () => {
     expect(hook.result.current.confidence).not.toBe('backend-ssot');
   });
 
-  it('mirror stale(lastAdvanceAt > 180s) → 채택 거부 (#1573 T10 60s → 180s)', async () => {
+  it('mirror stale(receivedAt > 180s) → 채택 거부 (#1573 T10 60s → 180s, #2261 receivedAt 재정의)', async () => {
     setupBaselineGpsAt('청담');
     mockRead.mockResolvedValue(
       makeMirror({
         currentStationId: yongmasan.name,
-        lastAdvanceAt: T0 - 240_000, // 4분 전 — staleness 180s 초과
+        receivedAt: T0 - 240_000, // 4분 전 — staleness 180s 초과
       }),
     );
     const hook = renderHook(() => useFusedNearestStation());
     await flushSsotRead();
     expect(hook.result.current.source).not.toBe('backend-ssot');
+  });
+
+  it('#2261 mirror lastAdvanceAt stale(지하·정지 non-advancing)이어도 receivedAt fresh면 채택 (deadlock 해소)', async () => {
+    // 지하·정지 trip: backend가 advance를 전혀 못 해 lastAdvanceAt이 옛날 값에 고정돼 있어도
+    // FG position pull이 방금 mirror를 갱신했다면(receivedAt fresh) 채택돼야 한다.
+    setupBaselineGpsAt('청담');
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name,
+        lastAdvanceAt: T0 - 10 * 60_000, // 10분 전 advance — non-advancing trip
+        receivedAt: T0, // 방금 pull로 갱신
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushSsotRead();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
   });
 
   it('mirror lock 활성 + line mismatch → station resolve 실패 → 채택 거부', async () => {
@@ -413,7 +433,8 @@ describe('#1705 ssotStation — lockless + currentStationLine line-matched resol
 
 describe('#1773 (E) SSoT mirror staleness × stale GPS 겹침 회귀 가드', () => {
   // GPS lastFixAtMs=T0-200_000: 200s old. GPS_FALLBACK_STALE_MAX_AGE_MS(300s) 이내라 GPS 게이트 통과.
-  // BACKEND_SSOT_MIRROR_MAX_AGE_MS = 180s. lastAdvanceAt으로 SSoT mirror 신선도 판정.
+  // BACKEND_SSOT_MIRROR_MAX_AGE_MS = 180s. #2261 (ADR-031 Phase 0) 이후 receivedAt으로 SSoT
+  // mirror 신선도 판정 (기존 lastAdvanceAt 기준에서 재정의).
   //
   // 시나리오:
   //   E1. mirror 60s old (fresh) + GPS 200s old → backend-ssot 채택 OK.
@@ -450,14 +471,14 @@ describe('#1773 (E) SSoT mirror staleness × stale GPS 겹침 회귀 가드', ()
   });
 
   it('E1: mirror 60s old(fresh) + GPS 200s old → backend-ssot 채택 OK', async () => {
-    // lastAdvanceAt = T0 - 60_000 (60s old). 60s < BACKEND_SSOT_MIRROR_MAX_AGE_MS(180s) → fresh.
+    // receivedAt = T0 - 60_000 (60s old). 60s < BACKEND_SSOT_MIRROR_MAX_AGE_MS(180s) → fresh.
     // GPS 200s old는 GPS_FALLBACK_STALE_MAX_AGE_MS(300s) 이내 → GPS 게이트 통과.
     // 결과: backend-ssot가 cascade 1순위로 채택됨.
     setupBaselineGpsWithLastFix('청담', T0 - 200_000);
     (readBackendSsotMirror as jest.Mock).mockResolvedValue(
       makeBackendSsotMirrorEntry({
         currentStationId: yongmasan.name,
-        lastAdvanceAt: T0 - 60_000,
+        receivedAt: T0 - 60_000,
       }),
     );
     const hook = renderHook(() => useFusedNearestStation());
@@ -470,13 +491,13 @@ describe('#1773 (E) SSoT mirror staleness × stale GPS 겹침 회귀 가드', ()
   });
 
   it('E2: mirror 170s old(한계 직전, still fresh) + GPS 200s old → backend-ssot 채택 OK', async () => {
-    // lastAdvanceAt = T0 - 170_000 (170s old). 170s < 180s → 아직 fresh(경계 직전).
+    // receivedAt = T0 - 170_000 (170s old). 170s < 180s → 아직 fresh(경계 직전).
     // 이 edge case는 stale 직전 구간 — 채택 허용 확인.
     setupBaselineGpsWithLastFix('청담', T0 - 200_000);
     (readBackendSsotMirror as jest.Mock).mockResolvedValue(
       makeBackendSsotMirrorEntry({
         currentStationId: yongmasan.name,
-        lastAdvanceAt: T0 - 170_000,
+        receivedAt: T0 - 170_000,
       }),
     );
     const hook = renderHook(() => useFusedNearestStation());
@@ -488,14 +509,14 @@ describe('#1773 (E) SSoT mirror staleness × stale GPS 겹침 회귀 가드', ()
   });
 
   it('E3: mirror 200s old(stale, >180s) + GPS 200s old → backend-ssot 채택 거부 → GPS fallback', async () => {
-    // lastAdvanceAt = T0 - 200_000 (200s old). 200s > 180s → stale → ssotFresh=false → 채택 거부.
+    // receivedAt = T0 - 200_000 (200s old). 200s > 180s → stale → ssotFresh=false → 채택 거부.
     // GPS 200s old는 GPS gate 통과 → GPS fallback으로 cascade 진행 (source='gps').
     // mirror stale + GPS not stale → fusion이 GPS tier로 fallback (source != 'backend-ssot').
     setupBaselineGpsWithLastFix('청담', T0 - 200_000);
     (readBackendSsotMirror as jest.Mock).mockResolvedValue(
       makeBackendSsotMirrorEntry({
         currentStationId: yongmasan.name,
-        lastAdvanceAt: T0 - 200_000,
+        receivedAt: T0 - 200_000,
       }),
     );
     const hook = renderHook(() => useFusedNearestStation());
