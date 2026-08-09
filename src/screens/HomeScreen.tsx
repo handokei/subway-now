@@ -405,6 +405,16 @@ export default function HomeScreen() {
     stopNavigation();
     void setInfoModeEnabled(false);
   }, [stopNavigation, setInfoModeEnabled]);
+  // #2238 — "안내 종료" 명시 trigger. "안내 중단"(navigationActive만 off, BG GPS 토글)과 달리
+  // trip 자체를 종료한다: setDestination(null)이 기존 cleanup chain(runTripBoundCleanups →
+  // #2129 backend DELETE /trips wire, tripBoundCleanups.ts:259)을 그대로 태워 로컬 정리 +
+  // backend trip 삭제(best-effort, 실패해도 15분 backstop #2230이 안전망) 양쪽을 처리한다.
+  // navigationActive/infoModeEnabled도 함께 reset해 trip 없는 상태에 stale 의향 플래그가
+  // 남지 않도록 한다.
+  const handleEndNavigation = useCallback(() => {
+    handleStopNavigation();
+    setDestination(null);
+  }, [handleStopNavigation, setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
     distanceKm: result?.distanceKm,
@@ -1421,6 +1431,22 @@ export default function HomeScreen() {
                     >
                       <Text style={[typography.label, { color: colors.warn, fontWeight: '700' }]}>
                         {t('navigation.stop')}
+                      </Text>
+                    </Pressable>
+                  )}
+                  {/* #2238 — "안내 종료" 버튼. "안내 시작"과 대칭 배치, 활성 trip(destination 존재)일
+                       때만 노출. 탭 시 trip 자체를 종료(setDestination(null))해 backend DELETE
+                       /trips까지 배선(runTripBoundCleanups → #2129)한다. */}
+                  {destination !== null && (
+                    <Pressable
+                      testID="home-navigation-end"
+                      style={[styles.navigationButton, { borderColor: colors.danger, borderWidth: 1 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('navigation.end')}
+                      onPress={handleEndNavigation}
+                    >
+                      <Text style={[typography.label, { color: colors.danger, fontWeight: '700' }]}>
+                        {t('navigation.end')}
                       </Text>
                     </Pressable>
                   )}

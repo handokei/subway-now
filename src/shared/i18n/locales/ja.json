@@ -210,6 +210,7 @@
   "navigation": {
     "start": "案内を開始",
     "stop": "案内を停止",
+    "end": "案内を終了",
     "permissionPrompt": "案内を開始するには位置情報の権限が必要です"
   },
   "arrival": {
