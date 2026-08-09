@@ -258,7 +258,11 @@ describe('useDestinationStore', () => {
   it('setDestination(#799): switch 시 alarmEvent 메모리 state도 null로 동기화', () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
-    useAlarmEventStore.getState().setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '시청' });
+    // #2258 — setAlarmEvent는 sleepMode 전용 게이트를 거치므로, 이 테스트가 검증하는
+    // setDestination의 alarmEvent clear 동작(alarm 게이트와 무관)은 state를 직접 세팅해 확인한다.
+    useAlarmEventStore.setState({
+      alarmEvent: { phaseId: 'early', type: 'destination', stationName: '시청' },
+    });
     expect(useAlarmEventStore.getState().alarmEvent).not.toBeNull();
 
     setDestination(mockStation2);
