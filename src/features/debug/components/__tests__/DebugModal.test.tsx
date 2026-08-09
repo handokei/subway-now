@@ -908,6 +908,28 @@ describe('DebugModal helpers', () => {
     expect(line).toContain('age=1500ms');
   });
 
+  // #2231 — pushKindRaw가 있으면 계약 스큐(device가 모르는 kind) 원본 문자열을 raw 로그 라인에 보존.
+  it('formatLogLine: pushKindRaw가 있으면 rawKind=... 표기 (#2231)', () => {
+    const entry: AlarmLogEntry = {
+      ts: Date.now(),
+      source: 'silent-push-received',
+      outcome: 'received',
+      pushKindRaw: 'future-kind',
+    };
+    const line = __test__.formatLogLine(entry);
+    expect(line).toContain('rawKind=future-kind');
+  });
+
+  it('formatLogLine: pushKindRaw 미존재면 rawKind 토큰이 붙지 않는다 (#2231)', () => {
+    const entry: AlarmLogEntry = {
+      ts: Date.now(),
+      source: 'silent-push-received',
+      outcome: 'received',
+    };
+    const line = __test__.formatLogLine(entry);
+    expect(line).not.toContain('rawKind');
+  });
+
   it('formatLogLine: 최소 fired 엔트리', () => {
     const entry: AlarmLogEntry = {
       ts: Date.now(),
@@ -5379,12 +5401,14 @@ describe('DebugModal share dump — 누락 3 섹션 wire (#2044-scope)', () => {
       expect(result[0]).toBe('alarmAccuracy(local)=3/5');
     });
 
-    it('silentPushReach(local) 은 args.logs 로 계산 — fired/received 반영', () => {
+    // #2231 — silentPushReach(local) 재정의: visible station kind로 도달한 수 / 전체 수신 수.
+    // #2064 이후 device 로컬 발사(fired)는 구조적으로 no-op이라 과거 fired 기준은 항상 0인 죽은 지표였다.
+    it('silentPushReach(local) 은 args.logs 로 계산 — visibleReceived/totalReceived 반영 (#2231)', () => {
       const result = __test__.buildOperationDashboardSection(
         makeArgs({
           operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
           logs: [
-            { ts: 1, source: 'silent-push-received', outcome: 'received' },
+            { ts: 1, source: 'silent-push-received', outcome: 'received', kind: 'transfer' },
             { ts: 2, source: 'silent-push-received', outcome: 'received' },
             { ts: 3, source: 'silent-push-fired', outcome: 'fired' },
           ],
@@ -5461,7 +5485,7 @@ describe('DebugModal share dump — 누락 3 섹션 wire (#2044-scope)', () => {
         makeArgs({
           operationDashboard: { groundTruthAccurateCount: 2, groundTruthAnsweredCount: 3 },
           logs: [
-            { ts: 1, source: 'silent-push-received', outcome: 'received' },
+            { ts: 1, source: 'silent-push-received', outcome: 'received', kind: 'destination' },
             { ts: 2, source: 'silent-push-fired', outcome: 'fired' },
           ],
         }),

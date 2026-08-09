@@ -19,7 +19,7 @@
  *   - metric row 클릭 → MetricDrillDownView expanded view (corrId join)
  *
  * Metric 1 — 알람 정확성: useTripGroundTruthStore(M2 구현) 기반
- * Metric 2 — Silent push 도달률: countSilentPushOutcomes (received vs fired)
+ * Metric 2 — Silent push 도달률: computeSilentPushReach (visible station kind / total received, #2231)
  * Metric 3 — Lockless miss: backend polling (ADMIN_TOKEN 미설정 시 mock 유지)
  * Metric 4 — Boardable train miss: backend polling (backend placeholder: 0/0)
  */
@@ -27,7 +27,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTheme, spacing, typography } from '../../../shared/theme';
 import { useTripGroundTruthStore } from '../store/useTripGroundTruthStore';
-import { countSilentPushOutcomes, type AlarmLogEntry } from '../../alarm/utils/alarmLog';
+import { computeSilentPushReach, type AlarmLogEntry } from '../../alarm/utils/alarmLog';
 import {
   fetchObservabilityMetrics,
   type ObservabilityMetricsBucket,
@@ -391,14 +391,17 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
           isMock: backendState.kind !== 'ok',
         };
 
-  // Metric 2 — Silent push 도달률 (received 중 fired 비율)
-  const silentCounts = countSilentPushOutcomes(logs);
+  // Metric 2 — Silent push 도달률 (#2231 재정의: 전체 수신 중 visible station kind 비율).
+  // #2064 이후 device 로컬 발사(fired)는 구조적으로 no-op이라 과거 fired/received 비율은
+  // 항상 0인 죽은 지표였다 — visibleReceived(station-passed/transfer/destination으로 도달)
+  // / totalReceived(reschedule/trip-ended 등 제어용 push 포함 전체 수신)로 재정의.
+  const reach = computeSilentPushReach(logs);
   const silentPushReach: MetricData = {
     key: 'silentPushReach',
     label: 'silentPushReach',
-    ratio: computeRatio(silentCounts.fired, silentCounts.received),
-    numerator: silentCounts.fired,
-    denominator: silentCounts.received,
+    ratio: computeRatio(reach.visibleReceived, reach.totalReceived),
+    numerator: reach.visibleReceived,
+    denominator: reach.totalReceived,
   };
 
   // Metric 3 — Lockless miss (backend polling 결과 또는 mock 유지)
@@ -437,7 +440,8 @@ export function OperationDashboardSection({ logs, onMetricClick }: OperationDash
       : { key: 'locklessMiss', label: 'laPushDelivery', ratio: null, numerator: 0, denominator: 0, isMock: true };
 
   // Metric 8 — #1958 silent push 5min corrId join 도달률 (backend SSoT).
-  // 기존 client-side `silentPushReach`(local fired/received)와 별도 — backend가 `sent`를 권위 분모로 보유.
+  // 기존 client-side `silentPushReach`(local visibleReceived/totalReceived, #2231)와 별도 —
+  // backend가 `sent`를 권위 분모로 보유.
   // backend가 silentPushReachRatio 필드를 응답하지 않으면(구 backend) placeholder.
   const silentPushReachBackend: MetricData =
     backendState.kind === 'ok' && backendState.silentPushReach !== null
