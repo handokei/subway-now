@@ -104,6 +104,19 @@ binding = "DB"
 database_name = "subway-now-db"
 database_id = "a2c04254-6bde-4b70-a31f-97ada2940b50"
 
+# Durable Object — TripDO scaffold (#2264, Epic #2260, ADR-031 Phase 1).
+# 1 trip = 1 DO(`env.TRIP_DO.idFromName(tripToken)`). Phase 1은 shadow(no-op 기본,
+# `tripDoFlag.ts` KV 게이트 off) — cron이 여전히 authoritative, fire 로직 없음(state 보관만).
+# SQLite storage backend는 Workers Free plan에서도 가용(요청 100K/day, 행 read 5M/day,
+# 행 write 100K/day, storage 5GB 한도 — 2026-08-09 durable-objects 스킬 문서 확인, blocker 아님).
+[[durable_objects.bindings]]
+name = "TRIP_DO"
+class_name = "TripDO"
+
+[[migrations]]
+tag = "v1-trip-do"
+new_sqlite_classes = ["TripDO"]
+
 # 1분마다 활성 트립 폴링
 [triggers]
 crons = ["*/1 * * * *"]

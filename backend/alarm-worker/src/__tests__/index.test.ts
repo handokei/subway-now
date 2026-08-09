@@ -4,6 +4,7 @@ import {
   app,
   applyBoardingLockTrainCodeSwap,
   computeLockSyncAdvance,
+  dualWriteTripDo,
   LOCK_TTL_REFRESH_MS,
   validateBoardingLockSync,
   validateLiveActivityRegister,
@@ -12,6 +13,8 @@ import {
   verifyBoardingLockPersisted,
 } from '../index';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
+import { TripDO } from '../tripDO';
+import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
 import { progressKey, type TripProgress } from '../progress';
 import { pendingKey, putPending, stampReceived } from '../pendingPushes';
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
@@ -5511,5 +5514,151 @@ describe('GET/POST /admin/kill-switch (#1967 Ff-1)', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ key: 'lockless_intermediate', value: 'false' });
     });
+  });
+});
+
+/**
+ * #2264 (Epic #2260, ADR-031 Phase 1) — TripDO shadow dual-write acceptance.
+ *
+ * - flag off(default) 또는 env.TRIP_DO 미바인딩 → 완전 no-op (기존 KV write 경로 무영향)
+ * - flag on → DO seed(shadow write) + 기존 row와의 divergence 로그
+ * - DO stub이 throw해도 trip 등록 응답은 차단되지 않는다(graceful)
+ */
+describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
+  /** 실 `TripDO` 클래스를 Map 기반 fake storage 위에서 재사용 — production 로직과 동형. */
+  function makeFakeTripDoNamespace(): {
+    ns: DurableObjectNamespace;
+    instances: Map<string, TripDO>;
+  } {
+    const instances = new Map<string, TripDO>();
+    const ns = {
+      idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
+      get: (id: DurableObjectId) => {
+        const name = id.toString();
+        let inst = instances.get(name);
+        if (!inst) {
+          const storage = new Map<string, unknown>();
+          const state = {
+            storage: {
+              get: async <T>(key: string) => storage.get(key) as T | undefined,
+              put: async (key: string, value: unknown) => {
+                storage.set(key, value);
+              },
+            },
+          } as unknown as DurableObjectState;
+          inst = new TripDO(state);
+          instances.set(name, inst);
+        }
+        return inst as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+    return { ns, instances };
+  }
+
+  it('flag off(default): env.TRIP_DO가 있어도 no-op (fetch 호출 없음)', async () => {
+    const env = makeKvEnv();
+    const { ns } = makeFakeTripDoNamespace();
+    const fetchSpy = vi.spyOn(ns, 'get');
+    const trip = validateTrip({ ...base(), token: 'tok-do-1' })!;
+    await dualWriteTripDo({ ...env, TRIP_DO: ns }, trip);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('env.TRIP_DO 미바인딩: flag on이어도 no-op', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    const trip = validateTrip({ ...base(), token: 'tok-do-2' })!;
+    // TRIP_DO undefined — 예외 없이 그냥 반환되는지만 확인.
+    await expect(dualWriteTripDo(env, trip)).resolves.toBeUndefined();
+  });
+
+  it('flag on: DO에 trip이 seed되고 GET /trip으로 조회 가능', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    const { ns, instances } = makeFakeTripDoNamespace();
+    const trip = validateTrip({ ...base(), token: 'tok-do-3' })!;
+    await dualWriteTripDo({ ...env, TRIP_DO: ns }, trip);
+
+    const stub = instances.get('tok-do-3')!;
+    const res = await stub.fetch(new Request('https://trip-do/trip'));
+    const body = (await res.json()) as { trip: unknown };
+    expect(body.trip).toEqual(trip);
+  });
+
+  it('flag on: 기존 DO row와 신규 trip이 다르면 divergence 로그를 남긴다', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    const { ns } = makeFakeTripDoNamespace();
+    const tripV1 = validateTrip({ ...base(), token: 'tok-do-4', destination: 'dst-v1' })!;
+    await dualWriteTripDo({ ...env, TRIP_DO: ns }, tripV1);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const tripV2 = validateTrip({ ...base(), token: 'tok-do-4', destination: 'dst-v2' })!;
+    await dualWriteTripDo({ ...env, TRIP_DO: ns }, tripV2);
+    const divergenceLog = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('trip-do: shadow-compare divergence'));
+    expect(divergenceLog).toBeDefined();
+    logSpy.mockRestore();
+  });
+
+  it('flag on: 첫 seed(기존 row 없음)는 divergence 로그를 남기지 않는다', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    const { ns } = makeFakeTripDoNamespace();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const trip = validateTrip({ ...base(), token: 'tok-do-5' })!;
+    await dualWriteTripDo({ ...env, TRIP_DO: ns }, trip);
+    const divergenceLog = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('trip-do: shadow-compare divergence'));
+    expect(divergenceLog).toBeUndefined();
+    logSpy.mockRestore();
+  });
+
+  it('DO stub이 throw해도 dualWriteTripDo는 삼키고 로그만 남긴다 (graceful)', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    const throwingNs = {
+      idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
+      get: () =>
+        ({
+          fetch: async () => {
+            throw new Error('do down');
+          },
+        }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const trip = validateTrip({ ...base(), token: 'tok-do-6' })!;
+    await expect(dualWriteTripDo({ ...env, TRIP_DO: throwingNs }, trip)).resolves.toBeUndefined();
+    const failureLog = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('trip-do: dual-write failed'));
+    expect(failureLog).toBeDefined();
+    logSpy.mockRestore();
+  });
+
+  it('POST /trips 통합: flag off(default)면 TRIP_DO가 바인딩돼 있어도 DO에 아무것도 쓰지 않는다', async () => {
+    const env = makeKvEnv();
+    const { ns, instances } = makeFakeTripDoNamespace();
+    const res = await post('/trips', { ...base(), token: 'tok-do-7' }, { ...env, TRIP_DO: ns });
+    expect(res.status).toBe(200);
+    expect(instances.size).toBe(0);
+  });
+
+  it('POST /trips 통합: flag on이면 응답 성공 + DO에 trip이 shadow-seed된다', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    const { ns, instances } = makeFakeTripDoNamespace();
+    const res = await post('/trips', { ...base(), token: 'tok-do-8' }, { ...env, TRIP_DO: ns });
+    expect(res.status).toBe(200);
+    const stub = instances.get('tok-do-8');
+    expect(stub).toBeDefined();
+    const doRes = await stub!.fetch(new Request('https://trip-do/trip'));
+    const doBody = (await doRes.json()) as { trip: { token: string } | null };
+    expect(doBody.trip?.token).toBe('tok-do-8');
+    // KV 경로(SSoT/기존 로직)는 dual-write와 무관하게 그대로 성공했는지 확인.
+    const kvTrip = JSON.parse((await env.TRIPS.get('trip:tok-do-8')) as string);
+    expect(kvTrip.token).toBe('tok-do-8');
   });
 });
