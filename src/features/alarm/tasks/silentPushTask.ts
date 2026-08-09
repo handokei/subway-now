@@ -395,6 +395,37 @@ export type ExtractedPayload =
   | SleepAlarmCompanionSilentPushPayload;
 
 /**
+ * A1 exhaustiveness 비대칭 보완 (#2256, ADR-029 Phase 0 후속) — control kind 컴파일-타임
+ * 커버리지 단언.
+ *
+ * `CONTROL_PUSH_KINDS`(SSoT, `pushContract.ts`)의 각 kind는 station kind와 달리 서로 다른
+ * payload schema를 가져 `Extract<ControlPushKind, '<literal>'>`로 각 payload interface에
+ * 핀되어 있다. 그 결과 기존 exhaustive switch(`handleSilentPush`의 control-kind switch)는
+ * *기존* payload union만 기준으로 exhaustive해 — `CONTROL_PUSH_KINDS`에 새 kind를 추가하고
+ * 대응 payload variant를 `ExtractedPayload`에 등록하지 않아도 switch 자체는 여전히 컴파일
+ * 통과한다(런타임 P1 fail-closed만 잡음). 아래 타입이 그 gap을 컴파일 타임으로 승격한다.
+ *
+ * `HandledControlPushKind`는 `ExtractedPayload`의 모든 variant가 실제로 제공하는 `kind` 리터럴
+ * 중 `ControlPushKind`에 속하는 것들의 합집합이다. `CONTROL_PUSH_KINDS`에 새 kind를 추가하고
+ * 대응 payload variant(및 `ExtractedPayload` union 등록)를 빠뜨리면
+ * `Exclude<ControlPushKind, HandledControlPushKind>`가 더 이상 `never`가 아니게 되고,
+ * `_ControlPushKindCoverageCheck`가 `never`로 좁혀져 아래 대입문이 컴파일 에러가 난다
+ * (`pushContract.test.ts`의 `@ts-expect-error` 데모가 동일 원리를 재현).
+ *
+ * **전제**: 각 control payload interface가 `kind: Extract<ControlPushKind, '<literal>'>`처럼
+ * 좁은 리터럴로 고정돼 있어야 한다. 이 필드가 `any`로 widen되면(`string`은 안전 — `Extract`가
+ * 걸러낸다) `Extract<any, ControlPushKind>`가 `any`로 흘러 `Exclude<ControlPushKind, any>`가
+ * `never`로 collapse해 본 단언이 무력화된다. 현재 4개 variant 모두 리터럴로 고정돼 있어 해당
+ * 없음 — 향후 payload interface 작성 시 이 전제를 깨지 않아야 한다.
+ */
+type HandledControlPushKind = Extract<ExtractedPayload['kind'], ControlPushKind>;
+type ControlPushKindCoverageAssert<T extends never> = T;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- 타입 전용 컴파일-타임 단언, 값 사용처 없음.
+type _ControlPushKindCoverageCheck = ControlPushKindCoverageAssert<
+  Exclude<ControlPushKind, HandledControlPushKind>
+>;
+
+/**
  * expo-notifications iOS의 `BackgroundEventTransformer.swift`가 APNs payload를
  * 다음과 같이 변환해 task 콜백에 전달한다:
  *   { data: { ...non-aps fields, dataString }, notification: <aps.alert | null>, aps: {...} }

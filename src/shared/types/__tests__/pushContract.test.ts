@@ -15,6 +15,7 @@ import {
   isValidContractVersion,
   isValidEtaSeconds,
   isValidStationIdentifier,
+  type ControlPushKind,
   type StationWaypointKind,
 } from '../pushContract';
 
@@ -139,6 +140,43 @@ describe('pushContract G2/G6 (#2243, ADR-029 Phase 1)', () => {
     expect(isValidEtaSeconds(NaN)).toBe(false);
     expect(isValidEtaSeconds(Infinity)).toBe(false);
     expect(isValidEtaSeconds('120')).toBe(false);
+  });
+});
+
+describe('pushContract A1 control-kind coverage assertion (#2256, ADR-029 Phase 0 후속)', () => {
+  /**
+   * 실제 프로덕션 단언은 `src/features/alarm/tasks/silentPushTask.ts`의
+   * `_ControlPushKindCoverageCheck`(`ExtractedPayload` 기준)가 수행한다 — 그 파일은 features
+   * 슬라이스라 여기(`shared/`)에서 직접 import할 수 없다(`import/no-restricted-paths`:
+   * shared는 features를 모른다). 여기서는 동일 메커니즘의 최소 재현으로 A1 실증을 남긴다:
+   * "payload variant 목록(HandledKind)이 `CONTROL_PUSH_KINDS` 전체를 커버하지 못하면 컴파일
+   * 에러가 난다"는 것을 `@ts-expect-error`로 증명한다.
+   */
+  it(
+    '컴파일-타임 실증 — 소비자(HandledKind)가 CONTROL_PUSH_KINDS 중 하나를 빠뜨리면 ' +
+      '커버리지 단언이 깨진다 (새 control kind를 union에만 추가하고 소비자를 안 만든 드리프트의 재현)',
+    () => {
+      // 'sleep-alarm-companion' payload variant를 깜빡 빠뜨렸다고 가정한 소비자 union.
+      type IncompleteHandledKind = Exclude<ControlPushKind, 'sleep-alarm-companion'>;
+      type IncompleteCoverage =
+        Exclude<ControlPushKind, IncompleteHandledKind> extends never ? true : never;
+
+      // @ts-expect-error — IncompleteCoverage는 'sleep-alarm-companion'이 빠져 Exclude 결과가
+      // never가 아니게 되고, 조건부 타입이 never로 좁혀져 true를 대입할 수 없다. 실제 코드에서
+      // CONTROL_PUSH_KINDS에 새 kind를 추가하고 대응 payload variant를 안 만들면 동일 원리
+      // (`ControlPushKindCoverageAssert`, silentPushTask.ts)로 컴파일이 깨진다 — 이 데모는
+      // `T extends never` generic 제약 대신 조건부 타입 대입으로 같은 Exclude 연산 결과를
+      // 재현한 것으로, 실제 구현과 동일한 컴파일 실패 메커니즘(constraint violation)은 아니다.
+      const demo: IncompleteCoverage = true;
+      expect(demo).toBe(true);
+    },
+  );
+
+  it('정상 케이스 — 소비자가 CONTROL_PUSH_KINDS 전체를 커버하면 단언이 통과한다(회귀 없음)', () => {
+    type FullHandledKind = ControlPushKind;
+    type FullCoverage = Exclude<ControlPushKind, FullHandledKind> extends never ? true : never;
+    const demo: FullCoverage = true;
+    expect(demo).toBe(true);
   });
 });
 
