@@ -15,6 +15,10 @@ Closes #<이슈번호>
 ## Wire-completion 5단 체크
 
 - [ ] **1. Orphan 없음** — `npm run lint:orphan` pass (CI 자동 검증). 신규 export에는 caller 존재.
+  - push/silent-push 계열 관측 지표를 새로 추가하거나 그 emitter를 은퇴시키는 PR은
+    `src/features/observability/utils/signalProvenanceRegistry.ts`도 함께 갱신 (#2250, ADR-029 Phase 3).
+    `findDewiredSignals.test.ts`가 registry의 emitterSymbol이 비-테스트 코드에서 실제 호출되는지
+    검증한다 — 호출자 없는 항목은 CI red ("de-wire").
 - [ ] **2. V/X dashboard** — DebugModal/wrangler tail/SSoT 어디서 시각화/관측 가능한지 명시.
 - [ ] **3. 의존 PR** — 이 PR이 작동하려면 머지 필요한 backend/device/infra PR 번호. 없으면 "N/A".
 - [ ] **4. 측정 plan** — 회귀 신호를 1주 안에 어떻게 측정할지(시나리오 / log query / 사용자 trip 캡처).
