@@ -499,16 +499,12 @@ export function useFusedNearestStation(
   /**
    * #1677 — silent push 건강 상태 (useSilentPushHealthCheck 출력).
    *
-   * false 시 `backendSsotAccepts` 강제 false — backend SSoT mirror tier를 cascade에서 제거.
-   * 기존 tier(wifi / positionTrain / fused / gps)가 자연 fallback.
-   *
-   * 미전달(undefined) = 기존 동작 유지(healthy로 간주).
-   * true 또는 undefined = `backendSsotAccepts` 판정에 영향 없음.
-   *
-   * 정책 정합:
-   * - 신규 폴링 추가 없음 — 기존 arrival/position 30s cycle 그대로.
-   * - FG 상태에서만 효과 — BG에서는 silentPushHealthy를 true로 유지(호출자 책임).
-   * - backendSsotAccepts=false이므로 backend mirror가 fresh여도 cascade 채택 안 함.
+   * #2261 (ADR-031 Phase 0) — `backendSsotAccepts`의 AND-gate에서 제거됨. receivedAt 기반
+   * freshness(FG position pull이 ~10s마다 backend 생존을 증명)가 이미 push 건강 여부와
+   * 무관하게 mirror 신뢰도를 보장하므로, silentPushHealthy=false + push 미도달(60s) +
+   * lastAdvanceAt stale(180s) 이중 조건이 지하·정지(non-advancing) trip에서 backend-ssot를
+   * 영구 미채택시키는 deadlock을 유발했다(RCA 2026-08-09, ADR-031). 파라미터 자체는 호출부
+   * 호환을 위해 유지 — 향후 BG 전용 게이트로 재도입 시 이 자리를 재사용한다.
    */
   silentPushHealthy?: boolean,
 ): UseFusedNearestStationReturn {
@@ -1152,15 +1148,20 @@ export function useFusedNearestStation(
     return findStationByName(backendSsotMirror.currentStationId);
   }, [backendSsotMirror, boardingLock]);
   const nowMsForSsot = Date.now();
+  // #2261 (ADR-031 Phase 0) — freshness를 `lastAdvanceAt`(backend가 실제 advance한 시각) 대신
+  // `receivedAt`(mirror가 device에 도달한 시각) 기준으로 재정의. lastAdvanceAt 기준은 지하·정지
+  // (non-advancing) trip에서 advance가 전혀 일어나지 않아 영구 stale에 빠지는 deadlock의 절반
+  // 원인이었다 — backend가 trip을 여전히 추적 중이라는 사실은 FG position pull(~10s cycle)이
+  // 응답을 받아 mirror를 갱신했다는 것 자체(receivedAt)로 이미 증명된다. 상한(180s)은 그대로
+  // 재사용 — 무한 stale 채택을 허용하지 않기 위해 동일 캡을 건다(RCA 2026-08-09, ADR-031).
   const ssotFresh =
     backendSsotMirror !== null &&
-    nowMsForSsot - backendSsotMirror.lastAdvanceAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
-  // #1677 — silent push 60s+ 미수신 시 backend SSoT mirror tier 강제 비활성.
-  // silentPushHealthy=false → backend가 silent push를 전달 못 하는 환경이므로
-  // mirror가 fresh여도 cascade에서 제거 → wifi/positionTrain/fused 등 device tier fallback.
-  // silentPushHealthy=undefined는 기존 동작 유지(healthy로 간주).
-  const backendSsotAccepts =
-    ssotStation !== null && ssotFresh && silentPushHealthy !== false;
+    nowMsForSsot - backendSsotMirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+  // #2261 (ADR-031 Phase 0) — silentPushHealthy AND-gate 제거. 위 receivedAt 기반 freshness가
+  // 이미 backend 생존 + pull 채널 정상 도달을 증명하므로, silent push 건강도와 별개로 채택한다.
+  // 기존 게이트(#1677)는 "push 60s 미수신 + advance 180s 미갱신"의 이중 조건이 지하·정지 trip을
+  // 영구 미채택시키는 deadlock을 유발했다 — 단일 조건(pull receivedAt 180s)으로 통합해 해소.
+  const backendSsotAccepts = ssotStation !== null && ssotFresh;
 
   // #1932 (Epic #1927 G2) — environment SSOT 단일화 + cascade 직전 산출.
   //

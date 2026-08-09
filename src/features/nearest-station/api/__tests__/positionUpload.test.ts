@@ -713,6 +713,39 @@ describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
     const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
     expect(stored).toBeNull();
   });
+
+  it('#2261 (ADR-031 Phase 0): response body에 full ssot(지하·정지, lockSuggestion 없음) → 그대로 mirror write', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (globalThis.fetch as jest.Mock).mockResolvedValue(
+      makeFetchResponse({
+        ok: true,
+        ssot: {
+          currentStationId: '용마산',
+          motionState: 'stationary',
+          lastAdvanceEvidence: 'arvlcd-arrived',
+          lastAdvanceAt: 1_699_999_000_000, // trip이 오래전에 advance한 이후 정지 — non-advancing.
+          passedStations: ['중곡'],
+        },
+      }),
+    );
+    await uploadPosition({
+      token: 'tok-full-ssot',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 0,
+      motion: 'stationary',
+    });
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored as string);
+    expect(parsed.currentStationId).toBe('용마산');
+    expect(parsed.motionState).toBe('stationary');
+    expect(parsed.lastAdvanceAt).toBe(1_699_999_000_000);
+    expect(parsed.passedStations).toEqual(['중곡']);
+    // receivedAt은 호출 시각(Date.now())으로 stamp — full ssot의 stale lastAdvanceAt과 별개로 fresh.
+    expect(typeof parsed.receivedAt).toBe('number');
+  });
 });
 
 describe('persistFromPositionResponse (#1534 S1 T9b)', () => {
@@ -770,5 +803,50 @@ describe('persistFromPositionResponse (#1534 S1 T9b)', () => {
     // originStationId 우선 (lockSuggestion.stationId '용마산' fallback X)
     expect(parsed.currentStationId).toBe('강변');
     expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+  });
+
+  describe('#2261 (ADR-031 Phase 0) — body.ssot 우선 채택', () => {
+    it('body.ssot 존재 → legacy 부분 합성 대신 그대로 채택 (motionState/lastAdvanceAt/passedStations 전체 forward)', async () => {
+      await persistFromPositionResponse(
+        {
+          // legacy 필드도 동시에 있어도 ssot가 우선.
+          originStationId: '무시될값',
+          ssot: {
+            currentStationId: '용마산',
+            motionState: 'stationary',
+            lastAdvanceEvidence: 'arvlcd-arrived',
+            lastAdvanceAt: 1_699_999_000_000,
+            passedStations: ['중곡'],
+            lockSuggestion: SUGGESTION,
+          },
+        },
+        1_700_000_010_000,
+      );
+      const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+      const parsed = JSON.parse(stored as string);
+      expect(parsed.currentStationId).toBe('용마산');
+      expect(parsed.motionState).toBe('stationary');
+      expect(parsed.lastAdvanceAt).toBe(1_699_999_000_000);
+      expect(parsed.passedStations).toEqual(['중곡']);
+      expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+      expect(parsed.receivedAt).toBe(1_700_000_010_000);
+    });
+
+    it('body.ssot.currentStationId 빈 문자열 → write skip (graceful)', async () => {
+      await persistFromPositionResponse(
+        {
+          ssot: {
+            currentStationId: '',
+            motionState: 'unknown',
+            lastAdvanceEvidence: 'seed-override',
+            lastAdvanceAt: 0,
+            passedStations: [],
+          },
+        },
+        1_700_000_010_000,
+      );
+      const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+      expect(stored).toBeNull();
+    });
   });
 });

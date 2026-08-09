@@ -65,7 +65,7 @@ import { updateSsotMotion } from './motionState';
 import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
-import { runScheduled } from './scheduled';
+import { runScheduled, toSilentPushSsot } from './scheduled';
 import * as Sentry from '@sentry/cloudflare';
 import {
   addValidateRejectBreadcrumb,
@@ -1541,6 +1541,12 @@ app.post('/position', async (c) => {
       ? { originStationId: ssot.currentStationId }
       : {}),
     ...(ssot?.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),
+    // #2261 (ADR-031 Phase 0) — full SSoT additive forward. 기존 originStationId/lockSuggestion
+    // 필드는 legacy 호환을 위해 유지, 본 필드는 device가 motionState/lastAdvanceAt/passedStations/
+    // alarmEvents/currentStationLine까지 mirror에 채택할 수 있게 하는 신규 채널이다. silent push
+    // payload와 동일 `toSilentPushSsot` 축소를 재사용해 두 transport가 같은 wire 형태를 공유한다
+    // (device backendSsotMirror는 어느 채널에서 와도 동일 schema).
+    ...(ssot ? { ssot: toSilentPushSsot(ssot) } : {}),
   });
 });
 

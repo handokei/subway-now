@@ -2254,6 +2254,71 @@ describe('POST /position (#819)', () => {
     });
   });
 
+  describe('#2261 (ADR-031 Phase 0) — response embed full ssot (additive)', () => {
+    const BASE_POS = {
+      token: 'tok-ssot',
+      lat: 1,
+      lng: 2,
+      accuracy: 5,
+      ts: 1234,
+      motion: 'walking' as const,
+    };
+
+    it('SSOT 미존재 → body.ssot 누락 (graceful, 기존 originStationId/lockSuggestion 동작과 동형)', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.ssot).toBeUndefined();
+    });
+
+    it('SSOT 존재 (lockless·정지, lockSuggestion/alarmEvents 없음) → body.ssot에 motionState/lastAdvanceAt/passedStations forward', async () => {
+      const env = makeKvEnv();
+      const { seedSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, BASE_POS.token, '용마산');
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.ssot).toMatchObject({
+        currentStationId: '용마산',
+        motionState: expect.any(String),
+        lastAdvanceEvidence: expect.any(String),
+        lastAdvanceAt: expect.any(Number),
+        passedStations: [],
+      });
+      // lockSuggestion 부재 시 wire 자연 누락 (toSilentPushSsot 기존 정책 재사용).
+      // alarmEvents는 seedSsot 기본값이 빈 배열이라 toSilentPushSsot가 그대로 forward.
+      expect((body.ssot as Record<string, unknown>).lockSuggestion).toBeUndefined();
+      expect((body.ssot as Record<string, unknown>).alarmEvents).toEqual([]);
+      // 기존 originStationId/lockSuggestion 필드는 회귀 없이 그대로 병존 (additive).
+      expect(body.originStationId).toBe('용마산');
+    });
+
+    it('SSOT + lockSuggestion → body.ssot.lockSuggestion도 forward (silent push payload와 동일 축소)', async () => {
+      const env = makeKvEnv();
+      const { seedSsot, setLockSuggestion, writeSsot } = await import('../tripPositionSsot');
+      const ssot = await seedSsot(env.TRIPS, BASE_POS.token, '용마산');
+      setLockSuggestion(ssot, {
+        stationId: '용마산',
+        trainCode: '7246',
+        lineId: '7',
+        confidence: 'high',
+        decidedAt: 1_700_000_000_000,
+      });
+      await writeSsot(env.TRIPS, ssot);
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect((body.ssot as Record<string, unknown>).lockSuggestion).toEqual({
+        stationId: '용마산',
+        trainCode: '7246',
+        lineId: '7',
+        confidence: 'high',
+        decidedAt: 1_700_000_000_000,
+      });
+    });
+  });
+
   // #2153 (리뷰 P1) — trip.promptGeoContext.originDistanceM/originAccuracyM은 device가
   // POST /trips 재등록할 때만 갱신되는 정적 스냅샷(useApnsTripRegistration.ts는 currentStation을
   // register effect deps에서 제외 — #703). "집에서 route 설정 → 재등록 트리거 없이 도보로 출발역
