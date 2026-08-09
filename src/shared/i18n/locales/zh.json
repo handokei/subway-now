@@ -210,6 +210,7 @@
   "navigation": {
     "start": "开始导航",
     "stop": "停止导航",
+    "end": "结束导航",
     "permissionPrompt": "开始导航需要位置权限"
   },
   "arrival": {
