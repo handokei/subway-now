@@ -43,6 +43,8 @@ const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
 // #2243 (ADR-029 Phase 1) — G6 kind skew / G2 value skew 관측 로거.
 const mockLogPushContractKindSkew = jest.fn();
 const mockLogPushContractValueSkew = jest.fn();
+// #2253 (ADR-029 Phase 5, G1) — 런타임 버전 스큐 관측 로거.
+const mockLogPushContractVersionSkew = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
   logSilentPushRescheduleReceived: (...args: unknown[]) =>
@@ -55,6 +57,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logCompanionAlarmFired: (...args: unknown[]) => mockLogCompanionAlarmFired(...args),
   logPushContractKindSkew: (...args: unknown[]) => mockLogPushContractKindSkew(...args),
   logPushContractValueSkew: (...args: unknown[]) => mockLogPushContractValueSkew(...args),
+  logPushContractVersionSkew: (...args: unknown[]) => mockLogPushContractVersionSkew(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
 }));
 
@@ -287,7 +290,11 @@ import {
 } from '../../../../shared/constants/storageKeys';
 // #2246 (ADR-029 Phase 2) — G6 property 테스트가 SSoT known-kind 집합과의 충돌 없는 임의 kind를
 // 생성하기 위해 참조.
-import { STATION_WAYPOINT_KINDS, CONTROL_PUSH_KINDS } from '../../../../shared/types/pushContract';
+import {
+  STATION_WAYPOINT_KINDS,
+  CONTROL_PUSH_KINDS,
+  PUSH_CONTRACT_VERSION,
+} from '../../../../shared/types/pushContract';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
@@ -911,6 +918,40 @@ describe('silentPushTask', () => {
           }),
         );
         expect(result).toMatchObject({ ssot: { passedStations: [] } });
+      });
+    });
+
+    describe('contractVersion (#2253, ADR-029 Phase 5 G1)', () => {
+      it('유효한 정수 contractVersion은 그대로 통과', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'transfer', contractVersion: 2 }),
+          ),
+        ).toMatchObject({ contractVersion: 2 });
+      });
+
+      it('구버전 backend(필드 미전달)는 undefined', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'transfer' }),
+          ),
+        ).toMatchObject({ contractVersion: undefined });
+      });
+
+      it('형식이 잘못된 값(문자열/0/음수/소수)은 undefined로 정규화', () => {
+        for (const bad of ['2', 0, -1, 1.5]) {
+          expect(
+            extractPayload(
+              bgTaskData({
+                nextWaypoint: 'A',
+                etaSeconds: 1,
+                phase: 'early',
+                kind: 'transfer',
+                contractVersion: bad,
+              }),
+            ),
+          ).toMatchObject({ contractVersion: undefined });
+        }
       });
     });
 
@@ -1657,6 +1698,44 @@ describe('silentPushTask', () => {
         await handleSilentPush({ data: bgTaskData({ trigger: 'other' }) });
         expect(mockLogPushContractKindSkew).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('#2253 (ADR-029 Phase 5, G1) — contractVersion 런타임 스큐', () => {
+      it('backend contractVersion > device 지원 버전 → skew 로그 적재 + 기존 kind는 fail-open 정상 처리(legacy-station-kind-ignored)', async () => {
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            nextWaypoint: '강남',
+            pushId: 'p-version-skew',
+            contractVersion: 99,
+          }),
+        );
+        expect(mockLogPushContractVersionSkew).toHaveBeenCalledWith({
+          deviceVersion: PUSH_CONTRACT_VERSION,
+          backendVersion: 99,
+          stationName: '강남',
+        });
+        // fail-open — 기존 kind 처리(legacy-station-kind-ignored skip)가 그대로 진행된다.
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-version-skew', 'skipped', 'legacy-station-kind-ignored'),
+        );
+      });
+
+      it('backend contractVersion === device 버전이면 skew 로그 없음', async () => {
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'early', contractVersion: PUSH_CONTRACT_VERSION }),
+        );
+        expect(mockLogPushContractVersionSkew).not.toHaveBeenCalled();
+      });
+
+      it('contractVersion 미전달(구버전 backend)이면 skew 로그 없음', async () => {
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
+        expect(mockLogPushContractVersionSkew).not.toHaveBeenCalled();
       });
     });
 

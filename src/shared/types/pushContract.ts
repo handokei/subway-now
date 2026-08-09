@@ -152,3 +152,35 @@ export function isValidEtaSeconds(value: unknown): value is number {
     value <= PUSH_ETA_SECONDS_MAX
   );
 }
+
+/**
+ * 런타임 버전 스큐 방어 (ADR-029 Phase 5 / G1, #2253) — SSoT.
+ *
+ * backend와 device는 이 파일(SSoT)을 각자 별도 빌드에 컴파일해 넣는다 — **같은 git SHA로 배포된
+ * 경우에만** 완전히 정합하다. App Store 심사 지연 등으로 device가 backend보다 낡은 빌드를
+ * 실행 중이면, 두 런타임이 별도로 배포됐기 때문에 컴파일 타임 exhaustive switch(Phase 0)로도
+ * 못 잡는 **런타임 스큐**가 발생한다(2026-08-09 dump `unk=5`의 실제 원인 중 하나로 추정).
+ *
+ * backend `apns.ts` `buildSilentPushData`가 매 standard silent push payload에 이 값을
+ * `contractVersion`으로 stamp하고, device `silentPushTask.ts`가 자신이 빌드된 시점의
+ * `PUSH_CONTRACT_VERSION`(같은 SSoT를 import한 값)과 비교한다. device 값보다 backend 값이 크면
+ * device가 낡은 것 — **skew 관측(P1 skew 로그 경로 재사용) + 기존 kind는 fail-open으로 정상
+ * 발사**(P1 G6 정책 재사용, ADR-029 A5). 발사를 막는 것은 A2(silent drop 금지) 취지에 반한다.
+ *
+ * **backward-compat 규칙(additive-only)**: 이 값을 올리는 것은 discriminator 집합/필수 필드
+ * semantics 자체가 바뀔 때만 — 신규 optional 필드 추가는 버전을 올리지 않는다. 값을 올리는 PR은
+ * backend가 **최소 2릴리스** 동안 구 device가 이해하는 kind/필드를 계속 발사할 수 있어야 한다
+ * (ADR-029 Phase 5 본문).
+ *
+ * **관측 범위(#2253 최초 구현)**: stamp/비교는 backend `buildSilentPushData`(standard silent
+ * push — station waypoint kind + unknown-kind fallback 경로 포함)에 한정된다. reschedule/
+ * trip-ended/boarding-prompt/sleep-alarm-companion 등 별도 control payload builder는 아직
+ * stamp하지 않는다 — 이번 dump(`unk=5`)의 원인이 standard 경로였기 때문에 그쪽부터 닫았다.
+ * control 채널까지 확장은 후속 스코프.
+ */
+export const PUSH_CONTRACT_VERSION = 1;
+
+/** `contractVersion` 값 형식 검증 — 1 이상 정수만 유효. */
+export function isValidContractVersion(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1;
+}

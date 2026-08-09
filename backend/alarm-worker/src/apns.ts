@@ -25,6 +25,7 @@ import {
   isPushAlarmPhase,
   isValidEtaSeconds,
   isValidStationIdentifier,
+  PUSH_CONTRACT_VERSION,
 } from '../../../src/shared/types/pushContract';
 
 /**
@@ -355,6 +356,10 @@ export function buildSilentPushData(payload: SilentPushPayload): Record<string, 
     kind: payload.kind,
     sentAt: payload.sentAt,
     pushId: payload.pushId,
+    // #2253 (ADR-029 Phase 5, G1) — 계약 버전 stamp. caller가 payload에 담지 않고 이 builder가
+    // 항상 현재 SSoT 값으로 stamp한다(발신 시점 코드가 곧 backend의 실제 계약 버전이므로). 구
+    // device는 이 필드를 모르면 무시(byte-level 호환) — 신 device만 skew 비교에 사용한다.
+    contractVersion: PUSH_CONTRACT_VERSION,
     // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex가 정의된 경우에만 wire.
     // 구 backend 호환을 위해 optional이라 undefined일 땐 JSON에서 자연 누락된다.
     ...(payload.hopIndex === undefined ? {} : { hopIndex: payload.hopIndex }),

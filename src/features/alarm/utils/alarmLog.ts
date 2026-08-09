@@ -377,7 +377,11 @@ export type AlarmLogReason =
   // #2243 (ADR-029 Phase 1, G2) — kind는 알려진 값인데 그 아래 값(phase/etaSeconds 등)이 도메인
   // semantics를 벗어난 drift(NaN etaSeconds, 상한 초과, 알 수 없는 phase 문자열 등)를 경계에서
   // 포착해 적재. 처리 자체는 기존과 동일하게 skip(발사 안 함) — 관측만 추가.
-  | 'push-contract-skew-value-drift';
+  | 'push-contract-skew-value-drift'
+  // #2253 (ADR-029 Phase 5, G1) — backend가 device보다 앞선 `contractVersion`을 stamp한 payload를
+  // 수신한 1건(런타임 버전 스큐). P1 G6 fail-open 정책 재사용 — 발사는 막지 않는다(기존 kind 처리가
+  // 이 skip과 별개로 정상 진행), 이 reason은 순수 관측용.
+  | 'push-contract-skew-version-old';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -1185,6 +1189,29 @@ export function logPushContractValueSkew(input: {
     reason: 'push-contract-skew-value-drift',
     stationName: input.stationName,
     pushKindRaw: `${input.field}=${JSON.stringify(input.rawValue)}`,
+  });
+}
+
+/**
+ * push 계약 런타임 버전 스큐 1건 적재 (#2253, ADR-029 Phase 5 G1).
+ *
+ * backend가 device보다 앞선 `contractVersion`을 stamp한 payload를 수신했을 때 관측용으로만
+ * 적재한다 — 처리(발사)는 fail-open으로 기존 kind 로직이 그대로 진행하므로 outcome은 'received'
+ * (관측일 뿐 자체 skip/fire 판정이 아님). `pushKindRaw`에 두 버전을 `device=X backend=Y` 형식으로
+ * 남겨 어떤 배포 창에서 스큐가 발생했는지 바로 진단 가능하게 한다.
+ */
+export function logPushContractVersionSkew(input: {
+  deviceVersion: number;
+  backendVersion: number;
+  stationName?: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'push-contract-skew',
+    outcome: 'received',
+    reason: 'push-contract-skew-version-old',
+    stationName: input.stationName,
+    pushKindRaw: `device=${input.deviceVersion} backend=${input.backendVersion}`,
   });
 }
 
