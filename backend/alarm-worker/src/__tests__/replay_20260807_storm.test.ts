@@ -132,7 +132,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
     vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
-    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
+    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
     stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
     staleLockFireSkipped: 0,

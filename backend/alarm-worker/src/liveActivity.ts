@@ -25,7 +25,12 @@ import { deleteProgress } from './progress';
 import { logPushFailure } from './pushFailureLog';
 import { computeMultiHopContext } from './tripMultiHop';
 import { deleteSsot } from './tripPositionSsot';
-import { deleteDeviceTripIndexIfCurrent, deleteTrip, resolveTripDeviceToken } from './trips';
+import {
+  cleanupPendingPushesForToken,
+  deleteDeviceTripIndexIfCurrent,
+  deleteTrip,
+  resolveTripDeviceToken,
+} from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
 
@@ -319,6 +324,20 @@ export async function cleanupTripWithLa(
   // #705 — trip을 폐기할 때 progress entry도 함께 제거. TTL이 자연 만료를 보장하지만
   // 즉시 cleanup해야 새 동일 token trip 등록 시 stale shiftedCount가 끼지 않는다.
   await deleteProgress(env.TRIPS, trip.token);
+  // #2230 — trip 종료 시 잔여 PENDING_PUSHES entry도 함께 정리. arvlCd fire/lockless intermediate
+  // push 등이 남긴 pending entry가 trip 삭제 후에도 KV에 잔존하면, 이미 죽은 trip에 대해 다음
+  // alert fallback cron이 무의미한 재발사를 시도할 수 있다(RCA #2230 follow-up B: destination
+  // cleanup 경로에서 PENDING_PUSHES 미정리). KV 미바인딩/실패는 graceful — cleanup 흐름 차단 X.
+  if (env.PENDING_PUSHES) {
+    try {
+      await cleanupPendingPushesForToken(env.PENDING_PUSHES, resolveTripDeviceToken(trip));
+    } catch (e) {
+      log('pending-pushes cleanup failed', {
+        token: trip.token.slice(0, 8),
+        error: String(e),
+      });
+    }
+  }
   // #1701 — SSoT mirror row(`ssot:<token>`)도 함께 제거. trip TTL(최대 9h+)이 자연 만료를
   // 보장하지만, 같은 token 새 trip 등록 시 lazy-seed가 `ssot === null` 조건이라 옛 SSoT가
   // 살아있으면 새 trip의 stationName이 아닌 옛 trip stationName이 그대로 device로 forward되어
