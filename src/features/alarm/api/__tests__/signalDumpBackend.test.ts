@@ -32,6 +32,7 @@ function entry(ts: number, kind: RawSignalEntry['kind'] = 'cycle'): RawSignalEnt
     accelPattern: null,
     cellular: null,
     subsurface: null,
+    barometerHpa: null,
     arvlCd: null,
     line: null,
     dir: null,

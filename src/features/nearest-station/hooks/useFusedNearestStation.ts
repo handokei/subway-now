@@ -29,6 +29,9 @@ import { useRouteProgress } from '../../route/hooks/useRouteProgress';
 import { usePositionStability } from './usePositionStability';
 import { useFusedStationDetection } from './useFusedStationDetection';
 import type { BarometerSignal } from '../../../shared/hooks/useBarometer';
+// #2241 (ADR-030 §Replay harness backbone P0-1) — 기압계 원시 hPa. ambient ring buffer module
+// (useBarometer가 push, 여기서는 read-only snapshot). subsurface(파생 boolean)와 별 채널.
+import { getBarometerReadings } from '../../../shared/utils/barometerState';
 import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
@@ -2177,8 +2180,19 @@ export function useFusedNearestStation(
           lng: gps.userLocation.lng,
           accM: gps.accuracyMeters,
           speedMps: gps.speedMps,
+          // #2241 (ADR-030 §Replay harness backbone P0-1) — GPS 수신 타임스탬프.
+          fixAtMs: gps.lastFixAtMs,
         }
       : null;
+    // #2241 (ADR-030 §Replay harness backbone P0-1) — 기압계 원시 hPa 시계열.
+    // getBarometerReadings()는 60s ring buffer ambient module(barometerState.ts) — 최신 reading만
+    // 뽑아 cycle당 1개씩 rawSignalBuffer에 적재하면(전체 buffer는 300 cycle 누적) 사후 replay가
+    // dP/dt 임계 자체를 재현 가능해진다.
+    const barometerReadings = getBarometerReadings();
+    const barometerHpaForDump =
+      barometerReadings.length > 0
+        ? barometerReadings[barometerReadings.length - 1].pressureHpa
+        : null;
     // #1678 — accelerometerPattern이 concrete(unknown 아님)이면 우선 채택.
     // 'automotive' / 'walking' / 'stationary'는 raw signal dump에 직접 반영.
     // 'unknown' (60s window 미수렴 / 미지원)이면 boolean motionStationary fallback.
@@ -2216,6 +2230,7 @@ export function useFusedNearestStation(
         accelPattern: accelerometerPattern,
         cellular: cellularForDump,
         subsurface: barometerSubsurface ?? null,
+        barometerHpa: barometerHpaForDump,
         arvlCd: arvlCdForDump,
         line: null,
         dir: null,
@@ -2234,6 +2249,7 @@ export function useFusedNearestStation(
         accelPattern: accelerometerPattern,
         cellular: cellularForDump,
         subsurface: barometerSubsurface ?? null,
+        barometerHpa: barometerHpaForDump,
         arvlCd: arvlCdForDump,
         line: result.station.line,
         dir: null,
@@ -2254,6 +2270,7 @@ export function useFusedNearestStation(
       accelPattern: accelerometerPattern,
       cellular: cellularForDump,
       subsurface: barometerSubsurface ?? null,
+      barometerHpa: barometerHpaForDump,
       arvlCd: arvlCdForDump,
       line: result?.station.line ?? null,
       dir: null,

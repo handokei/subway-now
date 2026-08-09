@@ -30,6 +30,13 @@ export interface RawSignalGps {
   lng: number;
   accM: number | null;
   speedMps: number | null;
+  /**
+   * #2241 (Epic #1927 G4 Phase 0, ADR-030 §Replay harness backbone P0-1) — GPS 수신
+   * 타임스탬프(`gps.lastFixAtMs`). `entry.ts`(cycle 발생 시각)와 분리 노출 — 두 값의 간극이
+   * "stale GPS fix가 새 cycle에 재사용됨"의 direct evidence(지하 stale-GPS over-accept 재현 전제).
+   * null이면 fix 미수신(cold start / GPS 완전 유실).
+   */
+  fixAtMs: number | null;
 }
 
 /**
@@ -53,6 +60,13 @@ export interface RawSignalEntry {
   /** #1859 — CTRadioAccessTechnology 스냅샷 + 환경 vote. null이면 미지원(Android/jest/old 엔트리). */
   cellular: RawSignalCellular | null;
   subsurface: boolean | null;
+  /**
+   * #2241 (Epic #1927 G4 Phase 0, ADR-030 §Replay harness backbone P0-1) — 기압계 원시 절대값
+   * (hPa). `subsurface`(dP/dt 파생 boolean)와 별도 채널 — replay harness가 barometer 검출기
+   * 자체(임계 튜닝 재현)까지 커버하려면 raw 값이 전제. `getBarometerReadings()` 최신 reading의
+   * `pressureHpa`. 미지원/reading 없음이면 null.
+   */
+  barometerHpa: number | null;
   arvlCd: number | null;
   line: string | null;
   dir: RawSignalDir | null;
