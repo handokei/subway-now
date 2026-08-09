@@ -861,4 +861,12 @@ export interface Env {
    *   + 90일 lifecycle 룰은 Cloudflare Dashboard에서 운영자가 수동 설정.
    */
   TELEMETRY_R2?: R2Bucket;
+  /**
+   * Per-trip Durable Object namespace — `TripDO` (#2264, Epic #2260, ADR-031 Phase 1).
+   * `POST /trips`가 `tripDoFlag.ts` 게이트(flag on)일 때만 dual-write(shadow seed)한다.
+   * Phase 1은 cron이 여전히 authoritative — 본 binding은 fire에 관여하지 않는다.
+   * 미바인딩 시(로컬/개발 환경) dual-write 경로는 graceful no-op.
+   * 생성: `wrangler.toml`의 `[[durable_objects.bindings]]` + `[[migrations]]` 참조.
+   */
+  TRIP_DO?: DurableObjectNamespace;
 }

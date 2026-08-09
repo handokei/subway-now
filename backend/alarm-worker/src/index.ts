@@ -59,6 +59,7 @@ import {
   KILL_SWITCH_DEFAULT,
   setKillSwitch,
 } from './killSwitch';
+import { getTripDoFlag, TRIP_DO_FLAG_DEFAULT } from './tripDoFlag';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -547,6 +548,56 @@ function parseQueryNumber(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * `POST /trips` dual-write — TripDO shadow seed (#2264, Epic #2260, ADR-031 Phase 1).
+ *
+ * flag off(default) 또는 `env.TRIP_DO` 미바인딩(개발/테스트 환경)이면 완전 no-op —
+ * 기존 KV write 경로는 이 함수 호출 전에 이미 끝나 있으므로 영향 없음.
+ *
+ * flag on이면:
+ *  1. 기존 DO row를 읽어 신규 `trip`과 다르면(divergence) 로그로 관측 — Phase 1은 cron이
+ *     여전히 authoritative이므로 여기서는 관측만 하고 fire/판정에 관여하지 않는다.
+ *  2. 신규 `trip`을 DO에 seed(shadow write). cron/KV 경로는 이 결과와 무관하게 그대로 진행.
+ *
+ * DO 호출 실패(네트워크/eviction 등)는 삼켜서 로그만 남긴다 — trip 등록 응답을 절대 차단하지
+ * 않는다(archFlag/killSwitch와 동일 graceful 원칙).
+ */
+export async function dualWriteTripDo(env: Env, trip: Trip): Promise<void> {
+  const flag = await getTripDoFlag(env.TRIPS).catch(() => TRIP_DO_FLAG_DEFAULT);
+  if (flag !== 'on' || !env.TRIP_DO) return;
+
+  try {
+    const id = env.TRIP_DO.idFromName(trip.token);
+    const stub = env.TRIP_DO.get(id);
+
+    const priorRes = await stub.fetch(new Request('https://trip-do/trip'));
+    const prior = (await priorRes.json()) as { trip: Trip | null };
+    if (prior.trip !== null && JSON.stringify(prior.trip) !== JSON.stringify(trip)) {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-do: shadow-compare divergence (#2264)',
+          tokenPrefix: tokenPrefix(trip.token),
+        }),
+      );
+    }
+
+    await stub.fetch(
+      new Request('https://trip-do/trip', {
+        method: 'POST',
+        body: JSON.stringify(trip),
+      }),
+    );
+  } catch (e) {
+    console.log(
+      JSON.stringify({
+        msg: 'trip-do: dual-write failed (graceful, #2264)',
+        tokenPrefix: tokenPrefix(trip.token),
+        error: String(e),
+      }),
+    );
+  }
+}
+
 app.post('/trips', async (c) => {
   let body: unknown;
   try {
@@ -953,6 +1004,10 @@ app.post('/trips', async (c) => {
     reason: trip.boardingLock ? 'lock-active' : 'lockless',
     hopIndex: trip.waypoints[0]?.hopIndex,
   });
+
+  // #2264 (Epic #2260, ADR-031 Phase 1) — TripDO shadow dual-write. flag off(default)면
+  // no-op. KV write(putTrip)는 이미 위에서 완료됐으므로 실패해도 trip 등록에 영향 없다.
+  await dualWriteTripDo(c.env, trip);
 
   // #1897 (RC-5) — KV에 박힌 권위 apnsEnv 를 device로 echo. device 는 이를 stamp 해 다음
   // register 시 build env 대신 송신 → backend self-heal(envCorrected) 발동을 0에 수렴.
@@ -2705,3 +2760,10 @@ export const handler = {
  * SENTRY_DSN secret 등록 즉시 자동 활성 (redeploy 필요 없음 — wrangler secret은 실시간 반영).
  */
 export default Sentry.withSentry(sentryOptions, handler);
+
+/**
+ * #2264 (Epic #2260, ADR-031 Phase 1) — `TripDO` class export. wrangler는 `main`
+ * module(본 파일)에서 `wrangler.toml`의 `durable_objects.bindings.class_name = "TripDO"`와
+ * 이름이 일치하는 top-level export를 찾는다. 재-export만 — 구현은 `tripDO.ts` 참조.
+ */
+export { TripDO } from './tripDO';
