@@ -58,10 +58,11 @@
 ### Phase 4 — 계약 변경 프로세스 강제
 - push kind 추가/은퇴 PR은 SSoT + exhaustive + 검증 + 테스트를 **한 PR에 동반**(PR 템플릿 + CI 게이트). 분리 금지.
 
-### Phase 5 — 런타임 버전 스큐 방어 (G1, 가장 큰 빈틈)
+### Phase 5 — 런타임 버전 스큐 방어 (G1, 가장 큰 빈틈) — 구현 완료 (#2253)
 - **문제**: SSoT는 *같은 git SHA*에서만 정합. device(App Store 심사 지연)와 backend(즉시 배포)는 따로 나가므로 **배포된 런타임끼리는 여전히 스큐** 가능(이번 `unk=5`의 실제 원인 = 빌드 스큐 = 런타임 스큐 증상).
-- payload에 `contractVersion` 필드 도입 → 수신 측이 자기 지원 버전과 비교해 스큐를 명시 관측.
-- **backward-compat 규칙**: backend는 구 device kind/필드를 **최소 N릴리스(제안 2)** 유지. 새 kind는 additive-only(기존 값 의미 변경 금지). Phase 4 프로세스 게이트가 이를 CI에서 강제.
+- `pushContract.ts`에 `PUSH_CONTRACT_VERSION`(SSoT, 현재 값 1) 도입. backend `apns.ts` `buildSilentPushData`가 매 standard silent push payload에 `contractVersion`으로 stamp하고, device `silentPushTask.ts`가 자신이 빌드된 시점의 `PUSH_CONTRACT_VERSION`과 비교한다.
+- device < backend(즉 `payload.contractVersion > PUSH_CONTRACT_VERSION`)면 `logPushContractVersionSkew`(P1 skew 로그 경로 재사용, source=`push-contract-skew`)로 명시 관측한 뒤, **기존 kind 처리를 막지 않는다**(fail-open, P1 G6 정책 재사용) — 알림 누락이 회귀보다 크다는 원칙 유지.
+- **backward-compat 규칙(확정)**: 계약 버전을 올리는 것은 discriminator 집합/필수 필드 semantics 자체가 바뀔 때만 — 신규 optional 필드 추가(additive-only)는 버전을 올리지 않는다. 버전을 올리는 PR은 backend가 **최소 2릴리스** 동안 구 device가 이해하는 kind/필드를 계속 발사할 수 있어야 한다. Phase 4 프로세스 게이트가 이를 CI에서 강제(추후).
 
 ---
 

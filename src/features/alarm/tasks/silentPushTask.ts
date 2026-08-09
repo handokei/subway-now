@@ -52,6 +52,7 @@ import {
   logCompanionAlarmFired,
   logPushContractKindSkew,
   logPushContractValueSkew,
+  logPushContractVersionSkew,
   type AlarmLogReason,
 } from '../utils/alarmLog';
 import { fireCompanionAlarm, readSleepMode } from '../utils/alarmLocalAuthority';
@@ -94,7 +95,9 @@ import {
   isPushAlarmPhase,
   isSleepAlarmTargetKind,
   isStationWaypointKind,
+  isValidContractVersion,
   isValidEtaSeconds,
+  PUSH_CONTRACT_VERSION,
   type ControlPushKind,
   type SleepAlarmTargetKind,
   type StationWaypointKind,
@@ -116,6 +119,14 @@ export interface SilentPushPayload {
    * 관측용 — 정상 kind거나 필드 자체가 없으면 undefined.
    */
   kindRaw?: string;
+  /**
+   * #2253 (ADR-029 Phase 5, G1) — backend가 stamp한 push 계약 버전(`pushContract.
+   * PUSH_CONTRACT_VERSION`). 구 backend는 필드 자체를 보내지 않아 undefined — 이 경우 스큐
+   * 비교를 자연 skip한다(구 backend는 device보다 앞설 수 없으므로 안전). 값 형식이 잘못된
+   * 경우(`isValidContractVersion` 실패)도 undefined로 정규화 — 파싱 시점 계약 스큐가 아니라
+   * 버전 스큐 판정 로직 자체를 오염시키지 않기 위함.
+   */
+  contractVersion?: number;
   /**
    * 백엔드 발사 시점 epoch ms (#478 측정 인프라).
    * 종료 조건: 신 백엔드 배포 후 required로 승격.
@@ -535,6 +546,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     etaSeconds,
     phase,
     kind,
+    contractVersion,
     sentAt,
     pushId,
     hopIndex,
@@ -570,6 +582,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     phase,
     kind: validKind,
     kindRaw,
+    contractVersion: isValidContractVersion(contractVersion) ? contractVersion : undefined,
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
     hopIndex: validHopIndex(hopIndex),
@@ -1201,6 +1214,29 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       receivedAt,
       rawKind: payload.kindRaw,
     });
+
+    // #2253 (ADR-029 Phase 5, G1) — backend가 device보다 앞선 contractVersion을 stamp했으면 런타임
+    // 버전 스큐(App Store 배포 지연 등으로 device가 낡은 빌드를 실행 중). fail-open — 여기서
+    // 발사를 막거나 되돌리지 않는다. 관측만 남기고 아래 기존 kind 처리(P1 G6 등)가 그대로 진행된다.
+    // 구 backend(contractVersion 미전달)나 device가 최신/앞선 경우는 skew가 아니다.
+    if (
+      payload.contractVersion !== undefined &&
+      payload.contractVersion > PUSH_CONTRACT_VERSION
+    ) {
+      logPushContractVersionSkew({
+        deviceVersion: PUSH_CONTRACT_VERSION,
+        backendVersion: payload.contractVersion,
+        stationName: payload.nextWaypoint,
+      });
+      addDomainBreadcrumb('push', 'contract-skew', {
+        category: 'version',
+        deviceVersion: PUSH_CONTRACT_VERSION,
+        backendVersion: payload.contractVersion,
+      });
+      logger.warn(
+        `push contract skew (version, fail-open): device=${PUSH_CONTRACT_VERSION} backend=${payload.contractVersion} station=${payload.nextWaypoint}`,
+      );
+    }
 
     // #1438 (E5) — backend → device lock release sync. payload.lockReleasedReason이 있으면
     // backend가 trip.boardingLock을 release했다는 신호 → 로컬 store도 같이 release한다. fire/skip

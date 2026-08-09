@@ -98,6 +98,7 @@ import {
   countFiredAlarms,
   logPushContractKindSkew,
   logPushContractValueSkew,
+  logPushContractVersionSkew,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -2441,6 +2442,19 @@ describe('alarmLog', () => {
       expect(saved[0].outcome).toBe('suppressed');
       expect(saved[0].reason).toBe('push-contract-skew-value-drift');
       expect(saved[0].pushKindRaw).toBe('etaSeconds=-5');
+      expect(saved[0].stationName).toBe('강남');
+    });
+
+    it('#2253 (ADR-029 Phase 5, G1): logPushContractVersionSkew이 version skew entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logPushContractVersionSkew({ deviceVersion: 1, backendVersion: 2, stationName: '강남' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('push-contract-skew');
+      expect(saved[0].outcome).toBe('received');
+      expect(saved[0].reason).toBe('push-contract-skew-version-old');
+      expect(saved[0].pushKindRaw).toBe('device=1 backend=2');
       expect(saved[0].stationName).toBe('강남');
     });
 

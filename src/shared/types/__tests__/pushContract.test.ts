@@ -5,12 +5,14 @@ import {
   STATION_WAYPOINT_KINDS,
   PUSH_ALARM_PHASES,
   PUSH_ETA_SECONDS_MAX,
+  PUSH_CONTRACT_VERSION,
   UNKNOWN_KIND_POLICY,
   assertNever,
   isControlPushKind,
   isPushAlarmPhase,
   isSleepAlarmTargetKind,
   isStationWaypointKind,
+  isValidContractVersion,
   isValidEtaSeconds,
   isValidStationIdentifier,
   type StationWaypointKind,
@@ -137,5 +139,23 @@ describe('pushContract G2/G6 (#2243, ADR-029 Phase 1)', () => {
     expect(isValidEtaSeconds(NaN)).toBe(false);
     expect(isValidEtaSeconds(Infinity)).toBe(false);
     expect(isValidEtaSeconds('120')).toBe(false);
+  });
+});
+
+describe('pushContract PUSH_CONTRACT_VERSION / isValidContractVersion (#2253, ADR-029 Phase 5 G1)', () => {
+  it('PUSH_CONTRACT_VERSION은 1 이상 정수 SSoT 값이다', () => {
+    expect(Number.isInteger(PUSH_CONTRACT_VERSION)).toBe(true);
+    expect(PUSH_CONTRACT_VERSION).toBeGreaterThanOrEqual(1);
+  });
+
+  it('isValidContractVersion — 1 이상 정수만 통과', () => {
+    expect(isValidContractVersion(1)).toBe(true);
+    expect(isValidContractVersion(2)).toBe(true);
+    expect(isValidContractVersion(0)).toBe(false);
+    expect(isValidContractVersion(-1)).toBe(false);
+    expect(isValidContractVersion(1.5)).toBe(false);
+    expect(isValidContractVersion(NaN)).toBe(false);
+    expect(isValidContractVersion('1')).toBe(false);
+    expect(isValidContractVersion(undefined)).toBe(false);
   });
 });

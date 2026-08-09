@@ -16,6 +16,7 @@ import {
   type SilentPushPayload,
 } from '../apns';
 import { TRIP_ENDED_ALERT_BODY, TRIP_ENDED_ALERT_TITLE } from '../alertContent';
+import { PUSH_CONTRACT_VERSION } from '../../../../src/shared/types/pushContract';
 
 let privateKeyPem = '';
 
@@ -1700,5 +1701,24 @@ describe('buildSilentPushData contract skew (#2243, ADR-029 Phase 1 G2)', () => 
       expect.stringContaining('fields=nextWaypoint,etaSeconds,phase'),
     );
     warnSpy.mockRestore();
+  });
+});
+
+// #2253 (ADR-029 Phase 5, G1) — buildSilentPushData가 항상 현재 계약 버전을 stamp한다.
+describe('buildSilentPushData contractVersion stamp (#2253, ADR-029 Phase 5 G1)', () => {
+  function validPayload(): SilentPushPayload {
+    return {
+      nextWaypoint: '강남',
+      etaSeconds: 60,
+      phase: 'early',
+      kind: 'destination',
+      sentAt: 1_700_000_000_000,
+      pushId: 'push-uuid-version',
+    };
+  }
+
+  it('caller가 contractVersion을 전달하지 않아도 SSoT 현재 값을 stamp한다', () => {
+    const data = buildSilentPushData(validPayload());
+    expect(data.contractVersion).toBe(PUSH_CONTRACT_VERSION);
   });
 });
