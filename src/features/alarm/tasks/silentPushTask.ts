@@ -98,6 +98,12 @@ export interface SilentPushPayload {
   /** Waypoint 종류 (#416). transfer/destination/intermediate. 구 백엔드 호환 위해 optional. */
   kind?: 'transfer' | 'destination' | 'intermediate';
   /**
+   * #2231 — `kind`가 알려진 값(transfer/destination/intermediate)과 매치되지 않을 때 backend가
+   * 실제로 보낸 원본 kind 문자열. 계약 스큐(backend가 새/변경된 kind를 보냈는데 device가 모르는 값)
+   * 관측용 — 정상 kind거나 필드 자체가 없으면 undefined.
+   */
+  kindRaw?: string;
+  /**
    * 백엔드 발사 시점 epoch ms (#478 측정 인프라).
    * 종료 조건: 신 백엔드 배포 후 required로 승격.
    */
@@ -493,11 +499,16 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   if (phase !== 'early' && phase !== 'imminent') return null;
   const validKind =
     kind === 'transfer' || kind === 'destination' || kind === 'intermediate' ? kind : undefined;
+  // #2231 — kind가 존재하지만(빈 문자열 제외) 알려진 값과 매치되지 않는 경우만 raw로 보존한다.
+  // kind 자체가 없는(구버전 backend 단순 미지정) 경우는 계약 스큐가 아니므로 kindRaw를 남기지 않는다.
+  const kindRaw =
+    typeof kind === 'string' && kind.length > 0 && validKind === undefined ? kind : undefined;
   return {
     nextWaypoint,
     etaSeconds,
     phase,
     kind: validKind,
+    kindRaw,
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
     hopIndex: validHopIndex(hopIndex),
@@ -1082,6 +1093,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       phaseId: payload.phase,
       sentAt: payload.sentAt,
       receivedAt,
+      rawKind: payload.kindRaw,
     });
 
     // #1438 (E5) — backend → device lock release sync. payload.lockReleasedReason이 있으면

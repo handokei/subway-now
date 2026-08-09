@@ -48,6 +48,7 @@ import {
   countAutoLockReasonsByWindow,
   countBoardingPromptByWindow,
   countGateReasons,
+  computeSilentPushReach,
   countSilentPushKindBreakdown,
   countSilentPushOutcomes,
   formatFusionPickerTierDistribution,
@@ -312,6 +313,9 @@ function formatLogLine(entry: AlarmLogEntry): string {
   ];
   if (entry.reason) parts.push(entry.reason);
   if (entry.kind) parts.push(entry.kind);
+  // #2231 — kind가 표준 station kind로 매핑되지 않을 때 backend가 실제로 보낸 원본 값을
+  // raw 로그에 보존 — 계약 스큐(device가 모르는 신규 kind) 발생 즉시 관측 가능하게 한다.
+  if (entry.pushKindRaw) parts.push(`rawKind=${entry.pushKindRaw}`);
   if (entry.phaseId) parts.push(entry.phaseId);
   if (entry.stationName) parts.push(entry.stationName);
   if (entry.location) {
@@ -443,8 +447,10 @@ function silentPushDiagRows(
   // received가 안 늘어남"을 한눈에 보고 측정할 수 있게 한다.
   const lowPowerValue = lowPowerMode ? 'ON' : 'off';
   // #1683 — received kind 분포. backend fired vs device received 갭 분석용.
+  // #2231 — reschedule/trip-ended(알려진 non-station 제어 push)를 unknown과 분리 표기 —
+  // unk는 이제 진짜 계약 스큐(device가 모르는 kind)만 남는다.
   const kindBreakdown = countSilentPushKindBreakdown(logs);
-  const receivedKindValue = `stn=${kindBreakdown['station-passed']} xfer=${kindBreakdown.transfer} dst=${kindBreakdown.destination} unk=${kindBreakdown.unknown}`;
+  const receivedKindValue = `stn=${kindBreakdown['station-passed']} xfer=${kindBreakdown.transfer} dst=${kindBreakdown.destination} resched=${kindBreakdown.reschedule} tripEnd=${kindBreakdown.tripEnded} unk=${kindBreakdown.unknown}`;
   return [
     { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
     { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
@@ -694,7 +700,7 @@ interface BuildDumpArgs {
    *
    * 노출 metric:
    *  - alarmAccuracy (local): tripGroundTruth store `responses` accurate/answered 비율
-   *  - silentPushReach (local): `countSilentPushOutcomes(logs)` fired/received
+   *  - silentPushReach (local): `computeSilentPushReach(logs)` visibleReceived/totalReceived (#2231)
    *
    * 미전달 시 (n/a) — DebugModalInner 이 store snapshot 을 주입하지 않은 케이스 graceful.
    */
@@ -927,17 +933,19 @@ function buildFeatureFlagSection(args: BuildDumpArgs): string[] {
  *
  * 노출 metric:
  *  - alarmAccuracy (local): tripGroundTruth store `responses` accurate/answered 비율
- *  - silentPushReach (local): `countSilentPushOutcomes(logs)` fired/received
+ *  - silentPushReach (local): `computeSilentPushReach(logs)` visibleReceived/totalReceived (#2231)
  *
  * 미전달 시 (n/a) — DebugModalInner 가 store snapshot 을 주입하지 않은 호출자 graceful.
  */
 function buildOperationDashboardSection(args: BuildDumpArgs): string[] {
   const op = args.operationDashboard;
   if (!op) return ['(n/a)'];
-  const silentCounts = countSilentPushOutcomes(args.logs);
+  // #2231 — #2064 이후 device 로컬 발사(fired)는 구조적으로 no-op이라 fired/received 비율은
+  // 항상 0인 죽은 지표였다. visible station kind로 도달한 수 / 전체 수신 수로 재정의.
+  const reach = computeSilentPushReach(args.logs);
   return [
     `alarmAccuracy(local)=${op.groundTruthAccurateCount}/${op.groundTruthAnsweredCount}`,
-    `silentPushReach(local)=${silentCounts.fired}/${silentCounts.received}`,
+    `silentPushReach(local)=${reach.visibleReceived}/${reach.totalReceived}`,
     '(backend metrics: locklessMiss/boardableMiss/accelPattern/pushLatency/laPush — see Modal UI, not dumped)',
   ];
 }

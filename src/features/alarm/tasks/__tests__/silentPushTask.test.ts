@@ -491,6 +491,28 @@ describe('silentPushTask', () => {
       ).toMatchObject({ kind: undefined });
     });
 
+    // #2231 — kind가 알려진 값과 매치되지 않을 때(계약 스큐) 원본 문자열을 kindRaw로 보존해
+    // device 관측(alarmLog pushKindRaw)까지 흘려보낸다.
+    it('kind가 알 수 없는 값이면 kindRaw에 원본 문자열 보존 (#2231)', () => {
+      expect(
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'foo' })),
+      ).toMatchObject({ kind: undefined, kindRaw: 'foo' });
+    });
+
+    it('kind가 알려진 값이면 kindRaw는 undefined (계약 스큐 아님, #2231)', () => {
+      expect(
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'transfer' }),
+        ),
+      ).toMatchObject({ kindRaw: undefined });
+    });
+
+    it('kind가 미지정이면 kindRaw도 undefined (구버전 backend, 계약 스큐 아님, #2231)', () => {
+      expect(
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
+      ).toMatchObject({ kind: undefined, kindRaw: undefined });
+    });
+
     it('sentAt이 number면 그대로 전달 (#478)', () => {
       expect(
         extractPayload(
@@ -1513,6 +1535,23 @@ describe('silentPushTask', () => {
       const arg = mockLogSilentPushReceived.mock.calls[0][0];
       expect(arg.sentAt).toBe(1_700_000_000_000);
       expect(typeof arg.receivedAt).toBe('number');
+    });
+
+    // #2231 — kind가 계약 스큐(알려지지 않은 값)면 원본 문자열이 logSilentPushReceived의
+    // rawKind로 전달되어 alarmLog pushKindRaw에 보존된다.
+    it('kind가 알 수 없는 값이면 logSilentPushReceived에 rawKind 전달 (#2231)', async () => {
+      await handleSilentPush(payload({ kind: 'future-kind', phase: 'early' }));
+      expect(mockLogSilentPushReceived).toHaveBeenCalledTimes(1);
+      const arg = mockLogSilentPushReceived.mock.calls[0][0];
+      expect(arg.kind).toBeUndefined();
+      expect(arg.rawKind).toBe('future-kind');
+    });
+
+    it('kind가 알려진 값이면 rawKind는 undefined로 전달 (#2231)', async () => {
+      await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
+      expect(mockLogSilentPushReceived).toHaveBeenCalledTimes(1);
+      const arg = mockLogSilentPushReceived.mock.calls[0][0];
+      expect(arg.rawKind).toBeUndefined();
     });
 
     // #2045 (Signal 4) — 유효 payload 진입 시점에 last-received stamp 갱신 (kind 무관).

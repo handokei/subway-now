@@ -15,6 +15,16 @@ import type { Station } from '../../../shared/types/station';
 // Buffer 크기는 ALARM_LOG_BUFFER_SIZE 상수로 분리 — 늘리려면 한 곳만 수정.
 export const ALARM_LOG_BUFFER_SIZE = 200;
 
+/**
+ * #2231 — `pushKindRaw` non-station discriminator 리터럴. 생산자(`logSilentPushRescheduleReceived`/
+ * `logSilentPushTripEndedReceived`)와 소비자(`countSilentPushKindBreakdown`)가 이 상수를 공유해,
+ * 한쪽만 문자열을 바꾸면 조용히 `unknown`(계약 스큐) 버킷으로 오분류되는 회귀를 차단한다.
+ */
+const PUSH_KIND_RAW = {
+  RESCHEDULE: 'reschedule',
+  TRIP_ENDED: 'trip-ended',
+} as const;
+
 // #735 — appendAlarmLog 배치 정책.
 // 기존: 매 호출마다 AsyncStorage RMW(get → parse → push → stringify → set) → JS thread 점유 (10-50ms × N).
 // 변경: in-memory pending에 push 후 debounce + max-delay로 1회 RMW 일괄 처리.
@@ -391,6 +401,13 @@ export interface AlarmLogEntry {
   reason?: AlarmLogReason;
   stationName?: string;
   kind?: AlarmLogKind;
+  /**
+   * #2231 — silent-push-received 엔트리 중 표준 station kind(station-passed/transfer/destination)로
+   * 매핑되지 않는 discriminator를 device 관측용으로 보존한다.
+   * - 'reschedule' / 'trip-ended': 알려진 non-station 제어 push (계약 스큐 아님).
+   * - 그 외 문자열: backend가 보낸, device가 모르는 kind 원본 값 — 진짜 계약 스큐.
+   */
+  pushKindRaw?: string;
   phaseId?: AlarmPhaseId;
   location?: AlarmLogLocation;
   // #372 — 사전 예약 알람 stamp. 모두 optional (구버전/일부 caller 호환).
@@ -993,6 +1010,13 @@ export function logSilentPushReceived(input: {
   phaseId: AlarmPhaseId;
   sentAt: number | undefined;
   receivedAt: number;
+  /**
+   * #2231 — kind가 알려진 값(station-passed/transfer/destination/intermediate)과 매치되지 않을 때
+   * backend가 실제로 보낸 원본 kind 문자열. 계약 스큐(backend가 새/변경된 kind를 보냈는데 device가
+   * 모르는 값) 발생 시 즉시 관측 가능하도록 unknown 버킷과 별개로 엔트리에 보존한다.
+   * kind가 정상 매핑되면(undefined 포함 — 구버전 backend의 단순 미지정) 전달하지 않는다.
+   */
+  rawKind?: string;
 }): void {
   // 'intermediate'는 station-passed에 매핑 (#416 silent push intermediate 흐름).
   // kind 미상(구 백엔드)이면 kind 필드 자체를 비워둔다.
@@ -1007,6 +1031,7 @@ export function logSilentPushReceived(input: {
     phaseId: input.phaseId,
     sentAt: input.sentAt,
     receivedAt: input.receivedAt,
+    pushKindRaw: mappedKind === undefined ? input.rawKind : undefined,
   });
 }
 
@@ -1032,6 +1057,9 @@ export function logSilentPushRescheduleReceived(input: {
     stationName: input.nextStation,
     sentAt: input.sentAt,
     receivedAt: input.receivedAt,
+    // #2231 — reschedule은 station kind가 없는 제어용 push. unknown(=진짜 계약 스큐)과
+    // 분리 집계하기 위한 discriminator.
+    pushKindRaw: PUSH_KIND_RAW.RESCHEDULE,
   });
 }
 
@@ -1054,6 +1082,9 @@ export function logSilentPushTripEndedReceived(input: {
     stationName: `trip-ended:${input.reason}`,
     sentAt: input.sentAt,
     receivedAt: input.receivedAt,
+    // #2231 — trip-ended는 station kind가 없는 제어용 push. unknown(=진짜 계약 스큐)과
+    // 분리 집계하기 위한 discriminator.
+    pushKindRaw: PUSH_KIND_RAW.TRIP_ENDED,
   });
 }
 
@@ -1321,15 +1352,20 @@ export function countFiredAlarms(entries: readonly AlarmLogEntry[]): number {
 
 /**
  * #1683 — silent push received 엔트리를 kind별로 집계.
+ * #2231 — reschedule/trip-ended(알려진 non-station 제어 push discriminator)를 unknown과
+ * 분리 집계. unknown은 진짜 계약 스큐(device가 모르는 kind)만 남는다.
  *
  * `silent-push-received` 소스의 엔트리만 추출해 kind 분포를 반환.
- * kind가 없는(구버전 backend / 미지정) 엔트리는 `unknown` 버킷에 포함.
+ * kind가 station kind로도, reschedule/trip-ended로도 식별되지 않는(구버전 backend 단순 미지정
+ * 포함) 엔트리만 `unknown` 버킷에 포함.
  * DebugModal Silent Push 섹션에서 "received by kind" 분포로 시각화한다.
  */
 export interface SilentPushKindBreakdown {
   'station-passed': number;
   transfer: number;
   destination: number;
+  reschedule: number;
+  tripEnded: number;
   unknown: number;
 }
 
@@ -1340,18 +1376,55 @@ export function countSilentPushKindBreakdown(
     'station-passed': 0,
     transfer: 0,
     destination: 0,
+    reschedule: 0,
+    tripEnded: 0,
     unknown: 0,
   };
   for (const entry of entries) {
     if (entry.source !== 'silent-push-received') continue;
-    const { kind } = entry;
+    const { kind, pushKindRaw } = entry;
     if (kind === 'station-passed' || kind === 'transfer' || kind === 'destination') {
       counts[kind] += 1;
+    } else if (pushKindRaw === PUSH_KIND_RAW.RESCHEDULE) {
+      counts.reschedule += 1;
+    } else if (pushKindRaw === PUSH_KIND_RAW.TRIP_ENDED) {
+      counts.tripEnded += 1;
     } else {
       counts.unknown += 1;
     }
   }
   return counts;
+}
+
+/**
+ * #2231 — silentPushReach(local) 재정의.
+ *
+ * #2064(Phase 1-device)로 device 로컬 발사(`silent-push-fired` source)가 구조적으로 no-op
+ * (`legacy-station-kind-ignored`)가 되어, 기존 fired/received 비율은 분자가 항상 0인 죽은 지표였다.
+ *
+ * 현 아키텍처(#2063/#2092)에서 매역 알림은 backend visible alert push가 `content-available`을
+ * 동봉해 보내고, device는 이를 `silent-push-received`(kind=station-passed/transfer/destination)로
+ * 수신한다 — 즉 "받은 station kind" 자체가 이제 "visible push가 device에 도달했다"는 신호다.
+ * reschedule/trip-ended 등 제어용 data-only push는 사용자에게 보이지 않으므로 분모(전체 수신)에는
+ * 포함하되 분자(visible 도달)에서는 제외한다.
+ *
+ * - visibleReceived: 사용자에게 실제로 노출되는 station 알림 kind로 도달한 silent push 수.
+ * - totalReceived:   `silent-push-received` 전체(제어용 push 포함) — device가 수신한 모든 silent data push.
+ */
+export interface SilentPushReachCounts {
+  visibleReceived: number;
+  totalReceived: number;
+}
+
+export function computeSilentPushReach(
+  entries: readonly AlarmLogEntry[],
+): SilentPushReachCounts {
+  const breakdown = countSilentPushKindBreakdown(entries);
+  const { received } = countSilentPushOutcomes(entries);
+  return {
+    visibleReceived: breakdown['station-passed'] + breakdown.transfer + breakdown.destination,
+    totalReceived: received,
+  };
 }
 
 export function logSuppressedGate(

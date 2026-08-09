@@ -73,6 +73,7 @@ import {
   countGateReasons,
   countSilentPushKindBreakdown,
   countSilentPushOutcomes,
+  computeSilentPushReach,
   summarizeAlarmLogCounters,
   countAlarmLogReasonsByWindow,
   lastNReasons,
@@ -1694,6 +1695,40 @@ describe('alarmLog', () => {
       expect(saved[0].receivedAt).toBe(1_700_000_001_000);
     });
 
+    // #2231 — kind가 알려진 값과 매치되지 않을 때(계약 스큐) rawKind를 pushKindRaw로 보존.
+    it('logSilentPushReceived: kind 매핑 실패 + rawKind 전달 시 pushKindRaw 적재 (#2231)', async () => {
+      logSilentPushReceived({
+        stationName: '강남',
+        kind: undefined,
+        phaseId: 'early',
+        sentAt: undefined,
+        receivedAt: 1_700_000_001_000,
+        rawKind: 'future-kind',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0].kind).toBeUndefined();
+      expect(saved[0].pushKindRaw).toBe('future-kind');
+    });
+
+    it('logSilentPushReceived: kind가 정상 매핑되면 rawKind가 전달돼도 pushKindRaw 미적재 (#2231)', async () => {
+      logSilentPushReceived({
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'early',
+        sentAt: undefined,
+        receivedAt: 1_700_000_001_000,
+        rawKind: 'destination',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0].pushKindRaw).toBeUndefined();
+    });
+
     // #725 — reschedule silent push 수신 적재. source는 동일(silent-push-received)이라
     // DebugModal `lastReceivedAt`이 자동 갱신. kind/phaseId는 reschedule 의미상 미적용.
     it('logSilentPushRescheduleReceived: source=silent-push-received, kind/phaseId 미포함, sentAt/receivedAt 적재 (#725)', async () => {
@@ -1716,6 +1751,8 @@ describe('alarmLog', () => {
       });
       expect(saved[0].kind).toBeUndefined();
       expect(saved[0].phaseId).toBeUndefined();
+      // #2231 — reschedule discriminator 보존 (unknown 버킷과 분리 집계용).
+      expect(saved[0].pushKindRaw).toBe('reschedule');
     });
 
     it('logSilentPushRescheduleReceived: sentAt 누락이면 undefined로 적재 (#725)', async () => {
@@ -1754,6 +1791,8 @@ describe('alarmLog', () => {
         expect(saved[0].sentAt).toBe(sentAt);
         expect(saved[0].kind).toBeUndefined();
         expect(saved[0].phaseId).toBeUndefined();
+        // #2231 — trip-ended discriminator 보존 (unknown 버킷과 분리 집계용).
+        expect(saved[0].pushKindRaw).toBe('trip-ended');
       },
     );
 
@@ -1891,6 +1930,8 @@ describe('alarmLog', () => {
         'station-passed': 0,
         transfer: 0,
         destination: 0,
+        reschedule: 0,
+        tripEnded: 0,
         unknown: 0,
       });
     });
@@ -1907,6 +1948,8 @@ describe('alarmLog', () => {
         'station-passed': 2,
         transfer: 1,
         destination: 1,
+        reschedule: 0,
+        tripEnded: 0,
         unknown: 0,
       });
     });
@@ -1920,6 +1963,8 @@ describe('alarmLog', () => {
         'station-passed': 0,
         transfer: 1,
         destination: 0,
+        reschedule: 0,
+        tripEnded: 0,
         unknown: 1,
       });
     });
@@ -1935,8 +1980,83 @@ describe('alarmLog', () => {
         'station-passed': 0,
         transfer: 0,
         destination: 1,
+        reschedule: 0,
+        tripEnded: 0,
         unknown: 0,
       });
+    });
+
+    // #2231 — reschedule/trip-ended는 알려진 non-station 제어 push discriminator. unknown과
+    // 분리 집계해 unknown이 진짜 계약 스큐(device가 모르는 kind)만 남도록 한다.
+    it('pushKindRaw=reschedule 엔트리는 reschedule 버킷으로 집계 (unknown 아님)', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'reschedule' }),
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'reschedule' }),
+        makeEntry({ source: 'silent-push-received', kind: 'transfer' }),
+      ];
+      expect(countSilentPushKindBreakdown(entries)).toEqual({
+        'station-passed': 0,
+        transfer: 1,
+        destination: 0,
+        reschedule: 2,
+        tripEnded: 0,
+        unknown: 0,
+      });
+    });
+
+    it('pushKindRaw=trip-ended 엔트리는 tripEnded 버킷으로 집계 (unknown 아님)', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'trip-ended' }),
+      ];
+      expect(countSilentPushKindBreakdown(entries)).toEqual({
+        'station-passed': 0,
+        transfer: 0,
+        destination: 0,
+        reschedule: 0,
+        tripEnded: 1,
+        unknown: 0,
+      });
+    });
+
+    it('알 수 없는 pushKindRaw(계약 스큐)는 unknown 버킷으로 집계된다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'future-kind' }),
+      ];
+      expect(countSilentPushKindBreakdown(entries)).toEqual({
+        'station-passed': 0,
+        transfer: 0,
+        destination: 0,
+        reschedule: 0,
+        tripEnded: 0,
+        unknown: 1,
+      });
+    });
+  });
+
+  describe('computeSilentPushReach (#2231)', () => {
+    it('엔트리가 없으면 0/0', () => {
+      expect(computeSilentPushReach([])).toEqual({ visibleReceived: 0, totalReceived: 0 });
+    });
+
+    it('visibleReceived는 station-passed/transfer/destination 합, totalReceived는 전체 received', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: 'station-passed' }),
+        makeEntry({ source: 'silent-push-received', kind: 'transfer' }),
+        makeEntry({ source: 'silent-push-received', kind: 'destination' }),
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'reschedule' }),
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'trip-ended' }),
+        makeEntry({ source: 'silent-push-received', kind: undefined, pushKindRaw: 'future-kind' }),
+      ];
+      // visible station kind 3건 / 전체 수신 6건 — reschedule/trip-ended/unknown은 분모에만 포함.
+      expect(computeSilentPushReach(entries)).toEqual({ visibleReceived: 3, totalReceived: 6 });
+    });
+
+    it('silent-push-fired source는 received 집계에 포함되지 않는다 (#2064 no-op 이후 죽은 지표 배제)', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received', kind: 'transfer' }),
+        makeEntry({ source: 'silent-push-fired', kind: 'transfer' }),
+      ];
+      expect(computeSilentPushReach(entries)).toEqual({ visibleReceived: 1, totalReceived: 1 });
     });
   });
 
