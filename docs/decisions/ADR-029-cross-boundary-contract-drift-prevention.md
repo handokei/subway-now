@@ -55,8 +55,9 @@
 ### Phase 3 — de-wire lint
 - 채널/이벤트 은퇴 시 그에 묶인 지표/소비자 orphan 감지 룰(`scripts/check-orphan-exports.sh` 확장 or 신규). `silentPushReach` 같은 죽은 지표가 lint fail.
 
-### Phase 4 — 계약 변경 프로세스 강제
+### Phase 4 — 계약 변경 프로세스 강제 (구현: #2252)
 - push kind 추가/은퇴 PR은 SSoT + exhaustive + 검증 + 테스트를 **한 PR에 동반**(PR 템플릿 + CI 게이트). 분리 금지.
+- 구현: `.github/PULL_REQUEST_TEMPLATE.md` "계약 변경 체크리스트" 섹션 + `.github/workflows/contract-change-reminder.yml`(`pushContract.ts` 변경 시 리뷰어 상기 코멘트, soft gate — hard-fail 없음).
 
 ### Phase 5 — 런타임 버전 스큐 방어 (G1, 가장 큰 빈틈)
 - **문제**: SSoT는 *같은 git SHA*에서만 정합. device(App Store 심사 지연)와 backend(즉시 배포)는 따로 나가므로 **배포된 런타임끼리는 여전히 스큐** 가능(이번 `unk=5`의 실제 원인 = 빌드 스큐 = 런타임 스큐 증상).
