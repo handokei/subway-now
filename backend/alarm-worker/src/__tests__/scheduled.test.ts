@@ -21,6 +21,7 @@ import {
   BACKEND_TRIP_LIFECYCLE_FORCE_END_MS,
   DESTINATION_GPS_CROSS_CHECK_MAX_M,
   DESTINATION_GPS_STALE_THRESHOLD_MS,
+  DESTINATION_REACH_BACKSTOP_MS,
   evaluateDestinationCrossCheck,
   recordDestinationCrossCheck,
   arvlCdFireKey,
@@ -55,6 +56,7 @@ import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTt
 import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip } from '../trips';
+import { pendingKey, putPending } from '../pendingPushes';
 import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -158,7 +160,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
     vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
-    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
+    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
     stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
     staleLockFireSkipped: 0,
@@ -1291,6 +1293,49 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       generatePushId: () => 'p2',
     });
     expect(stats.pushed).toBe(1);
+  });
+
+  // #2230 — per-station once dedup. 같은 (token, station)이 여러 cron cycle에 걸쳐 delta ≥ 15s로
+  // 계속 드리프트해도(정상적인 ETA 관측 변동) 두 번째 이후 cycle은 발사되지 않아야 한다.
+  // 2026-08-09 실기기 dump: destination ETA가 매 60s cron마다 15s+ 드리프트해 6분간 6회 반복 발사.
+  it('does not fire reschedule push again for the same station across multiple cron cycles (#2230)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    // cycle 1 — 최초 발사 (baseline 없음).
+    const stats1 = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'cyc1',
+    });
+    expect(stats1.pushed).toBe(1);
+    // cycle 2 — 같은 station(중곡)에 delta +30s (임계 15s 이상) 이지만 dedup TTL 내이므로 skip.
+    const stats2 = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 150)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW + 60_000,
+      generatePushId: () => 'cyc2',
+    });
+    expect(stats2.pushed).toBe(0);
+    expect(stats2.rescheduleDedupSkipped).toBe(1);
+    // cycle 3 — 또 한 번, 여전히 TTL 내(dedup 지속).
+    const stats3 = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 180)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW + 120_000,
+      generatePushId: () => 'cyc3',
+    });
+    expect(stats3.pushed).toBe(0);
+    expect(stats3.rescheduleDedupSkipped).toBe(1);
+    // 전체 3 cycle에 걸쳐 APNs reschedule push는 정확히 1회만 발사.
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to realtimePosition when trainCode not in arrivals', async () => {
@@ -10100,7 +10145,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
       vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
       vanishFallbackMotionGateBlocked: 0,
-      cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
+      cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0,
       realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
       // #1828 Phase 5 — station-level arrivals polling.
       stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
@@ -10485,6 +10530,45 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
     expect(stats.destinationCrossCheck.gpsFar).toBe(0);
   });
 
+  // #2230 (follow-up B) — destination cleanup 시 잔여 PENDING_PUSHES entry도 정리돼야 한다.
+  // 그렇지 않으면 이미 죽은 trip에 대해 alert fallback cron이 무의미한 재발사를 시도할 수 있다.
+  it('clears PENDING_PUSHES entries for the device token on destination cleanup (#2230)', async () => {
+    const kv = new InMemoryKV();
+    const pending = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('user-pending-cleanup-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        { lat: 37.549, lng: 126.9138, accuracy: 10, ts: NOW - 10_000, motion: 'automotive' },
+      ]),
+    );
+    // 잔여 pending entry 시뮬레이션 — arvlCd fire/lockless intermediate 등이 남긴 것.
+    await putPending(pending as unknown as KVNamespace, {
+      pushId: 'stale-pending-1',
+      token: trip.token,
+      alarmKey: 'imminent:합정',
+      sentAt: NOW - 30_000,
+      stationName: '합정',
+      kind: 'destination',
+      phase: 'imminent',
+      etaSeconds: 0,
+      apnsEnv: 'sandbox',
+    });
+    expect(await pending.get(pendingKey('stale-pending-1'))).not.toBeNull();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv, pending), {
+      seoul: makeHapjeongArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // trip 삭제 + pending entry도 함께 삭제.
+    expect(await kv.get(`trip:${trip.token}`)).toBeNull();
+    expect(await pending.get(pendingKey('stale-pending-1'))).toBeNull();
+  });
+
   /**
    * Stale GPS (>5min) → conservative cleanup. backend가 device GPS에 종속되면 안 됨.
    */
@@ -10610,6 +10694,93 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
     // trip 보존 — KV에 잔존.
     expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
     expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+  });
+
+  // #2230 — destination-reached 짧은 backstop. gps-far 보류가 무기한(9h force-end까지)
+  // 잔존하던 회귀(2026-08-09 실기기 dump)를 T분(DESTINATION_REACH_BACKSTOP_MS) 내로 단축한다.
+  describe('#2230 destination-reached short backstop (gps-far persisted)', () => {
+    /** 신촌 부근 GPS — 합정에서 ~1.3km, gps-far 트리거용. */
+    function seedFarGps(kv: InMemoryKV, token: string, ts: number) {
+      return kv.put(
+        `pos:${token}`,
+        JSON.stringify([
+          { lat: 37.5552, lng: 126.9368, accuracy: 15, ts, motion: 'automotive' },
+        ]),
+      );
+    }
+
+    it('does not force-cleanup before DESTINATION_REACH_BACKSTOP_MS elapses (first gps-far cycle stamps anchor only)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeHapjeongDestTrip('backstop-first-cycle-tok');
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedFarGps(kv, trip.token, NOW - 30_000);
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeHapjeongArrivedSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      // trip 보존 — anchor만 stamp, force-cleanup 미발동.
+      const stored = JSON.parse((await kv.get(`trip:${trip.token}`)) as string) as Trip;
+      expect(stored.destinationImminentFirstAt).toBe(NOW);
+      expect(stats.destinationBackstopForceEnded).toBe(0);
+    });
+
+    it('does not force-cleanup when elapsed since anchor is just under the threshold', async () => {
+      const kv = new InMemoryKV();
+      const anchorAt = NOW - (DESTINATION_REACH_BACKSTOP_MS - 1_000);
+      const trip = makeHapjeongDestTrip('backstop-under-tok');
+      trip.destinationImminentFirstAt = anchorAt;
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedFarGps(kv, trip.token, NOW - 30_000);
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeHapjeongArrivedSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
+      expect(stats.destinationBackstopForceEnded).toBe(0);
+      // anchor 보존 — 재stamp되지 않아야 다음 cycle의 경과 시간 판단이 정확.
+      const stored = JSON.parse((await kv.get(`trip:${trip.token}`)) as string) as Trip;
+      expect(stored.destinationImminentFirstAt).toBe(anchorAt);
+    });
+
+    it('force-cleans up via cleanupTripWithLa once DESTINATION_REACH_BACKSTOP_MS elapses, even though gps-far persists', async () => {
+      const kv = new InMemoryKV();
+      const anchorAt = NOW - DESTINATION_REACH_BACKSTOP_MS;
+      const trip = makeHapjeongDestTrip('backstop-elapsed-tok');
+      trip.destinationImminentFirstAt = anchorAt;
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedFarGps(kv, trip.token, NOW - 30_000);
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeHapjeongArrivedSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      // trip 삭제됨 — gps-far cross-check 자체는 여전히 'gps-far'였지만 backstop이 강제 종료.
+      expect(await kv.get(`trip:${trip.token}`)).toBeNull();
+      expect(stats.destinationBackstopForceEnded).toBe(1);
+      expect(stats.destinationCrossCheck.gpsFar).toBe(1);
+      // cleanupTripWithLa('destination-arrived') 경로 — trip-ended push 발사 확인.
+      const calls = fetchImpl.mock.calls as unknown as [string, RequestInit][];
+      const tripEndedCalls = calls.filter((c) => {
+        try {
+          const body = JSON.parse(c[1]?.body as string) as { data?: { reason?: string } };
+          return body?.data?.reason === 'destination-arrived';
+        } catch {
+          return false;
+        }
+      });
+      expect(tripEndedCalls.length).toBeGreaterThan(0);
+    });
   });
 });
 

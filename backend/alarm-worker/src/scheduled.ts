@@ -118,6 +118,7 @@ import {
   stampHeartbeat,
 } from './cronJitterAggregate';
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
+import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -253,6 +254,19 @@ export const BACKEND_TRIP_LIFECYCLE_FORCE_END_MS = 9 * 60 * 60 * 1000;
  */
 export const DESTINATION_GPS_CROSS_CHECK_MAX_M = 500;
 export const DESTINATION_GPS_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * #2230 — destination-reached 짧은 backstop.
+ *
+ * 배경: gps-far cross-check(#1707)가 destination advance를 무기한 보류하면(trip 보존 의도)
+ * `BACKEND_TRIP_LIFECYCLE_FORCE_END_MS`(9h)까지 trip이 잔존해 그 사이 매 cron 사이클
+ * destination imminent 평가가 반복된다(2026-08-09 실기기 dump). 9h force-end 자체는 다른
+ * 케이스(Seoul outage / lockless 정적 등)의 안전망이라 유지하되, destination 도달 신호가
+ * 최초 관측된 시각(`trip.destinationImminentFirstAt`) 기준 이 임계를 넘으면 gps-far 보류
+ * 상태라도 강제 cleanup한다. 9h보다 훨씬 짧게 — 15분(사용자가 실제 하차 후 GPS 갱신이
+ * 없거나 backend cross-check가 계속 어긋나는 경우를 위한 상한).
+ */
+export const DESTINATION_REACH_BACKSTOP_MS = 15 * 60 * 1000;
 
 /** #1707 destination GPS cross-check 결과. log/stats에 1:1로 매핑. */
 export type DestinationCrossCheckResult =
@@ -750,6 +764,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   rescheduleFallbackNoSsot: number;
   /**
+   * #2230 — `maybeReschedulePush` per-station once dedup으로 억제된 발사 누적 횟수.
+   * 같은 (token, station)에 TTL(5분) 내 이미 reschedule push를 발사한 경우 재발사를 skip한다.
+   * destination ETA가 매 cron마다 15s+ 드리프트해 60s마다 무한 반복 발사하던 회귀
+   * (2026-08-09 실기기 dump: 불광 도착 후 6분간 6회)를 닫는 카운터.
+   */
+  rescheduleDedupSkipped: number;
+  /**
    * #1614 Phase A (S4 #1537) — cron 진입부 self-poll realtimePosition fetch 횟수.
    * 활성 trip line union에 대해 Seoul API를 1회 호출(KV cache miss). 호선당 30s TTL.
    * positionTrainAgreement strongCB wire의 입력 단(端) 카운터.
@@ -859,6 +880,13 @@ export interface ScheduledStats extends LiveActivityStats {
     noGps: number;
     stationUnknown: number;
   };
+  /**
+   * #2230 — gps-far cross-check로 destination advance가 보류된 채 `DESTINATION_REACH_BACKSTOP_MS`
+   * (15분)를 초과해 강제 cleanup된 누적 횟수. 9h force-end(`lifecycleForceEnded`)보다 훨씬 짧은
+   * 시간 내에 발동하는 별도 카운터 — 정상 운영에서 0에 가까워야 한다(gps-far가 다음 cycle에
+   * 자연 해소되는 것이 정상 경로).
+   */
+  destinationBackstopForceEnded: number;
   /**
    * #2073 (Issue A) — 이번 tick에 pending/retry push entry가 존재할 가능성이 있는지.
    * `병합 listTrips 결과가 비어있음 AND 직전 tick 근방 fire/retry 기록 없음`일 때만 false —
@@ -1048,6 +1076,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #1559 (T6) — reschedule push motion 게이트 차단/fallback 누적.
     rescheduleBlockedMotion: 0,
     rescheduleFallbackNoSsot: 0,
+    // #2230 — reschedule push per-station once dedup 차단 누적.
+    rescheduleDedupSkipped: 0,
     // #1614 Phase A (S4) — backend self-poll realtimePosition stats.
     realtimePositionFetch: 0,
     selfPollCacheHit: 0,
@@ -1083,6 +1113,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       noGps: 0,
       stationUnknown: 0,
     },
+    // #2230 — gps-far 보류 destination advance의 짧은 backstop force-cleanup 누적.
+    destinationBackstopForceEnded: 0,
     // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
@@ -3618,12 +3650,34 @@ export async function advanceBoardingLockWaypoint(
       result: crossCheck,
     });
     if (crossCheck === 'gps-far') {
+      // #2230 — destination 도달이 최초로 관측된 시각 anchor. 이미 stamp돼 있으면 보존
+      // (매 cycle 재stamp하면 backstop이 끝없이 밀려 9h force-end와 다를 바 없어진다).
+      if (trip.destinationImminentFirstAt === undefined) {
+        trip.destinationImminentFirstAt = now;
+      }
+      const backstopElapsedMs = now - trip.destinationImminentFirstAt;
+      if (backstopElapsedMs >= DESTINATION_REACH_BACKSTOP_MS) {
+        // #2230 — gps-far 보류가 짧은 backstop을 초과 — 9h force-end보다 훨씬 짧게 강제 cleanup.
+        // gps-far cross-check(#1707) 자체(trip 보존 의도)는 유지 — 상한 시간만 단축한다.
+        stats.destinationBackstopForceEnded += 1;
+        log('boarding-lock: destination backstop force-cleanup (gps-far persisted)', {
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+          kind: waypoint.kind,
+          backstopElapsedMs,
+        });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+        await deleteSsot(env.TRIPS, trip.token);
+        return;
+      }
       // trip 보존 — advance 자체를 abort. trip.waypoints 미변동 → 다음 cycle 재평가 진입.
-      // 9h 도달 시 `tripLifecyclePhase`의 force-end 가 자연 cleanup (legacy 안전망).
+      // anchor stamp(신규 stamp된 경우)를 persist해 다음 cycle이 경과 시간을 정확히 판단하게 한다.
+      await putTrip(env.TRIPS, trip);
       log('boarding-lock: cleanup deferred (gps-far)', {
         token: trip.token.slice(0, 8),
         station: waypoint.stationName,
         kind: waypoint.kind,
+        backstopElapsedMs,
       });
       return;
     }
@@ -3940,6 +3994,18 @@ export async function maybeReschedulePush(
     return { cleanedUp: false };
   }
 
+  // #2230 — per-station once dedup. 위 임계(15s)만으로는 destination ETA가 매 cron(60s)마다
+  // 15s+ 드리프트하는 정상적인 관측 변동을 매번 "새 발사"로 취급해 무한 반복한다
+  // (2026-08-09 실기기 dump: 불광 도착 후 6분간 6회). 같은 (token, station)은 TTL 동안 1회만.
+  if (await hasRescheduleFired(env.TRIPS, trip.token, waypoint.stationName)) {
+    log('reschedule push: dedup-skip (already fired for station)', {
+      token: trip.token.slice(0, 8),
+      nextStation: waypoint.stationName,
+    });
+    stats.rescheduleDedupSkipped += 1;
+    return { cleanedUp: false };
+  }
+
   const pushId = generatePushId();
   log('reschedule push', {
     token: trip.token.slice(0, 8),
@@ -3996,6 +4062,9 @@ export async function maybeReschedulePush(
     stats.silentPushFiredByKind.reschedule += 1;
     trip.lastTrackedArrivalEpoch = newArrivalEpoch;
     dirty = true;
+    // #2230 — 발사 직후 per-station dedup marker stamp. 다음 cron부터 TTL 동안 같은 station
+    // reschedule는 dedup-skip으로 억제된다.
+    await markRescheduleFired(env.TRIPS, trip.token, waypoint.stationName);
   } else {
     stats.errors += 1;
     log('reschedule push failed', {

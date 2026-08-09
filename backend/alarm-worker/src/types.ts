@@ -306,6 +306,21 @@ export interface Trip {
    * 근접 게이트가 이미 발사를 차단하므로 창을 보수적으로 연장하는 효과가 없다.
    */
   originProximityAt?: number;
+  /**
+   * #2230 — destination(또는 마지막 intermediate = effective destination) 도착 advance가 최초로
+   * 평가된 시각(epoch ms). `advanceBoardingLockWaypoint`의 cleanup-advance 분기(gps-far
+   * cross-check 대상) 진입 시점에 최초 1회만 stamp된다.
+   *
+   * 배경(2026-08-09 실기기 dump RCA): gps-far cross-check(#1707)가 destination advance를
+   * 무기한 보류하면(trip 보존 의도) 종전엔 9h force-end까지 trip이 살아남았다. 본 필드로
+   * "destination 도달 신호가 처음 관측된 시각"을 anchor해, T분(짧은 backstop, 9h force-end와
+   * 별개) 경과 시 gps-far 보류 상태라도 강제 cleanup한다.
+   *
+   * 정상 종료(within/stale-gps/no-gps/station-unknown)로 즉시 cleanup되는 trip은 이 필드가
+   * 참조되기 전에 삭제되므로 무관. gps-far가 반복되지 않으면(다음 cycle에 within 등으로 해소)
+   * 자연스럽게 trip이 삭제되며 이 필드도 함께 사라진다.
+   */
+  destinationImminentFirstAt?: number;
 }
 
 /**
