@@ -1,8 +1,7 @@
 /* eslint-disable import/no-restricted-paths --
- * #2210 — Cross-feature orchestration: setAlarmEvent가 sleepMode(settings)와 trip-active
- * (route destination) 상태를 함께 게이트해야 한다. 비취침 + trip 종료 상태의 stale 알람
- * (BG write → FG loadAlarmEvent replay, inApp notification writer)를 단일 진입점에서 억제.
- * useDestinationStore가 이미 이 슬라이스를 역참조(alarm 클리어)하는 것과 대칭되는 orchestration.
+ * #2210 / #2258 — Cross-feature orchestration: setAlarmEvent가 sleepMode(settings) 상태를
+ * 게이트해야 한다. 알람 비주얼(AlarmOverlay)은 취침모드 전용 — BG write → FG loadAlarmEvent
+ * replay, inApp notification writer 두 경로 모두 단일 진입점에서 억제.
  */
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -15,7 +14,6 @@ import {
   type DismissSilenceState,
 } from '../utils/dismissSilenceStorage';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
-import { useDestinationStore } from '../../route/store/useDestinationStore';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = (): void => {};
@@ -54,14 +52,14 @@ export const useAlarmEventStore = create<AlarmEventState>((set, get) => ({
   alarmEvent: null,
   dismissSilence: null,
 
-  // #2210 — sleepMode + trip-active 중앙 게이트. BG write(backgroundLocationTask) → FG
+  // #2210 / #2258 — sleepMode 중앙 게이트. BG write(backgroundLocationTask) → FG
   // loadAlarmEvent replay와 inApp writer(notificationRouter) 두 경로 모두 이 함수를 거치므로
-  // 여기서 억제하면 두 경로 모두 상속받는다. 비취침(sleepMode=false) + trip 종료(destination=null)
-  // 상태의 stale 알람만 억제 — 취침 알람과 활성 trip 중 알람은 그대로 통과시킨다.
+  // 여기서 억제하면 두 경로 모두 상속받는다. 알람 비주얼(AlarmOverlay)은 취침모드 전용 —
+  // 활성 trip 여부와 무관하게 비취침(sleepMode=false)이면 항상 억제한다. 알람 소리/TTS/companion
+  // (alarmLocalAuthority.ts)은 이미 별도로 취침 전용이며, 상시 route 표시는 이 게이트와 무관.
   setAlarmEvent: (event: AlarmEvent) => {
     const { sleepMode } = useSettingsStore.getState();
-    const tripActive = useDestinationStore.getState().destination !== null;
-    if (!sleepMode && !tripActive) {
+    if (!sleepMode) {
       return;
     }
     set({ alarmEvent: event });

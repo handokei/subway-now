@@ -58,6 +58,10 @@ Accepted — 이슈 #2065 (Epic #2061), 2026-07-29. 사용자 체감 회귀 2건
 - 이 리스크는 의도적으로 수용한다: outage-miss(알람이 아예 안 울림)를 막기 위한 backstop이 존재하는 한, 극히 드문 경합 창(180s 버퍼 이내 cancel 실패)에서의 중복 1회는 miss보다 훨씬 저비용이다.
 - 중복 알람이 매 trip마다 반복 재현되면(N≥3) 별도 이슈로 cancel 신뢰성을 재조사한다 — 본 ADR은 trade-off 수용만 기록한다.
 
+### 6. 알람 비주얼 UI 노출 범위 (#2258)
+
+알람 비주얼(AlarmOverlay 환승/하차 오버레이)은 **취침모드 전용**이다 — 알람 소리/TTS/companion과 동일하게 `sleepMode` 단일 게이트를 따르며, 활성 trip 여부는 노출 조건이 아니다(`useAlarmEventStore.setAlarmEvent`).
+
 ## 결과
 
 ### 긍정
