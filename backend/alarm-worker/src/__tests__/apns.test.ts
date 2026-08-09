@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BOARDING_PROMPT_CATEGORY,
   buildApnsJwt,
+  buildSilentPushData,
   resetApnsJwtCache,
   sendAlertPush,
   sendBoardingPromptPush,
@@ -12,6 +13,7 @@ import {
   sendSleepAlarmCompanionPush,
   sendTripEndedAlertPush,
   type ApnsConfig,
+  type SilentPushPayload,
 } from '../apns';
 import { TRIP_ENDED_ALERT_BODY, TRIP_ENDED_ALERT_TITLE } from '../alertContent';
 
@@ -1641,5 +1643,62 @@ describe('sendSleepAlarmCompanionPush (#2066)', () => {
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const headers = call[1].headers as Record<string, string>;
     expect(headers['apns-thread-id']).toBe('trip-sleep-999');
+  });
+});
+
+// #2243 (ADR-029 Phase 1, G2) — buildSilentPushData 발신 경계 값 스키마 검증.
+describe('buildSilentPushData contract skew (#2243, ADR-029 Phase 1 G2)', () => {
+  function validPayload(): SilentPushPayload {
+    return {
+      nextWaypoint: '강남',
+      etaSeconds: 60,
+      phase: 'early',
+      kind: 'destination',
+      sentAt: 1_700_000_000_000,
+      pushId: 'push-uuid-skew',
+    };
+  }
+
+  it('정상 payload면 console.warn을 호출하지 않는다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    buildSilentPushData(validPayload());
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('etaSeconds가 음수면 console.warn(fields=etaSeconds)을 남기지만 data는 그대로 wire한다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const data = buildSilentPushData({ ...validPayload(), etaSeconds: -5 });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('fields=etaSeconds'));
+    expect(data.etaSeconds).toBe(-5);
+    warnSpy.mockRestore();
+  });
+
+  it('nextWaypoint가 빈 문자열이면 console.warn(fields=nextWaypoint)을 남긴다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    buildSilentPushData({ ...validPayload(), nextWaypoint: '' });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('fields=nextWaypoint'));
+    warnSpy.mockRestore();
+  });
+
+  it('phase가 SSoT 밖 값이면 console.warn(fields=phase)을 남긴다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    buildSilentPushData({ ...validPayload(), phase: 'late' as SilentPushPayload['phase'] });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('fields=phase'));
+    warnSpy.mockRestore();
+  });
+
+  it('여러 필드가 동시에 어긋나면 fields 목록에 전부 포함된다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    buildSilentPushData({
+      ...validPayload(),
+      nextWaypoint: '',
+      etaSeconds: NaN,
+      phase: 'late' as SilentPushPayload['phase'],
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('fields=nextWaypoint,etaSeconds,phase'),
+    );
+    warnSpy.mockRestore();
   });
 });

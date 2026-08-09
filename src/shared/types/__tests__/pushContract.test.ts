@@ -3,10 +3,16 @@ import {
   CONTROL_PUSH_KINDS,
   SLEEP_ALARM_TARGET_KINDS,
   STATION_WAYPOINT_KINDS,
+  PUSH_ALARM_PHASES,
+  PUSH_ETA_SECONDS_MAX,
+  UNKNOWN_KIND_POLICY,
   assertNever,
   isControlPushKind,
+  isPushAlarmPhase,
   isSleepAlarmTargetKind,
   isStationWaypointKind,
+  isValidEtaSeconds,
+  isValidStationIdentifier,
   type StationWaypointKind,
 } from '../pushContract';
 
@@ -93,5 +99,43 @@ describe('pushContract SSoT (#2235 ADR-029 Phase 0)', () => {
       // @ts-expect-error — never 파라미터에 임의 문자열을 강제 전달(context 생략 케이스).
       assertNever('no-context-case'),
     ).toThrow('pushContract: unhandled discriminator: "no-context-case"');
+  });
+});
+
+describe('pushContract G2/G6 (#2243, ADR-029 Phase 1)', () => {
+  it('UNKNOWN_KIND_POLICY — station-like는 fallback fire, control-like는 fail-closed', () => {
+    expect(UNKNOWN_KIND_POLICY.stationLike).toBe('fallback-imminent-fire');
+    expect(UNKNOWN_KIND_POLICY.controlLike).toBe('fail-closed');
+  });
+
+  it('isValidStationIdentifier — 비어있지 않고 상한 이내, 제어문자 없는 문자열만 통과', () => {
+    expect(isValidStationIdentifier('강남')).toBe(true);
+    expect(isValidStationIdentifier('동대문역사문화공원')).toBe(true);
+    expect(isValidStationIdentifier('')).toBe(false);
+    expect(isValidStationIdentifier('   ')).toBe(false);
+    expect(isValidStationIdentifier('a'.repeat(41))).toBe(false);
+    expect(isValidStationIdentifier('a'.repeat(40))).toBe(true);
+    expect(isValidStationIdentifier(`bad\nname`)).toBe(false);
+    expect(isValidStationIdentifier(123)).toBe(false);
+    expect(isValidStationIdentifier(undefined)).toBe(false);
+  });
+
+  it('PUSH_ALARM_PHASES / isPushAlarmPhase — early/imminent만 narrow', () => {
+    expect(PUSH_ALARM_PHASES).toEqual(['early', 'imminent']);
+    expect(isPushAlarmPhase('early')).toBe(true);
+    expect(isPushAlarmPhase('imminent')).toBe(true);
+    expect(isPushAlarmPhase('late')).toBe(false);
+    expect(isPushAlarmPhase(undefined)).toBe(false);
+  });
+
+  it('isValidEtaSeconds — 0 이상 PUSH_ETA_SECONDS_MAX 이하 finite number만 통과', () => {
+    expect(isValidEtaSeconds(0)).toBe(true);
+    expect(isValidEtaSeconds(120)).toBe(true);
+    expect(isValidEtaSeconds(PUSH_ETA_SECONDS_MAX)).toBe(true);
+    expect(isValidEtaSeconds(PUSH_ETA_SECONDS_MAX + 1)).toBe(false);
+    expect(isValidEtaSeconds(-1)).toBe(false);
+    expect(isValidEtaSeconds(NaN)).toBe(false);
+    expect(isValidEtaSeconds(Infinity)).toBe(false);
+    expect(isValidEtaSeconds('120')).toBe(false);
   });
 });

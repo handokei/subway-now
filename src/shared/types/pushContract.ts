@@ -74,3 +74,81 @@ export function isControlPushKind(value: unknown): value is ControlPushKind {
 export function isSleepAlarmTargetKind(value: unknown): value is SleepAlarmTargetKind {
   return (SLEEP_ALARM_TARGET_KINDS as readonly unknown[]).includes(value);
 }
+
+/**
+ * G6 unknown-kind 처리 정책 (ADR-029 Phase 1 / #2243) — SSoT.
+ *
+ * backend가 SSoT에 없는 새 kind를 보내는 계약 스큐 발생 시, "종류"에 따라 정책이 갈린다:
+ * - station 계열(payload가 `nextWaypoint`를 갖는 standard silent push 형태인데 kind가
+ *   STATION_WAYPOINT_KINDS 밖) → 안전 우선. 사용자 노출 알림을 조용히 누락시키지 않도록
+ *   **generic imminent fallback을 발사**한다(어떤 역인지는 알지만 kind 의미만 모르는 상황).
+ * - control 계열(payload가 station 형태가 아닌데 kind가 CONTROL_PUSH_KINDS 밖) → **fail-closed**.
+ *   control push는 schema 자체가 kind마다 달라 임의 fallback 처리가 오히려 위험(state
+ *   corruption 가능) — 거부하고 로그만 남긴다.
+ *
+ * 두 경우 모두 조용한 drop은 금지 — 소비자(device `silentPushTask.ts`)가 반드시 skew 로그를
+ * 남겨야 한다(A2). 정책 값 자체는 여기 SSoT에서만 정의하고, 소비자는 이 상수를 참조해 분기한다.
+ */
+export const UNKNOWN_KIND_POLICY = {
+  /** station-shaped unknown kind. */
+  stationLike: 'fallback-imminent-fire',
+  /** control-shaped unknown kind. */
+  controlLike: 'fail-closed',
+} as const;
+export type UnknownKindPolicyAction = (typeof UNKNOWN_KIND_POLICY)[keyof typeof UNKNOWN_KIND_POLICY];
+
+/**
+ * G2 semantic value 검증 (ADR-029 Phase 1 / #2243) — SSoT.
+ *
+ * Phase 0의 exhaustive switch/assertNever는 discriminator(kind)의 **집합**(어떤 값들이
+ * 허용되는지)을 컴파일 타임에 보증한다. 그 아래 값(stationId/phase/etaSeconds)은 타입은
+ * 맞아도(`string`/`number`) 런타임 값이 도메인 semantics를 벗어나는 drift가 가능하다
+ * (예: NaN etaSeconds, epoch를 잘못 실어보낸 초대형 값, 빈 문자열 station identifier).
+ * 이 경계에서 값을 검증해 통과 못한 값은 소비자가 skew로 관측하도록 한다.
+ */
+
+/**
+ * station identifier(표시 역명 — `nextWaypoint`/`nextStation`/`originStation` 등, stationId 형식
+ * 호환) 최소 형식 검증. 서울 지하철 최장 역명(예: "동대문역사문화공원")보다 넉넉한 길이 상한 +
+ * 제어문자 배제만 강제한다 — 다국어 역명(ko/en/ja/zh)을 전부 수용해야 하므로 문자셋 자체는
+ * 제한하지 않는다.
+ */
+const STATION_IDENTIFIER_MAX_LEN = 40;
+/** 제어문자(0x00~0x1F) 미포함 여부. regex literal escape로인한 바이트 오염을 피하기 위해 charCode 반복으로 검사.*/
+function hasNoControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f) return false;
+  }
+  return true;
+}
+export function isValidStationIdentifier(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    value.length <= STATION_IDENTIFIER_MAX_LEN &&
+    hasNoControlChars(value)
+  );
+}
+
+/** silent push discriminator `phase` — SilentPushPayload/backend AlarmPhase와 값 집합 1:1. */
+export const PUSH_ALARM_PHASES = ['early', 'imminent'] as const;
+export type PushAlarmPhase = (typeof PUSH_ALARM_PHASES)[number];
+export function isPushAlarmPhase(value: unknown): value is PushAlarmPhase {
+  return (PUSH_ALARM_PHASES as readonly unknown[]).includes(value);
+}
+
+/**
+ * `etaSeconds` 상한 — trip lifecycle 9h force-end backstop(device `TRIP_LIFECYCLE_FORCE_END_MS`
+ * / backend `BACKEND_TRIP_LIFECYCLE_FORCE_END_MS`)과 같은 자릿수(초 단위 32400s)를 상한으로
+ * 삼는다. 이보다 큰 값은 단위 실수(예: ms를 s로 착각) 또는 계산 drift로 판정한다.
+ */
+export const PUSH_ETA_SECONDS_MAX = 32_400;
+export function isValidEtaSeconds(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= PUSH_ETA_SECONDS_MAX
+  );
+}

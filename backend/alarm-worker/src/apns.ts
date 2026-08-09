@@ -21,6 +21,11 @@ import type {
   SleepAlarmTargetKind,
   StationWaypointKind,
 } from '../../../src/shared/types/pushContract';
+import {
+  isPushAlarmPhase,
+  isValidEtaSeconds,
+  isValidStationIdentifier,
+} from '../../../src/shared/types/pushContract';
 
 /**
  * iOS UNNotificationCategory 식별자 (#819 B 슬라이스). 클라이언트는 같은 식별자로
@@ -322,7 +327,27 @@ export interface SendPushResult {
  * 동일한 optional-field omission 규칙(undefined/false/빈 배열은 자연 누락)을 공유한다 — 채널이
  * silent→alert로 바뀌어도 device 소비 코드(SSoT cascade picker 등)가 받는 wire shape은 불변.
  */
+/**
+ * G2 (#2243, ADR-029 Phase 1) — 발신 경계 값 스키마 검증. Phase 0의 SSoT union type은 `kind` 같은
+ * discriminator 집합을 컴파일 타임에 보증하지만, 그 아래 값(nextWaypoint/etaSeconds/phase)은
+ * 타입이 `string`/`number`라 통과해도 계산 drift(NaN, 음수, 단위 착오로 인한 초대형 값, 빈
+ * 문자열 station identifier)가 런타임에 섞여 들어갈 수 있다. throw는 하지 않는다 — 발사 자체를
+ * 막는 것은 A2(silent drop 금지) 취지에 반한다. wrangler tail / Cloudflare Dashboard에서 바로
+ * 보이는 `console.warn`만 남긴다.
+ */
+function logSilentPushContractSkewIfInvalid(payload: SilentPushPayload): void {
+  const violations: string[] = [];
+  if (!isValidStationIdentifier(payload.nextWaypoint)) violations.push('nextWaypoint');
+  if (!isValidEtaSeconds(payload.etaSeconds)) violations.push('etaSeconds');
+  if (!isPushAlarmPhase(payload.phase)) violations.push('phase');
+  if (violations.length === 0) return;
+  console.warn(
+    `[push-contract-skew] buildSilentPushData value drift: fields=${violations.join(',')} nextWaypoint=${payload.nextWaypoint} etaSeconds=${payload.etaSeconds} phase=${payload.phase} pushId=${payload.pushId}`,
+  );
+}
+
 export function buildSilentPushData(payload: SilentPushPayload): Record<string, unknown> {
+  logSilentPushContractSkewIfInvalid(payload);
   return {
     nextWaypoint: payload.nextWaypoint,
     etaSeconds: payload.etaSeconds,
