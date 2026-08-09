@@ -34,6 +34,21 @@ Closes #<이슈번호>
 
 ---
 
+## 계약 변경 체크리스트 (push kind 추가/은퇴 시 — ADR-029 Phase 4 / #2252)
+
+<!--
+`src/shared/types/pushContract.ts`의 kind union(STATION_WAYPOINT_KINDS/CONTROL_PUSH_KINDS/
+ALARM_EVENT_TYPES/SLEEP_ALARM_TARGET_KINDS 등)을 추가·은퇴하는 PR만 해당. 그 외는 "N/A".
+CI가 이 파일 변경 시 리마인더 코멘트를 자동 게시한다(hard-block 아님).
+-->
+
+- [ ] SSoT(`pushContract.ts`) 갱신 — exhaustive switch/assertNever 컴파일 통과 확인
+- [ ] 경계 검증(ADR-029 Phase 1) 갱신 — zod refinement 등 런타임 검증 스키마 동기화
+- [ ] de-wire registry(ADR-029 Phase 3, `signalProvenanceRegistry.ts`) 등재/은퇴 반영
+- [ ] 테스트 동반(신규 kind 처리 경로 / 은퇴 kind 소비 제거)
+
+---
+
 ## Test plan
 
 - [ ] `npm test` 100% coverage pass
