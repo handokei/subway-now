@@ -5,6 +5,8 @@
  * 앱과 백엔드는 별도 빌드이므로 import 대신 구조적 호환을 유지한다.
  */
 
+import type { ControlPushKind, StationWaypointKind } from '../../../src/shared/types/pushContract';
+
 export type LineNumber = string;
 
 export interface DirectRoute {
@@ -44,7 +46,7 @@ export interface Waypoint {
   /** 노선 키 (정확히 어느 호선에서 도착을 봐야 하는지) */
   line: LineNumber;
   /** "transfer" — 환승 안내 / "destination" — 최종 도착 / "intermediate" — 중간역 통과 */
-  kind: 'transfer' | 'destination' | 'intermediate';
+  kind: StationWaypointKind;
   /**
    * #1193 — 같은 stationName이 trip 원본 waypoint 시퀀스에 중복 등장(순환선/회차)할 때,
    * 이 waypoint가 몇 번째 등장인지(0-based). reschedule push의 `occurrenceIdx`로 전달돼
@@ -428,7 +430,7 @@ export const RESCHEDULE_CHANNELS_DEFAULT: ReadonlyArray<RescheduleChannel> = ['b
  */
 export interface ReschedulePushPayload {
   pushId: string;
-  kind: 'reschedule';
+  kind: Extract<ControlPushKind, 'reschedule'>;
   trainCode: string;
   nextStation: string;
   newArrivalTimeEpoch: number;
@@ -484,7 +486,7 @@ export type TripEndedReason =
  */
 export interface TripEndedAlertPushPayload {
   pushId: string;
-  kind: 'trip-ended';
+  kind: Extract<ControlPushKind, 'trip-ended'>;
   tripToken: string;
   reason: TripEndedReason;
   sentAt: number;
@@ -670,7 +672,7 @@ export interface BoardingPromptCandidate {
  */
 export interface BoardingPromptPushPayload {
   pushId: string;
-  kind: 'boarding-prompt';
+  kind: Extract<ControlPushKind, 'boarding-prompt'>;
   /**
    * 사용자 출발역. hop-end 프롬프트(#2034) 일 때는 "환승 지점 역명" 으로 재해석되며 (=사용자가
    * 하차해야 하는 station). 일반 boarding-prompt 시엔 boardingStation 으로 그대로 사용.

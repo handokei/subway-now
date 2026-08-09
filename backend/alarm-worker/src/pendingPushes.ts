@@ -17,6 +17,7 @@ import type { ArchFlagValue } from './archFlag';
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
 import { stampSent } from './silentPushReachMetric';
 import type { ApnsEnv } from './types';
+import type { StationWaypointKind } from '../../../src/shared/types/pushContract';
 
 const PENDING_PREFIX = 'pending:';
 /**
@@ -47,7 +48,7 @@ export interface PendingPush {
   sentAt: number;
   /** alert fallback 본문 생성용 메타 (P2c/P2d에서 사용). */
   stationName: string;
-  kind: 'transfer' | 'destination' | 'intermediate';
+  kind: StationWaypointKind;
   phase: AlarmPhase;
   etaSeconds: number;
   /** APNs host 선택 (sandbox/production). silent push가 self-heal로 정정된 경우 정정된 값을 보관. */

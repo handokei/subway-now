@@ -38,6 +38,7 @@ import {
 } from './notificationSource';
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
+import type { StationWaypointKind } from '../../../shared/types/pushContract';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
  *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
@@ -128,7 +129,10 @@ async function isFallbackDuplicate(
 // 로컬 dispatchStationPassed의 AlarmLogKind('station-passed')로 매핑.
 // #918 — OS 사전예약(stationPrescheduler)이 transfer/destination kind도 커버하게 되면서
 // 매핑도 identity 항목 2개를 추가(로컬 kind 이름이 backend kind 이름과 동일).
-const BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND: Record<string, string> = {
+// #2235 (ADR-029 Phase 0) — 키를 pushContract SSoT `StationWaypointKind`로 타입해 exhaustive
+// 하게 강제한다. STATION_WAYPOINT_KINDS에 새 값이 추가되면 이 Record 리터럴이 컴파일 에러를 낸다
+// (키 누락 = 드리프트 = 빌드 실패).
+const BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND: Record<StationWaypointKind, string> = {
   intermediate: 'station-passed',
   transfer: 'transfer',
   destination: 'destination',
@@ -137,10 +141,12 @@ const BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND: Record<string, string> = {
 /**
  * backend push의 `data.kind`를 device local fire kind로 매핑. `scheduledAlarmReceiver`(#918)가
  * "remote 선표시 시 해당 역 pending 사전예약 cancel" 판정에 재사용 — 매핑 테이블의 단일 owner.
- * 매핑이 없는 kind(예: 'reschedule'/'trip-ended' 등 비-station 계열)는 null.
+ * 매핑이 없는 kind(예: 'reschedule'/'trip-ended' 등 비-station 계열, 또는 런타임 미검증 문자열)는
+ * null. 입력은 검증되지 않은 원본 문자열일 수 있어(#2122 `isRecentLocalAuxFireDuplicate` 호출부)
+ * 파라미터 타입은 `string`으로 유지 — 룩업 테이블 자체(키 집합)만 SSoT로 타입한다.
  */
 export function mapBackendKindToLocalFireKind(backendKind: string): string | null {
-  return BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND[backendKind] ?? null;
+  return BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND[backendKind as StationWaypointKind] ?? null;
 }
 
 /**
