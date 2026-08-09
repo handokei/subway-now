@@ -285,6 +285,9 @@ import {
   ROUTE_KEY,
   SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
+// #2246 (ADR-029 Phase 2) — G6 property 테스트가 SSoT known-kind 집합과의 충돌 없는 임의 kind를
+// 생성하기 위해 참조.
+import { STATION_WAYPOINT_KINDS, CONTROL_PUSH_KINDS } from '../../../../shared/types/pushContract';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
@@ -3569,5 +3572,82 @@ describe('silentPushTask', () => {
         expect(stored.alarmEvents).toEqual(ssotWithEvents.alarmEvents);
       });
     });
+  });
+
+  // #2246 (ADR-029 Phase 2) — G6 unknown-kind 정책(#2243)이 임의 kind 문자열에서 성립함을
+  // property로 lock. 런타임 로직은 미변경 — 이미 성립하는 불변식(station-shaped unknown →
+  // fallback-imminent-fire, control-shaped unknown → fail-closed)을 hand-rolled seeded PRNG로
+  // N회 임의 kind에 대해 재확인한다. fast-check 미사용(Simplicity, 새 의존 회피).
+  describe('#2246 property — G6 unknown-kind policy holds for arbitrary kind strings', () => {
+    // mulberry32 — 결정적 시드 PRNG. 재현성을 위해 순수 함수로 시드만 인자로 받는다.
+    function mulberry32(seed: number): () => number {
+      let s = seed >>> 0;
+      return () => {
+        s = (s + 0x6d2b79f5) | 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    const KIND_CHARS = 'abcdefghijklmnopqrstuvwxyz-0123456789';
+    /**
+     * SSoT(STATION_WAYPOINT_KINDS ∪ CONTROL_PUSH_KINDS)와 절대 겹치지 않는 임의 문자열을
+     * 생성한다 — 겹치면 "알려진 kind" 경로로 빠져 이 property의 대상(계약 스큐)이 아니게 된다.
+     */
+    function randomUnknownKind(rng: () => number): string {
+      const known: readonly string[] = [...STATION_WAYPOINT_KINDS, ...CONTROL_PUSH_KINDS];
+      let candidate: string;
+      do {
+        // len 최소값이 3이라 candidate.length===0은 도달 불가능 — known 집합과의 충돌만 재시도.
+        const len = 3 + Math.floor(rng() * 10);
+        candidate = Array.from({ length: len }, () => KIND_CHARS[Math.floor(rng() * KIND_CHARS.length)]).join('');
+      } while (known.includes(candidate as (typeof known)[number]));
+      return candidate;
+    }
+
+    const PROPERTY_ITERATIONS = 30;
+    // 시드 값 자체는 임의 — 이슈 번호 기반으로 선택해 재현 시 출처를 알아보기 쉽게만 함.
+    const rng = mulberry32(0x2246);
+
+    for (let i = 0; i < PROPERTY_ITERATIONS; i += 1) {
+      const rawKind = randomUnknownKind(rng);
+
+      it(`[station-shaped #${i}] unknown kind="${rawKind}" → silent drop 없이 skew 로그 + fallback-imminent-fire`, async () => {
+        const pushId = `prop-station-${i}`;
+        await handleSilentPush(
+          payload({ kind: rawKind, phase: 'early', nextWaypoint: '강남', pushId }),
+        );
+        // A2 — 조용한 drop 금지: skew가 반드시 관측된다.
+        expect(mockLogPushContractKindSkew).toHaveBeenCalledWith({
+          category: 'station-like',
+          rawKind,
+          stationName: '강남',
+        });
+        // G6 station-shaped 정책 = fallback-imminent-fire — generic 알림이 반드시 발사된다.
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall(pushId, 'fired', 'push-contract-skew-station-fallback-fired'),
+        );
+        // legacy-station-kind-ignored skip 경로로는 빠지지 않는다(#2243 회귀 대상).
+        expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
+      });
+
+      it(`[control-shaped #${i}] unknown kind="${rawKind}" → silent drop 없이 skew 로그 + fail-closed`, async () => {
+        const pushId = `prop-control-${i}`;
+        await handleSilentPush({ data: bgTaskData({ kind: rawKind, pushId }) });
+        // A2 — 조용한 drop 금지: skew가 반드시 관측된다.
+        expect(mockLogPushContractKindSkew).toHaveBeenCalledWith({
+          category: 'control-like',
+          rawKind,
+        });
+        // G6 control-shaped 정책 = fail-closed — 알림이 발사되지 않는다(schema 불명이라 state
+        // corruption 위험 — station-shaped와 달리 fallback fire 대상이 아니다).
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall(pushId, 'skipped', 'push-contract-skew-control-fail-closed'),
+        );
+      });
+    }
   });
 });
