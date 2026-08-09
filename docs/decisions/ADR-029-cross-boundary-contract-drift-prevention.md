@@ -42,11 +42,14 @@
 - 모든 kind 소비 지점(`silentPushTask.ts` if-체인, backend `apns.ts`/`scheduled.ts` 발신부)을 **exhaustive `switch` + `assertNever(x)`**로 전환.
 - **효과**: backend에 새 kind 추가 → device의 exhaustive switch가 `never` 불일치로 **컴파일 에러**. 드리프트가 CI에서 red.
 
-### Phase 1 — 런타임 계약 검증 (경계)
+### Phase 1 — 런타임 계약 검증 (경계) + unknown 처리 정책 (G6)
 - 수신(device `extractPayload`) / 발신(backend `buildSilentPushData`) 경계에 스키마 검증(zod 등). 불일치 시 **조용한 drop 대신 명시적 skew 로그**(원본 raw kind 보존 — #2231이 이미 raw-kind 가드 도입, 그 위에 SSoT 검증).
+- **G6 결정 (이 phase에서 확정)**: unknown/스큐 kind를 만났을 때 **fail-closed(거부+로그) vs fail-open(일반 알림으로 degrade 발사)**. 안전 알림에서 "관측된 누락"도 누락이므로, station 계열 unknown은 **generic imminent fallback 발사**를 기본으로 하되 control 계열(reschedule 등)은 fail-closed. 정책을 코드 상수로 SSoT화.
+- **G2 (semantic shape)**: kind뿐 아니라 `stationId` 포맷 / `phase` enum / `etaSeconds` 범위 등 **값 스키마**도 zod refinement로 검증. 타입은 맞고 값만 어긋나는 drift를 경계에서 포착.
 
-### Phase 2 — liveness/property 불변식 (example 아님)
+### Phase 2 — liveness/property 불변식 (example 아님) + semantic 불변식 (G2)
 - fast-check property test: "임의의 cron tick 시퀀스에서 **목적지 도달 trip은 T분 내 발사 정지**"(9h desync class), "임의 payload에서 **알 수 없는 kind는 silent drop 없이 skew로 관측**"(unk class).
+- **G2 semantic 불변식**: "이미 지난 역엔 재발사 안 함", "transfer early는 N분 이내에서만"(#2180 계열), "동일 역 dedup 창 안에서 채널 무관 1회" 등 **값/의미 불변식**을 property로. 타입 exhaustive가 못 잡는 semantic drift를 여기서 앵커.
 - 기존 replay fixture는 유지(회귀 앵커), 그 위에 불변식을 얹는다.
 
 ### Phase 3 — de-wire lint
@@ -54,6 +57,11 @@
 
 ### Phase 4 — 계약 변경 프로세스 강제
 - push kind 추가/은퇴 PR은 SSoT + exhaustive + 검증 + 테스트를 **한 PR에 동반**(PR 템플릿 + CI 게이트). 분리 금지.
+
+### Phase 5 — 런타임 버전 스큐 방어 (G1, 가장 큰 빈틈)
+- **문제**: SSoT는 *같은 git SHA*에서만 정합. device(App Store 심사 지연)와 backend(즉시 배포)는 따로 나가므로 **배포된 런타임끼리는 여전히 스큐** 가능(이번 `unk=5`의 실제 원인 = 빌드 스큐 = 런타임 스큐 증상).
+- payload에 `contractVersion` 필드 도입 → 수신 측이 자기 지원 버전과 비교해 스큐를 명시 관측.
+- **backward-compat 규칙**: backend는 구 device kind/필드를 **최소 N릴리스(제안 2)** 유지. 새 kind는 additive-only(기존 값 의미 변경 금지). Phase 4 프로세스 게이트가 이를 CI에서 강제.
 
 ---
 
@@ -65,8 +73,19 @@
 - **A2 (Phase 1)**: 알 수 없는 kind 수신 시 silent `unk` 대신 **명시적 skew 로그 + 지표**가 남는다.
 - **A3 (Phase 2)**: 목적지 도달 후 발사 정지 상한이 **property test로 보장**(특정 trip replay가 아니라 임의 시퀀스).
 - **A4 (Phase 3)**: 채널 은퇴 시 죽은 지표/소비자가 **lint fail**.
+- **A5 (Phase 5, G1)**: device보다 앞선 backend `contractVersion`을 만나면 **명시 스큐 관측 + backward-compat 경로로 정상 발사**(런타임 스큐가 무음 누락으로 안 감).
 
-**Epic close 조건** (PR 머지 ≠ close): A1~A4가 **CI에서 실제로 red를 낼 수 있음을 데모**(의도적 drift/de-wire PR이 fail하는 것 확인) + 이후 1주간 이 class 재발 0건.
+**Epic close 조건** (PR 머지 ≠ close): A1~A5가 **CI에서 실제로 red를 낼 수 있음을 데모**(의도적 drift/de-wire/version-skew PR이 fail하는 것 확인) + 이후 1주간 이 class 재발 0건.
+
+---
+
+## 알려진 빈틈 / 스코프 밖 — 명시적 handoff (가짜 커버리지 주장 금지)
+
+이 ADR은 **계약(contract) class**만 닫는다. 아래는 이 epic이 **덮지 않는** 별개 class이며, "계약 epic 완료 = 모든 재발 방지"라는 착각을 막기 위해 오너를 명시한다.
+
+- **G3 — device↔backend trip lifecycle 양방향 화해.** tactical backstop이 desync를 9h→15분으로 줄였을 뿐, "device 로컬 종료를 backend가 모른다"는 근본은 남음. **오너: #1553(Backend Trip Position SSoT), #2155(push 단일 소스화), #2061.** device 로컬 종료 → `DELETE /trips` 피드백 + 연속 reconciliation = **#2238** (신규).
+- **G4 — fusion/환경/추론 신호품질 class (재발 체감의 다수 추정).** env surface 고착, arc 적분 freeze, 지하 stale-GPS over-accept, barometer edge 오판, no-route auto-lock 후보 — **전부 계약과 무관, 이 epic 0 기여.** **오너: #1927(fusion env SSOT), #1432(합의 게이트/ADR-015), #2093(실시간성·발열 A~H), ADR-028(env stale-GPS, 보류).** ⚠️ **이들은 현재 다수 deferred 상태 — 별도 결정으로 un-defer 필요.**
+- **G5 — 연속 자동 field-replay 검증 인프라.** 현 close 조건이 "실탑승 dump 1회, 수동(N=1)". 드문 환경 회귀는 사용자가 밟아야만 발견. property test는 상상한 불변식만 잡음. **오너 없던 진짜 빈틈 → #2239 (신규 Epic).** 이 인프라는 계약·fusion 양 class를 함께 검증하는 cross-cutting 안전망.
 
 ---
 
