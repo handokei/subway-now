@@ -68,6 +68,12 @@
 
 **replay로 안 되는 잔여(정직)**: (1) barometer 검출기 자체 — 원시 hPa 미기록이라 P0-1 계측 추가 전까지 불가, (2) iOS BG 실행·LA/푸시 실제 전달 등 device-only 통합층(mock). 이 둘만 실탑승 잔류, 범위 작음.
 
+## CI 비용 / 게이팅 (하드룰)
+
+- **fake timer 강제**: replay 재생은 fake timer로만. real timer 금지(재생이 실시간=분 단위 폭발). 비용 ≈ 샘플 계산(ms).
+- **실측 기준**: 현 device Type Check&Test ~2m(9154 tests, 100% cov), backend vitest ~55s. replay ~100ms/개 → 수십 개는 **+초**, PR CI 무영향.
+- **2단 게이팅**: **PR 게이트 = 코어 앵커 세트**(고가치·빠름) / **nightly(`e2e.yml` 계열, PR 게이트 아님) = 전량 재생**. 라이브러리가 수백+ 로 커도 **PR CI 상한 ~2~3분 고정**. backend replay=Backend Validation, device=Type Check&Test + Jest 샤딩으로 분산.
+
 ## 트레이드오프 (수용)
 - Phase 1-C가 지상 dead-zone에서 miss 소폭 증가 가능(strict 강등) → Phase 0에서 계측, 수용/롤백 판단.
 - 두 systemic 트랙 병렬 → 실탑승 검증 attribution 흐려짐 → **런타임 변경은 탑승당 1개 스태거**(계약 Phase 0는 타입이라 무런타임, 자유).
