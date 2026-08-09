@@ -29,12 +29,12 @@ jobs:
           cache: 'npm'
 
       - name: 의존성 설치
-        run: npm ci --legacy-peer-deps
+        run: npm ci --legacy-peer-deps --ignore-scripts
 
       - name: replay 라이브러리 전량 재생 (tier 무관, fake timer 강제)
         env:
           REPLAY_FULL_LIBRARY: '1'
-        run: npx jest src/testUtils/fixtures/replay/__tests__/replayLibrary.full.test.ts --ci --collectCoverage=false
+        run: npm run test:replay-full
 
   e2e:
     name: E2E Nightly
