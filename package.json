@@ -9,6 +9,7 @@
     "web": "expo start --web",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
+    "test:replay-full": "jest src/testUtils/fixtures/replay/__tests__/replayLibrary.full.test.ts --ci --collectCoverage=false",
     "type-check": "tsc --noEmit",
     "lint": "eslint --ext .ts,.tsx src --max-warnings=0",
     "lint:orphan": "bash scripts/check-orphan-exports.sh",
