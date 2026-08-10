@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppState, Share } from 'react-native';
+import { Alert, AppState, Share } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
@@ -658,9 +658,42 @@ describe('DebugModal', () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     fireEvent.press(screen.getByTestId('debug-share-dump'));
-    expect(shareSpy).toHaveBeenCalled();
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
     expect(shareSpy.mock.calls[0][0].message).toContain('Subway debug');
     shareSpy.mockRestore();
+  });
+
+  // #2268 (S1) — Share.share가 reject 하면 이전엔 무음 실패였다(void 호출, catch 없음).
+  // 사용자에게 Alert로 실패 + 덤프 길이를 안내해야 한다.
+  it('Share.share가 실패하면 Alert로 사용자에게 안내한다', async () => {
+    const shareSpy = jest
+      .spyOn(Share, 'share')
+      .mockRejectedValue(new Error('share sheet dismissed'));
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    const [title, body] = alertSpy.mock.calls[0];
+    expect(title).toBe('공유 실패');
+    expect(body).toContain('share sheet dismissed');
+    expect(body).toMatch(/길이 \d+자/);
+    shareSpy.mockRestore();
+    alertSpy.mockRestore();
+  });
+
+  // #2268 (S1) — reject 값이 Error 인스턴스가 아닌 경우(String(e) fallback 분기) 커버.
+  it('Share.share가 non-Error 값으로 reject 되어도 Alert에 String(e)를 안내한다', async () => {
+    const shareSpy = jest.spyOn(Share, 'share').mockRejectedValue('share sheet unavailable');
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    const [, body] = alertSpy.mock.calls[0];
+    expect(body).toContain('share sheet unavailable');
+    shareSpy.mockRestore();
+    alertSpy.mockRestore();
   });
 
   it('AppState active 복귀 시 로그를 다시 불러온다', async () => {
@@ -4890,6 +4923,69 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## BoardingLock Lifecycle (2)');
     });
 
+    // #2268 (C2) — Lifecycle/Drift buffer가 in-memory 비영속이라 (0)이 "이벤트 없음"인지
+    // "앱 kill/BG 재기동으로 증발"인지 dump만으로 구분 불가능했다. launch 이후 경과 초를
+    // 헤더에 표기해 판정 가능하게 한다.
+    it('formatBufferAgeSuffix: launchAtMs/nowMs 기준 경과 초를 헤더 suffix로 표기 (#2268)', () => {
+      const { formatBufferAgeSuffix } = __test__;
+      expect(
+        formatBufferAgeSuffix({ ...baselineDumpArgs, launchAtMs: 1_000, nowMs: 1_000 }),
+      ).toBe(' (buffer age since launch = 0s)');
+      expect(
+        formatBufferAgeSuffix({ ...baselineDumpArgs, launchAtMs: 1_000, nowMs: 61_000 }),
+      ).toBe(' (buffer age since launch = 60s)');
+    });
+
+    it('Boarding-Lock Drift / BoardingLock Lifecycle 헤더에 buffer age suffix가 포함된다 (#2268)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({ launchAtMs: 1_000, nowMs: 6_000, boardingLockDriftLog: [], lockLifecycleLog: [] }),
+      );
+      expect(dump).toContain('## Boarding-Lock Drift (0) (buffer age since launch = 5s)');
+      expect(dump).toContain('## BoardingLock Lifecycle (0) (buffer age since launch = 5s)');
+    });
+
+    // #2268 (C1) — getLockCorrectionMetrics()(#1166)는 BoardingTrainList가 기록하는데
+    // DebugModal에 섹션이 없어 관측 불가했다(orphan getter). 섹션 배선 검증.
+    it('computeLockCorrectionLines / buildLockCorrectionSection: n/a + fired/lastFiredAt 표기 (#2268)', () => {
+      const { computeLockCorrectionLines, buildLockCorrectionSection } = __test__;
+      expect(computeLockCorrectionLines(undefined)).toEqual(['(n/a)']);
+      expect(computeLockCorrectionLines({ fired: 0, lastFiredAtMs: 0 })).toEqual([
+        'fired=0',
+        'lastFiredAt=(never)',
+      ]);
+      const withTs = computeLockCorrectionLines({ fired: 3, lastFiredAtMs: 1_700_000_000_000 });
+      expect(withTs[0]).toBe('fired=3');
+      expect(withTs[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+      const built = buildLockCorrectionSection({
+        ...baselineDumpArgs,
+        lockCorrection: { fired: 2, lastFiredAtMs: 1000 },
+      });
+      expect(built[0]).toBe('fired=2');
+      expect(built[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+    });
+
+    it('Lock Correction 섹션이 share dump에 포함된다 (#2268)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({ lockCorrection: { fired: 5, lastFiredAtMs: 2000 } }),
+      );
+      expect(dump).toContain('## Lock Correction');
+      const section = dump.slice(dump.indexOf('## Lock Correction'));
+      expect(section).toContain('fired=5');
+      expect(section).toMatch(/lastFiredAt=\d{2}:\d{2}:\d{2}/);
+    });
+
+    it('Lock Correction 섹션이 UI에 노출된다 (#2268)', async () => {
+      const { getLockCorrectionMetrics, resetLockCorrectionMetrics, recordLockCorrection } =
+        jest.requireActual('../../../alarm/utils/lockCorrectionMetrics');
+      resetLockCorrectionMetrics();
+      recordLockCorrection('T-1', 'T-2');
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText(/fired=1/)).toBeTruthy();
+      expect(getLockCorrectionMetrics().fired).toBe(1);
+      resetLockCorrectionMetrics();
+    });
+
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
       const {
         clearCandidateRejectEntries,
@@ -5700,8 +5796,11 @@ describe('DebugModal — #2049 UI 누락 4 섹션 render', () => {
   it('Boarding-Lock Drift 섹션이 UI에 노출된다 (buffer 비어 있으면 (empty))', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    // DebugLogSection은 header에 count(0) suffix를 붙임 → 'Boarding-Lock Drift (0)' 존재 확인.
-    expect(screen.getByText(/Boarding-Lock Drift \(\d+\)/)).toBeTruthy();
+    // DebugLogSection은 header에 count(0) suffix를 붙임. #2268 (C2)로 title 자체에 launch 이후
+    // 경과 초(buffer age)가 먼저 붙고 count가 그 뒤에 온다 → '...age since launch = Ns) (0)'.
+    expect(
+      screen.getByText(/Boarding-Lock Drift \(buffer age since launch = \d+s\) \(\d+\)/),
+    ).toBeTruthy();
   });
 
   it('Boarding-Lock Drift buffer push → UI 반영 + clear 버튼이 buffer를 비운다', async () => {
@@ -5736,7 +5835,10 @@ describe('DebugModal — #2049 UI 누락 4 섹션 render', () => {
   it('BoardingLock Lifecycle 섹션이 UI에 노출된다 (buffer 비어 있으면 (empty))', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText(/BoardingLock Lifecycle \(\d+\)/)).toBeTruthy();
+    // #2268 (C2) — buffer age suffix 포함 title.
+    expect(
+      screen.getByText(/BoardingLock Lifecycle \(buffer age since launch = \d+s\) \(\d+\)/),
+    ).toBeTruthy();
   });
 
   it('BoardingLock Lifecycle buffer push → UI 반영 + clear 버튼이 buffer를 비운다', async () => {
