@@ -50,27 +50,39 @@ ADR-032의 두 transport 잔여(연결 창 / 지연 drift) 해결이 전부 **"m
 - **PIVOT**: 무거운 튜닝/거치위치 한정으로만 충족 → barometer+accel consensus 추가, 지연 완화, 거치 가이드 등 조정 후 재spike.
 - **KILL**: 어떤 후보도 recall 90% 미달 → motion-gate 불신뢰 → ADR-032가 **backend plan ETA + arvlCd에 더 의존**(drift 일부 수용)하도록 재설계, 또는 device-fire 방향 재검토.
 
-## 라이드 매트릭스 (N≥5, 이상적 8)
-| 조건 | 목적 |
-|---|---|
-| 지하 노선(7호선) | 지하 무GPS 핵심 |
-| 지상/고가(2호선 지상 구간) | GPS ground-truth 대조 |
-| 환승 라이드(7→2) | leg 경계 검출 |
-| 급행+완행(9호선) | 급행 skip 패턴(W2 참고데이터) |
-| 거치: 주머니/손/가방 각 ≥2 | H3 |
+## 실탑승 최소화 — 캡처 1회 → fixture → CI replay (재설계 2026-08-10)
 
-> N≥5는 `lesson_n1_root_cause_bias` 최소선. 조건별 최소 1, 지하는 ≥2.
+**원칙**: raw accel 신호 품질(물리)과 iOS BG 웨이크(OS)는 실기기서만 관측된다 → **실탑승 0은 불가능**. 하지만 **한 번 캡처하면 fixture가 되어 이후 전부 CI replay**(`lesson_fixture_replay_verification_infrastructure` 패러다임). 그래서 "N≥5 반복 탑승"이 아니라 **"대표 캡처 1~2회 → fixture 심고 → 나머지는 CI"**.
 
-## 빌드 범위 (최소·throwaway)
-- DebugModal에 **"SPIKE 로깅 시작/종료" + "MARK 도착/출발"** 버튼. DeviceMotion@20Hz + 기존 snapshot을 in-memory ring에 적재 → 종료 시 `/signals/dump`(RAW_SIGNALS) 또는 파일 export. 기존 `rawSignalBuffer`/observability 덤프 경로 재사용.
-- **오프라인 분석 스크립트**(JS 또는 Python notebook): export 로그 → C1/C2/C3 실행 → 지표 산출.
-- 프로덕션 배선 X, coverage 테스트 X (spike 브랜치, dev 미머지).
+### CI/시나리오가 대체 가능 ✅ (탑승 불필요)
+- **검출 알고리즘 정확도** — 캡처한 fixture를 C1/C2/C3에 replay → recall/precision/latency. 반복·회귀·파라미터 스윕 전부 CI.
+- **로직·배선** — 탑승이벤트→프롬프트→forward(#C~#F) 결정 로직은 mock/시나리오로 검증.
+- **파라미터 튜닝** — θ/T/window 그리드 스윕을 fixture 위에서 자동 탐색(analyzer `--sweep`).
+
+### CI가 대체 **불가** ❌ (실기기 캡처 불가결, 최초 1회)
+1. 실제 지하철 accel이 **검출 가능한 패턴을 담고 있나**(물리) — 합성 selftest 통과 ≠ 실신호 보장.
+2. **iOS BG 웨이크(#0b)** — 시뮬레이터가 BG 스케줄링/신호상실/모션웨이크 재현 못 함.
+
+### 캡처 계획 (최소)
+| 캡처 | 조건 | 목적 | 방식 |
+|---|---|---|---|
+| **1 (필수)** | 지하 노선 + 환승 1회(예: 7→2), 거치 주머니 | 핵심 신호 존재 + leg 경계 | 실탑승 로거+MARK |
+| 2 (권장) | 급행 포함 노선, 거치 손/가방 | 급행 skip + 거치 robust 대조 | 실탑승 로거+MARK |
+| CI (탑승 X) | 위 fixture로 조건 파생(노이즈 주입/리샘플/거치각 회전) + 파라미터 스윕 | H1·H2·H3 커버리지 확장 | replay |
+
+> 즉 **실탑승은 1~2회로 축소**. N≥5 커버리지는 fixture augmentation + CI로 확보. 원래 `lesson_n1_root_cause_bias`의 N≥5는 "실탑승 5회"가 아니라 "검증 조건 5개" — CI replay로 충족 가능.
+
+## 빌드 범위
+- **[캡처 도구] DebugModal SPIKE 로거** — DeviceMotion@20Hz + 기존 snapshot + MARK 버튼 → JSONL export. (BG-B에서 구현, PR #2272)
+- **[replay 하네스] 분석 스크립트** `tools/spike/analyzeAccelFingerprint.mjs` — fixture → C1/C2/C3 지표 + go/no-go. `--selftest` + **`--sweep`(파라미터 그리드)** 추가. (BG-C 기반, PR #2271)
+- **[CI 회귀] fixture replay 테스트** — 캡처 fixture를 리포에 커밋(정제·익명화) → 분석기가 임계(recall≥90% 등)를 assert하는 CI job. 이후 알고리즘 변경 회귀 방어. ← **캡처 후 추가**.
+- 프로덕션 배선 X (로거/분석은 spike 성격, dev 미머지). CI replay 테스트만 dev 머지 대상.
 
 ## 산출물
-- 조건별 recall/precision/latency 표 + go/no-go 판정 + (GO 시) 확정 검출 알고리즘 파라미터(θ, T, window).
+- fixture(캡처 JSONL) + 조건별 recall/precision/latency 표 + go/no-go 판정 + (GO 시) 스윕으로 확정한 파라미터(θ, T, window) + CI replay job.
 
-## 페어 spike (#0b, 별개 실패모드)
-**#0는 "신호가 존재하나"(FG). "iOS가 도착 순간 BG로 앱을 깨워 그 신호를 잡나"(숙제1)는 별도 #0b**: BG location task cadence 로깅 → 정차 순간 tick 발생률 측정. #0 GO여도 #0b 실패면 발사 못 함 → 둘 다 통과해야 척추 확정. #0 먼저(더 쌈), GO면 #0b.
+## 페어 spike (#0b, 별개 실패모드 — 유일하게 CI 불가)
+**#0는 "신호가 존재하나". #0b는 "iOS가 도착 순간 BG로 앱을 깨우나"(숙제1)** — BG location task cadence 로깅 → 정차 순간 tick 발생률. **CI로 절대 대체 불가**(OS 런타임) → 실기기 필수. #0 GO 후 진행(캡처 1과 함께 묶어 라이드 1회로 병합 가능하면 병합).
 
 ## 효과 추정
-로거 ~0.5d + N회 라이드(실통근 passive) + 분석 ~0.5d.
+로거✅ + 분석기✅(스윕 추가 ~0.3d) + **실탑승 1~2회**(원래 N≥5 → 축소) + CI replay job ~0.3d. 실탑승 부담이 핵심 감소분.
