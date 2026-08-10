@@ -292,6 +292,9 @@ function tripEndedAlertDedupKey(tripToken: string, createdAt: number): string {
  * 게이팅하는 기존 계약(위 주석)을 그대로 유지 — HTTP DELETE 경로가 metrics 정확도 개선을 위해
  * 종료 사유를 함께 보내더라도 이 값이 alert push를 새로 트리거하면 안 된다(기존 "DELETE 경로는
  * push 불필요" 동작 회귀 금지). `metricsReason` 미지정 시 `reason`을 그대로 D1에 적재(기존 동작).
+ *
+ * Sonar maintainability(파라미터 수 ≤7) — `reason`/`metricsReason`을 `options` 객체로 묶었다.
+ * 둘의 분리 목적(위 문단)은 그대로 유지, 파라미터 개수만 축소.
  */
 export async function cleanupTripWithLa(
   trip: Trip,
@@ -300,9 +303,9 @@ export async function cleanupTripWithLa(
   stats: LiveActivityStats,
   now: number,
   log: Logger,
-  reason?: TripEndedReason,
-  metricsReason?: string,
+  options?: { reason?: TripEndedReason; metricsReason?: string },
 ): Promise<void> {
+  const { reason, metricsReason } = options ?? {};
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
   if (reason) {
     await fireTripEndedAlertPush(trip, reason, env, deps, now, log);

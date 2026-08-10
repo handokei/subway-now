@@ -2331,8 +2331,7 @@ app.delete('/trips/:token', async (c) => {
     makeLaStats(),
     Date.now(),
     (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
-    undefined,
-    metricsReason,
+    { metricsReason },
   );
   return c.json({ ok: true, deleted: true });
 });

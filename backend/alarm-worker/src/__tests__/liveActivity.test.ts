@@ -730,7 +730,7 @@ describe('cleanupTripWithLa', () => {
       makeStats(),
       NOW,
       () => undefined,
-      'eta-missing',
+      { reason: 'eta-missing' },
     );
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(calls[0]).toContain(APNS_HOSTS.sandbox);
@@ -756,7 +756,7 @@ describe('cleanupTripWithLa', () => {
       makeStats(),
       NOW,
       () => undefined,
-      'eta-missing',
+      { reason: 'eta-missing' },
     );
     expect(JSON.parse(capturedBody ?? '{}').data.corrId).toBe('corr-live-1');
   });
@@ -778,7 +778,7 @@ describe('cleanupTripWithLa', () => {
       makeStats(),
       NOW,
       () => undefined,
-      'eta-missing',
+      { reason: 'eta-missing' },
     );
     expect('corrId' in JSON.parse(capturedBody ?? '{}').data).toBe(false);
   });
@@ -799,7 +799,7 @@ describe('cleanupTripWithLa', () => {
       makeStats(),
       NOW,
       (msg) => logs.push(msg),
-      'eta-missing',
+      { reason: 'eta-missing' },
     );
     // 1차 + retry 모두 호출, 둘 다 실패 → 'trip-ended push failed' 로그.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -837,7 +837,7 @@ describe('cleanupTripWithLa', () => {
       makeStats(),
       NOW,
       () => undefined,
-      'eta-missing',
+      { reason: 'eta-missing' },
     );
 
     expect(insertBind).toHaveBeenCalled();
@@ -872,7 +872,7 @@ describe('cleanupTripWithLa', () => {
         makeStats(),
         atNow,
         log,
-        reason,
+        { reason },
       );
 
     it('success 시 dedup stamp 저장 → 동일 trip 재 cleanup 호출 시 alert push skip', async () => {
@@ -961,7 +961,7 @@ describe('cleanupTripWithLa', () => {
           makeStats(),
           NOW,
           () => undefined,
-          reason,
+          { reason },
         );
         const raw = kv.store.get('tripStatus:devtoken');
         expect(raw).toBeDefined();
@@ -1004,7 +1004,7 @@ describe('cleanupTripWithLa', () => {
         makeStats(),
         NOW,
         () => undefined,
-        'la-stale-backstop',
+        { reason: 'la-stale-backstop' },
       );
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       const call = fetchImpl.mock.calls[0] as unknown as [string, { body: string }];
@@ -1034,7 +1034,7 @@ describe('cleanupTripWithLa', () => {
           makeStats(),
           NOW,
           () => undefined,
-          reason,
+          { reason },
         );
         const call = fetchImpl.mock.calls[0] as unknown as [string, { body: string }];
         const body = JSON.parse(call[1].body) as { data: { reason: string } };
@@ -1065,7 +1065,7 @@ describe('cleanupTripWithLa', () => {
         makeStats(),
         NOW,
         (msg) => logs.push(msg),
-        'expired',
+        { reason: 'expired' },
       );
       expect(logs).toContain('trip-status write failed');
     });
@@ -1100,7 +1100,7 @@ describe('cleanupTripWithLa', () => {
           makeStats(),
           NOW,
           () => undefined,
-          reason,
+          { reason },
         );
         // trip + SSoT 모두 KV에서 제거됨.
         expect(await kv.get('trip:devtoken')).toBeNull();
@@ -1149,7 +1149,7 @@ describe('cleanupTripWithLa', () => {
         makeStats(),
         NOW,
         (msg) => logs.push(msg),
-        'expired',
+        { reason: 'expired' },
       );
       // ssot delete 실패 로그가 남고, trip 정리는 정상 완료.
       expect(logs).toContain('ssot delete failed');
@@ -1174,8 +1174,7 @@ describe('cleanupTripWithLa', () => {
         makeStats(),
         NOW,
         () => undefined,
-        undefined,
-        'lockless-trip-end',
+        { metricsReason: 'lockless-trip-end' },
       );
       // reason이 undefined였으므로 fireTripEndedAlertPush 자체가 스킵 — fetch(APNs) 호출 없음.
       expect(fetchImpl).not.toHaveBeenCalled();
@@ -1202,8 +1201,7 @@ describe('cleanupTripWithLa', () => {
         makeStats(),
         NOW,
         () => undefined,
-        undefined,
-        'lockless-trip-end',
+        { metricsReason: 'lockless-trip-end' },
       );
       expect(capturedArgs).toContain('lockless-trip-end');
       // alert push용 reason이 아니라 'user-delete' 폴백도 아님 — device가 보낸 값이 우선.

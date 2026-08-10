@@ -8,7 +8,7 @@
  */
 
 import { hashTripToken } from './sentry';
-import type { Trip, TripEndedReason } from './types';
+import type { Trip } from './types';
 
 /**
  * trip_metrics 에 trip 종료 기록을 적재한다.
@@ -19,12 +19,14 @@ import type { Trip, TripEndedReason } from './types';
  *   미전달 시). `TripEndedReason`(server-side auto-end)뿐 아니라 device가 보고하는 자유
  *   문자열(예: 'lockless-trip-end', 'user-tap')도 받는다(#2268) — alert push 발사 여부와는
  *   무관한 순수 telemetry 값이라 push payload 타입(`TripEndedReason`)으로 제약하지 않는다.
+ *   타입은 `string` 단독 — `TripEndedReason | string`은 리터럴이 string에 흡수돼 자동완성
+ *   효과가 없다(Sonar maintainability). `TripEndedReason` 값도 문자열이라 그대로 대입 가능.
  * @param endedAt - 종료 epoch ms.
  */
 export async function recordTripMetrics(
   db: D1Database | undefined,
   trip: Trip,
-  reason: TripEndedReason | string | undefined,
+  reason: string | undefined,
   endedAt: number,
 ): Promise<void> {
   if (!db) return;
