@@ -186,4 +186,5 @@ backend: device 침묵 확인 시에만 safetyNet backstop 1회(W4)
 
 ## 10. 남은 검증 인프라 (선행 권장)
 
-- **BoardingLock lifecycle 로깅 복구** — 이번 덤프에서 `BoardingLock Lifecycle`/`Drift` 버퍼가 비어 lock 유실 순간을 못 잡았음(#2152가 아침 빌드에 없었거나 미탑). 재현 진단 위해 lifecycle breadcrumb가 실기기 덤프에 확실히 남도록 검증 → 다음 실탑승부터 emitter 전환 효과를 로그로 판정 가능.
+- **BoardingLock lifecycle 버퍼 영속화** (전제 정정 2026-08-10 감사) — 이번 덤프의 `BoardingLock Lifecycle`/`Drift` (0)은 **로깅 결함이 아님**: #2152 배선 정상(`DebugModal.tsx:2101/2166`, 로깅 호출부 정상). 원인은 **모든 debug ring buffer(`createDebugBuffer`)가 in-memory 비영속 → 앱 kill·BG 재기동(silent push)·OTA 리로드 시 리셋**. 07:33 lock 이벤트 ~ 13h 뒤 덤프 사이 프로세스 재기동으로 증발. → **고칠 것 = 복구가 아니라 lifecycle/drift 버퍼 영속화(AsyncStorage) 또는 최소 "launch 이후 버퍼 age" 마커**로 (0)의 "이벤트 없음 vs 재기동 증발"을 구분. 다음 실탑승 RCA 인프라 직결.
+- **DebugModal share 신뢰성 + coverage gap** (2026-08-10 감사) — (a) share `void Share.share()` 무음 실패 → try/catch+Alert+Clipboard fallback+사이즈 가드. (b) `getLockCorrectionMetrics` 섹션 미배선(주석은 노출 주장) → SHARE_SECTIONS 배선. (c) `computeTripRecall` 요약 라인(선택).
