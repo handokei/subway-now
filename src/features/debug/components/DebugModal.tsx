@@ -69,6 +69,9 @@ import {
   exportRecentDays,
 } from '../../../features/alarm/utils/boardingPromptMonitor';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
+// #2268 (C1) — pending→confirmed lock 정정 measurement infra(#1166). fired count 는
+// BoardingTrainList가 이미 기록하지만 DebugModal에 섹션이 없어 관측 불가했다.
+import { getLockCorrectionMetrics } from '../../alarm/utils/lockCorrectionMetrics';
 import {
   BOARDING_LOCK_EXPIRY_FACTOR,
   isBoardingLockExpired,
@@ -634,6 +637,12 @@ interface BuildDumpArgs {
   boardingLockDriftLog?: readonly BoardingLockDriftEntry[];
   /** #2152 — BoardingLock lifecycle(create/release) 별 buffer entries. 미전달/빈 배열은 (empty). */
   lockLifecycleLog?: readonly LockLifecycleEntry[];
+  /**
+   * #2268 (C1) — pending(A)→confirmed(B) lock 정정 counter(#1166). `BoardingTrainList`가
+   * `recordLockCorrection`으로 기록하지만 DebugModal에 섹션이 없어 dump로 관측 불가했다.
+   * 미전달 시 (n/a) 표기.
+   */
+  lockCorrection?: ReturnType<typeof getLockCorrectionMetrics>;
   /**
    * #1413 — BoardingLock 섹션 dump 입력. lock 활성/trainCode/boardingLine/expiresAt.
    * 미전달이면 lock=null과 동일(active=no)로 출력.
@@ -1262,6 +1271,25 @@ function buildLockLifecycleSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #2268 (C1) — Lock Correction 섹션. `getLockCorrectionMetrics()`(#1166)가 기록하는
+ * fired count / lastFiredAtMs를 dump/UI 양쪽에 노출. 미전달 시 (n/a) — 호출자가 metrics를
+ * 주입하지 않은 테스트 호환용.
+ *
+ * #2049 패턴을 따라 dump builder와 UI section이 이 helper를 공유한다.
+ */
+function computeLockCorrectionLines(
+  metrics: ReturnType<typeof getLockCorrectionMetrics> | undefined,
+): string[] {
+  if (!metrics) return ['(n/a)'];
+  const lastFiredLine = metrics.lastFiredAtMs === 0 ? '(never)' : formatTime(metrics.lastFiredAtMs);
+  return [`fired=${metrics.fired}`, `lastFiredAt=${lastFiredLine}`];
+}
+
+function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
+  return computeLockCorrectionLines(args.lockCorrection);
+}
+
+/**
  * #1518 — Backend call ring buffer 1줄 포맷. call/response/error를 한 줄에 압축해
  * dump 분량을 줄인다. host 부분만 노출하고 path는 trim 안 함(진단 시 endpoint 식별).
  */
@@ -1685,6 +1713,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'Gates', build: buildGatesSection, omitIfEmpty: true },
   // #1413 — BoardingLock dump. lock vs lockless 구분이 dump 본문만으로 확인 가능해야 한다.
   { title: 'BoardingLock', build: buildBoardingLockSection },
+  // #2268 (C1) — pending→confirmed lock 정정 counter(#1166). BoardingLock 섹션 직후 배치.
+  { title: 'Lock Correction', build: buildLockCorrectionSection },
   // #1413 — Estimator buffer. lockless trip 진행도 사후 재구성용.
   {
     title: 'Estimator State',
@@ -2263,6 +2293,11 @@ function DebugModalInner({
     return `${upText}\n${downText}`;
   })();
 
+  // #2268 (C1) — pending→confirmed lock 정정 counter. lockCorrectionMetrics.ts는 순수
+  // module-level singleton getter라 render마다 직접 호출해도 안전(다른 render-time
+  // 스냅샷 산출 값들 — autoLockMeta/envDistribution — 과 동일 패턴).
+  const lockCorrectionMetrics = getLockCorrectionMetrics();
+
   const nearestDistanceM = result ? Math.round(result.distanceKm * 1000) : null;
   const variantNames = variants.map((v) => `${v.name}(${v.line})`);
 
@@ -2344,6 +2379,8 @@ function DebugModalInner({
       },
       // Fusion Tier (1h) — Modal render 와 동일 별 ring buffer(alarmLog 점령 회귀 차단).
       fusionTierLog: fusionTierLogs,
+      // #2268 (C1) — Lock Correction counter. Modal render와 동일 SSOT(getLockCorrectionMetrics).
+      lockCorrection: lockCorrectionMetrics,
     });
     // #2268 (S1+S2) — 이전엔 `void Share.share(...)`로 실패가 완전 무음이었다(catch 없음).
     // Share 시트를 뜨는 순간 취소돼도 reject 하는 OS 조합이 있어 사용자가 "왜 안 되지"만
@@ -2422,6 +2459,8 @@ function DebugModalInner({
     groundTruthResponses,
     // Fusion Tier (1h) — fusion picker tier 별 ring buffer 변경 시 dump 텍스트 자동 갱신.
     fusionTierLogs,
+    // #2268 (C1) — Lock Correction counter 변경 시 dump 텍스트 자동 갱신.
+    lockCorrectionMetrics,
   ]);
 
   return (
@@ -2719,6 +2758,10 @@ function DebugModalInner({
           </Section>
 
           <BoardingLockSection lock={lock} colors={colors} />
+
+          {/* #2268 (C1) — Lock Correction: pending→confirmed 정정 fired count / lastFiredAt.
+              buildLockCorrectionSection과 동일 SSOT (내부 helper 재사용). */}
+          <LockCorrectionSection metrics={lockCorrectionMetrics} colors={colors} />
 
           <DebugLogSection
             title="Estimator State"
@@ -3549,6 +3592,26 @@ function DumpTextSection({
 }
 
 /**
+ * #2268 (C1) — Lock Correction UI section. computeLockCorrectionLines helper를 dump builder와 공유.
+ */
+function LockCorrectionSection({
+  metrics,
+  colors,
+}: Readonly<{
+  metrics: ReturnType<typeof getLockCorrectionMetrics> | undefined;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <DumpTextSection
+      title="Lock Correction"
+      lines={computeLockCorrectionLines(metrics)}
+      entryTestId="debug-lock-correction"
+      colors={colors}
+    />
+  );
+}
+
+/**
  * #2049 (#1421) — Auto-lock Candidate UI section. computeAutoLockLines helper를 dump builder와 공유.
  */
 function AutoLockCandidateSection({
@@ -3723,6 +3786,9 @@ export const __test__ = {
   // #2268 (C2) — Lifecycle/Drift buffer age suffix. 단위 테스트에서 launchAtMs/nowMs 조합 검증.
   formatBufferAgeSuffix,
   DEBUG_MODAL_LOAD_AT_MS,
+  // #2268 (C1) — Lock Correction section builder/helper. 단위 테스트에서 직접 검증.
+  computeLockCorrectionLines,
+  buildLockCorrectionSection,
 };
 
 const styles = StyleSheet.create({

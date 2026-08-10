@@ -4944,6 +4944,48 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## BoardingLock Lifecycle (0) (buffer age since launch = 5s)');
     });
 
+    // #2268 (C1) — getLockCorrectionMetrics()(#1166)는 BoardingTrainList가 기록하는데
+    // DebugModal에 섹션이 없어 관측 불가했다(orphan getter). 섹션 배선 검증.
+    it('computeLockCorrectionLines / buildLockCorrectionSection: n/a + fired/lastFiredAt 표기 (#2268)', () => {
+      const { computeLockCorrectionLines, buildLockCorrectionSection } = __test__;
+      expect(computeLockCorrectionLines(undefined)).toEqual(['(n/a)']);
+      expect(computeLockCorrectionLines({ fired: 0, lastFiredAtMs: 0 })).toEqual([
+        'fired=0',
+        'lastFiredAt=(never)',
+      ]);
+      const withTs = computeLockCorrectionLines({ fired: 3, lastFiredAtMs: 1_700_000_000_000 });
+      expect(withTs[0]).toBe('fired=3');
+      expect(withTs[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+      const built = buildLockCorrectionSection({
+        ...baselineDumpArgs,
+        lockCorrection: { fired: 2, lastFiredAtMs: 1000 },
+      });
+      expect(built[0]).toBe('fired=2');
+      expect(built[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+    });
+
+    it('Lock Correction 섹션이 share dump에 포함된다 (#2268)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({ lockCorrection: { fired: 5, lastFiredAtMs: 2000 } }),
+      );
+      expect(dump).toContain('## Lock Correction');
+      const section = dump.slice(dump.indexOf('## Lock Correction'));
+      expect(section).toContain('fired=5');
+      expect(section).toMatch(/lastFiredAt=\d{2}:\d{2}:\d{2}/);
+    });
+
+    it('Lock Correction 섹션이 UI에 노출된다 (#2268)', async () => {
+      const { getLockCorrectionMetrics, resetLockCorrectionMetrics, recordLockCorrection } =
+        jest.requireActual('../../../alarm/utils/lockCorrectionMetrics');
+      resetLockCorrectionMetrics();
+      recordLockCorrection('T-1', 'T-2');
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText(/fired=1/)).toBeTruthy();
+      expect(getLockCorrectionMetrics().fired).toBe(1);
+      resetLockCorrectionMetrics();
+    });
+
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
       const {
         clearCandidateRejectEntries,
