@@ -8,10 +8,18 @@
  * 본 함수는 BG tick에서 동일한 `evaluateTransferSwap`(FG와 공유 pure 결정)을 돌려 환승-swap 후보를
  * 잡고, 후보가 있으면 backend `/boarding-lock/sync`에 새 노선 trainCode를 통보한다. backend가 새
  * trainCode를 관측하면 W1(#1271) 경로로 swap을 적용하고 `autoLockCandidate.from='transfer-swap'`을
- * silent push로 발급 → client store가 motion gate 우회로 hydrate. FG/BG가 같은 swap 경로를 탄다.
+ * **sync 응답에 직접** 실어 돌려준다.
  *
- * 의존성은 모두 주입한다(테스트 가능 + route 슬라이스가 nearest-station/arrival를 직접 import하지
- * 않게): 호출자(backgroundLocationTask, cross-feature 옵트인 파일)가 provider/sync/lookup을 넘긴다.
+ * #2268 (2026-08-10 실탑승 RCA) — 과거 구현은 이 응답을 버리고 "silent push가 hydrate할 것"이라
+ * 가정했으나, silent push는 autoLockCandidate를 소비하는 채널이 아니라 지하 환경에서 도착 자체가
+ * 죽는 독립 실패 지점이었다(`lesson_silent_push_ssot_forward_no_independent_channel`). 그 결과
+ * BG 환승에서 새 노선 lock이 영영 안 붙어 무보호 상태가 됐다. 본 함수는 이제 sync 응답의
+ * `autoLockCandidate`를 직접 소비해 `deps.hydrateLock`으로 lock을 hydrate한다 — FG
+ * (`useBoardingLockSync` → `hydrateLockFromCandidate`)와 동일하게 HTTP 응답을 SSOT로 쓴다.
+ *
+ * 의존성은 모두 주입한다(테스트 가능 + route 슬라이스가 nearest-station/arrival/alarm를 직접
+ * import하지 않게): 호출자(backgroundLocationTask, cross-feature 옵트인 파일)가
+ * provider/sync/lookup/hydrate를 넘긴다.
  *
  * false-positive 방어는 `evaluateTransferSwap`(=`detectTransfer`)의 기존 게이트를 그대로 재사용한다:
  *   1) 현재 최근접 역이 환승역  2) motion walking(이동 중)  3) 현재 boardingLine 제외 다른 노선의
@@ -34,13 +42,41 @@ export interface BackgroundTransferSwapSyncPayload {
   boardingLine: string;
 }
 
+/**
+ * #2268 — `nearest-station/api/boardingLockSync.ts`의 `AutoLockCandidate` 구조적 부분집합.
+ * route 슬라이스가 nearest-station의 타입을 직접 import하지 않도록(cross-feature 경계) 여기서
+ * 구조적으로 재정의한다 — 실제 호출자(backgroundLocationTask)가 넘기는 값은 그 타입 그대로다.
+ */
+export interface BackgroundTransferSwapAutoLockCandidate {
+  trainCode: string;
+  line: string;
+  subwayId: string;
+  from?: 'transfer-swap';
+}
+
+/** `syncBoardingLock` 응답에서 본 함수가 소비하는 부분집합. */
+export interface BackgroundTransferSwapSyncResult {
+  autoLockCandidate?: BackgroundTransferSwapAutoLockCandidate | null;
+}
+
 export interface BackgroundTransferSwapDeps {
   /** 좌표 → fusion 최근접 역(환승 여부 포함). nearest-station feature에서 주입. */
   findNearestStations: (lat: number, lng: number) => NearestStationsResult | null;
   /** arrival provider. 환승역 도착 정보 1회 조회용. */
   arrivalProvider: ArrivalProvider;
   /** backend sync 발사. 호출자(BG task)가 nearest-station API를 래핑해 주입. */
-  syncBoardingLock: (payload: BackgroundTransferSwapSyncPayload) => Promise<unknown>;
+  syncBoardingLock: (
+    payload: BackgroundTransferSwapSyncPayload,
+  ) => Promise<BackgroundTransferSwapSyncResult>;
+  /**
+   * #2268 — sync 응답에 `autoLockCandidate`가 실려오면 호출. 호출자(BG task)가 alarm 슬라이스의
+   * lock store로 hydrate한다. 미주입(undefined)이면 hydrate 자체를 skip — 기존 호출자/테스트가
+   * 깨지지 않도록 optional로 둔다.
+   */
+  hydrateLock?: (
+    candidate: BackgroundTransferSwapAutoLockCandidate,
+    context: { stationName: string },
+  ) => void;
 }
 
 export interface BackgroundTransferSwapInput {
@@ -89,6 +125,7 @@ export function resetBackgroundTransferSwapState(): void {
  *   3) 같은 환승역 + 같은 leg lock으로 이미 발사했으면 skip (arrival 재조회 churn 차단)
  *   4) 환승역 arrival 1회 조회 → `evaluateTransferSwap`로 다른 노선 임박 + walking 결합 판정
  *   5) 단일 후보(=새 노선 trainCode)면 backend sync 발사
+ *   6) sync 응답에 autoLockCandidate가 있으면 `deps.hydrateLock`으로 직접 hydrate (#2268)
  */
 export async function evaluateBackgroundTransferSwap(
   input: BackgroundTransferSwapInput,
@@ -129,7 +166,7 @@ export async function evaluateBackgroundTransferSwap(
   // backend가 새 trainCode(≠ 현재 lock)를 관측하면 W1(#1271) swap 경로로 from='transfer-swap'
   // candidate를 발급한다. candidate.line은 boardingLine 제외 후 산출돼 항상 다른 노선 → 다른 trainCode.
   lastFiredKey = fireKey;
-  await deps.syncBoardingLock({
+  const response = await deps.syncBoardingLock({
     token: apnsToken,
     observedStationName: stationName,
     observedAtMs,
@@ -137,6 +174,12 @@ export async function evaluateBackgroundTransferSwap(
     trainCode: candidate.trainCode,
     boardingLine: candidate.line,
   });
+
+  // #2268 — 응답에 autoLockCandidate가 실려오면 직접 hydrate. silent push 채널에 더 이상 의존하지
+  // 않는다(그 채널은 지하 환경에서 도착 자체가 죽는 독립 실패 지점이었다).
+  if (response?.autoLockCandidate) {
+    deps.hydrateLock?.(response.autoLockCandidate, { stationName });
+  }
 
   return { fired: true, trainCode: candidate.trainCode };
 }

@@ -224,4 +224,49 @@ describe('evaluateBackgroundTransferSwap', () => {
     expect(result.fired).toBe(true);
     expect(syncSpy).toHaveBeenCalledTimes(2);
   });
+
+  // #2268 — 2026-08-10 실탑승 RCA: sync 응답의 autoLockCandidate를 버리고 죽은 silent push를
+  // 기다리던 회귀. sync 응답에 candidate가 실려오면 hydrateLock으로 직접 hydrate해야 한다.
+  it('sync 응답에 autoLockCandidate가 있으면 hydrateLock을 후보+역명 컨텍스트로 호출', async () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '성수', arrivalSeconds: 60, line: '2', trainCode: 'T-2-new' }),
+    ]);
+    const candidate = { trainCode: 'T-2-new', line: '2', subwayId: '1002', from: 'transfer-swap' as const };
+    const syncSpy = jest.fn().mockResolvedValue({ ok: true, autoLockCandidate: candidate });
+    const { deps } = makeDeps({ arrival, syncSpy });
+    const hydrateLock = jest.fn();
+
+    const result = await evaluateBackgroundTransferSwap(baseInput(), { ...deps, hydrateLock });
+
+    expect(result).toEqual({ fired: true, trainCode: 'T-2-new' });
+    expect(hydrateLock).toHaveBeenCalledTimes(1);
+    expect(hydrateLock).toHaveBeenCalledWith(candidate, { stationName: '건대입구' });
+  });
+
+  it('sync 응답에 autoLockCandidate가 없으면 hydrateLock 미호출', async () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '성수', arrivalSeconds: 60, line: '2', trainCode: 'T-2-new' }),
+    ]);
+    const syncSpy = jest.fn().mockResolvedValue({ ok: true });
+    const { deps } = makeDeps({ arrival, syncSpy });
+    const hydrateLock = jest.fn();
+
+    await evaluateBackgroundTransferSwap(baseInput(), { ...deps, hydrateLock });
+
+    expect(hydrateLock).not.toHaveBeenCalled();
+  });
+
+  it('hydrateLock 미주입이어도 sync 응답 처리는 graceful (throw 없음)', async () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '성수', arrivalSeconds: 60, line: '2', trainCode: 'T-2-new' }),
+    ]);
+    const candidate = { trainCode: 'T-2-new', line: '2', subwayId: '1002', from: 'transfer-swap' as const };
+    const syncSpy = jest.fn().mockResolvedValue({ ok: true, autoLockCandidate: candidate });
+    const { deps } = makeDeps({ arrival, syncSpy });
+
+    await expect(evaluateBackgroundTransferSwap(baseInput(), deps)).resolves.toEqual({
+      fired: true,
+      trainCode: 'T-2-new',
+    });
+  });
 });
