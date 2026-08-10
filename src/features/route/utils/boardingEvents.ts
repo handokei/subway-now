@@ -92,7 +92,7 @@ export function computeBoardingEvents(
 
   if (route.type === 'transfer') {
     const legs: Leg[] = [initialLeg, transferLeg(route.transferName, route.toLine, destinationName)];
-    return legs.map(legToEvent);
+    return legs.map((leg, i) => legToEvent(leg, i));
   }
 
   // multi-transfer: transfers 배열을 순회해 환승 이벤트를 만든다.
@@ -102,5 +102,5 @@ export function computeBoardingEvents(
     return transferLeg(segment.transferName, segment.toLine, nextTargetName);
   });
 
-  return [initialLeg, ...transferLegs].map(legToEvent);
+  return [initialLeg, ...transferLegs].map((leg, i) => legToEvent(leg, i));
 }
