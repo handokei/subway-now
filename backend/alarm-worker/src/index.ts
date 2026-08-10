@@ -2313,6 +2313,13 @@ app.delete('/trips/:token', async (c) => {
       return getTrip(c.env.TRIPS, indexedToken);
     })());
   if (!existing) return c.json({ ok: true, deleted: false });
+  // #2268 — device가 실제 종료 사유(예: lockless-trip-end, 사용자 탭)를 알고 있으면 optional
+  // ?reason= 쿼리로 전달, D1 trip_metrics의 end_reason에 그대로 적재한다(6번째 인자
+  // metricsReason, cleanupTripWithLa 참고). 기존 alert-push 게이팅용 reason(5번째 인자)은 그대로
+  // undefined 유지 — DELETE 경로는 여전히 push를 새로 트리거하지 않는다(회귀 금지).
+  // 길이 제한(64자)은 자유 문자열이 D1 컬럼을 오염시키는 걸 막는 최소 방어 — 값 자체 검증(allowlist)은
+  // 하지 않는다(telemetry only, 분기 로직 없음).
+  const metricsReason = c.req.query('reason')?.trim().slice(0, 64) || undefined;
   // 활성 LA가 있으면 dismissal push 발사 후 KV 삭제. cleanupTripWithLa가 두 동작을 묶는다
   // (deviceToken 역인덱스 정리도 그 안에서 함께 처리된다, 리뷰 P1).
   // logger는 worker console.log로 직결 — HTTP-driven cleanup의 dismissal 실패가 silent loss로
@@ -2324,6 +2331,7 @@ app.delete('/trips/:token', async (c) => {
     makeLaStats(),
     Date.now(),
     (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
+    { metricsReason },
   );
   return c.json({ ok: true, deleted: true });
 });

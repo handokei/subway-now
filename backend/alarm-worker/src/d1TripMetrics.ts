@@ -8,20 +8,25 @@
  */
 
 import { hashTripToken } from './sentry';
-import type { Trip, TripEndedReason } from './types';
+import type { Trip } from './types';
 
 /**
  * trip_metrics 에 trip 종료 기록을 적재한다.
  *
  * @param db - D1 binding. undefined 시 no-op.
  * @param trip - 종료된 trip 객체.
- * @param reason - 종료 사유. undefined = 사용자 명시 DELETE (HTTP DELETE /trips/:token).
+ * @param reason - 종료 사유. undefined = 사용자 명시 DELETE (HTTP DELETE /trips/:token, reason
+ *   미전달 시). `TripEndedReason`(server-side auto-end)뿐 아니라 device가 보고하는 자유
+ *   문자열(예: 'lockless-trip-end', 'user-tap')도 받는다(#2268) — alert push 발사 여부와는
+ *   무관한 순수 telemetry 값이라 push payload 타입(`TripEndedReason`)으로 제약하지 않는다.
+ *   타입은 `string` 단독 — `TripEndedReason | string`은 리터럴이 string에 흡수돼 자동완성
+ *   효과가 없다(Sonar maintainability). `TripEndedReason` 값도 문자열이라 그대로 대입 가능.
  * @param endedAt - 종료 epoch ms.
  */
 export async function recordTripMetrics(
   db: D1Database | undefined,
   trip: Trip,
-  reason: TripEndedReason | undefined,
+  reason: string | undefined,
   endedAt: number,
 ): Promise<void> {
   if (!db) return;
@@ -32,9 +37,15 @@ export async function recordTripMetrics(
     const lineList = extractLineList(trip);
     const chainComplete = isChainComplete(trip);
 
+    // #2268 — INSERT OR IGNORE + migration 0004의 (trip_token_hash, started_at) UNIQUE index.
+    // DELETE /trips/:token이 getTrip→cleanupTripWithLa 사이 race하면 동일 trip 종료가
+    // recordTripMetrics를 두 번 호출할 수 있다(evidence: 2026-08-10, 동일 trip_token_hash 2행,
+    // 521ms차). D1(SQLite)의 UNIQUE 제약이 실제 원자성을 보장 — KV는 compare-and-swap이 없어
+    // app-level "먼저 읽고 나만 지웠으면 진행" 가드로는 이 race를 완전히 닫을 수 없다. 두 번째
+    // race 호출은 조용히 no-op(0 rows affected) — try/catch에 걸리지 않고 정상 흐름 유지.
     await db
       .prepare(
-        `INSERT INTO trip_metrics (
+        `INSERT OR IGNORE INTO trip_metrics (
           trip_token_hash, started_at, ended_at, end_reason,
           origin_station, destination_station, line_list,
           fired_count, suppressed_count,

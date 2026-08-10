@@ -1211,7 +1211,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     if (trip.expiresAt <= now) {
       // #586 D — trip 만료 시 활성 LA가 남아 있으면 dismissal push로 정리하고 KV에서 제거.
       // #868 — 클라 state sync용 trip-ended silent push도 함께 발사 (reason=expired).
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, 'expired');
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
       continue;
     }
 
@@ -1231,7 +1231,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         // ADR-023: backend는 이 값으로 발사 결정 X (log 전용).
         sleepMode: trip.sleepModeEnabled,
       });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, 'expired');
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
       continue;
     }
     if (lifecyclePhase === 'silence') {
@@ -1305,7 +1305,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
           sleepMode: trip.sleepModeEnabled,
         });
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, 'la-stale-backstop');
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'la-stale-backstop' });
         continue;
       }
       // #2131 (Part A-2, ADR-014 동급 보장) — boarding-prompt 9단 게이트 평가를 lockless
@@ -3306,7 +3306,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         endReason,
         seoulHttpErrors: deps.seoul.stats.httpErrorCount,
       });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, endReason);
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: endReason });
       return;
     }
     // #2157 (2026-08-05 결정 A) — 순수 eta-missing(Seoul API는 정상 응답, trainCode만
@@ -3682,7 +3682,7 @@ export async function advanceBoardingLockWaypoint(
           kind: waypoint.kind,
           backstopElapsedMs,
         });
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
         await deleteSsot(env.TRIPS, trip.token);
         return;
       }
@@ -3701,7 +3701,7 @@ export async function advanceBoardingLockWaypoint(
 
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT 도 cleanup. cleanupTripWithLa 가 throw 하면
     // SSoT 가 남아있을 수 있으나 본 PR 스코프 외 (다음 cron 의 stale 정리 path 는 후속 PR).
     await deleteSsot(env.TRIPS, trip.token);
@@ -3866,7 +3866,7 @@ export async function advanceBoardingLockWaypoint(
     // #1707 — 본 분기 진입 전 상단 isCleanupAdvance 게이트가 cross-check 완료. gps-far 케이스는
     // 이미 early return으로 차단됐다. 여기 도달 = within / stale-gps / no-gps / station-unknown
     // 중 하나 = 정상 cleanup 진행.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
     return;
@@ -4105,7 +4105,7 @@ export async function maybeReschedulePush(
       // #868 — 클라 state sync용 trip-ended silent push도 발사 (reason=push-unrecoverable).
       // 단, 토큰 자체가 unrecoverable이면 push도 같은 이유로 실패할 가능성이 높음 — fireTripEndedPush
       // 내부에서 graceful log만 남기고 cleanup 흐름은 계속 진행한다.
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, 'push-unrecoverable');
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
       return { cleanedUp: true };
     }
   }
@@ -4343,7 +4343,7 @@ export async function runLocklessIntermediate(
           envMismatchExhausted: heal.envMismatchExhausted,
         });
         // #868 — lockless push unrecoverable로 trip 폐기 시에도 클라 state sync push 발사.
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, 'push-unrecoverable');
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
         return;
       }
       // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
@@ -4428,7 +4428,7 @@ export async function runLocklessIntermediate(
   if (trip.waypoints.length === 0) {
     // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
     // #868 — lockless trip의 effective destination-arrived도 동일 reason.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
     return;
   }
   // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
