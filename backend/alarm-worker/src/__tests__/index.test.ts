@@ -1643,6 +1643,50 @@ describe('DELETE /trips/:token — LA dismissal (#586 D)', () => {
   });
 });
 
+// #2268 — DELETE /trips/:token이 device가 아는 실제 종료 사유를 ?reason= 쿼리로 받아 D1
+// trip_metrics.end_reason에 적재한다(기존엔 항상 'user-delete'로 뭉개짐). alert push 게이팅과는
+// 무관 — reason 미지정 시 기존 동작(push 없음) 그대로.
+describe('DELETE /trips/:token — ?reason= metrics telemetry (#2268)', () => {
+  const CREATED = 1_700_000_000_000;
+
+  it('?reason= 쿼리가 D1 trip_metrics에 device가 보낸 값 그대로 적재된다', async () => {
+    let capturedArgs: unknown[] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+      capturedArgs = args;
+      return { run };
+    });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    const env = makeKvEnv();
+    env.DB = { prepare } as unknown as Env['DB'];
+    await post('/trips', { ...base(), token: 'tok-reason', createdAt: CREATED }, env);
+
+    const res = await del('/trips/tok-reason?reason=lockless-trip-end', env);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(capturedArgs).toContain('lockless-trip-end');
+  });
+
+  it('reason 쿼리 미지정 시 기존대로 user-delete로 적재된다 (backward-compat)', async () => {
+    let capturedArgs: unknown[] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+      capturedArgs = args;
+      return { run };
+    });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    const env = makeKvEnv();
+    env.DB = { prepare } as unknown as Env['DB'];
+    await post('/trips', { ...base(), token: 'tok-no-reason', createdAt: CREATED }, env);
+
+    const res = await del('/trips/tok-no-reason', env);
+
+    expect(res.status).toBe(200);
+    expect(capturedArgs).toContain('user-delete');
+  });
+});
+
 // 리뷰 확정 P1 (#2186) — DELETE /trips/:token이 getTrip(token) 직접 키 조회만 하면, 역인덱스가
 // 직접 키와 다른 trip을 가리키는 상태(예: ADR-025 이후 존치된 APNs refresh 복구 경로, ADR-025
 // Consequences)에서 실토큰 DELETE가 miss → { ok:true, deleted:false } no-op → orphan trip이

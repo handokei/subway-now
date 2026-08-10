@@ -1156,4 +1156,82 @@ describe('cleanupTripWithLa', () => {
       expect(await kv.get('trip:devtoken')).toBeNull();
     });
   });
+
+  // #2268 — DELETE /trips/:token이 device가 아는 실제 종료 사유(reason)를 D1 trip_metrics에
+  // 적재할 수 있도록 metricsReason 파라미터를 추가했다. 이 값이 alert-push 게이팅용 reason과
+  // 완전히 분리되는지(= push를 새로 트리거하지 않는지) + D1 bind에는 정확히 반영되는지 검증.
+  describe('metricsReason (#2268 — D1 telemetry decoupled from alert-push reason)', () => {
+    it('reason 미지정 + metricsReason만 있으면 alert push는 발사되지 않는다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        undefined,
+        'lockless-trip-end',
+      );
+      // reason이 undefined였으므로 fireTripEndedAlertPush 자체가 스킵 — fetch(APNs) 호출 없음.
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(await kv.get('trip:devtoken')).toBeNull();
+    });
+
+    it('metricsReason이 D1 trip_metrics end_reason에 device가 보낸 값 그대로 적재된다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedArgs: unknown[] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+        capturedArgs = args;
+        return { run };
+      });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        undefined,
+        'lockless-trip-end',
+      );
+      expect(capturedArgs).toContain('lockless-trip-end');
+      // alert push용 reason이 아니라 'user-delete' 폴백도 아님 — device가 보낸 값이 우선.
+      expect(capturedArgs).not.toContain('user-delete');
+    });
+
+    it('metricsReason 미지정 시 기존대로 user-delete로 D1에 적재된다 (backward-compat)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedArgs: unknown[] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+        capturedArgs = args;
+        return { run };
+      });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+      );
+      expect(capturedArgs).toContain('user-delete');
+    });
+  });
 });

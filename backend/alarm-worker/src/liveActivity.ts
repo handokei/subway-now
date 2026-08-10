@@ -287,6 +287,11 @@ function tripEndedAlertDedupKey(tripToken: string, createdAt: number): string {
  *
  * push는 LA dismissal과 별개의 budget(분당 0~1건 trip 종료 수준)이라 LA push와 직렬 발사로 충분.
  * 실패 시 graceful — log만 남기고 cleanup 흐름은 계속 진행한다.
+ *
+ * #2268 — `metricsReason`은 `reason`과 분리된 D1 전용 파라미터. `reason`은 alert push 발사 여부를
+ * 게이팅하는 기존 계약(위 주석)을 그대로 유지 — HTTP DELETE 경로가 metrics 정확도 개선을 위해
+ * 종료 사유를 함께 보내더라도 이 값이 alert push를 새로 트리거하면 안 된다(기존 "DELETE 경로는
+ * push 불필요" 동작 회귀 금지). `metricsReason` 미지정 시 `reason`을 그대로 D1에 적재(기존 동작).
  */
 export async function cleanupTripWithLa(
   trip: Trip,
@@ -296,6 +301,7 @@ export async function cleanupTripWithLa(
   now: number,
   log: Logger,
   reason?: TripEndedReason,
+  metricsReason?: string,
 ): Promise<void> {
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
   if (reason) {
@@ -354,7 +360,8 @@ export async function cleanupTripWithLa(
   }
   // #1835 — D1 trip_metrics 적재. 미바인딩(env.DB undefined) 시 내부에서 graceful no-op.
   // cleanup 흐름 차단 없음 — recordTripMetrics 자체가 try/catch로 swallow.
-  await recordTripMetrics(env.DB, trip, reason, now);
+  // #2268 — metricsReason이 있으면 alert-push 게이팅용 reason 대신 그 값을 적재(위 헤더 주석).
+  await recordTripMetrics(env.DB, trip, metricsReason ?? reason, now);
 }
 
 /**
