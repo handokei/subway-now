@@ -125,6 +125,7 @@ export function resetBackgroundTransferSwapState(): void {
  *   3) 같은 환승역 + 같은 leg lock으로 이미 발사했으면 skip (arrival 재조회 churn 차단)
  *   4) 환승역 arrival 1회 조회 → `evaluateTransferSwap`로 다른 노선 임박 + walking 결합 판정
  *   5) 단일 후보(=새 노선 trainCode)면 backend sync 발사
+ *   6) sync 응답에 autoLockCandidate가 있으면 `deps.hydrateLock`으로 직접 hydrate (#2268)
  */
 export async function evaluateBackgroundTransferSwap(
   input: BackgroundTransferSwapInput,
@@ -165,7 +166,7 @@ export async function evaluateBackgroundTransferSwap(
   // backend가 새 trainCode(≠ 현재 lock)를 관측하면 W1(#1271) swap 경로로 from='transfer-swap'
   // candidate를 발급한다. candidate.line은 boardingLine 제외 후 산출돼 항상 다른 노선 → 다른 trainCode.
   lastFiredKey = fireKey;
-  await deps.syncBoardingLock({
+  const response = await deps.syncBoardingLock({
     token: apnsToken,
     observedStationName: stationName,
     observedAtMs,
@@ -173,6 +174,12 @@ export async function evaluateBackgroundTransferSwap(
     trainCode: candidate.trainCode,
     boardingLine: candidate.line,
   });
+
+  // #2268 — 응답에 autoLockCandidate가 실려오면 직접 hydrate. silent push 채널에 더 이상 의존하지
+  // 않는다(그 채널은 지하 환경에서 도착 자체가 죽는 독립 실패 지점이었다).
+  if (response?.autoLockCandidate) {
+    deps.hydrateLock?.(response.autoLockCandidate, { stationName });
+  }
 
   return { fired: true, trainCode: candidate.trainCode };
 }
