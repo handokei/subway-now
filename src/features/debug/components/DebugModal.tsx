@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   AppState,
   Modal,
   Pressable,
@@ -12,6 +13,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { createLogger } from '../../../shared/utils/logger';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
@@ -259,6 +261,12 @@ export interface AutoLockDebugMeta {
 }
 
 const UNKNOWN_LABEL = '—';
+
+/**
+ * #2268 (S1+S2) — Share dump 실패 관측용 logger. `handleShare`의 성공/실패 + 총 길이를
+ * 기록해 무음 실패(void Share.share만 호출하던 이전 구현)를 방지한다.
+ */
+const shareLog = createLogger('debugModalShare');
 
 /**
  * #1881 — DebugLogSection UI 표시 기본 cap. buffer 전체(최대 300~500)를 한 번에 렌더하면
@@ -2228,7 +2236,7 @@ function DebugModalInner({
   // fusedSpeed prop을 null로 정규화해 buildGpsRows/buildDumpText 양쪽에서 동일 분기 사용.
   const fusedSpeedSignal: FusedSpeedSignal | null = fusedSpeed ?? null;
 
-  const handleShare = useCallback(() => {
+  const handleShare = useCallback(async () => {
     const message = buildDumpText({
       userLocation,
       speedMps,
@@ -2304,7 +2312,23 @@ function DebugModalInner({
       // Fusion Tier (1h) — Modal render 와 동일 별 ring buffer(alarmLog 점령 회귀 차단).
       fusionTierLog: fusionTierLogs,
     });
-    void Share.share({ message });
+    // #2268 (S1+S2) — 이전엔 `void Share.share(...)`로 실패가 완전 무음이었다(catch 없음).
+    // Share 시트를 뜨는 순간 취소돼도 reject 하는 OS 조합이 있어 사용자가 "왜 안 되지"만
+    // 겪고 재시도 방법을 몰랐다. 길이를 항상 로그로 남기고, 실패 시 Alert로 안내한다.
+    // Clipboard fallback: expo-clipboard 등 클립보드 패키지가 프로젝트에 설치돼 있지 않아
+    // (package.json 확인 완료) 자동 클립보드 복사는 도입하지 않았다 — Alert가 실패/길이
+    // 안내를 대신한다(PR 본문에 결정 명시).
+    shareLog.info(`dump length=${message.length} chars`);
+    try {
+      await Share.share({ message });
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      shareLog.error(`share failed: ${reason}`);
+      Alert.alert(
+        '공유 실패',
+        `진단 덤프 공유에 실패했습니다 (길이 ${message.length}자).\n다시 시도하거나 잠시 후 재시도해 주세요.\n\n오류: ${reason}`,
+      );
+    }
   }, [
     userLocation,
     speedMps,

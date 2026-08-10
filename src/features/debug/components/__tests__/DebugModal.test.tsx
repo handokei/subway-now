@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppState, Share } from 'react-native';
+import { Alert, AppState, Share } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
@@ -658,9 +658,42 @@ describe('DebugModal', () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     fireEvent.press(screen.getByTestId('debug-share-dump'));
-    expect(shareSpy).toHaveBeenCalled();
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
     expect(shareSpy.mock.calls[0][0].message).toContain('Subway debug');
     shareSpy.mockRestore();
+  });
+
+  // #2268 (S1) — Share.share가 reject 하면 이전엔 무음 실패였다(void 호출, catch 없음).
+  // 사용자에게 Alert로 실패 + 덤프 길이를 안내해야 한다.
+  it('Share.share가 실패하면 Alert로 사용자에게 안내한다', async () => {
+    const shareSpy = jest
+      .spyOn(Share, 'share')
+      .mockRejectedValue(new Error('share sheet dismissed'));
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    const [title, body] = alertSpy.mock.calls[0];
+    expect(title).toBe('공유 실패');
+    expect(body).toContain('share sheet dismissed');
+    expect(body).toMatch(/길이 \d+자/);
+    shareSpy.mockRestore();
+    alertSpy.mockRestore();
+  });
+
+  // #2268 (S1) — reject 값이 Error 인스턴스가 아닌 경우(String(e) fallback 분기) 커버.
+  it('Share.share가 non-Error 값으로 reject 되어도 Alert에 String(e)를 안내한다', async () => {
+    const shareSpy = jest.spyOn(Share, 'share').mockRejectedValue('share sheet unavailable');
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    const [, body] = alertSpy.mock.calls[0];
+    expect(body).toContain('share sheet unavailable');
+    shareSpy.mockRestore();
+    alertSpy.mockRestore();
   });
 
   it('AppState active 복귀 시 로그를 다시 불러온다', async () => {
