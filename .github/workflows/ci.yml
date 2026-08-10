@@ -49,6 +49,34 @@ jobs:
       - name: 단위 테스트 실행 (커버리지 100% 검증)
         run: npm test -- --ci --forceExit
 
+  fixture-replay:
+    # #2268 — accelerometer detection fixture-replay harness, promoted from
+    # the throwaway spike (tools/spike/analyzeAccelFingerprint.mjs, #2271)
+    # to reusable regression infra (tools/replay/). Runs all committed
+    # fixtures (synthetic only for now, real captures drop in later) through
+    # the 3 candidate detectors and fails if none clears the go/no-go gate
+    # on any fixture.
+    #
+    # Deliberately NOT a required status check — it's a detection-quality
+    # signal, not a merge gate. Do not add this job name to branch
+    # protection required checks (Data Validation / Type Check & Test stay
+    # the only required checks, see CLAUDE.md).
+    name: Fixture Replay
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 가속도계 fixture replay (synthetic, informational)
+        run: node tools/replay/replayHarness.mjs --ci
+
   backend-validation:
     # #1624 — backend/alarm-worker type-check + vitest CI gate.
     # frontend `test` job은 backend를 검증하지 않으므로 별도 job으로 회귀 차단.
