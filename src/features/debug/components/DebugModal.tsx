@@ -269,6 +269,13 @@ const UNKNOWN_LABEL = '—';
 const shareLog = createLogger('debugModalShare');
 
 /**
+ * #2268 (C2) — DebugModal이 최초 로드된 시각. `app/_layout.tsx`가 static import하므로
+ * 사실상 앱 launch 시각의 근사치로 쓸 수 있다. 앱 kill/BG 재기동 시 모듈이 새로
+ * 로드되며 값도 리셋 — Lifecycle/Drift 버퍼 age 계산의 기준점(C2).
+ */
+const DEBUG_MODAL_LOAD_AT_MS = Date.now();
+
+/**
  * #1881 — DebugLogSection UI 표시 기본 cap. buffer 전체(최대 300~500)를 한 번에 렌더하면
  * ScrollView 성능 저하. 100건이면 약 50분 분량 — 진단에 충분하고 UI 스크롤 부담도 적다.
  * "더 보기" 버튼 탭 시 expanded state로 전환해 buffer 전체 표시.
@@ -641,6 +648,13 @@ interface BuildDumpArgs {
    * 미전달 시 `Date.now()` 사용. 테스트에서 결정적 출력 확보용.
    */
   nowMs?: number;
+  /**
+   * #2268 (C2) — DebugModal 모듈이 로드된 시각(≈ 앱 launch). 미전달 시
+   * `DEBUG_MODAL_LOAD_AT_MS`(모듈 상수) 사용 — 테스트에서 결정적 출력 확보용.
+   * Lifecycle/Drift 버퍼는 in-memory라 앱 kill/BG 재기동 시 리셋된다. 두 섹션이 (0)일 때
+   * "이벤트 없음"과 "재기동으로 증발"을 구분할 수 없는 문제(C2)를 이 값 기준 age 표기로 완화한다.
+   */
+  launchAtMs?: number;
   /**
    * #1421 — Auto-lock Candidate 측정 스냅샷. 미전달 시 섹션은 (n/a) 표기.
    * DebugModalInner가 매 render에서 useFusedNearestStation SSOT + stability buffer + direction을
@@ -1210,6 +1224,18 @@ function formatBoardingLockDriftLine(entry: BoardingLockDriftEntry): string {
   return `${time} | boarding-lock-drift:${entry.branch} | ${entry.lockStationName}(${entry.lockStationLine}) drift=${d}`;
 }
 
+/**
+ * #2268 (C2) — Lifecycle/Drift ring buffer가 in-memory 비영속이라 (0)이 "이벤트 없음"인지
+ * "앱 kill/BG 재기동으로 증발"인지 dump만으로 구분 불가능했다. launch 이후 경과 초를 헤더
+ * suffix로 노출해, "(0) + age 짧음"과 "(0) + age 김"을 사용자가 판정할 수 있게 한다.
+ */
+function formatBufferAgeSuffix(args: BuildDumpArgs): string {
+  const now = args.nowMs ?? Date.now();
+  const launchAtMs = args.launchAtMs ?? DEBUG_MODAL_LOAD_AT_MS;
+  const ageSec = Math.max(0, Math.round((now - launchAtMs) / 1000));
+  return ` (buffer age since launch = ${ageSec}s)`;
+}
+
 function buildBoardingLockDriftLogSection(args: BuildDumpArgs): string[] {
   const entries = args.boardingLockDriftLog ?? [];
   if (entries.length === 0) return ['(empty)'];
@@ -1703,16 +1729,18 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     suffix: (args) => ` (${args.candidateRejectLog?.length ?? 0})`,
   },
   // #1896 (RC-8) — boarding-lock-drift 별 buffer (GPS displacement gate trigger). fusionDebugBuffer 점령 회귀 차단.
+  // #2268 (C2) — buffer age suffix 추가: (0)이 "이벤트 없음"인지 "재기동 증발"인지 구분.
   {
     title: 'Boarding-Lock Drift',
     build: buildBoardingLockDriftLogSection,
-    suffix: (args) => ` (${args.boardingLockDriftLog?.length ?? 0})`,
+    suffix: (args) => ` (${args.boardingLockDriftLog?.length ?? 0})${formatBufferAgeSuffix(args)}`,
   },
   // #2152 — BoardingLock lifecycle 별 buffer (생성 source / 해제 reason / trainCode).
+  // #2268 (C2) — buffer age suffix 추가.
   {
     title: 'BoardingLock Lifecycle',
     build: buildLockLifecycleSection,
-    suffix: (args) => ` (${args.lockLifecycleLog?.length ?? 0})`,
+    suffix: (args) => ` (${args.lockLifecycleLog?.length ?? 0})${formatBufferAgeSuffix(args)}`,
   },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
@@ -1858,6 +1886,11 @@ function DebugModalInner({
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
   // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
   const insets = useSafeAreaInsets();
+  // #2268 (C2) — Lifecycle/Drift 섹션 헤더에 표시할 launch 이후 경과 초. render마다 재계산.
+  const debugModalBufferAgeSec = Math.max(
+    0,
+    Math.round((Date.now() - DEBUG_MODAL_LOAD_AT_MS) / 1000),
+  );
   // #1982 (ADR-022 Phase 0) — arrival-api-ssot-v1 Feature Flag remote 조회.
   // ADMIN_TOKEN / ALARM_BACKEND_URL 미설정 환경은 kind=unconfigured 로 그대로 표시.
   const archFlagRemote = useArchFlagRemote();
@@ -2744,8 +2777,10 @@ function DebugModalInner({
           />
 
           {/* #2049 (#1896 RC-8) — boarding-lock-drift 별 buffer. candidate-reject와 동일 표시 패턴. */}
+          {/* #2268 (C2) — 헤더에 launch 이후 경과 초를 표시해 (0)이 "이벤트 없음"인지
+              "앱 재기동으로 버퍼 증발"인지 판정 가능하게 한다. */}
           <DebugLogSection
-            title="Boarding-Lock Drift"
+            title={`Boarding-Lock Drift (buffer age since launch = ${debugModalBufferAgeSec}s)`}
             logs={boardingLockDriftLog}
             formatLine={formatBoardingLockDriftLine}
             onClear={() => {
@@ -2758,8 +2793,9 @@ function DebugModalInner({
           />
 
           {/* #2152 — BoardingLock lifecycle(생성 source / 해제 reason) 별 buffer. drift와 동일 표시 패턴. */}
+          {/* #2268 (C2) — 헤더에 launch 이후 경과 초를 표시(위 Drift 섹션과 동일 근거). */}
           <DebugLogSection
-            title="BoardingLock Lifecycle"
+            title={`BoardingLock Lifecycle (buffer age since launch = ${debugModalBufferAgeSec}s)`}
             logs={lockLifecycleLog}
             formatLine={formatLockLifecycleLine}
             onClear={() => {
@@ -3684,6 +3720,9 @@ export const __test__ = {
   computeAutoLockLines,
   computeEnvironmentDistributionLines,
   computeAlarmLogReasonsLines,
+  // #2268 (C2) — Lifecycle/Drift buffer age suffix. 단위 테스트에서 launchAtMs/nowMs 조합 검증.
+  formatBufferAgeSuffix,
+  DEBUG_MODAL_LOAD_AT_MS,
 };
 
 const styles = StyleSheet.create({

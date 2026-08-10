@@ -4923,6 +4923,27 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## BoardingLock Lifecycle (2)');
     });
 
+    // #2268 (C2) — Lifecycle/Drift buffer가 in-memory 비영속이라 (0)이 "이벤트 없음"인지
+    // "앱 kill/BG 재기동으로 증발"인지 dump만으로 구분 불가능했다. launch 이후 경과 초를
+    // 헤더에 표기해 판정 가능하게 한다.
+    it('formatBufferAgeSuffix: launchAtMs/nowMs 기준 경과 초를 헤더 suffix로 표기 (#2268)', () => {
+      const { formatBufferAgeSuffix } = __test__;
+      expect(
+        formatBufferAgeSuffix({ ...baselineDumpArgs, launchAtMs: 1_000, nowMs: 1_000 }),
+      ).toBe(' (buffer age since launch = 0s)');
+      expect(
+        formatBufferAgeSuffix({ ...baselineDumpArgs, launchAtMs: 1_000, nowMs: 61_000 }),
+      ).toBe(' (buffer age since launch = 60s)');
+    });
+
+    it('Boarding-Lock Drift / BoardingLock Lifecycle 헤더에 buffer age suffix가 포함된다 (#2268)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({ launchAtMs: 1_000, nowMs: 6_000, boardingLockDriftLog: [], lockLifecycleLog: [] }),
+      );
+      expect(dump).toContain('## Boarding-Lock Drift (0) (buffer age since launch = 5s)');
+      expect(dump).toContain('## BoardingLock Lifecycle (0) (buffer age since launch = 5s)');
+    });
+
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
       const {
         clearCandidateRejectEntries,
@@ -5733,8 +5754,11 @@ describe('DebugModal — #2049 UI 누락 4 섹션 render', () => {
   it('Boarding-Lock Drift 섹션이 UI에 노출된다 (buffer 비어 있으면 (empty))', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    // DebugLogSection은 header에 count(0) suffix를 붙임 → 'Boarding-Lock Drift (0)' 존재 확인.
-    expect(screen.getByText(/Boarding-Lock Drift \(\d+\)/)).toBeTruthy();
+    // DebugLogSection은 header에 count(0) suffix를 붙임. #2268 (C2)로 title 자체에 launch 이후
+    // 경과 초(buffer age)가 먼저 붙고 count가 그 뒤에 온다 → '...age since launch = Ns) (0)'.
+    expect(
+      screen.getByText(/Boarding-Lock Drift \(buffer age since launch = \d+s\) \(\d+\)/),
+    ).toBeTruthy();
   });
 
   it('Boarding-Lock Drift buffer push → UI 반영 + clear 버튼이 buffer를 비운다', async () => {
@@ -5769,7 +5793,10 @@ describe('DebugModal — #2049 UI 누락 4 섹션 render', () => {
   it('BoardingLock Lifecycle 섹션이 UI에 노출된다 (buffer 비어 있으면 (empty))', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText(/BoardingLock Lifecycle \(\d+\)/)).toBeTruthy();
+    // #2268 (C2) — buffer age suffix 포함 title.
+    expect(
+      screen.getByText(/BoardingLock Lifecycle \(buffer age since launch = \d+s\) \(\d+\)/),
+    ).toBeTruthy();
   });
 
   it('BoardingLock Lifecycle buffer push → UI 반영 + clear 버튼이 buffer를 비운다', async () => {
