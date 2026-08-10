@@ -102,6 +102,15 @@ const mockGetBoardingLock = jest.fn();
 jest.mock('../../../alarm/utils/boardingLockStorage', () => ({
   getBoardingLock: () => mockGetBoardingLock(),
 }));
+// #2268 — hydrateLock이 sync 응답 autoLockCandidate로 새 lock을 hydrate할 때 쓰는 store.
+// findStationByNameAndLine / allowedLinesFromRoute는 실제 shared 순수 함수를 그대로 사용한다
+// (mocking 불필요 — 결정성 있는 순수 함수, 실제 stations.json 정합성까지 함께 검증).
+const mockCreateLock = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../alarm/store/useBoardingLockStore', () => ({
+  useBoardingLockStore: {
+    getState: () => ({ createLock: (...args: unknown[]) => mockCreateLock(...args) }),
+  },
+}));
 
 // ── logger 모킹 ──
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -1326,6 +1335,81 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       await taskCallback({ data: { locations: [loc] }, error: null });
 
       expect(mockEvaluateBackgroundTransferSwap).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#2268 — hydrateLock: sync 응답 autoLockCandidate로 새 lock hydrate', () => {
+    const activeLock = {
+      destinationId: 'station-2',
+      trainCode: 'T-7-old',
+      boardingStationId: '7-019',
+      boardingLine: '7' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 30 * 60_000,
+    };
+
+    /** taskCallback을 1회 실행해 evaluateBackgroundTransferSwap에 주입된 deps.hydrateLock을 꺼낸다. */
+    async function runAndGetHydrateLock(
+      routeJson: string | null = null,
+    ): Promise<(candidate: Record<string, unknown>, context: { stationName: string }) => void> {
+      mockStorageValues(JSON.stringify(mockDestination), null, routeJson);
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null).mockResolvedValueOnce('apns-tok-1');
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+      const [, deps] = mockEvaluateBackgroundTransferSwap.mock.calls[0];
+      return deps.hydrateLock;
+    }
+
+    it('candidate.from이 "transfer-swap"이 아니면 createLock 미호출', async () => {
+      const hydrateLock = await runAndGetHydrateLock();
+      hydrateLock({ trainCode: 'T-2', line: '2', subwayId: '1002' }, { stationName: '건대입구' });
+      expect(mockCreateLock).not.toHaveBeenCalled();
+    });
+
+    it('역명+line 매칭 실패(무효 line)면 createLock 미호출', async () => {
+      const hydrateLock = await runAndGetHydrateLock();
+      hydrateLock(
+        { trainCode: 'T-2', line: '99', subwayId: '1099', from: 'transfer-swap' },
+        { stationName: '건대입구' },
+      );
+      expect(mockCreateLock).not.toHaveBeenCalled();
+    });
+
+    it('route에 candidate.line이 없으면(allowedLines 위반) createLock 미호출', async () => {
+      const hydrateLock = await runAndGetHydrateLock(JSON.stringify(makeDirectRoute(5, '7')));
+      hydrateLock(
+        { trainCode: 'T-2', line: '2', subwayId: '1002', from: 'transfer-swap' },
+        { stationName: '건대입구' },
+      );
+      expect(mockCreateLock).not.toHaveBeenCalled();
+    });
+
+    it('유효 candidate + route 미설정(필터 미적용) → createLock을 정정된 station으로 호출', async () => {
+      const hydrateLock = await runAndGetHydrateLock();
+      hydrateLock(
+        { trainCode: 'T-2-new', line: '2', subwayId: '1002', from: 'transfer-swap' },
+        { stationName: '건대입구' },
+      );
+      expect(mockCreateLock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destinationId: mockDestination.id,
+          trainCode: 'T-2-new',
+          boardingStationId: '2-012',
+          boardingLine: '2',
+        }),
+      );
+    });
+
+    it('createLock이 reject해도 graceful (throw 없음)', async () => {
+      mockCreateLock.mockRejectedValueOnce(new Error('storage fail'));
+      const hydrateLock = await runAndGetHydrateLock();
+      expect(() =>
+        hydrateLock(
+          { trainCode: 'T-2-new', line: '2', subwayId: '1002', from: 'transfer-swap' },
+          { stationName: '건대입구' },
+        ),
+      ).not.toThrow();
     });
   });
 

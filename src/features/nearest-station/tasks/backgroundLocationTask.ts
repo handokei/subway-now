@@ -42,9 +42,14 @@ import { createArrivalProvider } from '../../arrival/providers/factory';
 import { findNearestStations } from '../utils/findNearestStation';
 import { syncBoardingLock } from '../api/boardingLockSync';
 import { getBoardingLock } from '../../alarm/utils/boardingLockStorage';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { allowedLinesFromRoute, type Route } from '../../../shared/utils/stationRoute';
 import { isValidGpsSpeedMps, MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
-import type { Station } from '../../../shared/types/station';
+import type { LineNumber, Station } from '../../../shared/types/station';
+// #2268 — BG 환승 swap sync 응답의 autoLockCandidate를 직접 hydrate하기 위한 alarm/shared 의존.
+// cross-feature import는 본 파일 헤더 file-level disable로 이미 옵트인.
+import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
+import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
 // #1667 (ADR-015 strongDB wire) — WiFi SSID 매핑 역명 backend forward.
 // device가 lookup 후 역명만 송신 — backend는 stations.json 없으므로 lookup은 device 책임.
 import { getCurrentWifiSsid } from '../utils/wifiSsidNative';
@@ -342,8 +347,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     // #1281 — BG 환승 자동 detect. 주머니 속 환승에서 FG hook 진입점이 없어 옛 노선 lock이
     // 얼어붙던 회귀를 차단한다. lock 활성 + 환승역 + 다른 노선 임박 + walking이 모두 충족될 때만
-    // 새 노선 trainCode를 backend `/boarding-lock/sync`에 통보 → W1(#1271) swap 경로로 hydrate.
+    // 새 노선 trainCode를 backend `/boarding-lock/sync`에 통보한다.
     // apnsToken 부재(트립 미등록 등)는 함수 내부 게이트가 graceful no-op 처리.
+    //
+    // #2268 (2026-08-10 실탑승 RCA) — 과거엔 sync 응답을 버리고 죽은 silent push 채널이 새 노선
+    // lock을 hydrate할 것이라 가정했다(지하 7→2 환승 시 2호선 lock이 영영 안 붙는 무보호 회귀).
+    // hydrateLock이 sync 응답의 autoLockCandidate를 직접 소비해 즉시 hydrate — FG
+    // (`useBoardingLockSync` → `hydrateLockFromCandidate`)와 동일하게 HTTP 응답을 SSOT로 쓴다.
     const swapLock = await getBoardingLock();
     if (apnsToken && swapLock) {
       await evaluateBackgroundTransferSwap(
@@ -361,6 +371,37 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
           findNearestStations: (la, ln) => findNearestStations(la, ln, MAX_STATION_DISTANCE_KM),
           arrivalProvider: createArrivalProvider(),
           syncBoardingLock,
+          hydrateLock: (candidate, context) => {
+            // backend가 'transfer-swap' evidence로 확정 발급한 candidate만 신뢰한다(3조건:
+            // 기존 lock 존재 + trainCode 제공 + trainCode 변경 — 모두 backend가 이미 검증).
+            // motion gate는 evaluateBackgroundTransferSwap이 candidate를 산출한 시점에 이미
+            // walking(motionStationary=false) 조건을 통과했으므로 여기서 재검증하지 않는다
+            // (FG hydrateLockFromCandidate Gate 2의 transfer-swap 우회와 동일 정책).
+            if (candidate.from !== 'transfer-swap') return;
+            // 역명 + candidate.line 정확 매칭 — 환승역 fusion 오류/무효 line 문자열 방어.
+            const correctedStation = findStationByNameAndLine(
+              context.stationName,
+              candidate.line as LineNumber,
+            );
+            if (!correctedStation) return;
+            const boardingLine = correctedStation.line;
+            // #1449 (ADR-015 §9) — trip route 외 line candidate reject. route 없으면 필터 미적용.
+            const allowedLines = allowedLinesFromRoute(storedRoute);
+            if (allowedLines && !allowedLines.has(boardingLine)) return;
+            useBoardingLockStore
+              .getState()
+              .createLock({
+                destinationId: destination.id,
+                trainCode: candidate.trainCode,
+                boardingStationId: correctedStation.id,
+                boardingLine,
+                boardedAt: Date.now(),
+                expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
+              })
+              .catch(() => {
+                // store action rejection은 graceful — 다음 BG tick에서 자연 재시도.
+              });
+          },
         },
       );
     }
