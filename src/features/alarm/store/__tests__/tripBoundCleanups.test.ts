@@ -26,6 +26,7 @@ import { resetAlarmBackendDedup } from '../../api/alarmBackend';
 import * as alarmBackend from '../../api/alarmBackend';
 import { clearBackendSsotMirror } from '../../utils/backendSsotMirror';
 import { clearLastSilentPushReceivedAt } from '../../utils/lastSilentPushReceivedAt';
+import { clearNavigationPausedAt } from '../../utils/navigationPauseStorage';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../useBoardingLockStore';
 import { useLegAdvanceStore } from '../useLegAdvanceStore';
@@ -467,6 +468,12 @@ describe('tripBoundCleanups', () => {
       expect(TRIP_BOUND_CLEANUPS).toContain(clearLastSilentPushReceivedAt);
     });
 
+    // #2293 — "일시정지" stamp도 trip 종료 전체 경로에서 함께 제거돼야 이전 trip의 pausedAt이
+    // 새 trip에 leak되지 않는다.
+    it('#2293: clearNavigationPausedAt가 TRIP_BOUND_CLEANUPS에 포함된다 (일시정지 stamp leak 차단)', () => {
+      expect(TRIP_BOUND_CLEANUPS).toContain(clearNavigationPausedAt);
+    });
+
     it('S12-8: enumeration 가드 — TRIP_BOUND_CLEANUPS 길이가 baseline 이하로 떨어지면 회귀', () => {
       // 새 cleanup 항목이 추가될 때마다 baseline을 한 줄로 갱신. 누군가 실수로 항목을 제거하면
       // 본 assertion이 빨갛게 깨져 의도된 제거인지 코드리뷰에서 확인하도록 강제한다.
@@ -478,7 +485,8 @@ describe('tripBoundCleanups', () => {
       // useLaunchTripReconciliation/useStateRehydration sentinel+force-end)에서 명시 호출.
       // #1892 / #1885 — endLiveActivityCleanup 1 신규 (RC-9 LA orphan 26분 cascade fix).
       // #2045 — clearLastSilentPushReceivedAt 1 신규 (Signal 4 판정 오염 차단).
-      const MIN_ITEMS = 27;
+      // #2293 — clearNavigationPausedAt 1 신규 (일시정지 stamp leak 차단).
+      const MIN_ITEMS = 28;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
     });
   });

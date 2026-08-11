@@ -209,9 +209,14 @@
   },
   "navigation": {
     "start": "案内を開始",
-    "stop": "案内を停止",
+    "stop": "一時停止",
     "end": "案内を終了",
-    "permissionPrompt": "案内を開始するには位置情報の権限が必要です"
+    "permissionPrompt": "案内を開始するには位置情報の権限が必要です",
+    "endConfirmTitle": "案内を終了しますか?",
+    "endConfirmMessage": "経路とアラームが削除されます。",
+    "endConfirmConfirm": "終了",
+    "endConfirmCancel": "キャンセル",
+    "pausedBadge": "一時停止中・経路は保持・{{minutes}}分後に自動終了"
   },
   "arrival": {
     "upbound": "上り",

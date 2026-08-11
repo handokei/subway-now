@@ -209,9 +209,14 @@
   },
   "navigation": {
     "start": "Start guidance",
-    "stop": "Stop guidance",
+    "stop": "Pause",
     "end": "End guidance",
-    "permissionPrompt": "Location permission is required to start guidance"
+    "permissionPrompt": "Location permission is required to start guidance",
+    "endConfirmTitle": "End guidance?",
+    "endConfirmMessage": "Your route and alarms will be deleted.",
+    "endConfirmConfirm": "End",
+    "endConfirmCancel": "Cancel",
+    "pausedBadge": "Paused · route kept · auto-ends in {{minutes}} min"
   },
   "arrival": {
     "upbound": "Upbound",

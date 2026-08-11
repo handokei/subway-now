@@ -209,9 +209,14 @@
   },
   "navigation": {
     "start": "안내 시작",
-    "stop": "안내 중단",
+    "stop": "일시정지",
     "end": "안내 종료",
-    "permissionPrompt": "안내를 시작하려면 위치 권한이 필요합니다"
+    "permissionPrompt": "안내를 시작하려면 위치 권한이 필요합니다",
+    "endConfirmTitle": "안내를 종료할까요?",
+    "endConfirmMessage": "경로와 알람이 삭제됩니다.",
+    "endConfirmConfirm": "종료",
+    "endConfirmCancel": "취소",
+    "pausedBadge": "일시정지됨 · 경로 유지 · {{minutes}}분 후 자동 종료"
   },
   "arrival": {
     "upbound": "상행",

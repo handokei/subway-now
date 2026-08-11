@@ -35,6 +35,7 @@ import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { cancelAllSafetyNetAlarms, resolveEffectiveTripToken } from '../utils/safetyNetScheduler';
 import { cancelAllPrescheduledAlarms } from '../utils/stationPrescheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
+import { clearNavigationPausedAt } from '../utils/navigationPauseStorage';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
@@ -169,6 +170,11 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // (직전 trip이 정상 종료 후 새 trip 시작 X → 앱 launch) → 새 trip 판정 오염 방지.
   // 새 trip 등록 후 첫 silent push 수신 시점부터 stamp 재갱신 → clean baseline.
   clearLastSilentPushReceivedAt,
+  // #2293 — "일시정지" stamp 제거. trip 종료 전체 경로(FG setDestination(null/switch) /
+  // silent push trip-ended / useStateRehydration sentinel / useLaunchTripReconciliation
+  // cold-launch / pause-auto-end backstop 자체)가 모두 이 배열을 거치므로, 여기 한 줄
+  // 추가로 이전 trip의 pausedAt이 새 trip에 leak되지 않도록 자동 wire된다.
+  clearNavigationPausedAt,
 ];
 
 /**

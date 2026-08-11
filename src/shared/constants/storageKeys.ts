@@ -239,3 +239,10 @@ export const RECENT_LOCAL_STATION_FIRES_KEY = 'subway-now:recent-local-station-f
 // 형식: {"nextLine": LineNumber, "stampedAt": number(epoch ms)} JSON.
 // trip 종료 시 runTripBoundCleanups에서 제거 — 이전 trip의 leg-advance가 새 trip에 leak 차단.
 export const LEG_ADVANCE_KEY = 'subway-now:leg-advance';
+// #2293 — "일시정지" 진입 시각(epoch ms). HomeScreen.handleStopNavigation이 stamp,
+// useStateRehydration의 cold-start/FG 복귀 backstop이 PAUSE_AUTO_END_MS(15분) 경과 여부
+// 판정에 사용한다. FG 배지 카운트다운은 별도 메모리 채널(useNavigationStore.pausedAt)을
+// 쓰므로 이 키는 앱이 kill된 경우의 자동 종료 판정 전용. 재개(handleStartNavigation) 또는
+// trip 종료(runTripBoundCleanups) 시 제거.
+// 형식: 숫자(epoch ms) 문자열.
+export const NAVIGATION_PAUSED_AT_KEY = 'subway-now:navigation-paused-at';
