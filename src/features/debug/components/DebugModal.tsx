@@ -46,6 +46,7 @@ import {
 import {
   BOARDING_PROMPT_WINDOWS,
   clearAlarmLog,
+  clearFiredAlarmLog,
   countAlarmLogReasonsByWindow,
   countAutoLockReasonsByWindow,
   countBoardingPromptByWindow,
@@ -55,6 +56,7 @@ import {
   countSilentPushOutcomes,
   formatFusionPickerTierDistribution,
   getAlarmLog,
+  getFiredAlarmLog,
   getFusionTierLog,
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
@@ -62,6 +64,7 @@ import {
   type AlarmLogEntry,
   type AlarmLogReason,
   type AlarmLogReasonCounter,
+  type FiredAlarmLogEntry,
   type FusionTierLogEntry,
 } from '../../../features/alarm/utils/alarmLog';
 import {
@@ -321,9 +324,12 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-// #1626 — outcome filter helper. AlarmLogOutcome union 값 변경 시 grep이 흩어지지 않게
-// 한 곳에서 표현. SHARE_SECTIONS suffix / section builder / UI 컴포넌트 3곳 공유.
-const isFired = (e: AlarmLogEntry): boolean => e.outcome === 'fired';
+// #2284 — fired-only 독립 버퍼(FiredAlarmLogEntry) 1건 포맷. alarmLog의 formatLogLine과 달리
+// (ts, kind, station, line, channel) 5필드만 담는 별도 스키마라 전용 포매터를 둔다.
+function formatFiredLogLine(entry: FiredAlarmLogEntry): string {
+  const linePart = entry.line ?? UNKNOWN_LABEL;
+  return `${formatTime(entry.ts)} ${entry.channel} ${entry.kind} ${entry.station} (${linePart})`;
+}
 
 function formatLogLine(entry: AlarmLogEntry): string {
   const parts: string[] = [
@@ -610,6 +616,11 @@ interface BuildDumpArgs {
    */
   backendSsotMirror?: BackendSsotMirrorEntry | null;
   logs: AlarmLogEntry[];
+  /**
+   * #2284 — fired-only 독립 영속 링버퍼 스냅샷. alarmLog 200-cap rotate와 무관하게 보존되는
+   * 발사 기록 SSoT. 미전달 시 (empty) — 단위 테스트 호환.
+   */
+  firedAlarmLog?: readonly FiredAlarmLogEntry[];
   // #1308: iOS 저전력 모드. optional — 미전달 시 false(off). silent push 측정용.
   lowPowerMode?: boolean;
   // #756: OS 큐 dump. 미전달/null = DebugModal에서 한 번도 Refresh 안 한 상태.
@@ -1056,12 +1067,19 @@ function buildGatesSection(args: BuildDumpArgs): string[] {
   return reasonLine ? [reasonLine] : [];
 }
 
-// #1626 — AlarmLog 중 outcome='fired'만 시간순 reverse. baseline 측정 fidelity 향상:
-// backend `/admin/alarm-log-stats` 호출 없이 device DebugModal에서 V4 발사 시점 즉시 확인.
-// 30s 미만 trip (R2 forward skip)에도 device-local 보존 — 사용자 자가 진단용.
+// #2284 — args.firedAlarmLog optional 기본값 helper. build/suffix 양쪽이 공유해 동일 branch를
+// 재사용 — build()가 omitIfEmpty 판정 이전에 항상 호출되므로 undefined/defined 두 branch
+// 모두 이 한 곳에서 커버된다(suffix는 body 비었을 때 호출 자체가 안 됨, buildDumpText 참고).
+function getFiredEntries(args: BuildDumpArgs): readonly FiredAlarmLogEntry[] {
+  return args.firedAlarmLog ?? [];
+}
+
+// #1626 — V4 발사 시점 dump. baseline 측정 fidelity 향상:
+// backend `/admin/alarm-log-stats` 호출 없이 device DebugModal에서 발사 시점 즉시 확인.
+// #2284 — alarmLog(200-cap, 모든 outcome 혼합) 파생값 대신 독립 fired-only 버퍼를 SSoT로
+// 사용. rotate 절단(2026-08-11 덤프 evidence)으로 오래된 fired 기록이 사라지던 회귀 차단.
 function buildNotificationsFiredSection(args: BuildDumpArgs): string[] {
-  const fired = args.logs.filter(isFired);
-  return [...fired].reverse().map(formatLogLine);
+  return [...getFiredEntries(args)].reverse().map(formatFiredLogLine);
 }
 
 function buildAlarmLogSection(args: BuildDumpArgs): string[] {
@@ -1729,7 +1747,7 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     title: 'Notifications fired',
     build: buildNotificationsFiredSection,
     omitIfEmpty: true,
-    suffix: (args) => ` (${args.logs.filter(isFired).length})`,
+    suffix: (args) => ` (${getFiredEntries(args).length})`,
   },
   {
     title: 'Alarm log',
@@ -2148,6 +2166,9 @@ function DebugModalInner({
   }, []);
 
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
+  // #2284 — fired-only 독립 영속 버퍼 스냅샷. alarmLog(200-cap, 모든 outcome 혼합) rotate와
+  // 무관하게 보존되는 fired count SSoT.
+  const [firedAlarmLog, setFiredAlarmLog] = useState<FiredAlarmLogEntry[]>([]);
   // #1706 — fusion picker tier 별 ring buffer snapshot. alarmLog ring 점령 회귀 차단으로
   // 분리된 채널 (alarmLog와 다른 200 cap). refresh 사이클에 함께 snapshot.
   const [fusionTierLogs, setFusionTierLogs] = useState<readonly FusionTierLogEntry[]>(() =>
@@ -2260,6 +2281,8 @@ function DebugModalInner({
     // #1706 — fusion picker tier 별 ring buffer 동시 snapshot. AsyncStorage 없는 in-memory ring
     // 이라 동기 read. logs와 함께 refresh되어 UI/share dump 정합성 유지.
     setFusionTierLogs(getFusionTierLog());
+    // #2284 — fired-only 독립 버퍼도 동시 refresh. alarmLog와 별도 key라 별도 read 필요.
+    setFiredAlarmLog(await getFiredAlarmLog());
   }, []);
 
   useEffect(() => {
@@ -2273,6 +2296,7 @@ function DebugModalInner({
   const handleClear = useCallback(async () => {
     await Promise.all([
       clearAlarmLog(),
+      clearFiredAlarmLog(),
       clearEstimatorEntries(),
       clearFusionDebugEntries(),
       clearGpsDropEntries(),
@@ -2332,6 +2356,8 @@ function DebugModalInner({
       // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror.
       backendSsotMirror,
       logs,
+      // #2284 — fired-only 독립 버퍼 entries를 share dump에 포함. alarmLog rotate와 무관 보존.
+      firedAlarmLog,
       lowPowerMode,
       scheduledDump,
       barometerSubsurface,
@@ -2882,7 +2908,7 @@ function DebugModalInner({
             <ScheduledQueueBody dump={scheduledDump} colors={colors} />
           </Section>
 
-          <NotificationsFiredSection logs={logs} colors={colors} />
+          <NotificationsFiredSection firedLog={firedAlarmLog} colors={colors} />
 
           <Section
             title={`Alarm log (${logs.length})`}
@@ -3091,28 +3117,28 @@ function ScheduledQueueBody({
 // #1626 — V4 발사된 notification만 시간순 reverse. baseline 측정 fidelity 향상.
 // fired 0건이면 섹션 자체를 노출하지 않는다 — 사용자 노이즈 최소화 (fired 없으면 Alarm log
 // Section만 보면 충분).
+// #2284 — alarmLog 파생값(rotate 절단 상속) 대신 독립 fired-only 버퍼를 SSoT로 사용.
 function NotificationsFiredSection({
-  logs,
+  firedLog,
   colors,
 }: Readonly<{
-  logs: readonly AlarmLogEntry[];
+  firedLog: readonly FiredAlarmLogEntry[];
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
-  const fired = logs.filter(isFired);
-  if (fired.length === 0) return null;
+  if (firedLog.length === 0) return null;
   return (
     <Section
-      title={`Notifications fired (${fired.length})`}
+      title={`Notifications fired (${firedLog.length})`}
       colors={colors}
       testID="notifications-fired-section"
     >
-      {[...fired].reverse().map((entry, idx) => (
+      {[...firedLog].reverse().map((entry, idx) => (
         <MonoEntry
           key={`fired-${entry.ts}-${idx}`}
           testID="debug-notifications-fired-entry"
           colors={colors}
         >
-          {formatLogLine(entry)}
+          {formatFiredLogLine(entry)}
         </MonoEntry>
       ))}
     </Section>

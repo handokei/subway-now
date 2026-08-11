@@ -18,6 +18,9 @@ export const ACCESSIBILITY_MODE_KEY = 'subway-now:accessibility-mode';
 export const SLEEP_MODE_GUIDE_SHOWN_KEY = 'subway-now:sleep-mode-guide-shown';
 export const LOCALE_PREFERENCE_KEY = 'subway-now:locale-preference';
 export const ALARM_LOG_KEY = 'subway-now:alarm-log';
+// #2284 — fired-only 독립 영속 링버퍼. alarmLog(200-cap, 모든 outcome 혼합)와 분리된 key라
+// alarmLog rotate(다른 outcome 엔트리 과다 유입)로 fired 기록이 절단되지 않는다.
+export const FIRED_ALARM_LOG_KEY = 'subway-now:fired-alarm-log';
 export const APNS_TOKEN_KEY = 'subway-now:apns-token';
 // #1897 (RC-5) — 마지막으로 backend가 confirm한 APNs env(sandbox/production).
 // register 응답에서 backend가 `existing.apnsEnv ?? incoming.apnsEnv`로 결정한 KV 값을 echo →

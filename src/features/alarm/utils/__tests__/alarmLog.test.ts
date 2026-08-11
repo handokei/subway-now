@@ -15,6 +15,10 @@ import {
   resetAlarmLogForTest,
   getAlarmLog,
   clearAlarmLog,
+  getFiredAlarmLog,
+  clearFiredAlarmLog,
+  FIRED_ALARM_LOG_BUFFER_SIZE,
+  type FiredAlarmLogEntry,
   logFiredAlarm,
   logFiredStationPassed,
   logScheduledAlarm,
@@ -105,7 +109,7 @@ import {
   type AlarmLogReasonCounter,
   type BoardingPromptWindowKey,
 } from '../alarmLog';
-import { ALARM_LOG_KEY } from '../../../../shared/constants/storageKeys';
+import { ALARM_LOG_KEY, FIRED_ALARM_LOG_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmEvent } from '../stationAlarm';
 import type { Station } from '../../../../shared/types/station';
 
@@ -113,6 +117,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
   removeItem: jest.fn(),
+}));
+
+// #2284 — line lookup을 mock해 fired-only 버퍼 테스트를 stations.json 실데이터와 분리(결정적).
+jest.mock('../../../../shared/utils/stationLookup', () => ({
+  findLineByStationName: jest.fn((name: string) => (name === '강남' ? '2' : null)),
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -128,11 +137,16 @@ function flushPromises(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+// #2284 — 기본 outcome을 'suppressed'로 변경. 'fired'(+ FIRED_ALARM_SOURCES 소스)는
+// appendAlarmLog/flushAlarmLog 경로에서 독립 fired-only 버퍼(FIRED_ALARM_LOG_KEY)에도
+// 동시 write를 트리거하므로, fired 여부와 무관한 일반 배치 동작을 검증하는 기존 테스트가
+// 의도치 않게 두 번째 AsyncStorage 호출을 관측하지 않도록 한다. fired 전용 동작은
+// 'fired-only 독립 버퍼(#2284)' describe 블록에서 명시적으로 outcome: 'fired'를 지정한다.
 function makeEntry(overrides: Partial<AlarmLogEntry> = {}): AlarmLogEntry {
   return {
     ts: 1_700_000_000_000,
     source: 'bg',
-    outcome: 'fired',
+    outcome: 'suppressed',
     stationName: '강남',
     kind: 'station-passed',
     ...overrides,
@@ -3423,6 +3437,196 @@ describe('alarmLog', () => {
         { ts: 16, source: 'fg', outcome: 'fired' },
       ];
       expect(countFiredAlarms(entries)).toBe(1);
+    });
+  });
+
+  // ── #2284 fired-only 독립 영속 링버퍼 ──────────────────────────────────────
+  describe('fired-only 독립 버퍼 (#2284)', () => {
+    // AsyncStorage mock을 key별 in-memory Map으로 라우팅 — ALARM_LOG_KEY와
+    // FIRED_ALARM_LOG_KEY가 서로 다른 storage slot임을 시뮬레이션한다.
+    function makeKeyedStorage(): Map<string, string> {
+      const store = new Map<string, string>();
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(
+        async (key: string) => store.get(key) ?? null,
+      );
+      (AsyncStorage.setItem as jest.Mock).mockImplementation(
+        async (key: string, value: string) => {
+          store.set(key, value);
+        },
+      );
+      (AsyncStorage.removeItem as jest.Mock).mockImplementation(async (key: string) => {
+        store.delete(key);
+      });
+      return store;
+    }
+
+    it('outcome=fired + FIRED_ALARM_SOURCES=true 소스만 독립 버퍼에 적재된다', async () => {
+      makeKeyedStorage();
+      appendAlarmLog(
+        makeEntry({ source: 'fg', outcome: 'fired', kind: 'destination', stationName: '강남' }),
+      );
+      await flushAlarmLog();
+
+      const fired = await getFiredAlarmLog();
+      expect(fired).toEqual<FiredAlarmLogEntry[]>([
+        { ts: 1_700_000_000_000, kind: 'destination', station: '강남', line: '2', channel: 'fg' },
+      ]);
+    });
+
+    it('outcome=suppressed/received 엔트리는 독립 버퍼에 적재되지 않는다', async () => {
+      makeKeyedStorage();
+      appendAlarmLog(makeEntry({ source: 'fg', outcome: 'suppressed', reason: 'gate-age' }));
+      appendAlarmLog(makeEntry({ source: 'fg-hydrate', outcome: 'received' }));
+      await flushAlarmLog();
+
+      expect(await getFiredAlarmLog()).toEqual([]);
+      // 독립 버퍼 key에는 write 자체가 발생하지 않는다 — fired 엔트리 0건이면 no-op.
+      expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+        FIRED_ALARM_LOG_KEY,
+        expect.anything(),
+      );
+    });
+
+    it('metadata source(FIRED_ALARM_SOURCES=false)는 outcome=fired여도 독립 버퍼 제외', async () => {
+      makeKeyedStorage();
+      appendAlarmLog(makeEntry({ source: 'boarding-prompt', outcome: 'fired' }));
+      appendAlarmLog(makeEntry({ source: 'lifecycle-backstop', outcome: 'fired' }));
+      await flushAlarmLog();
+
+      expect(await getFiredAlarmLog()).toEqual([]);
+    });
+
+    it('kind 없는 엔트리는 line-agnostic 처리, station 미상은 unknown으로 채운다', async () => {
+      makeKeyedStorage();
+      appendAlarmLog({
+        ts: 5,
+        source: 'silent-push-fired',
+        outcome: 'fired',
+      });
+      await flushAlarmLog();
+
+      expect(await getFiredAlarmLog()).toEqual<FiredAlarmLogEntry[]>([
+        { ts: 5, kind: 'unknown', station: 'unknown', line: null, channel: 'silent-push-fired' },
+      ]);
+    });
+
+    it(
+      '#2284 핵심 회귀 — alarmLog(200-cap, 혼합 outcome) rotate로 과거 fired 기록이 밀려나도 ' +
+        '독립 버퍼는 보존한다 (2026-08-11 07:38:28 이전 fired 소실 evidence)',
+      async () => {
+        makeKeyedStorage();
+        // 오래된 fired 발사 1건 + 이후 대량 suppressed burst(200-cap 초과) — 실제 회귀 재현.
+        appendAlarmLog(
+          makeEntry({
+            ts: 1,
+            source: 'fg',
+            outcome: 'fired',
+            kind: 'station-passed',
+            stationName: '강남',
+          }),
+        );
+        for (let i = 0; i < ALARM_LOG_BUFFER_SIZE + 10; i += 1) {
+          appendAlarmLog(
+            makeEntry({ ts: i + 100, outcome: 'suppressed', reason: 'gate-age', stationName: `s${i}` }),
+          );
+        }
+        await flushAlarmLog();
+
+        // alarmLog 200-cap rotate로 가장 오래된 fired 엔트리(ts=1)는 사라진다 — 기존 동작.
+        const alarmLog = await getAlarmLog();
+        expect(alarmLog).toHaveLength(ALARM_LOG_BUFFER_SIZE);
+        expect(alarmLog.some((e) => e.ts === 1)).toBe(false);
+
+        // 그러나 fired-only 독립 버퍼는 rotate와 무관하게 그 발사 기록을 보존한다.
+        const fired = await getFiredAlarmLog();
+        expect(fired).toHaveLength(1);
+        expect(fired[0]).toMatchObject({ ts: 1, station: '강남', channel: 'fg' });
+      },
+    );
+
+    it('FIRED_ALARM_LOG_BUFFER_SIZE 초과 시 가장 오래된 fired 엔트리부터 drop (FIFO)', async () => {
+      const store = makeKeyedStorage();
+      const existing: FiredAlarmLogEntry[] = Array.from(
+        { length: FIRED_ALARM_LOG_BUFFER_SIZE },
+        (_, i) => ({ ts: i, kind: 'unknown', station: `s${i}`, line: null, channel: 'fg' }),
+      );
+      store.set(FIRED_ALARM_LOG_KEY, JSON.stringify(existing));
+
+      appendAlarmLog(makeEntry({ ts: 9999, source: 'fg', outcome: 'fired', stationName: '신규' }));
+      await flushAlarmLog();
+
+      const fired = await getFiredAlarmLog();
+      expect(fired).toHaveLength(FIRED_ALARM_LOG_BUFFER_SIZE);
+      expect(fired[0].ts).toBe(1); // ts=0인 가장 오래된 엔트리 drop
+      expect(fired.at(-1)?.station).toBe('신규'); // 새로 추가된 엔트리가 마지막
+    });
+
+    it('콜드런치 — 모듈 스코프 pending 없이도 저장된 값을 그대로 복원한다', async () => {
+      const store = makeKeyedStorage();
+      const persisted: FiredAlarmLogEntry[] = [
+        { ts: 1, kind: 'transfer', station: '강남', line: '2', channel: 'bg-scheduled' },
+      ];
+      store.set(FIRED_ALARM_LOG_KEY, JSON.stringify(persisted));
+
+      // resetAlarmLogForTest() 이후 append 없이 바로 read — 콜드런치와 동일 조건.
+      expect(await getFiredAlarmLog()).toEqual(persisted);
+    });
+
+    it('손상된 JSON이면 빈 배열을 반환한다', async () => {
+      const store = makeKeyedStorage();
+      store.set(FIRED_ALARM_LOG_KEY, 'not-json{{{');
+      expect(await getFiredAlarmLog()).toEqual([]);
+    });
+
+    it('JSON.parse 결과가 배열이 아니면 빈 배열을 반환한다', async () => {
+      const store = makeKeyedStorage();
+      store.set(FIRED_ALARM_LOG_KEY, JSON.stringify({ foo: 'bar' }));
+      expect(await getFiredAlarmLog()).toEqual([]);
+    });
+
+    it('AsyncStorage read 실패 시 빈 배열을 반환한다(throw 안 함)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
+      await expect(getFiredAlarmLog()).resolves.toEqual([]);
+    });
+
+    it('alarmLog write 실패해도 fired-only 버퍼 적재는 별도로 시도된다', async () => {
+      const store = makeKeyedStorage();
+      (AsyncStorage.setItem as jest.Mock).mockImplementation(
+        async (key: string, value: string) => {
+          if (key === ALARM_LOG_KEY) throw new Error('alarmLog write 실패');
+          store.set(key, value);
+        },
+      );
+      appendAlarmLog(makeEntry({ source: 'fg', outcome: 'fired', stationName: '강남' }));
+      await expect(flushAlarmLog()).resolves.toBeUndefined();
+
+      expect(await getFiredAlarmLog()).toHaveLength(1);
+    });
+
+    it('fired-only 버퍼 write 실패해도 throw하지 않는다(alarmLog write는 정상 진행)', async () => {
+      const store = makeKeyedStorage();
+      (AsyncStorage.setItem as jest.Mock).mockImplementation(
+        async (key: string, value: string) => {
+          if (key === FIRED_ALARM_LOG_KEY) throw new Error('fired 버퍼 write 실패');
+          store.set(key, value);
+        },
+      );
+      appendAlarmLog(makeEntry({ source: 'fg', outcome: 'fired', stationName: '강남' }));
+      await expect(flushAlarmLog()).resolves.toBeUndefined();
+
+      // alarmLog(ALARM_LOG_KEY) write는 fired-only 버퍼 실패와 무관하게 정상 진행됐다.
+      expect(store.has(ALARM_LOG_KEY)).toBe(true);
+    });
+
+    it('clearFiredAlarmLog — removeItem 호출', async () => {
+      makeKeyedStorage();
+      await clearFiredAlarmLog();
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(FIRED_ALARM_LOG_KEY);
+    });
+
+    it('clearFiredAlarmLog — AsyncStorage 실패해도 throw 안 함', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('remove fail'));
+      await expect(clearFiredAlarmLog()).resolves.toBeUndefined();
     });
   });
 });
