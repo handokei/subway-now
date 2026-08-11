@@ -28,6 +28,7 @@ import { clearBackendSsotMirror } from '../../utils/backendSsotMirror';
 import { clearLastSilentPushReceivedAt } from '../../utils/lastSilentPushReceivedAt';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../useBoardingLockStore';
+import { useLegAdvanceStore } from '../useLegAdvanceStore';
 import { useAlarmEventStore } from '../useAlarmEventStore';
 import {
   clearLockLifecycleEntries,
@@ -445,6 +446,14 @@ describe('tripBoundCleanups', () => {
       expect(useBoardingLockStore.getState().lock).toBeNull();
       expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
       expect(useAlarmEventStore.getState().dismissSilence).toBeNull();
+    });
+
+    it('#2278: leg-advance stamp도 trip 경계에서 클리어된다 (이전 trip 하차 확인이 새 trip에 leak 차단)', async () => {
+      useLegAdvanceStore.setState({ nextLine: '2' });
+
+      await runTripBoundCleanups();
+
+      expect(useLegAdvanceStore.getState().nextLine).toBeNull();
     });
 
     it('#1573 (T10): clearBackendSsotMirror가 TRIP_BOUND_CLEANUPS에 포함된다 (Mirror leak #3 가드)', () => {

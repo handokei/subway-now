@@ -16,6 +16,7 @@ import { useDestinationStore } from '../features/route/store/useDestinationStore
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
 import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
+import { useLegAdvanceStore } from '../features/alarm/store/useLegAdvanceStore';
 import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
@@ -490,8 +491,10 @@ export default function HomeScreen() {
     [effectiveOrigin, sleepMode, t, addRecentDestination, setDestination],
   );
   // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
-  // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
-  const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin);
+  // BoardingLock(사용자 선택) > legAdvance(#2278, 사용자 하차 응답 stamp) > Route(구조적 SSOT) >
+  // station.line fallback.
+  const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
+  const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin, legAdvanceLine);
   // D7 (#1213) ETA provider SSOT — 현재역 BoardingTrainList(via boardingListArrivals)와
   // 정상 Arrival 표시(EditorialArrivalRow via ArrivalDirectionGroup)는 둘 다 아래 `arrival`을
   // 출처로 사용한다. 절대 시각 anchor도 arrivalAt(item)으로 통일(#897 Seam A). 따라서 두 surface의
