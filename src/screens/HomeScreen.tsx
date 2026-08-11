@@ -600,6 +600,11 @@ export default function HomeScreen() {
   // P2 관찰(리뷰 (2)): cold-start hydration 창(앱 재시작 직후 storage에서 lock을 아직 못 읽어온
   // 수백ms)에는 fusionBoardingLock이 일시 null이라 이 조건이 false로 떨어진다. 방향은 "과다표시"
   // (원래 소진됐어야 할 대기를 잠깐 더 표시)라 과소표시보다 안전 — 별도 수정 없이 관찰만 유지.
+  // P3 관찰(리뷰 (4)): `hasConsumedOriginWait`는 렌더 시점 `Date.now()`로 평가되므로, 화면
+  // 갱신은 이 컴포넌트가 다시 렌더되는 다음 계기(위치/arrival 폴링 주기, 최대 ~30s)까지 지연될
+  // 수 있다 — user-tap lock의 initialEtaSeconds 경과 시점을 넘겨도 최대 30초간 origin wait가
+  // 계속 표시될 수 있다는 뜻. 방향은 여전히 "과다표시"(과소표시보다 안전)이므로 코드 변경 없이
+  // 관찰만 유지 — 실시간 1Hz 재평가가 필요해지면 useCountdown류 tick과 연결을 고려.
   const isInTrip = hasConsumedOriginWait(fusionBoardingLock, Date.now()) || legAdvanceLine !== null;
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route, { excludeOriginWait: isInTrip })
