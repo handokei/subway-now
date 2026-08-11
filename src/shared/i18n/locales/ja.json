@@ -236,7 +236,10 @@
     "actions": {
       "acknowledge": "確認",
       "endTrip": "trip終了",
-      "nextTrip": "次の旅程を開始"
+      "nextTrip": "次の旅程を開始",
+      "boardingConfirm": "乗車しました",
+      "disembarkConfirm": "降車しました",
+      "notYet": "まだです"
     }
   },
   "journey": {

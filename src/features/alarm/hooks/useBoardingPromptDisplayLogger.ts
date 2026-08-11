@@ -28,7 +28,7 @@
 import { useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { BOARDING_PROMPT_CATEGORY } from '../utils/notificationCategory';
+import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from '../utils/notificationCategory';
 import { logBoardingPromptFired } from '../utils/alarmLog';
 import { extractBoardingPromptPayload } from './useBoardingPromptResponder';
 import { createLogger } from '../../../shared/utils/logger';
@@ -74,7 +74,12 @@ function tryLogDisplayed(notification: Notifications.Notification): void {
   try {
     const request = notification.request;
     const content = request.content;
-    if (content.categoryIdentifier !== BOARDING_PROMPT_CATEGORY) return;
+    // #2282 — hop-end 는 DISEMBARK_PROMPT_CATEGORY로 분리 발사되므로 두 category 모두 displayed 적재.
+    if (
+      content.categoryIdentifier !== BOARDING_PROMPT_CATEGORY &&
+      content.categoryIdentifier !== DISEMBARK_PROMPT_CATEGORY
+    )
+      return;
     const payload = extractBoardingPromptPayload(content.data);
     if (!payload) return;
     const identifier = request.identifier;

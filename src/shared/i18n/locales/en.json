@@ -236,7 +236,10 @@
     "actions": {
       "acknowledge": "OK",
       "endTrip": "End trip",
-      "nextTrip": "Start next trip"
+      "nextTrip": "Start next trip",
+      "boardingConfirm": "Boarded",
+      "disembarkConfirm": "Got off",
+      "notYet": "Not yet"
     }
   },
   "journey": {

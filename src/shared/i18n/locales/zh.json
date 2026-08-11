@@ -236,7 +236,10 @@
     "actions": {
       "acknowledge": "确认",
       "endTrip": "结束旅程",
-      "nextTrip": "开始下一段旅程"
+      "nextTrip": "开始下一段旅程",
+      "boardingConfirm": "已上车",
+      "disembarkConfirm": "已下车",
+      "notYet": "还没"
     }
   },
   "journey": {
