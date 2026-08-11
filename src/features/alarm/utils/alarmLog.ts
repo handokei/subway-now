@@ -120,7 +120,12 @@ export type AlarmLogSource =
   // #2243 (ADR-029 Phase 1) — push 계약 런타임 경계 위반(unknown-kind skew / semantic value
   // drift) 관측 전용 source. 기존 silent-push-received/-skipped 분포와 분리해 A2("silent
   // drop 대신 명시적 skew 로그") 달성 여부를 독립적으로 측정할 수 있게 한다.
-  | 'push-contract-skew';
+  | 'push-contract-skew'
+  // #2284 (P1 wire matrix gap) — 막차 임박 알람(lastTrainAlarm.ts fireLastTrainAlarm) 즉시
+  // 발사 stamp. `expo-notifications`에 `trigger: null`로 예약하므로 스케줄 호출 자체가 곧
+  // 사용자 노출 확정 시점 — bg-scheduled(OS DATE trigger, 취소 가능한 미래 예약)와 달리
+  // "예약≠발사" 갭이 없는 확정 발사다.
+  | 'last-train-alarm';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1394,6 +1399,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   companion: null,
   // #2243 (ADR-029 Phase 1) — 계약 스큐는 별도 전용 counter(countPushContractSkew)로 집계.
   'push-contract-skew': null,
+  // #2284 — 막차 알람은 silent push와 무관한 device 로컬 채널이므로 이 counter 제외.
+  'last-train-alarm': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1453,6 +1460,8 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // generic imminent 알림이므로 fire 분모에 포함(outcome='fired'인 항목만 카운트되므로
   // control-like fail-closed 'suppressed' 항목은 자동 제외).
   'push-contract-skew': true,
+  // #2284 (P1) — 즉시 발사(trigger: null) 확정 알람. 실제 사용자 노출이므로 fire 분모 포함.
+  'last-train-alarm': true,
 };
 
 /**
@@ -2002,6 +2011,25 @@ export function logCompanionAlarmFired(input: {
     source: 'companion',
     outcome: 'fired',
     stationName: `${input.nextLine}·${input.nextStation}`,
+  });
+}
+
+/**
+ * #2284 (P1 wire matrix gap) — 막차 임박 알람 즉시 발사(`lastTrainAlarm.ts fireLastTrainAlarm`)
+ * 1건 적재. `trigger: null`로 스케줄하므로 호출 시점이 곧 확정 발사 시점이다(OS 사전예약과
+ * 달리 "예약≠발사" 갭 없음) — `appendAlarmLog`를 거쳐 fired-only 독립 버퍼(#2284)에도
+ * genuine fire로 자동 반영된다.
+ *
+ * stationName은 로컬라이즈된 표시명이 아닌 origin의 정규 한글 station명이어야 한다 —
+ * fired-only 버퍼가 `findLineByStationName`으로 line을 조회할 때 stations.json 원본과
+ * 매칭돼야 하기 때문.
+ */
+export function logLastTrainAlarmFired(input: { stationName: string }): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'last-train-alarm',
+    outcome: 'fired',
+    stationName: input.stationName,
   });
 }
 

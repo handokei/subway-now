@@ -46,6 +46,9 @@ import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { SAFETY_NET_MAX_WAYPOINTS } from '../../../shared/constants/iosScheduledLimit';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordScheduledAlarm } from './prescheduledMetrics';
+// #2284 (P1 wire matrix gap) — #2089 리팩터로 구 3종 스케줄러가 호출하던 logScheduledAlarm
+// stamp가 safetyNetScheduler로 이전되지 않고 유실됐다. bg-scheduled 관례를 그대로 재사용.
+import { logScheduledAlarm } from './alarmLog';
 
 const logger = createLogger('SafetyNetScheduler');
 
@@ -229,6 +232,17 @@ async function scheduleOne(params: {
   // 무영향(prescheduledMetrics 내부에서 흡수) — fire-and-forget이 아니라 await하는 이유는
   // register 호출 순서를 보존해 ledger idx 갱신 race를 피하기 위함.
   await recordScheduledAlarm({ identifier, scheduledFireMs: fireMs, stationName });
+  // #2284 (P1 wire matrix gap) — 구 3종 스케줄러가 호출하던 alarmLog 예약 stamp가 #2089
+  // 리팩터로 유실됐던 것을 복원. OS DATE trigger(미래 예약, 취소 가능)라 "발사"가 아닌
+  // "예약" 시점 기록 — bg-scheduled 관례(logScheduledAlarm) 그대로 재사용. safetyNetScheduler는
+  // direction/trainCode/직전 notified station 정보를 갖지 않아 해당 필드는 null.
+  logScheduledAlarm(event, {
+    direction: null,
+    usedTrainCode: null,
+    selectedArrivalSeconds: null,
+    expectedStationAtFire: stationName,
+    actualLastNotifiedStation: null,
+  });
 }
 
 export interface RegisterSafetyNetParams {

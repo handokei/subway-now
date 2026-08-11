@@ -59,6 +59,13 @@ jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
   addDomainBreadcrumb: (...args: unknown[]) => mockBreadcrumb(...args),
 }));
 
+// #2284 (P1 wire matrix gap) — 막차 임박 알람은 trigger:null 즉시 발사인데 fired-only 독립
+// 버퍼 집계 경로(alarmLog)를 전혀 거치지 않던 회귀. 발사 성공 시 stamp 호출을 검증한다.
+const mockLogLastTrainAlarmFired = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logLastTrainAlarmFired: (...args: unknown[]) => mockLogLastTrainAlarmFired(...args),
+}));
+
 const mockResolveTripDirection = jest.fn();
 jest.mock('../../../route/utils/tripDirection', () => ({
   resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
@@ -386,6 +393,19 @@ describe('fireLastTrainAlarm', () => {
     const call = (Notifications.scheduleNotificationAsync as jest.Mock).mock.calls[0][0];
     // i18next는 기본 ko, "막차 {{minutes}}분 전" → 0이 들어가야 함
     expect(call.content.title).toMatch(/0/);
+  });
+
+  it('#2284 (P1) — 발사 성공 시 fired-only 독립 버퍼 집계용 alarmLog stamp를 호출한다', async () => {
+    Object.defineProperty(Platform, 'OS', { value: 'ios', writable: true });
+    await fireLastTrainAlarm({
+      origin: station(),
+      destination: station({ id: '1-002', name: '회기' }),
+      minutesRemaining: 10,
+      lastTrainTime: '23:55',
+    });
+    // trigger:null 즉시 발사 — origin 정규 한글 station명(로컬라이즈 X, findLineByStationName
+    // lookup 호환)으로 stamp돼야 한다.
+    expect(mockLogLastTrainAlarmFired).toHaveBeenCalledWith({ stationName: station().name });
   });
 });
 

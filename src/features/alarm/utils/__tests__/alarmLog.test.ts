@@ -84,6 +84,7 @@ import {
   logBoardingPromptFired,
   logBoardingPromptResponded,
   logCompanionAlarmFired,
+  logLastTrainAlarmFired,
   logLegTransition,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
@@ -2415,6 +2416,17 @@ describe('alarmLog', () => {
       expect(saved[0].source).toBe('companion');
       expect(saved[0].outcome).toBe('fired');
       expect(saved[0].stationName).toBe('2·뚝섬');
+    });
+
+    it('#2284 (P1 wire matrix gap): logLastTrainAlarmFired가 last-train-alarm entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logLastTrainAlarmFired({ stationName: '소요산' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('last-train-alarm');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].stationName).toBe('소요산');
     });
 
     it('#2243 (ADR-029 Phase 1, G6): logPushContractKindSkew station-like → outcome=fired', async () => {
