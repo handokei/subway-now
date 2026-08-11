@@ -11,7 +11,7 @@
  *   cron every 1 min — 활성 트립 폴링 + 알람 발사
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import { isNearOrigin, markPromptSilenced } from './boardingPrompt';
 import {
@@ -175,6 +175,24 @@ function makeLaStats(): LiveActivityStats {
 }
 
 export const app = new Hono<{ Bindings: Env }>();
+
+/**
+ * #2283 리뷰 P2-2 — trip_events 기록(핫패스 `/boarding-lock/sync` 내 telemetry)이 응답 latency에
+ * 얹히지 않도록 `c.executionCtx.waitUntil`로 응답 반환 이후에 완료시킨다.
+ *
+ * Workers 런타임은 fetch handler에 항상 ExecutionContext를 제공하지만, 기존 단위 테스트 관례
+ * (`app.fetch(req, env)` — executionCtx 3번째 인자 생략, index.test.ts 전역)에서는
+ * `c.executionCtx` 접근 자체가 throw한다(Hono context.js). `recordTripEvent`는 내부에서 실패를
+ * 이미 swallow하므로, executionCtx 부재 시 fire-and-forget으로 degrade해도 unhandled rejection
+ * 위험이 없다 — 프로덕션 동작(waitUntil로 완료 보장)에는 영향 없이 테스트 하위호환만 흡수한다.
+ */
+function scheduleTripEvent(c: Context<{ Bindings: Env }>, promise: Promise<void>): void {
+  try {
+    c.executionCtx.waitUntil(promise);
+  } catch {
+    void promise;
+  }
+}
 
 /**
  * #1578 — Sentry init 미들웨어. DSN 미설정 시 graceful no-op (idempotent).
@@ -1847,12 +1865,16 @@ app.post('/boarding-lock/sync', async (c) => {
   const now = Date.now();
   // #2283 — D1 append-only 관측. KV trip 객체와 독립적으로 sync 도달을 보존한다(user-delete 시
   // KV가 사라져도 사후 재구성 가능해야 함). DB 미바인딩/실패는 recordTripEvent 내부 graceful no-op.
+  // #2283 리뷰 P2-2 — 핫패스 응답 latency에 얹지 않도록 waitUntil로 스케줄(scheduleTripEvent 참고).
   const tokenHash = hashTripToken(payload.token);
-  await recordTripEvent(c.env.DB, {
-    tokenHash,
-    kind: 'sync-received',
-    station: payload.observedStationName,
-  });
+  scheduleTripEvent(
+    c,
+    recordTripEvent(c.env.DB, {
+      tokenHash,
+      kind: 'sync-received',
+      station: payload.observedStationName,
+    }),
+  );
   const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
 
   let working: Trip = existing;
@@ -1870,13 +1892,17 @@ app.post('/boarding-lock/sync', async (c) => {
     // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
     await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
     // #2283 — advance 이벤트 관측. 새 head waypoint를 기록해 "언제 어디로 advance했는지" 사후 조회.
+    // #2283 리뷰 P2-2 — waitUntil로 스케줄.
     const advancedHead = remaining[0];
-    await recordTripEvent(c.env.DB, {
-      tokenHash,
-      kind: 'advance',
-      station: advancedHead ? advancedHead.stationName : undefined,
-      meta: { shiftedCount: advance.shiftedCount },
-    });
+    scheduleTripEvent(
+      c,
+      recordTripEvent(c.env.DB, {
+        tokenHash,
+        kind: 'advance',
+        station: advancedHead ? advancedHead.stationName : undefined,
+        meta: { shiftedCount: advance.shiftedCount },
+      }),
+    );
   }
 
   // D4 (#1210) — payload trainCode가 KV lock trainCode와 다르면 환승 leg로 해석.
@@ -1932,12 +1958,16 @@ app.post('/boarding-lock/sync', async (c) => {
   if (working.boardingLock) {
     // #2283 — hydrate-issued 관측. autoLockCandidate를 device가 실제로 받아 lock state를
     // hydrate할 수 있는 응답임을 기록(sync-received/advance와 별도 kind — "발사됐는지"를 분리 관측).
-    await recordTripEvent(c.env.DB, {
-      tokenHash,
-      kind: 'hydrate-issued',
-      station: head ? head.stationName : undefined,
-      line: working.boardingLock.line,
-    });
+    // #2283 리뷰 P2-2 — waitUntil로 스케줄.
+    scheduleTripEvent(
+      c,
+      recordTripEvent(c.env.DB, {
+        tokenHash,
+        kind: 'hydrate-issued',
+        station: head ? head.stationName : undefined,
+        line: working.boardingLock.line,
+      }),
+    );
   }
   return c.json({
     ok: true,
