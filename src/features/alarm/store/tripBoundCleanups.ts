@@ -43,6 +43,7 @@ import { clearAlarmLogWindows } from '../utils/alarmLog';
 import { clearActiveTrip, resetAlarmBackendDedup } from '../api/alarmBackend';
 import { getNotificationRouter } from '../api/notificationRouter';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useBoardingLockStore } from './useBoardingLockStore';
 import { useLegAdvanceStore } from './useLegAdvanceStore';
 import { useAlarmEventStore } from './useAlarmEventStore';
@@ -170,12 +171,29 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // (직전 trip이 정상 종료 후 새 trip 시작 X → 앱 launch) → 새 trip 판정 오염 방지.
   // 새 trip 등록 후 첫 silent push 수신 시점부터 stamp 재갱신 → clean baseline.
   clearLastSilentPushReceivedAt,
-  // #2293 — "일시정지" stamp 제거. trip 종료 전체 경로(FG setDestination(null/switch) /
-  // silent push trip-ended / useStateRehydration sentinel / useLaunchTripReconciliation
-  // cold-launch / pause-auto-end backstop 자체)가 모두 이 배열을 거치므로, 여기 한 줄
-  // 추가로 이전 trip의 pausedAt이 새 trip에 leak되지 않도록 자동 wire된다.
-  clearNavigationPausedAt,
+  // #2293 (PR #2301 리뷰 P1) — "일시정지" stamp 제거. storage 채널(NAVIGATION_PAUSED_AT_KEY,
+  // cold-start backstop 판정용)과 memory 채널(useNavigationStore.pausedAt, FG 배지 카운트다운
+  // 소스)을 반드시 같은 chokepoint에서 함께 지운다 — 산발 호출(startNavigation에서만 memory
+  // clear) 시 "일시정지 상태에서 재개/종료 버튼 없이 새 목적지 바로 선택"
+  // (handleSelectDestination, navigationActive 무검사 진입점) 경로에서 memory pausedAt만
+  // stale로 남아 새 trip에 잔여 배지 + 조기 자동종료가 발생하는 회귀가 있었다.
+  // trip 종료 전체 경로(FG setDestination(null/switch) / silent push trip-ended /
+  // useStateRehydration sentinel / useLaunchTripReconciliation cold-launch / pause-auto-end
+  // backstop 자체)가 모두 이 배열을 거치므로, 여기 한 줄 추가로 두 채널 모두 자동 wire된다.
+  clearNavigationPauseState,
 ];
+
+/**
+ * #2293 (PR #2301 리뷰 P1) — 일시정지 storage stamp + memory pausedAt을 한 호출로 동시 clear.
+ *
+ * 두 채널(navigationPauseStorage의 AsyncStorage stamp / useNavigationStore.pausedAt 메모리)이
+ * 서로 다른 시점에 개별 clear되면 한쪽만 지워진 채 새 trip이 시작될 수 있다 — 단일
+ * chokepoint(TRIP_BOUND_CLEANUPS)에서 항상 함께 처리해 drift를 원천 차단한다.
+ */
+function clearNavigationPauseState(): Promise<void> {
+  useNavigationStore.getState().clearPausedAt();
+  return clearNavigationPausedAt();
+}
 
 /**
  * #1892 / #1885 — Live Activity 인스턴스 dismiss helper.

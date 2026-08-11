@@ -28,6 +28,7 @@ import { clearBackendSsotMirror } from '../../utils/backendSsotMirror';
 import { clearLastSilentPushReceivedAt } from '../../utils/lastSilentPushReceivedAt';
 import { clearNavigationPausedAt } from '../../utils/navigationPauseStorage';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
+import { useNavigationStore } from '../../../route/store/useNavigationStore';
 import { useBoardingLockStore } from '../useBoardingLockStore';
 import { useLegAdvanceStore } from '../useLegAdvanceStore';
 import { useAlarmEventStore } from '../useAlarmEventStore';
@@ -61,6 +62,9 @@ describe('tripBoundCleanups', () => {
     // #918 A3 PR4 — cancelTripBoundAlarms는 OS 큐 enumerate가 필요. auto-mock default가
     // undefined를 반환하면 for..of에서 throw → cleanup 흐름이 막힌다. 빈 큐로 graceful 통과.
     (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([]);
+    // #2293 (PR #2301 리뷰 P1) — zustand 모듈 싱글톤이라 pausedAt 테스트가 다른 테스트로
+    // leak되지 않도록 매 테스트마다 reset.
+    useNavigationStore.setState({ navigationActive: false, pausedAt: null });
   });
 
   it('TRIP_BOUND_CLEANUPS는 비어있지 않다 (메타 배열 self-check)', () => {
@@ -468,10 +472,33 @@ describe('tripBoundCleanups', () => {
       expect(TRIP_BOUND_CLEANUPS).toContain(clearLastSilentPushReceivedAt);
     });
 
-    // #2293 — "일시정지" stamp도 trip 종료 전체 경로에서 함께 제거돼야 이전 trip의 pausedAt이
-    // 새 trip에 leak되지 않는다.
-    it('#2293: clearNavigationPausedAt가 TRIP_BOUND_CLEANUPS에 포함된다 (일시정지 stamp leak 차단)', () => {
-      expect(TRIP_BOUND_CLEANUPS).toContain(clearNavigationPausedAt);
+    // #2293 (PR #2301 리뷰 P1) — "일시정지" stamp의 두 채널(storage + memory)이 항상 같은
+    // chokepoint에서 함께 제거돼야 한다. 일시정지 상태에서 재개/종료 버튼 없이 바로 새
+    // 목적지를 선택(handleSelectDestination)해도 runTripBoundCleanups가 이 배열을 거치므로
+    // memory pausedAt이 stale로 남지 않는다(RED였던 회귀: startNavigation에서만 memory
+    // clear해 storage만 지워지고 memory는 남는 문제).
+    it('#2293 P1: runTripBoundCleanups 실행 시 storage(clearNavigationPausedAt)와 memory(useNavigationStore.pausedAt) 모두 clear', async () => {
+      useNavigationStore.setState({ navigationActive: false, pausedAt: 1_700_000_000_000 });
+      (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+
+      await runTripBoundCleanups();
+
+      const removedKeys = (AsyncStorage.removeItem as jest.Mock).mock.calls.map(
+        (c) => c[0] as string,
+      );
+      // storage 채널: clearNavigationPausedAt이 실제로 호출됐는지는 키 제거 여부로 검증
+      // (함수 reference 자체는 더 이상 배열에 직접 노출되지 않음 — 조합 함수로 감쌈).
+      expect(removedKeys).toContain(
+        jest.requireActual('../../../../shared/constants/storageKeys').NAVIGATION_PAUSED_AT_KEY,
+      );
+      // memory 채널: useNavigationStore.pausedAt이 함께 clear됐는지 직접 검증.
+      expect(useNavigationStore.getState().pausedAt).toBeNull();
+    });
+
+    it('#2293 P1: clearNavigationPausedAt(storage helper)는 여전히 실제 AsyncStorage 제거를 수행한다 (import 참조 회귀 가드)', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+      await clearNavigationPausedAt();
+      expect(AsyncStorage.removeItem).toHaveBeenCalled();
     });
 
     it('S12-8: enumeration 가드 — TRIP_BOUND_CLEANUPS 길이가 baseline 이하로 떨어지면 회귀', () => {

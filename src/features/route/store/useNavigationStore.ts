@@ -57,6 +57,14 @@ export interface NavigationState {
    * + infoMode reset wire.
    */
   stopNavigation: () => void;
+  /**
+   * #2293 PR #2301 리뷰 P1 — pausedAt memory만 clear(navigationActive는 건드리지 않음).
+   * trip 종료 전체 경로(`tripBoundCleanups`)의 단일 chokepoint에서 storage 채널
+   * (`clearNavigationPausedAt`)과 함께 호출된다. 일시정지 상태에서 재개/종료 버튼을
+   * 거치지 않고 새 목적지를 바로 선택(`handleSelectDestination`)해도 이전 trip의
+   * pausedAt이 새 trip에 stale로 남아 배지+조기 자동종료를 유발하던 회귀를 차단.
+   */
+  clearPausedAt: () => void;
 }
 
 export const useNavigationStore = create<NavigationState>((set) => ({
@@ -69,5 +77,9 @@ export const useNavigationStore = create<NavigationState>((set) => ({
 
   stopNavigation: () => {
     set({ navigationActive: false, pausedAt: Date.now() });
+  },
+
+  clearPausedAt: () => {
+    set({ pausedAt: null });
   },
 }));
