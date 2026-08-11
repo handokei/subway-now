@@ -9,6 +9,7 @@ import { useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useDestinationStore } from '../../features/route/store/useDestinationStore';
 import { useBoardingLockStore } from '../../features/alarm/store/useBoardingLockStore';
+import { useLegAdvanceStore } from '../../features/alarm/store/useLegAdvanceStore';
 import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
@@ -37,8 +38,9 @@ const logger = createLogger('useStateRehydration');
  *
  * 책임:
  *  1) 마운트 + AppState 'active' 진입마다 trip-bound store(destination/customOrigin/
- *     tripOrigin/lock)를 storage에서 재수화 — BG 동안 다른 채널(silent push 등)이 storage를
- *     갱신했을 수 있으므로 zustand snapshot을 항상 최신화.
+ *     tripOrigin/lock/legAdvance)를 storage에서 재수화 — BG 동안 다른 채널(silent push 등)이
+ *     storage를 갱신했을 수 있으므로 zustand snapshot을 항상 최신화. legAdvance(#2278)는
+ *     지하에서 앱 kill 후 재기동해도 하차 응답 stamp가 사라지지 않도록 하는 P1-2 보강.
  *  2) trip-ended sentinel(`TRIP_ENDED_BY_BACKEND_AT_KEY`)이 있으면 destination/lock store를
  *     명시적으로 reset — BG에서 storage cleanup만 수행한 trip-ended가 in-memory zustand에
  *     stale state로 잠시 노출되는 회귀(#899)를 차단. 처리 후 sentinel 즉시 삭제.
@@ -117,6 +119,11 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
     destStore.loadCustomOrigin(),
     destStore.loadTripOrigin(),
     useBoardingLockStore.getState().loadLock(),
+    // #2278 (PR #2287 리뷰 P1-2) — leg-advance stamp도 storage → memory 재수화. 지하에서 앱이
+    // kill된 뒤 재기동하면 in-memory stamp가 사라지므로, 이 공통 hydrate chokepoint(mount +
+    // AppState 'active' 진입)에서 복원하지 않으면 원 버그(releaseLock 직후 route.stopsToTransfer
+    // frozen → fromLine 고착)가 재기동 후 그대로 재현된다.
+    useLegAdvanceStore.getState().loadLegAdvance(),
   ]);
 
   // #1573 (T10) — trip lifecycle 단계적 backstop. FG 복귀 / mount 마다 확인.

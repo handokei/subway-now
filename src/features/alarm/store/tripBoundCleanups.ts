@@ -231,9 +231,13 @@ async function clearTripBoundStoreMemory(): Promise<void> {
     useAlarmEventStore.setState({ dismissSilence: null });
   }
   // #2278 — leg-advance stamp도 trip 경계에서 클리어. 이전 trip의 hop-end 확인이 새 trip의
-  // getApproachLine 우선순위를 오염시키지 않도록 한다 (in-memory only, 별도 storage 없음).
+  // getApproachLine 우선순위를 오염시키지 않도록 한다. #2278 (PR #2287 리뷰 P1-2) — 이 stamp는
+  // 이제 trip-scoped storage(LEG_ADVANCE_KEY)로 영속화되므로, boardingLock과 동일하게 store의
+  // `clearLegAdvance()` 액션을 경유해 memory + storage 동시 제거한다(직접 setState로 memory만
+  // 비우면 storage에 stale 값이 남아 다음 launch reconciliation에서 loadLegAdvance가 이전
+  // trip의 stamp를 복원하는 회귀가 생긴다).
   if (useLegAdvanceStore.getState().nextLine !== null) {
-    useLegAdvanceStore.setState({ nextLine: null });
+    await useLegAdvanceStore.getState().clearLegAdvance();
   }
   return Promise.resolve();
 }

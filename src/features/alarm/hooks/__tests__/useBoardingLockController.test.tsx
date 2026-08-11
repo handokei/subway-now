@@ -6,6 +6,7 @@ import {
   type UseBoardingLockControllerInputs,
 } from '../useBoardingLockController';
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
+import { useLegAdvanceStore } from '../../store/useLegAdvanceStore';
 import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
@@ -117,6 +118,8 @@ describe('useBoardingLockController', () => {
     // Default: lookup miss — controller falls back to currentStation.id (이전 동작 유지).
     mockFindStationByNameAndLine.mockReturnValue(null);
     useBoardingLockStore.setState({ lock: null });
+    // #2278 (PR #2287 리뷰 P1-1) — 매 테스트마다 leg-advance stamp 리셋 (zustand 모듈 싱글톤 leak 차단).
+    useLegAdvanceStore.setState({ nextLine: null, stampedAt: null });
   });
 
   it('마운트 시 loadLock 호출 → storage에서 복원', async () => {
@@ -1148,6 +1151,67 @@ describe('useBoardingLockController', () => {
       renderHook(() => useBoardingLockController(defaultInputs));
       await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    // #2278 (PR #2287 리뷰 P1-1) — 사용자 명시 하차 stamp(legAdvance)가 살아있는 동안 stale/
+    // 불일치 lockSuggestion으로 lock을 재-hydrate해 그 stamp를 무력화하지 않도록 하는 가드.
+    // 원 버그(#2278 RCA): lock > legAdvance 우선순위 chain에서 lockSuggestion 자동 hydrate가
+    // stale mirror(예: 이전 leg '7')로 lock을 재생성하면 stamp가 lock에 덮여 다시 fromLine으로
+    // 되돌아간다.
+    describe('#2278 P1-1 — legAdvance stamp staleness 가드', () => {
+      it('lockSuggestion.decidedAt이 stamp.stampedAt보다 이전(stale)이면 skip', async () => {
+        // SUGGESTION.decidedAt=1_700_000_000_000. stampedAt을 그보다 나중으로 설정 — 사용자가
+        // 하차 응답을 한 뒤에 backend가 그 이전 시점 기준으로 decide한 stale suggestion.
+        useLegAdvanceStore.setState({ nextLine: '2', stampedAt: SUGGESTION.decidedAt + 1_000 });
+        readSpy.mockResolvedValue(MIRROR);
+        const createLockMock = setupRejectScenario();
+        await tickAndSettleCycle();
+        expect(createLockMock).not.toHaveBeenCalled();
+      });
+
+      it('lockSuggestion.lineId가 stamp.nextLine과 다르면(불일치) stamp가 살아있는 동안 skip', async () => {
+        // 7→2 환승 route — 두 line 모두 allowedLines를 통과하므로(기존 #1449 가드와 독립적으로)
+        // P1-1 disagreement 가드 자체를 isolate해서 검증한다. stampedAt은 decidedAt보다
+        // 이전(staleness 가드는 통과) — 그러나 line이 stamp('2')와 다르므로(suggestion='7') skip.
+        const transferRoute = {
+          type: 'transfer' as const,
+          transferName: '건대입구',
+          fromLine: '7' as const,
+          toLine: '2' as const,
+          stopsToTransfer: 0,
+          stopsFromTransfer: 5,
+          secondsToTransfer: 0,
+          secondsFromTransfer: 600,
+        };
+        useLegAdvanceStore.setState({ nextLine: '2', stampedAt: SUGGESTION.decidedAt - 1_000 });
+        readSpy.mockResolvedValue({
+          ...MIRROR,
+          lockSuggestion: { ...SUGGESTION, lineId: '7' },
+        });
+        const createLockMock = setupRejectScenario({ ...defaultInputs, route: transferRoute });
+        await tickAndSettleCycle();
+        expect(createLockMock).not.toHaveBeenCalled();
+      });
+
+      it('lockSuggestion이 stamp와 일치 + fresh(decidedAt >= stampedAt)면 정상 채택 (과잉 차단 아님)', async () => {
+        useLegAdvanceStore.setState({ nextLine: '2', stampedAt: SUGGESTION.decidedAt - 1_000 });
+        readSpy.mockResolvedValue(MIRROR); // lineId='2' — stamp.nextLine과 일치.
+        const createLockMock = jest.fn().mockResolvedValue(undefined);
+        useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+        renderHook(() => useBoardingLockController(defaultInputs));
+        await tickAndSettleCycle();
+        expect(createLockMock).toHaveBeenCalled();
+      });
+
+      it('legAdvance stamp가 없으면(nextLine=null) 기존 동작 그대로 (가드 미개입)', async () => {
+        useLegAdvanceStore.setState({ nextLine: null, stampedAt: null });
+        readSpy.mockResolvedValue(MIRROR);
+        const createLockMock = jest.fn().mockResolvedValue(undefined);
+        useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+        renderHook(() => useBoardingLockController(defaultInputs));
+        await tickAndSettleCycle();
+        expect(createLockMock).toHaveBeenCalled();
+      });
     });
 
     it('lockSuggestion lineId가 trip route 허용 line이 아니면 reject', async () => {

@@ -228,3 +228,11 @@ export const ALARM_LOCAL_LEDGER_KEY = 'subway-now:alarm-local-ledger';
 // TTL RECENT_LOCAL_STATION_FIRE_TTL_MS(recentLocalStationFires.ts) 경과 항목은 add/read 시 cleanup.
 // 형식: { "<kind>:<stationName>": timestamp(epoch ms) } JSON.
 export const RECENT_LOCAL_STATION_FIRES_KEY = 'subway-now:recent-local-station-fires';
+// #2278 (PR #2287 리뷰 P1-2) — 환승역 하차 응답/버튼 leg-advance stamp의 trip-scoped 영속화.
+// `useLegAdvanceStore.stampLegAdvance`가 사용자 명시 하차 응답 시점에 write, `loadLegAdvance`가
+// cold start(useStateRehydration)에서 hydrate. 지하에서 앱이 kill된 뒤 재기동하면 in-memory
+// stamp가 사라져 releaseLock 직후 그대로 원 버그(#2278 RCA 가설 1)가 재현되므로, backend SSoT
+// 왕복과 무관한 device-local ground truth를 storage에도 남겨야 한다.
+// 형식: {"nextLine": LineNumber, "stampedAt": number(epoch ms)} JSON.
+// trip 종료 시 runTripBoundCleanups에서 제거 — 이전 trip의 leg-advance가 새 trip에 leak 차단.
+export const LEG_ADVANCE_KEY = 'subway-now:leg-advance';
