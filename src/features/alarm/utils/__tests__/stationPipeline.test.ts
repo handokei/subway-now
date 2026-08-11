@@ -328,6 +328,9 @@ describe('processLocationUpdate', () => {
     expect(mockCalculateStaticETA).toHaveBeenCalledWith(mockRoute, {
       currentLocation: { lat: 37.498, lng: 127.028 },
       originStation: { lat: mockStation.lat, lng: mockStation.lng },
+      arrivalAtOrigin: undefined,
+      arrivalsAtTransfers: undefined,
+      excludeOriginWait: false,
     });
   });
 

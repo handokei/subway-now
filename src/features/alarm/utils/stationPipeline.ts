@@ -14,6 +14,7 @@ import { distanceMetersBetween, estimateEtaSeconds, estimateTransitEtaSeconds } 
 import { cancelSafetyNetByStationKind } from './safetyNetScheduler';
 import { getBoardingLock } from './boardingLockStorage';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
+import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import {
   logFiredAlarm,
   logSuppressedChannelAgnosticDedup,
@@ -546,11 +547,15 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // 일치하므로 도보 0이 자명. 사용자 좌표를 별도로 보유하게 되면 destination/destinationStation 추가.
   // #777: arrivalAtOrigin 호출자가 제공 시 calculateStaticETA가 다음 열차 대기를 동적으로 계산.
   // #778: arrivalsAtTransfers 호출자가 제공 시 환승 leg마다 동적, 미제공 시 leg당 DEFAULT_WAIT_MINUTES.
+  // #2290 — in-trip(boardingLock 활성 또는 legAdvance stamp)이면 출발 leg의 boarding 대기를
+  // 제외한다. lockForLineGuard는 위에서 이미 조회한 boardingLock(신규 감지 경로 아님, 재사용).
+  const isInTrip = Boolean(lockForLineGuard) || useLegAdvanceStore.getState().nextLine !== null;
   const eta = calculateStaticETA(route, {
     currentLocation: { lat, lng },
     originStation: { lat: nearest.station.lat, lng: nearest.station.lng },
     arrivalAtOrigin,
     arrivalsAtTransfers,
+    excludeOriginWait: isInTrip,
   });
   // #746 — silence로 차단된 phase 알람은 sleep overlay에 노출하지 않음 (alarmEvent → null).
   const effectiveAlarmEvent = suppressedAlarmEvent ? null : alarmEvent;

@@ -588,8 +588,12 @@ export default function HomeScreen() {
     });
     return Math.min(...minutes);
   }, [arrival, arrivalIsMock]);
+  // #2290 — in-trip 판정: boardingLock 활성 또는 legAdvance stamp(#2278, 사용자 하차 응답)
+  // 존재 시 이미 탑승 중이므로 출발 leg의 boarding 대기(nextTrainMinutes)를 표시 ETA에서 제외한다.
+  // 새 자동 감지 경로 신설 금지(#2154) — 기존 신호(fusionBoardingLock/legAdvanceLine)만 재사용.
+  const isInTrip = Boolean(fusionBoardingLock) || legAdvanceLine !== null;
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
-    ? calculateETA(nextTrainMinutes, route)
+    ? calculateETA(nextTrainMinutes, route, { excludeOriginWait: isInTrip })
     : null;
   // #784: rawArrival(useArrivalInfo)을 직접 사용 — useArrivalCountdown(1Hz tick)은 receivedAtMs를
   // 원본으로 유지하면서 arrivalSeconds만 차감해 60s 후 항상 stale로 판정되는 회귀 회피(옵션 B).
@@ -602,6 +606,7 @@ export default function HomeScreen() {
           ? { lat: effectiveOrigin.lat, lng: effectiveOrigin.lng }
           : undefined,
         arrivalAtOrigin: pickArrivalAtOrigin(rawArrival),
+        excludeOriginWait: isInTrip,
       })
     : null;
   const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;

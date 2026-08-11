@@ -438,6 +438,39 @@ describe('calculateETA', () => {
     expect(calculateETA(5, null)).toBe(5);
   });
 
+  // #2290: 탑승 중(in-trip)에는 출발 leg의 boarding 대기(nextTrainMinutes)를 이미 소진했으므로
+  // excludeOriginWait: true로 호출 시 원본 대기 성분을 제외하고 주행 시간만 반환해야 한다.
+  // evidence: 성수→뚝섬 1정거장 남음 + nextTrainMinutes=7일 때 9분(7+2)이 아닌 2분(주행만) 기대.
+  it('#2290 excludeOriginWait 옵션 시 출발 대기를 제외하고 주행 시간만 반환한다(DirectRoute)', () => {
+    const route: DirectRoute = makeDirectRoute(1, '2');
+    // 주행만: round(1*2) = 2분. 출발 대기 7분은 제외.
+    expect(calculateETA(7, route, { excludeOriginWait: true })).toBe(2);
+  });
+
+  it('#2290 excludeOriginWait: false(기본값)는 기존 동작과 동치다', () => {
+    const route: DirectRoute = makeDirectRoute(1, '2');
+    expect(calculateETA(7, route)).toBe(9);
+    expect(calculateETA(7, route, { excludeOriginWait: false })).toBe(9);
+  });
+
+  it('#2290 excludeOriginWait 시에도 환승 leg 대기는 유지한다(TransferRoute)', () => {
+    const route: TransferRoute = makeTransferRoute({
+      transferName: '교대(법원.검찰청)',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 5,
+    });
+    const t = getTransferSeconds('2', '3', '교대');
+    // 출발 대기 0(제외) + 운행 + 환승 leg 대기(3, 유지)
+    const expected = Math.round((1 + 5) * 2 + t / 60) + 3;
+    expect(calculateETA(2, route, { excludeOriginWait: true })).toBe(expected);
+  });
+
+  it('#2290 route가 null이고 excludeOriginWait이면 0을 반환한다', () => {
+    expect(calculateETA(5, null, { excludeOriginWait: true })).toBe(0);
+  });
+
   // #851 회귀: 용마산(7) → 건대입구 환승 → 성수(2) 실측 데이터 기반
   // 7호선 용마산→건대입구 320s(5.33min) + 환승 7|2|건대입구 64s(1.07min)
   // + 2호선 건대입구→성수 90s(1.5min) = 474s ≈ 7.9 → round 8min 운행.
@@ -492,6 +525,33 @@ describe('calculateStaticETA', () => {
 
   it('route가 null이면 null을 반환한다', () => {
     expect(calculateStaticETA(null)).toBeNull();
+  });
+
+  // #2290: 탑승 중에는 출발 leg의 boarding 대기(DEFAULT_WAIT_MINUTES fallback 포함)를 제외한다.
+  it('#2290 excludeOriginWait 옵션 시 출발 대기(fallback 3분)를 제외한다(DirectRoute)', () => {
+    const route: DirectRoute = makeDirectRoute(1, '2');
+    // 주행만: round(1*2) = 2분. 출발 대기 fallback 3분 제외.
+    expect(calculateStaticETA(route, { excludeOriginWait: true })).toBe(2);
+  });
+
+  it('#2290 excludeOriginWait 시에도 환승 leg 대기(fallback)는 유지한다(TransferRoute)', () => {
+    const route: TransferRoute = makeTransferRoute({
+      transferName: '교대(법원.검찰청)',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 5,
+    });
+    const t = getTransferSeconds('2', '3', '교대');
+    // 출발 대기 0(제외) + 환승 leg 대기(3, 유지) + 운행
+    const expected = 3 + Math.round((1 + 5) * 2 + t / 60);
+    expect(calculateStaticETA(route, { excludeOriginWait: true })).toBe(expected);
+  });
+
+  it('#2290 excludeOriginWait 미지정(기본값)은 기존 동작과 동치다', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(calculateStaticETA(route)).toBe(13);
+    expect(calculateStaticETA(route, { excludeOriginWait: false })).toBe(13);
   });
 });
 
