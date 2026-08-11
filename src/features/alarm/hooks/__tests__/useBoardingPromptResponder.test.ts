@@ -1088,15 +1088,16 @@ describe('handleResponse — #2034 hop-end', () => {
     );
   });
 
-  // #2282 RED — 구 BOARDING_PROMPT_ACTION_BOARDED 식별자는 더 이상 hop-end 확정으로 인식되지
-  // 않는다(DISEMBARK 전용 식별자로 분리). $default(배너 탭)만 이 identifier 없이도 confirm.
-  it('구 BOARDING_PROMPT_ACTION_BOARDED 는 하차 확정으로 인식되지 않는다 (dismiss path)', async () => {
+  // #2282 리뷰 P1 — 구 backend(DISEMBARK 카테고리 배포 전)는 hop-end를 BOARDING_PROMPT
+  // 카테고리 + 구 BOARDED 식별자로 쏜다. payload.hopEndKind가 이미 hop-end로 분류하므로
+  // 과도기 호환으로 구 식별자도 하차 확정으로 인식해야 한다(배포 순서 종속 회귀 차단).
+  it('구 BOARDING_PROMPT_ACTION_BOARDED 도 하차 확정으로 인식된다 (과도기 호환)', async () => {
     await handleResponse(
       BOARDING_PROMPT_ACTION_BOARDED,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
-    expect(releaseLockMock).not.toHaveBeenCalled();
-    expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-hop');
+    expect(releaseLockMock).toHaveBeenCalled();
+    expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
   });
 });

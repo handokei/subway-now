@@ -257,6 +257,10 @@ async function handleHopEndResponse(
   // 포함해 항상 확정으로 처리(기존 동작 유지).
   if (
     actionIdentifier === DISEMBARK_ACTION_DISEMBARKED ||
+    // #2282 과도기 호환 — 구 backend(DISEMBARK 카테고리 배포 전)는 hop-end를 BOARDING_PROMPT
+    // 카테고리로 쏘므로 [Boarded] 탭이 이 구 식별자로 도착한다. payload.hopEndKind가 이미
+    // hop-end로 분류했으니 확정으로 인식해도 안전. 신 backend 전면 배포 후 deprecate.
+    actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
     actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
   ) {
     logBoardingPromptResponded({ outcome: 'boarded' });
