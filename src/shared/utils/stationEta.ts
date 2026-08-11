@@ -23,6 +23,16 @@ export function estimateEtaSeconds(
  *
  * speed가 null이거나 임계 미만(`estimateEtaSeconds`가 null 반환)이면 나눗셈 자체를 폐기하고
  * hop 기반 값만 사용한다.
+ *
+ * `stationTravelTimes.json` 실측 최솟값은 현재 60s — hopBasedSeconds가 evaluateAlarmPhase의
+ * imminent 게이트 문턱(`IMMINENT_ETA_SECONDS`=10s, `src/features/alarm/utils/alarmPhases.ts`)
+ * 미만으로 들어오는 경로는 없다는 데이터 불변식에 의존한다(붕괴 시 회귀 테스트 참고:
+ * `__tests__/stationEta.test.ts` "passes hopBasedSeconds through unmodified…").
+ *
+ * 반환값은 **표시 텍스트(알림/화면 "약 N분")가 아니라** `evaluateAlarmPhase`의 destination
+ * imminent 게이트 입력(`AlarmContext.etaSeconds`)으로만 소비된다. 알림 body의 표시 ETA는
+ * `calculateStaticETA`(`stationRoute.ts`)가 별도 산출하며, 탑승 중에도 다음 열차 대기시간을
+ * 합산하는 결함은 이 함수의 범위 밖 — #2290이 담당한다.
  */
 export function estimateTransitEtaSeconds(
   distanceMeters: number,

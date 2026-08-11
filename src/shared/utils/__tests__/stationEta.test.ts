@@ -48,6 +48,19 @@ describe('estimateTransitEtaSeconds', () => {
   it('falls back to hop-time only when speed is below the minimum valid threshold', () => {
     expect(estimateTransitEtaSeconds(1000, 0.4, 120)).toBe(120);
   });
+
+  // #2288 리뷰 P3-1 — 경계 케이스. evaluateAlarmPhase의 imminent 게이트(IMMINENT_ETA_SECONDS=10s,
+  // src/features/alarm/utils/alarmPhases.ts)보다 hopBasedSeconds가 작은 경우, 이 함수는 특별
+  // 취급 없이 그대로 통과시킨다(min-clamp 로직에 10s 문턱값 자체가 없음). stationTravelTimes.json
+  // 실측 최솟값은 현재 60s(stationEta.ts 주석 참조)라 이 경로는 production에서 발생하지 않지만,
+  // 향후 데이터에 <10s 이상치가 유입되면 imminent 게이트가 매 hop 조기 발화할 수 있다 — 그 가정
+  // 붕괴를 이 테스트가 드러낸다.
+  it('passes hopBasedSeconds through unmodified even below the imminent-gate threshold (10s)', () => {
+    // speed 없음 → hop 기반 값(5s, 10s 미만) 그대로 통과.
+    expect(estimateTransitEtaSeconds(1000, null, 5)).toBe(5);
+    // distance/speed(500s)가 hop 기반(5s)보다 크면 여전히 5s로 clamp — 10s 문턱과 무관.
+    expect(estimateTransitEtaSeconds(1000, 2, 5)).toBe(5);
+  });
 });
 
 describe('distanceMetersBetween', () => {
