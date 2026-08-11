@@ -363,7 +363,12 @@ async function tryAutoLock(
       expectedDurationMs: deps.expectedDurationMs,
       // #897 Seam A: auto-lock 시점 ETA 스냅샷. 지연 신호의 기준치.
       initialEtaSeconds: chosen.arrivalSeconds,
-    }, 'boarding-prompt-response');
+    // #2290 P2(재검토) — 이 경로는 BOARDED 응답에서만 도달: 사용자가 "지금 탑승한 상태"를 방금
+    // 명시했으므로 탑승 상태 evidence는 확정이다(ADR-014 사용자 명시 의향 동급). chosen train이
+    // fallback 후보일 수 있다는 건 trainCode 신뢰도의 불확실성이지 탑승 여부의 불확실성이 아님 —
+    // evidence는 후자(출발 대기 소진)를 답하는 flag이므로 true. 미래 열차 "선택"인 user-tap과
+    // 시제가 다르다.
+    }, true, 'boarding-prompt-response');
     logBoardingPromptAutoLock({ reason: 'autolock-success', ...telemetry });
   } catch (err) {
     // #1167 — lock 실패 시 fallback 경로. createLock는 storage/network 예외 가능.

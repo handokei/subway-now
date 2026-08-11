@@ -51,6 +51,21 @@ export interface BoardingLock {
     /** sentinel-hydrate 시각(ms epoch). */
     sentinelAt: number;
   };
+  /**
+   * #2290 P1-1 — 생성 시점에 이미 "탑승했다/곧 탑승한다"는 device-side evidence가 있었는지.
+   *
+   * `useBoardingLockController`의 origin auto-lock effect(문서상 `position-train`)만 true로
+   * stamp한다 — arvlCd(ENTERING/ARRIVED/DEPARTED) 강 게이트 + 4-signal consensus를 모두 통과한
+   * 뒤에만 lock을 생성하므로, 그 시점 자체가 곧 탑승 evidence다.
+   *
+   * user-tap(BoardingTrainList 직접 탭, `createLockFromTrain`)은 "미래 열차 선택"일 뿐 탑승
+   * evidence가 아니므로 이 필드를 stamp하지 않는다(undefined) — `hasConsumedOriginWait`가
+   * `initialEtaSeconds` 경과 여부로 별도 판정한다. boardingPrompt 응답 자동lock/환승 leg
+   * device auto-lock(`pickAutoTrainCodeFromArrivals`)은 fallback 후보(evidence 없는 코드)도
+   * 채택 가능해 이 게이트를 만족하지 않으므로 마찬가지로 undefined — 동일한 시간 경과 판정으로
+   * graceful하게 처리된다.
+   */
+  boardingEvidence?: boolean;
 }
 
 /** 자동 만료 안전 계수 — 예상 소요시간이 50% 초과되면 잘못된 Lock으로 보고 해제. */

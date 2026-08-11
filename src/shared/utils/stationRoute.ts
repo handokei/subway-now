@@ -924,6 +924,13 @@ export interface StaticEtaOptions {
   timetableBoardableWaitSecondsByLeg?: ReadonlyArray<number | null>;
   /** freshness 계산용 현재 시각(ms). 미지정 시 Date.now() — 테스트에서 monkeypatch. */
   nowMs?: number;
+  /**
+   * #2290 — 탑승 중(in-trip: boardingLock 활성 / legAdvance stamp / trip 진행 evidence)에는
+   * 출발 leg의 boarding 대기(originWaitMinutes)를 이미 소진한 상태이므로 0으로 제외한다.
+   * 잔여 환승 leg의 대기(transferWaitMinutes)는 유지 — 아직 타지 않은 leg의 대기는 실재한다.
+   * 미지정 시 기존 동작(대기+주행 합산) 동치.
+   */
+  excludeOriginWait?: boolean;
 }
 
 // 한 페어(사용자 좌표 + 역 좌표)의 도보 시간(분). 누락 시 0.
@@ -1027,7 +1034,10 @@ export function calculateStaticETA(
   const walkingMinutes =
     calculateWalkingMinutes(options.currentLocation, options.originStation) +
     calculateWalkingMinutes(options.destinationStation, options.destination);
-  const originWaitMinutes = resolveWaitMinutes(options.arrivalAtOrigin, nowMs);
+  // #2290 — in-trip이면 출발 leg 대기는 이미 소진했으므로 0.
+  const originWaitMinutes = options.excludeOriginWait
+    ? 0
+    : resolveWaitMinutes(options.arrivalAtOrigin, nowMs);
   const transferWaitMinutes = resolveTransferWaitMinutes(
     options.arrivalsAtTransfers,
     options.timetableBoardableWaitSecondsByLeg,
@@ -1142,11 +1152,21 @@ export function routeSignature(route: Route): string {
  * 첫 열차 대기는 호출자가 실시간으로 측정해 `nextTrainMinutes`로 주입한다.
  * 환승 leg 대기는 환승역별 폴링 인프라가 없으므로 fallback만 사용 — 후속에서 동적화 시
  * `calculateStaticETA`의 `arrivalsAtTransfers`와 동일한 옵션 시그니처로 확장.
+ *
+ * #2290 — `options.excludeOriginWait: true`(in-trip: boardingLock 활성 / legAdvance stamp /
+ * trip 진행 evidence)면 `nextTrainMinutes`(출발 leg boarding 대기)를 0으로 제외하고 주행 +
+ * 잔여 환승 leg 대기만 반환한다. 이미 탑승 중이므로 "다음 열차를 기다렸다 탄다"는 가정이 틀렸던
+ * 회귀(evidence: 성수→뚝섬 1정거장 남음인데 9분 표시) 수정. 탑승 전(기본값)에는 기존 동작 유지.
  */
-export function calculateETA(nextTrainMinutes: number, route: Route): number {
-  if (!route) return nextTrainMinutes;
+export function calculateETA(
+  nextTrainMinutes: number,
+  route: Route,
+  options: { excludeOriginWait?: boolean } = {},
+): number {
+  const originWait = options.excludeOriginWait ? 0 : nextTrainMinutes;
+  if (!route) return originWait;
   const transferWait = getTransferCount(route) * DEFAULT_WAIT_MINUTES;
-  return nextTrainMinutes + getTravelMinutes(route) + transferWait;
+  return originWait + getTravelMinutes(route) + transferWait;
 }
 
 export function getNextStationOnLine(

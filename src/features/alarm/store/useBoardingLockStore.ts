@@ -39,6 +39,15 @@ export type LockReleaseReason =
   | 'trip-cleanup';
 
 /**
+ * #2290 P1 (PR #2295 리뷰 2회차) — `createLock` 호출부가 만드는 lock payload. `boardingEvidence`는
+ * 이 타입에서 의도적으로 제외된다 — 호출자가 lock 객체 안에 산발적으로 stamp하면 새 lock 생성
+ * 경로가 추가될 때 stamp를 빠뜨려도 컴파일이 통과해버린다(P1-1 회귀의 재발 형태). 대신
+ * `createLock`의 별도 필수 인자 `evidence`로 강제해, 신규 호출부가 이 값을 명시하지 않으면
+ * 컴파일이 실패하도록 한다.
+ */
+export type BoardingLockInput = Omit<BoardingLock, 'boardingEvidence'>;
+
+/**
  * BoardingLock 전역 store (#584 PR A).
  *
  * Single Lock only — trip 1개에 leg 1개. multi-transfer는 createLock으로 교체(PR E).
@@ -53,8 +62,23 @@ export interface BoardingLockState {
    * #2152 — source는 lifecycle breadcrumb에 stamp되는 생성 경로 식별자. 사용자 명시 탭
    * (BoardingTrainList)과 boardingPrompt 응답을 구분해 오토락 범인 특정을 소거법으로 가능하게
    * 한다. 미전달(그 외 경로 — 자동 lock/backend suggestion 등)은 'other'로 기록.
+   *
+   * #2290 P1 — `evidence`는 필수 인자다(기본값 없음). "탑승했다/곧 탑승한다"는 device-side 또는
+   * backend-confirmed evidence가 이 lock 생성 시점에 실제로 있었는지를 호출자가 명시해야 한다:
+   *   - `true` — arvlCd 강 게이트 + consensus를 통과한 device-side auto-lock, backend가 이미
+   *     arvlcd-confirmed evidence로 합의한 lockSuggestion(#1534), 또는 backend가 (기존 lock +
+   *     trainCode 변경) 3조건을 모두 검증한 transfer-swap candidate처럼 "생성 시점 자체가 탑승
+   *     evidence"인 경로.
+   *   - `false` — user-tap(BoardingTrainList 직접 탭), boardingPrompt 응답 자동lock, 환승 leg
+   *     device auto-lock(D5), backend가 evidence 없이 발급한 autoLock candidate처럼 "미래 열차
+   *     선택/의향"만 있고 탑승 확정 evidence가 없는 경로. `hasConsumedOriginWait`가 이 경우
+   *     `initialEtaSeconds` 경과 여부로 별도 판정한다(부재 시 보수적으로 대기 유지).
    */
-  createLock: (lock: BoardingLock, source?: LockLifecycleCreateSource) => Promise<void>;
+  createLock: (
+    lock: BoardingLockInput,
+    evidence: boolean,
+    source?: LockLifecycleCreateSource,
+  ) => Promise<void>;
   /**
    * 사용자가 "하차" 탭하거나 trip 종료 시 호출.
    *
@@ -75,7 +99,15 @@ export interface BoardingLockState {
 export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
   lock: null,
 
-  createLock: async (lock: BoardingLock, source: LockLifecycleCreateSource = 'other') => {
+  createLock: async (
+    lockInput: BoardingLockInput,
+    evidence: boolean,
+    source: LockLifecycleCreateSource = 'other',
+  ) => {
+    // #2290 P1 — evidence를 별도 필수 인자로 받아 여기서 한 곳에서만 lock 객체에 합성한다.
+    // 호출부가 lock 객체 리터럴 안에 산발적으로 boardingEvidence를 stamp하던 방식(P1-1)은
+    // 새 생성 경로가 추가돼도 stamp를 빠뜨리면 컴파일이 통과했다 — 이 지점 하나로 강제한다.
+    const lock: BoardingLock = { ...lockInput, boardingEvidence: evidence };
     // #1996 (Phase 1-7, ADR-022 A4) — boardingStationId 불변 정책 (flag ON 시).
     //
     // route 등록 시 확정된 boardingStationId는 절대 자동 변경 금지 (auto-swap / reanchored /
