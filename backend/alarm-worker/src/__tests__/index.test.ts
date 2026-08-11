@@ -3542,6 +3542,81 @@ describe('POST /boarding-lock/sync (#901)', () => {
       expect(body.autoLockCandidate.expiresAt).toBeGreaterThan(Date.now());
     });
   });
+
+  // #2283 리뷰 P2-2 — trip_events 기록(sync-received/advance/hydrate-issued)이 핫패스 응답
+  // latency에 얹히지 않고 `c.executionCtx.waitUntil`로 스케줄되는지 검증.
+  describe('trip_events waitUntil wiring (#2283 리뷰 P2-2)', () => {
+    function makeExecutionContext(): ExecutionContext & { waitUntil: ReturnType<typeof vi.fn> } {
+      return {
+        waitUntil: vi.fn(),
+        passThroughOnException: () => {},
+        props: {},
+      } as unknown as ExecutionContext & { waitUntil: ReturnType<typeof vi.fn> };
+    }
+
+    async function postWithCtx(
+      path: string,
+      body: unknown,
+      env: Env,
+      ctx: ExecutionContext,
+    ): Promise<Response> {
+      return app.fetch(
+        new Request(`http://example.com${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        env,
+        ctx,
+      );
+    }
+
+    it('sync-received/advance/hydrate-issued 3종 모두 waitUntil로 스케줄된다 (응답을 막지 않음)', async () => {
+      const env = makeKvEnv();
+      const prepare = vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }),
+      });
+      env.DB = { prepare } as unknown as Env['DB'];
+      await post('/trips', tripWithLock(), env);
+
+      const ctx = makeExecutionContext();
+      // waypoints[0]='강남' 일치 → advance 발생 + boardingLock 존재 → hydrate-issued도 발생.
+      const res = await postWithCtx(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+        ctx,
+      );
+      expect(res.status).toBe(200);
+
+      // 3건(sync-received/advance/hydrate-issued) 모두 waitUntil에 넘겨졌는지 확인.
+      expect(ctx.waitUntil).toHaveBeenCalledTimes(3);
+      // waitUntil로 넘긴 프로미스가 실제로 완료되면 각 kind에 대해 D1 INSERT가 실행됐어야 한다.
+      const scheduled = ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>);
+      await Promise.all(scheduled);
+      const kinds = prepare.mock.calls
+        .map((call) => call[0] as string)
+        .filter((sql) => sql.includes('INSERT INTO trip_events'));
+      expect(kinds).toHaveLength(3);
+    });
+
+    it('executionCtx 미제공(기존 단위 테스트 관례) 시에도 throw 없이 정상 응답한다', async () => {
+      const env = makeKvEnv();
+      const prepare = vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }),
+      });
+      env.DB = { prepare } as unknown as Env['DB'];
+      await post('/trips', tripWithLock(), env);
+
+      // executionCtx 없이 기존 post() 헬퍼로 호출 — scheduleTripEvent가 graceful degrade해야 함.
+      const res = await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      expect(res.status).toBe(200);
+    });
+  });
 });
 
 // #1364 — verifyBoardingLockPersisted 단위 테스트 (sync handler retry/5xx 게이트의 분기).

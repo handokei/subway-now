@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { cleanupTripEvents, recordTripEvent, TRIP_EVENT_RETENTION_MS } from '../tripEventLog';
+import { captureXEvent } from '../sentry';
+
+vi.mock('../sentry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sentry')>();
+  return { ...actual, captureXEvent: vi.fn() };
+});
 
 function makeMockDb(runResult: unknown = { success: true }): D1Database {
   const run = vi.fn().mockResolvedValue(runResult);
@@ -83,6 +89,20 @@ describe('recordTripEvent (#2283)', () => {
       recordTripEvent(db, { tokenHash: 'hash5', kind: 'sync-received' }),
     ).resolves.toBeUndefined();
   });
+
+  it('D1 write 실패 시 무음이 아니라 captureXEvent로 관측 승격된다 (#2283 리뷰 P2-1)', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('D1 write error'));
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    const db = { prepare } as unknown as D1Database;
+
+    await recordTripEvent(db, { tokenHash: 'hash6', kind: 'sync-received' });
+
+    expect(captureXEvent).toHaveBeenCalledWith(
+      'D1-write-failure',
+      expect.objectContaining({ table: 'trip_events', kind: 'sync-received' }),
+    );
+  });
 });
 
 describe('cleanupTripEvents (#2283)', () => {
@@ -121,5 +141,19 @@ describe('cleanupTripEvents (#2283)', () => {
     const db = { prepare } as unknown as D1Database;
 
     await expect(cleanupTripEvents(db, 1000)).resolves.toBe(0);
+  });
+
+  it('D1 delete 실패 시 무음이 아니라 captureXEvent로 관측 승격된다 (#2283 리뷰 P2-1)', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('D1 delete error'));
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    const db = { prepare } as unknown as D1Database;
+
+    await cleanupTripEvents(db, 1000);
+
+    expect(captureXEvent).toHaveBeenCalledWith(
+      'D1-write-failure',
+      expect.objectContaining({ table: 'trip_events', kind: 'cleanup' }),
+    );
   });
 });
