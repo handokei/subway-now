@@ -8,7 +8,7 @@
  */
 
 import { hashTripToken } from './sentry';
-import type { Trip } from './types';
+import type { BoardingPromptState, Trip } from './types';
 
 /**
  * trip_metrics 에 trip 종료 기록을 적재한다.
@@ -61,7 +61,9 @@ export async function recordTripMetrics(
         extractOriginStation(trip),
         trip.destination ?? null,
         JSON.stringify(lineList),
-        0, // fired_count: 현재 trip 객체에 누적 카운터 없음 — Phase 2 follow-up에서 추가
+        // #2281 — hop-end/boarding prompt가 trip.hopEndPromptState / trip.boardingPromptState에
+        // 이미 남기는 per-trip fireCount를 집계. 기존 컬럼(fired_count) 재사용 — 스키마 변경 없음.
+        computeFiredCount(trip),
         0, // suppressed_count: 동상
         boardingPromptState?.fired ? 1 : 0,
         0, // boarding_prompt_responded: 현재 Trip 타입에 responded 필드 없음 — Phase 2 follow-up에서 추가
@@ -94,6 +96,33 @@ function extractOriginStation(trip: Trip): string | null {
   const { passedStations } = trip;
   if (passedStations && passedStations.length > 0) return passedStations[0];
   return null;
+}
+
+/**
+ * #2281 — trip 전체에서 실제 발사된 prompt 수를 집계한다.
+ *
+ * 대상: boarding-prompt(`trip.boardingPromptState`) + hop-end prompt(`trip.hopEndPromptState`,
+ * leg별 dedup key로 여러 개 존재 가능) — 둘 다 사용자에게 응답을 요구하는 alert push이자, trip
+ * 객체에 이미 per-trip 발사 상태(`fireCount`/`fired`)를 갖고 있어 새 스키마 없이 집계 가능하다.
+ *
+ * 범위 밖(전수 감사, PR 본문 표 참조): intermediate/transfer/destination 알림, reschedule,
+ * lockless-intermediate, sleep-alarm companion, vanish release/fallback, train-reconfirm push는
+ * cron 단위(`ScheduledStats`) 집계만 있고 trip 객체에 영속 상태가 없다 — 포함하려면 Trip 스키마에
+ * 새 필드를 추가해야 해 이번 최소 변경 범위를 벗어난다(follow-up 후보).
+ */
+function computeFiredCount(trip: Trip): number {
+  const boardingFired = countPromptFires(trip.boardingPromptState);
+  const hopEndFired = Object.values(trip.hopEndPromptState ?? {}).reduce(
+    (sum, state) => sum + countPromptFires(state),
+    0,
+  );
+  return boardingFired + hopEndFired;
+}
+
+/** 단일 `BoardingPromptState`의 발사 횟수. `fireCount`(반복 발사 지원) 우선, 없으면 `fired` boolean. */
+function countPromptFires(state: BoardingPromptState | undefined): number {
+  if (state?.fireCount !== undefined) return state.fireCount;
+  return state?.fired ? 1 : 0;
 }
 
 /**

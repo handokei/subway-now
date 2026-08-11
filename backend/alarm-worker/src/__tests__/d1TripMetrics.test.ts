@@ -169,6 +169,77 @@ describe('recordTripMetrics (#1835)', () => {
     });
   });
 
+  // #2281 — hop-end prompt(및 boarding-prompt) 발사가 trip.hopEndPromptState /
+  // trip.boardingPromptState에 이미 per-trip 기록되는데도 fired_count가 항상 0으로
+  // 하드코딩돼 D1에 반영되지 않던 갭. fired_count는 이 두 per-trip state에서 집계돼야 한다.
+  describe('fired_count 집계 (#2281)', () => {
+    it('hop-end prompt가 발사된 trip은 fired_count>0 이어야 한다', async () => {
+      const run = vi.fn().mockResolvedValue({ success: true });
+      let capturedArgs: unknown[] = [];
+      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+        capturedArgs = args;
+        return { run };
+      });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      const db = { prepare } as unknown as D1Database;
+
+      const trip = makeTripFixture({
+        hopEndPromptState: {
+          '건대입구|7': { fired: true, lastFiredAt: NOW - 60_000, fireCount: 1 },
+        },
+      });
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      // fired_count = 8번째 bind 인자 (positional index 7, 0-based) — INSERT 컬럼 순서 기준.
+      const firedCountArg = capturedArgs[7];
+      expect(firedCountArg).toBe(1);
+    });
+
+    it('boarding-prompt + hop-end prompt 둘 다 발사되면 fired_count가 합산된다', async () => {
+      const run = vi.fn().mockResolvedValue({ success: true });
+      let capturedArgs: unknown[] = [];
+      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+        capturedArgs = args;
+        return { run };
+      });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      const db = { prepare } as unknown as D1Database;
+
+      const trip = makeTripFixture({
+        boardingPromptState: { fired: true, lastFiredAt: NOW - 120_000, fireCount: 2 },
+        hopEndPromptState: {
+          '건대입구|7': { fired: true, lastFiredAt: NOW - 60_000, fireCount: 1 },
+          '군자|5': { fired: true, lastFiredAt: NOW - 30_000, fireCount: 1 },
+        },
+      });
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      const firedCountArg = capturedArgs[7];
+      // boardingPromptState.fireCount(2) + hopEndPromptState 2개 leg(각 1) = 4
+      expect(firedCountArg).toBe(4);
+    });
+
+    it('아무 prompt도 발사되지 않은 trip은 fired_count=0 이다', async () => {
+      const run = vi.fn().mockResolvedValue({ success: true });
+      let capturedArgs: unknown[] = [];
+      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+        capturedArgs = args;
+        return { run };
+      });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      const db = { prepare } as unknown as D1Database;
+
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      const firedCountArg = capturedArgs[7];
+      expect(firedCountArg).toBe(0);
+    });
+  });
+
   // #2268 — device가 알고 있는 실제 종료 사유(예: lockless-trip-end)도 자유 문자열로 받아
   // end_reason에 그대로 적재한다. TripEndedReason(server-side auto-end 전용) 제약을 받지 않는다.
   it('device가 보고한 자유 문자열 reason도 end_reason에 그대로 적재된다', async () => {
