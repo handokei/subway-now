@@ -87,6 +87,17 @@ jest.mock('../../store/useUserIntentStore', () => {
   };
 });
 
+// #2278 — useLegAdvanceStore mock. hop-end BOARDED 응답에서 stampLegAdvance 호출 검증.
+jest.mock('../../store/useLegAdvanceStore', () => {
+  const mockStampLegAdvance = jest.fn();
+  return {
+    useLegAdvanceStore: {
+      getState: () => ({ stampLegAdvance: mockStampLegAdvance }),
+    },
+    __mockStampLegAdvance: mockStampLegAdvance,
+  };
+});
+
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
 const {
   logBoardingPromptAutoLock,
@@ -101,6 +112,9 @@ const { __mockCreateLock: createLockMock, __mockReleaseLock: releaseLockMock } =
 );
 const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
   '../../store/useUserIntentStore',
+);
+const { __mockStampLegAdvance: stampLegAdvanceMock } = jest.requireMock(
+  '../../store/useLegAdvanceStore',
 );
 const displayLoggerMock = jest.requireMock('../useBoardingPromptDisplayLogger');
 
@@ -962,6 +976,42 @@ describe('handleResponse — #2034 hop-end', () => {
     );
     expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-hop');
     expect(releaseLockMock).not.toHaveBeenCalled();
+  });
+
+  // #2278 — 건대입구 7→2 환승 실기기 RCA. HOP_END_PAYLOAD.nextLine='K'는 유효한 LineNumber가
+  // 아니므로(테스트 placeholder) 위 케이스들에서는 stampLegAdvance가 호출되지 않는다 — 유효한
+  // nextLine('2')을 가진 payload로 stamp 발사를 별도 검증한다.
+  const HOP_END_PAYLOAD_VALID_NEXT_LINE = {
+    ...HOP_END_PAYLOAD,
+    nextLine: '2',
+  };
+
+  it('[하차함] (BOARDED action) + 유효한 nextLine → useLegAdvanceStore.stampLegAdvance(nextLine) 호출', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      HOP_END_PAYLOAD_VALID_NEXT_LINE,
+      makeHandleResponseDeps(),
+    );
+    expect(stampLegAdvanceMock).toHaveBeenCalledTimes(1);
+    expect(stampLegAdvanceMock).toHaveBeenCalledWith('2');
+  });
+
+  it('[하차함] (BOARDED action) + 유효하지 않은 nextLine("K") → stampLegAdvance 호출 안 함 (기존 동작 유지)', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+  });
+
+  it('[아직] (NOT_BOARDED action) → stampLegAdvance 호출 안 함', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      HOP_END_PAYLOAD_VALID_NEXT_LINE,
+      makeHandleResponseDeps(),
+    );
+    expect(stampLegAdvanceMock).not.toHaveBeenCalled();
   });
 
   it('breadcrumb "boarding_prompt_interactive_tap" 에 hopEndKind=disembark 스탬프', async () => {

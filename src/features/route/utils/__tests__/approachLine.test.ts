@@ -146,6 +146,33 @@ describe('getApproachLine', () => {
     });
   });
 
+  describe('legAdvance override (#2278 RCA — 가설 1 확정: releaseLock 후 stopsToTransfer 미갱신)', () => {
+    it('가설 1 재현: lock 해제 + route.stopsToTransfer 미갱신(frozen) → legAdvance 없이는 여전히 fromLine(구 노선) 반환', () => {
+      // 건대입구 7→2 환승: 사용자가 하차 응답 후 releaseLock(lock=null)했지만 route의 진행도
+      // (stopsToTransfer)는 backend SSoT 갱신 지연으로 아직 3(환승 전)에 머물러 있다.
+      // legAdvance 힌트 없이는 route가 여전히 fromLine('7')을 반환 — 이것이 BoardingTrainList가
+      // 7호선 열차만 보여준 회귀의 근본 원인(가설 1 확정).
+      const route = makeTransfer('7', '2', 3);
+      expect(getApproachLine(route, null, null)).toBe('7');
+    });
+
+    it('사용자 명시 하차 응답 stamp(legAdvance) 존재 시 lock=null + stale route라도 nextLine 반환', () => {
+      const route = makeTransfer('7', '2', 3);
+      expect(getApproachLine(route, null, null, '2')).toBe('2');
+    });
+
+    it('legAdvance가 있어도 lock이 여전히 존재하면 lock.boardingLine이 최우선', () => {
+      const route = makeTransfer('7', '2', 3);
+      const lock = makeLock('7');
+      expect(getApproachLine(route, lock, null, '2')).toBe('7');
+    });
+
+    it('legAdvance 없음(undefined)이면 기존 동작(route 기반) 그대로', () => {
+      const route = makeTransfer('7', '2', 0);
+      expect(getApproachLine(route, null, null, null)).toBe('2');
+    });
+  });
+
   describe('현재역 line 검증 가드 (#1325)', () => {
     it('후보 line을 현재역이 실제 서비스하면 그대로 반환', () => {
       // 신당은 2,6호선 정차 → boardingLine 6호선이면 검증 통과.

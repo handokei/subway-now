@@ -11,6 +11,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
+import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { getApproachLineWithConfirmation } from '../../route/utils/approachLine';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
@@ -268,9 +269,12 @@ export function useBoardingLockController({
   // `confirmed=false`(route/lock 후보 없음, fusion `currentStation.line` 임의값(#797))이면
   // 어떤 candidate 필터에도 이 line을 쓰지 않는다(누락 방지) — origin auto-lock 전용
   // `originAutoLockArrivals`(하단)에서만 소비한다.
+  // #2278 — 사용자 하차 응답 stamp. lock 해제 직후 route 진행도가 아직 못 따라온 gap을
+  // 로컬에서 즉시 메운다 (getApproachLine 우선순위: lock > legAdvance > route > fallback).
+  const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
   const { line: approachLine, confirmed: approachLineConfirmed } = useMemo(
-    () => getApproachLineWithConfirmation(route, lock, currentStation),
-    [route, lock, currentStation],
+    () => getApproachLineWithConfirmation(route, lock, currentStation, legAdvanceLine),
+    [route, lock, currentStation, legAdvanceLine],
   );
 
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {

@@ -11,8 +11,11 @@ import type { LineNumber, Station } from '../../../shared/types/station';
  *
  * 우선순위:
  *   1. **BoardingLock 존재** → `boardingLock.boardingLine` (사용자가 명시 선택한 leg, 가장 강한 신호)
- *   2. **Route + segment 진행도** → 다음 환승 전이면 fromLine, 환승 도착(stopsToTransfer===0)이면 toLine
- *   3. **fallback** → `currentStation?.line ?? null`
+ *   2. **legAdvance stamp** → 사용자가 환승역 하차 응답/버튼으로 명시 확인한 다음 leg 노선
+ *      (#2278). lock은 해제 직후 null이 되지만 route의 `stopsToTransfer` 진행도는 backend SSoT
+ *      갱신 지연으로 즉시 따라오지 못한다(RCA 가설 1 확정) — 그 gap을 메우는 로컬 ground truth.
+ *   3. **Route + segment 진행도** → 다음 환승 전이면 fromLine, 환승 도착(stopsToTransfer===0)이면 toLine
+ *   4. **fallback** → `currentStation?.line ?? null`
  *
  * stopsToTransfer===0의 의미 모호성(환승역 정확 도착 vs 환승 완료)은 BoardingLock이 있으면 1번에서
  * 해소된다. lock 없는 케이스는 "transferring or transferred"로 추정 → toLine 안내가 더 유용
@@ -40,8 +43,14 @@ export function getApproachLineWithConfirmation(
   route: Route,
   boardingLock: BoardingLock | null,
   currentStation: Station | null,
+  /**
+   * #2278 — 사용자가 환승역 하차 응답/버튼으로 명시 확인한 다음 leg 노선.
+   * `useLegAdvanceStore`가 SSoT. lock=null이고 route 진행도가 아직 못 따라온 구간을
+   * 로컬에서 즉시 메운다. 미전달(undefined) 또는 null이면 기존 동작(우선순위 3~4) 그대로.
+   */
+  legAdvanceLine?: LineNumber | null,
 ): ApproachLineResult {
-  const candidate = resolveCandidateLine(route, boardingLock);
+  const candidate = resolveCandidateLine(route, boardingLock, legAdvanceLine ?? null);
   const confirmed = candidate !== null;
 
   if (candidate && currentStation) {
@@ -58,13 +67,19 @@ export function getApproachLine(
   route: Route,
   boardingLock: BoardingLock | null,
   currentStation: Station | null,
+  legAdvanceLine?: LineNumber | null,
 ): LineNumber | null {
-  return getApproachLineWithConfirmation(route, boardingLock, currentStation).line;
+  return getApproachLineWithConfirmation(route, boardingLock, currentStation, legAdvanceLine).line;
 }
 
 /** route + BoardingLock SSOT로 우선순위에 따라 노선을 산출한다 (검증 전 raw 후보). */
-function resolveCandidateLine(route: Route, boardingLock: BoardingLock | null): LineNumber | null {
+function resolveCandidateLine(
+  route: Route,
+  boardingLock: BoardingLock | null,
+  legAdvanceLine: LineNumber | null,
+): LineNumber | null {
   if (boardingLock) return boardingLock.boardingLine;
+  if (legAdvanceLine) return legAdvanceLine;
 
   if (route) {
     if (route.type === 'direct') return route.line;

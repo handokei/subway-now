@@ -43,6 +43,7 @@ import { clearActiveTrip, resetAlarmBackendDedup } from '../api/alarmBackend';
 import { getNotificationRouter } from '../api/notificationRouter';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from './useBoardingLockStore';
+import { useLegAdvanceStore } from './useLegAdvanceStore';
 import { useAlarmEventStore } from './useAlarmEventStore';
 import { resetUserIntentInfoMode } from './useUserIntentStore';
 import { createLogger } from '../../../shared/utils/logger';
@@ -228,6 +229,11 @@ async function clearTripBoundStoreMemory(): Promise<void> {
   }
   if (alarmState.dismissSilence !== null) {
     useAlarmEventStore.setState({ dismissSilence: null });
+  }
+  // #2278 — leg-advance stamp도 trip 경계에서 클리어. 이전 trip의 hop-end 확인이 새 trip의
+  // getApproachLine 우선순위를 오염시키지 않도록 한다 (in-memory only, 별도 storage 없음).
+  if (useLegAdvanceStore.getState().nextLine !== null) {
+    useLegAdvanceStore.setState({ nextLine: null });
   }
   return Promise.resolve();
 }
