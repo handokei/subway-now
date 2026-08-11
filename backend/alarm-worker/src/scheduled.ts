@@ -120,6 +120,7 @@ import {
 } from './cronJitterAggregate';
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
+import { cleanupTripEvents } from './tripEventLog';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -1126,6 +1127,13 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #2073 (Issue A) — 아래 idle 판정 이후 실제 값으로 덮어쓴다. 기본 true = 보수적(항상 실행).
     pendingActivityPossible: true,
   };
+
+  // #2283 — trip_events 보존 기간(7일) 초과분 cleanup. cron이 60s마다(1440회/일) 도는데 매
+  // tick마다 DELETE를 부르면 D1 free plan write quota를 불필요하게 소진한다(#2073 lesson). 시(hour)
+  // 경계에서만 실행해 24회/일로 제한 — KV read/write 없이 `now` 값만으로 게이팅(추가 quota 0).
+  if (new Date(now).getUTCMinutes() === 0) {
+    await cleanupTripEvents(env.DB, now);
+  }
 
   // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
   // 1회 병합. 전체 trip을 배열로 확보해 아래 파생 함수 + main loop가 모두 이 배열을 재사용한다.
