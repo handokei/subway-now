@@ -33,6 +33,14 @@ jest.mock('../stationNotification', () => ({
   }),
 }));
 
+// #2284 (P1 wire matrix gap) — #2089 리팩터로 구 3종 스케줄러(alarmScheduler 등)가 호출하던
+// logScheduledAlarm 계측이 safetyNetScheduler로 이전되지 않고 유실됐다. OS 예약(DATE trigger,
+// 취소 가능) 성공 시 예약 stamp 호출을 검증한다 — "발사"가 아닌 "예약" 시점 기록.
+const mockLogScheduledAlarm = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logScheduledAlarm: (...args: unknown[]) => mockLogScheduledAlarm(...args),
+}));
+
 const mockedSchedule = Notifications.scheduleNotificationAsync as jest.MockedFunction<
   typeof Notifications.scheduleNotificationAsync
 >;
@@ -178,6 +186,25 @@ describe('registerSafetyNetAlarms', () => {
     const expectedFire = START_TIME + 600_000 - 120_000 + SAFETY_NET_BUFFER_MS;
     expect(scheduledFireMs()).toEqual([expectedFire]);
     expect(scheduledIdentifiers()).toEqual([`alarm-${TRIP_TOKEN}-${GANGNAM}-destination`]);
+  });
+
+  it('#2284 (P1) — OS 예약 성공 시 fired-only 독립 버퍼용 alarmLog 예약 stamp를 호출한다', async () => {
+    const route = makeDirectRoute(5, '2');
+    await registerSafetyNetAlarms({
+      tripToken: TRIP_TOKEN,
+      route,
+      destinationName: GANGNAM,
+      startTime: START_TIME,
+      now: START_TIME,
+      outageConfirmed: true,
+    });
+    // "예약"과 "실제 발사"가 다른 채널(OS DATE trigger, 취소 가능) — logScheduledAlarm(기존
+    // bg-scheduled 관례)로 예약 시점 기록. 취소되면 이 entry가 그대로 남는 known limitation은
+    // 구 3종 스케줄러 시절부터 존재하던 동일 특성(신규 도입 아님).
+    expect(mockLogScheduledAlarm).toHaveBeenCalledWith(
+      { phaseId: 'early', type: 'destination', stationName: GANGNAM },
+      expect.objectContaining({ expectedStationAtFire: GANGNAM }),
+    );
   });
 
   it('과거 시각(fireMs <= startTime/now)은 skip', async () => {

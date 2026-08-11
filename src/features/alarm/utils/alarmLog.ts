@@ -1,9 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus } from 'react-native';
-import { ALARM_LOG_KEY } from '../../../shared/constants/storageKeys';
+import { ALARM_LOG_KEY, FIRED_ALARM_LOG_KEY } from '../../../shared/constants/storageKeys';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { captureXEvent } from '../../../shared/infra/monitoring/captureXEvent';
 import { createLogger } from '../../../shared/utils/logger';
+import { findLineByStationName } from '../../../shared/utils/stationLookup';
 import type { AlarmEvent } from './stationAlarm';
 import type { AlarmPhaseId } from './alarmPhases';
 import type { Station } from '../../../shared/types/station';
@@ -119,7 +120,12 @@ export type AlarmLogSource =
   // #2243 (ADR-029 Phase 1) — push 계약 런타임 경계 위반(unknown-kind skew / semantic value
   // drift) 관측 전용 source. 기존 silent-push-received/-skipped 분포와 분리해 A2("silent
   // drop 대신 명시적 skew 로그") 달성 여부를 독립적으로 측정할 수 있게 한다.
-  | 'push-contract-skew';
+  | 'push-contract-skew'
+  // #2284 (P1 wire matrix gap) — 막차 임박 알람(lastTrainAlarm.ts fireLastTrainAlarm) 즉시
+  // 발사 stamp. `expo-notifications`에 `trigger: null`로 예약하므로 스케줄 호출 자체가 곧
+  // 사용자 노출 확정 시점 — bg-scheduled(OS DATE trigger, 취소 가능한 미래 예약)와 달리
+  // "예약≠발사" 갭이 없는 확정 발사다.
+  | 'last-train-alarm';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -464,6 +470,30 @@ export interface AlarmLogEntry {
   currentHopIndex?: number;
   candidateIndex?: number;
 }
+
+/**
+ * #2284 — fired-only 독립 영속 링버퍼 entry.
+ *
+ * `alarmLog`(200-cap, 모든 outcome/source 혼합)는 suppressed/received burst가 몰리면
+ * 이전 fired 기록을 rotate로 밀어낸다(2026-08-11 덤프: 07:38:28 이전 fired 소실).
+ * DebugModal의 "Notifications fired" 파생값(`logs.filter(outcome==='fired')`)이 이 절단을
+ * 그대로 상속해 "실알람 0건" 오판을 낳았다 — 별도 key/cap으로 분리해 alarmLog rotate와
+ * 무관하게 보존한다.
+ *
+ * `line`은 stationName → 데이터 기반 최근접 노선 조회(`findLineByStationName`)로 채운다.
+ * AlarmEvent 자체에 line 필드가 없어 발사 시점 정확한 노선을 항상 보장하지 못하지만(동명이역
+ * 등 ambiguous 케이스는 null), 진단 목적에는 충분하다.
+ */
+export interface FiredAlarmLogEntry {
+  ts: number;
+  kind: AlarmLogKind | 'unknown';
+  station: string;
+  line: string | null;
+  channel: AlarmLogSource;
+}
+
+// #2284 — 별 ring cap. alarmLog(200)와 무관 — fired만 담으므로 훨씬 적은 cap으로 충분.
+export const FIRED_ALARM_LOG_BUFFER_SIZE = 100;
 
 const logger = createLogger('AlarmLog');
 
@@ -1369,6 +1399,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   companion: null,
   // #2243 (ADR-029 Phase 1) — 계약 스큐는 별도 전용 counter(countPushContractSkew)로 집계.
   'push-contract-skew': null,
+  // #2284 — 막차 알람은 silent push와 무관한 device 로컬 채널이므로 이 counter 제외.
+  'last-train-alarm': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1428,6 +1460,8 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // generic imminent 알림이므로 fire 분모에 포함(outcome='fired'인 항목만 카운트되므로
   // control-like fail-closed 'suppressed' 항목은 자동 제외).
   'push-contract-skew': true,
+  // #2284 (P1) — 즉시 발사(trigger: null) 확정 알람. 실제 사용자 노출이므로 fire 분모 포함.
+  'last-train-alarm': true,
 };
 
 /**
@@ -1980,6 +2014,25 @@ export function logCompanionAlarmFired(input: {
   });
 }
 
+/**
+ * #2284 (P1 wire matrix gap) — 막차 임박 알람 즉시 발사(`lastTrainAlarm.ts fireLastTrainAlarm`)
+ * 1건 적재. `trigger: null`로 스케줄하므로 호출 시점이 곧 확정 발사 시점이다(OS 사전예약과
+ * 달리 "예약≠발사" 갭 없음) — `appendAlarmLog`를 거쳐 fired-only 독립 버퍼(#2284)에도
+ * genuine fire로 자동 반영된다.
+ *
+ * stationName은 로컬라이즈된 표시명이 아닌 origin의 정규 한글 station명이어야 한다 —
+ * fired-only 버퍼가 `findLineByStationName`으로 line을 조회할 때 stations.json 원본과
+ * 매칭돼야 하기 때문.
+ */
+export function logLastTrainAlarmFired(input: { stationName: string }): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'last-train-alarm',
+    outcome: 'fired',
+    stationName: input.stationName,
+  });
+}
+
 /** #1021: 시간 윈도우별 boardingPrompt 발사 횟수. 5m / 1h / all. */
 export const BOARDING_PROMPT_WINDOWS = [
   { key: '5m', label: '5m', ms: 5 * 60 * 1000 },
@@ -2435,6 +2488,45 @@ async function doFlushOnce(): Promise<void> {
   } catch (e) {
     logger.error('알람 로그 적재 실패:', e);
   }
+  // #2284 — 같은 flush 사이클(동일 mutex 보호 구간) 안에서 fired-only 독립 버퍼도 함께 적재.
+  // alarmLog write 실패와 독립적으로 시도 — 자체 try/catch로 격리.
+  await flushFiredAlarmLog(toFlush);
+}
+
+/**
+ * #2284 — pendingEntries 중 "실제 사용자에게 노출된" fired 엔트리만 골라 독립 버퍼에 적재.
+ *
+ * `FIRED_ALARM_SOURCES`(위 정의, countFiredAlarms가 쓰는 것과 동일 SSoT)로 metadata stamp
+ * (boarding-prompt/lifecycle-backstop/lockless-trip-end 등)를 걸러낸다 — 이 버퍼가 "발사=사용자
+ * 알림 노출"만 담아야 fired count가 다시 거짓말하지 않는다.
+ *
+ * appendAlarmLog를 거치는 모든 발사 경로(scheduleNotification/LA 계열 helper: logFiredAlarm /
+ * logFiredStationPassed / logScheduledAlarm / logCompanionFired 등)가 단일 진입점이므로 신규
+ * 발사 경로가 추가돼도 이 하나의 hook이 자동으로 커버한다 — 호출부별 개별 wiring 불필요.
+ */
+async function flushFiredAlarmLog(entries: readonly AlarmLogEntry[]): Promise<void> {
+  const fired = entries.filter(
+    (e) => e.outcome === 'fired' && FIRED_ALARM_SOURCES[e.source],
+  );
+  if (fired.length === 0) return;
+  try {
+    const raw = await AsyncStorage.getItem(FIRED_ALARM_LOG_KEY);
+    const existing: FiredAlarmLogEntry[] = raw ? safeParseFired(raw) : [];
+    const additions: FiredAlarmLogEntry[] = fired.map((e) => ({
+      ts: e.ts,
+      kind: e.kind ?? 'unknown',
+      station: e.stationName ?? 'unknown',
+      line: e.stationName ? findLineByStationName(e.stationName) : null,
+      channel: e.source,
+    }));
+    const next = [...existing, ...additions];
+    const trimmed = next.length > FIRED_ALARM_LOG_BUFFER_SIZE
+      ? next.slice(next.length - FIRED_ALARM_LOG_BUFFER_SIZE)
+      : next;
+    await AsyncStorage.setItem(FIRED_ALARM_LOG_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    logger.error('fired 알람 로그 적재 실패:', e);
+  }
 }
 
 export async function getAlarmLog(): Promise<AlarmLogEntry[]> {
@@ -2471,6 +2563,30 @@ export async function clearAlarmLog(): Promise<void> {
 }
 
 /**
+ * #2284 — fired-only 독립 버퍼 read. alarmLog와 분리된 key라 rotate와 무관하게 항상
+ * 실제 발사 기록만 반환한다. DebugModal의 "Notifications fired" 섹션/dump가 이 함수로
+ * 전환됐다 — 기존 `logs.filter(outcome==='fired')` 파생값(rotate 절단 상속) 대체.
+ */
+export async function getFiredAlarmLog(): Promise<FiredAlarmLogEntry[]> {
+  try {
+    const raw = await AsyncStorage.getItem(FIRED_ALARM_LOG_KEY);
+    return raw ? safeParseFired(raw) : [];
+  } catch (e) {
+    logger.error('fired 알람 로그 읽기 실패:', e);
+    return [];
+  }
+}
+
+/** #2284 — fired-only 독립 버퍼 clear. DebugModal handleClear가 alarmLog와 함께 초기화. */
+export async function clearFiredAlarmLog(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(FIRED_ALARM_LOG_KEY);
+  } catch (e) {
+    logger.error('fired 알람 로그 삭제 실패:', e);
+  }
+}
+
+/**
  * 테스트 전용 — 모듈 스코프 상태 초기화 (#735).
  * pendingEntries / flushTimer / oldestPendingTs를 reset해 테스트 간 격리.
  * production 호출 금지.
@@ -2495,6 +2611,21 @@ function safeParse(raw: string): AlarmLogEntry[] {
     return parsed;
   } catch {
     logger.error('알람 로그 JSON 손상 — 빈 로그로 초기화');
+    return [];
+  }
+}
+
+/** #2284 — fired-only 독립 버퍼 전용 파싱. safeParse와 동일 손상 방어 정책, 별도 로그 문구. */
+function safeParseFired(raw: string): FiredAlarmLogEntry[] {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      logger.error('fired 알람 로그 형태 손상(비배열) — 빈 로그로 초기화');
+      return [];
+    }
+    return parsed;
+  } catch {
+    logger.error('fired 알람 로그 JSON 손상 — 빈 로그로 초기화');
     return [];
   }
 }

@@ -21,6 +21,12 @@ const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 // #1706 — fusion picker tier 별 ring buffer mock. alarmLog ring과 분리된 채널.
 const mockGetFusionTierLog = jest.fn();
+// #2284 — fired-only 독립 버퍼 mock. alarmLog rotate와 분리된 별도 채널.
+// 기본 resolved value를 선언 시점에 고정 — 파일 전체에 수십 개의 독립 describe/beforeEach가
+// 있고 각각 jest.clearAllMocks()만 호출(mockReset은 안 함)하므로, 여기서 설정한 구현체는
+// clearAllMocks 이후에도 유지된다. 개별 describe가 매번 명시적으로 재설정할 필요 없음.
+const mockGetFiredAlarmLog = jest.fn().mockResolvedValue([]);
+const mockClearFiredAlarmLog = jest.fn().mockResolvedValue(undefined);
 const mockUseBarometer = jest.fn();
 const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
@@ -73,6 +79,9 @@ jest.mock('../../../alarm/utils/alarmLog', () => {
     clearAlarmLog: () => mockClearAlarmLog(),
     // #1706 — 별 ring buffer reader mock. test가 명시적으로 entries 주입.
     getFusionTierLog: () => mockGetFusionTierLog(),
+    // #2284 — fired-only 독립 버퍼 mock. alarmLog와 분리된 채널이라 별도 mock 필요.
+    getFiredAlarmLog: () => mockGetFiredAlarmLog(),
+    clearFiredAlarmLog: () => mockClearFiredAlarmLog(),
   };
 });
 
@@ -212,6 +221,9 @@ const setupHookDefaults = () => {
   mockClearAlarmLog.mockResolvedValue(undefined);
   // #1706 — 별 ring 기본 빈 배열. fusion-picker-tier 테스트는 명시 주입.
   mockGetFusionTierLog.mockReturnValue([]);
+  // #2284 — fired-only 독립 버퍼 기본 빈 배열. 개별 테스트가 명시 주입.
+  mockGetFiredAlarmLog.mockResolvedValue([]);
+  mockClearFiredAlarmLog.mockResolvedValue(undefined);
   mockDumpScheduledNotifications.mockResolvedValue([]);
   // #1215 (D9) — 기본은 subsurface=false (지상).
   mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
@@ -390,12 +402,11 @@ describe('DebugModal', () => {
     expect(screen.queryByTestId('debug-log-source-counts')).toBeNull();
   });
 
-  it('Notifications fired 섹션은 outcome=fired만 시간순 reverse로 표시한다 (#1626)', async () => {
-    mockGetAlarmLog.mockResolvedValue([
-      { ts: 1, source: 'fg', outcome: 'fired', stationName: '강남' },
-      { ts: 2, source: 'boarding-prompt', outcome: 'suppressed', reason: 'cooldown' },
-      { ts: 3, source: 'silent-push-received', outcome: 'received' },
-      { ts: 4, source: 'bg-scheduled', outcome: 'fired', stationName: '면목' },
+  it('Notifications fired 섹션은 fired-only 독립 버퍼를 시간순 reverse로 표시한다 (#1626, #2284)', async () => {
+    // #2284 — alarmLog 파생값 대신 독립 fired-only 버퍼(getFiredAlarmLog)가 SSoT.
+    mockGetFiredAlarmLog.mockResolvedValue([
+      { ts: 1, kind: 'destination', station: '강남', line: '2', channel: 'fg' },
+      { ts: 4, kind: 'transfer', station: '면목', line: '7', channel: 'bg-scheduled' },
     ]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(await screen.findByText('Notifications fired (2)')).toBeTruthy();
@@ -405,13 +416,30 @@ describe('DebugModal', () => {
     expect(entries[1].props.children).toContain('강남');
   });
 
-  it('fired 0건이면 Notifications fired 섹션 자체를 렌더링하지 않는다 (#1626)', async () => {
+  it('fired 0건이면 Notifications fired 섹션 자체를 렌더링하지 않는다 (#1626, #2284)', async () => {
     mockGetAlarmLog.mockResolvedValue([
       { ts: 1, source: 'fg', outcome: 'suppressed', reason: 'distance-gate' },
     ]);
+    mockGetFiredAlarmLog.mockResolvedValue([]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await screen.findByText('Alarm log (1)');
     expect(screen.queryByTestId('notifications-fired-section')).toBeNull();
+  });
+
+  it('#2284 — alarmLog가 rotate로 fired 기록을 잃어도 fired-only 버퍼는 독립적으로 count를 유지한다', async () => {
+    // alarmLog 쪽엔 fired 엔트리가 전혀 없어도(rotate로 밀려난 상태 시뮬레이션),
+    // 독립 버퍼에 남아있으면 그대로 노출돼야 한다 — 2026-08-11 07:38:28 이전 fired 소실 회귀 재현.
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 100, source: 'fg', outcome: 'suppressed', reason: 'gate-age' },
+    ]);
+    mockGetFiredAlarmLog.mockResolvedValue([
+      { ts: 1, kind: 'station-passed', station: '용마산', line: '7', channel: 'fg' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(await screen.findByText('Notifications fired (1)')).toBeTruthy();
+    expect(screen.getByTestId('debug-notifications-fired-entry').props.children).toContain(
+      '용마산',
+    );
   });
 
   it('userLocation이 null이면 "no location"을 표시한다', () => {
@@ -612,7 +640,7 @@ describe('DebugModal', () => {
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalledTimes(2));
   });
 
-  it('Clear all logs 버튼이 6개 buffer를 모두 비우고 재조회한다', async () => {
+  it('Clear all logs 버튼이 7개 buffer를 모두 비우고 재조회한다 (#2284 fired-only 버퍼 포함)', async () => {
     const estimatorMod = jest.requireActual('../../../route/utils/estimatorDebugBuffer') as typeof import('../../../route/utils/estimatorDebugBuffer');
     const fusionMod = jest.requireActual('../../../nearest-station/utils/fusionDebugBuffer') as typeof import('../../../nearest-station/utils/fusionDebugBuffer');
     const gpsDropMod = jest.requireActual('../../../nearest-station/utils/gpsDropBuffer') as typeof import('../../../nearest-station/utils/gpsDropBuffer');
@@ -632,6 +660,7 @@ describe('DebugModal', () => {
     });
 
     expect(mockClearAlarmLog).toHaveBeenCalledTimes(1);
+    expect(mockClearFiredAlarmLog).toHaveBeenCalledTimes(1);
     expect(spyEstimator).toHaveBeenCalledTimes(1);
     expect(spyFusion).toHaveBeenCalledTimes(1);
     expect(spyGpsDrop).toHaveBeenCalledTimes(1);
@@ -3383,6 +3412,32 @@ describe('DebugModal share SSOT (#1346)', () => {
     expect(dump).toContain('## Fusion Tier (1h)');
     // suppressed reason 없으면 Gates 헤더 자체 생략(omitIfEmpty=true).
     expect(dump).not.toContain('## Gates');
+  });
+
+  // #2284 — fired-only 독립 버퍼 share dump wire. alarmLog 파생값 대신 firedAlarmLog가 SSoT.
+  it('Notifications fired: firedAlarmLog 미전달/빈 배열이면 섹션 자체를 생략(omitIfEmpty)', () => {
+    const dump = __test__.buildDumpText(makeSsotArgs());
+    expect(dump).not.toContain('## Notifications fired');
+  });
+
+  it('Notifications fired: firedAlarmLog entries를 시간순 reverse로 (ts channel kind station (line)) 포맷 출력', () => {
+    const dump = __test__.buildDumpText(
+      makeSsotArgs({
+        firedAlarmLog: [
+          { ts: 1, kind: 'destination', station: '강남', line: '2', channel: 'fg' },
+          { ts: 2, kind: 'unknown', station: 'unknown', line: null, channel: 'silent-push-fired' },
+        ],
+      }),
+    );
+    expect(dump).toContain('## Notifications fired (2)');
+    const sectionStart = dump.indexOf('## Notifications fired');
+    const sectionEnd = dump.indexOf('## Alarm log');
+    const section = dump.slice(sectionStart, sectionEnd);
+    // 역순(최신 ts=2가 먼저) + line=null은 UNKNOWN_LABEL('—')로 표기.
+    const line2Idx = section.indexOf('silent-push-fired unknown unknown (—)');
+    const line1Idx = section.indexOf('fg destination 강남 (2)');
+    expect(line2Idx).toBeGreaterThan(-1);
+    expect(line1Idx).toBeGreaterThan(line2Idx);
   });
 
   it('Fusion log 섹션이 Alarm log 섹션 *다음*에 위치한다', () => {

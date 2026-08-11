@@ -20,6 +20,8 @@ import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
+// #2284 (P1 wire matrix gap) — 즉시 발사(trigger:null) fired-only 독립 버퍼 집계 stamp.
+import { logLastTrainAlarmFired } from './alarmLog';
 import {
   classifyDayTypeKst,
   getLastTrainTime,
@@ -171,6 +173,8 @@ export async function fireLastTrainAlarm(input: FireLastTrainAlarmInput): Promis
     minutesRemaining: input.minutesRemaining,
     lastTrainTime: input.lastTrainTime,
   });
+  // #2284 (P1) — trigger:null 즉시 발사 확정. fired-only 독립 버퍼 집계용 stamp.
+  logLastTrainAlarmFired({ stationName: input.origin.name });
 }
 
 export interface RunLastTrainAlarmCycleInput extends LastTrainEvaluationInput {
