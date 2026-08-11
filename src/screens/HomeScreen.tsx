@@ -20,6 +20,7 @@ import { useLegAdvanceStore } from '../features/alarm/store/useLegAdvanceStore';
 import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
+import { hasConsumedOriginWait } from '../shared/utils/boardingWait';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
 import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
@@ -588,10 +589,18 @@ export default function HomeScreen() {
     });
     return Math.min(...minutes);
   }, [arrival, arrivalIsMock]);
-  // #2290 — in-trip 판정: boardingLock 활성 또는 legAdvance stamp(#2278, 사용자 하차 응답)
-  // 존재 시 이미 탑승 중이므로 출발 leg의 boarding 대기(nextTrainMinutes)를 표시 ETA에서 제외한다.
+  // #2290 — in-trip 판정: 출발 leg의 boarding 대기를 표시 ETA에서 제외할지 여부.
+  // P1-1 (PR #2295 리뷰): `Boolean(lock)`만으로 판정하면 user-tap lock(BoardingTrainList 직접
+  // 탭)이 승강장에서 다음 열차를 기다리는 중에도 "이미 탑승"으로 오판했다. `hasConsumedOriginWait`가
+  // "lock 존재"가 아니라 "탑승 evidence가 실제로 있는가"(device-side auto-lock evidence 즉시 소진 /
+  // user-tap은 initialEtaSeconds 경과분만 소진)로 일반화해 판정한다.
+  // legAdvance stamp(#2278, 사용자 하차 응답)는 별도로 유지 — 하차 응답은 그 자체로 "이미 다음
+  // leg로 이동 중"이라는 확정 evidence이므로 lock 상태와 무관하게 즉시 true.
   // 새 자동 감지 경로 신설 금지(#2154) — 기존 신호(fusionBoardingLock/legAdvanceLine)만 재사용.
-  const isInTrip = Boolean(fusionBoardingLock) || legAdvanceLine !== null;
+  // P2 관찰(리뷰 (2)): cold-start hydration 창(앱 재시작 직후 storage에서 lock을 아직 못 읽어온
+  // 수백ms)에는 fusionBoardingLock이 일시 null이라 이 조건이 false로 떨어진다. 방향은 "과다표시"
+  // (원래 소진됐어야 할 대기를 잠깐 더 표시)라 과소표시보다 안전 — 별도 수정 없이 관찰만 유지.
+  const isInTrip = hasConsumedOriginWait(fusionBoardingLock, Date.now()) || legAdvanceLine !== null;
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route, { excludeOriginWait: isInTrip })
     : null;

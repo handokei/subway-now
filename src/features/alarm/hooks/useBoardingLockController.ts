@@ -554,6 +554,11 @@ export function useBoardingLockController({
       // 동급으로 신뢰(arvlCd 우선순위 단일 후보 + arrival API 가용)하므로 지연 칩이 backend SSoT hydrate와
       // 다르게 활성화돼야 자연스럽다.
       initialEtaSeconds: chosen.arrivalSeconds,
+      // #2290 P1-1 — 이 effect는 arvlCd(ENTERING/ARRIVED/DEPARTED) 강 게이트(위 507-511) +
+      // 4-signal consensus(위 525-536)를 모두 통과한 뒤에만 도달하므로, lock 생성 시점 자체가
+      // "이미 탑승/곧 탑승" evidence다. `hasConsumedOriginWait`가 이 flag를 보고 initialEtaSeconds
+      // 경과를 기다리지 않고 즉시 출발 대기를 소진 처리한다(ETA 표시에서 origin wait 제외).
+      boardingEvidence: true,
       ...(isSentinel
         ? {
             hydratedFromSentinel: {

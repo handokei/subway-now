@@ -8,6 +8,7 @@
  */
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
 import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
+import { hasConsumedOriginWait } from '../../../shared/utils/boardingWait';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
@@ -547,9 +548,14 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // 일치하므로 도보 0이 자명. 사용자 좌표를 별도로 보유하게 되면 destination/destinationStation 추가.
   // #777: arrivalAtOrigin 호출자가 제공 시 calculateStaticETA가 다음 열차 대기를 동적으로 계산.
   // #778: arrivalsAtTransfers 호출자가 제공 시 환승 leg마다 동적, 미제공 시 leg당 DEFAULT_WAIT_MINUTES.
-  // #2290 — in-trip(boardingLock 활성 또는 legAdvance stamp)이면 출발 leg의 boarding 대기를
-  // 제외한다. lockForLineGuard는 위에서 이미 조회한 boardingLock(신규 감지 경로 아님, 재사용).
-  const isInTrip = Boolean(lockForLineGuard) || useLegAdvanceStore.getState().nextLine !== null;
+  // #2290 — in-trip(출발 leg의 boarding 대기 소진 evidence)이면 대기를 제외한다.
+  // P1-1 (PR #2295 리뷰): `Boolean(lockForLineGuard)`만으로 판정하면 user-tap lock이 승강장
+  // 대기 중에도 "이미 탑승"으로 오판했다 — `hasConsumedOriginWait`로 일반화(device-side evidence
+  // 즉시 소진 / user-tap은 initialEtaSeconds 경과분만). lockForLineGuard는 위에서 이미 조회한
+  // boardingLock(신규 감지 경로 아님, 재사용). legAdvance stamp는 하차 응답=확정 evidence라 그대로 유지.
+  const isInTrip =
+    hasConsumedOriginWait(lockForLineGuard, Date.now()) ||
+    useLegAdvanceStore.getState().nextLine !== null;
   const eta = calculateStaticETA(route, {
     currentLocation: { lat, lng },
     originStation: { lat: nearest.station.lat, lng: nearest.station.lng },
