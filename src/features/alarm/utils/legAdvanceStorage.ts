@@ -21,12 +21,9 @@ export async function getLegAdvance(): Promise<LegAdvanceStorageState | null> {
     const raw = await AsyncStorage.getItem(LEG_ADVANCE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<LegAdvanceStorageState> | null;
-    if (
-      parsed &&
-      isValidLineNumber(parsed.nextLine ?? null) &&
-      typeof parsed.stampedAt === 'number'
-    ) {
-      return { nextLine: parsed.nextLine, stampedAt: parsed.stampedAt };
+    const nextLine = parsed?.nextLine ?? null;
+    if (parsed && isValidLineNumber(nextLine) && typeof parsed.stampedAt === 'number') {
+      return { nextLine, stampedAt: parsed.stampedAt };
     }
     return null;
   } catch {
