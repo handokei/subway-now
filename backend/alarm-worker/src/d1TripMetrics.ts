@@ -92,8 +92,12 @@ function extractLineList(trip: Trip): string[] {
 
 /** trip route의 출발 노선 첫 waypoint 이름을 원본 역으로 추정한다. */
 function extractOriginStation(trip: Trip): string | null {
-  // waypoints는 남은 경유지 배열. 종료 시점에는 비어 있을 수 있어 passedStations 활용.
-  const { passedStations } = trip;
+  // #2280 — device가 등록 시점에 stamp한 SSOT 출발역명을 1순위로 채택. 이 필드가 없는(구 client)
+  // 경우에만 passedStations[0]로 fallback — waypoints는 남은 경유지 배열이라 종료 시점에는
+  // 비어 있을 수 있고, passedStations 역시 advance 이벤트가 한 번도 없던 trip(짧은 trip/조기
+  // 종료)에서는 영구 undefined라 origin_station null 회귀의 원인이었다.
+  const { originStationName, passedStations } = trip;
+  if (originStationName) return originStationName;
   if (passedStations && passedStations.length > 0) return passedStations[0];
   return null;
 }

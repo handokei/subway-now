@@ -113,6 +113,14 @@ export interface UseApnsTripRegistrationInputs {
    * 그대로 전달한다.
    */
   routeOriginStation?: Station | null;
+  /**
+   * #2280 — trip 등록 시점에 고정된 SSOT 출발역명 (`useDestinationStore.tripOrigin.name`).
+   * backend trip_metrics.origin_station이 passedStations[0](advance 이벤트가 없으면 영구 null)로만
+   * 추론되어 null로 적재되는 회귀가 있었다 — 명시 송신해 backend가 우선 채택하도록 한다.
+   * tripOrigin이 아직 캡처 전(cold-start)이면 undefined로 생략(graceful) — backend는 기존
+   * passedStations fallback으로 동작.
+   */
+  originStationName?: string;
 }
 
 /**
@@ -156,6 +164,8 @@ interface RegisterCallInputs {
   promptContextOverride?: BoardingPromptContext | null;
   /** #2130 (B-2) — 등록 시점 GPS fix. promptGeoContext 근접 스탬프 입력. */
   gpsFix?: GpsFix | null;
+  /** #2280 — trip 등록 시점에 고정된 SSOT 출발역명. 미제공(undefined)이면 필드 송신 자체 생략. */
+  originStationName?: string;
 }
 
 /**
@@ -283,6 +293,8 @@ async function callRegister(
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
     // false/미설정은 필드 누락(graceful) — backend Trip.sleepModeEnabled=undefined 유지.
     ...(input.sleepMode ? { sleepModeEnabled: true } : {}),
+    // #2280 — SSOT 출발역명. 캡처 전(undefined)이면 필드 자체 생략(graceful).
+    ...(input.originStationName ? { originStationName: input.originStationName } : {}),
   });
   // #2130 (B-1) — 이번 register가 실제로 promptContext를 포함했는지 + 그 내용을 호출자에게 노출.
   // Tier 1 heal 판정의 SSoT이자, 캐시(`lastPromptContextRef`) 갱신 입력.
@@ -300,6 +312,7 @@ export function useApnsTripRegistration({
   sleepMode = false,
   gpsFix = null,
   routeOriginStation = null,
+  originStationName,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -319,6 +332,7 @@ export function useApnsTripRegistration({
     sleepMode,
     gpsFix,
     routeOriginStation,
+    originStationName,
   });
   useEffect(() => {
     latestInputsRef.current = {
@@ -332,6 +346,7 @@ export function useApnsTripRegistration({
       sleepMode,
       gpsFix,
       routeOriginStation,
+      originStationName,
     };
   });
 
@@ -479,6 +494,7 @@ export function useApnsTripRegistration({
       infoModeEnabled: ime,
       sleepMode: sm,
       gpsFix: gf,
+      originStationName: osn,
     } = latestInputsRef.current;
     if (!r || !d) return null;
     const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -512,6 +528,7 @@ export function useApnsTripRegistration({
       cachedPromptContext: lastPromptContextRef.current,
       promptContextOverride: options?.promptContextOverride,
       gpsFix: gf,
+      originStationName: osn,
     });
     // #2197 — 429(rate_limited) 응답이면 서버가 지시한 시간까지 이후 register/heal 호출을
     // 억제한다. backend가 매 429 응답에 최신 window를 다시 계산해 내려주므로 항상 최신값으로

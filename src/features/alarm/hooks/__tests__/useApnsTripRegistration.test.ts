@@ -2290,6 +2290,50 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #2280 — trip 등록 시점 SSOT 출발역명 forward. backend trip_metrics.origin_station null
+  // 회귀의 device-side 절반 — payload에 값이 실려야 backend가 passedStations fallback 없이
+  // 채택할 수 있다.
+  describe('originStationName (#2280)', () => {
+    const baseInputs = (originStationName?: string) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      ...(originStationName === undefined ? {} : { originStationName }),
+    });
+    const renderOrigin = (initial?: string) =>
+      renderHook(
+        ({ osn }: { osn?: string }) => useApnsTripRegistration(baseInputs(osn)),
+        { initialProps: { osn: initial } },
+      );
+
+    it('originStationName 있으면 payload에 그대로 포함', async () => {
+      renderOrigin('건대입구');
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].originStationName).toBe('건대입구');
+    });
+
+    it('originStationName 미지정(캡처 전 cold-start)이면 payload에 미포함 (graceful)', async () => {
+      renderOrigin(undefined);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].originStationName).toBeUndefined();
+    });
+
+    it('token refresh 경로도 최신 originStationName 값을 송신', async () => {
+      const { rerender } = renderOrigin('건대입구');
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-ORIGIN-NEW' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-ORIGIN-NEW',
+      );
+      expect(refreshed?.[0].originStationName).toBe('건대입구');
+    });
+  });
+
   describe('#1895 i18n locale 송신 (4언어 boarding-prompt)', () => {
     const baseInputs = {
       route: directRoute,

@@ -385,6 +385,20 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
+      // #2280 — SSOT 출발역명 forward. backend trip_metrics.origin_station null 회귀의
+      // device-side wire 절반 (frontend가 애초에 값을 안 보내면 backend가 채택할 게 없다).
+      it('#2280 originStationName 있으면 body에 포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, originStationName: '건대입구' });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.originStationName).toBe('건대입구');
+      });
+
+      it('#2280 originStationName 미설정이면 body에 미포함 (graceful, 캡처 전 cold-start)', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.originStationName).toBeUndefined();
+      });
+
       it('#701 in-flight dedup: 동일 페이로드 동시 호출 시 fetch는 1번만 발사된다', async () => {
         let resolveFetch: ((v: Response) => void) | null = null;
         (global.fetch as jest.Mock).mockImplementationOnce(

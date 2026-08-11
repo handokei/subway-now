@@ -155,6 +155,15 @@ export interface RegisterTripPayload {
    * 기존 register 호출자(테스트 등)는 미지정 시 undefined로 자연 생략.
    */
   corrId?: string | null;
+  /**
+   * #2280 — trip 등록 시점에 고정된 SSOT 출발역명 (device `tripOrigin.name`). backend
+   * `trip_metrics.origin_station`이 passedStations[0](advance 이벤트가 없으면 영구 null)로만
+   * 추론되어 null로 적재되는 회귀가 있었다 — 명시 송신해 backend가 우선 채택하도록 한다.
+   * `promptDisplay.originStation`(boarding-prompt 표시용, currentStation 기준으로 매 register마다
+   * 흔들릴 수 있음)과는 다른 값 — 이 필드는 trip 전체 수명 동안 불변이어야 한다.
+   * 캡처 전(undefined)이면 필드 자체 생략(graceful) — backend는 기존 passedStations fallback.
+   */
+  originStationName?: string;
 }
 
 export interface AlarmBackendResult {
@@ -332,6 +341,9 @@ async function performRegisterFetch(
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용 저장 (ADR-023).
     // 미송신 시 backend Trip.sleepModeEnabled는 undefined 유지 — 기존 동작 완전 보존.
     ...(payload.sleepModeEnabled === true ? { sleepModeEnabled: true } : {}),
+    // #2280 — SSOT 출발역명. trip 전체 수명 동안 불변이라 dedup hash에는 포함하지 않는다
+    // (같은 trip 재등록마다 값이 같아 hash 갱신을 유발할 필요가 없다). 캡처 전(undefined)이면 생략.
+    ...(payload.originStationName ? { originStationName: payload.originStationName } : {}),
   };
 
   try {

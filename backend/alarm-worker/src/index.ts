@@ -2524,6 +2524,12 @@ export function validateTrip(input: unknown): Trip | null {
     // Legacy client (필드 미송신) 또는 비boolean은 undefined로 graceful — 기존 동작 완전 보존.
     sleepModeEnabled:
       typeof obj.sleepModeEnabled === 'boolean' ? obj.sleepModeEnabled : undefined,
+    // #2280 — trip 등록 시점 SSOT 출발역명. 비어있지 않은 string만 채택 — 그 외(구 client
+    // 미송신 등)는 undefined로 graceful, d1TripMetrics가 기존 passedStations fallback을 사용한다.
+    originStationName:
+      typeof obj.originStationName === 'string' && obj.originStationName.length > 0
+        ? obj.originStationName
+        : undefined,
     // #2120 — device trip 인스턴스 corrId. 재등록마다 incoming 값으로 교체(다음 POST /trips
     // 핸들러가 baseTrip을 `{...incoming, ...}`로 spread하며 corrId를 별도 보존하지 않으므로
     // 자연스럽게 최신 값으로 갱신). 미송신/비string이면 undefined — trip-ended payload에서

@@ -257,6 +257,15 @@ export interface Trip {
    */
   passedStations?: string[];
   /**
+   * #2280 — device가 등록 시점에 고정한 SSOT 출발역명 (device `tripOrigin.name`). trip 수명 동안
+   * 재등록해도 device는 동일 값을 계속 보내므로 backend 입장에서도 사실상 불변.
+   * `promptDisplay.originStation`(boarding-prompt 표시용, currentStation 기준이라 흔들릴 수 있음)과
+   * 달리 `trip_metrics.origin_station` 적재(`d1TripMetrics.extractOriginStation`)의 1순위 소스 —
+   * 기존 `passedStations[0]` fallback은 advance 이벤트가 한 번도 없던 trip(짧은 trip/조기 종료)에서
+   * 영구 null이 되는 회귀가 있었다. 부재(구 client / 캡처 전)면 undefined.
+   */
+  originStationName?: string;
+  /**
    * #1895 — 사용자 device locale (ko / en / ja / zh). 디바이스 register 시점에 송신.
    * backend는 push 본문 생성 시 `t(trip.locale)`로 4언어 분기한다. 부재/비지원이면 ko
    * fallback (한국 운영 기본). 본 필드는 alert push(boarding-prompt) 본문 생성에만 사용 —
