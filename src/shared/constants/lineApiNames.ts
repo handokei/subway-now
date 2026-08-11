@@ -29,6 +29,19 @@ export function getLineApiName(line: LineNumber): string {
 }
 
 /**
+ * #2278 (PR #2287 리뷰 P2-1) — LineNumber 검증 단일 SSoT.
+ *
+ * `LINE_API_NAMES` key 집합(데이터 주도)으로 임의 문자열이 유효한 LineNumber인지 narrow한다.
+ * 이전엔 hop-end payload 검증(`useBoardingPromptResponder`)과 backend lockSuggestion 검증
+ * (`useBoardingLockController`)이 각자 별도 함수 + 하드코딩 배열(`VALID_LINES`)을 두어 신규
+ * 노선 추가 시 두 곳을 따로 갱신해야 하는 drift 위험이 있었다. 새 노선은 `LINE_API_NAMES`
+ * 한 줄 추가만으로 두 호출부 모두 자동 반영된다.
+ */
+export function isValidLineNumber(value: string | null | undefined): value is LineNumber {
+  return value != null && Object.prototype.hasOwnProperty.call(LINE_API_NAMES, value);
+}
+
+/**
  * 서울 열린데이터 `realtimeStationArrival` 응답 `subwayId`(예: "1001") → LineNumber 역매핑.
  * 환승역에서 같은 statnNm으로 두 노선 열차가 함께 응답되므로, 각 row의 정확한 호선 식별에 필요.
  * LINE_API_NAMES 추가 시 이 매핑도 함께 확장 — 호선 누락 시 어댑터에서 row 식별 실패.

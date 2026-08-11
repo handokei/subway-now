@@ -10,6 +10,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { useStateRehydration } from '../useStateRehydration';
 import { useDestinationStore } from '../../../features/route/store/useDestinationStore';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
+import { useLegAdvanceStore } from '../../../features/alarm/store/useLegAdvanceStore';
 
 const mockGetSentinel = jest.fn();
 const mockClearSentinel = jest.fn();
@@ -78,6 +79,7 @@ const mockSetState = jest.fn();
 
 const mockReleaseLock = jest.fn();
 const mockLoadLock = jest.fn();
+const mockLoadLegAdvance = jest.fn();
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -89,6 +91,7 @@ beforeEach(() => {
   mockLoadTripOrigin.mockResolvedValue(undefined);
   mockReleaseLock.mockResolvedValue(undefined);
   mockLoadLock.mockResolvedValue(undefined);
+  mockLoadLegAdvance.mockResolvedValue(undefined);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockSetSentinel.mockResolvedValue(undefined);
   // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
@@ -110,6 +113,9 @@ beforeEach(() => {
     releaseLock: mockReleaseLock,
     loadLock: mockLoadLock,
   } as unknown as ReturnType<typeof useBoardingLockStore.getState>);
+  jest.spyOn(useLegAdvanceStore, 'getState').mockReturnValue({
+    loadLegAdvance: mockLoadLegAdvance,
+  } as unknown as ReturnType<typeof useLegAdvanceStore.getState>);
 });
 
 function mockAppState(): {
@@ -137,6 +143,18 @@ describe('useStateRehydration', () => {
       expect(mockLoadCustomOrigin).toHaveBeenCalled();
       expect(mockLoadTripOrigin).toHaveBeenCalled();
       expect(mockLoadLock).toHaveBeenCalled();
+    });
+  });
+
+  // #2278 (PR #2287 리뷰 P1-2) — leg-advance stamp도 storage → memory 재수화 공통 진입점에
+  // 포함돼야 지하에서 앱이 kill된 뒤 재기동해도 stamp가 복원된다. 누락되면 loadLock 등은
+  // 정상 복원되지만 legAdvance만 null로 남아 원 버그(releaseLock 직후 fromLine 고착)가
+  // 재기동 후 재현된다.
+  it('마운트 시 leg-advance stamp도 재수화 (loadLegAdvance 호출)', async () => {
+    mockAppState();
+    renderHook(() => useStateRehydration());
+    await waitFor(() => {
+      expect(mockLoadLegAdvance).toHaveBeenCalled();
     });
   });
 

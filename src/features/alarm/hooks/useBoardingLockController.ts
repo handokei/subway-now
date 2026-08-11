@@ -16,6 +16,7 @@ import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { getApproachLineWithConfirmation } from '../../route/utils/approachLine';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { allowedLinesFromRoute } from '../../../shared/utils/stationRoute';
+import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -110,12 +111,13 @@ export interface UseBoardingLockControllerResult {
 /**
  * #915 — backend candidate.line(string)이 LineNumber valid 값인지 narrow.
  * 미정합이면 hydrate skip — 호출자는 graceful로 lock 없는 상태 유지.
+ *
+ * #2278 (PR #2287 리뷰 P2-1) — 하드코딩 배열(구 `VALID_LINES`) 대신 shared
+ * `isValidLineNumber`(LINE_API_NAMES 데이터 주도)로 위임. `useBoardingPromptResponder`의
+ * 동등 검증과 단일 SSoT로 통합 — 신규 노선 추가 시 두 곳을 따로 갱신할 필요가 없다.
  */
-const VALID_LINES: ReadonlyArray<LineNumber> = [
-  '1', '2', '3', '4', '5', '6', '7', '8', '9', 'airport', 'gyeongui', 'bundang', 'sinbundang',
-];
 function asLineNumber(raw: string): LineNumber | null {
-  return (VALID_LINES as ReadonlyArray<string>).includes(raw) ? (raw as LineNumber) : null;
+  return isValidLineNumber(raw) ? raw : null;
 }
 
 /**
@@ -161,6 +163,13 @@ export function useBoardingLockController({
   // null이면 기존 9-AND gate fallback (`hydrateLockFromCandidate`)이 그대로 동작.
   const { suggestion: lockSuggestion } = useLockSuggestion();
 
+  // #2278 — 사용자 하차 응답 stamp. lock 해제 직후 route 진행도가 아직 못 따라온 gap을
+  // 로컬에서 즉시 메운다 (getApproachLine 우선순위: lock > legAdvance > route > fallback).
+  // #2278 (PR #2287 리뷰 P1-1) — 아래 lockSuggestion 자동 hydrate effect가 이 stamp를
+  // 무력화하지 않도록 하는 staleness 가드에도 재사용.
+  const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
+  const legAdvanceStampedAt = useLegAdvanceStore((s) => s.stampedAt);
+
   // 마운트 시 storage hydrate.
   useEffect(() => {
     void loadLock();
@@ -205,11 +214,24 @@ export function useBoardingLockController({
   //     매칭되지 않으면 graceful skip (다음 cycle 재시도). lockSuggestion.stationId는 backend가
   //     waypoint 기반으로 산출했으므로 정상 케이스 대부분 매칭.
   //   - destinationId 없으면 free-trip sentinel으로 hydrate.
+  //   - #2278 (PR #2287 리뷰 P1-1) — legAdvance stamp(사용자 명시 하차 응답)가 살아있는 동안
+  //     stale/불일치 lockSuggestion으로 재-hydrate해 그 stamp를 무력화하지 않는다:
+  //       (a) suggestion.decidedAt < stamp.stampedAt — 사용자가 하차를 확인한 시점 *이전에*
+  //           backend가 결정한 stale suggestion. 그 사이의 최신 상황을 반영하지 못했으므로 신뢰 X.
+  //       (b) suggestion.boardingLine !== stamp.nextLine — 사용자가 확인한 다음 leg와 다른 노선을
+  //           제안 — stale mirror(이전 leg) 재생성 회귀(#2278 RCA)를 여기서 직접 차단.
+  //     stamp가 없으면(nextLine=null) 가드 미개입 — 기존 동작 그대로.
   useEffect(() => {
     if (!lockSuggestion) return;
     if (lock) return;
     const boardingLine = asLineNumber(lockSuggestion.lineId);
     if (!boardingLine) return;
+    if (legAdvanceLine !== null) {
+      const isStale =
+        legAdvanceStampedAt !== null && lockSuggestion.decidedAt < legAdvanceStampedAt;
+      const disagrees = boardingLine !== legAdvanceLine;
+      if (isStale || disagrees) return;
+    }
     const allowed = allowedLinesFromRoute(route);
     if (allowed && !allowed.has(boardingLine)) return;
     // boardingStationId 산출: lockSuggestion.stationId가 stations.json id이면 그대로,
@@ -251,6 +273,8 @@ export function useBoardingLockController({
     destinationId,
     expectedDurationMinutes,
     createLock,
+    legAdvanceLine,
+    legAdvanceStampedAt,
   ]);
 
   const direction = useMemo(() => {
@@ -269,9 +293,6 @@ export function useBoardingLockController({
   // `confirmed=false`(route/lock 후보 없음, fusion `currentStation.line` 임의값(#797))이면
   // 어떤 candidate 필터에도 이 line을 쓰지 않는다(누락 방지) — origin auto-lock 전용
   // `originAutoLockArrivals`(하단)에서만 소비한다.
-  // #2278 — 사용자 하차 응답 stamp. lock 해제 직후 route 진행도가 아직 못 따라온 gap을
-  // 로컬에서 즉시 메운다 (getApproachLine 우선순위: lock > legAdvance > route > fallback).
-  const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
   const { line: approachLine, confirmed: approachLineConfirmed } = useMemo(
     () => getApproachLineWithConfirmation(route, lock, currentStation, legAdvanceLine),
     [route, lock, currentStation, legAdvanceLine],

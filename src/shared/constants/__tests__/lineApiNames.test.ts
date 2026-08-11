@@ -1,4 +1,10 @@
-import { LINE_API_NAMES, getLineApiName, subwayIdToLine, lineToSubwayId } from '../lineApiNames';
+import {
+  LINE_API_NAMES,
+  getLineApiName,
+  subwayIdToLine,
+  lineToSubwayId,
+  isValidLineNumber,
+} from '../lineApiNames';
 
 describe('lineApiNames', () => {
   it('1~9호선 매핑 + 특수 노선', () => {
@@ -72,6 +78,28 @@ describe('lineApiNames', () => {
       for (const key of Object.keys(LINE_API_NAMES)) {
         expect(mappedLines.has(key)).toBe(true);
       }
+    });
+  });
+
+  // #2278 (PR #2287 리뷰 P2-1) — LineNumber 검증 단일 SSoT. 이전엔 responder(isValidLineNumber)와
+  // controller(VALID_LINES 하드코딩 배열 + asLineNumber)가 각자 중복 정의했다. LINE_API_NAMES
+  // key 집합으로 데이터 주도 검증해 신규 노선 추가 시 자동 반영되도록 통합.
+  describe('isValidLineNumber', () => {
+    it('LINE_API_NAMES에 존재하는 값은 true (모든 LineNumber)', () => {
+      for (const key of Object.keys(LINE_API_NAMES)) {
+        expect(isValidLineNumber(key)).toBe(true);
+      }
+    });
+
+    it('존재하지 않는 문자열은 false', () => {
+      expect(isValidLineNumber('K')).toBe(false);
+      expect(isValidLineNumber('mars')).toBe(false);
+      expect(isValidLineNumber('')).toBe(false);
+    });
+
+    it('undefined/null은 false', () => {
+      expect(isValidLineNumber(undefined)).toBe(false);
+      expect(isValidLineNumber(null)).toBe(false);
     });
   });
 });

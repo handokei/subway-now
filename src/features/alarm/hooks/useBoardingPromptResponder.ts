@@ -29,8 +29,7 @@ import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload'
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
-import { LINE_API_NAMES } from '../../../shared/constants/lineApiNames';
-import type { LineNumber } from '../../../shared/types/station';
+import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
 import {
   logBoardingPromptAutoLock,
@@ -272,8 +271,10 @@ async function handleHopEndResponse(
     // getApproachLine이 route의 stopsToTransfer(backend SSoT 왕복 지연 가능)에 의존하지 않고
     // 즉시 다음 leg 노선을 반환하도록 로컬에 stamp한다. nextLine이 유효한 LineNumber가 아니면
     // (구버전 backend 등 payload 누락) 기존 동작(route/lock fallback) 그대로 유지 — skip.
+    // #2278 (PR #2287 리뷰 P1-2) — trip-scoped storage 영속화도 겸하므로 releaseLock과 동일하게
+    // await(store 내부에서 실패를 swallow하므로 이 지점에서 throw되지 않는다).
     if (isValidLineNumber(payload.nextLine)) {
-      useLegAdvanceStore.getState().stampLegAdvance(payload.nextLine);
+      await useLegAdvanceStore.getState().stampLegAdvance(payload.nextLine);
     }
     if (
       actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER &&
@@ -288,14 +289,6 @@ async function handleHopEndResponse(
     line: payload.line,
   });
   await dismissBoardingPrompt(payload.tripToken);
-}
-
-/**
- * #2278 — payload.nextLine(string | undefined)이 유효한 LineNumber인지 narrow.
- * `LINE_API_NAMES`(shared, 노선 추가 시 이미 갱신되는 SSoT) key 집합으로 데이터 주도 검증한다.
- */
-function isValidLineNumber(value: string | undefined): value is LineNumber {
-  return value !== undefined && Object.prototype.hasOwnProperty.call(LINE_API_NAMES, value);
 }
 
 async function tryAutoLock(
