@@ -565,9 +565,16 @@ export default function HomeScreen() {
     return () => interaction.cancel();
   }, [effectiveOrigin?.id, destination?.id, routePreference, variantIds]);
 
+  // #2280 — journey(화면 route/stop 목록) fromName은 trip 등록 시점에 고정된 tripOrigin을
+  // SSOT로 사용해야 한다. effectiveOrigin은 GPS/현재역이 바뀔 때마다 흔들리는 라이브 값이라
+  // (arrival/congestion/nextStationName 등 "현재 위치" 표시용) 여기에 그대로 넘기면 trip 진행
+  // 중 화면에 표시되는 출발역이 현재역을 따라 재앵커되는 회귀가 있었다(evidence: 07:32
+  // 어린이대공원 → 07:34 건대입구). tripOrigin이 아직 캡처 전(cold-start)이면 effectiveOrigin으로
+  // 1회 fallback — useTripOrigin이 곧 캡처하면 이후 렌더부터는 tripOrigin으로 고정된다.
+  const journeyOrigin = tripOrigin ?? effectiveOrigin;
   const journey = useMemo(
-    () => (route && effectiveOrigin && destination ? buildJourneyDisplay(route, effectiveOrigin, destination) : null),
-    [route, effectiveOrigin?.id, destination?.id],
+    () => (route && journeyOrigin && destination ? buildJourneyDisplay(route, journeyOrigin, destination) : null),
+    [route, journeyOrigin?.id, destination?.id],
   );
   const nextTrainMinutes = useMemo(() => {
     if (!arrival || arrivalIsMock) return null;
@@ -943,6 +950,11 @@ export default function HomeScreen() {
     // customOrigin/lastFusedStation/boardingLockStation/tripOrigin 순으로 fallback해 currentStation이
     // GPS dead zone으로 null일 때도 trip의 출발역을 그대로 보존한다(#1379).
     routeOriginStation: effectiveOrigin,
+    // #2280 — trip 등록 시점에 고정된 SSOT 출발역명. backend가 trip_metrics.origin_station을
+    // passedStations[0](advance 이벤트가 없으면 영구 null)로만 추론해 origin_station null 회귀가
+    // 있었다 — tripOrigin을 명시 송신해 backend가 우선 채택하도록 한다. 캡처 전(cold-start)이면
+    // undefined로 생략(graceful) — backend는 기존 passedStations fallback으로 동작.
+    originStationName: tripOrigin?.name,
   });
 
   useEffect(() => {

@@ -186,4 +186,42 @@ describe('recordTripMetrics (#1835)', () => {
 
     expect(capturedArgs).toContain('lockless-trip-end');
   });
+
+  // #2280 — origin_station null RCA: passedStations는 advance 이벤트(waypoint 통과)가 한 번도
+  // 없던 trip(짧은 trip/조기 종료)에서 영구 undefined라 origin_station이 항상 null로 적재됐다
+  // (evidence: 2026-08-11 3건 + 2026-08-10 trip 50, 모두 origin_station=null). device가 등록
+  // 시점에 stamp한 `originStationName`(SSOT, trip 수명 동안 불변)을 1순위 소스로 채택해야 한다.
+  describe('origin_station 적재 (#2280)', () => {
+    /** trip_metrics INSERT의 origin_station positional arg (bind 5번째, 0-based index 4). */
+    function captureOriginStationArg(trip: Parameters<typeof makeTripFixture>[0]): Promise<unknown> {
+      return new Promise((resolve) => {
+        const run = vi.fn().mockResolvedValue({ success: true });
+        const bind = vi.fn().mockImplementation((...args: unknown[]) => {
+          resolve(args[4]);
+          return { run };
+        });
+        const prepare = vi.fn().mockReturnValue({ bind });
+        const db = { prepare } as unknown as D1Database;
+        void recordTripMetrics(db, makeTripFixture(trip), 'destination-arrived', NOW);
+      });
+    }
+
+    it('RED였던 회귀 재현: passedStations 없음(advance 이벤트 0회) + originStationName도 없으면 null', async () => {
+      const arg = await captureOriginStationArg({});
+      expect(arg).toBeNull();
+    });
+
+    it('originStationName이 있으면 passedStations 유무와 무관하게 1순위 채택', async () => {
+      const arg = await captureOriginStationArg({
+        originStationName: '건대입구',
+        passedStations: ['어린이대공원'],
+      });
+      expect(arg).toBe('건대입구');
+    });
+
+    it('originStationName이 없고 passedStations만 있으면 기존 fallback(첫 원소) 유지', async () => {
+      const arg = await captureOriginStationArg({ passedStations: ['어린이대공원', '건대입구'] });
+      expect(arg).toBe('어린이대공원');
+    });
+  });
 });

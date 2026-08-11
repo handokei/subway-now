@@ -239,6 +239,21 @@ describe('validateTrip', () => {
     expect(validateTrip(base())?.sleepModeEnabled).toBeUndefined();
   });
 
+  // #2280 — originStationName 필드 (trip 등록 시점 SSOT 출발역명, d1TripMetrics.origin_station
+  // null 회귀 fix의 device→backend wire 절반).
+  it('preserves non-empty string originStationName (#2280)', () => {
+    expect(validateTrip({ ...base(), originStationName: '건대입구' })?.originStationName).toBe(
+      '건대입구',
+    );
+  });
+
+  it('drops non-string/empty originStationName and absent field stays undefined (#2280, legacy client graceful)', () => {
+    expect(validateTrip({ ...base(), originStationName: '' })?.originStationName).toBeUndefined();
+    expect(validateTrip({ ...base(), originStationName: 42 })?.originStationName).toBeUndefined();
+    // Legacy client (필드 미송신) — 기존 동작 완전 보존.
+    expect(validateTrip(base())?.originStationName).toBeUndefined();
+  });
+
   // #1193 — 중복역 trip의 waypoint occurrenceIdx stamping.
   describe('occurrenceIdx stamping (#1193)', () => {
     it('단일 등장 waypoints는 모두 occurrenceIdx=0', () => {
