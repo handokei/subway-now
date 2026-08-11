@@ -836,20 +836,24 @@ export function buildJourneyDisplay(
 // 전환했고 본 상수는 데이터 부재 시 회귀 방지 fallback 역할.
 const DEFAULT_WAIT_MINUTES = 3;
 
-// 반환값은 항상 정수 분. 호출처(메인 ETA 카운터/알림 body/Live Activity etaMinutes Swift Int? 디코딩)가
-// 정수 분 contract에 의존하므로, 구간별 실측 운행시간(초)과 환승역별 실측 환승시간(초)을 합산해
-// 분으로 환산한 결과를 마지막에 반올림한다. 환승 시간은 getTransferSeconds.
-function getTravelMinutes(route: NonNullable<Route>): number {
+/**
+ * 잔여 경로 전체(현재 위치 이후 모든 hop + 환승 대기)의 실측 hop 시간 합(초). #2279 —
+ * 알람/알림 ETA가 haversine 직선거리÷순간속도(정거장수와 독립)로 산출되던 것을
+ * hop 시간(실측 테이블) 기반 상한으로 clamp하는 데 사용한다. `route`는 findRoute/
+ * updateRouteFromPosition이 매 위치 갱신마다 nIdx(현재 인접역)→dIdx(목적지)로 재계산하므로
+ * 반환값은 "지금부터 남은" 시간이다(호출 시점 스냅샷, 실시간 갱신은 호출자 책임).
+ */
+export function getRouteRemainingSeconds(route: NonNullable<Route>): number {
   if (route.type === 'direct') {
-    return Math.round(route.travelSeconds / 60);
+    return route.travelSeconds;
   }
 
   if (route.type === 'transfer') {
-    const totalSeconds =
+    return (
       route.secondsToTransfer +
       route.secondsFromTransfer +
-      getTransferSeconds(route.fromLine, route.toLine, route.transferName);
-    return Math.round(totalSeconds / 60);
+      getTransferSeconds(route.fromLine, route.toLine, route.transferName)
+    );
   }
 
   const segmentSecondsSum = route.transfers.reduce(
@@ -860,9 +864,14 @@ function getTravelMinutes(route: NonNullable<Route>): number {
     (sum, t) => sum + getTransferSeconds(t.fromLine, t.toLine, t.transferName),
     0,
   );
-  const totalSeconds =
-    segmentSecondsSum + route.secondsAfterLastTransfer + transferSecSum;
-  return Math.round(totalSeconds / 60);
+  return segmentSecondsSum + route.secondsAfterLastTransfer + transferSecSum;
+}
+
+// 반환값은 항상 정수 분. 호출처(메인 ETA 카운터/알림 body/Live Activity etaMinutes Swift Int? 디코딩)가
+// 정수 분 contract에 의존하므로, 구간별 실측 운행시간(초)과 환승역별 실측 환승시간(초)을 합산해
+// 분으로 환산한 결과를 마지막에 반올림한다. 환승 시간은 getTransferSeconds.
+function getTravelMinutes(route: NonNullable<Route>): number {
+  return Math.round(getRouteRemainingSeconds(route) / 60);
 }
 
 /** lat/lng만 추출한 좌표 — Station 전체를 넘기지 않아 결합도를 낮춘다. */

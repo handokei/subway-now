@@ -7,10 +7,10 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
-import { findRoute, calculateStaticETA, getFirstLeg, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
+import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { updateStationNotification } from './stationNotification';
-import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
+import { distanceMetersBetween, estimateEtaSeconds, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
 import { cancelSafetyNetByStationKind } from './safetyNetScheduler';
 import { getBoardingLock } from './boardingLockStorage';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
@@ -244,7 +244,12 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   }
 
   const distanceToDestM = distanceMetersBetween(lat, lng, destination.lat, destination.lng);
-  const etaSeconds = estimateEtaSeconds(distanceToDestM, speedMps);
+  // #2279 — route가 있으면 실측 hop 시간 합(getRouteRemainingSeconds)을 상한으로 clamp해
+  // haversine 직선거리÷순간속도가 정거장수와 무관하게 부풀지 않도록 한다. route 없으면
+  // (경로 미탐색) 기존 distance/speed 산식으로 graceful fallback.
+  const etaSeconds = route
+    ? estimateTransitEtaSeconds(distanceToDestM, speedMps, getRouteRemainingSeconds(route))
+    : estimateEtaSeconds(distanceToDestM, speedMps);
 
   // #2204 (ADR-026 ①잔여, 적대적 검증 HOLE 대응) — BG 채널 movement 가드 누락 수정.
   // FG(`useStationAlarm`/evaluateMovement)는 정적 misfire 가드(movement-static-speed /

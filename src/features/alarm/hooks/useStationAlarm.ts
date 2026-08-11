@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import {
   getFirstLeg,
+  getRouteRemainingSeconds,
   isStationOnRoute,
   isSameStationName,
   isStationWithinHopWindow,
@@ -20,7 +21,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import { alarmKey, parseAlarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
-import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
+import { distanceMetersBetween, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
 import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
 import type { StationArrival } from '../../../shared/types/arrival';
@@ -1093,7 +1094,9 @@ export function useStationAlarm({
         destination.lat,
         destination.lng,
       );
-      etaSeconds = estimateEtaSeconds(distM, speedMps);
+      // #2279 — route는 이 effect 상단(!route return)에서 이미 non-null 보장.
+      // haversine 직선거리÷순간속도의 정거장수-무관 과대추정을 실측 hop 시간 합으로 clamp.
+      etaSeconds = estimateTransitEtaSeconds(distM, speedMps, getRouteRemainingSeconds(route));
     }
 
     const suppressed: AlarmEvent[] = [];
