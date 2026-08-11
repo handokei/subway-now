@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, InteractionManager, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, InteractionManager, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
@@ -19,6 +19,11 @@ import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
 import { useLegAdvanceStore } from '../features/alarm/store/useLegAdvanceStore';
 import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
+import { PausedNavigationBadge } from '../features/route/components/PausedNavigationBadge';
+import {
+  setNavigationPausedAt,
+  clearNavigationPausedAt,
+} from '../features/alarm/utils/navigationPauseStorage';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { hasConsumedOriginWait } from '../shared/utils/boardingWait';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
@@ -148,6 +153,9 @@ export default function HomeScreen() {
   // #1973 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
   // BG GPS 지속 가능 (네이버 패턴). startNavigation은 setInfoModeEnabled(true) 자동 wire.
   const navigationActive = useNavigationStore((s) => s.navigationActive);
+  // #2293 — 일시정지 배지 카운트다운 소스(메모리, FG 전용). cold-start 자동 종료 판정은
+  // useStateRehydration이 별도 영속 채널(NAVIGATION_PAUSED_AT_KEY)로 처리.
+  const navigationPausedAt = useNavigationStore((s) => s.pausedAt);
   const startNavigation = useNavigationStore((s) => s.startNavigation);
   const stopNavigation = useNavigationStore((s) => s.stopNavigation);
   // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
@@ -402,21 +410,42 @@ export default function HomeScreen() {
   const handleStartNavigation = useCallback(() => {
     startNavigation();
     void setInfoModeEnabled(true);
+    // #2293 — 재개 시 일시정지 stamp 제거(cold-start backstop이 재개된 trip을 잘못 종료하지 않도록).
+    void clearNavigationPausedAt();
   }, [startNavigation, setInfoModeEnabled]);
+  // #2293 (Part of #2285 결정 ①+③) — "일시정지" 진입. navigationActive off + BG GPS 중단은
+  // 유지하되(#1973), destination/trip은 보존한다. pausedAt을 함께 stamp해 배지 카운트다운 +
+  // PAUSE_AUTO_END_MS(15분) 경과 시 자동 종료 backstop의 기준점으로 쓴다.
   const handleStopNavigation = useCallback(() => {
     stopNavigation();
     void setInfoModeEnabled(false);
+    void setNavigationPausedAt();
   }, [stopNavigation, setInfoModeEnabled]);
-  // #2238 — "안내 종료" 명시 trigger. "안내 중단"(navigationActive만 off, BG GPS 토글)과 달리
+  // #2238 — "안내 종료" 명시 trigger. "일시정지"(navigationActive만 off, BG GPS 토글)와 달리
   // trip 자체를 종료한다: setDestination(null)이 기존 cleanup chain(runTripBoundCleanups →
   // #2129 backend DELETE /trips wire, tripBoundCleanups.ts:259)을 그대로 태워 로컬 정리 +
-  // backend trip 삭제(best-effort, 실패해도 15분 backstop #2230이 안전망) 양쪽을 처리한다.
-  // navigationActive/infoModeEnabled도 함께 reset해 trip 없는 상태에 stale 의향 플래그가
-  // 남지 않도록 한다.
+  // backend trip 삭제(best-effort, 실패해도 9h force-end backstop이 안전망) 양쪽을 처리한다.
+  // navigationActive/infoModeEnabled/pausedAt도 함께 reset해 trip 없는 상태에 stale 의향
+  // 플래그가 남지 않도록 한다(pausedAt은 tripBoundCleanups에서 storage 채널도 함께 제거).
+  //
+  // #2293 — FG 일시정지 카운트다운 만료(PausedNavigationBadge.onExpire)에서도 확인 다이얼로그
+  // 없이 이 함수를 그대로 호출한다. 확인이 필요한 건 "사용자가 직접 종료 버튼을 탭"하는
+  // 경우뿐(handleEndNavigationPress) — 만료는 이미 15분 전 배지로 예고된 자동 처리.
   const handleEndNavigation = useCallback(() => {
     handleStopNavigation();
     setDestination(null);
   }, [handleStopNavigation, setDestination]);
+  // #2293 — "안내 종료" 버튼 탭 시 확인 다이얼로그. 취소 시 아무 것도 하지 않는다(경로/알람 유지).
+  const handleEndNavigationPress = useCallback(() => {
+    Alert.alert(
+      t('navigation.endConfirmTitle'),
+      t('navigation.endConfirmMessage'),
+      [
+        { text: t('navigation.endConfirmCancel'), style: 'cancel' },
+        { text: t('navigation.endConfirmConfirm'), style: 'destructive', onPress: handleEndNavigation },
+      ],
+    );
+  }, [t, handleEndNavigation]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
     distanceKm: result?.distanceKm,
@@ -1363,6 +1392,15 @@ export default function HomeScreen() {
               </View>
             )}
 
+            {/* #2293 (Part of #2285 결정 ①+③) — 일시정지 배지: navigationActive=false && destination
+                 존재 상태를 사용자에게 명확히 알린다("일시정지" ≠ "안내 종료" 구분). 카운트다운 만료 시
+                 handleEndNavigation을 확인 다이얼로그 없이 호출(15분 전 배지로 이미 예고됨). */}
+            {destination && !navigationActive && navigationPausedAt !== null && (
+              <View style={{ paddingHorizontal: spacing.xxl, paddingBottom: spacing.md }}>
+                <PausedNavigationBadge pausedAt={navigationPausedAt} onExpire={handleEndNavigation} />
+              </View>
+            )}
+
             {/* #1844 (Phase 6.1 Sub-step 5) — cold start mismatch 재확인 배너.
                  lock 활성 + mismatch 감지 시 노출. 탑승역 재선택 → lock 해제. */}
             {boardingLock && coldStartMismatch.detected && (
@@ -1468,16 +1506,17 @@ export default function HomeScreen() {
                       </Text>
                     </Pressable>
                   )}
-                  {/* #2238 — "안내 종료" 버튼. "안내 시작"과 대칭 배치, 활성 trip(destination 존재)일
-                       때만 노출. 탭 시 trip 자체를 종료(setDestination(null))해 backend DELETE
-                       /trips까지 배선(runTripBoundCleanups → #2129)한다. */}
+                  {/* #2238 — "안내 종료" 버튼. "일시정지"와 대칭 배치, 활성 trip(destination 존재)일
+                       때만 노출. 탭 시 확인 다이얼로그(#2293) 후 trip 자체를 종료
+                       (setDestination(null))해 backend DELETE /trips까지 배선
+                       (runTripBoundCleanups → #2129)한다. */}
                   {destination !== null && (
                     <Pressable
                       testID="home-navigation-end"
                       style={[styles.navigationButton, { borderColor: colors.danger, borderWidth: 1 }]}
                       accessibilityRole="button"
                       accessibilityLabel={t('navigation.end')}
-                      onPress={handleEndNavigation}
+                      onPress={handleEndNavigationPress}
                     >
                       <Text style={[typography.label, { color: colors.danger, fontWeight: '700' }]}>
                         {t('navigation.end')}

@@ -284,3 +284,15 @@ export const LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS = 90_000;
  * 정확한 역은 모른다"고 정직하게 알리는 것이 잘못된 역명 표시보다 낫다.
  */
 export const CURRENT_STATION_STALE_DEMOTE_MS = 3 * 60_000;
+
+/**
+ * #2293 (Part of #2285 결정 ①+③) — "일시정지"(navigationActive=false && destination 존재)
+ * 상태 경과 후 자동 종료까지의 임계.
+ *
+ * backend `DESTINATION_REACH_BACKSTOP_MS`(scheduled.ts, destination gps-far cross-check
+ * 전용 15분 backstop)와는 목적·트리거 조건이 전혀 다른 **독립 상수**다 — 우연히 같은
+ * 15분 값을 쓸 뿐, 서로 참조하거나 대체하지 않는다(혼동 방지로 의도적으로 분리 유지).
+ * 이 상수는 오직 device-side "일시정지" 판정(FG useCountdown 만료 / cold-start rehydration
+ * backstop)에서만 사용된다.
+ */
+export const PAUSE_AUTO_END_MS = 15 * 60_000;

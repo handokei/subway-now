@@ -387,7 +387,12 @@ export type AlarmLogReason =
   // #2253 (ADR-029 Phase 5, G1) — backend가 device보다 앞선 `contractVersion`을 stamp한 payload를
   // 수신한 1건(런타임 버전 스큐). P1 G6 fail-open 정책 재사용 — 발사는 막지 않는다(기존 kind 처리가
   // 이 skip과 별개로 정상 진행), 이 reason은 순수 관측용.
-  | 'push-contract-skew-version-old';
+  | 'push-contract-skew-version-old'
+  // #2293 (Part of #2285 결정 ①+③) — "일시정지"(navigationActive=false && destination 존재)
+  // 상태가 PAUSE_AUTO_END_MS(15분) 경과해 자동 종료된 1건. FG useCountdown 만료 /
+  // cold-start rehydration backstop 두 진입점 공통 reason — source='lifecycle-backstop'로
+  // 적재해 기존 backstop 계열과 같은 분포로 관측(fire 분모 제외 유지).
+  | 'trip-paused-auto-ended';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

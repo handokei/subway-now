@@ -209,9 +209,14 @@
   },
   "navigation": {
     "start": "开始导航",
-    "stop": "停止导航",
+    "stop": "暂停",
     "end": "结束导航",
-    "permissionPrompt": "开始导航需要位置权限"
+    "permissionPrompt": "开始导航需要位置权限",
+    "endConfirmTitle": "要结束导航吗?",
+    "endConfirmMessage": "路线和提醒将被删除。",
+    "endConfirmConfirm": "结束",
+    "endConfirmCancel": "取消",
+    "pausedBadge": "已暂停 · 保留路线 · {{minutes}}分钟后自动结束"
   },
   "arrival": {
     "upbound": "上行",

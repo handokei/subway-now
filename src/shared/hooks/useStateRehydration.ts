@@ -21,6 +21,10 @@ import {
   getTripStartedAt,
   tripLifecyclePhase,
 } from '../../features/alarm/utils/tripStartStorage';
+import {
+  getNavigationPausedAt,
+  isPauseAutoEndDue,
+} from '../../features/alarm/utils/navigationPauseStorage';
 import { appendAlarmLog } from '../../features/alarm/utils/alarmLog';
 import {
   clearBackendSsotMirror,
@@ -135,6 +139,12 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
   // share dump에서 lifecycle-backstop source 카운트로 측정.
   await runLifecycleBackstop(trigger);
 
+  // #2293 (Part of #2285 결정 ①+③) — "일시정지" 15분 경과 자동 종료 backstop. 신규 타이머
+  // 대신 이 chokepoint(mount + AppState 'active' 진입)에 편승 — 앱이 kill된 채로 15분이
+  // 지나도 다음 진입 시 정리된다. known limitation: 앱이 계속 kill 상태면 backend trip은
+  // 다음 진입까지 생존(backend-side pause 인지는 ADR-031 Phase 2, 본 PR 스코프 밖).
+  await runNavigationPauseBackstop(trigger);
+
   // #1598 — app boot / FG 복귀 시 active trip이 없는데 Backend SSoT mirror가 잔존하면 즉시 clear.
   // 2026-06-20 trip dump evidence: 사용자 위치 용마산 / activeTrip=(none) / mirror=건대입구.
   // TRIP_BOUND_CLEANUPS는 trip 종료 경로(setDestination(null)/silent push trip-ended/sentinel/
@@ -220,5 +230,46 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
     logger.warn('lifecycle backstop 실패 (graceful)', e);
+  }
+}
+
+/**
+ * #2293 (Part of #2285 결정 ①+③) — "일시정지"(navigationActive=false && destination 존재)
+ * 상태 PAUSE_AUTO_END_MS(15분) 경과 시 자동 종료. throw 없음 — launch 차단 금지.
+ *
+ * pausedAt은 trip 종료 전체 경로(TRIP_BOUND_CLEANUPS)에서 항상 함께 제거되므로, 이 값이
+ * 남아있다는 것 자체가 "아직 어떤 종료 경로도 거치지 않은 활성 일시정지"를 의미한다 —
+ * destination 존재 여부를 별도로 재확인할 필요 없음(force-end backstop과 동일 불변식).
+ *
+ * force-end(9h+) 분기와 동일한 cleanup 시퀀스를 재사용한다(silent push trip-ended와 동형) —
+ * setDestination 호출 대신 runTripBoundCleanups + setState 직접 호출은 #1351 R2와 동일 이유.
+ */
+async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<void> {
+  try {
+    const pausedAt = await getNavigationPausedAt();
+    const now = Date.now();
+    if (!isPauseAutoEndDue(pausedAt, now)) return;
+
+    appendAlarmLog({
+      ts: now,
+      source: 'lifecycle-backstop',
+      outcome: 'fired',
+      reason: 'trip-paused-auto-ended',
+    });
+    logger.info(`trigger=${trigger} pause auto-end (pausedAt=${pausedAt}) → cleanup`);
+    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+    await runTripBoundCleanups();
+    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
+    useDestinationStore.setState({
+      destination: null,
+      customOrigin: null,
+      tripOrigin: null,
+    });
+    addDomainBreadcrumb('trip', 'end', { reason: 'navigation-pause-auto-end' });
+    await useBoardingLockStore.getState().releaseLock();
+  } catch (e) {
+    logger.warn('navigation pause backstop 실패 (graceful)', e);
   }
 }

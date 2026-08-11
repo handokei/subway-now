@@ -38,25 +38,48 @@ export interface NavigationState {
    */
   navigationActive: boolean;
   /**
+   * #2293 (Part of #2285 결정 ①+③) — "일시정지" 진입 시각(epoch ms), FG 배지 카운트다운
+   * 표시 전용 메모리 값. stopNavigation에서 stamp, startNavigation에서 clear.
+   * cold-start 자동 종료 판정은 이 값이 아니라 별도 영속 채널(alarm feature
+   * `navigationPauseStorage`, `NAVIGATION_PAUSED_AT_KEY`)을 쓴다 — 이 store는 의도적으로
+   * 휘발성이라 cross-feature AsyncStorage 부작용을 담지 않는다(HomeScreen이
+   * handleStopNavigation/handleStartNavigation에서 두 채널을 같은 호출 지점에 wire).
+   */
+  pausedAt: number | null;
+  /**
    * 안내 시작. 사용자가 HomeScreen "안내 시작" 버튼을 탭할 때 호출.
-   * memory state만 true로 set (persist 미적용).
+   * memory state만 true로 set (persist 미적용). pausedAt도 함께 clear.
    */
   startNavigation: () => void;
   /**
-   * 안내 중단. 사용자가 HomeScreen "안내 중단" 버튼을 탭할 때 호출.
-   * memory state false로 set. HomeScreen이 useBackgroundLocation cleanup + infoMode reset wire.
+   * 안내 중단(일시정지). 사용자가 HomeScreen "일시정지" 버튼을 탭할 때 호출.
+   * memory state false로 set + pausedAt stamp. HomeScreen이 useBackgroundLocation cleanup
+   * + infoMode reset wire.
    */
   stopNavigation: () => void;
+  /**
+   * #2293 PR #2301 리뷰 P1 — pausedAt memory만 clear(navigationActive는 건드리지 않음).
+   * trip 종료 전체 경로(`tripBoundCleanups`)의 단일 chokepoint에서 storage 채널
+   * (`clearNavigationPausedAt`)과 함께 호출된다. 일시정지 상태에서 재개/종료 버튼을
+   * 거치지 않고 새 목적지를 바로 선택(`handleSelectDestination`)해도 이전 trip의
+   * pausedAt이 새 trip에 stale로 남아 배지+조기 자동종료를 유발하던 회귀를 차단.
+   */
+  clearPausedAt: () => void;
 }
 
 export const useNavigationStore = create<NavigationState>((set) => ({
   navigationActive: false,
+  pausedAt: null,
 
   startNavigation: () => {
-    set({ navigationActive: true });
+    set({ navigationActive: true, pausedAt: null });
   },
 
   stopNavigation: () => {
-    set({ navigationActive: false });
+    set({ navigationActive: false, pausedAt: Date.now() });
+  },
+
+  clearPausedAt: () => {
+    set({ pausedAt: null });
   },
 }));

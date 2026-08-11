@@ -11,6 +11,7 @@ import { useStateRehydration } from '../useStateRehydration';
 import { useDestinationStore } from '../../../features/route/store/useDestinationStore';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
 import { useLegAdvanceStore } from '../../../features/alarm/store/useLegAdvanceStore';
+import { PAUSE_AUTO_END_MS } from '../../constants/realtime';
 
 const mockGetSentinel = jest.fn();
 const mockClearSentinel = jest.fn();
@@ -33,6 +34,16 @@ jest.mock('../../../features/alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: (...args: unknown[]) => mockGetTripStartedAt(...args),
   tripLifecyclePhase: (...args: unknown[]) => mockTripLifecyclePhase(...args),
 }));
+
+// #2293 — 일시정지 15분 backstop. isPauseAutoEndDue는 순수 함수라 실제 구현 그대로 사용.
+const mockGetNavigationPausedAt = jest.fn();
+jest.mock('../../../features/alarm/utils/navigationPauseStorage', () => {
+  const actual = jest.requireActual('../../../features/alarm/utils/navigationPauseStorage');
+  return {
+    isPauseAutoEndDue: actual.isPauseAutoEndDue,
+    getNavigationPausedAt: (...args: unknown[]) => mockGetNavigationPausedAt(...args),
+  };
+});
 
 const mockAppendAlarmLog = jest.fn();
 jest.mock('../../../features/alarm/utils/alarmLog', () => ({
@@ -97,6 +108,8 @@ beforeEach(() => {
   // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
   mockGetTripStartedAt.mockResolvedValue(null);
   mockTripLifecyclePhase.mockReturnValue('none');
+  // #2293 — 기본은 일시정지 미존재 — 기존 테스트들이 pause backstop 영향 받지 않도록.
+  mockGetNavigationPausedAt.mockResolvedValue(null);
   // 기본 mirror 미존재 — 기존 테스트들이 mirror backstop 영향 받지 않도록.
   mockReadBackendSsotMirror.mockResolvedValue(null);
   mockClearBackendSsotMirror.mockResolvedValue(undefined);
@@ -467,6 +480,68 @@ describe('useStateRehydration', () => {
       mockGetTripStartedAt.mockRejectedValue(new Error('io'));
       mockAppState();
       // throw가 새지 않아 hook 자체는 정상 마운트.
+      expect(() => renderHook(() => useStateRehydration())).not.toThrow();
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+    });
+  });
+
+  describe('#2293 (Part of #2285 결정 ①+③) — 일시정지 15분 backstop', () => {
+    it('pausedAt=null — backstop early return (회귀 0)', async () => {
+      mockGetNavigationPausedAt.mockResolvedValue(null);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-paused-auto-ended' }),
+      );
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+    });
+
+    it('pausedAt 존재 + 경과 < PAUSE_AUTO_END_MS — 아무 동작 안 함', async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockGetNavigationPausedAt.mockResolvedValue(now - (PAUSE_AUTO_END_MS - 1_000));
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-paused-auto-ended' }),
+      );
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('pausedAt 존재 + 경과 ≥ PAUSE_AUTO_END_MS — runTripBoundCleanups + setState reset + releaseLock + alarmLog fired (RED: cold-start 자동 종료)', async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() =>
+        expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'lifecycle-backstop',
+            outcome: 'fired',
+            reason: 'trip-paused-auto-ended',
+          }),
+        ),
+      );
+      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      expect(mockSetState).toHaveBeenCalledWith({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+        reason: 'navigation-pause-auto-end',
+      });
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('backstop 실패는 graceful (다음 launch 영향 X)', async () => {
+      mockGetNavigationPausedAt.mockRejectedValue(new Error('io'));
+      mockAppState();
       expect(() => renderHook(() => useStateRehydration())).not.toThrow();
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
     });
