@@ -71,9 +71,11 @@ import * as Sentry from '@sentry/cloudflare';
 import {
   addValidateRejectBreadcrumb,
   captureBackendException,
+  hashTripToken,
   sentryInit,
   sentryOptions,
 } from './sentry';
+import { recordTripEvent } from './tripEventLog';
 import {
   recordRecallUpload,
   validateRecallUpload,
@@ -1843,6 +1845,14 @@ app.post('/boarding-lock/sync', async (c) => {
   if (!existing) return c.json({ error: 'trip_not_found' }, 404);
 
   const now = Date.now();
+  // #2283 — D1 append-only 관측. KV trip 객체와 독립적으로 sync 도달을 보존한다(user-delete 시
+  // KV가 사라져도 사후 재구성 가능해야 함). DB 미바인딩/실패는 recordTripEvent 내부 graceful no-op.
+  const tokenHash = hashTripToken(payload.token);
+  await recordTripEvent(c.env.DB, {
+    tokenHash,
+    kind: 'sync-received',
+    station: payload.observedStationName,
+  });
   const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
 
   let working: Trip = existing;
@@ -1859,6 +1869,14 @@ app.post('/boarding-lock/sync', async (c) => {
     };
     // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
     await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
+    // #2283 — advance 이벤트 관측. 새 head waypoint를 기록해 "언제 어디로 advance했는지" 사후 조회.
+    const advancedHead = remaining[0];
+    await recordTripEvent(c.env.DB, {
+      tokenHash,
+      kind: 'advance',
+      station: advancedHead ? advancedHead.stationName : undefined,
+      meta: { shiftedCount: advance.shiftedCount },
+    });
   }
 
   // D4 (#1210) — payload trainCode가 KV lock trainCode와 다르면 환승 leg로 해석.
@@ -1911,6 +1929,16 @@ app.post('/boarding-lock/sync', async (c) => {
   }
 
   const head = working.waypoints[0];
+  if (working.boardingLock) {
+    // #2283 — hydrate-issued 관측. autoLockCandidate를 device가 실제로 받아 lock state를
+    // hydrate할 수 있는 응답임을 기록(sync-received/advance와 별도 kind — "발사됐는지"를 분리 관측).
+    await recordTripEvent(c.env.DB, {
+      tokenHash,
+      kind: 'hydrate-issued',
+      station: head ? head.stationName : undefined,
+      line: working.boardingLock.line,
+    });
+  }
   return c.json({
     ok: true,
     advanced: advance.shiftedCount > 0,

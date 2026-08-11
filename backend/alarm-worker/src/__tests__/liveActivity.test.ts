@@ -1187,11 +1187,16 @@ describe('cleanupTripWithLa', () => {
       await kv.put('trip:devtoken', JSON.stringify(trip));
       let capturedArgs: unknown[] = [];
       const run = vi.fn().mockResolvedValue({ success: true });
-      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
-        capturedArgs = args;
-        return { run };
-      });
-      const prepare = vi.fn().mockReturnValue({ bind });
+      // #2283 — cleanupTripWithLa가 trip_metrics INSERT 외에 trip_events INSERT(trip-end)도
+      // 함께 호출한다. 동일 bind mock을 공유하면 마지막 호출(trip_events)이 capturedArgs를
+      // 덮어써 이 테스트가 검증하려는 trip_metrics.end_reason 값을 잃는다 — SQL 문자열로
+      // statement를 구분해 trip_metrics INSERT의 bind 인자만 캡처한다.
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_metrics')) capturedArgs = args;
+          return { run };
+        },
+      }));
       const db = { prepare } as unknown as D1Database;
       const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
       await cleanupTripWithLa(
@@ -1214,11 +1219,13 @@ describe('cleanupTripWithLa', () => {
       await kv.put('trip:devtoken', JSON.stringify(trip));
       let capturedArgs: unknown[] = [];
       const run = vi.fn().mockResolvedValue({ success: true });
-      const bind = vi.fn().mockImplementation((...args: unknown[]) => {
-        capturedArgs = args;
-        return { run };
-      });
-      const prepare = vi.fn().mockReturnValue({ bind });
+      // #2283 — 위 테스트와 동일 이유로 trip_metrics INSERT statement만 캡처.
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_metrics')) capturedArgs = args;
+          return { run };
+        },
+      }));
       const db = { prepare } as unknown as D1Database;
       const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
       await cleanupTripWithLa(

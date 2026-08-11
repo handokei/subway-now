@@ -23,8 +23,10 @@ import { recordTripMetrics } from './d1TripMetrics';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { logPushFailure } from './pushFailureLog';
+import { hashTripToken } from './sentry';
 import { computeMultiHopContext } from './tripMultiHop';
 import { deleteSsot } from './tripPositionSsot';
+import { recordTripEvent } from './tripEventLog';
 import {
   cleanupPendingPushesForToken,
   deleteDeviceTripIndexIfCurrent,
@@ -365,6 +367,14 @@ export async function cleanupTripWithLa(
   // cleanup 흐름 차단 없음 — recordTripMetrics 자체가 try/catch로 swallow.
   // #2268 — metricsReason이 있으면 alert-push 게이팅용 reason 대신 그 값을 적재(위 헤더 주석).
   await recordTripMetrics(env.DB, trip, metricsReason ?? reason, now);
+  // #2283 — D1 append-only 관측. KV trip 객체(위 deleteTrip)가 삭제된 후에도 trip-end 이벤트는
+  // 독립 보존된다 — trip_metrics(집계 스냅샷)와 달리 trip_events는 타임라인 재구성이 목적.
+  await recordTripEvent(env.DB, {
+    tokenHash: hashTripToken(trip.token),
+    kind: 'trip-end',
+    station: trip.destination ?? undefined,
+    meta: { reason: metricsReason ?? reason ?? 'user-delete' },
+  });
 }
 
 /**
