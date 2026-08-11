@@ -1,6 +1,6 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetApnsJwtCache, type ApnsConfig } from '../apns';
+import { DISEMBARK_PROMPT_CATEGORY, resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
 import type { WindowedMetrics } from '../positionSeries';
@@ -10986,6 +10986,8 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     expect(body.data.hopEndKind).toBe('disembark');
     expect(body.data.nextLine).toBe('K');
     expect(body.data.nextStation).toBe('왕십리');
+    // #2282 — hop-end fire는 BOARDING_PROMPT가 아닌 전용 DISEMBARK_PROMPT category로 나가야 한다.
+    expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
   });
 
   it('promptState.fired=true → blocked 카운터 증가 + push 미발사', async () => {

@@ -40,6 +40,8 @@ import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
   BOARDING_PROMPT_CATEGORY,
+  DISEMBARK_ACTION_DISEMBARKED,
+  DISEMBARK_PROMPT_CATEGORY,
 } from '../utils/notificationCategory';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { createLogger } from '../../../shared/utils/logger';
@@ -145,8 +147,10 @@ export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps)
       // notification.request.identifier 기준 — FG receive가 먼저 적재했으면 skip.
       const identifier = request.identifier;
       if (typeof identifier === 'string' && identifier.length > 0) {
+        // #2282 — hop-end 는 DISEMBARK_PROMPT_CATEGORY로 분리 발사되므로 fired 적재도 두 category 모두 인정.
         const isBoardingPromptCategory =
-          request.content.categoryIdentifier === BOARDING_PROMPT_CATEGORY;
+          request.content.categoryIdentifier === BOARDING_PROMPT_CATEGORY ||
+          request.content.categoryIdentifier === DISEMBARK_PROMPT_CATEGORY;
         // categoryIdentifier 미수신 OS(예: Android)에서도 payload schema가 일치하면 fired 적재.
         const shouldLog =
           (isBoardingPromptCategory || request.content.categoryIdentifier == null) &&
@@ -248,8 +252,11 @@ async function handleHopEndResponse(
   payload: BoardingPromptPayload,
   deps: HandleDeps,
 ): Promise<void> {
+  // #2282 — hop-end 는 DISEMBARK_PROMPT_CATEGORY의 DISEMBARK_ACTION_DISEMBARKED로 발사되므로
+  // 이 식별자를 [하차함] 확정으로 인식한다. 배너 탭($default)은 category 미등록 구 device를
+  // 포함해 항상 확정으로 처리(기존 동작 유지).
   if (
-    actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
+    actionIdentifier === DISEMBARK_ACTION_DISEMBARKED ||
     actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
   ) {
     logBoardingPromptResponded({ outcome: 'boarded' });

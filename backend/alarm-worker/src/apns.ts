@@ -36,6 +36,14 @@ import {
 export const BOARDING_PROMPT_CATEGORY = 'BOARDING_PROMPT';
 
 /**
+ * #2282 — hop-end (환승역 하차) 전용 UNNotificationCategory 식별자. 승차 질문과 버튼 의미가
+ * 달라("하차했어요"/"아직이요") BOARDING_PROMPT 재사용 시 iOS category-고정 버튼 제약으로
+ * 버튼 텍스트가 질문과 불일치했다. `sendBoardingPromptPush`가 `hopEndKind: 'disembark'`일 때
+ * 이 category로 발사한다. 클라이언트는 `setupDisembarkPromptCategory`로 동일 식별자를 등록.
+ */
+export const DISEMBARK_PROMPT_CATEGORY = 'DISEMBARK_PROMPT';
+
+/**
  * APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다.
  * JWT는 host와 독립적(keyId/teamId 만으로 서명)이므로 self-heal에서
  * sandbox↔production host를 바꿔도 동일 JWT를 재사용한다.
@@ -908,7 +916,11 @@ export async function sendBoardingPromptPush(
         ...(options.subtitle !== undefined ? { subtitle: options.subtitle } : {}),
       },
       sound: 'default',
-      category: BOARDING_PROMPT_CATEGORY,
+      // #2282 — hop-end(disembark) 질문은 승차 질문과 버튼 의미가 달라 전용 category로 분기.
+      category:
+        options.hopEndKind === 'disembark'
+          ? DISEMBARK_PROMPT_CATEGORY
+          : BOARDING_PROMPT_CATEGORY,
       // #2069 리뷰 P1-1 — B8(로컬 timeSensitive) 제거로 단일 채널이 된 원격 prompt가
       // Focus/DND/Sleep Focus를 관통하도록 time-sensitive를 병기한다. prompt 응답은
       // 사용자 확정 flow의 chain 전제라 도달성이 최우선 (결정 3-B와 동일 근거).

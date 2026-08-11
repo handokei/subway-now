@@ -11,7 +11,7 @@ import {
   markBoardingPromptDisplayed,
   __resetBoardingPromptDisplayedDedup,
 } from '../useBoardingPromptDisplayLogger';
-import { BOARDING_PROMPT_CATEGORY } from '../../utils/notificationCategory';
+import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from '../../utils/notificationCategory';
 
 jest.mock('expo-notifications', () => ({
   addNotificationReceivedListener: jest.fn(),
@@ -123,6 +123,15 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
     registeredHandler!(makeNotification({ identifier: 'n-1' }));
     registeredHandler!(makeNotification({ identifier: 'n-2' }));
     expect(logBoardingPromptFired).toHaveBeenCalledTimes(2);
+  });
+
+  // #2282 — hop-end 는 DISEMBARK_PROMPT_CATEGORY로 분리 발사되므로 fired 적재도 인정해야 한다.
+  it('DISEMBARK_PROMPT category notification 수신 시에도 logBoardingPromptFired 호출', () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    registeredHandler!(
+      makeNotification({ identifier: 'n-disembark', categoryIdentifier: DISEMBARK_PROMPT_CATEGORY }),
+    );
+    expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
   });
 
   it('다른 categoryIdentifier → no-op', () => {

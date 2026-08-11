@@ -15,6 +15,8 @@ import {
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
+  DISEMBARK_ACTION_DISEMBARKED,
+  DISEMBARK_ACTION_NOT_YET,
 } from '../../utils/notificationCategory';
 import * as positionUpload from '../../../nearest-station/api/positionUpload';
 import { renderHook } from '@testing-library/react-native';
@@ -935,9 +937,11 @@ describe('handleResponse — #2034 hop-end', () => {
     expect(r?.hopEndKind).toBeUndefined();
   });
 
-  it('[하차함] (BOARDED action) → releaseLock 호출 + tryAutoLock 진입 X + logBoardingPromptResponded(boarded)', async () => {
+  // #2282 — hop-end 는 DISEMBARK_PROMPT category(DISEMBARK_ACTION_DISEMBARKED/NOT_YET)로 발사되므로
+  // handleHopEndResponse 는 이 식별자를 [하차함]으로 인식해야 한다.
+  it('[하차함] (DISEMBARKED action) → releaseLock 호출 + tryAutoLock 진입 X + logBoardingPromptResponded(boarded)', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_BOARDED,
+      DISEMBARK_ACTION_DISEMBARKED,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
@@ -950,9 +954,9 @@ describe('handleResponse — #2034 hop-end', () => {
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
   });
 
-  it('[아직] (NOT_BOARDED action) → dismissBoardingPrompt POST + logBoardingPromptResponded(dismissed)', async () => {
+  it('[아직] (NOT_YET action) → dismissBoardingPrompt POST + logBoardingPromptResponded(dismissed)', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      DISEMBARK_ACTION_NOT_YET,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
@@ -991,9 +995,9 @@ describe('handleResponse — #2034 hop-end', () => {
     nextLine: '2',
   };
 
-  it('[하차함] (BOARDED action) + 유효한 nextLine → useLegAdvanceStore.stampLegAdvance(nextLine) 호출', async () => {
+  it('[하차함] (DISEMBARKED action) + 유효한 nextLine → useLegAdvanceStore.stampLegAdvance(nextLine) 호출', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_BOARDED,
+      DISEMBARK_ACTION_DISEMBARKED,
       HOP_END_PAYLOAD_VALID_NEXT_LINE,
       makeHandleResponseDeps(),
     );
@@ -1001,18 +1005,18 @@ describe('handleResponse — #2034 hop-end', () => {
     expect(stampLegAdvanceMock).toHaveBeenCalledWith('2');
   });
 
-  it('[하차함] (BOARDED action) + 유효하지 않은 nextLine("K") → stampLegAdvance 호출 안 함 (기존 동작 유지)', async () => {
+  it('[하차함] (DISEMBARKED action) + 유효하지 않은 nextLine("K") → stampLegAdvance 호출 안 함 (기존 동작 유지)', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_BOARDED,
+      DISEMBARK_ACTION_DISEMBARKED,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
     expect(stampLegAdvanceMock).not.toHaveBeenCalled();
   });
 
-  it('[아직] (NOT_BOARDED action) → stampLegAdvance 호출 안 함', async () => {
+  it('[아직] (NOT_YET action) → stampLegAdvance 호출 안 함', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      DISEMBARK_ACTION_NOT_YET,
       HOP_END_PAYLOAD_VALID_NEXT_LINE,
       makeHandleResponseDeps(),
     );
@@ -1021,20 +1025,20 @@ describe('handleResponse — #2034 hop-end', () => {
 
   it('breadcrumb "boarding_prompt_interactive_tap" 에 hopEndKind=disembark 스탬프', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_BOARDED,
+      DISEMBARK_ACTION_DISEMBARKED,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
     expect(addDomainBreadcrumb).toHaveBeenCalledWith(
       'boarding',
       'boarding_prompt_interactive_tap',
-      { action: BOARDING_PROMPT_ACTION_BOARDED, line: '2', hopEndKind: 'disembark' },
+      { action: DISEMBARK_ACTION_DISEMBARKED, line: '2', hopEndKind: 'disembark' },
     );
   });
 
   it('breadcrumb "hop_end_prompt_confirmed" ([하차함] 시)', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_BOARDED,
+      DISEMBARK_ACTION_DISEMBARKED,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
@@ -1047,7 +1051,7 @@ describe('handleResponse — #2034 hop-end', () => {
 
   it('breadcrumb "hop_end_prompt_dismissed" ([아직] 시)', async () => {
     await handleResponse(
-      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      DISEMBARK_ACTION_NOT_YET,
       HOP_END_PAYLOAD,
       makeHandleResponseDeps(),
     );
@@ -1062,7 +1066,7 @@ describe('handleResponse — #2034 hop-end', () => {
     releaseLockMock.mockImplementationOnce(() => Promise.reject(new Error('release failed')));
     await expect(
       handleResponse(
-        BOARDING_PROMPT_ACTION_BOARDED,
+        DISEMBARK_ACTION_DISEMBARKED,
         HOP_END_PAYLOAD,
         makeHandleResponseDeps(),
       ),
@@ -1073,7 +1077,7 @@ describe('handleResponse — #2034 hop-end', () => {
   it('nextLine 없음 → breadcrumb 에 nextLine="" 로 stamp (undefined 회피)', async () => {
     const payloadNoNext = { ...HOP_END_PAYLOAD, nextLine: undefined };
     await handleResponse(
-      BOARDING_PROMPT_ACTION_BOARDED,
+      DISEMBARK_ACTION_DISEMBARKED,
       payloadNoNext,
       makeHandleResponseDeps(),
     );
@@ -1082,5 +1086,17 @@ describe('handleResponse — #2034 hop-end', () => {
       'hop_end_prompt_confirmed',
       { line: '2', nextLine: '' },
     );
+  });
+
+  // #2282 RED — 구 BOARDING_PROMPT_ACTION_BOARDED 식별자는 더 이상 hop-end 확정으로 인식되지
+  // 않는다(DISEMBARK 전용 식별자로 분리). $default(배너 탭)만 이 identifier 없이도 confirm.
+  it('구 BOARDING_PROMPT_ACTION_BOARDED 는 하차 확정으로 인식되지 않는다 (dismiss path)', async () => {
+    await handleResponse(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      HOP_END_PAYLOAD,
+      makeHandleResponseDeps(),
+    );
+    expect(releaseLockMock).not.toHaveBeenCalled();
+    expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-hop');
   });
 });

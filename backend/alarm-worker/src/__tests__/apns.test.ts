@@ -2,6 +2,7 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BOARDING_PROMPT_CATEGORY,
+  DISEMBARK_PROMPT_CATEGORY,
   buildApnsJwt,
   buildSilentPushData,
   resetApnsJwtCache,
@@ -1355,6 +1356,30 @@ describe('sendBoardingPromptPush (#819)', () => {
     // 기존 필드는 그대로 유지
     expect(body.data.kind).toBe('boarding-prompt');
     expect(body.data.originStation).toBe('성수');
+  });
+
+  // #2282 — hop-end(disembark) 질문은 BOARDING_PROMPT 재사용이 아니라 전용 category로 발사돼야
+  // iOS가 질문에 맞는 버튼([하차했어요]/[아직이요])을 노출한다.
+  it('hopEndKind=disembark 시 DISEMBARK_PROMPT category로 발사 (#2282)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-hop-end-cat',
+      title: '성수에서 하차하셨나요?',
+      body: '2호선 성수에서 내려주세요.',
+      originStation: '성수',
+      line: '2',
+      tripToken: 'trip-hop',
+      sentAt: 0,
+      hopEndKind: 'disembark',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
+    expect(body.aps.category).not.toBe(BOARDING_PROMPT_CATEGORY);
   });
 
   it('hopEndKind 미지정 시 payload 에서 hop-end 필드 자연 누락 (#2034)', async () => {

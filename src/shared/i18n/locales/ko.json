@@ -231,7 +231,10 @@
     "actions": {
       "acknowledge": "확인",
       "endTrip": "trip 종료",
-      "nextTrip": "다음 여정 시작"
+      "nextTrip": "다음 여정 시작",
+      "boardingConfirm": "탑승했어요",
+      "disembarkConfirm": "하차했어요",
+      "notYet": "아직이요"
     }
   },
   "journey": {

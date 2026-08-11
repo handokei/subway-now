@@ -1,4 +1,5 @@
 import * as Notifications from 'expo-notifications';
+import i18next from 'i18next';
 import {
   ALARM_ACTION_ACKNOWLEDGE,
   ALARM_ACTION_END_TRIP,
@@ -6,8 +7,12 @@ import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
   BOARDING_PROMPT_CATEGORY,
+  DISEMBARK_ACTION_DISEMBARKED,
+  DISEMBARK_ACTION_NOT_YET,
+  DISEMBARK_PROMPT_CATEGORY,
   setupAlarmCategory,
   setupBoardingPromptCategory,
+  setupDisembarkPromptCategory,
   setupTripEndedCategory,
   TRIP_ENDED_ACTION_NEXT_TRIP,
   TRIP_ENDED_CATEGORY,
@@ -39,11 +44,56 @@ describe('setupBoardingPromptCategory (#819)', () => {
     );
   });
 
+  // #2282 — 버튼 라벨이 영어로 하드코딩돼 한국어 질문에도 "Boarded"/"Not boarded"로 표시되던 결함.
+  it('버튼 라벨이 i18next 번역 키로 로컬라이즈된다 (#2282)', async () => {
+    await setupBoardingPromptCategory();
+    const [, actions] = (Notifications.setNotificationCategoryAsync as jest.Mock).mock
+      .calls[0] as [string, { identifier: string; buttonTitle: string }[]];
+    const boarded = actions.find((a) => a.identifier === BOARDING_PROMPT_ACTION_BOARDED);
+    const notBoarded = actions.find((a) => a.identifier === BOARDING_PROMPT_ACTION_NOT_BOARDED);
+    expect(boarded?.buttonTitle).toBe(i18next.t('notifications.actions.boardingConfirm'));
+    expect(notBoarded?.buttonTitle).toBe(i18next.t('notifications.actions.notYet'));
+    expect(boarded?.buttonTitle).not.toBe('Boarded');
+    expect(notBoarded?.buttonTitle).not.toBe('Not boarded');
+  });
+
   it('Notifications가 throw해도 graceful (no throw)', async () => {
     (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
       new Error('not supported'),
     );
     await expect(setupBoardingPromptCategory()).resolves.toBeUndefined();
+  });
+});
+
+describe('setupDisembarkPromptCategory (#2282)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('DISEMBARK_PROMPT 식별자로 [하차했어요]/[아직이요] 액션 등록', async () => {
+    await setupDisembarkPromptCategory();
+    expect(Notifications.setNotificationCategoryAsync).toHaveBeenCalledWith(
+      DISEMBARK_PROMPT_CATEGORY,
+      expect.arrayContaining([
+        expect.objectContaining({
+          identifier: DISEMBARK_ACTION_DISEMBARKED,
+          buttonTitle: i18next.t('notifications.actions.disembarkConfirm'),
+          options: expect.objectContaining({ opensAppToForeground: true }),
+        }),
+        expect.objectContaining({
+          identifier: DISEMBARK_ACTION_NOT_YET,
+          buttonTitle: i18next.t('notifications.actions.notYet'),
+          options: expect.objectContaining({ opensAppToForeground: false, isDestructive: true }),
+        }),
+      ]),
+    );
+  });
+
+  it('Notifications가 throw해도 graceful (no throw)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
+      new Error('not supported'),
+    );
+    await expect(setupDisembarkPromptCategory()).resolves.toBeUndefined();
   });
 });
 
