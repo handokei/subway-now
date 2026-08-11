@@ -390,14 +390,21 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
             if (allowedLines && !allowedLines.has(boardingLine)) return;
             useBoardingLockStore
               .getState()
-              .createLock({
-                destinationId: destination.id,
-                trainCode: candidate.trainCode,
-                boardingStationId: correctedStation.id,
-                boardingLine,
-                boardedAt: Date.now(),
-                expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
-              })
+              .createLock(
+                {
+                  destinationId: destination.id,
+                  trainCode: candidate.trainCode,
+                  boardingStationId: correctedStation.id,
+                  boardingLine,
+                  boardedAt: Date.now(),
+                  expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
+                },
+                // #2290 P1 — 위 380줄 가드로 이 지점 도달 시 candidate.from은 항상
+                // 'transfer-swap'이다(backend가 3조건 검증 완료한 evidence) — 이미 새 leg에
+                // 탑승/이동 중이므로 evidence=true. FG hydrateLockFromCandidate의 동일 분기와
+                // 정책 일치.
+                true,
+              )
               .catch(() => {
                 // store action rejection은 graceful — 다음 BG tick에서 자연 재시도.
               });

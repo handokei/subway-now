@@ -256,6 +256,8 @@ describe('useBoardingLockController', () => {
         boardedAt: 1_700_000_000_000,
         expectedDurationMs: 20 * 60_000,
         initialEtaSeconds: 240,
+        // #2290 P1 — user-tap은 탑승 확정 evidence가 아니므로 evidence=false가 stamp된다.
+        boardingEvidence: false,
       });
     });
 
@@ -518,6 +520,11 @@ describe('useBoardingLockController', () => {
       });
       // initialEtaSeconds는 자동 hydrate에선 미포함 (Seam A 지연 칩은 명시 탭 lock 한정).
       expect(lock.initialEtaSeconds).toBeUndefined();
+      // #2290 P1 (RCA 재현) — candidate.from이 'transfer-swap'이 아닌 이 경로(#915/#916 원거리
+      // autoLock candidate)는 Gate 2(motionStationary)가 "아직 원점 정적 대기 중"을 확인해야
+      // 통과하므로 "아직 미탑승" 가능성이 정상 케이스다. evidence로 뭉뚱그리지 않고 false —
+      // initialEtaSeconds도 없으므로 hasConsumedOriginWait는 보수적으로 대기를 유지한다.
+      expect(lock.boardingEvidence).toBe(false);
     });
 
     it('역명+line 매칭 시 boardingStationId 정정', async () => {
@@ -775,6 +782,11 @@ describe('useBoardingLockController', () => {
             });
           });
           await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+          // #2290 P1 (RCA 재현): backend가 (기존 lock + trainCode 제공 + trainCode 변경) 3조건을
+          // 모두 검증한 뒤 발급한 transfer-swap candidate는 이미 새 leg에 탑승/이동 중이라는
+          // 확정 evidence다. evidence=false로 stamp되면(수정 전 버그) initialEtaSeconds도 없는 이
+          // lock 타입에서 trip 내내 hasConsumedOriginWait가 false로 고착된다.
+          expect(mockSetBoardingLock.mock.calls[0][0].boardingEvidence).toBe(true);
         });
 
         it('from=transfer-swap이어도 Gate 1(trainCode가 directionalArrivals에 없음) 통과 못하면 no-op', async () => {
@@ -1129,6 +1141,12 @@ describe('useBoardingLockController', () => {
       expect(arg.trainCode).toBe('AUTO-1');
       expect(arg.boardingLine).toBe('2');
       // motion gate / directionalArrivals 검증 X (suggestion 채택은 우회)
+      // #2290 P1 (RCA 재현): lockSuggestion은 backend(#1534)가 arvlcd-confirmed evidence로 이미
+      // 합의한 뒤 통보한 결과라 생성 시점 자체가 탑승 evidence다. evidence=false로 stamp되면
+      // (수정 전 버그) `hasConsumedOriginWait`가 initialEtaSeconds도 없는 이 lock 타입에서 trip
+      // 내내 false로 고착돼 출발 대기가 과다 합산된다.
+      const evidence = createLockMock.mock.calls[0][1];
+      expect(evidence).toBe(true);
     });
 
     it('이미 lock 존재 → suggestion 채택 skip (idempotent)', async () => {
@@ -1300,6 +1318,9 @@ describe('useBoardingLockController', () => {
       expect(arg.trainCode).toBe('AUTO-X');
       expect(arg.boardingLine).toBe('2');
       expect(arg.initialEtaSeconds).toBe(180);
+      // #2290 P1-1 — arvlCd 강 게이트 + 4-signal consensus를 모두 통과한 뒤에만 도달하므로
+      // evidence=true.
+      expect(createLockMock.mock.calls[0][1]).toBe(true);
     });
 
     it('lock 이미 존재 → 자동 lock skip (사용자 명시 탭 / lockSuggestion 보호)', async () => {

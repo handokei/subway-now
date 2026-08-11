@@ -53,34 +53,36 @@ describe('useBoardingLockStore', () => {
   describe('createLock', () => {
     it('state + storage 양쪽 갱신', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(sample);
+        await useBoardingLockStore.getState().createLock(sample, false);
       });
-      expect(useBoardingLockStore.getState().lock).toEqual(sample);
-      expect(mockSetBoardingLock).toHaveBeenCalledWith(sample);
+      // #2290 P1 — createLock이 evidence 인자를 lock.boardingEvidence로 합성해 저장한다.
+      expect(useBoardingLockStore.getState().lock).toEqual({ ...sample, boardingEvidence: false });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith({ ...sample, boardingEvidence: false });
     });
 
     it('기존 Lock을 새 Lock으로 교체 (multi-transfer 전환 대비)', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(sample);
+        await useBoardingLockStore.getState().createLock(sample, false);
       });
       const next: BoardingLock = { ...sample, trainCode: 'T-200', boardingLine: '7' };
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(next);
+        await useBoardingLockStore.getState().createLock(next, true);
       });
-      expect(useBoardingLockStore.getState().lock).toEqual(next);
-      expect(mockSetBoardingLock).toHaveBeenLastCalledWith(next);
+      // evidence=true로 생성 — boardingEvidence:true가 합성돼야 한다.
+      expect(useBoardingLockStore.getState().lock).toEqual({ ...next, boardingEvidence: true });
+      expect(mockSetBoardingLock).toHaveBeenLastCalledWith({ ...next, boardingEvidence: true });
     });
 
     it('#746 — createLock은 dismissSilence storage를 즉시 클리어', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(sample);
+        await useBoardingLockStore.getState().createLock(sample, false);
       });
       expect(mockClearDismissSilence).toHaveBeenCalledTimes(1);
     });
 
     it('#2152 — source 미전달 시 lifecycle buffer에 create 엔트리 source=other로 적재', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(sample);
+        await useBoardingLockStore.getState().createLock(sample, false);
       });
       const entries = getLockLifecycleEntries();
       expect(entries).toHaveLength(1);
@@ -96,7 +98,7 @@ describe('useBoardingLockStore', () => {
 
     it('#2152 — source 전달 시 lifecycle buffer에 그대로 stamp', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(sample, 'user-tap');
+        await useBoardingLockStore.getState().createLock(sample, false, 'user-tap');
       });
       const entries = getLockLifecycleEntries();
       expect(entries).toHaveLength(1);
@@ -184,7 +186,7 @@ describe('useBoardingLockStore', () => {
   describe('breadcrumb', () => {
     it('createLock 시 lock-create breadcrumb 추가', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().createLock(sample);
+        await useBoardingLockStore.getState().createLock(sample, false);
       });
       expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-create', {
         trainCode: sample.trainCode,
@@ -270,15 +272,15 @@ describe('useBoardingLockStore', () => {
 
       it('boardingStationId만 다른 createLock도 기존 lock을 교체한다', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         const swapped: BoardingLock = { ...sample, boardingStationId: 'stn-DIFFERENT' };
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(swapped);
+          await useBoardingLockStore.getState().createLock(swapped, false);
         });
         // flag OFF → 기존 동작 (교체 발생).
-        expect(useBoardingLockStore.getState().lock).toEqual(swapped);
-        expect(mockSetBoardingLock).toHaveBeenLastCalledWith(swapped);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...swapped, boardingEvidence: false });
+        expect(mockSetBoardingLock).toHaveBeenLastCalledWith({ ...swapped, boardingEvidence: false });
       });
     });
 
@@ -289,18 +291,18 @@ describe('useBoardingLockStore', () => {
 
       it('동일 destination/trainCode/boardingLine에서 boardingStationId만 다른 createLock은 skip한다', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         mockSetBoardingLock.mockClear();
         mockAddDomainBreadcrumb.mockClear();
 
         const attemptedSwap: BoardingLock = { ...sample, boardingStationId: 'stn-DIFFERENT' };
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(attemptedSwap);
+          await useBoardingLockStore.getState().createLock(attemptedSwap, false);
         });
 
         // 기존 lock은 그대로 유지, storage write 없음.
-        expect(useBoardingLockStore.getState().lock).toEqual(sample);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...sample, boardingEvidence: false });
         expect(useBoardingLockStore.getState().lock?.boardingStationId).toBe('stn-A');
         expect(mockSetBoardingLock).not.toHaveBeenCalled();
 
@@ -315,7 +317,7 @@ describe('useBoardingLockStore', () => {
 
       it('trainCode 변경(정당한 환승 leg)은 boardingStationId 변경을 허용한다', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         const legitimateTransfer: BoardingLock = {
           ...sample,
@@ -323,14 +325,14 @@ describe('useBoardingLockStore', () => {
           boardingStationId: 'stn-TRANSFER',
         };
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(legitimateTransfer);
+          await useBoardingLockStore.getState().createLock(legitimateTransfer, false);
         });
-        expect(useBoardingLockStore.getState().lock).toEqual(legitimateTransfer);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...legitimateTransfer, boardingEvidence: false });
       });
 
       it('boardingLine 변경(다른 노선 leg)은 boardingStationId 변경을 허용한다', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         const transferLeg: BoardingLock = {
           ...sample,
@@ -338,14 +340,14 @@ describe('useBoardingLockStore', () => {
           boardingStationId: 'stn-TRANSFER',
         };
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(transferLeg);
+          await useBoardingLockStore.getState().createLock(transferLeg, false);
         });
-        expect(useBoardingLockStore.getState().lock).toEqual(transferLeg);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...transferLeg, boardingEvidence: false });
       });
 
       it('destinationId 변경(다른 trip)은 boardingStationId 변경을 허용한다', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         const differentTrip: BoardingLock = {
           ...sample,
@@ -353,34 +355,34 @@ describe('useBoardingLockStore', () => {
           boardingStationId: 'stn-DIFFERENT',
         };
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(differentTrip);
+          await useBoardingLockStore.getState().createLock(differentTrip, false);
         });
-        expect(useBoardingLockStore.getState().lock).toEqual(differentTrip);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...differentTrip, boardingEvidence: false });
       });
 
       it('boardingStationId가 동일하면 다른 필드 갱신 시 정상 교체', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         // 같은 leg 안에서 expectedDurationMs 등 다른 필드 갱신은 정당한 use case.
         const sameStationUpdate: BoardingLock = { ...sample, expectedDurationMs: 999_999 };
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sameStationUpdate);
+          await useBoardingLockStore.getState().createLock(sameStationUpdate, false);
         });
-        expect(useBoardingLockStore.getState().lock).toEqual(sameStationUpdate);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...sameStationUpdate, boardingEvidence: false });
       });
 
       it('첫 lock 생성(기존 lock 없음)은 정상 처리', async () => {
         // lock=null 상태에서 createLock — 비교 대상이 없으므로 정책 우회 + 정상 생성.
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
-        expect(useBoardingLockStore.getState().lock).toEqual(sample);
+        expect(useBoardingLockStore.getState().lock).toEqual({ ...sample, boardingEvidence: false });
       });
 
       it('다수 tick 동안 auto-swap 시도해도 boardingStationId 변경 시도 0건', async () => {
         await act(async () => {
-          await useBoardingLockStore.getState().createLock(sample);
+          await useBoardingLockStore.getState().createLock(sample, false);
         });
         mockSetBoardingLock.mockClear();
 
@@ -390,7 +392,7 @@ describe('useBoardingLockStore', () => {
           await act(async () => {
             await useBoardingLockStore
               .getState()
-              .createLock({ ...sample, boardingStationId: stnId });
+              .createLock({ ...sample, boardingStationId: stnId }, false);
           });
         }
 

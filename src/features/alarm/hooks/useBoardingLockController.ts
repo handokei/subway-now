@@ -240,7 +240,11 @@ export function useBoardingLockController({
             },
           }
         : {}),
-    }).catch(() => {
+      // #2290 P1 — lockSuggestion은 backend(#1534)가 arvlcd-confirmed-train evidence로 이미
+      // 합의한 뒤 device에 통보한 결과다. device-side 9-AND gate(directionalArrivals 매칭 /
+      // motion gate)를 의도적으로 우회하는 이유(위 196-200줄)와 동일 — backend가 이미 "탑승
+      // evidence"를 확인했으므로 생성 시점 자체가 evidence다.
+    }, true).catch(() => {
       // store action rejection은 graceful — 다음 polling cycle에서 자연 재시도.
     });
   }, [
@@ -345,7 +349,9 @@ export function useBoardingLockController({
         // #897 Seam A: 탑승 시점 ETA 스냅샷. 동일 trainCode가 유지되는 동안 새 폴링의 arrivalSeconds가
         // 이 값보다 크게 늘면 그 차이가 지연(분). BoardingTrainList가 "+N분 지연" 칩으로 노출.
         initialEtaSeconds: train.arrivalSeconds,
-      }, 'user-tap').then(() => {
+      // #2290 P1 — user-tap은 "미래 열차 선택"일 뿐 탑승 확정 evidence가 아니므로 evidence=false.
+      // `hasConsumedOriginWait`가 위 initialEtaSeconds 경과 여부로 별도 판정한다.
+      }, false, 'user-tap').then(() => {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }).catch(() => {
         // store action rejection은 graceful — 다음 polling cycle에서 자연 재시도.
@@ -442,7 +448,14 @@ export function useBoardingLockController({
               },
             }
           : {}),
-      }).catch(() => {
+      // #2290 P1 — `candidate.from`별로 evidence 의미가 다르다:
+      //   - 'transfer-swap': 위 Gate 2 우회와 동일 근거(backend가 기존 lock + trainCode 변경
+      //     3조건을 모두 검증) — 이미 새 leg에 탑승/이동 중이라는 확정 evidence이므로 true.
+      //   - 그 외(#915/#916 원거리 autoLock candidate): Gate 2가 motionStationary(=아직 원점에
+      //     정적 대기 중)를 확인해야 통과하는 경로라, "아직 미탑승" 가능성이 오히려 정상 케이스다.
+      //     탑승 확정 evidence로 뭉뚱그리지 않는다 — evidence=false, initialEtaSeconds도 없으므로
+      //     `hasConsumedOriginWait`가 보수적으로 false를 유지(대기 표시 유지).
+      }, candidate.from === 'transfer-swap').catch(() => {
         // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
       });
     },
@@ -554,11 +567,6 @@ export function useBoardingLockController({
       // 동급으로 신뢰(arvlCd 우선순위 단일 후보 + arrival API 가용)하므로 지연 칩이 backend SSoT hydrate와
       // 다르게 활성화돼야 자연스럽다.
       initialEtaSeconds: chosen.arrivalSeconds,
-      // #2290 P1-1 — 이 effect는 arvlCd(ENTERING/ARRIVED/DEPARTED) 강 게이트(위 507-511) +
-      // 4-signal consensus(위 525-536)를 모두 통과한 뒤에만 도달하므로, lock 생성 시점 자체가
-      // "이미 탑승/곧 탑승" evidence다. `hasConsumedOriginWait`가 이 flag를 보고 initialEtaSeconds
-      // 경과를 기다리지 않고 즉시 출발 대기를 소진 처리한다(ETA 표시에서 origin wait 제외).
-      boardingEvidence: true,
       ...(isSentinel
         ? {
             hydratedFromSentinel: {
@@ -567,7 +575,11 @@ export function useBoardingLockController({
             },
           }
         : {}),
-    })
+    // #2290 P1-1 — 이 effect는 arvlCd(ENTERING/ARRIVED/DEPARTED) 강 게이트(위 507-511) +
+    // 4-signal consensus(위 525-536)를 모두 통과한 뒤에만 도달하므로, lock 생성 시점 자체가
+    // "이미 탑승/곧 탑승" evidence다. `hasConsumedOriginWait`가 이 값을 보고 initialEtaSeconds
+    // 경과를 기다리지 않고 즉시 출발 대기를 소진 처리한다(ETA 표시에서 origin wait 제외).
+    }, true)
       .then(() => {
         // V/X 측정 — `source='boarding-prompt'` 재사용해 DebugModal/autoLock outcome 분포에서 한 화면에서 가시화.
         // backend push 응답 path(useBoardingPromptResponder)와 같은 reason 라벨을 쓰되, alarm log entry에는

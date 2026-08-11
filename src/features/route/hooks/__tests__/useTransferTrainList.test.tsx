@@ -164,6 +164,7 @@ describe('useTransferTrainList', () => {
         expectedDurationMs: 6 * 60_000,
         initialEtaSeconds: 240,
       }),
+      false,
     );
   });
 
@@ -351,7 +352,7 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
       }),
     );
     expect(mockCreateLock).toHaveBeenCalledTimes(1);
-    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-ARRIVED', 30));
+    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-ARRIVED', 30), false);
   });
 
   it('arvlCd 우선순위 — DEPARTED(2) 단일이면 ENTERING(0) 무시하고 DEPARTED 선택', () => {
@@ -366,7 +367,7 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
         currentStation: gondeokOn6,
       }),
     );
-    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-DEP', 10));
+    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-DEP', 10), false);
   });
 
   it('ambiguity (같은 우선순위 train 2대) → autoLock skip — manual fallback', () => {
@@ -490,7 +491,7 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
     expect(mockCreateLock).not.toHaveBeenCalled();
     act(() => result.current.createTransferLock(makeTrain({ trainCode: 'T-A', arrivalSeconds: 30 })));
     expect(mockCreateLock).toHaveBeenCalledTimes(1);
-    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-A', 30));
+    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-A', 30), false);
   });
 
   it('환승역에서 벗어나면(currentStation null로 전환) idempotency ref 리셋 — 다음 진입 시 재시도', () => {
@@ -536,7 +537,7 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
       }),
     );
     expect(mockCreateLock).toHaveBeenCalledTimes(1);
-    expect(mockCreateLock).toHaveBeenCalledWith(expect.objectContaining({ trainCode: 'T-DIR-NULL' }));
+    expect(mockCreateLock).toHaveBeenCalledWith(expect.objectContaining({ trainCode: 'T-DIR-NULL' }), false);
   });
 });
 
@@ -596,6 +597,7 @@ describe('#2016 (autoLock dormant) archFlag ON 시 D5 autoLock skip', () => {
         expectedDurationMs: 6 * 60_000,
         initialEtaSeconds: 240,
       }),
+      false,
     );
   });
 

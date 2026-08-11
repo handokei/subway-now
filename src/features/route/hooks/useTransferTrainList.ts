@@ -150,7 +150,11 @@ export function useTransferTrainList({
         expectedDurationMs: durationMin * 60_000,
         // #897 Seam A: 환승 leg 탑승 시점 ETA 스냅샷. 새 폴 응답이 이보다 +180s 이상이면 지연 신호.
         initialEtaSeconds: train.arrivalSeconds,
-      });
+      // #2290 P1 — 이 함수는 사용자가 BoardingTrainList에서 직접 탭한 경우와 D5 dormant device
+      // auto-lock(아래 effect, `pickAutoTrainCodeFromArrivals` fallback 후보 포함 가능이라 강
+      // 게이트 없음) 양쪽에서 호출된다. 둘 다 탑승 확정 evidence가 아니므로 evidence=false —
+      // `hasConsumedOriginWait`가 위 initialEtaSeconds 경과 여부로 판정한다.
+      }, false);
     },
     [context, lock, route, createLock],
   );

@@ -1398,6 +1398,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
           boardingStationId: '2-012',
           boardingLine: '2',
         }),
+        // #2290 P1 — 이 진입점은 candidate.from === 'transfer-swap' 가드를 통과해야만 도달하므로
+        // evidence=true로 호출돼야 한다(backend가 3조건 검증한 transfer-swap evidence).
+        true,
       );
     });
 
