@@ -92,6 +92,8 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
   isSameStationName: (a: string, b: string) => a === b,
   // direct route 테스트만 사용 — 첫 leg endName은 항상 destinationName.
   getFirstLeg: (_route: unknown, destinationName: string) => ({ line: '2', endName: destinationName }),
+  // #2279 — stationPipeline이 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
+  getRouteRemainingSeconds: jest.fn(() => 120),
 }));
 
 const mockSendStationPassedNotification = jest.fn((..._args: unknown[]) => Promise.resolve());

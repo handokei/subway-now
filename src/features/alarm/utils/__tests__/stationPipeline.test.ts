@@ -18,6 +18,7 @@ const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
 const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
 const mockGetFirstLeg = jest.fn((..._args: unknown[]) => ({ line: '2', endName: '' }));
+const mockGetRouteRemainingSeconds = jest.fn((..._args: unknown[]) => 360);
 jest.mock('../../../../shared/utils/stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
@@ -25,6 +26,8 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
   isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
   isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
   getFirstLeg: (...args: unknown[]) => mockGetFirstLeg(...args),
+  // #2279 — processLocationUpdate가 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
+  getRouteRemainingSeconds: (...args: unknown[]) => mockGetRouteRemainingSeconds(...args),
 }));
 
 const mockEvaluateAlarmPhase = jest.fn();
@@ -272,14 +275,17 @@ describe('processLocationUpdate', () => {
     });
   });
 
-  it('passes null etaSeconds when speedMps is not provided', async () => {
+  // #2279 — route가 있으면(nearest 탐색 성공) speedMps 부재 시에도 distance/speed 나눗셈을
+  // 폐기하고 route의 실측 hop 시간 합(getRouteRemainingSeconds, 여기선 mock 360s)으로
+  // fallback한다. 과거엔 null(정보 없음)이었으나 hop 기반 값이 항상 계산 가능해졌다.
+  it('falls back to hop-based etaSeconds when speedMps is not provided', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
     await call();
 
     expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
-      expect.objectContaining({ etaSeconds: null }),
+      expect.objectContaining({ etaSeconds: 360 }),
       expect.any(Set),
       undefined,
       expect.any(Array),

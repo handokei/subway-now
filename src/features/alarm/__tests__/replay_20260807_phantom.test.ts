@@ -45,6 +45,7 @@ const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
 const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
 const mockGetFirstLeg = jest.fn((..._args: unknown[]) => ({ line: '2', endName: '' }));
+const mockGetRouteRemainingSeconds = jest.fn((..._args: unknown[]) => 120);
 jest.mock('../../../shared/utils/stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
@@ -52,6 +53,8 @@ jest.mock('../../../shared/utils/stationRoute', () => ({
   isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
   isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
   getFirstLeg: (...args: unknown[]) => mockGetFirstLeg(...args),
+  // #2279 — stationPipeline이 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
+  getRouteRemainingSeconds: (...args: unknown[]) => mockGetRouteRemainingSeconds(...args),
 }));
 
 const mockEvaluateAlarmPhase = jest.fn();

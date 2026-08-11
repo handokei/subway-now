@@ -693,7 +693,11 @@ describe('useStationAlarm', () => {
     });
   });
 
-  it('passes null etaSeconds when speed is null', async () => {
+  // #2279 — speed가 null이면 distance/speed 나눗셈 자체를 폐기하고 route의 실측 hop 시간 합
+  // (getRouteRemainingSeconds)으로 fallback한다. makeDirectRoute(3, '2')는 3 stops ×
+  // STOP_FALLBACK_SECONDS(120) = 360s. 과거엔 speed null → etaSeconds null(정보 없음)이었으나,
+  // hop 기반 값이 항상 계산 가능해졌으므로 더 이상 null을 반환하지 않는다.
+  it('falls back to hop-based etaSeconds when speed is null', async () => {
     const route = makeDirectRoute(3, '2');
     renderHook(() =>
       useStationAlarm(
@@ -702,7 +706,7 @@ describe('useStationAlarm', () => {
     );
     await waitFor(() =>
       expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
-        expect.objectContaining({ etaSeconds: null }),
+        expect.objectContaining({ etaSeconds: 360 }),
         expect.any(Set),
         undefined,
         expect.any(Array),
