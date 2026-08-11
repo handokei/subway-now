@@ -16,7 +16,13 @@
  *
  * `env.DB` 미바인딩 시 graceful no-op. 적재 실패는 호출 흐름을 차단하지 않는다(swallow) —
  * d1ErrorLog.ts / d1TripMetrics.ts와 동일 패턴.
+ *
+ * #2283 리뷰 P2-1 — write/cleanup 실패는 console.warn만으로 무음 처리하지 않고
+ * `captureXEvent('D1-write-failure', ...)`(sentry.ts, d1ErrorLog.ts와 동일 기존 이벤트 재사용,
+ * 신규 유니온 추가 없음)로 관측 승격한다.
  */
+
+import { captureXEvent } from './sentry';
 
 /** trip_events.kind 최소 집합. 데이터 주도 확장 시 이 유니온에 추가한다. */
 export type TripEventKind = 'sync-received' | 'advance' | 'hydrate-issued' | 'trip-end';
@@ -61,6 +67,9 @@ export async function recordTripEvent(
     console.warn(
       JSON.stringify({ msg: 'tripEventLog write failed', kind: input.kind, err: String(e) }),
     );
+    // #2283 리뷰 P2-1 — D1 write 자체가 실패한 상황이라 D1 sink(trip_events)로는 escalate할 수
+    // 없어 Sentry-only(d1ErrorLog.ts와 동일 패턴).
+    captureXEvent('D1-write-failure', { table: 'trip_events', kind: input.kind, err: String(e) });
   }
 }
 
@@ -86,6 +95,8 @@ export async function cleanupTripEvents(
     return result.meta?.changes ?? 0;
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'tripEventLog cleanup failed', err: String(e) }));
+    // #2283 리뷰 P2-1 — cleanup(DELETE) 실패도 동일하게 Sentry escalation.
+    captureXEvent('D1-write-failure', { table: 'trip_events', kind: 'cleanup', err: String(e) });
     return 0;
   }
 }
