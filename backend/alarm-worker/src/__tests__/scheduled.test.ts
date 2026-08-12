@@ -6662,31 +6662,36 @@ describe('toTripStatusEndReason — #1933 la-stale-backstop 외부 contract 매�
 
 describe('shouldSkipStationary (pure helper)', () => {
   it('stationary + intermediate → skip', () => {
-    expect(shouldSkipStationary('stationary', 'intermediate', false)).toBe(true);
+    expect(shouldSkipStationary('stationary', 'intermediate', false, false)).toBe(true);
   });
 
   it('moving + intermediate → 평가 유지 (no skip)', () => {
-    expect(shouldSkipStationary('moving', 'intermediate', false)).toBe(false);
+    expect(shouldSkipStationary('moving', 'intermediate', false, false)).toBe(false);
   });
 
   it('unknown + intermediate → 평가 유지 (backward-compat)', () => {
-    expect(shouldSkipStationary('unknown', 'intermediate', false)).toBe(false);
+    expect(shouldSkipStationary('unknown', 'intermediate', false, false)).toBe(false);
   });
 
   it('stationary + destination → 항상 bypass (ETA 신선도 보장 불가 → 안전 방향)', () => {
-    expect(shouldSkipStationary('stationary', 'destination', false)).toBe(false);
+    expect(shouldSkipStationary('stationary', 'destination', false, false)).toBe(false);
   });
 
   it('stationary + transfer → 항상 bypass (ETA 신선도 보장 불가 → 안전 방향)', () => {
-    expect(shouldSkipStationary('stationary', 'transfer', false)).toBe(false);
+    expect(shouldSkipStationary('stationary', 'transfer', false, false)).toBe(false);
   });
 
   it('stationary + intermediate + userIntentDeclared=true → bypass (ADR-014 동급 보장)', () => {
-    expect(shouldSkipStationary('stationary', 'intermediate', true)).toBe(false);
+    expect(shouldSkipStationary('stationary', 'intermediate', true, false)).toBe(false);
   });
 
   it('stationary + intermediate + userIntentDeclared=false → skip', () => {
-    expect(shouldSkipStationary('stationary', 'intermediate', false)).toBe(true);
+    expect(shouldSkipStationary('stationary', 'intermediate', false, false)).toBe(true);
+  });
+
+  // #2321 (O1-B) — device sync stale 시 motionState 신뢰 불가 → skip하지 않음(조건부 완화).
+  it('stationary + intermediate + deviceSyncStale=true → bypass (#2321)', () => {
+    expect(shouldSkipStationary('stationary', 'intermediate', false, true)).toBe(false);
   });
 });
 

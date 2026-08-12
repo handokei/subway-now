@@ -54,6 +54,7 @@ import {
 } from './advanceTripPosition';
 import {
   deleteSsot,
+  isDeviceSyncStale,
   readSsot,
   seedSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
@@ -347,16 +348,25 @@ export function recordDestinationCrossCheck(
  *
  * motionState='unknown' 또는 SSoT null → skip하지 않음 (backward-compat, 평가 유지).
  *
+ * #2321 (O1-B) — `deviceSyncStale=true`(device sync 5분+ 무갱신, `isDeviceSyncStale`)이면
+ * motionState 신호 자체가 suspend 직전 값에 고정된 stale 신호일 수 있어 skip하지 않는다
+ * (배터리 절감보다 backend 자율 전진 우선 — #2306 RCA, 25분 suspend 4역+목적지 알림 0건 재발
+ * 차단). device sync가 신선하면 기존 V8d 배터리 절감 동작 그대로 유지(무회귀).
+ *
  * @returns true = skip, false = 평가 계속
  */
 export function shouldSkipStationary(
   motionState: 'moving' | 'stationary' | 'unknown',
   waypointKind: Waypoint['kind'],
   userIntentDeclared: boolean,
+  deviceSyncStale: boolean,
 ): boolean {
   if (motionState !== 'stationary') return false;
   // ADR-014 §사용자 명시 의향 trip — 동급 보장. 정지 중이어도 skip X.
   if (userIntentDeclared) return false;
+  // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 arvlCd ground truth
+  // 평가를 계속 진행(조건부 완화, V8d 전면 제거 아님).
+  if (deviceSyncStale) return false;
   // destination/transfer — 항상 bypass. ETA 신선도를 알 수 없어 skip하면 도착 알림 누락 위험.
   // intermediate만 skip 대상 (Seoul API call + push 절감 대상).
   if (waypointKind === 'destination' || waypointKind === 'transfer') return false;
@@ -1274,6 +1284,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           stationarySsot.motionState,
           waypoint.kind,
           stationarySsot.userIntentDeclared,
+          // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 평가 계속.
+          isDeviceSyncStale(stationarySsot, now),
         )
       ) {
         stats.lifecycleStationarySkipped += 1;
@@ -2314,11 +2326,16 @@ export async function fireArvlCdStationPush(
   // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
   // transferDestinationGate (60s) 보다 보수적이지만 intermediate 까지 보호. lazy-seed (==0) 통과.
   // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
+  //
+  // #2321 (O1-B) — device sync stale일 때는 본 가드도 dormant 전환. 정상 흐름에서는 본 함수
+  // 호출 직전 advanceTripPosition이 이미 lastAdvanceAt을 방금 갱신해 staleMs≈0이 되므로
+  // 무영향이지만, defense-in-depth로 게이트 #1~#3과 동일 staleness 정책을 명시적으로 정합시킨다.
   const ssotForStale = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
   if (
     ssotForStale !== null &&
+    !isDeviceSyncStale(ssotForStale, now) &&
     ssotForStale.lastAdvanceAt > 0 &&
     now - ssotForStale.lastAdvanceAt > STALE_LOCK_FIRE_THRESHOLD_MS
   ) {
@@ -2617,7 +2634,10 @@ async function tryAdvanceAndFireArvlcd(inputs: {
   // 직전 1 hop 인지 (2) 마지막 advance 가 60s 이내 신선한지 확인. intermediate kind는 본 게이트
   // 우회 — T4/T5 6단 게이트만으로 충분. 정지 trip "환승임박 건대입구" false fire(N9) 차단.
   if (isTransferOrDestination(waypoint)) {
-    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now);
+    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
+      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
+      deviceSyncStale: isDeviceSyncStale(ssot, now),
+    });
     if (!transferGate.pass) {
       stats.arvlCdFireBlocked += 1;
       stats.transferDestinationGateBlocked += 1;
@@ -2819,7 +2839,10 @@ export async function fireVanishFallbackStationPush(
   // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 일관성 검증.
   // SSoT 부재 trip(legacy)은 본 게이트 통과시켜 기존 vanish-fallback 흐름 유지 — graceful.
   if (ssot !== null && isTransferOrDestination(waypoint)) {
-    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now);
+    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
+      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
+      deviceSyncStale: isDeviceSyncStale(ssot, now),
+    });
     if (!transferGate.pass) {
       stats.transferDestinationGateBlocked += 1;
       log(`${logPrefix}: transfer/destination gate blocked`, {

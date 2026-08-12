@@ -61,6 +61,7 @@ import type { ArrivalEntry, PositionEntry } from './seoul';
 import {
   appendAlarmEvent,
   computeAlarmId,
+  isDeviceSyncStale,
   isSameLockSuggestion,
   MOTION_EVIDENCE_CAP,
   readSsot,
@@ -402,7 +403,16 @@ export async function advanceTripPosition(
   const lock = pickActiveLock(trip, evidence.ts);
 
   // #2 Motion 게이트 — userIntentDeclared trip은 명시 의향이므로 통과 (P8 acceptance).
-  if (ssot.motionState === 'stationary' && !ssot.userIntentDeclared) {
+  //
+  // #2321 (O1-B) — device sync stale(`lastDeviceSyncAt` 5분 초과 무갱신) + arvlcd-confirmed-train
+  // evidence(lock trainCode 일치, 게이트 #5가 별도로 재검증)인 cycle은 motionState 신호 자체를
+  // 신뢰하지 않는다. suspend 직전 값에 영구 고정된 stale motionState가 backend 자율 전진까지
+  // 동결시키던 회귀(#2306 RCA)를 차단 — arvlCd ground truth로만 dormant 전환, 다른 evidence
+  // type(예: arvlcd-lockless, position-train)은 기존 게이트 그대로 유지(스코프: trainCode 보유
+  // leg 자율 전진만, 환승 후 leg는 범위 밖).
+  const deviceSyncStaleBypass =
+    isDeviceSyncStale(ssot, evidence.ts) && evidence.type === 'arvlcd-confirmed-train';
+  if (ssot.motionState === 'stationary' && !ssot.userIntentDeclared && !deviceSyncStaleBypass) {
     return { result: 'blocked', blockReason: 'motion-stationary', ssot };
   }
 
@@ -497,7 +507,7 @@ export async function advanceTripPosition(
     alarmEvents: ssot.alarmEvents ? [...ssot.alarmEvents] : [],
     // #1705 — advance 시 현재 waypoint 노선으로 갱신 (cross-line confusion 차단).
     ...(candidateLine !== undefined ? { currentStationLine: candidateLine } : {}),
-    schemaVersion: 2,
+    schemaVersion: 3,
   };
 
   applyLockSuggestion(next, ssot, {

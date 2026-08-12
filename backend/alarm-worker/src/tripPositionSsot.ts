@@ -242,16 +242,62 @@ export interface TripPositionSSoT {
    */
   currentStationLine?: string;
   /**
+   * #2321 (O1-B) — device가 마지막으로 backend에 신호를 보낸 시각 (epoch ms). `POST /position`
+   * 수신부(`updateSsotMotion`)가 매 호출마다 stamp한다.
+   *
+   * 배경: motionState/lastAdvanceAt 기반 게이트(cron stationary skip, motion 게이트,
+   * transfer/destination 신선도, stale SSoT fire guard)가 전부 "device가 최근에 신호를 보냈다"는
+   * 암묵 전제로 설계돼 있었다 — 앱 suspend로 device가 수 분~수십 분 침묵하면 motionState가
+   * suspend 직전 값에 영구 고정된 채 게이트가 계속 그 값을 신뢰해 backend 자율 전진(arvlCd ground
+   * truth)까지 함께 동결되는 회귀(#2306 RCA, 2026-08-12 저녁 25분 suspend 4역+목적지 알림 0건)가
+   * 있었다. 본 필드로 각 게이트가 "이 motionState/lastAdvanceAt 신호가 여전히 신뢰 가능한가"를
+   * 판단해, stale일 때만 arvlCd trainCode ground truth로 dormant 전환한다 (`isDeviceSyncStale`).
+   *
+   * 구 backend 호환을 위해 optional — v2 이하 row 또는 seed 직후 미stamp 상태는 undefined.
+   * undefined는 "legacy/미상"으로 다뤄 기존 게이트 동작을 그대로 유지한다(부재 시 dormant —
+   * 다른 optional SSoT 필드와 동일 backward-compat 정책).
+   */
+  lastDeviceSyncAt?: number;
+  /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.
    * v2: currentStationLine 추가 (#1705).
+   * v3: lastDeviceSyncAt 추가 (#2321).
    */
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
 }
 
 /** SSOT KV key 생성. */
 export function ssotKey(token: string): string {
   return `${SSOT_PREFIX}${token}`;
+}
+
+/**
+ * #2321 (O1-B) — device sync staleness 임계 (ms). `lastDeviceSyncAt`이 이 값보다 오래되면
+ * motionState/lastAdvanceAt 기반 게이트가 더 이상 신뢰할 수 없는 신호로 판정하고 arvlCd
+ * trainCode ground truth 경로로 dormant 전환한다.
+ *
+ * 5분 — 기존 코드베이스의 신선도 임계 관례(`DESTINATION_GPS_STALE_THRESHOLD_MS`,
+ * `LA_STALE_AUTO_END_MS`, `SIGNAL_STALE_MS`, `STATE_STALE_THRESHOLD_MS` 모두 5분)와 정합.
+ * cron 60s nominal interval 대비 충분히 여러 cycle 여유(false staleness 오탐 방지)를 두면서,
+ * #2306 evidence(25분 suspend)보다는 훨씬 짧게 잡아 실제 침묵을 놓치지 않는다.
+ */
+export const DEVICE_SYNC_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * #2321 (O1-B) — SSoT.lastDeviceSyncAt이 stale(임계 초과)한지 판정.
+ *
+ * `lastDeviceSyncAt` 부재(구 row / seed 직후 미stamp)는 "legacy/미상"으로 다뤄 false 반환
+ * (dormant — 기존 게이트 동작 그대로 유지, backward-compat). 단순 신호 부재만으로 즉시
+ * fallback 경로를 트는 것을 막아 트립 등록 직후 race를 방지한다.
+ */
+export function isDeviceSyncStale(
+  ssot: Pick<TripPositionSSoT, 'lastDeviceSyncAt'>,
+  now: number,
+  thresholdMs: number = DEVICE_SYNC_STALE_THRESHOLD_MS,
+): boolean {
+  if (ssot.lastDeviceSyncAt === undefined) return false;
+  return now - ssot.lastDeviceSyncAt > thresholdMs;
 }
 
 /**
@@ -344,7 +390,7 @@ export async function seedSsot(
     alarmEvents: [],
     // #1705 — line 지정 시 currentStationLine 박제 (cross-line confusion 차단).
     ...(options?.line !== undefined ? { currentStationLine: options.line } : {}),
-    schemaVersion: 2,
+    schemaVersion: 3,
   };
   await writeSsot(kv, ssot, { expiresAt: options?.expiresAt });
   return ssot;

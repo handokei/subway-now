@@ -117,17 +117,24 @@ export function isSsotAdvanceRecent(
  * @param waypoint 발사 후보 waypoint. kind가 transfer/destination 아닌 경우 caller가 본 함수를
  *                 호출하지 않는다 (intermediate는 통과 정책).
  * @param now epoch ms.
+ * @param options.deviceSyncStale #2321 (O1-B) — device sync stale(`isDeviceSyncStale`) 시 60s
+ *   신선도 검사(`isSsotAdvanceRecent`)를 dormant 전환한다. 이 60s 임계는 "정지 trip이 cron
+ *   wake-up만으로 시간 적분 도달"하는 false advance를 막기 위함(N9 회귀)이지, device가 정상
+ *   suspend로 침묵한 사이 backend가 arvlCd ground truth로 자율 전진한 advance까지 stale 취급할
+ *   의도는 아니었다 (#2306 RCA). `isAtOrApproachingTransferDestination`(position 일치)은
+ *   staleness와 무관한 별도 안전장치로 그대로 유지.
  */
 export function evaluateTransferDestinationGate(
   ssot: Pick<TripPositionSSoT, 'currentStationId' | 'lastAdvanceAt'>,
   trip: Pick<Trip, 'passedStations'>,
   waypoint: Pick<Waypoint, 'stationName' | 'kind'>,
   now: number,
+  options?: { deviceSyncStale?: boolean },
 ): TransferDestinationGateOutcome {
   if (!isAtOrApproachingTransferDestination(ssot, trip, waypoint)) {
     return { pass: false, blockReason: 'ssot-not-at-or-approaching' };
   }
-  if (!isSsotAdvanceRecent(ssot, now)) {
+  if (!options?.deviceSyncStale && !isSsotAdvanceRecent(ssot, now)) {
     return { pass: false, blockReason: 'ssot-stale' };
   }
   return { pass: true };
