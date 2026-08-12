@@ -388,6 +388,12 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
   if (entry.kind === 'display-demote') {
     return `${time} | ${entry.reason} | ${entry.stationName}(${entry.line})`;
   }
+  // #2307 — backend-ssot mirror line guard 거부 이벤트. device 확정 노선 vs mirror line 대조.
+  if (entry.kind === 'ssot-line-guard-reject') {
+    const mirror = `${entry.mirrorStationName}(${entry.mirrorLine})`;
+    const device = `${entry.deviceStationName}(${entry.deviceLine})`;
+    return `${time} | ssot-line-guard-reject | mirror=${mirror} device=${device}`;
+  }
   // #1902 (RC-18) — candidate-reject 분기는 candidateRejectBuffer로 이전(별 buffer + 별 섹션).
   // #1896 (RC-8) — boarding-lock-drift 분기는 boardingLockDriftBuffer로 이전(별 buffer + 별 섹션).
   // fusion 분기는 fusion decision entry만 처리한다.

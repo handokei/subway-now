@@ -1140,8 +1140,15 @@ export function useFusedNearestStation(
   //      같은 line 내 다른 station(backend가 한 정거장 앞을 안다고 판단하는 케이스)은 기존대로
   //      허용 — 본 가드는 cross-line false override만 차단한다(노선 하드코딩 없이 값 비교만).
   const ssotLineGuardRejectRef = useRef(0);
-  const ssotStation = useMemo<Station | null>(() => {
-    if (!backendSsotMirror) return null;
+  // #2307 — resolve 결과 + line-guard 거부 여부를 함께 산출. 거부 여부를 별도 값으로 노출해야
+  // 아래 dedup 효과(DebugModal Fusion log push)가 "line 불일치로 거부"와 "mirror 자체가 없음/
+  // 다른 사유로 resolve 실패"를 구분할 수 있다 (그렇지 않으면 무관한 null 전이도 push 대상이 됨).
+  const ssotGuardResult = useMemo<{
+    station: Station | null;
+    lineGuardRejected: boolean;
+    mirrorLine: LineNumber | null;
+  }>(() => {
+    if (!backendSsotMirror) return { station: null, lineGuardRejected: false, mirrorLine: null };
     let resolved: Station | null;
     if (boardingLock) {
       // lock 활성: lock.boardingLine으로 단일화 (기존 동작).
@@ -1161,16 +1168,43 @@ export function useFusedNearestStation(
       // currentStationLine 부재(legacy v1 mirror) 시 name-only fallback (기존 동작).
       resolved = findStationByName(backendSsotMirror.currentStationId);
     }
+    const mirrorLine = resolved?.line ?? null;
     if (
       resolved &&
       positionTrainResult &&
       resolved.line !== positionTrainResult.station.line
     ) {
       ssotLineGuardRejectRef.current += 1;
-      return null;
+      return { station: null, lineGuardRejected: true, mirrorLine };
     }
-    return resolved;
+    return { station: resolved, lineGuardRejected: false, mirrorLine };
   }, [backendSsotMirror, boardingLock, positionTrainResult]);
+  const ssotStation = ssotGuardResult.station;
+  // #2307 — DebugModal Fusion log 관측 채널. false→true 전환 시에만 push해 동일 mismatch가
+  // 지속되는 cycle(수 분)에 매번 재적재되어 fusionDebugBuffer 500 cap을 점령하는 것을 방지
+  // (#2125 display-demote와 동일 dedup 컨벤션).
+  const wasSsotLineGuardRejectedRef = useRef(false);
+  useEffect(() => {
+    if (
+      ssotGuardResult.lineGuardRejected &&
+      !wasSsotLineGuardRejectedRef.current &&
+      positionTrainResult &&
+      backendSsotMirror &&
+      // 타입 내로잉용 — lineGuardRejected=true는 항상 resolve 성공(mirrorLine non-null) 이후에만
+      // 설정되므로(위 ssotGuardResult useMemo) 실질적으로 이 분기는 항상 통과한다.
+      ssotGuardResult.mirrorLine != null
+    ) {
+      pushFusionDebugEntry({
+        kind: 'ssot-line-guard-reject',
+        ts: Date.now(),
+        deviceStationName: positionTrainResult.station.name,
+        deviceLine: positionTrainResult.station.line,
+        mirrorStationName: backendSsotMirror.currentStationId,
+        mirrorLine: ssotGuardResult.mirrorLine,
+      });
+    }
+    wasSsotLineGuardRejectedRef.current = ssotGuardResult.lineGuardRejected;
+  }, [ssotGuardResult, positionTrainResult, backendSsotMirror]);
   const nowMsForSsot = Date.now();
   // #2261 (ADR-031 Phase 0) — freshness를 `lastAdvanceAt`(backend가 실제 advance한 시각) 대신
   // `receivedAt`(mirror가 device에 도달한 시각) 기준으로 재정의. lastAdvanceAt 기준은 지하·정지

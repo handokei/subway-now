@@ -53,6 +53,7 @@ import {
   makeBackendSsotMirrorEntry,
 } from '../../../../testUtils/backendSsotMirrorFixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
+import { getFusionDebugEntries, clearFusionDebugEntries } from '../../utils/fusionDebugBuffer';
 
 const mockNearest = useNearestStation as jest.Mock;
 const mockArrival = useArrivalInfo as jest.Mock;
@@ -90,10 +91,38 @@ describe('#2307 backend-ssot line guard — device 확정 노선과 mirror line 
     jest.clearAllMocks();
     jest.useFakeTimers();
     jest.setSystemTime(T0);
+    clearFusionDebugEntries();
   });
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('DebugModal Fusion log 채널로 ssot-line-guard-reject entry가 push된다 (dedup: 지속 mismatch는 1건만)', async () => {
+    setupPositionTrainAt(gangnam2, '2');
+    mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name }));
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.source).not.toBe('backend-ssot');
+    });
+    const entries = getFusionDebugEntries().filter((e) => e.kind === 'ssot-line-guard-reject');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'ssot-line-guard-reject',
+      deviceStationName: gangnam2.name,
+      deviceLine: '2',
+      mirrorStationName: yongmasan.name,
+      mirrorLine: '7',
+    });
+
+    // 다음 mirror read cycle에서도 동일 mismatch가 지속되면 재적재하지 않는다 (dedup).
+    mockRead.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name, receivedAt: T0 + 5_000 }),
+    );
+    await flushBackendSsotMirrorTick();
+    const entriesAfter = getFusionDebugEntries().filter((e) => e.kind === 'ssot-line-guard-reject');
+    expect(entriesAfter).toHaveLength(1);
   });
 
   it('device position-train이 2호선(강남) 확정 + mirror가 7호선(용마산) 주입 → line2 유지 (mirror 거부)', async () => {
