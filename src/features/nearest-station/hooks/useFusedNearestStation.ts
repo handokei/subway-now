@@ -298,6 +298,12 @@ interface UseFusedNearestStationReturn {
    * 1주 tier 분포(어떤 tier가 cascade 결정에 기여) acceptance 측정용.
    */
   fusionTierAdopted: FusionTierName;
+  /**
+   * #2307 — backend-ssot mirror가 device 확정 노선(positionTrainResult.station.line)과
+   * 다른 line을 가리켜 override가 거부된 누적 횟수. DebugModal/Sentry에서 backend re-anchor
+   * drift 빈도 측정용(세션 내 in-memory 카운트, mount마다 0으로 리셋).
+   */
+  ssotLineGuardRejectCount: number;
   /** #1418 — 지상 Tier 1 SSOT(GPS+Arrival) 합의 활성 여부. */
   surfaceSSOTActive: boolean;
   /** #1418 — 지하 Tier 1 SSOT(WiFi/Position-Train + Arrival) 합의 활성 여부. */
@@ -1126,27 +1132,79 @@ export function useFusedNearestStation(
   //      cascade 채택 시 사용자 실제 위치를 뒤덮을 risk가 있어 자연 fallback.
   //   3. 노선 가드 — lock 활성 시 resolved station이 lock.boardingLine과 일치해야 채택.
   //      lockless trip은 노선 가드 없이 backend가 advance한 station을 신뢰(보조 cross-check 없음).
-  const ssotStation = useMemo<Station | null>(() => {
-    if (!backendSsotMirror) return null;
+  //   4. #2307 — device 확정 노선 가드 (ADR-010 device self-contained). device의
+  //      positionTrainResult(distance/arc/forward 게이트를 이미 통과한 live 확정 신호)가 존재하고
+  //      resolve된 mirror station의 line과 다르면 override를 거부한다. 2026-08-12 아침 evidence:
+  //      device가 2호선 주행 중(position-train 확정)인데 backend가 7호선 route로 re-anchor →
+  //      기존 코드는 line 정합 검증 없이 mirror를 그대로 채택해 헤더·리스트가 되감겼다.
+  //      같은 line 내 다른 station(backend가 한 정거장 앞을 안다고 판단하는 케이스)은 기존대로
+  //      허용 — 본 가드는 cross-line false override만 차단한다(노선 하드코딩 없이 값 비교만).
+  const ssotLineGuardRejectRef = useRef(0);
+  // #2307 — resolve 결과 + line-guard 거부 여부를 함께 산출. 거부 여부를 별도 값으로 노출해야
+  // 아래 dedup 효과(DebugModal Fusion log push)가 "line 불일치로 거부"와 "mirror 자체가 없음/
+  // 다른 사유로 resolve 실패"를 구분할 수 있다 (그렇지 않으면 무관한 null 전이도 push 대상이 됨).
+  const ssotGuardResult = useMemo<{
+    station: Station | null;
+    lineGuardRejected: boolean;
+    mirrorLine: LineNumber | null;
+  }>(() => {
+    if (!backendSsotMirror) return { station: null, lineGuardRejected: false, mirrorLine: null };
+    let resolved: Station | null;
     if (boardingLock) {
       // lock 활성: lock.boardingLine으로 단일화 (기존 동작).
-      return findStationByNameAndLine(
+      resolved = findStationByNameAndLine(
         backendSsotMirror.currentStationId,
         boardingLock.boardingLine,
       );
-    }
-    // #1705 — lockless trip: backend가 forward한 currentStationLine이 있으면 line 정확 매칭.
-    // 동명 환승역(합정 2/6호선, 공덕 5/6호선 등) cross-line confusion 차단.
-    // currentStationLine 부재(legacy v1 mirror) 시 name-only fallback (기존 동작).
-    // cast: backend의 Waypoint.line 어휘는 device LineNumber union과 동일 값 집합.
-    if (backendSsotMirror.currentStationLine !== undefined) {
-      return findStationByNameAndLine(
+    } else if (backendSsotMirror.currentStationLine !== undefined) {
+      // #1705 — lockless trip: backend가 forward한 currentStationLine이 있으면 line 정확 매칭.
+      // 동명 환승역(합정 2/6호선, 공덕 5/6호선 등) cross-line confusion 차단.
+      // cast: backend의 Waypoint.line 어휘는 device LineNumber union과 동일 값 집합.
+      resolved = findStationByNameAndLine(
         backendSsotMirror.currentStationId,
         backendSsotMirror.currentStationLine as LineNumber,
       );
+    } else {
+      // currentStationLine 부재(legacy v1 mirror) 시 name-only fallback (기존 동작).
+      resolved = findStationByName(backendSsotMirror.currentStationId);
     }
-    return findStationByName(backendSsotMirror.currentStationId);
-  }, [backendSsotMirror, boardingLock]);
+    const mirrorLine = resolved?.line ?? null;
+    if (
+      resolved &&
+      positionTrainResult &&
+      resolved.line !== positionTrainResult.station.line
+    ) {
+      ssotLineGuardRejectRef.current += 1;
+      return { station: null, lineGuardRejected: true, mirrorLine };
+    }
+    return { station: resolved, lineGuardRejected: false, mirrorLine };
+  }, [backendSsotMirror, boardingLock, positionTrainResult]);
+  const ssotStation = ssotGuardResult.station;
+  // #2307 — DebugModal Fusion log 관측 채널. false→true 전환 시에만 push해 동일 mismatch가
+  // 지속되는 cycle(수 분)에 매번 재적재되어 fusionDebugBuffer 500 cap을 점령하는 것을 방지
+  // (#2125 display-demote와 동일 dedup 컨벤션).
+  const wasSsotLineGuardRejectedRef = useRef(false);
+  useEffect(() => {
+    if (
+      ssotGuardResult.lineGuardRejected &&
+      !wasSsotLineGuardRejectedRef.current &&
+      positionTrainResult &&
+      backendSsotMirror &&
+      // 타입 내로잉용 — lineGuardRejected=true는 항상 resolve 성공(mirrorLine non-null) 이후에만
+      // 설정되므로(위 ssotGuardResult useMemo) 실질적으로 이 분기는 항상 통과한다.
+      ssotGuardResult.mirrorLine != null
+    ) {
+      pushFusionDebugEntry({
+        kind: 'ssot-line-guard-reject',
+        ts: Date.now(),
+        deviceStationName: positionTrainResult.station.name,
+        deviceLine: positionTrainResult.station.line,
+        mirrorStationName: backendSsotMirror.currentStationId,
+        mirrorLine: ssotGuardResult.mirrorLine,
+      });
+    }
+    wasSsotLineGuardRejectedRef.current = ssotGuardResult.lineGuardRejected;
+  }, [ssotGuardResult, positionTrainResult, backendSsotMirror]);
   const nowMsForSsot = Date.now();
   // #2261 (ADR-031 Phase 0) — freshness를 `lastAdvanceAt`(backend가 실제 advance한 시각) 대신
   // `receivedAt`(mirror가 device에 도달한 시각) 기준으로 재정의. lastAdvanceAt 기준은 지하·정지
@@ -2323,6 +2381,7 @@ export function useFusedNearestStation(
     environmentHintReason: environmentResult.hintReason,
     // #1936 — cascade picker가 채택한 tier 이름 (DebugModal + Sentry tier 분포 측정 SSOT).
     fusionTierAdopted: adoptedTier,
+    ssotLineGuardRejectCount: ssotLineGuardRejectRef.current,
     surfaceSSOTActive: surfaceSSOT !== null,
     undergroundSSOTActive: undergroundSSOT !== null,
     // #1421 — DebugModal Auto-lock 측정 섹션이 SSOT 객체를 inferAutoLockCandidate에 직접 전달.

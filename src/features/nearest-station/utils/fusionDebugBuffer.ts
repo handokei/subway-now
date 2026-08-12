@@ -1,4 +1,5 @@
 import type { FusionConfidence, FusionSource } from './pickFusedStation';
+import type { LineNumber } from '../../../shared/types/station';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 
 // 측정 인프라(#443): fusion 결정/GPS fix 이벤트를 in-memory ring buffer에 보관.
@@ -121,11 +122,33 @@ export interface DisplayDemoteEntry {
   line: string;
 }
 
+/**
+ * #2307 — backend-ssot mirror line guard 거부 이벤트. device 확정 노선(positionTrainResult)과
+ * mirror가 resolve한 station의 line이 달라 override가 거부됐을 때 1건 push(dedup: false→true
+ * 전환 시에만 — 동일 mismatch 지속 cycle에서 buffer 점령 방지, #2125 display-demote와 동일 컨벤션).
+ * ADR-010 device self-contained 원칙 위반 시도(backend re-anchor drift)를 사후 재구성하기 위한
+ * 관측 채널 — fire/알람 경로는 본 entry를 읽지 않는다.
+ */
+export interface SsotLineGuardRejectEntry {
+  kind: 'ssot-line-guard-reject';
+  ts: number;
+  /** device가 확정한 현재 station/line (positionTrainResult). */
+  deviceStationName: string;
+  deviceLine: LineNumber;
+  /**
+   * 거부된 backend mirror의 station/line. push 시점에 이미 resolve된 station의 line이므로
+   * (거부는 resolve 성공 후 line mismatch 판정에서만 발생) 항상 non-null.
+   */
+  mirrorStationName: string;
+  mirrorLine: LineNumber;
+}
+
 export type FusionDebugEntry =
   | FusionDecisionEntry
   | GpsFixEntry
   | StickyStationEntry
-  | DisplayDemoteEntry;
+  | DisplayDemoteEntry
+  | SsotLineGuardRejectEntry;
 
 const db = createDebugBuffer<FusionDebugEntry>(FUSION_DEBUG_BUFFER_CAPACITY);
 

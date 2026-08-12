@@ -2148,6 +2148,27 @@ describe('DebugModal fusion log section', () => {
     expect(entries[0].props.children).toContain('용마산(7)');
   });
 
+  // #2307 — backend-ssot mirror line guard 거부 entry (kind: 'ssot-line-guard-reject') 포맷 가드.
+  it('ssot-line-guard-reject entry를 mirror/device station(line) 포맷으로 노출한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    act(() => {
+      pushFusionDebugEntry({
+        kind: 'ssot-line-guard-reject',
+        ts: new Date('2026-08-12T07:42:00Z').getTime(),
+        deviceStationName: '뚝섬',
+        deviceLine: '2',
+        mirrorStationName: '중곡',
+        mirrorLine: '7',
+      });
+    });
+    expect(screen.getByText('Fusion log (1)')).toBeTruthy();
+    const entries = screen.getAllByTestId('debug-fusion-log-entry');
+    expect(entries[0].props.children).toContain('ssot-line-guard-reject');
+    expect(entries[0].props.children).toContain('mirror=중곡(7)');
+    expect(entries[0].props.children).toContain('device=뚝섬(2)');
+  });
+
   it('Clear 버튼이 fusion 로그를 비운다', async () => {
     pushFusionDebugEntry({
       kind: 'gps',
