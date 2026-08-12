@@ -1,8 +1,9 @@
 # ADR-031 — fire/SSoT 아키텍처 대규모 트래픽 재설계 (글로벌 cron → per-trip DO + SSoT transport 재정의)
 
-- **Status**: Proposed. Phase 0(저위험, DO 없음)부터 tracer-bullet.
+- **Status**: Proposed. Phase 0(저위험, DO 없음)부터 tracer-bullet. **2026-08-13 개정**: Phase 2를 2a/2b로 분리(아래 Migration 참조) — #2306 RCA(OS suspend, 지하 leg 알림 25분 전멸)로 O1(backend 자율 전진 + alert push 직접 발사)이 근본 축으로 채택되어 2a는 shadow 무관 즉시 착수, DO cutover(2b)는 기존 hard-gate 유지.
 - **Supersedes(부분)**: 순수-silent SSoT-forward 결정. **Builds on**: ADR-017/#1553(Backend Trip Position SSoT), ADR-026(단일 emitter, **불변**), ADR-023/#2063(silent→visible).
-- **분석**: 2026-08-09 silent-push deadlock RCA + 대규모 트래픽 요구.
+- **Supersedes ADR-032**: ADR-032(device-primary emitter, motion-gated fire)는 2026-08-12 spike 판정(CMMotionActivity 발사 게이트 확정 NO-GO, #2269)으로 설계 척추 붕괴 + 2026-08-13 O1 결정으로 **superseded/HOLD**. 상세는 ADR-032 Status 참조.
+- **분석**: 2026-08-09 silent-push deadlock RCA + 대규모 트래픽 요구. **2026-08-13**: #2306 RCA(WhileInUse + Low Power Mode + 지하 GPS/모션 델타 0 조합에서 OS가 위치 세션을 suspend, 독립 wake 채널 부재로 25분 침묵) — silent push deadlock과 별개로 backend 자율 전진의 필요성을 재확인.
 
 ---
 
@@ -57,8 +58,16 @@
 - `TripDO` + wrangler binding + `migrations[new_sqlite_classes]`. `POST /trips` dual-write(DO stub). cron authoritative, fire 변화 0.
 - Acceptance: DO state가 KV와 shadow-일치(비교 telemetry), 발사 delta 0. 롤백: DO 생성 flag off.
 
-### Phase 2 — fire를 DO alarm으로 (cohort cutover)
+### Phase 2a — cron 위 backend 자율 전진 + alert push 직접 발사 (2026-08-13 개정, shadow 무관 착수) ★
+- **배경**: #2306 RCA — WhileInUse + Low Power Mode + 지하(GPS/모션 델타 0)에서 OS가 위치 세션을 suspend. device-side 유일 backstop(#2178 pull-death-backstop)은 location tick에 편승해 host suspend 시 동반 사망. 지하 leg를 buffer하는 채널 = silent push(死, ADR-031 문제1) 또는 **backend 자율 전진뿐**.
+- **범위**: DO cutover 없이 **기존 글로벌 cron 위에서** (i) fire 게이트를 staleness-aware로 재기저(device 침묵 시에도 Seoul arrival API `arvlCd`로 위치 전진, #2321) (ii) 침묵/outage trip 생존 + 이중발사 audit(#2322) (iii) alert push를 device 개입 없이 backend가 직접 발사. Phase 0(SSoT pull/adoption)과 병행 가능, **Phase 1 shadow 상태와 무관하게 착수**.
+- 환승 후 leg는 본 phase 범위 밖(#2323, D1=D consensus 신규 설계 — 별도 결정 대기, 회귀 아님).
+- Acceptance: 다음 검증 탑승(잠금 leg 포함)에서 #2306류 침묵 알림 전멸 재발 0. PR 머지 ≠ close — 위 field verify 충족까지 open.
+- 롤백: per-trip/global flag로 staleness-aware 게이트 OFF → 기존 lock-active-only 게이트로 즉시 복귀.
+
+### Phase 2b — fire를 DO alarm으로 (cohort cutover, DO 필요)
 - register/position에서 `setAlarm(next fire)`. `alarm()`이 단일-trip fire(기존 함수 + #2230/#2243 게이트 재사용). cron은 DO-migrated trip fire skip(per-trip flag). cohort 롤아웃.
+- **Hard-gate 유지**: Phase 1의 DO-KV shadow-compare에서 divergence 0 관측 전까지 착수 금지(#2324). 2a와 달리 shadow 상태에 종속.
 - Acceptance: DO-fired trip이 cron baseline과 타이밍·dedup 일치. 롤백=flag를 cron으로.
 
 ### Phase 3 — 글로벌 cron 은퇴
