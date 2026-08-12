@@ -847,6 +847,19 @@ describe('#2319 lockless trip 환승 진행 시 legAdvance stamp', () => {
     expect(mockStampLegAdvance).not.toHaveBeenCalled();
   });
 
+  it('lock=null + currentStation이 환승역이 아닌 경유역(삼각지) → resolveTransferWaypoint 매칭 실패로 stampLegAdvance 미호출', () => {
+    const samgakji = findStationByNameAndLine('삼각지', '6') as Station;
+    renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakji,
+      }),
+    );
+    expect(mockStampLegAdvance).not.toHaveBeenCalled();
+  });
+
   it('lock=null + 환승역 유지 상태로 재렌더 → stampLegAdvance 중복 호출 없음', () => {
     const { rerender } = renderHook(
       (props: { currentStation: Station }) =>
