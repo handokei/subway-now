@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { prefetchArrival, useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
+import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
 import { pickAutoTrainCodeFromArrivals } from '../../alarm/utils/boardingPromptAutoLock';
 import {
   findActiveTransferContext,
@@ -91,11 +92,19 @@ export function useTransferTrainList({
   // #814 — context가 막 활성화된 순간(release: 사용자가 환승역에 도달해 다음 leg로 전환)
   // useArrivalInfo의 자연 polling 주기를 기다리지 않고 즉시 한 번 강제 fetch. cache가 비어
   // 있으면 첫 응답을 앞당기고, cache가 있어도 latest로 갱신해 stale 데이터 노출 시간을 줄인다.
+  //
+  // #2305 — 같은 활성화 전이(null→non-null)가 곧 fusion(lock+route+currentStation 합의)이
+  // 환승 waypoint 도달을 확정하는 지점이다. 이 사실을 `useLegAdvanceStore`에 durable stamp해
+  // 사용자 탭/hop-end 프롬프트 응답과 무관하게 `getApproachLine`이 다음 leg 노선을 유지하도록
+  // 한다. RCA(2026-08-12 건대입구 7→2 환승): transfer auto-lock(create:other)이 생성된 직후
+  // release되며 legAdvance stamp가 없어 route의 동결된 stopsToTransfer fallback으로 line이
+  // 구노선(7)으로 붕괴했다 — lock 생성/해제 여부와 무관한 이 지점이 유일한 durable 신호여야 한다.
   const prevContextActiveRef = useRef(false);
   useEffect(() => {
     const active = context !== null;
     if (active && !prevContextActiveRef.current) {
       refetch();
+      void useLegAdvanceStore.getState().stampLegAdvance(context.nextLine);
     }
     prevContextActiveRef.current = active;
   }, [context, refetch]);
