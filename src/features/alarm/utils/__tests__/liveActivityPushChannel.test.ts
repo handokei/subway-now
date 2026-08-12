@@ -292,6 +292,25 @@ describe('liveActivityPushChannel', () => {
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
     });
 
+    // #2310 — trip 종료(cleanup) 후 진행 중이던 backoff 재시도가 그대로 발화하면
+    // 이미 사라진 trip에 계속 register POST를 쏴 backend에 404 storm을 만든다.
+    // cleanup(teardown) 시 in-flight 재시도 루프도 함께 cancel되어야 한다.
+    it('trip cleanup 후 진행 중이던 register 재시도는 발화하지 않음', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken.mockResolvedValue({ ok: false, status: 503 });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      // 첫 호출 동기 발사 — 실패 → 500ms backoff 대기 중
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+
+      // backoff 대기 중 trip이 종료됨(cleanup)
+      await endLiveActivityWithDeregister('trip-1');
+
+      // 대기하던 backoff가 지나도 재시도가 발화하면 안 된다
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+    });
+
     // 회귀 가드 — throw가 났을 때 lastStatus는 undefined로 reset되어 기본 backoff(500ms) 사용.
     // 404 backoff가 stale하게 다음 throw 시 적용되면 graceful 보장 깨짐.
     it('register throw 후 다음 attempt는 기본 500ms backoff (404 stale 안 됨)', async () => {
