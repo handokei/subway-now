@@ -7,6 +7,10 @@
  */
 import { triggerTripGroundTruthPrompt } from '../triggerTripGroundTruthPrompt';
 import { useTripGroundTruthStore } from '../../store/useTripGroundTruthStore';
+import {
+  logFiredAlarm,
+  _resetAccurateDestinationFireForTests,
+} from '../../../alarm/utils/alarmLog';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn().mockResolvedValue(null),
@@ -21,6 +25,7 @@ describe('triggerTripGroundTruthPrompt (#1502 M2 / #1597)', () => {
       pendingPrompt: null,
       responses: [],
     });
+    _resetAccurateDestinationFireForTests();
   });
 
   it('corrId가 null이면 prompt enqueue X (graceful skip)', async () => {
@@ -34,6 +39,44 @@ describe('triggerTripGroundTruthPrompt (#1502 M2 / #1597)', () => {
     expect(useTripGroundTruthStore.getState().pendingPrompt).toEqual({
       corrId: 'trip-abc',
       endedAt: 12345,
+    });
+  });
+
+  // #2309 — 07:46:09 destination imminent 발사(정확) → 3초 뒤 사용자 안내 종료 시 정답지
+  // 확정 창이 완료되지 못해 miss로 self-report되던 회귀. imminent fire는 fusion arrival-confirmed
+  // 신호이므로 trip 종료 즉시 수동 응답 없이 accurate로 확정돼야 한다.
+  it('#2309 — destination imminent 발사 직후(3초 내) user-delete 시 accurate로 즉시 확정, modal(prompt) 미노출', async () => {
+    jest.spyOn(Date, 'now').mockReturnValueOnce(1000); // fire 시각
+    logFiredAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '뚝섬' }, 'api');
+
+    jest.spyOn(Date, 'now').mockReturnValue(3000); // 3초 뒤 user-delete → trip end
+    await triggerTripGroundTruthPrompt('trip-2309');
+
+    const state = useTripGroundTruthStore.getState();
+    // 수동 응답 대기 modal이 뜨지 않아야 한다 — pendingPrompt는 null 그대로.
+    expect(state.pendingPrompt).toBeNull();
+    // 정답지는 이미 accurate 1건으로 확정 — alarmAccuracy(local) 1/1.
+    expect(state.responses).toEqual([
+      { corrId: 'trip-2309', endedAt: 3000, respondedAt: 3000, outcome: 'accurate' },
+    ]);
+  });
+
+  it('#2309 — 정확한 발사가 없었던 trip 종료는 기존과 동일하게 수동 prompt enqueue', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(4000);
+    await triggerTripGroundTruthPrompt('trip-no-fire');
+    const state = useTripGroundTruthStore.getState();
+    expect(state.pendingPrompt).toEqual({ corrId: 'trip-no-fire', endedAt: 4000 });
+    expect(state.responses).toEqual([]);
+  });
+
+  it('#2309 — destination 이외 kind(transfer) imminent 발사는 auto-confirm 대상 아님', async () => {
+    jest.spyOn(Date, 'now').mockReturnValueOnce(1000);
+    logFiredAlarm('fg', { phaseId: 'imminent', type: 'transfer', stationName: '건대입구' }, 'api');
+    jest.spyOn(Date, 'now').mockReturnValue(2000);
+    await triggerTripGroundTruthPrompt('trip-transfer-only');
+    expect(useTripGroundTruthStore.getState().pendingPrompt).toEqual({
+      corrId: 'trip-transfer-only',
+      endedAt: 2000,
     });
   });
 

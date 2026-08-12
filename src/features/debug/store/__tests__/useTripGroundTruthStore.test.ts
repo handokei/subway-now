@@ -174,6 +174,41 @@ describe('useTripGroundTruthStore (#1502 M2)', () => {
     });
   });
 
+  describe('recordAutoConfirmed (#2309)', () => {
+    it('pendingPrompt 없이 accurate 응답을 즉시 합류하고 persist한다', async () => {
+      jest.spyOn(Date, 'now').mockReturnValue(700);
+      await useTripGroundTruthStore.getState().recordAutoConfirmed('c-auto');
+      const state = useTripGroundTruthStore.getState();
+      expect(state.pendingPrompt).toBeNull();
+      expect(state.responses).toEqual([
+        { corrId: 'c-auto', endedAt: 700, respondedAt: 700, outcome: 'accurate' },
+      ]);
+      expect(mockSetItem).toHaveBeenCalledWith(TRIP_GROUND_TRUTH_KEY, expect.any(String));
+    });
+
+    it('logGroundTruthResult(corrId, accurate)를 forward한다', async () => {
+      await useTripGroundTruthStore.getState().recordAutoConfirmed('c-auto2');
+      expect(mockLogGroundTruthResult).toHaveBeenCalledWith({
+        corrId: 'c-auto2',
+        outcome: 'accurate',
+      });
+    });
+
+    it('기존 pendingPrompt가 있어도 그대로 보존한다 (별개 trip의 미응답 prompt 훼손 X)', async () => {
+      await useTripGroundTruthStore
+        .getState()
+        .enqueuePrompt({ corrId: 'other-trip', endedAt: 1 });
+      await useTripGroundTruthStore.getState().recordAutoConfirmed('c-auto3');
+      expect(useTripGroundTruthStore.getState().pendingPrompt).toEqual({
+        corrId: 'other-trip',
+        endedAt: 1,
+      });
+      expect(useTripGroundTruthStore.getState().responses).toEqual([
+        { corrId: 'c-auto3', endedAt: expect.any(Number), respondedAt: expect.any(Number), outcome: 'accurate' },
+      ]);
+    });
+  });
+
   describe('hydrate', () => {
     it('storage가 비어있으면 hydrated=true만 set', async () => {
       mockGetItem.mockResolvedValue(null);

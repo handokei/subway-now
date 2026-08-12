@@ -521,6 +521,35 @@ export function logFiredAlarm(
     phaseId: event.phaseId,
     trigger,
   });
+  // #2309 — destination imminent 발사는 fusion이 arrival을 확인(진입/도착 감지)해야만 나가는
+  // 신호다(useStationAlarm.ts `isImminentByArrivalCode` / stationPipeline.ts 동일 phase 게이트).
+  // 즉 이 fire 자체가 "정확했다"는 객관적 ground truth. 발사 직후 사용자가 바로 trip을 종료하면
+  // (안내 종료 → user-delete) 수동 정답지 prompt가 완료되지 못해 miss로 self-report되는 왜곡이
+  // 있었다 — trip 종료 시 이 flag를 소비해 수동 응답 없이 즉시 accurate로 확정한다
+  // (triggerTripGroundTruthPrompt 참고).
+  if (event.type === 'destination' && event.phaseId === 'imminent') {
+    accurateDestinationFired = true;
+  }
+}
+
+// #2309 — 직전 destination imminent 발사가 fusion arrival-confirmed였는지 나타내는 in-memory
+// flag. trip 1개당 활성 trip은 항상 최대 1개라 corrId 매칭 없이도 안전 — trip 종료 시
+// `consumeAccurateDestinationFire`가 읽고 즉시 리셋해 다음 trip으로 새지 않는다. 다른 in-memory
+// ledger(`fireAlarmOnce`)와 동일하게 AsyncStorage roundtrip 없이 앱 lifetime 동안만 유지.
+let accurateDestinationFired = false;
+
+/**
+ * #2309 — pending 상태의 accurate destination fire flag를 읽고 즉시 리셋한다.
+ * trip 종료 흐름(`triggerTripGroundTruthPrompt`)이 정답지 prompt를 enqueue하기 직전 1회 호출.
+ */
+export function consumeAccurateDestinationFire(): boolean {
+  const value = accurateDestinationFired;
+  accurateDestinationFired = false;
+  return value;
+}
+
+export function _resetAccurateDestinationFireForTests(): void {
+  accurateDestinationFired = false;
 }
 
 /**

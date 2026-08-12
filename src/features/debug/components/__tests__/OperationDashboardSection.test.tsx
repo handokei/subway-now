@@ -70,6 +70,7 @@ function setupStore(responses: { outcome: 'accurate' | 'inaccurate' | 'unanswere
     responses: mapped,
     enqueuePrompt: jest.fn(),
     respond: jest.fn(),
+    recordAutoConfirmed: jest.fn(),
     hydrate: jest.fn(),
   };
   mockUseTripGroundTruthStore.mockImplementation((selector: (s: TripGroundTruthState) => unknown) =>
