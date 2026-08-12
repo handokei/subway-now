@@ -49,20 +49,6 @@ export interface AutoLockCandidate {
   trainCode: string;
   line: string;
   subwayId: string;
-  /**
-   * W1 (#1271, Epic #1204 그룹 2) — backend가 본 candidate를 환승 leg swap evidence로
-   * 확정 발급했음을 표시. client는 `'transfer-swap'`이면 motion gate(#1014 RC2 Gate #2)를
-   * 우회해 사용자가 이미 이동 중이어도 hydrate 허용한다.
-   *
-   * 발급 조건(backend `applyBoardingLockTrainCodeSwap` 실제 swap 성공):
-   *   1) 기존 lock 존재
-   *   2) payload.trainCode 제공
-   *   3) trainCode 변경됨 (옛 != 신)
-   * 세 조건 모두 통과 = client가 새 trainCode를 관측한 신뢰 evidence.
-   *
-   * 미발급(undefined) = 기존 자동 lock / 명시 탭 / 단순 sync — motion gate 정상 적용.
-   */
-  from?: 'transfer-swap';
 }
 
 /**
