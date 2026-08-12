@@ -8,6 +8,11 @@
  */
 
 import { canonicalLineName } from './lineAlias';
+import {
+  parseTrainType,
+  parseTrainTypeFromDirectAt,
+  type TrainType,
+} from '../../../src/shared/constants/trainTypes';
 
 const UP_DIRECTION_VALUES = ['상행', '내선'] as const;
 const SEOUL_API_TZ_OFFSET = '+09:00';
@@ -34,6 +39,18 @@ export interface ArrivalEntry {
    * consensusGate strongBE 통과 X. real Seoul API entry 는 undefined / false.
    */
   synthesized?: boolean;
+  /**
+   * #2328 (consensus-B, 설계 SSoT #2323) — Seoul API `btrainSttus`(열차종류) 파싱.
+   * `legCandidateFilters.ts` 급행 정차 필터(④)의 입력. optional — 구 caller/테스트 fixture가
+   * 이 필드 없이 리터럴을 구성해도 컴파일 호환(#1720 `synthesized?`와 동일 정책).
+   */
+  trainType?: TrainType;
+  /**
+   * #2328 — Seoul API `trainLineNm`(행선지) 텍스트에서 추출한 순수 종착역명.
+   * `legCandidateFilters.ts` 지선 필터(③)의 입력. 이산 종점이 없는 순환선(내선/외선순환) 또는
+   * 인식 불가 포맷은 null.
+   */
+  terminus?: string | null;
 }
 
 export interface FetchSeoulOptions {
@@ -60,6 +77,10 @@ export interface PositionEntry {
   isUp: boolean;
   /** API 수신 시각 (epoch ms) — staleness 판정용. 누락 시 0. */
   recptnMs: number;
+  /** #2328 — realtimePosition API `directAt`(1:급행, 7:특급) 파싱. ArrivalEntry.trainType과 동일 정책. */
+  trainType?: TrainType;
+  /** #2328 — realtimePosition API `statnTnm`(종착역명, 이미 순수 역명) 파싱. 누락/빈 문자열은 null. */
+  terminus?: string | null;
 }
 
 interface PositionCacheEntry {
@@ -163,14 +184,41 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
   const updnLine = typeof item.updnLine === 'string' ? item.updnLine : '';
   const isUp = (UP_DIRECTION_VALUES as readonly string[]).includes(updnLine);
 
+  const trainLineNm = typeof item.trainLineNm === 'string' ? item.trainLineNm : '';
+
   return {
-    destination: typeof item.trainLineNm === 'string' ? item.trainLineNm : '',
+    destination: trainLineNm,
     arrivalSeconds: seconds,
     trainCode: typeof item.btrainNo === 'string' ? item.btrainNo : '',
     isUp,
     subwayNm: typeof item.subwayNm === 'string' ? item.subwayNm : '',
     arvlCd: parseArvlCd(item.arvlCd),
+    trainType: parseTrainType(item.btrainSttus),
+    terminus: parseTerminusStationName(trainLineNm),
   };
+}
+
+/**
+ * #2328 — Seoul API `trainLineNm`(행선지 텍스트, 예: "성수행"/"내선순환"/"장암방면")에서 순수
+ * 종착역명을 추출한다. 순환선(내선/외선순환)은 이산 종점이 없어 null. 인식 못하는 포맷도 null
+ * (보수적 — `legCandidateFilters.ts`가 정보 부재를 오판단하지 않도록 미상 처리).
+ *
+ * frontend `src/features/route/utils/trainLineDirection.ts:parseTrainLineDirection`과 동일
+ * 포맷 인식이지만 i18n/표시명 조회 없이 원본 역명만 반환한다 — `legDirection.ts`(#1719)와 동일
+ * backend-local 정책(frontend hook/i18n 의존 그래프를 끌어오지 않음).
+ */
+export function parseTerminusStationName(trainLineNm: string): string | null {
+  const trimmed = trainLineNm.trim();
+  if (trimmed === '내선순환' || trimmed === '외선순환') return null;
+  if (trimmed.endsWith('행')) {
+    const name = trimmed.slice(0, -1).trim();
+    return name.length > 0 ? name : null;
+  }
+  if (trimmed.endsWith('방면')) {
+    const name = trimmed.slice(0, -2).trim();
+    return name.length > 0 ? name : null;
+  }
+  return null;
 }
 
 function parsePositionEntry(raw: unknown): PositionEntry | null {
@@ -180,12 +228,15 @@ function parsePositionEntry(raw: unknown): PositionEntry | null {
   if (!trainCode) return null;
   const stationName = typeof item.statnNm === 'string' ? item.statnNm : '';
   const updnLine = typeof item.updnLine === 'string' ? item.updnLine : '';
+  const statnTnm = typeof item.statnTnm === 'string' ? item.statnTnm.trim() : '';
   return {
     trainCode,
     stationName,
     trainSttus: parseArvlCd(item.trainSttus),
     isUp: (UP_DIRECTION_VALUES as readonly string[]).includes(updnLine),
     recptnMs: parseRecptnDt(item.lastRecptnDt),
+    trainType: parseTrainTypeFromDirectAt(item.directAt),
+    terminus: statnTnm.length > 0 ? statnTnm : null,
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SeoulArrivalClient, parseRecptnDt } from '../seoul';
+import { SeoulArrivalClient, parseRecptnDt, parseTerminusStationName } from '../seoul';
 
 function makeResponse(body: unknown, ok = true, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -123,6 +123,75 @@ describe('SeoulArrivalClient', () => {
     expect(arrivals).toHaveLength(1);
   });
 
+  describe('#2328 — btrainSttus(급행) + trainLineNm(행선지) 파싱', () => {
+    it('parses btrainSttus into trainType', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimeArrivalList: [
+            makeItem({ btrainSttus: '급행' }),
+            makeItem({ btrainSttus: 'ITX' }),
+            makeItem({ btrainSttus: '특급' }),
+            makeItem({ btrainSttus: undefined }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const arrivals = await client.fetchArrivals('서울역');
+      expect(arrivals[0].trainType).toBe('express');
+      expect(arrivals[1].trainType).toBe('itx');
+      expect(arrivals[2].trainType).toBe('rapid');
+      expect(arrivals[3].trainType).toBe('normal');
+    });
+
+    it('parses trainLineNm into terminus station name', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimeArrivalList: [
+            makeItem({ trainLineNm: '성수행' }),
+            makeItem({ trainLineNm: '내선순환' }),
+            makeItem({ trainLineNm: '외선순환' }),
+            makeItem({ trainLineNm: '장암방면' }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const arrivals = await client.fetchArrivals('서울역');
+      expect(arrivals[0].terminus).toBe('성수');
+      expect(arrivals[1].terminus).toBeNull();
+      expect(arrivals[2].terminus).toBeNull();
+      expect(arrivals[3].terminus).toBe('장암');
+    });
+  });
+
+  describe('parseTerminusStationName', () => {
+    it('strips 행 suffix', () => {
+      expect(parseTerminusStationName('성수행')).toBe('성수');
+    });
+    it('strips 방면 suffix', () => {
+      expect(parseTerminusStationName('장암방면')).toBe('장암');
+    });
+    it('returns null for loop-line direction tokens', () => {
+      expect(parseTerminusStationName('내선순환')).toBeNull();
+      expect(parseTerminusStationName('외선순환')).toBeNull();
+    });
+    it('returns null for unrecognized formats', () => {
+      expect(parseTerminusStationName('')).toBeNull();
+      expect(parseTerminusStationName('알수없음')).toBeNull();
+      expect(parseTerminusStationName('행')).toBeNull();
+      expect(parseTerminusStationName('방면')).toBeNull();
+    });
+  });
+
   it('applies recptnDt drift correction and demotes stale data', async () => {
     const staleItem = makeItem({
       barvlDt: '120',
@@ -213,6 +282,31 @@ describe('SeoulArrivalClient', () => {
       expect(await client.fetchPositions('7')).toEqual([]);
       await client.fetchPositions('7');
       expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('#2328 — parses directAt(급행) + statnTnm(행선지) into trainType/terminus', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimePositionList: [
+            makePositionItem({ trainNo: '7246', directAt: '1', statnTnm: '장암' }),
+            makePositionItem({ trainNo: '7248', directAt: '7', statnTnm: '' }),
+            makePositionItem({ trainNo: '7250', directAt: '0' }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions[0].trainType).toBe('express');
+      expect(positions[0].terminus).toBe('장암');
+      expect(positions[1].trainType).toBe('rapid');
+      expect(positions[1].terminus).toBeNull();
+      expect(positions[2].trainType).toBe('normal');
+      expect(positions[2].terminus).toBeNull();
     });
 
     it('skips malformed items (null, no trainNo, non-object)', async () => {
