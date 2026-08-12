@@ -54,6 +54,14 @@ jest.mock('../../../alarm/store/useBoardingLockStore', () => {
   };
 });
 
+// #2305 — useLegAdvanceStore mock. context 활성화 전이 시 stampLegAdvance 호출 검증.
+const mockStampLegAdvance = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../alarm/store/useLegAdvanceStore', () => ({
+  useLegAdvanceStore: {
+    getState: () => ({ stampLegAdvance: mockStampLegAdvance }),
+  },
+}));
+
 const lock: BoardingLock = {
   destinationId: 'dest-X',
   trainCode: 'T-OLD',
@@ -714,6 +722,81 @@ describe('#2115 loading passthrough', () => {
     );
     expect(result.current.loading).toBe(false);
     expect(result.current.arrivals.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * #2305 — durable legAdvance stamp RCA 재현 테스트.
+ *
+ * RCA(2026-08-12 건대입구 7→2 환승 실기기): transfer auto-lock(create:other)이 생성된 직후
+ * release되면서, 그 순간까지 legAdvance stamp가 없어(#2278 stamp는 hop-end 프롬프트 응답
+ * 전용) `getApproachLine`이 route의 동결된 stopsToTransfer fallback으로 떨어져 리스트가
+ * 구노선(7호선)으로 붕괴했다. context 활성화(=fusion이 lock+route+currentStation으로 환승
+ * waypoint 도달을 확정하는 지점) 자체가 사용자 탭/프롬프트 응답과 무관한 durable 신호여야 한다.
+ */
+describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+  });
+
+  it('환승 waypoint 도달(context 활성화) → stampLegAdvance(nextLine) 호출 — lock 탭/프롬프트 응답과 무관', () => {
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockStampLegAdvance).toHaveBeenCalledWith('5');
+  });
+
+  it('환승역 도달 후 lock이 해제(null)되어도 이미 stamp된 legAdvance는 그대로 유지 — approachLine이 참조하는 store 값 불변', () => {
+    const { rerender } = renderHook(
+      (props: { lock: BoardingLock | null }) =>
+        useTransferTrainList({
+          lock: props.lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      { initialProps: { lock: lock as BoardingLock | null } },
+    );
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+    // lock 해제(RCA evidence: release:user) — context는 lock=null이라 즉시 비활성화되지만
+    // 이미 발생한 stamp 호출 자체(=durable 신호)는 취소되지 않는다.
+    rerender({ lock: null });
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+  });
+
+  it('context가 계속 활성 상태로 재렌더 되어도 stampLegAdvance 중복 호출 없음', () => {
+    const { rerender } = renderHook(
+      (props: { currentStation: Station }) =>
+        useTransferTrainList({
+          lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: props.currentStation,
+        }),
+      { initialProps: { currentStation: gondeokOn6 } },
+    );
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+    rerender({ currentStation: gondeokOn6 });
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+  });
+
+  it('context 미활성(currentStation=null) → stampLegAdvance 미호출', () => {
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: null,
+      }),
+    );
+    expect(mockStampLegAdvance).not.toHaveBeenCalled();
   });
 });
 
