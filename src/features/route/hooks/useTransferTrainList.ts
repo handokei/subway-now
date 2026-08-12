@@ -13,6 +13,7 @@ import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
 import { pickAutoTrainCodeFromArrivals } from '../../alarm/utils/boardingPromptAutoLock';
 import {
   findActiveTransferContext,
+  findLocklessTransferWaypoint,
   findUpcomingTransferPrefetch,
 } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
@@ -108,6 +109,28 @@ export function useTransferTrainList({
     }
     prevContextActiveRef.current = active;
   }, [context, refetch]);
+
+  // #2319 — lockless trip(=origin lock 자체가 없는 trip) 환승 진행 시 durable legAdvance stamp 갭.
+  // 위 effect는 `context`(lock-bound `findActiveTransferContext`)의 null→non-null 전이에서만
+  // 발화하므로 lock이 아예 없는 trip은 영원히 stamp되지 않는다 (#2318 선행 검증 판정, PR #2313
+  // Deviation 절). lock이 있으면 위 effect가 이미 stamp를 책임지므로(lock 존재 시 `context`가
+  // 동일 waypoint에서 활성화됨), 이 effect는 lock=null 상태에서만 lock-비종속 신호
+  // (`findLocklessTransferWaypoint`)로 같은 stamp를 보완 발화한다. arrivals/refetch/autoLock은
+  // 여전히 lock-bound `context`만 사용 — stamp 전용 보완 경로다.
+  const locklessWaypoint = useMemo(
+    () => (lock ? null : findLocklessTransferWaypoint(route, destinationName, currentStation)),
+    [lock, route, destinationName, currentStation],
+  );
+  const prevLocklessWaypointKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = locklessWaypoint
+      ? `${locklessWaypoint.transferStationInToLine.id}|${locklessWaypoint.nextLine}`
+      : null;
+    if (key && key !== prevLocklessWaypointKeyRef.current) {
+      void useLegAdvanceStore.getState().stampLegAdvance(locklessWaypoint!.nextLine);
+    }
+    prevLocklessWaypointKeyRef.current = key;
+  }, [locklessWaypoint]);
 
   const arrivals = useMemo<ArrivalInfo[]>(
     () => filterByDirection(arrival, context?.direction ?? null),
