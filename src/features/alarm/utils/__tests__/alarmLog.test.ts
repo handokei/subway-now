@@ -20,6 +20,8 @@ import {
   FIRED_ALARM_LOG_BUFFER_SIZE,
   type FiredAlarmLogEntry,
   logFiredAlarm,
+  consumeAccurateDestinationFire,
+  _resetAccurateDestinationFireForTests,
   logFiredStationPassed,
   logScheduledAlarm,
   logFiredAlarmsHydrate,
@@ -550,6 +552,32 @@ describe('alarmLog', () => {
         phaseId: event.phaseId,
       });
       expect(saved[0].ts).toBeGreaterThan(0);
+    });
+
+    // #2309 — destination imminent 발사(fusion arrival-confirmed 신호)는 accurate-fire flag를
+    // 세운다. trip 종료 시 triggerTripGroundTruthPrompt가 소비해 수동 정답지 없이 즉시 확정.
+    describe('consumeAccurateDestinationFire (#2309)', () => {
+      beforeEach(() => {
+        _resetAccurateDestinationFireForTests();
+      });
+
+      it('destination + imminent 발사 시 flag가 true로 세워지고 1회 소비 후 리셋된다', () => {
+        expect(consumeAccurateDestinationFire()).toBe(false);
+        logFiredAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '뚝섬' });
+        expect(consumeAccurateDestinationFire()).toBe(true);
+        // 소비 직후 리셋 — 다음 trip으로 새지 않는다.
+        expect(consumeAccurateDestinationFire()).toBe(false);
+      });
+
+      it('destination이라도 phase가 early면 flag를 세우지 않는다', () => {
+        logFiredAlarm('fg', event); // event = { phaseId: 'early', type: 'destination', ... }
+        expect(consumeAccurateDestinationFire()).toBe(false);
+      });
+
+      it('kind가 transfer/station-passed면 phaseId=imminent여도 flag를 세우지 않는다', () => {
+        logFiredAlarm('fg', { phaseId: 'imminent', type: 'transfer', stationName: '건대입구' });
+        expect(consumeAccurateDestinationFire()).toBe(false);
+      });
     });
 
     // #2122 (FG 보조 발사) — station-passed는 phase가 없어 logFiredAlarm(AlarmEvent 전용)을

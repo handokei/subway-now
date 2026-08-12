@@ -60,6 +60,12 @@ export interface TripGroundTruthState {
    * pendingPrompt 부재 시 graceful no-op (race 안전).
    */
   respond: (outcome: TripGroundTruthOutcome) => Promise<void>;
+  /**
+   * #2309 — trip 종료 시 destination imminent 발사가 fusion arrival-confirmed였던 trip을
+   * 수동 Yes/No 없이 즉시 'accurate'로 확정한다. pendingPrompt를 enqueue하지 않아 모달이
+   * 뜨지 않는다 — 발사 자체가 이미 객관적 hit 증거이므로 사용자에게 물을 필요가 없다.
+   */
+  recordAutoConfirmed: (corrId: string) => Promise<void>;
   /** AsyncStorage → memory hydrate. boot 1회. */
   hydrate: () => Promise<void>;
 }
@@ -131,6 +137,19 @@ export const useTripGroundTruthStore = create<TripGroundTruthState>((set, get) =
     // #1957 — 응답 1건을 alarmLog로 stamp해 backend algorithmAccuracyRatio metric의 원천 신호로
     // forward. AsyncStorage persist와 무관하게 best-effort (graceful, throw 없음).
     logGroundTruthResult({ corrId: pendingPrompt.corrId, outcome });
+  },
+
+  recordAutoConfirmed: async (corrId) => {
+    const { responses } = get();
+    const now = Date.now();
+    const nextResponses = trimResponses([
+      ...responses,
+      { corrId, endedAt: now, respondedAt: now, outcome: 'accurate' },
+    ]);
+    set({ responses: nextResponses });
+    await persist({ pendingPrompt: get().pendingPrompt, responses: nextResponses });
+    // #1957과 동일 — accurate 확정 1건을 alarmLog로 stamp해 backend algorithmAccuracyRatio에도 반영.
+    logGroundTruthResult({ corrId, outcome: 'accurate' });
   },
 
   hydrate: async () => {
