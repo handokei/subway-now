@@ -203,7 +203,7 @@ struct SubwayWidgetView: View {
     }
 
     // P4: 위젯 탭 시 앱 딥링크 — 현재역 상세 화면 진입.
-    private var deepLink: URL { URL(string: "subway-now://current-station")! }
+    private var deepLink: URL { URL(string: "subwaynow://current-station")! }
 
     var body: some View {
         // iOS 17+는 위젯이 containerBackground를 채택하지 않으면
