@@ -3,9 +3,11 @@ import * as sentryModule from '../sentry';
 import {
   app,
   applyBoardingLockTrainCodeSwap,
+  applyProgress,
   computeLockSyncAdvance,
   dualWriteTripDo,
   LOCK_TTL_REFRESH_MS,
+  resolveProgressWaypoints,
   validateBoardingLockSync,
   validateLiveActivityRegister,
   validatePushAck,
@@ -18,7 +20,7 @@ import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
 import { progressKey, type TripProgress } from '../progress';
 import { pendingKey, putPending, stampReceived } from '../pendingPushes';
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
-import type { AnalyticsEngineWriter, Env } from '../types';
+import type { AnalyticsEngineWriter, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 import { makeEmptyFakeR2 } from './helpers/r2Fixtures';
 
@@ -3616,6 +3618,123 @@ describe('POST /boarding-lock/sync (#901)', () => {
       );
       expect(res.status).toBe(200);
     });
+  });
+
+  // #2308 — hydrate-issued의 `line`은 lock.line이 아니라 head(현재 anchor waypoint)의 line이어야
+  // 한다. lock.line은 D4 trainCode swap(payload 기반) 타이밍에 갱신되는 반면 head는 이번 sync의
+  // advance 직후 값이라, 환승 직후 한 cycle 동안 두 값이 어긋나면(저녁 어린이대공원 line=2, 아침
+  // 뚝섬 line=7 evidence) hydrate가 실제 서 있는 역의 노선과 다른 값을 발행한다.
+  describe('hydrate-issued line은 leg-aware — head.line 사용 (#2308)', () => {
+    it('advance 후 head가 다른 line이어도 hydrate line은 head.line (lock.line이 아님)', async () => {
+      const env = makeKvEnv();
+      const bind = vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      env.DB = { prepare } as unknown as Env['DB'];
+      // 다중 노선 trip: waypoints[0]='강남'(2호선), waypoints[1]='역삼'(7호선, 환승 이후 leg).
+      // lock.line은 아직 스왑 전 '2'로 등록 — D4 swap이 이번 payload에 없으면 lock.line은 '2'로 남는다.
+      await post(
+        '/trips',
+        tripWithLock({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'transfer' },
+            { stationName: '역삼', line: '7', kind: 'destination' },
+          ],
+        }),
+        env,
+      );
+      // sync가 waypoints[0]='강남'과 일치 → advance 1 hop → head='역삼'(line=7).
+      // payload에 trainCode(D4 swap 트리거)가 없으므로 lock.line은 '2' 그대로 유지된다.
+      const res = await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const hydrateCall = bind.mock.calls.find((call) => call[2] === 'hydrate-issued');
+      expect(hydrateCall).toBeDefined();
+      // [tokenHash, ts, kind, station, line, meta] — index 3=station, 4=line.
+      expect(hydrateCall?.[3]).toBe('역삼');
+      expect(hydrateCall?.[4]).toBe('7'); // head.line — lock.line('2')이 아님.
+    });
+  });
+});
+
+// #2308 — applyProgress/resolveProgressWaypoints 단조 전진 불변식.
+// 아침 07:37~07:44 trip_events 되감김 재현: count 기반(shiftedCount) slice는 POST /trips 재등록
+// 사이 incoming.waypoints 시퀀스가 바뀌면(route 재계산) 유효 범위 안에서도 완전히 다른(구노선)
+// waypoint로 head를 재anchor한다. headHopIndex 기반 재식별이 이를 차단해야 한다.
+describe('resolveProgressWaypoints / applyProgress — 단조 전진 불변식 (#2308)', () => {
+  function wp(stationName: string, line: string, hopIndex: number): Trip['waypoints'][number] {
+    return { stationName, line, kind: 'intermediate', hopIndex };
+  }
+
+  // 이미 advance된 현재 진행분(2호선 계속 주행 중, 뚝섬이 head).
+  const base = [wp('뚝섬', '2', 1), wp('건대입구', '2', 2), wp('중곡', '7', 5)];
+
+  it(
+    'RED (fixed) — incoming이 되계산된 구노선(7호선) 재전송이라 headHopIndex(1)를 못 찾으면 ' +
+      'count(shiftedCount=1) 기반 slice로 잘못된 7호선 역(군자)에 재anchor하지 않고 base(뚝섬)를 보존한다',
+    () => {
+      // 기기가 recompute한 stale/구노선 route — 자체적으로 hopIndex 10..12로 fresh stamp됨
+      // (원본 시퀀스와 무관한 새 Dijkstra 산출, 값 자체가 원본과 겹치지 않는다).
+      // 실 progress.headHopIndex(=1, 원본 시퀀스의 '뚝섬')는 이 배열에 존재하지 않는다.
+      const incoming = [wp('어린이대공원', '7', 10), wp('군자', '7', 11), wp('중곡', '7', 12)];
+      const progress: TripProgress = { trainCode: 'T-1', shiftedCount: 1, headHopIndex: 1 };
+
+      const result = resolveProgressWaypoints(base, incoming, progress);
+
+      // 되감김 없음: base(뚝섬, 2호선)가 그대로 유지돼야 한다.
+      expect(result).toBe(base);
+      expect(result[0].stationName).toBe('뚝섬');
+      expect(result[0].line).toBe('2');
+    },
+  );
+
+  it('incoming에 headHopIndex가 존재하면(정상 route 연속) 그 지점부터 slice한다', () => {
+    // 같은 원본 시퀀스를 그대로 재전송(hopIndex 보존) — 정상 재등록 케이스.
+    const incoming = [wp('성수', '2', 0), wp('뚝섬', '2', 1), wp('건대입구', '2', 2), wp('중곡', '7', 5)];
+    const progress: TripProgress = { trainCode: 'T-1', shiftedCount: 1, headHopIndex: 1 };
+
+    const result = resolveProgressWaypoints(base, incoming, progress);
+
+    expect(result[0].stationName).toBe('뚝섬');
+    expect(result).toHaveLength(3);
+  });
+
+  it('headHopIndex 없는 legacy progress는 기존 count(shiftedCount) 기반 정책으로 fallback한다', () => {
+    const incoming = [wp('성수', '2', 0), wp('뚝섬', '2', 1), wp('건대입구', '2', 2)];
+    const progress: TripProgress = { trainCode: 'T-1', shiftedCount: 1 };
+
+    const result = resolveProgressWaypoints(base, incoming, progress);
+
+    expect(result[0].stationName).toBe('뚝섬');
+    expect(result).toHaveLength(2);
+  });
+
+  it('applyProgress가 resolveProgressWaypoints 결과를 waypoints에 반영하고 baseline은 progress SSOT를 따른다', () => {
+    const baseTrip = {
+      waypoints: base,
+    } as Trip;
+    const incoming = {
+      waypoints: [wp('어린이대공원', '7', 10), wp('군자', '7', 11), wp('중곡', '7', 12)],
+    } as Trip;
+    const progress: TripProgress = {
+      trainCode: 'T-1',
+      shiftedCount: 1,
+      headHopIndex: 1,
+      lastTrackedArrivalEpoch: 111,
+      lastLaPushEpoch: 222,
+      lastLaPushAt: 333,
+      consecutiveEtaMissing: 4,
+    };
+
+    const result = applyProgress(baseTrip, incoming, progress);
+
+    expect(result.waypoints[0].stationName).toBe('뚝섬'); // 되감김 없음.
+    expect(result.lastTrackedArrivalEpoch).toBe(111);
+    expect(result.lastLaPushEpoch).toBe(222);
+    expect(result.lastLaPushAt).toBe(333);
+    expect(result.consecutiveEtaMissing).toBe(4);
   });
 });
 
