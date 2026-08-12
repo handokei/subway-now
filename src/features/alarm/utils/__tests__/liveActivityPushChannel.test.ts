@@ -292,6 +292,64 @@ describe('liveActivityPushChannel', () => {
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
     });
 
+    // #2310 — trip 종료(cleanup) 후 진행 중이던 backoff 재시도가 그대로 발화하면
+    // 이미 사라진 trip에 계속 register POST를 쏴 backend에 404 storm을 만든다.
+    // cleanup(teardown) 시 in-flight 재시도 루프도 함께 cancel되어야 한다.
+    it('trip cleanup 후 진행 중이던 register 재시도는 발화하지 않음', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken.mockResolvedValue({ ok: false, status: 503 });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      // 첫 호출 동기 발사 — 실패 → 500ms backoff 대기 중
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+
+      // backoff 대기 중 trip이 종료됨(cleanup)
+      await endLiveActivityWithDeregister('trip-1');
+
+      // 대기하던 backoff가 지나도 재시도가 발화하면 안 된다
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+    });
+
+    // #2310 — 마지막(3번째) attempt가 진행 중일 때 trip이 종료되면, 그 attempt의
+    // 네트워크 응답이 돌아온 시점엔 이미 session.cancelled=true다. 이 경우 루프는
+    // attempt 3까지 이미 소진했으므로 loop-start cancel 체크(attempt 1~3 진입 시)는
+    // 전부 통과하고, "재시도 소진 — giving up" 로그만 스킵해야 한다(종료된 trip에
+    // 대한 불필요한 warn 로그 방지).
+    it('마지막 attempt 처리 중 trip cleanup되면 exhausted 로그 없이 조용히 종료', async () => {
+      const handle = setupListener();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      let callCount = 0;
+      mockRegisterLiveActivityToken.mockImplementation(async () => {
+        callCount += 1;
+        if (callCount === 3) {
+          // 3번째 attempt가 backend 응답을 기다리는 동안 trip이 종료됨(teardown).
+          void endLiveActivityWithDeregister('trip-1');
+        }
+        return { ok: false, status: 503 };
+      });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(500);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
+
+      // trip cleanup(endLiveActivityWithDeregister)이 완료됨 — subscription/backend 정리.
+      expect(handle.remove).toHaveBeenCalledTimes(1);
+      expect(mockClearLiveActivityToken).toHaveBeenCalledWith('trip-1');
+      // "재시도 소진 — giving up" 로그는 남기지 않는다 (cancelled 세션이라 이미 정리됨).
+      expect(
+        warnSpy.mock.calls.some((call) =>
+          call.some(
+            (arg) => typeof arg === 'string' && arg.includes('exhausted retries'),
+          ),
+        ),
+      ).toBe(false);
+      warnSpy.mockRestore();
+    });
+
     // 회귀 가드 — throw가 났을 때 lastStatus는 undefined로 reset되어 기본 backoff(500ms) 사용.
     // 404 backoff가 stale하게 다음 throw 시 적용되면 graceful 보장 깨짐.
     it('register throw 후 다음 attempt는 기본 500ms backoff (404 stale 안 됨)', async () => {

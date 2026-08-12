@@ -58,16 +58,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** LA 세션 단위 재시도 취소 플래그(#2310). teardown 시 in-flight 재시도 루프를 중단한다. */
+interface RetrySession {
+  cancelled: boolean;
+}
+
 /**
  * backend `registerLiveActivityToken`을 exponential backoff로 재시도(#1288).
  * 모든 시도 실패 시 silent log — caller(subscription 콜백)는 throw하지 않는다.
+ *
+ * trip이 cleanup(teardown)되면 `session.cancelled`가 true로 바뀐다(#2310) — 종료된 trip에
+ * 계속 register POST를 쏘는 404 storm을 막기 위해 매 attempt 전에 취소 여부를 확인한다.
  */
 async function registerWithRetry(
   tripToken: string,
   activityPushToken: string,
+  session: RetrySession,
 ): Promise<void> {
   let lastStatus: number | undefined;
   for (let attempt = 1; attempt <= REGISTER_RETRY_MAX_ATTEMPTS; attempt += 1) {
+    if (session.cancelled) {
+      log.info('LA register retry cancelled — trip ended');
+      return;
+    }
     try {
       const result = await registerLiveActivityToken(tripToken, activityPushToken);
       if (result.ok) return;
@@ -84,6 +97,7 @@ async function registerWithRetry(
       await sleep(base * 2 ** (attempt - 1));
     }
   }
+  if (session.cancelled) return;
   log.warn('LA register exhausted retries — giving up (will retry on next token emit)');
 }
 
@@ -103,6 +117,7 @@ export async function startLiveActivityWithRegistration(
   }
   activeTripToken = tripToken;
 
+  const session: RetrySession = { cancelled: false };
   let lastToken: string | null = null;
   let firstEmitTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -116,7 +131,7 @@ export async function startLiveActivityWithRegistration(
       return;
     }
     lastToken = event.token;
-    void registerWithRetry(tripToken, event.token);
+    void registerWithRetry(tripToken, event.token, session);
   });
 
   firstEmitTimer = setTimeout(() => {
@@ -126,6 +141,9 @@ export async function startLiveActivityWithRegistration(
   }, PUSH_TOKEN_FIRST_EMIT_TIMEOUT_MS);
 
   const teardown = (): void => {
+    // #2310 — 진행 중인 register 재시도 루프도 함께 cancel. 종료된 trip에 대한
+    // 404 storm(불필요 네트워크/배터리/로그 오염)을 막는다.
+    session.cancelled = true;
     subscription.remove();
     if (firstEmitTimer) {
       clearTimeout(firstEmitTimer);
