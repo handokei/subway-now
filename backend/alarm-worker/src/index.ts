@@ -1959,13 +1959,18 @@ app.post('/boarding-lock/sync', async (c) => {
     // #2283 — hydrate-issued 관측. autoLockCandidate를 device가 실제로 받아 lock state를
     // hydrate할 수 있는 응답임을 기록(sync-received/advance와 별도 kind — "발사됐는지"를 분리 관측).
     // #2283 리뷰 P2-2 — waitUntil로 스케줄.
+    // #2308 — line은 `boardingLock.line`이 아니라 `head.line`(현재 anchor waypoint의 leg)을 쓴다.
+    // lock.line은 D4 trainCode swap(payload 기반) 타이밍에 갱신되는 반면 head는 이번 cycle의
+    // advance 직후 값이라, 환승 직후 한 cycle 동안 두 값이 어긋나면(저녁 어린이대공원 line=2,
+    // 아침 뚝섬 line=7 evidence) hydrate가 실제 서 있는 역의 노선과 다른 값을 발행한다.
+    // head가 있으면 head.line(다중 노선 trip의 해당 leg 노선)을 SSOT로 쓴다.
     scheduleTripEvent(
       c,
       recordTripEvent(c.env.DB, {
         tokenHash,
         kind: 'hydrate-issued',
         station: head ? head.stationName : undefined,
-        line: working.boardingLock.line,
+        line: head ? head.line : working.boardingLock.line,
       }),
     );
   }
@@ -2154,6 +2159,9 @@ async function maybeMirrorLockSyncProgress(
   const next: TripProgress = {
     trainCode,
     shiftedCount: prevShifted + shiftedDelta,
+    // #2308 — head 정체성 anchor. count 대신 hopIndex로 재등록 시 slice해 route 재계산에도
+    // 단조 전진을 보장한다 (applyProgress 참고).
+    headHopIndex: trip.waypoints[0]?.hopIndex,
     lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
     lastLaPushEpoch: trip.lastLaPushEpoch,
     // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
@@ -2441,21 +2449,29 @@ export function isBoardingLockConsistentWithWaypoints(
 }
 
 /**
- * #705: progress KV에 기록된 shiftedCount/baseline을 incoming trip에 적용.
+ * #2308 — 단조 전진 불변식: progress에 기록된 head waypoint(`headHopIndex`)를 incoming
+ * waypoints 시퀀스에서 다시 찾아 그 지점부터 slice한다.
  *
- * - waypoints: `incoming.waypoints.slice(shiftedCount)`로 잘라 backend 진행분 반영
- *   (전부 소진된 경우는 호출부가 isSameSession 분기로 trip.waypoints를 보존하므로
- *    여기서 빈 배열로 깎이는 회귀가 발생하지 않음)
- * - baseline (lastTrackedArrivalEpoch, lastLaPushEpoch, consecutiveEtaMissing):
- *   progress가 더 최신 — POST race에 무관한 source of truth.
+ * `progress.shiftedCount`(카운트)만으로 slice하면, POST /trips 재등록 사이에 incoming의
+ * waypoints 시퀀스 자체가 바뀐 경우(route 재계산 / 환승 leg 재산출 / 기기가 origin부터 다시
+ * 산출한 full route 재전송 등) count는 유효 범위 안에 있어도 완전히 다른(구노선) waypoint를
+ * head로 재anchor한다 — 아침 07:37~07:44 trip_events 되감김(#2308 RCA) 재현 경로.
+ *
+ * `headHopIndex`는 waypoint의 원본 시퀀스 위치로 shift와 무관하게 불변(types.ts Waypoint.hopIndex
+ * 계약) — count 대신 이 값으로 incoming에서 "같은 waypoint"를 재식별하면 시퀀스가 바뀌어도 head
+ * 정체성이 보존된다. incoming에 해당 hopIndex가 없으면(진짜 다른 route로 재계산된 경우) count
+ * 기반 추정은 신뢰할 수 없으므로 slice를 포기하고 `base.waypoints`(이미 advance된 현재 진행분)를
+ * 그대로 보존한다 — 절대 뒤로 되감기지 않는다.
+ *
+ * `headHopIndex`가 없는 legacy progress(구 client / 구 progress 엔트리)는 기존 count 기반
+ * 정책으로 fallback해 하위호환을 유지한다.
  */
 export function applyProgress(
   base: Trip,
   incoming: Trip,
   progress: TripProgress,
 ): Trip {
-  const sliced = incoming.waypoints.slice(progress.shiftedCount);
-  const waypoints = sliced.length > 0 ? sliced : base.waypoints;
+  const waypoints = resolveProgressWaypoints(base.waypoints, incoming.waypoints, progress);
   return {
     ...base,
     waypoints,
@@ -2465,6 +2481,22 @@ export function applyProgress(
     lastLaPushAt: progress.lastLaPushAt,
     consecutiveEtaMissing: progress.consecutiveEtaMissing,
   };
+}
+
+export function resolveProgressWaypoints(
+  baseWaypoints: Trip['waypoints'],
+  incomingWaypoints: Trip['waypoints'],
+  progress: TripProgress,
+): Trip['waypoints'] {
+  if (progress.headHopIndex !== undefined) {
+    const idx = incomingWaypoints.findIndex((w) => w.hopIndex === progress.headHopIndex);
+    // #2308 — 단조 전진 불변식: 못 찾으면(route 시퀀스 자체가 다름) count로 추측 slice하지
+    // 않고 이미 advance된 base.waypoints를 그대로 유지 — 구노선 되감김 차단.
+    return idx >= 0 ? incomingWaypoints.slice(idx) : baseWaypoints;
+  }
+  // legacy fallback — headHopIndex 없는 구 progress 엔트리는 기존 count 기반 정책.
+  const sliced = incomingWaypoints.slice(progress.shiftedCount);
+  return sliced.length > 0 ? sliced : baseWaypoints;
 }
 
 export function validateTrip(input: unknown): Trip | null {

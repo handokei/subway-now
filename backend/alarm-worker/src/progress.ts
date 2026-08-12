@@ -31,6 +31,15 @@ export interface TripProgress {
   lockless?: true;
   /** advance로 shift한 waypoint 개수. POST의 incoming.waypoints에 slice(shiftedCount) 적용. */
   shiftedCount: number;
+  /**
+   * #2308 — advance 시점 head waypoint의 `hopIndex` (원본 시퀀스 0-based 위치, shift와 무관하게
+   * 불변). POST /trips 재등록 시 `incoming.waypoints`가 (route 재계산 등으로) shiftedCount 계산
+   * 당시와 다른 시퀀스라면 count 기반 slice가 엉뚱한 waypoint를 head로 재anchor한다(단조 전진
+   * 불변식 위반, 구노선 head 되감김). `applyProgress`는 이 값이 있으면 count 대신
+   * hopIndex 일치 위치로 slice해 head 정체성을 보존한다. 미지정(구 progress/legacy)이면 기존
+   * count 기반 정책으로 fallback.
+   */
+  headHopIndex?: number;
   /** Trip의 lastTrackedArrivalEpoch 사본 — race-isolated. */
   lastTrackedArrivalEpoch?: number;
   /** Trip의 lastLaPushEpoch 사본. */

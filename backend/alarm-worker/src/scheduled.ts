@@ -1643,6 +1643,9 @@ async function mirrorProgress(
   const next: TripProgress = {
     trainCode,
     shiftedCount: prevShifted + shiftedCountDelta,
+    // #2308 — head 정체성 anchor. POST /trips 재등록 시 count 대신 hopIndex로 slice해
+    // route 재계산에도 단조 전진을 보장 (applyProgress 참고).
+    headHopIndex: trip.waypoints[0]?.hopIndex,
     lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
     lastLaPushEpoch: trip.lastLaPushEpoch,
     // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
@@ -1665,6 +1668,8 @@ async function mirrorLocklessProgress(kv: KVNamespace, trip: Trip): Promise<void
   const next: TripProgress = {
     lockless: true,
     shiftedCount: prevShifted + 1,
+    // #2308 — head 정체성 anchor (lock 경로 mirrorProgress와 동형).
+    headHopIndex: trip.waypoints[0]?.hopIndex,
   };
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
   await putProgress(kv, trip.token, next, ttlSec);
