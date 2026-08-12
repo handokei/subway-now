@@ -16,7 +16,7 @@
  *
  * 로그 스키마 (JSONL, 분석 에이전트와 공유 — 임의 변경 금지):
  *   메타: {"meta":{"ride","placement","line","startedAt"}}
- *   샘플: {"t","ua":[x,y,z],"rr":[x,y,z],"g":[x,y,z],"rms","pat","cm","cmc","hpa","gps":[lat,lng,acc]|null}
+ *   샘플: {"t","ua":[x,y,z],"rr":[x,y,z],"g":[x,y,z],"rms","pat","cm","cmc","hpa","gps":{"lat","lng","accuracy"}|null}
  *   마크: {"t","mark":"arrive"|"depart"}
  */
 
@@ -53,7 +53,14 @@ export interface SpikeSample {
   cm: string | null;
   cmc: number | null;
   hpa: number | null;
-  gps: [number, number, number] | null;
+  gps: SpikeGpsFix | null;
+}
+
+/** GPS fix — horizontal accuracy(m) 포함, 지하 구간 coarse fix 판별용(#2311). */
+export interface SpikeGpsFix {
+  lat: number;
+  lng: number;
+  accuracy: number;
 }
 
 export interface SpikeMark {
@@ -80,7 +87,7 @@ let meta: (SpikeMeta & { startedAt: number }) | null = null;
 let active = false;
 let deviceMotionSub: { remove(): void } | null = null;
 let locationSub: { remove(): void } | null = null;
-let latestFix: [number, number, number] | null = null;
+let latestFix: SpikeGpsFix | null = null;
 let motionActivityStarted = false;
 
 function pushEvent(event: SpikeEvent): void {
@@ -171,7 +178,11 @@ export function startSpikeLogging(input: SpikeMeta): void {
       locationSub = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
         (loc) => {
-          latestFix = [loc.coords.latitude, loc.coords.longitude, loc.coords.accuracy ?? -1];
+          latestFix = {
+            lat: loc.coords.latitude,
+            lng: loc.coords.longitude,
+            accuracy: loc.coords.accuracy ?? -1,
+          };
         },
       );
     } catch {

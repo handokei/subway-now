@@ -251,7 +251,7 @@ describe('accelSpikeLogger (SPIKE 영구 캡처 도구 승격, #2268)', () => {
       const written = mockFileWrite.mock.calls[0][0] as string;
       const lines = written.split('\n');
       const sampleLine = JSON.parse(lines[1]);
-      expect(sampleLine.gps).toEqual([1, 2, -1]);
+      expect(sampleLine.gps).toEqual({ lat: 1, lng: 2, accuracy: -1 });
       expect(uri).toContain('mock-file://');
     });
 
