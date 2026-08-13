@@ -52,6 +52,13 @@ const PENDING_TIMEOUT_MS_DEFAULT = 5000;
 const PENDING_BORDER_WIDTH = 2;
 
 /**
+ * consensus-confirmed 매칭 row 하이라이트 테두리 두께 — #2330. PENDING_BORDER_WIDTH(2)보다
+ * 얇게 잡아 "탭 확정 진행 중"(pending)과 "backend 추정 표시"(consensus)를 시각적으로 구분한다.
+ * 둘 다 동시에 true면 pending이 우선(더 두꺼운 표시) — 사용자 명시 탭이 항상 SSoT.
+ */
+const CONSENSUS_HIGHLIGHT_BORDER_WIDTH = 1;
+
+/**
  * #1366 Layer 1 — release-after-tap 보호 윈도우(ms).
  *
  * 사용자가 하차/재탑승을 짧은 간격으로 반복할 때(item 4 8:33 환승역 trip) lockedTrainCode가
@@ -161,6 +168,17 @@ interface Props {
    * 탭 시 다른 row와 동일하게 onSelect(prevTrain.train) 호출 — 신규 분기 없이 기존 lock 생성 경로 재사용.
    */
   prevTrain?: PrevTrainCandidate | null;
+  /**
+   * #2330 (consensus-D, 설계 SSoT #2323 2026-08-13 (3)(6)) — backend legConsensus 엔진이
+   * confirmed(confidence='consensus')한 다음 열차. 매칭되는 row에 "추정" 배지 + "직접 선택" 병기
+   * + 하이라이트를 노출한다. 매칭되는 row가 아직 list에 없으면(도착 목록 지연 등) list-level
+   * "다음 열차 추적 중" 배지만 노출한다.
+   *
+   * **어떤 상태도 "선택됨" 표기 금지** — 오토락 부활 오해(consensus는 lock 승격 금지) 차단.
+   * null/미전달이면 배지/하이라이트 전혀 미노출(기본값) — backend consensus wire(#2329) 결합 전
+   * 상태와 동일한 기존 렌더 100% 보존.
+   */
+  consensusSuggestion?: { trainCode: string } | null;
 }
 
 /**
@@ -207,6 +225,7 @@ export function BoardingTrainList({
   onLockCorrected,
   fallbackReason = null,
   prevTrain = null,
+  consensusSuggestion = null,
 }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -330,6 +349,10 @@ export function BoardingTrainList({
     const disabled = unreachable || isPendingBlocked;
     // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
     const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
+    // #2330 — consensusSuggestion이 이 row와 매칭되면 하이라이트 + "추정" 배지 + "직접 선택" 병기.
+    // "선택됨" 표기는 절대 사용하지 않는다(오토락 부활 오해 차단) — pending(탭 확정 진행 중)과
+    // 시각적으로 구분되는 별개의 하이라이트 색(accent border, PENDING_BORDER_WIDTH보다 얇게).
+    const isConsensusMatch = consensusSuggestion?.trainCode === train.trainCode;
     return (
       <Pressable
         key={`${testKeyPrefix}-${train.trainCode}`}
@@ -343,6 +366,11 @@ export function BoardingTrainList({
             borderWidth: PENDING_BORDER_WIDTH,
             borderColor: colors.accent,
           },
+          !isPending &&
+            isConsensusMatch && {
+              borderWidth: CONSENSUS_HIGHLIGHT_BORDER_WIDTH,
+              borderColor: colors.accent,
+            },
           { opacity: unreachable ? 0.4 : isPendingBlocked ? 0.5 : 1 },
         ]}
         testID={`${testKeyPrefix}-row-${train.trainCode}`}
@@ -383,6 +411,23 @@ export function BoardingTrainList({
                 <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
               ))}
           </View>
+          {/* #2330 — consensus-confirmed 매칭 row 전용: "추정" 배지 + "직접 선택" 병기.
+              "선택됨" 텍스트는 절대 사용하지 않는다(오토락 부활 오해 차단, 설계 SSoT #2323 (6)). */}
+          {isConsensusMatch && (
+            <View style={styles.rowConsensusLine}>
+              <View
+                style={[styles.consensusBadge, { borderColor: colors.accent }]}
+                testID={`${testKeyPrefix}-consensus-badge-${train.trainCode}`}
+              >
+                <Text style={[typography.micro, { color: colors.accent, fontWeight: '700' }]}>
+                  {t('home.consensusEstimatedBadge')}
+                </Text>
+              </View>
+              <Text style={[typography.micro, { color: colors.subtle }]}>
+                {t('home.consensusManualSelectHint')}
+              </Text>
+            </View>
+          )}
           {/* #805: sequence(거리/상태)와 시간 라벨은 별도 라인으로 분리.
               sequenceText가 "전역 출발"/"당역 도착"/"4번째 전" 등 어떤 길이여도 시간 라벨이
               같은 줄에서 가려지지 않는다. sequenceText가 비어 있으면 그 라인은 미렌더하지만
@@ -415,6 +460,15 @@ export function BoardingTrainList({
   // #897 Seam A: 가장 가까운 도착 ETA가 lock 시점보다 +180s 이상이면 누적 지연(분) 노출.
   // arrivals는 호출자가 도착시간 오름차순으로 전달한다는 컨벤션을 따른다(#749 카운터와 동일 가정).
   const delayMinutes = computeDelayMinutes(filteredArrivals, initialEtaSeconds);
+
+  // #2330 — consensusSuggestion이 현재 렌더될 row(전열차 포함) 중 매칭되는지 판정.
+  // 매칭되면 해당 row가 "추정" 배지로 상태를 전달하므로 list-level 추적 배지는 생략(중복 방지).
+  // 매칭 안 되면(도착 목록 아직 미도달 등) 추적 중임을 알리는 list-level 배지만 노출.
+  const consensusMatchedInList =
+    consensusSuggestion != null &&
+    (filteredArrivals.some((t) => t.trainCode === consensusSuggestion.trainCode) ||
+      prevTrain?.train.trainCode === consensusSuggestion.trainCode);
+  const showConsensusTrackingBadge = consensusSuggestion != null && !consensusMatchedInList;
 
   // #1177: 4가지 state 구분 — error > loading > empty > data. 낙관적 UI 도입(#1165) 후
   // 빈 list/loading의 의미를 사용자에게 명확히 전달한다.
@@ -522,6 +576,20 @@ export function BoardingTrainList({
           testID="boarding-train-delay-chip"
         >
           <Text style={[styles.delayChipText, { color: colors.danger }]}>{`+${delayMinutes}분 지연`}</Text>
+        </View>
+      )}
+      {/* #2330 — consensus 엔진이 아직 confirmed 매칭 row를 노출하지 못한 동안(도착 목록 지연 등)
+          "다음 열차 추적 중" 배지로 백그라운드 추적 사실을 알린다. 직접 선택 CTA를 겸용 —
+          사용자는 이 배지와 무관하게 아래 list에서 언제든 직접 탭할 수 있다. */}
+      {showConsensusTrackingBadge && (
+        <View
+          style={[styles.consensusTrackingBadge, { borderColor: colors.accent }]}
+          testID="boarding-train-list-consensus-tracking"
+          accessibilityLabel={t('a11y.alarm.consensusTrackingLabel')}
+        >
+          <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+            {t('home.consensusTrackingBadge')}
+          </Text>
         </View>
       )}
       {/* #1177 — pending lock state list-level 안내. row outline highlight와 별도로 list 헤더 영역에
@@ -637,6 +705,26 @@ const styles = StyleSheet.create({
   rowArrivalLine: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  // #2330 — consensus-confirmed row 내 "추정" 배지 + "직접 선택" 병기 라인.
+  rowConsensusLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  consensusBadge: {
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 1,
+  },
+  // #2330 — list-level "다음 열차 추적 중" 배지(직접 선택 CTA 겸용).
+  consensusTrackingBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs / 2,
+    borderRadius: radius.pill,
+    borderWidth: 1,
   },
   empty: {
     padding: spacing.lg,

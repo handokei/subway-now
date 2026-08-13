@@ -65,6 +65,9 @@
     "boardingTrainListPending": "Registering boarding...",
     "boardingTrainListError": "Couldn't load arrivals",
     "boardingTrainListErrorHint": "We'll retry automatically in a moment.",
+    "consensusTrackingBadge": "Tracking next train",
+    "consensusEstimatedBadge": "Estimated",
+    "consensusManualSelectHint": "Select manually",
     "misBoardingToast": "Can't find your train. Please reselect.",
     "autoDisembarkToast": {
       "message": "Arrived at {{name}} — destination cleared",
@@ -356,6 +359,7 @@
       "boardingTrainListFallbackLabel": "No boarding candidates",
       "boardingTrainListPendingLabel": "Registering boarding",
       "boardingTrainListErrorLabel": "Couldn't load arrivals",
+      "consensusTrackingLabel": "Tracking next train in the background",
       "boardingLockReleaseLabel": "Get off",
       "boardingLockReleaseHint": "Ends the current boarding session"
     },

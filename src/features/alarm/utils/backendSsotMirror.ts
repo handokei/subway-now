@@ -20,12 +20,18 @@ import { BACKEND_SSOT_MIRROR_KEY } from '../../../shared/constants/storageKeys';
  * `useBoardingLockController`에 1순위 candidate로 forward해 9-AND gate 우회.
  *
  * confidence 'low'는 향후 단일 cellular/accel 채택 slot. 현재는 high/medium만 backend가 set.
+ *
+ * confidence 'consensus' — #2330 (consensus-D, 설계 SSoT #2323 (1)(3)). backend legConsensus
+ * 엔진이 environment confirmed(core 창 단일 생존 + match≥2 + mismatch=0)한 transfer leg 다음
+ * 열차를 forward. high/medium/low(9-AND gate 기반)와 달리 **lock 승격 금지** — device
+ * (`useBoardingLockController`)는 이 값을 UI 표시(배지/하이라이트)/floor 힌트 전용으로만 소비하고
+ * 자동 lock 채택 경로에서는 명시적으로 제외한다.
  */
 export interface LockSuggestionMirror {
   stationId: string;
   trainCode: string;
   lineId: string;
-  confidence: 'high' | 'medium' | 'low';
+  confidence: 'high' | 'medium' | 'low' | 'consensus';
   decidedAt: number;
 }
 
@@ -220,7 +226,14 @@ function parseLockSuggestion(raw: unknown): LockSuggestionMirror | null {
   if (typeof o.stationId !== 'string' || o.stationId.length === 0) return null;
   if (typeof o.trainCode !== 'string' || o.trainCode.length === 0) return null;
   if (typeof o.lineId !== 'string' || o.lineId.length === 0) return null;
-  if (o.confidence !== 'high' && o.confidence !== 'medium' && o.confidence !== 'low') return null;
+  if (
+    o.confidence !== 'high' &&
+    o.confidence !== 'medium' &&
+    o.confidence !== 'low' &&
+    o.confidence !== 'consensus'
+  ) {
+    return null;
+  }
   if (typeof o.decidedAt !== 'number' || !Number.isFinite(o.decidedAt)) return null;
   return {
     stationId: o.stationId,
