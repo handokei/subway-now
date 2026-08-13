@@ -47,7 +47,6 @@ import { computeAlarmLogStats } from './alarmLogStats';
 import { computeBaselineCheck } from './baselineCheck';
 import {
   ARCH_FLAG_DEFAULT,
-  type ArchFlagValue,
   getArchFlag,
   isArchFlagValue,
   setArchFlag,
@@ -1905,26 +1904,6 @@ app.post('/boarding-lock/sync', async (c) => {
     );
   }
 
-  // D4 (#1210) — payload trainCode가 KV lock trainCode와 다르면 환승 leg로 해석.
-  // lock의 trainCode/line을 새 값으로 swap하고 consecutiveEtaMissing을 0으로 reset해
-  // 신규 trainCode가 Seoul API에서 잡힐 때까지의 자동 종료(`MAX_CONSECUTIVE_ETA_MISSING`)를 차단한다.
-  //
-  // W1 (#1271, Epic #1204 그룹 2) — swap 발생 여부를 본 cycle 안에서 식별해 응답
-  // autoLockCandidate에 `from: 'transfer-swap'` hint 첨부. client는 hint가 있으면
-  // motion gate(#1014 RC2 Gate #2)를 우회한다 — 환승 직후 사용자가 이동 중인 상태에서
-  // hydrate가 영구 차단되는 회귀(피드백 7, 22:53 transfer skip)를 차단.
-  //
-  // #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 을 무시해 device 가 backend lock
-  // 의 line 을 임의로 갱신하지 못하도록 봉인. flag 로드 실패 (KV race) 는 default('off') 로
-  // fallback → 기존 동작 유지 (사용자에게 dogfood 회귀 대신 legacy 동작 노출).
-  const archFlag = await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
-  const preSwapTrainCode = working.boardingLock?.trainCode;
-  working = applyBoardingLockTrainCodeSwap(working, payload, archFlag);
-  const transferSwapApplied =
-    preSwapTrainCode !== undefined &&
-    working.boardingLock !== undefined &&
-    working.boardingLock.trainCode !== preSwapTrainCode;
-
   // lock TTL refresh — 사용자가 지상에서 lock을 활성 유지 중임을 confirm.
   if (working.boardingLock) {
     working = {
@@ -1960,10 +1939,10 @@ app.post('/boarding-lock/sync', async (c) => {
     // hydrate할 수 있는 응답임을 기록(sync-received/advance와 별도 kind — "발사됐는지"를 분리 관측).
     // #2283 리뷰 P2-2 — waitUntil로 스케줄.
     // #2308 — line은 `boardingLock.line`이 아니라 `head.line`(현재 anchor waypoint의 leg)을 쓴다.
-    // lock.line은 D4 trainCode swap(payload 기반) 타이밍에 갱신되는 반면 head는 이번 cycle의
-    // advance 직후 값이라, 환승 직후 한 cycle 동안 두 값이 어긋나면(저녁 어린이대공원 line=2,
-    // 아침 뚝섬 line=7 evidence) hydrate가 실제 서 있는 역의 노선과 다른 값을 발행한다.
-    // head가 있으면 head.line(다중 노선 trip의 해당 leg 노선)을 SSOT로 쓴다.
+    // head는 이번 cycle의 advance 직후 값이라, lock.line이 아직 옛 leg에 머무는 한 cycle 동안
+    // (저녁 어린이대공원 line=2, 아침 뚝섬 line=7 evidence) hydrate가 실제 서 있는 역의 노선과
+    // 다른 값을 발행하는 것을 막는다. head가 있으면 head.line(다중 노선 trip의 해당 leg 노선)을
+    // SSOT로 쓴다.
     scheduleTripEvent(
       c,
       recordTripEvent(c.env.DB, {
@@ -1989,8 +1968,6 @@ app.post('/boarding-lock/sync', async (c) => {
           line: working.boardingLock.line,
           subwayId: working.boardingLock.subwayId,
           expiresAt: working.boardingLock.expiresAt,
-          // W1 (#1271): client motion gate 우회 hint — swap 발생 시에만 첨부.
-          ...(transferSwapApplied ? { from: 'transfer-swap' as const } : {}),
         }
       : null,
   });
@@ -2075,51 +2052,6 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
     result.boardingLine = obj.boardingLine;
   }
   return result;
-}
-
-/**
- * D4 (#1210) — payload trainCode가 KV trip.boardingLock과 불일치하면 lock의 trainCode/line을
- * 교체하고 `consecutiveEtaMissing`을 0으로 reset한다. 일치하거나 trainCode 미제공 / lock 부재면
- * no-op (trip 그대로 반환).
- *
- * 정책 근거: 환승 leg 진입 직후 backend Seoul API가 새 trainCode 응답을 받기까지 수십 초 공백이
- * 생긴다. lock의 trainCode가 옛 값이면 `runTrainCodeTracking`이 매 cycle estimate=null로 카운터를
- * 누적해 `MAX_CONSECUTIVE_ETA_MISSING` 초과 시 trip을 자동 종료한다 (#1210 evidence). 사용자가
- * Seam E sync로 새 trainCode를 보내면 KV를 즉시 갱신해 자동 종료를 차단한다.
- *
- * 순수 함수 — 호출자(handler)가 putTrip으로 영속화한다.
- *
- * #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 을 무시하고 기존 lock.line 을 그대로
- * 유지한다. Seam E 는 device 가 지상 GPS 관측을 backend 로 sync 하는 채널인데, flag=on 정책은
- * "trainCode 확정 없이는 어떤 알림도 발사 X" 이므로 device 가 보낸 line 값이 backend lock 을
- * 임의로 갱신하지 못하도록 봉인. flag=off (기본) / archFlag 미전달 시 기존 동작 100% 유지.
- * trainCode swap 자체는 flag 무관 유지 — 환승 leg 자동 종료 차단 목적은 flag on/off 공통.
- */
-export function applyBoardingLockTrainCodeSwap(
-  trip: Trip,
-  payload: BoardingLockSyncPayload,
-  archFlag?: ArchFlagValue,
-): Trip {
-  const incomingTrainCode = payload.trainCode;
-  if (!incomingTrainCode) return trip;
-  const lock = trip.boardingLock;
-  if (!lock) return trip;
-  if (lock.trainCode === incomingTrainCode) return trip;
-  // 환승 leg 감지 → lock 교체 + 카운터 reset.
-  // #2021 — flag=on 시 payload.boardingLine 무시, 기존 lock.line 유지. flag=off (기본) 는
-  //   payload.boardingLine ?? lock.line (기존 D4 정책).
-  const nextLine =
-    archFlag === 'on' ? lock.line : payload.boardingLine ?? lock.line;
-  return {
-    ...trip,
-    boardingLock: {
-      ...lock,
-      trainCode: incomingTrainCode,
-      // boardingLine은 optional payload — 미제공 시 기존 line 유지.
-      line: nextLine,
-    },
-    consecutiveEtaMissing: 0,
-  };
 }
 
 /**

@@ -6,14 +6,13 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
-import { getApproachLineWithConfirmation } from '../../route/utils/approachLine';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { allowedLinesFromRoute } from '../../../shared/utils/stationRoute';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
@@ -29,12 +28,6 @@ import {
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import { useLockSuggestion } from '../api/useLockSuggestion';
 import type { LockSuggestionMirror } from '../utils/backendSsotMirror';
-import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
-import { logBoardingPromptAutoLock } from '../utils/alarmLog';
-import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
-import { requiresPositionTrainConsensus } from '../../nearest-station/utils/positionTrainConsensus';
-import type { AccelerometerPattern } from '../../nearest-station/utils/accelerometerFingerprint';
-import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellularTech';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -59,19 +52,6 @@ export interface UseBoardingLockControllerInputs {
    * null은 미측정(게이트에서 motionStationary로 fallback).
    */
   speedMps?: number | null;
-  /**
-   * #1926 (A-fix) — device-side autoLock fast path 4-signal consensus 가드.
-   *
-   * `useBoardingLockController` autoLock effect는 source label='position-train' 자체 발사
-   * (BoardingTrainList 탭 / boardingPrompt 응답 같은 사용자 명시 의향 X)이므로 lockless 시
-   * `position-train` 채택 동일 paradigm을 적용해야 한다 (`feedback_user_intent_equal_protection`).
-   *
-   * 모두 미전달(undefined) 시 helper가 보수적으로 consensus 미달 판정 → createLock 차단.
-   * 다른 path(`createLockFromTrain` / `hydrateLockFromCandidate`)에는 영향 없음 (사용자 의향 source).
-   */
-  barometerSubsurface?: boolean | null | undefined;
-  accelerometerPattern?: AccelerometerPattern | null;
-  cellularEnvironmentVote?: CellularEnvironmentVote | null;
 }
 
 export interface UseBoardingLockControllerResult {
@@ -149,9 +129,6 @@ export function useBoardingLockController({
   expectedDurationMinutes,
   motionStationary,
   speedMps,
-  barometerSubsurface,
-  accelerometerPattern,
-  cellularEnvironmentVote,
 }: UseBoardingLockControllerInputs): UseBoardingLockControllerResult {
   const lock = useBoardingLockStore((s) => s.lock);
   const loadLock = useBoardingLockStore((s) => s.loadLock);
@@ -293,36 +270,12 @@ export function useBoardingLockController({
   // BoardingLock store로 흘러드는 회귀를 차단한다.
   const allowedLines = useMemo(() => allowedLinesFromRoute(route), [route]);
 
-  // #2209 (ADR-027 Decision 1) — route/lock 확정값일 때만 신뢰할 수 있는 line 신호.
-  // `confirmed=false`(route/lock 후보 없음, fusion `currentStation.line` 임의값(#797))이면
-  // 어떤 candidate 필터에도 이 line을 쓰지 않는다(누락 방지) — origin auto-lock 전용
-  // `originAutoLockArrivals`(하단)에서만 소비한다.
-  const { line: approachLine, confirmed: approachLineConfirmed } = useMemo(
-    () => getApproachLineWithConfirmation(route, lock, currentStation, legAdvanceLine),
-    [route, lock, currentStation, legAdvanceLine],
-  );
-
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival) return [];
     if (direction === 'up') return arrival.up.filter(isReachable);
     if (direction === 'down') return arrival.down.filter(isReachable);
     return [...arrival.up, ...arrival.down].filter(isReachable);
   }, [arrival, direction]);
-
-  // #2209 (ADR-027 Decision 3) — origin leg device-side auto-lock(하단 effect) 전용 line 사전필터.
-  // `directionalArrivals`(hydrateLockFromCandidate Gate 1 / hook 반환값)는 backend가 이미
-  // evidence로 line을 신뢰한 candidate까지 line 불일치로 걷어내면 안 되므로 건드리지 않는다
-  // (예: 환승역에서 backend가 toLine candidate를 evidence 기반으로 확정 hydrate하는 케이스).
-  // 반대로 origin auto-lock effect는 device 자체 판단(source='position-train')이라 `allowedLines`
-  // (trip route 전체 line 집합, `{2,7}` 등)만으로는 옆 line 후보(예: 7377)를 걸러내지 못했던
-  // 회귀(증상④)를 approachLine(확정)으로 사전 차단한다 — `useBoardingPromptResponder.ts:314`의
-  // `sameLine` 필터와 동일 정책.
-  const originAutoLockArrivals = useMemo<ArrivalInfo[]>(() => {
-    if (approachLineConfirmed && approachLine) {
-      return directionalArrivals.filter((t) => t.line === approachLine);
-    }
-    return directionalArrivals;
-  }, [directionalArrivals, approachLine, approachLineConfirmed]);
 
   // #1326: BoardingTrainList 전용 — 방향 필터 결과가 비면 빈 목록 대신 양방향 합집합으로 폴백.
   //
@@ -428,15 +381,10 @@ export function useBoardingLockController({
       //   speedMps >= STATIC_SPEED_THRESHOLD_MPS → 차단. 미측정/정적 → 통과.
       // 두 신호 모두 없거나 불확실하면 보수적으로 통과 — false negative보다 false positive 방지 우선.
       //
-      // W1 (#1271, Epic #1204 그룹 2): backend가 `from:'transfer-swap'` hint를 첨부했으면
-      // Gate 2를 우회한다. swap hint는 backend가 (기존 lock + 새 trainCode + trainCode 변경)
-      // 3 조건을 모두 통과한 신뢰 evidence — 사용자가 이미 이동 중(새 leg 탑승)인 게 정상이라
-      // motion 차단을 적용하면 환승 lock 회복이 영구 차단된다(피드백 7, 22:53 transfer skip).
-      // Gate 1(directionalArrivals 매칭)은 유지해 false positive 방어.
-      // ADR-014 첫 줄: lock 활성/lockless 동급 정확도 보장.
-      if (candidate.from === 'transfer-swap') {
-        // transfer swap evidence 신뢰 → Gate 2 우회
-      } else if (motionStationary === true) {
+      // #2154 — backend transfer-swap 발급 경로 전량 삭제(무탭 환승 auto-lock 사슬 근절)에 맞춰
+      // `from:'transfer-swap'` Gate 2 우회 분기도 함께 제거. backend가 더 이상 이 라벨을 발급하지
+      // 않으므로 candidate.from은 항상 undefined — motionStationary/speedMps 판정만 남는다.
+      if (motionStationary === true) {
         // stationary 확인됨 → Gate 2 통과
       } else if (speedMps != null && speedMps >= STATIC_SPEED_THRESHOLD_MPS) {
         return; // GPS speed로 이동 중 확인 → no-op
@@ -469,173 +417,17 @@ export function useBoardingLockController({
               },
             }
           : {}),
-      // #2290 P1 — `candidate.from`별로 evidence 의미가 다르다:
-      //   - 'transfer-swap': 위 Gate 2 우회와 동일 근거(backend가 기존 lock + trainCode 변경
-      //     3조건을 모두 검증) — 이미 새 leg에 탑승/이동 중이라는 확정 evidence이므로 true.
-      //   - 그 외(#915/#916 원거리 autoLock candidate): Gate 2가 motionStationary(=아직 원점에
-      //     정적 대기 중)를 확인해야 통과하는 경로라, "아직 미탑승" 가능성이 오히려 정상 케이스다.
-      //     탑승 확정 evidence로 뭉뚱그리지 않는다 — evidence=false, initialEtaSeconds도 없으므로
-      //     `hasConsumedOriginWait`가 보수적으로 false를 유지(대기 표시 유지).
-      }, candidate.from === 'transfer-swap').catch(() => {
+      // #2290 P1 / #2154 — transfer-swap 라벨 삭제 후 이 경로(#915/#916 원거리 autoLock candidate)는
+      // 항상 Gate 2가 motionStationary(=아직 원점에 정적 대기 중)를 확인해야 통과하는 경로라
+      // "아직 미탑승" 가능성이 오히려 정상 케이스다. 탑승 확정 evidence로 뭉뚱그리지 않는다 —
+      // evidence=false, initialEtaSeconds도 없으므로 `hasConsumedOriginWait`가 보수적으로 false를
+      // 유지(대기 표시 유지).
+      }, false).catch(() => {
         // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
       });
     },
     [destinationId, currentStation, expectedDurationMinutes, lock, createLock, directionalArrivals, motionStationary, speedMps, allowedLines],
   );
-
-  // #1640 — Origin leg device-side auto-lock.
-  //
-  // 환승 leg는 `useTransferTrainList.ts:152-161`에서 이미 device-side로 arvlCd 우선순위 자동 lock을
-  // 시도한다. 하지만 origin leg(첫 lock 부재 상태)는 backend boardingPrompt push → useBoardingPromptResponder
-  // 응답 chain에 100% 종속이라, backend 9-AND gate fail(지하/lockless 환경)이면 device가 자체로 lock 시도조차
-  // 못 했다 — 7일 누적 push 0건 / autoLock 0건 / lockless 알림 0건 회귀의 root cause.
-  //
-  // 본 effect는 origin leg에서 동일 device-side trigger를 복원한다. 정책은 `useTransferTrainList` D5
-  // (#1211)와 같은 패턴:
-  //   - lock 부재 + arrival 가용 + currentStation 확정 시
-  //   - `pickAutoTrainCodeFromArrivals(directionalArrivals)` 단일 후보 산출 가능 시
-  //   - allowedLines 검증 통과 시
-  //   - createLock 즉시 호출 (사용자 액션 0)
-  // ambiguity / empty 시 skip → 자연스럽게 BoardingTrainList (HomeScreen.tsx:1099 분기) fallback UX로 도달.
-  //
-  // backend push 응답 chain(C 경로)은 그대로 유지 — 본 effect가 먼저 성공하면 store lock 활성으로
-  // 뒤늦은 backend push 응답의 createLock도 `if (lock) return` idempotent로 자연 skip.
-  //
-  // 정합성 가드:
-  //   1) `lock != null` → skip (사용자 명시 탭/lockSuggestion/hydrateLockFromCandidate 우선 보호).
-  //   2) `!currentStation || !route` → skip (lock 컨텍스트 부재).
-  //   3) `directionalArrivals.length === 0` → skip (다음 polling cycle 재시도).
-  //   4) `pickAutoTrainCodeFromArrivals` ambiguity/empty → skip + idempotency ref 미설정 (다음 cycle 재시도).
-  //   5) **arvlCd 강 evidence 요구** — 선정된 train의 arvlCd가 ENTERING(0) / ARRIVED(1) / DEPARTED(2) 중
-  //      하나여야 자동 lock 진행. `pickAutoTrainCodeFromArrivals`의 마지막 fallback(arrivals[0] 첫 후보)은
-  //      device-side origin auto-lock에서 거부 — backend push 응답 path는 "사용자가 boarded 응답" 신호로
-  //      그 후보를 신뢰하지만, device-side trigger는 사용자 신호 없이 발사하므로 강 evidence가 필수.
-  //      false positive(엉뚱한 열차 lock) ≤ ambiguity 차단 (CLAUDE.md 룰 + ADR-014 첫 줄).
-  //   6) `allowedLines` 검증 — trip route 외 line train 자동 lock 차단 (환승역 fusion 오류 보호).
-  //   7) Idempotency: 같은 `${destinationId}|${currentStation.id}` 조합에서 최대 1회 lock 시도. 사용자가
-  //      release 후 같은 origin에서 다시 lock 시도하려면 effect의 success 분기에서 ref가 set되므로
-  //      자연 차단. trip 전환(destination 변경)으로 stale lock release되면 새 key → 자동 재시도 허용.
-  //
-  // CLAUDE.md 룰 정렬:
-  //   - lockless 토글 OFF도 자동 lock 진행 (정보용 라벨, ADR-014 "사용자 명시 의향 trip 동급" 룰).
-  //   - GPS 결정 권한 X — 본 effect는 arrival API + arvlCd 우선순위만 사용.
-  //   - 시간 적분 fire 권한 X — fire가 아니라 lock 부착만.
-  const lastOriginAutoLockKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (lock) return;
-    if (!route) return;
-    if (!currentStation) return;
-    if (originAutoLockArrivals.length === 0) return;
-    const originKey = `${destinationId ?? FREE_TRIP_DESTINATION_SENTINEL}|${currentStation.id}`;
-    if (lastOriginAutoLockKeyRef.current === originKey) return;
-    // #1740 — direction이 확정된 경우 pickAutoTrainCodeFromArrivals에 전달.
-    // originAutoLockArrivals는 이미 direction + (확정 시) line 필터가 적용됐지만, helper 인자로
-    // direction을 명시해 일관성 보장.
-    const destinationDirection = direction === 'up' || direction === 'down' ? direction : undefined;
-    const chosen = pickAutoTrainCodeFromArrivals(originAutoLockArrivals, destinationDirection);
-    if (!chosen) return;
-    // 강 evidence 게이트: arvlCd가 ENTERING/ARRIVED/DEPARTED 중 하나일 때만 진행.
-    // `pickAutoTrainCodeFromArrivals`는 receivedAt 정렬 첫 후보로 fallback하지만, 본 effect는
-    // 사용자 신호 없이 device-side 자체 발사이므로 fallback path를 거부한다 (false positive 차단).
-    if (
-      chosen.arrivalCode !== ARRIVAL_CODE.ENTERING &&
-      chosen.arrivalCode !== ARRIVAL_CODE.ARRIVED &&
-      chosen.arrivalCode !== ARRIVAL_CODE.DEPARTED
-    ) {
-      return;
-    }
-    // allowedLines 검증 — useBoardingPromptResponder.tryAutoLock과 createLockFromTrain의 정책을 그대로 반영.
-    if (allowedLines && !allowedLines.has(chosen.line)) return;
-    // #1926 (A-fix): device-side autoLock fast path 4-signal consensus.
-    //
-    // 본 effect는 source label='position-train' 자체 발사 — 사용자 명시 의향(BoardingTrainList 탭 /
-    // boardingPrompt 응답 / lockSuggestion / hydrateLockFromCandidate)이 모두 부재한 device-side 자체
-    // 결정 path. 따라서 lockless `position-train` 채택과 동일 paradigm으로 4-signal consensus 필수
-    // (`ADR-014` 첫 줄 / `feedback_device_self_contained_fusion`).
-    //
-    // 본 effect 진입 시 `if (lock) return` 가드로 lock은 항상 null — helper 두 번째 인자 = null.
-    // consensus 미달 시 `lastOriginAutoLockKeyRef.current`는 set하지 않아 다음 cycle 재시도가 가능하다
-    // (graceful — 환경 신호가 늦게 합의되는 케이스 흡수).
-    if (
-      !requiresPositionTrainConsensus(
-        {
-          barometerSubsurface: barometerSubsurface ?? null,
-          accelerometerPattern: accelerometerPattern ?? null,
-          cellularEnvironmentVote: cellularEnvironmentVote ?? null,
-        },
-        null,
-      )
-    ) {
-      return;
-    }
-    // idempotency ref는 시도 직전에 set — store action이 race/storage 실패해도 다음 cycle 재시도하지 않도록.
-    // graceful 실패는 ref reset 없이 그대로 두고, 사용자 release 시 자연 재진입(다른 key로) 시점에 재시도된다.
-    lastOriginAutoLockKeyRef.current = originKey;
-    const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
-    const correctedStation = findStationByNameAndLine(currentStation.name, chosen.line);
-    const boardingStationId = correctedStation?.id ?? currentStation.id;
-    const isSentinel = !destinationId;
-    const effectiveDestinationId = destinationId ?? FREE_TRIP_DESTINATION_SENTINEL;
-    const now = Date.now();
-    createLock({
-      destinationId: effectiveDestinationId,
-      trainCode: chosen.trainCode,
-      boardingStationId,
-      boardingLine: chosen.line,
-      boardedAt: now,
-      expectedDurationMs: durationMin * 60_000,
-      // #897 Seam A: 자동 lock도 탑승 시점 ETA 스냅샷 보존 — origin leg device-side 채택은 사용자 명시 탭과
-      // 동급으로 신뢰(arvlCd 우선순위 단일 후보 + arrival API 가용)하므로 지연 칩이 backend SSoT hydrate와
-      // 다르게 활성화돼야 자연스럽다.
-      initialEtaSeconds: chosen.arrivalSeconds,
-      ...(isSentinel
-        ? {
-            hydratedFromSentinel: {
-              destinationId: FREE_TRIP_DESTINATION_SENTINEL,
-              sentinelAt: now,
-            },
-          }
-        : {}),
-    // #2290 P1-1 — 이 effect는 arvlCd(ENTERING/ARRIVED/DEPARTED) 강 게이트(위 507-511) +
-    // 4-signal consensus(위 525-536)를 모두 통과한 뒤에만 도달하므로, lock 생성 시점 자체가
-    // "이미 탑승/곧 탑승" evidence다. `hasConsumedOriginWait`가 이 값을 보고 initialEtaSeconds
-    // 경과를 기다리지 않고 즉시 출발 대기를 소진 처리한다(ETA 표시에서 origin wait 제외).
-    }, true)
-      .then(() => {
-        // V/X 측정 — `source='boarding-prompt'` 재사용해 DebugModal/autoLock outcome 분포에서 한 화면에서 가시화.
-        // backend push 응답 path(useBoardingPromptResponder)와 같은 reason 라벨을 쓰되, alarm log entry에는
-        // stationName=`${line}·${originStation}` 포맷으로 stamped — countBoardingPromptAutoLockOutcomes 결과에
-        // 가산되어 1주 production 측정에서 device-side origin 시도 가시화.
-        logBoardingPromptAutoLock({
-          reason: 'autolock-success',
-          originStation: currentStation.name,
-          line: chosen.line,
-        });
-      })
-      .catch(() => {
-        // store action rejection은 graceful — 이미 ref가 set돼 있어 즉시 재시도 폭주는 차단.
-        // 사용자 명시 탭 / backend push 응답 path가 fallback으로 남아 있다.
-        logBoardingPromptAutoLock({
-          reason: 'autolock-lock-failed',
-          originStation: currentStation.name,
-          line: chosen.line,
-        });
-      });
-  }, [
-    lock,
-    route,
-    currentStation,
-    originAutoLockArrivals,
-    destinationId,
-    expectedDurationMinutes,
-    allowedLines,
-    createLock,
-    direction,
-    // #1926 (A-fix) — 4-signal consensus deps.
-    barometerSubsurface,
-    accelerometerPattern,
-    cellularEnvironmentVote,
-  ]);
 
   return {
     lock,

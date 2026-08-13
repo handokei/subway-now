@@ -3,9 +3,11 @@
  * pure 함수로 file-level 옵트인되어 있으므로 그 테스트도 동일 정책으로 type을 직접 import한다.
  */
 /**
- * #1281 — evaluateTransferSwap (FG hook + BG task 공유 pure 결정).
+ * #1281 — evaluateTransferSwap (FG hook 결정 로직).
  *
- * hook(useTransferAutoDetect) / BG(backgroundTransferSwap) 양쪽에서 재사용되는 결정 로직을 직접 검증:
+ * #2154 — BG task(backgroundTransferSwap)는 무탭 환승 auto-lock 사슬 삭제로 제거됨. 본 함수는
+ * 현재 hook(useTransferAutoDetect) 단독 소비 — route 미설정 환승 자동 detect(#924) 전용.
+ * 검증 대상:
  *   - onPlannedTransfer short-circuit
  *   - detect 실패(비환승/정지/임박 없음) → 빈 결과
  *   - 단일 후보 → candidate 산출, 다중 후보 → candidate null

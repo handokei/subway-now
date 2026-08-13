@@ -728,10 +728,6 @@ export default function HomeScreen() {
     expectedDurationMinutes: staticEtaMinutes,
     motionStationary,
     speedMps,
-    // #1926 (A-fix) — 4-signal consensus 가드 신호.
-    barometerSubsurface,
-    accelerometerPattern,
-    cellularEnvironmentVote,
   });
   // #2139 — "전열차"(출발역을 방금 떠난 열차) 후보. lock이 없는 상태(=BoardingTrainList 노출 구간)에서만
   // 의미가 있지만 Rules of Hooks 준수를 위해 항상 호출 — currentStation/nextStationName 부재 시
