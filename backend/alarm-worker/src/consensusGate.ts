@@ -68,6 +68,13 @@ export type StationEnvironment = 'surface' | 'underground' | 'mixed' | 'unknown'
  *     - 'surface'      : 4G/5G 잡힘 → 지상 환경 vote (strong F)
  *     - 'underground'  : 2G/3G fallback → 지하 환경 vote (strong F)
  *     - 'unknown'/미전송 : vote 미투표 (정책 영향 0)
+ *
+ * - `consensusConfirmed`: #2329 (consensus-C, 설계 SSoT #2323) — `transferLegConsensus.ts`
+ *   상태기계가 'confirmed'로 수렴했다는 surrogate 신호(strong G). underground 분기에서
+ *   `lockAttachable`(=lock 부착, strong E)의 대체 surrogate로 취급한다 — 2+ waypoint 연속
+ *   match(±90s) + mismatch=0 확정은 실제 lock 부착과 동급의 강 신호이기 때문이다(설계 SSoT
+ *   (1) "confirmed = lockAttachable surrogate"). true일 때만 의미 있고, false/undefined는
+ *   기존 정책 무영향(다른 OR 분기가 그대로 평가된다).
  */
 export interface ConsensusSignals {
   gateOutcome: GateOutcome;
@@ -76,6 +83,7 @@ export interface ConsensusSignals {
   positionTrainAgreement?: boolean;
   wifiSsidMatch?: boolean;
   cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
+  consensusConfirmed?: boolean;
 }
 
 /**
@@ -162,7 +170,11 @@ export function evaluateConsensusGate(
     const strongBE = signals.arrivalSignalPresent && signals.lockAttachable;
     const strongCB = (signals.positionTrainAgreement ?? false) && signals.arrivalSignalPresent;
     const strongDB = (signals.wifiSsidMatch ?? false) && signals.arrivalSignalPresent;
-    if (strongBE || strongCB || strongDB) return { pass: true, environment };
+    // #2329 (consensus-C) — consensusConfirmed는 lockAttachable(strong E) surrogate.
+    // arrival(B) 없이도 confirmed 단독으로 통과시킨다 — 상태기계 자체가 이미 다중 waypoint
+    // match(±90s)/mismatch=0 확정이라 arrival 신호 재요구는 이중 게이트(설계 SSoT (1)).
+    const strongG = signals.consensusConfirmed === true;
+    if (strongBE || strongCB || strongDB || strongG) return { pass: true, environment };
     return { pass: false, environment, reason: 'environment-no-gps-consensus' };
   }
   // mixed/unknown: 보수적 — base 9단 + arrival + lockAttachable 모두 통과 시에만.

@@ -57,7 +57,17 @@
 
 import type { ArchFlagValue } from './archFlag';
 import { evaluateConsensusGate, type StationEnvironment } from './consensusGate';
+import { hashTripToken } from './sentry';
 import type { ArrivalEntry, PositionEntry } from './seoul';
+import {
+  initLegConsensus,
+  stepLegConsensus,
+  type LegConsensusEvent,
+  type LegConsensusRecord,
+  type LegConsensusTick,
+  type ObservedDeparture,
+} from './transferLegConsensus';
+import { recordTripEvent } from './tripEventLog';
 import {
   appendAlarmEvent,
   computeAlarmId,
@@ -94,6 +104,10 @@ export const STRONG_EVIDENCE_TYPES: ReadonlySet<EvidenceType> = new Set<Evidence
   'cellular-tech-change',
   'position-train',
   'accel-fingerprint',
+  // #2329 (consensus-C) — transferLegConsensus 상태기계가 confirmed로 수렴한 evidence.
+  // gate #5b가 legConsensus.status==='confirmed'를 별도로 강제하므로 seedOverride 등에서
+  // strong 취급해도 false positive 우려 없음(이미 2+ waypoint match 확정 신호).
+  'consensus-train',
 ]);
 
 /**
@@ -163,7 +177,8 @@ export type AdvanceBlockReason =
   | 'lockless-arvlcd-alone'
   | 'position-train-jump'
   | 'position-train-stale'
-  | 'arc-overshoot';
+  | 'arc-overshoot'
+  | 'consensus-not-confirmed';
 
 /** advance 호출 결과 — caller가 SSoT 후속 작업(fire 발사 등)을 진행할지 결정. */
 export interface AdvanceOutcome {
@@ -336,6 +351,10 @@ export function buildSignalsFromEvidence(
     positionTrainAgreement: evidence.type === 'position-train' ? true : undefined,
     wifiSsidMatch: evidence.type === 'wifi-ssid-match' ? true : undefined,
     cellularEnvironmentVote: evidence.cellularTechVote,
+    // #2329 (consensus-C) — consensus-train evidence는 그 자체가 underground lockAttachable
+    // surrogate(strong G, consensusGate.ts). gate #5b가 legConsensus confirmed를 이미 강제하므로
+    // 여기서는 evidence.type만으로 forward — 이중 확인 불필요.
+    consensusConfirmed: evidence.type === 'consensus-train' ? true : undefined,
   };
 }
 
@@ -433,10 +452,32 @@ export async function advanceTripPosition(
     return { result: 'blocked', blockReason: 'time-only-forbidden', ssot };
   }
 
-  // #5 Train identity 게이트
-  if (lock !== undefined && evidence.type === 'arvlcd-confirmed-train') {
+  // #5 Train identity 게이트 — lock 활성 시 arvlcd-confirmed-train과 consensus-train
+  // (#2329, consensus-C) 모두 lock.trainCode 일치를 강제한다.
+  if (
+    lock !== undefined &&
+    (evidence.type === 'arvlcd-confirmed-train' || evidence.type === 'consensus-train')
+  ) {
     if (evidence.arvlcdTrainCode !== lock.trainCode) {
       return { result: 'blocked', blockReason: 'train-mismatch', ssot };
+    }
+  }
+
+  // #5b consensus-train 게이트 (#2329, consensus-C, 설계 SSoT #2323) — legConsensus 상태기계가
+  // 'confirmed'로 수렴했을 때만 통과. tracking/ambiguous/demoted/suppressed 또는 상태기계
+  // 미시작(undefined)은 전부 blocked — "confirmed에서만 alert 발사" 정책의 SSoT 강제 지점.
+  // confirmedTrainCode와 evidence.arvlcdTrainCode가 둘 다 있으면 일치까지 확인(caller가 다른
+  // trainCode를 잘못 forward하는 회귀 방지). demote 발생 직후(status='demoted')는 발사권을
+  // 즉시 회수 — 이 게이트가 재평가마다 항상 재검증하므로 별도 revoke 로직 불필요.
+  if (evidence.type === 'consensus-train') {
+    const consensus = ssot.legConsensus;
+    const confirmed =
+      consensus !== undefined &&
+      consensus.status === 'confirmed' &&
+      (evidence.arvlcdTrainCode === undefined ||
+        evidence.arvlcdTrainCode === consensus.confirmedTrainCode);
+    if (!confirmed) {
+      return { result: 'blocked', blockReason: 'consensus-not-confirmed', ssot };
     }
   }
 
@@ -607,6 +648,18 @@ function deriveLockSuggestion(input: {
       decidedAt: evidence.ts,
     };
   }
+  // consensus (#2329, consensus-C) — legConsensus 상태기계 confirmed. gate #5b가 이미 confirmed +
+  // trainCode 일치를 강제했으므로 여기 도달한 evidence.arvlcdTrainCode는 신뢰 가능. lock 승격은
+  // 하지 않는다 — confidence='consensus'는 device 측에서 high/medium과 별도로 다뤄지는 표식.
+  if (evidence.type === 'consensus-train' && evidence.arvlcdTrainCode) {
+    return {
+      stationId: candidateStationId,
+      trainCode: evidence.arvlcdTrainCode,
+      lineId: waypointLine,
+      confidence: 'consensus',
+      decidedAt: evidence.ts,
+    };
+  }
   return null;
 }
 
@@ -660,4 +713,77 @@ function appendUnique(arr: readonly string[], next: string): string[] {
   // motionEvidence와 동일한 ring buffer cap을 적용해 KV row 폭주 방지.
   while (copy.length > MOTION_EVIDENCE_CAP) copy.shift();
   return copy;
+}
+
+/**
+ * #2329 (consensus-C, 설계 SSoT #2323) — `transferLegConsensus.ts`(#2327) 상태기계 1 tick 진행 +
+ * SSoT 영속 + D1 trip_events(`consensus-confirm`/`consensus-demote`/`consensus-suppress`) 기록을
+ * 한 곳에 묶는 wire 진입점. caller(scheduled.ts)는 매 cron cycle 관측치를 `LegConsensusTick`으로
+ * forward하기만 하면 된다 — 상태기계 mutate/write/D1 append는 본 함수가 전담한다(ADR-017 §단일
+ * mutation 진입점 정신을 legConsensus 서브필드에도 동일 적용).
+ *
+ * `ssot.legConsensus`가 없으면 `init`으로 최초 상태기계를 만든다(caller가 T0/W(transferTimeSec)/
+ * H(headwaySec)/observedDepartures를 데이터 주도로 산출해 전달). 이미 있으면 `init`은 무시.
+ *
+ * `suppressFloorEpochMs`(#2155 floor 공급)는 별도 write 없이 `record` 자체(=ssot.legConsensus)에
+ * 이미 포함되어 있다 — apns.ts silent push payload가 ssot 전체를 forward할 때 함께 실려 device로
+ * 전달된다(consumption은 #2155 범위, 본 함수는 supply만).
+ *
+ * trip 부재(getTrip null)면 expiresAt 힌트 없이 write — 이론상 SSoT는 있는데 trip이 사라진 경우는
+ * 발생하지 않지만(trip 삭제 시 SSoT도 함께 삭제), defense-in-depth로 graceful 처리.
+ */
+export async function applyLegConsensusTick(
+  kv: KVNamespace,
+  db: D1Database | undefined,
+  token: string,
+  input: {
+    init?: {
+      t0EpochMs: number;
+      transferTimeSec: number;
+      headwaySec: number;
+      observedDepartures: readonly ObservedDeparture[];
+    };
+    tick: LegConsensusTick;
+    /** D1 trip_events meta stamp용 — 관측 대상 station/line. */
+    station?: string;
+    line?: string;
+  },
+): Promise<{ record: LegConsensusRecord; events: LegConsensusEvent[] } | null> {
+  const ssot = await readSsot(kv, token);
+  if (ssot === null) return null;
+
+  const existing = ssot.legConsensus;
+  const seed = existing ?? (input.init ? initLegConsensus(
+    input.init.t0EpochMs,
+    input.init.transferTimeSec,
+    input.init.headwaySec,
+    input.init.observedDepartures,
+    input.tick.now,
+  ) : undefined);
+  if (seed === undefined) return null;
+
+  const { record, events } = stepLegConsensus(seed, input.tick);
+  const next: TripPositionSSoT = { ...ssot, legConsensus: record };
+
+  const trip = await getTrip(kv, token);
+  await writeSsot(kv, next, trip ? { expiresAt: trip.expiresAt } : undefined);
+
+  if (db) {
+    const tokenHash = hashTripToken(token);
+    for (const event of events) {
+      await recordTripEvent(
+        db,
+        {
+          tokenHash,
+          kind: event.kind,
+          station: input.station,
+          line: input.line,
+          meta: { trainCode: event.trainCode, ...event.meta },
+        },
+        input.tick.now,
+      );
+    }
+  }
+
+  return { record, events };
 }

@@ -34,6 +34,7 @@
  */
 
 import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
+import type { LegConsensusRecord } from './transferLegConsensus';
 import type { Trip } from './types';
 
 /**
@@ -65,7 +66,8 @@ export type EvidenceType =
   | 'accel-fingerprint'
   | 'time-only'
   | 'manual-user-intent'
-  | 'seed-override';
+  | 'seed-override'
+  | 'consensus-train';
 
 /**
  * Evidence가 어느 데이터 출처에서 왔는지. T2 합의 게이트가 source 분산을 평가할 때 사용.
@@ -167,9 +169,13 @@ export async function computeAlarmId(
  * device는 기존 9-AND gate fallback으로 동작 (graceful, backward-compat).
  *
  * confidence:
- *   - 'high'   : arvlcd-confirmed-train evidence (trainCode/line 명확)
- *   - 'medium' : position-train / wifi-ssid-match evidence (train 후보 좁힘 + 정합)
- *   - 'low'    : 향후 cellular/accel single signal 채택 (현재 미사용 — 미래 확장 slot)
+ *   - 'high'      : arvlcd-confirmed-train evidence (trainCode/line 명확)
+ *   - 'medium'    : position-train / wifi-ssid-match evidence (train 후보 좁힘 + 정합)
+ *   - 'consensus' : #2329 (consensus-C) — transferLegConsensus 상태기계가 confirmed로 수렴한
+ *                   trainCode. lock 승격은 절대 하지 않는다 — device `useLockSuggestion`이
+ *                   기존 high/medium과 동일하게 reader-only 채택하되, 오토락 부활(#2154에서
+ *                   삭제 대상인 자동 lock 부착 chain)과 구조적으로 구분되는 confidence 값이다.
+ *   - 'low'       : 향후 cellular/accel single signal 채택 (현재 미사용 — 미래 확장 slot)
  */
 export interface LockSuggestion {
   /** 추론된 출발/현재 station identifier. */
@@ -179,7 +185,7 @@ export interface LockSuggestion {
   /** 노선 (Waypoint.line / BoardingLockMeta.line과 동일 표기). */
   lineId: string;
   /** 추론 신뢰도 — device가 채택 정책에 사용 가능 (현 PR은 high/medium 모두 채택). */
-  confidence: 'high' | 'medium' | 'low';
+  confidence: 'high' | 'medium' | 'low' | 'consensus';
   /** 추론 결정 시각 (epoch ms). device가 staleness 판단 가능. */
   decidedAt: number;
 }
@@ -258,6 +264,18 @@ export interface TripPositionSSoT {
    * 다른 optional SSoT 필드와 동일 backward-compat 정책).
    */
   lastDeviceSyncAt?: number;
+  /**
+   * #2329 (consensus-C, 설계 SSoT #2323) — `transferLegConsensus.ts`(#2327) 상태기계 스냅샷.
+   *
+   * lockless leg(환승 직후 lock 미부착 구간)에서 후보 열차 관측/판정 진행 상태를 trip KV 객체
+   * 내부에 보존한다(별도 KV row 금지 — #2073 cron KV quota lesson). caller(scheduled.ts)가
+   * `stepLegConsensus`로 매 tick 갱신 후 write. `status==='confirmed'`일 때만
+   * `advanceTripPosition`의 'consensus-train' evidence 게이트가 통과한다.
+   *
+   * 구 backend 호환을 위해 optional — v3 이하 row 또는 leg에 consensus 추적이 시작되지 않은
+   * trip은 undefined.
+   */
+  legConsensus?: LegConsensusRecord;
   /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.

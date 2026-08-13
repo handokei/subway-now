@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   POSITION_TRAIN_MAX_HOP,
   POSITION_TRAIN_STALE_THRESHOLD_MS,
   STRONG_EVIDENCE_TYPES,
   advanceTripPosition,
+  applyLegConsensusTick,
   buildSignalsFromEvidence,
   computePositionTrainHopDistance,
   consecutiveDurationMs,
@@ -91,14 +92,16 @@ describe('mapEvidenceEnvironment', () => {
 });
 
 describe('STRONG_EVIDENCE_TYPES', () => {
-  it('5종 strong evidence (arvlcd-confirmed-train / wifi / cellular / position / accel)', () => {
-    expect(STRONG_EVIDENCE_TYPES.size).toBe(5);
+  it('6종 strong evidence (arvlcd-confirmed-train / wifi / cellular / position / accel / consensus-train)', () => {
+    expect(STRONG_EVIDENCE_TYPES.size).toBe(6);
     for (const t of [
       'arvlcd-confirmed-train',
       'wifi-ssid-match',
       'cellular-tech-change',
       'position-train',
       'accel-fingerprint',
+      // #2329 (consensus-C) — transferLegConsensus 상태기계 confirmed evidence.
+      'consensus-train',
     ] as const) {
       expect(STRONG_EVIDENCE_TYPES.has(t)).toBe(true);
     }
@@ -1423,5 +1426,325 @@ describe('advanceTripPosition — gate #7 position-train jump/stale (#1665)', ()
       { gatePassed: true, lockAttachable: true },
     );
     expect(out.result).toBe('advanced');
+  });
+});
+
+describe('advanceTripPosition — gate #5b consensus-train confirmed-only (#2329, consensus-C)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('legConsensus 미시작(undefined) → blocked(consensus-not-confirmed)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ type: 'consensus-train', stationId: '중곡', arvlcdTrainCode: '7246' }),
+      { gatePassed: true, lockAttachable: false },
+    );
+    expect(out.result).toBe('blocked');
+    expect(out.blockReason).toBe('consensus-not-confirmed');
+  });
+
+  it.each(['tracking', 'ambiguous', 'demoted', 'suppressed'] as const)(
+    'legConsensus.status=%s (confirmed 아님) → blocked(consensus-not-confirmed)',
+    async (status) => {
+      const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+      ssot.motionState = 'moving';
+      ssot.legConsensus = {
+        status,
+        t0EpochMs: NOW - 60_000,
+        transferTimeSec: 278,
+        headwaySec: 210,
+        window: {
+          earliestAllowedEpochMs: NOW,
+          coreStartEpochMs: NOW,
+          coreEndEpochMs: NOW,
+          latestAllowedEpochMs: NOW,
+        },
+        candidates: [],
+        confirmedMismatchStreak: 0,
+        updatedAt: NOW,
+      };
+      await writeSsot(kv as unknown as KVNamespace, ssot);
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+      const out = await advanceTripPosition(
+        kv as unknown as KVNamespace,
+        TOKEN,
+        '중곡',
+        makeEvidence({ type: 'consensus-train', stationId: '중곡', arvlcdTrainCode: '7246' }),
+        { gatePassed: true, lockAttachable: false },
+      );
+      expect(out.result).toBe('blocked');
+      expect(out.blockReason).toBe('consensus-not-confirmed');
+    },
+  );
+
+  it('legConsensus.status=confirmed + trainCode 일치 → advanced', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    ssot.motionState = 'moving';
+    ssot.legConsensus = {
+      status: 'confirmed',
+      t0EpochMs: NOW - 300_000,
+      transferTimeSec: 278,
+      headwaySec: 210,
+      window: {
+        earliestAllowedEpochMs: NOW,
+        coreStartEpochMs: NOW,
+        coreEndEpochMs: NOW,
+        latestAllowedEpochMs: NOW,
+      },
+      candidates: [],
+      confirmedTrainCode: '7246',
+      confirmedMismatchStreak: 0,
+      updatedAt: NOW,
+    };
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ type: 'consensus-train', stationId: '중곡', arvlcdTrainCode: '7246' }),
+      { gatePassed: true, lockAttachable: false },
+    );
+    expect(out.result).toBe('advanced');
+  });
+
+  it('confirmed이지만 evidence trainCode 불일치 → blocked(consensus-not-confirmed)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    ssot.motionState = 'moving';
+    ssot.legConsensus = {
+      status: 'confirmed',
+      t0EpochMs: NOW - 300_000,
+      transferTimeSec: 278,
+      headwaySec: 210,
+      window: {
+        earliestAllowedEpochMs: NOW,
+        coreStartEpochMs: NOW,
+        coreEndEpochMs: NOW,
+        latestAllowedEpochMs: NOW,
+      },
+      candidates: [],
+      confirmedTrainCode: '7246',
+      confirmedMismatchStreak: 0,
+      updatedAt: NOW,
+    };
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ type: 'consensus-train', stationId: '중곡', arvlcdTrainCode: '9999' }),
+      { gatePassed: true, lockAttachable: false },
+    );
+    expect(out.result).toBe('blocked');
+    expect(out.blockReason).toBe('consensus-not-confirmed');
+  });
+
+  it('lock 활성 + consensus-train + lock.trainCode 불일치 → blocked(train-mismatch) — 게이트 #5 확장', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    ssot.motionState = 'moving';
+    ssot.legConsensus = {
+      status: 'confirmed',
+      t0EpochMs: NOW - 300_000,
+      transferTimeSec: 278,
+      headwaySec: 210,
+      window: {
+        earliestAllowedEpochMs: NOW,
+        coreStartEpochMs: NOW,
+        coreEndEpochMs: NOW,
+        latestAllowedEpochMs: NOW,
+      },
+      candidates: [],
+      confirmedTrainCode: '7246',
+      confirmedMismatchStreak: 0,
+      updatedAt: NOW,
+    };
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    // lock.trainCode(다른 값)와 consensus confirmedTrainCode(7246)가 둘 다 evidence와 일치해야
+    // gate #5b + 확장된 gate #5를 모두 통과 — lock.trainCode만 다르면 gate #5(train-mismatch)가 차단.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({ boardingLock: makeLock({ trainCode: '1111' }) }),
+    );
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ type: 'consensus-train', stationId: '중곡', arvlcdTrainCode: '7246' }),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(out.result).toBe('blocked');
+    expect(out.blockReason).toBe('train-mismatch');
+  });
+});
+
+describe('advanceTripPosition — lockSuggestion consensus confidence (#2329, consensus-C)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('lockless + consensus-train confirmed → confidence=consensus suggestion (lock 승격 없음)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    ssot.motionState = 'moving';
+    ssot.legConsensus = {
+      status: 'confirmed',
+      t0EpochMs: NOW - 300_000,
+      transferTimeSec: 278,
+      headwaySec: 210,
+      window: {
+        earliestAllowedEpochMs: NOW,
+        coreStartEpochMs: NOW,
+        coreEndEpochMs: NOW,
+        latestAllowedEpochMs: NOW,
+      },
+      candidates: [],
+      confirmedTrainCode: '7246',
+      confirmedMismatchStreak: 0,
+      updatedAt: NOW,
+    };
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ type: 'consensus-train', stationId: '중곡', arvlcdTrainCode: '7246' }),
+      { gatePassed: true, lockAttachable: false },
+    );
+    expect(out.result).toBe('advanced');
+
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.lockSuggestion).toEqual({
+      stationId: '중곡',
+      trainCode: '7246',
+      lineId: '7',
+      confidence: 'consensus',
+      decidedAt: NOW,
+    });
+    // lock 승격 금지 — trip.boardingLock 자체는 본 함수가 절대 mutate하지 않는다.
+    expect(ssot.legConsensus?.status).toBe('confirmed');
+  });
+});
+
+describe('applyLegConsensusTick (#2329, consensus-C — legConsensus SSoT wire + D1 event log)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  function makeMockDb(): D1Database {
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const bind = vi.fn().mockReturnValue({ run });
+    const prepare = vi.fn().mockReturnValue({ bind });
+    return { prepare, run, bind } as unknown as D1Database & { bind: typeof bind };
+  }
+
+  it('SSoT 부재 시 null 반환 (no-op)', async () => {
+    const out = await applyLegConsensusTick(kv as unknown as KVNamespace, undefined, TOKEN, {
+      init: { t0EpochMs: NOW, transferTimeSec: 278, headwaySec: 210, observedDepartures: [] },
+      tick: { now: NOW },
+    });
+    expect(out).toBeNull();
+  });
+
+  it('init 없음 + 기존 legConsensus 없음 → null (초기화 재료 부재)', async () => {
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    const out = await applyLegConsensusTick(kv as unknown as KVNamespace, undefined, TOKEN, {
+      tick: { now: NOW },
+    });
+    expect(out).toBeNull();
+  });
+
+  it('최초 tick — init 후 confirm 미달(단일 후보 match<2)이면 tracking 유지 + ssot.legConsensus 저장', async () => {
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+    const out = await applyLegConsensusTick(kv as unknown as KVNamespace, undefined, TOKEN, {
+      init: {
+        t0EpochMs: NOW,
+        transferTimeSec: 278,
+        headwaySec: 210,
+        observedDepartures: [{ trainCode: '7246', departureEpochMs: NOW + 278_000 }],
+      },
+      tick: { now: NOW, observations: [{ trainCode: '7246', deltaSec: 0 }] },
+    });
+    expect(out?.record.status).toBe('tracking');
+    expect(out?.events).toEqual([]);
+
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.legConsensus?.candidates).toHaveLength(1);
+  });
+
+  it('연속 2 match → confirmed 이벤트 + D1 consensus-confirm append', async () => {
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+    const db = makeMockDb();
+
+    await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+      init: {
+        t0EpochMs: NOW,
+        transferTimeSec: 278,
+        headwaySec: 210,
+        observedDepartures: [{ trainCode: '7246', departureEpochMs: NOW + 278_000 }],
+      },
+      tick: { now: NOW, observations: [{ trainCode: '7246', deltaSec: 0 }] },
+      station: '중곡',
+      line: '7',
+    });
+    const out2 = await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+      tick: { now: NOW + 80_000, observations: [{ trainCode: '7246', deltaSec: 10 }] },
+      station: '중곡',
+      line: '7',
+    });
+
+    expect(out2?.record.status).toBe('confirmed');
+    expect(out2?.record.confirmedTrainCode).toBe('7246');
+    expect(out2?.events).toEqual([{ kind: 'consensus-confirm', trainCode: '7246' }]);
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO trip_events'));
+
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after?.legConsensus?.status).toBe('confirmed');
+  });
+
+  it('db 미전달 시 D1 append 없이도 SSoT는 정상 갱신 (graceful)', async () => {
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+    const out = await applyLegConsensusTick(kv as unknown as KVNamespace, undefined, TOKEN, {
+      init: {
+        t0EpochMs: NOW,
+        transferTimeSec: 278,
+        headwaySec: 210,
+        observedDepartures: [
+          { trainCode: '7246', departureEpochMs: NOW + 278_000 },
+          { trainCode: '9999', departureEpochMs: NOW + 279_000 },
+        ],
+      },
+      tick: {
+        now: NOW,
+        observations: [
+          { trainCode: '7246', deltaSec: 200 },
+          { trainCode: '9999', deltaSec: 200 },
+        ],
+      },
+    });
+    // 둘 다 mismatch(|Δ|>180) → 생존 0 → suppress.
+    expect(out?.record.status).toBe('suppressed');
+    expect(out?.events[0]?.kind).toBe('consensus-suppress');
   });
 });

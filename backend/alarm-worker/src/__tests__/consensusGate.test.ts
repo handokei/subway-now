@@ -96,6 +96,37 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
         }).pass,
       ).toBe(false);
     });
+
+    // #2329 (consensus-C, 설계 SSoT #2323) — consensusConfirmed는 lockAttachable(strong E)
+    // surrogate. arrival(B)/lockAttachable 없이도 단독으로 통과시킨다.
+    it('consensusConfirmed=true 단독(arrival/lockAttachable 모두 없음) → 통과 (strong G surrogate)', () => {
+      expect(
+        runGate('underground', {
+          gateOutcome: FAIL_GATE,
+          arrivalSignalPresent: false,
+          lockAttachable: false,
+          consensusConfirmed: true,
+        }).pass,
+      ).toBe(true);
+    });
+
+    it('consensusConfirmed=false/undefined → 기존 정책 무영향(다른 신호 없으면 reject)', () => {
+      expect(
+        runGate('underground', {
+          gateOutcome: FAIL_GATE,
+          arrivalSignalPresent: false,
+          lockAttachable: false,
+          consensusConfirmed: false,
+        }).pass,
+      ).toBe(false);
+      expect(
+        runGate('underground', {
+          gateOutcome: FAIL_GATE,
+          arrivalSignalPresent: false,
+          lockAttachable: false,
+        }).pass,
+      ).toBe(false);
+    });
   });
 
   describe('environment=mixed (보수적)', () => {
