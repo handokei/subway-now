@@ -28,6 +28,7 @@ import {
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import { useLockSuggestion } from '../api/useLockSuggestion';
 import type { LockSuggestionMirror } from '../utils/backendSsotMirror';
+import { recordConsensusMismatch } from '../utils/consensusMismatchMetrics';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -201,6 +202,10 @@ export function useBoardingLockController({
   useEffect(() => {
     if (!lockSuggestion) return;
     if (lock) return;
+    // #2330 (consensus-D, 설계 SSoT #2323 (3)) — confidence='consensus'는 lock 승격 금지.
+    // legConsensus는 UI 표시(배지/하이라이트)/floor 힌트 전용 forward라 high/medium/low(9-AND
+    // gate 기반 evidence)와 달리 자동 hydrate 대상이 아니다. "오토락 부활" 오해를 구조적으로 차단.
+    if (lockSuggestion.confidence === 'consensus') return;
     const boardingLine = asLineNumber(lockSuggestion.lineId);
     if (!boardingLine) return;
     if (legAdvanceLine !== null) {
@@ -298,6 +303,15 @@ export function useBoardingLockController({
       // train arrival을 directionalArrivals에 섞어 노출한 경우 lock 채택을 차단한다.
       // allowedLines === undefined는 trip 비활성 → 필터 미적용(free-trip 등 기존 UX 유지).
       if (allowedLines && !allowedLines.has(train.line)) return;
+      // #2330 (consensus-D, 설계 SSoT #2323 (3)) — 명시 탭이 항상 우선. backend consensus
+      // engine이 confirmed(confidence='consensus')한 제안과 다른 열차를 탭하면 mismatch telemetry
+      // 기록 — lock 채택 자체는 아래 기존 흐름 그대로(탭이 SSoT, consensus는 표시 전용이라 차단하지 않음).
+      if (
+        lockSuggestion?.confidence === 'consensus' &&
+        lockSuggestion.trainCode !== train.trainCode
+      ) {
+        recordConsensusMismatch(lockSuggestion.trainCode, train.trainCode);
+      }
       // #1923 — 사용자 명시 의향 stamp. BoardingTrainList 직접 탭은 lock 활성과 동급 의향 표명.
       // ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
       // setInfoModeEnabled는 memory + storage atomic — graceful 실패(다음 cycle에서 자연 재시도).
@@ -331,7 +345,7 @@ export function useBoardingLockController({
         // store action rejection은 graceful — 다음 polling cycle에서 자연 재시도.
       });
     },
-    [destinationId, currentStation, expectedDurationMinutes, createLock, allowedLines],
+    [destinationId, currentStation, expectedDurationMinutes, createLock, allowedLines, lockSuggestion],
   );
 
   const release = useCallback(() => {

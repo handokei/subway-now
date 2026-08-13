@@ -75,6 +75,7 @@ import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingL
 // #2268 (C1) — pending→confirmed lock 정정 measurement infra(#1166). fired count 는
 // BoardingTrainList가 이미 기록하지만 DebugModal에 섹션이 없어 관측 불가했다.
 import { getLockCorrectionMetrics } from '../../alarm/utils/lockCorrectionMetrics';
+import { getConsensusMismatchMetrics } from '../../alarm/utils/consensusMismatchMetrics';
 import {
   BOARDING_LOCK_EXPIRY_FACTOR,
   isBoardingLockExpired,
@@ -662,6 +663,11 @@ interface BuildDumpArgs {
    * 미전달 시 (n/a) 표기.
    */
   lockCorrection?: ReturnType<typeof getLockCorrectionMetrics>;
+  /**
+   * #2330 (consensus-D, 설계 SSoT #2323 (3)) — 명시 탭이 backend consensus-confirmed 제안과
+   * 다른 열차를 선택했을 때 fire하는 counter(`consensusMismatchMetrics.ts`). 미전달 시 (n/a) 표기.
+   */
+  consensusMismatch?: ReturnType<typeof getConsensusMismatchMetrics>;
   /**
    * #1413 — BoardingLock 섹션 dump 입력. lock 활성/trainCode/boardingLine/expiresAt.
    * 미전달이면 lock=null과 동일(active=no)로 출력.
@@ -1316,6 +1322,23 @@ function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #2330 (consensus-D, 설계 SSoT #2323 (3)) — Consensus Mismatch 섹션. 명시 탭이 backend
+ * consensus-confirmed 제안과 다른 열차를 선택한 빈도를 dump/UI 양쪽에 노출.
+ * `computeLockCorrectionLines`와 동일 패턴 — 미전달 시 (n/a).
+ */
+function computeConsensusMismatchLines(
+  metrics: ReturnType<typeof getConsensusMismatchMetrics> | undefined,
+): string[] {
+  if (!metrics) return ['(n/a)'];
+  const lastFiredLine = metrics.lastFiredAtMs === 0 ? '(never)' : formatTime(metrics.lastFiredAtMs);
+  return [`fired=${metrics.fired}`, `lastFiredAt=${lastFiredLine}`];
+}
+
+function buildConsensusMismatchSection(args: BuildDumpArgs): string[] {
+  return computeConsensusMismatchLines(args.consensusMismatch);
+}
+
+/**
  * #1518 — Backend call ring buffer 1줄 포맷. call/response/error를 한 줄에 압축해
  * dump 분량을 줄인다. host 부분만 노출하고 path는 trim 안 함(진단 시 endpoint 식별).
  */
@@ -1741,6 +1764,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'BoardingLock', build: buildBoardingLockSection },
   // #2268 (C1) — pending→confirmed lock 정정 counter(#1166). BoardingLock 섹션 직후 배치.
   { title: 'Lock Correction', build: buildLockCorrectionSection },
+  // #2330 (consensus-D) — 명시 탭 vs consensus-confirmed 제안 불일치 counter. Lock Correction 직후 배치.
+  { title: 'Consensus Mismatch', build: buildConsensusMismatchSection },
   // #1413 — Estimator buffer. lockless trip 진행도 사후 재구성용.
   {
     title: 'Estimator State',
@@ -2330,6 +2355,10 @@ function DebugModalInner({
   // 스냅샷 산출 값들 — autoLockMeta/envDistribution — 과 동일 패턴).
   const lockCorrectionMetrics = getLockCorrectionMetrics();
 
+  // #2330 (consensus-D) — 명시 탭 vs consensus-confirmed 불일치 counter. 동일 module-level
+  // singleton getter 패턴(위 lockCorrectionMetrics와 동일 render-time 스냅샷 근거).
+  const consensusMismatchMetrics = getConsensusMismatchMetrics();
+
   const nearestDistanceM = result ? Math.round(result.distanceKm * 1000) : null;
   const variantNames = variants.map((v) => `${v.name}(${v.line})`);
 
@@ -2415,6 +2444,8 @@ function DebugModalInner({
       fusionTierLog: fusionTierLogs,
       // #2268 (C1) — Lock Correction counter. Modal render와 동일 SSOT(getLockCorrectionMetrics).
       lockCorrection: lockCorrectionMetrics,
+      // #2330 (consensus-D) — Consensus Mismatch counter. Modal render와 동일 SSOT.
+      consensusMismatch: consensusMismatchMetrics,
     });
     // #2268 (S1+S2) — 이전엔 `void Share.share(...)`로 실패가 완전 무음이었다(catch 없음).
     // Share 시트를 뜨는 순간 취소돼도 reject 하는 OS 조합이 있어 사용자가 "왜 안 되지"만
@@ -2495,6 +2526,8 @@ function DebugModalInner({
     fusionTierLogs,
     // #2268 (C1) — Lock Correction counter 변경 시 dump 텍스트 자동 갱신.
     lockCorrectionMetrics,
+    // #2330 (consensus-D) — Consensus Mismatch counter 변경 시 dump 텍스트 자동 갱신.
+    consensusMismatchMetrics,
   ]);
 
   return (
@@ -2796,6 +2829,10 @@ function DebugModalInner({
           {/* #2268 (C1) — Lock Correction: pending→confirmed 정정 fired count / lastFiredAt.
               buildLockCorrectionSection과 동일 SSOT (내부 helper 재사용). */}
           <LockCorrectionSection metrics={lockCorrectionMetrics} colors={colors} />
+
+          {/* #2330 (consensus-D) — Consensus Mismatch: 탭 vs consensus-confirmed 불일치 fired count.
+              buildConsensusMismatchSection과 동일 SSOT (내부 helper 재사용). */}
+          <ConsensusMismatchSection metrics={consensusMismatchMetrics} colors={colors} />
 
           <DebugLogSection
             title="Estimator State"
@@ -3649,6 +3686,27 @@ function LockCorrectionSection({
 }
 
 /**
+ * #2330 (consensus-D) — Consensus Mismatch UI section. computeConsensusMismatchLines helper를
+ * dump builder와 공유.
+ */
+function ConsensusMismatchSection({
+  metrics,
+  colors,
+}: Readonly<{
+  metrics: ReturnType<typeof getConsensusMismatchMetrics> | undefined;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <DumpTextSection
+      title="Consensus Mismatch"
+      lines={computeConsensusMismatchLines(metrics)}
+      entryTestId="debug-consensus-mismatch"
+      colors={colors}
+    />
+  );
+}
+
+/**
  * #2049 (#1421) — Auto-lock Candidate UI section. computeAutoLockLines helper를 dump builder와 공유.
  */
 function AutoLockCandidateSection({
@@ -3826,6 +3884,9 @@ export const __test__ = {
   // #2268 (C1) — Lock Correction section builder/helper. 단위 테스트에서 직접 검증.
   computeLockCorrectionLines,
   buildLockCorrectionSection,
+  // #2330 (consensus-D) — Consensus Mismatch section builder/helper. 단위 테스트에서 직접 검증.
+  computeConsensusMismatchLines,
+  buildConsensusMismatchSection,
 };
 
 const styles = StyleSheet.create({

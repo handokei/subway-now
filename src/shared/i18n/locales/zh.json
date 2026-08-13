@@ -65,6 +65,9 @@
     "boardingTrainListPending": "正在登记乘车...",
     "boardingTrainListError": "无法加载到达信息",
     "boardingTrainListErrorHint": "稍后将自动重试。",
+    "consensusTrackingBadge": "正在追踪下一班列车",
+    "consensusEstimatedBadge": "推测",
+    "consensusManualSelectHint": "直接选择",
     "misBoardingToast": "找不到乘坐的列车,请重新选择。",
     "autoDisembarkToast": {
       "message": "已到达{{name}},已清除目的地",
@@ -356,6 +359,7 @@
       "boardingTrainListFallbackLabel": "无乘车候选",
       "boardingTrainListPendingLabel": "正在登记乘车",
       "boardingTrainListErrorLabel": "无法加载到达信息",
+      "consensusTrackingLabel": "正在后台追踪下一班列车",
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
     },

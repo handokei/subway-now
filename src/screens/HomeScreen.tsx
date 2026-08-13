@@ -729,6 +729,17 @@ export default function HomeScreen() {
     motionStationary,
     speedMps,
   });
+  // #2330 (consensus-D, 설계 SSoT #2323 (3)(6)) — backend legConsensus가 confirmed한 제안만
+  // BoardingTrainList 배지/하이라이트로 forward. high/medium/low(9-AND gate 기반)는 이미
+  // useBoardingLockController가 자동 lock으로 채택하므로 UI 표시 대상이 아니다(lockSuggestion=null로
+  // 이어지는 정상 경로). lockSuggestion 부재/비-consensus면 null — 기존 렌더 100% 보존.
+  const consensusSuggestion = useMemo(
+    () =>
+      lockSuggestion?.confidence === 'consensus'
+        ? { trainCode: lockSuggestion.trainCode }
+        : null,
+    [lockSuggestion],
+  );
   // #2139 — "전열차"(출발역을 방금 떠난 열차) 후보. lock이 없는 상태(=BoardingTrainList 노출 구간)에서만
   // 의미가 있지만 Rules of Hooks 준수를 위해 항상 호출 — currentStation/nextStationName 부재 시
   // hook 내부에서 graceful null 반환.
@@ -1637,6 +1648,8 @@ export default function HomeScreen() {
                                     // #2139 — 전열차(출발역을 방금 떠난 열차) 후보. 식별 불가 시 null이라
                                     // 기존 [현열차 | 다음열차] 렌더가 그대로 보존된다.
                                     prevTrain={prevTrain}
+                                    // #2330 — backend legConsensus confirmed 제안. null이면 배지 미노출.
+                                    consensusSuggestion={consensusSuggestion}
                                   />
                                 </View>
                               );
@@ -1685,6 +1698,8 @@ export default function HomeScreen() {
                                   // #2179 — 전열차(환승역을 방금 떠난 열차) 후보. 식별 불가 시 null이라
                                   // 기존 [현열차 | 다음열차] 렌더가 그대로 보존된다.
                                   prevTrain={transferPrevTrain}
+                                  // #2330 — 환승 leg도 동일 legConsensus SSOT(lockSuggestion)를 공유.
+                                  consensusSuggestion={consensusSuggestion}
                                 />
                               );
                             }

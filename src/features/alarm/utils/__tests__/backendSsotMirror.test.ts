@@ -76,6 +76,22 @@ describe('readBackendSsotMirror lockSuggestion parse (#1534 S1 T9b)', () => {
     expect(got?.lockSuggestion).toBeUndefined();
   });
 
+  // #2330 (consensus-D, 설계 SSoT #2323 (1)) — confidence='consensus' forward-compat.
+  // backend consensus-C(#2329, 머지 대기)가 legConsensus confirmed 시 이 값을 forward한다.
+  // 아직 backend가 이 값을 보내지 않아도 device parse가 미리 허용해야 결합 시 즉시 동작.
+  it('confidence=consensus 도 유효 lockSuggestion으로 파싱 (#2330 forward-compat)', async () => {
+    const lockSuggestion = {
+      stationId: '건대입구',
+      trainCode: '2246',
+      lineId: '7',
+      confidence: 'consensus' as const,
+      decidedAt: 1_700_000_005_000,
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, lockSuggestion }));
+    const got = await readBackendSsotMirror();
+    expect(got?.lockSuggestion).toEqual(lockSuggestion);
+  });
+
   it.each([
     ['stationId missing', { trainCode: 'X', lineId: '2', confidence: 'high', decidedAt: 1 }],
     [

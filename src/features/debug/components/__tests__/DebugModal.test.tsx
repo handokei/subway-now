@@ -5062,6 +5062,52 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       resetLockCorrectionMetrics();
     });
 
+    // #2330 (consensus-D, 설계 SSoT #2323 (3)) — getConsensusMismatchMetrics()는
+    // useBoardingLockController가 기록하는데 DebugModal에 섹션이 없으면 관측 불가하다(orphan getter).
+    // Lock Correction과 동일 패턴 검증.
+    it('computeConsensusMismatchLines / buildConsensusMismatchSection: n/a + fired/lastFiredAt 표기 (#2330)', () => {
+      const { computeConsensusMismatchLines, buildConsensusMismatchSection } = __test__;
+      expect(computeConsensusMismatchLines(undefined)).toEqual(['(n/a)']);
+      expect(computeConsensusMismatchLines({ fired: 0, lastFiredAtMs: 0 })).toEqual([
+        'fired=0',
+        'lastFiredAt=(never)',
+      ]);
+      const withTs = computeConsensusMismatchLines({ fired: 3, lastFiredAtMs: 1_700_000_000_000 });
+      expect(withTs[0]).toBe('fired=3');
+      expect(withTs[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+      const built = buildConsensusMismatchSection({
+        ...baselineDumpArgs,
+        consensusMismatch: { fired: 2, lastFiredAtMs: 1000 },
+      });
+      expect(built[0]).toBe('fired=2');
+      expect(built[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+    });
+
+    it('Consensus Mismatch 섹션이 share dump에 포함된다 (#2330)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({ consensusMismatch: { fired: 5, lastFiredAtMs: 2000 } }),
+      );
+      expect(dump).toContain('## Consensus Mismatch');
+      const section = dump.slice(dump.indexOf('## Consensus Mismatch'));
+      expect(section).toContain('fired=5');
+      expect(section).toMatch(/lastFiredAt=\d{2}:\d{2}:\d{2}/);
+    });
+
+    it('Consensus Mismatch 섹션이 UI에 노출된다 (#2330)', async () => {
+      const {
+        getConsensusMismatchMetrics,
+        resetConsensusMismatchMetrics,
+        recordConsensusMismatch,
+      } = jest.requireActual('../../../alarm/utils/consensusMismatchMetrics');
+      resetConsensusMismatchMetrics();
+      recordConsensusMismatch('T-1', 'T-2');
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText(/fired=1/)).toBeTruthy();
+      expect(getConsensusMismatchMetrics().fired).toBe(1);
+      resetConsensusMismatchMetrics();
+    });
+
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
       const {
         clearCandidateRejectEntries,

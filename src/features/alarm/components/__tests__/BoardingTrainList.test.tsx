@@ -1396,4 +1396,106 @@ describe('BoardingTrainList', () => {
       expect(getByTestId('boarding-train-list-pending-notice')).toBeTruthy();
     });
   });
+
+  // #2330 (consensus-D, 설계 SSoT #2323 2026-08-13 (3)(6)) — 배지+확정정보 조합 UI.
+  // 어떤 상태도 "선택됨" 표기 금지(오토락 부활 오해 차단) — "추정" + "직접 선택" 병기만 사용.
+  describe('#2330 consensusSuggestion 배지/하이라이트', () => {
+    it('consensusSuggestion 미전달(기본값) → 배지/하이라이트 전혀 미노출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(queryByTestId('boarding-train-list-consensus-tracking')).toBeNull();
+      expect(queryByTestId('boarding-train-consensus-badge-T-A')).toBeNull();
+    });
+
+    it('consensusSuggestion.trainCode가 현재 list 어느 row와도 매칭 안 되면 추적 중 배지만 노출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          consensusSuggestion={{ trainCode: 'NOT-IN-LIST' }}
+        />,
+      );
+      expect(getByTestId('boarding-train-list-consensus-tracking')).toBeTruthy();
+      expect(queryByTestId('boarding-train-consensus-badge-T-A')).toBeNull();
+    });
+
+    it('consensusSuggestion.trainCode가 매칭되는 row → "추정" 배지 + "직접 선택" 병기, 추적 배지는 생략', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { getByTestId, queryByTestId, getByText } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          consensusSuggestion={{ trainCode: 'T-A' }}
+        />,
+      );
+      expect(getByTestId('boarding-train-consensus-badge-T-A')).toBeTruthy();
+      expect(getByText('추정')).toBeTruthy();
+      expect(getByText('직접 선택')).toBeTruthy();
+      expect(queryByTestId('boarding-train-list-consensus-tracking')).toBeNull();
+    });
+
+    it('어떤 상태도 "선택됨" 텍스트를 렌더하지 않는다 (오토락 부활 오해 차단)', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { queryByText } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          consensusSuggestion={{ trainCode: 'T-A' }}
+        />,
+      );
+      expect(queryByText('선택됨')).toBeNull();
+    });
+
+    it('탭은 consensusSuggestion과 무관하게 그대로 onSelect 발화 (탭 우선)', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const onSelect = jest.fn();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          consensusSuggestion={{ trainCode: 'OTHER' }}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-A'));
+      expect(onSelect).toHaveBeenCalledWith(train);
+    });
+
+    it('compact 모드에서도 매칭 row 배지 노출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          compact
+          consensusSuggestion={{ trainCode: 'T-A' }}
+        />,
+      );
+      expect(getByTestId('boarding-train-consensus-badge-T-A')).toBeTruthy();
+    });
+
+    it('전열차(prevTrain) row도 매칭되면 배지 노출', () => {
+      const prevTrain: PrevTrainCandidate = {
+        train: makeTrain({ trainCode: 'T-PREV', arrivalSeconds: 40 }),
+        elapsedSeconds: 90,
+      };
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          prevTrain={prevTrain}
+          consensusSuggestion={{ trainCode: 'T-PREV' }}
+        />,
+      );
+      expect(getByTestId('boarding-train-prev-consensus-badge-T-PREV')).toBeTruthy();
+    });
+  });
 });

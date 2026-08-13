@@ -62,6 +62,12 @@ const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
   '../../store/useUserIntentStore',
 );
 
+// #2330 (consensus-D) — 탭 vs consensus-confirmed 불일치 telemetry mock.
+const mockRecordConsensusMismatch = jest.fn();
+jest.mock('../../utils/consensusMismatchMetrics', () => ({
+  recordConsensusMismatch: (...args: unknown[]) => mockRecordConsensusMismatch(...args),
+}));
+
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '종착',
@@ -485,6 +491,82 @@ describe('useBoardingLockController', () => {
           result.current.createLockFromTrain(makeTrain({ trainCode: 'T-WRONG', line: '9' }));
         });
         expect(setInfoModeEnabledMock).not.toHaveBeenCalled();
+      });
+    });
+
+    // #2330 (consensus-D, 설계 SSoT #2323 (3)) — 탭은 항상 우선(SSoT). consensus-confirmed
+    // 제안과 다른 열차를 탭하면 mismatch telemetry가 기록되지만 lock 채택 자체는 차단되지 않는다.
+    describe('#2330 consensus-mismatch telemetry', () => {
+      let readSpy: jest.SpyInstance;
+      const CONSENSUS_SUGGESTION = {
+        stationId: '강남',
+        trainCode: 'CONSENSUS-1',
+        lineId: '2',
+        confidence: 'consensus' as const,
+        decidedAt: 1_700_000_000_000,
+      };
+      const MIRROR_WITH_CONSENSUS = {
+        currentStationId: '강남',
+        motionState: 'moving' as const,
+        lastAdvanceEvidence: 'arvlcd-confirmed-train',
+        lastAdvanceAt: 1_700_000_000_000,
+        passedStations: [],
+        receivedAt: Date.now(),
+        lockSuggestion: CONSENSUS_SUGGESTION,
+      };
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+        jest.setSystemTime(1_700_000_000_000);
+        mockRecordConsensusMismatch.mockClear();
+        const mirror = jest.requireActual('../../utils/backendSsotMirror');
+        readSpy = jest.spyOn(mirror, 'readBackendSsotMirror');
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+        readSpy.mockRestore();
+      });
+
+      it('탭한 trainCode가 consensus 제안과 다르면 recordConsensusMismatch 호출 + lock은 탭이 채택', async () => {
+        readSpy.mockResolvedValue(MIRROR_WITH_CONSENSUS);
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          jest.advanceTimersByTime(5_000);
+        });
+        await waitFor(() => {
+          expect(result.current.lockSuggestion?.confidence).toBe('consensus');
+        });
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'TAPPED-1' }));
+        });
+        expect(mockRecordConsensusMismatch).toHaveBeenCalledWith('CONSENSUS-1', 'TAPPED-1');
+        expect(mockSetBoardingLock).toHaveBeenCalledWith(
+          expect.objectContaining({ trainCode: 'TAPPED-1' }),
+        );
+      });
+
+      it('탭한 trainCode가 consensus 제안과 같으면 recordConsensusMismatch 미호출', async () => {
+        readSpy.mockResolvedValue(MIRROR_WITH_CONSENSUS);
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          jest.advanceTimersByTime(5_000);
+        });
+        await waitFor(() => {
+          expect(result.current.lockSuggestion?.confidence).toBe('consensus');
+        });
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'CONSENSUS-1' }));
+        });
+        expect(mockRecordConsensusMismatch).not.toHaveBeenCalled();
+      });
+
+      it('lockSuggestion 없으면 recordConsensusMismatch 미호출 (기존 동작)', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'ANY' }));
+        });
+        expect(mockRecordConsensusMismatch).not.toHaveBeenCalled();
       });
     });
   });
@@ -1277,6 +1359,34 @@ describe('useBoardingLockController', () => {
       });
       await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    // #2330 (consensus-D, 설계 SSoT #2323 (3)) — confidence='consensus'는 lock 승격 금지.
+    // backend legConsensus는 UI 표시/floor 힌트 전용으로만 forward — 자동 hydrate 경로가
+    // 이 값을 다른 confidence(high/medium/low)와 동일하게 채택하면 "오토락 부활" 오해를 준다.
+    it('confidence=consensus → createLock 미호출 (lock 승격 금지, UI 표시 전용)', async () => {
+      readSpy.mockResolvedValue({
+        ...MIRROR,
+        lockSuggestion: { ...SUGGESTION, confidence: 'consensus' as const },
+      });
+      const createLockMock = setupRejectScenario();
+      await tickAndSettleCycle();
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('confidence=consensus 여도 result.lockSuggestion에는 노출 (UI consumer 진입점)', async () => {
+      readSpy.mockResolvedValue({
+        ...MIRROR,
+        lockSuggestion: { ...SUGGESTION, confidence: 'consensus' as const },
+      });
+      useBoardingLockStore.setState({ lock: null });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => {
+        expect(result.current.lockSuggestion?.confidence).toBe('consensus');
+      });
     });
   });
 
