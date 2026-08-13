@@ -231,6 +231,14 @@ export interface SilentPushSsotPayload {
    * 두 번 발사되는 X1/X2/X6 회귀 차단.
    */
   alarmEvents?: ReadonlyArray<AlarmEventPayload>;
+  /**
+   * #2329 (consensus-C, 설계 SSoT #2323) — legConsensus suppress 시 최후 생존 후보 최늦 T_dep
+   * 기반 도착 추정(epoch ms). #2155(OS 사전예약 최후 안전망 1건 축소)가 소비할 floor 입력 —
+   * 본 필드는 supply만 담당하며 device 측 consumption은 #2155 범위(별도 이슈, 미착륙).
+   *
+   * 부재 시 wire 자연 누락(legConsensus 미시작 / suppress 아닌 상태 / 구 backend 호환).
+   */
+  legConsensusFloorEpochMs?: number;
 }
 
 /**
@@ -257,7 +265,7 @@ export interface LockSuggestionPayload {
   stationId: string;
   trainCode: string;
   lineId: string;
-  confidence: 'high' | 'medium' | 'low';
+  confidence: 'high' | 'medium' | 'low' | 'consensus';
   decidedAt: number;
 }
 
