@@ -24,8 +24,22 @@
 
 import { captureXEvent } from './sentry';
 
-/** trip_events.kind 최소 집합. 데이터 주도 확장 시 이 유니온에 추가한다. */
-export type TripEventKind = 'sync-received' | 'advance' | 'hydrate-issued' | 'trip-end';
+/**
+ * trip_events.kind 최소 집합. 데이터 주도 확장 시 이 유니온에 추가한다.
+ *
+ * `consensus-confirm` / `consensus-demote` / `consensus-suppress` (#2327, consensus-A) —
+ * `transferLegConsensus.ts` 상태기계가 산출하는 `LegConsensusEvent`를 D1에 append할 때 쓰는
+ * kind. 실제 insert 호출(엔진 이벤트 → 본 kind로 write하는 wire)은 #2329(consensus-C) 범위 —
+ * 본 파일은 kind 유니온만 선반영한다.
+ */
+export type TripEventKind =
+  | 'sync-received'
+  | 'advance'
+  | 'hydrate-issued'
+  | 'trip-end'
+  | 'consensus-confirm'
+  | 'consensus-demote'
+  | 'consensus-suppress';
 
 export interface TripEventInput {
   /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */

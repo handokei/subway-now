@@ -6,6 +6,7 @@
  */
 
 import type { ControlPushKind, StationWaypointKind } from '../../../src/shared/types/pushContract';
+import type { LegConsensusRecord } from './transferLegConsensus';
 
 export type LineNumber = string;
 
@@ -332,6 +333,16 @@ export interface Trip {
    * 자연스럽게 trip이 삭제되며 이 필드도 함께 사라진다.
    */
   destinationImminentFirstAt?: number;
+  /**
+   * #2327 (consensus-A) — 환승 leg 후보 열차 consensus 상태기계 스냅샷
+   * (`transferLegConsensus.ts:LegConsensusRecord`). 별도 KV row가 아닌 trip 객체 내부 필드로
+   * 저장한다(#2073 cron KV quota lesson — 새 row는 free plan quota를 소진한다).
+   *
+   * 본 필드는 순수 상태 저장소다. 실제 confirmed/demoted 상태를 fire/advance 판단에 연결하는
+   * wire(consensus-train evidence, confirmed-only alert, suppress→floor 공급)는 #2329
+   * (consensus-C) 범위 — 본 이슈(#2327)는 엔진+상태기계+본 필드까지만 제공한다.
+   */
+  legConsensus?: LegConsensusRecord;
 }
 
 /**
