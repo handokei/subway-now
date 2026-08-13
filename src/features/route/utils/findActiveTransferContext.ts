@@ -54,6 +54,74 @@ export function findActiveTransferContext(
 ): ActiveTransferContext | null {
   if (!lock || !route || !destinationName || !currentStation) return null;
 
+  const matched = resolveTransferWaypoint(route, destinationName, currentStation);
+  if (!matched) return null;
+
+  const { nextLine, transferStationInToLine, nextWaypointName, matchedIdx } = matched;
+  // lock이 이미 nextLine으로 교체된 상태(=환승 완료)면 context 재노출하지 않음.
+  // 사용자가 새 열차 탭 → createTransferLock → boardingLine=nextLine 갱신되었지만 GPS는 아직
+  // 환승역에 머무는 경우, 가드 없으면 같은 list가 다시 노출되어 lock 중복 생성 가능.
+  if (lock.boardingLine === nextLine) return null;
+
+  const direction = resolveDirectionInLine(
+    nextLine,
+    transferStationInToLine.id,
+    nextWaypointName,
+  );
+
+  return {
+    transferStationInToLine,
+    nextLine,
+    nextWaypointName,
+    direction,
+    completedTransferIdx: matchedIdx,
+  };
+}
+
+export interface LocklessTransferWaypoint {
+  /** toLine 기준의 환승역 Station 객체 — legAdvance stamp의 nextLine 근거. */
+  transferStationInToLine: Station;
+  /** 환승 후 탑승할 노선. */
+  nextLine: LineNumber;
+}
+
+/**
+ * #2319 — lock 유무와 무관하게 route + destinationName + currentStation만으로 환승 waypoint
+ * 도달을 판정한다. `findActiveTransferContext`는 lock 존재를 전제(#584 PR E 원 설계 — BoardingLock
+ * SSOT 기반 환승 list/autoLock)해 lockless trip(origin lock 자체가 없는 trip)에서는 영원히 null을
+ * 반환한다. `useTransferTrainList`의 durable legAdvance stamp(#2305)는 이 함수로 lock-비종속
+ * 신호를 얻어, lockless trip 환승 진행 시에도 approachLine이 동결 route fallback으로 남지 않도록
+ * 한다. arrivals list/autoLock(#1211 D5)은 여전히 lock-bound `findActiveTransferContext`만 사용
+ * — 이 함수는 stamp 전용 lock-비종속 신호다.
+ */
+export function findLocklessTransferWaypoint(
+  route: Route,
+  destinationName: string | null,
+  currentStation: Station | null,
+): LocklessTransferWaypoint | null {
+  if (!route || !destinationName || !currentStation) return null;
+  const matched = resolveTransferWaypoint(route, destinationName, currentStation);
+  if (!matched) return null;
+  return { transferStationInToLine: matched.transferStationInToLine, nextLine: matched.nextLine };
+}
+
+interface ResolvedTransferWaypoint {
+  transferStationInToLine: Station;
+  nextLine: LineNumber;
+  nextWaypointName: string;
+  matchedIdx: number;
+}
+
+/**
+ * `findActiveTransferContext`와 `findLocklessTransferWaypoint`가 공유하는 core 매칭 로직
+ * (lock 무관). resolveAllTargets로 waypoint 목록 산출 후 currentStation.name과 매칭되는
+ * transfer target을 탐색한다.
+ */
+function resolveTransferWaypoint(
+  route: NonNullable<Route>,
+  destinationName: string,
+  currentStation: Station,
+): ResolvedTransferWaypoint | null {
   const targets = resolveAllTargets(route, destinationName);
   const matchedIdx = targets.findIndex((t) => isSameStationName(t.name, currentStation.name));
   if (matchedIdx === -1) return null;
@@ -68,26 +136,10 @@ export function findActiveTransferContext(
   if (!next) return null;
 
   const nextLine = next.approachLine;
-  // lock이 이미 nextLine으로 교체된 상태(=환승 완료)면 context 재노출하지 않음.
-  // 사용자가 새 열차 탭 → createTransferLock → boardingLine=nextLine 갱신되었지만 GPS는 아직
-  // 환승역에 머무는 경우, 가드 없으면 같은 list가 다시 노출되어 lock 중복 생성 가능.
-  if (lock.boardingLine === nextLine) return null;
   const transferStationInToLine = findStationByNameAndLine(matched.name, nextLine);
   if (!transferStationInToLine) return null;
 
-  const direction = resolveDirectionInLine(
-    nextLine,
-    transferStationInToLine.id,
-    next.name,
-  );
-
-  return {
-    transferStationInToLine,
-    nextLine,
-    nextWaypointName: next.name,
-    direction,
-    completedTransferIdx: matchedIdx,
-  };
+  return { transferStationInToLine, nextLine, nextWaypointName: next.name, matchedIdx };
 }
 
 /** prefetch 트리거에 사용 — 환승 imminent로 판정하는 잔여 stops 임계값 (#814). */

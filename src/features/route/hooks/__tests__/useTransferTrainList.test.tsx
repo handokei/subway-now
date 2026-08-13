@@ -400,8 +400,13 @@ describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () =>
     expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
     // lock 해제(RCA evidence: release:user) — context는 lock=null이라 즉시 비활성화되지만
     // 이미 발생한 stamp 호출 자체(=durable 신호)는 취소되지 않는다.
+    // #2319 — lock=null 전이 시 lock-비종속 보조 경로(findLocklessTransferWaypoint)가 같은
+    // waypoint(nextLine='5')로 stamp를 다시 발화한다. 같은 값 재-stamp는 durable 신호를
+    // 무효화하지 않고(멱등), 오히려 lockless로 전환된 이후에도 stamp가 살아있음을 보강한다 —
+    // 이 재발화 자체가 #2319가 메우려는 lockless 갭의 정상 동작.
     rerender({ lock: null });
-    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(2);
+    expect(mockStampLegAdvance).toHaveBeenNthCalledWith(2, '5');
   });
 
   it('context가 계속 활성 상태로 재렌더 되어도 stampLegAdvance 중복 호출 없음', () => {
@@ -430,6 +435,91 @@ describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () =>
       }),
     );
     expect(mockStampLegAdvance).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2319 — lockless trip(=origin lock 자체가 없는 trip) 환승 진행 시 legAdvance stamp 갭.
+ *
+ * #2305(PR #2313)의 stamp는 `findActiveTransferContext`의 null→non-null 전이에서 발화하는데,
+ * 그 함수는 `lock` 존재를 전제(`if (!lock || ...) return null`)한다. lockless trip은 애초에
+ * lock이 없으므로 context가 영원히 null → stamp가 찍히지 않고 approachLine이 동결 route
+ * `stopsToTransfer` fallback으로 남는다 (#2318 선행 검증 판정, PR #2313 Deviation 절).
+ *
+ * 기대 동작: lock 유무와 무관하게, route + destinationName + currentStation만으로 환승
+ * waypoint 도달을 판정해 stamp가 발화해야 한다.
+ */
+describe('#2319 lockless trip 환승 진행 시 legAdvance stamp', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+  });
+
+  it('lock=null + 환승 waypoint 도달 → stampLegAdvance(nextLine) 호출 (RED였던 lockless 갭)', () => {
+    renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockStampLegAdvance).toHaveBeenCalledWith('5');
+  });
+
+  it('lock=null + 환승 waypoint 미도달(currentStation=null) → stampLegAdvance 미호출', () => {
+    renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: null,
+      }),
+    );
+    expect(mockStampLegAdvance).not.toHaveBeenCalled();
+  });
+
+  it('lock=null + currentStation이 환승역이 아닌 경유역(삼각지) → resolveTransferWaypoint 매칭 실패로 stampLegAdvance 미호출', () => {
+    const samgakji = findStationByNameAndLine('삼각지', '6') as Station;
+    renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakji,
+      }),
+    );
+    expect(mockStampLegAdvance).not.toHaveBeenCalled();
+  });
+
+  it('lock=null + 환승역 유지 상태로 재렌더 → stampLegAdvance 중복 호출 없음', () => {
+    const { rerender } = renderHook(
+      (props: { currentStation: Station }) =>
+        useTransferTrainList({
+          lock: null,
+          route,
+          destinationName: '여의나루',
+          currentStation: props.currentStation,
+        }),
+      { initialProps: { currentStation: gondeokOn6 } },
+    );
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+    rerender({ currentStation: gondeokOn6 });
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+  });
+
+  it('lock 존재 시(기존 경로)에는 lockless 보조 경로가 중복 stamp를 발생시키지 않음', () => {
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
+    expect(mockStampLegAdvance).toHaveBeenCalledWith('5');
   });
 });
 
