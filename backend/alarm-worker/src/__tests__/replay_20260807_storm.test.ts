@@ -119,7 +119,7 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -132,7 +132,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
     vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
-    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0,
+    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
     stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
     staleLockFireSkipped: 0,
