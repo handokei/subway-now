@@ -32,7 +32,9 @@
     "../../src/shared/utils/normalizeStationName.js",
     "../../src/shared/utils/dijkstraRoute.ts",
     "../../src/shared/utils/buildRouteGraph.ts",
-    "../../src/shared/constants/lineSpeeds.ts"
+    "../../src/shared/constants/lineSpeeds.ts",
+    "../../src/shared/constants/trainTypes.ts",
+    "../../src/data/expressStops.ts"
   ],
   "exclude": ["node_modules"]
 }
