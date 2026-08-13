@@ -1,6 +1,6 @@
 # ADR-032 — Fire emitter를 device primary + backend safetyNet backstop으로 개정 (route+arvlCd 탑승 이벤트 루프)
 
-- **Status**: Proposed. tracer-bullet (플래그 게이트, per-trip 원자 전환).
+- **Status**: **Superseded/HOLD (2026-08-13)**. 설계 척추("motion=ground-truth 발사 게이트", 트레이드오프 절 "단일 급소 = 가속도계 신뢰성")가 2026-08-12 실탑승 spike 판정(CMMotionActivity 발사 게이트 확정 NO-GO — 실제 출발·정차 감지 0건, walking/automotive 역전·오분류, #2269 코멘트)으로 붕괴. 같은 날 #2306 RCA(OS suspend가 지하 leg 알림 25분 전멸의 근본 원인)를 근거로 2026-08-13 사용자가 **O1: backend 자율 전진 + alert push 직접 발사**(ADR-031 Phase 2a로 흡수, backend가 위치 추적뿐 아니라 발사까지 담당)를 근본 축으로 확정하면서 본 ADR의 "발사=device" 분업 전제가 대체됨. **재개 조건**: 재캡처(placement=pocket/bag, GPS 완전 사망 구간 포함)로 raw ua+g low-pass 단독 신뢰성이 확보되고, ADR-031 Phase 2a/2b로 backend-primary 경로가 W1(지하 위치)·W4(miss)를 구조적으로 해결하지 못하는 잔여 갭이 확인될 때만. **raw ua+g low-pass(3s 벡터평균) 계열은 폐기 아님 — 보조 후보로 존치**(spike에서 출발·정차 신호 자체는 확인, 단독 불가·plan-융합 전제부 생존).
 - **부분 개정**: ADR-026(단일 emitter = backend) — **단일 emitter 원칙은 불변, primary 권위만 backend→device로 이동**. **Builds on**: ADR-010(miss=오발사 동급), ADR-022(flag), ADR-031(silent push deadlock), feedback_device_self_contained_fusion.
 - **분석**: 2026-08-10 오전 실탑승 덤프(`텍스트-885C779A95BA-1.txt`) + backend D1 trip `b00dd879` 교차 RCA.
 - **관련 plan**: `tasks/plan-2026-08-10-device-boarding-emitter.md`
