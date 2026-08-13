@@ -550,6 +550,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   laStaleAutoEnded: number;
   /**
+   * #2322 (O1-C) — la-stale backstop이 발동 조건(5분 침묵)을 만족했지만 device sync stale
+   * (#2321 `isDeviceSyncStale`) 또는 Seoul API outage(이 cron 사이클 HTTP error 관측) 상태라
+   * cleanup을 skip하고 trip을 생존시킨 누적 횟수. `laStaleAutoEnded`와 상호 배타적 — 같은
+   * 발동 조건에서 이 카운터가 늘면 그 카운터는 늘지 않는다. 침묵/outage 종료 후 정상 push가
+   * 재개되면 다음 cycle에 `lastLaPushAt`이 갱신돼 이 상태에서 벗어난다.
+   */
+  laStaleSurvivedSilence: number;
+  /**
    * #1967 (Ff-1) — admin kill switch(`KILL_LOCKLESS_INTERMEDIATE`)가 활성 상태라
    * `runLocklessIntermediate`의 매역 station-passed push 발사(pushId 발급/전송/
    * putPending/LA update)만 skip한 누적 횟수. 2026-07-31 리뷰(P1) — 게이트를 함수
@@ -900,6 +908,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   destinationBackstopForceEnded: number;
   /**
+   * #2322 (O1-C) — destination cross-check 결과가 'stale-gps'였지만 device sync stale(#2321) 또는
+   * Seoul API outage(이 cron 사이클 HTTP error 관측) 상태라 즉시 cleanup하지 않고 'gps-far'와
+   * 동일한 짧은 backstop(`DESTINATION_REACH_BACKSTOP_MS`)으로 trip 보존을 이관한 누적 횟수.
+   * device GPS 자체가 없는 legacy stale-gps(#1707 conservative cleanup)와 구분 — 이 카운터가
+   * 늘면 destinationCrossCheck.staleGps도 같이 늘지만 즉시 cleanup은 발생하지 않는다.
+   */
+  destinationStaleGpsSurvivedSilence: number;
+  /**
    * #2073 (Issue A) — 이번 tick에 pending/retry push entry가 존재할 가능성이 있는지.
    * `병합 listTrips 결과가 비어있음 AND 직전 tick 근방 fire/retry 기록 없음`일 때만 false —
    * 그 외(활성 trip 존재 또는 최근 활동 marker 有)엔 true(보수적 기본값). `index.ts`의
@@ -1047,6 +1063,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     envCorrected: 0,
     lockMissing: 0,
     laStaleAutoEnded: 0,
+    laStaleSurvivedSilence: 0,
     killSwitchLocklessIntermediateSkipped: 0,
     locklessIntermediateFired: 0,
     locklessMotionGateBlocked: 0,
@@ -1127,6 +1144,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     },
     // #2230 — gps-far 보류 destination advance의 짧은 backstop force-cleanup 누적.
     destinationBackstopForceEnded: 0,
+    destinationStaleGpsSurvivedSilence: 0,
     // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
@@ -1274,30 +1292,31 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #1680 (V8d) — stationary cron skip 게이트. SSoT.motionState === 'stationary' 명시 시
     // Seoul polling + push 발사를 skip한다. motionState='unknown' 또는 SSoT null은 평가 유지.
     // destination/transfer 임박 bypass: 사용자가 환승역/목적지에 정차 중인 케이스를 보호.
-    {
-      const stationarySsot = await readSsot(env.TRIPS, trip.token, {
-        cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    //
+    // #2322 (O1-C) — la-stale backstop(아래)이 같은 SSoT read를 재사용해 침묵/outage 여부를
+    // 판정하므로 이 블록 밖으로 scope를 넓혔다. 결과 판정 로직 자체는 무변경.
+    const stationarySsot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    if (
+      stationarySsot !== null &&
+      shouldSkipStationary(
+        stationarySsot.motionState,
+        waypoint.kind,
+        stationarySsot.userIntentDeclared,
+        // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 평가 계속.
+        isDeviceSyncStale(stationarySsot, now),
+      )
+    ) {
+      stats.lifecycleStationarySkipped += 1;
+      log('cron: stationary skip', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+        sleepMode: trip.sleepModeEnabled,
       });
-      if (
-        stationarySsot !== null &&
-        shouldSkipStationary(
-          stationarySsot.motionState,
-          waypoint.kind,
-          stationarySsot.userIntentDeclared,
-          // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 평가 계속.
-          isDeviceSyncStale(stationarySsot, now),
-        )
-      ) {
-        stats.lifecycleStationarySkipped += 1;
-        log('cron: stationary skip', {
-          token: trip.token.slice(0, 8),
-          station: waypoint.stationName,
-          kind: waypoint.kind,
-          // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
-          sleepMode: trip.sleepModeEnabled,
-        });
-        continue;
-      }
+      continue;
     }
 
     // #640 — BoardingLock 게이트. 사용자가 열차를 아직 선택하지 않았거나 lock이 만료된 trip은
@@ -1313,20 +1332,42 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // SSoT mirror cleanup은 `cleanupTripWithLa` 내부의 graceful `deleteSsot` 호출(try/catch
       // swallow, liveActivity.ts:322)에 위임 — 외부 추가 호출은 redundant + KV throw 발생 시
       // cron 루프 break-out 위험이라 두지 않는다.
+      //
+      // #2322 (O1-C) — device sync stale(#2321) 또는 Seoul API outage(이 cron 사이클 HTTP error
+      // 관측) 중에는 push 침묵이 device/API 장애의 정상 결과이지 SSoT freeze 버그의 증거가
+      // 아니다. 이 두 상태에서는 backstop을 skip하고 trip을 생존시킨다 — 무한 생존은 이미
+      // 존재하는 6h silence / 9h force-end staged lifecycle backstop(`tripLifecyclePhase`,
+      // 이 loop 상단에서 매 cycle 선행 평가됨)이 상한을 보장하므로 별도 상한 불필요.
+      const laStaleSurvivedSilence =
+        (stationarySsot !== null && isDeviceSyncStale(stationarySsot, now)) ||
+        deps.seoul.stats.httpErrorCount > 0;
       if (
         trip.lastLaPushAt !== undefined &&
         now - trip.lastLaPushAt > LA_STALE_AUTO_END_MS
       ) {
-        stats.laStaleAutoEnded += 1;
-        log('la-stale: auto-end after 5min push silence', {
-          token: trip.token.slice(0, 8),
-          elapsedMs: now - trip.lastLaPushAt,
-          station: pickActiveWaypoint(trip)?.stationName,
-          // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
-          sleepMode: trip.sleepModeEnabled,
-        });
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'la-stale-backstop' });
-        continue;
+        if (laStaleSurvivedSilence) {
+          stats.laStaleSurvivedSilence += 1;
+          log('la-stale: survived (device-sync-stale or seoul-outage)', {
+            token: trip.token.slice(0, 8),
+            elapsedMs: now - trip.lastLaPushAt,
+            station: pickActiveWaypoint(trip)?.stationName,
+            deviceSyncStale: stationarySsot !== null && isDeviceSyncStale(stationarySsot, now),
+            seoulHttpErrors: deps.seoul.stats.httpErrorCount,
+          });
+        } else {
+          stats.laStaleAutoEnded += 1;
+          log('la-stale: auto-end after 5min push silence', {
+            token: trip.token.slice(0, 8),
+            elapsedMs: now - trip.lastLaPushAt,
+            station: pickActiveWaypoint(trip)?.stationName,
+            // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+            sleepMode: trip.sleepModeEnabled,
+          });
+          await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+            reason: 'la-stale-backstop',
+          });
+          continue;
+        }
       }
       // #2131 (Part A-2, ADR-014 동급 보장) — boarding-prompt 9단 게이트 평가를 lockless
       // intermediate 분기보다 앞으로 hoist. 기존엔 `trip.infoModeEnabled && waypoint.kind ===
@@ -3701,7 +3742,33 @@ export async function advanceBoardingLockWaypoint(
       kind: waypoint.kind,
       result: crossCheck,
     });
-    if (crossCheck === 'gps-far') {
+    // #2322 (O1-C) — 'stale-gps'(device GPS 5분+ 미갱신)는 기존 #1707 정책상 conservative
+    // cleanup 대상이지만, device sync 자체가 stale(#2321)하거나 Seoul API outage(이 cron
+    // 사이클 HTTP error 관측) 상태에서는 "device GPS가 잠깐 안 옴"이 아니라 "device/API
+    // 전체가 침묵 중"인 다른 상황 — 그 상태에서 destination 도착으로 잘못 판정해 종료하면
+    // 침묵 25분 fixture 같은 케이스에서 실제 도착 전에 trip이 사라진다. 이 두 상태에서는
+    // 'gps-far'와 동일하게 짧은 backstop(`DESTINATION_REACH_BACKSTOP_MS`)으로 이관한다.
+    let effectiveCrossCheck = crossCheck;
+    if (crossCheck === 'stale-gps') {
+      const staleGpsSsot = await readSsot(env.TRIPS, trip.token, {
+        cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+      });
+      const silentOrOutage =
+        (staleGpsSsot !== null && isDeviceSyncStale(staleGpsSsot, now)) ||
+        deps.seoul.stats.httpErrorCount > 0;
+      if (silentOrOutage) {
+        stats.destinationStaleGpsSurvivedSilence += 1;
+        log('boarding-lock: stale-gps survived (device-sync-stale or seoul-outage)', {
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+          kind: waypoint.kind,
+          deviceSyncStale: staleGpsSsot !== null && isDeviceSyncStale(staleGpsSsot, now),
+          seoulHttpErrors: deps.seoul.stats.httpErrorCount,
+        });
+        effectiveCrossCheck = 'gps-far';
+      }
+    }
+    if (effectiveCrossCheck === 'gps-far') {
       // #2230 — destination 도달이 최초로 관측된 시각 anchor. 이미 stamp돼 있으면 보존
       // (매 cycle 재stamp하면 backstop이 끝없이 밀려 9h force-end와 다를 바 없어진다).
       if (trip.destinationImminentFirstAt === undefined) {

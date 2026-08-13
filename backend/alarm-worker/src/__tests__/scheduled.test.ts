@@ -147,7 +147,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -160,7 +160,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
     vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
-    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0,
+    cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
     stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
     staleLockFireSkipped: 0,
@@ -6494,6 +6494,115 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
     expect(remaining).toHaveLength(0);
   });
 
+  // #2322 (O1-C) — 침묵(device sync stale) 중 la-stale backstop이 trip을 죽이지 않아야 한다.
+  // #2306 evidence(25분 suspend 4역+목적지 알림 0건)의 backend 측 안전망 회귀 차단.
+  it('device sync stale(25min silence) → la-stale backstop skip, laStaleSurvivedSilence++, trip 생존', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'la-stale-silent',
+      createdAt: NOW - 30 * 60_000,
+      expiresAt: NOW + 60 * 60_000,
+      alarmAtEpochMs: NOW + 60_000,
+      lastLaPushAt: NOW - 6 * 60_000,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // device가 25분간 sync 없음 — DEVICE_SYNC_STALE_THRESHOLD_MS(5분) 초과.
+    const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.lastDeviceSyncAt = NOW - 25 * 60_000;
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(0);
+    expect(stats.laStaleSurvivedSilence).toBe(1);
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining).toHaveLength(1);
+  });
+
+  // #2322 (O1-C) — Seoul API outage(이 cron 사이클 HTTP error) 중에도 la-stale backstop이
+  // trip을 죽이지 않아야 한다. push 침묵이 backend가 아닌 Seoul API 장애의 정상 결과이기 때문.
+  it('Seoul API outage(HTTP error 관측) → la-stale backstop skip, laStaleSurvivedSilence++, trip 생존', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'la-stale-outage',
+      createdAt: NOW - 30 * 60_000,
+      expiresAt: NOW + 60 * 60_000,
+      alarmAtEpochMs: NOW + 60_000,
+      lastLaPushAt: NOW - 6 * 60_000,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    const erroredFetch = vi.fn(
+      async () => new Response('boom', { status: 500 }),
+    ) as unknown as typeof fetch;
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: erroredFetch,
+    });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(0);
+    expect(stats.laStaleSurvivedSilence).toBe(1);
+    const remaining: Trip[] = [];
+    for await (const t of (await import('../trips')).listTrips(kv as unknown as KVNamespace)) {
+      remaining.push(t);
+    }
+    expect(remaining).toHaveLength(1);
+  });
+
+  // #2322 (O1-C) — 침묵/outage가 끝나고 device sync가 다시 신선해지면 기존 5분 backstop이
+  // 정상 재개돼야 한다 (guard가 영구 면제가 아님을 검증).
+  it('device sync 재개(fresh) 후에는 la-stale backstop이 정상 발동', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'la-stale-recovered',
+      createdAt: NOW - 30 * 60_000,
+      expiresAt: NOW + 60 * 60_000,
+      alarmAtEpochMs: NOW + 60_000,
+      lastLaPushAt: NOW - 6 * 60_000,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.lastDeviceSyncAt = NOW - 10_000; // 신선 — stale 아님.
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(stats.laStaleAutoEnded).toBe(1);
+    expect(stats.laStaleSurvivedSilence).toBe(0);
+  });
+
   // 회귀 가드 — #1933 review finding. cleanupTripWithLa는 내부에서 deleteSsot을 try/catch로 감싸
   // graceful swallow한다 (liveActivity.ts:322). 외부에서 추가 호출 시 비가드라 KV throw가 cron 루프를
   // break-out 해 다음 trip이 평가되지 않는 회귀 위험. 본 가드 테스트는 ssot KV가 throw해도 backstop이
@@ -10137,7 +10246,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, laStaleAutoEnded: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -10150,7 +10259,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
       vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
       vanishFallbackMotionGateBlocked: 0,
-      cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0,
+      cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
       realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
       // #1828 Phase 5 — station-level arrivals polling.
       stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
@@ -10606,6 +10715,126 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
     expect(await kv.get(`trip:${trip.token}`)).toBeNull();
     expect(stats.destinationCrossCheck.staleGps).toBe(1);
     expect(stats.destinationCrossCheck.gpsFar).toBe(0);
+  });
+
+  // #2322 (O1-C) — stale-gps여도 device sync stale(#2321) 상태면 즉시 cleanup하지 않고
+  // gps-far와 동일한 짧은 backstop으로 trip을 보존해야 한다.
+  it('preserves trip on stale-gps when device sync is also stale (25min silence)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('user-stale-silent-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        {
+          lat: 37.5552,
+          lng: 126.9368,
+          accuracy: 15,
+          ts: NOW - DESTINATION_GPS_STALE_THRESHOLD_MS - 1,
+          motion: 'automotive',
+        },
+      ]),
+    );
+    const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '홍대입구', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.lastDeviceSyncAt = NOW - 25 * 60_000;
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeHapjeongArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // trip 보존 — 즉시 cleanup되지 않는다.
+    expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
+    expect(stats.destinationCrossCheck.staleGps).toBe(1);
+    expect(stats.destinationStaleGpsSurvivedSilence).toBe(1);
+  });
+
+  // #2322 (O1-C) — Seoul API outage 중에도 stale-gps 즉시 cleanup을 skip해야 한다.
+  // decoy trip(다른 역 조회)이 이 cron 사이클에 HTTP error를 관측시켜 outage를 재현하고,
+  // 본 trip(합정)의 arrivals 조회 자체는 정상 ARRIVED 응답으로 advance된다 — 두 신호가
+  // 독립적임을 보장(같은 SeoulArrivalClient 인스턴스가 cron 1 cycle 범위로 httpErrorCount를
+  // 공유하는 기존 정책, #1663).
+  it('preserves trip on stale-gps when Seoul API outage observed this cycle (decoy trip HTTP error)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeHapjeongDestTrip('z-user-stale-outage-tok');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await kv.put(
+      `pos:${trip.token}`,
+      JSON.stringify([
+        {
+          lat: 37.5552,
+          lng: 126.9368,
+          accuracy: 15,
+          ts: NOW - DESTINATION_GPS_STALE_THRESHOLD_MS - 1,
+          motion: 'automotive',
+        },
+      ]),
+    );
+    // decoy trip — 'a-'로 시작해 InMemoryKV.list() 정렬(localeCompare)상 본 trip보다 먼저
+    // scan돼 같은 cycle 내에서 httpErrorCount를 먼저 증가시킨다.
+    const decoyTrip = makeTrip({
+      token: 'a-decoy-outage-tok',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+      boardingLock: {
+        trainCode: 'D',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['교대', '강남'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+    });
+    await putTrip(kv as unknown as KVNamespace, decoyTrip);
+
+    const hapjeongUrlPart = encodeURIComponent('합정');
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes(hapjeongUrlPart)) {
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '0',
+                recptnDt: '',
+                updnLine: '내선',
+                trainLineNm: '합정',
+                btrainNo: 'T',
+                subwayNm: '지하철2호선',
+                arvlCd: 1, // ARRIVED
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      // decoy(강남) 조회 + positions 조회 등 나머지는 모두 error → httpErrorCount 증가.
+      return new Response('boom', { status: 500 });
+    });
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // outage 관측 확인 — httpErrorCount가 실제로 늘었어야 이 테스트가 의미 있다.
+    expect(seoul.stats.httpErrorCount).toBeGreaterThan(0);
+    // trip 보존 — Seoul outage 상태에선 stale-gps로 즉시 종료되지 않는다.
+    expect(await kv.get(`trip:${trip.token}`)).not.toBeNull();
+    expect(stats.destinationStaleGpsSurvivedSilence).toBe(1);
   });
 
   /**
