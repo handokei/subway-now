@@ -146,7 +146,8 @@ describe('tripPositionSsot — seedSsot (S1 GAP A 수신부)', () => {
     expect(ssot.passedStations).toEqual([]);
     expect(ssot.userIntentDeclared).toBe(false);
     expect(ssot.seedOverrideCount).toBe(0);
-    expect(ssot.schemaVersion).toBe(2);
+    // #2321 — lastDeviceSyncAt 추가로 schemaVersion 3.
+    expect(ssot.schemaVersion).toBe(3);
     expect(ssot.lastAdvanceAt).toBe(0);
 
     const persisted = await readSsot(kv as unknown as KVNamespace, 'tok-seed');
@@ -169,12 +170,12 @@ describe('tripPositionSsot — seedSsot (S1 GAP A 수신부)', () => {
     expect(entry?.expiresAt).toBeDefined();
   });
 
-  // #1705 — currentStationLine seed + schemaVersion=2
-  it('seedSsot: line 옵션 전달 시 currentStationLine stamp + schemaVersion=2', async () => {
+  // #1705 — currentStationLine seed + schemaVersion=3 (#2321 — lastDeviceSyncAt 추가로 bump)
+  it('seedSsot: line 옵션 전달 시 currentStationLine stamp + schemaVersion=3', async () => {
     const kv = new InMemoryKV();
     const ssot = await seedSsot(kv as unknown as KVNamespace, 'tok-line', '합정', { line: '2' });
     expect(ssot.currentStationLine).toBe('2');
-    expect(ssot.schemaVersion).toBe(2);
+    expect(ssot.schemaVersion).toBe(3);
     const persisted = await readSsot(kv as unknown as KVNamespace, 'tok-line');
     expect(persisted?.currentStationLine).toBe('2');
   });

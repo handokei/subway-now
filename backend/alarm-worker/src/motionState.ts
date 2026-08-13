@@ -178,6 +178,11 @@ export async function updateSsotMotion(
   const ssot = await readSsot(kv, token);
   if (!ssot) return null;
 
+  // #2321 (O1-B) — device sync freshness anchor. POST /position 수신 = device가 살아있다는
+  // 직접 증거이므로 매 호출마다 stamp. 게이트들이 motionState/lastAdvanceAt을 신뢰할지
+  // 판단하는 입력(`isDeviceSyncStale`)이 된다.
+  ssot.lastDeviceSyncAt = now;
+
   // device GPS sample을 evidence로 누적 (signal은 후속 maxDisplacementMeters가 lat/lng 추출).
   pushMotionEvidence(ssot, {
     source: 'device-position',
