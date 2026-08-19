@@ -10,9 +10,12 @@
  * pure 알고리즘(`transferDetect.ts`, #937 머지)을 런타임 신호와 묶어 다음을 한다:
  *   1) 다른 노선 ArrivalRow를 모아 `detectTransfer`로 입력 — current `boardingLine`은 제외해
  *      이미 타고 있는 노선이 후보로 잡히지 않게 한다.
- *   2) 단일 후보 → A1 자동 lock (`hydrateLockFromCandidate` 재사용, `useBoardingLockController`)
- *      — destination 미설정이면 lock 컨텍스트 부족으로 hydrate가 no-op이라 호출자 가드 불필요.
- *   3) 다중 후보 → 모달 상태를 노출 — 호출자가 F4 1탭 모달(#914) UI 트리거.
+ *   2) 후보(1개든 N개든) → 모달 상태를 노출 — 호출자가 F4 1탭 모달(#914) UI 트리거.
+ *      사용자가 모달에서 line을 선택(`selectLine`)해야만 `onAutoLock`(hydrate) 호출.
+ *
+ * #2342 — 단일 후보 무탭 자동 lock(A1) 삭제. 무탭 auto-lock 회귀(2026-08-18 검증 탑승,
+ * boardingPrompt=0인데 lock 활성) 원인이 본 hook의 "candidateLines.length === 1" 분기였다.
+ * 사용자 명시 의향(탭)만 lock을 만든다는 원칙(ADR-014)에 따라 단일 후보도 모달로 탭을 요구한다.
  *
  * 본 hook이 막는 것(no-op 조건):
  *   - 사용자가 이미 planned route의 transfer waypoint에 있다 (=`useTransferTrainList` context 활성).
@@ -46,8 +49,9 @@ export interface UseTransferAutoDetectInputs {
   /** route 도착역 이름. `findActiveTransferContext`의 입력. */
   readonly destinationName: string | null;
   /**
-   * 단일 후보 detect 시 호출 — 호출자가 `useBoardingLockController.hydrateLockFromCandidate`로
-   * lock 자동 hydrate. destination 미설정 / lock 활성 등으로 hydrate가 no-op이면 graceful.
+   * 사용자가 모달에서 line을 선택(`selectLine`)했을 때만 호출 — 호출자가
+   * `useBoardingLockController.hydrateLockFromCandidate`로 lock hydrate.
+   * destination 미설정 / lock 활성 등으로 hydrate가 no-op이면 graceful.
    */
   readonly onAutoLock: (candidate: AutoLockCandidate) => void;
 }
@@ -103,7 +107,6 @@ export function useTransferAutoDetect({
   // 같은 환승역에서 사용자가 닫아도 다음 polling에서 다시 열린다.
   const [modalVisible, setModalVisible] = useState(false);
   const dismissedAtStationRef = useRef<string | null>(null);
-  const lastAutoLockedKeyRef = useRef<string | null>(null);
 
   // #1637 — 환승역에서 station.id는 line별로 분리(예: '합정-2' vs '합정-6')되어 있어 dismiss flag
   // 추적에 부적합. fusion이 같은 환승역의 다른 line variant를 primary로 채택하면 id 변경 →
@@ -116,35 +119,17 @@ export function useTransferAutoDetect({
     if (dismissedAtStationRef.current && dismissedAtStationRef.current !== stationKey) {
       dismissedAtStationRef.current = null;
     }
-    if (lastAutoLockedKeyRef.current && !stationKey) {
-      lastAutoLockedKeyRef.current = null;
-    }
   }, [stationKey]);
 
-  const { candidate } = detection;
-
-  // detect 결과 적용 — 단일 후보면 자동 lock, 다중 후보면 모달 open.
+  // detect 결과 적용 — 후보가 1개든 N개든 모달로 사용자 탭을 요구한다(#2342, 무탭 auto-lock 삭제).
   useEffect(() => {
     if (candidateLines.length === 0 || !currentStation) {
       if (candidateLines.length === 0 && modalVisible) setModalVisible(false);
       return;
     }
-    if (candidateLines.length === 1) {
-      /* istanbul ignore next -- candidateLines가 detectTransfer로 산출되었으면 arrival에 해당 line의
-         imminent 도착이 반드시 존재 → buildAutoLockCandidate는 항상 candidate를 반환. 방어 코드. */
-      if (!candidate) return;
-      // 같은 환승역 같은 trainCode는 1회만 hydrate 시도 — onAutoLock 자체도 idempotent지만
-      // hydrateLockFromCandidate는 ETA 스냅샷이 없어 lock=null 가드만 의존 → 첫 hydrate가 race로
-      // 늦어지는 동안 매 polling tick에서 호출되는 churn을 줄인다.
-      const key = `${currentStation.id}|${candidate.trainCode}|${candidate.line}`;
-      if (lastAutoLockedKeyRef.current === key) return;
-      lastAutoLockedKeyRef.current = key;
-      onAutoLock(candidate);
-      return;
-    }
     if (dismissedAtStationRef.current === stationKey) return;
     setModalVisible(true);
-  }, [candidateLines, candidate, currentStation, onAutoLock, modalVisible, stationKey]);
+  }, [candidateLines, currentStation, modalVisible, stationKey]);
 
   const modalCandidates = useMemo<Station[]>(() => {
     if (!currentStation) return [];
@@ -164,8 +149,6 @@ export function useTransferAutoDetect({
       dismissedAtStationRef.current = stationKey;
       const candidate = buildAutoLockCandidate(line, arrival, destinationName);
       if (!candidate) return;
-      const key = `${currentStation.id}|${candidate.trainCode}|${candidate.line}`;
-      lastAutoLockedKeyRef.current = key;
       onAutoLock(candidate);
     },
     [currentStation, arrival, destinationName, onAutoLock, stationKey],
