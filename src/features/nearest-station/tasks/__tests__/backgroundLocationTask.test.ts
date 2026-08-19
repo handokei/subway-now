@@ -58,6 +58,12 @@ jest.mock('../../utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
 }));
 
+// ── bgLocationProfile 모킹 (#2344 V8a profile 전환) ──
+const mockApplyBgLocationProfile = jest.fn();
+jest.mock('../../utils/bgLocationProfile', () => ({
+  applyBgLocationProfile: (...args: unknown[]) => mockApplyBgLocationProfile(...args),
+}));
+
 // ── accelMotionState 모킹 (#823 가속도 latest 첨부) ──
 const mockGetLatestAccelSummary = jest.fn();
 jest.mock('../../utils/accelMotionState', () => ({
@@ -217,6 +223,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     // #2178 — pull death backstop 기본값: baseUrl 없음(호출 안 함). 개별 테스트에서 override.
     mockGetTripDeathPullBackendUrl.mockReturnValue(null);
     mockCheckTripDeathByPull.mockResolvedValue('skipped');
+    mockApplyBgLocationProfile.mockResolvedValue(undefined);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -1154,6 +1161,48 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
       expect(mockUploadPosition).toHaveBeenCalledWith(expect.objectContaining({ motion: 'stationary' }));
       expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+
+    describe('#2344 (V8a) — BG location profile 전환', () => {
+      it('motionStationary=true → applyBgLocationProfile(TASK, "stationary") 호출', async () => {
+        mockGetCurrentMotionStationary.mockReturnValue(true);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(
+          BACKGROUND_LOCATION_TASK,
+          'stationary',
+        );
+      });
+
+      it('motionStationary=false → applyBgLocationProfile(TASK, "surface") 호출', async () => {
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'surface');
+      });
+
+      it('applyBgLocationProfile이 reject해도 태스크는 크래시하지 않는다 (graceful)', async () => {
+        mockGetCurrentMotionStationary.mockReturnValue(true);
+        mockApplyBgLocationProfile.mockRejectedValueOnce(new Error('restart failed'));
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await expect(
+          taskCallback({
+            data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+            error: null,
+          }),
+        ).resolves.toBeUndefined();
+      });
     });
 
     describe('#1667 (ADR-015 strongDB wire) — wifiSsidStationName forward', () => {
