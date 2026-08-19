@@ -31,6 +31,13 @@ import { captureXEvent } from './sentry';
  * `transferLegConsensus.ts` 상태기계가 산출하는 `LegConsensusEvent`를 D1에 append할 때 쓰는
  * kind. 실제 insert 호출(엔진 이벤트 → 본 kind로 write하는 wire)은 #2329(consensus-C) 범위 —
  * 본 파일은 kind 유니온만 선반영한다.
+ *
+ * `cron-fire-attempt` (#2343) — cron 자율 fire path(`tryAdvanceAndFireArvlcd` /
+ * `fireArvlCdStationPush`, scheduled.ts)가 destination/transfer/station-passed(intermediate)
+ * push를 실제로 발사 시도한 시점에만 append. 매 tick이 아니라 발사 시도(성공/실패/trip 삭제
+ * race skip) 시점 1건만 write — Free plan D1 quota 보호(#2073 lesson). `meta`에
+ * `{ waypointKind, phase, outcome, reason? }`을 싣는다 — 새 kind를 추가하지 않고 기존
+ * trip_events 스키마를 재사용(quota 증분 최소화).
  */
 export type TripEventKind =
   | 'sync-received'
@@ -39,7 +46,8 @@ export type TripEventKind =
   | 'trip-end'
   | 'consensus-confirm'
   | 'consensus-demote'
-  | 'consensus-suppress';
+  | 'consensus-suppress'
+  | 'cron-fire-attempt';
 
 export interface TripEventInput {
   /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */
