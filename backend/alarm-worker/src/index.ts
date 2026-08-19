@@ -2711,6 +2711,7 @@ export const handler = {
           skippedNoContext: scheduledStats.boardingPromptSkippedNoContext,
           skippedStale: scheduledStats.boardingPromptSkippedStale,
           skippedTooFar: scheduledStats.boardingPromptSkippedTooFar,
+          skippedEmpty: scheduledStats.boardingPromptSkippedEmpty,
           skippedTrainDuplicate: scheduledStats.boardingPromptSkippedTrainDuplicate,
         },
         Date.now(),

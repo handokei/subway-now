@@ -4677,6 +4677,58 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.boardingPromptEvaluated).toBe(1);
   });
 
+  // #2350 — 근접 게이트 live anchor 전환. `/position` 채널(index.ts stampOriginProximityIfNeeded)이
+  // 이미 originProximityAt을 stamp했다면(디바이스가 실시간으로 근접을 확인함), POST /trips
+  // 등록 시점의 정적 promptGeoContext 스냅샷이 "멀다"를 가리켜도 근접 게이트로 영구 차단해선
+  // 안 된다 — 집에서 경로 미리 설정 후 도보 이동하는 흔한 케이스(#2350 RCA).
+  it('#2350 — originProximityAt 이미 stamp됨 + 정적 스냅샷 tooFar → 근접 게이트 통과(발사 도달)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        // /position 채널이 과거에 이미 근접을 관측해 stamp — anchor 존재.
+        originProximityAt: NOW - 5 * 60 * 1000,
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          // 등록 시점 정적 스냅샷은 여전히 "멀다"(300 - 9 = 291 > 150) — 갱신 안 됨(index.ts:1564).
+          originDistanceM: 300,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
+  // #2350 — originProximityAt이 아직 stamp 안 됐고 정적 스냅샷이 진짜 멀면 여전히 차단(무회귀).
+  it('#2350 — originProximityAt 미stamp + 정적 스냅샷 tooFar → 근접 게이트 여전히 차단(무회귀)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          originDistanceM: 300,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+  });
+
   // #2153 — 근접 관측 시각(originProximityAt)이 최초 1회만 stamp되어 이후 cycle의 anchor로
   // 보존된다. createdAt이 아니라 이 stamp 기준으로 15분 초과 시 다시 stale이어야 한다.
   it('#2153 — 근접 관측 시각이 stamp되어 보존 — 관측 후 15분+ 경과하면 다시 SkippedStale', async () => {
