@@ -24,6 +24,10 @@
  *
  *   Signal 4 backend-timeout은 silentPushTask.ts 4-way 편집 충돌 회피로 후속 이슈 분리.
  *
+ * #2341 — Signal 1(fusion-destination)은 backend destination push(실측 지연 35~51s) 발사보다
+ * 먼저 trip을 삭제해버리는 race가 있어, destination push 관측 OR 백스톱 타임아웃
+ * (DESTINATION_PUSH_TIMEOUT_MS) 게이트를 통과해야만 발화한다 (evaluateDestinationPushGate).
+ *
  * Idempotent guard:
  *   - trigger 전 `getTripEndedSentinel()` 확인 → non-null 이면 이미 backend cleanup 실행 → skip.
  *   - trigger 시 `runTripBoundCleanups()` + `setTripEndedSentinel(now)` 호출 → backend가 뒤늦게
@@ -53,6 +57,8 @@ import {
   arcCompletionSignal,
   etaBackstopSignal,
   shouldTriggerSelfEnd,
+  hasObservedDestinationPush,
+  destinationPushGatePassed,
   type SelfEndSignalReason,
 } from '../utils/deviceSelfEndSignals';
 import { getTripStartedAt } from '../utils/tripStartStorage';
@@ -66,7 +72,7 @@ import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
-import { appendAlarmLog } from '../utils/alarmLog';
+import { appendAlarmLog, getAlarmLog } from '../utils/alarmLog';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
@@ -126,6 +132,13 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
   // 불필요 storage/log I/O 회피).
   const firedForDestinationIdRef = useRef<string | null>(null);
 
+  // #2341 — destination push 게이트 평가가 in-flight인 동안 겹쳐 들어오는 effect tick이
+  // evaluateDestinationPushGate를 중복 호출하는 것을 방지. firedForDestinationIdRef는
+  // performSelfEnd 진입 시에만 stamp되므로(게이트 통과 전) 게이트 평가 자체의 재진입은
+  // 별도 ref로 막는다. 게이트가 아직 통과 못 한 상태(push 미관측 + 타임아웃 전)에서는
+  // 다음 tick 재평가를 허용해야 하므로 완료 시 항상 false로 되돌린다.
+  const destinationGatePendingRef = useRef<boolean>(false);
+
   // destination id 변경 감지 → tripStartedAt 재로드 + ref 리셋 (새 trip은 카운트 처음부터).
   const destinationId = destination?.id ?? null;
   useEffect(() => {
@@ -133,6 +146,7 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
     stationaryStartedAtRef.current = null;
     stationary5minStartedAtRef.current = null;
     firedForDestinationIdRef.current = null;
+    destinationGatePendingRef.current = false;
     if (destinationId === null) {
       setTripStartedAt_(null);
       return;
@@ -213,6 +227,23 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
     [releaseLock, tripStartedAt],
   );
 
+  // #2341 — Signal 1(fusion-destination)의 destination 도착 판정이 backend destination push
+  // 발사(실측 지연 35~51s)를 선점해 trip을 삭제해버리는 race 방지 게이트. destination-match
+  // 시작 이후 destination push가 alarmLog에 관측됐으면 즉시 통과, 아니면 DESTINATION_PUSH_TIMEOUT_MS
+  // 백스톱 경과 시에만 통과 (backend 완전 침묵 trip이 self-end를 영구 대기하는 stale 방지).
+  const evaluateDestinationPushGate = useCallback(
+    async (matchStartedAt: number | null, now: number): Promise<boolean> => {
+      /* istanbul ignore next -- 호출부는 s1.trigger===true(reason='fusion-destination')일 때만
+       * 진입하며, fusionDestinationSignal은 destinationMatchStartedAt!==null일 때만 trigger를
+       * 반환하므로 matchStartedAt null은 도달 불가. 타입 시그니처 방어용. */
+      if (matchStartedAt === null) return false;
+      const entries = await getAlarmLog();
+      const pushObserved = hasObservedDestinationPush(entries, matchStartedAt);
+      return destinationPushGatePassed(matchStartedAt, now, pushObserved);
+    },
+    [],
+  );
+
   // 매 render tick에서 fusion 신호 평가. 신호 변경마다 실행되며, 매 evaluation 시점의 fresh input으로
   // 3-signal OR 판정. 첫 진입 tick의 ts는 ref에 저장하고 다음 tick부터 elapsed 누적 계산.
   useEffect(() => {
@@ -276,7 +307,21 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
 
     const verdict = shouldTriggerSelfEnd([s1, s2, s3]);
     if (verdict.trigger && verdict.reason !== null) {
-      void performSelfEnd(verdict.reason, destinationId);
+      const reason = verdict.reason;
+      if (reason === 'fusion-destination') {
+        // #2341 — destination push 관측 또는 백스톱 타임아웃 게이트 통과 후에만 발화.
+        // in-flight 평가 중이면 이번 tick은 skip (완료 시 pending 플래그가 풀려 다음 tick 재평가).
+        if (!destinationGatePendingRef.current) {
+          destinationGatePendingRef.current = true;
+          const matchStartedAt = destinationMatchStartedAtRef.current;
+          void evaluateDestinationPushGate(matchStartedAt, now).then((allowed) => {
+            destinationGatePendingRef.current = false;
+            if (allowed) void performSelfEnd(reason, destinationId);
+          });
+        }
+      } else {
+        void performSelfEnd(reason, destinationId);
+      }
     }
   }, [
     destinationId,
@@ -287,5 +332,6 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
     inputs.expectedTripDurationMs,
     tripStartedAt,
     performSelfEnd,
+    evaluateDestinationPushGate,
   ]);
 }

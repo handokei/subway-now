@@ -4,6 +4,9 @@ import {
   etaBackstopSignal,
   shouldTriggerSelfEnd,
   isStrongFusionConfidenceForSelfEnd,
+  hasObservedDestinationPush,
+  destinationPushGatePassed,
+  DESTINATION_PUSH_TIMEOUT_MS,
 } from '../deviceSelfEndSignals';
 import type { FusionConfidence } from '../../../../shared/types/fusion';
 
@@ -327,5 +330,87 @@ describe('shouldTriggerSelfEnd', () => {
       { trigger: true, reason: 'eta-backstop' },
     ]);
     expect(v).toEqual({ trigger: true, reason: 'fusion-destination' });
+  });
+});
+
+describe('#2341 hasObservedDestinationPush', () => {
+  it('빈 배열 → false', () => {
+    expect(hasObservedDestinationPush([], NOW)).toBe(false);
+  });
+
+  it('destination kind + silent-push-received + sinceTs 이후 → true', () => {
+    expect(
+      hasObservedDestinationPush(
+        [{ ts: NOW + 1, source: 'silent-push-received', kind: 'destination' }],
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it('ts === sinceTs (경계값) → true', () => {
+    expect(
+      hasObservedDestinationPush(
+        [{ ts: NOW, source: 'silent-push-received', kind: 'destination' }],
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it('ts가 sinceTs 이전 → false (destination-match 시작 이전 push는 이 trip 것 아님)', () => {
+    expect(
+      hasObservedDestinationPush(
+        [{ ts: NOW - 1, source: 'silent-push-received', kind: 'destination' }],
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it('kind가 station-passed/transfer면 destination 아니라 false', () => {
+    expect(
+      hasObservedDestinationPush(
+        [
+          { ts: NOW + 1, source: 'silent-push-received', kind: 'station-passed' },
+          { ts: NOW + 1, source: 'silent-push-received', kind: 'transfer' },
+        ],
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it('source가 silent-push-received 아니면 false (kind만 destination이어도)', () => {
+    expect(
+      hasObservedDestinationPush(
+        [{ ts: NOW + 1, source: 'lifecycle-backstop', kind: 'destination' }],
+        NOW,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('#2341 destinationPushGatePassed', () => {
+  it('push 관측됨 → matchStartedAt/timeout 무관 즉시 true', () => {
+    expect(destinationPushGatePassed(null, NOW, true)).toBe(true);
+    expect(destinationPushGatePassed(NOW, NOW, true)).toBe(true);
+  });
+
+  it('push 미관측 + matchStartedAt null → false', () => {
+    expect(destinationPushGatePassed(null, NOW, false)).toBe(false);
+  });
+
+  it('push 미관측 + 타임아웃 미도달 → false (race 차단)', () => {
+    expect(
+      destinationPushGatePassed(NOW, NOW + DESTINATION_PUSH_TIMEOUT_MS - 1, false),
+    ).toBe(false);
+  });
+
+  it('push 미관측 + 타임아웃 도달 → true (stale-trip 방지 백스톱)', () => {
+    expect(
+      destinationPushGatePassed(NOW, NOW + DESTINATION_PUSH_TIMEOUT_MS, false),
+    ).toBe(true);
+  });
+
+  it('timeoutMs override', () => {
+    expect(destinationPushGatePassed(NOW, NOW + 1_000, false, 1_000)).toBe(true);
+    expect(destinationPushGatePassed(NOW, NOW + 999, false, 1_000)).toBe(false);
   });
 });
