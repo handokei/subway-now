@@ -48,7 +48,18 @@ jest.mock('expo-task-manager', () => ({
   },
 }));
 
-jest.mock('expo-location', () => ({}));
+// #2344 — locationTracking.ts(BASE_TRACKING_OPTIONS)가 모듈 로드 시점에 Location.Accuracy /
+// Location.LocationActivityType을 참조한다. 이 파일은 backgroundLocationTask → bgLocationProfile
+// → locationTracking을 실제 모듈로 로드하므로(상단 헤더 주석 "외부 boundary만 mock" 참고) 해당
+// enum 값이 mock에 있어야 import 체인이 깨지지 않는다. stopLocationUpdatesAsync /
+// startLocationUpdatesAsync는 bgLocationProfile의 프로파일 전환 경로가 호출할 수 있어 결정적
+// no-op으로 제공한다(이 테스트는 프로파일 전환 자체를 검증 대상으로 삼지 않는다).
+jest.mock('expo-location', () => ({
+  Accuracy: { High: 6, Balanced: 3 },
+  LocationActivityType: { AutomotiveNavigation: 2 },
+  stopLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
+  startLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
+}));
 
 // ── 외부 boundary fake: 결정적 동작 ──
 const fakeStation = {
