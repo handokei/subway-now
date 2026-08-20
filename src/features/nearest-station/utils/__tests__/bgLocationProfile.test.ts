@@ -27,13 +27,21 @@ import {
   applyBgLocationProfile,
   saveForegroundServiceNotification,
   resetBgLocationProfile,
+  demoteToUndergroundIfNeeded,
+  releaseFromUndergroundIfNeeded,
+  resetUndergroundFailCount,
 } from '../bgLocationProfile';
 import {
   BG_LOCATION_PROFILE_KEY,
   BG_LOCATION_PROFILE_FLIP_COUNT_KEY,
   BG_FOREGROUND_SERVICE_TEXT_KEY,
+  BG_UNDERGROUND_FAIL_COUNT_KEY,
 } from '../../../../shared/constants/storageKeys';
-import { LOCATION_TRACKING_OPTIONS_STATIONARY } from '../../../../shared/constants/locationTracking';
+import {
+  LOCATION_TRACKING_OPTIONS_STATIONARY,
+  LOCATION_TRACKING_OPTIONS_UNDERGROUND,
+  BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD,
+} from '../../../../shared/constants/locationTracking';
 
 const TASK_NAME = 'background-location-task';
 
@@ -225,6 +233,128 @@ describe('bgLocationProfile', () => {
       mockSetItem.mockRejectedValue(new Error('fail'));
 
       await expect(resetBgLocationProfile()).resolves.toBeUndefined();
+    });
+  });
+
+  // #2345 — 지하 accuracy 강등 gate.
+  describe('demoteToUndergroundIfNeeded', () => {
+    it('임계값 미만이면 카운터만 올리고 profile 전환은 하지 않는다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_UNDERGROUND_FAIL_COUNT_KEY) return Promise.resolve(String(BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD - 2));
+        return Promise.resolve(null);
+      });
+
+      await demoteToUndergroundIfNeeded(TASK_NAME);
+
+      expect(mockSetItem).toHaveBeenCalledWith(
+        BG_UNDERGROUND_FAIL_COUNT_KEY,
+        String(BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD - 1),
+      );
+      expect(mockStopLocationUpdatesAsync).not.toHaveBeenCalled();
+    });
+
+    it('임계값에 도달하면 카운터를 올리고 profile을 underground로 강등한다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_UNDERGROUND_FAIL_COUNT_KEY) return Promise.resolve(String(BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD - 1));
+        if (key === BG_LOCATION_PROFILE_KEY) return Promise.resolve(null); // surface
+        return Promise.resolve(null);
+      });
+
+      await demoteToUndergroundIfNeeded(TASK_NAME);
+
+      expect(mockSetItem).toHaveBeenCalledWith(
+        BG_UNDERGROUND_FAIL_COUNT_KEY,
+        String(BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD),
+      );
+      expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith(TASK_NAME);
+      expect(mockStartLocationUpdatesAsync).toHaveBeenCalledWith(
+        TASK_NAME,
+        expect.objectContaining(LOCATION_TRACKING_OPTIONS_UNDERGROUND),
+      );
+      expect(mockSetItem).toHaveBeenCalledWith(BG_LOCATION_PROFILE_KEY, 'underground');
+    });
+
+    it('카운터 read 예외 시 0에서 시작해 1로 증가시킨다 (graceful)', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_UNDERGROUND_FAIL_COUNT_KEY) return Promise.reject(new Error('storage down'));
+        return Promise.resolve(null);
+      });
+
+      await demoteToUndergroundIfNeeded(TASK_NAME);
+
+      expect(mockSetItem).toHaveBeenCalledWith(BG_UNDERGROUND_FAIL_COUNT_KEY, '1');
+    });
+
+    it('카운터 파싱 실패 시 0에서 시작해 1로 증가시킨다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_UNDERGROUND_FAIL_COUNT_KEY) return Promise.resolve('not-a-number');
+        return Promise.resolve(null);
+      });
+
+      await demoteToUndergroundIfNeeded(TASK_NAME);
+
+      expect(mockSetItem).toHaveBeenCalledWith(BG_UNDERGROUND_FAIL_COUNT_KEY, '1');
+    });
+
+    it('카운터 저장 실패는 graceful하게 흡수하고 임계값 판정은 계속 진행한다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_UNDERGROUND_FAIL_COUNT_KEY) return Promise.resolve(String(BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD - 1));
+        return Promise.resolve(null);
+      });
+      mockSetItem.mockImplementation((key: string, value: string) => {
+        if (key === BG_UNDERGROUND_FAIL_COUNT_KEY) return Promise.reject(new Error('fail'));
+        return Promise.resolve(undefined);
+      });
+
+      await expect(demoteToUndergroundIfNeeded(TASK_NAME)).resolves.toBeUndefined();
+      expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith(TASK_NAME);
+    });
+  });
+
+  describe('releaseFromUndergroundIfNeeded', () => {
+    it('현재 profile이 underground가 아니면 카운터만 reset하고 false를 반환한다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_LOCATION_PROFILE_KEY) return Promise.resolve(null); // surface
+        return Promise.resolve(null);
+      });
+
+      const released = await releaseFromUndergroundIfNeeded(TASK_NAME);
+
+      expect(released).toBe(false);
+      expect(mockSetItem).toHaveBeenCalledWith(BG_UNDERGROUND_FAIL_COUNT_KEY, '0');
+      expect(mockStopLocationUpdatesAsync).not.toHaveBeenCalled();
+    });
+
+    it('현재 profile이 underground면 즉시 surface로 eager release하고 true를 반환한다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_LOCATION_PROFILE_KEY) return Promise.resolve('underground');
+        return Promise.resolve(null);
+      });
+
+      const released = await releaseFromUndergroundIfNeeded(TASK_NAME);
+
+      expect(released).toBe(true);
+      expect(mockSetItem).toHaveBeenCalledWith(BG_UNDERGROUND_FAIL_COUNT_KEY, '0');
+      expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith(TASK_NAME);
+      expect(mockStartLocationUpdatesAsync).toHaveBeenCalledWith(
+        TASK_NAME,
+        expect.objectContaining({ timeInterval: 30_000 }),
+      );
+      expect(mockSetItem).toHaveBeenCalledWith(BG_LOCATION_PROFILE_KEY, 'surface');
+    });
+  });
+
+  describe('resetUndergroundFailCount', () => {
+    it('BG_UNDERGROUND_FAIL_COUNT_KEY를 0으로 초기화한다', async () => {
+      await resetUndergroundFailCount();
+
+      expect(mockSetItem).toHaveBeenCalledWith(BG_UNDERGROUND_FAIL_COUNT_KEY, '0');
+    });
+
+    it('저장 실패는 graceful하게 흡수한다', async () => {
+      mockSetItem.mockRejectedValue(new Error('fail'));
+
+      await expect(resetUndergroundFailCount()).resolves.toBeUndefined();
     });
   });
 });

@@ -20,7 +20,11 @@ import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } 
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../shared/constants/location';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
-import { applyBgLocationProfile } from '../utils/bgLocationProfile';
+import {
+  applyBgLocationProfile,
+  demoteToUndergroundIfNeeded,
+  releaseFromUndergroundIfNeeded,
+} from '../utils/bgLocationProfile';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
 // #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint (Background Location piggyback).
 // BG location updates 활성 동안 raw 가속도 5Hz sampling 시작 — 정적 native module (no-op if already
@@ -153,6 +157,12 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   // 여기서 게이트를 풀면 지하 구간 노이즈 좌표로 알람이 잘못 발화될 수 있다.
   if (!isAccuracyAcceptable(accuracy)) {
     logSuppressedGate('gate-accuracy', { lat, lng, accuracy, ageMs });
+    // #2345 — 지하 accuracy 강등 proxy. 기압계는 BG에서 무용(FG-only)이라, 연속 gate-accuracy
+    // 실패를 지하 진입 신호로 사용한다. early-return 이전에 카운터를 올려 persist해야 다음
+    // invocation에서 이어서 누적된다. fire-and-forget — 이번 tick 처리를 막지 않는다.
+    void demoteToUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch((e: unknown) => {
+      logger.warn('underground 강등 처리 실패 (graceful)', e);
+    });
     return;
   }
 
@@ -263,15 +273,28 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // fallback(미지원/권한 거절 → false)에 의존한다. false이면 게이트를 건너뛰고 기존 경로를 유지.
     const motionStationary = getCurrentMotionStationary();
 
+    // #2345 — 이 tick은 gate-accuracy를 통과했으므로 연속 실패 streak을 reset하고, 직전까지
+    // 'underground'로 강등돼 있었다면 즉시 'surface'(High)로 eager release한다. await하는
+    // 이유: 이번 tick에 이미 재시작이 일어났으면(true) 아래 motion 기반 전환을 중복 실행하지
+    // 않기 위해 결과가 필요하다(surface→stationary로 바로 재플립하는 낭비 방지).
+    const undergroundReleased = await releaseFromUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch(
+      (e: unknown) => {
+        logger.warn('underground release 처리 실패 (graceful)', e);
+        return false;
+      },
+    );
+
     // #2344 (V8a) — 정지 확정 시 BG location interval을 완화(stationary 프리셋)하고, 이동 재개
     // 시 surface로 즉시 복귀한다. fire-and-forget — stop→start 재시작이 이번 tick의 알람 파이프라인
     // 처리를 막지 않는다(다음 tick부터 새 interval 적용). accuracy는 미접촉, timeInterval만 전환.
-    void applyBgLocationProfile(
-      BACKGROUND_LOCATION_TASK,
-      motionStationary === true ? 'stationary' : 'surface',
-    ).catch((e: unknown) => {
-      logger.warn('BG location profile 전환 실패 (graceful)', e);
-    });
+    if (!undergroundReleased) {
+      void applyBgLocationProfile(
+        BACKGROUND_LOCATION_TASK,
+        motionStationary === true ? 'stationary' : 'surface',
+      ).catch((e: unknown) => {
+        logger.warn('BG location profile 전환 실패 (graceful)', e);
+      });
+    }
 
     const motionSignal = evaluateMovement(
       { timestamp: latest.timestamp, accuracyM: accuracy ?? undefined, speedMps: speedMps ?? undefined },
