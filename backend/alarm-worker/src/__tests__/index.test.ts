@@ -2500,7 +2500,7 @@ describe('POST /position (#819)', () => {
       expect(await env.TRIPS.get('trip:no-such-trip')).toBeNull();
     });
 
-    it('이미 stamp된 trip은 재관측해도 최초 시각을 보존(계속 갱신 금지)', async () => {
+    it('#2358 — 이미 stamp된 trip은 재관측 간격이 갱신 주기(5분) 미달이면 최초 시각을 보존', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(CREATED);
       const env = makeKvEnv();
@@ -2519,11 +2519,40 @@ describe('POST /position (#819)', () => {
       const firstStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
       expect(firstStamp).toBe(CREATED);
 
-      // 5분 뒤 재관측(여전히 근접) — anchor가 최초 시각(CREATED)으로 그대로 유지돼야 한다.
+      // 4분 뒤 재관측(여전히 근접, 갱신 주기 5분 미달) — anchor가 최초 시각(CREATED)으로 유지.
+      vi.setSystemTime(CREATED + 4 * 60 * 1000);
+      await post('/position', { ...nearPayload, ts: CREATED + 4 * 60 * 1000 }, env);
+      const secondStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
+      expect(secondStamp).toBe(CREATED);
+    });
+
+    // #2358 (RCA) — 근접 관측이 5분 이상 지속되면 anchor를 재stamp해 "출발역에서 계속 대기
+    // 중"인 실 시나리오가 신선도 창(15분) 만료로 영구히 막히지 않게 한다. 최초 1회만 stamp하고
+    // 영구 고정하던 #2153 원안 결함의 fix.
+    it('#2358 — 갱신 주기(5분) 이상 지나 재관측되면(계속 근접) anchor가 갱신된다', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(CREATED);
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      const nearPayload = {
+        token: 'tok-prox',
+        lat: 1,
+        lng: 2,
+        accuracy: 10,
+        ts: CREATED,
+        motion: 'walking' as const,
+        originDistanceM: 50,
+        originAccuracyM: 10,
+      };
+      await post('/position', nearPayload, env);
+      const firstStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
+      expect(firstStamp).toBe(CREATED);
+
+      // 5분 뒤 재관측(여전히 근접, 원점 대기 지속) — anchor가 now로 갱신돼야 한다.
       vi.setSystemTime(CREATED + 5 * 60 * 1000);
       await post('/position', { ...nearPayload, ts: CREATED + 5 * 60 * 1000 }, env);
       const secondStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
-      expect(secondStamp).toBe(CREATED);
+      expect(secondStamp).toBe(CREATED + 5 * 60 * 1000);
     });
   });
 });

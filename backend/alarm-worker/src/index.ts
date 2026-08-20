@@ -13,7 +13,7 @@
 
 import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
-import { isNearOrigin, markPromptSilenced } from './boardingPrompt';
+import { isNearOrigin, markPromptSilenced, shouldStampOriginProximity } from './boardingPrompt';
 import {
   recordBoardingPromptOutcome,
   validateBoardingPromptOutcome,
@@ -1655,9 +1655,15 @@ export function parseOriginProximityFields(input: unknown): {
  * 공유하되, 이 경로는 근접이 아니면(멀거나 값 부재) trip을 아예 읽지 않는다 — 매 10초 호출되는
  * 채널이므로 KV read/write 낭비를 근접 관측이 실제로 발생하는 순간으로 최소화한다.
  *
- * **KV write 최소화**: 이미 stamp된 trip(`originProximityAt !== undefined`)은 재관측해도
- * write하지 않는다 — trip당 최초 1회만 write (CF KV free tier quota 보호, #2073 lesson).
+ * **KV write 최소화**: 이미 stamp된 trip은 `shouldStampOriginProximity`
+ * (`ORIGIN_PROXIMITY_RENEWAL_MS`, 5분) 주기 미달이면 재관측해도 write하지 않는다 —
+ * 매 10초 호출마다 쓰지 않고 스로틀링 (CF KV free tier quota 보호, #2073 lesson).
  * trip 미존재(register 전/만료)는 graceful no-op.
+ *
+ * #2358 (RCA) — 최초 1회만 stamp하고 영구 고정하면(#2153 원안) 출발역에서 계속 대기 중인 실
+ * 시나리오가 신선도 창(15분)을 넘기는 순간 근접이 실시간으로 계속 확인되는 중에도 영구히
+ * boarding-prompt가 막힌다. 근접이 관측되는 동안 anchor를 주기적으로 재stamp해 이 채널
+ * (10초 주기)이 신선도 게이트를 계속 갱신하는 실질적 주 경로가 되게 한다.
  */
 export async function stampOriginProximityIfNeeded(
   kv: KVNamespace,
@@ -1669,7 +1675,7 @@ export async function stampOriginProximityIfNeeded(
   if (!isNearOrigin(originDistanceM, originAccuracyM)) return;
   const trip = await getTrip(kv, token);
   if (!trip) return;
-  if (trip.originProximityAt !== undefined) return;
+  if (!shouldStampOriginProximity(trip.originProximityAt, now)) return;
   await putTrip(kv, { ...trip, originProximityAt: now });
 }
 
