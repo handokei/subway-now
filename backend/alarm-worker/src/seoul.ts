@@ -7,7 +7,7 @@
  *   동일 사이클 내 중복 호출 차단이 주 목적)
  */
 
-import { canonicalLineName } from './lineAlias';
+import { canonicalLineName, lineNameBySubwayId } from './lineAlias';
 import {
   parseTrainType,
   parseTrainTypeFromDirectAt,
@@ -26,8 +26,19 @@ export interface ArrivalEntry {
   trainCode: string;
   /** "상행"/"내선" 인지 여부 */
   isUp: boolean;
-  /** 노선명 (예: "지하철1호선") — Seoul API의 subwayNm */
+  /**
+   * 노선명 (예: "지하철1호선") — Seoul API의 subwayNm. #2355: 실 API는 이 필드를 null로
+   * 보내는 경우가 있어(subwayId만 유효), 그런 경우 `subwayId`에서 역파생한 canonical
+   * line name으로 대체된다 (`parseEntry` 참고) — 원본 raw subwayNm이 아닐 수 있다.
+   */
   subwayNm: string;
+  /**
+   * #2355 — Seoul API `subwayId` (예: "1007" = 7호선). `subwayNm`이 null인 실 API shape에서
+   * `lineNameBySubwayId`로 line을 복원하기 위해 파싱. optional — 구 caller/합성 entry
+   * (`arrivalsFromPositions.ts`)/테스트 fixture가 이 필드 없이 리터럴을 구성해도 컴파일 호환
+   * (#1720 `synthesized?`와 동일 정책).
+   */
+  subwayId?: string;
   /**
    * 도착 코드 (Seoul API arvlCd, #409): 0:진입, 1:도착, 2:출발, 3:전역출발,
    * 4:전역진입, 5:전역도착, 99:운행중. 누락/파싱 실패 시 null.
@@ -185,13 +196,20 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
   const isUp = (UP_DIRECTION_VALUES as readonly string[]).includes(updnLine);
 
   const trainLineNm = typeof item.trainLineNm === 'string' ? item.trainLineNm : '';
+  const subwayId = typeof item.subwayId === 'string' ? item.subwayId : '';
+  // #2355 — 실 Seoul API는 subwayNm=null, subwayId만 보낸다. subwayNm 부재 시 subwayId에서
+  // canonical line name을 역파생 — matchLine('', line)이 전량 false로 떨어져 arrival pool이
+  // 통째로 비는 회귀 차단.
+  const rawSubwayNm = typeof item.subwayNm === 'string' ? item.subwayNm : '';
+  const subwayNm = rawSubwayNm || (canonicalLineName(lineNameBySubwayId(subwayId) ?? '') ?? '');
 
   return {
     destination: trainLineNm,
     arrivalSeconds: seconds,
     trainCode: typeof item.btrainNo === 'string' ? item.btrainNo : '',
     isUp,
-    subwayNm: typeof item.subwayNm === 'string' ? item.subwayNm : '',
+    subwayNm,
+    subwayId,
     arvlCd: parseArvlCd(item.arvlCd),
     trainType: parseTrainType(item.btrainSttus),
     terminus: parseTerminusStationName(trainLineNm),

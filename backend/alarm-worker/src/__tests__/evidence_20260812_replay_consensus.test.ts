@@ -81,7 +81,9 @@ function makeConsensusSeoul(now: number, etaSeconds: number): SeoulArrivalClient
               updnLine: '상행',
               trainLineNm: '중곡',
               btrainNo: '8801',
-              subwayNm: '지하철7호선',
+              // #2355 — 실 Seoul API는 subwayNm=null, subwayId만 유효값으로 보낸다.
+              subwayNm: null,
+              subwayId: '1007',
               arvlCd: 3,
             },
           ],

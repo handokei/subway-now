@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SeoulArrivalClient, parseRecptnDt, parseTerminusStationName } from '../seoul';
+import { matchLine } from '../lineAlias';
 
 function makeResponse(body: unknown, ok = true, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -10,6 +11,9 @@ function makeResponse(body: unknown, ok = true, status = 200): Response {
 
 const FIXED_NOW = Date.parse('2025-01-15T10:30:00+09:00');
 
+// #2355 — 실 Seoul API `realtimeStationArrival`은 subwayNm=null, subwayId만 유효값으로 보낸다
+// (rca-2351로 확증). 기존 fixture가 subwayNm 텍스트를 손주입해 empty-pool 회귀를 마스킹했던
+// 문제를 실 shape로 교정.
 function makeItem(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
     barvlDt: '120',
@@ -17,7 +21,8 @@ function makeItem(overrides: Partial<Record<string, unknown>> = {}): Record<stri
     updnLine: '상행',
     trainLineNm: '서울행',
     btrainNo: 'T-001',
-    subwayNm: '지하철1호선',
+    subwayNm: null,
+    subwayId: '1001',
     ...overrides,
   };
 }
@@ -49,6 +54,42 @@ describe('SeoulArrivalClient', () => {
     expect(arrivals[0].isUp).toBe(true);
     expect(arrivals[1].isUp).toBe(false);
     expect(arrivals[0].arrivalSeconds).toBe(120);
+  });
+
+  it('#2355 — subwayNm=null(실 API shape)이어도 subwayId로 line 복원 → matchLine 통과', async () => {
+    const fetchImpl = vi.fn(async () =>
+      makeResponse({
+        realtimeArrivalList: [makeItem({ subwayNm: null, subwayId: '1007' })],
+      }),
+    );
+    const client = new SeoulArrivalClient({
+      apiKey: 'KEY',
+      host: 'example.com',
+      now: () => FIXED_NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const arrivals = await client.fetchArrivals('건대입구');
+    expect(arrivals).toHaveLength(1);
+    expect(arrivals[0].subwayNm).toBe('7호선');
+    expect(arrivals[0].subwayId).toBe('1007');
+    // 회귀 재현: 수정 전에는 subwayNm=''로 남아 matchLine이 전량 false.
+    expect(matchLine(arrivals[0].subwayNm, '7')).toBe(true);
+  });
+
+  it('#2355 — subwayNm이 실값으로 오면 그대로 유지(subwayId 파생 우회 X)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      makeResponse({
+        realtimeArrivalList: [makeItem({ subwayNm: '지하철1호선', subwayId: '1001' })],
+      }),
+    );
+    const client = new SeoulArrivalClient({
+      apiKey: 'KEY',
+      host: 'example.com',
+      now: () => FIXED_NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const arrivals = await client.fetchArrivals('서울역');
+    expect(arrivals[0].subwayNm).toBe('지하철1호선');
   });
 
   it('arvlCd 파싱 — number / numeric string / 누락 (#409)', async () => {
