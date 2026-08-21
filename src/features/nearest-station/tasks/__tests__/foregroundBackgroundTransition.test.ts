@@ -48,7 +48,12 @@ jest.mock('expo-task-manager', () => ({
   },
 }));
 
-jest.mock('expo-location', () => ({}));
+// #2354 — locationTracking.ts가 module-load 시점에 Location.Accuracy.High 등 정적 enum을
+// 읽는다. 빈 mock이면 이 import edge만으로 스위트 실행 자체가 실패하므로 SSoT enum을 spread.
+jest.mock('expo-location', () => {
+  const { expoLocationEnumMock } = require('../../../../testUtils/expoLocationMock');
+  return { ...expoLocationEnumMock };
+});
 
 // ── 외부 boundary fake: 결정적 동작 ──
 const fakeStation = {
