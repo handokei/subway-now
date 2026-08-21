@@ -260,3 +260,9 @@ export const BG_LOCATION_PROFILE_FLIP_COUNT_KEY = 'subway-now:bg-location-profil
 // profile 전환 시 stop→start 자기 재시작에 동일 텍스트를 재사용하기 위해 FG(hook)가 미리 적재한다.
 // 형식: {"notificationTitle": string, "notificationBody": string} JSON. 키 부재 = 폴백 텍스트 사용.
 export const BG_FOREGROUND_SERVICE_TEXT_KEY = 'subway-now:bg-foreground-service-text';
+// #2345 — BG location task의 연속 gate-accuracy(200m) 실패 카운터. 매 tick 실패 시 +1,
+// 성공(passing fix) 시 0으로 reset. BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD 도달 시 profile을
+// 'underground'로 강등한다. TaskManager invocation마다 새 컨텍스트라 in-memory ref 대신
+// AsyncStorage로 invocation 간 상태를 공유한다(BG_LOCATION_PROFILE_KEY와 동일 패턴).
+// 형식: 숫자 문자열. 키 부재 = 0.
+export const BG_UNDERGROUND_FAIL_COUNT_KEY = 'subway-now:bg-underground-fail-count';

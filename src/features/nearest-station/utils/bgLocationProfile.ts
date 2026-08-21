@@ -13,12 +13,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createLogger } from '../../../shared/utils/logger';
 import {
   locationTrackingOptionsForProfile,
+  BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD,
   type BgLocationProfile,
 } from '../../../shared/constants/locationTracking';
 import {
   BG_LOCATION_PROFILE_KEY,
   BG_LOCATION_PROFILE_FLIP_COUNT_KEY,
   BG_FOREGROUND_SERVICE_TEXT_KEY,
+  BG_UNDERGROUND_FAIL_COUNT_KEY,
 } from '../../../shared/constants/storageKeys';
 
 const logger = createLogger('BgLocationProfile');
@@ -82,7 +84,9 @@ async function readForegroundServiceNotification(): Promise<ForegroundServiceNot
 async function readCurrentProfile(): Promise<BgLocationProfile> {
   try {
     const raw = await AsyncStorage.getItem(BG_LOCATION_PROFILE_KEY);
-    return raw === 'stationary' ? 'stationary' : 'surface';
+    if (raw === 'stationary') return 'stationary';
+    if (raw === 'underground') return 'underground';
+    return 'surface';
   } catch {
     return 'surface';
   }
@@ -130,4 +134,58 @@ export async function applyBgLocationProfile(
   } catch (e) {
     logger.error('BG location profile 전환 실패', e);
   }
+}
+
+async function readUndergroundFailCount(): Promise<number> {
+  try {
+    const raw = await AsyncStorage.getItem(BG_UNDERGROUND_FAIL_COUNT_KEY);
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * #2345 — 연속 gate-accuracy(200m) 실패 카운터를 0으로 초기화한다. 좋은 fix(gate 통과) 도착
+ * 시 호출 — 연속 실패 streak을 끊는다.
+ */
+export async function resetUndergroundFailCount(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(BG_UNDERGROUND_FAIL_COUNT_KEY, '0');
+  } catch (e) {
+    logger.warn('underground fail count 초기화 실패', e);
+  }
+}
+
+/**
+ * #2345 — gate-accuracy 실패 tick마다 호출. 카운터를 +1하고 BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD
+ * 도달 시 profile을 'underground'(Balanced/느림)로 강등한다. isAccuracyAcceptable early-return
+ * 직전에 호출되어야 한다(카운터 persist가 gate drop과 같은 tick에 반영되도록).
+ */
+export async function demoteToUndergroundIfNeeded(taskName: string): Promise<void> {
+  const currentCount = await readUndergroundFailCount();
+  const nextCount = currentCount + 1;
+  try {
+    await AsyncStorage.setItem(BG_UNDERGROUND_FAIL_COUNT_KEY, String(nextCount));
+  } catch (e) {
+    logger.warn('underground fail count 저장 실패', e);
+  }
+  if (nextCount < BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD) return;
+  await applyBgLocationProfile(taskName, 'underground');
+}
+
+/**
+ * #2345 — gate-accuracy 통과(≤200m) tick마다 호출. 연속 실패 카운터를 reset하고, 현재
+ * profile이 'underground'였다면 즉시 'surface'(High)로 eager release한다("첫 ≤200m fix에
+ * 즉시 High 복귀" — FG profileWatchDegraded release와 동일 철학). 반환값 true는 이번 tick에
+ * eager release가 일어났다는 뜻 — 호출부가 motion 기반 profile 결정(stationary/surface)을
+ * 중복 실행하지 않도록 스킵 신호로 쓴다.
+ */
+export async function releaseFromUndergroundIfNeeded(taskName: string): Promise<boolean> {
+  await resetUndergroundFailCount();
+  const currentProfile = await readCurrentProfile();
+  if (currentProfile !== 'underground') return false;
+  await applyBgLocationProfile(taskName, 'surface');
+  return true;
 }

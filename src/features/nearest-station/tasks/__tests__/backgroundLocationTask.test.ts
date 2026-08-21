@@ -58,10 +58,14 @@ jest.mock('../../utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
 }));
 
-// ── bgLocationProfile 모킹 (#2344 V8a profile 전환) ──
+// ── bgLocationProfile 모킹 (#2344 V8a profile 전환 + #2345 지하 accuracy 강등) ──
 const mockApplyBgLocationProfile = jest.fn();
+const mockDemoteToUndergroundIfNeeded = jest.fn();
+const mockReleaseFromUndergroundIfNeeded = jest.fn();
 jest.mock('../../utils/bgLocationProfile', () => ({
   applyBgLocationProfile: (...args: unknown[]) => mockApplyBgLocationProfile(...args),
+  demoteToUndergroundIfNeeded: (...args: unknown[]) => mockDemoteToUndergroundIfNeeded(...args),
+  releaseFromUndergroundIfNeeded: (...args: unknown[]) => mockReleaseFromUndergroundIfNeeded(...args),
 }));
 
 // ── accelMotionState 모킹 (#823 가속도 latest 첨부) ──
@@ -224,6 +228,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockGetTripDeathPullBackendUrl.mockReturnValue(null);
     mockCheckTripDeathByPull.mockResolvedValue('skipped');
     mockApplyBgLocationProfile.mockResolvedValue(undefined);
+    mockDemoteToUndergroundIfNeeded.mockResolvedValue(undefined);
+    mockReleaseFromUndergroundIfNeeded.mockResolvedValue(false);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -564,6 +570,21 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       'gate-accuracy',
       expect.objectContaining({ accuracy }),
     );
+  });
+
+  // #2345 — 지하 accuracy 강등 gate. isAccuracyAcceptable early-return 직전에 카운터를 올린다.
+  it('저정확도 게이트 drop 시 demoteToUndergroundIfNeeded(TASK)를 호출한다', async () => {
+    const accuracy = MAX_ACCURACY_M + 50;
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+    expect(mockDemoteToUndergroundIfNeeded).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK);
+  });
+
+  it('demoteToUndergroundIfNeeded가 reject해도 태스크는 크래시하지 않는다 (graceful)', async () => {
+    mockDemoteToUndergroundIfNeeded.mockRejectedValueOnce(new Error('demote failed'));
+    const accuracy = MAX_ACCURACY_M + 50;
+
+    await expect(runWithLocation(makeLocation(37.498, 127.028, { accuracy }))).resolves.toBeUndefined();
   });
 
   // ── #527 jump gate: trip 컨텍스트(destJson 통과) 이후에만 동작 ──
@@ -1202,6 +1223,59 @@ describe('backgroundLocationTask defineTask 콜백', () => {
             error: null,
           }),
         ).resolves.toBeUndefined();
+      });
+    });
+
+    describe('#2345 — 지하 accuracy 강등: gate-accuracy 통과 시 underground eager release', () => {
+      it('gate-accuracy를 통과하면 releaseFromUndergroundIfNeeded(TASK)를 호출한다', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockReleaseFromUndergroundIfNeeded).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK);
+      });
+
+      it('eager release가 일어났으면(true) motion 기반 applyBgLocationProfile을 중복 호출하지 않는다', async () => {
+        mockReleaseFromUndergroundIfNeeded.mockResolvedValueOnce(true);
+        mockGetCurrentMotionStationary.mockReturnValue(true);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockApplyBgLocationProfile).not.toHaveBeenCalled();
+      });
+
+      it('eager release가 일어나지 않았으면(false) motion 기반 applyBgLocationProfile을 정상 호출한다', async () => {
+        mockReleaseFromUndergroundIfNeeded.mockResolvedValueOnce(false);
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'surface');
+      });
+
+      it('releaseFromUndergroundIfNeeded가 reject해도 태스크는 크래시하지 않고 motion 기반 전환을 계속 진행한다 (graceful)', async () => {
+        mockReleaseFromUndergroundIfNeeded.mockRejectedValueOnce(new Error('release failed'));
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await expect(
+          taskCallback({
+            data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+            error: null,
+          }),
+        ).resolves.toBeUndefined();
+        expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'surface');
       });
     });
 
