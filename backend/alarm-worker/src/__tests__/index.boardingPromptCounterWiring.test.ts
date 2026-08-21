@@ -72,6 +72,7 @@ function boardingPromptStats(
     boardingPromptSkippedNoContext: number;
     boardingPromptSkippedStale: number;
     boardingPromptSkippedTooFar: number;
+    boardingPromptSkippedEmpty: number;
     boardingPromptSkippedTrainDuplicate: number;
   }> = {},
 ) {
@@ -84,6 +85,7 @@ function boardingPromptStats(
     boardingPromptSkippedNoContext: 0,
     boardingPromptSkippedStale: 0,
     boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedEmpty: 0,
     boardingPromptSkippedTrainDuplicate: 0,
     ...overrides,
   };
@@ -121,6 +123,18 @@ describe('handler.scheduled — #2160 boardingPrompt counter 누적 배선', () 
     expect(stored).not.toBeNull();
     expect(stored?.evaluated).toBe(1);
     expect(stored?.fired).toBe(1);
+  });
+
+  // #2350 — skippedEmpty(RC-13, candidateTrains 0건)가 evaluated/fired/blocked 등 기존 필드에는
+  // 없어 KV counter로 노출되지 않던 관측 사각. 다른 skip 필드와 동일하게 배선돼야 한다.
+  it('#2350 — skippedEmpty>0인 tick도 활성 tick으로 누적 KV 키에 write', async () => {
+    const kv = new InMemoryKV();
+    runScheduledMock.mockResolvedValue(
+      boardingPromptStats({ boardingPromptEvaluated: 1, boardingPromptSkippedEmpty: 1 }),
+    );
+    await handler.scheduled(makeScheduledController(), makeEnv(kv), makeExecutionContext());
+    const stored = await readBoardingPromptCounters(kv as unknown as KVNamespace);
+    expect(stored?.skippedEmpty).toBe(1);
   });
 
   it('연속 활성 tick 2회 — 누적(스냅샷 덮어쓰기 아님)', async () => {

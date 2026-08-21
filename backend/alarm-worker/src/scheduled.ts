@@ -4958,7 +4958,12 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   const { originDistanceM, originAccuracyM } = geo;
   const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
   const nearOrigin = isNearOrigin(originDistanceM, originAccuracyM);
-  const isTooFarFromOrigin = hasProximityReading && !nearOrigin;
+  // #2350 — live anchor 전환. `promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips
+  // 등록 시점의 정적 스냅샷이라 이후 절대 갱신되지 않는다(index.ts:1564). `/position` 채널이
+  // 이미 근접을 실시간 관측해 `trip.originProximityAt`을 stamp했다면, 그 정적 스냅샷이 여전히
+  // "멀다"를 가리켜도 근접 게이트로 영구 차단해선 안 된다(집에서 경로 미리 설정 후 도보 이동
+  // 케이스). anchor가 아직 없을 때만(=live 근접 확인 이력 없음) 정적 스냅샷으로 판단한다.
+  const isTooFarFromOrigin = hasProximityReading && !nearOrigin && trip.originProximityAt === undefined;
 
   // #2153 — trip 등록 후 최초로 출발역 근접을 관측한 cycle의 시각을 1회만 stamp. 이후
   // cycle에서는 이 anchor를 보존(재관측마다 now로 계속 갱신하면 게이트가 무력화된다).
