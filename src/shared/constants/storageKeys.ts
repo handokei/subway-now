@@ -246,3 +246,17 @@ export const LEG_ADVANCE_KEY = 'subway-now:leg-advance';
 // trip 종료(runTripBoundCleanups) 시 제거.
 // 형식: 숫자(epoch ms) 문자열.
 export const NAVIGATION_PAUSED_AT_KEY = 'subway-now:navigation-paused-at';
+// #2344 (V8a) — BG location task가 현재 적용 중인 추적 프로파일('surface'|'stationary').
+// TaskManager invocation마다 새 컨텍스트라 in-memory ref로 유지할 수 없어 AsyncStorage로
+// invocation 간 상태를 공유한다. 키 부재 = 'surface'(기본값, 첫 tick 재시작 skip).
+export const BG_LOCATION_PROFILE_KEY = 'subway-now:bg-location-profile';
+// #2344 — profile 전환(stop→start 재시작) 발생 횟수 누적. 진동(surface↔stationary 반복) 없이
+// 수렴하는지 관측하기 위한 카운터. trip 종료 시 별도 cleanup 불필요 — 다음 trip 첫 전환에서
+// 자연스럽게 이어서 누적된다(누적값 자체가 진단 목적이라 trip 경계로 reset할 필요가 없음).
+// 형식: 숫자 문자열.
+export const BG_LOCATION_PROFILE_FLIP_COUNT_KEY = 'subway-now:bg-location-profile-flip-count';
+// #2344 — useBackgroundLocation이 startLocationUpdatesAsync 호출 시 사용한 foregroundService
+// 알림 텍스트(title/body) 캐시. BG task 콜백은 React tree 밖이라 i18n `t()`에 접근할 수 없어,
+// profile 전환 시 stop→start 자기 재시작에 동일 텍스트를 재사용하기 위해 FG(hook)가 미리 적재한다.
+// 형식: {"notificationTitle": string, "notificationBody": string} JSON. 키 부재 = 폴백 텍스트 사용.
+export const BG_FOREGROUND_SERVICE_TEXT_KEY = 'subway-now:bg-foreground-service-text';

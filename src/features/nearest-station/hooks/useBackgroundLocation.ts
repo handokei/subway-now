@@ -12,6 +12,8 @@ import { BACKGROUND_LOCATION_TASK } from '../tasks/backgroundLocationTask';
 import { LOCATION_TRACKING_OPTIONS } from '../../../shared/constants/locationTracking';
 import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+// #2344 (V8a) — BG task 콜백이 profile 전환(stop→start) 시 재사용할 foregroundService 텍스트 캐시.
+import { saveForegroundServiceNotification, resetBgLocationProfile } from '../utils/bgLocationProfile';
 // eslint-disable-next-line import/no-restricted-paths
 import { useNavigationStore } from '../../route/store/useNavigationStore';
 
@@ -100,15 +102,20 @@ export function useBackgroundLocation(destination: Station | null): void {
       const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
       if (isRegistered || cancelled) return;
 
+      // foregroundService 알림 텍스트는 task 시작 시점 언어로 고정. 사용자가 추적 중 언어를
+      // 바꿔도 GPS 추적 공백을 만들지 않기 위해 i18n.language를 deps에 두지 않는다.
+      // 다음 destination 변경 시점에 자연스럽게 새 언어로 반영된다.
+      const foregroundService = {
+        notificationTitle: t('background.title'),
+        notificationBody: t('background.body'),
+      };
+      // #2344 — BG task가 profile 전환(stop→start) 시 동일 텍스트로 재시작할 수 있도록 캐시.
+      await saveForegroundServiceNotification(foregroundService);
+      // 이 hook은 항상 surface 옵션으로 시작하므로 이전 trip의 stale 'stationary' 기록을 초기화한다.
+      await resetBgLocationProfile();
       await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
         ...LOCATION_TRACKING_OPTIONS,
-        // foregroundService 알림 텍스트는 task 시작 시점 언어로 고정. 사용자가 추적 중 언어를
-        // 바꿔도 GPS 추적 공백을 만들지 않기 위해 i18n.language를 deps에 두지 않는다.
-        // 다음 destination 변경 시점에 자연스럽게 새 언어로 반영된다.
-        foregroundService: {
-          notificationTitle: t('background.title'),
-          notificationBody: t('background.body'),
-        },
+        foregroundService,
       });
       logger.info('백그라운드 위치 추적 시작 (navigationActive)');
     })();

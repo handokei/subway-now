@@ -4,7 +4,11 @@
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { Alert, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  BG_PERMISSION_DENIED_DISMISSED_KEY,
+  BG_FOREGROUND_SERVICE_TEXT_KEY,
+  BG_LOCATION_PROFILE_KEY,
+} from '../../../../shared/constants/storageKeys';
 import type { Station } from '../../../../shared/types/station';
 
 // ── Alert.alert / Linking.openSettings 모킹 ──
@@ -210,6 +214,24 @@ describe('useBackgroundLocation (#1973 명시 trigger)', () => {
       notificationTitle: '지하철 위치 감지 중',
       notificationBody: '백그라운드에서 현재 역을 추적하고 있습니다',
     });
+  });
+
+  // ── #2344 (V8a) — profile 전환 인프라를 위한 foregroundService 텍스트 캐시 + profile 초기화 ──
+
+  it('#2344 — startLocationUpdatesAsync 성공 시 foregroundService 텍스트를 캐시하고 profile을 surface로 초기화한다', async () => {
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockStartLocationUpdatesAsync).toHaveBeenCalled();
+    });
+
+    expect(await AsyncStorage.getItem(BG_FOREGROUND_SERVICE_TEXT_KEY)).toBe(
+      JSON.stringify({
+        notificationTitle: '지하철 위치 감지 중',
+        notificationBody: '백그라운드에서 현재 역을 추적하고 있습니다',
+      }),
+    );
+    expect(await AsyncStorage.getItem(BG_LOCATION_PROFILE_KEY)).toBe('surface');
   });
 
   // ── #1973 권한 단계화: WhileInUse granted + Always denied (네이버 패턴 핵심) ──

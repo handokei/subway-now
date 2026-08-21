@@ -20,6 +20,7 @@ import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } 
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../shared/constants/location';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
+import { applyBgLocationProfile } from '../utils/bgLocationProfile';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
 // #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint (Background Location piggyback).
 // BG location updates 활성 동안 raw 가속도 5Hz sampling 시작 — 정적 native module (no-op if already
@@ -261,6 +262,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // BG에서는 motion 신선도를 별도로 관리할 수 없으므로 getCurrentMotionStationary()의 graceful
     // fallback(미지원/권한 거절 → false)에 의존한다. false이면 게이트를 건너뛰고 기존 경로를 유지.
     const motionStationary = getCurrentMotionStationary();
+
+    // #2344 (V8a) — 정지 확정 시 BG location interval을 완화(stationary 프리셋)하고, 이동 재개
+    // 시 surface로 즉시 복귀한다. fire-and-forget — stop→start 재시작이 이번 tick의 알람 파이프라인
+    // 처리를 막지 않는다(다음 tick부터 새 interval 적용). accuracy는 미접촉, timeInterval만 전환.
+    void applyBgLocationProfile(
+      BACKGROUND_LOCATION_TASK,
+      motionStationary === true ? 'stationary' : 'surface',
+    ).catch((e: unknown) => {
+      logger.warn('BG location profile 전환 실패 (graceful)', e);
+    });
+
     const motionSignal = evaluateMovement(
       { timestamp: latest.timestamp, accuracyM: accuracy ?? undefined, speedMps: speedMps ?? undefined },
       Date.now(),
