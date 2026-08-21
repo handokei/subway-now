@@ -41,9 +41,11 @@ export interface BoardingLockSyncPayload {
 }
 
 /**
- * #916 A1 — backend cron이 자동 lock을 부착했을 때 노출하는 후보 메타.
- * Client는 이 값으로 boardingLock store를 hydrate해 사용자가 직접 BoardingTrainList에서
- * 열차를 탭하지 않아도 trainCode 추적이 활성화된다 (#915 destination-only baseline UX).
+ * #2352 — 구 #916 A1 backend cron 자동 lock 후보 메타(`/boarding-lock/sync` 응답 필드)는
+ * 삭제됐다("무탭 오토락 전량 삭제" 결정, #2342). 본 type은 device-side 별개 채널
+ * (`transferSwap.ts`/`useTransferAutoDetect`의 환승 자동 detect, #924)이 동일 shape을 재사용해
+ * 계속 존재 — 두 채널은 서로 독립적이며 이 type은 이제 순수 shape 정의일 뿐 backend 응답과
+ * 1:1이 아니다.
  */
 export interface AutoLockCandidate {
   trainCode: string;
@@ -63,11 +65,6 @@ export interface BoardingLockSyncResponse {
   currentWaypoint?: string | null;
   /** currentWaypoint와 동일 — 의미상 alias (다음 알람 대상). */
   nextStation?: string | null;
-  /**
-   * #916 A1 — backend가 trip에 부착한 자동/명시 lock 메타. 없으면 null.
-   * Client는 이 값을 useBoardingLockStore에 hydrate해 사용자 명시 탭 없이도 lock UX 활성화.
-   */
-  autoLockCandidate?: AutoLockCandidate | null;
   /** HTTP 실패/skip을 호출자가 진단할 수 있게 노출 — graceful (throw 아님). */
   skipped?: boolean;
   status?: number;
@@ -106,7 +103,6 @@ export async function syncBoardingLock(
       advanced: json?.advanced ?? false,
       currentWaypoint: json?.currentWaypoint ?? null,
       nextStation: json?.nextStation ?? null,
-      autoLockCandidate: json?.autoLockCandidate ?? null,
     };
   } catch (e) {
     log.warn('boarding-lock sync error', e);

@@ -54,7 +54,6 @@ describe('syncBoardingLock (#901)', () => {
       advanced: true,
       currentWaypoint: '역삼',
       nextStation: '역삼',
-      autoLockCandidate: null,
     });
     const [url, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.test.dev/boarding-lock/sync');
@@ -62,7 +61,9 @@ describe('syncBoardingLock (#901)', () => {
     expect(JSON.parse(init.body)).toEqual(basePayload);
   });
 
-  it('#915/#916 — autoLockCandidate 응답 forward', async () => {
+  // #2352 — 구 #915/#916 autoLockCandidate 응답 필드는 backend에서 삭제됐다. 응답에 있어도
+  // (구버전 backend 잔존/캐시) client가 forward하지 않는지 확인 — 무탭 hydrate 채널 완전 제거.
+  it('#2352 — 응답에 autoLockCandidate가 있어도 forward하지 않음', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
     (globalThis.fetch as jest.Mock).mockResolvedValue({
       ok: true,
@@ -77,7 +78,7 @@ describe('syncBoardingLock (#901)', () => {
         }),
     });
     const r = await syncBoardingLock(basePayload);
-    expect(r.autoLockCandidate).toEqual({ trainCode: '7246', line: '2', subwayId: '1002' });
+    expect(r).not.toHaveProperty('autoLockCandidate');
   });
 
   it('subsurface 옵션 필드 forward', async () => {
@@ -158,7 +159,6 @@ describe('syncBoardingLock (#901)', () => {
       advanced: false,
       currentWaypoint: null,
       nextStation: null,
-      autoLockCandidate: null,
     });
   });
 
@@ -176,7 +176,6 @@ describe('syncBoardingLock (#901)', () => {
       advanced: false,
       currentWaypoint: null,
       nextStation: null,
-      autoLockCandidate: null,
     });
   });
 
