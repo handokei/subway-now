@@ -126,7 +126,8 @@ import {
 } from './cronJitterAggregate';
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
-import { cleanupTripEvents } from './tripEventLog';
+import { cleanupTripEvents, recordTripEvent } from './tripEventLog';
+import { hashTripToken } from './sentry';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -2375,6 +2376,50 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   }
 }
 
+/**
+ * #2343 — `Waypoint.kind`(intermediate/transfer/destination) → fire-attempt 로그 어휘
+ * (station-passed/transfer/destination) 매핑. trip_events.meta에 device/문서 어휘로 남기기 위한
+ * 얇은 변환 — `assertNever`로 신규 kind 추가 시 드리프트를 컴파일 에러로 승격.
+ */
+function fireLogWaypointKind(kind: Waypoint['kind']): 'station-passed' | 'transfer' | 'destination' {
+  switch (kind) {
+    case 'intermediate':
+      return 'station-passed';
+    case 'transfer':
+      return 'transfer';
+    case 'destination':
+      return 'destination';
+    default:
+      return assertNever(kind, 'scheduled.ts fireLogWaypointKind');
+  }
+}
+
+/**
+ * #2343 — cron 자율 fire path(destination/transfer/station-passed) 발사 시도를 D1
+ * `trip_events`(kind='cron-fire-attempt')에 1건만 append한다. 매 tick이 아니라 실제 발사
+ * 시도(성공/실패/trip 삭제 race skip) 시점에만 호출 — Free plan D1 quota 보호(#2073 lesson).
+ * `env.DB` 미바인딩 시 `recordTripEvent`가 graceful no-op.
+ */
+async function recordFireAttempt(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  outcome: 'sent' | 'failed' | 'skipped-reason',
+  now: number,
+  reason?: string,
+): Promise<void> {
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'cron-fire-attempt',
+      station: waypoint.stationName,
+      meta: { waypointKind: fireLogWaypointKind(waypoint.kind), phase: 'imminent', outcome, reason },
+    },
+    now,
+  );
+}
+
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
 // path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
@@ -2606,6 +2651,8 @@ export async function fireArvlCdStationPush(
       deps.archFlag,
       env.DB,
     );
+    // #2343 — fire-attempt(실패) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
   }
@@ -2650,6 +2697,8 @@ export async function fireArvlCdStationPush(
     hopIndex: waypoint.hopIndex,
     staleMs: ssotForStale?.lastAdvanceAt ? now - ssotForStale.lastAdvanceAt : undefined,
   });
+  // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
+  await recordFireAttempt(env, trip, waypoint, 'sent', now);
   return { dirty };
 }
 
@@ -2763,6 +2812,12 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       environment: deriveEvidenceEnvironment(trip),
       hopIndex: waypoint.hopIndex,
     });
+    // #2343 — trip 삭제 race(advanceTripPosition 게이트 #5 `no-trip`)만 fire-attempt D1 관측
+    // 대상. 다른 blockReason(모션 정지/env 불일치 등)은 정상 게이트 동작이라 발사 시도 자체가
+    // 아니므로 quota 절약을 위해 로깅하지 않는다.
+    if (outcome.blockReason === 'no-trip') {
+      await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, 'no-trip');
+    }
     return { dirty: false };
   }
   stats.arvlCdFireFired += 1;

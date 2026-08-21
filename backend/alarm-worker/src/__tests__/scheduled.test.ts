@@ -89,7 +89,7 @@ const APNS_HOSTS = {
 // 실제 device token 길이를 반영한 별도 상수를 collapse-id 전용 테스트에서 사용한다.
 const HEX64_TOKEN = '0123456789abcdef'.repeat(4);
 
-function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
+function makeEnv(kv: InMemoryKV, pending?: InMemoryKV, db?: D1Database): Env {
   return {
     TRIPS: kv as unknown as KVNamespace,
     APNS_HOST: APNS_HOSTS.production,
@@ -101,7 +101,28 @@ function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
     APNS_PRIVATE_KEY: apnsConfig.privateKeyPem,
     APNS_BUNDLE_ID: 'com.example.app',
     PENDING_PUSHES: pending ? (pending as unknown as KVNamespace) : undefined,
+    DB: db,
   };
+}
+
+// #2343 — trip_events INSERT 호출을 가로채는 최소 D1 mock. `bind(...).run()` 인자를
+// `inserts` 배열에 축적해 테스트가 실제 D1 없이 fire-attempt 로그 내용을 검증한다.
+// `first()`도 no-op 응답 — pushFailureLog 등 같은 fire path에서 함께 호출되는 다른 D1
+// consumer가 mock 표면 부재로 swallow-warn 노이즈를 내지 않도록 최소 호환.
+function makeFireLogDb(): { db: D1Database; inserts: unknown[][] } {
+  const inserts: unknown[][] = [];
+  const db = {
+    prepare: () => ({
+      bind: (...args: unknown[]) => {
+        inserts.push(args);
+        return {
+          run: async () => ({ success: true }),
+          first: async () => null,
+        };
+      },
+    }),
+  } as unknown as D1Database;
+  return { db, inserts };
 }
 
 // estimateBoardingLockArrival 테스트 공용 — 단일 arvlCd 노출만 검증.
@@ -8234,12 +8255,13 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     apnsFetch?: ReturnType<typeof vi.fn>;
     pushId?: string;
     seedKv?: (kv: InMemoryKV) => Promise<void>;
+    db?: D1Database;
   }): Promise<{ stats: ScheduledStats; kv: InMemoryKV; apnsFetch: ReturnType<typeof vi.fn> }> {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, opts.trip ?? makeLockTrip());
     if (opts.seedKv) await opts.seedKv(kv);
     const apnsFetch = opts.apnsFetch ?? vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const stats = await runScheduled(makeEnv(kv, undefined, opts.db), {
       seoul: opts.seoul,
       apnsConfig,
       apnsHosts: APNS_HOSTS,
@@ -8671,6 +8693,115 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 });
 
+/**
+ * #2343 — cron fire path(destination/transfer/station-passed 발사)를 D1 `trip_events`
+ * (kind='cron-fire-attempt')로 관측. 다음 검증 탑승에서 backend가 실제로 발사했는지를 device
+ * 로그 없이 D1 SELECT만으로 판정할 수 있게 한다(2026-08-18 검증 탑승 blind spot).
+ */
+describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
+  const makeLockTrip = (overrides: Partial<Trip> = {}) => makeLockTripFixture('arvl-fire-log', overrides);
+  const makeArrivalSeoul = makeArvlCdFireSeoul;
+
+  it('발사 성공 → trip_events에 kind=cron-fire-attempt / outcome=sent 1건 insert', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    await runScheduled(makeEnv(kv, undefined, db), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-fire-log-sent',
+    });
+    const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+    expect(fireLogInserts).toHaveLength(1);
+    const [, , kind, station, , metaJson] = fireLogInserts[0] as [
+      string,
+      number,
+      string,
+      string | null,
+      string | null,
+      string | null,
+    ];
+    expect(kind).toBe('cron-fire-attempt');
+    expect(station).toBe('중곡');
+    expect(JSON.parse(metaJson!)).toEqual({
+      waypointKind: 'station-passed',
+      phase: 'imminent',
+      outcome: 'sent',
+    });
+  });
+
+  it('발사 실패(push 400) → outcome=failed + reason 기록', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadFoo' }), { status: 400 }),
+    );
+    await runScheduled(makeEnv(kv, undefined, db), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-fire-log-failed',
+    });
+    const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+    expect(fireLogInserts).toHaveLength(1);
+    const meta = JSON.parse(fireLogInserts[0][5] as string) as {
+      waypointKind: string;
+      phase: string;
+      outcome: string;
+      reason?: string;
+    };
+    expect(meta.outcome).toBe('failed');
+    expect(meta.reason).toBe('BadFoo');
+  });
+
+  it('trip 삭제 race(advanceTripPosition no-trip) → outcome=skipped-reason', async () => {
+    // listTrips가 trip을 읽어 처리 루프에 진입시킨 *직후*, advanceTripPosition 내부의
+    // 독립적인 getTrip 재조회 시점에 trip이 사라진 상황을 시뮬레이션한다 — 같은 trip key에
+    // 대한 2번째 kv.get 호출만 null로 응답해 "listTrips는 읽었지만 그 사이 DELETE됨" 레이스를
+    // 재현한다 (listTrips 1회 get + advanceTripPosition getTrip 1회 get = 2번째 호출).
+    class RaceDeleteKV extends InMemoryKV {
+      private tripKeyGetCount = 0;
+      constructor(private readonly raceKey: string) {
+        super();
+      }
+      async get(key: string, options?: { cacheTtl?: number }): Promise<string | null> {
+        if (key === this.raceKey) {
+          this.tripKeyGetCount += 1;
+          if (this.tripKeyGetCount === 2) return null;
+        }
+        return super.get(key, options);
+      }
+    }
+    const token = 'arvl-fire-log-race';
+    const kv = new RaceDeleteKV(`trip:${token}`);
+    await putTrip(kv as unknown as KVNamespace, makeLockTripFixture(token));
+    const { db, inserts } = makeFireLogDb();
+    await runScheduled(makeEnv(kv as unknown as InMemoryKV, undefined, db), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-fire-log-race',
+    });
+    const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+    expect(fireLogInserts).toHaveLength(1);
+    const meta = JSON.parse(fireLogInserts[0][5] as string) as {
+      waypointKind: string;
+      phase: string;
+      outcome: string;
+      reason?: string;
+    };
+    expect(meta.outcome).toBe('skipped-reason');
+    expect(meta.reason).toBe('no-trip');
+  });
+});
 
 /**
  * ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=ON 시).
