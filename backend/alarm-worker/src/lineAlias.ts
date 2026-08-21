@@ -69,6 +69,18 @@ export function subwayIdForLine(line: string): string | null {
 }
 
 /**
+ * #2355 — `subwayIdForLine`의 역방향. subwayId로 client line code(LINE_META의 key,
+ * `canonicalLineName`의 입력 형식)를 조회한다. Seoul API `realtimeStationArrival`이
+ * subwayNm=null, subwayId만 보내는 실 shape에서 line canonical name을 복원할 때
+ * `canonicalLineName(lineNameBySubwayId(item.subwayId))` 형태로 사용
+ * (`seoul.ts:parseEntry`). LINE_META에서 파생 — 매핑 없는 subwayId면 null.
+ */
+export function lineNameBySubwayId(subwayId: string): string | null {
+  const entry = Object.entries(LINE_META).find(([, meta]) => meta.subwayId === subwayId);
+  return entry?.[0] ?? null;
+}
+
+/**
  * 기존 호환성 — LINE_META에서 파생되는 alias 목록. 신규 코드는 LINE_META를 직접 사용 권장.
  */
 export const LINE_ALIAS_MAP: Record<string, readonly string[]> = Object.fromEntries(

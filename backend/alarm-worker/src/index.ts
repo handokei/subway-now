@@ -1842,13 +1842,16 @@ app.post('/metrics/boarding-prompt', async (c) => {
  *
  * Body: { token, observedStationName, observedAtMs, accuracy, subsurface? }
  * Response 200:
- *   { ok, advanced, currentWaypoint, nextStation, autoLockCandidate }
+ *   { ok, advanced, currentWaypoint, nextStation }
  *   - advanced: 이번 sync로 waypoints가 shift됐는지 (1+ hop)
  *   - currentWaypoint: 정정 후 first waypoint stationName (없으면 null — destination 도착)
  *   - nextStation: 정정 후 first waypoint = 다음 알람 대상 (currentWaypoint와 동일, 의미상 alias)
- *   - autoLockCandidate (#916 A1): cron이 자동 lock을 부착했을 때 그 lock 메타.
- *     클라는 이 값을 보고 사용자가 직접 탭하지 않아도 boardingLock state를 hydrate 가능.
- *     없으면 null. 후속 PR에서 클라이언트가 이 필드를 처리한다.
+ *   - #2352 — `autoLockCandidate` 필드는 삭제됐다(구 #916 A1). 사용자가 직접 탭하지 않은
+ *     trainCode를 client가 무탭으로 hydrate하는 채널은 사용자 "무탭 오토락 전량 삭제" 결정(#2342)의
+ *     backend-driven 잔존분이었다 — client가 이미 lock을 갖고 있으면 no-op이지만, client local
+ *     store가 비어 있는데 backend Trip에 boardingLock이 남아있는 edge case(재설치/storage race
+ *     등)에서 사용자 명시 없이 lock을 재생성했다. 명시 탭(createLockFromTrain) / boardingPrompt
+ *     응답 lock 경로는 이 endpoint와 무관하게 그대로 유지된다.
  * Response 404: { error: 'trip_not_found' } — 클라는 다음 fix에서 자연 retry
  *
  * Trip 부재 시 lock 재생성 책임은 본 endpoint가 지지 않음 — 클라가 useApnsTripRegistration으로
@@ -1940,42 +1943,14 @@ app.post('/boarding-lock/sync', async (c) => {
   }
 
   const head = working.waypoints[0];
-  if (working.boardingLock) {
-    // #2283 — hydrate-issued 관측. autoLockCandidate를 device가 실제로 받아 lock state를
-    // hydrate할 수 있는 응답임을 기록(sync-received/advance와 별도 kind — "발사됐는지"를 분리 관측).
-    // #2283 리뷰 P2-2 — waitUntil로 스케줄.
-    // #2308 — line은 `boardingLock.line`이 아니라 `head.line`(현재 anchor waypoint의 leg)을 쓴다.
-    // head는 이번 cycle의 advance 직후 값이라, lock.line이 아직 옛 leg에 머무는 한 cycle 동안
-    // (저녁 어린이대공원 line=2, 아침 뚝섬 line=7 evidence) hydrate가 실제 서 있는 역의 노선과
-    // 다른 값을 발행하는 것을 막는다. head가 있으면 head.line(다중 노선 trip의 해당 leg 노선)을
-    // SSOT로 쓴다.
-    scheduleTripEvent(
-      c,
-      recordTripEvent(c.env.DB, {
-        tokenHash,
-        kind: 'hydrate-issued',
-        station: head ? head.stationName : undefined,
-        line: head ? head.line : working.boardingLock.line,
-      }),
-    );
-  }
+  // #2352 — 구 hydrate-issued D1 관측(#2283/#2308)은 autoLockCandidate 응답 필드 노출을 전제로
+  // 한 계측이었다. 필드 삭제로 "hydrate 받을 수 있는 응답이 나갔다"는 사실 자체가 더 이상 발생하지
+  // 않으므로 함께 제거 — 없는 채널을 있다고 관측하는 오탐 신호를 막는다.
   return c.json({
     ok: true,
     advanced: advance.shiftedCount > 0,
     currentWaypoint: head ? head.stationName : null,
     nextStation: head ? head.stationName : null,
-    // #916 A1 — cron auto-lock(또는 사용자 명시 lock)이 trip에 부착돼 있으면 그 메타를
-    // candidate로 노출. client가 이 값으로 boardingLock UI/state를 hydrate한다.
-    // segmentStations/expiresAt 등 내부 필드는 client가 트래킹할 필요가 없어 공개 표면 최소화.
-    // #1364 P1 — `expiresAt`을 노출해 client local store가 backend 갱신값과 동기화되도록 한다.
-    autoLockCandidate: working.boardingLock
-      ? {
-          trainCode: working.boardingLock.trainCode,
-          line: working.boardingLock.line,
-          subwayId: working.boardingLock.subwayId,
-          expiresAt: working.boardingLock.expiresAt,
-        }
-      : null,
   });
 });
 
@@ -2717,6 +2692,7 @@ export const handler = {
           skippedNoContext: scheduledStats.boardingPromptSkippedNoContext,
           skippedStale: scheduledStats.boardingPromptSkippedStale,
           skippedTooFar: scheduledStats.boardingPromptSkippedTooFar,
+          skippedEmpty: scheduledStats.boardingPromptSkippedEmpty,
           skippedTrainDuplicate: scheduledStats.boardingPromptSkippedTrainDuplicate,
         },
         Date.now(),

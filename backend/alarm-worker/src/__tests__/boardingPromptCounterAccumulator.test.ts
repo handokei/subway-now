@@ -20,6 +20,7 @@ const ZERO_DELTA: BoardingPromptCounterDelta = {
   skippedNoContext: 0,
   skippedStale: 0,
   skippedTooFar: 0,
+  skippedEmpty: 0,
   skippedTrainDuplicate: 0,
 };
 
@@ -77,6 +78,7 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
       skippedNoContext: 0,
       skippedStale: 0,
       skippedTooFar: 0,
+      skippedEmpty: 0,
       skippedTrainDuplicate: 0,
       window: '24h-rolling-ttl',
       sampledAt: NOW,
@@ -105,6 +107,7 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
       skippedNoContext: 0,
       skippedStale: 0,
       skippedTooFar: 0,
+      skippedEmpty: 0,
       skippedTrainDuplicate: 1,
       window: '24h-rolling-ttl',
       sampledAt: NOW + 60_000,
@@ -153,6 +156,32 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
     );
     expect(result?.evaluated).toBe(2);
   });
+
+  // #2350 — skippedEmpty(RC-13, candidateTrains 0건)가 evaluated>0인데 fired=0인 원인을
+  // 판별하는 유일 잔여 경로였는데 KV counter에 미노출이었다(RCA). 계수/누적/idle-skip gate
+  // 모두 다른 skip 필드와 동일하게 동작해야 한다.
+  it('#2350 — skippedEmpty가 KV counter에 계수/누적된다', async () => {
+    const kv = new InMemoryKV();
+    const result = await accumulateBoardingPromptCounters(
+      kv as unknown as KVNamespace,
+      { ...ZERO_DELTA, evaluated: 1, skippedEmpty: 1 },
+      NOW,
+    );
+    expect(result?.skippedEmpty).toBe(1);
+    const stored = await readBoardingPromptCounters(kv as unknown as KVNamespace);
+    expect(stored?.skippedEmpty).toBe(1);
+  });
+
+  it('#2350 — skippedEmpty만 >0이어도 활성 tick으로 KV write 발생(idle-skip 아님)', async () => {
+    const kv = new InMemoryKV();
+    const result = await accumulateBoardingPromptCounters(
+      kv as unknown as KVNamespace,
+      { ...ZERO_DELTA, skippedEmpty: 1 },
+      NOW,
+    );
+    expect(result).not.toBeNull();
+    expect(result?.skippedEmpty).toBe(1);
+  });
 });
 
 describe('EMPTY_BOARDING_PROMPT_COUNTERS', () => {
@@ -164,6 +193,7 @@ describe('EMPTY_BOARDING_PROMPT_COUNTERS', () => {
       skippedNoContext: 0,
       skippedStale: 0,
       skippedTooFar: 0,
+      skippedEmpty: 0,
       skippedTrainDuplicate: 0,
       window: '24h-rolling-ttl',
       sampledAt: 0,
