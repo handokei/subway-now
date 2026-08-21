@@ -4,11 +4,11 @@
  */
 /**
  * #924 — useTransferAutoDetect (D1 후속 PR — production wire).
+ * #2342 — 단일 후보 무탭 auto-lock 삭제. 후보 1개든 N개든 모달로 탭을 요구한다.
  *
  * pure 알고리즘은 transferDetect.test.ts에서 커버. 본 테스트는 hook 차원에서:
  *   - 다른 노선 arrival 수집 + boardingLine 제외
- *   - 단일 후보 → onAutoLock 호출 + idempotency
- *   - 다중 후보 → 모달 open + selectLine으로 hydrate + dismiss 처리
+ *   - 단일/다중 후보 모두 → 모달 open (무탭 onAutoLock 없음) + selectLine으로만 hydrate
  *   - planned route transfer waypoint이면 detect skip
  *   - 환승역 벗어나면 dismiss flag 리셋
  */
@@ -90,18 +90,35 @@ function renderTransferDetect(initialProps: Parameters<typeof useTransferAutoDet
 }
 
 describe('useTransferAutoDetect', () => {
-  it('단일 후보 detect → onAutoLock 호출 (현재 boardingLine 제외)', () => {
+  it('단일 후보 detect → 무탭 onAutoLock 호출 없음, 모달만 open (#2342)', () => {
     const onAutoLock = jest.fn();
     const arrival = makeArrival(
       [makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' })],
       [makeArrivalInfo({ destination: '잠실', arrivalSeconds: 30, line: '2', trainCode: 'T-2-A' })],
     );
-    renderHook(() =>
+    const { result } = renderHook(() =>
       useTransferAutoDetect(baseInputs({ arrival, boardingLock: makeLock(), onAutoLock })),
     );
+    expect(onAutoLock).not.toHaveBeenCalled();
+    expect(result.current.modalVisible).toBe(true);
+    expect(result.current.candidateLines).toEqual(['4']);
+  });
+
+  it('단일 후보 → 모달에서 selectLine 탭 시에만 onAutoLock 호출', () => {
+    const onAutoLock = jest.fn();
+    const arrival = makeArrival(
+      [makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' })],
+      [makeArrivalInfo({ destination: '잠실', arrivalSeconds: 30, line: '2', trainCode: 'T-2-A' })],
+    );
+    const { result } = renderHook(() =>
+      useTransferAutoDetect(baseInputs({ arrival, boardingLock: makeLock(), onAutoLock })),
+    );
+    expect(onAutoLock).not.toHaveBeenCalled();
+    act(() => result.current.selectLine('4'));
     expect(onAutoLock).toHaveBeenCalledTimes(1);
     const candidate: AutoLockCandidate = onAutoLock.mock.calls[0][0];
     expect(candidate).toEqual({ trainCode: 'T-4-A', line: '4', subwayId: '1004' });
+    expect(result.current.modalVisible).toBe(false);
   });
 
   it('motionStationary=true(정지) → no-op', () => {
@@ -167,18 +184,19 @@ describe('useTransferAutoDetect', () => {
     expect(result.current.modalVisible).toBe(true);
   });
 
-  it('단일 후보 idempotency — 같은 trainCode polling 반복돼도 onAutoLock 1회', () => {
+  it('단일 후보 — polling 반복돼도 무탭 onAutoLock 없음, 모달만 유지', () => {
     const onAutoLock = jest.fn();
     const arrival = makeArrival([
       makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
     ]);
-    const { rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
     rerender(baseInputs({ arrival, onAutoLock }));
     rerender(baseInputs({ arrival, onAutoLock }));
-    expect(onAutoLock).toHaveBeenCalledTimes(1);
+    expect(onAutoLock).not.toHaveBeenCalled();
+    expect(result.current.modalVisible).toBe(true);
   });
 
-  it('단일 후보 — 다른 trainCode가 들어오면 새로 hydrate', () => {
+  it('단일 후보 — 다른 trainCode로 갱신돼도 여전히 탭(selectLine) 시에만 최신 trainCode로 hydrate', () => {
     const onAutoLock = jest.fn();
     const arrivalA = makeArrival([
       makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
@@ -186,10 +204,12 @@ describe('useTransferAutoDetect', () => {
     const arrivalB = makeArrival([
       makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-B' }),
     ]);
-    const { rerender } = renderTransferDetect(baseInputs({ arrival: arrivalA, onAutoLock }));
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival: arrivalA, onAutoLock }));
     rerender(baseInputs({ arrival: arrivalB, onAutoLock }));
-    expect(onAutoLock).toHaveBeenCalledTimes(2);
-    expect(onAutoLock.mock.calls[1][0].trainCode).toBe('T-4-B');
+    expect(onAutoLock).not.toHaveBeenCalled();
+    act(() => result.current.selectLine('4'));
+    expect(onAutoLock).toHaveBeenCalledTimes(1);
+    expect(onAutoLock.mock.calls[0][0].trainCode).toBe('T-4-B');
   });
 
   it('도착 데이터 없음 → trainCode pick 실패 → no-op', () => {
@@ -390,32 +410,34 @@ describe('useTransferAutoDetect', () => {
     expect(onAutoLock).not.toHaveBeenCalled();
   });
 
-  it('환승역에서 GPS 끊김(stationKey → null) → lastAutoLockedKey 리셋되어 재진입 시 다시 hydrate', () => {
+  it('환승역에서 GPS 끊김(stationKey → null) 후 dismiss 상태로 재진입해도 dismiss 리셋되어 모달 재오픈', () => {
     const onAutoLock = jest.fn();
-    const arrival = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
-    ]);
-    const { rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
-    expect(onAutoLock).toHaveBeenCalledTimes(1);
-    // GPS 끊김 — nearestStations null.
+    const arrival = multiCandidateArrival();
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
+    expect(result.current.modalVisible).toBe(true);
+    act(() => result.current.dismissModal());
+    expect(result.current.modalVisible).toBe(false);
+    // GPS 끊김 — nearestStations null → stationKey null 전환으로 dismiss ref 리셋.
     rerender(baseInputs({ nearestStations: null, arrival, onAutoLock }));
-    // 다시 같은 환승역 진입 — 새 trainCode 같아도 ref가 리셋되었으므로 재호출.
+    // 다시 같은 환승역 진입 — dismiss가 리셋되었으므로 모달 재오픈.
     rerender(baseInputs({ arrival, onAutoLock }));
-    expect(onAutoLock).toHaveBeenCalledTimes(2);
+    expect(result.current.modalVisible).toBe(true);
+    expect(onAutoLock).not.toHaveBeenCalled();
   });
 
-  it('단일 후보 — 같은 trainCode + 새 arrival object → key 일치로 hydrate skip', () => {
-    // 같은 station + 같은 trainCode이지만 arrival 객체 ref만 새로 → effect 재실행 + key 가드 분기.
+  it('단일 후보 — 같은 trainCode + 새 arrival object여도 무탭 onAutoLock 없음(모달만 유지)', () => {
+    // 같은 station + 같은 trainCode이지만 arrival 객체 ref만 새로 → effect 재실행돼도 무탭 hydrate 없음.
     const onAutoLock = jest.fn();
     const makeArrivalA = () =>
       makeArrival([
         makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
       ]);
-    const { rerender } = renderTransferDetect(baseInputs({ arrival: makeArrivalA(), onAutoLock }));
-    expect(onAutoLock).toHaveBeenCalledTimes(1);
-    // 새 arrival 객체(ref만 다름, 데이터 동일) → effect 재실행하지만 ref key가 같으면 skip.
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival: makeArrivalA(), onAutoLock }));
+    expect(onAutoLock).not.toHaveBeenCalled();
+    // 새 arrival 객체(ref만 다름, 데이터 동일) → effect 재실행돼도 여전히 무탭 hydrate 없음.
     rerender(baseInputs({ arrival: makeArrivalA(), onAutoLock }));
-    expect(onAutoLock).toHaveBeenCalledTimes(1);
+    expect(onAutoLock).not.toHaveBeenCalled();
+    expect(result.current.modalVisible).toBe(true);
   });
 
   // pickImminentTrainCode가 best replace(later→earlier) 분기와 skip(earlier→later) 분기를
@@ -518,7 +540,12 @@ describe('useTransferAutoDetect', () => {
       { label: '일반정차역 only(대방) + express only → fallback', ups: [EXPRESS_60], destinationName: '대방', expectedTrainCode: 'T-1-EXPRESS' },
     ])('$label', ({ ups, destinationName, expectedTrainCode }) => {
       const onAutoLock = jest.fn();
-      renderHook(() => useTransferAutoDetect(inputs1Line(makeArrival(ups), destinationName, onAutoLock)));
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(inputs1Line(makeArrival(ups), destinationName, onAutoLock)),
+      );
+      // #2342 — 단일 후보도 무탭 hydrate 없음. 모달 탭(selectLine)으로만 trainType 우선순위 적용.
+      expect(onAutoLock).not.toHaveBeenCalled();
+      act(() => result.current.selectLine('1'));
       expect(onAutoLock).toHaveBeenCalledWith({ trainCode: expectedTrainCode, line: '1', subwayId: '1001' });
     });
 
