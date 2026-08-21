@@ -167,3 +167,54 @@ export function shouldTriggerSelfEnd(
   }
   return { trigger: false, reason: null };
 }
+
+/**
+ * #2341 — Signal 1(fusion-destination)의 destination-match 30s 지속 요구가 backend destination
+ * push(실측 도달 지연 35~51s) 발사보다 먼저 self-end로 trip을 삭제해버리는 race 차단 게이트.
+ *
+ * destination push(source='silent-push-received', kind='destination')가 destination-match
+ * 시작 이후 관측되면 즉시 통과. 관측 안 됐으면 DESTINATION_PUSH_TIMEOUT_MS(기본 4분 — 실측
+ * 지연 35~51s 대비 충분한 여유이면서, backend가 완전 침묵하는 trip이 self-end를 영구히
+ * 대기하는 stale-trip 방지 백스톱) 경과해야만 통과.
+ */
+export const DESTINATION_PUSH_TIMEOUT_MS = 4 * 60_000;
+
+export interface DestinationPushObservationEntry {
+  source: string;
+  kind?: string;
+  ts: number;
+}
+
+/**
+ * alarmLog ring buffer entries에서 destination-match 시작(sinceTs) 이후 도달한 destination
+ * push(visible station kind) 관측 여부를 판정한다. alarmLog.ts의 computeSilentPushReach와
+ * 동일한 '도달=received station kind' 정의를 destination에 한정해 재사용한다.
+ */
+export function hasObservedDestinationPush(
+  entries: readonly DestinationPushObservationEntry[],
+  sinceTs: number,
+): boolean {
+  return entries.some(
+    (entry) =>
+      entry.source === 'silent-push-received' &&
+      entry.kind === 'destination' &&
+      entry.ts >= sinceTs,
+  );
+}
+
+/**
+ * @param destinationMatchStartedAt Signal 1 destination-match 최초 진입 tick의 epoch ms.
+ * @param now                        기준 시각.
+ * @param pushObserved               destination push 관측 여부 (hasObservedDestinationPush 결과).
+ * @param timeoutMs                  백스톱 타임아웃 (기본 DESTINATION_PUSH_TIMEOUT_MS).
+ */
+export function destinationPushGatePassed(
+  destinationMatchStartedAt: number | null,
+  now: number,
+  pushObserved: boolean,
+  timeoutMs: number = DESTINATION_PUSH_TIMEOUT_MS,
+): boolean {
+  if (pushObserved) return true;
+  if (destinationMatchStartedAt === null) return false;
+  return now - destinationMatchStartedAt >= timeoutMs;
+}
