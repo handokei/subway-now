@@ -25,6 +25,7 @@ import {
   markPromptFired,
   pickAutoTrainCode,
   PROMPT_FRESHNESS_MS,
+  shouldStampOriginProximity,
   type GateSkipReason,
 } from './boardingPrompt';
 import {
@@ -655,6 +656,10 @@ export interface ScheduledStats extends LiveActivityStats {
    * #2153 — 기준 시각(anchor)은 route 설정 시각(`trip.createdAt`)이 아니라 출발역 근접을 처음
    * 관측한 시각(`trip.originProximityAt`, 근접 관측 전엔 createdAt fallback)이다. 집/사무실에서
    * 경로를 미리 설정하고 15분 뒤 탑승하는 패턴에서 이 게이트가 오차단하던 회귀를 닫는다.
+   *
+   * #2358 — anchor는 최초 1회 고정이 아니라 근접이 계속 관측되는 동안 주기적으로
+   * (`ORIGIN_PROXIMITY_RENEWAL_MS`, 5분) 재stamp된다 — 출발역에서 계속 대기 중인 trip이
+   * 15분 창을 넘기는 순간 영구히 막히던 결함(#2153 원안)을 닫는다.
    */
   boardingPromptSkippedStale: number;
   /**
@@ -4958,17 +4963,25 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   const { originDistanceM, originAccuracyM } = geo;
   const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
   const nearOrigin = isNearOrigin(originDistanceM, originAccuracyM);
-  const isTooFarFromOrigin = hasProximityReading && !nearOrigin;
+  // #2350 — live anchor 전환. `promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips
+  // 등록 시점의 정적 스냅샷이라 이후 절대 갱신되지 않는다(index.ts:1564). `/position` 채널이
+  // 이미 근접을 실시간 관측해 `trip.originProximityAt`을 stamp했다면, 그 정적 스냅샷이 여전히
+  // "멀다"를 가리켜도 근접 게이트로 영구 차단해선 안 된다(집에서 경로 미리 설정 후 도보 이동
+  // 케이스). anchor가 아직 없을 때만(=live 근접 확인 이력 없음) 정적 스냅샷으로 판단한다.
+  const isTooFarFromOrigin = hasProximityReading && !nearOrigin && trip.originProximityAt === undefined;
 
-  // #2153 — trip 등록 후 최초로 출발역 근접을 관측한 cycle의 시각을 1회만 stamp. 이후
-  // cycle에서는 이 anchor를 보존(재관측마다 now로 계속 갱신하면 게이트가 무력화된다).
+  // #2358 (RCA — #2153 원안 결함) — 최초 1회만 stamp하고 영구 고정하면 "출발역에서 계속
+  // 대기 중"인 실 시나리오가 15분을 넘기는 순간 근접이 실시간으로 계속 확인되는 중에도
+  // 영구히 SkippedStale로 막힌다. `shouldStampOriginProximity`(ORIGIN_PROXIMITY_RENEWAL_MS,
+  // 5분)로 근접이 관측되는 동안 anchor를 주기적으로 재stamp — "계속 근접 확인 중"이면 신선도
+  // 창이 만료되지 않는다. 매 cycle 무조건 쓰지 않고 스로틀링해 KV write 최소화(#2073 lesson).
   //
   // #2153 (리뷰 P1) — 이 cron 경로는 `trip.promptGeoContext`가 register 시점의 정적 스냅샷이라
   // 재등록 트리거(currentStation null→non-null 등)가 안 오면 값이 절대 갱신되지 않는 구조적
   // 한계가 있다(집에서 route 설정 후 재등록 없이 도보 이동하는 케이스). 실시간 anchor의 주 경로는
   // `/position`(10초 주기, index.ts stampOriginProximityIfNeeded) — 이 cron 분기는 register/heal로
   // 이미 갱신된 케이스를 추가로 커버하는 보조 경로로 유지.
-  if (nearOrigin && trip.originProximityAt === undefined) {
+  if (nearOrigin && shouldStampOriginProximity(trip.originProximityAt, now)) {
     trip.originProximityAt = now;
     dirty = true;
   }

@@ -1594,10 +1594,19 @@ export function computeSilentPushReach(
   };
 }
 
+/**
+ * #2339 — 지하 BG trip에서 같은 gate reason이 fix마다 반복 suppress되어 burst dedup 없이
+ * 매 append(ring buffer write + Sentry breadcrumb + AsyncStorage flush)를 유발하던 배터리
+ * 소모 차단. 형제 suppress 함수와 동일하게 isBurstDuplicate로 같은 reason 연속 발생은
+ * DEDUP_LOG_WINDOW_MS 안에서 count만 유지(신규 append 생략)하고 최초 1건만 적재한다.
+ * DebugModal Gates 집계는 summarizeAlarmLogByReason이 엔트리 수를 세므로, 반복 suppress를
+ * count 없이 그냥 버려도 "gate 발생 자체는 있었다"는 신호(count > 0)는 보존된다.
+ */
 export function logSuppressedGate(
   reason: 'gate-age' | 'gate-accuracy' | 'gate-jump' | 'gate-motion-stationary',
   location: AlarmLogLocation,
 ): void {
+  if (isBurstDuplicate('gate', reason)) return;
   appendAlarmLog({
     ts: Date.now(),
     source: 'bg',

@@ -77,9 +77,12 @@ export interface UseBoardingLockControllerResult {
   /** 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op. */
   createLockFromTrain: (train: ArrivalInfo) => void;
   /**
-   * #915/#916 — backend `/boarding-lock/sync` 응답의 autoLockCandidate로 lock을 hydrate.
-   * destination-only baseline UX에서 사용자가 명시 탭하지 않아도 backend cron이 trainCode를
-   * 결정하면 client store에 반영해 lock UX 활성화한다.
+   * candidate(trainCode/line/subwayId)로 lock을 hydrate.
+   *
+   * #2352 — 구 #915/#916 backend `/boarding-lock/sync` 응답 autoLockCandidate 채널은 삭제됐다
+   * ("무탭 오토락 전량 삭제" 결정, #2342). 현재 유일한 호출자는 `useTransferAutoDetect`(#924)의
+   * device-side 단일 후보 환승 자동 detect — planned route 없이 환승역에서 다른 노선 임박 열차가
+   * 정확히 1개 감지될 때만 발동하는 별개 기능이다.
    *
    * idempotent: 이미 같은 trainCode + boardingLine으로 활성 lock이 있으면 no-op.
    * lock 생성을 위한 컨텍스트(destinationId / currentStation / line valid) 부족 시 no-op.
@@ -352,20 +355,19 @@ export function useBoardingLockController({
     void releaseLock();
   }, [releaseLock]);
 
-  // #915/#916 — backend autoLockCandidate를 받아 client BoardingLock store hydrate.
+  // candidate(현재는 useTransferAutoDetect의 device-side 단일 후보 detect, #924)를 받아 client
+  // BoardingLock store hydrate. #2352 — 구 backend #915/#916 autoLockCandidate 채널은 삭제됨.
   // hydrate 정책: lock이 이미 존재하면 항상 no-op.
-  //  - 사용자가 BoardingTrainList에서 명시 탭한 lock을 backend cron candidate(다른 trainCode 가능)가
+  //  - 사용자가 BoardingTrainList에서 명시 탭한 lock을 candidate(다른 trainCode 가능)가
   //    silently overwrite하지 않게 보호 (#915 self code-review).
   //  - destination 변경 시 controller의 stale-lock release effect가 lock=null로 만든 후에야 hydrate.
-  //  - 자동 lock도 한 번 잡히면 변경 X (Seam F swap은 backend cron이 trip.boardingLock을 갱신하고
-  //    silent push로 client store가 hydrate되는 별 경로).
+  //  - 자동 lock도 한 번 잡히면 변경 X.
   // #1014 RC2 acceptance gate — 두 조건 모두 통과해야 hydrate:
   //  1) candidate.trainCode가 directionalArrivals(현재 역 + 방향 필터)에 있는지 확인
   //     → origin을 이미 지난 열차(arrival list 없음)는 자동 차단.
   //     → 방향 불일치 열차도 동시에 차단 (directionalArrivals가 direction 필터 적용됨).
   //  2) 사용자가 origin에서 정적 대기 중인지 확인 — motionStationary 우선, speedMps fallback.
-  //     → 이미 열차에 탑승해 이동 중인 상태에서 backend가 autoLockCandidate를 지연 응답하는
-  //        false positive를 차단.
+  //     → 이미 열차에 탑승해 이동 중인 상태에서 candidate가 지연 발생하는 false positive를 차단.
   const hydrateLockFromCandidate = useCallback(
     (candidate: AutoLockCandidate) => {
       if (!currentStation) return;

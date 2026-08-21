@@ -99,7 +99,11 @@ function makeArrivedSeoul(stationName: string, trainCode = '7246'): SeoulArrival
               updnLine: '상행',
               trainLineNm: stationName,
               btrainNo: trainCode,
-              subwayNm: '지하철7호선',
+              // #2355 — 실 Seoul API는 subwayNm=null, subwayId만 유효값으로 보낸다. subwayId만
+              // 남겨 seoul.ts:parseEntry가 subwayId→line 역파생 경로를 타도록 fixture 교정
+              // (masking 제거).
+              subwayNm: null,
+              subwayId: '1007',
               arvlCd: 1,
             },
           ],

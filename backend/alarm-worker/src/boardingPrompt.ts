@@ -79,6 +79,30 @@ export function isNearOrigin(
  */
 export const PROMPT_FRESHNESS_MS = 15 * 60 * 1000;
 /**
+ * #2358 — 근접 관측(anchor, `trip.originProximityAt`) 갱신 주기. 최초 1회만 stamp하고 영구
+ * 고정하면(#2153 원안) "출발역에서 계속 대기 중"인 실 시나리오(배차 간격이 긴 노선의 열차 대기,
+ * "원점 대기~탑승")가 PROMPT_FRESHNESS_MS(15분)를 넘기는 순간 영구히 SkippedStale로 막힌다 —
+ * 근접이 실시간으로 계속 확인되는 중인데도 "오래된 컨텍스트"로 오분류하는 RCA 결함(#2358).
+ * anchor를 이 주기(5분)마다 재stamp해 "계속 근접 확인 중"이면 15분 창이 절대 만료되지 않게
+ * 한다 — 매 cycle(cron 1분 / `/position` 10초) 무조건 쓰지 않고 스로틀링해 KV write를
+ * 최소화한다(#2073 lesson: CF free tier quota).
+ */
+export const ORIGIN_PROXIMITY_RENEWAL_MS = 5 * 60 * 1000;
+/**
+ * #2358 — `trip.originProximityAt`를 지금 다시 stamp해야 하는지 판정하는 순수 함수.
+ * cron(`evaluateAndMaybeFireBoardingPrompt`)과 `/position`(`stampOriginProximityIfNeeded`)
+ * 양쪽이 공유 — 최초 관측(undefined) 또는 마지막 stamp로부터 `ORIGIN_PROXIMITY_RENEWAL_MS` 이상
+ * 지났으면 true.
+ */
+export function shouldStampOriginProximity(
+  originProximityAt: number | undefined,
+  now: number,
+): boolean {
+  return (
+    originProximityAt === undefined || now - originProximityAt >= ORIGIN_PROXIMITY_RENEWAL_MS
+  );
+}
+/**
  * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — 반복 발사(A4) 최소 발사 간격.
  * 직전 발사로부터 이 시간 미만이면 새 열차(arvlCd=1)가 도착해도 재발사하지 않는다
  * (배차 2~3분 역에서 연발 방지). `DISMISS_SILENCE_MS`와 값은 같지만 의미가 달라 별도 상수로 분리.

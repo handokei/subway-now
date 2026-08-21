@@ -44,8 +44,10 @@ jest.mock('../../../debug/utils/triggerTripGroundTruthPrompt', () => ({
 }));
 
 const mockAppendAlarmLog = jest.fn();
+const mockGetAlarmLog = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
+  getAlarmLog: (...args: unknown[]) => mockGetAlarmLog(...args),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -125,6 +127,13 @@ beforeEach(() => {
   mockGetTripStartedAt.mockResolvedValue(null);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
+  // #2341 — 기본값은 "destination push 이미 관측됨" — Signal 1을 다루는 기존 테스트들이
+  // 게이트에 막히지 않고 기존 타이밍대로 동작하게 한다. ts를 충분히 미래로 잡아 어떤
+  // destination-match 시작 시각(재trip 포함)과 비교해도 sinceTs 이후로 판정되게 한다.
+  // 게이트 자체를 검증하는 테스트는 이 mock을 빈 배열/특정 ts로 override.
+  mockGetAlarmLog.mockResolvedValue([
+    { ts: T0 + 10 * 60_000, source: 'silent-push-received', kind: 'destination' },
+  ]);
   // #2114 (방안 C′) — 기본은 null(corrId sync cache 미수화 → timestamp fallback). 각 test가 필요 시 override.
   mockGetCurrentTripCorrIdSync.mockReturnValue(null);
 });
@@ -362,6 +371,125 @@ describe('useDeviceSelfEnd', () => {
       });
       await Promise.resolve();
       expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#2341 destination push gate — Signal 1이 backend destination push를 선점하는 race 차단', () => {
+    it('destination push 미관측 + 타임아웃 미도달 → 30s 지속 충족돼도 cleanup 보류 (race 재현, red)', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetAlarmLog.mockResolvedValue([]); // destination push 미도달.
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      // 08-18 저녁 evidence — 도착 +2.4초 tick. destination-match는 30s 이전부터 지속됐다고
+      // 가정(실제로는 T0가 match 시작, +30s tick에서 30s 조건 충족).
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      // gate가 push 미관측 + 타임아웃 미도달로 막아 cleanup이 아직 발화하지 않아야 한다.
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+
+    it('destination push 관측되면 즉시 cleanup 발화 (push가 늦게 도달해도 관측 즉시 진행)', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetAlarmLog.mockResolvedValue([]); // 처음엔 미도달.
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+
+      // backend destination push 도달 (T0+40s, 실측 35~51s 지연대) — 다음 신호 tick에서 관측.
+      mockGetAlarmLog.mockResolvedValue([
+        { ts: T0 + 40_000, source: 'silent-push-received', kind: 'destination' },
+      ]);
+      withDateNow(T0 + 40_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'static', // deps 변경 유도.
+          }),
+        );
+      });
+      await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalled());
+      expect(mockSetSentinel).toHaveBeenCalled();
+    });
+
+    it('push 계속 미관측 + 4분 타임아웃 경과 → stale-trip 방지 백스톱으로 강제 종료', async () => {
+      mockDestinationState = DESTINATION;
+      mockGetAlarmLog.mockResolvedValue([]); // backend 완전 침묵.
+      const { rerender } = withDateNow(T0, () =>
+        renderHook(
+          (p: UseDeviceSelfEndInputs) => useDeviceSelfEnd(p),
+          {
+            initialProps: baseInputs({
+              currentStation: { ...DESTINATION },
+              confidence: 'backend-ssot',
+              positionStability: 'unknown',
+            }),
+          },
+        ),
+      );
+      withDateNow(T0 + 30_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'unknown',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+
+      // destination-match 시작(T0) + 4분 타임아웃 경과.
+      withDateNow(T0 + 4 * 60_000, () => {
+        rerender(
+          baseInputs({
+            currentStation: { ...DESTINATION },
+            confidence: 'backend-ssot',
+            positionStability: 'static',
+          }),
+        );
+      });
+      await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalled());
+      expect(mockSetSentinel).toHaveBeenCalled();
     });
   });
 

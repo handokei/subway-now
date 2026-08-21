@@ -48,11 +48,21 @@ jest.mock('expo-task-manager', () => ({
   },
 }));
 
-// #2354 — locationTracking.ts가 module-load 시점에 Location.Accuracy.High 등 정적 enum을
-// 읽는다. 빈 mock이면 이 import edge만으로 스위트 실행 자체가 실패하므로 SSoT enum을 spread.
+// #2344 — locationTracking.ts(BASE_TRACKING_OPTIONS)가 모듈 로드 시점에 Location.Accuracy /
+// Location.LocationActivityType을 참조한다. 이 파일은 backgroundLocationTask → bgLocationProfile
+// → locationTracking을 실제 모듈로 로드하므로(상단 헤더 주석 "외부 boundary만 mock" 참고) 해당
+// enum 값이 mock에 있어야 import 체인이 깨지지 않는다. stopLocationUpdatesAsync /
+// startLocationUpdatesAsync는 bgLocationProfile의 프로파일 전환 경로가 호출할 수 있어 결정적
+// no-op으로 제공한다(이 테스트는 프로파일 전환 자체를 검증 대상으로 삼지 않는다).
+// #2354 — enum 값 자체는 매직 넘버 하드코딩 대신 SSoT(src/testUtils/expoLocationMock.ts)에서
+// spread한다 — 빈 mock이면 이 import edge만으로 스위트 실행 자체가 실패한 회귀(#2354)의 재발 방지.
 jest.mock('expo-location', () => {
   const { expoLocationEnumMock } = require('../../../../testUtils/expoLocationMock');
-  return { ...expoLocationEnumMock };
+  return {
+    ...expoLocationEnumMock,
+    stopLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
+    startLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
+  };
 });
 
 // ── 외부 boundary fake: 결정적 동작 ──

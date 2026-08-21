@@ -54,6 +54,8 @@ export interface BoardingPromptCounterDelta {
   skippedNoContext: number;
   skippedStale: number;
   skippedTooFar: number;
+  /** #2350 — candidateTrains 0건(RC-13). evaluated>0인데 fired=0의 잔여 판별 경로. */
+  skippedEmpty: number;
   skippedTrainDuplicate: number;
 }
 
@@ -79,6 +81,7 @@ export const EMPTY_BOARDING_PROMPT_COUNTERS: BoardingPromptCounters = {
   skippedNoContext: 0,
   skippedStale: 0,
   skippedTooFar: 0,
+  skippedEmpty: 0,
   skippedTrainDuplicate: 0,
   window: '24h-rolling-ttl',
   sampledAt: 0,
@@ -125,6 +128,7 @@ export async function accumulateBoardingPromptCounters(
     delta.skippedNoContext > 0 ||
     delta.skippedStale > 0 ||
     delta.skippedTooFar > 0 ||
+    delta.skippedEmpty > 0 ||
     delta.skippedTrainDuplicate > 0;
   if (!hasDelta) return null;
 
@@ -136,6 +140,7 @@ export async function accumulateBoardingPromptCounters(
     skippedNoContext: (existing?.skippedNoContext ?? 0) + delta.skippedNoContext,
     skippedStale: (existing?.skippedStale ?? 0) + delta.skippedStale,
     skippedTooFar: (existing?.skippedTooFar ?? 0) + delta.skippedTooFar,
+    skippedEmpty: (existing?.skippedEmpty ?? 0) + delta.skippedEmpty,
     skippedTrainDuplicate: (existing?.skippedTrainDuplicate ?? 0) + delta.skippedTrainDuplicate,
     window: '24h-rolling-ttl',
     sampledAt: now,

@@ -2500,7 +2500,7 @@ describe('POST /position (#819)', () => {
       expect(await env.TRIPS.get('trip:no-such-trip')).toBeNull();
     });
 
-    it('이미 stamp된 trip은 재관측해도 최초 시각을 보존(계속 갱신 금지)', async () => {
+    it('#2358 — 이미 stamp된 trip은 재관측 간격이 갱신 주기(5분) 미달이면 최초 시각을 보존', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(CREATED);
       const env = makeKvEnv();
@@ -2519,11 +2519,40 @@ describe('POST /position (#819)', () => {
       const firstStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
       expect(firstStamp).toBe(CREATED);
 
-      // 5분 뒤 재관측(여전히 근접) — anchor가 최초 시각(CREATED)으로 그대로 유지돼야 한다.
+      // 4분 뒤 재관측(여전히 근접, 갱신 주기 5분 미달) — anchor가 최초 시각(CREATED)으로 유지.
+      vi.setSystemTime(CREATED + 4 * 60 * 1000);
+      await post('/position', { ...nearPayload, ts: CREATED + 4 * 60 * 1000 }, env);
+      const secondStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
+      expect(secondStamp).toBe(CREATED);
+    });
+
+    // #2358 (RCA) — 근접 관측이 5분 이상 지속되면 anchor를 재stamp해 "출발역에서 계속 대기
+    // 중"인 실 시나리오가 신선도 창(15분) 만료로 영구히 막히지 않게 한다. 최초 1회만 stamp하고
+    // 영구 고정하던 #2153 원안 결함의 fix.
+    it('#2358 — 갱신 주기(5분) 이상 지나 재관측되면(계속 근접) anchor가 갱신된다', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(CREATED);
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      const nearPayload = {
+        token: 'tok-prox',
+        lat: 1,
+        lng: 2,
+        accuracy: 10,
+        ts: CREATED,
+        motion: 'walking' as const,
+        originDistanceM: 50,
+        originAccuracyM: 10,
+      };
+      await post('/position', nearPayload, env);
+      const firstStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
+      expect(firstStamp).toBe(CREATED);
+
+      // 5분 뒤 재관측(여전히 근접, 원점 대기 지속) — anchor가 now로 갱신돼야 한다.
       vi.setSystemTime(CREATED + 5 * 60 * 1000);
       await post('/position', { ...nearPayload, ts: CREATED + 5 * 60 * 1000 }, env);
       const secondStamp = JSON.parse((await env.TRIPS.get('trip:tok-prox')) as string).originProximityAt;
-      expect(secondStamp).toBe(CREATED);
+      expect(secondStamp).toBe(CREATED + 5 * 60 * 1000);
     });
   });
 });
@@ -3081,18 +3110,13 @@ describe('POST /boarding-lock/sync (#901)', () => {
       advanced: boolean;
       currentWaypoint: string | null;
       nextStation: string | null;
-      autoLockCandidate: { trainCode: string; line: string; subwayId: string; expiresAt: number };
     };
     expect(body.ok).toBe(true);
     expect(body.advanced).toBe(true);
     expect(body.currentWaypoint).toBe('역삼');
     expect(body.nextStation).toBe('역삼');
-    // #916 — tripWithLock fixture에 boardingLock이 미리 설정돼 있으므로 candidate로 노출.
-    // #1364 P1 — expiresAt도 함께 노출 (client local store 동기화용).
-    expect(body.autoLockCandidate.trainCode).toBe('T-1');
-    expect(body.autoLockCandidate.line).toBe('2');
-    expect(body.autoLockCandidate.subwayId).toBe('1002');
-    expect(typeof body.autoLockCandidate.expiresAt).toBe('number');
+    // #2352 — autoLockCandidate 필드는 삭제됐다(구 #916). 응답에 재등장하지 않는지 확인.
+    expect(body).not.toHaveProperty('autoLockCandidate');
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
     expect(stored.waypoints.map((w: { stationName: string }) => w.stationName)).toEqual([
       '역삼',
@@ -3254,9 +3278,9 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(res.status).toBe(200);
   });
 
-  // #916 A1 — boardingLock이 있으면 autoLockCandidate로 노출, 없으면 null.
-  // client는 이 필드를 보고 자동 lock이 부착됐는지 알 수 있다.
-  it('boardingLock 있는 trip → autoLockCandidate에 trainCode/line/subwayId 노출', async () => {
+  // #2352 — 구 #916 A1 autoLockCandidate 노출은 삭제됐다. boardingLock 존재 여부와 무관하게
+  // 응답에 그 필드가 재등장하지 않는지 확인 (무탭 hydrate 채널 완전 제거 확인).
+  it('boardingLock 있는 trip → autoLockCandidate 필드 없음', async () => {
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);
     const res = await post(
@@ -3265,17 +3289,11 @@ describe('POST /boarding-lock/sync (#901)', () => {
       env,
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      autoLockCandidate: { trainCode: string; line: string; subwayId: string; expiresAt: number } | null;
-    };
-    // #1364 P1 — autoLockCandidate에 expiresAt 포함 (client TTL 동기화).
-    expect(body.autoLockCandidate?.trainCode).toBe('T-1');
-    expect(body.autoLockCandidate?.line).toBe('2');
-    expect(body.autoLockCandidate?.subwayId).toBe('1002');
-    expect(typeof body.autoLockCandidate?.expiresAt).toBe('number');
+    const body = await res.json();
+    expect(body).not.toHaveProperty('autoLockCandidate');
   });
 
-  it('boardingLock 없는 trip → autoLockCandidate=null', async () => {
+  it('boardingLock 없는 trip → autoLockCandidate 필드 없음', async () => {
     const env = makeKvEnv();
     const tripNoLock = tripWithLock();
     delete tripNoLock.boardingLock;
@@ -3286,18 +3304,16 @@ describe('POST /boarding-lock/sync (#901)', () => {
       env,
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      autoLockCandidate: unknown;
-    };
-    expect(body.autoLockCandidate).toBeNull();
+    const body = await res.json();
+    expect(body).not.toHaveProperty('autoLockCandidate');
   });
 
-  // #1364 — read-after-write verification + expiresAt response field.
+  // #1364 — read-after-write verification.
   //
   // sync handler가 putTrip 후 cacheTtl=0으로 KV propagation을 확인한다. 정상 path는 1회로
   // 통과해야 하며, verification failure 경로는 verifyBoardingLockPersisted 단위 테스트로 커버.
   describe('read-after-write verification (#1364)', () => {
-    it('정상 path → 200 + autoLockCandidate.expiresAt 노출', async () => {
+    it('정상 path → 200 + KV boardingLock.expiresAt이 refresh 이상으로 propagate', async () => {
       const env = makeKvEnv();
       await post('/trips', tripWithLock(), env);
       const res = await post(
@@ -3306,15 +3322,13 @@ describe('POST /boarding-lock/sync (#901)', () => {
         env,
       );
       expect(res.status).toBe(200);
-      const body = (await res.json()) as {
-        autoLockCandidate: { expiresAt: number };
-      };
-      // refresh 후 expiresAt이 LOCK_TTL_REFRESH_MS 이상 미래 (P1 response sync).
-      expect(body.autoLockCandidate.expiresAt).toBeGreaterThan(Date.now());
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+      // refresh 후 expiresAt이 LOCK_TTL_REFRESH_MS 이상 미래 (KV propagation 확인).
+      expect(stored.boardingLock.expiresAt).toBeGreaterThan(Date.now());
     });
   });
 
-  // #2283 리뷰 P2-2 — trip_events 기록(sync-received/advance/hydrate-issued)이 핫패스 응답
+  // #2283 리뷰 P2-2 — trip_events 기록(sync-received/advance)이 핫패스 응답
   // latency에 얹히지 않고 `c.executionCtx.waitUntil`로 스케줄되는지 검증.
   describe('trip_events waitUntil wiring (#2283 리뷰 P2-2)', () => {
     function makeExecutionContext(): ExecutionContext & { waitUntil: ReturnType<typeof vi.fn> } {
@@ -3342,7 +3356,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
       );
     }
 
-    it('sync-received/advance/hydrate-issued 3종 모두 waitUntil로 스케줄된다 (응답을 막지 않음)', async () => {
+    it('sync-received/advance 2종 모두 waitUntil로 스케줄된다 (응답을 막지 않음)', async () => {
       const env = makeKvEnv();
       const prepare = vi.fn().mockReturnValue({
         bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }),
@@ -3351,7 +3365,8 @@ describe('POST /boarding-lock/sync (#901)', () => {
       await post('/trips', tripWithLock(), env);
 
       const ctx = makeExecutionContext();
-      // waypoints[0]='강남' 일치 → advance 발생 + boardingLock 존재 → hydrate-issued도 발생.
+      // waypoints[0]='강남' 일치 → advance 발생. #2352 — hydrate-issued 관측(autoLockCandidate
+      // 응답 필드 삭제와 함께 제거)은 더 이상 발생하지 않는다.
       const res = await postWithCtx(
         '/boarding-lock/sync',
         { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
@@ -3360,15 +3375,15 @@ describe('POST /boarding-lock/sync (#901)', () => {
       );
       expect(res.status).toBe(200);
 
-      // 3건(sync-received/advance/hydrate-issued) 모두 waitUntil에 넘겨졌는지 확인.
-      expect(ctx.waitUntil).toHaveBeenCalledTimes(3);
+      // 2건(sync-received/advance) 모두 waitUntil에 넘겨졌는지 확인.
+      expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
       // waitUntil로 넘긴 프로미스가 실제로 완료되면 각 kind에 대해 D1 INSERT가 실행됐어야 한다.
       const scheduled = ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>);
       await Promise.all(scheduled);
       const kinds = prepare.mock.calls
         .map((call) => call[0] as string)
         .filter((sql) => sql.includes('INSERT INTO trip_events'));
-      expect(kinds).toHaveLength(3);
+      expect(kinds).toHaveLength(2);
     });
 
     it('executionCtx 미제공(기존 단위 테스트 관례) 시에도 throw 없이 정상 응답한다', async () => {
@@ -3389,43 +3404,6 @@ describe('POST /boarding-lock/sync (#901)', () => {
     });
   });
 
-  // #2308 — hydrate-issued의 `line`은 lock.line이 아니라 head(현재 anchor waypoint)의 line이어야
-  // 한다. lock.line은 D4 trainCode swap(payload 기반) 타이밍에 갱신되는 반면 head는 이번 sync의
-  // advance 직후 값이라, 환승 직후 한 cycle 동안 두 값이 어긋나면(저녁 어린이대공원 line=2, 아침
-  // 뚝섬 line=7 evidence) hydrate가 실제 서 있는 역의 노선과 다른 값을 발행한다.
-  describe('hydrate-issued line은 leg-aware — head.line 사용 (#2308)', () => {
-    it('advance 후 head가 다른 line이어도 hydrate line은 head.line (lock.line이 아님)', async () => {
-      const env = makeKvEnv();
-      const bind = vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) });
-      const prepare = vi.fn().mockReturnValue({ bind });
-      env.DB = { prepare } as unknown as Env['DB'];
-      // 다중 노선 trip: waypoints[0]='강남'(2호선), waypoints[1]='역삼'(7호선, 환승 이후 leg).
-      // lock.line은 아직 스왑 전 '2'로 등록 — D4 swap이 이번 payload에 없으면 lock.line은 '2'로 남는다.
-      await post(
-        '/trips',
-        tripWithLock({
-          waypoints: [
-            { stationName: '강남', line: '2', kind: 'transfer' },
-            { stationName: '역삼', line: '7', kind: 'destination' },
-          ],
-        }),
-        env,
-      );
-      // sync가 waypoints[0]='강남'과 일치 → advance 1 hop → head='역삼'(line=7).
-      // payload에 trainCode(D4 swap 트리거)가 없으므로 lock.line은 '2' 그대로 유지된다.
-      const res = await post(
-        '/boarding-lock/sync',
-        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const hydrateCall = bind.mock.calls.find((call) => call[2] === 'hydrate-issued');
-      expect(hydrateCall).toBeDefined();
-      // [tokenHash, ts, kind, station, line, meta] — index 3=station, 4=line.
-      expect(hydrateCall?.[3]).toBe('역삼');
-      expect(hydrateCall?.[4]).toBe('7'); // head.line — lock.line('2')이 아님.
-    });
-  });
 });
 
 // #2308 — applyProgress/resolveProgressWaypoints 단조 전진 불변식.

@@ -4677,9 +4677,65 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.boardingPromptEvaluated).toBe(1);
   });
 
-  // #2153 — 근접 관측 시각(originProximityAt)이 최초 1회만 stamp되어 이후 cycle의 anchor로
-  // 보존된다. createdAt이 아니라 이 stamp 기준으로 15분 초과 시 다시 stale이어야 한다.
-  it('#2153 — 근접 관측 시각이 stamp되어 보존 — 관측 후 15분+ 경과하면 다시 SkippedStale', async () => {
+  // #2350 — 근접 게이트 live anchor 전환. `/position` 채널(index.ts stampOriginProximityIfNeeded)이
+  // 이미 originProximityAt을 stamp했다면(디바이스가 실시간으로 근접을 확인함), POST /trips
+  // 등록 시점의 정적 promptGeoContext 스냅샷이 "멀다"를 가리켜도 근접 게이트로 영구 차단해선
+  // 안 된다 — 집에서 경로 미리 설정 후 도보 이동하는 흔한 케이스(#2350 RCA).
+  it('#2350 — originProximityAt 이미 stamp됨 + 정적 스냅샷 tooFar → 근접 게이트 통과(발사 도달)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        // /position 채널이 과거에 이미 근접을 관측해 stamp — anchor 존재.
+        originProximityAt: NOW - 5 * 60 * 1000,
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          // 등록 시점 정적 스냅샷은 여전히 "멀다"(300 - 9 = 291 > 150) — 갱신 안 됨(index.ts:1564).
+          originDistanceM: 300,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
+  // #2350 — originProximityAt이 아직 stamp 안 됐고 정적 스냅샷이 진짜 멀면 여전히 차단(무회귀).
+  it('#2350 — originProximityAt 미stamp + 정적 스냅샷 tooFar → 근접 게이트 여전히 차단(무회귀)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0.01 },
+          direction: 'up',
+          originDistanceM: 300,
+          originAccuracyM: 9,
+        },
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedTooFar).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+  });
+
+  // #2358 (RCA — #2153 원안 결함) — 근접 관측 시각(originProximityAt)을 최초 1회만 stamp하고
+  // 영구 고정하면, "출발역에서 계속 대기 중"인 실 시나리오(배차 간격이 긴 노선에서 열차를
+  // 기다리는 "원점 대기~탑승")가 15분을 넘기는 순간 근접이 실시간으로 계속 확인되는 중에도
+  // 영구히 SkippedStale로 막힌다. anchor는 근접이 계속 관측되는 동안 주기적으로
+  // (ORIGIN_PROXIMITY_RENEWAL_MS, 5분) 재stamp돼야 한다 — 15분+ 경과해도 근접이 계속
+  // 관측되고 있으면 SkippedStale이면 안 된다.
+  it('#2358 — 근접 관측이 계속되면(원점 대기) anchor가 갱신돼 15분+ 경과해도 SkippedStale 아님', async () => {
     const kv = new InMemoryKV();
     await putTrip(
       kv as unknown as KVNamespace,
@@ -4699,14 +4755,35 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     const stats1 = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl1));
     expect(stats1.boardingPromptSkippedStale).toBe(0);
 
-    // 두 번째 cycle: 근접 관측 시각(첫 cycle의 NOW) 기준 16분 경과 — 여전히 근접이어도 stale.
+    // 두 번째 cycle: 첫 cycle의 stamp(NOW) 기준 16분 경과 — 여전히 근접 관측 중이므로
+    // ORIGIN_PROXIMITY_RENEWAL_MS(5분) 초과 시 anchor가 재stamp돼 stale이 아니어야 한다.
     await seedHappySeries(kv);
-    const fetchImpl2 = vi.fn() as unknown as typeof fetch;
+    const fetchImpl2 = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
     const stats2 = await runScheduled(makeEnv(kv), {
       ...makeBoardingPromptDeps(fetchImpl2),
       now: () => NOW + 16 * 60 * 1000,
     });
-    expect(stats2.boardingPromptSkippedStale).toBe(1);
+    expect(stats2.boardingPromptSkippedStale).toBe(0);
+  });
+
+  // #2358 — 근접 관측이 끊긴(더 이상 nearOrigin 갱신이 오지 않는) 진짜 오래된 trip은 anchor가
+  // 재stamp되지 않으므로 여전히 stale이어야 한다 (renewal이 무제한 게이트 무력화가 아님을 회귀 방지).
+  it('#2358 — 근접 관측이 끊긴 trip은 anchor가 stale인 채 보존되고 재관측 없으면 계속 SkippedStale', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        createdAt: NOW - 20 * 60 * 1000,
+        originProximityAt: NOW - 16 * 60 * 1000,
+        // 이 cycle의 geo context는 근접이 아니다(예: 재등록 없이 신선한 관측이 끊김) — nearOrigin
+        // 판정 재료(distance/accuracy) 부재로 anchor 갱신 기회가 없다.
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedStale).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
   });
 
   it('9단 통과 + APNs 200 → alert push 발사 + state.fired 영구화', async () => {
