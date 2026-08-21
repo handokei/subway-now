@@ -1526,6 +1526,39 @@ describe('alarmLog', () => {
       });
     });
 
+    // #2339 — 지하 BG trip에서 같은 gate reason이 fix마다 반복 suppress되어도 burst dedup으로
+    // 첫 1건만 적재하고 이후 반복은 append/breadcrumb/flush를 skip해야 한다 (배터리 절감).
+    it('#2339 logSuppressedGate: burst dedup applies — same reason repeated within window dropped', async () => {
+      _resetBurstSuppressWindowForTests();
+      const location = { lat: 37.5, lng: 127.0, accuracy: 250, ageMs: 30_000 };
+      logSuppressedGate('gate-accuracy', location);
+      logSuppressedGate('gate-accuracy', location);
+      logSuppressedGate('gate-accuracy', location);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'gate-accuracy');
+      expect(matching).toHaveLength(1);
+    });
+
+    it('#2339 logSuppressedGate: different reasons are NOT deduped against each other', async () => {
+      _resetBurstSuppressWindowForTests();
+      const location = { lat: 37.5, lng: 127.0, accuracy: 250, ageMs: 30_000 };
+      logSuppressedGate('gate-accuracy', location);
+      logSuppressedGate('gate-age', location);
+      logSuppressedGate('gate-jump', location);
+      logSuppressedGate('gate-motion-stationary', location);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) =>
+        ['gate-accuracy', 'gate-age', 'gate-jump', 'gate-motion-stationary'].includes(e.reason ?? ''),
+      );
+      expect(matching).toHaveLength(4);
+    });
+
     // #727 — 정적 misfire 가드(movementGate.ts)가 차단한 발사. source/stationName/kind/phaseId 보존.
     it('logSuppressedMovement: 모든 필드 지정 시 그대로 적재', async () => {
       logSuppressedMovement({
