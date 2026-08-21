@@ -56,14 +56,13 @@ jest.mock('expo-task-manager', () => ({
 // no-op으로 제공한다(이 테스트는 프로파일 전환 자체를 검증 대상으로 삼지 않는다).
 // #2354 — enum 값 자체는 매직 넘버 하드코딩 대신 SSoT(src/testUtils/expoLocationMock.ts)에서
 // spread한다 — 빈 mock이면 이 import edge만으로 스위트 실행 자체가 실패한 회귀(#2354)의 재발 방지.
-jest.mock('expo-location', () => {
-  const { expoLocationEnumMock } = require('../../../../testUtils/expoLocationMock');
-  return {
-    ...expoLocationEnumMock,
-    stopLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
-    startLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
-  };
-});
+// `mock` 접두사 바인딩(mockExpoLocationEnums)은 babel-plugin-jest-hoist가 팩토리 밖 참조를
+// 허용하는 예외 규칙 — 정적 import라 ts-prune이 consumer로 인식해 orphan export 오탐도 없다.
+jest.mock('expo-location', () => ({
+  ...mockExpoLocationEnums,
+  stopLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
+  startLocationUpdatesAsync: jest.fn(() => Promise.resolve()),
+}));
 
 // ── 외부 boundary fake: 결정적 동작 ──
 const fakeStation = {
@@ -142,6 +141,12 @@ jest.mock('../../../../shared/utils/logger', () => ({
     error: jest.fn(),
   }),
 }));
+
+// expo-location mock 팩토리(위 jest.mock)가 참조하는 SSoT — '../../tasks/backgroundLocationTask'
+// import가 트리거하는 require('expo-location')보다 먼저 requre되어야 하므로 그 import보다 앞에 둔다
+// (babel commonjs 변환은 import를 원문 순서 그대로 top-level require로 배치, jest.mock만 최상단으로
+// 별도 hoist — mock-prefixed 바인딩 자체의 참조 시점은 팩토리 호출 시점이라 소스 순서를 따른다).
+import { expoLocationEnumMock as mockExpoLocationEnums } from '../../../../testUtils/expoLocationMock';
 
 // ── 모듈 import (defineTask 실행 시점) ──
 import '../../tasks/backgroundLocationTask';
