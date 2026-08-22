@@ -3388,6 +3388,58 @@ describe('useStationAlarm', () => {
       expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
+    // #2364 (ADR-033 A5) — 지하(GPS speed 불명) + arvlcd-arrived 포함 ≥2 신호 합의
+    // (subsurfaceStationDetected=true, useFusedNearestStation SSoT)가 이동을 간접 확인하면
+    // 정적 misfire 가드(#727/#728/#733)가 유효 arvlCd fast-path 발사를 오억제하지 않아야 한다.
+    it('#2364 subsurfaceStationDetected=true(지하 합의) + speed 불명 → movement gate 우회, fast path 발사', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          fastPathInputs({
+            speedMps: null,
+            positionStability: 'static',
+            subsurfaceStationDetected: true,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id),
+      );
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'fg-arvlcd' }),
+      );
+    });
+
+    // 회귀 가드: subsurfaceStationDetected=false(합의 없음, 진짜 정적 사용자)면 기존처럼
+    // 정적 misfire 가드가 그대로 억제한다 — 통과 열차 momentary adopt 등 false positive 방어 유지.
+    it('#2364 회귀 가드 — subsurfaceStationDetected=false(합의 없음) + speed=0 → 여전히 억제', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          fastPathInputs({ speedMps: 0, subsurfaceStationDetected: false }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg-arvlcd',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+            reason: 'movement-static-speed',
+          }),
+        ),
+      );
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
     it('dismiss silence 활성 시 fast path 발사 X + logSuppressedDismissSilence(fg-arvlcd)', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock);
       mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
