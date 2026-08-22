@@ -204,10 +204,18 @@ jest.mock('../../../route/store/useDestinationStore', () => ({
 const mockAppStateHolder: { currentState: 'active' | 'background' | 'inactive' } = {
   currentState: 'background',
 };
+// #2363 — fireStationKindSkewFallback의 sleepMode × Platform.OS 4분기 커버리지를 위해
+// Platform.OS를 테스트에서 조작 가능하게 getter로 노출(AppState와 동일 패턴).
+const mockPlatformHolder: { OS: 'ios' | 'android' } = { OS: 'ios' };
 jest.mock('react-native', () => ({
   AppState: {
     get currentState() {
       return mockAppStateHolder.currentState;
+    },
+  },
+  Platform: {
+    get OS() {
+      return mockPlatformHolder.OS;
     },
   },
 }));
@@ -246,10 +254,15 @@ const mockBuildAlarmContent = jest.fn((event: { phaseId: string; type: string; s
   title: `${event.phaseId}-title`,
   body: `${event.stationName}-${event.type}-body`,
 }));
+// #2363 — fireStationKindSkewFallback이 참조하는 일반모드 무음 채널 id(#2158). 실제 모듈의
+// 상수값과 동일 문자열로 mock — 값 자체가 프로덕션 코드의 SSoT이므로 여기서 재정의하지 않고
+// 그대로 재사용(리터럴 동기화는 stationNotification.test.ts가 실제 값으로 검증).
+const MOCK_ALARM_SILENT_CHANNEL_ID = 'station-alarm-silent';
 jest.mock('../../utils/stationNotification', () => ({
   mapBackendKindToLocalFireKind: (backendKind: string) =>
     ({ intermediate: 'station-passed', transfer: 'transfer', destination: 'destination' })[backendKind] ?? null,
   buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as [never])),
+  ALARM_SILENT_CHANNEL_ID: 'station-alarm-silent',
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -415,6 +428,8 @@ describe('silentPushTask', () => {
     mockAddFiredPushId.mockResolvedValue(undefined);
     // #2018 γ' — 기본 BG로 설정해 기존 테스트가 FG 분기 진입하지 않도록.
     mockAppStateHolder.currentState = 'background';
+    // #2363 — 기본 iOS로 설정해 기존 테스트가 android 분기로 새지 않도록.
+    mockPlatformHolder.OS = 'ios';
     // clearAllMocks가 mockImplementation을 reset하지 않으므로 명시 복구.
     mockSetTripEndedSentinel.mockResolvedValue(undefined);
     mockClearTripEndedSentinel.mockResolvedValue(undefined);
@@ -1631,6 +1646,61 @@ describe('silentPushTask', () => {
         // legacy-station-kind-ignored skip은 발생하지 않는다 — fallback fire 분기에서 즉시 return.
         expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
       });
+
+      // #2363 — station-shaped skew fallback의 loud/gentle은 sleepMode를 따른다(#2158류 회귀
+      // 가드: 일반모드 loud 알람 재발 차단). Platform.OS × sleepMode 4개 조합 모두 단정 —
+      // Android는 channelId 유무, iOS는 interruptionLevel 유무가 분기마다 달라진다.
+      it.each<{
+        platform: 'ios' | 'android';
+        sleepMode: boolean;
+        expectedContent: Record<string, unknown>;
+      }>([
+        {
+          platform: 'android',
+          sleepMode: false,
+          expectedContent: { sound: false, channelId: MOCK_ALARM_SILENT_CHANNEL_ID },
+        },
+        {
+          platform: 'android',
+          sleepMode: true,
+          expectedContent: { sound: true },
+        },
+        {
+          platform: 'ios',
+          sleepMode: false,
+          expectedContent: { sound: false, interruptionLevel: 'timeSensitive' },
+        },
+        {
+          platform: 'ios',
+          sleepMode: true,
+          expectedContent: { sound: true, interruptionLevel: 'timeSensitive' },
+        },
+      ])(
+        'platform=$platform sleepMode=$sleepMode → content가 acceptance대로 발사된다 (#2363)',
+        async ({ platform, sleepMode, expectedContent }) => {
+          mockPlatformHolder.OS = platform;
+          mockReadSleepMode.mockResolvedValueOnce(sleepMode);
+          await handleSilentPush(
+            payload({ kind: 'future-station-kind', phase: 'early', nextWaypoint: '강남', pushId: `p-skew-${platform}-${sleepMode}` }),
+          );
+          expect(mockScheduleNotificationAsync).toHaveBeenCalledWith(
+            expect.objectContaining({
+              identifier: 'skew-fallback-강남',
+              content: expect.objectContaining(expectedContent),
+            }),
+          );
+          const [[call]] = mockScheduleNotificationAsync.mock.calls.slice(-1);
+          // android+일반모드에만 channelId, ios에만 interruptionLevel — 반대 조합에서는 키 자체가 없어야 한다.
+          if (platform === 'android' && sleepMode) {
+            expect(call.content).not.toHaveProperty('channelId');
+          }
+          if (platform === 'ios') {
+            expect(call.content).not.toHaveProperty('channelId');
+          } else {
+            expect(call.content).not.toHaveProperty('interruptionLevel');
+          }
+        },
+      );
 
       it('kind가 없으면(구버전 backend) 여전히 payload-missing-kind skip — fallback fire 아님', async () => {
         await handleSilentPush(
