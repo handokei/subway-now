@@ -274,8 +274,6 @@
     "atCurrentStation": "当前 {{name}}",
     "approximateDistance": "约{{m}}m",
     "stationPassed": "已到达{{name}}",
-    "intermediatePassedTitle": "经过站点",
-    "intermediatePassedBody": "正在经过{{name}}站",
     "tripEndedArrivedTitle": "已到达目的地",
     "tripEndedTitle": "导航结束",
     "tripEndedBody": "路线导航已结束",

@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform, Vibration } from 'react-native';
+import i18next from 'i18next';
 import {
   setupNotificationHandler,
   initStationNotification,
@@ -7,6 +8,7 @@ import {
   clearStationNotification,
   clearAlarmNotification,
   buildAlarmContent,
+  buildStationPassedContent,
   fireFgAuxStationPassedNotification,
 } from '../stationNotification';
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
@@ -954,23 +956,23 @@ describe('stationNotification', () => {
     });
   });
 
-  describe('fireFgAuxStationPassedNotification (#2122 FG 보조 발사)', () => {
+  describe('fireFgAuxStationPassedNotification (#2122 FG 보조 발사, #2362 count/target 배선)', () => {
     beforeEach(async () => {
       await AsyncStorage.clear();
     });
 
-    it('device token 보유 시 backend collapse-id와 동일한 identifier로 로컬 알림을 발사하고 markLocalStationFired를 stamp한다', async () => {
+    it('device token 보유 시 backend collapse-id와 동일한 identifier로 "역 도착 / N정거장 남음" 로컬 알림을 발사하고 markLocalStationFired를 stamp한다', async () => {
       await AsyncStorage.setItem(APNS_TOKEN_KEY, 'a'.repeat(64));
 
-      await fireFgAuxStationPassedNotification('중곡');
+      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남');
 
       const expectedId = buildStationNotifCollapseId('a'.repeat(64));
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           identifier: expectedId,
           content: expect.objectContaining({
-            title: '역 통과',
-            body: '중곡역을 지나고 있어요',
+            title: '중곡역 도착',
+            body: '강남까지 1정거장 남음',
             sound: false,
           }),
           trigger: null,
@@ -979,17 +981,69 @@ describe('stationNotification', () => {
       expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'station-passed');
     });
 
+    it('targetKind=transfer 전달 시에도 동일 템플릿으로 환승역명이 대상에 채워진다', async () => {
+      await AsyncStorage.setItem(APNS_TOKEN_KEY, 'c'.repeat(64));
+
+      await fireFgAuxStationPassedNotification('중곡', 2, 'transfer', '홍대입구');
+
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            body: '홍대입구까지 2정거장 남음',
+          }),
+        }),
+      );
+    });
+
     it('기존 동일 identifier 알림을 dismiss한 뒤 재발사한다 (scheduleNotification 공용 helper 재사용)', async () => {
       await AsyncStorage.setItem(APNS_TOKEN_KEY, 'b'.repeat(64));
-      await fireFgAuxStationPassedNotification('군자');
+      await fireFgAuxStationPassedNotification('강남', 3, 'destination', '홍대입구');
       const expectedId = buildStationNotifCollapseId('b'.repeat(64));
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith(expectedId);
     });
 
     it('device token 미보유 시(등록 전) 스킵 — 알림 발사/stamp 모두 안 함', async () => {
-      await fireFgAuxStationPassedNotification('중곡');
+      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남');
       expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
       expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('buildStationPassedContent (#2362 — 역 도착 + N정거장 남음)', () => {
+    afterEach(async () => {
+      await i18next.changeLanguage('ko');
+    });
+
+    // 강남/중곡 모두 stations.json에 동일 노선 중복 항목이 있어도 nameEn/nameJa/nameHanja가
+    // 일치하는 안정적 실역명 — 4개 locale × count 단수/복수(destination target).
+    it.each([
+      ['ko', 1, '강남까지 1정거장 남음'],
+      ['ko', 3, '강남까지 3정거장 남음'],
+      ['en', 1, '1 stop to Gangnam'],
+      ['en', 3, '3 stops to Gangnam'],
+      ['ja', 1, 'カンナムまで残り1駅'],
+      ['ja', 3, 'カンナムまで残り3駅'],
+      ['zh', 1, '距江南还有1站'],
+      ['zh', 3, '距江南还有3站'],
+    ])('locale=%s, count=%s(destination target) → %s', async (lang, count, expectedBody) => {
+      await i18next.changeLanguage(lang);
+      const { body } = buildStationPassedContent('중곡', count as number, 'destination', '강남');
+      expect(body).toBe(expectedBody);
+    });
+
+    // 환승 전(targetKind='transfer')도 동일 템플릿 — 대상만 환승역명으로 바뀐다.
+    it.each([
+      ['ko', '홍대입구까지 2정거장 남음'],
+      ['en', '2 stops to Hongik Univ.'],
+    ])('locale=%s, 환승 전(targetKind=transfer) → %s', async (lang, expectedBody) => {
+      await i18next.changeLanguage(lang);
+      const { body } = buildStationPassedContent('중곡', 2, 'transfer', '홍대입구');
+      expect(body).toBe(expectedBody);
+    });
+
+    it('title은 targetKind와 무관하게 "{{역}}역 도착" 고정', () => {
+      const { title } = buildStationPassedContent('중곡', 1, 'destination', '강남');
+      expect(title).toBe('중곡역 도착');
     });
   });
 
