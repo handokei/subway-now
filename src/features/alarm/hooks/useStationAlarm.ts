@@ -1500,7 +1500,14 @@ export function useStationAlarm({
       // #727/#728/#733 — 정적 misfire 가드. arvlCd 신호가 강해도 정적 사용자(speed=0) 발사는
       // 잘못된 trainCode lock 케이스 (fusion이 통과 열차를 momentary adopt)에서 위험.
       // movement gate는 silence gate보다 먼저 평가 — 정적 사용자면 silence 만료 부수효과도 불필요.
-      if (movementSuppressionReason) {
+      // #2364 (ADR-033 A5) — subsurfaceStationDetected=true는 useFusedNearestStation이 이미
+      // subsurface(지하 진입 확정) + ≥2 신호 합의(barometer-stop/motion-stationary/arvlcd-arrived) +
+      // 역 근접 게이트를 통과시킨 상태. 지하 GPS 사멸로 speed/positionStability가 불명(motion-warmup/
+      // static-position 등)일 뿐인데 정적 misfire 가드가 이미 간접 확인된 이동을 오억제하는 회귀
+      // 차단 — trainProgressing(#1401)과 동일한 취지의 우회. false positive 방어(통과 열차
+      // momentary adopt)는 lock.trainCode 일치(findFgArvlCdFireSignal)가 1차로 이미 담당하고,
+      // subsurfaceStationDetected 자체도 근접 게이트를 포함해 GPS 좌표 기반 지하 추정과는 무관하다.
+      if (movementSuppressionReason && !subsurfaceStationDetected) {
         logSuppressedMovement({
           source: 'fg-arvlcd',
           stationName: candidateStation.name,
@@ -1593,6 +1600,8 @@ export function useStationAlarm({
     nearestStation?.line,
     currentStationArrival,
     movementSuppressionReason,
+    // #2364 — subsurfaceStationDetected 변화 시 movement gate 우회 여부 재평가.
+    subsurfaceStationDetected,
     dismissSilence,
     clearDismissSilenceAction,
     userLocation?.lat,
