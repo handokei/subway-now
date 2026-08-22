@@ -210,6 +210,8 @@ jest.mock('react-native', () => ({
       return mockAppStateHolder.currentState;
     },
   },
+  // #2363 — fireStationKindSkewFallback의 sleepMode 분기가 Platform.OS를 참조.
+  Platform: { OS: 'ios' },
 }));
 
 // #698/#918 A3 PR4 → #2089 — 옛 bl/tba 이중 채널(rescheduleHopForLock/rescheduleTripBoundAlarm +
@@ -1630,6 +1632,35 @@ describe('silentPushTask', () => {
         );
         // legacy-station-kind-ignored skip은 발생하지 않는다 — fallback fire 분기에서 즉시 return.
         expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
+      });
+
+      // #2363 — 일반모드(sleepMode OFF)에서 발사되는 station-shaped skew fallback은 loud가
+      // 아니라 gentle이어야 한다(#2158류 회귀 가드: 일반모드 loud 알람 재발 차단).
+      it('일반모드(sleepMode OFF)면 gentle(sound:false)로 발사한다 (#2363)', async () => {
+        mockReadSleepMode.mockResolvedValueOnce(false);
+        await handleSilentPush(
+          payload({ kind: 'future-station-kind', phase: 'early', nextWaypoint: '강남', pushId: 'p-skew-general' }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledWith(
+          expect.objectContaining({
+            identifier: 'skew-fallback-강남',
+            content: expect.objectContaining({ sound: false }),
+          }),
+        );
+      });
+
+      // 취침모드(sleepMode ON)면 acceptance 표대로 도착/환승은 loud wake 유지.
+      it('취침모드(sleepMode ON)면 loud(sound:true)로 발사한다 (#2363)', async () => {
+        mockReadSleepMode.mockResolvedValueOnce(true);
+        await handleSilentPush(
+          payload({ kind: 'future-station-kind', phase: 'early', nextWaypoint: '강남', pushId: 'p-skew-sleep' }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalledWith(
+          expect.objectContaining({
+            identifier: 'skew-fallback-강남',
+            content: expect.objectContaining({ sound: true }),
+          }),
+        );
       });
 
       it('kind가 없으면(구버전 backend) 여전히 payload-missing-kind skip — fallback fire 아님', async () => {

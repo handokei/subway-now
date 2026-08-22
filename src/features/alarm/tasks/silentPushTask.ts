@@ -28,7 +28,7 @@ import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import {
   persistBackendSsotMirror,
   parseAlarmEventsMirror,
@@ -79,7 +79,11 @@ import {
   cancelSafetyNetByStationKind,
 } from '../utils/safetyNetScheduler';
 import { cancelPrescheduledByStationKind } from '../utils/stationPrescheduler';
-import { mapBackendKindToLocalFireKind, buildAlarmContent } from '../utils/stationNotification';
+import {
+  mapBackendKindToLocalFireKind,
+  buildAlarmContent,
+  ALARM_SILENT_CHANNEL_ID,
+} from '../utils/stationNotification';
 import { markLocalStationFired } from '../utils/recentLocalStationFires';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -1583,6 +1587,10 @@ async function fireSleepAlarmCompanion(
  * stationLike`. 어떤 세부 종류(환승/도착/통과)인지는 알 수 없지만 어느 역인지는 알고 있으므로,
  * transfer/destination 공용 문구 빌더(`buildAlarmContent`)를 `type: 'destination'`(비-환승 문구,
  * 더 일반적인 표현)으로 재사용해 generic "곧 도착" 알림을 즉시 발사한다.
+ *
+ * #2363 (ADR-033 acceptance) — loud/gentle은 sleepMode를 따른다: 취침이면 loud wake(사용자가
+ * 잠들어 있으니 도달률 우선), 일반이면 gentle(#2158류 — 일반모드 loud 알람 재발 방지).
+ * `ALARM_SILENT_CHANNEL_ID`는 이미 #2158에서 만들어진 일반모드 무음 채널을 그대로 재사용한다.
  */
 async function fireStationKindSkewFallback(payload: SilentPushPayload): Promise<void> {
   const { title, body } = buildAlarmContent({
@@ -1590,9 +1598,17 @@ async function fireStationKindSkewFallback(payload: SilentPushPayload): Promise<
     type: 'destination',
     stationName: payload.nextWaypoint,
   });
+  const sleepMode = await readSleepMode();
   await Notifications.scheduleNotificationAsync({
     identifier: `skew-fallback-${payload.nextWaypoint}`,
-    content: { title, body, sound: true },
+    content: {
+      title,
+      body,
+      sound: sleepMode,
+      ...(Platform.OS === 'android' &&
+        !sleepMode && { channelId: ALARM_SILENT_CHANNEL_ID }),
+      ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
+    },
     trigger: null,
   });
 }
