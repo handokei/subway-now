@@ -574,16 +574,34 @@ export async function clearAlarmNotification(): Promise<void> {
   } catch { /* 무시 */ }
 }
 
+/** 매역 알림 대상 종류 — 다음 환승역인지 최종 도착역인지. `StationWaypointKind`의 subset
+ *  (backend push discriminator SSoT 재사용. 'intermediate'는 이 맥락에 해당 없음). */
+export type StationPassedTargetKind = Extract<StationWaypointKind, 'transfer' | 'destination'>;
+
 /**
- * #918 — "역 통과" 알림 title/body 빌더. #2122 FG 보조 발사(`fireFgAuxStationPassedNotification`)와
+ * #918 → #2362 — "역 통과" 알림 title/body 빌더. #2122 FG 보조 발사(`fireFgAuxStationPassedNotification`)와
  * `stationPrescheduler`(#918 OS 사전예약, station-passed kind)가 동일 카피를 공유한다 —
  * 발사 채널(FG 즉시 발사 vs OS 사전 예약)이 달라도 사용자가 보는 문구는 항상 같아야 한다.
+ *
+ * #2362 — "OO역 통과/지나고 있어요" → "OO역 도착 / {대상}까지 N정거장 남음"으로 교체.
+ * `targetKind`는 title/body 문구 자체를 바꾸지 않는다(환승 전/후 모두 동일 "{{target}}까지
+ * N정거장" 템플릿) — 호출자가 어느 대상(환승역/도착역)을 넘기는지 명시하는 타입 계약이다
+ * (backend waypoint kind와 정합). 기존 locale 키 재사용: `route.stationPassed`(title) +
+ * `route.stopsRemainingToDestination`(body, "destination" 파라미터에 환승역명도 그대로 대입 가능).
  */
-export function buildStationPassedContent(stationName: string): { title: string; body: string } {
+export function buildStationPassedContent(
+  stationName: string,
+  count: number,
+  targetKind: StationPassedTargetKind,
+  targetName: string,
+): { title: string; body: string } {
   return {
-    title: i18next.t('route.intermediatePassedTitle'),
-    body: i18next.t('route.intermediatePassedBody', {
+    title: i18next.t('route.stationPassed', {
       name: getStationDisplayNameByName(stationName, allStations),
+    }),
+    body: i18next.t('route.stopsRemainingToDestination', {
+      count,
+      destination: getStationDisplayNameByName(targetName, allStations),
     }),
   };
 }
@@ -599,12 +617,20 @@ export function buildStationPassedContent(stationName: string): { title: string;
  *
  * device token(APNS_TOKEN_KEY) 미보유 시(등록 전) backend와 동일한 collapse-id를 만들 수 없어
  * 발사를 스킵한다 — 이 경우 사용자는 기존처럼 backend push만 받는다(회귀 아님).
+ *
+ * #2362 — count/targetKind/targetName은 caller(`useStationAlarm.dispatchStationPassed`)가
+ * route hopIndex/waypoint 기반 정수로 도출해 전달한다(GPS 좌표 추정 금지).
  */
-export async function fireFgAuxStationPassedNotification(stationName: string): Promise<void> {
+export async function fireFgAuxStationPassedNotification(
+  stationName: string,
+  count: number,
+  targetKind: StationPassedTargetKind,
+  targetName: string,
+): Promise<void> {
   const deviceToken = await AsyncStorage.getItem(APNS_TOKEN_KEY);
   if (!deviceToken) return;
   const identifier = buildStationNotifCollapseId(deviceToken);
-  const { title, body } = buildStationPassedContent(stationName);
+  const { title, body } = buildStationPassedContent(stationName, count, targetKind, targetName);
   await scheduleNotification(identifier, { title, body, sound: false });
   await markLocalStationFired(stationName, 'station-passed');
 }

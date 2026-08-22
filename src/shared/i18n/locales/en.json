@@ -274,8 +274,6 @@
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
     "stationPassed": "Arrived at {{name}}",
-    "intermediatePassedTitle": "Passing station",
-    "intermediatePassedBody": "Passing through {{name}}",
     "tripEndedArrivedTitle": "Arrived at destination",
     "tripEndedTitle": "Guidance ended",
     "tripEndedBody": "Route guidance has ended",

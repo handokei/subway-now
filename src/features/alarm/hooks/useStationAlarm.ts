@@ -85,7 +85,10 @@ import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates'
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
-import { fireFgAuxStationPassedNotification } from '../utils/stationNotification';
+import {
+  fireFgAuxStationPassedNotification,
+  type StationPassedTargetKind,
+} from '../utils/stationNotification';
 
 const logger = createLogger('StationAlarm');
 
@@ -172,6 +175,62 @@ function logSuppressedStationPassedLockless(stationName: string): void {
   });
 }
 
+/** #2362 — 매역 알림 본문에 배선할 "남은 정거장 수 + 다음 대상(환승역|도착역)". */
+interface StationPassedTarget {
+  count: number;
+  targetKind: StationPassedTargetKind;
+  targetName: string;
+}
+
+/**
+ * #2362 — route(direct/transfer/multi-transfer)가 이미 들고 있는 남은 정거장 수 필드
+ * (`stops`/`stopsToTransfer`/`stopsFromTransfer`/`stopsAfterLastTransfer`)에서 다음 hop
+ * 대상(환승역 또는 최종 도착역)과 count를 그대로 읽어온다. 이 필드들은 매 폴링 주기마다
+ * `updateRouteFromPosition`(stationRoute.ts)이 현재 위치 기준 정수 hop count로 갱신한
+ * SSoT — Live Activity route subtext(`buildLiveActivityData`)도 동일 필드를 읽는다.
+ * 별도 GPS 좌표 기반 추정이나 station id lookup을 추가하지 않는다.
+ *
+ * transfers 배열은 인덱스 하드코딩 없이 순회 — candidate가 아직 도달하지 않은 첫 leg의
+ * fromLine과 일치하면 그 leg의 환승역이 대상. 어느 leg에도 걸리지 않으면(마지막 환승 이후)
+ * 최종 destination이 대상.
+ */
+function deriveStationPassedTarget(
+  route: NonNullable<Route>,
+  destination: Station,
+  candidateStation: Station,
+): StationPassedTarget {
+  if (route.type === 'direct') {
+    return { count: route.stops, targetKind: 'destination', targetName: destination.name };
+  }
+  if (route.type === 'transfer') {
+    if (candidateStation.line === route.fromLine) {
+      return {
+        count: route.stopsToTransfer,
+        targetKind: 'transfer',
+        targetName: route.transferName,
+      };
+    }
+    return {
+      count: route.stopsFromTransfer,
+      targetKind: 'destination',
+      targetName: destination.name,
+    };
+  }
+  for (const segment of route.transfers) {
+    if (candidateStation.line !== segment.fromLine) continue;
+    return {
+      count: segment.stopsToTransfer,
+      targetKind: 'transfer',
+      targetName: segment.transferName,
+    };
+  }
+  return {
+    count: route.stopsAfterLastTransfer,
+    targetKind: 'destination',
+    targetName: destination.name,
+  };
+}
+
 /**
  * #917 follow-up — station-passed 알림 dedup → resolve → send → setLast → log 시퀀스 추출.
  * GPS station-passed effect와 FG arvlCd fast-path effect가 동일한 5단 시퀀스를 반복하던 것
@@ -190,6 +249,10 @@ async function dispatchStationPassed(params: {
   /** #2122 — FG 보조 발사 조건(AppState active && lock 활성) 판정용. 호출부가 항상 lock 활성 trip만
    *  진입시키므로 실질적으로 non-null이지만, 타입은 방어적으로 nullable을 유지한다. */
   lock: import('../../../shared/types/boardingLock').BoardingLock | null;
+  /** #2362 — count/target 도출용. 호출부의 effect가 이미 `!route || !destination` 가드를
+   *  통과했으므로 non-null이지만, 방어적으로 nullable 유지. */
+  route: Route;
+  destination: Station | null;
 }): Promise<void> {
   const {
     source,
@@ -198,6 +261,8 @@ async function dispatchStationPassed(params: {
     isCancelled,
     errorLogPrefix,
     lock,
+    route,
+    destination,
   } = params;
   try {
     const lastId = await getLastNotifiedStationId(capturedDestinationId);
@@ -265,9 +330,17 @@ async function dispatchStationPassed(params: {
     // 등, 여기 도달했다는 것 자체가 전부 통과했다는 뜻)를 통과한 뒤에만, FG 한정으로 로컬
     // station-passed 배너를 추가 발사한다. BG(AppState !=='active')는 이 블록에 도달해도 스킵 —
     // #2064 봉인이 BG에는 그대로 유지된다.
-    if (AppState.currentState === 'active' && lock) {
+    // #2362 — count/target(환승역|도착역) 배선. route/destination은 호출부 effect가 이미
+    // `!route || !destination` 가드로 non-null을 보장한 뒤에만 여기 도달한다.
+    if (AppState.currentState === 'active' && lock && route && destination) {
       try {
-        await fireFgAuxStationPassedNotification(candidateStation.name);
+        const target = deriveStationPassedTarget(route, destination, candidateStation);
+        await fireFgAuxStationPassedNotification(
+          candidateStation.name,
+          target.count,
+          target.targetKind,
+          target.targetName,
+        );
         logFiredStationPassed(source, candidateStation.name);
       } catch (e) {
         logger.error('FG 보조 발사 실패:', e);
@@ -296,6 +369,9 @@ async function runSilenceGateAndDispatch(params: {
   clearDismissSilenceAction: () => Promise<void>;
   /** #1816 — lock 활성 trip만 진입. gate-passed-event-on-lock-origin에서 boardingStationId 비교. */
   lock: import('../../../shared/types/boardingLock').BoardingLock | null;
+  /** #2362 — dispatchStationPassed로 그대로 전달 → count/target 도출. */
+  route: Route;
+  destination: Station | null;
 }): Promise<void> {
   // #1599 — boardingLock active 시 candidate가 lock origin(= boardingStationId)이면 station-passed 차단.
   // 2026-06-20 용마산 evidence: lock 활성 1초 후 lock origin 자체에 station-passed fire (X1).
@@ -333,6 +409,8 @@ async function runSilenceGateAndDispatch(params: {
     isCancelled: params.isCancelled,
     errorLogPrefix: params.errorLogPrefix,
     lock: params.lock,
+    route: params.route,
+    destination: params.destination,
   });
 }
 
@@ -1426,6 +1504,8 @@ export function useStationAlarm({
           userLocation,
           clearDismissSilenceAction,
           lock,
+          route,
+          destination,
         });
       })();
     }
@@ -1577,6 +1657,8 @@ export function useStationAlarm({
         userLocation,
         clearDismissSilenceAction,
         lock,
+        route,
+        destination,
       });
     })();
 
@@ -1656,6 +1738,8 @@ export function useStationAlarm({
         userLocation,
         clearDismissSilenceAction,
         lock,
+        route,
+        destination,
       });
     })();
 

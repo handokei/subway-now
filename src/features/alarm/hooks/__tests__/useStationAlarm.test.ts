@@ -1718,7 +1718,12 @@ describe('useStationAlarm', () => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
         await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(station.name);
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+            station.name,
+            1,
+            'destination',
+            destination.name,
+          );
         });
         expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg', station.name);
       });
@@ -1758,10 +1763,159 @@ describe('useStationAlarm', () => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
         await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(station.name);
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+            station.name,
+            1,
+            'destination',
+            destination.name,
+          );
         });
         // logFiredStationPassed는 fireFgAuxStationPassedNotification 성공 후에만 호출 — 실패 시 미호출.
         expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+      });
+
+      // #2362 — transfer/multi-transfer route에서 count/target(환승역|도착역) 배선.
+      it('transfer route + 환승 전(candidate.line===fromLine) → targetKind=transfer + stopsToTransfer 전달', async () => {
+        setAppState('active');
+        const transferRoute = makeTransferRoute({
+          transferName: '시청',
+          fromLine: '2',
+          toLine: '1',
+          stopsToTransfer: 4,
+          stopsFromTransfer: 6,
+        });
+        mockEvaluateAlarmPhase.mockReturnValue(null);
+        mockGetLastNotifiedStationId.mockResolvedValue(null);
+        mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+        mockResolveNextTarget.mockReturnValue({
+          nextStationName: '강남',
+          stopsToNextStation: 1,
+          isTransfer: false,
+          stopsToDestination: 1,
+        });
+
+        renderHook(() =>
+          useStationAlarm(
+            defaultInputs({ route: transferRoute, destination, nearestStation: station }),
+          ),
+        );
+
+        await waitFor(() => {
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+            station.name,
+            4,
+            'transfer',
+            '시청',
+          );
+        });
+      });
+
+      it('transfer route + 환승 후(candidate.line===toLine) → targetKind=destination + stopsFromTransfer 전달', async () => {
+        setAppState('active');
+        const transferRoute = makeTransferRoute({
+          transferName: '시청',
+          fromLine: '1',
+          toLine: '2',
+          stopsToTransfer: 4,
+          stopsFromTransfer: 6,
+        });
+        mockEvaluateAlarmPhase.mockReturnValue(null);
+        mockGetLastNotifiedStationId.mockResolvedValue(null);
+        mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+        mockResolveNextTarget.mockReturnValue({
+          nextStationName: '강남',
+          stopsToNextStation: 1,
+          isTransfer: false,
+          stopsToDestination: 1,
+        });
+
+        // candidate(station)는 line '2' 고정 — toLine과 일치시켜 "환승 후" 분기를 탄다.
+        renderHook(() =>
+          useStationAlarm(
+            defaultInputs({ route: transferRoute, destination, nearestStation: station }),
+          ),
+        );
+
+        await waitFor(() => {
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+            station.name,
+            6,
+            'destination',
+            destination.name,
+          );
+        });
+      });
+
+      it('multi-transfer route + candidate가 첫 leg fromLine과 일치 → 그 leg의 환승역 대상', async () => {
+        setAppState('active');
+        const multiRoute = makeMultiTransferRoute({
+          transfers: [
+            { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 2 },
+            { transferName: '충무로', fromLine: '1', toLine: '4', stopsToTransfer: 5 },
+          ],
+          stopsAfterLastTransfer: 3,
+        });
+        mockEvaluateAlarmPhase.mockReturnValue(null);
+        mockGetLastNotifiedStationId.mockResolvedValue(null);
+        mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+        mockResolveNextTarget.mockReturnValue({
+          nextStationName: '강남',
+          stopsToNextStation: 1,
+          isTransfer: false,
+          stopsToDestination: 1,
+        });
+
+        renderHook(() =>
+          useStationAlarm(
+            defaultInputs({ route: multiRoute, destination, nearestStation: station }),
+          ),
+        );
+
+        await waitFor(() => {
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+            station.name,
+            2,
+            'transfer',
+            '시청',
+          );
+        });
+      });
+
+      it('multi-transfer route + candidate가 어느 leg의 fromLine과도 불일치(마지막 환승 이후) → destination 대상 + stopsAfterLastTransfer', async () => {
+        setAppState('active');
+        const multiRoute = makeMultiTransferRoute({
+          transfers: [
+            { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 2 },
+            { transferName: '충무로', fromLine: '3', toLine: '2', stopsToTransfer: 5 },
+          ],
+          stopsAfterLastTransfer: 3,
+        });
+        mockEvaluateAlarmPhase.mockReturnValue(null);
+        mockGetLastNotifiedStationId.mockResolvedValue(null);
+        mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+        mockResolveNextTarget.mockReturnValue({
+          nextStationName: '강남',
+          stopsToNextStation: 1,
+          isTransfer: false,
+          stopsToDestination: 1,
+        });
+
+        // candidate(station)는 line '2' 고정 — 마지막 leg의 toLine과 일치해 isStationOnRoute는
+        // 통과하지만, 두 leg의 fromLine('1'/'3') 어디에도 걸리지 않아 destination 분기로 떨어진다.
+        renderHook(() =>
+          useStationAlarm(
+            defaultInputs({ route: multiRoute, destination, nearestStation: station }),
+          ),
+        );
+
+        await waitFor(() => {
+          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+            station.name,
+            3,
+            'destination',
+            destination.name,
+          );
+        });
       });
     });
 
