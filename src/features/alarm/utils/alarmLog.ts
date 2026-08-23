@@ -1758,6 +1758,10 @@ export function logSuppressedHopWindow(input: {
   stationName: string;
   currentHopIndex: number;
   candidateIndex: number;
+  // #2373 — BG 채널은 station-passed가 아닌 phase 알람(transfer/destination)을 이 게이트로
+  // 차단한다. kind/phaseId 미전달 시 기존 FG station-passed 호출부와 동일하게 동작(회귀 없음).
+  kind?: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
 }): void {
   appendAlarmLog({
     ts: Date.now(),
@@ -1765,7 +1769,8 @@ export function logSuppressedHopWindow(input: {
     outcome: 'suppressed',
     reason: 'gate-hop-window',
     stationName: input.stationName,
-    kind: 'station-passed',
+    kind: input.kind ?? 'station-passed',
+    phaseId: input.phaseId,
     currentHopIndex: input.currentHopIndex,
     candidateIndex: input.candidateIndex,
   });

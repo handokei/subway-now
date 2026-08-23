@@ -57,6 +57,12 @@ export const BG_PERMISSION_DENIED_DISMISSED_KEY = 'subway-now:bg-permission-deni
 // 형식: {"station": Station, "distanceKm": number, "timestamp": number} JSON.
 // WhileInUse 권한 사용자에게는 BG task 자체가 동작하지 않으므로 graceful no-op (key 없음).
 export const BG_LAST_STATION_KEY = 'subway-now:bg-last-station';
+// #2373 — BG 채널(stationPipeline)의 hop-window 게이트가 참조하는 직전 tick 수용 station.
+// FG(useStationAlarm)는 D1 estimator의 currentHopIndex를 SSOT로 쓰지만 BG는 그 컨텍스트가
+// 없는 stateless 함수라 별도로 영속화한다. 형식: {"destinationId": string, "station": Station} JSON.
+// destinationId가 read 시점 destination과 다르면 stale로 간주(새 trip 시작 시 자동 무효화, 명시
+// clear 불필요) — notificationState.ts의 LAST_NOTIFIED_STATION_KEY 스코핑 패턴과 동일.
+export const BG_HOP_WINDOW_STATION_KEY = 'subway-now:bg-hop-window-station';
 // #816 B — boardingPrompt 발사 추적 (trip당 1회 발사 + dismiss 시 5분 silence).
 // 형식: {"tripKey": string, "promptedAt": number, "dismissedAt"?: number} JSON.
 // tripKey는 `${destinationId}|${createdAtBucketMs}` — destination 변경 시 자동 reset.

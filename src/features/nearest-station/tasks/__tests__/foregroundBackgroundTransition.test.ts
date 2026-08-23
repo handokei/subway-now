@@ -96,19 +96,33 @@ jest.mock('../../utils/findNearestStation', () => ({
 }));
 
 const mockFindRoute = jest.fn();
-jest.mock('../../../../shared/utils/stationRoute', () => ({
-  findRoute: (...args: unknown[]) => mockFindRoute(...args),
-  calculateStaticETA: jest.fn(() => 10),
-  updateRouteFromPosition: jest.fn(() => null),
-  isStationOnRoute: jest.fn(() => true),
-  // #750 — stationPipeline의 sleep 게이트가 isSameStationName으로 첫 hop을 매칭.
-  // 결정적 fake: strict equality로 충분 (테스트는 동일 한국어 이름 사용).
-  isSameStationName: (a: string, b: string) => a === b,
-  // direct route 테스트만 사용 — 첫 leg endName은 항상 destinationName.
-  getFirstLeg: (_route: unknown, destinationName: string) => ({ line: '2', endName: destinationName }),
-  // #2279 — stationPipeline이 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
-  getRouteRemainingSeconds: jest.fn(() => 120),
-}));
+jest.mock('../../../../shared/utils/stationRoute', () => {
+  // #2373 — stationPipeline의 BG hop-window 게이트가 getStationsOnLine/arcIndexOf/
+  // computeHopWindowSize/isStationWithinHopWindow/LOCKLESS_HOP_WINDOW_DEFAULT를 참조한다.
+  // 이 파일의 fake station("station-1"/"station-2")은 실제 stations.json에 없는 id라
+  // requireActual의 getStationsOnLine이 반환하는 실제 노선 배열에서 항상 arcIndexOf가 -1을
+  // 반환한다 — 게이트가 "인덱스 미발견 → 미적용" graceful skip 경로로만 진입해 기존
+  // FG/BG dedup 계약(이 파일의 검증 대상)을 건드리지 않는다.
+  const actual = jest.requireActual('../../../../shared/utils/stationRoute');
+  return {
+    findRoute: (...args: unknown[]) => mockFindRoute(...args),
+    calculateStaticETA: jest.fn(() => 10),
+    updateRouteFromPosition: jest.fn(() => null),
+    isStationOnRoute: jest.fn(() => true),
+    // #750 — stationPipeline의 sleep 게이트가 isSameStationName으로 첫 hop을 매칭.
+    // 결정적 fake: strict equality로 충분 (테스트는 동일 한국어 이름 사용).
+    isSameStationName: (a: string, b: string) => a === b,
+    // direct route 테스트만 사용 — 첫 leg endName은 항상 destinationName.
+    getFirstLeg: (_route: unknown, destinationName: string) => ({ line: '2', endName: destinationName }),
+    // #2279 — stationPipeline이 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
+    getRouteRemainingSeconds: jest.fn(() => 120),
+    getStationsOnLine: actual.getStationsOnLine,
+    arcIndexOf: actual.arcIndexOf,
+    computeHopWindowSize: actual.computeHopWindowSize,
+    isStationWithinHopWindow: actual.isStationWithinHopWindow,
+    LOCKLESS_HOP_WINDOW_DEFAULT: actual.LOCKLESS_HOP_WINDOW_DEFAULT,
+  };
+});
 
 const mockSendStationPassedNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
 const mockUpdateStationNotification = jest.fn((..._args: unknown[]) => Promise.resolve());

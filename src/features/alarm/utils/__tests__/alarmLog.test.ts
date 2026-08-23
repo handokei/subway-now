@@ -1007,6 +1007,31 @@ describe('alarmLog', () => {
       });
     });
 
+    it('#2373 logSuppressedHopWindow: kind/phaseId 전달 시(BG phase 알람 게이트) 그대로 stamp', async () => {
+      logSuppressedHopWindow({
+        source: 'bg',
+        stationName: '건대입구',
+        currentHopIndex: 1,
+        candidateIndex: 3,
+        kind: 'transfer',
+        phaseId: 'early',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'gate-hop-window',
+        stationName: '건대입구',
+        kind: 'transfer',
+        phaseId: 'early',
+        currentHopIndex: 1,
+        candidateIndex: 3,
+      });
+    });
+
     it('#1208 logSuppressedHopWindowNoSource: reason=gate-hop-window-no-source + kind=station-passed', async () => {
       logSuppressedHopWindowNoSource({ source: 'fg', stationName: '용마산' });
       await flushAlarmLog();

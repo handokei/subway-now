@@ -19,15 +19,34 @@ const mockIsStationOnRoute = jest.fn();
 const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
 const mockGetFirstLeg = jest.fn((..._args: unknown[]) => ({ line: '2', endName: '' }));
 const mockGetRouteRemainingSeconds = jest.fn((..._args: unknown[]) => 360);
-jest.mock('../../../../shared/utils/stationRoute', () => ({
-  findRoute: (...args: unknown[]) => mockFindRoute(...args),
-  calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
-  updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
-  isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
-  isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
-  getFirstLeg: (...args: unknown[]) => mockGetFirstLeg(...args),
-  // #2279 — processLocationUpdate가 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
-  getRouteRemainingSeconds: (...args: unknown[]) => mockGetRouteRemainingSeconds(...args),
+const mockGetStationsOnLine = jest.fn((..._args: unknown[]) => [] as Station[]);
+jest.mock('../../../../shared/utils/stationRoute', () => {
+  // #2373 — computeHopWindowSize/isStationWithinHopWindow/arcIndexOf/LOCKLESS_HOP_WINDOW_DEFAULT는
+  // FG(useStationAlarm) 검증 로직을 그대로 재사용하는 게이트라 실제 구현을 requireActual로 통과시킨다.
+  // (mock으로 대체하면 게이트 정확성 자체를 검증할 수 없다 — 이 파일의 red→green fixture 목적과 배치.)
+  const actual = jest.requireActual('../../../../shared/utils/stationRoute');
+  return {
+    findRoute: (...args: unknown[]) => mockFindRoute(...args),
+    calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
+    updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
+    isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
+    isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
+    getFirstLeg: (...args: unknown[]) => mockGetFirstLeg(...args),
+    // #2279 — processLocationUpdate가 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
+    getRouteRemainingSeconds: (...args: unknown[]) => mockGetRouteRemainingSeconds(...args),
+    getStationsOnLine: (...args: unknown[]) => mockGetStationsOnLine(...args),
+    arcIndexOf: actual.arcIndexOf,
+    computeHopWindowSize: actual.computeHopWindowSize,
+    isStationWithinHopWindow: actual.isStationWithinHopWindow,
+    LOCKLESS_HOP_WINDOW_DEFAULT: actual.LOCKLESS_HOP_WINDOW_DEFAULT,
+  };
+});
+
+const mockGetBgHopWindowStation = jest.fn();
+const mockSetBgHopWindowStation = jest.fn();
+jest.mock('../hopWindowState', () => ({
+  getBgHopWindowStation: (...args: unknown[]) => mockGetBgHopWindowStation(...args),
+  setBgHopWindowStation: (...args: unknown[]) => mockSetBgHopWindowStation(...args),
 }));
 
 const mockEvaluateAlarmPhase = jest.fn();
@@ -84,6 +103,7 @@ const mockLogSuppressedCrossCategoryRecent = jest.fn();
 const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
+const mockLogSuppressedHopWindow = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -95,6 +115,7 @@ jest.mock('../alarmLog', () => ({
     mockLogSuppressedSleepStationPassed(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
+  logSuppressedHopWindow: (...args: unknown[]) => mockLogSuppressedHopWindow(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
   logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
@@ -170,6 +191,10 @@ describe('processLocationUpdate', () => {
     // #746: dismissSilence 기본은 null — silence 없음.
     mockGetDismissSilence.mockResolvedValue(null);
     mockClearDismissSilence.mockResolvedValue(undefined);
+    // #2373: hop-window 게이트 기본 — 기준 없음(첫 tick 취급) → 기존 테스트 전부 회귀 없음.
+    mockGetBgHopWindowStation.mockResolvedValue(null);
+    mockSetBgHopWindowStation.mockResolvedValue(undefined);
+    mockGetStationsOnLine.mockReturnValue([]);
   });
 
   it('returns null nearest and null alarm when findNearestStation returns null', async () => {
@@ -1267,6 +1292,104 @@ describe('processLocationUpdate', () => {
       });
       await call({ source: 'bg' });
       expect(mockUpdateStationNotification).toHaveBeenCalled();
+    });
+  });
+
+  // #2373 (RCA #2180, Option A) — FG의 검증된 station-passed hop-window 게이트를 BG 채널에
+  // 이식. GPS drift로 findNearestStation이 직전 tick 기준(hopWindowState 영속)보다 hop window
+  // 밖의 station을 반환하면 phase 알람(early transfer 등) 발사를 차단한다.
+  // 이 게이트가 없던 코드에서는 아래 '조기 오발사 evidence 재현' 테스트가 fired로 실패했다
+  // (2026-08-23 14분 조기 오발사 — 2호선 건대입구 구간 evidence).
+  describe('#2373 BG hop-window 게이트 (RCA #2180 transfer-early 조기 오발사)', () => {
+    const lineStationA: Station = { id: 'line2-a', name: 'A역', line: '2', lineColor: '#009246', lat: 37.50, lng: 127.02 };
+    const lineStationB: Station = { id: 'line2-b', name: 'B역', line: '2', lineColor: '#009246', lat: 37.51, lng: 127.03 };
+    const lineStationC: Station = { id: 'line2-c', name: 'C역', line: '2', lineColor: '#009246', lat: 37.52, lng: 127.04 };
+    const lineStationD: Station = { id: 'line2-d', name: 'D역', line: '2', lineColor: '#009246', lat: 37.53, lng: 127.05 };
+    const otherLineStation: Station = { id: 'line5-a', name: 'E역', line: '5', lineColor: '#996CAC', lat: 37.54, lng: 127.06 };
+    const lineStations = [lineStationA, lineStationB, lineStationC, lineStationD];
+
+    beforeEach(() => {
+      mockGetStationsOnLine.mockReturnValue(lineStations);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'transfer',
+        stationName: '건대입구',
+      });
+    });
+
+    it('직전 tick 기준(index 1) 대비 2 hop 이상 앞선 candidate(index 3)는 조기 발사를 차단한다 (RCA #2180 재현)', async () => {
+      mockGetBgHopWindowStation.mockResolvedValue(lineStationB); // 직전 tick 기준 = index 1
+      mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 }); // GPS drift → index 3
+
+      await call();
+
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: '건대입구',
+        kind: 'transfer',
+        phaseId: 'early',
+        currentHopIndex: 1,
+        candidateIndex: 3,
+      });
+      // 차단된 candidate로 기준을 덮어쓰지 않는다 — 다음 tick도 같은 기준(index 1)으로 재평가.
+      expect(mockSetBgHopWindowStation).not.toHaveBeenCalled();
+    });
+
+    it('직전 tick 기준(index 1) 대비 1 hop 이내(index 2)는 정상 발사하고 기준을 갱신한다', async () => {
+      mockGetBgHopWindowStation.mockResolvedValue(lineStationB);
+      mockFindNearestStation.mockReturnValue({ station: lineStationC, distanceKm: 0.1 }); // index 2, diff=1
+
+      await call();
+
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockSetBgHopWindowStation).toHaveBeenCalledWith(mockDestination.id, lineStationC);
+    });
+
+    it('기준 없음(첫 tick)이면 게이트 없이 발사하고 candidate를 새 기준으로 저장한다', async () => {
+      mockGetBgHopWindowStation.mockResolvedValue(null);
+      mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 });
+
+      await call();
+
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockSetBgHopWindowStation).toHaveBeenCalledWith(mockDestination.id, lineStationD);
+    });
+
+    it('직전 기준과 candidate의 노선이 다르면(환승 완료) 게이트를 skip하고 새 기준으로 채택한다', async () => {
+      mockGetBgHopWindowStation.mockResolvedValue(otherLineStation); // line '5'
+      mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 }); // line '2'
+
+      await call();
+
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockSetBgHopWindowStation).toHaveBeenCalledWith(mockDestination.id, lineStationD);
+    });
+
+    it('같은 노선이지만 arcStations에서 기준/candidate 인덱스를 찾지 못하면 게이트 없이 새 기준으로 채택한다', async () => {
+      mockGetBgHopWindowStation.mockResolvedValue(lineStationB);
+      mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 });
+      // getStationsOnLine이 두 station을 포함하지 않는 다른 노선 구간을 반환(방어적 edge case).
+      mockGetStationsOnLine.mockReturnValue([]);
+
+      await call();
+
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockSetBgHopWindowStation).toHaveBeenCalledWith(mockDestination.id, lineStationD);
+    });
+
+    it('route가 없으면 게이트를 평가하지 않는다 (alarmEvent도 항상 null이라 대상 없음)', async () => {
+      mockFindRoute.mockReturnValue(null);
+      mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 });
+
+      await call();
+
+      expect(mockGetBgHopWindowStation).not.toHaveBeenCalled();
     });
   });
 });
