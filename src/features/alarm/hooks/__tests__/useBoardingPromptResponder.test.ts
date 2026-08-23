@@ -89,6 +89,18 @@ jest.mock('../../store/useUserIntentStore', () => {
   };
 });
 
+// #2371 — useNavigationStore mock. boarded path 진입 시 startNavigation() 호출 검증
+// (#2306 RCA — 잠금 시 BG GPS 미시작 회귀 fix).
+jest.mock('../../../route/store/useNavigationStore', () => {
+  const mockStartNavigation = jest.fn();
+  return {
+    useNavigationStore: {
+      getState: () => ({ startNavigation: mockStartNavigation }),
+    },
+    __mockStartNavigation: mockStartNavigation,
+  };
+});
+
 // #2278 — useLegAdvanceStore mock. hop-end BOARDED 응답에서 stampLegAdvance 호출 검증.
 jest.mock('../../store/useLegAdvanceStore', () => {
   const mockStampLegAdvance = jest.fn();
@@ -114,6 +126,9 @@ const { __mockCreateLock: createLockMock, __mockReleaseLock: releaseLockMock } =
 );
 const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
   '../../store/useUserIntentStore',
+);
+const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
+  '../../../route/store/useNavigationStore',
 );
 const { __mockStampLegAdvance: stampLegAdvanceMock } = jest.requireMock(
   '../../store/useLegAdvanceStore',
@@ -731,6 +746,32 @@ describe('handleResponse — #1923 infoModeEnabled stamp (사용자 명시 의�
     const deps = makeHandleResponseDeps({ destinationId: null });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
     expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
+  });
+});
+
+// #2371 (Part of #2306) — boardingPrompt "탑승" 응답도 navigationActive를 켠다. 잠금 시 BG GPS
+// 세션이 navigationActive에만 걸려 있어, 명시 의향을 표명해도 화면을 잠그면 BG GPS가 시작되지
+// 않던 회귀(#2306 RCA)의 fix — infoMode stamp와 정확히 대칭으로 wire.
+describe('handleResponse — #2371 navigationActive wire (BG GPS 시작 트리거)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each<[string, string]>([
+    ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED],
+    ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER],
+  ])('%s → useNavigationStore.startNavigation() 호출', async (_label, action) => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(startNavigationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each<[string, string]>([
+    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
+    ['알 수 없는 액션', 'SOME_OTHER_ACTION'],
+  ])('%s → startNavigation 호출 안 함 (dismissed path는 의향 표명 없음)', async (_label, action) => {
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(startNavigationMock).not.toHaveBeenCalled();
   });
 });
 

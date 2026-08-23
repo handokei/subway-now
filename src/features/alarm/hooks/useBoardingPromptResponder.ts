@@ -28,6 +28,7 @@ import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival'
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
+import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
@@ -218,6 +219,13 @@ export async function handleResponse(
     // ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
     // setInfoModeEnabled는 memory + storage atomic — graceful 실패(다음 cycle에서 재시도).
     void useUserIntentStore.getState().setInfoModeEnabled(true);
+    // #2371 (Part of #2306) — 잠금 시 BG GPS 세션이 navigationActive(useNavigationStore)에만
+    // 걸려 있어, boardingPrompt "탑승" 응답처럼 명시 의향을 표명해도 화면을 잠그면 BG GPS가
+    // 시작되지 않는 회귀(#2306 RCA, 25분 leg 알림 전멸). ADR-014 "사용자 명시 의향 trip = lock
+    // 활성과 동급 정확도 보장 의무"를 BG 시작 트리거까지 실제 확장 — infoMode와 정확히 대칭으로
+    // navigationActive도 함께 켠다. startNavigation은 set만 수행(비동기 아님), infoMode를
+    // 건드리지 않으므로 위 stamp와 중복되지 않는다.
+    useNavigationStore.getState().startNavigation();
     await tryAutoLock(payload, deps);
     // #1888 (RC-13) — banner 탭($default) 케이스만 home 화면으로 navigate. 사용자가 list를 보고 싶다는
     // 명시 의향(action button BOARDED는 silent autolock으로 끝, navigation은 surplus).
