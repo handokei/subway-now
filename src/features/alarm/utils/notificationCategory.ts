@@ -121,14 +121,14 @@ export async function setupAlarmCategory(): Promise<void> {
     await Notifications.setNotificationCategoryAsync(ALARM_CATEGORY, [
       {
         identifier: ALARM_ACTION_ACKNOWLEDGE,
-        buttonTitle: '확인',
+        buttonTitle: i18next.t('notifications.actions.acknowledge'),
         options: {
           opensAppToForeground: false,
         },
       },
       {
         identifier: ALARM_ACTION_END_TRIP,
-        buttonTitle: 'trip 종료',
+        buttonTitle: i18next.t('notifications.actions.endTrip'),
         options: {
           opensAppToForeground: false,
           isDestructive: true,
@@ -149,7 +149,7 @@ export async function setupTripEndedCategory(): Promise<void> {
     await Notifications.setNotificationCategoryAsync(TRIP_ENDED_CATEGORY, [
       {
         identifier: TRIP_ENDED_ACTION_NEXT_TRIP,
-        buttonTitle: '다음 여정 시작',
+        buttonTitle: i18next.t('notifications.actions.nextTrip'),
         options: {
           opensAppToForeground: true,
         },

@@ -59,6 +59,15 @@ getCurrentTripCorrId().catch((e) =>
   layoutLogger.warn('tripCorrId hydrate 실패(#1501):', e),
 );
 
+// #2374 — 4개 알림 카테고리 setup 함수 배열. 부팅 시 개별 호출(아래, 기존 유지)과 별도로
+// RootContent 내부의 언어 변경 재등록 useEffect가 이 배열을 순회 호출한다(하드코딩 나열 방지).
+const NOTIFICATION_CATEGORY_SETUP_FNS = [
+  setupBoardingPromptCategory,
+  setupDisembarkPromptCategory,
+  setupAlarmCategory,
+  setupTripEndedCategory,
+];
+
 SplashScreen.preventAutoHideAsync();
 setupNotificationHandler();
 // iOS silent push BG task 등록 — APNs payload 수신용.
@@ -181,6 +190,15 @@ function RootContent() {
   // 언어 전환 시 Android 알림 채널 이름을 새 언어로 갱신 (권한 다이얼로그 트리거 없이 채널만)
   useEffect(() => {
     refreshNotificationChannels().catch((e) => layoutLogger.error('알림 채널 갱신 실패:', e));
+  }, [i18nInstance.language]);
+
+  // #2374 — iOS 알림 카테고리 액션 버튼 라벨 재등록. 부팅 시 모듈 톱레벨 1회 등록만으로는
+  // i18next.changeLanguage() 이후 버튼 라벨이 옛 언어로 남는다. 위 refreshNotificationChannels
+  // effect와 동일 패턴으로 언어 변경마다 4개 카테고리를 재등록한다.
+  useEffect(() => {
+    NOTIFICATION_CATEGORY_SETUP_FNS.forEach((setup) => {
+      setup().catch((e) => layoutLogger.warn('알림 카테고리 재등록 실패(#2374):', e));
+    });
   }, [i18nInstance.language]);
 
   // #1780 — 첫 실행 온보딩 redirect.
