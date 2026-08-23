@@ -62,6 +62,22 @@ const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
   '../../store/useUserIntentStore',
 );
 
+// #2371 — useNavigationStore mock. createLockFromTrain(user-tap) 진입 시 startNavigation()
+// 호출 검증 + hydrateLockFromCandidate(무탭 fusion auto-lock)에서는 호출 안 됨을 검증
+// (#2306 RCA — 잠금 시 BG GPS 미시작 회귀 fix + 무탭 auto-lock BG 시작 금지 회귀 방지).
+jest.mock('../../../route/store/useNavigationStore', () => {
+  const mockStartNavigation = jest.fn();
+  return {
+    useNavigationStore: {
+      getState: () => ({ startNavigation: mockStartNavigation }),
+    },
+    __mockStartNavigation: mockStartNavigation,
+  };
+});
+const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
+  '../../../route/store/useNavigationStore',
+);
+
 // #2330 (consensus-D) — 탭 vs consensus-confirmed 불일치 telemetry mock.
 const mockRecordConsensusMismatch = jest.fn();
 jest.mock('../../utils/consensusMismatchMetrics', () => ({
@@ -494,6 +510,42 @@ describe('useBoardingLockController', () => {
       });
     });
 
+    // #2371 (Part of #2306) — BoardingTrainList 직접 탭(user-tap)도 boardingPrompt 응답과 동급
+    // 명시 의향 표명이므로 navigationActive도 함께 켠다. hydrateLockFromCandidate(무탭 fusion
+    // auto-lock 경로)에서는 절대 켜지면 안 됨(#1973 "명시 trigger 없이 자동 BG 금지") — 회귀
+    // 방지 assertion은 아래 hydrateLockFromCandidate describe에 배치.
+    describe('#2371 navigationActive wire (BG GPS 시작 트리거)', () => {
+      beforeEach(() => {
+        startNavigationMock.mockClear();
+      });
+
+      it('createLockFromTrain 성공 시 startNavigation() 1회 호출', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-NAV' }));
+        });
+        expect(startNavigationMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('destinationId null이면 startNavigation 호출 안 함 (createLock 진입 전 early return)', async () => {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, destinationId: null }),
+        );
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain());
+        });
+        expect(startNavigationMock).not.toHaveBeenCalled();
+      });
+
+      it('#1449 trip route 외 line은 startNavigation 호출 안 함 (createLock 진입 전 line filter reject)', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-WRONG', line: '9' }));
+        });
+        expect(startNavigationMock).not.toHaveBeenCalled();
+      });
+    });
+
     // #2330 (consensus-D, 설계 SSoT #2323 (3)) — 탭은 항상 우선(SSoT). consensus-confirmed
     // 제안과 다른 열차를 탭하면 mismatch telemetry가 기록되지만 lock 채택 자체는 차단되지 않는다.
     describe('#2330 consensus-mismatch telemetry', () => {
@@ -604,6 +656,19 @@ describe('useBoardingLockController', () => {
       // 통과하므로 "아직 미탑승" 가능성이 정상 케이스다. evidence로 뭉뚱그리지 않고 false —
       // initialEtaSeconds도 없으므로 hasConsumedOriginWait는 보수적으로 대기를 유지한다.
       expect(lock.boardingEvidence).toBe(false);
+    });
+
+    // #2371 (Part of #2306) 회귀 방지 — hydrateLockFromCandidate는 무탭 fusion auto-lock
+    // 경로이므로 startNavigation()이 절대 호출되면 안 된다(#1973 "명시 trigger 없이 자동 BG
+    // 금지"). createLockFromTrain(user-tap)에서만 startNavigation을 호출하는지 대칭 검증.
+    it('#2371: hydrateLockFromCandidate(무탭)는 startNavigation() 호출 안 함', async () => {
+      startNavigationMock.mockClear();
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      expect(startNavigationMock).not.toHaveBeenCalled();
     });
 
     it('역명+line 매칭 시 boardingStationId 정정', async () => {

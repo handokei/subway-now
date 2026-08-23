@@ -11,6 +11,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
+import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
@@ -321,6 +322,12 @@ export function useBoardingLockController({
       // lock 활성 trip은 backend가 boardingLock 분기로 처리하므로 본 stamp는 graceful surplus,
       // 단 lock이 실패/만료해 lockless 전환되면 즉시 lockless intermediate gate 활성화 보장.
       void useUserIntentStore.getState().setInfoModeEnabled(true);
+      // #2371 (Part of #2306) — BoardingTrainList 직접 탭(user-tap)도 boardingPrompt 응답과
+      // 동급 명시 의향 표명이므로 navigationActive도 함께 켠다(#2306 RCA — 화면 잠금 시 BG GPS
+      // 미시작 → leg 알림 전멸). hydrateLockFromCandidate(무탭 fusion auto-lock 경로)는 의도적으로
+      // 건드리지 않는다 — 사용자 명시 탭이 아닌 candidate 채택까지 BG GPS를 켜면 #1973
+      // "명시 trigger 없이 자동 BG 금지" 원칙 위반.
+      useNavigationStore.getState().startNavigation();
       const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
       // #663: boardingLine은 사용자가 실제로 탭한 train의 line을 사용. currentStation.line은 fusion
       // 추정이라 환승역에서 옆 노선으로 잘못 잠긴 상태일 수 있다 (#662). train.line은 어댑터가 subwayId로

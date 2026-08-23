@@ -181,6 +181,16 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // useStateRehydration sentinel / useLaunchTripReconciliation cold-launch / pause-auto-end
   // backstop 자체)가 모두 이 배열을 거치므로, 여기 한 줄 추가로 두 채널 모두 자동 wire된다.
   clearNavigationPauseState,
+  // #2371 (Part of #2306) — trip 종료 시 navigationActive stale true 방지. navigationActive는
+  // 사용자 "일시정지" 버튼(HomeScreen.handleStopNavigation → stopNavigation)에만 false로
+  // 복귀했다. 하지만 backend auto-end / silent push trip-ended / launch reconciliation 등
+  // 버튼을 거치지 않는 trip 종료 경로는 navigationActive를 건드리지 않아, 다음 trip 시작
+  // 전까지 useBackgroundLocation이 stale true를 보고 불필요하게 BG GPS를 유지한다(배터리).
+  // stopNavigation을 그대로 재사용하지 않는 이유: stopNavigation은 pausedAt에 Date.now()를
+  // stamp하는데("일시정지" 배지 의미), 바로 위 clearNavigationPauseState가 pausedAt을 null로
+  // 되돌리는 것과 순서에 의존하게 된다 — navigationActive만 직접 false로 set해 pausedAt과
+  // 독립적으로 처리한다.
+  resetNavigationActive,
 ];
 
 /**
@@ -193,6 +203,15 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
 function clearNavigationPauseState(): Promise<void> {
   useNavigationStore.getState().clearPausedAt();
   return clearNavigationPausedAt();
+}
+
+/**
+ * #2371 (Part of #2306) — navigationActive를 trip 종료 시 false로 되돌린다.
+ * memory-only 값(persist 미적용)이라 storage clear가 필요 없어 Promise.resolve로 즉시 완료.
+ */
+function resetNavigationActive(): Promise<void> {
+  useNavigationStore.setState({ navigationActive: false });
+  return Promise.resolve();
 }
 
 /**

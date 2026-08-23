@@ -501,6 +501,19 @@ describe('tripBoundCleanups', () => {
       expect(AsyncStorage.removeItem).toHaveBeenCalled();
     });
 
+    // #2371 (Part of #2306) — navigationActive는 사용자 "일시정지" 버튼(stopNavigation)에만
+    // false로 복귀했다. backend auto-end / silent push trip-ended 등 버튼을 거치지 않는 종료
+    // 경로에서도 이 배열을 거쳐 memory-only navigationActive가 stale true로 남지 않아야
+    // useBackgroundLocation이 다음 trip 시작 전까지 불필요하게 BG GPS를 유지하지 않는다.
+    it('#2371: runTripBoundCleanups 실행 시 navigationActive가 false로 reset된다 (stale true 방지)', async () => {
+      useNavigationStore.setState({ navigationActive: true, pausedAt: null });
+      (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+
+      await runTripBoundCleanups();
+
+      expect(useNavigationStore.getState().navigationActive).toBe(false);
+    });
+
     it('S12-8: enumeration 가드 — TRIP_BOUND_CLEANUPS 길이가 baseline 이하로 떨어지면 회귀', () => {
       // 새 cleanup 항목이 추가될 때마다 baseline을 한 줄로 갱신. 누군가 실수로 항목을 제거하면
       // 본 assertion이 빨갛게 깨져 의도된 제거인지 코드리뷰에서 확인하도록 강제한다.
@@ -513,7 +526,8 @@ describe('tripBoundCleanups', () => {
       // #1892 / #1885 — endLiveActivityCleanup 1 신규 (RC-9 LA orphan 26분 cascade fix).
       // #2045 — clearLastSilentPushReceivedAt 1 신규 (Signal 4 판정 오염 차단).
       // #2293 — clearNavigationPausedAt 1 신규 (일시정지 stamp leak 차단).
-      const MIN_ITEMS = 28;
+      // #2371 — resetNavigationActive 1 신규 (navigationActive stale true 방지, BG GPS 배터리).
+      const MIN_ITEMS = 29;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
     });
   });
