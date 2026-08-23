@@ -97,4 +97,19 @@ describe('i18n instance', () => {
       expect(label.length).toBeGreaterThan(0);
     },
   );
+
+  // #2374 — notificationCategory.ts 하드코딩 한국어 → i18n 전환분. 4언어 모두 키 정의됨을 가드.
+  it.each([
+    'notifications.actions.acknowledge',
+    'notifications.actions.endTrip',
+    'notifications.actions.nextTrip',
+  ] as const)('resolves %s for all supported languages (#2374)', async (key) => {
+    for (const lang of ['ko', 'en', 'ja', 'zh'] as const) {
+      await i18n.changeLanguage(lang);
+      const label: string = i18n.t(key);
+      expect(label).not.toBe(key);
+      expect(typeof label).toBe('string');
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
 });

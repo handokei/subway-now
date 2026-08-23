@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import i18next from 'i18next';
+import { setLang, installLanguageRestoreHook } from '../../../../testUtils/i18nLanguageOverride';
 import {
   ALARM_ACTION_ACKNOWLEDGE,
   ALARM_ACTION_END_TRIP,
@@ -21,6 +22,8 @@ import {
 jest.mock('expo-notifications', () => ({
   setNotificationCategoryAsync: jest.fn(),
 }));
+
+installLanguageRestoreHook();
 
 describe('setupBoardingPromptCategory (#819)', () => {
   beforeEach(() => {
@@ -119,6 +122,18 @@ describe('setupAlarmCategory (#1798 P2)', () => {
     );
   });
 
+  // #2374 — 하드코딩 한국어('확인'/'trip 종료')를 i18next.t() 키로 전환. 언어별 라벨 검증.
+  it.each(['ko', 'en', 'ja', 'zh'])('%s 언어에서 버튼 라벨이 i18next 번역 키로 로컬라이즈된다 (#2374)', async (lang) => {
+    setLang(lang);
+    await setupAlarmCategory();
+    const [, actions] = (Notifications.setNotificationCategoryAsync as jest.Mock).mock
+      .calls[0] as [string, { identifier: string; buttonTitle: string }[]];
+    const acknowledge = actions.find((a) => a.identifier === ALARM_ACTION_ACKNOWLEDGE);
+    const endTrip = actions.find((a) => a.identifier === ALARM_ACTION_END_TRIP);
+    expect(acknowledge?.buttonTitle).toBe(i18next.t('notifications.actions.acknowledge'));
+    expect(endTrip?.buttonTitle).toBe(i18next.t('notifications.actions.endTrip'));
+  });
+
   it('Notifications가 throw해도 graceful (no throw)', async () => {
     (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
       new Error('not supported'),
@@ -143,6 +158,16 @@ describe('setupTripEndedCategory (#1798 P2)', () => {
         }),
       ]),
     );
+  });
+
+  // #2374 — 하드코딩 한국어('다음 여정 시작')를 i18next.t() 키로 전환. 언어별 라벨 검증.
+  it.each(['ko', 'en', 'ja', 'zh'])('%s 언어에서 버튼 라벨이 i18next 번역 키로 로컬라이즈된다 (#2374)', async (lang) => {
+    setLang(lang);
+    await setupTripEndedCategory();
+    const [, actions] = (Notifications.setNotificationCategoryAsync as jest.Mock).mock
+      .calls[0] as [string, { identifier: string; buttonTitle: string }[]];
+    const nextTrip = actions.find((a) => a.identifier === TRIP_ENDED_ACTION_NEXT_TRIP);
+    expect(nextTrip?.buttonTitle).toBe(i18next.t('notifications.actions.nextTrip'));
   });
 
   it('Notifications가 throw해도 graceful (no throw)', async () => {
