@@ -2,13 +2,18 @@
  * #2303 재발 차단 가드.
  *
  * 네이티브(위젯/Live Activity)·알림 코드가 앱 커스텀 스킴(`subwaynow://...`) 딥링크
- * URL 문자열을 만들면, 그 path에 대응하는 expo-router route 파일(`app/**`)이 실재해야
- * 한다. producer(SubwayWidget.swift 등)가 새 딥링크를 추가해도 이 테스트가 자동으로
- * 스캔 대상에 포함되므로 하드코딩된 path 목록을 유지할 필요가 없다(글로벌 규칙 3).
+ * URL 문자열을 만들면, 그 path에 대응하는 expo-router route 파일(`app/**`)이 실재하거나
+ * `app/+native-intent.ts`의 `redirectSystemPath` alias로 재작성돼야 한다. producer
+ * (SubwayWidget.swift 등)가 새 딥링크를 추가해도 이 테스트가 자동으로 스캔 대상에
+ * 포함되므로 하드코딩된 path 목록을 유지할 필요가 없다(글로벌 규칙 3).
  *
  * 원본 결함(#2303): SubwayWidget.swift가 `subwaynow://current-station`을 위젯 탭 시
  * 딥링크로 방출했지만 `app/current-station.tsx` route가 없어 expo-router가
  * "Unmatched Route"를 표출했다.
+ *
+ * #2377: 중간 리다이렉트 라우트(`app/current-station.tsx`)를 거치면 흰 화면 + push
+ * 슬라이드가 발생해, 라우터 마운트 전 경로를 재작성하는 `+native-intent.ts` alias로
+ * 대체했다. 이 가드는 route 파일 부재를 다시 회귀로 오탐하지 않도록 alias도 인정한다.
  */
 import fs from 'fs';
 import path from 'path';
@@ -74,6 +79,18 @@ function routeExists(routePath: string): boolean {
   return candidates.some((candidate) => fs.existsSync(candidate));
 }
 
+/**
+ * routePath가 `app/+native-intent.ts`의 `redirectSystemPath`에서 재작성 대상으로
+ * 다뤄지는지 확인한다. 라우터 마운트 전에 경로를 재작성하는 alias이므로 route 파일이
+ * 없어도 딥링크가 유효하게 처리된다(#2377).
+ */
+function nativeIntentAliasExists(routePath: string): boolean {
+  const nativeIntentPath = path.join(ROOT, 'app', '+native-intent.ts');
+  if (!fs.existsSync(nativeIntentPath)) return false;
+  const content = fs.readFileSync(nativeIntentPath, 'utf8');
+  return content.includes(`'${routePath}'`);
+}
+
 describe('딥링크 producer ↔ expo-router route 대응 (#2303 재발 차단)', () => {
   const appScheme = readAppScheme();
   const deepLinks = extractDeepLinks(appScheme);
@@ -83,9 +100,9 @@ describe('딥링크 producer ↔ expo-router route 대응 (#2303 재발 차단)'
   });
 
   it.each(deepLinks.map((link) => [`${link.scheme}://${link.routePath} (${path.relative(ROOT, link.file)})`, link] as const))(
-    '%s → app/ route가 실재해야 한다',
+    '%s → app/ route 또는 +native-intent alias가 실재해야 한다',
     (_label, link) => {
-      expect(routeExists(link.routePath)).toBe(true);
+      expect(routeExists(link.routePath) || nativeIntentAliasExists(link.routePath)).toBe(true);
     },
   );
 });
