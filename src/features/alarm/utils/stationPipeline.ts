@@ -7,7 +7,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
-import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
+import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition, getStationsOnLine, arcIndexOf, computeHopWindowSize, isStationWithinHopWindow } from '../../../shared/utils/stationRoute';
 import { hasConsumedOriginWait } from '../../../shared/utils/boardingWait';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { updateStationNotification } from './stationNotification';
@@ -15,6 +15,7 @@ import { distanceMetersBetween, estimateEtaSeconds, estimateTransitEtaSeconds } 
 import { cancelSafetyNetByStationKind } from './safetyNetScheduler';
 import { getBoardingLock } from './boardingLockStorage';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
+import { getBgHopWindowStation, setBgHopWindowStation } from './hopWindowState';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import {
   logFiredAlarm,
@@ -25,6 +26,7 @@ import {
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
+  logSuppressedHopWindow,
   logSuppressedMovement,
   logSuppressedSleepFirstTransfer,
   logSuppressedSleepStationPassed,
@@ -214,6 +216,61 @@ export interface ProcessLocationInputs {
   arrivalsAtTransfers?: ReadonlyArray<{ arrivalSeconds: number; receivedAtMs: number } | null>;
 }
 
+/**
+ * #2373 (Option A, RCA #2180) — FG의 검증된 station-passed hop-window 게이트를 BG 채널에 이식.
+ *
+ * 배경: BG(stationPipeline)는 findNearestStation의 raw GPS 좌표 최근접 스냅을 그대로 route/phase
+ * 평가에 사용한다 — 매 tick 독립 계산, 이전 hop/경과시간 무관 = stateless. 지하 GPS drift가 실제보다
+ * 앞선 역(예: 2 hop 전인데 1 hop 전 역)을 스냅하면 remainingStops가 즉시 줄어 transfer-early가
+ * 조기 발사한다(2026-08-23 14분 조기 오발사 evidence, 2호선 건대입구 구간).
+ *
+ * FG(useStationAlarm.ts)는 D1 estimator의 currentHopIndex(부재 시 firedAlarms 기반 fallback)를
+ * hop 기준으로 삼지만 BG는 estimator가 없는 stateless 함수다. 대신 직전 tick에 게이트를 통과한
+ * nearestStation을 AsyncStorage에 영속화(hopWindowState.ts)해 다음 tick의 기준으로 쓴다.
+ *
+ * arcStations는 candidate와 같은 노선 전체 station 순서(getStationsOnLine)로 유도한다 — FG의
+ * computeRouteArc(환승 양쪽 노선을 이어붙인 arc)를 그대로 쓰지 않는 이유: 기준 station과
+ * candidate가 다른 노선이면(=방금 환승 완료) 그 자체가 정상 진행 신호이므로 게이트를 skip하고
+ * 새 기준으로 채택한다. computeHopWindowSize/isStationWithinHopWindow는 FG와 동일 함수를
+ * 그대로 재사용(shared 추출, 신규 게이트 로직 발명 아님) — route.type이 transfer/multi-transfer면
+ * windowSize 동적 확장도 동일하게 적용된다.
+ *
+ * 반환:
+ *   - null: 게이트 미적용(기준 없음 / 방금 환승 / arc 인덱스 미발견) — candidate를 새 기준으로 채택.
+ *   - { blocked: true, ... }: hop window 밖 — 기준 station 유지(overwrite 안 함), caller가 이번
+ *     tick의 phase 알람 발사만 suppress한다. candidate 자체(route/notification)는 계속 갱신된다
+ *     (FG와 동일 — hop window는 "발사"만 가드, "현재 위치 추정"은 가드하지 않음).
+ */
+async function evaluateBgHopWindowGate(params: {
+  destinationId: string;
+  candidateStation: Station;
+  route: Route;
+}): Promise<{ blocked: true; currentHopIndex: number; candidateIndex: number } | null> {
+  const { destinationId, candidateStation, route } = params;
+  const prevStation = await getBgHopWindowStation(destinationId);
+  if (!prevStation || prevStation.line !== candidateStation.line) {
+    // 기준 없음(첫 tick) 또는 방금 환승선 전환 — 게이트 미적용, candidate를 새 기준으로 채택.
+    await setBgHopWindowStation(destinationId, candidateStation);
+    return null;
+  }
+
+  const arcStations = getStationsOnLine(candidateStation.line);
+  const currentHopIndex = arcIndexOf(arcStations, prevStation);
+  const candidateIndex = arcIndexOf(arcStations, candidateStation);
+  if (currentHopIndex < 0 || candidateIndex < 0) {
+    await setBgHopWindowStation(destinationId, candidateStation);
+    return null;
+  }
+
+  const windowSize = computeHopWindowSize(arcStations, route, currentHopIndex, candidateIndex, null);
+  if (isStationWithinHopWindow(candidateStation, arcStations, currentHopIndex, windowSize)) {
+    await setBgHopWindowStation(destinationId, candidateStation);
+    return null;
+  }
+
+  return { blocked: true, currentHopIndex, candidateIndex };
+}
+
 export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
   const {
     lat,
@@ -244,6 +301,16 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   if (!route) {
     route = findRoute(nearest.station.id, destination.id);
   }
+
+  // #2373 (RCA #2180) — FG의 검증된 station-passed hop-window 게이트를 BG 채널에 이식.
+  // route 없으면 게이트 대상 자체가 없다(evaluateAlarmPhase도 route=null이면 항상 alarmEvent=null).
+  const hopWindowGate = route
+    ? await evaluateBgHopWindowGate({
+        destinationId: destination.id,
+        candidateStation: nearest.station,
+        route,
+      })
+    : null;
 
   const distanceToDestM = distanceMetersBetween(lat, lng, destination.lat, destination.lng);
   // #2279 — route가 있으면 실측 hop 시간 합(getRouteRemainingSeconds)을 상한으로 clamp해
@@ -334,6 +401,17 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         kind: alarmEvent.type,
         phaseId: alarmEvent.phaseId,
         reason: MOVEMENT_TO_ALARM_LOG_REASON[movementSignal.reason],
+      });
+    } else if (hopWindowGate?.blocked) {
+      // #2373 — candidate가 직전 tick 기준 station 대비 hop window 밖(GPS drift로 앞선 역 스냅).
+      // transfer-early 14분 조기 오발사(2호선 건대입구 구간, 2026-08-23) 차단.
+      logSuppressedHopWindow({
+        source,
+        stationName: alarmEvent.stationName,
+        kind: alarmEvent.type,
+        phaseId: alarmEvent.phaseId,
+        currentHopIndex: hopWindowGate.currentHopIndex,
+        candidateIndex: hopWindowGate.candidateIndex,
       });
     } else if (suppressBySleep) {
       logSuppressedSleepFirstTransfer({
