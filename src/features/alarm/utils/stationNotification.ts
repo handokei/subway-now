@@ -567,6 +567,40 @@ export function buildAlarmContent(
   return { title, body: withSource };
 }
 
+/**
+ * #2379 (Phase 2-device 복원, #2067 되돌리기) — `EXPO_PUBLIC_MINIMAL_ALARM` 플래그 ON일 때
+ * BG pipeline(`stationPipeline.ts`)이 잠금 화면에서도 스스로 발사하는 device 로컬 transfer/
+ * destination 알람 배너. #2067이 제거한 `sendAlarmNotification`의 visible-알림 발사 로직을
+ * `buildAlarmContent` + `scheduleNotification` 재사용으로 복원한다(TTS/진동은 companion
+ * (`AlarmLocalAuthority`, #2067 D3)이 별도 채널로 이미 담당하므로 이 함수는 배너만 발사 — 중복
+ * 방지).
+ */
+export async function fireLocalAlarmNotification(
+  event: AlarmEvent,
+  source?: NotificationSource,
+): Promise<void> {
+  const { title, body } = buildAlarmContent(event, source);
+
+  await scheduleNotification(ALARM_NOTIFICATION_ID, {
+    title,
+    body,
+    sound: 'alarm.wav',
+    ...(Platform.OS === 'android' && {
+      channelId: ALARM_CHANNEL_ID,
+      priority: Notifications.AndroidNotificationPriority.MAX,
+    }),
+    // NOTE: critical Entitlement 승인 후 'critical'로 변경 → Sleep Focus 완전 관통
+    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
+  });
+  notifLogger.info('로컬 알람(minimal-alarm):', title, body);
+  addDomainBreadcrumb('alarm', 'fire-local', {
+    type: event.type,
+    phase: event.phaseId,
+    station: event.stationName,
+    source,
+  });
+}
+
 export async function clearAlarmNotification(): Promise<void> {
   stopVibration();
   try {

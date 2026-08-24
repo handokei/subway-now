@@ -10,7 +10,8 @@ import { findNearestStation } from '../../nearest-station/utils/findNearestStati
 import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition, getStationsOnLine, arcIndexOf, computeHopWindowSize, isStationWithinHopWindow } from '../../../shared/utils/stationRoute';
 import { hasConsumedOriginWait } from '../../../shared/utils/boardingWait';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
-import { updateStationNotification } from './stationNotification';
+import { updateStationNotification, fireLocalAlarmNotification, fireFgAuxStationPassedNotification } from './stationNotification';
+import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import { distanceMetersBetween, estimateEtaSeconds, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
 import { cancelSafetyNetByStationKind } from './safetyNetScheduler';
 import { getBoardingLock } from './boardingLockStorage';
@@ -392,9 +393,10 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       sleepMode,
       isFirstHop,
     });
-    if (!movementSignal.reliable) {
+    if (!movementSignal.reliable && !isMinimalAlarmEnabled()) {
       // #2204 — FG와 동일 정적 misfire 가드. destination/transfer early가 정적 사용자에게
       // 발사되던 phantom fire(뚝섬 evidence)를 차단.
+      // #2379 — EXPO_PUBLIC_MINIMAL_ALARM ON일 때는 이 과억제 게이트를 우회한다(스펙 B).
       logSuppressedMovement({
         source,
         stationName: alarmEvent.stationName,
@@ -494,6 +496,12 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       );
       // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거. 알람 배너는 원격 visible push가
       // 담당(Phase 2-backend). BG pipeline은 dedup ledger 기록 + alarmLog 적재만 수행한다.
+      // #2379 (Phase 2-device 복원, #2067 되돌리기) — 플래그 ON이면 BG가 스스로 device 로컬
+      // visible 알림을 발사한다(잠금 화면에서 backend push 단독 의존 시 화면에 아무것도 안 뜨는
+      // 회귀 대응). fire-once(markStationFired)는 위에서 이미 통과했으므로 중복 발사 없음.
+      if (isMinimalAlarmEnabled()) {
+        await fireLocalAlarmNotification(alarmEvent, notificationSource);
+      }
       logFiredAlarm(source, alarmEvent);
     }
   }
@@ -516,8 +524,9 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     // dedup(lastNotifiedStationId) 위에 위치 — sleep으로 차단되면 lastNotifiedStationId 갱신 안 함
     // → sleep OFF 토글 후 정상 첫 hop 알림이 재발사 가능.
     // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
-    if (!movementSignal.reliable) {
+    if (!movementSignal.reliable && !isMinimalAlarmEnabled()) {
       // #2204 — FG와 동일 정적 misfire 가드. 정적 사용자에게 station-passed가 발사되던 회귀 차단.
+      // #2379 — EXPO_PUBLIC_MINIMAL_ALARM ON일 때는 이 과억제 게이트를 우회한다(스펙 B).
       logSuppressedMovement({
         source,
         stationName: nearest.station.name,
@@ -605,6 +614,20 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
           // #1515 — cross-category 윈도우 갱신. category='station-passed'.
           markStationFired(destination.id, nearest.station.name, 'station-passed', Date.now());
           await setLastNotifiedStationId(destination.id, nearest.station.id);
+
+          // #2379 (Phase 2-device 복원, #2067 되돌리기) — 플래그 ON이면 BG가 스스로 device 로컬
+          // station-passed 배너를 발사한다. 기존 FG 보조 발사(`fireFgAuxStationPassedNotification`,
+          // #2122)를 재사용 — count/targetKind/targetName은 위에서 이미 계산한 target(NextTarget)의
+          // stopsToNextStation/isTransfer/nextStationName을 그대로 매핑(FG dispatchStationPassed의
+          // deriveStationPassedTarget과 동일 의미). fire-once는 위 markStationFired로 이미 보장.
+          if (isMinimalAlarmEnabled()) {
+            await fireFgAuxStationPassedNotification(
+              nearest.station.name,
+              target.stopsToNextStation,
+              target.isTransfer ? 'transfer' : 'destination',
+              target.nextStationName,
+            );
+          }
 
           // #624 → #2089 — BG-safe stale alarm 차단. 통과한 waypoint의 safety-net 사전 예약을
           // 능동 cancel(더 이상 lock 필요 없음 — safetyNetScheduler는 tripToken 기반 lockless).
