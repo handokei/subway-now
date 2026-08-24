@@ -79,9 +79,17 @@ jest.mock('../safetyNetScheduler', () => ({
 
 const mockUpdateStationNotification = jest.fn();
 const mockSendStationPassedNotification = jest.fn();
+const mockFireLocalAlarmNotification = jest.fn();
+const mockFireFgAuxStationPassedNotification = jest.fn();
 jest.mock('../stationNotification', () => ({
   updateStationNotification: (...args: unknown[]) => mockUpdateStationNotification(...args),
   sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
+  // #2379 (Phase 2-device 복원, #2067 되돌리기) — BG pipeline이 EXPO_PUBLIC_MINIMAL_ALARM ON일 때
+  // 직접 호출하는 device 로컬 발사 함수. 내부 구현은 stationNotification.test.ts가 검증하므로
+  // 여기서는 호출 여부/인자만 mock으로 assert한다.
+  fireLocalAlarmNotification: (...args: unknown[]) => mockFireLocalAlarmNotification(...args),
+  fireFgAuxStationPassedNotification: (...args: unknown[]) =>
+    mockFireFgAuxStationPassedNotification(...args),
 }));
 
 const mockGetLastNotifiedStationId = jest.fn();
@@ -174,6 +182,8 @@ describe('processLocationUpdate', () => {
     require('../crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
     mockUpdateStationNotification.mockResolvedValue(undefined);
     mockSendStationPassedNotification.mockResolvedValue(undefined);
+    mockFireLocalAlarmNotification.mockResolvedValue(undefined);
+    mockFireFgAuxStationPassedNotification.mockResolvedValue(undefined);
     mockCalculateStaticETA.mockReturnValue(10);
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockIsStationOnRoute.mockReturnValue(true);
@@ -1390,6 +1400,171 @@ describe('processLocationUpdate', () => {
       await call();
 
       expect(mockGetBgHopWindowStation).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2379 (Phase 2-device 복원, #2067 되돌리기) — EXPO_PUBLIC_MINIMAL_ALARM 플래그로 BG pipeline이
+  // 잠금 화면에서도 스스로 device 로컬 알림을 발사하게 한다(#2067이 제거한 sendAlarmNotification
+  // 상당물 복원). 플래그 OFF는 기존 동작(backend push 단일 의존) 완전 불변 — 회귀 가드.
+  describe('#2379 EXPO_PUBLIC_MINIMAL_ALARM — BG device 로컬 발사 복원', () => {
+    const originalEnv = process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+
+    afterEach(() => {
+      if (originalEnv === undefined) {
+        delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      } else {
+        process.env.EXPO_PUBLIC_MINIMAL_ALARM = originalEnv;
+      }
+    });
+
+    describe('플래그 OFF (기본) — 회귀 가드: device 로컬 발사 없음, 과억제 게이트 그대로 유지', () => {
+      beforeEach(() => {
+        delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      });
+
+      it('phase 알람이 fire해도 fireLocalAlarmNotification을 호출하지 않는다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+        await call();
+
+        expect(mockLogFiredAlarm).toHaveBeenCalled();
+        expect(mockFireLocalAlarmNotification).not.toHaveBeenCalled();
+      });
+
+      it('station-passed가 fire해도 fireFgAuxStationPassedNotification을 호출하지 않는다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+
+        await call();
+
+        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
+      });
+
+      it('정적 사용자(movement unreliable)는 여전히 억제된다 — 과억제 게이트 우회 없음', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+        await call({ speedMps: 0.1 });
+
+        expect(mockLogSuppressedMovement).toHaveBeenCalled();
+        expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+        expect(mockFireLocalAlarmNotification).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('플래그 ON — device 로컬 발사 복원 + movement 과억제 게이트 우회', () => {
+      beforeEach(() => {
+        process.env.EXPO_PUBLIC_MINIMAL_ALARM = 'true';
+      });
+
+      it('phase 알람(transfer/destination) fire 시 fireLocalAlarmNotification을 alarmEvent와 함께 발사한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+        await call();
+
+        expect(mockLogFiredAlarm).toHaveBeenCalled();
+        expect(mockFireLocalAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, undefined);
+      });
+
+      it('station-passed fire 시 fireFgAuxStationPassedNotification을 count/targetKind/targetName과 함께 발사한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+
+        await call();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          mockStation.name,
+          mockRoute.stops,
+          'destination',
+          mockDestination.name,
+        );
+      });
+
+      it('정적 사용자(movement unreliable)여도 게이트를 우회해 phase 알람을 발사한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+        await call({ speedMps: 0.1 });
+
+        expect(mockLogSuppressedMovement).not.toHaveBeenCalled();
+        expect(mockLogFiredAlarm).toHaveBeenCalled();
+        expect(mockFireLocalAlarmNotification).toHaveBeenCalled();
+      });
+
+      it('정적 사용자(movement unreliable)여도 게이트를 우회해 station-passed를 발사한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+
+        await call({ speedMps: 0.1 });
+
+        expect(mockLogSuppressedMovement).not.toHaveBeenCalled();
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalled();
+      });
+
+      it('target.isTransfer === true이면 targetKind="transfer"로 발사한다 (환승 전 구간)', async () => {
+        const transferRoute = makeTransferRoute({
+          transferName: '동대문',
+          fromLine: '2',
+          toLine: '4',
+          stopsToTransfer: 2,
+          stopsFromTransfer: 3,
+        });
+        mockFindNearestStation.mockReturnValue(mockNearestResult); // station.line = '2' = fromLine
+        mockFindRoute.mockReturnValue(transferRoute);
+        mockGetBoardingLock.mockResolvedValue(null); // currentLine = nearest.station.line('2')
+
+        await call();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          mockStation.name,
+          2,
+          'transfer',
+          '동대문',
+        );
+      });
+
+      it('C 유지 — sleep 첫 hop 룰은 ON에서도 여전히 phase 알람(transfer)을 억제한다', async () => {
+        const lockSleeping = {
+          destinationId: 'station-2',
+          trainCode: 'T-1',
+          boardingStationId: 'station-1',
+          boardingLine: '2' as const,
+          boardedAt: 1_700_000_000_000,
+          expectedDurationMs: 600_000,
+        };
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockGetBoardingLock.mockResolvedValue(lockSleeping);
+        mockGetFirstLeg.mockReturnValue({ line: '2', endName: '시청' });
+        mockEvaluateAlarmPhase.mockReturnValue({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+
+        await call({ sleepMode: true });
+
+        expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalled();
+        expect(mockFireLocalAlarmNotification).not.toHaveBeenCalled();
+      });
+
+      it('C 유지 — fire-once(markStationFired dedup)는 ON에서도 중복 발사를 차단한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+        // #1515 dedup 모듈(crossCategoryStationDedup)은 mock 대상이 아니라 실제 상태를 갖는다 —
+        // 직전 tick에서 이미 같은 (station, kind) phase가 fire됐다면 cross-category dedup으로 억제.
+        mockIsStationOnRoute.mockReturnValue(false); // station-passed 분기는 이번 assert 대상 밖.
+
+        await call();
+        expect(mockFireLocalAlarmNotification).toHaveBeenCalledTimes(1);
+
+        await call();
+        // 같은 station+kind 재평가 — cross-category dedup(#1515)이 두 번째 호출을 억제한다.
+        expect(mockFireLocalAlarmNotification).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

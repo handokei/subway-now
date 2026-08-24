@@ -10,6 +10,7 @@ import {
   buildAlarmContent,
   buildStationPassedContent,
   fireFgAuxStationPassedNotification,
+  fireLocalAlarmNotification,
 } from '../stationNotification';
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
 import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
@@ -953,6 +954,59 @@ describe('stationNotification', () => {
     it('dismiss 실패해도 에러를 던지지 않는다', async () => {
       (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
       await expect(clearAlarmNotification()).resolves.toBeUndefined();
+    });
+  });
+
+  // #2379 (Phase 2-device 복원, #2067 되돌리기) — EXPO_PUBLIC_MINIMAL_ALARM 플래그 ON일 때 BG
+  // pipeline이 직접 발사하는 device 로컬 transfer/destination 알람 배너.
+  describe('fireLocalAlarmNotification (#2379 — #2067 sendAlarmNotification 복원)', () => {
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+
+    it('buildAlarmContent와 동일한 title/body로 ALARM_NOTIFICATION_ID 알림을 예약한다', async () => {
+      await fireLocalAlarmNotification(earlyDest);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          identifier: 'station-alarm',
+          content: expect.objectContaining({
+            title: '하차 알림',
+            body: '다음 역 강남에서 하차하세요!',
+            sound: 'alarm.wav',
+          }),
+        }),
+      );
+    });
+
+    it('iOS에서는 interruptionLevel: timeSensitive를 부착한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await fireLocalAlarmNotification(earlyDest);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({ interruptionLevel: 'timeSensitive' }),
+        }),
+      );
+    });
+
+    it('Android에서는 ALARM_CHANNEL_ID + MAX priority를 부착한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await fireLocalAlarmNotification(earlyDest);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            channelId: 'station-alarm',
+            priority: Notifications.AndroidNotificationPriority.MAX,
+          }),
+        }),
+      );
+    });
+
+    it('source가 있으면 breadcrumb에 전달한다', async () => {
+      await fireLocalAlarmNotification(earlyDest, 'positionTrain');
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire-local', {
+        type: 'destination',
+        phase: 'early',
+        station: '강남',
+        source: 'positionTrain',
+      });
     });
   });
 

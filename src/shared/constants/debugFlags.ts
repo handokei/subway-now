@@ -12,3 +12,12 @@ export function isDebugModalEnabled(): boolean {
 export const DEBUG_MODAL_TRIGGER_TAP_COUNT = 7;
 /** 탭 간격이 이 시간을 넘으면 카운트 reset — 우발적 누적 트리거 방지. */
 export const DEBUG_MODAL_TRIGGER_RESET_MS = 1500;
+
+// #2379 (Phase 2-device 복원, #2067 되돌리기) — BG pipeline(stationPipeline.ts)이 device 로컬
+// visible 알림을 직접 발사하게 하는 빌드타임 플래그. OFF(기본)면 기존 동작(backend push 단일
+// 의존) 완전 불변 — 회귀 0. ON이면 잠금 화면에서도 발사되도록 로컬 발사 경로 + 과억제 게이트
+// (movement) 우회가 활성화된다. isDebugModalEnabled와 동일 패턴 — __DEV__ 자동 활성 없이
+// env 값만으로 게이트(의도적 opt-in, 실기기 dogfood 빌드 전용).
+export function isMinimalAlarmEnabled(): boolean {
+  return process.env.EXPO_PUBLIC_MINIMAL_ALARM === 'true';
+}
