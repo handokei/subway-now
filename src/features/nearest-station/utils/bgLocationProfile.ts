@@ -92,6 +92,15 @@ async function readCurrentProfile(): Promise<BgLocationProfile> {
   }
 }
 
+/**
+ * #2381 — 현재 영속 profile이 'underground'(gate-accuracy 연속 실패로 강등된 상태)인지 조회.
+ * BG 지하 arrival 폴링/consensus 진입 게이트 판정용 — readCurrentProfile을 그대로 재사용해
+ * profile 판정 로직을 이원화하지 않는다.
+ */
+export async function isUndergroundProfile(): Promise<boolean> {
+  return (await readCurrentProfile()) === 'underground';
+}
+
 async function bumpFlipCount(): Promise<number> {
   try {
     const raw = await AsyncStorage.getItem(BG_LOCATION_PROFILE_FLIP_COUNT_KEY);

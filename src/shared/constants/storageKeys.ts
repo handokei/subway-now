@@ -272,3 +272,11 @@ export const BG_FOREGROUND_SERVICE_TEXT_KEY = 'subway-now:bg-foreground-service-
 // AsyncStorage로 invocation 간 상태를 공유한다(BG_LOCATION_PROFILE_KEY와 동일 패턴).
 // 형식: 숫자 문자열. 키 부재 = 0.
 export const BG_UNDERGROUND_FAIL_COUNT_KEY = 'subway-now:bg-underground-fail-count';
+// #2381 — 지하 BG arvlCd 폴링 최소 간격 가드용 마지막 폴링 시각(epoch ms). BG_LAST_POSITION_UPLOAD_AT_KEY와
+// 동일 패턴 — TaskManager invocation 간 쿨다운 상태를 AsyncStorage로 공유한다.
+// 형식: 숫자 문자열. 키 부재 = 첫 폴링(즉시 fetch).
+export const BG_UNDERGROUND_ARRIVAL_POLLED_AT_KEY = 'subway-now:bg-underground-arrival-polled-at';
+// #2381 — 지하 BG arvlCd 폴링 결과 캐시. 최소 간격 미경과 tick 또는 fetch 실패 시 이 캐시를
+// undergroundSSOTConsensus 입력으로 재사용(quota 보호 + graceful fallback).
+// 형식: StationArrival JSON. 키 부재 = 캐시 없음(null).
+export const BG_UNDERGROUND_ARRIVAL_CACHE_KEY = 'subway-now:bg-underground-arrival-cache';
