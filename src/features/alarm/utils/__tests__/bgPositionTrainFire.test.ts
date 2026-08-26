@@ -37,9 +37,14 @@ jest.mock('../../../nearest-station/utils/lockedStationGate', () => ({
   passesLockedStationGate: (...args: unknown[]) => mockPassesLockedStationGate(...args),
 }));
 
-const mockPollUndergroundArrivalIfDue = jest.fn();
-jest.mock('../../../nearest-station/tasks/bgUndergroundArrivalPoll', () => ({
-  pollUndergroundArrivalIfDue: (...args: unknown[]) => mockPollUndergroundArrivalIfDue(...args),
+const mockPollTrainPositionsIfDue = jest.fn();
+jest.mock('../../../nearest-station/tasks/bgPositionTrainPoll', () => ({
+  pollTrainPositionsIfDue: (...args: unknown[]) => mockPollTrainPositionsIfDue(...args),
+}));
+
+const mockPickCandidateTrains = jest.fn();
+jest.mock('../../../arrival/utils/pickCandidateTrains', () => ({
+  pickCandidateTrains: (...args: unknown[]) => mockPickCandidateTrains(...args),
 }));
 
 const mockComputeRouteArc = jest.fn();
@@ -47,19 +52,9 @@ jest.mock('../../../route/utils/routeProgress', () => ({
   computeRouteArc: (...args: unknown[]) => mockComputeRouteArc(...args),
 }));
 
-const mockForwardWaypointStations = jest.fn();
-jest.mock('../../../route/utils/forwardWaypointStations', () => ({
-  forwardWaypointStations: (...args: unknown[]) => mockForwardWaypointStations(...args),
-}));
-
 const mockTrackTrainProgress = jest.fn();
 jest.mock('../../../route/utils/trackTrainProgress', () => ({
   trackTrainProgress: (...args: unknown[]) => mockTrackTrainProgress(...args),
-}));
-
-const mockBuildCandidateTrainsFromArrival = jest.fn();
-jest.mock('../../../arrival/utils/buildCandidateTrainsFromArrival', () => ({
-  buildCandidateTrainsFromArrival: (...args: unknown[]) => mockBuildCandidateTrainsFromArrival(...args),
 }));
 
 const mockSaveStationToWidget = jest.fn();
@@ -109,6 +104,7 @@ const LOCK = {
   boardedAt: 500,
   expectedDurationMs: 100_000,
 };
+const LINE_POSITIONS = { line: '2', trains: [{ statnNm: '다음역', trainNo: 'T1' }] };
 
 function mockAsyncStorageGet(map: Record<string, string | null>) {
   mockGetItem.mockImplementation((key: string) =>
@@ -130,9 +126,8 @@ describe('evaluatePositionTrainFire', () => {
     });
     mockGetStationById.mockReturnValue(ORIGIN);
     mockComputeRouteArc.mockReturnValue({ stations: ARC_STATIONS, arcM: [0, 100], totalLengthM: 100 });
-    mockForwardWaypointStations.mockReturnValue([WAYPOINT]);
-    mockPollUndergroundArrivalIfDue.mockResolvedValue({ up: [], down: [] });
-    mockBuildCandidateTrainsFromArrival.mockReturnValue([
+    mockPollTrainPositionsIfDue.mockResolvedValue(LINE_POSITIONS);
+    mockPickCandidateTrains.mockReturnValue([
       { trainNo: 'T1', line: '2', direction: 0, currentStationName: '다음역', trainStatus: 1, receivedAtMs: 1 },
     ]);
     mockTrackTrainProgress.mockReturnValue({
@@ -166,7 +161,7 @@ describe('evaluatePositionTrainFire', () => {
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(false);
-    expect(mockPollUndergroundArrivalIfDue).not.toHaveBeenCalled();
+    expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
   });
 
   it('lock.trainCode가 없으면 false를 반환한다', async () => {
@@ -175,7 +170,7 @@ describe('evaluatePositionTrainFire', () => {
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(false);
-    expect(mockPollUndergroundArrivalIfDue).not.toHaveBeenCalled();
+    expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
   });
 
   it('isUndergroundProfile/wifiStation 게이트를 걸지 않는다 — profile 무관하게 진행', async () => {
@@ -240,7 +235,7 @@ describe('evaluatePositionTrainFire', () => {
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(false);
-    expect(mockForwardWaypointStations).not.toHaveBeenCalled();
+    expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
   });
 
   it('sleepJson이 저장되지 않았으면 sleepMode=false로 기본 처리한다', async () => {
@@ -258,7 +253,7 @@ describe('evaluatePositionTrainFire', () => {
     );
   });
 
-  it('BG_LAST_STATION JSON은 파싱되지만 station.id가 없으면 boardingStationId를 anchor로 fallback한다', async () => {
+  it('BG_LAST_STATION JSON은 파싱되지만 station.name이 없으면 탑승역 이름을 anchor로 fallback한다', async () => {
     mockAsyncStorageGet({
       [DESTINATION_KEY]: JSON.stringify(DESTINATION),
       [SLEEP_MODE_KEY]: 'false',
@@ -268,10 +263,12 @@ describe('evaluatePositionTrainFire', () => {
 
     await evaluatePositionTrainFire();
 
-    expect(mockForwardWaypointStations).toHaveBeenCalledWith(ARC_STATIONS, LOCK.boardingStationId, 2);
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({ anchorStationName: ORIGIN.name }),
+    );
   });
 
-  it('BG_LAST_STATION이 있으면 그 station id를 anchor로 forwardWaypointStations를 호출한다', async () => {
+  it('BG_LAST_STATION이 있으면 그 station name을 anchor로 pickCandidateTrains를 호출한다', async () => {
     mockAsyncStorageGet({
       [DESTINATION_KEY]: JSON.stringify(DESTINATION),
       [SLEEP_MODE_KEY]: 'false',
@@ -281,10 +278,12 @@ describe('evaluatePositionTrainFire', () => {
 
     await evaluatePositionTrainFire();
 
-    expect(mockForwardWaypointStations).toHaveBeenCalledWith(ARC_STATIONS, WAYPOINT.id, 2);
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({ anchorStationName: WAYPOINT.name }),
+    );
   });
 
-  it('BG_LAST_STATION JSON이 손상되면 boardingStationId를 anchor로 fallback한다', async () => {
+  it('BG_LAST_STATION JSON이 손상되면 탑승역 이름을 anchor로 fallback한다', async () => {
     mockAsyncStorageGet({
       [DESTINATION_KEY]: JSON.stringify(DESTINATION),
       [SLEEP_MODE_KEY]: 'false',
@@ -294,25 +293,18 @@ describe('evaluatePositionTrainFire', () => {
 
     await evaluatePositionTrainFire();
 
-    expect(mockForwardWaypointStations).toHaveBeenCalledWith(ARC_STATIONS, LOCK.boardingStationId, 2);
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({ anchorStationName: ORIGIN.name }),
+    );
   });
 
-  it('전방 waypoint가 없으면(빈 배열) false를 반환하고 폴링하지 않는다', async () => {
-    mockForwardWaypointStations.mockReturnValue([]);
+  it('polling이 null이면(quota skip 등) false를 반환하고 candidate 산출을 시도하지 않는다', async () => {
+    mockPollTrainPositionsIfDue.mockResolvedValue(null);
 
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(false);
-    expect(mockPollUndergroundArrivalIfDue).not.toHaveBeenCalled();
-  });
-
-  it('arrival이 null이면 false를 반환한다', async () => {
-    mockPollUndergroundArrivalIfDue.mockResolvedValue(null);
-
-    const result = await evaluatePositionTrainFire();
-
-    expect(result).toBe(false);
-    expect(mockBuildCandidateTrainsFromArrival).not.toHaveBeenCalled();
+    expect(mockPickCandidateTrains).not.toHaveBeenCalled();
   });
 
   it('trackTrainProgress가 null이면(후보 없음) false를 반환한다', async () => {
@@ -333,16 +325,19 @@ describe('evaluatePositionTrainFire', () => {
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
   });
 
-  it('userLocation 없이(GPS-free) trackTrainProgress/pollUndergroundArrivalIfDue/lock 게이트를 순서대로 호출하고 station 채택 시 true를 반환한다', async () => {
+  it('userLocation 없이(GPS-free) lock.boardingLine으로 폴링하고 pickCandidateTrains/trackTrainProgress/lock 게이트를 순서대로 호출해 station 채택 시 true를 반환한다', async () => {
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(true);
-    expect(mockPollUndergroundArrivalIfDue).toHaveBeenCalledWith(WAYPOINT.name, WAYPOINT.line);
-    expect(mockBuildCandidateTrainsFromArrival).toHaveBeenCalledWith(
-      { up: [], down: [] },
-      WAYPOINT.name,
-      LOCK.trainCode,
+    expect(mockPollTrainPositionsIfDue).toHaveBeenCalledWith(LOCK.boardingLine);
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({
+        positions: [LINE_POSITIONS],
+        line: LOCK.boardingLine,
+        anchorStationName: ORIGIN.name,
+      }),
     );
+    expect(mockPickCandidateTrains.mock.calls[0][0]).not.toHaveProperty('userLocation');
     expect(mockTrackTrainProgress).toHaveBeenCalledWith(
       expect.objectContaining({
         lastConfirmedTrainNo: LOCK.trainCode,
