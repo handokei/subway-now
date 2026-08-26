@@ -280,3 +280,12 @@ export const BG_UNDERGROUND_ARRIVAL_POLLED_AT_KEY = 'subway-now:bg-underground-a
 // undergroundSSOTConsensus 입력으로 재사용(quota 보호 + graceful fallback).
 // 형식: StationArrival JSON. 키 부재 = 캐시 없음(null).
 export const BG_UNDERGROUND_ARRIVAL_CACHE_KEY = 'subway-now:bg-underground-arrival-cache';
+// #2383 — position-train-lock BG 발사 경로의 realtimePosition(fetchTrainPositions) 폴링 최소
+// 간격 가드용 마지막 폴링 시각(epoch ms). BG_UNDERGROUND_ARRIVAL_POLLED_AT_KEY와 동일 패턴 —
+// TaskManager invocation 간 쿨다운 상태를 AsyncStorage로 공유한다.
+// 형식: 숫자 문자열. 키 부재 = 첫 폴링(즉시 fetch).
+export const BG_POSITION_TRAIN_POLLED_AT_KEY = 'subway-now:bg-position-train-polled-at';
+// #2383 — position-train-lock BG 발사 경로의 realtimePosition 폴링 결과 캐시. 최소 간격 미경과
+// tick 또는 fetch 실패 시 이 캐시를 trackTrainProgress 입력으로 재사용(quota 보호 + graceful
+// fallback). 형식: LinePositions JSON. 키 부재 = 캐시 없음(null).
+export const BG_POSITION_TRAIN_CACHE_KEY = 'subway-now:bg-position-train-cache';

@@ -55,6 +55,9 @@ import { checkTripDeathByPull, getBackendUrl as getTripDeathPullBackendUrl } fro
 // profile 강등 + lock 존재 tick에서 arvlCd+accel+cellular consensus로 device가 스스로 판정·발사.
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import { evaluateUndergroundConsensusFire } from '../../alarm/utils/undergroundConsensusFire';
+// #2383 (Part of #2381) — position-train-lock BG 발사 경로. 환경(지상/지하) 오분류·GPS accuracy
+// 상태에 독립적으로 lock.trainCode를 arvlCd로 직접 추적한다 (#2382 WiFi/consensus 경로보다 우선).
+import { evaluatePositionTrainFire } from '../../alarm/utils/bgPositionTrainFire';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -146,6 +149,21 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     void checkTripDeathByPull(tripDeathPullBackendUrl, 'bg-location-tick').catch((e: unknown) => {
       logger.warn('pull death backstop 실패 (graceful)', e);
     });
+  }
+
+  // #2383 (Part of #2381) — position-train-lock 경로. lock 활성(trainCode 존재)이면 GPS
+  // accuracy 상태와 무관하게(환경/GPS/WiFi 독립이 핵심) arvlCd로 그 trainCode 열차의 현재
+  // 역을 직접 판정해 발사를 먼저 시도한다. 2026-08-26 덤프: GPS accuracy가 9~40m로 "정상"
+  // 판정돼 아래 gate-accuracy 강등 분기(→ #2382 evaluateUndergroundConsensusFire)에 도달조차
+  // 못 한 채 지하에서 위치가 틀린 채 방치됐다 — 그 실패 지점을 우회하는 것이 이 경로의 목적.
+  // 채택 성공(true) 시 이번 tick은 이미 처리되었으므로 GPS 파이프라인으로 fall through하지 않는다.
+  if (isMinimalAlarmEnabled()) {
+    try {
+      const fired = await evaluatePositionTrainFire();
+      if (fired) return;
+    } catch (e) {
+      logger.warn('position-train lock 처리 실패 (graceful)', e);
+    }
   }
 
   // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.

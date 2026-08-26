@@ -131,6 +131,14 @@ jest.mock('../../../alarm/utils/undergroundConsensusFire', () => ({
     mockEvaluateUndergroundConsensusFire(...args),
 }));
 
+// #2383 (Part of #2381) — position-train-lock 경로 모킹. 내부 판정은 bgPositionTrainFire.test.ts
+// 전담, 여기서는 backgroundLocationTask가 플래그 상태·반환값에 따라 올바르게 호출/early-return
+// 하는지만 검증.
+const mockEvaluatePositionTrainFire = jest.fn().mockResolvedValue(false);
+jest.mock('../../../alarm/utils/bgPositionTrainFire', () => ({
+  evaluatePositionTrainFire: (...args: unknown[]) => mockEvaluatePositionTrainFire(...args),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
@@ -245,6 +253,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     // #2381 — 기본: 플래그 OFF(현행 유지). 개별 테스트에서 override.
     mockIsMinimalAlarmEnabled.mockReturnValue(false);
     mockEvaluateUndergroundConsensusFire.mockResolvedValue(undefined);
+    // #2383 — 기본: false(미채택) — 기존 GPS/consensus 파이프라인이 그대로 이어진다.
+    mockEvaluatePositionTrainFire.mockResolvedValue(false);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -639,6 +649,76 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       await runWithLocation(makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M - 1 }));
 
       expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2383 (Part of #2381) — position-train-lock 경로. 환경(지상/지하) 오분류·GPS accuracy
+  // 상태에 독립적이라는 것이 핵심이므로 "accuracy가 정상인 tick"에서도 호출되는지를 검증한다
+  // (2026-08-26 덤프: accuracy 9~40m로 gate-accuracy 강등 분기에 도달조차 못 해 #2382가
+  // 무력화됐다 — 이 경로가 그 실패 지점을 우회한다).
+  describe('#2383 — position-train-lock 발사 게이트 (EXPO_PUBLIC_MINIMAL_ALARM)', () => {
+    const goodAccuracy = MAX_ACCURACY_M - 1;
+
+    it('플래그 OFF면 evaluatePositionTrainFire를 호출하지 않는다(현행 완전 불변)', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(false);
+      mockStorageValues(null);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
+
+      expect(mockEvaluatePositionTrainFire).not.toHaveBeenCalled();
+    });
+
+    it('플래그 ON이면 accuracy가 정상인 tick에서도 evaluatePositionTrainFire를 호출한다', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockStorageValues(null);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
+
+      expect(mockEvaluatePositionTrainFire).toHaveBeenCalledTimes(1);
+    });
+
+    it('플래그 ON이면 gate-accuracy tick에서도 evaluatePositionTrainFire를 (evaluateUndergroundConsensusFire보다 먼저) 호출한다', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      const accuracy = MAX_ACCURACY_M + 50;
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+      expect(mockEvaluatePositionTrainFire).toHaveBeenCalledTimes(1);
+      expect(mockEvaluateUndergroundConsensusFire).toHaveBeenCalledTimes(1);
+      const positionTrainOrder = mockEvaluatePositionTrainFire.mock.invocationCallOrder[0];
+      const consensusOrder = mockEvaluateUndergroundConsensusFire.mock.invocationCallOrder[0];
+      expect(positionTrainOrder).toBeLessThan(consensusOrder);
+    });
+
+    it('evaluatePositionTrainFire가 true를 반환하면 이번 tick을 종료하고 GPS 파이프라인/consensus로 fall through하지 않는다', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockEvaluatePositionTrainFire.mockResolvedValue(true);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
+
+      expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
+      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+
+    it('evaluatePositionTrainFire가 false를 반환하면 기존 파이프라인이 그대로 이어진다', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockEvaluatePositionTrainFire.mockResolvedValue(false);
+      mockStorageValues(JSON.stringify(mockDestination));
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
+
+      expect(mockProcessLocationUpdate).toHaveBeenCalled();
+    });
+
+    it('evaluatePositionTrainFire가 예외를 던져도 태스크는 크래시하지 않고 기존 파이프라인이 이어진다 (graceful)', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockEvaluatePositionTrainFire.mockRejectedValueOnce(new Error('position-train failed'));
+      mockStorageValues(JSON.stringify(mockDestination));
+
+      await expect(
+        runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy })),
+      ).resolves.toBeUndefined();
+      expect(mockProcessLocationUpdate).toHaveBeenCalled();
     });
   });
 
