@@ -119,6 +119,18 @@ jest.mock('../../../alarm/utils/tripDeathPullBackstop', () => ({
   checkTripDeathByPull: (...args: unknown[]) => mockCheckTripDeathByPull(...args),
 }));
 
+// ── #2381 지하 BG 자가감지 게이트 모킹 — 내부 판정은 undergroundConsensusFire.test.ts 전담,
+// 여기서는 backgroundLocationTask가 올바른 조건(플래그 ON)에서만 호출하는지만 검증 ──
+const mockIsMinimalAlarmEnabled = jest.fn<boolean, []>(() => false);
+jest.mock('../../../../shared/constants/debugFlags', () => ({
+  isMinimalAlarmEnabled: () => mockIsMinimalAlarmEnabled(),
+}));
+const mockEvaluateUndergroundConsensusFire = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../alarm/utils/undergroundConsensusFire', () => ({
+  evaluateUndergroundConsensusFire: (...args: unknown[]) =>
+    mockEvaluateUndergroundConsensusFire(...args),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
@@ -230,6 +242,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockApplyBgLocationProfile.mockResolvedValue(undefined);
     mockDemoteToUndergroundIfNeeded.mockResolvedValue(undefined);
     mockReleaseFromUndergroundIfNeeded.mockResolvedValue(false);
+    // #2381 — 기본: 플래그 OFF(현행 유지). 개별 테스트에서 override.
+    mockIsMinimalAlarmEnabled.mockReturnValue(false);
+    mockEvaluateUndergroundConsensusFire.mockResolvedValue(undefined);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -585,6 +600,46 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     const accuracy = MAX_ACCURACY_M + 50;
 
     await expect(runWithLocation(makeLocation(37.498, 127.028, { accuracy }))).resolves.toBeUndefined();
+  });
+
+  // #2381 (Gap A+B) — 지하 BG 자가감지 게이트. 상세 판정 로직은 undergroundConsensusFire.test.ts
+  // 전담, 여기서는 backgroundLocationTask가 플래그 상태에 따라 올바르게 호출/미호출하는지만 검증.
+  describe('#2381 — 지하 consensus 자가감지 게이트 (EXPO_PUBLIC_MINIMAL_ALARM)', () => {
+    const accuracy = MAX_ACCURACY_M + 50;
+
+    it('플래그 OFF면 evaluateUndergroundConsensusFire를 호출하지 않는다(현행 완전 불변)', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(false);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+      expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
+    });
+
+    it('플래그 ON이면 gate-accuracy tick에서 evaluateUndergroundConsensusFire를 호출한다', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+      expect(mockEvaluateUndergroundConsensusFire).toHaveBeenCalledTimes(1);
+    });
+
+    it('플래그 ON + evaluateUndergroundConsensusFire가 reject해도 태스크는 크래시하지 않는다 (graceful)', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockEvaluateUndergroundConsensusFire.mockRejectedValueOnce(new Error('consensus failed'));
+
+      await expect(
+        runWithLocation(makeLocation(37.498, 127.028, { accuracy })),
+      ).resolves.toBeUndefined();
+    });
+
+    it('accuracy 게이트를 통과하는 정상 tick에서는 호출하지 않는다(gate-accuracy 실패 전용)', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockStorageValues(null);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M - 1 }));
+
+      expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
+    });
   });
 
   // ── #527 jump gate: trip 컨텍스트(destJson 통과) 이후에만 동작 ──

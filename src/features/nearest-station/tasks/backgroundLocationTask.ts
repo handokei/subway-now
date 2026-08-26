@@ -51,6 +51,10 @@ import { lookupStationBySsid } from '../utils/wifiSsidLookup';
 // 편승해 저빈도(내부 쿨다운)로 backend trip status를 확인한다. alarm 슬라이스 cross-feature
 // import는 본 파일 헤더 file-level disable로 이미 옵트인.
 import { checkTripDeathByPull, getBackendUrl as getTripDeathPullBackendUrl } from '../../alarm/utils/tripDeathPullBackstop';
+// #2381 (Gap A+B) — 지하(GPS dead) BG 자가감지. gate-accuracy 연속 실패로 'underground'
+// profile 강등 + lock 존재 tick에서 arvlCd+accel+cellular consensus로 device가 스스로 판정·발사.
+import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
+import { evaluateUndergroundConsensusFire } from '../../alarm/utils/undergroundConsensusFire';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -163,6 +167,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     void demoteToUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch((e: unknown) => {
       logger.warn('underground 강등 처리 실패 (graceful)', e);
     });
+    // #2381 (Gap A+B) — GPS 좌표가 무효한 이 tick에서, 지하(profile='underground')+lock
+    // 조건이면 arvlCd+accel+cellular consensus로 device가 스스로 역 통과를 판정해 발사한다.
+    // 플래그 OFF(기본값)면 evaluateUndergroundConsensusFire 내부 첫 줄에서 즉시 no-op —
+    // 아래 조건 자체를 생략해 플래그 OFF 경로를 완전히 그대로 유지한다.
+    if (isMinimalAlarmEnabled()) {
+      try {
+        await evaluateUndergroundConsensusFire();
+      } catch (e) {
+        logger.warn('지하 consensus 처리 실패 (graceful)', e);
+      }
+    }
     return;
   }
 
