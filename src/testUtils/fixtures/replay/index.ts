@@ -24,6 +24,7 @@
 import { RED_FIXTURE_G4_ENV_LOCK_DUMP_TEXT } from './replay_20260809_g4_env_lock';
 import { SYNTHETIC_STALE_GPS_UNDERGROUND_DUMP_TEXT } from './replay_20260809_g4_stale_gps_synthetic';
 import { SYNTHETIC_SURFACE_DEADZONE_POSITIVE_DUMP_TEXT } from './replay_20260809_g4_surface_deadzone_positive';
+import { RED_FIXTURE_20260826_UNDERGROUND_SURFACE_MISCLASSIFY_DUMP_TEXT } from './replay_20260826_underground_surface_misclassify';
 
 /** fixture가 PR 게이트(core)에서 항상 재생되는지, nightly 전용(extended)인지. */
 export type ReplayFixtureTier = 'core' | 'extended';
@@ -92,5 +93,17 @@ export const REPLAY_FIXTURE_LIBRARY: readonly ReplayFixtureLibraryEntry[] = [
       { invariant: 'offRouteJump', expectViolations: false },
       { invariant: 'staleGpsUnderground', expectViolations: false },
     ],
+  },
+  {
+    id: 'replay_20260826_underground_surface_misclassify',
+    tier: 'core',
+    provenance: 'device-dump',
+    capturedAt: '2026-08-26',
+    description:
+      '2026-08-26 검증탑승 지하 미작동 실기기 evidence(E05A4F244EEB, 17:14:47~20:42:05). ' +
+      '7-015(용마산)/7-019(건대입구 7호선) 지하 구간에서 surface 오분류 red 재현 — #2384가 ' +
+      '이 오분류를 뚫고 올바른 역을 발사하는지는 bgPositionTrainFire.dumpReplay.test.ts가 검증.',
+    dumpText: RED_FIXTURE_20260826_UNDERGROUND_SURFACE_MISCLASSIFY_DUMP_TEXT,
+    expectations: [{ invariant: 'surfaceInUnderground', expectViolations: true }],
   },
 ];
