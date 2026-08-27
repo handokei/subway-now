@@ -5869,102 +5869,98 @@ describe('useStationAlarm', () => {
     // 이전에 명시 탭(BoardingTrainList)했으면 infoModeEnabled=true가 살아있어 device 알람 권위를
     // 유지해야 한다(lock 재생성 아님, CLAUDE.md "명시 탭=lock 동급" 정합).
     describe('#2387 infoModeEnabled 계승 — lock=null + infoModeEnabled=true → 게이트 통과', () => {
-      it('lock=null + infoModeEnabled=true → station-passed FG GPS path 정상 발사 (게이트 832/1420 무관 — GPS path는 1420)', async () => {
+      // 게이트 3곳(832/1420/1664) 각각에 도달하는 이벤트/mock 조합만 다르고 arrange(lock=null +
+      // infoModeEnabled 세팅)·act(renderHook)·최종 공통 assert(logSuppressedLocklessNoUserIntent
+      // 미호출)는 동일 — it.each로 축약(SonarCloud dup 회피). 분기 실행(각 게이트의 true-path)은
+      // 케이스별로 그대로 보존돼 커버리지 100% 유지.
+      const gateCases = [
+        {
+          name: 'station-passed FG GPS path (게이트 1420)',
+          setup: () => {
+            mockGetLastNotifiedStationId.mockResolvedValue(null);
+            mockResolveNextTarget.mockReturnValue({
+              nextStationName: '왕십리',
+              stopsToNextStation: 1,
+              isTransfer: false,
+              stopsToDestination: 3,
+            });
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+          assertFired: async () => {
+            // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+            await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+            expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+          },
+        },
+        {
+          name: 'transfer phase ETA (게이트 832)',
+          setup: () => {
+            mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: makeTransferRoute({
+              transferName: '시청',
+              fromLine: '5',
+              toLine: '2',
+              stopsToTransfer: 1,
+              stopsFromTransfer: 3,
+            }),
+            destination,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+          assertFired: async () => {
+            await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
+          },
+        },
+        {
+          name: 'destination phase ETA (게이트 832)',
+          setup: () => {
+            mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: routeDirect,
+            destination,
+            userLocation: { lat: 37.498, lng: 127.028 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+          assertFired: async () => {
+            await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
+          },
+        },
+        {
+          name: 'subsurface station-passed (게이트 1664)',
+          setup: () => {
+            /* no-op — subsurface path엔 GPS/phase mock 불필요 */
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: routeDirect,
+            destination,
+            nearestStation: makeStation('S-SUB-2387', '지하역2', 37.5, 127.0),
+            subsurfaceStationDetected: true,
+          }),
+          assertFired: async () => {
+            await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+          },
+        },
+      ];
+
+      it.each(gateCases)('lock=null + infoModeEnabled=true → $name 정상 발사', async ({ setup, inputs, assertFired }) => {
         mockGetBoardingLock.mockResolvedValue(null);
         useUserIntentStore.setState({ infoModeEnabled: true });
-        mockGetLastNotifiedStationId.mockResolvedValue(null);
-        mockResolveNextTarget.mockReturnValue({
-          nextStationName: '왕십리',
-          stopsToNextStation: 1,
-          isTransfer: false,
-          stopsToDestination: 3,
-        });
+        setup();
 
-        renderHook(() =>
-          useStationAlarm(
-            defaultInputs({
-              route: routeDirect,
-              destination,
-              nearestStation: onRouteStation,
-              accuracyMeters: 50,
-              speedMps: 10,
-            }),
-          ),
-        );
+        renderHook(() => useStationAlarm(defaultInputs(inputs())));
 
-        // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
-        await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
-        expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-        expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
-      });
-
-      it('lock=null + infoModeEnabled=true → transfer phase ETA 정상 발사 (게이트 832)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        useUserIntentStore.setState({ infoModeEnabled: true });
-        mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
-
-        const route = makeTransferRoute({
-          transferName: '시청',
-          fromLine: '5',
-          toLine: '2',
-          stopsToTransfer: 1,
-          stopsFromTransfer: 3,
-        });
-
-        renderHook(() =>
-          useStationAlarm(
-            defaultInputs({
-              route,
-              destination,
-              userLocation: { lat: 37.5, lng: 127.0 },
-              speedMps: 10,
-              accuracyMeters: 50,
-            }),
-          ),
-        );
-
-        await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-        expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
-      });
-
-      it('lock=null + infoModeEnabled=true → destination phase ETA 정상 발사 (게이트 832)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        useUserIntentStore.setState({ infoModeEnabled: true });
-        mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-
-        renderHook(() =>
-          useStationAlarm(
-            defaultInputs({
-              route: routeDirect,
-              destination,
-              userLocation: { lat: 37.498, lng: 127.028 },
-              speedMps: 10,
-              accuracyMeters: 50,
-            }),
-          ),
-        );
-
-        await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-        expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
-      });
-
-      it('lock=null + infoModeEnabled=true → subsurface station-passed 정상 발사 (게이트 1664)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        useUserIntentStore.setState({ infoModeEnabled: true });
-        const subsurfaceStation = makeStation('S-SUB-2387', '지하역2', 37.5, 127.0);
-
-        renderHook(() =>
-          useStationAlarm(
-            defaultInputs({
-              route: routeDirect,
-              destination,
-              nearestStation: subsurfaceStation,
-              subsurfaceStationDetected: true,
-            }),
-          ),
-        );
-
-        await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+        await assertFired();
         expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
       });
 
@@ -5972,26 +5968,10 @@ describe('useStationAlarm', () => {
         mockGetBoardingLock.mockResolvedValue(null);
         useUserIntentStore.setState({ infoModeEnabled: true });
         useSettingsStore.setState({ sleepMode: true });
-        mockGetLastNotifiedStationId.mockResolvedValue(null);
-        mockResolveNextTarget.mockReturnValue({
-          nextStationName: '왕십리',
-          stopsToNextStation: 1,
-          isTransfer: false,
-          stopsToDestination: 3,
-        });
+        gateCases[0].setup();
 
         expect(() =>
-          renderHook(() =>
-            useStationAlarm(
-              defaultInputs({
-                route: routeDirect,
-                destination,
-                nearestStation: onRouteStation,
-                accuracyMeters: 50,
-                speedMps: 10,
-              }),
-            ),
-          ),
+          renderHook(() => useStationAlarm(defaultInputs(gateCases[0].inputs()))),
         ).not.toThrow();
       });
     });

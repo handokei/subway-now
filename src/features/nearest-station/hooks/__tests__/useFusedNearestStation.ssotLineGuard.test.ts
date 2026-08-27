@@ -157,48 +157,61 @@ describe('#2307 backend-ssot line guard — device 확정 노선과 mirror line 
     expect(hook.result.current.ssotLineGuardRejectCount).toBe(0);
   });
 
-  it('#2387 positionTrainResult 없음 + legAdvanceLine=2(환승 하차 응답 확인) + mirror=7호선(용마산, stuck) → approachLine 가드로 거부', async () => {
-    setupPositionTrainAt(gangnam2, '2');
-    // train 없음 → candidateTrains 비어 positionTrainResult=null. 사용자가 환승역 하차 응답으로
-    // 2호선을 확인(legAdvance stamp)했는데 backend mirror는 여전히 7호선(용마산)에 stuck.
-    mockPos.mockReturnValue(positionRet(null));
-    useLegAdvanceStore.setState({ nextLine: '2', stampedAt: T0 });
-    mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name }));
-    const hook = renderHook(() => useFusedNearestStation());
-    await flushBackendSsotMirrorTick();
-    await waitFor(() => {
-      expect(hook.result.current.source).not.toBe('backend-ssot');
-    });
-    expect(hook.result.current.result?.station.id).not.toBe(yongmasan.id);
-    expect(hook.result.current.ssotLineGuardRejectCount).toBeGreaterThan(0);
-  });
+  // #2387 — approachLine(legAdvance) 기반 추가 가드 3케이스. arrange(positionTrainResult=null
+  // 강제 + legAdvance stamp + mirror 주입)와 act(renderHook+flush)가 동일 패턴이라 it.each로
+  // 축약(SonarCloud dup 회피) — 거부/채택 두 분기(approach.confirmed true+mismatch / true+match /
+  // false)는 파라미터로 그대로 보존해 커버리지 100% 유지.
+  it.each([
+    {
+      name: 'legAdvanceLine=2(환승 하차 응답 확인) + mirror=7호선(용마산, stuck) → approachLine 가드로 거부',
+      positionStation: gangnam2,
+      positionLine: '2' as const,
+      legAdvanceLine: '2' as const,
+      mirrorStationId: yongmasan.name,
+      mirrorAccepted: false,
+      expectedStationId: undefined as string | undefined,
+    },
+    {
+      name: 'legAdvanceLine=7(아직 환승 전) + mirror=7호선(청담) → line 일치, 기존대로 mirror 채택 (무오탐)',
+      positionStation: yongmasan,
+      positionLine: '7' as const,
+      legAdvanceLine: '7' as const,
+      mirrorStationId: chungdam.name,
+      mirrorAccepted: true,
+      expectedStationId: chungdam.id,
+    },
+    {
+      name: 'route/legAdvance 둘 다 없음(approach.confirmed=false) → 기존대로 mirror 채택 (잔여 엣지, 정직 인정)',
+      positionStation: gangnam2,
+      positionLine: '2' as const,
+      legAdvanceLine: null,
+      mirrorStationId: yongmasan.name,
+      mirrorAccepted: true,
+      expectedStationId: yongmasan.id,
+    },
+  ])(
+    '#2387 positionTrainResult 없음 + $name',
+    async ({ positionStation, positionLine, legAdvanceLine, mirrorStationId, mirrorAccepted, expectedStationId }) => {
+      setupPositionTrainAt(positionStation, positionLine);
+      // train 없음 → candidateTrains 비어 positionTrainResult=null.
+      mockPos.mockReturnValue(positionRet(null));
+      useLegAdvanceStore.setState({ nextLine: legAdvanceLine, stampedAt: legAdvanceLine ? T0 : null });
+      mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: mirrorStationId }));
+      const hook = renderHook(() => useFusedNearestStation());
+      await flushBackendSsotMirrorTick();
 
-  it('#2387 positionTrainResult 없음 + legAdvanceLine=7(아직 환승 전) + mirror=7호선(청담) → line 일치, 기존대로 mirror 채택 (무오탐)', async () => {
-    setupPositionTrainAt(yongmasan, '7');
-    mockPos.mockReturnValue(positionRet(null));
-    useLegAdvanceStore.setState({ nextLine: '7', stampedAt: T0 });
-    mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: chungdam.name }));
-    const hook = renderHook(() => useFusedNearestStation());
-    await flushBackendSsotMirrorTick();
-    await waitFor(() => {
-      expect(hook.result.current.source).toBe('backend-ssot');
-    });
-    expect(hook.result.current.result?.station.id).toBe(chungdam.id);
-    expect(hook.result.current.ssotLineGuardRejectCount).toBe(0);
-  });
-
-  it('#2387 positionTrainResult 없음 + route/legAdvance 둘 다 없음(approach.confirmed=false) → 기존대로 mirror 채택 (잔여 엣지, 정직 인정)', async () => {
-    setupPositionTrainAt(gangnam2, '2');
-    mockPos.mockReturnValue(positionRet(null));
-    // route(undefined)/boardingLock(undefined)/legAdvanceLine(null) 전부 부재 →
-    // getApproachLineWithConfirmation의 candidate=null → confirmed=false → 가드 skip.
-    mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name }));
-    const hook = renderHook(() => useFusedNearestStation());
-    await flushBackendSsotMirrorTick();
-    await waitFor(() => {
-      expect(hook.result.current.source).toBe('backend-ssot');
-    });
-    expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
-    expect(hook.result.current.ssotLineGuardRejectCount).toBe(0);
-  });
+      if (mirrorAccepted) {
+        await waitFor(() => {
+          expect(hook.result.current.source).toBe('backend-ssot');
+        });
+        expect(hook.result.current.result?.station.id).toBe(expectedStationId);
+        expect(hook.result.current.ssotLineGuardRejectCount).toBe(0);
+      } else {
+        await waitFor(() => {
+          expect(hook.result.current.source).not.toBe('backend-ssot');
+        });
+        expect(hook.result.current.ssotLineGuardRejectCount).toBeGreaterThan(0);
+      }
+    },
+  );
 });
