@@ -24,6 +24,7 @@ import {
 import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../../store/useAlarmEventStore';
+import { useUserIntentStore } from '../../store/useUserIntentStore';
 import type { Station } from '../../../../shared/types/station';
 import type { AlarmEvent } from '../../utils/stationAlarm';
 import {
@@ -258,6 +259,7 @@ describe('useStationAlarm', () => {
     mockFireFgAuxStationPassedNotification.mockResolvedValue(undefined);
     useSettingsStore.setState({ sleepMode: false, allowSpeaker: true });
     useAlarmEventStore.setState({ alarmEvent: null, dismissSilence: null });
+    useUserIntentStore.setState({ infoModeEnabled: false });
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveAlarmDirection.mockReturnValue(undefined);
     mockResolveNextTarget.mockReturnValue(null);
@@ -5861,6 +5863,117 @@ describe('useStationAlarm', () => {
         ),
       );
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    // #2387 — 명시 탭 의향(infoModeEnabled) 환승 계승. 환승서 lock release 후에도 사용자가
+    // 이전에 명시 탭(BoardingTrainList)했으면 infoModeEnabled=true가 살아있어 device 알람 권위를
+    // 유지해야 한다(lock 재생성 아님, CLAUDE.md "명시 탭=lock 동급" 정합).
+    describe('#2387 infoModeEnabled 계승 — lock=null + infoModeEnabled=true → 게이트 통과', () => {
+      // 게이트 3곳(832/1420/1664) 각각에 도달하는 이벤트/mock 조합만 다르고 arrange(lock=null +
+      // infoModeEnabled 세팅)·act(renderHook)·최종 공통 assert(logSuppressedLocklessNoUserIntent
+      // 미호출)는 동일 — it.each로 축약(SonarCloud dup 회피). 분기 실행(각 게이트의 true-path)은
+      // 케이스별로 그대로 보존돼 커버리지 100% 유지.
+      const gateCases = [
+        {
+          name: 'station-passed FG GPS path (게이트 1420)',
+          setup: () => {
+            mockGetLastNotifiedStationId.mockResolvedValue(null);
+            mockResolveNextTarget.mockReturnValue({
+              nextStationName: '왕십리',
+              stopsToNextStation: 1,
+              isTransfer: false,
+              stopsToDestination: 3,
+            });
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+          assertFired: async () => {
+            // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
+            await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+            expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+          },
+        },
+        {
+          name: 'transfer phase ETA (게이트 832)',
+          setup: () => {
+            mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: makeTransferRoute({
+              transferName: '시청',
+              fromLine: '5',
+              toLine: '2',
+              stopsToTransfer: 1,
+              stopsFromTransfer: 3,
+            }),
+            destination,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+          assertFired: async () => {
+            await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
+          },
+        },
+        {
+          name: 'destination phase ETA (게이트 832)',
+          setup: () => {
+            mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: routeDirect,
+            destination,
+            userLocation: { lat: 37.498, lng: 127.028 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+          assertFired: async () => {
+            await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
+          },
+        },
+        {
+          name: 'subsurface station-passed (게이트 1664)',
+          setup: () => {
+            /* no-op — subsurface path엔 GPS/phase mock 불필요 */
+          },
+          inputs: (): Partial<UseStationAlarmInputs> => ({
+            route: routeDirect,
+            destination,
+            nearestStation: makeStation('S-SUB-2387', '지하역2', 37.5, 127.0),
+            subsurfaceStationDetected: true,
+          }),
+          assertFired: async () => {
+            await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+          },
+        },
+      ];
+
+      it.each(gateCases)('lock=null + infoModeEnabled=true → $name 정상 발사', async ({ setup, inputs, assertFired }) => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        useUserIntentStore.setState({ infoModeEnabled: true });
+        setup();
+
+        renderHook(() => useStationAlarm(defaultInputs(inputs())));
+
+        await assertFired();
+        expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
+      });
+
+      it('lock=null + infoModeEnabled=true + sleep ON → 무크래시 (첫 hop suppress는 sleep rule이 담당, lockless 게이트가 아님)', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        useUserIntentStore.setState({ infoModeEnabled: true });
+        useSettingsStore.setState({ sleepMode: true });
+        gateCases[0].setup();
+
+        expect(() =>
+          renderHook(() => useStationAlarm(defaultInputs(gateCases[0].inputs()))),
+        ).not.toThrow();
+      });
     });
   });
 
