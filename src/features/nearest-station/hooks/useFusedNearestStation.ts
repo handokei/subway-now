@@ -81,6 +81,11 @@ import {
   readBackendSsotMirror,
   type BackendSsotMirrorEntry,
 } from '../../alarm/utils/backendSsotMirror';
+// #2387 — route/lock/legAdvance 권위 line 판정. GPS raw proximity(gps.liveResult)는 line 권위로
+// 부적합(환승역 좌표 근접 오탐, lockless cascade의 "backend 신뢰" 설계 무력화) — approachLine이
+// 대신 route+lock+legAdvance SSoT 기반 확정(confirmed) 여부까지 함께 제공한다.
+import { getApproachLineWithConfirmation } from '../../route/utils/approachLine';
+import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import {
@@ -520,6 +525,10 @@ export function useFusedNearestStation(
   // routeContext는 HomeScreen에서 trip 시작 시 채워지고 종료 시 undefined로 돌아간다.
   const tripActive = routeContext != null;
   const gps = useNearestStation({ barometerSubsurface, tripActive });
+  // #2387 — approachLine(route/lock/legAdvance 권위 line 판정)의 legAdvance 입력. reactive 구독
+  // 필수 — getState()는 useMemo 재계산을 트리거하지 않아 store 값이 바뀌어도 ssotGuardResult가
+  // stale하게 남는다.
+  const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
   const positionStability = usePositionStability(gps.userLocation);
@@ -1177,8 +1186,31 @@ export function useFusedNearestStation(
       ssotLineGuardRejectRef.current += 1;
       return { station: null, lineGuardRejected: true, mirrorLine };
     }
+    // #2387 — lock/legAdvance 권위(approachLine) 기반 추가 cross-line 가드. 위 positionTrainResult
+    // 가드가 무력화되는 사이클(지하/GPS열화, positionTrainResult=null)에도 사용자가 명시적으로
+    // 확인한 line(BoardingLock 또는 환승역 하차 응답 legAdvance stamp)과 mirror가 다르면 거부한다.
+    // route는 의도적으로 전달하지 않는다(항상 null) — bare route progression(candidate 3/4,
+    // stopsToTransfer 기반 추정)은 사용자 확인이 아닌 "계획값"이라 positionTrainResult급 신뢰도가
+    // 아니다. #1605 회귀(lockless + route만 있고 lock/legAdvance 둘 다 없는 trip에서 backend가
+    // route와 다른 line으로 정당하게 advance한 경우도 backend-ssot-override로 채택돼야 하는 시나리오)가
+    // route를 신뢰 소스로 쓰면 깨진다 — getApproachLineWithConfirmation(route=null, ...)이면
+    // resolveCandidateLine이 boardingLock/legAdvanceLine만 확인하고 route 분기는 건너뛰어
+    // confirmed는 오직 lock/legAdvance 존재 시에만 true가 된다.
+    // 기존 positionTrainResult 가드와 OR 조건 — additive, 기존 분기는 그대로 유지.
+    if (resolved) {
+      const approach = getApproachLineWithConfirmation(
+        null,
+        boardingLock ?? null,
+        null,
+        legAdvanceLine,
+      );
+      if (approach.confirmed && resolved.line !== approach.line) {
+        ssotLineGuardRejectRef.current += 1;
+        return { station: null, lineGuardRejected: true, mirrorLine };
+      }
+    }
     return { station: resolved, lineGuardRejected: false, mirrorLine };
-  }, [backendSsotMirror, boardingLock, positionTrainResult]);
+  }, [backendSsotMirror, boardingLock, positionTrainResult, legAdvanceLine]);
   const ssotStation = ssotGuardResult.station;
   // #2307 — DebugModal Fusion log 관측 채널. false→true 전환 시에만 push해 동일 mismatch가
   // 지속되는 cycle(수 분)에 매번 재적재되어 fusionDebugBuffer 500 cap을 점령하는 것을 방지
