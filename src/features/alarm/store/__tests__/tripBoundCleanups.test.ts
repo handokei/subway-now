@@ -101,9 +101,8 @@ describe('tripBoundCleanups', () => {
     // clearWidgetStation을 호출해 "감지 중" 상태로 즉시 전환.
     mockClearWidgetStation.mockClear();
     await runTripBoundCleanups();
-    // #1524 직접 cleanup 1회 + #1575 (T12) router.clearAllForTrip의 widget surface clear 1회 = 2회.
-    // 둘 다 멱등 — 이미 비어 있으면 graceful no-op.
-    expect(mockClearWidgetStation).toHaveBeenCalledTimes(2);
+    // #1524 직접 cleanup 1회. 멱등 — 이미 비어 있으면 graceful no-op.
+    expect(mockClearWidgetStation).toHaveBeenCalledTimes(1);
   });
 
   it('#773/#2089 — runTripBoundCleanups 실행 시 tripToken 기준 safety-net OS 사전 예약을 cancel한다 (옛 trip 알람 burst 차단)', async () => {

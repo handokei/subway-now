@@ -41,7 +41,6 @@ import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
 import { clearAlarmLogWindows } from '../utils/alarmLog';
 import { clearActiveTrip, resetAlarmBackendDedup } from '../api/alarmBackend';
-import { getNotificationRouter } from '../api/notificationRouter';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useBoardingLockStore } from './useBoardingLockStore';
@@ -150,10 +149,6 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 때만 호출되는 반면, BG silent push trip-ended 경로는 token 없이 cleanup만 진행 →
   // in-flight Promise/last hash가 다음 trip register에 stale로 재사용되는 회귀 차단.
   resetAlarmBackendDedup,
-  // #1575 (T12, ADR-017) — NotificationRouter dedup map + delivery log + widget surface 클리어.
-  // 새 trip 시작 시 직전 trip의 (alarmId, surface) dedup 상태가 leak되어 새 alarmId의 첫 발사를
-  // 차단하는 회귀 방지. router.clearAllForTrip은 graceful — 내부 surface.clearAll 실패도 swallow.
-  () => getNotificationRouter().clearAllForTrip(),
   // #1545 (S12) — in-memory zustand store mirror 클리어.
   // FG setDestination(null/switch) 경로는 useDestinationStore가 inline으로 customOrigin/
   // alarmEvent/dismissSilence 메모리를 동기화하지만, BG silent push trip-ended 경로는

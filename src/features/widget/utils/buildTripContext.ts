@@ -5,8 +5,8 @@ import type { WidgetTripContext } from '../api/widgetStorage';
 /**
  * #1929 — widget tripContext wire helper.
  *
- * 4곳의 호출자(useWidgetMirror, HomeScreen AppState force, backgroundLocationTask,
- * notificationRouter)가 동일 로직으로 `WidgetTripContext`를 구성해 `saveStationToWidget`의
+ * 여러 곳의 호출자(useWidgetMirror, HomeScreen AppState force, backgroundLocationTask 등
+ * `saveStationToWidget` 호출자)가 동일 로직으로 `WidgetTripContext`를 구성해 `saveStationToWidget`의
  * 5th arg로 forward하기 위한 DRY 진입점.
  *
  * 입력 매트릭스 (4 시나리오):
@@ -30,7 +30,6 @@ export interface BuildTripContextArgs {
    * 사용자 현재 trip의 route. 4 호출자 모두 같은 source 사용 시 동일 로직 보장.
    *  - FG: HomeScreen `route` (selectedKey 기반 derive).
    *  - BG: `ROUTE_KEY` AsyncStorage 파싱.
-   *  - notification: store/payload에서 read.
    *
    * null/undefined 또는 direct 타입이면 `nextTransferName` undefined.
    */
@@ -38,9 +37,9 @@ export interface BuildTripContextArgs {
   /**
    * #1963 — destination null일 때 undefined 대신 `tripActive: false` stamp를 반환할지 여부.
    *
-   * default false — 기존 4 호출자(useWidgetMirror / AppState force / backgroundLocationTask /
-   * notificationRouter)는 destination null 시 undefined를 그대로 5th arg에 forward하는 계약을
-   * 유지해야 하므로 옵트인 없이는 동작 변경이 없다.
+   * default false — 기존 `saveStationToWidget` 호출자(useWidgetMirror / AppState force /
+   * backgroundLocationTask 등)는 destination null 시 undefined를 그대로 5th arg에 forward하는
+   * 계약을 유지해야 하므로 옵트인 없이는 동작 변경이 없다.
    *
    * true면 silent push 채널(`updateWidgetFromSilentPush`)처럼 destination 없이도 위젯이
    * nearest-station 모드로 fallback할 수 있도록 명시적 비활성 stamp를 반환한다.
