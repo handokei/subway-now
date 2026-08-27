@@ -25,7 +25,8 @@ import {
   clearNavigationPausedAt,
 } from '../features/alarm/utils/navigationPauseStorage';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
-import { hasConsumedOriginWait } from '../shared/utils/boardingWait';
+import { isInTripByEvidence } from '../shared/utils/boardingWait';
+import { getFiredAlarms } from '../features/alarm/utils/notificationState';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
 import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
@@ -634,7 +635,26 @@ export default function HomeScreen() {
   // 수 있다 — user-tap lock의 initialEtaSeconds 경과 시점을 넘겨도 최대 30초간 origin wait가
   // 계속 표시될 수 있다는 뜻. 방향은 여전히 "과다표시"(과소표시보다 안전)이므로 코드 변경 없이
   // 관찰만 유지 — 실시간 1Hz 재평가가 필요해지면 useCountdown류 tick과 연결을 고려.
-  const isInTrip = hasConsumedOriginWait(fusionBoardingLock, Date.now()) || legAdvanceLine !== null;
+  // #2393 — firedAlarms(이 trip의 station-passed/도착 알람 발사 원장) non-empty를 in-trip 신호로
+  // 추가. getFiredAlarms가 async라 useEffect+state로 hasFiredThisTrip을 도출한다. destination.id가
+  // 바뀌면(새 trip) 재조회하고, effectiveOrigin.id가 바뀔 때도 재조회한다 — nearest station 변경은
+  // station-passed 발사와 같은 계기(사용자 이동)에서 일어나므로, 이 시점에 재조회해야 발사 직후의
+  // 원장 갱신을 화면이 놓치지 않는다(2026-08-27 성수→뚝섬 evidence 재현 경로).
+  const [hasFiredThisTrip, setHasFiredThisTrip] = useState(false);
+  useEffect(() => {
+    if (!destination) {
+      setHasFiredThisTrip(false);
+      return;
+    }
+    let cancelled = false;
+    getFiredAlarms(destination.id).then((fired) => {
+      if (!cancelled) setHasFiredThisTrip(fired.size > 0);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [destination?.id, effectiveOrigin?.id]);
+  const isInTrip = isInTripByEvidence(fusionBoardingLock, Date.now(), legAdvanceLine, hasFiredThisTrip);
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route, { excludeOriginWait: isInTrip })
     : null;
