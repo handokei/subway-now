@@ -53,8 +53,8 @@ export const useAlarmEventStore = create<AlarmEventState>((set, get) => ({
   dismissSilence: null,
 
   // #2210 / #2258 — sleepMode 중앙 게이트. BG write(backgroundLocationTask) → FG
-  // loadAlarmEvent replay와 inApp writer(notificationRouter) 두 경로 모두 이 함수를 거치므로
-  // 여기서 억제하면 두 경로 모두 상속받는다. 알람 비주얼(AlarmOverlay)은 취침모드 전용 —
+  // loadAlarmEvent replay와 useStationAlarm의 직접 setAlarmEvent 호출 두 경로 모두 이 함수를
+  // 거치므로 여기서 억제하면 두 경로 모두 상속받는다. 알람 비주얼(AlarmOverlay)은 취침모드 전용 —
   // 활성 trip 여부와 무관하게 비취침(sleepMode=false)이면 항상 억제한다. 알람 소리/TTS/companion
   // (alarmLocalAuthority.ts)은 이미 별도로 취침 전용이며, 상시 route 표시는 이 게이트와 무관.
   setAlarmEvent: (event: AlarmEvent) => {
