@@ -8,7 +8,7 @@
  */
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
 import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition, getStationsOnLine, arcIndexOf, computeHopWindowSize, isStationWithinHopWindow } from '../../../shared/utils/stationRoute';
-import { hasConsumedOriginWait } from '../../../shared/utils/boardingWait';
+import { isInTripByEvidence } from '../../../shared/utils/boardingWait';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { updateStationNotification, fireLocalAlarmNotification, fireFgAuxStationPassedNotification } from './stationNotification';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
@@ -654,9 +654,15 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // 대기 중에도 "이미 탑승"으로 오판했다 — `hasConsumedOriginWait`로 일반화(device-side evidence
   // 즉시 소진 / user-tap은 initialEtaSeconds 경과분만). lockForLineGuard는 위에서 이미 조회한
   // boardingLock(신규 감지 경로 아님, 재사용). legAdvance stamp는 하차 응답=확정 evidence라 그대로 유지.
-  const isInTrip =
-    hasConsumedOriginWait(lockForLineGuard, Date.now()) ||
-    useLegAdvanceStore.getState().nextLine !== null;
+  // #2393 — firedAlarms(이 함수 입력으로 이미 존재, 신규 read 아님) non-empty도 in-trip 신호로 추가.
+  // 이 trip에 station-passed/도착 알람이 이미 발사됐다면 device는 이미 주행 중으로 판단한 것이므로
+  // ETA가 출발 대기를 계속 합산하는 자기모순(2026-08-27 성수→뚝섬 "1정거장 6분" evidence)을 차단한다.
+  const isInTrip = isInTripByEvidence(
+    lockForLineGuard,
+    Date.now(),
+    useLegAdvanceStore.getState().nextLine,
+    firedAlarms.size > 0,
+  );
   const eta = calculateStaticETA(route, {
     currentLocation: { lat, lng },
     originStation: { lat: nearest.station.lat, lng: nearest.station.lng },

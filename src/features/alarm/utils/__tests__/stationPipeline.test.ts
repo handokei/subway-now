@@ -369,6 +369,44 @@ describe('processLocationUpdate', () => {
     });
   });
 
+  // #2393 — lockless(lock=null) + legAdvance 없음 + firedAlarms non-empty(이 trip에 이미 알람
+  // 발사됨) 조합에서 excludeOriginWait이 true가 돼야 한다(성수→뚝섬 evidence: 실제 1분 hop인데
+  // 출발 대기 ~5분이 합산돼 "6분"으로 표시됐다). lock/legAdvance 신호는 기존과 동일하게 무변경이며
+  // firedAlarms만 신규 OR 항으로 추가된다.
+  it('lockless + legAdvance 없음이어도 firedAlarms가 non-empty면 excludeOriginWait: true를 전달한다(#2393)', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockGetBoardingLock.mockResolvedValue(null);
+
+    await call({ firedAlarms: new Set(['destination:시청']) });
+
+    expect(mockCalculateStaticETA).toHaveBeenCalledWith(mockRoute, {
+      currentLocation: { lat: 37.498, lng: 127.028 },
+      originStation: { lat: mockStation.lat, lng: mockStation.lng },
+      arrivalAtOrigin: undefined,
+      arrivalsAtTransfers: undefined,
+      excludeOriginWait: true,
+    });
+  });
+
+  // 회귀 없음 — firedAlarms가 empty(출발역 대기 중, 아직 아무 알람도 발사 안 됨)이면 기존대로
+  // excludeOriginWait: false를 유지한다(#2290의 "과다표시 안전" 방향 비역행).
+  it('lockless + legAdvance 없음 + firedAlarms empty면 기존대로 excludeOriginWait: false를 유지한다(회귀 없음)', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockGetBoardingLock.mockResolvedValue(null);
+
+    await call({ firedAlarms: new Set() });
+
+    expect(mockCalculateStaticETA).toHaveBeenCalledWith(mockRoute, {
+      currentLocation: { lat: 37.498, lng: 127.028 },
+      originStation: { lat: mockStation.lat, lng: mockStation.lng },
+      arrivalAtOrigin: undefined,
+      arrivalsAtTransfers: undefined,
+      excludeOriginWait: false,
+    });
+  });
+
   it('passes alarmEvent to updateStationNotification only when sleepMode is true', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);

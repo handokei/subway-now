@@ -1,4 +1,4 @@
-import { hasConsumedOriginWait } from '../boardingWait';
+import { hasConsumedOriginWait, isInTripByEvidence } from '../boardingWait';
 import type { BoardingLock } from '../../types/boardingLock';
 
 const baseLock: BoardingLock = {
@@ -49,5 +49,31 @@ describe('hasConsumedOriginWait', () => {
   it('boardingEvidence=true이고 initialEtaSeconds가 없어도 true를 반환한다', () => {
     const lock: BoardingLock = { ...baseLock, boardingEvidence: true };
     expect(hasConsumedOriginWait(lock, lock.boardedAt)).toBe(true);
+  });
+});
+
+// #2393 — isInTripByEvidence: HomeScreen/stationPipeline 공통 in-trip 판정 헬퍼.
+// 4 입력 조합(lock/legAdvance/firedAlarms 각 신호 단독 true, 전부 false) 단위 테스트.
+describe('isInTripByEvidence', () => {
+  const now = 1_700_000_100_000;
+
+  it('세 신호 모두 false/null이면 false를 반환한다', () => {
+    expect(isInTripByEvidence(null, now, null, false)).toBe(false);
+  });
+
+  it('hasConsumedOriginWait만 true이면 true를 반환한다', () => {
+    const lock: BoardingLock = { ...baseLock, boardingEvidence: true };
+    expect(isInTripByEvidence(lock, now, null, false)).toBe(true);
+  });
+
+  it('legAdvanceLine만 non-null이면 true를 반환한다', () => {
+    expect(isInTripByEvidence(null, now, '2', false)).toBe(true);
+  });
+
+  // RED(수정 전 실패) → GREEN(수정 후 통과): lockless + legAdvance 없음 + firedAlarms만 있는
+  // 조합이 이 이슈(#2393)의 핵심 신규 신호다. 성수→뚝섬 evidence(2026-08-27): device가 이미
+  // station-passed/도착 알람을 발사했다면 lock/legAdvance가 둘 다 없어도 in-trip이어야 한다.
+  it('hasFiredThisTrip만 true이면 true를 반환한다(lockless + legAdvance 없음)', () => {
+    expect(isInTripByEvidence(null, now, null, true)).toBe(true);
   });
 });
