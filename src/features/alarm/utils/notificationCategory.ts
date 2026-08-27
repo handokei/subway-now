@@ -20,6 +20,10 @@
 
 import * as Notifications from 'expo-notifications';
 import i18next from 'i18next';
+import {
+  logCategoryRegistrationSucceeded,
+  logCategoryRegistrationFailed,
+} from './alarmLog';
 
 /** APNs payload `aps.category`와 1:1 매칭. backend `BOARDING_PROMPT_CATEGORY`와 동기. */
 export const BOARDING_PROMPT_CATEGORY = 'BOARDING_PROMPT';
@@ -58,27 +62,37 @@ export const TRIP_ENDED_ACTION_NEXT_TRIP = 'TRIP_ENDED_ACTION_NEXT_TRIP';
  * 같은 listener가 default action으로 호출되니 trainCode 자동 lock은 계속 동작.
  */
 export async function setupBoardingPromptCategory(): Promise<void> {
+  const actions = [
+    {
+      identifier: BOARDING_PROMPT_ACTION_BOARDED,
+      buttonTitle: i18next.t('notifications.actions.boardingConfirm'),
+      options: {
+        opensAppToForeground: true,
+      },
+    },
+    {
+      identifier: BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      buttonTitle: i18next.t('notifications.actions.notYet'),
+      options: {
+        // FG로 열지 않음 — 사용자가 푸시만 닫고 silent dismiss POST가 backend로 가게 한다.
+        opensAppToForeground: false,
+        isDestructive: true,
+      },
+    },
+  ];
   try {
-    await Notifications.setNotificationCategoryAsync(BOARDING_PROMPT_CATEGORY, [
-      {
-        identifier: BOARDING_PROMPT_ACTION_BOARDED,
-        buttonTitle: i18next.t('notifications.actions.boardingConfirm'),
-        options: {
-          opensAppToForeground: true,
-        },
-      },
-      {
-        identifier: BOARDING_PROMPT_ACTION_NOT_BOARDED,
-        buttonTitle: i18next.t('notifications.actions.notYet'),
-        options: {
-          // FG로 열지 않음 — 사용자가 푸시만 닫고 silent dismiss POST가 backend로 가게 한다.
-          opensAppToForeground: false,
-          isDestructive: true,
-        },
-      },
-    ]);
-  } catch {
-    // graceful — Android/예외 시 기본 동작으로 폴백.
+    await Notifications.setNotificationCategoryAsync(BOARDING_PROMPT_CATEGORY, actions);
+    // #2398 — 등록 성공 진단 계측.
+    logCategoryRegistrationSucceeded({
+      categoryId: BOARDING_PROMPT_CATEGORY,
+      buttonTitles: actions.map((a) => a.buttonTitle),
+    });
+  } catch (err) {
+    // graceful — Android/예외 시 기본 동작으로 폴백. #2398 — 삼킨 에러를 device 덤프로 가시화.
+    logCategoryRegistrationFailed({
+      categoryId: BOARDING_PROMPT_CATEGORY,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -88,27 +102,37 @@ export async function setupBoardingPromptCategory(): Promise<void> {
  * 같은 listener가 default action으로 호출되니 `handleHopEndResponse`는 계속 동작.
  */
 export async function setupDisembarkPromptCategory(): Promise<void> {
+  const actions = [
+    {
+      identifier: DISEMBARK_ACTION_DISEMBARKED,
+      buttonTitle: i18next.t('notifications.actions.disembarkConfirm'),
+      options: {
+        opensAppToForeground: true,
+      },
+    },
+    {
+      identifier: DISEMBARK_ACTION_NOT_YET,
+      buttonTitle: i18next.t('notifications.actions.notYet'),
+      options: {
+        // FG로 열지 않음 — 사용자가 푸시만 닫고 silent dismiss POST가 backend로 가게 한다.
+        opensAppToForeground: false,
+        isDestructive: true,
+      },
+    },
+  ];
   try {
-    await Notifications.setNotificationCategoryAsync(DISEMBARK_PROMPT_CATEGORY, [
-      {
-        identifier: DISEMBARK_ACTION_DISEMBARKED,
-        buttonTitle: i18next.t('notifications.actions.disembarkConfirm'),
-        options: {
-          opensAppToForeground: true,
-        },
-      },
-      {
-        identifier: DISEMBARK_ACTION_NOT_YET,
-        buttonTitle: i18next.t('notifications.actions.notYet'),
-        options: {
-          // FG로 열지 않음 — 사용자가 푸시만 닫고 silent dismiss POST가 backend로 가게 한다.
-          opensAppToForeground: false,
-          isDestructive: true,
-        },
-      },
-    ]);
-  } catch {
-    // graceful — Android/예외 시 기본 동작으로 폴백.
+    await Notifications.setNotificationCategoryAsync(DISEMBARK_PROMPT_CATEGORY, actions);
+    // #2398 — 등록 성공 진단 계측.
+    logCategoryRegistrationSucceeded({
+      categoryId: DISEMBARK_PROMPT_CATEGORY,
+      buttonTitles: actions.map((a) => a.buttonTitle),
+    });
+  } catch (err) {
+    // graceful — Android/예외 시 기본 동작으로 폴백. #2398 — 삼킨 에러를 device 덤프로 가시화.
+    logCategoryRegistrationFailed({
+      categoryId: DISEMBARK_PROMPT_CATEGORY,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -117,26 +141,36 @@ export async function setupDisembarkPromptCategory(): Promise<void> {
  * 앱 부팅 시 1회 호출. 실패는 graceful — 미등록 시 액션 없는 alert로 폴백.
  */
 export async function setupAlarmCategory(): Promise<void> {
+  const actions = [
+    {
+      identifier: ALARM_ACTION_ACKNOWLEDGE,
+      buttonTitle: i18next.t('notifications.actions.acknowledge'),
+      options: {
+        opensAppToForeground: false,
+      },
+    },
+    {
+      identifier: ALARM_ACTION_END_TRIP,
+      buttonTitle: i18next.t('notifications.actions.endTrip'),
+      options: {
+        opensAppToForeground: false,
+        isDestructive: true,
+      },
+    },
+  ];
   try {
-    await Notifications.setNotificationCategoryAsync(ALARM_CATEGORY, [
-      {
-        identifier: ALARM_ACTION_ACKNOWLEDGE,
-        buttonTitle: i18next.t('notifications.actions.acknowledge'),
-        options: {
-          opensAppToForeground: false,
-        },
-      },
-      {
-        identifier: ALARM_ACTION_END_TRIP,
-        buttonTitle: i18next.t('notifications.actions.endTrip'),
-        options: {
-          opensAppToForeground: false,
-          isDestructive: true,
-        },
-      },
-    ]);
-  } catch {
-    // graceful — Android/예외 시 기본 동작으로 폴백.
+    await Notifications.setNotificationCategoryAsync(ALARM_CATEGORY, actions);
+    // #2398 — 등록 성공 진단 계측.
+    logCategoryRegistrationSucceeded({
+      categoryId: ALARM_CATEGORY,
+      buttonTitles: actions.map((a) => a.buttonTitle),
+    });
+  } catch (err) {
+    // graceful — Android/예외 시 기본 동작으로 폴백. #2398 — 삼킨 에러를 device 덤프로 가시화.
+    logCategoryRegistrationFailed({
+      categoryId: ALARM_CATEGORY,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -145,17 +179,27 @@ export async function setupAlarmCategory(): Promise<void> {
  * 앱 부팅 시 1회 호출. 실패는 graceful — 미등록 시 액션 없는 alert로 폴백.
  */
 export async function setupTripEndedCategory(): Promise<void> {
-  try {
-    await Notifications.setNotificationCategoryAsync(TRIP_ENDED_CATEGORY, [
-      {
-        identifier: TRIP_ENDED_ACTION_NEXT_TRIP,
-        buttonTitle: i18next.t('notifications.actions.nextTrip'),
-        options: {
-          opensAppToForeground: true,
-        },
+  const actions = [
+    {
+      identifier: TRIP_ENDED_ACTION_NEXT_TRIP,
+      buttonTitle: i18next.t('notifications.actions.nextTrip'),
+      options: {
+        opensAppToForeground: true,
       },
-    ]);
-  } catch {
-    // graceful — Android/예외 시 기본 동작으로 폴백.
+    },
+  ];
+  try {
+    await Notifications.setNotificationCategoryAsync(TRIP_ENDED_CATEGORY, actions);
+    // #2398 — 등록 성공 진단 계측.
+    logCategoryRegistrationSucceeded({
+      categoryId: TRIP_ENDED_CATEGORY,
+      buttonTitles: actions.map((a) => a.buttonTitle),
+    });
+  } catch (err) {
+    // graceful — Android/예외 시 기본 동작으로 폴백. #2398 — 삼킨 에러를 device 덤프로 가시화.
+    logCategoryRegistrationFailed({
+      categoryId: TRIP_ENDED_CATEGORY,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
   }
 }

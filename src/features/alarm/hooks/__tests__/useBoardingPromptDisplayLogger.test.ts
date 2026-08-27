@@ -19,6 +19,7 @@ jest.mock('expo-notifications', () => ({
 }));
 jest.mock('../../utils/alarmLog', () => ({
   logBoardingPromptFired: jest.fn(),
+  logBoardingPromptCategoryReceived: jest.fn(),
 }));
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -29,7 +30,9 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
-const { logBoardingPromptFired } = jest.requireMock('../../utils/alarmLog');
+const { logBoardingPromptFired, logBoardingPromptCategoryReceived } = jest.requireMock(
+  '../../utils/alarmLog',
+);
 
 const VALID_DATA = {
   kind: 'boarding-prompt',
@@ -146,6 +149,51 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
     renderHook(() => useBoardingPromptDisplayLogger());
     registeredHandler!(makeNotification({ categoryIdentifier: null }));
     expect(logBoardingPromptFired).not.toHaveBeenCalled();
+  });
+
+  // #2398 — early-return 직전 진단 계측 3케이스: null / 미스매치 / 정상.
+  describe('진단 계측 — logBoardingPromptCategoryReceived (#2398)', () => {
+    it('categoryIdentifier null → categoryIdentifier=null + payloadMatched 기록 (기존 동작 무변경)', () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      registeredHandler!(makeNotification({ categoryIdentifier: null }));
+      expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
+        categoryIdentifier: null,
+        payloadMatched: true,
+      });
+      expect(logBoardingPromptFired).not.toHaveBeenCalled();
+    });
+
+    it('categoryIdentifier 미스매치 → 수신값 그대로 기록 (기존 동작 무변경)', () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      registeredHandler!(makeNotification({ categoryIdentifier: 'OTHER_CATEGORY' }));
+      expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
+        categoryIdentifier: 'OTHER_CATEGORY',
+        payloadMatched: true,
+      });
+      expect(logBoardingPromptFired).not.toHaveBeenCalled();
+    });
+
+    it('categoryIdentifier 정상 매칭 → 매칭값 + payloadMatched=true 기록 (기존 동작 무변경)', () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      registeredHandler!(makeNotification({ identifier: 'n-diag' }));
+      expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
+        categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+        payloadMatched: true,
+      });
+      expect(logBoardingPromptFired).toHaveBeenCalledWith({
+        originStation: '강남',
+        line: '2',
+      });
+    });
+
+    it('payload schema 미일치 → payloadMatched=false 기록', () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      registeredHandler!(makeNotification({ data: { kind: 'reschedule' } }));
+      expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
+        categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+        payloadMatched: false,
+      });
+    });
   });
 
   it('payload schema 미일치(kind 다름) → no-op', () => {

@@ -84,6 +84,9 @@ import {
   countAlarmLogReasonsByWindow,
   lastNReasons,
   logBoardingPromptFired,
+  logCategoryRegistrationSucceeded,
+  logCategoryRegistrationFailed,
+  logBoardingPromptCategoryReceived,
   logBoardingPromptResponded,
   logCompanionAlarmFired,
   logLastTrainAlarmFired,
@@ -2502,6 +2505,54 @@ describe('alarmLog', () => {
       expect(saved[0].source).toBe('companion');
       expect(saved[0].outcome).toBe('fired');
       expect(saved[0].stationName).toBe('2·뚝섬');
+    });
+
+    it('#2398: logCategoryRegistrationSucceeded가 category-registration entry(outcome=fired)를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logCategoryRegistrationSucceeded({
+        categoryId: 'BOARDING_PROMPT',
+        buttonTitles: ['탑승', '아직이요'],
+      });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('category-registration');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].stationName).toBe('BOARDING_PROMPT:buttons=2:[탑승|아직이요]');
+    });
+
+    it('#2398: logCategoryRegistrationFailed가 category-registration entry(outcome=suppressed)를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logCategoryRegistrationFailed({
+        categoryId: 'BOARDING_PROMPT',
+        errorMessage: 'not supported',
+      });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('category-registration');
+      expect(saved[0].outcome).toBe('suppressed');
+      expect(saved[0].reason).toBe('category-registration-failed');
+      expect(saved[0].stationName).toBe('BOARDING_PROMPT:not supported');
+    });
+
+    it('#2398: logBoardingPromptCategoryReceived가 boarding-prompt-category-received entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptCategoryReceived({ categoryIdentifier: 'BOARDING_PROMPT', payloadMatched: true });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('boarding-prompt-category-received');
+      expect(saved[0].outcome).toBe('received');
+      expect(saved[0].stationName).toBe('category=BOARDING_PROMPT:payloadMatched=true');
+    });
+
+    it('#2398: logBoardingPromptCategoryReceived — categoryIdentifier null은 "null" 문자열로 인코딩', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptCategoryReceived({ categoryIdentifier: null, payloadMatched: false });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0].stationName).toBe('category=null:payloadMatched=false');
     });
 
     it('#2284 (P1 wire matrix gap): logLastTrainAlarmFired가 last-train-alarm entry를 적재한다', async () => {

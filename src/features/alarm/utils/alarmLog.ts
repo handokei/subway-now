@@ -125,7 +125,16 @@ export type AlarmLogSource =
   // 발사 stamp. `expo-notifications`에 `trigger: null`로 예약하므로 스케줄 호출 자체가 곧
   // 사용자 노출 확정 시점 — bg-scheduled(OS DATE trigger, 취소 가능한 미래 예약)와 달리
   // "예약≠발사" 갭이 없는 확정 발사다.
-  | 'last-train-alarm';
+  | 'last-train-alarm'
+  // #2398 — boardingPrompt 버튼 미표시 근본 계측. UNNotificationCategory 등록 성공/실패 stamp.
+  // `setup*Category`(notificationCategory.ts) 4종이 앱 부팅 시 이 source로 outcome='fired'
+  // (등록 성공, id+버튼 개수/타이틀 기록) 또는 outcome='suppressed'(등록 실패, catch 삼킨 에러
+  // 가시화)를 적재한다. 순수 진단 — 등록 로직/graceful catch는 무변경.
+  | 'category-registration'
+  // #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 계측. `useBoardingPromptDisplayLogger`
+  // `tryLogDisplayed`가 early-return(categoryIdentifier 미스매치) 직전 매 수신 건마다 적재 —
+  // "backend push에 aps.category가 실제로 실렸는가"를 device 덤프로 판정한다.
+  | 'boarding-prompt-category-received';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -135,6 +144,8 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'lock-line-mismatch'는 BoardingLock 활성 시 nextWaypoint가 lock.boardingLine에 정차하지
 // 않는 다른 leg/노선의 silent push로 판정돼 차단된 케이스 (#707).
 export type AlarmLogReason =
+  // #2398 — UNNotificationCategory 등록 실패(setNotificationCategoryAsync reject/throw) stamp.
+  | 'category-registration-failed'
   | 'dedup-station'
   | 'dedup-alarm'
   // #1515 — station-level cross-category dedup. firedAlarms(phase) + lastNotifiedStationId(station-passed)
@@ -1435,6 +1446,10 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'push-contract-skew': null,
   // #2284 — 막차 알람은 silent push와 무관한 device 로컬 채널이므로 이 counter 제외.
   'last-train-alarm': null,
+  // #2398 — category 등록 성공/실패는 silent push와 무관한 진단 stamp.
+  'category-registration': null,
+  // #2398 — 수신 categoryIdentifier 진단 stamp도 silent push outcome과 무관.
+  'boarding-prompt-category-received': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1496,6 +1511,10 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'push-contract-skew': true,
   // #2284 (P1) — 즉시 발사(trigger: null) 확정 알람. 실제 사용자 노출이므로 fire 분모 포함.
   'last-train-alarm': true,
+  // #2398 — category 등록 성공(outcome='fired')은 사용자 노출 알람이 아닌 진단 stamp. fire 분모 제외.
+  'category-registration': false,
+  // #2398 — 수신 categoryIdentifier 진단 stamp(outcome='received')도 fire 분모 제외.
+  'boarding-prompt-category-received': false,
 };
 
 /**
@@ -2037,6 +2056,58 @@ export function logBoardingPromptFired(input: { originStation: string; line: str
     source: 'boarding-prompt',
     outcome: 'fired',
     stationName: `${input.line}·${input.originStation}`,
+  });
+}
+
+/**
+ * #2398 — UNNotificationCategory 등록 성공 1건 적재. `setup*Category`(notificationCategory.ts)가
+ * `setNotificationCategoryAsync` 성공 직후 호출. categoryId + 버튼 개수/타이틀을 stationName
+ * 슬롯에 인코딩 — 기존 schema 확장 없이 DebugModal 가시화(logBoardingPromptFired 패턴 재사용).
+ */
+export function logCategoryRegistrationSucceeded(input: {
+  categoryId: string;
+  buttonTitles: string[];
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'category-registration',
+    outcome: 'fired',
+    stationName: `${input.categoryId}:buttons=${input.buttonTitles.length}:[${input.buttonTitles.join('|')}]`,
+  });
+}
+
+/**
+ * #2398 — UNNotificationCategory 등록 실패 1건 적재. `setup*Category`의 삼킨 `catch {}`에서
+ * 호출 — graceful 유지(throw 재전파 없음)한 채 실패 흔적만 device 덤프로 가시화.
+ */
+export function logCategoryRegistrationFailed(input: {
+  categoryId: string;
+  errorMessage: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'category-registration',
+    outcome: 'suppressed',
+    reason: 'category-registration-failed',
+    stationName: `${input.categoryId}:${input.errorMessage}`,
+  });
+}
+
+/**
+ * #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 1건 적재.
+ * `useBoardingPromptDisplayLogger.tryLogDisplayed`가 early-return 여부 판정 직전, 매 수신
+ * notification마다 호출한다. categoryIdentifier가 null이면 문자열 'null'로 인코딩(AlarmLogEntry
+ * stationName은 string만 허용).
+ */
+export function logBoardingPromptCategoryReceived(input: {
+  categoryIdentifier: string | null;
+  payloadMatched: boolean;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'boarding-prompt-category-received',
+    outcome: 'received',
+    stationName: `category=${input.categoryIdentifier ?? 'null'}:payloadMatched=${input.payloadMatched}`,
   });
 }
 
