@@ -29,7 +29,7 @@ import { useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from '../utils/notificationCategory';
-import { logBoardingPromptFired } from '../utils/alarmLog';
+import { logBoardingPromptFired, logBoardingPromptCategoryReceived } from '../utils/alarmLog';
 import { extractBoardingPromptPayload } from './useBoardingPromptResponder';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -74,13 +74,19 @@ function tryLogDisplayed(notification: Notifications.Notification): void {
   try {
     const request = notification.request;
     const content = request.content;
+    const payload = extractBoardingPromptPayload(content.data);
+    // #2398 — 진단 계측: early-return 판정 직전, 수신한 categoryIdentifier 실제 값(null 포함)
+    // + payload 매칭 여부를 매 수신 건마다 device 덤프로 가시화. behavior 무변경.
+    logBoardingPromptCategoryReceived({
+      categoryIdentifier: content.categoryIdentifier ?? null,
+      payloadMatched: payload !== null,
+    });
     // #2282 — hop-end 는 DISEMBARK_PROMPT_CATEGORY로 분리 발사되므로 두 category 모두 displayed 적재.
     if (
       content.categoryIdentifier !== BOARDING_PROMPT_CATEGORY &&
       content.categoryIdentifier !== DISEMBARK_PROMPT_CATEGORY
     )
       return;
-    const payload = extractBoardingPromptPayload(content.data);
     if (!payload) return;
     const identifier = request.identifier;
     if (typeof identifier !== 'string' || identifier.length === 0) return;

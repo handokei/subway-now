@@ -22,6 +22,14 @@ import {
 jest.mock('expo-notifications', () => ({
   setNotificationCategoryAsync: jest.fn(),
 }));
+jest.mock('../alarmLog', () => ({
+  logCategoryRegistrationSucceeded: jest.fn(),
+  logCategoryRegistrationFailed: jest.fn(),
+}));
+
+const { logCategoryRegistrationSucceeded, logCategoryRegistrationFailed } = jest.requireMock(
+  '../alarmLog',
+);
 
 installLanguageRestoreHook();
 
@@ -66,6 +74,40 @@ describe('setupBoardingPromptCategory (#819)', () => {
     );
     await expect(setupBoardingPromptCategory()).resolves.toBeUndefined();
   });
+
+  // #2398 — 진단 계측: 등록 성공/실패 로그 호출 검증.
+  it('등록 성공 시 logCategoryRegistrationSucceeded 호출 (#2398)', async () => {
+    await setupBoardingPromptCategory();
+    expect(logCategoryRegistrationSucceeded).toHaveBeenCalledWith({
+      categoryId: BOARDING_PROMPT_CATEGORY,
+      buttonTitles: [
+        i18next.t('notifications.actions.boardingConfirm'),
+        i18next.t('notifications.actions.notYet'),
+      ],
+    });
+    expect(logCategoryRegistrationFailed).not.toHaveBeenCalled();
+  });
+
+  it('등록 실패 시 logCategoryRegistrationFailed 호출 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
+      new Error('not supported'),
+    );
+    await setupBoardingPromptCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: BOARDING_PROMPT_CATEGORY,
+      errorMessage: 'not supported',
+    });
+    expect(logCategoryRegistrationSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('non-Error throw도 문자열로 변환해 기록 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce('boom');
+    await setupBoardingPromptCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: BOARDING_PROMPT_CATEGORY,
+      errorMessage: 'boom',
+    });
+  });
 });
 
 describe('setupDisembarkPromptCategory (#2282)', () => {
@@ -97,6 +139,38 @@ describe('setupDisembarkPromptCategory (#2282)', () => {
       new Error('not supported'),
     );
     await expect(setupDisembarkPromptCategory()).resolves.toBeUndefined();
+  });
+
+  // #2398 — 진단 계측: 등록 성공/실패 로그 호출 검증.
+  it('등록 성공 시 logCategoryRegistrationSucceeded 호출 (#2398)', async () => {
+    await setupDisembarkPromptCategory();
+    expect(logCategoryRegistrationSucceeded).toHaveBeenCalledWith({
+      categoryId: DISEMBARK_PROMPT_CATEGORY,
+      buttonTitles: [
+        i18next.t('notifications.actions.disembarkConfirm'),
+        i18next.t('notifications.actions.notYet'),
+      ],
+    });
+  });
+
+  it('등록 실패 시 logCategoryRegistrationFailed 호출 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
+      new Error('not supported'),
+    );
+    await setupDisembarkPromptCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: DISEMBARK_PROMPT_CATEGORY,
+      errorMessage: 'not supported',
+    });
+  });
+
+  it('non-Error throw도 문자열로 변환해 기록 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce('boom');
+    await setupDisembarkPromptCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: DISEMBARK_PROMPT_CATEGORY,
+      errorMessage: 'boom',
+    });
   });
 });
 
@@ -140,6 +214,38 @@ describe('setupAlarmCategory (#1798 P2)', () => {
     );
     await expect(setupAlarmCategory()).resolves.toBeUndefined();
   });
+
+  // #2398 — 진단 계측: 등록 성공/실패 로그 호출 검증.
+  it('등록 성공 시 logCategoryRegistrationSucceeded 호출 (#2398)', async () => {
+    await setupAlarmCategory();
+    expect(logCategoryRegistrationSucceeded).toHaveBeenCalledWith({
+      categoryId: ALARM_CATEGORY,
+      buttonTitles: [
+        i18next.t('notifications.actions.acknowledge'),
+        i18next.t('notifications.actions.endTrip'),
+      ],
+    });
+  });
+
+  it('등록 실패 시 logCategoryRegistrationFailed 호출 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
+      new Error('not supported'),
+    );
+    await setupAlarmCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: ALARM_CATEGORY,
+      errorMessage: 'not supported',
+    });
+  });
+
+  it('non-Error throw도 문자열로 변환해 기록 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce('boom');
+    await setupAlarmCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: ALARM_CATEGORY,
+      errorMessage: 'boom',
+    });
+  });
 });
 
 describe('setupTripEndedCategory (#1798 P2)', () => {
@@ -175,5 +281,34 @@ describe('setupTripEndedCategory (#1798 P2)', () => {
       new Error('not supported'),
     );
     await expect(setupTripEndedCategory()).resolves.toBeUndefined();
+  });
+
+  // #2398 — 진단 계측: 등록 성공/실패 로그 호출 검증.
+  it('등록 성공 시 logCategoryRegistrationSucceeded 호출 (#2398)', async () => {
+    await setupTripEndedCategory();
+    expect(logCategoryRegistrationSucceeded).toHaveBeenCalledWith({
+      categoryId: TRIP_ENDED_CATEGORY,
+      buttonTitles: [i18next.t('notifications.actions.nextTrip')],
+    });
+  });
+
+  it('등록 실패 시 logCategoryRegistrationFailed 호출 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce(
+      new Error('not supported'),
+    );
+    await setupTripEndedCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: TRIP_ENDED_CATEGORY,
+      errorMessage: 'not supported',
+    });
+  });
+
+  it('non-Error throw도 문자열로 변환해 기록 (#2398)', async () => {
+    (Notifications.setNotificationCategoryAsync as jest.Mock).mockRejectedValueOnce('boom');
+    await setupTripEndedCategory();
+    expect(logCategoryRegistrationFailed).toHaveBeenCalledWith({
+      categoryId: TRIP_ENDED_CATEGORY,
+      errorMessage: 'boom',
+    });
   });
 });
