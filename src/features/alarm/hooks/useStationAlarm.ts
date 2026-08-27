@@ -91,8 +91,12 @@ import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStre
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
 import {
   fireFgAuxStationPassedNotification,
+  fireLocalAlarmNotification,
   type StationPassedTargetKind,
 } from '../utils/stationNotification';
+import { markLocalStationFired } from '../utils/recentLocalStationFires';
+import { resolveNotificationSource } from '../utils/notificationSource';
+import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 
 const logger = createLogger('StationAlarm');
 
@@ -1026,6 +1030,18 @@ export function useStationAlarm({
     // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거. 알람 배너는 원격 visible push가
     // 담당(Phase 2-backend). FG는 이제 dedup ledger 기록 + in-app store stamp만 수행한다.
     logFiredAlarm('fg', event, trigger);
+    // #2395 (ADR-035 Phase1① — #2067 봉인 해제) — EXPO_PUBLIC_MINIMAL_ALARM ON이면 FG도
+    // BG(stationPipeline #2379)와 동일하게 device 로컬 배너를 즉시 발사한다. markLocalStationFired
+    // 동반 필수 — 뒤늦게 도착하는 backend transfer/destination push(APNs 지연 실측 35~51s)를
+    // setupNotificationHandler의 isRecentLocalAuxFireDuplicate가 (station, kind) 매칭으로 억제해
+    // 이중배너를 막는다(#2122와 동일 방어 패턴).
+    if (isMinimalAlarmEnabled()) {
+      const notificationSource = fusionSource
+        ? resolveNotificationSource(fusionSource, locationUncertain)
+        : undefined;
+      await fireLocalAlarmNotification(event, notificationSource);
+      await markLocalStationFired(rawEvent.stationName, rawEvent.type);
+    }
   }
 
   /**
