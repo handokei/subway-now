@@ -6,9 +6,17 @@
 // #2122 (FG 보조 발사) — 로컬 station-passed 배너 발사. 실제 expo-notifications 왕복 없이
 // 호출 여부/인자만 검증하기 위해 mock으로 격리.
 const mockFireFgAuxStationPassedNotification = jest.fn().mockResolvedValue(undefined);
+// #2395 (ADR-035 Phase1① — #2067 봉인 해제) — FG phase(transfer/destination) device 로컬 발사.
+const mockFireLocalAlarmNotification = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/stationNotification', () => ({
   fireFgAuxStationPassedNotification: (...args: unknown[]) =>
     mockFireFgAuxStationPassedNotification(...args),
+  fireLocalAlarmNotification: (...args: unknown[]) => mockFireLocalAlarmNotification(...args),
+}));
+
+const mockMarkLocalStationFired = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/recentLocalStationFires', () => ({
+  markLocalStationFired: (...args: unknown[]) => mockMarkLocalStationFired(...args),
 }));
 
 import { AppState } from 'react-native';
@@ -257,6 +265,10 @@ describe('useStationAlarm', () => {
     jest.clearAllMocks();
     setAppState('background');
     mockFireFgAuxStationPassedNotification.mockResolvedValue(undefined);
+    mockFireLocalAlarmNotification.mockResolvedValue(undefined);
+    mockMarkLocalStationFired.mockResolvedValue(undefined);
+    // #2395 — 기본 flag OFF(회귀 보존). 개별 describe에서 ON으로 재설정.
+    delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
     useSettingsStore.setState({ sleepMode: false, allowSpeaker: true });
     useAlarmEventStore.setState({ alarmEvent: null, dismissSilence: null });
     useUserIntentStore.setState({ infoModeEnabled: false });
@@ -1666,6 +1678,117 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => {
         expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta');
+      });
+    });
+
+    // #2395 (ADR-035 Phase1① — #2067 봉인 해제) — EXPO_PUBLIC_MINIMAL_ALARM 플래그로 FG도
+    // BG(stationPipeline #2379)와 동일하게 device 로컬 배너를 즉시 발사한다. markLocalStationFired
+    // 동반은 뒤늦게 도착하는 backend transfer/destination push의 이중배너를 억제하는 핵심 방어선
+    // (setupNotificationHandler의 isRecentLocalAuxFireDuplicate가 참조) — 빠뜨리면 acceptance 위반.
+    describe('#2395 EXPO_PUBLIC_MINIMAL_ALARM — FG phase device 로컬 발사', () => {
+      const originalEnv = process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+
+      afterEach(() => {
+        if (originalEnv === undefined) {
+          delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+        } else {
+          process.env.EXPO_PUBLIC_MINIMAL_ALARM = originalEnv;
+        }
+      });
+
+      describe('플래그 OFF (기본) — 회귀 가드: #2067 봉인 유지, device 로컬 발사 없음', () => {
+        beforeEach(() => {
+          delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+        });
+
+        it('destination phase 발사 시에도 fireLocalAlarmNotification을 호출하지 않는다', async () => {
+          mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+          renderHook(() =>
+            useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+          );
+
+          await waitFor(() => {
+            expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta');
+          });
+          expect(mockFireLocalAlarmNotification).not.toHaveBeenCalled();
+          expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+        });
+
+        it('transfer phase 발사 시에도 fireLocalAlarmNotification을 호출하지 않는다', async () => {
+          mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+
+          renderHook(() =>
+            useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+          );
+
+          await waitFor(() => {
+            expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyTransfer, 'eta');
+          });
+          expect(mockFireLocalAlarmNotification).not.toHaveBeenCalled();
+          expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('플래그 ON — device 로컬 발사 + markLocalStationFired 이중배너 방어', () => {
+        beforeEach(() => {
+          process.env.EXPO_PUBLIC_MINIMAL_ALARM = 'true';
+        });
+
+        it('destination phase 발사 시 fireLocalAlarmNotification + markLocalStationFired("강남", "destination")를 호출한다', async () => {
+          mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+          renderHook(() =>
+            useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+          );
+
+          await waitFor(() => {
+            expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta');
+          });
+          await waitFor(() => {
+            expect(mockFireLocalAlarmNotification).toHaveBeenCalledWith(earlyDest, undefined);
+          });
+          expect(mockMarkLocalStationFired).toHaveBeenCalledWith('강남', 'destination');
+        });
+
+        it('transfer phase 발사 시 fireLocalAlarmNotification + markLocalStationFired("시청", "transfer")를 호출한다', async () => {
+          mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+
+          renderHook(() =>
+            useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+          );
+
+          await waitFor(() => {
+            expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyTransfer, 'eta');
+          });
+          await waitFor(() => {
+            expect(mockFireLocalAlarmNotification).toHaveBeenCalledWith(earlyTransfer, undefined);
+          });
+          expect(mockMarkLocalStationFired).toHaveBeenCalledWith('시청', 'transfer');
+        });
+
+        it('fusionSource 전달 시 resolveNotificationSource 결과를 source로 전달한다', async () => {
+          mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+          renderHook(() =>
+            useStationAlarm(
+              defaultInputs({
+                route,
+                destination,
+                nearestStation: station,
+                fusionSource: 'position-train',
+                locationUncertain: false,
+              }),
+            ),
+          );
+
+          await waitFor(() => {
+            expect(mockFireLocalAlarmNotification).toHaveBeenCalledWith(
+              earlyDest,
+              'positionTrain',
+            );
+          });
+        });
       });
     });
 
