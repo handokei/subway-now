@@ -134,7 +134,13 @@ export type AlarmLogSource =
   // #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 계측. `useBoardingPromptDisplayLogger`
   // `tryLogDisplayed`가 early-return(categoryIdentifier 미스매치) 직전 매 수신 건마다 적재 —
   // "backend push에 aps.category가 실제로 실렸는가"를 device 덤프로 판정한다.
-  | 'boarding-prompt-category-received';
+  | 'boarding-prompt-category-received'
+  // #2403 — BG 지하 실시간성 계측. `BACKGROUND_LOCATION_TASK`가 매 tick `latest` fix를 확보한
+  // 직후, 기존 gate(gate-age/gate-accuracy)/발사 로직보다 먼저 1건 적재한다. gate에 걸려 조기
+  // return하거나 position-train 경로로 fire하는 tick도 이 heartbeat는 남으므로, 덤프에서
+  // "BG task가 실제로 몇 초/분 간격으로 깨어났는지"(starvation 여부)와 fix staleness(ageMs)를
+  // 직접 측정할 수 있다. 순수 진단 stamp — behavior 무변경.
+  | 'bg-task-heartbeat';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -1450,6 +1456,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'category-registration': null,
   // #2398 — 수신 categoryIdentifier 진단 stamp도 silent push outcome과 무관.
   'boarding-prompt-category-received': null,
+  // #2403 — BG task heartbeat는 silent push와 무관한 순수 진단 stamp.
+  'bg-task-heartbeat': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1515,6 +1523,8 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'category-registration': false,
   // #2398 — 수신 categoryIdentifier 진단 stamp(outcome='received')도 fire 분모 제외.
   'boarding-prompt-category-received': false,
+  // #2403 — BG task heartbeat(outcome='received')는 사용자 노출 알람이 아닌 진단 stamp. fire 분모 제외.
+  'bg-task-heartbeat': false,
 };
 
 /**
@@ -1631,6 +1641,26 @@ export function logSuppressedGate(
     source: 'bg',
     outcome: 'suppressed',
     reason,
+    location,
+  });
+}
+
+/**
+ * #2403 — BG task 발화 heartbeat 1건 적재. 순수 진단 계측 — behavior 무변경.
+ *
+ * `BACKGROUND_LOCATION_TASK`가 `latest` fix를 확보한 직후, 기존 gate-age/gate-accuracy 게이트나
+ * position-train-lock 발사 경로보다 먼저 호출한다. 그 아래 경로가 조기 return하거나 fire하는
+ * tick도 이 heartbeat는 남으므로, 덤프에서 BG task 발화 간격(starvation vs O1 threshold 병목
+ * 확정)과 fix staleness(ageMs)/accuracy를 직접 측정할 수 있다.
+ *
+ * 다른 suppress 계열 helper와 달리 burst dedup을 적용하지 않는다 — 이 stamp 자체가 "발화
+ * 간격"의 측정 대상이므로 연속 tick을 하나로 합치면 간격 측정이 불가능해진다.
+ */
+export function logBgTaskHeartbeat(location: AlarmLogLocation): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-task-heartbeat',
+    outcome: 'received',
     location,
   });
 }

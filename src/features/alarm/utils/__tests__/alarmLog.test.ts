@@ -87,6 +87,7 @@ import {
   logCategoryRegistrationSucceeded,
   logCategoryRegistrationFailed,
   logBoardingPromptCategoryReceived,
+  logBgTaskHeartbeat,
   logBoardingPromptResponded,
   logCompanionAlarmFired,
   logLastTrainAlarmFired,
@@ -1568,6 +1569,34 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.reason === 'gate-accuracy');
       expect(matching).toHaveLength(1);
+    });
+
+    it('#2403 logBgTaskHeartbeat: source=bg-task-heartbeat, outcome=received로 location과 함께 적재한다', async () => {
+      const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
+      logBgTaskHeartbeat(location);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg-task-heartbeat',
+        outcome: 'received',
+        location,
+      });
+    });
+
+    it('#2403 logBgTaskHeartbeat: burst dedup 없이 연속 호출마다 개별 entry를 적재한다 (발화 간격 측정 목적)', async () => {
+      _resetBurstSuppressWindowForTests();
+      const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
+      logBgTaskHeartbeat(location);
+      logBgTaskHeartbeat(location);
+      logBgTaskHeartbeat(location);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.source === 'bg-task-heartbeat');
+      expect(matching).toHaveLength(3);
     });
 
     it('#2339 logSuppressedGate: different reasons are NOT deduped against each other', async () => {

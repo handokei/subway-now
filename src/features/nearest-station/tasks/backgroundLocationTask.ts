@@ -15,7 +15,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import { getFiredAlarms, setFiredAlarms } from '../../alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
-import { logSuppressedGate } from '../../alarm/utils/alarmLog';
+import { logSuppressedGate, logBgTaskHeartbeat } from '../../alarm/utils/alarmLog';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } from '../../../shared/constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../shared/constants/location';
@@ -138,6 +138,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { locations } = data as { locations: Location.LocationObject[] };
   const latest = locations[locations.length - 1];
   if (!latest) return;
+
+  // #2403 — BG task 발화 heartbeat. behavior 무변경 순수 진단 계측: 이 tick이 실제로 깨어났다는
+  // 사실 자체와 fix staleness(ageMs)/accuracy를 덤프에 남겨 지하 발화 간격 측정을 가능하게 한다.
+  // 아래 gate/position-train/consensus 발사 로직보다 먼저 fire-and-forget으로 적재 — 그 경로가
+  // 조기 return하거나 fire해도 이 heartbeat는 항상 남는다.
+  logBgTaskHeartbeat({
+    lat: latest.coords.latitude,
+    lng: latest.coords.longitude,
+    accuracy: latest.coords.accuracy,
+    ageMs: Date.now() - (latest.timestamp ?? 0),
+  });
 
   // #2178 — pull 기반 trip 死 backstop. GPS fix 품질(age/accuracy)과 무관하게 "BG task가
   // 깨어났다"는 사실 자체가 backend 생존 확인 기회다. fire-and-forget — 아래 알람 파이프라인의

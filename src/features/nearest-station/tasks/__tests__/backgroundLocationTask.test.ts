@@ -42,8 +42,11 @@ jest.mock('../../../alarm/utils/notificationState', () => ({
 
 // ── alarmLog 모킹 ──
 const mockLogSuppressedGate = jest.fn();
+// #2403 — BG task 발화 heartbeat 모킹.
+const mockLogBgTaskHeartbeat = jest.fn();
 jest.mock('../../../alarm/utils/alarmLog', () => ({
   logSuppressedGate: (...args: unknown[]) => mockLogSuppressedGate(...args),
+  logBgTaskHeartbeat: (...args: unknown[]) => mockLogBgTaskHeartbeat(...args),
 }));
 
 // ── positionUpload 모킹 (#819) ──
@@ -595,6 +598,70 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       'gate-accuracy',
       expect.objectContaining({ accuracy }),
     );
+  });
+
+  // #2403 — BG task 발화 heartbeat. 순수 진단 계측 — 아래 gate/발사 로직에 영향 없이 매 tick
+  // logBgTaskHeartbeat가 fix ageMs/accuracy와 함께 호출되는지만 검증한다.
+  describe('#2403 — BG task 발화 heartbeat (진단 계측)', () => {
+    it('정상 fix 수신 시 logBgTaskHeartbeat가 lat/lng/accuracy/ageMs와 함께 호출된다', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 12 }));
+
+      expect(mockLogBgTaskHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ lat: 37.498, lng: 127.028, accuracy: 12 }),
+      );
+      const [[heartbeatArg]] = mockLogBgTaskHeartbeat.mock.calls;
+      expect(typeof heartbeatArg.ageMs).toBe('number');
+      expect(heartbeatArg.ageMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('gate-age drop tick에서도 logBgTaskHeartbeat가 호출된다(게이트 로직보다 먼저 적재)', async () => {
+      const ageMs = MAX_LOCATION_AGE_MS + 1_000;
+      await runWithLocation(makeLocation(37.498, 127.028, { ageMs }));
+
+      expect(mockLogBgTaskHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ ageMs: expect.any(Number) }),
+      );
+      const [[heartbeatArg]] = mockLogBgTaskHeartbeat.mock.calls;
+      expect(heartbeatArg.ageMs).toBeGreaterThanOrEqual(ageMs);
+    });
+
+    it('gate-accuracy drop tick에서도 logBgTaskHeartbeat가 호출된다', async () => {
+      const accuracy = MAX_ACCURACY_M + 50;
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+      expect(mockLogBgTaskHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ accuracy }),
+      );
+    });
+
+    it('position-train-lock이 채택(fired=true)한 tick에서도 logBgTaskHeartbeat가 먼저 호출된다', async () => {
+      mockIsMinimalAlarmEnabled.mockReturnValue(true);
+      mockEvaluatePositionTrainFire.mockResolvedValueOnce(true);
+
+      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 12 }));
+
+      expect(mockLogBgTaskHeartbeat).toHaveBeenCalledTimes(1);
+      // position-train fire 채택 시 이후 GPS 파이프라인은 건너뛴다 (기존 동작 무변경 확인).
+      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+
+    it('error 분기에서는 logBgTaskHeartbeat를 호출하지 않는다', async () => {
+      await taskCallback({ data: null, error: { message: '위치 오류' } });
+      expect(mockLogBgTaskHeartbeat).not.toHaveBeenCalled();
+    });
+
+    it('data가 null이면 logBgTaskHeartbeat를 호출하지 않는다', async () => {
+      await taskCallback({ data: null, error: null });
+      expect(mockLogBgTaskHeartbeat).not.toHaveBeenCalled();
+    });
+
+    it('locations가 빈 배열이면 logBgTaskHeartbeat를 호출하지 않는다', async () => {
+      await taskCallback({ data: { locations: [] }, error: null });
+      expect(mockLogBgTaskHeartbeat).not.toHaveBeenCalled();
+    });
   });
 
   // #2345 — 지하 accuracy 강등 gate. isAccuracyAcceptable early-return 직전에 카운터를 올린다.
