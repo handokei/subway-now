@@ -179,6 +179,29 @@ function logSuppressedStationPassedLockless(stationName: string): void {
   });
 }
 
+/**
+ * #2387 — lockless trip + 사용자 명시 의향(infoModeEnabled) 부재 판정 공통 헬퍼.
+ * lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭.
+ * infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
+ * 권위를 유지한다(lock 재생성 아님 — CLAUDE.md "명시 탭=lock 동급" 정합). fireAndLog phase(:837)와
+ * station-passed 두 경로(:1427/:1673) 3곳에서 동일 조건식이 반복돼 SonarCloud CPD 해소.
+ */
+function isLocklessNoUserIntent(lock: BoardingLock | null): boolean {
+  return !lock && !useUserIntentStore.getState().infoModeEnabled;
+}
+
+/**
+ * #2387 — station-passed 경로(GPS IIFE :1427 / subsurface IIFE :1673) 공통 lockless-no-user-intent
+ * 억제 블록. `isLocklessNoUserIntent` 참고. true 반환 시 호출자는 즉시 return.
+ */
+function suppressIfLocklessStationPassed(lock: BoardingLock | null, candidateStation: Station): boolean {
+  if (isLocklessNoUserIntent(lock)) {
+    logSuppressedStationPassedLockless(candidateStation.name);
+    return true;
+  }
+  return false;
+}
+
 /** #2362 — 매역 알림 본문에 배선할 "남은 정거장 수 + 다음 대상(환승역|도착역)". */
 interface StationPassedTarget {
   count: number;
@@ -829,12 +852,10 @@ export function useStationAlarm({
     const isFirstHop = isSameStationName(getFirstLeg(activeRoute, activeDestination.name).endName, rawEvent.stationName);
     const lock = await getBoardingLock();
     // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 ETA/imminent phase 발사 차단.
-    // lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭(#2387).
-    // infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
-    // 권위를 유지한다(lock 재생성 아님 — CLAUDE.md "명시 탭=lock 동급" 정합). 이 상태에서
-    // transfer/destination phase 알람(ETA 기반 early/imminent + API imminent)을 fire하면 paradigm shift 위반.
+    // #2387: lockless+무의향 억제 — isLocklessNoUserIntent 참고. 이 상태에서 transfer/destination
+    // phase 알람(ETA 기반 early/imminent + API imminent)을 fire하면 paradigm shift 위반.
     // firedAlarmsRef.current.delete(key): 진입부 add를 복구해 storage net-zero 유지 (sleep/cross-category 차단과 동일 패턴).
-    if (!lock && !useUserIntentStore.getState().infoModeEnabled) {
+    if (isLocklessNoUserIntent(lock)) {
       firedAlarmsRef.current.delete(key);
       logSuppressedLocklessNoUserIntent({
         source: 'fg-evaluated',
@@ -1420,14 +1441,9 @@ export function useStationAlarm({
         const lock = await getBoardingLock();
         if (cancelled) return;
         // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 station-passed 차단.
-        // lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭(#2387).
-        // infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
-        // 권위를 유지한다. paradigm shift 정합.
+        // #2387: lockless+무의향 억제 — isLocklessNoUserIntent 참고. paradigm shift 정합.
         // #1514 — origin hop lockless 차단(용마산 evidence)은 본 broad guard의 subset이 되어 하나로 통합.
-        if (!lock && !useUserIntentStore.getState().infoModeEnabled) {
-          logSuppressedStationPassedLockless(candidateStation.name);
-          return;
-        }
+        if (suppressIfLocklessStationPassed(lock, candidateStation)) return;
         // #1572 (T9) — backend SSoT 권위 게이트 (Path A). mirror.alarmEvents에 같은 alarmId가
         // 이미 있거나(Gate A) mirror.passedStations/alarmEvents에 같은 stationId가 station-passed로
         // 이미 결정됐으면(Gate B) fire 차단. mirror 부재/stale은 graceful no-block.
@@ -1667,13 +1683,8 @@ export function useStationAlarm({
       const lock = await getBoardingLock();
       if (cancelled) return;
       // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 subsurface station-passed 차단.
-      // lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭(#2387).
-      // infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
-      // 권위를 유지한다. paradigm shift 정합.
-      if (!lock && !useUserIntentStore.getState().infoModeEnabled) {
-        logSuppressedStationPassedLockless(candidateStation.name);
-        return;
-      }
+      // #2387: lockless+무의향 억제 — isLocklessNoUserIntent 참고. paradigm shift 정합.
+      if (suppressIfLocklessStationPassed(lock, candidateStation)) return;
       // #1572 (T9) — backend SSoT 권위 게이트 (Path C subsurface verdict). subsurface fusion이
       // backend가 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. dispatch helper 진입 직전 평가.
       // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
