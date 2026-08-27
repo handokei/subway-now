@@ -81,6 +81,9 @@ import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-st
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../store/useAlarmEventStore';
+// #2387 — 명시 탭 의향(infoModeEnabled) 환승 계승. lock=null을 "미탭" proxy로 쓰던 게이트가
+// 환승 후 lock release 시 명시 탭 의향까지 함께 억제하던 회귀를 막는다.
+import { useUserIntentStore } from '../store/useUserIntentStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
@@ -826,10 +829,12 @@ export function useStationAlarm({
     const isFirstHop = isSameStationName(getFirstLeg(activeRoute, activeDestination.name).endName, rawEvent.stationName);
     const lock = await getBoardingLock();
     // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 ETA/imminent phase 발사 차단.
-    // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. 이 상태에서 transfer/destination
-    // phase 알람(ETA 기반 early/imminent + API imminent)을 fire하면 paradigm shift 위반.
+    // lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭(#2387).
+    // infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
+    // 권위를 유지한다(lock 재생성 아님 — CLAUDE.md "명시 탭=lock 동급" 정합). 이 상태에서
+    // transfer/destination phase 알람(ETA 기반 early/imminent + API imminent)을 fire하면 paradigm shift 위반.
     // firedAlarmsRef.current.delete(key): 진입부 add를 복구해 storage net-zero 유지 (sleep/cross-category 차단과 동일 패턴).
-    if (!lock) {
+    if (!lock && !useUserIntentStore.getState().infoModeEnabled) {
       firedAlarmsRef.current.delete(key);
       logSuppressedLocklessNoUserIntent({
         source: 'fg-evaluated',
@@ -1415,9 +1420,11 @@ export function useStationAlarm({
         const lock = await getBoardingLock();
         if (cancelled) return;
         // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 station-passed 차단.
-        // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. paradigm shift 정합.
+        // lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭(#2387).
+        // infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
+        // 권위를 유지한다. paradigm shift 정합.
         // #1514 — origin hop lockless 차단(용마산 evidence)은 본 broad guard의 subset이 되어 하나로 통합.
-        if (!lock) {
+        if (!lock && !useUserIntentStore.getState().infoModeEnabled) {
           logSuppressedStationPassedLockless(candidateStation.name);
           return;
         }
@@ -1660,8 +1667,10 @@ export function useStationAlarm({
       const lock = await getBoardingLock();
       if (cancelled) return;
       // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 subsurface station-passed 차단.
-      // lock=null = boardingPrompt 미응답 + BoardingTrainList 미탭. paradigm shift 정합.
-      if (!lock) {
+      // lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭(#2387).
+      // infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
+      // 권위를 유지한다. paradigm shift 정합.
+      if (!lock && !useUserIntentStore.getState().infoModeEnabled) {
         logSuppressedStationPassedLockless(candidateStation.name);
         return;
       }
