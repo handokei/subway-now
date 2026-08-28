@@ -19,6 +19,7 @@ import {
   DISEMBARK_ACTION_NOT_YET,
 } from '../../utils/notificationCategory';
 import * as positionUpload from '../../../nearest-station/api/positionUpload';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { renderHook } from '@testing-library/react-native';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
@@ -26,6 +27,10 @@ import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
   DEFAULT_ACTION_IDENTIFIER: '$default',
+}));
+// #2408 — 위험1 guard: BG_LAST_STATION_KEY read. 기본값은 부재(null) → guard 미작동(기존 동작).
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(async () => null),
 }));
 jest.mock('../../../nearest-station/api/positionUpload', () => ({
   dismissBoardingPrompt: jest.fn(),
@@ -405,6 +410,86 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       originStation: '강남',
       line: '2',
     });
+  });
+
+  // #2408 — 위험1 guard: stale prompt → 잘못된 lock 방지. BG_LAST_STATION mock helper.
+  function mockBgLastStation(line: string, ageMs: number): void {
+    (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(async () =>
+      JSON.stringify({
+        station: { id: 'BG1', line, name: '용마산' },
+        distanceKm: 0.1,
+        timestamp: Date.now() - ageMs,
+      }),
+    );
+  }
+
+  it('#2408 — fresh BG_LAST_STATION이 payload.line과 모순 → createLock 미호출(skip)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    mockBgLastStation('7', 0); // 7호선(용마산)에 있는데 payload.line='2'(강남) — 모순.
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).not.toHaveBeenCalled();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'fallback-skipped-position-contradiction',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('#2408 — BG_LAST_STATION line이 payload.line과 일치 → 기존대로 pending fallback lock 생성', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    mockBgLastStation('2', 0);
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+      false,
+      'boarding-prompt-response',
+    );
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-fallback-pending',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('#2408 — BG_LAST_STATION 부재(null) → 검증 불가, 기존대로 lock 생성(탭 신뢰)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(async () => null);
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+      false,
+      'boarding-prompt-response',
+    );
+  });
+
+  it('#2408 — BG_LAST_STATION stale(신선도 초과) → 검증 불가, 기존대로 lock 생성', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    // line 모순('7')이어도 신선도 초과(5분+1ms)면 guard 미작동 — 검증 불가로 간주.
+    mockBgLastStation('7', 5 * 60_000 + 1);
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+      false,
+      'boarding-prompt-response',
+    );
+  });
+
+  it('#2408 — BG_LAST_STATION read 예외 → guard skip, 기존대로 lock 생성(graceful)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(async () => {
+      throw new Error('IO error');
+    });
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+      false,
+      'boarding-prompt-response',
+    );
   });
 
   it('station lookup 실패 → manual fallback (createLock 안 함)', async () => {

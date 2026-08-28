@@ -217,6 +217,27 @@ export function isPendingTrainCode(trainCode: string): boolean {
 }
 
 /**
+ * #2408 (위험1 guard) — pending fallback lock 생성 전 BG_LAST_STATION과 payload.line 모순 판정에
+ * 쓰는 신선도 임계값(ms).
+ *
+ * 배경: `createPendingFallbackLock`은 payload.line/originStation을 위치 검증 없이 신뢰한다.
+ * stale prompt(예: 용마산/7호선에서 발사됐는데 실제로는 성수/2호선에 있는 사용자가 뒤늦게 탭)에서도
+ * lock을 생성해버리면 틀린 노선으로 lock이 잠기는 회귀가 생긴다. device가 최근에 관측한
+ * BG_LAST_STATION(`backgroundLocationTask`가 적재)이 payload.line과 다르면 모순으로 간주해 lock
+ * 생성을 skip한다.
+ *
+ * 5분으로 둔 이유:
+ *  - BG task 폴링 주기(30s~수분, 이동 속도에 따라 가변)를 여러 tick 커버해 오탐(일시적 GPS 튐)을
+ *    피하면서도, stale prompt가 보통 수 분~수십 분 전 발사분이라는 점을 고려하면 5분 이내 관측치는
+ *    "지금 위치"로 신뢰할 만큼 충분히 최근이다.
+ *  - 너무 짧으면(예: 1분) BG task가 저빈도 모드(이동 없음/절전)일 때 최근 관측치가 없어 guard가
+ *    거의 작동하지 않는다.
+ *  - 너무 길면(예: 30분) 실제로 이동한 사용자의 오래된 위치를 "현재 위치"로 오판해 정상 fallback
+ *    lock 생성까지 잘못 skip할 위험이 커진다.
+ */
+export const FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS = 5 * 60_000;
+
+/**
  * #2197 (ADR-025 client 절반) — 이미 등록된 trip의 route/destination 변경 재-POST를
  * coalesce하는 debounce(ms).
  *

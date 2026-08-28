@@ -264,11 +264,14 @@ export type AlarmLogReason =
   //   'autolock-station-lookup': originStation/line 매칭 실패.
   //   'autolock-lock-failed': createLock 예외 (저장/네트워크 등) → manual fallback.
   //   'autolock-fallback-pending': #2407 root fix — train 확정 실패해도 pending trainCode로 lock 생성.
+  //   'fallback-skipped-position-contradiction': #2408 위험1 guard — fresh BG_LAST_STATION이
+  //     payload.line과 모순(다른 노선에 위치)돼 stale prompt로 판단, pending fallback lock을 skip.
   | 'autolock-success'
   | 'autolock-no-trip'
   | 'autolock-arrivals-empty'
   | 'autolock-ambiguity'
   | 'autolock-fallback-pending'
+  | 'fallback-skipped-position-contradiction'
   | 'autolock-station-lookup'
   | 'autolock-lock-failed'
   // #1170 — boarding-prompt 사용자 응답 측정. 9단 게이트 통과 후 발사된 prompt에 대한 응답.
@@ -2228,7 +2231,10 @@ export type BoardingPromptAutoLockReason =
   | 'autolock-station-lookup'
   | 'autolock-lock-failed'
   // #2407 — train 확정 실패해도 lock은 생성한 root-fix fallback 경로. trainCode=pending sentinel.
-  | 'autolock-fallback-pending';
+  | 'autolock-fallback-pending'
+  // #2408 — 위험1 guard: fresh BG_LAST_STATION이 payload.line과 모순돼 stale prompt로 판단,
+  // pending fallback lock 생성을 skip.
+  | 'fallback-skipped-position-contradiction';
 
 export function logBoardingPromptAutoLock(input: {
   reason: BoardingPromptAutoLockReason;
@@ -2256,6 +2262,7 @@ export function countBoardingPromptAutoLockOutcomes(
     'autolock-station-lookup': 0,
     'autolock-lock-failed': 0,
     'autolock-fallback-pending': 0,
+    'fallback-skipped-position-contradiction': 0,
   };
   for (const entry of entries) {
     if (entry.source !== 'boarding-prompt') continue;
@@ -2290,6 +2297,7 @@ export function countAutoLockReasonsByWindow(
     'autolock-station-lookup': 0,
     'autolock-lock-failed': 0,
     'autolock-fallback-pending': 0,
+    'fallback-skipped-position-contradiction': 0,
   };
   for (const entry of entries) {
     if (entry.ts <= cutoff) continue;

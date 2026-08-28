@@ -49,8 +49,11 @@ function parseDestination(raw: string | null): Station | null {
  * (`refreshLiveActivityFromBackgroundContext`의 `BgLastStation`과 동일 shape).
  *
  * - parsed가 null / 비-object / distanceKm 비-number / station 부재 → null.
+ *
+ * #2408 — useBoardingPromptResponder의 stale-prompt position guard도 동일 parse 로직이 필요해
+ * export. 중복 구현 대신 이 단일 narrow 함수를 공유한다.
  */
-function parseBgLastStation(raw: string | null): BgLastStationContext | null {
+export function parseBgLastStation(raw: string | null): BgLastStationContext | null {
   const parsed = safeParse<unknown>(raw);
   if (
     !parsed ||

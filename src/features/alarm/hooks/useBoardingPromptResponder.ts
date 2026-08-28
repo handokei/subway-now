@@ -24,6 +24,7 @@
 
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
@@ -45,9 +46,14 @@ import {
   DISEMBARK_PROMPT_CATEGORY,
 } from '../utils/notificationCategory';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
-import { PENDING_TRAIN_CODE } from '../../../shared/constants/boardingLock';
+import {
+  FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS,
+  PENDING_TRAIN_CODE,
+} from '../../../shared/constants/boardingLock';
+import { BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { parseBgLastStation } from '../utils/widgetRefreshContext';
 import {
   markBoardingPromptDisplayed,
   wasBoardingPromptDisplayed,
@@ -408,6 +414,26 @@ async function tryAutoLock(
 }
 
 /**
+ * #2408 (위험1 guard) — BG_LAST_STATION_KEY를 읽어 신선도 기준(FALLBACK_LOCK_POSITION_GUARD_
+ * FRESHNESS_MS) 안의 관측치만 반환. stale(오래된 timestamp)이거나 부재/파싱 실패면 null —
+ * 검증 불가 케이스는 guard가 작동하지 않고 기존 fallback lock 생성 경로로 흐른다.
+ *
+ * read/parse 실패는 swallow — guard는 best-effort이며 실패 시 사용자 탭을 그대로 신뢰한다.
+ */
+async function readFreshBgLastStationForGuard() {
+  try {
+    const raw = await AsyncStorage.getItem(BG_LAST_STATION_KEY);
+    const bgContext = parseBgLastStation(raw);
+    if (!bgContext) return null;
+    if (Date.now() - bgContext.timestamp > FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS) return null;
+    return bgContext;
+  } catch (err) {
+    log.warn('BG_LAST_STATION read failed — position guard skipped', err as Error);
+    return null;
+  }
+}
+
+/**
  * #2407 (root fix) — train 확정 실패(arrivals null / line 매칭 0건 / ambiguity)에서도 사용자가
  * 방금 [탑승] 응답했다는 사실 자체는 확정 evidence다(ADR-014 "명시 탭 = lock 활성과 동급").
  * trainCode만 `PENDING_TRAIN_CODE` sentinel로 채워 lock을 생성 — GPS/route 기반 저정밀도라도
@@ -423,6 +449,21 @@ async function createPendingFallbackLock(
   destinationId: string,
 ): Promise<void> {
   const telemetry = { originStation: payload.originStation, line: payload.line };
+
+  // #2408 (위험1 guard) — stale prompt → 잘못된 lock 방지. device가 최근에 관측한
+  // BG_LAST_STATION(현재 위치)이 payload.line과 다른 노선이면, 이 prompt가 사용자의 실제 현재
+  // 위치와 모순되는 오래된(stale) 알림이라고 판단해 lock 생성을 skip한다. BG_LAST_STATION이
+  // 없거나(WhileInUse 등) 신선도 기준을 넘었거나(검증 불가) line이 일치하면 기존대로 진행 —
+  // 사용자의 명시 탭을 신뢰한다(ADR-014).
+  const bgContext = await readFreshBgLastStationForGuard();
+  if (bgContext && bgContext.station.line !== payload.line) {
+    log.info('pending fallback lock skipped — position contradiction with fresh BG context');
+    logBoardingPromptAutoLock({
+      reason: 'fallback-skipped-position-contradiction',
+      ...telemetry,
+    });
+    return;
+  }
 
   if (!isValidLineNumber(payload.line)) {
     log.warn('pending fallback lock skipped — invalid line', payload.line);
