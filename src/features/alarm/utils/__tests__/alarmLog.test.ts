@@ -2757,6 +2757,8 @@ describe('alarmLog', () => {
       ['autolock-ambiguity', 'suppressed'],
       ['autolock-station-lookup', 'suppressed'],
       ['autolock-lock-failed', 'suppressed'],
+      // #2407 — root fix fallback lock reason.
+      ['autolock-fallback-pending', 'suppressed'],
     ] as const)('reason=%s → outcome=%s + stationName 합성', async (reason, expectedOutcome) => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
       logBoardingPromptAutoLock({ reason, originStation: '강남', line: '2' });
@@ -2780,6 +2782,8 @@ describe('alarmLog', () => {
         { ts: 5, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
         { ts: 6, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-station-lookup' },
         { ts: 7, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+        // #2407 — root fix fallback lock reason도 분포에 포함되어야 한다.
+        { ts: 10, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-fallback-pending' },
         // reason 없는 #1021 발사 entry는 제외
         { ts: 8, source: 'boarding-prompt', outcome: 'fired' },
         // 다른 source는 제외
@@ -2793,6 +2797,7 @@ describe('alarmLog', () => {
         'autolock-ambiguity': 1,
         'autolock-station-lookup': 1,
         'autolock-lock-failed': 1,
+        'autolock-fallback-pending': 1,
       });
     });
 
@@ -2837,6 +2842,8 @@ describe('alarmLog', () => {
         { ts: 99_003, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-no-trip' },
         { ts: 99_004, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-station-lookup' },
         { ts: 99_005, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+        // #2407 — root fix fallback lock reason도 분포에 포함되어야 한다.
+        { ts: 99_006, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-fallback-pending' },
       ];
       const counts = countAutoLockReasonsByWindow(entries, 10_000, now);
       expect(counts).toEqual({
@@ -2846,6 +2853,7 @@ describe('alarmLog', () => {
         'autolock-no-trip': 1,
         'autolock-station-lookup': 1,
         'autolock-lock-failed': 1,
+        'autolock-fallback-pending': 1,
       });
     });
 
@@ -2867,6 +2875,7 @@ describe('alarmLog', () => {
       expect(counts['autolock-no-trip']).toBe(0);
       expect(counts['autolock-station-lookup']).toBe(0);
       expect(counts['autolock-lock-failed']).toBe(0);
+      expect(counts['autolock-fallback-pending']).toBe(0);
     });
 
     it('reason 없는 entry(발사 빈도 #1021)는 집계에서 제외한다', () => {
