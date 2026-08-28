@@ -14,6 +14,7 @@ import {
   makeDirectRoute,
   makeTransferRoute,
 } from '../../../../testUtils/routeFixtures';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 
 jest.mock('expo-haptics', () => ({
   impactAsync: jest.fn().mockResolvedValue(undefined),
@@ -1242,6 +1243,59 @@ describe('useBoardingLockController', () => {
       // loadLock effect도 같은 lock을 반환하도록 모킹 — selector가 hydrate한 후에도 lock 유지.
       mockGetBoardingLock.mockResolvedValue(existing);
       useBoardingLockStore.setState({ lock: existing, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await tickAndSettleCycle();
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    // #2407 — pending fallback lock(trainCode 미확정)은 lockSuggestion(backend
+    // arvlcd-confirmed evidence)이 도착하면 async로 실 trainCode를 확정해야 한다. 같은 leg
+    // (boardingLine 일치)이면 upgrade 허용.
+    it('#2407 — pending lock(trainCode 미확정) + 같은 boardingLine suggestion → 실 trainCode로 upgrade', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      const pending: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: PENDING_TRAIN_CODE,
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 30 * 60_000,
+        boardingEvidence: false,
+      };
+      mockGetBoardingLock.mockResolvedValue(pending);
+      useBoardingLockStore.setState({ lock: pending, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await tickAndSettleCycle();
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      const arg = createLockMock.mock.calls[0][0];
+      expect(arg.trainCode).toBe('AUTO-1');
+      expect(arg.boardingLine).toBe('2');
+      const evidence = createLockMock.mock.calls[0][1];
+      expect(evidence).toBe(true);
+    });
+
+    // #2407 — 다른 leg(boardingLine 불일치)의 suggestion이 pending fallback lock을 clobber하지
+    // 않도록 방어.
+    it('#2407 — pending lock + 다른 boardingLine suggestion → upgrade 안 함 (clobber 방지)', async () => {
+      readSpy.mockResolvedValue({
+        ...MIRROR,
+        lockSuggestion: { ...SUGGESTION, lineId: '7' },
+      });
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      const pending: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: PENDING_TRAIN_CODE,
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 30 * 60_000,
+        boardingEvidence: false,
+      };
+      mockGetBoardingLock.mockResolvedValue(pending);
+      useBoardingLockStore.setState({ lock: pending, createLock: createLockMock });
       renderHook(() => useBoardingLockController(defaultInputs));
       await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();

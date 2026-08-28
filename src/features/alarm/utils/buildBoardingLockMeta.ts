@@ -8,6 +8,7 @@ import type { Station } from '../../../shared/types/station';
 import type { LineNumber } from '../../../shared/types/station';
 import type { AlarmBoardingLock } from '../api/alarmBackend';
 import { isScheduleFallbackTrainCode } from './scheduleFallback';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('buildBoardingLockMeta');
@@ -100,6 +101,17 @@ export function buildBoardingLockMeta({
   if (isScheduleFallbackTrainCode(lock.trainCode)) {
     logger.warn(
       `skip backend register — schedule fallback trainCode=${lock.trainCode} (line=${lock.boardingLine})`,
+    );
+    return null;
+  }
+
+  // #2407 — trainCode pending(fallback lock, train 미확정)은 backend reschedule의 정정 anchor로
+  // 쓸 수 없다 — backend가 이 sentinel로 실시간 API를 조회하면 절대 못 찾아 schedule fallback과
+  // 동일하게 anchor waypoint 폴링으로 fallback해야 한다. 등록 자체를 보류하고, 다음 effect
+  // cycle에서 trainCode가 확정되면(useBoardingLockController lockSuggestion upgrade) 정상 등록된다.
+  if (isPendingTrainCode(lock.trainCode)) {
+    logger.warn(
+      `skip backend register — pending trainCode (line=${lock.boardingLine})`,
     );
     return null;
   }

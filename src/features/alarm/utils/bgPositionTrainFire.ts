@@ -9,6 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from './stationPipeline';
 import { alarmKey } from './stationAlarm';
 import { getBoardingLock } from './boardingLockStorage';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { getFiredAlarms, setFiredAlarms } from './notificationState';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import { passesLockedStationGate } from '../../nearest-station/utils/lockedStationGate';
@@ -61,7 +62,10 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   if (!isMinimalAlarmEnabled()) return false;
 
   const lock = await getBoardingLock();
-  if (!lock || !lock.trainCode) return false;
+  // #2407 — trainCode pending(fallback lock, 미확정) 상태에서는 이 경로(realtimePosition 정밀추적)를
+  // skip한다. pending sentinel을 실 trainCode처럼 매칭에 넣으면 항상 미매칭이라 false negative만
+  // 쌓인다 — 호출자(backgroundLocationTask)가 기존 GPS/route 파이프라인으로 graceful degrade.
+  if (!lock || !lock.trainCode || isPendingTrainCode(lock.trainCode)) return false;
 
   const destJson = await AsyncStorage.getItem(DESTINATION_KEY);
   if (!destJson) return false;

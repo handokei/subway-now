@@ -25,6 +25,7 @@ import type { BoardingLock } from '../../../shared/types/boardingLock';
 import {
   FALLBACK_BOARDING_DURATION_MINUTES,
   FREE_TRIP_DESTINATION_SENTINEL,
+  isPendingTrainCode,
 } from '../../../shared/constants/boardingLock';
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import { useLockSuggestion } from '../api/useLockSuggestion';
@@ -205,13 +206,22 @@ export function useBoardingLockController({
   //     stamp가 없으면(nextLine=null) 가드 미개입 — 기존 동작 그대로.
   useEffect(() => {
     if (!lockSuggestion) return;
-    if (lock) return;
+    // #2407 — pending lock(#2407 fallback lock, trainCode 미확정)은 lockSuggestion(backend
+    // arvlcd-confirmed evidence, arrival/realtimePosition 기반)이 도착하면 async로 실 trainCode를
+    // 확정해야 한다("기존 메커니즘 재사용, 신규 감지 신설 금지" — 이 effect가 이미 하는 backend
+    // suggestion → createLock 채택 로직을 pending 케이스까지 확장). 이미 trainCode가 확정된
+    // 일반 lock은 기존대로 완전 no-op(사용자 명시 탭 lock 보호 정책 불변).
+    const isPendingUpgrade = lock !== null && isPendingTrainCode(lock.trainCode);
+    if (lock && !isPendingUpgrade) return;
     // #2330 (consensus-D, 설계 SSoT #2323 (3)) — confidence='consensus'는 lock 승격 금지.
     // legConsensus는 UI 표시(배지/하이라이트)/floor 힌트 전용 forward라 high/medium/low(9-AND
     // gate 기반 evidence)와 달리 자동 hydrate 대상이 아니다. "오토락 부활" 오해를 구조적으로 차단.
     if (lockSuggestion.confidence === 'consensus') return;
     const boardingLine = asLineNumber(lockSuggestion.lineId);
     if (!boardingLine) return;
+    // pending lock upgrade는 같은 leg(boardingLine 일치)일 때만 허용 — 다른 leg의 suggestion이
+    // fallback lock을 clobber하지 않도록 방어.
+    if (isPendingUpgrade && lock && boardingLine !== lock.boardingLine) return;
     if (legAdvanceLine !== null) {
       const isStale =
         legAdvanceStampedAt !== null && lockSuggestion.decidedAt < legAdvanceStampedAt;

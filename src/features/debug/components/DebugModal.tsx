@@ -81,6 +81,7 @@ import {
   isBoardingLockExpired,
   type BoardingLock,
 } from '../../../shared/types/boardingLock';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import {
   clearEstimatorEntries,
   getEstimatorEntries,
@@ -1379,7 +1380,8 @@ function buildBoardingLockSection(args: BuildDumpArgs): string[] {
   const lines: string[] = [`active=${active ? 'yes' : 'no'}`];
   if (lock) {
     lines.push(
-      `trainCode=${lock.trainCode}`,
+      // #2407 — pending sentinel(fallback lock, 실 trainCode 미확정)을 dump에도 명시 표기.
+      `trainCode=${isPendingTrainCode(lock.trainCode) ? `${lock.trainCode} (pending)` : lock.trainCode}`,
       `line=${lock.boardingLine}`,
       `expiresAt=${formatAt(lock.boardedAt + lock.expectedDurationMs * BOARDING_LOCK_EXPIRY_FACTOR)}`,
       `boardedAt=${formatAt(lock.boardedAt)}`,
@@ -3381,7 +3383,12 @@ function BoardingLockSection({
       <KeyValue label="active" value={active ? 'yes' : 'no'} colors={colors} />
       {lock && (
         <>
-          <KeyValue label="trainCode" value={lock.trainCode} colors={colors} />
+          <KeyValue
+            label="trainCode"
+            // #2407 — pending sentinel(fallback lock, 실 trainCode 미확정)을 명시 표기.
+            value={isPendingTrainCode(lock.trainCode) ? `${lock.trainCode} (pending)` : lock.trainCode}
+            colors={colors}
+          />
           <KeyValue label="line" value={String(lock.boardingLine)} colors={colors} />
           <KeyValue
             label="expiresAt"
@@ -3566,11 +3573,13 @@ function AutoLockTelemetryRow({
     counts['autolock-arrivals-empty'] +
     counts['autolock-no-trip'] +
     counts['autolock-station-lookup'] +
-    counts['autolock-lock-failed'];
+    counts['autolock-lock-failed'] +
+    counts['autolock-fallback-pending'];
   const value =
     total === 0
       ? '—'
-      : `ok=${counts['autolock-success']} amb=${counts['autolock-ambiguity']} empty=${counts['autolock-arrivals-empty']} fail=${counts['autolock-lock-failed']}`;
+      // #2407 — pending: root-fix fallback lock 카운트(train 미확정이어도 lock은 생성됨).
+      : `ok=${counts['autolock-success']} amb=${counts['autolock-ambiguity']} empty=${counts['autolock-arrivals-empty']} fail=${counts['autolock-lock-failed']} pending=${counts['autolock-fallback-pending']}`;
   return (
     <KeyValue
       label="autoLock(1h)"

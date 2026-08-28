@@ -102,6 +102,19 @@ describe('buildBoardingLockMeta', () => {
     expect(result).toBeNull();
   });
 
+  // #2407 — pending fallback lock(trainCode 미확정)은 backend reschedule의 anchor로 쓸 수
+  // 없다. schedule fallback과 동일하게 등록을 보류해 anchor waypoint 폴링으로 fallback해야 한다.
+  it('#2407 — trainCode가 pending sentinel이면 null (backend 등록 보류)', () => {
+    const route = makeDirectRoute(1, '7');
+    const result = buildBoardingLockMeta({
+      lock: { ...baseLock, trainCode: 'PENDING-TRAIN-CODE', boardingLine: '7' },
+      route,
+      destinationName: '용마산',
+      boardingStationName: '면목',
+    });
+    expect(result).toBeNull();
+  });
+
   it('segmentStations 추론 불가하면 (boardingLine ≠ route segment) null', () => {
     const route = makeTransferRoute({
       transferName: '교대',

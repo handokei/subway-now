@@ -186,6 +186,37 @@ export const REGISTER_RETRY_HEAL_BUSY_RECHECK_MS = 2_000;
 export const REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES = 5;
 
 /**
+ * #2407 (root fix, 08-28 lockless cascade) — trainCode 확정 실패(arrivals null / line 매칭 0건)
+ * 상태에서도 사용자 탑 탭 = lock 생성을 보장하기 위한 pending trainCode sentinel.
+ *
+ * 배경: `tryAutoLock`(useBoardingPromptResponder)이 arrivals 조회 실패/무매칭이면 `createLock`을
+ * 아예 호출하지 않고 return해, 사용자가 명시 탭했는데도 lock이 하나도 생기지 않는 회귀가
+ * 실탑승에서 확인됐다(#2405/#2406 RED fixture). ADR-014 "명시 탭 = lock 활성과 동급" 정합을
+ * 지키려면 train 확정 실패해도 lock 자체는 생성해야 한다 — trainCode만 이 sentinel로 채운다.
+ *
+ * 설계(빈 문자열 vs sentinel 상수 — sentinel 채택 이유):
+ *   - `BoardingLock.trainCode: string`은 이미 여러 소비처가 `.length > 0`/`.startsWith(...)`
+ *     같은 명시적 predicate로 검사한다(`isScheduleFallbackTrainCode`의 `SCHED-` prefix가 동일
+ *     선례). 빈 문자열('')은 일부 falsy-check(`!lock.trainCode`) 소비처에서는 우연히 안전하게
+ *     걸러지지만, 값 비교(`row.trainCode === lock.trainCode`)나 `.startsWith()` 호출부에서는
+ *     예외/오탐 가능성이 있어 암묵적 falsy coercion에 의존하는 게 더 위험하다.
+ *   - 명시적 sentinel 상수 + `isPendingTrainCode()` predicate가 "이 값이 왜 특별한가"를 grep
+ *     한 번으로 드러내고, 향후 코드 리뷰에서 실수로 빠뜨린 consumer를 찾기 쉽다(blast radius
+ *     추적 용이).
+ *   - `string` 타입을 `string | undefined`로 optional化하는 대안은 BoardingLock을 참조하는
+ *     전 소비처(수십 곳, 위 grep 결과)의 타입 가드를 전수 추가해야 해 blast radius가 훨씬 크다.
+ *
+ * 🔴 소비처는 `lock.trainCode`를 실 trainCode처럼 매칭에 사용하기 전에 반드시
+ * `isPendingTrainCode(lock.trainCode)`로 pending 여부를 먼저 판별해야 한다(오탐 금지).
+ */
+export const PENDING_TRAIN_CODE = 'PENDING-TRAIN-CODE';
+
+/** lock.trainCode가 #2407 fallback lock의 미확정 sentinel인지 판별. */
+export function isPendingTrainCode(trainCode: string): boolean {
+  return trainCode === PENDING_TRAIN_CODE;
+}
+
+/**
  * #2197 (ADR-025 client 절반) — 이미 등록된 trip의 route/destination 변경 재-POST를
  * coalesce하는 debounce(ms).
  *

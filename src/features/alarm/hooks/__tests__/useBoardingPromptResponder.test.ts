@@ -21,6 +21,7 @@ import {
 import * as positionUpload from '../../../nearest-station/api/positionUpload';
 import { renderHook } from '@testing-library/react-native';
 import type { StationArrival } from '../../../../shared/types/arrival';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
@@ -336,19 +337,74 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(createLockMock).not.toHaveBeenCalled();
   });
 
-  it('arrivals null → fallback to manual (createLock/dismiss 없음)', async () => {
+  // #2407 (root fix) — train 확정 실패해도 lock은 생성한다(ADR-014 명시 탭=lock 동급).
+  it('arrivals null → pending fallback lock 생성 (#2407, dismiss는 발사 안 함)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).not.toHaveBeenCalled();
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+      false,
+      'boarding-prompt-response',
+    );
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
   });
 
-  it('ambiguity (같은 priority 후보 2+) → manual fallback, lock 안 함', async () => {
+  // #2407 — ambiguity도 "탭했는데 train을 못 골랐다"는 동일 실패 모드라 pending fallback lock 대상.
+  it('ambiguity (같은 priority 후보 2+) → pending fallback lock 생성 (#2407)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps({
       fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
     });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+      false,
+      'boarding-prompt-response',
+    );
+  });
+
+  // #2407 — pending fallback lock도 payload.line이 유효 LineNumber가 아니면 생성 불가(극히
+  // 드문 데이터 이상). manual fallback graceful skip.
+  it('#2407 — pending fallback: payload.line이 유효하지 않으면 createLock 안 함', async () => {
+    const invalidPayload = { ...PAYLOAD, line: '99' };
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, invalidPayload, deps);
     expect(createLockMock).not.toHaveBeenCalled();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-station-lookup',
+      originStation: '강남',
+      line: '99',
+    });
+  });
+
+  // #2407 — pending fallback: station lookup 자체가 실패하면 lock 없이 graceful skip.
+  it('#2407 — pending fallback: station lookup 실패 → createLock 안 함', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).not.toHaveBeenCalled();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-station-lookup',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  // #2407 — pending fallback createLock이 실패해도(storage/network 예외) 응답 처리는 graceful.
+  it('#2407 — pending fallback: createLock 예외 시 graceful (autolock-lock-failed telemetry)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const failingCreateLock = jest.fn().mockRejectedValue(new Error('storage full'));
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () => null),
+      createLock: failingCreateLock,
+    });
+    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toBeUndefined();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-lock-failed',
+      originStation: '강남',
+      line: '2',
+    });
   });
 
   it('station lookup 실패 → manual fallback (createLock 안 함)', async () => {
@@ -408,17 +464,27 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     );
   });
 
-  it('#1740 — destinationDirection "up" 지정 + up 후보 없음 → lock 안 함 (반대 방향만 존재)', async () => {
-    const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
-    const deps = makeDeps({
-      fetchArrivalsForStation: jest.fn(async () =>
-        makeArrivalBothDirections([], [downTrain]),
-      ),
-    });
-    const payload = { ...PAYLOAD, destinationDirection: 'up' as const };
-    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
-    expect(createLockMock).not.toHaveBeenCalled();
-  });
+  // #2407 — up 후보 0건은 "line 매칭 0건" 실패 모드와 동일 — pending fallback lock 대상.
+  it(
+    '#1740 — destinationDirection "up" 지정 + up 후보 없음 → pending fallback lock 생성 ' +
+      '(#2407, 반대 방향만 존재)',
+    async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () =>
+          makeArrivalBothDirections([], [downTrain]),
+        ),
+      });
+      const payload = { ...PAYLOAD, destinationDirection: 'up' as const };
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
+        false,
+        'boarding-prompt-response',
+      );
+    },
+  );
 
   it('#1740 — destinationDirection undefined → 양방향 모두 후보 (backward compat)', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
@@ -873,18 +939,26 @@ describe('handleResponse — #1888 RC-13 onBannerTap navigation', () => {
     expect(onBannerTap).toHaveBeenCalledTimes(1);
   });
 
-  it('$default action → onBannerTap 호출 (autolock 실패 케이스도 navigation)', async () => {
-    // arrivals 0건 → autolock empty fallback path. 사용자는 여전히 list를 보고 싶다.
-    const onBannerTap = jest.fn();
-    const deps = makeHandleResponseDeps({
-      fetchArrivalsForStation: jest.fn(async () => null),
-      onBannerTap,
-    });
-    await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
-    expect(onBannerTap).toHaveBeenCalledTimes(1);
-    // 추가 확인 — lock은 생성 안 됨 (fallback path).
-    expect(createLockMock).not.toHaveBeenCalled();
-  });
+  it(
+    '$default action → onBannerTap 호출 (train 확정 실패해도 pending fallback lock 생성, #2407)',
+    async () => {
+      // arrivals 0건 → #2407 pending fallback lock 경로. 사용자는 여전히 list를 보고 싶다.
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const onBannerTap = jest.fn();
+      const deps = makeHandleResponseDeps({
+        fetchArrivalsForStation: jest.fn(async () => null),
+        onBannerTap,
+      });
+      await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
+      expect(onBannerTap).toHaveBeenCalledTimes(1);
+      // #2407 root fix — train 미확정이어도 lock 자체는 생성된다 (trainCode=pending sentinel).
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE }),
+        false,
+        'boarding-prompt-response',
+      );
+    },
+  );
 
   it('[탑승] action → onBannerTap 호출 안 함 (action button은 silent autolock)', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });

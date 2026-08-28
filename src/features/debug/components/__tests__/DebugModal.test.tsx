@@ -876,13 +876,15 @@ describe('DebugModal', () => {
     expect(screen.getByTestId('debug-autolock-telemetry-1h').props.children).toBe('—');
   });
 
-  it('#1687: autoLock(1h) row — success/ambiguous/empty/failed 분포 표기', async () => {
+  it('#1687: autoLock(1h) row — success/ambiguous/empty/failed/pending 분포 표기', async () => {
     const now = Date.now();
     mockGetAlarmLog.mockResolvedValue([
       { ts: now - 1_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
       { ts: now - 2_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
       { ts: now - 3_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
       { ts: now - 4_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+      // #2407 — root fix fallback lock 카운트.
+      { ts: now - 5_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-fallback-pending' },
     ]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
@@ -892,6 +894,7 @@ describe('DebugModal', () => {
     expect(el.props.children).toContain('amb=1');
     expect(el.props.children).toContain('empty=1');
     expect(el.props.children).toContain('fail=1');
+    expect(el.props.children).toContain('pending=1');
   });
 
   it('#1693/#1706: Fusion Tier (1h) 섹션이 별 ring tier 분포를 표시한다', async () => {
@@ -3246,6 +3249,25 @@ describe('DebugModal — BoardingLock 섹션 (#1025)', () => {
     expect(screen.getByText('yes')).toBeTruthy();
   });
 
+  // #2407 — root fix fallback lock의 trainCode가 pending sentinel이면 UI KeyValue에도
+  // "(pending)" suffix를 명시(V/X dashboard 관측성).
+  it('lock.trainCode가 pending sentinel이면 "(pending)" suffix를 표시한다', async () => {
+    act(() => {
+      useBoardingLockStore.setState({
+        lock: {
+          ...activeLockBase(),
+          destinationId: 'dest-1',
+          trainCode: 'PENDING-TRAIN-CODE',
+          boardingStationId: 'stn-1',
+          boardingLine: '2',
+          boardingEvidence: false,
+        },
+      });
+    });
+    await renderAndWait();
+    expect(screen.getByText('PENDING-TRAIN-CODE (pending)')).toBeTruthy();
+  });
+
   it('lock이 sentinel이면 sentinel=yes를 표시한다', async () => {
     act(() => {
       useBoardingLockStore.setState({
@@ -3576,6 +3598,30 @@ describe('DebugModal share SSOT (#1346)', () => {
       expect(section).toContain('expiresAt=');
       expect(section).toContain('boardedAt=');
       expect(section).not.toContain('sentinel=yes');
+    });
+
+    // #2407 — trainCode가 pending sentinel(fallback lock, 실 trainCode 미확정)이면 dump에도
+    // 명시 표기(V/X dashboard 관측성).
+    it('BoardingLock: trainCode가 pending sentinel이면 "(pending)" suffix 표기', () => {
+      const boardedAt = new Date('2026-06-17T13:00:00Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: boardedAt + 60_000,
+          boardingLock: {
+            trainCode: 'PENDING-TRAIN-CODE',
+            boardingLine: '7',
+            boardedAt,
+            expectedDurationMs: 30 * 60 * 1000,
+            boardingStationId: '728',
+            destinationId: '2-022',
+          },
+        }),
+      );
+      const section = dump.slice(
+        dump.indexOf('## BoardingLock'),
+        dump.indexOf('## Estimator State'),
+      );
+      expect(section).toContain('trainCode=PENDING-TRAIN-CODE (pending)');
     });
 
     it('BoardingLock: hydratedFromSentinel=true면 sentinel=yes 라인 추가', () => {
