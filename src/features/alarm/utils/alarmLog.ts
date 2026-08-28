@@ -2250,11 +2250,9 @@ export function logBoardingPromptAutoLock(input: {
   });
 }
 
-/** #1167 — 최근 N건의 autolock outcome 분포 (운영 측정용). */
-export function countBoardingPromptAutoLockOutcomes(
-  entries: readonly AlarmLogEntry[],
-): Record<BoardingPromptAutoLockReason, number> {
-  const counts: Record<BoardingPromptAutoLockReason, number> = {
+/** #2408 — `countBoardingPromptAutoLockOutcomes`/`countAutoLockReasonsByWindow`가 공유하는 0값 초기 분포. */
+function createEmptyAutoLockReasonCounts(): Record<BoardingPromptAutoLockReason, number> {
+  return {
     'autolock-success': 0,
     'autolock-no-trip': 0,
     'autolock-arrivals-empty': 0,
@@ -2264,6 +2262,13 @@ export function countBoardingPromptAutoLockOutcomes(
     'autolock-fallback-pending': 0,
     'fallback-skipped-position-contradiction': 0,
   };
+}
+
+/** #1167 — 최근 N건의 autolock outcome 분포 (운영 측정용). */
+export function countBoardingPromptAutoLockOutcomes(
+  entries: readonly AlarmLogEntry[],
+): Record<BoardingPromptAutoLockReason, number> {
+  const counts = createEmptyAutoLockReasonCounts();
   for (const entry of entries) {
     if (entry.source !== 'boarding-prompt') continue;
     const reason = entry.reason;
@@ -2289,16 +2294,7 @@ export function countAutoLockReasonsByWindow(
   now: number = Date.now(),
 ): Record<BoardingPromptAutoLockReason, number> {
   const cutoff = now - windowMs;
-  const counts: Record<BoardingPromptAutoLockReason, number> = {
-    'autolock-success': 0,
-    'autolock-no-trip': 0,
-    'autolock-arrivals-empty': 0,
-    'autolock-ambiguity': 0,
-    'autolock-station-lookup': 0,
-    'autolock-lock-failed': 0,
-    'autolock-fallback-pending': 0,
-    'fallback-skipped-position-contradiction': 0,
-  };
+  const counts = createEmptyAutoLockReasonCounts();
   for (const entry of entries) {
     if (entry.ts <= cutoff) continue;
     if (entry.source !== 'boarding-prompt') continue;
