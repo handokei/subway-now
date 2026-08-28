@@ -215,6 +215,16 @@ function expectPendingFallbackLockCalled(boardingLine?: string): void {
   );
 }
 
+// #2407/#2408 — logBoardingPromptAutoLock({ reason, originStation, line }) 호출 assertion
+// 공통 헬퍼. originStation/line은 이 describe 전역에서 '강남'/'2'로 고정된 케이스가 대부분.
+function expectAutoLockLogged(
+  reason: string,
+  originStation: string = '강남',
+  line: string = '2',
+): void {
+  expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({ reason, originStation, line });
+}
+
 describe('extractBoardingPromptPayload', () => {
   it('valid payload → 보존', () => {
     expect(
@@ -379,11 +389,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, invalidPayload, deps);
     expect(createLockMock).not.toHaveBeenCalled();
-    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
-      reason: 'autolock-station-lookup',
-      originStation: '강남',
-      line: '99',
-    });
+    expectAutoLockLogged('autolock-station-lookup', '강남', '99');
   });
 
   // #2407 — pending fallback: station lookup 자체가 실패하면 lock 없이 graceful skip.
@@ -392,11 +398,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
-    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
-      reason: 'autolock-station-lookup',
-      originStation: '강남',
-      line: '2',
-    });
+    expectAutoLockLogged('autolock-station-lookup');
   });
 
   // #2407 — pending fallback createLock이 실패해도(storage/network 예외) 응답 처리는 graceful.
@@ -408,11 +410,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       createLock: failingCreateLock,
     });
     await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toBeUndefined();
-    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
-      reason: 'autolock-lock-failed',
-      originStation: '강남',
-      line: '2',
-    });
+    expectAutoLockLogged('autolock-lock-failed');
   });
 
   // #2408 — 위험1 guard: stale prompt → 잘못된 lock 방지. BG_LAST_STATION mock helper.
@@ -432,11 +430,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
-    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
-      reason: 'fallback-skipped-position-contradiction',
-      originStation: '강남',
-      line: '2',
-    });
+    expectAutoLockLogged('fallback-skipped-position-contradiction');
   });
 
   it('#2408 — BG_LAST_STATION line이 payload.line과 일치 → 기존대로 pending fallback lock 생성', async () => {
@@ -445,11 +439,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expectPendingFallbackLockCalled('2');
-    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
-      reason: 'autolock-fallback-pending',
-      originStation: '강남',
-      line: '2',
-    });
+    expectAutoLockLogged('autolock-fallback-pending');
   });
 
   it('#2408 — BG_LAST_STATION 부재(null) → 검증 불가, 기존대로 lock 생성(탭 신뢰)', async () => {

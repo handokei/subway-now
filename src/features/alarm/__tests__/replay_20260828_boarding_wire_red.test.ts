@@ -120,6 +120,19 @@ describe('#2405 whole-trip wire RED — 용마산(7) boardingPrompt → tryAutoL
     });
   }
 
+  // #2407 root fix 공통 assertion — train 확정 실패(가설 A/B)해도 pending sentinel lock이
+  // 생성됨을 검증. destinationId 검증은 가설 A에서만 필요(가설 B는 별도 관심사 없음).
+  function expectPendingFallbackLock(opts: { checkDestinationId?: boolean } = {}) {
+    const { lock } = useBoardingLockStore.getState();
+    expect(lock).not.toBeNull();
+    expect(lock?.trainCode).toBe(PENDING_TRAIN_CODE);
+    expect(lock?.boardingLine).toBe(LINE);
+    expect(lock?.boardingEvidence).toBe(false);
+    if (opts.checkDestinationId) {
+      expect(lock?.destinationId).toBe(DESTINATION_ID);
+    }
+  }
+
   it(
     '가설 A(arrivals-null): fetchArrivalsForStation이 null 반환 시 실 tryAutoLock이 pending ' +
       'fallback lock을 생성한다 (GREEN — #2407 root fix 증명)',
@@ -131,12 +144,7 @@ describe('#2405 whole-trip wire RED — 용마산(7) boardingPrompt → tryAutoL
       expect(fetchArrivalsForStation).toHaveBeenCalledWith(ORIGIN_STATION);
       // 🟢 GREEN 기대(#2407 root fix): train 확정 실패해도 lock은 생성된다 — trainCode는
       // pending sentinel, evidence=false, destinationId/boardingLine은 payload 기반 확정값.
-      const { lock } = useBoardingLockStore.getState();
-      expect(lock).not.toBeNull();
-      expect(lock?.trainCode).toBe(PENDING_TRAIN_CODE);
-      expect(lock?.boardingLine).toBe(LINE);
-      expect(lock?.destinationId).toBe(DESTINATION_ID);
-      expect(lock?.boardingEvidence).toBe(false);
+      expectPendingFallbackLock({ checkDestinationId: true });
       // 사용자 명시 의향은 그대로 stamp됨 (ADR-014 §X, useBoardingPromptResponder.ts:217-228).
       // 덤프의 `lockless-trip-end 1:intent`와 정합.
       expect(useUserIntentStore.getState().infoModeEnabled).toBe(true);
@@ -172,11 +180,7 @@ describe('#2405 whole-trip wire RED — 용마산(7) boardingPrompt → tryAutoL
       await driveBoardedTap(fetchArrivalsForStation);
 
       // 🟢 GREEN 기대(#2407 root fix): 7호선 매칭 0건이어도 pending fallback lock이 생성된다.
-      const { lock } = useBoardingLockStore.getState();
-      expect(lock).not.toBeNull();
-      expect(lock?.trainCode).toBe(PENDING_TRAIN_CODE);
-      expect(lock?.boardingLine).toBe(LINE);
-      expect(lock?.boardingEvidence).toBe(false);
+      expectPendingFallbackLock();
     },
   );
 
