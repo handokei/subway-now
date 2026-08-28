@@ -115,6 +115,43 @@ function asLineNumber(raw: string): LineNumber | null {
 const isReachable = (train: ArrivalInfo): boolean => train.arrivalSeconds >= 0;
 
 /**
+ * #2407 — lock이 이미 확정된(pending 아닌) trainCode로 존재하면 lockSuggestion 채택을 skip.
+ * pending fallback lock(trainCode 미확정)은 upgrade 대상이라 skip하지 않는다.
+ */
+function shouldSkipExistingLock(lock: BoardingLock | null): boolean {
+  return lock !== null && !isPendingTrainCode(lock.trainCode);
+}
+
+/**
+ * #2407 — pending fallback lock upgrade는 같은 leg(boardingLine 일치)일 때만 허용한다.
+ * 다른 leg의 suggestion이 fallback lock을 clobber하지 않도록 방어.
+ */
+function isPendingUpgradeLineMismatch(lock: BoardingLock | null, boardingLine: LineNumber): boolean {
+  return lock !== null && isPendingTrainCode(lock.trainCode) && boardingLine !== lock.boardingLine;
+}
+
+/**
+ * #2278 (PR #2287 리뷰 P1-1) — legAdvance stamp(사용자 명시 하차 응답)가 살아있는 동안 stale/
+ * 불일치 lockSuggestion으로 재-hydrate해 그 stamp를 무력화하지 않도록 판정한다:
+ *   (a) suggestion.decidedAt < stamp.stampedAt — 사용자가 하차를 확인한 시점 *이전에* backend가
+ *       결정한 stale suggestion. 그 사이의 최신 상황을 반영하지 못했으므로 신뢰 X.
+ *   (b) suggestion.boardingLine !== stamp.nextLine — 사용자가 확인한 다음 leg와 다른 노선을
+ *       제안 — stale mirror(이전 leg) 재생성 회귀(#2278 RCA)를 여기서 직접 차단.
+ * stamp가 없으면(legAdvanceLine=null) conflict 없음 — 기존 동작 그대로.
+ */
+function isLegAdvanceConflict(
+  legAdvanceLine: LineNumber | null,
+  legAdvanceStampedAt: number | null,
+  decidedAt: number,
+  boardingLine: LineNumber,
+): boolean {
+  if (legAdvanceLine === null) return false;
+  const isStale = legAdvanceStampedAt !== null && decidedAt < legAdvanceStampedAt;
+  const disagrees = boardingLine !== legAdvanceLine;
+  return isStale || disagrees;
+}
+
+/**
  * BoardingLock 제어 hook (#584 PR B).
  *
  * 책임:
@@ -211,22 +248,16 @@ export function useBoardingLockController({
     // 확정해야 한다("기존 메커니즘 재사용, 신규 감지 신설 금지" — 이 effect가 이미 하는 backend
     // suggestion → createLock 채택 로직을 pending 케이스까지 확장). 이미 trainCode가 확정된
     // 일반 lock은 기존대로 완전 no-op(사용자 명시 탭 lock 보호 정책 불변).
-    const isPendingUpgrade = lock !== null && isPendingTrainCode(lock.trainCode);
-    if (lock && !isPendingUpgrade) return;
+    if (shouldSkipExistingLock(lock)) return;
     // #2330 (consensus-D, 설계 SSoT #2323 (3)) — confidence='consensus'는 lock 승격 금지.
     // legConsensus는 UI 표시(배지/하이라이트)/floor 힌트 전용 forward라 high/medium/low(9-AND
     // gate 기반 evidence)와 달리 자동 hydrate 대상이 아니다. "오토락 부활" 오해를 구조적으로 차단.
     if (lockSuggestion.confidence === 'consensus') return;
     const boardingLine = asLineNumber(lockSuggestion.lineId);
     if (!boardingLine) return;
-    // pending lock upgrade는 같은 leg(boardingLine 일치)일 때만 허용 — 다른 leg의 suggestion이
-    // fallback lock을 clobber하지 않도록 방어.
-    if (isPendingUpgrade && lock && boardingLine !== lock.boardingLine) return;
-    if (legAdvanceLine !== null) {
-      const isStale =
-        legAdvanceStampedAt !== null && lockSuggestion.decidedAt < legAdvanceStampedAt;
-      const disagrees = boardingLine !== legAdvanceLine;
-      if (isStale || disagrees) return;
+    if (isPendingUpgradeLineMismatch(lock, boardingLine)) return;
+    if (isLegAdvanceConflict(legAdvanceLine, legAdvanceStampedAt, lockSuggestion.decidedAt, boardingLine)) {
+      return;
     }
     const allowed = allowedLinesFromRoute(route);
     if (allowed && !allowed.has(boardingLine)) return;

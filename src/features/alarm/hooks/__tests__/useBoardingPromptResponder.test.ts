@@ -204,6 +204,17 @@ function makeHandleResponseDeps(
   };
 }
 
+// #2407 — pending fallback lock(trainCode=PENDING_TRAIN_CODE) 생성 assertion 공통 헬퍼.
+function expectPendingFallbackLockCalled(boardingLine?: string): void {
+  expect(createLockMock).toHaveBeenCalledWith(
+    boardingLine === undefined
+      ? expect.objectContaining({ trainCode: PENDING_TRAIN_CODE })
+      : expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine }),
+    false,
+    'boarding-prompt-response',
+  );
+}
+
 describe('extractBoardingPromptPayload', () => {
   it('valid payload → 보존', () => {
     expect(
@@ -347,11 +358,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-      false,
-      'boarding-prompt-response',
-    );
+    expectPendingFallbackLockCalled('2');
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
   });
 
@@ -362,11 +369,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
     });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-      false,
-      'boarding-prompt-response',
-    );
+    expectPendingFallbackLockCalled('2');
   });
 
   // #2407 — pending fallback lock도 payload.line이 유효 LineNumber가 아니면 생성 불가(극히
@@ -441,11 +444,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     mockBgLastStation('2', 0);
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-      false,
-      'boarding-prompt-response',
-    );
+    expectPendingFallbackLockCalled('2');
     expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
       reason: 'autolock-fallback-pending',
       originStation: '강남',
@@ -458,11 +457,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(async () => null);
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-      false,
-      'boarding-prompt-response',
-    );
+    expectPendingFallbackLockCalled('2');
   });
 
   it('#2408 — BG_LAST_STATION stale(신선도 초과) → 검증 불가, 기존대로 lock 생성', async () => {
@@ -471,11 +466,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     mockBgLastStation('7', 5 * 60_000 + 1);
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-      false,
-      'boarding-prompt-response',
-    );
+    expectPendingFallbackLockCalled('2');
   });
 
   it('#2408 — BG_LAST_STATION read 예외 → guard skip, 기존대로 lock 생성(graceful)', async () => {
@@ -485,11 +476,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     });
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-      false,
-      'boarding-prompt-response',
-    );
+    expectPendingFallbackLockCalled('2');
   });
 
   it('station lookup 실패 → manual fallback (createLock 안 함)', async () => {
@@ -563,11 +550,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       });
       const payload = { ...PAYLOAD, destinationDirection: 'up' as const };
       await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
-      expect(createLockMock).toHaveBeenCalledWith(
-        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE, boardingLine: '2' }),
-        false,
-        'boarding-prompt-response',
-      );
+      expectPendingFallbackLockCalled('2');
     },
   );
 
@@ -1037,11 +1020,7 @@ describe('handleResponse — #1888 RC-13 onBannerTap navigation', () => {
       await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps);
       expect(onBannerTap).toHaveBeenCalledTimes(1);
       // #2407 root fix — train 미확정이어도 lock 자체는 생성된다 (trainCode=pending sentinel).
-      expect(createLockMock).toHaveBeenCalledWith(
-        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE }),
-        false,
-        'boarding-prompt-response',
-      );
+      expectPendingFallbackLockCalled();
     },
   );
 

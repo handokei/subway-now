@@ -101,6 +101,21 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   };
 }
 
+// #2407 — pending fallback lock(trainCode 미확정) fixture. upgrade 시나리오 2개(같은/다른
+// boardingLine suggestion)가 공유.
+function makePendingLock(overrides: Partial<BoardingLock> = {}): BoardingLock {
+  return {
+    destinationId: 'dest-1',
+    trainCode: PENDING_TRAIN_CODE,
+    boardingStationId: 'stn-A',
+    boardingLine: '2',
+    boardedAt: Date.now(),
+    expectedDurationMs: 30 * 60_000,
+    boardingEvidence: false,
+    ...overrides,
+  };
+}
+
 const stationA: Station = {
   id: 'stn-A',
   name: '강남',
@@ -1254,15 +1269,7 @@ describe('useBoardingLockController', () => {
     it('#2407 — pending lock(trainCode 미확정) + 같은 boardingLine suggestion → 실 trainCode로 upgrade', async () => {
       readSpy.mockResolvedValue(MIRROR);
       const createLockMock = jest.fn().mockResolvedValue(undefined);
-      const pending: BoardingLock = {
-        destinationId: 'dest-1',
-        trainCode: PENDING_TRAIN_CODE,
-        boardingStationId: 'stn-A',
-        boardingLine: '2',
-        boardedAt: Date.now(),
-        expectedDurationMs: 30 * 60_000,
-        boardingEvidence: false,
-      };
+      const pending = makePendingLock();
       mockGetBoardingLock.mockResolvedValue(pending);
       useBoardingLockStore.setState({ lock: pending, createLock: createLockMock });
       renderHook(() => useBoardingLockController(defaultInputs));
@@ -1285,15 +1292,7 @@ describe('useBoardingLockController', () => {
         lockSuggestion: { ...SUGGESTION, lineId: '7' },
       });
       const createLockMock = jest.fn().mockResolvedValue(undefined);
-      const pending: BoardingLock = {
-        destinationId: 'dest-1',
-        trainCode: PENDING_TRAIN_CODE,
-        boardingStationId: 'stn-A',
-        boardingLine: '2',
-        boardedAt: Date.now(),
-        expectedDurationMs: 30 * 60_000,
-        boardingEvidence: false,
-      };
+      const pending = makePendingLock();
       mockGetBoardingLock.mockResolvedValue(pending);
       useBoardingLockStore.setState({ lock: pending, createLock: createLockMock });
       renderHook(() => useBoardingLockController(defaultInputs));

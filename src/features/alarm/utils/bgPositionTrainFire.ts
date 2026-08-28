@@ -65,7 +65,7 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   // #2407 — trainCode pending(fallback lock, 미확정) 상태에서는 이 경로(realtimePosition 정밀추적)를
   // skip한다. pending sentinel을 실 trainCode처럼 매칭에 넣으면 항상 미매칭이라 false negative만
   // 쌓인다 — 호출자(backgroundLocationTask)가 기존 GPS/route 파이프라인으로 graceful degrade.
-  if (!lock || !lock.trainCode || isPendingTrainCode(lock.trainCode)) return false;
+  if (!lock?.trainCode || isPendingTrainCode(lock.trainCode)) return false;
 
   const destJson = await AsyncStorage.getItem(DESTINATION_KEY);
   if (!destJson) return false;

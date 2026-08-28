@@ -1370,6 +1370,14 @@ function buildBackendCallsSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #2407 — pending sentinel(fallback lock, 실 trainCode 미확정)을 dump/UI 양쪽에 동일하게
+ * "(pending)" suffix로 명시 표기. 두 표시 지점(dump text, BoardingLockSection UI)의 SSOT.
+ */
+function formatTrainCodeDisplay(trainCode: string): string {
+  return isPendingTrainCode(trainCode) ? `${trainCode} (pending)` : trainCode;
+}
+
+/**
  * #1413 — BoardingLock 섹션. UI BoardingLockSection과 동일 필드를 dump key=value 형태로.
  * lock 없으면 `active=no` 1줄만.
  */
@@ -1380,8 +1388,7 @@ function buildBoardingLockSection(args: BuildDumpArgs): string[] {
   const lines: string[] = [`active=${active ? 'yes' : 'no'}`];
   if (lock) {
     lines.push(
-      // #2407 — pending sentinel(fallback lock, 실 trainCode 미확정)을 dump에도 명시 표기.
-      `trainCode=${isPendingTrainCode(lock.trainCode) ? `${lock.trainCode} (pending)` : lock.trainCode}`,
+      `trainCode=${formatTrainCodeDisplay(lock.trainCode)}`,
       `line=${lock.boardingLine}`,
       `expiresAt=${formatAt(lock.boardedAt + lock.expectedDurationMs * BOARDING_LOCK_EXPIRY_FACTOR)}`,
       `boardedAt=${formatAt(lock.boardedAt)}`,
@@ -3385,8 +3392,7 @@ function BoardingLockSection({
         <>
           <KeyValue
             label="trainCode"
-            // #2407 — pending sentinel(fallback lock, 실 trainCode 미확정)을 명시 표기.
-            value={isPendingTrainCode(lock.trainCode) ? `${lock.trainCode} (pending)` : lock.trainCode}
+            value={formatTrainCodeDisplay(lock.trainCode)}
             colors={colors}
           />
           <KeyValue label="line" value={String(lock.boardingLine)} colors={colors} />
