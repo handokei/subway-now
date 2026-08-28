@@ -7,9 +7,9 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from './stationPipeline';
-import { alarmKey } from './stationAlarm';
 import { getBoardingLock } from './boardingLockStorage';
-import { getFiredAlarms, setFiredAlarms } from './notificationState';
+import { getFiredAlarms } from './notificationState';
+import { persistBgFireResult } from './bgFirePersist';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import { isUndergroundProfile } from '../../nearest-station/utils/bgLocationProfile';
 import { undergroundSSOTConsensus } from '../../nearest-station/utils/undergroundSSotConsensus';
@@ -25,15 +25,7 @@ import {
   startCellularTechUpdates,
   classifyCellularEnvironment,
 } from '../../nearest-station/utils/cellularTech';
-import { saveStationToWidget } from '../../widget/api/widgetStorage';
-import { buildWidgetTripContext } from '../../widget/utils/buildTripContext';
-import {
-  DESTINATION_KEY,
-  SLEEP_MODE_KEY,
-  ROUTE_KEY,
-  ALARM_EVENT_KEY,
-  BG_LAST_STATION_KEY,
-} from '../../../shared/constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import { createLogger } from '../../../shared/utils/logger';
@@ -142,28 +134,5 @@ export async function evaluateUndergroundConsensusFire(): Promise<void> {
     fusionSource: 'position-train',
   });
 
-  if (alarmEvent) {
-    firedAlarms.add(alarmKey(alarmEvent));
-    await Promise.all([
-      setFiredAlarms(destination.id, firedAlarms),
-      AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
-    ]);
-  }
-
-  if (nearest) {
-    await AsyncStorage.setItem(
-      BG_LAST_STATION_KEY,
-      JSON.stringify({
-        station: nearest.station,
-        distanceKm: nearest.distanceKm,
-        timestamp: Date.now(),
-      }),
-    );
-    const tripContext = buildWidgetTripContext({
-      destination,
-      currentStation: nearest.station,
-      route: storedRoute,
-    });
-    await saveStationToWidget(nearest.station, nearest.distanceKm, undefined, undefined, tripContext);
-  }
+  await persistBgFireResult({ alarmEvent, nearest, destination, firedAlarms, storedRoute });
 }
