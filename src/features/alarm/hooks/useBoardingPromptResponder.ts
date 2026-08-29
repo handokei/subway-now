@@ -53,7 +53,9 @@ import {
 import { BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
-import { parseBgLastStation } from '../utils/widgetRefreshContext';
+import { parseBgLastStation, readWidgetRefreshContext } from '../utils/widgetRefreshContext';
+import { findLocklessTransferWaypoint } from '../../route/utils/findActiveTransferContext';
+import type { LineNumber } from '../../../shared/types/station';
 import {
   markBoardingPromptDisplayed,
   wasBoardingPromptDisplayed,
@@ -295,12 +297,19 @@ async function handleHopEndResponse(
     }
     // #2278 — 사용자 명시 [하차함] 응답 = ground truth. releaseLock으로 lock이 사라진 뒤
     // getApproachLine이 route의 stopsToTransfer(backend SSoT 왕복 지연 가능)에 의존하지 않고
-    // 즉시 다음 leg 노선을 반환하도록 로컬에 stamp한다. nextLine이 유효한 LineNumber가 아니면
-    // (구버전 backend 등 payload 누락) 기존 동작(route/lock fallback) 그대로 유지 — skip.
+    // 즉시 다음 leg 노선을 반환하도록 로컬에 stamp한다.
     // #2278 (PR #2287 리뷰 P1-2) — trip-scoped storage 영속화도 겸하므로 releaseLock과 동일하게
     // await(store 내부에서 실패를 swallow하므로 이 지점에서 throw되지 않는다).
     if (isValidLineNumber(payload.nextLine)) {
       await useLegAdvanceStore.getState().stampLegAdvance(payload.nextLine);
+    } else {
+      // #2410 — nextLine이 유효한 LineNumber가 아니면(구버전 backend 등 payload 누락)
+      // 하차 등록 전체를 silent skip하지 않고 로컬 route에서 다음 leg 노선을 도출해 stamp한다.
+      // route/destination 부재나 waypoint 매칭 실패(도출 불가)면 기존대로 graceful skip.
+      const derivedLine = await deriveNextLegLineFromRoute(payload);
+      if (derivedLine) {
+        await useLegAdvanceStore.getState().stampLegAdvance(derivedLine);
+      }
     }
     if (
       actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER &&
@@ -315,6 +324,40 @@ async function handleHopEndResponse(
     line: payload.line,
   });
   await dismissBoardingPrompt(payload.tripToken);
+}
+
+/**
+ * #2410 — hop-end push의 `payload.nextLine`이 없거나 유효한 LineNumber가 아닐 때, 로컬
+ * route + `payload.originStation`(환승/하차역)으로 다음 leg 노선을 도출한다.
+ *
+ * `findLocklessTransferWaypoint`(#2319)를 재사용 — 이 함수는 lock 존재를 전제하는
+ * `findActiveTransferContext`와 달리 lock-비종속으로 설계되어, handleHopEndResponse가
+ * 이미 releaseLock을 호출해 lock이 사라진 이 시점에도 route + destinationName +
+ * currentStation만으로 다음 leg 노선을 판정할 수 있다(useTransferTrainList의 lockless
+ * legAdvance stamp 경로와 동일 패턴).
+ *
+ * route/destination은 `readWidgetRefreshContext`(ROUTE_KEY/DESTINATION_KEY storage SSoT)로
+ * 읽는다 — silent push 등 BG 컨텍스트에서도 React state 없이 동일하게 동작하는 기존 채널.
+ * currentStation은 payload.originStation을 payload.line(현재/직전 leg 노선)으로 조회한다.
+ *
+ * 아래 중 하나라도 실패하면 null (caller가 graceful skip):
+ *  - payload.line이 유효한 LineNumber가 아님
+ *  - originStation을 payload.line 위에서 찾지 못함(역명 불일치)
+ *  - route 또는 destination이 storage에 없음(cold-start 미hydrate 등)
+ *  - findLocklessTransferWaypoint가 현재 위치를 환승 waypoint로 매칭하지 못함
+ */
+async function deriveNextLegLineFromRoute(
+  payload: BoardingPromptPayload,
+): Promise<LineNumber | null> {
+  if (!isValidLineNumber(payload.line)) return null;
+  const currentStation = findStationByNameAndLine(payload.originStation, payload.line);
+  if (!currentStation) return null;
+
+  const { destination, route } = await readWidgetRefreshContext();
+  if (!route || !destination) return null;
+
+  const waypoint = findLocklessTransferWaypoint(route, destination.name, currentStation);
+  return waypoint?.nextLine ?? null;
 }
 
 async function tryAutoLock(

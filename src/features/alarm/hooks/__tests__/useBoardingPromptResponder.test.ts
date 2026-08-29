@@ -23,6 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { renderHook } from '@testing-library/react-native';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
+import { makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
@@ -118,6 +119,29 @@ jest.mock('../../store/useLegAdvanceStore', () => {
   };
 });
 
+// #2410 — nextLine 무효 시 route derive fallback. parseBgLastStation은 실제 구현 유지
+// (#2408 위험1 guard 테스트가 이미 real 함수에 의존), readWidgetRefreshContext만 mock해
+// route/destination fixture를 직접 제어한다.
+jest.mock('../../utils/widgetRefreshContext', () => {
+  const actual = jest.requireActual('../../utils/widgetRefreshContext');
+  const mockReadWidgetRefreshContext = jest.fn(async () => ({
+    destination: null,
+    route: null,
+    bgContext: null,
+  }));
+  return {
+    ...actual,
+    readWidgetRefreshContext: mockReadWidgetRefreshContext,
+    __mockReadWidgetRefreshContext: mockReadWidgetRefreshContext,
+  };
+});
+
+// #2410 — findLocklessTransferWaypoint mock. 실 stations.json 데이터 의존 없이
+// route derive 성공/실패 분기를 직접 제어한다.
+jest.mock('../../../route/utils/findActiveTransferContext', () => ({
+  findLocklessTransferWaypoint: jest.fn(() => null),
+}));
+
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
 const {
   logBoardingPromptAutoLock,
@@ -138,6 +162,12 @@ const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
 );
 const { __mockStampLegAdvance: stampLegAdvanceMock } = jest.requireMock(
   '../../store/useLegAdvanceStore',
+);
+const { __mockReadWidgetRefreshContext: readWidgetRefreshContextMock } = jest.requireMock(
+  '../../utils/widgetRefreshContext',
+);
+const { findLocklessTransferWaypoint: findLocklessTransferWaypointMock } = jest.requireMock(
+  '../../../route/utils/findActiveTransferContext',
 );
 const displayLoggerMock = jest.requireMock('../useBoardingPromptDisplayLogger');
 
@@ -1181,6 +1211,146 @@ describe('handleResponse — #2034 hop-end', () => {
       makeHandleResponseDeps(),
     );
     expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+  });
+
+  // #2410 — push nextLine 무효(구버전 backend 등) 시 로컬 route에서 다음 leg 노선을 도출해
+  // stampLegAdvance한다. 하차 등록이 push 데이터 부재로 통째로 무효화되던 회귀 fix.
+  describe('#2410 — nextLine 무효 시 route derive fallback', () => {
+    it('nextLine 무효 + route derive 성공 → 도출된 line으로 stampLegAdvance 호출', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D1', line: 'gyeongui', name: '왕십리' },
+        route: makeTransferRoute({
+          transferName: '성수',
+          fromLine: '2',
+          toLine: 'gyeongui',
+          stopsToTransfer: 0,
+          stopsFromTransfer: 3,
+        }),
+        bgContext: null,
+      });
+      findLocklessTransferWaypointMock.mockReturnValueOnce({
+        transferStationInToLine: { id: 'S-성수-K', line: 'gyeongui', name: '성수' },
+        nextLine: '5',
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(findLocklessTransferWaypointMock).toHaveBeenCalledTimes(1);
+      expect(stampLegAdvanceMock).toHaveBeenCalledTimes(1);
+      expect(stampLegAdvanceMock).toHaveBeenCalledWith('5');
+    });
+
+    it('nextLine 무효 + route/destination storage 부재 → stampLegAdvance 호출 안 함 (graceful skip)', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: null,
+        route: null,
+        bgContext: null,
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(findLocklessTransferWaypointMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 무효 + originStation station lookup 실패 → stampLegAdvance 호출 안 함 (graceful skip)', async () => {
+      findStationByNameAndLine.mockReturnValue(undefined);
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(readWidgetRefreshContextMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 무효 + route derive 매칭 실패(findLocklessTransferWaypoint null) → stampLegAdvance 호출 안 함', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D1', line: 'gyeongui', name: '왕십리' },
+        route: makeTransferRoute({
+          transferName: '성수',
+          fromLine: '2',
+          toLine: 'gyeongui',
+          stopsToTransfer: 0,
+          stopsFromTransfer: 3,
+        }),
+        bgContext: null,
+      });
+      findLocklessTransferWaypointMock.mockReturnValueOnce(null);
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 무효 + route derive 성공해도 releaseLock은 그대로 1회 호출됨 (기존 흐름 무변경)', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D1', line: 'gyeongui', name: '왕십리' },
+        route: makeTransferRoute({
+          transferName: '성수',
+          fromLine: '2',
+          toLine: 'gyeongui',
+          stopsToTransfer: 0,
+          stopsFromTransfer: 3,
+        }),
+        bgContext: null,
+      });
+      findLocklessTransferWaypointMock.mockReturnValueOnce({
+        transferStationInToLine: { id: 'S-성수-K', line: 'gyeongui', name: '성수' },
+        nextLine: '5',
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(releaseLockMock).toHaveBeenCalledTimes(1);
+      expect(releaseLockMock).toHaveBeenCalledWith('user');
+    });
+
+    it('nextLine 무효 + payload.line도 유효하지 않음 → station lookup 시도 없이 stampLegAdvance 호출 안 함', async () => {
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        { ...HOP_END_PAYLOAD, line: 'not-a-line' },
+        makeHandleResponseDeps(),
+      );
+
+      expect(findStationByNameAndLine).not.toHaveBeenCalled();
+      expect(readWidgetRefreshContextMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 유효 → route derive 경로 진입 안 함 (findLocklessTransferWaypoint 미호출, 기존 회귀 없음)', async () => {
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD_VALID_NEXT_LINE,
+        makeHandleResponseDeps(),
+      );
+
+      expect(readWidgetRefreshContextMock).not.toHaveBeenCalled();
+      expect(findLocklessTransferWaypointMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).toHaveBeenCalledWith('2');
+    });
   });
 
   it('[아직] (NOT_YET action) → stampLegAdvance 호출 안 함', async () => {
