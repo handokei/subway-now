@@ -511,7 +511,7 @@ describe('useStateRehydration', () => {
       (Date.now as jest.Mock).mockRestore();
     });
 
-    it('pausedAt 존재 + 경과 ≥ PAUSE_AUTO_END_MS — runTripBoundCleanups + setState reset + releaseLock + alarmLog fired (RED: cold-start 자동 종료)', async () => {
+    it('pausedAt 존재 + 경과 ≥ PAUSE_AUTO_END_MS — runTripBoundCleanups + setState reset + releaseLock + sentinel + alarmLog fired (RED: cold-start 자동 종료)', async () => {
       const now = 1_700_000_000_000;
       jest.spyOn(Date, 'now').mockReturnValue(now);
       mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
@@ -536,6 +536,8 @@ describe('useStateRehydration', () => {
       expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
         reason: 'navigation-pause-auto-end',
       });
+      // 버그 #3 fix — force-end 경로와 동일하게 종료 시 sentinel set, BG 채널이 인지 가능.
+      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
       (Date.now as jest.Mock).mockRestore();
     });
 
