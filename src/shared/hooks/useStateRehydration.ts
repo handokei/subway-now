@@ -243,6 +243,8 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
  *
  * force-end(9h+) 분기와 동일한 cleanup 시퀀스를 재사용한다(silent push trip-ended와 동형) —
  * setDestination 호출 대신 runTripBoundCleanups + setState 직접 호출은 #1351 R2와 동일 이유.
+ * force-end와 동일하게 종료 후 setTripEndedSentinel을 호출해 BG 채널(silent push 등)이 이 종료를
+ * 인지하도록 한다 — 누락 시 backend trip이 계속 살아있을 수 있음(버그 #3).
  */
 async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<void> {
   try {
@@ -269,6 +271,9 @@ async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<
     });
     addDomainBreadcrumb('trip', 'end', { reason: 'navigation-pause-auto-end' });
     await useBoardingLockStore.getState().releaseLock();
+    // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
+    // force-end 경로와 동일 — BG 채널(silent push 등)이 이 종료를 인지하도록 mirror 남김.
+    await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
     logger.warn('navigation pause backstop 실패 (graceful)', e);
   }
