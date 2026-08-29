@@ -102,6 +102,7 @@ import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHo
 import { LocklessBadge } from '../features/alarm/components/LocklessBadge';
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
+import { resolveJourneyOriginStation } from '../features/route/utils/journeyOrigin';
 import { useCongestion } from '../features/congestion/hooks/useCongestion';
 import { deriveCongestionDirection } from '../features/congestion/utils/deriveDirection';
 import { CongestionBadge } from '../features/congestion/components/CongestionBadge';
@@ -605,7 +606,13 @@ export default function HomeScreen() {
   // 중 화면에 표시되는 출발역이 현재역을 따라 재앵커되는 회귀가 있었다(evidence: 07:32
   // 어린이대공원 → 07:34 건대입구). tripOrigin이 아직 캡처 전(cold-start)이면 effectiveOrigin으로
   // 1회 fallback — useTripOrigin이 곧 캡처하면 이후 렌더부터는 tripOrigin으로 고정된다.
-  const journeyOrigin = tripOrigin ?? effectiveOrigin;
+  // #2412 — 환승 후엔 origin을 trip 시작역이 아니라 현재 leg가 시작된 환승역으로 re-origin
+  // ("용마산 → 뚝섬"이 아니라 "건대 → 뚝섬"). 새 신호 신설 없이 기존 3단 신호
+  // (boardingLock.boardingStationId / legAdvanceLine / route 진행도)만 재사용해 leg를 판정하고,
+  // 판정 실패 시 위 tripOrigin ?? effectiveOrigin 체인 그대로 fallback한다.
+  const journeyOrigin =
+    resolveJourneyOriginStation(route, fusionBoardingLock, tripOrigin, legAdvanceLine) ??
+    effectiveOrigin;
   const journey = useMemo(
     () => (route && journeyOrigin && destination ? buildJourneyDisplay(route, journeyOrigin, destination) : null),
     [route, journeyOrigin?.id, destination?.id],
