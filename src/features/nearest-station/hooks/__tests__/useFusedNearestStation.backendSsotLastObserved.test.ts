@@ -16,19 +16,12 @@
  *   4. backend-ssot 완전 부재 → 기존 ④ DefaultHop cap fallback (회귀 없음).
  */
 
-// #2414 (SonarCloud dup fix) — 반드시 최상단 import. jest.mock 등록 + mock 캐스팅 + 공통 station
-// 상수(용마산/청담)를 estimatorBackendSsotOverride.test.ts와 공유하는 harness. 상세 사유는 harness 헤더 참조.
-import {
-  mockNearest,
-  mockArrival,
-  mockPos,
-  mockFindTop,
-  mockRead,
-  yongmasan,
-  chungdam,
-} from '../../../../testUtils/backendSsotFusionTestHarness';
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useFusedNearestStation } from '../useFusedNearestStation';
+import { useNearestStation } from '../useNearestStation';
+import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
+import { useTrainPositions } from '../../../route/hooks/useTrainPositions';
+import { findTopNearestStations } from '../../utils/findNearestStation';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
 import { TRAIN_STATUS } from '../../../../shared/constants/trainStatus';
 import {
@@ -43,8 +36,26 @@ import {
   flushBackendSsotMirrorTick,
   makeBackendSsotMirrorEntry,
 } from '../../../../testUtils/backendSsotMirrorFixtures';
+import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
+jest.mock('../useNearestStation');
+jest.mock('../../../arrival/hooks/useArrivalInfo');
+jest.mock('../../../route/hooks/useTrainPositions');
+jest.mock('../../utils/findNearestStation', () => ({ findTopNearestStations: jest.fn() }));
+jest.mock('../../../alarm/utils/tripStartStorage', () => ({
+  getTripStartedAt: jest.fn().mockResolvedValue(null),
+}));
+jest.mock('../../../alarm/utils/backendSsotMirror', () => ({ readBackendSsotMirror: jest.fn() }));
+
+const mockNearest = useNearestStation as jest.Mock;
+const mockArrival = useArrivalInfo as jest.Mock;
+const mockPos = useTrainPositions as jest.Mock;
+const mockFindTop = findTopNearestStations as jest.Mock;
+const mockRead = readBackendSsotMirror as jest.Mock;
+
+const yongmasan = findStationByNameAndLine('용마산', '7')!;
+const chungdam = findStationByNameAndLine('청담', '7')!;
 const TRAIN_CODE = 'T-2414';
 
 function setupGpsAt(stationName: string, line: '7' = '7') {
