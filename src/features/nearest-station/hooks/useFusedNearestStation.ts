@@ -1744,6 +1744,25 @@ export function useFusedNearestStation(
     lastObservedRef.current = { arcIndex: idx, observedAtMs: Date.now() };
   }, [freshTrainProgress, lockedTrainCode, arcStations]);
 
+  // #2414 — backend-ssot 채택 시에도 lastObserved 앵커 갱신. A1 pending lock(trainCode 없음)이면
+  // 위 ① LivePosition effect가 skip돼 lastObserved가 null로 남고, ③ ReanchoredHop이 못 메운 갭이
+  // ④ DefaultHop(boarding+1 cap)으로 추락해 2역 lag가 난다(#2409). backend-ssot(fresh, line-guard
+  // 통과)가 위치를 알고 있으면 그 관측을 lastObserved로 흘려 ③가 대신 메우게 한다.
+  // 우선순위: ① LivePosition(trainCode, drift=0)이 더 정밀 — backend-ssot는 현재 앵커보다
+  // fresher(observedAtMs 더 큼)일 때만, 또는 앵커가 비어있을 때만 덮어쓴다. observedAtMs는
+  // Date.now()가 아니라 backend 수신 시각(receivedAt) — 1-hop 적분 타이밍 정합.
+  useEffect(() => {
+    if (!backendSsotAccepts || ssotStation == null) return;
+    if (arcStations.length === 0) return;
+    const idx = arcIndexOfStation(arcStations, ssotStation);
+    if (idx === -1) return;
+    const receivedAt = backendSsotMirror?.receivedAt ?? null;
+    if (receivedAt == null) return;
+    const current = lastObservedRef.current;
+    if (current !== null && current.observedAtMs >= receivedAt) return;
+    lastObservedRef.current = { arcIndex: idx, observedAtMs: receivedAt };
+  }, [backendSsotAccepts, ssotStation, arcStations, backendSsotMirror]);
+
   // boardingLock이 release/교체되면 앵커도 리셋 — 이전 trip 관측이 새 trip에 흘러가는 것 방지.
   // race: createTransferLock으로 lock이 새 leg로 교체되는 순간 1 cycle 옛 앵커가 새 arc에 매칭될
   // 위험이 있으나, lock 자체 변화로 effect가 트리거되며 다음 render에서 새 앵커로 갱신된다.
