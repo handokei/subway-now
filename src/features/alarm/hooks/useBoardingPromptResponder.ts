@@ -24,6 +24,7 @@
 
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
@@ -45,8 +46,14 @@ import {
   DISEMBARK_PROMPT_CATEGORY,
 } from '../utils/notificationCategory';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import {
+  FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS,
+  PENDING_TRAIN_CODE,
+} from '../../../shared/constants/boardingLock';
+import { BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { parseBgLastStation } from '../utils/widgetRefreshContext';
 import {
   markBoardingPromptDisplayed,
   wasBoardingPromptDisplayed,
@@ -322,10 +329,12 @@ async function tryAutoLock(
     await dismissBoardingPrompt(payload.tripToken);
     return;
   }
+  // await 경계를 넘어도 non-null narrowing이 유지되도록 local const로 고정.
+  const destinationId = deps.destinationId;
 
   const arrival = await deps.fetchArrivalsForStation(payload.originStation);
   if (!arrival) {
-    log.info('arrivals fetch returned null — falling back to manual');
+    log.info('arrivals fetch returned null — creating pending fallback lock');
     logBoardingPromptAutoLock({ reason: 'autolock-arrivals-empty', ...telemetry });
     // #1888 (RC-13) — 빈 후보 graceful skip evidence. arrivals null = API fetch 실패 또는 응답 빈 케이스.
     // BoardingTrainList도 동시에 empty state로 진입하므로 사용자는 manual list에서 0건만 본다.
@@ -334,6 +343,10 @@ async function tryAutoLock(
       reason: 'arrivals-null',
       ...telemetry,
     });
+    // #2407 (root fix) — train 확정 실패해도 사용자 명시 탭 = lock 활성과 동급(ADR-014).
+    // trainCode는 PENDING sentinel로, downstream consumer가 arrival/realtimePosition 도착 시
+    // 기존 lockSuggestion 채널(useBoardingLockController)로 async 확정한다.
+    await createPendingFallbackLock(payload, deps, destinationId);
     return;
   }
 
@@ -349,7 +362,7 @@ async function tryAutoLock(
   );
   const chosen = pickAutoTrainCodeFromArrivals(sameLine, destinationDirection);
   if (!chosen) {
-    log.info('ambiguity or empty — auto lock skipped');
+    log.info('ambiguity or empty — creating pending fallback lock');
     // 빈 후보와 ambiguity 구분: sameLine이 1개 이상인데 chosen이 null이면 ambiguity.
     const reason = sameLine.length === 0 ? 'autolock-arrivals-empty' : 'autolock-ambiguity';
     logBoardingPromptAutoLock({ reason, ...telemetry });
@@ -361,6 +374,9 @@ async function tryAutoLock(
         ...telemetry,
       });
     }
+    // #2407 (root fix) — 무매칭/ambiguity 둘 다 "탭했는데 train을 못 골랐다"는 동일 실패 모드.
+    // 두 경우 모두 lock 자체는 생성해 lockless cascade를 막는다 (async 확정은 후속 신호에 위임).
+    await createPendingFallbackLock(payload, deps, destinationId);
     return;
   }
 
@@ -374,7 +390,7 @@ async function tryAutoLock(
 
   try {
     await deps.createLock({
-      destinationId: deps.destinationId,
+      destinationId,
       trainCode: chosen.trainCode,
       boardingStationId: station.id,
       boardingLine: chosen.line,
@@ -393,6 +409,93 @@ async function tryAutoLock(
     // #1167 — lock 실패 시 fallback 경로. createLock는 storage/network 예외 가능.
     // 사용자는 manual BoardingTrainList에서 재선택. 예외는 swallow — autoLock은 best-effort.
     log.warn('createLock failed — falling back to manual', err as Error);
+    logBoardingPromptAutoLock({ reason: 'autolock-lock-failed', ...telemetry });
+  }
+}
+
+/**
+ * #2408 (위험1 guard) — BG_LAST_STATION_KEY를 읽어 신선도 기준(FALLBACK_LOCK_POSITION_GUARD_
+ * FRESHNESS_MS) 안의 관측치만 반환. stale(오래된 timestamp)이거나 부재/파싱 실패면 null —
+ * 검증 불가 케이스는 guard가 작동하지 않고 기존 fallback lock 생성 경로로 흐른다.
+ *
+ * read/parse 실패는 swallow — guard는 best-effort이며 실패 시 사용자 탭을 그대로 신뢰한다.
+ */
+async function readFreshBgLastStationForGuard() {
+  try {
+    const raw = await AsyncStorage.getItem(BG_LAST_STATION_KEY);
+    const bgContext = parseBgLastStation(raw);
+    if (!bgContext) return null;
+    if (Date.now() - bgContext.timestamp > FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS) return null;
+    return bgContext;
+  } catch (err) {
+    log.warn('BG_LAST_STATION read failed — position guard skipped', err as Error);
+    return null;
+  }
+}
+
+/**
+ * #2407 (root fix) — train 확정 실패(arrivals null / line 매칭 0건 / ambiguity)에서도 사용자가
+ * 방금 [탑승] 응답했다는 사실 자체는 확정 evidence다(ADR-014 "명시 탭 = lock 활성과 동급").
+ * trainCode만 `PENDING_TRAIN_CODE` sentinel로 채워 lock을 생성 — GPS/route 기반 저정밀도라도
+ * lockless보다 낫다(설계 문서 "지하 완벽감지"와 동일 철학). `evidence=false` — 탑승 확정이 아니라
+ * "탑승 의향 표명 + train 미확정" 상태이므로 #2290 P1 정책과 정합.
+ *
+ * boardingStationId 조회 실패(원 payload.line이 유효 LineNumber가 아니거나 역명 매칭 실패)는
+ * 극히 드문 데이터 이상 케이스 — lock 없이 manual fallback으로 graceful skip.
+ */
+async function createPendingFallbackLock(
+  payload: BoardingPromptPayload,
+  deps: HandleDeps,
+  destinationId: string,
+): Promise<void> {
+  const telemetry = { originStation: payload.originStation, line: payload.line };
+
+  // #2408 (위험1 guard) — stale prompt → 잘못된 lock 방지. device가 최근에 관측한
+  // BG_LAST_STATION(현재 위치)이 payload.line과 다른 노선이면, 이 prompt가 사용자의 실제 현재
+  // 위치와 모순되는 오래된(stale) 알림이라고 판단해 lock 생성을 skip한다. BG_LAST_STATION이
+  // 없거나(WhileInUse 등) 신선도 기준을 넘었거나(검증 불가) line이 일치하면 기존대로 진행 —
+  // 사용자의 명시 탭을 신뢰한다(ADR-014).
+  const bgContext = await readFreshBgLastStationForGuard();
+  if (bgContext && bgContext.station.line !== payload.line) {
+    log.info('pending fallback lock skipped — position contradiction with fresh BG context');
+    logBoardingPromptAutoLock({
+      reason: 'fallback-skipped-position-contradiction',
+      ...telemetry,
+    });
+    return;
+  }
+
+  if (!isValidLineNumber(payload.line)) {
+    log.warn('pending fallback lock skipped — invalid line', payload.line);
+    logBoardingPromptAutoLock({ reason: 'autolock-station-lookup', ...telemetry });
+    return;
+  }
+  const station = findStationByNameAndLine(payload.originStation, payload.line);
+  if (!station) {
+    log.info('pending fallback lock skipped — station lookup failed');
+    logBoardingPromptAutoLock({ reason: 'autolock-station-lookup', ...telemetry });
+    return;
+  }
+
+  try {
+    await deps.createLock(
+      {
+        destinationId,
+        trainCode: PENDING_TRAIN_CODE,
+        boardingStationId: station.id,
+        boardingLine: payload.line,
+        boardedAt: Date.now(),
+        expectedDurationMs: deps.expectedDurationMs,
+        // train 미확정 — Seam A 지연 칩 기준치가 없다. undefined는 기존 legacy lock과 동일하게
+        // graceful(지연 라벨 미노출).
+        initialEtaSeconds: undefined,
+      },
+      false,
+      'boarding-prompt-response',
+    );
+    logBoardingPromptAutoLock({ reason: 'autolock-fallback-pending', ...telemetry });
+  } catch (err) {
+    log.warn('pending fallback createLock failed', err as Error);
     logBoardingPromptAutoLock({ reason: 'autolock-lock-failed', ...telemetry });
   }
 }

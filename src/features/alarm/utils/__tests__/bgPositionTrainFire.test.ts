@@ -89,6 +89,7 @@ import {
   ALARM_EVENT_KEY,
   BG_LAST_STATION_KEY,
 } from '../../../../shared/constants/storageKeys';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 
 const ORIGIN = { id: 'S0', name: '탑승역', line: '2', lat: 37.0, lng: 127.0 };
 const WAYPOINT = { id: 'S1', name: '다음역', line: '2', lat: 37.1, lng: 127.1 };
@@ -166,6 +167,17 @@ describe('evaluatePositionTrainFire', () => {
 
   it('lock.trainCode가 없으면 false를 반환한다', async () => {
     mockGetBoardingLock.mockResolvedValue({ ...LOCK, trainCode: '' });
+
+    const result = await evaluatePositionTrainFire();
+
+    expect(result).toBe(false);
+    expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
+  });
+
+  // #2407 — pending lock(fallback lock, trainCode 미확정)은 이 정밀추적 경로를 skip해야
+  // 한다. sentinel을 실 trainCode처럼 넣으면 어떤 열차와도 매칭되지 않아 false negative만 쌓인다.
+  it('lock.trainCode가 pending sentinel이면 false를 반환한다 (#2407)', async () => {
+    mockGetBoardingLock.mockResolvedValue({ ...LOCK, trainCode: PENDING_TRAIN_CODE });
 
     const result = await evaluatePositionTrainFire();
 

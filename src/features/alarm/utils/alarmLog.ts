@@ -263,10 +263,15 @@ export type AlarmLogReason =
   //   'autolock-ambiguity': 같은 priority 후보 2+ → manual fallback.
   //   'autolock-station-lookup': originStation/line 매칭 실패.
   //   'autolock-lock-failed': createLock 예외 (저장/네트워크 등) → manual fallback.
+  //   'autolock-fallback-pending': #2407 root fix — train 확정 실패해도 pending trainCode로 lock 생성.
+  //   'fallback-skipped-position-contradiction': #2408 위험1 guard — fresh BG_LAST_STATION이
+  //     payload.line과 모순(다른 노선에 위치)돼 stale prompt로 판단, pending fallback lock을 skip.
   | 'autolock-success'
   | 'autolock-no-trip'
   | 'autolock-arrivals-empty'
   | 'autolock-ambiguity'
+  | 'autolock-fallback-pending'
+  | 'fallback-skipped-position-contradiction'
   | 'autolock-station-lookup'
   | 'autolock-lock-failed'
   // #1170 — boarding-prompt 사용자 응답 측정. 9단 게이트 통과 후 발사된 prompt에 대한 응답.
@@ -2224,7 +2229,12 @@ export type BoardingPromptAutoLockReason =
   | 'autolock-arrivals-empty'
   | 'autolock-ambiguity'
   | 'autolock-station-lookup'
-  | 'autolock-lock-failed';
+  | 'autolock-lock-failed'
+  // #2407 — train 확정 실패해도 lock은 생성한 root-fix fallback 경로. trainCode=pending sentinel.
+  | 'autolock-fallback-pending'
+  // #2408 — 위험1 guard: fresh BG_LAST_STATION이 payload.line과 모순돼 stale prompt로 판단,
+  // pending fallback lock 생성을 skip.
+  | 'fallback-skipped-position-contradiction';
 
 export function logBoardingPromptAutoLock(input: {
   reason: BoardingPromptAutoLockReason;
@@ -2240,18 +2250,25 @@ export function logBoardingPromptAutoLock(input: {
   });
 }
 
-/** #1167 — 최근 N건의 autolock outcome 분포 (운영 측정용). */
-export function countBoardingPromptAutoLockOutcomes(
-  entries: readonly AlarmLogEntry[],
-): Record<BoardingPromptAutoLockReason, number> {
-  const counts: Record<BoardingPromptAutoLockReason, number> = {
+/** #2408 — `countBoardingPromptAutoLockOutcomes`/`countAutoLockReasonsByWindow`가 공유하는 0값 초기 분포. */
+function createEmptyAutoLockReasonCounts(): Record<BoardingPromptAutoLockReason, number> {
+  return {
     'autolock-success': 0,
     'autolock-no-trip': 0,
     'autolock-arrivals-empty': 0,
     'autolock-ambiguity': 0,
     'autolock-station-lookup': 0,
     'autolock-lock-failed': 0,
+    'autolock-fallback-pending': 0,
+    'fallback-skipped-position-contradiction': 0,
   };
+}
+
+/** #1167 — 최근 N건의 autolock outcome 분포 (운영 측정용). */
+export function countBoardingPromptAutoLockOutcomes(
+  entries: readonly AlarmLogEntry[],
+): Record<BoardingPromptAutoLockReason, number> {
+  const counts = createEmptyAutoLockReasonCounts();
   for (const entry of entries) {
     if (entry.source !== 'boarding-prompt') continue;
     const reason = entry.reason;
@@ -2277,14 +2294,7 @@ export function countAutoLockReasonsByWindow(
   now: number = Date.now(),
 ): Record<BoardingPromptAutoLockReason, number> {
   const cutoff = now - windowMs;
-  const counts: Record<BoardingPromptAutoLockReason, number> = {
-    'autolock-success': 0,
-    'autolock-no-trip': 0,
-    'autolock-arrivals-empty': 0,
-    'autolock-ambiguity': 0,
-    'autolock-station-lookup': 0,
-    'autolock-lock-failed': 0,
-  };
+  const counts = createEmptyAutoLockReasonCounts();
   for (const entry of entries) {
     if (entry.ts <= cutoff) continue;
     if (entry.source !== 'boarding-prompt') continue;

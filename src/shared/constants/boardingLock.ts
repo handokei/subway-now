@@ -186,6 +186,58 @@ export const REGISTER_RETRY_HEAL_BUSY_RECHECK_MS = 2_000;
 export const REGISTER_RETRY_HEAL_BUSY_MAX_RESCHEDULES = 5;
 
 /**
+ * #2407 (root fix, 08-28 lockless cascade) — trainCode 확정 실패(arrivals null / line 매칭 0건)
+ * 상태에서도 사용자 탑 탭 = lock 생성을 보장하기 위한 pending trainCode sentinel.
+ *
+ * 배경: `tryAutoLock`(useBoardingPromptResponder)이 arrivals 조회 실패/무매칭이면 `createLock`을
+ * 아예 호출하지 않고 return해, 사용자가 명시 탭했는데도 lock이 하나도 생기지 않는 회귀가
+ * 실탑승에서 확인됐다(#2405/#2406 RED fixture). ADR-014 "명시 탭 = lock 활성과 동급" 정합을
+ * 지키려면 train 확정 실패해도 lock 자체는 생성해야 한다 — trainCode만 이 sentinel로 채운다.
+ *
+ * 설계(빈 문자열 vs sentinel 상수 — sentinel 채택 이유):
+ *   - `BoardingLock.trainCode: string`은 이미 여러 소비처가 `.length > 0`/`.startsWith(...)`
+ *     같은 명시적 predicate로 검사한다(`isScheduleFallbackTrainCode`의 `SCHED-` prefix가 동일
+ *     선례). 빈 문자열('')은 일부 falsy-check(`!lock.trainCode`) 소비처에서는 우연히 안전하게
+ *     걸러지지만, 값 비교(`row.trainCode === lock.trainCode`)나 `.startsWith()` 호출부에서는
+ *     예외/오탐 가능성이 있어 암묵적 falsy coercion에 의존하는 게 더 위험하다.
+ *   - 명시적 sentinel 상수 + `isPendingTrainCode()` predicate가 "이 값이 왜 특별한가"를 grep
+ *     한 번으로 드러내고, 향후 코드 리뷰에서 실수로 빠뜨린 consumer를 찾기 쉽다(blast radius
+ *     추적 용이).
+ *   - `string` 타입을 `string | undefined`로 optional化하는 대안은 BoardingLock을 참조하는
+ *     전 소비처(수십 곳, 위 grep 결과)의 타입 가드를 전수 추가해야 해 blast radius가 훨씬 크다.
+ *
+ * 🔴 소비처는 `lock.trainCode`를 실 trainCode처럼 매칭에 사용하기 전에 반드시
+ * `isPendingTrainCode(lock.trainCode)`로 pending 여부를 먼저 판별해야 한다(오탐 금지).
+ */
+export const PENDING_TRAIN_CODE = 'PENDING-TRAIN-CODE';
+
+/** lock.trainCode가 #2407 fallback lock의 미확정 sentinel인지 판별. */
+export function isPendingTrainCode(trainCode: string): boolean {
+  return trainCode === PENDING_TRAIN_CODE;
+}
+
+/**
+ * #2408 (위험1 guard) — pending fallback lock 생성 전 BG_LAST_STATION과 payload.line 모순 판정에
+ * 쓰는 신선도 임계값(ms).
+ *
+ * 배경: `createPendingFallbackLock`은 payload.line/originStation을 위치 검증 없이 신뢰한다.
+ * stale prompt(예: 용마산/7호선에서 발사됐는데 실제로는 성수/2호선에 있는 사용자가 뒤늦게 탭)에서도
+ * lock을 생성해버리면 틀린 노선으로 lock이 잠기는 회귀가 생긴다. device가 최근에 관측한
+ * BG_LAST_STATION(`backgroundLocationTask`가 적재)이 payload.line과 다르면 모순으로 간주해 lock
+ * 생성을 skip한다.
+ *
+ * 5분으로 둔 이유:
+ *  - BG task 폴링 주기(30s~수분, 이동 속도에 따라 가변)를 여러 tick 커버해 오탐(일시적 GPS 튐)을
+ *    피하면서도, stale prompt가 보통 수 분~수십 분 전 발사분이라는 점을 고려하면 5분 이내 관측치는
+ *    "지금 위치"로 신뢰할 만큼 충분히 최근이다.
+ *  - 너무 짧으면(예: 1분) BG task가 저빈도 모드(이동 없음/절전)일 때 최근 관측치가 없어 guard가
+ *    거의 작동하지 않는다.
+ *  - 너무 길면(예: 30분) 실제로 이동한 사용자의 오래된 위치를 "현재 위치"로 오판해 정상 fallback
+ *    lock 생성까지 잘못 skip할 위험이 커진다.
+ */
+export const FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS = 5 * 60_000;
+
+/**
  * #2197 (ADR-025 client 절반) — 이미 등록된 trip의 route/destination 변경 재-POST를
  * coalesce하는 debounce(ms).
  *

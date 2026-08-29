@@ -7,25 +7,18 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from './stationPipeline';
-import { alarmKey } from './stationAlarm';
 import { getBoardingLock } from './boardingLockStorage';
-import { getFiredAlarms, setFiredAlarms } from './notificationState';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
+import { getFiredAlarms } from './notificationState';
+import { persistBgFireResult } from './bgFirePersist';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import { passesLockedStationGate } from '../../nearest-station/utils/lockedStationGate';
 import { pollTrainPositionsIfDue } from '../../nearest-station/tasks/bgPositionTrainPoll';
 import { pickCandidateTrains } from '../../arrival/utils/pickCandidateTrains';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
-import { saveStationToWidget } from '../../widget/api/widgetStorage';
-import { buildWidgetTripContext } from '../../widget/utils/buildTripContext';
 import { getStationById, type Route } from '../../../shared/utils/stationRoute';
-import {
-  DESTINATION_KEY,
-  SLEEP_MODE_KEY,
-  ROUTE_KEY,
-  ALARM_EVENT_KEY,
-  BG_LAST_STATION_KEY,
-} from '../../../shared/constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, ROUTE_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -61,7 +54,10 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   if (!isMinimalAlarmEnabled()) return false;
 
   const lock = await getBoardingLock();
-  if (!lock || !lock.trainCode) return false;
+  // #2407 — trainCode pending(fallback lock, 미확정) 상태에서는 이 경로(realtimePosition 정밀추적)를
+  // skip한다. pending sentinel을 실 trainCode처럼 매칭에 넣으면 항상 미매칭이라 false negative만
+  // 쌓인다 — 호출자(backgroundLocationTask)가 기존 GPS/route 파이프라인으로 graceful degrade.
+  if (!lock?.trainCode || isPendingTrainCode(lock.trainCode)) return false;
 
   const destJson = await AsyncStorage.getItem(DESTINATION_KEY);
   if (!destJson) return false;
@@ -145,30 +141,7 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
     fusionSource: 'position-train',
   });
 
-  if (alarmEvent) {
-    firedAlarms.add(alarmKey(alarmEvent));
-    await Promise.all([
-      setFiredAlarms(destination.id, firedAlarms),
-      AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
-    ]);
-  }
-
-  if (nearest) {
-    await AsyncStorage.setItem(
-      BG_LAST_STATION_KEY,
-      JSON.stringify({
-        station: nearest.station,
-        distanceKm: nearest.distanceKm,
-        timestamp: Date.now(),
-      }),
-    );
-    const tripContext = buildWidgetTripContext({
-      destination,
-      currentStation: nearest.station,
-      route: storedRoute,
-    });
-    await saveStationToWidget(nearest.station, nearest.distanceKm, undefined, undefined, tripContext);
-  }
+  await persistBgFireResult({ alarmEvent, nearest, destination, firedAlarms, storedRoute });
 
   return true;
 }

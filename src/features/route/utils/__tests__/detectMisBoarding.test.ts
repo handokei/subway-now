@@ -1,6 +1,7 @@
 import { detectMisBoarding } from '../detectMisBoarding';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 
 const lock: BoardingLock = {
   destinationId: 'd',
@@ -62,5 +63,15 @@ describe('detectMisBoarding', () => {
 
   it('positions에 trains 빈 배열 → absent (관측은 됐지만 lock train 없음)', () => {
     expect(detectMisBoarding(lock, positions({ trains: [] }))).toBe('absent');
+  });
+
+  // #2407 — pending lock(fallback lock, trainCode 미확정)은 오탐 방지를 위해 no-signal로
+  // 판정을 보류해야 한다. sentinel을 실 trainCode처럼 매칭에 넣으면 항상 'absent'로 잘못 확정된다.
+  it('lock.trainCode가 pending sentinel이면 no-signal (오탐 금지, #2407)', () => {
+    const pendingLock: BoardingLock = { ...lock, trainCode: PENDING_TRAIN_CODE };
+    expect(
+      detectMisBoarding(pendingLock, positions({ trains: [train({ trainNo: 'T-OTHER' })] })),
+    ).toBe('no-signal');
+    expect(detectMisBoarding(pendingLock, positions({ trains: [] }))).toBe('no-signal');
   });
 });

@@ -1,6 +1,7 @@
 import { type MutableRefObject, useEffect, useRef, useState } from 'react';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LinePositions } from '../../../shared/types/position';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 
 /**
  * ref + state 이중관리 helper — stale closure 없이 ref는 effect 분기에, state는 외부 노출에 쓴다.
@@ -91,6 +92,10 @@ export function useTrainCodeMismatchDetector({
     if (!lock || !positions) return;
     if (positions.isMock) return;
     if (positions.line !== lock.boardingLine) return;
+    // #2407 — lock.trainCode가 pending sentinel(train 미확정)이면 mismatch 판정을 보류한다.
+    // pending은 실 trainCode가 아니므로 어떤 열차와도 매칭되지 않아 항상 'mismatch 후보'로
+    // 잘못 카운트되고, 90s 후 정당한 pending lock을 오탐 release할 위험이 있다(오탐 금지 원칙).
+    if (isPendingTrainCode(lock.trainCode)) return;
 
     // lock.trainCode가 현재 positions에 present → 정상 탑승, 카운터 reset.
     const isPresent = positions.trains.some((t) => t.trainNo === lock.trainCode);

@@ -80,21 +80,17 @@ describe('buildBoardingLockMeta', () => {
     expect(result).toBeNull();
   });
 
-  it('#865 — 시간표 fallback trainCode(SCHED-*)면 null (backend 누설 차단)', () => {
+  // #865 — 시간표 fallback trainCode(SCHED-*)는 backend 누설 차단.
+  // #2407 — pending fallback lock(trainCode 미확정)도 backend reschedule의 anchor로 쓸 수
+  // 없다. schedule fallback과 동일하게 등록을 보류해 anchor waypoint 폴링으로 fallback해야 한다.
+  it.each([
+    ['#865 — 시간표 fallback trainCode(SCHED-*)면 null (backend 누설 차단)', 'SCHED-UP-1'],
+    ['#865 — SCHED-DN-* 같은 다른 suffix도 동일하게 null', 'SCHED-DN-2'],
+    ['#2407 — trainCode가 pending sentinel이면 null (backend 등록 보류)', 'PENDING-TRAIN-CODE'],
+  ])('%s', (_description, trainCode) => {
     const route = makeDirectRoute(1, '7');
     const result = buildBoardingLockMeta({
-      lock: { ...baseLock, trainCode: 'SCHED-UP-1', boardingLine: '7' },
-      route,
-      destinationName: '용마산',
-      boardingStationName: '면목',
-    });
-    expect(result).toBeNull();
-  });
-
-  it('#865 — SCHED-DN-* 같은 다른 suffix도 동일하게 null', () => {
-    const route = makeDirectRoute(1, '7');
-    const result = buildBoardingLockMeta({
-      lock: { ...baseLock, trainCode: 'SCHED-DN-2', boardingLine: '7' },
+      lock: { ...baseLock, trainCode: trainCode as never, boardingLine: '7' },
       route,
       destinationName: '용마산',
       boardingStationName: '면목',

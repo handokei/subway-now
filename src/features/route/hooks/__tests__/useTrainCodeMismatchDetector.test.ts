@@ -6,6 +6,7 @@ import {
 } from '../useTrainCodeMismatchDetector';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 
 const baseLock: BoardingLock = {
   destinationId: 'd',
@@ -237,6 +238,20 @@ describe('useTrainCodeMismatchDetector', () => {
       rerender,
       { lock: refreshedLock, positions: mismatchPositions, now: stillInGrace },
       TRAIN_CODE_MISMATCH_THRESHOLD + 2,
+    );
+    expect(result.current.detected).toBe(false);
+  });
+
+  // #2407 — pending lock(fallback lock, trainCode 미확정)은 mismatch 판정을 보류해야 한다.
+  // sentinel을 실 trainCode처럼 매칭에 넣으면 항상 mismatch 후보로 잘못 카운트돼 정당한
+  // pending lock을 90s 후 오탐 release할 위험이 있다.
+  it('lock.trainCode가 pending sentinel이면 mismatch 카운터가 증가하지 않는다 (#2407)', () => {
+    const pendingLock: BoardingLock = { ...baseLock, trainCode: PENDING_TRAIN_CODE };
+    const { result, rerender } = mount({ lock: pendingLock, positions: mismatchPositions });
+    rerenderTimes(
+      rerender,
+      { lock: pendingLock, positions: mismatchPositions, now: afterGraceNow },
+      TRAIN_CODE_MISMATCH_THRESHOLD + 5,
     );
     expect(result.current.detected).toBe(false);
   });
