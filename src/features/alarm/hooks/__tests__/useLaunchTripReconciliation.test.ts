@@ -9,6 +9,8 @@ import {
   runLaunchTripReconciliation,
   useLaunchTripReconciliation,
 } from '../useLaunchTripReconciliation';
+import { useDestinationStore } from '../../../route/store/useDestinationStore';
+import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 
 const mockFetchTripStatus = jest.fn();
 jest.mock('../../api/tripStatus', () => ({
@@ -107,6 +109,13 @@ beforeEach(async () => {
   // #2114 (방안 C′) — 기본은 null(corrId sync cache 미수화 → timestamp fallback). 각 test가 필요 시 override.
   mockGetCurrentTripCorrIdSync.mockReturnValue(null);
   process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+  // #2419 — Signal 4 self-end가 in-memory destination을 실제로 clear하는지 검증하려면
+  // 매 test가 "stale destination이 남아있는 상태"에서 출발해야 한다.
+  useDestinationStore.setState({
+    destination: MOCK_STATIONS.gangnam,
+    customOrigin: MOCK_STATIONS.chungmuro,
+    tripOrigin: MOCK_STATIONS.hyochang,
+  });
 });
 
 afterEach(() => {
@@ -204,6 +213,13 @@ describe('runLaunchTripReconciliation', () => {
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
     expect(mockSetSentinel).toHaveBeenCalledWith(1_700_000_000_000, null);
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+    // #2419 — status='ended'는 cleanupBackendConfirmedEndedTrip을 경유하며, 그 함수가
+    // in-memory destination/customOrigin/tripOrigin을 reset한다. 이게 없으면 stale
+    // destination이 남아 lockless trip이 유령 재시작된다.
+    const state = useDestinationStore.getState();
+    expect(state.destination).toBeNull();
+    expect(state.customOrigin).toBeNull();
+    expect(state.tripOrigin).toBeNull();
   });
 
   it('status ended — 호출 순서: triggerTripEndRecall → runTripBoundCleanups → setTripEndedSentinel → removeItem(ACTIVE_TRIP_KEY)', async () => {
@@ -266,6 +282,8 @@ describe('runLaunchTripReconciliation', () => {
     expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
     expect(mockSetSentinel).not.toHaveBeenCalled();
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+    // #2419 — trip이 여전히 active면 destination은 건드리면 안 된다 (회귀 방어).
+    expect(useDestinationStore.getState().destination).not.toBeNull();
   });
 
   it('404/410 (null) → active trip clear만, cleanup/recall X (기존 동작 유지)', async () => {
@@ -338,6 +356,12 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledTimes(1);
       expect(mockSetSentinel).toHaveBeenCalledWith(now, null);
       expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+      // #2419 — Signal 4 self-end 분기는 runTripBoundCleanups만으로는 in-memory destination이
+      // stale로 남는다 — 명시적 reset이 없으면 lockless trip이 유령 재시작된다.
+      const state = useDestinationStore.getState();
+      expect(state.destination).toBeNull();
+      expect(state.customOrigin).toBeNull();
+      expect(state.tripOrigin).toBeNull();
     });
 
     it('self-end 시 호출 순서: recall → cleanup → prompt → sentinel → active clear', async () => {

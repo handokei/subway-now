@@ -64,6 +64,7 @@ import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip } from '../utils/alarmLog';
+import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -168,6 +169,11 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
       await runTripBoundCleanups();
       await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
+      // #2419 — in-memory destination/customOrigin/tripOrigin reset. runTripBoundCleanups는
+      // storage만 정리하므로 이게 없으면 stale destination이 메모리에 남아 lockless trip이
+      // 유령 재시작된다. status='ended' 분기는 cleanupBackendConfirmedEndedTrip을 경유해
+      // 동일하게 처리됨 (tripEndedCleanupSequence.ts 헤더 주석).
+      useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
       // #2114 (방안 C′) — sentinel에 corrId 동봉.
       await setTripEndedSentinel(now, endedCorrIdSnapshot);
       await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
