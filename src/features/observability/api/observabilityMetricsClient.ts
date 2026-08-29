@@ -109,6 +109,27 @@ export type FetchMetricsResult =
   | { kind: 'error'; message: string }
   | { kind: 'unconfigured' };
 
+/**
+ * 마지막 `fetchObservabilityMetrics()` 호출 결과 + 조회 시각 snapshot.
+ * DebugModal share dump(#N)가 async poll 결과를 dump 시점에 sync로 읽기 위한 캐시 —
+ * `OperationDashboardSection`이 마운트 시 이미 이 함수를 호출하므로 별도 polling 없이
+ * side-effect로 채워진다.
+ */
+interface MetricsSnapshot {
+  result: FetchMetricsResult;
+  fetchedAtMs: number;
+}
+
+let lastMetricsSnapshot: MetricsSnapshot | null = null;
+
+/**
+ * 마지막 `fetchObservabilityMetrics()` 결과를 sync로 읽는다.
+ * 한 번도 fetch가 완료되지 않았으면 null.
+ */
+export function getLastObservabilityMetricsSnapshot(): MetricsSnapshot | null {
+  return lastMetricsSnapshot;
+}
+
 /** ADMIN_TOKEN 환경변수 조회. 미설정 시 null. */
 function getAdminToken(): string | null {
   const token = process.env.EXPO_PUBLIC_ADMIN_TOKEN;
@@ -125,6 +146,12 @@ function getAdminToken(): string | null {
  * - 성공 → `{ kind: 'ok', metrics }`
  */
 export async function fetchObservabilityMetrics(): Promise<FetchMetricsResult> {
+  const result = await fetchObservabilityMetricsUncached();
+  lastMetricsSnapshot = { result, fetchedAtMs: Date.now() };
+  return result;
+}
+
+async function fetchObservabilityMetricsUncached(): Promise<FetchMetricsResult> {
   const token = getAdminToken();
   if (!token) return { kind: 'unconfigured' };
 
@@ -153,4 +180,8 @@ export async function fetchObservabilityMetrics(): Promise<FetchMetricsResult> {
 // Internal exports for tests — DO NOT use from app code.
 export const __test__ = {
   getAdminToken,
+  /** 테스트 간 module-level snapshot 오염 방지용 리셋. */
+  resetLastMetricsSnapshot(): void {
+    lastMetricsSnapshot = null;
+  },
 };

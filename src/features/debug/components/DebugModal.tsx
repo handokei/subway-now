@@ -146,6 +146,10 @@ import {
   formatScheduledNotificationLine,
   type ScheduledNotificationDumpEntry,
 } from '../../../features/alarm/utils/scheduledNotificationsDump';
+import {
+  getLastObservabilityMetricsSnapshot,
+  type ObservabilityMetrics,
+} from '../../observability/api/observabilityMetricsClient';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
@@ -756,9 +760,10 @@ interface BuildDumpArgs {
     active: boolean;
   };
   /**
-   * Operation Dashboard 4 metric 중 device-local 계산 가능한 것만 share dump에 포함.
-   * backend polling 결과(locklessMiss / boardableMiss / accelPattern / latency / laPush)는
-   * dump 시점에 sync 접근 불가 → dump에서는 (backend metrics: n/a in dump) 안내로 대체.
+   * Operation Dashboard의 device-local metric 입력(alarmAccuracy). backend polling metric
+   * (locklessMiss / boardableMiss / accelPattern / latency / laPush 등)은 이 필드가 아니라
+   * `observabilityMetricsClient`의 마지막 poll snapshot에서 직접 읽는다(`buildOperationDashboardSection`
+   * 참조) — `OperationDashboardSection` 마운트 시 채워진 결과를 dump 시점에 sync로 재사용.
    *
    * 노출 metric:
    *  - alarmAccuracy (local): tripGroundTruth store `responses` accurate/answered 비율
@@ -986,16 +991,103 @@ function buildFeatureFlagSection(args: BuildDumpArgs): string[] {
   ];
 }
 
+/** `value/total` 비율을 `pct% (value/total)`로 포맷. total=0이면 0%로 표시. */
+function formatRatioPct(value: number, total: number): string {
+  const pct = total === 0 ? 0 : Math.round((value / total) * 100);
+  return `${pct}% (${value}/${total})`;
+}
+
+/** `label=pct% (value/total)` 한 줄 포맷. */
+function formatBucketLine(label: string, value: number, total: number): string {
+  return `${label}=${formatRatioPct(value, total)}`;
+}
+
 /**
- * Operation Dashboard(Modal render line 2141-2143)의 device-local 계산 가능 metric dump.
+ * #1769 accelPattern 4종 분포를 한 줄로 포맷. 분포 key 수가 늘어도 코드 변경 없이
+ * 순회(`Object.entries`)해 대응 — `OperationDashboardSection`의 `ACCEL_PATTERN_KEYS`와
+ * 동일 데이터(`AccelPatternBucket`)를 소비하되 하드코딩 배열에 의존하지 않는다.
+ */
+function formatAccelPatternLine(accelPattern: ObservabilityMetrics['accelPatternHitRatio']): string {
+  const parts = Object.entries(accelPattern).map(
+    ([key, { count, ratio }]) => `${key} ${Math.round(ratio * 100)}%(${count})`,
+  );
+  return `accelPattern: ${parts.join(' ')}`;
+}
+
+/**
+ * backend observability metrics(`ObservabilityMetrics`)를 dump 라인 배열로 변환.
+ * Modal UI(`OperationDashboardSection`)와 동일 SSOT(backend 응답 필드)를 그대로 읽어
+ * 텍스트로 재구성 — ratio 재계산 로직 분기는 두지 않고 필드값을 직접 사용.
+ */
+function formatBackendMetricsLines(metrics: ObservabilityMetrics): string[] {
+  const { locklessMissRatio, boardableMissRatio, laPushDeliveryRatio } = metrics;
+  const lines = [
+    formatBucketLine('locklessMiss', locklessMissRatio.value, locklessMissRatio.total),
+    formatBucketLine('boardableMiss', boardableMissRatio.value, boardableMissRatio.total),
+    formatAccelPatternLine(metrics.accelPatternHitRatio),
+    metrics.silentPushLatency
+      ? `silentPushLatency=p50=${metrics.silentPushLatency.p50}ms p95=${metrics.silentPushLatency.p95}ms n=${metrics.silentPushLatency.totalSamples}`
+      : 'silentPushLatency=no data',
+    formatBucketLine(
+      'laPushDelivery',
+      laPushDeliveryRatio.sent,
+      laPushDeliveryRatio.sent + laPushDeliveryRatio.failed,
+    ),
+    metrics.silentPushReachRatio
+      ? formatBucketLine(
+          'silentPushReach(backend)',
+          metrics.silentPushReachRatio.received,
+          metrics.silentPushReachRatio.sent,
+        )
+      : 'silentPushReach(backend)=no data',
+    metrics.algorithmAccuracyRatio
+      ? formatBucketLine('algorithmAccuracy', metrics.algorithmAccuracyRatio.value, metrics.algorithmAccuracyRatio.total)
+      : 'algorithmAccuracy=no data',
+    metrics.locklessTripMissRatio
+      ? `locklessTripMiss(paradigm=${metrics.locklessTripMissRatio.paradigmIntent})=${formatRatioPct(
+          metrics.locklessTripMissRatio.miss,
+          metrics.locklessTripMissRatio.miss + metrics.locklessTripMissRatio.fired,
+        )}`
+      : 'locklessTripMiss=no data',
+  ];
+  return lines;
+}
+
+/**
+ * backend observability metrics의 마지막 poll snapshot(`getLastObservabilityMetricsSnapshot`)을
+ * dump 라인으로 변환. `OperationDashboardSection`이 마운트 시 1회 `fetchObservabilityMetrics()`를
+ * 호출해 이 snapshot을 채운다 — 별도 polling을 추가하지 않고 그 결과를 dump 시점에 sync로 읽는다.
  *
- * Modal이 노출하는 6+ metric 중 backend polling 결과(locklessMiss / boardableMiss / accelPattern /
- * pushLatency / laPushDelivery / silentPushReachBackend / locklessTripMiss)는 dump 시점에 sync
- * 접근 불가 → 본 섹션은 device-local snapshot 만 노출하고 backend metric 은 명시적으로 안내.
+ * - 한 번도 poll 안 됨(모달 진입 전 dump 등): `(no backend poll yet)`
+ * - poll 실패(unconfigured/error): `(backend poll failed: <reason>)`
+ * - 성공: metric 라인들 + `as of <조회 시각>` (staleness 명시 — snapshot이 dump 시점 것이 아닐 수 있음)
+ */
+function buildBackendMetricsSection(): string[] {
+  const snapshot = getLastObservabilityMetricsSnapshot();
+  if (!snapshot) return ['(no backend poll yet)'];
+  const { result, fetchedAtMs } = snapshot;
+  if (result.kind !== 'ok') {
+    const reason = result.kind === 'unconfigured' ? 'unconfigured' : result.message;
+    return [`(backend poll failed: ${reason})`];
+  }
+  return [...formatBackendMetricsLines(result.metrics), `as of ${formatTime(fetchedAtMs)}`];
+}
+
+/**
+ * Operation Dashboard(Modal render line 2141-2143) metric dump.
+ *
+ * device-local metric(alarmAccuracy/silentPushReach)과 backend polling metric(locklessMiss /
+ * boardableMiss / accelPattern / silentPushLatency / laPushDelivery / silentPushReach(backend) /
+ * algorithmAccuracy / locklessTripMiss)을 모두 포함한다.
+ *
+ * backend metric은 `observabilityMetricsClient`의 마지막 poll 결과 snapshot을 읽는다 — dump는
+ * async fetch를 하지 않고 `OperationDashboardSection` 마운트 시 이미 완료된 poll의 결과를
+ * 그대로 노출한다(`as of` 로 조회 시각 명시, staleness graceful).
  *
  * 노출 metric:
  *  - alarmAccuracy (local): tripGroundTruth store `responses` accurate/answered 비율
  *  - silentPushReach (local): `computeSilentPushReach(logs)` visibleReceived/totalReceived (#2231)
+ *  - backend 8종: 위 참고
  *
  * 미전달 시 (n/a) — DebugModalInner 가 store snapshot 을 주입하지 않은 호출자 graceful.
  */
@@ -1008,7 +1100,7 @@ function buildOperationDashboardSection(args: BuildDumpArgs): string[] {
   return [
     `alarmAccuracy(local)=${op.groundTruthAccurateCount}/${op.groundTruthAnsweredCount}`,
     `silentPushReach(local)=${reach.visibleReceived}/${reach.totalReceived}`,
-    '(backend metrics: locklessMiss/boardableMiss/accelPattern/pushLatency/laPush — see Modal UI, not dumped)',
+    ...buildBackendMetricsSection(),
   ];
 }
 
@@ -2444,7 +2536,8 @@ function DebugModalInner({
         active: isSimpleArchEnabled(archFlagRemote.value),
       },
       // Operation Dashboard 의 device-local metric (alarmAccuracy local). backend polling metric 은
-      // dump 시점 sync 접근 불가라 안내 라인으로 대체 (buildOperationDashboardSection 참조).
+      // buildOperationDashboardSection이 observabilityMetricsClient의 마지막 poll snapshot을
+      // 직접 읽어 채운다 — 여기서는 device-local 입력만 넘긴다.
       operationDashboard: {
         groundTruthAccurateCount: groundTruthResponses.filter((r) => r.outcome === 'accurate').length,
         groundTruthAnsweredCount: groundTruthResponses.filter((r) => r.outcome !== 'unanswered').length,

@@ -12,6 +12,7 @@
  */
 import {
   fetchObservabilityMetrics,
+  getLastObservabilityMetricsSnapshot,
   __test__,
   type ObservabilityMetrics,
 } from '../observabilityMetricsClient';
@@ -22,6 +23,7 @@ beforeEach(() => {
   process.env.EXPO_PUBLIC_ADMIN_TOKEN = 'test-token';
   process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://alarm.example.test';
   global.fetch = jest.fn() as unknown as typeof fetch;
+  __test__.resetLastMetricsSnapshot();
 });
 
 afterEach(() => {
@@ -227,6 +229,39 @@ describe('fetchObservabilityMetrics', () => {
       if (result.kind === 'error') {
         expect(typeof result.message).toBe('string');
       }
+    });
+  });
+
+  describe('getLastObservabilityMetricsSnapshot', () => {
+    it('returns null before any fetch', () => {
+      expect(getLastObservabilityMetricsSnapshot()).toBeNull();
+    });
+
+    it('caches the ok result with a fetchedAtMs timestamp', async () => {
+      mockFetchOk(makeMetrics());
+      const before = Date.now();
+      await fetchObservabilityMetrics();
+      const snapshot = getLastObservabilityMetricsSnapshot();
+      expect(snapshot).not.toBeNull();
+      expect(snapshot?.result.kind).toBe('ok');
+      expect(snapshot?.fetchedAtMs).toBeGreaterThanOrEqual(before);
+    });
+
+    it('caches error/unconfigured results too', async () => {
+      mockFetchStatus(500);
+      await fetchObservabilityMetrics();
+      const snapshot = getLastObservabilityMetricsSnapshot();
+      expect(snapshot?.result.kind).toBe('error');
+    });
+
+    it('overwrites the previous snapshot on subsequent fetch', async () => {
+      mockFetchStatus(500);
+      await fetchObservabilityMetrics();
+      expect(getLastObservabilityMetricsSnapshot()?.result.kind).toBe('error');
+
+      mockFetchOk(makeMetrics());
+      await fetchObservabilityMetrics();
+      expect(getLastObservabilityMetricsSnapshot()?.result.kind).toBe('ok');
     });
   });
 
