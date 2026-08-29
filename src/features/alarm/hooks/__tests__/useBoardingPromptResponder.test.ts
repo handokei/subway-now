@@ -23,6 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { renderHook } from '@testing-library/react-native';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
+import { makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
@@ -118,6 +119,29 @@ jest.mock('../../store/useLegAdvanceStore', () => {
   };
 });
 
+// #2410 — nextLine 무효 시 route derive fallback. parseBgLastStation은 실제 구현 유지
+// (#2408 위험1 guard 테스트가 이미 real 함수에 의존), readWidgetRefreshContext만 mock해
+// route/destination fixture를 직접 제어한다.
+jest.mock('../../utils/widgetRefreshContext', () => {
+  const actual = jest.requireActual('../../utils/widgetRefreshContext');
+  const mockReadWidgetRefreshContext = jest.fn(async () => ({
+    destination: null,
+    route: null,
+    bgContext: null,
+  }));
+  return {
+    ...actual,
+    readWidgetRefreshContext: mockReadWidgetRefreshContext,
+    __mockReadWidgetRefreshContext: mockReadWidgetRefreshContext,
+  };
+});
+
+// #2410 — findLocklessTransferWaypoint mock. 실 stations.json 데이터 의존 없이
+// route derive 성공/실패 분기를 직접 제어한다.
+jest.mock('../../../route/utils/findActiveTransferContext', () => ({
+  findLocklessTransferWaypoint: jest.fn(() => null),
+}));
+
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
 const {
   logBoardingPromptAutoLock,
@@ -138,6 +162,12 @@ const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
 );
 const { __mockStampLegAdvance: stampLegAdvanceMock } = jest.requireMock(
   '../../store/useLegAdvanceStore',
+);
+const { __mockReadWidgetRefreshContext: readWidgetRefreshContextMock } = jest.requireMock(
+  '../../utils/widgetRefreshContext',
+);
+const { findLocklessTransferWaypoint: findLocklessTransferWaypointMock } = jest.requireMock(
+  '../../../route/utils/findActiveTransferContext',
 );
 const displayLoggerMock = jest.requireMock('../useBoardingPromptDisplayLogger');
 
@@ -488,43 +518,30 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   });
 
   // #1740 — destination 방향 filter 강화 테스트.
-  it('#1740 — destinationDirection "up" → up 후보만 추림, down 후보 무시', async () => {
-    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
-    const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
-    const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
-    const deps = makeDeps({
-      fetchArrivalsForStation: jest.fn(async () =>
-        makeArrivalBothDirections([upTrain], [downTrain]),
-      ),
-    });
-    const payload = { ...PAYLOAD, destinationDirection: 'up' as const };
-    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
-    // up 단일 후보 → lock 생성, trainCode = 'UP1'
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: 'UP1' }),
-      true,
-      'boarding-prompt-response',
-    );
-  });
-
-  it('#1740 — destinationDirection "down" → down 후보만 추림, up 후보 무시', async () => {
-    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
-    const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
-    const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
-    const deps = makeDeps({
-      fetchArrivalsForStation: jest.fn(async () =>
-        makeArrivalBothDirections([upTrain], [downTrain]),
-      ),
-    });
-    const payload = { ...PAYLOAD, destinationDirection: 'down' as const };
-    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
-    // down 단일 후보 → lock 생성, trainCode = 'DOWN1'
-    expect(createLockMock).toHaveBeenCalledWith(
-      expect.objectContaining({ trainCode: 'DOWN1' }),
-      true,
-      'boarding-prompt-response',
-    );
-  });
+  it.each<['up' | 'down', string]>([
+    ['up', 'UP1'],
+    ['down', 'DOWN1'],
+  ])(
+    '#1740 — destinationDirection "%s" → %s 후보만 추림, 반대 후보 무시',
+    async (direction, expectedTrainCode) => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
+      const downTrain = { trainCode: 'DOWN1', arrivalCode: 2, line: '2' as const };
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () =>
+          makeArrivalBothDirections([upTrain], [downTrain]),
+        ),
+      });
+      const payload = { ...PAYLOAD, destinationDirection: direction };
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+      // 단일 방향 후보 → lock 생성, trainCode = 방향에 맞는 열차
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: expectedTrainCode }),
+        true,
+        'boarding-prompt-response',
+      );
+    },
+  );
 
   // #2407 — up 후보 0건은 "line 매칭 0건" 실패 모드와 동일 — pending fallback lock 대상.
   it(
@@ -834,6 +851,34 @@ describe('handleResponse — #1170 응답 telemetry (logBoardingPromptResponded)
   });
 });
 
+// boarded-like / dismissed-like 액션 목록. #1923 infoModeEnabled stamp와 #2371
+// navigationActive wire가 정확히 대칭이라 두 describe가 이 목록을 공유한다.
+const BOARDED_LIKE_ACTIONS: [string, string][] = [
+  ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED],
+  ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER],
+];
+const DISMISSED_LIKE_ACTIONS: [string, string][] = [
+  ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
+  ['알 수 없는 액션', 'SOME_OTHER_ACTION'],
+];
+
+// boarded-like 액션마다 station lookup을 mock한 뒤 handleResponse를 호출하고 assertion을 실행.
+function itEachBoardedLikeAction(title: string, assertion: () => void): void {
+  it.each<[string, string]>(BOARDED_LIKE_ACTIONS)(title, async (_label, action) => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    assertion();
+  });
+}
+
+// dismissed-like 액션마다 handleResponse를 호출하고 assertion을 실행 (station lookup mock 불필요).
+function itEachDismissedLikeAction(title: string, assertion: () => void): void {
+  it.each<[string, string]>(DISMISSED_LIKE_ACTIONS)(title, async (_label, action) => {
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    assertion();
+  });
+}
+
 // #1923 — 사용자 명시 의향 stamp. boarded path 진입 시 setInfoModeEnabled(true) 호출 검증.
 // dismissed path는 stamp 안 함 (의향 표명 없음).
 describe('handleResponse — #1923 infoModeEnabled stamp (사용자 명시 의향)', () => {
@@ -841,22 +886,14 @@ describe('handleResponse — #1923 infoModeEnabled stamp (사용자 명시 의�
     jest.clearAllMocks();
   });
 
-  it.each<[string, string]>([
-    ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED],
-    ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER],
-  ])('%s → useUserIntentStore.setInfoModeEnabled(true) 호출', async (_label, action) => {
-    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
-    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
-    expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true);
-  });
+  itEachBoardedLikeAction('%s → useUserIntentStore.setInfoModeEnabled(true) 호출', () =>
+    expect(setInfoModeEnabledMock).toHaveBeenCalledWith(true),
+  );
 
-  it.each<[string, string]>([
-    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
-    ['알 수 없는 액션', 'SOME_OTHER_ACTION'],
-  ])('%s → setInfoModeEnabled 호출 안 함 (dismissed path는 의향 표명 없음)', async (_label, action) => {
-    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
-    expect(setInfoModeEnabledMock).not.toHaveBeenCalled();
-  });
+  itEachDismissedLikeAction(
+    '%s → setInfoModeEnabled 호출 안 함 (dismissed path는 의향 표명 없음)',
+    () => expect(setInfoModeEnabledMock).not.toHaveBeenCalled(),
+  );
 
   it('tryAutoLock 실패(arrivals null)해도 setInfoModeEnabled(true)는 호출 (의향 표명 사실은 실패와 무관)', async () => {
     const deps = makeHandleResponseDeps({
@@ -881,22 +918,14 @@ describe('handleResponse — #2371 navigationActive wire (BG GPS 시작 트리�
     jest.clearAllMocks();
   });
 
-  it.each<[string, string]>([
-    ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED],
-    ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER],
-  ])('%s → useNavigationStore.startNavigation() 호출', async (_label, action) => {
-    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
-    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
-    expect(startNavigationMock).toHaveBeenCalledTimes(1);
-  });
+  itEachBoardedLikeAction('%s → useNavigationStore.startNavigation() 호출', () =>
+    expect(startNavigationMock).toHaveBeenCalledTimes(1),
+  );
 
-  it.each<[string, string]>([
-    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
-    ['알 수 없는 액션', 'SOME_OTHER_ACTION'],
-  ])('%s → startNavigation 호출 안 함 (dismissed path는 의향 표명 없음)', async (_label, action) => {
-    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
-    expect(startNavigationMock).not.toHaveBeenCalled();
-  });
+  itEachDismissedLikeAction(
+    '%s → startNavigation 호출 안 함 (dismissed path는 의향 표명 없음)',
+    () => expect(startNavigationMock).not.toHaveBeenCalled(),
+  );
 });
 
 // #1888 (RC-13) — Interactive UI 작동 확인 + 빈 후보 graceful skip evidence.
@@ -1181,6 +1210,131 @@ describe('handleResponse — #2034 hop-end', () => {
       makeHandleResponseDeps(),
     );
     expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+  });
+
+  // #2410 — push nextLine 무효(구버전 backend 등) 시 로컬 route에서 다음 leg 노선을 도출해
+  // stampLegAdvance한다. 하차 등록이 push 데이터 부재로 통째로 무효화되던 회귀 fix.
+  describe('#2410 — nextLine 무효 시 route derive fallback', () => {
+    // route derive가 성공하는 공통 setup — station lookup, 환승 route, waypoint mock을
+    // 동일하게 구성한 뒤 handleResponse를 호출한다. 아래 두 테스트가 결과 assertion만 다르게 검증.
+    async function invokeDisembarkWithSuccessfulRouteDerive(): Promise<void> {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D1', line: 'gyeongui', name: '왕십리' },
+        route: makeTransferRoute({
+          transferName: '성수',
+          fromLine: '2',
+          toLine: 'gyeongui',
+          stopsToTransfer: 0,
+          stopsFromTransfer: 3,
+        }),
+        bgContext: null,
+      });
+      findLocklessTransferWaypointMock.mockReturnValueOnce({
+        transferStationInToLine: { id: 'S-성수-K', line: 'gyeongui', name: '성수' },
+        nextLine: '5',
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+    }
+
+    it('nextLine 무효 + route derive 성공 → 도출된 line으로 stampLegAdvance 호출', async () => {
+      await invokeDisembarkWithSuccessfulRouteDerive();
+
+      expect(findLocklessTransferWaypointMock).toHaveBeenCalledTimes(1);
+      expect(stampLegAdvanceMock).toHaveBeenCalledTimes(1);
+      expect(stampLegAdvanceMock).toHaveBeenCalledWith('5');
+    });
+
+    it('nextLine 무효 + route/destination storage 부재 → stampLegAdvance 호출 안 함 (graceful skip)', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: null,
+        route: null,
+        bgContext: null,
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(findLocklessTransferWaypointMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 무효 + originStation station lookup 실패 → stampLegAdvance 호출 안 함 (graceful skip)', async () => {
+      findStationByNameAndLine.mockReturnValue(undefined);
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(readWidgetRefreshContextMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 무효 + route derive 매칭 실패(findLocklessTransferWaypoint null) → stampLegAdvance 호출 안 함', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D1', line: 'gyeongui', name: '왕십리' },
+        route: makeTransferRoute({
+          transferName: '성수',
+          fromLine: '2',
+          toLine: 'gyeongui',
+          stopsToTransfer: 0,
+          stopsFromTransfer: 3,
+        }),
+        bgContext: null,
+      });
+      findLocklessTransferWaypointMock.mockReturnValueOnce(null);
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 무효 + route derive 성공해도 releaseLock은 그대로 1회 호출됨 (기존 흐름 무변경)', async () => {
+      await invokeDisembarkWithSuccessfulRouteDerive();
+
+      expect(releaseLockMock).toHaveBeenCalledTimes(1);
+      expect(releaseLockMock).toHaveBeenCalledWith('user');
+    });
+
+    it('nextLine 무효 + payload.line도 유효하지 않음 → station lookup 시도 없이 stampLegAdvance 호출 안 함', async () => {
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        { ...HOP_END_PAYLOAD, line: 'not-a-line' },
+        makeHandleResponseDeps(),
+      );
+
+      expect(findStationByNameAndLine).not.toHaveBeenCalled();
+      expect(readWidgetRefreshContextMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('nextLine 유효 → route derive 경로 진입 안 함 (findLocklessTransferWaypoint 미호출, 기존 회귀 없음)', async () => {
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD_VALID_NEXT_LINE,
+        makeHandleResponseDeps(),
+      );
+
+      expect(readWidgetRefreshContextMock).not.toHaveBeenCalled();
+      expect(findLocklessTransferWaypointMock).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).toHaveBeenCalledWith('2');
+    });
   });
 
   it('[아직] (NOT_YET action) → stampLegAdvance 호출 안 함', async () => {
