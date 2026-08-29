@@ -1756,8 +1756,11 @@ export function useFusedNearestStation(
     if (arcStations.length === 0) return;
     const idx = arcIndexOfStation(arcStations, ssotStation);
     if (idx === -1) return;
-    const receivedAt = backendSsotMirror?.receivedAt ?? null;
-    if (receivedAt == null) return;
+    // backendSsotAccepts(위에서 이미 가드)는 정의상 backendSsotMirror !== null을 보장한다
+    // (backendSsotAccepts = ssotStation !== null && ssotFresh, ssotFresh = backendSsotMirror !== null
+    // && ...). 둘 다 같은 render에서 파생된 plain const라 이 effect 클로저 안에서 값이 달라질 수
+    // 없다 — non-null 단언으로 단순화(런타임 동작 동일, 도달 불가능한 방어 분기 제거).
+    const receivedAt = backendSsotMirror!.receivedAt;
     const current = lastObservedRef.current;
     if (current !== null && current.observedAtMs >= receivedAt) return;
     lastObservedRef.current = { arcIndex: idx, observedAtMs: receivedAt };
