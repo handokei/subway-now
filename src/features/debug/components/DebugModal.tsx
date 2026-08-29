@@ -320,14 +320,18 @@ function formatOptionalNumber(value: number | null | undefined): string {
   return value == null ? UNKNOWN_LABEL : String(value);
 }
 
-function formatOptionalTs(value: number | null | undefined): string {
-  if (value == null) return UNKNOWN_LABEL;
-  return new Date(value).toISOString();
-}
-
 function formatTime(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// #2424 — 이전엔 `toISOString()`(UTC)로 렌더해 나머지 시각 표시(formatTime 기반, 로컬=KST)와
+// 타임존이 혼재되어 실기기 덤프 오독→오진단을 유발했다. tripStartedAt 등은 날짜 경계를 넘는
+// trip 구분이 필요하므로 HH:mm만이 아니라 로컬 날짜(en-CA → YYYY-MM-DD)+시각(formatTime 재사용)으로 통일.
+function formatOptionalTs(value: number | null | undefined): string {
+  if (value == null) return UNKNOWN_LABEL;
+  const date = new Date(value).toLocaleDateString('en-CA');
+  return `${date} ${formatTime(value)}`;
 }
 
 // #2284 — fired-only 독립 버퍼(FiredAlarmLogEntry) 1건 포맷. alarmLog의 formatLogLine과 달리
