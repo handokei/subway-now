@@ -36,7 +36,7 @@ import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/co
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
-import { shouldDowngradeFusion } from '../utils/movementGate';
+import { shouldDowngradeFusion, STATIC_SPEED_THRESHOLD_MPS } from '../utils/movementGate';
 import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
@@ -628,17 +628,36 @@ export function useFusedNearestStation(
     [routeContext?.route],
   );
 
-  // GPS 좌표 → 거리순 후보 N개. 좌표 갱신 시에만 재계산.
+  // #2418 (perf) — 정지+유휴 backoff. movementGate(evaluateMovement)가 이미 계산하는 동일 정적 신호
+  // (motionStationary===true OR gps speed < STATIC_SPEED_THRESHOLD_MPS)를 재사용해, lockless(잠금
+  // 없음) && route 없음(trip 비활성)일 때 candidate enumeration/train-position poll을 skip한다.
+  // suppression(evaluateMovement/useStationAlarm)은 "발사"만 막고 "연산"은 막지 않아 정지 상태(주차/
+  // 실내/취침)에도 GPS·CPU가 계속 도는 발열 root — lock/route/trip 활성이면 정확도 우선으로 미적용.
+  // 이동 재개(speed 상승 또는 motion 비정지) 시 다음 렌더에서 즉시 정상 주기로 복귀한다(지연 금지 —
+  // 탑승 순간을 놓치면 안 됨).
+  const isStationaryForBackoff =
+    motionStationary === true ||
+    (gps.speedMps != null && gps.speedMps < STATIC_SPEED_THRESHOLD_MPS);
+  const stationaryBackoffActive = isStationaryForBackoff && !tripActive && boardingLock == null;
+
+  // 직전 candidate enumeration 결과. backoff 활성 중엔 재계산 없이 이 값을 재사용해 참조를
+  // 고정 — 하류(activeLines/[candidates,environment] effect)의 불필요 재실행도 함께 차단한다.
+  const lastCandidatesRef = useRef<NearestStationResult[]>([]);
+
+  // GPS 좌표 → 거리순 후보 N개. 좌표 갱신 시에만 재계산 (정지 backoff 시엔 skip).
   const candidates = useMemo<NearestStationResult[]>(() => {
+    if (stationaryBackoffActive) return lastCandidatesRef.current;
     if (!gps.userLocation) return [];
-    return findTopNearestStations(
+    const next = findTopNearestStations(
       gps.userLocation.lat,
       gps.userLocation.lng,
       FUSION_CANDIDATE_LIMIT,
       MAX_STATION_DISTANCE_KM,
       allowedLines,
     );
-  }, [gps.userLocation, allowedLines]);
+    lastCandidatesRef.current = next;
+    return next;
+  }, [gps.userLocation, allowedLines, stationaryBackoffActive]);
 
   // arrival 폴링: 후보 역명 단위 K=3 고정.
   // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한
@@ -656,9 +675,11 @@ export function useFusedNearestStation(
   // position 폴링: 후보 역들의 호선만 dedup 후 K=3 고정 슬롯.
   // (대부분 1~2개 호선이지만 환승 인근에서 3개까지 가능)
   const activeLines = useMemo(() => findActiveLines(candidates), [candidates]);
-  const l0 = activeLines[0] ?? null;
-  const l1 = activeLines[1] ?? null;
-  const l2 = activeLines[2] ?? null;
+  // #2418 (perf) — 정지 backoff 중엔 line을 null로 넘겨 useTrainPositions 폴링 자체를 비활성화
+  // (useTrainPositions는 line=null이면 network poll을 skip하는 기존 계약을 그대로 사용).
+  const l0 = stationaryBackoffActive ? null : activeLines[0] ?? null;
+  const l1 = stationaryBackoffActive ? null : activeLines[1] ?? null;
+  const l2 = stationaryBackoffActive ? null : activeLines[2] ?? null;
   const p0 = useTrainPositions(l0, positionProvider);
   const p1 = useTrainPositions(l1, positionProvider);
   const p2 = useTrainPositions(l2, positionProvider);
