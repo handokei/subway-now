@@ -39,6 +39,8 @@ import {
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
 import type { StationWaypointKind } from '../../../shared/types/pushContract';
+import { BOARDING_PROMPT_CATEGORY } from './notificationCategory';
+import type { LineNumber } from '../../../shared/types/station';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
  *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
@@ -64,7 +66,18 @@ const STATION_PASSED_CHANNEL_ID = 'station-passed';
 
 async function scheduleNotification(
   id: string,
-  content: { title: string; body: string; sound?: boolean | string; channelId?: string; interruptionLevel?: 'timeSensitive' | 'critical'; priority?: Notifications.AndroidNotificationPriority },
+  content: {
+    title: string;
+    body: string;
+    sound?: boolean | string;
+    channelId?: string;
+    interruptionLevel?: 'timeSensitive' | 'critical';
+    priority?: Notifications.AndroidNotificationPriority;
+    /** #2422 — boarding-prompt 등 액션 버튼(UNNotificationCategory)이 필요한 로컬 발사용. */
+    categoryIdentifier?: string;
+    /** #2422 — 응답 listener(`useBoardingPromptResponder`)가 파싱하는 payload 동봉용. */
+    data?: Record<string, unknown>;
+  },
 ): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(id);
@@ -91,6 +104,11 @@ export function setupNotificationHandler(): void {
       // #2122 — FG 보조 발사(로컬 station-passed 알림) 직후 뒤늦게 도착한 backend alert push가
       // 같은 (station, kind)면 2차 방어선으로 표시 억제(1차는 apns-collapse-id 문자열 일치).
       if (await isRecentLocalAuxFireDuplicate(notification)) {
+        return SUPPRESSED_NOTIFICATION_BEHAVIOR;
+      }
+      // #2422 — 로컬 boarding-prompt 발사 직후 뒤늦게 도착하는 backend remote alert push가
+      // 같은 origin station이면 억제 (station-passed의 isRecentLocalAuxFireDuplicate와 동형 2차 방어선).
+      if (await isRecentLocalBoardingPromptDuplicate(notification)) {
         return SUPPRESSED_NOTIFICATION_BEHAVIOR;
       }
       return {
@@ -167,6 +185,27 @@ async function isRecentLocalAuxFireDuplicate(
   const localKind = mapBackendKindToLocalFireKind(backendKind);
   if (!localKind) return false;
   return hasRecentLocalStationFire(stationName, localKind);
+}
+
+/** boarding-prompt local fire dedup 키 kind — `recentLocalStationFires`(#2122 station-passed
+ *  선례) 재사용. station name과 조합해 `${kind}:${stationName}` 키를 만든다. */
+export const LOCAL_BOARDING_PROMPT_FIRE_KIND = 'boarding-prompt';
+
+/**
+ * #2422 — backend remote boarding-prompt alert push(`data.kind === 'boarding-prompt'`)가,
+ * 이 device가 방금 로컬로 발사한 것과 같은 originStation이면 true. 로컬 발사가 backend push보다
+ * 먼저 도달했을 때 뒤늦은 remote alert의 중복 표시를 억제한다.
+ */
+async function isRecentLocalBoardingPromptDuplicate(
+  notification: Notifications.Notification,
+): Promise<boolean> {
+  const data = notification.request.content.data as
+    | { kind?: unknown; originStation?: unknown }
+    | undefined;
+  if (data?.kind !== 'boarding-prompt') return false;
+  const originStation = data?.originStation;
+  if (typeof originStation !== 'string' || originStation.length === 0) return false;
+  return hasRecentLocalStationFire(originStation, LOCAL_BOARDING_PROMPT_FIRE_KIND);
 }
 
 const STATION_CHANNEL_ID = 'station';
@@ -667,4 +706,76 @@ export async function fireFgAuxStationPassedNotification(
   const { title, body } = buildStationPassedContent(stationName, count, targetKind, targetName);
   await scheduleNotification(identifier, { title, body, sound: false });
   await markLocalStationFired(stationName, 'station-passed');
+}
+
+/**
+ * #2422 — "탔어요?" boarding-prompt title/body 빌더. backend `buildBoardingPromptMessage`
+ * (backend/alarm-worker/src/scheduled.ts)의 device 쪽 대응 — ETA 절대시각까지는 복제하지 않는다
+ * (단순성. 이 로컬 발사는 backend remote push의 fallback 안전망이라 표시 정보가 backend와
+ * 100% 동일할 필요는 없다. 사용자는 앱 홈 화면에서 이미 ETA를 보고 있다).
+ */
+function buildBoardingPromptContent(
+  originStation: string,
+  line: string,
+): { title: string; body: string } {
+  return {
+    title: i18next.t('route.boardingPromptTitle'),
+    body: i18next.t('route.boardingPromptBody', {
+      line: LINE_NAMES[line as LineNumber] ?? line,
+      originStation: getStationDisplayNameByName(originStation, allStations),
+    }),
+  };
+}
+
+/** #2422 — 로컬 boarding-prompt 알림 identifier prefix. 매 발사마다 station+시각을 붙여 유일화
+ *  (동일 identifier 재사용은 `useBoardingPromptDisplayLogger`의 dedup Set이 두 번째 발사부터
+ *  displayed 카운트를 영구 억제하는 부작용이 있다 — #2422 PR 리뷰 참고). */
+const LOCAL_BOARDING_PROMPT_ID_PREFIX = 'boarding-prompt-local';
+
+/**
+ * #2422 (방향 A) — device FG 로컬 boarding-prompt 단일권위 발사.
+ *
+ * backend remote alert push(주 채널)가 미발송/전달실패해도 device가 FG에서 동일 게이트
+ * (`localBoardingPromptGate.ts`)를 통과하면 로컬로 직접 발사한다 — ADR-033(station-passed FG
+ * 보조 발사)과 동일 패턴.
+ *
+ * `useBoardingPromptResponder`가 파싱하는 payload schema(`BoardingPromptPayload`)와 동일한
+ * shape으로 `content.data`를 채운다 — [탑승]/[미탑승] 액션 버튼(BOARDING_PROMPT_CATEGORY)이
+ * 로컬 발사든 원격 발사든 동일하게 동작한다.
+ *
+ * tripToken은 `ACTIVE_TRIP_KEY`(backend register 성공 시에만 set)를 요구한다 — 아직 register가
+ * 안 된 trip은 이 로컬 발사도 스킵(register 자체의 실패는 이 안전망의 범위 밖. 이 안전망은
+ * "register는 됐지만 backend cron/APNs 전달이 실패"하는 SPOF만 커버한다).
+ *
+ * dedup: `recentLocalStationFires`(#2122 선례)로 같은 originStation 재발사를 TTL(2분) 동안 억제.
+ * 반환값은 실제 발사 여부(테스트/로깅 용) — 게이트 자체는 caller(`useLocalBoardingPromptGate`)가
+ * 이미 통과한 상태로 호출한다.
+ */
+export async function fireLocalBoardingPromptNotification(
+  originStation: string,
+  line: string,
+  destinationDirection: 'up' | 'down' | null,
+): Promise<boolean> {
+  if (await hasRecentLocalStationFire(originStation, LOCAL_BOARDING_PROMPT_FIRE_KIND)) {
+    return false;
+  }
+  const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+  if (!tripToken) return false;
+
+  const identifier = `${LOCAL_BOARDING_PROMPT_ID_PREFIX}:${originStation}:${Date.now()}`;
+  const { title, body } = buildBoardingPromptContent(originStation, line);
+  await scheduleNotification(identifier, {
+    title,
+    body,
+    categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+    data: {
+      kind: 'boarding-prompt',
+      originStation,
+      line,
+      tripToken,
+      ...(destinationDirection ? { destinationDirection } : {}),
+    },
+  });
+  await markLocalStationFired(originStation, LOCAL_BOARDING_PROMPT_FIRE_KIND);
+  return true;
 }

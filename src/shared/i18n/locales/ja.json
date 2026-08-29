@@ -274,6 +274,8 @@
     "atCurrentStation": "現在 {{name}}",
     "approximateDistance": "約{{m}}m",
     "stationPassed": "{{name}}駅に到着",
+    "boardingPromptTitle": "ご乗車されましたか?",
+    "boardingPromptBody": "{{originStation}}駅付近です({{line}})。",
     "tripEndedArrivedTitle": "目的地に到着",
     "tripEndedTitle": "案内終了",
     "tripEndedBody": "ルート案内を終了しました",

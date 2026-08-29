@@ -47,6 +47,7 @@ import { useBarometer } from '../shared/hooks/useBarometer';
 import { useTripOrigin } from '../features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../features/nearest-station/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegistration';
+import { useLocalBoardingPromptGate } from '../features/alarm/hooks/useLocalBoardingPromptGate';
 import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -1039,6 +1040,22 @@ export default function HomeScreen() {
     // 있었다 — tripOrigin을 명시 송신해 backend가 우선 채택하도록 한다. 캡처 전(cold-start)이면
     // undefined로 생략(graceful) — backend는 기존 passedStations fallback으로 동작.
     originStationName: tripOrigin?.name,
+  });
+
+  // #2422 (방향 A) — boarding prompt device FG 로컬 단일권위. backend remote alert push(주 채널)
+  // 가 미발송/전달실패해도 device가 FG에서 같은 gate 입력으로 로컬 발사 안전망을 돌린다.
+  // gpsFix는 useApnsTripRegistration과 동일 소스(userLocation/accuracyMeters) — 중복 계산 없이
+  // 같은 GPS fix를 boarding-prompt context 근접 게이트 입력으로 재사용.
+  useLocalBoardingPromptGate({
+    route,
+    currentStation: result?.station ?? null,
+    destination,
+    lock: boardingLock,
+    gpsFix:
+      userLocation && accuracyMeters != null
+        ? { lat: userLocation.lat, lng: userLocation.lng, accuracyM: accuracyMeters }
+        : null,
+    arrival,
   });
 
   useEffect(() => {
