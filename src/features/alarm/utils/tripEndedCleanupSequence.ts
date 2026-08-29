@@ -44,13 +44,20 @@ import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+
+/** breadcrumb에서 trip 종료 트리거를 구분하는 reason. */
+type TripEndReason = 'backend-confirmed' | 'user-end-trip-button';
 
 /**
- * backend-confirmed 'ended' trip을 device 상태에 반영한다.
- *
- * @param endedAt backend가 보고한 종료 시각(epoch ms). 미상이면 호출자가 `Date.now()` fallback.
+ * trip-ended cleanup 5단 시퀀스 본체. `cleanupBackendConfirmedEndedTrip` /
+ * `cleanupUserInitiatedEndedTrip`(#2428) 양쪽이 공유하는 단일 구현 — drift 방지를 위해
+ * 여기 외에는 재구현하지 않는다.
  */
-export async function cleanupBackendConfirmedEndedTrip(endedAt: number): Promise<void> {
+async function runFullTripEndCleanupSequence(
+  endedAt: number,
+  reason: TripEndReason,
+): Promise<void> {
   await triggerTripEndRecall();
   // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
   const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
@@ -61,7 +68,30 @@ export async function cleanupBackendConfirmedEndedTrip(endedAt: number): Promise
   // storage만 정리하므로 이게 없으면 stale destination이 메모리에 남아 lockless trip이
   // 유령 재시작된다 (헤더 주석 참고).
   useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
+  // #2428 — trip 종료 트리거 구분 breadcrumb (V/X dashboard 관측용: Sentry breadcrumb trail).
+  addDomainBreadcrumb('trip', 'end', { reason });
   // #2114 (방안 C′) — sentinel에 corrId 동봉.
   await setTripEndedSentinel(endedAt, endedCorrIdSnapshot);
   await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+}
+
+/**
+ * backend-confirmed 'ended' trip을 device 상태에 반영한다.
+ *
+ * @param endedAt backend가 보고한 종료 시각(epoch ms). 미상이면 호출자가 `Date.now()` fallback.
+ */
+export async function cleanupBackendConfirmedEndedTrip(endedAt: number): Promise<void> {
+  await runFullTripEndCleanupSequence(endedAt, 'backend-confirmed');
+}
+
+/**
+ * #2428 — 사용자가 `ALARM_CATEGORY` 알림의 [trip 종료] 액션(`ALARM_ACTION_END_TRIP`)을 직접
+ * 탭했을 때 호출하는 진입점. 시퀀스는 `cleanupBackendConfirmedEndedTrip`과 동일
+ * (`runFullTripEndCleanupSequence` 공유, 재구현 금지) — 사용자 명시 탭도 종료 확정 신호로
+ * backend 통지와 동급이다(ADR-014 "사용자 명시 의향 trip = lock 활성과 동급").
+ *
+ * @param endedAt 사용자가 탭한 시각(epoch ms). 호출자가 `Date.now()`를 전달.
+ */
+export async function cleanupUserInitiatedEndedTrip(endedAt: number): Promise<void> {
+  await runFullTripEndCleanupSequence(endedAt, 'user-end-trip-button');
 }

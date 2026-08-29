@@ -1,8 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
-import { cleanupBackendConfirmedEndedTrip } from '../tripEndedCleanupSequence';
+import {
+  cleanupBackendConfirmedEndedTrip,
+  cleanupUserInitiatedEndedTrip,
+} from '../tripEndedCleanupSequence';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
+
+const mockAddDomainBreadcrumb = jest.fn();
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
+}));
 
 const mockTriggerTripEndRecall = jest.fn();
 jest.mock('../triggerTripEndRecall', () => ({
@@ -97,5 +105,47 @@ describe('cleanupBackendConfirmedEndedTrip', () => {
 
     expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith(null);
     expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(42, null);
+  });
+
+  it('reason=backend-confirmed breadcrumb 발사', async () => {
+    await cleanupBackendConfirmedEndedTrip(1_700_000_000_000);
+
+    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+      reason: 'backend-confirmed',
+    });
+  });
+});
+
+// #2428 — [trip 종료] 버튼 dead wire 수정. cleanupUserInitiatedEndedTrip은
+// cleanupBackendConfirmedEndedTrip과 동일 시퀀스(runFullTripEndCleanupSequence 공유)를 타므로
+// 핵심 순서/destination reset 검증은 위 describe에서 이미 커버 — 여기서는 함수 자체가 호출되고
+// reason이 구분되는지만 별도 검증한다(구현 재사용 확인).
+describe('cleanupUserInitiatedEndedTrip', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+    await AsyncStorage.clear();
+    useDestinationStore.setState({
+      destination: MOCK_STATIONS.gangnam,
+      customOrigin: MOCK_STATIONS.chungmuro,
+      tripOrigin: MOCK_STATIONS.hyochang,
+    });
+  });
+
+  it('cleanupBackendConfirmedEndedTrip과 동일 5단 시퀀스 실행 + reason=user-end-trip-button', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    mockGetCurrentTripCorrIdSync.mockReturnValue('corr-2');
+
+    await cleanupUserInitiatedEndedTrip(1_700_000_100_000);
+
+    expect(mockTriggerTripEndRecall).toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+    expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith('corr-2');
+    expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(1_700_000_100_000, 'corr-2');
+    expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+    expect(useDestinationStore.getState().destination).toBeNull();
+    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+      reason: 'user-end-trip-button',
+    });
   });
 });
