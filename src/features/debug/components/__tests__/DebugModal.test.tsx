@@ -19,6 +19,18 @@ import {
   type ObservabilityMetrics,
 } from '../../../observability/api/observabilityMetricsClient';
 
+// #2424 — formatOptionalTs(로컬 날짜+시각) 기대값 재현 헬퍼. 프로덕션 구현(DebugModal.tsx
+// formatOptionalTs)과 동일한 포맷 규칙(en-CA 날짜 + en-GB HH:mm:ss)을 테스트에서 독립 재현.
+function formatLocalTs(ts: number): string {
+  const date = new Date(ts).toLocaleDateString('en-CA');
+  const time = new Date(ts).toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  return `${date} ${time}`;
+}
+
 const mockUseFusedNearestStation = jest.fn();
 const mockUseArrivalInfo = jest.fn();
 const mockUseSilentPushDiagnostics = jest.fn();
@@ -1339,11 +1351,16 @@ describe('DebugModal helpers — D9 optional formatters (#1215)', () => {
     expect(__test__.formatOptionalNumber(input as number | null | undefined)).toBe(expected);
   });
 
-  it('formatOptionalTs: 값이 있으면 ISO, null이면 —', () => {
+  it('formatOptionalTs: 값이 있으면 로컬 날짜+시각(KST), null이면 —', () => {
     const ts = Date.UTC(2026, 5, 12, 5, 0, 0);
-    expect(__test__.formatOptionalTs(ts)).toBe(new Date(ts).toISOString());
+    expect(__test__.formatOptionalTs(ts)).toBe(formatLocalTs(ts));
     expect(__test__.formatOptionalTs(null)).toBe('—');
     expect(__test__.formatOptionalTs(undefined)).toBe('—');
+  });
+
+  it('formatOptionalTs: UTC ISO 문자열을 반환하지 않는다 (#2424 회귀 방지)', () => {
+    const ts = Date.UTC(2026, 5, 12, 5, 0, 0);
+    expect(__test__.formatOptionalTs(ts)).not.toBe(new Date(ts).toISOString());
   });
 });
 
@@ -1384,7 +1401,7 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
     expect(dump).toContain('tier=high');
     expect(dump).toContain('signalMask=TFT');
     expect(dump).toContain('lockless=true');
-    expect(dump).toContain(`tripStartedAt=${new Date(tripStartedAt).toISOString()}`);
+    expect(dump).toContain(`tripStartedAt=${formatLocalTs(tripStartedAt)}`);
     expect(dump).toContain('currentHopIndex=2');
     expect(dump).toContain('route hop count=7');
     expect(dump).toContain('sleepMode=on');
@@ -1623,7 +1640,7 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     // #1253 — maestro manual flow가 Trip 섹션을 testID로 잡는다.
     expect(screen.getByTestId('debug-modal-trip-section')).toBeTruthy();
     expect(screen.getByText('lockless')).toBeTruthy();
-    expect(screen.getByText(new Date(tripStartedAt).toISOString())).toBeTruthy();
+    expect(screen.getByText(formatLocalTs(tripStartedAt))).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
     expect(screen.getByText('8')).toBeTruthy();
   });
@@ -1921,7 +1938,7 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
       mockGetTripStartedAt.mockResolvedValue(tripAt);
       useDestinationStore.setState({ destination: wireTripDestination });
       const message = await shareAndReadDump();
-      expect(message).toContain(`tripStartedAt=${new Date(tripAt).toISOString()}`);
+      expect(message).toContain(`tripStartedAt=${formatLocalTs(tripAt)}`);
     });
 
     it('비동기 hydration 중 unmount 시 setState 호출 안 함', async () => {
