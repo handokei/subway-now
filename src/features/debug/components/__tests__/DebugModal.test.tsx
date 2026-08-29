@@ -13,6 +13,11 @@ import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime';
+import {
+  fetchObservabilityMetrics,
+  __test__ as observabilityMetricsClientTestUtils,
+  type ObservabilityMetrics,
+} from '../../../observability/api/observabilityMetricsClient';
 
 const mockUseFusedNearestStation = jest.fn();
 const mockUseArrivalInfo = jest.fn();
@@ -5656,11 +5661,15 @@ describe('DebugModal share dump — 누락 3 섹션 wire (#2044-scope)', () => {
   });
 
   describe('buildOperationDashboardSection (#1751)', () => {
+    beforeEach(() => {
+      observabilityMetricsClientTestUtils.resetLastMetricsSnapshot();
+    });
+
     it('operationDashboard 미전달 시 (n/a) 반환 — store snapshot 미주입 graceful', () => {
       expect(__test__.buildOperationDashboardSection(makeArgs())).toEqual(['(n/a)']);
     });
 
-    it('alarmAccuracy(local) 0/0 + silentPushReach(local) 0/0 + backend 안내 라인', () => {
+    it('alarmAccuracy(local) 0/0 + silentPushReach(local) 0/0 + backend poll 전이면 안내 라인', () => {
       const result = __test__.buildOperationDashboardSection(
         makeArgs({
           operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
@@ -5669,8 +5678,135 @@ describe('DebugModal share dump — 누락 3 섹션 wire (#2044-scope)', () => {
       expect(result).toEqual([
         'alarmAccuracy(local)=0/0',
         'silentPushReach(local)=0/0',
-        '(backend metrics: locklessMiss/boardableMiss/accelPattern/pushLatency/laPush — see Modal UI, not dumped)',
+        '(no backend poll yet)',
       ]);
+    });
+
+    it('backend poll 실패(unconfigured) 시 사유를 명시', async () => {
+      const originalToken = process.env.EXPO_PUBLIC_ADMIN_TOKEN;
+      delete process.env.EXPO_PUBLIC_ADMIN_TOKEN;
+      await fetchObservabilityMetrics();
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = originalToken;
+
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
+        }),
+      );
+      expect(result).toContain('(backend poll failed: unconfigured)');
+    });
+
+    it('backend poll 실패(HTTP error) 시 error message를 명시', async () => {
+      const originalToken = process.env.EXPO_PUBLIC_ADMIN_TOKEN;
+      const originalUrl = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = 'test-token';
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://alarm.example.test';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: async () => ({}),
+      }) as unknown as typeof fetch;
+      await fetchObservabilityMetrics();
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = originalToken;
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = originalUrl;
+
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
+        }),
+      );
+      expect(result).toContain('(backend poll failed: HTTP 503)');
+    });
+
+    it('backend poll 성공 시 OperationDashboardSection과 동일 SSOT metric 8종을 노출', async () => {
+      const metrics: ObservabilityMetrics = {
+        accuracyRatio: { value: 8, total: 10, ratio: 0.8 },
+        silentPushDeliveryRatio: { value: 5, total: 6, ratio: 0.833 },
+        locklessMissRatio: { value: 0, total: 147, ratio: 0 },
+        boardableMissRatio: { value: 0, total: 0, ratio: 0 },
+        accelPatternHitRatio: {
+          automotive: { count: 4, ratio: 0.33 },
+          walking: { count: 2, ratio: 0.17 },
+          stationary: { count: 0, ratio: 0 },
+          unknown: { count: 6, ratio: 0.5 },
+        },
+        silentPushLatency: { p50: 120, p95: 400, totalSamples: 9 },
+        laPushDeliveryRatio: { sent: 10, failed: 2, ratio: 10 / 12 },
+        silentPushReachRatio: { sent: 7, received: 5, joined: 5, ratio: 5 / 7 },
+        algorithmAccuracyRatio: { value: 8, total: 10, ratio: 0.8, answeredTotal: 12 },
+        locklessTripMissRatio: { miss: 0, fired: 2, paradigmIntent: 0, ratio: 0 },
+        window: '24h',
+        timestamp: 1_700_000_000_000,
+      };
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => metrics,
+      }) as unknown as typeof fetch;
+      const originalToken = process.env.EXPO_PUBLIC_ADMIN_TOKEN;
+      const originalUrl = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = 'test-token';
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://alarm.example.test';
+      await fetchObservabilityMetrics();
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = originalToken;
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = originalUrl;
+
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
+        }),
+      );
+      expect(result).toContain('locklessMiss=0% (0/147)');
+      expect(result).toContain('boardableMiss=0% (0/0)');
+      expect(result).toContain('accelPattern: automotive 33%(4) walking 17%(2) stationary 0%(0) unknown 50%(6)');
+      expect(result).toContain('silentPushLatency=p50=120ms p95=400ms n=9');
+      expect(result).toContain('laPushDelivery=83% (10/12)');
+      expect(result).toContain('silentPushReach(backend)=71% (5/7)');
+      expect(result).toContain('algorithmAccuracy=80% (8/10)');
+      expect(result).toContain('locklessTripMiss(paradigm=0)=0% (0/2)');
+      expect(result.some((line) => line.startsWith('as of '))).toBe(true);
+    });
+
+    it('구버전 backend(optional metric 필드 미응답) 시 no data 라인으로 graceful', async () => {
+      const metrics: ObservabilityMetrics = {
+        accuracyRatio: { value: 0, total: 0, ratio: 0 },
+        silentPushDeliveryRatio: { value: 0, total: 0, ratio: 0 },
+        locklessMissRatio: { value: 0, total: 0, ratio: 0 },
+        boardableMissRatio: { value: 0, total: 0, ratio: 0 },
+        accelPatternHitRatio: {
+          automotive: { count: 0, ratio: 0 },
+          walking: { count: 0, ratio: 0 },
+          stationary: { count: 0, ratio: 0 },
+          unknown: { count: 0, ratio: 0 },
+        },
+        laPushDeliveryRatio: { sent: 0, failed: 0, ratio: 0 },
+        window: '24h',
+        timestamp: 1_700_000_000_000,
+        // silentPushLatency / silentPushReachRatio / algorithmAccuracyRatio /
+        // locklessTripMissRatio 모두 미응답 (구버전 backend).
+      };
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => metrics,
+      }) as unknown as typeof fetch;
+      const originalToken = process.env.EXPO_PUBLIC_ADMIN_TOKEN;
+      const originalUrl = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = 'test-token';
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://alarm.example.test';
+      await fetchObservabilityMetrics();
+      process.env.EXPO_PUBLIC_ADMIN_TOKEN = originalToken;
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = originalUrl;
+
+      const result = __test__.buildOperationDashboardSection(
+        makeArgs({
+          operationDashboard: { groundTruthAccurateCount: 0, groundTruthAnsweredCount: 0 },
+        }),
+      );
+      expect(result).toContain('silentPushLatency=no data');
+      expect(result).toContain('silentPushReach(backend)=no data');
+      expect(result).toContain('algorithmAccuracy=no data');
+      expect(result).toContain('locklessTripMiss=no data');
     });
 
     it('alarmAccuracy(local) 3/5 반영 — 사용자 정답지 응답 반영', () => {
