@@ -11,6 +11,7 @@ import {
   buildStationPassedContent,
   fireFgAuxStationPassedNotification,
   fireLocalAlarmNotification,
+  fireLocalBoardingPromptNotification,
 } from '../stationNotification';
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
 import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
@@ -307,6 +308,80 @@ describe('stationNotification', () => {
           },
         });
         expect(emptyStation.shouldShowAlert).toBe(true);
+        expect(mockHasRecentLocalStationFire).not.toHaveBeenCalled();
+      });
+    });
+
+    // #2422 — 로컬 boarding-prompt 발사 직후 뒤늦게 도착한 backend remote alert push의
+    // 중복 표시 억제(2차 방어선, station-passed isRecentLocalAuxFireDuplicate와 동형).
+    describe('#2422 — 최근 로컬 boarding-prompt 발사 표시 억제', () => {
+      it('data.kind=boarding-prompt + hasRecentLocalStationFire=true → 표시 억제', async () => {
+        mockHasRecentLocalStationFire.mockResolvedValueOnce(true);
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const result = await handleNotification({
+          request: {
+            identifier: 'boarding-prompt-local-x',
+            content: { sound: null, data: { kind: 'boarding-prompt', originStation: '중곡' } },
+          },
+        });
+        expect(mockHasRecentLocalStationFire).toHaveBeenCalledWith('중곡', 'boarding-prompt');
+        expect(result).toEqual({
+          shouldShowAlert: false,
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        });
+      });
+
+      it('data.kind=boarding-prompt + hasRecentLocalStationFire=false → 정상 표시', async () => {
+        mockHasRecentLocalStationFire.mockResolvedValueOnce(false);
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const result = await handleNotification({
+          request: {
+            identifier: 'boarding-prompt-local-x',
+            content: { sound: null, data: { kind: 'boarding-prompt', originStation: '중곡' } },
+          },
+        });
+        expect(result.shouldShowAlert).toBe(true);
+      });
+
+      it('data.kind가 boarding-prompt가 아니면 hasRecentLocalStationFire 호출 안 함 (정상 표시)', async () => {
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const result = await handleNotification({
+          request: {
+            identifier: 'station-alarm',
+            content: { sound: null, data: { kind: 'intermediate', originStation: '중곡' } },
+          },
+        });
+        expect(mockHasRecentLocalStationFire).not.toHaveBeenCalled();
+        expect(result.shouldShowAlert).toBe(true);
+      });
+
+      it('data 없거나 originStation 누락/빈 문자열이면 hasRecentLocalStationFire 호출 안 함 (정상 표시)', async () => {
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+        const noData = await handleNotification({
+          request: { identifier: 'boarding-prompt-local-x', content: { sound: null } },
+        });
+        expect(noData.shouldShowAlert).toBe(true);
+        const noOrigin = await handleNotification({
+          request: {
+            identifier: 'boarding-prompt-local-x',
+            content: { sound: null, data: { kind: 'boarding-prompt' } },
+          },
+        });
+        expect(noOrigin.shouldShowAlert).toBe(true);
+        const emptyOrigin = await handleNotification({
+          request: {
+            identifier: 'boarding-prompt-local-x',
+            content: { sound: null, data: { kind: 'boarding-prompt', originStation: '' } },
+          },
+        });
+        expect(emptyOrigin.shouldShowAlert).toBe(true);
         expect(mockHasRecentLocalStationFire).not.toHaveBeenCalled();
       });
     });
@@ -1058,6 +1133,85 @@ describe('stationNotification', () => {
 
     it('device token 미보유 시(등록 전) 스킵 — 알림 발사/stamp 모두 안 함', async () => {
       await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남');
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fireLocalBoardingPromptNotification (#2422 — device FG 로컬 boarding-prompt 단일권위)', () => {
+    beforeEach(async () => {
+      await AsyncStorage.clear();
+      mockHasRecentLocalStationFire.mockResolvedValue(false);
+    });
+
+    it('ACTIVE_TRIP_KEY 보유 + dedup 미기록 시 BOARDING_PROMPT_CATEGORY + 응답 payload shape로 발사하고 markLocalStationFired를 stamp한다', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+      const fired = await fireLocalBoardingPromptNotification('중곡', '7', 'up');
+
+      expect(fired).toBe(true);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            title: '탑승하셨나요?',
+            categoryIdentifier: 'BOARDING_PROMPT',
+            data: {
+              kind: 'boarding-prompt',
+              originStation: '중곡',
+              line: '7',
+              tripToken: 'trip-abc',
+              destinationDirection: 'up',
+            },
+          }),
+          trigger: null,
+        }),
+      );
+      expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'boarding-prompt');
+    });
+
+    it('direction=null이면 data.destinationDirection 필드 자체를 생략한다', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+      await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            data: { kind: 'boarding-prompt', originStation: '중곡', line: '7', tripToken: 'trip-abc' },
+          }),
+        }),
+      );
+    });
+
+    it('LINE_NAMES에 없는 line 값(비정상 데이터)이면 원본 line 문자열을 그대로 body에 사용한다', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+      await fireLocalBoardingPromptNotification('중곡', 'not-a-line', null);
+
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            body: expect.stringContaining('not-a-line'),
+          }),
+        }),
+      );
+    });
+
+    it('ACTIVE_TRIP_KEY 미보유(backend register 전) 시 스킵 — 알림 발사/stamp 모두 안 함', async () => {
+      const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+      expect(fired).toBe(false);
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+    });
+
+    it('최근 dedup 기록 있으면(hasRecentLocalStationFire=true) 스킵 — ACTIVE_TRIP_KEY 조회조차 안 함', async () => {
+      mockHasRecentLocalStationFire.mockResolvedValueOnce(true);
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+      const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+      expect(fired).toBe(false);
+      expect(mockHasRecentLocalStationFire).toHaveBeenCalledWith('중곡', 'boarding-prompt');
       expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
       expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
     });

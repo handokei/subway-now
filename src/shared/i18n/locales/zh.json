@@ -274,6 +274,8 @@
     "atCurrentStation": "当前 {{name}}",
     "approximateDistance": "约{{m}}m",
     "stationPassed": "已到达{{name}}",
+    "boardingPromptTitle": "您已乘车了吗?",
+    "boardingPromptBody": "您在{{originStation}}站附近({{line}})。",
     "tripEndedArrivedTitle": "已到达目的地",
     "tripEndedTitle": "导航结束",
     "tripEndedBody": "路线导航已结束",

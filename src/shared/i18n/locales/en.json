@@ -274,6 +274,8 @@
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
     "stationPassed": "Arrived at {{name}}",
+    "boardingPromptTitle": "Are you on board?",
+    "boardingPromptBody": "You're near {{originStation}} station ({{line}}).",
     "tripEndedArrivedTitle": "Arrived at destination",
     "tripEndedTitle": "Guidance ended",
     "tripEndedBody": "Route guidance has ended",
