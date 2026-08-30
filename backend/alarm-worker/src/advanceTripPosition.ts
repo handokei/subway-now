@@ -21,6 +21,11 @@
  *                             lock 활성과 동급 정확도 → motion stationary 게이트도 우회 X 아닌 동급 처리.
  *                             그러나 P8 acceptance "userIntentDeclared=true + 정지 → advanced"가
  *                             명시되어 있어 #2에서만 명시 의향 trip을 통과시킨다. 다른 게이트는 동급.)
+ *                            #2432 — lock 활성 + `arvlcd-confirmed-train` evidence는 locked trainCode
+ *                             자체가 실제 이동 중이라는 독립 확증이므로 device sync 신선도와 무관하게
+ *                             motion gate를 면제한다(지하 GPS 끊김으로 motion 신호가 고정되는 사각
+ *                             차단). false-positive 방어는 #5 train identity + T7
+ *                             `evaluateTransferDestinationGate`가 담당.
  *   #3 Environment 게이트  — evaluateConsensusGate 통과 필수 (지하 GPS-only false positive 차단)
  *   #4 Evidence type 게이트 — ADR-015 §E4: 'time-only' evidence 절대 거부
  *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train evidence면 trainCode 일치 필수
@@ -431,7 +436,22 @@ export async function advanceTripPosition(
   // leg 자율 전진만, 환승 후 leg는 범위 밖).
   const deviceSyncStaleBypass =
     isDeviceSyncStale(ssot, evidence.ts) && evidence.type === 'arvlcd-confirmed-train';
-  if (ssot.motionState === 'stationary' && !ssot.userIntentDeclared && !deviceSyncStaleBypass) {
+  // #2432 — lock 활성 + `arvlcd-confirmed-train` evidence는 그 자체로 "locked trainCode가 실제
+  // 이동 중"이라는 독립 확증이다(#1315 주석 자백: 지하 GPS 끊김으로 motion=unknown/stationary
+  // 고정 시 trainCode 바인딩도 이동 게이트에 의존해 사각 발생 — 8/30 D1 trip 어대/건대 advance
+  // stall 재현). deviceSyncStale 여부와 무관하게, 열차 자체의 arvlCd 진행이 device motion보다
+  // 강한 ground truth이므로 motion gate를 면제한다. false-positive 방어는 gate #5(train identity
+  // — `lock.trainCode` 불일치 시 blocked('train-mismatch'))와 T7
+  // `evaluateTransferDestinationGate`(transfer/destination kind 60s 신선도, 2026-06-19 회귀 방어)가
+  // 유지 — 본 게이트에서 lock 없음/trainCode 확증 없는 evidence(예: `position-train`)는 기존대로
+  // 차단된다.
+  const lockedTrainArvlcdBypass = lock !== undefined && evidence.type === 'arvlcd-confirmed-train';
+  if (
+    ssot.motionState === 'stationary' &&
+    !ssot.userIntentDeclared &&
+    !deviceSyncStaleBypass &&
+    !lockedTrainArvlcdBypass
+  ) {
     return { result: 'blocked', blockReason: 'motion-stationary', ssot };
   }
 
