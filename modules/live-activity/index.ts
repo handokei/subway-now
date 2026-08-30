@@ -104,6 +104,27 @@ export function clearWidgetStation(): Promise<void> {
   return LiveActivityModule?.clearWidgetStation() ?? Promise.resolve();
 }
 
+/**
+ * #2439 — LA 인터랙티브 프롬프트 piece ⑤-native. 잠금화면 버튼(BoardingConfirmIntent/
+ * DisembarkConfirmIntent, `targets/subway-widget/BoardingIntents.swift`)이 App Group
+ * (`group.com.subwaynow.app`, key `pendingBoardingIntent`)에 write한 raw JSON 문자열을 읽는다.
+ * 없으면 null. 파싱/도메인 처리(lock 생성 등)는 호출 측(⑤-JS) 책임 — 이 함수는 read-only 브릿지.
+ *
+ * value(JSON) 계약: `{ id, tripToken, action: "BOARDING_BOARDED" | "DISEMBARK_DISEMBARKED",
+ * originStation, line, atMs }`
+ */
+export function readPendingBoardingIntent(): string | null {
+  return LiveActivityModule?.readPendingBoardingIntent() ?? null;
+}
+
+/**
+ * 처리 완료한 pending intent를 제거. `id`가 저장된 값과 일치할 때만 제거되는 멱등 연산 —
+ * 이미 지워졌거나 그 사이 새 intent로 덮어써졌으면 native가 no-op 처리한다.
+ */
+export function clearPendingBoardingIntent(id: string): void {
+  LiveActivityModule?.clearPendingBoardingIntent(id);
+}
+
 const NOOP_SUBSCRIPTION: EventSubscription = { remove: () => undefined };
 
 export interface PushTokenEvent {

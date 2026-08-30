@@ -1,5 +1,6 @@
 #if os(iOS)
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -102,8 +103,15 @@ private struct LockScreenView: View {
     }
 
 
+    /// #2439 — pre-boarding/hop-end 단계는 "탑승/하차 확인" 프롬프트를 최우선 표시.
+    var isBoardingPrompt: Bool {
+        state.boardingPhase == "pre-boarding" || state.boardingPhase == "hop-end"
+    }
+
     var body: some View {
-        if isUrgent {
+        if isBoardingPrompt {
+            BoardingPromptView(state: state, phase: state.boardingPhase ?? "")
+        } else if isUrgent {
             // 긴급 모드
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 4)
@@ -208,6 +216,76 @@ private struct LockScreenView: View {
                 Color.black.opacity(isLuminanceReduced ? 0.9 : 0.85)
                     .overlay(isLuminanceReduced ? lineColor.opacity(0.08) : Color.clear)
             )
+        }
+    }
+}
+
+/// #2439 — pre-boarding("탑승하셨나요?") / hop-end("하차하셨나요?") 프롬프트 배너.
+/// LA 자체는 16.1+ 유지 — 버튼만 iOS 17+ `@available` 가드로 분리해, 17 미만 기기는 텍스트만 본다.
+@available(iOS 16.1, *)
+private struct BoardingPromptView: View {
+    let state: SubwayActivityAttributes.ContentState
+    let phase: String
+
+    var questionKey: String {
+        phase == "pre-boarding"
+            ? "widget.boardingPrompt.boarded.question"
+            : "widget.boardingPrompt.disembark.question"
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(state.boardingPromptOriginStation ?? state.stationName)
+                    .font(.title3)
+                    .fontWeight(.black)
+                    .foregroundColor(.white)
+                Text(NSLocalizedString(questionKey, comment: "Live Activity boarding/disembark confirmation prompt"))
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white.opacity(0.85))
+            }
+
+            Spacer()
+
+            if #available(iOS 17.0, *) {
+                BoardingPromptButton(state: state, phase: phase)
+            }
+        }
+        .padding(16)
+        .background(Color.black.opacity(0.85))
+    }
+}
+
+/// AppIntent 버튼 자체는 iOS 17+ (`LiveActivityIntent`)에서만 렌더 — 17 미만은 위 텍스트만 노출.
+@available(iOS 17.0, *)
+private struct BoardingPromptButton: View {
+    let state: SubwayActivityAttributes.ContentState
+    let phase: String
+
+    var body: some View {
+        if phase == "pre-boarding" {
+            Button(intent: BoardingConfirmIntent(
+                tripToken: state.boardingPromptTripToken ?? "",
+                originStation: state.boardingPromptOriginStation ?? "",
+                line: state.boardingPromptLine ?? ""
+            )) {
+                Text(NSLocalizedString("widget.boardingPrompt.boarded.button", comment: "Confirm boarding button label"))
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+            }
+            .tint(.white)
+        } else {
+            Button(intent: DisembarkConfirmIntent(
+                tripToken: state.boardingPromptTripToken ?? "",
+                originStation: state.boardingPromptOriginStation ?? "",
+                line: state.boardingPromptLine ?? ""
+            )) {
+                Text(NSLocalizedString("widget.boardingPrompt.disembark.button", comment: "Confirm disembark button label"))
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+            }
+            .tint(.white)
         }
     }
 }
