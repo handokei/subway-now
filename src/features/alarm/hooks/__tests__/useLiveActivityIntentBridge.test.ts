@@ -140,18 +140,18 @@ describe('useLiveActivityIntentBridge', () => {
     mockCreateLock.mockReset();
     mockFindStationByNameAndLine.mockReset();
     mockHandleResponse.mockResolvedValue(undefined);
-    mockClearPendingBoardingIntent.mockResolvedValue(undefined);
+    mockClearPendingBoardingIntent.mockReturnValue(undefined);
   });
 
   it('마운트 시 pending intent를 1회 확인한다', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue(null);
+    mockReadPendingBoardingIntent.mockReturnValue(null);
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     expect(mockReadPendingBoardingIntent).toHaveBeenCalledTimes(1);
   });
 
   it('pending 없음(null) → handleResponse/clear 호출 안 함', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue(null);
+    mockReadPendingBoardingIntent.mockReturnValue(null);
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
@@ -160,7 +160,7 @@ describe('useLiveActivityIntentBridge', () => {
   });
 
   it('malformed pending → handleResponse/clear 호출 안 함', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue('not-json{');
+    mockReadPendingBoardingIntent.mockReturnValue('not-json{');
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
@@ -169,7 +169,9 @@ describe('useLiveActivityIntentBridge', () => {
   });
 
   it('readPendingBoardingIntent 실패 → throw 없이 흡수', async () => {
-    mockReadPendingBoardingIntent.mockRejectedValue(new Error('native error'));
+    mockReadPendingBoardingIntent.mockImplementation(() => {
+      throw new Error('native error');
+    });
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
@@ -177,7 +179,7 @@ describe('useLiveActivityIntentBridge', () => {
   });
 
   it('lock 없음 + BOARDING_BOARDED → handleResponse(BOARDED) 호출 후 clear', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
+    mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
@@ -197,7 +199,7 @@ describe('useLiveActivityIntentBridge', () => {
   });
 
   it('DISEMBARK_DISEMBARKED → handleResponse(DISEMBARKED, hopEndKind=disembark) 호출 후 clear', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue(validDisembarkRaw);
+    mockReadPendingBoardingIntent.mockReturnValue(validDisembarkRaw);
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
@@ -211,8 +213,10 @@ describe('useLiveActivityIntentBridge', () => {
   });
 
   it('clearPendingBoardingIntent 실패 → throw 없이 흡수', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
-    mockClearPendingBoardingIntent.mockRejectedValue(new Error('clear failed'));
+    mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
+    mockClearPendingBoardingIntent.mockImplementation(() => {
+      throw new Error('clear failed');
+    });
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
@@ -234,7 +238,7 @@ describe('useLiveActivityIntentBridge', () => {
     it('같은 boardingStationId/line → handleResponse skip, clear는 호출', async () => {
       setMockLock(activeLock);
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
-      mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
       await Promise.resolve();
       await Promise.resolve();
@@ -246,7 +250,7 @@ describe('useLiveActivityIntentBridge', () => {
     it('lock 만료됨 → dedup 미적용, handleResponse 호출', async () => {
       setMockLock({ ...activeLock, boardedAt: Date.now() - 100 * 60_000 });
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
-      mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
       await Promise.resolve();
       await Promise.resolve();
@@ -257,7 +261,7 @@ describe('useLiveActivityIntentBridge', () => {
     it('line 불일치 → dedup 미적용, handleResponse 호출', async () => {
       setMockLock({ ...activeLock, boardingLine: '2' });
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
-      mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
       await Promise.resolve();
       await Promise.resolve();
@@ -268,7 +272,7 @@ describe('useLiveActivityIntentBridge', () => {
     it('station 매칭 실패(다른 역) → dedup 미적용, handleResponse 호출', async () => {
       setMockLock(activeLock);
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-다른역-5' });
-      mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
       await Promise.resolve();
       await Promise.resolve();
@@ -279,7 +283,7 @@ describe('useLiveActivityIntentBridge', () => {
     it('station lookup이 null → dedup 미적용, handleResponse 호출', async () => {
       setMockLock(activeLock);
       mockFindStationByNameAndLine.mockReturnValue(null);
-      mockReadPendingBoardingIntent.mockResolvedValue(validBoardedRaw);
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
       await Promise.resolve();
       await Promise.resolve();
@@ -289,7 +293,7 @@ describe('useLiveActivityIntentBridge', () => {
 
     it('DISEMBARK 액션은 dedup 체크 대상 아님 — lock 있어도 handleResponse 호출', async () => {
       setMockLock(activeLock);
-      mockReadPendingBoardingIntent.mockResolvedValue(validDisembarkRaw);
+      mockReadPendingBoardingIntent.mockReturnValue(validDisembarkRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
       await Promise.resolve();
       await Promise.resolve();
@@ -299,7 +303,7 @@ describe('useLiveActivityIntentBridge', () => {
   });
 
   it('foreground 폴링 콜백이 등록되고 재호출 시 재확인한다', async () => {
-    mockReadPendingBoardingIntent.mockResolvedValue(null);
+    mockReadPendingBoardingIntent.mockReturnValue(null);
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     expect(capturedPollCallback).not.toBeNull();

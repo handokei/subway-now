@@ -172,20 +172,3 @@ export function addActivityDismissedListener(
     LiveActivityModule?.addListener('onActivityDismissed', listener) ?? NOOP_SUBSCRIPTION
   );
 }
-
-/**
- * #2438 (LA 인터랙티브 프롬프트 piece ⑤) — AppIntent(LA 버튼 탭)가 App Group에 write한
- * pending boarding intent를 읽는다. JSON 문자열(`{ id, tripToken, action, originStation,
- * line, atMs }`) 또는 미존재/모듈 미지원 시 null.
- */
-export function readPendingBoardingIntent(): Promise<string | null> {
-  return LiveActivityModule?.readPendingBoardingIntent() ?? Promise.resolve(null);
-}
-
-/**
- * #2438 — 처리 완료한 pending boarding intent를 App Group에서 clear. 멱등(같은 id
- * 재호출 안전) — 모듈 미지원 환경은 no-op.
- */
-export function clearPendingBoardingIntent(id: string): Promise<void> {
-  return LiveActivityModule?.clearPendingBoardingIntent(id) ?? Promise.resolve();
-}

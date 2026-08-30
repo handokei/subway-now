@@ -14,10 +14,10 @@
  * 로직을 만들지 않고 기존 tryAutoLock/createPendingFallbackLock/dedup/의향 stamp를 재사용한다.
  *
  * App Group 계약 (native와 공유):
- *   `readPendingBoardingIntent(): Promise<string | null>` → JSON 문자열 또는 pending 없음/모듈
- *   미지원 시 null. `{ id, tripToken, action: 'BOARDING_BOARDED' | 'DISEMBARK_DISEMBARKED',
- *   originStation, line, atMs }`.
- *   `clearPendingBoardingIntent(id)` → 처리 후 호출(멱등) — 재폴링/재부팅 중복 처리 방지.
+ *   `readPendingBoardingIntent(): string | null` → JSON 문자열 또는 pending 없음/모듈
+ *   미지원 시 null (native `Function`이 sync라 JS 래퍼도 sync). `{ id, tripToken,
+ *   action: 'BOARDING_BOARDED' | 'DISEMBARK_DISEMBARKED', originStation, line, atMs }`.
+ *   `clearPendingBoardingIntent(id): void` → 처리 후 호출(멱등) — 재폴링/재부팅 중복 처리 방지.
  *
  * 트리거: 마운트 + AppState 'active' 진입 + foreground 유지 중 짧은 폴링
  * (`LIVE_ACTIVITY_INTENT_POLL_MS`) — native가 push event 없이 App Group write만 하는 pull
@@ -118,7 +118,7 @@ function isDuplicateBoardingIntent(intent: PendingBoardingIntent): boolean {
 async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
   let raw: string | null;
   try {
-    raw = await readPendingBoardingIntent();
+    raw = readPendingBoardingIntent();
   } catch (err) {
     log.warn('readPendingBoardingIntent 실패', err as Error);
     return;
@@ -149,7 +149,7 @@ async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
   }
 
   try {
-    await clearPendingBoardingIntent(intent.id);
+    clearPendingBoardingIntent(intent.id);
   } catch (err) {
     log.warn('clearPendingBoardingIntent 실패', err as Error);
   }
