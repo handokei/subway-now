@@ -37,6 +37,12 @@ struct SubwayActivityAttributes: ActivityAttributes {
         // 데이터 출처 자백 라벨 (#327). JS에서 i18n으로 빌드된 사용자 노출 텍스트.
         // 누락 시 위젯은 라벨 표시 생략 — 기존 LA 인스턴스 호환 안전.
         var sourceLabel: String?
+        // #2434 — LA interactive prompt piece ①. 순수 데이터 필드만 (버튼/AppIntent는 후속 piece).
+        // 전부 optional이라 기존 LA 세션(구 ContentState)이 decode 시 missing key → nil로 안전.
+        var boardingPhase: String?
+        var boardingPromptTripToken: String?
+        var boardingPromptOriginStation: String?
+        var boardingPromptLine: String?
     }
 }
 

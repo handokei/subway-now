@@ -36,6 +36,12 @@ export interface LiveActivityData {
   // 데이터 출처 자백 라벨 (#327). JS에서 i18n으로 빌드해 전달.
   // 누락 시 위젯/LA는 라벨 표시 생략 — 기존 인스턴스 호환 안전.
   sourceLabel?: string;
+  // #2434 — LA interactive prompt piece ①. 순수 데이터 필드만 (버튼/AppIntent는 후속 piece).
+  // 전부 optional — 미전달 시 native ContentState가 nil로 decode돼 기존 렌더와 100% 동일.
+  boardingPhase?: 'pre-boarding' | 'boarded' | 'hop-end' | 'arrival';
+  boardingPromptTripToken?: string;
+  boardingPromptOriginStation?: string;
+  boardingPromptLine?: string;
 }
 
 const LiveActivityModule =
