@@ -2,6 +2,7 @@
 import ActivityKit
 import AppIntents
 import Foundation
+import os.log
 
 // LA 인터랙티브 프롬프트 piece ③ (#2439). 잠금화면 Live Activity 버튼에서 직접 실행되는
 // AppIntent 2종. `LiveActivityIntent` 채택(iOS 17+)이 핵심 — 이 프로토콜을 채택한 intent는
@@ -15,9 +16,16 @@ import Foundation
 //   value(JSON) = { id, tripToken, action, originStation, line, atMs }
 //     - id: "<tripToken>-<atMs>" — clear 시 대조용
 //     - action: "BOARDING_BOARDED" | "DISEMBARK_DISEMBARKED"
+//
+// 파일 위치 = `_shared/` (fix/#2444): @bacons/apple-targets는 이 디렉토리 파일을 main app
+// target과 widget extension target 양쪽에 자동 링크한다(SubwayActivityAttributes.swift와 동일
+// 패턴). widget 전용 폴더에만 있었을 때 버튼 탭이 perform()까지 도달하지 않는 증상이 있었다 —
+// Apple 개발자 포럼 다수 보고: LiveActivityIntent가 위젯 프로세스에서 직접 실행되긴 하지만 App
+// Intents 등록이 안정적으로 동작하려면 intent 정의가 main app target에도 포함돼야 한다.
 
 private let APP_GROUP = "group.com.subwaynow.app"
 private let PENDING_BOARDING_INTENT_KEY = "pendingBoardingIntent"
+private let intentLog = Logger(subsystem: "com.subwaynow.app.widget", category: "BoardingIntent")
 private let ACTION_BOARDING_BOARDED = "BOARDING_BOARDED"
 private let ACTION_DISEMBARK_DISEMBARKED = "DISEMBARK_DISEMBARKED"
 
@@ -92,6 +100,7 @@ struct BoardingConfirmIntent: LiveActivityIntent {
     }
 
     func perform() async throws -> some IntentResult {
+        intentLog.info("perform BOARDING tapped tripToken=\(tripToken, privacy: .public)")
         await markCurrentActivity(boardingPhase: PHASE_BOARDED)
         writePendingBoardingIntent(
             action: ACTION_BOARDING_BOARDED,
@@ -132,6 +141,7 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
     }
 
     func perform() async throws -> some IntentResult {
+        intentLog.info("perform DISEMBARK tapped tripToken=\(tripToken, privacy: .public)")
         await markCurrentActivity(boardingPhase: PHASE_ARRIVAL)
         writePendingBoardingIntent(
             action: ACTION_DISEMBARK_DISEMBARKED,
