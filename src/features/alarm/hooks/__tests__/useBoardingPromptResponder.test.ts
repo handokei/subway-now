@@ -385,12 +385,42 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok');
   });
 
-  it('destinationId null → dismiss POST만 발사 (lock 시도 안 함)', async () => {
+  // 진짜 trip 종료(storage에도 destination 없음) — dismiss만, lock 시도 안 함.
+  // readWidgetRefreshContextMock 기본값(destination: null)을 그대로 사용.
+  it('destinationId null + storage에도 destination 없음(진짜 trip 종료) → dismiss POST만 발사 (lock 시도 안 함)', async () => {
     const deps = makeDeps({ destinationId: null });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(deps.fetchArrivalsForStation).not.toHaveBeenCalled();
     expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok');
     expect(createLockMock).not.toHaveBeenCalled();
+  });
+
+  // #2430 (cold-start race) — 알림의 "탑승했어요" 액션은 opensAppToForeground:true라
+  // 탭 시 앱이 cold-start된다. HomeScreen의 destination store가 hydrate되기 전에 이 listener가
+  // 응답을 처리하면 deps.destinationId(in-memory)는 일시 null이지만, trip은 여전히 활성이고
+  // AsyncStorage(DESTINATION_KEY)에는 올바른 destination이 남아 있다(진짜 trip 종료 시에만 storage도
+  // clear됨). storage live-read로 hydrate-전 일시 null과 진짜 종료를 구분해야 한다.
+  it('#2430 destinationId null이지만 storage에 destination 존재(cold-start race) → storage 값으로 lock 생성', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    readWidgetRefreshContextMock.mockResolvedValueOnce({
+      destination: { id: 'dst-from-storage', name: '잠실', line: '2' },
+      route: null,
+      bgContext: null,
+    });
+    const deps = makeDeps({ destinationId: null });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(deps.fetchArrivalsForStation).toHaveBeenCalledWith('강남');
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ destinationId: 'dst-from-storage', trainCode: 'T1' }),
+      true,
+      'boarding-prompt-response',
+    );
+    expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-success',
+      originStation: '강남',
+      line: '2',
+    });
   });
 
   // #2407 (root fix) — train 확정 실패해도 lock은 생성한다(ADR-014 명시 탭=lock 동급).

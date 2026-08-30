@@ -141,8 +141,15 @@ export interface UseBoardingPromptResponderDeps {
 /**
  * 응답 listener wiring + 분기 처리.
  *
- * destinationId가 null이면 lock 생성 불가 — 사용자가 trip을 이미 종료한 후 푸시를 늦게 탭한 케이스.
- * 그 경우 dismiss POST만 발사하고 lock 시도는 silent skip.
+ * deps.destinationId가 null이면 두 가지 케이스가 구분 안 된 상태다:
+ *   1) 진짜 trip 종료 후 푸시를 늦게 탭한 케이스.
+ *   2) cold-start race — "탑승했어요" 액션은 opensAppToForeground:true라 탭 시 앱이 killed 상태에서
+ *      새로 뜬다. HomeScreen의 destination store가 AsyncStorage(DESTINATION_KEY)로부터 hydrate되기
+ *      전에 이 listener가 응답을 먼저 처리하면 deps.destinationId(in-memory)는 일시 null이지만
+ *      storage에는 여전히 올바른 destination이 남아 있다(진짜 종료 시에만 storage도 clear됨).
+ *
+ * `tryAutoLock`이 destinationId가 null일 때 storage를 live-read해 둘을 구분한다 — storage에도
+ * 없으면 케이스 1로 간주해 dismiss POST만 발사하고 lock 시도는 silent skip.
  */
 export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps): void {
   const createLock = useBoardingLockStore((s) => s.createLock);
@@ -366,14 +373,18 @@ async function tryAutoLock(
 ): Promise<void> {
   const telemetry = { originStation: payload.originStation, line: payload.line };
 
-  if (!deps.destinationId) {
-    // trip이 이미 끝남 — lock 시도 안 함, dismiss로 backend silence.
+  // #2430 (cold-start race) — deps.destinationId(HomeScreen in-memory state)가 null이면
+  // storage(DESTINATION_KEY)를 live-read해 hydrate-전 일시 null과 진짜 trip 종료를 구분한다.
+  // deps.destinationId가 있으면 storage read는 short-circuit으로 건너뛴다(정상 경로 비용 無).
+  const destinationId =
+    deps.destinationId ?? (await readWidgetRefreshContext()).destination?.id ?? null;
+
+  if (!destinationId) {
+    // storage에도 destination이 없음 — 진짜 trip 종료. lock 시도 안 함, dismiss로 backend silence.
     logBoardingPromptAutoLock({ reason: 'autolock-no-trip', ...telemetry });
     await dismissBoardingPrompt(payload.tripToken);
     return;
   }
-  // await 경계를 넘어도 non-null narrowing이 유지되도록 local const로 고정.
-  const destinationId = deps.destinationId;
 
   const arrival = await deps.fetchArrivalsForStation(payload.originStation);
   if (!arrival) {
