@@ -30,6 +30,7 @@ import {
   setupTripEndedCategory,
 } from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
+import { useLiveActivityIntentBridge } from '../src/features/alarm/hooks/useLiveActivityIntentBridge';
 import { useAlarmEndTripResponder } from '../src/features/alarm/hooks/useAlarmEndTripResponder';
 import { useBoardingPromptDisplayLogger } from '../src/features/alarm/hooks/useBoardingPromptDisplayLogger';
 import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
@@ -153,6 +154,16 @@ function RootContent() {
   // 마운트 — payload만 들어오면 silence POST는 동작.
   // #1888 (RC-13) — banner를 직접 탭한 경우 home 화면으로 navigate해 BoardingTrainList를 노출.
   useBoardingPromptResponder({
+    fetchArrivalsForStation: (stationName) => fetchArrivalInfo(stationName),
+    destinationId,
+    expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
+    onBannerTap: requestNavigate,
+  });
+
+  // #2438 — LA(Live Activity) 버튼 탭 → App Group pending intent를 위 responder와 동일한
+  // handleResponse 경로로 위임. deps shape은 useBoardingPromptResponder와 동일해 두 채널이
+  // 같은 lock 생성/해제 컨텍스트를 공유한다(⑥ dedup은 훅 내부에서 active lock 존재로 판단).
+  useLiveActivityIntentBridge({
     fetchArrivalsForStation: (stationName) => fetchArrivalInfo(stationName),
     destinationId,
     expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,

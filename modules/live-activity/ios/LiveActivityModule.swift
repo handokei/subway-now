@@ -14,6 +14,11 @@ private let WIDGET_KEY_DESTINATION_NAME = "destinationName"
 private let WIDGET_KEY_NEXT_TRANSFER_NAME = "nextTransferName"
 private let WIDGET_KEY_TRIP_ACTIVE = "tripActive"
 
+// #2439 — LA 인터랙티브 프롬프트 piece ⑤-native. App Group 계약(⑤-JS 브릿지와 공유,
+// 정확히 일치해야 함). targets/subway-widget/BoardingIntents.swift의
+// PENDING_BOARDING_INTENT_KEY와 동일 리터럴 — 별도 컴파일 단위(pod)라 미러링한다.
+private let PENDING_BOARDING_INTENT_KEY = "pendingBoardingIntent"
+
 public class LiveActivityModule: Module {
     public func definition() -> ModuleDefinition {
         Name("LiveActivity")
@@ -120,6 +125,26 @@ public class LiveActivityModule: Module {
             if #available(iOS 14.0, *) {
                 WidgetCenter.shared.reloadAllTimelines()
             }
+        }
+
+        // #2439 — LA 잠금화면 버튼(BoardingConfirmIntent/DisembarkConfirmIntent, 위젯
+        // 익스텐션 프로세스)이 App Group에 write한 pending intent를 JS가 읽는다. 계약은
+        // BoardingIntents.swift 헤더 주석 참조. raw JSON 문자열을 그대로 반환 — 파싱은 JS 측 책임.
+        Function("readPendingBoardingIntent") { () -> String? in
+            guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return nil }
+            return defaults.string(forKey: PENDING_BOARDING_INTENT_KEY)
+        }
+
+        // id가 저장된 값과 일치할 때만 제거 — 멱등(이미 지워졌거나 그새 새 intent로 덮어써졌으면
+        // no-op). 새 intent를 실수로 지우는 race를 방지한다.
+        Function("clearPendingBoardingIntent") { (id: String) -> Void in
+            guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return }
+            guard let raw = defaults.string(forKey: PENDING_BOARDING_INTENT_KEY) else { return }
+            guard let jsonData = raw.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                  let storedId = json["id"] as? String,
+                  storedId == id else { return }
+            defaults.removeObject(forKey: PENDING_BOARDING_INTENT_KEY)
         }
     }
 }

@@ -254,3 +254,18 @@ export const FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS = 5 * 60_000;
  * 해당하며, 이 상수는 오직 "이미 등록된 trip"의 이후 변경에만 쓰인다.
  */
 export const ROUTE_CHANGE_DEBOUNCE_MS = 1500;
+
+/**
+ * #2438 (LA 인터랙티브 프롬프트 piece ⑤) — `useLiveActivityIntentBridge`가 App Group의
+ * pending boarding intent(LA 버튼 탭)를 foreground에서 재확인하는 짧은 폴링 주기(ms).
+ *
+ * native가 push event 없이 App Group write만 하는 pull 모델이라, 마운트 + AppState 'active'
+ * 진입 외에도 앱이 이미 foreground인 동안 버튼을 탭한 케이스(위젯/잠금화면에서 LA 버튼 탭 시
+ * 앱은 이미 열려 있을 수 있음)를 흡수하려면 짧은 재확인이 필요하다.
+ *
+ * 5s로 둔 이유: `usePolling`이 이미 AppState 'active' 진입 시 즉시 1회 재확인하므로, 이 값은
+ * "foreground 유지 중 버튼 탭"만 커버하면 된다 — 사용자가 버튼을 탭하고 화면을 계속 보고
+ * 있어도 5s 이내 lock이 반영되면 체감 지연이 크지 않다. 배터리 부담은 로컬 App Group 읽기
+ * 1회(AsyncStorage/UserDefaults 수준)라 무시할 만하다.
+ */
+export const LIVE_ACTIVITY_INTENT_POLL_MS = 5_000;
