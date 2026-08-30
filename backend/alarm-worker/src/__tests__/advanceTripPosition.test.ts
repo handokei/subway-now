@@ -334,7 +334,7 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
     },
     // Negative
     {
-      name: 'N1 정지 + arvlcd + userIntent OFF → blocked(motion-stationary)',
+      name: 'P9 (#2432) 정지 + lock + arvlcd-confirmed-train(trainCode 일치) → advanced (locked trainCode 확증은 motion 무관 독립 증거)',
       motion: 'stationary',
       userIntent: false,
       hasLock: true,
@@ -343,6 +343,33 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: true,
       gatePassed: true,
       lockAttachable: true,
+      extraStrongInRing: 0,
+      expected: 'advanced',
+    },
+    {
+      name: 'N1 (#2432 회귀방어) 정지 + lock + arvlcd 확증 없는 evidence(position-train) → blocked(motion-stationary)',
+      motion: 'stationary',
+      userIntent: false,
+      hasLock: true,
+      env: 'surface',
+      evidenceType: 'position-train',
+      trainMatch: false,
+      gatePassed: true,
+      lockAttachable: true,
+      extraStrongInRing: 0,
+      expected: 'blocked',
+      expectedReason: 'motion-stationary',
+    },
+    {
+      name: 'N1b (#2432 회귀방어) lockless + 정지 + arvlcd-lockless → blocked(motion-stationary)',
+      motion: 'stationary',
+      userIntent: false,
+      hasLock: false,
+      env: 'surface',
+      evidenceType: 'arvlcd-lockless',
+      trainMatch: false,
+      gatePassed: true,
+      lockAttachable: false,
       extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'motion-stationary',
@@ -1056,7 +1083,10 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
 
   // Shared setup — seedSsot(motion) + putTrip(with lock) + advanceTripPosition 4-line 시퀀스.
   // 3 case가 motion state만 다르고 나머지가 동일 → factory + advance 호출 통합으로 SonarCloud CPD 회피.
-  async function setupAndAdvance(motion: 'moving' | 'stationary'): Promise<{
+  async function setupAndAdvance(
+    motion: 'moving' | 'stationary',
+    evidence: AdvanceEvidence = makeEvidence(),
+  ): Promise<{
     result: AdvanceResult;
     after: Awaited<ReturnType<typeof readSsot>>;
   }> {
@@ -1068,7 +1098,7 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
       kv as unknown as KVNamespace,
       TOKEN,
       '중곡',
-      makeEvidence(),
+      evidence,
       { gatePassed: true, lockAttachable: true },
     );
     const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
@@ -1095,7 +1125,12 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
   });
 
   it('blocked advance → alarmEvents stamp 안 함', async () => {
-    const { result, after } = await setupAndAdvance('stationary'); // motion gate 차단
+    // #2432 — arvlcd-confirmed-train evidence는 lock 활성 + stationary여도 motion gate를 우회하므로,
+    // 본 blocked 시나리오는 확증 없는 evidence type(position-train)으로 motion gate를 차단시킨다.
+    const { result, after } = await setupAndAdvance(
+      'stationary',
+      makeEvidence({ type: 'position-train', arvlCd: null, arvlcdTrainCode: undefined }),
+    );
     expect(result).toBe('blocked');
     expect(after?.alarmEvents).toEqual([]);
   });
