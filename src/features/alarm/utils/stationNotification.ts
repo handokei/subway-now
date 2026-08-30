@@ -374,6 +374,26 @@ export interface BoardingPromptLiveActivityFields {
   line?: string;
 }
 
+type BoardingPromptTarget =
+  | 'boardingPhase'
+  | 'boardingPromptTripToken'
+  | 'boardingPromptOriginStation'
+  | 'boardingPromptLine';
+
+/**
+ * #2434 — (source key → LiveActivityData target key) 매핑. 필드가 하나 더 추가돼도
+ * 이 배열에 한 줄만 늘리면 되도록 데이터 주도로 구성 (개별 if 반복 하드코딩 금지, CLAUDE.md 룰3).
+ */
+const BOARDING_PROMPT_FIELD_MAP: ReadonlyArray<{
+  source: keyof BoardingPromptLiveActivityFields;
+  target: BoardingPromptTarget;
+}> = [
+  { source: 'phase', target: 'boardingPhase' },
+  { source: 'tripToken', target: 'boardingPromptTripToken' },
+  { source: 'originStation', target: 'boardingPromptOriginStation' },
+  { source: 'line', target: 'boardingPromptLine' },
+];
+
 /**
  * Live Activity content-state payload 빌더 — 입력은 train/route/alarm 정보, 출력은 native
  * Live Activity 모듈에 전달할 직렬화된 `LiveActivityData`. `updateStationNotification`(FG)과
@@ -500,21 +520,15 @@ export function buildLiveActivityData(
     }
   }
 
-  // #2434 — LA interactive prompt piece ①. boardingPrompt 필드가 있을 때만 채운다.
-  // 미전달(undefined/null)이면 data에 필드가 세팅되지 않아 native ContentState가 nil로
-  // decode돼 기존 렌더와 100% 동일.
+  // #2434 — LA interactive prompt piece ①. boardingPrompt 필드가 있을 때만, 존재하는 값만
+  // 순회로 채운다. 미전달(undefined/null)이면 data에 필드가 세팅되지 않아 native ContentState가
+  // nil로 decode돼 기존 렌더와 100% 동일.
   if (boardingPrompt) {
-    if (boardingPrompt.phase) {
-      data.boardingPhase = boardingPrompt.phase;
-    }
-    if (boardingPrompt.tripToken) {
-      data.boardingPromptTripToken = boardingPrompt.tripToken;
-    }
-    if (boardingPrompt.originStation) {
-      data.boardingPromptOriginStation = boardingPrompt.originStation;
-    }
-    if (boardingPrompt.line) {
-      data.boardingPromptLine = boardingPrompt.line;
+    for (const { source, target } of BOARDING_PROMPT_FIELD_MAP) {
+      const value = boardingPrompt[source];
+      if (value) {
+        (data as Record<BoardingPromptTarget, string | undefined>)[target] = value;
+      }
     }
   }
 
