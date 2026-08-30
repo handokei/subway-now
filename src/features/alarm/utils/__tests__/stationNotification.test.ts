@@ -12,6 +12,7 @@ import {
   fireFgAuxStationPassedNotification,
   fireLocalAlarmNotification,
   fireLocalBoardingPromptNotification,
+  buildLiveActivityData,
 } from '../stationNotification';
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
 import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
@@ -1303,6 +1304,74 @@ describe('stationNotification', () => {
     ])('buildAlarmContent source=%s → body=%s', (source, expectedBody) => {
       const { body } = buildAlarmContent(earlyDest, source);
       expect(body).toBe(expectedBody);
+    });
+  });
+
+  describe('buildLiveActivityData boardingPrompt 필드 (#2434 — LA interactive piece ①)', () => {
+    it('boardingPrompt 미전달 시 boarding* 필드가 undefined (기존 동작 그대로)', () => {
+      const data = buildLiveActivityData(mockStation, 154);
+      expect(data.boardingPhase).toBeUndefined();
+      expect(data.boardingPromptTripToken).toBeUndefined();
+      expect(data.boardingPromptOriginStation).toBeUndefined();
+      expect(data.boardingPromptLine).toBeUndefined();
+    });
+
+    it('boardingPrompt=null 전달 시에도 boarding* 필드가 undefined', () => {
+      const data = buildLiveActivityData(
+        mockStation,
+        154,
+        null,
+        null,
+        null,
+        false,
+        null,
+        undefined,
+        null,
+      );
+      expect(data.boardingPhase).toBeUndefined();
+      expect(data.boardingPromptTripToken).toBeUndefined();
+      expect(data.boardingPromptOriginStation).toBeUndefined();
+      expect(data.boardingPromptLine).toBeUndefined();
+    });
+
+    it('boardingPrompt 전달 시 4개 필드를 그대로 직렬화한다', () => {
+      const data = buildLiveActivityData(
+        mockStation,
+        154,
+        null,
+        null,
+        null,
+        false,
+        null,
+        undefined,
+        {
+          phase: 'pre-boarding',
+          tripToken: 'trip-abc',
+          originStation: '시청',
+          line: '1',
+        },
+      );
+      expect(data.boardingPhase).toBe('pre-boarding');
+      expect(data.boardingPromptTripToken).toBe('trip-abc');
+      expect(data.boardingPromptOriginStation).toBe('시청');
+      expect(data.boardingPromptLine).toBe('1');
+    });
+
+    it.each(['pre-boarding', 'boarded', 'hop-end', 'arrival'] as const)(
+      'phase=%s 단독 전달도 정상 직렬화',
+      (phase) => {
+        const data = buildLiveActivityData(mockStation, 154, null, null, null, false, null, undefined, {
+          phase,
+        });
+        expect(data.boardingPhase).toBe(phase);
+        expect(data.boardingPromptTripToken).toBeUndefined();
+      },
+    );
+
+    it('기존 호출자(source까지만 전달)는 시그니처가 안 깨진다', () => {
+      const data = buildLiveActivityData(mockStation, 154, null, null, null, false, null, 'gpsOnly');
+      expect(data.stationName).toBe('시청');
+      expect(data.boardingPhase).toBeUndefined();
     });
   });
 });

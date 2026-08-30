@@ -363,6 +363,38 @@ function buildContent(
 }
 
 /**
+ * #2434 — LA interactive prompt piece ①. boarding 프롬프트 상태를 LA content state에 실어
+ * 보내기 위한 순수 데이터 필드. 버튼/AppIntent는 후속 piece에서 배선한다.
+ * 전부 optional — 미전달 시 `buildLiveActivityData`가 대응 필드를 세팅하지 않아 기존 동작과 동일.
+ */
+export interface BoardingPromptLiveActivityFields {
+  phase?: 'pre-boarding' | 'boarded' | 'hop-end' | 'arrival';
+  tripToken?: string;
+  originStation?: string;
+  line?: string;
+}
+
+type BoardingPromptTarget =
+  | 'boardingPhase'
+  | 'boardingPromptTripToken'
+  | 'boardingPromptOriginStation'
+  | 'boardingPromptLine';
+
+/**
+ * #2434 — (source key → LiveActivityData target key) 매핑. 필드가 하나 더 추가돼도
+ * 이 배열에 한 줄만 늘리면 되도록 데이터 주도로 구성 (개별 if 반복 하드코딩 금지, CLAUDE.md 룰3).
+ */
+const BOARDING_PROMPT_FIELD_MAP: ReadonlyArray<{
+  source: keyof BoardingPromptLiveActivityFields;
+  target: BoardingPromptTarget;
+}> = [
+  { source: 'phase', target: 'boardingPhase' },
+  { source: 'tripToken', target: 'boardingPromptTripToken' },
+  { source: 'originStation', target: 'boardingPromptOriginStation' },
+  { source: 'line', target: 'boardingPromptLine' },
+];
+
+/**
  * Live Activity content-state payload 빌더 — 입력은 train/route/alarm 정보, 출력은 native
  * Live Activity 모듈에 전달할 직렬화된 `LiveActivityData`. `updateStationNotification`(FG)과
  * `refreshLiveActivityFromBackgroundContext`(#900 Seam D, silent push BG)에서 공유한다.
@@ -376,6 +408,7 @@ export function buildLiveActivityData(
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
   source?: NotificationSource,
+  boardingPrompt?: BoardingPromptLiveActivityFields | null,
 ): LiveActivity.LiveActivityData {
   // station layer: 항상 포함. Live Activity는 사용자 노출이므로 현재 언어로 표시.
   const data: LiveActivity.LiveActivityData = {
@@ -484,6 +517,18 @@ export function buildLiveActivityData(
         destination: destName,
         etaSuffix,
       });
+    }
+  }
+
+  // #2434 — LA interactive prompt piece ①. boardingPrompt 필드가 있을 때만, 존재하는 값만
+  // 순회로 채운다. 미전달(undefined/null)이면 data에 필드가 세팅되지 않아 native ContentState가
+  // nil로 decode돼 기존 렌더와 100% 동일.
+  if (boardingPrompt) {
+    for (const { source, target } of BOARDING_PROMPT_FIELD_MAP) {
+      const value = boardingPrompt[source];
+      if (value) {
+        (data as Record<BoardingPromptTarget, string | undefined>)[target] = value;
+      }
     }
   }
 
