@@ -49,6 +49,7 @@ import { useBackgroundLocation } from '../features/nearest-station/hooks/useBack
 import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegistration';
 import { useLocalBoardingPromptGate } from '../features/alarm/hooks/useLocalBoardingPromptGate';
 import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
+import { useLiveActivityPreBoardingLifecycle } from '../features/alarm/hooks/useLiveActivityPreBoardingLifecycle';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
@@ -1011,6 +1012,7 @@ export default function HomeScreen() {
   useBackgroundLocation(destination);
   const permissionWatcher = useLocationPermissionWatcher();
   useLiveActivityDismissBridge();
+  useLiveActivityPreBoardingLifecycle();
   useApnsTripRegistration({
     route,
     destination,
