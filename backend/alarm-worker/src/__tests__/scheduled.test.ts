@@ -2301,6 +2301,48 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(await kv.get('progress:lock-tok')).toBeNull();
   });
 
+  // 잠실나루 redundant boarding prompt regression — transfer waypoint의 목적지 line이 현재
+  // boardingLock.line과 동일(같은 호선 내 잘못 라벨된 transfer)이면 lock을 release하면 안 된다.
+  // release되면 다음 cycle의 evaluateAndMaybeFireBoardingPrompt가 lock=inactive로 오판해
+  // "탑승했어요?" 프롬프트를 이미 탑승 중인 사용자에게 재발사한다.
+  it('실제 노선 변경 없는 transfer waypoint(같은 line) 통과 시 boardingLock 유지(release 억제)', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        waypoints: [
+          // 목적지 line이 lock.line('7')과 동일 — 같은 호선 내 waypoint가 transfer로 잘못
+          // 라벨/advance된 케이스. 실제 환승이 아니므로 lock을 유지해야 한다.
+          { stationName: '잠실나루', line: '7', kind: 'transfer' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      },
+      '잠실나루',
+      'p-same-line-transfer',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.boardingLock).toBeDefined();
+    expect(stored.boardingLock.trainCode).toBe('7246');
+  });
+
+  // 대조군 — 목적지 line이 lock.line과 실제로 다르면(#864 원 시나리오) 기존대로 release돼야 한다.
+  it('실제 노선 변경 있는 transfer waypoint(다른 line) 통과 시 boardingLock release 유지', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-diff-line-transfer',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
   // #1438 (E5) — backend → device lock release sync. transfer waypoint advance 시 device로
   // silent push에 lockReleasedReason='transfer'를 실어 보내 로컬 useBoardingLockStore가 즉시 sync.
   it('#1438 (E5) — transfer release 시 silent push payload에 lockReleasedReason=transfer 포함', async () => {

@@ -3911,6 +3911,11 @@ export async function advanceBoardingLockWaypoint(
   // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
   // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
   appendPassedStation(trip, waypoint.stationName);
+  // 잠실나루 redundant boarding prompt regression — slice 직전 다음 waypoint(새 leg 시작점)의
+  // line을 캡처. transfer waypoint 자체의 line은 "방금 통과한(=현재) leg"의 line이라 항상
+  // boardingLock.line과 같아 진짜 환승/같은 호선 오라벨을 구분하지 못한다. 실제 노선 변경
+  // 여부는 그 다음 waypoint의 line으로만 판별 가능.
+  const nextLegWaypoint = trip.waypoints[1];
   // ADR-017 T5 (#1558) — immutable slice 로 mutation race 방지 (.shift 는 in-place).
   trip.waypoints = trip.waypoints.slice(1);
   trip.lastTrackedArrivalEpoch = undefined;
@@ -3926,7 +3931,15 @@ export async function advanceBoardingLockWaypoint(
   // progress KV도 같이 정리 — 옛 trainCode + shiftedCount가 stale로 남으면 token-refresh race
   // (`useApnsTripRegistration` `latestInputsRef` 옛 lock 보유) 윈도우에서 client 옛 lock POST 시
   // `progressApplies=true` 분기로 진입해 옛 lock이 backend에 다시 active로 복원되는 회귀가 가능.
-  const lockReleasedOnTransfer = waypoint.kind === 'transfer' && trip.boardingLock !== undefined;
+  //
+  // 잠실나루 redundant boarding prompt regression — waypoint.kind==='transfer'라도 다음
+  // leg(nextLegWaypoint)의 line이 현재 boardingLock.line과 같으면(같은 호선 내 waypoint가
+  // transfer로 잘못 라벨/advance된 케이스) 실제 노선 변경이 아니므로 release하면 안 된다.
+  // release되면 다음 cycle에 isBoardingLockActive=false로 오판해 이미 탑승 중인 사용자에게
+  // "탑승했어요?" 프롬프트가 재발사된다(#864 원 목적인 진짜 환승 release는 그대로 유지).
+  const isRealLineChange = nextLegWaypoint?.line !== trip.boardingLock?.line;
+  const lockReleasedOnTransfer =
+    waypoint.kind === 'transfer' && trip.boardingLock !== undefined && isRealLineChange;
   // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
   // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
   const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
