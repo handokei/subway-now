@@ -1,4 +1,4 @@
-import { inferLoopDirection, parseTrainLineDirection } from '../loopDirection';
+import { inferLoopDirection, nextLoopAdjacentStationName, parseTrainLineDirection } from '../loopDirection';
 
 jest.mock('../../../../shared/utils/stationRoute', () => ({
   getStationsOnLine: (line: string) => {
@@ -98,6 +98,61 @@ describe('inferLoopDirection — 하이브리드 노선 (6호선 응암 루프, 
 
   it.each(cases)('%s', (_desc, from, to, expected) => {
     expect(inferLoopDirection('6', from, to)).toBe(expected);
+  });
+});
+
+describe('nextLoopAdjacentStationName (#2446)', () => {
+  // #649/#807 nextStationLabel의 loop fallback — resolveNextAdjacentStationName이 비단조
+  // 노선에서 inferLoopDirection으로 산출한 방향을 받아 실제 1-hop 인접역 이름을 계산한다.
+  describe('진짜 순환선(2호선) — modulo wrap', () => {
+    const cases: Array<[string, string, 'up' | 'down', string | null]> = [
+      ['시청 → down(외선) → 을지로입구(다음 idx)', '시청', 'down', '을지로입구'],
+      ['시청 → up(내선) → 왕십리(wrap, idx -1 → 마지막)', '시청', 'up', '왕십리'],
+      ['왕십리 → down(외선) → 시청(wrap, 마지막 idx → 0)', '왕십리', 'down', '시청'],
+      ['까치산(지선)은 main range 밖 — currentIdx 미발견 → null', '까치산', 'down', null],
+      ['존재하지 않는 역명 → null', '없는역', 'down', null],
+    ];
+    it.each(cases)('%s', (_desc, current, direction, expected) => {
+      expect(nextLoopAdjacentStationName('2', current, direction)).toBe(expected);
+    });
+  });
+
+  describe('하이브리드 노선(6호선 응암 루프) — wrap 없이 단순 ±1, 범위 밖은 null', () => {
+    const cases: Array<[string, string, 'up' | 'down', string | null]> = [
+      ['합정 → down(본선 forward) → 상수', '합정', 'down', '상수'],
+      ['합정 → up(본선 backward) → 망원', '합정', 'up', '망원'],
+      ['응암(idx 0) → up → 범위 밖(-1) → null', '응암', 'up', null],
+      ['공덕(fixture 마지막 idx) → down → 범위 밖 → null', '공덕', 'down', null],
+    ];
+    it.each(cases)('%s', (_desc, current, direction, expected) => {
+      expect(nextLoopAdjacentStationName('6', current, direction)).toBe(expected);
+    });
+  });
+
+  it('CLOSED_LOOPS 미포함 노선(3호선)은 null', () => {
+    expect(nextLoopAdjacentStationName('3', '대화', 'down')).toBeNull();
+  });
+
+  describe('empty/small loop guards', () => {
+    const stationRoute = jest.requireMock('../../../../shared/utils/stationRoute') as {
+      getStationsOnLine: (line: string) => Array<{ id: string; name: string; line: string }>;
+    };
+    const original = stationRoute.getStationsOnLine;
+
+    afterEach(() => {
+      stationRoute.getStationsOnLine = original;
+    });
+
+    it('순환선이지만 stations 빈 배열이면 null', () => {
+      stationRoute.getStationsOnLine = () => [];
+      expect(nextLoopAdjacentStationName('2', '시청', 'down')).toBeNull();
+    });
+
+    it('메인 루프 station이 1개 이하면 null', () => {
+      stationRoute.getStationsOnLine = (line: string) =>
+        line === '2' ? [{ id: '2-001', name: '시청', line: '2' }] : [];
+      expect(nextLoopAdjacentStationName('2', '시청', 'down')).toBeNull();
+    });
   });
 });
 

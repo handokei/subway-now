@@ -307,6 +307,34 @@ describe('BoardingTrainList', () => {
     expect(getByTestId('boarding-train-meta-T-NEXT').props.children).toBe('중곡방면');
   });
 
+  it('#2446 offRouteTrainCodes에 속한 row는 nextStationLabel(route 방향) 대신 자신의 실제 방면으로 라벨링', () => {
+    // 뚝섬→신당 route로 nextStationLabel="한양대"가 내려온 상황을 재현. arrival.up(정방향)이
+    // 비어 #1326 fallback으로 반대 방향(성수행) 열차가 boardingListArrivals에 합쳐졌다면,
+    // 그 열차는 offRouteTrainCodes에 담겨 전달된다 — route 라벨("한양대방면")이 아니라 자신의
+    // 실제 방면("성수행")으로 표시되어야 사용자가 반대 방향임을 인지할 수 있다.
+    const correct = makeTrain({ trainCode: 'T-CORRECT', destination: '한양대행' });
+    const offRoute = makeTrain({ trainCode: 'T-OFFROUTE', destination: '성수행' });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[correct, offRoute]}
+        line="2"
+        onSelect={() => {}}
+        nextStationLabel="한양대"
+        offRouteTrainCodes={new Set(['T-OFFROUTE'])}
+      />,
+    );
+    expect(getByTestId('boarding-train-meta-T-CORRECT').props.children).toBe('한양대방면');
+    expect(getByTestId('boarding-train-meta-T-OFFROUTE').props.children).toBe('성수행');
+  });
+
+  it('#2446 offRouteTrainCodes 미전달이면 기존 동작 100% 보존(모든 row가 nextStationLabel 사용)', () => {
+    const train = makeTrain({ trainCode: 'T-DEFAULT', destination: '성수행' });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} nextStationLabel="한양대" />,
+    );
+    expect(getByTestId('boarding-train-meta-T-DEFAULT').props.children).toBe('한양대방면');
+  });
+
   it('#749 nextStationLabel null이면 종착만 표시 (방면 생략)', () => {
     const train = makeTrain({ trainCode: 'T-NO-NEXT', destination: '석남행', line: '7' });
     const { getByTestId } = renderWithTheme(

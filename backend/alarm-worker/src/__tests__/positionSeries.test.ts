@@ -10,6 +10,7 @@ import {
   evaluateWindow,
   haversineKm,
   pickMotionMode,
+  POSITION_SERIES_WRITE_MIN_INTERVAL_MS,
   POSITION_WINDOW_MS,
   readSeries,
 } from '../positionSeries';
@@ -37,14 +38,16 @@ describe('positionSeries — KV roundtrip', () => {
   });
 
   it('30개를 넘어가면 oldest sample이 ring으로 잘림', async () => {
+    // write throttle(POSITION_SERIES_WRITE_MIN_INTERVAL_MS) 간격보다 넉넉히 벌려서
+    // 매 point가 실제로 write되도록 함 (ring-trim 자체를 검증하는 테스트).
     const kv = new InMemoryKV() as unknown as KVNamespace;
     for (let i = 0; i < 40; i++) {
-      await appendPositionPoint(kv, 'tok', point({ ts: i }));
+      await appendPositionPoint(kv, 'tok', point({ ts: i * 40_000 }));
     }
     const series = await readSeries(kv, 'tok');
     expect(series).toHaveLength(30);
-    expect(series[0].ts).toBe(10);
-    expect(series[29].ts).toBe(39);
+    expect(series[0].ts).toBe(10 * 40_000);
+    expect(series[29].ts).toBe(39 * 40_000);
   });
 
   it('clearSeries → readSeries 빈 배열', async () => {
@@ -76,6 +79,51 @@ describe('positionSeries — KV roundtrip', () => {
     await kv.put('pos:tok', invalid);
     const series = await readSeries(kv, 'tok');
     expect(series).toHaveLength(1);
+  });
+});
+
+describe('appendPositionPoint — write throttle (KV quota #2439-ish)', () => {
+  it('cold start(series 비어있음)는 항상 write', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const series = await appendPositionPoint(kv, 'tok', point({ ts: 1000 }));
+    expect(series).toHaveLength(1);
+    expect(await readSeries(kv, 'tok')).toHaveLength(1);
+  });
+
+  it('간격 미달(직전 point 대비 interval 미만) → put skip, 메모리 append도 skip', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await appendPositionPoint(kv, 'tok', point({ ts: 0 }));
+    const result = await appendPositionPoint(
+      kv,
+      'tok',
+      point({ ts: POSITION_SERIES_WRITE_MIN_INTERVAL_MS - 1 }),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].ts).toBe(0);
+    const persisted = await readSeries(kv, 'tok');
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].ts).toBe(0);
+  });
+
+  it('간격 충족(정확히 interval) → write 진행', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await appendPositionPoint(kv, 'tok', point({ ts: 0 }));
+    const result = await appendPositionPoint(
+      kv,
+      'tok',
+      point({ ts: POSITION_SERIES_WRITE_MIN_INTERVAL_MS }),
+    );
+    expect(result).toHaveLength(2);
+    const persisted = await readSeries(kv, 'tok');
+    expect(persisted).toHaveLength(2);
+  });
+
+  it('역행/동시 ts(clock skew) → skip (throttle과 동일 취급)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await appendPositionPoint(kv, 'tok', point({ ts: 100_000 }));
+    const result = await appendPositionPoint(kv, 'tok', point({ ts: 50_000 }));
+    expect(result).toHaveLength(1);
+    expect(result[0].ts).toBe(100_000);
   });
 });
 

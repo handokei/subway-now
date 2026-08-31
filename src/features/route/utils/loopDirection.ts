@@ -81,6 +81,50 @@ export function parseTrainLineDirection(trainLineNm: string): TravelDirection | 
   return null;
 }
 
+/**
+ * 순환/하이브리드 노선에서 currentStationName 기준 direction(1역 前) 인접역 이름을 반환한다(#2446).
+ *
+ * `resolveNextAdjacentStationName`(nextAdjacentStation.ts)이 비단조 노선(2호선 순환 등)에서
+ * `resolveTravelDirection`이 null을 반환할 때 쓰는 fallback. `inferLoopDirection`으로 이미
+ * 산출한 방향을 받아 그 방향으로 한 칸 이동한 인접역만 계산한다(호 길이 비교는 하지 않음 —
+ * "다음 인접역"은 항상 1-hop이므로 wrap 여부만 판단하면 된다).
+ *
+ * - 진짜 순환선(2호선, `loopTailRange` 없음): mainIdRange 내에서 modulo wrap(양 끝 seam 연결).
+ * - 하이브리드 노선(6호선): 단방향 꼬리라 wrap 없이 단순 id ±1 (범위 밖이면 null — 종점 밖은
+ *   `resolveTravelDirection`/지선 영역이라 이 함수 책임 밖).
+ * - 대상 노선 아니거나 currentStationName이 main range에 없으면 null.
+ */
+export function nextLoopAdjacentStationName(
+  line: LineNumber,
+  currentStationName: string,
+  direction: TravelDirection,
+): string | null {
+  const meta = CLOSED_LOOPS[line];
+  if (!meta) return null;
+
+  const stations = getStationsOnLine(line);
+  if (stations.length === 0) return null;
+
+  const { firstId, lastId } = meta.mainIdRange;
+  const main = stations.filter((s) => s.id >= firstId && s.id <= lastId);
+  if (main.length < 2) return null;
+
+  const currentIdx = indexOf(main, currentStationName);
+  if (currentIdx === -1) return null;
+
+  const n = main.length;
+
+  if (meta.loopTailRange) {
+    const nextIdx = direction === 'down' ? currentIdx + 1 : currentIdx - 1;
+    if (nextIdx < 0 || nextIdx >= n) return null;
+    return main[nextIdx].name;
+  }
+
+  const step = direction === 'down' ? 1 : -1;
+  const nextIdx = (currentIdx + step + n) % n;
+  return main[nextIdx].name;
+}
+
 function indexOf(stations: ReadonlyArray<{ name: string }>, name: string): number {
   const exact = stations.findIndex((s) => s.name === name);
   if (exact !== -1) return exact;

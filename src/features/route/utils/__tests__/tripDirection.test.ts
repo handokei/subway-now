@@ -56,6 +56,27 @@ describe('resolveTripDirection', () => {
     expect(resolveTripDirection(route, '강남', '1-001')).toBe('down');
   });
 
+  describe('#2446 — 뚝섬 실탑승 회귀 재현: resolveTripDirection은 이미 정확한 방향을 산출한다', () => {
+    // 2026-08-31 실탑승: 뚝섬(2호선)→신당(6호선 환승)→석계 route에서 보딩 카드가 "성수행"
+    // (반대 방향)을 노출한 사고. 재현 조사 결과 이 함수(resolveTripDirection) 자체는 이미
+    // 정확히 'up'(한양대/내선 방향, 신당 방면)을 산출한다 — 근본 원인은 nextAdjacentStation.ts의
+    // 별도 resolver(resolveNextAdjacentStationName)가 비단조 노선에서 null을 반환해 라벨이
+    // route와 무관한 raw trainLineNm으로 fallback한 것이었다(#2446 R1a, 별도 fix).
+    // 이 테스트는 resolveTripDirection의 기존 정확성을 회귀 가드로 고정한다.
+    it('뚝섬(2호선, transfer leg) → 신당(환승 waypoint) = up (내선/한양대 방향)', () => {
+      const route = makeTransferRoute({
+        transferName: '신당',
+        fromLine: '2',
+        toLine: '6',
+        stopsToTransfer: 4,
+        stopsFromTransfer: 6,
+      });
+      // 뚝섬(2-010) 현재 위치, destination 석계(6호선) — direction은 첫 leg(2호선)의
+      // fromLine + transferName(신당) 기준으로 산출된다.
+      expect(resolveTripDirection(route, '석계', '2-010')).toBe('up');
+    });
+  });
+
   describe('#1922 — closed loop (2호선 환상선) direction', () => {
     // 2호선 본선 closed loop은 id 사전순 정렬이 wraparound와 일치하지 않을 수 있으므로
     // shortestLinePathIndices로 짧은 쪽 path를 산출해 방향 결정.

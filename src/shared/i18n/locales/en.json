@@ -275,6 +275,8 @@
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
     "stationPassed": "Arrived at {{name}}",
+    "intermediateApproachingTitle": "Approaching",
+    "intermediateApproachingBody": "Approaching {{name}} soon",
     "boardingPromptTitle": "Are you on board?",
     "boardingPromptBody": "You're near {{originStation}} station ({{line}}).",
     "tripEndedArrivedTitle": "Arrived at destination",

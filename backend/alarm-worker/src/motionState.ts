@@ -51,6 +51,28 @@ export const MOTION_STATIONARY_DISPLACEMENT_M = 10;
 export const MOTION_MOVING_DISPLACEMENT_M = 50;
 
 /**
+ * SSOT write 최소 간격 (ms) — CF Free tier 1,000 writes/day quota 소진 방지.
+ *
+ * POST /position은 10s마다 호출되지만 evidence push + writeSsot는 이 간격으로 스로틀한다:
+ * 최근 'device-position' evidence가 이 값보다 어리면(now 기준) push/write 둘 다 skip.
+ * 5분 윈도우(MOTION_WINDOW_MS)에 25s 간격이면 ~12 sample — MOTION_MIN_SAMPLES(10) 대비
+ * 20% 여유. token의 첫 evidence(cold start)는 항상 write.
+ */
+export const SSOT_MOTION_WRITE_MIN_INTERVAL_MS = 25_000;
+
+/** motionEvidence 중 최신 'device-position' sample의 ts. 없으면 null. */
+function newestDevicePositionEvidenceTs(
+  evidence: readonly MotionEvidence[],
+): number | null {
+  let newest: number | null = null;
+  for (const e of evidence) {
+    if (e.source !== 'device-position') continue;
+    if (newest === null || e.ts > newest) newest = e.ts;
+  }
+  return newest;
+}
+
+/**
  * SSOT.motionEvidence 중 'device-position' source의 GPS sample 쌍 최대 displacement (m).
  *
  * signal payload는 `{ lat: number; lng: number; ... }` 형태로 stamp되어 들어온다고 가정 —
@@ -177,6 +199,15 @@ export async function updateSsotMotion(
 ): Promise<TripPositionSSoT | null> {
   const ssot = await readSsot(kv, token);
   if (!ssot) return null;
+
+  // #KV quota — 최근 device-position evidence가 SSOT_MOTION_WRITE_MIN_INTERVAL_MS 미만
+  // 전이면 evidence push + writeSsot 둘 다 skip (cold start는 항상 진행).
+  // lastDeviceSyncAt은 write가 실제로 일어날 때만 갱신되지만, 그 write 자체가 최소
+  // 이 간격으로는 돌기 때문에 DEVICE_SYNC_STALE_THRESHOLD_MS(5min) 안에서는 항상 신선하다.
+  const lastEvidenceTs = newestDevicePositionEvidenceTs(ssot.motionEvidence);
+  if (lastEvidenceTs !== null && now - lastEvidenceTs < SSOT_MOTION_WRITE_MIN_INTERVAL_MS) {
+    return ssot;
+  }
 
   // #2321 (O1-B) — device sync freshness anchor. POST /position 수신 = device가 살아있다는
   // 직접 증거이므로 매 호출마다 stamp. 게이트들이 motionState/lastAdvanceAt을 신뢰할지

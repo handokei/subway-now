@@ -275,6 +275,8 @@
     "atCurrentStation": "현재 {{name}}역",
     "approximateDistance": "약 {{m}}m",
     "stationPassed": "{{name}}역 도착",
+    "intermediateApproachingTitle": "곧 진입",
+    "intermediateApproachingBody": "곧 {{name}}역에 진입해요",
     "boardingPromptTitle": "탑승하셨나요?",
     "boardingPromptBody": "{{line}} {{originStation}}역 근처예요.",
     "tripEndedArrivedTitle": "목적지 도착",

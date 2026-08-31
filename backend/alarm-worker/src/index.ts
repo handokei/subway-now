@@ -19,6 +19,7 @@ import {
   validateBoardingPromptOutcome,
 } from './boardingPromptOutcome';
 import { stampPushActivity } from './cronIdleGate';
+import { markTripRegistered } from './activeTripsGate';
 import { runFallbackPushes } from './fallback';
 import { runRetryPushes } from './retryPushes';
 import {
@@ -963,6 +964,24 @@ app.post('/trips', async (c) => {
       : baseTrip;
 
       await putTrip(c.env.TRIPS, trip);
+
+      // #2452 — cron listTrips() list-quota 게이트 마커. REGISTER 성공(생성/업데이트 공통)
+      // 시에만 stamp한다 — POST /position에서는 절대 stamp하지 않는다(#2450 write throttle을
+      // 되돌리지 않기 위함). TTL은 trip.expiresAt에 정렬(activeTripsGate.ts 참조). KV write
+      // 실패는 graceful하지만 register 응답 차단 없이 관측 가능하도록 로그를 남긴다 — 이 마커가
+      // 유실되면 cron이 이 trip을 영영 스캔하지 못할 수 있는 유일한 실패 지점이기 때문
+      // (cron 쪽 refreshActiveTripsMarker는 마커가 이미 있을 때만 동작).
+      try {
+        await markTripRegistered(c.env.TRIPS, trip.expiresAt, Date.now());
+      } catch (e) {
+        console.log(
+          JSON.stringify({
+            msg: 'active-trips marker stamp on register failed (#2452)',
+            tokenPrefix: tokenPrefix(trip.token),
+            error: String(e),
+          }),
+        );
+      }
 
       // #2175 — deviceToken 역인덱스를 이번에 확정된 trip.token으로 갱신. ADR-025(#2194) 하에서
       // 신원=deviceToken이라 이 값은 항상 trip.token 자기 자신을 가리키지만(#2196), APNs token

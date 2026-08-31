@@ -31,6 +31,11 @@ interface Props {
   nextStationLabel?: string | null;
   /** 모달을 띄운 원인(#2455, Phase B). 미전달 시 기존 'absent' copy 유지(하위호환). */
   reason?: MisBoardingBannerReason;
+  /**
+   * #2446 — BoardingTrainList로 forward. #1326 fallback으로 합쳐진 반대 방향 열차 trainCode
+   * 집합. 해당 row는 route 방향 nextStationLabel 대신 자신의 실제 방면으로 라벨링된다.
+   */
+  offRouteTrainCodes?: ReadonlySet<string>;
 }
 
 /**
@@ -48,6 +53,7 @@ export function MisBoardingReselectModal({
   onClose,
   nextStationLabel = null,
   reason = 'absent',
+  offRouteTrainCodes,
 }: Props) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -89,6 +95,7 @@ export function MisBoardingReselectModal({
               line={line}
               onSelect={onSelect}
               nextStationLabel={nextStationLabel}
+              offRouteTrainCodes={offRouteTrainCodes}
             />
           )}
         </View>
