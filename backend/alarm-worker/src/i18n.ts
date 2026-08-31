@@ -65,6 +65,14 @@ interface I18nStrings {
   /** #2063 — 매역 알림(station-notif) body. kind별 분기 + station 삽입. */
   stationNotifBody: (kind: StationNotifKind, stationName: string) => string;
   /**
+   * #2448 — intermediate waypoint에 arvlCd=ENTERING(0)으로 진입할 때 전용 title.
+   * `stationNotifTitle('intermediate')`("역 통과")와 별개 — 열차가 아직 역에 도착하지
+   * 않고 진입 중인 순간에만 쓴다. ARRIVED(1)는 기존 stationNotifTitle을 그대로 사용.
+   */
+  stationNotifApproachingTitle: string;
+  /** #2448 — intermediate ENTERING 전용 body. 고정 lead time을 약속하지 않는다("곧"). */
+  stationNotifApproachingBody: (stationName: string) => string;
+  /**
    * #2157 — eta-missing lock detach 시 재확인 alert push title. trip을 강제 종료하는 대신
    * lock만 해제하고 사용자에게 재선택(boardingPrompt/직접 탭)을 유도한다.
    */
@@ -108,6 +116,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
       return `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
     },
+    // #2448 — intermediate ENTERING 전용. 정확한 lead time을 약속하지 않는다.
+    stationNotifApproachingTitle: '곧 진입',
+    stationNotifApproachingBody: (stationName) => `곧 ${stationName}역에 진입해요`,
     trainReconfirmTitle: '탑승 열차를 찾을 수 없어요',
     trainReconfirmBody: '다시 확인해주세요',
   },
@@ -137,6 +148,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `Arriving at ${stationName} — transfer soon!`;
       return `Arriving at ${stationName} — exit soon!`;
     },
+    // #2448 — intermediate ENTERING only. No fixed lead time promised.
+    stationNotifApproachingTitle: 'Approaching',
+    stationNotifApproachingBody: (stationName) => `Approaching ${stationName} soon`,
     trainReconfirmTitle: "We couldn't find your train",
     trainReconfirmBody: 'Please check again',
   },
@@ -166,6 +180,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `まもなく${stationName}に到着します。乗換の準備をしてください!`;
       return `まもなく${stationName}に到着します。下車の準備をしてください!`;
     },
+    // #2448 — intermediate ENTERING 専用。固定リードタイムは約束しない。
+    stationNotifApproachingTitle: 'まもなく進入',
+    stationNotifApproachingBody: (stationName) => `まもなく${stationName}駅に進入します`,
     trainReconfirmTitle: '乗車列車が見つかりません',
     trainReconfirmBody: 'もう一度ご確認ください',
   },
@@ -195,6 +212,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `即将到达${stationName}。请准备换乘!`;
       return `即将到达${stationName}。请准备下车!`;
     },
+    // #2448 — intermediate ENTERING 专用。不承诺固定提前时间。
+    stationNotifApproachingTitle: '即将进站',
+    stationNotifApproachingBody: (stationName) => `即将进入${stationName}站`,
     trainReconfirmTitle: '未能找到您的乘车列车',
     trainReconfirmBody: '请重新确认',
   },
