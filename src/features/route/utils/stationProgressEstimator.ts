@@ -17,6 +17,9 @@ import {
   LOCKLESS_TIME_INTEGRATION_STUCK_TIMEOUT_MS,
 } from '../../../shared/constants/realtime';
 import { isSimpleArchEnabled } from '../../../shared/config/archFlag';
+import { getStationsOnLine } from '../../../shared/utils/stationRoute';
+import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
+import { directionOnLine } from './directionOnLine';
 
 /**
  * ADR-008 — 탑승 진행 추정(BoardingLock 활성 trip 중 현재역) 합성기.
@@ -157,6 +160,80 @@ function tryLivePosition(
   const idx = arcStations.findIndex((s) => s.id === trainProgress.currentStation.id);
   if (idx === -1) return null;
   return { station: arcStations[idx], index: idx, strategy: 'live-position' };
+}
+
+/**
+ * R1c — arc 밖에서 관측된 station이 arc 진행과 **반대 방향**인지 판정한다.
+ *
+ * "신호 없음"(trainProgress null/trainCode 불일치)과 "위치가 arc 반대쪽에 있다는 양성 신호"를
+ * 구분하는 핵심 판별. 전자는 estimator가 기존처럼 시간 적분(③④)으로 계속 진행해야 하고
+ * (지하 GPS drop 등 정상 케이스 회귀 방지), 후자는 시간 적분을 억제해 phantom station-passed를
+ * 막아야 한다(예: 뚝섬→신당 진행 arc인데 실제로는 성수/건대 방향으로 역행).
+ *
+ * 방향 산출 자체는 공유 primitive `directionOnLine`(station id 두 개 → 방향, #2455)에 위임한다.
+ * `detectMisBoarding.ts`의 `isWrongDirection`(Phase B, 반대 방향 탑승 감지)과 **동일 알고리즘을
+ * 공유**해 두 판정이 2호선 순환선 seam(시청↔충정로) 등 경계 케이스에서 서로 어긋나는 것을
+ * 원천 차단한다(Option C, #2455 설계 노트) — R1c 자체 wraparound 로직을 따로 두지 않는다.
+ *
+ * `arcPath` 물리적 경로 포함 여부(express skip 등 arc가 일부 station을 건너뛴 경우)만
+ * `shortestLinePathIndices`로 별도 확인 — 이는 방향 산출이 아니라 "arc 경로 위인가"라는
+ * 별개 관심사라 `directionOnLine`이 담당하지 않는다.
+ *
+ * 판정 불가(관측 station이 arc가 지나는 line 위에 없음, `directionOnLine`이 null 등)한 경우는
+ * 보수적으로 false — 신호가 애매하면 기존 동작(시간 적분 유지)을 보존한다.
+ */
+function isOffArcOppositeDirection(
+  arcStations: Station[],
+  observedStation: Station,
+): boolean {
+  const arcOnLine = arcStations.filter((s) => s.line === observedStation.line);
+  if (arcOnLine.length < 2) return false; // arc 진행 방향을 산출할 기준점 부족
+
+  const line = observedStation.line;
+  const firstId = arcOnLine[0].id;
+  const lastId = arcOnLine[arcOnLine.length - 1].id;
+
+  const lineStations = getStationsOnLine(line);
+  const idOf = (id: string) => lineStations.findIndex((s) => s.id === id);
+  const firstIdx = idOf(firstId);
+  const lastIdx = idOf(lastId);
+  const observedIdx = idOf(observedStation.id);
+  if (firstIdx === -1 || lastIdx === -1 || observedIdx === -1) return false;
+  // 방어적 가드: arcOnLine 첫/끝이 같은 line-index로 수렴하면(중복/이상 데이터) 진행 방향 산출 불가.
+  // 호출자(isOffArcOppositeSignal)가 이미 observed.id가 arcStations 위에 없음을 보장하므로
+  // observedIdx === firstIdx(=arc 첫 역 자신)는 실질적으로 도달 불가.
+  /* istanbul ignore next -- 실 stations.json 데이터로는 arcOnLine 첫/끝이 겹치는 케이스가 없음 */
+  if (firstIdx === lastIdx) return false;
+
+  const arcPath = shortestLinePathIndices(lineStations, firstIdx, lastIdx, line);
+  if (arcPath.includes(observedIdx)) return false; // arc 경로 위 — 반대 방향 아님(단순 미매칭)
+
+  // firstIdx/lastIdx/observedIdx가 모두 유효하고(위 가드), firstIdx !== lastIdx(line 206)이며
+  // arcPath에 observedIdx가 없음(=observedIdx !== firstIdx, line 209)이 이미 보장돼
+  // `directionOnLine`(동일 getStationsOnLine lookup 내부 사용)이 null을 반환할 조건
+  // (인덱스 미발견 / from===to)이 이 시점엔 성립하지 않는다.
+  const arcDirection = directionOnLine(line, firstId, lastId);
+  const observedDirection = directionOnLine(line, firstId, observedStation.id);
+  /* istanbul ignore next -- 위 invariant로 도달 불가한 방어적 분기 */
+  if (!arcDirection || !observedDirection) return false;
+  return observedDirection !== arcDirection;
+}
+
+/**
+ * R1c — Strategy ①이 실패한 원인이 "신호 없음"이 아니라 "arc 반대 방향의 양성 신호"인지 판정.
+ *
+ * true면 `estimateStationProgress`가 ③(ReanchoredHop)/④(DefaultHop) 시간 적분을 건너뛰어
+ * phantom station-passed를 억제한다. trainProgress가 null이거나 trainCode가 불일치하면(=신호
+ * 자체가 없음) 무조건 false — 그 경우는 기존 시간 적분 fallback을 그대로 보존해야 한다
+ * (지하 등 위치 신호 부재 상태에서 estimator가 비활성화되는 회귀를 막기 위함).
+ */
+function isOffArcOppositeSignal(input: StationProgressEstimatorInput): boolean {
+  const { trainProgress, lockedTrainCode, arcStations } = input;
+  if (!trainProgress || lockedTrainCode == null) return false;
+  if (trainProgress.trainNo !== lockedTrainCode) return false;
+  // estimateStationProgress가 tryLivePosition 성공(=arc 위, idx !== -1) 시 이미 조기 반환하므로
+  // 본 함수 도달 시점엔 trainProgress.currentStation이 arc 밖이라는 invariant가 성립한다.
+  return isOffArcOppositeDirection(arcStations, trainProgress.currentStation);
 }
 
 /**
@@ -429,10 +506,13 @@ export function estimateStationProgress(
   // tryArrivalEta/tryReanchoredHop/tryDefaultHop 은 유지: arrival API 응답 자체를 소비하는
   // strategy(② ArrivalEta) 는 dogfood 단계에서 여전히 필요, ③/④ 는 dead zone fallback 유지.
   const livePosition = simpleArch ? null : tryLivePosition(input);
-  return (
-    livePosition ??
-    tryArrivalEta(input) ??
-    tryReanchoredHop(input) ??
-    tryDefaultHop(lockedInput)
-  );
+  if (livePosition) return livePosition;
+  // R1c — 신호 없음(no-signal)과 "arc 반대 방향의 양성 신호"를 구분. 후자는 ③④ 시간 적분을
+  // 건너뛰어 phantom station-passed(예: 왕십리 도착 오탐)를 막는다. flag ON(simpleArch)이면 ①
+  // 자체가 dormant이므로 본 판정도 함께 dormant — 기존 flag ON 동작 유지.
+  const offArcOpposite = !simpleArch && isOffArcOppositeSignal(input);
+  const arrivalEta = tryArrivalEta(input);
+  if (arrivalEta) return arrivalEta;
+  if (offArcOpposite) return null;
+  return tryReanchoredHop(input) ?? tryDefaultHop(lockedInput);
 }

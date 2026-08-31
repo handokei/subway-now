@@ -226,6 +226,116 @@ describe('estimateStationProgress', () => {
     });
   });
 
+  describe('R1c — off-arc 반대 방향 양성 신호 vs no-signal 구분 (phantom station-passed 방지)', () => {
+    // arc를 ARC[2..4](7-003~7-005, id 오름차순)로 좁혀 ARC[0..1](7-001,7-002 = arc 진행 반대편,
+    // 실제로는 뚝섬→신당 arc인데 성수/건대 방향으로 역행한 상황을 재현)을 반대 방향 관측 지점으로 사용한다.
+    const SUB_ARC = ARC.slice(2);
+    const lock = makeLock({ boardingStationId: SUB_ARC[0].id });
+
+    it('off-arc 반대 방향 양성 신호 — 시간 적분(③④) 억제, phantom station-passed 없음(null)', () => {
+      // ④ DefaultHop만 있었다면 2 hop 진행 → SUB_ARC[1](Seam B cap)을 phantom 채택했을 케이스.
+      const r = estimateStationProgress({
+        lock,
+        arcStations: SUB_ARC,
+        now: T0 + 2 * HOP_TIME_MS,
+        trainProgress: makeTrainProgress({ currentStation: ARC[0] }), // arc 밖, 반대 방향(behind)
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('no-signal(트레인 미관측) — 기존처럼 시간 적분(④ DefaultHop) 유지 — 지하 GPS drop 회귀 방지', () => {
+      const r = estimateStationProgress({
+        lock,
+        arcStations: SUB_ARC,
+        now: T0 + 2 * HOP_TIME_MS,
+        trainProgress: null, // 신호 없음 — off-arc 양성 신호와 구분되어야 함
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r?.strategy).toBe('default-hop');
+    });
+
+    it('정방향 LivePosition — arc 위 정상 진행은 영향 없음(기존 동작 유지)', () => {
+      const r = estimateStationProgress({
+        lock,
+        arcStations: SUB_ARC,
+        now: T0 + 5 * HOP_TIME_MS,
+        trainProgress: makeTrainProgress({ currentStation: SUB_ARC[1] }), // arc 위, 정상 진행
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toEqual({ station: SUB_ARC[1], index: 1, strategy: 'live-position' });
+    });
+
+    it('arc가 가리키는 line과 다른 line에서 관측 — 판정 불가(신호 애매) → 기존 시간 적분 유지', () => {
+      const otherLine: Station = {
+        id: '9-999',
+        name: '딴노선역',
+        line: '9',
+        lineColor: '#x',
+        lat: 0,
+        lng: 0,
+      };
+      const r = estimateStationProgress({
+        lock,
+        arcStations: SUB_ARC,
+        now: T0 + 2 * HOP_TIME_MS,
+        trainProgress: makeTrainProgress({ currentStation: otherLine }),
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r?.strategy).toBe('default-hop');
+    });
+
+    it('arc 두 끝점 사이(express skip) 관측 — arc 물리적 경로 위 → 반대 방향 아님(기존 동작 유지)', () => {
+      // SUB_ARC2는 7-003, 7-005만 포함(7-004 skip) — arc "경로"는 여전히 7-003~7-005를 관통하므로
+      // 그 사이 7-004에서 관측되면 arc를 벗어난 것이 아니다(단순 arcStations 미포함).
+      const SUB_ARC2 = [ARC[2], ARC[4]];
+      const expressLock = makeLock({ boardingStationId: SUB_ARC2[0].id });
+      const r = estimateStationProgress({
+        lock: expressLock,
+        arcStations: SUB_ARC2,
+        now: T0 + HOP_TIME_MS,
+        trainProgress: makeTrainProgress({ currentStation: ARC[3] }), // 7-004, arc 두 끝점 사이
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r?.strategy).toBe('default-hop');
+    });
+
+    it('arc station id가 실제 stations.json에 없는 방어적 케이스 — 판정 불가 → 기존 시간 적분 유지', () => {
+      // 같은 line이지만 getStationsOnLine 캐시에 없는 합성 id — firstIdx 산출 자체가 불가한 방어 분기.
+      const fakeArc: Station[] = [
+        { id: '7-fake-1', name: '합성역1', line: '7', lineColor: '#x', lat: 0, lng: 0 },
+        { id: '7-fake-2', name: '합성역2', line: '7', lineColor: '#x', lat: 0, lng: 0 },
+      ];
+      const fakeLock = makeLock({ boardingStationId: fakeArc[0].id });
+      const r = estimateStationProgress({
+        lock: fakeLock,
+        arcStations: fakeArc,
+        now: T0 + HOP_TIME_MS,
+        trainProgress: makeTrainProgress({ currentStation: ARC[0] }), // line 7, 실 id지만 fakeArc엔 없음
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r?.strategy).toBe('default-hop');
+    });
+  });
+
   describe('Strategy ③ ReanchoredHop — lastObserved 앵커', () => {
     it('lastObserved 있으면 그 시각/인덱스에 재앵커 + (now - ts)/hopTime hop 추가', () => {
       // 마지막 관측 = idx 2 (군자), T0+200s. now = T0+200s + 2*hopTime → 2+2 = 4
