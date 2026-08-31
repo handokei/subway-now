@@ -76,6 +76,15 @@ export interface UseBoardingLockControllerResult {
    * 양쪽 모두 비어야 빈 목록. 빈 list "선택할 열차 없음" 회귀를 막되 Gate 1 엄격성은 건드리지 않는다.
    */
   boardingListArrivals: ArrivalInfo[];
+  /**
+   * #2446 — boardingListArrivals가 #1326 fallback으로 반대 방향 열차를 합쳐 넣은 경우, 그 반대
+   * 방향 열차들의 trainCode 집합. `BoardingTrainList`가 이 집합에 속한 row는 route 기준
+   * nextStationLabel을 적용하지 않고 그 열차 자신의 실제 방면(raw destination)으로 라벨링하도록
+   * 전달한다 — route 진행 방향(예: "한양대방면")을 반대 방향 열차(성수행)에 거짓으로 붙이는 회귀
+   * 차단(뚝섬 실탑승 mislabel 사고). direction이 null(방향 미상)이면 어느 쪽이 "반대"인지 정의할
+   * 수 없으므로 빈 집합 — 기존 동작(양쪽 모두 route 라벨 없이 노출) 그대로.
+   */
+  offRouteTrainCodes: ReadonlySet<string>;
   /** 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op. */
   createLockFromTrain: (train: ArrivalInfo) => void;
   /**
@@ -340,6 +349,15 @@ export function useBoardingLockController({
     return [...arrival.up, ...arrival.down].filter(isReachable);
   }, [directionalArrivals, arrival]);
 
+  // #2446 — boardingListArrivals가 위 fallback으로 합쳐진 경우에만(directionalArrivals가 비어
+  // merge가 실제로 일어난 경우에만) 반대 방향 쪽 trainCode를 표시한다. direction이 null이면
+  // "반대"가 정의되지 않으므로 빈 집합.
+  const offRouteTrainCodes = useMemo<ReadonlySet<string>>(() => {
+    if (directionalArrivals.length > 0 || !arrival || direction === null) return new Set();
+    const oppositeSide = direction === 'up' ? arrival.down : arrival.up;
+    return new Set(oppositeSide.filter(isReachable).map((train) => train.trainCode));
+  }, [directionalArrivals, arrival, direction]);
+
   const createLockFromTrain = useCallback(
     (train: ArrivalInfo) => {
       if (!destinationId || !currentStation) return;
@@ -498,6 +516,7 @@ export function useBoardingLockController({
     lockSuggestion,
     directionalArrivals,
     boardingListArrivals,
+    offRouteTrainCodes,
     createLockFromTrain,
     hydrateLockFromCandidate,
     releaseLock: release,

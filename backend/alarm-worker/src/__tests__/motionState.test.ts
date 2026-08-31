@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MOTION_MIN_SAMPLES,
   MOTION_WINDOW_MS,
+  SSOT_MOTION_WRITE_MIN_INTERVAL_MS,
   computeMotionState,
   emitMotionTransitionBreadcrumb,
   hasArvlcdTrainProgress,
@@ -9,6 +10,7 @@ import {
   updateSsotMotion,
 } from '../motionState';
 import {
+  DEVICE_SYNC_STALE_THRESHOLD_MS,
   seedSsot,
   readSsot,
   writeSsot,
@@ -412,4 +414,124 @@ describe('updateSsotMotion — POST /position 수신 path', () => {
       JSON.stringify({ from: 'moving', to: 'stationary' }),
     );
   });
+});
+
+describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
+  let kv: InMemoryKV;
+
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('motionEvidence가 out-of-order(최신 evidence가 배열 뒤쪽 아님)여도 최신 ts 기준으로 스로틀 판단', async () => {
+    // #newestDevicePositionEvidenceTs 분기 커버 — 두 번째 device-position entry의 ts가
+    // 첫 번째보다 작은(과거) 경우에도 max(ts)를 정확히 찾아야 함 + non-device-position 소스는
+    // 스킵되어야 함.
+    const ssot = makeSsot({
+      tripToken: 'tok-order',
+      motionEvidence: [
+        gpsEvidence(37.5, 127.0, 100_000),
+        gpsEvidence(37.5, 127.0, 50_000),
+        arvlcdEvidence('0228', 90_000),
+      ],
+    });
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    // now - newest(100_000) = 30_000 ≥ SSOT_MOTION_WRITE_MIN_INTERVAL_MS(25_000) → write 진행
+    const now = 130_000;
+    const result = await updateSsotMotion(
+      kv as unknown as KVNamespace,
+      'tok-order',
+      makePosition({ ts: now }),
+      now,
+    );
+    expect(result?.motionEvidence).toHaveLength(4);
+  });
+
+  it('cold start(evidence 없음)는 항상 write', async () => {
+    await seedSsot(kv as unknown as KVNamespace, 'tok-cold', '0228');
+    const pos = makePosition({ ts: 1_000_000 });
+    const result = await updateSsotMotion(
+      kv as unknown as KVNamespace,
+      'tok-cold',
+      pos,
+      1_000_000,
+    );
+    expect(result?.motionEvidence).toHaveLength(1);
+    const persisted = await readSsot(kv as unknown as KVNamespace, 'tok-cold');
+    expect(persisted?.motionEvidence).toHaveLength(1);
+  });
+
+  it('직전 evidence로부터 간격 미달 → evidence push/write 둘 다 skip', async () => {
+    await seedSsot(kv as unknown as KVNamespace, 'tok-skip', '0228');
+    await updateSsotMotion(
+      kv as unknown as KVNamespace,
+      'tok-skip',
+      makePosition({ ts: 0 }),
+      0,
+    );
+    const result = await updateSsotMotion(
+      kv as unknown as KVNamespace,
+      'tok-skip',
+      makePosition({ ts: SSOT_MOTION_WRITE_MIN_INTERVAL_MS - 1 }),
+      SSOT_MOTION_WRITE_MIN_INTERVAL_MS - 1,
+    );
+    // skip이므로 evidence는 여전히 1건, lastDeviceSyncAt도 첫 write 시점(0)에 머무름.
+    expect(result?.motionEvidence).toHaveLength(1);
+    expect(result?.lastDeviceSyncAt).toBe(0);
+    const persisted = await readSsot(kv as unknown as KVNamespace, 'tok-skip');
+    expect(persisted?.motionEvidence).toHaveLength(1);
+  });
+
+  it('간격 충족(정확히 interval) → write 진행 (evidence 2건)', async () => {
+    await seedSsot(kv as unknown as KVNamespace, 'tok-write', '0228');
+    await updateSsotMotion(
+      kv as unknown as KVNamespace,
+      'tok-write',
+      makePosition({ ts: 0 }),
+      0,
+    );
+    const result = await updateSsotMotion(
+      kv as unknown as KVNamespace,
+      'tok-write',
+      makePosition({ ts: SSOT_MOTION_WRITE_MIN_INTERVAL_MS }),
+      SSOT_MOTION_WRITE_MIN_INTERVAL_MS,
+    );
+    expect(result?.motionEvidence).toHaveLength(2);
+    expect(result?.lastDeviceSyncAt).toBe(SSOT_MOTION_WRITE_MIN_INTERVAL_MS);
+  });
+
+  it(
+    'lastDeviceSyncAt은 25s 스로틀 cadence에서도 DEVICE_SYNC_STALE_THRESHOLD_MS(5min) ' +
+      '안에서 항상 신선 (자명 — write 자체가 최소 25s마다 일어남)',
+    () => {
+      expect(SSOT_MOTION_WRITE_MIN_INTERVAL_MS).toBeLessThan(
+        DEVICE_SYNC_STALE_THRESHOLD_MS,
+      );
+    },
+  );
+
+  it(
+    '#1 우선순위 — 25s 스로틀 cadence로 5분 시뮬레이션(디바이스는 10s마다 호출, ' +
+      "motion='unknown' + 무변위 GPS) → evidence 버퍼가 MOTION_MIN_SAMPLES 이상 쌓여 " +
+      "computeMotionState가 'stationary'로 수렴 (버퍼 starvation이면 'unknown' 고착 → " +
+      '#2433 motion-gate blindspot류 회귀 재현 방지)',
+    async () => {
+      await seedSsot(kv as unknown as KVNamespace, 'tok-density', '0228');
+      const startNow = 1_000_000;
+      const totalMs = MOTION_WINDOW_MS; // 5분
+      const deviceCallIntervalMs = 10_000; // 실제 디바이스 POST /position 주기
+      let result: TripPositionSSoT | null = null;
+      for (let elapsed = 0; elapsed <= totalMs; elapsed += deviceCallIntervalMs) {
+        const now = startNow + elapsed;
+        const pos = makePosition({ motion: 'unknown', ts: now });
+        result = await updateSsotMotion(kv as unknown as KVNamespace, 'tok-density', pos, now);
+      }
+      expect(result).not.toBeNull();
+      const deviceEvidence = result!.motionEvidence.filter(
+        (e) => e.source === 'device-position',
+      );
+      expect(deviceEvidence.length).toBeGreaterThanOrEqual(MOTION_MIN_SAMPLES);
+      expect(result!.motionState).toBe('stationary');
+    },
+  );
 });

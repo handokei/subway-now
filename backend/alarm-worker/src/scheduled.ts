@@ -125,6 +125,7 @@ import {
   stampHeartbeat,
 } from './cronJitterAggregate';
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
+import { hasActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGate';
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
 import { cleanupTripEvents, recordTripEvent } from './tripEventLog';
 import { hashTripToken } from './sentry';
@@ -1176,9 +1177,17 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
   // 1회 병합. 전체 trip을 배열로 확보해 아래 파생 함수 + main loop가 모두 이 배열을 재사용한다.
   // 감축: list 5→3/tick, 활성 시 trip get 3N→N.
+  // #2452 — listTrips(kv.list())는 Free plan LIST quota(1,000/일) 소진 대상(read/write와 별도
+  // 버킷). 1,440 tick/일 무조건 호출하면 하루 중 특정 시각부터 자정까지 list가 실패해 cron이
+  // 활성 trip을 아예 못 찾는다. 값싼 KV GET 마커로 "활성 trip이 있을 수 있는가"를 먼저 판정해
+  // 마커 부재(진짜 idle)일 때만 listTrips 호출 자체를 skip한다. 마커 GET 실패는 보수적으로
+  // listTrips를 강행(activeTripsGate.ts 헤더 참조) — 실 라이더 miss는 불허.
+  const mayHaveActiveTrips = await hasActiveTripsMarker(env.TRIPS);
   const scannedTrips: Trip[] = [];
-  for await (const trip of listTrips(env.TRIPS)) {
-    scannedTrips.push(trip);
+  if (mayHaveActiveTrips) {
+    for await (const trip of listTrips(env.TRIPS)) {
+      scannedTrips.push(trip);
+    }
   }
   // #2175 — register-time deviceToken 역인덱스 merge/cleanup(#2184 리뷰 P1)에 대한 cron
   // 안전망. KV eventual consistency 등으로 같은 deviceToken의 active trip이 순간적으로 2개 이상
@@ -1186,6 +1195,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // 하는 중복 발송을 막기 위해 매 tick 최신(createdAt) trip만 처리 대상으로 남긴다. deviceToken이
   // 없는(legacy) trip은 그대로 통과.
   const trips: Trip[] = dedupeTripsByDeviceToken(scannedTrips);
+  // #2452 — listTrips를 실제로 실행한 tick에서만 마커를 실 결과로 조정한다(mayHaveActiveTrips가
+  // false였던 tick은 scannedTrips가 항상 []이므로, 여기서 delete를 또 부르면 부재 마커에 대한
+  // 낭비 write가 매 idle tick 반복된다 — 그 write는 스킵한다).
+  if (mayHaveActiveTrips) {
+    await refreshActiveTripsMarker(env.TRIPS, trips, now);
+  }
 
   // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
   // 없으면 pending/retry push가 존재할 수 없다(모든 fire 경로가 trip 기반이므로 trip 부재 tick엔
@@ -1802,14 +1817,36 @@ export const SAME_PHASE_STATION_DEDUP_WINDOW_MS = 45_000;
 export const ARVLCD_FIRE_KEY_PREFIX = 'arvlcd-fire:';
 
 /**
- * ADR-022 Phase 1-1 (#1985) — fire-once TTL key 의 cycle slot 값.
+ * ADR-022 Phase 1-1 (#1985) → #2448 확장 — fire-once TTL key 의 cycle slot 값.
  *
- * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 현재
- * backend cron 은 stateful cycle counter 를 유지하지 않고 5분 TTL 로 cycle 경계를 자연 처리
- * 하므로, key 의 cycle slot 은 미래-확장 자리 표시자로 `0` 고정. 후속 PR 에서 cross-cron
- * cycle 추적이 필요해지면 slot 을 정수 카운터로 확장 가능하다.
+ * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 원래는
+ * 이 cycle 전체를 하나의 slot(`0` 고정)으로 묶어 station 당 1회로 강제했다(어린이대공원
+ * 13:31/13:32/13:37 반복 storm, #1980/#2200 차단). #2448에서 "곧 진입"(ENTERING) 알림을
+ * "역 통과"(ARRIVED)와 별도로 발사하기 위해 slot 을 arvlCd 값 기반 2-way bucket 으로 넓힌다 —
+ * ENTERING 1회 + ARRIVED 1회(합 최대 2회/5분 TTL)까지만 허용하고, 같은 (station, bucket)
+ * 재관측은 여전히 storm 방지 정책 그대로 skip 한다.
+ *
+ * `arvlCdFireOnceBucket`가 실제 bucket 계산을 담당 — 이 두 상수는 KV key 조립/테스트에서
+ * 값을 직접 참조할 때 쓰는 명시적 별칭이다.
  */
-export const ARVLCD_FIRE_ONCE_CYCLE_SLOT = 0;
+export const ARVLCD_FIRE_ONCE_ENTERING_BUCKET = 0;
+export const ARVLCD_FIRE_ONCE_ARRIVED_BUCKET = 1;
+
+/**
+ * #2448 — (waypoint kind, arvlCd) 조합을 fire-once TTL bucket 으로 매핑.
+ *
+ * `kind==='intermediate'`일 때만 ENTERING(0) 전용 bucket 을 분리한다 — `buildStationNotifContent`가
+ * 새 "곧 진입" copy 를 렌더하는 대상이 intermediate 뿐이기 때문. transfer/destination 은 arvlCd
+ * 0/1 모두 여전히 같은 "임박" copy 를 렌더하므로(#2063, 미변경) bucket 을 나누면 **같은 문구가
+ * 두 번 발사**되는 storm 회귀가 재발한다(2026-08-07 뚝섬 evidence, #2200/`replay_20260807_storm.test.ts`)
+ * — 그래서 non-intermediate 는 기존과 동일하게 단일 bucket 으로 유지한다.
+ */
+export function arvlCdFireOnceBucket(waypointKind: Waypoint['kind'], arvlCd: number): number {
+  if (waypointKind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    return ARVLCD_FIRE_ONCE_ENTERING_BUCKET;
+  }
+  return ARVLCD_FIRE_ONCE_ARRIVED_BUCKET;
+}
 
 /**
  * dedup KV key 빌더. arvlCd 0(ENTERING) vs 1(ARRIVED)은 별 entry로 분리(둘 다 신호).
@@ -2092,12 +2129,24 @@ export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
  *
  * arvlCd 기반 매역 fire는 항상 phase='imminent' — `i18n.ts`의 `stationNotifTitle`/`stationNotifBody`도
  * 그에 맞춰 kind 단일 분기만 제공한다(early phase 없음).
+ *
+ * #2448 — `kind==='intermediate'`이고 발사 시점 arvlCd가 ENTERING(0)이면 "곧 진입" 전용 copy로
+ * 분기한다. ARRIVED(1)는 기존 "역 통과" copy 유지 — arvlCd는 optional: 호출자가 arvlCd를
+ * 모르는 경로(`fireVanishFallbackStationPush`/`maybeFireSleepAlarm`은 vanish/target 판정이라
+ * "방금 진입"이 아님)는 인자를 생략해 기존 ARRIVED-copy 분기로 자연 fallback한다.
  */
 function buildStationNotifContent(
   waypoint: Waypoint,
   locale: SupportedLocale | undefined,
+  arvlCd?: number,
 ): { title: string; body: string } {
   const strings = t(locale);
+  if (waypoint.kind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    return {
+      title: strings.stationNotifApproachingTitle,
+      body: strings.stationNotifApproachingBody(waypoint.stationName),
+    };
+  }
   return {
     title: strings.stationNotifTitle(waypoint.kind),
     body: strings.stationNotifBody(waypoint.kind, waypoint.stationName),
@@ -2468,12 +2517,14 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
-  // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트.
-  // flag=ON 시 같은 (tripToken, stationName, arvlCd cycle) 조합에서 5분 이내 이미 fire 된 경우
-  // skip. arvlCd 0/1 을 별 entry 로 stamp 하던 기존 `arvlCdFireKey` dedup 과 달리, cycle 전체
-  // (0→1→2→5) 를 하나의 fire 이벤트로 통합 — 어린이대공원 반복 4회 fire (#1980) 회귀 차단.
+  // ADR-022 Phase 1-1 (#1985) → #2448 확장 — arvlCd fire-once TTL 게이트.
+  // flag=ON 시 같은 (tripToken, stationName, arvlCd bucket) 조합에서 5분 이내 이미 fire 된 경우
+  // skip. #2448 이전에는 cycle 전체(0→1→2→5)를 단일 bucket 으로 묶어 어린이대공원 반복 4회
+  // fire(#1980) 회귀를 차단했다 — 이제는 ENTERING(0)과 그 외(주로 ARRIVED=1)를 별 bucket 으로
+  // 나눠 "곧 진입" + "역 통과" 둘 다 1회씩 발사되도록 하되, 같은 bucket 재관측은 여전히 storm
+  // 방지 정책대로 skip 한다(무제한 재발사는 여전히 불가능).
   // flag=OFF (default, Phase 0 #1982 미머지 상태) 에서는 조기 return 으로 무영향.
-  const fireOnceCycle = ARVLCD_FIRE_ONCE_CYCLE_SLOT;
+  const fireOnceCycle = arvlCdFireOnceBucket(waypoint.kind, arvlCd);
   if (await isSimpleArchEnabled(env)) {
     const alreadyFired = await checkArvlCdFireOnce(
       env.TRIPS,
@@ -2583,7 +2634,7 @@ export async function fireArvlCdStationPush(
   // #2092 — contentAvailable:true를 병기해 alert와 동시에 device background task
   // (handleSilentPush)를 깨운다. station kind는 배너 no-op(#2088)이라 이중 배너 없이 SSoT
   // mirror(persistBackendSsotMirror)·BG 위젯 갱신(updateWidgetFromSilentPush)만 수행한다.
-  const stationNotifContent = buildStationNotifContent(waypoint, trip.locale);
+  const stationNotifContent = buildStationNotifContent(waypoint, trip.locale, arvlCd);
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
@@ -3911,6 +3962,11 @@ export async function advanceBoardingLockWaypoint(
   // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
   // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
   appendPassedStation(trip, waypoint.stationName);
+  // 잠실나루 redundant boarding prompt regression — slice 직전 다음 waypoint(새 leg 시작점)의
+  // line을 캡처. transfer waypoint 자체의 line은 "방금 통과한(=현재) leg"의 line이라 항상
+  // boardingLock.line과 같아 진짜 환승/같은 호선 오라벨을 구분하지 못한다. 실제 노선 변경
+  // 여부는 그 다음 waypoint의 line으로만 판별 가능.
+  const nextLegWaypoint = trip.waypoints[1];
   // ADR-017 T5 (#1558) — immutable slice 로 mutation race 방지 (.shift 는 in-place).
   trip.waypoints = trip.waypoints.slice(1);
   trip.lastTrackedArrivalEpoch = undefined;
@@ -3926,7 +3982,15 @@ export async function advanceBoardingLockWaypoint(
   // progress KV도 같이 정리 — 옛 trainCode + shiftedCount가 stale로 남으면 token-refresh race
   // (`useApnsTripRegistration` `latestInputsRef` 옛 lock 보유) 윈도우에서 client 옛 lock POST 시
   // `progressApplies=true` 분기로 진입해 옛 lock이 backend에 다시 active로 복원되는 회귀가 가능.
-  const lockReleasedOnTransfer = waypoint.kind === 'transfer' && trip.boardingLock !== undefined;
+  //
+  // 잠실나루 redundant boarding prompt regression — waypoint.kind==='transfer'라도 다음
+  // leg(nextLegWaypoint)의 line이 현재 boardingLock.line과 같으면(같은 호선 내 waypoint가
+  // transfer로 잘못 라벨/advance된 케이스) 실제 노선 변경이 아니므로 release하면 안 된다.
+  // release되면 다음 cycle에 isBoardingLockActive=false로 오판해 이미 탑승 중인 사용자에게
+  // "탑승했어요?" 프롬프트가 재발사된다(#864 원 목적인 진짜 환승 release는 그대로 유지).
+  const isRealLineChange = nextLegWaypoint?.line !== trip.boardingLock?.line;
+  const lockReleasedOnTransfer =
+    waypoint.kind === 'transfer' && trip.boardingLock !== undefined && isRealLineChange;
   // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
   // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
   const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
@@ -4550,6 +4614,15 @@ export async function runLocklessIntermediate(
   // 이동(walking/automotive)을 positive하게 보일 때만 advance를 허용 — 정적/저신뢰(stationary/
   // unknown, 샘플 없음 포함)는 보류해 false positive(정적 false advance + 알림 레이스)를 차단한다.
   // #1386 — lock-active vanish fallback도 같은 헬퍼(`isAdvanceAllowedByMotion`)를 공유한다.
+  //
+  // #2448 — 이 게이트가 lockless(C 토글) 매역 "곧 진입"(ENTERING) fire 를 locked 경로와
+  // 동급으로 만들지 못하는 지점이다. CMMotionActivity 는 지하에서 5~10분 간헐 신호라
+  // (memory: lesson_motion_activity_intermittent_signal) motion 이 stationary/unknown 으로
+  // 잘못 분류되면 이 게이트가 정당한 ENTERING 순간도 보류시킨다. `fireArvlCdStationPush`
+  // (lock 활성 경로)는 이 motion 게이트가 없어 지하에서도 100% 동작하지만, lockless는
+  // best-effort — 사용자 명시 의향 trip(C 토글 ON)이 lock 활성과 동급 정확도 보장을 받아야
+  // 한다는 원칙(ADR-014, memory: feedback_user_intent_equal_protection)에 아직 미달한다.
+  // 근본 해소는 이 게이트 완화/대체가 아니라 트립을 lock 상태로 승격하는 별도 트랙 과제.
   if (!isAdvanceAllowedByMotion(fusion.posMetrics.motion)) {
     stats.locklessMotionGateBlocked += 1;
     log('lockless: motion gate blocked (no trainCode, not moving)', {

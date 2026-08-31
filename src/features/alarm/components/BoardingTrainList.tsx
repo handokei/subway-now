@@ -18,7 +18,7 @@ import { formatClockTime } from '../../../shared/utils/formatTime';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { recordLockCorrection } from '../utils/lockCorrectionMetrics';
-import { buildDirectionMeta } from '../../route/utils/trainLineDirection';
+import { buildDirectionMeta, parseTrainLineDirection } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../../../shared/constants/lineColors';
 import { buildFallbackSequenceLabel, buildPrevTrainLabel } from '../../../shared/constants/labels';
@@ -179,6 +179,16 @@ interface Props {
    * 상태와 동일한 기존 렌더 100% 보존.
    */
   consensusSuggestion?: { trainCode: string } | null;
+  /**
+   * #2446 — 이 집합에 속한 trainCode의 row는 nextStationLabel(route 진행 방향 라벨)을 적용하지
+   * 않고 그 열차 자신의 실제 방면(raw destination 기반)으로 라벨링한다.
+   *
+   * `useBoardingLockController`의 boardingListArrivals가 #1326 fallback으로 반대 방향 열차를
+   * 합쳐 노출할 때, route 방향 라벨("한양대방면" 등)이 실제로는 반대 방향(성수행)인 열차에
+   * 거짓으로 붙는 회귀를 차단한다 — 뚝섬 실탑승 mislabel 사고. 미전달/빈 집합이면 기존 동작
+   * 100% 보존(모든 row가 nextStationLabel 사용).
+   */
+  offRouteTrainCodes?: ReadonlySet<string>;
 }
 
 /**
@@ -226,6 +236,7 @@ export function BoardingTrainList({
   fallbackReason = null,
   prevTrain = null,
   consensusSuggestion = null,
+  offRouteTrainCodes,
 }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -348,7 +359,12 @@ export function BoardingTrainList({
     const isPendingBlocked = pendingTrainCode != null && !isPending;
     const disabled = unreachable || isPendingBlocked;
     // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
-    const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
+    // #2446 — offRouteTrainCodes에 속한 row(#1326 fallback으로 합쳐진 반대 방향 열차)는
+    // route 방향 nextStationLabel을 적용하지 않고 그 열차 자신의 실제 방면으로 라벨링한다.
+    const isOffRoute = offRouteTrainCodes?.has(train.trainCode) ?? false;
+    const metaText = isOffRoute
+      ? parseTrainLineDirection(train.destination, allStations)
+      : buildDirectionMeta(train.destination, nextStationLabel, allStations);
     // #2330 — consensusSuggestion이 이 row와 매칭되면 하이라이트 + "추정" 배지 + "직접 선택" 병기.
     // "선택됨" 표기는 절대 사용하지 않는다(오토락 부활 오해 차단) — pending(탭 확정 진행 중)과
     // 시각적으로 구분되는 별개의 하이라이트 색(accent border, PENDING_BORDER_WIDTH보다 얇게).
