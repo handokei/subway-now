@@ -54,6 +54,11 @@ import {
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTtl';
 import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
+import {
+  ACTIVE_TRIPS_MARKER_KEY,
+  hasActiveTripsMarker,
+  markTripRegistered,
+} from '../activeTripsGate';
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
@@ -11585,7 +11590,7 @@ describe('runScheduled — #2073 listTrips 병합 (Issue B)', () => {
 });
 
 describe('runScheduled — #2073 진짜 idle skip 게이트 (Issue A)', () => {
-  it('idle tick(활성 trip 0 + marker 없음) — kv.list 1회, kv.put 0회, pendingActivityPossible=false', async () => {
+  it('idle tick(활성 trip 0 + marker 없음) — kv.list 0회(#2452 list-quota 게이트), kv.put 0회, pendingActivityPossible=false', async () => {
     const kv = new InMemoryKV();
     // heartbeat가 이번 tick에 발화하지 않도록 직전 heartbeat를 미리 stamp(첫 진입 heartbeat put을
     // "idle write 0" 검증에서 배제 — 이슈 본문도 heartbeat 시간당 1 put은 예외로 명시).
@@ -11601,7 +11606,10 @@ describe('runScheduled — #2073 진짜 idle skip 게이트 (Issue A)', () => {
     });
     expect(stats.scanned).toBe(0);
     expect(stats.pendingActivityPossible).toBe(false);
-    expect(listSpy).toHaveBeenCalledTimes(1);
+    // #2452 — cron:has-active-trips 마커가 없으므로 listTrips(kv.list) 자체가 이번 tick엔
+    // 호출되지 않는다(list quota 보호가 이 테스트의 신규 관측 대상. 구 #2073 idle-gate는
+    // pending/retry list만 gating했고 이 main listTrips는 무조건 실행했었다).
+    expect(listSpy).not.toHaveBeenCalled();
     expect(putSpy).not.toHaveBeenCalled();
   });
 
@@ -11631,6 +11639,74 @@ describe('runScheduled — #2073 진짜 idle skip 게이트 (Issue A)', () => {
     });
     expect(stats.scanned).toBe(0);
     expect(stats.pendingActivityPossible).toBe(true);
+  });
+});
+
+describe('runScheduled — #2452 listTrips() list-quota 게이트', () => {
+  it('마커 有 + 활성 trip 有 — listTrips 실행되고 trip이 실제로 처리된다(라이더 절대 skip 안 됨)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // #2452 — InMemoryKV.put(trip:*)이 테스트 편의상 마커를 자동 stamp하므로(inMemoryKv.ts 참조)
+    // 명시적으로 markTripRegistered를 다시 호출해 "REGISTER 경로가 실제로 마커를 남긴다"는
+    // 계약 자체도 별도로 검증한다.
+    await markTripRegistered(kv as unknown as KVNamespace, trip.expiresAt, NOW);
+    const listSpy = vi.spyOn(kv, 'list');
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(listSpy).toHaveBeenCalled();
+    expect(stats.scanned).toBe(1);
+  });
+
+  it('마커 GET이 throw — listTrips를 강행한다(보수적, 실 라이더 miss 불허)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const getSpy = vi
+      .spyOn(kv, 'get')
+      .mockImplementation(async (key: string) => {
+        if (key === ACTIVE_TRIPS_MARKER_KEY) throw new Error('kv down');
+        return InMemoryKV.prototype.get.call(kv, key);
+      });
+    const listSpy = vi.spyOn(kv, 'list');
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(listSpy).toHaveBeenCalled();
+    expect(stats.scanned).toBe(1);
+    getSpy.mockRestore();
+  });
+
+  it('마커 有 but listTrips 결과 0건(stale marker) — 마커를 delete해 다음 idle tick부터 skip 재개', async () => {
+    const kv = new InMemoryKV();
+    await markTripRegistered(kv as unknown as KVNamespace, NOW + 60_000, NOW);
+    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(true);
+
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+
+    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(false);
+  });
+
+  it('POST /trips REGISTER(markTripRegistered)가 마커를 stamp — cron이 그걸 보고 listTrips를 실행', async () => {
+    const kv = new InMemoryKV();
+    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(false);
+    await markTripRegistered(kv as unknown as KVNamespace, NOW + 30 * 60 * 1000, NOW);
+    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(true);
   });
 });
 
