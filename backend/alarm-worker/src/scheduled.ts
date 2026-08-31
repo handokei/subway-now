@@ -125,6 +125,7 @@ import {
   stampHeartbeat,
 } from './cronJitterAggregate';
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
+import { hasActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGate';
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
 import { cleanupTripEvents, recordTripEvent } from './tripEventLog';
 import { hashTripToken } from './sentry';
@@ -1176,9 +1177,17 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
   // 1회 병합. 전체 trip을 배열로 확보해 아래 파생 함수 + main loop가 모두 이 배열을 재사용한다.
   // 감축: list 5→3/tick, 활성 시 trip get 3N→N.
+  // #2452 — listTrips(kv.list())는 Free plan LIST quota(1,000/일) 소진 대상(read/write와 별도
+  // 버킷). 1,440 tick/일 무조건 호출하면 하루 중 특정 시각부터 자정까지 list가 실패해 cron이
+  // 활성 trip을 아예 못 찾는다. 값싼 KV GET 마커로 "활성 trip이 있을 수 있는가"를 먼저 판정해
+  // 마커 부재(진짜 idle)일 때만 listTrips 호출 자체를 skip한다. 마커 GET 실패는 보수적으로
+  // listTrips를 강행(activeTripsGate.ts 헤더 참조) — 실 라이더 miss는 불허.
+  const mayHaveActiveTrips = await hasActiveTripsMarker(env.TRIPS);
   const scannedTrips: Trip[] = [];
-  for await (const trip of listTrips(env.TRIPS)) {
-    scannedTrips.push(trip);
+  if (mayHaveActiveTrips) {
+    for await (const trip of listTrips(env.TRIPS)) {
+      scannedTrips.push(trip);
+    }
   }
   // #2175 — register-time deviceToken 역인덱스 merge/cleanup(#2184 리뷰 P1)에 대한 cron
   // 안전망. KV eventual consistency 등으로 같은 deviceToken의 active trip이 순간적으로 2개 이상
@@ -1186,6 +1195,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // 하는 중복 발송을 막기 위해 매 tick 최신(createdAt) trip만 처리 대상으로 남긴다. deviceToken이
   // 없는(legacy) trip은 그대로 통과.
   const trips: Trip[] = dedupeTripsByDeviceToken(scannedTrips);
+  // #2452 — listTrips를 실제로 실행한 tick에서만 마커를 실 결과로 조정한다(mayHaveActiveTrips가
+  // false였던 tick은 scannedTrips가 항상 []이므로, 여기서 delete를 또 부르면 부재 마커에 대한
+  // 낭비 write가 매 idle tick 반복된다 — 그 write는 스킵한다).
+  if (mayHaveActiveTrips) {
+    await refreshActiveTripsMarker(env.TRIPS, trips, now);
+  }
 
   // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
   // 없으면 pending/retry push가 존재할 수 없다(모든 fire 경로가 trip 기반이므로 trip 부재 tick엔

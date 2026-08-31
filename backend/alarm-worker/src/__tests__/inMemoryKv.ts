@@ -1,4 +1,5 @@
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
+import { ACTIVE_TRIPS_MARKER_KEY } from '../activeTripsGate';
 
 /**
  * Cloudflare KVNamespace의 in-memory test double.
@@ -46,6 +47,24 @@ export class InMemoryKV {
       ? Date.now() + options.expirationTtl * 1000
       : undefined;
     this.store.set(key, { value, expiresAt });
+    // #2452 — 프로덕션에서 `trip:` 키는 항상 `POST /trips` 등록(activeTripsGate.markTripRegistered
+    // 가 stamp)을 거쳐 존재하므로 cron listTrips 게이트 마커가 함께 있다. 이 테스트 더블은
+    // 수백 개 기존 테스트가 registration 경로 없이 putTrip으로 trip을 직접 시드하므로, 그
+    // 불변식을 여기서 흡수해 마커를 함께 stamp한다. `this.store`를 직접 조작(= `this.put()`
+    // 재귀호출 아님)해 `vi.spyOn(kv, 'put')` 호출 횟수 assertion에 잡히지 않는다 — 이 stamp는
+    // 순수 테스트 인프라 편의이지 관측 대상 동작이 아니다.
+    if (key.startsWith('trip:')) {
+      let markerTtlMs = 60 * 60 * 1000;
+      try {
+        const parsed = JSON.parse(value) as { expiresAt?: unknown };
+        if (typeof parsed.expiresAt === 'number') {
+          markerTtlMs = Math.max(60_000, parsed.expiresAt - Date.now());
+        }
+      } catch {
+        // 손상된 payload는 기본 TTL로 stamp.
+      }
+      this.store.set(ACTIVE_TRIPS_MARKER_KEY, { value: '1', expiresAt: Date.now() + markerTtlMs });
+    }
   }
 
   async delete(key: string): Promise<void> {
