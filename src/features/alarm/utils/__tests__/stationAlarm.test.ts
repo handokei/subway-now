@@ -447,6 +447,56 @@ describe('evaluateAlarmPhase', () => {
         ),
       ).toBeNull();
     });
+
+    // #2464 — 건대입구(7→2) 실환승 회귀: 환승 타겟에 아직 도달 전(stops>0)인데
+    // currentLine이 station complex GPS/fusion jitter로 toLine(2)으로 조기 flip되면,
+    // 기존 로직은 미도달 환승 타겟을 건너뛰고 도착 타겟(approachLine=toLine)으로
+    // 오매칭돼 "환승하세요" 안내가 통째로 스킵됐다. stops>0인 미도달 타겟은
+    // currentLine mismatch 시 다음 leg로 fall-through하지 않고 그 tick은 보류(null)해야 한다.
+    it('#2464 — 환승 타겟 미도달(stops>0)인데 currentLine이 toLine으로 조기 flip되면 도착 타겟으로 오매칭하지 않는다', () => {
+      // 건대입구 1정거장 전(stopsToTransfer=1, 아직 미도달) — currentLine은 이미 '2'로 flip.
+      const route = makeTransferRoute(1, 1, '건대입구', '7', '2');
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName: '성수', currentLine: '2' }),
+          new Set(),
+        ),
+      ).toBeNull();
+    });
+
+    it('#2464 — currentLine이 fromLine으로 복귀하면 보류됐던 환승 알람이 정상 발사된다', () => {
+      // 위 케이스와 동일 route/stops. currentLine만 올바른 값(fromLine='7')으로 복귀.
+      const route = makeTransferRoute(1, 1, '건대입구', '7', '2');
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName: '성수', currentLine: '7' }),
+          new Set(),
+        ),
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '건대입구' });
+    });
+
+    it('#2464 — 환승 타겟을 이미 통과(stops<=0)했다면 currentLine mismatch여도 다음 leg로 정상 진행한다', () => {
+      // 환승역 통과(stops=0), 도착역 1정거장 전. currentLine='2'(toLine)로 정상 매칭.
+      const route = makeTransferRoute(0, 1, '건대입구', '7', '2');
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName: '성수', currentLine: '2' }),
+          new Set(),
+        ),
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '성수' });
+    });
+
+    it('#2464 — 유일한 타겟이 이미 통과(stops<=0)했지만 currentLine이 어느 leg와도 안 맞으면 loop 끝까지 진행 후 null', () => {
+      // DirectRoute stops=0(이미 도달) + currentLine mismatch → stops<=0이라 continue하지만
+      // 더 이상 평가할 leg가 없어 loop 종료 후 최종 null로 떨어진다.
+      const route = makeDirectRoute(0, '2');
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName: '강남', currentLine: '5' }),
+          new Set(),
+        ),
+      ).toBeNull();
+    });
   });
 
   describe('suppressedOut out-param (#580)', () => {
