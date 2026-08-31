@@ -159,7 +159,16 @@ export function evaluateAlarmPhase(
 
   for (let i = 0; i < targets.length; i++) {
     const target = targets[i];
-    if (target.approachLine !== currentLine) continue;
+    if (target.approachLine !== currentLine) {
+      // #2464 — target.stops <= 0(이미 도달/통과)일 때만 다음 leg로 진행 허용한다.
+      // stops > 0(아직 도달 전)인데 currentLine이 mismatch면, station complex에서
+      // GPS/fusion이 currentLine을 다음 leg 노선으로 조기 flip했을 가능성이 있다 —
+      // 이 tick엔 아직 도달하지 않은 웨이포인트(예: 환승역)를 건너뛰고 뒤 leg(도착역 등)로
+      // 오매칭하지 않도록 보류(null)한다. currentLine이 올바르게 복귀하면 다음 tick에
+      // 이 웨이포인트가 정상 평가된다.
+      if (target.stops <= 0) continue;
+      return null;
+    }
 
     const isFinal = i === targets.length - 1;
     const context: AlarmContext = {
