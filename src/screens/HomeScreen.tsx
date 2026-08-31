@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
 import { useFusedNearestStation } from '../features/nearest-station/hooks/useFusedNearestStation';
+import { resolveOriginLineVariants } from '../features/nearest-station/utils/resolveOriginLineVariants';
 import { useV1MismatchDetector } from '../features/nearest-station/hooks/useV1MismatchDetector';
 import { useStationMismatchDetector } from '../features/nearest-station/hooks/useStationMismatchDetector';
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
@@ -553,7 +554,9 @@ export default function HomeScreen() {
   }, [refresh, refetchArrival]);
 
   // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
-  const originVariants = !isCustomOrigin && variants.length > 1 ? variants : effectiveOrigin ? [effectiveOrigin] : [];
+  // #2454 (R2) — rawVariants(GPS live)가 effectiveOrigin(fused stall 시 stale fallback)과
+  // 다른 역을 가리키면 "NAME=A + LINE 배지=B" 모순을 막기 위해 단일 노선으로 강등한다.
+  const originVariants = resolveOriginLineVariants(effectiveOrigin, variants, isCustomOrigin);
   const variantIds = originVariants.map((v) => v.id).join(',');
 
   // #1883 (RC-11) — 마지막으로 route를 계산한 trip session id (`${destinationId}|${routePreference}`).
