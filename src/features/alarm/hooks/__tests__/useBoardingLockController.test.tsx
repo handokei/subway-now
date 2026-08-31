@@ -269,6 +269,63 @@ describe('useBoardingLockController', () => {
     });
   });
 
+  describe('offRouteTrainCodes (#2446)', () => {
+    // 뚝섬→신당 route에서 nextStationLabel이 "한양대"로 route 방향 표시될 때, arrival.up(정방향)
+    // 이 비어 #1326 fallback으로 arrival.down(성수행)이 합쳐진 케이스. 그 반대 방향 열차의
+    // trainCode가 offRouteTrainCodes에 담겨야 BoardingTrainList가 route 라벨을 붙이지 않는다.
+    it('방향 필터가 빈 쪽을 고르면 반대 방향(합쳐진 쪽) trainCode가 offRouteTrainCodes에 담긴다', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const onlyDown: StationArrival = { up: [], down: [downTrain] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: onlyDown }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([downTrain]);
+      expect(result.current.offRouteTrainCodes).toEqual(new Set([downTrain.trainCode]));
+    });
+
+    it('방향 필터 결과가 있으면(merge 미발생) offRouteTrainCodes는 빈 집합', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      expect(result.current.offRouteTrainCodes).toEqual(new Set());
+    });
+
+    it('direction="down"일 때는 반대(arrival.up) 쪽 trainCode가 담긴다', () => {
+      mockResolveTripDirection.mockReturnValue('down');
+      const onlyUp: StationArrival = { up: [upTrain], down: [] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: onlyUp }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([upTrain]);
+      expect(result.current.offRouteTrainCodes).toEqual(new Set([upTrain.trainCode]));
+    });
+
+    it('direction이 null(방향 미상)이면 "반대"가 정의되지 않아 offRouteTrainCodes는 빈 집합', () => {
+      mockResolveTripDirection.mockReturnValue(null);
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      expect(result.current.boardingListArrivals).toEqual([upTrain, downTrain]);
+      expect(result.current.offRouteTrainCodes).toEqual(new Set());
+    });
+
+    it('arrival null이면 offRouteTrainCodes는 빈 집합', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: null }),
+      );
+      expect(result.current.offRouteTrainCodes).toEqual(new Set());
+    });
+
+    it('폴백 시 반대 방향에서도 음수 arrivalSeconds(지나간 열차)는 제외', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: -10 });
+      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
+      const onlyDownMixed: StationArrival = { up: [], down: [passed, future] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: onlyDownMixed }),
+      );
+      expect(result.current.offRouteTrainCodes).toEqual(new Set(['FUTURE']));
+    });
+  });
+
   describe('createLockFromTrain', () => {
     beforeEach(() => {
       jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
