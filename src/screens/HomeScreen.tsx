@@ -5,6 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
 import { useFusedNearestStation } from '../features/nearest-station/hooks/useFusedNearestStation';
 import { resolveOriginLineVariants } from '../features/nearest-station/utils/resolveOriginLineVariants';
+import { resolveDisplayOrigin } from '../features/nearest-station/utils/resolveDisplayOrigin';
 import { useV1MismatchDetector } from '../features/nearest-station/hooks/useV1MismatchDetector';
 import { useStationMismatchDetector } from '../features/nearest-station/hooks/useStationMismatchDetector';
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
@@ -502,6 +503,15 @@ export default function HomeScreen() {
     boardingLockStation ??
     tripOrigin ??
     null;
+  // #2454 (R2) — cascade가 off-arc로 stuck되면(currentStationDisplayDemoted) 표시명은
+  // stale한 effectiveOrigin이 아니라 raw GPS 실제 위치(liveResult)를 따라간다. 표시 전용 —
+  // 알람/도착정보/경로 계산(fire path)은 계속 effectiveOrigin을 그대로 쓴다.
+  const displayOrigin = resolveDisplayOrigin(
+    effectiveOrigin,
+    liveResult?.station ?? null,
+    currentStationDisplayDemoted,
+    isCustomOrigin,
+  );
   useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
   const handleSameOriginToastDismiss = useCallback(() => setSameOriginToast(null), []);
   const handleShortRouteToastDismiss = useCallback(() => setShortRouteToast(null), []);
@@ -557,10 +567,13 @@ export default function HomeScreen() {
   }, [refresh, refetchArrival]);
 
   // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
-  // #2454 (R2) — rawVariants(GPS live)가 effectiveOrigin(fused stall 시 stale fallback)과
-  // 다른 역을 가리키면 "NAME=A + LINE 배지=B" 모순을 막기 위해 단일 노선으로 강등한다.
+  // fire path(route 계산)라 effectiveOrigin 기준 그대로 — displayOrigin(표시 전용)과 분리.
   const originVariants = resolveOriginLineVariants(effectiveOrigin, variants, isCustomOrigin);
   const variantIds = originVariants.map((v) => v.id).join(',');
+  // #2454 (R2) — LINE 배지 표시 전용. displayOrigin(이름과 동일 소스)과 raw variants가
+  // 다른 역을 가리키면 "이름=A + 배지=B" 모순을 막기 위해 단일 노선으로 강등한다. 정상 시
+  // (demoted 아님) displayOrigin===effectiveOrigin이라 기존 동작과 동일.
+  const displayLineVariants = resolveOriginLineVariants(displayOrigin, variants, isCustomOrigin);
 
   // #1883 (RC-11) — 마지막으로 route를 계산한 trip session id (`${destinationId}|${routePreference}`).
   // trip session이 같으면 effectiveOrigin / variants 갱신으로 인한 mid-trip route mutation을 차단.
@@ -1402,11 +1415,13 @@ export default function HomeScreen() {
                   ]}
                   testID="home-origin-station-name"
                 >
-                  {/* #2125 — 현재역 표시 고착 정직 강등. 역명 표시만 대체 — effectiveOrigin
-                      자체(journey/도착정보/알람 SSOT)는 무변경. */}
-                  {currentStationDisplayDemoted
-                    ? t('home.originStaleDemote')
-                    : getStationDisplayName(effectiveOrigin)}
+                  {/* #2125/#2454 — cascade가 off-arc로 stuck되면 displayOrigin이 raw GPS
+                      실제 위치를 따라간다(resolveDisplayOrigin). 실제 위치조차 없을 때만
+                      정직 강등 placeholder. effectiveOrigin 자체(journey/도착정보/알람
+                      SSOT)는 무변경. */}
+                  {displayOrigin
+                    ? getStationDisplayName(displayOrigin)
+                    : t('home.originStaleDemote')}
                 </Text>
                 <TouchableOpacity
                   onPress={() =>
@@ -1423,11 +1438,14 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
               <View style={styles.metaRow}>
-                {originVariants.length > 0 ? (
-                  originVariants.map((v) => <LineBadge key={v.id} line={v.line} />)
-                ) : (
-                  <LineBadge line={effectiveOrigin.line} />
-                )}
+                {/* #2454 — badge는 항상 위 이름(displayOrigin)과 같은 역을 가리킨다. 실제
+                    위치조차 없어 이름이 placeholder일 때는 badge도 렌더하지 않는다. */}
+                {displayOrigin &&
+                  (displayLineVariants.length > 0 ? (
+                    displayLineVariants.map((v) => <LineBadge key={v.id} line={v.line} />)
+                  ) : (
+                    <LineBadge line={displayOrigin.line} />
+                  ))}
                 {/* #446: source==='gps'일 때만 user↔station 거리/도보시간이 의미 있음.
                     fusion 추정(positionTrain/arrival/route) 결과의 거리는 user↔추정역
                     직선거리라 도보 안내로 표시하면 잘못된 정보가 됨 → 숨김. */}
