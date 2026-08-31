@@ -6,6 +6,9 @@ import {
 } from '../useMisBoardingDetector';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
+import type { Route } from '../../../../shared/utils/stationRoute';
+import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
 const baseLock: BoardingLock = {
   destinationId: 'd',
@@ -216,5 +219,191 @@ describe('useMisBoardingDetector', () => {
       MIS_BOARDING_MISS_THRESHOLD,
     );
     expect(result.current.detected).toBe(true);
+  });
+});
+
+// 반대 방향 탑승 감지 (#2455, Phase B). route/destinationName 전달 시에만 활성화되므로
+// 실제 stations.json 데이터(뚝섬→신당, 2호선)로 direction 판정을 재현한다.
+describe('useMisBoardingDetector — wrongDirectionDetected (#2455)', () => {
+  const ddukseom = findStationByNameAndLine(canonicalStationName('뚝섬', '2'), '2')!;
+  const sindangName = canonicalStationName('신당', '2');
+  const directRoute: Route = { type: 'direct', stops: 4, line: '2', travelSeconds: 240 };
+  const directionLock: BoardingLock = {
+    destinationId: 'd',
+    trainCode: 'T-LOCK',
+    boardingStationId: ddukseom.id,
+    boardingLine: '2',
+    boardedAt: 1_000_000,
+    expectedDurationMs: 1_800_000,
+  };
+  const afterDirectionGraceNow = () => directionLock.boardedAt + MIS_BOARDING_GRACE_MS + 1;
+
+  function positionsAt(statnNm: string): LinePositions {
+    return { line: '2', trains: [{ ...train('T-LOCK'), statnNm }] };
+  }
+
+  const wrongDirectionPositions = positionsAt('성수');
+  const correctDirectionPositions = positionsAt('한양대');
+
+  function mountDirection(initial: Partial<Props> = {}): RenderHookResult<Result, Props> {
+    return renderHook((props: Props) => useMisBoardingDetector(props), {
+      initialProps: {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+        ...initial,
+      },
+    });
+  }
+
+  it('route/destinationName 미전달 시 wrong-direction 관측이어도 wrongDirectionDetected 항상 false (기존 absent 동작 불변)', () => {
+    const { result, rerender } = renderHook((props: Props) => useMisBoardingDetector(props), {
+      initialProps: {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        now: afterDirectionGraceNow,
+      },
+    });
+    rerenderTimes(
+      rerender,
+      { lock: directionLock, positions: wrongDirectionPositions, now: afterDirectionGraceNow },
+      MIS_BOARDING_MISS_THRESHOLD + 5,
+    );
+    expect(result.current.wrongDirectionDetected).toBe(false);
+    // route 없이는 detectMisBoarding이 항상 'present'(trainNo 매칭됨) → absent 카운터도 안 오른다.
+    expect(result.current.detected).toBe(false);
+  });
+
+  it('grace 이후 wrong-direction threshold회 누적되면 wrongDirectionDetected=true', () => {
+    const { result, rerender } = mountDirection();
+    rerenderTimes(
+      rerender,
+      {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      },
+      MIS_BOARDING_MISS_THRESHOLD - 1,
+    );
+    expect(result.current.wrongDirectionDetected).toBe(true);
+    // wrong-direction과 absent(=detected)는 배타적 — 동시에 true가 될 수 없다.
+    expect(result.current.detected).toBe(false);
+  });
+
+  it('grace 내 wrong-direction은 카운터 미증가', () => {
+    const inGraceNow = () => directionLock.boardedAt + 100;
+    const { result, rerender } = mountDirection({ now: inGraceNow });
+    rerenderTimes(
+      rerender,
+      {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: inGraceNow,
+      },
+      MIS_BOARDING_MISS_THRESHOLD + 5,
+    );
+    expect(result.current.wrongDirectionDetected).toBe(false);
+  });
+
+  it('정방향(한양대) 관측이 들어오면 wrongDirectionDetected reset', () => {
+    const { result, rerender } = mountDirection();
+    rerenderTimes(
+      rerender,
+      {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      },
+      MIS_BOARDING_MISS_THRESHOLD - 1,
+    );
+    expect(result.current.wrongDirectionDetected).toBe(true);
+
+    act(() =>
+      rerender({
+        lock: directionLock,
+        positions: correctDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      }),
+    );
+    expect(result.current.wrongDirectionDetected).toBe(false);
+  });
+
+  it('absent(다른 trainCode)가 들어오면 wrongDirectionDetected reset되고 detected 카운터가 누적된다', () => {
+    const { result, rerender } = mountDirection();
+    rerenderTimes(
+      rerender,
+      {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      },
+      MIS_BOARDING_MISS_THRESHOLD - 1,
+    );
+    expect(result.current.wrongDirectionDetected).toBe(true);
+
+    const absentDirectionPositions: LinePositions = { line: '2', trains: [train('T-OTHER')] };
+    act(() =>
+      rerender({
+        lock: directionLock,
+        positions: absentDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      }),
+    );
+    expect(result.current.wrongDirectionDetected).toBe(false);
+    expect(result.current.detected).toBe(false); // 1회차라 threshold 미도달
+
+    rerenderTimes(
+      rerender,
+      {
+        lock: directionLock,
+        positions: absentDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      },
+      MIS_BOARDING_MISS_THRESHOLD - 1,
+    );
+    expect(result.current.detected).toBe(true);
+  });
+
+  it('lock → null이면 wrongDirectionDetected도 reset', () => {
+    const { result, rerender } = mountDirection();
+    rerenderTimes(
+      rerender,
+      {
+        lock: directionLock,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      },
+      MIS_BOARDING_MISS_THRESHOLD - 1,
+    );
+    expect(result.current.wrongDirectionDetected).toBe(true);
+
+    act(() =>
+      rerender({
+        lock: null,
+        positions: wrongDirectionPositions,
+        route: directRoute,
+        destinationName: sindangName,
+        now: afterDirectionGraceNow,
+      }),
+    );
+    expect(result.current.wrongDirectionDetected).toBe(false);
   });
 });

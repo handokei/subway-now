@@ -95,4 +95,20 @@ describe('MisBoardingReselectModal', () => {
     );
     expect(getByTestId('boarding-train-meta-C').props.children).toBe('사가정방면');
   });
+
+  // 반대 방향 탑승 감지 (#2455, Phase B) — absent 케이스와 구분되는 헤더 copy.
+  it('reason="wrong-direction" → 헤더가 반대 방향 전용 copy로 렌더', () => {
+    const { getByText, queryByText } = renderWithTheme(
+      <MisBoardingReselectModal
+        visible
+        arrivals={[makeTrain()]}
+        line="2"
+        onSelect={() => {}}
+        onClose={() => {}}
+        reason="wrong-direction"
+      />,
+    );
+    expect(getByText('반대 방향 — 열차 재선택')).toBeTruthy();
+    expect(queryByText('탑승 열차 재선택')).toBeNull();
+  });
 });

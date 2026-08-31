@@ -69,6 +69,7 @@
     "consensusEstimatedBadge": "Estimated",
     "consensusManualSelectHint": "Select manually",
     "misBoardingToast": "Can't find your train. Please reselect.",
+    "misBoardingWrongDirectionToast": "Looks like you're heading the wrong way. Get off at the next station and switch to the other platform.",
     "autoDisembarkToast": {
       "message": "Arrived at {{name}} — destination cleared",
       "undo": "Undo"
@@ -371,6 +372,7 @@
       "assignSlotHint": "Saves the next selected station to this slot",
       "favoriteChipHint": "Tap to set this station as destination",
       "misBoardingBannerLabel": "Cannot identify your train. Please reselect.",
+      "misBoardingWrongDirectionBannerLabel": "You seem to be heading the wrong way. Please reselect.",
       "misBoardingReselectLabel": "Reselect boarding train",
       "misBoardingReselectHint": "Reopens the boarding train picker"
     }

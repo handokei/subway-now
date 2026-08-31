@@ -35,4 +35,26 @@ describe('MisBoardingBanner', () => {
     expect(action.props.accessibilityLabel).toBe('탑승 열차 재선택');
     expect(action.props.accessibilityHint).toBe('탑승 열차 선택 화면을 다시 엽니다');
   });
+
+  // 반대 방향 탑승 감지 (#2455, Phase B) — 기존 absent copy와 구분되는 별도 라벨/본문.
+  it('reason="wrong-direction" → 반대 방향 경고 copy 렌더', () => {
+    const { getByTestId, getByText } = renderWithTheme(
+      <MisBoardingBanner onReselect={() => {}} reason="wrong-direction" />,
+    );
+    expect(getByTestId('mis-boarding-banner')).toBeTruthy();
+    expect(getByText('반대 방향으로 가고 있어요')).toBeTruthy();
+    expect(
+      getByText('반대 방향으로 가고 계신 것 같아요. 다음 역에서 내려 반대편에서 타세요.'),
+    ).toBeTruthy();
+  });
+
+  it('reason="wrong-direction" → a11y 라벨도 반대 방향 전용 copy', () => {
+    const { getByTestId } = renderWithTheme(
+      <MisBoardingBanner onReselect={() => {}} reason="wrong-direction" />,
+    );
+    const banner = getByTestId('mis-boarding-banner');
+    expect(banner.props.accessibilityLabel).toBe(
+      '반대 방향으로 가고 계신 것 같아요. 다시 선택하세요.',
+    );
+  });
 });
