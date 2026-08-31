@@ -12,6 +12,7 @@ import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { BoardingTrainList } from '../../alarm/components/BoardingTrainList';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { LineNumber } from '../../../shared/types/station';
+import type { MisBoardingBannerReason } from './MisBoardingBanner';
 
 interface Props {
   visible: boolean;
@@ -28,10 +29,12 @@ interface Props {
    * 호출자가 resolveNextAdjacentStationName으로 도출해 전달. null/미전달이면 종착만 노출.
    */
   nextStationLabel?: string | null;
+  /** 모달을 띄운 원인(#2455, Phase B). 미전달 시 기존 'absent' copy 유지(하위호환). */
+  reason?: MisBoardingBannerReason;
 }
 
 /**
- * 잘못 탑승 감지 시 노출되는 재선택 모달 (#603).
+ * 잘못 탑승 감지 시 노출되는 재선택 모달 (#603, #2455 반대 방향 탑승 확장).
  *
  * BoardingTrainList를 재사용해 현재역 도착 list를 다시 노출. 사용자가 train 탭 →
  * onSelect 콜백 → caller가 createLockFromTrain 호출 + 모달 close 처리.
@@ -44,9 +47,11 @@ export function MisBoardingReselectModal({
   onSelect,
   onClose,
   nextStationLabel = null,
+  reason = 'absent',
 }: Props) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const headerTitle = reason === 'wrong-direction' ? '반대 방향 — 열차 재선택' : '탑승 열차 재선택';
 
   return (
     <Modal
@@ -64,7 +69,7 @@ export function MisBoardingReselectModal({
           ]}
         >
           <View style={[styles.header, { borderBottomColor: colors.hair }]}>
-            <Text style={[typography.label, { color: colors.warn }]}>탑승 열차 재선택</Text>
+            <Text style={[typography.label, { color: colors.warn }]}>{headerTitle}</Text>
             <Pressable
               onPress={onClose}
               testID="mis-boarding-reselect-close"

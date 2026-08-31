@@ -69,6 +69,7 @@
     "consensusEstimatedBadge": "推测",
     "consensusManualSelectHint": "直接选择",
     "misBoardingToast": "找不到乘坐的列车,请重新选择。",
+    "misBoardingWrongDirectionToast": "您好像坐反方向了。请在下一站下车，到对面站台换乘。",
     "autoDisembarkToast": {
       "message": "已到达{{name}},已清除目的地",
       "undo": "撤销"
@@ -369,6 +370,7 @@
       "assignSlotHint": "将下次选择的车站保存到此槽位",
       "favoriteChipHint": "点击将此站设为目的地",
       "misBoardingBannerLabel": "无法识别乘坐的列车，请重新选择。",
+      "misBoardingWrongDirectionBannerLabel": "您好像坐反方向了，请重新选择。",
       "misBoardingReselectLabel": "重新选择乘坐列车",
       "misBoardingReselectHint": "重新打开乘坐列车选择界面"
     }

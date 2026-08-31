@@ -84,7 +84,10 @@ import { CurrentStationConfirmModal } from '../features/nearest-station/componen
 import { ColdStartCandidatePicker } from '../features/nearest-station/components/ColdStartCandidatePicker';
 import { useColdStartCandidates } from '../features/nearest-station/hooks/useColdStartCandidates';
 import type { ColdStartCandidate } from '../features/nearest-station/hooks/useColdStartCandidates';
-import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
+import {
+  MisBoardingBanner,
+  type MisBoardingBannerReason,
+} from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { ShareTripButton } from '../features/route/components/ShareTripButton';
 import { isDegenerateDestination } from '../features/route/utils/isDegenerateDestination';
@@ -897,22 +900,39 @@ export default function HomeScreen() {
   // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
   // lock 없으면 line=null로 호출되어 polling이 자동 정지된다.
   const { positions: lockLinePositions } = useTrainPositions(boardingLock?.boardingLine ?? null);
-  const { detected: misBoardingDetected } = useMisBoardingDetector({
+  // #2455 (Phase B, foreground) — 반대 방향 탑승 감지. route/destination이 있어야 방향 검사가
+  // 활성화된다(둘 다 없으면 detectMisBoarding이 기존 absent 판정만 수행 — 하위호환).
+  const { detected: misBoardingDetected, wrongDirectionDetected } = useMisBoardingDetector({
     lock: boardingLock,
     positions: lockLinePositions,
+    route,
+    destinationName: destination?.name ?? null,
   });
   // #603: detected false→true 전환 시점에 토스트 + 모달 1회 발사. true가 유지되어도 중복 발사 X.
   // banner는 그대로 노출되어 사용자가 닫은 뒤에도 잘못 탑승 상태를 알 수 있다.
+  // #2455 — reason으로 absent/wrong-direction copy를 분기. 두 감지는 훅 내부에서 서로 배타적으로
+  // reset되므로 rising edge 시점의 reason이 현재 노출 상태와 항상 일치한다.
+  const [misBoardingReason, setMisBoardingReason] = useState<MisBoardingBannerReason>('absent');
   const [misBoardingToastVisible, setMisBoardingToastVisible] = useState(false);
   const [misBoardingModalVisible, setMisBoardingModalVisible] = useState(false);
   const prevMisBoardingRef = useRef(false);
   useEffect(() => {
     if (misBoardingDetected && !prevMisBoardingRef.current) {
+      setMisBoardingReason('absent');
       setMisBoardingToastVisible(true);
       setMisBoardingModalVisible(true);
     }
     prevMisBoardingRef.current = misBoardingDetected;
   }, [misBoardingDetected]);
+  const prevWrongDirectionRef = useRef(false);
+  useEffect(() => {
+    if (wrongDirectionDetected && !prevWrongDirectionRef.current) {
+      setMisBoardingReason('wrong-direction');
+      setMisBoardingToastVisible(true);
+      setMisBoardingModalVisible(true);
+    }
+    prevWrongDirectionRef.current = wrongDirectionDetected;
+  }, [wrongDirectionDetected]);
   const handleMisBoardingReselect = useCallback(
     (train: ArrivalInfo) => {
       createLockFromTrain(train);
@@ -1291,7 +1311,11 @@ export default function HomeScreen() {
       )}
       <Toast
         visible={misBoardingToastVisible}
-        message={t('home.misBoardingToast')}
+        message={t(
+          misBoardingReason === 'wrong-direction'
+            ? 'home.misBoardingWrongDirectionToast'
+            : 'home.misBoardingToast',
+        )}
         onDismiss={handleMisBoardingToastDismiss}
         accent={colors.warn}
         testID="mis-boarding-toast"
@@ -1313,6 +1337,7 @@ export default function HomeScreen() {
         onSelect={handleMisBoardingReselect}
         onClose={handleMisBoardingModalClose}
         nextStationLabel={nextStationName}
+        reason={misBoardingReason}
       />
       {/* #924 D1 — 환승 자동 detect 다중 후보 모달. F4 1탭 모달 인프라(#914) 재사용. */}
       <CurrentStationConfirmModal
@@ -1768,8 +1793,11 @@ export default function HomeScreen() {
                   {/* #625 — MisBoarding 배너는 route 컨텍스트 안에서 노출.
                        외곽 {destination && ...} 가드 안쪽이라 destination 재가드 불필요.
                        #758: BoardingLockBanner는 hop slot 안 BoardingLockHopCard로 통합 이전 — 별도 노출 제거. */}
-                  {boardingLock && misBoardingDetected && (
-                    <MisBoardingBanner onReselect={releaseBoardingLock} />
+                  {/* #2455 — wrongDirectionDetected 추가. 훅 내부에서 두 감지가 서로 배타적으로
+                       reset되므로 동시에 true가 될 수 없다 — misBoardingReason이 현재 노출 상태와
+                       항상 일치. */}
+                  {boardingLock && (misBoardingDetected || wrongDirectionDetected) && (
+                    <MisBoardingBanner onReselect={releaseBoardingLock} reason={misBoardingReason} />
                   )}
                   {/* #649 — BoardingTrainList 두 인스턴스(현재역/환승)는 EditorialTimeline의
                        renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기.

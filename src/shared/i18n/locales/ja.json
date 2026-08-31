@@ -69,6 +69,7 @@
     "consensusEstimatedBadge": "推定",
     "consensusManualSelectHint": "直接選択",
     "misBoardingToast": "乗車中の列車が見つかりません。もう一度選択してください。",
+    "misBoardingWrongDirectionToast": "反対方向へ進んでいるようです。次の駅で降りて反対側のホームに乗り換えてください。",
     "autoDisembarkToast": {
       "message": "{{name}}に到着し、目的地を解除しました",
       "undo": "元に戻す"
@@ -369,6 +370,7 @@
       "assignSlotHint": "次に選択する駅をこのスロットに保存します",
       "favoriteChipHint": "タップしてこの駅を目的地に設定",
       "misBoardingBannerLabel": "乗車中の列車を特定できません。再選択してください。",
+      "misBoardingWrongDirectionBannerLabel": "反対方向へ進んでいるようです。再選択してください。",
       "misBoardingReselectLabel": "乗車列車を再選択",
       "misBoardingReselectHint": "乗車列車選択画面を再度開きます"
     }
