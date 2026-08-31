@@ -15,6 +15,15 @@ const MAX_SERIES_SAMPLES = 90;
 const SERIES_TTL_SEC = 60 * 60;
 /** evaluateAccelWindow 기본 window — 60s, positionSeries POSITION_WINDOW_MS와 정합. */
 export const ACCEL_WINDOW_MS = 60_000;
+/**
+ * KV write 최소 간격 (ms) — CF Free tier 1,000 writes/day quota 소진 방지
+ * (positionSeries.POSITION_SERIES_WRITE_MIN_INTERVAL_MS와 동일 정책).
+ *
+ * E2 Kalman/E3 phase 감지는 아직 이 series를 게이트 입력으로 소비하지 않으므로(수집 전용
+ * 단계, 모듈 헤더 참고) window당 최소 point 수 제약이 없다 — 55s로 여유 있게 스로틀.
+ * cold start(series 비어있음)는 항상 write.
+ */
+export const ACCEL_SERIES_WRITE_MIN_INTERVAL_MS = 55_000;
 
 /**
  * 디바이스 토큰의 가속도 series에 새 요약값을 append하고 저장.
@@ -26,6 +35,15 @@ export async function appendAccelSample(
   sample: AccelSummary,
 ): Promise<AccelSummary[]> {
   const series = await readAccelSeries(kv, token);
+  // #KV quota — 마지막 저장 sample이 ACCEL_SERIES_WRITE_MIN_INTERVAL_MS 미만 전이면 put skip
+  // (cold start, 즉 series 비어있으면 항상 write).
+  const newestEndTs = series.length > 0 ? series[series.length - 1].endTs : null;
+  if (
+    newestEndTs !== null &&
+    sample.endTs - newestEndTs < ACCEL_SERIES_WRITE_MIN_INTERVAL_MS
+  ) {
+    return series;
+  }
   series.push(sample);
   while (series.length > MAX_SERIES_SAMPLES) series.shift();
   await kv.put(seriesKey(token), JSON.stringify(series), { expirationTtl: SERIES_TTL_SEC });
