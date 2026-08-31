@@ -18,6 +18,16 @@ const MAX_SERIES_POINTS = 30;
 const SERIES_TTL_SEC = 60 * 60;
 /** motion 최빈값 계산용 윈도우 (최근 sample 개수). ADR Section 6 step 6. */
 const MOTION_RECENT_COUNT = 6;
+/**
+ * KV write 최소 간격 (ms) — CF Free tier 1,000 writes/day quota 소진 방지.
+ *
+ * 디바이스는 POST /position을 10s마다 호출하지만 series KV put은 이 간격으로 스로틀한다
+ * (신규 point의 `ts`가 저장된 마지막 point보다 이 값 미만 차이면 put skip, 메모리 append도 skip).
+ * `evaluateWindow`는 `[now-60s, now]`에서 hop 쌍(gpsAvgKmh)과 방향(cosineDirection)에 최소
+ * 2개의 distinct sample이 필요 — 30s 이하로 두면 60s 윈도우 안에 항상 ≥2 point가 보장된다.
+ * cold start(series 비어있음)는 항상 write.
+ */
+export const POSITION_SERIES_WRITE_MIN_INTERVAL_MS = 30_000;
 /** 게이트 #3 / 평균속도 산출에서 컷오프할 accuracy (meters). */
 export const ACCURACY_CUTOFF_M = 50;
 
@@ -57,6 +67,12 @@ export async function appendPositionPoint(
   point: PositionPoint,
 ): Promise<PositionPoint[]> {
   const series = await readSeries(kv, token);
+  // #KV quota — 마지막 저장 point가 POSITION_SERIES_WRITE_MIN_INTERVAL_MS 미만 전이면
+  // put 자체를 skip (cold start, 즉 series 비어있으면 항상 write).
+  const newestTs = series.length > 0 ? series[series.length - 1].ts : null;
+  if (newestTs !== null && point.ts - newestTs < POSITION_SERIES_WRITE_MIN_INTERVAL_MS) {
+    return series;
+  }
   series.push(point);
   // 오래된 쪽부터 제거 (push 후 잘림).
   while (series.length > MAX_SERIES_POINTS) series.shift();

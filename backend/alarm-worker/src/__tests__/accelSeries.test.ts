@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACCEL_SERIES_WRITE_MIN_INTERVAL_MS,
   ACCEL_WINDOW_MS,
   appendAccelSample,
   clearAccelSeries,
@@ -34,14 +35,20 @@ describe('accelSeries — KV roundtrip', () => {
   });
 
   it('90개를 넘어가면 oldest sample이 ring으로 잘림', async () => {
+    // write throttle(ACCEL_SERIES_WRITE_MIN_INTERVAL_MS) 간격보다 넉넉히 벌려서
+    // 매 sample이 실제로 write되도록 함 (ring-trim 자체를 검증하는 테스트).
     const kv = new InMemoryKV() as unknown as KVNamespace;
     for (let i = 0; i < 100; i++) {
-      await appendAccelSample(kv, 'tok', sample({ startTs: i, endTs: i + 1 }));
+      await appendAccelSample(
+        kv,
+        'tok',
+        sample({ startTs: i * 60_000, endTs: i * 60_000 + 1 }),
+      );
     }
     const series = await readAccelSeries(kv, 'tok');
     expect(series).toHaveLength(90);
-    expect(series[0].startTs).toBe(10);
-    expect(series[89].startTs).toBe(99);
+    expect(series[0].startTs).toBe(10 * 60_000);
+    expect(series[89].startTs).toBe(99 * 60_000);
   });
 
   it('clearAccelSeries → readAccelSeries 빈 배열', async () => {
@@ -73,6 +80,40 @@ describe('accelSeries — KV roundtrip', () => {
     await kv.put('accel:tok', invalid);
     const series = await readAccelSeries(kv, 'tok');
     expect(series).toHaveLength(1);
+  });
+});
+
+describe('appendAccelSample — write throttle (KV quota #2439-ish)', () => {
+  it('cold start(series 비어있음)는 항상 write', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const series = await appendAccelSample(kv, 'tok', sample({ endTs: 1000 }));
+    expect(series).toHaveLength(1);
+    expect(await readAccelSeries(kv, 'tok')).toHaveLength(1);
+  });
+
+  it('간격 미달(직전 sample.endTs 대비 interval 미만) → put skip', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await appendAccelSample(kv, 'tok', sample({ endTs: 0 }));
+    const result = await appendAccelSample(
+      kv,
+      'tok',
+      sample({ endTs: ACCEL_SERIES_WRITE_MIN_INTERVAL_MS - 1 }),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].endTs).toBe(0);
+    expect(await readAccelSeries(kv, 'tok')).toHaveLength(1);
+  });
+
+  it('간격 충족(정확히 interval) → write 진행', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await appendAccelSample(kv, 'tok', sample({ endTs: 0 }));
+    const result = await appendAccelSample(
+      kv,
+      'tok',
+      sample({ endTs: ACCEL_SERIES_WRITE_MIN_INTERVAL_MS }),
+    );
+    expect(result).toHaveLength(2);
+    expect(await readAccelSeries(kv, 'tok')).toHaveLength(2);
   });
 });
 
