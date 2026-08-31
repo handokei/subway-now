@@ -295,12 +295,25 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   const nearest = findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM);
   if (!nearest) return { alarmEvent: null, nearest: null };
 
+  // #707용 lock을 여기서 미리 조회 — 아래 U1 off-route hold 가드가 currentLine 강등 로직보다
+  // 먼저 lock 존재 여부를 알아야 한다. 중복 조회 방지를 위해 이 결과를 아래에서 재사용한다.
+  const lockForLineGuard = await getBoardingLock();
+
   let route: Route = null;
   if (storedRoute) {
     route = updateRouteFromPosition(storedRoute, nearest.station, destination.id);
   }
   if (!route) {
-    route = findRoute(nearest.station.id, destination.id);
+    // #U1 (2026-08-31 실탑승 evidence) — 활성 boardingLock이 있는 trip 도중 단일 off-route
+    // position(GPS drift/오분류 등)이 들어와 updateRouteFromPosition이 null을 반환하면, 그
+    // off-route position으로 findRoute를 재탐색하지 않는다. 재탐색은 완전히 다른(엉뚱한 노선/
+    // 방향) 경로를 만들어 그 route의 alarmEvent(phantom transfer/destination 안내)를 발사시킨다
+    // — 뚝섬→신당 trip 중 잠실 방향 오탐 스냅으로 "잠실 환승하세요"가 잘못 발사된 사례.
+    // 대신 storedRoute를 그대로 유지(hold)한다 — 다음 tick에 position이 route로 복귀하면
+    // updateRouteFromPosition이 정상 성공해 자연 복구된다. lock 없는 자유 탐색(genuine reroute,
+    // 예: 목적지 변경 직후 최초 route 탐색)은 기존대로 findRoute 재계산을 허용해야 하므로
+    // storedRoute 존재 + lock 활성 조합일 때만 hold한다.
+    route = storedRoute && lockForLineGuard ? storedRoute : findRoute(nearest.station.id, destination.id);
   }
 
   // #2373 (RCA #2180) — FG의 검증된 station-passed hop-window 게이트를 BG 채널에 이식.
@@ -335,8 +348,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // BG path는 fusion이 없어 nearest.station.line(raw GPS 최근접)이 환승역에서 옆 노선으로
   // 잘못 잡힐 수 있다. 사용자가 명시 탭한 lock.boardingLine을 source of truth로 신뢰 —
   // evaluateAlarmPhase의 approachLine 게이트(#579)와 맞물려 잘못된 leg 알람 발사를 차단.
-  // lock 없으면 기존 동작(GPS line) 유지.
-  const lockForLineGuard = await getBoardingLock();
+  // lock 없으면 기존 동작(GPS line) 유지. lockForLineGuard는 위 U1 hold 가드에서 이미 조회했다
+  // (중복 AsyncStorage read 방지 — 재사용).
   const currentLine = lockForLineGuard?.boardingLine ?? nearest.station.line;
 
   const suppressed: AlarmEvent[] = [];
