@@ -491,6 +491,56 @@ describe('processLocationUpdate', () => {
     expect(mockCalculateStaticETA).toHaveBeenCalledWith(updatedRoute, expect.any(Object));
   });
 
+  // #U1 (2026-08-31) — 실탑승 evidence: 뚝섬→신당 활성 trip 도중 단일 off-route GPS 좌표
+  // (성수 방면 잘못 탑승 라벨 버그로 인한 잠실 방향 스냅)가 들어오면 updateRouteFromPosition이
+  // null을 반환하고, 기존 코드는 그 off-route 위치로 findRoute를 재호출해 완전히 다른(잠실 경유)
+  // 경로를 만들어 그 route의 alarmEvent(예: "잠실 환승하세요")를 phantom 발사했다.
+  // 활성 boardingLock이 있으면(=사용자가 명시 탑승 확정한 trip 진행 중) 단일 glitch position으로
+  // 경로를 갈아엎지 않고 storedRoute를 그대로 유지(hold)한다 — Option (a).
+  it('활성 boardingLock 중 updateRouteFromPosition이 null이면 findRoute로 재계산하지 않고 storedRoute를 유지한다 (#U1 off-route hold)', async () => {
+    const storedRoute = makeDirectRoute(5, '2');
+    const activeLock = {
+      destinationId: 'station-2',
+      trainCode: 'T-2',
+      boardingStationId: 'station-0',
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+    // off-route 후보역 — 실제로는 storedRoute 상에 없는 역(예: 잠실)이라고 가정.
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockUpdateRouteFromPosition.mockReturnValue(null);
+    mockGetBoardingLock.mockResolvedValue(activeLock);
+    mockIsStationOnRoute.mockReturnValue(false);
+
+    await call({ storedRoute });
+
+    expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
+    // 핵심 assertion — off-route 위치로 새 경로를 재탐색하지 않는다.
+    expect(mockFindRoute).not.toHaveBeenCalled();
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+      expect.objectContaining({ route: storedRoute }),
+      expect.any(Set),
+      undefined,
+      expect.any(Array),
+    );
+  });
+
+  // MUST-NOT-REGRESS — lock 없는 자유 탐색(genuine reroute)은 기존대로 findRoute 재계산을 허용한다.
+  // (이는 기존 회귀 테스트 '#468 falls back to findRoute...'가 이미 lockless 기본값으로 커버하지만,
+  // #U1 hold 분기 추가 후에도 명시적으로 재확인.)
+  it('lock 없으면(#U1 hold 미적용) updateRouteFromPosition null 시 기존대로 findRoute로 재계산한다 (MUST-NOT-REGRESS)', async () => {
+    const storedRoute = makeDirectRoute(5, '2');
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockUpdateRouteFromPosition.mockReturnValue(null);
+    mockGetBoardingLock.mockResolvedValue(null);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    await call({ storedRoute });
+
+    expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
+  });
+
   it('calls findRoute when no storedRoute is provided', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
