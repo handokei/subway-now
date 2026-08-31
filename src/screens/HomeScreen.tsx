@@ -745,6 +745,7 @@ export default function HomeScreen() {
     lock: boardingLock,
     lockSuggestion,
     boardingListArrivals,
+    offRouteTrainCodes,
     createLockFromTrain,
     hydrateLockFromCandidate,
     releaseLock: releaseBoardingLock,
@@ -1313,6 +1314,7 @@ export default function HomeScreen() {
         onSelect={handleMisBoardingReselect}
         onClose={handleMisBoardingModalClose}
         nextStationLabel={nextStationName}
+        offRouteTrainCodes={offRouteTrainCodes}
       />
       {/* #924 D1 — 환승 자동 detect 다중 후보 모달. F4 1탭 모달 인프라(#914) 재사용. */}
       <CurrentStationConfirmModal
@@ -1675,6 +1677,7 @@ export default function HomeScreen() {
                                 >
                                   <BoardingTrainList
                                     arrivals={boardingListArrivals}
+                                    offRouteTrainCodes={offRouteTrainCodes}
                                     // #797: approachLine 우선 — 환승역에서 effectiveOrigin.line이 trip 방향과
                                     // 어긋날 때 BoardingLock·route SSOT로 정확한 호선 표시.
                                     line={approachLine ?? effectiveOrigin.line}

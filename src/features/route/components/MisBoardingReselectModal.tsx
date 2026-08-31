@@ -28,6 +28,11 @@ interface Props {
    * 호출자가 resolveNextAdjacentStationName으로 도출해 전달. null/미전달이면 종착만 노출.
    */
   nextStationLabel?: string | null;
+  /**
+   * #2446 — BoardingTrainList로 forward. #1326 fallback으로 합쳐진 반대 방향 열차 trainCode
+   * 집합. 해당 row는 route 방향 nextStationLabel 대신 자신의 실제 방면으로 라벨링된다.
+   */
+  offRouteTrainCodes?: ReadonlySet<string>;
 }
 
 /**
@@ -44,6 +49,7 @@ export function MisBoardingReselectModal({
   onSelect,
   onClose,
   nextStationLabel = null,
+  offRouteTrainCodes,
 }: Props) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -84,6 +90,7 @@ export function MisBoardingReselectModal({
               line={line}
               onSelect={onSelect}
               nextStationLabel={nextStationLabel}
+              offRouteTrainCodes={offRouteTrainCodes}
             />
           )}
         </View>
