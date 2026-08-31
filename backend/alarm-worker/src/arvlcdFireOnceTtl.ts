@@ -17,13 +17,16 @@
  *
  * ## 정책
  *
- * 같은 (`tripToken`, `stationName`) 에서 한 arvlCd cycle (0진입→1도착→2출발→5전역도착 monotone
- * 시퀀스) 동안 fire 를 **1회로 강제**. 5분 TTL 로 자연 회수 — TTL 만료 시 다음 관측이 새 cycle
- * 시작 (train 이 물리적으로 같은 station 을 5분 안에 재방문할 수 없음).
+ * 같은 (`tripToken`, `stationName`, `cycle`) 조합에서 fire 를 **1회로 강제**. 5분 TTL 로 자연
+ * 회수 — TTL 만료 시 다음 관측이 새 cycle 시작 (train 이 물리적으로 같은 station 을 5분 안에
+ * 재방문할 수 없음).
  *
- * `cycle` 파라미터는 미래-확장 slot — 현재는 `0` 고정 상수 caller 가 전달. 5분 TTL 이 사실상
- * cycle 경계를 처리하므로 stateful cycle counter 는 불필요. 후속 PR 에서 cross-cron cycle
- * 추적이 필요해지면 slot 을 활용해 정수 카운터로 확장 가능.
+ * `cycle` 파라미터는 애초 "미래-확장 slot"으로 설계되어 caller 가 `0` 고정값을 전달했다
+ * (arvlCd 0→1→2→5 전체 monotone 시퀀스를 단일 fire 이벤트로 통합 — 어린이대공원 반복 storm
+ * 차단, #1985/#2200). #2448 에서 그 확장 slot 을 실제로 활용 — caller(`fireArvlCdStationPush`)
+ * 가 `arvlCdFireOnceBucket(arvlCd)`(`scheduled.ts`)로 ENTERING(0)/그 외 2-way bucket 값을
+ * 계산해 전달한다. 이 helper 자체는 bucket 의 의미를 모른다 — 여전히 순수 (token, station,
+ * cycle) 3-tuple key 저장소일 뿐이며, storm 방지(같은 3-tuple 무제한 재발사 차단)는 그대로다.
  *
  * ## Feature flag
  *

@@ -1817,14 +1817,36 @@ export const SAME_PHASE_STATION_DEDUP_WINDOW_MS = 45_000;
 export const ARVLCD_FIRE_KEY_PREFIX = 'arvlcd-fire:';
 
 /**
- * ADR-022 Phase 1-1 (#1985) — fire-once TTL key 의 cycle slot 값.
+ * ADR-022 Phase 1-1 (#1985) → #2448 확장 — fire-once TTL key 의 cycle slot 값.
  *
- * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 현재
- * backend cron 은 stateful cycle counter 를 유지하지 않고 5분 TTL 로 cycle 경계를 자연 처리
- * 하므로, key 의 cycle slot 은 미래-확장 자리 표시자로 `0` 고정. 후속 PR 에서 cross-cron
- * cycle 추적이 필요해지면 slot 을 정수 카운터로 확장 가능하다.
+ * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 원래는
+ * 이 cycle 전체를 하나의 slot(`0` 고정)으로 묶어 station 당 1회로 강제했다(어린이대공원
+ * 13:31/13:32/13:37 반복 storm, #1980/#2200 차단). #2448에서 "곧 진입"(ENTERING) 알림을
+ * "역 통과"(ARRIVED)와 별도로 발사하기 위해 slot 을 arvlCd 값 기반 2-way bucket 으로 넓힌다 —
+ * ENTERING 1회 + ARRIVED 1회(합 최대 2회/5분 TTL)까지만 허용하고, 같은 (station, bucket)
+ * 재관측은 여전히 storm 방지 정책 그대로 skip 한다.
+ *
+ * `arvlCdFireOnceBucket`가 실제 bucket 계산을 담당 — 이 두 상수는 KV key 조립/테스트에서
+ * 값을 직접 참조할 때 쓰는 명시적 별칭이다.
  */
-export const ARVLCD_FIRE_ONCE_CYCLE_SLOT = 0;
+export const ARVLCD_FIRE_ONCE_ENTERING_BUCKET = 0;
+export const ARVLCD_FIRE_ONCE_ARRIVED_BUCKET = 1;
+
+/**
+ * #2448 — (waypoint kind, arvlCd) 조합을 fire-once TTL bucket 으로 매핑.
+ *
+ * `kind==='intermediate'`일 때만 ENTERING(0) 전용 bucket 을 분리한다 — `buildStationNotifContent`가
+ * 새 "곧 진입" copy 를 렌더하는 대상이 intermediate 뿐이기 때문. transfer/destination 은 arvlCd
+ * 0/1 모두 여전히 같은 "임박" copy 를 렌더하므로(#2063, 미변경) bucket 을 나누면 **같은 문구가
+ * 두 번 발사**되는 storm 회귀가 재발한다(2026-08-07 뚝섬 evidence, #2200/`replay_20260807_storm.test.ts`)
+ * — 그래서 non-intermediate 는 기존과 동일하게 단일 bucket 으로 유지한다.
+ */
+export function arvlCdFireOnceBucket(waypointKind: Waypoint['kind'], arvlCd: number): number {
+  if (waypointKind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    return ARVLCD_FIRE_ONCE_ENTERING_BUCKET;
+  }
+  return ARVLCD_FIRE_ONCE_ARRIVED_BUCKET;
+}
 
 /**
  * dedup KV key 빌더. arvlCd 0(ENTERING) vs 1(ARRIVED)은 별 entry로 분리(둘 다 신호).
@@ -2107,12 +2129,24 @@ export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
  *
  * arvlCd 기반 매역 fire는 항상 phase='imminent' — `i18n.ts`의 `stationNotifTitle`/`stationNotifBody`도
  * 그에 맞춰 kind 단일 분기만 제공한다(early phase 없음).
+ *
+ * #2448 — `kind==='intermediate'`이고 발사 시점 arvlCd가 ENTERING(0)이면 "곧 진입" 전용 copy로
+ * 분기한다. ARRIVED(1)는 기존 "역 통과" copy 유지 — arvlCd는 optional: 호출자가 arvlCd를
+ * 모르는 경로(`fireVanishFallbackStationPush`/`maybeFireSleepAlarm`은 vanish/target 판정이라
+ * "방금 진입"이 아님)는 인자를 생략해 기존 ARRIVED-copy 분기로 자연 fallback한다.
  */
 function buildStationNotifContent(
   waypoint: Waypoint,
   locale: SupportedLocale | undefined,
+  arvlCd?: number,
 ): { title: string; body: string } {
   const strings = t(locale);
+  if (waypoint.kind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    return {
+      title: strings.stationNotifApproachingTitle,
+      body: strings.stationNotifApproachingBody(waypoint.stationName),
+    };
+  }
   return {
     title: strings.stationNotifTitle(waypoint.kind),
     body: strings.stationNotifBody(waypoint.kind, waypoint.stationName),
@@ -2483,12 +2517,14 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
-  // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트.
-  // flag=ON 시 같은 (tripToken, stationName, arvlCd cycle) 조합에서 5분 이내 이미 fire 된 경우
-  // skip. arvlCd 0/1 을 별 entry 로 stamp 하던 기존 `arvlCdFireKey` dedup 과 달리, cycle 전체
-  // (0→1→2→5) 를 하나의 fire 이벤트로 통합 — 어린이대공원 반복 4회 fire (#1980) 회귀 차단.
+  // ADR-022 Phase 1-1 (#1985) → #2448 확장 — arvlCd fire-once TTL 게이트.
+  // flag=ON 시 같은 (tripToken, stationName, arvlCd bucket) 조합에서 5분 이내 이미 fire 된 경우
+  // skip. #2448 이전에는 cycle 전체(0→1→2→5)를 단일 bucket 으로 묶어 어린이대공원 반복 4회
+  // fire(#1980) 회귀를 차단했다 — 이제는 ENTERING(0)과 그 외(주로 ARRIVED=1)를 별 bucket 으로
+  // 나눠 "곧 진입" + "역 통과" 둘 다 1회씩 발사되도록 하되, 같은 bucket 재관측은 여전히 storm
+  // 방지 정책대로 skip 한다(무제한 재발사는 여전히 불가능).
   // flag=OFF (default, Phase 0 #1982 미머지 상태) 에서는 조기 return 으로 무영향.
-  const fireOnceCycle = ARVLCD_FIRE_ONCE_CYCLE_SLOT;
+  const fireOnceCycle = arvlCdFireOnceBucket(waypoint.kind, arvlCd);
   if (await isSimpleArchEnabled(env)) {
     const alreadyFired = await checkArvlCdFireOnce(
       env.TRIPS,
@@ -2598,7 +2634,7 @@ export async function fireArvlCdStationPush(
   // #2092 — contentAvailable:true를 병기해 alert와 동시에 device background task
   // (handleSilentPush)를 깨운다. station kind는 배너 no-op(#2088)이라 이중 배너 없이 SSoT
   // mirror(persistBackendSsotMirror)·BG 위젯 갱신(updateWidgetFromSilentPush)만 수행한다.
-  const stationNotifContent = buildStationNotifContent(waypoint, trip.locale);
+  const stationNotifContent = buildStationNotifContent(waypoint, trip.locale, arvlCd);
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
@@ -4578,6 +4614,15 @@ export async function runLocklessIntermediate(
   // 이동(walking/automotive)을 positive하게 보일 때만 advance를 허용 — 정적/저신뢰(stationary/
   // unknown, 샘플 없음 포함)는 보류해 false positive(정적 false advance + 알림 레이스)를 차단한다.
   // #1386 — lock-active vanish fallback도 같은 헬퍼(`isAdvanceAllowedByMotion`)를 공유한다.
+  //
+  // #2448 — 이 게이트가 lockless(C 토글) 매역 "곧 진입"(ENTERING) fire 를 locked 경로와
+  // 동급으로 만들지 못하는 지점이다. CMMotionActivity 는 지하에서 5~10분 간헐 신호라
+  // (memory: lesson_motion_activity_intermittent_signal) motion 이 stationary/unknown 으로
+  // 잘못 분류되면 이 게이트가 정당한 ENTERING 순간도 보류시킨다. `fireArvlCdStationPush`
+  // (lock 활성 경로)는 이 motion 게이트가 없어 지하에서도 100% 동작하지만, lockless는
+  // best-effort — 사용자 명시 의향 trip(C 토글 ON)이 lock 활성과 동급 정확도 보장을 받아야
+  // 한다는 원칙(ADR-014, memory: feedback_user_intent_equal_protection)에 아직 미달한다.
+  // 근본 해소는 이 게이트 완화/대체가 아니라 트립을 lock 상태로 승격하는 별도 트랙 과제.
   if (!isAdvanceAllowedByMotion(fusion.posMetrics.motion)) {
     stats.locklessMotionGateBlocked += 1;
     log('lockless: motion gate blocked (no trainCode, not moving)', {
