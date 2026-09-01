@@ -42,7 +42,9 @@ import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
+  BOARDING_PROMPT_ACTION_NOT_BOARDED,
   DISEMBARK_ACTION_DISEMBARKED,
+  DISEMBARK_ACTION_NOT_YET,
 } from '../utils/notificationCategory';
 import {
   handleResponse,
@@ -57,7 +59,7 @@ const log = createLogger('liveActivityIntentBridge');
 export interface PendingBoardingIntent {
   id: string;
   tripToken: string;
-  action: 'BOARDING_BOARDED' | 'DISEMBARK_DISEMBARKED';
+  action: 'BOARDING_BOARDED' | 'DISEMBARK_DISEMBARKED' | 'BOARDING_NOT_BOARDED' | 'DISEMBARK_NOT_YET';
   originStation: string;
   line: string;
   atMs: number;
@@ -66,7 +68,20 @@ export interface PendingBoardingIntent {
 const VALID_ACTIONS: readonly PendingBoardingIntent['action'][] = [
   'BOARDING_BOARDED',
   'DISEMBARK_DISEMBARKED',
+  'BOARDING_NOT_BOARDED',
+  'DISEMBARK_NOT_YET',
 ];
+
+/**
+ * #2470 — 알림 대칭 액션(미탑승/아직이요) 포함 4종 action → handleResponse 호출 파라미터
+ * data-driven 매핑(글로벌 규칙 3, 하드코딩 삼항 금지).
+ */
+const ACTION_MAP: Record<PendingBoardingIntent['action'], { actionIdentifier: string; hopEnd: boolean }> = {
+  BOARDING_BOARDED: { actionIdentifier: BOARDING_PROMPT_ACTION_BOARDED, hopEnd: false },
+  BOARDING_NOT_BOARDED: { actionIdentifier: BOARDING_PROMPT_ACTION_NOT_BOARDED, hopEnd: false },
+  DISEMBARK_DISEMBARKED: { actionIdentifier: DISEMBARK_ACTION_DISEMBARKED, hopEnd: true },
+  DISEMBARK_NOT_YET: { actionIdentifier: DISEMBARK_ACTION_NOT_YET, hopEnd: true },
+};
 
 /**
  * `readPendingBoardingIntent()`가 반환한 raw JSON 문자열을 파싱 + 검증한다.
@@ -134,18 +149,15 @@ async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
   if (intent.action === 'BOARDING_BOARDED' && isDuplicateBoardingIntent(intent)) {
     log.info('duplicate boarding intent — active lock already exists, no-op');
   } else {
+    const mapped = ACTION_MAP[intent.action];
     const payload: BoardingPromptPayload = {
       kind: 'boarding-prompt',
       originStation: intent.originStation,
       line: intent.line,
       tripToken: intent.tripToken,
-      hopEndKind: intent.action === 'DISEMBARK_DISEMBARKED' ? 'disembark' : undefined,
+      hopEndKind: mapped.hopEnd ? 'disembark' : undefined,
     };
-    const actionIdentifier =
-      intent.action === 'DISEMBARK_DISEMBARKED'
-        ? DISEMBARK_ACTION_DISEMBARKED
-        : BOARDING_PROMPT_ACTION_BOARDED;
-    await handleResponse(actionIdentifier, payload, deps);
+    await handleResponse(mapped.actionIdentifier, payload, deps);
   }
 
   try {
