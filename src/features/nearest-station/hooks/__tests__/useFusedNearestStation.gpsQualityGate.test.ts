@@ -106,8 +106,46 @@ describe('#2070 useFusedNearestStation — gpsQualityDegraded → inferEnvironme
     expect(hook.result.current.environmentHintReason).toBeUndefined();
   });
 
-  it('barometer.subsurface=false 명시 시 gpsQualityDegraded=true여도 surface 우선 (기존 판정 대체 아님)', async () => {
+  it('#2468 회귀 fix — barometer.subsurface=false + gpsQualityDegraded=true(garbage GPS) + lock 없음 → unknown (surface 단정 X)', async () => {
+    // 변경 전(#1932 당시): 'surface' 반환 — barometer subsurface=false를 GPS 품질과 무관하게
+    // 지상으로 단정하던 것이 바로 확인된 회귀(#2468). accuracyMeters=200(setupNearest)은 garbage
+    // GPS이므로 raw subsurface=false 단독으로 surface를 신뢰하지 않는다. lock 미활성이라 근거
+    // 부족 → unknown(underground 단정도 하지 않음).
     setupNearest(true);
+
+    const hook = renderHook(() =>
+      useFusedNearestStation(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { subsurface: false },
+      ),
+    );
+    await flushBackendSsotMirrorTick();
+
+    await waitFor(() => {
+      expect(hook.result.current.environment).toBe('unknown');
+    });
+    expect(hook.result.current.environmentHintReason).toBeUndefined();
+  });
+
+  it('barometer.subsurface=false + GPS 양호(accuracy≤50m) → surface 유지 (gpsDerivedFastPath 보존, blanket revert 아님)', async () => {
+    setupNearest(false);
+    mockNearest.mockReturnValue({
+      result: { station: hanyangdae, distanceKm: 0.05 },
+      liveResult: { station: hanyangdae, distanceKm: 0.05 },
+      stickyDisplayOnly: null,
+      variants: [hanyangdae],
+      userLocation: { lat: hanyangdae.lat, lng: hanyangdae.lng },
+      ...GPS_BASE_DEFAULTS,
+      accuracyMeters: 20, // GPS 양호
+      lastFixAtMs: T0,
+      gpsQualityDegraded: false,
+      refresh: jest.fn(),
+    });
 
     const hook = renderHook(() =>
       useFusedNearestStation(
