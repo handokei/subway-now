@@ -9,9 +9,19 @@
  *   1. `subsurface === true` 명시 → 'underground' (barometer 확정).
  *   2. `subsurface === false` 명시 + surfaceSSOT 활성 → 'surface'.
  *   3. `subsurface === false` + undergroundSSOT 활성 → 'underground' (지하상가/매핑 SSID).
- *   4. `subsurface === false` + 두 SSOT 모두 null + barometer-stop hint 미발동 → 'surface'
- *      (#1932 — barometer 명시 지상 신뢰. raw `subsurface === false` 동작 보존).
- *      hint 발동(tripActive + barometerStop=true) 시는 우선 5번으로 흘러 unknown 유지.
+ *   4. `subsurface === false` + 두 SSOT 모두 null + barometer-stop hint 미발동:
+ *      4a. GPS 양호(accuracyMeters ≤ 50m, qualityDegraded 아님) → 'surface'
+ *          (#1932 — barometer 명시 지상 신뢰. raw `subsurface === false` 동작 보존.
+ *          gpsDerivedFastPath와의 semantic equivalence 유지).
+ *      4b. GPS garbage(accuracyMeters > 50m 또는 qualityDegraded=true) + lockActive=true →
+ *          'underground' (#2468/#1932 회귀 fix — barometer subsurface는 EDGE 감지기라 steady
+ *          지하 주행에서 dP≈0 → false. GPS 3km급 오차는 지상일 수 없다 — garbage GPS 하에서
+ *          raw subsurface=false 단독으로 'surface' 단정 금지. lock 활성 시 underground로
+ *          되돌려 `positionTrainBoardingLockMatch` 재활성 → 지하 device 자율 advance 복구).
+ *      4c. GPS garbage + lockActive=false(또는 미전달) → 'unknown' (보수적 — lock 근거 없이
+ *          underground 단정하지 않는다. 지상 urban canyon/non-trip 오탐 방지).
+ *      hint 발동(tripActive + barometerStop=true) 시는 4보다 먼저 처리 — 우선 5번으로 흘러
+ *      unknown 유지.
  *   5. `subsurface === false` + 두 SSOT 모두 null + tripActive + barometerStop=true →
  *      'unknown' (with hint 'barometer-stop'). 지하상가 hint paradigm.
  *   6. `subsurface === undefined` + surfaceSSOT만 활성 → 'surface' (hybrid).
@@ -34,7 +44,16 @@
  * #2076 — GPS 품질 저하 입력(qualityDegraded)은 게이트 통과 fix가 30s 이상 부재(absence)할
  * 때만 true다. accuracy 1회성 급락 단독으로는 true가 되지 않는다 — 지상 urban canyon(고층빌딩
  * multipath)에서의 급락 1회가 지하로 오분류되던 결함(#2076 결함2) 차단.
+ *
+ * #2468 — 우선순위 4가 4a/4b/4c로 세분화됨(#1932 회귀 fix). GPS accuracy(gpsAccuracyMeters)와
+ * lock 활성 여부(lockActive)가 새 입력으로 추가. `GPS_DERIVED_ACCURACY_MAX_M`(50m, 기존
+ * gpsDerivedFastPath와 동일 threshold)를 초과하거나 qualityDegraded=true면 GPS를 garbage로
+ * 간주 — 이 상태에서는 raw `subsurface === false`가 지상을 증명하지 않는다(barometer는 하강
+ * edge만 감지, steady 지하 주행 dP≈0). lock 활성 trip에서만 'underground'로 판정을 뒤집는다
+ * (lock 없는 case는 근거 부족 → 'unknown').
  */
+
+import { GPS_DERIVED_ACCURACY_MAX_M } from '../../../shared/constants/realtime';
 
 export type Environment = 'surface' | 'underground' | 'unknown';
 
@@ -47,8 +66,11 @@ export interface InferEnvironmentResult {
    *
    * #2070 — 'gps-quality-drop': subsurface===undefined + 두 SSOT 무판정 + GPS 품질 저하
    * (#2076 — absence 30s+ 단독. 급락 단독으로는 발동하지 않는다) 관측 시 발동.
+   *
+   * #2468 — 'gps-garbage-underground': subsurface===false + 두 SSOT null + GPS garbage
+   * (accuracy > 50m 또는 qualityDegraded) + lockActive=true 관측 시 발동.
    */
-  hintReason?: 'barometer-stop' | 'gps-quality-drop';
+  hintReason?: 'barometer-stop' | 'gps-quality-drop' | 'gps-garbage-underground';
 }
 
 export interface InferEnvironmentInput {
@@ -68,11 +90,29 @@ export interface InferEnvironmentInput {
    * 판정에 관여한다(우선순위 8). 미전달이면 false로 간주(기존 동작 보존).
    */
   qualityDegraded?: boolean;
+  /**
+   * #2468 — barometer garbage-GPS 판정 입력. GPS fix accuracy(m). null/undefined = fix 없음
+   * (garbage 판정 미적용, 기존 동작 보존). `GPS_DERIVED_ACCURACY_MAX_M`(50m) 초과 시 garbage.
+   */
+  gpsAccuracyMeters?: number | null;
+  /**
+   * #2468 — 사용자 명시 의향 trip(boardingLock 활성) 여부. GPS garbage 판정 시 'underground'
+   * 대 'unknown' 분기 조건 — lock 근거 없이는 underground를 단정하지 않는다.
+   */
+  lockActive?: boolean;
 }
 
 export function inferEnvironment(input: InferEnvironmentInput): InferEnvironmentResult {
-  const { subsurface, surfaceSSOT, undergroundSSOT, tripActive, barometerStop, qualityDegraded } =
-    input;
+  const {
+    subsurface,
+    surfaceSSOT,
+    undergroundSSOT,
+    tripActive,
+    barometerStop,
+    qualityDegraded,
+    gpsAccuracyMeters,
+    lockActive,
+  } = input;
   if (subsurface === true) return { label: 'underground' };
   if (subsurface === false) {
     if (surfaceSSOT) return { label: 'surface' };
@@ -82,8 +122,23 @@ export function inferEnvironment(input: InferEnvironmentInput): InferEnvironment
     if (tripActive && barometerStop === true) {
       return { label: 'unknown', hintReason: 'barometer-stop' };
     }
-    // #1932 — barometer 명시 지상 신뢰. cascade tier 2(gpsDerivedFastPath)와의 semantic
-    // equivalence 보존: 두 SSOT 비활성이라도 `subsurface === false` raw signal을 surface로 인정.
+    // #2468 — GPS garbage 하에서는 raw `subsurface === false` 단독으로 'surface' 단정 금지.
+    // barometer는 하강 edge만 감지(steady 지하 주행 dP≈0 → false) — GPS accuracy 3km급 오차는
+    // 지상 증거가 될 수 없다.
+    const gpsGarbage =
+      (gpsAccuracyMeters != null && gpsAccuracyMeters > GPS_DERIVED_ACCURACY_MAX_M) ||
+      qualityDegraded === true;
+    if (gpsGarbage) {
+      if (lockActive === true) {
+        // lock 활성 trip → underground로 되돌려 positionTrainBoardingLockMatch 재활성.
+        return { label: 'underground', hintReason: 'gps-garbage-underground' };
+      }
+      // lock 없음 → underground 단정 근거 부족, 보수적으로 unknown.
+      return { label: 'unknown' };
+    }
+    // #1932 — barometer 명시 지상 신뢰(GPS 양호 한정). cascade tier 2(gpsDerivedFastPath)와의
+    // semantic equivalence 보존: 두 SSOT 비활성이라도 `subsurface === false` raw signal을
+    // surface로 인정.
     return { label: 'surface' };
   }
   // subsurface === undefined (warmup / 미지원) — SSOT 신호로만 판단.

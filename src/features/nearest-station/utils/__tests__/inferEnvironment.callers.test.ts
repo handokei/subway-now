@@ -442,4 +442,69 @@ describe('#1932 inferEnvironment 호출자 통합 (SSOT 단일화 + cascade 직�
       // 1주 environment 분포 측정 인프라 prereq — Sentry breadcrumb는 useEffect에서 emit (deps environment).
     });
   });
+
+  describe('#2468 (#1932 회귀 fix) garbage GPS 하에서 subsurface=false 단독 surface 단정 차단', () => {
+    /**
+     * D1 dump 실측: 지하 구간 subsurface=false ×140/true ×19, GPS accuracy 1,395~3,703m.
+     * SSOT 둘 다 미합의(gps garbage로 surfaceSSOT 불성립, undergroundSSOT 신호 없음).
+     */
+    function setupGarbageGpsNoSsot(): void {
+      const live = { station: hanyangdae, distanceKm: 0.05 };
+      mockNearest.mockReturnValue({
+        result: live,
+        liveResult: live,
+        stickyDisplayOnly: null,
+        variants: [hanyangdae],
+        userLocation: { lat: hanyangdae.lat, lng: hanyangdae.lng },
+        ...GPS_BASE_DEFAULTS,
+        accuracyMeters: 1395, // 실 dump garbage GPS accuracy — GPS_DERIVED_ACCURACY_MAX_M(50m) 훨씬 초과
+        lastFixAtMs: T0,
+        refresh: jest.fn(),
+      });
+      mockFindTop.mockReturnValue([{ station: hanyangdae, distanceKm: 0.05 }]);
+      mockArrival.mockReturnValue(arrivalRet(null)); // SSOT 미합의
+      mockPos.mockReturnValue(positionRet(null));
+    }
+
+    it('subsurface=false + garbage GPS(1395m) + lock 활성 → underground (positionTrainBoardingLockMatch 재활성 경로 복구, RED before #2468 fix)', async () => {
+      setupGarbageGpsNoSsot();
+
+      const hook = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          lockOn2,
+          undefined,
+          { subsurface: false },
+        ),
+      );
+      await flushBackendSsotMirrorTick();
+      await waitFor(() => {
+        expect(hook.result.current.environment).toBe('underground');
+      });
+      expect(hook.result.current.environmentHintReason).toBe('gps-garbage-underground');
+    });
+
+    it('subsurface=false + garbage GPS(1395m) + lock 없음 → unknown (lock 근거 없어 underground 단정 X)', async () => {
+      setupGarbageGpsNoSsot();
+
+      const hook = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { subsurface: false },
+        ),
+      );
+      await flushBackendSsotMirrorTick();
+      await waitFor(() => {
+        expect(hook.result.current.environment).toBe('unknown');
+      });
+    });
+  });
 });

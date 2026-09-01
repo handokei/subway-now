@@ -1347,6 +1347,10 @@ export function useFusedNearestStation(
   // #2076 — gpsQualityDegraded는 absence(게이트 통과 fix 30s+ 부재, 독립 타이머 구동) 단독으로만
   // true가 된다. 급락(accuracy 1회성 급증) 단독으로는 true가 되지 않아(#2076 결함2) 지상 urban
   // canyon 오탐이 이 hint를 발동시키지 않는다.
+  // #2468 (#1932 회귀 fix) — GPS accuracy(gpsAccuracyMeters) + lock 활성(lockActive) 추가 입력.
+  // GPS garbage(accuracy>50m 또는 qualityDegraded) 하에서 raw `subsurface===false`가
+  // 'surface'로 단정되지 않도록 — lock 활성 trip이면 'underground'로 되돌려
+  // positionTrainBoardingLockMatch(아래) 재활성 경로를 복구한다.
   const cascadeEnvironmentResult: InferEnvironmentResult = inferEnvironment({
     subsurface: barometerSubsurface,
     surfaceSSOT: cascadeSurfaceSSOT !== null,
@@ -1354,6 +1358,8 @@ export function useFusedNearestStation(
     tripActive,
     barometerStop: barometerSignal?.stop,
     qualityDegraded: gps.gpsQualityDegraded,
+    gpsAccuracyMeters: gps.accuracyMeters,
+    lockActive: boardingLock != null,
   });
   // #1932 — cascade tier 1/2가 직접 read하는 environment 변수.
   // 후속 cascade-wide post-section(L1378~)에서도 동일 값 재사용 (분산 산출 0건 SSOT).
