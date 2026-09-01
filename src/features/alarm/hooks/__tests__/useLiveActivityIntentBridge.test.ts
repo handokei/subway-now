@@ -65,7 +65,9 @@ import {
 } from '../useLiveActivityIntentBridge';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
+  BOARDING_PROMPT_ACTION_NOT_BOARDED,
   DISEMBARK_ACTION_DISEMBARKED,
+  DISEMBARK_ACTION_NOT_YET,
 } from '../../utils/notificationCategory';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,6 +102,24 @@ const validDisembarkRaw = JSON.stringify({
   atMs: 200,
 });
 
+const validNotBoardedRaw = JSON.stringify({
+  id: 'trip-1-300',
+  tripToken: 'trip-1',
+  action: 'BOARDING_NOT_BOARDED',
+  originStation: '군자',
+  line: '5',
+  atMs: 300,
+});
+
+const validDisembarkNotYetRaw = JSON.stringify({
+  id: 'trip-1-400',
+  tripToken: 'trip-1',
+  action: 'DISEMBARK_NOT_YET',
+  originStation: '군자',
+  line: '5',
+  atMs: 400,
+});
+
 describe('parsePendingBoardingIntent', () => {
   it('유효한 JSON을 파싱한다', () => {
     expect(parsePendingBoardingIntent(validBoardedRaw)).toEqual({
@@ -114,6 +134,28 @@ describe('parsePendingBoardingIntent', () => {
 
   it('malformed JSON → null', () => {
     expect(parsePendingBoardingIntent('not-json{')).toBeNull();
+  });
+
+  it('BOARDING_NOT_BOARDED action을 파싱한다', () => {
+    expect(parsePendingBoardingIntent(validNotBoardedRaw)).toEqual({
+      id: 'trip-1-300',
+      tripToken: 'trip-1',
+      action: 'BOARDING_NOT_BOARDED',
+      originStation: '군자',
+      line: '5',
+      atMs: 300,
+    });
+  });
+
+  it('DISEMBARK_NOT_YET action을 파싱한다', () => {
+    expect(parsePendingBoardingIntent(validDisembarkNotYetRaw)).toEqual({
+      id: 'trip-1-400',
+      tripToken: 'trip-1',
+      action: 'DISEMBARK_NOT_YET',
+      originStation: '군자',
+      line: '5',
+      atMs: 400,
+    });
   });
 
   it('object가 아님 → null', () => {
@@ -210,6 +252,40 @@ describe('useLiveActivityIntentBridge', () => {
       expect.anything(),
     );
     expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-1-200');
+  });
+
+  it('BOARDING_NOT_BOARDED → handleResponse(NOT_BOARDED, hopEndKind=undefined) 호출 후 clear', async () => {
+    mockReadPendingBoardingIntent.mockReturnValue(validNotBoardedRaw);
+    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockHandleResponse).toHaveBeenCalledWith(
+      BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      expect.objectContaining({
+        kind: 'boarding-prompt',
+        originStation: '군자',
+        line: '5',
+        tripToken: 'trip-1',
+        hopEndKind: undefined,
+      }),
+      expect.objectContaining({ ...baseDeps, createLock: mockCreateLock }),
+    );
+    expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-1-300');
+  });
+
+  it('DISEMBARK_NOT_YET → handleResponse(NOT_YET, hopEndKind=disembark) 호출 후 clear', async () => {
+    mockReadPendingBoardingIntent.mockReturnValue(validDisembarkNotYetRaw);
+    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockHandleResponse).toHaveBeenCalledWith(
+      DISEMBARK_ACTION_NOT_YET,
+      expect.objectContaining({ hopEndKind: 'disembark' }),
+      expect.anything(),
+    );
+    expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-1-400');
   });
 
   it('clearPendingBoardingIntent 실패 → throw 없이 흡수', async () => {

@@ -265,27 +265,51 @@ private struct BoardingPromptButton: View {
 
     var body: some View {
         if phase == "pre-boarding" {
-            Button(intent: BoardingConfirmIntent(
-                tripToken: state.boardingPromptTripToken ?? "",
-                originStation: state.boardingPromptOriginStation ?? "",
-                line: state.boardingPromptLine ?? ""
-            )) {
-                Text(NSLocalizedString("widget.boardingPrompt.boarded.button", comment: "Confirm boarding button label"))
-                    .font(.subheadline)
-                    .fontWeight(.bold)
+            VStack(spacing: 6) {
+                Button(intent: BoardingConfirmIntent(
+                    tripToken: state.boardingPromptTripToken ?? "",
+                    originStation: state.boardingPromptOriginStation ?? "",
+                    line: state.boardingPromptLine ?? ""
+                )) {
+                    Text(NSLocalizedString("widget.boardingPrompt.boarded.button", comment: "Confirm boarding button label"))
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                }
+                .tint(.white)
+
+                Button(intent: NotBoardedIntent(
+                    tripToken: state.boardingPromptTripToken ?? "",
+                    originStation: state.boardingPromptOriginStation ?? "",
+                    line: state.boardingPromptLine ?? ""
+                )) {
+                    Text(NSLocalizedString("widget.boardingPrompt.boarded.notBoarded.button", comment: "Not boarded button label"))
+                        .font(.subheadline)
+                }
+                .tint(.secondary)
             }
-            .tint(.white)
         } else {
-            Button(intent: DisembarkConfirmIntent(
-                tripToken: state.boardingPromptTripToken ?? "",
-                originStation: state.boardingPromptOriginStation ?? "",
-                line: state.boardingPromptLine ?? ""
-            )) {
-                Text(NSLocalizedString("widget.boardingPrompt.disembark.button", comment: "Confirm disembark button label"))
-                    .font(.subheadline)
-                    .fontWeight(.bold)
+            VStack(spacing: 6) {
+                Button(intent: DisembarkConfirmIntent(
+                    tripToken: state.boardingPromptTripToken ?? "",
+                    originStation: state.boardingPromptOriginStation ?? "",
+                    line: state.boardingPromptLine ?? ""
+                )) {
+                    Text(NSLocalizedString("widget.boardingPrompt.disembark.button", comment: "Confirm disembark button label"))
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                }
+                .tint(.white)
+
+                Button(intent: DisembarkNotYetIntent(
+                    tripToken: state.boardingPromptTripToken ?? "",
+                    originStation: state.boardingPromptOriginStation ?? "",
+                    line: state.boardingPromptLine ?? ""
+                )) {
+                    Text(NSLocalizedString("widget.boardingPrompt.disembark.notYet.button", comment: "Not yet disembark button label"))
+                        .font(.subheadline)
+                }
+                .tint(.secondary)
             }
-            .tint(.white)
         }
     }
 }

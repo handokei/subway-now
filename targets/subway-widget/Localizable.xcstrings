@@ -262,6 +262,35 @@
         }
       }
     },
+    "widget.boardingPrompt.boarded.notBoarded.button" : {
+      "comment" : "Not boarded button label",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Didn't board"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "乗車していない"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "미탑승"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未上车"
+          }
+        }
+      }
+    },
     "widget.boardingPrompt.disembark.question" : {
       "comment" : "Live Activity boarding/disembark confirmation prompt",
       "localizations" : {
@@ -316,6 +345,35 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已下车"
+          }
+        }
+      }
+    },
+    "widget.boardingPrompt.disembark.notYet.button" : {
+      "comment" : "Not yet disembark button label",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not yet"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "まだ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "아직이요"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没"
           }
         }
       }

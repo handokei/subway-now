@@ -28,6 +28,8 @@ private let PENDING_BOARDING_INTENT_KEY = "pendingBoardingIntent"
 private let intentLog = Logger(subsystem: "com.subwaynow.app.widget", category: "BoardingIntent")
 private let ACTION_BOARDING_BOARDED = "BOARDING_BOARDED"
 private let ACTION_DISEMBARK_DISEMBARKED = "DISEMBARK_DISEMBARKED"
+private let ACTION_BOARDING_NOT_BOARDED = "BOARDING_NOT_BOARDED"
+private let ACTION_DISEMBARK_NOT_YET = "DISEMBARK_NOT_YET"
 
 /// boardingPhase enum 값(모듈 index.ts LiveActivityData.boardingPhase 타입과 동일 어휘 사용).
 /// 'pre-boarding' → 탑승 확인 버튼 탭 → 'boarded'. 'hop-end' → 하차 확인 버튼 탭 → 'arrival'.
@@ -60,9 +62,10 @@ private func writePendingBoardingIntent(
 
 /// (a) 현재 추적 중인 Activity(들)의 boardingPhase를 즉시 전환 — 버튼 탭 즉시 시각 피드백.
 /// 아키텍처상 활성 Activity는 최대 1개(LiveActivityManager.endAllActivities)이므로 전수 update해도
-/// 안전하다.
+/// 안전하다. `nil`이면 프롬프트 배너를 즉시 숨긴다(미탑승/아직이요 — 아직 판단 유보라 boarded/arrival
+/// 어느 쪽으로도 전환하지 않고 LockScreenView.isBoardingPrompt를 false로 되돌린다).
 @available(iOS 17.0, *)
-private func markCurrentActivity(boardingPhase: String) async {
+private func markCurrentActivity(boardingPhase: String?) async {
     for activity in Activity<SubwayActivityAttributes>.activities {
         var state = activity.content.state
         state.boardingPhase = boardingPhase
@@ -145,6 +148,89 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
         await markCurrentActivity(boardingPhase: PHASE_ARRIVAL)
         writePendingBoardingIntent(
             action: ACTION_DISEMBARK_DISEMBARKED,
+            tripToken: tripToken,
+            originStation: originStation,
+            line: line
+        )
+        return .result()
+    }
+}
+
+/// pre-boarding 단계 "미탑승" 버튼의 AppIntent — 알림 `BOARDING_PROMPT_ACTION_NOT_BOARDED`와 대칭
+/// (#2470). 프롬프트 배너만 즉시 닫고(boardingPhase=nil) 도메인 처리는 JS `handleResponse`에 위임.
+@available(iOS 17.0, *)
+struct NotBoardedIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "미탑승 확인"
+    static var isDiscoverable: Bool = false
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "tripToken")
+    var tripToken: String
+
+    @Parameter(title: "originStation")
+    var originStation: String
+
+    @Parameter(title: "line")
+    var line: String
+
+    init() {
+        self.tripToken = ""
+        self.originStation = ""
+        self.line = ""
+    }
+
+    init(tripToken: String, originStation: String, line: String) {
+        self.tripToken = tripToken
+        self.originStation = originStation
+        self.line = line
+    }
+
+    func perform() async throws -> some IntentResult {
+        intentLog.info("perform NOT_BOARDED tapped tripToken=\(tripToken, privacy: .public)")
+        await markCurrentActivity(boardingPhase: nil)
+        writePendingBoardingIntent(
+            action: ACTION_BOARDING_NOT_BOARDED,
+            tripToken: tripToken,
+            originStation: originStation,
+            line: line
+        )
+        return .result()
+    }
+}
+
+/// hop-end 단계 "아직이요" 버튼의 AppIntent — 알림 `DISEMBARK_ACTION_NOT_YET`와 대칭 (#2470).
+@available(iOS 17.0, *)
+struct DisembarkNotYetIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "아직 하차 안 함"
+    static var isDiscoverable: Bool = false
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "tripToken")
+    var tripToken: String
+
+    @Parameter(title: "originStation")
+    var originStation: String
+
+    @Parameter(title: "line")
+    var line: String
+
+    init() {
+        self.tripToken = ""
+        self.originStation = ""
+        self.line = ""
+    }
+
+    init(tripToken: String, originStation: String, line: String) {
+        self.tripToken = tripToken
+        self.originStation = originStation
+        self.line = line
+    }
+
+    func perform() async throws -> some IntentResult {
+        intentLog.info("perform DISEMBARK_NOT_YET tapped tripToken=\(tripToken, privacy: .public)")
+        await markCurrentActivity(boardingPhase: nil)
+        writePendingBoardingIntent(
+            action: ACTION_DISEMBARK_NOT_YET,
             tripToken: tripToken,
             originStation: originStation,
             line: line
