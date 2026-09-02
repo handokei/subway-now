@@ -414,7 +414,38 @@ export type AlarmLogReason =
   // 상태가 PAUSE_AUTO_END_MS(15분) 경과해 자동 종료된 1건. FG useCountdown 만료 /
   // cold-start rehydration backstop 두 진입점 공통 reason — source='lifecycle-backstop'로
   // 적재해 기존 backstop 계열과 같은 분포로 관측(fire 분모 제외 유지).
-  | 'trip-paused-auto-ended';
+  | 'trip-paused-auto-ended'
+  // #2474 (ADR-036 Phase 0 G0-1) — `evaluatePositionTrainFire`(#2383)의 각 false-return 지점 +
+  // 성공(true) 지점 진단 stamp. 순수 관측 — 반환값/게이트 로직/발사 판정 순서는 절대 변경하지
+  // 않는다. 2026-09-02 저녁 지하 return leg에서 이 경로가 계속 false를 반환한 원인(poll empty /
+  // realtimePosition 피드 드롭 / BG cadence skip / trainCode 매칭 실패 중 무엇인지)이 poll-레벨
+  // 로그 부재로 미확정이었다 — 다음 실탑승 dump가 이 reason 분포로 원인을 스스로 확정한다.
+  //   'skip-no-lock'           : lock 자체가 없음 (line 60).
+  //   'skip-pending-traincode' : lock은 있으나 trainCode가 fallback pending sentinel (line 60).
+  //   'skip-no-destination'    : DESTINATION_KEY 미존재 (line 63).
+  //   'skip-bad-destination'   : 목적지 JSON 파싱 실패 또는 id 없음 (line 70/78).
+  //   'skip-no-route'          : ROUTE_KEY 미존재 (line 89).
+  //   'skip-no-origin'         : lock.boardingStationId station lookup 실패 (line 92).
+  //   'skip-empty-arc'         : computeRouteArc 결과 arc.stations 0건 (line 96).
+  //   'skip-poll-null'         : realtimePosition 폴링 결과 null — 쿨다운 미경과(cadence) 또는
+  //                              fetch 실패/빈 응답(empty) 두 원인이 섞여 있음(line 112, 지하
+  //                              핵심 후보).
+  //   'skip-no-train-progress' : trackTrainProgress 매칭 실패 — candidate 없음/backward 등
+  //                              (line 125, 피드 드롭/매칭 실패 후보).
+  //   'skip-locked-gate'       : passesLockedStationGate 거부 — lock 노선/arc-window/forward-only
+  //                              (line 128).
+  //   'engaged'                : processLocationUpdate까지 완료한 성공 tick (line 146) — 대비군.
+  | 'skip-no-lock'
+  | 'skip-pending-traincode'
+  | 'skip-no-destination'
+  | 'skip-bad-destination'
+  | 'skip-no-route'
+  | 'skip-no-origin'
+  | 'skip-empty-arc'
+  | 'skip-poll-null'
+  | 'skip-no-train-progress'
+  | 'skip-locked-gate'
+  | 'engaged';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -496,6 +527,12 @@ export interface AlarmLogEntry {
   // currentHopIndex = D1 estimator/fallback이 결정한 SSOT hop, candidateIndex = arc 위 candidate 위치.
   currentHopIndex?: number;
   candidateIndex?: number;
+  // #2474 — position-train-fire 진단 stamp 컨텍스트.
+  // hasTrainCode: lock.trainCode 필드 자체의 존재 여부(falsy 문자열 포함 판정). pending
+  // sentinel인지 여부는 별도로 reason('skip-pending-traincode')이 구분한다.
+  // candidatesCount: pickCandidateTrains가 반환한 후보 열차 수 (매칭 실패 원인 분석용).
+  hasTrainCode?: boolean;
+  candidatesCount?: number;
 }
 
 /**
@@ -1667,6 +1704,53 @@ export function logBgTaskHeartbeat(location: AlarmLogLocation): void {
     source: 'bg-task-heartbeat',
     outcome: 'received',
     location,
+  });
+}
+
+/**
+ * #2474 (ADR-036 Phase 0 G0-1) — `evaluatePositionTrainFire`(#2383) false-return/성공 지점
+ * 진단 stamp. 순수 관측 — 호출자는 이 함수 호출로 반환값/게이트 로직을 바꾸지 않는다.
+ *
+ * `'engaged'`(성공)는 outcome='received'로 적재한다 — 실제 알람 발사 카운트(`FIRED_ALARM_SOURCES`
+ * 기준 outcome='fired')는 `processLocationUpdate` 내부 경로가 별도로 남기므로, 여기서 'fired'를
+ * 쓰면 같은 tick이 이중 집계된다. 나머지 `'skip-*'`는 outcome='suppressed'.
+ *
+ * `reason`을 채우므로 `appendAlarmLog`의 #1024 burst inline counter(연속 동일
+ * (source, reason, kind, phaseId, stationName)이면 새 entry 대신 count++)가 그대로 적용된다 —
+ * 같은 지점이 연속 tick 동안 막혀도 ring buffer를 점령하지 않으면서 count로 반복 빈도는 보존한다.
+ * 별도의 시간-윈도우 `isBurstDuplicate` 호출은 하지 않는다 — reason이 바뀌거나 anchorStationName이
+ * 달라지면(예: 열차가 실제로 이동) 곧바로 새 entry로 분리돼야 poll empty vs cadence skip vs
+ * 매칭 실패 지점 전환을 놓치지 않는다.
+ */
+export function logPositionTrainFireDiagnostic(
+  reason: Extract<
+    AlarmLogReason,
+    | 'skip-no-lock'
+    | 'skip-pending-traincode'
+    | 'skip-no-destination'
+    | 'skip-bad-destination'
+    | 'skip-no-route'
+    | 'skip-no-origin'
+    | 'skip-empty-arc'
+    | 'skip-poll-null'
+    | 'skip-no-train-progress'
+    | 'skip-locked-gate'
+    | 'engaged'
+  >,
+  context: {
+    anchorStationName?: string | null;
+    hasTrainCode?: boolean;
+    candidatesCount?: number;
+  } = {},
+): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg',
+    outcome: reason === 'engaged' ? 'received' : 'suppressed',
+    reason,
+    stationName: context.anchorStationName ?? undefined,
+    hasTrainCode: context.hasTrainCode,
+    candidatesCount: context.candidatesCount,
   });
 }
 

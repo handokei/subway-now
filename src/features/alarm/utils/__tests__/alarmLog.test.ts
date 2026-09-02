@@ -88,6 +88,7 @@ import {
   logCategoryRegistrationFailed,
   logBoardingPromptCategoryReceived,
   logBgTaskHeartbeat,
+  logPositionTrainFireDiagnostic,
   logBoardingPromptResponded,
   logCompanionAlarmFired,
   logLastTrainAlarmFired,
@@ -1597,6 +1598,108 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.source === 'bg-task-heartbeat');
       expect(matching).toHaveLength(3);
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: context 생략 시 기본값({})으로 적재한다', async () => {
+      logPositionTrainFireDiagnostic('skip-no-destination');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'skip-no-destination',
+      });
+      expect(saved[0].stationName).toBeUndefined();
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: skip-* reason은 source=bg, outcome=suppressed로 컨텍스트와 함께 적재한다', async () => {
+      logPositionTrainFireDiagnostic('skip-no-lock', { hasTrainCode: false });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'skip-no-lock',
+        hasTrainCode: false,
+      });
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: skip-poll-null은 anchorStationName을 stationName으로 적재한다', async () => {
+      logPositionTrainFireDiagnostic('skip-poll-null', { anchorStationName: '군자' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'skip-poll-null',
+        stationName: '군자',
+      });
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: skip-no-train-progress/skip-locked-gate는 candidatesCount를 적재한다', async () => {
+      logPositionTrainFireDiagnostic('skip-no-train-progress', {
+        anchorStationName: '군자',
+        candidatesCount: 2,
+      });
+      logPositionTrainFireDiagnostic('skip-locked-gate', {
+        anchorStationName: '군자',
+        candidatesCount: 1,
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved.filter((e) => e.reason === 'skip-no-train-progress')[0]).toMatchObject({
+        candidatesCount: 2,
+      });
+      expect(saved.filter((e) => e.reason === 'skip-locked-gate')[0]).toMatchObject({
+        candidatesCount: 1,
+      });
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: engaged(성공)는 outcome=received로 적재해 fired 분모를 오염하지 않는다', async () => {
+      logPositionTrainFireDiagnostic('engaged', { anchorStationName: '군자', candidatesCount: 1 });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'received',
+        reason: 'engaged',
+        stationName: '군자',
+        candidatesCount: 1,
+      });
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: 연속 동일 reason+station은 #1024 burst inline counter로 count++된다', async () => {
+      _resetBurstSuppressWindowForTests();
+      logPositionTrainFireDiagnostic('skip-poll-null', { anchorStationName: '군자' });
+      logPositionTrainFireDiagnostic('skip-poll-null', { anchorStationName: '군자' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'skip-poll-null');
+      expect(matching).toHaveLength(1);
+      expect(matching[0].count).toBe(2);
+    });
+
+    it('#2474 logPositionTrainFireDiagnostic: 다른 stationName의 연속 호출은 별개 entry로 적재한다', async () => {
+      _resetBurstSuppressWindowForTests();
+      logPositionTrainFireDiagnostic('skip-poll-null', { anchorStationName: '군자' });
+      logPositionTrainFireDiagnostic('skip-poll-null', { anchorStationName: '어린이대공원' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved.filter((e) => e.reason === 'skip-poll-null')).toHaveLength(2);
     });
 
     it('#2339 logSuppressedGate: different reasons are NOT deduped against each other', async () => {
