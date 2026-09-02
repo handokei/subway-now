@@ -445,6 +445,13 @@ export type AlarmLogReason =
   | 'skip-poll-null'
   | 'skip-no-train-progress'
   | 'skip-locked-gate'
+  // #2480 — waypoint arvlCd 직폴 spine(bgWaypointArvlcdFire.ts) 전용 skip 사유.
+  //   'skip-no-next-target': resolveAllTargets의 모든 waypoint가 이미 발사 완료(nextTarget 없음).
+  //   'skip-not-imminent': 폴링한 arvlCd에 내 trainCode가 없거나 ENTERING/ARRIVED 미확증.
+  //   'skip-no-target-station': waypoint 이름+노선으로 station lookup 실패(stations.json drift 등).
+  | 'skip-no-next-target'
+  | 'skip-not-imminent'
+  | 'skip-no-target-station'
   | 'engaged';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
@@ -1751,6 +1758,41 @@ export function logPositionTrainFireDiagnostic(
     stationName: context.anchorStationName ?? undefined,
     hasTrainCode: context.hasTrainCode,
     candidatesCount: context.candidatesCount,
+  });
+}
+
+/**
+ * #2480 — waypoint arvlCd 직폴 spine(bgWaypointArvlcdFire.ts) 발사/skip 1건 적재.
+ * `logPositionTrainFireDiagnostic`(#2383/#2474)과 동일 취지 — 이 spine이 존재하는 이유 자체가
+ * 9/2 저녁 용마산 도착 0건(#2383/#2381 둘 다 실패) evidence라, 다음 field miss가 발생했을 때
+ * 어느 skip 지점에서 멈췄는지 DebugModal alarmLog로 바로 관측 가능해야 한다.
+ */
+export function logWaypointArvlcdFireDiagnostic(
+  reason: Extract<
+    AlarmLogReason,
+    | 'skip-no-lock'
+    | 'skip-pending-traincode'
+    | 'skip-no-destination'
+    | 'skip-bad-destination'
+    | 'skip-no-route'
+    | 'skip-no-next-target'
+    | 'skip-poll-null'
+    | 'skip-not-imminent'
+    | 'skip-no-target-station'
+    | 'engaged'
+  >,
+  context: {
+    waypointName?: string | null;
+    hasTrainCode?: boolean;
+  } = {},
+): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg',
+    outcome: reason === 'engaged' ? 'received' : 'suppressed',
+    reason,
+    stationName: context.waypointName ?? undefined,
+    hasTrainCode: context.hasTrainCode,
   });
 }
 
