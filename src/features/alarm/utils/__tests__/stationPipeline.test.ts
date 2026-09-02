@@ -1710,26 +1710,52 @@ describe('processLocationUpdate', () => {
         );
       });
 
-      it('정적 사용자(movement unreliable)여도 게이트를 우회해 phase 알람을 발사한다', async () => {
+      // #2483 — 우회는 arvlCd/열차 확증(fusionSource=position-train)일 때만. flag ON 단독으로는
+      // 더 이상 우회하지 않는다(GPS-static phantom 차단, 아래 "확증 없으면 억제" 테스트 참고).
+      it('정적 사용자(movement unreliable) + fusionSource=position-train(arvlCd 확증)이면 게이트를 우회해 phase 알람을 발사한다', async () => {
         mockFindNearestStation.mockReturnValue(mockNearestResult);
         mockFindRoute.mockReturnValue(mockRoute);
         mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
 
-        await call({ speedMps: 0.1 });
+        await call({ speedMps: 0.1, fusionSource: 'position-train' });
 
         expect(mockLogSuppressedMovement).not.toHaveBeenCalled();
         expect(mockLogFiredAlarm).toHaveBeenCalled();
         expect(mockFireLocalAlarmNotification).toHaveBeenCalled();
       });
 
-      it('정적 사용자(movement unreliable)여도 게이트를 우회해 station-passed를 발사한다', async () => {
+      it('정적 사용자(movement unreliable) + fusionSource=position-train(arvlCd 확증)이면 게이트를 우회해 station-passed를 발사한다', async () => {
         mockFindNearestStation.mockReturnValue(mockNearestResult);
         mockFindRoute.mockReturnValue(mockRoute);
 
-        await call({ speedMps: 0.1 });
+        await call({ speedMps: 0.1, fusionSource: 'position-train' });
 
         expect(mockLogSuppressedMovement).not.toHaveBeenCalled();
         expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalled();
+      });
+
+      // #2483 — flag ON이어도 fusionSource가 arvlCd 확증(position-train)이 아니면 정적 상태에서
+      // 여전히 억제한다(승격 시뮬 ship-blocker였던 GPS-static phantom 차단, replay_20260902 fixture).
+      it('정적 사용자(movement unreliable) + fusionSource=gps(arvlCd 미확증)이면 flag ON이어도 phase 알람을 억제한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+        await call({ speedMps: 0.1, fusionSource: 'gps' });
+
+        expect(mockLogSuppressedMovement).toHaveBeenCalled();
+        expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+        expect(mockFireLocalAlarmNotification).not.toHaveBeenCalled();
+      });
+
+      it('정적 사용자(movement unreliable) + fusionSource=gps(arvlCd 미확증)이면 flag ON이어도 station-passed를 억제한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+
+        await call({ speedMps: 0.1, fusionSource: 'gps' });
+
+        expect(mockLogSuppressedMovement).toHaveBeenCalled();
+        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
       });
 
       it('target.isTransfer === true이면 targetKind="transfer"로 발사한다 (환승 전 구간)', async () => {

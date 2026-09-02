@@ -480,10 +480,12 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       sleepMode,
       isFirstHop,
     });
-    if (!movementSignal.reliable && !isMinimalAlarmEnabled()) {
+    if (!movementSignal.reliable && !(isMinimalAlarmEnabled() && fusionSource === 'position-train')) {
       // #2204 — FG와 동일 정적 misfire 가드. destination/transfer early가 정적 사용자에게
       // 발사되던 phantom fire(뚝섬 evidence)를 차단.
       // #2379 — EXPO_PUBLIC_MINIMAL_ALARM ON일 때는 이 과억제 게이트를 우회한다(스펙 B).
+      // #2483 — 우회를 arvlCd/열차 확증(fusionSource=position-train)으로 좁힌다. flag ON만으로는
+      // 우회하지 않는다 — GPS-static 정적 phantom(fusionSource=gps 등)은 flag ON에서도 억제 유지.
       logSuppressedMovement({
         source,
         stationName: alarmEvent.stationName,
@@ -611,9 +613,10 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     // dedup(lastNotifiedStationId) 위에 위치 — sleep으로 차단되면 lastNotifiedStationId 갱신 안 함
     // → sleep OFF 토글 후 정상 첫 hop 알림이 재발사 가능.
     // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
-    if (!movementSignal.reliable && !isMinimalAlarmEnabled()) {
+    if (!movementSignal.reliable && !(isMinimalAlarmEnabled() && fusionSource === 'position-train')) {
       // #2204 — FG와 동일 정적 misfire 가드. 정적 사용자에게 station-passed가 발사되던 회귀 차단.
       // #2379 — EXPO_PUBLIC_MINIMAL_ALARM ON일 때는 이 과억제 게이트를 우회한다(스펙 B).
+      // #2483 — 우회를 arvlCd/열차 확증(fusionSource=position-train)으로 좁힌다.
       logSuppressedMovement({
         source,
         stationName: nearest.station.name,
