@@ -3647,7 +3647,12 @@ describe('useStationAlarm', () => {
       expect(mockGetBoardingLock).not.toHaveBeenCalled();
     });
 
-    it('movement gate 차단(speed=0) → fast path 발사 X + logSuppressedMovement(fg-arvlcd)', async () => {
+    // #2476 (G0-3a) 이전엔 movement gate(speed=0)가 fg-arvlcd 경로를 'movement-static-speed'로
+    // 억제했다. arvlCd 확증(signal) 자체가 이미 강한 ground-truth이므로 이제 movement gate는
+    // fg-arvlcd 경로에서 항상 우회된다 — 이 케이스는 station-level dedup(lastNotifiedStationId
+    // 기존값과 동일)이 대신 fast path를 차단한다. GPS station-passed effect('fg' source)는
+    // 본 이슈 스코프 밖이라 speed=0 movement 억제가 여전히 별도로 발생한다.
+    it('#2476 movement gate 우회(arvlCd 확증) 이후 speed=0 → fast path는 dedup으로 차단(발사 X)', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock);
       mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
       mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
@@ -3655,14 +3660,7 @@ describe('useStationAlarm', () => {
       renderHook(() => useStationAlarm(fastPathInputs({ speedMps: 0 })));
 
       await waitFor(() =>
-        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
-          expect.objectContaining({
-            source: 'fg-arvlcd',
-            stationName: onRouteStation.name,
-            kind: 'station-passed',
-            reason: 'movement-static-speed',
-          }),
-        ),
+        expect(mockLogSuppressedDedupStation).toHaveBeenCalledWith('fg-arvlcd', onRouteStation),
       );
       expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
@@ -3693,30 +3691,59 @@ describe('useStationAlarm', () => {
       );
     });
 
-    // 회귀 가드: subsurfaceStationDetected=false(합의 없음, 진짜 정적 사용자)면 기존처럼
-    // 정적 misfire 가드가 그대로 억제한다 — 통과 열차 momentary adopt 등 false positive 방어 유지.
-    it('#2364 회귀 가드 — subsurfaceStationDetected=false(합의 없음) + speed=0 → 여전히 억제', async () => {
+    // #2476 (G0-3a, ADR-036 Phase 0 축2) — 9/2 저녁 덤프 replay(건대→용마산 leg).
+    // 지하 garbage GPS(acc~2500m, speed=0 정적)에서 barometer flip으로 subsurfaceStationDetected가
+    // false로 떨어져도, findFgArvlCdFireSignal 확증(lock.trainCode 일치 + arvlCd∈{0,1})이 이미
+    // 강한 ground-truth이므로 movement gate를 우회해 발사해야 한다. #2364 시점엔
+    // subsurfaceStationDetected만이 우회 조건이라 이 케이스가 오억제됐다(RED) — 우회 조건을
+    // "subsurfaceStationDetected || arvlCd 확증(signal)"으로 확장해 발사(GREEN)한다.
+    it('#2476 G0-3a — subsurfaceStationDetected=false(barometer flip) + speed=0(garbage GPS) + arvlCd 확증 → movement gate 우회 발사', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock);
-      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
       mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
 
       renderHook(() =>
         useStationAlarm(
-          fastPathInputs({ speedMps: 0, subsurfaceStationDetected: false }),
+          fastPathInputs({
+            speedMps: 0,
+            accuracyMeters: 2500,
+            subsurfaceStationDetected: false,
+          }),
         ),
       );
 
       await waitFor(() =>
-        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
-          expect.objectContaining({
-            source: 'fg-arvlcd',
-            stationName: onRouteStation.name,
-            kind: 'station-passed',
-            reason: 'movement-static-speed',
-          }),
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id),
+      );
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'fg-arvlcd' }),
+      );
+    });
+
+    // G0-4 오발사 방어 (지상 정상 정지 회귀 겸용) — arvlCd 확증(signal) 자체가 없으면(lock
+    // 부재/trainCode 불일치)위 우회는 적용되지 않고 억제가 그대로 유지된다.
+    // findFgArvlCdFireSignal이 null이면 `if (!signal) return`으로 movement 게이트 이전에 이미
+    // 차단되므로(#640), accuracyMeters(지상 정상치 10 vs 지하 garbage 2500)와 무관하게 항상
+    // 같은 경로로 억제된다 — "지상 정상 정지" 회귀 케이스는 이 경로의 subset이라 별도 분기 없이
+    // 여기서 함께 검증한다(리뷰 지적: 두 케이스가 accuracyMeters만 다르고 동일 코드 경로를
+    // 실행해 중복이었음).
+    it('#2476 G0-4 — arvlCd 확증 없음(signal null) → subsurfaceStationDetected/accuracy 무관 항상 억제(지상 정상 정지 포함)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue(null);
+
+      renderHook(() =>
+        useStationAlarm(
+          fastPathInputs({ speedMps: 0, accuracyMeters: 10, subsurfaceStationDetected: false }),
         ),
       );
+
+      await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
+      await Promise.resolve();
       expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'fg-arvlcd' }),
+      );
     });
 
     it('dismiss silence 활성 시 fast path 발사 X + logSuppressedDismissSilence(fg-arvlcd)', async () => {

@@ -1525,7 +1525,8 @@ export function useStationAlarm({
   //   4. nearestStation이 route 상에 있음 (off-route 신호 무시)
   //   5. lock 존재 + lock.trainCode == row.trainCode + arvlCd∈{0,1} (findFgArvlCdFireSignal — #640 회귀 가드)
   //   6. dismiss silence 미적용
-  //   7. movement gate(speed/accuracy/static) 통과
+  //   7. movement gate(speed/accuracy/static) — #2476 (G0-3a) 이후 이 fast-path는 5번 가드
+  //      (signal 확증) 자체가 movement gate보다 강한 ground-truth이므로 항상 우회한다.
   //   8. lastNotifiedStationId 미일치 (GPS station-passed와 dedup 공유 — 한 station에 한 알람)
   //
   // dedup 정책: lastNotifiedStationId 단일 출처. 기존 station-passed effect와 같은 키를 사용해
@@ -1559,22 +1560,18 @@ export function useStationAlarm({
       // #727/#728/#733 — 정적 misfire 가드. arvlCd 신호가 강해도 정적 사용자(speed=0) 발사는
       // 잘못된 trainCode lock 케이스 (fusion이 통과 열차를 momentary adopt)에서 위험.
       // movement gate는 silence gate보다 먼저 평가 — 정적 사용자면 silence 만료 부수효과도 불필요.
-      // #2364 (ADR-033 A5) — subsurfaceStationDetected=true는 useFusedNearestStation이 이미
-      // subsurface(지하 진입 확정) + ≥2 신호 합의(barometer-stop/motion-stationary/arvlcd-arrived) +
-      // 역 근접 게이트를 통과시킨 상태. 지하 GPS 사멸로 speed/positionStability가 불명(motion-warmup/
-      // static-position 등)일 뿐인데 정적 misfire 가드가 이미 간접 확인된 이동을 오억제하는 회귀
-      // 차단 — trainProgressing(#1401)과 동일한 취지의 우회. false positive 방어(통과 열차
-      // momentary adopt)는 lock.trainCode 일치(findFgArvlCdFireSignal)가 1차로 이미 담당하고,
-      // subsurfaceStationDetected 자체도 근접 게이트를 포함해 GPS 좌표 기반 지하 추정과는 무관하다.
-      if (movementSuppressionReason && !subsurfaceStationDetected) {
-        logSuppressedMovement({
-          source: 'fg-arvlcd',
-          stationName: candidateStation.name,
-          kind: 'station-passed',
-          reason: movementSuppressionReason,
-        });
-        return;
-      }
+      // #2364 (ADR-033 A5) — subsurfaceStationDetected=true(지하 진입 확정 + ≥2 신호 합의 +
+      // 근접 게이트 통과)면 movement gate를 우회했다. 지하 GPS 사멸로 speed/positionStability가
+      // 불명(motion-warmup/static-position 등)일 뿐인데 정적 misfire 가드가 이미 간접 확인된
+      // 이동을 오억제하는 회귀 차단 — trainProgressing(#1401)과 동일한 취지.
+      // #2476 (G0-3a, ADR-036 Phase 0 축2) — 9/2 저녁 덤프: 지하 garbage GPS(정지 좌표)에서
+      // barometer flip으로 subsurfaceStationDetected가 false로 떨어지면 위 우회가 적용되지 않아
+      // 오억제됐다(용마산/군자/중곡). 그러나 이 시점에 도달했다는 것 자체가 이미 `signal`
+      // non-null(lock 존재 + lock.trainCode 일치 + arvlCd∈{0,1} 확증, #640 회귀 가드, :1556-1557)을
+      // 의미하는 강한 ground-truth이므로, movement gate는 subsurfaceStationDetected 여부와
+      // 무관하게 항상 우회한다 — "게이트 제거"가 아니라 "arvlCd 확증으로 대체". G0-4 오발사
+      // 방어: 확증(signal) 자체가 없으면 :1557에서 이미 return되어 이 지점에 도달하지 않으므로
+      // lock 부재/trainCode 불일치/arvlCd 무효 시 기존 억제는 그대로 보존된다.
 
       // #1266 (Epic #1204 D2 follow-up) — fast-path에도 hop window 게이트 적용.
       // 2026-06-12 22:31 회귀: GPS station-passed effect는 D2(#1208) 게이트로 차단됐으나
@@ -1660,9 +1657,8 @@ export function useStationAlarm({
     nearestStation?.name,
     nearestStation?.line,
     currentStationArrival,
-    movementSuppressionReason,
-    // #2364 — subsurfaceStationDetected 변화 시 movement gate 우회 여부 재평가.
-    subsurfaceStationDetected,
+    // #2476 (G0-3a) — movement gate가 arvlCd 확증 시 항상 우회되어 movementSuppressionReason/
+    // subsurfaceStationDetected를 더 이상 이 effect 본문에서 읽지 않는다 (재평가 불필요, dep 제거).
     dismissSilence,
     clearDismissSilenceAction,
     userLocation?.lat,
