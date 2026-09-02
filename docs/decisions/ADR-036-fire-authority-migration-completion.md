@@ -21,10 +21,11 @@ Proposed — 2026-09-02. **ADR-033(Proposed)·ADR-035(DRAFT)를 실행 계획으
 두 트립(오전 outbound 06:31~53 / 저녁 return 17:11~22)을 device 로그 × D1 `trip_events`로 KST 정렬 교차분석. 검증 방법·원문은 세션 RCA 참조.
 
 1. **지하 도착 알림 = 아무도 못 쏨** (confirmed). 저녁 종점 용마산(7호선 지하, GPS acc **2270~2546m** garbage):
-   - device gate-free 경로(#2383, `backgroundLocationTask.ts:171`)가 저녁 leg서 **engage 실패**(position-train cycle 0회, 오전엔 작동) → gate-accuracy(2270m) 경로로 fall.
-   - fall 후 arvlCd 유효신호를 `gate-accuracy`+`gate-hop-window`+`gate-phase-time-integration`이 **4중 억제**(로그 확인) — device가 정확한 종점(용마산)을 집었는데도 게이트가 죽임.
+   - **지하 내내 세 신호가 정확했다** (File B 덤프 확정, 17:14~22): backend silent-push가 `어린이대공원(17:16:59) → 군자(17:18:59) → 중곡(17:20:58)` station-passed를 정확 전송, fg-arvlcd가 `군자(17:19:21) · 중곡(17:21:19)`을 GPS garbage(acc 2226~2545m) 하에서도 감지, realtimePosition 열차 `7-019`가 `어린이대공원→군자→중곡→용마산` 정확 추적. **신호는 죽지 않았다.**
+   - **그런데 발사는 매번 게이트가 죽였다** (4중+): `movement-static-position`(**17회**, 최대 범인 — garbage GPS가 좌표상 "정지"로 보여 arvlcd 발사 억제), `gate-accuracy`(**19회**), `gate-hop-window`/`gate-hop-window-no-source`(hop-index 지하서 진행 못 함 → 용마산이 window 밖), `gate-phase-time-integration`. 17:22:27 GPS 20m 복귀 순간에도 bg 용마산 destination=`gate-hop-window`, fg=`gate-phase-time-integration`, fg-arvlcd 용마산=`gate-hop-window-no-source`로 **동시 억제**.
+   - device gate-free 경로(#2383, `backgroundLocationTask.ts:171`)는 저녁 leg서 미engage(매 tick `gate-accuracy`로 fall). 단 realtimePosition 피드에 열차 7-019 존재 → **poll-empty는 아님**(원인은 매칭/cadence, G0-1로 확정 — 부차).
    - backend = destination visible 미발사. D1 오늘 `cron-fire-attempt` waypointKind = **station-passed 20 + transfer 2뿐, destination/entering 0건**(독립 재확증).
-   - → **지하 종점 도착 = 커버리지 공백.**
+   - **용마산 도착 발사 = 0건**(File B grep: fired destination 부재, boarding-prompt만) → **miss 확정. 원인은 신호 부재가 아니라 게이트 과억제(축2).**
 2. **backend가 "OO역 통과" visible을 계속 발사** (confirmed). `scheduled.ts:2677` "visible alert push 직접 발사"(#2063). device는 같은 신호를 `legacy-station-kind-ignored`로 버림(`silentPushTask.ts:1358`, #2064) — **ADR-033 D1("backend station-passed 발사 제거")이 결정만 되고 미구현.**
 3. **동일 waypoint 이중발사 잔존** (confirmed). 오전 건대 환승: backend transfer 06:41:51 + device transfer 06:41:49 = 8초 차 same-waypoint. ADR-035가 "미검증"으로 남긴 항목이 9/2에도 재현.
 4. **"됐다 안 됐다"(flip-flop)의 정체** (diagnosis). 두 권위(ADR-023/026 backend-visible + ADR-035 device-authority)가 **안 합쳐진 채 공존** → GPS/환경분류/flag 상태에 따라 매순간 승자가 바뀜. 지상 GPS 양호 → device 발사, 지하 garbage → device 억제→backend만, 지하 종점 → 둘 다 실패. 환경분류(subsurface) 자체가 오락가락(barometer flip)해 같은 자리서 다르게 판정.
@@ -43,13 +44,14 @@ Proposed — 2026-09-02. **ADR-033(Proposed)·ADR-035(DRAFT)를 실행 계획으
 | 동일 waypoint 이중발사(transfer) | ✅ 확정 | 9/2 오전 건대 backend+device 8초차 |
 | device가 지하 arvlCd 신호를 **보유** (발사 소스로 살아있음) | ✅ 확정 | `undergroundConsensusFire`(#2381), position-train-lock(#2383) |
 | 저녁 lock의 trainCode = 실코드 (PENDING 아님) | ✅ **확정** (정정) | File B line 282 `autolock-success 7·건대입구` — 건대 탑승응답 → Seoul 도착정보로 실코드 잠김. **초기 "PENDING 가능성"은 오진** |
-| device가 지하서 arvlCd로 **올바른 종점(용마산)을 집었나** | ✅ **positive n=1** | File B `17:22:29 fg-arvlcd … station-passed 용마산` — arvlCd가 정확한 종점 식별 |
-| 그 arvlCd 발사가 지하서 **일관되게** 정확한가(전 구간·전 트립) | ❌ **미확인** | n=1 positive지만 fusion 티어 회귀 이력(tier-lock/arc/motion flip) → 누적 실탑승으로만 close. **AC7** |
+| device가 지하서 arvlCd로 **올바른 역들을 집었나** | ✅ **확정 (n=3, 정정↑)** | File B fg-arvlcd `군자(17:19:21) · 중곡(17:21:19) · 용마산(17:22:29)` — GPS garbage(2226~2545m) 하에서도 arvlCd가 진행 정확 추적. + backend silent-push `어린이대공원·군자·중곡` 일치. 초기 "n=1"은 과소평가 |
+| 그 arvlCd 발사가 지하서 **일관되게** 정확한가(전 구간·전 트립) | ⚠️ **1트립 전구간 positive** | 9/2 저녁 leg 전 역 positive. 단 fusion 티어 회귀 이력(tier-lock/arc/motion flip) → 누적 실탑승으로 close. **AC7** |
 | (축1) 저녁 leg에서 gate-free 경로 #2383가 **engage 안 함**(false 반환) | ✅ **확정** (증상) | File B 저녁 leg position-train cycle 0회. 오전엔 동일 코드로 작동 → 런타임 원인(정적 아님) |
 | 그 #2383 false의 **런타임 원인**(poll empty / 피드 드롭 / cadence skip 중 무엇) | ❌ **미확인** | poll-레벨 로그 부재. **G0-1 자가진단 로그로 다음 탑승이 확정** — 유일하게 남은 미확정 |
-| (축2) device가 도착을 쏘려 **시도했으나 게이트 스택이 억제** | ✅ **확정** (핵심) | File B 17:22:05~29 `destination early 용마산` = gate-accuracy(2270m)+gate-hop-window+gate-phase-time-integration+gate-hop-window-no-source 4중 억제. "device가 못 잡음"이 아니라 "게이트가 죽임" |
+| (축2) device가 도착을 쏘려 **시도했으나 게이트 스택이 억제** | ✅ **확정 (지배적 원인)** | File B 17:14~22: `movement-static-position` **17회**(최대) + `gate-accuracy` **19회** + `gate-hop-window`/`-no-source` + `gate-phase-time-integration`. 17:22:27 용마산 destination도 3경로(bg/fg/fg-arvlcd) 동시 억제. **신호는 살아있었고(위 3행) 게이트가 죽임** |
+| `movement-static-position`이 지하 arvlcd를 오억제(garbage GPS "정지" 오판) | ✅ **확정 (신규 특정)** | fg-arvlcd 군자·중곡 억제 사유 = `movement-static-position`. 열차 이동 중인데 GPS 좌표 정지 → 억제. **G0-3 우회 대상 1순위** |
 
-**함의**: Phase 0(지하 device 발사)의 신뢰성이 실증되기 전엔 Phase 2(backend 퇴역) 정당화 불가 — 순서가 hard-gate인 이유. ❌ 항목은 커밋 전 실기기로 닫는다.
+**함의**: 9/2 저녁 miss의 **지배적 원인은 축2(게이트 과억제)로 확정** — 지하 신호(arvlCd·backend·realtimePosition)는 살아있었다. 따라서 **G0-3(게이트 arvlCd-인지 우회)가 이 miss를 직접 막는 fix이며 지금 정당화된다**(덤프가 이미 "관측"). 축1(#2383 engage)은 부차로 강등 — poll-empty는 배제됨(피드에 열차 존재), 잔여 미확정은 매칭/cadence(G0-1). Phase 2(backend 퇴역)는 여전히 Phase 0 실증 후 hard-gate. ❌ 항목은 커밋 전 실기기로 닫는다.
 
 ---
 
@@ -78,17 +80,17 @@ safetyNet = backend outage 확인 시에만 단일 backstop (변경 없음)
 
 > **정정 (초안 오진 폐기)**: 애초 초안은 "`gate-accuracy` 면제 분기를 **신설**"로 잡았으나 **오진**이었다. 그 면제 경로는 **이미 존재한다** — `evaluatePositionTrainFire`(#2383)가 `backgroundLocationTask.ts:171`에서 **gate-accuracy(:191)보다 먼저**, GPS/accuracy와 독립으로 locked trainCode 열차의 현재역을 arvlCd로 직접 판정해 발사하고, 성공(fired) 시 early-return한다. 9/2 저녁 return leg의 실패는 "면제 분기 부재"가 아니라 **두 축의 복합**이다(오전 outbound에선 #2383이 정상 작동해 뚝섬 발사 성공 → **정적 버그 아님**).
 
-**문제**: 지하 garbage GPS에서 device가 도착을 못 쐈다. 근본은 하나가 아니라 둘 — (①) 이미 존재하는 gate-free 경로(#2383)가 저녁 leg서 engage하지 않았고, (②) fall-through 후 게이트 스택이 arvlCd 유효신호를 과억제했다.
+**문제**: 지하 garbage GPS에서 device가 도착을 못 쐈다. 근본은 하나가 아니라 둘 — (①) 이미 존재하는 gate-free 경로(#2383)가 저녁 leg서 engage하지 않았고, (②) fall-through 후 게이트 스택이 arvlCd 유효신호를 과억제했다. **9/2 덤프 확정: ②가 지배적 원인**(신호는 살아있었고 게이트가 죽임) → **축 2(G0-3)가 critical-path fix, 축 1(G0-1)은 부차.**
 
-#### 축 1 — #2383 지하 engage 신뢰성 (런타임 원인 규명 + hardening)
+#### 축 1 — #2383 지하 engage 신뢰성 (부차 · 런타임 원인 규명 + hardening)
 - **증상 (confirmed)**: 저녁 leg position-train cycle 0회 = `evaluatePositionTrainFire`가 계속 false 반환 → gate-accuracy(2270m) 경로로 fall. 오전엔 **동일 코드**로 작동(뚝섬 발사).
-- **원인 후보 (런타임, 정적 아님)**: (a) 지하 네트워크로 arvlCd/position 폴링 empty·실패, (b) 열차 realtimePosition 피드 드롭, (c) BG cadence(25s 쿨다운)로 fresh poll 부재. `lock.trainCode`(arrivals `btrainNo`) vs realtimePosition `trainNo` 매칭은 Seoul서 동일 열차번호 + 오전 작동 → **매칭 자체는 정상**. poll-레벨 로그 부재로 셋 중 뭔지 미확정 — 하나 확정 못 해도 fix를 막지 않는다.
+- **원인 후보 (런타임, 정적 아님)**: 9/2 덤프로 **(a) poll empty는 배제** — realtimePosition 피드에 열차 7-019가 존재·정확 진행했다. 남은 건 (b) 열차매칭 실패(`trackTrainProgress`가 lock.trainCode 매칭 못 함) 또는 (c) BG cadence(25s 쿨다운)로 fresh poll 부재. `lock.trainCode`(arrivals `btrainNo`) vs realtimePosition `trainNo` 매칭은 오전 작동 → 정적 결함 아님. **잔여 미확정은 (b)/(c) — G0-1이 확정. 부차이므로 fix critical-path 아님.**
 - **G0-1 (자가진단 로그, 선행 머지)**: `evaluatePositionTrainFire`가 false를 반환한 **이유**(poll empty / 피드 드롭 / cadence skip / trainCode 매칭 실패)를 alarmLog에 구분 적재. → **다음 평범한 탑승이 스스로 원인을 확정**한다("덤프 한 번 더" 전용 진단세션 불필요).
 - **G0-2 (hardening)**: G0-1 로그로 확정된 원인에 맞춰 poll 재시도(지하 네트워크 백오프)·열차매칭 견고화·cadence 하 fresh-poll 보장. **원인 확정 전엔 G0-1만 먼저 머지**(관측 먼저, 추측 hardening 금지).
 
-#### 축 2 — 게이트 arvlCd-인지 (fall-through 시 유효신호 과억제 차단)
-- **증상 (confirmed)**: #2383이 false로 fall한 뒤 arvlCd가 정확한 종점을 집었는데도 게이트가 죽임 — `17:22:29 fg-arvlcd 용마산`이 `gate-hop-window-no-source`·`gate-phase-time-integration`으로 억제(`useStationAlarm.ts` fg-arvlcd fast-path + hop-window). GPS 지상복귀(20m) 후에도 hop-window가 용마산 도착을 막음.
-- **G0-3 (게이트 우회)**: FG/BG 도착 경로에서 **locked trainCode의 arvlCd가 대상 waypoint를 ENTERING/ARRIVED로 확증하면** `gate-hop-window`·`gate-phase-time-integration`을 **우회**한다. 이 게이트는 fusion jitter 방어용인데 arvlCd 확증은 fusion보다 강한 ground truth이므로, **arvlCd 확증이라는 강한 조건에서만 여는 additive 우회**로 추가(#2433 lock+trainCode arvlcd motion-gate 면제 패턴의 도착 확장).
+#### 축 2 — 게이트 arvlCd-인지 (fall-through 시 유효신호 과억제 차단) 🔴 **critical path**
+- **증상 (9/2 덤프 확정, 지배적 원인)**: 지하 내내 arvlCd·backend·realtimePosition이 정확했는데(군자·중곡·용마산) 발사는 매번 게이트가 죽임. 억제 사유 실측: `movement-static-position` **17회**(최대 — garbage GPS "정지" 오판), `gate-hop-window`/`gate-hop-window-no-source`(hop-index 지하서 못 진행 → 용마산 window 밖), `gate-phase-time-integration`. 17:22:27 용마산 destination이 bg/fg/fg-arvlcd 3경로 동시 억제. (`useStationAlarm.ts` fg-arvlcd fast-path + hop-window / GPS 지상복귀 20m 후에도 억제.)
+- **G0-3 (게이트 우회)**: FG/BG 도착 경로에서 **locked trainCode의 arvlCd(또는 backend station-passed SSoT)가 대상 waypoint를 ENTERING/ARRIVED로 확증하면** `movement-static-position`·`gate-hop-window`·`gate-hop-window-no-source`·`gate-phase-time-integration`을 **우회**한다. `movement-static-position`이 1순위 — 지하 garbage GPS는 항상 "정지"로 보이므로 arvlcd 진행 신호를 무조건 죽인다. 이 게이트들은 fusion jitter 방어용인데 arvlCd 확증은 fusion보다 강한 ground truth이므로, **arvlCd 확증이라는 강한 조건에서만 여는 additive 우회**로 추가(#2433 lock+trainCode arvlcd motion-gate 면제 패턴의 도착 확장).
 - **G0-4 (오발사 방어 유지)**: 우회는 "게이트 제거"가 아니라 "arvlCd로 대체". arvlCd 확증이 없으면 기존 게이트 그대로(false-positive 방지, AC2). 게이트를 전역으로 느슨하게 하지 않는다.
 
 #### 보조 — PENDING 해소
@@ -123,8 +125,8 @@ locked trainCode가 `PENDING` sentinel이면 arvlCd 확증 자체가 불가 → 
 
 | # | 항목 | 검증 | close 게이트 |
 |---|---|---|---|
-| AC1a | (축1) #2383 gate-free 경로가 지하서 engage — false 반환 시 **사유가 로그로 관측**됨 | G0-1 자가진단 로그 + 다음 평범 탑승 dump | 실기기 지하 (관측) |
-| AC1b | (축2) #2383 fall 시에도 arvlCd 확증이 게이트를 우회해 지하 종점 도착 발사(저녁 용마산 재현) | red replay fixture(garbage GPS + arvlCd 확증 → hop-window/phase-time 우회 발사) | CI + **실기기 지하** |
+| AC1b 🔴 | (축2, critical) arvlCd/backend 확증 시 `movement-static-position`·`gate-hop-window`·`gate-phase-time-integration`을 우회해 지하 도착 발사(9/2 저녁 용마산·군자·중곡 재현) | red replay fixture(9/2 덤프: garbage GPS 정지 + arvlCd 진행 확증 → 우회 발사) | CI + **실기기 지하** |
+| AC1a | (축1, 부차) #2383 gate-free 경로 false 반환 시 **사유가 로그로 관측**됨((b)매칭/(c)cadence 구분) | G0-1 자가진단 로그 + 다음 평범 탑승 dump | 실기기 지하 (관측) |
 | AC2 | arvlCd 확증 없으면 발사 안 함(오발사 0) | unit(G0-4 우회 조건 negative) | CI |
 | AC3 | 지상 도착/환승 발사 **불변**(회귀 0) | red fixture(오전 뚝섬 케이스 발사 유지) | CI |
 | AC4 | backend visible station-passed/transfer/destination = 0 (Phase 2 후) | backend worker 테스트 + D1 waypointKind visible 0 | CI + 측정 |
@@ -142,7 +144,9 @@ locked trainCode가 `PENDING` sentinel이면 arvlCd 확증 자체가 불가 → 
 ## Sequencing (Phase는 앞 Phase 검증에 hard-gated)
 
 ```
-Phase 0  지하 device arvlCd 발사 신뢰성(축1 #2383 engage + 축2 게이트 arvlCd-인지)  ── 자가진단 로그 → red fixture → 실기기 지하 발사 실증
+Phase 0  지하 device arvlCd 발사 신뢰성
+   ├ 축2 게이트 arvlCd-인지 우회(G0-3) 🔴 critical  ── 9/2 덤프 red fixture(신호 정확·게이트 억제 → 우회 후 발사) → 실기기 지하
+   └ 축1 #2383 engage(G0-1 로그·부차)             ── 다음 탑승이 (b)/(c) 확정 → G0-2 hardening
    │        (backend visible은 그대로 = 지하 백업 유지, 공백 없음)
    ▼
 Phase 1  device FG 봉인해제 + 문구/count 배선 + 3환경 실증        ── FG/잠금/지하 device 단독 발사 확인
@@ -169,7 +173,7 @@ Phase 2  backend visible 퇴역(통과 noise + 이중발사 동시 소멸)     �
 ## 구현 지점 (참조)
 
 - Phase 0 축1(#2383 engage 신뢰성): `src/features/alarm/utils/bgPositionTrainFire.ts`(`evaluatePositionTrainFire`) + `src/features/nearest-station/tasks/backgroundLocationTask.ts:171`(gate-accuracy :191보다 **먼저** 호출, fired 시 early-return). 자가진단 로그(G0-1)는 `src/features/alarm/utils/alarmLog.ts`에 false-사유 reason 추가. consensus 보조: `undergroundConsensusFire.ts`(#2381).
-- Phase 0 축2(게이트 arvlCd-인지): `src/features/alarm/hooks/useStationAlarm.ts` fg-arvlcd fast-path(~:1571) + `gate-hop-window`/`gate-hop-window-no-source`/`gate-phase-time-integration` 우회 조건. trainCode 해소(보조): position-train-lock(#2383) 경로.
+- Phase 0 축2(게이트 arvlCd-인지, 🔴 critical): `src/features/alarm/hooks/useStationAlarm.ts` fg-arvlcd fast-path(~:1571) + 우회 대상 게이트 = `movement-static-position`(**1순위**, `logSuppressed…` movement gate 지점)·`gate-hop-window`/`gate-hop-window-no-source`(~:661,:1397)·`gate-phase-time-integration`(:1145). BG 경로는 `backgroundLocationTask.ts`의 `bg destination gate-hop-window` 억제 지점도 동일 우회. 확증 소스 = locked trainCode arvlCd 또는 backend station-passed SSoT mirror.
 - Phase 1: `useStationAlarm.ts`(FG 봉인 해제 #2067 지점), `stationNotification.ts`(문구/count), locale `src/shared/i18n/locales/*.json`, `debugFlags.ts`(MINIMAL_ALARM 승격).
 - Phase 2: `backend/alarm-worker/src/scheduled.ts`(`fireArvlCdStationPush`/`fireVanishFallbackStationPush` visible 제거), `fallback.ts`, backend `i18n.ts`.
 
