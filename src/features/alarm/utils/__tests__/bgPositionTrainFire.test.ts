@@ -27,6 +27,11 @@ jest.mock('../notificationState', () => ({
   setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
 }));
 
+const mockLogPositionTrainFireDiagnostic = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logPositionTrainFireDiagnostic: (...args: unknown[]) => mockLogPositionTrainFireDiagnostic(...args),
+}));
+
 const mockIsMinimalAlarmEnabled = jest.fn();
 jest.mock('../../../../shared/constants/debugFlags', () => ({
   isMinimalAlarmEnabled: () => mockIsMinimalAlarmEnabled(),
@@ -154,6 +159,8 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    // #2474 — MINIMAL_ALARM flag-off는 비활성 사용자 전원 스팸 방지를 위해 진단 로그 미적재.
+    expect(mockLogPositionTrainFireDiagnostic).not.toHaveBeenCalled();
   });
 
   it('lock이 없으면 false를 반환한다', async () => {
@@ -163,6 +170,10 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
+    // #2474 — 진단 로그: lock 자체가 없는 케이스는 skip-no-lock.
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-no-lock', {
+      hasTrainCode: false,
+    });
   });
 
   it('lock.trainCode가 없으면 false를 반환한다', async () => {
@@ -172,6 +183,10 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
+    // #2474 — lock은 있으나 trainCode가 falsy(빈 문자열)면 skip-no-lock으로 분류.
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-no-lock', {
+      hasTrainCode: false,
+    });
   });
 
   // #2407 — pending lock(fallback lock, trainCode 미확정)은 이 정밀추적 경로를 skip해야
@@ -183,6 +198,10 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
+    // #2474 — trainCode는 존재하지만 pending sentinel인 케이스는 skip-pending-traincode로 분류.
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-pending-traincode', {
+      hasTrainCode: true,
+    });
   });
 
   it('isUndergroundProfile/wifiStation 게이트를 걸지 않는다 — profile 무관하게 진행', async () => {
@@ -200,6 +219,7 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockGetStationById).not.toHaveBeenCalled();
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-no-destination');
   });
 
   it('destination JSON 파싱 실패면 false를 반환한다', async () => {
@@ -208,6 +228,7 @@ describe('evaluatePositionTrainFire', () => {
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(false);
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-bad-destination');
   });
 
   it('destination에 id가 없으면 false를 반환한다', async () => {
@@ -216,6 +237,7 @@ describe('evaluatePositionTrainFire', () => {
     const result = await evaluatePositionTrainFire();
 
     expect(result).toBe(false);
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-bad-destination');
   });
 
   it('route가 없으면 false를 반환한다(arc 계산 불가)', async () => {
@@ -230,6 +252,7 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockGetStationById).not.toHaveBeenCalled();
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-no-route');
   });
 
   it('탑승역 station lookup 실패 시 false를 반환한다', async () => {
@@ -239,6 +262,7 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockComputeRouteArc).not.toHaveBeenCalled();
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-no-origin');
   });
 
   it('arc가 비어있으면 false를 반환한다', async () => {
@@ -248,6 +272,9 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockPollTrainPositionsIfDue).not.toHaveBeenCalled();
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-empty-arc', {
+      anchorStationName: ORIGIN.name,
+    });
   });
 
   it('sleepJson이 저장되지 않았으면 sleepMode=false로 기본 처리한다', async () => {
@@ -317,6 +344,10 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockPickCandidateTrains).not.toHaveBeenCalled();
+    // #2474 — 지하 회귀 핵심 후보: 폴링 null(쿨다운 미경과/fetch 실패/빈 응답)을 skip-poll-null로 적재.
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-poll-null', {
+      anchorStationName: ORIGIN.name,
+    });
   });
 
   it('trackTrainProgress가 null이면(후보 없음) false를 반환한다', async () => {
@@ -326,6 +357,10 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-no-train-progress', {
+      anchorStationName: ORIGIN.name,
+      candidatesCount: 1,
+    });
   });
 
   it('lock 게이트를 통과 못 하면 false를 반환한다', async () => {
@@ -335,6 +370,10 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(false);
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('skip-locked-gate', {
+      anchorStationName: ORIGIN.name,
+      candidatesCount: 1,
+    });
   });
 
   it('userLocation 없이(GPS-free) lock.boardingLine으로 폴링하고 pickCandidateTrains/trackTrainProgress/lock 게이트를 순서대로 호출해 station 채택 시 true를 반환한다', async () => {
@@ -342,6 +381,11 @@ describe('evaluatePositionTrainFire', () => {
 
     expect(result).toBe(true);
     expect(mockPollTrainPositionsIfDue).toHaveBeenCalledWith(LOCK.boardingLine);
+    // #2474 — 성공(engaged) 대비군 stamp.
+    expect(mockLogPositionTrainFireDiagnostic).toHaveBeenCalledWith('engaged', {
+      anchorStationName: ORIGIN.name,
+      candidatesCount: 1,
+    });
     expect(mockPickCandidateTrains).toHaveBeenCalledWith(
       expect.objectContaining({
         positions: [LINE_POSITIONS],

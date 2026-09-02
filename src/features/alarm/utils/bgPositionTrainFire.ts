@@ -11,6 +11,7 @@ import { getBoardingLock } from './boardingLockStorage';
 import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { getFiredAlarms } from './notificationState';
 import { persistBgFireResult } from './bgFirePersist';
+import { logPositionTrainFireDiagnostic } from './alarmLog';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import { passesLockedStationGate } from '../../nearest-station/utils/lockedStationGate';
 import { pollTrainPositionsIfDue } from '../../nearest-station/tasks/bgPositionTrainPoll';
@@ -57,16 +58,25 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   // #2407 — trainCode pending(fallback lock, 미확정) 상태에서는 이 경로(realtimePosition 정밀추적)를
   // skip한다. pending sentinel을 실 trainCode처럼 매칭에 넣으면 항상 미매칭이라 false negative만
   // 쌓인다 — 호출자(backgroundLocationTask)가 기존 GPS/route 파이프라인으로 graceful degrade.
-  if (!lock?.trainCode || isPendingTrainCode(lock.trainCode)) return false;
+  if (!lock?.trainCode || isPendingTrainCode(lock.trainCode)) {
+    void logPositionTrainFireDiagnostic(!lock?.trainCode ? 'skip-no-lock' : 'skip-pending-traincode', {
+      hasTrainCode: !!lock?.trainCode,
+    });
+    return false;
+  }
 
   const destJson = await AsyncStorage.getItem(DESTINATION_KEY);
-  if (!destJson) return false;
+  if (!destJson) {
+    void logPositionTrainFireDiagnostic('skip-no-destination');
+    return false;
+  }
 
   let destinationRaw: unknown;
   try {
     destinationRaw = JSON.parse(destJson);
   } catch {
     logger.error('목적지 JSON 파싱 실패');
+    void logPositionTrainFireDiagnostic('skip-bad-destination');
     return false;
   }
   if (
@@ -75,6 +85,7 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
     typeof (destinationRaw as { id?: unknown }).id !== 'string'
   ) {
     logger.error('목적지에 id가 없음');
+    void logPositionTrainFireDiagnostic('skip-bad-destination');
     return false;
   }
   const destination = destinationRaw as Station;
@@ -86,14 +97,23 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   ]);
   const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
   const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
-  if (!storedRoute) return false;
+  if (!storedRoute) {
+    void logPositionTrainFireDiagnostic('skip-no-route');
+    return false;
+  }
 
   const origin = getStationById(lock.boardingStationId);
-  if (!origin) return false;
+  if (!origin) {
+    void logPositionTrainFireDiagnostic('skip-no-origin');
+    return false;
+  }
 
   const arc = computeRouteArc(storedRoute, origin, destination);
   const arcStations = arc?.stations ?? [];
-  if (arcStations.length === 0) return false;
+  if (arcStations.length === 0) {
+    void logPositionTrainFireDiagnostic('skip-empty-arc', { anchorStationName: origin.name });
+    return false;
+  }
 
   // pickCandidateTrains anchor — BG_LAST_STATION(진행한 마지막 확인 역)이 있으면 그 역,
   // 없으면 탑승역. anchorStationName은 window(±3역, DEFAULT_WINDOW_STATIONS) 후보 필터링에만
@@ -109,7 +129,10 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   }
 
   const positions = await pollTrainPositionsIfDue(lock.boardingLine);
-  if (!positions) return false;
+  if (!positions) {
+    void logPositionTrainFireDiagnostic('skip-poll-null', { anchorStationName });
+    return false;
+  }
 
   const candidates = pickCandidateTrains({
     positions: [positions],
@@ -122,10 +145,22 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
     segmentStations: arcStations,
     boardingStationId: lock.boardingStationId,
   });
-  if (!trainProgress) return false;
+  if (!trainProgress) {
+    void logPositionTrainFireDiagnostic('skip-no-train-progress', {
+      anchorStationName,
+      candidatesCount: candidates.length,
+    });
+    return false;
+  }
 
   const { currentStation } = trainProgress;
-  if (!passesLockedStationGate(currentStation, lock, arcStations)) return false;
+  if (!passesLockedStationGate(currentStation, lock, arcStations)) {
+    void logPositionTrainFireDiagnostic('skip-locked-gate', {
+      anchorStationName,
+      candidatesCount: candidates.length,
+    });
+    return false;
+  }
 
   const firedAlarms = await getFiredAlarms(destination.id);
   const { alarmEvent, nearest } = await processLocationUpdate({
@@ -142,6 +177,11 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
   });
 
   await persistBgFireResult({ alarmEvent, nearest, destination, firedAlarms, storedRoute });
+
+  void logPositionTrainFireDiagnostic('engaged', {
+    anchorStationName,
+    candidatesCount: candidates.length,
+  });
 
   return true;
 }
