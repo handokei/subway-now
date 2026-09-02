@@ -284,3 +284,12 @@ export const BG_POSITION_TRAIN_POLLED_AT_KEY = 'subway-now:bg-position-train-pol
 // tick 또는 fetch 실패 시 이 캐시를 trackTrainProgress 입력으로 재사용(quota 보호 + graceful
 // fallback). 형식: LinePositions JSON. 키 부재 = 캐시 없음(null).
 export const BG_POSITION_TRAIN_CACHE_KEY = 'subway-now:bg-position-train-cache';
+// #2480 — waypoint arvlCd 직폴 BG spine의 폴링 최소 간격 가드용 마지막 폴링 시각(epoch ms).
+// BG_UNDERGROUND_ARRIVAL_POLLED_AT_KEY와 동일 패턴이나, 두 폴링이 서로의 쿨다운을 침범하지
+// 않도록 별도 키로 분리한다.
+// 형식: 숫자 문자열. 키 부재 = 첫 폴링(즉시 fetch).
+export const BG_WAYPOINT_ARRIVAL_POLLED_AT_KEY = 'subway-now:bg-waypoint-arrival-polled-at';
+// #2480 — waypoint arvlCd 직폴 BG spine의 폴링 결과 캐시. 최소 간격 미경과 tick 또는 fetch
+// 실패 시 이 캐시를 isImminentByArrivalCode 입력으로 재사용(quota 보호 + graceful fallback).
+// 형식: StationArrival JSON. 키 부재 = 캐시 없음(null).
+export const BG_WAYPOINT_ARRIVAL_CACHE_KEY = 'subway-now:bg-waypoint-arrival-cache';

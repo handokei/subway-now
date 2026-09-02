@@ -89,6 +89,7 @@ import {
   logBoardingPromptCategoryReceived,
   logBgTaskHeartbeat,
   logPositionTrainFireDiagnostic,
+  logWaypointArvlcdFireDiagnostic,
   logBoardingPromptResponded,
   logCompanionAlarmFired,
   logLastTrainAlarmFired,
@@ -1700,6 +1701,62 @@ describe('alarmLog', () => {
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       expect(saved.filter((e) => e.reason === 'skip-poll-null')).toHaveLength(2);
+    });
+
+    it('#2480 logWaypointArvlcdFireDiagnostic: context 생략 시 기본값({})으로 적재한다', async () => {
+      logWaypointArvlcdFireDiagnostic('skip-no-destination');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'skip-no-destination',
+      });
+      expect(saved[0].stationName).toBeUndefined();
+    });
+
+    it('#2480 logWaypointArvlcdFireDiagnostic: skip-* reason은 source=bg, outcome=suppressed로 컨텍스트와 함께 적재한다', async () => {
+      logWaypointArvlcdFireDiagnostic('skip-no-lock', { hasTrainCode: false });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'skip-no-lock',
+        hasTrainCode: false,
+      });
+    });
+
+    it('#2480 logWaypointArvlcdFireDiagnostic: skip-not-imminent은 waypointName을 stationName으로 적재한다', async () => {
+      logWaypointArvlcdFireDiagnostic('skip-not-imminent', { waypointName: '용마산' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'skip-not-imminent',
+        stationName: '용마산',
+      });
+    });
+
+    it('#2480 logWaypointArvlcdFireDiagnostic: engaged(성공)는 outcome=received로 적재해 fired 분모를 오염하지 않는다', async () => {
+      logWaypointArvlcdFireDiagnostic('engaged', { waypointName: '용마산' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'received',
+        reason: 'engaged',
+        stationName: '용마산',
+      });
     });
 
     it('#2339 logSuppressedGate: different reasons are NOT deduped against each other', async () => {
