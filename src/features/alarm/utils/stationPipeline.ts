@@ -7,7 +7,9 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
-import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition, getStationsOnLine, arcIndexOf, computeHopWindowSize, isStationWithinHopWindow } from '../../../shared/utils/stationRoute';
+import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition, getStationsOnLine, arcIndexOf, computeHopWindowSize, isStationWithinHopWindow, getStationById } from '../../../shared/utils/stationRoute';
+import { computeRouteArc } from '../../route/utils/routeProgress';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { isInTripByEvidence } from '../../../shared/utils/boardingWait';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { updateStationNotification, fireLocalAlarmNotification, fireFgAuxStationPassedNotification } from './stationNotification';
@@ -47,6 +49,7 @@ import { clearDismissSilence, getDismissSilence } from './dismissSilenceStorage'
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { AlarmEvent } from './stationAlarm';
 import type { FusionSource } from '../../../shared/types/fusion';
 import { resolveNotificationSource } from './notificationSource';
@@ -237,17 +240,47 @@ export interface ProcessLocationInputs {
  * windowSize 동적 확장도 동일하게 적용된다.
  *
  * 반환:
- *   - null: 게이트 미적용(기준 없음 / 방금 환승 / arc 인덱스 미발견) — candidate를 새 기준으로 채택.
+ *   - null: 게이트 미적용(기준 없음 / 방금 환승 / arc 인덱스 미발견 / lock 확증 우회) — candidate를
+ *     새 기준으로 채택.
  *   - { blocked: true, ... }: hop window 밖 — 기준 station 유지(overwrite 안 함), caller가 이번
  *     tick의 phase 알람 발사만 suppress한다. candidate 자체(route/notification)는 계속 갱신된다
  *     (FG와 동일 — hop window는 "발사"만 가드, "현재 위치 추정"은 가드하지 않음).
+ *
+ * #2478 (ADR-036 Phase 0 G0-3c) — lock 확증 forward 전진 우회.
+ *
+ * 배경: 지하 구간에서 GPS accuracy 게이트(gate-accuracy)로 중간역 tick 자체가 이 함수 호출까지
+ * 못 미쳐(evaluateBgHopWindowGate가 아예 호출 안 됨) prevStation(기준점)이 origin(탑승역)에
+ * stuck된 채 GPS가 지상 복귀하면, 정당한 다역 전진(예: gap=4)도 GPS drift와 구분 못 하고 그대로
+ * 차단된다(2026-09-02 저녁 건대입구→용마산 evidence, `fireLocalAlarmNotification` 미호출).
+ *
+ * 이 함수는 lock/trainCode/arvlCd 신호를 원래 입력받지 않아(#2373 최초 설계, destinationId/
+ * candidateStation/route뿐) drift와 정당 전진을 구분할 수 없었다 — active lock이 이미 확증한
+ * trainCode(실코드, PENDING sentinel 아님)가 있으면 그 신뢰를 이 게이트에도 배선한다.
+ *
+ * 우회 조건 (#2373 방어 유지 — 아래 중 하나라도 미충족이면 기존 차단 그대로):
+ *   1. lock 활성 (`lockForLineGuard`는 `processLocationUpdate`가 이미 fetch — 재조회 안 함)
+ *   2. lock.trainCode가 실코드(`!isPendingTrainCode`) — fallback lock(미확정)은 신뢰 못 함(#2407과
+ *      동일 취지, `evaluatePositionTrainFire`가 pending을 skip하는 것과 동일 가드)
+ *   3. lock.destinationId === destinationId — 다른 trip의 stale lock 오매칭 방지
+ *   4. candidate가 locked 경로 forward 전진 — `computeRouteArc(route, origin, destination)`로
+ *      route 방향대로 정렬된 arc(bgPositionTrainFire.ts와 동일 패턴, `getStationsOnLine`의
+ *      raw 노선 전체 순서와 달리 환승 포함 실제 trip 진행 방향)에서 prevStation → candidateStation
+ *      인덱스가 감소하지 않아야 한다. off-route(arc 밖, 노선 이탈) 또는 역행(인덱스 감소)이면
+ *      우회하지 않는다 — 이게 #2373 원취지(GPS drift 조기 발사) 방어의 핵심.
+ *
+ * `passesLockedStationGate`(#2383)를 그대로 재사용하지 않는 이유: 그 함수의
+ * `LOCK_NEXT_HOP_WINDOW`(±3 hop)는 position-train candidate 선별용 좁은 창으로, 이 evidence
+ * 케이스(탑승역 기준 4 hop 밖 목적지)조차 차단해 이 fix의 목적과 충돌한다. 이 게이트는 이미
+ * hop-window 자체가 정상 진행을 별도로 bound하므로, lock 확증 우회는 "방향"만 검증하면 된다.
  */
 async function evaluateBgHopWindowGate(params: {
   destinationId: string;
+  destination: Station;
   candidateStation: Station;
   route: Route;
+  lock: BoardingLock | null;
 }): Promise<{ blocked: true; currentHopIndex: number; candidateIndex: number } | null> {
-  const { destinationId, candidateStation, route } = params;
+  const { destinationId, destination, candidateStation, route, lock } = params;
   const prevStation = await getBgHopWindowStation(destinationId);
   if (!prevStation || prevStation.line !== candidateStation.line) {
     // 기준 없음(첫 tick) 또는 방금 환승선 전환 — 게이트 미적용, candidate를 새 기준으로 채택.
@@ -269,7 +302,46 @@ async function evaluateBgHopWindowGate(params: {
     return null;
   }
 
+  if (
+    lock &&
+    lock.destinationId === destinationId &&
+    !isPendingTrainCode(lock.trainCode) &&
+    isLockConfirmedForwardHop(prevStation, candidateStation, lock, route, destination)
+  ) {
+    await setBgHopWindowStation(destinationId, candidateStation);
+    return null;
+  }
+
   return { blocked: true, currentHopIndex, candidateIndex };
+}
+
+/**
+ * #2478 — prevStation → candidateStation이 lock 경로 방향으로 forward 전진인지(off-route/역행
+ * 아닌지) 판정. `computeRouteArc`가 route 방향대로 정렬한 arc를 재사용해 방향을 확정한다
+ * (`getStationsOnLine`의 raw 노선 순서는 진행 방향과 무관해 직접 비교 불가).
+ */
+function isLockConfirmedForwardHop(
+  prevStation: Station,
+  candidateStation: Station,
+  lock: BoardingLock,
+  route: Route,
+  destination: Station,
+): boolean {
+  // 방어적 가드 — lock.boardingStationId는 계약상 항상 실존 Station.id지만(BoardingLock 계약),
+  // station 데이터 drift/malformed route 대비로 명시 처리한다(#2478, bgPositionTrainFire.ts와
+  // 동일 취지의 graceful degrade — 우회 실패 시 기존 #2373 차단 유지).
+  const origin = getStationById(lock.boardingStationId);
+  if (!origin) return false;
+
+  const arc = computeRouteArc(route, origin, destination);
+  const arcStations = arc?.stations ?? [];
+  if (arcStations.length === 0) return false;
+
+  const prevIndex = arcStations.findIndex((s) => s.id === prevStation.id);
+  const candidateArcIndex = arcStations.findIndex((s) => s.id === candidateStation.id);
+  if (prevIndex === -1 || candidateArcIndex === -1) return false;
+
+  return candidateArcIndex >= prevIndex;
 }
 
 export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
@@ -321,8 +393,10 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   const hopWindowGate = route
     ? await evaluateBgHopWindowGate({
         destinationId: destination.id,
+        destination,
         candidateStation: nearest.station,
         route,
+        lock: lockForLineGuard,
       })
     : null;
 

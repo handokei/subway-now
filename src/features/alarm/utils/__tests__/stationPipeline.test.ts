@@ -20,6 +20,7 @@ const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
 const mockGetFirstLeg = jest.fn((..._args: unknown[]) => ({ line: '2', endName: '' }));
 const mockGetRouteRemainingSeconds = jest.fn((..._args: unknown[]) => 360);
 const mockGetStationsOnLine = jest.fn((..._args: unknown[]) => [] as Station[]);
+const mockGetStationById = jest.fn((..._args: unknown[]) => undefined as Station | undefined);
 jest.mock('../../../../shared/utils/stationRoute', () => {
   // #2373 — computeHopWindowSize/isStationWithinHopWindow/arcIndexOf/LOCKLESS_HOP_WINDOW_DEFAULT는
   // FG(useStationAlarm) 검증 로직을 그대로 재사용하는 게이트라 실제 구현을 requireActual로 통과시킨다.
@@ -35,12 +36,22 @@ jest.mock('../../../../shared/utils/stationRoute', () => {
     // #2279 — processLocationUpdate가 route 존재 시 estimateTransitEtaSeconds의 hop-time 상한으로 사용.
     getRouteRemainingSeconds: (...args: unknown[]) => mockGetRouteRemainingSeconds(...args),
     getStationsOnLine: (...args: unknown[]) => mockGetStationsOnLine(...args),
+    // #2478 — evaluateBgHopWindowGate의 lock-확증 forward 우회가 lock.boardingStationId로 origin을
+    // 조회할 때 사용. mock으로 undefined/유효 station 양쪽 분기를 제어한다.
+    getStationById: (...args: unknown[]) => mockGetStationById(...args),
     arcIndexOf: actual.arcIndexOf,
     computeHopWindowSize: actual.computeHopWindowSize,
     isStationWithinHopWindow: actual.isStationWithinHopWindow,
     LOCKLESS_HOP_WINDOW_DEFAULT: actual.LOCKLESS_HOP_WINDOW_DEFAULT,
   };
 });
+
+// #2478 — isLockConfirmedForwardHop이 route 방향대로 정렬된 arc를 얻기 위해 재사용하는 함수.
+// bgPositionTrainFire.test.ts와 동일하게 mock으로 arc 반환값을 직접 제어(null/빈 배열/정상 등).
+const mockComputeRouteArc = jest.fn();
+jest.mock('../../../route/utils/routeProgress', () => ({
+  computeRouteArc: (...args: unknown[]) => mockComputeRouteArc(...args),
+}));
 
 const mockGetBgHopWindowStation = jest.fn();
 const mockSetBgHopWindowStation = jest.fn();
@@ -205,6 +216,10 @@ describe('processLocationUpdate', () => {
     mockGetBgHopWindowStation.mockResolvedValue(null);
     mockSetBgHopWindowStation.mockResolvedValue(undefined);
     mockGetStationsOnLine.mockReturnValue([]);
+    // #2478 — 기본은 lock-확증 우회 대상 자체가 없는 상태(getStationById undefined / arc 없음).
+    // 각 lock-bypass 테스트가 필요한 값으로 override한다.
+    mockGetStationById.mockReturnValue(undefined);
+    mockComputeRouteArc.mockReturnValue(null);
   });
 
   it('returns null nearest and null alarm when findNearestStation returns null', async () => {
@@ -1488,6 +1503,128 @@ describe('processLocationUpdate', () => {
       await call();
 
       expect(mockGetBgHopWindowStation).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2478 (ADR-036 Phase 0 G0-3c) — active lock이 forward 전진을 확증하면 #2373 hop-window
+  // 차단을 우회한다. 지하 구간에서 중간역 tick이 gate-accuracy로 evaluateBgHopWindowGate 자체에
+  // 도달하지 못해 기준(prevStation)이 origin에 stuck된 채 GPS가 지상 복귀하면(큰 gap), lock이
+  // 실 trainCode로 확증한 forward 전진만 신뢰해 발사를 되살린다. lock 부재/PENDING/
+  // destinationId mismatch/역행/off-route는 기존 #2373 차단 그대로 유지(오발사 방어).
+  describe('#2478 hop-window 게이트 lock-확증 forward 우회', () => {
+    const lineStationA: Station = { id: 'l7-a', name: 'A역', line: '7', lineColor: '#747F00', lat: 37.50, lng: 127.02 };
+    const lineStationB: Station = { id: 'l7-b', name: 'B역', line: '7', lineColor: '#747F00', lat: 37.51, lng: 127.03 };
+    const lineStationC: Station = { id: 'l7-c', name: 'C역', line: '7', lineColor: '#747F00', lat: 37.52, lng: 127.04 };
+    const lineStationD: Station = { id: 'l7-d', name: 'D역', line: '7', lineColor: '#747F00', lat: 37.53, lng: 127.05 };
+    const lineStations = [lineStationA, lineStationB, lineStationC, lineStationD];
+    const activeLock = {
+      destinationId: mockDestination.id,
+      trainCode: 'REAL-TRAIN-CODE',
+      boardingStationId: lineStationA.id,
+      boardingLine: '7' as const,
+      boardedAt: 0,
+      expectedDurationMs: 600_000,
+    };
+
+    beforeEach(() => {
+      // 기준(index 1) 대비 2 hop 이상 앞선 candidate(index 3) — hop-window 자체는 항상 blocked.
+      mockGetStationsOnLine.mockReturnValue(lineStations);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '시청',
+      });
+      mockGetBgHopWindowStation.mockResolvedValue(lineStationB); // 기준 = index 1
+      mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 }); // candidate = index 3
+      // lock이 forward 확증하는 정상 경로: origin(lineStationA)부터 candidate까지 순서대로 정렬된 arc.
+      mockGetStationById.mockReturnValue(lineStationA);
+      mockComputeRouteArc.mockReturnValue({
+        stations: [lineStationA, lineStationB, lineStationC, lineStationD],
+      });
+    });
+
+    it('lock 활성 + 실 trainCode + forward 전진 → 우회해 발사하고 candidate를 새 기준으로 저장한다', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
+      expect(mockSetBgHopWindowStation).toHaveBeenCalledWith(mockDestination.id, lineStationD);
+    });
+
+    it('lock.trainCode가 PENDING(미확정)이면 우회하지 않고 기존대로 차단한다', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...activeLock, trainCode: 'PENDING-TRAIN-CODE' });
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+      expect(mockSetBgHopWindowStation).not.toHaveBeenCalled();
+    });
+
+    it('lock.destinationId가 이번 trip destination과 다르면(stale lock) 우회하지 않는다', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...activeLock, destinationId: 'other-destination' });
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('lock.boardingStationId로 origin을 찾지 못하면(getStationById undefined) 우회하지 않는다', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetStationById.mockReturnValue(undefined);
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('computeRouteArc가 null이면(arc 계산 불가) 우회하지 않는다', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockComputeRouteArc.mockReturnValue(null);
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('arc가 빈 배열이면 우회하지 않는다', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockComputeRouteArc.mockReturnValue({ stations: [] });
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('arc에 기준/candidate station이 없으면(off-route) 우회하지 않는다', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      const offRouteArcStation: Station = { id: 'l2-x', name: 'X역', line: '2', lineColor: '#009246', lat: 37.55, lng: 127.06 };
+      mockComputeRouteArc.mockReturnValue({ stations: [offRouteArcStation] });
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('candidate가 arc상 기준보다 역행(역방향)이면 우회하지 않는다', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      // arc 순서를 뒤집어(candidate가 기준보다 앞선 index) 역행으로 재현.
+      mockComputeRouteArc.mockReturnValue({
+        stations: [lineStationD, lineStationC, lineStationB, lineStationA],
+      });
+
+      await call();
+
+      expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
   });
 
