@@ -30,6 +30,7 @@ import { evaluateLocalBoardingPromptGate } from '../utils/localBoardingPromptGat
 import { fireLocalBoardingPromptNotification } from '../utils/stationNotification';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 
 const log = createLogger('localBoardingPromptGate');
 
@@ -50,6 +51,10 @@ export function useLocalBoardingPromptGate(params: UseLocalBoardingPromptGatePar
   const inFlightRef = useRef(false);
 
   useEffect(() => {
+    // MINIMAL_ALARM이 마스터 스위치 — 다른 device-local ALARM 발사 경로(bgPositionTrainFire.ts,
+    // undergroundConsensusFire.ts)와 동일하게 OFF면 device가 로컬 boarding-prompt를 발사하지
+    // 않는다. backend `evaluateAndMaybeFireBoardingPrompt`가 유일 소스가 된다.
+    if (!isMinimalAlarmEnabled()) return;
     if (lock != null) return; // #1921/#1921류 F2 defense와 동형 — 탑승 확정 trip은 스킵.
     if (!arrival) return;
     if (inFlightRef.current) return;
