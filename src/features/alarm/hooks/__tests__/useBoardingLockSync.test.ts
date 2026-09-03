@@ -413,6 +413,30 @@ describe('useBoardingLockSync (#901)', () => {
       expect(mockedSync).toHaveBeenCalledTimes(1);
     });
 
+    // #2407 sentinel leak (신규) — buildBoardingLockMeta는 pending sentinel을 이미 걸러내지만
+    // /boarding-lock/sync 경로(fireSync)는 동일 가드가 없어 PENDING-TRAIN-CODE가 그대로
+    // payload.trainCode로 나간다. backend가 이 sentinel로 실시간 API를 조회하면 못 찾아
+    // 정상 trainCode를 덮어쓰는 회귀 — payload에서 반드시 생략돼야 한다.
+    it('#2407 — boardingLockTrainCode가 PENDING 센티넬이면 payload에서 trainCode 생략', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          boardingLockTrainCode: 'PENDING-TRAIN-CODE',
+          boardingLockLine: '2',
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      const sent = mockedSync.mock.calls[0][0];
+      expect(sent).not.toHaveProperty('trainCode');
+      // line은 trainCode 없이는 backend에서 무시되지만(D4 주석), sentinel 자체가 노선 정보로
+      // 오인되지 않도록 함께 생략한다.
+      expect(sent).not.toHaveProperty('boardingLine');
+    });
+
     it('tripActive false → true 전환 시 trainCode dedup ref도 reset', async () => {
       const { rerender } = renderHook(
         ({ active }: { active: boolean }) =>
