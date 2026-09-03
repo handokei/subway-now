@@ -25,6 +25,7 @@ import {
   __resetLiveActivityPushChannelForTests,
   endLiveActivityWithDeregister,
   ensureLiveActivityRegistered,
+  shouldSkipDeviceLiveActivityWrite,
   startLiveActivityWithRegistration,
 } from '../liveActivityPushChannel';
 
@@ -411,6 +412,52 @@ describe('liveActivityPushChannel', () => {
       expect(mockStartLiveActivity).toHaveBeenCalledTimes(2);
       second.emit('tok');
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-2', 'tok');
+    });
+  });
+
+  // #2481 (backend-authority device 쓰기 억제 게이트, Wave 2) — device W2/W3 두 writer가 공유하는
+  // 판정 함수 단독 검증. flag는 EXPO_PUBLIC_MINIMAL_ALARM(isMinimalAlarmEnabled SSoT)로 제어한다.
+  describe('shouldSkipDeviceLiveActivityWrite (#2481)', () => {
+    const originalFlag = process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+
+    afterEach(() => {
+      if (originalFlag === undefined) {
+        delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      } else {
+        process.env.EXPO_PUBLIC_MINIMAL_ALARM = originalFlag;
+      }
+    });
+
+    it('backend-authority(flag OFF) + 이 trip의 LA push 세션이 이미 등록됨 → true(스킵)', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(true);
+    });
+
+    it('dogfood 모드(flag ON)면 세션이 등록돼 있어도 false(device가 계속 쓴다) — 회귀 방지', async () => {
+      process.env.EXPO_PUBLIC_MINIMAL_ALARM = 'true';
+      setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
+    });
+
+    it('backend-tracked trip 자체가 없으면(tripToken null) false — pre-boarding 등 lock 전 구간', () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      expect(shouldSkipDeviceLiveActivityWrite(null)).toBe(false);
+    });
+
+    it('trip은 있지만 이 프로세스에서 아직 LA push 세션을 등록 못한 상태(첫 write)면 false — blank LA 방지', () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      __resetLiveActivityPushChannelForTests();
+      expect(shouldSkipDeviceLiveActivityWrite('trip-never-registered')).toBe(false);
+    });
+
+    it('다른 tripToken의 세션이 등록돼 있으면(불일치) false — 새 trip 부트스트랩 허용', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      setupListener();
+      await startLiveActivityWithRegistration('trip-old', SAMPLE_DATA);
+      expect(shouldSkipDeviceLiveActivityWrite('trip-new')).toBe(false);
     });
   });
 

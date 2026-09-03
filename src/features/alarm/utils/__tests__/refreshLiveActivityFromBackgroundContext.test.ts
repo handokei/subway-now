@@ -29,6 +29,15 @@ jest.mock('../laDismissSentinel', () => ({
   isLaDismissed: () => mockIsLaDismissed(),
 }));
 
+// #2481 — 기본값 false(=device가 계속 쓴다). 게이트 로직 자체는 liveActivityPushChannel.test.ts가
+// 단독 검증하고, 여기서는 refreshLiveActivityFromBackgroundContext가 판정 결과를 존중해 조기
+// return하는지만 wire-up 검증한다.
+const mockShouldSkipDeviceLiveActivityWrite = jest.fn((..._args: unknown[]) => false);
+jest.mock('../liveActivityPushChannel', () => ({
+  shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
+    mockShouldSkipDeviceLiveActivityWrite(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -50,6 +59,7 @@ import {
   __test__,
 } from '../refreshLiveActivityFromBackgroundContext';
 import {
+  ACTIVE_TRIP_KEY,
   BG_LAST_STATION_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
@@ -153,6 +163,37 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     expect(isMock).toBe(false);
     expect(alarm).toBeNull();
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  // #2481 — backend-authority(dogfood 플래그 OFF) + backend가 이 trip의 LA push 채널을 이미
+  // 쥐고 있으면(shouldSkipDeviceLiveActivityWrite=true) BG silent-push refresh는 LA content를
+  // 전혀 쓰지 않는다 — backend push가 단독 저자(Wave 2). 이게 이 파일이 고치는 W3 writer다.
+  describe('#2481 backend-authority device 쓰기 억제 게이트', () => {
+    it('게이트가 true를 반환하면 buildLiveActivityData/updateLiveActivity 둘 다 호출 안 함', async () => {
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+      });
+      mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
+      expect(mockBuild).not.toHaveBeenCalled();
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('게이트가 false면(기본값) 기존처럼 updateLiveActivity로 계속 진행 — blank LA 방지', async () => {
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: null,
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith(null);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('bg 없으면 no-op (마지막 정상 LA 유지) — updateLiveActivity 미호출', async () => {

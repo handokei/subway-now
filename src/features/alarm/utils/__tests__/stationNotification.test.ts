@@ -59,11 +59,17 @@ jest.mock('live-activity', () => ({
 
 const mockEnsureLiveActivityRegistered = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivityWithDeregister = jest.fn().mockResolvedValue(undefined);
+// #2481 — 기본값 false(=device가 계속 쓴다). 게이트 자체 로직은 liveActivityPushChannel.test.ts가
+// 단독 검증하고, 여기서는 updateStationNotification이 이 판정 결과를 존중해 조기 return하는지만
+// wire-up 검증한다.
+const mockShouldSkipDeviceLiveActivityWrite = jest.fn().mockReturnValue(false);
 jest.mock('../liveActivityPushChannel', () => ({
   ensureLiveActivityRegistered: (...args: unknown[]) =>
     mockEnsureLiveActivityRegistered(...args),
   endLiveActivityWithDeregister: (...args: unknown[]) =>
     mockEndLiveActivityWithDeregister(...args),
+  shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
+    mockShouldSkipDeviceLiveActivityWrite(...args),
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -486,6 +492,34 @@ describe('stationNotification', () => {
       mockEnsureLiveActivityRegistered.mockRejectedValueOnce(new Error('LA 등록 실패'));
       await updateStationNotification(mockStation, 154);
       expectNotificationContent('시청역', '1호선 · 약 154m');
+    });
+
+    // #2481 — backend-authority(dogfood 플래그 OFF) + backend가 이 trip의 LA push 채널을 이미
+    // 쥐고 있으면(shouldSkipDeviceLiveActivityWrite=true) device는 LA content를 전혀 쓰지 않는다
+    // (backend push가 단독 저자, Wave 2).
+    describe('#2481 backend-authority device 쓰기 억제 게이트', () => {
+      it('게이트가 true를 반환하면 ensureLiveActivityRegistered/updateLiveActivity 둘 다 호출 안 함', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
+        await updateStationNotification(mockStation, 154);
+        expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
+        expect(mockEnsureLiveActivityRegistered).not.toHaveBeenCalled();
+        expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('게이트가 false면(기본값) 기존처럼 ensureLiveActivityRegistered 경로로 진행한다', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        await updateStationNotification(mockStation, 154);
+        expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
+        expect(mockEnsureLiveActivityRegistered).toHaveBeenCalledTimes(1);
+      });
+
+      it('ACTIVE_TRIP_KEY 없을 때도 게이트에 null을 넘기고, 게이트가 false면 updateLiveActivity로 계속 진행(blank LA 방지)', async () => {
+        await updateStationNotification(mockStation, 154);
+        expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith(null);
+        expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('updateLiveActivity를 호출한다', async () => {

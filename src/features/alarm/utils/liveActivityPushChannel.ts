@@ -28,6 +28,7 @@ import {
   registerLiveActivityToken,
 } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
+import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 
 const log = createLogger('liveActivityPushChannel');
 
@@ -164,6 +165,30 @@ export async function startLiveActivityWithRegistration(
     }
     throw e;
   }
+}
+
+/**
+ * #2481 (backend-authority device 쓰기 억제 게이트, Wave 2) — backend-authority 모드
+ * (`isMinimalAlarmEnabled() === false`)에서 device가 LA content-state를 써도 되는지 판정한다.
+ * device W2(`updateStationNotification`)/W3(`refreshLiveActivityFromBackgroundContext`)가
+ * 공유하는 단일 게이트 — backend가 이미 이 trip의 LA push 채널(`activeTripToken`)을 쥐고 있으면
+ * device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다.
+ *
+ * true(스킵)는 다음이 모두 성립할 때만:
+ *   - backend-authority 모드(dogfood 플래그 OFF)
+ *   - tripToken이 존재하고, 이미 이 프로세스에서 LA push 세션이 등록된(`activeTripToken`과 일치)
+ *     상태 — backend가 이 trip의 push 채널로 LA를 갱신할 수 있는 상태.
+ *
+ * false(계속 device가 쓴다)는 blank LA 회귀를 막는 3개 케이스를 모두 커버한다:
+ *   - dogfood 모드(flag ON) — 기존 device 동작 100% 유지.
+ *   - backend-tracked trip 자체가 없음(tripToken null) — pre-boarding 등 lock 전 구간.
+ *   - trip은 있지만 아직 이 프로세스에서 LA push 세션을 등록 못한 상태(첫 write가 곧 세션
+ *     부트스트랩이므로 스킵하면 LA가 영영 시작되지 않는다).
+ */
+export function shouldSkipDeviceLiveActivityWrite(tripToken: string | null): boolean {
+  if (isMinimalAlarmEnabled()) return false;
+  if (!tripToken) return false;
+  return activeTripToken === tripToken;
 }
 
 /**
