@@ -490,6 +490,86 @@ describe('fireLiveActivityUpdate', () => {
     expect(trip.activityPushToken).toBe('la-token');
     expect(stats.laTokenCleared).toBe(0);
   });
+
+  // apnsEnv self-heal (#2064 계열) — silent/alert push의 sendWithEnvHeal과 동일 패턴을 LA update에도
+  // 적용. 첫 시도가 BadDeviceToken(400, env mismatch 신호)이면 즉시 clear하지 않고 opposite host로
+  // 1회 retry한다. retry가 성공하면 token은 살아있는 것이 확인됐으므로 clear하지 않고, 대신
+  // trip.apnsEnv를 정정해 다음 push부터는 첫 시도로 바로 성공하도록 한다.
+  it('retries on opposite host on 400 BadDeviceToken and does not clear token when retry succeeds (env self-heal)', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+      )
+      .mockResolvedValueOnce(new Response('', { status: 200 }));
+    const stats = makeStats();
+    const trip = makeTrip({ apnsEnv: 'sandbox' });
+    const r = await fireLiveActivityUpdate(
+      trip,
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [firstUrl] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const [secondUrl] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+    expect(firstUrl).toBe(`https://${APNS_HOSTS.sandbox}/3/device/la-token`);
+    expect(secondUrl).toBe(`https://${APNS_HOSTS.production}/3/device/la-token`);
+    // token은 유효했음이 확인됐으므로 clear하지 않는다.
+    expect(trip.activityPushToken).toBe('la-token');
+    expect(trip.activityState).toBe('live');
+    expect(stats.laTokenCleared).toBe(0);
+    expect(stats.laPushSent).toBe(1);
+    // apnsEnv 정정 + dirty=true → 호출자가 putTrip으로 정정된 env를 영속화해야 함.
+    expect(trip.apnsEnv).toBe('production');
+    expect(r.dirty).toBe(true);
+  });
+
+  it('clears token only when BOTH envs fail with BadDeviceToken (env self-heal exhausted)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const stats = makeStats();
+    const trip = makeTrip({ apnsEnv: 'sandbox' });
+    const r = await fireLiveActivityUpdate(
+      trip,
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(r.dirty).toBe(true);
+    expect(trip.activityPushToken).toBeUndefined();
+    expect(trip.activityState).toBe('ended');
+    expect(stats.laTokenCleared).toBe(1);
+  });
+
+  // 410 Unregistered는 env mismatch 신호가 아니다 — 어느 host로 보내도 결과가 같으므로 retry 없이
+  // 즉시 clear한다 (기존 동작 유지, self-heal 도입으로 회귀 없음을 보장).
+  it('clears immediately on 410 without retrying opposite host (410 is not env-specific)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
+    );
+    const stats = makeStats();
+    const trip = makeTrip({ apnsEnv: 'sandbox' });
+    const r = await fireLiveActivityUpdate(
+      trip,
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(r.dirty).toBe(true);
+    expect(trip.activityPushToken).toBeUndefined();
+    expect(trip.activityState).toBe('ended');
+    expect(stats.laTokenCleared).toBe(1);
+  });
 });
 
 describe('fireLiveActivityDismissal', () => {

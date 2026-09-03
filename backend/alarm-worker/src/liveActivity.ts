@@ -140,14 +140,19 @@ export interface LiveActivityFireResult {
  * LA update push 발사. trip에 activity token이 없거나 state가 live가 아니면 no-op.
  * APNs token-invalid 응답 시 token clear + state='ended'로 전이 (dirty=true).
  *
- * silent/reschedule push의 env-heal(#482)은 LA에 적용하지 않는다 — LA token은 register 시점에
- * 디바이스가 apnsEnv를 확정 통지(`POST /live-activity/register`가 trip의 apnsEnv를 신뢰)하므로,
- * 토큰/환경 불일치는 곧 토큰 자체 무효를 의미. token-invalid 분기에서 단순 clear로 흡수.
+ * #2064 계열 — silent/reschedule/trip-ended push와 동일한 apnsEnv self-heal(#482,
+ * `sendWithEnvHeal`)을 LA update에도 적용한다. LA token은 register 시점에 디바이스가 apnsEnv를
+ * 통지하지만, 로컬 sandbox 빌드 vs production trip처럼 그 통지가 실제 발사 환경과 어긋나는
+ * 경우(#2064) 첫 시도가 400 BadDeviceToken으로 실패한다 — 과거엔 이를 즉시 token-invalid로
+ * 오판해 clear했다. opposite host로 1회 retry해 진짜 무효(양쪽 env 모두 실패)인지 확인 후에만
+ * clear한다. retry가 성공하면 trip.apnsEnv를 정정(dirty=true)해 다음 push부터 첫 시도로 성공한다.
  *
  * #1899 — token-invalid 판정 확장: 410 Unregistered + 400 BadDeviceToken 둘 다 처리.
- * APNs는 rotation 직후 짧은 window에서 옛 token으로 400 BadDeviceToken을 반환하다가 410로
- * 전환되는 패턴이 있다(T2/T3 trip 경계 race). 400을 clear 안 하면 다음 cron cycle도 같은
- * stale token으로 재시도 → BadDeviceToken 폭증 + LA UI desync. reason 문자열이 SSoT.
+ * 410은 env-specific이 아니므로(양쪽 host 모두 동일 결과) retry 없이 즉시 clear한다.
+ * 400 BadDeviceToken은 env mismatch 신호일 수 있어 `sendWithEnvHeal`의 retry를 거친 뒤,
+ * 양쪽 env 모두 실패(envMismatchExhausted)했을 때만 clear한다 — rotation race(T2/T3 trip
+ * 경계)에서 옛 token이 400으로 응답되는 패턴도 결국 양쪽 env 모두 실패로 귀결되어 기존
+ * 즉시-clear 동작과 결과가 동일하게 유지된다.
  */
 export async function fireLiveActivityUpdate(
   trip: Trip,
@@ -161,19 +166,32 @@ export async function fireLiveActivityUpdate(
   if (!trip.activityPushToken || trip.activityState !== 'live') {
     return { dirty: false };
   }
-  const host = pickApnsHost(trip.apnsEnv, deps.apnsHosts);
-  const result = await sendLiveActivityUpdate({
-    activityToken: trip.activityPushToken,
-    contentState,
-    event: 'update',
-    staleDate: Math.floor(now / 1000) + staleDurationSecForKind(waypointKind),
-    config: deps.apnsConfig,
-    host,
-    fetchImpl: deps.fetchImpl,
-    now,
-  });
+  const activityToken = trip.activityPushToken;
+  const staleDate = Math.floor(now / 1000) + staleDurationSecForKind(waypointKind);
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendLiveActivityUpdate({
+        activityToken,
+        contentState,
+        event: 'update',
+        staleDate,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  const result = heal.result;
   if (result.ok) {
     stats.laPushSent += 1;
+    if (heal.correctedEnv) {
+      trip.apnsEnv = heal.correctedEnv;
+      return { dirty: true };
+    }
     return { dirty: false };
   }
   stats.laPushFailed += 1;
@@ -182,7 +200,9 @@ export async function fireLiveActivityUpdate(
     status: result.status,
     reason: result.reason,
   });
-  if (isApnsTokenInvalid(result.status, result.reason)) {
+  // 410은 env-specific이 아니라 retry 없이 바로 clear. 400 BadDeviceToken은 sendWithEnvHeal이
+  // 이미 opposite host로 1회 retry했으므로, 양쪽 env 모두 실패했을 때(envMismatchExhausted)만 clear.
+  if (isApnsTokenInvalid(result.status, result.reason) && (result.status === 410 || heal.envMismatchExhausted)) {
     trip.activityPushToken = undefined;
     trip.activityState = 'ended';
     stats.laTokenCleared += 1;
