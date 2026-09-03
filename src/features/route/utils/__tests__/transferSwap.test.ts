@@ -54,6 +54,7 @@ function baseInput(overrides: Partial<Parameters<typeof evaluateTransferSwap>[0]
     boardingLine: '2' as const,
     destinationName: null as string | null,
     onPlannedTransfer: false,
+    onRouteStation: false,
     ...overrides,
   };
 }
@@ -62,6 +63,27 @@ describe('evaluateTransferSwap', () => {
   it('onPlannedTransfer이면 즉시 빈 결과(detect 안 함)', () => {
     const result = evaluateTransferSwap(baseInput({ onPlannedTransfer: true }));
     expect(result).toEqual({ candidateLines: [], candidate: null });
+  });
+
+  // #U1 — 통과역(pass-through) 오출현 회귀 가드. 군자(5/7호선)처럼 물리적 환승역이라도
+  // 활성 route가 이미 그 line을 알고 있으면(=onRouteStation) 재확인 모달을 띄우지 않는다.
+  it('onRouteStation이면 즉시 빈 결과(활성 route 경로상 통과역, 재확인 불필요)', () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+    ]);
+    const result = evaluateTransferSwap(baseInput({ arrival, onRouteStation: true }));
+    expect(result).toEqual({ candidateLines: [], candidate: null });
+  });
+
+  // 과억제 방지 가드: route가 모르는 line으로의 진짜(off-route) 환승은 onRouteStation=false로
+  // 계속 detect되어야 한다 — 위 테스트와 짝을 이뤄 guard가 정확히 route-known line만 억제함을 검증.
+  it('onRouteStation=false(route가 모르는 line) → 진짜 환승은 계속 detect됨(과억제 아님)', () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+    ]);
+    const result = evaluateTransferSwap(baseInput({ arrival, onRouteStation: false }));
+    expect(result.candidateLines).toEqual(['4']);
+    expect(result.candidate).toEqual({ trainCode: 'T-4', line: '4', subwayId: expect.any(String) });
   });
 
   it('비환승 역이면 빈 결과', () => {

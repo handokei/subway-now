@@ -284,6 +284,72 @@ describe('useTransferAutoDetect', () => {
     expect(onAutoLock).not.toHaveBeenCalled();
   });
 
+  /**
+   * #U1 — 통과역(pass-through) 오출현 회귀 가드. 군자(5/7호선)는 물리적 환승역이지만 활성
+   * route(7호선 direct)가 이미 그 line을 안다 — 재확인 모달이 뜨면 안 된다. 군자를 벗어나
+   * route가 모르는 line(다른 물리 환승역)으로 진짜 갈아탄 경우엔 계속 detect되어야 한다(과억제 방지).
+   */
+  describe('#U1 활성 route 경로상 통과역 억제', () => {
+    const GUNJA_7: Station = { id: '0720', name: '군자', line: '7', lineColor: '#747F00', lat: 37.557, lng: 127.079 };
+    const GUNJA_5: Station = { id: '0547', name: '군자', line: '5', lineColor: '#996CAC', lat: 37.557, lng: 127.079 };
+    const gunjaNearest: NearestStationsResult = {
+      primary: GUNJA_7,
+      variants: [GUNJA_7, GUNJA_5],
+      distanceKm: 0.03,
+      isTransfer: true,
+    };
+    const directRouteLine7 = {
+      type: 'direct' as const,
+      stops: 4,
+      line: '7' as const,
+      travelSeconds: 480,
+    };
+
+    it('route가 아는 line 위의 통과역(군자) → 5호선 임박이 있어도 모달 안 뜸', () => {
+      const onAutoLock = jest.fn();
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '까치산', arrivalSeconds: 60, line: '5', trainCode: 'T-5' }),
+      ]);
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: gunjaNearest,
+            arrival,
+            boardingLock: makeLock({ boardingLine: '7', boardingStationId: GUNJA_7.id }),
+            route: directRouteLine7,
+            destinationName: '용마산',
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(result.current.modalVisible).toBe(false);
+      expect(result.current.candidateLines).toEqual([]);
+      expect(onAutoLock).not.toHaveBeenCalled();
+    });
+
+    it('route가 모르는 line으로의 진짜 환승(off-route)은 계속 detect됨(과억제 아님)', () => {
+      const onAutoLock = jest.fn();
+      // 동대문역사문화공원(2/4/5호선)은 line 7 route와 무관 — currentStation.line(2)이 route에 없음.
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+      ]);
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest,
+            arrival,
+            boardingLock: makeLock({ boardingLine: '2', boardingStationId: DDP_2.id }),
+            route: directRouteLine7,
+            destinationName: '용마산',
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(result.current.modalVisible).toBe(true);
+      expect(result.current.candidateLines).toEqual(['4']);
+    });
+  });
+
   it('variants에 candidate line 없음 → 모달 후보 0 (selectLine 호출해도 no-op)', () => {
     const onAutoLock = jest.fn();
     const arrival = multiCandidateArrival();

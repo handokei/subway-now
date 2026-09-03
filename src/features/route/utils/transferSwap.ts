@@ -48,6 +48,13 @@ export interface EvaluateTransferSwapInput {
    * 자동 detect skip. FG hook은 `findActiveTransferContext`로 산출, BG task는 항상 false.
    */
   readonly onPlannedTransfer: boolean;
+  /**
+   * #U1 — 현재 역이 활성 route 경로상의(known) line이다. true면 통과역(pass-through)으로 보고
+   * 자동 detect skip. 물리적 환승역(예: 군자 5/7호선)이라도 route가 이미 그 line을 알고 있으면
+   * 사용자에게 불필요한 재확인을 요구하지 않는다(진짜 route-off 환승은 currentStation의 line이
+   * route에 없으므로 계속 detect됨). FG hook은 `isStationOnRoute`로 산출, BG task는 항상 false.
+   */
+  readonly onRouteStation: boolean;
 }
 
 export interface EvaluateTransferSwapResult {
@@ -68,9 +75,17 @@ const EMPTY_RESULT: EvaluateTransferSwapResult = { candidateLines: [], candidate
 export function evaluateTransferSwap(
   input: EvaluateTransferSwapInput,
 ): EvaluateTransferSwapResult {
-  const { nearestStations, motionStationary, arrival, boardingLine, destinationName, onPlannedTransfer } = input;
+  const {
+    nearestStations,
+    motionStationary,
+    arrival,
+    boardingLine,
+    destinationName,
+    onPlannedTransfer,
+    onRouteStation,
+  } = input;
 
-  if (onPlannedTransfer) return EMPTY_RESULT;
+  if (onPlannedTransfer || onRouteStation) return EMPTY_RESULT;
 
   const otherLineArrivals = collectOtherLineArrivals(arrival, boardingLine);
   const detection = detectTransfer({
