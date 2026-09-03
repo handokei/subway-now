@@ -84,7 +84,6 @@ import {
   buildAlarmContent,
   ALARM_SILENT_CHANNEL_ID,
 } from '../utils/stationNotification';
-import { markLocalStationFired } from '../utils/recentLocalStationFires';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
@@ -1328,10 +1327,17 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     }
 
     // #918 — BG wake = backend visible push 도착 시점("결정 evolve" 2026-08-03 2차 2항 BG 방향).
-    // 이 station의 presched(OS 사전예약) pending을 즉시 취소 + 이미 OS가 발사했다면 delivered
-    // tray에서도 제거 + recentLocalStationFires에 마킹 — FG willPresent 2차 방어선(#2122)이
-    // 뒤늦게 도착하는(사실상 이미 도착한) presched 발사를 억제하도록 갱신한다. 3-소스 중 하나가
-    // 먼저 도달하면 나머지 둘의 흔적을 정리하는 대칭 동작(FG 방향은 scheduledAlarmReceiver).
+    // 이 station의 presched(OS 사전예약) pending을 즉시 취소한다 — "역당 배너 정확히 1개"의
+    // 남은 방향(remote가 먼저 도착 → 나중에 presched pending이 또 안 뜨게).
+    //
+    // #2488 (#2064 잔여) — 과거 이 지점에서 recentLocalStationFires에도 함께 마킹했으나, 이 no-op
+    // 경로(#2064 Phase 1-device로 device가 transfer/destination/intermediate kind를 로컬 발사하지
+    // 않게 됨)에서는 사용자에게 실제로 아무것도 표시되지 않는다. 발사하지 않았는데 "발사됨"으로
+    // 마킹하면 phantom 플래그가 남아, 뒤이어 도착하는 backend의 진짜 visible arrival push가 FG에서
+    // isRecentLocalAuxFireDuplicate(stationNotification.ts)에 의해 오억제된다. markLocalStationFired는
+    // 실제 로컬 발사가 일어난 지점(stationNotification.ts의 station-passed/boarding-prompt 발사,
+    // scheduledAlarmReceiver의 presched 실발사, useStationAlarm의 device 로컬 발사)에서만 호출돼야
+    // 하는 계약 — 이 no-op 경로는 그 계약을 어겼으므로 호출을 제거한다.
     const localKind = mapBackendKindToLocalFireKind(payload.kind);
     // istanbul ignore next -- 이 지점에 도달하는 payload.kind는 이미 위에서 reschedule/trip-ended/
     // boarding-prompt/sleep-alarm-companion/missing-kind 분기로 전부 걸러진 뒤라
@@ -1341,9 +1347,6 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     if (localKind === 'transfer' || localKind === 'destination' || localKind === 'station-passed') {
       await cancelPrescheduledByStationKind(payload.nextWaypoint, localKind).catch((e: unknown) => {
         logger.warn('presched cancel-on-remote-arrival 실패:', e);
-      });
-      await markLocalStationFired(payload.nextWaypoint, localKind).catch((e: unknown) => {
-        logger.warn('markLocalStationFired 실패:', e);
       });
     }
 
