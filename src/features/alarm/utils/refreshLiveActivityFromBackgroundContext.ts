@@ -28,6 +28,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import * as LiveActivity from 'live-activity';
 import {
+  ACTIVE_TRIP_KEY,
   BG_LAST_STATION_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
@@ -37,6 +38,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
+import { shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -104,10 +106,11 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       logger.info('LA dismiss sentinel active — skip refresh');
       return;
     }
-    const [destRaw, routeRaw, bgRaw] = await Promise.all([
+    const [destRaw, routeRaw, bgRaw, tripToken] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(BG_LAST_STATION_KEY),
+      AsyncStorage.getItem(ACTIVE_TRIP_KEY),
     ]);
 
     const destination = readDestination(destRaw);
@@ -124,6 +127,12 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // lockscreen에 의도치 않은 LA를 띄울 위험. 둘 다 본 가드로 차단.
     if (!bg) {
       logger.info('BG_LAST_STATION absent — skip refresh (preserve last LA state)');
+      return;
+    }
+    // #2481 — backend-authority 모드 + 이미 backend가 이 trip의 LA push 채널을 쥐고 있으면
+    // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2).
+    if (shouldSkipDeviceLiveActivityWrite(tripToken)) {
+      logger.info('backend-authority active trip — skip BG LA refresh write');
       return;
     }
     const currentStation = bg.station;

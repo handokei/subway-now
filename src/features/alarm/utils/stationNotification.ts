@@ -19,6 +19,7 @@ import { ACTIVE_TRIP_KEY, APNS_TOKEN_KEY } from '../../../shared/constants/stora
 import {
   ensureLiveActivityRegistered,
   endLiveActivityWithDeregister,
+  shouldSkipDeviceLiveActivityWrite,
 } from './liveActivityPushChannel';
 import { stopVibration } from './alarmSound';
 import { createLogger } from '../../../shared/utils/logger';
@@ -564,6 +565,12 @@ export async function updateStationNotification(
       // #1288 — 활성 trip이 있으면 LA push 토큰 등록 채널을 거친다. 활성 trip이 없으면
       // 기존처럼 update만 호출(LA push 미등록은 silent, LA 자체는 정상 동작).
       const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+      // #2481 — backend-authority 모드 + 이미 backend가 이 trip의 LA push 채널을 쥐고 있으면
+      // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2).
+      if (shouldSkipDeviceLiveActivityWrite(tripToken)) {
+        liveActivityLogger.info('backend-authority 활성 trip — device LA 쓰기 스킵(backend push 단독 저자)');
+        return;
+      }
       if (tripToken) {
         await ensureLiveActivityRegistered(tripToken, data);
       } else {
