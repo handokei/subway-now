@@ -33,7 +33,7 @@ import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSy
 import type { StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LineNumber, NearestStationsResult, Station } from '../../../shared/types/station';
-import { normalizeStationName, type Route } from '../../../shared/utils/stationRoute';
+import { isStationOnRoute, normalizeStationName, type Route } from '../../../shared/utils/stationRoute';
 
 export interface UseTransferAutoDetectInputs {
   /** 환승역 신호 + 후보 산출에 필요한 현재 fusion 결과. */
@@ -87,6 +87,14 @@ export function useTransferAutoDetect({
     [boardingLock, route, destinationName, currentStation],
   );
 
+  // #U1 — 현재 역이 활성 route가 이미 아는 line 위의 통과역이면 detect skip. 물리적 환승역(예:
+  // 군자 5/7호선)이라도 route가 그 line을 포함하면 재확인 불필요(#2479 원인). route가 모르는
+  // line으로의 진짜 환승은 currentStation.line이 route에 없어 계속 detect된다(과억제 방지).
+  const onRouteStation = useMemo(
+    () => (route && currentStation ? isStationOnRoute(currentStation, route) : false),
+    [route, currentStation],
+  );
+
   // #1281 — FG/BG 공유 pure 결정 로직. hook은 결과를 모달/idempotency state와 묶기만 한다.
   const detection = useMemo(
     () =>
@@ -97,8 +105,17 @@ export function useTransferAutoDetect({
         boardingLine,
         destinationName,
         onPlannedTransfer,
+        onRouteStation,
       }),
-    [nearestStations, motionStationary, arrival, boardingLine, destinationName, onPlannedTransfer],
+    [
+      nearestStations,
+      motionStationary,
+      arrival,
+      boardingLine,
+      destinationName,
+      onPlannedTransfer,
+      onRouteStation,
+    ],
   );
 
   const candidateLines = detection.candidateLines;
