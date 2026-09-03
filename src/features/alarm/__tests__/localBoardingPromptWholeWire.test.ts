@@ -47,6 +47,12 @@ jest.mock('../../../shared/utils/logger', () => ({
   }),
 }));
 
+// 이 fixture는 dogfood(MINIMAL_ALARM ON) 전제의 device 로컬 발사 wire를 검증한다 — flag OFF
+// 케이스는 useLocalBoardingPromptGate.test.ts가 별도로 커버.
+jest.mock('../../../shared/constants/debugFlags', () => ({
+  isMinimalAlarmEnabled: () => true,
+}));
+
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useLocalBoardingPromptGate } from '../hooks/useLocalBoardingPromptGate';
 import { getStationById } from '../../../shared/utils/stationRoute';
