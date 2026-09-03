@@ -131,6 +131,26 @@ describe('journeyDisplayToStops', () => {
     expect(stops[1].station).toBe('용산');
   });
 
+  it('U2(#2492) 환승 lead window: origin 재앵커링 직후 route.stopsToTransfer가 아직 0으로 갱신되지 않아도(예: 2, stale) 출발 노드는 이전 leg 노선(A)이 아니라 다음 leg 노선(B)으로 표시된다', () => {
+    // resolveJourneyOriginStation이 boardingLock/legAdvance로 origin을 환승역(건대입구)에 조기
+    // 재앵커링 → buildJourneyDisplay seg0 fromName===toName('건대입구')이지만 stale stopsToTransfer(2)가
+    // 아직 남아있는 lead window. isCollapsedZeroFirstHop이 stops===0을 요구하면 collapse 미발동 →
+    // 출발 노드가 seg.line('7', A leg 잔재)으로 오표시됨. 기대: 'gyeongui'(B, 다음 leg).
+    const journey: JourneyDisplay = {
+      segments: [
+        { line: '7', lineColor: '#747F00', fromName: '건대입구', toName: '건대입구', stops: 2 },
+        { line: 'gyeongui', lineColor: '#77C4A3', fromName: '건대입구', toName: '용산', stops: 5 },
+      ],
+      totalStops: 7,
+    };
+    const stops = journeyDisplayToStops(journey);
+    // 출발 노드 1개 + 도착 노드 1개 = 2개. phantom/중복 환승 노드가 없어야 한다.
+    expect(stops).toHaveLength(2);
+    expect(stops[0]).toEqual({ station: '건대입구', line: 'gyeongui', mark: 'filled' });
+    expect(stops[1].mark).toBe('dest');
+    expect(stops[1].station).toBe('용산');
+  });
+
   it('#665 출발역과 환승역 이름이 다르면 흡수하지 않음 (기존 동작 유지)', () => {
     const journey: JourneyDisplay = {
       segments: [

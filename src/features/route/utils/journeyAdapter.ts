@@ -55,11 +55,16 @@ export function journeyDisplayToStops(
     const isFirst = i === 0;
     const isLast = i === segments.length - 1;
 
-    // #665: 출발=첫 환승역(stops=0)인 경우 transfer 노드를 출발 노드에 흡수.
+    // #665: 출발=첫 환승역인 경우 transfer 노드를 출발 노드에 흡수.
     // 출발 마크의 line을 다음 segment의 line으로 두면 환승 후 노선이 시각적으로 그대로 표시되고
     // "0정거장" 표기가 사라진다. 흡수 후에는 아래 transfer push 분기를 skip.
+    // #2492(U2): 판정을 seg.stops===0이 아니라 fromName===toName만으로 한다. journeyOrigin.ts의
+    // resolveJourneyOriginStation이 boardingLock/legAdvance로 origin을 환승역에 조기
+    // 재앵커링하면 fromName===toName은 즉시 참이 되지만, route.stopsToTransfer(seg.stops)는
+    // 아직 0으로 갱신되지 않는 lead window가 생긴다. stops===0을 추가 요구하면 이 lead window
+    // 동안 collapse가 발동하지 않아 출발 노드가 이전 leg 노선(A)으로 오표시된다.
     const isCollapsedZeroFirstHop =
-      isFirst && !isLast && seg.stops === 0 && isSameStationName(seg.fromName, seg.toName);
+      isFirst && !isLast && isSameStationName(seg.fromName, seg.toName);
 
     if (isFirst) {
       const nextSeg = segments[i + 1];
