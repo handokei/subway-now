@@ -36,6 +36,11 @@ jest.mock('../../utils/stationNotification', () => ({
     mockFireLocalBoardingPromptNotification(...args),
 }));
 
+const mockIsMinimalAlarmEnabled = jest.fn();
+jest.mock('../../../../shared/constants/debugFlags', () => ({
+  isMinimalAlarmEnabled: () => mockIsMinimalAlarmEnabled(),
+}));
+
 const currentStation = getStationById('2-020')!; // 중곡
 const destination = getStationById('2-022')!; // 건대입구
 const route = makeDirectRoute(4, '2');
@@ -68,9 +73,47 @@ const context = {
 describe('useLocalBoardingPromptGate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // 기존 시나리오는 전부 dogfood(MINIMAL_ALARM ON) 전제 — 아래 OFF 전용 테스트에서만 override.
+    mockIsMinimalAlarmEnabled.mockReturnValue(true);
     mockBuildBoardingPromptContext.mockReturnValue(context);
     mockEvaluateLocalBoardingPromptGate.mockReturnValue({ pass: true });
     mockFireLocalBoardingPromptNotification.mockResolvedValue(true);
+  });
+
+  it('MINIMAL_ALARM 플래그가 OFF면 게이트가 pass여도 로컬 발사하지 않는다 (backend가 유일 소스)', () => {
+    mockIsMinimalAlarmEnabled.mockReturnValue(false);
+    renderHook(() =>
+      useLocalBoardingPromptGate({
+        route,
+        currentStation,
+        destination,
+        lock: null,
+        gpsFix: null,
+        arrival,
+      }),
+    );
+    expect(mockFireLocalBoardingPromptNotification).not.toHaveBeenCalled();
+  });
+
+  it('MINIMAL_ALARM 플래그가 ON이면 기존과 동일하게 발사한다 (dogfood 회귀 없음)', async () => {
+    mockIsMinimalAlarmEnabled.mockReturnValue(true);
+    renderHook(() =>
+      useLocalBoardingPromptGate({
+        route,
+        currentStation,
+        destination,
+        lock: null,
+        gpsFix: null,
+        arrival,
+      }),
+    );
+    await waitFor(() => {
+      expect(mockFireLocalBoardingPromptNotification).toHaveBeenCalledWith(
+        currentStation.name,
+        '2',
+        'up',
+      );
+    });
   });
 
   it('lock이 활성이면 게이트 평가 자체를 스킵한다 (context 빌드/발사 모두 안 함)', () => {
