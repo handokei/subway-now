@@ -22,6 +22,7 @@ import { useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { syncBoardingLock } from '../../nearest-station/api/boardingLockSync';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useBoardingLockSync');
@@ -212,14 +213,20 @@ async function fireSync(input: FireSyncInput): Promise<void> {
     logger.info('skip — apns or trip token missing', { reason: input.reason });
     return;
   }
+  // #2407 — pending fallback lock의 sentinel trainCode(PENDING-TRAIN-CODE)는 backend 실시간 API에서
+  // 절대 찾을 수 없다. buildBoardingLockMeta(/trips 등록 경로)는 이미 이 sentinel을 걸러내는데
+  // /boarding-lock/sync 경로는 가드가 없어 그대로 새어나가 backend가 정상 anchor를 덮어쓰는 회귀가
+  // 있었다 — 같은 predicate로 여기서도 생략한다. boardingLine은 trainCode 없이는 backend가 무시하지만
+  // (D4 주석) sentinel 페어를 절반만 보내는 모호함을 피하기 위해 함께 생략한다.
+  const isPending = input.trainCode ? isPendingTrainCode(input.trainCode) : false;
   const payload = {
     token,
     observedStationName: input.observedStationName,
     observedAtMs: Date.now(),
     accuracy: input.accuracy,
     ...(input.subsurface !== undefined ? { subsurface: input.subsurface } : {}),
-    ...(input.trainCode ? { trainCode: input.trainCode } : {}),
-    ...(input.boardingLine ? { boardingLine: input.boardingLine } : {}),
+    ...(input.trainCode && !isPending ? { trainCode: input.trainCode } : {}),
+    ...(input.boardingLine && !isPending ? { boardingLine: input.boardingLine } : {}),
   };
   const res = await syncBoardingLock(payload);
   logger.info('boarding-lock sync sent', {
