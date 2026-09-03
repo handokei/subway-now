@@ -1920,15 +1920,28 @@ describe('silentPushTask', () => {
         );
       });
 
-      // #918 — BG wake 시점에 presched(OS 사전예약) pending cancel + markLocalStationFired를
-      // 호출한다. 매핑되는 kind(transfer/destination/intermediate→station-passed)에서 정상 호출됨을
-      // 확인하고, 두 호출이 각각 reject해도(예: OS query 실패) 나머지 처리 흐름이 중단되지 않음을 검증한다.
-      it('kind=intermediate → cancelPrescheduledByStationKind + markLocalStationFired(station-passed)로 호출', async () => {
+      // #2488 (#2064 잔여) — BG wake 시점에 presched(OS 사전예약) pending cancel은 그대로 수행하되,
+      // markLocalStationFired는 더 이상 호출하지 않는다. 이 no-op 경로는 device가 실제로 로컬
+      // 알림을 발사하지 않는다(#2064 Phase 1-device로 device 발사 자체가 제거됨) — 발사하지 않은
+      // (station,kind)를 "발사됨"으로 마킹하면 recentLocalStationFires(#2122 dedup store)에 phantom
+      // 플래그가 남고, 뒤이어 도착하는 backend의 실제 visible arrival push가 FG에서
+      // isRecentLocalAuxFireDuplicate(stationNotification.ts)에 의해 오억제된다.
+      it('kind=intermediate → cancelPrescheduledByStationKind는 호출하되 markLocalStationFired는 호출하지 않는다 (발사 없이 mark 금지)', async () => {
         await handleSilentPush(
           payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '건대입구' }),
         );
         expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('건대입구', 'station-passed');
-        expect(mockMarkLocalStationFired).toHaveBeenCalledWith('건대입구', 'station-passed');
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      });
+
+      it('kind=transfer/destination도 markLocalStationFired를 호출하지 않는다', async () => {
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', nextWaypoint: '왕십리' }),
+        );
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', nextWaypoint: '잠실' }),
+        );
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
       });
 
       it('cancelPrescheduledByStationKind reject해도 흐름 계속 (logger.warn으로 흡수)', async () => {
@@ -1936,15 +1949,7 @@ describe('silentPushTask', () => {
         await expect(
           handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', nextWaypoint: '왕십리' })),
         ).resolves.toBeUndefined();
-        expect(mockMarkLocalStationFired).toHaveBeenCalledWith('왕십리', 'transfer');
-      });
-
-      it('markLocalStationFired reject해도 흐름 계속 (logger.warn으로 흡수)', async () => {
-        mockMarkLocalStationFired.mockRejectedValueOnce(new Error('storage fail'));
-        await expect(
-          handleSilentPush(payload({ kind: 'destination', phase: 'imminent', nextWaypoint: '잠실' })),
-        ).resolves.toBeUndefined();
-        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('잠실', 'destination');
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
       });
 
       it('logSilentPushReceived는 no-op 이전에 그대로 적재 (수신 자체는 유지)', async () => {
