@@ -474,10 +474,10 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   });
 
   // #2408 — 위험1 guard: stale prompt → 잘못된 lock 방지. BG_LAST_STATION mock helper.
-  function mockBgLastStation(line: string, ageMs: number): void {
+  function mockBgLastStation(line: string, ageMs: number, name = '용마산'): void {
     (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(async () =>
       JSON.stringify({
-        station: { id: 'BG1', line, name: '용마산' },
+        station: { id: 'BG1', line, name },
         distanceKm: 0.1,
         timestamp: Date.now() - ageMs,
       }),
@@ -485,12 +485,61 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   }
 
   it('#2408 — fresh BG_LAST_STATION이 payload.line과 모순 → createLock 미호출(skip)', async () => {
-    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    // 이름까지 다른 진짜 다른 역(용마산 vs 강남) — findStationByNameAndLine은 인자별로
+    // 실제 역 매칭 여부를 흉내낸다(용마산은 2호선에 없음 → null).
+    (findStationByNameAndLine as jest.Mock).mockImplementation(
+      (name: string, line: string) => (name === '강남' && line === '2' ? { id: 'S1', line: '2', name: '강남' } : null),
+    );
     mockBgLastStation('7', 0); // 7호선(용마산)에 있는데 payload.line='2'(강남) — 모순.
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
     expectAutoLockLogged('fallback-skipped-position-contradiction');
+  });
+
+  // #2408 Gap A (root fix) — 환승역(예: 건대입구=2호선+7호선)에서 BG fusion이 payload.line과
+  // 다른 노선으로 최근접역을 stamp해도 같은 물리적 역이면 진짜 모순이 아니다. line만 비교하는
+  // 구 guard는 이 케이스를 오판해 lock 생성을 skip(lockless cascade)했다.
+  it('#2408 Gap A — 환승역에서 BG_LAST_STATION이 다른(그러나 유효한) 노선으로 관측 → 같은 물리적 역이면 모순 아님, pending fallback lock 생성', async () => {
+    const transferPayload = { ...PAYLOAD, originStation: '건대입구', line: '2' };
+    (findStationByNameAndLine as jest.Mock).mockImplementation((name: string, line: string) =>
+      name === '건대입구' && (line === '2' || line === '7')
+        ? { id: `${line}-X`, line, name: '건대입구' }
+        : null,
+    );
+    mockBgLastStation('7', 0, '건대입구'); // BG_LAST_STATION: 건대입구 7호선. prompt: 건대입구 2호선.
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, transferPayload, deps);
+    expectPendingFallbackLockCalled('2');
+    expectAutoLockLogged('autolock-fallback-pending', '건대입구', '2');
+  });
+
+  // #2408 Gap A — false-positive 방어: line이 payload.line 위에서 둘 다 유효한 역으로 resolve돼도
+  // station 이름 자체가 다르면(진짜 다른 물리적 역) 여전히 모순으로 skip해야 한다. "bg station이
+  // payload.line 위에 존재하는지"만 보고 통과시키면 안 된다 — identity(이름) 비교가 필수.
+  it('#2408 Gap A — 서로 다른 진짜 역(둘 다 payload.line에 존재)은 여전히 모순으로 skip', async () => {
+    (findStationByNameAndLine as jest.Mock).mockImplementation((name: string, line: string) => {
+      if (name === '강남' && line === '2') return { id: '2-S', line: '2', name: '강남' };
+      if (name === '왕십리' && line === '2') return { id: '2-W', line: '2', name: '왕십리' };
+      return null;
+    });
+    mockBgLastStation('5', 0, '왕십리'); // 왕십리(5호선) — 강남과 다른 물리적 위치.
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).not.toHaveBeenCalled();
+    expectAutoLockLogged('fallback-skipped-position-contradiction');
+  });
+
+  // #2408 Gap A — payload.line 자체가 유효한 LineNumber가 아니면(데이터 이상) 환승역 동일성
+  // 검증(promptLine 조회)이 애초에 불가능하다 — 검증 불가는 모순으로 간주해 기존대로 skip.
+  it('#2408 Gap A — payload.line이 유효하지 않으면 환승역 판정 skip, 위치 모순으로 처리', async () => {
+    const invalidLinePayload = { ...PAYLOAD, line: '99' };
+    (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+    mockBgLastStation('7', 0); // bgContext line('7') !== payload.line('99') — 모순.
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, invalidLinePayload, deps);
+    expect(createLockMock).not.toHaveBeenCalled();
+    expectAutoLockLogged('fallback-skipped-position-contradiction', '강남', '99');
   });
 
   it('#2408 — BG_LAST_STATION line이 payload.line과 일치 → 기존대로 pending fallback lock 생성', async () => {
