@@ -26,6 +26,7 @@ import {
   FALLBACK_BOARDING_DURATION_MINUTES,
   FREE_TRIP_DESTINATION_SENTINEL,
   isPendingTrainCode,
+  isRealBoardingLock,
 } from '../../../shared/constants/boardingLock';
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import { useLockSuggestion } from '../api/useLockSuggestion';
@@ -126,9 +127,10 @@ const isReachable = (train: ArrivalInfo): boolean => train.arrivalSeconds >= 0;
 /**
  * #2407 — lock이 이미 확정된(pending 아닌) trainCode로 존재하면 lockSuggestion 채택을 skip.
  * pending fallback lock(trainCode 미확정)은 upgrade 대상이라 skip하지 않는다.
+ * `isRealBoardingLock`(shared, Gap B)와 동일 predicate — 소비처가 늘어나며 단일 SSOT로 위임.
  */
 function shouldSkipExistingLock(lock: BoardingLock | null): boolean {
-  return lock !== null && !isPendingTrainCode(lock.trainCode);
+  return isRealBoardingLock(lock);
 }
 
 /**
