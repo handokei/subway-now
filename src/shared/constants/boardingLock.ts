@@ -2,6 +2,8 @@
  * BoardingLock 관련 상수 — PR C/D에서 scheduler/알람도 참조해 drift 방지 (#584).
  */
 
+import type { BoardingLock } from '../types/boardingLock';
+
 /**
  * trip ETA 미상 시 lock 생성에 사용할 fallback 지속시간(분).
  * 자동 만료는 expectedDurationMs × BOARDING_LOCK_EXPIRY_FACTOR(=1.5)이므로
@@ -214,6 +216,20 @@ export const PENDING_TRAIN_CODE = 'PENDING-TRAIN-CODE';
 /** lock.trainCode가 #2407 fallback lock의 미확정 sentinel인지 판별. */
 export function isPendingTrainCode(trainCode: string): boolean {
   return trainCode === PENDING_TRAIN_CODE;
+}
+
+/**
+ * #2407 Gap B (root fix) — lock이 backend에 도달 가능한 "실" lock인지 판별.
+ *
+ * pending fallback lock(trainCode=PENDING_TRAIN_CODE)은 `buildBoardingLockMeta`가 backend 등록을
+ * 보류하는 sentinel이라 존재해도 backend 관점에서는 lockless와 동일하다. UI가 이를 "탑승
+ * 확정됨"처럼 렌더하면(BoardingLockHopCard) 사용자가 실 trainCode를 고를 기회(BoardingTrainList)를
+ * 영영 못 만나 deadlock(lockSuggestion만이 유일한 upgrade 경로인데 backend evidence가 없으면
+ * lockSuggestion도 안 옴)에 빠진다. 소비처는 이 predicate로 "실 lock" vs "미확정 lock"을
+ * 구분해, 미확정이면 lockless와 동일하게 취급(원 train 선택 UI로 유도)해야 한다.
+ */
+export function isRealBoardingLock(lock: BoardingLock | null): lock is BoardingLock {
+  return lock !== null && !isPendingTrainCode(lock.trainCode);
 }
 
 /**

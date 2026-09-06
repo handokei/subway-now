@@ -102,6 +102,7 @@ import { useTransferAutoDetect } from '../features/route/hooks/useTransferAutoDe
 import {
   BOARDING_PROXIMITY_THRESHOLD_M,
   TRANSFER_WALKING_BUFFER_SECONDS,
+  isRealBoardingLock,
 } from '../shared/constants/boardingLock';
 import { getTransferSeconds } from '../shared/utils/transferTimes';
 import { BoardingTrainList } from '../features/alarm/components/BoardingTrainList';
@@ -1654,7 +1655,12 @@ export default function HomeScreen() {
                           renderHopSlot={(stop, i) => {
                             // #758 — origin hop slot에 BoardingLock 활성 상태 카드 렌더.
                             // BoardingLockBanner 별도 카드는 제거되고 timeline 안 hop으로 통합.
-                            if (i === 0 && stop.mark === 'filled' && boardingLock) {
+                            // #2407 Gap B (root fix) — pending fallback lock(trainCode 미확정)은
+                            // backend에 절대 도달하지 못하는 sentinel이라(buildBoardingLockMeta
+                            // skip) "실 lock"이 아니다. isRealBoardingLock=false면 이 hop card
+                            // 대신 아래 BoardingTrainList 분기로 흘러 사용자가 실제 열차를 직접
+                            // 선택하게 한다 — lockSuggestion만 기다리는 deadlock을 UI에서 차단.
+                            if (i === 0 && stop.mark === 'filled' && isRealBoardingLock(boardingLock)) {
                               // #897 Seam A: lock.trainCode 매칭 train의 잔여 ETA → 지연 칩 계산 input.
                               // 매칭 없으면 undefined → 칩 미노출 (graceful).
                               // #1326: 표시 전용 lookup이라 boardingListArrivals 사용(Gate 1 무관). 방향 폴백
@@ -1673,7 +1679,9 @@ export default function HomeScreen() {
                             // #649 — origin hop slot: 현재역에서 다음 인접역 방면 boarding list.
                             // #758 — 탑승역 GPS 근접 게이트(BOARDING_PROXIMITY_THRESHOLD_M). custom origin은
                             //  사용자 명시 설정이라 게이트 면제. 게이트 미통과 시 list 비노출 + 안내 텍스트.
-                            if (i === 0 && stop.mark === 'filled' && !boardingLock && effectiveOrigin) {
+                            // #2407 Gap B — pending fallback lock도 이 분기(train picker)로
+                            // 흘러야 하므로 !boardingLock 대신 !isRealBoardingLock 사용.
+                            if (i === 0 && stop.mark === 'filled' && !isRealBoardingLock(boardingLock) && effectiveOrigin) {
                               const distanceToCurrentM = (result?.distanceKm ?? Infinity) * 1000;
                               const nearBoardingStation =
                                 isCustomOrigin || distanceToCurrentM < BOARDING_PROXIMITY_THRESHOLD_M;
