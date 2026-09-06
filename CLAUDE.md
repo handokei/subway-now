@@ -12,6 +12,58 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 
 ---
 
+## 결정 / Acceptance 룰 (필수, 2026-06-12 추가)
+
+2026-06-11 일괄 결정 사고로 사용자 가치 손실 후 도입. 상세는 `tasks/lessons.md` L1~L4.
+
+### 결정 옵션 제시 (B1~BN 같은 차단 항목 결정 PR 작성 시)
+- **false binary 금지** — "강제 적용 vs 면제" 두 옵션만 제시 X. 최소 3개 옵션 보장
+- 빠뜨리기 쉬운 옵션: **"정확성 게이트 보강 (현재 코드에 없음, 신규 작업 X주 필요)"** — 현재 코드에 없어도 옵션 테이블에 포함
+- 자가 점검: "사용자가 한쪽 극단 선택 시 ADR 첫 줄 원칙 위반?" → Yes면 옵션 누락
+- 출처: `memory/feedback_decision_no_false_binary.md`
+
+### Epic close 조건
+- **PR 머지 = close 금지.** "Seam A~G 7개 PR 머지"는 진행 척도일 뿐
+- close 조건 필수: 본문 evidence 시나리오 실기기 1주 재발 0건 OR 1주 production 측정 회귀 0건
+- 자가 점검: "epic 본문 evidence가 acceptance에 1:1 매핑되는가?"
+- 출처: `memory/feedback_epic_close_field_verify.md`
+
+### Acceptance 정의 순서
+- **사용자 가치 → acceptance → 코드** 순서. "이미 머지된 sub-issue" 기준 acceptance 금지
+- 회귀 정의 점검:
+  1. lock 활성 / lockless 둘 다 카테고리?
+  2. 사용자 명시 의향(C 토글 ON / boardingPrompt 응답 / 직접 탭) trip이 lock 활성과 동급으로 다뤄지는가?
+  3. ADR 첫 줄 원칙이 acceptance까지 적용되는가?
+  4. 권한 매트릭스(WhileInUse/Always × FG/BG/취침) 모두 커버?
+  5. 환경 매트릭스(지하/지상/환승) 모두 커버?
+- 출처: `memory/feedback_acceptance_drives_code.md`
+
+### 사용자 명시 의향 trip
+- **C 토글 ON / boardingPrompt 응답 / BoardingTrainList 직접 탭 = lock 활성과 동급 정확도 보장 의무**
+- "정보용 토글" 라벨은 UI 텍스트로만, acceptance/게이트는 동급
+- 다음 표현 금지: "사용자 선택 영역 → acceptance 위반 아님", "정보용이라 정확성 게이트 의무 없음", "best effort"
+- ADR-010 첫 줄: "두 실패 모드(false positive / miss)는 비대칭이 아니라 **동급**."
+- 출처: `memory/feedback_user_intent_equal_protection.md`, `docs/decisions/ADR-014-decision-process-rules.md`
+
+### Wire-completion 5단 룰 (#1582)
+
+"코드만 머지되고 실제 연결 안 됨" 회귀 차단. 모든 PR에 5단 체크 필수 (`.github/PULL_REQUEST_TEMPLATE.md`).
+
+1. **Orphan 없음** — `npm run lint:orphan` pass. CI `Orphan Export Detection` job이 강제. 신규 export 추가 시 caller 반드시 존재.
+   - 의도적 entry-point(`app/` route, `modules/*/index.ts`, barrel `providers/index.ts` 등)는 `scripts/check-orphan-exports.sh`의 `IGNORE_PATTERN`에 추가.
+   - "(used in module)" 라인은 false-positive로 자동 무시.
+2. **V/X dashboard** — 변경된 신호가 어디서 시각화/관측 가능한지(DebugModal / wrangler tail / Cloudflare Dashboard / Sentry) PR 본문에 명시.
+3. **의존 PR** — 본 PR이 작동하려면 머지돼야 할 다른 PR(backend/device/infra) 번호 명시. 없으면 "N/A".
+4. **측정 plan** — 회귀 신호를 1주 안에 어떻게 측정할지(시나리오 / log query / 사용자 trip 캡처) 명시.
+5. **Device verify** — 실기기 검증 필요 여부 + 시나리오. 코드-only면 "N/A — type+unit only" 명시.
+
+검증 절차:
+- `npm run lint:orphan` 로컬 실행 → 0 orphan 확인 후 PR 생성.
+- CI `Wire-completion CI / Orphan Export Detection` job pass 확인 후 머지.
+- 신규 entry-point export 추가 시 ignore pattern 갱신 PR을 분리하지 말고 같은 PR에 포함.
+
+---
+
 ## Agent skills
 
 ### Issue tracker
@@ -24,7 +76,7 @@ Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 ### Domain docs
 
-Single-context — `docs/adr/` at repo root. See `docs/agents/domain.md`.
+Single-context — `docs/decisions/` at repo root (ADR-001~). See `docs/agents/domain.md`.
 
 ---
 
@@ -108,20 +160,38 @@ GPS (expo-location)
     → stationNotification.ts (Live Activity + 푸시 알림)
 ```
 
-### 레이어 구조
-- **`src/api/`** — 외부 API 호출만 담당
-- **`src/hooks/`** — 비즈니스 로직 캡슐화. 훅 내부에서 setInterval로 자체 폴링 관리
-- **`src/store/`** — Zustand 전역 상태 (즐겨찾기, 목적지, 취침모드). AsyncStorage로 영속화
-- **`src/utils/`** — 순수 함수들. `haversine.ts` (거리), `stationRoute.ts` (경로 탐색), `buildMapHtml.ts` (Kakao Maps HTML), `stationNotification.ts` (Live Activity)
-- **`src/components/`** — UI 컴포넌트. 공통: `ScreenContainer`, `Card`, `SectionHeader`
-- **`src/theme/`** — 테마 시스템. `ThemeProvider` + `useTheme()` (라이트/다크 자동 전환)
-- **`src/providers/`** — 도착 정보 Provider 패턴 (팩토리 기반)
-- **`src/testUtils/`** — 테스트 유틸리티. `renderWithTheme`, `fixtures`
-- **`modules/`** — 네이티브 모듈: `live-activity` (iOS Live Activity), `audio-route` (이어폰 감지)
+### 레이어 구조 (Feature-based + Ports & Adapters, ADR Phase 5 + Step 7)
+ADR "Feature-based + Ports & Adapters 디렉토리 재정비" (https://app.notion.com/p/36e30c0194b68148ba29f2bc4554ce8a) 적용.
+의존 방향: `app/` (thin route) → `src/screens/*` (controller) → `src/features/*` → `src/shared/*`. features 끼리, features → screens, shared → screens는 ESLint(`import/no-restricted-paths`)로 직접 import를 차단한다.
+
+- **`app/`** — expo-router route entry (각 파일 1~2줄 re-export). 화면 본체는 `src/screens/`에 둔다 (bulletproof-react "thin route + thick screen", Step 7 / #894).
+- **`src/screens/`** — 화면 본체. features를 조합하는 controller layer. expo-router의 route entry는 `app/(tabs)/X.tsx`가 `src/screens/XScreen.tsx`를 default re-export하는 형태. coverage 제외 (E2E + 수동 검증).
+- **`src/features/<slice>/`** — 도메인별 슬라이스. 각 슬라이스는 자체 `api/`, `hooks/`, `components/`, `utils/`, `tasks/`, `providers/`, `store/` 등을 내부에 둔다.
+  - `alarm/` — 알람·BoardingLock·silent push
+  - `arrival/` — 실시간 도착 정보
+  - `nearest-station/` — GPS 기반 최근접 역 탐색 + fusion
+  - `route/` — 경로 탐색·환승·trip 진행
+  - `map/` — 지도 화면(Kakao Maps WebView)
+  - `widget/` — iOS 홈 위젯 데이터 게이트웨이
+  - `settings/` — 설정·언어·취침모드
+  - `debug/` — DebugModal (cross-feature observer)
+- **`src/shared/`** — 모든 features가 공유하는 공통 인프라.
+  - `types/` — 도메인 type (`station`, `arrival`, `boardingLock`, `fusion`, `journey`, `position`, `providers`, `exitSide`, `alarm` 등)
+  - `utils/` — 순수 함수 (`haversine`, `stationRoute`, `stationLookup`, `stationDisplay`, `stationEta`, `logger`, `formatTime`, `ttlCache`, `normalizeStationName`, `apnsEnv`, `barometer*`)
+  - `hooks/` — 공용 hook (`usePolling`, `useCountdown`, `useBarometer`)
+  - `ui/` — 공용 컴포넌트 (`ScreenContainer`, `Card`, `LineBadge`, `SectionHeader`, `Toast`, `ActionBanner`, `LocationStateView`)
+  - `theme/` — 테마 시스템 (`ThemeProvider`, `useTheme()`)
+  - `constants/` — 상수 (`lineColors`, `lineApiNames`, `storageKeys`, `trainTypes`, `arrivalCodes`, `eta`, `labels`, `debugFlags`, `gpsStatus`, `trainStatus`, `barometer`)
+  - `i18n/` — i18next 설정 + locales(ko/en/ja/zh)
+  - `infra/` — Adapter 구현 (`location/Expo*`, `storage/AsyncStorage*`, `storage/SharedGroup*`)
+  - `ports/` — Adapter가 구현하는 추상 인터페이스 (`LocationPort`, `WidgetStoragePort`)
+- **`src/store/useAppStore.ts`** — Zustand 전역 상태 (즐겨찾기, 목적지, 취침모드 등). AsyncStorage 영속화. favorites slice 분해는 ADR Phase 5 follow-up.
+- **`src/testUtils/`** — 테스트 유틸리티 (`renderWithTheme`, `fixtures`, `routeFixtures`, `i18nLanguageOverride`)
+- **`modules/`** — 네이티브 모듈 (`live-activity`, `audio-route`, `motion-activity`)
 - **`targets/`** — `subway-widget` (iOS 홈 위젯)
 
 ### 테마 시스템
-- `ThemeProvider` (`src/theme/ThemeContext.tsx`)가 `app/_layout.tsx`에 마운트
+- `ThemeProvider` (`src/shared/theme/ThemeContext.tsx`)가 `app/_layout.tsx`에 마운트
 - `useColorScheme()`으로 OS 다크모드 자동 감지
 - 라이트: Editorial Light (B) — 크림톤(`#F5F2EC`) + 어스레드(`#C8553D`)
 - 다크: C · Focus — 퓨어블랙(`#0A0A0A`) + 라임그린(`#C8E600`)
@@ -129,13 +199,13 @@ GPS (expo-location)
 - StyleSheet.create는 레이아웃 전용, 색상은 인라인 `[layout, { color: colors.xxx }]`
 
 ### 지도 구현
-- `buildMapHtml.ts`로 HTML 생성 → `WebView`에 주입 (Kakao Maps SDK)
+- `src/features/map/utils/buildMapConfig.ts`로 HTML 생성 → `WebView`에 주입 (Kakao Maps SDK)
 - `MarkerClusterer`로 528개 역 마커 성능 최적화 (자동 클러스터링)
 - SDK 로드 실패 시 `window.onerror` → RN fallback UI 표시
-- 웹 플랫폼은 `StationMap.web.tsx`로 별도 구현
+- 웹 플랫폼은 `src/features/map/components/StationMap.web.tsx`로 별도 구현
 
 ### iOS 위젯 & Live Activity
-- `widgetStorage.ts`가 App Groups → SharedGroupPreferences에 현재 역 정보 저장
+- `src/features/widget/api/widgetStorage.ts`가 App Groups → SharedGroupPreferences에 현재 역 정보 저장
 - `modules/live-activity/` — iOS Dynamic Island + Lock Screen Live Activity
 
 ---
@@ -173,23 +243,36 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 3. `npm test` 커버리지 100% 확인
 4. `npm run type-check` 통과 확인
 5. `dev`를 base로 PR 생성 — 본문에 `Closes #이슈번호` 포함
-6. GitHub Actions `CI / Type Check & Test` 체크 통과 확인 후 머지
+6. GitHub Actions `CI / Data Validation` + `CI / Type Check & Test` 체크 통과 확인 후 머지
 
 ### PR 머지 규칙
-- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 Type Check & Test pass 확인 후 머지
-- E2E Tests (Maestro)는 CI 환경 제약으로 실패할 수 있음 — Type Check & Test만 필수
+- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 `Data Validation` + `Type Check & Test` pass 확인 후 머지
+- **Branch protection의 required status check** — `Data Validation`, `Type Check & Test` (구 `E2E Smoke (mock mode)` 제거됨, #1335). repo settings에서 수동 갱신 필요
+- **CI 범위 = 정적 검증만**. type-check + unit(coverage 100%) + stations.json 정합성. iOS Release 빌드/시뮬레이터 실행/Maestro는 CI에 없음 (#1335)
+- **빌드/실기기 검증은 사용자 책임** — prebuild drift / Pods 충돌 / native compile 깨짐은 사용자가 다음 로컬 빌드(`npm run ios` / EAS) 시 발견. CI가 미리 막아주지 않음
+- **에이전트 PR은 device 검증 갭 존재** — 에이전트는 type-check + unit만 검증. runtime/native/위젯/LA/지하 등 device-only 회귀는 에이전트가 검증 불가. 사용자가 머지 전 결정 권한자이며, 의심 PR은 본인 실기기 빌드 후 머지
+- nightly gps/scenario(`e2e.yml`)는 PR 게이트 아님. 실기기 수동 회귀는 `.maestro/manual/`
 
 ---
 
 ## 테스트 규칙
 
 - **커버리지 100%** (lines / functions / branches / statements) — `package.json`의 `coverageThreshold`로 자동 강제
-- **테스트 파일 위치**: `src/<모듈>/__tests__/<파일명>.test.ts`
+- **테스트 파일 위치**: `src/<feature 또는 shared>/<sub>/__tests__/<파일명>.test.ts`
 - **Mock 원칙**: `expo-location`, `fetch`, `AsyncStorage`, `widgetStorage`, `react-native-webview`는 `jest.mock()`으로 격리
 - 훅 테스트는 `@testing-library/react-native`의 `renderHook` + `act` + `waitFor` 사용
 - 테마 의존 컴포넌트는 `renderWithTheme` (`src/testUtils/renderWithTheme.tsx`) 사용
 - 인터벌 테스트는 `jest.useFakeTimers()` 사용
 - barrel re-export 파일(`**/index.ts`)은 `collectCoverageFrom`에서 제외
+- 역명 hardcoding 금지 — base name(예: `'교대'`) assertion은 `canonicalStationName(base, line)` (`src/testUtils/canonicalStationName.ts`) 사용. stations.json BLDN_NM drift(#1410) 자동 흡수.
+
+## 디렉토리 경계 룰 (ESLint)
+
+- `import/no-restricted-paths` enforce(error). `npm run lint` 또는 CI에서 검증.
+- `src/features/<X>/`는 `src/features/<Y>/`를 직접 import할 수 없다 — 공용 코드는 `src/shared/`로 추출한다.
+- `src/shared/`는 `src/features/`, `src/screens/`를 import할 수 없다.
+- `src/features/`는 `src/screens/`를 import할 수 없다 (screens는 features 위 layer, Step 7).
+- 본질적 cross-feature orchestrator(예: `useFusedNearestStation`, `backgroundLocationTask`, `useStationAlarm` 등)는 파일 헤더의 `eslint-disable import/no-restricted-paths` 주석으로 명시 옵트인한다. 후속 PR에서 orchestration 슬라이스로 이전 예정.
 
 ---
 
@@ -216,6 +299,6 @@ EXPO_PUBLIC_KAKAO_MAP_KEY=         # 카카오맵 JavaScript API
 
 ### 확장성/재사용성 (글로벌 규칙 3번 적용)
 - 노선/역 관련 분기: `if-else`/`switch` 대신 `stations.json`, `lineColors.ts` 등 데이터로 구동
-- 상수 위치: `src/constants/`에 `UPPER_SNAKE_CASE`로 분리
-- API Provider: 새 제공자 추가 시 `src/providers/` 인터페이스 구현체만 추가
+- 상수 위치: `src/shared/constants/`에 `UPPER_SNAKE_CASE`로 분리
+- API Provider: 새 제공자 추가 시 `src/features/<도메인>/providers/` 인터페이스 구현체만 추가
 - 알람/경로 로직: 환승 횟수에 의존하지 않고 `transfers` 배열 순회로 처리

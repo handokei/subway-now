@@ -7,12 +7,142 @@ compatibility_flags = ["nodejs_compat"]
 # 생성: wrangler kv:namespace create TRIPS
 [[kv_namespaces]]
 binding = "TRIPS"
-id = "REPLACE_WITH_PRODUCTION_KV_ID"
-preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+id = "8d10a57ffe4c46e28a6df33ef0c86b68"
+preview_id = "7e67683c147349ed90c16a28ae232e34"
+
+# KV: pending silent pushes (#566 P2a)
+# 발사한 silent push 1건마다 pushId entry를 기록. P2c가 30s 미ACK push를 alert fallback으로 재발사.
+# 코드는 `if (env.PENDING_PUSHES)` 분기로 graceful — binding 없으면 모든 pending 경로가 no-op.
+[[kv_namespaces]]
+binding = "PENDING_PUSHES"
+id = "12e5eae8b5c94420b0efc1e89870c845"
+preview_id = "53a86628f78c48fa91fa954f84514df3"
+
+# KV: 사용자 버그 신고 (#1034, docs/requirements/12-cross-cutting.md)
+# `POST /feedback`이 메시지 + 디바이스 컨텍스트를 30일 TTL로 적재.
+# 운영자가 `wrangler kv key list --binding FEEDBACK`으로 수거 후 분기 트리아지.
+# 키 prefix:
+#   - `feedback:<epochMs>:<id>` — 원문 entry, TTL 30일
+#   - `rl:feedback:<ip>:<windowStartMs>` — rate limit 카운터, TTL 60s
+#   - `stats:YYYY-MM-DD` — 일일 집계 (#1080 follow-up). cron이 매일 00:05 UTC에 어제 entry를
+#     집계(platform/appVersion/locale 카운트)해 적재. TTL 365일.
+#     `GET /admin/feedback/stats?date=YYYY-MM-DD`로 조회.
+[[kv_namespaces]]
+binding = "FEEDBACK"
+id = "831193b9d97f44c5b65131f045c09804"
+preview_id = "d38f190e3f7f4fd3b6e7f6485dd1733d"
+
+# #498 — silent push 게이트 outcome 텔레메트리. 클라가 누적한 카운터를 일별 query 가능하게 적재.
+# Privacy: 카운트만, token은 8자 prefix만. 개별 push 내용/좌표 미저장.
+#
+# 임시 비활성화 (#506): Analytics Engine은 Workers Paid 전용. 현재 Free plan에서는
+# binding 선언만으로도 deploy가 실패한다(Cloudflare API 10089). 코드는 `if (writer)` 분기로
+# graceful — binding 없으면 런타임에 datapoint 적재만 skip하고 ok 응답한다.
+# 운영 통계(stop-rate / push→ack 비율) 수집 보류. silent push 본 기능엔 영향 없음.
+# 복원: Paid 전환 시 아래 3줄 주석 해제 후 `npx wrangler deploy`.
+# [[analytics_engine_datasets]]
+# binding = "TELEMETRY"
+# dataset = "silent_push_telemetry"
+
+# KV: device raw signal dump (#1520, ADR-015 §10 P5 / PR-B)
+# `POST /signals/dump`이 trip 종료 시 device fusion ring buffer를 60일 TTL로 적재한다.
+# `GET /admin/signals/export?corrId=`로 운영자가 7일 회귀 사후 분석.
+# 코드는 `if (env.RAW_SIGNALS)` 분기로 graceful — binding 없으면 endpoint가 503 반환.
+#
+# 운영자 1회성 등록 절차 (PR #1829):
+#   1) `wrangler kv namespace create RAW_SIGNALS`
+#      → 출력된 id를 아래 id = "..." 에 채운다.
+#   2) `wrangler kv namespace create RAW_SIGNALS --preview`
+#      → 출력된 id를 아래 preview_id = "..." 에 채운다.
+#   3) `wrangler deploy`
+[[kv_namespaces]]
+binding = "RAW_SIGNALS"
+id = "65ed2ed2bbc64e62bf04a65c5ba7040e"
+preview_id = "81c2617b485a466e904202fda70b45bc"
+
+# Analytics Engine: V/X acceptance 시계열 dataset (#1577, Phase 0 epic #1576)
+# advance / fire / suppress / motion-transition / position-upload / trip-mutation 6 event를
+# `src/analytics.ts`의 `writeMetric()` helper로 적재한다. ADR-017/016 acceptance를 SQL로 직접 검증.
+#
+# ⚠️ Workers Paid plan 필수 — Free plan에서는 binding 선언만으로도 deploy 실패(Cloudflare API 10089).
+# Free plan 환경이면 아래 3줄을 주석 처리. 코드는 `if (env.TRIP_METRICS)` 분기로 graceful —
+# binding 없으면 모든 적재 경로가 no-op (개발/테스트 환경 호환, TELEMETRY 동형).
+# [[analytics_engine_datasets]]
+# binding = "TRIP_METRICS"
+# dataset = "trip_metrics"
+
+# R2: device alarmLog/fusionLog telemetry forward archive (#1579, Phase 0 epic #1576 P0-3)
+# Trip 종료 시 device가 `POST /telemetry/alarm-log`로 4개 buffer snapshot을 forward.
+# `trip-evidence/YYYY/MM/DD/{tokenPrefix}-{tripStartedAt}.ndjson` 키로 90일 보관해
+# 운영자가 사용자 trip evidence를 사용자 부담 없이 자동 수집.
+# 미바인딩 시 endpoint는 503 graceful (개발 환경 호환).
+#
+# 운영자 1회성 등록 절차:
+#   1) `wrangler r2 bucket create subway-now-telemetry`
+#   2) 아래 binding 활성화 (id 불필요 — bucket_name만 지정).
+#   3) Cloudflare Dashboard → R2 → subway-now-telemetry → Lifecycle 룰에서
+#      "Delete objects after 90 days" 추가 (cost 절감, evidence는 단기 분석 목적).
+[[r2_buckets]]
+binding = "TELEMETRY_R2"
+bucket_name = "subway-now-telemetry"
+
+# D1 SQLite — backend 오류 로그 + trip 메타 (#1835)
+# Phase 1: backend_errors 테이블. Phase 2: trip_metrics 테이블.
+# Phase 3 (station_signals) 는 별도 PR — 사용자 ≥10명 후 진행.
+#
+# 운영자 1회성 등록 절차:
+#   1) `wrangler d1 create subway-now-db`
+#   2) 출력된 database_id를 아래 binding에 채운다
+#   3) `wrangler d1 migrations apply subway-now-db --remote` (Phase 1+2 schema 적용)
+#   4) `wrangler deploy`
+#   5) verify: `wrangler d1 execute subway-now-db --command "SELECT name FROM sqlite_master WHERE type='table'"`
+#      출력: backend_errors, trip_metrics
+#
+# 미바인딩 시 모든 D1 적재 경로는 graceful no-op (코드 if (!db) return 패턴).
+[[d1_databases]]
+binding = "DB"
+database_name = "subway-now-db"
+database_id = "a2c04254-6bde-4b70-a31f-97ada2940b50"
+
+# Durable Object — TripDO scaffold (#2264, Epic #2260, ADR-031 Phase 1).
+# 1 trip = 1 DO(`env.TRIP_DO.idFromName(tripToken)`). Phase 1은 shadow(no-op 기본,
+# `tripDoFlag.ts` KV 게이트 off) — cron이 여전히 authoritative, fire 로직 없음(state 보관만).
+# SQLite storage backend는 Workers Free plan에서도 가용(요청 100K/day, 행 read 5M/day,
+# 행 write 100K/day, storage 5GB 한도 — 2026-08-09 durable-objects 스킬 문서 확인, blocker 아님).
+[[durable_objects.bindings]]
+name = "TRIP_DO"
+class_name = "TripDO"
+
+[[migrations]]
+tag = "v1-trip-do"
+new_sqlite_classes = ["TripDO"]
 
 # 1분마다 활성 트립 폴링
 [triggers]
 crons = ["*/1 * * * *"]
+
+# Observability — Workers Logs persist (#863)
+# `wrangler tail`은 실시간 1~2분 윈도우만 잡혀 retrospective 진단 불가.
+# logs만 활성화해 invocation logs를 Workers Logs에 영구 저장, dashboard에서 조회 가능.
+# traces는 비용/성능 영향 최소화 위해 일단 비활성. 필요 시 토글.
+#
+# #2055 임시 조치: persist=false — 매 분 5개 idle log 축적으로 2000 cap 6시간 소진 회귀.
+# #2054 (idle skip + heartbeat) 배포 완료 시 persist=true 복구 검토.
+# wrangler tail 실시간 진단은 여전히 동작.
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = false
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
 
 # 공개 환경변수 (시크릿은 `wrangler secret put` 사용)
 # - SEOUL_API_KEY          : 서울 열린데이터 API 키
@@ -20,6 +150,17 @@ crons = ["*/1 * * * *"]
 # - APNS_TEAM_ID           : Apple Developer Team ID
 # - APNS_PRIVATE_KEY       : .p8 PEM 본문 (BEGIN/END 라인 포함)
 # - APNS_BUNDLE_ID         : 앱 번들 ID (예: com.handokei.subwaynow)
+#
+# #972 — recall alert webhook (PR #961 follow-up). 셋 다 설정되어야 cron이 평가/발사한다.
+# 하나라도 비어 있으면 `evaluateAndMaybeAlert`가 graceful no-op (현재 Workers Paid 대기로 사실상 비활성).
+# - RECALL_ALERT_WEBHOOK_URL  : Slack incoming webhook URL 또는 호환 receiver
+# - CF_ACCOUNT_ID             : Cloudflare account ID (Analytics Engine SQL HTTP API endpoint 조립)
+# - CF_API_TOKEN              : Cloudflare API token (Analytics Engine read 권한)
+#
+# - ADMIN_TOKEN               : 운영자용 admin endpoint Bearer token (#1042 follow-up).
+#     `/admin/feedback`, `/admin/feedback/export.csv` 접근에 필요. 미설정 시 503.
+#     등록: `wrangler secret put ADMIN_TOKEN`
 [vars]
 APNS_HOST = "api.push.apple.com"
+APNS_HOST_SANDBOX = "api.sandbox.push.apple.com"
 SEOUL_API_HOST = "swopenapi.seoul.go.kr"

@@ -1,0 +1,84 @@
+appId: com.subwaynow.app
+name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
+---
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      notifications: allow
+      location: always
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+
+# 취침 모드는 목적지 설정 시에만 노출되므로 잠실 지정
+- tapOn:
+    id: "destination-button"
+- extendedWaitUntil:
+    visible:
+      id: "search-input"
+    timeout: 5000
+- tapOn:
+    id: "search-input"
+- inputText: "잠실"
+# iOS 시뮬레이터 IME가 한글 입력 후 setQuery → suggestions useMemo → SectionList 렌더까지
+# 종종 ~1s를 넘긴다. flow 02와 동일하게 extendedWaitUntil(5s)로 흡수.
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    id: "suggestion-item-2-016"
+
+# 잠실 설정 직후 destination/route 박스가 늘어나 home-sleep-mode-switch가 viewport 밖.
+# #644는 단발 swipe(50%→30%)로 보정했지만 이후 destination 블록에 컨텐츠가 추가되며
+# (#749/#758/#797/#816) 한 번의 swipe로는 도달 못 하는 회귀 발생(#949). scrollUntilVisible로
+# 가변 컨텐츠 길이에 자동 적응하도록 전환. centerElement로 nested ScrollView 인식 안정화.
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+    timeout: 10000
+    centerElement: true
+    visibilityPercentage: 100
+- tapOn:
+    id: "home-sleep-mode-switch"
+
+# clearState로 useSleepModeGuide의 노출 플래그가 매번 리셋되어 첫 토글 시 Alert가 뜸.
+# OK 버튼으로 닫아야 다음 탭 이동이 가능. optional로 두 번째 실행 안전.
+- tapOn:
+    text: "OK|확인"
+    optional: true
+
+# 설정 탭 동기화 확인
+- tapOn:
+    point: "87%,95%"
+- extendedWaitUntil:
+    visible:
+      id: "sleep-mode-switch"
+    timeout: 5000
+- tapOn:
+    id: "sleep-mode-switch"
+
+# 홈 탭 복귀
+- tapOn:
+    point: "12%,95%"
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+    timeout: 10000
+    centerElement: true
+    visibilityPercentage: 100

@@ -1,0 +1,239 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: alarm hook이 nearest-station feature의 API client
+ * `syncBoardingLock`을 직접 호출한다. positionUpload와 동형(BG task가 nearest-station API
+ * 호출)이라 file-level disable 패턴을 따른다. ADR Phase 5 (#890).
+ */
+/**
+ * Seam E (#901) — BoardingLock 정정 신호 송신 훅.
+ *
+ * 사용자의 좋은 GPS fix(accuracy ≤ GOOD_FIX_ACCURACY_MAX_M)로 확정된 현재역을 backend에 통보해
+ * cron의 stale lock currentWaypoint를 사용자 위치와 정렬한다. silent push 누락 회귀(#622) 흡수.
+ *
+ * 트리거:
+ *   1) currentStationName 변경 + accuracy 게이트 통과 → debounce SYNC_DEBOUNCE_MS 후 발사
+ *   2) `forceTriggerKey` 변경 — trip 등록 직후 / 지하→지상 경계(Seam G) 등 호출자 선택 트리거
+ *      (key는 식별용 문자열; 호출자가 동일 key를 재전달하면 재발사 안 함)
+ *
+ * APNs token / trip token 모두 없는 상태(트립 미시작)는 자연 no-op. 송신 결과는 무시 —
+ * backend의 정정 결과는 cron 사이클이 client에 silent push로 별도 전달한다.
+ */
+
+import { useEffect, useRef } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import { syncBoardingLock } from '../../nearest-station/api/boardingLockSync';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
+import { createLogger } from '../../../shared/utils/logger';
+
+const logger = createLogger('useBoardingLockSync');
+
+/** sync 발사 직전 debounce — 사용자가 짧게 역 사이를 GPS jitter로 왕복해도 1회로 묶는다. */
+export const SYNC_DEBOUNCE_MS = 5000;
+
+/** 좋은 fix 임계 — Seam E 정정은 GPS-확신 신호만 받는다. positionUpload의 ≥ 50m drop과 정합. */
+export const GOOD_FIX_ACCURACY_MAX_M = 50;
+
+export interface UseBoardingLockSyncOptions {
+  /** 클라가 좋은 fix로 확정한 현재역명. null이면 no-op. */
+  currentStationName: string | null;
+  /** 직전 fix accuracy meters. null/임계 초과면 no-op. */
+  accuracyMeters: number | null;
+  /**
+   * 트립 활성 여부 — 호출자가 trip + lock 활성 게이트를 결정해 전달한다.
+   * false면 본 훅은 sync를 발사하지 않는다 (lock 없는 fix에 backend가 trip_not_found로 응답할 뿐이라
+   * 트래픽만 발생). 게이트는 호출자 책임 — alarm 슬라이스가 lock 존재로 판단.
+   */
+  tripActive: boolean;
+  /**
+   * 명시 트리거 키 — 값이 바뀔 때마다 1회 즉시 sync 발사 (debounce 우회).
+   *   - 트립 등록 직후: 새 trip token을 key로 전달
+   *   - 지하→지상 경계: barometer 신호 timestamp 또는 sequence 번호 전달
+   * 같은 key 재전달은 no-op (재발사 방지). null → effect skip.
+   */
+  forceTriggerKey?: string | null;
+  /** Seam G subsurface 신호 (옵션) — backend 로그에 진단 라벨로 첨부. */
+  subsurface?: boolean;
+  /**
+   * #1286 — 현재역이 WiFi SSID 매칭으로 확정됐는지 (fusion confidence==='wifi-ssid').
+   * true면 `accuracyMeters > GOOD_FIX_ACCURACY_MAX_M` 게이트를 우회한다 — WiFi SSID는 GPS 정확도와
+   * 무관하게 역을 확정하므로(지하 GPS dead zone에서 accuracy>50m가 정상), ≤50m fix가 없어도 sync한다.
+   * 일반 GPS 유도 역(false/미전달)에는 ≤50m 게이트를 그대로 유지 — 부정확한 fix로 잘못된 정정 차단.
+   * accuracy=null(관측 자체 부재)은 WiFi 여부와 무관하게 여전히 no-op (payload accuracy 필드 요구).
+   */
+  stationFromWifi?: boolean;
+  /**
+   * D4 (#1210) — 현재 활성 boarding lock의 trainCode. 있으면 sync payload에 동봉돼
+   * backend가 환승 leg trainCode 변경을 즉시 인식하고 `consecutiveEtaMissing` 자동 종료를 차단한다.
+   * null/undefined면 payload에 trainCode 미포함 (구버전 backend / lock 없는 trip 호환).
+   */
+  boardingLockTrainCode?: string | null;
+  /**
+   * D4 (#1210) — 현재 활성 boarding lock의 노선. trainCode와 함께 sync payload에 동봉된다.
+   * trainCode 없이 단독 전송은 backend에서 무시 (trainCode가 동일성 판정의 primary key).
+   */
+  boardingLockLine?: string | null;
+}
+
+/**
+ * Effect-only 훅 — 외부 상태를 mutate하지 않고 backend POST만 발사한다 (return 없음).
+ * 정정 결과는 cron sync silent push로 client에 별도 전달.
+ */
+export function useBoardingLockSync({
+  currentStationName,
+  accuracyMeters,
+  tripActive,
+  forceTriggerKey,
+  subsurface,
+  stationFromWifi,
+  boardingLockTrainCode,
+  boardingLockLine,
+}: UseBoardingLockSyncOptions): void {
+  // 이미 보낸 currentStation을 기억해 debounce 안의 중복 발사를 방지.
+  const lastSentStationRef = useRef<string | null>(null);
+  // D4 (#1210) — 이미 보낸 trainCode를 기억해 환승 leg에서 trainCode가 바뀐 trip은 같은 역에서도
+  // 1회 재발사하도록 한다. station 단독 dedup만 두면 환승 직후 사용자가 환승역에 계속 머무는 동안
+  // backend가 새 trainCode를 영영 못 받는 회귀가 생긴다 (D4 evidence consecutiveEtaMissing 자동 종료).
+  const lastSentTrainCodeRef = useRef<string | null>(null);
+  // forceTriggerKey 이전 값 — 같은 key 재전달 시 no-op 판정용.
+  const lastForceKeyRef = useRef<string | null>(null);
+
+  // tripActive false → true 전환 시 lastSent ref들을 리셋. 새 trip의 첫 currentStationName이
+  // 이전 trip의 마지막 station과 같아도 첫 sync가 발사되도록 보장 (#915 self code-review C4).
+  useEffect(() => {
+    if (!tripActive) {
+      lastSentStationRef.current = null;
+      lastSentTrainCodeRef.current = null;
+      lastForceKeyRef.current = null;
+    }
+  }, [tripActive]);
+
+  // 1) currentStationName 변경 debounce 트리거.
+  // D4: trainCode 변경(환승 leg)도 동일 트리거로 다뤄 같은 역에서도 새 lock으로 1회 재발사.
+  useEffect(() => {
+    if (!tripActive) return;
+    if (!currentStationName) return;
+    if (accuracyMeters === null) return;
+    // #1286 — WiFi SSID 확정 역은 GPS 정확도 게이트를 우회 (지하 GPS dead zone에서 accuracy>50m가 정상).
+    if (!stationFromWifi && accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
+    const trainCodeForFire = boardingLockTrainCode ?? null;
+    const stationUnchanged = lastSentStationRef.current === currentStationName;
+    const trainCodeUnchanged = lastSentTrainCodeRef.current === trainCodeForFire;
+    if (stationUnchanged && trainCodeUnchanged) return;
+
+    const timer = setTimeout(() => {
+      // race: force-trigger 경로가 같은 station+trainCode를 이미 발사했을 수 있음. setTimeout
+      // 내부에서 한 번 더 체크해 중복 발사 차단.
+      if (
+        lastSentStationRef.current === currentStationName &&
+        lastSentTrainCodeRef.current === trainCodeForFire
+      ) {
+        return;
+      }
+      lastSentStationRef.current = currentStationName;
+      lastSentTrainCodeRef.current = trainCodeForFire;
+      void fireSync({
+        observedStationName: currentStationName,
+        accuracy: accuracyMeters,
+        subsurface,
+        trainCode: boardingLockTrainCode ?? null,
+        boardingLine: boardingLockLine ?? null,
+        reason: 'station-change',
+      });
+    }, SYNC_DEBOUNCE_MS);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [
+    tripActive,
+    currentStationName,
+    accuracyMeters,
+    subsurface,
+    stationFromWifi,
+    boardingLockTrainCode,
+    boardingLockLine,
+  ]);
+
+  // 2) 명시 트리거 (forceTriggerKey) — debounce 우회.
+  useEffect(() => {
+    if (!tripActive) return;
+    if (!forceTriggerKey) return;
+    if (lastForceKeyRef.current === forceTriggerKey) return;
+    if (!currentStationName) return;
+    if (accuracyMeters === null) return;
+    // #1286 — WiFi SSID 확정 역은 GPS 정확도 게이트를 우회 (effect 1과 동일).
+    if (!stationFromWifi && accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
+
+    lastForceKeyRef.current = forceTriggerKey;
+    // lastSent ref들을 즉시 동기로 set — effect 1의 debounce timer가 같은 station/trainCode로
+    // 추가 발사하지 않도록 차단. fire 실패해도 force 트리거는 forceTriggerKey 변경으로만 재시도되므로
+    // false-positive 무발사는 발생하지 않음.
+    lastSentStationRef.current = currentStationName;
+    lastSentTrainCodeRef.current = boardingLockTrainCode ?? null;
+    void fireSync({
+      observedStationName: currentStationName,
+      accuracy: accuracyMeters,
+      subsurface,
+      trainCode: boardingLockTrainCode ?? null,
+      boardingLine: boardingLockLine ?? null,
+      reason: 'force-trigger',
+    });
+  }, [
+    tripActive,
+    forceTriggerKey,
+    currentStationName,
+    accuracyMeters,
+    subsurface,
+    stationFromWifi,
+    boardingLockTrainCode,
+    boardingLockLine,
+  ]);
+}
+
+interface FireSyncInput {
+  observedStationName: string;
+  accuracy: number;
+  subsurface?: boolean;
+  /** D4 (#1210) — 호출 시점 lock trainCode. null이면 payload에 미포함. */
+  trainCode?: string | null;
+  /** D4 (#1210) — 호출 시점 lock 노선. trainCode와 페어로만 의미. */
+  boardingLine?: string | null;
+  reason: 'station-change' | 'force-trigger';
+}
+
+/**
+ * AsyncStorage에서 token을 읽어 syncBoardingLock 호출. token/trip 부재는 graceful no-op.
+ * 정정 자체(currentWaypoint)는 cron silent push 경로가 별도로 client store를 mutate한다.
+ * #2352 — 구 autoLockCandidate(#916) 무탭 hydrate forward 로직은 삭제됐다.
+ */
+async function fireSync(input: FireSyncInput): Promise<void> {
+  const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+  const activeTrip = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+  if (!token || !activeTrip) {
+    logger.info('skip — apns or trip token missing', { reason: input.reason });
+    return;
+  }
+  // #2407 — pending fallback lock의 sentinel trainCode(PENDING-TRAIN-CODE)는 backend 실시간 API에서
+  // 절대 찾을 수 없다. buildBoardingLockMeta(/trips 등록 경로)는 이미 이 sentinel을 걸러내는데
+  // /boarding-lock/sync 경로는 가드가 없어 그대로 새어나가 backend가 정상 anchor를 덮어쓰는 회귀가
+  // 있었다 — 같은 predicate로 여기서도 생략한다. boardingLine은 trainCode 없이는 backend가 무시하지만
+  // (D4 주석) sentinel 페어를 절반만 보내는 모호함을 피하기 위해 함께 생략한다.
+  const isPending = input.trainCode ? isPendingTrainCode(input.trainCode) : false;
+  const payload = {
+    token,
+    observedStationName: input.observedStationName,
+    observedAtMs: Date.now(),
+    accuracy: input.accuracy,
+    ...(input.subsurface !== undefined ? { subsurface: input.subsurface } : {}),
+    ...(input.trainCode && !isPending ? { trainCode: input.trainCode } : {}),
+    ...(input.boardingLine && !isPending ? { boardingLine: input.boardingLine } : {}),
+  };
+  const res = await syncBoardingLock(payload);
+  logger.info('boarding-lock sync sent', {
+    reason: input.reason,
+    trainCode: input.trainCode ?? null,
+    advanced: res.advanced ?? false,
+    currentWaypoint: res.currentWaypoint ?? null,
+    ok: res.ok,
+  });
+}

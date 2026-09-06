@@ -1,3 +1,9 @@
+// #1890 — SourceKit이 macOS target 인덱싱 시 `accessoryRectangular` / `accessoryCircular`
+// 같은 iOS-only WidgetFamily case를 'unavailable in macOS'로 진단한다. `#available(iOS 16.0, *)`
+// 는 런타임 가드일 뿐 compile-time 차단이 아니므로, 파일 전체를 `#if os(iOS)`로 감싸 SourceKit/
+// SwiftPM의 macOS 변형에서 이 파일을 통째로 건너뛰게 한다. SubwayLiveActivityWidget.swift와
+// 동일한 patten.
+#if os(iOS)
 import WidgetKit
 import SwiftUI
 
@@ -9,6 +15,50 @@ struct SubwayEntry: TimelineEntry {
     let lineColor: String
     let distanceM: Int
     let isAvailable: Bool
+    // 앱이 마지막으로 위젯 데이터를 기록한 시각. nil이면 freshness 표시 생략 (legacy 데이터).
+    let savedAt: Date?
+    // #1781 — trip 활성 시 추가 필드. nil이면 기존 nearest station UI 유지 (backward compat).
+    let tripActive: Bool
+    let currentStationName: String?
+    let destinationName: String?
+    let nextTransferName: String?
+    // P4: staleDate — savedAt + 10분 초과 시 시스템 "stale" overlay 표시 차단 임계.
+    var staleDate: Date? { savedAt.map { $0.addingTimeInterval(EXPIRED_THRESHOLD_SECONDS) } }
+    // P3: Smart Stack relevance (iOS 17+). trip 활성+환승 임박 → 1.0, trip 활성 → 0.8, 평시 → 0.3.
+    var relevance: TimelineEntryRelevance? {
+        if tripActive && nextTransferName != nil {
+            return TimelineEntryRelevance(score: 1.0, duration: 60)
+        } else if tripActive {
+            return TimelineEntryRelevance(score: 0.8, duration: 60)
+        } else {
+            return TimelineEntryRelevance(score: 0.3, duration: 0)
+        }
+    }
+}
+
+// Freshness 3단계 임계. savedAt으로부터 경과 시간으로 tier를 결정한다.
+// - fresh: ≤ STALE_THRESHOLD_SECONDS → 캡션 미표시 (정상)
+// - stale: STALE < t ≤ EXPIRED → "갱신 지연" 캡션 (백그라운드 갱신 일시 중단 신호)
+// - expired: > EXPIRED_THRESHOLD_SECONDS → "정보 오래됨" 캡션 + 본문 dim (앱이 죽었거나 권한 끊김)
+private let STALE_THRESHOLD_SECONDS: TimeInterval = 2 * 60
+private let EXPIRED_THRESHOLD_SECONDS: TimeInterval = 10 * 60
+
+// 본문 dim 시 사용할 opacity (expired tier에서만 적용).
+private let EXPIRED_CONTENT_OPACITY: Double = 0.45
+
+enum WidgetFreshness {
+    case fresh
+    case stale
+    case expired
+    case unknown // legacy: savedAt nil
+
+    static func from(savedAt: Date?, now: Date) -> WidgetFreshness {
+        guard let savedAt = savedAt else { return .unknown }
+        let elapsed = now.timeIntervalSince(savedAt)
+        if elapsed > EXPIRED_THRESHOLD_SECONDS { return .expired }
+        if elapsed > STALE_THRESHOLD_SECONDS { return .stale }
+        return .fresh
+    }
 }
 
 // MARK: - Timeline Provider
@@ -22,35 +72,93 @@ struct SubwayProvider: TimelineProvider {
             stationName: "강남",
             lineColor: "#009933",
             distanceM: 120,
-            isAvailable: true
+            isAvailable: true,
+            savedAt: Date(),
+            tripActive: false,
+            currentStationName: nil,
+            destinationName: nil,
+            nextTransferName: nil
         )
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SubwayEntry) -> Void) {
-        completion(makeEntry())
+        completion(makeEntry(at: Date()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SubwayEntry>) -> Void) {
-        let entry = makeEntry()
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date()
-        let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
+        let now = Date()
+        let entry = makeEntry(at: now)
+        // 앱이 종료된 상태에서도 freshness 표시(10분 임계)가 비교적 빨리 반영되도록
+        // 5분 간격으로 재평가한다. 앱이 살아있으면 saveWidgetStation이 호출되며 즉시 reload.
+        var entries: [SubwayEntry] = [entry]
+        // #1890 (RC-15) — savedAt 기반 stale/expired 전이 시점에 추가 entry를 삽입해,
+        // 앱이 종료되어 reloadAllTimelines가 호출되지 않는 상황에서도 OS가 freshness 변화 직후
+        // UI를 재구성하도록 한다. tripActive trip 컨텍스트가 expired로 진입하는 시점이 핵심 경계 —
+        // 사용자는 trip 정보 stale을 가장 즉시 인식한다.
+        if let savedAt = entry.savedAt {
+            let staleAt = savedAt.addingTimeInterval(STALE_THRESHOLD_SECONDS)
+            if staleAt > now {
+                entries.append(SubwayEntry(
+                    date: staleAt,
+                    stationName: entry.stationName,
+                    lineColor: entry.lineColor,
+                    distanceM: entry.distanceM,
+                    isAvailable: entry.isAvailable,
+                    savedAt: entry.savedAt,
+                    tripActive: entry.tripActive,
+                    currentStationName: entry.currentStationName,
+                    destinationName: entry.destinationName,
+                    nextTransferName: entry.nextTransferName
+                ))
+            }
+            let expiredAt = savedAt.addingTimeInterval(EXPIRED_THRESHOLD_SECONDS)
+            if expiredAt > now {
+                entries.append(SubwayEntry(
+                    date: expiredAt,
+                    stationName: entry.stationName,
+                    lineColor: entry.lineColor,
+                    distanceM: entry.distanceM,
+                    isAvailable: entry.isAvailable,
+                    savedAt: entry.savedAt,
+                    tripActive: entry.tripActive,
+                    currentStationName: entry.currentStationName,
+                    destinationName: entry.destinationName,
+                    nextTransferName: entry.nextTransferName
+                ))
+            }
+        }
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: now) ?? now
+        let timeline = Timeline(entries: entries, policy: .after(nextUpdate))
         completion(timeline)
     }
 
-    private func makeEntry() -> SubwayEntry {
+    private func makeEntry(at date: Date) -> SubwayEntry {
         let defaults = UserDefaults(suiteName: appGroup)
         let name = defaults?.string(forKey: "stationName") ?? ""
         let color = defaults?.string(forKey: "lineColor") ?? "#888888"
         let distanceStr = defaults?.string(forKey: "distanceM") ?? "0"
         let distance = Int(distanceStr) ?? 0
         let isAvailable = !name.isEmpty
+        // savedAt이 없는 레거시 설치 환경에서는 nil로 두어 freshness 표시를 생략한다.
+        let savedAtSec = defaults?.object(forKey: "savedAt") as? Double
+        let savedAt = savedAtSec.map { Date(timeIntervalSince1970: $0) }
+        // #1781 — trip 활성 필드. 키 없는 레거시 데이터에서는 false로 폴백.
+        let tripActive = defaults?.bool(forKey: "tripActive") ?? false
+        let currentStationName = defaults?.string(forKey: "currentStationName")
+        let destinationName = defaults?.string(forKey: "destinationName")
+        let nextTransferName = defaults?.string(forKey: "nextTransferName")
 
         return SubwayEntry(
-            date: Date(),
-            stationName: isAvailable ? name : "감지 중",
+            date: date,
+            stationName: isAvailable ? name : NSLocalizedString("widget.detecting", comment: "Placeholder station name while GPS detection is in progress"),
             lineColor: color,
             distanceM: distance,
-            isAvailable: isAvailable
+            isAvailable: isAvailable,
+            savedAt: savedAt,
+            tripActive: tripActive,
+            currentStationName: currentStationName,
+            destinationName: destinationName,
+            nextTransferName: nextTransferName
         )
     }
 }
@@ -78,13 +186,65 @@ struct SubwayWidgetView: View {
         Color(hex: entry.lineColor) ?? .gray
     }
 
+    var freshness: WidgetFreshness {
+        WidgetFreshness.from(savedAt: entry.savedAt, now: entry.date)
+    }
+
+    var freshnessCaption: String? {
+        switch freshness {
+        case .stale: return NSLocalizedString("widget.freshness.stale", comment: "Caption shown when widget data is stale (2–10 min old)")
+        case .expired: return NSLocalizedString("widget.freshness.expired", comment: "Caption shown when widget data is expired (>10 min old)")
+        case .fresh, .unknown: return nil
+        }
+    }
+
+    var contentOpacity: Double {
+        freshness == .expired ? EXPIRED_CONTENT_OPACITY : 1.0
+    }
+
+    // P4: 위젯 탭 시 앱 딥링크 — 현재역 상세 화면 진입.
+    private var deepLink: URL { URL(string: "subwaynow://current-station")! }
+
     var body: some View {
+        // iOS 17+는 위젯이 containerBackground를 채택하지 않으면
+        // 시스템이 "Please adopt containerBackground API" placeholder를 대신 그린다.
+        // 배포 타겟 15.1이라 availability 분기 필요.
+        if #available(iOS 17.0, *) {
+            content
+                .containerBackground(.background, for: .widget)
+                .widgetURL(deepLink)
+        } else {
+            content
+                .widgetURL(deepLink)
+        }
+    }
+
+    private var content: some View {
+        Group {
+            // #1890 (RC-15) — trip 분기는 freshness가 expired가 아닐 때만 사용한다.
+            // backend trip-ended silent push가 device에 도달하지 못한 경우(예: APNs 지연/네트워크 단절/
+            // 앱 종료), trip 정보가 19분 이상 stale로 위젯에 그대로 노출되는 회귀(2026-06-26 T4 evidence)를
+            // 차단한다. expired tier에 진입하면 trip 컨텍스트를 숨기고 nearestStation 분기의 placeholder/
+            // dim UI로 폴백 — savedAt 기반 자율 stale 감지라 push가 dropped여도 device 단독으로 회복한다.
+            if entry.tripActive,
+               let currentStation = entry.currentStationName,
+               let destination = entry.destinationName,
+               freshness != .expired {
+                tripActiveContent(currentStation: currentStation, destination: destination)
+            } else {
+                nearestStationContent
+            }
+        }
+    }
+
+    // trip 비활성 — 기존 최근접 역 UI (backward compat)
+    private var nearestStationContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
                 Circle()
                     .fill(lineColor)
                     .frame(width: 10, height: 10)
-                Text("지하철")
+                Text(NSLocalizedString("widget.header", comment: "Header label shown above the station name in the widget"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -95,11 +255,77 @@ struct SubwayWidgetView: View {
                 .foregroundColor(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .opacity(contentOpacity)
 
             if entry.isAvailable {
                 Text("\(entry.distanceM)m")
                     .font(.subheadline)
                     .foregroundColor(lineColor)
+                    .opacity(contentOpacity)
+            }
+
+            if let caption = freshnessCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Text(entry.date, style: .time)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(12)
+    }
+
+    // trip 활성 — 현재역 + 다음 환승역(있을 경우) + 도착역
+    private func tripActiveContent(currentStation: String, destination: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(lineColor)
+                    .frame(width: 10, height: 10)
+                Text("탑승 중")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Text(currentStation)
+                .font(.headline)
+                .fontWeight(.bold)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            if let transfer = entry.nextTransferName {
+                HStack(spacing: 2) {
+                    Text("다음 환승")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(transfer)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                }
+            }
+
+            HStack(spacing: 2) {
+                Text("도착 예정")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(destination)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(lineColor)
+                    .lineLimit(1)
+            }
+
+            if let caption = freshnessCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             Spacer()
@@ -112,18 +338,125 @@ struct SubwayWidgetView: View {
     }
 }
 
+// MARK: - Lock Screen Widget Views (iOS 16+)
+
+@available(iOS 16.0, *)
+struct LockScreenRectangularView: View {
+    var entry: SubwayEntry
+
+    var lineColor: Color {
+        Color(hex: entry.lineColor) ?? .gray
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // 노선 색 stripe
+            RoundedRectangle(cornerRadius: 2)
+                .fill(lineColor)
+                .frame(width: 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(NSLocalizedString("widget.lockscreen.title", comment: "Title shown in lock screen rectangular widget"))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(entry.stationName)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .widgetAccentable()
+    }
+}
+
+@available(iOS 16.0, *)
+struct LockScreenCircularView: View {
+    var entry: SubwayEntry
+
+    var lineColor: Color {
+        Color(hex: entry.lineColor) ?? .gray
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(lineColor)
+            Text(entry.stationName.prefix(2))
+                .font(.caption2)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .widgetAccentable()
+    }
+}
+
+// MARK: - Lock Screen Widget Entry View Router
+
+struct SubwayLockScreenWidgetView: View {
+    @Environment(\.widgetFamily) var family
+    var entry: SubwayEntry
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            switch family {
+            case .accessoryRectangular:
+                LockScreenRectangularView(entry: entry)
+            case .accessoryCircular:
+                LockScreenCircularView(entry: entry)
+            default:
+                EmptyView()
+            }
+        }
+    }
+}
+
 // MARK: - Widget Configuration
 
 struct SubwayWidget: Widget {
     let kind = "SubwayWidget"
 
+    private var supportedFamilies: [WidgetFamily] {
+        if #available(iOS 16.0, *) {
+            return [.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular]
+        }
+        return [.systemSmall, .systemMedium]
+    }
+
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: SubwayProvider()) { entry in
-            SubwayWidgetView(entry: entry)
+            if #available(iOS 16.0, *) {
+                SubwayWidgetEntryView(entry: entry)
+            } else {
+                SubwayWidgetView(entry: entry)
+            }
         }
-        .configurationDisplayName("지하철 현재 역")
-        .description("가장 가까운 지하철역을 홈 화면에서 확인하세요.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .configurationDisplayName(NSLocalizedString("widget.displayName", comment: "Widget configuration display name shown in the widget picker"))
+        .description(NSLocalizedString("widget.description", comment: "Widget description shown in the widget picker"))
+        .supportedFamilies(supportedFamilies)
     }
 }
+
+// Routes between home-screen and lock-screen families (iOS 16+).
+@available(iOS 16.0, *)
+private struct SubwayWidgetEntryView: View {
+    @Environment(\.widgetFamily) var family
+    var entry: SubwayEntry
+
+    var body: some View {
+        switch family {
+        case .accessoryRectangular, .accessoryCircular:
+            SubwayLockScreenWidgetView(entry: entry)
+        default:
+            SubwayWidgetView(entry: entry)
+        }
+    }
+}
+
+#endif
 

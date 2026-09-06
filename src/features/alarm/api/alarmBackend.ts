@@ -1,0 +1,676 @@
+/**
+ * alarm-worker(#338) 백엔드 클라이언트.
+ *
+ * APNs device token + 활성 트립을 등록/해제한다. 백엔드는 cron으로 도착 정보를
+ * 폴링하고 적절한 시점에 silent push로 reschedule을 트리거한다.
+ *
+ * URL은 `EXPO_PUBLIC_ALARM_BACKEND_URL`로만 주입된다. 미설정 시 모든 호출은
+ * graceful skip(`{ok:false, skipped:true}`) — Phase 1 baseline(사전 예약만)으로 동작한다.
+ */
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { Route } from '../../../shared/utils/stationRoute';
+import { type ApnsEnv, setConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
+import { createLogger } from '../../../shared/utils/logger';
+import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
+import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
+
+const log = createLogger('alarmBackend');
+
+/**
+ * #828 — BG/FG location task가 좌표 upload 시 linePolyline snap을 수행할 active boarding line.
+ * register/clear 시점에 mirror하여 backgroundLocationTask가 trip 컨텍스트 없이도 snap 가능.
+ *
+ * AsyncStorage 실패는 graceful — snap이 skip될 뿐 fusion 자체는 Phase 1로 자연 동작.
+ */
+async function mirrorBoardingLine(line: string | undefined): Promise<void> {
+  try {
+    if (line && line.length > 0) {
+      await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, line);
+    } else {
+      await AsyncStorage.removeItem(ACTIVE_BOARDING_LINE_KEY);
+    }
+  } catch (e) {
+    log.warn('mirror boarding line failed', e);
+  }
+}
+
+// AlarmWaypoint는 shared/types/alarm으로 추출됨 (#890, Phase 5).
+// 기존 호출자(route/utils/routeWaypoints 등) 호환을 위해 re-export 유지.
+// 백엔드 Trip.Waypoint와 동일 구조. backend/alarm-worker/src/types.ts와 동기화.
+import type { AlarmWaypoint } from '../../../shared/types/alarm';
+export type { AlarmWaypoint };
+
+/**
+ * 백엔드 Trip.boardingLock과 동일 구조 (#622). backend/alarm-worker/src/types.ts의
+ * `BoardingLockMeta`와 schema 동기화 — backend parseBoardingLock(index.ts:272)이 모든 필드를 검증한다.
+ * 한 필드라도 어긋나면 backend가 boardingLock만 drop하고 trip은 살린다.
+ */
+export interface AlarmBoardingLock {
+  /** Seoul API btrainNo (예: "7246") — 사용자가 탭한 열차. */
+  trainCode: string;
+  /** 현재 leg의 노선 (Waypoint.line과 동일 표기). */
+  line: string;
+  /** Seoul API subwayId (예: "1007") — 환승 노선 구분용. */
+  subwayId: string;
+  /** 사용자가 선택한 열차 출발 시각 (epoch ms) — 보통 client BoardingLock.boardedAt. */
+  selectedDepartureTime: number;
+  /** 현 BoardingLock 구간 내 정차역 시퀀스 (출발역 → 구간 끝). backend가 indexOf로 위치 계산. */
+  segmentStations: string[];
+  /** Lock 자동 만료 시각 (epoch ms). */
+  expiresAt: number;
+}
+
+export interface RegisterTripPayload {
+  /** APNs device token (hex) */
+  token: string;
+  route: NonNullable<Route>;
+  /** 목적지 역 ID — stations.json id (예: "0228") */
+  destination: string;
+  waypoints: AlarmWaypoint[];
+  /** epoch ms — 트립 등록 시각 (기본: Date.now()) */
+  createdAt?: number;
+  /** epoch ms — 자동 만료 시각 (기본: createdAt + 2시간) */
+  expiresAt?: number;
+  /** epoch ms — 알람 발사 예상 시각 (5분 윈도우 진입 판정용) */
+  alarmAtEpochMs: number;
+  /** APNs 토큰 환경 — backend가 sandbox/production host를 선택. */
+  apnsEnv: ApnsEnv;
+  /**
+   * BoardingLock metadata (#622). 사용자가 탑승 열차를 확정한 경우 함께 보내 backend가 trainCode
+   * 기준으로 추적·reschedule 가능. 없으면 backend는 기존 anchor waypoint 폴링으로 fallback.
+   */
+  boardingLock?: AlarmBoardingLock;
+  /**
+   * #819 — boarding-prompt 9단 게이트 평가에 필요한 출발역/다음역 좌표.
+   * lockMissing trip에 대해 backend가 평가 — 좌표 부재 시 backend는 자동 skip.
+   */
+  promptGeoContext?: {
+    origin: { lat: number; lng: number };
+    nextStation: { lat: number; lng: number };
+    /** 출발역에서 trip 방향 (Seoul API의 isUp과 정합). 모르면 null — 양방향 허용. */
+    direction: 'up' | 'down' | null;
+    /**
+     * #2130 (B-2) — origin과 등록 시점 GPS fix 사이 거리(m). backend 근접 게이트(B-backend,
+     * 별도 PR)가 원거리 오탑승 후보를 걸러내는 입력. GPS fix가 아예 없을 때만 생략 — backend는
+     * 부재를 관대하게(지하/구 클라 호환) 통과시킨다.
+     */
+    originDistanceM?: number;
+    /** #2130 (B-2) — GPS fix 정확도(m). originDistanceM과 항상 짝으로만 존재. */
+    originAccuracyM?: number;
+  };
+  /**
+   * #819 — boarding-prompt push 본문에 노출할 출발역/노선 표시명.
+   * 좌표(promptGeoContext)와 짝으로 보내야 backend가 평가 결과 push를 빌드할 수 있다.
+   */
+  promptDisplay?: {
+    originStation: string;
+    line: string;
+  };
+  /**
+   * #903 (Seam G) — 등록 시점 기압계가 지하 진입을 시사하는가.
+   * true면 backend가 consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival
+   * 누락에 더 인내한다(지하 dead zone일 때 trainCode 추적이 자주 끊김).
+   * false/미설정은 기존 동작 그대로 — 기압계 미지원/권한 거절 환경 graceful.
+   */
+  subsurface?: boolean;
+  /**
+   * #1895 — device locale (ko/en/ja/zh). backend가 boarding-prompt push 본문을
+   * 4언어 분기 (`backend/alarm-worker/src/i18n.ts`)에 사용한다. 미지정/비지원은
+   * backend가 ko로 fallback (한국 운영 기본). 디바이스 i18next.language 값을 그대로 송신.
+   */
+  locale?: 'ko' | 'en' | 'ja' | 'zh';
+  /**
+   * #1923 — 사용자 명시 의향 trip의 lockless intermediate station-passed
+   * silent push 발사 허용 토글. ADR-014 §X "사용자 명시 의향 trip = lock 활성과
+   * 동급 정확도 보장 의무" 정합. 사용자가 [C 토글 ON / boardingPrompt 응답 /
+   * BoardingTrainList 직접 탭] 중 하나라도 행하면 device SSoT(`useUserIntentStore`)가
+   * true로 stamp되며 본 필드를 통해 backend로 forward된다.
+   *
+   * backend 분기: `trip.infoModeEnabled && waypoint.kind === 'intermediate'`
+   *   → runLocklessIntermediate 진입 → station-passed silent push 발사
+   * (backend/alarm-worker/src/scheduled.ts:980)
+   *
+   * 미설정/false: 기존 동작 그대로 — boardingLock 부재 시 `lockMissing` skip.
+   * backend는 미송신 시 graceful undefined → false 처리 (backward-compat).
+   */
+  infoModeEnabled?: boolean;
+  /**
+   * #2524 — 사용자가 boardingPrompt [탑승] 응답/배너 탭으로 승차를 "커밋"했지만 지하/arrivals
+   * 공백·ambiguity로 실 trainCode를 못 구해 device가 PENDING fallback lock을 생성했을 때만
+   * true. `infoModeEnabled`(안내 시작/info-mode 경로도 true)만으로는 backend가 "탑승 커밋 +
+   * lock 미확정"과 "정보용 안내 시작"을 구분할 수 없어, 후자에서만 의도된 lockless intermediate
+   * "통과" push가 전자에서도 스팸처럼 계속 발사되던 회귀(#2524)를 막기 위한 별도 시그널.
+   *
+   * backend 분기: `trip.boardingCommitted===true` → `runLocklessIntermediate`(매역 "통과")
+   * 억제, `attemptBoardingAnchorResolution`이 실 lock으로 승격하면 정상 `runTrainCodeTracking`
+   * 경로로 자연 전환 (backend/alarm-worker/src/scheduled.ts).
+   *
+   * 미설정/false: 필드 미송신(graceful) — backend Trip.boardingCommitted는 undefined 유지,
+   * 기존 lockless "통과" 발사 동작 완전 보존.
+   */
+  boardingCommitted?: boolean;
+  /**
+   * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **backend monitoring 전용 (ADR-023)**.
+   *
+   * backend는 이 값을 저장(Trip.sleepModeEnabled)해 cron/silent push log에 dimension으로
+   * 얹는다 — skip 원인 자동 분류(정상 sleep skip vs 회귀 skip)와 evidence 재구성 자동화에 사용.
+   * backend push 발사 결정에는 사용하지 않는다(ADR-023: Backend는 arvlCd 신호 기반 silent push
+   * 무조건 발사, 취침모드 무관). Device의 `shouldSuppressBySleepRule`이 단일 gate.
+   *
+   * 미설정/false: 필드 미송신(graceful) — backend Trip.sleepModeEnabled는 undefined 유지.
+   */
+  sleepModeEnabled?: boolean;
+  /**
+   * #2120 (#2114 근본 수리 Phase 2) — trip 인스턴스 corrId (`getCurrentTripCorrIdSync()`).
+   * backend가 Trip에 저장했다가 trip-ended push payload에 echo — device가 대조해 같은
+   * tripToken(기기 고정)의 옛 trip 종료 push가 새 trip 등록 후 도착하는 race를 차단한다.
+   * null 허용 — sync cache 미수화 시점(cold start 등)에는 null 그대로 송신해 backend가
+   * corrId 없는 trip으로 저장하고, 이후 정상 register부터 값이 채워진다(graceful). optional —
+   * 기존 register 호출자(테스트 등)는 미지정 시 undefined로 자연 생략.
+   */
+  corrId?: string | null;
+  /**
+   * #2280 — trip 등록 시점에 고정된 SSOT 출발역명 (device `tripOrigin.name`). backend
+   * `trip_metrics.origin_station`이 passedStations[0](advance 이벤트가 없으면 영구 null)로만
+   * 추론되어 null로 적재되는 회귀가 있었다 — 명시 송신해 backend가 우선 채택하도록 한다.
+   * `promptDisplay.originStation`(boarding-prompt 표시용, currentStation 기준으로 매 register마다
+   * 흔들릴 수 있음)과는 다른 값 — 이 필드는 trip 전체 수명 동안 불변이어야 한다.
+   * 캡처 전(undefined)이면 필드 자체 생략(graceful) — backend는 기존 passedStations fallback.
+   */
+  originStationName?: string;
+}
+
+export interface AlarmBackendResult {
+  ok: boolean;
+  /** URL 미설정 등으로 호출이 건너뛰어진 경우 true. */
+  skipped?: boolean;
+  status?: number;
+  /**
+   * #1897 (RC-5) — backend 가 응답으로 echo한 KV 권위 apnsEnv.
+   * `performRegisterFetch` 가 추출하여 호출자에게 노출. 구 backend 또는 parse 실패 시
+   * undefined (graceful — device 는 다음 register 시 build env fallback 사용).
+   */
+  confirmedEnv?: ApnsEnv;
+  /**
+   * #2197 (ADR-025 client 절반) — status 429(rate_limited) 응답 body의 `retryAfterSeconds`
+   * echo (backend `index.ts:584`). device 는 이 값이 지날 때까지 자체 재시도/heal POST를
+   * 억제해 storm을 스스로 키우지 않는다. 구 backend/parse 실패 시 undefined (graceful).
+   */
+  retryAfterSeconds?: number;
+}
+
+/** 기본 트립 TTL — 2시간. 백엔드 KV expiration과 정렬. */
+const DEFAULT_TRIP_TTL_MS = 2 * 60 * 60 * 1000;
+/** fetch 타임아웃 — 백엔드 응답 지연으로 알람 등록이 차단되지 않도록 짧게 유지. */
+const REQUEST_TIMEOUT_MS = 5000;
+/**
+ * register dedup 시 `alarmAtEpochMs`를 묶는 버킷(ms).
+ *
+ * `alarmAtEpochMs = now + ETA*1000`이므로 Open API ETA가 30~60초 단위로 흔들리면
+ * 매 GPS 폴링마다 다른 값이 된다. 버킷 단위(60s)로 떨어뜨려 동일 트립의 잔jitter를
+ * 흡수한다. 정확한 발사 시각은 백엔드 cron이 reschedule로 자체 보정한다.
+ */
+const ALARM_TIME_BUCKET_MS = 60 * 1000;
+
+/**
+ * 마지막으로 백엔드에 성공적으로 등록된 트립 페이로드의 해시.
+ *
+ * 디바이스 hook(`useApnsTripRegistration`)이 GPS/ETA 변동마다 useEffect를
+ * 재실행하는 경우 의미상 동일한 페이로드로 POST /trips가 분당 수회 폭주한다(#581).
+ * 모듈 레벨에 마지막 해시를 보관해 동일 페이로드는 fetch 없이 `{ok:true, skipped:true}`로
+ * 응답한다. `clearActiveTrip` 호출 시 초기화되어 같은 트립의 재등록(예: 사용자가
+ * 트립을 종료 후 곧바로 다시 시작)도 정상 동작한다.
+ */
+let lastRegisteredHash: string | null = null;
+
+/**
+ * In-flight register Promise dedup (#701).
+ *
+ * `lastRegisteredHash`만으로는 hash check ↔ fetch resolve 사이 round-trip 동안
+ * 동일 hash의 register가 동시 발사되면 모두 hash 미일치로 통과해 POST /trips가
+ * race로 폭주한다 (Cloudflare 로그: 같은 ms에 3개 도착). 모듈 레벨 Map에 hash →
+ * in-flight Promise를 보관해 같은 hash의 동시 호출은 첫 Promise를 공유한다.
+ * 완료 시 entry는 제거되고 결과는 `lastRegisteredHash`에 기록된다.
+ */
+const inFlightRegisters = new Map<string, Promise<AlarmBackendResult>>();
+
+function buildRegisterHash(body: {
+  token: string;
+  route: NonNullable<Route>;
+  destination: string;
+  waypoints: AlarmWaypoint[];
+  alarmAtEpochMs: number;
+  apnsEnv: ApnsEnv;
+  boardingLock?: AlarmBoardingLock;
+  promptDisplay?: { originStation: string; line: string };
+  subsurface?: boolean;
+  locale?: 'ko' | 'en' | 'ja' | 'zh';
+  infoModeEnabled?: boolean;
+  boardingCommitted?: boolean;
+  sleepModeEnabled?: boolean;
+}): string {
+  return JSON.stringify({
+    token: body.token,
+    route: body.route,
+    destination: body.destination,
+    waypoints: body.waypoints,
+    alarmBucket: Math.floor(body.alarmAtEpochMs / ALARM_TIME_BUCKET_MS),
+    apnsEnv: body.apnsEnv,
+    // boardingLock 변경 — trainCode/line 또는 segmentStations 갱신 시 즉시 재등록 보장.
+    // expiresAt은 dedup 대상 아님 (시간 흐름으로 자연 변동).
+    boardingLockKey: body.boardingLock
+      ? `${body.boardingLock.trainCode}|${body.boardingLock.line}|${body.boardingLock.subwayId}|${body.boardingLock.segmentStations.join(',')}`
+      : null,
+    // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
+    // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
+    // 게이트 평가 시점에 KV series로 자체 계산하니 영향 없음.
+    promptDisplayKey: body.promptDisplay
+      ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
+      : null,
+    // #903 (Seam G) — subsurface 토글이 바뀌면 backend threshold가 즉시 갱신되도록 dedup 키 포함.
+    // 빈번한 ON/OFF jitter는 useBarometer의 60s 윈도우 평가가 자체 흡수하므로 폭주 위험 낮음.
+    subsurface: body.subsurface === true,
+    // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
+    // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
+    locale: body.locale ?? null,
+    // #1923 — infoModeEnabled 토글 ON ↔ OFF 전환 시 즉시 재등록 보장 + dedup 폭주 차단.
+    // 사용자가 의향 표명 직후 backend lockless intermediate gate가 즉시 활성화되어야 다음
+    // cron cycle부터 station-passed silent push 발사가 가능. 같은 값 연속 호출은 hash 동일 → skip.
+    infoModeEnabled: body.infoModeEnabled === true,
+    // #2524 — boardingCommitted 전환(탑승 커밋 ↔ 실 lock 승격) 시 즉시 재등록 보장. 승격 후에는
+    // device가 이 플래그를 다시 false로 내리지 않지만(실 lock 존재 자체가 backend 분기를
+    // isBoardingLockActive 경로로 우회시킴), 값이 바뀌는 유일한 실제 케이스(커밋 시점)에서
+    // dedup으로 인한 재등록 누락을 방지한다.
+    boardingCommitted: body.boardingCommitted === true,
+    // #2032 (Issue D) — sleepMode 토글 ON ↔ OFF 전환 시 즉시 재등록 보장.
+    // backend monitoring 값(Trip.sleepModeEnabled)이 즉시 갱신되어 이후 skip 원인 log가 정확.
+    // ADR-023: backend push 발사 결정에는 미영향(저장/log 전용). 같은 값 연속 호출은 hash 동일 → skip.
+    sleepModeEnabled: body.sleepModeEnabled === true,
+  });
+}
+
+/** 테스트용 — 모듈 dedup 상태 초기화 (완료 캐시 + in-flight Map). */
+export function __resetAlarmBackendDedup(): void {
+  lastRegisteredHash = null;
+  inFlightRegisters.clear();
+}
+
+/**
+ * #1545 (S12) — trip 종료 시 alarm-backend dedup 캐시(완료 hash + in-flight Map) 초기화.
+ *
+ * `clearActiveTrip`이 동일 작업을 수행하지만, BG silent push trip-ended 경로는 token이 없는
+ * 채로 `runTripBoundCleanups`만 호출되어 in-flight Promise/last hash가 다음 trip register에
+ * 의도치 않게 재사용되는 회귀(같은 hash로 stale Promise 공유)가 발생. 본 함수는 token 없이
+ * dedup 상태만 즉시 초기화 — 멱등.
+ */
+export function resetAlarmBackendDedup(): Promise<void> {
+  lastRegisteredHash = null;
+  inFlightRegisters.clear();
+  return Promise.resolve();
+}
+
+function getBackendUrl(): string | null {
+  const url = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
+  if (!url) return null;
+  return url.replace(/\/$/, '');
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    // #1518 — instrumentBackendFetch로 wrapping해 call/response/error entry를 진단 buffer에 push.
+    return await instrumentBackendFetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function performRegisterFetch(
+  base: string,
+  payload: RegisterTripPayload,
+  hash: string,
+): Promise<AlarmBackendResult> {
+  const createdAt = payload.createdAt ?? Date.now();
+  const expiresAt = payload.expiresAt ?? createdAt + DEFAULT_TRIP_TTL_MS;
+  const body = {
+    token: payload.token,
+    route: payload.route,
+    destination: payload.destination,
+    waypoints: payload.waypoints,
+    createdAt,
+    expiresAt,
+    alarmAtEpochMs: payload.alarmAtEpochMs,
+    apnsEnv: payload.apnsEnv,
+    // #2120 — trip 인스턴스 corrId. null 허용 그대로 항상 동봉(sync cache 미수화 시 null) —
+    // backend는 string이 아니면 undefined로 저장해 trip-ended payload에서 필드를 생략한다.
+    corrId: payload.corrId ?? null,
+    // boardingLock은 있을 때만 송신 (없으면 backend는 기존 anchor 폴링).
+    ...(payload.boardingLock ? { boardingLock: payload.boardingLock } : {}),
+    // #819 — boarding-prompt 평가 컨텍스트. 좌표/표시 둘 중 하나라도 없으면 backend는 자동 skip.
+    ...(payload.promptGeoContext ? { promptGeoContext: payload.promptGeoContext } : {}),
+    ...(payload.promptDisplay ? { promptDisplay: payload.promptDisplay } : {}),
+    // #903 (Seam G) — 지하 진입 신호. ON일 때만 송신. backend는 부재 시 false default로 기존 threshold(5) 적용.
+    ...(payload.subsurface === true ? { subsurface: true } : {}),
+    // #1895 — device locale. 송신 시 backend가 boarding-prompt 본문을 4언어 분기 (ko/en/ja/zh).
+    // 미송신 시 backend는 ko fallback.
+    ...(payload.locale ? { locale: payload.locale } : {}),
+    // #1923 — 사용자 명시 의향 토글. ON일 때만 송신. backend는 부재 시 false default 처리 (backward-compat).
+    // device SSoT 동기화 시점에 false로 명시 송신 vs 미송신 둘 다 backend 동일 처리 → 송신 skip로 트래픽 절약.
+    ...(payload.infoModeEnabled === true ? { infoModeEnabled: true } : {}),
+    // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신. backend는 부재 시 false default
+    // 처리 (backward-compat) — 기존 lockless "통과" 발사 동작 완전 보존.
+    ...(payload.boardingCommitted === true ? { boardingCommitted: true } : {}),
+    // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용 저장 (ADR-023).
+    // 미송신 시 backend Trip.sleepModeEnabled는 undefined 유지 — 기존 동작 완전 보존.
+    ...(payload.sleepModeEnabled === true ? { sleepModeEnabled: true } : {}),
+    // #2280 — SSOT 출발역명. trip 전체 수명 동안 불변이라 dedup hash에는 포함하지 않는다
+    // (같은 trip 재등록마다 값이 같아 hash 갱신을 유발할 필요가 없다). 캡처 전(undefined)이면 생략.
+    ...(payload.originStationName ? { originStationName: payload.originStationName } : {}),
+  };
+
+  try {
+    const res = await fetchWithTimeout(`${base}/trips`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      log.warn(`register failed status=${res.status}`);
+      // #2197 — 429(rate_limited)는 body에 `retryAfterSeconds`를 담아 내려온다(index.ts:584).
+      // 다른 status는 body 형태가 다르므로 429일 때만 파싱 — parse 실패는 graceful undefined.
+      const retryAfterSeconds =
+        res.status === 429 ? await extractRetryAfterSeconds(res) : undefined;
+      return {
+        ok: false,
+        status: res.status,
+        ...(retryAfterSeconds != null ? { retryAfterSeconds } : {}),
+      };
+    }
+    lastRegisteredHash = hash;
+    // #1897 (RC-5) — backend 가 echo한 `confirmedEnv` 추출 + stamp.
+    // 구 backend 응답(confirmedEnv 부재) / parse 실패 시 graceful — device 는 다음 register
+    // 에서 build env(`resolveApnsEnv`)로 자연 fallback.
+    const confirmedEnv = await extractConfirmedEnv(res);
+    if (confirmedEnv) {
+      await setConfirmedApnsEnv(confirmedEnv);
+    }
+    return { ok: true, status: res.status, ...(confirmedEnv ? { confirmedEnv } : {}) };
+  } catch (e) {
+    log.warn('register error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * #1897 (RC-5) — register 응답에서 `confirmedEnv` 추출.
+ * JSON parse 실패 / 필드 부재 / 값 오류 모두 graceful undefined — device 는 build env fallback.
+ */
+async function extractConfirmedEnv(res: Response): Promise<ApnsEnv | undefined> {
+  try {
+    const body = (await res.json()) as { confirmedEnv?: unknown };
+    if (body.confirmedEnv === 'sandbox' || body.confirmedEnv === 'production') {
+      return body.confirmedEnv;
+    }
+  } catch {
+    // graceful — 구 backend 응답 또는 parse 실패
+  }
+  return undefined;
+}
+
+/**
+ * #2197 (ADR-025 client 절반) — 429 register 응답에서 `retryAfterSeconds` 추출.
+ * JSON parse 실패 / 필드 부재 / 값 오류(양수 아님)는 모두 graceful undefined —
+ * 호출자는 기존 자체 backoff schedule([15/30/60s])로 fallback한다.
+ */
+async function extractRetryAfterSeconds(res: Response): Promise<number | undefined> {
+  try {
+    const body = (await res.json()) as { retryAfterSeconds?: unknown };
+    if (typeof body.retryAfterSeconds === 'number' && body.retryAfterSeconds > 0) {
+      return body.retryAfterSeconds;
+    }
+  } catch {
+    // graceful — 구 backend 응답 또는 parse 실패
+  }
+  return undefined;
+}
+
+/**
+ * 활성 트립을 등록한다. 백엔드 URL이 없거나 호출이 실패해도 throw하지 않고
+ * `{ok:false}`를 반환 — 알람 사전 예약(#334)은 그대로 동작한다.
+ *
+ * Dedup 2-layer (#581, #701):
+ *   1) `lastRegisteredHash` — 직전 성공 register의 hash와 동일하면 즉시 skip.
+ *   2) `inFlightRegisters` — 같은 hash로 이미 fetch 중이면 그 Promise를 공유 (race 차단).
+ */
+export function registerActiveTrip(
+  payload: RegisterTripPayload,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip register');
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+
+  const hash = buildRegisterHash({
+    token: payload.token,
+    route: payload.route,
+    destination: payload.destination,
+    waypoints: payload.waypoints,
+    alarmAtEpochMs: payload.alarmAtEpochMs,
+    apnsEnv: payload.apnsEnv,
+    boardingLock: payload.boardingLock,
+    promptDisplay: payload.promptDisplay,
+    subsurface: payload.subsurface,
+    // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
+    locale: payload.locale,
+    // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).
+    infoModeEnabled: payload.infoModeEnabled,
+    // #2524 — boardingCommitted 변경 시 hash 갱신해 재등록 보장 (탑승 커밋 직후 backend 억제 gate 즉시 활성화).
+    boardingCommitted: payload.boardingCommitted,
+    // #2032 (Issue D) — sleepMode 변경 시 hash 갱신해 재등록 보장 (backend 저장값 즉시 동기화).
+    sleepModeEnabled: payload.sleepModeEnabled,
+  });
+  if (hash === lastRegisteredHash) {
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+
+  // 같은 hash로 이미 in-flight fetch가 있으면 그 Promise를 그대로 반환 — TOCTOU race
+  // (hash check ↔ fetch resolve 사이 동시 호출)로 POST /trips가 동시 발사되는 것을 차단.
+  const pending = inFlightRegisters.get(hash);
+  if (pending) {
+    return pending;
+  }
+
+  // #828 — BG/FG location task가 snap에 사용할 boarding line을 mirror. fetch와 병렬로 발사해
+  // register와 무관하게 (URL 미설정 graceful 경로에서도) 다음 좌표 upload부터 효과.
+  void mirrorBoardingLine(payload.promptDisplay?.line);
+
+  const promise = performRegisterFetch(base, payload, hash).finally(() => {
+    inFlightRegisters.delete(hash);
+  });
+  inFlightRegisters.set(hash, promise);
+  return promise;
+}
+
+/**
+ * silent push 처리 결과 ACK (#568 P2b). 백엔드 #566 P2a `/push/ack` endpoint 호출.
+ * 백엔드가 pushId 발급 시 KV에 저장한 token과 매칭해 임의 echo를 차단하므로
+ * caller는 디바이스의 APNs token을 함께 전달해야 한다.
+ * URL 미설정/네트워크 실패 시 throw 없이 `{ok:false}` — 본 silent push 처리는 영향 없음.
+ */
+export interface PushAckPayload {
+  pushId: string;
+  token: string;
+  // #1370 L5 — `received` outcome은 게이트 평가 전 push 도달 stamp만 기록한다.
+  //   backend는 pending entry를 삭제하지 않고 KV에 `received:<pushId>` stamp만 저장 →
+  //   RCA 시 pushed(backend tail) vs received(stamp) 1:1 비교 가능.
+  outcome: 'received' | 'fired' | 'skipped';
+  reason?: string;
+  // #1768 — 권한별 도달률 집계를 위해 foreground+background 권한 조합을 보고.
+  // legacy device가 누락 시 backend는 graceful skip (backward compat).
+  permissionMode?: 'always' | 'whileInUse' | 'denied';
+  // #1772 — silent push latency (receivedAt - sentAt, ms). legacy 누락 시 backend KV fallback.
+  latencyMs?: number;
+  // #1772 — battery state. legacy device 미전송 시 backend graceful skip.
+  batteryState?: 'normal' | 'lowPowerMode' | 'unknown';
+}
+
+export async function sendPushAck(payload: PushAckPayload): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip push ack');
+    return { ok: false, skipped: true };
+  }
+  try {
+    const res = await fetchWithTimeout(`${base}/push/ack`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      log.warn(`push ack failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('push ack error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * 활성 트립을 해제한다. URL/네트워크 실패 시에도 throw하지 않는다 — 백엔드 KV는
+ * `expiresAt`으로 자동 정리되므로 클라이언트가 재시도 책임을 갖지 않는다.
+ */
+export async function clearActiveTrip(token: string): Promise<AlarmBackendResult> {
+  // 트립 종료 후 동일 트립을 다시 시작할 수 있도록 dedup 캐시를 초기화한다.
+  // URL 미설정/네트워크 실패 경로에서도 초기화해야 클라이언트가 register dedup에
+  // 의도치 않게 갇히지 않는다. in-flight Promise까지 비워야 clear 직후 register가
+  // 이전 Promise를 재사용하지 않는다.
+  lastRegisteredHash = null;
+  inFlightRegisters.clear();
+  // #828 — trip 종료 시 mirror도 제거. 다음 좌표 upload부터 snap skip(graceful).
+  void mirrorBoardingLine(undefined);
+
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip clear');
+    return { ok: false, skipped: true };
+  }
+  if (!token) return { ok: false };
+
+  try {
+    const res = await fetchWithTimeout(`${base}/trips/${encodeURIComponent(token)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      log.warn(`clear failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('clear error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * boarding-prompt 응답 측정 (#827).
+ *
+ * 사용자가 "탑승했냐?" 푸시에 응답한 결과를 backend `/metrics/boarding-prompt`로 보낸다.
+ * `boarded` / `dismissed` 두 outcome만 허용. dismiss 시 silencedUntil 갱신은 별도
+ * `/boarding-prompt/dismiss` endpoint에서 수행 — 본 호출은 측정 only(부수효과 없음).
+ *
+ * URL 미설정/네트워크 실패 시 throw 없이 `{ok:false}` — measurement loss는 발생하지만 본
+ * 알람 흐름에는 영향 없음.
+ */
+export type BoardingPromptOutcome = 'boarded' | 'dismissed';
+
+export async function reportBoardingPromptOutcome(
+  token: string,
+  outcome: BoardingPromptOutcome,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip boarding-prompt metric');
+    return { ok: false, skipped: true };
+  }
+  if (!token) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(`${base}/metrics/boarding-prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, outcome }),
+    });
+    if (!res.ok) {
+      log.warn(`boarding-prompt metric failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('boarding-prompt metric error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * Live Activity push token 등록 (#586 B/C).
+ * native가 emit한 push token hex를 backend의 trip 레코드에 보관한다.
+ * URL 미설정/네트워크 실패는 throw 없이 `{ok:false}` — LA 자체는 정상 동작한다.
+ */
+export async function registerLiveActivityToken(
+  tripToken: string,
+  activityPushToken: string,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip LA register');
+    return { ok: false, skipped: true };
+  }
+  try {
+    const res = await fetchWithTimeout(`${base}/live-activity/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tripToken, activityPushToken }),
+    });
+    if (!res.ok) {
+      log.warn(`LA register failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('LA register error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * Live Activity push token 해제 (#586 B/C).
+ * trip이 끝났거나 사용자가 LA를 dismiss했을 때 호출.
+ */
+export async function clearLiveActivityToken(
+  tripToken: string,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip LA clear');
+    return { ok: false, skipped: true };
+  }
+  if (!tripToken) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(
+      `${base}/live-activity/${encodeURIComponent(tripToken)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      log.warn(`LA clear failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('LA clear error', e);
+    return { ok: false };
+  }
+}

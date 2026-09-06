@@ -2,45 +2,1378 @@
  * Cron 핸들러 — 활성 트립 enumerate → 알람 윈도우(5분 이내) 트립만 폴링 → ETA 평가 → push 발사.
  */
 
+import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
+import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
+import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
+import { inferLegDirection } from './legDirection';
 import {
-  EARLY_THRESHOLD_SEC,
-  evaluatePhase,
-  isSignificantEtaChange,
-  shouldFire,
-} from './alarm';
-import { sendSilentPush, type ApnsConfig } from './apns';
-import { SeoulArrivalClient, type ArrivalEntry } from './seoul';
-import { deleteTrip, listTrips, putTrip } from './trips';
-import type { Env, Trip, Waypoint } from './types';
+  buildSilentPushData,
+  sendAlertPush,
+  sendBoardingPromptPush,
+  sendReschedulePush,
+  sendSilentPush,
+  sendSleepAlarmCompanionPush,
+  type ApnsConfig,
+  type PushOrigin,
+  type SilentPushPayload,
+} from './apns';
+import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
+import type { ArchFlagValue } from './archFlag';
+import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
+import {
+  evaluateBoardingPromptGates,
+  evaluateHopEndPromptGates,
+  isNearOrigin,
+  markPromptFired,
+  pickAutoTrainCode,
+  PROMPT_FRESHNESS_MS,
+  shouldStampOriginProximity,
+  type GateSkipReason,
+} from './boardingPrompt';
+import { computeMultiHopContext } from './tripMultiHop';
+import {
+  detectKalmanDrift,
+  KALMAN_DRIFT_GRACE_MS,
+  type KalmanState,
+  readKalmanState,
+  resetKalmanForArrival,
+  runKalmanStep,
+  writeKalmanState,
+} from './kalmanFilter';
+import {
+  buildLiveActivityContentState,
+  cleanupTripWithLa,
+  fireLiveActivityUpdate,
+  type LiveActivityStats,
+} from './liveActivity';
+import { matchLine } from './lineAlias';
+import { computeAllowedLines, type StationEnvironment } from './consensusGate';
+import { attachTrainCodeForLeg } from './lockSwap';
+import { filterCandidateDirection, filterCandidateLine } from './legCandidateFilters';
+import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
+import type { ObservedDeparture } from './transferLegConsensus';
+import {
+  advanceTripPosition,
+  applyLegConsensusTick,
+  mapEvidenceEnvironment,
+  type AdvanceBlockReason,
+  type AdvanceEvidence,
+  type EvidenceEnvironment,
+} from './advanceTripPosition';
+import {
+  deleteSsot,
+  isDeviceSyncStale,
+  readSsot,
+  seedSsot,
+  SSOT_CRON_READ_CACHE_TTL_SEC,
+  type TripPositionSSoT,
+} from './tripPositionSsot';
+import {
+  detectArcOvershoot,
+  evaluateWindow,
+  haversineKm,
+  readSeries,
+  type WindowedMetrics,
+} from './positionSeries';
+import { findStationCoordsByNameAndLine } from './stationsLookup';
+import { assertCronCacheTtl } from './kvConsistency';
+import { buildAlarmKey, putPending } from './pendingPushes';
+import { logPushFailure } from './pushFailureLog';
+import { enqueueRetryIfTransient } from './retryPushes';
+import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
+import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
+import {
+  N_STATION_LOOKAHEAD,
+  pollLinesAndStamp,
+  pollStationsAndStamp,
+  readFreshSelfPollPosition,
+} from './selfPollPosition';
+import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
+import { dedupeTripsByDeviceToken, listTrips, putTrip, resolveTripDeviceToken } from './trips';
+import {
+  evaluateTransferDestinationGate,
+  isTransferOrDestination,
+  type TransferDestinationBlockReason,
+} from './transferDestinationGate';
+import type {
+  ApnsEnv,
+  BoardingLockMeta,
+  BoardingPromptCandidate,
+  Env,
+  LineNumber,
+  PositionPoint,
+  StationPhaseState,
+  TrainReconfirmAlertPushPayload,
+  Trip,
+  Waypoint,
+} from './types';
+import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
+import { assertNever } from '../../../src/shared/types/pushContract';
+import { writeMetric } from './analytics';
+import { accumulateLaPushCounters } from './laPushCounters';
+import { t, type StationNotifCounts, type SupportedLocale } from './i18n';
+import {
+  checkArvlCdFireOnce,
+  isSimpleArchEnabled,
+  stampArvlCdFireOnce,
+} from './arvlcdFireOnceTtl';
+import {
+  appendJitterSample,
+  computeJitterPercentiles,
+  JITTER_SPIKE_THRESHOLD_MS,
+  readJitterSamples,
+  resetJitterSamples,
+  shouldEmitHeartbeat,
+  shouldSampleJitterTick,
+  stampHeartbeat,
+} from './cronJitterAggregate';
+import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
+import { hasActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGate';
+import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
+import { cleanupTripEvents, recordTripEvent } from './tripEventLog';
+import { hashTripToken } from './sentry';
+
+// pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
+// 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
+export { flipApnsEnv, pickApnsHost };
 
 /** 알람 윈도우: 알람 예상 시각 5분 이내인 트립만 폴링한다. */
 const POLLING_WINDOW_MS = 5 * 60 * 1000;
 
-export interface ScheduledStats {
+/**
+ * boardingLock 추적에서 reschedule push를 발사할 변동 임계치 (#585).
+ * 새 도착 예측이 마지막으로 디바이스에 통지한 값과 이 이상 어긋날 때만 push.
+ * 15s = Seoul API barvlDt 단위(60s)의 1/4 — 노이즈는 줄이고 의미있는 변동은 잡는다.
+ */
+export const RESCHEDULE_THRESHOLD_MS = 15_000;
+
+/** boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화. */
+export const FALLBACK_HOP_SEC = 90;
+
+/**
+ * LA update push 발사 임계치 (#586 D). reschedule push의 15s 임계와는 별개 — LA는 화면 표시용이라
+ * 더 듬성듬성 보내도 사용자가 인지하지 못하고, APNs LA budget(앱당 분당 ~60건)이 빠듯하다.
+ * 새 추정 도착 epoch이 lastLaPushEpoch와 30s 이상 차이날 때만 발사.
+ */
+export const LA_PUSH_THRESHOLD_MS = 30_000;
+
+/**
+ * LA heartbeat 간격 (#900 Seam D / #1671). ETA가 정체돼 ΔETA 임계 미달이어도 마지막 LA push 후
+ * 이 간격이 지나면 한 번 더 발사한다. 사용자가 BG에서도 stale content-state를 보지 않게
+ * 갱신을 강제하기 위한 안전망.
+ *
+ * #1671 — 60s → 90s (33% 감소). 환승/도착 임박 즉시 trigger(LA_IMMEDIATE_TRIGGER_ETA_SEC)가
+ * 핵심 시점을 cover하므로 일반 heartbeat를 늘려도 사용자 체감 lagは없다.
+ * Net LA push 빈도 ↓ (배터리/발열 개선). APNs LA budget 절감.
+ */
+export const LA_HEARTBEAT_INTERVAL_MS = 90_000;
+
+/**
+ * #1933 — LA push 침묵 자동 종료 임계 (5분).
+ *
+ * 회귀(2026-06-27 "건대 환승" 9분 stuck): 첫 LA push 후 advance evidence 0건이라 backend SSoT가
+ * `건대입구 transfer`로 frozen, `maybeFireLiveActivityUpdate`가 호출돼도 ΔETA=0 분기 dedup으로
+ * 새 push 미발사 → ActivityKit이 last content-state(staleDate 75s 무시)를 9분간 유지 →
+ * 사용자 도착 시점까지 Dynamic Island가 "건대 환승" 표시.
+ *
+ * heartbeat가 "새 push에 의존해 새 push를 보낸다"는 self-referential gap이라 새 evidence가
+ * 들어와도 SSoT가 바뀌지 않으면 영구 freeze. `lastLaPushAt + LA_STALE_AUTO_END_MS` 경과 시
+ * 자동 cleanup → `cleanupTripWithLa` 내부 `fireLiveActivityDismissal`로 ActivityKit dismiss →
+ * device의 stale 표시를 강제 정리한다. 5분은 보수적 — 정상 동작 시 90s heartbeat 3회 안에
+ * push가 발사돼 stamp가 갱신되므로 본 backstop은 발동되지 않는다.
+ *
+ * 6h staged lifecycle(`lifecycleForceEnded`)보다 일찍 발동 → safety net. B(silent push 정상화)
+ * + #10(infoModeEnabled 강화) 정상 동작 시 0건 기대 (V5/V6/X3 강화).
+ */
+export const LA_STALE_AUTO_END_MS = 5 * 60 * 1000;
+
+/**
+ * #1671 — 환승/도착 임박 즉시 trigger 임계 (초).
+ * `waypoint.kind === 'transfer'` (환승) 또는
+ * `waypoint.kind === 'destination' && etaSeconds <= LA_IMMEDIATE_TRIGGER_ETA_SEC` (도착 임박)
+ * 일 때 heartbeat/ΔETA 대기 없이 즉시 LA push를 발사한다.
+ *
+ * dedup window(LA_PUSH_THRESHOLD_MS=30s)는 여전히 적용 — 잦은 재발사 차단.
+ * 환승은 etaSeconds 무관하게 즉시(trip 중 leg 전환 = 중요도 최상). 도착은 1분 이내만 즉시.
+ */
+export const LA_IMMEDIATE_TRIGGER_ETA_SEC = 60;
+
+/**
+ * #2027 (Issue K) — archFlag='on' 시 환승 후 다음 hop 조기 도착 알림 방지용 임계 (초).
+ *
+ * 배경 (2026-07-03 08:24 KST 중곡→성수 trip):
+ *   08:32:17 사용자 건대입구 실제 도착 → 08:32:45 backend가 성수 waypoint(다음 hop, 2호선) 로 advance.
+ *   08:33-34 다음 cron cycle 에서 Seoul API 성수 arvlCd=4/5 (early), etaSeconds ≤ 60 →
+ *   destination-imminent LA push 조기 발사. 실제 성수 도착 08:37 (5분 이상 조기).
+ *
+ * 환승 직후 leg 전환 시점의 arvlCd=4/5(early) 신호는 물리적으로 아직 새 leg 열차가 대상 역 근처에
+ * 도착하지 않은 상태에서도 나올 수 있다 (Seoul API 는 line 별 pool 이라 stale). 60s → 90s 상향으로
+ * 사용자 체감 관점에서 도착 임박 판정 시점을 뒤로 밀어 조기 발사를 방지한다.
+ *
+ * archFlag='off' 시 기존 60s 유지 (regression 방어). archFlag='on' 시에만 90s 적용.
+ */
+export const LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH = 90;
+
+/**
+ * 연속 etaMissing 임계치 (#706). 한 trip이 N회 연속 trainCode 매칭 실패면 자동 종료.
+ * 운행 시간대 외(새벽)에 trainCode가 Seoul API에서 사라지면 무한 폴링하던 회귀(8h × 1/min) 방지.
+ * cron 주기 60s × 5회 = 5분 — 일시적 API 누락은 흡수하고 운행 종료/탈선 신호는 잡는다.
+ */
+export const MAX_CONSECUTIVE_ETA_MISSING = 5;
+
+/**
+ * #903 (Seam G) — 기압계 subsurface=true trip에 적용되는 인내 임계치 (10회 ≈ 10분).
+ * 지하 dead zone에서 GPS/trainCode 신호 누락이 더 자주, 더 길게 발생하므로 기본 임계의 2배로 인내.
+ * 너무 크면 자동 종료 효과를 잃어 무한 폴링 위험 — 2배가 절충점.
+ */
+export const SUBSURFACE_ETA_MISSING_TOLERANCE = 10;
+
+/**
+ * #1652 — backend cron staged trip lifecycle backstop (X8 차단).
+ *
+ * 배경: `consecutiveEtaMissing` 임계 종료(5/10 cycle)는 Seoul API가 trainCode를 잃을 때만 발동.
+ * Seoul outage / lockless 정적 / 권한 손상 등으로 cleanup 분기에 닿지 않으면 trip이 무한 잔존
+ * (10.5h 좀비 evidence, 2026-06-20 dump).
+ *
+ * Device-side는 T10 #1573 / PR #1594에서 `tripStartStorage.tripLifecyclePhase` +
+ * `useStateRehydration.runLifecycleBackstop`이 같은 임계로 silence/force-end를 처리한다.
+ * 본 backend backstop은 device가 죽거나 BG 미진입 상태에서도 trip이 KV에 무한 잔존하지
+ * 않도록 하는 **마지막 line of defense** — device-side와 dual safety net.
+ *
+ * 정합성: 임계는 device-side `TRIP_LIFECYCLE_SILENCE_MS` / `TRIP_LIFECYCLE_FORCE_END_MS`와 1:1
+ * (`src/shared/constants/realtime.ts`). 두 값이 어긋나면 한쪽이 먼저 발동해 cleanup race가 발생하므로
+ * 변경 시 양쪽 동시 업데이트 필수.
+ */
+export const BACKEND_TRIP_LIFECYCLE_SILENCE_MS = 6 * 60 * 60 * 1000;
+export const BACKEND_TRIP_LIFECYCLE_FORCE_END_MS = 9 * 60 * 60 * 1000;
+
+/**
+ * #1707 — destination 도달 자동 종료 시 device GPS cross-check 임계.
+ *
+ * 배경: backend vanish-fallback이 1.5분/hop pace로 cascade(`FALLBACK_HOP_SEC=90s`)되면 외선
+ * 우회 27 hop trip이 약 27~40분 만에 destination 도달 신호를 만들어 사용자 trip이 실제 도달
+ * 전에 자동 종료될 수 있다 (2026-06-23 13:35 사용자 1차 trip evidence: 성수→합정 외선 우회를
+ * 14:07 홍대입구에서 강제 종료).
+ *
+ * 정책:
+ *   - DESTINATION_GPS_CROSS_CHECK_MAX_M (500m): GPS 좌표와 destination 좌표 차이 ≤ 이 값이면
+ *     정상 종료. 도시 한 역 반경 + GPS accuracy 여유.
+ *   - DESTINATION_GPS_STALE_THRESHOLD_MS (5min): 마지막 position upload가 이 값보다 오래되면
+ *     "device GPS 자체가 없음"으로 간주해 기존 동작(정상 종료) 유지. backend가 device GPS
+ *     loss에 종속되면 안 됨 — graceful.
+ *
+ * fallback: GPS far(>500m) + fresh(<5min) → trip 보존 + force-end 9h auto-end로 이관.
+ *   force-end는 `tripLifecyclePhase` 9h 백스톱이 처리한다 (`BACKEND_TRIP_LIFECYCLE_FORCE_END_MS`).
+ */
+export const DESTINATION_GPS_CROSS_CHECK_MAX_M = 500;
+export const DESTINATION_GPS_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * #2230 — destination-reached 짧은 backstop.
+ *
+ * 배경: gps-far cross-check(#1707)가 destination advance를 무기한 보류하면(trip 보존 의도)
+ * `BACKEND_TRIP_LIFECYCLE_FORCE_END_MS`(9h)까지 trip이 잔존해 그 사이 매 cron 사이클
+ * destination imminent 평가가 반복된다(2026-08-09 실기기 dump). 9h force-end 자체는 다른
+ * 케이스(Seoul outage / lockless 정적 등)의 안전망이라 유지하되, destination 도달 신호가
+ * 최초 관측된 시각(`trip.destinationImminentFirstAt`) 기준 이 임계를 넘으면 gps-far 보류
+ * 상태라도 강제 cleanup한다. 9h보다 훨씬 짧게 — 15분(사용자가 실제 하차 후 GPS 갱신이
+ * 없거나 backend cross-check가 계속 어긋나는 경우를 위한 상한).
+ */
+export const DESTINATION_REACH_BACKSTOP_MS = 15 * 60 * 1000;
+
+/** #1707 destination GPS cross-check 결과. log/stats에 1:1로 매핑. */
+export type DestinationCrossCheckResult =
+  | 'within' // GPS 좌표 ≤ 500m → 정상 종료
+  | 'gps-far' // GPS 좌표 > 500m (fresh) → trip 보존 + force-end 위임
+  | 'stale-gps' // 마지막 GPS upload > 5min stale → 정상 종료 (graceful)
+  | 'no-gps' // device GPS upload 자체 없음 → 정상 종료 (legacy graceful)
+  | 'station-unknown'; // stations.json lookup fail → 정상 종료 (conservative)
+
+/**
+ * #1707 — destination 도달 cross-check.
+ *
+ * cleanupTripWithLa('destination-arrived') 호출 직전 device GPS 좌표와 destination station
+ * 좌표 거리를 verify한다. 결과는 호출자에게 enum으로 반환 — 'gps-far'만 trip 보존, 나머지는
+ * 모두 정상 종료.
+ *
+ * 입력 series는 KV에서 호출자가 read해 전달 (테스트 격리 + 호출자 cycle 내 series read 재사용).
+ *
+ * @param series device positionSeries (KV `pos:${token}`)
+ * @param waypoint destination kind waypoint (stationName + line으로 stations.json lookup)
+ * @param now 현재 epoch ms
+ */
+export function evaluateDestinationCrossCheck(
+  series: readonly PositionPoint[],
+  waypoint: Waypoint,
+  now: number,
+): DestinationCrossCheckResult {
+  if (series.length === 0) return 'no-gps';
+  // 마지막 sample 기준 — 시간순 정렬 가정(append-only).
+  const last = series[series.length - 1];
+  const ageMs = now - last.ts;
+  if (ageMs > DESTINATION_GPS_STALE_THRESHOLD_MS) return 'stale-gps';
+  const coords = findStationCoordsByNameAndLine(waypoint.stationName, waypoint.line);
+  if (coords === null) return 'station-unknown';
+  const distanceM = haversineKm(last.lat, last.lng, coords.lat, coords.lng) * 1000;
+  if (distanceM <= DESTINATION_GPS_CROSS_CHECK_MAX_M) return 'within';
+  return 'gps-far';
+}
+
+/** #1707 — cross-check 결과를 ScheduledStats.destinationCrossCheck 카운터에 누적. */
+export function recordDestinationCrossCheck(
+  stats: Pick<ScheduledStats, 'destinationCrossCheck'>,
+  result: DestinationCrossCheckResult,
+): void {
+  switch (result) {
+    case 'within':
+      stats.destinationCrossCheck.within += 1;
+      return;
+    case 'gps-far':
+      stats.destinationCrossCheck.gpsFar += 1;
+      return;
+    case 'stale-gps':
+      stats.destinationCrossCheck.staleGps += 1;
+      return;
+    case 'no-gps':
+      stats.destinationCrossCheck.noGps += 1;
+      return;
+    case 'station-unknown':
+      stats.destinationCrossCheck.stationUnknown += 1;
+      return;
+  }
+}
+
+/**
+ * #1680 (V8d) — cron 사이클에서 stationary skip 여부 결정.
+ *
+ * SSoT.motionState === 'stationary' 시 Seoul polling + push를 skip한다.
+ *
+ * Bypass 조건:
+ *   1. userIntentDeclared=true — C 토글 ON / boardingPrompt 응답 / BoardingTrainList 직접 탭.
+ *      ADR-014 §사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무. 정지 중이어도 skip X.
+ *   2. destination/transfer kind — 항상 bypass.
+ *      이 시점에서 현재 ETA를 알 수 없으므로(trip.lastEtaSeconds는 device 마지막 등록값으로
+ *      최신이 아님) 안전 방향(bypass)으로 평가를 진행한다. intermediate waypoint만 skip 대상.
+ *      실제 false fire는 downstream advanceTripPosition 게이트(motion-stationary)가 차단한다.
+ *
+ * motionState='unknown' 또는 SSoT null → skip하지 않음 (backward-compat, 평가 유지).
+ *
+ * #2321 (O1-B) — `deviceSyncStale=true`(device sync 5분+ 무갱신, `isDeviceSyncStale`)이면
+ * motionState 신호 자체가 suspend 직전 값에 고정된 stale 신호일 수 있어 skip하지 않는다
+ * (배터리 절감보다 backend 자율 전진 우선 — #2306 RCA, 25분 suspend 4역+목적지 알림 0건 재발
+ * 차단). device sync가 신선하면 기존 V8d 배터리 절감 동작 그대로 유지(무회귀).
+ *
+ * @returns true = skip, false = 평가 계속
+ */
+export function shouldSkipStationary(
+  motionState: 'moving' | 'stationary' | 'unknown',
+  waypointKind: Waypoint['kind'],
+  userIntentDeclared: boolean,
+  deviceSyncStale: boolean,
+): boolean {
+  if (motionState !== 'stationary') return false;
+  // ADR-014 §사용자 명시 의향 trip — 동급 보장. 정지 중이어도 skip X.
+  if (userIntentDeclared) return false;
+  // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 arvlCd ground truth
+  // 평가를 계속 진행(조건부 완화, V8d 전면 제거 아님).
+  if (deviceSyncStale) return false;
+  // destination/transfer — 항상 bypass. ETA 신선도를 알 수 없어 skip하면 도착 알림 누락 위험.
+  // intermediate만 skip 대상 (Seoul API call + push 절감 대상).
+  if (waypointKind === 'destination' || waypointKind === 'transfer') return false;
+  return true;
+}
+
+/**
+ * #1652 — trip lifecycle phase 판정.
+ *
+ * `createdAt` 기준 elapsed로 단계 분리. cron이 매 cycle iterate하면서 phase에 따라 처리 분기:
+ *  - 'normal'    : 정상 운행 (createdAt < 6h). 기존 로직 그대로
+ *  - 'silence'   : 6h~9h. cron skip (Seoul polling + push 모두 미발사) — KTX/장거리 trip 보호
+ *  - 'force-end' : 9h+. cleanupTripWithLa('expired')로 강제 종료
+ *
+ * 좀비 회수가 cleanup이므로 reason='expired' 재사용 — TripEndedReason enum 변경 없이 client는
+ * 이미 graceful handle. log/stats에 별도 label로 telemetry 구분.
+ */
+export type TripLifecyclePhase = 'normal' | 'silence' | 'force-end';
+
+export function tripLifecyclePhase(
+  trip: Pick<Trip, 'createdAt'>,
+  now: number,
+): TripLifecyclePhase {
+  const elapsed = now - trip.createdAt;
+  if (elapsed >= BACKEND_TRIP_LIFECYCLE_FORCE_END_MS) return 'force-end';
+  if (elapsed >= BACKEND_TRIP_LIFECYCLE_SILENCE_MS) return 'silence';
+  return 'normal';
+}
+
+/**
+ * #1315 — lockless trip에서 trainCode를 확보하지 못한 cycle의 bare-arvlCd advance 보수 게이트.
+ *
+ * 배경(2026-06-15 trip): 사용자가 정적(용마산 근처)인데 backend가 waypoint 역의 "아무 열차"
+ * arvlCd=ARRIVED만 보고 다음 역으로 advance → false positive + 알림 레이스. `pickBestArrivalSignal`
+ * 은 trainCode를 바인딩하지 않으므로, 그 신호가 *사용자가 탄 열차*가 통과했다는 ground truth가
+ * 아니다(다른 열차/반대 방향일 수 있음).
+ *
+ * 정책(ADR-010 "false positive / miss 동급" + "나쁜 신호 거부" 실시간성 정책): trainCode
+ * 미확보 cycle에서는 GPS motion이 **실제 이동**(walking/automotive)을 positive하게 보일 때만
+ * bare-arvlCd advance를 허용한다. `stationary`/`unknown`(샘플 없음 포함)은 보류 — 사용자가
+ * 그 구간을 실제로 지났다는 독립 확증이 없다.
+ *
+ * 트레이드오프(PR 본문 FLAG): 지하(subsurface)에서 GPS가 끊겨 motion=unknown인 채로 사용자가
+ * 실제 이동 중이면 이 게이트가 정당한 advance를 miss한다. trainCode 바인딩(우선 경로)이 그 miss를
+ * 메우지만, 바인딩 자체가 9단 게이트(이동 필요)에 의존하므로 지하 정적 케이스는 여전히 사각이다.
+ * 임계 완화 대신 후속 보강(예: subsurface trainCode 추론)으로 결정 — 본 PR은 false positive
+ * 제거를 우선한다.
+ */
+export const LOCKLESS_ADVANCE_MOTION_MODES: ReadonlySet<PositionPoint['motion']> = new Set([
+  'walking',
+  'automotive',
+]);
+
+/**
+ * #1315 — lockless 경로 motion 게이트(엄격). positive 이동(walking/automotive)일 때만 advance 허용.
+ * stationary/unknown은 보류. 정적 false advance + 알림 레이스 차단이 1차 목표.
+ */
+export function isAdvanceAllowedByMotion(motion: PositionPoint['motion']): boolean {
+  return LOCKLESS_ADVANCE_MOTION_MODES.has(motion);
+}
+
+/**
+ * #1386 — lock-active vanish fallback advance(`handleEtaMissing` time-based) 전용 motion 게이트.
+ *
+ * @deprecated ADR-017 T5 (#1558) — `advanceBoardingLockWaypoint`가 `advanceTripPosition` 단일
+ *   진입점을 통해 SSoT motion 게이트(#2)로 정지 trip을 차단한다. 본 함수는 backward-compat 용으로
+ *   export를 유지하지만 신규 호출 X. vanish-fallback path는 evidence를 stamp하면 SSoT가 자동으로
+ *   stationary를 차단한다 (`tripPositionSsot.motionState` + `advanceTripPosition` #2 게이트).
+ *
+ * 기존 동작 (참조):
+ * - `stationary` → 보류, `walking`/`automotive`/`unknown` → 진행.
+ * - SSoT 도입 후엔 motionState='stationary' + userIntentDeclared=false 시 자동 차단.
+ *
+ * 트레이드오프(이슈 #1386): `unknown` 중 실제 정지인 케이스는 못 잡는다 — SSoT motionState
+ * 'unknown'도 #2 게이트를 통과하므로 동등한 트레이드오프가 유지된다.
+ */
+export function isFallbackAdvanceBlockedByMotion(motion: PositionPoint['motion']): boolean {
+  return motion === 'stationary';
+}
+
+/**
+ * trip별 etaMissing 임계 결정. subsurface=true면 늘려 잡고, 그 외엔 기본값.
+ * 클라가 매 register POST에 기압계 신호를 동봉하므로 한 trip 내에서 지상→지하 전이 시
+ * threshold가 자연 갱신된다(stale 가능 윈도우는 다음 register 까지 ≤ ALARM_TIME_BUCKET_MS).
+ */
+export function resolveEtaMissingThreshold(trip: Pick<Trip, 'subsurface'>): number {
+  return trip.subsurface === true
+    ? SUBSURFACE_ETA_MISSING_TOLERANCE
+    : MAX_CONSECUTIVE_ETA_MISSING;
+}
+
+/**
+ * cron이 progress KV를 read할 때의 cacheTtl (#766/#770).
+ * POST `/trips`가 putProgress 직후 같은 cron 사이클에서 옛 값을 읽지 않도록 30s까지 단축.
+ * trips.ts/pendingPushes.ts의 cron read와 동일 정책. Cloudflare KV는 cacheTtl<30s 시
+ * 런타임에서 `Invalid cache_ttl` 던짐(#770 hotfix).
+ */
+const CRON_PROGRESS_CACHE_TTL_SEC = 30;
+
+/**
+ * #1539 (S6) — `Trip.passedStations` 누적 최대 길이.
+ * silent push payload가 비대해지는 것을 막고(APNs payload limit 4KB), device 사전 예약 큐와
+ * diff에 필요한 직전 N개 station만 유지한다(트립 누적 알림 수는 일반적으로 한 자릿수~십 수개).
+ *
+ * 20은 보수적 상한 — 1분 cron jitter로 device가 놓칠 수 있는 최대 통과 station 수의 2배 이상.
+ */
+export const PASSED_STATIONS_MAX_LEN = 20;
+
+/**
+ * #1539 (S6) — Cloudflare cron trigger의 nominal interval (60s, `wrangler.toml` `[triggers].crons`).
+ * `runScheduled`가 실제 실행된 시각과 직전 60s boundary의 차이로 cron jitter를 측정한다.
+ *
+ * 정상 운영: jitter < 1s. Cloudflare scheduler 부하 시 수 초~수십 초까지 늘어날 수 있고,
+ * device 매역 알림 누락의 1차 원인 중 하나(epic #1533 ADR-016 §3 결정 5). 이 값이 P99로
+ * 추적되면 cron 윈도우 확장(S5) 영향 평가의 정량 근거가 된다.
+ */
+export const CRON_NOMINAL_INTERVAL_MS = 60_000;
+
+/**
+ * #1539 (S6) — `Trip.passedStations`에 stationName을 cap 적용해 누적.
+ * 같은 stationName이 연속 호출되면 push하지 않는다(arrived+entering 양쪽 신호로 advance 헬퍼가
+ * 1 hop에 한 번만 진입하지만 defensive). 길이 초과 시 oldest를 drop.
+ *
+ * pure helper — trip 객체를 mutate하고 변경 여부(dirty)를 반환해 호출자가 putTrip 분기에 사용한다.
+ */
+export function appendPassedStation(trip: Trip, stationName: string): boolean {
+  if (stationName.length === 0) return false;
+  if (trip.passedStations === undefined) {
+    trip.passedStations = [stationName];
+    return true;
+  }
+  const last = trip.passedStations[trip.passedStations.length - 1];
+  if (last === stationName) return false;
+  trip.passedStations.push(stationName);
+  if (trip.passedStations.length > PASSED_STATIONS_MAX_LEN) {
+    trip.passedStations.splice(0, trip.passedStations.length - PASSED_STATIONS_MAX_LEN);
+  }
+  return true;
+}
+
+/**
+ * #1539 (S6) — cron jitter 측정. 실제 실행 시각과 직전 60s boundary의 차이(ms).
+ * 정상 운영에서 < 1s. Cloudflare scheduler 부하 또는 cold start 시 수 초까지 늘어날 수 있다.
+ *
+ * 음수 반환 가능성 없음 — `now`가 boundary 이전인 case는 floor의 의미상 불가능(now ≥ boundary).
+ */
+export function computeCronJitterMs(now: number): number {
+  const boundary = Math.floor(now / CRON_NOMINAL_INTERVAL_MS) * CRON_NOMINAL_INTERVAL_MS;
+  return now - boundary;
+}
+// #1402 — load-time 회귀 가드. 컴파일 시 0/10 같은 값을 silently 넣지 못하도록 module load
+// 시점에 즉시 throw. 신규 callsite 추가 시 type-check + 첫 test run 양쪽에서 잡힌다.
+assertCronCacheTtl(CRON_PROGRESS_CACHE_TTL_SEC);
+
+type Logger = (message: string, meta?: Record<string, unknown>) => void;
+
+export interface ScheduledStats extends LiveActivityStats {
   scanned: number;
   polled: number;
   pushed: number;
   errors: number;
+  /** Seoul API 응답이 비어 ETA를 산출하지 못한 트립 수 (운영 가시성용). */
+  etaMissing: number;
+  /**
+   * BadDeviceToken으로 1차 host에서 거부됐다가 반대 host로 self-heal 성공해
+   * `trip.apnsEnv`를 정정한 카운트. 운영 메트릭 — 이 값이 0이 아니면
+   * 클라이언트 hint가 빌드 환경과 어긋나고 있다는 신호 (#482).
+   */
+  envCorrected: number;
+  /**
+   * BoardingLock 부재/만료로 발사 게이트에서 스킵된 트립 수 (#640).
+   * 사용자가 열차 미선택 상태에서 noise push가 발사되지 않도록 차단된 결과.
+   */
+  lockMissing: number;
+  /**
+   * 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) — 명시 탑승
+   * anchor(`promptDisplay` + `infoModeEnabled===true`)를 가진 lockless trip에서 정확히 1개의
+   * unambiguous trainCode를 찾아 `trip.boardingLock`을 승격시킨 누적 횟수. 다음 cycle부터
+   * `isBoardingLockActive` → `runTrainCodeTracking` 정상 경로로 매역 push가 시작된다.
+   * `boardingAnchorResolver.ts` 참고.
+   */
+  boardingAnchorResolved: number;
+  /**
+   * 위와 동일 anchor 조건에서 resolver가 0개(none) 또는 2개+(ambiguous) 후보를 만나 승격을
+   * 보류한 누적 횟수. 틀린 열차를 추측해 lock하지 않는다는 안전 게이트가 실제로 작동한 빈도
+   * 측정 — 사용자는 다음 cycle 재시도 또는 device BoardingTrainList manual fallback으로 이어진다.
+   */
+  boardingAnchorUnresolved: number;
+  /**
+   * #2524 — `trip.boardingCommitted===true`(탑승 커밋, lock 미확정) 상태에서
+   * `runLocklessIntermediate`의 매역 "통과" push를 억제한 누적 횟수. resolver가 실 lock으로
+   * 승격하기 전까지 매 intermediate waypoint 통과마다 1씩 증가 — 정상 운영에서 커밋~승격 사이
+   * 몇 cycle 정도만 관측되면 의도대로 억제가 작동 중인 신호. info-mode(안내 시작) trip은
+   * `boardingCommitted`가 서지 않아 이 카운터에 잡히지 않는다(기존 "통과" 그대로 발사).
+   */
+  boardingCommittedSuppressed: number;
+  /**
+   * #1933 — `lastLaPushAt`이 `LA_STALE_AUTO_END_MS` 이상 침묵해 cron이 자동 cleanup한 trip 수.
+   * lockMissing 분기 진입 시 평가. 정상 운영(silent push + LA heartbeat 작동)에서 0건 기대 —
+   * 0이 아니면 `lockMissing` 분기 잔여 케이스(advance gate freeze + heartbeat self-referential gap)에서
+   * LA가 frozen된 채 5분+ 표류한 trip 수 = 사용자 가치 손실 미니 회귀 차단 효과 측정.
+   * 1주 0건이면 본 backstop이 dual safety net으로 동작 중임을 확인.
+   */
+  laStaleAutoEnded: number;
+  /**
+   * #2322 (O1-C) — la-stale backstop이 발동 조건(5분 침묵)을 만족했지만 device sync stale
+   * (#2321 `isDeviceSyncStale`) 또는 Seoul API outage(이 cron 사이클 HTTP error 관측) 상태라
+   * cleanup을 skip하고 trip을 생존시킨 누적 횟수. `laStaleAutoEnded`와 상호 배타적 — 같은
+   * 발동 조건에서 이 카운터가 늘면 그 카운터는 늘지 않는다. 침묵/outage 종료 후 정상 push가
+   * 재개되면 다음 cycle에 `lastLaPushAt`이 갱신돼 이 상태에서 벗어난다.
+   */
+  laStaleSurvivedSilence: number;
+  /**
+   * #1967 (Ff-1) — admin kill switch(`KILL_LOCKLESS_INTERMEDIATE`)가 활성 상태라
+   * `runLocklessIntermediate`의 매역 station-passed push 발사(pushId 발급/전송/
+   * putPending/LA update)만 skip한 누적 횟수. 2026-07-31 리뷰(P1) — 게이트를 함수
+   * 호출 전체가 아니라 push 발사 블록에만 적용해 취침 알람(`maybeFireSleepAlarm`)과
+   * waypoint 진행(`waypoints.shift()`)은 kill switch와 무관하게 항상 실행된다.
+   * 정상 운영(kill switch off)에서 0건 기대 — 0이 아니면 운영자가 device false alarm
+   * 회귀 대응으로 매역 push를 의도적으로 차단 중이라는 신호.
+   * dashboard: `kill_switch_lockless_intermediate_skipped`.
+   */
+  killSwitchLocklessIntermediateSkipped: number;
+  /**
+   * #816 C — lockless opt-in 토글 ON trip에서 station-passed(intermediate) push가 발사된 횟수.
+   * false-positive 측정 인프라 — 사용자 dismiss/탭률은 client alarmLog로 별도 적재된다.
+   * (lockMissing은 토글 OFF로 게이트 차단된 trip만 카운트되도록 유지 — 두 stat은 disjoint.)
+   */
+  locklessIntermediateFired: number;
+  /**
+   * #1315 — lockless cycle에서 trainCode 미확보 + GPS motion이 실제 이동(walking/automotive)이
+   * 아니어서 bare-arvlCd advance를 보류한 누적 횟수 (`LOCKLESS_ADVANCE_MOTION_MODES` 게이트).
+   * false positive(정적 상태 잘못된 station-passed) 방어 효과 측정 — 정상 운영에서 0이 아니면
+   * trainCode 바인딩이 닿지 않는 lockless 정적 구간이 그만큼 있었다는 신호.
+   */
+  locklessMotionGateBlocked: number;
+  /** #819 — boarding-prompt 게이트 평가가 한 번이라도 시도된 trip 수 (lockMissing 부분집합). */
+  boardingPromptEvaluated: number;
+  /** #819 — 9단 AND 게이트를 모두 통과해 alert push가 발사된 횟수 (측정 인프라). */
+  boardingPromptFired: number;
+  /** #819 — 게이트 차단으로 미발사한 횟수 — false positive 1차 방어 효과 측정. */
+  boardingPromptBlocked: number;
+  /**
+   * #825 — phase 분류가 'high-confidence non-APPROACHING'으로 lockless imminent 발사를
+   * 차단한 횟수. 측정 인프라 — gate가 실제로 발동된 빈도 + E5 RMSE/recall과 cross-check.
+   */
+  phaseImminentBlocked: number;
+  /**
+   * #826 — arvlCd=ARRIVED ground truth로 Kalman state hard reset된 횟수 (v=0/P=R_LOW).
+   * lockless ARRIVED 또는 boardingLock trainCode arrived 시점에 발사. drift 누적 차단.
+   */
+  kalmanReset: number;
+  /**
+   * #826 — 정상 cycle에서 |gpsAvgKmh - state.v| ≥ DRIFT_WARNING_THRESHOLD_KMH인 누적 횟수.
+   * 누적이 의미있게 커지면 Kalman 튜닝(R/Q) 재측정 또는 reset 정책 조정 신호.
+   */
+  kalmanDriftWarning: number;
+  /**
+   * #916 A1 — 9단 게이트 통과 후 backend가 `attemptAutoLock`으로 trainCode를 자동 합성해
+   * `trip.boardingLock`을 부착한 누적 횟수. 사용자가 "탑승" 액션을 직접 탭하지 않아도 cron이
+   * 매역 추적을 시작한 케이스 수 = 다운로드 가치 직결 신호.
+   */
+  autoLockSuccess: number;
+  /**
+   * #916 A1 — 자동 lock 후 사용자가 다른 trainCode로 swap한 케이스의 placeholder
+   * (false positive 측정 인프라). 본 PR에서는 catalog 등록 + stat 필드 placeholder만 — 실제
+   * client swap 신호 처리는 후속 PR (#916 A2)에서 wire한다. 현재는 항상 0.
+   */
+  autoLockFalsePositive: number;
+  /**
+   * #916 follow-up B — 직전 auto-prompt 발사 윈도우(AUTO_PROMPT_DEDUP_WINDOW_MS) 안에 다시
+   * `evaluateAndMaybeFireBoardingPrompt`에 진입한 trip을 `lastAutoPromptedAt` 마커로 차단한
+   * 누적 횟수. lock이 클리어/swap돼 lockMissing으로 돌아오거나 `isSameSession=false`로
+   * boardingPromptState가 리셋된 케이스가 여기에 잡힌다. 0이면 회귀 방어가 발동되지 않은 상태.
+   */
+  boardingPromptAutoDeduped: number;
+  /**
+   * #1888 (RC-13) — 9단 게이트는 통과했으나 line+direction 후보가 0건이라 발사를 skip한 누적 횟수.
+   * 사용자가 "탑승" 액션을 받아도 후보가 0이면 banner 탭 후 빈 BoardingTrainList만 보게 되는
+   * 사용자 가치 손실 시나리오(RC-13 IMG_9039/9040)를 차단. > 0이 자주 발생하면 Seoul API
+   * 응답 안정성 또는 line 매칭 정규화 보강 신호.
+   */
+  boardingPromptSkippedEmpty: number;
+  /**
+   * #1921 — boarding-prompt는 boarding 이전 게이트(사용자 인지 요구 → lock 생성). lock이 이미
+   * 활성인 trip은 이미 탑승 확정 상태이므로 cron이 진입 자체가 의미 없다. 진입 시 즉시 return
+   * + counter +1 — F1(frontend stamp 정확화)이 완전히 wire되면 0에 수렴. 0이 아니면 frontend KV
+   * `boardingLock` 갱신 race 또는 lockMissing→lock 부착 transient cycle 잔재.
+   */
+  boardingPromptSkippedLockActive: number;
+  /**
+   * #2131 (Part A-1) — `evaluateAndMaybeFireBoardingPrompt`가 `trip.promptGeoContext` 또는
+   * `trip.promptDisplay` 부재로 게이트 평가 자체를 시도하지 못하고 무음 return한 누적 횟수.
+   * 기존엔 counter/log 없이 조용히 skip돼 "boardingPromptEvaluated=0인데 이유를 알 수 없는" 관측
+   * 공백이 있었다 — F1(frontend geo/display stamp)가 아직 도달하지 않은 trip 비율 측정용.
+   * dashboard: `scheduled run complete` cron summary log (persist=false 환경에서도 조회 가능).
+   */
+  boardingPromptSkippedNoContext: number;
+  /**
+   * #2130 (Part B-be-1) — boarding-prompt 신선도 게이트(`PROMPT_FRESHNESS_MS`, 15분) 만료로 skip한
+   * 누적 횟수. 오래된 lockMissing trip에 뒤늦게 발사되는 stale prompt를 차단 — 0이 아니면 device
+   * 재등록 주기 또는 사용자 응답 지연 분포를 시사.
+   *
+   * #2153 — 기준 시각(anchor)은 route 설정 시각(`trip.createdAt`)이 아니라 출발역 근접을 처음
+   * 관측한 시각(`trip.originProximityAt`, 근접 관측 전엔 createdAt fallback)이다. 집/사무실에서
+   * 경로를 미리 설정하고 15분 뒤 탑승하는 패턴에서 이 게이트가 오차단하던 회귀를 닫는다.
+   *
+   * #2358 — anchor는 최초 1회 고정이 아니라 근접이 계속 관측되는 동안 주기적으로
+   * (`ORIGIN_PROXIMITY_RENEWAL_MS`, 5분) 재stamp된다 — 출발역에서 계속 대기 중인 trip이
+   * 15분 창을 넘기는 순간 영구히 막히던 결함(#2153 원안)을 닫는다.
+   */
+  boardingPromptSkippedStale: number;
+  /**
+   * #2130 (Part B-be-1) — `promptGeoContext.originDistanceM - originAccuracyM > 150m`로 근접
+   * 게이트가 차단한 누적 횟수. 자택 등록(A2) 등 실제 미승차 시나리오에서 0이 아니게 나오는 것이
+   * 정상 — 지하/구 클라(필드 부재)는 이 게이트를 거치지 않아 관대하게 허용된다.
+   */
+  boardingPromptSkippedTooFar: number;
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — 반복 발사(A4) 최소 발사 간격(5분) 미달로
+   * `evaluateBoardingPromptGates`가 차단한 누적 횟수(`boardingPromptBlocked`의 부분집합을
+   * reason별로 재분류). 배차가 촘촘한 역에서 연발이 억제되고 있는지 관측.
+   */
+  boardingPromptSkippedMinInterval: number;
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — trip당 최대 발사 횟수(3회) hard cap 도달로
+   * `evaluateBoardingPromptGates`가 차단한 누적 횟수(`boardingPromptBlocked`의 부분집합).
+   * 0이 아니면 15분 창 내내 사용자가 무응답으로 3회 모두 소진한 케이스가 존재한다는 신호.
+   */
+  boardingPromptSkippedMaxFires: number;
+  /**
+   * #2130 (Part B-be-2, 2026-08-04 사용자 결정) — 이번 cycle에 관측된 arvlCd=1 우선순위
+   * trainCode가 이미 `promptState.firedTrainCodes`에 있어 발사를 skip한 누적 횟수. 같은 열차가
+   * 플랫폼에 정차 중 cron 여러 tick에 걸쳐 재관측돼도 중복 발사하지 않는다는 방증.
+   */
+  boardingPromptSkippedTrainDuplicate: number;
+  /**
+   * #2034 — 환승 waypoint advance 시점에 hop-end ("하차했나요?") prompt 게이트를 통과해 alert
+   * push 가 발사된 누적 횟수. leg 단위 dedup 이라 같은 trip 내 여러 환승도 각각 카운트.
+   * dashboard: `hop_end_prompt_fired`.
+   */
+  hopEndPromptFired: number;
+  /**
+   * #2034 — hop-end prompt 게이트가 dedup/silence 로 차단해 미발사한 누적 횟수. 사용자 [아직]
+   * 응답 후 5 분 silence 윈도우가 정상 동작하는지 관측용.
+   */
+  hopEndPromptBlocked: number;
+  /**
+   * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 boarding prompt가 도보시간
+   * 게이트 통과 + dedup 게이트 통과로 실제 발사된 누적 횟수. `hopEndPromptFired`(환승역 "하차했나요?")
+   * 와 별개 — 이 카운터는 도보시간 후 "탑승하셨나요?" 발사만 센다.
+   */
+  legBoardingPromptFired: number;
+  /**
+   * #2515 — leg 2 boarding prompt가 도보시간 미경과로 평가 자체를 skip한 누적 횟수. anchor는
+   * 있지만 아직 `now < legBoardingEligibleAt`인 정상 대기 상태 — 0이 아니어도 회귀 신호 아님
+   * (오탑승 방지가 의도대로 동작 중이라는 증거).
+   */
+  legBoardingPromptSkippedWalking: number;
+  /**
+   * #2515 — leg 2 boarding prompt가 dedup/silence(`evaluateHopEndPromptGates`) 또는 후보 0건으로
+   * 차단된 누적 횟수.
+   */
+  legBoardingPromptBlocked: number;
+  /**
+   * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 arvlCd(ENTERING/ARRIVED)
+   * ground truth로 통과(anchor stamp + hop-end prompt + waypoint slice)한 누적 횟수. 종전에는
+   * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만 반응해
+   * lockless leg-1이 transfer에서 영구 정지(anchor 미stamp → leg-2 dead)했다 — 이 카운터가 0이
+   * 아니면 그 gap이 실제로 닫혔다는 증거.
+   */
+  locklessTransferAdvanced: number;
+  /**
+   * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
+   * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
+   * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
+   */
+  arvlCdFireSuccess: number;
+  /**
+   * #917 A2 — 같은 (trainCode, station, arvlCd) 조합에 대해 이미 발사한 dedup KV가 있어
+   * 매역 push가 차단된 횟수. cron 60s × Seoul API 갱신 지연으로 같은 신호가 2~3 cycle 반복
+   * 노출되는데, 클라가 같은 알림을 중복 수신하는 회귀를 차단한다.
+   */
+  arvlCdFireDedup: number;
+  /**
+   * #917 A2 — 매역 fire path 진입했지만 prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패로
+   * push 미발사된 횟수. positions-fallback arrived(arvlCd=null) 등 SSOT가 arvlCd가 아닌
+   * 경로를 측정한다. #640 회귀(lock 없는 trip 발사) 방어 신호 — 정상 운영에서는 0이어야 한다.
+   */
+  arvlCdFireMismatch: number;
+  /**
+   * ADR-017 T4 (#1557) — `advanceTripPosition` SSoT 게이트가 차단해 매역 push가 발사되지
+   * 않은 누적 횟수. 2026-06-19 정지 trip + lock active + arvlcd ARRIVED → false 발사 회귀
+   * (N1)를 직접 차단하는 게이트. 0이 아니면 stationary trip / env-consensus-fail /
+   * train-mismatch 등 6단 게이트 reject 분포를 production tail로 측정 가능.
+   */
+  arvlCdFireBlocked: number;
+  /**
+   * ADR-017 T4 (#1557) — `advanceTripPosition`이 'advanced' 통과 후 실제로 push 발사 시도까지
+   * 도달한 누적 횟수. `arvlCdFireSuccess`(push ack 성공)와 별개 — fire 진입(SSoT 통과)
+   * vs 외부 APNs 성공률을 분리 측정. `arvlCdFireBlocked`와 합쳐 SSoT 게이트의 traffic
+   * 비중(blocked / fired) 분포를 추적한다.
+   */
+  arvlCdFireFired: number;
+  /**
+   * ADR-017 T5 (#1558) — `advanceBoardingLockWaypoint` 진입했지만 `advanceTripPosition` SSoT
+   * 게이트가 차단해 trip.waypoints advance 가 일어나지 않은 횟수. 2026-06-19 정지 trip 매분
+   * waypoint advance 회귀(8회)를 직접 차단하는 게이트. arvlcd-arrived path (T4 와 짝) +
+   * vanish-fallback path 모두 본 카운터에 집계. blockReason 분포는 log 로 확인.
+   */
+  boardingLockWaypointAdvanceBlocked: number;
+  /**
+   * ADR-017 T7 (#1560) — transfer/destination kind 의 station-passed/transfer-release fire 시점에
+   * `evaluateTransferDestinationGate`가 차단한 누적 횟수. SSoT.currentStationId 가 waypoint 또는
+   * 직전 1 hop 아님 / lastAdvanceAt 60s stale / 미advance 분포를 production tail 로 확인. 2026-06-19
+   * 정지 trip "환승임박 건대입구" false 발사(N9) 회귀를 직접 차단하는 게이트.
+   */
+  transferDestinationGateBlocked: number;
+  /**
+   * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 station-passed silent push가
+   * 발사된 누적 횟수. fallback path가 어린이대공원/군자/중곡 같은 intermediate를 "지났음" 신호 없이
+   * 통과하던 회귀(silent push 0건)를 닫는다.
+   */
+  vanishFallbackFired: number;
+  /**
+   * #1402 — trainCode vanish 후 hop 시간 미경과로 lock release 직전에 보장 발사한 floor
+   * station-passed silent push의 누적 횟수. fallback advance(hop-elapsed) 경로가 발사하던
+   * push가 release(hop-not-elapsed) 경로에서 빠져 device가 stale 채로 lock 인계되던 회귀
+   * (2026-06-17 군자/용마산 침묵)를 닫는다. 발사 성공 시 PENDING_PUSHES에 등록돼 30s 내
+   * ACK 없으면 alert fallback이 자동 발사된다.
+   */
+  vanishReleaseFired: number;
+  /**
+   * #1370 L3 — vanish 후 hop 시간 미경과로 lock release할 때 trip.infoModeEnabled가
+   * false였던 trip을 강제 enable해 lockless 인계 경로를 살린 횟수. 0이 아니면 사용자가 opt-in
+   * 토글 OFF였지만 vanish recovery로 매역 push가 복구된 trip 수.
+   */
+  vanishLocklessTakeover: number;
+  /**
+   * #1386 — lock-active fallback advance(handleEtaMissing time-based) 진입 시점에 device
+   * positionSeries의 motion이 실제 이동(walking/automotive)이 아니어서 advance + station-passed
+   * push를 보류한 누적 횟수. lockless 경로(`locklessMotionGateBlocked`)와 동일 정책의
+   * lock-active 버전 — 사용자가 정지 중인데 backend가 hop 시간 적분만으로 false station-passed를
+   * 발사하던 회귀(2026-06-16 용마산 정지 trip)를 차단한다.
+   */
+  vanishFallbackMotionGateBlocked: number;
+  /**
+   * #1539 (S6, Epic #1533 / ADR-016) — `runScheduled` 진입 시점의 cron jitter (ms).
+   * 직전 60s boundary와 실제 실행 시각의 차이. 정상 운영 < 1s. 매역 알림 누락 회귀의 1차
+   * 원인 중 하나로 추정되며(2026-06-19 트립 2 evidence), P50/P99 추적이 S5 윈도우 확장 효과
+   * 측정의 정량 근거가 된다. 누적 metric이 아니라 매 cycle의 즉시값을 그대로 log한다.
+   */
+  cronJitterMs: number;
+  /**
+   * #1559 (T6, Epic #1553 / ADR-017) — `maybeReschedulePush` 진입 시 SSoT.motionState === 'stationary'로
+   * reschedule silent push가 차단된 누적 횟수. 정지 trip에서 ETA 임계치 변동만으로 LA/scheduled queue를
+   * 재발사하던 회귀(2026-06-19 15:53/15:56 evidence)를 닫는다. lock-active fallback
+   * (`vanishFallbackMotionGateBlocked`) / lockless advance(`locklessMotionGateBlocked`)와 동일 정책의
+   * reschedule-push 버전 — `tripPositionSsot.motionState` SSoT 단일 소스.
+   */
+  rescheduleBlockedMotion: number;
+  /**
+   * #1559 (T6) — `maybeReschedulePush` 진입 시 SSoT가 존재하지 않아(legacy trip — T1 SSoT seeding 이전에
+   * 생성된 trip 또는 KV TTL 만료) motion 게이트를 적용하지 않고 기존 로직으로 fallback한 누적 횟수.
+   * SSoT 마이그레이션 진행도 측정 — 모든 trip이 T1 seeding을 거치게 되면 0으로 수렴한다.
+   */
+  rescheduleFallbackNoSsot: number;
+  /**
+   * #2230 — `maybeReschedulePush` per-station once dedup으로 억제된 발사 누적 횟수.
+   * 같은 (token, station)에 TTL(5분) 내 이미 reschedule push를 발사한 경우 재발사를 skip한다.
+   * destination ETA가 매 cron마다 15s+ 드리프트해 60s마다 무한 반복 발사하던 회귀
+   * (2026-08-09 실기기 dump: 불광 도착 후 6분간 6회)를 닫는 카운터.
+   */
+  rescheduleDedupSkipped: number;
+  /**
+   * #1614 Phase A (S4 #1537) — cron 진입부 self-poll realtimePosition fetch 횟수.
+   * 활성 trip line union에 대해 Seoul API를 1회 호출(KV cache miss). 호선당 30s TTL.
+   * positionTrainAgreement strongCB wire의 입력 단(端) 카운터.
+   */
+  realtimePositionFetch: number;
+  /**
+   * #1614 Phase A — KV stamp 살아있어 fetch skip한 횟수. cron 1분 race에서 동일 line 재진입 시.
+   */
+  selfPollCacheHit: number;
+  /**
+   * #1614 Phase A — Seoul API throw 또는 KV write throw 등 self-poll 전반 실패 횟수.
+   * 0이 아니면 cron tail에서 Seoul API rate limit / KV 장애 진단 신호.
+   */
+  realtimePositionFetchError: number;
+  /**
+   * #1828 Phase 5 — station-level Seoul fetchArrivals fetch 횟수 (KV cache miss).
+   * trip route 다음 N개 역 union에 대해 Seoul realtimeStationArrival 1회 호출.
+   * line call(max 100 trains) 대신 station call(max 10 arrivals)로 API 비용 1/10 이하.
+   */
+  stationPollFetch: number;
+  /**
+   * #1828 Phase 5 — station arrivals KV stamp 살아있어 fetch skip한 횟수.
+   */
+  stationPollCacheHit: number;
+  /**
+   * #1828 Phase 5 — station arrivals fetch 실패 횟수.
+   * 0이 아니면 Seoul API 오류 또는 KV write 실패 신호.
+   */
+  stationPollError: number;
+  /**
+   * #1614 Phase C — `fireArvlCdStationPush` 진입 시 SSoT.lastAdvanceAt이 stale(>3분 경과)이라
+   * fire를 차단한 누적 횟수. transferDestinationGate(60s)보다 보수적이지만 모든 fire kind에
+   * 동일 적용. 정상 운영에서는 0에 가깝고, 0이 아니면 motion 추적 cascade fail 또는 stale lock
+   * misfire 회귀 신호. (transferDestinationGateBlocked와 별도 계측 — 본 가드는 intermediate 포함.)
+   */
+  staleLockFireSkipped: number;
+  /**
+   * ADR-022 Phase 1-1 (#1985) — flag=ON 시 fire-once TTL 게이트가 차단한 누적 횟수.
+   * 같은 (tripToken, stationName, arvlCd cycle) 조합에서 이미 5분 이내 fire 된 경우 skip.
+   * flag=OFF (default) 상태에서는 항상 0 — Phase 0 (#1982) 머지 후속 PR 에서 실제 wire.
+   * 0이 아니면 arvlCd 반복 노출로 인한 중복 발사가 차단된 케이스 수 = ADR-022 정책 발동 신호.
+   */
+  arvlCdFireOnceSkipped: number;
+  /**
+   * #1652 — staged lifecycle backstop. trip이 createdAt > 6h이라 silence cycle로 skip된 누적 횟수.
+   * Seoul polling + push 발사 모두 skip된 cycle 수 = 6h+ 잔존 trip × 분당 1 cycle. 정상 운영에선
+   * 일반적으로 0에 수렴 (대부분 trip이 6h 이내 종료). 0이 아니면 KTX/장거리 trip 또는 좀비 trip이
+   * 잔존 중이라는 신호 — 9h 도달 시 force-end로 자연 회수.
+   */
+  lifecycleSilenceSkipped: number;
+  /**
+   * #1652 — staged lifecycle backstop. trip이 createdAt > 9h이라 force-end로 cleanup된 누적 횟수.
+   * 정상 운영에선 0이어야 (정상 trip + device staged backstop이 9h 이내 종료). 0이 아니면 device가
+   * 죽었거나 BG 미진입 상태에서 backend가 마지막 line of defense로 cleanup한 케이스 = 회귀 신호.
+   * cron tail에서 1주 0건이면 본 backstop이 dual safety net으로 동작 중임을 확인.
+   */
+  lifecycleForceEnded: number;
+  /**
+   * #1680 (V8d) — SSoT.motionState === 'stationary' 명시로 cron Seoul polling + silent push 발사를
+   * skip한 누적 횟수. motionState='unknown' 또는 SSoT 미존재는 평가 유지 (backward-compat).
+   * destination/transfer kind + etaSeconds ≤ 60 임박 시 bypass — 도착 알림 누락 방지.
+   * 정상 운영: 정지 대기 사용자 수(trip × cycle) 만큼 누적. Seoul API call 절감 + false fire 방어 효과.
+   */
+  lifecycleStationarySkipped: number;
+  /**
+   * #1683 — silent push 발사 건수 kind별 분리 (backend 단계 측정).
+   * `sendSilentPush` 성공 호출 수 = APNs로 넘어간 push 수. device received와 diff → APNs 손실 분리.
+   *
+   * - `intermediate`: station-passed(매역 통과) 알림 발사
+   * - `transfer`     : 환승 임박 / transfer-release lock sync 발사
+   * - `destination`  : 도착 임박 발사
+   * - `boardingPrompt`: boarding-prompt alert push 발사
+   * - `reschedule`   : reschedule push 발사 (스케줄 정정)
+   *
+   * cron tail `kind` 필드로 fired vs received 단계 손실을 손쉽게 집계 가능.
+   */
+  silentPushFiredByKind: {
+    intermediate: number;
+    transfer: number;
+    destination: number;
+    boardingPrompt: number;
+    reschedule: number;
+  };
+  /**
+   * #1824 — Seoul API outage 시 arrivals + positions 모두 없어 FALLBACK_HOP_SEC 기반
+   * 스케줄 ETA 추정을 사용한 누적 횟수. 0이 아니면 Seoul API 장애로 실시간 신호 대신
+   * hop 추정값으로 reschedule push / LA heartbeat가 유지된 기간 = outage 진단 신호.
+   * cron tail에서 1주 0건이면 Seoul API가 정상 작동 중임을 확인.
+   */
+  scheduleEtaFallback: number;
+  /**
+   * #1707 — destination 도달 자동 종료 시 device GPS cross-check 결과 분포.
+   *
+   * - `within`         : GPS 좌표 ≤ 500m → 정상 종료
+   * - `gpsFar`         : GPS 좌표 > 500m (fresh) → trip 보존 + force-end 9h 위임 (회귀 차단 누적)
+   * - `staleGps`       : 마지막 GPS upload > 5min stale → 정상 종료 (graceful)
+   * - `noGps`          : device GPS upload 자체 없음 → 정상 종료 (legacy graceful)
+   * - `stationUnknown` : stations.json lookup fail → 정상 종료 (conservative)
+   *
+   * 정상 운영에서 `gpsFar` > 0이면 backend가 destination 도달을 잘못 판정한 케이스가 그만큼
+   * 있었다는 신호 = 회귀 차단 발동. cron tail로 1주 측정.
+   */
+  destinationCrossCheck: {
+    within: number;
+    gpsFar: number;
+    staleGps: number;
+    noGps: number;
+    stationUnknown: number;
+  };
+  /**
+   * #2230 — gps-far cross-check로 destination advance가 보류된 채 `DESTINATION_REACH_BACKSTOP_MS`
+   * (15분)를 초과해 강제 cleanup된 누적 횟수. 9h force-end(`lifecycleForceEnded`)보다 훨씬 짧은
+   * 시간 내에 발동하는 별도 카운터 — 정상 운영에서 0에 가까워야 한다(gps-far가 다음 cycle에
+   * 자연 해소되는 것이 정상 경로).
+   */
+  destinationBackstopForceEnded: number;
+  /**
+   * #2322 (O1-C) — destination cross-check 결과가 'stale-gps'였지만 device sync stale(#2321) 또는
+   * Seoul API outage(이 cron 사이클 HTTP error 관측) 상태라 즉시 cleanup하지 않고 'gps-far'와
+   * 동일한 짧은 backstop(`DESTINATION_REACH_BACKSTOP_MS`)으로 trip 보존을 이관한 누적 횟수.
+   * device GPS 자체가 없는 legacy stale-gps(#1707 conservative cleanup)와 구분 — 이 카운터가
+   * 늘면 destinationCrossCheck.staleGps도 같이 늘지만 즉시 cleanup은 발생하지 않는다.
+   */
+  destinationStaleGpsSurvivedSilence: number;
+  /**
+   * #2073 (Issue A) — 이번 tick에 pending/retry push entry가 존재할 가능성이 있는지.
+   * `병합 listTrips 결과가 비어있음 AND 직전 tick 근방 fire/retry 기록 없음`일 때만 false —
+   * 그 외(활성 trip 존재 또는 최근 활동 marker 有)엔 true(보수적 기본값). `index.ts`의
+   * scheduled handler가 이 값으로 `runFallbackPushes`/`runRetryPushes` 호출 여부를 게이트해
+   * 진짜 idle tick의 KV list/write를 0으로 줄인다 (cron KV quota audit, 2026-07-29).
+   */
+  pendingActivityPossible: boolean;
+  /**
+   * #2066 (Phase 2-backend) — 취침 알람이 "환승/도착역 직전 역" arvlCd 진입 신호로 성공 발사된
+   * 누적 횟수. visible alert(+companion silent) 둘 다 발사 시도한 케이스 = wrangler tail
+   * `alarm fired` 로그와 1:1.
+   */
+  sleepAlarmFired: number;
+  /**
+   * #2066 — 같은 (tripToken, targetStation) 조합에 대해 1시간 이내 이미 발사한 KV dedup이
+   * 있어 차단된 누적 횟수. `alarm skip: dedup` 로그와 1:1.
+   */
+  sleepAlarmDedupSkipped: number;
+  /**
+   * #2066 (PR #2085 리뷰 P2-1) — visible alert push 발사 실패로 dedup claim을 rollback한
+   * 누적 횟수. dedup KV를 claim-then-send로 선점하되, `sendAlertPush` 실패 시 즉시 삭제해
+   * 다음 cron tick에 재시도를 허용한다(전송 실패로 1h 동안 알람이 영구 미스되는 회귀 방지).
+   */
+  sleepAlarmRolledBack: number;
+  /**
+   * #2510 — "1정거장 전" 준비 진동(ACTION, 전체 트립 대상)이 성공 발사된 누적 횟수.
+   * `maybeFireSleepAlarm`의 비취침 대응판(`maybeFirePrepareAlarm`) — sleepModeEnabled===true
+   * trip은 대신 `sleepAlarmFired`로 집계된다(상호 배타).
+   */
+  prepareAlarmFired: number;
+  /** #2510 — 같은 (tripToken, targetStation) 1h dedup으로 차단된 누적 횟수. */
+  prepareAlarmDedupSkipped: number;
+  /** #2510 — 발사 실패로 dedup claim을 rollback한 누적 횟수 (`sleepAlarmRolledBack`과 동형). */
+  prepareAlarmRolledBack: number;
+  /**
+   * #2157 (2026-08-05 결정 A) — eta-missing 임계(`resolveEtaMissingThreshold`) 도달 시 trip을
+   * 강제 종료하는 대신 lock만 해제하고 lockless로 강등한 누적 횟수. seoul-outage(httpErrorCount>0)
+   * 분기는 기존대로 `cleanupTripWithLa`를 타므로 본 카운터에 집계되지 않는다 — 순수 eta-missing만.
+   * dashboard: `trip_metrics` end_reason=eta-missing 분포와 역상관 — 배포 후 이 값이 늘고
+   * end_reason=eta-missing이 0에 수렴하면 fix가 의도대로 작동 중인 신호.
+   */
+  etaMissingDemoted: number;
+  /**
+   * #2157 — eta-missing 강등 시 재확인("탑승 열차를 찾을 수 없어요") alert push가 실제 발사된
+   * 누적 횟수. KV dedup(1 trip 1회)으로 `etaMissingDemoted`보다 작거나 같아야 정상 —
+   * dedup으로 skip된 케이스는 `etaMissingDemoted`에는 잡히되 본 카운터에는 잡히지 않는다.
+   */
+  trainReconfirmFired: number;
+}
+
+/**
+ * BoardingLock이 활성 상태인지 (#640 게이트).
+ * 부재거나 만료된 경우 false — push 발사 경로를 모두 차단한다.
+ * type predicate로 선언해 호출부에서 `trip.boardingLock` non-null narrowing이 자동 적용된다.
+ */
+export function isBoardingLockActive(
+  trip: Trip,
+  now: number,
+): trip is Trip & { boardingLock: BoardingLockMeta } {
+  return trip.boardingLock !== undefined && trip.boardingLock.expiresAt > now;
 }
 
 export interface ScheduledDeps {
   seoul: SeoulArrivalClient;
   apnsConfig: ApnsConfig;
+  /** APNs host 매핑. trip.apnsEnv에 따라 선택. */
+  apnsHosts: Record<ApnsEnv, string>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (message: string, meta?: Record<string, unknown>) => void;
+  /** pushId 발급 — 테스트에선 결정적 값을 주입한다. 기본은 crypto.randomUUID. */
+  generatePushId?: () => string;
+  /**
+   * #1995 (ADR-022 Phase 1-2) — arrival API SSOT 아키텍처 활성화 여부.
+   * flag=on 시 pending/retry queue 등록을 destination(하차) 알림 kind 로 제한한다.
+   * index.ts scheduled handler 가 매 cron cycle `getArchFlag(env.TRIPS)` 로 read 해 forward.
+   * 미전달 (테스트/legacy) 시 undefined → 기존 동작 100% 유지.
+   */
+  archFlag?: ArchFlagValue;
+  /**
+   * #1967 (Ff-1) — admin kill switch(`KILL_LOCKLESS_INTERMEDIATE`) 활성 여부. true 시
+   * `runLocklessIntermediate` 내부의 매역 station-passed push 발사 블록만 skip한다
+   * (fusion advance 평가 / 취침 알람 / waypoint 진행은 무관하게 실행 — 2026-07-31 리뷰 P1).
+   * index.ts scheduled handler가 매 cron cycle `getKillSwitch(env.TRIPS,
+   * 'lockless_intermediate')`로 read해 forward. 미전달(테스트/legacy) 시 undefined →
+   * falsy → 기존 동작 100% 유지(dormant).
+   */
+  killSwitchLocklessIntermediate?: boolean;
+}
+
+/**
+ * #1614 Phase A — 활성 trip의 line union 수집.
+ *
+ * #2073 (Issue B) — 이전엔 `listTrips`를 별도로 한 번 더 iterate했으나(3중 listTrips 호출의
+ * 한 축), `runScheduled`가 1회 병합 list한 `trips` 배열을 그대로 받아 순회하는 순수 함수로
+ * 전환했다. route + waypoints의 모든 line을 `computeAllowedLines`로 union — 환승 route는
+ * fromLine/toLine 모두 포함되므로 leg마다 별도 fetch 없이 한 cron tick에 trip이 다닐 수 있는
+ * 모든 line이 stamp된다.
+ *
+ * `expiresAt` 만료 trip은 skip — 메인 루프의 cleanup 분기가 어차피 처리하므로 self-poll 대상 X.
+ * `alarmAtEpochMs - now > POLLING_WINDOW_MS`(아직 알람 윈도우 진입 전) trip은 포함 — 미리 line의
+ * realtimePosition stamp를 적재해두면 윈도우 진입 시 첫 cycle부터 cross-match 가능.
+ *
+ * #1652 — staged lifecycle backstop 도달 trip은 self-poll 대상 X. 같은 cycle에 메인 루프가
+ *   - silence(6h~9h): cron skip → polling 무의미
+ *   - force-end(9h+): cleanupTripWithLa로 cleanup → 다음 cycle에 line union에서 자연 빠짐
+ *   둘 다 Seoul 호출을 미리 줄여 quota 절감 + cron throughput 보호.
+ */
+function collectActiveLines(trips: readonly Trip[], now: number): Set<LineNumber> {
+  const lines = new Set<LineNumber>();
+  for (const trip of trips) {
+    if (trip.expiresAt <= now) continue;
+    if (tripLifecyclePhase(trip, now) !== 'normal') continue;
+    for (const line of computeAllowedLines(trip.route, trip.waypoints)) {
+      lines.add(line);
+    }
+  }
+  return lines;
+}
+
+/**
+ * #1828 Phase 5 — 활성 trip route의 다음 N개 역 name union 수집.
+ *
+ * #2073 (Issue B) — `collectActiveLines`와 동일하게 병합된 `trips` 배열을 순회하는 순수
+ * 함수로 전환 (기존 별도 listTrips iterate 제거).
+ *
+ * `trip.waypoints`는 이미 shift된 잔여 waypoints 배열 — 맨 앞이 다음 알람 대상 역.
+ * 각 trip에서 `N_STATION_LOOKAHEAD`개(최대)를 추출해 union dedup. 같은 역을 여러 trip이
+ * 공유해도 Set으로 자연 dedup — Seoul fetchArrivals 중복 호출 방지.
+ *
+ * #1652 line-union과 동일 필터 — 만료 / lifecycle-abnormal trip은 skip.
+ */
+function collectActiveStations(trips: readonly Trip[], now: number): Set<string> {
+  const stations = new Set<string>();
+  for (const trip of trips) {
+    if (trip.expiresAt <= now) continue;
+    if (tripLifecyclePhase(trip, now) !== 'normal') continue;
+    for (const waypoint of trip.waypoints.slice(0, N_STATION_LOOKAHEAD)) {
+      stations.add(waypoint.stationName);
+    }
+  }
+  return stations;
 }
 
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
-  const stats: ScheduledStats = { scanned: 0, polled: 0, pushed: 0, errors: 0 };
+  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
+  const stats: ScheduledStats = {
+    scanned: 0,
+    polled: 0,
+    pushed: 0,
+    errors: 0,
+    etaMissing: 0,
+    envCorrected: 0,
+    lockMissing: 0,
+    boardingAnchorResolved: 0,
+    boardingAnchorUnresolved: 0,
+    boardingCommittedSuppressed: 0,
+    laStaleAutoEnded: 0,
+    laStaleSurvivedSilence: 0,
+    killSwitchLocklessIntermediateSkipped: 0,
+    locklessIntermediateFired: 0,
+    locklessMotionGateBlocked: 0,
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
+    boardingPromptEvaluated: 0,
+    boardingPromptFired: 0,
+    boardingPromptBlocked: 0,
+    phaseImminentBlocked: 0,
+    kalmanReset: 0,
+    kalmanDriftWarning: 0,
+    autoLockSuccess: 0,
+    autoLockFalsePositive: 0,
+    boardingPromptAutoDeduped: 0,
+    boardingPromptSkippedEmpty: 0,
+    boardingPromptSkippedLockActive: 0,
+    boardingPromptSkippedNoContext: 0,
+    boardingPromptSkippedStale: 0,
+    boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedMinInterval: 0,
+    boardingPromptSkippedMaxFires: 0,
+    boardingPromptSkippedTrainDuplicate: 0,
+    hopEndPromptFired: 0,
+    hopEndPromptBlocked: 0,
+    locklessTransferAdvanced: 0,
+    legBoardingPromptFired: 0,
+    legBoardingPromptSkippedWalking: 0,
+    legBoardingPromptBlocked: 0,
+    arvlCdFireSuccess: 0,
+    arvlCdFireDedup: 0,
+    arvlCdFireMismatch: 0,
+    arvlCdFireBlocked: 0,
+    arvlCdFireFired: 0,
+    boardingLockWaypointAdvanceBlocked: 0,
+    transferDestinationGateBlocked: 0,
+    vanishFallbackFired: 0,
+    vanishReleaseFired: 0,
+    vanishLocklessTakeover: 0,
+    vanishFallbackMotionGateBlocked: 0,
+    // #1539 (S6) — cron jitter (실행 시각 - 직전 60s boundary). 매 cycle 즉시값으로 stamp.
+    cronJitterMs: computeCronJitterMs(now),
+    // #1559 (T6) — reschedule push motion 게이트 차단/fallback 누적.
+    rescheduleBlockedMotion: 0,
+    rescheduleFallbackNoSsot: 0,
+    // #2230 — reschedule push per-station once dedup 차단 누적.
+    rescheduleDedupSkipped: 0,
+    // #1614 Phase A (S4) — backend self-poll realtimePosition stats.
+    realtimePositionFetch: 0,
+    selfPollCacheHit: 0,
+    realtimePositionFetchError: 0,
+    // #1828 Phase 5 — station-level arrivals self-poll stats.
+    stationPollFetch: 0,
+    stationPollCacheHit: 0,
+    stationPollError: 0,
+    // #1614 Phase C — stale SSoT 가드 fire 차단.
+    staleLockFireSkipped: 0,
+    // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 차단 (flag=OFF 시 항상 0).
+    arvlCdFireOnceSkipped: 0,
+    // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
+    lifecycleSilenceSkipped: 0,
+    lifecycleForceEnded: 0,
+    // #1680 (V8d) — stationary cron skip.
+    lifecycleStationarySkipped: 0,
+    // #1683 — silent push kind별 발사 카운터 (backend cron stage 측정).
+    silentPushFiredByKind: {
+      intermediate: 0,
+      transfer: 0,
+      destination: 0,
+      boardingPrompt: 0,
+      reschedule: 0,
+    },
+    // #1824 — Seoul API outage 시 schedule hop ETA fallback 사용 횟수.
+    scheduleEtaFallback: 0,
+    // #1707 — destination 도달 cross-check 결과 분포 (회귀 차단 측정).
+    destinationCrossCheck: {
+      within: 0,
+      gpsFar: 0,
+      staleGps: 0,
+      noGps: 0,
+      stationUnknown: 0,
+    },
+    // #2230 — gps-far 보류 destination advance의 짧은 backstop force-cleanup 누적.
+    destinationBackstopForceEnded: 0,
+    destinationStaleGpsSurvivedSilence: 0,
+    // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
+    sleepAlarmFired: 0,
+    sleepAlarmDedupSkipped: 0,
+    sleepAlarmRolledBack: 0,
+    // #2510 — 준비 진동(ACTION, 전체 트립) 발사/skip 카운터.
+    prepareAlarmFired: 0,
+    prepareAlarmDedupSkipped: 0,
+    prepareAlarmRolledBack: 0,
+    // #2157 — eta-missing 강등 + 재확인 push 카운터.
+    etaMissingDemoted: 0,
+    trainReconfirmFired: 0,
+    // #2073 (Issue A) — 아래 idle 판정 이후 실제 값으로 덮어쓴다. 기본 true = 보수적(항상 실행).
+    pendingActivityPossible: true,
+  };
 
-  for await (const trip of listTrips(env.TRIPS)) {
+  // #2283 — trip_events 보존 기간(7일) 초과분 cleanup. cron이 60s마다(1440회/일) 도는데 매
+  // tick마다 DELETE를 부르면 D1 free plan write quota를 불필요하게 소진한다(#2073 lesson). 시(hour)
+  // 경계에서만 실행해 24회/일로 제한 — KV read/write 없이 `now` 값만으로 게이팅(추가 quota 0).
+  if (new Date(now).getUTCMinutes() === 0) {
+    await cleanupTripEvents(env.DB, now);
+  }
+
+  // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
+  // 1회 병합. 전체 trip을 배열로 확보해 아래 파생 함수 + main loop가 모두 이 배열을 재사용한다.
+  // 감축: list 5→3/tick, 활성 시 trip get 3N→N.
+  // #2452 — listTrips(kv.list())는 Free plan LIST quota(1,000/일) 소진 대상(read/write와 별도
+  // 버킷). 1,440 tick/일 무조건 호출하면 하루 중 특정 시각부터 자정까지 list가 실패해 cron이
+  // 활성 trip을 아예 못 찾는다. 값싼 KV GET 마커로 "활성 trip이 있을 수 있는가"를 먼저 판정해
+  // 마커 부재(진짜 idle)일 때만 listTrips 호출 자체를 skip한다. 마커 GET 실패는 보수적으로
+  // listTrips를 강행(activeTripsGate.ts 헤더 참조) — 실 라이더 miss는 불허.
+  const mayHaveActiveTrips = await hasActiveTripsMarker(env.TRIPS);
+  const scannedTrips: Trip[] = [];
+  if (mayHaveActiveTrips) {
+    for await (const trip of listTrips(env.TRIPS)) {
+      scannedTrips.push(trip);
+    }
+  }
+  // #2175 — register-time deviceToken 역인덱스 merge/cleanup(#2184 리뷰 P1)에 대한 cron
+  // 안전망. KV eventual consistency 등으로 같은 deviceToken의 active trip이 순간적으로 2개 이상
+  // 존재해도, cron이 orphan에 대해서도 실 deviceToken으로 push를 발사(#2184 resolveTripDeviceToken)
+  // 하는 중복 발송을 막기 위해 매 tick 최신(createdAt) trip만 처리 대상으로 남긴다. deviceToken이
+  // 없는(legacy) trip은 그대로 통과.
+  const trips: Trip[] = dedupeTripsByDeviceToken(scannedTrips);
+  // #2452 — listTrips를 실제로 실행한 tick에서만 마커를 실 결과로 조정한다(mayHaveActiveTrips가
+  // false였던 tick은 scannedTrips가 항상 []이므로, 여기서 delete를 또 부르면 부재 마커에 대한
+  // 낭비 write가 매 idle tick 반복된다 — 그 write는 스킵한다).
+  if (mayHaveActiveTrips) {
+    await refreshActiveTripsMarker(env.TRIPS, trips, now);
+  }
+
+  // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
+  // 없으면 pending/retry push가 존재할 수 없다(모든 fire 경로가 trip 기반이므로 trip 부재 tick엔
+  // 새 entry가 생기지 않는다). 이 tick엔 index.ts가 runFallbackPushes/runRetryPushes를 skip한다.
+  // #2079 (P3-2) — trips.length > 0이면 idle이 어차피 false로 확정되므로 결과가 폐기된다.
+  // short-circuit으로 불필요한 KV read를 건너뛴다.
+  const activityRecent = trips.length === 0 ? await readPushActivityRecent(env.TRIPS) : false;
+  const idle = trips.length === 0 && !activityRecent;
+  stats.pendingActivityPossible = !idle;
+  if (trips.length > 0) {
+    // 다음 tick(들)의 idle 판정이 이번 활성 tick을 근방 활동으로 인지하도록 marker 갱신.
+    await stampPushActivity(env.TRIPS, now);
+  }
+
+  // #2054 — jitter raw log 제거. spike 임계 초과 시만 즉시 로그, 정상 값은 KV samples append 후
+  // heartbeat 시 P50/P99 산출. Cloudflare Workers Logs cap(2000 events / cycle 5 로그) 소진 방지.
+  // #2073 (Issue A+D) — idle tick은 write 0 목표라 append 자체를 skip. 활성 tick도
+  // JITTER_SAMPLE_EVERY_N_TICKS(10)당 1회로 샘플링해 write 1,440→144/일로 절감.
+  if (stats.cronJitterMs > JITTER_SPIKE_THRESHOLD_MS) {
+    log('scheduled: cron jitter spike', {
+      jitterMs: stats.cronJitterMs,
+      thresholdMs: JITTER_SPIKE_THRESHOLD_MS,
+    });
+  } else if (!idle && shouldSampleJitterTick(now, CRON_NOMINAL_INTERVAL_MS)) {
+    await appendJitterSample(env.TRIPS, stats.cronJitterMs);
+  }
+
+  // #1614 Phase A (S4 #1537) — 활성 trip line union 추출 + Seoul realtimePosition 전수 self-poll.
+  // #2073 (Issue B) — 위에서 병합한 `trips` 배열에서 파생(순수 함수, KV 재호출 없음). 폴링 ·
+  // push 발사 흐름은 그대로 유지. KV stamp는 advanceTripPosition site들이 lock.trainCode
+  // cross-match에 사용. idle tick은 trips가 비어 있어 아래 두 collect가 empty Set을 반환하고
+  // pollLinesAndStamp/pollStationsAndStamp는 empty set에서 자연히 KV 호출 없이 조기 반환한다.
+  const activeLines = collectActiveLines(trips, now);
+  const selfPollStats = await pollLinesAndStamp(env.TRIPS, deps.seoul, activeLines, now);
+  stats.realtimePositionFetch += selfPollStats.fetched;
+  stats.selfPollCacheHit += selfPollStats.cacheHit;
+  stats.realtimePositionFetchError += selfPollStats.error;
+  if (activeLines.size > 0) {
+    log('self-poll: realtimePosition', {
+      lines: activeLines.size,
+      fetched: selfPollStats.fetched,
+      cacheHit: selfPollStats.cacheHit,
+      error: selfPollStats.error,
+    });
+  }
+
+  // #1828 Phase 5 — 활성 trip route 다음 N개 역 union 추출 + Seoul fetchArrivals station-level stamp.
+  // line-unit polling(max 100 trains/call) 대신 station-unit(max 10 arrivals/call)으로 전환.
+  // route bound 폴링으로 trip 무관 trains candidate-reject 감소 (Day 2 evidence: 53건/시간).
+  const activeStations = collectActiveStations(trips, now);
+  const stationPollStats = await pollStationsAndStamp(env.TRIPS, deps.seoul, activeStations, now);
+  stats.stationPollFetch += stationPollStats.fetched;
+  stats.stationPollCacheHit += stationPollStats.cacheHit;
+  stats.stationPollError += stationPollStats.error;
+  if (activeStations.size > 0) {
+    log('self-poll: stationArrivals', {
+      stations: activeStations.size,
+      fetched: stationPollStats.fetched,
+      cacheHit: stationPollStats.cacheHit,
+      error: stationPollStats.error,
+    });
+  }
+
+  // #2073 (Issue B) — 병합된 trips 배열 순회(3번째이자 마지막 listTrips 소비). 로직은 기존과
+  // 동일 — dedup/advance/fire semantics 변경 없음.
+  for (const trip of trips) {
     stats.scanned += 1;
 
     if (trip.expiresAt <= now) {
-      await deleteTrip(env.TRIPS, trip.token);
+      // #586 D — trip 만료 시 활성 LA가 남아 있으면 dismissal push로 정리하고 KV에서 제거.
+      // #868 — 클라 state sync용 trip-ended silent push도 함께 발사 (reason=expired).
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
+      continue;
+    }
+
+    // #1652 — staged lifecycle backstop (X8 차단). expiresAt 만료 분기 직후 게이트.
+    // device-side (T10 #1573 / PR #1594)가 staged backstop을 처리하지만 device가 죽거나 BG 미진입
+    // 시 trip이 backend KV에 무한 잔존(10.5h 좀비 evidence). backend 마지막 line of defense.
+    //   - silence (6h~9h): cron skip — KTX/장거리 trip 보호. Seoul polling + push 모두 미발사.
+    //   - force-end (9h+) : cleanupTripWithLa로 강제 종료. reason='expired' 재사용 (client는 이미
+    //     graceful handle, 신규 enum 추가 없이 backward-compat). log/stats로 telemetry 구분.
+    const lifecyclePhase = tripLifecyclePhase(trip, now);
+    if (lifecyclePhase === 'force-end') {
+      stats.lifecycleForceEnded += 1;
+      log('lifecycle: force-end (>9h)', {
+        token: trip.token.slice(0, 8),
+        elapsedMs: now - trip.createdAt,
+        // #2032 (Issue D) — monitoring dimension. skip 원인 분류 시 device sleep 상태 참조.
+        // ADR-023: backend는 이 값으로 발사 결정 X (log 전용).
+        sleepMode: trip.sleepModeEnabled,
+      });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
+      continue;
+    }
+    if (lifecyclePhase === 'silence') {
+      stats.lifecycleSilenceSkipped += 1;
+      log('lifecycle: silence cycle skipped (>6h)', {
+        token: trip.token.slice(0, 8),
+        elapsedMs: now - trip.createdAt,
+        // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+        sleepMode: trip.sleepModeEnabled,
+      });
       continue;
     }
 
@@ -49,82 +1382,3977 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       continue;
     }
 
-    stats.polled += 1;
     const waypoint = pickActiveWaypoint(trip);
     if (!waypoint) continue;
 
-    try {
-      const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-      const eta = pickBestEtaSeconds(arrivals, waypoint);
-      if (eta === null) continue;
+    // #1680 (V8d) — stationary cron skip 게이트. SSoT.motionState === 'stationary' 명시 시
+    // Seoul polling + push 발사를 skip한다. motionState='unknown' 또는 SSoT null은 평가 유지.
+    // destination/transfer 임박 bypass: 사용자가 환승역/목적지에 정차 중인 케이스를 보호.
+    //
+    // #2322 (O1-C) — la-stale backstop(아래)이 같은 SSoT read를 재사용해 침묵/outage 여부를
+    // 판정하므로 이 블록 밖으로 scope를 넓혔다. 결과 판정 로직 자체는 무변경.
+    const stationarySsot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    if (
+      stationarySsot !== null &&
+      shouldSkipStationary(
+        stationarySsot.motionState,
+        waypoint.kind,
+        stationarySsot.userIntentDeclared,
+        // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 평가 계속.
+        isDeviceSyncStale(stationarySsot, now),
+      )
+    ) {
+      stats.lifecycleStationarySkipped += 1;
+      log('cron: stationary skip', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+        sleepMode: trip.sleepModeEnabled,
+      });
+      continue;
+    }
 
-      const phase = evaluatePhase(eta);
-      const etaChanged = isSignificantEtaChange(trip.lastEtaSeconds, eta);
-      const phaseFires = phase !== null && shouldFire(phase, trip.lastFiredPhase);
-
-      // 메모리 갱신: ETA가 의미있게 변하거나 phase가 발사된 경우만
-      let dirty = false;
-      if (etaChanged) {
-        trip.lastEtaSeconds = eta;
-        dirty = true;
-      }
-
-      // Push 발사 조건:
-      // (1) 새 phase 도달 (phaseFires)
-      // (2) phase 미도달이지만 ETA 변동이 의미있게 발생 & 5분 이내 (사용자에게 정보 갱신)
-      const shouldPushPhase = phaseFires && phase !== null;
-      const shouldPushEtaUpdate =
-        !shouldPushPhase && etaChanged && eta <= EARLY_THRESHOLD_SEC * 2;
-
-      if (shouldPushPhase || shouldPushEtaUpdate) {
-        const pushPhase = phase ?? 'early';
-        const result = await sendSilentPush({
-          deviceToken: trip.token,
-          payload: { nextWaypoint: waypoint.stationName, etaSeconds: eta, phase: pushPhase },
-          config: deps.apnsConfig,
-          fetchImpl: deps.fetchImpl,
-          now,
-        });
-
-        if (result.ok) {
-          stats.pushed += 1;
-          if (shouldPushPhase) {
-            trip.lastFiredPhase = phase!;
-            dirty = true;
-            if (phase === 'imminent') {
-              await deleteTrip(env.TRIPS, trip.token);
-              log('trip completed after imminent push', { token: trip.token.slice(0, 8) });
-              continue;
-            }
-          }
-        } else {
-          stats.errors += 1;
-          log('apns push failed', {
-            status: result.status,
-            reason: result.reason,
+    // #640 — BoardingLock 게이트. 사용자가 열차를 아직 선택하지 않았거나 lock이 만료된 trip은
+    // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
+    // lock 부재 상태에서의 phase-based push는 "탑승 전 노이즈"였다.
+    if (!isBoardingLockActive(trip, now)) {
+      // 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) —
+      // 명시 탑승 anchor(promptDisplay + infoModeEnabled=true)를 가진 lockless trip을 우선
+      // 시도한다. 정확히 1개 unambiguous trainCode가 나오면 즉시 lock을 승격 + persist하고
+      // 이번 cycle은 여기서 종료한다 — 다음 cycle부터 위 `isBoardingLockActive` 판정이 true가
+      // 되어 정상 `runTrainCodeTracking` 경로(매역 push)로 진입한다. ambiguous/none은 그대로
+      // lockMissing 분기(boarding-prompt / lockless-intermediate fallback)로 흘려보낸다 —
+      // 틀린 열차를 추측해 lock하지 않는다(#1729 auto-lock 폐기와 동일 안전 원칙).
+      try {
+        const anchorLock = await attemptBoardingAnchorResolution(trip, deps.seoul, now);
+        if (anchorLock) {
+          trip.boardingLock = anchorLock;
+          trip.consecutiveEtaMissing = 0;
+          trip.lastTrackedArrivalEpoch = undefined;
+          trip.lastLaPushEpoch = undefined;
+          trip.lastLaPushAt = undefined;
+          await putTrip(env.TRIPS, trip);
+          stats.boardingAnchorResolved += 1;
+          log('boarding-anchor: trainCode resolved, lock promoted', {
             token: trip.token.slice(0, 8),
+            // #2515 — leg 2(currentLegAnchor)면 anchorLock 자체가 그 leg의 station/line을
+            // self-describe한다. promptDisplay는 leg 1 전용이라 leg 2에서는 stale 값을 로깅한다.
+            station: anchorLock.segmentStations[0] ?? trip.promptDisplay?.originStation,
+            line: anchorLock.line,
+            trainCode: anchorLock.trainCode,
+            isLeg2: trip.currentLegAnchor !== undefined,
           });
-          if (isUnrecoverableApnsError(result.status, result.reason)) {
-            await deleteTrip(env.TRIPS, trip.token);
-            continue;
-          }
+          continue;
+        }
+        if (trip.infoModeEnabled === true && (trip.promptDisplay || trip.currentLegAnchor)) {
+          stats.boardingAnchorUnresolved += 1;
+        }
+      } catch (e) {
+        stats.errors += 1;
+        log('boarding-anchor: resolution error', { error: String(e), token: trip.token.slice(0, 8) });
+      }
+      // #1933 — LA push 침묵 자동 종료 backstop. lockMissing 분기 진입 시 평가.
+      // backend SSoT가 advance 게이트로 frozen된 채 `maybeFireLiveActivityUpdate`가 ΔETA=0 분기
+      // dedup으로 새 push 미발사 → ActivityKit이 last content-state를 영구 유지하는
+      // heartbeat self-referential gap을 차단. lockless / lock-missing 둘 다 동일 보호.
+      // `lastLaPushAt === undefined`는 첫 push 전(또는 advance 직후 reset 직후) 상태 — skip.
+      //
+      // SSoT mirror cleanup은 `cleanupTripWithLa` 내부의 graceful `deleteSsot` 호출(try/catch
+      // swallow, liveActivity.ts:322)에 위임 — 외부 추가 호출은 redundant + KV throw 발생 시
+      // cron 루프 break-out 위험이라 두지 않는다.
+      //
+      // #2322 (O1-C) — device sync stale(#2321) 또는 Seoul API outage(이 cron 사이클 HTTP error
+      // 관측) 중에는 push 침묵이 device/API 장애의 정상 결과이지 SSoT freeze 버그의 증거가
+      // 아니다. 이 두 상태에서는 backstop을 skip하고 trip을 생존시킨다 — 무한 생존은 이미
+      // 존재하는 6h silence / 9h force-end staged lifecycle backstop(`tripLifecyclePhase`,
+      // 이 loop 상단에서 매 cycle 선행 평가됨)이 상한을 보장하므로 별도 상한 불필요.
+      const laStaleSurvivedSilence =
+        (stationarySsot !== null && isDeviceSyncStale(stationarySsot, now)) ||
+        deps.seoul.stats.httpErrorCount > 0;
+      if (
+        trip.lastLaPushAt !== undefined &&
+        now - trip.lastLaPushAt > LA_STALE_AUTO_END_MS
+      ) {
+        if (laStaleSurvivedSilence) {
+          stats.laStaleSurvivedSilence += 1;
+          log('la-stale: survived (device-sync-stale or seoul-outage)', {
+            token: trip.token.slice(0, 8),
+            elapsedMs: now - trip.lastLaPushAt,
+            station: pickActiveWaypoint(trip)?.stationName,
+            deviceSyncStale: stationarySsot !== null && isDeviceSyncStale(stationarySsot, now),
+            seoulHttpErrors: deps.seoul.stats.httpErrorCount,
+          });
+        } else {
+          stats.laStaleAutoEnded += 1;
+          log('la-stale: auto-end after 5min push silence', {
+            token: trip.token.slice(0, 8),
+            elapsedMs: now - trip.lastLaPushAt,
+            station: pickActiveWaypoint(trip)?.stationName,
+            // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+            sleepMode: trip.sleepModeEnabled,
+          });
+          await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+            reason: 'la-stale-backstop',
+          });
+          continue;
         }
       }
-
-      if (dirty) {
-        await putTrip(env.TRIPS, trip);
+      // #2131 (Part A-2, ADR-014 동급 보장) — boarding-prompt 9단 게이트 평가를 lockless
+      // intermediate 분기보다 앞으로 hoist. 기존엔 `trip.infoModeEnabled && waypoint.kind ===
+      // 'intermediate'`인 trip이 이 지점에 도달하지 못하고 `runLocklessIntermediate` +
+      // `continue`로 빠져나가 boarding-prompt 평가가 영구 skip되는 회귀가 있었다 — C 토글
+      // ON(사용자 명시 의향) trip이 lock 활성 trip과 동급 정확도를 보장받지 못한 것.
+      // 조건: lock 없음(바깥 `if (!isBoardingLockActive(...))`가 이미 보장) +
+      // `promptState.fired` 아님 — 두 조건 모두 `evaluateAndMaybeFireBoardingPrompt` 내부에서
+      // 이미 강제된다(F2 lock-active 방어 + 게이트 #9 already-fired dedup). 여기서는 호출
+      // 위치만 앞으로 옮기고 별도 pre-check는 두지 않는다 — 이중 게이트로 인한 관측(counter)
+      // 손실을 피하기 위함(기존 boardingPromptBlocked/already-fired 회귀 신호 보존).
+      // `runLocklessIntermediate` 호출 자체와 순서는 아래에서 불변 유지 (#1967 kill switch 의미
+      // 보존 — kill switch는 그 함수 내부에서만 게이트한다).
+      try {
+        await evaluateAndMaybeFireBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
+      } catch (e) {
+        stats.errors += 1;
+        log('boarding-prompt: evaluation error', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
       }
+      // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2(`currentLegAnchor`)에는 위
+      // origin 전용 `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트, `promptDisplay` 기반)가
+      // 적용되지 않는다(leg 2에서는 `promptDisplay`가 stale이라 이미 자연 skip). 별도의 GPS-free
+      // 도보시간 게이트 함수로 leg 2 "탑승하셨나요?" 프롬프트를 평가한다. `currentLegAnchor` 없으면
+      // (leg 1 이거나 아직 환승 전) 함수 내부에서 즉시 no-op.
+      try {
+        await maybeFireLegBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
+      } catch (e) {
+        stats.errors += 1;
+        log('leg-boarding-prompt: evaluation error', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
+      // #816 C — lockless opt-in trip은 게이트 우회. lock 없이도 intermediate waypoint 통과
+      // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
+      // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면
+      // 잘못된 leg/방향으로 갈 위험.
+      // #1967 (Ff-1) — admin kill switch는 `runLocklessIntermediate` 내부에서 매역 push
+      // 발사만 게이트한다 (2026-07-31 리뷰: 함수 호출 자체를 skip하면 취침 알람 +
+      // waypoint 진행까지 죽는 회귀). 여기서는 항상 호출.
+      if (trip.infoModeEnabled && waypoint.kind === 'intermediate') {
+        // #2524 — 탑승 커밋(PENDING lock, boardingCommitted===true) trip은 아직 안내 시작
+        // info-mode가 아니라 "탑승했지만 열차 미확정" 상태다. resolver가 실 lock으로 승격할
+        // 때까지 raw "통과" push를 매역마다 발사하면 사용자에게 스팸으로 느껴진다(#2524 배경).
+        // 위 `attemptBoardingAnchorResolution` 호출은 이 분기 이전에 이미 매 cycle 시도되므로
+        // 승격되는 즉시 다음 cycle부터 `isBoardingLockActive` → `runTrainCodeTracking` 정상
+        // 경로로 전환된다 — 여기서는 그 사이 침묵 구간만 만든다. info-mode(안내 시작) trip은
+        // boardingCommitted가 서지 않으므로 기존과 동일하게 "통과"가 계속 발사된다.
+        if (trip.boardingCommitted === true) {
+          stats.boardingCommittedSuppressed += 1;
+          log('lockless: suppressed 통과 (boarding committed, lock unresolved)', {
+            token: trip.token.slice(0, 8),
+            station: waypoint.stationName,
+          });
+          continue;
+        }
+        try {
+          await runLocklessIntermediate(trip, waypoint, env, deps, stats, now, log, generatePushId);
+        } catch (e) {
+          stats.errors += 1;
+          log('lockless: poll error', { error: String(e), token: trip.token.slice(0, 8) });
+        }
+        continue;
+      }
+      // #2329 (consensus-C, 설계 SSoT #2323) — C 토글 OFF(infoModeEnabled=false) lockless leg는
+      // `runLocklessIntermediate`(위 분기)로 진입하지 못해 종전엔 이 지점에서 아무 진행/발사 없이
+      // `lockMissing`만 누적됐다(08-12 25분 침묵 evidence의 leg2 공백). `!trip.infoModeEnabled`
+      // 조건으로 위 분기와 상호 배타적 — 이중 발사 경로가 겹치지 않는다.
+      if (!trip.infoModeEnabled && waypoint.kind === 'intermediate') {
+        try {
+          await tryFireConsensusTrainLeg(trip, waypoint, env, deps, stats, now, log, generatePushId);
+        } catch (e) {
+          stats.errors += 1;
+          log('consensus-fire: poll error', { error: String(e), token: trip.token.slice(0, 8) });
+        }
+      }
+      // #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint에서 영구 정지하던
+      // gap 차단. C 토글 ON/OFF 무관 — 환승 waypoint 통과는 lock 유무와 무관한 ground truth
+      // (arvlCd)로 판정한다(#864 lock-active transfer advance와 동일 신호). advance 성공 시
+      // `completeWaypointAdvance`가 이미 trip을 persist/cleanup했으므로 continue로 이 cycle의
+      // 나머지(lockMissing 카운트/LA heartbeat)를 skip — stale trip 참조로 재-putTrip하는
+      // 회귀를 방지한다. 미확보/미도착이면 기존 lockMissing 경로로 정상 fallthrough.
+      if (waypoint.kind === 'transfer') {
+        let advanced = false;
+        try {
+          advanced = await runLocklessTransfer(trip, waypoint, env, deps, stats, now, log, generatePushId);
+        } catch (e) {
+          stats.errors += 1;
+          log('lockless-transfer: poll error', { error: String(e), token: trip.token.slice(0, 8) });
+        }
+        if (advanced) continue;
+      }
+      stats.lockMissing += 1;
+      log('boarding-lock: skip cycle (lock missing or expired)', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        locklessOptIn: trip.infoModeEnabled === true,
+        waypointKind: waypoint.kind,
+        // #2032 (Issue D) — monitoring dimension. skip 원인 분류(정상 sleep skip vs 회귀 skip)의 핵심 dimension.
+        // ADR-023: backend 발사 결정 X — device의 `shouldSuppressBySleepRule`가 실제 suppress gate.
+        sleepMode: trip.sleepModeEnabled,
+      });
+      // #1826 — lock 없는 trip에서도 LA BG update heartbeat 발사.
+      // ETA 미지 → newArrivalEpoch=now: ΔETA 게이트는 첫 call에서 통과(last===undefined),
+      // 이후 heartbeat(90s) 게이트만 적용. putTrip dirty 여부와 무관하게 별도 persist.
+      if (trip.activityPushToken && trip.activityState === 'live') {
+        try {
+          const laHeartbeatDirty = await maybeFireLiveActivityUpdate(
+            trip, waypoint, now, deps, stats, now, log,
+          );
+          if (laHeartbeatDirty) {
+            await putTrip(env.TRIPS, trip);
+          }
+        } catch (e) {
+          log('la-heartbeat: error (lock-missing path)', {
+            error: String(e),
+            token: trip.token.slice(0, 8),
+          });
+        }
+      }
+      continue;
+    }
+
+    // `polled`는 lock-active trip의 실제 Seoul polling 사이클 수만 카운트 — lockMissing은 별도 stat.
+    stats.polled += 1;
+    // #585 — boardingLock 활성 trip은 trainCode 단위 추적 + reschedule push 경로로 분기.
+    // 디바이스는 사전 예약 알람(#584)으로 SLA를 보장하므로 phase-based silent push는 보내지 않는다.
+    try {
+      await runTrainCodeTracking(
+        trip,
+        waypoint,
+        trip.boardingLock,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+      );
     } catch (e) {
       stats.errors += 1;
-      log('poll error', { error: String(e), token: trip.token.slice(0, 8) });
+      log('boarding-lock: poll error', { error: String(e), token: trip.token.slice(0, 8) });
     }
   }
 
-  log('scheduled run complete', {
-    ...stats,
-    seoulCalls: deps.seoul.stats.callCount,
-  });
+  // #2054 — idle skip + heartbeat. scanned=0 (활성 trip 없음) 시 매 cycle 로그를 억제하고,
+  // 시간당 1회 `scheduled heartbeat` 로 halt 감지 능력만 유지. 활성 trip 있을 땐 기존대로 상세 log.
+  if (stats.scanned > 0) {
+    log('scheduled run complete', {
+      ...stats,
+      seoulCalls: deps.seoul.stats.callCount,
+    });
+  } else if (await shouldEmitHeartbeat(env.TRIPS, now)) {
+    const samples = await readJitterSamples(env.TRIPS);
+    const percentiles = computeJitterPercentiles(samples);
+    log('scheduled heartbeat', {
+      alive: true,
+      jitterP50: percentiles?.p50 ?? null,
+      jitterP99: percentiles?.p99 ?? null,
+      samples: samples.length,
+    });
+    await stampHeartbeat(env.TRIPS, now);
+    await resetJitterSamples(env.TRIPS);
+  }
+
+  // #1779 — LA push 도달률 Analytics Engine forward.
+  // cron cycle 합산(laPushSent / laPushFailed)을 단일 la-push 이벤트로 적재.
+  // binding 미설정 시 writeMetric은 no-op — 개발/테스트 환경 호환.
+  if (stats.laPushSent + stats.laPushFailed > 0) {
+    writeMetric(env, {
+      eventType: 'la-push',
+      tripToken: 'cron-aggregate',
+      reason: 'cycle-summary',
+      staleMs: stats.laPushFailed,
+      hopIndex: stats.laPushSent,
+    });
+  }
+
+  // #1779 — LA push 도달률 KV 누적. 1h bucket별 sent/failed를 accumulate해
+  // computeObservabilityMetrics가 laPushDeliveryRatio를 산출할 수 있도록 한다.
+  await accumulateLaPushCounters(env.TRIPS, stats.laPushSent, stats.laPushFailed, now);
+
   return stats;
+}
+
+/**
+ * #1363 — 시리즈에서 가장 최근 `currentStationName`을 추출. log 진단(`waypoint` vs
+ * `currentStation`) 이원화 용도. 클라가 stamp한 사용자 현재 추정역 이름이고, 가장 최근 sample이
+ * 누락한 경우 직전 sample에서 backfill한다(클라가 fix마다 매번 stamp하지 않는 케이스 대응).
+ * 시리즈 전체에서 stamp가 한 번도 없으면 undefined → log 키 자체 omit (graceful).
+ */
+export function pickLatestCurrentStationName(series: readonly PositionPoint[]): string | undefined {
+  for (let i = series.length - 1; i >= 0; i--) {
+    const name = series[i].currentStationName;
+    if (typeof name === 'string' && name.length > 0) return name;
+  }
+  return undefined;
+}
+
+/** runFusionStep 반환값 — boarding-prompt / lockless-intermediate 분기에서 공통 사용. */
+interface FusionStepResult {
+  /** 원본 positionSeries (호출자가 evaluateBoardingPromptGates 등에 그대로 전달). */
+  series: PositionPoint[];
+  /** evaluateWindow 결과 — observation 유효성/window 카운트 평가용. */
+  posMetrics: WindowedMetrics;
+  /**
+   * smoothed velocity를 fusedSpeed에 합류시킬 값 (km/h). null인 경우:
+   *  - observation 무효 (Kalman skip)
+   *  - prior=null 첫 cycle (state는 persist하지만 fusion 합류 제외 — #832 P2-3 정합)
+   */
+  kalmanKmh: number | null;
+  /** 운행 phase 분류 결과. null인 경우: observation 무효 또는 nearestStationDistanceM 미수신. */
+  phaseState: StationPhaseState | null;
+  /**
+   * 정상 cycle(observationValid)의 직전 cycle Kalman state — drift 측정 입력 (#837 P2-3).
+   * observation 무효 cycle 또는 KV 미존재면 null → 호출자 maybeCountDrift가 skip.
+   */
+  kalmanPrior: KalmanState | null;
+  /** 이번 cycle predict+update 직후 state. observation 무효면 null (KV write 자체가 skip). */
+  kalmanState: KalmanState | null;
+}
+
+/**
+ * Phase 3 fusion 한 cycle pipeline (#824 E2 + #825 E3).
+ *
+ *   1. positionSeries + accelSeries + Kalman prior state 병렬 KV read
+ *   2. evaluateWindow + evaluateAccelWindow
+ *   3. observationValid 가드 — 무효면 state I/O skip (P2-1)
+ *   4. runKalmanStep → writeKalmanState
+ *   5. prior 부재 첫 cycle은 fusion 합류 제외 (P2-3)
+ *   6. runStationPhaseStep — nearestStationDistanceM 없으면 phase null로 graceful skip (#834 wire 전)
+ *
+ * 호출자 책임:
+ *   - phaseState non-null이면 trip.stationPhase에 stamp + putTrip 시 persist
+ *   - kalmanKmh를 게이트/fusion 입력으로 전달
+ *   - series는 본 함수가 fetched한 raw KV 값 — 추가 read 불필요
+ *   - #837 P2-3 — drift 카운트(stats.kalmanDriftWarning)는 호출자가 maybeCountDrift(prior, posMetrics, stats, now)
+ *     로 수행. fusion 자체는 stats를 받지 않아 SRP 유지(HTTP path 등에서 stats 없이 재사용 가능).
+ *
+ * #2007 (ADR-022 Phase 4-5) — `archFlag='on'` 시 Kalman 계산/write/phase 전부 skip.
+ * runKalmanStep 이 null 반환 → writeKalmanState skip → kalmanKmh/kalmanPrior/kalmanState/phaseState
+ * 모두 null 로 downstream 에 전달 (observation 무효 cycle 과 동일 shape). 호출자의
+ * maybeCountDrift, boardingPrompt 게이트 #7 등 downstream 은 이미 null-safe 하므로
+ * flag 배선만으로 dormant. flag=off (기본) 또는 archFlag 미전달 시 기존 동작 100% 유지.
+ */
+async function runFusionStep(
+  trip: Trip,
+  env: Env,
+  now: number,
+  archFlag?: ArchFlagValue,
+): Promise<FusionStepResult> {
+  const [series, accelSeries, kalmanPrior] = await Promise.all([
+    readSeries(env.TRIPS, trip.token),
+    readAccelSeries(env.TRIPS, trip.token),
+    readKalmanState(env.TRIPS, trip.token),
+  ]);
+  const posMetrics = evaluateWindow(series, now);
+  const accelMetrics = evaluateAccelWindow(accelSeries, now);
+  const observationValid =
+    posMetrics.count > 0 && Number.isFinite(posMetrics.avgAccuracyMeters);
+
+  if (!observationValid) {
+    // observation 무효 cycle은 drift도 의미 없음 — kalmanPrior=null로 반환해 호출자가 skip.
+    return {
+      series,
+      posMetrics,
+      kalmanKmh: null,
+      phaseState: null,
+      kalmanPrior: null,
+      kalmanState: null,
+    };
+  }
+
+  const kalmanState = runKalmanStep(
+    {
+      prior: kalmanPrior,
+      gpsAvgKmh: posMetrics.gpsAvgKmh,
+      gpsAccuracyMeters: posMetrics.avgAccuracyMeters,
+      accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
+      now,
+    },
+    archFlag,
+  );
+
+  // #2007 — flag=on 이면 runKalmanStep 이 null. writeKalmanState skip + phaseState 도 null
+  // (station phase 는 kalmanKmh 신호에 의존 — 신 아키텍처에서 smoothed velocity 자체가 dormant).
+  // maybeCountDrift 는 kalmanPrior=null 시 skip 되므로 여기서도 null 로 forward.
+  if (kalmanState === null) {
+    return {
+      series,
+      posMetrics,
+      kalmanKmh: null,
+      phaseState: null,
+      kalmanPrior: null,
+      kalmanState: null,
+    };
+  }
+
+  await writeKalmanState(env.TRIPS, trip.token, kalmanState);
+
+  // P2-3 정합 — 첫 cycle은 v=gpsAvg라 fusion에 합류 시 같은 GPS 2회 가중 → confidence 가짜
+  // 상승. state는 persist 하되 fusion 입력에서는 제외.
+  const kalmanKmh = kalmanPrior !== null ? kalmanState.v : null;
+
+  // phase 분류 — 가장 최신 sample의 distance 입력. #834 wire 전까지 undefined → null 반환.
+  // 직전 cycle의 kalmanPrior.v를 prevKalmanKmh로 전달해 APPROACHING(감속)/DEPARTING(가속)
+  // 방향 구분 — accel magnitude만으로는 부호 부재라 분리 불가.
+  const lastSample = series[series.length - 1];
+  const phaseState = runStationPhaseStep(
+    {
+      kalmanKmh: kalmanState.v,
+      prevKalmanKmh: kalmanPrior?.v,
+      accelMagnitudeMean: accelMetrics.avgMagnitudeMean,
+      accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
+      nearestStationDistanceM: lastSample?.nearestStationDistanceM,
+      motion: posMetrics.motion,
+      now,
+    },
+    trip.stationPhase,
+  );
+
+  return {
+    series,
+    posMetrics,
+    kalmanKmh,
+    phaseState,
+    kalmanPrior,
+    kalmanState,
+  };
+}
+
+/**
+ * #837 P2-3 — Kalman drift 카운트 헬퍼.
+ *
+ * runFusionStep에서 분리한 책임 (SRP):
+ *  - fusion은 순수 pipeline (KV I/O + 계산만), stats 의존 제거 → HTTP path 등에서 dummy stats 없이 재사용.
+ *  - drift 카운트는 호출자 직후에 수행 — 발생 시점/조건 동치(정상 cycle + prior 존재).
+ *
+ * skip 조건:
+ *  - prior=null (첫 cycle, v=gpsAvg 초기화라 delta=0 의미 없음)
+ *  - posMetrics가 fusion observation 무효 cycle의 것이면 호출자가 prior=null로 받음 (#826 정합)
+ *  - #837 P2-2 reset grace window: prior.lastResetTs가 있고 now - lastResetTs < KALMAN_DRIFT_GRACE_MS면
+ *    카운트 skip. `resetKalmanForArrival` 직후 cycle은 prior.v=0과 GPS 회복 phase 사이 |delta|가
+ *    임계 근처/초과로 잡혀 kalmanReset과 동시 카운트되는 telemetry 사각지대 — 해석 불명확 해소.
+ *    legacy state는 lastResetTs 미존재(undefined) — grace skip 없이 정상 평가 (회귀 없음).
+ */
+export function maybeCountDrift(
+  prior: KalmanState | null,
+  posMetrics: WindowedMetrics,
+  stats: ScheduledStats,
+  now: number,
+): void {
+  if (prior === null) return;
+  if (
+    prior.lastResetTs !== undefined &&
+    now - prior.lastResetTs < KALMAN_DRIFT_GRACE_MS
+  ) {
+    return;
+  }
+  const drift = detectKalmanDrift(prior, posMetrics.gpsAvgKmh);
+  if (drift.warning) {
+    stats.kalmanDriftWarning += 1;
+  }
+}
+
+/**
+ * #705 — trip의 baseline/진행 상태를 progress KV에도 mirror해 POST /trips race에 무관하게 유지.
+ * trainCode가 없는 호출(lock 없음)은 no-op — progress KV는 trainCode가 stamp되어야 의미가 있다.
+ */
+async function mirrorProgress(
+  kv: KVNamespace,
+  trip: Trip,
+  shiftedCountDelta: number,
+): Promise<void> {
+  const trainCode = trip.boardingLock?.trainCode;
+  if (!trainCode) return;
+  // #766 — cron path는 cacheTtl=10s로 PUT 직후 stale read 방지.
+  const existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
+  const prevShifted = existing?.trainCode === trainCode ? existing.shiftedCount : 0;
+  const next: TripProgress = {
+    trainCode,
+    shiftedCount: prevShifted + shiftedCountDelta,
+    // #2308 — head 정체성 anchor. POST /trips 재등록 시 count 대신 hopIndex로 slice해
+    // route 재계산에도 단조 전진을 보장 (applyProgress 참고).
+    headHopIndex: trip.waypoints[0]?.hopIndex,
+    lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
+    lastLaPushEpoch: trip.lastLaPushEpoch,
+    // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
+    lastLaPushAt: trip.lastLaPushAt,
+    consecutiveEtaMissing: trip.consecutiveEtaMissing,
+  };
+  const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
+  await putProgress(kv, trip.token, next, ttlSec);
+}
+
+/**
+ * #1285 — lockless trip의 waypoint shift를 progress KV에 mirror해 POST /trips 재등록 race 보존.
+ * trip.waypoints는 이미 shift() 완료된 상태로 전달된다 — shiftedCount는 (totalWaypoints - remaining).
+ * mirrorProgress(lock 경로)와 동형이지만 trainCode 없이 lockless===true 마커로 저장.
+ */
+async function mirrorLocklessProgress(kv: KVNamespace, trip: Trip): Promise<void> {
+  // #766 — cron path는 cacheTtl=10s로 PUT 직후 stale read 방지.
+  const existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
+  const prevShifted = existing?.lockless === true ? existing.shiftedCount : 0;
+  const next: TripProgress = {
+    lockless: true,
+    shiftedCount: prevShifted + 1,
+    // #2308 — head 정체성 anchor (lock 경로 mirrorProgress와 동형).
+    headHopIndex: trip.waypoints[0]?.hopIndex,
+  };
+  const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
+  await putProgress(kv, trip.token, next, ttlSec);
+}
+
+/**
+ * boardingLock trip 추적 (#585).
+ *
+ * 3단계로 분리: estimate → arrival 시 waypoint 진행(early return) → 아니면 reschedule push.
+ * push가 trip 도착 시점에 의미 없으므로 도착 케이스를 먼저 처리해 dirty write를 단일화.
+ *
+ * #902 Seam F — estimate=null이고 누적 miss가 임계(VANISH_RE_ATTACH_THRESHOLD) 도달 직전이면
+ * 같은 station/line의 신규 trainCode를 자동 swap 후 같은 cycle에 재estimate한다.
+ */
+
+/**
+ * #902 Seam F — trainCode 사라짐 후 재attach 시도 임계.
+ * `consecutiveEtaMissing`이 이 값에 도달한 미스 cycle에서 한 번 swap을 시도한다.
+ * 1회로는 일시적 API 누락과 진짜 사라짐을 구분하지 못해 false swap 위험이 크므로 2로 둔다.
+ * (그 미만 미스는 단순 누락으로 간주 + 카운터 증가만).
+ */
+export const VANISH_RE_ATTACH_THRESHOLD = 2;
+
+/**
+ * #1277 — vanish-swap 실패 후 시간 기반 waypoint advance를 시도하기까지의 추가 grace cycle 수.
+ * VANISH_RE_ATTACH_THRESHOLD(2회) 시도 후 이 grace만큼 더 인내하다가 advance 또는 lock release.
+ * swap 시도(2회)와 grace(1회) 합산 총 3회 miss → 시간 게이트를 통과하면 waypoint 전진.
+ * subsurface grace(10회)와 무관하게 적용 — 지하에서도 무한 동결은 막는다.
+ */
+export const FALLBACK_ADVANCE_GRACE_CYCLES = 1;
+
+/**
+ * #917 A2 — 매역 알림 dedup KV TTL(초).
+ * 같은 trainCode가 같은 역의 arvlCd∈{0,1} 신호를 cron 60s × Seoul API 갱신 지연으로 2~3 cycle
+ * 반복 노출하는데, 그 윈도우 동안 push가 중복 발사되지 않도록 차단한다.
+ * 한 trip 진행 중 같은 역으로 다시 돌아올 일은 없으므로 보수적으로 1시간 — KV TTL 최소(60s) 위.
+ */
+export const ARVLCD_FIRE_DEDUP_TTL_SEC = 60 * 60;
+
+/**
+ * #1367 — cross-station 동일 phase 다중 banner 차단 윈도우(ms).
+ * 짧은 cron 간격(60s)에서 hop이 advance한 직후 다음 hop의 첫 fire가 즉시 또 발사되어 device에서
+ * "같은 분에 두 알림" 패턴이 발생하던 회귀(이슈 evidence) 차단용. 윈도우 안이면 한 번만 통과한다.
+ * 60s 이상 hop이 진행됐다면 정상 시퀀스이므로 통과 — 사용자 가치 손실 없음.
+ */
+export const SAME_PHASE_STATION_DEDUP_WINDOW_MS = 45_000;
+
+/**
+ * #917 A2 — 매역 알림 dedup KV key prefix.
+ * Key 형식: `${prefix}${token}|${trainCode}|${stationName}|${arvlCd}`
+ *
+ * 주의: trip token이 key에 포함된다 — 같은 train(trainCode)을 탄 여러 사용자가 같은 역에
+ * 도착할 때 한 명만 push 받고 나머지가 dedup으로 silence되는 cross-trip leak을 차단한다.
+ */
+export const ARVLCD_FIRE_KEY_PREFIX = 'arvlcd-fire:';
+
+/**
+ * ADR-022 Phase 1-1 (#1985) → #2448 확장 — fire-once TTL key 의 cycle slot 값.
+ *
+ * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 원래는
+ * 이 cycle 전체를 하나의 slot(`0` 고정)으로 묶어 station 당 1회로 강제했다(어린이대공원
+ * 13:31/13:32/13:37 반복 storm, #1980/#2200 차단). #2448에서 "곧 진입"(ENTERING) 알림을
+ * "역 통과"(ARRIVED)와 별도로 발사하기 위해 slot 을 arvlCd 값 기반 2-way bucket 으로 넓힌다 —
+ * ENTERING 1회 + ARRIVED 1회(합 최대 2회/5분 TTL)까지만 허용하고, 같은 (station, bucket)
+ * 재관측은 여전히 storm 방지 정책 그대로 skip 한다.
+ *
+ * `arvlCdFireOnceBucket`가 실제 bucket 계산을 담당 — 이 두 상수는 KV key 조립/테스트에서
+ * 값을 직접 참조할 때 쓰는 명시적 별칭이다.
+ */
+export const ARVLCD_FIRE_ONCE_ENTERING_BUCKET = 0;
+export const ARVLCD_FIRE_ONCE_ARRIVED_BUCKET = 1;
+
+/**
+ * #2448 — (waypoint kind, arvlCd) 조합을 fire-once TTL bucket 으로 매핑.
+ *
+ * `kind==='intermediate'`일 때만 ENTERING(0) 전용 bucket 을 분리한다 — `buildStationNotifContent`가
+ * 새 "곧 진입" copy 를 렌더하는 대상이 intermediate 뿐이기 때문. transfer/destination 은 arvlCd
+ * 0/1 모두 여전히 같은 "임박" copy 를 렌더하므로(#2063, 미변경) bucket 을 나누면 **같은 문구가
+ * 두 번 발사**되는 storm 회귀가 재발한다(2026-08-07 뚝섬 evidence, #2200/`replay_20260807_storm.test.ts`)
+ * — 그래서 non-intermediate 는 기존과 동일하게 단일 bucket 으로 유지한다.
+ */
+export function arvlCdFireOnceBucket(waypointKind: Waypoint['kind'], arvlCd: number): number {
+  if (waypointKind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    return ARVLCD_FIRE_ONCE_ENTERING_BUCKET;
+  }
+  return ARVLCD_FIRE_ONCE_ARRIVED_BUCKET;
+}
+
+/**
+ * dedup KV key 빌더. arvlCd 0(ENTERING) vs 1(ARRIVED)은 별 entry로 분리(둘 다 신호).
+ * token은 trip 단위 격리 — 같은 train 다른 trip이 서로 silence하지 않도록.
+ */
+export function arvlCdFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+  arvlCd: number,
+): string {
+  return `${ARVLCD_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}|${arvlCd}`;
+}
+
+/**
+ * arvlCd∈{0(ENTERING), 1(ARRIVED)} 신호로 매역 알림 발사 가능한지 prereq 평가 (#917 A2 가드).
+ *
+ * Returns:
+ *   - 'fire'      — push 발사 진행
+ *   - 'mismatch'  — prereq 실패. push X. arvlCdFireMismatch++로 카운트해 회귀 측정.
+ *
+ * 가드:
+ *   1. lock 활성 (호출 전 isBoardingLockActive로 이미 검증되지만 defensive recheck)
+ *   2. estimate.arvlCd가 ARRIVED(1) 또는 ENTERING(0)
+ *
+ * #640 회귀 차단: lock 없는 trip은 애초에 runTrainCodeTracking에 도달하지 못한다.
+ * positions-fallback arrived(arvlCd=null)는 매역 알림 SSOT(arvlCd)와 다른 신호 →
+ * mismatch로 분류해 push 미발사 + 운영 가시성 카운트.
+ *
+ * @deprecated ADR-017 T2 (#1555) — 본 게이트는 분산된 fire path 잔존 호출자 보존용. 신규 호출자는
+ *   `advanceTripPosition` (단일 mutation 진입점)을 사용해 6단 게이트(seed/motion/env/type/train
+ *   identity/lockless arvlcd 단독)를 전부 거치게 해야 한다. T4~T7 reader migration에서 호출자
+ *   교체가 완료되면 본 함수는 제거 예정.
+ */
+export function evaluateArvlCdFireGate(
+  lock: BoardingLockMeta | undefined,
+  estimateArvlCd: number | null,
+  now: number,
+): 'fire' | 'mismatch' {
+  if (lock === undefined || lock.expiresAt <= now) return 'mismatch';
+  if (estimateArvlCd !== ARRIVAL_CODE.ARRIVED && estimateArvlCd !== ARRIVAL_CODE.ENTERING) {
+    return 'mismatch';
+  }
+  return 'fire';
+}
+
+/**
+ * #1370 — station-passed imminent push payload 빌더. arvlCd path와 vanish-fallback path가
+ * 같은 payload 모양을 공유 (lock self-describing, subsurface flag, hopIndex forward 등). SonarCloud
+ * 중복 차단 + 새 필드 추가 시 단일 지점 갱신을 위해 헬퍼로 추출.
+ */
+interface BuildStationPassedImminentPayloadInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  pushId: string;
+  now: number;
+  /**
+   * #1402 — 발사 경로(origin) stamp. 좀비 알림 RCA + alarmLog `pushOrigin` 매핑용.
+   * arvlCd 경로 = 'arvlcd', vanish fallback advance 직전 = 'vanish-fallback',
+   * vanish lock release 직전 floor = 'vanish-release'.
+   */
+  origin: PushOrigin;
+  /**
+   * #1438 (E5) — backend → device lock release sync 채널. 이 push 발사와 동시에 backend가
+   * `trip.boardingLock`을 release한 경우 reason을 forward해 device가 즉시 store sync 가능.
+   * floor fire(vanish-release)에서만 'vanish'로 전달 — 다른 경로(arvlcd, vanish-fallback)는
+   * lock을 release하지 않으므로 undefined.
+   */
+  lockReleasedReason?: 'transfer' | 'vanish';
+  /**
+   * #1561 (T8, ADR-017 / S2 #1535 흡수) — backend가 보유한 TripPositionSSoT 권위 스냅샷.
+   *
+   * 정의된 경우 silent push payload에 `ssot` 필드로 forward → device cascade picker가 `backend-ssot`
+   * tier(최상위)로 채택. 미전달(undefined) 시 payload에서 자연 누락 → device는 기존 cascade fallback.
+   *
+   * SSoT는 caller가 `readSsot(env.TRIPS, trip.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC })`로
+   * 로드해 전달. read 실패 시 undefined를 그대로 전달해 wire에서 자연 누락하는 정책 — backend SSoT가
+   * 부재한 trip(seed 전 / KV race)도 push 발사 자체는 막지 않는다(graceful).
+   */
+  ssot?: TripPositionSSoT | null;
+  /**
+   * #2021 (ADR-022) — archFlag='on' 시 payload.boardingLine 을 undefined 로 실어 device 의
+   * `lockless-opt-out` gate 를 존중한다. flag=off (기본) / 미전달 시 기존 동작 (lock.line forward)
+   * 100% 유지 — Phase 4-x 이하 legacy 배선에서 회귀 발생 없음.
+   *
+   * device 는 payload.boardingLine !== undefined 를 "backend authoritative" 신호로 간주해
+   * lockless-opt-out gate 를 우회하므로, boardingPrompt 응답 없이 lock 이 null 인 상태에서
+   * backend push 가 boardingLine 을 실으면 알림이 잘못 fire 된다 (2026-07-03 08:24 evidence,
+   * 중곡→성수 trip 의 성수 알림). flag=on 배포 시 이 경로를 봉인.
+   */
+  archFlag?: ArchFlagValue;
+}
+
+/**
+ * #2021 (ADR-022) — payload.boardingLine 실는 정책 게이트.
+ *
+ * archFlag='on' → undefined (device 의 lockless-opt-out gate 존중, "trainCode 확정 없이는
+ * 어떤 알림도 발사 X" 사용자 명시 flow 유지). archFlag='off' 또는 undefined → 기존 동작
+ * (lock.line 그대로 forward, #1322 "지하 auto-lock hydration window" 용도).
+ *
+ * 순수 함수 — flag 정책 변경 시 단일 지점 갱신. 3개 fire 경로(arvlcd / vanish-fallback /
+ * transfer-release) + Seam E swap 이 모두 본 helper 를 통과한다.
+ */
+export function resolveBoardingLinePayload(
+  archFlag: ArchFlagValue | undefined,
+  lockLine: string,
+): string | undefined {
+  return archFlag === 'on' ? undefined : lockLine;
+}
+/**
+ * #1561 (T8) — silent push payload에 forward되는 SSoT 스냅샷의 passedStations 최근 N개 한도.
+ * 4호선 전 구간(40+ 역) 같은 긴 trip에서도 payload 크기 폭주 차단. device는 자체 누적 + 본 forward로
+ * 짧은 history만 cross-check.
+ */
+const SSOT_FORWARD_PASSED_STATIONS_MAX = 5;
+
+/**
+ * #1561 (T8) — `TripPositionSSoT`를 silent push payload에 forward할 수 있는 `SilentPushSsotPayload`
+ * 형태로 축소. null/undefined는 그대로 통과시켜 caller가 wire 자연 누락 분기를 단순화.
+ */
+export function toSilentPushSsot(
+  ssot: TripPositionSSoT | null | undefined,
+): SilentPushPayload['ssot'] {
+  if (ssot == null) return undefined;
+  return {
+    currentStationId: ssot.currentStationId,
+    motionState: ssot.motionState,
+    lastAdvanceEvidence: ssot.lastAdvanceEvidence,
+    lastAdvanceAt: ssot.lastAdvanceAt,
+    passedStations: ssot.passedStations.slice(-SSOT_FORWARD_PASSED_STATIONS_MAX),
+    // #1534 (S1, T9b) — backend lockSuggestion forward. 부재 시 wire 자연 누락
+    // (apns.ts JSON serializer는 undefined 필드 omit). device cascade picker는 기존 tier fallback.
+    ...(ssot.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),
+    // #1572 (T9) — backend alarmEvents forward. 부재 시 wire 자연 누락. device 측 evaluateSsotFireGate가
+    // mirror에서 read해 5 fire path 게이트 A/B로 사용. SSOT_FORWARD_PASSED_STATIONS_MAX와 별개 cap —
+    // alarmEvents는 source에서 이미 ALARM_EVENTS_CAP=50으로 제한돼 추가 slice 불필요.
+    ...(ssot.alarmEvents ? { alarmEvents: ssot.alarmEvents } : {}),
+    // #1705 — currentStationLine forward. 부재(legacy v1 row) 시 wire 자연 누락.
+    ...(ssot.currentStationLine !== undefined
+      ? { currentStationLine: ssot.currentStationLine }
+      : {}),
+    // #2329 (consensus-C) — legConsensus suppress floor forward (#2155 소비 대상, supply만).
+    ...(ssot.legConsensus?.suppressFloorEpochMs !== undefined
+      ? { legConsensusFloorEpochMs: ssot.legConsensus.suppressFloorEpochMs }
+      : {}),
+  };
+}
+
+function buildStationPassedImminentPayload(
+  inputs: BuildStationPassedImminentPayloadInputs,
+): Parameters<typeof sendSilentPush>[0]['payload'] {
+  const { trip, waypoint, lock, pushId, now, origin, lockReleasedReason, ssot, archFlag } = inputs;
+  return {
+    nextWaypoint: waypoint.stationName,
+    // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
+    etaSeconds: 0,
+    phase: 'imminent',
+    kind: waypoint.kind,
+    sentAt: now,
+    pushId,
+    // Epic #1204 그룹 2 D3 (#1273) — validateTrip stamp 결과를 forward.
+    // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
+    // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
+    hopIndex: waypoint.hopIndex,
+    // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+    // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+    occupiedLine: waypoint.line,
+    // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
+    // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
+    subsurface: trip.subsurface === true,
+    // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
+    // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
+    // #2021 (ADR-022) — archFlag=on 시 undefined 로 forward 하여 device 의
+    // lockless-opt-out gate 를 존중. `resolveBoardingLinePayload` 단일 지점 정책 게이트.
+    boardingLine: resolveBoardingLinePayload(archFlag, lock.line),
+    trainCode: lock.trainCode,
+    // #1399 — 좀비 알림 cleanup. push 발사 시점의 active trip token을 stamp해 device가
+    // ACTIVE_TRIP_KEY와 비교해 만료 token push를 drop. trip-ended cleanup 후 늦게 도착한
+    // stale silent push 차단(S8 14:19 좀비 회귀).
+    tripToken: trip.token,
+    // #1402 — 발사 경로 stamp. device alarmLog와 backend tail이 같은 값으로 1:1 매핑.
+    origin,
+    // #1438 (E5) — lock release sync. 정의된 경우에만 wire (apns.ts JSON serializer가 undefined 누락).
+    lockReleasedReason,
+    // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
+    // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
+    passedStations: trip.passedStations,
+    // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts JSON
+    // serializer가 자연 누락 → device cascade picker는 기존 tier fallback. caller가 SSoT를 읽어
+    // 명시 전달. payload size 폭주 차단 위해 passedStations는 최근 5개로 잘려 forward된다.
+    ssot: toSilentPushSsot(ssot),
+  };
+}
+
+/**
+ * #917 A2 — boardingLock trip에서 arvlCd∈{0,1} 신호 관측 시 매역 station-passed silent push 발사.
+ *
+ * 호출 시점: runTrainCodeTracking이 estimate.arrived=true를 얻은 직후 advanceBoardingLockWaypoint
+ * 진입 전. prereq 게이트(lock 활성 + arvlCd∈{0,1}) 통과 + dedup KV 미존재 시 발사.
+ *
+ * push 실패 분기 정책:
+ *   - APNs env mismatch self-heal은 reschedule push와 동일 (sendWithEnvHeal 재사용)
+ *   - 410 Unregistered / env exhausted 등 unrecoverable은 trip 자체 cleanup이 reschedule 경로의
+ *     maybeReschedulePush에서 처리되므로 본 함수는 그 분기를 만들지 않는다 — arvlCd fire는 trip
+ *     상태에 영향을 주지 않는 보조 신호로 한정 (waypoint advance / cleanup은 호출자 책임).
+ *   - 일반 실패는 stats.errors++ + log만 — dedup KV는 성공 시에만 stamp해 다음 cycle 재시도 허용.
+ *
+ * @returns cleanedUp=true는 token unrecoverable로 trip 폐기 신호 (호출자가 advance 스킵).
+ *          현재 정책상 cleanup 분기는 없고 항상 false 반환.
+ */
+export interface FireArvlCdStationPushInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  arvlCd: number;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+
+/**
+ * #1614 Phase C — stale SSoT lock false-fire 차단 임계.
+ *
+ * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_WINDOW_MS` (60s) 는 transfer/destination
+ * kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용 — transfer 게이트보다 보수적
+ * (3분) 으로 두어 정상 운영(역 간 hop 평균 1~2분 + cron jitter) 을 차단하지 않으면서, 멈춘 trip
+ * 의 stale lock 에서 cron 누적 misfire(2026-06-19 evidence) 를 차단한다.
+ *
+ * `lastAdvanceAt===0` (lazy-seed 직후, 미advance) 은 본 가드 dormant — T4 motion 게이트의
+ * 'unknown' 통과 정책과 동일 ([[transferDestinationGate.isSsotAdvanceRecent]] 와 같은 의미론).
+ */
+export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
+
+/**
+ * #2063 (ADR-023 개정) — 매역 알림(station-notif) apns-collapse-id prefix.
+ * 같은 trip 의 매역 알림은 알림센터에서 최신 것으로 교체(스택 방지).
+ */
+export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
+
+/**
+ * #2063 — 매역 알림 apns-collapse-id 빌더.
+ * #2086 — device token(64 hex)을 통째로 넣으면 `station-<64hex>` ≈ 72B로 APNs
+ * `apns-collapse-id` 64B 한도를 초과할 수 있어 `slice(0, 16)`로 축약한다
+ * (`sleepAlarmCollapseId`와 동일 패턴, PR #2085 리뷰 P2-2). collapse는 같은 trip 내
+ * 최신으로 교체하는 용도라 16 hex prefix로 유니크성 충분.
+ */
+export function stationNotifCollapseId(tripToken: string): string {
+  return `${STATION_NOTIF_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
+}
+
+/**
+ * #2130 (Part B-be-2) — boarding-prompt(반복 발사, A4) apns-collapse-id prefix.
+ * 새 열차의 prompt가 이전 무응답 배너를 알림센터에서 최신으로 교체(스택 금지) — #2086 규칙
+ * (`stationNotifCollapseId`/`sleepAlarmCollapseId`와 동일하게 `slice(0, 16)`로 64B 한도 방어).
+ */
+export const BOARDING_PROMPT_COLLAPSE_ID_PREFIX = 'boarding-prompt-';
+
+/** #2130 — boarding-prompt apns-collapse-id 빌더. */
+export function boardingPromptCollapseId(tripToken: string): string {
+  return `${BOARDING_PROMPT_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
+}
+
+/**
+ * #2063 — 매역 알림 apns-expiration 유예(ms). 지하 데이터 순단 후 stale 알림이 뒤늦게
+ * 표시되는 것을 방지한다 (now + 90s 이후 APNs가 폐기).
+ */
+export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
+
+/**
+ * #2506 — intermediate 매역 도착 시점 기준 "다음 hop 대상(환승역|도착역)까지 남은 정거장"을
+ * 계산한다. `waypoint`는 아직 shift 되지 않은 `trip.waypoints[0]`(advance는 fire *이후*
+ * `advanceBoardingLockWaypoint`가 수행 — #1558 T5)이므로, 자기 자신을 제외한 나머지
+ * (`trip.waypoints` 중 waypoint 다음부터)로 `computeMultiHopContext`를 재사용한다. 이는
+ * `advanceBoardingLockWaypoint`가 advance *이후* `trip.waypoints.length`를 stopsRemaining으로
+ * 쓰는 LA 관례(scheduled.ts:4121 부근)와 동일한 1-based 의미론 — 새 계산을 도입하지 않는다.
+ *
+ * device #2362(`deriveStationPassedTarget`, src/features/alarm/hooks/useStationAlarm.ts)와
+ * 동일하게 아직 환승이 남아있으면 환승역을, 아니면 최종 도착역을 대상으로 삼는다.
+ */
+function deriveStationNotifCounts(trip: Trip, waypoint: Waypoint): StationNotifCounts {
+  const idx = trip.waypoints.indexOf(waypoint);
+  const remaining = idx === -1 ? trip.waypoints : trip.waypoints.slice(idx + 1);
+  const multiHop = computeMultiHopContext({ ...trip, waypoints: remaining });
+  const transferAhead = multiHop.stopsToTransfer !== undefined && multiHop.stopsToTransfer > 0;
+  return transferAhead
+    ? { targetName: multiHop.transferStationName, count: multiHop.stopsToTransfer }
+    : { targetName: multiHop.destinationName, count: remaining.length };
+}
+
+/**
+ * #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 title/body 빌더.
+ *
+ * P1 수정(코드리뷰) — 최초 구현은 `alertContent.buildAlertContent`(한국어 고정, alert fallback
+ * 채널용)를 재사용해 en/ja/zh 사용자에게도 한국어 배너가 발사되는 i18n 회귀가 있었다. #1895
+ * boarding-prompt(`buildBoardingPromptMessage`)와 동일 패턴으로 `t(locale)` 4언어 lookup으로
+ * 전환 — locale 미지정/비지원 시 ko fallback(`t()`의 `DEFAULT_LOCALE` 처리에 위임).
+ *
+ * arvlCd 기반 매역 fire는 항상 phase='imminent' — `i18n.ts`의 `stationNotifTitle`/`stationNotifBody`도
+ * 그에 맞춰 kind 단일 분기만 제공한다(early phase 없음).
+ *
+ * #2506 — #2448이 도입한 intermediate ENTERING(0) 전용 "곧 진입" 사전 push를 제거했다(사용자
+ * 결정: "도착 1개" — 매역당 push는 도착 시점 1개만). 대신 intermediate ARRIVED(1) copy 자체를
+ * device #2362(`buildStationPassedContent`)와 byte-parity로 맞춰 "OO역 도착" + "{target}까지
+ * N정거장 남음"을 렌더한다. `fireArvlCdStationPush`가 ENTERING을 이 함수 호출 전에 skip하므로
+ * 본 함수는 더 이상 arvlCd를 인자로 받지 않는다.
+ */
+function buildStationNotifContent(
+  trip: Trip,
+  waypoint: Waypoint,
+  locale: SupportedLocale | undefined,
+): { title: string; body: string } {
+  const strings = t(locale);
+  const counts =
+    waypoint.kind === 'intermediate' ? deriveStationNotifCounts(trip, waypoint) : undefined;
+  return {
+    title: strings.stationNotifTitle(waypoint.kind, waypoint.stationName),
+    body: strings.stationNotifBody(waypoint.kind, waypoint.stationName, counts),
+  };
+}
+
+/**
+ * #2510 — 매역 알림(arvlCd 확정)의 sound/interruption-level. intermediate(#2507)는 무음 INFO를
+ * 그대로 유지하고, transfer/destination(=하차/환승 준비 copy)은 도착 진동(ACTION, 전체 트립)으로
+ * 승격한다 — 지금까지 sleep이 아니면 sound:null이라 "도착해도 무음"이던 회귀를 고친다.
+ * `fireArvlCdStationPush`/`fireVanishFallbackStationPush`가 공유한다.
+ */
+function stationNotifSoundFields(
+  kind: Waypoint['kind'],
+): { sound: string | null; interruptionLevel: 'active' | 'time-sensitive' } {
+  if (kind === 'intermediate') {
+    return { sound: null, interruptionLevel: 'active' };
+  }
+  return { sound: 'alarm.wav', interruptionLevel: 'time-sensitive' };
+}
+
+/**
+ * #2066 (Phase 2-backend) — 취침 알람 dedup KV prefix.
+ * 같은 (tripToken, targetStation) 조합은 1시간 TTL 동안 재발사하지 않는다. 매역 알림
+ * (`arvlCdFireKey`)과 분리된 별 namespace — sleep alarm은 target(환승/도착)역 단위 dedup이라
+ * (trainCode, arvlCd) 조합이 필요없다.
+ */
+export const SLEEP_ALARM_FIRE_KEY_PREFIX = 'alarmFireKey:';
+
+export function sleepAlarmFireKey(tripToken: string, targetStation: string): string {
+  return `${SLEEP_ALARM_FIRE_KEY_PREFIX}${tripToken}:${targetStation}`;
+}
+
+/** #2066 — 취침 알람 dedup TTL (1h). */
+export const SLEEP_ALARM_FIRE_DEDUP_TTL_SEC = 60 * 60;
+
+export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding';
+
+/**
+ * #2066 — 취침 알람 발사 조건 평가 (순수 함수, KV/네트워크 접근 없음).
+ *
+ * 발사 조건 (전부 AND):
+ *   1. `trip.sleepModeEnabled === true`
+ *   2. `waypoint`(방금 arvlCd∈{0,1}로 진입/도착 확정된 역)가 `kind: 'intermediate'`
+ *      — transfer/destination 자신은 "직전역"이 될 수 없다(그 경우는 이미 도착한 것).
+ *   3. `nextWaypoint`(waypoint 바로 다음 대상)가 존재하고 `kind`가 'transfer' 또는 'destination'
+ *      — waypoint가 정확히 그 환승/도착역의 "직전역"이어야 한다.
+ *
+ * "1역차 금지"(이슈 #2066 스펙 "그 직전 역 ≠ 해당 구간의 출발역")는 별도 게이트가 필요 없다 —
+ * `trip.waypoints`는 leg의 출발역(방금 탑승/환승한 역) 자체를 포함하지 않으므로, 환승/도착이
+ * 출발역과 직접 인접한 1-hop leg에서는 currently-active waypoint가 이미 transfer/destination
+ * kind라 조건 2에서 자연히 차단된다(별도 leg-relative hop 카운터를 두면 오히려 2-hop 이상의
+ * 정상 leg에서 false-skip을 유발한다 — PR #2085 리뷰에서 제거).
+ */
+export function evaluateSleepAlarmTrigger(
+  trip: Trip,
+  waypoint: Waypoint,
+  nextWaypoint: Waypoint | undefined,
+): { fire: true; target: Waypoint } | { fire: false; reason: SleepAlarmSkipReason } {
+  if (trip.sleepModeEnabled !== true) {
+    return { fire: false, reason: 'not-sleep' };
+  }
+  if (
+    waypoint.kind !== 'intermediate' ||
+    nextWaypoint === undefined ||
+    (nextWaypoint.kind !== 'transfer' && nextWaypoint.kind !== 'destination')
+  ) {
+    return { fire: false, reason: 'not-preceding' };
+  }
+  return { fire: true, target: nextWaypoint };
+}
+
+interface MaybeFireSleepAlarmInputs {
+  trip: Trip;
+  /** 방금 arvlCd∈{0,1}로 진입/도착 확정된 역(= 환승/도착역의 "직전역" 후보). */
+  waypoint: Waypoint;
+  /** waypoint 바로 다음 대상 (shift 전 `trip.waypoints[1]`). */
+  nextWaypoint: Waypoint | undefined;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+
+/**
+ * #2066 (Phase 2-backend) — visible alert push의 `apns-collapse-id` prefix.
+ * PR #2085 리뷰 P2-2 — device token(64 hex)을 통째로 넣으면 APNs `apns-collapse-id` 64B
+ * 한도를 초과할 수 있어(`alarm-<64hex>-<station>` ≈ 77~92B) `slice(0, 16)`로 축약한다.
+ * collapse는 같은 trip·station 내에서 최신으로 교체하는 용도라 16 hex prefix로 유니크성 충분.
+ */
+function sleepAlarmCollapseId(tripToken: string, targetStation: string): string {
+  return `alarm-${tripToken.slice(0, 16)}-${targetStation}`;
+}
+
+/**
+ * #2066 (Phase 2-backend) — 취침 알람 실패 시 retry queue 등록용 payload. `SilentPushPayload`의
+ * 필수 필드만 채운 최소 shape — companion(kind `sleep-alarm-companion`) 자체 필드(originStation
+ * 등)는 retry queue의 `SilentPushPayload` 타입에 없어 보존되지 않지만(Phase 2-device 소비 전이라
+ * 무해), station/tripToken 정보는 보존해 재발사 시 device가 최소한 "이 역 근처" 신호는 받는다.
+ */
+function buildSleepAlarmRetryPayload(
+  pushId: string,
+  target: Waypoint,
+  targetKind: 'transfer' | 'destination',
+  tripToken: string,
+  now: number,
+): SilentPushPayload {
+  return {
+    nextWaypoint: target.stationName,
+    etaSeconds: 0,
+    phase: 'imminent',
+    kind: targetKind,
+    sentAt: now,
+    pushId,
+    tripToken,
+  };
+}
+
+/**
+ * #2066 (Phase 2-backend) — 취침 알람(원격 visible) 평가 + 발사.
+ *
+ * `evaluateSleepAlarmTrigger`로 조건을 평가하고, 통과 시 KV dedup(1h) 체크 후
+ * visible alert push(주 채널, `sound: alarm.wav` + `interruption-level: time-sensitive`) +
+ * companion silent push(kind `sleep-alarm-companion`, device TTS/진동 + OS 예약 cancel용)를
+ * 같은 cron tick에서 동시 발사한다.
+ *
+ * PR #2085 리뷰 P2-1 — dedup은 claim-then-send(발사 전 선점)를 유지하되, 주 채널(visible alert)
+ * 발사가 실패하면 dedup claim을 즉시 rollback(delete)한다 — 그렇지 않으면 전송 실패가 1시간
+ * 동안 알람을 영구 미스시킨다. transient 실패(429/5xx)는 기존 `enqueueRetryIfTransient` 큐에
+ * 등록해 backoff 재발사 안전망을 확보한다(다른 fire path와 동일 패턴 재사용).
+ *
+ * "하지 말 것" 준수 — 매역 알림 경로(`fireArvlCdStationPush`/`fireVanishFallbackStationPush`)는
+ * 건드리지 않는다. 본 함수는 별도 dedup namespace(`alarmFireKey:`)와 별도 push kind를 사용하는
+ * 완전히 독립된 발사 경로다.
+ */
+async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<void> {
+  const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
+  const trigger = evaluateSleepAlarmTrigger(trip, waypoint, nextWaypoint);
+  if (!trigger.fire) {
+    // 'not-sleep' / 'not-preceding' 은 매 intermediate advance마다 정상적으로 대량 발생하는
+    // routine 분기라 로그 노이즈를 만들지 않는다 (매역 알림의 다른 skip 사유들과 동일 정책).
+    return;
+  }
+  const target = trigger.target;
+  const dedupKey = sleepAlarmFireKey(trip.token, target.stationName);
+  const existingDedup = await env.TRIPS.get(dedupKey);
+  if (existingDedup !== null) {
+    stats.sleepAlarmDedupSkipped += 1;
+    log('alarm skip: dedup', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      target: target.stationName,
+    });
+    return;
+  }
+  // claim 먼저 — cron tick 겹침(같은 trip이 동시 두 사이클로 평가되는 race)으로부터 보호.
+  // 실패 시 아래에서 rollback(delete) — 영구 dedup 미스 방지.
+  await env.TRIPS.put(dedupKey, '1', { expirationTtl: SLEEP_ALARM_FIRE_DEDUP_TTL_SEC });
+
+  const content = buildStationNotifContent(trip, target, trip.locale);
+  const collapseId = sleepAlarmCollapseId(trip.token, target.stationName);
+  const targetKind: 'transfer' | 'destination' =
+    target.kind === 'destination' ? 'destination' : 'transfer';
+
+  const alertPushId = generatePushId();
+  const alertHeal = await sendWithEnvHeal(
+    (host) =>
+      sendAlertPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        title: content.title,
+        body: content.body,
+        pushId: alertPushId,
+        tripToken: trip.token,
+        sound: 'alarm.wav',
+        interruptionLevel: 'time-sensitive',
+        collapseId,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  if (alertHeal.correctedEnv) {
+    trip.apnsEnv = alertHeal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+
+  const companionPushId = generatePushId();
+  const companionHeal = await sendWithEnvHeal(
+    (host) =>
+      sendSleepAlarmCompanionPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId: companionPushId,
+        originStation: waypoint.stationName,
+        targetKind,
+        nextLine: target.line,
+        nextStation: target.stationName,
+        tripToken: trip.token,
+        sentAt: now,
+        title: content.title,
+        body: content.body,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  if (companionHeal.correctedEnv) {
+    trip.apnsEnv = companionHeal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+
+  if (alertHeal.result.ok) {
+    stats.sleepAlarmFired += 1;
+    log('alarm fired', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      target: target.stationName,
+      targetKind,
+      companionOk: companionHeal.result.ok,
+    });
+  } else {
+    // P2-1 — 주 채널 실패: dedup rollback(다음 재평가 기회 보존) + transient retry 큐 등록.
+    stats.sleepAlarmRolledBack += 1;
+    await env.TRIPS.delete(dedupKey);
+    log('sleep-alarm: visible push failed (dedup rolled back)', {
+      token: trip.token.slice(0, 8),
+      target: target.stationName,
+      status: alertHeal.result.status,
+      reason: alertHeal.result.reason,
+    });
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId: alertPushId,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
+        payload: buildSleepAlarmRetryPayload(alertPushId, target, targetKind, trip.token, now),
+        apnsEnv: alertHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
+        status: alertHeal.result.status,
+        reason: alertHeal.result.reason,
+        now,
+        envMismatchExhausted: alertHeal.envMismatchExhausted,
+      },
+      deps.archFlag,
+      env.DB,
+    );
+  }
+  if (!companionHeal.result.ok) {
+    log('sleep-alarm: companion push failed', {
+      token: trip.token.slice(0, 8),
+      target: target.stationName,
+      status: companionHeal.result.status,
+      reason: companionHeal.result.reason,
+    });
+    // companion은 보조 채널 — dedup은 (alert 성공 시) 유지하고 transient retry만 시도.
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId: companionPushId,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
+        payload: buildSleepAlarmRetryPayload(companionPushId, target, targetKind, trip.token, now),
+        apnsEnv: companionHeal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
+        status: companionHeal.result.status,
+        reason: companionHeal.result.reason,
+        now,
+        envMismatchExhausted: companionHeal.envMismatchExhausted,
+      },
+      deps.archFlag,
+      env.DB,
+    );
+  }
+}
+
+export type PrepareAlarmSkipReason = 'not-preceding';
+
+/**
+ * #2510 — "1정거장 전" 준비 진동(ACTION) 발사 조건 평가 (순수 함수, KV/네트워크 접근 없음).
+ *
+ * `evaluateSleepAlarmTrigger`와 동일한 intermediate → next(transfer|destination) 형태 매칭이지만
+ * sleepModeEnabled 게이트가 없다 — "알람 진동 = 1정거장 전 + 도착" 아키텍처를 전체(비취침) 트립
+ * 으로 확대하기 위한 병렬 트리거다. sleep 전용 companion push(TTS/OS 예약 cancel)는 이 경로에
+ * 없다 — sleep trip은 `maybeFireSleepAlarm`이 계속 전담하고, `maybeFirePrepareAlarm` 호출자가
+ * sleepModeEnabled===true trip을 스킵해 두 경로가 상호 배타적으로 동작한다(중복 발사 없음).
+ */
+export function evaluatePrepareAlarmTrigger(
+  waypoint: Waypoint,
+  nextWaypoint: Waypoint | undefined,
+): { fire: true; target: Waypoint } | { fire: false; reason: PrepareAlarmSkipReason } {
+  if (
+    waypoint.kind !== 'intermediate' ||
+    nextWaypoint === undefined ||
+    (nextWaypoint.kind !== 'transfer' && nextWaypoint.kind !== 'destination')
+  ) {
+    return { fire: false, reason: 'not-preceding' };
+  }
+  return { fire: true, target: nextWaypoint };
+}
+
+/**
+ * #2510 — 준비 진동 dedup KV prefix. sleep 알람(`alarmFireKey:`)과 완전히 분리된 namespace —
+ * 같은 트립이 취침 토글을 전환해도 두 dedup이 서로 간섭하지 않는다.
+ */
+export const PREPARE_ALARM_FIRE_KEY_PREFIX = 'prepareAlarmFireKey:';
+
+export function prepareAlarmFireKey(tripToken: string, targetStation: string): string {
+  return `${PREPARE_ALARM_FIRE_KEY_PREFIX}${tripToken}:${targetStation}`;
+}
+
+/** #2510 — 준비 진동 dedup TTL (1h, sleep 알람과 동일 정책). */
+export const PREPARE_ALARM_FIRE_DEDUP_TTL_SEC = 60 * 60;
+
+function prepareAlarmCollapseId(tripToken: string, targetStation: string): string {
+  return `prepare-${tripToken.slice(0, 16)}-${targetStation}`;
+}
+
+interface MaybeFirePrepareAlarmInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  nextWaypoint: Waypoint | undefined;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+
+/**
+ * #2510 — "1정거장 전" 준비 진동(ACTION) 평가 + 발사. sleep 알람(`maybeFireSleepAlarm`)의
+ * 비취침 대응판 — 같은 트리거 모양(직전 intermediate → 다음 transfer/destination)을 전체 트립에
+ * 적용한다. companion silent push는 발사하지 않는다(TTS/OS 예약 cancel은 sleep 전용 기능).
+ *
+ * "하지 말 것" 준수 — 매역 알림 경로(`fireArvlCdStationPush`/`fireVanishFallbackStationPush`)의
+ * intermediate 무음 INFO(#2507)는 건드리지 않는다. 같은 (직전역) arvlCd 이벤트에서 두 채널이
+ * 함께 발사될 수 있다 — INFO(무음, "OO역을 지나고 있어요")와 ACTION(진동, "곧 OO에 도착합니다.
+ * 하차 준비하세요!")은 서로 다른 채널의 보완 정보이지 중복이 아니다.
+ */
+async function maybeFirePrepareAlarm(inputs: MaybeFirePrepareAlarmInputs): Promise<void> {
+  const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
+  if (trip.sleepModeEnabled === true) {
+    // sleep trip은 maybeFireSleepAlarm이 동일 형태의 알람을 전담 — 상호 배타.
+    return;
+  }
+  const trigger = evaluatePrepareAlarmTrigger(waypoint, nextWaypoint);
+  if (!trigger.fire) {
+    return;
+  }
+  const target = trigger.target;
+  const dedupKey = prepareAlarmFireKey(trip.token, target.stationName);
+  const existingDedup = await env.TRIPS.get(dedupKey);
+  if (existingDedup !== null) {
+    stats.prepareAlarmDedupSkipped += 1;
+    log('prepare-alarm skip: dedup', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      target: target.stationName,
+    });
+    return;
+  }
+  // claim 먼저 — cron tick 겹침 보호. 실패 시 아래에서 rollback.
+  await env.TRIPS.put(dedupKey, '1', { expirationTtl: PREPARE_ALARM_FIRE_DEDUP_TTL_SEC });
+
+  const content = buildStationNotifContent(trip, target, trip.locale);
+  const collapseId = prepareAlarmCollapseId(trip.token, target.stationName);
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendAlertPush({
+        deviceToken: resolveTripDeviceToken(trip),
+        title: content.title,
+        body: content.body,
+        pushId,
+        tripToken: trip.token,
+        sound: 'alarm.wav',
+        interruptionLevel: 'time-sensitive',
+        collapseId,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+
+  if (heal.result.ok) {
+    stats.prepareAlarmFired += 1;
+    log('prepare-alarm fired', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      target: target.stationName,
+    });
+    return;
+  }
+  stats.prepareAlarmRolledBack += 1;
+  await env.TRIPS.delete(dedupKey);
+  log('prepare-alarm: visible push failed (dedup rolled back)', {
+    token: trip.token.slice(0, 8),
+    target: target.stationName,
+    status: heal.result.status,
+    reason: heal.result.reason,
+  });
+  await enqueueRetryIfTransient(
+    env.PENDING_PUSHES,
+    {
+      pushId,
+      token: resolveTripDeviceToken(trip),
+      tripToken: trip.token,
+      payload: buildSleepAlarmRetryPayload(
+        pushId,
+        target,
+        target.kind === 'destination' ? 'destination' : 'transfer',
+        trip.token,
+        now,
+      ),
+      apnsEnv: heal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
+      status: heal.result.status,
+      reason: heal.result.reason,
+      now,
+      envMismatchExhausted: heal.envMismatchExhausted,
+    },
+    deps.archFlag,
+    env.DB,
+  );
+}
+
+/**
+ * #2343 — `Waypoint.kind`(intermediate/transfer/destination) → fire-attempt 로그 어휘
+ * (station-passed/transfer/destination) 매핑. trip_events.meta에 device/문서 어휘로 남기기 위한
+ * 얇은 변환 — `assertNever`로 신규 kind 추가 시 드리프트를 컴파일 에러로 승격.
+ */
+function fireLogWaypointKind(kind: Waypoint['kind']): 'station-passed' | 'transfer' | 'destination' {
+  switch (kind) {
+    case 'intermediate':
+      return 'station-passed';
+    case 'transfer':
+      return 'transfer';
+    case 'destination':
+      return 'destination';
+    default:
+      return assertNever(kind, 'scheduled.ts fireLogWaypointKind');
+  }
+}
+
+/**
+ * #2343 — cron 자율 fire path(destination/transfer/station-passed) 발사 시도를 D1
+ * `trip_events`(kind='cron-fire-attempt')에 1건만 append한다. 매 tick이 아니라 실제 발사
+ * 시도(성공/실패/trip 삭제 race skip) 시점에만 호출 — Free plan D1 quota 보호(#2073 lesson).
+ * `env.DB` 미바인딩 시 `recordTripEvent`가 graceful no-op.
+ */
+async function recordFireAttempt(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  outcome: 'sent' | 'failed' | 'skipped-reason',
+  now: number,
+  reason?: string,
+): Promise<void> {
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'cron-fire-attempt',
+      station: waypoint.stationName,
+      meta: { waypointKind: fireLogWaypointKind(waypoint.kind), phase: 'imminent', outcome, reason },
+    },
+    now,
+  );
+}
+
+// #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
+// boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
+// path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
+export async function fireArvlCdStationPush(
+  inputs: FireArvlCdStationPushInputs,
+): Promise<{ dirty: boolean }> {
+  const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
+  if (trip.sleepModeEnabled === true) {
+    log('station-notif skip: sleep', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    return { dirty: false };
+  }
+  // #2506 — 사용자 결정 "도착 1개": intermediate 매역은 도착(ARRIVED) 신호 1개로만 push를
+  // 발사한다. #2448이 도입한 ENTERING(0) 전용 "곧 진입" 사전 push를 제거 — fire-once bucket/
+  // dedup KV 로직에 진입하기 전 조기 skip해 해당 상태를 전혀 건드리지 않는다(뒤이은 ARRIVED
+  // 신호가 정상적으로 fire-once/dedup 게이트를 거쳐 진행한다).
+  if (waypoint.kind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    log('station-notif skip: intermediate-entering-suppressed', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    return { dirty: false };
+  }
+  // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
+  // transferDestinationGate (60s) 보다 보수적이지만 intermediate 까지 보호. lazy-seed (==0) 통과.
+  // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
+  //
+  // #2321 (O1-B) — device sync stale일 때는 본 가드도 dormant 전환. 정상 흐름에서는 본 함수
+  // 호출 직전 advanceTripPosition이 이미 lastAdvanceAt을 방금 갱신해 staleMs≈0이 되므로
+  // 무영향이지만, defense-in-depth로 게이트 #1~#3과 동일 staleness 정책을 명시적으로 정합시킨다.
+  const ssotForStale = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  if (
+    ssotForStale !== null &&
+    !isDeviceSyncStale(ssotForStale, now) &&
+    ssotForStale.lastAdvanceAt > 0 &&
+    now - ssotForStale.lastAdvanceAt > STALE_LOCK_FIRE_THRESHOLD_MS
+  ) {
+    stats.staleLockFireSkipped += 1;
+    log('arvlcd-fire: stale SSoT skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      lastAdvanceAt: ssotForStale.lastAdvanceAt,
+      staleMs: now - ssotForStale.lastAdvanceAt,
+    });
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: 'stale-lock-fire',
+      hopIndex: waypoint.hopIndex,
+      staleMs: now - ssotForStale.lastAdvanceAt,
+    });
+    return { dirty: false };
+  }
+  // ADR-022 Phase 1-1 (#1985) → #2448 확장 — arvlCd fire-once TTL 게이트.
+  // flag=ON 시 같은 (tripToken, stationName, arvlCd bucket) 조합에서 5분 이내 이미 fire 된 경우
+  // skip. #2448 이전에는 cycle 전체(0→1→2→5)를 단일 bucket 으로 묶어 어린이대공원 반복 4회
+  // fire(#1980) 회귀를 차단했다 — 이제는 ENTERING(0)과 그 외(주로 ARRIVED=1)를 별 bucket 으로
+  // 나눠 "곧 진입" + "역 통과" 둘 다 1회씩 발사되도록 하되, 같은 bucket 재관측은 여전히 storm
+  // 방지 정책대로 skip 한다(무제한 재발사는 여전히 불가능).
+  // flag=OFF (default, Phase 0 #1982 미머지 상태) 에서는 조기 return 으로 무영향.
+  const fireOnceCycle = arvlCdFireOnceBucket(waypoint.kind, arvlCd);
+  if (await isSimpleArchEnabled(env)) {
+    const alreadyFired = await checkArvlCdFireOnce(
+      env.TRIPS,
+      trip.token,
+      waypoint.stationName,
+      fireOnceCycle,
+    );
+    if (alreadyFired) {
+      stats.arvlCdFireOnceSkipped += 1;
+      log('arvlcd-fire: fire-once cycle already', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        arvlCd,
+        cycle: fireOnceCycle,
+      });
+      writeMetric(env, {
+        eventType: 'suppress',
+        tripToken: trip.token,
+        stationId: waypoint.stationName,
+        reason: 'fire-once-cycle-already',
+        hopIndex: waypoint.hopIndex,
+      });
+      return { dirty: false };
+    }
+  }
+  const key = arvlCdFireKey(trip.token, lock.trainCode, waypoint.stationName, arvlCd);
+  const existing = await env.TRIPS.get(key);
+  if (existing !== null) {
+    stats.arvlCdFireDedup += 1;
+    log('arvlcd-fire: dedup skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      arvlCd,
+    });
+    // P0-1 (#1577) — Site 2 of 6: cross-category station dedup suppress.
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: 'arvlcd-dedup',
+      hopIndex: waypoint.hopIndex,
+    });
+    return { dirty: false };
+  }
+
+  // #1367 — cross-station 동시 fire 차단. 같은 trip에서 이전 station-passed push로부터
+  // SAME_PHASE_STATION_DEDUP_WINDOW_MS 이내에 *다른* station 발사는 보류 (client 채널 2 banner 회귀 차단).
+  // 같은 station 재발사는 위 per-(token,trainCode,station,arvlCd) 게이트가 처리하므로 여기선 다른 station만 본다.
+  const lastFired = trip.lastFiredStation;
+  if (
+    lastFired !== undefined &&
+    lastFired.stationName !== waypoint.stationName &&
+    now - lastFired.epochMs < SAME_PHASE_STATION_DEDUP_WINDOW_MS
+  ) {
+    stats.arvlCdFireDedup += 1;
+    log('arvlcd-fire: cross-station dedup skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      previousStation: lastFired.stationName,
+      sinceMs: now - lastFired.epochMs,
+      arvlCd,
+    });
+    // P0-1 (#1577) — Site 2 of 6: cross-station dedup suppress.
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: 'cross-station-dedup',
+      hopIndex: waypoint.hopIndex,
+    });
+    return { dirty: false };
+  }
+  const pushId = generatePushId();
+  log('arvlcd-fire: station-passed push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    arvlCd,
+    kind: waypoint.kind,
+    // #2032 (Issue D) — monitoring dimension. backend fire 시 device sleep 상태 기록.
+    // ADR-023: backend는 sleep 무관 발사 (arvlCd 신호 기반). device의 shouldSuppressBySleepRule이 UI suppress 판정.
+    // fire log ↔ device suppress log를 sleepMode dimension으로 대조해 skip 원인 자동 분류.
+    sleepMode: trip.sleepModeEnabled,
+  });
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward.
+  // #1614 Phase C — stale guard 단계에서 이미 read한 ssotForStale 재사용 (KV read 1회 절약).
+  // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+  const arvlcdPayload = buildStationPassedImminentPayload({
+    trip,
+    waypoint,
+    lock,
+    pushId,
+    now,
+    origin: 'arvlcd',
+    ssot: ssotForStale,
+    // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
+    archFlag: deps.archFlag,
+  });
+  // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사. device silentPushTask 미기동
+  // (앱 kill/throttle) 상태에서도 OS가 직접 배너를 렌더한다. 무소리 + interruption-level=active +
+  // apns-collapse-id로 같은 trip의 매역 알림을 알림센터에서 최신으로 교체(스택 방지) + apns-expiration
+  // 90s로 지하 데이터 순단 후 stale 알림 늦은 표시를 방지한다. data는 기존 silent payload를 그대로
+  // forward해 device SSoT/게이트 소비 코드(cascade picker 등)가 영향받지 않게 한다.
+  // #2092 — contentAvailable:true를 병기해 alert와 동시에 device background task
+  // (handleSilentPush)를 깨운다. station kind는 배너 no-op(#2088)이라 이중 배너 없이 SSoT
+  // mirror(persistBackendSsotMirror)·BG 위젯 갱신(updateWidgetFromSilentPush)만 수행한다.
+  const stationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
+  // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
+  const stationNotifSound = stationNotifSoundFields(waypoint.kind);
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendAlertPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        title: stationNotifContent.title,
+        body: stationNotifContent.body,
+        pushId,
+        tripToken: trip.token,
+        sound: stationNotifSound.sound,
+        interruptionLevel: stationNotifSound.interruptionLevel,
+        collapseId: stationNotifCollapseId(trip.token),
+        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+        data: buildSilentPushData(arvlcdPayload),
+        contentAvailable: true,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+    // #1633 — corrected env 즉시 KV persist. 후속 caller putTrip이 early-return / race /
+    // exception으로 누락되거나 KV eventual consistency로 다음 cron이 stale read해도, 본
+    // 즉시 write가 origin 갱신을 보장해 같은 trip의 후속 push가 mismatch retry로 1초 지연
+    // → device gate-station-already-passed로 drop되는 회귀(2026-06-22 evidence)를 차단.
+    // putTrip은 idempotent하며 caller의 후속 putTrip은 자연 dedup(같은 in-memory snapshot).
+    await putTrip(env.TRIPS, trip);
+  }
+  if (!heal.result.ok) {
+    stats.errors += 1;
+    log('arvlcd-fire: push failed', {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. envHeal 양 env 모두 실패해도 영구 lost
+    // 차단. 410/400 BadDeviceToken 같은 unrecoverable 은 enqueueRetryIfTransient 가 자연 skip
+    // (caller 가 이미 dedup/cleanup 책임).
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry queue 적재.
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
+        payload: arvlcdPayload,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+        status: heal.result.status,
+        reason: heal.result.reason,
+        now,
+        envMismatchExhausted: heal.envMismatchExhausted,
+      },
+      deps.archFlag,
+      env.DB,
+    );
+    // #2343 — fire-attempt(실패) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
+    // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
+    return { dirty };
+  }
+  stats.arvlCdFireSuccess += 1;
+  stats.pushed += 1;
+  // #1683 — kind별 발사 카운터. 'intermediate'는 station-passed 경로, 그 외 그대로.
+  // #2235 (ADR-029 Phase 0) — exhaustive switch + assertNever: StationWaypointKind에 새 값이
+  // 추가되면 이 switch가 default 분기로 떨어져 컴파일 에러가 난다(드리프트 = 빌드 실패).
+  switch (waypoint.kind) {
+    case 'intermediate':
+      stats.silentPushFiredByKind.intermediate += 1;
+      break;
+    case 'transfer':
+      stats.silentPushFiredByKind.transfer += 1;
+      break;
+    case 'destination':
+      stats.silentPushFiredByKind.destination += 1;
+      break;
+    default:
+      assertNever(waypoint.kind, 'scheduled.ts arvlCd silentPushFiredByKind');
+  }
+  // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
+  // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
+  // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
+  // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
+  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
+  // 해 다음 cycle 이내 arvlCd 재노출을 통합 차단. flag=OFF 시 이 write 는 실행되지 않아
+  // production 무영향.
+  if (await isSimpleArchEnabled(env)) {
+    await stampArvlCdFireOnce(env.TRIPS, trip.token, waypoint.stationName, fireOnceCycle, now);
+  }
+  // #1367 — cross-station dedup용 마지막 fire 마커. 성공 시에만 stamp(실패는 다음 cycle 재시도 허용).
+  trip.lastFiredStation = { stationName: waypoint.stationName, epochMs: now };
+  dirty = true;
+  // P0-1 (#1577) — Site 3 of 6: arvlcd fire 적재 (X3 stale fire 검증).
+  writeMetric(env, {
+    eventType: 'fire',
+    tripToken: trip.token,
+    stationId: waypoint.stationName,
+    reason: `arvlcd:${waypoint.kind}`,
+    hopIndex: waypoint.hopIndex,
+    staleMs: ssotForStale?.lastAdvanceAt ? now - ssotForStale.lastAdvanceAt : undefined,
+  });
+  // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
+  await recordFireAttempt(env, trip, waypoint, 'sent', now);
+  return { dirty };
+}
+
+/**
+ * ADR-017 T4 (#1557) — `advanceTripPosition` SSoT 게이트를 통과한 경우에만 매역 arvlCd push를
+ * 발사하는 thin wrapper.
+ *
+ * 호출 흐름:
+ *   1. SSoT 부재 시 lazy-seed (currentStationId = waypoint.stationName). T1/T2 마이그레이션
+ *      이전 trip 호환. seed 직후 candidate=current이지만 `appendUnique`가 noop 처리.
+ *   2. `advanceTripPosition` 6단 게이트 호출.
+ *   3. `blocked` → push 발사 X. `arvlCdFireBlocked` 카운트 + reason log. Trip mutation 없음.
+ *   4. `advanced` → `arvlCdFireFired` 카운트 후 기존 `fireArvlCdStationPush` 위임 (cross-station
+ *      dedup + APNs send + envHeal + pending fallback 안전망 등 기존 wiring 재사용).
+ *
+ * Trip mutation은 fire 성공 시 `fireArvlCdStationPush`의 dirty 결과를 그대로 forward — 호출자
+ * (`handleBoardingLockTracking`)가 putTrip을 결정한다.
+ *
+ * @returns dirty=true는 trip 객체가 in-place mutate되어 caller가 putTrip 필요.
+ */
+async function tryAdvanceAndFireArvlcd(inputs: {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  arvlCd: number;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}): Promise<{ dirty: boolean }> {
+  const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
+  let ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  if (ssot === null) {
+    // Lazy-seed for legacy trips (T1 미마이그레이션). motionState='unknown'로 시작 — T3가
+    // device upload로 motion 갱신을 시작하면 게이트 #2가 자동 활성화.
+    ssot = await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
+      expiresAt: trip.expiresAt,
+    });
+    log('arvlcd-fire: lazy-seed ssot', {
+      token: trip.token.slice(0, 8),
+      currentStationId: waypoint.stationName,
+    });
+  }
+  // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 추가 SSoT 일관성 검증.
+  // pre-advance SSoT 스냅샷으로 (1) currentStationId가 transfer/destination waypoint 또는
+  // 직전 1 hop 인지 (2) 마지막 advance 가 60s 이내 신선한지 확인. intermediate kind는 본 게이트
+  // 우회 — T4/T5 6단 게이트만으로 충분. 정지 trip "환승임박 건대입구" false fire(N9) 차단.
+  if (isTransferOrDestination(waypoint)) {
+    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
+      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
+      deviceSyncStale: isDeviceSyncStale(ssot, now),
+    });
+    if (!transferGate.pass) {
+      stats.arvlCdFireBlocked += 1;
+      stats.transferDestinationGateBlocked += 1;
+      log('arvlcd-fire: transfer/destination gate blocked', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
+        ssotCurrent: ssot.currentStationId,
+        ssotLastAdvanceAt: ssot.lastAdvanceAt,
+      });
+      return { dirty: false };
+    }
+  }
+  // #2023 — device `mapMatchedArcM` 시간 적분 폭주 감지. archFlag='on' 시 게이트 #8이 hop pause.
+  // series read + 감지 결과를 evidence에 stamp. archFlag='off' 시 dormant (기존 동작 유지).
+  const arcOvershootSeries = await readSeries(env.TRIPS, trip.token);
+  const arcOvershootDetected = detectArcOvershoot(arcOvershootSeries);
+  const outcome = await advanceTripPosition(
+    env.TRIPS,
+    trip.token,
+    waypoint.stationName,
+    {
+      type: 'arvlcd-confirmed-train',
+      stationId: waypoint.stationName,
+      ts: now,
+      environment: deriveEvidenceEnvironment(trip),
+      arvlcdTrainCode: lock.trainCode,
+      arvlCd,
+      arcOvershootDetected,
+    },
+    {
+      // lock 활성 = base 합의 surrogate. consensusGate가 surface는 base만으로, underground는
+      // arrival + lockAttachable 2-of-2로, mixed/unknown은 base + arrival + lockAttachable 모두로
+      // 검증. lock 활성 trip에서 lockAttachable 단일 trainCode 수렴은 lock 부착 자체가 증거.
+      gatePassed: true,
+      lockAttachable: true,
+      // #2023 (ADR-022) — archFlag='on' 시 arc 게이트 활성. 미wire caller는 dormant.
+      archFlag: deps.archFlag,
+    },
+  );
+  if (outcome.result !== 'advanced') {
+    stats.arvlCdFireBlocked += 1;
+    log('arvlcd-fire: blocked', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      reason: outcome.blockReason satisfies AdvanceBlockReason | undefined,
+    });
+    // P0-1 (#1577) — Site 1 of 6: advance suppress 적재 (V/X X3/X8 검증).
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: outcome.blockReason ?? 'advance-blocked',
+      environment: deriveEvidenceEnvironment(trip),
+      hopIndex: waypoint.hopIndex,
+    });
+    // #2343 — trip 삭제 race(advanceTripPosition 게이트 #5 `no-trip`)만 fire-attempt D1 관측
+    // 대상. 다른 blockReason(모션 정지/env 불일치 등)은 정상 게이트 동작이라 발사 시도 자체가
+    // 아니므로 quota 절약을 위해 로깅하지 않는다.
+    if (outcome.blockReason === 'no-trip') {
+      await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, 'no-trip');
+    }
+    return { dirty: false };
+  }
+  stats.arvlCdFireFired += 1;
+  // P0-1 (#1577) — Site 1 of 6: advance 적재 (V8 적재 카운터).
+  writeMetric(env, {
+    eventType: 'advance',
+    tripToken: trip.token,
+    stationId: waypoint.stationName,
+    reason: 'arvlcd-confirmed-train',
+    environment: deriveEvidenceEnvironment(trip),
+    hopIndex: waypoint.hopIndex,
+  });
+  // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
+  return fireArvlCdStationPush({
+    trip,
+    waypoint,
+    lock,
+    arvlCd,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+}
+
+/**
+ * Trip.subsurface → EvidenceEnvironment 매핑. `consensusGate.StationEnvironment` 어휘로 변환은
+ * `mapEvidenceEnvironment`가 담당하므로 본 함수는 device upload 어휘만 산출한다.
+ */
+function deriveEvidenceEnvironment(trip: Trip): EvidenceEnvironment {
+  if (trip.subsurface === true) return 'underground';
+  if (trip.subsurface === false) return 'surface';
+  return 'unknown';
+}
+
+/**
+ * #1536 (S3) — Trip.subsurface → consensusGate.StationEnvironment 매핑.
+ *
+ * `deriveEvidenceEnvironment` (EvidenceEnvironment 어휘) 결과를 `mapEvidenceEnvironment`
+ * 로 한 단계 변환해 single source 유지 (S4144 회피). trip 데이터 자체가 device 어휘인
+ * `subsurface` boolean 만 갖고 'mixed' 표현이 없으므로 mapping 결과는 underground / surface
+ * / unknown 셋 중 하나(추후 trip.environment 필드 도입 시 'mixed' 분기 자연 확장).
+ */
+function deriveTripEnvironment(trip: Trip): StationEnvironment {
+  return mapEvidenceEnvironment(deriveEvidenceEnvironment(trip));
+}
+
+/**
+ * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 발사하는 station-passed silent push.
+ *
+ * arvlCd fire 경로와 모양은 같지만 SSOT가 다르다 — arvlCd∈{0,1}이 아니라 "trainCode 사라짐 + hop 시간
+ * 경과 = optimistic 통과"를 신호로 채택. 디바이스 payload는 `arvlCd=null` (vanish-fallback 표식)으로
+ * 보내되 phase/kind는 imminent + 원본 waypoint.kind. dedup key는 arvlCd path와 분리 namespace
+ * (`vanish:`)을 사용해 cross-pollute 차단.
+ *
+ * 실패 분기 정책: arvlCd path와 동일 — push 실패는 stats.errors++만 누적, trip 자체는 호출자
+ * (`advanceBoardingLockWaypoint`)가 계속 진행한다. 추가 cleanup 분기 없음.
+ */
+interface FireVanishFallbackStationPushInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+  /**
+   * #1402 — 발사 경로 식별자. 기존 hop-elapsed advance 직전 fire는 `'vanish-fallback'`,
+   * 신규 hop-not-elapsed lock release 직전 floor fire는 `'vanish-release'`. dedup key는
+   * origin별로 격리해 두 경로가 같은 station에서 둘 다 한 번씩 발사될 수 있게 한다 — release
+   * 후 lock 재부착(swap 성공)으로 같은 station에서 advance 경로가 추가 발사되는 시나리오를
+   * 차단하지 않기 위함.
+   */
+  origin: 'vanish-fallback' | 'vanish-release';
+}
+
+export const VANISH_FALLBACK_FIRE_KEY_PREFIX = 'vanish-fallback-fire:';
+export const VANISH_RELEASE_FIRE_KEY_PREFIX = 'vanish-release-fire:';
+
+export function vanishFallbackFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+): string {
+  return `${VANISH_FALLBACK_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
+export function vanishReleaseFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+): string {
+  return `${VANISH_RELEASE_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
+// #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. fireArvlCdStationPush와
+// 동일 분기 — sleep-transfer(B4)·boarding-prompt(B7/B8) 게이트와는 완전히 별개.
+export async function fireVanishFallbackStationPush(
+  inputs: FireVanishFallbackStationPushInputs,
+): Promise<void> {
+  const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId, origin } = inputs;
+  if (trip.sleepModeEnabled === true) {
+    log('station-notif skip: sleep', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      origin,
+    });
+    return;
+  }
+  const key =
+    origin === 'vanish-release'
+      ? vanishReleaseFireKey(trip.token, lock.trainCode, waypoint.stationName)
+      : vanishFallbackFireKey(trip.token, lock.trainCode, waypoint.stationName);
+  const logPrefix = origin === 'vanish-release' ? 'vanish-release-fire' : 'vanish-fallback-fire';
+  const existing = await env.TRIPS.get(key);
+  if (existing !== null) {
+    log(`${logPrefix}: dedup skip`, {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+    });
+    // P0-1 (#1577) — Site 4 of 6: vanish-fallback dedup suppress.
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: `${origin}-dedup`,
+      hopIndex: waypoint.hopIndex,
+    });
+    return;
+  }
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 일관성 검증.
+  // SSoT 부재 trip(legacy)은 본 게이트 통과시켜 기존 vanish-fallback 흐름 유지 — graceful.
+  if (ssot !== null && isTransferOrDestination(waypoint)) {
+    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
+      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
+      deviceSyncStale: isDeviceSyncStale(ssot, now),
+    });
+    if (!transferGate.pass) {
+      stats.transferDestinationGateBlocked += 1;
+      log(`${logPrefix}: transfer/destination gate blocked`, {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        origin,
+        reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
+        ssotCurrent: ssot.currentStationId,
+        ssotLastAdvanceAt: ssot.lastAdvanceAt,
+      });
+      return;
+    }
+  }
+  const pushId = generatePushId();
+  log(`${logPrefix}: station-passed push`, {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    kind: waypoint.kind,
+    origin,
+  });
+  // #1438 (E5) — vanish-release origin은 직후 caller가 `trip.boardingLock = undefined`로 lock을
+  // release하므로 device에 `lockReleasedReason='vanish'`를 forward해 store sync. vanish-fallback은
+  // 직후 `advanceBoardingLockWaypoint`로 흘러가 그 함수가 transfer 시 별도로 release를 통지한다.
+  const lockReleasedReason: 'vanish' | undefined = origin === 'vanish-release' ? 'vanish' : undefined;
+  // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+  const vanishPayload = buildStationPassedImminentPayload({
+    trip,
+    waypoint,
+    lock,
+    pushId,
+    now,
+    origin,
+    lockReleasedReason,
+    ssot,
+    // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
+    archFlag: deps.archFlag,
+  });
+  // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사 (fireArvlCdStationPush와 동일 정책).
+  // #2092 — contentAvailable:true 병기로 device background task(handleSilentPush)를 깨워
+  // SSoT mirror·BG 위젯 갱신을 fireArvlCdStationPush와 동일하게 유지한다.
+  const vanishStationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
+  // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
+  const vanishStationNotifSound = stationNotifSoundFields(waypoint.kind);
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendAlertPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        title: vanishStationNotifContent.title,
+        body: vanishStationNotifContent.body,
+        pushId,
+        tripToken: trip.token,
+        sound: vanishStationNotifSound.sound,
+        interruptionLevel: vanishStationNotifSound.interruptionLevel,
+        collapseId: stationNotifCollapseId(trip.token),
+        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+        data: buildSilentPushData(vanishPayload),
+        contentAvailable: true,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+    // #1633 — corrected env 즉시 KV persist. vanish-fallback / vanish-release 경로는 본 함수가
+    // void 반환이라 호출자가 dirty 신호 없이 putTrip 결정. 후속 putTrip은 advanceBoardingLockWaypoint
+    // 또는 명시 putTrip이 있지만 race/early-return 시 누락 가능 — 본 즉시 write로 영구 보존.
+    await putTrip(env.TRIPS, trip);
+  }
+  if (!heal.result.ok) {
+    stats.errors += 1;
+    log(`${logPrefix}: push failed`, {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    // #1721 — vanish 경로는 silent push 가 가장 잘 누락되는 경로라 retry queue 적재 우선순위 1순위.
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry queue 적재.
+    await enqueueRetryIfTransient(
+      env.PENDING_PUSHES,
+      {
+        pushId,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
+        // #2185 — trip_token_hash용 신원 토큰.
+        tripToken: trip.token,
+        payload: vanishPayload,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+        status: heal.result.status,
+        reason: heal.result.reason,
+        now,
+        envMismatchExhausted: heal.envMismatchExhausted,
+      },
+      deps.archFlag,
+      env.DB,
+    );
+    // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
+    return;
+  }
+  stats.pushed += 1;
+  if (origin === 'vanish-release') {
+    stats.vanishReleaseFired += 1;
+  } else {
+    stats.vanishFallbackFired += 1;
+  }
+  // #1683 — kind별 발사 카운터. vanish 경로는 waypoint.kind로 분류.
+  // #2235 (ADR-029 Phase 0) — exhaustive switch + assertNever(위 arvlCd 발사기와 동일 근거).
+  switch (waypoint.kind) {
+    case 'intermediate':
+      stats.silentPushFiredByKind.intermediate += 1;
+      break;
+    case 'transfer':
+      stats.silentPushFiredByKind.transfer += 1;
+      break;
+    case 'destination':
+      stats.silentPushFiredByKind.destination += 1;
+      break;
+    default:
+      assertNever(waypoint.kind, 'scheduled.ts vanish silentPushFiredByKind');
+  }
+  // P0-1 (#1577) — Site 4 of 6: vanish fire 적재 (transfer/destination imminent 포함).
+  writeMetric(env, {
+    eventType: 'fire',
+    tripToken: trip.token,
+    stationId: waypoint.stationName,
+    reason: `${origin}:${waypoint.kind}`,
+    hopIndex: waypoint.hopIndex,
+    staleMs: ssot?.lastAdvanceAt ? now - ssot.lastAdvanceAt : undefined,
+  });
+  // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
+  // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
+  // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
+  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+}
+
+/**
+ * #902 Seam F — trainCode 사라짐 후 swap. previous+이번 미스 = VANISH_RE_ATTACH_THRESHOLD 도달 시 시도.
+ * 같은 station에 같은 line 신규 trainCode가 보이면 activeLock 교체. 호출자는 swap 결과를 사용해 재estimate.
+ * `runTrainCodeTracking`의 cognitive complexity 분담용 추출 (Sonar S3776).
+ */
+async function attemptVanishSwap(
+  trip: Trip,
+  waypoint: Waypoint,
+  activeLock: BoardingLockMeta,
+  env: Env,
+  deps: ScheduledDeps,
+  now: number,
+  log: Logger,
+): Promise<BoardingLockMeta | null> {
+  const previousMissCount = trip.consecutiveEtaMissing ?? 0;
+  if (previousMissCount + 1 < VANISH_RE_ATTACH_THRESHOLD) return null;
+  // #1702 (B2-A) — Seoul 단방향/0건 arrivals fallback. attachTrainCodeForLeg 가 candidate 를
+  // 찾지 못하면 line 의 realtimePosition snapshot 에서 segmentStations 기반 합성을 시도.
+  // #2079 (P2) — staleness 게이트 적용 reader. 90s TTL 안쪽이어도 fetchedAt이 60s 초과면
+  // stale로 간주(vanish-reattach 오lock 방지).
+  const selfPollPositions = await readFreshSelfPollPosition(env.TRIPS, waypoint.line, now);
+  const swapped = await attachTrainCodeForLeg({
+    trip,
+    targetWaypoint: waypoint,
+    seoul: deps.seoul,
+    now,
+    // #1439 (E6, ADR-015 §9) — vanish-swap이 trip route 외 line으로 잘못 매핑되지 않도록.
+    allowedLines: computeAllowedLines(trip.route, trip.waypoints),
+    selfPollPositions: selfPollPositions?.positions,
+  });
+  if (!swapped || swapped.trainCode === activeLock.trainCode) return null;
+  log('boarding-lock: trainCode vanished, swapped', {
+    token: trip.token.slice(0, 8),
+    previousTrainCode: activeLock.trainCode,
+    newTrainCode: swapped.trainCode,
+    station: waypoint.stationName,
+    consecutiveEtaMissing: previousMissCount + 1,
+  });
+  // segmentStations는 기존 lock 것을 유지 (이미 진행 중인 leg) — 새 trainCode/expiresAt만 채택.
+  const newLock: BoardingLockMeta = {
+    ...activeLock,
+    trainCode: swapped.trainCode,
+    expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
+  };
+  trip.boardingLock = newLock;
+  trip.consecutiveEtaMissing = 0;
+  return newLock;
+}
+
+/**
+ * #2157 (2026-08-05 결정 A, PR #2162 리뷰 P1) — eta-missing 재확인 alert push의 KV dedup 키.
+ * `(tripToken, demotedAt)` 단위 — `demotedAt`은 이 demotion event가 발생한 시점
+ * (`trip.etaMissingDemotedAt`, 호출 직전에 `now`로 stamp됨)이지 `trip.createdAt`이 아니다.
+ * trip-ended alert dedup(`tripEndedAlertDedupKey`)과 겉모양은 같지만 전제가 다르다 — trip-ended는
+ * 발사 직후 trip이 삭제되는 반면 본 강등은 trip이 **생존**하고 재등록해도 `createdAt`이 보존된다
+ * (`isSameSession`). `createdAt` 기준으로 잡으면 같은 trip의 두 번째 demotion이 첫 demotion의
+ * dedup stamp에 막혀 조용히 미발사된다 — event 단위 키로 "같은 demotion 중복 tick 차단 +
+ * 새 demotion 재발사 허용"을 동시에 만족한다. TTL은 trip이 살아있는 채로 반복 cron cycle을 도는
+ * 경로라 trip 최대 수명(9h+) 이상으로 넉넉히 잡는다.
+ */
+const TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX = 'trainReconfirmAlert:';
+const TRAIN_RECONFIRM_ALERT_DEDUP_TTL_SEC = 12 * 60 * 60;
+
+function trainReconfirmAlertDedupKey(tripToken: string, demotedAt: number): string {
+  return `${TRAIN_RECONFIRM_ALERT_DEDUP_KEY_PREFIX}${tripToken}:${demotedAt}`;
+}
+
+/**
+ * #2157 — eta-missing 임계 도달로 lock을 해제할 때 "탑승 열차를 찾을 수 없어요 — 다시
+ * 확인해주세요" alert push를 1 demotion event당 1회만 발사한다. KV set-if-absent 게이트로 cron
+ * race에 의한 중복 발사를 차단(`fireTripEndedAlertPush`와 동일 패턴). 실패는 graceful — dedup
+ * stamp를 남기지 않아 다음 cycle에서 재시도 허용.
+ *
+ * 호출자(threshold 분기)가 `trip.etaMissingDemotedAt = now`를 이미 stamp한 뒤 호출한다 —
+ * 이 함수는 그 값을 그대로 dedup 키에 사용한다(직접 `now` 파라미터를 쓰지 않는 이유: 값의
+ * SSoT가 trip 객체여야 재진입/재시도 시에도 같은 demotion을 가리키는 키가 보장된다).
+ */
+async function fireTrainReconfirmPush(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const dedupKey = trainReconfirmAlertDedupKey(trip.token, trip.etaMissingDemotedAt ?? trip.createdAt);
+  const existing = await env.TRIPS.get(dedupKey);
+  if (existing !== null) {
+    log('train-reconfirm: dedup skip', { token: trip.token.slice(0, 8) });
+    return;
+  }
+  const pushId = generatePushId();
+  const strings = t(trip.locale);
+  const payload: TrainReconfirmAlertPushPayload = {
+    pushId,
+    kind: 'train-reconfirm',
+    tripToken: trip.token,
+    sentAt: now,
+  };
+  // sendAlertPush의 `data`는 Record<string, unknown> — payload를 spread해 index signature를 만족.
+  const data: Record<string, unknown> = { ...payload };
+  try {
+    const heal = await sendWithEnvHeal(
+      (host) =>
+        sendAlertPush({
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
+          title: strings.trainReconfirmTitle,
+          body: strings.trainReconfirmBody,
+          pushId,
+          tripToken: trip.token,
+          data,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+    );
+    if (!heal.result.ok) {
+      log('train-reconfirm push failed', {
+        token: trip.token.slice(0, 8),
+        status: heal.result.status,
+        pushReason: heal.result.reason,
+      });
+      // #2177 — retry queue를 타지 않는 fire-and-forget 경로(다음 cycle 자연 재시도) — 직접 기록.
+      await logPushFailure(env.DB, {
+        // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+        // 별도로 trip_token_hash에 남긴다.
+        token: resolveTripDeviceToken(trip),
+        tripToken: trip.token,
+        pushKind: payload.kind,
+        apnsStatus: heal.result.status,
+        apnsReason: heal.result.reason,
+        apnsEnv: trip.apnsEnv,
+        envMismatchExhausted: heal.envMismatchExhausted,
+      });
+      return;
+    }
+  } catch (e) {
+    log('train-reconfirm push threw', { token: trip.token.slice(0, 8), error: String(e) });
+    return;
+  }
+  stats.trainReconfirmFired += 1;
+  await env.TRIPS.put(dedupKey, '1', { expirationTtl: TRAIN_RECONFIRM_ALERT_DEDUP_TTL_SEC });
+}
+
+/**
+ * estimate가 null로 끝난 cycle 처리 — etaMissing 카운터 누적 + 임계 초과 시 trip 자동 종료.
+ * runTrainCodeTracking의 cognitive complexity 분담용 추출 (Sonar S3776).
+ *
+ * #1277 — vanish-swap 후보 없음(지하 dead zone)으로 freeze 방지:
+ *   VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES miss 도달 시
+ *   lastTrackedArrivalEpoch 기준 hop 시간 경과를 확인해 waypoint optimistic advance를 시도.
+ *   경과 미달이면 lock release해 lockless/boardingPrompt가 인계받게 함.
+ */
+interface HandleEtaMissingInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  activeLock: BoardingLockMeta;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
+  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId } = inputs;
+  stats.etaMissing += 1;
+  const previousMissCount = trip.consecutiveEtaMissing ?? 0;
+  const nextMissCount = previousMissCount + 1;
+  log('boarding-lock: trainCode not found in arrivals or positions', {
+    token: trip.token.slice(0, 8),
+    trainCode: activeLock.trainCode,
+    station: waypoint.stationName,
+    consecutiveEtaMissing: nextMissCount,
+  });
+
+  // #1277 — vanish-swap(VANISH_RE_ATTACH_THRESHOLD 도달 시 한 번 시도)이 실패한 후
+  // FALLBACK_ADVANCE_GRACE_CYCLES grace를 더 기다린 시점에서 시간 기반 fallback.
+  // lastTrackedArrivalEpoch가 있을 때만 활성화 — 한 번도 추적된 적 없는 trip(새벽 무운행 등)은
+  // 기존 auto-end 임계 경로로 처리한다.
+  // 이 분기는 auto-end 임계(threshold) 전에 평가되어 무한 동결을 막는다.
+  const fallbackTrigger = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
+  const lastEpoch = trip.lastTrackedArrivalEpoch;
+  if (nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
+    const hopElapsed = now >= lastEpoch + FALLBACK_HOP_SEC * 1000;
+    if (hopElapsed) {
+      // #1386 — hop 시간이 경과했더라도 device motion이 명확히 stationary면 advance 보류.
+      // 2026-06-16 용마산 정지 trip 회귀: 사용자가 정지 중인데 backend가 hop 시간만 보고 false
+      // station-passed를 발사. lockless 경로(#1315)는 stationary/unknown 모두 보류로 더 엄격이지만,
+      // lock-active fallback은 한 번이라도 정상 추적된 trip이라 unknown(센서 미지원/권한 거절)을
+      // 보류하면 다수 사용자가 freeze. `stationary` 신호가 있을 때만 게이트 진입(이슈 #1386).
+      // 카운터(consecutiveEtaMissing)는 누적 유지 — motion이 회복되면 다음 cycle에서 정상 advance,
+      // 회복 안 되면 기존 auto-end 임계(`resolveEtaMissingThreshold`) 경로가 종료를 보장한다.
+      const positionSeries = await readSeries(env.TRIPS, trip.token);
+      const fallbackMotion = evaluateWindow(positionSeries, now).motion;
+      if (isFallbackAdvanceBlockedByMotion(fallbackMotion)) {
+        stats.vanishFallbackMotionGateBlocked += 1;
+        log('boarding-lock: vanish fallback motion gate blocked (not moving)', {
+          token: trip.token.slice(0, 8),
+          trainCode: activeLock.trainCode,
+          station: waypoint.stationName,
+          consecutiveEtaMissing: nextMissCount,
+          lastTrackedArrivalEpoch: lastEpoch,
+          motion: fallbackMotion,
+        });
+        trip.consecutiveEtaMissing = nextMissCount;
+        await putTrip(env.TRIPS, trip);
+        return;
+      }
+      // hop 시간 경과 → optimistic waypoint advance.
+      // advance 내부에서 destination 도착이면 cleanupTripWithLa, 그 외엔 waypoints.shift().
+      log('boarding-lock: trainCode vanished — time-based waypoint advance fallback', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        consecutiveEtaMissing: nextMissCount,
+        lastTrackedArrivalEpoch: lastEpoch,
+        motion: fallbackMotion,
+      });
+      trip.consecutiveEtaMissing = 0;
+      // #1370 L2 — fallback advance 전에 station-passed silent push를 발사한다.
+      // advanceBoardingLockWaypoint는 LA update + (destination 시) trip-ended push만 발사하므로
+      // intermediate/transfer waypoint를 "지났다"는 신호가 사용자에게 도달하지 않는 회귀가 있었다
+      // (어린이대공원/군자/중곡 silent push 0건). vanish fallback도 ground truth 신호로 취급해
+      // arvlCd∈{0,1}과 동등하게 station-passed push를 발사한다.
+      //
+      // #1399 — destination/transfer 포함 모든 kind에 대해 발사. 기존엔 destination을 skip해
+      // advanceBoardingLockWaypoint의 trip-ended push만 사용자에게 도달했으나, 그 경로는
+      // alert payload(`aps.alert`)로 system banner를 띄우는 데에 의존한다. vanish 상황(지하 +
+      // backend trainCode 누락)에서 trip-ended가 trip token 검증/cleanup race로 지연/소실되면
+      // 사용자는 종착역 하차 알림을 받지 못한다. station-passed imminent push를 destination에도
+      // 발사해 device 측 banner 발사 경로(채널 2)도 확보한다. surface 중복은 device 측
+      // pushId/firedPushIds dedup으로 흡수.
+      // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
+      await fireVanishFallbackStationPush({
+        trip,
+        waypoint,
+        lock: activeLock,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+        origin: 'vanish-fallback',
+      });
+      // ADR-017 T5 (#1558) — vanish-fallback path 도 SSoT 단일 진입점을 통과해야 trip.waypoints
+      // 가 advance 한다. evidence type 은 `arvlcd-confirmed-train` — lock 활성 시점에서 vanish 직전
+      // 마지막으로 확정된 trainCode 가 ground truth 이고, 본 fallback 은 hop 시간 + 직전 lock 으로
+      // optimistic advance 를 취급하기 때문. SSoT motionState='stationary' 이면 #2 게이트가 차단해
+      // 기존 `isFallbackAdvanceBlockedByMotion` 보다 광범위(정지 trip 어떤 경로도)로 보호한다.
+      await advanceBoardingLockWaypoint(
+        trip,
+        waypoint,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        {
+          type: 'arvlcd-confirmed-train',
+          stationId: waypoint.stationName,
+          ts: now,
+          environment: deriveEvidenceEnvironment(trip),
+          arvlcdTrainCode: activeLock.trainCode,
+        },
+        generatePushId,
+      );
+      return;
+    }
+    // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
+    // isBoardingLockActive=false가 되는 즉시 다음 cycle의 evaluateAndMaybeFireBoardingPrompt 경로 복구.
+    // #1370 L3 — lock release 후 lockless 인계가 실제로 작동하려면 trip.infoModeEnabled가
+    // true여야 한다(`if (!isBoardingLockActive) → if (trip.infoModeEnabled && intermediate)`).
+    // OFF인 trip은 다음 cycle에서 lockMissing으로 spin하며 군자/중곡까지 push 0건. vanish fallback은
+    // 시스템이 trainCode를 잃은 상황이므로 lockless 인계를 강제 enable해 매역 push 경로를 복구한다.
+    //
+    // #1402 — lock release 전 floor station-passed push를 보장 발사한다. 종전 release 경로는
+    // push 0건으로 device가 stale 채로 lockless 인계만 받았고, lockless 인계 직후 GPS가 잠시라도
+    // 추가 누락되면 다음 station push까지 침묵 ≥ 1 cycle. release 직전 floor push 1건이
+    // PENDING_PUSHES에 등록되면 60s(#1894로 30s→60s 완화) 내 ACK 없을 때 alert fallback이 자동 발사돼 "하차 침묵 0"
+    // acceptance를 충족(2026-06-17 군자/용마산 회귀). 발사 자체가 false positive를 만들 수
+    // 있어 ADR-010 "false positive / miss 동급" 원칙에 따라 lock-active fallback과 같은
+    // motion gate(`isFallbackAdvanceBlockedByMotion`)를 통과한 경우에만 fire.
+    const releaseMotionSeries = await readSeries(env.TRIPS, trip.token);
+    const releaseMotion = evaluateWindow(releaseMotionSeries, now).motion;
+    if (!isFallbackAdvanceBlockedByMotion(releaseMotion)) {
+      // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
+      await fireVanishFallbackStationPush({
+        trip,
+        waypoint,
+        lock: activeLock,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+        origin: 'vanish-release',
+      });
+    } else {
+      stats.vanishFallbackMotionGateBlocked += 1;
+      log('vanish-release-fire: motion gate blocked (not moving)', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        motion: releaseMotion,
+      });
+    }
+    log('boarding-lock: trainCode vanished — releasing lock (hop time not yet elapsed)', {
+      token: trip.token.slice(0, 8),
+      trainCode: activeLock.trainCode,
+      station: waypoint.stationName,
+      consecutiveEtaMissing: nextMissCount,
+      lastTrackedArrivalEpoch: lastEpoch,
+      locklessTakeoverEnabled: trip.infoModeEnabled !== true,
+    });
+    trip.boardingLock = undefined;
+    trip.consecutiveEtaMissing = 0;
+    trip.infoModeEnabled = true;
+    stats.vanishLocklessTakeover += 1;
+    await deleteProgress(env.TRIPS, trip.token);
+    await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
+  const threshold = resolveEtaMissingThreshold(trip);
+  if (nextMissCount >= threshold) {
+    // #1663 — Seoul API HTTP error가 이 cron 사이클에 1건이라도 관측됐으면 'seoul-outage'로 구분.
+    // trip auto-end 원인이 Seoul API 장애(일시 HTTP error)였다고 판별해 #1425 cooldown을 면제한다.
+    // httpErrorCount는 SeoulArrivalClient 인스턴스 수명(= cron 1 cycle) 범위라 cron scope 내에서만 유효.
+    const endReason: import('./types').TripEndedReason =
+      deps.seoul.stats.httpErrorCount > 0 ? 'seoul-outage' : 'eta-missing';
+    if (endReason === 'seoul-outage') {
+      // seoul-outage 분기는 기존 유지 (#1663) — Seoul API 장애가 원인이면 trip auto-end +
+      // #1425 cooldown 면제 경로를 그대로 탄다. cleanupTripWithLa가 LA dismissal + deleteTrip을
+      // 묶어 정리하고 trip-ended alert push를 발사한다.
+      log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        threshold,
+        subsurface: trip.subsurface === true,
+        endReason,
+        seoulHttpErrors: deps.seoul.stats.httpErrorCount,
+      });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: endReason });
+      return;
+    }
+    // #2157 (2026-08-05 결정 A) — 순수 eta-missing(Seoul API는 정상 응답, trainCode만
+    // 매칭 실패)은 더 이상 trip을 강제 종료하지 않는다. lock만 해제 + lockless로 강등해
+    // 사용자에게 재확인 alert push를 발사, boardingPrompt/직접 탭으로 재선택을 유도한다
+    // (결정1 #2154 "명시 확인 철학"과 일관 — 백엔드가 사용자 trip을 일방 종료하지 않음).
+    log('boarding-lock: eta-missing threshold — demoting to lockless (lock detached)', {
+      token: trip.token.slice(0, 8),
+      trainCode: activeLock.trainCode,
+      station: waypoint.stationName,
+      threshold,
+      subsurface: trip.subsurface === true,
+    });
+    trip.boardingLock = undefined;
+    trip.consecutiveEtaMissing = 0;
+    // #1370 L3 vanishLocklessTakeover 선례와 동일 패턴 — 시스템 fallback이 lockless 인계 경로를
+    // 강제 활성화한다. 사용자가 opt-in 토글을 OFF로 둔 trip이어도 register 시 device가 보낸
+    // 실제 값으로 다음 세션에 자연 정합화되므로, 이 강제 활성화가 사용자 설정을 영구 덮어쓰지
+    // 않는다(#1370 L3 코멘트와 동일 근거).
+    trip.infoModeEnabled = true;
+    // #2157 (PR #2162 리뷰 P1) — dedup 키를 이 demotion event 시점으로 고정. trip.createdAt은
+    // trip 생애 전체에 불변이라 두 번째 demotion에서 재사용하면 재확인 push가 조용히 막힌다.
+    trip.etaMissingDemotedAt = now;
+    stats.etaMissingDemoted += 1;
+    await deleteProgress(env.TRIPS, trip.token);
+    await putTrip(env.TRIPS, trip);
+    await fireTrainReconfirmPush(trip, env, deps, stats, now, log, generatePushId);
+    return;
+  }
+  trip.consecutiveEtaMissing = nextMissCount;
+  await putTrip(env.TRIPS, trip);
+  await mirrorProgress(env.TRIPS, trip, 0);
+}
+
+export async function runTrainCodeTracking(
+  trip: Trip,
+  waypoint: Waypoint,
+  lock: BoardingLockMeta,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  let activeLock = lock;
+  let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
+  if (estimate === null) {
+    const swappedLock = await attemptVanishSwap(trip, waypoint, activeLock, env, deps, now, log);
+    if (swappedLock) {
+      activeLock = swappedLock;
+      estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
+    }
+  }
+  if (estimate === null) {
+    // #1824 — Seoul API outage 시 arrivals + positions 모두 없어도 FALLBACK_HOP_SEC(90s) 기반
+    // 스케줄 ETA로 LA heartbeat를 유지한다. consecutiveEtaMissing 카운터는 그대로 증가
+    // (auto-end 로직 보존). reschedule push는 trip.lastTrackedArrivalEpoch side-effect가
+    // handleEtaMissing time-based fallback과 충돌하므로 skip — LA만 유지.
+    const scheduleHopEpoch = now + FALLBACK_HOP_SEC * 1000;
+    stats.scheduleEtaFallback += 1;
+    log('boarding-lock: schedule-hop-fallback used (Seoul outage)', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+      epochOffset: FALLBACK_HOP_SEC,
+    });
+    // LA heartbeat는 trip.lastLaPushEpoch 기준이라 handleEtaMissing과 충돌하지 않음.
+    await maybeFireLiveActivityUpdate(trip, waypoint, scheduleHopEpoch, deps, stats, now, log);
+    await handleEtaMissing({
+      trip,
+      waypoint,
+      activeLock,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+    });
+    return;
+  }
+
+  // 성공 사이클 — 카운터가 누적된 상태였다면 reset하고 persist. 0이면 dirty write 회피.
+  const hadMissCount = (trip.consecutiveEtaMissing ?? 0) > 0;
+  if (hadMissCount) {
+    trip.consecutiveEtaMissing = 0;
+  }
+
+  if (estimate.arrived) {
+    // #826 — arvlCd=ARRIVED ground truth → Kalman state hard reset.
+    // 정거장 도착은 가장 강한 신호 (실제 정차) — v=0/P=R_LOW로 drift 누적 차단.
+    // #2007 (ADR-022 Phase 4-5) — archFlag=on 시 Kalman state 자체가 dormant → reset write + counter skip.
+    if (deps.archFlag !== 'on') {
+      await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
+      stats.kalmanReset += 1;
+    }
+    // #917 A2 — 매역 알림 1차 source는 arvlCd∈{0(ENTERING), 1(ARRIVED)}.
+    // positions-fallback arrived(arvlCd=null)는 SSOT 다름 — mismatch로 분류해 push X.
+    // prereq 게이트(레거시): lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
+    const legacyGate = evaluateArvlCdFireGate(activeLock, estimate.arvlCd, now);
+    if (legacyGate === 'fire' && estimate.arvlCd !== null) {
+      // ADR-017 T4 (#1557) — 분산된 fire 게이트를 `advanceTripPosition` 단일 진입점으로 통합.
+      // 6단 게이트(seed/motion/env/type/train identity/lockless arvlcd 단독)를 통과한 advance
+      // 결과만 push 발사로 이어진다. 2026-06-19 정지 trip false 발사 회귀(N1)를 직접 차단.
+      //
+      // SSoT 부재 (legacy trip / 마이그레이션 전) → lazy-seed로 currentStationId=waypoint.stationName
+      // 정착. T3 motion state machine wire 전이므로 motionState='unknown' — 정지 게이트는 dormant
+      // 상태이지만, T3가 device upload로 motionState='stationary'를 stamp하기 시작하면 자동 활성화.
+      const fireOutcome = await tryAdvanceAndFireArvlcd({
+        trip,
+        waypoint,
+        lock: activeLock,
+        arvlCd: estimate.arvlCd,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+      });
+      if (fireOutcome.dirty) await putTrip(env.TRIPS, trip);
+    } else {
+      stats.arvlCdFireMismatch += 1;
+      log('arvlcd-fire: mismatch (prereq failed)', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        arvlCd: estimate.arvlCd,
+      });
+    }
+    // ADR-017 T5 (#1558) — arvlcd-arrived path 도 SSoT 단일 진입점을 통과해야 trip.waypoints
+    // 가 advance 한다. T4 가 fire 를 게이트했더라도 본 진행분(waypoints shift / passedStations
+    // stamp / progress 누적) 자체는 SSoT 동의 후만 적용.
+    // #1665 — arvlCd=null (positions-fallback arrived) 경로를 'position-train' evidence로 마이그레이션.
+    // positionEntryFetchedAt=now: estimateBoardingLockArrival이 Seoul API를 직접 호출
+    // (15s in-memory cache 안)하므로 fresh snapshot. stale 가드는 30s 임계 — false reject 없음.
+    const arvlCdEvidence: AdvanceEvidence =
+      estimate.arvlCd !== null
+        ? {
+            type: 'arvlcd-confirmed-train',
+            stationId: waypoint.stationName,
+            ts: now,
+            environment: deriveEvidenceEnvironment(trip),
+            arvlcdTrainCode: activeLock.trainCode,
+            arvlCd: estimate.arvlCd,
+          }
+        : {
+            type: 'position-train',
+            stationId: waypoint.stationName,
+            ts: now,
+            environment: deriveEvidenceEnvironment(trip),
+            positionEntryFetchedAt: now,
+          };
+    await advanceBoardingLockWaypoint(
+      trip,
+      waypoint,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      arvlCdEvidence,
+      generatePushId,
+    );
+    return;
+  }
+
+  const { cleanedUp } = await maybeReschedulePush(
+    trip,
+    waypoint,
+    activeLock,
+    estimate.epoch,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  );
+  // trip이 KV에서 삭제됐다면 후속 putTrip은 resurrection이 되므로 즉시 종료.
+  if (cleanedUp) return;
+  // LA는 reschedule와 독립 평가 — reschedule 임계(15s) 미달이거나 push가 실패해도 LA 임계(30s)는 별도 게이트.
+  const laDirty = await maybeFireLiveActivityUpdate(
+    trip,
+    waypoint,
+    estimate.epoch,
+    deps,
+    stats,
+    now,
+    log,
+  );
+  if (laDirty || hadMissCount) {
+    await putTrip(env.TRIPS, trip);
+  }
+  // #705 — reschedule push 성공/LA dirty/카운터 reset 어느 경로든 baseline이 바뀔 수 있으므로
+  // 항상 progress 미러링. 함수 자체는 lock 없는 trip에 no-op이라 추가 비용 미미.
+  await mirrorProgress(env.TRIPS, trip, 0);
+}
+
+/**
+ * 다음 waypoint에 trainCode가 도착할 시각을 추정.
+ *   1순위: arrivals에서 trainCode 매칭 → barvlDt
+ *   2순위: positions에서 trainCode 위치 → segmentStations 인덱스 차이 기반
+ *   3순위: 둘 다 없음 → null
+ *
+ * arrived 판정: arrivals 경로는 arvlCd가 ENTERING(0, 진입) 또는 ARRIVED(1, 도착)인 경우.
+ * positions 경로는 estimateArrivalFromPosition이 sttus와 station 매치로 결정.
+ */
+export async function estimateBoardingLockArrival(
+  deps: ScheduledDeps,
+  lock: BoardingLockMeta,
+  waypoint: Waypoint,
+  now: number,
+): Promise<{ epoch: number; arrived: boolean; arvlCd: number | null } | null> {
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  const matched = arrivals.find((a) => a.trainCode === lock.trainCode);
+  if (matched) {
+    return {
+      epoch: now + matched.arrivalSeconds * 1000,
+      arrived:
+        matched.arvlCd === ARRIVAL_CODE.ARRIVED || matched.arvlCd === ARRIVAL_CODE.ENTERING,
+      // #917 A2 — 매역 알림 1차 source. arrivals 경로의 arvlCd를 호출자에게 노출해
+      // dedup key 구성 + position-fallback arrived와 구분(positions 경로는 arvlCd=null).
+      arvlCd: matched.arvlCd,
+    };
+  }
+  const positions = await deps.seoul.fetchPositions(lock.line);
+  const train = positions.find((p) => p.trainCode === lock.trainCode);
+  if (!train) return null;
+  const fallback = estimateArrivalFromPosition(train, waypoint.stationName, lock, now);
+  if (fallback.epoch === null) return null;
+  // positions 경로의 arrived는 arvlCd가 아닌 sttus 신호 — 호출자가 arvlCd 매역 fire 분기를
+  // skip하도록 null 명시 (#917 A2 prereq guard).
+  return { epoch: fallback.epoch, arrived: fallback.arrived, arvlCd: null };
+}
+
+/**
+ * waypoint 진행 처리. destination 도착 또는 last intermediate 통과 시 trip 삭제.
+ * baseline(lastTrackedArrivalEpoch / lastLaPushEpoch)도 함께 리셋해 새 waypoint의 첫 push를 보장.
+ *
+ * #586 D — stopsRemaining이 바뀌는 시점은 사용자가 즉시 보아야 할 변동(다음 hop 표시)이므로
+ * ETA 임계와 무관하게 새 waypoint로 LA update를 동기 발사한다. ETA는 모르므로 0으로 보내고
+ * lastLaPushEpoch는 reset 상태(undefined)로 두어 다음 폴링에서 첫 estimate가 들어오면
+ * 임계 검사 없이 발사되도록 한다.
+ */
+export async function advanceBoardingLockWaypoint(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  // ADR-017 T5 (#1558) — SSoT advance evidence. 호출자가 stamp 한 evidence로
+  // `advanceTripPosition` 6단 게이트 통과 시에만 trip.waypoints 를 advance 한다.
+  // optional 인 이유: legacy 호출자(테스트 fixture, T6 reader migration 미적용 path)는
+  // evidence 없이 호출 가능 — 그 경우 SSoT 게이트를 skip 하고 기존 동작 그대로 진행한다.
+  // 새 호출자는 반드시 evidence 를 전달해야 한다.
+  evidence?: AdvanceEvidence,
+  // #2066 (Phase 2-backend) — 취침 알람 visible/companion push 발사용 pushId 발급자.
+  // optional — legacy 테스트 호출자는 미전달 시 `crypto.randomUUID` fallback.
+  generatePushId: () => string = () => crypto.randomUUID(),
+): Promise<void> {
+  // ADR-017 T5 (#1558) — SSoT 통합 게이트.
+  // evidence 가 제공되면 `advanceTripPosition`이 동의해야만 trip.waypoints / cleanup 이 진행된다.
+  // 정지 trip + arvlcd ARRIVED → SSoT motion 게이트(#2)가 blocked('motion-stationary') 반환 →
+  // trip mutation X (2026-06-19 정지 trip 8회 waypoint advance 회귀 직접 차단).
+  if (evidence !== undefined) {
+    // T4 `tryAdvanceAndFireArvlcd` 와 같은 lazy-seed 정책 — legacy trip (SSoT 미정착) 은
+    // currentStationId=waypoint.stationName 로 seed 후 정상 advance. motionState='unknown' 으로
+    // 시작하므로 정지 게이트는 dormant 이지만 T3 motion state machine 갱신 후 자동 활성화.
+    // seed 없이 바로 advanceTripPosition 을 호출하면 #1 Seed 게이트가 blocked('no-seed') 반환 →
+    // legacy 호출자가 모두 frozen 되는 회귀 발생.
+    const existingSsot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    if (existingSsot === null) {
+      await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
+        expiresAt: trip.expiresAt,
+      });
+      log('boarding-lock: lazy-seed ssot for waypoint advance', {
+        token: trip.token.slice(0, 8),
+        currentStationId: waypoint.stationName,
+      });
+    }
+    // #2023 — evidence.arcOvershootDetected 가 이미 stamp되어 있으면 그대로 유지(caller가
+    // 감지한 값 존중). 미stamp이면 series read + detectArcOvershoot로 채워 넣는다. 게이트 #8은
+    // options.archFlag='on'일 때만 활성(archFlag=off/미제공 dormant → backward compat).
+    const advanceEvidence: AdvanceEvidence =
+      evidence.arcOvershootDetected !== undefined
+        ? evidence
+        : {
+            ...evidence,
+            arcOvershootDetected: detectArcOvershoot(
+              await readSeries(env.TRIPS, trip.token),
+            ),
+          };
+    const outcome = await advanceTripPosition(
+      env.TRIPS,
+      trip.token,
+      waypoint.stationName,
+      advanceEvidence,
+      {
+        // lock 활성 = base 합의 surrogate (T4 `tryAdvanceAndFireArvlcd` 와 같은 정책).
+        gatePassed: true,
+        lockAttachable: trip.boardingLock !== undefined,
+        // #2023 (ADR-022) — archFlag='on' 시 arc overshoot 게이트 활성. off/미제공 dormant.
+        archFlag: deps.archFlag,
+      },
+    );
+    if (outcome.result !== 'advanced') {
+      stats.boardingLockWaypointAdvanceBlocked += 1;
+      log('boarding-lock: waypoint advance blocked by ssot gate', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        reason: outcome.blockReason satisfies AdvanceBlockReason | undefined,
+        evidenceType: evidence.type,
+      });
+      // P0-1 (#1577) — Site 1 of 6: boarding-lock waypoint advance suppress.
+      writeMetric(env, {
+        eventType: 'suppress',
+        tripToken: trip.token,
+        stationId: waypoint.stationName,
+        reason: outcome.blockReason ?? 'lock-advance-blocked',
+        hopIndex: waypoint.hopIndex,
+      });
+      return;
+    }
+    // P0-1 (#1577) — Site 1 of 6: boarding-lock waypoint advance.
+    writeMetric(env, {
+      eventType: 'advance',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: evidence.type,
+      hopIndex: waypoint.hopIndex,
+    });
+  }
+
+  // #1707 — destination 자동 종료 전 device GPS cross-check.
+  // 본 advance가 trip을 cleanup으로 이끄는지 판정 (destination kind 또는 마지막 intermediate).
+  // 둘 다 동일 cross-check 정책: device GPS가 destination 좌표 ≤500m면 정상 종료, >500m이고
+  // GPS fresh면 trip 보존 + 9h force-end 위임. stale/no-gps/station-unknown은 정상 종료.
+  // backend hop-time fallback cascade(1.5분/hop)가 외선 우회 27 hop trip을 약 27~40분 만에
+  // destination 도달로 잘못 판정하던 회귀(2026-06-23 13:35 성수→합정 trip 14:07 홍대입구
+  // 자동 종료 evidence)를 차단한다.
+  const isCleanupAdvance =
+    waypoint.kind === 'destination' || trip.waypoints.length === 1;
+  if (isCleanupAdvance) {
+    const series = await readSeries(env.TRIPS, trip.token);
+    const crossCheck = evaluateDestinationCrossCheck(series, waypoint, now);
+    recordDestinationCrossCheck(stats, crossCheck);
+    log('boarding-lock: destination cross-check', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      kind: waypoint.kind,
+      result: crossCheck,
+    });
+    // #2322 (O1-C) — 'stale-gps'(device GPS 5분+ 미갱신)는 기존 #1707 정책상 conservative
+    // cleanup 대상이지만, device sync 자체가 stale(#2321)하거나 Seoul API outage(이 cron
+    // 사이클 HTTP error 관측) 상태에서는 "device GPS가 잠깐 안 옴"이 아니라 "device/API
+    // 전체가 침묵 중"인 다른 상황 — 그 상태에서 destination 도착으로 잘못 판정해 종료하면
+    // 침묵 25분 fixture 같은 케이스에서 실제 도착 전에 trip이 사라진다. 이 두 상태에서는
+    // 'gps-far'와 동일하게 짧은 backstop(`DESTINATION_REACH_BACKSTOP_MS`)으로 이관한다.
+    let effectiveCrossCheck = crossCheck;
+    if (crossCheck === 'stale-gps') {
+      const staleGpsSsot = await readSsot(env.TRIPS, trip.token, {
+        cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+      });
+      const silentOrOutage =
+        (staleGpsSsot !== null && isDeviceSyncStale(staleGpsSsot, now)) ||
+        deps.seoul.stats.httpErrorCount > 0;
+      if (silentOrOutage) {
+        stats.destinationStaleGpsSurvivedSilence += 1;
+        log('boarding-lock: stale-gps survived (device-sync-stale or seoul-outage)', {
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+          kind: waypoint.kind,
+          deviceSyncStale: staleGpsSsot !== null && isDeviceSyncStale(staleGpsSsot, now),
+          seoulHttpErrors: deps.seoul.stats.httpErrorCount,
+        });
+        effectiveCrossCheck = 'gps-far';
+      }
+    }
+    if (effectiveCrossCheck === 'gps-far') {
+      // #2230 — destination 도달이 최초로 관측된 시각 anchor. 이미 stamp돼 있으면 보존
+      // (매 cycle 재stamp하면 backstop이 끝없이 밀려 9h force-end와 다를 바 없어진다).
+      if (trip.destinationImminentFirstAt === undefined) {
+        trip.destinationImminentFirstAt = now;
+      }
+      const backstopElapsedMs = now - trip.destinationImminentFirstAt;
+      if (backstopElapsedMs >= DESTINATION_REACH_BACKSTOP_MS) {
+        // #2230 — gps-far 보류가 짧은 backstop을 초과 — 9h force-end보다 훨씬 짧게 강제 cleanup.
+        // gps-far cross-check(#1707) 자체(trip 보존 의도)는 유지 — 상한 시간만 단축한다.
+        stats.destinationBackstopForceEnded += 1;
+        log('boarding-lock: destination backstop force-cleanup (gps-far persisted)', {
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+          kind: waypoint.kind,
+          backstopElapsedMs,
+        });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+        await deleteSsot(env.TRIPS, trip.token);
+        return;
+      }
+      // trip 보존 — advance 자체를 abort. trip.waypoints 미변동 → 다음 cycle 재평가 진입.
+      // anchor stamp(신규 stamp된 경우)를 persist해 다음 cycle이 경과 시간을 정확히 판단하게 한다.
+      await putTrip(env.TRIPS, trip);
+      log('boarding-lock: cleanup deferred (gps-far)', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        backstopElapsedMs,
+      });
+      return;
+    }
+  }
+
+  if (waypoint.kind === 'destination') {
+    // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    // ADR-017 T5 (#1558) — trip 종료 시 SSoT 도 cleanup. cleanupTripWithLa 가 throw 하면
+    // SSoT 가 남아있을 수 있으나 본 PR 스코프 외 (다음 cron 의 stale 정리 path 는 후속 PR).
+    await deleteSsot(env.TRIPS, trip.token);
+    log('boarding-lock: destination arrived, trip cleared', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    return;
+  }
+  // #2323 rework (break #1) — waypoint advance 공통 블록(anchor stamp + hop-end prompt +
+  // waypoints slice + LA/putTrip/mirrorProgress)을 lock-independent 헬퍼로 추출.
+  // 이 시점 이전(evidence 게이트, destination cleanup)은 lock 활성 경로 전용이라 그대로 유지.
+  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+}
+
+/**
+ * #2323 rework (break #1) — waypoint advance의 lock-independent 공통 처리.
+ *
+ * 원래 `advanceBoardingLockWaypoint` 본문 일부였다(ADR-017 T5 evidence 게이트 통과 이후 블록).
+ * lock 활성 경로(`advanceBoardingLockWaypoint`)와 lockless 경로(`runLocklessTransfer`, 신규) 둘 다
+ * 이 함수를 호출한다 — anchor stamp(`currentLegAnchor`/`legBoardingEligibleAt`)와 hop-end
+ * prompt는 lock 유무와 무관하게 "waypoint를 통과했다"는 ground truth에만 의존하기 때문이다
+ * (`trip.boardingLock !== undefined` 가드가 이미 내부에 있어 lockless 호출 시 release 관련
+ * 분기는 자연히 no-op).
+ *
+ * caller 계약: `waypoint`는 호출 시점의 `trip.waypoints[0]`과 같아야 한다(아직 shift 전).
+ * `waypoint.kind === 'destination'`은 이 함수 호출 전 caller가 먼저 처리해야 한다(cleanup 후
+ * return) — 이 함수는 transfer/intermediate 통과만 다룬다.
+ */
+async function completeWaypointAdvance(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  // #2066 (Phase 2-backend) — 취침 알람 평가. waypoints shift 전이라 trip.waypoints[1]이
+  // waypoint(방금 arvlCd 확정된 직전역 후보) 바로 다음 대상(환승/도착 여부 판정용).
+  await maybeFireSleepAlarm({
+    trip,
+    waypoint,
+    nextWaypoint: trip.waypoints[1],
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+  // #2510 — 준비 진동(ACTION, 전체 트립). sleepModeEnabled===true trip은 위 maybeFireSleepAlarm이
+  // 이미 담당해 내부에서 스킵된다(상호 배타).
+  await maybeFirePrepareAlarm({
+    trip,
+    waypoint,
+    nextWaypoint: trip.waypoints[1],
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+  // #1539 (S6) — waypoint advance 시점 직전 station 누적. silent push payload로 forward되어
+  // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
+  // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
+  appendPassedStation(trip, waypoint.stationName);
+  // 잠실나루 redundant boarding prompt regression — slice 직전 다음 waypoint(새 leg 시작점)의
+  // line을 캡처. transfer waypoint 자체의 line은 "방금 통과한(=현재) leg"의 line이라 항상
+  // boardingLock.line과 같아 진짜 환승/같은 호선 오라벨을 구분하지 못한다. 실제 노선 변경
+  // 여부는 그 다음 waypoint의 line으로만 판별 가능.
+  const nextLegWaypoint = trip.waypoints[1];
+  // ADR-017 T5 (#1558) — immutable slice 로 mutation race 방지 (.shift 는 in-place).
+  trip.waypoints = trip.waypoints.slice(1);
+  trip.lastTrackedArrivalEpoch = undefined;
+  trip.lastLaPushEpoch = undefined;
+  // #900 Seam D — heartbeat 기준점도 reset. 다음 hop은 첫 LA push 후 wall-clock stamp.
+  trip.lastLaPushAt = undefined;
+  // #864 — transfer waypoint 통과 = 직전 train segment 종료. lock을 유지하면 다음 cycle이
+  // 새 line(예: 5호선)에서 옛 trainCode(예: 7327)를 찾아 etaMissing 5회 후 trip auto-end로 사망.
+  // lock을 release하면 다음 cycle은 isBoardingLockActive=false → evaluateAndMaybeFireBoardingPrompt
+  // 가 사용자에게 환승 train 선택을 prompt하고, 클라이언트의 createTransferLock이 새 lock을 등록.
+  // segmentStations도 직전 leg 기준이라 위치 fallback 폴링도 더는 의미 없음.
+  //
+  // progress KV도 같이 정리 — 옛 trainCode + shiftedCount가 stale로 남으면 token-refresh race
+  // (`useApnsTripRegistration` `latestInputsRef` 옛 lock 보유) 윈도우에서 client 옛 lock POST 시
+  // `progressApplies=true` 분기로 진입해 옛 lock이 backend에 다시 active로 복원되는 회귀가 가능.
+  //
+  // 잠실나루 redundant boarding prompt regression — waypoint.kind==='transfer'라도 다음
+  // leg(nextLegWaypoint)의 line이 현재 boardingLock.line과 같으면(같은 호선 내 waypoint가
+  // transfer로 잘못 라벨/advance된 케이스) 실제 노선 변경이 아니므로 release하면 안 된다.
+  // release되면 다음 cycle에 isBoardingLockActive=false로 오판해 이미 탑승 중인 사용자에게
+  // "탑승했어요?" 프롬프트가 재발사된다(#864 원 목적인 진짜 환승 release는 그대로 유지).
+  const isRealLineChange = nextLegWaypoint?.line !== trip.boardingLock?.line;
+  const lockReleasedOnTransfer =
+    waypoint.kind === 'transfer' && trip.boardingLock !== undefined && isRealLineChange;
+  // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
+  // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
+  const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
+  if (lockReleasedOnTransfer) {
+    trip.boardingLock = undefined;
+    trip.consecutiveEtaMissing = 0;
+    await deleteProgress(env.TRIPS, trip.token);
+  }
+  // #1438 (E5) — backend → device lock release sync. 환승 waypoint 통과로 backend가 lock을
+  // release한 즉시 device에 silent push로 통보해 로컬 useBoardingLockStore와 sync한다. 종전에는
+  // device가 backend release를 인지하지 못해 leg 1 lock이 21분간 잔존하다 자연 만료에 의존했고,
+  // 그 시간 동안 leg 2 boardingPrompt 발사가 차단됐다 (2026-06-18 evidence). 본 push는 station-passed
+  // 알림 본문(arvlCd/vanish path와 같은 payload 모양)이 아니라 lock-only sync 신호 — etaSeconds=0,
+  // phase='imminent', kind=waypoint.kind. device의 fireWithGate는 station-passed 동등 처리를 하지만,
+  // payload.lockReleasedReason='transfer'가 우선 처리돼 store sync 후 본 처리 흐름을 그대로 진행한다.
+  if (lockReleasedOnTransfer && releasedLockSnapshot !== undefined) {
+    const pushId = crypto.randomUUID();
+    // #1561 (T8, ADR-017 / S2 흡수) — transfer-release fire 직전 SSoT 권위 스냅샷 forward.
+    const ssotForTransfer = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+    const transferPayload = buildStationPassedImminentPayload({
+      trip,
+      waypoint,
+      lock: releasedLockSnapshot,
+      pushId,
+      now,
+      origin: 'transfer-release',
+      lockReleasedReason: 'transfer',
+      ssot: ssotForTransfer,
+      // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
+      archFlag: deps.archFlag,
+    });
+    const transferHeal = await sendWithEnvHeal(
+      (host) =>
+        sendSilentPush({
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
+          payload: transferPayload,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+    );
+    // #1633 — transfer-release fire의 corrected env capture. 종전엔 결과 discard로
+    // trip.apnsEnv 가 in-memory mutate 되지 않아 line 2217 putTrip 이 OLD value 를 쓰고,
+    // 환승 후 leg 2 의 후속 push 들이 매번 mismatch retry 로 1초 지연된다. 즉시 write 로
+    // corrected env 영구 보존.
+    if (transferHeal.correctedEnv) {
+      trip.apnsEnv = transferHeal.correctedEnv;
+      stats.envCorrected += 1;
+      await putTrip(env.TRIPS, trip);
+    }
+    // #1683 — transfer-release push 성공 시 kind 카운터 누적.
+    if (transferHeal.result.ok) {
+      stats.silentPushFiredByKind.transfer += 1;
+    } else {
+      // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. transfer-release 도 silent push 누락 시
+      // leg 2 boardingPrompt 재요청이 차단되는 회귀(2026-06-18 evidence)가 발생하므로 retry 필요.
+      // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry (transfer-release payload.kind='transfer' → flag=on 시 skip).
+      await enqueueRetryIfTransient(
+        env.PENDING_PUSHES,
+        {
+          pushId,
+          // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+          token: resolveTripDeviceToken(trip),
+          // #2185 — trip_token_hash용 신원 토큰.
+          tripToken: trip.token,
+          payload: transferPayload,
+          apnsEnv: trip.apnsEnv ?? 'sandbox',
+          status: transferHeal.result.status,
+          reason: transferHeal.result.reason,
+          now,
+          envMismatchExhausted: transferHeal.envMismatchExhausted,
+        },
+        deps.archFlag,
+        env.DB,
+      );
+    }
+  }
+  // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — 환승 waypoint 통과(= 위 hop-end
+  // "하차했나요?" 프롬프트와 동일 ground-truth 시점)에 "지금" leg anchor를 stamp한다.
+  // `isRealLineChange`가 false(같은 호선 내 오라벨 transfer)면 진짜 환승이 아니므로 stamp하지
+  // 않는다 — 위 `lockReleasedOnTransfer`와 동일 조건. 여러 번 환승해도 매번 덮어써 항상 "지금"
+  // leg만 가리킨다. `legBoardingEligibleAt`(도보시간 게이트) 이전에는 `resolveActiveLegOrigin`과
+  // `maybeFireLegBoardingPrompt` 둘 다 이 anchor를 못 본 것처럼 동작한다 — 오탑승 lock 방지.
+  if (waypoint.kind === 'transfer' && nextLegWaypoint && isRealLineChange) {
+    const transferWalkSeconds = getTransferSeconds(
+      waypoint.line as Parameters<typeof getTransferSeconds>[0],
+      nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
+      waypoint.stationName,
+    );
+    trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
+    trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
+    trip.legBoardingPromptState = undefined;
+  }
+  // #2034 — 환승 waypoint advance = "환승역 도착". 사용자에게 "하차했나요?" hop-end 프롬프트를
+  // 발사해 다음 leg 진입을 명시 확인하도록 유도. lock 활성 여부와 무관 (transfer 직후 lock 은 이미
+  // release 됐거나 애초에 lockless leg 였다). 게이트는 leg-key (`${transferStation}|${nextLine}`)
+  // 로 fired/silence dedup 만 유지 — GPS/motion 검증 없이 waypoint advance = ground truth.
+  if (waypoint.kind === 'transfer') {
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint: waypoint,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId: () => crypto.randomUUID(),
+      env,
+    });
+  }
+  // #2066 (Phase 2-backend) — 이전엔 #2036이 여기서(환승 waypoint 소진 시점) 직접
+  // sleep-transfer-alarm을 발사했으나, #2066부터는 "환승/도착 직전역 진입" 시점(위
+  // `maybeFireSleepAlarm`)으로 이관됐다.
+  // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
+  // 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
+  // 다음 cron cycle에서 lockMissing → evaluateAndMaybeFireBoardingPrompt → boardingPrompt push 발사.
+  log('boarding-lock: waypoint advanced', {
+    token: trip.token.slice(0, 8),
+    completed: waypoint.stationName,
+    kind: waypoint.kind,
+    remaining: trip.waypoints.length,
+    // P2-2: true일 때만 log key 포함 — false noise로 운영 로그 가시성 저하 방지.
+    ...(lockReleasedOnTransfer ? { lockReleasedOnTransfer: true } : {}),
+  });
+  if (trip.waypoints.length === 0) {
+    // #868 — waypoints 소진(intermediate 마지막 통과)도 effective destination-arrived.
+    // #1707 — 본 분기 진입 전 상단 isCleanupAdvance 게이트가 cross-check 완료. gps-far 케이스는
+    // 이미 early return으로 차단됐다. 여기 도달 = within / stale-gps / no-gps / station-unknown
+    // 중 하나 = 정상 cleanup 진행.
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
+    await deleteSsot(env.TRIPS, trip.token);
+    return;
+  }
+  // stopsRemaining 변동 즉시 LA 발사 — 사용자에게 새 hop 정보를 즉시 노출.
+  const nextWaypoint = trip.waypoints[0];
+  if (trip.activityPushToken && trip.activityState === 'live') {
+    const contentState = buildLiveActivityContentState(
+      nextWaypoint,
+      0,
+      trip.waypoints.length,
+      trip,
+    );
+    await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind);
+  }
+  await putTrip(env.TRIPS, trip);
+  // #705 — shift된 진행분을 progress KV에 +1 누적. 이후 POST /trips race가 trip.waypoints를
+  // 다시 wipe해도 progress 기반 slice로 복원된다.
+  await mirrorProgress(env.TRIPS, trip, 1);
+}
+
+/**
+ * Live Activity update push 발사 헬퍼 (#586 D).
+ *
+ * - 새 추정 도착 epoch이 trip.lastLaPushEpoch와 LA_PUSH_THRESHOLD_MS(30s) 이상 차이날 때만 발사.
+ * - activityPushToken 부재 / activityState !== 'live' / threshold 미달 시 no-op.
+ * - 발사 후 trip.lastLaPushEpoch 갱신 + 410 응답 시 token clear (fireLiveActivityUpdate 내부).
+ *
+ * 반환 dirty=true는 호출자가 putTrip을 호출해야 함을 의미한다.
+ * (lastLaPushEpoch 갱신 또는 410 token clear 둘 다 dirty)
+ *
+ * #900 Seam D — ΔETA 임계가 미달이어도 직전 LA push 후 LA_HEARTBEAT_INTERVAL_MS(90s)가
+ * 지났으면 heartbeat로 한 번 더 발사한다. ETA가 정체된 BG 구간에서 content-state가
+ * stale로 남는 것을 방지하기 위한 안전망. `trip.lastLaPushAt`(epoch ms) 기반.
+ *
+ * #1671 — 환승/도착 임박 즉시 trigger. waypoint.kind==='transfer' 또는
+ * (kind==='destination' && etaSeconds≤LA_IMMEDIATE_TRIGGER_ETA_SEC) 일 때 ΔETA/heartbeat
+ * 대기 없이 즉시 발사한다. dedup window(30s)는 여전히 적용.
+ * X9 sub (환승/도착 LA lag) 해소 + V8 배터리 Net ↓ (heartbeat 90s로 상쇄).
+ */
+export async function maybeFireLiveActivityUpdate(
+  trip: Trip,
+  waypoint: Waypoint,
+  newArrivalEpoch: number,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+): Promise<boolean> {
+  if (!trip.activityPushToken || trip.activityState !== 'live') return false;
+  const last = trip.lastLaPushEpoch;
+  const etaSeconds = Math.max(0, Math.round((newArrivalEpoch - now) / 1000));
+
+  // #1671 — 즉시 trigger 여부 판정. dedup window(30s)는 통과해야 발사.
+  // transfer: leg 전환 시점 — 중요도 최상, etaSeconds 무관.
+  // destination: 도착 1분 이내 — 사용자가 내릴 준비를 해야 하는 시점.
+  // #2027 (Issue K) — archFlag='on' 시 환승 후 조기 발사 방지 위해 60s → 90s 상향.
+  // archFlag='off' 는 기존 60s 유지 (regression 방어).
+  const immediateTriggerEtaSec =
+    deps.archFlag === 'on' ? LA_IMMEDIATE_TRIGGER_ETA_SEC_ARCH : LA_IMMEDIATE_TRIGGER_ETA_SEC;
+  const isImmediateTrigger =
+    waypoint.kind === 'transfer' ||
+    (waypoint.kind === 'destination' && etaSeconds <= immediateTriggerEtaSec);
+
+  // #1671 — wall-clock dedup guard (즉시 trigger / heartbeat 공통).
+  // lastLaPushAt 기준 LA_PUSH_THRESHOLD_MS(30s) 이내에 이미 발사했으면 모든 경로 차단.
+  // 환승 시점에 isImmediateTrigger=true라도 30s 안에 중복 발사되지 않도록 race 차단.
+  const lastPushAt = trip.lastLaPushAt;
+  if (lastPushAt !== undefined && now - lastPushAt < LA_PUSH_THRESHOLD_MS) return false;
+
+  // #900 — 다음 셋 중 하나라도 만족하면 발사 (dedup 통과 후):
+  //   (a) ΔETA ≥ LA_PUSH_THRESHOLD_MS (변동 발사)
+  //   (b) heartbeat: (now − lastLaPushAt) ≥ LA_HEARTBEAT_INTERVAL_MS (정체 안전망)
+  //   (c) 즉시 trigger (환승/도착 임박) — ΔETA 미달이어도 통과
+  // last/lastLaPushAt이 둘 다 undefined인 첫 push는 (a) 분기에서 통과 (기존 동작).
+  if (last !== undefined && Math.abs(newArrivalEpoch - last) < LA_PUSH_THRESHOLD_MS) {
+    const heartbeatDue =
+      lastPushAt !== undefined && now - lastPushAt >= LA_HEARTBEAT_INTERVAL_MS;
+    if (!heartbeatDue && !isImmediateTrigger) return false;
+  }
+  const contentState = buildLiveActivityContentState(
+    waypoint,
+    etaSeconds,
+    trip.waypoints.length,
+    trip,
+  );
+  const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind);
+  if (result.dirty) {
+    // 410 분기 — token이 비워졌으므로 lastLaPushEpoch/lastLaPushAt은 갱신하지 않는다.
+    return true;
+  }
+  trip.lastLaPushEpoch = newArrivalEpoch;
+  // #900 Seam D — heartbeat 게이트 기준점. 발사 시각(wall clock)을 stamp.
+  trip.lastLaPushAt = now;
+  return true;
+}
+
+/**
+ * 임계치 이상 변동 시 reschedule silent push 발사. APNs env mismatch(#482) self-heal 포함.
+ * reschedule push는 alert fallback 대상이 아니므로 PENDING_PUSHES 미등록.
+ *
+ * 반환값 `cleanedUp=true`는 trip이 KV에서 삭제됐음을 의미 — 호출자는 이후 putTrip을 호출하면 안 된다
+ * (삭제된 trip을 in-memory 상태로 resurrect하는 것을 방지). #706에서 counter reset과 충돌하지 않게 도입.
+ */
+export async function maybeReschedulePush(
+  trip: Trip,
+  waypoint: Waypoint,
+  lock: BoardingLockMeta,
+  newArrivalEpoch: number,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<{ cleanedUp: boolean }> {
+  // #1559 (T6, Epic #1553 / ADR-017) — SSoT.motionState 게이트.
+  // 정지 trip에서도 ETA 임계치 변동만으로 reschedule silent push가 발사되던 회귀
+  // (2026-06-19 15:53/15:56 evidence) 차단. SSoT 부재 시(legacy trip — T1 seeding 이전 또는
+  // KV TTL 만료)는 backward compat을 위해 fallback. cron read는 SSOT_CRON_READ_CACHE_TTL_SEC
+  // (30s)로 같은 사이클 내 stale read 방지.
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  if (ssot === null) {
+    log('reschedule push: no-ssot fallback', { token: trip.token.slice(0, 8) });
+    stats.rescheduleFallbackNoSsot += 1;
+  } else if (ssot.motionState === 'stationary') {
+    log('reschedule push: blocked (motion-stationary)', {
+      token: trip.token.slice(0, 8),
+    });
+    stats.rescheduleBlockedMotion += 1;
+    return { cleanedUp: false };
+  }
+
+  const lastEpoch = trip.lastTrackedArrivalEpoch;
+  if (
+    lastEpoch !== undefined &&
+    Math.abs(newArrivalEpoch - lastEpoch) < RESCHEDULE_THRESHOLD_MS
+  ) {
+    return { cleanedUp: false };
+  }
+
+  // #2230 — per-station once dedup. 위 임계(15s)만으로는 destination ETA가 매 cron(60s)마다
+  // 15s+ 드리프트하는 정상적인 관측 변동을 매번 "새 발사"로 취급해 무한 반복한다
+  // (2026-08-09 실기기 dump: 불광 도착 후 6분간 6회). 같은 (token, station)은 TTL 동안 1회만.
+  if (await hasRescheduleFired(env.TRIPS, trip.token, waypoint.stationName)) {
+    log('reschedule push: dedup-skip (already fired for station)', {
+      token: trip.token.slice(0, 8),
+      nextStation: waypoint.stationName,
+    });
+    stats.rescheduleDedupSkipped += 1;
+    return { cleanedUp: false };
+  }
+
+  const pushId = generatePushId();
+  log('reschedule push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    nextStation: waypoint.stationName,
+    newArrivalTimeEpoch: newArrivalEpoch,
+    previousEpoch: lastEpoch,
+  });
+
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendReschedulePush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        trainCode: lock.trainCode,
+        nextStation: waypoint.stationName,
+        newArrivalTimeEpoch: newArrivalEpoch,
+        sentAt: now,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+        // #918 A3 PR4 — `bl:` + `tba:` 동시 정정. 구 backend 호환을 위해 채널 상수는
+        // types.ts 단일 SSOT (RESCHEDULE_CHANNELS_DEFAULT)에서 import.
+        channels: RESCHEDULE_CHANNELS_DEFAULT,
+        // #1193 — 중복역 trip(순환선/회차)에서 `tba:` 채널의 N번째 등장 정정. `validateTrip`이
+        // POST /trips 시점에 stamp한 값(불변)을 그대로 forward해 클라이언트와 routeStops 인덱스가
+        // round-trip 일치하도록 한다. 구 trip(필드 부재) → undefined → wire 생략 → 클라 0 fallback.
+        occurrenceIdx: waypoint.occurrenceIdx,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+    // #1633 — reschedule push corrected env 즉시 KV persist. 후속 maybeReschedulePush 호출이
+    // 다음 cron까지 1분 간격이라 그 사이 device re-POST나 cron stale read로 mismatch가 반복될
+    // 수 있다. 즉시 write로 race window 차단.
+    await putTrip(env.TRIPS, trip);
+  }
+  const envMismatchExhausted = heal.envMismatchExhausted;
+  const result = heal.result;
+
+  if (result.ok) {
+    stats.pushed += 1;
+    // #1683 — reschedule kind 카운터.
+    stats.silentPushFiredByKind.reschedule += 1;
+    trip.lastTrackedArrivalEpoch = newArrivalEpoch;
+    dirty = true;
+    // #2230 — 발사 직후 per-station dedup marker stamp. 다음 cron부터 TTL 동안 같은 station
+    // reschedule는 dedup-skip으로 억제된다.
+    await markRescheduleFired(env.TRIPS, trip.token, waypoint.stationName);
+  } else {
+    stats.errors += 1;
+    log('reschedule push failed', {
+      status: result.status,
+      reason: result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    // #2177 — reschedule push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+    await logPushFailure(env.DB, {
+      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+      // 별도로 trip_token_hash에 남긴다.
+      token: resolveTripDeviceToken(trip),
+      tripToken: trip.token,
+      pushKind: 'reschedule',
+      apnsStatus: result.status,
+      apnsReason: result.reason,
+      apnsEnv: trip.apnsEnv,
+      envMismatchExhausted,
+    });
+    if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
+      // #586 D — trip이 unrecoverable로 폐기되는 경로에서도 LA가 살아있으면 dismissal로 정리.
+      // #868 — 클라 state sync용 trip-ended silent push도 발사 (reason=push-unrecoverable).
+      // 단, 토큰 자체가 unrecoverable이면 push도 같은 이유로 실패할 가능성이 높음 — fireTripEndedPush
+      // 내부에서 graceful log만 남기고 cleanup 흐름은 계속 진행한다.
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
+      return { cleanedUp: true };
+    }
+  }
+
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
+  return { cleanedUp: false };
+}
+
+/** #2329 (consensus-C) — legConsensus 미 wire 시 headway 데이터 부재 conservative fallback (초). */
+export const CONSENSUS_DEFAULT_HEADWAY_SEC = 300;
+
+/**
+ * #2329 (consensus-C, 설계 SSoT #2323) — lock 없는 leg(환승 직후, 오토락 재부착 미실행 — #2154
+ * 삭제 대상 chain)에서 `transferLegConsensus` 상태기계로 후보 열차를 추적하고, confirmed 상태에
+ * 도달했을 때만 기존 `fireArvlCdStationPush`(dedup 포함)를 재사용해 imminent alert를 발사한다.
+ *
+ * 신규 emitter 없음 — 확정된 trainCode를 `BoardingLockMeta` 모양의 synthetic lock으로 감싸
+ * 기존 arvlCd fire path에 그대로 위임한다(dedup key도 trainCode 기반이라 자연 중복 방지).
+ * `runLocklessIntermediate`(C 토글 ON 전용)와는 caller가 `!trip.infoModeEnabled`로 상호
+ * 배타적으로 호출해 이중 발사 경로가 원천적으로 겹치지 않는다.
+ *
+ * candidate 관측: waypoint arrivals(이미 이 cycle에서 필요한 신규 fetch — lockMissing 분기는
+ * 기존에 Seoul 호출이 0건이었다)를 line/direction 필터(#2328, legCandidateFilters)로 사전 배제한
+ * 뒤 `transferLegConsensus` 상태기계에 forward한다. 각 candidate의 departureEpochMs는 상태기계
+ * 최초 관측 시점의 예측 도착 epoch로 고정되고(engine이 재기록하지 않음), 이후 tick의 deltaSec은
+ * "이번 tick 예측 - 최초 예측"으로 산출 — 같은 실차가 일관되게 카운트다운하면 0에 수렴(match),
+ * 후보가 바뀌거나 사라지면 발산(mismatch/missed)한다.
+ *
+ * confirmed 이벤트가 발생한 tick에서만 advance+fire를 시도한다(매 tick 재발사 방지 — dedup으로도
+ * 막히지만 SSoT write/advance 비용을 아낀다).
+ */
+async function tryFireConsensusTrainLeg(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  if (waypoint.kind !== 'intermediate') return;
+
+  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  if (ssot === null || !ssot.currentStationId) return;
+
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  if (arrivals.length === 0) return;
+
+  const candidates: { trainCode: string; arvlCd: number; arrivalSeconds: number }[] = [];
+  for (const a of arrivals) {
+    if (a.arvlCd === null) continue;
+    if (!matchLine(a.subwayNm, waypoint.line)) continue;
+    if (filterCandidateLine(waypoint.line, trip.route, trip.waypoints).kind === 'reject') continue;
+    if (
+      filterCandidateDirection(waypoint.line, a.isUp, ssot.currentStationId, waypoint.stationName)
+        .kind === 'reject'
+    ) {
+      continue;
+    }
+    candidates.push({ trainCode: a.trainCode, arvlCd: a.arvlCd, arrivalSeconds: a.arrivalSeconds });
+  }
+  if (candidates.length === 0) return;
+
+  const observedDepartures: ObservedDeparture[] = candidates.map((c) => ({
+    trainCode: c.trainCode,
+    departureEpochMs: now + c.arrivalSeconds * 1000,
+  }));
+
+  const existingBaseline = new Map(
+    (ssot.legConsensus?.candidates ?? []).map((c) => [c.trainCode, c.departureEpochMs]),
+  );
+  const observations = observedDepartures.map((d) => {
+    const baseline = existingBaseline.get(d.trainCode);
+    return {
+      trainCode: d.trainCode,
+      deltaSec: baseline !== undefined ? (d.departureEpochMs - baseline) / 1000 : 0,
+    };
+  });
+
+  // frontend LineNumber(엄격 union)와 backend LineNumber(=string) 어휘 차이 — legDirection.ts/
+  // legCandidateFilters.ts와 동일한 caster 패턴(런타임은 `===` 비교라 안전).
+  const transferTimeSec = getTransferSeconds(
+    (ssot.currentStationLine ?? waypoint.line) as Parameters<typeof getTransferSeconds>[0],
+    waypoint.line as Parameters<typeof getTransferSeconds>[1],
+    ssot.currentStationId,
+  );
+
+  const outcome = await applyLegConsensusTick(env.TRIPS, env.DB, trip.token, {
+    init: ssot.legConsensus
+      ? undefined
+      : {
+          t0EpochMs: ssot.lastAdvanceAt > 0 ? ssot.lastAdvanceAt : now,
+          transferTimeSec,
+          headwaySec: CONSENSUS_DEFAULT_HEADWAY_SEC,
+          observedDepartures,
+        },
+    tick: { now, observations },
+    station: waypoint.stationName,
+    line: waypoint.line,
+  });
+  if (outcome === null) return;
+
+  const justConfirmed = outcome.events.some((e) => e.kind === 'consensus-confirm');
+  if (!justConfirmed || outcome.record.confirmedTrainCode === undefined) return;
+
+  const confirmedEntry = candidates.find((c) => c.trainCode === outcome.record.confirmedTrainCode);
+  if (!confirmedEntry) return;
+
+  const advanceOutcome = await advanceTripPosition(
+    env.TRIPS,
+    trip.token,
+    waypoint.stationName,
+    {
+      type: 'consensus-train',
+      stationId: waypoint.stationName,
+      ts: now,
+      environment: deriveEvidenceEnvironment(trip),
+      arvlcdTrainCode: outcome.record.confirmedTrainCode,
+      arvlCd: confirmedEntry.arvlCd,
+    },
+    { gatePassed: true, lockAttachable: false, archFlag: deps.archFlag },
+  );
+  if (advanceOutcome.result !== 'advanced') {
+    stats.arvlCdFireBlocked += 1;
+    log('consensus-fire: blocked', {
+      token: trip.token.slice(0, 8),
+      trainCode: outcome.record.confirmedTrainCode,
+      station: waypoint.stationName,
+      reason: advanceOutcome.blockReason satisfies AdvanceBlockReason | undefined,
+    });
+    return;
+  }
+  stats.arvlCdFireFired += 1;
+
+  const syntheticLock: BoardingLockMeta = {
+    trainCode: outcome.record.confirmedTrainCode,
+    line: waypoint.line,
+    subwayId: '',
+    selectedDepartureTime: now,
+    segmentStations: [waypoint.stationName],
+    expiresAt: trip.expiresAt,
+  };
+  await fireArvlCdStationPush({
+    trip,
+    waypoint,
+    lock: syntheticLock,
+    arvlCd: confirmedEntry.arvlCd,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+}
+
+/**
+ * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 통과하도록 하는 lock-
+ * independent 헬퍼. C 토글(`infoModeEnabled`) ON/OFF 둘 다 대상이다 — dispatch에서
+ * `runLocklessIntermediate`(C ON, intermediate 전용) / `tryFireConsensusTrainLeg`(C OFF,
+ * intermediate 전용) 둘 다 kind==='transfer'에 반응하지 않아 lockless leg-1이 환승 waypoint에서
+ * 영구 정지(`currentLegAnchor` 미stamp → leg-2가 태어나지 못함)하던 gap을 메운다.
+ *
+ * ground truth = 잠실나루/#864 시나리오의 lock-active transfer advance와 동일 신호
+ * (`arrivalForLock(station, 0, 1)` 류 fixture) — waypoint.line(방금 통과한 현재 leg의 line)
+ * 기준 arvlCd가 ENTERING(0) 또는 ARRIVED(1). motion 게이트는 두지 않는다 — lock-active transfer
+ * advance(`runTrainCodeTracking` → `fireArvlCdStationPush` → `advanceBoardingLockWaypoint`)도
+ * 같은 arvlCd 단일 신호만으로 advance하므로 lockless가 그보다 더 엄격할 이유가 없다(#1315
+ * motion 게이트는 "trainCode 미확보 intermediate" 전용 보수 게이트로 별개 트랙).
+ *
+ * 발사 성공 시 `completeWaypointAdvance`(anchor stamp + hop-end prompt + waypoints slice +
+ * LA/putTrip/mirrorProgress, `advanceBoardingLockWaypoint`와 공유)를 그대로 호출한다.
+ *
+ * 반환값 true = advance 완료(trip이 이미 persist/cleanup됨 — caller는 이 cycle에서 trip을
+ * 더 이상 건드리지 않고 continue해야 한다). false = 신호 미확보/미도착(caller는 기존
+ * lockMissing 카운트 + LA heartbeat 경로로 정상 fallthrough).
+ */
+async function runLocklessTransfer(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<boolean> {
+  if (waypoint.kind !== 'transfer') return false;
+
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  if (signal === null || signal.arvlCd === null) {
+    stats.etaMissing += 1;
+    return false;
+  }
+  const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
+  if (!fires) return false;
+
+  stats.locklessTransferAdvanced += 1;
+  log('lockless-transfer: waypoint advance (ground truth arvlCd)', {
+    token: trip.token.slice(0, 8),
+    station: waypoint.stationName,
+    line: waypoint.line,
+    arvlCd: signal.arvlCd,
+  });
+  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  return true;
+}
+
+/**
+ * #816 C — lockless trip (사용자 opt-in)에서 intermediate waypoint 통과를 추적하고 station-passed
+ * push를 발사한다.
+ *
+ * #1729 paradigm shift — `maybeBindLocklessTrainCode`(Path B') 제거.
+ * 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
+ * lockless 9단 통과 시 boardingPrompt push 흐름으로 fallthrough.
+ *
+ * 발사 조건:
+ *   1. arrivals 중 best signal의 arvlCd가 ARRIVED(1) 또는 ENTERING(0)
+ *   2. GPS motion ∈ {walking, automotive} (실제 이동 확증)
+ *   3. dedup: 같은 waypoint에서 이미 한 번 발사한 경우 (lastFiredPhase='imminent') skip
+ *
+ * 발사 성공 시: waypoint shift + lastFiredPhase reset + trip 저장. waypoint 0이면 trip cleanup.
+ * 사양상 transfer/destination kind는 호출 전에 분기로 차단됨 — 이 함수는 intermediate에 한정.
+ */
+// Backend는 취침모드 무관 발사 (device shouldSuppressBySleepRule 단일 gate, ADR-023).
+export async function runLocklessIntermediate(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  // #837 P2-1 — dedup gate를 fusion + arrivals fetch + reset 이후로 이동.
+  // arvlCd=ARRIVED/ENTERING은 phase보다 강한 ground truth 신호이므로, 이미 imminent 발사한
+  // waypoint라도 reset은 수행해야 한다(state drift 누적 차단). push 발사만 dedup으로 차단.
+  // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
+  // #2007 — archFlag=on 시 runFusionStep 이 Kalman 계산/write/phase 를 skip (fusion.kalmanKmh=null 등).
+  const fusion = await runFusionStep(trip, env, now, deps.archFlag);
+  // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
+  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
+  let dirty = false;
+  if (fusion.phaseState) {
+    trip.stationPhase = fusion.phaseState;
+    dirty = true;
+  }
+  // #1729 paradigm shift — maybeBindLocklessTrainCode(Path B') 제거됨.
+  // lockless trip은 boardingPrompt push 경로로 사용자 인지 후 BoardingTrainList에서 명시 탭.
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  // #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 차단 (환승 후 stale 신호 방지).
+  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  if (signal === null || signal.arvlCd === null) {
+    stats.etaMissing += 1;
+    // #2027 — line mismatch 로 인해 archFlag='on' 에서 null 이 반환된 경우 skip reason stamp.
+    if (deps.archFlag === 'on' && arrivals.length > 0 && signal === null) {
+      log('lockless: pickBestArrivalSignal skipped (line-mismatch-transfer)', {
+        token: trip.token.slice(0, 8),
+        waypoint: waypoint.stationName,
+        waypointLine: waypoint.line,
+        arrivalsCount: arrivals.length,
+      });
+    }
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // 발사 트리거: 해당 역에 진입(ENTERING) 또는 도착(ARRIVED). 그 외 phase는 통과 알림 부적합.
+  const fires =
+    signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
+  if (!fires) {
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #826 — fires=true(ARRIVED/ENTERING)는 ground truth 신호. push 발사 여부(phase 가드/dedup)와
+  // 무관하게 Kalman state를 reset해 drift 누적을 차단한다. arvlCd가 가장 강한 신호 — phase
+  // 분류는 휴리스틱이라 contradiction 시 arvlCd를 신뢰. KV write는 idempotent(v=0/P=R_LOW).
+  // #2007 (ADR-022 Phase 4-5) — archFlag=on 시 Kalman state 자체가 dormant → reset write + counter skip.
+  if (deps.archFlag !== 'on') {
+    await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
+    stats.kalmanReset += 1;
+  }
+  // #837 P2-1 — dedup gate (reset 이후, push 발사 직전). 같은 waypoint에서 이미 발사했으면
+  // push만 skip하고 dirty 저장 후 return (lockless 흐름은 phase 개념이 없으니 imminent 단일 stamp 사용).
+  if (trip.lastFiredPhase === 'imminent') {
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #825 — high-confidence non-APPROACHING phase면 차단 (false positive 1차).
+  // 신호 부재/낮은 신뢰는 기존 동작 그대로 (회귀 없음, #834 wire 전까지 자연 skip).
+  // #1363 — log 진단 이원화. `waypoint`(trip 다음 정거장) ↔ `currentStation`(사용자 추정 현재역)
+  // 혼동 방지. 클라가 송신한 latest point의 currentStationName을 추출(있으면), log object에 동시 적재.
+  const currentStationName = pickLatestCurrentStationName(fusion.series);
+  if (!phaseAllowsImminentFiring(fusion.phaseState)) {
+    stats.phaseImminentBlocked += 1;
+    log('lockless: phase gate blocked', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
+      phase: fusion.phaseState?.current,
+      confidence: fusion.phaseState?.confidence,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #1315 — trainCode 미확보 cycle의 보수 게이트. `pickBestArrivalSignal`의 arvlCd는 waypoint
+  // 역의 "아무 열차" 신호라 *사용자 열차*가 통과했다는 ground truth가 아니다. GPS motion이 실제
+  // 이동(walking/automotive)을 positive하게 보일 때만 advance를 허용 — 정적/저신뢰(stationary/
+  // unknown, 샘플 없음 포함)는 보류해 false positive(정적 false advance + 알림 레이스)를 차단한다.
+  // #1386 — lock-active vanish fallback도 같은 헬퍼(`isAdvanceAllowedByMotion`)를 공유한다.
+  //
+  // #2448 — 이 게이트가 lockless(C 토글) 매역 "곧 진입"(ENTERING) fire 를 locked 경로와
+  // 동급으로 만들지 못하는 지점이다. CMMotionActivity 는 지하에서 5~10분 간헐 신호라
+  // (memory: lesson_motion_activity_intermittent_signal) motion 이 stationary/unknown 으로
+  // 잘못 분류되면 이 게이트가 정당한 ENTERING 순간도 보류시킨다. `fireArvlCdStationPush`
+  // (lock 활성 경로)는 이 motion 게이트가 없어 지하에서도 100% 동작하지만, lockless는
+  // best-effort — 사용자 명시 의향 trip(C 토글 ON)이 lock 활성과 동급 정확도 보장을 받아야
+  // 한다는 원칙(ADR-014, memory: feedback_user_intent_equal_protection)에 아직 미달한다.
+  // 근본 해소는 이 게이트 완화/대체가 아니라 트립을 lock 상태로 승격하는 별도 트랙 과제.
+  if (!isAdvanceAllowedByMotion(fusion.posMetrics.motion)) {
+    stats.locklessMotionGateBlocked += 1;
+    log('lockless: motion gate blocked (no trainCode, not moving)', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
+      motion: fusion.posMetrics.motion,
+      arvlCd: signal.arvlCd,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #1967 (Ff-1) — admin kill switch. fusion advance 평가(위) + arvlCd Kalman reset +
+  // phase/motion 게이트는 kill switch와 무관하게 이미 완료됐다. 여기서부터는 매역
+  // station-passed push 발사(pushId 발급/전송/putPending/stats.pushed·locklessIntermediateFired
+  // 증가/LA update)만 게이트 대상 — 취침 알람(`maybeFireSleepAlarm`) 평가와 waypoint 진행
+  // (`waypoints.shift()`)은 kill switch 활성 여부와 무관하게 아래에서 항상 실행된다.
+  // 사용자 명시 의향 trip(C 토글 ON)은 lock 활성과 동급 정확도 보장 의무(ADR-014) —
+  // device false-alarm push 회귀 대응으로 매역 통지만 끄더라도 trip advance와 취침 알람까지
+  // 함께 멈추면 그 자체가 새로운 사용자 가치 손실 회귀가 된다.
+  if (deps.killSwitchLocklessIntermediate === true) {
+    stats.killSwitchLocklessIntermediateSkipped += 1;
+    log('lockless: skip push (kill switch active)', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
+      arvlCd: signal.arvlCd,
+    });
+  } else {
+    const pushId = generatePushId();
+    log('lockless: station-passed push', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
+      arvlCd: signal.arvlCd,
+      etaSeconds: signal.etaSeconds,
+      // #2032 (Issue D) — monitoring dimension. lockless fire 시 device sleep 상태 기록.
+      // ADR-023: backend는 sleep 무관 발사. device의 shouldSuppressBySleepRule이 UI suppress 판정.
+      sleepMode: trip.sleepModeEnabled,
+    });
+    // #1561 (T8, ADR-017 / S2 흡수) — lockless fire 직전 SSoT 권위 스냅샷 forward.
+    const locklessSsot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
+    const locklessPayload: SilentPushPayload = {
+      nextWaypoint: waypoint.stationName,
+      etaSeconds: signal.etaSeconds,
+      phase: 'imminent',
+      kind: 'intermediate',
+      sentAt: now,
+      pushId,
+      // Epic #1204 그룹 2 D3 (#1273) — lockless intermediate도 waypoint.hopIndex forward.
+      // D1 estimator의 currentHopIndex와 ±tolerance 매칭 시 거리 검증 우회 + GPS 미준비 fallback.
+      hopIndex: waypoint.hopIndex,
+      // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+      // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+      occupiedLine: waypoint.line,
+      // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
+      // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
+      subsurface: trip.subsurface === true,
+      // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
+      // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
+      tripToken: trip.token,
+      // #1402 — 발사 경로 stamp. device alarmLog에 pushOrigin=lockless로 기록.
+      origin: 'lockless' as const,
+      // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
+      // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
+      passedStations: trip.passedStations,
+      // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts
+      // JSON serializer가 자연 누락 → device cascade picker는 기존 tier fallback. lockless trip은
+      // backend SSoT가 가장 신뢰 높은 단일 신호 (lock 부재 환경).
+      ssot: toSilentPushSsot(locklessSsot),
+    };
+    const heal = await sendWithEnvHeal(
+      (host) =>
+        sendSilentPush({
+          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+          deviceToken: resolveTripDeviceToken(trip),
+          payload: locklessPayload,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+    );
+    if (heal.correctedEnv) {
+      trip.apnsEnv = heal.correctedEnv;
+      dirty = true;
+      stats.envCorrected += 1;
+      // #1633 — lockless intermediate corrected env 즉시 KV persist. lockless는 매역 fire 경로라
+      // 다음 push까지 짧은 간격(~60s)이지만, 본 cycle 내 후속 코드가 cleanupTripWithLa로 early
+      // return하면 putTrip이 호출되지 않는다. 즉시 write로 corrected env 영구 보존.
+      await putTrip(env.TRIPS, trip);
+    }
+    if (!heal.result.ok) {
+      stats.errors += 1;
+      log('lockless: push failed', {
+        status: heal.result.status,
+        reason: heal.result.reason,
+        token: trip.token.slice(0, 8),
+      });
+      if (
+        isUnrecoverableApnsError(heal.result.status, heal.result.reason) ||
+        heal.envMismatchExhausted
+      ) {
+        // #2177 — unrecoverable(410/mismatch exhausted)로 cleanup 분기하는 경로는 retry queue를
+        // 타지 않아 enqueueRetryIfTransient의 공통 D1 기록 지점을 지나지 않는다 — 직접 기록.
+        await logPushFailure(env.DB, {
+          // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+          // 별도로 trip_token_hash에 남긴다.
+          token: resolveTripDeviceToken(trip),
+          tripToken: trip.token,
+          pushKind: locklessPayload.kind,
+          apnsStatus: heal.result.status,
+          apnsReason: heal.result.reason,
+          apnsEnv: trip.apnsEnv,
+          envMismatchExhausted: heal.envMismatchExhausted,
+        });
+        // #868 — lockless push unrecoverable로 trip 폐기 시에도 클라 state sync push 발사.
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
+        return;
+      }
+      // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
+      // 분기 이후이므로 본 경로는 transient 또는 기타 비치명 실패. enqueueRetryIfTransient 가 retryable
+      // 만 적재한다.
+      // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry (lockless intermediate payload.kind='intermediate' → flag=on 시 skip).
+      await enqueueRetryIfTransient(
+        env.PENDING_PUSHES,
+        {
+          pushId,
+          // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+          token: resolveTripDeviceToken(trip),
+          // #2185 — trip_token_hash용 신원 토큰.
+          tripToken: trip.token,
+          payload: locklessPayload,
+          apnsEnv: trip.apnsEnv ?? 'sandbox',
+          status: heal.result.status,
+          reason: heal.result.reason,
+          now,
+          envMismatchExhausted: heal.envMismatchExhausted,
+        },
+        deps.archFlag,
+        env.DB,
+      );
+      if (dirty) await putTrip(env.TRIPS, trip);
+      return;
+    }
+    // 발사 성공 — dedup stamp + 측정 카운터. waypoint 진행은 kill switch 무관 블록(아래)으로 이동.
+    stats.pushed += 1;
+    stats.locklessIntermediateFired += 1;
+    // #1683 — lockless intermediate kind 카운터.
+    stats.silentPushFiredByKind.intermediate += 1;
+    // #1402 — alert fallback 안전망 등록 (60s 임계, #1894로 30s→60s 완화). shift 전 stationName으로 등록해 alert 본문이
+    // 사용자가 실제로 통과한 station을 가리키게 한다. lockless intermediate는 lock 경로보다
+    // device-side validation이 느슨해 silent push 누락 시 안전망 가동이 더 절실한 경로.
+    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록 (본 경로 kind='intermediate' → flag=on 시 skip).
+    await putPending(
+      env.PENDING_PUSHES,
+      {
+        pushId,
+        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
+        token: resolveTripDeviceToken(trip),
+        // #2522 — fallback이 발사 직전 lock 상태를 재확인할 수 있도록 trip 신원 토큰 동봉.
+        tripToken: trip.token,
+        alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+        sentAt: now,
+        stationName: waypoint.stationName,
+        kind: 'intermediate',
+        phase: 'imminent',
+        etaSeconds: signal.etaSeconds,
+        apnsEnv: trip.apnsEnv ?? 'sandbox',
+      },
+      deps.archFlag,
+    );
+    trip.lastFiredPhase = 'imminent';
+    // #1539 (S6) — lockless intermediate 통과 시점도 동일하게 stationName 누적. lock 경로와 동등
+    // 정확도 보장 의무(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).
+    appendPassedStation(trip, waypoint.stationName);
+    // #1826 — lockless intermediate 경로에서도 LA BG update 발사.
+    // signal.etaSeconds를 ETA로 전달 — station-passed push와 동일 시점의 ETA 추정값.
+    // maybeFireLiveActivityUpdate 내 dedup(30s) + heartbeat(90s) 게이트가 중복 발사를 차단한다.
+    // 반환 dirty=true여도 trip의 lastLaPushEpoch/lastLaPushAt 갱신분은 아래 putTrip으로 일괄 persist.
+    await maybeFireLiveActivityUpdate(trip, waypoint, now + signal.etaSeconds * 1000, deps, stats, now, log);
+  }
+  // #2066 (Phase 2-backend) — 취침 알람 평가. shift 전이라 trip.waypoints[1]이 waypoint(방금
+  // arvlCd 확정된 직전역 후보) 바로 다음 대상. lockless도 intermediate만 advance하므로 lock 경로
+  // (`advanceBoardingLockWaypoint`)와 동일 로직 재사용 — 환승/도착 타겟 종류만 다르다.
+  // #1967 (Ff-1) — kill switch 활성 시에도 실행: 매역 push만 억제 대상이지 취침 알람까지 죽이면
+  // 안 된다(회귀 대응 중 취침 알람이 함께 죽는 새 회귀 방지).
+  await maybeFireSleepAlarm({
+    trip,
+    waypoint,
+    nextWaypoint: trip.waypoints[1],
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+  // #2510 — 준비 진동(ACTION, 전체 트립). lock 경로와 동일 병렬 트리거 — 상호 배타(sleep이면 skip).
+  await maybeFirePrepareAlarm({
+    trip,
+    waypoint,
+    nextWaypoint: trip.waypoints[1],
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+  // #1967 (Ff-1) — kill switch 활성 시에도 waypoint 진행은 정상 수행 (trip advance는
+  // 매역 통지 여부와 독립적인 SSoT). push 미발사와 무관하게 사용자는 실제로 이 역을 통과했다.
+  trip.waypoints.shift();
+  if (trip.waypoints.length === 0) {
+    // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
+    // #868 — lockless trip의 effective destination-arrived도 동일 reason.
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    return;
+  }
+  // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
+  trip.lastFiredPhase = undefined;
+  // #1285 — lockless shift를 progress KV에 mirror해 POST /trips 재등록 race로부터 진행분 보존.
+  // lock 경로의 mirrorProgress와 동형 — token 기준 lockless 마커로 저장.
+  await mirrorLocklessProgress(env.TRIPS, trip);
+  await putTrip(env.TRIPS, trip);
+}
+
+/**
+ * realtimePosition에서 trainCode 위치를 찾았을 때 다음 waypoint 도착 epoch을 추정한다.
+ * segmentStations에서 현재 위치 인덱스와 목표 인덱스의 차이 × hop time(90s default).
+ * 매핑 안 되면 epoch null — 호출자가 etaMissing 처리.
+ * 이미 도착(sttus=ARRIVED) + 목표역 일치이면 arrived=true.
+ */
+export function estimateArrivalFromPosition(
+  train: PositionEntry,
+  targetStation: string,
+  lock: BoardingLockMeta,
+  now: number,
+): { epoch: number | null; arrived: boolean } {
+  const currentIdx = lock.segmentStations.indexOf(train.stationName);
+  const targetIdx = lock.segmentStations.indexOf(targetStation);
+  if (currentIdx < 0 || targetIdx < 0) return { epoch: null, arrived: false };
+  // 이미 목표역에 도착했거나 지나친 경우
+  if (currentIdx >= targetIdx) {
+    return {
+      epoch: now,
+      arrived: train.trainSttus === TRAIN_STATUS.ARRIVED && train.stationName === targetStation,
+    };
+  }
+  const hops = targetIdx - currentIdx;
+  return { epoch: now + hops * FALLBACK_HOP_SEC * 1000, arrived: false };
 }
 
 /**
@@ -136,36 +5364,884 @@ export function pickActiveWaypoint(trip: Trip): Waypoint | null {
   return trip.waypoints[0];
 }
 
+export interface ArrivalSignal {
+  etaSeconds: number;
+  arvlCd: number | null;
+}
+
 /**
- * arrivals 중 waypoint의 line과 매칭되는 가장 빠른 ETA(seconds)를 반환.
- * 매칭 실패 시 가장 빠른 도착으로 fallback. 모두 없으면 null.
+ * arrivals 중 waypoint의 line과 매칭되는 trains에서 phase trigger에 가장 적합한 신호를 선택 (#409).
+ *
+ * 선택 순서:
+ *   1. arvlCd ∈ {0, 1} (해당 역 진입/도착) — imminent phase 직결, 즉시 채택
+ *   2. arvlCd ∈ {4, 5} (전역 진입/도착) — early phase 직결, 즉시 채택
+ *   3. 위 둘 모두 없으면 min ETA의 train을 채택 (ETA fallback 경로)
+ *
+ * 라인 매칭 실패 시 전체 arrivals로 fallback. 모두 없으면 null.
+ *
+ * #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 제거. 환승 직후 (waypoint 가 새 line
+ * 으로 전환) Seoul API 가 이전 line 의 stale 신호만 반환하면 다른 line 의 train 이 대상 역에 도착
+ * 임박으로 판정돼 조기 알림이 발사되는 회귀 (2026-07-03 성수 8분 조기) 를 차단한다. archFlag='on'
+ * + matchingLine.length===0 이면 null 반환 → caller 는 arc / ETA fallback 경로로 자연 전환.
+ * archFlag='off' 시 기존 fallback 동작 유지 (regression 방어).
  */
-export function pickBestEtaSeconds(
+export function pickBestArrivalSignal(
   arrivals: readonly ArrivalEntry[],
   waypoint: Waypoint,
-): number | null {
+  archFlag?: ArchFlagValue,
+): ArrivalSignal | null {
   if (arrivals.length === 0) return null;
-  const matchingLine = arrivals.filter((a) => isLineMatch(a.subwayNm, waypoint.line));
+  const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, waypoint.line));
+  // #2027 (Issue K) — archFlag='on' 시 line mismatch 시 fallback 차단.
+  if (matchingLine.length === 0 && archFlag === 'on') {
+    return null;
+  }
   const pool = matchingLine.length > 0 ? matchingLine : arrivals;
-  const min = pool.reduce(
-    (acc, cur) => (cur.arrivalSeconds < acc ? cur.arrivalSeconds : acc),
-    Number.POSITIVE_INFINITY,
+
+  // 1순위: imminent 실측 신호 (해당 역 진입/도착).
+  const imminentTrain = pool.find(
+    (a) => a.arvlCd === ARRIVAL_CODE.ENTERING || a.arvlCd === ARRIVAL_CODE.ARRIVED,
   );
-  return Number.isFinite(min) ? min : null;
+  if (imminentTrain) {
+    return { etaSeconds: imminentTrain.arrivalSeconds, arvlCd: imminentTrain.arvlCd };
+  }
+  // 2순위: early 실측 신호 (전역 진입/도착).
+  const earlyTrain = pool.find(
+    (a) => a.arvlCd === ARRIVAL_CODE.PREV_ENTERING || a.arvlCd === ARRIVAL_CODE.PREV_ARRIVED,
+  );
+  if (earlyTrain) {
+    return { etaSeconds: earlyTrain.arrivalSeconds, arvlCd: earlyTrain.arvlCd };
+  }
+  // 3순위: 실측 신호 없음 → min ETA fallback (기존 동작 유지).
+  let best = pool[0];
+  for (const cur of pool) {
+    if (cur.arrivalSeconds < best.arrivalSeconds) best = cur;
+  }
+  return { etaSeconds: best.arrivalSeconds, arvlCd: best.arvlCd };
 }
 
 /**
- * 노선 매칭 — Seoul API는 "지하철1호선", "수도권2호선" 같은 형식.
- * waypoint.line은 "1", "2" 또는 "수인분당" 등의 키.
- * 둘 중 하나가 다른 쪽 문자열에 포함되면 매칭으로 간주한다.
+ * BadDeviceToken은 self-heal 분기에서 처리한다 (#482 D안).
+ * unrecoverable로 분류되는 것은 토큰 자체가 만료/취소된 경우뿐.
  */
-function isLineMatch(subwayNm: string, line: string): boolean {
-  if (!subwayNm || !line) return false;
-  return subwayNm.includes(line) || line.includes(subwayNm);
+function isUnrecoverableApnsError(status: number, _reason: string | undefined): boolean {
+  if (status === 410) return true; // Unregistered
+  return false;
 }
 
-function isUnrecoverableApnsError(status: number, reason: string | undefined): boolean {
-  if (status === 410) return true; // Unregistered
-  if (status === 400 && reason === 'BadDeviceToken') return true;
-  return false;
+/** KST(UTC+9) HH:MM 문자열로 변환 (#1739). */
+function toKstHhmm(epochMs: number): string {
+  const kstMs = epochMs + 9 * 60 * 60 * 1000;
+  const d = new Date(kstMs);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/**
+ * boardingPrompt push 메시지 빌드 (#1739 — 방면 + 시간 명시).
+ *
+ * #1895 — i18n 4언어 분기 (ko/en/ja/zh). trip.locale 기반으로 `t(locale)` lookup해 본문 생성.
+ * locale 미지정/비지원 시 ko fallback (한국 운영 기본).
+ *
+ * title: locale별 분기 ("탑승하셨나요?" / "Are you on board?" / "ご乗車されましたか?" / "您已乘车了吗?").
+ * body:  nextStation이 있으면 "출발역 [호선] → 다음역 방면 HH:MM 진입" (locale별 어미 분기),
+ *        없으면 fallback "${line} · ${originStation}".
+ *
+ * @param originStation  display.originStation (출발역 표시명)
+ * @param line           display.line ("2", "gyeongui" 등)
+ * @param nextStation    trip.waypoints[0].stationName (다음 정거장 — 방면 표시)
+ * @param etaSeconds     arrivals에서 추출한 도착 잔여 초 (null = 정보 없음)
+ * @param now            현재 epoch ms (ETA 절대 시각 계산용)
+ * @param locale         #1895 — trip.locale (ko/en/ja/zh). 미지정 시 ko fallback.
+ */
+export function buildBoardingPromptMessage(
+  originStation: string,
+  line: string,
+  nextStation: string | null,
+  etaSeconds: number | null,
+  now: number,
+  locale?: SupportedLocale,
+): { title: string; body: string } {
+  const strings = t(locale);
+  const etaTimeStr =
+    etaSeconds === null ? null : toKstHhmm(now + etaSeconds * 1000);
+  return {
+    title: strings.boardingPromptTitle,
+    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr }),
+  };
+}
+
+/**
+ * #2034 — 환승역 hop-end ("하차했나요?") 알림 title/body 를 4언어 (ko/en/ja/zh) 로 빌드.
+ *
+ * caller (환승 waypoint advance 시점) 는 `transferStation` / `line` (직전 leg) / `nextLine` /
+ * `nextStation` 을 넘긴다. i18n 는 locale 자동 fallback.
+ */
+export function buildHopEndPromptMessage(
+  transferStation: string,
+  line: string,
+  nextLine: string | null,
+  nextStation: string | null,
+  locale?: SupportedLocale,
+): { title: string; body: string } {
+  const strings = t(locale);
+  return {
+    title: strings.hopEndPromptTitle({ transferStation }),
+    body: strings.hopEndPromptBody({ transferStation, line, nextLine, nextStation }),
+  };
+}
+
+/**
+ * APNs 토큰 환경(sandbox/production)과 host가 어긋났을 때 Apple이 내는 시그널.
+ * 이 조건에 한해서만 self-heal retry를 시도한다.
+ */
+
+/**
+ * #2022 (ADR-022 B8 caller 완결) — archFlag=on 분기의 fire trigger.
+ *
+ * Seoul API pool 안에 arvlCd=1(ARRIVED) 신호가 최소 1개 이상 존재하는지 검사.
+ * 사용자 확정 flow "A역 도착 판정 → boardingPrompt" 정합 — arvlCd=0(진입 중)/
+ * arvlCd=2(출발)/기타 상태에서는 fire trigger 미충족 (UI 오탐 방지).
+ *
+ * caller 는 archFlag=on 분기에서만 호출. archFlag=off 는 기존 9-AND gate 가
+ * fire trigger 이므로 이 함수를 통과하지 않는다 (회귀 방어).
+ */
+export function hasArrivedSignal(pool: readonly ArrivalEntry[]): boolean {
+  return pool.some((entry) => entry.arvlCd === ARRIVAL_CODE.ARRIVED);
+}
+
+/**
+ * #2515 — boarding-prompt 계열(origin `evaluateAndMaybeFireBoardingPrompt` + leg 2
+ * `maybeFireLegBoardingPrompt`) 공용 push 실패 기록. 두 caller의 실패 분기가 동일한
+ * `logPushFailure` 인자 구성을 그대로 반복해 SonarCloud 중복 임계를 넘겨 추출(리뷰 요청).
+ */
+async function logBoardingPromptPushFailure(
+  env: Env,
+  trip: Trip,
+  heal: Pick<EnvHealResult, 'result' | 'envMismatchExhausted'>,
+): Promise<void> {
+  // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+  // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
+  await logPushFailure(env.DB, {
+    // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+    // 별도로 trip_token_hash에 남긴다.
+    token: resolveTripDeviceToken(trip),
+    tripToken: trip.token,
+    pushKind: 'boarding-prompt',
+    apnsStatus: heal.result.status,
+    apnsReason: heal.result.reason,
+    apnsEnv: trip.apnsEnv,
+    envMismatchExhausted: heal.envMismatchExhausted,
+  });
+}
+
+/**
+ * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
+ *
+ * lockMissing 분기에서만 호출. promptGeoContext가 없으면 skip — backend는 stations 좌표를
+ * 갖지 않으므로 평가 자체 불가. 9단 AND 게이트 평가는 evaluateBoardingPromptGates에 위임.
+ *
+ * 발사 성공:
+ *   - alert push (BOARDING_PROMPT category)로 [탑승]/[미탑승] 액션 노출
+ *   - trip.boardingPromptState = markPromptFired(now, prev, trainCode) → KV 저장. #2130
+ *     (Part B-be-2) 이후 "trip당 1회" 정책 폐기 — 15분 창 내 trainCode별 반복 발사(A4).
+ *   - boardingPromptFired stat +1
+ *
+ * 차단:
+ *   - boardingPromptBlocked stat +1 (게이트 reason 로그)
+ *
+ * 좌표 컨텍스트 부재:
+ *   - no-op (silent skip, blocked 카운트 안 함 — 게이트 평가 안 한 것과 평가 후 차단 분리)
+ */
+export async function evaluateAndMaybeFireBoardingPrompt(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  // #1921 — F2 defense. boarding-prompt는 boarding 이전 게이트 — lock이 이미 활성인 trip은
+  // cron 진입 자체가 의미 없음. 호출 시점에서 lockMissing 분기를 통과했다는 사실은
+  // `isBoardingLockActive(trip, now) === false`라는 invariant이므로 정상 케이스에서 본 분기는
+  // 발동되지 않는다. lock-active trip이 lockMissing 분기로 진입한다면 race(예: lock 만료 직후
+  // 같은 cycle) 또는 isBoardingLockActive 판정 변경 — counter로 측정해 회귀 진단.
+  if (trip.boardingLock !== undefined) {
+    stats.boardingPromptSkippedLockActive += 1;
+    log('boarding-prompt: skip (lock active, F2 defense)', {
+      token: trip.token.slice(0, 8),
+      boardingLine: trip.boardingLock.line,
+      // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+      sleepMode: trip.sleepModeEnabled,
+    });
+    return;
+  }
+
+  const geo = trip.promptGeoContext;
+  const display = trip.promptDisplay;
+  if (!geo || !display) {
+    stats.boardingPromptSkippedNoContext += 1;
+    log('boarding-prompt: skip (no geo/display context)', {
+      token: trip.token.slice(0, 8),
+      hasGeo: geo !== undefined,
+      hasDisplay: display !== undefined,
+      // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
+      sleepMode: trip.sleepModeEnabled,
+    });
+    return;
+  }
+
+  let dirty = false;
+
+  // #2153 — 근접 게이트 판정(`isNearOrigin`, boardingPrompt.ts 공용 함수 — `/position` 핸들러와
+  // 재사용)을 신선도 게이트보다 먼저 계산해 anchor 재정의에 재사용한다. distance/accuracy 둘 다
+  // 있을 때만 "너무 멀다" 판정 가능 — 부재(지하/구 클라)는 관대 허용(too-far 아님).
+  const { originDistanceM, originAccuracyM } = geo;
+  const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
+  const nearOrigin = isNearOrigin(originDistanceM, originAccuracyM);
+  // #2350 — live anchor 전환. `promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips
+  // 등록 시점의 정적 스냅샷이라 이후 절대 갱신되지 않는다(index.ts:1564). `/position` 채널이
+  // 이미 근접을 실시간 관측해 `trip.originProximityAt`을 stamp했다면, 그 정적 스냅샷이 여전히
+  // "멀다"를 가리켜도 근접 게이트로 영구 차단해선 안 된다(집에서 경로 미리 설정 후 도보 이동
+  // 케이스). anchor가 아직 없을 때만(=live 근접 확인 이력 없음) 정적 스냅샷으로 판단한다.
+  const isTooFarFromOrigin = hasProximityReading && !nearOrigin && trip.originProximityAt === undefined;
+
+  // #2358 (RCA — #2153 원안 결함) — 최초 1회만 stamp하고 영구 고정하면 "출발역에서 계속
+  // 대기 중"인 실 시나리오가 15분을 넘기는 순간 근접이 실시간으로 계속 확인되는 중에도
+  // 영구히 SkippedStale로 막힌다. `shouldStampOriginProximity`(ORIGIN_PROXIMITY_RENEWAL_MS,
+  // 5분)로 근접이 관측되는 동안 anchor를 주기적으로 재stamp — "계속 근접 확인 중"이면 신선도
+  // 창이 만료되지 않는다. 매 cycle 무조건 쓰지 않고 스로틀링해 KV write 최소화(#2073 lesson).
+  //
+  // #2153 (리뷰 P1) — 이 cron 경로는 `trip.promptGeoContext`가 register 시점의 정적 스냅샷이라
+  // 재등록 트리거(currentStation null→non-null 등)가 안 오면 값이 절대 갱신되지 않는 구조적
+  // 한계가 있다(집에서 route 설정 후 재등록 없이 도보 이동하는 케이스). 실시간 anchor의 주 경로는
+  // `/position`(10초 주기, index.ts stampOriginProximityIfNeeded) — 이 cron 분기는 register/heal로
+  // 이미 갱신된 케이스를 추가로 커버하는 보조 경로로 유지.
+  if (nearOrigin && shouldStampOriginProximity(trip.originProximityAt, now)) {
+    trip.originProximityAt = now;
+    dirty = true;
+  }
+
+  // #2153 — 신선도 게이트 기준 시각(anchor) 재정의. route 설정 시각(`createdAt`)이 아니라
+  // "탑승 근접 시각"(`originProximityAt`) 기준으로 15분 창을 판정한다. 근접 관측 전(stamp
+  // 미존재)에는 fallback으로 createdAt을 그대로 쓴다 — 근접 전에는 아래 근접 게이트가 이미
+  // 발사를 차단하므로 창을 보수적으로 연장하는 효과가 없다(#2153 스펙).
+  const freshnessAnchor = trip.originProximityAt ?? trip.createdAt;
+  if (now - freshnessAnchor > PROMPT_FRESHNESS_MS) {
+    stats.boardingPromptSkippedStale += 1;
+    log('boarding-prompt: skip (stale, past freshness window)', {
+      token: trip.token.slice(0, 8),
+      ageMs: now - freshnessAnchor,
+      anchoredToProximity: trip.originProximityAt !== undefined,
+    });
+    // #2153 (리뷰 P1) — dirty는 이 cycle에 `nearOrigin`이 true일 때만 set되고(위 stamp 블록),
+    // 그 경우 freshnessAnchor는 방금 stamp된 `now`라 age=0 — 이 stale 분기는 같은 cycle에
+    // 도달 불가하다. dirty=true로 이 지점에 도달하는 경로가 없어 putTrip 호출을 넣지 않는다
+    // (도달 불가 dead code 방지).
+    return;
+  }
+
+  // #2130 (Part B-be-1) — 근접 게이트. isTooFarFromOrigin이면 발사 skip.
+  if (isTooFarFromOrigin) {
+    stats.boardingPromptSkippedTooFar += 1;
+    log('boarding-prompt: skip (too far from origin)', {
+      token: trip.token.slice(0, 8),
+      originDistanceM: geo.originDistanceM,
+      originAccuracyM: geo.originAccuracyM,
+    });
+    // #2153 (리뷰 P1) — 위와 동일 이유. isTooFarFromOrigin=true는 nearOrigin=false를 함의하므로
+    // dirty=true(=nearOrigin true였던 cycle)와 동시에 성립할 수 없다 — dead code 방지.
+    return;
+  }
+
+  // #916 follow-up B — fired+clear 분기 회복. 직전 auto-prompt 발사 윈도우 안에 다시 들어왔다면
+  // 평가 자체를 skip — boardingPromptState가 isSameSession=false로 리셋됐거나 lock이 클리어된
+  // 직후 같은 trip token이 lockMissing으로 돌아온 케이스. 같은 trip 컨텍스트의 중복 auto-prompt
+  // 시도/푸시를 차단한다 (윈도우 만료 후엔 자연 재평가 — 새 leg/새 trip은 fresh).
+  //
+  // #2130 (Part B-be-2) — `trip.boardingPromptState !== undefined`(=같은 trip 내 반복 발사 상태가
+  // 살아있음)면 이 30분 게이트를 적용하지 않는다. 반복 발사(A4)는 그보다 촘촘한
+  // `evaluateBoardingPromptRepeatGate`(최소 간격 5분 + 최대 3회 + dismiss silence)가 이미 스팸을
+  // 막으므로, 이 게이트가 겹쳐 걸리면 같은 trip 안에서 2번째 열차조차 30분간 완전히 못 쏜다.
+  // 이 게이트는 원래 목적(boardingPromptState가 undefined로 리셋된 케이스)에서만 발동한다.
+  if (
+    trip.boardingPromptState === undefined &&
+    trip.lastAutoPromptedAt !== undefined &&
+    now - trip.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
+  ) {
+    stats.boardingPromptAutoDeduped += 1;
+    log('boarding-prompt: auto-deduped (within window)', {
+      token: trip.token.slice(0, 8),
+      ageMs: now - trip.lastAutoPromptedAt,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  stats.boardingPromptEvaluated += 1;
+
+  // #2007 — archFlag=on 시 runFusionStep 이 Kalman 계산/write/phase 를 skip.
+  // fusion.kalmanKmh=null → boardingPrompt 게이트 #7 fusedSpeed 에서 weight=0 → 자연 참조 skip.
+  const fusion = await runFusionStep(trip, env, now, deps.archFlag);
+  // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
+  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
+  // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
+  if (fusion.phaseState) {
+    trip.stationPhase = fusion.phaseState;
+    dirty = true;
+  }
+
+  // #1536 (S3) — 환경 분기. underground/unknown 은 GPS 의존 게이트(#3~#7) 를 byPass.
+  // 결과(outcome.pass) 는 motion+silence/fired 만 보장하므로 caller 는 별도 consensusGate
+  // 로 arrival+lockAttachable 합의를 검증해야 false positive 차단.
+  //
+  // #2014 (ADR-022 B8) — deps.archFlag='on' 시 GPS/motion/speed 게이트(#3~#8) 전부 skip,
+  // #9 (fired/silenced) 만 평가. arvlCd=1 관측 기반 fire 판정은 아래 fetchArrivals 후
+  // `pickAutoTrainCode` 로 별도 진행. 즉 gate 통과 = "silence/fired dedup OK"만 의미.
+  const environment = deriveTripEnvironment(trip);
+  const outcome = evaluateBoardingPromptGates({
+    series: fusion.series,
+    origin: geo.origin,
+    nextStation: geo.nextStation,
+    now,
+    promptState: trip.boardingPromptState,
+    kalmanKmh: fusion.kalmanKmh,
+    // #833 — runFusionStep이 Kalman observation을 위해 이미 evaluateWindow를 1회 돌렸다.
+    // 그 결과를 그대로 재사용해 trip당 redundant window 평가를 제거 (동작 동치).
+    metrics: fusion.posMetrics,
+    environment,
+    archFlag: deps.archFlag,
+  });
+
+  if (!outcome.pass) {
+    stats.boardingPromptBlocked += 1;
+    // #2130 (Part B-be-2) — 반복 발사 게이트가 차단한 두 신규 reason은 전용 counter로도 집계.
+    if (outcome.reason === 'fired-too-recently') stats.boardingPromptSkippedMinInterval += 1;
+    if (outcome.reason === 'max-fires-reached') stats.boardingPromptSkippedMaxFires += 1;
+    log('boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: outcome.reason satisfies GateSkipReason,
+      environment,
+      // #2032 (Issue D) — monitoring dimension. gate block 원인 분류 시 device sleep 상태 참조.
+      sleepMode: trip.sleepModeEnabled,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  // #1729 paradigm shift — attemptAutoLock(Path B) 제거.
+  // 9단 게이트 통과 시 backend가 자동 trainCode 결정 X. boardingPrompt push 발사 → 사용자 인지 요구.
+
+  // #1739 — 방면 + 시간 명시. 출발역 arrivals를 fetch해 방향 일치 최소 ETA 추출.
+  // 실패 시 graceful fallback (메시지 없이 push는 항상 발사).
+  // #1888 (RC-13) — pool을 candidateTrains로 가공해 payload에 동봉. device의 BoardingTrainList가
+  // 자체 API 응답 0건일 때 이 배열로 fallback 렌더(IMG_9040 빈 리스트 회귀 차단).
+  const nextStation = trip.waypoints[0]?.stationName ?? null;
+  let etaSeconds: number | null = null;
+  let candidateTrains: BoardingPromptCandidate[] = [];
+  // #2014 — pool 을 catch 밖으로 export 해 archFlag=on ambiguity guard 에서 재사용.
+  let poolForArchFlagCheck: readonly ArrivalEntry[] = [];
+  try {
+    const arrivals = await deps.seoul.fetchArrivals(display.originStation);
+    const directional = arrivals.filter(
+      (a) =>
+        matchLine(a.subwayNm, display.line) &&
+        (geo.direction === null || (geo.direction === 'up' ? a.isUp : !a.isUp)),
+    );
+    const pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, display.line));
+    poolForArchFlagCheck = pool;
+    if (pool.length > 0) {
+      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
+      etaSeconds = best.arrivalSeconds;
+    }
+    // #1888 (RC-13) — pool에서 최대 5건 후보 추출. arrivalSeconds 오름차순 정렬 후 slice.
+    // (a.arrivalSeconds - b.arrivalSeconds)는 음수/양수/0을 그대로 비교 — 정렬 안정성 확보.
+    candidateTrains = [...pool]
+      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .slice(0, 5)
+      .map<BoardingPromptCandidate>((entry) => ({
+        trainCode: entry.trainCode,
+        line: display.line,
+        direction: entry.isUp ? 'up' : 'down',
+        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+      }));
+  } catch {
+    // Seoul API 장애 시 ETA 없이 push 발사 — 메시지 degradation만 발생, push 자체는 보존.
+  }
+
+  // #2022 (ADR-022 B8 caller 완결) — archFlag=on 시 arvlCd=1(ARRIVED) 관측 explicit check.
+  //
+  // #2014 는 게이트 skip 만 구현 — GPS/motion/speed 없이 통과. 그러나 사용자 확정 flow
+  // "A역 도착 판정 → boardingPrompt" 는 arvlCd=1 관측 시점에만 발사가 정합.
+  // arvlCd=0(진입 중) / arvlCd=2(출발) 상태에서 발사하면 UI 오탐 — "이미 출발한 열차에
+  // 탑승했나?" 같은 잘못된 프롬프트. hasArrivedSignal 이 archFlag=on 분기의 fire trigger.
+  //
+  // pool.length===0 케이스는 아래 candidateTrains 0건 guard 가 `boardingPromptSkippedEmpty`
+  // 로 별도 관측 (RC-13 카운터 의미론 유지) — 여기서는 pool 이 있는데도 arvlCd=1 이 없는
+  // 케이스만 명시 차단해 arvlCd 관점 skip 을 별도 counter 로 가시화.
+  //
+  // archFlag=off 는 기존 9-AND gate 통과가 fire trigger — 여기 check 는 skip (회귀 방어).
+  if (
+    deps.archFlag === 'on' &&
+    poolForArchFlagCheck.length > 0 &&
+    !hasArrivedSignal(poolForArchFlagCheck)
+  ) {
+    stats.boardingPromptBlocked += 1;
+    log('boarding-prompt: skipped no-arvlcd-arrived (#2022 archFlag=on)', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      direction: geo.direction,
+      poolSize: poolForArchFlagCheck.length,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 우선순위 기반 단일 trainCode 수렴 검증.
+  // ambiguity(같은 우선순위 후보 2+) 면 fire skip — false positive 방어(기존 B9 게이트 유지).
+  // pool 이 비어 있으면 (Seoul API 실패 / 매칭 0건) 아래 candidateTrains 0건 guard 로 skip 됨 —
+  // 여기서는 pool.length > 0 인데 pickAutoTrainCode 가 null 인 케이스만 명시 차단해 counter 로
+  // 가시화한다.
+  //
+  // #2130 (Part B-be-2) — 같은 호출로 산출한 selectedTrainCode를 아래 trainCode dedup(반복
+  // 발사, A4)에도 재사용한다. archFlag 무관(off 포함)하게 항상 계산 — GPS 9단 게이트로 발사되는
+  // legacy 경로도 같은 trainCode dedup 혜택을 받는다(pool이 비어 있으면 자연히 null).
+  const selectedTrainCode =
+    poolForArchFlagCheck.length > 0
+      ? pickAutoTrainCode(poolForArchFlagCheck, display.line, geo.direction)
+      : null;
+  if (deps.archFlag === 'on' && poolForArchFlagCheck.length > 0 && selectedTrainCode === null) {
+    stats.boardingPromptBlocked += 1;
+    log('boarding-prompt: skipped ambiguity (#2014 archFlag=on)', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      direction: geo.direction,
+      poolSize: poolForArchFlagCheck.length,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  // #1888 (RC-13) — 후보 0건이면 발사 skip. 사용자가 banner를 받아도 빈 BoardingTrainList만 보게 되는
+  // 시나리오를 backend에서 차단. 게이트 통과 후 응답 fail은 회귀 신호 — stat counter로 가시화.
+  if (candidateTrains.length === 0) {
+    stats.boardingPromptSkippedEmpty += 1;
+    log('boarding-prompt: skipped empty candidates (#1888 RC-13)', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      direction: geo.direction,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  // #2130 (Part B-be-2, A4) — 반복 발사 trainCode dedup. 이번 cycle에 선택된 trainCode가 이미
+  // 발사된 열차면 skip — 같은 열차가 cron 여러 tick에 걸쳐 재관측돼도 중복 발사하지 않는다.
+  // selectedTrainCode===null(ambiguity 기각 없이 통과한 archFlag=off 경로 등)이면 dedup 대상이
+  // 없어 자연 통과 — 기존 GPS 9단 게이트 기반 fire 는 이 신규 게이트로 인한 회귀가 없다.
+  if (
+    selectedTrainCode !== null &&
+    trip.boardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
+  ) {
+    stats.boardingPromptSkippedTrainDuplicate += 1;
+    log('boarding-prompt: skipped train duplicate (#2130 A4)', {
+      token: trip.token.slice(0, 8),
+      trainCode: selectedTrainCode,
+      firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
+  const { title, body } = buildBoardingPromptMessage(
+    display.originStation,
+    display.line,
+    nextStation,
+    etaSeconds,
+    now,
+    trip.locale,
+  );
+
+  // 9단 통과 + 후보 ≥1 — alert push 발사.
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        title,
+        body,
+        originStation: display.originStation,
+        line: display.line,
+        tripToken: trip.token,
+        sentAt: now,
+        // #1536 (S3, T13) — cron loop 경로. POST /trips instant path 와 source 구분.
+        triggerKind: 'cron',
+        // #1740 — geo.direction이 null이면 undefined 전달 → device 양방향 허용 (backward compat).
+        destinationDirection: geo.direction ?? undefined,
+        // #1798 P3 — subtitle: "${line}호선 ${direction}방면". direction이 있을 때만 첨부.
+        subtitle:
+          geo.direction !== null
+            ? `${display.line}호선 ${geo.direction === 'up' ? '상행' : '하행'}방면`
+            : undefined,
+        // #1888 (RC-13) — 후보 train 목록 동봉. device fallback 렌더.
+        candidateTrains,
+        // #2130 (Part B-be-2, A4) — 반복 발사 시 이전 무응답 배너를 최신으로 교체(스택 방지).
+        collapseId: boardingPromptCollapseId(trip.token),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+    // #1633 — boarding-prompt corrected env 즉시 KV persist. dirty 후속 putTrip(line 2990)이
+    // 정상 경로지만, 본 함수가 trip 종료 / cleanup 경로로 분기하면 누락 가능. 즉시 write로
+    // corrected env가 영구 보존돼 후속 cron / push가 mismatch retry 없이 정상 호스트로 직행.
+    await putTrip(env.TRIPS, trip);
+  }
+  if (heal.result.ok) {
+    stats.boardingPromptFired += 1;
+    // #1683 — boardingPrompt kind 카운터.
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    // #2130 (Part B-be-2, A4) — prev state + selectedTrainCode를 전달해 firedTrainCodes/fireCount를
+    // 누적한다(반복 발사 dedup + hard cap 입력).
+    trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
+    // #916 follow-up B — prompt push도 같은 dedup 마커를 stamp한다. dismiss + 클리어 후
+    // isSameSession=false 분기로 boardingPromptState가 사라져도 window 안에서 재발사 차단.
+    trip.lastAutoPromptedAt = now;
+    dirty = true;
+    log('boarding-prompt: fired', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      fusedSpeedKmh: Math.round(outcome.fusedSpeedKmh * 10) / 10,
+      // #2032 (Issue D) — monitoring dimension. fire 시 device sleep 상태 기록 (device suppress 여부와 대조 가능).
+      // ADR-023: backend는 sleep 무관 발사 유지. device의 shouldSuppressBySleepRule이 UI suppress 판정.
+      sleepMode: trip.sleepModeEnabled,
+    });
+  } else {
+    stats.errors += 1;
+    log('boarding-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+    await logBoardingPromptPushFailure(env, trip, heal);
+  }
+
+  // #2069 (Phase 3) — boarding-prompt silent push fallback(B8, #2037) 제거. visible alert push
+  // (B7)만 원격 단일 채널로 유지 — 이중 표시(원격+로컬 identifier 상이로 둘 다 뜨던 문제) 소멸.
+
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
+}
+
+/**
+ * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 "탑승하셨나요?" prompt 평가 + 발사.
+ *
+ * caller: lockMissing 분기(`attemptBoardingAnchorResolution` 시도 이후). `trip.currentLegAnchor`
+ * 없으면(leg 1 이거나 아직 환승 전) no-op. GPS 게이트 없음 — origin의 `evaluateAndMaybeFireBoardingPrompt`
+ * (9단 GPS AND 게이트)와 달리 이 함수는 애초에 GPS를 쓰지 않는다:
+ *   - fire trigger = `now >= trip.legBoardingEligibleAt`(환승 통과 + 도보시간 경과, ground truth
+ *     시간 게이트) — GPS proximity/direction/speed 대신 시간으로 "환승역 도착 후 도보 이동 완료"를
+ *     판정한다. 도보 창 동안은 이 함수 자체가 평가되지 않으므로 그 사이 있었던 열차는 자연히
+ *     후보에서 배제된다(#2511이 놓친 오탑승 위험의 근본 supersede).
+ *   - dedup = `evaluateHopEndPromptGates`(hop-end와 동일 — 1회 발사 + dismiss 5분 silence).
+ *     origin의 `evaluateBoardingPromptRepeatGate`(반복 발사 A4)까지는 재사용하지 않는다 —
+ *     leg 2는 배차 간격 동안 여러 후보가 반복 관측될 필요가 origin만큼 크지 않고, 단순한
+ *     정책이 오탑승 표면적을 더 줄인다.
+ *
+ * 발사 성공: alert push(kind='boarding-prompt', hopEndKind 없음 — device 는 origin 과 동일하게
+ * `tryAutoLock` 경로로 응답을 처리, 신규 device 배선 불필요) + `trip.legBoardingPromptState`
+ * markPromptFired + `stats.legBoardingPromptFired += 1`.
+ * 차단: 도보시간 미경과 → `stats.legBoardingPromptSkippedWalking += 1`(정상 대기, 회귀 아님).
+ * dedup/후보 0건 → `stats.legBoardingPromptBlocked += 1`.
+ */
+export async function maybeFireLegBoardingPrompt(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const { currentLegAnchor } = trip;
+  if (!currentLegAnchor) return;
+
+  const eligibleAt = trip.legBoardingEligibleAt;
+  if (eligibleAt === undefined || now < eligibleAt) {
+    stats.legBoardingPromptSkippedWalking += 1;
+    return;
+  }
+
+  const outcome = evaluateHopEndPromptGates({ promptState: trip.legBoardingPromptState, now });
+  if (!outcome.pass) {
+    stats.legBoardingPromptBlocked += 1;
+    log('leg-boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: outcome.reason,
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+    return;
+  }
+
+  const nextWaypoint = trip.waypoints[0];
+  const direction =
+    nextWaypoint && nextWaypoint.line === currentLegAnchor.line
+      ? inferLegDirection(currentLegAnchor.line, currentLegAnchor.boardingStation, nextWaypoint.stationName)
+      : null;
+
+  let etaSeconds: number | null = null;
+  let candidateTrains: BoardingPromptCandidate[] = [];
+  try {
+    const arrivals = await deps.seoul.fetchArrivals(currentLegAnchor.boardingStation);
+    const directional = arrivals.filter(
+      (a) =>
+        matchLine(a.subwayNm, currentLegAnchor.line) &&
+        (direction === null || (direction === 'up' ? a.isUp : !a.isUp)),
+    );
+    const pool =
+      directional.length > 0
+        ? directional
+        : arrivals.filter((a) => matchLine(a.subwayNm, currentLegAnchor.line));
+    if (pool.length > 0) {
+      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
+      etaSeconds = best.arrivalSeconds;
+    }
+    candidateTrains = [...pool]
+      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .slice(0, 5)
+      .map<BoardingPromptCandidate>((entry) => ({
+        trainCode: entry.trainCode,
+        line: currentLegAnchor.line,
+        direction: entry.isUp ? 'up' : 'down',
+        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+      }));
+  } catch {
+    // Seoul API 장애 — ETA 없이 push 발사(메시지 degradation만, push 자체는 보존). origin과 동일 정책.
+  }
+
+  if (candidateTrains.length === 0) {
+    stats.legBoardingPromptBlocked += 1;
+    log('leg-boarding-prompt: skipped empty candidates', {
+      token: trip.token.slice(0, 8),
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+    return;
+  }
+
+  const { title, body } = buildBoardingPromptMessage(
+    currentLegAnchor.boardingStation,
+    currentLegAnchor.line,
+    nextWaypoint?.stationName ?? null,
+    etaSeconds,
+    now,
+    trip.locale,
+  );
+
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        title,
+        body,
+        originStation: currentLegAnchor.boardingStation,
+        line: currentLegAnchor.line,
+        tripToken: trip.token,
+        sentAt: now,
+        triggerKind: 'cron',
+        destinationDirection: direction ?? undefined,
+        subtitle:
+          direction !== null
+            ? `${currentLegAnchor.line}호선 ${direction === 'up' ? '상행' : '하행'}방면`
+            : undefined,
+        candidateTrains,
+        collapseId: boardingPromptCollapseId(trip.token),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    stats.legBoardingPromptFired += 1;
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState);
+    dirty = true;
+    log('leg-boarding-prompt: fired', {
+      token: trip.token.slice(0, 8),
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+  } else {
+    stats.errors += 1;
+    log('leg-boarding-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+    await logBoardingPromptPushFailure(env, trip, heal);
+  }
+
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
+}
+
+/**
+ * #2034 — hop-end (환승역 "하차했나요?") prompt 평가 + 발사.
+ *
+ * caller: 환승 waypoint advance 직후 (waypoint.kind === 'transfer' 로 shift 된 시점).
+ * transferWaypoint 는 방금 통과한 (직전 leg 끝) waypoint — trip.waypoints[0] 은 이미 다음 leg
+ * 첫 정거장. leg-key (`${transferStation}|${nextLine ?? ''}`) 로 dedup — 같은 trip 에 여러 환승이
+ * 있어도 각 환승은 독립적으로 발사.
+ *
+ * 게이트: `evaluateHopEndPromptGates` (fired dedup + silencedUntil 만). transfer waypoint advance
+ * 자체가 ground truth 이므로 GPS/motion/speed 재검증 없음. false-positive 방어는 caller (advance
+ * gate) + silence dedup 로 충분.
+ *
+ * 발사 성공:
+ *   - alert push (BOARDING_PROMPT category, hopEndKind='disembark') → device 가 payload 를 파싱해
+ *     "하차했나요?" 프롬프트 노출.
+ *   - trip.hopEndPromptState[key] = markPromptFired(now).
+ *   - stats.hopEndPromptFired += 1.
+ * 차단: stats.hopEndPromptBlocked += 1 + reason log.
+ */
+export async function maybeFireHopEndPrompt(inputs: {
+  trip: Trip;
+  transferWaypoint: Waypoint;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+  /** #2177 — push 최종 실패 D1 기록용. */
+  env: Env;
+}): Promise<void> {
+  const { trip, transferWaypoint, deps, stats, now, log, generatePushId, env } = inputs;
+  const nextWaypoint = trip.waypoints[0];
+  const nextLine = nextWaypoint?.line ?? null;
+  const nextStation = nextWaypoint?.stationName ?? null;
+  const legKey = `${transferWaypoint.stationName}|${nextLine ?? ''}`;
+  const stateMap = trip.hopEndPromptState ?? {};
+  const outcome = evaluateHopEndPromptGates({ promptState: stateMap[legKey], now });
+  if (!outcome.pass) {
+    stats.hopEndPromptBlocked += 1;
+    log('hop-end-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      legKey,
+      reason: outcome.reason,
+    });
+    return;
+  }
+  const { title, body } = buildHopEndPromptMessage(
+    transferWaypoint.stationName,
+    transferWaypoint.line,
+    nextLine,
+    nextStation,
+    trip.locale,
+  );
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        title,
+        body,
+        // originStation 필드는 hop-end 시 "하차 대상 역 (환승역)" 으로 재해석 — device 가
+        // hopEndKind='disembark' 를 보고 이 의미로 파싱.
+        originStation: transferWaypoint.stationName,
+        line: transferWaypoint.line,
+        tripToken: trip.token,
+        sentAt: now,
+        triggerKind: 'cron',
+        hopEndKind: 'disembark',
+        ...(nextLine !== null ? { nextLine } : {}),
+        ...(nextStation !== null ? { nextStation } : {}),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    stats.hopEndPromptFired += 1;
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    trip.hopEndPromptState = {
+      ...stateMap,
+      [legKey]: markPromptFired(now),
+    };
+    log('hop-end-prompt: fired', {
+      token: trip.token.slice(0, 8),
+      transferStation: transferWaypoint.stationName,
+      line: transferWaypoint.line,
+      nextLine,
+      nextStation,
+    });
+  } else {
+    stats.errors += 1;
+    log('hop-end-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      legKey,
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+    // #2177 — hop-end-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+    await logPushFailure(env.DB, {
+      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+      // 별도로 trip_token_hash에 남긴다.
+      token: resolveTripDeviceToken(trip),
+      tripToken: trip.token,
+      pushKind: 'hop-end-prompt',
+      apnsStatus: heal.result.status,
+      apnsReason: heal.result.reason,
+      apnsEnv: trip.apnsEnv,
+      envMismatchExhausted: heal.envMismatchExhausted,
+    });
+  }
 }

@@ -1,0 +1,161 @@
+{
+  "$schema": "./metrics.catalog.schema.json",
+  "description": "Phase 3 fusion baseline 지표 카탈로그. backend metrics.ts와 scripts/perf-report.js의 단일 SSOT.",
+  "constants": {
+    "SLA_LATE_THRESHOLD_MS": 30000,
+    "FALSE_POSITIVE_RATIO_THRESHOLD": 0.05,
+    "MIN_SAMPLE_FOR_DECISION": 30,
+    "SLA_PERCENTILE": 0.95,
+    "METRIC_LABEL_PREFIX": "phase3",
+    "MIN_RECALL_RATIO_THRESHOLD": 0.95,
+    "RECALL_THRESHOLD_CRITICAL": 0.9,
+    "MIN_SERVER_PROGRESS_RECEIVED_RATIO": 0.95
+  },
+  "metrics": [
+    {
+      "key": "boardingFalsePositiveRate",
+      "constantName": "BOARDING_FALSE_POSITIVE",
+      "format": "rate",
+      "display": "percentage",
+      "description": "9단 게이트 통과 후 미탑승 dismiss된 비율",
+      "gate": {
+        "field": "value",
+        "op": ">",
+        "thresholdConst": "FALSE_POSITIVE_RATIO_THRESHOLD",
+        "triggerName": "falsePositive"
+      }
+    },
+    {
+      "key": "imminentSlaErrorMs",
+      "constantName": "IMMINENT_SLA_ERROR",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "임박 알람 발사 vs 실제 도착 시각 차이",
+      "gate": {
+        "field": "p95",
+        "op": ">",
+        "thresholdConst": "SLA_LATE_THRESHOLD_MS",
+        "triggerName": "imminentSla"
+      }
+    },
+    {
+      "key": "stationPassedAccuracy",
+      "constantName": "STATION_PASSED_ACCURACY",
+      "format": "rate",
+      "display": "percentage",
+      "description": "사전 예약 station-passed가 실제 통과와 일치한 비율"
+    },
+    {
+      "key": "phaseClassificationAccuracy",
+      "constantName": "PHASE_CLASSIFICATION_ACCURACY",
+      "format": "rate",
+      "display": "percentage",
+      "description": "E3 4-class precision/recall"
+    },
+    {
+      "key": "driftRecoveryMeters",
+      "constantName": "DRIFT_RECOVERY",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "E4 GPS 회복 시점 position 오차"
+    },
+    {
+      "key": "kalmanResidual",
+      "constantName": "KALMAN_RESIDUAL",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "E2 Kalman predict vs observe 차이"
+    },
+    {
+      "key": "autoLockSuccess",
+      "constantName": "AUTO_LOCK_SUCCESS",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#916 A1 — 9단 게이트 통과 후 backend가 trainCode를 자동 결정해 lock 부착에 성공한 비율"
+    },
+    {
+      "key": "autoLockFalsePositive",
+      "constantName": "AUTO_LOCK_FALSE_POSITIVE",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#916 A1 — 자동 lock 후 사용자가 다른 trainCode로 swap한 비율 (catalog placeholder, 후속 PR에서 client swap 신호 wire)"
+    },
+    {
+      "key": "arvlCdFireSuccess",
+      "constantName": "ARVLCD_FIRE_SUCCESS",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#917 A2 — boardingLock 활성 trip에서 Seoul arvlCd∈{0,1} 신호로 매역 station-passed push 발사 성공 비율"
+    },
+    {
+      "key": "arvlCdFireDedup",
+      "constantName": "ARVLCD_FIRE_DEDUP",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#917 A2 — 같은 (trainCode, station, arvlCd) 조합 dedup KV로 차단된 비율 — Seoul API 갱신 지연으로 중복 신호 차단 효과 측정"
+    },
+    {
+      "key": "arvlCdFireMismatch",
+      "constantName": "ARVLCD_FIRE_MISMATCH",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#917 A2 — prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패로 매역 push 미발사된 비율 — #640 회귀 방어 신호"
+    },
+    {
+      "key": "perStationAlarmRecall",
+      "constantName": "PER_STATION_ALARM_RECALL",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#919 A4 — trip 종료 시 route 정차역 대비 실제 발사된 매역 알림 비율. hit=firedStops, total=expectedStops. MIN_RECALL_RATIO_THRESHOLD(0.95) 미달 trip 비율로 운영 alert 발사 (Phase 4 결정 게이트 아님 — 운영 KPI)."
+    },
+    {
+      "key": "gateSuppressionDistribution",
+      "constantName": "GATE_SUPPRESSION_DISTRIBUTION",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#919 A4 — recall < 100% trip에서 매역 알림을 차단한 게이트(accuracy/motion/silence/lockMissing/...) 분포. 차단 reason은 별도 blob label로 적재(reason 카탈로그는 recallTelemetry.ts:KNOWN_GATE_REASONS와 client recallMetrics.ts:GATE_SUPPRESSION_REASONS의 양방향 SSOT)."
+    },
+    {
+      "key": "prescheduledFireMissRate",
+      "constantName": "PRESCHEDULED_FIRE_MISS_RATE",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#918 A3 — trip 종료까지 fire ledger에 actualFireMs가 기록되지 않은 비율. hit=scheduledCount-firedCount, total=scheduledCount. OS local notification 누락/cancel/일정 변경의 합산 신호 — A4 recall과 보완. 운영 KPI(Phase 4 결정 게이트 아님)."
+    },
+    {
+      "key": "prescheduledStationAccuracy",
+      "constantName": "PRESCHEDULED_STATION_ACCURACY",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#918 A3 — fired 사전 예약 알람의 station 정확도. hit=fired entry 중 alarmLog가 같은 station에서 fired outcome을 남긴 수, total=firedCount. 사전 예약 시점 prediction과 실제 trip 진행 일치도."
+    },
+    {
+      "key": "autoLockConfidenceBreakdown",
+      "constantName": "AUTO_LOCK_CONFIDENCE_BREAKDOWN",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#1171 — RC1 confidence gate(#1018) 평가 시 산출된 score(0~4) 분포. arvlCd=2 branch에서만 sample 적재. 본 분포로 1주 운영 후 AUTO_LOCK_CONFIDENCE_THRESHOLD(현재 2) 튜닝 결정 (낮춰서 lock 통과율↑ vs 높여서 false positive↓). p95/mean으로 threshold 후보 산출. Phase 4 결정 게이트 아님 — 운영 튜닝 측정 인프라."
+    },
+    {
+      "key": "prescheduledFireDeltaMs",
+      "constantName": "PRESCHEDULED_FIRE_DELTA_MS",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#918 A3 — actualFireMs - scheduledFireMs (양수=OS 늦게 발사). p95로 OS 타이밍 SLA 추적. 시계 보정/timer drift 진단 신호."
+    },
+    {
+      "key": "serverProgressReceived",
+      "constantName": "SERVER_PROGRESS_RECEIVED",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#1173 Epic C B5 — BFF /progress 폴링 응답 수신율. hit=2xx 응답 수, total=요청 시도 수. MIN_SERVER_PROGRESS_RECEIVED_RATIO(0.95) 미달이면 backend down/네트워크 회귀 신호. Phase 4 결정 게이트 아님 — B5 optional→required 승격 게이트 측정 인프라(운영 KPI)."
+    },
+    {
+      "key": "deltaVsEstimatorIndex",
+      "constantName": "DELTA_VS_ESTIMATOR_INDEX",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#1174 Epic C B5 — server BffProgressResponse.waypointIndex와 local stationProgressEstimator(Stage 1-3) 결과의 arc-index 차이 절댓값(|serverIdx - estimatorIdx|, 단위=hop). 1주 baseline 운영으로 P50/P95 산출 → B5(server progress) optional→required 승격 시 P95 임계 결정 근거. Phase 4 결정 게이트 아님 — 운영 측정 KPI(운영 임계는 P95 baseline 확정 후 별도 const로 카탈로그에 추가)."
+    }
+  ]
+}
