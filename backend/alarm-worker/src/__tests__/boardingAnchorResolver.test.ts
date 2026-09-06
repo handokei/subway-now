@@ -313,9 +313,14 @@ describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {
     expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
   });
 
-  it('currentLegAnchor 있지만 legBoardingEligibleAt 미정의(비정상 상태) → null', () => {
+  it('currentLegAnchor 있지만 legBoardingEligibleAt 미정의(비정상 상태) → null (allowLegTransfer 미전달)', () => {
     const trip = makeTrip({ currentLegAnchor: { boardingStation: '건대입구', line: '2' } });
     expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
+  });
+
+  it('currentLegAnchor + allowLegTransfer:true 이지만 legBoardingEligibleAt 미정의(비정상 상태) → null', () => {
+    const trip = makeTrip({ currentLegAnchor: { boardingStation: '건대입구', line: '2' } });
+    expect(resolveActiveLegOrigin(trip, NOW, { allowLegTransfer: true })).toBeNull();
   });
 
   it('promptDisplay, currentLegAnchor 둘 다 없음 → null', () => {

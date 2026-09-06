@@ -12718,6 +12718,47 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     expect(stored.waypoints).toEqual([{ stationName: '용마산', line: '7', kind: 'destination' }]);
   });
 
+  it('A2b (break #1) — 건대입구 도착 신호 없음(signal null) → etaMissing만 증가, advance 없음', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTransferTrip(TOKEN_A2));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulFull({}),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-2323-a2b',
+    });
+    expect(stats.etaMissing).toBeGreaterThan(0);
+    expect(stats.locklessTransferAdvanced).toBe(0);
+    const stored = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
+    expect(stored.currentLegAnchor).toBeUndefined();
+    expect(stored.waypoints).toEqual([
+      { stationName: '건대입구', line: '2', kind: 'transfer' },
+      { stationName: '용마산', line: '7', kind: 'destination' },
+    ]);
+  });
+
+  it('A2c (break #1) — arvlCd가 ENTERING/ARRIVED가 아님(아직 멀리 있음) → advance 없음', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTransferTrip(TOKEN_A2));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 300, 3, '9001')] }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-2323-a2c',
+    });
+    expect(stats.locklessTransferAdvanced).toBe(0);
+    const stored = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
+    expect(stored.currentLegAnchor).toBeUndefined();
+    expect(stored.waypoints).toEqual([
+      { stationName: '건대입구', line: '2', kind: 'transfer' },
+      { stationName: '용마산', line: '7', kind: 'destination' },
+    ]);
+  });
+
   it('A3 — 도보시간 미경과 시 leg-2 boarding prompt skip (walking silence, 회귀 아님)', async () => {
     const kv = new InMemoryKV();
     // A2 직후 상태를 직접 seed (walk 게이트 미경과).
