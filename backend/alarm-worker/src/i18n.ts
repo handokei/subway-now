@@ -48,10 +48,22 @@ export interface HopEndPromptArgs {
 /**
  * #2063 (ADR-023 개정) — 매역 알림(station-notif) waypoint kind. `Waypoint.kind`와 1:1.
  * arvlCd 기반 매역 fire는 항상 phase='imminent'라 phase 분기는 두지 않는다
- * (device `route.intermediatePassedTitle` / `notifications.arrivalImminentTitle` /
+ * (device #2506 `route.stationPassed` / `notifications.arrivalImminentTitle` /
  * `notifications.transferImminentTitle` 과 1:1 매핑, `alertContent.ts` byte-identical 문구 재사용).
  */
 export type StationNotifKind = 'intermediate' | 'transfer' | 'destination';
+
+/**
+ * #2506 — intermediate 매역 도착 push 본문에 필요한 "다음 hop 대상까지 남은 정거장" 데이터.
+ * device #2362(`deriveStationPassedTarget`/`buildStationPassedContent`,
+ * src/features/alarm/hooks/useStationAlarm.ts + src/features/alarm/utils/stationNotification.ts)와
+ * byte-parity를 맞추기 위해 "환승"/"도착" 같은 범주어 대신 실제 대상 station 이름을 그대로 쓴다.
+ * `targetName`/`count`가 없거나 count<=0이면(구조 이상 방어) 카운트 문구를 생략하고 "도착"만 표시.
+ */
+export interface StationNotifCounts {
+  targetName?: string;
+  count?: number;
+}
 
 interface I18nStrings {
   boardingPromptTitle: string;
@@ -60,18 +72,22 @@ interface I18nStrings {
   hopEndPromptTitle: (args: { transferStation: string }) => string;
   /** #2034 — hop-end (환승역 하차) 알림 body. */
   hopEndPromptBody: (args: HopEndPromptArgs) => string;
-  /** #2063 — 매역 알림(station-notif) title. kind별 분기. */
-  stationNotifTitle: (kind: StationNotifKind) => string;
-  /** #2063 — 매역 알림(station-notif) body. kind별 분기 + station 삽입. */
-  stationNotifBody: (kind: StationNotifKind, stationName: string) => string;
   /**
-   * #2448 — intermediate waypoint에 arvlCd=ENTERING(0)으로 진입할 때 전용 title.
-   * `stationNotifTitle('intermediate')`("역 통과")와 별개 — 열차가 아직 역에 도착하지
-   * 않고 진입 중인 순간에만 쓴다. ARRIVED(1)는 기존 stationNotifTitle을 그대로 사용.
+   * #2063 — 매역 알림(station-notif) title. kind별 분기.
+   * #2506 — intermediate는 station 이름을 title에 직접 포함("OO역 도착") — device
+   * #2362(`route.stationPassed`)와 동일 wording.
    */
-  stationNotifApproachingTitle: string;
-  /** #2448 — intermediate ENTERING 전용 body. 고정 lead time을 약속하지 않는다("곧"). */
-  stationNotifApproachingBody: (stationName: string) => string;
+  stationNotifTitle: (kind: StationNotifKind, stationName: string) => string;
+  /**
+   * #2063 — 매역 알림(station-notif) body. kind별 분기 + station 삽입.
+   * #2506 — intermediate는 `counts`(다음 hop 대상 + 남은 정거장 수)를 받아 "{target}까지
+   * N정거장 남음"을 렌더한다(device #2362 `route.stopsRemainingToDestination`와 동일 wording).
+   */
+  stationNotifBody: (
+    kind: StationNotifKind,
+    stationName: string,
+    counts?: StationNotifCounts,
+  ) => string;
   /**
    * #2157 — eta-missing lock detach 시 재확인 alert push title. trip을 강제 종료하는 대신
    * lock만 해제하고 사용자에게 재선택(boardingPrompt/직접 탭)을 유도한다.
@@ -103,22 +119,26 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       const next = nextStation ? `${nextLine}호선 ${nextStation}` : `${nextLine}호선`;
       return `${from} 다음은 ${next} 방면입니다.`;
     },
-    // #2063 — device ko.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
-    // notifications.transferImminentTitle 과 byte-identical.
-    stationNotifTitle: (kind) => {
-      if (kind === 'intermediate') return '역 통과';
+    // #2506 — intermediate는 device ko.json route.stationPassed와 byte-identical.
+    // transfer/destination은 기존 #2063 문구 유지(notifications.arrivalImminentTitle/
+    // transferImminentTitle).
+    stationNotifTitle: (kind, stationName) => {
+      if (kind === 'intermediate') return `${stationName}역 도착`;
       if (kind === 'transfer') return '환승 임박';
       return '도착 임박';
     },
-    // device ko.json route.intermediatePassedBody / alarms.imminentArrivalBody / alarms.imminentTransferBody.
-    stationNotifBody: (kind, stationName) => {
-      if (kind === 'intermediate') return `${stationName}역을 지나고 있어요`;
+    // #2506 — intermediate는 device ko.json route.stopsRemainingToDestination과 byte-identical
+    // (target=환승역/도착역 실명). transfer/destination은 기존 alarms.imminent*Body 유지.
+    stationNotifBody: (kind, stationName, counts) => {
+      if (kind === 'intermediate') {
+        if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
+          return `${counts.targetName}까지 ${counts.count}정거장 남음`;
+        }
+        return '도착';
+      }
       if (kind === 'transfer') return `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
       return `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
     },
-    // #2448 — intermediate ENTERING 전용. 정확한 lead time을 약속하지 않는다.
-    stationNotifApproachingTitle: '곧 진입',
-    stationNotifApproachingBody: (stationName) => `곧 ${stationName}역에 진입해요`,
     trainReconfirmTitle: '탑승 열차를 찾을 수 없어요',
     trainReconfirmBody: '다시 확인해주세요',
   },
@@ -136,21 +156,27 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       const next = nextStation ? `line ${nextLine} toward ${nextStation}` : `line ${nextLine}`;
       return `${from} Next: ${next}.`;
     },
-    // #2063 — device en.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
-    // notifications.transferImminentTitle 과 byte-identical.
-    stationNotifTitle: (kind) => {
-      if (kind === 'intermediate') return 'Passing station';
+    // #2506 — intermediate is byte-identical to device en.json route.stationPassed.
+    // transfer/destination keep the #2063 wording (notifications.arrivalImminentTitle/
+    // transferImminentTitle).
+    stationNotifTitle: (kind, stationName) => {
+      if (kind === 'intermediate') return `Arrived at ${stationName}`;
       if (kind === 'transfer') return 'Transfer imminent';
       return 'Arrival imminent';
     },
-    stationNotifBody: (kind, stationName) => {
-      if (kind === 'intermediate') return `Passing through ${stationName}`;
+    // #2506 — intermediate is byte-identical to device en.json
+    // route.stopsRemainingToDestination (target = actual transfer/destination station name).
+    stationNotifBody: (kind, stationName, counts) => {
+      if (kind === 'intermediate') {
+        if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
+          const unit = counts.count === 1 ? 'stop' : 'stops';
+          return `${counts.count} ${unit} to ${counts.targetName}`;
+        }
+        return 'Arrived';
+      }
       if (kind === 'transfer') return `Arriving at ${stationName} — transfer soon!`;
       return `Arriving at ${stationName} — exit soon!`;
     },
-    // #2448 — intermediate ENTERING only. No fixed lead time promised.
-    stationNotifApproachingTitle: 'Approaching',
-    stationNotifApproachingBody: (stationName) => `Approaching ${stationName} soon`,
     trainReconfirmTitle: "We couldn't find your train",
     trainReconfirmBody: 'Please check again',
   },
@@ -168,21 +194,25 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       const next = nextStation ? `${nextLine}号線 ${nextStation}方面` : `${nextLine}号線`;
       return `${from} 次は${next}です。`;
     },
-    // #2063 — device ja.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
-    // notifications.transferImminentTitle 과 byte-identical.
-    stationNotifTitle: (kind) => {
-      if (kind === 'intermediate') return '駅通過';
+    // #2506 — intermediateは device ja.json route.stationPassedと byte-identical。
+    // transfer/destinationは既存 #2063 文言を維持。
+    stationNotifTitle: (kind, stationName) => {
+      if (kind === 'intermediate') return `${stationName}駅に到着`;
       if (kind === 'transfer') return 'まもなく乗換';
       return 'まもなく到着';
     },
-    stationNotifBody: (kind, stationName) => {
-      if (kind === 'intermediate') return `${stationName}駅を通過しています`;
+    // #2506 — intermediateは device ja.json route.stopsRemainingToDestinationと byte-identical
+    // (target=実際の乗換駅/到着駅名)。
+    stationNotifBody: (kind, stationName, counts) => {
+      if (kind === 'intermediate') {
+        if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
+          return `${counts.targetName}まで残り${counts.count}駅`;
+        }
+        return '到着';
+      }
       if (kind === 'transfer') return `まもなく${stationName}に到着します。乗換の準備をしてください!`;
       return `まもなく${stationName}に到着します。下車の準備をしてください!`;
     },
-    // #2448 — intermediate ENTERING 専用。固定リードタイムは約束しない。
-    stationNotifApproachingTitle: 'まもなく進入',
-    stationNotifApproachingBody: (stationName) => `まもなく${stationName}駅に進入します`,
     trainReconfirmTitle: '乗車列車が見つかりません',
     trainReconfirmBody: 'もう一度ご確認ください',
   },
@@ -200,21 +230,25 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       const next = nextStation ? `${nextLine}号线 ${nextStation}方向` : `${nextLine}号线`;
       return `${from} 下一段: ${next}。`;
     },
-    // #2063 — device zh.json route.intermediatePassedTitle / notifications.arrivalImminentTitle /
-    // notifications.transferImminentTitle 과 byte-identical.
-    stationNotifTitle: (kind) => {
-      if (kind === 'intermediate') return '经过站点';
+    // #2506 — intermediate 与 device zh.json route.stationPassed byte-identical。
+    // transfer/destination 维持既有 #2063 文案。
+    stationNotifTitle: (kind, stationName) => {
+      if (kind === 'intermediate') return `已到达${stationName}`;
       if (kind === 'transfer') return '即将换乘';
       return '即将到达';
     },
-    stationNotifBody: (kind, stationName) => {
-      if (kind === 'intermediate') return `正在经过${stationName}站`;
+    // #2506 — intermediate 与 device zh.json route.stopsRemainingToDestination byte-identical
+    // (target=实际换乘站/到达站名称)。
+    stationNotifBody: (kind, stationName, counts) => {
+      if (kind === 'intermediate') {
+        if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
+          return `距${counts.targetName}还有${counts.count}站`;
+        }
+        return '到达';
+      }
       if (kind === 'transfer') return `即将到达${stationName}。请准备换乘!`;
       return `即将到达${stationName}。请准备下车!`;
     },
-    // #2448 — intermediate ENTERING 专用。不承诺固定提前时间。
-    stationNotifApproachingTitle: '即将进站',
-    stationNotifApproachingBody: (stationName) => `即将进入${stationName}站`,
     trainReconfirmTitle: '未能找到您的乘车列车',
     trainReconfirmBody: '请重新确认',
   },

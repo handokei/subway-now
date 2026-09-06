@@ -28,6 +28,7 @@ import {
   shouldStampOriginProximity,
   type GateSkipReason,
 } from './boardingPrompt';
+import { computeMultiHopContext } from './tripMultiHop';
 import {
   detectKalmanDrift,
   KALMAN_DRIFT_GRACE_MS,
@@ -108,7 +109,7 @@ import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { assertNever } from '../../../src/shared/types/pushContract';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
-import { t, type SupportedLocale } from './i18n';
+import { t, type StationNotifCounts, type SupportedLocale } from './i18n';
 import {
   checkArvlCdFireOnce,
   isSimpleArchEnabled,
@@ -2120,6 +2121,27 @@ export function boardingPromptCollapseId(tripToken: string): string {
 export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
 
 /**
+ * #2506 — intermediate 매역 도착 시점 기준 "다음 hop 대상(환승역|도착역)까지 남은 정거장"을
+ * 계산한다. `waypoint`는 아직 shift 되지 않은 `trip.waypoints[0]`(advance는 fire *이후*
+ * `advanceBoardingLockWaypoint`가 수행 — #1558 T5)이므로, 자기 자신을 제외한 나머지
+ * (`trip.waypoints` 중 waypoint 다음부터)로 `computeMultiHopContext`를 재사용한다. 이는
+ * `advanceBoardingLockWaypoint`가 advance *이후* `trip.waypoints.length`를 stopsRemaining으로
+ * 쓰는 LA 관례(scheduled.ts:4121 부근)와 동일한 1-based 의미론 — 새 계산을 도입하지 않는다.
+ *
+ * device #2362(`deriveStationPassedTarget`, src/features/alarm/hooks/useStationAlarm.ts)와
+ * 동일하게 아직 환승이 남아있으면 환승역을, 아니면 최종 도착역을 대상으로 삼는다.
+ */
+function deriveStationNotifCounts(trip: Trip, waypoint: Waypoint): StationNotifCounts {
+  const idx = trip.waypoints.indexOf(waypoint);
+  const remaining = idx === -1 ? trip.waypoints : trip.waypoints.slice(idx + 1);
+  const multiHop = computeMultiHopContext({ ...trip, waypoints: remaining });
+  const transferAhead = multiHop.stopsToTransfer !== undefined && multiHop.stopsToTransfer > 0;
+  return transferAhead
+    ? { targetName: multiHop.transferStationName, count: multiHop.stopsToTransfer }
+    : { targetName: multiHop.destinationName, count: remaining.length };
+}
+
+/**
  * #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 title/body 빌더.
  *
  * P1 수정(코드리뷰) — 최초 구현은 `alertContent.buildAlertContent`(한국어 고정, alert fallback
@@ -2130,26 +2152,23 @@ export const STATION_NOTIF_EXPIRATION_MS = 90 * 1000;
  * arvlCd 기반 매역 fire는 항상 phase='imminent' — `i18n.ts`의 `stationNotifTitle`/`stationNotifBody`도
  * 그에 맞춰 kind 단일 분기만 제공한다(early phase 없음).
  *
- * #2448 — `kind==='intermediate'`이고 발사 시점 arvlCd가 ENTERING(0)이면 "곧 진입" 전용 copy로
- * 분기한다. ARRIVED(1)는 기존 "역 통과" copy 유지 — arvlCd는 optional: 호출자가 arvlCd를
- * 모르는 경로(`fireVanishFallbackStationPush`/`maybeFireSleepAlarm`은 vanish/target 판정이라
- * "방금 진입"이 아님)는 인자를 생략해 기존 ARRIVED-copy 분기로 자연 fallback한다.
+ * #2506 — #2448이 도입한 intermediate ENTERING(0) 전용 "곧 진입" 사전 push를 제거했다(사용자
+ * 결정: "도착 1개" — 매역당 push는 도착 시점 1개만). 대신 intermediate ARRIVED(1) copy 자체를
+ * device #2362(`buildStationPassedContent`)와 byte-parity로 맞춰 "OO역 도착" + "{target}까지
+ * N정거장 남음"을 렌더한다. `fireArvlCdStationPush`가 ENTERING을 이 함수 호출 전에 skip하므로
+ * 본 함수는 더 이상 arvlCd를 인자로 받지 않는다.
  */
 function buildStationNotifContent(
+  trip: Trip,
   waypoint: Waypoint,
   locale: SupportedLocale | undefined,
-  arvlCd?: number,
 ): { title: string; body: string } {
   const strings = t(locale);
-  if (waypoint.kind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
-    return {
-      title: strings.stationNotifApproachingTitle,
-      body: strings.stationNotifApproachingBody(waypoint.stationName),
-    };
-  }
+  const counts =
+    waypoint.kind === 'intermediate' ? deriveStationNotifCounts(trip, waypoint) : undefined;
   return {
-    title: strings.stationNotifTitle(waypoint.kind),
-    body: strings.stationNotifBody(waypoint.kind, waypoint.stationName),
+    title: strings.stationNotifTitle(waypoint.kind, waypoint.stationName),
+    body: strings.stationNotifBody(waypoint.kind, waypoint.stationName, counts),
   };
 }
 
@@ -2293,7 +2312,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   // 실패 시 아래에서 rollback(delete) — 영구 dedup 미스 방지.
   await env.TRIPS.put(dedupKey, '1', { expirationTtl: SLEEP_ALARM_FIRE_DEDUP_TTL_SEC });
 
-  const content = buildStationNotifContent(target, trip.locale);
+  const content = buildStationNotifContent(trip, target, trip.locale);
   const collapseId = sleepAlarmCollapseId(trip.token, target.stationName);
   const targetKind: 'transfer' | 'destination' =
     target.kind === 'destination' ? 'destination' : 'transfer';
@@ -2483,6 +2502,17 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
+  // #2506 — 사용자 결정 "도착 1개": intermediate 매역은 도착(ARRIVED) 신호 1개로만 push를
+  // 발사한다. #2448이 도입한 ENTERING(0) 전용 "곧 진입" 사전 push를 제거 — fire-once bucket/
+  // dedup KV 로직에 진입하기 전 조기 skip해 해당 상태를 전혀 건드리지 않는다(뒤이은 ARRIVED
+  // 신호가 정상적으로 fire-once/dedup 게이트를 거쳐 진행한다).
+  if (waypoint.kind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
+    log('station-notif skip: intermediate-entering-suppressed', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    return { dirty: false };
+  }
   // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
   // transferDestinationGate (60s) 보다 보수적이지만 intermediate 까지 보호. lazy-seed (==0) 통과.
   // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
@@ -2634,7 +2664,7 @@ export async function fireArvlCdStationPush(
   // #2092 — contentAvailable:true를 병기해 alert와 동시에 device background task
   // (handleSilentPush)를 깨운다. station kind는 배너 no-op(#2088)이라 이중 배너 없이 SSoT
   // mirror(persistBackendSsotMirror)·BG 위젯 갱신(updateWidgetFromSilentPush)만 수행한다.
-  const stationNotifContent = buildStationNotifContent(waypoint, trip.locale, arvlCd);
+  const stationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
@@ -3058,7 +3088,7 @@ export async function fireVanishFallbackStationPush(
   // #2063 (ADR-023 개정) — silent → visible alert push 직접 발사 (fireArvlCdStationPush와 동일 정책).
   // #2092 — contentAvailable:true 병기로 device background task(handleSilentPush)를 깨워
   // SSoT mirror·BG 위젯 갱신을 fireArvlCdStationPush와 동일하게 유지한다.
-  const vanishStationNotifContent = buildStationNotifContent(waypoint, trip.locale);
+  const vanishStationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
   const heal = await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
