@@ -22,6 +22,7 @@ function makeEntry(overrides: Partial<PendingPush> = {}): PendingPush {
   return {
     pushId: 'push-1',
     token: 'devicetoken-hex',
+    tripToken: 'tok-auto',
     alarmKey: 'early:강남',
     sentAt: 1_700_000_000_000,
     stationName: '강남',

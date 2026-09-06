@@ -4970,6 +4970,7 @@ describe('GET /admin/push-ack-stats (#1614 Phase D)', () => {
     await putPending(pendingKv, {
       pushId: 'p1700',
       token: 'device-token-A',
+      tripToken: 'trip-p1700',
       alarmKey: 'imminent:용마산',
       sentAt: Date.now(),
       stationName: '용마산',

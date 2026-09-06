@@ -264,6 +264,7 @@ describe('trips KV CRUD', () => {
       return {
         pushId: 'push-1',
         token: 'tok-A',
+        tripToken: 'tok-A',
         alarmKey: 'early:강남',
         sentAt: Date.now(),
         stationName: '강남',
