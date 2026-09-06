@@ -4,6 +4,7 @@
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
+import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
 import {
   buildSilentPushData,
   sendAlertPush,
@@ -549,6 +550,20 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   lockMissing: number;
   /**
+   * 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) — 명시 탑승
+   * anchor(`promptDisplay` + `infoModeEnabled===true`)를 가진 lockless trip에서 정확히 1개의
+   * unambiguous trainCode를 찾아 `trip.boardingLock`을 승격시킨 누적 횟수. 다음 cycle부터
+   * `isBoardingLockActive` → `runTrainCodeTracking` 정상 경로로 매역 push가 시작된다.
+   * `boardingAnchorResolver.ts` 참고.
+   */
+  boardingAnchorResolved: number;
+  /**
+   * 위와 동일 anchor 조건에서 resolver가 0개(none) 또는 2개+(ambiguous) 후보를 만나 승격을
+   * 보류한 누적 횟수. 틀린 열차를 추측해 lock하지 않는다는 안전 게이트가 실제로 작동한 빈도
+   * 측정 — 사용자는 다음 cycle 재시도 또는 device BoardingTrainList manual fallback으로 이어진다.
+   */
+  boardingAnchorUnresolved: number;
+  /**
    * #1933 — `lastLaPushAt`이 `LA_STALE_AUTO_END_MS` 이상 침묵해 cron이 자동 cleanup한 trip 수.
    * lockMissing 분기 진입 시 평가. 정상 운영(silent push + LA heartbeat 작동)에서 0건 기대 —
    * 0이 아니면 `lockMissing` 분기 잔여 케이스(advance gate freeze + heartbeat self-referential gap)에서
@@ -1073,6 +1088,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     etaMissing: 0,
     envCorrected: 0,
     lockMissing: 0,
+    boardingAnchorResolved: 0,
+    boardingAnchorUnresolved: 0,
     laStaleAutoEnded: 0,
     laStaleSurvivedSilence: 0,
     killSwitchLocklessIntermediateSkipped: 0,
@@ -1348,6 +1365,38 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
     // lock 부재 상태에서의 phase-based push는 "탑승 전 노이즈"였다.
     if (!isBoardingLockActive(trip, now)) {
+      // 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) —
+      // 명시 탑승 anchor(promptDisplay + infoModeEnabled=true)를 가진 lockless trip을 우선
+      // 시도한다. 정확히 1개 unambiguous trainCode가 나오면 즉시 lock을 승격 + persist하고
+      // 이번 cycle은 여기서 종료한다 — 다음 cycle부터 위 `isBoardingLockActive` 판정이 true가
+      // 되어 정상 `runTrainCodeTracking` 경로(매역 push)로 진입한다. ambiguous/none은 그대로
+      // lockMissing 분기(boarding-prompt / lockless-intermediate fallback)로 흘려보낸다 —
+      // 틀린 열차를 추측해 lock하지 않는다(#1729 auto-lock 폐기와 동일 안전 원칙).
+      try {
+        const anchorLock = await attemptBoardingAnchorResolution(trip, deps.seoul, now);
+        if (anchorLock) {
+          trip.boardingLock = anchorLock;
+          trip.consecutiveEtaMissing = 0;
+          trip.lastTrackedArrivalEpoch = undefined;
+          trip.lastLaPushEpoch = undefined;
+          trip.lastLaPushAt = undefined;
+          await putTrip(env.TRIPS, trip);
+          stats.boardingAnchorResolved += 1;
+          log('boarding-anchor: trainCode resolved, lock promoted', {
+            token: trip.token.slice(0, 8),
+            station: trip.promptDisplay?.originStation,
+            line: trip.promptDisplay?.line,
+            trainCode: anchorLock.trainCode,
+          });
+          continue;
+        }
+        if (trip.infoModeEnabled === true && trip.promptDisplay) {
+          stats.boardingAnchorUnresolved += 1;
+        }
+      } catch (e) {
+        stats.errors += 1;
+        log('boarding-anchor: resolution error', { error: String(e), token: trip.token.slice(0, 8) });
+      }
       // #1933 — LA push 침묵 자동 종료 backstop. lockMissing 분기 진입 시 평가.
       // backend SSoT가 advance 게이트로 frozen된 채 `maybeFireLiveActivityUpdate`가 ΔETA=0 분기
       // dedup으로 새 push 미발사 → ActivityKit이 last content-state를 영구 유지하는

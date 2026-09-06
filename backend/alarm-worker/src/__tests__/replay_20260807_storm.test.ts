@@ -119,7 +119,7 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,

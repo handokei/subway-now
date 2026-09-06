@@ -175,7 +175,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -1208,6 +1208,108 @@ describe('runScheduled', () => {
         expect(apnsFetch).toHaveBeenCalled();
       });
     });
+  });
+});
+
+// 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) — cron 배선 검증.
+// `boardingAnchorResolver.test.ts`가 resolver pure function 자체를 검증하므로, 여기서는
+// `runScheduled`가 실제로 그 결과를 `trip.boardingLock`으로 승격 + persist하고 다음 cycle의
+// `isBoardingLockActive` 판정에 반영되는지(=매역 push 경로 진입 가능 여부)를 검증한다.
+describe('runScheduled — boarding anchor trainCode resolution (backend-authority)', () => {
+  /** seoul.ts parseRecptnDt는 `<recptnDt 공백구분> + '+09:00'`을 Date.parse한다 — 역산. */
+  function recptnDtFor(ms: number): string {
+    return new Date(ms + 9 * 60 * 60_000).toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  function makeSeoulPositions(
+    positions: Array<Partial<PositionEntry> & { trainCode: string }>,
+  ): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: [],
+            realtimePositionList: positions.map((p) => ({
+              trainNo: p.trainCode,
+              statnNm: p.stationName ?? '중곡',
+              trainSttus: p.trainSttus ?? 1,
+              updnLine: p.isUp === true ? '상행' : '하행',
+              lastRecptnDt: recptnDtFor(p.recptnMs ?? NOW),
+            })),
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+  }
+
+  function anchorTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 'anchor-tok',
+      route: { type: 'direct', line: '7', stops: 1 },
+      destination: '어린이대공원',
+      waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+      infoModeEnabled: true,
+      promptDisplay: { originStation: '중곡', line: '7' },
+      ...overrides,
+    });
+  }
+
+  it('anchor + 후보 1개 → boardingLock 승격 + persist + boardingAnchorResolved 카운트', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, anchorTrip());
+    const seoul = makeSeoulPositions([{ trainCode: '7246' }]);
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(1);
+    expect(stats.boardingAnchorUnresolved).toBe(0);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7246');
+    expect(stored.boardingLock?.line).toBe('7');
+    expect(stored.boardingLock?.segmentStations[0]).toBe('중곡');
+    // 다음 cycle의 isBoardingLockActive 판정과 동일 조건 — 승격된 lock이 활성이어야 매역 추적 재개.
+    expect(stored.boardingLock?.expiresAt).toBeGreaterThan(NOW);
+  });
+
+  it('anchor + 후보 2개(ambiguous) → boardingLock 승격 안 함, boardingAnchorUnresolved 카운트', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, anchorTrip());
+    const seoul = makeSeoulPositions([{ trainCode: '7246' }, { trainCode: '7248' }]);
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(0);
+    expect(stats.boardingAnchorUnresolved).toBe(1);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  it('infoModeEnabled=false → resolver 평가 자체를 skip (기존 lockMissing 동작 무변경)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, anchorTrip({ infoModeEnabled: false }));
+    const seoul = makeSeoulPositions([{ trainCode: '7246' }]);
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(0);
+    expect(stats.boardingAnchorUnresolved).toBe(0);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock).toBeUndefined();
   });
 });
 
@@ -10669,7 +10771,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,

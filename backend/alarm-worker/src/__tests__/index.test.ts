@@ -3404,6 +3404,175 @@ describe('POST /boarding-lock/sync (#901)', () => {
     });
   });
 
+  // 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) — tap-시점
+  // (register) 즉시 시도 wiring. cron(≤60s)만 기다리면 열차가 이미 탑승역을 떠나 dwell window를
+  // 놓칠 위험이 있어, anchor가 처음 도달하는 이 시점에 1회 즉시 resolve를 시도한다.
+  describe('boarding-anchor tap-time resolution at POST /trips (backend-authority)', () => {
+    function makeExecutionContext(): ExecutionContext & { waitUntil: ReturnType<typeof vi.fn> } {
+      return {
+        waitUntil: vi.fn(),
+        passThroughOnException: () => {},
+        props: {},
+      } as unknown as ExecutionContext & { waitUntil: ReturnType<typeof vi.fn> };
+    }
+
+    async function postWithCtx(
+      path: string,
+      body: unknown,
+      env: Env,
+      ctx: ExecutionContext,
+    ): Promise<Response> {
+      return app.fetch(
+        new Request(`http://example.com${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        env,
+        ctx,
+      );
+    }
+
+    /** seoul.ts parseRecptnDt는 `<recptnDt 공백구분> + '+09:00'`을 Date.parse한다 — 역산. */
+    function recptnDtFor(ms: number): string {
+      return new Date(ms + 9 * 60 * 60_000).toISOString().slice(0, 19).replace('T', ' ');
+    }
+
+    function anchorTripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        token: 'anchor-tok',
+        route: { type: 'direct', line: '7', stops: 1 },
+        destination: '어린이대공원',
+        waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+        expiresAt: FUTURE,
+        alarmAtEpochMs: FUTURE - 30 * 60 * 1000,
+        infoModeEnabled: true,
+        promptDisplay: { originStation: '중곡', line: '7' },
+        ...overrides,
+      };
+    }
+
+    let fetchSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('정확히 1개 매칭 → waitUntil 완료 후 trip.boardingLock 승격 + register 응답은 지장 없음', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [
+              {
+                trainNo: '7246',
+                statnNm: '중곡',
+                trainSttus: 1,
+                updnLine: '하행',
+                lastRecptnDt: recptnDtFor(Date.now()),
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      const ctx = makeExecutionContext();
+      const res = await postWithCtx('/trips', anchorTripBody(), env, ctx);
+      expect(res.status).toBe(200);
+
+      // register 응답 자체는 tap-resolve 완료를 기다리지 않는다 — register 직후 KV에는 아직
+      // boardingLock이 없어야 한다(waitUntil 완료 전).
+      const beforeAwait = JSON.parse((await env.TRIPS.get('trip:anchor-tok')) as string);
+      expect(beforeAwait.boardingLock).toBeUndefined();
+
+      const scheduled = ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>);
+      expect(scheduled.length).toBeGreaterThan(0);
+      await Promise.all(scheduled);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:anchor-tok')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7246');
+      expect(stored.boardingLock?.line).toBe('7');
+    });
+
+    it('resolver가 예외를 던져도(fetch reject) register 응답은 정상 200 (register 절대 안 깨짐)', async () => {
+      fetchSpy.mockRejectedValue(new Error('network down'));
+      const env = makeKvEnv();
+      const ctx = makeExecutionContext();
+      const res = await postWithCtx('/trips', anchorTripBody(), env, ctx);
+      expect(res.status).toBe(200);
+
+      const scheduled = ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>);
+      // waitUntil로 스케줄된 프로미스가 reject 없이(swallow) 완료돼야 한다.
+      await expect(Promise.all(scheduled)).resolves.toBeDefined();
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:anchor-tok')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+    });
+
+    it('infoModeEnabled !== true → tap-resolve 시도 자체 안 함 (기존 register 동작 무변경)', async () => {
+      const env = makeKvEnv();
+      const ctx = makeExecutionContext();
+      const res = await postWithCtx('/trips', anchorTripBody({ infoModeEnabled: false }), env, ctx);
+      expect(res.status).toBe(200);
+      await Promise.all(ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+      // infoModeEnabled=false라 SeoulArrivalClient(fetch)가 전혀 호출되지 않아야 한다.
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const stored = JSON.parse((await env.TRIPS.get('trip:anchor-tok')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+    });
+
+    it('이미 boardingLock 있는 trip → tap-resolve 시도 안 함 (active lock 재평가 금지)', async () => {
+      const env = makeKvEnv();
+      const ctx = makeExecutionContext();
+      const res = await postWithCtx(
+        '/trips',
+        anchorTripBody({
+          boardingLock: {
+            trainCode: '9999',
+            line: '7',
+            subwayId: '1007',
+            selectedDepartureTime: Date.now(),
+            segmentStations: ['중곡', '어린이대공원'],
+            expiresAt: Date.now() + 60 * 60_000,
+          },
+        }),
+        env,
+        ctx,
+      );
+      expect(res.status).toBe(200);
+      await Promise.all(ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('executionCtx 미제공(기존 단위 테스트 관례) 시에도 throw 없이 정상 응답 + fire-and-forget 완료', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [
+              {
+                trainNo: '7246',
+                statnNm: '중곡',
+                trainSttus: 1,
+                updnLine: '하행',
+                lastRecptnDt: recptnDtFor(Date.now()),
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      const res = await post('/trips', anchorTripBody(), env);
+      expect(res.status).toBe(200);
+      // fire-and-forget(마이크로태스크) 완료를 기다린다 — executionCtx 없이도 throw 없이 진행.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  });
 });
 
 // #2308 — applyProgress/resolveProgressWaypoints 단조 전진 불변식.

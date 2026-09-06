@@ -13,6 +13,7 @@
 
 import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
+import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
 import { isNearOrigin, markPromptSilenced, shouldStampOriginProximity } from './boardingPrompt';
 import {
   recordBoardingPromptOutcome,
@@ -191,6 +192,55 @@ function scheduleTripEvent(c: Context<{ Bindings: Env }>, promise: Promise<void>
     c.executionCtx.waitUntil(promise);
   } catch {
     void promise;
+  }
+}
+
+/**
+ * 백엔드 realtimePosition trainCode resolver — tap-시점(register) 즉시 시도 (POST /trips 참고).
+ * `scheduleTripEvent`로 waitUntil 스케줄되므로 응답 반환 이후 실행된다.
+ *
+ * `getTrip`으로 최신 trip을 재조회 후 write한다 — waitUntil 실행 시점까지 cron(`scheduled.ts`
+ * 의 동일 resolver 재시도)이나 다른 register가 먼저 lock을 승격/변경했을 수 있는 race를
+ * 방어한다(이미 lock 있으면 skip — 어느 쪽이 먼저 승격했든 결과는 동일한 정책이라 덮어쓸
+ * 필요가 없다).
+ *
+ * 모든 실패(네트워크/파싱/KV)는 여기서 swallow — register 응답은 이미 반환된 이후이므로
+ * 예외가 밖으로 나가도 사용자에게 영향은 없지만, unhandled rejection 로그 노이즈를 막기 위해
+ * 명시적으로 처리한다.
+ */
+async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<void> {
+  try {
+    const seoul = new SeoulArrivalClient({ apiKey: env.SEOUL_API_KEY, host: env.SEOUL_API_HOST });
+    const anchorLock = await attemptBoardingAnchorResolution(trip, seoul, Date.now());
+    if (!anchorLock) return;
+
+    const latest = await getTrip(env.TRIPS, trip.token);
+    if (!latest || latest.boardingLock !== undefined) return;
+
+    const resolvedTrip: Trip = {
+      ...latest,
+      boardingLock: anchorLock,
+      consecutiveEtaMissing: 0,
+      lastTrackedArrivalEpoch: undefined,
+      lastLaPushEpoch: undefined,
+      lastLaPushAt: undefined,
+    };
+    await putTrip(env.TRIPS, resolvedTrip);
+    console.log(
+      JSON.stringify({
+        msg: 'boarding-anchor: trainCode resolved at register (tap-time)',
+        tokenPrefix: tokenPrefix(trip.token),
+        trainCode: anchorLock.trainCode,
+      }),
+    );
+  } catch (e) {
+    console.log(
+      JSON.stringify({
+        msg: 'boarding-anchor: tap-time resolution error (register unaffected)',
+        tokenPrefix: tokenPrefix(trip.token),
+        error: String(e),
+      }),
+    );
   }
 }
 
@@ -1046,6 +1096,19 @@ app.post('/trips', async (c) => {
   // #2264 (Epic #2260, ADR-031 Phase 1) — TripDO shadow dual-write. flag off(default)면
   // no-op. KV write(putTrip)는 이미 위에서 완료됐으므로 실패해도 trip 등록에 영향 없다.
   await dualWriteTripDo(c.env, trip);
+
+  // 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) — tap-시점
+  // 즉시 시도. 실제 열차는 탑승역에서 ~20-30s 안에 떠난다 — cron(≤60s 주기)만 기다리면 dwell
+  // window를 놓쳐 station 정확 일치 매칭이 영구 실패할 위험이 있다(열차가 이미 다음 역으로
+  // 넘어가 버림). anchor(promptDisplay + infoModeEnabled=true)가 backend에 처음 도달하는 이
+  // 시점 — 즉 탭 직후, 열차가 아직 탑승역에 있을 가능성이 가장 높은 시점 — 에 1회 즉시 시도해
+  // 그 창을 잡는다. `scheduleTripEvent`와 동일 waitUntil 패턴으로 register 응답 latency에
+  // 얹지 않고, 실패/예외는 전부 swallow — register 자체(위에서 이미 persist 완료)는 절대
+  // 실패시키지 않는다. cron(`scheduled.ts`)은 retry로 그대로 유지 — 이 tap-time 시도가
+  // 실패해도(dwell window를 못 잡았거나 ambiguous) 다음 cycle이 계속 재평가한다.
+  if (trip.infoModeEnabled === true && trip.boardingLock === undefined) {
+    scheduleTripEvent(c, resolveBoardingAnchorAtRegister(c.env, trip));
+  }
 
   // #1897 (RC-5) — KV에 박힌 권위 apnsEnv 를 device로 echo. device 는 이를 stamp 해 다음
   // register 시 build env 대신 송신 → backend self-heal(envCorrected) 발동을 0에 수렴.
