@@ -86,6 +86,7 @@ async function readCurrentProfile(): Promise<BgLocationProfile> {
     const raw = await AsyncStorage.getItem(BG_LOCATION_PROFILE_KEY);
     if (raw === 'stationary') return 'stationary';
     if (raw === 'underground') return 'underground';
+    if (raw === 'locked') return 'locked';
     return 'surface';
   } catch {
     return 'surface';

@@ -11,6 +11,7 @@ import {
   MAX_LOCATION_AGE_MS,
   FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+  FG_WATCH_LOCKED_TIME_INTERVAL_MS,
 } from '../../../../shared/constants/location';
 import { BG_LAST_STATION_KEY } from '../../../../shared/constants/storageKeys';
 
@@ -1601,6 +1602,149 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
     renderHook(() => useNearestStation(props));
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
     expect(lastWatchOptions().accuracy).toBe(expectedAccuracy());
+  });
+});
+
+// #2514 — boardingLock 활성 시 device GPS demote. backend가 realtimePosition으로 열차를
+// GPS-독립적으로 추적하므로 lock 활성 중에는 device GPS 고정밀 추적이 불필요(발열/배터리 절감).
+// lock 활성 전(undefined/false)은 기존 정확도(High@2s 또는 subsurface Balanced@12s)를 그대로
+// 유지해야 한다 — origin-proximity/boarding-prompt 감지에 필요.
+describe('useNearestStation — #2514 boardingLock 활성 GPS demote', () => {
+  const SURFACE_OPTIONS = {
+    accuracy: Location.Accuracy.High,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+  };
+  const SUBSURFACE_OPTIONS = {
+    accuracy: Location.Accuracy.Balanced,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+  };
+  const LOCKED_OPTIONS = {
+    accuracy: Location.Accuracy.Balanced,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_LOCKED_TIME_INTERVAL_MS,
+  };
+  const originalCurrentState = AppState.currentState;
+
+  const lastWatchOptions = () => {
+    const calls = (Location.watchPositionAsync as jest.Mock).mock.calls;
+    return calls[calls.length - 1][0];
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    mockGranted();
+    (AppState as { currentState: string }).currentState = 'active';
+  });
+
+  afterEach(() => {
+    (AppState as { currentState: string }).currentState = originalCurrentState;
+  });
+
+  it('lockActive 미전달(undefined) → 기존 지상 기본값(High@2s) 유지', async () => {
+    renderHook(() => useNearestStation({}));
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+  });
+
+  it('lockActive=true → 마운트 즉시 Balanced/90s locked 옵션으로 시작한다', async () => {
+    renderHook(() => useNearestStation({ lockActive: true }));
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+    expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS);
+  });
+
+  it('lockActive false→true flip 시 watch를 teardown 후 locked 옵션으로 재시작한다', async () => {
+    const { rerender } = renderHook(
+      ({ locked }: { locked: boolean }) => useNearestStation({ lockActive: locked }),
+      { initialProps: { locked: false } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+
+    await act(async () => {
+      rerender({ locked: true });
+    });
+
+    expect(mockSubscription.remove).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS);
+  });
+
+  it('lockActive true→false flip 시 watch를 teardown 후 기존 정확도(High@2s)로 되돌린다', async () => {
+    const { rerender } = renderHook(
+      ({ locked }: { locked: boolean }) => useNearestStation({ lockActive: locked }),
+      { initialProps: { locked: true } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS);
+
+    await act(async () => {
+      rerender({ locked: false });
+    });
+
+    expect(mockSubscription.remove).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+  });
+
+  // lock 활성이면 지하(subsurface throttle) 여부와 무관하게 locked가 우선한다 — backend 추적이
+  // GPS 정밀도 자체를 대체하므로 지하 확정 여부는 더 이상 의미 없다.
+  it('lockActive=true + barometerSubsurface=true 조합에서도 locked가 우선한다(subsurface보다 강)', async () => {
+    renderHook(() => useNearestStation({ lockActive: true, barometerSubsurface: true }));
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS);
+  });
+
+  it('lockActive=true 상태에서 barometerSubsurface만 바뀌어도 locked 옵션을 유지한다(재시작 없음)', async () => {
+    const { rerender } = renderHook(
+      ({ sub }: { sub: boolean }) => useNearestStation({ lockActive: true, barometerSubsurface: sub }),
+      { initialProps: { sub: false } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS);
+
+    await act(async () => {
+      rerender({ sub: true });
+    });
+
+    // throttled(subsurface) 값이 false→true로 바뀌었지만 locked가 이미 최우선이라 옵션 자체는
+    // 그대로 — 다만 restart effect는 throttled 변화를 감지해 재시작할 수 있다(no-op 재시작 허용).
+    expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS);
+  });
+
+  it('백그라운드 중 lockActive flip은 FG watch를 켜지 않는다 (active 가드)', async () => {
+    const { rerender } = renderHook(
+      ({ locked }: { locked: boolean }) => useNearestStation({ lockActive: locked }),
+      { initialProps: { locked: false } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    (AppState as { currentState: string }).currentState = 'background';
+    await act(async () => {
+      rerender({ locked: true });
+    });
+
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.remove).not.toHaveBeenCalled();
+
+    (AppState as { currentState: string }).currentState = 'active';
+    await act(async () => {
+      appStateCallback?.('active');
+    });
+    await waitFor(() => expect(lastWatchOptions()).toEqual(LOCKED_OPTIONS));
   });
 });
 

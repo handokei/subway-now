@@ -58,6 +58,14 @@ export const FG_WATCH_SURFACE_TIME_INTERVAL_MS = 8_000;
 //  useNearestStation.ts의 FG_WATCH_OPTIONS_SUBSURFACE 주석 참고.
 export const FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS = 12_000;
 
+// #2514 — boardingLock 활성 구간의 FG watch throttle interval. BG의 'locked' 프로파일(90s,
+// shared/constants/locationTracking.ts)과 동일 cadence를 재사용한다 — lock 활성 시 backend가
+// realtimePosition으로 열차를 GPS-독립적으로 추적하므로 device GPS는 지상/지하 여부와 무관하게
+// 이미 무의미하다(중복 상수 회피). subsurface(12s)보다 더 완화하는 이유: subsurface throttle은
+// "지하라 부정확"이 근거지만, locked throttle은 "추적 자체를 backend가 대신한다"는 더 강한
+// 근거라 더 길게 늦춰도 안전하다.
+export const FG_WATCH_LOCKED_TIME_INTERVAL_MS = 90_000;
+
 // iOS CoreLocation은 속도를 측정할 수 없을 때 음수(보통 -1)를 반환한다.
 // stationary/indoor/cold-start 등에서 자주 발생 — null로 정규화해 다운스트림이
 // "측정 불가"와 "정지(0 m/s)"를 명확히 구분하도록 한다.
