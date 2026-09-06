@@ -24,7 +24,7 @@ describe('useAlarmEventStore', () => {
     expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
   });
 
-  // #2258 — 알람 비주얼(AlarmOverlay)은 취침모드 전용. 활성 trip 중이어도 sleepMode=false면
+  // #2258 — 알람 비주얼(SleepAlarmOverlay)은 취침모드 전용. 활성 trip 중이어도 sleepMode=false면
   // 억제한다(구 #2210 게이트는 tripActive를 우회 조건으로 통과시켰으나, 이는 취침 OFF에서도
   // 환승/하차 오버레이가 뜨는 회귀였다). red: 게이트 변경 전에는 이 상태에서 alarmEvent가 set됐다.
   it('setAlarmEvent: sleepMode=false면 활성 trip 중이어도 알람 이벤트를 억제한다', () => {
