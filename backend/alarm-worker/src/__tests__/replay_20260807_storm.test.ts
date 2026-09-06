@@ -158,6 +158,9 @@ function makeFullEmptyStats(): ScheduledStats {
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
     sleepAlarmRolledBack: 0,
+    prepareAlarmFired: 0,
+    prepareAlarmDedupSkipped: 0,
+    prepareAlarmRolledBack: 0,
     etaMissingDemoted: 0,
     trainReconfirmFired: 0,
   };
