@@ -42,6 +42,14 @@ export interface PendingPush {
   pushId: string;
   /** APNs device token — fallback 재발사 시 사용. */
   token: string;
+  /**
+   * trip 신원 토큰 (#2522) — fallback이 발사 직전 trip의 lock 상태를 재확인하는 데 사용.
+   * lock 활성 trip의 stale intermediate("통과") pending은 발사하면 안 되는데, 종전엔
+   * PendingPush에 trip을 되찾을 방법이 없어 lock 상태를 볼 수 없었다(runFallbackPushes.ts 참고).
+   * 구 entry(본 필드 추가 전 putPending)는 undefined일 수 있다 — fallback.ts가 "검증 불가"로
+   * 취급해 intermediate는 발사하지 않는다(보수적 기본값, "락 활성 중 통과" 회귀 방지 우선).
+   */
+  tripToken: string;
   /** dedup 식별자 — 디바이스 FIRED_ALARMS와 매칭. `${stationName}:${kind}:${phase}` 형태. */
   alarmKey: string;
   /** 백엔드 발사 시점 epoch ms. P2c가 30s 임계 판단. */

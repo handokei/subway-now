@@ -11537,6 +11537,7 @@ describe('runScheduled — #1707 destination GPS cross-check integration', () =>
     await putPending(pending as unknown as KVNamespace, {
       pushId: 'stale-pending-1',
       token: trip.token,
+      tripToken: trip.token,
       alarmKey: 'imminent:합정',
       sentAt: NOW - 30_000,
       stationName: '합정',

@@ -2,8 +2,10 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FALLBACK_THRESHOLD_MS, runFallbackPushes } from '../fallback';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
+import { putTrip } from '../trips';
 import type { Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
+import { makeTripFixture } from './helpers/testFixtures';
 
 let privateKeyPem = '';
 beforeAll(async () => {
@@ -17,9 +19,9 @@ const APNS_HOSTS = {
   sandbox: 'api.sandbox.push.apple.com',
 } as const;
 
-function makeEnv(kv: InMemoryKV): Env {
+function makeEnv(kv: InMemoryKV, tripsKv: InMemoryKV = new InMemoryKV()): Env {
   return {
-    TRIPS: {} as Env['TRIPS'],
+    TRIPS: tripsKv as unknown as Env['TRIPS'],
     PENDING_PUSHES: kv as unknown as KVNamespace,
     APNS_HOST: APNS_HOSTS.production,
     APNS_HOST_SANDBOX: APNS_HOSTS.sandbox,
@@ -36,6 +38,7 @@ function makeEntry(overrides: Partial<PendingPush> = {}): PendingPush {
   return {
     pushId: 'push-1',
     token: 'devicetoken-hex',
+    tripToken: 'tok-auto',
     alarmKey: 'imminent:강남',
     sentAt: NOW - FALLBACK_THRESHOLD_MS, // 임계 정확히 도달
     stationName: '강남',
@@ -69,7 +72,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 0, pushed: 0, errors: 0, deferred: 0 });
+    expect(stats).toEqual({ scanned: 0, pushed: 0, errors: 0, deferred: 0, skippedLocked: 0 });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -85,7 +88,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 0, deferred: 1 });
+    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 0, deferred: 1, skippedLocked: 0 });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(kv.store.has(pendingKey('push-1'))).toBe(true);
   });
@@ -99,7 +102,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 1, pushed: 1, errors: 0, deferred: 0 });
+    expect(stats).toEqual({ scanned: 1, pushed: 1, errors: 0, deferred: 0, skippedLocked: 0 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`https://${APNS_HOSTS.sandbox}/3/device/devicetoken-hex`);
@@ -127,12 +130,14 @@ describe('runFallbackPushes (#572 P2c)', () => {
   });
 
   it('intermediate kind는 phase 무관 단일 본문', async () => {
+    const tripsKv = new InMemoryKV();
+    await putTrip(tripsKv as unknown as KVNamespace, makeTripFixture({ token: 'tok-auto' }));
     await putPending(
       kv as unknown as KVNamespace,
       makeEntry({ kind: 'intermediate', stationName: '중곡', phase: 'imminent' }),
     );
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    await runFallbackPushes(makeEnv(kv), {
+    await runFallbackPushes(makeEnv(kv, tripsKv), {
       apnsConfig: apnsConfig(),
       apnsHosts: APNS_HOSTS,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -155,7 +160,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 1, deferred: 0 });
+    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 1, deferred: 0, skippedLocked: 0 });
     expect(kv.store.has(pendingKey('p-perm'))).toBe(false);
   });
 
@@ -258,5 +263,133 @@ describe('runFallbackPushes (#572 P2c)', () => {
       },
     });
     expect(logMessages.some((l) => l.msg === 'fallback run complete')).toBe(true);
+  });
+
+  describe('#2522 — 락 활성 시 stale intermediate "통과" 발사 차단', () => {
+    it('intermediate pending + trip lock 활성 → 발사하지 않고 entry만 삭제', async () => {
+      const tripsKv = new InMemoryKV();
+      await putTrip(
+        tripsKv as unknown as KVNamespace,
+        makeTripFixture({
+          token: 'tok-locked',
+          boardingLock: {
+            trainCode: 'T',
+            line: '2',
+            subwayId: '1002',
+            selectedDepartureTime: NOW,
+            segmentStations: ['중곡', '군자'],
+            expiresAt: NOW + 60 * 60_000,
+          },
+        }),
+      );
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-locked', kind: 'intermediate', tripToken: 'tok-locked', stationName: '중곡' }),
+      );
+      const fetchImpl = vi.fn();
+      const stats = await runFallbackPushes(makeEnv(kv, tripsKv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(kv.store.has(pendingKey('p-locked'))).toBe(false);
+      expect(stats.pushed).toBe(0);
+    });
+
+    it('intermediate pending + trip lockless(락 없음) → 기존대로 발사', async () => {
+      const tripsKv = new InMemoryKV();
+      await putTrip(tripsKv as unknown as KVNamespace, makeTripFixture({ token: 'tok-lockless' }));
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-lockless', kind: 'intermediate', tripToken: 'tok-lockless', stationName: '중곡' }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runFallbackPushes(makeEnv(kv, tripsKv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(stats.pushed).toBe(1);
+      expect(kv.store.has(pendingKey('p-lockless'))).toBe(false);
+    });
+
+    it('intermediate pending + trip 이미 소멸(없음) → 발사하지 않고 entry만 삭제', async () => {
+      const tripsKv = new InMemoryKV();
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-gone', kind: 'intermediate', tripToken: 'tok-gone', stationName: '중곡' }),
+      );
+      const fetchImpl = vi.fn();
+      const stats = await runFallbackPushes(makeEnv(kv, tripsKv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(kv.store.has(pendingKey('p-gone'))).toBe(false);
+      expect(stats.pushed).toBe(0);
+    });
+
+    it('intermediate pending + tripToken 누락(구 entry) → 검증 불가로 보수적 skip', async () => {
+      const entryRaw = JSON.stringify({
+        pushId: 'p-no-triptoken',
+        token: 'devicetoken-hex',
+        alarmKey: 'imminent:중곡',
+        sentAt: NOW - FALLBACK_THRESHOLD_MS,
+        stationName: '중곡',
+        kind: 'intermediate',
+        phase: 'imminent',
+        etaSeconds: 30,
+        apnsEnv: 'sandbox',
+        // tripToken 누락 — #2522 이전 entry
+      });
+      await kv.put(pendingKey('p-no-triptoken'), entryRaw);
+      const fetchImpl = vi.fn();
+      const stats = await runFallbackPushes(makeEnv(kv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(kv.store.has(pendingKey('p-no-triptoken'))).toBe(false);
+      expect(stats.pushed).toBe(0);
+    });
+
+    it('destination/transfer kind는 lock 활성 trip이어도 기존대로 발사(영향 없음)', async () => {
+      const tripsKv = new InMemoryKV();
+      await putTrip(
+        tripsKv as unknown as KVNamespace,
+        makeTripFixture({
+          token: 'tok-locked-2',
+          boardingLock: {
+            trainCode: 'T',
+            line: '2',
+            subwayId: '1002',
+            selectedDepartureTime: NOW,
+            segmentStations: ['강남', '역삼'],
+            expiresAt: NOW + 60 * 60_000,
+          },
+        }),
+      );
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-dest-locked', kind: 'destination', tripToken: 'tok-locked-2' }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runFallbackPushes(makeEnv(kv, tripsKv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(stats.pushed).toBe(1);
+    });
   });
 });

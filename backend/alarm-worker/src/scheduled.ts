@@ -5238,6 +5238,8 @@ export async function runLocklessIntermediate(
         pushId,
         // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
         token: resolveTripDeviceToken(trip),
+        // #2522 — fallback이 발사 직전 lock 상태를 재확인할 수 있도록 trip 신원 토큰 동봉.
+        tripToken: trip.token,
         alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
         sentAt: now,
         stationName: waypoint.stationName,
