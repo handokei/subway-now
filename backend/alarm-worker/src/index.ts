@@ -2596,6 +2596,10 @@ export function validateTrip(input: unknown): Trip | null {
         : typeof obj.locklessStationPassed === 'boolean'
           ? obj.locklessStationPassed
           : undefined,
+    // #2524 — 탑승 커밋(PENDING lock) 시그널. 미송신/비boolean이면 undefined(default false, 기존
+    // lockless "통과" 동작 보존).
+    boardingCommitted:
+      typeof obj.boardingCommitted === 'boolean' ? obj.boardingCommitted : undefined,
     // #819: boarding-prompt 평가용 컨텍스트. 좌표/표시 명시 부재 시 백엔드는 lockMissing 분기에서
     // 자연 skip — 좌표 없는 평가는 게이트 #4/#5 정확도 0이라 의미 없음.
     promptGeoContext: parsePromptGeoContext(obj.promptGeoContext),

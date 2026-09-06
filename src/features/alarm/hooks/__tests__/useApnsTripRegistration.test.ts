@@ -2239,6 +2239,40 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #2524 — 탑승 커밋(PENDING lock) 시그널 backend forward 검증. infoModeEnabled와 동일 wiring pattern.
+  describe('boardingCommitted (#2524)', () => {
+    const baseInputs = (boardingCommitted?: boolean) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      ...(boardingCommitted === undefined ? {} : { boardingCommitted }),
+    });
+    const renderCommitted = (initial?: boolean) =>
+      renderHook(
+        ({ bc }: { bc?: boolean }) => useApnsTripRegistration(baseInputs(bc)),
+        { initialProps: { bc: initial } },
+      );
+
+    it.each([
+      { label: 'boardingCommitted=true → payload에 포함', bc: true, expected: true },
+      { label: 'boardingCommitted 미지정 → payload에 미포함 (graceful)', bc: undefined, expected: undefined },
+      { label: 'boardingCommitted=false → payload에 미포함 (graceful)', bc: false, expected: undefined },
+    ])('$label', async ({ bc, expected }) => {
+      renderCommitted(bc);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].boardingCommitted).toBe(expected);
+    });
+
+    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend 억제 gate 즉시 활성화)', async () => {
+      const { rerender } = renderCommitted(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].boardingCommitted).toBeUndefined();
+      rerender({ bc: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].boardingCommitted).toBe(true);
+    });
+  });
+
   // #2032 (Issue D) — device 취침모드 상태 backend forward (monitoring 전용, ADR-023 결정 gate 미사용).
   describe('sleepMode (#2032)', () => {
     const baseInputs = (sleepMode?: boolean) => ({

@@ -179,7 +179,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -867,6 +867,36 @@ describe('runScheduled', () => {
       if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
     });
 
+    // #2524 — 탑승 커밋(PENDING lock, boardingCommitted===true) trip은 실 lock으로 승격되기
+    // 전까지 매역 "통과" push가 스팸처럼 계속 발사되던 회귀. 안내 시작(info-mode) trip은
+    // boardingCommitted가 서지 않으므로 위 cases(토글 ON 케이스)의 기존 발사 동작이 그대로
+    // 유지된다는 사실 자체가 "unaffected" 회귀 가드다.
+    describe('#2524 — boardingCommitted 트립의 "통과" 억제', () => {
+      it('boardingCommitted=true + intermediate + arvlCd=1 → push 0 + locklessIntermediateFired 0 + boardingCommittedSuppressed 1', async () => {
+        const { stats, apnsFetch } = await runLocklessCycle({
+          trip: intermediateTrip({ boardingCommitted: true }),
+          arrivals: [ARVL_ARRIVED],
+          apnsOk: true,
+        });
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(stats.boardingCommittedSuppressed).toBe(1);
+        expect(apnsFetch).not.toHaveBeenCalled();
+      });
+
+      it('boardingCommitted=false(안내 시작/info-mode) + intermediate + arvlCd=1 → 기존과 동일하게 발사 (unaffected)', async () => {
+        const { stats, apnsFetch } = await runLocklessCycle({
+          trip: intermediateTrip({ boardingCommitted: false }),
+          arrivals: [ARVL_ARRIVED],
+          apnsOk: true,
+        });
+        expect(stats.pushed).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.boardingCommittedSuppressed).toBe(0);
+        expect(apnsFetch).toHaveBeenCalled();
+      });
+    });
+
     // #1967 (Ff-1) — admin kill switch. 2026-07-31 리뷰(P1) — 게이트는 `runLocklessIntermediate`
     // 함수 호출 전체가 아니라 함수 내부의 매역 station-passed push 발사 블록만 대상으로 한다.
     // fusion advance 평가 / arvlCd Kalman reset / phase·motion 게이트 / 취침 알람 / waypoint 진행은
@@ -1293,6 +1323,27 @@ describe('runScheduled — boarding anchor trainCode resolution (backend-authori
     expect(stored.boardingLock?.segmentStations[0]).toBe('중곡');
     // 다음 cycle의 isBoardingLockActive 판정과 동일 조건 — 승격된 lock이 활성이어야 매역 추적 재개.
     expect(stored.boardingLock?.expiresAt).toBeGreaterThan(NOW);
+  });
+
+  // #2524 — boardingCommitted===true인 trip도 resolver(anchor 승격)는 무영향으로 동작해야 한다.
+  // 이 waypoint는 kind:'destination'이라 애초에 lockless intermediate "통과" 게이트 자체를
+  // 거치지 않지만(#2524 gate는 intermediate 전용), 승격 분기가 그 게이트보다 먼저 `continue`하는
+  // 구조라는 사실을 명시적으로 고정해 향후 리팩터가 순서를 뒤집는 회귀를 차단한다.
+  it('#2524 — anchor + 후보 1개 + boardingCommitted=true → 승격 정상 동작 + boardingCommittedSuppressed 0', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, anchorTrip({ boardingCommitted: true }));
+    const seoul = makeSeoulPositions([{ trainCode: '7246' }]);
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(1);
+    expect(stats.boardingCommittedSuppressed).toBe(0);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7246');
   });
 
   it('anchor + 후보 2개(ambiguous) → boardingLock 승격 안 함, boardingAnchorUnresolved 카운트', async () => {
@@ -11119,7 +11170,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,

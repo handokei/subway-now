@@ -27,7 +27,10 @@
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { USER_INTENT_INFO_MODE_KEY } from '../../../shared/constants/storageKeys';
+import {
+  USER_INTENT_INFO_MODE_KEY,
+  USER_INTENT_BOARDING_COMMITTED_KEY,
+} from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('useUserIntentStore');
@@ -50,10 +53,22 @@ export interface UserIntentState {
    * cold start 시 storage hydrate. parse 실패/키 부재는 false 유지.
    */
   loadInfoModeEnabled: () => Promise<void>;
+  /**
+   * #2524 — 탑승 커밋(PENDING fallback lock 생성) 시그널. `infoModeEnabled`와 달리 안내
+   * 시작(`HomeScreen.handleStartNavigation`)에서는 세팅되지 않는다 — "탑승했지만 열차 미확정"과
+   * "정보용 안내 시작"을 backend가 구분할 수 있는 유일한 채널.
+   * `useBoardingPromptResponder.createPendingFallbackLock`에서만 true로 stamp.
+   */
+  boardingCommitted: boolean;
+  /** memory + AsyncStorage 동기 영속화. `setInfoModeEnabled`와 동일 pattern. */
+  setBoardingCommitted: (committed: boolean) => Promise<void>;
+  /** cold start 시 storage hydrate. parse 실패/키 부재는 false 유지. */
+  loadBoardingCommitted: () => Promise<void>;
 }
 
 export const useUserIntentStore = create<UserIntentState>((set) => ({
   infoModeEnabled: false,
+  boardingCommitted: false,
 
   setInfoModeEnabled: async (enabled: boolean) => {
     set({ infoModeEnabled: enabled });
@@ -78,6 +93,28 @@ export const useUserIntentStore = create<UserIntentState>((set) => ({
       log.warn('hydrate failed', e);
     }
   },
+
+  setBoardingCommitted: async (committed: boolean) => {
+    set({ boardingCommitted: committed });
+    try {
+      if (committed) {
+        await AsyncStorage.setItem(USER_INTENT_BOARDING_COMMITTED_KEY, STORAGE_VALUE_TRUE);
+      } else {
+        await AsyncStorage.removeItem(USER_INTENT_BOARDING_COMMITTED_KEY);
+      }
+    } catch (e) {
+      log.warn('boardingCommitted persist failed', e);
+    }
+  },
+
+  loadBoardingCommitted: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(USER_INTENT_BOARDING_COMMITTED_KEY);
+      set({ boardingCommitted: raw === STORAGE_VALUE_TRUE });
+    } catch (e) {
+      log.warn('boardingCommitted hydrate failed', e);
+    }
+  },
 }));
 
 /**
@@ -88,4 +125,14 @@ export const useUserIntentStore = create<UserIntentState>((set) => ({
  */
 export function resetUserIntentInfoMode(): Promise<void> {
   return useUserIntentStore.getState().setInfoModeEnabled(false);
+}
+
+/**
+ * #2524 — trip 종료 시 `runTripBoundCleanups`에서 호출하는 cleanup helper.
+ *
+ * 이전 trip의 탑승 커밋 신호가 새 trip에 leak되지 않도록 memory + storage 동시 false 처리.
+ * `resetUserIntentInfoMode`와 동일 wiring pattern.
+ */
+export function resetBoardingCommitted(): Promise<void> {
+  return useUserIntentStore.getState().setBoardingCommitted(false);
 }

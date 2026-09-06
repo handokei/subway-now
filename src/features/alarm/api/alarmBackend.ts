@@ -136,6 +136,21 @@ export interface RegisterTripPayload {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2524 — 사용자가 boardingPrompt [탑승] 응답/배너 탭으로 승차를 "커밋"했지만 지하/arrivals
+   * 공백·ambiguity로 실 trainCode를 못 구해 device가 PENDING fallback lock을 생성했을 때만
+   * true. `infoModeEnabled`(안내 시작/info-mode 경로도 true)만으로는 backend가 "탑승 커밋 +
+   * lock 미확정"과 "정보용 안내 시작"을 구분할 수 없어, 후자에서만 의도된 lockless intermediate
+   * "통과" push가 전자에서도 스팸처럼 계속 발사되던 회귀(#2524)를 막기 위한 별도 시그널.
+   *
+   * backend 분기: `trip.boardingCommitted===true` → `runLocklessIntermediate`(매역 "통과")
+   * 억제, `attemptBoardingAnchorResolution`이 실 lock으로 승격하면 정상 `runTrainCodeTracking`
+   * 경로로 자연 전환 (backend/alarm-worker/src/scheduled.ts).
+   *
+   * 미설정/false: 필드 미송신(graceful) — backend Trip.boardingCommitted는 undefined 유지,
+   * 기존 lockless "통과" 발사 동작 완전 보존.
+   */
+  boardingCommitted?: boolean;
+  /**
    * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **backend monitoring 전용 (ADR-023)**.
    *
    * backend는 이 값을 저장(Trip.sleepModeEnabled)해 cron/silent push log에 dimension으로
@@ -232,6 +247,7 @@ function buildRegisterHash(body: {
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   infoModeEnabled?: boolean;
+  boardingCommitted?: boolean;
   sleepModeEnabled?: boolean;
 }): string {
   return JSON.stringify({
@@ -262,6 +278,11 @@ function buildRegisterHash(body: {
     // 사용자가 의향 표명 직후 backend lockless intermediate gate가 즉시 활성화되어야 다음
     // cron cycle부터 station-passed silent push 발사가 가능. 같은 값 연속 호출은 hash 동일 → skip.
     infoModeEnabled: body.infoModeEnabled === true,
+    // #2524 — boardingCommitted 전환(탑승 커밋 ↔ 실 lock 승격) 시 즉시 재등록 보장. 승격 후에는
+    // device가 이 플래그를 다시 false로 내리지 않지만(실 lock 존재 자체가 backend 분기를
+    // isBoardingLockActive 경로로 우회시킴), 값이 바뀌는 유일한 실제 케이스(커밋 시점)에서
+    // dedup으로 인한 재등록 누락을 방지한다.
+    boardingCommitted: body.boardingCommitted === true,
     // #2032 (Issue D) — sleepMode 토글 ON ↔ OFF 전환 시 즉시 재등록 보장.
     // backend monitoring 값(Trip.sleepModeEnabled)이 즉시 갱신되어 이후 skip 원인 log가 정확.
     // ADR-023: backend push 발사 결정에는 미영향(저장/log 전용). 같은 값 연속 호출은 hash 동일 → skip.
@@ -338,6 +359,9 @@ async function performRegisterFetch(
     // #1923 — 사용자 명시 의향 토글. ON일 때만 송신. backend는 부재 시 false default 처리 (backward-compat).
     // device SSoT 동기화 시점에 false로 명시 송신 vs 미송신 둘 다 backend 동일 처리 → 송신 skip로 트래픽 절약.
     ...(payload.infoModeEnabled === true ? { infoModeEnabled: true } : {}),
+    // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신. backend는 부재 시 false default
+    // 처리 (backward-compat) — 기존 lockless "통과" 발사 동작 완전 보존.
+    ...(payload.boardingCommitted === true ? { boardingCommitted: true } : {}),
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용 저장 (ADR-023).
     // 미송신 시 backend Trip.sleepModeEnabled는 undefined 유지 — 기존 동작 완전 보존.
     ...(payload.sleepModeEnabled === true ? { sleepModeEnabled: true } : {}),
@@ -443,6 +467,8 @@ export function registerActiveTrip(
     locale: payload.locale,
     // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).
     infoModeEnabled: payload.infoModeEnabled,
+    // #2524 — boardingCommitted 변경 시 hash 갱신해 재등록 보장 (탑승 커밋 직후 backend 억제 gate 즉시 활성화).
+    boardingCommitted: payload.boardingCommitted,
     // #2032 (Issue D) — sleepMode 변경 시 hash 갱신해 재등록 보장 (backend 저장값 즉시 동기화).
     sleepModeEnabled: payload.sleepModeEnabled,
   });

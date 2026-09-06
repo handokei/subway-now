@@ -160,6 +160,11 @@ export default function HomeScreen() {
   const infoModeEnabled = useUserIntentStore((s) => s.infoModeEnabled);
   const setInfoModeEnabled = useUserIntentStore((s) => s.setInfoModeEnabled);
   const loadInfoModeEnabled = useUserIntentStore((s) => s.loadInfoModeEnabled);
+  // #2524 — 탑승 커밋(PENDING lock) 시그널. infoModeEnabled와 별도로 forward해 backend가
+  // "탑승 커밋 + lock 미확정"과 "정보용 안내 시작"을 구분하도록 한다(전자에서만 lockless
+  // intermediate "통과" push 억제). handleStartNavigation은 이 값을 세팅하지 않는다.
+  const boardingCommitted = useUserIntentStore((s) => s.boardingCommitted);
+  const loadBoardingCommitted = useUserIntentStore((s) => s.loadBoardingCommitted);
   // #1973 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
   // BG GPS 지속 가능 (네이버 패턴). startNavigation은 setInfoModeEnabled(true) 자동 wire.
   const navigationActive = useNavigationStore((s) => s.navigationActive);
@@ -1062,6 +1067,9 @@ export default function HomeScreen() {
     // #1923 — 사용자 명시 의향 토글. backend가 lockless intermediate gate 진입에 사용 →
     // station-passed silent push 발사. 미stamp(false) trip은 기존 lockMissing skip 동작.
     infoModeEnabled,
+    // #2524 — 탑승 커밋(PENDING lock) 시그널. backend가 lockless intermediate "통과" push를
+    // 억제하는 gate에 사용 (안내 시작 trip은 이 값이 서지 않아 기존 "통과" 그대로 발사).
+    boardingCommitted,
     // #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 저장 (ADR-023 결정 gate 미사용).
     // skip 원인 분류 + evidence 재구성 자동화용. Device의 `shouldSuppressBySleepRule`이 실제 suppress gate.
     sleepMode,
@@ -1118,6 +1126,9 @@ export default function HomeScreen() {
     // trip 종료 시 runTripBoundCleanups가 storage를 정리하므로 cold start hydrate 결과는
     // 의향이 살아있는 trip만 true. graceful — 키 부재/parse 실패는 false 유지.
     void loadInfoModeEnabled();
+    // #2524 — cold start 시 탑승 커밋 시그널 hydrate. infoModeEnabled와 동일한 이유(trip 종료 시
+    // runTripBoundCleanups가 storage 정리).
+    void loadBoardingCommitted();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
     // #700 — tripOrigin을 먼저 await으로 hydrate한 다음 destination을 set한다.

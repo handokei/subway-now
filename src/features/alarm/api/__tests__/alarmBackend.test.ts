@@ -355,6 +355,36 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
+      // #2524 — 탑승 커밋(PENDING lock) 시그널 송신/dedup. infoModeEnabled와 동일 wiring pattern.
+      it('#2524 boardingCommitted=true 송신 시 body에 포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: true });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.boardingCommitted).toBe(true);
+      });
+
+      it('#2524 boardingCommitted=false/미설정이면 body에 미포함 (graceful, backend false default)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: false });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.boardingCommitted).toBeUndefined();
+      });
+
+      it('#2524 boardingCommitted OFF→ON 전환 시 hash 갱신 → 재등록', async () => {
+        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: false });
+        expect(first.ok).toBe(true);
+        const second = await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: true });
+        expect(second).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const secondBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+        expect(secondBody.boardingCommitted).toBe(true);
+      });
+
+      it('#2524 동일 boardingCommitted 값 연속 호출 시 dedup (skipped=true)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: true });
+        const dedup = await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: true });
+        expect(dedup).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
       // #2032 (Issue D) — device 취침모드 상태 forward. backend monitoring 전용 (ADR-023 결정 gate 미사용).
       it('#2032 sleepModeEnabled=true 송신 시 body에 포함', async () => {
         await registerActiveTrip({ ...SAMPLE_PAYLOAD, sleepModeEnabled: true });

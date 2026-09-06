@@ -92,6 +92,15 @@ export interface UseApnsTripRegistrationInputs {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2524 — 탑승 커밋(PENDING fallback lock 생성) 시그널. `infoModeEnabled`와 별개로
+   * `useUserIntentStore.boardingCommitted`에서 읽어 전달한다. 안내 시작(HomeScreen
+   * handleStartNavigation)에서는 세팅되지 않아 backend가 "탑승 커밋 + lock 미확정"과
+   * "정보용 안내 시작"을 구분할 수 있다 — 전자에서만 lockless intermediate "통과" push를
+   * 억제한다(backend/alarm-worker/src/scheduled.ts).
+   * 미지정/false: 필드 미송신(graceful) — 기존 lockless "통과" 발사 동작 완전 보존.
+   */
+  boardingCommitted?: boolean;
+  /**
    * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **monitoring 전용 (ADR-023)**.
    * `useSettingsStore.sleepMode`를 그대로 전달. backend는 이 값으로 push 발사 결정을
    * 바꾸지 않으며(오로지 저장/로그), skip 원인 자동 분류 + evidence 재구성에만 사용한다.
@@ -146,6 +155,8 @@ interface RegisterCallInputs {
   subsurface: boolean;
   /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
   infoModeEnabled: boolean;
+  /** #2524 — 탑승 커밋(PENDING lock) 시그널. true면 backend가 lockless "통과" push를 억제. */
+  boardingCommitted: boolean;
   /** #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 (ADR-023 결정 gate 미사용). */
   sleepMode: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
@@ -290,6 +301,8 @@ async function callRegister(
     ...(locale ? { locale } : {}),
     // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
     ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
+    // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신 — backend는 부재 시 false default.
+    ...(input.boardingCommitted ? { boardingCommitted: true } : {}),
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
     // false/미설정은 필드 누락(graceful) — backend Trip.sleepModeEnabled=undefined 유지.
     ...(input.sleepMode ? { sleepModeEnabled: true } : {}),
@@ -309,6 +322,7 @@ export function useApnsTripRegistration({
   boardingLock = null,
   subsurface = false,
   infoModeEnabled = false,
+  boardingCommitted = false,
   sleepMode = false,
   gpsFix = null,
   routeOriginStation = null,
@@ -329,6 +343,7 @@ export function useApnsTripRegistration({
     boardingLock,
     subsurface,
     infoModeEnabled,
+    boardingCommitted,
     sleepMode,
     gpsFix,
     routeOriginStation,
@@ -343,6 +358,7 @@ export function useApnsTripRegistration({
       boardingLock,
       subsurface,
       infoModeEnabled,
+      boardingCommitted,
       sleepMode,
       gpsFix,
       routeOriginStation,
@@ -492,6 +508,7 @@ export function useApnsTripRegistration({
       boardingLock: bl,
       subsurface: sub,
       infoModeEnabled: ime,
+      boardingCommitted: bc,
       sleepMode: sm,
       gpsFix: gf,
       originStationName: osn,
@@ -523,6 +540,7 @@ export function useApnsTripRegistration({
       boardingLock: bl,
       subsurface: sub,
       infoModeEnabled: ime,
+      boardingCommitted: bc,
       sleepMode: sm,
       createdAt: resolveTripCreatedAt(sessionKey),
       cachedPromptContext: lastPromptContextRef.current,
@@ -1056,8 +1074,18 @@ export function useApnsTripRegistration({
     // #2032 (Issue D): sleepMode 변화 시 backend 저장값이 즉시 갱신되어 이후 log/skip 원인 분류가
     // 정확해진다. **backend 발사 결정은 미영향 (ADR-023)** — device의 `shouldSuppressBySleepRule`만
     // suppress 판정. 토글 빈도는 사용자 명시 설정 시점만이므로 deps churn 위험 낮음.
+    // #2524: boardingCommitted 변화 시 backend 억제 gate(runLocklessIntermediate "통과")를 즉시
+    // 활성화. 토글 빈도는 PENDING fallback lock 생성 시점 1회뿐이므로 deps churn 위험 낮음.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig, subsurface, infoModeEnabled, sleepMode]);
+  }, [
+    routeSig,
+    destination?.id,
+    boardingLockSig,
+    subsurface,
+    infoModeEnabled,
+    boardingCommitted,
+    sleepMode,
+  ]);
 
   // ── #2130 (B-1 Tier 1) — context-heal on currentStation 전환 (#2150: 결과 상태 기준) ──
   //

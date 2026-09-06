@@ -566,6 +566,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingAnchorUnresolved: number;
   /**
+   * #2524 — `trip.boardingCommitted===true`(탑승 커밋, lock 미확정) 상태에서
+   * `runLocklessIntermediate`의 매역 "통과" push를 억제한 누적 횟수. resolver가 실 lock으로
+   * 승격하기 전까지 매 intermediate waypoint 통과마다 1씩 증가 — 정상 운영에서 커밋~승격 사이
+   * 몇 cycle 정도만 관측되면 의도대로 억제가 작동 중인 신호. info-mode(안내 시작) trip은
+   * `boardingCommitted`가 서지 않아 이 카운터에 잡히지 않는다(기존 "통과" 그대로 발사).
+   */
+  boardingCommittedSuppressed: number;
+  /**
    * #1933 — `lastLaPushAt`이 `LA_STALE_AUTO_END_MS` 이상 침묵해 cron이 자동 cleanup한 trip 수.
    * lockMissing 분기 진입 시 평가. 정상 운영(silent push + LA heartbeat 작동)에서 0건 기대 —
    * 0이 아니면 `lockMissing` 분기 잔여 케이스(advance gate freeze + heartbeat self-referential gap)에서
@@ -1127,6 +1135,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     lockMissing: 0,
     boardingAnchorResolved: 0,
     boardingAnchorUnresolved: 0,
+    boardingCommittedSuppressed: 0,
     laStaleAutoEnded: 0,
     laStaleSurvivedSilence: 0,
     killSwitchLocklessIntermediateSkipped: 0,
@@ -1534,6 +1543,21 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // 발사만 게이트한다 (2026-07-31 리뷰: 함수 호출 자체를 skip하면 취침 알람 +
       // waypoint 진행까지 죽는 회귀). 여기서는 항상 호출.
       if (trip.infoModeEnabled && waypoint.kind === 'intermediate') {
+        // #2524 — 탑승 커밋(PENDING lock, boardingCommitted===true) trip은 아직 안내 시작
+        // info-mode가 아니라 "탑승했지만 열차 미확정" 상태다. resolver가 실 lock으로 승격할
+        // 때까지 raw "통과" push를 매역마다 발사하면 사용자에게 스팸으로 느껴진다(#2524 배경).
+        // 위 `attemptBoardingAnchorResolution` 호출은 이 분기 이전에 이미 매 cycle 시도되므로
+        // 승격되는 즉시 다음 cycle부터 `isBoardingLockActive` → `runTrainCodeTracking` 정상
+        // 경로로 전환된다 — 여기서는 그 사이 침묵 구간만 만든다. info-mode(안내 시작) trip은
+        // boardingCommitted가 서지 않으므로 기존과 동일하게 "통과"가 계속 발사된다.
+        if (trip.boardingCommitted === true) {
+          stats.boardingCommittedSuppressed += 1;
+          log('lockless: suppressed 통과 (boarding committed, lock unresolved)', {
+            token: trip.token.slice(0, 8),
+            station: waypoint.stationName,
+          });
+          continue;
+        }
         try {
           await runLocklessIntermediate(trip, waypoint, env, deps, stats, now, log, generatePushId);
         } catch (e) {
