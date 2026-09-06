@@ -218,6 +218,32 @@ export interface Trip {
    */
   hopEndPromptState?: Record<string, BoardingPromptState>;
   /**
+   * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — 환승 waypoint 통과 시점(=hop-end
+   * "하차했나요?" 프롬프트와 동일 ground-truth 시점, `scheduled.ts` transfer advance 블록)에
+   * backend가 stamp하는 "현재 leg" anchor. `promptDisplay`(leg 1 origin, POST /trips 등록 시점
+   * 1회만 기록되어 이후 절대 갱신되지 않음)와 달리, 여러 번 환승해도 매번 덮어써 항상 "지금"
+   * leg만 가리킨다(N번째 환승 하드코딩 없음). `boardingAnchorResolver.resolveActiveLegOrigin`이
+   * `promptDisplay`보다 우선 사용한다.
+   */
+  currentLegAnchor?: { boardingStation: string; line: string };
+  /**
+   * #2515 — `currentLegAnchor`가 leg 2 재탑승 평가(자동 resolve + "탑승하셨나요?" 프롬프트)에
+   * 유효해지는 시각(epoch ms) = 환승 waypoint 통과 시각 + `getTransferSeconds(...)` 도보 시간.
+   * `now < legBoardingEligibleAt`인 동안은 `attemptBoardingAnchorResolution`의 leg-2 분기와
+   * `maybeFireLegBoardingPrompt` 둘 다 평가 자체를 skip한다 — 사용자가 아직 도보 이동 중일 때
+   * 플랫폼에 서 있는 열차와 우연히 매칭되는 오탑승 lock을 원천 차단한다(#2511 PR 본문이 명시한
+   * 위험, 본 필드가 그 supersede 핵심). `currentLegAnchor`와 항상 함께 stamp/overwrite된다.
+   */
+  legBoardingEligibleAt?: number;
+  /**
+   * #2515 — leg 2 "탑승하셨나요?" 프롬프트 발사 상태. `boardingPromptState`(leg 1 전용, GPS 9단
+   * 게이트 경로)/`hopEndPromptState`(환승역 "하차했나요?")와 별개 네임스페이스 — 셋 다 같은 trip에
+   * 공존 가능하므로 충돌 방지. `currentLegAnchor`가 재stamp될 때마다(=새 환승) undefined로 함께
+   * 리셋되어 매 leg마다 fresh 하게 dedup/silence를 시작한다. 게이트는 `evaluateHopEndPromptGates`
+   * 재사용(1회 발사 + 5분 dismiss silence — GPS 없이 dedup만 필요하다는 점이 hop-end와 동일).
+   */
+  legBoardingPromptState?: BoardingPromptState;
+  /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
    * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.

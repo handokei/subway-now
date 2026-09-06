@@ -69,6 +69,20 @@
  * lock하는 것이 이 기능이 막아야 할 핵심 위험이므로, 이 PR은 trainType 기반 임의 tie-break를
  * 구현하지 않는다 — ARRIVED/APPROACHING 타이 안에서 2개+ 남으면 그대로 ambiguous 로 판정한다.
  * 향후 evidence가 쌓이면 별도 PR로 추가.
+ *
+ * leg 2(환승 후) 확장 — 도보시간 게이트 (#2515, #2511 supersede)
+ * ================================================================
+ * #2511(`feat/#2508-transfer-leg-resolver`)이 `Trip.currentLegAnchor`로 이 리졸버를 leg 2까지
+ * 확장했으나, 트리거가 환승 waypoint 통과 직후부터 매 cron tick 즉시 평가되어 "사용자가 아직
+ * 도보 이동 중인데 환승역 플랫폼에 서 있는 열차 1대와 우연히 매칭 → 오탑승 lock" 위험이 있었다
+ * (PR 본문이 loud flag로 명시한 leg 2 고유 위험 — origin보다 도보 이동 창이 길다).
+ *
+ * 본 PR은 `currentLegAnchor` 자체(leg 2 anchor 개념)는 그대로 재사용하되, `resolveActiveLegOrigin`이
+ * `trip.legBoardingEligibleAt`(=환승 통과 시각 + `getTransferSeconds(...)` 도보 시간,
+ * `scheduled.ts` transfer advance 블록이 stamp) 게이트를 통과했을 때만 leg 2 anchor를 반환한다.
+ * 게이트 미통과(`now < legBoardingEligibleAt`)면 null — caller(`attemptBoardingAnchorResolution`)가
+ * anchor 자체를 못 얻으므로 realtimePosition 조회조차 하지 않는다. 즉 도보 창 동안 있었던 열차는
+ * "탈락시키는" 필터가 아니라 애초에 "쳐다보지 않는" 시간 게이트로 배제된다.
  */
 
 import { TRAIN_STATUS } from './alarm';
@@ -127,15 +141,45 @@ export function resolveTrainCodeFromPositions(
   return { status: 'none' };
 }
 
+/** `resolveActiveLegOrigin`이 반환하는 "지금 leg"의 origin 컨텍스트. */
+export interface ActiveLegOrigin {
+  originStation: string;
+  line: string;
+}
+
 /**
- * lockless trip이 명시 탑승 anchor(`promptDisplay` + `infoModeEnabled===true`)를 가지고 있을 때
- * realtimePosition으로 trainCode를 확정해 승격 가능한 `BoardingLockMeta`를 합성한다.
+ * "지금" leg의 anchor origin을 결정한다 (#2515, #2511 supersede).
+ *
+ * 우선순위:
+ *   1. `trip.currentLegAnchor` — leg 2+(환승 후). `trip.legBoardingEligibleAt`(도보시간 게이트)를
+ *      통과했을 때만(`now >= legBoardingEligibleAt`) 반환한다. 게이트 미통과면 null — leg 1
+ *      `promptDisplay`로 fallback하지 않는다(환승 후에는 leg 1 anchor가 더 이상 유효하지 않다).
+ *   2. `trip.promptDisplay` — leg 1(origin, 환승 전). `currentLegAnchor`가 아직 없을 때만.
+ *
+ * 둘 다 없거나(신규 trip 최초 register 전) leg 2 게이트 미통과면 null.
+ */
+export function resolveActiveLegOrigin(trip: Trip, now: number): ActiveLegOrigin | null {
+  if (trip.currentLegAnchor) {
+    const eligibleAt = trip.legBoardingEligibleAt;
+    if (eligibleAt === undefined || now < eligibleAt) return null;
+    return { originStation: trip.currentLegAnchor.boardingStation, line: trip.currentLegAnchor.line };
+  }
+  if (trip.promptDisplay) {
+    return { originStation: trip.promptDisplay.originStation, line: trip.promptDisplay.line };
+  }
+  return null;
+}
+
+/**
+ * lockless trip이 명시 탑승 anchor(`resolveActiveLegOrigin` + `infoModeEnabled===true`)를 가지고
+ * 있을 때 realtimePosition으로 trainCode를 확정해 승격 가능한 `BoardingLockMeta`를 합성한다.
  *
  * 전제(caller 책임, #902 Seam F `attachTrainCodeForLeg`와 동일 계약): `isBoardingLockActive(trip,
  * now) === false`. 본 함수는 그 판정을 재검증하지 않는다 — `scheduled.ts` 순환 import를 피하기
  * 위해 의도적으로 분리(이미 `lockSwap.ts`가 같은 패턴).
  *
- * null 반환 사유: anchor 정보 부재(promptDisplay 없음/infoModeEnabled!==true) / line 매핑 실패
+ * null 반환 사유: anchor 정보 부재/미확정(promptDisplay 없음 + currentLegAnchor 없음, 또는
+ * currentLegAnchor는 있으나 도보시간 게이트 미통과, infoModeEnabled!==true) / line 매핑 실패
  * / 후보 0개 또는 ambiguous(2개+) / segmentStations 산출 실패(route 불일치).
  */
 export async function attemptBoardingAnchorResolution(
@@ -144,42 +188,41 @@ export async function attemptBoardingAnchorResolution(
   now: number,
 ): Promise<BoardingLockMeta | null> {
   if (trip.infoModeEnabled !== true) return null;
-  const { promptDisplay, waypoints } = trip;
-  if (!promptDisplay) return null;
+  const anchor = resolveActiveLegOrigin(trip, now);
+  if (!anchor) return null;
+  const { waypoints } = trip;
 
-  const subwayId = subwayIdForLine(promptDisplay.line);
+  const subwayId = subwayIdForLine(anchor.line);
   if (!subwayId) return null;
 
-  // #1719 — direction 추론. waypoints[0]은 route 상 origin 다음 정차역(origin 자체는 waypoints에
-  // 포함되지 않는다, `dijkstraRoute.ts:routeToInferredWaypoints` "출발역 — push 안 함" 계약).
-  // origin(promptDisplay.originStation) → waypoints[0]로 방향을 추론한다. 추론 불가 노선/
-  // 매칭 실패는 null(양방향 허용) — 기존 `attachTrainCodeForLeg`와 동일 fallback 정책.
+  // #1719 — direction 추론. waypoints[0]은 "지금" leg의 다음 정차역(anchor.originStation 자체는
+  // waypoints에 포함되지 않는다 — leg 1은 `dijkstraRoute.ts:routeToInferredWaypoints`의 "출발역 —
+  // push 안 함" 계약, leg 2는 `scheduled.ts` transfer advance가 이미 `waypoints.slice(1)`로 shift).
+  // 추론 불가 노선/매칭 실패는 null(양방향 허용) — 기존 `attachTrainCodeForLeg`와 동일 fallback 정책.
   const nextWaypoint = waypoints[0];
   const direction =
-    nextWaypoint && nextWaypoint.line === promptDisplay.line
-      ? inferLegDirection(promptDisplay.line, promptDisplay.originStation, nextWaypoint.stationName)
+    nextWaypoint && nextWaypoint.line === anchor.line
+      ? inferLegDirection(anchor.line, anchor.originStation, nextWaypoint.stationName)
       : null;
 
-  const positions = await seoul.fetchPositions(promptDisplay.line);
+  const positions = await seoul.fetchPositions(anchor.line);
   const resolution = resolveTrainCodeFromPositions(
-    { line: promptDisplay.line, boardingStation: promptDisplay.originStation, direction },
+    { line: anchor.line, boardingStation: anchor.originStation, direction },
     positions,
     now,
   );
   if (resolution.status !== 'resolved') return null;
 
-  // segmentStations — 탑승역(origin) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
+  // segmentStations — 탑승역(anchor.originStation) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
   // `buildLegSegmentStations`는 waypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
-  const legSegment = buildLegSegmentStations(waypoints, promptDisplay.line);
+  const legSegment = buildLegSegmentStations(waypoints, anchor.line);
   if (legSegment.length === 0) return null;
   const segmentStations =
-    legSegment[0] === promptDisplay.originStation
-      ? legSegment
-      : [promptDisplay.originStation, ...legSegment];
+    legSegment[0] === anchor.originStation ? legSegment : [anchor.originStation, ...legSegment];
 
   return {
     trainCode: resolution.trainCode,
-    line: promptDisplay.line,
+    line: anchor.line,
     subwayId,
     selectedDepartureTime: now,
     segmentStations,
