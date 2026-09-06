@@ -147,19 +147,45 @@ export interface ActiveLegOrigin {
   line: string;
 }
 
+/** `resolveActiveLegOrigin`/`attemptBoardingAnchorResolution` 호출 컨텍스트 (break #2, #2323 rework). */
+export interface LegOriginResolutionOptions {
+  /**
+   * true = 사용자의 실제 탭이 트리거인 register-time 경로(`index.ts` `POST /trips` →
+   * `resolveBoardingAnchorAtRegister`)에서 호출됐다는 뜻 — leg 2(`currentLegAnchor`)까지
+   * 평가 대상에 포함한다.
+   *
+   * false/미지정(기본값) = cron 경로(`scheduled.ts` 매 사이클 폴링)에서 호출됐다는 뜻 — leg 2는
+   * 절대 평가하지 않는다(null 반환, leg 1 `promptDisplay`로도 fallback하지 않음 — 기존 정책과
+   * 동일). leg 1(`promptDisplay`)은 도보 이동 창이 없는 즉시 탑승이라 cron 매 cycle 재시도가
+   * 안전하므로 이 옵션과 무관하게 계속 평가된다.
+   *
+   * 근거: leg 2는 환승 후 도보 이동 창(#2511이 놓친 위험)이 있어, cron이 매 사이클 조용히
+   * 승격을 시도하면 "아직 플랫폼에 도착하지 않았는데 서 있는 열차와 우연히 매칭"될 위험이
+   * 크다. leg 2 승격은 사용자의 실제 탭(boarding-prompt 응답 → device re-register)이 트리거인
+   * 순간에만 일어나야 한다 — cron의 배경 폴링이 아니라.
+   */
+  allowLegTransfer?: boolean;
+}
+
 /**
- * "지금" leg의 anchor origin을 결정한다 (#2515, #2511 supersede).
+ * "지금" leg의 anchor origin을 결정한다 (#2515, #2511 supersede; break #2 옵션 추가는 #2323 rework).
  *
  * 우선순위:
- *   1. `trip.currentLegAnchor` — leg 2+(환승 후). `trip.legBoardingEligibleAt`(도보시간 게이트)를
- *      통과했을 때만(`now >= legBoardingEligibleAt`) 반환한다. 게이트 미통과면 null — leg 1
- *      `promptDisplay`로 fallback하지 않는다(환승 후에는 leg 1 anchor가 더 이상 유효하지 않다).
+ *   1. `trip.currentLegAnchor` — leg 2+(환승 후). `options.allowLegTransfer===true`이고
+ *      `trip.legBoardingEligibleAt`(도보시간 게이트)를 통과했을 때만(`now >= legBoardingEligibleAt`)
+ *      반환한다. 둘 중 하나라도 미충족이면 null — leg 1 `promptDisplay`로 fallback하지 않는다
+ *      (환승 후에는 leg 1 anchor가 더 이상 유효하지 않다).
  *   2. `trip.promptDisplay` — leg 1(origin, 환승 전). `currentLegAnchor`가 아직 없을 때만.
  *
  * 둘 다 없거나(신규 trip 최초 register 전) leg 2 게이트 미통과면 null.
  */
-export function resolveActiveLegOrigin(trip: Trip, now: number): ActiveLegOrigin | null {
+export function resolveActiveLegOrigin(
+  trip: Trip,
+  now: number,
+  options?: LegOriginResolutionOptions,
+): ActiveLegOrigin | null {
   if (trip.currentLegAnchor) {
+    if (options?.allowLegTransfer !== true) return null;
     const eligibleAt = trip.legBoardingEligibleAt;
     if (eligibleAt === undefined || now < eligibleAt) return null;
     return { originStation: trip.currentLegAnchor.boardingStation, line: trip.currentLegAnchor.line };
@@ -179,16 +205,22 @@ export function resolveActiveLegOrigin(trip: Trip, now: number): ActiveLegOrigin
  * 위해 의도적으로 분리(이미 `lockSwap.ts`가 같은 패턴).
  *
  * null 반환 사유: anchor 정보 부재/미확정(promptDisplay 없음 + currentLegAnchor 없음, 또는
- * currentLegAnchor는 있으나 도보시간 게이트 미통과, infoModeEnabled!==true) / line 매핑 실패
- * / 후보 0개 또는 ambiguous(2개+) / segmentStations 산출 실패(route 불일치).
+ * currentLegAnchor는 있으나 `options.allowLegTransfer!==true`이거나 도보시간 게이트 미통과,
+ * infoModeEnabled!==true) / line 매핑 실패 / 후보 0개 또는 ambiguous(2개+) / segmentStations
+ * 산출 실패(route 불일치).
+ *
+ * break #2 (#2323 rework) — `options.allowLegTransfer`를 그대로 `resolveActiveLegOrigin`에
+ * forward한다. cron 호출자(`scheduled.ts`)는 미전달(기본 false)해 leg 2 자동 승격을 완전히
+ * skip하고, register-time 호출자(`index.ts` tap 트리거)만 true를 전달한다.
  */
 export async function attemptBoardingAnchorResolution(
   trip: Trip,
   seoul: SeoulArrivalClient,
   now: number,
+  options?: LegOriginResolutionOptions,
 ): Promise<BoardingLockMeta | null> {
   if (trip.infoModeEnabled !== true) return null;
-  const anchor = resolveActiveLegOrigin(trip, now);
+  const anchor = resolveActiveLegOrigin(trip, now, options);
   if (!anchor) return null;
   const { waypoints } = trip;
 

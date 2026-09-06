@@ -292,12 +292,25 @@ describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {
     expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
   });
 
-  it('currentLegAnchor + 도보시간 경과(now === legBoardingEligibleAt, 경계) → leg 2 anchor 반환', () => {
+  it('currentLegAnchor + 도보시간 경과(now === legBoardingEligibleAt, 경계) + allowLegTransfer:true(탭/register-time) → leg 2 anchor 반환', () => {
     const trip = makeTrip({
       currentLegAnchor: { boardingStation: '건대입구', line: '2' },
       legBoardingEligibleAt: NOW,
     });
-    expect(resolveActiveLegOrigin(trip, NOW)).toEqual({ originStation: '건대입구', line: '2' });
+    expect(resolveActiveLegOrigin(trip, NOW, { allowLegTransfer: true })).toEqual({
+      originStation: '건대입구',
+      line: '2',
+    });
+  });
+
+  // break #2 (#2323 rework) — cron 경로(옵션 미전달, 기본 false)는 도보시간 경과 + eligible해도
+  // leg 2를 절대 평가하지 않는다. leg 2 승격은 register-time(탭 트리거) 경로에서만 허용된다.
+  it('currentLegAnchor + 도보시간 경과했어도 allowLegTransfer 미전달(cron 기본값) → null', () => {
+    const trip = makeTrip({
+      currentLegAnchor: { boardingStation: '건대입구', line: '2' },
+      legBoardingEligibleAt: NOW,
+    });
+    expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
   });
 
   it('currentLegAnchor 있지만 legBoardingEligibleAt 미정의(비정상 상태) → null', () => {
@@ -362,11 +375,23 @@ describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', (
     const trip = makeLeg2Trip({
       waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
     });
-    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+    // break #2 (#2323 rework) — leg 2는 allowLegTransfer:true(register-time/탭 트리거) 없이는
+    // 평가되지 않는다. 이 테스트는 index.ts의 resolveBoardingAnchorAtRegister와 동일 호출 계약.
+    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, { allowLegTransfer: true });
     expect(result).not.toBeNull();
     expect(result?.trainCode).toBe('7246');
     expect(result?.line).toBe('7');
     expect(result?.segmentStations[0]).toBe('건대입구');
+  });
+
+  // break #2 (#2323 rework) — cron 호출자(옵션 미전달)는 leg 2를 절대 자동 승격하지 않는다.
+  it('allowLegTransfer 미전달(cron 기본값) → 도보시간 경과 + unambiguous 후보 있어도 승격 안 함', async () => {
+    const seoul = makeSeoulWithPositions([{ trainCode: '7246', isUp: true }]);
+    const trip = makeLeg2Trip({
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+    });
+    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+    expect(result).toBeNull();
   });
 
   it('도보시간 미경과 → null, seoul 호출 안 함 (오탑승 lock 방지 — #2511 supersede 핵심)', async () => {

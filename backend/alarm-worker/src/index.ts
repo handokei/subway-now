@@ -211,7 +211,12 @@ function scheduleTripEvent(c: Context<{ Bindings: Env }>, promise: Promise<void>
 async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<void> {
   try {
     const seoul = new SeoulArrivalClient({ apiKey: env.SEOUL_API_KEY, host: env.SEOUL_API_HOST });
-    const anchorLock = await attemptBoardingAnchorResolution(trip, seoul, Date.now());
+    // break #2 (#2323 rework) — register-time(POST /trips, 사용자의 실제 탭이 트리거)만 leg 2
+    // (currentLegAnchor) 자동 승격을 허용한다. cron(`scheduled.ts`)은 매 사이클 배경 폴링이라
+    // 이 옵션 없이 호출해 leg 2를 절대 조용히 승격시키지 않는다 — answer-driven 원칙.
+    const anchorLock = await attemptBoardingAnchorResolution(trip, seoul, Date.now(), {
+      allowLegTransfer: true,
+    });
     if (!anchorLock) return;
 
     const latest = await getTrip(env.TRIPS, trip.token);
