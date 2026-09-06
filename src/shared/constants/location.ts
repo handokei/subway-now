@@ -34,12 +34,20 @@ export const MIN_JUMP_DISTANCE_M = 100;
 export const POSITION_UPLOAD_MIN_INTERVAL_MS = 10_000;
 
 // #1313 — foreground GPS watch 샘플링 파라미터. subsurface(지하) 여부로 갈린다.
-// 지상/warmup/미지원에서는 High@2s를 그대로 유지(정확도 우선), 지하에서만 throttle.
+// 지상/warmup/미지원에서는 High를 그대로 유지(정확도 우선), 지하에서만 throttle.
 //
-// 지상(기본): High + distanceInterval:0 + timeInterval:2000.
-//  GPS hardware fix를 최대한 자주 흘려보낸다. subsurface가 true로 확정되기 전까지는
-//  항상 이 값을 사용한다(undefined/false 포함) — 확신 없이 GPS를 절대 낮추지 않는다.
-export const FG_WATCH_SURFACE_TIME_INTERVAL_MS = 2_000;
+// 지상(기본): High + distanceInterval:0 + timeInterval:8000.
+//  accuracy(High)는 fire path 정확도 우선 원칙(#1416/#1440) 유지를 위해 그대로 둔다 —
+//  Balanced 전환은 정확도 회귀 리스크가 있어 별도 결정 트랙(옵션 테이블) 필요, 이번 스코프 제외.
+//
+// #2509 (interim 발열 완화) — 2000ms→8000ms로 완화.
+//  **중요**: expo-location iOS 구현(`LocationOptions.swift`)은 Record로 `accuracy`+
+//  `distanceInterval` 두 필드만 노출한다 — `timeInterval`은 iOS `watchPositionImplAsync`/
+//  `LocationsStreamer`에서 전혀 읽히지 않는다(Android `LocationHelpers.kt`에서만 소비).
+//  즉 이 값은 iOS(이 프로젝트 실기기 검증 대상)에서는 배터리/발열에 영향이 없고, Android
+//  전용 이득 + 코드 위생(2s 값이 문서/의도와 불일치하지 않도록)을 위한 변경이다. iOS 발열의
+//  실질 레버는 accuracy이며, 위 이유로 이번 PR 스코프에서는 건드리지 않는다(#2509 이슈 참고).
+export const FG_WATCH_SURFACE_TIME_INTERVAL_MS = 8_000;
 // 지하(subsurface 확정): Balanced + distanceInterval:0 + timeInterval:12000.
 //  지하 GPS는 WiFi BSSID/Cell triangulation으로 300~1500m라 알람에 무의미(useStationAlarm 게이트가
 //  별도 차단) — 표시 전용. 위치 지능은 WiFi SSID/기압계/backend dead-reckoning이 담당하므로

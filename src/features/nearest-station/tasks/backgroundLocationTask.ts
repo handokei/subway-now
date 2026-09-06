@@ -27,9 +27,10 @@ import {
 } from '../utils/bgLocationProfile';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
 // #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint (Background Location piggyback).
-// BG location updates 활성 동안 raw 가속도 5Hz sampling 시작 — 정적 native module (no-op if already
-// started). position upload 시점에 latest 60s window snapshot을 첨부해 backend가 진동 fingerprint
-// 환경 vote로 사용 + undergroundSSotConsensus가 'automotive' pattern을 1표로 채택.
+// BG location updates 활성 동안 raw 가속도 1Hz sampling 시작(#2509 interim 발열 완화, 구 5Hz) —
+// 정적 native module (no-op if already started). position upload 시점에 latest 60s window snapshot을
+// 첨부해 backend가 진동 fingerprint 환경 vote로 사용 + undergroundSSotConsensus가 'automotive'
+// pattern을 1표로 채택.
 import {
   startAccelerometerFingerprint,
   getLatestAccelerometerSnapshot,
@@ -289,7 +290,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       await AsyncStorage.setItem(BG_LAST_POSITION_UPLOAD_AT_KEY, String(now));
       // #1542 (ADR-016 S9) — Background Location piggyback: BG task가 호출될 때마다
       // accelerometer fingerprint start를 no-op 보장으로 호출. native 모듈이 isUpdating 가드를
-      // 갖고 있어 한 번만 시작되며, 이후 BG location updates 활성 동안 raw 가속도 5Hz가 계속 흐른다.
+      // 갖고 있어 한 번만 시작되며, 이후 BG location updates 활성 동안 raw 가속도 1Hz(#2509)가 계속 흐른다.
       // 미지원/실패는 graceful (snapshot 조회가 null로 fallback).
       startAccelerometerFingerprint();
       // #823 — 가속도 latest summary 첨부 (옵션). useAccelerometer가 FG에서 갱신.

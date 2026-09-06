@@ -494,10 +494,11 @@ export function useNearestStation(
 
       // 연속 GPS 스트리밍 — 지하 구간 horizontalAccuracy(300~1500m)도 표시용으로는 수용.
       // 알람은 useStationAlarm에서 accuracyMeters로 별도 엄격 게이트.
-      // 지상(기본): High + distanceInterval:0 + timeInterval:2000:
-      //  좌표를 최대한 자주 흘려보낸다 (foreground 한정, 화면 켜진 동안만).
+      // 지상(기본): High + distanceInterval:0 + timeInterval:8000(#2509, 구 2000):
       //  High는 GPS hardware fix가 없으면 WiFi BSSID / Cell tower triangulation으로 fallback
       //  → 지하 구간에서도 ~50~100m 위치가 들어옴 (BestForNavigation은 fallback 없이 stale).
+      //  timeInterval은 iOS watchPositionAsync에서 읽히지 않는다(expo-location LocationOptions.swift
+      //  참고, Android만 소비) — 8000ms 상향은 Android 배터리 이득용, iOS 발열엔 영향 없음(#2509).
       // 지하(subsurface 확정, #1313 + #2100): Balanced + timeInterval:12000으로 throttle.
       //  #1983 이후 한동안 High를 썼으나(지하 fix 정확도 확보 목적), #2074 품질 게이트가 지하 fix를
       //  전량 폐기하는 게 실측 확인돼(7/7 gps-drop 84건) Balanced로 재전환 — 지하 무의미 GPS
