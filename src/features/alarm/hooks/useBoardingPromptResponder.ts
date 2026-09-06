@@ -511,12 +511,31 @@ async function createPendingFallbackLock(
   // 사용자의 명시 탭을 신뢰한다(ADR-014).
   const bgContext = await readFreshBgLastStationForGuard();
   if (bgContext && bgContext.station.line !== payload.line) {
-    log.info('pending fallback lock skipped — position contradiction with fresh BG context');
-    logBoardingPromptAutoLock({
-      reason: 'fallback-skipped-position-contradiction',
-      ...telemetry,
-    });
-    return;
+    // #2408 Gap A — 환승역(예: 건대입구=2호선+7호선)에서는 BG fusion이 payload.line과 다른
+    // 노선으로 최근접역을 stamp할 수 있다. line만 비교하면 "같은 물리적 역, 다른 유효 노선"을
+    // 진짜 위치 모순으로 오판해 lock 생성을 skip한다(실사용자가 정확히 그 역에 있는데도 차단).
+    // bgContext.station.name과 payload.originStation을 각각 payload.line 위에서 조회해 같은
+    // canonical station으로 귀결되는지(findStationByNameAndLine이 alias/정규화까지 흡수) 확인 —
+    // 둘 다 유효하고 이름이 같은 station으로 resolve되면 환승역 관측 차이일 뿐 모순이 아니다.
+    const promptLine = isValidLineNumber(payload.line) ? payload.line : null;
+    const bgStationOnPromptLine = promptLine
+      ? findStationByNameAndLine(bgContext.station.name, promptLine)
+      : null;
+    const promptStation = promptLine
+      ? findStationByNameAndLine(payload.originStation, promptLine)
+      : null;
+    const isSameTransferStation =
+      bgStationOnPromptLine !== null &&
+      promptStation !== null &&
+      bgStationOnPromptLine.name === promptStation.name;
+    if (!isSameTransferStation) {
+      log.info('pending fallback lock skipped — position contradiction with fresh BG context');
+      logBoardingPromptAutoLock({
+        reason: 'fallback-skipped-position-contradiction',
+        ...telemetry,
+      });
+      return;
+    }
   }
 
   if (!isValidLineNumber(payload.line)) {
