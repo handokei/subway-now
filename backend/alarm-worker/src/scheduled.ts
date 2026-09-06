@@ -4040,6 +4040,13 @@ export async function advanceBoardingLockWaypoint(
   const isRealLineChange = nextLegWaypoint?.line !== trip.boardingLock?.line;
   const lockReleasedOnTransfer =
     waypoint.kind === 'transfer' && trip.boardingLock !== undefined && isRealLineChange;
+  // #2505 follow-up — transfer-leg trainCode resolver 확장. 환승 waypoint 통과 = leg 2(+)의
+  // 실질 탑승역이 확정되는 순간이므로 `boardingAnchorResolver.attemptBoardingAnchorResolution`이
+  // 다음 cycle부터 옛(leg 1) `promptDisplay` 대신 이 anchor로 leg 2 trainCode를 조회하게 stamp한다.
+  // `nextLegWaypoint`가 없으면(환승 waypoint가 route의 마지막 항목인 데이터 이상) stamp 생략.
+  if (waypoint.kind === 'transfer' && nextLegWaypoint !== undefined) {
+    trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
+  }
   // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
   // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
   const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;

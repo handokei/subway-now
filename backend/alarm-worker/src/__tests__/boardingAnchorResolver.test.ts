@@ -260,4 +260,80 @@ describe('attemptBoardingAnchorResolution', () => {
     expect(result?.trainCode).toBe('7246');
     expect(result?.segmentStations).toEqual(['중곡']);
   });
+
+  describe('transfer-leg 확장 (#2505 follow-up) — currentLegAnchor', () => {
+    it('환승 후(currentLegAnchor 존재) → promptDisplay(옛 leg 1 line) 대신 leg 2 line/역을 조회해 resolved', async () => {
+      // promptDisplay는 leg 1(7호선/중곡)을 그대로 남겨둔 채(원 ORIGIN-ONLY 버그 재현 조건),
+      // currentLegAnchor가 leg 2(5호선/군자)를 가리키면 leg 2가 채택돼야 한다.
+      const seoul = makeSeoulWithPositions([{ trainCode: '5123', stationName: '군자' }]);
+      const trip = makeTrip({
+        promptDisplay: { originStation: '중곡', line: '7' },
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        waypoints: [{ stationName: '아차산', line: '5', kind: 'destination' }],
+      });
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+      expect(result).not.toBeNull();
+      expect(result?.trainCode).toBe('5123');
+      expect(result?.line).toBe('5');
+      expect(result?.segmentStations[0]).toBe('군자');
+      expect(result?.segmentStations).toContain('아차산');
+    });
+
+    it('환승 후 후보 2개(ambiguous) → null, lock 승격 안 함(leg 2도 동일 안전 기준)', async () => {
+      const seoul = makeSeoulWithPositions([
+        { trainCode: '5123', stationName: '군자' },
+        { trainCode: '5124', stationName: '군자' },
+      ]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        waypoints: [{ stationName: '아차산', line: '5', kind: 'destination' }],
+      });
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+      expect(result).toBeNull();
+    });
+
+    it('환승 후 후보 0개 → null', async () => {
+      const seoul = makeSeoulWithPositions([]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        waypoints: [{ stationName: '아차산', line: '5', kind: 'destination' }],
+      });
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+      expect(result).toBeNull();
+    });
+
+    it('promptDisplay 없이 currentLegAnchor만 있어도 resolved (leg 1 프롬프트 정보 소실 케이스에도 leg 2 동작)', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '5123', stationName: '군자' }]);
+      const trip = makeTrip({
+        promptDisplay: undefined,
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        waypoints: [{ stationName: '아차산', line: '5', kind: 'destination' }],
+      });
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+      expect(result).not.toBeNull();
+      expect(result?.trainCode).toBe('5123');
+    });
+
+    it('infoModeEnabled !== true면 currentLegAnchor가 있어도 null (seoul 호출 안 함, 트리거 게이트 불변)', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '5123', stationName: '군자' }]);
+      const trip = makeTrip({
+        infoModeEnabled: false,
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        waypoints: [{ stationName: '아차산', line: '5', kind: 'destination' }],
+      });
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+      expect(result).toBeNull();
+      expect(seoul.stats.callCount).toBe(0);
+    });
+
+    it('currentLegAnchor의 line이 subwayId 매핑 실패 → null', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '5123', stationName: '군자' }]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '군자', line: 'not-a-line' },
+        waypoints: [{ stationName: '아차산', line: '5', kind: 'destination' }],
+      });
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+      expect(result).toBeNull();
+    });
+  });
 });

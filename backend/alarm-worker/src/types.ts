@@ -230,6 +230,17 @@ export interface Trip {
    */
   promptDisplay?: PromptDisplay;
   /**
+   * transfer-leg trainCode resolver 확장(#2505 follow-up) — 환승 waypoint 통과 시점에 backend가
+   * stamp하는 "현재 활성 leg"의 탑승 anchor. `promptDisplay`는 leg 1(origin)만 기술하므로 환승
+   * 이후에는 옛 line/역을 가리켜 `attemptBoardingAnchorResolution`이 엉뚱한 노선을 조회하고
+   * 'none'을 반환하는 원인이었다 — leg 2+ 에서는 이 필드가 `promptDisplay`보다 우선한다.
+   *
+   * `boardingStation`: 방금 통과한 환승역(=leg 2의 실질 탑승역). `line`: 다음 waypoint의 line
+   * (=leg 2 노선). 클라이언트는 절대 송신하지 않는다 — backend가 waypoint advance 시점에만 stamp.
+   * 환승이 여러 번 있는 trip은 매 환승마다 덮어써 항상 "현재" leg만 가리킨다.
+   */
+  currentLegAnchor?: { boardingStation: string; line: string };
+  /**
    * Phase 3 E3 (#825) — 운행 phase 분류 + 2 cycle hysteresis 상태. cron 사이클마다
    * stationPhase.ts가 분류 결과로 갱신한다. 사용자가 명시 보내는 필드 아님 — backend 자체 stamp.
    * 부재(첫 평가 전) = phase 분류 신호 없음.

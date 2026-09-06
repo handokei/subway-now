@@ -2410,6 +2410,27 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(await kv.get('progress:lock-tok')).toBeNull();
   });
 
+  // #2505 follow-up — transfer waypoint advance 시 leg 2 resolver anchor(currentLegAnchor)를
+  // stamp해야 다음 cycle의 attemptBoardingAnchorResolution이 옛(leg 1) promptDisplay 대신
+  // 환승역+leg 2 line을 조회한다.
+  it('#2505 follow-up — transfer waypoint advance 시 currentLegAnchor를 환승역+다음 leg line으로 stamp', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+        consecutiveEtaMissing: 2,
+      },
+      '군자',
+      'p-transfer-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
+  });
+
   // 잠실나루 redundant boarding prompt regression — transfer waypoint의 목적지 line이 현재
   // boardingLock.line과 동일(같은 호선 내 잘못 라벨된 transfer)이면 lock을 release하면 안 된다.
   // release되면 다음 cycle의 evaluateAndMaybeFireBoardingPrompt가 lock=inactive로 오판해
