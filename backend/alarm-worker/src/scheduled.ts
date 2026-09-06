@@ -17,7 +17,7 @@ import {
   type PushOrigin,
   type SilentPushPayload,
 } from './apns';
-import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
+import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
@@ -5130,6 +5130,31 @@ export function hasArrivedSignal(pool: readonly ArrivalEntry[]): boolean {
 }
 
 /**
+ * #2515 — boarding-prompt 계열(origin `evaluateAndMaybeFireBoardingPrompt` + leg 2
+ * `maybeFireLegBoardingPrompt`) 공용 push 실패 기록. 두 caller의 실패 분기가 동일한
+ * `logPushFailure` 인자 구성을 그대로 반복해 SonarCloud 중복 임계를 넘겨 추출(리뷰 요청).
+ */
+async function logBoardingPromptPushFailure(
+  env: Env,
+  trip: Trip,
+  heal: Pick<EnvHealResult, 'result' | 'envMismatchExhausted'>,
+): Promise<void> {
+  // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+  // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
+  await logPushFailure(env.DB, {
+    // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+    // 별도로 trip_token_hash에 남긴다.
+    token: resolveTripDeviceToken(trip),
+    tripToken: trip.token,
+    pushKind: 'boarding-prompt',
+    apnsStatus: heal.result.status,
+    apnsReason: heal.result.reason,
+    apnsEnv: trip.apnsEnv,
+    envMismatchExhausted: heal.envMismatchExhausted,
+  });
+}
+
+/**
  * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
  *
  * lockMissing 분기에서만 호출. promptGeoContext가 없으면 skip — backend는 stations 좌표를
@@ -5535,19 +5560,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       status: heal.result.status,
       reason: heal.result.reason,
     });
-    // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
-    // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
-    await logPushFailure(env.DB, {
-      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
-      // 별도로 trip_token_hash에 남긴다.
-      token: resolveTripDeviceToken(trip),
-      tripToken: trip.token,
-      pushKind: 'boarding-prompt',
-      apnsStatus: heal.result.status,
-      apnsReason: heal.result.reason,
-      apnsEnv: trip.apnsEnv,
-      envMismatchExhausted: heal.envMismatchExhausted,
-    });
+    await logBoardingPromptPushFailure(env, trip, heal);
   }
 
   // #2069 (Phase 3) — boarding-prompt silent push fallback(B8, #2037) 제거. visible alert push
@@ -5719,15 +5732,7 @@ export async function maybeFireLegBoardingPrompt(
       status: heal.result.status,
       reason: heal.result.reason,
     });
-    await logPushFailure(env.DB, {
-      token: resolveTripDeviceToken(trip),
-      tripToken: trip.token,
-      pushKind: 'boarding-prompt',
-      apnsStatus: heal.result.status,
-      apnsReason: heal.result.reason,
-      apnsEnv: trip.apnsEnv,
-      envMismatchExhausted: heal.envMismatchExhausted,
-    });
+    await logBoardingPromptPushFailure(env, trip, heal);
   }
 
   if (dirty) {
