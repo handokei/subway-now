@@ -10,8 +10,12 @@ import Foundation
  * 원리:
  *   - `CMMotionManager.accelerometerUpdates`는 Background Location piggyback으로 BG에서도 수신 가능
  *     (Apple Core Motion 공식: location updates 활성 동안 raw 가속도 계속 흐름)
- *   - 5Hz sampling rate (Transit App pattern, accelerometerUpdateInterval = 0.2s) — 진동 fingerprint
- *     추출 + 배터리 합리적 (BG에서 100Hz는 V8 배터리 임계 위반)
+ *   - 1Hz sampling rate (accelerometerUpdateInterval = 1.0s) — 진동 fingerprint 추출 + 발열 완화.
+ *     #2509 (interim 발열 완화): 원래 5Hz(Transit App pattern, 0.2s)였으나, backend
+ *     `advanceTripPosition.ts` Motion 게이트가 이 모듈의 `motion` 분류를 load-bearing하게 소비해
+ *     (isMinimalAlarmEnabled OFF와 무관하게 항상 동작) 완전 gate-off는 부적절 — 대신 continuous
+ *     wakeup 빈도만 5배 낮춘다. 60s window RMS 분류는 표본 수가 줄어도(아래 MIN_SAMPLES_FOR_CLASSIFY)
+ *     동일 비율로 계속 동작한다.
  *   - 60s sliding window RMS magnitude로 train automotive / walking / stationary 패턴 분류
  *   - native가 latest snapshot 캐시 → JS layer가 `getLatestSnapshot()`으로 polling 조회
  *
@@ -41,19 +45,23 @@ public class AccelerometerFingerprintModule: Module {
         return q
     }()
     /**
-     * 60s sliding window — RMS magnitude 추출용. 1초 5 sample × 60s = 300 capacity (안전 여유).
+     * 60s sliding window — RMS magnitude 추출용. 1초 1 sample × 60s = 60 capacity (안전 여유).
      * lock으로 다중 스레드 접근(JS thread vs accelerometer queue) 보호.
      */
     private var samples: [SampleRecord] = []
     private let samplesLock = NSLock()
     private var isUpdating: Bool = false
 
-    /** 5Hz sampling — Transit App pattern. 0.2s interval. */
-    private static let SAMPLE_INTERVAL_SEC: TimeInterval = 0.2
+    /** 1Hz sampling — #2509 interim 발열 완화 (구 5Hz/0.2s, 모듈 헤더 참고). */
+    private static let SAMPLE_INTERVAL_SEC: TimeInterval = 1.0
     /** 60s window. RMS 추출 + 패턴 분류 sample 모집 기간. */
     private static let WINDOW_DURATION_SEC: TimeInterval = 60.0
-    /** 분류 신뢰 최소 sample 수 — 60s × 5Hz = 300 기대, 50 미달 시 unknown. */
-    private static let MIN_SAMPLES_FOR_CLASSIFY: Int = 50
+    /**
+     * 분류 신뢰 최소 sample 수 — 60s × 1Hz = 60 기대, 10 미달 시 unknown.
+     * #2509: 5Hz(300 기대/50 임계, 16.7%)와 동일 비율(60 × 16.7% ≈ 10)로 낮춰 최초 분류
+     * 도달 시간(~10s)을 샘플레이트 변경 전후로 동등하게 유지한다.
+     */
+    private static let MIN_SAMPLES_FOR_CLASSIFY: Int = 10
 
     /** stationary 임계 — RMS m/s² 단위. */
     private static let STATIONARY_RMS_MAX: Double = 0.3

@@ -14,7 +14,7 @@
  *   - `stationary` : RMS < 0.3 m/s² (정적 사용자)
  *   - `walking`    : 0.3 ≤ RMS < 2.0 m/s² (도보 cadence)
  *   - `automotive` : RMS ≥ 2.0 m/s² (train 가속/감속, env vote 1표 추가)
- *   - `unknown`    : window 미수렴 (60s × 5Hz=300 기대, 50개 미달) — vote 미투표
+ *   - `unknown`    : window 미수렴 (60s × 1Hz=60 기대, 10개 미달, #2509 interim 발열 완화) — vote 미투표
  *
  * 호환:
  *   - 기존 `useAccelerometer` (#823, expo-sensors 기반)와 별 lifecycle. expo-sensors는 FG-only.
@@ -36,7 +36,7 @@ export interface AccelerometerSnapshot {
   rmsMagnitude: number;
   /** 분류 결과. 'unknown'은 vote 미투표. */
   patternClass: AccelerometerPattern;
-  /** window 내 sample 수. MIN(=50) 미달 시 unknown 강제. */
+  /** window 내 sample 수. MIN(=10, #2509) 미달 시 unknown 강제. */
   sampleCount: number;
 }
 
@@ -47,7 +47,7 @@ interface AccelerometerFingerprintNative {
   isAvailable(): boolean;
   start(): void;
   stop(): void;
-  /** native가 캐시한 최신 60s window snapshot. 미수렴 시 sampleCount<50 + patternClass='unknown'. */
+  /** native가 캐시한 최신 60s window snapshot. 미수렴 시 sampleCount<10 + patternClass='unknown'. */
   getLatestSnapshot(): AccelerometerSnapshot | null;
 }
 

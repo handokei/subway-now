@@ -242,9 +242,10 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('watchPositionAsync에 High·distanceInterval:0·timeInterval:2000을 전달한다', async () => {
+  it('watchPositionAsync에 High·distanceInterval:0·timeInterval(surface 상수)을 전달한다', async () => {
     // #1440 — surface는 distanceInterval=0으로 정적 FG에서도 watch 이벤트가 흘러야 GPS acc가
     // 회복된다. #1416에서 5m 적용 → 정적 30분 acc>30m stuck + 한양대 820m stuck fix 회귀로 되돌림.
+    // #2509 — timeInterval 값 자체는 FG_WATCH_SURFACE_TIME_INTERVAL_MS 상수 참조(리터럴 금지).
     mockGranted();
 
     renderHook(() => useNearestStation());
@@ -255,7 +256,7 @@ describe('useNearestStation', () => {
       {
         accuracy: Location.Accuracy.High,
         distanceInterval: 0,
-        timeInterval: 2000,
+        timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
       },
       expect.any(Function),
     );
