@@ -1,6 +1,6 @@
 /* eslint-disable import/no-restricted-paths --
  * #2210 / #2258 — Cross-feature orchestration: setAlarmEvent가 sleepMode(settings) 상태를
- * 게이트해야 한다. 알람 비주얼(AlarmOverlay)은 취침모드 전용 — BG write → FG loadAlarmEvent
+ * 게이트해야 한다. 알람 비주얼(SleepAlarmOverlay)은 취침모드 전용 — BG write → FG loadAlarmEvent
  * replay, inApp notification writer 두 경로 모두 단일 진입점에서 억제.
  */
 import { create } from 'zustand';
@@ -22,7 +22,7 @@ const noop = (): void => {};
  * 알람 이벤트 store — ADR 후속 Step 6 (#892).
  *
  * 두 가지 알람 도메인 in-memory mirror:
- *  - alarmEvent: BG 알람 → AlarmOverlay UI 트리거 (ALARM_EVENT_KEY 영속).
+ *  - alarmEvent: BG 알람 → SleepAlarmOverlay UI 트리거 (ALARM_EVENT_KEY 영속).
  *  - dismissSilence: 사용자가 알람을 dismiss한 시점 + 위치 (DISMISS_SILENCE_KEY SSOT).
  *    5분 또는 200m 이내까지 모든 알람 차단. BG path는 storage helper로 직접 read.
  *
@@ -54,7 +54,7 @@ export const useAlarmEventStore = create<AlarmEventState>((set, get) => ({
 
   // #2210 / #2258 — sleepMode 중앙 게이트. BG write(backgroundLocationTask) → FG
   // loadAlarmEvent replay와 useStationAlarm의 직접 setAlarmEvent 호출 두 경로 모두 이 함수를
-  // 거치므로 여기서 억제하면 두 경로 모두 상속받는다. 알람 비주얼(AlarmOverlay)은 취침모드 전용 —
+  // 거치므로 여기서 억제하면 두 경로 모두 상속받는다. 알람 비주얼(SleepAlarmOverlay)은 취침모드 전용 —
   // 활성 trip 여부와 무관하게 비취침(sleepMode=false)이면 항상 억제한다. 알람 소리/TTS/companion
   // (alarmLocalAuthority.ts)은 이미 별도로 취침 전용이며, 상시 route 표시는 이 게이트와 무관.
   setAlarmEvent: (event: AlarmEvent) => {

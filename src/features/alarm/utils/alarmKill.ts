@@ -14,7 +14,7 @@ const logger = createLogger('AlarmKill');
  * 호출은 fire-and-forget; 각 단계 실패는 로그만 남기고 다음 단계 진행한다 —
  * 한 채널이 죽어도 나머지가 정리되도록.
  *
- * AlarmOverlay dismiss(#633)에서 사용 — 사용자가 알람 닫기 누르면 모든 채널 100% 종료.
+ * SleepAlarmOverlay dismiss(#633)에서 사용 — 사용자가 알람 닫기 누르면 모든 채널 100% 종료.
  */
 export async function killAllAlarms(): Promise<void> {
   try {

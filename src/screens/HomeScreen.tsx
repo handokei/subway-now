@@ -55,7 +55,7 @@ import { useLiveActivityPreBoardingLifecycle } from '../features/alarm/hooks/use
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
-import { AlarmOverlay } from '../features/alarm/components/AlarmOverlay';
+import { SleepAlarmOverlay } from '../features/alarm/components/SleepAlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { ActionBanner } from '../shared/ui/ActionBanner';
@@ -2005,7 +2005,9 @@ export default function HomeScreen() {
         // 한 정거장 전(early) destination 알람을 끄면 trip이 종료되던 회귀의 fix.
         // trip release는 도착 자동 release(useBoardingLockAutoRelease, #759)에 위임한다.
         // #746: dismiss와 동시에 silence 시작점 기록. userLocation 미가용 시 시간 단독 silence.
-        <AlarmOverlay
+        // #2520 — sleepMode를 명시 전달해 컴포넌트 자체 게이트(#2258 defense-in-depth)를 만족.
+        <SleepAlarmOverlay
+          sleepMode={sleepMode}
           event={alarmEvent}
           onDismiss={() => {
             setDismissSilence(

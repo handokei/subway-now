@@ -193,7 +193,7 @@ function RootContent() {
   }, []);
 
   // #623 — 사용자가 잠금화면에서 노티 tap/dismiss할 때 진동이 안 멈추는 문제 해결.
-  // FG AlarmOverlay 외 경로(잠금화면 swipe)는 ResponseReceivedListener로만 잡힌다.
+  // FG SleepAlarmOverlay 외 경로(잠금화면 swipe)는 ResponseReceivedListener로만 잡힌다.
   useEffect(() => {
     const sub = Notifications.addNotificationResponseReceivedListener(() => {
       stopVibration();

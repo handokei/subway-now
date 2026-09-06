@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
-import { AlarmOverlay } from '../AlarmOverlay';
+import { SleepAlarmOverlay } from '../SleepAlarmOverlay';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 import type { LineNumber } from '../../../../shared/types/station';
 import type { ExitInfoProvider } from '../../../exit-info/providers/types';
@@ -16,6 +16,18 @@ jest.mock('../../utils/stationNotification', () => ({
   clearAlarmNotification: () => mockClearAlarmNotification(),
 }));
 
+// #2520 — dismiss가 BoardingLock(trip)을 절대 건드리지 않는다는 회귀 가드(#673/#806/#741/#746).
+// SleepAlarmOverlay는 이 모듈을 import조차 하지 않지만, 만약 향후 리팩터로 의존이 생기더라도
+// getBoardingLock/setBoardingLock/clearBoardingLock 중 아무것도 호출되지 않아야 함을 직접 assert한다.
+const mockGetBoardingLock = jest.fn();
+const mockSetBoardingLock = jest.fn();
+const mockClearBoardingLock = jest.fn();
+jest.mock('../../utils/boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
+  setBoardingLock: () => mockSetBoardingLock(),
+  clearBoardingLock: () => mockClearBoardingLock(),
+}));
+
 const mockDismiss = jest.fn();
 
 function makeExitProvider(exits: ExitInfo[]): ExitInfoProvider {
@@ -27,9 +39,12 @@ function renderAlarm(
   stationName: string,
   phaseId: AlarmEvent['phaseId'] = 'early',
   line?: LineNumber | null,
+  sleepMode = true,
 ) {
   const event: AlarmEvent = { phaseId, type, stationName };
-  return render(<AlarmOverlay event={event} onDismiss={mockDismiss} line={line} />);
+  return render(
+    <SleepAlarmOverlay sleepMode={sleepMode} event={event} onDismiss={mockDismiss} line={line} />,
+  );
 }
 
 async function triggerModalClose(rendered: ReturnType<typeof renderAlarm>) {
@@ -38,9 +53,22 @@ async function triggerModalClose(rendered: ReturnType<typeof renderAlarm>) {
   await rendered.UNSAFE_getByType(Modal).props.onRequestClose();
 }
 
-describe('AlarmOverlay', () => {
+describe('SleepAlarmOverlay', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  // #2258 — 취침모드 전용 게이트. store 중앙 게이트(useAlarmEventStore.setAlarmEvent)와
+  // 별개로 컴포넌트 자체에도 방어선을 둔다(defense-in-depth). 이 게이트가 없다면 store 게이트를
+  // 우회하는 향후 호출부에서 비취침 상태에도 오버레이가 노출되는 #2258이 재발한다.
+  it('#2258 sleepMode=false면 아무것도 렌더하지 않는다 (defense-in-depth)', () => {
+    const { queryByTestId } = renderAlarm('destination', '강남', 'early', undefined, false);
+    expect(queryByTestId('alarm-overlay')).toBeNull();
+  });
+
+  it('sleepMode=true + 환승이면 렌더한다', () => {
+    const { queryByTestId } = renderAlarm('transfer', '시청', 'early', undefined, true);
+    expect(queryByTestId('alarm-overlay')).toBeTruthy();
   });
 
   it('하차 알림을 표시한다', () => {
@@ -67,6 +95,10 @@ describe('AlarmOverlay', () => {
       expect(mockKillAllAlarms).not.toHaveBeenCalled();
       expect(mockDismiss).toHaveBeenCalled();
     });
+    // #673/#806/#741/#746 회귀 가드 — dismiss는 BoardingLock storage를 절대 건드리지 않는다.
+    expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    expect(mockClearBoardingLock).not.toHaveBeenCalled();
   });
 
   it('#806 도착 알람(early) dismiss → trip 유지. killAllAlarms만 호출, release 트리거 없음', async () => {
@@ -77,6 +109,10 @@ describe('AlarmOverlay', () => {
       expect(mockClearAlarmNotification).not.toHaveBeenCalled();
       expect(mockDismiss).toHaveBeenCalled();
     });
+    // #673/#806/#741/#746 회귀 가드 — dismiss는 BoardingLock storage를 절대 건드리지 않는다.
+    expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    expect(mockClearBoardingLock).not.toHaveBeenCalled();
   });
 
   it('#806 도착 알람(imminent) dismiss → trip 유지. killAllAlarms만 호출', async () => {
@@ -111,7 +147,7 @@ describe('AlarmOverlay', () => {
     it('line 전달 시 출구 안내 섹션이 렌더되고 출구 카드가 나타난다', async () => {
       const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
       const { getByTestId, findByTestId } = render(
-        <AlarmOverlay event={event} onDismiss={mockDismiss} line="2" />,
+        <SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} line="2" />,
       );
       // exit section은 즉시 렌더됨 (line이 있으면)
       expect(getByTestId('alarm-overlay-exit-section')).toBeTruthy();
