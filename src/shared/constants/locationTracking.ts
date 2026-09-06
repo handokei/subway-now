@@ -62,19 +62,41 @@ export const LOCATION_TRACKING_OPTIONS_UNDERGROUND = {
   timeInterval: TRACKING_UNDERGROUND_TIME_INTERVAL_MS,
 } as const;
 
+// #2514 — boardingLock 활성 구간의 완화 interval. underground와 동일 cadence(90s) 재사용 —
+// lock 활성 시 backend가 realtimePosition으로 열차를 GPS-독립적으로 추적하므로 device GPS는
+// 지상/지하 여부와 무관하게 이미 "지하급 무의미" 상태다(중복 상수 회피).
+const TRACKING_LOCKED_TIME_INTERVAL_MS = TRACKING_STATIONARY_TIME_INTERVAL_MS;
+
+// #2514 — boardingLock 활성 시 GPS profile 강제 저전력화. backend realtimePosition이 열차를
+// 서버 사이드로 추적하는 동안 device GPS는 추적 목적에 더 이상 쓰이지 않는다(#2178/#2383 등
+// lock 기반 발사 경로는 arvlCd/consensus 기반이지 GPS 좌표 정밀도에 의존하지 않음). accuracy를
+// Balanced로 낮추고, AutomotiveNavigation(iOS가 GPS를 가장 공격적으로 유지하는 프로필)도
+// 제거해(`Other`) 배터리/발열을 추가로 아낀다. uploadPosition 자체는 이 프로파일과 무관하게
+// backgroundLocationTask.ts에서 계속 저빈도로 호출된다 — 이 프로파일은 오직 OS GPS 하드웨어
+// 요청 강도만 낮춘다.
+export const LOCATION_TRACKING_OPTIONS_LOCKED = {
+  ...BASE_TRACKING_OPTIONS,
+  accuracy: Location.Accuracy.Balanced,
+  activityType: Location.LocationActivityType.Other,
+  timeInterval: TRACKING_LOCKED_TIME_INTERVAL_MS,
+} as const;
+
 /**
  * BG location 추적 프로파일.
  * 'surface'=기본(High/30s), 'stationary'=정지 확정 시 완화(High/90s),
- * 'underground'=연속 gate-accuracy 실패 확정 시 강등(Balanced/90s, #2345).
+ * 'underground'=연속 gate-accuracy 실패 확정 시 강등(Balanced/90s, #2345),
+ * 'locked'=boardingLock 활성 시 강등(Balanced/90s, activityType Other, #2514) — backend가
+ * realtimePosition으로 추적하므로 surface/stationary/underground 어떤 상태보다도 우선한다.
  */
-export type BgLocationProfile = 'surface' | 'stationary' | 'underground';
+export type BgLocationProfile = 'surface' | 'stationary' | 'underground' | 'locked';
 
 /**
  * profile → 추적 옵션 매핑의 SSoT. 신규 프로파일이 추가돼도 이 함수 한 곳만 확장하면 되도록
- * 전환 지점을 일반화한다(#2344 인프라를 #2345가 재사용).
+ * 전환 지점을 일반화한다(#2344 인프라를 #2345/#2514가 재사용).
  */
 export function locationTrackingOptionsForProfile(profile: BgLocationProfile) {
   if (profile === 'stationary') return LOCATION_TRACKING_OPTIONS_STATIONARY;
   if (profile === 'underground') return LOCATION_TRACKING_OPTIONS_UNDERGROUND;
+  if (profile === 'locked') return LOCATION_TRACKING_OPTIONS_LOCKED;
   return LOCATION_TRACKING_OPTIONS;
 }

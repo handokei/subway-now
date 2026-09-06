@@ -19,6 +19,7 @@ import {
   MAX_STATION_DISTANCE_KM,
   FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+  FG_WATCH_LOCKED_TIME_INTERVAL_MS,
   isValidGpsSpeedMps,
 } from '../../../shared/constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../../../shared/constants/e2e';
@@ -87,10 +88,20 @@ const FG_WATCH_OPTIONS_SUBSURFACE: Location.LocationOptions = {
   distanceInterval: 0,
   timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
 };
+// #2514 — boardingLock 활성 구간의 watch 옵션. backend realtimePosition이 열차를 GPS-독립적으로
+// 추적하므로 device GPS는 surface/subsurface보다 이 강등이 우선한다(지상/지하 여부 무관).
+const FG_WATCH_OPTIONS_LOCKED: Location.LocationOptions = {
+  accuracy: Location.Accuracy.Balanced,
+  distanceInterval: 0,
+  timeInterval: FG_WATCH_LOCKED_TIME_INTERVAL_MS,
+};
 
-// throttle 여부로 watch 옵션을 고른다. true(지하 확정)면 throttle, false면 지상 기본값.
-// 확신 없이(undefined/false) GPS를 낮추지 않는다 — 호출부가 === true로 좁힌 boolean만 넘긴다(#1313).
-function fgWatchOptionsFor(throttled: boolean): Location.LocationOptions {
+// throttle/locked 여부로 watch 옵션을 고른다. locked(lock 활성)가 최우선 — backend가 추적을
+// 대신하므로 지하 throttle 여부와 무관하게 가장 저전력 옵션을 쓴다. 그 다음 subsurface throttle,
+// 마지막 지상 기본값. 확신 없이(undefined/false) GPS를 낮추지 않는다 — 호출부가 === true로
+// 좁힌 boolean만 넘긴다(#1313).
+function fgWatchOptionsFor(throttled: boolean, locked: boolean): Location.LocationOptions {
+  if (locked) return FG_WATCH_OPTIONS_LOCKED;
   return throttled ? FG_WATCH_OPTIONS_SUBSURFACE : FG_WATCH_OPTIONS_SURFACE;
 }
 
@@ -209,6 +220,14 @@ export interface UseNearestStationInputs {
    * sticky unlock(motion/distance) 보류. 미전달이면 false로 간주(기존 동작 보존).
    */
   tripActive?: boolean;
+  /**
+   * #2514 — boardingLock 활성 여부. true면 FG watch를 저전력(Balanced/90s) 'locked' 옵션으로
+   * 강제 전환한다 — backend가 realtimePosition으로 열차를 GPS-독립적으로 추적하므로 device GPS
+   * 고정밀 추적이 더 이상 필요 없다(지상/지하 여부 무관, subsurface throttle보다 우선). 미전달이면
+   * false로 간주(기존 동작 보존) — lock 활성 전에는 origin-proximity/boarding-prompt 감지를 위해
+   * 기존 정확도를 그대로 유지해야 한다.
+   */
+  lockActive?: boolean;
 }
 
 export function useNearestStation(
@@ -235,6 +254,9 @@ export function useNearestStation(
   // 초기값을 첫 render의 subsurface로 맞춰, 마운트 시 이미 지하면 startWatch가 곧장 throttle 옵션을
   // 고르고 restart effect는 변화 없음으로 early return → 마운트 중복 start 방지.
   const throttledRef = useRef(inputs.barometerSubsurface === true);
+  // #2514 — "lock 활성이라 저전력 강제 중인가"의 SSOT. throttledRef와 동일 패턴 —
+  // startWatch가 호출 시점에 이 ref를 읽어 최우선으로 locked 옵션을 고른다.
+  const lockActiveRef = useRef(inputs.lockActive === true);
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
   // 진단용 누적 카운터: lastKnown 캐시 fix가 freshness/accuracy 게이트에서 거부된 횟수.
@@ -508,7 +530,7 @@ export function useNearestStation(
       // 참고: pausesUpdatesAutomatically / activityType은 expo-location foreground 옵션에
       //  노출되지 않아 적용 불가. background task 옵션에서만 사용 가능.
       subscriptionRef.current = await Location.watchPositionAsync(
-        fgWatchOptionsFor(throttledRef.current),
+        fgWatchOptionsFor(throttledRef.current, lockActiveRef.current),
         (location) => {
           if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
             // #1516: setLocationUncertain(true)도 이전 값과 같으면 setState skip.
@@ -697,14 +719,19 @@ export function useNearestStation(
   // watch 프로파일이 즉시 반응하지 않는다 — 다만 이 경로도 지상에 실제로 진입하면 곧 High-등급
   // GPS fix가 표시 게이트(250m)를 통과하게 되므로, profileWatchDegraded의 게이트 통과 fix
   // eager-release로 짧은 지연 후 self-heal된다(별도 트리거 불필요).
+  // #2514 — lockActive 변화도 동일 재시작 트리거로 다룬다. throttled/lockActive 둘 중 하나라도
+  // 바뀌면 재시작 — fgWatchOptionsFor가 locked를 최우선으로 판정하므로 throttled 값 변화가
+  // lockActive=true 상태에서 일어나도(예: 지하 진입/탈출) 옵션 자체는 계속 locked로 고정된다.
   useEffect(() => {
-    const next = inputs.barometerSubsurface === true || profileWatchDegraded;
-    if (next === throttledRef.current) return;
-    throttledRef.current = next;
+    const nextThrottled = inputs.barometerSubsurface === true || profileWatchDegraded;
+    const nextLockActive = inputs.lockActive === true;
+    if (nextThrottled === throttledRef.current && nextLockActive === lockActiveRef.current) return;
+    throttledRef.current = nextThrottled;
+    lockActiveRef.current = nextLockActive;
     if (AppState.currentState !== 'active') return;
     stopWatch();
     void startWatch();
-  }, [inputs.barometerSubsurface, profileWatchDegraded, startWatch, stopWatch]);
+  }, [inputs.barometerSubsurface, inputs.lockActive, profileWatchDegraded, startWatch, stopWatch]);
 
   // #876 — 매 fix를 sticky 훅에 전달. lock된 역이 있으면 result를 그것으로 override.
   // fusion candidates는 useFusedNearestStation에서 userLocation 기반으로 별도 계산하므로 영향 없음.

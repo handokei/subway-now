@@ -150,6 +150,14 @@ jest.mock('../../../alarm/utils/bgWaypointArvlcdFire', () => ({
   evaluateWaypointArvlcdFire: (...args: unknown[]) => mockEvaluateWaypointArvlcdFire(...args),
 }));
 
+// #2514 — boardingLock 활성 시 GPS profile을 저전력 강등하기 위한 lock 존재 여부 조회 모킹.
+// 내부 파싱/CRUD 로직은 boardingLockStorage.test.ts 전담, 여기서는 backgroundLocationTask가
+// lock 존재 여부에 따라 profile 선택을 올바르게 분기하는지만 검증.
+const mockGetBoardingLock = jest.fn();
+jest.mock('../../../alarm/utils/boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
@@ -268,6 +276,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockEvaluatePositionTrainFire.mockResolvedValue(false);
     // #2480 — 기본: false(미채택) — 기존 GPS/consensus 파이프라인이 그대로 이어진다.
     mockEvaluateWaypointArvlcdFire.mockResolvedValue(false);
+    // #2514 — 기본: lock 없음(null) — 기존 surface/stationary/underground 파이프라인이 그대로 이어진다.
+    mockGetBoardingLock.mockResolvedValue(null);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -1558,6 +1568,115 @@ describe('backgroundLocationTask defineTask 콜백', () => {
           }),
         ).resolves.toBeUndefined();
         expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'surface');
+      });
+    });
+
+    // #2514 — boardingLock 활성 시 GPS profile을 'locked'로 강등. backend가 realtimePosition으로
+    // 열차를 추적하므로 device GPS는 surface/stationary/underground보다 이 강등이 우선한다.
+    describe('#2514 — boardingLock 활성 시 GPS profile locked 강등', () => {
+      const mockLock = {
+        destinationId: 'station-2',
+        trainCode: 'K123',
+        boardingStationId: 'station-1',
+        boardingLine: '2',
+        boardedAt: 0,
+        expectedDurationMs: 600_000,
+      };
+
+      it('lock 활성이면 accuracy 정상 fix에서도 applyBgLocationProfile(TASK, "locked")를 호출한다', async () => {
+        mockGetBoardingLock.mockResolvedValue(mockLock);
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'locked');
+        // motion 기반 stationary/surface 전환은 lock 활성 중 skip된다 — 되돌아가지 않게.
+        expect(mockApplyBgLocationProfile).not.toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'surface');
+        expect(mockApplyBgLocationProfile).not.toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'stationary');
+      });
+
+      it('lock 활성이면 gate-accuracy 저정확도 fix에서도 applyBgLocationProfile(TASK, "locked")를 호출하고 underground 강등은 skip한다', async () => {
+        mockGetBoardingLock.mockResolvedValue(mockLock);
+        const accuracy = MAX_ACCURACY_M + 50;
+
+        await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+        expect(mockApplyBgLocationProfile).toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'locked');
+        expect(mockDemoteToUndergroundIfNeeded).not.toHaveBeenCalled();
+      });
+
+      it('lock 활성이면 releaseFromUndergroundIfNeeded를 호출하지 않는다', async () => {
+        mockGetBoardingLock.mockResolvedValue(mockLock);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockReleaseFromUndergroundIfNeeded).not.toHaveBeenCalled();
+      });
+
+      it('lock 없음(null)이면 applyBgLocationProfile(TASK, "locked")를 호출하지 않는다 (기존 동작 유지)', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockApplyBgLocationProfile).not.toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'locked');
+      });
+
+      it('getBoardingLock이 reject해도 태스크는 크래시하지 않고 기존 파이프라인을 계속 진행한다 (graceful)', async () => {
+        mockGetBoardingLock.mockRejectedValueOnce(new Error('storage down'));
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await expect(
+          taskCallback({
+            data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+            error: null,
+          }),
+        ).resolves.toBeUndefined();
+        expect(mockApplyBgLocationProfile).not.toHaveBeenCalledWith(BACKGROUND_LOCATION_TASK, 'locked');
+        expect(mockProcessLocationUpdate).toHaveBeenCalled();
+      });
+
+      it('applyBgLocationProfile(locked)이 reject해도 태스크는 크래시하지 않는다 (graceful)', async () => {
+        mockGetBoardingLock.mockResolvedValue(mockLock);
+        mockApplyBgLocationProfile.mockRejectedValueOnce(new Error('restart failed'));
+        mockStorageValues(JSON.stringify(mockDestination));
+
+        await expect(
+          taskCallback({
+            data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+            error: null,
+          }),
+        ).resolves.toBeUndefined();
+      });
+
+      // 요구사항 3 — lock 활성 중에도 uploadPosition(저빈도 좌표+motion)은 계속 살아있어야 한다.
+      // backend가 realtimePosition 추적 + Motion gate에 이 값을 계속 소비한다.
+      it('lock 활성이어도 apnsToken이 있으면 uploadPosition은 정상 호출된다', async () => {
+        mockGetBoardingLock.mockResolvedValue(mockLock);
+        (AsyncStorage.getItem as jest.Mock)
+          .mockResolvedValueOnce(JSON.stringify(mockDestination))
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY
+          .mockResolvedValueOnce('apns-tok-1'); // APNS_TOKEN_KEY
+
+        await taskCallback({
+          data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+          error: null,
+        });
+
+        expect(mockUploadPosition).toHaveBeenCalled();
       });
     });
 

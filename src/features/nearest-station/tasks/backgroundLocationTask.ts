@@ -62,6 +62,10 @@ import { evaluatePositionTrainFire } from '../../alarm/utils/bgPositionTrainFire
 // 열차위치매칭 전부 무관 — "내 목적지(다음 waypoint)에 내 열차가 도착하나"만 셀룰러로 직접 폴한다.
 // #2383과 병행(대체 아님) — #2383이 실패(false)한 tick에서만 시도.
 import { evaluateWaypointArvlcdFire } from '../../alarm/utils/bgWaypointArvlcdFire';
+// #2514 — boardingLock 활성 시 GPS profile을 저전력으로 강등하기 위한 lock 존재 여부 조회.
+// backend가 realtimePosition으로 열차를 GPS-독립적으로 추적하는 동안 device GPS 고정밀 추적은
+// 불필요 — surface/stationary/underground 어떤 상태보다 이 강등이 우선한다.
+import { getBoardingLock } from '../../alarm/utils/boardingLockStorage';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -154,6 +158,20 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     ageMs: Date.now() - (latest.timestamp ?? 0),
   });
 
+  // #2514 — boardingLock 활성 시 GPS profile을 즉시 'locked'(Balanced/90s, AutomotiveNavigation
+  // 제거)로 강등한다. backend가 realtimePosition으로 열차를 서버 사이드에서 추적하므로 lock
+  // 활성 중에는 device GPS 고정밀 추적이 불필요 — 지상/지하 여부(surface/stationary/underground)와
+  // 무관하게 이 강등이 최우선이다. fire-and-forget — 이번 tick의 알람 파이프라인 처리를 막지
+  // 않는다(applyBgLocationProfile은 desiredProfile이 이미 현재 profile과 같으면 no-op).
+  // uploadPosition(아래)은 이 프로파일과 무관하게 계속 저빈도로 호출된다 — 이 강등은 오직 OS
+  // GPS 하드웨어 요청 강도만 낮춘다.
+  const lockActive = (await getBoardingLock().catch(() => null)) != null;
+  if (lockActive) {
+    void applyBgLocationProfile(BACKGROUND_LOCATION_TASK, 'locked').catch((e: unknown) => {
+      logger.warn('lock-demote BG location profile 전환 실패 (graceful)', e);
+    });
+  }
+
   // #2178 — pull 기반 trip 死 backstop. GPS fix 품질(age/accuracy)과 무관하게 "BG task가
   // 깨어났다"는 사실 자체가 backend 생존 확인 기회다. fire-and-forget — 아래 알람 파이프라인의
   // 타이밍을 막지 않는다. 내부 쿨다운(TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS)이 매 tick마다
@@ -207,9 +225,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // #2345 — 지하 accuracy 강등 proxy. 기압계는 BG에서 무용(FG-only)이라, 연속 gate-accuracy
     // 실패를 지하 진입 신호로 사용한다. early-return 이전에 카운터를 올려 persist해야 다음
     // invocation에서 이어서 누적된다. fire-and-forget — 이번 tick 처리를 막지 않는다.
-    void demoteToUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch((e: unknown) => {
-      logger.warn('underground 강등 처리 실패 (graceful)', e);
-    });
+    // #2514 — lock 활성이면 skip: 이미 위에서 'locked' 프로파일을 적용했고, lock 활성 중에는
+    // underground보다 locked가 우선이라 카운터 누적이 무의미하다.
+    if (!lockActive) {
+      void demoteToUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch((e: unknown) => {
+        logger.warn('underground 강등 처리 실패 (graceful)', e);
+      });
+    }
     // #2381 (Gap A+B) — GPS 좌표가 무효한 이 tick에서, 지하(profile='underground')+lock
     // 조건이면 arvlCd+accel+cellular consensus로 device가 스스로 역 통과를 판정해 발사한다.
     // 플래그 OFF(기본값)면 evaluateUndergroundConsensusFire 내부 첫 줄에서 즉시 no-op —
@@ -335,17 +357,19 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // 'underground'로 강등돼 있었다면 즉시 'surface'(High)로 eager release한다. await하는
     // 이유: 이번 tick에 이미 재시작이 일어났으면(true) 아래 motion 기반 전환을 중복 실행하지
     // 않기 위해 결과가 필요하다(surface→stationary로 바로 재플립하는 낭비 방지).
-    const undergroundReleased = await releaseFromUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch(
-      (e: unknown) => {
-        logger.warn('underground release 처리 실패 (graceful)', e);
-        return false;
-      },
-    );
+    // #2514 — lock 활성이면 이 tick의 목적은 'locked' 유지뿐 — surface/stationary/underground
+    // 사이의 motion 기반 전환을 skip해 위쪽에서 이미 적용한 'locked'로 되돌아가지 않게 한다.
+    const undergroundReleased = lockActive
+      ? false
+      : await releaseFromUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch((e: unknown) => {
+          logger.warn('underground release 처리 실패 (graceful)', e);
+          return false;
+        });
 
     // #2344 (V8a) — 정지 확정 시 BG location interval을 완화(stationary 프리셋)하고, 이동 재개
     // 시 surface로 즉시 복귀한다. fire-and-forget — stop→start 재시작이 이번 tick의 알람 파이프라인
     // 처리를 막지 않는다(다음 tick부터 새 interval 적용). accuracy는 미접촉, timeInterval만 전환.
-    if (!undergroundReleased) {
+    if (!lockActive && !undergroundReleased) {
       void applyBgLocationProfile(
         BACKGROUND_LOCATION_TASK,
         motionStationary === true ? 'stationary' : 'surface',

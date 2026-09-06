@@ -2,7 +2,7 @@ const mockStopLocationUpdatesAsync = jest.fn();
 const mockStartLocationUpdatesAsync = jest.fn();
 jest.mock('expo-location', () => ({
   Accuracy: { High: 6, Balanced: 3 },
-  LocationActivityType: { AutomotiveNavigation: 2 },
+  LocationActivityType: { Other: 1, AutomotiveNavigation: 2 },
   stopLocationUpdatesAsync: (...args: unknown[]) => mockStopLocationUpdatesAsync(...args),
   startLocationUpdatesAsync: (...args: unknown[]) => mockStartLocationUpdatesAsync(...args),
 }));
@@ -41,6 +41,7 @@ import {
 import {
   LOCATION_TRACKING_OPTIONS_STATIONARY,
   LOCATION_TRACKING_OPTIONS_UNDERGROUND,
+  LOCATION_TRACKING_OPTIONS_LOCKED,
   BG_UNDERGROUND_DEMOTE_FAIL_THRESHOLD,
 } from '../../../../shared/constants/locationTracking';
 
@@ -185,6 +186,35 @@ describe('bgLocationProfile', () => {
       });
 
       await expect(applyBgLocationProfile(TASK_NAME, 'stationary')).resolves.toBeUndefined();
+    });
+
+    // #2514 — boardingLock 활성 강등 프로파일.
+    it('surface → locked 전환 시 stop→start로 재시작하고 Balanced/완화 interval을 적용한다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_LOCATION_PROFILE_KEY) return Promise.resolve(null); // surface
+        return Promise.resolve(null);
+      });
+
+      await applyBgLocationProfile(TASK_NAME, 'locked');
+
+      expect(mockStopLocationUpdatesAsync).toHaveBeenCalledWith(TASK_NAME);
+      expect(mockStartLocationUpdatesAsync).toHaveBeenCalledWith(
+        TASK_NAME,
+        expect.objectContaining(LOCATION_TRACKING_OPTIONS_LOCKED),
+      );
+      expect(mockSetItem).toHaveBeenCalledWith(BG_LOCATION_PROFILE_KEY, 'locked');
+    });
+
+    it('현재 프로파일이 이미 locked면 재시작하지 않는다', async () => {
+      mockGetItem.mockImplementation((key: string) => {
+        if (key === BG_LOCATION_PROFILE_KEY) return Promise.resolve('locked');
+        return Promise.resolve(null);
+      });
+
+      await applyBgLocationProfile(TASK_NAME, 'locked');
+
+      expect(mockStopLocationUpdatesAsync).not.toHaveBeenCalled();
+      expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
     });
 
     it('stopLocationUpdatesAsync 실패 시 예외를 흡수한다(graceful)', async () => {

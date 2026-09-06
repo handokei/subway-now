@@ -524,7 +524,11 @@ export function useFusedNearestStation(
   // D6 (#1212) — trip 활성(origin+destination+route 모두 채워진 상태)을 sticky 게이트에 전달.
   // routeContext는 HomeScreen에서 trip 시작 시 채워지고 종료 시 undefined로 돌아간다.
   const tripActive = routeContext != null;
-  const gps = useNearestStation({ barometerSubsurface, tripActive });
+  // #2514 — boardingLock 활성 여부를 FG watch profile 강등 신호로 전달. backend가
+  // realtimePosition으로 열차를 GPS-독립적으로 추적하므로 lock 활성 중에는 device GPS 고정밀
+  // 추적이 불필요(발열/배터리 절감). lock 활성 전(origin-proximity/boarding-prompt 감지 구간)은
+  // boardingLock == null이라 기존 정확도가 그대로 유지된다.
+  const gps = useNearestStation({ barometerSubsurface, tripActive, lockActive: boardingLock != null });
   // #2387 — approachLine(route/lock/legAdvance 권위 line 판정)의 legAdvance 입력. reactive 구독
   // 필수 — getState()는 useMemo 재계산을 트리거하지 않아 store 값이 바뀌어도 ssotGuardResult가
   // stale하게 남는다.
