@@ -201,6 +201,10 @@ export const TRIP_GROUND_TRUTH_KEY = 'subway-now:trip-ground-truth';
 // trip 종료 시 runTripBoundCleanups에서 false로 reset (이전 trip의 의향 신호가 새 trip에 leak 차단).
 // 형식: 'true' 또는 키 부재(=false). ADR-014 §X "사용자 명시 의향 trip = lock 활성과 동급 정확도 보장 의무" 정합.
 export const USER_INTENT_INFO_MODE_KEY = 'subway-now:user-intent-info-mode';
+// #2524 — 탑승 커밋(PENDING fallback lock 생성) 시그널. infoModeEnabled와 별도 키 —
+// 안내 시작(handleStartNavigation)에서는 세팅되지 않아 backend가 "탑승 커밋 + lock 미확정"과
+// "정보용 안내 시작"을 구분할 수 있다. trip 종료 시 runTripBoundCleanups에서 false로 reset.
+export const USER_INTENT_BOARDING_COMMITTED_KEY = 'subway-now:user-intent-boarding-committed';
 // #2045 (Signal 4, Issue #2043 β 후속) — 마지막 silent push 수신 시각 (epoch ms).
 // silentPushTask.handleSilentPush가 유효 payload 진입점(handleSilentPush)에서 stamp,
 // useLaunchTripReconciliation이 launch 시점에 read해 backend-timeout self-end 판정에 사용.

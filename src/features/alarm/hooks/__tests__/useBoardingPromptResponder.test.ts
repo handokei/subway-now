@@ -86,13 +86,20 @@ jest.mock('../../store/useBoardingLockStore', () => {
 });
 
 // #1923 — useUserIntentStore mock. tryAutoLock 진입 시 setInfoModeEnabled(true) 호출 검증.
+// #2524 — setBoardingCommitted도 같은 mock에 포함 — createPendingFallbackLock 진입 시
+// setBoardingCommitted(true) 호출 검증.
 jest.mock('../../store/useUserIntentStore', () => {
   const mockSetInfoModeEnabled = jest.fn(() => Promise.resolve());
+  const mockSetBoardingCommitted = jest.fn(() => Promise.resolve());
   return {
     useUserIntentStore: {
-      getState: () => ({ setInfoModeEnabled: mockSetInfoModeEnabled }),
+      getState: () => ({
+        setInfoModeEnabled: mockSetInfoModeEnabled,
+        setBoardingCommitted: mockSetBoardingCommitted,
+      }),
     },
     __mockSetInfoModeEnabled: mockSetInfoModeEnabled,
+    __mockSetBoardingCommitted: mockSetBoardingCommitted,
   };
 });
 
@@ -154,9 +161,10 @@ const { addDomainBreadcrumb } = jest.requireMock(
 const { __mockCreateLock: createLockMock, __mockReleaseLock: releaseLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
-const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
-  '../../store/useUserIntentStore',
-);
+const {
+  __mockSetInfoModeEnabled: setInfoModeEnabledMock,
+  __mockSetBoardingCommitted: setBoardingCommittedMock,
+} = jest.requireMock('../../store/useUserIntentStore');
 const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
   '../../../route/store/useNavigationStore',
 );
@@ -370,6 +378,10 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps();
     await handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, PAYLOAD, deps);
     expect(createLockMock).toHaveBeenCalled();
+    // #2524 — 실 trainCode로 lock이 즉시 확정된 경로(PENDING fallback 아님)는 탑승 커밋
+    // stamp 대상이 아니다. backend가 boardingLock 필드로 이미 정상 트립을 구분하므로
+    // boardingCommitted는 "PENDING lock 생성" 경로에서만 세워야 한다.
+    expect(setBoardingCommittedMock).not.toHaveBeenCalled();
   });
 
   it('[미탑승] 액션 → dismissBoardingPrompt 호출 (lock 미생성)', async () => {
@@ -430,6 +442,38 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expectPendingFallbackLockCalled('2');
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+  });
+
+  // #2524 — PENDING fallback lock 생성 = 탑승 커밋 시그널. infoModeEnabled와 별도로 stamp돼야
+  // backend가 "탑승 커밋 + lock 미확정"과 "정보용 안내 시작"을 구분해 후자 전용 lockless
+  // intermediate "통과" push를 전자에서 억제할 수 있다.
+  it('#2524 — arrivals null → pending fallback lock 생성 시 setBoardingCommitted(true) 호출', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(setBoardingCommittedMock).toHaveBeenCalledWith(true);
+  });
+
+  // #2524 — createLock이 실패해도(storage 예외) 사용자가 방금 탑승을 커밋한 사실 자체는
+  // 유효하므로 setBoardingCommitted(true)는 그대로 호출돼야 한다(setInfoModeEnabled와 동일 원칙).
+  it('#2524 — pending fallback createLock 예외에도 setBoardingCommitted(true)는 호출', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const failingCreateLock = jest.fn().mockRejectedValue(new Error('storage full'));
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () => null),
+      createLock: failingCreateLock,
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(setBoardingCommittedMock).toHaveBeenCalledWith(true);
+  });
+
+  // #2524 — station lookup 실패로 pending fallback lock 자체를 시도하지 않는 극히 드문 데이터
+  // 이상 케이스는 "탑승 커밋" 판정의 근거(PENDING lock 생성 시도)가 없으므로 stamp하지 않는다.
+  it('#2524 — pending fallback: station lookup 실패로 lock 시도 자체를 안 하면 setBoardingCommitted 미호출', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(setBoardingCommittedMock).not.toHaveBeenCalled();
   });
 
   // #2407 — ambiguity도 "탭했는데 train을 못 골랐다"는 동일 실패 모드라 pending fallback lock 대상.

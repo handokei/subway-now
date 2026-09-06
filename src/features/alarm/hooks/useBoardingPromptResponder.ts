@@ -550,6 +550,14 @@ async function createPendingFallbackLock(
     return;
   }
 
+  // #2524 — 탑승 커밋 시그널. train 미확정 PENDING lock을 생성한다는 것 자체가 "사용자가
+  // 방금 탑승을 커밋했지만 실 열차를 못 구했다"는 사실이다. infoModeEnabled(위 tryAutoLock
+  // 호출자에서 이미 true로 stamp됨)만으로는 backend가 이 상태와 "정보용 안내 시작"을 구분할
+  // 수 없어 매역 "통과" push가 스팸처럼 계속 발사되던 회귀(#2524)를 막기 위한 별도 stamp.
+  // createLock 성공/실패와 무관하게 기록 — 실패해도 사용자는 방금 탑승을 커밋한 사실 자체는
+  // 유효하므로(다음 cycle 재시도 또는 manual fallback으로 이어짐).
+  void useUserIntentStore.getState().setBoardingCommitted(true);
+
   try {
     await deps.createLock(
       {

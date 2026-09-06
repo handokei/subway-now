@@ -187,6 +187,15 @@ describe('#1545 (S12) — TRIP_BOUND_CLEANUPS enumeration audit', () => {
     expect(TRIP_BOUND_CLEANUPS).toContain(resetAlarmBackendDedup);
   });
 
+  // #2524 — 탑승 커밋 시그널도 resetUserIntentInfoMode와 동일하게 trip 종료 시 reset돼야
+  // 이전 trip의 커밋 상태가 새 trip에 leak되지 않는다.
+  it('#2524 — resetBoardingCommitted가 등록돼 있다', () => {
+    const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
+    const { resetBoardingCommitted } = jest.requireActual('../useUserIntentStore');
+
+    expect(TRIP_BOUND_CLEANUPS).toContain(resetBoardingCommitted);
+  });
+
   it('baseline 25 항목에서 줄어들면 회귀 (#1597 ground-truth trigger 제거 후)', () => {
     const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
     // #1597 — triggerTripGroundTruthPrompt 제거(trip-start 회귀 차단). 종료-only trigger이므로

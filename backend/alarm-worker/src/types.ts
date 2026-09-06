@@ -189,6 +189,21 @@ export interface Trip {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2524 — 사용자가 boardingPrompt [탑승] 응답/배너 탭으로 승차를 "커밋"했지만 지하/arrivals
+   * 공백·ambiguity로 실 trainCode를 못 구해 device가 PENDING fallback lock을 생성한 경우에만
+   * true로 송신되는 시그널. `infoModeEnabled`(안내 시작/info-mode도 true로 만듦)만으로는 backend가
+   * "탑승 커밋했지만 lock 미확정"과 "정보용 안내 시작"을 구분할 수 없어, 후자에서 의도된
+   * `runLocklessIntermediate` "통과" push가 전자에서도 스팸처럼 발사되던 회귀를 막는다
+   * (scheduled.ts `pickAndDispatch` 참고).
+   *
+   * true인 동안은 `runLocklessIntermediate`의 매역 "통과" push를 억제하고,
+   * `attemptBoardingAnchorResolution`(realtimePosition resolver)이 실 lock으로 승격하면
+   * `isBoardingLockActive` → `runTrainCodeTracking` 정상 경로로 자연 전환된다.
+   *
+   * 미송신/비boolean이면 undefined(default false) — 기존 lockless "통과" 동작 완전 보존.
+   */
+  boardingCommitted?: boolean;
+  /**
    * boarding-prompt(#819) 발사 추적 — trip당 1회 + dismiss 5분 silence 게이트(#9).
    * 부재 = 미발사 상태. 사용자 응답으로 lock이 생기면 자연스럽게 게이트 #2가 차단한다.
    */
