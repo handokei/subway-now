@@ -42,6 +42,7 @@ import {
   buildBoardingPromptMessage,
   buildHopEndPromptMessage,
   maybeFireHopEndPrompt,
+  maybeFireLegBoardingPrompt,
   runScheduled,
   tripLifecyclePhase,
   appendPassedStation,
@@ -55,6 +56,7 @@ import {
   type ScheduledStats,
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
+import { getTransferSeconds } from '../../../../src/shared/utils/transferTimes';
 import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTtl';
 import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
 import {
@@ -183,7 +185,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -2475,6 +2477,48 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     );
     const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
     expect(stored.boardingLock).toBeUndefined();
+  });
+
+  // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — 실제 환승(line 변경) waypoint 통과 시
+  // currentLegAnchor + legBoardingEligibleAt(도보시간 게이트)이 함께 stamp된다.
+  it('#2515 — 실제 노선 변경 transfer waypoint 통과 시 currentLegAnchor + legBoardingEligibleAt stamp', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
+    const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+    expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
+    expect(stored.legBoardingPromptState).toBeUndefined();
+  });
+
+  // 대조군 — 같은 호선 내 오라벨 transfer(실제 환승 아님)는 currentLegAnchor를 stamp하지 않는다.
+  // lock도 유지되므로(위 테스트) leg 2 anchor 개념 자체가 성립하지 않는다.
+  it('#2515 — 같은 line 내 오라벨 transfer는 currentLegAnchor를 stamp하지 않음', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        waypoints: [
+          { stationName: '잠실나루', line: '7', kind: 'transfer' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      },
+      '잠실나루',
+      'p-same-line-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toBeUndefined();
+    expect(stored.legBoardingEligibleAt).toBeUndefined();
   });
 
   // #1438 (E5) — backend → device lock release sync. transfer waypoint advance 시 device로
@@ -11081,7 +11125,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
       boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-      hopEndPromptFired: 0, hopEndPromptBlocked: 0,
+      hopEndPromptFired: 0, hopEndPromptBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -12142,6 +12186,118 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     // 기존 legKey 는 유지, 새 legKey (`성수|5`) 는 신규 fired.
     expect(trip.hopEndPromptState?.['성수|K']?.fired).toBe(true);
     expect(trip.hopEndPromptState?.['성수|5']?.fired).toBe(true);
+  });
+});
+
+/**
+ * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — 도보시간 게이트 leg 2 "탑승하셨나요?" 프롬프트.
+ *
+ * 핵심 검증: `now < legBoardingEligibleAt`(도보 이동 중)이면 push 자체를 평가/발사하지 않는다 —
+ * #2511의 오탑승 위험(도보 중 플랫폼에 서 있는 열차와 우연히 매칭)을 시간 게이트로 원천 차단.
+ */
+describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
+  function makeStats(): ScheduledStats {
+    return makeFullEmptyStats();
+  }
+
+  function makeArrivalsSeoul(fetchImpl: typeof fetch): SeoulArrivalClient {
+    return new SeoulArrivalClient({ host: 'seoul.api', apiKey: 'KEY', fetchImpl });
+  }
+
+  function makeDeps(fetchImpl: typeof fetch): ScheduledDeps {
+    return {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl,
+      seoul: makeArrivalsSeoul(fetchImpl),
+      archFlag: 'off',
+    };
+  }
+
+  function makeArrivalsResponse(rows: Array<Partial<ArrivalEntry> & { btrainNo: string }>): typeof fetch {
+    return (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: rows.map((r) => ({
+            barvlDt: String(Math.round((r.arrivalSeconds ?? 120))),
+            recptnDt: '',
+            updnLine: r.isUp === false ? '하행' : '상행',
+            trainLineNm: '건대입구',
+            btrainNo: r.btrainNo,
+            subwayNm: '지하철7호선',
+            arvlCd: r.arvlCd ?? 0,
+          })),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+  }
+
+  function makeTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'trip-leg2',
+      createdAt: NOW - 20 * 60_000,
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      apnsEnv: 'production',
+      registeredAt: NOW,
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW,
+      ...overrides,
+    } as unknown as Trip;
+  }
+
+  it('currentLegAnchor 없음 → no-op (seoul 호출 안 함, 카운터 불변)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true }]));
+    const trip = makeTrip({ currentLegAnchor: undefined, legBoardingEligibleAt: undefined });
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.legBoardingPromptFired).toBe(0);
+    expect(stats.legBoardingPromptSkippedWalking).toBe(0);
+  });
+
+  it('도보시간 미경과(now < legBoardingEligibleAt) → skippedWalking 증가, seoul 호출 안 함 (오탑승 방지 핵심)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true }]));
+    const trip = makeTrip({ legBoardingEligibleAt: NOW + 60_000 });
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.legBoardingPromptSkippedWalking).toBe(1);
+    expect(stats.legBoardingPromptFired).toBe(0);
+  });
+
+  it('도보시간 경과(now === legBoardingEligibleAt, 경계) + 후보 있음 → 발사, legBoardingPromptState.fired=true', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid-leg2');
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(trip.legBoardingPromptState?.fired).toBe(true);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    expect(alertCall).toBeDefined();
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.originStation).toBe('건대입구');
+    expect(body.data.line).toBe('7');
+    expect(body.data.hopEndKind).toBeUndefined();
+  });
+
+  it('후보 0건(arrivals 빈 배열) → blocked 증가, push 미발사', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([]));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(stats.legBoardingPromptBlocked).toBe(1);
+    expect(stats.legBoardingPromptFired).toBe(0);
+  });
+
+  it('legBoardingPromptState.fired=true(이미 발사) → blocked 증가, 재발사 안 함', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true }]));
+    const trip = makeTrip({ legBoardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 } });
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.legBoardingPromptBlocked).toBe(1);
+    expect(stats.legBoardingPromptFired).toBe(0);
   });
 });
 

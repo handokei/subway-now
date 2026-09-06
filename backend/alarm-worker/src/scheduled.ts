@@ -5,6 +5,7 @@
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
 import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
+import { inferLegDirection } from './legDirection';
 import {
   buildSilentPushData,
   sendAlertPush,
@@ -16,7 +17,7 @@ import {
   type PushOrigin,
   type SilentPushPayload,
 } from './apns';
-import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
+import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
@@ -716,6 +717,23 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   hopEndPromptBlocked: number;
   /**
+   * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 boarding prompt가 도보시간
+   * 게이트 통과 + dedup 게이트 통과로 실제 발사된 누적 횟수. `hopEndPromptFired`(환승역 "하차했나요?")
+   * 와 별개 — 이 카운터는 도보시간 후 "탑승하셨나요?" 발사만 센다.
+   */
+  legBoardingPromptFired: number;
+  /**
+   * #2515 — leg 2 boarding prompt가 도보시간 미경과로 평가 자체를 skip한 누적 횟수. anchor는
+   * 있지만 아직 `now < legBoardingEligibleAt`인 정상 대기 상태 — 0이 아니어도 회귀 신호 아님
+   * (오탑승 방지가 의도대로 동작 중이라는 증거).
+   */
+  legBoardingPromptSkippedWalking: number;
+  /**
+   * #2515 — leg 2 boarding prompt가 dedup/silence(`evaluateHopEndPromptGates`) 또는 후보 0건으로
+   * 차단된 누적 횟수.
+   */
+  legBoardingPromptBlocked: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -1128,6 +1146,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptSkippedTrainDuplicate: 0,
     hopEndPromptFired: 0,
     hopEndPromptBlocked: 0,
+    legBoardingPromptFired: 0,
+    legBoardingPromptSkippedWalking: 0,
+    legBoardingPromptBlocked: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -1399,13 +1420,16 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           stats.boardingAnchorResolved += 1;
           log('boarding-anchor: trainCode resolved, lock promoted', {
             token: trip.token.slice(0, 8),
-            station: trip.promptDisplay?.originStation,
-            line: trip.promptDisplay?.line,
+            // #2515 — leg 2(currentLegAnchor)면 anchorLock 자체가 그 leg의 station/line을
+            // self-describe한다. promptDisplay는 leg 1 전용이라 leg 2에서는 stale 값을 로깅한다.
+            station: anchorLock.segmentStations[0] ?? trip.promptDisplay?.originStation,
+            line: anchorLock.line,
             trainCode: anchorLock.trainCode,
+            isLeg2: trip.currentLegAnchor !== undefined,
           });
           continue;
         }
-        if (trip.infoModeEnabled === true && trip.promptDisplay) {
+        if (trip.infoModeEnabled === true && (trip.promptDisplay || trip.currentLegAnchor)) {
           stats.boardingAnchorUnresolved += 1;
         }
       } catch (e) {
@@ -1475,6 +1499,20 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       } catch (e) {
         stats.errors += 1;
         log('boarding-prompt: evaluation error', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
+      // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2(`currentLegAnchor`)에는 위
+      // origin 전용 `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트, `promptDisplay` 기반)가
+      // 적용되지 않는다(leg 2에서는 `promptDisplay`가 stale이라 이미 자연 skip). 별도의 GPS-free
+      // 도보시간 게이트 함수로 leg 2 "탑승하셨나요?" 프롬프트를 평가한다. `currentLegAnchor` 없으면
+      // (leg 1 이거나 아직 환승 전) 함수 내부에서 즉시 no-op.
+      try {
+        await maybeFireLegBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
+      } catch (e) {
+        stats.errors += 1;
+        log('leg-boarding-prompt: evaluation error', {
           error: String(e),
           token: trip.token.slice(0, 8),
         });
@@ -4363,6 +4401,22 @@ export async function advanceBoardingLockWaypoint(
       );
     }
   }
+  // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — 환승 waypoint 통과(= 위 hop-end
+  // "하차했나요?" 프롬프트와 동일 ground-truth 시점)에 "지금" leg anchor를 stamp한다.
+  // `isRealLineChange`가 false(같은 호선 내 오라벨 transfer)면 진짜 환승이 아니므로 stamp하지
+  // 않는다 — 위 `lockReleasedOnTransfer`와 동일 조건. 여러 번 환승해도 매번 덮어써 항상 "지금"
+  // leg만 가리킨다. `legBoardingEligibleAt`(도보시간 게이트) 이전에는 `resolveActiveLegOrigin`과
+  // `maybeFireLegBoardingPrompt` 둘 다 이 anchor를 못 본 것처럼 동작한다 — 오탑승 lock 방지.
+  if (waypoint.kind === 'transfer' && nextLegWaypoint && isRealLineChange) {
+    const transferWalkSeconds = getTransferSeconds(
+      waypoint.line as Parameters<typeof getTransferSeconds>[0],
+      nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
+      waypoint.stationName,
+    );
+    trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
+    trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
+    trip.legBoardingPromptState = undefined;
+  }
   // #2034 — 환승 waypoint advance = "환승역 도착". 사용자에게 "하차했나요?" hop-end 프롬프트를
   // 발사해 다음 leg 진입을 명시 확인하도록 유도. lock 활성 여부와 무관 (transfer 직후 lock 은 이미
   // release 됐거나 애초에 lockless leg 였다). 게이트는 leg-key (`${transferStation}|${nextLine}`)
@@ -5324,6 +5378,31 @@ export function hasArrivedSignal(pool: readonly ArrivalEntry[]): boolean {
 }
 
 /**
+ * #2515 — boarding-prompt 계열(origin `evaluateAndMaybeFireBoardingPrompt` + leg 2
+ * `maybeFireLegBoardingPrompt`) 공용 push 실패 기록. 두 caller의 실패 분기가 동일한
+ * `logPushFailure` 인자 구성을 그대로 반복해 SonarCloud 중복 임계를 넘겨 추출(리뷰 요청).
+ */
+async function logBoardingPromptPushFailure(
+  env: Env,
+  trip: Trip,
+  heal: Pick<EnvHealResult, 'result' | 'envMismatchExhausted'>,
+): Promise<void> {
+  // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
+  // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
+  await logPushFailure(env.DB, {
+    // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
+    // 별도로 trip_token_hash에 남긴다.
+    token: resolveTripDeviceToken(trip),
+    tripToken: trip.token,
+    pushKind: 'boarding-prompt',
+    apnsStatus: heal.result.status,
+    apnsReason: heal.result.reason,
+    apnsEnv: trip.apnsEnv,
+    envMismatchExhausted: heal.envMismatchExhausted,
+  });
+}
+
+/**
  * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
  *
  * lockMissing 분기에서만 호출. promptGeoContext가 없으면 skip — backend는 stations 좌표를
@@ -5729,23 +5808,180 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       status: heal.result.status,
       reason: heal.result.reason,
     });
-    // #2177 — boarding-prompt push는 retry queue를 타지 않는 fire-and-forget 경로 — 직접 기록.
-    // 08-06 RCA의 원 동기(push-unrecoverable 정확한 코드 확인) — 최우선 대상 push kind.
-    await logPushFailure(env.DB, {
-      // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
-      // 별도로 trip_token_hash에 남긴다.
-      token: resolveTripDeviceToken(trip),
-      tripToken: trip.token,
-      pushKind: 'boarding-prompt',
-      apnsStatus: heal.result.status,
-      apnsReason: heal.result.reason,
-      apnsEnv: trip.apnsEnv,
-      envMismatchExhausted: heal.envMismatchExhausted,
-    });
+    await logBoardingPromptPushFailure(env, trip, heal);
   }
 
   // #2069 (Phase 3) — boarding-prompt silent push fallback(B8, #2037) 제거. visible alert push
   // (B7)만 원격 단일 채널로 유지 — 이중 표시(원격+로컬 identifier 상이로 둘 다 뜨던 문제) 소멸.
+
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
+}
+
+/**
+ * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 "탑승하셨나요?" prompt 평가 + 발사.
+ *
+ * caller: lockMissing 분기(`attemptBoardingAnchorResolution` 시도 이후). `trip.currentLegAnchor`
+ * 없으면(leg 1 이거나 아직 환승 전) no-op. GPS 게이트 없음 — origin의 `evaluateAndMaybeFireBoardingPrompt`
+ * (9단 GPS AND 게이트)와 달리 이 함수는 애초에 GPS를 쓰지 않는다:
+ *   - fire trigger = `now >= trip.legBoardingEligibleAt`(환승 통과 + 도보시간 경과, ground truth
+ *     시간 게이트) — GPS proximity/direction/speed 대신 시간으로 "환승역 도착 후 도보 이동 완료"를
+ *     판정한다. 도보 창 동안은 이 함수 자체가 평가되지 않으므로 그 사이 있었던 열차는 자연히
+ *     후보에서 배제된다(#2511이 놓친 오탑승 위험의 근본 supersede).
+ *   - dedup = `evaluateHopEndPromptGates`(hop-end와 동일 — 1회 발사 + dismiss 5분 silence).
+ *     origin의 `evaluateBoardingPromptRepeatGate`(반복 발사 A4)까지는 재사용하지 않는다 —
+ *     leg 2는 배차 간격 동안 여러 후보가 반복 관측될 필요가 origin만큼 크지 않고, 단순한
+ *     정책이 오탑승 표면적을 더 줄인다.
+ *
+ * 발사 성공: alert push(kind='boarding-prompt', hopEndKind 없음 — device 는 origin 과 동일하게
+ * `tryAutoLock` 경로로 응답을 처리, 신규 device 배선 불필요) + `trip.legBoardingPromptState`
+ * markPromptFired + `stats.legBoardingPromptFired += 1`.
+ * 차단: 도보시간 미경과 → `stats.legBoardingPromptSkippedWalking += 1`(정상 대기, 회귀 아님).
+ * dedup/후보 0건 → `stats.legBoardingPromptBlocked += 1`.
+ */
+export async function maybeFireLegBoardingPrompt(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const { currentLegAnchor } = trip;
+  if (!currentLegAnchor) return;
+
+  const eligibleAt = trip.legBoardingEligibleAt;
+  if (eligibleAt === undefined || now < eligibleAt) {
+    stats.legBoardingPromptSkippedWalking += 1;
+    return;
+  }
+
+  const outcome = evaluateHopEndPromptGates({ promptState: trip.legBoardingPromptState, now });
+  if (!outcome.pass) {
+    stats.legBoardingPromptBlocked += 1;
+    log('leg-boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: outcome.reason,
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+    return;
+  }
+
+  const nextWaypoint = trip.waypoints[0];
+  const direction =
+    nextWaypoint && nextWaypoint.line === currentLegAnchor.line
+      ? inferLegDirection(currentLegAnchor.line, currentLegAnchor.boardingStation, nextWaypoint.stationName)
+      : null;
+
+  let etaSeconds: number | null = null;
+  let candidateTrains: BoardingPromptCandidate[] = [];
+  try {
+    const arrivals = await deps.seoul.fetchArrivals(currentLegAnchor.boardingStation);
+    const directional = arrivals.filter(
+      (a) =>
+        matchLine(a.subwayNm, currentLegAnchor.line) &&
+        (direction === null || (direction === 'up' ? a.isUp : !a.isUp)),
+    );
+    const pool =
+      directional.length > 0
+        ? directional
+        : arrivals.filter((a) => matchLine(a.subwayNm, currentLegAnchor.line));
+    if (pool.length > 0) {
+      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
+      etaSeconds = best.arrivalSeconds;
+    }
+    candidateTrains = [...pool]
+      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .slice(0, 5)
+      .map<BoardingPromptCandidate>((entry) => ({
+        trainCode: entry.trainCode,
+        line: currentLegAnchor.line,
+        direction: entry.isUp ? 'up' : 'down',
+        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+      }));
+  } catch {
+    // Seoul API 장애 — ETA 없이 push 발사(메시지 degradation만, push 자체는 보존). origin과 동일 정책.
+  }
+
+  if (candidateTrains.length === 0) {
+    stats.legBoardingPromptBlocked += 1;
+    log('leg-boarding-prompt: skipped empty candidates', {
+      token: trip.token.slice(0, 8),
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+    return;
+  }
+
+  const { title, body } = buildBoardingPromptMessage(
+    currentLegAnchor.boardingStation,
+    currentLegAnchor.line,
+    nextWaypoint?.stationName ?? null,
+    etaSeconds,
+    now,
+    trip.locale,
+  );
+
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        title,
+        body,
+        originStation: currentLegAnchor.boardingStation,
+        line: currentLegAnchor.line,
+        tripToken: trip.token,
+        sentAt: now,
+        triggerKind: 'cron',
+        destinationDirection: direction ?? undefined,
+        subtitle:
+          direction !== null
+            ? `${currentLegAnchor.line}호선 ${direction === 'up' ? '상행' : '하행'}방면`
+            : undefined,
+        candidateTrains,
+        collapseId: boardingPromptCollapseId(trip.token),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    stats.legBoardingPromptFired += 1;
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState);
+    dirty = true;
+    log('leg-boarding-prompt: fired', {
+      token: trip.token.slice(0, 8),
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+  } else {
+    stats.errors += 1;
+    log('leg-boarding-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+    await logBoardingPromptPushFailure(env, trip, heal);
+  }
 
   if (dirty) {
     await putTrip(env.TRIPS, trip);

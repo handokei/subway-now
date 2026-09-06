@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attemptBoardingAnchorResolution,
   POSITION_FRESHNESS_MS,
+  resolveActiveLegOrigin,
   resolveTrainCodeFromPositions,
   type BoardingAnchor,
 } from '../boardingAnchorResolver';
@@ -259,5 +260,130 @@ describe('attemptBoardingAnchorResolution', () => {
     expect(result).not.toBeNull();
     expect(result?.trainCode).toBe('7246');
     expect(result?.segmentStations).toEqual(['중곡']);
+  });
+});
+
+describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {
+  function makeTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'tok',
+      route: { type: 'direct', line: '7', stops: 1 },
+      destination: '어린이대공원',
+      waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+      expiresAt: NOW + 60 * 60_000,
+      createdAt: NOW,
+      alarmAtEpochMs: NOW + 60_000,
+      infoModeEnabled: true,
+      promptDisplay: { originStation: '중곡', line: '7' },
+      ...overrides,
+    };
+  }
+
+  it('currentLegAnchor 없음 → promptDisplay(leg 1) 반환', () => {
+    const trip = makeTrip();
+    expect(resolveActiveLegOrigin(trip, NOW)).toEqual({ originStation: '중곡', line: '7' });
+  });
+
+  it('currentLegAnchor 있지만 도보시간 미경과(now < legBoardingEligibleAt) → null (promptDisplay로 fallback하지 않음)', () => {
+    const trip = makeTrip({
+      currentLegAnchor: { boardingStation: '건대입구', line: '2' },
+      legBoardingEligibleAt: NOW + 60_000,
+    });
+    expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
+  });
+
+  it('currentLegAnchor + 도보시간 경과(now === legBoardingEligibleAt, 경계) → leg 2 anchor 반환', () => {
+    const trip = makeTrip({
+      currentLegAnchor: { boardingStation: '건대입구', line: '2' },
+      legBoardingEligibleAt: NOW,
+    });
+    expect(resolveActiveLegOrigin(trip, NOW)).toEqual({ originStation: '건대입구', line: '2' });
+  });
+
+  it('currentLegAnchor 있지만 legBoardingEligibleAt 미정의(비정상 상태) → null', () => {
+    const trip = makeTrip({ currentLegAnchor: { boardingStation: '건대입구', line: '2' } });
+    expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
+  });
+
+  it('promptDisplay, currentLegAnchor 둘 다 없음 → null', () => {
+    const trip = makeTrip({ promptDisplay: undefined });
+    expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
+  });
+});
+
+describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', () => {
+  function makeLeg2Trip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'tok',
+      route: { type: 'direct', line: '2', stops: 1 },
+      destination: '용마산',
+      waypoints: [{ stationName: '용마산', line: '2', kind: 'destination' }],
+      expiresAt: NOW + 60 * 60_000,
+      createdAt: NOW - 10 * 60_000,
+      alarmAtEpochMs: NOW + 60_000,
+      infoModeEnabled: true,
+      // leg 1 promptDisplay는 여전히 남아 있다(옛 origin) — currentLegAnchor가 우선해야 한다.
+      promptDisplay: { originStation: '성수', line: '2' },
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW,
+      ...overrides,
+    };
+  }
+
+  function makeSeoulWithPositions(
+    positions: Array<Partial<PositionEntry> & { trainCode: string }>,
+  ): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimePositionList: positions.map((p) => ({
+              trainNo: p.trainCode,
+              statnNm: p.stationName ?? '건대입구',
+              trainSttus: p.trainSttus ?? 1,
+              updnLine: p.isUp === true ? '상행' : '하행',
+              lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
+                .toISOString()
+                .slice(0, 19)
+                .replace('T', ' '),
+            })),
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+  }
+
+  it('도보시간 경과 후 정확히 1개 매칭 → leg 2(건대입구/7호선) trainCode로 lock 승격, 옛 leg 1 origin(성수) 사용 안 함', async () => {
+    // inferLegDirection('7', '건대입구', '용마산') === 'up' (7호선 monotonic, 실측).
+    const seoul = makeSeoulWithPositions([{ trainCode: '7246', isUp: true }]);
+    const trip = makeLeg2Trip({
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+    });
+    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+    expect(result).not.toBeNull();
+    expect(result?.trainCode).toBe('7246');
+    expect(result?.line).toBe('7');
+    expect(result?.segmentStations[0]).toBe('건대입구');
+  });
+
+  it('도보시간 미경과 → null, seoul 호출 안 함 (오탑승 lock 방지 — #2511 supersede 핵심)', async () => {
+    const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+    const trip = makeLeg2Trip({ legBoardingEligibleAt: NOW + 60_000 });
+    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+    expect(result).toBeNull();
+    expect(seoul.stats.callCount).toBe(0);
+  });
+
+  it('도보시간 경과 + 후보 2개(ambiguous) → null, lock 승격 안 함', async () => {
+    const seoul = makeSeoulWithPositions([
+      { trainCode: '7246' },
+      { trainCode: '7248' },
+    ]);
+    const trip = makeLeg2Trip();
+    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
+    expect(result).toBeNull();
   });
 });
