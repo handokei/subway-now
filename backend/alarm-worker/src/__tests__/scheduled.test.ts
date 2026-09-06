@@ -8570,14 +8570,16 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.trainCode).toBe('7246');
   });
 
-  it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {
+  // #2506 — 사용자 결정 "도착 1개": intermediate waypoint의 arvlCd=0(ENTERING)은 매역 push를
+  // 발사하지 않는다(#2448의 "곧 진입" 사전 push 제거). dedup key도 stamp되지 않음 — skip이
+  // fire 경로(및 dedup KV) 진입 전에 발생.
+  it('arvlCd=0(ENTERING), intermediate waypoint → 매역 push 미발사 (도착 1개 원칙)', async () => {
     const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 0),
       pushId: 'p-arvl-0',
     });
-    expect(stats.arvlCdFireSuccess).toBe(1);
-    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 0))).toBe('1');
-    // arvlCd=1 entry는 아직 stamp 없음 — 0과 1은 분리.
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 0))).toBeNull();
     expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
   });
 
@@ -8742,13 +8744,15 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     });
   });
 
-  // #2063 (ADR-023 개정) P1 — i18n 4언어 매역 알림 문구 (locale별).
-  describe('#2063 매역 알림 locale별 title/body 렌더', () => {
+  // #2506 (P1 — i18n 4언어 매역 알림 문구, device #2362와 byte-parity). makeLockTrip 기본
+  // waypoints = [중곡(intermediate), 군자(destination)] — 중곡 도착 시점 remaining=[군자] →
+  // target=군자(destination), count=1.
+  describe('#2506 매역 알림 locale별 title/body 렌더 ("OO역 도착" + N정거장 남음)', () => {
     it.each<['ko' | 'en' | 'ja' | 'zh', string, string]>([
-      ['ko', '역 통과', '중곡역을 지나고 있어요'],
-      ['en', 'Passing station', 'Passing through 중곡'],
-      ['ja', '駅通過', '중곡駅を通過しています'],
-      ['zh', '经过站点', '正在经过중곡站'],
+      ['ko', '중곡역 도착', '군자까지 1정거장 남음'],
+      ['en', 'Arrived at 중곡', '1 stop to 군자'],
+      ['ja', '중곡駅に到着', '군자まで残り1駅'],
+      ['zh', '已到达중곡', '距군자还有1站'],
     ])('locale=%s → intermediate title/body 4언어 렌더', async (locale, title, body) => {
       const { apnsFetch } = await runArvlScheduled({
         seoul: makeArrivalSeoul('중곡', 0, 1),
@@ -8769,16 +8773,15 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
       });
       const call = getStationPassedCalls(apnsFetch)[0];
       const parsedBody = JSON.parse(call[1].body as string) as { aps: { alert: { title: string; body: string } } };
-      expect(parsedBody.aps.alert.title).toBe('역 통과');
+      expect(parsedBody.aps.alert.title).toBe('중곡역 도착');
     });
   });
 
-  // #2448 — 지하 매역 "곧 진입"(ENTERING) 알림. arvlCd=ENTERING(0) 시점엔 새 approaching copy,
-  // arvlCd=ARRIVED(1) 시점엔 기존 "역 통과" copy 를 유지한다(회귀 없음). 두 알림은 별 dedup
-  // bucket 이라 같은 트립·같은 역에서 순차로 각각 1회씩 발사된다(triple-fire 는 발생하지 않음 —
-  // 동일 arvlCd 반복 관측은 fire-once TTL 로 계속 skip 된다).
-  describe('#2448 매역 "곧 진입"(ENTERING) copy 분기', () => {
-    it('arvlCd=ENTERING(0) → "곧 진입" copy 발사, arvlCd=ARRIVED(1) → 기존 "역 통과" copy 유지, 동일 arvlCd 재관측은 재발사 X', async () => {
+  // #2506 — 사용자 결정 "도착 1개": #2448이 도입한 intermediate ENTERING(0) 전용 "곧 진입"
+  // 사전 push를 제거한다. ENTERING 신호는 fireArvlCdStationPush 진입 즉시 skip(push 미발사,
+  // dedup/fire-once 상태 불변)되고, 뒤이은 ARRIVED(1) 신호만 "OO역 도착" copy로 1회 발사된다.
+  describe('#2506 매역 "도착 1개" — ENTERING pre-push 제거', () => {
+    it('arvlCd=ENTERING(0) → push 미발사(skip), 이어진 arvlCd=ARRIVED(1) → "OO역 도착" copy 1회만 발사', async () => {
       const mod = await import('../arvlcdFireOnceTtl');
       const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
       try {
@@ -8803,38 +8806,36 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
           generatePushId: () => 'p-approaching-1',
         };
 
-        // 1) ENTERING(0) — 신규 "곧 진입" copy.
+        // 1) ENTERING(0) — push 미발사, fire-once/dedup 상태 불변.
         const statsEntering = makeFullEmptyStats();
-        await fireArvlCdStationPush({ ...commonInputs, stats: statsEntering, arvlCd: 0 });
-        expect(statsEntering.arvlCdFireSuccess).toBe(1);
-        {
-          const call = getStationPassedCalls(apnsFetch)[0];
-          const parsed = JSON.parse(call[1].body as string) as {
-            aps: { alert: { title: string; body: string } };
-          };
-          expect(parsed.aps.alert.title).toBe('곧 진입');
-          expect(parsed.aps.alert.body).toBe('곧 중곡역에 진입해요');
-        }
+        const { dirty: enteringDirty } = await fireArvlCdStationPush({
+          ...commonInputs,
+          stats: statsEntering,
+          arvlCd: 0,
+        });
+        expect(enteringDirty).toBe(false);
+        expect(statsEntering.arvlCdFireSuccess).toBe(0);
+        expect(statsEntering.arvlCdFireOnceSkipped).toBe(0);
+        expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
 
-        // 2) 같은 station 에서 ENTERING(0) 재관측 — 재발사 X (storm 회귀 차단).
+        // 2) 같은 station 에서 ENTERING(0) 재관측 — 여전히 push 미발사(멱등).
         const statsEnteringRepeat = makeFullEmptyStats();
         await fireArvlCdStationPush({ ...commonInputs, stats: statsEnteringRepeat, arvlCd: 0 });
         expect(statsEnteringRepeat.arvlCdFireSuccess).toBe(0);
-        expect(statsEnteringRepeat.arvlCdFireOnceSkipped).toBe(1);
-        expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
+        expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
 
-        // 3) ARRIVED(1) — 별 bucket 이라 fire, 기존 "역 통과" copy 유지(회귀 없음).
+        // 3) ARRIVED(1) — "OO역 도착" copy 로 fire. 도착 1개 원칙대로 이번 station 최초 발사.
         const statsArrived = makeFullEmptyStats();
         await fireArvlCdStationPush({ ...commonInputs, stats: statsArrived, arvlCd: 1 });
         expect(statsArrived.arvlCdFireSuccess).toBe(1);
         {
           const calls = getStationPassedCalls(apnsFetch);
-          expect(calls).toHaveLength(2);
-          const parsed = JSON.parse(calls[1][1].body as string) as {
+          expect(calls).toHaveLength(1);
+          const parsed = JSON.parse(calls[0][1].body as string) as {
             aps: { alert: { title: string; body: string } };
           };
-          expect(parsed.aps.alert.title).toBe('역 통과');
-          expect(parsed.aps.alert.body).toBe('중곡역을 지나고 있어요');
+          expect(parsed.aps.alert.title).toBe('중곡역 도착');
+          expect(parsed.aps.alert.body).toBe('군자까지 1정거장 남음');
         }
 
         // 4) 같은 station 에서 ARRIVED(1) 재관측 — 재발사 X (triple-fire 방지).
@@ -8842,16 +8843,16 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
         await fireArvlCdStationPush({ ...commonInputs, stats: statsArrivedRepeat, arvlCd: 1 });
         expect(statsArrivedRepeat.arvlCdFireSuccess).toBe(0);
         expect(statsArrivedRepeat.arvlCdFireOnceSkipped).toBe(1);
-        expect(getStationPassedCalls(apnsFetch)).toHaveLength(2);
+        expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
       } finally {
         spy.mockRestore();
       }
     });
 
-    it('transfer/destination kind는 arvlCd=ENTERING이어도 기존 "임박" copy 유지 (intermediate 전용 분기)', async () => {
-      // #2448 approaching copy는 kind==='intermediate' 전용 — transfer/destination은 fireArvlCdStationPush를
+    it('transfer/destination kind는 arvlCd=ENTERING이어도 기존 "임박" copy 로 정상 발사 (intermediate 전용 skip 아님, 회귀 없음)', async () => {
+      // #2506 ENTERING skip은 kind==='intermediate' 전용 — transfer/destination은 fireArvlCdStationPush를
       // 직접 호출해(게이트 우회, buildStationNotifContent 분기만 격리 검증) arvlCd=ENTERING이어도 기존
-      // "환승 임박" copy가 그대로 유지되는지 확인한다.
+      // "환승 임박" copy로 정상 발사되는지 확인한다.
       const trip = makeLockTrip();
       const transferWaypoint: Waypoint = { ...trip.waypoints[0], kind: 'transfer' };
       const kv = new InMemoryKV();
@@ -9167,9 +9168,10 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985) → #2448 pha
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
   });
 
-  // #2448 — 어린이대공원 storm(#1980/#2200) 회귀 차단의 핵심 불변식: 같은 (station, arvlCd)
-  // 재관측은 여전히 skip 된다. 이 테스트가 그 보장의 직접 회귀 테스트.
-  it('flag=ON, 같은 station 에서 arvlCd=0(ENTERING) 재관측 → 2번째는 skip (storm 회귀 차단 유지)', async () => {
+  // #2506 — 사용자 결정 "도착 1개": intermediate 매역의 arvlCd=0(ENTERING) 신호는
+  // fire-once bucket 게이트 도달 전 조기 skip 된다(push 미발사, KV stamp 없음). 반복 관측해도
+  // 마찬가지로 계속 skip — bucket/dedup 상태를 전혀 건드리지 않는다는 것이 이 테스트의 요지.
+  it('flag=ON, intermediate 의 arvlCd=0(ENTERING) 반복 관측 → 매번 push 미발사 (fire-once 상태 불변)', async () => {
     const mod = await import('../arvlcdFireOnceTtl');
     const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
     try {
@@ -9194,23 +9196,34 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985) → #2448 pha
         generatePushId: () => 'p-direct-repeat',
       };
       const statsFirst = makeFullEmptyStats();
-      await fireArvlCdStationPush({ ...commonInputs, stats: statsFirst, arvlCd: 0 });
-      expect(statsFirst.arvlCdFireSuccess).toBe(1);
-      // 같은 cron tick 반복 관측(Seoul API 갱신 지연 등)으로 다시 arvlCd=0 이 들어와도 재발사 X.
+      const { dirty: firstDirty } = await fireArvlCdStationPush({
+        ...commonInputs,
+        stats: statsFirst,
+        arvlCd: 0,
+      });
+      expect(statsFirst.arvlCdFireSuccess).toBe(0);
+      expect(statsFirst.arvlCdFireOnceSkipped).toBe(0);
+      expect(firstDirty).toBe(false);
+      // 같은 cron tick 반복 관측(Seoul API 갱신 지연 등)으로 다시 arvlCd=0 이 들어와도 여전히 미발사.
       const statsSecond = makeFullEmptyStats();
       const { dirty } = await fireArvlCdStationPush({ ...commonInputs, stats: statsSecond, arvlCd: 0 });
       expect(statsSecond.arvlCdFireSuccess).toBe(0);
-      expect(statsSecond.arvlCdFireOnceSkipped).toBe(1);
+      expect(statsSecond.arvlCdFireOnceSkipped).toBe(0);
       expect(dirty).toBe(false);
+      expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+      // fire-once KV 도 stamp 되지 않음 — ENTERING skip은 bucket 게이트에 도달하지 않는다.
+      expect(
+        await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_ENTERING_BUCKET)),
+      ).toBeNull();
     } finally {
       spy.mockRestore();
     }
   });
 
-  // #2448 — 신규 동작: ENTERING("곧 진입")과 ARRIVED("역 통과")는 별 bucket 이라 같은 station 에서
-  // 둘 다 각각 1회씩 발사된다(합 최대 2회/5분). #1985 당시엔 이 둘을 하나로 묶어 ARRIVED 를
-  // 억제했지만, #2448 목표(진입 알림 신설)상 이제는 의도된 동작이다.
-  it('flag=ON, arvlCd=0(ENTERING) fire 후 arvlCd=1(ARRIVED) 재관측 → 별 bucket 이라 각각 fire', async () => {
+  // #2506 — 사용자 결정 "도착 1개": arvlCd=0(ENTERING) 관측은 push 미발사·bucket 미stamp로
+  // 넘어가고, 뒤이은 arvlCd=1(ARRIVED) 관측만 정상 fire + ARRIVED bucket stamp. #2448 당시
+  // 도입된 "ENTERING 도 별 bucket 으로 fire" 동작은 본 PR로 되돌린다.
+  it('flag=ON, arvlCd=0(ENTERING) skip 후 arvlCd=1(ARRIVED) 재관측 → 정상 fire + ARRIVED bucket stamp', async () => {
     const mod = await import('../arvlcdFireOnceTtl');
     const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
     try {
@@ -9235,14 +9248,19 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985) → #2448 pha
         generatePushId: () => 'p-direct-cycle',
       };
       const statsFirst = makeFullEmptyStats();
-      await fireArvlCdStationPush({ ...commonInputs, stats: statsFirst, arvlCd: 0 });
-      expect(statsFirst.arvlCdFireSuccess).toBe(1);
+      const { dirty: firstDirty } = await fireArvlCdStationPush({
+        ...commonInputs,
+        stats: statsFirst,
+        arvlCd: 0,
+      });
+      expect(statsFirst.arvlCdFireSuccess).toBe(0);
       expect(statsFirst.arvlCdFireOnceSkipped).toBe(0);
-      // ENTERING bucket stamp 확인.
+      expect(firstDirty).toBe(false);
+      // ENTERING bucket 은 stamp 되지 않는다 — skip이 bucket 게이트 이전에 발생.
       expect(
         await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_ENTERING_BUCKET)),
-      ).toBe(String(NOW));
-      // 두 번째 호출: 같은 station 에서 arvlCd=1 재관측 (cycle 안 monotone 진행) — 다른 bucket이라 fire.
+      ).toBeNull();
+      // 두 번째 호출: 같은 station 에서 arvlCd=1 재관측 (cycle 안 monotone 진행) — 정상 fire.
       const statsSecond = makeFullEmptyStats();
       const { dirty } = await fireArvlCdStationPush({
         ...commonInputs,
