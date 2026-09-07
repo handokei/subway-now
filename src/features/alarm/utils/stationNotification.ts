@@ -766,7 +766,11 @@ export async function fireFgAuxStationPassedNotification(
  * (단순성. 이 로컬 발사는 backend remote push의 fallback 안전망이라 표시 정보가 backend와
  * 100% 동일할 필요는 없다. 사용자는 앱 홈 화면에서 이미 ETA를 보고 있다).
  */
-function buildBoardingPromptContent(
+/**
+ * #2528 — LA AlertConfiguration도 이 문구를 재사용한다(`useLiveActivityPreBoardingLifecycle`) —
+ * 백업 알림과 LA 잠금화면 alert가 동일한 문구로 사용자에게 일관되게 보이도록.
+ */
+export function buildBoardingPromptContent(
   originStation: string,
   line: string,
 ): { title: string; body: string } {

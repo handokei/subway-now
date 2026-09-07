@@ -42,6 +42,15 @@ export interface LiveActivityData {
   boardingPromptTripToken?: string;
   boardingPromptOriginStation?: string;
   boardingPromptLine?: string;
+  // #2528 — LA 인터랙티브 프롬프트 하이브리드. 행동 필요 프롬프트(승차/하차)에만 native가
+  // AlertConfiguration(소리+배너)을 부착한다. JS가 i18n으로 빌드해 전달 — 누락 시 native는
+  // 해당 업데이트를 조용히 처리(alert 미부착), 기존 동작과 동일.
+  boardingAlertTitle?: string;
+  boardingAlertBody?: string;
+  // leg-1 자동락(사용자 명시 응답 없이 device evidence로 확정된 lock) 상태에서 pre-boarding
+  // 배너를 계속 노출할 때 true. native 위젯은 "탑승하셨나요?" 질문 대신 "추적중" 안내 +
+  // [아니에요] 버튼만 렌더한다 — 이미 확정된 열차라 재확인 질문이 불필요하기 때문.
+  boardingAutoLocked?: boolean;
 }
 
 const LiveActivityModule =

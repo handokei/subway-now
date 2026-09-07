@@ -25,6 +25,11 @@ actor LiveActivityManager {
     /// 이 값이 true면 system end로 분류 → dismiss emit skip. false면 사용자 swipe로 분류.
     private var expectingSystemEnd: Bool = false
 
+    /// #2528 — 직전 update에서 alert(AlertConfiguration)를 부착한 boardingPhase.
+    /// 같은 phase가 반복 update(예: origin 텍스트 refine)돼도 매번 재알림하지 않도록 dedup한다.
+    /// phase가 nil로 비거나 다른 phase로 전환되면 초기화 — 다음 프롬프트는 다시 alert.
+    private var lastAlertedBoardingPhase: String?
+
     private init() {}
 
     static func isActivityEnabled() -> Bool {
@@ -131,6 +136,36 @@ actor LiveActivityManager {
         #endif
     }
 
+    /// #2528 — 행동 필요 프롬프트(승차/하차, boardingPhase "pre-boarding"/"hop-end")에만
+    /// AlertConfiguration(소리+배너)을 반환. 매역 "N정거장" 업데이트나 leg-1 자동락 "추적중"
+    /// 안내(boardingAutoLocked=true — 이미 확정돼 재확인이 불필요)는 nil을 반환해 조용히 update된다.
+    /// 같은 phase가 연속 update돼도(예: origin 텍스트 refine) 한 번만 알림 — `lastAlertedBoardingPhase`.
+    private func resolveAlertConfiguration(
+        for state: SubwayActivityAttributes.ContentState
+    ) -> AlertConfiguration? {
+        guard let phase = state.boardingPhase, phase == "pre-boarding" || phase == "hop-end" else {
+            lastAlertedBoardingPhase = nil
+            return nil
+        }
+        if phase == "pre-boarding" && state.boardingAutoLocked == true {
+            lastAlertedBoardingPhase = nil
+            return nil
+        }
+        guard let title = state.boardingAlertTitle, let body = state.boardingAlertBody else {
+            // JS가 아직 alert 텍스트를 채우지 못한 과도기 업데이트(예: origin 미확정) — 조용히.
+            return nil
+        }
+        guard lastAlertedBoardingPhase != phase else {
+            return nil
+        }
+        lastAlertedBoardingPhase = phase
+        return AlertConfiguration(
+            title: LocalizedStringResource(stringLiteral: title),
+            body: LocalizedStringResource(stringLiteral: body),
+            sound: .default
+        )
+    }
+
     func start(data: [String: Any]) async throws {
         guard UIDevice.current.userInterfaceIdiom != .pad else {
             throw NSError(
@@ -141,6 +176,8 @@ actor LiveActivityManager {
         }
 
         await endAllActivities()
+        // 새 Activity 세션 — 이전 세션의 alert dedup 상태는 무의미하니 초기화.
+        lastAlertedBoardingPhase = nil
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw NSError(
@@ -182,9 +219,10 @@ actor LiveActivityManager {
             if activity.activityState == .active {
                 let state = try decodeState(from: data)
                 let content = ActivityContent(state: state, staleDate: nil)
-                await activity.update(content)
+                let alertConfiguration = resolveAlertConfiguration(for: state)
+                await activity.update(content, alertConfiguration: alertConfiguration)
                 #if DEBUG
-                print("[LiveActivity] updated, destination=\(state.destinationName ?? "nil")")
+                print("[LiveActivity] updated, destination=\(state.destinationName ?? "nil"), alert=\(alertConfiguration != nil)")
                 #endif
                 return
             } else {
@@ -204,6 +242,7 @@ actor LiveActivityManager {
         // (start() 내부 cleanup 경로는 다음 토큰이 backend를 upsert하므로 emit 불필요)
         // #967: observer가 뒤따라 발사될 때 system end로 분류하도록 플래그 set.
         expectingSystemEnd = true
+        lastAlertedBoardingPhase = nil
         let hadActivity = currentActivity != nil
             || !Activity<SubwayActivityAttributes>.activities.isEmpty
         if hadActivity {

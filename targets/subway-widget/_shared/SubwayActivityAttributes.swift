@@ -46,6 +46,12 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var boardingPromptTripToken: String?
         var boardingPromptOriginStation: String?
         var boardingPromptLine: String?
+        // #2528 — 행동 필요 프롬프트(승차/하차)에만 alert 부착. JS가 i18n으로 빌드해 전달,
+        // 누락 시 LiveActivityManager가 alertConfiguration 없이 조용히 update.
+        var boardingAlertTitle: String?
+        var boardingAlertBody: String?
+        // leg-1 자동락 상태의 pre-boarding 배너 — "탑승하셨나요?" 대신 "추적중" 안내 표시.
+        var boardingAutoLocked: Bool?
     }
 }
 

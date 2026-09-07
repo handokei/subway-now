@@ -233,6 +233,35 @@
         }
       }
     },
+    "widget.boardingPrompt.autoLocked.tracking" : {
+      "comment" : "Live Activity banner label shown when leg-1 already auto-locked from device evidence — informational, no confirmation needed",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tracking"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "追跡中"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "추적중"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "追踪中"
+          }
+        }
+      }
+    },
     "widget.boardingPrompt.boarded.button" : {
       "comment" : "Confirm boarding button label",
       "localizations" : {
