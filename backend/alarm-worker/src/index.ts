@@ -1971,14 +1971,11 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           };
           lockState = isLeg2 ? 'leg2' : 'leg1';
         }
-      } catch (e) {
-        console.log(
-          JSON.stringify({
-            msg: 'boarding-confirm: boarded resolution error',
-            tokenPrefix: tokenPrefix(token),
-            error: String(e),
-          }),
-        );
+      } catch {
+        // SonarCloud S5145 — tokenPrefix(token)도 token(URL param)이 user-controlled라
+        // 신규코드 게이트에서 taint로 잡힌다. 정적 msg만 남기고 error 내용도 로깅하지 않는다
+        // (Error 메시지에 요청 파생 문자열이 섞일 수 있어 안전하지 않음).
+        console.log(JSON.stringify({ msg: 'boarding-confirm: boarded resolution error' }));
       }
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
@@ -2001,16 +1998,13 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     lockState = 'none';
   }
 
-  // SonarCloud S5145 — station/line은 사용자 입력(user-controlled)이라 로그에 직접 넣지 않는다.
-  // action은 validateBoardingConfirmPayload가 3개 리터럴로 제한한 enum이라 안전.
-  console.log(
-    JSON.stringify({
-      msg: 'boarding-confirm',
-      tokenPrefix: tokenPrefix(token),
-      action: payload.action,
-      lockState,
-    }),
-  );
+  // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
+  // user-controlled 값이라 신규코드 게이트에서 taint로 잡힌다(tokenPrefix로 마스킹해도
+  // 원본이 user-controlled라는 taint 자체는 남는다). lockState는 서버 resolver가 계산한
+  // enum('leg1'|'leg2'|'released'|'none')뿐이라 안전 — 이것만 남긴다. token 상관관계는
+  // 기존 resolver 로그('boarding-anchor: trainCode resolved')와 D1 trip_metrics(token_hash)가
+  // 이미 커버한다.
+  console.log(JSON.stringify({ msg: 'boarding-confirm', lockState }));
   return c.json({ ok: true, lockState });
 });
 
