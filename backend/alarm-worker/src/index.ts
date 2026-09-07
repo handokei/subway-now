@@ -14,7 +14,12 @@
 import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
-import { isNearOrigin, markPromptSilenced, shouldStampOriginProximity } from './boardingPrompt';
+import {
+  isNearOrigin,
+  markPromptFired,
+  markPromptSilenced,
+  shouldStampOriginProximity,
+} from './boardingPrompt';
 import {
   recordBoardingPromptOutcome,
   validateBoardingPromptOutcome,
@@ -1887,6 +1892,160 @@ export function validateDismissPayload(input: unknown): DismissPayload | null {
   const obj = input as Record<string, unknown>;
   if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
   return { token: obj.token };
+}
+
+/**
+ * #2527 — LA 인터랙티브 버튼(App Intent)이 앱을 열지 않고(BG) 직접 호출해 leg 락 체인을
+ * 완결하는 엔드포인트. 기존 device 흐름(`useBoardingPromptResponder.handleResponse`/
+ * `tryAutoLock`, `handleHopEndResponse`)을 서버-사이드로 재현한다 — 새 정책을 만들지 않는다.
+ *
+ * Body: `{ action: 'boarded' | 'disembarked' | 'not-boarded', station: string, line: string }`
+ * station/line은 native가 버튼을 표시한 컨텍스트 echo — 진단 로그(wrangler tail)용으로만 쓰고
+ * lock 판정 입력으로는 쓰지 않는다(판정은 trip 자신의 `promptDisplay`/`currentLegAnchor`가
+ * SSoT — device의 "지금 이 역"보다 backend anchor가 신뢰 가능하다는 기존 아키텍처와 동일).
+ *
+ * 의미 매핑(#2527 이슈 본문):
+ *   - `boarded` — register-time resolver(`index.ts` `resolveBoardingAnchorAtRegister`)와 동일한
+ *     `attemptBoardingAnchorResolution(trip, seoul, now, { allowLegTransfer: true })`를 재사용.
+ *     이미 `boardingLock`이 있으면 재평가하지 않는다(#1729 active lock 재평가 금지와 동일 원칙,
+ *     POST /trips register-time 가드 재현). 정확히 1개 resolve되면 lock 승격 + 해당 leg의
+ *     prompt state를 `markPromptFired`로 갱신(재발사 dedup 목적 — 새 필드 없이 기존 함수 재사용).
+ *     ambiguous/none이면 락 생성 금지(#1729) — `infoModeEnabled=true` stamp만 반영.
+ *   - `disembarked` — 환승 하차 확정(#2278 "사용자 명시 [하차함] 응답 = ground truth"와 동일
+ *     신뢰 수준). `trip.boardingLock`을 해제한다. waypoint/currentLegAnchor는 건드리지 않는다 —
+ *     그 advance는 cron(`scheduled.ts` transfer 블록, arvlCd 기반)의 책임 그대로이며, 이미
+ *     advance됐다면(currentLegAnchor 존재) 본 분기는 lock이 이미 없어 idempotent no-op이다.
+ *   - `not-boarded` — `POST /boarding-prompt/dismiss`와 완전히 동일한 의미(재현) —
+ *     `boardingPromptState`를 `markPromptSilenced`로 갱신해 5분 재발사를 차단한다. 락 생성 없음.
+ *
+ * Response 200: `{ ok: true, lockState: 'leg1' | 'leg2' | 'released' | 'none' }`
+ * Response 404: `{ error: 'trip_not_found' }`
+ * Response 400: `{ error: 'invalid_json' | 'invalid_payload' | 'missing_token' }`
+ */
+app.post('/trips/:token/boarding-confirm', async (c) => {
+  const token = c.req.param('token');
+  if (!token) return c.json({ error: 'missing_token' }, 400);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const payload = validateBoardingConfirmPayload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const existing = await getTrip(c.env.TRIPS, token);
+  if (!existing) return c.json({ error: 'trip_not_found' }, 404);
+
+  const now = Date.now();
+  let lockState: 'leg1' | 'leg2' | 'released' | 'none' = 'none';
+  let working: Trip = existing;
+
+  if (payload.action === 'boarded') {
+    if (working.infoModeEnabled !== true) {
+      working = { ...working, infoModeEnabled: true };
+    }
+    // #1729 — 이미 active lock이 있으면 재평가하지 않는다(register-time과 동일 가드).
+    if (working.boardingLock === undefined) {
+      try {
+        const seoul = new SeoulArrivalClient({
+          apiKey: c.env.SEOUL_API_KEY,
+          host: c.env.SEOUL_API_HOST,
+        });
+        const anchorLock = await attemptBoardingAnchorResolution(working, seoul, now, {
+          allowLegTransfer: true,
+        });
+        if (anchorLock) {
+          const isLeg2 = isLegTwoActive(working, now);
+          working = {
+            ...working,
+            boardingLock: anchorLock,
+            consecutiveEtaMissing: 0,
+            lastTrackedArrivalEpoch: undefined,
+            lastLaPushEpoch: undefined,
+            lastLaPushAt: undefined,
+            ...(isLeg2
+              ? { legBoardingPromptState: markPromptFired(now, working.legBoardingPromptState, anchorLock.trainCode) }
+              : { boardingPromptState: markPromptFired(now, working.boardingPromptState, anchorLock.trainCode) }),
+          };
+          lockState = isLeg2 ? 'leg2' : 'leg1';
+        }
+      } catch (e) {
+        console.log(
+          JSON.stringify({
+            msg: 'boarding-confirm: boarded resolution error',
+            tokenPrefix: tokenPrefix(token),
+            error: String(e),
+          }),
+        );
+      }
+    } else {
+      lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
+    }
+    await putTrip(c.env.TRIPS, working);
+  } else if (payload.action === 'disembarked') {
+    if (existing.boardingLock !== undefined) {
+      working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
+      await deleteProgress(c.env.TRIPS, token);
+      await putTrip(c.env.TRIPS, working);
+    }
+    lockState = 'released';
+  } else {
+    // 'not-boarded' — POST /boarding-prompt/dismiss와 동일 의미(재현).
+    working = {
+      ...existing,
+      boardingPromptState: markPromptSilenced(existing.boardingPromptState, now),
+    };
+    await putTrip(c.env.TRIPS, working);
+    lockState = 'none';
+  }
+
+  console.log(
+    JSON.stringify({
+      msg: 'boarding-confirm',
+      tokenPrefix: tokenPrefix(token),
+      action: payload.action,
+      station: payload.station,
+      line: payload.line,
+      lockState,
+    }),
+  );
+  return c.json({ ok: true, lockState });
+});
+
+interface BoardingConfirmPayload {
+  action: 'boarded' | 'disembarked' | 'not-boarded';
+  station: string;
+  line: string;
+}
+
+export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmPayload | null {
+  if (!input || typeof input !== 'object') return null;
+  const obj = input as Record<string, unknown>;
+  if (
+    obj.action !== 'boarded' &&
+    obj.action !== 'disembarked' &&
+    obj.action !== 'not-boarded'
+  ) {
+    return null;
+  }
+  if (typeof obj.station !== 'string' || obj.station.length === 0) return null;
+  if (typeof obj.line !== 'string' || obj.line.length === 0) return null;
+  return { action: obj.action, station: obj.station, line: obj.line };
+}
+
+/**
+ * `resolveActiveLegOrigin`이 `currentLegAnchor` 분기를 선택하는 조건(#2515 도보시간 게이트)과
+ * 동일 판정을 boolean으로 노출 — leg1/leg2 lockState 라벨링에만 쓰는 얕은 미러(순환 import
+ * 회피, `lockSwap.ts`/`boardingAnchorResolver.ts`가 이미 쓰는 것과 동일 선례).
+ */
+function isLegTwoActive(trip: Trip, now: number): boolean {
+  return (
+    trip.currentLegAnchor !== undefined &&
+    trip.legBoardingEligibleAt !== undefined &&
+    now >= trip.legBoardingEligibleAt
+  );
 }
 
 /**

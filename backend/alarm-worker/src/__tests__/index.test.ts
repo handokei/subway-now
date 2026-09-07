@@ -2608,6 +2608,303 @@ describe('POST /boarding-prompt/dismiss (#819)', () => {
   });
 });
 
+// #2527 — LA 인터랙티브 버튼(BG, 앱 안 열림)이 직접 호출하는 leg 락 체인 완결 엔드포인트.
+// register-time resolver(`attemptBoardingAnchorResolution` allowLegTransfer:true) 재사용을
+// 검증 — 위 'boarding-anchor tap-time resolution at POST /trips'와 동일 mocking 패턴.
+describe('POST /trips/:token/boarding-confirm (#2527)', () => {
+  const CREATED = 1_710_000_000_000;
+
+  function tripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      token: 'tok-bc',
+      route: { type: 'direct', line: '7', stops: 1 },
+      destination: '어린이대공원',
+      waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+      infoModeEnabled: false,
+      promptDisplay: { originStation: '중곡', line: '7' },
+      ...overrides,
+    };
+  }
+
+  /** seoul.ts parseRecptnDt는 `<recptnDt 공백구분> + '+09:00'`을 Date.parse한다 — 역산. */
+  function recptnDtFor(ms: number): string {
+    return new Date(ms + 9 * 60 * 60_000).toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  function positionEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      trainNo: '7246',
+      statnNm: '중곡',
+      trainSttus: 1,
+      updnLine: '하행',
+      lastRecptnDt: recptnDtFor(CREATED),
+      ...overrides,
+    };
+  }
+
+  function confirmBody(
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return { action: 'boarded', station: '중곡', line: '7', ...overrides };
+  }
+
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('trip 없음 → 404', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips/no-such-token/boarding-confirm', confirmBody(), env);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'trip_not_found' });
+  });
+
+  it('invalid_json → 400', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips/tok-bc/boarding-confirm', '{', env);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['invalid action', { action: 'idle', station: '중곡', line: '7' }],
+    ['missing station', { action: 'boarded', line: '7' }],
+    ['empty line', { action: 'boarded', station: '중곡', line: '' }],
+    ['null body', null],
+  ])('invalid_payload — %s', async (_label, body) => {
+    const env = makeKvEnv();
+    const res = await post('/trips/tok-bc/boarding-confirm', body, env);
+    expect(res.status).toBe(400);
+  });
+
+  describe('boarded — leg 1 (promptDisplay)', () => {
+    it('정확히 1개 매칭(resolved) → boardingLock 승격 + lockState leg1', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), {
+          status: 200,
+        }),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7246');
+      expect(stored.infoModeEnabled).toBe(true);
+      expect(stored.boardingPromptState?.fired).toBe(true);
+    });
+
+    it('ambiguous(2개 매칭) → 락 생성 금지, lockState none (#1729)', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [
+              positionEntry({ trainNo: '7246' }),
+              positionEntry({ trainNo: '7247' }),
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      // #1923 — 락 미확정이어도 명시 탭 의향은 stamp된다(ADR-014).
+      expect(stored.infoModeEnabled).toBe(true);
+    });
+
+    it('none(0개 매칭) → 락 생성 금지, lockState none', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+    });
+
+    it('이미 boardingLock 있는 trip → 재평가 안 함(fetch 미호출), 기존 상태 그대로 leg1 보고', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            boardingLock: {
+              trainCode: '9999',
+              line: '7',
+              subwayId: '1007',
+              selectedDepartureTime: CREATED,
+              segmentStations: ['중곡', '어린이대공원'],
+              expiresAt: CREATED + 60 * 60_000,
+            },
+          }),
+        ),
+      );
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('boarded — leg 2 (currentLegAnchor, #2515 도보시간 게이트)', () => {
+    function leg2TripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return tripBody({
+        promptDisplay: { originStation: '용마산', line: '2' }, // stale leg 1 origin
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: CREATED, // 경계 — 도보시간 경과
+        waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+        infoModeEnabled: true,
+        ...overrides,
+      });
+    }
+
+    it('도보시간 경과 + resolved 1개 → leg-2 boardingLock, lockState leg2', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            // '건대입구'→'어린이대공원'(7호선)은 inferLegDirection이 'up'으로 추론 —
+            // positionEntry 기본 updnLine('하행')은 방향 필터에서 제외되므로 '상행'으로 override.
+            realtimePositionList: [
+              positionEntry({ statnNm: '건대입구', updnLine: '상행' }),
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(leg2TripBody()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '건대입구' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7246');
+      expect(stored.boardingLock?.line).toBe('7');
+      expect(stored.legBoardingPromptState?.fired).toBe(true);
+    });
+
+    it('도보시간 미경과(now < legBoardingEligibleAt) → anchor 자체 없음, lockState none', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [positionEntry({ statnNm: '건대입구' })],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(leg2TripBody({ legBoardingEligibleAt: CREATED + 60_000 })),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '건대입구' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('disembarked', () => {
+    it('boardingLock 있으면 해제 + lockState released', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            boardingLock: {
+              trainCode: '7246',
+              line: '7',
+              subwayId: '1007',
+              selectedDepartureTime: CREATED,
+              segmentStations: ['중곡', '어린이대공원'],
+              expiresAt: CREATED + 60 * 60_000,
+            },
+          }),
+        ),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'disembarked' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'released' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+    });
+
+    it('boardingLock 없어도(cron이 이미 release) idempotent — lockState released, no-op write', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'disembarked' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'released' });
+    });
+  });
+
+  describe('not-boarded', () => {
+    it('boardingPromptState.silencedUntil 설정(POST /boarding-prompt/dismiss와 동일 의미) + lockState none', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'not-boarded' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptState.silencedUntil).toBe(CREATED + 5 * 60 * 1000);
+      // 락 생성 없음.
+      expect(stored.boardingLock).toBeUndefined();
+    });
+  });
+});
+
 describe('POST /metrics/boarding-prompt (#827)', () => {
   runTelemetryEndpointSuite('/metrics/boarding-prompt', {
     token: 'aabbccdd11223344',
