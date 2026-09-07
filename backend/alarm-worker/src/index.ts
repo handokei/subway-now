@@ -2001,13 +2001,13 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     lockState = 'none';
   }
 
+  // SonarCloud S5145 — station/line은 사용자 입력(user-controlled)이라 로그에 직접 넣지 않는다.
+  // action은 validateBoardingConfirmPayload가 3개 리터럴로 제한한 enum이라 안전.
   console.log(
     JSON.stringify({
       msg: 'boarding-confirm',
       tokenPrefix: tokenPrefix(token),
       action: payload.action,
-      station: payload.station,
-      line: payload.line,
       lockState,
     }),
   );
