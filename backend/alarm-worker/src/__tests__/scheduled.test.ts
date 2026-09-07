@@ -12371,12 +12371,12 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     return new SeoulArrivalClient({ host: 'seoul.api', apiKey: 'KEY', fetchImpl });
   }
 
-  function makeDeps(fetchImpl: typeof fetch): ScheduledDeps {
+  function makeDeps(fetchImpl: typeof fetch, seoul?: SeoulArrivalClient): ScheduledDeps {
     return {
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl,
-      seoul: makeArrivalsSeoul(fetchImpl),
+      seoul: seoul ?? makeArrivalsSeoul(fetchImpl),
       archFlag: 'off',
     };
   }
@@ -12637,6 +12637,112 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
     expect(stats.errors).toBeGreaterThan(0);
     expect(trip.boardingPromptState?.fired).toBeUndefined();
+  });
+
+  it('Seoul API 호출이 throw → catch로 degrade, ETA 없이 candidateTrains 0건이면 blocked', async () => {
+    // #2531 CI coverage — try 블록 내부에서 예외가 나는 분기(catch) 자체가 여태 미검증이었다.
+    // pool/candidateTrains 초기화가 try 안에서만 채워지므로 throw 시 둘 다 빈 배열로 남아
+    // 이후 "후보 0건" 게이트로 자연 합류한다(leg-2/origin GPS 경로와 동일 degradation 정책).
+    const throwingSeoul = {
+      fetchArrivals: vi.fn(async () => {
+        throw new Error('seoul unreachable');
+      }),
+    } as unknown as SeoulArrivalClient;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl, throwingSeoul),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('direction=up 추론(다음 waypoint가 상행 방향) + isUp:true 매칭 → 발사, subtitle "상행"', async () => {
+    // #2531 CI coverage — 기존 케이스는 direction=null 또는 down만 exercise했다. 7호선
+    // 군자→용마산은 'up'으로 추론되는 실제 역 쌍(legDirection.ts 정책 기준) — direction==='up'
+    // 분기(필터 + subtitle 내부 삼항) 자체를 실제로 태운다.
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({
+      promptDisplay: { originStation: '군자', line: '7' },
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
+    });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.destinationDirection).toBe('up');
+    expect(body.aps.alert.subtitle).toContain('상행');
+  });
+
+  it('direction=null + 양방향(up/down) 후보 2건, arrivalSeconds 역전 — reduce 최솟값 갱신 + isUp:false 매핑', async () => {
+    // #2531 CI coverage — 기존 케이스는 pool 1건 또는 동일 arrivalSeconds라 reduce의
+    // "새 최솟값(cur)으로 교체" 분기와 candidateTrains map의 isUp:false → 'down' 분기가 전혀
+    // 실행되지 않았다. direction=null(다른 line waypoint)로 양방향 모두 pool에 포함시키고,
+    // 두 번째 후보(하행, arvlCd=1)가 더 이른 도착이 되도록 barvlDt를 역전시킨다.
+    const fetchImpl = vi.fn(
+      makeArrivalsResponse([
+        { btrainNo: 'up-train', isUp: true, arvlCd: 2, arrivalSeconds: 180 },
+        { btrainNo: 'down-train', isUp: false, arvlCd: 1, arrivalSeconds: 60 },
+      ]),
+    );
+    const trip = makeTrip({ waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }] });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    // 오름차순 정렬 시 down-train(60s)이 먼저 — isUp:false → direction:'down' 매핑 확인.
+    expect(body.data.candidateTrains?.[0]).toMatchObject({ trainCode: 'down-train', direction: 'down' });
+    expect(body.data.candidateTrains?.[1]).toMatchObject({ trainCode: 'up-train', direction: 'up' });
+  });
+
+  it('trip.waypoints가 빈 배열(다음 정거장 없음) → nextStation=null로도 발사', async () => {
+    // #2531 CI coverage — `trip.waypoints[0]?.stationName ?? null`의 optional chaining이
+    // undefined를 만나는 분기(다음 waypoint 자체가 없음)를 명시적으로 exercise.
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ waypoints: [] });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.destinationDirection).toBeUndefined();
   });
 });
 
