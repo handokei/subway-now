@@ -31,6 +31,68 @@ private let ACTION_DISEMBARK_DISEMBARKED = "DISEMBARK_DISEMBARKED"
 private let ACTION_BOARDING_NOT_BOARDED = "BOARDING_NOT_BOARDED"
 private let ACTION_DISEMBARK_NOT_YET = "DISEMBARK_NOT_YET"
 
+// #2528 — backend 직결(BG, #2527 계약: POST /trips/:token/boarding-confirm,
+// body {action,station,line}). body의 `action`은 App Group의 ACTION_* 코드와 다른 어휘라
+// 별도 상수로 둔다(계약 고정값, backend index.ts 라우터와 문자열 일치 필수).
+// #2527의 계약은 3-way(boarded/disembarked/not-boarded)만 정의한다 — "아직이요"
+// (DISEMBARK_NOT_YET, 하차 보류)는 "이 프롬프트를 보류하고 상태 변경 없음"이라는 의미에서
+// not-boarded와 동일하게 매핑한다.
+private let CONFIRM_ACTION_BOARDED = "boarded"
+private let CONFIRM_ACTION_DISEMBARKED = "disembarked"
+private let CONFIRM_ACTION_NOT_BOARDED = "not-boarded"
+
+// eas.json production 프로파일의 EXPO_PUBLIC_ALARM_BACKEND_URL과 동일 값(JS SSoT).
+// 위젯 익스텐션 프로세스는 Expo env 인라이닝(JS 번들 전용) 범위 밖이라 값을 미러링한다 —
+// 이 파일 상단 App Group 계약과 동일한 "별도 컴파일 단위라 리터럴 미러링" 관례.
+// 값이 바뀌면 eas.json의 build.production.env.EXPO_PUBLIC_ALARM_BACKEND_URL도 함께 갱신해야 한다.
+private let ALARM_BACKEND_URL_BASE = "https://subway-now-alarm-worker.handokei.workers.dev"
+
+/// #2528 — App Intent perform()이 앱을 열지 않고(BG) backend에 직접 탑승/하차 확정을 전달한다.
+/// `writePendingBoardingIntent`(App Group)는 FG sync용으로 계속 유지 — 이 호출은 그와 별개로,
+/// 앱이 완전히 정지된 상태에서도 leg 락 체인이 완결되도록 하는 주 경로다(#2527 FG-gap 제거).
+///
+/// perform() 안에서 await로 완료를 기다린다 — 위젯 익스텐션 프로세스가 짧게 생존하므로
+/// fire-and-forget dataTask는 perform() 반환 후 프로세스가 정지되며 유실될 수 있다.
+/// 네트워크 실패는 graceful — App Group write(FG sync)가 이미 완료됐으므로 다음 FG 진입 시
+/// `useLiveActivityIntentBridge`가 동일 처리를 재시도한다.
+@available(iOS 17.0, *)
+private func postBoardingConfirm(
+    tripToken: String,
+    action: String,
+    station: String,
+    line: String
+) async {
+    guard let encodedToken = tripToken.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+          let url = URL(string: "\(ALARM_BACKEND_URL_BASE)/trips/\(encodedToken)/boarding-confirm")
+    else {
+        intentLog.error("boarding-confirm invalid URL, tripToken empty or unencodable")
+        return
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.timeoutInterval = 10
+
+    let body: [String: Any] = ["action": action, "station": station, "line": line]
+    guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+        intentLog.error("boarding-confirm body encode failed")
+        return
+    }
+    request.httpBody = bodyData
+
+    do {
+        let (_, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            intentLog.error("boarding-confirm non-2xx status=\(http.statusCode, privacy: .public)")
+        } else {
+            intentLog.info("boarding-confirm POST ok action=\(action, privacy: .public)")
+        }
+    } catch {
+        intentLog.error("boarding-confirm POST failed: \(error.localizedDescription, privacy: .public)")
+    }
+}
+
 /// boardingPhase enum 값(모듈 index.ts LiveActivityData.boardingPhase 타입과 동일 어휘 사용).
 /// 'pre-boarding' → 탑승 확인 버튼 탭 → 'boarded'. 'hop-end' → 하차 확인 버튼 탭 → 'arrival'.
 private let PHASE_BOARDED = "boarded"
@@ -111,6 +173,12 @@ struct BoardingConfirmIntent: LiveActivityIntent {
             originStation: originStation,
             line: line
         )
+        await postBoardingConfirm(
+            tripToken: tripToken,
+            action: CONFIRM_ACTION_BOARDED,
+            station: originStation,
+            line: line
+        )
         return .result()
     }
 }
@@ -150,6 +218,12 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
             action: ACTION_DISEMBARK_DISEMBARKED,
             tripToken: tripToken,
             originStation: originStation,
+            line: line
+        )
+        await postBoardingConfirm(
+            tripToken: tripToken,
+            action: CONFIRM_ACTION_DISEMBARKED,
+            station: originStation,
             line: line
         )
         return .result()
@@ -194,6 +268,12 @@ struct NotBoardedIntent: LiveActivityIntent {
             originStation: originStation,
             line: line
         )
+        await postBoardingConfirm(
+            tripToken: tripToken,
+            action: CONFIRM_ACTION_NOT_BOARDED,
+            station: originStation,
+            line: line
+        )
         return .result()
     }
 }
@@ -233,6 +313,12 @@ struct DisembarkNotYetIntent: LiveActivityIntent {
             action: ACTION_DISEMBARK_NOT_YET,
             tripToken: tripToken,
             originStation: originStation,
+            line: line
+        )
+        await postBoardingConfirm(
+            tripToken: tripToken,
+            action: CONFIRM_ACTION_NOT_BOARDED,
+            station: originStation,
             line: line
         )
         return .result()

@@ -17,8 +17,13 @@ jest.mock('live-activity', () => ({
 }));
 
 const mockClearStationNotification = jest.fn();
+const mockBuildBoardingPromptContent = jest.fn((originStation: string, line: string) => ({
+  title: '탑승하셨나요?',
+  body: `${line} ${originStation}역 근처예요.`,
+}));
 jest.mock('../../utils/stationNotification', () => ({
   clearStationNotification: (...args: unknown[]) => mockClearStationNotification(...args),
+  buildBoardingPromptContent: (...args: [string, string]) => mockBuildBoardingPromptContent(...args),
 }));
 
 const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);
@@ -140,6 +145,69 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     rerender({});
 
     expect(mockClearStationNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('#2528 — evidence 있는 lock으로 전환 시 추적중(auto-locked) 배너로 한 번 더 update한다', () => {
+    mockGetCurrentTripCorrIdSync.mockReturnValue('corr-999');
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useBoardingLockStore.setState({ lock: LOCK }); // LOCK.boardingEvidence === true
+    });
+    rerender({});
+
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+    const autoLockedData = mockUpdateLiveActivity.mock.calls[1][0];
+    expect(autoLockedData.boardingPhase).toBe('pre-boarding');
+    expect(autoLockedData.boardingAutoLocked).toBe(true);
+    expect(autoLockedData.boardingAlertTitle).toBeUndefined();
+    expect(autoLockedData.boardingPromptTripToken).toBe('corr-999');
+  });
+
+  it('#2528 — tripToken 없이 evidence 있는 lock으로 전환되면 boardingPromptTripToken 없이 추적중 배너를 갱신한다', () => {
+    mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useBoardingLockStore.setState({ lock: LOCK });
+    });
+    rerender({});
+
+    const autoLockedData = mockUpdateLiveActivity.mock.calls[1][0];
+    expect(autoLockedData.boardingAutoLocked).toBe(true);
+    expect(autoLockedData.boardingPromptTripToken).toBeUndefined();
+  });
+
+  it('#2528 — evidence 없는(사용자 tap/응답) lock으로 전환되면 추가 update 없이 조용히 소유권만 넘긴다', () => {
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useBoardingLockStore.setState({ lock: { ...LOCK, boardingEvidence: undefined } });
+    });
+    rerender({});
+
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('#2528 — auto-locked LA 갱신이 throw하면 logger.warn으로 흡수', async () => {
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    mockUpdateLiveActivity.mockRejectedValueOnce(new Error('auto-lock update fail'));
+
+    act(() => {
+      useBoardingLockStore.setState({ lock: LOCK });
+    });
+    rerender({});
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockWarn).toHaveBeenCalledWith('auto-locked pre-boarding LA 갱신 실패', expect.any(Error));
   });
 
   it('Android — 아무 것도 하지 않는다', () => {

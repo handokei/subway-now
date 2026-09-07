@@ -47,7 +47,7 @@ import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
-import { clearStationNotification } from '../utils/stationNotification';
+import { clearStationNotification, buildBoardingPromptContent } from '../utils/stationNotification';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('useLiveActivityPreBoardingLifecycle');
@@ -83,6 +83,39 @@ function buildPreBoardingLiveActivityData(
   if (origin) {
     data.boardingPromptOriginStation = getStationDisplayName(origin);
     data.boardingPromptLine = origin.line;
+    // #2528 — 행동 필요 프롬프트(승차) alert 문구. origin 미확정("감지 중") 구간은 아직 "탑승
+    // 하셨나요?"를 물을 대상이 없어 alert 필드를 비워둔다 — native가 조용히 update.
+    const { title, body } = buildBoardingPromptContent(data.boardingPromptOriginStation, origin.line);
+    data.boardingAlertTitle = title;
+    data.boardingAlertBody = body;
+  }
+  return data;
+}
+
+/**
+ * #2528 — leg-1 자동락(사용자 명시 응답 없이 device evidence로 확정된 lock, `boardingEvidence`)
+ * 전환 시 pre-boarding 배너를 "추적중" 안내로 갱신하기 위한 content. 질문형 문구는 이미 확정된
+ * 상태에 어울리지 않아 alert 필드는 채우지 않는다(native가 boardingAutoLocked=true를 보고
+ * 알림 없이 조용히 처리) — [아니에요] 탈출구만 유지.
+ */
+function buildAutoLockedPreBoardingLiveActivityData(
+  destination: Station,
+  origin: Station,
+  tripToken: string | null,
+): LiveActivity.LiveActivityData {
+  const data: LiveActivity.LiveActivityData = {
+    stationName: getStationDisplayName(origin),
+    lineName: LINE_NAMES[origin.line],
+    lineColorHex: LINE_COLORS[origin.line],
+    distanceM: 0,
+    destinationName: getStationDisplayName(destination),
+    boardingPhase: 'pre-boarding',
+    boardingPromptOriginStation: getStationDisplayName(origin),
+    boardingPromptLine: origin.line,
+    boardingAutoLocked: true,
+  };
+  if (tripToken) {
+    data.boardingPromptTripToken = tripToken;
   }
   return data;
 }
@@ -110,6 +143,18 @@ export function useLiveActivityPreBoardingLifecycle(): void {
     }
 
     if (lock) {
+      // #2528 — 이 훅이 이미 pre-boarding 배너를 노출 중이었고, 그 lock이 사용자 명시 응답 없이
+      // device evidence(`boardingEvidence`)로 자동 확정됐다면, 질문형 배너를 "추적중"으로 한 번
+      // 더 갱신해 사용자 혼란("확정됐는데 왜 아직도 물어봐?")을 막는다. evidence 없는 auto-lock
+      // (fallback 후보/boardingPrompt 응답)이나 사용자 tap 확정은 애초에 이 배너가 아닌 다른
+      // 채널(BoardingTrainList/알림 응답)로 confirm된 것이라 재알림이 불필요 — 조용히 넘긴다.
+      if (preBoardingActiveRef.current && lock.boardingEvidence === true && tripOrigin) {
+        const tripToken = getCurrentTripCorrIdSync();
+        const data = buildAutoLockedPreBoardingLiveActivityData(destination, tripOrigin, tripToken);
+        LiveActivity.updateLiveActivity(data).catch((e) => {
+          log.warn('auto-locked pre-boarding LA 갱신 실패', e);
+        });
+      }
       // 탑승 확정 — 콘텐츠 소유권을 GPS-트리거 파이프라인에 넘긴다.
       preBoardingActiveRef.current = false;
       return;

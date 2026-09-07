@@ -227,8 +227,17 @@ private struct BoardingPromptView: View {
     let state: SubwayActivityAttributes.ContentState
     let phase: String
 
+    /// #2528 — leg-1 자동락 상태(device evidence로 이미 확정된 lock)면 "탑승하셨나요?" 질문 대신
+    /// "추적중" 안내를 보여준다 — 이미 확정된 열차를 재확인할 필요가 없기 때문(신뢰도 분기 표시).
+    var isAutoLockedTracking: Bool {
+        phase == "pre-boarding" && state.boardingAutoLocked == true
+    }
+
     var questionKey: String {
-        phase == "pre-boarding"
+        if isAutoLockedTracking {
+            return "widget.boardingPrompt.autoLocked.tracking"
+        }
+        return phase == "pre-boarding"
             ? "widget.boardingPrompt.boarded.question"
             : "widget.boardingPrompt.disembark.question"
     }
@@ -249,7 +258,7 @@ private struct BoardingPromptView: View {
             Spacer()
 
             if #available(iOS 17.0, *) {
-                BoardingPromptButton(state: state, phase: phase)
+                BoardingPromptButton(state: state, phase: phase, autoLockedTracking: isAutoLockedTracking)
             }
         }
         .padding(16)
@@ -262,9 +271,22 @@ private struct BoardingPromptView: View {
 private struct BoardingPromptButton: View {
     let state: SubwayActivityAttributes.ContentState
     let phase: String
+    /// #2528 — leg-1 자동락 "추적중" 상태면 재확인 질문 버튼([탑승])은 생략하고 탈출구
+    /// ([아니에요]=NotBoardedIntent)만 노출한다.
+    var autoLockedTracking: Bool = false
 
     var body: some View {
-        if phase == "pre-boarding" {
+        if autoLockedTracking {
+            Button(intent: NotBoardedIntent(
+                tripToken: state.boardingPromptTripToken ?? "",
+                originStation: state.boardingPromptOriginStation ?? "",
+                line: state.boardingPromptLine ?? ""
+            )) {
+                Text(NSLocalizedString("widget.boardingPrompt.boarded.notBoarded.button", comment: "Not boarded button label"))
+                    .font(.subheadline)
+            }
+            .tint(.secondary)
+        } else if phase == "pre-boarding" {
             VStack(spacing: 6) {
                 Button(intent: BoardingConfirmIntent(
                     tripToken: state.boardingPromptTripToken ?? "",
