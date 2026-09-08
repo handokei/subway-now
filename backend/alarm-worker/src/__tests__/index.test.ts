@@ -3,6 +3,7 @@ import * as sentryModule from '../sentry';
 import {
   app,
   applyProgress,
+  buildBoardingConfirmEventMeta,
   computeLockSyncAdvance,
   dualWriteTripDo,
   LOCK_TTL_REFRESH_MS,
@@ -2901,6 +2902,193 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.boardingPromptState.silencedUntil).toBe(CREATED + 5 * 60 * 1000);
       // 락 생성 없음.
       expect(stored.boardingLock).toBeUndefined();
+    });
+  });
+
+  // ADR-037 D2b (#2535, 진단 계측 only) — buildBoardingConfirmEventMeta 순수 함수 단위 테스트.
+  describe('buildBoardingConfirmEventMeta (#2535)', () => {
+    it('outcome 있으면 meta에 포함', () => {
+      expect(buildBoardingConfirmEventMeta('leg1', 'resolved')).toEqual({
+        lockState: 'leg1',
+        outcome: 'resolved',
+      });
+    });
+
+    it('outcome undefined면 meta에서 생략(시도 자체를 안 한 경로)', () => {
+      expect(buildBoardingConfirmEventMeta('released', undefined)).toEqual({
+        lockState: 'released',
+      });
+    });
+  });
+
+  // ADR-037 D2b (#2535, 진단 계측 only) — 탭 처리 결과(lockState + resolve outcome)를 D1
+  // trip_events(kind='boarding-confirm-result')에 1건만 append. push/advance/lock 동작은
+  // 위 describe 블록들이 이미 검증했으므로, 여기서는 D1 append 내용만 확인한다.
+  describe('D1 boarding-confirm-result 계측 (#2535)', () => {
+    function captureEventInserts(): { db: Env['DB']; inserts: unknown[][] } {
+      const inserts: unknown[][] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      }));
+      return { db: { prepare } as unknown as Env['DB'], inserts };
+    }
+
+    it('resolved — meta={lockState:leg1, outcome:resolved}', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), {
+          status: 200,
+        }),
+      );
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({
+        lockState: 'leg1',
+        outcome: 'resolved',
+      });
+    });
+
+    it('ambiguous — meta={lockState:none, outcome:ambiguous}', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [
+              positionEntry({ trainNo: '7246' }),
+              positionEntry({ trainNo: '7247' }),
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({
+        lockState: 'none',
+        outcome: 'ambiguous',
+      });
+    });
+
+    it('leg-2 도보시간 미경과 — meta={lockState:none, outcome:walk-gated}', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            promptDisplay: { originStation: '용마산', line: '2' },
+            currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+            legBoardingEligibleAt: CREATED + 60_000,
+            waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+            infoModeEnabled: true,
+          }),
+        ),
+      );
+
+      await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '건대입구' }),
+        env,
+      );
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({
+        lockState: 'none',
+        outcome: 'walk-gated',
+      });
+    });
+
+    it('이미 boardingLock 활성(재평가 안 함) — meta에 outcome 없음(시도 자체를 안 함)', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            boardingLock: {
+              trainCode: '9999',
+              line: '7',
+              subwayId: '1007',
+              selectedDepartureTime: CREATED,
+              segmentStations: ['중곡', '어린이대공원'],
+              expiresAt: CREATED + 60 * 60_000,
+            },
+          }),
+        ),
+      );
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'leg1' });
+    });
+
+    it('disembarked — meta={lockState:released}, outcome 없음', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            boardingLock: {
+              trainCode: '7246',
+              line: '7',
+              subwayId: '1007',
+              selectedDepartureTime: CREATED,
+              segmentStations: ['중곡', '어린이대공원'],
+              expiresAt: CREATED + 60 * 60_000,
+            },
+          }),
+        ),
+      );
+
+      await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'disembarked' }),
+        env,
+      );
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'released' });
+    });
+
+    it('not-boarded — meta={lockState:none}, outcome 없음', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'not-boarded' }),
+        env,
+      );
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'none' });
     });
   });
 });

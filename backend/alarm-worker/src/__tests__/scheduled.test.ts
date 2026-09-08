@@ -13512,5 +13512,235 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     expect(stored.legBoardingEligibleAt).toBe(NOW + walkSeconds2 * 1000);
     expect(stored.legBoardingPromptState).toBeUndefined();
   });
+
+  // ADR-037 D2b (#2535, 진단 계측 only) — #2533(D2)이 커버하지 못한 나머지 3개 조건부 stall 지점 중
+  // 2개(환승 waypoint advance 성공/실패, leg-2 estimateBoardingLockArrival trainCode 매칭)를 D1에
+  // 남긴다. 발사/advance 동작은 위 A1~A7이 이미 검증 — 여기서는 오직 D1 append 시점/dedup만 검증.
+  describe('ADR-037 D2b (#2535) — transfer-advance / leg2-estimate 진단 계측', () => {
+    function findInserts(inserts: unknown[][], kind: string): unknown[][] {
+      return inserts.filter((args) => args[2] === kind);
+    }
+
+    it('transfer-advance(lockless) — arvlCd 미확보 → no-arvlcd, SSoT 부재면 append 없음', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTransferTrip(TOKEN_A2));
+      // seedSsot 호출 없음 — SSoT null.
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-t1',
+      });
+      expect(findInserts(inserts, 'transfer-advance')).toHaveLength(0);
+    });
+
+    it('transfer-advance(lockless) — arvlCd 미확보 → no-arvlcd, 전이 시에만 append(동일 반복 no-op)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A2);
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '중곡', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      const deps = {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-t2',
+      };
+      await runScheduled(makeEnv(kv, undefined, db), deps);
+      const first = findInserts(inserts, 'transfer-advance');
+      expect(first).toHaveLength(1);
+      expect(JSON.parse(first[0][5] as string)).toEqual({ path: 'lockless', outcome: 'no-arvlcd' });
+
+      await runScheduled(makeEnv(kv, undefined, db), { ...deps, now: () => NOW + 60_000 });
+      expect(findInserts(inserts, 'transfer-advance')).toHaveLength(1);
+    });
+
+    it('transfer-advance(lockless) — arvlCd 확보했으나 ENTERING/ARRIVED 아님 → not-fires', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A2);
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '중곡', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 300, 3, '9001')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-t3',
+      });
+      const events = findInserts(inserts, 'transfer-advance');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ path: 'lockless', outcome: 'not-fires' });
+    });
+
+    it('transfer-advance(lockless) — ENTERING/ARRIVED → advanced', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A2);
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '중곡', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 0, 1, '9001')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-t4',
+      });
+      const events = findInserts(inserts, 'transfer-advance');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ path: 'lockless', outcome: 'advanced' });
+    });
+
+    it('transfer-advance(lock-active) — arvlCd/positions 둘 다 못 잡음 → no-arvlcd', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A1, {
+        boardingLock: makeBoardingLock({
+          trainCode: '2246',
+          line: '2',
+          subwayId: '1002',
+          segmentStations: ['성수', '건대입구'],
+        }),
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-t5',
+      });
+      const events = findInserts(inserts, 'transfer-advance');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ path: 'lock-active', outcome: 'no-arvlcd' });
+    });
+
+    it('transfer-advance(lock-active) — arvlCd ARRIVED → advanced', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A1, {
+        boardingLock: makeBoardingLock({
+          trainCode: '2246',
+          line: '2',
+          subwayId: '1002',
+          segmentStations: ['성수', '건대입구'],
+        }),
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 0, 1, '2246')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-t6',
+      });
+      const events = findInserts(inserts, 'transfer-advance');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ path: 'lock-active', outcome: 'advanced' });
+    });
+
+    it('leg2-estimate — leg-2 lock 활성 + trainCode 매칭 실패(양쪽 다 없음) → matched:false', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      const trip = makeTransferTrip(TOKEN_A2, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: nowAfterWalk,
+        infoModeEnabled: true,
+        boardingLock: makeBoardingLock({
+          trainCode: '7911',
+          line: '7',
+          subwayId: '1007',
+          segmentStations: ['건대입구', '용마산'],
+        }),
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        // 용마산 arrivals/positions 모두 7911을 포함하지 않음 → estimate=null.
+        seoul: makeSeoulFull({ 용마산: [arrivalOnLine('7', '용마산', 120, null, 'other-train')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2535-e1',
+      });
+      const events = findInserts(inserts, 'leg2-estimate');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({ matched: false });
+    });
+
+    it('leg2-estimate — leg-2 lock 활성 + trainCode 매칭 성공 → matched:true, 전이 시에만 append', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      const trip = makeTransferTrip(TOKEN_A2, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: nowAfterWalk,
+        infoModeEnabled: true,
+        boardingLock: makeBoardingLock({
+          trainCode: '7911',
+          line: '7',
+          subwayId: '1007',
+          segmentStations: ['건대입구', '용마산'],
+        }),
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      const deps = {
+        seoul: makeSeoulFull({ 용마산: [arrivalOnLine('7', '용마산', 120, null, '7911')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2535-e2',
+      };
+      await runScheduled(makeEnv(kv, undefined, db), deps);
+      const first = findInserts(inserts, 'leg2-estimate');
+      expect(first).toHaveLength(1);
+      expect(JSON.parse(first[0][5] as string)).toEqual({ matched: true });
+
+      // 같은 tick 반복(매칭 유지) → 재기록 없음(#2073 quota 보호).
+      await runScheduled(makeEnv(kv, undefined, db), { ...deps, now: () => nowAfterWalk + 60_000 });
+      expect(findInserts(inserts, 'leg2-estimate')).toHaveLength(1);
+    });
+
+    it('leg2-estimate — leg-1(currentLegAnchor 없음)은 append 없음(leg-2 lock 활성 시점에만 한정)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A1, {
+        boardingLock: makeBoardingLock({
+          trainCode: '2246',
+          line: '2',
+          subwayId: '1002',
+          segmentStations: ['성수', '건대입구'],
+        }),
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 120, null, '2246')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2535-e3',
+      });
+      expect(findInserts(inserts, 'leg2-estimate')).toHaveLength(0);
+    });
+  });
 });
 

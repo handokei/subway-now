@@ -35,7 +35,11 @@
 
 import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
 import type { LegConsensusRecord } from './transferLegConsensus';
-import type { ConsensusNeverRanPhase, IntermediateRouteBranch } from './tripEventLog';
+import type {
+  ConsensusNeverRanPhase,
+  IntermediateRouteBranch,
+  TransferAdvanceOutcome,
+} from './tripEventLog';
 import type { Trip } from './types';
 
 /**
@@ -295,6 +299,27 @@ export interface TripPositionSSoT {
    * 관여하지 않는다.
    */
   consensusNeverRanPhase?: ConsensusNeverRanPhase;
+  /**
+   * ADR-037 D2b (#2535) — 진단 계측 전용 dedup 마커. 환승(transfer) waypoint advance 직전 관측된
+   * 결과(`no-arvlcd`/`not-fires`/`advanced`, `TransferAdvanceOutcome`). caller(scheduled.ts)가
+   * 이 값과 이번 tick 결과를 비교해 다를 때만 D1 `trip_events`(kind='transfer-advance')로
+   * append한다(#2073 quota 보호). lockless(`runLocklessTransfer`)/lock-active
+   * (`runTrainCodeTracking`) 두 경로가 공유한다 — 한 trip은 한 시점에 둘 중 하나만 활성이라
+   * 마커 충돌이 없다(`intermediateRouteBranch`와 동일 선례). 발사/advance 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  transferAdvanceState?: TransferAdvanceOutcome;
+  /**
+   * ADR-037 D2b (#2535) — 진단 계측 전용 dedup 마커. leg-2(환승 후, `trip.currentLegAnchor` 활성)
+   * lock의 `estimateBoardingLockArrival` 직전 tick 매칭 여부(`estimate!==null`). caller
+   * (scheduled.ts)가 이 값과 이번 tick 매칭 여부를 비교해 다를 때만 D1
+   * `trip_events`(kind='leg2-estimate')로 append한다(#2073 quota 보호). 발사/advance 판정에는
+   * 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row 또는 leg-2 진입 전은 undefined.
+   */
+  leg2EstimateMatched?: boolean;
   /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.

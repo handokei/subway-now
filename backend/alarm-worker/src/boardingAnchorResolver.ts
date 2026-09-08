@@ -112,6 +112,15 @@ export type BoardingResolution =
   | { status: 'none' };
 
 /**
+ * ADR-037 D2b (#2535) — 진단 계측 전용. `attemptBoardingAnchorResolution`이 어느 경로로
+ * null/성공을 반환했는지 caller(index.ts `POST /trips/:token/boarding-confirm`)에게 노출한다.
+ * `walk-gated` = leg-2 도보시간 게이트(#2515) 미통과, `ambiguous`/`none` = `BoardingResolution`의
+ * 동명 status와 동일 의미(후보 2개+/0개), `resolved` = 승격 성공. 반환 타입 자체는 바꾸지
+ * 않는다(기존 caller 전부 무변경) — `onOutcome` 콜백으로만 부가 관측.
+ */
+export type BoardingResolveOutcome = 'resolved' | 'none' | 'ambiguous' | 'walk-gated';
+
+/**
  * realtimePosition snapshot에서 anchor 조건에 맞는 정확히 1개의 trainCode를 찾는다. Pure —
  * KV/네트워크 의존 없음. caller(`attemptBoardingAnchorResolution`)가 `seoul.fetchPositions`
  * 결과를 전달한다.
@@ -212,20 +221,39 @@ export function resolveActiveLegOrigin(
  * break #2 (#2323 rework) — `options.allowLegTransfer`를 그대로 `resolveActiveLegOrigin`에
  * forward한다. cron 호출자(`scheduled.ts`)는 미전달(기본 false)해 leg 2 자동 승격을 완전히
  * skip하고, register-time 호출자(`index.ts` tap 트리거)만 true를 전달한다.
+ *
+ * ADR-037 D2b (#2535) — `onOutcome` 콜백(진단 계측 전용, optional)은 각 조기 반환/성공 지점에서
+ * `BoardingResolveOutcome`을 관측한다. 반환값(`BoardingLockMeta | null`)과 기존 호출자 동작은
+ * 완전히 무변경 — 콜백을 전달하지 않는 기존 3개 호출자(index.ts register-time, scheduled.ts
+ * cron)는 영향 없다.
  */
 export async function attemptBoardingAnchorResolution(
   trip: Trip,
   seoul: SeoulArrivalClient,
   now: number,
   options?: LegOriginResolutionOptions,
+  onOutcome?: (outcome: BoardingResolveOutcome) => void,
 ): Promise<BoardingLockMeta | null> {
-  if (trip.infoModeEnabled !== true) return null;
+  if (trip.infoModeEnabled !== true) {
+    onOutcome?.('none');
+    return null;
+  }
   const anchor = resolveActiveLegOrigin(trip, now, options);
-  if (!anchor) return null;
+  if (!anchor) {
+    const walkGated =
+      trip.currentLegAnchor !== undefined &&
+      options?.allowLegTransfer === true &&
+      (trip.legBoardingEligibleAt === undefined || now < trip.legBoardingEligibleAt);
+    onOutcome?.(walkGated ? 'walk-gated' : 'none');
+    return null;
+  }
   const { waypoints } = trip;
 
   const subwayId = subwayIdForLine(anchor.line);
-  if (!subwayId) return null;
+  if (!subwayId) {
+    onOutcome?.('none');
+    return null;
+  }
 
   // #1719 — direction 추론. waypoints[0]은 "지금" leg의 다음 정차역(anchor.originStation 자체는
   // waypoints에 포함되지 않는다 — leg 1은 `dijkstraRoute.ts:routeToInferredWaypoints`의 "출발역 —
@@ -243,15 +271,22 @@ export async function attemptBoardingAnchorResolution(
     positions,
     now,
   );
-  if (resolution.status !== 'resolved') return null;
+  if (resolution.status !== 'resolved') {
+    onOutcome?.(resolution.status);
+    return null;
+  }
 
   // segmentStations — 탑승역(anchor.originStation) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
   // `buildLegSegmentStations`는 waypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
   const legSegment = buildLegSegmentStations(waypoints, anchor.line);
-  if (legSegment.length === 0) return null;
+  if (legSegment.length === 0) {
+    onOutcome?.('none');
+    return null;
+  }
   const segmentStations =
     legSegment[0] === anchor.originStation ? legSegment : [anchor.originStation, ...legSegment];
 
+  onOutcome?.('resolved');
   return {
     trainCode: resolution.trainCode,
     line: anchor.line,
