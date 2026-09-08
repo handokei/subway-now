@@ -180,7 +180,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -11310,7 +11310,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
     const stats: ScheduledStats = {
       scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
       laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
       boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
       phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -13511,6 +13511,212 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     const walkSeconds2 = getTransferSeconds('7', '5', '군자');
     expect(stored.legBoardingEligibleAt).toBe(NOW + walkSeconds2 * 1000);
     expect(stored.legBoardingPromptState).toBeUndefined();
+  });
+
+  // #2539 — leg-2 lock 형성이 사용자 탭(register-time/boarding-confirm)에만 단일경로로 매달려
+  // 있던 gap을 cron 강화 자동resolve(연속확증)로 메운다. A4가 확인한 "cron이 조용히 auto-lock
+  // 하지 않는다"는 원칙은 유지하되(1회 resolved만으로는 여전히 승격 안 됨), 같은 trainCode가
+  // LEG_RESOLVE_STREAK_THRESHOLD회 연속 확증되면 cron도 스스로 승격한다.
+  describe('#2539 — leg-2 cron 연속확증(streak) 게이트', () => {
+    const TOKEN_STREAK = '2539-leg2-streak-tok';
+
+    it('K 미달(1회 resolved) → 승격 X, legResolveStreak count=1만 기록', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: nowAfterWalk,
+          infoModeEnabled: true,
+        }),
+      );
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull(
+          { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] },
+          [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-k1',
+      });
+      expect(stats.boardingAnchorResolved).toBe(0);
+      expect(stats.boardingAnchorLegStreakPending).toBe(1);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.legResolveStreak).toEqual({ trainCode: '7911', count: 1 });
+    });
+
+    it('K회(기본 2) 연속 같은 trainCode resolved → 승격 O', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: nowAfterWalk,
+          infoModeEnabled: true,
+        }),
+      );
+      const deps = {
+        seoul: makeSeoulFull(
+          { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] },
+          [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-k2a',
+      };
+      const firstTick = await runScheduled(makeEnv(kv), deps);
+      expect(firstTick.boardingAnchorResolved).toBe(0);
+
+      const secondTick = await runScheduled(makeEnv(kv), { ...deps, generatePushId: () => 'p-2539-k2b' });
+      expect(secondTick.boardingAnchorResolved).toBe(1);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toMatchObject({ trainCode: '7911', line: '7' });
+      expect(stored.legResolveStreak).toBeUndefined();
+    });
+
+    it('trainCode 변경 시 streak 리셋(count=1로 재시작, 승격 안 됨)', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: nowAfterWalk,
+          infoModeEnabled: true,
+        }),
+      );
+      // 1st tick — trainCode '7911'.
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull(
+          { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] },
+          [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-swap-a',
+      });
+      // 2nd tick — 다른 열차 '7922'가 대신 그 역에 서 있음(다른 trainCode).
+      const secondTick = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull(
+          { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7922')] },
+          [{ trainCode: '7922', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-swap-b',
+      });
+      expect(secondTick.boardingAnchorResolved).toBe(0);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.legResolveStreak).toEqual({ trainCode: '7922', count: 1 });
+    });
+
+    it('walk-gate 미통과(아직 도보 이동 중) → 평가 자체 skip, streak 생성 안 됨, 승격 X', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: NOW + WALK_SECONDS * 1000,
+          infoModeEnabled: true,
+        }),
+      );
+      const nowMidWalk = NOW + Math.floor((WALK_SECONDS * 1000) / 2);
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        // unambiguous 후보가 있어도 walk-gate가 realtimePosition 조회 자체를 막는다.
+        seoul: makeSeoulFull(
+          {},
+          [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowMidWalk }],
+          nowMidWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => nowMidWalk,
+        generatePushId: () => 'p-2539-walkgate',
+      });
+      expect(stats.boardingAnchorResolved).toBe(0);
+      expect(stats.boardingAnchorLegStreakPending).toBe(0);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.legResolveStreak).toBeUndefined();
+    });
+
+    it('none/ambiguous 판정 → 승격 X + 기존 streak 리셋', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: nowAfterWalk,
+          infoModeEnabled: true,
+          // 이전 cycle에서 이미 1회 확증된 상태라고 가정.
+          legResolveStreak: { trainCode: '7911', count: 1 },
+        }),
+      );
+      // 이번 cycle은 후보 2개(ambiguous) — 승격 안 되고 streak도 리셋돼야 한다.
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull(
+          {},
+          [
+            { trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk },
+            { trainCode: '7933', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk },
+          ],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-ambiguous',
+      });
+      expect(stats.boardingAnchorResolved).toBe(0);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.legResolveStreak).toBeUndefined();
+    });
+
+    it('register-time(탭) 경로는 streak과 무관하게 1회 resolved로 즉시 승격(무변경)', async () => {
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      const trip = makeTransferTrip(TOKEN_STREAK, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: nowAfterWalk,
+        infoModeEnabled: true,
+      });
+      const seoul = makeSeoulFull(
+        {},
+        [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+        nowAfterWalk,
+      );
+      const anchorLock = await attemptBoardingAnchorResolution(trip, seoul, nowAfterWalk, {
+        allowLegTransfer: true,
+      });
+      expect(anchorLock).not.toBeNull();
+      expect(anchorLock?.trainCode).toBe('7911');
+    });
   });
 
   // ADR-037 D2b (#2535, 진단 계측 only) — #2533(D2)이 커버하지 못한 나머지 3개 조건부 stall 지점 중

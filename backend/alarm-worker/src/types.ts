@@ -259,6 +259,17 @@ export interface Trip {
    */
   legBoardingPromptState?: BoardingPromptState;
   /**
+   * #2539 — leg 2 cron 자동 resolve 연속확증 카운터. register-time(탭)은 사용자 확인이 있어
+   * 1회 resolved로 lock을 승격하지만, cron은 탭 없이 매 cycle 배경 폴링만으로 leg 2 승격을
+   * 시도하므로 "플랫폼에 우연히 서 있는 열차 1대"와의 transient 매칭을 방어하기 위해 같은
+   * trainCode가 `LEG_RESOLVE_STREAK_THRESHOLD`(`boardingAnchorResolver.ts`, 기본 2)회 연속
+   * resolved일 때만 승격한다. trainCode가 바뀌거나 판정이 none/ambiguous가 되면 리셋된다
+   * (`scheduled.ts` cron 분기). `currentLegAnchor`가 재stamp될 때마다(=새 환승) undefined로
+   * 함께 리셋된다. leg 1 cron(promptDisplay 경로)과 register-time/boarding-confirm 탭 경로는
+   * 이 필드를 전혀 쓰지 않는다(기존 1회 승격 유지).
+   */
+  legResolveStreak?: { trainCode: string; count: number };
+  /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
    * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.
