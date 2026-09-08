@@ -1184,6 +1184,42 @@ describe('sendLiveActivityUpdate (#586 C)', () => {
 describe('sendBoardingPromptPush (#819)', () => {
   beforeEach(() => resetApnsJwtCache());
 
+  // #2549 — expo-notifications iOS는 remote push의 `content.data`를
+  // `request.content.userInfo["body"]`에서만 추출한다(EXNotificationSerializer.m
+  // `serializedNotificationData`, isRemote 분기). payload를 top-level `data` 키로 실으면
+  // device에서 content.data가 항상 null → `extractBoardingPromptPayload`가 매번 실패해
+  // payloadMatched=false로 관측된다(#2398 계측이 잡은 실측). custom payload는 반드시
+  // top-level `body` 키로 실어야 한다.
+  it('custom payload는 top-level `body` 키로 실린다 (iOS content.data는 userInfo["body"]에서만 추출, #2549)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-body-key',
+      title: 'Are you on board?',
+      body: '2 · 강남',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      sentAt: 1234,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const parsed = JSON.parse(call[1].body as string);
+    expect(parsed.body).toEqual({
+      pushId: 'p-body-key',
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      sentAt: 1234,
+    });
+    // top-level `data` 키는 더 이상 존재하지 않아야 한다 — 존재하면 device에서 무시되는
+    // 유령 payload가 되어 원인 재발.
+    expect('data' in parsed).toBe(false);
+  });
+
   it('alert push + category + data payload 송신', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
     const result = await sendBoardingPromptPush({
@@ -1212,7 +1248,7 @@ describe('sendBoardingPromptPush (#819)', () => {
     expect(body.aps.sound).toBe('default');
     // #2069 리뷰 P1-1 — B8(로컬 timeSensitive) 제거 후 단일 채널의 Focus/DND 관통 보장.
     expect(body.aps['interruption-level']).toBe('time-sensitive');
-    expect(body.data).toEqual({
+    expect(body.body).toEqual({
       pushId: 'p1',
       kind: 'boarding-prompt',
       originStation: '강남',
@@ -1283,7 +1319,7 @@ describe('sendBoardingPromptPush (#819)', () => {
       });
       const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(call[1].body as string);
-      expect(body.data.triggerKind).toBe(triggerKind);
+      expect(body.body.triggerKind).toBe(triggerKind);
     },
   );
 
@@ -1350,12 +1386,12 @@ describe('sendBoardingPromptPush (#819)', () => {
     });
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(call[1].body as string);
-    expect(body.data.hopEndKind).toBe('disembark');
-    expect(body.data.nextLine).toBe('K');
-    expect(body.data.nextStation).toBe('왕십리');
+    expect(body.body.hopEndKind).toBe('disembark');
+    expect(body.body.nextLine).toBe('K');
+    expect(body.body.nextStation).toBe('왕십리');
     // 기존 필드는 그대로 유지
-    expect(body.data.kind).toBe('boarding-prompt');
-    expect(body.data.originStation).toBe('성수');
+    expect(body.body.kind).toBe('boarding-prompt');
+    expect(body.body.originStation).toBe('성수');
   });
 
   // #2282 — hop-end(disembark) 질문은 BOARDING_PROMPT 재사용이 아니라 전용 category로 발사돼야
@@ -1399,9 +1435,9 @@ describe('sendBoardingPromptPush (#819)', () => {
     });
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(call[1].body as string);
-    expect('hopEndKind' in body.data).toBe(false);
-    expect('nextLine' in body.data).toBe(false);
-    expect('nextStation' in body.data).toBe(false);
+    expect('hopEndKind' in body.body).toBe(false);
+    expect('nextLine' in body.body).toBe(false);
+    expect('nextStation' in body.body).toBe(false);
   });
 });
 

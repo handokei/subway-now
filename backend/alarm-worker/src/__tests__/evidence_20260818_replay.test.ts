@@ -203,10 +203,10 @@ describe('evidence 2026-08-18 저녁 BG 환승 시나리오 — 조립 체인 re
     const call = fetchImpl.mock.calls[0];
     const body = JSON.parse(call[1]?.body ?? '{}') as {
       aps: { alert: unknown };
-      data: { candidateTrains?: unknown[] };
+      body: { candidateTrains?: unknown[] };
     };
-    expect(Array.isArray(body.data.candidateTrains)).toBe(true);
-    expect((body.data.candidateTrains ?? []).length).toBeGreaterThan(0);
+    expect(Array.isArray(body.body.candidateTrains)).toBe(true);
+    expect((body.body.candidateTrains ?? []).length).toBeGreaterThan(0);
   });
 
   it('(b) 환승 후 7호선 leg(건대입구→중곡) — subwayId 역파생 arvlCd 신호로 advance+fire', async () => {
