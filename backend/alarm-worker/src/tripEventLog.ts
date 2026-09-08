@@ -67,6 +67,16 @@ import { captureXEvent } from './sentry';
  * - `leg2-estimate` — leg-2(환승 후, `trip.currentLegAnchor` 활성) lock의
  *   `estimateBoardingLockArrival`이 locked trainCode를 Seoul arrivals/positions에서 찾았는지
  *   (matched=`estimate!==null`). SSoT 마커(`leg2EstimateMatched`)와 비교해 다를 때만 append.
+ *
+ * `leg-boarding-prompt` / `hop-end-prompt` (ADR-037 D2c, #2537) — 진단 계측 전용. 사용자 ground
+ * truth(7→2 환승 시 leg-2에서 탑승 프롬프트도 하차 프롬프트도 뜨지 않음)에 따라 root를 lock/fire
+ * (#2535 D2b)보다 한 단계 위 — 프롬프트 fire 시도 자체가 안 됐는지를 관측한다. fire/advance/lock
+ * 동작에는 관여하지 않는다.
+ *
+ * - `leg-boarding-prompt` — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire 여부/skip 사유
+ *   (`LegBoardingPromptOutcome`). SSoT 마커(`legBoardingPromptOutcome`)와 비교해 다를 때만 append.
+ * - `hop-end-prompt` — `maybeFireHopEndPrompt`(scheduled.ts)의 fire 여부/skip 사유
+ *   (`HopEndPromptOutcome`). SSoT 마커(`hopEndPromptOutcome`)와 비교해 다를 때만 append.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -81,7 +91,9 @@ export type TripEventKind =
   | 'intermediate-route'
   | 'boarding-confirm-result'
   | 'transfer-advance'
-  | 'leg2-estimate';
+  | 'leg2-estimate'
+  | 'leg-boarding-prompt'
+  | 'hop-end-prompt';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
@@ -109,6 +121,27 @@ export type TransferAdvanceOutcome = 'no-arvlcd' | 'not-fires' | 'advanced';
 
 /** `transfer-advance` 이벤트가 어느 코드 경로에서 관측됐는지(데이터 주도). */
 export type TransferAdvancePath = 'lockless' | 'lock-active';
+
+/**
+ * ADR-037 D2c (#2537) — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
+ * `no-anchor` = `trip.currentLegAnchor` 없음(leg-1 이거나 아직 환승 전), `walk-gated` =
+ * `now < trip.legBoardingEligibleAt`(도보시간 미경과), `no-candidates` = Seoul API 열차 후보 0건,
+ * `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우, 두 사유를 단일 값으로
+ * 합산), `fired` = 실제 발사 성공.
+ */
+export type LegBoardingPromptOutcome =
+  | 'no-anchor'
+  | 'walk-gated'
+  | 'no-candidates'
+  | 'silenced'
+  | 'fired';
+
+/**
+ * ADR-037 D2c (#2537) — `maybeFireHopEndPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
+ * `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우 합산), `fired` = 실제
+ * 발사 성공.
+ */
+export type HopEndPromptOutcome = 'silenced' | 'fired';
 
 export interface TripEventInput {
   /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */
