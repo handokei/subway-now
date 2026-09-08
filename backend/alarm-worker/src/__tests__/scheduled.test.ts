@@ -43,6 +43,7 @@ import {
   buildHopEndPromptMessage,
   maybeFireHopEndPrompt,
   maybeFireLegBoardingPrompt,
+  maybeFireOriginBoardingPromptGpsFree,
   runScheduled,
   tripLifecyclePhase,
   appendPassedStation,
@@ -186,7 +187,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -11177,7 +11178,7 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
       boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-      hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0,
+      hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0,
       arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
       arvlCdFireBlocked: 0, arvlCdFireFired: 0,
       boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -12351,6 +12352,397 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(stats.legBoardingPromptBlocked).toBe(1);
     expect(stats.legBoardingPromptFired).toBe(0);
+  });
+});
+
+/**
+ * #2531 — leg-1(origin) "탑승했냐?" 프롬프트 GPS-free fallback.
+ *
+ * 핵심 검증: 지하 GPS stale로 `evaluateAndMaybeFireBoardingPrompt`(9단 GPS 게이트)가 영구
+ * 막히는 origin trip도 이 함수는 GPS 신호 없이(=series/geo 인자 자체가 없음) fetchArrivals만으로
+ * 발사한다. dedup은 `trip.boardingPromptState`를 GPS 경로와 공유해 더블발사를 구조적으로 차단.
+ */
+describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
+  function makeStats(): ScheduledStats {
+    return makeFullEmptyStats();
+  }
+
+  function makeArrivalsSeoul(fetchImpl: typeof fetch): SeoulArrivalClient {
+    return new SeoulArrivalClient({ host: 'seoul.api', apiKey: 'KEY', fetchImpl });
+  }
+
+  function makeDeps(fetchImpl: typeof fetch, seoul?: SeoulArrivalClient): ScheduledDeps {
+    return {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl,
+      seoul: seoul ?? makeArrivalsSeoul(fetchImpl),
+      archFlag: 'off',
+    };
+  }
+
+  function makeArrivalsResponse(rows: Array<Partial<ArrivalEntry> & { btrainNo: string }>): typeof fetch {
+    return (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: rows.map((r) => ({
+            barvlDt: String(Math.round((r.arrivalSeconds ?? 120))),
+            recptnDt: '',
+            updnLine: r.isUp === false ? '하행' : '상행',
+            trainLineNm: '군자',
+            btrainNo: r.btrainNo,
+            subwayNm: '지하철7호선',
+            arvlCd: r.arvlCd ?? 1,
+          })),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+  }
+
+  function makeTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'trip-origin-gps-free',
+      createdAt: NOW - 5 * 60_000,
+      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+      apnsEnv: 'production',
+      registeredAt: NOW,
+      infoModeEnabled: true,
+      promptDisplay: { originStation: '용마산', line: '7' },
+      ...overrides,
+    } as unknown as Trip;
+  }
+
+  it('지하(GPS 부재) — arvlCd 임박 열차 있으면 GPS 없이 발사(RED→GREEN 핵심)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    expect(trip.boardingPromptState?.fired).toBe(true);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    expect(alertCall).toBeDefined();
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.originStation).toBe('용마산');
+    expect(body.data.line).toBe('7');
+  });
+
+  it('GPS 경로가 먼저 발사(boardingPromptState.fired + 최근 lastFiredAt) → 공유 dedup으로 skip (더블발사 0)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({
+      boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000, fireCount: 1, firedTrainCodes: ['7246'] },
+    });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+  });
+
+  it('boardingLock 활성 → no-op (fetch 안 함, 카운터 불변)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({
+      boardingLock: {
+        trainCode: '7246',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['용마산', '중곡'],
+        expiresAt: NOW + 10 * 60_000,
+      },
+    });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+  });
+
+  it('infoModeEnabled !== true → no-op (fetch 안 함, 카운터 불변)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ infoModeEnabled: false });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+  });
+
+  it('currentLegAnchor 있음(leg-2) → no-op (이 함수는 leg-1 전용, maybeFireLegBoardingPrompt가 담당)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ currentLegAnchor: { boardingStation: '건대입구', line: '7' } });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+  });
+
+  it('후보 0건(arrivals 빈 배열) → blocked 증가, push 미발사', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([]));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+  });
+
+  it('다음 waypoint가 다른 line(direction 추론 불가) → direction=null로 발사(subtitle/destinationDirection 없음)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    // waypoint.line !== promptDisplay.line → direction 계산 자체를 skip하는 분기(direction=null).
+    const trip = makeTrip({ waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }] });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.destinationDirection).toBeUndefined();
+    expect(body.data.subtitle).toBeUndefined();
+  });
+
+  it('#2130 A4 — 같은 trainCode가 이미 firedTrainCodes에 있으면(5분 경과 후에도) 재발사 skip', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    // lastFiredAt은 MIN_FIRE_INTERVAL_MS(5분)보다 오래돼 반복 발사 게이트는 통과하지만,
+    // 이번 cycle 후보로 뽑힌 trainCode가 firedTrainCodes에 이미 있으면 A4 dedup이 별도 차단한다.
+    // waypoint.line을 다른 line으로 둬 direction=null(방향 미상)로 만들어 pickAutoTrainCode가
+    // 방향 필터로 인해 ambiguous null을 반환하는 경로를 피한다.
+    const trip = makeTrip({
+      waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
+      boardingPromptState: {
+        fired: true,
+        lastFiredAt: NOW - 10 * 60_000,
+        fireCount: 1,
+        firedTrainCodes: ['7246'],
+      },
+    });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/3/device/'))).toBe(false);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+  });
+
+  it('APNs env mismatch 시 self-heal → corrected env 저장', async () => {
+    let callIdx = 0;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('seoul.api')) {
+        return makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }])(url as unknown as RequestInfo, init);
+      }
+      callIdx += 1;
+      if (callIdx === 1) {
+        return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+      }
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ apnsEnv: 'sandbox' });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(kv),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    expect(stats.envCorrected).toBe(1);
+    expect(trip.apnsEnv).toBe('production');
+  });
+
+  it('push 발사 실패(env mismatch 아닌 일반 실패) → errors 카운트, boardingPromptState 미변경', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('seoul.api')) {
+        return makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }])(url as unknown as RequestInfo, init);
+      }
+      return new Response(JSON.stringify({ reason: 'TopicDisallowed' }), { status: 403 });
+    }) as unknown as typeof fetch;
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.errors).toBeGreaterThan(0);
+    expect(trip.boardingPromptState?.fired).toBeUndefined();
+  });
+
+  it('Seoul API 호출이 throw → catch로 degrade, ETA 없이 candidateTrains 0건이면 blocked', async () => {
+    // #2531 CI coverage — try 블록 내부에서 예외가 나는 분기(catch) 자체가 여태 미검증이었다.
+    // pool/candidateTrains 초기화가 try 안에서만 채워지므로 throw 시 둘 다 빈 배열로 남아
+    // 이후 "후보 0건" 게이트로 자연 합류한다(leg-2/origin GPS 경로와 동일 degradation 정책).
+    const throwingSeoul = {
+      fetchArrivals: vi.fn(async () => {
+        throw new Error('seoul unreachable');
+      }),
+    } as unknown as SeoulArrivalClient;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl, throwingSeoul),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('direction=up 추론(다음 waypoint가 상행 방향) + isUp:true 매칭 → 발사, subtitle "상행"', async () => {
+    // #2531 CI coverage — 기존 케이스는 direction=null 또는 down만 exercise했다. 7호선
+    // 군자→용마산은 'up'으로 추론되는 실제 역 쌍(legDirection.ts 정책 기준) — direction==='up'
+    // 분기(필터 + subtitle 내부 삼항) 자체를 실제로 태운다.
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({
+      promptDisplay: { originStation: '군자', line: '7' },
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
+    });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.destinationDirection).toBe('up');
+    expect(body.aps.alert.subtitle).toContain('상행');
+  });
+
+  it('direction=null + 양방향(up/down) 후보 2건, arrivalSeconds 역전 — reduce 최솟값 갱신 + isUp:false 매핑', async () => {
+    // #2531 CI coverage — 기존 케이스는 pool 1건 또는 동일 arrivalSeconds라 reduce의
+    // "새 최솟값(cur)으로 교체" 분기와 candidateTrains map의 isUp:false → 'down' 분기가 전혀
+    // 실행되지 않았다. direction=null(다른 line waypoint)로 양방향 모두 pool에 포함시키고,
+    // 두 번째 후보(하행, arvlCd=1)가 더 이른 도착이 되도록 barvlDt를 역전시킨다.
+    const fetchImpl = vi.fn(
+      makeArrivalsResponse([
+        { btrainNo: 'up-train', isUp: true, arvlCd: 2, arrivalSeconds: 180 },
+        { btrainNo: 'down-train', isUp: false, arvlCd: 1, arrivalSeconds: 60 },
+      ]),
+    );
+    const trip = makeTrip({ waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }] });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    // 오름차순 정렬 시 down-train(60s)이 먼저 — isUp:false → direction:'down' 매핑 확인.
+    expect(body.data.candidateTrains?.[0]).toMatchObject({ trainCode: 'down-train', direction: 'down' });
+    expect(body.data.candidateTrains?.[1]).toMatchObject({ trainCode: 'up-train', direction: 'up' });
+  });
+
+  it('trip.waypoints가 빈 배열(다음 정거장 없음) → nextStation=null로도 발사', async () => {
+    // #2531 CI coverage — `trip.waypoints[0]?.stationName ?? null`의 optional chaining이
+    // undefined를 만나는 분기(다음 waypoint 자체가 없음)를 명시적으로 exercise.
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ waypoints: [] });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.data.destinationDirection).toBeUndefined();
   });
 });
 

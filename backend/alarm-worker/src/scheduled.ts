@@ -22,6 +22,7 @@ import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
+  evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   isNearOrigin,
   markPromptFired,
@@ -742,6 +743,19 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   legBoardingPromptBlocked: number;
   /**
+   * #2531 — leg-1(origin) "탑승했냐?" 프롬프트가 GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`)
+   * 로 실제 발사된 누적 횟수. `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트)가 지하에서
+   * 영구 막힐 때 이 카운터만 오르는 것이 정상 — GPS 경로(`boardingPromptFired`)와 합쳐야 origin
+   * 프롬프트 전체 발사량이 된다.
+   */
+  originGpsFreeBoardingPromptFired: number;
+  /**
+   * #2531 — GPS-free origin 프롬프트가 공유 dedup(`evaluateBoardingPromptRepeatGate`,
+   * `trip.boardingPromptState` 공유) 또는 후보 0건으로 차단된 누적 횟수. GPS 경로가 먼저
+   * 발사해 이 카운터가 오르면 더블발사 방지가 의도대로 동작 중이라는 증거(회귀 아님).
+   */
+  originGpsFreeBoardingPromptBlocked: number;
+  /**
    * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 arvlCd(ENTERING/ARRIVED)
    * ground truth로 통과(anchor stamp + hop-end prompt + waypoint slice)한 누적 횟수. 종전에는
    * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만 반응해
@@ -1167,6 +1181,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
+    originGpsFreeBoardingPromptFired: 0,
+    originGpsFreeBoardingPromptBlocked: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -1517,6 +1533,18 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       } catch (e) {
         stats.errors += 1;
         log('boarding-prompt: evaluation error', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
+      // #2531 — 위 GPS 9단 게이트 경로 직후 GPS-free fallback을 호출한다. GPS 경로가 우선권을
+      // 갖고(먼저 평가), 지하 GPS stale로 위 경로가 영구 막힌 origin trip만 이 경로로 보충
+      // 발사된다 — 공유 dedup(`trip.boardingPromptState`)이 더블발사를 구조적으로 차단한다.
+      try {
+        await maybeFireOriginBoardingPromptGpsFree(trip, env, deps, stats, now, log, generatePushId);
+      } catch (e) {
+        stats.errors += 1;
+        log('origin-boarding-prompt-gps-free: evaluation error', {
           error: String(e),
           token: trip.token.slice(0, 8),
         });
@@ -5954,6 +5982,282 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 }
 
 /**
+ * #2531 — leg-1(origin) "탑승했냐?" 프롬프트 GPS-free fallback.
+ *
+ * Root: `evaluateAndMaybeFireBoardingPrompt`(9단 GPS AND 게이트)가 지하 GPS stale로 origin
+ * trip을 영구 차단한다 — leg-2는 이미 `maybeFireLegBoardingPrompt`(GPS-free)로 해결됐지만
+ * leg-1만 GPS에 갇혀 있었다(#2531 본문). 본 함수는 그 leg-2 GPS-free 패턴을 origin용으로
+ * 그대로 미러한다 — `resolveTrainCodeFromPositions`의 "탑승역만 매칭" 안전장치와 9단 게이트
+ * 자체는 손대지 않고, GPS를 아예 쓰지 않는 별도 발사 경로만 추가한다.
+ *
+ * caller: lockMissing 분기에서 `evaluateAndMaybeFireBoardingPrompt` 직후 호출. GPS 경로가
+ * 먼저 평가되어 우선권을 갖는다 — 이 함수는 GPS 경로가 막혔거나(지하) 아직 평가/발사되지
+ * 않았을 때만 보충 발사한다.
+ *
+ * 게이트:
+ *   - `trip.currentLegAnchor` 있음(leg-2 진입, 환승 후) → no-op. leg-2는
+ *     `maybeFireLegBoardingPrompt` 전담 — 이 함수는 leg-1(origin) 전용.
+ *   - `trip.promptDisplay` 없음 → no-op (평가 자체 불가, GPS 경로와 동일 계약, #2131 Part A-1).
+ *   - `trip.infoModeEnabled !== true` → no-op (사용자 명시 의향 trip만 대상 — C 토글 ON 동급 보장).
+ *   - `trip.boardingLock !== undefined`(F2 방어) → no-op. caller가 `isBoardingLockActive===false`를
+ *     이미 보장하지만 GPS 경로와 동일하게 방어적으로 재확인한다.
+ *   - dedup: `evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now)` — **GPS 경로
+ *     (`evaluateAndMaybeFireBoardingPrompt` 내부 `evaluateBoardingPromptGates`)와 완전히 동일한
+ *     게이트 함수 + 동일 `trip.boardingPromptState` ledger를 공유한다.** GPS 경로가 먼저
+ *     발사하면 `lastFiredAt`/`fireCount`/`silencedUntil`이 stamp되어 이 함수도 즉시 dedup에
+ *     걸린다 — 두 경로가 별도 상태를 갖지 않으므로 더블발사가 구조적으로 불가능하다.
+ *   - 같은 trainCode 재발사 방지: `trip.boardingPromptState?.firedTrainCodes`에 이번 cycle
+ *     선택된 trainCode가 이미 있으면 skip (GPS 경로의 #2130 A4 정책과 동일 ledger 재사용).
+ *
+ * 트리거: `deps.seoul.fetchArrivals(promptDisplay.originStation)` → line + direction
+ * (`inferLegDirection`) 필터 → 임박 열차(candidateTrains) 있으면 발사. `maybeFireLegBoardingPrompt`
+ * 와 완전히 동일한 fetchArrivals 경로 — GPS 미사용.
+ *
+ * 발사 성공: alert push(kind='boarding-prompt') — device는 기존 `tryAutoLock`/#2529
+ * boarding-confirm 엔드포인트로 탭 응답을 처리한다(신규 device 배선 불필요) +
+ * `trip.boardingPromptState = markPromptFired(now, prev, selectedTrainCode)`(GPS 경로와 동일
+ * 상태 갱신 함수) + `stats.originGpsFreeBoardingPromptFired += 1`.
+ * 차단: dedup/후보 0건 → `stats.originGpsFreeBoardingPromptBlocked += 1`.
+ */
+/**
+ * #2531 (SonarCloud 중복 제거) — leg-1 `maybeFireOriginBoardingPromptGpsFree`와 leg-2
+ * `maybeFireLegBoardingPrompt`가 각자 고유 게이트를 통과한 뒤 공유하는 발사 본체:
+ * `deps.seoul.fetchArrivals(station)` → line/direction 필터 → directional 0건 시 line-only
+ * fallback pool → `etaSeconds`/`candidateTrains` 계산 → (후보 0건이면 종료) →
+ * `buildBoardingPromptMessage` → `sendWithEnvHeal`/`sendBoardingPromptPush` → envCorrected/errors
+ * 공통 처리 → `putTrip`. 두 함수가 완전히 동일하게 수행하던 블록을 그대로 옮겼다(로직 변경 없음).
+ *
+ * caller 고유 게이트(leg-2 `legBoardingEligibleAt`+`evaluateHopEndPromptGates`, leg-1
+ * `!currentLegAnchor`+`evaluateBoardingPromptRepeatGate`)는 호출 전에 각자 이미 통과시킨다.
+ * leg-1 전용 #2130 A4 trainCode dedup처럼 candidates 확보 후 send 전에 추가 검사가 필요하면
+ * `shouldProceedToSend`로 위임 — false 반환 시 caller가 이미 자체 stats/log를 처리했다고 보고
+ * 이 함수는 조용히 종료한다(leg-2는 미지정 = 항상 진행, 기존 동작과 동일).
+ * "발사 성공" 시 caller별 promptState 필드/카운터/trainCode 처리는 `onFired` 콜백으로 위임.
+ */
+async function fireBoardingPromptForAnchor(inputs: {
+  trip: Trip;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+  station: string;
+  line: string;
+  nextStation: string | null;
+  direction: 'up' | 'down' | null;
+  logPrefix: string;
+  onEmptyCandidates: () => void;
+  shouldProceedToSend?: (pool: readonly ArrivalEntry[]) => boolean;
+  onFired: (pool: readonly ArrivalEntry[]) => void;
+}): Promise<void> {
+  const {
+    trip,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    station,
+    line,
+    nextStation,
+    direction,
+    logPrefix,
+    onEmptyCandidates,
+    shouldProceedToSend,
+    onFired,
+  } = inputs;
+
+  let etaSeconds: number | null = null;
+  let candidateTrains: BoardingPromptCandidate[] = [];
+  let pool: readonly ArrivalEntry[] = [];
+  try {
+    const arrivals = await deps.seoul.fetchArrivals(station);
+    const directional = arrivals.filter(
+      (a) =>
+        matchLine(a.subwayNm, line) &&
+        (direction === null || (direction === 'up' ? a.isUp : !a.isUp)),
+    );
+    pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, line));
+    if (pool.length > 0) {
+      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
+      etaSeconds = best.arrivalSeconds;
+    }
+    candidateTrains = [...pool]
+      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .slice(0, 5)
+      .map<BoardingPromptCandidate>((entry) => ({
+        trainCode: entry.trainCode,
+        line,
+        direction: entry.isUp ? 'up' : 'down',
+        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+      }));
+  } catch {
+    // Seoul API 장애 — ETA 없이 push 발사 (leg-1/leg-2 동일 degradation 정책).
+  }
+
+  if (candidateTrains.length === 0) {
+    onEmptyCandidates();
+    return;
+  }
+
+  if (shouldProceedToSend && !shouldProceedToSend(pool)) {
+    return;
+  }
+
+  const { title, body } = buildBoardingPromptMessage(station, line, nextStation, etaSeconds, now, trip.locale);
+
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        title,
+        body,
+        originStation: station,
+        line,
+        tripToken: trip.token,
+        sentAt: now,
+        triggerKind: 'cron',
+        destinationDirection: direction ?? undefined,
+        subtitle:
+          direction !== null ? `${line}호선 ${direction === 'up' ? '상행' : '하행'}방면` : undefined,
+        candidateTrains,
+        collapseId: boardingPromptCollapseId(trip.token),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    onFired(pool);
+    dirty = true;
+    log(`${logPrefix}: fired`, {
+      token: trip.token.slice(0, 8),
+      station,
+      line,
+    });
+  } else {
+    stats.errors += 1;
+    log(`${logPrefix}: push failed`, {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+    await logBoardingPromptPushFailure(env, trip, heal);
+  }
+
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
+}
+
+export async function maybeFireOriginBoardingPromptGpsFree(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  // leg-2(환승 후)는 `maybeFireLegBoardingPrompt` 전담 — 이 함수는 leg-1(origin) 전용.
+  if (trip.currentLegAnchor) return;
+
+  const display = trip.promptDisplay;
+  if (!display) return;
+
+  // 사용자 명시 의향(C 토글 ON) trip만 대상 — ADR-014 동급 보장 정책과 정합.
+  if (trip.infoModeEnabled !== true) return;
+
+  // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
+  if (trip.boardingLock !== undefined) return;
+
+  // #2531 — GPS 경로(`evaluateBoardingPromptGates`)와 동일 dedup 게이트 + 동일 ledger 공유.
+  const repeatOutcome = evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now);
+  if (repeatOutcome && !repeatOutcome.pass) {
+    stats.originGpsFreeBoardingPromptBlocked += 1;
+    log('origin-boarding-prompt-gps-free: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: repeatOutcome.reason,
+      originStation: display.originStation,
+      line: display.line,
+    });
+    return;
+  }
+
+  const nextWaypoint = trip.waypoints[0];
+  const direction =
+    nextWaypoint && nextWaypoint.line === display.line
+      ? inferLegDirection(display.line, display.originStation, nextWaypoint.stationName)
+      : null;
+
+  await fireBoardingPromptForAnchor({
+    trip,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    station: display.originStation,
+    line: display.line,
+    nextStation: trip.waypoints[0]?.stationName ?? null,
+    direction,
+    logPrefix: 'origin-boarding-prompt-gps-free',
+    onEmptyCandidates: () => {
+      stats.originGpsFreeBoardingPromptBlocked += 1;
+      log('origin-boarding-prompt-gps-free: skipped empty candidates', {
+        token: trip.token.slice(0, 8),
+        originStation: display.originStation,
+        line: display.line,
+      });
+    },
+    // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
+    // 재발사하지 않는다.
+    shouldProceedToSend: (pool) => {
+      const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
+      if (
+        selectedTrainCode !== null &&
+        trip.boardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
+      ) {
+        stats.originGpsFreeBoardingPromptBlocked += 1;
+        log('origin-boarding-prompt-gps-free: skipped train duplicate', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
+        });
+        return false;
+      }
+      return true;
+    },
+    onFired: (pool) => {
+      const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
+      stats.originGpsFreeBoardingPromptFired += 1;
+      // GPS 경로와 동일한 상태 갱신 함수 + 동일 필드 — ledger 공유가 곧 더블발사 방지 근거.
+      trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
+      trip.lastAutoPromptedAt = now;
+    },
+  });
+}
+
+/**
  * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 "탑승하셨나요?" prompt 평가 + 발사.
  *
  * caller: lockMissing 분기(`attemptBoardingAnchorResolution` 시도 이후). `trip.currentLegAnchor`
@@ -6010,116 +6314,32 @@ export async function maybeFireLegBoardingPrompt(
       ? inferLegDirection(currentLegAnchor.line, currentLegAnchor.boardingStation, nextWaypoint.stationName)
       : null;
 
-  let etaSeconds: number | null = null;
-  let candidateTrains: BoardingPromptCandidate[] = [];
-  try {
-    const arrivals = await deps.seoul.fetchArrivals(currentLegAnchor.boardingStation);
-    const directional = arrivals.filter(
-      (a) =>
-        matchLine(a.subwayNm, currentLegAnchor.line) &&
-        (direction === null || (direction === 'up' ? a.isUp : !a.isUp)),
-    );
-    const pool =
-      directional.length > 0
-        ? directional
-        : arrivals.filter((a) => matchLine(a.subwayNm, currentLegAnchor.line));
-    if (pool.length > 0) {
-      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
-      etaSeconds = best.arrivalSeconds;
-    }
-    candidateTrains = [...pool]
-      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
-      .slice(0, 5)
-      .map<BoardingPromptCandidate>((entry) => ({
-        trainCode: entry.trainCode,
-        line: currentLegAnchor.line,
-        direction: entry.isUp ? 'up' : 'down',
-        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
-      }));
-  } catch {
-    // Seoul API 장애 — ETA 없이 push 발사(메시지 degradation만, push 자체는 보존). origin과 동일 정책.
-  }
-
-  if (candidateTrains.length === 0) {
-    stats.legBoardingPromptBlocked += 1;
-    log('leg-boarding-prompt: skipped empty candidates', {
-      token: trip.token.slice(0, 8),
-      station: currentLegAnchor.boardingStation,
-      line: currentLegAnchor.line,
-    });
-    return;
-  }
-
-  const { title, body } = buildBoardingPromptMessage(
-    currentLegAnchor.boardingStation,
-    currentLegAnchor.line,
-    nextWaypoint?.stationName ?? null,
-    etaSeconds,
+  await fireBoardingPromptForAnchor({
+    trip,
+    env,
+    deps,
+    stats,
     now,
-    trip.locale,
-  );
-
-  const pushId = generatePushId();
-  const heal = await sendWithEnvHeal(
-    (host) =>
-      sendBoardingPromptPush({
-        deviceToken: resolveTripDeviceToken(trip),
-        pushId,
-        title,
-        body,
-        originStation: currentLegAnchor.boardingStation,
-        line: currentLegAnchor.line,
-        tripToken: trip.token,
-        sentAt: now,
-        triggerKind: 'cron',
-        destinationDirection: direction ?? undefined,
-        subtitle:
-          direction !== null
-            ? `${currentLegAnchor.line}호선 ${direction === 'up' ? '상행' : '하행'}방면`
-            : undefined,
-        candidateTrains,
-        collapseId: boardingPromptCollapseId(trip.token),
-        config: deps.apnsConfig,
-        host,
-        fetchImpl: deps.fetchImpl,
-        now,
-      }),
-    trip.apnsEnv,
-    deps.apnsHosts,
     log,
-    trip.token.slice(0, 8),
-    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
-
-  let dirty = false;
-  if (heal.correctedEnv) {
-    trip.apnsEnv = heal.correctedEnv;
-    dirty = true;
-    stats.envCorrected += 1;
-  }
-  if (heal.result.ok) {
-    stats.legBoardingPromptFired += 1;
-    stats.silentPushFiredByKind.boardingPrompt += 1;
-    trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState);
-    dirty = true;
-    log('leg-boarding-prompt: fired', {
-      token: trip.token.slice(0, 8),
-      station: currentLegAnchor.boardingStation,
-      line: currentLegAnchor.line,
-    });
-  } else {
-    stats.errors += 1;
-    log('leg-boarding-prompt: push failed', {
-      token: trip.token.slice(0, 8),
-      status: heal.result.status,
-      reason: heal.result.reason,
-    });
-    await logBoardingPromptPushFailure(env, trip, heal);
-  }
-
-  if (dirty) {
-    await putTrip(env.TRIPS, trip);
-  }
+    generatePushId,
+    station: currentLegAnchor.boardingStation,
+    line: currentLegAnchor.line,
+    nextStation: nextWaypoint?.stationName ?? null,
+    direction,
+    logPrefix: 'leg-boarding-prompt',
+    onEmptyCandidates: () => {
+      stats.legBoardingPromptBlocked += 1;
+      log('leg-boarding-prompt: skipped empty candidates', {
+        token: trip.token.slice(0, 8),
+        station: currentLegAnchor.boardingStation,
+        line: currentLegAnchor.line,
+      });
+    },
+    onFired: () => {
+      stats.legBoardingPromptFired += 1;
+      trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState);
+    },
+  });
 }
 
 /**

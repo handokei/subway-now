@@ -227,8 +227,13 @@ function evaluateSilenceGate(
  * `fired` 필드 자체는 더 이상 검사하지 않는다 — 관측 전용 플래그로만 유지된다(d1TripMetrics 등).
  *
  * hop-end는 여전히 `evaluateSilenceGate`(1회 정책)를 사용 — 이 함수는 boarding-prompt 전용.
+ *
+ * #2531 — export. leg-1 GPS 9단 게이트 경로(`evaluateBoardingPromptGates` 내부)뿐 아니라
+ * `scheduled.ts`의 GPS-free 신규 함수(`maybeFireOriginBoardingPromptGpsFree`)도 동일
+ * `trip.boardingPromptState` ledger로 이 게이트를 직접 호출한다 — 두 발사 경로가 같은 dedup
+ * 상태를 공유해 더블발사를 구조적으로 차단한다(#2531 본문 설계).
  */
-function evaluateBoardingPromptRepeatGate(
+export function evaluateBoardingPromptRepeatGate(
   promptState: BoardingPromptState | undefined,
   now: number,
 ): GateOutcome | null {
