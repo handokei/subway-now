@@ -9586,6 +9586,70 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
     expect(meta.outcome).toBe('skipped-reason');
     expect(meta.reason).toBe('no-trip');
   });
+
+  // ADR-037 D2c (#2542) — 발사 게이트 blockReason 전부(#2343 no-trip 한정 해제) D1 관측 대상
+  // 확장 + 전이 시에만 기록(#2073 quota 보호).
+  describe('ADR-037 D2c (#2542) — 발사 게이트 blockReason 전이 관측', () => {
+    function setupTransferGateBlockedTrip(token: string): Promise<{ kv: InMemoryKV; trip: Trip }> {
+      const kv = new InMemoryKV();
+      const trip = makeLockTripFixture(token, {
+        waypoints: [{ stationName: '중곡', line: '7', kind: 'transfer' }],
+        passedStations: ['역삼'],
+      });
+      return putTrip(kv as unknown as KVNamespace, trip).then(async () => {
+        const ssot = await seedSsot(kv as unknown as KVNamespace, token, '강남', {
+          expiresAt: trip.expiresAt,
+        });
+        ssot.motionState = 'moving';
+        ssot.lastAdvanceAt = NOW - 30_000;
+        ssot.lastAdvanceEvidence = 'arvlcd-confirmed-train';
+        await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+        return { kv, trip };
+      });
+    }
+
+    it('transferDestinationGate blocked(ssot-not-at-or-approaching) 전이 시 1건 기록', async () => {
+      const token = 'arvl-fire-log-blockreason-t1';
+      const { kv } = await setupTransferGateBlockedTrip(token);
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1, '7246'),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2542-t1',
+      });
+      const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(fireLogInserts).toHaveLength(1);
+      const meta = JSON.parse(fireLogInserts[0][5] as string) as {
+        outcome: string;
+        reason?: string;
+      };
+      expect(meta.outcome).toBe('skipped-reason');
+      expect(meta.reason).toBe('ssot-not-at-or-approaching');
+    });
+
+    it('동일 blockReason이 다음 tick에도 반복되면 미기록(throttle)', async () => {
+      const token = 'arvl-fire-log-blockreason-t2';
+      const { kv } = await setupTransferGateBlockedTrip(token);
+      const { db, inserts } = makeFireLogDb();
+      const deps = {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1, '7246'),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2542-t2',
+      };
+      await runScheduled(makeEnv(kv, undefined, db), deps);
+      expect(inserts.filter((args) => args[2] === 'cron-fire-attempt')).toHaveLength(1);
+
+      // 다음 tick — SSoT 상태 불변이라 동일 blockReason 재현. 전이가 아니므로 추가 기록 없음.
+      await runScheduled(makeEnv(kv, undefined, db), { ...deps, now: () => NOW + 30_000 });
+      expect(inserts.filter((args) => args[2] === 'cron-fire-attempt')).toHaveLength(1);
+    });
+  });
 });
 
 /**

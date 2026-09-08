@@ -3149,6 +3149,31 @@ async function recordFireAttempt(
   );
 }
 
+/**
+ * ADR-037 D2c (#2542, 진단 계측 only) — 발사 게이트(`advanceTripPosition` 6단 게이트 /
+ * `transferDestinationGate` / lock-active waypoint advance)가 blocked한 사유를 SSoT 마커
+ * (`lastFireBlockReason`)와 비교해 다를 때만(전이 시에만) 기존 `recordFireAttempt`
+ * (kind='cron-fire-attempt', outcome='skipped-reason')로 D1 append한다(#2073 quota 보호).
+ * 같은 blockReason이 매 tick 반복(모션정지 등 수분 지속)되는 경우 중복 기록을 막는다.
+ * 발사/게이트 판정에는 관여하지 않는다.
+ */
+async function recordFireBlockReasonTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  reason: string,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.lastFireBlockReason === reason) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, lastFireBlockReason: reason },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, reason);
+}
+
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
 // path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
@@ -3509,6 +3534,9 @@ async function tryAdvanceAndFireArvlcd(inputs: {
         ssotCurrent: ssot.currentStationId,
         ssotLastAdvanceAt: ssot.lastAdvanceAt,
       });
+      if (transferGate.blockReason !== undefined) {
+        await recordFireBlockReasonTransition(env, trip, waypoint, ssot, transferGate.blockReason, now);
+      }
       return { dirty: false };
     }
   }
@@ -3556,11 +3584,19 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       environment: deriveEvidenceEnvironment(trip),
       hopIndex: waypoint.hopIndex,
     });
-    // #2343 — trip 삭제 race(advanceTripPosition 게이트 #5 `no-trip`)만 fire-attempt D1 관측
-    // 대상. 다른 blockReason(모션 정지/env 불일치 등)은 정상 게이트 동작이라 발사 시도 자체가
-    // 아니므로 quota 절약을 위해 로깅하지 않는다.
-    if (outcome.blockReason === 'no-trip') {
-      await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, 'no-trip');
+    // ADR-037 D2c (#2542) — 모든 blockReason을 전이 시에만(#2073 quota 보호) D1 관측 대상으로
+    // 확장. 과거 #2343 no-trip 한정 로깅은 `recordFireBlockReasonTransition`의 SSoT dedup 마커
+    // (`lastFireBlockReason`)로 흡수 — no-trip 케이스도 여전히 매 tick이 아닌 전이 시에만 기록되어
+    // 기존 동작을 보존한다.
+    if (outcome.blockReason !== undefined) {
+      await recordFireBlockReasonTransition(
+        env,
+        trip,
+        waypoint,
+        outcome.ssot,
+        outcome.blockReason,
+        now,
+      );
     }
     return { dirty: false };
   }
@@ -4554,6 +4590,18 @@ export async function advanceBoardingLockWaypoint(
         reason: outcome.blockReason ?? 'lock-advance-blocked',
         hopIndex: waypoint.hopIndex,
       });
+      // ADR-037 D2c (#2542) — lock-active waypoint advance blocked도 전이 시에만(#2073 quota
+      // 보호) D1 관측 대상. writeMetric(AE)는 D1 미적재라 본 site는 기존에 D1 blind spot이었다.
+      if (outcome.blockReason !== undefined) {
+        await recordFireBlockReasonTransition(
+          env,
+          trip,
+          waypoint,
+          outcome.ssot,
+          outcome.blockReason,
+          now,
+        );
+      }
       return;
     }
     // P0-1 (#1577) — Site 1 of 6: boarding-lock waypoint advance.
