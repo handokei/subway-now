@@ -35,6 +35,7 @@
 
 import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
 import type { LegConsensusRecord } from './transferLegConsensus';
+import type { ConsensusNeverRanPhase, IntermediateRouteBranch } from './tripEventLog';
 import type { Trip } from './types';
 
 /**
@@ -276,6 +277,24 @@ export interface TripPositionSSoT {
    * trip은 undefined.
    */
   legConsensus?: LegConsensusRecord;
+  /**
+   * ADR-037 D2 (#2533) — 진단 계측 전용 dedup 마커. intermediate waypoint에서 직전에 dispatch된
+   * 라우팅 분기(`lockless`/`consensus`). caller(scheduled.ts)가 이 값과 이번 tick 분기를 비교해
+   * 다를 때만 D1 `trip_events`(kind='intermediate-route')로 append한다(#2073 quota 보호). 발사/
+   * advance 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급,
+   * 다음 tick에서 자연히 전이 감지).
+   */
+  intermediateRouteBranch?: IntermediateRouteBranch;
+  /**
+   * ADR-037 D2 (#2533) — 진단 계측 전용 dedup 마커. `tryFireConsensusTrainLeg`가 직전 tick에
+   * candidate 관측 전 조기 반환한 사유. undefined = 정상 진행(engine 진입) 또는 최초 tick.
+   * caller가 이 값과 이번 tick 사유(또는 진행 시 undefined)를 비교해 다를 때만 D1
+   * `trip_events`(kind='consensus-tick')로 append한다(#2073 quota 보호). 발사/advance 판정에는
+   * 관여하지 않는다.
+   */
+  consensusNeverRanPhase?: ConsensusNeverRanPhase;
   /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.

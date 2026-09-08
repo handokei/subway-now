@@ -38,6 +38,18 @@ import { captureXEvent } from './sentry';
  * race skip) 시점 1건만 write — Free plan D1 quota 보호(#2073 lesson). `meta`에
  * `{ waypointKind, phase, outcome, reason? }`을 싣는다 — 새 kind를 추가하지 않고 기존
  * trip_events 스키마를 재사용(quota 증분 최소화).
+ *
+ * `consensus-tick` / `intermediate-route` (ADR-037 D2, #2533) — 진단 계측 전용. leg-2 침묵
+ * root를 D1만으로 격리하기 위해 legConsensus 상태기계 진행/조기 반환 사유와 intermediate
+ * waypoint 라우팅 분기를 관측한다. fire/advance 동작에는 관여하지 않는다.
+ *
+ * - `consensus-tick` — `applyLegConsensusTick`(advanceTripPosition.ts)의 legConsensus.status
+ *   전이(confirm/demote/suppress 이벤트가 별도로 남는 전이는 중복 제외) + `tryFireConsensusTrainLeg`
+ *   (scheduled.ts)의 candidate 관측 전 조기 반환 사유(`ConsensusNeverRanPhase`) 전이. 둘 다 상태
+ *   자체가 바뀔 때만 append(#2073 quota 보호).
+ * - `intermediate-route` — intermediate waypoint에서 `lockless`(C 토글 ON,
+ *   `runLocklessIntermediate`)/`consensus`(C 토글 OFF, `tryFireConsensusTrainLeg`) 중 어느 분기로
+ *   dispatch됐는지. 직전 분기와 다를 때만 append.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -47,7 +59,23 @@ export type TripEventKind =
   | 'consensus-confirm'
   | 'consensus-demote'
   | 'consensus-suppress'
-  | 'cron-fire-attempt';
+  | 'cron-fire-attempt'
+  | 'consensus-tick'
+  | 'intermediate-route';
+
+/**
+ * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
+ * `lockless` = C 토글 ON(`runLocklessIntermediate`), `consensus` = C 토글 OFF
+ * (`tryFireConsensusTrainLeg`). 데이터 주도 — scheduled.ts 하드코딩 분기 대신 본 유니온으로 구동.
+ */
+export type IntermediateRouteBranch = 'lockless' | 'consensus';
+
+/**
+ * ADR-037 D2 (#2533) — `tryFireConsensusTrainLeg`가 legConsensus 상태기계 진입 전 조기 반환하는
+ * 사유(진단 전용). `no-arrivals` = Seoul arrivals 자체가 0건(지하 arvlCd 침묵), `candidates-filtered`
+ * = arrivals는 있으나 line/direction 필터(#2328)로 전부 배제.
+ */
+export type ConsensusNeverRanPhase = 'no-arrivals' | 'candidates-filtered';
 
 export interface TripEventInput {
   /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */

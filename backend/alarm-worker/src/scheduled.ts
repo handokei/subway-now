@@ -67,6 +67,7 @@ import {
   readSsot,
   seedSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
+  writeSsot,
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import {
@@ -131,7 +132,12 @@ import {
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
 import { hasActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGate';
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
-import { cleanupTripEvents, recordTripEvent } from './tripEventLog';
+import {
+  cleanupTripEvents,
+  recordTripEvent,
+  type ConsensusNeverRanPhase,
+  type IntermediateRouteBranch,
+} from './tripEventLog';
 import { hashTripToken } from './sentry';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
@@ -1563,6 +1569,19 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           token: trip.token.slice(0, 8),
         });
       }
+      // ADR-037 D2 (#2533, 진단 계측 only) — intermediate waypoint에서 실제 dispatch될 분기
+      // (lockless=C 토글 ON / consensus=C 토글 OFF)를 직전 tick 마커와 비교해 전이 시에만 D1에
+      // 남긴다. 발사/advance 동작 무변경 — 관측만 추가.
+      if (waypoint.kind === 'intermediate') {
+        await recordIntermediateRouteTransition(
+          env,
+          trip,
+          waypoint,
+          stationarySsot,
+          trip.infoModeEnabled ? 'lockless' : 'consensus',
+          now,
+        );
+      }
       // #816 C — lockless opt-in trip은 게이트 우회. lock 없이도 intermediate waypoint 통과
       // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
       // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면
@@ -2821,6 +2840,75 @@ function fireLogWaypointKind(kind: Waypoint['kind']): 'station-passed' | 'transf
  * 시도(성공/실패/trip 삭제 race skip) 시점에만 호출 — Free plan D1 quota 보호(#2073 lesson).
  * `env.DB` 미바인딩 시 `recordTripEvent`가 graceful no-op.
  */
+/**
+ * ADR-037 D2 (#2533, 진단 계측 only) — intermediate waypoint에서 dispatch된 라우팅 분기
+ * (`lockless`/`consensus`)를 SSoT 마커(`intermediateRouteBranch`)와 비교해 다를 때만 D1
+ * `trip_events`(kind='intermediate-route')로 append한다. 매 tick 동일 분기 반복은 write하지
+ * 않는다(#2073 quota 보호). SSoT 부재(lazy-seed 이전) 시 no-op — 다음 cycle의 seed 이후 tick에서
+ * 자연히 관측된다. 발사/advance 동작에는 관여하지 않는다.
+ */
+async function recordIntermediateRouteTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  branch: IntermediateRouteBranch,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.intermediateRouteBranch === branch) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, intermediateRouteBranch: branch },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'intermediate-route',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { branch },
+    },
+    now,
+  );
+}
+
+/**
+ * ADR-037 D2 (#2533, 진단 계측 only) — `tryFireConsensusTrainLeg`가 legConsensus 상태기계 진입
+ * 전 조기 반환한 사유(`no-arrivals`=지하 arvlCd 침묵 / `candidates-filtered`=#2328 필터 배제 /
+ * `undefined`=정상 진행)를 SSoT 마커(`consensusNeverRanPhase`)와 비교해 다를 때만 D1
+ * `trip_events`(kind='consensus-tick')로 append한다(#2073 quota 보호). 발사/advance 동작에는
+ * 관여하지 않는다.
+ */
+async function recordConsensusPhaseTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT,
+  phase: ConsensusNeverRanPhase | undefined,
+  now: number,
+): Promise<void> {
+  if (ssot.consensusNeverRanPhase === phase) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, consensusNeverRanPhase: phase },
+    { expiresAt: trip.expiresAt },
+  );
+  if (phase === undefined) return;
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'consensus-tick',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { phase },
+    },
+    now,
+  );
+}
+
 async function recordFireAttempt(
   env: Env,
   trip: Trip,
@@ -4848,7 +4936,11 @@ async function tryFireConsensusTrainLeg(
   if (ssot === null || !ssot.currentStationId) return;
 
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  if (arrivals.length === 0) return;
+  if (arrivals.length === 0) {
+    // ADR-037 D2 (#2533, 진단 계측 only) — 지하 arvlCd 침묵 never-ran 사유.
+    await recordConsensusPhaseTransition(env, trip, waypoint, ssot, 'no-arrivals', now);
+    return;
+  }
 
   const candidates: { trainCode: string; arvlCd: number; arrivalSeconds: number }[] = [];
   for (const a of arrivals) {
@@ -4863,7 +4955,14 @@ async function tryFireConsensusTrainLeg(
     }
     candidates.push({ trainCode: a.trainCode, arvlCd: a.arvlCd, arrivalSeconds: a.arrivalSeconds });
   }
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) {
+    // ADR-037 D2 (#2533, 진단 계측 only) — #2328 line/direction 필터 배제 never-ran 사유.
+    await recordConsensusPhaseTransition(env, trip, waypoint, ssot, 'candidates-filtered', now);
+    return;
+  }
+  // ADR-037 D2 (#2533, 진단 계측 only) — 정상 진행(candidate 확보). 직전 tick이 never-ran
+  // 사유로 마킹돼 있었다면 전이로 간주해 마커를 clear한다(다음 침묵 재발 시 다시 관측 가능).
+  await recordConsensusPhaseTransition(env, trip, waypoint, ssot, undefined, now);
 
   const observedDepartures: ObservedDeparture[] = candidates.map((c) => ({
     trainCode: c.trainCode,

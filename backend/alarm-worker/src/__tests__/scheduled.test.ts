@@ -1256,6 +1256,145 @@ describe('runScheduled', () => {
         expect(apnsFetch).toHaveBeenCalled();
       });
     });
+
+    // ADR-037 D2 (#2533, 진단 계측 only) — leg-2 침묵 root를 D1만으로 격리하기 위한 관측
+    // 이벤트(consensus-tick / intermediate-route). 발사/advance 동작은 무변경 — 아래 테스트는
+    // 오직 D1 append 시점/dedup(전이 시에만)만 검증한다.
+    describe('ADR-037 D2 (#2533) — 진단 계측 이벤트', () => {
+      function findInserts(inserts: unknown[][], kind: string): unknown[][] {
+        return inserts.filter((args) => args[2] === kind);
+      }
+
+      it('intermediate-route — SSoT 부재(lazy-seed 이전)면 append 없음 (no-op)', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip({ infoModeEnabled: false });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        // seedSsot 호출 없음 — stationarySsot이 null인 상태를 재현.
+        const { db, inserts } = makeFireLogDb();
+        await runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeSeoul([]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW,
+        });
+        expect(findInserts(inserts, 'intermediate-route')).toHaveLength(0);
+      });
+
+      it('intermediate-route — 토글 ON(lockless) 분기는 전이 시에만 append, 동일 분기 반복은 no-op', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip({ infoModeEnabled: true });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
+        const { db, inserts } = makeFireLogDb();
+        const deps = {
+          seoul: makeSeoul([ARVL_NO_SIGNAL]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW,
+        };
+        await runScheduled(makeEnv(kv, undefined, db), deps);
+        const first = findInserts(inserts, 'intermediate-route');
+        expect(first).toHaveLength(1);
+        expect(JSON.parse(first[0][5] as string)).toEqual({ branch: 'lockless' });
+
+        // 같은 tick 분기 반복 → 재기록 없음(#2073 quota 보호).
+        await runScheduled(makeEnv(kv, undefined, db), { ...deps, now: () => NOW + 60_000 });
+        expect(findInserts(inserts, 'intermediate-route')).toHaveLength(1);
+      });
+
+      it('intermediate-route — 토글 OFF(consensus) 분기 meta.branch=consensus', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip({ infoModeEnabled: false });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
+        const { db, inserts } = makeFireLogDb();
+        await runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeSeoul([]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW,
+        });
+        const events = findInserts(inserts, 'intermediate-route');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toEqual({ branch: 'consensus' });
+      });
+
+      it('consensus-tick — arrivals=0(지하 arvlCd 침묵) never-ran phase, 전이 시에만 append', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip({ infoModeEnabled: false });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
+        const { db, inserts } = makeFireLogDb();
+        const deps = {
+          seoul: makeSeoul([]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW,
+        };
+        await runScheduled(makeEnv(kv, undefined, db), deps);
+        const first = findInserts(inserts, 'consensus-tick');
+        expect(first).toHaveLength(1);
+        expect(JSON.parse(first[0][5] as string)).toEqual({ phase: 'no-arrivals' });
+
+        // 같은 사유 반복 tick → 재기록 없음.
+        await runScheduled(makeEnv(kv, undefined, db), { ...deps, now: () => NOW + 60_000 });
+        expect(findInserts(inserts, 'consensus-tick')).toHaveLength(1);
+      });
+
+      it('consensus-tick — arrivals 있으나 필터 배제(#2328) never-ran phase=candidates-filtered', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip({ infoModeEnabled: false });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
+        const { db, inserts } = makeFireLogDb();
+        await runScheduled(makeEnv(kv, undefined, db), {
+          // arvlCd=null → candidate 진입 전 배제(#2328 필터 이전 단계).
+          seoul: makeSeoul([ARVL_NO_SIGNAL]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW,
+        });
+        const events = findInserts(inserts, 'consensus-tick');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toEqual({ phase: 'candidates-filtered' });
+      });
+
+      it('consensus-tick — never-ran → candidate 확보(정상 진행) 전이 시 마커 clear (재기록 없이 SSoT만 갱신)', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip({ infoModeEnabled: false });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        // currentStationId == waypoint.stationName → inferLegDirection 불가(null) → 방향 필터 dormant(pass).
+        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
+        const { db, inserts } = makeFireLogDb();
+        await runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeSeoul([]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW,
+        });
+        expect(findInserts(inserts, 'consensus-tick')).toHaveLength(1);
+
+        await runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+          now: () => NOW + 60_000,
+        });
+        // 정상 진행 전이 자체는 D1에 추가 append하지 않는다(phase=undefined는 이벤트 없음) —
+        // no-arrivals 1건에서 늘어나지 않아야 한다.
+        expect(findInserts(inserts, 'consensus-tick')).toHaveLength(1);
+        const ssotAfter = await readSsot(kv as unknown as KVNamespace, trip.token);
+        expect(ssotAfter?.consensusNeverRanPhase).toBeUndefined();
+      });
+    });
   });
 });
 

@@ -69,6 +69,7 @@ import {
   stepLegConsensus,
   type LegConsensusEvent,
   type LegConsensusRecord,
+  type LegConsensusStatus,
   type LegConsensusTick,
   type ObservedDeparture,
 } from './transferLegConsensus';
@@ -736,11 +737,37 @@ function appendUnique(arr: readonly string[], next: string): string[] {
 }
 
 /**
+ * ADR-037 D2 (#2533) — legConsensus 상태기계 스냅샷을 D1 `trip_events`(kind='consensus-tick')
+ * meta로 변환하는 순수 helper. 진단 계측 전용 — advance/fire 판정에는 관여하지 않는다.
+ */
+export function buildConsensusTickMeta(record: LegConsensusRecord): {
+  status: LegConsensusStatus;
+  candidates: { train: string; match: number; mismatch: number; missed: number }[];
+} {
+  return {
+    status: record.status,
+    candidates: record.candidates.map((c) => ({
+      train: c.trainCode,
+      match: c.matchCount,
+      mismatch: c.mismatchCount,
+      missed: c.missedTicks,
+    })),
+  };
+}
+
+/**
  * #2329 (consensus-C, 설계 SSoT #2323) — `transferLegConsensus.ts`(#2327) 상태기계 1 tick 진행 +
  * SSoT 영속 + D1 trip_events(`consensus-confirm`/`consensus-demote`/`consensus-suppress`) 기록을
  * 한 곳에 묶는 wire 진입점. caller(scheduled.ts)는 매 cron cycle 관측치를 `LegConsensusTick`으로
  * forward하기만 하면 된다 — 상태기계 mutate/write/D1 append는 본 함수가 전담한다(ADR-017 §단일
  * mutation 진입점 정신을 legConsensus 서브필드에도 동일 적용).
+ *
+ * ADR-037 D2 (#2533, 진단 계측 only) — 위 confirm/demote/suppress 이벤트가 없는 순수 status
+ * 전이(init→tracking/ambiguous, tracking↔ambiguous)는 D1에 전혀 남지 않아 leg-2 침묵이
+ * "state machine이 안 탔다"인지 "탔지만 confirm에 못 미쳤다"인지 D1만으로 구분 불가했다. 아래
+ * 블록은 `events.length===0`(기존 confirm/demote/suppress 이벤트와 중복 없음) + pre-tick status와
+ * post-tick status가 다를 때만 `consensus-tick` 1건을 append한다(#2073 quota 보호 — 매 tick
+ * write 금지). 발사/advance 동작은 무변경.
  *
  * `ssot.legConsensus`가 없으면 `init`으로 최초 상태기계를 만든다(caller가 T0/W(transferTimeSec)/
  * H(headwaySec)/observedDepartures를 데이터 주도로 산출해 전달). 이미 있으면 `init`은 무시.
@@ -799,6 +826,21 @@ export async function applyLegConsensusTick(
           station: input.station,
           line: input.line,
           meta: { trainCode: event.trainCode, ...event.meta },
+        },
+        input.tick.now,
+      );
+    }
+    // ADR-037 D2 (#2533) — confirm/demote/suppress로 이미 이벤트가 남은 tick은 제외하고, 순수
+    // status 전이(pre-tick existing?.status → post-tick record.status)일 때만 append.
+    if (events.length === 0 && existing?.status !== record.status) {
+      await recordTripEvent(
+        db,
+        {
+          tokenHash,
+          kind: 'consensus-tick',
+          station: input.station,
+          line: input.line,
+          meta: buildConsensusTickMeta(record),
         },
         input.tick.now,
       );
