@@ -13,7 +13,10 @@
 
 import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
-import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
+import {
+  attemptBoardingAnchorResolution,
+  type BoardingResolveOutcome,
+} from './boardingAnchorResolver';
 import {
   isNearOrigin,
   markPromptFired,
@@ -1940,6 +1943,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
 
   const now = Date.now();
   let lockState: 'leg1' | 'leg2' | 'released' | 'none' = 'none';
+  let resolveOutcome: BoardingResolveOutcome | undefined;
   let working: Trip = existing;
 
   if (payload.action === 'boarded') {
@@ -1953,9 +1957,17 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           apiKey: c.env.SEOUL_API_KEY,
           host: c.env.SEOUL_API_HOST,
         });
-        const anchorLock = await attemptBoardingAnchorResolution(working, seoul, now, {
-          allowLegTransfer: true,
-        });
+        const anchorLock = await attemptBoardingAnchorResolution(
+          working,
+          seoul,
+          now,
+          { allowLegTransfer: true },
+          // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
+          // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.
+          (outcome) => {
+            resolveOutcome = outcome;
+          },
+        );
         if (anchorLock) {
           const isLeg2 = isLegTwoActive(working, now);
           working = {
@@ -2005,8 +2017,28 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // 기존 resolver 로그('boarding-anchor: trainCode resolved')와 D1 trip_metrics(token_hash)가
   // 이미 커버한다.
   console.log(JSON.stringify({ msg: 'boarding-confirm', lockState }));
+  // ADR-037 D2b (#2535, 진단 계측 only) — 탭 처리 1건당 정확히 1회 D1 append. HTTP 요청 단위라
+  // #2073 quota throttle 불필요(매 tick 반복 호출이 아니다). push/advance/lock 동작 무변경 —
+  // 위에서 이미 확정된 lockState/resolveOutcome을 관측만 한다.
+  await recordTripEvent(c.env.DB, {
+    tokenHash: hashTripToken(token),
+    kind: 'boarding-confirm-result',
+    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome),
+  });
   return c.json({ ok: true, lockState });
 });
+
+/**
+ * ADR-037 D2b (#2535, 진단 계측 only) — `boarding-confirm-result` D1 이벤트 meta 빌더(순수 함수,
+ * 테스트 용이). `resolveOutcome`은 `action==='boarded'`이고 신규 resolve를 실제로 시도했을 때만
+ * 존재 — 그 외(이미 lock 활성/disembarked/not-boarded)는 undefined라 meta에서 생략한다.
+ */
+export function buildBoardingConfirmEventMeta(
+  lockState: 'leg1' | 'leg2' | 'released' | 'none',
+  resolveOutcome: BoardingResolveOutcome | undefined,
+): { lockState: 'leg1' | 'leg2' | 'released' | 'none'; outcome?: BoardingResolveOutcome } {
+  return { lockState, ...(resolveOutcome !== undefined ? { outcome: resolveOutcome } : {}) };
+}
 
 interface BoardingConfirmPayload {
   action: 'boarded' | 'disembarked' | 'not-boarded';

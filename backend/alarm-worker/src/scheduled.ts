@@ -137,6 +137,8 @@ import {
   recordTripEvent,
   type ConsensusNeverRanPhase,
   type IntermediateRouteBranch,
+  type TransferAdvanceOutcome,
+  type TransferAdvancePath,
 } from './tripEventLog';
 import { hashTripToken } from './sentry';
 
@@ -1634,7 +1636,17 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       if (waypoint.kind === 'transfer') {
         let advanced = false;
         try {
-          advanced = await runLocklessTransfer(trip, waypoint, env, deps, stats, now, log, generatePushId);
+          advanced = await runLocklessTransfer(
+            trip,
+            waypoint,
+            env,
+            deps,
+            stats,
+            now,
+            log,
+            generatePushId,
+            stationarySsot,
+          );
         } catch (e) {
           stats.errors += 1;
           log('lockless-transfer: poll error', { error: String(e), token: trip.token.slice(0, 8) });
@@ -1687,6 +1699,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         now,
         log,
         generatePushId,
+        stationarySsot,
       );
     } catch (e) {
       stats.errors += 1;
@@ -2909,6 +2922,67 @@ async function recordConsensusPhaseTransition(
   );
 }
 
+/**
+ * ADR-037 D2b (#2535, 진단 계측 only) — 환승(transfer) waypoint advance 관측 결과
+ * (`no-arvlcd`/`not-fires`/`advanced`)를 SSoT 마커(`transferAdvanceState`)와 비교해 다를 때만 D1
+ * `trip_events`(kind='transfer-advance')로 append한다(#2073 quota 보호). `path`로 lockless
+ * (`runLocklessTransfer`)/lock-active(`runTrainCodeTracking`) 중 어느 경로의 관측인지 남긴다.
+ * 발사/advance 동작에는 관여하지 않는다.
+ */
+async function recordTransferAdvanceTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  path: TransferAdvancePath,
+  outcome: TransferAdvanceOutcome,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.transferAdvanceState === outcome) return;
+  await writeSsot(env.TRIPS, { ...ssot, transferAdvanceState: outcome }, { expiresAt: trip.expiresAt });
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'transfer-advance',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { path, outcome },
+    },
+    now,
+  );
+}
+
+/**
+ * ADR-037 D2b (#2535, 진단 계측 only) — leg-2(환승 후, `trip.currentLegAnchor` 활성) lock의
+ * `estimateBoardingLockArrival` 매칭 여부(`estimate!==null`)를 SSoT 마커(`leg2EstimateMatched`)와
+ * 비교해 다를 때만 D1 `trip_events`(kind='leg2-estimate')로 append한다(#2073 quota 보호). leg-2
+ * lock 활성 시점(`trip.currentLegAnchor !== undefined`)에 한정 — leg-1은 caller가 호출하지 않는다.
+ * 발사/advance 동작에는 관여하지 않는다.
+ */
+async function recordLeg2EstimateTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  matched: boolean,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.leg2EstimateMatched === matched) return;
+  await writeSsot(env.TRIPS, { ...ssot, leg2EstimateMatched: matched }, { expiresAt: trip.expiresAt });
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'leg2-estimate',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { matched },
+    },
+    now,
+  );
+}
+
 async function recordFireAttempt(
   env: Env,
   trip: Trip,
@@ -4034,6 +4108,7 @@ export async function runTrainCodeTracking(
   now: number,
   log: Logger,
   generatePushId: () => string,
+  ssot: TripPositionSSoT | null = null,
 ): Promise<void> {
   let activeLock = lock;
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
@@ -4043,6 +4118,18 @@ export async function runTrainCodeTracking(
       activeLock = swappedLock;
       estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
     }
+  }
+  // ADR-037 D2b (#2535, 진단 계측 only) — leg-2(환승 후) lock의 trainCode 매칭 여부.
+  // leg-1(currentLegAnchor 미stamp)은 caller 관심사 밖(#2533/D2가 이미 leg-1 intermediate를 커버).
+  if (trip.currentLegAnchor !== undefined) {
+    await recordLeg2EstimateTransition(env, trip, waypoint, ssot, estimate !== null, now);
+  }
+  // ADR-037 D2b (#2535, 진단 계측 only) — 환승 waypoint의 lock-active advance 관측.
+  // estimate===null(arvlCd/positions 둘 다 못 잡음) vs estimate.arrived===true(advance 시도) 중
+  // 전이 시에만 append. `estimate!==null && !estimate.arrived`(아직 접근 중, 정상 대기)는
+  // 마커를 건드리지 않는다 — 다음 전이(no-arvlcd↔advanced)에서 자연히 감지된다.
+  if (waypoint.kind === 'transfer' && estimate === null) {
+    await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lock-active', 'no-arvlcd', now);
   }
   if (estimate === null) {
     // #1824 — Seoul API outage 시 arrivals + positions 모두 없어도 FALLBACK_HOP_SEC(90s) 기반
@@ -4079,6 +4166,10 @@ export async function runTrainCodeTracking(
   }
 
   if (estimate.arrived) {
+    // ADR-037 D2b (#2535, 진단 계측 only) — 환승 waypoint의 lock-active advance 관측(성공 측).
+    if (waypoint.kind === 'transfer') {
+      await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lock-active', 'advanced', now);
+    }
     // #826 — arvlCd=ARRIVED ground truth → Kalman state hard reset.
     // 정거장 도착은 가장 강한 신호 (실제 정차) — v=0/P=R_LOW로 drift 누적 차단.
     // #2007 (ADR-022 Phase 4-5) — archFlag=on 시 Kalman state 자체가 dormant → reset write + counter skip.
@@ -5087,6 +5178,7 @@ async function runLocklessTransfer(
   now: number,
   log: Logger,
   generatePushId: () => string,
+  ssot: TripPositionSSoT | null,
 ): Promise<boolean> {
   if (waypoint.kind !== 'transfer') return false;
 
@@ -5094,10 +5186,14 @@ async function runLocklessTransfer(
   const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
+    await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'no-arvlcd', now);
     return false;
   }
   const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
-  if (!fires) return false;
+  if (!fires) {
+    await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'not-fires', now);
+    return false;
+  }
 
   stats.locklessTransferAdvanced += 1;
   log('lockless-transfer: waypoint advance (ground truth arvlCd)', {
@@ -5106,6 +5202,7 @@ async function runLocklessTransfer(
     line: waypoint.line,
     arvlCd: signal.arvlCd,
   });
+  await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'advanced', now);
   await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
   return true;
 }

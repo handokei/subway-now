@@ -50,6 +50,23 @@ import { captureXEvent } from './sentry';
  * - `intermediate-route` — intermediate waypoint에서 `lockless`(C 토글 ON,
  *   `runLocklessIntermediate`)/`consensus`(C 토글 OFF, `tryFireConsensusTrainLeg`) 중 어느 분기로
  *   dispatch됐는지. 직전 분기와 다를 때만 append.
+ *
+ * `boarding-confirm-result` / `transfer-advance` / `leg2-estimate` (ADR-037 D2b, #2535) — 진단
+ * 계측 전용. #2533(D2)이 커버하지 못한 3개 조건부 stall 지점(boarding-confirm 탭 처리 결과,
+ * 환승 waypoint advance 성공/실패, leg-2 estimateBoardingLockArrival trainCode 매칭)을 관측한다.
+ * fire/advance 동작에는 관여하지 않는다.
+ *
+ * - `boarding-confirm-result` — `POST /trips/:token/boarding-confirm`(index.ts) 탭 처리 1건당
+ *   정확히 1회 append(HTTP 요청 단위라 throttle 불필요 — 매 tick 반복 호출이 아니다). `meta`에
+ *   `{ lockState, outcome? }` — `lockState`는 항상 존재('none'/'leg1'/'leg2'/'released'),
+ *   `outcome`은 `action==='boarded'`이고 신규 resolve를 실제로 시도했을 때만 존재
+ *   (`BoardingResolveOutcome`, `boardingAnchorResolver.ts`).
+ * - `transfer-advance` — 환승(transfer) waypoint를 실제로 통과했는지(`lockless`=
+ *   `runLocklessTransfer`, `lock-active`=`runTrainCodeTracking`의 lock 활성 경로) 관측한다.
+ *   SSoT 마커(`transferAdvanceState`)와 비교해 다를 때만 append(#2073 quota 보호).
+ * - `leg2-estimate` — leg-2(환승 후, `trip.currentLegAnchor` 활성) lock의
+ *   `estimateBoardingLockArrival`이 locked trainCode를 Seoul arrivals/positions에서 찾았는지
+ *   (matched=`estimate!==null`). SSoT 마커(`leg2EstimateMatched`)와 비교해 다를 때만 append.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -61,7 +78,10 @@ export type TripEventKind =
   | 'consensus-suppress'
   | 'cron-fire-attempt'
   | 'consensus-tick'
-  | 'intermediate-route';
+  | 'intermediate-route'
+  | 'boarding-confirm-result'
+  | 'transfer-advance'
+  | 'leg2-estimate';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
@@ -76,6 +96,19 @@ export type IntermediateRouteBranch = 'lockless' | 'consensus';
  * = arrivals는 있으나 line/direction 필터(#2328)로 전부 배제.
  */
 export type ConsensusNeverRanPhase = 'no-arrivals' | 'candidates-filtered';
+
+/**
+ * ADR-037 D2b (#2535) — 환승 waypoint advance 진단 표식(데이터 주도). `no-arvlcd` = 해당 역
+ * arrivals에서 arvlCd 자체를 못 잡음(지하 침묵), `not-fires` = arvlCd는 잡았으나 ENTERING(0)/
+ * ARRIVED(1)가 아님(아직 통과 전), `advanced` = waypoint를 실제로 통과. `lockless`(`runLocklessTransfer`)
+ * 경로는 3값 전부, `lock-active`(`runTrainCodeTracking`) 경로는 `no-arvlcd`/`advanced` 2값만 쓴다
+ * (lock 활성 경로는 arvlCd ENTERING/ARRIVED 확정 시에만 advance를 시도하므로 `not-fires` 중간
+ * 상태가 없다).
+ */
+export type TransferAdvanceOutcome = 'no-arvlcd' | 'not-fires' | 'advanced';
+
+/** `transfer-advance` 이벤트가 어느 코드 경로에서 관측됐는지(데이터 주도). */
+export type TransferAdvancePath = 'lockless' | 'lock-active';
 
 export interface TripEventInput {
   /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */
