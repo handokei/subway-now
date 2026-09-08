@@ -6,6 +6,7 @@ import {
   STRONG_EVIDENCE_TYPES,
   advanceTripPosition,
   applyLegConsensusTick,
+  buildConsensusTickMeta,
   buildSignalsFromEvidence,
   computePositionTrainHopDistance,
   consecutiveDurationMs,
@@ -20,6 +21,7 @@ import {
   type WifiSsidEntry,
 } from '../advanceTripPosition';
 import { detectArcOvershoot } from '../positionSeries';
+import type { LegConsensusRecord } from '../transferLegConsensus';
 import type { PositionPoint } from '../types';
 import {
   readSsot,
@@ -1781,5 +1783,177 @@ describe('applyLegConsensusTick (#2329, consensus-C — legConsensus SSoT wire +
     // 둘 다 mismatch(|Δ|>180) → 생존 0 → suppress.
     expect(out?.record.status).toBe('suppressed');
     expect(out?.events[0]?.kind).toBe('consensus-suppress');
+  });
+
+  // ADR-037 D2 (#2533, 진단 계측 only) — confirm/demote/suppress 이벤트가 없는 순수 status 전이
+  // (init→tracking/ambiguous, tracking↔ambiguous)는 종전엔 D1에 전혀 남지 않았다. 발사/advance
+  // 동작은 무변경 — 아래 테스트는 오직 `consensus-tick` append 시점/dedup만 검증한다.
+  describe('consensus-tick (ADR-037 D2, #2533 — 진단 계측)', () => {
+    function insertedKinds(db: { bind: ReturnType<typeof vi.fn> }): unknown[][] {
+      return db.bind.mock.calls;
+    }
+
+    it('init→tracking 전이(confirm/demote/suppress 이벤트 없음) → consensus-tick 1건 append', async () => {
+      await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+      const db = makeMockDb();
+
+      const out = await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+        init: {
+          t0EpochMs: NOW,
+          transferTimeSec: 278,
+          headwaySec: 210,
+          observedDepartures: [{ trainCode: '7246', departureEpochMs: NOW + 278_000 }],
+        },
+        tick: { now: NOW, observations: [{ trainCode: '7246', deltaSec: 0 }] },
+        station: '중곡',
+        line: '7',
+      });
+      expect(out?.record.status).toBe('tracking');
+      expect(out?.events).toEqual([]);
+
+      const calls = insertedKinds(db as unknown as { bind: ReturnType<typeof vi.fn> });
+      expect(calls).toHaveLength(1);
+      const [, , kind, station, line, metaJson] = calls[0] as [
+        string,
+        number,
+        string,
+        string,
+        string,
+        string,
+      ];
+      expect(kind).toBe('consensus-tick');
+      expect(station).toBe('중곡');
+      expect(line).toBe('7');
+      expect(JSON.parse(metaJson)).toEqual({
+        status: 'tracking',
+        candidates: [{ train: '7246', match: 1, mismatch: 0, missed: 0 }],
+      });
+    });
+
+    it('status 불변 tick(동일 tracking 유지) → consensus-tick 재기록 없음', async () => {
+      await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+      const db = makeMockDb();
+
+      await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+        init: {
+          t0EpochMs: NOW,
+          transferTimeSec: 278,
+          headwaySec: 210,
+          observedDepartures: [{ trainCode: '7246', departureEpochMs: NOW + 278_000 }],
+        },
+        tick: { now: NOW, observations: [{ trainCode: '7246', deltaSec: 0 }] },
+      });
+      const afterInit = insertedKinds(db as unknown as { bind: ReturnType<typeof vi.fn> }).length;
+      expect(afterInit).toBe(1);
+
+      // 두 번째 tick도 관측 부재(missed) — mismatch/match streak가 confirm/demote/suppress
+      // 문턱에 못 미쳐 status는 'tracking' 그대로 유지된다.
+      const out2 = await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+        tick: { now: NOW + 30_000, observations: [] },
+      });
+      expect(out2?.record.status).toBe('tracking');
+      expect(out2?.events).toEqual([]);
+      expect(
+        insertedKinds(db as unknown as { bind: ReturnType<typeof vi.fn> }).length,
+      ).toBe(afterInit);
+    });
+
+    it('confirm 이벤트가 함께 발생한 tick은 consensus-tick을 별도로 추가하지 않는다(중복 방지)', async () => {
+      await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+      const db = makeMockDb();
+
+      await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+        init: {
+          t0EpochMs: NOW,
+          transferTimeSec: 278,
+          headwaySec: 210,
+          observedDepartures: [{ trainCode: '7246', departureEpochMs: NOW + 278_000 }],
+        },
+        tick: { now: NOW, observations: [{ trainCode: '7246', deltaSec: 0 }] },
+      });
+      const calls = insertedKinds(db as unknown as { bind: ReturnType<typeof vi.fn> });
+      expect(calls).toHaveLength(1); // init→tracking consensus-tick
+
+      const out2 = await applyLegConsensusTick(kv as unknown as KVNamespace, db, TOKEN, {
+        tick: { now: NOW + 80_000, observations: [{ trainCode: '7246', deltaSec: 10 }] },
+      });
+      expect(out2?.record.status).toBe('confirmed');
+      expect(out2?.events).toEqual([{ kind: 'consensus-confirm', trainCode: '7246' }]);
+      // status도 tracking→confirmed로 바뀌었지만 events.length>0이라 consensus-tick 중복 없음 —
+      // consensus-confirm 1건만 추가.
+      const callsAfter = insertedKinds(db as unknown as { bind: ReturnType<typeof vi.fn> });
+      expect(callsAfter).toHaveLength(2);
+      expect(callsAfter[1]?.[2]).toBe('consensus-confirm');
+    });
+
+    it('db 미전달 시 consensus-tick도 append 없이 SSoT만 갱신 (graceful)', async () => {
+      await seedSsot(kv as unknown as KVNamespace, TOKEN, '건대입구');
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
+
+      const out = await applyLegConsensusTick(kv as unknown as KVNamespace, undefined, TOKEN, {
+        init: {
+          t0EpochMs: NOW,
+          transferTimeSec: 278,
+          headwaySec: 210,
+          observedDepartures: [{ trainCode: '7246', departureEpochMs: NOW + 278_000 }],
+        },
+        tick: { now: NOW, observations: [{ trainCode: '7246', deltaSec: 0 }] },
+      });
+      expect(out?.record.status).toBe('tracking');
+      const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+      expect(after?.legConsensus?.status).toBe('tracking');
+    });
+  });
+});
+
+describe('buildConsensusTickMeta (ADR-037 D2, #2533 — 진단 계측 순수 helper)', () => {
+  it('status + candidates(train/match/mismatch/missed)를 meta 형태로 변환한다', () => {
+    const record: LegConsensusRecord = {
+      status: 'ambiguous',
+      t0EpochMs: NOW,
+      transferTimeSec: 278,
+      headwaySec: 210,
+      window: {
+        earliestAllowedEpochMs: NOW,
+        coreStartEpochMs: NOW,
+        coreEndEpochMs: NOW,
+        latestAllowedEpochMs: NOW,
+      },
+      candidates: [
+        { trainCode: '7246', departureEpochMs: NOW, matchCount: 2, mismatchCount: 1, missedTicks: 0 },
+        { trainCode: '9999', departureEpochMs: NOW, matchCount: 0, mismatchCount: 0, missedTicks: 3 },
+      ],
+      confirmedMismatchStreak: 0,
+      updatedAt: NOW,
+    };
+    expect(buildConsensusTickMeta(record)).toEqual({
+      status: 'ambiguous',
+      candidates: [
+        { train: '7246', match: 2, mismatch: 1, missed: 0 },
+        { train: '9999', match: 0, mismatch: 0, missed: 3 },
+      ],
+    });
+  });
+
+  it('candidates 빈 배열이면 meta.candidates도 빈 배열', () => {
+    const record: LegConsensusRecord = {
+      status: 'tracking',
+      t0EpochMs: NOW,
+      transferTimeSec: 278,
+      headwaySec: 210,
+      window: {
+        earliestAllowedEpochMs: NOW,
+        coreStartEpochMs: NOW,
+        coreEndEpochMs: NOW,
+        latestAllowedEpochMs: NOW,
+      },
+      candidates: [],
+      confirmedMismatchStreak: 0,
+      updatedAt: NOW,
+    };
+    expect(buildConsensusTickMeta(record)).toEqual({ status: 'tracking', candidates: [] });
   });
 });
