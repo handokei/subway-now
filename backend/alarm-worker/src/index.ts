@@ -1005,6 +1005,15 @@ app.post('/trips', async (c) => {
           // undefined — device가 보내지 않는 필드)으로 덮이면 매 재등록마다 anchor가 사라져
           // createdAt fallback으로 되돌아가는 회귀가 생긴다. same session이면 그대로 보존.
           originProximityAt: existing.originProximityAt,
+          // #2547 — leg-2 anchor 계열도 backend-only state(device는 이 필드들을 보내지 않음 →
+          // incoming은 항상 undefined). same-session 재등록마다 덮이면 환승 후 stamp된 anchor가
+          // walk-gate 경과 전에 소실돼 leg-2 탑승 프롬프트/lock이 영영 발사되지 않는 회귀가 생긴다
+          // (originProximityAt #2153과 동일 클래스). legResolveStreak도 함께 보존해야 #2540의
+          // K회 연속확증 카운터가 재등록마다 리셋돼 승격이 무력화되지 않는다.
+          currentLegAnchor: existing.currentLegAnchor,
+          legBoardingEligibleAt: existing.legBoardingEligibleAt,
+          legBoardingPromptState: existing.legBoardingPromptState,
+          legResolveStreak: existing.legResolveStreak,
         }
       : {
           ...incoming,

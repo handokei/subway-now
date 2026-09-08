@@ -3400,6 +3400,73 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
   });
 });
 
+describe('POST /trips — #2547 leg-2 anchor fields carry over same session', () => {
+  const CREATED = 1_700_000_000_000;
+  function tripBody(): Record<string, unknown> {
+    return {
+      token: 'tok-leg2',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+      // device는 currentLegAnchor 계열 필드를 보내지 않는다 (backend-only state).
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('red → green: same-session 재등록 후에도 currentLegAnchor/legBoardingEligibleAt/legBoardingPromptState/legResolveStreak 보존', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:tok-leg2',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        currentLegAnchor: { boardingStation: '교대', line: '3' },
+        legBoardingEligibleAt: CREATED + 5_000,
+        legBoardingPromptState: { fired: false },
+        legResolveStreak: { trainCode: '1234', count: 1 },
+      }),
+    );
+    // re-register (same createdAt → same session)
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-leg2')) as string);
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '교대', line: '3' });
+    expect(stored.legBoardingEligibleAt).toBe(CREATED + 5_000);
+    expect(stored.legBoardingPromptState).toEqual({ fired: false });
+    expect(stored.legResolveStreak).toEqual({ trainCode: '1234', count: 1 });
+  });
+
+  it('new session (createdAt drift > 5s) → 4필드 carry 안 됨', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:tok-leg2',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        currentLegAnchor: { boardingStation: '교대', line: '3' },
+        legBoardingEligibleAt: CREATED + 5_000,
+        legBoardingPromptState: { fired: false },
+        legResolveStreak: { trainCode: '1234', count: 1 },
+      }),
+    );
+    vi.setSystemTime(CREATED + 10_000);
+    await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-leg2')) as string);
+    expect(stored.currentLegAnchor).toBeUndefined();
+    expect(stored.legBoardingEligibleAt).toBeUndefined();
+    expect(stored.legBoardingPromptState).toBeUndefined();
+    expect(stored.legResolveStreak).toBeUndefined();
+  });
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // Seam E (#901) — POST /boarding-lock/sync
 // ──────────────────────────────────────────────────────────────────────────
