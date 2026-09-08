@@ -136,7 +136,9 @@ import {
   cleanupTripEvents,
   recordTripEvent,
   type ConsensusNeverRanPhase,
+  type HopEndPromptOutcome,
   type IntermediateRouteBranch,
+  type LegBoardingPromptOutcome,
   type TransferAdvanceOutcome,
   type TransferAdvancePath,
 } from './tripEventLog';
@@ -2978,6 +2980,77 @@ async function recordLeg2EstimateTransition(
       station: waypoint.stationName,
       line: waypoint.line,
       meta: { matched },
+    },
+    now,
+  );
+}
+
+/**
+ * ADR-037 D2c (#2537, 진단 계측 only) — `maybeFireLegBoardingPrompt`의 fire/skip 사유
+ * (`LegBoardingPromptOutcome`)를 SSoT 마커(`legBoardingPromptOutcome`)와 비교해 다를 때만 D1
+ * `trip_events`(kind='leg-boarding-prompt')로 append한다(#2073 quota 보호). SSoT 부재(lazy-seed
+ * 이전) 시 no-op — 다음 cycle의 seed 이후 tick에서 자연히 관측된다. `station`/`line`은
+ * `trip.currentLegAnchor` 부재('no-anchor') 시 알 수 없어 생략될 수 있다. 발사/advance/lock
+ * 판정에는 관여하지 않는다.
+ */
+async function recordLegBoardingPromptTransition(
+  env: Env,
+  trip: Trip,
+  station: string | undefined,
+  line: string | undefined,
+  ssot: TripPositionSSoT | null,
+  outcome: LegBoardingPromptOutcome,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.legBoardingPromptOutcome === outcome) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, legBoardingPromptOutcome: outcome },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'leg-boarding-prompt',
+      ...(station !== undefined ? { station } : {}),
+      ...(line !== undefined ? { line } : {}),
+      meta: { outcome },
+    },
+    now,
+  );
+}
+
+/**
+ * ADR-037 D2c (#2537, 진단 계측 only) — `maybeFireHopEndPrompt`의 fire/skip 사유
+ * (`HopEndPromptOutcome`)를 SSoT 마커(`hopEndPromptOutcome`)와 비교해 다를 때만 D1
+ * `trip_events`(kind='hop-end-prompt')로 append한다(#2073 quota 보호). SSoT 부재(lazy-seed 이전)
+ * 시 no-op — 다음 cycle의 seed 이후 tick에서 자연히 관측된다. 발사/advance/lock 판정에는
+ * 관여하지 않는다.
+ */
+async function recordHopEndPromptTransition(
+  env: Env,
+  trip: Trip,
+  station: string,
+  line: string,
+  ssot: TripPositionSSoT | null,
+  outcome: HopEndPromptOutcome,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.hopEndPromptOutcome === outcome) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, hopEndPromptOutcome: outcome },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'hop-end-prompt',
+      station,
+      line,
+      meta: { outcome },
     },
     now,
   );
@@ -6483,12 +6556,29 @@ export async function maybeFireLegBoardingPrompt(
   log: Logger,
   generatePushId: () => string,
 ): Promise<void> {
+  // ADR-037 D2c (#2537, 진단 계측 only) — 이 함수의 fire/skip 사유를 SSoT 마커
+  // (`legBoardingPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 아래 게이트
+  // 판정/발사 로직 자체는 무변경.
+  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+
   const { currentLegAnchor } = trip;
-  if (!currentLegAnchor) return;
+  if (!currentLegAnchor) {
+    await recordLegBoardingPromptTransition(env, trip, undefined, undefined, ssot, 'no-anchor', now);
+    return;
+  }
 
   const eligibleAt = trip.legBoardingEligibleAt;
   if (eligibleAt === undefined || now < eligibleAt) {
     stats.legBoardingPromptSkippedWalking += 1;
+    await recordLegBoardingPromptTransition(
+      env,
+      trip,
+      currentLegAnchor.boardingStation,
+      currentLegAnchor.line,
+      ssot,
+      'walk-gated',
+      now,
+    );
     return;
   }
 
@@ -6501,6 +6591,15 @@ export async function maybeFireLegBoardingPrompt(
       station: currentLegAnchor.boardingStation,
       line: currentLegAnchor.line,
     });
+    await recordLegBoardingPromptTransition(
+      env,
+      trip,
+      currentLegAnchor.boardingStation,
+      currentLegAnchor.line,
+      ssot,
+      'silenced',
+      now,
+    );
     return;
   }
 
@@ -6509,6 +6608,10 @@ export async function maybeFireLegBoardingPrompt(
     nextWaypoint && nextWaypoint.line === currentLegAnchor.line
       ? inferLegDirection(currentLegAnchor.line, currentLegAnchor.boardingStation, nextWaypoint.stationName)
       : null;
+
+  // ADR-037 D2c (#2537, 진단 계측 only) — 콜백은 동기(`() => void`)라 D1 write를 여기서 바로 할 수
+  // 없다 — 결과만 캡처해 `fireBoardingPromptForAnchor` 완료 후 기록한다.
+  let promptOutcome: LegBoardingPromptOutcome | null = null;
 
   await fireBoardingPromptForAnchor({
     trip,
@@ -6530,12 +6633,26 @@ export async function maybeFireLegBoardingPrompt(
         station: currentLegAnchor.boardingStation,
         line: currentLegAnchor.line,
       });
+      promptOutcome = 'no-candidates';
     },
     onFired: () => {
       stats.legBoardingPromptFired += 1;
       trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState);
+      promptOutcome = 'fired';
     },
   });
+
+  if (promptOutcome !== null) {
+    await recordLegBoardingPromptTransition(
+      env,
+      trip,
+      currentLegAnchor.boardingStation,
+      currentLegAnchor.line,
+      ssot,
+      promptOutcome,
+      now,
+    );
+  }
 }
 
 /**
@@ -6575,6 +6692,10 @@ export async function maybeFireHopEndPrompt(inputs: {
   const legKey = `${transferWaypoint.stationName}|${nextLine ?? ''}`;
   const stateMap = trip.hopEndPromptState ?? {};
   const outcome = evaluateHopEndPromptGates({ promptState: stateMap[legKey], now });
+  // ADR-037 D2c (#2537, 진단 계측 only) — 이 함수의 fire/skip 사유를 SSoT 마커
+  // (`hopEndPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 게이트 판정/발사
+  // 로직 자체는 무변경.
+  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
   if (!outcome.pass) {
     stats.hopEndPromptBlocked += 1;
     log('hop-end-prompt: gate blocked', {
@@ -6582,6 +6703,15 @@ export async function maybeFireHopEndPrompt(inputs: {
       legKey,
       reason: outcome.reason,
     });
+    await recordHopEndPromptTransition(
+      env,
+      trip,
+      transferWaypoint.stationName,
+      transferWaypoint.line,
+      ssot,
+      'silenced',
+      now,
+    );
     return;
   }
   const { title, body } = buildHopEndPromptMessage(
@@ -6639,6 +6769,15 @@ export async function maybeFireHopEndPrompt(inputs: {
       nextLine,
       nextStation,
     });
+    await recordHopEndPromptTransition(
+      env,
+      trip,
+      transferWaypoint.stationName,
+      transferWaypoint.line,
+      ssot,
+      'fired',
+      now,
+    );
   } else {
     stats.errors += 1;
     log('hop-end-prompt: push failed', {

@@ -37,7 +37,9 @@ import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
 import type { LegConsensusRecord } from './transferLegConsensus';
 import type {
   ConsensusNeverRanPhase,
+  HopEndPromptOutcome,
   IntermediateRouteBranch,
+  LegBoardingPromptOutcome,
   TransferAdvanceOutcome,
 } from './tripEventLog';
 import type { Trip } from './types';
@@ -320,6 +322,24 @@ export interface TripPositionSSoT {
    * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row 또는 leg-2 진입 전은 undefined.
    */
   leg2EstimateMatched?: boolean;
+  /**
+   * ADR-037 D2c (#2537) — 진단 계측 전용 dedup 마커. `maybeFireLegBoardingPrompt`(scheduled.ts)의
+   * 직전 tick fire/skip 사유(`LegBoardingPromptOutcome`). caller가 이 값과 이번 tick 사유를 비교해
+   * 다를 때만 D1 `trip_events`(kind='leg-boarding-prompt')로 append한다(#2073 quota 보호). 발사/
+   * advance/lock 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  legBoardingPromptOutcome?: LegBoardingPromptOutcome;
+  /**
+   * ADR-037 D2c (#2537) — 진단 계측 전용 dedup 마커. `maybeFireHopEndPrompt`(scheduled.ts)의
+   * 직전 tick fire/skip 사유(`HopEndPromptOutcome`). caller가 이 값과 이번 tick 사유를 비교해
+   * 다를 때만 D1 `trip_events`(kind='hop-end-prompt')로 append한다(#2073 quota 보호). 발사/
+   * advance/lock 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  hopEndPromptOutcome?: HopEndPromptOutcome;
   /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.
