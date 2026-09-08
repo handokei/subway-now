@@ -83,6 +83,19 @@
  * 게이트 미통과(`now < legBoardingEligibleAt`)면 null — caller(`attemptBoardingAnchorResolution`)가
  * anchor 자체를 못 얻으므로 realtimePosition 조회조차 하지 않는다. 즉 도보 창 동안 있었던 열차는
  * "탈락시키는" 필터가 아니라 애초에 "쳐다보지 않는" 시간 게이트로 배제된다.
+ *
+ * leg 2 cron 자동 resolve — 연속확증 (#2539, 위 leg 2 skip 정책의 supersede)
+ * ============================================================================
+ * 위 문단(#2515)까지는 "cron은 leg 2를 절대 평가하지 않는다"가 정책이었다 — leg 2 lock이
+ * 사용자의 실제 탭(boarding-prompt 응답/BoardingTrainList 탭 → register-time 또는
+ * `POST /trips/:token/boarding-confirm`)에만 의존했다. 그러나 그 탭(leg 2 프롬프트) 자체가
+ * 뜨지 않으면 lock 형성 경로가 통째로 없다는 것이 실측으로 확정됐다(#2539 root). 이제 cron도
+ * `{ allowLegTransfer: true }`로 leg 2를 평가하되(walk-gate는 위 문단 그대로 강제), register-time과
+ * 달리 **연속확증**을 추가로 요구한다 — 같은 trainCode가 `LEG_RESOLVE_STREAK_THRESHOLD`회
+ * 연속 cron tick에서 resolved일 때만 실제 lock 승격이 일어난다(`scheduled.ts`
+ * `trip.legResolveStreak` 카운터, 이 함수 자체는 무변경 — 게이트는 caller 쪽에 있다). trainCode
+ * 변경/none/ambiguous 판정은 카운터를 리셋시킨다. register-time/boarding-confirm 탭 경로는
+ * 사용자 확인이 이미 있으므로 이 카운터를 전혀 보지 않고 기존처럼 1회 resolved로 즉시 승격한다.
  */
 
 import { TRAIN_STATUS } from './alarm';
@@ -96,6 +109,18 @@ import type { BoardingLockMeta, Trip } from './types';
  * MAX_RECPTN_DRIFT_SEC(120s)와 동일 정책 — 두 값은 각자 로컬 모듈에 선언해 순환 import를
  * 피한다(`arrivalsFromPositions.ts`의 HOP_SEC 중복 선언과 동일 선례). */
 export const POSITION_FRESHNESS_MS = 120_000;
+
+/**
+ * #2539 — leg 2 cron 자동 resolve 연속확증 임계값. register-time(탭)은 사용자 확인(#1729
+ * 안전 원칙 + ADR-014 명시 의향 stamp)이 트리거라 1회 resolved로 충분하지만, cron은 탭 없이
+ * 매 cycle 배경 폴링만으로 leg 2 승격을 시도하므로(#2518 오탑승 우려로 그동안 skip돼 있었음)
+ * "플랫폼에 우연히 서 있는 열차 1대"와의 transient 매칭을 방어하기 위해 같은 trainCode가 이
+ * 값만큼 연속 cron tick 동안 resolved일 때만 lock으로 승격한다(`scheduled.ts` cron 분기,
+ * `trip.legResolveStreak` SSoT). leg 1 cron(promptDisplay 경로)과 register-time(탭)/
+ * boarding-confirm 탭 엔드포인트는 이 게이트를 거치지 않는다(기존 1회 승격 유지 — 사용자
+ * 확인이 이미 있는 경로이기 때문).
+ */
+export const LEG_RESOLVE_STREAK_THRESHOLD = 2;
 
 export interface BoardingAnchor {
   /** 탑승 확정 대상 노선 (Waypoint.line / BoardingLockMeta.line과 동일 표기). */
@@ -163,15 +188,21 @@ export interface LegOriginResolutionOptions {
    * `resolveBoardingAnchorAtRegister`)에서 호출됐다는 뜻 — leg 2(`currentLegAnchor`)까지
    * 평가 대상에 포함한다.
    *
-   * false/미지정(기본값) = cron 경로(`scheduled.ts` 매 사이클 폴링)에서 호출됐다는 뜻 — leg 2는
-   * 절대 평가하지 않는다(null 반환, leg 1 `promptDisplay`로도 fallback하지 않음 — 기존 정책과
-   * 동일). leg 1(`promptDisplay`)은 도보 이동 창이 없는 즉시 탑승이라 cron 매 cycle 재시도가
-   * 안전하므로 이 옵션과 무관하게 계속 평가된다.
+   * false/미지정(기본값) = leg 2를 평가하지 않는다(null 반환, leg 1 `promptDisplay`로도
+   * fallback하지 않음). leg 1(`promptDisplay`)은 도보 이동 창이 없는 즉시 탑승이라 이 옵션과
+   * 무관하게 계속 평가된다.
    *
-   * 근거: leg 2는 환승 후 도보 이동 창(#2511이 놓친 위험)이 있어, cron이 매 사이클 조용히
-   * 승격을 시도하면 "아직 플랫폼에 도착하지 않았는데 서 있는 열차와 우연히 매칭"될 위험이
-   * 크다. leg 2 승격은 사용자의 실제 탭(boarding-prompt 응답 → device re-register)이 트리거인
-   * 순간에만 일어나야 한다 — cron의 배경 폴링이 아니라.
+   * 근거: leg 2는 환승 후 도보 이동 창(#2511이 놓친 위험)이 있어, walk-gate(`legBoardingEligibleAt`)
+   * 없이 평가하면 "아직 플랫폼에 도착하지 않았는데 서 있는 열차와 우연히 매칭"될 위험이 크다.
+   * walk-gate는 `allowLegTransfer` 값과 무관하게 항상 강제된다(우회 불가).
+   *
+   * #2539 갱신 — cron(`scheduled.ts`)도 이제 `{ allowLegTransfer: true }`를 전달해 leg 2를
+   * 평가한다(구 정책: cron은 leg 2를 절대 평가하지 않음 — #2539가 supersede). register-time(탭,
+   * `index.ts`)과의 차이는 이 함수 자체가 아니라 caller의 승격 규율에 있다: register-time/
+   * boarding-confirm 탭은 이 함수가 resolved를 반환하는 즉시 1회로 lock 승격하지만, cron은
+   * `trip.legResolveStreak`로 같은 trainCode의 연속 resolved를 `LEG_RESOLVE_STREAK_THRESHOLD`회
+   * 확인한 뒤에만 승격한다(`scheduled.ts` 참고) — 탭이 없는 배경 폴링이라 더 강한 확증이
+   * 필요하다는 판단.
    */
   allowLegTransfer?: boolean;
 }
@@ -219,8 +250,9 @@ export function resolveActiveLegOrigin(
  * 산출 실패(route 불일치).
  *
  * break #2 (#2323 rework) — `options.allowLegTransfer`를 그대로 `resolveActiveLegOrigin`에
- * forward한다. cron 호출자(`scheduled.ts`)는 미전달(기본 false)해 leg 2 자동 승격을 완전히
- * skip하고, register-time 호출자(`index.ts` tap 트리거)만 true를 전달한다.
+ * forward한다. #2539부터는 cron 호출자(`scheduled.ts`)와 register-time 호출자(`index.ts` 탭
+ * 트리거) 모두 true를 전달해 leg 2를 평가한다 — 승격 규율(1회 즉시 vs 연속확증 K회)의 차이는
+ * caller 쪽 로직이며 이 함수 자체는 두 caller에 대해 동일하게 동작한다.
  *
  * ADR-037 D2b (#2535) — `onOutcome` 콜백(진단 계측 전용, optional)은 각 조기 반환/성공 지점에서
  * `BoardingResolveOutcome`을 관측한다. 반환값(`BoardingLockMeta | null`)과 기존 호출자 동작은

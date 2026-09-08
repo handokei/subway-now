@@ -4,7 +4,11 @@
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
-import { attemptBoardingAnchorResolution } from './boardingAnchorResolver';
+import {
+  attemptBoardingAnchorResolution,
+  LEG_RESOLVE_STREAK_THRESHOLD,
+  type BoardingResolveOutcome,
+} from './boardingAnchorResolver';
 import { inferLegDirection } from './legDirection';
 import {
   buildSilentPushData,
@@ -576,6 +580,13 @@ export interface ScheduledStats extends LiveActivityStats {
    * 측정 — 사용자는 다음 cycle 재시도 또는 device BoardingTrainList manual fallback으로 이어진다.
    */
   boardingAnchorUnresolved: number;
+  /**
+   * #2539 — leg 2 cron 자동 resolve 연속확증 게이트에서, resolved이지만 아직
+   * `LEG_RESOLVE_STREAK_THRESHOLD`에 못 미쳐 승격을 보류한 누적 횟수(`trip.legResolveStreak`
+   * 카운터만 갱신하고 lock은 아직 안 붙임). 정상 운영에서는 다음 cycle에 같은 trainCode가
+   * 다시 resolved되면 이 카운터가 아니라 `boardingAnchorResolved`로 넘어간다.
+   */
+  boardingAnchorLegStreakPending: number;
   /**
    * #2524 — `trip.boardingCommitted===true`(탑승 커밋, lock 미확정) 상태에서
    * `runLocklessIntermediate`의 매역 "통과" push를 억제한 누적 횟수. resolver가 실 lock으로
@@ -1159,6 +1170,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     lockMissing: 0,
     boardingAnchorResolved: 0,
     boardingAnchorUnresolved: 0,
+    boardingAnchorLegStreakPending: 0,
     boardingCommittedSuppressed: 0,
     laStaleAutoEnded: 0,
     laStaleSurvivedSilence: 0,
@@ -1447,14 +1459,69 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     if (!isBoardingLockActive(trip, now)) {
       // 백엔드 realtimePosition trainCode resolver (committed architecture, 2026-09-03) —
       // 명시 탑승 anchor(promptDisplay + infoModeEnabled=true)를 가진 lockless trip을 우선
-      // 시도한다. 정확히 1개 unambiguous trainCode가 나오면 즉시 lock을 승격 + persist하고
-      // 이번 cycle은 여기서 종료한다 — 다음 cycle부터 위 `isBoardingLockActive` 판정이 true가
-      // 되어 정상 `runTrainCodeTracking` 경로(매역 push)로 진입한다. ambiguous/none은 그대로
+      // 시도한다. 정확히 1개 unambiguous trainCode가 나오면 lock을 승격 + persist하고 이번
+      // cycle은 여기서 종료한다 — 다음 cycle부터 위 `isBoardingLockActive` 판정이 true가 되어
+      // 정상 `runTrainCodeTracking` 경로(매역 push)로 진입한다. ambiguous/none은 그대로
       // lockMissing 분기(boarding-prompt / lockless-intermediate fallback)로 흘려보낸다 —
       // 틀린 열차를 추측해 lock하지 않는다(#1729 auto-lock 폐기와 동일 안전 원칙).
+      //
+      // #2539 — leg 2(currentLegAnchor)는 `{ allowLegTransfer: true }`로 평가하되(walk-gate는
+      // resolveActiveLegOrigin 내부에서 여전히 강제, 우회 불가), 탭이 없는 배경 폴링이라
+      // register-time과 달리 즉시 승격하지 않는다. 같은 trainCode가
+      // `LEG_RESOLVE_STREAK_THRESHOLD`회 연속 resolved일 때만 승격한다(`trip.legResolveStreak`).
+      // leg 1(promptDisplay만 있고 currentLegAnchor 없음)은 기존과 동일하게 1회 resolved로
+      // 즉시 승격 — 도보 이동 창이 없는 즉시 탑승이라 이미 안전하다는 기존 판단 불변.
+      const isLeg2Candidate = trip.currentLegAnchor !== undefined;
       try {
-        const anchorLock = await attemptBoardingAnchorResolution(trip, deps.seoul, now);
-        if (anchorLock) {
+        let outcome: BoardingResolveOutcome | undefined;
+        const anchorLock = await attemptBoardingAnchorResolution(
+          trip,
+          deps.seoul,
+          now,
+          { allowLegTransfer: true },
+          (o) => {
+            outcome = o;
+          },
+        );
+        if (anchorLock && isLeg2Candidate) {
+          const prevStreak = trip.legResolveStreak;
+          const streakCount =
+            prevStreak && prevStreak.trainCode === anchorLock.trainCode ? prevStreak.count + 1 : 1;
+          if (streakCount >= LEG_RESOLVE_STREAK_THRESHOLD) {
+            trip.boardingLock = anchorLock;
+            trip.consecutiveEtaMissing = 0;
+            trip.lastTrackedArrivalEpoch = undefined;
+            trip.lastLaPushEpoch = undefined;
+            trip.lastLaPushAt = undefined;
+            trip.legResolveStreak = undefined;
+            await putTrip(env.TRIPS, trip);
+            stats.boardingAnchorResolved += 1;
+            log('boarding-anchor: leg-2 trainCode resolved (streak confirmed), lock promoted', {
+              token: trip.token.slice(0, 8),
+              station: anchorLock.segmentStations[0],
+              line: anchorLock.line,
+              trainCode: anchorLock.trainCode,
+              streakCount,
+            });
+            continue;
+          }
+          // 아직 K회 연속확증 미달 — lock은 승격하지 않는다. 카운터만 persist하고, 이번
+          // cycle은 anchorLock이 없었던 것과 동일하게 아래 lockMissing 분기(leg-2 boarding
+          // prompt 등)로 계속 흘려보낸다 — `continue`하지 않는다. 여기서 continue하면 아직
+          // lock이 없는 사용자에게 "탑승하셨나요?" 프롬프트가 억제되는 회귀가 생긴다.
+          trip.legResolveStreak = { trainCode: anchorLock.trainCode, count: streakCount };
+          await putTrip(env.TRIPS, trip);
+          stats.boardingAnchorLegStreakPending += 1;
+          log('boarding-anchor: leg-2 trainCode resolved (streak pending)', {
+            token: trip.token.slice(0, 8),
+            station: anchorLock.segmentStations[0],
+            line: anchorLock.line,
+            trainCode: anchorLock.trainCode,
+            streakCount,
+            threshold: LEG_RESOLVE_STREAK_THRESHOLD,
+          });
+        } else if (anchorLock) {
+          // leg 1(promptDisplay) — 기존과 동일하게 1회 resolved로 즉시 승격.
           trip.boardingLock = anchorLock;
           trip.consecutiveEtaMissing = 0;
           trip.lastTrackedArrivalEpoch = undefined;
@@ -1464,14 +1531,20 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           stats.boardingAnchorResolved += 1;
           log('boarding-anchor: trainCode resolved, lock promoted', {
             token: trip.token.slice(0, 8),
-            // #2515 — leg 2(currentLegAnchor)면 anchorLock 자체가 그 leg의 station/line을
-            // self-describe한다. promptDisplay는 leg 1 전용이라 leg 2에서는 stale 값을 로깅한다.
             station: anchorLock.segmentStations[0] ?? trip.promptDisplay?.originStation,
             line: anchorLock.line,
             trainCode: anchorLock.trainCode,
-            isLeg2: trip.currentLegAnchor !== undefined,
+            isLeg2: false,
           });
           continue;
+        }
+        // #2539 — resolved가 아니었다(none/ambiguous/walk-gated). leg 2 후보였고 실제로
+        // 평가돼 none/ambiguous로 판정났다면(walk-gated는 애초에 평가 자체를 안 한 것이라
+        // 카운터를 건드리지 않는다 — walk-gate 재진입 시 이전 streak을 그대로 이어가도 무방한
+        // 것이 아니라 애초에 streak이 생길 수 없는 시점이라 no-op) 연속확증 카운터를 리셋한다.
+        if (isLeg2Candidate && (outcome === 'none' || outcome === 'ambiguous') && trip.legResolveStreak !== undefined) {
+          trip.legResolveStreak = undefined;
+          await putTrip(env.TRIPS, trip);
         }
         if (trip.infoModeEnabled === true && (trip.promptDisplay || trip.currentLegAnchor)) {
           stats.boardingAnchorUnresolved += 1;
@@ -4775,6 +4848,9 @@ async function completeWaypointAdvance(
     trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
     trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
     trip.legBoardingPromptState = undefined;
+    // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
+    // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
+    trip.legResolveStreak = undefined;
   }
   // #2034 — 환승 waypoint advance = "환승역 도착". 사용자에게 "하차했나요?" hop-end 프롬프트를
   // 발사해 다음 leg 진입을 명시 확인하도록 유도. lock 활성 여부와 무관 (transfer 직후 lock 은 이미
