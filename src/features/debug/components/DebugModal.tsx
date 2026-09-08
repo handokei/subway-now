@@ -140,7 +140,9 @@ import {
   getRawSignalEntries,
   subscribeRawSignal,
   type RawSignalEntry,
+  type PushReceiptDetail,
 } from '../../observability/utils/rawSignalBuffer';
+import type { AlarmEventMirror } from '../../alarm/utils/backendSsotMirror';
 import {
   dumpScheduledNotifications,
   formatScheduledNotificationLine,
@@ -1419,6 +1421,69 @@ function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #2541 (obs: whole-chain 관측) — 매역(정거장)별 1행으로 backend SSoT 발사 신호와 device
+ * push-receipt를 교차 대조한다.
+ *
+ * backend 쪽: `backendSsotMirror.alarmEvents`(silent push payload가 forward하는 station별
+ * 발사 결정 기록 — station-passed/transfer/destination/imminent type). device 쪽:
+ * `rawSignalLog`에서 `kind === 'push-receipt'`인 entry들(#2541 `logPushReceipt`가 적재) —
+ * pushType(alert/background) + displayed + suppressedReason.
+ *
+ * "backend=[transfer] device=[none]"처럼 backend는 발사했는데 device 쪽 receipt가 전혀 없으면
+ * 배달 단계에서 끊긴 것(BG alert push는 OS가 직접 표시해 JS 수신 핸들러가 아예 안 탈 수 있다는
+ * 한계는 `logAlertPushReceipt`/`handleSilentPush` 주석 참고 — 그 경우도 이 표에서는 device=[none]
+ * 으로 보인다는 점을 함께 읽어야 한다).
+ *
+ * 둘 다 비어 있으면 (empty).
+ */
+function computeWholeChainLines(
+  alarmEvents: readonly AlarmEventMirror[] | undefined,
+  rawSignalLog: readonly RawSignalEntry[] | undefined,
+): string[] {
+  const receipts: PushReceiptDetail[] = [];
+  for (const e of rawSignalLog ?? []) {
+    if (e.pushReceipt !== null) receipts.push(e.pushReceipt);
+  }
+  const events = alarmEvents ?? [];
+  if (events.length === 0 && receipts.length === 0) return ['(empty)'];
+
+  const stations: string[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (!seen.has(e.stationId)) {
+      seen.add(e.stationId);
+      stations.push(e.stationId);
+    }
+  }
+  for (const detail of receipts) {
+    if (!seen.has(detail.station)) {
+      seen.add(detail.station);
+      stations.push(detail.station);
+    }
+  }
+
+  return stations.map((station) => {
+    const backendTypes = events.filter((e) => e.stationId === station).map((e) => e.type);
+    const backendPart = backendTypes.length > 0 ? backendTypes.join(',') : 'none';
+    const stationReceipts = receipts.filter((detail) => detail.station === station);
+    const devicePart =
+      stationReceipts.length > 0
+        ? stationReceipts
+            .map(({ pushType, displayed, suppressedReason }) => {
+              const suffix = suppressedReason ? `(${suppressedReason})` : '';
+              return `${pushType}:displayed=${displayed ? 'Y' : 'N'}${suffix}`;
+            })
+            .join('|')
+        : 'none';
+    return `${station}: backend=[${backendPart}] device=[${devicePart}]`;
+  });
+}
+
+function buildWholeChainSection(args: BuildDumpArgs): string[] {
+  return computeWholeChainLines(args.backendSsotMirror?.alarmEvents, args.rawSignalLog);
+}
+
+/**
  * #2330 (consensus-D, 설계 SSoT #2323 (3)) — Consensus Mismatch 섹션. 명시 탭이 backend
  * consensus-confirmed 제안과 다른 열차를 선택한 빈도를 dump/UI 양쪽에 노출.
  * `computeLockCorrectionLines`와 동일 패턴 — 미전달 시 (n/a).
@@ -1869,6 +1934,10 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'BoardingLock', build: buildBoardingLockSection },
   // #2268 (C1) — pending→confirmed lock 정정 counter(#1166). BoardingLock 섹션 직후 배치.
   { title: 'Lock Correction', build: buildLockCorrectionSection },
+  // #2541 (obs: whole-chain 관측) — 매역 backend SSoT(alarmEvents) ↔ device push-receipt 교차
+  // 대조. Backend SSoT/BoardingLock 직후 배치해 같은 화면에서 프롬프트/lock/발사/배달 4단계를
+  // 이어 읽을 수 있게 한다.
+  { title: 'Whole Chain', build: buildWholeChainSection },
   // #2330 (consensus-D) — 명시 탭 vs consensus-confirmed 제안 불일치 counter. Lock Correction 직후 배치.
   { title: 'Consensus Mismatch', build: buildConsensusMismatchSection },
   // #1413 — Estimator buffer. lockless trip 진행도 사후 재구성용.
@@ -2936,6 +3005,14 @@ function DebugModalInner({
               buildLockCorrectionSection과 동일 SSOT (내부 helper 재사용). */}
           <LockCorrectionSection metrics={lockCorrectionMetrics} colors={colors} />
 
+          {/* #2541 (obs: whole-chain 관측) — 매역 backend SSoT(alarmEvents) ↔ device
+              push-receipt 교차 대조. buildWholeChainSection과 동일 SSOT (내부 helper 재사용). */}
+          <WholeChainSection
+            alarmEvents={backendSsotMirror?.alarmEvents}
+            rawSignalLog={rawSignalLog}
+            colors={colors}
+          />
+
           {/* #2330 (consensus-D) — Consensus Mismatch: 탭 vs consensus-confirmed 불일치 fired count.
               buildConsensusMismatchSection과 동일 SSOT (내부 helper 재사용). */}
           <ConsensusMismatchSection metrics={consensusMismatchMetrics} colors={colors} />
@@ -3798,6 +3875,29 @@ function LockCorrectionSection({
 }
 
 /**
+ * #2541 (obs: whole-chain 관측) — Whole Chain UI section. computeWholeChainLines helper를
+ * dump builder와 공유.
+ */
+function WholeChainSection({
+  alarmEvents,
+  rawSignalLog,
+  colors,
+}: Readonly<{
+  alarmEvents: readonly AlarmEventMirror[] | undefined;
+  rawSignalLog: readonly RawSignalEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <DumpTextSection
+      title="Whole Chain"
+      lines={computeWholeChainLines(alarmEvents, rawSignalLog)}
+      entryTestId="debug-whole-chain"
+      colors={colors}
+    />
+  );
+}
+
+/**
  * #2330 (consensus-D) — Consensus Mismatch UI section. computeConsensusMismatchLines helper를
  * dump builder와 공유.
  */
@@ -3999,6 +4099,9 @@ export const __test__ = {
   // #2330 (consensus-D) — Consensus Mismatch section builder/helper. 단위 테스트에서 직접 검증.
   computeConsensusMismatchLines,
   buildConsensusMismatchSection,
+  // #2541 (obs: whole-chain 관측) — Whole Chain section builder/helper. 단위 테스트에서 직접 검증.
+  computeWholeChainLines,
+  buildWholeChainSection,
 };
 
 const styles = StyleSheet.create({

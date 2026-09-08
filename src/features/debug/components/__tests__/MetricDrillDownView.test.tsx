@@ -42,6 +42,7 @@ function makeEntry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     stationId: null,
     source: null,
     confidence: null,
+    pushReceipt: null,
     ...overrides,
   };
 }

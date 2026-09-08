@@ -21,7 +21,7 @@ import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellul
 export const RAW_SIGNAL_BUFFER_CAPACITY = 300;
 export const RAW_SIGNAL_WRITE_THROTTLE_MS = 1000;
 
-export type RawSignalKind = 'cycle' | 'enter' | 'exit';
+export type RawSignalKind = 'cycle' | 'enter' | 'exit' | 'push-receipt';
 export type MotionLabel = 'stationary' | 'walking' | 'automotive' | 'unknown';
 export type RawSignalDir = 'up' | 'down';
 
@@ -47,6 +47,39 @@ export interface RawSignalGps {
 export interface RawSignalCellular {
   tech: string | null;
   vote: CellularEnvironmentVote;
+}
+
+/**
+ * #2541 — device push-receipt kind. backend "매역 알림" 4단계(프롬프트/lock/발사/배달) 중
+ * 마지막 단계(배달)를 device-side에서 관측하기 위한 discriminator.
+ * 'station-passed' = intermediate waypoint 통과, 'prompt' = boarding-prompt(승차/hop-end).
+ */
+export type PushReceiptKind = 'station-passed' | 'transfer' | 'destination' | 'prompt';
+
+/**
+ * #2541 — push가 device에 도달한 채널. 'background' = silent push(content-available, JS BG task가
+ * 수신), 'alert' = APNs alert push(FG는 `setupNotificationHandler` JS 핸들러가 개입해 표시 여부
+ * 결정 가능하지만, BG에서는 iOS가 시스템 배너를 직접 렌더해 JS가 개입/관측할 수 없다 — 그 경우
+ * receipt 자체가 기록되지 않는 것이 "BG alert 도달 여부 불명"의 direct evidence다).
+ */
+export type PushReceiptType = 'alert' | 'background';
+
+/**
+ * #2541 (obs: whole-chain 관측) — device push-receipt 상세. backend가 push를 발사(D1
+ * cron-fire-attempt sent)한 뒤 device가 실제로 그 push를 받았는지/표시했는지를 station+시각
+ * 기준으로 backend와 대조하기 위한 필드 집합.
+ *
+ * suppressedReason — dedup 등으로 로컬 표시가 억제된 경우의 사유 문자열(기존 alarmLog reason과
+ * 동일 어휘 재사용, 예: 'legacy-station-kind-ignored' / 'boarding-prompt-remote-only').
+ * 관측 전용 — 이 값이 발사/표시/dedup 동작을 바꾸지 않는다.
+ */
+export interface PushReceiptDetail {
+  pushId: string | null;
+  station: string;
+  kind: PushReceiptKind;
+  pushType: PushReceiptType;
+  displayed: boolean;
+  suppressedReason?: string;
 }
 
 export interface RawSignalEntry {
@@ -75,6 +108,8 @@ export interface RawSignalEntry {
   stationId: string | null;
   source: FusionSource | null;
   confidence: FusionConfidence | null;
+  /** #2541 — kind='push-receipt'일 때만 non-null. 그 외 kind(cycle/enter/exit)는 항상 null. */
+  pushReceipt: PushReceiptDetail | null;
 }
 
 const db = createDebugBuffer<RawSignalEntry>(RAW_SIGNAL_BUFFER_CAPACITY);

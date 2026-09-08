@@ -41,6 +41,7 @@ function entry(ts: number, kind: RawSignalEntry['kind'] = 'cycle'): RawSignalEnt
     stationId: null,
     source: null,
     confidence: null,
+    pushReceipt: null,
   };
 }
 

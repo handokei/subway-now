@@ -2383,6 +2383,7 @@ export function useFusedNearestStation(
         stationId: prevStationId,
         source: null,
         confidence: null,
+        pushReceipt: null,
       });
       pushRawSignal({
         ts,
@@ -2402,6 +2403,7 @@ export function useFusedNearestStation(
         stationId: nextStationId,
         source,
         confidence,
+        pushReceipt: null,
       });
     }
     lastStationIdRef.current = nextStationId;
@@ -2423,6 +2425,7 @@ export function useFusedNearestStation(
       stationId: nextStationId,
       source,
       confidence,
+      pushReceipt: null,
     });
   }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, accelerometerPattern, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
 

@@ -72,6 +72,10 @@ import {
   getBackendUrl as getTripDeathPullBackendUrl,
 } from '../utils/tripDeathPullBackstop';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
+import {
+  logPushReceipt,
+  mapWaypointKindToReceiptKind,
+} from '../../observability/utils/pushReceiptLog';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { addFiredPushId } from '../utils/firedPushIds';
 import {
@@ -1196,6 +1200,16 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         logger.info(
           `boarding-prompt received (remote-only, no local notification): originStation=${payload.originStation} line=${payload.line} tripToken=${payload.tripToken.slice(0, 8)} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
         );
+        // #2541 — device push-receipt. 이 silent push 자체는 로컬 알림을 만들지 않는다(remote
+        // alert push가 실제 표시 채널) — displayed=false + 사유 명시.
+        logPushReceipt({
+          pushId: payload.pushId,
+          station: payload.originStation,
+          kind: 'prompt',
+          pushType: 'background',
+          displayed: false,
+          suppressedReason: 'boarding-prompt-remote-only',
+        });
         void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-remote-only');
         return;
       }
@@ -1295,6 +1309,16 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       // drop하는 대신 generic imminent 알림을 즉시 발사해 안전을 우선한다.
       if (payload.kindRaw) {
         await fireStationKindSkewFallback(payload);
+        // #2541 — device push-receipt. kind-skew fallback은 generic imminent 알림을 실제로
+        // 로컬 발사한다(위 fireStationKindSkewFallback) — displayed=true. kind 자체는 SSoT
+        // 밖의 값(payload.kindRaw)이라 4종 PushReceiptKind 중 가장 가까운 'station-passed'로 기록.
+        logPushReceipt({
+          pushId: payload.pushId,
+          station: payload.nextWaypoint,
+          kind: 'station-passed',
+          pushType: 'background',
+          displayed: true,
+        });
         logPushContractKindSkew({
           category: 'station-like',
           rawKind: payload.kindRaw,
@@ -1359,6 +1383,16 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
       phaseId: payload.phase,
       reason: 'legacy-station-kind-ignored',
+    });
+    // #2541 — device push-receipt. 이 silent push는 로컬 알림을 발사하지 않는다(backend visible
+    // alert push가 실제 표시 채널, #2064 Phase 1-device) — displayed=false + 사유 명시.
+    logPushReceipt({
+      pushId: payload.pushId,
+      station: payload.nextWaypoint,
+      kind: mapWaypointKindToReceiptKind(payload.kind),
+      pushType: 'background',
+      displayed: false,
+      suppressedReason: 'legacy-station-kind-ignored',
     });
     void ackOutcome(payload.pushId, apnsToken, 'skipped', 'legacy-station-kind-ignored');
     logger.info(

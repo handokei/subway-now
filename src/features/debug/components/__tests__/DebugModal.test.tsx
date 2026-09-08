@@ -10,6 +10,7 @@ import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useTripGroundTruthStore } from '../../store/useTripGroundTruthStore';
 import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
+import type { RawSignalEntry } from '../../../observability/utils/rawSignalBuffer';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime';
@@ -4461,6 +4462,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     stationId: '7-220',
     source: 'gps',
     confidence: 'gps-only',
+    pushReceipt: null,
     ...overrides,
   });
 
@@ -5174,6 +5176,151 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(screen.getByText(/fired=1/)).toBeTruthy();
       expect(getConsensusMismatchMetrics().fired).toBe(1);
       resetConsensusMismatchMetrics();
+    });
+
+    // #2541 (obs: whole-chain 관측) — 매역 backend SSoT(alarmEvents) ↔ device push-receipt
+    // 교차 대조. Lock Correction/Consensus Mismatch와 동일 패턴(computeXxxLines + buildXxxSection
+    // 공유 helper) 검증.
+    describe('computeWholeChainLines / buildWholeChainSection (#2541)', () => {
+      function receiptEntry(
+        overrides: Partial<NonNullable<RawSignalEntry['pushReceipt']>> = {},
+      ): RawSignalEntry {
+        return {
+          ts: 1_700_000_000_000,
+          corrId: null,
+          kind: 'push-receipt',
+          gps: null,
+          motion: null,
+          accelPattern: null,
+          cellular: null,
+          subsurface: null,
+          barometerHpa: null,
+          arvlCd: null,
+          line: null,
+          dir: null,
+          arcIdx: null,
+          arcProgress: null,
+          stationId: null,
+          source: null,
+          confidence: null,
+          pushReceipt: {
+            pushId: 'push-1',
+            station: '용마산',
+            kind: 'station-passed',
+            pushType: 'background',
+            displayed: false,
+            ...overrides,
+          },
+        };
+      }
+
+      it('둘 다 비어있으면 (empty)', () => {
+        expect(__test__.computeWholeChainLines(undefined, undefined)).toEqual(['(empty)']);
+        expect(__test__.computeWholeChainLines([], [])).toEqual(['(empty)']);
+      });
+
+      it('backend alarmEvents만 있으면 device=[none]', () => {
+        const lines = __test__.computeWholeChainLines(
+          [{ alarmId: 'a1', stationId: '용마산', type: 'transfer', decidedAt: 1 }],
+          [],
+        );
+        expect(lines).toEqual(['용마산: backend=[transfer] device=[none]']);
+      });
+
+      it('device push-receipt만 있으면 backend=[none]', () => {
+        const lines = __test__.computeWholeChainLines(undefined, [receiptEntry()]);
+        expect(lines).toEqual([
+          '용마산: backend=[none] device=[background:displayed=N]',
+        ]);
+      });
+
+      it('같은 station에 backend/device 둘 다 있으면 한 줄로 합쳐진다 (dedup)', () => {
+        const lines = __test__.computeWholeChainLines(
+          [
+            { alarmId: 'a1', stationId: '용마산', type: 'transfer', decidedAt: 1 },
+            { alarmId: 'a2', stationId: '용마산', type: 'imminent', decidedAt: 2 },
+          ],
+          [receiptEntry({ displayed: true })],
+        );
+        expect(lines).toEqual([
+          '용마산: backend=[transfer,imminent] device=[background:displayed=Y]',
+        ]);
+      });
+
+      it('한 station에 여러 receipt는 |로 join, suppressedReason도 표기', () => {
+        const lines = __test__.computeWholeChainLines(undefined, [
+          receiptEntry({
+            pushType: 'background',
+            displayed: false,
+            suppressedReason: 'legacy-station-kind-ignored',
+          }),
+          receiptEntry({ pushType: 'alert', displayed: true, suppressedReason: undefined }),
+        ]);
+        expect(lines).toEqual([
+          '용마산: backend=[none] device=[background:displayed=N(legacy-station-kind-ignored)|alert:displayed=Y]',
+        ]);
+      });
+
+      it('rawSignalLog에서 pushReceipt=null인 entry(cycle/enter/exit)는 무시한다', () => {
+        const fusionEntry: RawSignalEntry = {
+          ts: 1,
+          corrId: null,
+          kind: 'cycle',
+          gps: null,
+          motion: null,
+          accelPattern: null,
+          cellular: null,
+          subsurface: null,
+          barometerHpa: null,
+          arvlCd: null,
+          line: null,
+          dir: null,
+          arcIdx: null,
+          arcProgress: null,
+          stationId: '강남',
+          source: null,
+          confidence: null,
+          pushReceipt: null,
+        };
+        expect(__test__.computeWholeChainLines(undefined, [fusionEntry])).toEqual(['(empty)']);
+      });
+
+      it('여러 station이면 등장 순서(backend 먼저, 이어서 device-only)로 stations를 나열', () => {
+        const lines = __test__.computeWholeChainLines(
+          [{ alarmId: 'a1', stationId: '군자', type: 'destination', decidedAt: 1 }],
+          [receiptEntry({ station: '중곡', kind: 'transfer' })],
+        );
+        expect(lines).toEqual([
+          '군자: backend=[destination] device=[none]',
+          '중곡: backend=[none] device=[background:displayed=N]',
+        ]);
+      });
+
+      it('buildWholeChainSection: backendSsotMirror.alarmEvents + rawSignalLog를 args에서 읽는다', () => {
+        const built = __test__.buildWholeChainSection({
+          ...baselineDumpArgs,
+          backendSsotMirror: {
+            currentStationId: '군자',
+            motionState: 'moving',
+            lastAdvanceEvidence: 'arvlCd',
+            lastAdvanceAt: 1,
+            passedStations: [],
+            alarmEvents: [{ alarmId: 'a1', stationId: '군자', type: 'destination', decidedAt: 1 }],
+            receivedAt: 1,
+          },
+          rawSignalLog: [receiptEntry({ station: '군자' })],
+        });
+        expect(built).toEqual([
+          '군자: backend=[destination] device=[background:displayed=N]',
+        ]);
+      });
+
+      it('Whole Chain 섹션이 share dump에 포함된다 (#2541)', () => {
+        const dump = buildDumpText(makeDumpArgs({ rawSignalLog: [receiptEntry()] }));
+        expect(dump).toContain('## Whole Chain');
+        const section = dump.slice(dump.indexOf('## Whole Chain'));
+        expect(section).toContain('용마산: backend=[none] device=[background:displayed=N]');
+      });
     });
 
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {

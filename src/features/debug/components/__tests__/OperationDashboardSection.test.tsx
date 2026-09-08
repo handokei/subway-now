@@ -518,6 +518,7 @@ describe('OperationDashboardSection', () => {
         stationId: null,
         source: null,
         confidence: null,
+        pushReceipt: null,
       };
       pushRawSignal(baseEntry);
 
@@ -549,6 +550,7 @@ describe('OperationDashboardSection', () => {
         stationId: null,
         source: null,
         confidence: null,
+        pushReceipt: null,
       };
       pushRawSignal(baseEntry);
 
