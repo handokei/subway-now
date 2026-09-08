@@ -341,6 +341,16 @@ export interface TripPositionSSoT {
    */
   hopEndPromptOutcome?: HopEndPromptOutcome;
   /**
+   * ADR-037 D2c (#2542, 진단 계측 전용) — 발사 게이트(`advanceTripPosition` 6단 게이트 /
+   * `transferDestinationGate` / lock-active waypoint advance)가 blocked될 때 직전 tick의
+   * blockReason. caller(scheduled.ts)가 이 값과 이번 tick blockReason을 비교해 다를 때만
+   * D1 `trip_events`(kind='cron-fire-attempt', outcome='skipped-reason')로 append한다
+   * (#2073 quota 보호). 발사/게이트 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  lastFireBlockReason?: string;
+  /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.
    * v2: currentStationLine 추가 (#1705).
