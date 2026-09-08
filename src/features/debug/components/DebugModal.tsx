@@ -1442,7 +1442,7 @@ function computeWholeChainLines(
 ): string[] {
   const receipts: PushReceiptDetail[] = [];
   for (const e of rawSignalLog ?? []) {
-    if (e.pushReceipt !== null) receipts.push(e.pushReceipt);
+    if (e.pushReceipt != null) receipts.push(e.pushReceipt);
   }
   const events = alarmEvents ?? [];
   if (events.length === 0 && receipts.length === 0) return ['(empty)'];
