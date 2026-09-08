@@ -35,6 +35,7 @@ function entry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     stationId: '2-022',
     source: 'gps',
     confidence: 'gps-only',
+    pushReceipt: null,
     ...overrides,
   };
 }

@@ -35,6 +35,7 @@ function makeEntry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     stationId: null,
     source: null,
     confidence: null,
+    pushReceipt: null,
     ...overrides,
   };
 }
@@ -91,7 +92,7 @@ describe('buildTripDetail', () => {
         makeEntry({ corrId: 'corr-1', ts: i * 1_000, kind: k }),
       );
       const detail = buildTripDetail(entries, 'corr-1');
-      expect(detail?.kindCounts).toEqual({ cycle: 2, enter: 1, exit: 1 });
+      expect(detail?.kindCounts).toEqual({ cycle: 2, enter: 1, exit: 1, 'push-receipt': 0 });
     });
 
     it('sorts entries newest-first (ts descending)', () => {

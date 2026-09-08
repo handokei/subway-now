@@ -39,9 +39,13 @@ import {
 } from './notificationSource';
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
-import type { StationWaypointKind } from '../../../shared/types/pushContract';
+import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
 import { BOARDING_PROMPT_CATEGORY } from './notificationCategory';
 import type { LineNumber } from '../../../shared/types/station';
+import {
+  logPushReceipt,
+  mapWaypointKindToReceiptKind,
+} from '../../observability/utils/pushReceiptLog';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
  *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
@@ -100,18 +104,22 @@ export function setupNotificationHandler(): void {
       // #574 P2e — silent push가 이미 fired한 pushId의 alert fallback이 race로 도달했을 때
       // FG에서 중복 표시 차단. BG에선 iOS가 직접 표시해 JS 개입 불가(P2e 한계 명시).
       if (await isFallbackDuplicate(notification)) {
+        logAlertPushReceipt(notification, false, 'fallback-duplicate-of-silent-fired');
         return SUPPRESSED_NOTIFICATION_BEHAVIOR;
       }
       // #2122 — FG 보조 발사(로컬 station-passed 알림) 직후 뒤늦게 도착한 backend alert push가
       // 같은 (station, kind)면 2차 방어선으로 표시 억제(1차는 apns-collapse-id 문자열 일치).
       if (await isRecentLocalAuxFireDuplicate(notification)) {
+        logAlertPushReceipt(notification, false, 'recent-local-aux-fire-duplicate');
         return SUPPRESSED_NOTIFICATION_BEHAVIOR;
       }
       // #2422 — 로컬 boarding-prompt 발사 직후 뒤늦게 도착하는 backend remote alert push가
       // 같은 origin station이면 억제 (station-passed의 isRecentLocalAuxFireDuplicate와 동형 2차 방어선).
       if (await isRecentLocalBoardingPromptDuplicate(notification)) {
+        logAlertPushReceipt(notification, false, 'recent-local-boarding-prompt-duplicate');
         return SUPPRESSED_NOTIFICATION_BEHAVIOR;
       }
+      logAlertPushReceipt(notification, true);
       return {
         shouldShowAlert: true,
         shouldShowBanner: true,
@@ -120,6 +128,54 @@ export function setupNotificationHandler(): void {
         shouldSetBadge: false,
       };
     },
+  });
+}
+
+/**
+ * #2541 (obs: whole-chain 관측) — FG alert push receipt. `setupNotificationHandler`가
+ * shouldShowAlert 결정을 내리는 이 지점이 device가 backend visible push(alert)를 실제로
+ * "표시할지" 결정하는 유일한 JS 개입 지점이다.
+ *
+ * 한계: BG(앱 kill/suspend)에서는 iOS가 alert push를 시스템 배너로 직접 렌더하며 이 핸들러가
+ * 아예 호출되지 않는다 — 그 경우 receipt 자체가 device dump에 남지 않는다("BG alert 도달 여부
+ * 불명"의 direct evidence, backend D1 cron-fire-attempt와 대조 시 이 gap을 감안해야 한다).
+ *
+ * data.kind가 station waypoint kind(transfer/destination/intermediate)나 'boarding-prompt'가
+ * 아니면(trip-ended 등 비-station alert) 관측 대상 밖 — 조용히 no-op.
+ */
+function logAlertPushReceipt(
+  notification: Notifications.Notification,
+  displayed: boolean,
+  suppressedReason?: string,
+): void {
+  const data = notification.request.content.data as
+    | { nextWaypoint?: unknown; kind?: unknown; originStation?: unknown; pushId?: unknown }
+    | undefined;
+  const pushId = typeof data?.pushId === 'string' ? data.pushId : null;
+  const rawKind = data?.kind;
+  if (rawKind === 'boarding-prompt') {
+    const station = data?.originStation;
+    if (typeof station !== 'string' || station.length === 0) return;
+    logPushReceipt({
+      pushId,
+      station,
+      kind: 'prompt',
+      pushType: 'alert',
+      displayed,
+      ...(suppressedReason !== undefined ? { suppressedReason } : {}),
+    });
+    return;
+  }
+  if (typeof rawKind !== 'string' || !isStationWaypointKind(rawKind)) return;
+  const station = data?.nextWaypoint;
+  if (typeof station !== 'string' || station.length === 0) return;
+  logPushReceipt({
+    pushId,
+    station,
+    kind: mapWaypointKindToReceiptKind(rawKind),
+    pushType: 'alert',
+    displayed,
+    ...(suppressedReason !== undefined ? { suppressedReason } : {}),
   });
 }
 

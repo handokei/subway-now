@@ -64,7 +64,7 @@ function filterEntriesByToken(
 
 /** kind별 카운트 집계 — 0 초기값에서 누적. */
 function countByKind(entries: readonly RawSignalEntry[]): RawSignalKindCounts {
-  const counts: RawSignalKindCounts = { cycle: 0, enter: 0, exit: 0 };
+  const counts: RawSignalKindCounts = { cycle: 0, enter: 0, exit: 0, 'push-receipt': 0 };
   for (const entry of entries) {
     counts[entry.kind] += 1;
   }
