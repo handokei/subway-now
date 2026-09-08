@@ -5285,6 +5285,17 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         expect(__test__.computeWholeChainLines(undefined, [fusionEntry])).toEqual(['(empty)']);
       });
 
+      it('#2545 — AsyncStorage 복원 legacy entry(pushReceipt 필드 자체가 없어 undefined)는 크래시 없이 무시한다', () => {
+        const legacyEntry = receiptEntry();
+        // v1.2.5 이전 버전이 저장한 entry는 pushReceipt 필드가 아예 없다(JSON에 키 부재) →
+        // 복원 시 undefined. `!== null` 체크는 undefined를 통과시켜 receipts에 undefined를
+        // push하고 이후 구조분해에서 크래시한다(#2545 root). delete로 필드 부재 상태를 재현.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (legacyEntry as any).pushReceipt;
+        expect(() => __test__.computeWholeChainLines(undefined, [legacyEntry])).not.toThrow();
+        expect(__test__.computeWholeChainLines(undefined, [legacyEntry])).toEqual(['(empty)']);
+      });
+
       it('여러 station이면 등장 순서(backend 먼저, 이어서 device-only)로 stations를 나열', () => {
         const lines = __test__.computeWholeChainLines(
           [{ alarmId: 'a1', stationId: '군자', type: 'destination', decidedAt: 1 }],
