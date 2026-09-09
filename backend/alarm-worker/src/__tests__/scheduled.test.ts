@@ -5503,9 +5503,11 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     });
     const alertBody = JSON.parse((alertInit as RequestInit).body as string);
     expect(alertBody.aps.category).toBe('BOARDING_PROMPT');
-    expect(alertBody.data.kind).toBe('boarding-prompt');
-    expect(alertBody.data.originStation).toBe('강남');
-    expect(alertBody.data.line).toBe('2');
+    // #2549 — custom payload는 top-level `body` 키로 실린다 (iOS content.data는
+    // userInfo["body"]에서만 추출).
+    expect(alertBody.body.kind).toBe('boarding-prompt');
+    expect(alertBody.body.originStation).toBe('강남');
+    expect(alertBody.body.line).toBe('2');
 
     const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
     // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. 반복 발사(A4) 상태(firedTrainCodes/fireCount)가
@@ -5884,12 +5886,12 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
       const [, init] = fetchMock.mock.calls[0];
       const body = JSON.parse((init as RequestInit).body as string);
       // 5건만 wire + arrivalSeconds 오름차순.
-      expect(body.data.candidateTrains).toHaveLength(5);
-      expect(body.data.candidateTrains.map((c: { trainCode: string }) => c.trainCode)).toEqual([
+      expect(body.body.candidateTrains).toHaveLength(5);
+      expect(body.body.candidateTrains.map((c: { trainCode: string }) => c.trainCode)).toEqual([
         'T1', 'T2', 'T3', 'T4', 'T5',
       ]);
       // 각 후보의 schema 검증 — line/direction/nextArrivalEta.
-      const first = body.data.candidateTrains[0];
+      const first = body.body.candidateTrains[0];
       expect(first).toEqual({
         trainCode: 'T1',
         line: '2',
@@ -12349,9 +12351,9 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     // payload wire 검증
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.data.hopEndKind).toBe('disembark');
-    expect(body.data.nextLine).toBe('K');
-    expect(body.data.nextStation).toBe('왕십리');
+    expect(body.body.hopEndKind).toBe('disembark');
+    expect(body.body.nextLine).toBe('K');
+    expect(body.body.nextStation).toBe('왕십리');
     // #2282 — hop-end fire는 BOARDING_PROMPT가 아닌 전용 DISEMBARK_PROMPT category로 나가야 한다.
     expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
   });
@@ -12413,8 +12415,8 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     expect(stats.hopEndPromptFired).toBe(1);
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect('nextLine' in body.data).toBe(false);
-    expect('nextStation' in body.data).toBe(false);
+    expect('nextLine' in body.body).toBe(false);
+    expect('nextStation' in body.body).toBe(false);
     // legKey = "성수|"
     expect(trip.hopEndPromptState?.['성수|']?.fired).toBe(true);
   });
@@ -12533,9 +12535,9 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(alertCall).toBeDefined();
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.data.originStation).toBe('건대입구');
-    expect(body.data.line).toBe('7');
-    expect(body.data.hopEndKind).toBeUndefined();
+    expect(body.body.originStation).toBe('건대입구');
+    expect(body.body.line).toBe('7');
+    expect(body.body.hopEndKind).toBeUndefined();
   });
 
   it('후보 0건(arrivals 빈 배열) → blocked 증가, push 미발사', async () => {
@@ -12634,8 +12636,8 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(alertCall).toBeDefined();
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.data.originStation).toBe('용마산');
-    expect(body.data.line).toBe('7');
+    expect(body.body.originStation).toBe('용마산');
+    expect(body.body.line).toBe('7');
   });
 
   it('GPS 경로가 먼저 발사(boardingPromptState.fired + 최근 lastFiredAt) → 공유 dedup으로 skip (더블발사 0)', async () => {
@@ -12756,8 +12758,8 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.data.destinationDirection).toBeUndefined();
-    expect(body.data.subtitle).toBeUndefined();
+    expect(body.body.destinationDirection).toBeUndefined();
+    expect(body.body.subtitle).toBeUndefined();
   });
 
   it('#2130 A4 — 같은 trainCode가 이미 firedTrainCodes에 있으면(5분 경과 후에도) 재발사 skip', async () => {
@@ -12891,7 +12893,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.data.destinationDirection).toBe('up');
+    expect(body.body.destinationDirection).toBe('up');
     expect(body.aps.alert.subtitle).toContain('상행');
   });
 
@@ -12922,8 +12924,8 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     // 오름차순 정렬 시 down-train(60s)이 먼저 — isUp:false → direction:'down' 매핑 확인.
-    expect(body.data.candidateTrains?.[0]).toMatchObject({ trainCode: 'down-train', direction: 'down' });
-    expect(body.data.candidateTrains?.[1]).toMatchObject({ trainCode: 'up-train', direction: 'up' });
+    expect(body.body.candidateTrains?.[0]).toMatchObject({ trainCode: 'down-train', direction: 'down' });
+    expect(body.body.candidateTrains?.[1]).toMatchObject({ trainCode: 'up-train', direction: 'up' });
   });
 
   it('trip.waypoints가 빈 배열(다음 정거장 없음) → nextStation=null로도 발사', async () => {
@@ -12945,7 +12947,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.data.destinationDirection).toBeUndefined();
+    expect(body.body.destinationDirection).toBeUndefined();
   });
 });
 
@@ -13468,16 +13470,16 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     const promptCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
         const body = JSON.parse(call[1].body as string);
-        return body?.data?.originStation === '건대입구';
+        return body?.body?.originStation === '건대입구';
       } catch {
         return false;
       }
     });
     expect(promptCall).toBeDefined();
     const body = JSON.parse(promptCall![1].body as string);
-    expect(body.data.originStation).toBe('건대입구');
-    expect(body.data.line).toBe('7');
-    expect(body.data.hopEndKind).toBeUndefined();
+    expect(body.body.originStation).toBe('건대입구');
+    expect(body.body.line).toBe('7');
+    expect(body.body.hopEndKind).toBeUndefined();
     // break #2 핵심 단언 — unambiguous 후보가 있었음에도 backend가 조용히 잠그지 않았다.
     const stored = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
     expect(stored.boardingLock).toBeUndefined();

@@ -934,7 +934,11 @@ export async function sendBoardingPromptPush(
       // 사용자 확정 flow의 chain 전제라 도달성이 최우선 (결정 3-B와 동일 근거).
       'interruption-level': 'time-sensitive',
     },
-    data,
+    // #2549 — expo-notifications iOS는 remote push의 `content.data`를
+    // `request.content.userInfo["body"]`에서만 추출한다(EXNotificationSerializer.m). top-level
+    // `data` 키로 실으면 device에서 content.data가 항상 null → 인터랙티브 프롬프트 파싱이
+    // 매번 실패(payloadMatched=false, #2398 계측 실측)한다. 키 이름은 반드시 `body`.
+    body: data,
   });
 
   const response = await fetchImpl(url, {
