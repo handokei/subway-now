@@ -909,6 +909,9 @@ describe('sendAlertPush (#572 P2c)', () => {
         kind: 'intermediate',
         phase: 'imminent',
       });
+      // #2552 — 동일 payload를 top-level `body`에도 병기(FG expo content.data 파싱 경로).
+      // `data`(BG raw)와 `body`(FG content.data)가 같은 payload여야 두 경로 모두 정상.
+      expect(body.body).toEqual(body.data);
     });
 
     it('data 미지정 시 data는 { pushId }만 (backward compat)', async () => {
@@ -1501,6 +1504,8 @@ describe('sendTripEndedAlertPush (#1337)', () => {
       reason: 'destination-arrived',
       sentAt: 1_700_000_000_000,
     });
+    // #2552 — FG expo content.data(userInfo["body"]) 파싱 경로용 body 병기. data와 동일 payload.
+    expect(body.body).toEqual(body.data);
   });
 
   it.each<{ reason: TripEndedReason }>([
