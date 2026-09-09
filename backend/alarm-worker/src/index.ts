@@ -947,6 +947,18 @@ app.post('/trips', async (c) => {
     if (progress !== null && !progressApplies) {
       await deleteProgress(c.env.TRIPS, incoming.token);
     }
+    // #2554 (ADR-038 Phase 0) — same-session 재등록 시 보존할 boardingLock 산출(auto/manual 무관).
+    // incoming이 있으면 그대로 채택(swap/재송신). 없으면 existing lock을 현재 waypoints와 정합할
+    // 때만 보존한다 — 환승 후 stale leg-1 lock이 leg-2 waypoints에 살아남는 회귀를 차단(정합 실패
+    // 시 drop → lockMissing → leg-2 프롬프트 정상). new-session 분기는 `...incoming`으로 자연 처리.
+    const carriedBoardingLock =
+      incoming.boardingLock ??
+      (isSameSession &&
+      existing !== null &&
+      existing.boardingLock !== undefined &&
+      isBoardingLockConsistentWithWaypoints(existing.boardingLock, existing.waypoints)
+        ? existing.boardingLock
+        : undefined);
     const baseTrip = isSameSession
       ? {
           ...incoming,
@@ -957,30 +969,30 @@ app.post('/trips', async (c) => {
           lastFiredStation: existing.lastFiredStation,
           lastEtaSeconds: existing.lastEtaSeconds,
           apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
-          // #916 follow-up A — server-set auto-lock 보존.
-          // 9단 게이트 통과로 backend가 합성한 lock(autoLockedAt 마커 보유)은 client가 lock 필드
-          // 없이 재등록해도 silent하게 drop되지 않아야 한다 (cron 추적이 끊기는 회귀 차단).
-          // 마커가 없는 사용자 명시 lock은 기존 정책대로 incoming.boardingLock===undefined일 때 drop —
-          // 사용자가 명시적으로 lock을 해제했다는 신호로 간주.
-          // incoming.boardingLock이 truthy면 (사용자가 다른 trainCode 선택 또는 client가 같은 lock
-          // 재송신) 그대로 채택돼 swap 경로가 동작.
-          boardingLock:
-            incoming.boardingLock ??
-            (existing.boardingLock?.autoLockedAt !== undefined
-              ? existing.boardingLock
-              : undefined),
-          // boardingLock이 바뀌면(예: 환승 후 새 trainCode) 추적 baseline도 리셋.
-          // 양쪽 모두 boardingLock이 있고 trainCode가 같을 때만 baseline 유지 — 둘 다 undefined인
-          // 경우 비교가 true로 평가돼 stale epoch이 살아남는 회귀를 막는다.
+          // #2554 (ADR-038 Phase 0) — boardingLock durable화. 재등록 시 device가 lock을 payload에
+          // 안 실어도(incoming.boardingLock===undefined) existing lock을 auto/manual 구분 없이 보존한다.
           //
-          // #916 follow-up A — incoming.boardingLock===undefined + existing auto-lock 보존 케이스도
-          // 같은 lock이 유지되므로 baseline 유지 (cron 추적 연속성). 사용자 명시 lock drop 케이스는
-          // 기존 정책대로 undefined로 리셋.
+          // 기존(#916 follow-up A)은 backend auto-lock(autoLockedAt 마커)만 보존하고 사용자 수동
+          // lock은 "명시 해제"로 오간주해 drop했다. 그러나 device는 GPS update마다 재등록(#578)하고
+          // 그때마다 lock을 payload에 안 실을 수 있어, 수동 lock이 소실 → cron이 lockMissing으로
+          // 판정 → "탑승하셨나요?" 프롬프트 재발사 회귀(2026-09-09 7→2 라이드 confirmed)의 root였다.
+          // 명시 해제는 trip-end(trip 삭제) 또는 다른 trainCode swap(incoming truthy)으로만 일어나고
+          // "lock만 풀고 trip 유지"하는 순수 release 경로는 존재하지 않으므로("undefined=release"
+          // 채널 폐기 안전). lock은 TTL(LOCK_TTL_REFRESH_MS 30분, /boarding-lock/sync가 활성 중 갱신)로만
+          // 자연 만료한다 (option 2, 사용자 결정 2026-09-09).
+          //
+          // 단, 보존은 lock이 현재 waypoints와 여전히 정합할 때만(carriedBoardingLock 산출 참조) —
+          // 환승 후 stale leg-1 lock(line 7)이 leg-2(line 2) waypoints에 살아남아 leg-2 탑승
+          // 프롬프트를 억제하는 회귀를 차단한다. inconsistent면 drop → 다음 cycle lockMissing →
+          // leg-2 프롬프트 정상 발사. incoming.boardingLock이 truthy면(다른 trainCode 선택 또는 같은
+          // lock 재송신) 그대로 채택돼 swap 경로가 동작.
+          boardingLock: carriedBoardingLock,
+          // 추적 baseline은 같은 lock이 유지될 때만 보존(cron 추적 연속성). swap(다른 trainCode)/
+          // drop(inconsistent/부재)이면 리셋 — 새 head waypoint의 첫 push를 보장한다.
           lastTrackedArrivalEpoch:
-            (incoming.boardingLock &&
-              existing.boardingLock?.trainCode === incoming.boardingLock.trainCode) ||
-            (incoming.boardingLock === undefined &&
-              existing.boardingLock?.autoLockedAt !== undefined)
+            (incoming.boardingLock === undefined && carriedBoardingLock !== undefined) ||
+            (incoming.boardingLock !== undefined &&
+              existing.boardingLock?.trainCode === incoming.boardingLock.trainCode)
               ? existing.lastTrackedArrivalEpoch
               : undefined,
           // #586 C: Live Activity token/state는 별도 endpoint(`/live-activity/register`)로 관리.

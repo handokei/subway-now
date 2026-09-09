@@ -457,9 +457,25 @@ describe('POST /trips — boardingLock merge (#585)', () => {
     expect(stored.boardingLock?.trainCode).toBe('2317');
   });
 
-  it('omitted boardingLock clears existing lock (lock released)', async () => {
+  it('omitted boardingLock preserves consistent existing lock (#2554 durable화)', async () => {
+    // ADR-038 Phase 0 option 2: 재등록 시 lock 필드 생략 ≠ 해제. waypoints와 정합하는 lock은
+    // 보존한다(device GPS-update 재등록 #578마다 lock 소실 → 프롬프트 재발사 회귀 차단).
     const env = makeKvEnv();
     await post('/trips', lockBody(), env);
+    await post('/trips', lockBody(null), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7246');
+  });
+
+  it('omitted boardingLock drops stale lock inconsistent with waypoints (환승 후 leg-1 lock, #2554)', async () => {
+    // 환승 통과 상태 시뮬: line 7 lock이 남았지만 waypoints는 line 2만(leg-1 소진). 이 stale lock을
+    // 보존하면 leg-2 탑승 프롬프트가 억제되므로 drop → 다음 cycle lockMissing → leg-2 프롬프트 정상.
+    const env = makeKvEnv();
+    const seeded = {
+      ...lockBody(), // line 7 lock
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    };
+    await env.TRIPS.put('trip:tok-585', JSON.stringify(seeded));
     await post('/trips', lockBody(null), env);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
     expect(stored.boardingLock).toBeUndefined();
@@ -616,12 +632,27 @@ describe('POST /trips — server-set auto-lock 보존 (#916 follow-up A)', () =>
     expect(stored.boardingLock?.autoLockedAt).toBe(CREATED + 1_000);
   });
 
-  it('user-set lock + incoming.boardingLock 부재 → drop (기존 정책 유지)', async () => {
+  it('user-set lock + incoming.boardingLock 부재 → 보존 (#2554 option 2, durable화)', async () => {
+    // ADR-038 Phase 0: 수동 lock도 재등록 시 보존한다. device가 GPS update마다 재등록(#578)하며
+    // lock을 payload에 안 실어도 소실되지 않아야 "lock 걸었는데 탑승 프롬프트 재발사" 회귀가 없다.
     const env = makeKvEnv();
     await seedExisting(env, userSetLock());
     await post('/trips', tripBody(), env);
     const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
-    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.boardingLock?.trainCode).toBe('USER1');
+    // 수동 lock은 autoLockedAt 마커가 없다 — 보존돼도 마커는 계속 부재.
+    expect(stored.boardingLock?.autoLockedAt).toBeUndefined();
+  });
+
+  it('user-set lock 보존 시 lastTrackedArrivalEpoch도 유지 (#2554)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, userSetLock());
+    const advanced = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    advanced.lastTrackedArrivalEpoch = 54_321;
+    await env.TRIPS.put(`trip:${TOKEN}`, JSON.stringify(advanced));
+    await post('/trips', tripBody(), env); // lock 필드 없이 재등록
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBe(54_321);
   });
 
   it('server-set lock + incoming 새 trainCode → swap (새 lock 채택)', async () => {
