@@ -1,6 +1,6 @@
 import i18next from 'i18next';
 import type { JourneyDisplay, JourneySegment } from '../../../shared/utils/stationRoute';
-import { getStationsOnLine, isSameStationName } from '../../../shared/utils/stationRoute';
+import { findStationByNameAndLine, getStationsOnLine, isSameStationName } from '../../../shared/utils/stationRoute';
 import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { NearestStationResult, LineNumber, Station } from '../../../shared/types/station';
@@ -41,6 +41,26 @@ function intermediateStationsForSegment(seg: JourneySegment): Station[] {
   return intermediate;
 }
 
+/**
+ * #2556 (ADR-038 Phase 1) — origin 노드 표시 호선 정합 가드.
+ *
+ * journey origin 노드는 `seg.line`(환승 전이면 route.fromLine)으로 색을 칠하는데, route
+ * 진행도(stopsToTransfer)가 위치보다 순간 stale하면 이미 다음 leg 역에 있는 사용자의 origin
+ * (예: 성수, 2호선 단일)이 이전 leg 호선(예: 7호선) 색으로 표시되는 회귀가 있었다
+ * (2026-09-09 라이드 confirmed). `approachLine.ts`(#1325)와 동일 패턴 — 그 역이 의도한
+ * 호선에 실제로 존재하지 않으면 역의 실제 호선으로 fallback한다. 표시 전용(색만) —
+ * arrivalContext/세그먼트 line은 무변경.
+ *
+ * 상류 root(route 진행 지연)는 A(#2547/#2554)로 해소 중 — 본 가드는 additive 방어선.
+ */
+function resolveOriginLine(fromName: string, intendedLine: LineNumber): LineNumber {
+  if (findStationByNameAndLine(fromName, intendedLine)) return intendedLine;
+  // 의도한 호선에 없음 — 그 역명이 실제 존재하는 호선으로 fallback. 조회 실패 시 의도값 유지
+  // (데이터 부재 — 기존 동작 보존, graceful).
+  const actual = allStations.find((s) => isSameStationName(s.name, fromName));
+  return actual ? actual.line : intendedLine;
+}
+
 export function journeyDisplayToStops(
   journey: JourneyDisplay,
   options: { readonly expanded?: boolean } = {},
@@ -68,9 +88,14 @@ export function journeyDisplayToStops(
 
     if (isFirst) {
       const nextSeg = segments[i + 1];
+      // #2556 — collapse(환승역 흡수) 시 nextSeg.line은 이미 정합(흡수 조건이 fromName===toName).
+      // 비collapse origin만 fromName↔seg.line 정합 가드 적용.
+      const originLine = isCollapsedZeroFirstHop
+        ? nextSeg.line
+        : resolveOriginLine(seg.fromName, seg.line);
       stops.push({
         station: getStationDisplayNameByName(seg.fromName, allStations),
-        line: isCollapsedZeroFirstHop ? nextSeg.line : seg.line,
+        line: originLine,
         mark: 'filled',
       });
     }

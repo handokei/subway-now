@@ -260,6 +260,44 @@ describe('journeyDisplayToStops', () => {
       expect(intermediates[0].station).toContain('충정로');
     });
   });
+
+  describe('origin 노드 호선 정합 가드 (#2556, ADR-038 Phase 1)', () => {
+    it('stale route(fromLine=7)에 존재하지 않는 origin(성수=2호선 단일) → 역의 실제 호선(2)으로 fallback', () => {
+      // 환승 전 stopsToTransfer stale: seg[0]=line7이지만 origin은 이미 성수(2호선 단일).
+      // 성수는 line 7에 없으므로 origin 노드 색은 7이 아니라 2로 fallback해야 한다.
+      const journey: JourneyDisplay = {
+        segments: [
+          { line: '7', lineColor: '#54640D', fromName: '성수', toName: '건대입구', stops: 4 },
+          { line: '2', lineColor: '#009D3E', fromName: '건대입구', toName: '뚝섬', stops: 2 },
+        ],
+        totalStops: 6,
+      };
+      const origin = journeyDisplayToStops(journey).find((s) => s.mark === 'filled');
+      expect(origin?.line).toBe('2');
+    });
+
+    it('정합 origin(건대입구는 line7에 존재)이면 의도 호선(7) 그대로 유지', () => {
+      // 건대입구는 2·7 양쪽에 존재 → 의도한 line 7을 그대로 쓴다(fallback 미발동, 회귀 방어).
+      const journey: JourneyDisplay = {
+        segments: [
+          { line: '7', lineColor: '#54640D', fromName: '건대입구', toName: '어린이대공원', stops: 1 },
+          { line: '2', lineColor: '#009D3E', fromName: '어린이대공원', toName: '뚝섬', stops: 3 },
+        ],
+        totalStops: 4,
+      };
+      const origin = journeyDisplayToStops(journey).find((s) => s.mark === 'filled');
+      expect(origin?.line).toBe('7');
+    });
+
+    it('알 수 없는 역명이면 의도 호선 그대로 유지 (데이터 부재 graceful)', () => {
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '없는역명ZZZ', toName: '강남', stops: 3 }],
+        totalStops: 3,
+      };
+      const origin = journeyDisplayToStops(journey).find((s) => s.mark === 'filled');
+      expect(origin?.line).toBe('2');
+    });
+  });
 });
 
 describe('arrivalInfoToArrivalTrain', () => {
