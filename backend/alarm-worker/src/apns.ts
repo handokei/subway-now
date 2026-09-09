@@ -540,6 +540,7 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = `https://${options.host}/3/device/${options.deviceToken}`;
 
+  const alertData = { pushId: options.pushId, ...options.data };
   const body = JSON.stringify({
     aps: {
       alert: { title: options.title, body: options.body },
@@ -555,7 +556,15 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
       // task(handleSilentPush)를 깨워 SSoT mirror·BG 위젯 갱신을 유지한다.
       ...(options.contentAvailable === true ? { 'content-available': 1 } : {}),
     },
-    data: { pushId: options.pushId, ...options.data },
+    // #2552 — 동일 payload를 `data`와 `body` 둘 다에 병기한다.
+    //   - `data`: content-available으로 깨어난 device background task(silentPushTask)가 raw
+    //     payload(`root.data`)로 읽는 경로 — 유지 필수(제거 시 BG SSoT mirror/위젯 갱신 깨짐).
+    //   - `body`: expo-notifications iOS가 `content.data`를 `userInfo["body"]`에서만 추출(#2549
+    //     기전, EXNotificationSerializer.m)하므로 FG 알림 핸들러(stationNotification `content.data`:
+    //     pushId dedup / source / exitSide)가 읽는 경로 — 없으면 content.data가 null이라 FG
+    //     dedup·표시 메타가 깨진다.
+    data: alertData,
+    body: alertData,
   });
 
   const response = await fetchImpl(url, {
@@ -713,7 +722,10 @@ export async function sendTripEndedAlertPush(
     aps: {
       alert: { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY },
     },
+    // #2552 — data(레거시/BG raw 경로) + body(expo FG content.data: userInfo["body"], #2549 기전)
+    // 둘 다 병기. trip-ended 응답 핸들러가 content.data로 읽는 경로가 top-level `data`만으론 null.
     data,
+    body: data,
   });
 
   const response = await fetchImpl(url, {
