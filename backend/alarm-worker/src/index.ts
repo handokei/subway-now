@@ -15,6 +15,7 @@ import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   attemptBoardingAnchorResolution,
+  buildLockFromKnownTrainCode,
   type BoardingResolveOutcome,
 } from './boardingAnchorResolver';
 import {
@@ -2204,6 +2205,45 @@ app.post('/boarding-lock/sync', async (c) => {
         meta: { shiftedCount: advance.shiftedCount },
       }),
     );
+  }
+
+  // #2560 (ADR-038 Phase 2, ROOT fix) — lock 승격. backend가 active boardingLock이 없는데 device가
+  // 확정 trainCode(D4 #1210)를 sync로 보냈으면(사용자 탭 = ground truth), 그 trainCode로 lock을 합성해
+  // 부착한다. POST /trips 경로가 lock을 못 실었거나(레이스) infoModeEnabled lockless로 흘러
+  // runTrainCodeTracking에 못 들어가 leg-1 매역 발사가 전멸하던 회귀(2026-09-10/11 실측, cron-fire-attempt=0)
+  // 를 sync 채널로 확실히 복구한다. line이 waypoints와 정합할 때만 부착(stale trainCode drop). 부착 시
+  // baseline reset으로 다음 cron이 이 lock으로 즉시 추적 시작.
+  if (
+    working.boardingLock === undefined &&
+    payload.trainCode !== undefined &&
+    payload.boardingLine !== undefined
+  ) {
+    const promoted = buildLockFromKnownTrainCode(
+      working.waypoints,
+      payload.trainCode,
+      payload.boardingLine,
+      payload.observedStationName,
+      now,
+    );
+    if (promoted && isBoardingLockConsistentWithWaypoints(promoted, working.waypoints)) {
+      working = {
+        ...working,
+        boardingLock: promoted,
+        lastTrackedArrivalEpoch: undefined,
+        lastLaPushEpoch: undefined,
+        lastLaPushAt: undefined,
+        consecutiveEtaMissing: 0,
+      };
+      scheduleTripEvent(
+        c,
+        recordTripEvent(c.env.DB, {
+          tokenHash,
+          kind: 'sync-received',
+          station: promoted.segmentStations[0],
+          meta: { promotedLock: true, trainCode: promoted.trainCode, line: promoted.line },
+        }),
+      );
+    }
   }
 
   // lock TTL refresh — 사용자가 지상에서 lock을 활성 유지 중임을 confirm.

@@ -328,3 +328,46 @@ export async function attemptBoardingAnchorResolution(
     expiresAt: now + SWAP_LOCK_TTL_MS,
   };
 }
+
+/**
+ * #2560 (ADR-038 Phase 2, ROOT fix) — device가 탭한 확정 trainCode로 BoardingLockMeta를 합성한다.
+ *
+ * 배경: 사용자가 열차를 탭하면 device는 (1)로컬 boardingLock + (2)infoModeEnabled=true를 set하고,
+ * POST /trips에 lock을, /boarding-lock/sync에 trainCode(D4 #1210)를 실어 backend에 알린다. 그러나
+ * 2026-09-10/11 실측: backend Trip이 `infoModeEnabled=true + boardingLock=null`(lockless)로 남아
+ * `runTrainCodeTracking`(lock 경로) 대신 `runLocklessIntermediate`로 흘러 leg-1 매역 발사가 지하
+ * motion 게이트(#2448)에 전멸했다(D1 cron-fire-attempt=0, 2 라이드 재현).
+ *
+ * `attemptBoardingAnchorResolution`은 trainCode를 realtimePosition에서 **추론**하지만, device가 이미
+ * **명시 탭으로 확정한 trainCode**가 sync로 도착하면 추론이 불필요하다(탭=ground truth). 본 함수는
+ * 그 확정 trainCode + trip.waypoints + 관측 탑승역으로 lock을 직접 합성해 sync 핸들러가 backend에
+ * 부착한다 — POST /trips 경로의 race/드롭과 무관하게 lock이 확실히 active가 된다.
+ *
+ * leg 무관: `buildLegSegmentStations`가 line이 바뀌는 waypoint에서 break하므로 leg-1/2/3 각 leg의
+ * 탭이 그 leg의 새 trainCode를 sync로 보내면 해당 leg lock이 매번 합성된다.
+ *
+ * null 반환: subwayId 미매핑 / boardingLine에 해당하는 leg segment 없음(waypoints[0]이 다른 line —
+ * stale trainCode) → 부착 안 함(안전).
+ */
+export function buildLockFromKnownTrainCode(
+  waypoints: Trip['waypoints'],
+  trainCode: string,
+  boardingLine: string,
+  observedStation: string,
+  now: number,
+): BoardingLockMeta | null {
+  const subwayId = subwayIdForLine(boardingLine);
+  if (!subwayId) return null;
+  const legSegment = buildLegSegmentStations(waypoints, boardingLine);
+  if (legSegment.length === 0) return null;
+  const segmentStations =
+    legSegment[0] === observedStation ? legSegment : [observedStation, ...legSegment];
+  return {
+    trainCode,
+    line: boardingLine,
+    subwayId,
+    selectedDepartureTime: now,
+    segmentStations,
+    expiresAt: now + SWAP_LOCK_TTL_MS,
+  };
+}
