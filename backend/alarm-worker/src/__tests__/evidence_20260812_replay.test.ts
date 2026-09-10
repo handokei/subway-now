@@ -227,7 +227,11 @@ describe('evidence 2026-08-12 저녁 25분 device silence — staleness-aware ga
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('무회귀 — device sync 신선(정상 운행) + stationary + intermediate → 기존 stationary skip 게이트 그대로 유지', async () => {
+  it('#2554 — lock trip(명시 의향)은 device sync 신선 + stationary여도 stationary skip 우회 후 추적', async () => {
+    // makeTrip은 boardingLock 포함(사용자 탭 = 명시 의향). #2554(ADR-038/ADR-014): 탭 확정이
+    // device 정지 판정보다 우선하므로 fresh-sync stationary여도 stationary skip을 우회해 매역 추적.
+    // #2321 V8d 배터리절약 stationary skip은 이제 lockless(무의향) trip에만 적용된다. 08-12
+    // device silence 침묵 우려는 lock trip이 항상 추적되므로 오히려 강화됨.
     const kv = new InMemoryKV();
     const trip = makeTrip({
       waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
@@ -237,15 +241,14 @@ describe('evidence 2026-08-12 저녁 25분 device silence — staleness-aware ga
       expiresAt: trip.expiresAt,
     });
     ssot.motionState = 'stationary';
-    // device sync가 방금(0ms 전) 갱신됨 — fresh. 기존 V8d stationary skip 게이트가 그대로 적용돼야 한다.
     ssot.lastDeviceSyncAt = NOW;
     await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
 
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runOnce(kv, makeArrivedSeoul('중곡'), fetchImpl);
 
-    expect(stats.lifecycleStationarySkipped).toBe(1);
-    expect(stats.arvlCdFireFired).toBe(0);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    // lock 의향 → stationary 우회 → 중곡 arvlcd 확증 → 매역 fire.
+    expect(stats.lifecycleStationarySkipped).toBe(0);
+    expect(stats.arvlCdFireFired).toBe(1);
   });
 });
