@@ -3729,17 +3729,18 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expectedBlockedMotion: 0,
         expectedFallbackNoSsot: 0,
       },
-      // Negative — SSoT stationary + delta > 15s → upstream stationary gate 차단 (#1680).
-      // #1559 reschedule-gate(rescheduleBlockedMotion)는 미도달. lifecycleStationarySkipped=1.
+      // #2554 (ADR-038/ADR-014) — lock trip(makeLockTrip = 사용자 명시 의향)은 stationary여도
+      // reschedule fires. 탭 확정이 device 정지 판정보다 우선(tripHasDeclaredIntent 배선). 지하
+      // GPS 정지 오판으로 추적을 굶기던 회귀(2026-09-10 leg-1 침묵) 해소. 기존 #1680 upstream skip은
+      // lockless(무의향) trip에만 적용.
       {
-        name: 'SSoT stationary + ETA delta > 15s → upstream stationary skip (회귀 차단 유지)',
+        name: 'SSoT stationary + lock(명시 의향) + ETA delta > 15s → reschedule fires (#2554)',
         ssotMotion: 'stationary',
         arrivalSec: 140,
         lastTrackedDeltaMs: 120_000,
-        expectedFire: false,
+        expectedFire: true,
         expectedBlockedMotion: 0,
         expectedFallbackNoSsot: 0,
-        expectedStationarySkip: true,
       },
       // Fallback — SSoT 없음 (legacy) + delta > 15s → fire (기존 동작 유지)
       {
@@ -10751,14 +10752,15 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
       userIntentDeclared: true,
       expectFire: true,
     },
-    // Negative — 2026-06-19 회귀 박제.
-    // #1680: 이제 upstream stationary gate(shouldSkipStationary)가 먼저 차단 → lifecycleStationarySkipped=1.
-    // arvlCdFireBlocked는 0 (downstream gate 미도달). expectFire=false 불변.
+    // #2554 (ADR-038/ADR-014) — lock trip은 stationary여도 arvlcd 확증 시 fire. 탭 확정(사용자
+    // 명시 의향)이 device 정지 판정보다 우선 → tripHasDeclaredIntent 배선으로 stationary 게이트
+    // 우회. 2026-06-19 "정지+false fire" 우려는 "탭=확정, 안 탔으면 탭 안 함" 원칙으로 수용
+    // (자기 고른 열차 미탑승+정지+그 열차 진행은 드문 자초 케이스). 지하 GPS 정지 오판 miss가 더 큰
+    // 사용자 가치 손실(2026-09-10 leg-1 침묵)이라는 ADR-010 동급 판정.
     {
-      name: 'N1 stationary trip + lock + arvlcd → blocked (upstream stationary gate, 회귀 박제)',
+      name: 'N1 stationary trip + lock + arvlcd → fire (#2554 명시 의향 우선)',
       motionState: 'stationary',
-      expectFire: false,
-      expectStationarySkip: true,
+      expectFire: true,
     },
     // Note: N4 train-mismatch는 본 entry point(arvlcd fire)에서는 구조적으로 도달 불가 —
     // `estimateBoardingLockArrival`이 이미 lock.trainCode 기준으로 Seoul 응답을 필터하므로,
@@ -11093,21 +11095,21 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
       expectAdvance: true,
       expectCleanup: true,
     },
-    // Negative — 2026-06-19 회귀 박제.
-    // #1680: upstream stationary gate가 먼저 차단 → boardingLockWaypointAdvanceBlocked=0, lifecycleStationarySkipped=1.
+    // #2554 (ADR-038/ADR-014) — lock trip(makeLockTripFixture = 명시 의향)은 stationary여도 advance.
+    // 탭 확정이 device 정지 판정보다 우선(tripHasDeclaredIntent 배선). arvlcd-arrived는 arvlcd
+    // ground truth 확증, vanish-fallback은 position 추정이지만 #7 position-stale(30s) 게이트가
+    // false-advance backstop으로 남는다. 지하 GPS 정지 오판 miss(leg-1 침묵) 해소가 우선.
     {
-      name: 'N1 arvlcd-arrived + stationary trip → trip.waypoints 보존 (회귀 박제, upstream gate)',
+      name: 'N1 arvlcd-arrived + stationary lock trip → advance (#2554 명시 의향 우선)',
       path: 'arvlcd-arrived',
       motionState: 'stationary',
-      expectAdvance: false,
-      expectStationarySkip: true,
+      expectAdvance: true,
     },
     {
-      name: 'N2 vanish-fallback + stationary trip → trip.waypoints 보존 (upstream gate)',
+      name: 'N2 vanish-fallback + stationary lock trip → advance (#2554, #7 stale-gate backstop)',
       path: 'vanish-fallback',
       motionState: 'stationary',
-      expectAdvance: false,
-      expectStationarySkip: true,
+      expectAdvance: true,
     },
   ];
 
@@ -11224,10 +11226,10 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
   });
 
-  it('vanish-fallback path 도 stationary trip → trip.waypoints 보존 (upstream stationary gate 광범위 보호)', async () => {
-    // #1680: upstream stationary gate(shouldSkipStationary)가 cron loop 진입 직후 차단.
-    // 기존 T5 advanceTripPosition 게이트보다 더 앞단에서 차단 — 동급 보호 보장.
-    // GPS series 없이도 SSoT motionState='stationary'만으로 advance 미발생, waypoints 보존.
+  it('vanish-fallback + stationary lock trip → stationary 게이트 우회 (#2554 명시 의향)', async () => {
+    // #2554 (ADR-038/ADR-014) — lock trip(명시 의향)은 stationary여도 upstream stationary 게이트를
+    // 우회한다(tripHasDeclaredIntent 배선). 탭 확정이 device 정지 판정보다 우선 — 지하 GPS 정지
+    // 오판으로 추적이 굶던 회귀(leg-1 침묵) 해소. lifecycleStationarySkipped=0(우회)이 핵심 assertion.
     const kv = new InMemoryKV();
     const trip = makeLockTripFixture(TOKEN, {
       consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
@@ -11247,11 +11249,9 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
       now: () => NOW,
       generatePushId: () => 'p-t5-ssot-vanish',
     });
-    const stored = JSON.parse((await kv.get(`trip:${TOKEN}`))!) as Trip;
-    expect(stored.waypoints[0].stationName).toBe('중곡');
-    // #1680: upstream gate 차단 → boardingLockWaypointAdvanceBlocked=0, lifecycleStationarySkipped=1.
-    expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
-    expect(stats.lifecycleStationarySkipped).toBe(1);
+    // #2554 — 명시 의향 trip은 stationary 게이트에 skip되지 않는다(우회). downstream vanish-fallback
+    // 게이트(#7 position-stale 등)가 advance 여부를 판정 — 본 테스트의 핵심은 게이트 우회 자체.
+    expect(stats.lifecycleStationarySkipped).toBe(0);
   });
 });
 

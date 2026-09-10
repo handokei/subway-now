@@ -359,6 +359,22 @@ export function recordDestinationCrossCheck(
 }
 
 /**
+ * #2554 (ADR-038, ADR-014 §사용자 명시 의향) — trip이 "사용자 명시 의향"을 선언했는지.
+ *
+ * 사용자가 열차를 직접 탭(BoardingTrainList / boardingPrompt 응답 → `boardingLock`) 하거나
+ * C 토글을 켜면(`infoModeEnabled`) "나는 이 trip을 명시적으로 추적 중"이라는 확정 신호다.
+ * 이 확정은 device 모션(정지)보다 우선한다 — backend가 trainCode를 TOPIS로 device-독립 추적하므로
+ * 지하 GPS 정지 오판으로 추적을 굶겨선 안 된다(ADR-014 동급 보장).
+ *
+ * SSoT.userIntentDeclared는 원래 이 값을 담기 위한 필드였으나 프로덕션에서 true로 세팅하는 배선이
+ * 없어(dead wire) stationary 게이트가 탭한 trip까지 skip하던 회귀(2026-09-10 leg-1 침묵)의
+ * 원인이었다. 본 helper가 trip 상태에서 직접 파생해 seed/게이트에 배선한다.
+ */
+export function tripHasDeclaredIntent(trip: Pick<Trip, 'boardingLock' | 'infoModeEnabled'>): boolean {
+  return trip.boardingLock !== undefined || trip.infoModeEnabled === true;
+}
+
+/**
  * #1680 (V8d) — cron 사이클에서 stationary skip 여부 결정.
  *
  * SSoT.motionState === 'stationary' 시 Seoul polling + push를 skip한다.
@@ -1437,7 +1453,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       shouldSkipStationary(
         stationarySsot.motionState,
         waypoint.kind,
-        stationarySsot.userIntentDeclared,
+        // #2554 — 사용자 명시 의향은 trip에서 직접 파생(OR). SSoT.userIntentDeclared가 seed 시점
+        // 이후 탭이라 stale-false여도, 탭/C토글 확정이 있으면 정지 게이트를 우회한다(권위=사용자 탭).
+        stationarySsot.userIntentDeclared || tripHasDeclaredIntent(trip),
         // #2321 — device sync stale 시 motionState 신뢰 불가 → skip하지 않고 평가 계속.
         isDeviceSyncStale(stationarySsot, now),
       )
@@ -3507,6 +3525,9 @@ async function tryAdvanceAndFireArvlcd(inputs: {
     // device upload로 motion 갱신을 시작하면 게이트 #2가 자동 활성화.
     ssot = await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
       expiresAt: trip.expiresAt,
+      // #2554 — 탭/C토글 확정을 SSoT에 배선. advanceTripPosition #2 motion 게이트도 동일 필드를
+      // 읽으므로 seed 시점에 파생해 두면 lock trip이 정지여도 layer-2에서 통과한다.
+      userIntentDeclared: tripHasDeclaredIntent(trip),
     });
     log('arvlcd-fire: lazy-seed ssot', {
       token: trip.token.slice(0, 8),
@@ -4542,6 +4563,8 @@ export async function advanceBoardingLockWaypoint(
     if (existingSsot === null) {
       await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
         expiresAt: trip.expiresAt,
+        // #2554 — 탭/C토글 확정을 SSoT에 배선(위 arvlcd-fire seed와 동일 이유).
+        userIntentDeclared: tripHasDeclaredIntent(trip),
       });
       log('boarding-lock: lazy-seed ssot for waypoint advance', {
         token: trip.token.slice(0, 8),
@@ -5063,7 +5086,12 @@ export async function maybeReschedulePush(
   if (ssot === null) {
     log('reschedule push: no-ssot fallback', { token: trip.token.slice(0, 8) });
     stats.rescheduleFallbackNoSsot += 1;
-  } else if (ssot.motionState === 'stationary') {
+  } else if (
+    ssot.motionState === 'stationary' &&
+    // #2554 (ADR-038/ADR-014) — 사용자 명시 의향(탭/C토글) trip은 stationary여도 우회. 지하 GPS
+    // 정지 오판으로 reschedule이 굶던 것 해소. cron stationary 게이트(shouldSkipStationary)와 동일 정책.
+    !(ssot.userIntentDeclared || tripHasDeclaredIntent(trip))
+  ) {
     log('reschedule push: blocked (motion-stationary)', {
       token: trip.token.slice(0, 8),
     });
