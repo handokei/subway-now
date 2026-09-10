@@ -282,4 +282,81 @@ describe('2026-09-10 leg-1 침묵 격리 (용마산7→뚝섬2)', () => {
     // POST /trips로 들어온 lock만으로 cron이 leg-1 중곡을 arvlCd로 advance+fire.
     expect(stats.arvlCdFireSuccess).toBe(1);
   });
+
+  it('(G) ★ROOT fix #2560: infoMode-lockless trip이어도 /boarding-lock/sync가 trainCode로 lock 승격 → cron 추적', async () => {
+    // 2026-09-10/11 실측 재현: 사용자 탭했지만 backend trip이 infoModeEnabled=true + boardingLock=null
+    // (lockless)로 등록됨(POST /trips가 lock 못 실음/레이스). device는 /boarding-lock/sync에 확정
+    // trainCode(D4)를 실어보낸다. #2560: sync가 그 trainCode로 lock을 합성·부착 → 다음 cron이
+    // runTrainCodeTracking으로 leg-1 중곡 발사. sync-promotion 없으면 lockless #2448 motion 게이트에
+    // 전멸(2 라이드 침묵)이던 것을 복구.
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    // backend가 라이드 실측처럼 infoMode-lockless로 trip 보유(lock 없음).
+    const trip = makeTrip({ token: 'scenario-sync-promote', infoModeEnabled: true });
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    // device가 탭한 열차(7039) trainCode를 sync로 전송(관측역=용마산).
+    const syncRes = await app.fetch(
+      new Request('http://example.com/boarding-lock/sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: 'scenario-sync-promote',
+          observedStationName: '용마산',
+          observedAtMs: NOW,
+          accuracy: 20,
+          trainCode: '7039',
+          boardingLine: '7',
+        }),
+      }),
+      env,
+    );
+    expect(syncRes.status).toBe(200);
+
+    // sync가 lock을 승격·부착했는지 확인.
+    const promoted = await getTrip(env.TRIPS, 'scenario-sync-promote');
+    expect(promoted?.boardingLock?.trainCode).toBe('7039');
+    expect(isBoardingLockActive(promoted as Trip, NOW)).toBe(true);
+
+    // 그 lock으로 cron이 중곡 매역 발사.
+    const seoul = makeSeoulTrainAt('중곡', '7039', '1007', 1);
+    const stats = await runOnce(kv, seoul);
+    expect(stats.arvlCdFireSuccess).toBe(1);
+  });
+
+  it('(H) leg 무관: sync trainCode가 waypoints line과 불일치(stale)면 lock 승격 안 함(안전)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    // waypoints가 이미 leg-2(성수/뚝섬, line 2)로 advance된 상태 — leg-1(line 7) stale trainCode 도착.
+    const trip = makeTrip({
+      token: 'scenario-sync-stale',
+      infoModeEnabled: true,
+      waypoints: [
+        { stationName: '성수', line: '2', kind: 'intermediate' },
+        { stationName: '뚝섬', line: '2', kind: 'destination' },
+      ],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    const syncRes = await app.fetch(
+      new Request('http://example.com/boarding-lock/sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: 'scenario-sync-stale',
+          observedStationName: '용마산',
+          observedAtMs: NOW,
+          accuracy: 20,
+          trainCode: '7039', // line 7 — 현재 waypoints(line 2)와 불일치
+          boardingLine: '7',
+        }),
+      }),
+      env,
+    );
+    expect(syncRes.status).toBe(200);
+
+    // line 불일치 → lock 승격 안 함(stale trainCode 안전 drop).
+    const after = await getTrip(env.TRIPS, 'scenario-sync-stale');
+    expect(after?.boardingLock).toBeUndefined();
+  });
 });
