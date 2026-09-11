@@ -2693,6 +2693,37 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.legBoardingPromptState).toBeUndefined();
   });
 
+  // #2564 (ADR-038 다중 환승 leg-agnostic) — 이미 이전 환승에서 stamp된 currentLegAnchor가
+  // 다음 환승 통과 시 덮어써져 "지금" leg만 가리키는지 검증. #2515(1차 stamp) + 이 테스트(N차
+  // 덮어쓰기)로 "환승 몇 번이든 매번 현재 leg anchor로 전진" 불변식이 귀납 완성된다. 아울러
+  // 이전 leg의 stale legResolveStreak가 리셋돼 다른 leg의 trainCode가 새 leg 승격으로 새지
+  // 않음을 확인(#2539 cross-leg 오염 차단).
+  it('#2564 — 이미 stamp된 currentLegAnchor를 다음 환승이 덮어써 leg 전진 (2회+ 환승 leg-agnostic)', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        // 1차 환승에서 남은 leg anchor(다른 역/노선) + stale streak. 2차 환승 통과 시 갱신돼야 한다.
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: NOW - 60_000,
+        legResolveStreak: { trainCode: 'STALE', count: 3 },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-multi-transfer-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    // 이전 anchor({건대입구,7})가 이번 환승({군자,5})로 덮어써졌다.
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
+    // 이전 leg의 stale streak도 리셋 — cross-leg 오승격 차단.
+    expect(stored.legResolveStreak).toBeUndefined();
+    // 실노선 변경(7→5)이라 이전 leg lock은 release.
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
   // 대조군 — 같은 호선 내 오라벨 transfer(실제 환승 아님)는 currentLegAnchor를 stamp하지 않는다.
   // lock도 유지되므로(위 테스트) leg 2 anchor 개념 자체가 성립하지 않는다.
   it('#2515 — 같은 line 내 오라벨 transfer는 currentLegAnchor를 stamp하지 않음', async () => {
