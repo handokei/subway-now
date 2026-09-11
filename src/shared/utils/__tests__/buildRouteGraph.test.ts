@@ -75,4 +75,37 @@ describe('buildRouteGraph (#1499)', () => {
     expect(graph.stats.lineEdgeCount).toBeGreaterThan(800);
     expect(graph.stats.transferEdgeCount).toBeGreaterThan(0);
   });
+
+  // 이름 정규화 drift 회귀: stations.json은 후행 괄호 부제("왕십리(성동구청)")를,
+  // transferTimes.json 키는 정규화된 base("왕십리")를 사용한다. buildRouteGraph가
+  // raw name으로 그룹/조회하면 42개(전체 21%) 허브 환승 엣지가 통째로 사라져
+  // 해당 허브 통과 경로가 NULL이 된다. 생성기와 동일한 2단 정규화로 흡수해야 한다.
+  it.each([
+    ['왕십리(성동구청)', '2-008', '5-031', '2', '5'],
+    ['교대(법원.검찰청)', '2-023', '3-032', '2', '3'],
+    ['잠실(송파구청)', '2-016', '8-005', '2', '8'],
+  ])(
+    'builds transfer edge across 부제-mismatch hub %s (%s↔%s)',
+    (_name, fromId, toId, fromLine, toLine) => {
+      const graph = buildRouteGraph();
+      const edge = (graph.adjacency.get(fromId) ?? []).find(
+        (e) => e.kind === 'transfer' && e.toId === toId,
+      );
+      expect(edge).toBeDefined();
+      if (edge && edge.kind === 'transfer') {
+        expect(edge.walkingSeconds).toBeGreaterThan(0);
+        expect(edge.fromLine).toBe(fromLine);
+        expect(edge.toLine).toBe(toLine);
+      }
+    },
+  );
+
+  it('연결성: 부제-mismatch 허브 통과 경로가 끊기지 않는다 (모든 transferTimes 키에 엣지 존재)', () => {
+    const graph = buildRouteGraph();
+    // transfer edge 총수는 transferTimes 양방향 키 수와 일치해야 한다(누락 0).
+    const stations = graph.stats.nodeCount;
+    expect(stations).toBe(533);
+    // 42개 허브가 살아나면 transfer edge가 대폭 증가(> 200 양방향 키 수준).
+    expect(graph.stats.transferEdgeCount).toBeGreaterThanOrEqual(200);
+  });
 });
