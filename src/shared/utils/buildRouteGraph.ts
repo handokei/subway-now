@@ -14,11 +14,22 @@
  *
  * Sub-D 본 PR 범위. boardable wait(Sub C cascade) 합산은 Sub-E 후속.
  */
+import { applyStationAlias } from '../../data/stationAliases';
 import stationsRaw from '../../data/stations.json';
 import stationDistancesRaw from '../../data/stationDistances.json';
 import transferTimesRaw from '../../data/transferTimes.json';
 import { LINE_AVERAGE_SPEED_KMH } from '../constants/lineSpeeds';
 import type { LineNumber, Station } from '../types/station';
+import { normalizeStationName } from './normalizeStationName';
+
+/**
+ * transferTimes.json 키는 생성기(scripts/build-transfer-times.js)가
+ * `applyStationAlias(normalizeStationName(name))` 2단 정규화로 만든다.
+ * 소비자인 이 그래프도 동일 정규화를 써야 stations.json의 후행 괄호 부제
+ * ("왕십리(성동구청)" 등)와 정합한다. 미정규화 시 42개 허브 환승 엣지 소실.
+ */
+const canonicalStationName = (name: string): string =>
+  applyStationAlias(normalizeStationName(name));
 
 const STATIONS = stationsRaw as Station[];
 const DISTANCES = stationDistancesRaw as Record<string, number>;
@@ -108,14 +119,16 @@ export function buildRouteGraph(): RouteGraph {
     lineEdgeCount += 1;
   }
 
-  // 같은 name 그룹별 호선 노드 매핑.
+  // 같은 정규화 name 그룹별 호선 노드 매핑.
+  // 그룹 키·TRANSFERS 조회 키 모두 생성기와 동일한 2단 정규화 name을 사용한다.
   const nameGroups = new Map<string, Station[]>();
   for (const station of STATIONS) {
-    const list = nameGroups.get(station.name);
+    const canonical = canonicalStationName(station.name);
+    const list = nameGroups.get(canonical);
     if (list) {
       list.push(station);
     } else {
-      nameGroups.set(station.name, [station]);
+      nameGroups.set(canonical, [station]);
     }
   }
 
