@@ -140,3 +140,18 @@ Phase 4 — 발사 단일화 (D7,D8,D3)
 **미래(무관/보류)**: #79(OAuth)
 
 **미수정 잔여(오늘 라이드 confirmed, 기존 이슈에 매핑)**: 탑승여부 방향 틀림→#2351/#2130, trip 종료 후 재발사→신규 조사 필요(기존 없음), 하차 프롬프트, LA vs 홈 현재역 불일치→#2306 계열.
+
+---
+
+## 다중 leg(환승) 아키텍처 완결 (2026-09-11) — leg-agnostic 확정
+
+사용자 요구: "Leg-2,3,4,5 등 다환승 경로도 아무 문제 없도록 아키텍처를." 아래 4조각으로 leg 번호 무관 균일 처리를 **코드+테스트로 확정**:
+
+| 조각 | 위치 | 검증 |
+|---|---|---|
+| lock segment 격리 | `buildLockFromKnownTrainCode` (line 경계 break) | #2564 (leg-1/2/3 segment 격리) |
+| lock 승격(탭/sync) | `/boarding-lock/sync` #2560 + leg-2 streak(#2539) | #2564 (leg-2/3 sync 승격) |
+| 환승 release + anchor 전진 | `scheduled.ts:4818`(release) + `4913`(무조건 덮어쓰기 + cross-leg 리셋) | #2515(1차)+#2568(N차 덮어쓰기)=귀납 완성 |
+| 다환승 라우팅(허브 통과) | `buildRouteGraph` 이름 정규화 | #2566/#2567 (42개 허브 환승 엣지 복구, 성수2→마장5 NULL 해소) |
+
+**결론**: lock 생성·승격·환승 release·anchor 전진·경로 탐색 전 구간에 leg 번호 하드코딩 없음. `scheduled.ts:4913`이 매 환승 anchor를 덮어쓰므로 leg-3/4/5+도 동일 경로. 남은 것은 실기기 다환승 라이드 field-verify(#2566 backend 배포 완료).
