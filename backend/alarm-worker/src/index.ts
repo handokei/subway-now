@@ -751,18 +751,31 @@ app.post('/trips', async (c) => {
   //
   // Wire-completion: device-side는 `useApnsTripRegistration` 변경 X — 같은 endpoint로 register
   // 후 다음 cron 사이클부터 정상 waypoints로 추적된다 (revalidate-route-sig-mismatch 0건).
+  // #2562 (ADR-038 Phase 2) — 재합성 트리거 확장. 기존엔 `length===1 && kind==='destination'`
+  // (device가 목적지만 보낸 케이스)만 재합성했으나, cold-start(currentStation=null) register 시
+  // device `routeToWaypoints`의 `intermediateWaypoints`가 [] 반환 → sparse-multi
+  // (예: [건대입구(transfer), 뚝섬(destination)], intermediate 0개)로 도착한다. 이 경우 backend
+  // `estimateBoardingLockArrival`이 waypoints[0](=건대입구)만 폴링해 중곡/군자/어린이 매역 발사가
+  // 구조적으로 불가(#2560 lock 승격돼도 침묵). + boarding-prompt 방면(=waypoints[0])이 다음
+  // 물리역 아닌 transfer/destination으로 오표시(2026-09-11 "용마산→뚝섬"). 두 증상 공통 상류.
+  // → intermediate가 하나도 없으면(sparse) origin+destination으로 full path를 재합성한다.
+  // 재합성 결과가 기존보다 waypoint를 늘렸을 때만 채택(정상 device 전송분 회귀 0).
+  const hasIntermediateWaypoint = incoming.waypoints.some((w) => w.kind === 'intermediate');
+  const destinationWaypointName =
+    incoming.waypoints.find((w) => w.kind === 'destination')?.stationName ??
+    incoming.waypoints[incoming.waypoints.length - 1]?.stationName;
   if (
-    incoming.waypoints.length === 1 &&
-    incoming.waypoints[0].kind === 'destination' &&
+    !hasIntermediateWaypoint &&
+    destinationWaypointName !== undefined &&
     incoming.promptDisplay !== undefined
   ) {
     const inferred = inferWaypointsFromOriginAndDestination({
       originName: incoming.promptDisplay.originStation,
       originLine: incoming.promptDisplay.line,
       destinationId: incoming.destination,
-      destinationName: incoming.waypoints[0].stationName,
+      destinationName: destinationWaypointName,
     });
-    if (inferred !== null && inferred.length > 0) {
+    if (inferred !== null && inferred.length > incoming.waypoints.length) {
       // occurrenceIdx 재stamp — `validateTrip`(types.ts:1723~) 규약과 동일. 중복 stationName
       // (순환선/회차)에 정확한 :n suffix 매칭을 위해 sequence 1-pass로 stamp.
       const occurrenceCount = new Map<string, number>();

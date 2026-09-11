@@ -4896,6 +4896,68 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     expect(stored.waypoints.length).toBe(1);
     expect(stored.waypoints[0].stationName).toBe('강남');
   });
+
+  it('#2562: sparse-multi(transfer+destination, intermediate 0개) → intermediate 재합성 (cold-start 침묵 root)', async () => {
+    // cold-start(currentStation=null) register 시 device가 intermediate 없이 [transfer, destination]만
+    // 보낸다. 기존 length===1 트리거는 이걸 못 잡아 backend가 waypoints[0](=건대입구)만 폴링 →
+    // 중곡/군자/어린이 매역 발사 불가(leg-1 침묵) + 프롬프트 방면 오표시. #2562: intermediate 부재면
+    // origin+destination으로 full path 재합성.
+    const env = makeKvEnv();
+    await post(
+      '/trips',
+      collapseBody1604(
+        [
+          { stationName: '건대입구', line: '2', kind: 'transfer' },
+          { stationName: '뚝섬', line: '2', kind: 'destination' },
+        ],
+        {
+          destination: '2-010',
+          route: { type: 'transfer', fromLine: '7', toLine: '2', transferName: '건대입구', stops: 6, stopsToTransfer: 4, stopsFromTransfer: 2 },
+          promptDisplay: { originStation: '용마산', line: '7' },
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+        },
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
+    // 재합성 → intermediate 생김 + waypoint 수 증가.
+    const intermediates = stored.waypoints.filter((w: { kind: string }) => w.kind === 'intermediate');
+    expect(intermediates.length).toBeGreaterThan(0);
+    expect(stored.waypoints.length).toBeGreaterThan(2);
+    // 첫 waypoint = 물리적 다음역(중곡, 7호선) — 프롬프트 방면/cron 폴링 SSoT.
+    expect(stored.waypoints[0].kind).toBe('intermediate');
+    expect(stored.waypoints[0].line).toBe('7');
+    expect(stored.waypoints[0].stationName).toBe('중곡');
+    // 마지막 = 목적지 뚝섬(2호선).
+    const last = stored.waypoints[stored.waypoints.length - 1];
+    expect(last.kind).toBe('destination');
+    expect(last.stationName).toBe('뚝섬');
+  });
+
+  it('#2562: 이미 intermediate 있는 정상 waypoints는 재합성 안 함 (device 전송분 회귀 0)', async () => {
+    const env = makeKvEnv();
+    await post(
+      '/trips',
+      collapseBody1604(
+        [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '건대입구', line: '2', kind: 'transfer' },
+          { stationName: '뚝섬', line: '2', kind: 'destination' },
+        ],
+        {
+          destination: '2-010',
+          route: { type: 'transfer', fromLine: '7', toLine: '2', transferName: '건대입구', stops: 6, stopsToTransfer: 4, stopsFromTransfer: 2 },
+          promptDisplay: { originStation: '용마산', line: '7' },
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+        },
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
+    // intermediate 이미 존재 → 재합성 트리거 안 됨. device가 보낸 3개 그대로.
+    expect(stored.waypoints.length).toBe(3);
+    expect(stored.waypoints[0].stationName).toBe('중곡');
+  });
 });
 
 // #1425 — POST /trips trip-ended retention 안 같은 token 재등록 차단.
