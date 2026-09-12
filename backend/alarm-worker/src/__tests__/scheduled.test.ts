@@ -27,6 +27,7 @@ import {
   evaluateDestinationCrossCheck,
   recordDestinationCrossCheck,
   arvlCdFireKey,
+  stationPassedFiredKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
   evaluateArvlCdFireGate,
@@ -3874,11 +3875,20 @@ describe('estimateArrivalFromPosition (#585)', () => {
     expect(estimateArrivalFromPosition(train, '어린이대공원', lock, NOW)).toEqual({ epoch: NOW + 270_000, arrived: false });
   });
 
-  it('treats currentIdx >= targetIdx as already at/past target', () => {
+  it('#2571 — 목표역을 지나친 경우(currentIdx > targetIdx) arrived=true (sttus 무관)', () => {
+    // train이 군자(idx 2), target 중곡(idx 1) → 이미 중곡 지나침. 60초 cron이 중곡 체류 창을
+    // 놓쳐도 "지나쳤다"는 영구 참 상태로 반드시 advance/발사되게 arrived=true 확정(#2571).
     const train: PositionEntry = { trainCode: '7246', stationName: '군자', trainSttus: 0, isUp: true, recptnMs: 0 };
     const r = estimateArrivalFromPosition(train, '중곡', lock, NOW);
     expect(r.epoch).toBe(NOW);
-    expect(r.arrived).toBe(false); // sttus가 ARRIVED 아니고 stationName도 target과 다름
+    expect(r.arrived).toBe(true); // 지나침 → arrived (놓친 창으로 인한 영구 stall 방지)
+  });
+
+  it('#2571 — 목표역에 정확히 있으나 sttus≠ARRIVED이면 arrived=false (아직 정차 전)', () => {
+    // train이 target역(군자)에 있지만 sttus=진입(0) → 아직 도착 확정 아님. currentIdx===targetIdx는
+    // 기존대로 sttus=ARRIVED 요구(지나침이 아니므로).
+    const train: PositionEntry = { trainCode: '7246', stationName: '군자', trainSttus: 0, isUp: true, recptnMs: 0 };
+    expect(estimateArrivalFromPosition(train, '군자', lock, NOW)).toEqual({ epoch: NOW, arrived: false });
   });
 
   it('reports arrived=true when sttus=ARRIVED at target station', () => {
@@ -9128,14 +9138,16 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   // #2506 — 사용자 결정 "도착 1개": intermediate waypoint의 arvlCd=0(ENTERING)은 매역 push를
   // 발사하지 않는다(#2448의 "곧 진입" 사전 push 제거). dedup key도 stamp되지 않음 — skip이
   // fire 경로(및 dedup KV) 진입 전에 발생.
-  it('arvlCd=0(ENTERING), intermediate waypoint → 매역 push 미발사 (도착 1개 원칙)', async () => {
+  it('#2571 — arvlCd=0(ENTERING), intermediate → 매역 push 발사 (먼저 잡힌 신호, 역당 1개)', async () => {
+    // #2506 재정의(#2571): 도착(1)에만 발사하면 60초 cron이 도착 창(~30초)을 놓쳐 침묵한다.
+    // 진입(0)도 발사하되 경로 무관 station-passed 마커로 "역당 1개"를 보장(뒤이은 도착은 dedup).
     const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 0),
       pushId: 'p-arvl-0',
     });
-    expect(stats.arvlCdFireSuccess).toBe(0);
-    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 0))).toBeNull();
-    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    // 경로 무관 station-passed 마커 stamp → 이후 도착(1)/position/vanish 재발사 차단.
+    expect(await kv.get(stationPassedFiredKey('arvl-tok', '7246', '중곡'))).toBe('1');
   });
 
   it('dedup — 같은 (trainCode, station, arvlCd) 이미 stamp되어 있으면 push 미발사', async () => {
@@ -9153,9 +9165,16 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
   });
 
-  it('#640 회귀 가드 — positions-fallback arrived(arvlCd=null)은 매역 push 미발사 (mismatch++)', async () => {
+  it('#2571 재정의 — positions-fallback arrived(arvlCd=null)도 매역 push 발사 (realtimePosition 확증)', async () => {
     // arrivals 빈 응답 + positions에 lock.trainCode가 target 역에 ARRIVED.
-    // 호출 흐름: estimate.arrived=true (positions 경로), estimate.arvlCd=null → fire 게이트 차단.
+    // 호출 흐름: estimate.arrived=true (positions 경로), estimate.arvlCd=null.
+    //
+    // #2571 (2026-09-12 실측 재생 근거) — 기존 #640 가드는 arvlCd=null(position) arrived를 발사에서
+    // 제외했으나, cron 60초 주기가 arvlCd∈{진입,도착} 창(~30초)을 놓치는 위상에서 역이 침묵했다
+    // (replay_20260912 하네스). realtimePosition은 GPS무관·매cycle 열차 현재역을 직접 주므로,
+    // position이 "열차가 이 역 통과"를 확증하면(advanceBoardingLockWaypoint가 이미 이 신호로 전진함)
+    // station-passed push도 발사한다(#1370 L2 vanish-fallback과 동일 원리). arvlCdFireSuccess는
+    // 여전히 0(arvlCd 경로 아님) + mismatch++는 유지(진단), 발사는 vanish-fallback 경로로 1회.
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockTrip());
     const seoul = makePositionsFallbackSeoul();
@@ -9170,7 +9189,8 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     });
     expect(stats.arvlCdFireSuccess).toBe(0);
     expect(stats.arvlCdFireMismatch).toBe(1);
-    expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+    // position 확증 도착 → 매역 침묵 방지: station-passed push 1회 발사.
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
   });
 
   it('#640 회귀 가드 — lock 부재 trip은 lockMissing 게이트에 막혀 매역 fire 경로 진입 자체 X', async () => {
@@ -9361,43 +9381,28 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
           generatePushId: () => 'p-approaching-1',
         };
 
-        // 1) ENTERING(0) — push 미발사, fire-once/dedup 상태 불변.
+        // 1) ENTERING(0) — #2571: 먼저 잡힌 신호이므로 발사(침묵 방지). 경로 무관 station 마커 stamp.
         const statsEntering = makeFullEmptyStats();
         const { dirty: enteringDirty } = await fireArvlCdStationPush({
           ...commonInputs,
           stats: statsEntering,
           arvlCd: 0,
         });
-        expect(enteringDirty).toBe(false);
-        expect(statsEntering.arvlCdFireSuccess).toBe(0);
-        expect(statsEntering.arvlCdFireOnceSkipped).toBe(0);
-        expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+        expect(enteringDirty).toBe(true);
+        expect(statsEntering.arvlCdFireSuccess).toBe(1);
+        expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
 
-        // 2) 같은 station 에서 ENTERING(0) 재관측 — 여전히 push 미발사(멱등).
+        // 2) 같은 station ENTERING(0) 재관측 — station 마커로 dedup(멱등, 역당 1개).
         const statsEnteringRepeat = makeFullEmptyStats();
         await fireArvlCdStationPush({ ...commonInputs, stats: statsEnteringRepeat, arvlCd: 0 });
         expect(statsEnteringRepeat.arvlCdFireSuccess).toBe(0);
-        expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+        expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
 
-        // 3) ARRIVED(1) — "OO역 도착" copy 로 fire. 도착 1개 원칙대로 이번 station 최초 발사.
+        // 3) 이어진 ARRIVED(1) — 이미 이 station 발사됨(진입에) → dedup. "역당 1개" 유지(#2506 의도).
         const statsArrived = makeFullEmptyStats();
         await fireArvlCdStationPush({ ...commonInputs, stats: statsArrived, arvlCd: 1 });
-        expect(statsArrived.arvlCdFireSuccess).toBe(1);
-        {
-          const calls = getStationPassedCalls(apnsFetch);
-          expect(calls).toHaveLength(1);
-          const parsed = JSON.parse(calls[0][1].body as string) as {
-            aps: { alert: { title: string; body: string } };
-          };
-          expect(parsed.aps.alert.title).toBe('중곡역 도착');
-          expect(parsed.aps.alert.body).toBe('군자까지 1정거장 남음');
-        }
-
-        // 4) 같은 station 에서 ARRIVED(1) 재관측 — 재발사 X (triple-fire 방지).
-        const statsArrivedRepeat = makeFullEmptyStats();
-        await fireArvlCdStationPush({ ...commonInputs, stats: statsArrivedRepeat, arvlCd: 1 });
-        expect(statsArrivedRepeat.arvlCdFireSuccess).toBe(0);
-        expect(statsArrivedRepeat.arvlCdFireOnceSkipped).toBe(1);
+        expect(statsArrived.arvlCdFireSuccess).toBe(0);
+        expect(statsArrived.arvlCdFireDedup).toBe(1);
         expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
       } finally {
         spy.mockRestore();
@@ -9790,7 +9795,7 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985) → #2448 pha
   // #2506 — 사용자 결정 "도착 1개": intermediate 매역의 arvlCd=0(ENTERING) 신호는
   // fire-once bucket 게이트 도달 전 조기 skip 된다(push 미발사, KV stamp 없음). 반복 관측해도
   // 마찬가지로 계속 skip — bucket/dedup 상태를 전혀 건드리지 않는다는 것이 이 테스트의 요지.
-  it('flag=ON, intermediate 의 arvlCd=0(ENTERING) 반복 관측 → 매번 push 미발사 (fire-once 상태 불변)', async () => {
+  it('#2571 flag=ON, intermediate arvlCd=0(ENTERING) → 최초 발사 후 재관측 dedup (역당 1개)', async () => {
     const mod = await import('../arvlcdFireOnceTtl');
     const spy = vi.spyOn(mod, 'isSimpleArchEnabled').mockResolvedValue(true);
     try {
@@ -9814,26 +9819,24 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985) → #2448 pha
         log: () => undefined,
         generatePushId: () => 'p-direct-repeat',
       };
+      // #2571 — ENTERING도 최초 관측이면 발사(침묵 방지).
       const statsFirst = makeFullEmptyStats();
       const { dirty: firstDirty } = await fireArvlCdStationPush({
         ...commonInputs,
         stats: statsFirst,
         arvlCd: 0,
       });
-      expect(statsFirst.arvlCdFireSuccess).toBe(0);
-      expect(statsFirst.arvlCdFireOnceSkipped).toBe(0);
-      expect(firstDirty).toBe(false);
-      // 같은 cron tick 반복 관측(Seoul API 갱신 지연 등)으로 다시 arvlCd=0 이 들어와도 여전히 미발사.
+      expect(statsFirst.arvlCdFireSuccess).toBe(1);
+      expect(firstDirty).toBe(true);
+      // 반복 관측(Seoul API 갱신 지연) → 경로 무관 station 마커로 dedup(역당 1개, storm 방지).
       const statsSecond = makeFullEmptyStats();
       const { dirty } = await fireArvlCdStationPush({ ...commonInputs, stats: statsSecond, arvlCd: 0 });
       expect(statsSecond.arvlCdFireSuccess).toBe(0);
-      expect(statsSecond.arvlCdFireOnceSkipped).toBe(0);
+      expect(statsSecond.arvlCdFireDedup).toBe(1);
       expect(dirty).toBe(false);
-      expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
-      // fire-once KV 도 stamp 되지 않음 — ENTERING skip은 bucket 게이트에 도달하지 않는다.
-      expect(
-        await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_ENTERING_BUCKET)),
-      ).toBeNull();
+      expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
+      // station-passed 마커 stamp 확인.
+      expect(await kv.get(stationPassedFiredKey(TOKEN, '7246', '중곡'))).toBe('1');
     } finally {
       spy.mockRestore();
     }
@@ -9866,32 +9869,26 @@ describe('runScheduled — ADR-022 Phase 1-1 fire-once TTL (#1985) → #2448 pha
         log: () => undefined,
         generatePushId: () => 'p-direct-cycle',
       };
+      // #2571 — ENTERING(0)이 먼저 관측되면 그걸로 발사(침묵 방지). station 마커 stamp.
       const statsFirst = makeFullEmptyStats();
       const { dirty: firstDirty } = await fireArvlCdStationPush({
         ...commonInputs,
         stats: statsFirst,
         arvlCd: 0,
       });
-      expect(statsFirst.arvlCdFireSuccess).toBe(0);
-      expect(statsFirst.arvlCdFireOnceSkipped).toBe(0);
-      expect(firstDirty).toBe(false);
-      // ENTERING bucket 은 stamp 되지 않는다 — skip이 bucket 게이트 이전에 발생.
-      expect(
-        await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARVLCD_FIRE_ONCE_ENTERING_BUCKET)),
-      ).toBeNull();
-      // 두 번째 호출: 같은 station 에서 arvlCd=1 재관측 (cycle 안 monotone 진행) — 정상 fire.
+      expect(statsFirst.arvlCdFireSuccess).toBe(1);
+      expect(firstDirty).toBe(true);
+      expect(await kv.get(stationPassedFiredKey(TOKEN, '7246', '중곡'))).toBe('1');
+      // 두 번째 호출: 같은 station arvlCd=1 재관측 — 이미 진입에 발사됨 → station 마커로 dedup(역당 1개).
       const statsSecond = makeFullEmptyStats();
       const { dirty } = await fireArvlCdStationPush({
         ...commonInputs,
         stats: statsSecond,
         arvlCd: 1,
       });
-      expect(statsSecond.arvlCdFireSuccess).toBe(1);
-      expect(statsSecond.arvlCdFireOnceSkipped).toBe(0);
-      expect(dirty).toBe(true);
-      expect(
-        await kv.get(arvlCdFireOnceKey(TOKEN, '중곡', ARRIVED_BUCKET)),
-      ).toBe(String(NOW));
+      expect(statsSecond.arvlCdFireSuccess).toBe(0);
+      expect(statsSecond.arvlCdFireDedup).toBe(1);
+      expect(dirty).toBe(false);
     } finally {
       spy.mockRestore();
     }

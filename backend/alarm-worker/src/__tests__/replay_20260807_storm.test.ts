@@ -206,11 +206,12 @@ describe('evidence 2026-08-07 07:38 뚝섬 storm — 단일 물리 이벤트 bac
         generatePushId: () => 'p-storm-fix-2',
       });
 
-      // 수리 후: 같은 물리 이벤트의 두 번째 관측은 fire-once 게이트가 remote flag=on을 존중해
-      // skip해야 한다 — 두 번째 push가 발사되지 않는다(dirty=false, arvlCdFireOnceSkipped=1).
+      // 수리 후: 같은 물리 이벤트의 두 번째 관측은 발사되지 않는다(dirty=false). #2571부터는
+      // 경로 무관 station-passed 마커가 첫 발사(arvlCd=0)에서 stamp돼 두 번째(arvlCd=1)를 fire-once
+      // 게이트보다 먼저 차단한다 — storm 방지(역당 1개)는 동일, 차단 게이트만 station 마커로 이동.
       expect(second.dirty).toBe(false);
       expect(statsSecond.arvlCdFireSuccess).toBe(0);
-      expect(statsSecond.arvlCdFireOnceSkipped).toBe(1);
+      expect(statsSecond.arvlCdFireDedup).toBe(1);
     },
   );
 });

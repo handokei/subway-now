@@ -2166,6 +2166,24 @@ export function arvlCdFireKey(
 }
 
 /**
+ * #2571 (2026-09-12 실측 재생 근거) — 매역 "지나감 알림"의 **경로 무관 단일 dedup**.
+ *
+ * 배경: 한 역의 발사는 3경로(arvlCd 진입0/도착1, realtimePosition 확증, vanish-fallback)에서
+ * 올 수 있는데, 각 경로가 별도 dedup 키를 써서 같은 역이 2번 발사되는 회귀가 있었다(실측 재생:
+ * 진입 vanish-fallback 발사 후 advance가 SSoT 게이트에 막히면 다음 cycle에 arvlCd로 재발사).
+ * 사용자 결정 #2506 "역당 알림 1개"를 **트리거 무관**하게 보장하려면 (token, trainCode, station)
+ * 단위의 공용 마커가 있어야 한다. 모든 발사 경로가 발사 전 이 키를 확인하고, 발사 성공 시 stamp한다.
+ */
+export const STATION_PASSED_FIRED_KEY_PREFIX = 'station-passed-fired:';
+export function stationPassedFiredKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+): string {
+  return `${STATION_PASSED_FIRED_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
+/**
  * arvlCd∈{0(ENTERING), 1(ARRIVED)} 신호로 매역 알림 발사 가능한지 prereq 평가 (#917 A2 가드).
  *
  * Returns:
@@ -3206,14 +3224,19 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
-  // #2506 — 사용자 결정 "도착 1개": intermediate 매역은 도착(ARRIVED) 신호 1개로만 push를
-  // 발사한다. #2448이 도입한 ENTERING(0) 전용 "곧 진입" 사전 push를 제거 — fire-once bucket/
-  // dedup KV 로직에 진입하기 전 조기 skip해 해당 상태를 전혀 건드리지 않는다(뒤이은 ARRIVED
-  // 신호가 정상적으로 fire-once/dedup 게이트를 거쳐 진행한다).
-  if (waypoint.kind === 'intermediate' && arvlCd === ARRIVAL_CODE.ENTERING) {
-    log('station-notif skip: intermediate-entering-suppressed', {
+  // #2506 재정의 (#2571, 2026-09-12 실측 재생 근거) — "역당 알림 1개"는 유지하되 트리거를
+  // "도착(ARRIVED)만"에서 "진입(ENTERING) 또는 도착 중 먼저 잡히는 것"으로 넓힌다. 한 역의 arvlCd
+  // ∈{진입,도착} 창은 실측 ~30초인데 cron은 60초 주기라 도착(1)에만 발사하면 위상에 따라 침묵한다
+  // (replay_20260912). ENTERING을 조기 skip하는 대신 아래 공용 station-passed dedup으로 "역당 1개"를
+  // 트리거 무관하게 보장한다(진입이 먼저 발사되면 뒤이은 도착은 dedup). 공용 마커는 arvlCd/position/
+  // vanish-fallback 3경로가 모두 공유 → 경로 간 이중발사도 차단.
+  const stationFiredKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
+  if ((await env.TRIPS.get(stationFiredKey)) !== null) {
+    stats.arvlCdFireDedup += 1;
+    log('arvlcd-fire: station-passed dedup skip (already fired this station)', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
+      arvlCd,
     });
     return { dirty: false };
   }
@@ -3466,6 +3489,9 @@ export async function fireArvlCdStationPush(
   // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
   // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  // #2571 — 경로 무관 station-passed 마커. 진입/도착/position/vanish 어느 경로가 먼저 발사하든
+  // 이후 다른 경로의 같은 역 재발사를 차단(역당 1개, #2506 유지).
+  await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
   // 해 다음 cycle 이내 arvlCd 재노출을 통합 차단. flag=OFF 시 이 write 는 실행되지 않아
   // production 무영향.
@@ -3732,6 +3758,17 @@ export async function fireVanishFallbackStationPush(
     });
     return;
   }
+  // #2571 — 경로 무관 station-passed dedup. arvlCd/position 경로가 이미 이 역을 발사했으면 skip
+  // (역당 1개, #2506 유지 + 경로 간 이중발사 차단).
+  const stationFiredKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
+  if ((await env.TRIPS.get(stationFiredKey)) !== null) {
+    log('vanish-fallback-fire: station-passed dedup skip (already fired this station)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      origin,
+    });
+    return;
+  }
   const key =
     origin === 'vanish-release'
       ? vanishReleaseFireKey(trip.token, lock.trainCode, waypoint.stationName)
@@ -3909,6 +3946,8 @@ export async function fireVanishFallbackStationPush(
   // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
   // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  // #2571 — 경로 무관 station-passed 마커 stamp (arvlCd 경로와 공유).
+  await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
 }
 
 /**
@@ -4413,6 +4452,28 @@ export async function runTrainCodeTracking(
         station: waypoint.stationName,
         arvlCd: estimate.arvlCd,
       });
+      // #2571 (2026-09-12 실측 재생 근거) — position-fallback arrived(arvlCd=null)도 station-passed
+      // 발사. arvlCd∈{진입0,도착1} 창은 실측 ~30초인데 cron은 60초 주기라 그 창을 통째로 놓치는
+      // 위상이 존재한다(replay_20260912 하네스). 그때 estimateBoardingLockArrival이 realtimePosition
+      // fallback으로 "열차가 이 역 통과"를 확정(arvlCd=null)하는데, 기존엔 여기서 advance만 하고
+      // 발사를 skip해 역이 침묵했다(어린이대공원/군자 등). #1370 L2 vanish-fallback과 동일 원리로
+      // position 확증 도착에도 매역 push를 발사한다 — realtimePosition은 GPS무관·매cycle 존재라
+      // narrow arvlCd 창을 놓쳐도 발사가 보장된다. dedup(vanishFallbackFireKey)이 arvlCd 경로와의
+      // 중복을 흡수(역 advance 후 재평가 없음 + 키 기반 storm 방지).
+      if (estimate.arvlCd === null) {
+        await fireVanishFallbackStationPush({
+          trip,
+          waypoint,
+          lock: activeLock,
+          env,
+          deps,
+          stats,
+          now,
+          log,
+          generatePushId,
+          origin: 'vanish-fallback',
+        });
+      }
     }
     // ADR-017 T5 (#1558) — arvlcd-arrived path 도 SSoT 단일 진입점을 통과해야 trip.waypoints
     // 가 advance 한다. T4 가 fire 를 게이트했더라도 본 진행분(waypoints shift / passedStations
@@ -4500,24 +4561,36 @@ export async function estimateBoardingLockArrival(
 ): Promise<{ epoch: number; arrived: boolean; arvlCd: number | null } | null> {
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const matched = arrivals.find((a) => a.trainCode === lock.trainCode);
-  if (matched) {
-    return {
-      epoch: now + matched.arrivalSeconds * 1000,
-      arrived:
-        matched.arvlCd === ARRIVAL_CODE.ARRIVED || matched.arvlCd === ARRIVAL_CODE.ENTERING,
-      // #917 A2 — 매역 알림 1차 source. arrivals 경로의 arvlCd를 호출자에게 노출해
-      // dedup key 구성 + position-fallback arrived와 구분(positions 경로는 arvlCd=null).
-      arvlCd: matched.arvlCd,
-    };
+  // arvlCd∈{진입0,도착1} 확증 → 즉시 arrived(1차 source, dedup key용 arvlCd 노출).
+  if (
+    matched &&
+    (matched.arvlCd === ARRIVAL_CODE.ARRIVED || matched.arvlCd === ARRIVAL_CODE.ENTERING)
+  ) {
+    return { epoch: now + matched.arrivalSeconds * 1000, arrived: true, arvlCd: matched.arvlCd };
   }
+  // #2571 (2026-09-12 실측 재생 근거) — arrivals에 열차가 잡혔지만 아직 arvlCd∉{0,1}이어도
+  // realtimePosition을 확인한다. Seoul arrivals 피드는 realtimePosition보다 lag하는 경우가 있어
+  // (실측: position이 sttus=도착인데 arrivals는 arvlCd=99), arrivals 매칭 시 position을 안 보면
+  // 그 역이 침묵한다(replay_20260912 위상 30 군자). position은 GPS무관·매cycle·넓은 창(~50-64초)
+  // 이라 매역 발사를 보장한다. arrivals에 아예 없을 때(matched=undefined)도 동일 경로.
   const positions = await deps.seoul.fetchPositions(lock.line);
   const train = positions.find((p) => p.trainCode === lock.trainCode);
-  if (!train) return null;
-  const fallback = estimateArrivalFromPosition(train, waypoint.stationName, lock, now);
-  if (fallback.epoch === null) return null;
-  // positions 경로의 arrived는 arvlCd가 아닌 sttus 신호 — 호출자가 arvlCd 매역 fire 분기를
-  // skip하도록 null 명시 (#917 A2 prereq guard).
-  return { epoch: fallback.epoch, arrived: fallback.arrived, arvlCd: null };
+  const posEstimate = train
+    ? estimateArrivalFromPosition(train, waypoint.stationName, lock, now)
+    : null;
+  if (posEstimate?.arrived) {
+    // positions 경로의 arrived는 sttus/passed 신호 — arvlCd=null 명시(호출자가 arvlcd fire 분기 skip,
+    // vanish-fallback 발사 경로로 진입, #2571).
+    return { epoch: posEstimate.epoch ?? now, arrived: true, arvlCd: null };
+  }
+  // 아직 도착 전 — ETA는 arrivals(있으면) 우선, 없으면 position 추정.
+  if (matched) {
+    return { epoch: now + matched.arrivalSeconds * 1000, arrived: false, arvlCd: matched.arvlCd };
+  }
+  if (posEstimate && posEstimate.epoch !== null) {
+    return { epoch: posEstimate.epoch, arrived: false, arvlCd: null };
+  }
+  return null;
 }
 
 /**
@@ -5795,9 +5868,15 @@ export function estimateArrivalFromPosition(
   if (currentIdx < 0 || targetIdx < 0) return { epoch: null, arrived: false };
   // 이미 목표역에 도착했거나 지나친 경우
   if (currentIdx >= targetIdx) {
+    // #2571 (2026-09-12 실측 재생 근거) — 열차가 목표역을 이미 지나쳤으면(currentIdx > targetIdx)
+    // arrived=true로 확정한다. 60초 cron이 목표역 체류 창을 놓쳐 sttus=ARRIVED 순간을 못 잡아도,
+    // "지나쳤다"는 상태는 이후 영구히 참이므로 다음 어느 cycle에서든 반드시 잡혀 매역 발사/advance가
+    // 보장된다(놓친 창 → 영구 stall 방지). 목표역에 정확히 있을 때는 기존대로 sttus=ARRIVED 요구.
     return {
       epoch: now,
-      arrived: train.trainSttus === TRAIN_STATUS.ARRIVED && train.stationName === targetStation,
+      arrived:
+        currentIdx > targetIdx ||
+        (train.trainSttus === TRAIN_STATUS.ARRIVED && train.stationName === targetStation),
     };
   }
   const hops = targetIdx - currentIdx;
