@@ -5383,6 +5383,52 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.boardingPromptEvaluated).toBe(1);
   });
 
+  // #2351 (2026-09-12) — 방향 오표시 차단. trip이 origin leg를 벗어나 advance(waypoints[0]이
+  // origin과 다른 노선)하면 origin-앵커 leg-1 프롬프트는 stale — "용마산(7)→뚝섬(2) 방면" 오방향.
+  it('#2351 — waypoints[0].line ≠ display.line(origin leg 이탈) → leg-1 프롬프트 skip (오방향 차단)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptDisplay: { originStation: '용마산', line: '7' },
+        waypoints: [
+          // 이미 환승 후 2호선으로 advance — origin(용마산/7호선)과 다른 leg.
+          { stationName: '뚝섬', line: '2', kind: 'intermediate' },
+          { stationName: '성수', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    // 교차-leg stale → skip. 오방향 "용마산→뚝섬" push 발사 안 됨.
+    expect(stats.boardingPromptSkippedStale).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  // 대조군 — 같은 leg(waypoints[0].line === display.line)면 정상 평가(회귀 없음).
+  it('#2351 대조군 — waypoints[0].line === display.line면 정상 boarding-prompt 평가', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({
+        promptDisplay: { originStation: '강남', line: '2' },
+        waypoints: [
+          { stationName: '역삼', line: '2', kind: 'intermediate' },
+          { stationName: '선릉', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptSkippedStale).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+  });
+
   // #2153 — 신선도 게이트 기준 시각 재anchor. route 설정(createdAt) 후 20분 지나 출발역에
   // 근접(집/사무실에서 미리 경로 설정 후 이동하는 흔한 패턴)해도 근접 관측 시각을 기준으로
   // 15분 창을 재계산해야 한다. createdAt 기준이면 이 케이스가 SkippedStale로 막힌다(#2153 RCA).
