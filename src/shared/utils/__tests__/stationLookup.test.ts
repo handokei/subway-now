@@ -2,6 +2,7 @@ import {
   findLineByStationName,
   findStationByName,
   findStationByNameAndLine,
+  resolveConsistentStationLine,
 } from '../stationLookup';
 
 jest.mock('../../../data/stations.json', () => [
@@ -90,5 +91,27 @@ describe('findStationByNameAndLine (#707)', () => {
   it('#1405: canonical 매칭되어도 line 불일치면 null (호선 정확성 유지)', () => {
     // 뚝섬유원지는 alias로 자양에 매칭되지만, 자양은 7호선만이라 line=2 조회는 null.
     expect(findStationByNameAndLine('뚝섬유원지', '2')).toBeNull();
+  });
+});
+
+describe('resolveConsistentStationLine (ADR-038 Phase 1 #2575)', () => {
+  it('역이 의도 노선을 서비스하면 의도값 그대로', () => {
+    // 서울역은 1·4 둘 다 서비스 — 의도 4면 4 채택.
+    expect(resolveConsistentStationLine('서울역', '4')).toBe('4');
+    expect(resolveConsistentStationLine('서울역', '1')).toBe('1');
+  });
+
+  it('역이 의도 노선을 서비스 안 하고 fallback 있으면 fallback (호출자 known 실제 노선)', () => {
+    // 강남(2호선 단독) 의도 7 + fallback 2 → 2 (approachLine의 currentStation.line 경로).
+    expect(resolveConsistentStationLine('강남', '7', '2')).toBe('2');
+  });
+
+  it('역이 의도 노선 서비스 안 하고 fallback 없으면 역명으로 실제 노선 조회 교정 (D#10 성수 패턴)', () => {
+    // 강남(2호선 단독)에 7호선이 stale하게 붙어도 실제 노선 2로 교정 — journey origin 경로.
+    expect(resolveConsistentStationLine('강남', '7')).toBe('2');
+  });
+
+  it('역명 조회 실패 + fallback 없으면 의도값 유지 (graceful, 데이터 부재)', () => {
+    expect(resolveConsistentStationLine('없는역', '3')).toBe('3');
   });
 });
