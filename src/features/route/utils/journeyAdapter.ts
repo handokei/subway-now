@@ -1,6 +1,7 @@
 import i18next from 'i18next';
 import type { JourneyDisplay, JourneySegment } from '../../../shared/utils/stationRoute';
-import { findStationByNameAndLine, getStationsOnLine, isSameStationName } from '../../../shared/utils/stationRoute';
+import { getStationsOnLine, isSameStationName } from '../../../shared/utils/stationRoute';
+import { resolveConsistentStationLine } from '../../../shared/utils/stationLookup';
 import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { NearestStationResult, LineNumber, Station } from '../../../shared/types/station';
@@ -54,11 +55,9 @@ function intermediateStationsForSegment(seg: JourneySegment): Station[] {
  * 상류 root(route 진행 지연)는 A(#2547/#2554)로 해소 중 — 본 가드는 additive 방어선.
  */
 function resolveOriginLine(fromName: string, intendedLine: LineNumber): LineNumber {
-  if (findStationByNameAndLine(fromName, intendedLine)) return intendedLine;
-  // 의도한 호선에 없음 — 그 역명이 실제 존재하는 호선으로 fallback. 조회 실패 시 의도값 유지
-  // (데이터 부재 — 기존 동작 보존, graceful).
-  const actual = allStations.find((s) => isSameStationName(s.name, fromName));
-  return actual ? actual.line : intendedLine;
+  // ADR-038 Phase 1 (#2575) — approachLine(#1325)과 공유하는 역↔노선 정합 SSoT. 별도 구현
+  // 중복(drift 위험) 제거: 의도 호선을 그 역이 서비스하면 채택, 아니면 실제 정차 호선으로 교정.
+  return resolveConsistentStationLine(fromName, intendedLine);
 }
 
 export function journeyDisplayToStops(

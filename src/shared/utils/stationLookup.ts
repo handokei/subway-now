@@ -63,3 +63,26 @@ export function findStationByNameAndLine(name: string, line: LineNumber): Statio
   const key = canonicalKey(name);
   return stations.find((s) => canonicalKey(s.name) === key && s.line === line) ?? null;
 }
+
+/**
+ * ADR-038 Phase 1 (#2575) — "역↔노선 정합" 단일 SSoT.
+ *
+ * route/lock 진행도가 위치보다 순간 stale하거나 fusion이 환승역에서 옆 노선을 골라, 어떤 역에
+ * "그 역이 실제로 서비스하지 않는 노선"이 붙는 회귀가 여러 소비자에서 독립적으로 발생했다:
+ *   - `approachLine`(#1325) — BoardingTrainList/헤더 현재 노선
+ *   - journey origin 노드 색(#2556, 성수 7호선 D#10)
+ * 둘이 같은 판정을 **별도 구현**해 drift 위험(한쪽만 고치면 어긋남)이 있어 여기로 통합한다.
+ *
+ * 규칙: `intendedLine`(route/lock 산출)을 그 역이 실제 서비스하면 그대로 채택. 아니면 호출자가
+ * 아는 실제 노선(`fallbackLine`, 예: 그 fused Station의 line)을 우선, 없으면 역명으로 실제
+ * 정차 노선을 조회해 교정한다. 데이터 부재 시 `intendedLine` 유지(graceful, 기존 동작 보존).
+ */
+export function resolveConsistentStationLine(
+  stationName: string,
+  intendedLine: LineNumber,
+  fallbackLine?: LineNumber | null,
+): LineNumber {
+  if (findStationByNameAndLine(stationName, intendedLine)) return intendedLine;
+  if (fallbackLine != null) return fallbackLine;
+  return findStationByName(stationName)?.line ?? intendedLine;
+}

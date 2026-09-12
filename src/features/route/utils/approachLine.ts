@@ -1,4 +1,5 @@
-import { findStationByNameAndLine, type Route } from '../../../shared/utils/stationRoute';
+import { type Route } from '../../../shared/utils/stationRoute';
+import { resolveConsistentStationLine } from '../../../shared/utils/stationLookup';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LineNumber, Station } from '../../../shared/types/station';
 
@@ -54,9 +55,9 @@ export function getApproachLineWithConfirmation(
   const confirmed = candidate !== null;
 
   if (candidate && currentStation) {
-    const line = findStationByNameAndLine(currentStation.name, candidate)
-      ? candidate
-      : currentStation.line;
+    // #1325 → ADR-038 Phase 1 (#2575): 역↔노선 정합 단일 SSoT. candidate를 currentStation이
+    // 실제 서비스하면 채택, 아니면 그 station의 실제 노선(currentStation.line)으로 교정.
+    const line = resolveConsistentStationLine(currentStation.name, candidate, currentStation.line);
     return { line, confirmed };
   }
 
