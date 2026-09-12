@@ -15,7 +15,9 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { runScheduled } from '../scheduled';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { putTrip } from '../trips';
+import { putTrip, getTrip } from '../trips';
+import { isBoardingLockActive } from '../scheduled';
+import app from '../index';
 import type { Env, Trip } from '../types';
 import type { ArrivalEntry, PositionEntry, SeoulArrivalClient } from '../seoul';
 import { InMemoryKV } from './inMemoryKv';
@@ -177,5 +179,104 @@ describe('실측 재생 — 7호선 매역 발사 (position 확증 fix 검증)',
     for (const phase of PHASES) {
       expect(results[phase].sort()).toEqual([...INTERMEDIATES].sort());
     }
+  });
+});
+
+// 전 체인 E2E — 탭 → device register(POST /trips) → backend lock 부착 → cron(실 Seoul 재생) → 매역 알림.
+// 라이드 없이 "디바이스에서 탭하면 백엔드까지 가서 알림 온다"를 실제 엔드포인트+실제 데이터로 증명한다.
+// (APNs→물리 폰 배달만 제외 — 그것만이 진짜 실기기 의존 링크.)
+describe('전 체인 E2E — 탭→register→lock부착→매역 알림 (라이드 0)', () => {
+  const INTERMEDIATES = ['어린이대공원(세종대)', '군자(능동)'];
+
+  // validateTrip은 expiresAt > 실제 Date.now()를 요구(POST 시점 검증). cron sim은 NOW(고정 anchor)
+  // 기반이라 lock.expiresAt는 NOW보다 크기만 하면 active — 둘 다 실제-미래로 두면 양쪽 만족.
+  const FUTURE = Date.now() + 2 * 60 * 60_000;
+
+  // device가 BoardingTrainList 탭 후 registerActiveTrip으로 보내는 POST /trips 본문.
+  function registerBody(token: string) {
+    return {
+      token,
+      route: { type: 'direct', line: '7', stops: 3 },
+      destination: '중곡',
+      waypoints: [
+        { stationName: '어린이대공원(세종대)', line: '7', kind: 'intermediate' },
+        { stationName: '군자(능동)', line: '7', kind: 'intermediate' },
+        { stationName: '중곡', line: '7', kind: 'destination' },
+      ],
+      expiresAt: FUTURE,
+      alarmAtEpochMs: NOW,
+      // 사용자가 탭한 실 열차(7204) → device buildBoardingLockMeta가 실 trainCode로 구성.
+      boardingLock: {
+        trainCode: LOCK_TRAIN,
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: SEGMENT,
+        expiresAt: FUTURE,
+      },
+    };
+  }
+
+  it('탭한 lock이 register(POST /trips)로 즉시 backend에 부착(active)된다 (B 링크)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const token = 'e2e-register';
+    const res = await app.fetch(
+      new Request('http://example.com/trips', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(registerBody(token)),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const trip = await getTrip(env.TRIPS, token);
+    // B 확정: 탭 → register 즉시 lock 부착(늦게 아님). 실 trainCode라 buildBoardingLockMeta 성공 전제.
+    expect(trip?.boardingLock?.trainCode).toBe(LOCK_TRAIN);
+    expect(isBoardingLockActive(trip as Trip, NOW)).toBe(true);
+  });
+
+  it('register된 trip이 실 Seoul 재생 cron에서 매역 알림 발사 (B→C 전 체인)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const token = 'e2e-fullchain';
+    // 1) 탭 → device register.
+    await app.fetch(
+      new Request('http://example.com/trips', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(registerBody(token)),
+      }),
+      env,
+    );
+    const registered = await getTrip(env.TRIPS, token);
+    expect(isBoardingLockActive(registered as Trip, NOW)).toBe(true);
+
+    // 2) cron(실 Seoul 7204 재생) — 위상 0으로 전 구간.
+    const fired = new Set<string>();
+    let simNow = NOW;
+    const client = makeReplayClient(() => simNow);
+    for (let t = 0; t <= (fixture.durationSec as number); t += 60) {
+      simNow = NOW + t * 1000;
+      await runScheduled(env, {
+        seoul: client,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => simNow,
+        generatePushId: () => `p-${t}`,
+        log: (msg: string, ctx?: Record<string, unknown>) => {
+          if (
+            (msg === 'arvlcd-fire: station-passed push' ||
+              msg === 'vanish-fallback-fire: station-passed push') &&
+            ctx?.station
+          ) {
+            fired.add(String(ctx.station));
+          }
+        },
+      });
+    }
+    // 전 체인 증명: 탭→register→부착→cron→매 intermediate 알림 발사.
+    for (const s of INTERMEDIATES) expect(fired.has(s)).toBe(true);
   });
 });
