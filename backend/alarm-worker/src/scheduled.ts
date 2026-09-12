@@ -6121,6 +6121,24 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     return;
   }
 
+  // #2351 (2026-09-12) — 방향 오표시 가드. leg-1 boarding-prompt는 originStation(=display, trip
+  // 최초 출발역, 절대 갱신 안 됨)에 앵커되는데, nextStation은 waypoints[0](advance됨)에서 온다.
+  // trip이 origin의 leg를 벗어나 advance하면(= waypoints[0]이 origin과 다른 노선) origin(고정)과
+  // nextStation(advance)이 발산해 "용마산(7호선)→뚝섬(2호선) 방면" 같은 오방향 메시지가 발사된다.
+  // 환승 후 leg는 currentLegAnchor 기반 maybeFireLegBoardingPrompt가 담당하므로, 여기서는 교차-leg
+  // stale 프롬프트를 조기 skip한다(origin leg 이탈 = 이 origin-앵커 프롬프트는 더 이상 유효하지 않음).
+  const headWaypoint = trip.waypoints[0];
+  if (headWaypoint !== undefined && headWaypoint.line !== display.line) {
+    stats.boardingPromptSkippedStale += 1;
+    log('boarding-prompt: skip (advanced past origin leg — waypoint line != display line)', {
+      token: trip.token.slice(0, 8),
+      displayLine: display.line,
+      headLine: headWaypoint.line,
+      headStation: headWaypoint.stationName,
+    });
+    return;
+  }
+
   let dirty = false;
 
   // #2153 — 근접 게이트 판정(`isNearOrigin`, boardingPrompt.ts 공용 함수 — `/position` 핸들러와
