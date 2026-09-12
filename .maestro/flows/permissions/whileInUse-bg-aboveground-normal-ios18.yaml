@@ -1,0 +1,61 @@
+appId: com.subwaynow.app
+name: "permissions - WhileInUse × BG × 지상 × 일반 (#923 cell)"
+# 권한 매트릭스 cell.
+# 차원: permission=whileInUse, appState=bg, environment=aboveground, mode=normal, os=ios18
+#
+# 검증 목표:
+#   - WhileInUse × BG 결합 첫 진입. 가장 흔한 권한 다운그레이드 사용자 시나리오
+#     (앱이 BG에 진입해도 권한 강등으로 GPS가 잠시 끊겼다 복귀하는 경로) 회귀 가드.
+#   - stopApp + relaunch(clearState=false) 후 WhileInUse 권한이 보존되고
+#     홈 진입점이 유지되는지 확인한다.
+#
+# 전제: baseline cell과 동일 (EXPO_PUBLIC_E2E_MOCK=1, 강남역 fixture).
+# BG 전이는 always-bg-aboveground-normal-ios18 cell과 동일 패턴.
+---
+- setLocation:
+    latitude: 37.497942
+    longitude: 127.027621
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: inuse
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 1차 포그라운드 — 홈 진입점 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"
+
+# BG 전이 모사 — stopApp + relaunch (clearState=false로 권한 보존 확인)
+- stopApp:
+    appId: com.subwaynow.app
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: false
+
+# 복귀 후에도 홈 진입점이 유지되어야 한다 (WhileInUse × BG 결합 회귀 가드)
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"

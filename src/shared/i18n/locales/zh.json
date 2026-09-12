@@ -1,0 +1,436 @@
+{
+  "common": {
+    "retry": "重试",
+    "close": "关闭",
+    "cancel": "取消",
+    "remove": "删除"
+  },
+  "tabs": {
+    "current": "当前",
+    "map": "地图",
+    "favorites": "收藏",
+    "settings": "设置"
+  },
+  "permissions": {
+    "locationRequiredShort": "需要位置权限。",
+    "locating": "正在定位...",
+    "backgroundDeniedTitle": "需要后台位置权限",
+    "backgroundDeniedBody": "要在后台接收闹钟，请在设置中将位置访问设为\"始终允许\"。",
+    "openSettings": "打开设置",
+    "changeRevokedTitle": "位置权限已被撤销",
+    "changeRevokedBody": "位置访问已关闭，闹钟可能不会响起。请在设置中重新允许位置访问。",
+    "changeDowngradedTitle": "后台位置权限已关闭",
+    "changeDowngradedBody": "\"始终允许\"已改为\"使用App时\"，后台闹钟可能会丢失。请在设置中重新设为\"始终允许\"。"
+  },
+  "home": {
+    "arrived": "已到达!",
+    "originManual": "出发站(手动)",
+    "originCurrent": "当前站",
+    "originNearest": "最近站",
+    "originEstimated": "当前推定站",
+    "originStaleDemote": "行驶中 · 正在确认当前站",
+    "routeTo": "前往",
+    "estimatedSuffix": "预计",
+    "destinationChange": "更改目的地 →",
+    "destinationReset": "重置",
+    "viewRouteOnMap": "在地图上查看路线",
+    "routeExpand": "显示所有车站",
+    "routeCollapse": "仅显示主要车站",
+    "destinationSet": "设置目的地",
+    "previousDestination": "上次目的地",
+    "sleepMode": "睡眠模式",
+    "sleepModeDescription": "在换乘或到达前1站时震动并通知",
+    "sleepModeLabel": "切换睡眠模式",
+    "favAdd": "添加到收藏",
+    "favRemove": "从收藏中删除",
+    "arrivalInfoTitle": "列车到达信息",
+    "loading": "加载中...",
+    "mockNotice": "无法获取实时数据,显示预测数据",
+    "scheduleNotice": "基于时刻表 · 无实时响应",
+    "closedNotice": "已超出运营时间",
+    "noArrivalInfo": "无到达信息",
+    "notNearStationTitle": "附近没有地铁站",
+    "notNearStationDescription": "当您距离地铁站500m以内时,会显示当前站。\n您也可以在地图标签页手动设置出发站。",
+    "locationUncertainTitle": "正在定位",
+    "locationUncertainDescription": "GPS精度较低,\n暂时无法确定您的位置。\n稍后将自动重试。",
+    "refresh": "刷新",
+    "boardingProximityHint": "靠近乘车站后可以选择列车",
+    "originResolving": "正在确认出发站...",
+    "boardingTrainListTitle": "选择乘坐列车",
+    "boardingTrainListLoading": "正在加载到达信息...",
+    "boardingTrainListEmpty": "暂无即将到达的列车。",
+    "boardingTrainListEmptyHint": "稍后将自动重新确认。",
+    "boardingTrainListFallback": "未找到乘车候选。",
+    "boardingTrainListFallbackHint": "请在车站附近重试,或手动选择列车。",
+    "boardingTrainListPending": "正在登记乘车...",
+    "boardingTrainListError": "无法加载到达信息",
+    "boardingTrainListErrorHint": "稍后将自动重试。",
+    "consensusTrackingBadge": "正在追踪下一班列车",
+    "consensusEstimatedBadge": "推测",
+    "consensusManualSelectHint": "直接选择",
+    "misBoardingToast": "找不到乘坐的列车,请重新选择。",
+    "misBoardingWrongDirectionToast": "您好像坐反方向了。请在下一站下车，到对面站台换乘。",
+    "autoDisembarkToast": {
+      "message": "已到达{{name}},已清除目的地",
+      "undo": "撤销"
+    },
+    "lockCorrectionToast": "已将乘车列车修正为 {{prev}} → {{next}}",
+    "shortRouteToast": "区间太短，闹钟不会响起",
+    "coldStartMismatch": {
+      "title": "确认乘车站",
+      "message": "乘车站与当前位置不符，请重新选择。",
+      "reselect": "重新选择"
+    },
+    "congestion": {
+      "level": {
+        "low": "宽松",
+        "medium": "一般",
+        "high": "拥挤",
+        "veryHigh": "非常拥挤"
+      },
+      "hint": {
+        "low": "有座位余裕",
+        "medium": "需扶把手站立",
+        "high": "贴身拥挤",
+        "veryHigh": "车内难以移动"
+      },
+      "a11yLabel": "当前时段平均拥挤度{{level}},约{{raw}}%"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "themeSection": "主题",
+    "themeAuto": "自动",
+    "themeLight": "浅色",
+    "themeDark": "深色",
+    "themeLabel": "深色模式",
+    "themeDescription": "自动会跟随设备设置",
+    "routeSection": "路线",
+    "routePreferenceLabel": "路线偏好",
+    "routePreferenceDescription": "选择默认路线搜索方式",
+    "accessibilitySection": "无障碍",
+    "accessibilityModeLabel": "无障碍模式",
+    "accessibilityModeDescription": "路线画面优先显示电梯侧的快速下车位置（不影响提醒文案）",
+    "alarmSection": "提醒",
+    "sleepModeLabel": "睡眠模式",
+    "sleepModeDescription": "连接耳机时播放唤醒铃声",
+    "speakerOutputLabel": "允许扬声器输出",
+    "speakerOutputDescription": "即使未连接耳机也通过扬声器播放铃声",
+    "speakerOffTitle": "关闭扬声器输出",
+    "speakerOffMessage": "关闭扬声器输出后,未连接耳机时只会震动。是否继续?",
+    "speakerOffConfirm": "关闭",
+    "languageSection": "语言",
+    "languageLabel": "应用语言",
+    "languageDescription": "自动会跟随设备设置",
+    "languageAuto": "自动",
+    "feedbackSection": "支持",
+    "feedbackLabel": "报告问题",
+    "feedbackDescription": "告诉我们您遇到的问题",
+    "privacySection": "隐私",
+    "sentryOptInLabel": "发送错误诊断信息",
+    "sentryOptInDescription": "向开发者发送匿名错误信息"
+  },
+  "feedback": {
+    "title": "报告问题",
+    "description": "请详细描述您遇到的问题。应用版本和系统信息将一并发送。",
+    "placeholder": "例如：江南站的到达提醒未响起",
+    "submit": "发送",
+    "submitting": "正在发送…",
+    "successToast": "已发送，感谢您的反馈！",
+    "errorToast": "发送失败，请稍后再试。"
+  },
+  "map": {
+    "originBadge": "出发",
+    "destinationBadge": "目的地",
+    "setAsOrigin": "设为出发站",
+    "setAsDestination": "设为目的地",
+    "assignAsSlot": "保存为{{label}}",
+    "slotAlreadyAssigned": "{{label}} ✓",
+    "nearbyStationsHeader": "附近地铁站(1km以内)",
+    "noNearbyStations": "1km内没有地铁站。",
+    "recenter": "返回当前位置",
+    "search": {
+      "placeholder": "搜索车站"
+    }
+  },
+  "favorites": {
+    "title": "收藏",
+    "searchPlaceholder": "搜索车站名称...",
+    "noSearchResults": "无搜索结果",
+    "empty": "还没有收藏",
+    "emptyDescription": "在上方搜索车站\n添加到收藏。",
+    "remove": "删除",
+    "addLabel": "添加别名",
+    "editLabel": "编辑别名",
+    "saveLabel": "保存",
+    "labelPlaceholder": "别名",
+    "home": "家",
+    "work": "公司",
+    "slotAssignHint": "点击设置",
+    "slotPickerTitle": "设置{{label}}"
+  },
+  "alarmOverlay": {
+    "transferTitle": "换乘提醒",
+    "arrivalTitle": "到达提醒",
+    "transferMessage": "在{{station}}\n换乘",
+    "arrivalMessage": "在{{station}}\n下车",
+    "dismiss": "关闭提醒"
+  },
+  "destinationPicker": {
+    "noLocation": "无位置信息。",
+    "title": "设置目的地",
+    "originTitle": "选择当前车站",
+    "searchPlaceholder": "搜索车站名称",
+    "assignSlot": "添加{{label}}",
+    "pendingSlot": "下次选择的车站将保存为{{label}}",
+    "sameAsOrigin": "当前车站不能设为目的地"
+  },
+  "currentStationConfirm": {
+    "title": "请确认当前车站",
+    "subtitle": "点按即设为当前车站",
+    "topPickHint": "推荐",
+    "empty": "附近未找到车站",
+    "searchFallback": "通过搜索选择",
+    "close": "关闭",
+    "autoConfirmed": "已确认为{{name}}"
+  },
+  "coldStartPicker": {
+    "title": "您现在在哪个车站？",
+    "subtitle": "选择附近的车站即可开始追踪",
+    "distanceKm": "{{km}}公里",
+    "tooManyCandidates": "附近车站太多了。\n请搜索车站名称进行选择。",
+    "searchFallback": "搜索车站",
+    "close": "关闭"
+  },
+  "sleepModeGuide": {
+    "title": "睡眠模式提示",
+    "message": "如果未连接耳机,提醒可能通过扬声器播放。\n\n如不希望扬声器输出,请在 设置 > 提醒 中关闭'允许扬声器输出'。",
+    "confirm": "确定"
+  },
+  "background": {
+    "title": "正在检测地铁位置",
+    "body": "正在后台追踪当前车站"
+  },
+  "navigation": {
+    "start": "开始导航",
+    "stop": "暂停",
+    "end": "结束导航",
+    "permissionPrompt": "开始导航需要位置权限",
+    "endConfirmTitle": "要结束导航吗?",
+    "endConfirmMessage": "路线和提醒将被删除。",
+    "endConfirmConfirm": "结束",
+    "endConfirmCancel": "取消",
+    "pausedBadge": "已暂停 · 保留路线 · {{minutes}}分钟后自动结束"
+  },
+  "arrival": {
+    "upbound": "上行",
+    "downbound": "下行",
+    "rowLabel": "{{line}} {{direction}} {{mm}}分{{ss}}秒后到达"
+  },
+  "notifications": {
+    "channelStation": "当前车站",
+    "channelTransferAlarm": "换乘/到达提醒",
+    "channelTransferAlarmSilent": "换乘/到达提醒(静音)",
+    "channelStationPass": "到达车站提醒",
+    "channelLastTrain": "末班车提醒",
+    "transferEarlyTitle": "换乘提醒",
+    "arrivalEarlyTitle": "到达提醒",
+    "transferImminentTitle": "即将换乘",
+    "arrivalImminentTitle": "即将到达",
+    "actions": {
+      "acknowledge": "确认",
+      "endTrip": "结束旅程",
+      "nextTrip": "开始下一段旅程",
+      "boardingConfirm": "已上车",
+      "disembarkConfirm": "已下车",
+      "notYet": "还没"
+    }
+  },
+  "journey": {
+    "transferNote": "换乘",
+    "arrivalNote": "到达",
+    "transferArrivalNote": "换乘 → 到达"
+  },
+  "routes": {
+    "optimal": "最快",
+    "minTransfer": "最少换乘"
+  },
+  "time": {
+    "arrivingSoon": "即将到达",
+    "minutesAndSeconds": "{{min}}分{{sec}}秒",
+    "seconds": "{{sec}}秒",
+    "approximateMinutes": "约{{min}}分钟",
+    "estimatedSuffix": " (预计)"
+  },
+  "route": {
+    "stops_one": "{{count}}站",
+    "stops_other": "{{count}}站",
+    "stopsLeft_one": "剩余{{count}}站",
+    "stopsLeft_other": "剩余{{count}}站",
+    "transferAfterStops": "{{stops}}站后在{{name}}换乘",
+    "minutesAndTransfers_one": "{{min}}分钟 · 换乘{{count}}次",
+    "minutesAndTransfers_other": "{{min}}分钟 · 换乘{{count}}次",
+    "directOnly": "{{min}}分钟 · 直达",
+    "currentStation": "{{name}}",
+    "atCurrentStation": "当前 {{name}}",
+    "approximateDistance": "约{{m}}m",
+    "stationPassed": "已到达{{name}}",
+    "intermediateApproachingTitle": "即将进站",
+    "intermediateApproachingBody": "即将进入{{name}}站",
+    "boardingPromptTitle": "您已乘车了吗?",
+    "boardingPromptBody": "您在{{originStation}}站附近({{line}})。",
+    "tripEndedArrivedTitle": "已到达目的地",
+    "tripEndedTitle": "导航结束",
+    "tripEndedBody": "路线导航已结束",
+    "stopsRemainingToDestination_one": "距{{destination}}还有{{count}}站",
+    "stopsRemainingToDestination_other": "距{{destination}}还有{{count}}站",
+    "stopsRemainingViaTransfer": "距{{transfer}}换乘{{transferStops}}站 · 距{{destination}}{{totalStops}}站",
+    "quickExitDoor": "{{door}}号门",
+    "boardingDoor": "{{door}}号门上车"
+  },
+  "lines": {
+    "1": "1号线",
+    "2": "2号线",
+    "3": "3号线",
+    "4": "4号线",
+    "5": "5号线",
+    "6": "6号线",
+    "7": "7号线",
+    "8": "8号线",
+    "9": "9号线",
+    "airport": "机场铁路",
+    "gyeongui": "京义中央线",
+    "bundang": "盆唐线",
+    "sinbundang": "新盆唐线"
+  },
+  "alarms": {
+    "earlyTransferBody": "下一站 {{station}} 请换乘!",
+    "earlyArrivalBody": "下一站 {{station}} 请下车!",
+    "imminentTransferBody": "即将到达{{station}}。请准备换乘!",
+    "imminentArrivalBody": "即将到达{{station}}。请准备下车!",
+    "exitSideLeft": "请从左侧车门下车",
+    "exitSideRight": "请从右侧车门下车",
+    "exitSideBoth": "两侧车门都会开启",
+    "quickHintTransfer": "请在靠近换乘的位置下车",
+    "quickHintArrival": "请在靠近出口的位置下车",
+    "lastTrainTitle": "末班车还有{{minutes}}分钟",
+    "lastTrainBody": "{{origin}}→{{destination}}末班车{{time}}发车，请立即出发。"
+  },
+  "liveActivity": {
+    "alarmShortTransfer": "换乘",
+    "alarmShortArrival": "下车",
+    "etaSubtextEstimated": "预计",
+    "etaSubtextDuration": "用时",
+    "stopsToArrival_one": "距{{destination}}还有{{count}}站",
+    "stopsToArrival_other": "距{{destination}}还有{{count}}站",
+    "stopsToTransfer_one": "{{count}}站后在{{name}}换乘",
+    "stopsToTransfer_other": "{{count}}站后在{{name}}换乘",
+    "summaryWithStops_one": "→ {{destination}} · 还有{{count}}站到达{{etaSuffix}}",
+    "summaryWithStops_other": "→ {{destination}} · 还有{{count}}站到达{{etaSuffix}}",
+    "summaryWithTransfer_one": "→ {{destination}} · {{count}}站后在{{name}}换乘{{etaSuffix}}",
+    "summaryWithTransfer_other": "→ {{destination}} · {{count}}站后在{{name}}换乘{{etaSuffix}}",
+    "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
+    "etaSuffix": " · 约{{min}}分钟"
+  },
+  "direction": {
+    "boundFor": "开往{{name}}",
+    "innerLoop": "内环",
+    "outerLoop": "外环",
+    "viaName": "{{name}}方向"
+  },
+  "source": {
+    "positionTrain": "列车数据",
+    "routeProgress": "路径推算",
+    "gpsOnly": "GPS推算",
+    "uncertain": "定位中"
+  },
+  "a11y": {
+    "settings": {
+      "sleepModeHint": "连接耳机时以起床闹钟音播放",
+      "speakerOutputHint": "未连接耳机时通过扬声器播放闹钟音",
+      "sentryOptInHint": "同意发送匿名错误信息",
+      "accessibilityModeHint": "按电梯位置引导快速下车位置",
+      "versionFooterLabel": "应用版本 {{version}}",
+      "versionFooterHint": "多次点击打开调试菜单"
+    },
+    "alarm": {
+      "dismissHint": "停止闹钟声和振动",
+      "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
+      "boardingTrainSelectHint": "点击乘坐该列车",
+      "boardingTrainListLoadingLabel": "正在加载到达信息",
+      "boardingTrainListEmptyLabel": "无即将到达的列车",
+      "boardingTrainListFallbackLabel": "无乘车候选",
+      "boardingTrainListPendingLabel": "正在登记乘车",
+      "boardingTrainListErrorLabel": "无法加载到达信息",
+      "consensusTrackingLabel": "正在后台追踪下一班列车",
+      "boardingLockReleaseLabel": "下车",
+      "boardingLockReleaseHint": "结束当前乘车状态"
+    },
+    "route": {
+      "destinationCloseHint": "取消目的地选择并关闭弹窗",
+      "assignSlotLabel": "指定 {{label}} 槽位",
+      "assignSlotHint": "将下次选择的车站保存到此槽位",
+      "favoriteChipHint": "点击将此站设为目的地",
+      "misBoardingBannerLabel": "无法识别乘坐的列车，请重新选择。",
+      "misBoardingWrongDirectionBannerLabel": "您好像坐反方向了，请重新选择。",
+      "misBoardingReselectLabel": "重新选择乘坐列车",
+      "misBoardingReselectHint": "重新打开乘坐列车选择界面"
+    }
+  },
+  "service": {
+    "window": {
+      "preFirst": "首班车前 · 首班车 {{time}}",
+      "postLast": "末班车后 · 明日首班车 {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "地铁路线",
+      "buttonLabel": "分享路线",
+      "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)"
+    }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "本次行程的提醒准确吗?",
+      "body": "您的反馈将用于提升提醒准确度。",
+      "accurate": "都不错",
+      "inaccurate": "有错误的提醒",
+      "dismiss": "稍后",
+      "thanks": "感谢您的反馈。"
+    }
+  },
+  "lockless": {
+    "badge": "🔍 搜索中",
+    "tapToConfirm": "确认乘车"
+  },
+  "onboarding": {
+    "skip": "跳过",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "地铁，现在自动化",
+      "description": "通过GPS实时检测您当前乘坐的车站，自动发送换乘和到站提醒。即使在后台运行也没问题。",
+      "next": "下一步"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "需要两项权限",
+      "description": "权限仅用于发送提醒，不会对外共享。"
+    },
+    "permissions": {
+      "locationLabel": "位置权限",
+      "locationReason": "用于检测您当前乘坐的车站",
+      "notificationLabel": "通知权限",
+      "notificationReason": "用于接收换乘和到站提醒",
+      "grant": "允许权限",
+      "requesting": "请求中..."
+    }
+  },
+  "widget": {
+    "header": "地铁",
+    "headerTrip": "乘车中",
+    "detecting": "检测中",
+    "nextTransfer": "下次换乘",
+    "destination": "到站预计"
+  }
+}

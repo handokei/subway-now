@@ -1,7 +1,7 @@
 import { Tabs } from 'expo-router';
 import { Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from '../../src/theme';
+import { useTheme } from '../../src/shared/theme';
 
 export default function TabsLayout() {
   const { colors } = useTheme();

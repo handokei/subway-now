@@ -1,0 +1,102 @@
+appId: com.subwaynow.app
+name: "regression - Seam A (#922) — boarding lock 지연 칩 노출 (#897)"
+# Epic #896 Seam A(#897) 회귀 가드. 사용자가 BoardingTrainList의 열차 row를 탭해 lock하면
+# lock.initialEtaSeconds가 snapshot된다. 이후 폴링에서 동일 trainCode의 잔여 ETA가 임계값
+# (+180s) 이상 늘면 BoardingLockHopCard(testID=boarding-lock-hop-card)에 '+N분 지연' 칩
+# (testID=boarding-lock-hop-delay-chip)이 노출되어야 한다.
+#
+# 본 flow는 GPS를 어린이대공원에 두고 mock backend가 phase 0~30s 동안 trainCode 7180을
+# arrivalSeconds=120으로, phase 30s 이후로는 arrivalSeconds=360으로 응답하는 상황에서,
+# row 탭으로 lock 형성 후 약 60초 대기 → 지연 칩 노출을 검증한다.
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=seam-a-delay-chip PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+- setLocation:
+    latitude: 37.548014
+    longitude: 127.074658
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 어린이대공원 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "어린이대공원|Children"
+
+# 목적지: 군자 (7호선 단순 trip — Seam A의 핵심은 lock 후 지연 칩 노출)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "군자"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-7-017"
+- waitForAnimationToEnd
+
+# BoardingTrainList가 어린이대공원 row를 노출할 때까지 대기 (mock 응답 phase 0 활성).
+- extendedWaitUntil:
+    visible:
+      id: "boarding-train-row-7180"
+    timeout: 15000
+
+# 사용자가 7180 row 탭 → lock 형성 (lock.initialEtaSeconds=120 snapshot).
+- tapOn:
+    id: "boarding-train-row-7180"
+- waitForAnimationToEnd
+
+# Lock 카드가 떠야 한다 — BoardingTrainList는 사라지고 BoardingLockHopCard 노출.
+- extendedWaitUntil:
+    visible:
+      id: "boarding-lock-hop-card"
+    timeout: 10000
+
+# Phase 30s 전환 + 클라이언트 폴링 cycle을 위해 충분히 대기.
+# - mock fixture는 fromMs=30000부터 arrivalSeconds=360 응답.
+# - 클라이언트 arrival 폴링 30s 주기 + lock 카드 currentEtaSeconds 갱신.
+# 70초 대기로 phase 전환 + 최소 1회 폴링 cycle 확보.
+- repeat:
+    times: 70
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# Seam A 회귀 검증: 지연 칩이 노출되어야 한다.
+# 임계값 +180s 초과(+240s) → ceil(240/60)=4분.
+- assertVisible:
+    id: "boarding-lock-hop-delay-chip"
+- assertVisible:
+    text: "\\+4분 지연"
+
+# Lock은 유지되어야 하고 — false-positive 알람은 발사되지 않아야 한다.
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# 트립 진행 chip은 어린이대공원으로 안정 (지연이 waypoint advance 회귀를 유발하면 안 됨).
+- assertVisible:
+    text: "어린이대공원|Children"

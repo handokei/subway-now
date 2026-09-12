@@ -1,4 +1,7 @@
 {
   "type": "widget",
-  "deploymentTarget": "16.0"
+  "deploymentTarget": "16.0",
+  "entitlements": {
+    "com.apple.security.application-groups": ["group.com.subwaynow.app"]
+  }
 }

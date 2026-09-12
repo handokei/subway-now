@@ -1,0 +1,32 @@
+name: Wire-completion CI
+
+# #1582 — Wire-completion 5단 룰 lite 게이트.
+# ts-prune로 orphan export(미연결 신호/모듈)를 탐지해 "코드만 머지되고 호출자 없음" 회귀를 차단한다.
+# 5단 룰 중 1단(orphan 탐지)에 해당. 나머지 4단(V/X dashboard, 의존 PR, 측정 PR template,
+# device verify)은 PR template으로 강제한다.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  orphan-detection:
+    name: Orphan Export Detection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps
+
+      - name: Orphan export 검사 (ts-prune)
+        run: npm run lint:orphan

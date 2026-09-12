@@ -1,0 +1,82 @@
+appId: com.subwaynow.app
+name: "regression - A1 (#922) — backend autoLockCandidate hydrate (#916)"
+# Epic #912 P1 A1(#916) 회귀 가드. backend `/boarding-lock/sync` 응답의 autoLockCandidate
+# ({ trainCode, line, subwayId })로 client BoardingLock store가 사용자 탭 없이 hydrate되어야
+# 한다. wire-up이 회귀하면 boarding-lock-hop-card가 노출되지 않아 매역 알림 활성화 누락.
+#
+# 본 flow는 GPS를 강남(2-022)에 두고 목적지 역삼(2-021) 단순 trip을 등록한다. mock backend가
+# boardingLockSync 응답에 autoLockCandidate를 부착하므로 HomeScreen의 useBoardingLockSync →
+# hydrateLockFromCandidate 경로가 정상 동작하면 BoardingTrainList row 탭 없이도
+# BoardingLockHopCard(testID=boarding-lock-hop-card)가 노출되어야 한다.
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=a1-auto-lock PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+- setLocation:
+    latitude: 37.49799
+    longitude: 127.027912
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 강남 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "강남|Gangnam"
+
+# 목적지: 역삼 (2호선 단순 trip — A1의 핵심은 destination 설정만으로 lock hydrate)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "역삼"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-2-021"
+- waitForAnimationToEnd
+
+# 트립 형성 → useBoardingLockSync가 debounce(5s) + forceTriggerKey로 sync POST 발사 →
+# mock backend가 autoLockCandidate 응답 → hydrateLockFromCandidate → store createLock →
+# BoardingLockHopCard 노출. 충분히 대기(20s) — debounce 5s + 응답 처리 + 렌더 마진.
+- extendedWaitUntil:
+    visible:
+      id: "boarding-lock-hop-card"
+    timeout: 20000
+
+# A1 회귀 검증: 사용자가 직접 BoardingTrainList row를 탭하지 않았는데도 lock 카드가 노출되었다.
+# 이 시점에서 lock 카드가 보이면 backend autoLockCandidate 경로가 정상 wire-up.
+- assertVisible:
+    id: "boarding-lock-hop-card"
+
+# false-positive 알람 발사 시 실패 — 자동 lock 형성이 ghost 알람을 유발하면 안 됨.
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# 트립 chip은 강남에 안정 — 자동 lock이 GPS-기반 currentStation을 ghost로 점프시키면 안 됨.
+- assertVisible:
+    text: "강남|Gangnam"

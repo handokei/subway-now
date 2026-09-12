@@ -1,0 +1,59 @@
+appId: com.subwaynow.app
+name: "smoke - 즐겨찾기 추가 & 삭제"
+---
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      notifications: allow
+      location: always
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+
+# 즐겨찾기 탭 (62.5%)
+# 탭 전환 직후 mount까지 maestro default(~1s)를 넘는 케이스를 흡수 (#1230).
+- tapOn:
+    point: "62%,95%"
+- extendedWaitUntil:
+    visible:
+      id: "favorites-empty"
+    timeout: 5000
+
+# 추가
+- tapOn:
+    id: "favorites-search-input"
+- inputText: "강남"
+- tapOn:
+    id: "favorite-add-2-022"
+- tapOn:
+    id: "favorites-search-input"
+- eraseText
+- hideKeyboard
+
+# FavoriteCard는 TouchableOpacity가 여러 Text를 감싸 a11y aggregation으로
+# 단독 station 이름 텍스트가 매처에 안 잡힘. testID로 검증해 a11y 구조 무관하게 결정적.
+- extendedWaitUntil:
+    visible:
+      id: "favorite-remove-2-022"
+    timeout: 5000
+
+# 삭제
+- tapOn:
+    id: "favorite-remove-2-022"
+- extendedWaitUntil:
+    visible:
+      id: "favorites-empty"
+    timeout: 5000

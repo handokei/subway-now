@@ -1,0 +1,23 @@
+{
+  "monotonicLines": ["3", "4", "7", "8", "9", "airport", "bundang", "sinbundang"],
+  "_comment": "단조(상행 종점 → 하행 종점)로 stations.json에 표현 가능한 노선 화이트리스트. 다음 노선들은 단조 배열로 표현 불가하므로 제외: 1호선(다중 종착/지선), 2호선(순환선), 5호선(마천/상일동 분기), 6호선(응암 루프), 경의중앙선(다중 갈래). 좌/우 안내가 false direction을 내는 것을 방지한다.",
+  "endpoints": {
+    "3": { "low": "대화", "high": "오금" },
+    "4": { "low": "진접", "high": "오이도" },
+    "7": { "low": "장암", "high": "석남" },
+    "8": { "low": "별내", "high": "모란" },
+    "9": { "low": "개화", "high": "중앙보훈병원" },
+    "airport": { "low": "서울역", "high": "인천공항2터미널" },
+    "bundang": { "low": "인천", "high": "청량리" },
+    "sinbundang": { "low": "광교", "high": "신사" }
+  },
+  "_endpoints_comment": "각 단조 노선의 진행방면 종착역 운영명(#788). SSOT: 본 endpoints. stations.json은 stationId 정렬용으로만 쓰이며 신규 연장(석남/진접/별내/중앙보훈병원 등)을 미반영한 상태. transferExit.json의 fromTerminal은 본 endpoints에 정렬돼야 하며, 미정렬 row는 score=0으로 첫 매칭 fallback(회귀 없음, 정확도 저하). low = stations.json id가 작은 쪽(상행 방면) 운영 종점, high = id가 큰 쪽(하행 방면). 노선 연장 시 본 endpoints 먼저 갱신 → transferExit.json fromTerminal 동기화.",
+  "closedLoops": {
+    "2": { "mainIdRange": { "firstId": "2-001", "lastId": "2-043" } },
+    "6": {
+      "mainIdRange": { "firstId": "6-001", "lastId": "6-039" },
+      "loopTailRange": { "firstId": "6-001", "lastId": "6-007" }
+    }
+  },
+  "_closedLoops_comment": "방향 추론용 노선 토폴로지(#1703). `inferLoopDirection`이 단조 화이트리스트 밖 노선의 방향을 결정하기 위해 참조. `mainIdRange`는 메인 운행 구간(지선 배제용). `loopTailRange`(선택)는 6호선처럼 단방향 응암 루프(P자 노선) 꼬리. loopTailRange가 있으면 hybrid 노선으로 처리한다 — id 단조 비교만으로 방향 결정(루프가 단방향이라 wrap 사용 안 함). loopTailRange가 없으면 진짜 순환선(2호선)으로 처리 — wrap 길이 비교."
+}

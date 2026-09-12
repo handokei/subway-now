@@ -1,0 +1,436 @@
+{
+  "common": {
+    "retry": "Retry",
+    "close": "Close",
+    "cancel": "Cancel",
+    "remove": "Remove"
+  },
+  "tabs": {
+    "current": "Current",
+    "map": "Map",
+    "favorites": "Favorites",
+    "settings": "Settings"
+  },
+  "permissions": {
+    "locationRequiredShort": "Location permission required.",
+    "locating": "Locating...",
+    "backgroundDeniedTitle": "Background location required",
+    "backgroundDeniedBody": "To receive background alarms, set location access to \"Always\" in Settings.",
+    "openSettings": "Open Settings",
+    "changeRevokedTitle": "Location permission was revoked",
+    "changeRevokedBody": "Location access is off, so alarms may not fire. Please re-enable location access in Settings.",
+    "changeDowngradedTitle": "Background location was disabled",
+    "changeDowngradedBody": "\"Always\" was changed to \"While Using the App\", so background alarms may be missed. Please set access back to \"Always\" in Settings."
+  },
+  "home": {
+    "arrived": "Arrived!",
+    "originManual": "Origin (manual)",
+    "originCurrent": "Current station",
+    "originNearest": "Nearest station",
+    "originEstimated": "Estimated current station",
+    "originStaleDemote": "Moving · confirming current station",
+    "routeTo": "Route to",
+    "estimatedSuffix": "EST",
+    "destinationChange": "Change destination →",
+    "destinationReset": "Reset",
+    "viewRouteOnMap": "View route on map",
+    "routeExpand": "Show all stops",
+    "routeCollapse": "Show key stops only",
+    "destinationSet": "Set destination",
+    "previousDestination": "Previous destination",
+    "sleepMode": "Sleep mode",
+    "sleepModeDescription": "Vibrate and notify 1 stop before transfer or arrival",
+    "sleepModeLabel": "Toggle sleep mode",
+    "favAdd": "Add to favorites",
+    "favRemove": "Remove from favorites",
+    "arrivalInfoTitle": "Train arrivals",
+    "loading": "Loading...",
+    "mockNotice": "Showing estimated data — real-time unavailable",
+    "scheduleNotice": "Schedule-based · no real-time response",
+    "closedNotice": "Service hours have ended",
+    "noArrivalInfo": "No arrival info",
+    "notNearStationTitle": "Not near a subway station",
+    "notNearStationDescription": "Your current station appears when you are within 500m of a subway station.\nYou can also set the origin manually from the Map tab.",
+    "locationUncertainTitle": "Locating",
+    "locationUncertainDescription": "GPS accuracy is low,\nso we can't pinpoint your location.\nWe'll retry automatically.",
+    "refresh": "Refresh",
+    "boardingProximityHint": "Move closer to the boarding station to pick a train",
+    "originResolving": "Detecting origin station...",
+    "boardingTrainListTitle": "Pick your train",
+    "boardingTrainListLoading": "Loading arrivals...",
+    "boardingTrainListEmpty": "No upcoming trains.",
+    "boardingTrainListEmptyHint": "We'll retry automatically.",
+    "boardingTrainListFallback": "Couldn't find boarding candidates.",
+    "boardingTrainListFallbackHint": "Try again near the station or pick a train manually.",
+    "boardingTrainListPending": "Registering boarding...",
+    "boardingTrainListError": "Couldn't load arrivals",
+    "boardingTrainListErrorHint": "We'll retry automatically in a moment.",
+    "consensusTrackingBadge": "Tracking next train",
+    "consensusEstimatedBadge": "Estimated",
+    "consensusManualSelectHint": "Select manually",
+    "misBoardingToast": "Can't find your train. Please reselect.",
+    "misBoardingWrongDirectionToast": "Looks like you're heading the wrong way. Get off at the next station and switch to the other platform.",
+    "autoDisembarkToast": {
+      "message": "Arrived at {{name}} — destination cleared",
+      "undo": "Undo"
+    },
+    "lockCorrectionToast": "Boarding train corrected: {{prev}} → {{next}}",
+    "shortRouteToast": "This trip is too short for the alarm to sound",
+    "coldStartMismatch": {
+      "title": "Check boarding station",
+      "message": "Your boarding station does not match your current location. Please reselect.",
+      "reselect": "Reselect"
+    },
+    "congestion": {
+      "level": {
+        "low": "Light",
+        "medium": "Moderate",
+        "high": "Crowded",
+        "veryHigh": "Very crowded"
+      },
+      "hint": {
+        "low": "Seats likely available",
+        "medium": "Standing with handrails",
+        "high": "Tightly packed",
+        "veryHigh": "Hard to move around"
+      },
+      "a11yLabel": "Average congestion right now: {{level}}, about {{raw}} percent"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "themeSection": "Theme",
+    "themeAuto": "Auto",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "themeLabel": "Dark mode",
+    "themeDescription": "Auto follows your device setting",
+    "routeSection": "Route",
+    "routePreferenceLabel": "Route preference",
+    "routePreferenceDescription": "Choose the default route search method",
+    "accessibilitySection": "Accessibility",
+    "accessibilityModeLabel": "Mobility-accessible mode",
+    "accessibilityModeDescription": "Route screen shows elevator-side quick exits (alarm copy unchanged)",
+    "alarmSection": "Alarm",
+    "sleepModeLabel": "Sleep mode",
+    "sleepModeDescription": "Plays the wake-up alarm sound when earphones are connected",
+    "speakerOutputLabel": "Allow speaker output",
+    "speakerOutputDescription": "Plays the alarm through the speaker even without earphones",
+    "speakerOffTitle": "Turn off speaker output",
+    "speakerOffMessage": "Disabling speaker output will play only vibration when earphones are not connected. Continue?",
+    "speakerOffConfirm": "Turn off",
+    "languageSection": "Language",
+    "languageLabel": "App language",
+    "languageDescription": "Auto follows your device setting",
+    "languageAuto": "Auto",
+    "feedbackSection": "Support",
+    "feedbackLabel": "Report a bug",
+    "feedbackDescription": "Tell us about issues you encountered",
+    "privacySection": "Privacy",
+    "sentryOptInLabel": "Send diagnostic data",
+    "sentryOptInDescription": "Send anonymous error reports to the developer"
+  },
+  "feedback": {
+    "title": "Report a bug",
+    "description": "Describe the problem you experienced. App version and OS info will be sent along.",
+    "placeholder": "e.g. The arrival alarm for Gangnam didn't fire",
+    "submit": "Send",
+    "submitting": "Sending…",
+    "successToast": "Sent. Thank you!",
+    "errorToast": "Failed to send. Please try again later."
+  },
+  "map": {
+    "originBadge": "Origin",
+    "destinationBadge": "Destination",
+    "setAsOrigin": "Set as origin",
+    "setAsDestination": "Set as destination",
+    "assignAsSlot": "Save as {{label}}",
+    "slotAlreadyAssigned": "{{label}} ✓",
+    "nearbyStationsHeader": "Nearby stations (within 1km)",
+    "noNearbyStations": "No subway stations within 1km.",
+    "recenter": "Recenter on my location",
+    "search": {
+      "placeholder": "Search stations"
+    }
+  },
+  "favorites": {
+    "title": "Favorites",
+    "searchPlaceholder": "Search station name...",
+    "noSearchResults": "No search results",
+    "empty": "No favorites yet",
+    "emptyDescription": "Search stations above and add\nthem to your favorites.",
+    "remove": "Remove",
+    "addLabel": "Add label",
+    "editLabel": "Edit label",
+    "saveLabel": "Save",
+    "labelPlaceholder": "Label",
+    "home": "Home",
+    "work": "Work",
+    "slotAssignHint": "Tap to assign",
+    "slotPickerTitle": "Set {{label}}"
+  },
+  "alarmOverlay": {
+    "transferTitle": "Transfer alert",
+    "arrivalTitle": "Arrival alert",
+    "transferMessage": "Transfer at\n{{station}}",
+    "arrivalMessage": "Exit at\n{{station}}",
+    "dismiss": "Dismiss alarm"
+  },
+  "destinationPicker": {
+    "noLocation": "Location info unavailable.",
+    "title": "Set destination",
+    "originTitle": "Choose current station",
+    "searchPlaceholder": "Search station name",
+    "assignSlot": "Add {{label}}",
+    "pendingSlot": "The next station you pick will be saved as {{label}}",
+    "sameAsOrigin": "You can't set your current station as the destination"
+  },
+  "currentStationConfirm": {
+    "title": "Confirm your current station",
+    "subtitle": "Tap to set as current station",
+    "topPickHint": "Best match",
+    "empty": "No nearby station found",
+    "searchFallback": "Search instead",
+    "close": "Close",
+    "autoConfirmed": "Confirmed as {{name}}"
+  },
+  "coldStartPicker": {
+    "title": "Which station are you at?",
+    "subtitle": "Select a nearby station to start tracking",
+    "distanceKm": "{{km}} km",
+    "tooManyCandidates": "Too many nearby stations.\nPlease search for your station.",
+    "searchFallback": "Search station",
+    "close": "Close"
+  },
+  "sleepModeGuide": {
+    "title": "Sleep mode notice",
+    "message": "If earphones are not connected, the alarm may play through the speaker.\n\nIf you do not want speaker output, turn off 'Allow speaker output' under Settings > Alarm.",
+    "confirm": "OK"
+  },
+  "background": {
+    "title": "Detecting subway location",
+    "body": "Tracking your current station in the background"
+  },
+  "navigation": {
+    "start": "Start guidance",
+    "stop": "Pause",
+    "end": "End guidance",
+    "permissionPrompt": "Location permission is required to start guidance",
+    "endConfirmTitle": "End guidance?",
+    "endConfirmMessage": "Your route and alarms will be deleted.",
+    "endConfirmConfirm": "End",
+    "endConfirmCancel": "Cancel",
+    "pausedBadge": "Paused · route kept · auto-ends in {{minutes}} min"
+  },
+  "arrival": {
+    "upbound": "Upbound",
+    "downbound": "Downbound",
+    "rowLabel": "{{line}} {{direction}} arriving in {{mm}} min {{ss}} sec"
+  },
+  "notifications": {
+    "channelStation": "Current station",
+    "channelTransferAlarm": "Transfer/arrival alert",
+    "channelTransferAlarmSilent": "Transfer/arrival alert (silent)",
+    "channelStationPass": "Station arrival alert",
+    "channelLastTrain": "Last train alert",
+    "transferEarlyTitle": "Transfer alert",
+    "arrivalEarlyTitle": "Arrival alert",
+    "transferImminentTitle": "Transfer imminent",
+    "arrivalImminentTitle": "Arrival imminent",
+    "actions": {
+      "acknowledge": "OK",
+      "endTrip": "End trip",
+      "nextTrip": "Start next trip",
+      "boardingConfirm": "Boarded",
+      "disembarkConfirm": "Got off",
+      "notYet": "Not yet"
+    }
+  },
+  "journey": {
+    "transferNote": "Transfer",
+    "arrivalNote": "Arrival",
+    "transferArrivalNote": "Transfer → Arrival"
+  },
+  "routes": {
+    "optimal": "Fastest",
+    "minTransfer": "Fewest transfers"
+  },
+  "time": {
+    "arrivingSoon": "Arriving soon",
+    "minutesAndSeconds": "{{min}}m {{sec}}s",
+    "seconds": "{{sec}}s",
+    "approximateMinutes": "~{{min}}m",
+    "estimatedSuffix": " (estimated)"
+  },
+  "route": {
+    "stops_one": "{{count}} stop",
+    "stops_other": "{{count}} stops",
+    "stopsLeft_one": "{{count}} stop left",
+    "stopsLeft_other": "{{count}} stops left",
+    "transferAfterStops": "Transfer at {{name}} in {{stops}} stops",
+    "minutesAndTransfers_one": "{{min}}m · {{count}} transfer",
+    "minutesAndTransfers_other": "{{min}}m · {{count}} transfers",
+    "directOnly": "{{min}}m · Direct",
+    "currentStation": "{{name}}",
+    "atCurrentStation": "Currently at {{name}}",
+    "approximateDistance": "~{{m}}m",
+    "stationPassed": "Arrived at {{name}}",
+    "intermediateApproachingTitle": "Approaching",
+    "intermediateApproachingBody": "Approaching {{name}} soon",
+    "boardingPromptTitle": "Are you on board?",
+    "boardingPromptBody": "You're near {{originStation}} station ({{line}}).",
+    "tripEndedArrivedTitle": "Arrived at destination",
+    "tripEndedTitle": "Guidance ended",
+    "tripEndedBody": "Route guidance has ended",
+    "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
+    "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
+    "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}",
+    "quickExitDoor": "Door {{door}}",
+    "boardingDoor": "Board at door {{door}}"
+  },
+  "lines": {
+    "1": "Line 1",
+    "2": "Line 2",
+    "3": "Line 3",
+    "4": "Line 4",
+    "5": "Line 5",
+    "6": "Line 6",
+    "7": "Line 7",
+    "8": "Line 8",
+    "9": "Line 9",
+    "airport": "AREX",
+    "gyeongui": "Gyeongui-Jungang Line",
+    "bundang": "Bundang Line",
+    "sinbundang": "Shinbundang Line"
+  },
+  "alarms": {
+    "earlyTransferBody": "Transfer at {{station}} (next stop)!",
+    "earlyArrivalBody": "Exit at {{station}} (next stop)!",
+    "imminentTransferBody": "Arriving at {{station}} — transfer soon!",
+    "imminentArrivalBody": "Arriving at {{station}} — exit soon!",
+    "exitSideLeft": "Exit on the left",
+    "exitSideRight": "Exit on the right",
+    "exitSideBoth": "Doors open on both sides",
+    "quickHintTransfer": "Stand near transfer exit",
+    "quickHintArrival": "Stand near station exit",
+    "lastTrainTitle": "Last train in {{minutes}} min",
+    "lastTrainBody": "Last train from {{origin}} to {{destination}} departs at {{time}}. Head out now."
+  },
+  "liveActivity": {
+    "alarmShortTransfer": "Transfer",
+    "alarmShortArrival": "Exit",
+    "etaSubtextEstimated": "estimated",
+    "etaSubtextDuration": "duration",
+    "stopsToArrival_one": "{{count}} stop to {{destination}}",
+    "stopsToArrival_other": "{{count}} stops to {{destination}}",
+    "stopsToTransfer_one": "Transfer at {{name}} in {{count}} stop",
+    "stopsToTransfer_other": "Transfer at {{name}} in {{count}} stops",
+    "summaryWithStops_one": "→ {{destination}} · {{count}} stop to arrival{{etaSuffix}}",
+    "summaryWithStops_other": "→ {{destination}} · {{count}} stops to arrival{{etaSuffix}}",
+    "summaryWithTransfer_one": "→ {{destination}} · Transfer at {{name}} in {{count}} stop{{etaSuffix}}",
+    "summaryWithTransfer_other": "→ {{destination}} · Transfer at {{name}} in {{count}} stops{{etaSuffix}}",
+    "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
+    "etaSuffix": " · ~{{min}} min"
+  },
+  "direction": {
+    "boundFor": "Bound for {{name}}",
+    "innerLoop": "Inner Loop",
+    "outerLoop": "Outer Loop",
+    "viaName": "via {{name}}"
+  },
+  "source": {
+    "positionTrain": "Train data",
+    "routeProgress": "Route est.",
+    "gpsOnly": "GPS est.",
+    "uncertain": "Locating…"
+  },
+  "a11y": {
+    "settings": {
+      "sleepModeHint": "Plays a wake-up alarm sound when headphones are connected",
+      "speakerOutputHint": "Plays alarm sound through the speaker when headphones are not connected",
+      "sentryOptInHint": "Consent to send anonymous error reports",
+      "accessibilityModeHint": "Guides quick-exit positions based on elevators",
+      "versionFooterLabel": "App version {{version}}",
+      "versionFooterHint": "Tap multiple times to open the debug menu"
+    },
+    "alarm": {
+      "dismissHint": "Stops the alarm sound and vibration",
+      "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
+      "boardingTrainSelectHint": "Tap to board this train",
+      "boardingTrainListLoadingLabel": "Loading arrivals",
+      "boardingTrainListEmptyLabel": "No upcoming trains",
+      "boardingTrainListFallbackLabel": "No boarding candidates",
+      "boardingTrainListPendingLabel": "Registering boarding",
+      "boardingTrainListErrorLabel": "Couldn't load arrivals",
+      "consensusTrackingLabel": "Tracking next train in the background",
+      "boardingLockReleaseLabel": "Get off",
+      "boardingLockReleaseHint": "Ends the current boarding session"
+    },
+    "route": {
+      "destinationCloseHint": "Cancels destination selection and closes the modal",
+      "assignSlotLabel": "Assign {{label}} slot",
+      "assignSlotHint": "Saves the next selected station to this slot",
+      "favoriteChipHint": "Tap to set this station as destination",
+      "misBoardingBannerLabel": "Cannot identify your train. Please reselect.",
+      "misBoardingWrongDirectionBannerLabel": "You seem to be heading the wrong way. Please reselect.",
+      "misBoardingReselectLabel": "Reselect boarding train",
+      "misBoardingReselectHint": "Reopens the boarding train picker"
+    }
+  },
+  "service": {
+    "window": {
+      "preFirst": "Before first train · first train at {{time}}",
+      "postLast": "After last train · first train tomorrow at {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "Subway Route",
+      "buttonLabel": "Share route",
+      "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)"
+    }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "Were the alarms accurate this trip?",
+      "body": "Your answer trains the alarm accuracy model.",
+      "accurate": "All good",
+      "inaccurate": "Some were wrong",
+      "dismiss": "Later",
+      "thanks": "Thanks for your feedback."
+    }
+  },
+  "lockless": {
+    "badge": "🔍 Searching",
+    "tapToConfirm": "Confirm boarding"
+  },
+  "onboarding": {
+    "skip": "Skip",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "Subway, now automatic",
+      "description": "We detect your current station via GPS and send transfer and arrival alerts automatically — even when the app is in the background.",
+      "next": "Next"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "Two permissions needed",
+      "description": "Permissions are used only for alarms and are never shared externally."
+    },
+    "permissions": {
+      "locationLabel": "Location",
+      "locationReason": "Needed to detect the station you are currently on",
+      "notificationLabel": "Notifications",
+      "notificationReason": "Needed to send transfer and arrival alerts",
+      "grant": "Allow permissions",
+      "requesting": "Requesting..."
+    }
+  },
+  "widget": {
+    "header": "Subway",
+    "headerTrip": "On Board",
+    "detecting": "Detecting",
+    "nextTransfer": "Next Transfer",
+    "destination": "Destination"
+  }
+}

@@ -1,0 +1,436 @@
+{
+  "common": {
+    "retry": "再試行",
+    "close": "閉じる",
+    "cancel": "キャンセル",
+    "remove": "削除"
+  },
+  "tabs": {
+    "current": "現在",
+    "map": "地図",
+    "favorites": "お気に入り",
+    "settings": "設定"
+  },
+  "permissions": {
+    "locationRequiredShort": "位置情報の許可が必要です。",
+    "locating": "位置情報を取得中...",
+    "backgroundDeniedTitle": "バックグラウンド位置情報の許可が必要です",
+    "backgroundDeniedBody": "バックグラウンドでアラームを受け取るには、設定で位置情報を「常に許可」にしてください。",
+    "openSettings": "設定を開く",
+    "changeRevokedTitle": "位置情報の許可が取り消されました",
+    "changeRevokedBody": "位置情報がオフになり、アラームが鳴らない可能性があります。設定で位置情報の利用を再度許可してください。",
+    "changeDowngradedTitle": "バックグラウンドの位置情報が無効になりました",
+    "changeDowngradedBody": "「常に許可」が「Appの使用中のみ許可」に変更され、バックグラウンドアラームを受け取れない可能性があります。設定で「常に許可」に戻してください。"
+  },
+  "home": {
+    "arrived": "到着!",
+    "originManual": "出発駅(手動)",
+    "originCurrent": "現在駅",
+    "originNearest": "最寄り駅",
+    "originEstimated": "現在の推定駅",
+    "originStaleDemote": "移動中・現在駅を確認中",
+    "routeTo": "目的地まで",
+    "estimatedSuffix": "予想",
+    "destinationChange": "目的地を変更 →",
+    "destinationReset": "リセット",
+    "viewRouteOnMap": "地図で経路を見る",
+    "routeExpand": "全駅を表示",
+    "routeCollapse": "主要駅のみ表示",
+    "destinationSet": "目的地を設定",
+    "previousDestination": "前回の目的地",
+    "sleepMode": "おやすみモード",
+    "sleepModeDescription": "乗換・到着の1駅手前で振動・通知",
+    "sleepModeLabel": "おやすみモードのオン/オフ",
+    "favAdd": "お気に入りに追加",
+    "favRemove": "お気に入りから削除",
+    "arrivalInfoTitle": "列車到着情報",
+    "loading": "読み込み中...",
+    "mockNotice": "リアルタイムデータが取得できないため予想データを表示しています",
+    "scheduleNotice": "ダイヤに基づく表示 · リアルタイム応答なし",
+    "closedNotice": "運行時間外です",
+    "noArrivalInfo": "到着情報なし",
+    "notNearStationTitle": "地下鉄駅の近くではありません",
+    "notNearStationDescription": "地下鉄駅から500m以内にいるとき、現在駅が表示されます。\n地図タブで出発駅を手動で設定することもできます。",
+    "locationUncertainTitle": "位置確認中",
+    "locationUncertainDescription": "GPSの精度が低いため、\n現在地を特定できません。\nしばらくしてから自動で再試行します。",
+    "refresh": "更新",
+    "boardingProximityHint": "乗車駅の近くで列車を選択できます",
+    "originResolving": "出発駅を確認中...",
+    "boardingTrainListTitle": "乗車する列車を選択",
+    "boardingTrainListLoading": "到着情報を読み込み中...",
+    "boardingTrainListEmpty": "到着予定の列車がありません。",
+    "boardingTrainListEmptyHint": "しばらくしてから自動で再確認します。",
+    "boardingTrainListFallback": "乗車候補が見つかりません。",
+    "boardingTrainListFallbackHint": "駅の近くで再試行するか、手動で列車を選択してください。",
+    "boardingTrainListPending": "乗車を登録中...",
+    "boardingTrainListError": "到着情報を読み込めませんでした",
+    "boardingTrainListErrorHint": "しばらくしてから自動で再試行します。",
+    "consensusTrackingBadge": "次の列車を追跡中",
+    "consensusEstimatedBadge": "推定",
+    "consensusManualSelectHint": "直接選択",
+    "misBoardingToast": "乗車中の列車が見つかりません。もう一度選択してください。",
+    "misBoardingWrongDirectionToast": "反対方向へ進んでいるようです。次の駅で降りて反対側のホームに乗り換えてください。",
+    "autoDisembarkToast": {
+      "message": "{{name}}に到着し、目的地を解除しました",
+      "undo": "元に戻す"
+    },
+    "lockCorrectionToast": "乗車中の列車を {{prev}} → {{next}} に修正しました",
+    "shortRouteToast": "区間が短いためアラームは鳴りません",
+    "coldStartMismatch": {
+      "title": "乗車駅を確認",
+      "message": "乗車駅が現在地と一致しません。再選択してください。",
+      "reselect": "再選択"
+    },
+    "congestion": {
+      "level": {
+        "low": "余裕",
+        "medium": "普通",
+        "high": "混雑",
+        "veryHigh": "非常に混雑"
+      },
+      "hint": {
+        "low": "座席に余裕があります",
+        "medium": "つり革を使う程度です",
+        "high": "密着するほど混んでいます",
+        "veryHigh": "車内移動が難しい状況です"
+      },
+      "a11yLabel": "現在の時間帯平均混雑度 {{level}}、約{{raw}}パーセント"
+    }
+  },
+  "settings": {
+    "title": "設定",
+    "themeSection": "テーマ",
+    "themeAuto": "自動",
+    "themeLight": "ライト",
+    "themeDark": "ダーク",
+    "themeLabel": "ダークモード",
+    "themeDescription": "自動はデバイスの設定に従います",
+    "routeSection": "経路",
+    "routePreferenceLabel": "経路設定",
+    "routePreferenceDescription": "デフォルトの経路探索方法を選択します",
+    "accessibilitySection": "アクセシビリティ",
+    "accessibilityModeLabel": "移動弱者モード",
+    "accessibilityModeDescription": "経路画面の早降り位置をエレベーター優先で表示します（アラーム本文には反映されません）",
+    "alarmSection": "アラーム",
+    "sleepModeLabel": "おやすみモード",
+    "sleepModeDescription": "イヤホン接続時は起床アラーム音を鳴らします",
+    "speakerOutputLabel": "スピーカー出力を許可",
+    "speakerOutputDescription": "イヤホン未接続時もスピーカーでアラーム音を再生します",
+    "speakerOffTitle": "スピーカー出力をオフ",
+    "speakerOffMessage": "スピーカー出力をオフにすると、イヤホン未接続時は振動のみになります。続けますか?",
+    "speakerOffConfirm": "オフにする",
+    "languageSection": "言語",
+    "languageLabel": "アプリの言語",
+    "languageDescription": "自動はデバイスの設定に従います",
+    "languageAuto": "自動",
+    "feedbackSection": "サポート",
+    "feedbackLabel": "バグを報告",
+    "feedbackDescription": "アプリで発生した問題をお知らせください",
+    "privacySection": "プライバシー",
+    "sentryOptInLabel": "エラー診断情報の送信",
+    "sentryOptInDescription": "匿名のエラー情報を開発者に送信します"
+  },
+  "feedback": {
+    "title": "バグを報告",
+    "description": "発生した問題を詳しく記入してください。アプリのバージョンとOS情報も一緒に送信されます。",
+    "placeholder": "例: 江南駅の到着アラームが鳴りませんでした",
+    "submit": "送信",
+    "submitting": "送信中…",
+    "successToast": "送信しました。ありがとうございます！",
+    "errorToast": "送信に失敗しました。しばらくしてからもう一度お試しください。"
+  },
+  "map": {
+    "originBadge": "出発",
+    "destinationBadge": "目的地",
+    "setAsOrigin": "出発駅に設定",
+    "setAsDestination": "目的地に設定",
+    "assignAsSlot": "{{label}}として保存",
+    "slotAlreadyAssigned": "{{label}} ✓",
+    "nearbyStationsHeader": "周辺の地下鉄駅 (1km以内)",
+    "noNearbyStations": "1km以内に地下鉄駅がありません。",
+    "recenter": "現在地に戻る",
+    "search": {
+      "placeholder": "駅名を検索"
+    }
+  },
+  "favorites": {
+    "title": "お気に入り",
+    "searchPlaceholder": "駅名を検索...",
+    "noSearchResults": "検索結果がありません",
+    "empty": "お気に入りはまだありません",
+    "emptyDescription": "上の検索窓で駅を検索して\nお気に入りに追加できます。",
+    "remove": "削除",
+    "addLabel": "ラベル追加",
+    "editLabel": "ラベル編集",
+    "saveLabel": "保存",
+    "labelPlaceholder": "ラベル",
+    "home": "自宅",
+    "work": "会社",
+    "slotAssignHint": "タップして設定",
+    "slotPickerTitle": "{{label}}を設定"
+  },
+  "alarmOverlay": {
+    "transferTitle": "乗換アラーム",
+    "arrivalTitle": "到着アラーム",
+    "transferMessage": "{{station}}で\n乗り換え",
+    "arrivalMessage": "{{station}}で\n下車",
+    "dismiss": "アラームを止める"
+  },
+  "destinationPicker": {
+    "noLocation": "位置情報がありません。",
+    "title": "目的地を設定",
+    "originTitle": "現在の駅を選択",
+    "searchPlaceholder": "駅名を検索",
+    "assignSlot": "{{label}}を追加",
+    "pendingSlot": "次に選ぶ駅を{{label}}として保存します",
+    "sameAsOrigin": "現在の駅は目的地に設定できません"
+  },
+  "currentStationConfirm": {
+    "title": "現在の駅を確認してください",
+    "subtitle": "タップすると現在の駅に設定されます",
+    "topPickHint": "おすすめ",
+    "empty": "近くの駅が見つかりませんでした",
+    "searchFallback": "検索で選ぶ",
+    "close": "閉じる",
+    "autoConfirmed": "{{name}}に確定しました"
+  },
+  "coldStartPicker": {
+    "title": "今どの駅にいますか？",
+    "subtitle": "近くの駅を選ぶと乗車情報をすぐに繋げます",
+    "distanceKm": "{{km}}km",
+    "tooManyCandidates": "近くに駅が多すぎます。\n駅名を検索して選んでください。",
+    "searchFallback": "駅を検索",
+    "close": "閉じる"
+  },
+  "sleepModeGuide": {
+    "title": "おやすみモードのご案内",
+    "message": "イヤホンが接続されていない場合、アラームがスピーカーで再生されることがあります。\n\nスピーカー出力を希望しない場合は、設定 > アラームで「スピーカー出力を許可」をオフにしてください。",
+    "confirm": "OK"
+  },
+  "background": {
+    "title": "地下鉄の位置を検出中",
+    "body": "バックグラウンドで現在駅を追跡しています"
+  },
+  "navigation": {
+    "start": "案内を開始",
+    "stop": "一時停止",
+    "end": "案内を終了",
+    "permissionPrompt": "案内を開始するには位置情報の権限が必要です",
+    "endConfirmTitle": "案内を終了しますか?",
+    "endConfirmMessage": "経路とアラームが削除されます。",
+    "endConfirmConfirm": "終了",
+    "endConfirmCancel": "キャンセル",
+    "pausedBadge": "一時停止中・経路は保持・{{minutes}}分後に自動終了"
+  },
+  "arrival": {
+    "upbound": "上り",
+    "downbound": "下り",
+    "rowLabel": "{{line}} {{direction}} {{mm}}分{{ss}}秒後到着"
+  },
+  "notifications": {
+    "channelStation": "現在駅",
+    "channelTransferAlarm": "乗換・到着アラーム",
+    "channelTransferAlarmSilent": "乗換・到着アラーム (無音)",
+    "channelStationPass": "到着駅アラーム",
+    "channelLastTrain": "終電アラート",
+    "transferEarlyTitle": "乗換アラーム",
+    "arrivalEarlyTitle": "到着アラーム",
+    "transferImminentTitle": "まもなく乗換",
+    "arrivalImminentTitle": "まもなく到着",
+    "actions": {
+      "acknowledge": "確認",
+      "endTrip": "trip終了",
+      "nextTrip": "次の旅程を開始",
+      "boardingConfirm": "乗車しました",
+      "disembarkConfirm": "降車しました",
+      "notYet": "まだです"
+    }
+  },
+  "journey": {
+    "transferNote": "乗換",
+    "arrivalNote": "到着",
+    "transferArrivalNote": "乗換 → 到着"
+  },
+  "routes": {
+    "optimal": "最速",
+    "minTransfer": "乗換最少"
+  },
+  "time": {
+    "arrivingSoon": "まもなく到着",
+    "minutesAndSeconds": "{{min}}分{{sec}}秒",
+    "seconds": "{{sec}}秒",
+    "approximateMinutes": "約{{min}}分",
+    "estimatedSuffix": " (予想)"
+  },
+  "route": {
+    "stops_one": "{{count}}駅",
+    "stops_other": "{{count}}駅",
+    "stopsLeft_one": "残り{{count}}駅",
+    "stopsLeft_other": "残り{{count}}駅",
+    "transferAfterStops": "{{stops}}駅先の{{name}}で乗換",
+    "minutesAndTransfers_one": "{{min}}分 · 乗換{{count}}回",
+    "minutesAndTransfers_other": "{{min}}分 · 乗換{{count}}回",
+    "directOnly": "{{min}}分 · 直通",
+    "currentStation": "{{name}}",
+    "atCurrentStation": "現在 {{name}}",
+    "approximateDistance": "約{{m}}m",
+    "stationPassed": "{{name}}駅に到着",
+    "intermediateApproachingTitle": "まもなく進入",
+    "intermediateApproachingBody": "まもなく{{name}}駅に進入します",
+    "boardingPromptTitle": "ご乗車されましたか?",
+    "boardingPromptBody": "{{originStation}}駅付近です({{line}})。",
+    "tripEndedArrivedTitle": "目的地に到着",
+    "tripEndedTitle": "案内終了",
+    "tripEndedBody": "ルート案内を終了しました",
+    "stopsRemainingToDestination_one": "{{destination}}まで残り{{count}}駅",
+    "stopsRemainingToDestination_other": "{{destination}}まで残り{{count}}駅",
+    "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅",
+    "quickExitDoor": "{{door}}番ドア",
+    "boardingDoor": "{{door}}番ドアから乗車"
+  },
+  "lines": {
+    "1": "1号線",
+    "2": "2号線",
+    "3": "3号線",
+    "4": "4号線",
+    "5": "5号線",
+    "6": "6号線",
+    "7": "7号線",
+    "8": "8号線",
+    "9": "9号線",
+    "airport": "空港鉄道",
+    "gyeongui": "京義中央線",
+    "bundang": "盆唐線",
+    "sinbundang": "新盆唐線"
+  },
+  "alarms": {
+    "earlyTransferBody": "次の駅 {{station}}で乗り換えてください!",
+    "earlyArrivalBody": "次の駅 {{station}}で下車してください!",
+    "imminentTransferBody": "まもなく{{station}}に到着します。乗換の準備をしてください!",
+    "imminentArrivalBody": "まもなく{{station}}に到着します。下車の準備をしてください!",
+    "exitSideLeft": "左側のドアから降りてください",
+    "exitSideRight": "右側のドアから降りてください",
+    "exitSideBoth": "両側のドアが開きます",
+    "quickHintTransfer": "乗り換えに近い位置で降りてください",
+    "quickHintArrival": "出口に近い位置で降りてください",
+    "lastTrainTitle": "終電まで{{minutes}}分",
+    "lastTrainBody": "{{origin}}→{{destination}}の終電は{{time}}発。今すぐ出発してください。"
+  },
+  "liveActivity": {
+    "alarmShortTransfer": "乗換",
+    "alarmShortArrival": "下車",
+    "etaSubtextEstimated": "予想",
+    "etaSubtextDuration": "所要",
+    "stopsToArrival_one": "{{destination}}まで残り{{count}}駅",
+    "stopsToArrival_other": "{{destination}}まで残り{{count}}駅",
+    "stopsToTransfer_one": "{{count}}駅先の{{name}}で乗換",
+    "stopsToTransfer_other": "{{count}}駅先の{{name}}で乗換",
+    "summaryWithStops_one": "→ {{destination}} · 残り{{count}}駅で到着{{etaSuffix}}",
+    "summaryWithStops_other": "→ {{destination}} · 残り{{count}}駅で到着{{etaSuffix}}",
+    "summaryWithTransfer_one": "→ {{destination}} · {{count}}駅先の{{name}}で乗換{{etaSuffix}}",
+    "summaryWithTransfer_other": "→ {{destination}} · {{count}}駅先の{{name}}で乗換{{etaSuffix}}",
+    "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
+    "etaSuffix": " · 約{{min}}分"
+  },
+  "direction": {
+    "boundFor": "{{name}}行き",
+    "innerLoop": "内回り",
+    "outerLoop": "外回り",
+    "viaName": "{{name}}方面"
+  },
+  "source": {
+    "positionTrain": "列車データ",
+    "routeProgress": "経路推定",
+    "gpsOnly": "GPS推定",
+    "uncertain": "位置確認中"
+  },
+  "a11y": {
+    "settings": {
+      "sleepModeHint": "イヤホン接続時に起床アラーム音で鳴ります",
+      "speakerOutputHint": "イヤホン未接続時にスピーカーでアラーム音を再生",
+      "sentryOptInHint": "匿名のエラー情報送信に同意",
+      "accessibilityModeHint": "エレベーター基準で速やかな降車位置を案内",
+      "versionFooterLabel": "アプリバージョン {{version}}",
+      "versionFooterHint": "複数回タップでデバッグメニューを開く"
+    },
+    "alarm": {
+      "dismissHint": "アラーム音と振動を停止します",
+      "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
+      "boardingTrainSelectHint": "タップしてこの列車に乗車",
+      "boardingTrainListLoadingLabel": "到着情報を読み込み中",
+      "boardingTrainListEmptyLabel": "到着予定の列車なし",
+      "boardingTrainListFallbackLabel": "乗車候補なし",
+      "boardingTrainListPendingLabel": "乗車を登録中",
+      "boardingTrainListErrorLabel": "到着情報を読み込めません",
+      "consensusTrackingLabel": "次の列車をバックグラウンドで追跡中",
+      "boardingLockReleaseLabel": "降車",
+      "boardingLockReleaseHint": "現在の乗車を終了します"
+    },
+    "route": {
+      "destinationCloseHint": "目的地選択をキャンセルしモーダルを閉じます",
+      "assignSlotLabel": "{{label}} スロットを指定",
+      "assignSlotHint": "次に選択する駅をこのスロットに保存します",
+      "favoriteChipHint": "タップしてこの駅を目的地に設定",
+      "misBoardingBannerLabel": "乗車中の列車を特定できません。再選択してください。",
+      "misBoardingWrongDirectionBannerLabel": "反対方向へ進んでいるようです。再選択してください。",
+      "misBoardingReselectLabel": "乗車列車を再選択",
+      "misBoardingReselectHint": "乗車列車選択画面を再度開きます"
+    }
+  },
+  "service": {
+    "window": {
+      "preFirst": "始発前 · 始発 {{time}} 予定",
+      "postLast": "終電後 · 明日の始発 {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "地下鉄ルート",
+      "buttonLabel": "ルートを共有",
+      "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分 ({{stops}} 駅)"
+    }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "今回のtripのアラームは正確でしたか?",
+      "body": "回答はアラーム精度の学習に使われます。",
+      "accurate": "良かった",
+      "inaccurate": "間違いがあった",
+      "dismiss": "あとで",
+      "thanks": "ご回答ありがとうございます。"
+    }
+  },
+  "lockless": {
+    "badge": "🔍 探索中",
+    "tapToConfirm": "乗車を確認する"
+  },
+  "onboarding": {
+    "skip": "スキップ",
+    "splash1": {
+      "emoji": "🚇",
+      "title": "地下鉄、自動で管理",
+      "description": "GPSで現在乗車中の駅をリアルタイム検知し、乗換・到着アラームを自動でお届けします。アプリを開いたままにしなくて大丈夫です。",
+      "next": "次へ"
+    },
+    "splash2": {
+      "emoji": "🔔",
+      "title": "2つの権限が必要です",
+      "description": "権限はアラームの送信のみに使用され、外部に提供されません。"
+    },
+    "permissions": {
+      "locationLabel": "位置情報",
+      "locationReason": "現在乗車中の駅を検知するために必要です",
+      "notificationLabel": "通知",
+      "notificationReason": "乗換・到着アラームを受け取るために必要です",
+      "grant": "権限を許可する",
+      "requesting": "リクエスト中..."
+    }
+  },
+  "widget": {
+    "header": "地下鉄",
+    "headerTrip": "乗車中",
+    "detecting": "検出中",
+    "nextTransfer": "次の乗換",
+    "destination": "到着予定"
+  }
+}

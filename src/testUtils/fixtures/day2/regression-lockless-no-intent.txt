@@ -1,0 +1,76 @@
+[Subway debug] 2026-06-25T05:46:00.000Z
+
+## GPS
+lat=37.58, lng=127.08, speed=1.2 m/s, accuracy=20.0 m
+fused=(no fused signal)
+state=fg, lastFix=14:46:00
+subsurface=false (reason=readings, readings=10)
+
+## Nearest
+사가정 · 80 m
+variants: 사가정(7)
+
+## Fusion
+confidence=gps-only, source=gps
+fused: 사가정(7) · 80m
+gps:   사가정(7) · 80m
+tier=low
+signalMask=UUF
+
+## Trip
+lockless=true
+tripStartedAt=14:46:00
+currentHopIndex=0
+route hop count=3
+displayOnlyEstimate=(none)
+lifecyclePhase=active
+
+## Sleep
+sleepMode=off
+firstHopApproaching=false
+
+## Arrival
+up: 도봉산행 - 면목방면 · 90s (2분 후)
+down: 온수행 - 용마산방면 · 120s (2분 후)
+
+## Silent Push
+permission=granted
+apnsToken=…35b3502c
+activeTrip=trip-abc123
+apnsEnv=production
+taskRegistration=success
+route=용마산→성수
+destination=성수
+currentStation=사가정
+received=3 (last 14:46:10)
+receivedByKind=stn=3 xfer=0 dst=0 unk=0
+fired=0 (last (never))
+lastSkipped=(never)
+lowPowerMode=off
+
+## Backend SSoT
+(no recent SSoT push)
+
+## Scheduled queue (0)
+
+## Gates
+lockless-no-user-intent=3
+
+## BoardingLock
+active=no
+
+## Estimator State (3)
+14:46:10 | lockless-route-hop | 사가정(7) idx=0
+14:46:00 | lockless-route-hop | 용마산(7) idx=0
+14:45:55 | none | - idx=-
+
+## Notifications fired (0)
+
+## Alarm log (6)
+sources: fg=3, silent-push-received=3
+14:46:15 | fg | suppressed | lockless-no-user-intent | station-passed | 사가정
+14:46:15 | silent-push-received | received | 사가정
+14:46:10 | fg | suppressed | lockless-no-user-intent | station-passed | 사가정
+14:46:05 | fg | suppressed | lockless-no-user-intent | station-passed | 사가정
+14:46:05 | silent-push-received | received | 사가정
+14:46:00 | silent-push-received | received | 사가정

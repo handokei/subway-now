@@ -1,0 +1,33 @@
+appId: com.subwaynow.app
+name: "gps - 역 근처 (강남역)"
+# nightly 전용. 실제 useNearestStation 흐름을 검증하므로 mock 빌드 아님.
+---
+- setLocation:
+    latitude: 37.49799
+    longitude: 127.027912
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 외부 시스템 UI(권한 alert) — text 매칭 유지
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible:
+      id: "home-origin-label"
+    timeout: 15000
+
+- assertVisible:
+    id: "home-origin-station-name"
+- assertVisible:
+    id: "home-arrival-section-title"
+- assertVisible:
+    id: "arrival-direction-label-up"
+- assertVisible:
+    id: "arrival-direction-label-down"

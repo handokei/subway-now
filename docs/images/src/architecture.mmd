@@ -1,0 +1,40 @@
+flowchart TD
+    subgraph Client["📱 React Native + Expo 54"]
+        UI["Screens / Features"]
+        Store["Zustand Store"]
+        Native["Native Modules<br/>(Live Activity · Widget · Motion)"]
+    end
+
+    subgraph Shared["🔗 shared (Ports & Adapters)"]
+        Ports["Ports<br/>(LocationPort · NotificationPort · WidgetStoragePort)"]
+        Infra["Infra Adapters<br/>(Expo* · AsyncStorage* · SharedGroup*)"]
+    end
+
+    subgraph Backend["☁️ Cloudflare Workers Edge"]
+        BFF["Workers BFF<br/>(alarm-worker)"]
+        KV["Workers KV<br/>(trip token SSoT)"]
+        R2["R2<br/>(raw signals · logs)"]
+        Cron["Cron Trigger<br/>(30s reconcile)"]
+    end
+
+    subgraph External["🌐 외부 서비스"]
+        Seoul["서울 열린데이터 API"]
+        APNs["Apple Push (APNs)"]
+        Sentry["Sentry"]
+    end
+
+    UI --> Store
+    UI --> Ports
+    Ports --> Infra
+    Native --> Ports
+
+    UI -->|"BFF call"| BFF
+    BFF --> KV
+    BFF --> R2
+    BFF -->|"proxy"| Seoul
+    BFF -->|"silent push"| APNs
+    Cron --> BFF
+    APNs -->|"silent"| UI
+
+    BFF --> Sentry
+    UI -.->|"breadcrumb"| Sentry

@@ -1,0 +1,53 @@
+appId: com.subwaynow.app
+name: "permissions - Always × FG × 지하 × 일반 (#923 cell)"
+# 권한 매트릭스 cell.
+# 차원: permission=always, appState=fg, environment=underground, mode=normal, os=ios18
+#
+# 검증 목표:
+#   - underground 환경 첫 진입 — Always 권한 + FG 상태에서 지하역 GPS 좌표가
+#     dispatch 됐을 때 홈 진입점이 유지됨을 보장한다.
+#   - underground 차원 등록(dispatch-only). 현재 E2E mock fixture는 강남(지상)을
+#     고정 반환하므로 본 cell은 GPS 좌표만 지하역으로 차원 등록하고,
+#     실제 underground UX 검증(예: "GPS 약화" 배너, 기압계 fallback)은
+#     fixture 확장 후속 PR에서 별도 assert로 강화한다.
+#     (iOS 17 / Android cell의 dispatch-only 등록 패턴과 동일.)
+#
+# 전제: baseline cell과 동일 (EXPO_PUBLIC_E2E_MOCK=1, fixture는 강남역 고정 반환).
+---
+# 신도림 1호선(지하) 좌표 — stations.json id "1-041"
+- setLocation:
+    latitude: 37.508787
+    longitude: 126.891144
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 홈 진입점 노출 — 지하 GPS 좌표에서도 destination-button이 렌더되어야 함
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 — mock fixture가 강남 고정 반환하므로 강남으로 assert.
+# fixture가 underground 분기를 지원하게 되면 "신도림|Sindorim"으로 교체할 것.
+- assertVisible:
+    text: "강남|Gangnam"
+
+# 매역 알람 경로의 진입점이 유지되어야 한다 (underground 차원 회귀 가드)
+- assertVisible:
+    text: "목적지 설정|Set destination"

@@ -1,0 +1,69 @@
+{
+  "name": "Seam C — 상태 hydration seam 회귀 (#899 / #922 deferred / #1200)",
+  "seam": "C",
+  "_doc": [
+    "Epic #896 Seam C(#899) — 상태 hydration seam 회귀 가드. #922에서 transfer-leg/FG-return",
+    "이벤트 mock 설계 결함으로 보류했던 시나리오를 H5(#1012, hydration state machine) 머지 후",
+    "다시 추가한다(#1200).",
+    "",
+    "Maestro fixture는 silent push(trip-ended) / 환승 waypoint 통과 같은 server-side 이벤트를",
+    "직접 발사할 수 없으므로, 본 시나리오는 #899 acceptance 중 **client-observable** 경로만",
+    "회귀 가드한다:",
+    "  1) 사용자 destination 해제 경로 — destination-clear-button 탭 → chip/banner 즉시 정리",
+    "  2) FG 복귀 재수화 — stopApp + relaunch(clearState=false) → 재수화 후 destination/UI",
+    "     정합성 유지 + ghost 알람 발사 0건",
+    "  3) 재수화 후 cleanup — 재수화된 상태에서 다시 destination 해제 → stale UI 없음",
+    "",
+    "fixture는 강남(2-220) 단순 trip(역삼 2-221)을 안정 ETA(5분)로 응답해 알람 발사 조건을",
+    "충족하지 않는다(Seam B/E/F와 동일한 안정 trip 패턴). hydration race 회귀 시 ghost 알람",
+    "이 표면화 + stale destination chip이 BG/FG cycle 이후 잔존한다."
+  ],
+  "arrivals": {
+    "강남": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "역삼",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "2231",
+              "line": "2",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "역삼": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "역삼",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "2231",
+              "line": "2",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  }
+}

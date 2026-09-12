@@ -1,0 +1,60 @@
+{
+  "name": "Seam B — 13:19 transfer/early/건대입구 fired @ 성수",
+  "seam": "B",
+  "_doc": [
+    "2026-06-05 13:19 실기기 회귀: 사용자가 성수역에서 정지 중인데 환승 목적지 건대입구에 대해",
+    "early(곧 도착) 알람이 발사됨. transfer leg가 backend boardingLock과 sync되지 않아",
+    "client가 stale ETA를 기반으로 잘못 발사했다(Seam B).",
+    "본 fixture는 성수역 좌표 + 성수 도착정보(현재 정차 중)를 응답하면서, 건대입구 ETA는",
+    "이미 큰 값(곧 도착 아님)으로 내려와 client가 발사 조건을 충족하지 않아야 함을 검증한다.",
+    "기대 동작: 매역 통과 알람 0건, 트립 진행 chip은 '성수'로 안정."
+  ],
+  "arrivals": {
+    "성수": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "성수",
+              "arrivalMinutes": 0,
+              "arrivalSeconds": 0,
+              "statusMessage": "도착",
+              "trainCode": "2211",
+              "line": "2",
+              "receivedAtMs": 0,
+              "arrivalCode": 1,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "건대입구": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "건대입구",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "2213",
+              "line": "2",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  }
+}

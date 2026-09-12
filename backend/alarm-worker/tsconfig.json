@@ -4,7 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
-    "types": ["@cloudflare/workers-types"],
+    "types": ["@cloudflare/workers-types/latest"],
     "strict": true,
     "noImplicitAny": true,
     "noUnusedLocals": true,
@@ -18,6 +18,23 @@
     "noEmit": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "../../src/shared/infra/monitoring/tripTokenHash.ts",
+    "../../src/data/stations.json",
+    "../../src/data/stationDistances.json",
+    "../../src/data/transferTimes.json",
+    "../../src/data/stationAliases.js",
+    "../../src/data/lineTopology.json",
+    "../../src/shared/types/station.ts",
+    "../../src/shared/types/pushContract.ts",
+    "../../src/shared/utils/stationLookup.ts",
+    "../../src/shared/utils/normalizeStationName.js",
+    "../../src/shared/utils/dijkstraRoute.ts",
+    "../../src/shared/utils/buildRouteGraph.ts",
+    "../../src/shared/constants/lineSpeeds.ts",
+    "../../src/shared/constants/trainTypes.ts",
+    "../../src/data/expressStops.ts"
+  ],
   "exclude": ["node_modules"]
 }

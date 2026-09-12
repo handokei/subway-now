@@ -1,0 +1,79 @@
+{
+  "name": "Seam E — 13:39~45 lockMissing (어린이대공원→군자 sync 정정)",
+  "seam": "E",
+  "_doc": [
+    "2026-06-05 13:39~45 실기기 회귀: 사용자가 군자를 지났는데 backend lock의",
+    "currentWaypoint는 여전히 어린이대공원에 있어 군자 알람 push 0건 (lockMissing).",
+    "Seam E(#901)는 client → backend POST /boarding-lock/sync로 사용자 GPS-확신",
+    "위치를 통보해 lock의 currentWaypoint를 즉시 advance한다.",
+    "",
+    "fixture 구성:",
+    "  - 도착정보: 군자 응답은 다음 열차 5분 후 → client 측에서는 false-positive 발사 없음",
+    "  - /boarding-lock/sync POST 수신 시 backend가 advanced=true + currentWaypoint=군자",
+    "    + nextStation=중곡 응답 (lock 정정 시뮬레이션)",
+    "",
+    "기대 client-observable 동작: 'lockMissing' 또는 ghost '곧 도착' UI 노출 없음,",
+    "트립 chip은 군자(또는 다음 hop)로 안정 — 환승 advance UI 표시 가능."
+  ],
+  "arrivals": {
+    "군자": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "군자",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "중곡": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "중곡",
+              "arrivalMinutes": 7,
+              "arrivalSeconds": 420,
+              "statusMessage": "7분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  },
+  "boardingLockSync": {
+    "response": {
+      "ok": true,
+      "advanced": true,
+      "currentWaypoint": "군자",
+      "nextStation": "중곡",
+      "autoLockCandidate": {
+        "trainCode": "7180",
+        "line": "7",
+        "subwayId": "1077"
+      }
+    }
+  }
+}

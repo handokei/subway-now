@@ -3,12 +3,31 @@ name: CI
 on:
   push:
     branches: [main, dev]
+  # #1389 — stacked PR(base가 dev/main 아닌 경우)에도 CI 게이트가 동작하도록 branches 필터 미적용.
+  # required CI(Data Validation + Type Check & Test)는 모든 PR에 동등 적용해야 머지 전 검증이 깨지지 않는다.
   pull_request:
-    branches: [main, dev]
 
 jobs:
+  data-validation:
+    name: Data Validation
+    # stations.json + lineTopology.json 정합성을 5초 안에 검증 (#1039).
+    # 데이터 손상이 type check / test보다 먼저 fail-fast 되도록 분리한다.
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: stations.json + lineTopology 검증
+        run: node scripts/validate-stations.js
+
   test:
     name: Type Check & Test
+    needs: [data-validation]
     runs-on: ubuntu-latest
 
     steps:
@@ -30,81 +49,48 @@ jobs:
       - name: 단위 테스트 실행 (커버리지 100% 검증)
         run: npm test -- --ci --forceExit
 
-  e2e:
-    name: E2E Tests (Maestro)
-    runs-on: macos-latest
-    needs: test
-    if: github.event_name == 'pull_request'
+  fixture-replay:
+    # #2268 — accelerometer detection fixture-replay harness, promoted from
+    # the throwaway spike (tools/spike/analyzeAccelFingerprint.mjs, #2271)
+    # to reusable regression infra (tools/replay/). Runs all committed
+    # fixtures (synthetic only for now, real captures drop in later) through
+    # the 3 candidate detectors and fails if none clears the go/no-go gate
+    # on any fixture.
+    #
+    # Deliberately NOT a required status check — it's a detection-quality
+    # signal, not a merge gate. Do not add this job name to branch
+    # protection required checks (Data Validation / Type Check & Test stay
+    # the only required checks, see CLAUDE.md).
+    name: Fixture Replay
+    runs-on: ubuntu-latest
+    continue-on-error: true
 
     steps:
       - name: 코드 체크아웃
         uses: actions/checkout@v4
 
-      - name: Xcode 버전 고정
-        uses: maxim-lobanov/setup-xcode@v1
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
         with:
-          xcode-version: latest-stable
+          node-version: '20'
 
-      - name: iOS 시뮬레이터 환경 확인 및 준비
-        id: sim
-        run: |
-          echo "=== Xcode version ==="
-          xcodebuild -version
-          echo "=== Available runtimes ==="
-          xcrun simctl list runtimes
-          echo "=== Available devices ==="
-          xcrun simctl list devices available | grep -i iphone || echo "No iPhone devices found"
+      - name: 가속도계 fixture replay (synthetic, informational)
+        run: node tools/replay/replayHarness.mjs --ci
 
-          # 사용 가능한 iPhone 시뮬레이터 찾기
-          SIM_NAME=$(xcrun simctl list devices available -j | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)
-          for runtime, devices in data['devices'].items():
-            if 'iOS' in runtime or 'iphone' in runtime.lower():
-              for d in devices:
-                if 'iPhone' in d['name'] and d['isAvailable']:
-                  print(d['name']); sys.exit(0)
-          " 2>/dev/null || echo "")
+  backend-validation:
+    # #1624 — backend/alarm-worker type-check + vitest CI gate.
+    # frontend `test` job은 backend를 검증하지 않으므로 별도 job으로 회귀 차단.
+    #
+    # **frontend deps 선행 설치 필수**: backend/alarm-worker/src/sentry.ts가
+    # `../../../src/shared/infra/monitoring/tripTokenHash`를 import한다. root tsconfig.json이
+    # `expo/tsconfig.base`를 extends하므로, expo 패키지(=frontend node_modules) 부재 시
+    # vite transform이 'Cannot find module expo/tsconfig.base/tsconfig.json' 으로 fail.
+    name: Backend Validation
+    runs-on: ubuntu-latest
 
-          if [ -z "$SIM_NAME" ]; then
-            echo "No available iPhone simulator. Listing all runtimes and device types..."
-            xcrun simctl list runtimes -j
-            xcrun simctl list devicetypes | grep -i iphone | tail -5
-
-            # 사용 가능한 런타임으로 시뮬레이터 생성 시도
-            RUNTIME=$(xcrun simctl list runtimes -j | python3 -c "
-            import json, sys
-            for r in json.load(sys.stdin)['runtimes']:
-              if r['isAvailable']:
-                print(r['identifier']); sys.exit(0)
-            print('')
-            " 2>/dev/null || echo "")
-
-            if [ -n "$RUNTIME" ]; then
-              DEVICE_TYPE=$(xcrun simctl list devicetypes -j | python3 -c "
-              import json, sys
-              last = None
-              for d in json.load(sys.stdin)['devicetypes']:
-                if 'iPhone' in d['name']:
-                  last = d['identifier']
-              if last: print(last)
-              " 2>/dev/null || echo "")
-
-              if [ -n "$DEVICE_TYPE" ]; then
-                echo "Creating simulator: $DEVICE_TYPE with $RUNTIME"
-                xcrun simctl create "CI-iPhone" "$DEVICE_TYPE" "$RUNTIME"
-                SIM_NAME="CI-iPhone"
-              fi
-            fi
-          fi
-
-          if [ -z "$SIM_NAME" ]; then
-            echo "::error::No iPhone simulator available"
-            exit 1
-          fi
-
-          echo "simulator=$SIM_NAME" >> "$GITHUB_OUTPUT"
-          echo "Selected simulator: $SIM_NAME"
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
 
       - name: Node.js 20 설정
         uses: actions/setup-node@v4
@@ -112,53 +98,17 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: 의존성 설치
+      - name: frontend 의존성 설치 (expo tsconfig.base resolver)
         run: npm ci --legacy-peer-deps
 
-      - name: Maestro CLI 설치
-        run: |
-          curl -Ls "https://get.maestro.mobile.dev" | bash
-          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+      - name: backend 의존성 설치
+        working-directory: backend/alarm-worker
+        run: npm ci
 
-      - name: iOS Prebuild
-        run: npx expo prebuild --platform ios --clean
+      - name: TypeScript 타입 체크
+        working-directory: backend/alarm-worker
+        run: npm run type-check
 
-      - name: CocoaPods 설치
-        run: cd ios && pod install
-
-      - name: iOS 빌드 (Debug)
-        run: |
-          cd ios
-          xcodebuild -workspace subwaynow.xcworkspace \
-            -scheme subwaynow \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=${{ steps.sim.outputs.simulator }}' \
-            -derivedDataPath build \
-            build
-
-      - name: 시뮬레이터 부팅 및 준비 대기
-        run: |
-          xcrun simctl boot "${{ steps.sim.outputs.simulator }}" || true
-          xcrun simctl bootstatus "${{ steps.sim.outputs.simulator }}" -b
-
-      - name: 앱 설치
-        run: |
-          APP_PATH=$(find ios/build -name "*.app" -type d | head -1)
-          if [ -z "$APP_PATH" ]; then echo "ERROR: .app not found"; exit 1; fi
-          xcrun simctl install booted "$APP_PATH"
-
-      - name: Maestro E2E 테스트 실행
-        run: |
-          maestro test .maestro/flows/home/ --format junit --output maestro-home.xml
-          maestro test .maestro/flows/favorites/ --format junit --output maestro-favorites.xml
-          maestro test .maestro/flows/location/ --format junit --output maestro-location.xml
-          maestro test .maestro/flows/navigation/ --format junit --output maestro-navigation.xml
-          maestro test .maestro/flows/alarm/ --format junit --output maestro-alarm.xml
-
-      - name: E2E 결과 업로드
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: maestro-results
-          path: maestro-*.xml
+      - name: vitest 실행 (coverage 게이트 포함, #2081)
+        working-directory: backend/alarm-worker
+        run: npm test

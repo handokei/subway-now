@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, type RenderOptions } from '@testing-library/react-native';
-import { ThemeProvider } from '../theme';
+import { ThemeProvider } from '../shared/theme';
 
 /**
  * ThemeProvider로 래핑하여 렌더링하는 테스트 유틸리티.
