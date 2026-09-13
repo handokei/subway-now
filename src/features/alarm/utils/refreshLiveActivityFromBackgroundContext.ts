@@ -43,6 +43,7 @@ import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
+import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -152,45 +153,33 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     const mirrorStation = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
 
     const bg = readBgLastStation(bgRaw);
+    const route = safeParse<Route>(routeRaw);
 
-    let currentStation: Station | null = null;
-    let distanceM = 0;
-    let source: 'backend-ssot' | 'gps-bg' = 'gps-bg';
+    // #2589 (code review 3번, P1 #1 클래스) — mirror-sourced 경로는 update-only. 활성 LA가
+    // 없으면 native `update()`가 내부적으로 `start()`로 fall-through해 BG 컨텍스트에서
+    // 사용자가 본 적 없는 새 LA를 생성할 위험이 있다(LiveActivityManager.swift). 기존
+    // BG_LAST_STATION 경로는 이 가드 없이 그대로 둔다(현행 보존 지시) — mirror 경로만 신규
+    // 위험이라 새로 도입.
+    // #2610 (b) — mirror 결정 이후 3단계(update-only 가드 → buildLiveActivityData →
+    // updateLiveActivity)는 `updateLiveActivityFromMirrorStation`으로 추출. FG
+    // (`useForegroundLaMirrorSync`)와 동일 함수를 공유해 backend-ssot 소스의 LA 갱신 동작이
+    // BG/FG 양쪽에서 drift하지 않는다(순수 추출, 동작 100% 동일).
     if (mirrorStation) {
-      // #2589 (code review 3번, P1 #1 클래스) — mirror-sourced 경로는 update-only. 활성 LA가
-      // 없으면 native `update()`가 내부적으로 `start()`로 fall-through해 BG 컨텍스트에서
-      // 사용자가 본 적 없는 새 LA를 생성할 위험이 있다(LiveActivityManager.swift). 기존
-      // BG_LAST_STATION 경로는 이 가드 없이 그대로 둔다(현행 보존 지시) — mirror 경로만 신규
-      // 위험이라 새로 도입.
-      if (!LiveActivity.hasActiveLiveActivity()) {
-        logger.info(
-          `la-refresh source=backend-ssot but no active LA — skip (update-only, no create): ${mirrorStation.name}`,
-        );
-        return;
-      }
-      currentStation = mirrorStation;
-      // backend mirror는 GPS distance를 싣지 않는다 — backend가 이미 "이 역에 있다"고
-      // advance 확정한 상태이므로 0m(도착)로 표시한다.
-      distanceM = 0;
-      source = 'backend-ssot';
-    } else if (bg) {
-      currentStation = bg.station;
-      distanceM = Math.round(bg.distanceKm * 1000);
-      source = 'gps-bg';
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, route);
+      return;
     }
 
-    if (!currentStation) {
+    if (!bg) {
       logger.info(
         'no currentStation source (mirror stale/absent/rejected + BG_LAST_STATION absent) — skip refresh (preserve last LA state)',
       );
       return;
     }
-    const route = safeParse<Route>(routeRaw);
+    const currentStation = bg.station;
+    const distanceM = Math.round(bg.distanceKm * 1000);
 
     // BG 컨텍스트는 ETA/alarm을 계산하지 않는다 — silent push가 알람을 별도로 발사하고,
     // ETA는 backend LA push가 권위. LA refresh는 station/route 변동을 빠르게 반영하는 용도.
-    // sourceLabel은 silent push 출처를 자백할 수도 있으나, #327 정책상 positionTrain은
-    // 라벨 미부착이라 inputs로 넘기지 않아도 동일 결과.
     const data = buildLiveActivityData(
       currentStation,
       distanceM,
@@ -203,7 +192,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     await LiveActivity.updateLiveActivity(data);
     // #2589 — V/X 대시보드(DebugModal alarm log)에서 currentStation SSoT 출처 관측용.
     logger.info(
-      `la-refresh source=${source}: ${currentStation.name} → ${destination.name}`,
+      `la-refresh source=gps-bg: ${currentStation.name} → ${destination.name}`,
     );
   } catch (e) {
     logger.warn('refresh failed:', e);

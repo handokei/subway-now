@@ -46,6 +46,7 @@ import {
   type BackendSsotMirrorEntry,
 } from './backendSsotMirror';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
+import { markDeviceGpsLiveActivityWrite } from './liveActivityGpsWriteArbitration';
 import { getLegAdvance } from './legAdvanceStorage';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
 import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from './notificationCategory';
@@ -665,6 +666,9 @@ export async function updateStationNotification(
       } else {
         await LiveActivity.updateLiveActivity(data);
       }
+      // #2610 (code review 2번) — mirror-sourced writer(useForegroundLaMirrorSync)가 이 GPS
+      // writer가 방금 쓴 ETA/알람 배지를 blank로 덮어쓰지 않도록 recency arbitration에 stamp.
+      markDeviceGpsLiveActivityWrite();
       liveActivityLogger.info('업데이트 성공');
     } catch (e) {
       liveActivityLogger.error('업데이트 실패:', e);
