@@ -89,6 +89,13 @@ jest.mock('../recentLocalStationFires', () => ({
   hasRecentLocalStationFire: (...args: unknown[]) => mockHasRecentLocalStationFire(...args),
 }));
 
+// #2591 — 로컬 boarding-prompt 여정 진행 중 억제 게이트 검증용. mirror fresh/stale/부재를
+// 테스트별로 자유롭게 조작하기 위해 mock으로 격리.
+const mockReadBackendSsotMirror = jest.fn().mockResolvedValue(null);
+jest.mock('../backendSsotMirror', () => ({
+  readBackendSsotMirror: () => mockReadBackendSsotMirror(),
+}));
+
 const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
 const mockAddDomainBreadcrumb = jest.fn();
@@ -1177,6 +1184,7 @@ describe('stationNotification', () => {
     beforeEach(async () => {
       await AsyncStorage.clear();
       mockHasRecentLocalStationFire.mockResolvedValue(false);
+      mockReadBackendSsotMirror.mockResolvedValue(null);
     });
 
     it('ACTIVE_TRIP_KEY 보유 + dedup 미기록 시 BOARDING_PROMPT_CATEGORY + 응답 payload shape로 발사하고 markLocalStationFired를 stamp한다', async () => {
@@ -1202,6 +1210,104 @@ describe('stationNotification', () => {
         }),
       );
       expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'boarding-prompt');
+    });
+
+    // #2591 — 데스크 trip 실증: 로컬 채널이 sound/interruption-level 미전달로 무음·무진동 전달됐다.
+    // backend 채널(apns.ts sendBoardingPromptPush)과 동급 presentation을 보장해야 한다.
+    describe('#2591 — presentation 동급화 (sound + interruption-level)', () => {
+      it('iOS에서 sound: true + interruptionLevel: timeSensitive를 전달한다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+        await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+          expect.objectContaining({
+            content: expect.objectContaining({
+              sound: true,
+              interruptionLevel: 'timeSensitive',
+            }),
+          }),
+        );
+      });
+
+      it('Android에서는 interruptionLevel(iOS 전용 옵션)을 전달하지 않는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'android');
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+        await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        const call = (Notifications.scheduleNotificationAsync as jest.Mock).mock.calls[0][0];
+        expect(call.content.sound).toBe(true);
+        expect(call.content.interruptionLevel).toBeUndefined();
+      });
+    });
+
+    // #2591 — 데스크 trip 실증: mirror가 fresh(backend 생존 증거)하고 origin을 이탈했으면
+    // (여정 진행 중 GPS 재근접) 잘못된 역 프롬프트 재발사를 막는다. #2422 SPOF 커버 취지는
+    // mirror stale/부재/origin 그대로일 때 보존한다.
+    describe('#2591 — 여정 진행 중 억제 게이트 (backend SSoT mirror)', () => {
+      it('mirror fresh + currentStationId !== originStation → 발사 skip', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        mockReadBackendSsotMirror.mockResolvedValueOnce({
+          currentStationId: '건대입구',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arvlcd',
+          lastAdvanceAt: Date.now(),
+          passedStations: [],
+          receivedAt: Date.now(),
+        });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(false);
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      });
+
+      it('mirror stale(180s 초과) + origin 이탈 → 발사 유지(backend 생존 미확인)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        mockReadBackendSsotMirror.mockResolvedValueOnce({
+          currentStationId: '건대입구',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arvlcd',
+          lastAdvanceAt: Date.now() - 200_000,
+          passedStations: [],
+          receivedAt: Date.now() - 200_000,
+        });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(true);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('mirror 부재(null) → 발사 유지(backend 생존 미확인)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        mockReadBackendSsotMirror.mockResolvedValueOnce(null);
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(true);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('mirror fresh + currentStationId === originStation(여전히 출발역) → 발사 유지(#2422 SPOF 커버 보존)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        mockReadBackendSsotMirror.mockResolvedValueOnce({
+          currentStationId: '중곡',
+          motionState: 'stationary',
+          lastAdvanceEvidence: 'arvlcd',
+          lastAdvanceAt: Date.now(),
+          passedStations: [],
+          receivedAt: Date.now(),
+        });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(true);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+      });
     });
 
     it('direction=null이면 data.destinationDirection 필드 자체를 생략한다', async () => {
