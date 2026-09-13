@@ -17,6 +17,8 @@ import {
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
 import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
 import { Station } from '../../../../shared/types/station';
+import { setLegAdvance, clearLegAdvance } from '../legAdvanceStorage';
+import { setTripCorrId, __resetTripCorrIdForTests__ } from '../../../observability/utils/tripCorrId';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -92,7 +94,11 @@ jest.mock('../recentLocalStationFires', () => ({
 // #2591 — 로컬 boarding-prompt 여정 진행 중 억제 게이트 검증용. mirror fresh/stale/부재를
 // 테스트별로 자유롭게 조작하기 위해 mock으로 격리.
 const mockReadBackendSsotMirror = jest.fn().mockResolvedValue(null);
+// #2591 (code review 3번) — resolveBackendSsotMirrorStation/isBackendSsotMirrorFresh는 실제
+// 구현(stations.json 경유 순수 함수)을 그대로 사용한다 — mock으로 대체하면 raw !== 비교로
+// 되돌아간 것과 판정이 구분 안 된다(refreshLiveActivityFromBackgroundContext.test.ts와 동일 패턴).
 jest.mock('../backendSsotMirror', () => ({
+  ...jest.requireActual('../backendSsotMirror'),
   readBackendSsotMirror: () => mockReadBackendSsotMirror(),
 }));
 
@@ -202,6 +208,57 @@ describe('stationNotification', () => {
 
       const silentAlarmResult = await handleNotification({ request: { identifier: 'station-alarm', content: { sound: null } } });
       expect(silentAlarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
+    });
+
+    // #2591 (code review 1번, 치명) — 이 FG 핸들러가 shouldPlaySound를 ALARM_NOTIFICATION_ID
+    // identifier로만 게이트해, boarding/disembark-prompt(로컬 발사, FG 전용 채널)는 content에
+    // sound를 실어도 항상 무음 처리됐다(root — presentation 동급화만으로는 FG에서 무효). 이
+    // 게이트 자체를 직접 assert해 payload만 보던 기존 테스트의 구멍을 봉인한다.
+    it('#2591 — categoryIdentifier가 BOARDING_PROMPT/DISEMBARK_PROMPT이고 sound가 있으면 shouldPlaySound=true', async () => {
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+
+      const boardingResult = await handleNotification({
+        request: {
+          identifier: 'boarding-prompt-local-1',
+          content: { sound: true, categoryIdentifier: 'BOARDING_PROMPT' },
+        },
+      });
+      expect(boardingResult.shouldPlaySound).toBe(true);
+
+      const disembarkResult = await handleNotification({
+        request: {
+          identifier: 'disembark-prompt-local-1',
+          content: { sound: true, categoryIdentifier: 'DISEMBARK_PROMPT' },
+        },
+      });
+      expect(disembarkResult.shouldPlaySound).toBe(true);
+    });
+
+    it('#2591 — categoryIdentifier가 prompt 카테고리가 아니고 identifier도 alarm이 아니면(sound 있어도) shouldPlaySound=false', async () => {
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+
+      const result = await handleNotification({
+        request: {
+          identifier: 'station-notif-abc',
+          content: { sound: true, categoryIdentifier: 'SOME_OTHER_CATEGORY' },
+        },
+      });
+      expect(result.shouldPlaySound).toBe(false);
+    });
+
+    it('#2591 — prompt 카테고리여도 sound가 없으면(null) shouldPlaySound=false', async () => {
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+
+      const result = await handleNotification({
+        request: {
+          identifier: 'boarding-prompt-local-1',
+          content: { sound: null, categoryIdentifier: 'BOARDING_PROMPT' },
+        },
+      });
+      expect(result.shouldPlaySound).toBe(false);
     });
 
     it('#574 P2e — pushId가 firedPushIds에 있으면 모든 show 플래그 false로 suppress', async () => {
@@ -1185,6 +1242,8 @@ describe('stationNotification', () => {
       await AsyncStorage.clear();
       mockHasRecentLocalStationFire.mockResolvedValue(false);
       mockReadBackendSsotMirror.mockResolvedValue(null);
+      await clearLegAdvance();
+      __resetTripCorrIdForTests__();
     });
 
     it('ACTIVE_TRIP_KEY 보유 + dedup 미기록 시 BOARDING_PROMPT_CATEGORY + 응답 payload shape로 발사하고 markLocalStationFired를 stamp한다', async () => {
@@ -1241,6 +1300,31 @@ describe('stationNotification', () => {
         expect(call.content.sound).toBe(true);
         expect(call.content.interruptionLevel).toBeUndefined();
       });
+
+      // #2591 (code review 5번) — Android는 채널의 importance/sound가 per-notification content만으론
+      // 결정되지 않는다(#2158 코멘트 선례) — fireLocalAlarmNotification과 동형으로 ALARM_CHANNEL_ID +
+      // MAX priority를 명시해야 실제로 소리/진동이 난다.
+      it('Android에서 ALARM_CHANNEL_ID + MAX priority를 지정한다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'android');
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+        await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        const call = (Notifications.scheduleNotificationAsync as jest.Mock).mock.calls[0][0];
+        expect(call.content.channelId).toBe('station-alarm');
+        expect(call.content.priority).toBe(Notifications.AndroidNotificationPriority.MAX);
+      });
+
+      it('iOS에서는 channelId/priority(Android 전용 옵션)를 전달하지 않는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+
+        await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        const call = (Notifications.scheduleNotificationAsync as jest.Mock).mock.calls[0][0];
+        expect(call.content.channelId).toBeUndefined();
+        expect(call.content.priority).toBeUndefined();
+      });
     });
 
     // #2591 — 데스크 trip 실증: mirror가 fresh(backend 생존 증거)하고 origin을 이탈했으면
@@ -1262,7 +1346,23 @@ describe('stationNotification', () => {
 
         expect(fired).toBe(false);
         expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+        // #2591 (code review 6번) — 발사 dedup(kind='boarding-prompt')는 stamp 안 하되, 억제
+        // 자체의 TTL dedup(kind='boarding-prompt-suppressed')는 stamp한다.
+        expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'boarding-prompt-suppressed');
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalledWith('중곡', 'boarding-prompt');
+      });
+
+      it('억제 TTL dedup 기록이 있으면(hasRecentLocalStationFire(suppressed)=true) mirror/legAdvance 재조회 없이 조용히 skip', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        mockHasRecentLocalStationFire.mockImplementation((_station: string, kind: string) =>
+          Promise.resolve(kind === 'boarding-prompt-suppressed'),
+        );
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(false);
+        expect(mockReadBackendSsotMirror).not.toHaveBeenCalled();
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
       });
 
       it('mirror stale(180s 초과) + origin 이탈 → 발사 유지(backend 생존 미확인)', async () => {
@@ -1302,6 +1402,135 @@ describe('stationNotification', () => {
           passedStations: [],
           receivedAt: Date.now(),
         });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(true);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      // #2591 (code review 3번) — mirror가 stations.json에서 resolve되지 않는 값(데이터 drift
+      // 의심)을 실으면, 판정 불확실 = 발사(억제 안 함). "잔여 창"이므로 field 진단용 breadcrumb도
+      // 함께 남긴다(code review 4번(b)/9번).
+      it('mirror의 역명이 stations.json에서 resolve 불가 → 발사 유지 + mirror-unresolved breadcrumb', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        mockReadBackendSsotMirror.mockResolvedValueOnce({
+          currentStationId: '존재하지않는역이름',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arvlcd',
+          lastAdvanceAt: Date.now(),
+          passedStations: [],
+          receivedAt: Date.now(),
+        });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(true);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+          'boarding',
+          'local_boarding_prompt_fired_mirror_unconfirmed',
+          expect.objectContaining({ mirrorDiagnostic: 'mirror-unresolved' }),
+        );
+      });
+
+      // #2591 (code review 2번) — 옛 trip의 mirror가 race로 revive되어 새 trip origin과 우연히
+      // 다른 역을 실으면(race A), corrId 불일치 시 이 mirror를 판정에 쓰지 않는다(=발사 유지).
+      describe('corrId 교차 가드 (race A — 옛 trip mirror revive)', () => {
+        it('mirror.corrId와 현재 trip corrId 불일치 → mirror 무시하고 발사 유지 + mirror-cross-trip breadcrumb', async () => {
+          await setTripCorrId('trip-current');
+          await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+          mockReadBackendSsotMirror.mockResolvedValueOnce({
+            currentStationId: '건대입구',
+            motionState: 'moving',
+            lastAdvanceEvidence: 'arvlcd',
+            lastAdvanceAt: Date.now(),
+            passedStations: [],
+            receivedAt: Date.now(),
+            corrId: 'trip-old',
+          });
+
+          const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+          expect(fired).toBe(true);
+          expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+          expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+            'boarding',
+            'local_boarding_prompt_fired_mirror_unconfirmed',
+            expect.objectContaining({ mirrorDiagnostic: 'mirror-cross-trip' }),
+          );
+        });
+
+        it('mirror.corrId와 현재 trip corrId 일치 → 기존처럼 same-trip 취급(진행 확정 시 억제)', async () => {
+          await setTripCorrId('trip-current');
+          await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+          mockReadBackendSsotMirror.mockResolvedValueOnce({
+            currentStationId: '건대입구',
+            motionState: 'moving',
+            lastAdvanceEvidence: 'arvlcd',
+            lastAdvanceAt: Date.now(),
+            passedStations: [],
+            receivedAt: Date.now(),
+            corrId: 'trip-current',
+          });
+
+          const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+          expect(fired).toBe(false);
+        });
+
+        it('mirror.corrId 부재(레거시 저장분) → 기존처럼 same-trip 취급(진행 확정 시 억제)', async () => {
+          await setTripCorrId('trip-current');
+          await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+          mockReadBackendSsotMirror.mockResolvedValueOnce({
+            currentStationId: '건대입구',
+            motionState: 'moving',
+            lastAdvanceEvidence: 'arvlcd',
+            lastAdvanceAt: Date.now(),
+            passedStations: [],
+            receivedAt: Date.now(),
+          });
+
+          const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+          expect(fired).toBe(false);
+        });
+      });
+    });
+
+    // #2591 (code review 4번(a)) — legAdvance stamp(#2278, 사용자 명시 하차 응답/버튼 — GPS
+    // 무관 signal)가 이 프롬프트의 대상 line과 이미 일치하면, 다른 채널(hop-end 응답 등)로 이
+    // leg가 이미 확인됐다는 뜻이다 — mirror 상태와 무관하게 억제.
+    describe('#2591 — legAdvance stamp 기반 추가 억제', () => {
+      it('legAdvance.nextLine === line → mirror와 무관하게 발사 skip', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        await setLegAdvance({ nextLine: '7', stampedAt: Date.now() });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(false);
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockReadBackendSsotMirror).not.toHaveBeenCalled();
+        expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'boarding-prompt-suppressed');
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+          'boarding',
+          'local_boarding_prompt_suppressed',
+          expect.objectContaining({ reason: 'leg-advance-confirmed' }),
+        );
+      });
+
+      it('legAdvance.nextLine !== line(다른 leg 확인분) → 이 프롬프트 판정에 영향 없음(발사 유지)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
+        await setLegAdvance({ nextLine: '2', stampedAt: Date.now() });
+
+        const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
+
+        expect(fired).toBe(true);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('legAdvance 미확인(null) → 이 프롬프트 판정에 영향 없음(발사 유지)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-abc');
 
         const fired = await fireLocalBoardingPromptNotification('중곡', '7', null);
 

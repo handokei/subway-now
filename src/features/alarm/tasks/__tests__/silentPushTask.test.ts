@@ -263,6 +263,11 @@ jest.mock('../../utils/stationNotification', () => ({
     ({ intermediate: 'station-passed', transfer: 'transfer', destination: 'destination' })[backendKind] ?? null,
   buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as [never])),
   ALARM_SILENT_CHANNEL_ID: 'station-alarm-silent',
+  // #2591 (code review 8번) — iOS interruptionLevel spread 통합 helper. 이 테스트는 Android
+  // 분기(Platform.OS 미교체 시 기본 'ios' — jest-expo preset)만 검증하므로 실제 구현과 동일하게
+  // Platform.OS==='ios'일 때만 값을 반환하도록 유지.
+  iosTimeSensitiveOption: () =>
+    require('react-native').Platform.OS === 'ios' ? { interruptionLevel: 'timeSensitive' } : {},
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();

@@ -36,14 +36,13 @@ import {
   DESTINATION_KEY,
   ROUTE_KEY,
 } from '../../../shared/constants/storageKeys';
-import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
-import { readBackendSsotMirror, resolveBackendSsotMirrorStation } from './backendSsotMirror';
+import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -149,8 +148,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       AsyncStorage.getItem(BG_LAST_STATION_KEY),
       readBackendSsotMirror(),
     ]);
-    const mirrorFresh =
-      mirror !== null && Date.now() - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+    const mirrorFresh = isBackendSsotMirrorFresh(mirror);
     const mirrorStation = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
 
     const bg = readBgLastStation(bgRaw);

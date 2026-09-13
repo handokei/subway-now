@@ -40,9 +40,8 @@
  * 비운다(재활성 시 stale 값을 들고 있지 않도록).
  */
 import { useEffect, useState } from 'react';
-import { readBackendSsotMirror } from '../utils/backendSsotMirror';
+import { readBackendSsotMirror, isBackendSsotMirrorFresh } from '../utils/backendSsotMirror';
 import type { BackendSsotMirrorEntry } from '../utils/backendSsotMirror';
-import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 
 export function useBackendSsotMirrorPoll(enabled = true): BackendSsotMirrorEntry | null {
   const [mirror, setMirror] = useState<BackendSsotMirrorEntry | null>(null);
@@ -55,8 +54,7 @@ export function useBackendSsotMirrorPoll(enabled = true): BackendSsotMirrorEntry
     const tick = () => {
       void readBackendSsotMirror().then((raw) => {
         if (cancelled) return;
-        const fresh =
-          raw !== null && Date.now() - raw.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+        const fresh = isBackendSsotMirrorFresh(raw);
         const entry = fresh ? raw : null;
         setMirror((prev) => {
           if (prev === null && entry === null) return prev;

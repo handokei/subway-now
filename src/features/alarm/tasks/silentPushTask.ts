@@ -87,6 +87,7 @@ import {
   mapBackendKindToLocalFireKind,
   buildAlarmContent,
   ALARM_SILENT_CHANNEL_ID,
+  iosTimeSensitiveOption,
 } from '../utils/stationNotification';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -1657,7 +1658,7 @@ async function fireStationKindSkewFallback(payload: SilentPushPayload): Promise<
       sound: sleepMode,
       ...(Platform.OS === 'android' &&
         !sleepMode && { channelId: ALARM_SILENT_CHANNEL_ID }),
-      ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
+      ...iosTimeSensitiveOption(),
     },
     trigger: null,
   });

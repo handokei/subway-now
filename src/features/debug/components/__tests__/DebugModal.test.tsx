@@ -82,6 +82,7 @@ jest.mock('../../../alarm/hooks/useSilentPushDiagnostics', () => ({
 // #1568 (T8b) — backend SSoT mirror 폴링. test에서는 default null로 mock.
 const mockReadBackendSsotMirror = jest.fn();
 jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  ...jest.requireActual('../../../alarm/utils/backendSsotMirror'),
   readBackendSsotMirror: () => mockReadBackendSsotMirror(),
 }));
 // #1898 — accelerometer raw snapshot polling. test에서는 default null로 mock — 미지원 환경 가정.

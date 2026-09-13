@@ -22,6 +22,7 @@ import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 // #2284 (P1 wire matrix gap) — 즉시 발사(trigger:null) fired-only 독립 버퍼 집계 stamp.
 import { logLastTrainAlarmFired } from './alarmLog';
+import { iosTimeSensitiveOption } from './stationNotification';
 import {
   classifyDayTypeKst,
   getLastTrainTime,
@@ -162,7 +163,7 @@ export async function fireLastTrainAlarm(input: FireLastTrainAlarmInput): Promis
         channelId: LAST_TRAIN_CHANNEL_ID,
         priority: Notifications.AndroidNotificationPriority.HIGH,
       }),
-      ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
+      ...iosTimeSensitiveOption(),
     },
     trigger: null,
   });
