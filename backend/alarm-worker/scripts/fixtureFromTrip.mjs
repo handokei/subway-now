@@ -24,10 +24,8 @@
  * 우선하고, 없으면 repo 루트 `.env`의 `EXPO_PUBLIC_ADMIN_TOKEN` 값을 읽는다(이 스크립트가
  * 토큰을 저장/로그에 남기지 않는다 — 값 자체를 출력하지 않는다).
  *
- * Usage:
- *   node scripts/fixtureFromTrip.mjs (--trip <tripToken> | --token-hash <8hex>)
- *     [--worker-url https://subway-now-alarm-worker.handokei.workers.dev]
- *     [--out .fixture-staging/] [--db subway-now-db] [--force]
+ * Usage: 하단 `USAGE` 상수 참고(인자 누락/충돌 시 stdout에도 그대로 출력된다) — 문서
+ * 3중 사본(헤더/상수/README)을 피하려고 여기서는 텍스트를 반복하지 않는다.
  *
  * trip이 종료/삭제된 뒤에는(이 도구의 전형적 사용 시점) KV 원본 토큰이 사라지고 D1
  * `trip_events`에는 `token_hash`만 남는다 — 그 경우 `--token-hash`로 직접 조회한다
@@ -47,6 +45,7 @@ import {
   extractFireAttempts,
   extractLines,
   extractSegmentStations,
+  parseEnvValue,
   parseTripEventsResponse,
   resolveTokenHash,
 } from '../src/fixtureFromTrip.ts';
@@ -64,7 +63,7 @@ const DEFAULT_WORKER_URL = 'https://subway-now-alarm-worker.handokei.workers.dev
 
 const USAGE =
   'Usage: node scripts/fixtureFromTrip.mjs (--trip <tripToken> | --token-hash <8hex>) ' +
-  `[--worker-url ${DEFAULT_WORKER_URL}] [--out .fixture-staging/] [--bucket ${DEFAULT_BUCKET}] [--db subway-now-db] [--force]`;
+  `[--worker-url ${DEFAULT_WORKER_URL}] [--out ${DEFAULT_OUT_DIR}] [--bucket ${DEFAULT_BUCKET}] [--db ${DEFAULT_DB}] [--force]`;
 
 /**
  * wrangler CLI 실행 지점을 한 곳으로 수렴 — 이 스크립트는 개발자 로컬 전용 CLI로 CI/서버에서
@@ -92,12 +91,8 @@ function runD1Query(db, sql) {
 function resolveAdminToken() {
   if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN;
   if (!existsSync(REPO_ROOT_ENV_PATH)) return undefined;
-  const line = readFileSync(REPO_ROOT_ENV_PATH, 'utf-8')
-    .split('\n')
-    .find((l) => l.startsWith('EXPO_PUBLIC_ADMIN_TOKEN='));
-  if (!line) return undefined;
-  const value = line.slice('EXPO_PUBLIC_ADMIN_TOKEN='.length).trim();
-  return value === '' ? undefined : value;
+  const value = parseEnvValue(readFileSync(REPO_ROOT_ENV_PATH, 'utf-8'), 'EXPO_PUBLIC_ADMIN_TOKEN');
+  return value === undefined || value === '' ? undefined : value;
 }
 
 /**
@@ -105,6 +100,12 @@ function resolveAdminToken() {
  * seoul-capture 키 목록을 받는다(aws s3api/R2 S3 토큰 불필요). 401/400 등 비정상 응답은
  * status + body를 그대로 노출한다(오진 방지 — "캡처 없음"으로 뭉뚱그리지 않는다, #2586
  * 코드리뷰). 정상 응답 + 매칭 0건일 때만 호출자가 "캡처 없음"으로 판정한다.
+ *
+ * trade-off(all-or-nothing, #2586 코드리뷰): 이전 aws 기반 나열은 날짜별 요청이라 일부
+ * 날짜만 실패해도 나머지로 부분 진행할 수 있었다. 이 endpoint는 요청 1건이라 실패하면
+ * 전체가 실패한다 — 그 대신 실패 원인이 항상 명확하고(status+body 그대로 노출), 이
+ * CLI는 재실행 비용이 거의 0(같은 인자로 다시 실행)이라 부분 관용보다 "무엇이 왜
+ * 실패했는지 즉시 아는 것"을 우선한다.
  */
 async function fetchCaptureKeys(workerUrl, adminToken, fromMs, toMs) {
   const url = new URL('/admin/seoul-capture/keys', workerUrl);
@@ -147,8 +148,10 @@ function downloadCaptureKey(bucket, key, destDir) {
   }
 }
 
+const BOOLEAN_FLAGS = ['force'];
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), BOOLEAN_FLAGS);
 
   const resolved = resolveTokenHash(args.trip, args['token-hash']);
   if ('error' in resolved) {
@@ -162,7 +165,7 @@ async function main() {
   const outDir = args.out ?? DEFAULT_OUT_DIR;
   const bucket = args.bucket ?? DEFAULT_BUCKET;
   const db = args.db ?? DEFAULT_DB;
-  const force = args.force !== undefined;
+  const force = args.force === true;
 
   const adminToken = resolveAdminToken();
   if (!adminToken) {

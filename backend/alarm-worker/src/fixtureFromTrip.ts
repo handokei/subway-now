@@ -190,31 +190,12 @@ function parseOutcome(meta: string | null): string | null {
 }
 
 /**
- * R2 캡처 키(basename=`<cycleStartMs>.json`)를 시간창으로 필터한다. `preRollMs`만큼
- * 하한을 앞당기는 이유는 cycle이 window 시작 직전에 시작해도 그 cycle의 entry 일부가
- * window 안에 들어올 수 있어서다(`buildReplayFixture`가 entry 단위로 다시 걸러내므로
- * 여기서는 넉넉하게 통과시키는 게 안전).
- *
- * #2595(GET /admin/seoul-capture/keys) 도입 이후 `scripts/fixtureFromTrip.mjs`는 서버가
- * 이미 from/to로 필터한 키 목록을 받으므로 이 함수를 호출하지 않는다(중복 필터 제거,
- * #2586 코드리뷰) — 다만 순수 함수 + 테스트는 유지한다. 엔드포인트 없이 로컬에서 R2 키
- * 목록을 직접 다룰 다른 진입점이 생기면(quota 보호가 필요한 다운로드 전 필터링) 재사용할
- * 수 있다.
+ * `GET /admin/seoul-capture/keys`(#2595) 요청 시 시간창 하한을 앞당기는 여유. cycle이
+ * window 시작 직전에 시작해도 그 cycle의 entry 일부가 window 안에 들어올 수 있어서다
+ * (`buildReplayFixture`가 entry 단위로 다시 걸러내므로 여기서는 넉넉하게 요청하는 게
+ * 안전, `scripts/fixtureFromTrip.mjs`가 `from` 계산에 사용).
  */
 export const CAPTURE_KEY_PRE_ROLL_MS = 90_000;
-
-export function filterCaptureKeysInWindow(
-  keys: string[],
-  window: TripWindow,
-  preRollMs: number = CAPTURE_KEY_PRE_ROLL_MS,
-): string[] {
-  const lowerBound = window.fromMs - preRollMs;
-  return keys.filter((key) => {
-    const base = key.slice(key.lastIndexOf('/') + 1).replace('.json', '');
-    const cycleStartMs = Number(base);
-    return Number.isFinite(cycleStartMs) && cycleStartMs >= lowerBound && cycleStartMs <= window.toMs;
-  });
-}
 
 /**
  * fixture 파일명 slug — `capture_<YYYYMMDD>T<HHmm>Z_<tokenHash>` (파일명·registry
@@ -268,4 +249,44 @@ export function buildRegistryEntrySkeleton(params: RegistrySkeletonParams): stri
       firedStations: ${firedStationsLiteral}, // TODO: 실제 fire 이력과 대조해 검증/축소
     },${lossyLine}
   },`;
+}
+
+/**
+ * `.env` 파일 텍스트에서 `KEY=value` 한 줄의 값을 추출한다(dotenv 의미론의 최소 부분집합 —
+ * 이 도구가 필요로 하는 단일 키 조회만 지원, 멀티라인 값/변수 확장 등은 다루지 않는다).
+ * `scripts/fixtureFromTrip.mjs`의 `ADMIN_TOKEN` fallback 조회가 사용한다(#2586 코드리뷰 —
+ * ad-hoc 인라인 파서를 ts 층으로 이동 + 단위테스트).
+ *
+ * - `#`로 시작하는 줄 전체는 주석으로 무시한다.
+ * - 값이 작은따옴표(`'`)/큰따옴표(`"`)/백틱(`` ` ``)으로 양끝을 감싸면 그 따옴표를 벗기고,
+ *   따옴표 안 내용은 `#`가 있어도 그대로 보존한다(dotenv 의미론 — 따옴표 안은 리터럴).
+ * - 따옴표가 없으면 값에서 첫 `#` 이후를 인라인 주석으로 잘라내고 trim한다.
+ * - key가 여러 줄에 있으면 처음 매칭되는 값을 반환한다(dotenv와 동일 — 나중 값이 앞선 값을
+ *   덮어쓰지 않는다는 의미가 아니라 단순 첫 매치 우선 조회).
+ */
+export function parseEnvValue(envFileContent: string, key: string): string | undefined {
+  const lines = envFileContent.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const eqIndex = line.indexOf('=');
+    if (eqIndex === -1) continue;
+    const lineKey = line.slice(0, eqIndex).trim();
+    if (lineKey !== key) continue;
+    return stripEnvValue(line.slice(eqIndex + 1).trim());
+  }
+  return undefined;
+}
+
+function stripEnvValue(rawValue: string): string {
+  if (rawValue.length >= 2) {
+    const first = rawValue[0];
+    const last = rawValue[rawValue.length - 1];
+    if ((first === '"' || first === "'" || first === '`') && first === last) {
+      return rawValue.slice(1, -1);
+    }
+  }
+  const hashIndex = rawValue.indexOf('#');
+  const withoutComment = hashIndex === -1 ? rawValue : rawValue.slice(0, hashIndex);
+  return withoutComment.trim();
 }
