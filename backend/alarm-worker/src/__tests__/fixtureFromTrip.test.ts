@@ -1,44 +1,65 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAPTURE_KEY_PRE_ROLL_MS,
-  SEOUL_CAPTURE_KEY_PREFIX,
+  TOKEN_HASH_PATTERN,
   TRIP_WINDOW_MARGIN_MS,
   buildFixtureSlug,
   buildRegistryEntrySkeleton,
   buildTripEventsQuery,
-  computeCaptureDates,
   computeTripCaptureWindow,
   extractFireAttempts,
   extractLines,
   extractSegmentStations,
   filterCaptureKeysInWindow,
   parseTripEventsResponse,
+  resolveTokenHash,
   type TripEventRow,
 } from '../fixtureFromTrip';
-import { SEOUL_CAPTURE_KEY_PREFIX as SEOUL_CAPTURE_KEY_PREFIX_SSOT } from '../seoulCapture';
-
-describe('SEOUL_CAPTURE_KEY_PREFIX (leaf-safe 재선언, #2586 코드리뷰)', () => {
-  it('seoulCapture.ts의 SEOUL_CAPTURE_KEY_PREFIX와 값이 같다(SSoT 드리프트 가드)', () => {
-    expect(SEOUL_CAPTURE_KEY_PREFIX).toBe(SEOUL_CAPTURE_KEY_PREFIX_SSOT);
-  });
-});
 
 function makeRow(overrides: Partial<TripEventRow> = {}): TripEventRow {
   return { ts: 1000, kind: 'sync-received', station: null, line: null, meta: null, ...overrides };
 }
 
-describe('buildTripEventsQuery', () => {
-  it('tripToken을 hash해 tokenHash + SELECT SQL을 만든다', () => {
-    const { tokenHash, sql } = buildTripEventsQuery('some-trip-token');
+describe('resolveTokenHash', () => {
+  it('--trip만 주면 hashTripToken 결과를 tokenHash로 반환한다', () => {
+    const result = resolveTokenHash('some-trip-token', undefined);
 
-    expect(tokenHash).toMatch(/^[0-9a-f]{8}$/);
-    expect(sql).toBe(
-      `SELECT ts, kind, station, line, meta FROM trip_events WHERE token_hash = '${tokenHash}' ORDER BY ts ASC`,
-    );
+    expect(result).toEqual({ tokenHash: expect.stringMatching(TOKEN_HASH_PATTERN) });
   });
 
-  it('같은 token은 항상 같은 tokenHash를 만든다(결정론)', () => {
-    expect(buildTripEventsQuery('abc').tokenHash).toBe(buildTripEventsQuery('abc').tokenHash);
+  it('같은 tripToken은 항상 같은 tokenHash(결정론)', () => {
+    const a = resolveTokenHash('abc', undefined);
+    const b = resolveTokenHash('abc', undefined);
+
+    expect(a).toEqual(b);
+  });
+
+  it('--token-hash만 주면(8자리 소문자 hex) 그대로 tokenHash로 반환한다', () => {
+    expect(resolveTokenHash(undefined, 'aabbccdd')).toEqual({ tokenHash: 'aabbccdd' });
+  });
+
+  it('둘 다 없으면 missing_input', () => {
+    expect(resolveTokenHash(undefined, undefined)).toEqual({ error: 'missing_input' });
+  });
+
+  it('둘 다 있으면 conflicting_input', () => {
+    expect(resolveTokenHash('some-trip-token', 'aabbccdd')).toEqual({ error: 'conflicting_input' });
+  });
+
+  it('--token-hash가 8자리 소문자 hex가 아니면 invalid_token_hash', () => {
+    expect(resolveTokenHash(undefined, 'AABBCCDD')).toEqual({ error: 'invalid_token_hash' });
+    expect(resolveTokenHash(undefined, 'short')).toEqual({ error: 'invalid_token_hash' });
+    expect(resolveTokenHash(undefined, 'toolong123')).toEqual({ error: 'invalid_token_hash' });
+  });
+});
+
+describe('buildTripEventsQuery', () => {
+  it('tokenHash로 SELECT SQL을 만든다', () => {
+    const sql = buildTripEventsQuery('aabbccdd');
+
+    expect(sql).toBe(
+      "SELECT ts, kind, station, line, meta FROM trip_events WHERE token_hash = 'aabbccdd' ORDER BY ts ASC",
+    );
   });
 });
 
@@ -125,22 +146,6 @@ describe('computeTripCaptureWindow', () => {
   });
 });
 
-describe('computeCaptureDates', () => {
-  it('같은 날이면 날짜 1개', () => {
-    const dates = computeCaptureDates({ fromMs: Date.parse('2026-09-13T01:00:00Z'), toMs: Date.parse('2026-09-13T05:00:00Z') });
-
-    expect(dates).toEqual(['2026-09-13']);
-  });
-
-  it('자정을 걸치면 날짜 2개 이상, 오름차순', () => {
-    const dates = computeCaptureDates({
-      fromMs: Date.parse('2026-09-12T23:50:00Z'),
-      toMs: Date.parse('2026-09-13T00:10:00Z'),
-    });
-
-    expect(dates).toEqual(['2026-09-12', '2026-09-13']);
-  });
-});
 
 describe('extractSegmentStations / extractLines', () => {
   it('station이 있는 row만, 첫 등장 순서로 dedup', () => {

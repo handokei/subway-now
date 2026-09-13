@@ -3,63 +3,76 @@
  * trip 토큰 1개 → replay fixture 후보 자동 생성 one-command 도구 (#2586, Epic #2239 P1).
  *
  * D1 조회(SQL 문자열 생성/응답 파싱), 시간창 계산, registry 스켈레톤 직렬화는 전부
- * `../src/fixtureFromTrip.ts`에 있다(vitest 커버) — 이 파일은 wrangler/aws CLI 실행 + 임시
- * 디렉토리 관리만 하는 얇은 I/O 셸이다(`buildReplayFixture.mjs`, #2580과 동일 분리 원칙).
- * 인자 파싱 + capture cycle 파일 읽기는 `cliUtils.mjs`(#2586 코드리뷰 — 두 스크립트 공유)로
- * 뺐다.
+ * `../src/fixtureFromTrip.ts`에 있다(vitest 커버) — 이 파일은 wrangler CLI 실행 + admin
+ * endpoint 호출 + 임시 디렉토리 관리만 하는 얇은 I/O 셸이다(`buildReplayFixture.mjs`,
+ * #2580과 동일 분리 원칙). 인자 파싱 + capture cycle 파일 읽기는 `cliUtils.mjs`(#2586
+ * 코드리뷰 — 두 스크립트 공유)로 뺐다.
  *
- * 절차 (README "Seoul capture → replay fixture" 수동 절차를 trip 토큰 기준으로 자동화):
+ * 절차:
  *   1) `wrangler d1 execute <DB> --remote --json --command "<SELECT ... WHERE token_hash=?>"`
  *      로 trip_events에서 시간창/노선/segment 역/fire 이력 추출.
- *   2) 시간창(±2분 margin + 사전 필터 preRoll)이 걸치는 UTC 날짜마다 `aws s3api
- *      list-objects-v2`로 R2 cycle 키 나열 → 시간창 안 키만 `wrangler r2 object get --remote`로
- *      임시 디렉토리에 다운로드(날짜 prefix 전체를 무조건 받지 않는다 — #2073 quota lesson).
+ *   2) `GET /admin/seoul-capture/keys?from=<ms>&to=<ms>`(#2595, Bearer ADMIN_TOKEN)로 그
+ *      시간창(사전 필터 preRoll 포함)에 해당하는 R2 seoul-capture 키 목록을 받는다 — aws
+ *      s3api + R2 S3 호환 토큰 없이 worker 자신의 TELEMETRY_R2 바인딩으로 조회(#2586
+ *      코드리뷰 2차). 매칭 key만 `wrangler r2 object get --remote`로 다운로드한다.
  *   3) `buildReplayFixture`(#2580, ../src/replayFixture.ts)로 병합 →
  *      `<out>/<slug>.fixture.json`. 기본 `<out>`은 `.fixture-staging/`(1:1 게이트 디렉토리인
  *      `src/__tests__/fixtures/replayLibrary/`에 직행하지 않는다 — 사람이 검토 후 옮긴다).
  *   4) registry 엔트리 스켈레톤(#2585 규약)을 stdout에 출력 — 사람은 등록 diff 확인만.
  *
- * wrangler/aws 인증은 로컬 환경 것을 그대로 쓴다(이 스크립트는 자격증명을 다루지 않는다).
+ * wrangler 인증은 로컬 환경 것을 그대로 쓴다. admin endpoint 인증은 `ADMIN_TOKEN` env를
+ * 우선하고, 없으면 repo 루트 `.env`의 `EXPO_PUBLIC_ADMIN_TOKEN` 값을 읽는다(이 스크립트가
+ * 토큰을 저장/로그에 남기지 않는다 — 값 자체를 출력하지 않는다).
  *
  * Usage:
- *   node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId>
- *     [--out .fixture-staging/] [--bucket subway-now-telemetry] [--db subway-now-db] [--force]
+ *   node scripts/fixtureFromTrip.mjs (--trip <tripToken> | --token-hash <8hex>)
+ *     [--worker-url https://subway-now-alarm-worker.handokei.workers.dev]
+ *     [--out .fixture-staging/] [--db subway-now-db] [--force]
+ *
+ * trip이 종료/삭제된 뒤에는(이 도구의 전형적 사용 시점) KV 원본 토큰이 사라지고 D1
+ * `trip_events`에는 `token_hash`만 남는다 — 그 경우 `--token-hash`로 직접 조회한다
+ * (`resolveTokenHash`, ../src/fixtureFromTrip.ts).
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  SEOUL_CAPTURE_KEY_PREFIX,
   buildFixtureSlug,
   buildRegistryEntrySkeleton,
   buildTripEventsQuery,
-  computeCaptureDates,
+  CAPTURE_KEY_PRE_ROLL_MS,
   computeTripCaptureWindow,
   extractFireAttempts,
   extractLines,
   extractSegmentStations,
-  filterCaptureKeysInWindow,
   parseTripEventsResponse,
+  resolveTokenHash,
 } from '../src/fixtureFromTrip.ts';
 import { buildReplayFixture, isLossyFixture, parseSeoulCaptureCycle } from '../src/replayFixture.ts';
 import { parseArgs, readCycleFile } from './cliUtils.mjs';
-// `../src/seoulCapture.ts`는 여기서 직접 import하지 않는다 — `SEOUL_CAPTURE_KEY_PREFIX`는
-// `fixtureFromTrip.ts`가 leaf-safe 재선언으로 제공한다(#2586 코드리뷰 — ERR_MODULE_NOT_FOUND
-// 재발 방지, 위 fixtureFromTrip.ts 주석 참고).
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT_ENV_PATH = path.join(SCRIPT_DIR, '..', '..', '..', '.env');
 
 const DEFAULT_OUT_DIR = '.fixture-staging/';
 const REPLAY_LIBRARY_DIR = 'src/__tests__/fixtures/replayLibrary/';
-const DEFAULT_BUCKET = 'subway-now-telemetry';
 const DEFAULT_DB = 'subway-now-db';
+const DEFAULT_BUCKET = 'subway-now-telemetry';
+const DEFAULT_WORKER_URL = 'https://subway-now-alarm-worker.handokei.workers.dev';
+
+const USAGE =
+  'Usage: node scripts/fixtureFromTrip.mjs (--trip <tripToken> | --token-hash <8hex>) ' +
+  `[--worker-url ${DEFAULT_WORKER_URL}] [--out .fixture-staging/] [--bucket ${DEFAULT_BUCKET}] [--db subway-now-db] [--force]`;
 
 /**
- * wrangler/aws CLI 실행 지점을 한 곳으로 수렴 — 이 스크립트는 개발자 로컬 전용 CLI로
- * CI/서버에서 실행되지 않으므로, PATH에서 wrangler/aws를 해석하는 것은 의도된 동작이다.
- * spawn 호출을 여기 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
+ * wrangler CLI 실행 지점을 한 곳으로 수렴 — 이 스크립트는 개발자 로컬 전용 CLI로 CI/서버에서
+ * 실행되지 않으므로, PATH에서 wrangler를 해석하는 것은 의도된 동작이다. spawn 호출을 여기
+ * 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
  */
 function runCli(cmd, args, options = {}) {
-  return execFileSync(cmd, args, { encoding: 'utf-8', ...options }); // NOSONAR — dev-only local CLI; PATH resolution of wrangler/aws is intentional (S4036)
+  return execFileSync(cmd, args, { encoding: 'utf-8', ...options }); // NOSONAR — dev-only local CLI; PATH resolution of wrangler is intentional (S4036)
 }
 
 function runD1Query(db, sql) {
@@ -73,62 +86,52 @@ function runD1Query(db, sql) {
 }
 
 /**
- * 지정 날짜의 R2 seoul-capture 키 목록(aws s3api list-objects-v2, 목록 조회는 wrangler
- * 미지원). 실행 자체가 실패하면(인증/설치 문제) throw한다 — "정상 나열했는데 0건"과
- * "나열 자체가 안 됨"을 호출자가 구분해야 한다(#2586 코드리뷰 — 오진 방지).
+ * admin endpoint 인증 토큰 — env `ADMIN_TOKEN` 우선, 없으면 repo 루트 `.env`의
+ * `EXPO_PUBLIC_ADMIN_TOKEN` 값을 읽는다. 값 자체는 반환만 하고 로그에 남기지 않는다.
  */
-function listCaptureKeys(bucket, accountId, date) {
-  const prefix = `${SEOUL_CAPTURE_KEY_PREFIX}${date}/`;
-  const stdout = runCli('aws', [
-    's3api',
-    'list-objects-v2',
-    '--endpoint-url',
-    `https://${accountId}.r2.cloudflarestorage.com`,
-    '--bucket',
-    bucket,
-    '--prefix',
-    prefix,
-    '--query',
-    'Contents[].Key',
-    '--output',
-    'text',
-  ]);
-  const trimmed = stdout.trim();
-  if (trimmed === '' || trimmed === 'None') return [];
-  return trimmed.split(/\s+/);
+function resolveAdminToken() {
+  if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN;
+  if (!existsSync(REPO_ROOT_ENV_PATH)) return undefined;
+  const line = readFileSync(REPO_ROOT_ENV_PATH, 'utf-8')
+    .split('\n')
+    .find((l) => l.startsWith('EXPO_PUBLIC_ADMIN_TOKEN='));
+  if (!line) return undefined;
+  const value = line.slice('EXPO_PUBLIC_ADMIN_TOKEN='.length).trim();
+  return value === '' ? undefined : value;
 }
 
 /**
- * 시간창이 걸치는 모든 날짜의 R2 키를 나열한다. 날짜별 나열 실패(인증/도구 부재 등)는
- * 개별 수집만 하고, 전체 날짜가 실패했을 때만 원인 에러를 그대로 올린다(부분 실패는
- * 경고로 진행 — 부분 캡처 허용).
+ * `GET /admin/seoul-capture/keys`(#2595) 호출 — worker 자신의 TELEMETRY_R2 바인딩으로 R2
+ * seoul-capture 키 목록을 받는다(aws s3api/R2 S3 토큰 불필요). 401/400 등 비정상 응답은
+ * status + body를 그대로 노출한다(오진 방지 — "캡처 없음"으로 뭉뚱그리지 않는다, #2586
+ * 코드리뷰). 정상 응답 + 매칭 0건일 때만 호출자가 "캡처 없음"으로 판정한다.
  */
-function listAllCaptureKeys(bucket, accountId, dates) {
-  const errors = [];
-  const keys = [];
-  for (const date of dates) {
-    try {
-      const dateKeys = listCaptureKeys(bucket, accountId, date);
-      if (dateKeys.length === 0) {
-        console.warn(`[warn] ${date}: 캡처 키 0건 — 부분 캡처 가능성`);
-      }
-      keys.push(...dateKeys);
-    } catch (err) {
-      errors.push({ date, message: err instanceof Error ? err.message : String(err) });
-    }
+async function fetchCaptureKeys(workerUrl, adminToken, fromMs, toMs) {
+  const url = new URL('/admin/seoul-capture/keys', workerUrl);
+  url.searchParams.set('from', String(fromMs));
+  url.searchParams.set('to', String(toMs));
+
+  let res;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${adminToken}` } });
+  } catch (err) {
+    throw new Error(`GET /admin/seoul-capture/keys 요청 실패(네트워크): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const bodyText = await res.text();
+  if (!res.ok) {
+    throw new Error(`GET /admin/seoul-capture/keys 실패 (status=${res.status}): ${bodyText}`);
   }
 
-  if (errors.length === dates.length) {
-    const lastError = errors[errors.length - 1];
-    throw new Error(
-      `R2 캡처 키 나열 실패(전체 ${dates.length}개 날짜 모두 실패) — aws CLI 인증/설치를 확인하세요. ` +
-        `마지막 에러(${lastError.date}): ${lastError.message}`,
-    );
+  let body;
+  try {
+    body = JSON.parse(bodyText);
+  } catch (err) {
+    throw new Error(`GET /admin/seoul-capture/keys 응답 JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}`);
   }
-  for (const { date, message } of errors) {
-    console.warn(`[warn] ${date} 캡처 키 나열 실패(부분 캡처로 진행): ${message}`);
+  if (!Array.isArray(body.keys)) {
+    throw new Error('GET /admin/seoul-capture/keys 응답에 keys 배열이 없습니다');
   }
-  return keys;
+  return body.keys;
 }
 
 /** R2 키 하나를 로컬 파일로 다운로드(`--remote` — 로컬 빈 버킷이 아니라 실 R2 조회). 실패해도 throw하지 않고 skip(부분 캡처 허용). */
@@ -144,23 +147,32 @@ function downloadCaptureKey(bucket, key, destDir) {
   }
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.trip || !args['account-id']) {
-    console.error(
-      'Usage: node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId> ' +
-        '[--out .fixture-staging/] [--bucket subway-now-telemetry] [--db subway-now-db] [--force]',
-    );
+
+  const resolved = resolveTokenHash(args.trip, args['token-hash']);
+  if ('error' in resolved) {
+    console.error(USAGE);
+    console.error(`인자 오류(${resolved.error}): --trip 또는 --token-hash 중 정확히 하나가 필요합니다(형식: 8자리 소문자 hex).`);
     process.exit(1);
   }
+  const { tokenHash } = resolved;
 
+  const workerUrl = args['worker-url'] ?? DEFAULT_WORKER_URL;
   const outDir = args.out ?? DEFAULT_OUT_DIR;
   const bucket = args.bucket ?? DEFAULT_BUCKET;
   const db = args.db ?? DEFAULT_DB;
   const force = args.force !== undefined;
 
+  const adminToken = resolveAdminToken();
+  if (!adminToken) {
+    throw new Error(
+      'ADMIN_TOKEN을 찾을 수 없습니다 — env ADMIN_TOKEN을 설정하거나 repo 루트 .env에 EXPO_PUBLIC_ADMIN_TOKEN을 채워주세요.',
+    );
+  }
+
   // 1) D1 조회 — 시간창/노선/segment 역/fire 이력.
-  const { tokenHash, sql } = buildTripEventsQuery(args.trip);
+  const sql = buildTripEventsQuery(tokenHash);
   const stdout = runD1Query(db, sql);
   const rows = parseTripEventsResponse(stdout, tokenHash);
 
@@ -168,7 +180,6 @@ function main() {
   const segmentStations = extractSegmentStations(rows);
   const lines = extractLines(rows);
   const fireAttempts = extractFireAttempts(rows);
-  const dates = computeCaptureDates(window);
 
   // slug/출력 경로를 다운로드 전에 먼저 확정 — 덮어쓰기 여부를 network I/O 전에 판별한다.
   const slug = buildFixtureSlug(tokenHash, window);
@@ -178,9 +189,9 @@ function main() {
     throw new Error(`이미 존재합니다: ${outPath} — 덮어쓰려면 --force를 붙이세요`);
   }
 
-  // 2) 시간창이 걸치는 날짜마다 R2 캡처 키 나열 → 시간창 안 키만 다운로드(quota 보호).
-  const allKeys = listAllCaptureKeys(bucket, args['account-id'], dates);
-  const keysInWindow = filterCaptureKeysInWindow(allKeys, window);
+  // 2) admin endpoint가 이미 [from, to]로 필터한 키 목록을 받는다(#2595) — 클라이언트측
+  // 재필터는 하지 않는다(중복, #2586 코드리뷰). preRoll은 요청 시점에 한 번만 적용.
+  const keysInWindow = await fetchCaptureKeys(workerUrl, adminToken, window.fromMs - CAPTURE_KEY_PRE_ROLL_MS, window.toMs);
 
   const tempDir = mkdtempSync(path.join(tmpdir(), 'fixture-from-trip-'));
   try {
@@ -193,7 +204,7 @@ function main() {
     if (cycleFiles.length === 0) {
       throw new Error(
         `캡처 없음: 시간창(${new Date(window.fromMs).toISOString()} ~ ${new Date(window.toMs).toISOString()})에 ` +
-          `해당하는 R2 seoul-capture 객체를 하나도 찾지 못했습니다(날짜 prefix 전체 ${allKeys.length}건 중 시간창 안 ${keysInWindow.length}건)`,
+          `해당하는 R2 seoul-capture 객체를 하나도 찾지 못했습니다(admin endpoint 매칭 ${keysInWindow.length}건)`,
       );
     }
 
@@ -228,7 +239,7 @@ function main() {
       [
         `trip tokenHash: ${tokenHash}`,
         `trip_events: ${rows.length}건`,
-        `capture cycles: ${cycles.length} (skipped: ${skipped}, R2 키 시간창 필터: ${keysInWindow.length}/${allKeys.length})`,
+        `capture cycles: ${cycles.length} (skipped: ${skipped}, admin endpoint 매칭 키: ${keysInWindow.length})`,
         `window: ${new Date(window.fromMs).toISOString()} ~ ${new Date(window.toMs).toISOString()}`,
         `노선: ${lines.join(', ') || '(미확인)'}`,
         `segment 역: ${segmentStations.join(' → ') || '(없음)'}`,
@@ -254,4 +265,7 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
+});

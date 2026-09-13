@@ -7,9 +7,9 @@
  * registry 엔트리 스켈레톤을 만든다.
  *
  * D1 SQL 문자열 생성 + wrangler/D1 응답 파싱 + registry 스켈레톤 직렬화 — 순수 함수만
- * 둔다. wrangler d1 execute / aws s3api / wrangler r2 object get 실행(실제 네트워크 I/O)은
- * `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸) 책임이다 — `buildReplayFixture.mjs`(#2580)와
- * 동일 분리 패턴.
+ * 둔다. wrangler d1 execute / `GET /admin/seoul-capture/keys`(#2595) 호출 / wrangler r2
+ * object get 실행(실제 네트워크 I/O)은 `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸) 책임이다
+ * — `buildReplayFixture.mjs`(#2580)와 동일 분리 패턴.
  */
 // `hashTripToken`은 `.ts` 확장자를 명시한다 — 이 파일은 `scripts/fixtureFromTrip.mjs`가
 // Node 네이티브 type-stripping으로 직접 로드한다(vitest/webpack 같은 번들러 경유가 아님).
@@ -17,15 +17,6 @@
 // ERR_MODULE_NOT_FOUND 확인), 이 체인에서만 명시 확장자가 필요하다
 // (tsconfig `allowImportingTsExtensions` 참고).
 import { hashTripToken } from '../../../src/shared/infra/monitoring/tripTokenHash.ts';
-
-/**
- * R2 key prefix — `seoulCapture.ts`의 `SEOUL_CAPTURE_KEY_PREFIX`와 값이 반드시 같아야
- * 한다(테스트로 SSoT 일치를 고정). 그 값을 직접 import하지 않는 이유: `seoulCapture.ts`는
- * `./seoul`(값 import, extensionless)로 이어지는 프로덕션 런타임 체인을 갖고 있어, 이
- * leaf 모듈이 그 체인 전체를 Node 네이티브 로더로 끌고 들어오게 된다(#2586 코드리뷰 —
- * leaf-safe 구조). 이 파일은 순수 문자열 상수 하나만 필요하므로 재선언이 더 안전하다.
- */
-export const SEOUL_CAPTURE_KEY_PREFIX = 'seoul-capture/';
 
 /** trip 시간창 앞뒤로 붙이는 여유(R2 capture 조회 시). 이슈 스펙 "±2분 margin". */
 export const TRIP_WINDOW_MARGIN_MS = 2 * 60 * 1000;
@@ -52,15 +43,42 @@ export interface FireAttemptSummary {
   outcome: string | null;
 }
 
+export type ResolveTokenHashError = 'missing_input' | 'conflicting_input' | 'invalid_token_hash';
+
+/** `--token-hash` 형식 — `hashTripToken` 출력과 동일한 8자리 소문자 hex. */
+export const TOKEN_HASH_PATTERN = /^[0-9a-f]{8}$/;
+
 /**
- * tripToken → tokenHash(D1 조회 키, trip_events는 원본 token을 저장하지 않는다) + SELECT SQL.
- * tokenHash는 `hashTripToken`이 생성하는 8자 hex 문자열이라 그대로 SQL 리터럴에 삽입해도
- * 안전하다(사용자 입력 직삽입 아님).
+ * `--trip <tripToken>` / `--token-hash <8hex>` 중 정확히 하나로 tokenHash를 산출한다.
+ *
+ * trip이 종료/삭제되면 KV에서 원본 토큰은 사라지고 D1 `trip_events`에는 `token_hash`만
+ * 남는다 — 과거 trip을 fixture化하려면(이 도구의 존재 목적) hash 입력이 유일한 경로가
+ * 된다. 이미 시간이 지난 trip(도구를 쓰는 전형적 상황)은 `--trip` 원본 토큰을 다시 구할
+ * 방법이 없으므로 `--token-hash`를 1급 입력으로 지원한다.
+ *
+ * 둘 다 없거나(`missing_input`) 둘 다 있으면(`conflicting_input`) 에러. `--token-hash`
+ * 값이 8자리 소문자 hex(`TOKEN_HASH_PATTERN`)가 아니면 `invalid_token_hash`.
  */
-export function buildTripEventsQuery(tripToken: string): { tokenHash: string; sql: string } {
-  const tokenHash = hashTripToken(tripToken);
-  const sql = `SELECT ts, kind, station, line, meta FROM trip_events WHERE token_hash = '${tokenHash}' ORDER BY ts ASC`;
-  return { tokenHash, sql };
+export function resolveTokenHash(
+  tripToken: string | undefined,
+  tokenHashArg: string | undefined,
+): { tokenHash: string } | { error: ResolveTokenHashError } {
+  if (tripToken !== undefined && tokenHashArg !== undefined) return { error: 'conflicting_input' };
+  if (tripToken === undefined && tokenHashArg === undefined) return { error: 'missing_input' };
+  if (tokenHashArg !== undefined) {
+    if (!TOKEN_HASH_PATTERN.test(tokenHashArg)) return { error: 'invalid_token_hash' };
+    return { tokenHash: tokenHashArg };
+  }
+  return { tokenHash: hashTripToken(tripToken as string) };
+}
+
+/**
+ * tokenHash(D1 조회 키, trip_events는 원본 token을 저장하지 않는다) → SELECT SQL.
+ * tokenHash는 `resolveTokenHash`가 검증한 8자 hex 문자열이라 그대로 SQL 리터럴에
+ * 삽입해도 안전하다(사용자 입력 직삽입 아님).
+ */
+export function buildTripEventsQuery(tokenHash: string): string {
+  return `SELECT ts, kind, station, line, meta FROM trip_events WHERE token_hash = '${tokenHash}' ORDER BY ts ASC`;
 }
 
 /**
@@ -132,21 +150,6 @@ function utcDateKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/**
- * window가 걸치는 UTC 날짜(YYYY-MM-DD) 목록, 오름차순 — R2 `seoul-capture/{date}/` prefix
- * 나열에 쓴다(`seoulCapture.ts`의 `buildSeoulCaptureKey`와 동일 UTC 날짜 규약).
- */
-export function computeCaptureDates(window: TripWindow): string[] {
-  const oneDayMs = 24 * 60 * 60 * 1000;
-  const startDay = Date.parse(`${utcDateKey(window.fromMs)}T00:00:00.000Z`);
-  const endDay = Date.parse(`${utcDateKey(window.toMs)}T00:00:00.000Z`);
-  const dates: string[] = [];
-  for (let cursor = startDay; cursor <= endDay; cursor += oneDayMs) {
-    dates.push(utcDateKey(cursor));
-  }
-  return dates;
-}
-
 /** segment 역 목록 — station이 있는 row에서 첫 등장 순서로 dedup. */
 export function extractSegmentStations(rows: TripEventRow[]): string[] {
   return dedupInOrder(rows.map((row) => row.station));
@@ -187,11 +190,16 @@ function parseOutcome(meta: string | null): string | null {
 }
 
 /**
- * R2 캡처 키(basename=`<cycleStartMs>.json`)를 다운로드 전에 시간창으로 사전 필터한다.
- * 날짜 prefix 전체(~1440개/일)를 무조건 받으면 Free plan quota를 불필요하게 소진한다
- * (#2073 lesson). `preRollMs`만큼 하한을 앞당기는 이유는 cycle이 window 시작 직전에
- * 시작해도 그 cycle의 entry 일부가 window 안에 들어올 수 있어서다(`buildReplayFixture`가
- * entry 단위로 다시 걸러내므로 여기서는 넉넉하게 통과시키는 게 안전).
+ * R2 캡처 키(basename=`<cycleStartMs>.json`)를 시간창으로 필터한다. `preRollMs`만큼
+ * 하한을 앞당기는 이유는 cycle이 window 시작 직전에 시작해도 그 cycle의 entry 일부가
+ * window 안에 들어올 수 있어서다(`buildReplayFixture`가 entry 단위로 다시 걸러내므로
+ * 여기서는 넉넉하게 통과시키는 게 안전).
+ *
+ * #2595(GET /admin/seoul-capture/keys) 도입 이후 `scripts/fixtureFromTrip.mjs`는 서버가
+ * 이미 from/to로 필터한 키 목록을 받으므로 이 함수를 호출하지 않는다(중복 필터 제거,
+ * #2586 코드리뷰) — 다만 순수 함수 + 테스트는 유지한다. 엔드포인트 없이 로컬에서 R2 키
+ * 목록을 직접 다룰 다른 진입점이 생기면(quota 보호가 필요한 다운로드 전 필터링) 재사용할
+ * 수 있다.
  */
 export const CAPTURE_KEY_PRE_ROLL_MS = 90_000;
 
