@@ -39,6 +39,8 @@ import {
 } from './notificationSource';
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
+import { readBackendSsotMirror } from './backendSsotMirror';
+import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
 import { BOARDING_PROMPT_CATEGORY } from './notificationCategory';
 import type { LineNumber } from '../../../shared/types/station';
@@ -862,6 +864,19 @@ const LOCAL_BOARDING_PROMPT_ID_PREFIX = 'boarding-prompt-local';
  * dedup: `recentLocalStationFires`(#2122 선례)로 같은 originStation 재발사를 TTL(2분) 동안 억제.
  * 반환값은 실제 발사 여부(테스트/로깅 용) — 게이트 자체는 caller(`useLocalBoardingPromptGate`)가
  * 이미 통과한 상태로 호출한다.
+ *
+ * #2591 — 데스크 trip 실증(무음·무진동 전달 + "용마산 탑승?" 오표기 의심)에서 확정된 fix 2건:
+ * 1) presentation 동급화 — backend 채널(`sendBoardingPromptPush`, apns.ts)은 이미
+ *    `sound: default` + `interruption-level: time-sensitive`인데 이 로컬 채널만 미전달이었다.
+ *    사용자 게이트(놓치면 leg가 lockless로 남음)이므로 도착 알림과 동급 이상의 주의 획득이 필요.
+ * 2) 여정 진행 중 억제 게이트 — backend SSoT mirror가 fresh(≤180s)하고 mirror의 현재역이
+ *    originStation과 다르면(=여정이 이미 진행 중이고 backend가 살아있다는 증거) 발사를
+ *    skip한다. 이 로컬 채널의 존재 이유(#2422)는 "backend register는 됐지만 cron/APNs 전달이
+ *    실패"하는 SPOF 커버인데, mirror fresh는 정확히 그 반대(backend 생존) 증거이고, origin
+ *    이탈은 GPS가 여정 중반에 origin 근방으로 재근접한 것(2026-09-13 실증 케이스)일 뿐 새
+ *    탑승 게이트가 아니다 — 이 조합에서 발사하면 잘못된 역으로 사용자를 오도한다. mirror가
+ *    stale/부재(backend 생존 미확인)거나 mirror==origin(여전히 출발역, #2422 취지 그대로 SPOF
+ *    커버 필요)이면 기존처럼 발사한다.
  */
 export async function fireLocalBoardingPromptNotification(
   originStation: string,
@@ -874,11 +889,22 @@ export async function fireLocalBoardingPromptNotification(
   const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
   if (!tripToken) return false;
 
+  const mirror = await readBackendSsotMirror();
+  const mirrorFresh = mirror !== null && Date.now() - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+  if (mirrorFresh && mirror.currentStationId !== originStation) {
+    notifLogger.info(
+      `local-boarding-prompt-suppressed reason=journey-progressed origin=${originStation} mirrorStation=${mirror.currentStationId}`,
+    );
+    return false;
+  }
+
   const identifier = `${LOCAL_BOARDING_PROMPT_ID_PREFIX}:${originStation}:${Date.now()}`;
   const { title, body } = buildBoardingPromptContent(originStation, line);
   await scheduleNotification(identifier, {
     title,
     body,
+    sound: true,
+    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
     categoryIdentifier: BOARDING_PROMPT_CATEGORY,
     data: {
       kind: 'boarding-prompt',
