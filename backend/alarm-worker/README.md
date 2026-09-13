@@ -165,3 +165,17 @@ WHERE timestamp > NOW() - INTERVAL '7' DAY
 GROUP BY blob1
 ORDER BY cnt DESC;
 ```
+
+## Seoul capture → replay fixture (Epic #2239 P0-a/P0-b)
+
+Seoul API raw 응답이 `seoul-capture/{YYYY-MM-DD}/{cycleStartMs}.json` (`SeoulCaptureCycle`)로 R2에 쌓인다. 과거 trip 재생용 fixture로 만들려면:
+
+```bash
+# 1) 해당 날짜의 cycle 파일들을 로컬로 다운로드 (R2 IO는 wrangler CLI가 담당)
+mkdir -p /tmp/capture-2026-09-13
+wrangler r2 object get subway-now-telemetry --prefix seoul-capture/2026-09-13/ --destination /tmp/capture-2026-09-13
+
+# 2) 병합해 fixture 생성 (window 미지정 시 cycle 전체 범위 자동 산출)
+cd backend/alarm-worker
+node scripts/buildReplayFixture.mjs --in /tmp/capture-2026-09-13 --out src/__tests__/fixtures/capture_2026-09-13.json
+```

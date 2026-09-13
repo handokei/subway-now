@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, coverageConfigDefaults } from 'vitest/config';
 
 // #2081 — coverage ratchet 게이트.
 // 100% 강제가 아니라 "현재 실측값" 기준 floor. 기존 미커버 코드로 인한
@@ -12,6 +12,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary'],
+      // scripts/는 얇은 I/O CLI 셸(#2580) — 로직은 src/*.ts에 있고 그쪽이 커버리지 대상.
+      exclude: [...coverageConfigDefaults.exclude, 'scripts/**'],
       thresholds: {
         statements: 97,
         branches: 96,
