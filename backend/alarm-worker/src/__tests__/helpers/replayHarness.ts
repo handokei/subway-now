@@ -81,11 +81,26 @@ function isConstructibleResponseStatus(status: number): boolean {
  *   SyntaxError를 던져 해당 cron cycle 전체가 오염된다(#2581 리뷰 P2).
  * - entry의 `status`가 Response로 구성 불가능한 값(0 등, fetch 자체 실패 sentinel)이면 그
  *   자체를 reject해 원본의 네트워크 오류를 재현한다(#2581 리뷰 P3).
+ *
+ * `ceilingMs`(#2600) — entry.tMs가 넘을 수 없는 상한. 미지정 시 `simNow`(기존 동작, 옛
+ * "합성 grid" 재생과 100% 동일 — grid tick은 실 cycleStartsMs와 무관해 미래 entry를 허용할
+ * 근거가 없다). `runCaptureReplay`가 'recorded' cadence(cron 미지정)에서 **실 캡처**를
+ * 재생할 때만 다음 tick 시각을 넘겨 넓힌다 — production `handler.scheduled`는
+ * `cycleStartMs = Date.now()`를 fetch **이전**에 stamp하므로(`src/index.ts`), 실 캡처
+ * entry의 tMs는 그 cycle 자신의 `cycleStartMs`보다 항상(네트워크/처리 지연만큼, 실측
+ * 수 초) **뒤**에 찍힌다. `entry.tMs > simNow`를 그대로 두면 이 몇 초 지연 때문에 그 entry가
+ * 자신이 속한 cycle의 tick에서는 "아직 안 옴"으로, 다음 tick에서는 이미 `freshMs`를 넘겨
+ * "너무 오래됨"으로 두 번 다 걸러져 **영영 재생되지 않는다** — 실캡처 fixture(#2600
+ * capture_20260913T1249Z_b00dd879)를 라이브러리에 등록하며 발견(발사 0건 회귀 재현).
+ * `ceilingMs`를 다음 tick(=그 다음 실 cron 실행 시각)으로 넓히면 "이 cycle 동안 캡처된
+ * entry는 이 cycle의 tick에서 보인다"는 실제 의미를 정확히 재현하면서, 여전히 그 다음
+ * cycle의 entry가 이번 tick으로 새는 것은 막는다(합성 grid의 90s 드리프트 회귀 테스트는
+ * `ceilingMs` 미지정 경로라 영향 없음).
  */
 export function makeCaptureFetch(
   fixture: ReplayFixture,
   getNow: () => number,
-  opts?: { freshMs?: number },
+  opts?: { freshMs?: number; ceilingMs?: number },
 ): typeof fetch {
   const freshMs = opts?.freshMs ?? DEFAULT_FRESH_MS;
 
@@ -97,10 +112,11 @@ export function makeCaptureFetch(
     }
 
     const simNow = getNow();
+    const ceilingMs = opts?.ceilingMs ?? simNow;
     let latest: ReplayFixture['entries'][number] | null = null;
     for (const entry of fixture.entries) {
       if (entry.kind !== classified.kind || entry.target !== classified.target) continue;
-      if (entry.tMs > simNow || simNow - entry.tMs >= freshMs) continue;
+      if (entry.tMs > ceilingMs || simNow - entry.tMs >= freshMs) continue;
       if (!latest || entry.tMs > latest.tMs) latest = entry;
     }
 
@@ -177,17 +193,55 @@ function makeCapturingApnsFetch(sink: CapturedPush[], getNow: () => number): typ
 const NOOP_APNS_FETCH: typeof fetch = (async () => new Response('', { status: 200 })) as unknown as typeof fetch;
 
 /**
+ * `recorded` cadence 전용 — 캡처된 entry가 자신이 속한 cycle의 `cycleStartMs`보다 실제로
+ * 얼마나 늦게 찍혔는지(median, ms)를 fixture 자체 데이터로 산출한다 (#2600 코드리뷰 항목2).
+ *
+ * production `handler.scheduled`는 `cycleStartMs = Date.now()`를 Seoul fetch **이전**에
+ * stamp한다(`src/index.ts`) — 그래서 그 cycle 동안 캡처된 entry들의 `tMs`는 항상
+ * `cycleStartMs`보다 (네트워크/처리 지연만큼) 뒤에 찍힌다. `runCaptureReplay`가 tick을
+ * `cycleStartMs` 정각으로 잡으면 production이 실제로 그 데이터를 "평가한" 시점(=fetch가
+ * 끝나고 게이트를 통과하는 순간)보다 최대 수 초 이르게 시뮬레이션하게 되고, 이 차이가
+ * `evaluateTransferDestinationGate`처럼 60s 임계에 근접한 게이트를 실제와 다르게(더 엄격하게)
+ * 판정시킬 수 있다 — 실캡처 fixture(capture_20260913T1249Z_b00dd879)에서 건대입구
+ * transfer 발사가 1ms 차이(60001ms)로 오탐 차단된 사례로 발견.
+ *
+ * 하드코딩 없이 fixture마다 실측값을 쓴다 — entry 각각을 "그 entry.tMs 이하인 cycleStartsMs
+ * 중 가장 큰 값"이 속한 cycle로 배정하고, 그 cycle 대비 지연(entry.tMs - cycleStart)의
+ * median을 취한다. entry가 없거나 cycleStartsMs가 비어 있으면 0(기존 동작, 합성 fixture는
+ * 대개 entry.tMs===cycleStartMs라 median도 자연히 0).
+ */
+function computeExecLagMs(fixture: ReplayFixture): number {
+  const cycleStarts = fixture.cycleStartsMs;
+  if (cycleStarts.length === 0) return 0;
+  const lags: number[] = [];
+  for (const entry of fixture.entries) {
+    let owningCycleStart: number | undefined;
+    for (const cycleStart of cycleStarts) {
+      if (cycleStart <= entry.tMs && (owningCycleStart === undefined || cycleStart > owningCycleStart)) {
+        owningCycleStart = cycleStart;
+      }
+    }
+    if (owningCycleStart !== undefined) lags.push(entry.tMs - owningCycleStart);
+  }
+  if (lags.length === 0) return 0;
+  lags.sort((a, b) => a - b);
+  const mid = Math.floor(lags.length / 2);
+  return lags.length % 2 === 0 ? (lags[mid - 1] + lags[mid]) / 2 : lags[mid];
+}
+
+/**
  * 재생할 cron tick(simNow) 목록을 만든다 (#2581 리뷰 P1).
  *
  * - `cronIntervalMs` 미지정(기본): fixture가 기록한 **실제** cron cycle 시각
- *   (`fixture.cycleStartsMs`, P0-a가 실 `handler.scheduled` 호출마다 stamp한 값)을 그대로
- *   tick으로 쓴다 — 이게 실 P0-a 캡처를 충실히 재생하는 방법이다. 합성 균일 그리드로
- *   가정하면(예: window.fromMs부터 60s 고정 스텝) 실 캡처의 cron 위상/드리프트와 어긋나
- *   위상 30/45초 같은 조합에서 매 tick이 어떤 entry의 freshness 창도 못 맞춰 전부 빈 응답
- *   fallback이 되는 "합성 grid vs 실 데이터" 불일치가 생긴다.
+ *   (`fixture.cycleStartsMs`, P0-a가 실 `handler.scheduled` 호출마다 stamp한 값)에
+ *   `computeExecLagMs`(위, #2600 코드리뷰 항목2)로 산출한 지연을 더해 tick으로 쓴다 —
+ *   이게 실 P0-a 캡처를 충실히 재생하는 방법이다. 합성 균일 그리드로 가정하면(예:
+ *   window.fromMs부터 60s 고정 스텝) 실 캡처의 cron 위상/드리프트와 어긋나 위상 30/45초
+ *   같은 조합에서 매 tick이 어떤 entry의 freshness 창도 못 맞춰 전부 빈 응답 fallback이
+ *   되는 "합성 grid vs 실 데이터" 불일치가 생긴다.
  * - `cronIntervalMs` 명시: 합성/고밀도 샘플링 fixture(예: 15s 간격으로 캡처해 60s cron을
  *   흉내내고 싶은 검증용 fixture)를 위해 `fixture.cycleStartsMs[0]`부터 균일 그리드로 건너
- *   뛴다 — 기존 동작 보존.
+ *   뛴다 — 기존 동작 보존(execLag 미적용 — 합성 grid는 실 cycleStartsMs와 무관).
  * - `phaseOffsetMs`는 두 경우 모두 각 tick에 더해지는 상대 오프셋(cron 위상 스윕용).
  */
 function buildTickSchedule(fixture: ReplayFixture, cronIntervalMs: number | undefined, phaseOffsetMs: number): number[] {
@@ -198,7 +252,8 @@ function buildTickSchedule(fixture: ReplayFixture, cronIntervalMs: number | unde
     return ticks;
   }
   const recorded = fixture.cycleStartsMs.length > 0 ? fixture.cycleStartsMs : [fixture.window.fromMs];
-  return recorded.map((cycleStartMs) => cycleStartMs + phaseOffsetMs);
+  const execLagMs = computeExecLagMs(fixture);
+  return recorded.map((cycleStartMs) => cycleStartMs + phaseOffsetMs + execLagMs);
 }
 
 /**
@@ -248,14 +303,32 @@ export async function runCaptureReplay(opts: {
 
   let pushSeq = 0;
   const cycles: ReplayCycleResult[] = [];
+  // 'recorded' cadence(cronIntervalMs 미지정)에서만 다음 "실" cycle 경계를 ceiling으로
+  // 넓힌다 — `makeCaptureFetch` 문서 참고(#2600). 합성 grid(cronIntervalMs 지정)는
+  // ceilingMs를 안 넘겨 기존 동작(entry.tMs <= simNow)을 그대로 유지한다.
+  //
+  // ceiling은 반드시 **비-shift** `fixture.cycleStartsMs`(phaseOffsetMs/execLagMs를 더하지
+  // 않은 원본 실제 cron 실행 시각)를 기준으로 잡는다 — `ticks`(위상/execLag가 반영된 값)를
+  // 쓰면 위상 offset이 tick과 ceiling을 함께 밀어, entry는 고정된 실좌표에 있는데 평가
+  // 창(window)만 미래로 옮겨가 다음 cycle의 entry가 이전 tick에 새는 회귀가 생긴다
+  // (#2600 코드리뷰 항목3 — phaseOffset=15000에서 실증된 leak). `recordedCycleStarts`가
+  // `ticks`와 index가 1:1로 맞는 이유는 `buildTickSchedule`이 'recorded' 분기에서
+  // `fixture.cycleStartsMs`(비었으면 `[fixture.window.fromMs]`)를 그대로 map하기 때문.
+  const isRecordedCadence = opts.cronIntervalMs === undefined;
+  const recordedCycleStarts =
+    opts.fixture.cycleStartsMs.length > 0 ? opts.fixture.cycleStartsMs : [opts.fixture.window.fromMs];
 
-  for (const tick of ticks) {
+  for (let tickIdx = 0; tickIdx < ticks.length; tickIdx += 1) {
+    const tick = ticks[tickIdx];
     simNow = tick;
+    const ceilingMs = isRecordedCadence
+      ? (recordedCycleStarts[tickIdx + 1] ?? opts.fixture.window.toMs + 1)
+      : undefined;
     const seoul = new SeoulArrivalClient({
       apiKey: 'KEY',
       host: 'seoul.api',
       now: () => tick,
-      fetchImpl: makeCaptureFetch(opts.fixture, () => tick, { freshMs }),
+      fetchImpl: makeCaptureFetch(opts.fixture, () => tick, { freshMs, ceilingMs }),
     });
 
     const pushCountBefore = capturedPushes.length;

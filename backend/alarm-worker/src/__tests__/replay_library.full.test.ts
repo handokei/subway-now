@@ -28,8 +28,18 @@ function listFixtureFilesOnDisk(): string[] {
   return fs.readdirSync(REPLAY_LIBRARY_DIR).filter((name) => name.endsWith(FIXTURE_SUFFIX));
 }
 
-/** alert push 중 nextWaypoint를 실은 것 전부 — 시간순, **중복 제거하지 않는다**. 같은 역이
- * 두 번 발사되면(회귀) 그 중복이 그대로 남아야 sorted exact-match가 이를 잡아낸다. */
+/**
+ * alert push 중 station-passed(`data.nextWaypoint`, arvlcd/vanish-fallback
+ * `buildStationPassedImminentPayload`) 채널로 발사된 것 전부 — 시간순, **중복 제거하지
+ * 않는다**. 같은 역이 두 번 발사되면(회귀) 그 중복이 그대로 남아야 sorted exact-match가
+ * 이를 잡아낸다.
+ *
+ * hop-end-prompt 채널(`firedHopEndPromptStations`, 아래)과 반드시 분리 집계한다(#2600
+ * 코드리뷰 항목1) — 한 리스트에 합산하면 둘 다 정상 발사되는 transfer trip(예: 어린이대공원
+ * fire와 무관하게 항상 뜨는 hop-end-prompt + SSoT 신선도를 만족해 같이 뜨는 station-passed
+ * alert)에서 같은 역이 2회로 잡혀, registry의 단일 `firedStations` 기대와 어긋나는
+ * false-red를 만든다.
+ */
 function firedStationOccurrences(pushes: CapturedPush[]): string[] {
   const occurrences: string[] = [];
   for (const push of pushes) {
@@ -37,6 +47,30 @@ function firedStationOccurrences(pushes: CapturedPush[]): string[] {
     const data = push.body.data as Record<string, unknown> | undefined;
     const station = data?.nextWaypoint;
     if (typeof station === 'string' && station.length > 0) occurrences.push(station);
+  }
+  return occurrences;
+}
+
+/**
+ * alert push 중 hop-end-prompt("하차했나요?", `sendBoardingPromptPush`, `hopEndKind
+ * ==='disembark'`) 채널로 발사된 것 전부 — 시간순, 중복 제거하지 않음(위 함수와 동일 이유).
+ *
+ * #2549(top-level `body` 키 wire, expo-notifications iOS가 remote push `content.data`를
+ * `userInfo['body']`에서만 추출)에 따라 이 push는 `data`가 아니라 **`push.body.body`**에
+ * payload가 실린다 — `data.nextWaypoint` 채널(arvlcd/vanish-fallback)과 wire 계약 자체가
+ * 다르다. transfer waypoint advance 시 `evaluateTransferDestinationGate`의 60s 신선도
+ * 게이트와 무관하게(`maybeFireHopEndPrompt` 자체 dedup만 적용) 항상 발사되는 채널이라,
+ * station-passed 채널(위 `firedStationOccurrences`)이 SSoT stale로 막힐 때도 이 채널은
+ * 살아있을 수 있다 — `capture_20260913T1249Z_b00dd879` 재생에서 최초 실증(#2600).
+ */
+function firedHopEndPromptStations(pushes: CapturedPush[]): string[] {
+  const occurrences: string[] = [];
+  for (const push of pushes) {
+    if (push.headers.pushType !== 'alert') continue;
+    const promptBody = push.body.body as Record<string, unknown> | undefined;
+    if (promptBody?.hopEndKind !== 'disembark') continue;
+    const originStation = promptBody?.originStation;
+    if (typeof originStation === 'string' && originStation.length > 0) occurrences.push(originStation);
   }
   return occurrences;
 }
@@ -68,6 +102,20 @@ describe('replay library — 디렉터리 ↔ registry 1:1 대조', () => {
 
   it('REPLAY_LIBRARY entry가 최소 1개 이상이다 (조용한 0-test 통과 방지)', () => {
     expect(REPLAY_LIBRARY.length).toBeGreaterThan(0);
+  });
+
+  // #2600 코드리뷰 항목3 — 'recorded' cadence는 fixture가 기록한 실제 cron cycle 시각을
+  // 그대로 tick으로 쓴다. 여기에 phaseOffsetMs를 얹으면(위상 스윕) entry.tMs는 고정된
+  // 실좌표에 있는데 평가 창(tick)만 밀려, ceiling이 비-shift `cycleStartsMs` 기준이어도
+  // freshness(`simNow - entry.tMs`) 판정 자체가 실측과 어긋나는 합성 시나리오가 된다 —
+  // 위상 스윕은 애초에 "cron이 임의 위상에서 시작했다고 가정"하는 합성 grid 전용 개념이라
+  // recorded cadence에는 의미가 없다. 이 불변식을 깨는 entry가 조용히 들어오는 것을
+  // 막는다(다른 값 지정 시 이 테스트가 즉시 실패).
+  it("cronIntervalMs:'recorded' entry는 phaseOffsetsMs를 반드시 [0]으로만 지정한다(위상 스윕 무의미)", () => {
+    for (const entry of REPLAY_LIBRARY) {
+      if (entry.cronIntervalMs !== 'recorded') continue;
+      expect(entry.phaseOffsetsMs).toEqual([0]);
+    }
   });
 });
 
@@ -105,7 +153,14 @@ for (const entry of REPLAY_LIBRARY) {
         // expect에서 역 하나 제거 시 red), 위상별로 인접 tick 사이에서 발사 순서가 뒤바뀌는
         // 것(회귀 아님)은 false-red를 만들지 않는다. 중복 제거를 하지 않은 채로 비교하므로
         // 같은 역이 두 번 발사되면(회귀) sorted 배열 길이가 달라져 그 자체로 실패한다.
+        // alert nextWaypoint 채널 전용 — hop-end-prompt 채널은 별도 아래에서 검증한다
+        // (#2600 코드리뷰 항목1, 두 채널 합산 시 정상 이중 발사가 false-red가 되는 결함 수정).
         expect([...fired].sort()).toEqual([...entry.expect.firedStations].sort());
+
+        if (entry.expect.hopEndPromptStations !== undefined) {
+          const firedHopEnd = firedHopEndPromptStations(result.pushes);
+          expect([...firedHopEnd].sort()).toEqual([...entry.expect.hopEndPromptStations].sort());
+        }
 
         for (const forbidden of entry.expect.forbiddenStations ?? []) {
           expect(fired).not.toContain(forbidden);
