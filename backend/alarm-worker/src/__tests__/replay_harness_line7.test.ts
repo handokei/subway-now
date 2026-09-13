@@ -1,14 +1,22 @@
 /**
- * 재생 하네스 검증 (#2581, Epic #2239 P0-c) — 7호선 합성 fixture(capture_20260912_line7_synth.json)를
+ * 재생 하네스 검증 (#2581, Epic #2239 P0-c) — 7호선 합성 fixture(capture_20260912_line7_synth.fixture.json)를
  * `runCaptureReplay`(fetchImpl 레벨, 실 `SeoulArrivalClient` 파싱 경유)로 재생해 #2571과 동일한
  * "위상 무관 매역 발사" 결론을 이번엔 파싱 전 체인 포함으로 재증명한다.
+ *
+ * 책임 경계 (#2585 — Epic #2239 P2, 라이브러리 게이트 도입 시 정리): 이 fixture의 "4개 cron
+ * 위상 전부 intermediate 매역 발사" 결론은 `replayLibrary.ts`의 `REPLAY_LIBRARY` entry로
+ * 등록되어 `replay_library.full.test.ts`가 전량 재생·단언한다 — 이 파일에서는 그 결론을
+ * 다시 주장하지 않는다(이중 유지보수 방지). 이 파일이 유지하는 것은 하네스 자체의 기계적
+ * 정확성(freshness 경계, truncated/status=0 매핑, cron drift, KV TTL 벽시계 독립성, 실
+ * 파싱 경로로 trainCode가 관통하는지, destination trip-ended 신호 — registry의
+ * `expect.firedStations` 스키마가 표현하지 못하는 별도 신호)에 대한 단위 검증뿐이다.
  */
 import { describe, expect, it } from 'vitest';
 import type { Trip } from '../types';
 import { SEOUL_ARRIVAL_PATH_SEGMENT, SEOUL_POSITION_PATH_SEGMENT } from '../seoul';
 import { makeCaptureFetch, runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
 import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
-import fixtureJson from './fixtures/capture_20260912_line7_synth.json';
+import fixtureJson from './fixtures/replayLibrary/capture_20260912_line7_synth.fixture.json';
 
 const fixture = parseReplayFixture(fixtureJson);
 
@@ -53,20 +61,6 @@ function makeLockTrip(token: string): Trip {
   };
 }
 
-/** apns-push-type='alert'인(실제 화면에 뜨는) push만 station으로 집계 — silent만 발사되고
- * 실제로는 침묵인 상태를 green 처리하지 않기 위함 (#2581 리뷰 P5). intermediate/transfer
- * station-passed push는 `data.nextWaypoint`로 station을 싣는다. */
-function firedAlertStations(pushes: CapturedPush[]): Set<string> {
-  const fired = new Set<string>();
-  for (const push of pushes) {
-    if (push.headers.pushType !== 'alert') continue;
-    const data = push.body.data as Record<string, unknown> | undefined;
-    const station = data?.nextWaypoint;
-    if (typeof station === 'string' && station.length > 0) fired.add(station);
-  }
-  return fired;
-}
-
 /**
  * 목적지 도착은 station-passed(`nextWaypoint`) 경로가 아니라 `boarding-lock: destination
  * cross-check` → `cleanupTripWithLa(reason:'destination-arrived')` → `sendTripEndedAlertPush`
@@ -99,22 +93,6 @@ describe('runCaptureReplay — fixture 시간창 cron 재생', () => {
     }
   });
 
-  const PHASES = [0, 15_000, 30_000, 45_000];
-  const INTERMEDIATES = ['어린이대공원(세종대)', '군자(능동)'];
-
-  it('apns:"capture"로 발사된 alert push의 nextWaypoint가 매 intermediate 역을 포함한다 (위상 0)', async () => {
-    const result = await runCaptureReplay({
-      fixture,
-      seedTrips: [makeLockTrip('harness-capture')],
-      cronIntervalMs: SYNTH_CRON_INTERVAL_MS,
-      apns: 'capture',
-    });
-    const fired = firedAlertStations(result.pushes);
-    for (const station of INTERMEDIATES) {
-      expect(fired.has(station)).toBe(true);
-    }
-  });
-
   it('fixture body의 btrainNo(=7204)가 실 파싱 경유 push의 trainCode로 도달한다', async () => {
     const result = await runCaptureReplay({
       fixture,
@@ -129,30 +107,6 @@ describe('runCaptureReplay — fixture 시간창 cron 재생', () => {
     expect(trainCodes.length).toBeGreaterThan(0);
     for (const code of trainCodes) {
       expect(code).toBe(LOCK_TRAIN);
-    }
-  });
-
-  it('기존 replay_20260912 테스트와 동일 결론 — 4개 cron 위상 전부 intermediate 침묵 0 + destination 완결', async () => {
-    const results: Record<number, { intermediates: string[]; destinationArrived: boolean }> = {};
-    for (const phaseOffsetMs of PHASES) {
-      const result = await runCaptureReplay({
-        fixture,
-        seedTrips: [makeLockTrip(`harness-all-phase-${phaseOffsetMs}`)],
-        cronIntervalMs: SYNTH_CRON_INTERVAL_MS,
-        phaseOffsetMs,
-        apns: 'capture',
-      });
-      const fired = firedAlertStations(result.pushes);
-      results[phaseOffsetMs] = {
-        intermediates: INTERMEDIATES.filter((s) => fired.has(s)),
-        destinationArrived: destinationArrivedFired(result.pushes),
-      };
-    }
-    // eslint-disable-next-line no-console
-    console.log('발사된 역 + 목적지 완결 (위상별, fetchImpl 레벨 재생):', JSON.stringify(results, null, 2));
-    for (const phaseOffsetMs of PHASES) {
-      expect(results[phaseOffsetMs].intermediates.sort()).toEqual([...INTERMEDIATES].sort());
-      expect(results[phaseOffsetMs].destinationArrived).toBe(true);
     }
   });
 
