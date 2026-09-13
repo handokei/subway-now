@@ -17,6 +17,15 @@ export class InMemoryKV {
   store = new Map<string, { value: string; expiresAt?: number }>();
 
   /**
+   * #2581 리뷰 — 만료 판정 기준 시각. 기본은 실 `Date.now()`(기존 수백 개 테스트와 동일 동작).
+   * capture replay 하네스처럼 시뮬레이션 시계(simNow)로 장시간 재생하는 caller는 생성자에
+   * 주입해 KV TTL 판정을 실 벽시계가 아닌 시뮬레이션 시계에 정렬시킬 수 있다 — 그렇지 않으면
+   * 실행이 실 60초를 넘길 때(또는 느린 CI 머신에서) seed trip이 벽시계 TTL로 소멸해 재생
+   * 결과가 "거짓 침묵"으로 오염된다.
+   */
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  /**
    * 실제 KV.get(key, options) 시그니처 호환. #1423 — Cloudflare KV runtime은 `cacheTtl < 30`
    * 을 `Invalid cache_ttl of N. Cache TTL must be at least 30.` 400 throw로 거절한다.
    * 본 mock도 동일하게 throw해야 caller가 production과 같은 실패 모드를 테스트할 수 있다.
@@ -31,7 +40,7 @@ export class InMemoryKV {
     }
     const entry = this.store.get(key);
     if (!entry) return null;
-    if (entry.expiresAt && entry.expiresAt < Date.now()) {
+    if (entry.expiresAt && entry.expiresAt < this.now()) {
       this.store.delete(key);
       return null;
     }
@@ -44,7 +53,7 @@ export class InMemoryKV {
     options?: { expirationTtl?: number },
   ): Promise<void> {
     const expiresAt = options?.expirationTtl
-      ? Date.now() + options.expirationTtl * 1000
+      ? this.now() + options.expirationTtl * 1000
       : undefined;
     this.store.set(key, { value, expiresAt });
     // #2452 — 프로덕션에서 `trip:` 키는 항상 `POST /trips` 등록(activeTripsGate.markTripRegistered
@@ -58,12 +67,12 @@ export class InMemoryKV {
       try {
         const parsed = JSON.parse(value) as { expiresAt?: unknown };
         if (typeof parsed.expiresAt === 'number') {
-          markerTtlMs = Math.max(60_000, parsed.expiresAt - Date.now());
+          markerTtlMs = Math.max(60_000, parsed.expiresAt - this.now());
         }
       } catch {
         // 손상된 payload는 기본 TTL로 stamp.
       }
-      this.store.set(ACTIVE_TRIPS_MARKER_KEY, { value: '1', expiresAt: Date.now() + markerTtlMs });
+      this.store.set(ACTIVE_TRIPS_MARKER_KEY, { value: '1', expiresAt: this.now() + markerTtlMs });
     }
   }
 

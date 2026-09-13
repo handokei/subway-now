@@ -1,0 +1,280 @@
+/**
+ * capture fixture 재생 하네스 — 재사용 가능한 helper (Epic #2239 P0-c, #2581).
+ *
+ * #2571의 1회성 하네스(`replay_20260912_line7_arvlcd_sampling.test.ts`)는 파싱을 우회하고
+ * 축약된 필드를 합성한 fake `SeoulArrivalClient`를 직접 구현해 충실도 한계가 있었다. 이
+ * 하네스는 **fetchImpl 레벨**로 내려 실제 `SeoulArrivalClient`(seoul.ts) 파싱 코드까지
+ * 재생 범위에 포함한다 — fixture의 raw Seoul JSON body가 실 파싱 경로를 그대로 통과한다.
+ *
+ * 입력 = `ReplayFixture`(P0-b, replayFixture.ts) + seed Trip[]. 출력 = cycle별
+ * `ScheduledStats` + 발사된 push 목록 — 어떤 가설이든 라이드 0으로 오프라인 검증한다.
+ */
+import { generateKeyPair, exportPKCS8 } from 'jose';
+import { runScheduled, type ScheduledStats } from '../../scheduled';
+import { resetApnsJwtCache, type ApnsConfig } from '../../apns';
+import { putTrip } from '../../trips';
+import { classifyUrl } from '../../seoulCapture';
+import { SeoulArrivalClient } from '../../seoul';
+import type { ReplayFixture } from '../../replayFixture';
+import type { Env, Trip } from '../../types';
+import { InMemoryKV } from '../inMemoryKv';
+
+/** Seoul 갱신 주기 근사 — 이 창 안의 최신 관측만 유효(#2571 하네스와 동일 정책). */
+const DEFAULT_FRESH_MS = 20_000;
+
+const APNS_HOSTS = { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' };
+
+/** cron 재생 중 발사(APNs 전송)된 push 1건 — fetchImpl로 가로챈 실제 요청. */
+export interface CapturedPush {
+  simNowMs: number;
+  url: string;
+  /** POST body를 JSON.parse한 결과. `{ aps, data, body? }` 형태(silent/alert 공통 `data`). */
+  body: Record<string, unknown>;
+  /**
+   * APNs 전송 헤더 일부 (#2581 리뷰 P5) — `apns-push-type`으로 silent(background)와
+   * alert(사용자 가시 배너)를 구분한다. "매역 침묵 0" 같은 assertion이 실제로는 silent만
+   * 발사되고 화면엔 아무것도 안 뜨는 상태를 green 처리하는 것을 차단하기 위함.
+   */
+  headers: { pushType?: string; priority?: string; collapseId?: string };
+}
+
+export interface ReplayCycleResult {
+  simNowMs: number;
+  stats: ScheduledStats;
+  pushes: CapturedPush[];
+}
+
+export interface ReplayRunResult {
+  cycles: ReplayCycleResult[];
+  pushes: CapturedPush[];
+  /**
+   * fixture에 캡처 유실 신호(`droppedEntries`/`failedCycleStartsMs`)가 있으면 true —
+   * 이 재생 결과가 불완전한 입력으로 만들어졌다는 경고. caller는 이 값을 무시하지 말고
+   * 결론(특히 "발사 안 됨")을 낼 때 신뢰도 판단에 반영해야 한다.
+   */
+  lossyCapture: boolean;
+}
+
+/** Seoul 빈 응답 JSON — freshness 창 안에 매칭되는 entry가 없거나(또는 truncated) fallback. */
+function emptySeoulResponseBody(kind: 'arrival' | 'position'): string {
+  return kind === 'arrival' ? '{"realtimeArrivalList":[]}' : '{"realtimePositionList":[]}';
+}
+
+/**
+ * `SeoulCaptureEntry.status`가 실제 HTTP Response로 구성 가능한 값인지. capture recorder
+ * (`seoulCapture.ts`)는 fetch 자체가 throw한 네트워크 오류를 `status: 0`으로 기록한다 —
+ * `new Response(body, { status: 0 })`는 RangeError이므로 그대로 재생하면 안 되고, 원본이
+ * throw였다는 사실 자체를 fetch reject로 재현해야 한다(#2581 리뷰 P3).
+ */
+function isConstructibleResponseStatus(status: number): boolean {
+  return Number.isInteger(status) && status >= 200 && status <= 599;
+}
+
+/**
+ * fixture 캡처 스트림을 서빙하는 fetchImpl. simNow 기준 `freshMs`(default 20s) 이내의
+ * 최신 entry의 raw body/status를 그대로 응답한다 — 파싱은 실 `SeoulArrivalClient`가 한다.
+ * classify는 `seoulCapture.ts`의 URL 파서를 그대로 재사용(중복 정규식 구현 금지).
+ *
+ * - entry가 `truncated`(캡처 상한으로 body가 비워짐)면 raw body(빈 문자열)를 그대로 서빙하지
+ *   않는다 — `replayFixture.ts`의 계약("재생 시 빈 응답 취급은 하네스 책임")대로 적법한 빈
+ *   Seoul JSON으로 매핑한다. 빈 문자열을 그대로 흘리면 `SeoulArrivalClient`의 `response.json()`이
+ *   SyntaxError를 던져 해당 cron cycle 전체가 오염된다(#2581 리뷰 P2).
+ * - entry의 `status`가 Response로 구성 불가능한 값(0 등, fetch 자체 실패 sentinel)이면 그
+ *   자체를 reject해 원본의 네트워크 오류를 재현한다(#2581 리뷰 P3).
+ */
+export function makeCaptureFetch(
+  fixture: ReplayFixture,
+  getNow: () => number,
+  opts?: { freshMs?: number },
+): typeof fetch {
+  const freshMs = opts?.freshMs ?? DEFAULT_FRESH_MS;
+
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const classified = classifyUrl(url);
+    if (!classified) {
+      return new Response('{}', { status: 200 });
+    }
+
+    const simNow = getNow();
+    let latest: ReplayFixture['entries'][number] | null = null;
+    for (const entry of fixture.entries) {
+      if (entry.kind !== classified.kind || entry.target !== classified.target) continue;
+      if (entry.tMs > simNow || simNow - entry.tMs >= freshMs) continue;
+      if (!latest || entry.tMs > latest.tMs) latest = entry;
+    }
+
+    if (!latest) {
+      return new Response(emptySeoulResponseBody(classified.kind), { status: 200 });
+    }
+    if (!isConstructibleResponseStatus(latest.status)) {
+      throw new Error(`replay: 캡처된 fetch 실패 재현 (status=${latest.status}, target=${classified.target})`);
+    }
+    const body = latest.truncated ? emptySeoulResponseBody(classified.kind) : latest.body;
+    return new Response(body, { status: latest.status });
+  }) as unknown as typeof fetch;
+}
+
+function makeEnv(kv: InMemoryKV, apnsConfig: ApnsConfig): Env {
+  return {
+    TRIPS: kv as unknown as KVNamespace,
+    APNS_HOST: APNS_HOSTS.production,
+    APNS_HOST_SANDBOX: APNS_HOSTS.sandbox,
+    SEOUL_API_HOST: 'seoul.api',
+    SEOUL_API_KEY: 'KEY',
+    APNS_KEY_ID: apnsConfig.keyId,
+    APNS_TEAM_ID: apnsConfig.teamId,
+    APNS_PRIVATE_KEY: apnsConfig.privateKeyPem,
+    APNS_BUNDLE_ID: apnsConfig.bundleId,
+  };
+}
+
+/** ES256 테스트 키 생성 — 재생마다 재생성하지 않도록 모듈 스코프에서 1회 메모이즈. */
+let cachedApnsConfig: Promise<ApnsConfig> | undefined;
+function getTestApnsConfig(): Promise<ApnsConfig> {
+  if (!cachedApnsConfig) {
+    cachedApnsConfig = (async () => {
+      const { privateKey } = await generateKeyPair('ES256');
+      const privateKeyPem = await exportPKCS8(privateKey);
+      resetApnsJwtCache();
+      return { keyId: 'K', teamId: 'T', privateKeyPem, bundleId: 'com.example.app' };
+    })();
+  }
+  return cachedApnsConfig;
+}
+
+function extractHeader(headers: RequestInit['headers'], name: string): string | undefined {
+  // apns.ts의 모든 sendXPush는 headers를 plain object literal로 구성해 fetchImpl에 넘긴다
+  // (Headers 인스턴스/배열 형태 사용 없음) — 이 하네스가 가로채는 유일한 caller 표면.
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return undefined;
+  return (headers as Record<string, string>)[name];
+}
+
+/** APNs 전송(fetchImpl)을 가로채 CapturedPush로 기록하고 200을 반환하는 fake sender. */
+function makeCapturingApnsFetch(sink: CapturedPush[], getNow: () => number): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    let body: Record<string, unknown> = {};
+    try {
+      body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    } catch {
+      body = {};
+    }
+    sink.push({
+      simNowMs: getNow(),
+      url: String(input),
+      body,
+      headers: {
+        pushType: extractHeader(init?.headers, 'apns-push-type'),
+        priority: extractHeader(init?.headers, 'apns-priority'),
+        collapseId: extractHeader(init?.headers, 'apns-collapse-id'),
+      },
+    });
+    return new Response('', { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+/** APNs push를 캡처하지 않고 전부 200으로 no-op 처리하는 fetchImpl(기존 #2571 패턴). */
+const NOOP_APNS_FETCH: typeof fetch = (async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+
+function hasLossySignal(fixture: ReplayFixture): boolean {
+  return (fixture.droppedEntries ?? 0) > 0 || (fixture.failedCycleStartsMs?.length ?? 0) > 0;
+}
+
+/**
+ * 재생할 cron tick(simNow) 목록을 만든다 (#2581 리뷰 P1).
+ *
+ * - `cronIntervalMs` 미지정(기본): fixture가 기록한 **실제** cron cycle 시각
+ *   (`fixture.cycleStartsMs`, P0-a가 실 `handler.scheduled` 호출마다 stamp한 값)을 그대로
+ *   tick으로 쓴다 — 이게 실 P0-a 캡처를 충실히 재생하는 방법이다. 합성 균일 그리드로
+ *   가정하면(예: window.fromMs부터 60s 고정 스텝) 실 캡처의 cron 위상/드리프트와 어긋나
+ *   위상 30/45초 같은 조합에서 매 tick이 어떤 entry의 freshness 창도 못 맞춰 전부 빈 응답
+ *   fallback이 되는 "합성 grid vs 실 데이터" 불일치가 생긴다.
+ * - `cronIntervalMs` 명시: 합성/고밀도 샘플링 fixture(예: 15s 간격으로 캡처해 60s cron을
+ *   흉내내고 싶은 검증용 fixture)를 위해 `fixture.cycleStartsMs[0]`부터 균일 그리드로 건너
+ *   뛴다 — 기존 동작 보존.
+ * - `phaseOffsetMs`는 두 경우 모두 각 tick에 더해지는 상대 오프셋(cron 위상 스윕용).
+ */
+function buildTickSchedule(fixture: ReplayFixture, cronIntervalMs: number | undefined, phaseOffsetMs: number): number[] {
+  if (cronIntervalMs !== undefined) {
+    const startMs = (fixture.cycleStartsMs[0] ?? fixture.window.fromMs) + phaseOffsetMs;
+    const ticks: number[] = [];
+    for (let t = startMs; t <= fixture.window.toMs; t += cronIntervalMs) ticks.push(t);
+    return ticks;
+  }
+  const recorded = fixture.cycleStartsMs.length > 0 ? fixture.cycleStartsMs : [fixture.window.fromMs];
+  return recorded.map((cycleStartMs) => cycleStartMs + phaseOffsetMs);
+}
+
+/**
+ * fixture 시간창을 cron 간격으로 걸으며 실제 `runScheduled`를 재생한다. cycle마다 fresh
+ * `SeoulArrivalClient`(15s 내부 캐시 수명까지 production과 동일하게 재현)를 새로 만들어
+ * fixture 캡처 스트림을 서빙하는 fetchImpl을 주입한다.
+ *
+ * KV(`InMemoryKV`)에는 재생 시계(simNow)를 clock으로 주입한다(#2581 리뷰 P4) — 그렇지
+ * 않으면 `putTrip`의 KV TTL이 실 벽시계 기준으로 만료돼, 재생이 실행에 60초 이상 실 시간을
+ * 쓰거나(느린 머신/장시간 재생) 하면 seed trip이 KV에서 사라져 "거짓 침묵"으로 오염된다.
+ */
+export async function runCaptureReplay(opts: {
+  fixture: ReplayFixture;
+  seedTrips: Trip[];
+  cronIntervalMs?: number;
+  phaseOffsetMs?: number;
+  freshMs?: number;
+  apns?: 'capture';
+}): Promise<ReplayRunResult> {
+  const phaseOffsetMs = opts.phaseOffsetMs ?? 0;
+  const freshMs = opts.freshMs ?? DEFAULT_FRESH_MS;
+  const ticks = buildTickSchedule(opts.fixture, opts.cronIntervalMs, phaseOffsetMs);
+
+  const startMs = ticks[0] ?? opts.fixture.window.fromMs + phaseOffsetMs;
+  let simNow = startMs;
+  // #2581 리뷰 P4 — `trips.ts:putTrip`의 KV TTL clamp(`max(60, floor((expiresAt-Date.now())/1000))`)는
+  // production 코드 내부에서 **실** `Date.now()`를 쓴다(못 바꿈). fixture의 `trip.expiresAt`은
+  // fixture 앵커(과거 고정 epoch) 기준이라 실 Date.now()와의 차는 항상 음수 → 이 clamp가 항상
+  // 최소값(60s)으로 saturate된다. production에서는 이 60s floor가 근접-만료 trip에만 적용되는
+  // 안전판이고 정상 trip은 훨씬 긴 실TTL을 받아 재-put 여부와 무관하게 살아있는데, replay에서는
+  // *모든* seed trip이 이 60s floor를 맞아 매 cycle 재-put(dirty)되지 않으면 KV 레벨에서 소멸한다.
+  // `InMemoryKV`의 만료 판정 시계를 replay 시작 시각(anchor, 고정값)에 못박아 이 저장소 계층의
+  // 부수적 TTL이 도메인 로직(`trip.expiresAt <= deps.now()`, scheduled.ts가 이미 시뮬레이션
+  // 시계로 정확히 판단)과 별개로 재생을 오염시키지 않게 한다 — 재생이 실 벽시계뿐 아니라
+  // "시뮬레이션 시계가 흐른다"는 사실 자체와도 완전히 독립되는 동급 해법.
+  const kv = new InMemoryKV(() => startMs);
+  for (const trip of opts.seedTrips) {
+    await putTrip(kv as unknown as KVNamespace, trip);
+  }
+
+  const apnsConfig = await getTestApnsConfig();
+  const env = makeEnv(kv, apnsConfig);
+
+  const capturedPushes: CapturedPush[] = [];
+  const apnsFetchImpl =
+    opts.apns === 'capture' ? makeCapturingApnsFetch(capturedPushes, () => simNow) : NOOP_APNS_FETCH;
+
+  let pushSeq = 0;
+  const cycles: ReplayCycleResult[] = [];
+
+  for (const tick of ticks) {
+    simNow = tick;
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'KEY',
+      host: 'seoul.api',
+      now: () => tick,
+      fetchImpl: makeCaptureFetch(opts.fixture, () => tick, { freshMs }),
+    });
+
+    const pushCountBefore = capturedPushes.length;
+    const stats = await runScheduled(env, {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetchImpl,
+      now: () => tick,
+      // #2581 리뷰 P6 — 같은 tick 안에서 여러 push가 발사될 수 있어 tick만으로는 충돌한다.
+      generatePushId: () => `replay-${tick}-${pushSeq++}`,
+    });
+
+    cycles.push({ simNowMs: tick, stats, pushes: capturedPushes.slice(pushCountBefore) });
+  }
+
+  return { cycles, pushes: capturedPushes, lossyCapture: hasLossySignal(opts.fixture) };
+}
