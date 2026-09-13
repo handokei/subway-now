@@ -170,12 +170,27 @@ ORDER BY cnt DESC;
 
 Seoul API raw 응답이 `seoul-capture/{YYYY-MM-DD}/{cycleStartMs}.json` (`SeoulCaptureCycle`)로 R2에 쌓인다. 과거 trip 재생용 fixture로 만들려면:
 
-```bash
-# 1) 해당 날짜의 cycle 파일들을 로컬로 다운로드 (R2 IO는 wrangler CLI가 담당)
-mkdir -p /tmp/capture-2026-09-13
-wrangler r2 object get subway-now-telemetry --prefix seoul-capture/2026-09-13/ --destination /tmp/capture-2026-09-13
+`node scripts/buildReplayFixture.mjs`가 소스를 직접(`.ts` 그대로) import하므로 **Node >=23.6**(타입 스트리핑 기본 활성화 버전) 필요 — `package.json`의 `engines.node` 참고.
 
-# 2) 병합해 fixture 생성 (window 미지정 시 cycle 전체 범위 자동 산출)
+```bash
+# 0) wrangler CLI(4.105 기준)는 r2 object get/put/delete만 지원하고 목록 조회(list)가
+#    없다 — prefix로 키를 나열하려면 R2의 S3 호환 API(aws-cli)를 쓴다.
+#    자격증명: Cloudflare dashboard → R2 → Manage R2 API Tokens.
+
+# 1) 해당 날짜의 cycle 키 나열 (S3 호환 API)
+aws s3api list-objects-v2 \
+  --endpoint-url https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+  --bucket subway-now-telemetry \
+  --prefix seoul-capture/2026-09-13/ \
+  --query 'Contents[].Key' --output text | tr '\t' '\n' > /tmp/capture-2026-09-13-keys.txt
+
+# 2) 키마다 wrangler로 다운로드 (R2 IO 자체는 wrangler CLI가 담당, 파일명 = key의 basename)
+mkdir -p /tmp/capture-2026-09-13
+while read -r key; do
+  wrangler r2 object get "subway-now-telemetry/${key}" --file "/tmp/capture-2026-09-13/$(basename "$key")"
+done < /tmp/capture-2026-09-13-keys.txt
+
+# 3) 병합해 fixture 생성 (window 미지정 시 cycle 전체 범위 자동 산출, --from/--to는 한쪽만 줘도 됨)
 cd backend/alarm-worker
 node scripts/buildReplayFixture.mjs --in /tmp/capture-2026-09-13 --out src/__tests__/fixtures/capture_2026-09-13.json
 ```

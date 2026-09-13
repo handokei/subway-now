@@ -3,16 +3,21 @@
  * Seoul capture cycle JSON들(로컬 디렉토리) → 재생 fixture 번들 CLI (#2580, Epic #2239 P0-b).
  *
  * R2 다운로드는 이 스크립트 책임이 아니다 — 사용자/메인이 `wrangler r2 object get`으로
- * 미리 받아둔 로컬 디렉토리를 입력으로 받는다(단순성 우선, 자동화는 P1).
+ * 미리 받아둔 로컬 디렉토리를 입력으로 받는다(단순성 우선, 자동화는 P1). 절차는
+ * `backend/alarm-worker/README.md`의 "Seoul capture → replay fixture" 참고.
  * 병합/정렬/window trim/검증 로직은 전부 `../src/replayFixture.ts`에 있다 — 이 파일은
- * 얇은 파일 I/O + CLI 인자 파싱 셸이다.
+ * 얇은 파일 I/O + CLI 인자 파싱 셸이다(검증 로직을 갖지 않는다, #2580 리뷰).
+ *
+ * `../src/replayFixture.ts`를 직접 import한다 — Node의 타입 스트리핑(TypeScript 타입
+ * 구문 erasure) 기능이 필요하다. `package.json`의 `engines.node` 참고.
  *
  * Usage:
  *   node scripts/buildReplayFixture.mjs --in <captureDir> --out <fixture.json> [--from <ISO|ms>] [--to <ISO|ms>]
+ *   --from/--to는 한쪽만 줘도 된다 — 그 방향만 제약하고 반대쪽은 실제 데이터 범위로 자동 산출한다.
  */
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { buildReplayFixture } from '../src/replayFixture.ts';
+import { buildReplayFixture, parseSeoulCaptureCycle } from '../src/replayFixture.ts';
 
 function parseArgs(argv) {
   const args = {};
@@ -27,7 +32,6 @@ function parseArgs(argv) {
 
 /** ISO 문자열 또는 epoch ms 문자열 → epoch ms. */
 function parseTimeArg(value) {
-  if (value === undefined) return undefined;
   if (/^\d+$/.test(value)) return Number(value);
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
@@ -36,19 +40,23 @@ function parseTimeArg(value) {
   return parsed;
 }
 
-/** cycle 파일 하나를 읽어 SeoulCaptureCycle로 최소 검증. 실패 시 이유와 함께 null. */
+/** cycle 파일 하나를 읽어 SeoulCaptureCycle로 검증(`replayFixture.ts`에 위임). 실패 시 이유와 함께 error. */
 function readCycleFile(filePath) {
-  let parsed;
+  let parsedJson;
   try {
-    parsed = JSON.parse(readFileSync(filePath, 'utf-8'));
+    parsedJson = JSON.parse(readFileSync(filePath, 'utf-8'));
   } catch (err) {
     return { error: `JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}` };
   }
-  if (!parsed || typeof parsed !== 'object') return { error: 'object가 아님' };
-  if (parsed.schemaVersion !== 1) return { error: `schemaVersion !== 1 (got ${parsed.schemaVersion})` };
-  if (typeof parsed.cycleStartMs !== 'number') return { error: 'cycleStartMs가 number가 아님' };
-  if (!Array.isArray(parsed.entries)) return { error: 'entries가 배열이 아님' };
-  return { cycle: parsed };
+  try {
+    return { cycle: parseSeoulCaptureCycle(parsedJson) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function formatBoundLabel(ms) {
+  return ms === undefined ? '(open)' : new Date(ms).toISOString();
 }
 
 function main() {
@@ -74,19 +82,27 @@ function main() {
     cycles.push(result.cycle);
   }
 
-  const fromMs = parseTimeArg(args.from);
-  const toMs = parseTimeArg(args.to);
-  const window = fromMs !== undefined && toMs !== undefined ? { fromMs, toMs } : undefined;
+  const hasFrom = args.from !== undefined;
+  const hasTo = args.to !== undefined;
+  const fromMs = hasFrom ? parseTimeArg(args.from) : undefined;
+  const toMs = hasTo ? parseTimeArg(args.to) : undefined;
+  const window = hasFrom || hasTo ? { fromMs, toMs } : undefined;
 
   const fixture = buildReplayFixture(cycles, window);
   const json = JSON.stringify(fixture, null, 2);
   writeFileSync(args.out, json);
 
+  const { fromMs: appliedFromMs, toMs: appliedToMs } = fixture.window;
+  const { droppedEntries, failedCycleStartsMs } = fixture;
+
   console.log(
     [
       `cycles: ${cycles.length} (skipped: ${skipped})`,
       `entries: ${fixture.entries.length}`,
-      `window: ${new Date(fixture.window.fromMs).toISOString()} ~ ${new Date(fixture.window.toMs).toISOString()}`,
+      `window constraint: from=${formatBoundLabel(fromMs)} to=${formatBoundLabel(toMs)}`,
+      `window (fixture): ${new Date(appliedFromMs).toISOString()} ~ ${new Date(appliedToMs).toISOString()}`,
+      ...(droppedEntries ? [`droppedEntries: ${droppedEntries}`] : []),
+      ...(failedCycleStartsMs?.length ? [`failedCycleStartsMs: ${failedCycleStartsMs.length}`] : []),
       `bytes: ${Buffer.byteLength(json, 'utf-8')}`,
       `out: ${args.out}`,
     ].join('\n'),

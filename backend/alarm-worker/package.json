@@ -5,6 +5,9 @@
   "description": "Cloudflare Worker that polls Seoul Arrival API for active trips and fires APNs silent push when ETA changes or alarm fires.",
   "type": "module",
   "main": "src/index.ts",
+  "engines": {
+    "node": ">=23.6"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
