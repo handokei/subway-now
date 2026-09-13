@@ -187,13 +187,52 @@ aws s3api list-objects-v2 \
 # 2) 키마다 wrangler로 다운로드 (R2 IO 자체는 wrangler CLI가 담당, 파일명 = key의 basename)
 mkdir -p /tmp/capture-2026-09-13
 while read -r key; do
-  wrangler r2 object get "subway-now-telemetry/${key}" --file "/tmp/capture-2026-09-13/$(basename "$key")"
+  wrangler r2 object get "subway-now-telemetry/${key}" --file "/tmp/capture-2026-09-13/$(basename "$key")" --remote
 done < /tmp/capture-2026-09-13-keys.txt
 
 # 3) 병합해 fixture 생성 (window 미지정 시 cycle 전체 범위 자동 산출, --from/--to는 한쪽만 줘도 됨)
 cd backend/alarm-worker
 node scripts/buildReplayFixture.mjs --in /tmp/capture-2026-09-13 --out src/__tests__/fixtures/capture_2026-09-13.json
 ```
+
+## trip 토큰 1개 → fixture 자동 생성 (Epic #2239 P1 / #2586)
+
+위 수동 절차(D1 조회 → R2 키 나열 → 다운로드 → 병합)를 trip 토큰 1개로 원커맨드 실행하는
+도구. 로직(SQL 생성/D1 응답 파싱/registry 스켈레톤)은 `src/fixtureFromTrip.ts`(vitest 커버),
+wrangler/aws CLI 실행은 `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸, `buildReplayFixture.mjs`와
+동일 분리 원칙)에 있다.
+
+```bash
+cd backend/alarm-worker
+node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId> \
+  [--out .fixture-staging/] [--bucket subway-now-telemetry] [--db subway-now-db] [--force]
+```
+
+1. `trip_events`(token_hash 기준, read-only 조회 — 스키마 변경 없음)에서 시간창(min/max
+   ts)·노선·segment 역 목록·실제 fire 이력(`kind='cron-fire-attempt'`)을 뽑는다. 이벤트가
+   없으면(캡처 없음/토큰 오류) 명확한 에러로 즉시 중단한다.
+2. 시간창(±2분 margin, R2 키는 다운로드 전 추가로 ±90초 preRoll 필터) — 걸치는 UTC
+   날짜마다 R2 seoul-capture 키를 나열하고, 시간창 안 키만 `wrangler r2 object get
+   --remote`로 다운로드한다(날짜 prefix 전체를 무조건 받지 않는다 — #2073 quota lesson).
+   일부 날짜 나열이 실패해도 나머지로 계속 진행하고(부분 캡처 허용, stdout에 경고),
+   **전체** 날짜 나열이 실패하면(인증/도구 문제) 원인 에러를 그대로 올려 중단한다.
+3. `buildReplayFixture`(#2580)로 병합해 기본적으로 `.fixture-staging/<slug>.fixture.json`
+   (git-ignored)에 쓴다 — `src/__tests__/fixtures/replayLibrary/`(P2 PR 게이트 디렉토리)에
+   바로 쓰지 않는다. 이미 같은 파일이 있으면 `--force` 없이는 에러로 중단한다(실수로
+   기존 fixture를 덮어쓰지 않도록).
+4. `src/__tests__/replayLibrary.ts`의 `REPLAY_LIBRARY` 배열에 붙여넣을 entry 텍스트
+   스켈레톤을 stdout에 출력한다 — `cronIntervalMs`는 실 캡처 fixture이므로 항상
+   `'recorded'`, `expect.firedStations`는 segment 역 전체로 채운다. `seedTrips`/
+   `description`은 사람이 채워야 하는 후속 작업으로 남는다 — 사람은 등록 diff 확인만
+   하면 된다. 검토가 끝나면 staging 파일을 `src/__tests__/fixtures/replayLibrary/`로
+   옮기고 스켈레톤을 등록한다.
+5. fixture가 캡처 유실 신호(`droppedEntries`/`failedCycleStartsMs`, `isLossyFixture`)를
+   가지면 요약에 경고를 찍고 스켈레톤에 `allowLossy: true`를 자동으로 넣는다.
+
+**Stage 2(nightly 자동 수집 workflow)는 이 이슈 범위에서 제외** — repo에 R2 S3 자격증명을
+가진 secret(`CLOUDFLARE_API_TOKEN` 등)이 아직 없어 CI에서 `aws s3api`/`wrangler r2`를
+인증할 수 없다. secret이 준비되면 후속 이슈로 분리해 nightly cron이 전일 캡처를 trip별로
+훑어 이 도구를 반복 호출 → `replay-fixture/<date>` 브랜치 + PR을 여는 자동화를 추가한다.
 
 ## Replay fixture 라이브러리 — PR 게이트 (Epic #2239 P2 / #2585)
 
