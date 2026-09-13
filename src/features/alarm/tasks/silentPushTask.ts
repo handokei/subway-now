@@ -1034,7 +1034,20 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         // #1628 — R11-b 차단 1건 측정.
         logCrossTripMirrorSkip('mismatch');
       } else {
-        await persistBackendSsotMirror(payload.ssot, receivedAt);
+        // #2593 (code-review 수정) — mirror에 corrId(device 현재 trip 인스턴스, tripToken이
+        // 아님 — corrId를 쓰는 이유는 backendSsotMirror.ts의 SilentPushSsotMirror.corrId 문서
+        // 참조) + sentAt(lastAdvanceAt 동률 tie-break용, payload가 이미 파싱해 둔 값)을 실어
+        // persistBackendSsotMirror의 단조성 가드가 same-trip/다른-trip 및 재정렬 창을 판정할 수
+        // 있게 한다. corrId는 payload가 아니라 device 자체 값 — backend 계약 변경 불필요.
+        const currentCorrId = getCurrentTripCorrIdSync();
+        await persistBackendSsotMirror(
+          {
+            ...payload.ssot,
+            ...(currentCorrId !== null ? { corrId: currentCorrId } : {}),
+            ...(payload.sentAt !== undefined ? { sentAt: payload.sentAt } : {}),
+          },
+          receivedAt,
+        );
       }
     }
 

@@ -3565,6 +3565,54 @@ describe('silentPushTask', () => {
       expect(mirrorCall).toBeUndefined();
     });
 
+    // #2593 (code-review 항목 1/2) — mirror persist 호출부가 device corrId + payload.sentAt를
+    // 실어 보내는지 검증. corrId는 backend payload가 아니라 device 자체 값
+    // (getCurrentTripCorrIdSync)이라 이 테스트가 유일한 wiring 검증 지점이다.
+    it('handleSilentPush persists mirror with device corrId + payload.sentAt when both present', async () => {
+      mockGetCurrentTripCorrIdSync.mockReturnValueOnce('device-corr-xyz');
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+      await handleSilentPush(
+        bgTaskData({
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_009_000,
+          ssot: validSsot,
+        }),
+      );
+      const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+        ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+      );
+      expect(mirrorCall).toBeDefined();
+      const stored = JSON.parse(mirrorCall![1] as string);
+      expect(stored.corrId).toBe('device-corr-xyz');
+      expect(stored.sentAt).toBe(1_700_000_009_000);
+    });
+
+    it('handleSilentPush persists mirror without corrId/sentAt when device corrId null + payload.sentAt absent', async () => {
+      mockGetCurrentTripCorrIdSync.mockReturnValueOnce(null);
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+      await handleSilentPush(
+        bgTaskData({
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          ssot: validSsot,
+        }),
+      );
+      const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+        ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+      );
+      expect(mirrorCall).toBeDefined();
+      const stored = JSON.parse(mirrorCall![1] as string);
+      expect(stored.corrId).toBeUndefined();
+      expect(stored.sentAt).toBeUndefined();
+    });
+
     // R11-b (#1612) — payload.tripToken mismatch 시 mirror write skip (race A 차단).
     // it.each + helper로 4 case 통합 (SonarCloud dup 회피, lesson_sonarcloud_dup_prevention).
     describe('R11-b (#1612) — trip token mismatch 시 mirror write skip', () => {

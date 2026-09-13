@@ -40,6 +40,7 @@ import {
   type LockSuggestionMirror,
   type SilentPushSsotMirror,
 } from '../../alarm/utils/backendSsotMirror';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 
 const log = createLogger('positionUpload');
 
@@ -375,6 +376,16 @@ export async function persistFromPositionResponse(
   body: Partial<PositionResponseBody>,
   receivedAt: number,
 ): Promise<void> {
+  // #2593 (code-review 수정) — 이 함수의 두 write 경로 모두 persistBackendSsotMirror의 단조성
+  // 가드(#2593)를 그대로 통과한다. 특히 legacy fallback 경로(아래)는 lastAdvanceAt을 0 또는
+  // lockSuggestion.decidedAt으로 "합성"하는데, 이 값이 기존에 저장된 더 최신/더 풍부한 mirror
+  // (예: silent push가 이미 최신 역까지 advance시킨 mirror)보다 과거면 가드가 write를 skip한다 —
+  // **의도된 개선**이다: 합성 값은 backend의 실제 SSoT보다 신뢰도가 낮으므로 최신 mirror를
+  // 되돌리면 안 된다(회귀 테스트: `persistFromPositionResponse.test.ts` "legacy 0-stamp는 더
+  // 풍부한 기존 mirror를 못 덮는다"). corrId를 함께 stamp해 같은 trip 안에서만 가드가 적용되게
+  // 한다 — device의 현재 trip 인스턴스 값(`getCurrentTripCorrIdSync()`)이며 payload 계약 변경은
+  // 불필요하다.
+  const currentCorrId = getCurrentTripCorrIdSync();
   // #2261 (ADR-031 Phase 0) — body.ssot(full SSoT)가 있으면 그대로 채택한다. 이전에는
   // lockSuggestion 부재 시 lastAdvanceAt이 0으로 고정돼(never fresh) lockless·정지 trip이 이
   // 채널만으로는 영원히 mirror를 갱신할 수 없었다(deadlock의 절반). full ssot는 backend가 실제
@@ -382,7 +393,10 @@ export async function persistFromPositionResponse(
   // 담고 있어 legacy 부분 합성보다 우선한다.
   if (body.ssot) {
     if (body.ssot.currentStationId.length === 0) return;
-    await persistBackendSsotMirror(body.ssot, receivedAt);
+    await persistBackendSsotMirror(
+      currentCorrId !== null ? { ...body.ssot, corrId: currentCorrId } : body.ssot,
+      receivedAt,
+    );
     return;
   }
   // legacy fallback — 구 backend(ssot 필드 미forward) 호환. currentStationId는 originStationId
@@ -398,6 +412,7 @@ export async function persistFromPositionResponse(
     lastAdvanceAt: body.lockSuggestion?.decidedAt ?? 0,
     passedStations: [],
     ...(body.lockSuggestion ? { lockSuggestion: body.lockSuggestion } : {}),
+    ...(currentCorrId !== null ? { corrId: currentCorrId } : {}),
   };
   await persistBackendSsotMirror(mirror, receivedAt);
 }
