@@ -139,6 +139,18 @@ function deriveDataRange(
 }
 
 /**
+ * fixture가 캡처 유실/실패 신호(`droppedEntries`/`failedCycleStartsMs`)를 갖고 있는지 —
+ * 이 신호가 있으면 이 fixture로 만든 재생 결과(특히 "발사 안 됨" 결론)는 불완전한 입력으로
+ * 만들어진 것이니 신뢰도 판단에 반영해야 한다. 이 판정 로직의 SSoT는 스키마를 소유한 이
+ * 모듈이며, `replayHarness.ts`(runCaptureReplay 결과의 lossyCapture)와
+ * `replay_library.full.test.ts`(라이브러리 lossy 등록 가드) 양쪽이 이 함수 하나를 소비한다
+ * (#2585 리뷰 — 인라인 중복 판정 제거).
+ */
+export function isLossyFixture(fixture: ReplayFixture): boolean {
+  return (fixture.droppedEntries ?? 0) > 0 || (fixture.failedCycleStartsMs?.length ?? 0) > 0;
+}
+
+/**
  * unknown JSON → ReplayFixture 검증 파싱. 필드 타입/불변식이 한 곳이라도 어긋나면
  * 이유를 포함한 Error를 throw한다(`parseBoardingLock`류 방어적 fallback과 달리, fixture는
  * 재생 입력 그 자체라 silent drop 대신 fail-fast가 맞다).

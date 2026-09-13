@@ -15,7 +15,7 @@ import { resetApnsJwtCache, type ApnsConfig } from '../../apns';
 import { putTrip } from '../../trips';
 import { classifyUrl } from '../../seoulCapture';
 import { SeoulArrivalClient } from '../../seoul';
-import type { ReplayFixture } from '../../replayFixture';
+import { isLossyFixture, type ReplayFixture } from '../../replayFixture';
 import type { Env, Trip } from '../../types';
 import { InMemoryKV } from '../inMemoryKv';
 
@@ -176,10 +176,6 @@ function makeCapturingApnsFetch(sink: CapturedPush[], getNow: () => number): typ
 /** APNs push를 캡처하지 않고 전부 200으로 no-op 처리하는 fetchImpl(기존 #2571 패턴). */
 const NOOP_APNS_FETCH: typeof fetch = (async () => new Response('', { status: 200 })) as unknown as typeof fetch;
 
-function hasLossySignal(fixture: ReplayFixture): boolean {
-  return (fixture.droppedEntries ?? 0) > 0 || (fixture.failedCycleStartsMs?.length ?? 0) > 0;
-}
-
 /**
  * 재생할 cron tick(simNow) 목록을 만든다 (#2581 리뷰 P1).
  *
@@ -276,5 +272,5 @@ export async function runCaptureReplay(opts: {
     cycles.push({ simNowMs: tick, stats, pushes: capturedPushes.slice(pushCountBefore) });
   }
 
-  return { cycles, pushes: capturedPushes, lossyCapture: hasLossySignal(opts.fixture) };
+  return { cycles, pushes: capturedPushes, lossyCapture: isLossyFixture(opts.fixture) };
 }

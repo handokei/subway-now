@@ -194,3 +194,29 @@ done < /tmp/capture-2026-09-13-keys.txt
 cd backend/alarm-worker
 node scripts/buildReplayFixture.mjs --in /tmp/capture-2026-09-13 --out src/__tests__/fixtures/capture_2026-09-13.json
 ```
+
+## Replay fixture 라이브러리 — PR 게이트 (Epic #2239 P2 / #2585)
+
+`src/__tests__/fixtures/replayLibrary/`에 등록된 fixture는 매 PR(`npm test` → CI `Backend
+Validation`, #1624)마다 전량 재생돼 회귀를 잡는다. 신규 workflow는 없다 — 테스트 파일로
+존재하는 것 자체가 게이트다.
+
+**새 fixture 추가 절차 (P1 자동 파이프라인 완성 전까지 수동 fallback):**
+
+1. 위 "Seoul capture → replay fixture" 절차로 `ReplayFixture` JSON을 만든다.
+2. 파일을 `src/__tests__/fixtures/replayLibrary/<slug>.fixture.json`로 저장한다(반드시
+   `parseReplayFixture` 통과 — `replay_library.full.test.ts`가 로드 시 검증한다).
+3. `src/__tests__/replayLibrary.ts`의 `REPLAY_LIBRARY` 배열에 entry를 추가한다:
+   - `slug`/`fixturePath`: 파일명과 1:1.
+   - `description`: 앵커하는 회귀/원 사건 이슈 번호.
+   - `seedTrips`: 재생 시작 시점(cron tick 0) trip 상태를 만드는 함수.
+   - `phaseOffsetsMs`: 위상 스윕(기본 `DEFAULT_PHASE_OFFSETS_MS`, cron 위상 무관성 검증).
+   - `expect.firedStations`: **위상 무관 매역 발사돼야 하는 역 전체를 발사 순서대로** —
+     부분집합이 아니라 정확히 일치해야 통과한다(하나라도 빠지면 red).
+   - `expect.forbiddenStations` / `expect.minPushes`: 필요 시에만.
+   - fixture가 `droppedEntries`/`failedCycleStartsMs`(캡처 유실)를 가지면 `allowLossy: true`를
+     명시해야 한다 — 안 하면 테스트가 실패해 불완전 캡처의 조용한 등록을 막는다.
+4. `npx vitest run src/__tests__/replay_library.full.test.ts`로 로컬 확인 후 PR.
+
+디렉터리에 파일만 두고 registry에 등록하지 않으면(또는 그 반대) 즉시 테스트 실패로
+드러난다 — 등록 누락이 조용히 묻히지 않는다.
