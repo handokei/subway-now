@@ -86,6 +86,12 @@ preview_id = "81c2617b485a466e904202fda70b45bc"
 binding = "TELEMETRY_R2"
 bucket_name = "subway-now-telemetry"
 
+# 같은 TELEMETRY_R2 버킷의 또 다른 prefix — cron raw Seoul 응답 캡처 (#2579, Epic #2239 P0-a)
+# record-replay(#2239)의 입력 확보용. active trip이 있던 cycle(scanned>0)에 한해
+# `seoul-capture/{YYYY-MM-DD}/{cycleStartMs}.json`에 arrival/position raw body를 저장한다.
+# 권장 Lifecycle: "Delete objects after 30 days" (재생 하네스 개발 기간만 필요, evidence
+# 목적인 trip-evidence/ 90일보다 짧게 — Cloudflare Dashboard에서 prefix 별 룰 수동 설정).
+
 # D1 SQLite — backend 오류 로그 + trip 메타 (#1835)
 # Phase 1: backend_errors 테이블. Phase 2: trip_metrics 테이블.
 # Phase 3 (station_signals) 는 별도 PR — 사용자 ≥10명 후 진행.

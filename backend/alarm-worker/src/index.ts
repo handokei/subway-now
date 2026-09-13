@@ -77,6 +77,7 @@ import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled, toSilentPushSsot } from './scheduled';
+import { createSeoulCaptureRecorder, flushSeoulCapture, buildSeoulCaptureKey } from './seoulCapture';
 import * as Sentry from '@sentry/cloudflare';
 import {
   addValidateRejectBreadcrumb,
@@ -2976,11 +2977,16 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
 // `handler.scheduled`를 직접 단위 테스트하려면 HOC를 우회할 진입점이 필요하다.
 export const handler = {
   fetch: app.fetch,
-  async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     sentryInit(env);
+    // #2579 (Epic #2239 P0-a) — cron cycle 동안의 Seoul API raw 요청/응답을 fetchImpl
+    // 레벨에서 캡처한다. 파싱 로직(seoul.ts)은 그대로, recorder는 순수 관찰자.
+    const cycleStartMs = Date.now();
+    const seoulCaptureRecorder = createSeoulCaptureRecorder(env.SEOUL_API_KEY);
     const seoul = new SeoulArrivalClient({
       apiKey: env.SEOUL_API_KEY,
       host: env.SEOUL_API_HOST,
+      fetchImpl: seoulCaptureRecorder.fetchImpl,
     });
     const apnsConfig = {
       keyId: env.APNS_KEY_ID,
@@ -3020,6 +3026,26 @@ export const handler = {
     } catch (err) {
       void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
       throw err;
+    }
+    // #2579 (Epic #2239 P0-a) — active trip이 있던 cycle(scanned>0)에 한해 캡처를 R2로
+    // flush. idle cycle write 0 게이트(#2073 lesson 재발 금지). flush 실패는 cron 본
+    // 흐름에 영향을 주면 안 되므로 waitUntil + swallow.
+    if (env.TELEMETRY_R2 && scheduledStats.scanned > 0 && seoulCaptureRecorder.entries.length > 0) {
+      const cycle = {
+        schemaVersion: 1 as const,
+        cycleStartMs,
+        scanned: scheduledStats.scanned,
+        polled: seoulCaptureRecorder.entries.length,
+        entries: seoulCaptureRecorder.entries,
+      };
+      const r2 = env.TELEMETRY_R2;
+      const key = buildSeoulCaptureKey(cycleStartMs);
+      const bytes = cycle.entries.reduce((sum, e) => sum + e.body.length, 0);
+      ctx.waitUntil(
+        flushSeoulCapture(r2, cycle)
+          .then(() => log('seoul-capture flushed', { key, entries: cycle.entries.length, bytes }))
+          .catch((err) => void captureBackendException(env, err, { path: 'scheduled/seoulCapture' })),
+      );
     }
     // #2160 (follow-up of #2151) — boardingPrompt counter를 이번 tick의 delta로 누적 KV 키에
     // read-modify-write. delta 전부 0이면 accumulate 함수 내부에서 KV read/write 자체를 skip
