@@ -12,12 +12,15 @@
  * 사용자 다수가 WhileInUse라서 BG에서 client-side LA push는 0건이 된다.
  *
  * silent push는 권한에 무관하게 도달하므로, payload `kind`와 상관없이 모든 silent push가
- * AsyncStorage SSOT(`ROUTE_KEY` / `DESTINATION_KEY` / `BG_LAST_STATION_KEY` / `BOARDING_LOCK_KEY`)
+ * AsyncStorage SSOT(`ROUTE_KEY` / `DESTINATION_KEY` / `BG_LAST_STATION_KEY` / `BACKEND_SSOT_MIRROR_KEY`)
  * 를 읽어 LA를 재계산해 한 번 발사한다.
  *
  *   - destination 없음 → trip 종료 의미 → `endLiveActivity` 호출
- *   - currentStation 결정 불가 (BG_LAST_STATION 부재 + lock의 boarding station 매칭 실패)
- *     → no-op (안전: 기존 LA 마지막 정상 상태 유지)
+ *   - currentStation 결정 순서 (#2589 — 확정 아키텍처: backend추적 → LA 표시 SSoT):
+ *     1. backend SSoT mirror (fresh ≤180s, `resolveBackendSsotMirrorStation` 경유 — line 불일치는
+ *        거부(null)해 다음 tier로. 활성 LA 없으면 update-only 가드로 no-op) — GPS 사망 상태에서도 우선
+ *     2. BG_LAST_STATION(GPS) — mirror 부재/stale/거부 시 폴백
+ *     3. 없음 → no-op (안전: 기존 LA 마지막 정상 상태 유지)
  *   - 그 외 → `buildLiveActivityData` → `updateLiveActivity`
  *
  * zustand store는 BG에서 접근 불가하므로 AsyncStorage만 사용한다. iOS 외 플랫폼은 native
@@ -33,12 +36,14 @@ import {
   DESTINATION_KEY,
   ROUTE_KEY,
 } from '../../../shared/constants/storageKeys';
+import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
+import { readBackendSsotMirror, resolveBackendSsotMirrorStation } from './backendSsotMirror';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -56,8 +61,8 @@ function safeParse<T>(raw: string | null): T | null {
 
 /**
  * BG_LAST_STATION 형식 — `backgroundLocationTask`가 적재. WhileInUse 사용자는 BG task가
- * 동작하지 않으므로 키가 비어 있는 게 정상 — 그 경우 boardingLock의 boarding station을
- * 폴백 currentStation으로 사용한다 (대안: 위치 정보 없으면 LA 갱신 무의미하므로 no-op).
+ * 동작하지 않으므로 키가 비어 있는 게 정상 — 이 경우 currentStation 결정 순서(#2589, 파일 상단
+ * 헤더 참조)의 2순위가 채택 실패하고, 1순위(backend SSoT mirror)도 없으면 3순위(no-op)로 떨어진다.
  */
 interface BgLastStation {
   station: Station;
@@ -106,10 +111,11 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       logger.info('LA dismiss sentinel active — skip refresh');
       return;
     }
-    const [destRaw, routeRaw, bgRaw, tripToken] = await Promise.all([
+    // #2589 (code review 효율) — destination/tripToken만 먼저 읽어 destination-absent 조기
+    // return과 #2481 backend-authority skip 게이트를 최소 I/O로 먼저 판정한다. 두 게이트 모두
+    // route/bg/mirror 값이 필요 없으므로, skip되는 trip에서 route/bg/mirror read를 낭비하지 않는다.
+    const [destRaw, tripToken] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
-      AsyncStorage.getItem(ROUTE_KEY),
-      AsyncStorage.getItem(BG_LAST_STATION_KEY),
       AsyncStorage.getItem(ACTIVE_TRIP_KEY),
     ]);
 
@@ -120,23 +126,67 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       return;
     }
 
-    const bg = readBgLastStation(bgRaw);
-    // bg가 없으면 LA 갱신용 currentStation 추정 불가 → no-op으로 마지막 정상 상태 유지.
-    // boardingLock fallback은 사용자가 다수 역 진행한 후에도 boarding station을 표시해
-    // stale을 부르고(P1 #3), 활성 LA 없는 상태에서 update가 새 LA를 시작해(P1 #1)
-    // lockscreen에 의도치 않은 LA를 띄울 위험. 둘 다 본 가드로 차단.
-    if (!bg) {
-      logger.info('BG_LAST_STATION absent — skip refresh (preserve last LA state)');
-      return;
-    }
     // #2481 — backend-authority 모드 + 이미 backend가 이 trip의 LA push 채널을 쥐고 있으면
-    // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2).
+    // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2). route/bg/mirror
+    // read 전에 판정해 skip 트립에서 그 read들을 낭비하지 않는다(code review 효율 항목).
     if (shouldSkipDeviceLiveActivityWrite(tripToken)) {
       logger.info('backend-authority active trip — skip BG LA refresh write');
       return;
     }
-    const currentStation = bg.station;
-    const distanceM = Math.round(bg.distanceKm * 1000);
+
+    // #2589 — currentStation SSoT 결정 순서 (확정 아키텍처: backend추적 → LA 표시).
+    // 1순위: backend SSoT mirror (fresh ≤180s — cascade picker와 동일 상한,
+    //   BACKEND_SSOT_MIRROR_MAX_AGE_MS). GPS 사망(지하/데스크) 상태에서도 backend가 이미
+    //   advance 게이트를 통과한 위치를 신뢰한다. 역/노선 resolve는 FG cascade picker
+    //   (`useFusedNearestStation` ssotGuardResult)와 동일한 `resolveBackendSsotMirrorStation`을
+    //   공유 — line 불일치는 "보정"이 아니라 "거부"(null)해 다음 tier로 넘긴다(code review 1/2번,
+    //   판정 로직 drift 방지).
+    // 2순위: BG_LAST_STATION(GPS, backgroundLocationTask 적재) — mirror 부재/stale/거부 시 폴백.
+    // 3순위: 없음 — no-op으로 마지막 정상 LA 상태 유지 (boardingLock fallback은 stale
+    //   "탑승역" 표시(P1 #3) 위험이 있어 의도적으로 채택하지 않음 — 기존 동작 유지).
+    const [routeRaw, bgRaw, mirror] = await Promise.all([
+      AsyncStorage.getItem(ROUTE_KEY),
+      AsyncStorage.getItem(BG_LAST_STATION_KEY),
+      readBackendSsotMirror(),
+    ]);
+    const mirrorFresh =
+      mirror !== null && Date.now() - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+    const mirrorStation = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
+
+    const bg = readBgLastStation(bgRaw);
+
+    let currentStation: Station | null = null;
+    let distanceM = 0;
+    let source: 'backend-ssot' | 'gps-bg' = 'gps-bg';
+    if (mirrorStation) {
+      // #2589 (code review 3번, P1 #1 클래스) — mirror-sourced 경로는 update-only. 활성 LA가
+      // 없으면 native `update()`가 내부적으로 `start()`로 fall-through해 BG 컨텍스트에서
+      // 사용자가 본 적 없는 새 LA를 생성할 위험이 있다(LiveActivityManager.swift). 기존
+      // BG_LAST_STATION 경로는 이 가드 없이 그대로 둔다(현행 보존 지시) — mirror 경로만 신규
+      // 위험이라 새로 도입.
+      if (!LiveActivity.hasActiveLiveActivity()) {
+        logger.info(
+          `la-refresh source=backend-ssot but no active LA — skip (update-only, no create): ${mirrorStation.name}`,
+        );
+        return;
+      }
+      currentStation = mirrorStation;
+      // backend mirror는 GPS distance를 싣지 않는다 — backend가 이미 "이 역에 있다"고
+      // advance 확정한 상태이므로 0m(도착)로 표시한다.
+      distanceM = 0;
+      source = 'backend-ssot';
+    } else if (bg) {
+      currentStation = bg.station;
+      distanceM = Math.round(bg.distanceKm * 1000);
+      source = 'gps-bg';
+    }
+
+    if (!currentStation) {
+      logger.info(
+        'no currentStation source (mirror stale/absent/rejected + BG_LAST_STATION absent) — skip refresh (preserve last LA state)',
+      );
+      return;
+    }
     const route = safeParse<Route>(routeRaw);
 
     // BG 컨텍스트는 ETA/alarm을 계산하지 않는다 — silent push가 알람을 별도로 발사하고,
@@ -153,7 +203,10 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       null,
     );
     await LiveActivity.updateLiveActivity(data);
-    logger.info(`LA refreshed: ${currentStation.name} → ${destination.name}`);
+    // #2589 — V/X 대시보드(DebugModal alarm log)에서 currentStation SSoT 출처 관측용.
+    logger.info(
+      `la-refresh source=${source}: ${currentStation.name} → ${destination.name}`,
+    );
   } catch (e) {
     logger.warn('refresh failed:', e);
   }

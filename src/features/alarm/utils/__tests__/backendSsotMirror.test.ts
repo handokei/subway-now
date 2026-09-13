@@ -10,6 +10,7 @@ import {
   clearBackendSsotMirror,
   persistBackendSsotMirror,
   readBackendSsotMirror,
+  resolveBackendSsotMirrorStation,
 } from '../backendSsotMirror';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../../shared/constants/storageKeys';
 
@@ -498,5 +499,62 @@ describe('persistBackendSsotMirror TOCTOU 직렬화 (#2593)', () => {
     await Promise.all([callA, callB]);
     const finalStored = JSON.parse(fakeStore[BACKEND_SSOT_MIRROR_KEY]);
     expect(finalStored.currentStationId).toBe('군자');
+  });
+});
+
+/**
+ * #2589 (code review 1/2번) — mirror→Station 해석 단일 진입점. FG cascade picker
+ * (`useFusedNearestStation` ssotGuardResult)와 LA refresh(`refreshLiveActivityFromBackgroundContext`)
+ * 가 공유한다. 핵심 계약: line 불일치는 "보정"이 아니라 "거부(null)".
+ */
+describe('resolveBackendSsotMirrorStation (#2589 code review)', () => {
+  it('lockLine 주어짐 + 실제 서비스 line과 일치 → 채택', () => {
+    const result = resolveBackendSsotMirrorStation({ currentStationId: '강남' }, '2');
+    expect(result).toEqual(expect.objectContaining({ name: '강남', line: '2' }));
+  });
+
+  it('lockLine 주어짐 + 실제 서비스하지 않는 line → 거부(null), 보정하지 않음', () => {
+    // 강남은 2/sinbundang만 서비스 — 7호선 없음. 예전 정합 가드였다면 실제 line으로 "교정"해
+    // 채택했겠지만, 이 함수는 신뢰 불가 판정으로 보고 무조건 거부한다.
+    const result = resolveBackendSsotMirrorStation({ currentStationId: '강남' }, '7');
+    expect(result).toBeNull();
+  });
+
+  it('lockLine 없음 + currentStationLine이 실제와 일치 → 채택', () => {
+    const result = resolveBackendSsotMirrorStation({
+      currentStationId: '성수',
+      currentStationLine: '2',
+    });
+    expect(result).toEqual(expect.objectContaining({ name: '성수', line: '2' }));
+  });
+
+  it('lockLine 없음 + currentStationLine이 실제와 불일치(성수 7호선 클래스, #2556) → 거부(null)', () => {
+    // 성수는 stations.json 기준 2호선만 서비스 — 7호선 없음. 예전 구현은
+    // resolveConsistentStationLine으로 실제 line(2)에 "보정"해 채택했으나, 이는 FG
+    // ssotGuardResult의 기존 거부 계약과 어긋난다. 본 함수는 거부한다.
+    const result = resolveBackendSsotMirrorStation({
+      currentStationId: '성수',
+      currentStationLine: '7',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('lockLine/currentStationLine 둘 다 없음(legacy v1 mirror) → name-only fallback', () => {
+    const result = resolveBackendSsotMirrorStation({ currentStationId: '강남' });
+    expect(result).toEqual(expect.objectContaining({ name: '강남' }));
+  });
+
+  it('lockLine이 currentStationLine보다 우선한다', () => {
+    // lockLine('2')이 currentStationLine('7', 성수 기준 무효)보다 우선 채택되어 성공해야 함.
+    const result = resolveBackendSsotMirrorStation(
+      { currentStationId: '성수', currentStationLine: '7' },
+      '2',
+    );
+    expect(result).toEqual(expect.objectContaining({ name: '성수', line: '2' }));
+  });
+
+  it('역명 자체가 stations.json에 없음 → null', () => {
+    const result = resolveBackendSsotMirrorStation({ currentStationId: '존재하지않는역이름' });
+    expect(result).toBeNull();
   });
 });

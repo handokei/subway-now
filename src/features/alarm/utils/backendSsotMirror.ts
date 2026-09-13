@@ -13,6 +13,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+import type { LineNumber, Station } from '../../../shared/types/station';
+import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 
 const logger = createLogger('BackendSsotMirror');
 
@@ -337,4 +339,38 @@ function parseLockSuggestion(raw: unknown): LockSuggestionMirror | null {
     confidence: o.confidence,
     decidedAt: o.decidedAt,
   };
+}
+
+/**
+ * #2589 (code review) — backend SSoT mirror의 currentStationId(+line)를 stations.json Station으로
+ * 해석하는 단일 진입점. FG cascade picker(`useFusedNearestStation`의 `ssotGuardResult`)와 BG LA
+ * refresh(`refreshLiveActivityFromBackgroundContext`)가 동일 함수를 공유해, 같은 입력에 서로 다른
+ * 판정(한쪽은 line 불일치를 "보정", 다른 쪽은 "거부")이 발생하는 의미론 drift를 원천 차단한다.
+ *
+ * 의미론(FG 기존 계약과 100% 동일, additive 아님 — 순수 추출):
+ *   - `lockLine`(사용자가 탑승 확정한 노선) 주어짐 → 그 line으로 정확 매칭만. 불일치/미존재면 **거부(null)**.
+ *   - `lockLine` 없고 `mirror.currentStationLine`(backend forward) 있음 → 그 line으로 정확 매칭만.
+ *     불일치/미존재면 **거부(null)** — ADR-038 `resolveConsistentStationLine`처럼 다른 실제 노선으로
+ *     "보정"하지 않는다. 보정은 이미 채택된 station의 표시 노선 통일용(다른 문제)이지, mirror
+ *     자체의 신뢰성 판정(채택 여부)에는 부적합 — 틀린 노선을 보정해 채택하면 그 mirror가 애초에
+ *     신뢰 불가능한 상태(동명 환승역 오매칭 등)라는 신호를 무시하게 된다.
+ *   - 둘 다 없음(legacy v1 mirror, currentStationLine 필드 자체 부재) → name-only fallback(기존 동작).
+ *
+ * 거부(null) 시 caller는 다음 cascade tier로 fallback한다 — FG는 estimator/GPS, LA refresh는
+ * BG_LAST_STATION(GPS).
+ */
+export function resolveBackendSsotMirrorStation(
+  mirror: Pick<SilentPushSsotMirror, 'currentStationId' | 'currentStationLine'>,
+  lockLine?: LineNumber,
+): Station | null {
+  if (lockLine !== undefined) {
+    return findStationByNameAndLine(mirror.currentStationId, lockLine);
+  }
+  if (mirror.currentStationLine !== undefined) {
+    return findStationByNameAndLine(
+      mirror.currentStationId,
+      mirror.currentStationLine as LineNumber,
+    );
+  }
+  return findStationByName(mirror.currentStationId);
 }

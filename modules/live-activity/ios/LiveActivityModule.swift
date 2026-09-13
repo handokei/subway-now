@@ -74,6 +74,16 @@ public class LiveActivityModule: Module {
             return false
         }
 
+        // #2589 (code review) — update-only 소비자(BG mirror-sourced LA refresh)가 native
+        // `update()`의 start-fallthrough(활성 Activity 없으면 새로 start)를 우회할 수 있도록
+        // 활성 Activity 존재 여부를 조회.
+        Function("hasActiveLiveActivity") { () -> Bool in
+            if #available(iOS 16.2, *) {
+                return LiveActivityManager.hasActiveActivity()
+            }
+            return false
+        }
+
         AsyncFunction("saveWidgetStation") { (stationName: String, lineColor: String, distanceM: Int, savedAtMs: Double) in
             guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return }
             defaults.set(stationName, forKey: WIDGET_KEY_STATION_NAME)

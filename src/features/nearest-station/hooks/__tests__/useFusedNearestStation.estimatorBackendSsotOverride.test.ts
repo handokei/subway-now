@@ -45,7 +45,12 @@ jest.mock('../../utils/findNearestStation', () => ({ findTopNearestStations: jes
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
-jest.mock('../../../alarm/utils/backendSsotMirror', () => ({ readBackendSsotMirror: jest.fn() }));
+// #2589 (code review 2번) — resolveBackendSsotMirrorStation은 실제 구현(순수 함수, 실 stations.json
+// 경유)을 유지. readBackendSsotMirror만 이 파일의 시나리오대로 mock.
+jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  ...jest.requireActual('../../../alarm/utils/backendSsotMirror'),
+  readBackendSsotMirror: jest.fn(),
+}));
 
 const mockNearest = useNearestStation as jest.Mock;
 const mockArrival = useArrivalInfo as jest.Mock;
