@@ -11,6 +11,7 @@ import {
   persistBackendSsotMirror,
   readBackendSsotMirror,
   resolveBackendSsotMirrorStation,
+  isBackendSsotMirrorFresh,
 } from '../backendSsotMirror';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../../shared/constants/storageKeys';
 
@@ -499,6 +500,39 @@ describe('persistBackendSsotMirror TOCTOU 직렬화 (#2593)', () => {
     await Promise.all([callA, callB]);
     const finalStored = JSON.parse(fakeStore[BACKEND_SSOT_MIRROR_KEY]);
     expect(finalStored.currentStationId).toBe('군자');
+  });
+});
+
+/**
+ * #2591 (code review 7번) — freshness(≤180s) 단일 진입점. `useBackendSsotMirrorPoll`
+ * (FG 5s 폴링) / `refreshLiveActivityFromBackgroundContext`(BG LA 갱신) / 로컬 boarding-prompt
+ * 억제 게이트(`fireLocalBoardingPromptNotification`) 3곳이 공유한다.
+ */
+describe('isBackendSsotMirrorFresh (#2591 code review 7번)', () => {
+  const baseEntry = {
+    currentStationId: '중곡',
+    motionState: 'moving' as const,
+    lastAdvanceEvidence: 'arvlcd',
+    lastAdvanceAt: 1_000,
+    passedStations: [],
+    receivedAt: 1_000,
+  };
+
+  it('mirror가 null이면 false', () => {
+    expect(isBackendSsotMirrorFresh(null, 200_000)).toBe(false);
+  });
+
+  it('180s 이내면 true', () => {
+    expect(isBackendSsotMirrorFresh(baseEntry, 1_000 + 179_000)).toBe(true);
+  });
+
+  it('180s 초과면 false', () => {
+    expect(isBackendSsotMirrorFresh(baseEntry, 1_000 + 180_001)).toBe(false);
+  });
+
+  it('now 생략 시 Date.now() 기준으로 판정한다', () => {
+    const fresh = { ...baseEntry, receivedAt: Date.now() };
+    expect(isBackendSsotMirrorFresh(fresh)).toBe(true);
   });
 });
 

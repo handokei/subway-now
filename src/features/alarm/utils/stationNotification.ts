@@ -11,7 +11,7 @@ import { Platform } from 'react-native';
 import i18next from 'i18next';
 import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
-import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../../shared/utils/stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName, isSameStationName } from '../../../shared/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import * as LiveActivity from 'live-activity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -39,10 +39,16 @@ import {
 } from './notificationSource';
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
-import { readBackendSsotMirror } from './backendSsotMirror';
-import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
+import {
+  readBackendSsotMirror,
+  isBackendSsotMirrorFresh,
+  resolveBackendSsotMirrorStation,
+  type BackendSsotMirrorEntry,
+} from './backendSsotMirror';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
+import { getLegAdvance } from './legAdvanceStorage';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
-import { BOARDING_PROMPT_CATEGORY } from './notificationCategory';
+import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from './notificationCategory';
 import type { LineNumber } from '../../../shared/types/station';
 import {
   logPushReceipt,
@@ -61,6 +67,17 @@ const allStations = stationsData as Station[];
 
 const notifLogger = createLogger('Notification');
 const liveActivityLogger = createLogger('LiveActivity');
+
+/**
+ * #2591 (code review 8번, SonarCloud dup 회피) — iOS `interruptionLevel: 'timeSensitive'`
+ * 옵션 spread 단일 진입점. `fireLocalAlarmNotification`/`fireLocalBoardingPromptNotification`
+ * (본 파일)과 `lastTrainAlarm.ts`/`silentPushTask.ts`(skew-fallback)까지 동일한
+ * `...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const })` 4개 사본이
+ * 있었다 — 이 함수로 통합해 4곳 모두 재사용한다.
+ */
+export function iosTimeSensitiveOption(): { interruptionLevel: 'timeSensitive' } | Record<string, never> {
+  return Platform.OS === 'ios' ? { interruptionLevel: 'timeSensitive' } : {};
+}
 
 export const NOTIFICATION_ID = 'current-station';
 export const ALARM_NOTIFICATION_ID = 'station-alarm';
@@ -102,6 +119,14 @@ export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
       const isAlarm = notification.request.identifier === ALARM_NOTIFICATION_ID;
+      // #2591 (code review 1번, 치명) — 이 FG 핸들러가 shouldPlaySound를 ALARM_NOTIFICATION_ID
+      // identifier로만 게이트해, boarding/disembark-prompt(로컬 발사 채널, FG 전용)는 content에
+      // sound를 실어도 FG에서 항상 무음 처리됐다(root — 헤드라인 presentation 동급화만으로는
+      // 무효). 두 prompt 카테고리(BOARDING_PROMPT_CATEGORY/DISEMBARK_PROMPT_CATEGORY)도
+      // hasSound와 함께 shouldPlaySound=true로 취급한다.
+      const isPromptCategory =
+        notification.request.content.categoryIdentifier === BOARDING_PROMPT_CATEGORY ||
+        notification.request.content.categoryIdentifier === DISEMBARK_PROMPT_CATEGORY;
       const hasSound = notification.request.content.sound != null;
       // #574 P2e — silent push가 이미 fired한 pushId의 alert fallback이 race로 도달했을 때
       // FG에서 중복 표시 차단. BG에선 iOS가 직접 표시해 JS 개입 불가(P2e 한계 명시).
@@ -126,7 +151,7 @@ export function setupNotificationHandler(): void {
         shouldShowAlert: true,
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: isAlarm && hasSound,
+        shouldPlaySound: (isAlarm || isPromptCategory) && hasSound,
         shouldSetBadge: false,
       };
     },
@@ -249,6 +274,12 @@ async function isRecentLocalAuxFireDuplicate(
 /** boarding-prompt local fire dedup 키 kind — `recentLocalStationFires`(#2122 station-passed
  *  선례) 재사용. station name과 조합해 `${kind}:${stationName}` 키를 만든다. */
 export const LOCAL_BOARDING_PROMPT_FIRE_KIND = 'boarding-prompt';
+
+/** #2591 (code review 6번) — 로컬 boarding-prompt 억제 판정 자체의 TTL dedup 키. 발사
+ *  dedup(`LOCAL_BOARDING_PROMPT_FIRE_KIND`)와 별개 kind — 억제된 origin은 이 TTL 동안
+ *  mirror/legAdvance 재조회·재로깅 없이 조용히 skip한다(호출부가 매 polling cycle마다
+ *  재평가하는 `useLocalBoardingPromptGate` 특성상 무한 재실행 IO/로그 스팸을 방지). */
+export const LOCAL_BOARDING_PROMPT_SUPPRESS_KIND = 'boarding-prompt-suppressed';
 
 /**
  * #2422 — backend remote boarding-prompt alert push(`data.kind === 'boarding-prompt'`)가,
@@ -739,7 +770,7 @@ export async function fireLocalAlarmNotification(
       priority: Notifications.AndroidNotificationPriority.MAX,
     }),
     // NOTE: critical Entitlement 승인 후 'critical'로 변경 → Sleep Focus 완전 관통
-    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
+    ...iosTimeSensitiveOption(),
   });
   notifLogger.info('로컬 알람(minimal-alarm):', title, body);
   addDomainBreadcrumb('alarm', 'fire-local', {
@@ -847,6 +878,78 @@ export function buildBoardingPromptContent(
 const LOCAL_BOARDING_PROMPT_ID_PREFIX = 'boarding-prompt-local';
 
 /**
+ * #2591 (code review 3번) — backend SSoT mirror가 가리키는 역이 origin과 실제로 "다른 역"인지
+ * 판정하는 단일 진입점. 문자열 raw 비교(`mirror.currentStationId !== originStation`)는
+ * #1410/#2566 클래스의 표기 drift(같은 역의 다른 표기)를 진행으로 오판할 위험이 있어,
+ * `resolveBackendSsotMirrorStation`(canonical Station 해석, #2589 SSoT 진입점)로 먼저 resolve하고
+ * `isSameStationName`(별칭/정규화 동일성, `normalizeStationName` 경유)으로 비교한다.
+ *
+ * - resolve 실패('unresolved') — mirror의 역/노선 조합이 stations.json에서 해석되지 않음(데이터
+ *   drift 의심). 판정 불확실 = 발사(억제 안 함, item 3 명시 요구사항).
+ * - 'confirmed-same' — 정규화 후 origin과 동일 — 여전히 출발역(#2422 SPOF 커버 유지, 발사).
+ * - 'confirmed-different' — 정규화 후에도 다른 역 — 여정 진행 확정(억제 대상).
+ */
+function classifyMirrorAgainstOrigin(
+  mirror: Pick<BackendSsotMirrorEntry, 'currentStationId' | 'currentStationLine'>,
+  originStation: string,
+): 'confirmed-different' | 'confirmed-same' | 'unresolved' {
+  const resolved = resolveBackendSsotMirrorStation(mirror);
+  if (resolved === null) return 'unresolved';
+  return isSameStationName(resolved.name, originStation) ? 'confirmed-same' : 'confirmed-different';
+}
+
+type LocalBoardingPromptMirrorGate =
+  | { action: 'suppress'; reason: 'journey-progressed' }
+  | {
+      action: 'fire';
+      /** 발사는 하되 mirror가 이 판정에 쓰이지 못한 이유(잔여 창 field 진단용, item 4). */
+      mirrorDiagnostic?: 'mirror-missing' | 'mirror-stale' | 'mirror-cross-trip' | 'mirror-unresolved';
+    };
+
+/**
+ * #2591 (code review 2/3/4번) — backend SSoT mirror 기반 여정 진행 판정. 원칙(코디네이터 지시,
+ * #2606 transfer 리스트 게이트와 반대 방향): 이 게이트는 "사용자 명시 의향" 게이트의 SPOF
+ * 보조망이라 **판정 불확실 시 보수 = 발사(억제 아님)** — #2606은 반대로 보수=거부다. 그래서
+ * mirror가 조금이라도 신뢰 불가능/불확실하면 무조건 'fire'를 반환한다.
+ *
+ * - mirror 부재 → fire(mirror-missing).
+ * - #2591 (code review 2번) — corrId 교차 가드. mirror.corrId와 현재 trip corrId
+ *   (`getCurrentTripCorrIdSync`)가 둘 다 있고 불일치하면, 옛 trip의 mirror가 race로 revive되어
+ *   새 trip 첫 프롬프트를 잘못 억제하는 것(race A)을 막기 위해 이 mirror를 판정에 쓰지 않는다
+ *   → fire(mirror-cross-trip). 어느 한쪽이 없으면(레거시 저장분 등) 기존처럼 same-trip 취급.
+ * - stale(>180s, `isBackendSsotMirrorFresh`) → fire(mirror-stale) — backend 생존이 확인되지
+ *   않아 SPOF 커버가 여전히 필요하다.
+ * - fresh + `classifyMirrorAgainstOrigin`이 'unresolved' → fire(mirror-unresolved).
+ * - fresh + 'confirmed-same' → fire(진단 태그 없음 — 정상 SPOF 발사).
+ * - fresh + 'confirmed-different' → suppress('journey-progressed') — backend 생존 + 여정
+ *   진행이 모두 확정된 유일한 케이스.
+ */
+function evaluateLocalBoardingPromptMirrorGate(
+  mirror: BackendSsotMirrorEntry | null,
+  originStation: string,
+): LocalBoardingPromptMirrorGate {
+  if (mirror === null) return { action: 'fire', mirrorDiagnostic: 'mirror-missing' };
+
+  const currentCorrId = getCurrentTripCorrIdSync();
+  if (mirror.corrId !== undefined && currentCorrId !== null && mirror.corrId !== currentCorrId) {
+    return { action: 'fire', mirrorDiagnostic: 'mirror-cross-trip' };
+  }
+
+  if (!isBackendSsotMirrorFresh(mirror)) {
+    return { action: 'fire', mirrorDiagnostic: 'mirror-stale' };
+  }
+
+  const classification = classifyMirrorAgainstOrigin(mirror, originStation);
+  if (classification === 'unresolved') {
+    return { action: 'fire', mirrorDiagnostic: 'mirror-unresolved' };
+  }
+  if (classification === 'confirmed-same') {
+    return { action: 'fire' };
+  }
+  return { action: 'suppress', reason: 'journey-progressed' };
+}
+
+/**
  * #2422 (방향 A) — device FG 로컬 boarding-prompt 단일권위 발사.
  *
  * backend remote alert push(주 채널)가 미발송/전달실패해도 device가 FG에서 동일 게이트
@@ -865,18 +968,24 @@ const LOCAL_BOARDING_PROMPT_ID_PREFIX = 'boarding-prompt-local';
  * 반환값은 실제 발사 여부(테스트/로깅 용) — 게이트 자체는 caller(`useLocalBoardingPromptGate`)가
  * 이미 통과한 상태로 호출한다.
  *
- * #2591 — 데스크 trip 실증(무음·무진동 전달 + "용마산 탑승?" 오표기 의심)에서 확정된 fix 2건:
+ * #2591 — 데스크 trip 실증(무음·무진동 전달 + "용마산 탑승?" 오표기 의심)에서 확정된 fix:
  * 1) presentation 동급화 — backend 채널(`sendBoardingPromptPush`, apns.ts)은 이미
- *    `sound: default` + `interruption-level: time-sensitive`인데 이 로컬 채널만 미전달이었다.
+ *    `sound: default` + `interruption-level: time-sensitive`인데 이 로컬 채널만 미전달이었다
+ *    (Android도 `fireLocalAlarmNotification`과 동형으로 ALARM_CHANNEL_ID + MAX priority 지정).
  *    사용자 게이트(놓치면 leg가 lockless로 남음)이므로 도착 알림과 동급 이상의 주의 획득이 필요.
- * 2) 여정 진행 중 억제 게이트 — backend SSoT mirror가 fresh(≤180s)하고 mirror의 현재역이
- *    originStation과 다르면(=여정이 이미 진행 중이고 backend가 살아있다는 증거) 발사를
- *    skip한다. 이 로컬 채널의 존재 이유(#2422)는 "backend register는 됐지만 cron/APNs 전달이
- *    실패"하는 SPOF 커버인데, mirror fresh는 정확히 그 반대(backend 생존) 증거이고, origin
- *    이탈은 GPS가 여정 중반에 origin 근방으로 재근접한 것(2026-09-13 실증 케이스)일 뿐 새
- *    탑승 게이트가 아니다 — 이 조합에서 발사하면 잘못된 역으로 사용자를 오도한다. mirror가
- *    stale/부재(backend 생존 미확인)거나 mirror==origin(여전히 출발역, #2422 취지 그대로 SPOF
- *    커버 필요)이면 기존처럼 발사한다.
+ * 2) 여정 진행 중 억제 게이트(`evaluateLocalBoardingPromptMirrorGate`) — backend SSoT mirror가
+ *    fresh하고 origin과 다른 역을 확정적으로 가리킬 때만 억제한다. **판정 불확실 시 보수 =
+ *    발사**(코디네이터 지시 — #2606 transfer 리스트의 "보수=거부"와 정반대 방향. 이 게이트는
+ *    놓치면 leg가 lockless로 방치되는 사용자 명시 의향 게이트라 false negative가 false positive
+ *    보다 비싸다).
+ * 3) legAdvance stamp(#2278, 사용자 명시 하차 응답 — GPS 무관) 기반 추가 억제 — mirror가
+ *    stale/부재라도 다른 채널(hop-end 응답 등)로 이미 이 leg가 확인됐으면 억제한다.
+ * 4) 잔여 창(root RCA 항목 4) — legAdvance도 미확인이고 mirror도 이 판정에 못 쓰이는 상태
+ *    (stale/부재/cross-trip/unresolved)에서 발사하는 경우는 코드로 완전히 봉합하지 못한다.
+ *    침묵하지 않고 `local_boarding_prompt_fired_mirror_unconfirmed` breadcrumb으로 field 진단
+ *    가능하게 남긴다 (PR 본문 "잔여 창" 항목 참고).
+ * 5) 억제 자체도 `LOCAL_BOARDING_PROMPT_SUPPRESS_KIND` TTL dedup — 같은 origin을 매 polling
+ *    cycle마다 재평가/재로깅하는 무한 재실행(IO/로그 스팸)을 차단한다.
  */
 export async function fireLocalBoardingPromptNotification(
   originStation: string,
@@ -886,16 +995,46 @@ export async function fireLocalBoardingPromptNotification(
   if (await hasRecentLocalStationFire(originStation, LOCAL_BOARDING_PROMPT_FIRE_KIND)) {
     return false;
   }
+  if (await hasRecentLocalStationFire(originStation, LOCAL_BOARDING_PROMPT_SUPPRESS_KIND)) {
+    return false;
+  }
   const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
   if (!tripToken) return false;
 
-  const mirror = await readBackendSsotMirror();
-  const mirrorFresh = mirror !== null && Date.now() - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
-  if (mirrorFresh && mirror.currentStationId !== originStation) {
+  const legAdvance = await getLegAdvance();
+  if (legAdvance !== null && legAdvance.nextLine === line) {
+    await markLocalStationFired(originStation, LOCAL_BOARDING_PROMPT_SUPPRESS_KIND);
     notifLogger.info(
-      `local-boarding-prompt-suppressed reason=journey-progressed origin=${originStation} mirrorStation=${mirror.currentStationId}`,
+      `local-boarding-prompt-suppressed reason=leg-advance-confirmed origin=${originStation} line=${line}`,
     );
+    addDomainBreadcrumb('boarding', 'local_boarding_prompt_suppressed', {
+      originStation,
+      line,
+      reason: 'leg-advance-confirmed',
+    });
     return false;
+  }
+
+  const mirror = await readBackendSsotMirror();
+  const mirrorGate = evaluateLocalBoardingPromptMirrorGate(mirror, originStation);
+  if (mirrorGate.action === 'suppress') {
+    await markLocalStationFired(originStation, LOCAL_BOARDING_PROMPT_SUPPRESS_KIND);
+    notifLogger.info(
+      `local-boarding-prompt-suppressed reason=${mirrorGate.reason} origin=${originStation} mirrorStation=${mirror?.currentStationId}`,
+    );
+    addDomainBreadcrumb('boarding', 'local_boarding_prompt_suppressed', {
+      originStation,
+      line,
+      reason: mirrorGate.reason,
+    });
+    return false;
+  }
+  if (mirrorGate.mirrorDiagnostic) {
+    addDomainBreadcrumb('boarding', 'local_boarding_prompt_fired_mirror_unconfirmed', {
+      originStation,
+      line,
+      mirrorDiagnostic: mirrorGate.mirrorDiagnostic,
+    });
   }
 
   const identifier = `${LOCAL_BOARDING_PROMPT_ID_PREFIX}:${originStation}:${Date.now()}`;
@@ -904,7 +1043,11 @@ export async function fireLocalBoardingPromptNotification(
     title,
     body,
     sound: true,
-    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
+    ...(Platform.OS === 'android' && {
+      channelId: ALARM_CHANNEL_ID,
+      priority: Notifications.AndroidNotificationPriority.MAX,
+    }),
+    ...iosTimeSensitiveOption(),
     categoryIdentifier: BOARDING_PROMPT_CATEGORY,
     data: {
       kind: 'boarding-prompt',

@@ -49,6 +49,7 @@ jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
 jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  ...jest.requireActual('../../../alarm/utils/backendSsotMirror'),
   readBackendSsotMirror: jest.fn(),
 }));
 

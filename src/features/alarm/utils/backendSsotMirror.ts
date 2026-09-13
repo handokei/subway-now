@@ -15,6 +15,7 @@ import { BACKEND_SSOT_MIRROR_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 
 const logger = createLogger('BackendSsotMirror');
 
@@ -339,6 +340,23 @@ function parseLockSuggestion(raw: unknown): LockSuggestionMirror | null {
     confidence: o.confidence,
     decidedAt: o.decidedAt,
   };
+}
+
+/**
+ * #2591 (code review 7번, SonarCloud dup 회피) — backend SSoT mirror freshness(≤180s,
+ * `BACKEND_SSOT_MIRROR_MAX_AGE_MS`) 단일 판정 진입점.
+ *
+ * 동일 `mirror !== null && Date.now() - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS` 식이
+ * `useBackendSsotMirrorPoll`(FG 5s 폴링) / `refreshLiveActivityFromBackgroundContext`(BG LA 갱신) /
+ * 로컬 boarding-prompt 억제 게이트(`fireLocalBoardingPromptNotification`) 3곳에 사본으로 존재해
+ * 상한값 drift 위험이 있었다 — 이 함수로 통합해 세 소비처가 공유한다. `now` 파라미터는 테스트용
+ * (기본 `Date.now()`).
+ */
+export function isBackendSsotMirrorFresh(
+  mirror: Pick<BackendSsotMirrorEntry, 'receivedAt'> | null,
+  now: number = Date.now(),
+): boolean {
+  return mirror !== null && now - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
 }
 
 /**
