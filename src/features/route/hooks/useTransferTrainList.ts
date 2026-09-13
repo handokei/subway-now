@@ -6,15 +6,12 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { prefetchArrival, useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
 import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
-import {
-  readBackendSsotMirror,
-  resolveBackendSsotMirrorStation,
-} from '../../alarm/utils/backendSsotMirror';
-import type { BackendSsotMirrorEntry } from '../../alarm/utils/backendSsotMirror';
+import { resolveBackendSsotMirrorStation } from '../../alarm/utils/backendSsotMirror';
+import { useBackendSsotMirrorPoll } from '../../alarm/hooks/useBackendSsotMirrorPoll';
 import {
   findActiveTransferContext,
   findLocklessTransferWaypoint,
@@ -87,32 +84,11 @@ export function useTransferTrainList({
   // (`resolveTransferWaypoint`)가 route가 기대하는 환승역 이름과 정확히 일치할 때만 context를
   // 활성화하므로, mirror가 엉뚱한 역을 가리키면 이름이 매칭되지 않아 context는 자연히 비활성으로
   // 남는다(기존 "탑승역만" 안전장치와 동일 계약, 추가 게이트 불필요).
-  const [backendSsotMirror, setBackendSsotMirror] = useState<BackendSsotMirrorEntry | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void readBackendSsotMirror().then((entry) => {
-        if (cancelled) return;
-        setBackendSsotMirror((prev) => {
-          if (prev === null && entry === null) return prev;
-          if (
-            prev !== null &&
-            entry !== null &&
-            prev.receivedAt === entry.receivedAt &&
-            prev.currentStationId === entry.currentStationId
-          ) {
-            return prev;
-          }
-          return entry;
-        });
-      });
-    };
-    const id = setInterval(tick, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+  //
+  // #2590 (SonarCloud dup 해소) — 폴링 boilerplate는 useFusedNearestStation과 공유하는
+  // useBackendSsotMirrorPoll로 추출(순수 추출, 동작/타이밍 100% 동일. 상세 계약은 그 훅의
+  // docblock 참조).
+  const backendSsotMirror = useBackendSsotMirrorPoll();
 
   const transferCurrentStation = useMemo(() => {
     if (!backendSsotMirror) return currentStation;

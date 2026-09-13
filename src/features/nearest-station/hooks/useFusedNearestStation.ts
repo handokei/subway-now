@@ -77,11 +77,8 @@ import {
 } from '../../route/utils/stationProgressEstimator';
 import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
-import {
-  readBackendSsotMirror,
-  resolveBackendSsotMirrorStation,
-  type BackendSsotMirrorEntry,
-} from '../../alarm/utils/backendSsotMirror';
+import { resolveBackendSsotMirrorStation } from '../../alarm/utils/backendSsotMirror';
+import { useBackendSsotMirrorPoll } from '../../alarm/hooks/useBackendSsotMirrorPoll';
 // #2387 — route/lock/legAdvance 권위 line 판정. GPS raw proximity(gps.liveResult)는 line 권위로
 // 부적합(환승역 좌표 근접 오탐, lockless cascade의 "backend 신뢰" 설계 무력화) — approachLine이
 // 대신 route+lock+legAdvance SSoT 기반 확정(confirmed) 여부까지 함께 제공한다.
@@ -583,36 +580,9 @@ export function useFusedNearestStation(
   // `backend-ssot` tier(최상위)로 채택할 수 있게 한다. 5s 간격 폴링 — backend는 cycle(~30s)마다
   // 발사하므로 충분히 빈번하며 매 render read를 피해 AsyncStorage I/O 폭주를 방지.
   // 미존재 / parse 실패 / staleness(60s 초과) 시 null로 두어 cascade는 기존 tier fallback (graceful).
-  const [backendSsotMirror, setBackendSsotMirror] = useState<BackendSsotMirrorEntry | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void readBackendSsotMirror().then((entry) => {
-        if (cancelled) return;
-        // 무의미한 state update로 인한 추가 render 방지 — receivedAt이 같으면 동일 entry.
-        // 미존재(null) → 미존재(null) 전이도 setState skip.
-        setBackendSsotMirror((prev) => {
-          if (prev === null && entry === null) return prev;
-          if (
-            prev !== null &&
-            entry !== null &&
-            prev.receivedAt === entry.receivedAt &&
-            prev.currentStationId === entry.currentStationId
-          ) {
-            return prev;
-          }
-          return entry;
-        });
-      });
-    };
-    // 첫 read는 5s interval 첫 tick에 맡긴다 — 마운트 직후 동기 read의 microtask resolve가
-    // 첫 render commit phase와 겹쳐 act() warning을 발생시키는 회귀 차단(jest-expo setup).
-    const id = setInterval(tick, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+  // #2590 (SonarCloud dup 해소) — 폴링 boilerplate를 공유 훅(useBackendSsotMirrorPoll)으로
+  // 추출(순수 추출, 동작/타이밍 100% 동일). 상세 계약은 그 훅의 docblock 참조.
+  const backendSsotMirror = useBackendSsotMirrorPoll();
 
   // Phase A: 경로가 설정되면 진행도 기반 현재역으로 GPS 결과를 덮어쓴다.
   // origin/destination이 빠지면 useRouteProgress가 arc를 만들지 못하고 null을 반환,
