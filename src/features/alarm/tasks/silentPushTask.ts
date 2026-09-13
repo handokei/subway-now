@@ -1034,7 +1034,17 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         // #1628 — R11-b 차단 1건 측정.
         logCrossTripMirrorSkip('mismatch');
       } else {
-        await persistBackendSsotMirror(payload.ssot, receivedAt);
+        // #2593 — mirror에 trip 식별자를 실어 persistBackendSsotMirror의 단조성 가드가
+        // same-trip/다른-trip을 판정할 수 있게 한다. payload.tripToken 부재(구 backend)면
+        // 필드 자체를 생략 — 가드는 undefined를 same-trip으로 취급(하위 호환).
+        // outer if('ssot' in payload)가 이미 payload를 SilentPushPayload로 narrow했으므로
+        // 여기서는 추가 'in' 체크 없이 바로 접근한다.
+        await persistBackendSsotMirror(
+          payload.tripToken !== undefined
+            ? { ...payload.ssot, tripToken: payload.tripToken }
+            : payload.ssot,
+          receivedAt,
+        );
       }
     }
 

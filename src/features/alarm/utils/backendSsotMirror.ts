@@ -12,6 +12,9 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../shared/constants/storageKeys';
+import { createLogger } from '../../../shared/utils/logger';
+
+const logger = createLogger('BackendSsotMirror');
 
 /**
  * #1534 (S1, T9b, ADR-016) — backend가 추론한 lock 제안 (device 측 mirror schema).
@@ -77,6 +80,13 @@ export interface SilentPushSsotMirror {
    * name-only fallback (`findStationByName`)으로 기존 동작 유지.
    */
   currentStationLine?: string;
+  /**
+   * #2593 — mirror가 소속된 trip 식별자 (backend push payload의 `tripToken` echo).
+   *
+   * `persistBackendSsotMirror`의 단조성 가드가 "같은 trip"을 판정하는 키. 구 backend/구 저장분
+   * 호환 위해 optional — 부재 시(레거시 stored entry 포함) same-trip으로 취급해 기존 가드 동작 보존.
+   */
+  tripToken?: string;
 }
 
 /** #1561 (T8) — mirror entry에 receivedAt 추가. cascade picker가 자체 staleness 판정. */
@@ -91,12 +101,32 @@ export interface BackendSsotMirrorEntry extends SilentPushSsotMirror {
  * tier(최상위)로 채택한다. receivedAt epoch ms를 함께 stamp.
  *
  * write 실패는 silent — backend SSoT mirror는 보조 신호로 미존재 시 cascade는 기존 tier fallback.
+ *
+ * #2593 — 단조성 가드 (RCA: 2026-09-13 데스크 trip, 군자 21:54:38 적용 후 stale 중곡 21:54:53 역행
+ * 적용). APNs는 순서를 보장하지 않아 늦게 도착한 과거 push가 최신 상태를 덮어쓸 수 있다. 기존
+ * mirror가 있고 **같은 trip**이며 incoming.lastAdvanceAt이 existing보다 과거면 write를 skip한다.
+ * 같음(=)은 수용(advance 없는 사이 재수신 push는 정상). **다른 trip이면 무조건 수용** — 새 trip의
+ * 작은 lastAdvanceAt를 이전 trip 기준으로 거부하면 안 된다. trip 식별은 `tripToken` — 기존 저장분처럼
+ * 한쪽이라도 tripToken이 없으면 same-trip으로 취급해 하위 호환을 보존한다(레거시 mirror에도 가드 적용).
  */
 export async function persistBackendSsotMirror(
   ssot: SilentPushSsotMirror,
   receivedAt: number,
 ): Promise<void> {
   try {
+    const existing = await readBackendSsotMirror();
+    if (existing !== null) {
+      const sameTrip =
+        existing.tripToken === undefined ||
+        ssot.tripToken === undefined ||
+        existing.tripToken === ssot.tripToken;
+      if (sameTrip && ssot.lastAdvanceAt < existing.lastAdvanceAt) {
+        logger.info(
+          `ssot-mirror-stale-skip: incoming station=${ssot.currentStationId} lastAdvanceAt=${ssot.lastAdvanceAt} existing station=${existing.currentStationId} lastAdvanceAt=${existing.lastAdvanceAt}`,
+        );
+        return;
+      }
+    }
     await AsyncStorage.setItem(
       BACKEND_SSOT_MIRROR_KEY,
       JSON.stringify({ ...ssot, receivedAt }),
@@ -158,6 +188,12 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
       typeof parsed.currentStationLine === 'string' && parsed.currentStationLine.length > 0
         ? parsed.currentStationLine
         : undefined;
+    // #2593 — tripToken parse (optional). 레거시 저장분(필드 부재)은 undefined로 정규화 —
+    // persistBackendSsotMirror 단조성 가드가 same-trip으로 취급하는 것과 동일 계약.
+    const tripToken =
+      typeof parsed.tripToken === 'string' && parsed.tripToken.length > 0
+        ? parsed.tripToken
+        : undefined;
     return {
       currentStationId: parsed.currentStationId,
       motionState: parsed.motionState,
@@ -170,6 +206,7 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
       ...(lockSuggestion ? { lockSuggestion } : {}),
       ...(alarmEvents !== undefined ? { alarmEvents } : {}),
       ...(currentStationLine !== undefined ? { currentStationLine } : {}),
+      ...(tripToken !== undefined ? { tripToken } : {}),
     };
   } catch {
     return null;

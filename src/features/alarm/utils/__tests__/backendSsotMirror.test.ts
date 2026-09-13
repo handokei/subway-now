@@ -273,6 +273,8 @@ describe('readBackendSsotMirror currentStationLine parse (#1705)', () => {
 describe('persistBackendSsotMirror (#1568 T8b)', () => {
   beforeEach(() => {
     mockSetItem.mockReset();
+    mockGetItem.mockReset();
+    mockGetItem.mockResolvedValue(null);
   });
 
   it('AsyncStorage.setItem 성공 — BACKEND_SSOT_MIRROR_KEY에 receivedAt 합쳐 저장', async () => {
@@ -290,6 +292,91 @@ describe('persistBackendSsotMirror (#1568 T8b)', () => {
     expect(mockSetItem).toHaveBeenCalledWith(
       BACKEND_SSOT_MIRROR_KEY,
       expect.stringContaining('"receivedAt":1700000010000'),
+    );
+  });
+});
+
+// #2593 — persistBackendSsotMirror 단조성 가드. RCA: 2026-09-13 데스크 trip, 군자 21:54:38
+// 적용 후 stale 중곡 21:54:53 도착이 역행 적용된 실측(D1 295/296) 재생.
+describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
+  const gunjaAppliedAt = new Date('2026-09-13T21:54:38+09:00').getTime();
+  const jungokActualAt = new Date('2026-09-13T21:54:20+09:00').getTime(); // 군자보다 과거 — stale
+  const gunja = {
+    currentStationId: '군자',
+    motionState: 'moving' as const,
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: gunjaAppliedAt,
+    passedStations: ['어린이대공원'],
+  };
+  const staleJungok = {
+    currentStationId: '중곡',
+    motionState: 'moving' as const,
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: jungokActualAt,
+    passedStations: [],
+  };
+
+  beforeEach(() => {
+    mockSetItem.mockReset();
+    mockGetItem.mockReset();
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('재생: stale 중곡(lastAdvanceAt 과거) 주입 시 미적용 — 기존 군자 mirror 유지 (RCA 재현, red→green)', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    await persistBackendSsotMirror(staleJungok, jungokActualAt + 15_000);
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('동일 lastAdvanceAt(=) 값은 수용 — advance 없는 사이 재수신 push는 정상', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    const sameAdvance = { ...gunja, currentStationId: '군자' };
+    await persistBackendSsotMirror(sameAdvance, gunjaAppliedAt + 20_000);
+    expect(mockSetItem).toHaveBeenCalledWith(
+      BACKEND_SSOT_MIRROR_KEY,
+      expect.stringContaining('"currentStationId":"군자"'),
+    );
+  });
+
+  it('다른 trip이면 lastAdvanceAt가 더 과거여도 무조건 수용', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, tripToken: 'trip-old', receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    const newTripEarlier = { ...staleJungok, tripToken: 'trip-new' };
+    await persistBackendSsotMirror(newTripEarlier, jungokActualAt + 15_000);
+    expect(mockSetItem).toHaveBeenCalledWith(
+      BACKEND_SSOT_MIRROR_KEY,
+      expect.stringContaining('"currentStationId":"중곡"'),
+    );
+  });
+
+  it('기존 저장분(tripToken 필드 없음) 하위호환 — same-trip 취급해 stale 가드 적용', async () => {
+    // 레거시 저장분은 tripToken 필드 자체가 없다 (#2593 이전 저장). incoming도 tripToken 없음.
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    await persistBackendSsotMirror(staleJungok, jungokActualAt + 15_000);
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('기존 mirror 없음(첫 push) — 가드 없이 항상 수용', async () => {
+    mockGetItem.mockResolvedValue(null);
+    await persistBackendSsotMirror(gunja, gunjaAppliedAt + 5_000);
+    expect(mockSetItem).toHaveBeenCalled();
+  });
+
+  it('신규 lastAdvanceAt(미래)가 기존보다 최신이면 정상 수용', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...staleJungok, receivedAt: jungokActualAt + 5_000 }),
+    );
+    await persistBackendSsotMirror(gunja, gunjaAppliedAt + 5_000);
+    expect(mockSetItem).toHaveBeenCalledWith(
+      BACKEND_SSOT_MIRROR_KEY,
+      expect.stringContaining('"currentStationId":"군자"'),
     );
   });
 });
