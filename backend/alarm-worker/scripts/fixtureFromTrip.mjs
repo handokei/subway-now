@@ -69,17 +69,23 @@ function readCycleFile(filePath) {
   }
 }
 
+/**
+ * wrangler/aws CLI 실행 지점을 한 곳으로 수렴 — 이 스크립트는 개발자 로컬 전용 CLI로
+ * CI/서버에서 실행되지 않으므로, PATH에서 wrangler/aws를 해석하는 것은 의도된 동작이다.
+ * spawn 호출을 여기 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
+ */
+function runCli(cmd, args, options = {}) {
+  return execFileSync(cmd, args, { encoding: 'utf-8', ...options }); // NOSONAR — dev-only local CLI; PATH resolution of wrangler/aws is intentional (S4036)
+}
+
 function runD1Query(db, sql) {
-  let stdout;
   try {
-    stdout = execFileSync('wrangler', ['d1', 'execute', db, '--remote', '--json', '--command', sql], {
-      encoding: 'utf-8',
+    return runCli('wrangler', ['d1', 'execute', db, '--remote', '--json', '--command', sql], {
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
     throw new Error(`D1 조회 실패: wrangler d1 execute 실행 실패 (${err instanceof Error ? err.message : String(err)})`);
   }
-  return stdout;
 }
 
 /** 지정 날짜의 R2 seoul-capture 키 목록(aws s3api list-objects-v2, 목록 조회는 wrangler 미지원). */
@@ -87,24 +93,20 @@ function listCaptureKeys(bucket, accountId, date) {
   const prefix = `${SEOUL_CAPTURE_KEY_PREFIX}${date}/`;
   let stdout;
   try {
-    stdout = execFileSync(
-      'aws',
-      [
-        's3api',
-        'list-objects-v2',
-        '--endpoint-url',
-        `https://${accountId}.r2.cloudflarestorage.com`,
-        '--bucket',
-        bucket,
-        '--prefix',
-        prefix,
-        '--query',
-        'Contents[].Key',
-        '--output',
-        'text',
-      ],
-      { encoding: 'utf-8' },
-    );
+    stdout = runCli('aws', [
+      's3api',
+      'list-objects-v2',
+      '--endpoint-url',
+      `https://${accountId}.r2.cloudflarestorage.com`,
+      '--bucket',
+      bucket,
+      '--prefix',
+      prefix,
+      '--query',
+      'Contents[].Key',
+      '--output',
+      'text',
+    ]);
   } catch (err) {
     console.warn(`[warn] ${date} 캡처 키 나열 실패(부분 캡처로 진행): ${err instanceof Error ? err.message : String(err)}`);
     return [];
@@ -119,7 +121,7 @@ function downloadCaptureKey(bucket, key, destDir) {
   const fileName = path.basename(key);
   const destPath = path.join(destDir, fileName);
   try {
-    execFileSync('wrangler', ['r2', 'object', 'get', `${bucket}/${key}`, '--file', destPath], { encoding: 'utf-8' });
+    runCli('wrangler', ['r2', 'object', 'get', `${bucket}/${key}`, '--file', destPath]);
     return destPath;
   } catch (err) {
     console.warn(`[skip] ${key} 다운로드 실패: ${err instanceof Error ? err.message : String(err)}`);

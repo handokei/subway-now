@@ -82,10 +82,10 @@ function parseTripEventRow(raw: unknown, index: number): TripEventRow {
   }
   const o = raw as Record<string, unknown>;
   if (typeof o.ts !== 'number') {
-    throw new Error(`D1 조회 실패: trip_events row[${index}].ts가 number가 아닙니다`);
+    throw new TypeError(`D1 조회 실패: trip_events row[${index}].ts가 number가 아닙니다`);
   }
   if (typeof o.kind !== 'string') {
-    throw new Error(`D1 조회 실패: trip_events row[${index}].kind가 string이 아닙니다`);
+    throw new TypeError(`D1 조회 실패: trip_events row[${index}].kind가 string이 아닙니다`);
   }
   return {
     ts: o.ts,
@@ -174,7 +174,7 @@ function parseOutcome(meta: string | null): string | null {
 
 /** fixture 파일명 slug — `capture_<YYYYMMDD>_<tokenHash>` (파일명·registry entry.slug 공용). */
 export function buildFixtureSlug(tokenHash: string, window: TripWindow): string {
-  const dateStr = utcDateKey(window.fromMs).replace(/-/g, '');
+  const dateStr = utcDateKey(window.fromMs).replaceAll('-', '');
   return `capture_${dateStr}_${tokenHash}`;
 }
 
@@ -191,8 +191,9 @@ export interface RegistrySkeletonParams {
  * `src/__tests__/replayLibrary.ts`의 `REPLAY_LIBRARY` 배열에 붙여넣을 entry 텍스트
  * 스켈레톤(#2585 규약 — `ReplayLibraryEntry`). 사람이 등록 diff만 확인하면 되도록
  * `expect.firedStations`는 segment 역 전체로 채우고, `seedTrips`/`description`은 자동
- * 유추 불가 필드라 TODO 주석으로 남긴다. 실 캡처 fixture이므로 `cronIntervalMs`는
- * 항상 `'recorded'`(합성 fixture 전용 균일 그리드 옵션은 쓰지 않는다).
+ * 유추 불가 필드라 사람이 채워야 하는 후속 작업으로 남긴다(#2586 본문 참조). 실 캡처
+ * fixture이므로 `cronIntervalMs`는 항상 `'recorded'`(합성 fixture 전용 균일 그리드 옵션은
+ * 쓰지 않는다).
  */
 export function buildRegistryEntrySkeleton(params: RegistrySkeletonParams): string {
   const firedStationsLiteral = JSON.stringify(params.segmentStations);
