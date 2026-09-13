@@ -77,21 +77,17 @@ import {
 } from '../../route/utils/stationProgressEstimator';
 import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
-import {
-  readBackendSsotMirror,
-  resolveBackendSsotMirrorStation,
-  type BackendSsotMirrorEntry,
-} from '../../alarm/utils/backendSsotMirror';
+import { resolveBackendSsotMirrorStation } from '../../alarm/utils/backendSsotMirror';
+import { useBackendSsotMirrorPoll } from '../../alarm/hooks/useBackendSsotMirrorPoll';
 // #2387 — route/lock/legAdvance 권위 line 판정. GPS raw proximity(gps.liveResult)는 line 권위로
 // 부적합(환승역 좌표 근접 오탐, lockless cascade의 "backend 신뢰" 설계 무력화) — approachLine이
 // 대신 route+lock+legAdvance SSoT 기반 확정(confirmed) 여부까지 함께 제공한다.
-import { getApproachLineWithConfirmation } from '../../route/utils/approachLine';
+import { evaluateBackendSsotCrossLineGuard } from '../../route/utils/approachLine';
 import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import {
   ARVL_CD_ARRIVED_MAX_AGE_MS,
-  BACKEND_SSOT_MIRROR_MAX_AGE_MS,
   CANDIDATE_ANCHOR_WINDOW_DEFAULT,
   CANDIDATE_ANCHOR_WINDOW_EXPANDED,
   CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD,
@@ -583,36 +579,9 @@ export function useFusedNearestStation(
   // `backend-ssot` tier(최상위)로 채택할 수 있게 한다. 5s 간격 폴링 — backend는 cycle(~30s)마다
   // 발사하므로 충분히 빈번하며 매 render read를 피해 AsyncStorage I/O 폭주를 방지.
   // 미존재 / parse 실패 / staleness(60s 초과) 시 null로 두어 cascade는 기존 tier fallback (graceful).
-  const [backendSsotMirror, setBackendSsotMirror] = useState<BackendSsotMirrorEntry | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void readBackendSsotMirror().then((entry) => {
-        if (cancelled) return;
-        // 무의미한 state update로 인한 추가 render 방지 — receivedAt이 같으면 동일 entry.
-        // 미존재(null) → 미존재(null) 전이도 setState skip.
-        setBackendSsotMirror((prev) => {
-          if (prev === null && entry === null) return prev;
-          if (
-            prev !== null &&
-            entry !== null &&
-            prev.receivedAt === entry.receivedAt &&
-            prev.currentStationId === entry.currentStationId
-          ) {
-            return prev;
-          }
-          return entry;
-        });
-      });
-    };
-    // 첫 read는 5s interval 첫 tick에 맡긴다 — 마운트 직후 동기 read의 microtask resolve가
-    // 첫 render commit phase와 겹쳐 act() warning을 발생시키는 회귀 차단(jest-expo setup).
-    const id = setInterval(tick, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+  // #2590 (SonarCloud dup 해소) — 폴링 boilerplate를 공유 훅(useBackendSsotMirrorPoll)으로
+  // 추출(순수 추출, 동작/타이밍 100% 동일). 상세 계약은 그 훅의 docblock 참조.
+  const backendSsotMirror = useBackendSsotMirrorPoll();
 
   // Phase A: 경로가 설정되면 진행도 기반 현재역으로 GPS 결과를 덮어쓴다.
   // origin/destination이 빠지면 useRouteProgress가 arc를 만들지 못하고 null을 반환,
@@ -1194,36 +1163,21 @@ export function useFusedNearestStation(
       boardingLock ? boardingLock.boardingLine : undefined,
     );
     const mirrorLine = resolved?.line ?? null;
+    // #2590 (code review 2/3번) — cross-line 가드(positionTrainResult 대조 + #2387 lock/legAdvance
+    // confirmed 대조)를 `evaluateBackendSsotCrossLineGuard`(route/utils/approachLine.ts)로 순수
+    // 추출. useTransferTrainList와 동일 함수를 공유해 두 소비처의 판정이 drift하지 않는다 —
+    // 이 파일의 판정 결과/조건/순서는 100% 동일(pure extraction).
     if (
       resolved &&
-      positionTrainResult &&
-      resolved.line !== positionTrainResult.station.line
+      evaluateBackendSsotCrossLineGuard(
+        resolved.line,
+        positionTrainResult,
+        boardingLock ?? null,
+        legAdvanceLine ?? null,
+      )
     ) {
       ssotLineGuardRejectRef.current += 1;
       return { station: null, lineGuardRejected: true, mirrorLine };
-    }
-    // #2387 — lock/legAdvance 권위(approachLine) 기반 추가 cross-line 가드. 위 positionTrainResult
-    // 가드가 무력화되는 사이클(지하/GPS열화, positionTrainResult=null)에도 사용자가 명시적으로
-    // 확인한 line(BoardingLock 또는 환승역 하차 응답 legAdvance stamp)과 mirror가 다르면 거부한다.
-    // route는 의도적으로 전달하지 않는다(항상 null) — bare route progression(candidate 3/4,
-    // stopsToTransfer 기반 추정)은 사용자 확인이 아닌 "계획값"이라 positionTrainResult급 신뢰도가
-    // 아니다. #1605 회귀(lockless + route만 있고 lock/legAdvance 둘 다 없는 trip에서 backend가
-    // route와 다른 line으로 정당하게 advance한 경우도 backend-ssot-override로 채택돼야 하는 시나리오)가
-    // route를 신뢰 소스로 쓰면 깨진다 — getApproachLineWithConfirmation(route=null, ...)이면
-    // resolveCandidateLine이 boardingLock/legAdvanceLine만 확인하고 route 분기는 건너뛰어
-    // confirmed는 오직 lock/legAdvance 존재 시에만 true가 된다.
-    // 기존 positionTrainResult 가드와 OR 조건 — additive, 기존 분기는 그대로 유지.
-    if (resolved) {
-      const approach = getApproachLineWithConfirmation(
-        null,
-        boardingLock ?? null,
-        null,
-        legAdvanceLine,
-      );
-      if (approach.confirmed && resolved.line !== approach.line) {
-        ssotLineGuardRejectRef.current += 1;
-        return { station: null, lineGuardRejected: true, mirrorLine };
-      }
     }
     return { station: resolved, lineGuardRejected: false, mirrorLine };
   }, [backendSsotMirror, boardingLock, positionTrainResult, legAdvanceLine]);
@@ -1253,21 +1207,23 @@ export function useFusedNearestStation(
     }
     wasSsotLineGuardRejectedRef.current = ssotGuardResult.lineGuardRejected;
   }, [ssotGuardResult, positionTrainResult, backendSsotMirror]);
-  const nowMsForSsot = Date.now();
   // #2261 (ADR-031 Phase 0) — freshness를 `lastAdvanceAt`(backend가 실제 advance한 시각) 대신
   // `receivedAt`(mirror가 device에 도달한 시각) 기준으로 재정의. lastAdvanceAt 기준은 지하·정지
   // (non-advancing) trip에서 advance가 전혀 일어나지 않아 영구 stale에 빠지는 deadlock의 절반
   // 원인이었다 — backend가 trip을 여전히 추적 중이라는 사실은 FG position pull(~10s cycle)이
   // 응답을 받아 mirror를 갱신했다는 것 자체(receivedAt)로 이미 증명된다. 상한(180s)은 그대로
   // 재사용 — 무한 stale 채택을 허용하지 않기 위해 동일 캡을 건다(RCA 2026-08-09, ADR-031).
-  const ssotFresh =
-    backendSsotMirror !== null &&
-    nowMsForSsot - backendSsotMirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
-  // #2261 (ADR-031 Phase 0) — silentPushHealthy AND-gate 제거. 위 receivedAt 기반 freshness가
+  //
+  // #2590 (code review 1번) — freshness 판정 자체는 `useBackendSsotMirrorPoll` 내부로 이동(5s tick마다
+  // 재평가 — memo에 갇혀 영구 fresh로 남는 버그 차단, 그 훅 docblock 참조). 이 훅이 반환하는
+  // `backendSsotMirror`는 이미 fresh 보장이므로 `ssotStation !== null`만으로 충분 — 별도
+  // freshness 재계산 불필요(중복 계산 제거, 의미론은 100% 동일: fresh 아니면 애초에
+  // backendSsotMirror 자체가 null).
+  // #2261 (ADR-031 Phase 0) — silentPushHealthy AND-gate 제거. receivedAt 기반 freshness가
   // 이미 backend 생존 + pull 채널 정상 도달을 증명하므로, silent push 건강도와 별개로 채택한다.
   // 기존 게이트(#1677)는 "push 60s 미수신 + advance 180s 미갱신"의 이중 조건이 지하·정지 trip을
   // 영구 미채택시키는 deadlock을 유발했다 — 단일 조건(pull receivedAt 180s)으로 통합해 해소.
-  const backendSsotAccepts = ssotStation !== null && ssotFresh;
+  const backendSsotAccepts = ssotStation !== null;
 
   // #1932 (Epic #1927 G2) — environment SSOT 단일화 + cascade 직전 산출.
   //
@@ -1779,9 +1735,9 @@ export function useFusedNearestStation(
     const idx = arcIndexOfStation(arcStations, ssotStation);
     if (idx === -1) return;
     // backendSsotAccepts(위에서 이미 가드)는 정의상 backendSsotMirror !== null을 보장한다
-    // (backendSsotAccepts = ssotStation !== null && ssotFresh, ssotFresh = backendSsotMirror !== null
-    // && ...). 둘 다 같은 render에서 파생된 plain const라 이 effect 클로저 안에서 값이 달라질 수
-    // 없다 — non-null 단언으로 단순화(런타임 동작 동일, 도달 불가능한 방어 분기 제거).
+    // (backendSsotAccepts = ssotStation !== null, ssotStation은 ssotGuardResult가 backendSsotMirror
+    // null이면 항상 null을 반환하므로). 같은 render에서 파생된 plain const라 이 effect 클로저 안에서
+    // 값이 달라질 수 없다 — non-null 단언으로 단순화(런타임 동작 동일, 도달 불가능한 방어 분기 제거).
     const receivedAt = backendSsotMirror!.receivedAt;
     const current = lastObservedRef.current;
     if (current !== null && current.observedAtMs >= receivedAt) return;

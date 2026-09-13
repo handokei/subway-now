@@ -22,6 +22,16 @@
  *     기존 환승 list flow가 책임지므로 자동 detect는 중복 트리거 금지.
  *   - 현재 boardingLock의 boardingLine으로만 후보가 들어와 있다 (=같은 노선 환승 데이터).
  *
+ * #2590 (code review 6번) — `plannedTransferActive` 정합. `useTransferTrainList`가 backend SSoT
+ * mirror를 currentStation 1순위로 주입하도록 바뀌면서, 이 hook이 자체적으로 `nearestStations.primary`
+ * (raw GPS)만으로 재계산하던 `onPlannedTransfer`가 `useTransferTrainList`의 실제 활성 여부와
+ * 어긋날 수 있게 됐다(전자는 GPS만 보고 "planned 아님"이라 판단하는데 후자는 mirror로 이미
+ * 활성) — 두 hook이 동시에 서로 다른 UI(자동 detect 모달 vs 환승 리스트)를 노출하는 충돌 위험.
+ * 호출자가 `useTransferTrainList`의 `context !== null` 결과를 `plannedTransferActive`로 그대로
+ * 넘기면 두 hook이 정확히 같은 판정을 공유한다 — 값을 두 번 다르게 계산하지 않고 한쪽(더 정확한
+ * 쪽)을 그대로 재사용하는 것이라 "최소 diff". 미전달(undefined) 시 기존 내부 계산으로 fallback해
+ * 이 hook의 기존 단위 테스트는 무수정으로 유지된다.
+ *
  * #971 (#955 follow-up) — 후보 line의 trainCode 산출 시 destination 정차 여부로 우선순위.
  *   destination이 일반정차만 가능 → 급행/특급 통과로 lock 사고 회피. destination 미설정 시
  *   기존 동작(가장 임박) 유지.
@@ -48,6 +58,13 @@ export interface UseTransferAutoDetectInputs {
   readonly route: Route;
   /** route 도착역 이름. `findActiveTransferContext`의 입력. */
   readonly destinationName: string | null;
+  /**
+   * #2590 (code review 6번) — 호출자가 이미 계산해둔 `useTransferTrainList`의 활성 여부
+   * (`context !== null`)를 그대로 넘기면 이 값을 `onPlannedTransfer`로 채택한다. 미전달
+   * (undefined)이면 기존처럼 `nearestStations.primary`(raw GPS) + `findActiveTransferContext`로
+   * 내부 재계산 — 기존 단위 테스트/호출부는 이 인자 없이도 그대로 동작한다.
+   */
+  readonly plannedTransferActive?: boolean;
   /**
    * 사용자가 모달에서 line을 선택(`selectLine`)했을 때만 호출 — 호출자가
    * `useBoardingLockController.hydrateLockFromCandidate`로 lock hydrate.
@@ -76,16 +93,21 @@ export function useTransferAutoDetect({
   boardingLock,
   route,
   destinationName,
+  plannedTransferActive,
   onAutoLock,
 }: UseTransferAutoDetectInputs): UseTransferAutoDetectResult {
   const currentStation = nearestStations?.primary ?? null;
   const boardingLine = boardingLock?.boardingLine ?? null;
 
   // planned route의 transfer waypoint면 기존 useTransferTrainList가 책임지므로 detect skip.
-  const onPlannedTransfer = useMemo(
+  // #2590 (code review 6번) — 호출자가 `plannedTransferActive`를 넘기면 그 값을 그대로 채택해
+  // useTransferTrainList와 동일 판정을 공유한다(둘 다 raw GPS만 보던 시절엔 항상 같은 값이었으나,
+  // mirror 주입 이후로는 계산식이 갈릴 수 있어 SSoT를 하나로 둔다). 미전달 시 기존 내부 계산.
+  const internalOnPlannedTransfer = useMemo(
     () => findActiveTransferContext(boardingLock, route, destinationName, currentStation) !== null,
     [boardingLock, route, destinationName, currentStation],
   );
+  const onPlannedTransfer = plannedTransferActive ?? internalOnPlannedTransfer;
 
   // #U1 — 현재 역이 활성 route가 이미 아는 line 위의 통과역이면 detect skip. 물리적 환승역(예:
   // 군자 5/7호선)이라도 route가 그 line을 포함하면 재확인 불필요(#2479 원인). route가 모르는

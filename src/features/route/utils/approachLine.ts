@@ -1,7 +1,7 @@
 import { type Route } from '../../../shared/utils/stationRoute';
 import { resolveConsistentStationLine } from '../../../shared/utils/stationLookup';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { LineNumber, Station } from '../../../shared/types/station';
+import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
 
 /**
  * #797: 현재 사용자가 탑승 중(또는 탑승 예정)인 노선을 trip route + BoardingLock SSOT로 결정한다.
@@ -98,4 +98,36 @@ function resolveCandidateLine(
   }
 
   return null;
+}
+
+/**
+ * #2590 (code review 2/3번) — backend SSoT mirror 채택 전 cross-line 가드. `useFusedNearestStation`
+ * (FG cascade picker, ADR-010/#2307/#2387)이 원래 구현한 두 단계 판정을 순수 추출해
+ * `useTransferTrainList`(환승 컨텍스트)와 공유한다 — 동작/타이밍/조건 100% 동일(pure extraction).
+ *
+ * 판정 순서 (하나라도 해당하면 거부):
+ *   1. `positionTrainResult`(device GPS 확정 live 신호, distance/arc/forward 게이트 통과)가 있고
+ *      resolved line과 다르면 거부. positionTrainResult가 없으면(GPS 열화/미배선) 이 단계는
+ *      판정하지 않고 통과 — 이는 완화가 아니라 원 설계 자체가 "더 강한 신호가 있을 때만 대조"이기
+ *      때문(#2307). GPS를 판정 근거로 쓰지 않는 orchestrator(`useTransferTrainList`)는 항상
+ *      positionTrainResult=null을 넘기므로 이 단계가 자연히 no-op이 된다 — FG와 동일 함수·동일
+ *      의미론을 공유하는 것이지 별도의 완화된 경로가 아니다.
+ *   2. 사용자가 명시 확인한 line(BoardingLock 또는 legAdvance stamp, `getApproachLineWithConfirmation`
+ *      `confirmed`)과 다르면 거부(#2387). route는 의도적으로 전달하지 않는다 — bare route
+ *      progression(계획값)은 사용자 확인이 아니라 positionTrainResult급 신뢰도가 아니다.
+ */
+export function evaluateBackendSsotCrossLineGuard(
+  resolvedLine: LineNumber,
+  positionTrainResult: Pick<NearestStationResult, 'station'> | null,
+  boardingLock: BoardingLock | null,
+  legAdvanceLine: LineNumber | null,
+): boolean {
+  if (positionTrainResult && resolvedLine !== positionTrainResult.station.line) {
+    return true;
+  }
+  const approach = getApproachLineWithConfirmation(null, boardingLock, null, legAdvanceLine);
+  if (approach.confirmed && resolvedLine !== approach.line) {
+    return true;
+  }
+  return false;
 }
