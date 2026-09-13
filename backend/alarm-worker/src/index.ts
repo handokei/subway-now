@@ -84,6 +84,7 @@ import {
   type SeoulCaptureRecorder,
   type SeoulCaptureCycle,
 } from './seoulCapture';
+import { parseSeoulCaptureRangeQuery, listSeoulCaptureKeys } from './seoulCaptureKeys';
 import * as Sentry from '@sentry/cloudflare';
 import {
   addValidateRejectBreadcrumb,
@@ -462,6 +463,41 @@ app.get('/admin/alarm-log-stats', async (c) => {
   const limit = parseQueryNumber(c.req.query('limit')) ?? 50;
   const stats = await computeAlarmLogStats(r2, Date.now(), windowHours, limit);
   return c.json(stats);
+});
+
+/**
+ * #2592 (Epic #2239 P1 후속) — seoul-capture R2 캡처 key 목록 조회 endpoint.
+ *
+ * `fixtureFromTrip`(#2586/PR#2588)이 R2 캡처 목록을 얻으려면 지금까지 `aws s3api
+ * list-objects` + R2 S3 호환 API 토큰이 필요했다. wrangler에는 `r2 object list`가
+ * 없고(4.131 확인) 사용자에게 별도 R2 토큰 발급을 요구하는 건 불필요한 마찰이라, worker
+ * 자신의 TELEMETRY_R2 바인딩으로 목록만 읽어 반환한다(객체 본문은 반환하지 않음 —
+ * 다운로드는 `wrangler r2 object get --remote` 그대로 유지). 스캔 로직은 `seoulCaptureKeys.ts`
+ * (단위테스트도 그쪽에 위치) — 라우트는 위임만 한다.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Query: `?from=<epochMs>&to=<epochMs>` — 둘 다 선택. 미지정 시 전체 범위.
+ *
+ * V/X: curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+ *   "https://<worker>/admin/seoul-capture/keys?from=1757750000000&to=1757760000000"
+ *
+ * Response 200: `{ keys: string[], count: number }`
+ * Response 400: `{ error: 'invalid_range' }` — from/to가 비숫자(공백 포함)이거나 from > to.
+ * Response 400: `{ error: 'range_too_wide' }` — from~to 걸치는 날짜 45일 초과 또는 매칭 key 5000개 초과.
+ * Response 401/503: 인증/binding 정책 동일 (TELEMETRY_R2 미바인딩 시 503).
+ */
+app.get('/admin/seoul-capture/keys', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const r2 = c.env.TELEMETRY_R2;
+  if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
+
+  const range = parseSeoulCaptureRangeQuery(c.req.query('from'), c.req.query('to'));
+  if ('error' in range) return c.json({ error: range.error }, 400);
+
+  const result = await listSeoulCaptureKeys(r2, range.from, range.to);
+  if ('error' in result) return c.json({ error: result.error }, 400);
+  return c.json({ keys: result.keys, count: result.keys.length });
 });
 
 /**
