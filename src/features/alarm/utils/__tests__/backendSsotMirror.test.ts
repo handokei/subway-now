@@ -298,6 +298,11 @@ describe('persistBackendSsotMirror (#1568 T8b)', () => {
 
 // #2593 — persistBackendSsotMirror 단조성 가드. RCA: 2026-09-13 데스크 trip, 군자 21:54:38
 // 적용 후 stale 중곡 21:54:53 도착이 역행 적용된 실측(D1 295/296) 재생.
+//
+// same-trip 판정 키는 `corrId`다 — `tripToken`은 APNs 기기 토큰이라 기기당 고정이라 "다른 trip"
+// 분기가 실질적으로 dead code가 되고, 누수된 옛 trip mirror가 새 trip의 lastAdvanceAt=0 seed
+// push(register-retry가 clearBackendSsotMirror 없이 ACTIVE_TRIP만 갱신하는 시나리오)를 전부
+// stale-skip해버리는 역효과가 있다(code-review 지적). 아래 (b) 케이스가 그 회귀를 직접 재현한다.
 describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
   const gunjaAppliedAt = new Date('2026-09-13T21:54:38+09:00').getTime();
   const jungokActualAt = new Date('2026-09-13T21:54:20+09:00').getTime(); // 군자보다 과거 — stale
@@ -322,7 +327,39 @@ describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
     mockSetItem.mockResolvedValue(undefined);
   });
 
-  it('재생: stale 중곡(lastAdvanceAt 과거) 주입 시 미적용 — 기존 군자 mirror 유지 (RCA 재현, red→green)', async () => {
+  it('(a) 같은 corrId + stale(lastAdvanceAt 과거) 주입 시 미적용 — 기존 군자 mirror 유지 (RCA 재현, red→green)', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, corrId: 'corr-A', receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    await persistBackendSsotMirror({ ...staleJungok, corrId: 'corr-A' }, jungokActualAt + 15_000);
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('(b) 새 corrId + lastAdvanceAt=0 → 수용 (register-retry가 옛 trip mirror를 안 지운 채 재등록한 시나리오)', async () => {
+    // 누수된 옛 trip(corr-OLD) mirror가 여전히 남아있는 상태 — clearBackendSsotMirror 미호출.
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, corrId: 'corr-OLD', receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    // 새 trip(corr-NEW)의 origin seed push — lastAdvanceAt=0(합성 값)이 옛 trip의 lastAdvanceAt
+    // 보다 훨씬 과거지만, corrId가 다르므로 무조건 수용해야 한다. tripToken 기준이었다면(기기당
+    // 고정) 이 케이스가 stale-skip 오탐으로 새 trip 시작을 막았을 것.
+    const newTripSeed = {
+      currentStationId: '건대입구',
+      motionState: 'unknown' as const,
+      lastAdvanceEvidence: 'seed-override',
+      lastAdvanceAt: 0,
+      passedStations: [],
+      corrId: 'corr-NEW',
+    };
+    await persistBackendSsotMirror(newTripSeed, gunjaAppliedAt + 20_000);
+    expect(mockSetItem).toHaveBeenCalledWith(
+      BACKEND_SSOT_MIRROR_KEY,
+      expect.stringContaining('"currentStationId":"건대입구"'),
+    );
+  });
+
+  it('(c) corrId 부재 legacy — 양쪽 다 corrId 없으면 same-trip 취급해 stale 가드 적용', async () => {
+    // 레거시 저장분은 corrId 필드 자체가 없다 (#2593 이전 저장). incoming도 corrId 없음.
     mockGetItem.mockResolvedValue(
       JSON.stringify({ ...gunja, receivedAt: gunjaAppliedAt + 5_000 }),
     );
@@ -330,37 +367,24 @@ describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
     expect(mockSetItem).not.toHaveBeenCalled();
   });
 
-  it('동일 lastAdvanceAt(=) 값은 수용 — advance 없는 사이 재수신 push는 정상', async () => {
+  it('incoming만 corrId 있고 existing은 없음(legacy 저장분) → same-trip 취급, stale 가드 적용', async () => {
     mockGetItem.mockResolvedValue(
       JSON.stringify({ ...gunja, receivedAt: gunjaAppliedAt + 5_000 }),
     );
-    const sameAdvance = { ...gunja, currentStationId: '군자' };
+    await persistBackendSsotMirror({ ...staleJungok, corrId: 'corr-A' }, jungokActualAt + 15_000);
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('동일 lastAdvanceAt(=), sentAt 없음 → 기본 수용 (advance 없는 사이 재수신 push는 정상)', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...gunja, corrId: 'corr-A', receivedAt: gunjaAppliedAt + 5_000 }),
+    );
+    const sameAdvance = { ...gunja, corrId: 'corr-A' };
     await persistBackendSsotMirror(sameAdvance, gunjaAppliedAt + 20_000);
     expect(mockSetItem).toHaveBeenCalledWith(
       BACKEND_SSOT_MIRROR_KEY,
       expect.stringContaining('"currentStationId":"군자"'),
     );
-  });
-
-  it('다른 trip이면 lastAdvanceAt가 더 과거여도 무조건 수용', async () => {
-    mockGetItem.mockResolvedValue(
-      JSON.stringify({ ...gunja, tripToken: 'trip-old', receivedAt: gunjaAppliedAt + 5_000 }),
-    );
-    const newTripEarlier = { ...staleJungok, tripToken: 'trip-new' };
-    await persistBackendSsotMirror(newTripEarlier, jungokActualAt + 15_000);
-    expect(mockSetItem).toHaveBeenCalledWith(
-      BACKEND_SSOT_MIRROR_KEY,
-      expect.stringContaining('"currentStationId":"중곡"'),
-    );
-  });
-
-  it('기존 저장분(tripToken 필드 없음) 하위호환 — same-trip 취급해 stale 가드 적용', async () => {
-    // 레거시 저장분은 tripToken 필드 자체가 없다 (#2593 이전 저장). incoming도 tripToken 없음.
-    mockGetItem.mockResolvedValue(
-      JSON.stringify({ ...gunja, receivedAt: gunjaAppliedAt + 5_000 }),
-    );
-    await persistBackendSsotMirror(staleJungok, jungokActualAt + 15_000);
-    expect(mockSetItem).not.toHaveBeenCalled();
   });
 
   it('기존 mirror 없음(첫 push) — 가드 없이 항상 수용', async () => {
@@ -378,5 +402,101 @@ describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
       BACKEND_SSOT_MIRROR_KEY,
       expect.stringContaining('"currentStationId":"군자"'),
     );
+  });
+});
+
+// #2593 (code-review 항목 2) — lastAdvanceAt 동률 재정렬 창 tie-break. trySeedOverride/모션 갱신처럼
+// advance를 안 올리는 구 push가 sentAt만으로는 더 과거인데도 같은 역을 되돌릴 수 있는 케이스를 막는다.
+describe('persistBackendSsotMirror sentAt tie-break (#2593)', () => {
+  const advanceAt = 1_700_000_000_000;
+  const existingFresh = {
+    currentStationId: '군자',
+    motionState: 'moving' as const,
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: advanceAt,
+    passedStations: [],
+    sentAt: 1_700_000_050_000,
+  };
+
+  beforeEach(() => {
+    mockSetItem.mockReset();
+    mockGetItem.mockReset();
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('lastAdvanceAt 동률 + incoming.sentAt < existing.sentAt → stale-skip (재정렬 창)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...existingFresh, receivedAt: advanceAt + 1_000 }));
+    const staleReorderedPush = {
+      currentStationId: '중곡',
+      motionState: 'stationary' as const,
+      lastAdvanceEvidence: 'motion-correction',
+      lastAdvanceAt: advanceAt,
+      passedStations: [],
+      sentAt: 1_700_000_010_000, // existing.sentAt보다 과거 — 재정렬로 늦게 도착한 구 push
+    };
+    await persistBackendSsotMirror(staleReorderedPush, advanceAt + 2_000);
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('lastAdvanceAt 동률 + incoming.sentAt >= existing.sentAt → 수용', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...existingFresh, receivedAt: advanceAt + 1_000 }));
+    const newerPush = { ...existingFresh, sentAt: 1_700_000_060_000 };
+    await persistBackendSsotMirror(newerPush, advanceAt + 2_000);
+    expect(mockSetItem).toHaveBeenCalled();
+  });
+
+  it('lastAdvanceAt 동률이지만 sentAt 한쪽이라도 없으면 tie-break skip하고 기존처럼 수용', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...existingFresh, sentAt: undefined, receivedAt: advanceAt + 1_000 }),
+    );
+    const incomingNoSentAt = {
+      currentStationId: '중곡',
+      motionState: 'stationary' as const,
+      lastAdvanceEvidence: 'motion-correction',
+      lastAdvanceAt: advanceAt,
+      passedStations: [],
+    };
+    await persistBackendSsotMirror(incomingNoSentAt, advanceAt + 2_000);
+    expect(mockSetItem).toHaveBeenCalled();
+  });
+});
+
+// #2593 (code-review 항목 4) — read→write TOCTOU 하드닝. 동시 호출이 인터리브하면 두 호출이 같은
+// stale existing을 보고 동시에 write할 수 있다. 모듈 레벨 promise chain으로 직렬화해 호출 순서를
+// 보장한다.
+describe('persistBackendSsotMirror TOCTOU 직렬화 (#2593)', () => {
+  let fakeStore: Record<string, string> = {};
+
+  beforeEach(() => {
+    fakeStore = {};
+    mockGetItem.mockReset();
+    mockSetItem.mockReset();
+    mockGetItem.mockImplementation(async (key: string) => fakeStore[key] ?? null);
+    mockSetItem.mockImplementation(async (key: string, value: string) => {
+      fakeStore[key] = value;
+    });
+  });
+
+  it('동시에 발사된 fresh write와 stale write — 직렬화로 stale write가 fresh 커밋을 못 덮음', async () => {
+    const fresh = {
+      currentStationId: '군자',
+      motionState: 'moving' as const,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      lastAdvanceAt: 100,
+      passedStations: [],
+    };
+    const stale = {
+      currentStationId: '중곡',
+      motionState: 'moving' as const,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      lastAdvanceAt: 50,
+      passedStations: [],
+    };
+    // await 없이 동시에 호출 — 직렬화가 없다면 둘 다 existing=null을 보고 둘 다 write할 것.
+    const callA = persistBackendSsotMirror(fresh, 1_000);
+    const callB = persistBackendSsotMirror(stale, 1_001);
+    await Promise.all([callA, callB]);
+    const finalStored = JSON.parse(fakeStore[BACKEND_SSOT_MIRROR_KEY]);
+    expect(finalStored.currentStationId).toBe('군자');
   });
 });

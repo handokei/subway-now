@@ -16,6 +16,7 @@ import {
   TRIP_ORIGIN_KEY,
 } from '../../../../shared/constants/storageKeys';
 import type { LockSuggestionMirror } from '../../../alarm/utils/backendSsotMirror';
+import { setTripCorrId, clearTripCorrId } from '../../../observability/utils/tripCorrId';
 
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -847,6 +848,89 @@ describe('persistFromPositionResponse (#1534 S1 T9b)', () => {
       );
       const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
       expect(stored).toBeNull();
+    });
+  });
+
+  // #2593 (code-review 항목 1) — device 현재 trip corrId를 두 write 경로(ssot 우선 채택 /
+  // legacy 부분 합성) 모두에 stamp — persistBackendSsotMirror 단조성 가드가 same-trip을 corrId로
+  // 판정할 수 있게 한다.
+  describe('#2593 — corrId stamping (persistBackendSsotMirror 단조성 가드 연동)', () => {
+    afterEach(async () => {
+      await clearTripCorrId();
+    });
+
+    it('device corrId 존재 시 body.ssot 경로 mirror에 corrId 포함', async () => {
+      await setTripCorrId('corr-position-ssot');
+      await persistFromPositionResponse(
+        {
+          ssot: {
+            currentStationId: '용마산',
+            motionState: 'stationary',
+            lastAdvanceEvidence: 'arvlcd-arrived',
+            lastAdvanceAt: 1_699_999_000_000,
+            passedStations: [],
+          },
+        },
+        1_700_000_010_000,
+      );
+      const parsed = JSON.parse(
+        (await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY)) as string,
+      );
+      expect(parsed.corrId).toBe('corr-position-ssot');
+    });
+
+    it('device corrId 존재 시 legacy fallback 경로 mirror에도 corrId 포함', async () => {
+      await setTripCorrId('corr-position-legacy');
+      await persistFromPositionResponse({ originStationId: '중곡' }, 1_700_000_010_000);
+      const parsed = JSON.parse(
+        (await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY)) as string,
+      );
+      expect(parsed.corrId).toBe('corr-position-legacy');
+    });
+
+    it('device corrId 없음(null) → mirror에 corrId 필드 자체 생략', async () => {
+      await clearTripCorrId();
+      await persistFromPositionResponse({ originStationId: '중곡' }, 1_700_000_010_000);
+      const parsed = JSON.parse(
+        (await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY)) as string,
+      );
+      expect(parsed.corrId).toBeUndefined();
+    });
+  });
+
+  // #2593 (code-review 항목 3, 범위 명시) — legacy 합성(lastAdvanceAt=0/decidedAt)도
+  // persistBackendSsotMirror의 단조성 가드를 그대로 탄다. 의도된 개선: 합성 값이 backend의 실제
+  // SSoT보다 신뢰도가 낮으므로, 더 풍부하고 더 최신인 기존 mirror를 되돌리면 안 된다.
+  describe('#2593 — legacy 합성 경로도 단조성 가드 적용 (범위 명시된 행동 변화)', () => {
+    afterEach(async () => {
+      await clearTripCorrId();
+    });
+
+    it('legacy 0-stamp(originStationId만)는 더 풍부한 기존 mirror(같은 trip, 이미 advance됨)를 못 덮는다', async () => {
+      await setTripCorrId('corr-same-trip');
+      // 1) 먼저 실제 advance된(더 신선한) mirror가 이미 저장돼 있다고 가정 (예: silent push가
+      //    이미 최신 역까지 전진시킴).
+      await persistFromPositionResponse(
+        {
+          ssot: {
+            currentStationId: '군자',
+            motionState: 'moving',
+            lastAdvanceEvidence: 'arvlcd-confirmed-train',
+            lastAdvanceAt: 1_700_000_000_000,
+            passedStations: ['어린이대공원'],
+          },
+        },
+        1_700_000_005_000,
+      );
+      // 2) 같은 trip의 legacy fallback(originStationId만, lastAdvanceAt 합성값 0)이 뒤늦게
+      //    도착 — 단조성 가드가 이를 stale로 판정해 skip해야 한다.
+      await persistFromPositionResponse({ originStationId: '중곡' }, 1_700_000_010_000);
+      const parsed = JSON.parse(
+        (await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY)) as string,
+      );
+      // 기존 군자 mirror가 그대로 유지 — 중곡으로 되돌아가지 않았다.
+      expect(parsed.currentStationId).toBe('군자');
+      expect(parsed.lastAdvanceAt).toBe(1_700_000_000_000);
     });
   });
 });

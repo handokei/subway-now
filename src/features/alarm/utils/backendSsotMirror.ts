@@ -81,12 +81,33 @@ export interface SilentPushSsotMirror {
    */
   currentStationLine?: string;
   /**
-   * #2593 — mirror가 소속된 trip 식별자 (backend push payload의 `tripToken` echo).
+   * #2593 (code-review 수정) — mirror가 소속된 trip 인스턴스 식별자.
    *
-   * `persistBackendSsotMirror`의 단조성 가드가 "같은 trip"을 판정하는 키. 구 backend/구 저장분
-   * 호환 위해 optional — 부재 시(레거시 stored entry 포함) same-trip으로 취급해 기존 가드 동작 보존.
+   * **`tripToken`이 아니라 `corrId`를 쓴다** — tripToken은 APNs 기기 토큰이라 기기당 고정이고
+   * (types.ts, #2120), 같은 기기가 trip을 재등록해도 값이 바뀌지 않는다. 그 tripToken을
+   * same-trip 판정 키로 쓰면 "다른 trip" 분기가 사실상 dead code가 되고, 누수된 옛 trip mirror가
+   * 새 trip의 `lastAdvanceAt=0` seed push(`positionUpload.persistFromPositionResponse` legacy
+   * 합성)를 전부 stale-skip해버리는 역효과가 생긴다(register-retry가 `clearBackendSsotMirror`
+   * 없이 ACTIVE_TRIP만 갱신하는 시나리오).
+   *
+   * `corrId`는 trip 등록마다 새로 발급되는 인스턴스 식별자(`tripCorrId.ts`, #1501/#2120 — trip-ended
+   * corrId 가드와 동일 계약)이므로 이 판정에 적합하다. 호출부는 device의 현재 corrId
+   * (`getCurrentTripCorrIdSync()`)를 stamp한다 — payload가 corrId를 실어 보낼 필요가 없어
+   * 백엔드 계약 변경 없이 device 자체 정보만으로 동작한다.
+   *
+   * 구 저장분/구 호출부 호환 위해 optional — 부재 시(레거시 stored entry 포함) same-trip으로
+   * 취급해 기존 가드 동작 보존.
    */
-  tripToken?: string;
+  corrId?: string;
+  /**
+   * #2593 (code-review 수정) — backend 발사 시점 epoch ms (silent push payload의 `sentAt` echo).
+   *
+   * `lastAdvanceAt`이 동일한 두 push(예: `trySeedOverride`/모션 갱신처럼 advance 없이 재수신되는
+   * push)는 `lastAdvanceAt`만으로 순서를 못 가른다 — 늦게 도착한 구 push가 보정된 값을 되돌릴 수
+   * 있다. `persistBackendSsotMirror`가 `lastAdvanceAt` 동률일 때 `sentAt`으로 tie-break한다.
+   * 한쪽이라도 없으면(구 backend/구 저장분) tie-break를 skip하고 기존처럼 수용한다.
+   */
+  sentAt?: number;
 }
 
 /** #1561 (T8) — mirror entry에 receivedAt 추가. cascade picker가 자체 staleness 판정. */
@@ -104,12 +125,32 @@ export interface BackendSsotMirrorEntry extends SilentPushSsotMirror {
  *
  * #2593 — 단조성 가드 (RCA: 2026-09-13 데스크 trip, 군자 21:54:38 적용 후 stale 중곡 21:54:53 역행
  * 적용). APNs는 순서를 보장하지 않아 늦게 도착한 과거 push가 최신 상태를 덮어쓸 수 있다. 기존
- * mirror가 있고 **같은 trip**이며 incoming.lastAdvanceAt이 existing보다 과거면 write를 skip한다.
- * 같음(=)은 수용(advance 없는 사이 재수신 push는 정상). **다른 trip이면 무조건 수용** — 새 trip의
- * 작은 lastAdvanceAt를 이전 trip 기준으로 거부하면 안 된다. trip 식별은 `tripToken` — 기존 저장분처럼
- * 한쪽이라도 tripToken이 없으면 same-trip으로 취급해 하위 호환을 보존한다(레거시 mirror에도 가드 적용).
+ * mirror가 있고 **같은 trip**(`corrId` 일치 — 정의는 `SilentPushSsotMirror.corrId` 참조)이며
+ * incoming.lastAdvanceAt이 existing보다 과거면 write를 skip한다. **다른 trip이면 무조건 수용** —
+ * 새 trip의 작은 lastAdvanceAt를 이전 trip 기준으로 거부하면 안 된다.
+ *
+ * `lastAdvanceAt`이 동률이면(advance 없는 사이 재수신) 기본은 수용하되, 양쪽에 `sentAt`이 모두
+ * 있으면 그것으로 재정렬 창을 한 번 더 가른다(`SilentPushSsotMirror.sentAt` 참조) — 동일 역에서
+ * `trySeedOverride`/모션 보정처럼 advance를 안 올리는 구 push가 새 push를 되돌리는 것을 차단.
+ *
+ * #2593 — TOCTOU 하드닝: read(`readBackendSsotMirror`) → write(`AsyncStorage.setItem`) 사이 다른
+ * 호출이 인터리브하면 두 호출이 같은 stale `existing`을 보고 동시에 write할 수 있다. 모듈 레벨
+ * promise chain(`mirrorWriteQueue`)으로 호출을 직렬화 — 동시 호출도 항상 이전 write가 끝난 뒤의
+ * `existing`을 read한다.
  */
-export async function persistBackendSsotMirror(
+let mirrorWriteQueue: Promise<void> = Promise.resolve();
+
+export function persistBackendSsotMirror(
+  ssot: SilentPushSsotMirror,
+  receivedAt: number,
+): Promise<void> {
+  mirrorWriteQueue = mirrorWriteQueue.then(() =>
+    persistBackendSsotMirrorSerialized(ssot, receivedAt),
+  );
+  return mirrorWriteQueue;
+}
+
+async function persistBackendSsotMirrorSerialized(
   ssot: SilentPushSsotMirror,
   receivedAt: number,
 ): Promise<void> {
@@ -117,14 +158,27 @@ export async function persistBackendSsotMirror(
     const existing = await readBackendSsotMirror();
     if (existing !== null) {
       const sameTrip =
-        existing.tripToken === undefined ||
-        ssot.tripToken === undefined ||
-        existing.tripToken === ssot.tripToken;
-      if (sameTrip && ssot.lastAdvanceAt < existing.lastAdvanceAt) {
-        logger.info(
-          `ssot-mirror-stale-skip: incoming station=${ssot.currentStationId} lastAdvanceAt=${ssot.lastAdvanceAt} existing station=${existing.currentStationId} lastAdvanceAt=${existing.lastAdvanceAt}`,
-        );
-        return;
+        existing.corrId === undefined ||
+        ssot.corrId === undefined ||
+        existing.corrId === ssot.corrId;
+      if (sameTrip) {
+        if (ssot.lastAdvanceAt < existing.lastAdvanceAt) {
+          logger.info(
+            `ssot-mirror-stale-skip: incoming station=${ssot.currentStationId} lastAdvanceAt=${ssot.lastAdvanceAt} existing station=${existing.currentStationId} lastAdvanceAt=${existing.lastAdvanceAt}`,
+          );
+          return;
+        }
+        if (
+          ssot.lastAdvanceAt === existing.lastAdvanceAt &&
+          ssot.sentAt !== undefined &&
+          existing.sentAt !== undefined &&
+          ssot.sentAt < existing.sentAt
+        ) {
+          logger.info(
+            `ssot-mirror-stale-skip: incoming station=${ssot.currentStationId} sentAt=${ssot.sentAt} existing station=${existing.currentStationId} sentAt=${existing.sentAt} (lastAdvanceAt tie)`,
+          );
+          return;
+        }
       }
     }
     await AsyncStorage.setItem(
@@ -188,11 +242,14 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
       typeof parsed.currentStationLine === 'string' && parsed.currentStationLine.length > 0
         ? parsed.currentStationLine
         : undefined;
-    // #2593 — tripToken parse (optional). 레거시 저장분(필드 부재)은 undefined로 정규화 —
+    // #2593 — corrId parse (optional). 레거시 저장분(필드 부재)은 undefined로 정규화 —
     // persistBackendSsotMirror 단조성 가드가 same-trip으로 취급하는 것과 동일 계약.
-    const tripToken =
-      typeof parsed.tripToken === 'string' && parsed.tripToken.length > 0
-        ? parsed.tripToken
+    const corrId =
+      typeof parsed.corrId === 'string' && parsed.corrId.length > 0 ? parsed.corrId : undefined;
+    // #2593 — sentAt parse (optional). lastAdvanceAt 동률 tie-break에만 사용.
+    const sentAt =
+      typeof parsed.sentAt === 'number' && Number.isFinite(parsed.sentAt)
+        ? parsed.sentAt
         : undefined;
     return {
       currentStationId: parsed.currentStationId,
@@ -206,7 +263,8 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
       ...(lockSuggestion ? { lockSuggestion } : {}),
       ...(alarmEvents !== undefined ? { alarmEvents } : {}),
       ...(currentStationLine !== undefined ? { currentStationLine } : {}),
-      ...(tripToken !== undefined ? { tripToken } : {}),
+      ...(corrId !== undefined ? { corrId } : {}),
+      ...(sentAt !== undefined ? { sentAt } : {}),
     };
   } catch {
     return null;
