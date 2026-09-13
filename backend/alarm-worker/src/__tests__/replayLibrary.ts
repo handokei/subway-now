@@ -61,9 +61,28 @@ export interface ReplayLibraryEntry {
    */
   loadFixture: () => ReplayFixture;
   expect: {
-    /** 위상 무관 발사돼야 하는 역들 — 발사 순서와 무관하게 정확히 이 집합과 일치해야 한다
-     * (중복 발사도 실패 — 순서 무시 비교를 위해 실제 발사 리스트는 중복 제거하지 않는다). */
+    /**
+     * 위상 무관 발사돼야 하는 역들 — **alert `data.nextWaypoint` 채널 전용**
+     * (arvlcd/vanish-fallback station-passed push, `buildStationPassedImminentPayload`).
+     * 발사 순서와 무관하게 정확히 이 집합과 일치해야 한다(중복 발사도 실패 — 순서 무시
+     * 비교를 위해 실제 발사 리스트는 중복 제거하지 않는다).
+     *
+     * transfer waypoint는 **이 채널과 별개로** `hopEndPromptStations`(아래)에서도 동시에
+     * 발사될 수 있다 — 두 채널을 섞어서 세면(#2600 최초 구현의 결함) 정상적으로 둘 다
+     * 발사되는 trip(예: EVT 299+300 동시 실측)에서 같은 역이 2회로 잡혀 false-red가 난다.
+     * `replay_library.full.test.ts`는 두 채널을 별도 collector로 분리해 검증한다.
+     */
     firedStations: string[];
+    /**
+     * transfer waypoint 전용 hop-end-prompt 채널(`sendBoardingPromptPush`, "하차했나요?")에서
+     * 발사돼야 하는 역들(#2600 코드리뷰 항목1) — `push.body.body.originStation`
+     * (+ `hopEndKind==='disembark'`)로 식별. `evaluateTransferDestinationGate`의 60s 신선도
+     * 게이트와 무관하게(자체 dedup만 적용) 항상 발사되는 channel이라 `firedStations`(alert
+     * nextWaypoint 채널)와는 발사 조건이 다르다 — 같은 transfer 역이 두 채널 모두에서 발사될
+     * 수 있으므로 별도 필드로 분리한다. 미지정 시 이 채널은 검증하지 않는다(N/A, 예:
+     * intermediate/destination만 있는 trip).
+     */
+    hopEndPromptStations?: string[];
     /** 오발사 금지 역. */
     forbiddenStations?: string[];
     /** 재생 전체(모든 tick 합산)에서 최소 발사돼야 하는 push 총 수. */
@@ -135,10 +154,25 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
     phaseOffsetsMs: [0],
     loadFixture: loadDesk20260913Fixture,
     expect: {
-      // D1 실측 fire 이력(4건, 2026-09-13T12:52:27Z~12:57:27Z) 1:1 — 중곡/군자(능동)/
-      // 어린이대공원(세종대)는 station-passed, 건대입구는 transfer 안내. leg-2(2호선,
-      // 뚝섬 방면)는 lockless라 fire 없음(trip은 13:02Z user-delete로 종료).
-      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      // station-passed alert(nextWaypoint 채널) — 중곡/군자(능동)/어린이대공원(세종대) 3역.
+      //
+      // #2600 코드리뷰 항목2 조사 결과(PR 본문에 상세 기록): production D1 ground truth는
+      // 건대입구도 이 채널(cron-fire-attempt kind='sent')로 발사됐다고 시사하지만, 이
+      // fixture(Seoul-capture만 담고 backend KV/SSoT 히스토리는 담지 않음)를 execLagMs
+      // 보정(아래 helper 참고)까지 적용해 최대한 충실히 재생해도 재현되지 않는다 — 어린이
+      // 대공원 advance(cycle4)~건대입구 평가(cycle5) 간 recorded cron 간격 자체가
+      // 60001ms로 이미 60000ms 게이트를 넘는다. execLagMs는 두 cycle 모두에 **균일하게**
+      // 더해지는 상수라 간격(delta) 자체를 절대 좁히지 못한다(수학적으로 증명: tick[5]-tick[4]
+      // = (cs[5]+lag)-(cs[4]+lag) = cs[5]-cs[4], lag와 무관). 이 게이트 통과에 필요한 신호
+      // (예: 건대입구 도착 이전 자체 position 기반 SSoT 갱신)가 fixture 캡처 범위 밖에
+      // 있다면 이 fixture만으로는 재현 불가 — 기대값을 억지로 4로 맞추지 않고 재생이 실제로
+      // 재현하는 3역만 이 채널의 ground truth로 유지한다("완화"가 아니라 이 채널의 실측
+      // 재현 한계를 정직하게 반영. hop-end-prompt 채널은 아래에서 별도로 건대입구를 검증).
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)'],
+      // 건대입구는 hop-end-prompt("하차했나요?") 채널로는 재생에서도 항상 발사된다(#2600
+      // 코드리뷰 항목1 — nextWaypoint 채널과 별개, 60s 신선도 게이트 무관하게
+      // `maybeFireHopEndPrompt` 자체 dedup만 적용).
+      hopEndPromptStations: ['건대입구'],
       minPushes: 4,
     },
   },

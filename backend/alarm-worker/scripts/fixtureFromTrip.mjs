@@ -80,10 +80,12 @@ const USAGE =
 /**
  * `runCli`(cliUtils.mjs) 호출 시 항상 `BACKEND_DIR`을 cwd로 고정하는 얇은 래퍼(#2600) —
  * 이 파일의 모든 wrangler 호출 지점이 개별적으로 cwd를 지정해야 한다는 사실을 잊지 않도록
- * 한 곳으로 좁힌다.
+ * 한 곳으로 좁힌다. `{ ...options, cwd: BACKEND_DIR }` 순서(#2600 코드리뷰 항목4) — caller가
+ * `options.cwd`를 실수로 넘겨도 이 함수의 목적(항상 backend/alarm-worker에서 wrangler 실행)을
+ * 덮어쓸 수 없게 마지막에 스프레드한다.
  */
 function runCli(args, options = {}) {
-  return runWranglerCli(SCRIPT_DIR, args, { cwd: BACKEND_DIR, ...options });
+  return runWranglerCli(SCRIPT_DIR, args, { ...options, cwd: BACKEND_DIR });
 }
 
 function runD1Query(db, sql) {
@@ -174,7 +176,13 @@ async function main() {
   const { tokenHash } = resolved;
 
   const workerUrl = args['worker-url'] ?? DEFAULT_WORKER_URL;
-  const outDir = args.out ?? DEFAULT_OUT_DIR;
+  // #2600 코드리뷰 항목4 — `--out`를 명시하지 않은 기본값은 `BACKEND_DIR`(스크립트 위치)
+  // 기준 절대경로로 해석한다. wrangler cwd 고정(위 `runCli`)과 같은 이유 — repo 루트 등
+  // 다른 cwd에서 실행해도 `.fixture-staging/`가 `backend/alarm-worker/.fixture-staging/`를
+  // 가리켜야 `existsSync(outPath) && !force` 중복 검사(아래)와 실제 파일 위치가 일치한다.
+  // 사용자가 `--out`을 직접 지정하면 일반 CLI 관행대로 현재 cwd 기준 상대경로로 존중한다
+  // (기본값만 cwd 독립, 명시 인자는 사용자 의도 그대로).
+  const outDir = args.out ?? path.join(BACKEND_DIR, DEFAULT_OUT_DIR);
   const bucket = args.bucket ?? DEFAULT_BUCKET;
   const db = args.db ?? DEFAULT_DB;
   const force = args.force === true;

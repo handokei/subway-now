@@ -10,10 +10,14 @@
  */
 import type { Trip } from '../../types';
 
-export const DESK_20260913_LOCK_TRAIN = '7301';
+// #2600 코드리뷰 항목5 — line7SynthTrip.ts의 자매 helper와 달리 이 두 상수는 다른 테스트
+// 파일에서 직접 참조하는 caller가 없다(replayLibrary.ts는 `makeDesk20260913LockTrip`만
+// 소비). orphan export를 만들지 않도록 비export const로 유지 — 소비자가 생기면 그때
+// export한다.
+const DESK_20260913_LOCK_TRAIN = '7301';
 
 /** leg-1(용마산 승차 → 건대입구 환승) 구간 정차역 시퀀스 — hop 거리 산출용(`segmentStations`). */
-export const DESK_20260913_SEGMENT = ['용마산', '중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'];
+const DESK_20260913_SEGMENT = ['용마산', '중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'];
 
 export function makeDesk20260913LockTrip(token: string, now: number): Trip {
   return {
