@@ -52,6 +52,7 @@ import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegi
 import { useLocalBoardingPromptGate } from '../features/alarm/hooks/useLocalBoardingPromptGate';
 import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
 import { useLiveActivityPreBoardingLifecycle } from '../features/alarm/hooks/useLiveActivityPreBoardingLifecycle';
+import { useForegroundLaMirrorSync } from '../features/alarm/hooks/useForegroundLaMirrorSync';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
@@ -1059,6 +1060,9 @@ export default function HomeScreen() {
   const permissionWatcher = useLocationPermissionWatcher();
   useLiveActivityDismissBridge();
   useLiveActivityPreBoardingLifecycle();
+  // #2610 (b) — silent push(BG task) 수신 0인 FG trip에서도 LA가 backend mirror를 따라 전진하도록,
+  // silent push 경로와 독립적인 FG mirror 폴링(useBackendSsotMirrorPoll)에 LA refresh를 wire.
+  useForegroundLaMirrorSync(destination, route, fusionBoardingLock?.boardingLine);
   useApnsTripRegistration({
     route,
     destination,
