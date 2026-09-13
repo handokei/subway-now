@@ -10,3 +10,5 @@ export function readCycleFile<T>(
   filePath: string,
   parseCycle: (json: unknown) => T,
 ): { cycle: T } | { error: string };
+
+export function resolveWranglerCommand(scriptDir: string): { cmd: string; prefixArgs: string[] };

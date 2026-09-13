@@ -13,6 +13,8 @@ import {
   parseEnvValue,
   parseTripEventsResponse,
   resolveTokenHash,
+  segmentTripEvents,
+  selectTripSegment,
   type TripEventRow,
 } from '../fixtureFromTrip';
 
@@ -163,6 +165,74 @@ describe('extractSegmentStations / extractLines', () => {
   it('전부 null이면 빈 배열', () => {
     expect(extractSegmentStations([makeRow()])).toEqual([]);
     expect(extractLines([makeRow()])).toEqual([]);
+  });
+
+  it('#2598 결함2 — raw station 코드(N-NNN 형식) row는 역명이 아니므로 제외한다', () => {
+    const rows = [
+      makeRow({ station: '교대', line: '2호선' }),
+      makeRow({ station: '2-010', line: null, kind: 'trip-end' }),
+      makeRow({ station: '7-015', line: null, kind: 'trip-end' }),
+      makeRow({ station: '강남', line: '2호선' }),
+    ];
+
+    expect(extractSegmentStations(rows)).toEqual(['교대', '강남']);
+  });
+});
+
+describe('segmentTripEvents (#2598 결함1)', () => {
+  it('trip-end 마커 없이 한 trip만 있으면 세그먼트 1개', () => {
+    const rows = [makeRow({ ts: 1000, station: '교대' }), makeRow({ ts: 2000, station: '강남' })];
+
+    expect(segmentTripEvents(rows)).toEqual([{ rows }]);
+  });
+
+  it('trip-end 마커로 여러 trip을 분리하고, trip-end row는 그 세그먼트에 포함된다', () => {
+    const rowA1 = makeRow({ ts: 1000, station: '교대' });
+    const rowAEnd = makeRow({ ts: 1500, kind: 'trip-end', station: '2-010' });
+    const rowB1 = makeRow({ ts: 2000, station: '용마산' });
+    const rowB2 = makeRow({ ts: 2500, station: '중곡' });
+
+    const segments = segmentTripEvents([rowA1, rowAEnd, rowB1, rowB2]);
+
+    expect(segments).toEqual([{ rows: [rowA1, rowAEnd] }, { rows: [rowB1, rowB2] }]);
+  });
+
+  it('trip-end 뒤에 남은 row가 없으면 마지막 세그먼트가 trip-end로 끝난다(빈 잔여 세그먼트 없음)', () => {
+    const rowA1 = makeRow({ ts: 1000 });
+    const rowAEnd = makeRow({ ts: 1500, kind: 'trip-end' });
+
+    expect(segmentTripEvents([rowA1, rowAEnd])).toEqual([{ rows: [rowA1, rowAEnd] }]);
+  });
+
+  it('빈 배열이면 빈 세그먼트 배열', () => {
+    expect(segmentTripEvents([])).toEqual([]);
+  });
+});
+
+describe('selectTripSegment (#2598 결함1 — --trip-index)', () => {
+  const segA = { rows: [makeRow({ ts: 1000 })] };
+  const segB = { rows: [makeRow({ ts: 2000 })] };
+  const segC = { rows: [makeRow({ ts: 3000 })] };
+  const segments = [segA, segB, segC];
+
+  it('tripIndexFromEnd=0(기본값)이면 최신(마지막) 세그먼트', () => {
+    expect(selectTripSegment(segments, 0)).toEqual({ segment: segC });
+  });
+
+  it('tripIndexFromEnd=1이면 뒤에서 두 번째 세그먼트', () => {
+    expect(selectTripSegment(segments, 1)).toEqual({ segment: segB });
+  });
+
+  it('tripIndexFromEnd가 보유 세그먼트 수 이상이면 trip_index_out_of_range', () => {
+    expect(selectTripSegment(segments, 3)).toEqual({ error: 'trip_index_out_of_range' });
+  });
+
+  it('tripIndexFromEnd가 음수면 trip_index_out_of_range', () => {
+    expect(selectTripSegment(segments, -1)).toEqual({ error: 'trip_index_out_of_range' });
+  });
+
+  it('세그먼트가 없으면(빈 배열) 어떤 index도 out_of_range', () => {
+    expect(selectTripSegment([], 0)).toEqual({ error: 'trip_index_out_of_range' });
   });
 });
 

@@ -48,9 +48,11 @@ import {
   parseEnvValue,
   parseTripEventsResponse,
   resolveTokenHash,
+  segmentTripEvents,
+  selectTripSegment,
 } from '../src/fixtureFromTrip.ts';
 import { buildReplayFixture, isLossyFixture, parseSeoulCaptureCycle } from '../src/replayFixture.ts';
-import { parseArgs, readCycleFile } from './cliUtils.mjs';
+import { parseArgs, readCycleFile, resolveWranglerCommand } from './cliUtils.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT_ENV_PATH = path.join(SCRIPT_DIR, '..', '..', '..', '.env');
@@ -63,20 +65,23 @@ const DEFAULT_WORKER_URL = 'https://subway-now-alarm-worker.handokei.workers.dev
 
 const USAGE =
   'Usage: node scripts/fixtureFromTrip.mjs (--trip <tripToken> | --token-hash <8hex>) ' +
-  `[--worker-url ${DEFAULT_WORKER_URL}] [--out ${DEFAULT_OUT_DIR}] [--bucket ${DEFAULT_BUCKET}] [--db ${DEFAULT_DB}] [--force]`;
+  `[--worker-url ${DEFAULT_WORKER_URL}] [--out ${DEFAULT_OUT_DIR}] [--bucket ${DEFAULT_BUCKET}] [--db ${DEFAULT_DB}] ` +
+  '[--trip-index 0] [--force]';
 
 /**
- * wrangler CLI 실행 지점을 한 곳으로 수렴 — 이 스크립트는 개발자 로컬 전용 CLI로 CI/서버에서
- * 실행되지 않으므로, PATH에서 wrangler를 해석하는 것은 의도된 동작이다. spawn 호출을 여기
- * 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
+ * wrangler CLI 실행 지점을 한 곳으로 수렴 — 로컬 devDependency bin이 있으면 그것을, 없으면
+ * `npx wrangler`로 실행한다(`resolveWranglerCommand`, cliUtils.mjs, #2598 — 글로벌 wrangler가
+ * PATH에 없는 환경에서 bare spawn ENOENT 수리). spawn 호출을 여기 하나로 좁혀 S4036 위험
+ * 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
  */
-function runCli(cmd, args, options = {}) {
-  return execFileSync(cmd, args, { encoding: 'utf-8', ...options }); // NOSONAR — dev-only local CLI; PATH resolution of wrangler is intentional (S4036)
+function runCli(args, options = {}) {
+  const { cmd, prefixArgs } = resolveWranglerCommand(SCRIPT_DIR);
+  return execFileSync(cmd, [...prefixArgs, ...args], { encoding: 'utf-8', ...options }); // NOSONAR — dev-only local CLI; wrangler resolution is intentional (S4036)
 }
 
 function runD1Query(db, sql) {
   try {
-    return runCli('wrangler', ['d1', 'execute', db, '--remote', '--json', '--command', sql], {
+    return runCli(['d1', 'execute', db, '--remote', '--json', '--command', sql], {
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
@@ -140,7 +145,7 @@ function downloadCaptureKey(bucket, key, destDir) {
   const fileName = path.basename(key);
   const destPath = path.join(destDir, fileName);
   try {
-    runCli('wrangler', ['r2', 'object', 'get', `${bucket}/${key}`, '--file', destPath, '--remote']);
+    runCli(['r2', 'object', 'get', `${bucket}/${key}`, '--file', destPath, '--remote']);
     return destPath;
   } catch (err) {
     console.warn(`[skip] ${key} 다운로드 실패: ${err instanceof Error ? err.message : String(err)}`);
@@ -167,6 +172,13 @@ async function main() {
   const db = args.db ?? DEFAULT_DB;
   const force = args.force === true;
 
+  const tripIndexRaw = args['trip-index'] ?? '0';
+  if (!/^\d+$/.test(tripIndexRaw)) {
+    console.error(USAGE);
+    throw new Error(`--trip-index는 0 이상의 정수여야 합니다 (받은 값: ${tripIndexRaw})`);
+  }
+  const tripIndex = Number(tripIndexRaw);
+
   const adminToken = resolveAdminToken();
   if (!adminToken) {
     throw new Error(
@@ -174,10 +186,21 @@ async function main() {
     );
   }
 
-  // 1) D1 조회 — 시간창/노선/segment 역/fire 이력.
+  // 1) D1 조회 — token_hash 전체 이벤트(디바이스 수명 단위, 여러 trip 혼재 가능).
   const sql = buildTripEventsQuery(tokenHash);
   const stdout = runD1Query(db, sql);
-  const rows = parseTripEventsResponse(stdout, tokenHash);
+  const allRows = parseTripEventsResponse(stdout, tokenHash);
+
+  // #2598 결함1 — trip-end 마커로 세그먼트 분리 후, 기본값 최신 세그먼트(--trip-index 0)만
+  // window/segment/fire 이력 계산에 사용한다. 과거 trip 혼입으로 인한 window/segment 오염 방지.
+  const segments = segmentTripEvents(allRows);
+  const selected = selectTripSegment(segments, tripIndex);
+  if ('error' in selected) {
+    throw new Error(
+      `--trip-index ${tripIndex}에 해당하는 trip이 없습니다 (tokenHash=${tokenHash}에서 발견된 trip 수: ${segments.length})`,
+    );
+  }
+  const rows = selected.segment.rows;
 
   const window = computeTripCaptureWindow(rows);
   const segmentStations = extractSegmentStations(rows);
@@ -241,7 +264,7 @@ async function main() {
     console.log(
       [
         `trip tokenHash: ${tokenHash}`,
-        `trip_events: ${rows.length}건`,
+        `trip_events: ${rows.length}건 (선택 trip-index=${tripIndex}/${segments.length}개 중, tokenHash 전체 ${allRows.length}건)`,
         `capture cycles: ${cycles.length} (skipped: ${skipped}, admin endpoint 매칭 키: ${keysInWindow.length})`,
         `window: ${new Date(window.fromMs).toISOString()} ~ ${new Date(window.toMs).toISOString()}`,
         `노선: ${lines.join(', ') || '(미확인)'}`,

@@ -146,13 +146,66 @@ export function computeTripCaptureWindow(rows: TripEventRow[], marginMs: number 
   return { fromMs: minTs - marginMs, toMs: maxTs + marginMs };
 }
 
+/** trip_events 1건 — `segmentTripEvents`가 나눈 세그먼트 1개(오래된 trip 순서 보존). */
+export interface TripSegment {
+  rows: TripEventRow[];
+}
+
+/**
+ * token_hash 전체 조회 결과(ts asc, 여러 trip 혼재)를 `kind === 'trip-end'` 마커 기준으로
+ * trip 단위 세그먼트로 분리한다(#2598 결함1 — token_hash는 디바이스 수명 단위라 D1 조회가
+ * 과거 trip들을 전부 포함해 window/segment 역이 오염됨).
+ *
+ * `trip-end` row는 그것이 끝맺는 세그먼트에 포함시키고 그 지점에서 세그먼트를 닫는다.
+ * 마지막 trip-end 이후 남은 row(아직 종료 마커가 D1에 적재되지 않은 진행 중 trip 포함)는
+ * 별도 세그먼트로 남긴다. 반환 배열은 오래된 trip이 먼저(index 0) 오는 순서.
+ */
+export function segmentTripEvents(rows: TripEventRow[]): TripSegment[] {
+  const segments: TripSegment[] = [];
+  let current: TripEventRow[] = [];
+  for (const row of rows) {
+    current.push(row);
+    if (row.kind === 'trip-end') {
+      segments.push({ rows: current });
+      current = [];
+    }
+  }
+  if (current.length > 0) {
+    segments.push({ rows: current });
+  }
+  return segments;
+}
+
+export type SelectTripSegmentError = 'trip_index_out_of_range';
+
+/**
+ * `segmentTripEvents` 결과(오래된 순) + `--trip-index`(뒤에서부터, 0=최신)로 세그먼트
+ * 1개를 선택한다. 범위를 벗어나면(음수 index 또는 보유 세그먼트 수 이상) `trip_index_out_of_range`.
+ */
+export function selectTripSegment(
+  segments: TripSegment[],
+  tripIndexFromEnd: number,
+): { segment: TripSegment } | { error: SelectTripSegmentError } {
+  const index = segments.length - 1 - tripIndexFromEnd;
+  if (tripIndexFromEnd < 0 || index < 0 || index >= segments.length) {
+    return { error: 'trip_index_out_of_range' };
+  }
+  return { segment: segments[index] };
+}
+
 function utcDateKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/** segment 역 목록 — station이 있는 row에서 첫 등장 순서로 dedup. */
+/**
+ * segment 역 목록 — station이 있는 row에서 첫 등장 순서로 dedup. raw station 코드
+ * (`2-010`/`7-015` 형식, 주로 `trip-end` row가 남기는 값)는 역명이 아니라서 제외한다
+ * (#2598 결함2).
+ */
+const STATION_CODE_PATTERN = /^\d+-\d+$/;
+
 export function extractSegmentStations(rows: TripEventRow[]): string[] {
-  return dedupInOrder(rows.map((row) => row.station));
+  return dedupInOrder(rows.map((row) => (row.station !== null && STATION_CODE_PATTERN.test(row.station) ? null : row.station)));
 }
 
 /** 관련 노선 목록 — line이 있는 row에서 첫 등장 순서로 dedup. */
