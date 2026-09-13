@@ -15,20 +15,10 @@
  *   node scripts/buildReplayFixture.mjs --in <captureDir> --out <fixture.json> [--from <ISO|ms>] [--to <ISO|ms>]
  *   --from/--to는 한쪽만 줘도 된다 — 그 방향만 제약하고 반대쪽은 실제 데이터 범위로 자동 산출한다.
  */
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildReplayFixture, parseSeoulCaptureCycle } from '../src/replayFixture.ts';
-
-function parseArgs(argv) {
-  const args = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const key = argv[i];
-    if (!key.startsWith('--')) continue;
-    args[key.slice(2)] = argv[i + 1];
-    i += 1;
-  }
-  return args;
-}
+import { parseArgs, readCycleFile } from './cliUtils.mjs';
 
 /** ISO 문자열 또는 epoch ms 문자열 → epoch ms. */
 function parseTimeArg(value) {
@@ -38,21 +28,6 @@ function parseTimeArg(value) {
     throw new Error(`시간 인자를 파싱할 수 없습니다: ${value}`);
   }
   return parsed;
-}
-
-/** cycle 파일 하나를 읽어 SeoulCaptureCycle로 검증(`replayFixture.ts`에 위임). 실패 시 이유와 함께 error. */
-function readCycleFile(filePath) {
-  let parsedJson;
-  try {
-    parsedJson = JSON.parse(readFileSync(filePath, 'utf-8'));
-  } catch (err) {
-    return { error: `JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}` };
-  }
-  try {
-    return { cycle: parseSeoulCaptureCycle(parsedJson) };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
 }
 
 function formatBoundLabel(ms) {
@@ -73,7 +48,7 @@ function main() {
   let skipped = 0;
   for (const file of files) {
     const filePath = path.join(inDir, file);
-    const result = readCycleFile(filePath);
+    const result = readCycleFile(filePath, parseSeoulCaptureCycle);
     if ('error' in result) {
       console.warn(`[skip] ${file}: ${result.error}`);
       skipped += 1;

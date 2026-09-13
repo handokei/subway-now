@@ -11,7 +11,21 @@
  * `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸) 책임이다 — `buildReplayFixture.mjs`(#2580)와
  * 동일 분리 패턴.
  */
-import { hashTripToken } from '../../../src/shared/infra/monitoring/tripTokenHash';
+// `hashTripToken`은 `.ts` 확장자를 명시한다 — 이 파일은 `scripts/fixtureFromTrip.mjs`가
+// Node 네이티브 type-stripping으로 직접 로드한다(vitest/webpack 같은 번들러 경유가 아님).
+// Node ESM은 확장자 생략 relative import를 해석하지 못해(#2586 코드리뷰 — 실행 시
+// ERR_MODULE_NOT_FOUND 확인), 이 체인에서만 명시 확장자가 필요하다
+// (tsconfig `allowImportingTsExtensions` 참고).
+import { hashTripToken } from '../../../src/shared/infra/monitoring/tripTokenHash.ts';
+
+/**
+ * R2 key prefix — `seoulCapture.ts`의 `SEOUL_CAPTURE_KEY_PREFIX`와 값이 반드시 같아야
+ * 한다(테스트로 SSoT 일치를 고정). 그 값을 직접 import하지 않는 이유: `seoulCapture.ts`는
+ * `./seoul`(값 import, extensionless)로 이어지는 프로덕션 런타임 체인을 갖고 있어, 이
+ * leaf 모듈이 그 체인 전체를 Node 네이티브 로더로 끌고 들어오게 된다(#2586 코드리뷰 —
+ * leaf-safe 구조). 이 파일은 순수 문자열 상수 하나만 필요하므로 재선언이 더 안전하다.
+ */
+export const SEOUL_CAPTURE_KEY_PREFIX = 'seoul-capture/';
 
 /** trip 시간창 앞뒤로 붙이는 여유(R2 capture 조회 시). 이슈 스펙 "±2분 margin". */
 export const TRIP_WINDOW_MARGIN_MS = 2 * 60 * 1000;
@@ -172,10 +186,41 @@ function parseOutcome(meta: string | null): string | null {
   }
 }
 
-/** fixture 파일명 slug — `capture_<YYYYMMDD>_<tokenHash>` (파일명·registry entry.slug 공용). */
+/**
+ * R2 캡처 키(basename=`<cycleStartMs>.json`)를 다운로드 전에 시간창으로 사전 필터한다.
+ * 날짜 prefix 전체(~1440개/일)를 무조건 받으면 Free plan quota를 불필요하게 소진한다
+ * (#2073 lesson). `preRollMs`만큼 하한을 앞당기는 이유는 cycle이 window 시작 직전에
+ * 시작해도 그 cycle의 entry 일부가 window 안에 들어올 수 있어서다(`buildReplayFixture`가
+ * entry 단위로 다시 걸러내므로 여기서는 넉넉하게 통과시키는 게 안전).
+ */
+export const CAPTURE_KEY_PRE_ROLL_MS = 90_000;
+
+export function filterCaptureKeysInWindow(
+  keys: string[],
+  window: TripWindow,
+  preRollMs: number = CAPTURE_KEY_PRE_ROLL_MS,
+): string[] {
+  const lowerBound = window.fromMs - preRollMs;
+  return keys.filter((key) => {
+    const base = key.slice(key.lastIndexOf('/') + 1).replace('.json', '');
+    const cycleStartMs = Number(base);
+    return Number.isFinite(cycleStartMs) && cycleStartMs >= lowerBound && cycleStartMs <= window.toMs;
+  });
+}
+
+/**
+ * fixture 파일명 slug — `capture_<YYYYMMDD>T<HHmm>Z_<tokenHash>` (파일명·registry
+ * entry.slug 공용). window 시작 시분(UTC)까지 포함하는 이유: 같은 UTC 날짜에 trip이 여러
+ * 건이면 날짜+tokenHash만으로는 부족하지 않지만(tokenHash가 이미 trip을 구분), 사람이
+ * 라이브러리를 훑을 때 같은 날짜의 여러 fixture를 시간순으로 식별하기 쉽게 하기 위함
+ * (#2586 코드리뷰).
+ */
 export function buildFixtureSlug(tokenHash: string, window: TripWindow): string {
+  const start = new Date(window.fromMs);
   const dateStr = utcDateKey(window.fromMs).replaceAll('-', '');
-  return `capture_${dateStr}_${tokenHash}`;
+  const hh = String(start.getUTCHours()).padStart(2, '0');
+  const mm = String(start.getUTCMinutes()).padStart(2, '0');
+  return `capture_${dateStr}T${hh}${mm}Z_${tokenHash}`;
 }
 
 export interface RegistrySkeletonParams {

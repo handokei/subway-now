@@ -187,7 +187,7 @@ aws s3api list-objects-v2 \
 # 2) 키마다 wrangler로 다운로드 (R2 IO 자체는 wrangler CLI가 담당, 파일명 = key의 basename)
 mkdir -p /tmp/capture-2026-09-13
 while read -r key; do
-  wrangler r2 object get "subway-now-telemetry/${key}" --file "/tmp/capture-2026-09-13/$(basename "$key")"
+  wrangler r2 object get "subway-now-telemetry/${key}" --file "/tmp/capture-2026-09-13/$(basename "$key")" --remote
 done < /tmp/capture-2026-09-13-keys.txt
 
 # 3) 병합해 fixture 생성 (window 미지정 시 cycle 전체 범위 자동 산출, --from/--to는 한쪽만 줘도 됨)
@@ -205,19 +205,27 @@ wrangler/aws CLI 실행은 `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸, `buildR
 ```bash
 cd backend/alarm-worker
 node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId> \
-  [--out src/__tests__/fixtures/replayLibrary/] [--bucket subway-now-telemetry] [--db subway-now-db]
+  [--out .fixture-staging/] [--bucket subway-now-telemetry] [--db subway-now-db] [--force]
 ```
 
 1. `trip_events`(token_hash 기준, read-only 조회 — 스키마 변경 없음)에서 시간창(min/max
    ts)·노선·segment 역 목록·실제 fire 이력(`kind='cron-fire-attempt'`)을 뽑는다. 이벤트가
    없으면(캡처 없음/토큰 오류) 명확한 에러로 즉시 중단한다.
-2. 시간창 ±2분 margin이 걸치는 UTC 날짜마다 R2 seoul-capture 키를 나열·다운로드한다(일부
-   구간 캡처가 없어도 나머지로 계속 진행 — 부분 캡처 허용, stdout에 경고).
-3. `buildReplayFixture`(#2580)로 병합해 `<slug>.fixture.json`을 쓴다.
+2. 시간창(±2분 margin, R2 키는 다운로드 전 추가로 ±90초 preRoll 필터) — 걸치는 UTC
+   날짜마다 R2 seoul-capture 키를 나열하고, 시간창 안 키만 `wrangler r2 object get
+   --remote`로 다운로드한다(날짜 prefix 전체를 무조건 받지 않는다 — #2073 quota lesson).
+   일부 날짜 나열이 실패해도 나머지로 계속 진행하고(부분 캡처 허용, stdout에 경고),
+   **전체** 날짜 나열이 실패하면(인증/도구 문제) 원인 에러를 그대로 올려 중단한다.
+3. `buildReplayFixture`(#2580)로 병합해 기본적으로 `.fixture-staging/<slug>.fixture.json`
+   (git-ignored)에 쓴다 — `src/__tests__/fixtures/replayLibrary/`(P2 PR 게이트 디렉토리)에
+   바로 쓰지 않는다. 이미 같은 파일이 있으면 `--force` 없이는 에러로 중단한다(실수로
+   기존 fixture를 덮어쓰지 않도록).
 4. `src/__tests__/replayLibrary.ts`의 `REPLAY_LIBRARY` 배열에 붙여넣을 entry 텍스트
    스켈레톤을 stdout에 출력한다 — `cronIntervalMs`는 실 캡처 fixture이므로 항상
    `'recorded'`, `expect.firedStations`는 segment 역 전체로 채운다. `seedTrips`/
-   `description`은 사람이 채워야 하는 TODO로 남는다 — 사람은 등록 diff 확인만 하면 된다.
+   `description`은 사람이 채워야 하는 후속 작업으로 남는다 — 사람은 등록 diff 확인만
+   하면 된다. 검토가 끝나면 staging 파일을 `src/__tests__/fixtures/replayLibrary/`로
+   옮기고 스켈레톤을 등록한다.
 5. fixture가 캡처 유실 신호(`droppedEntries`/`failedCycleStartsMs`, `isLossyFixture`)를
    가지면 요약에 경고를 찍고 스켈레톤에 `allowLossy: true`를 자동으로 넣는다.
 

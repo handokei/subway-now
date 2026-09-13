@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CAPTURE_KEY_PRE_ROLL_MS,
+  SEOUL_CAPTURE_KEY_PREFIX,
   TRIP_WINDOW_MARGIN_MS,
   buildFixtureSlug,
   buildRegistryEntrySkeleton,
@@ -9,9 +11,17 @@ import {
   extractFireAttempts,
   extractLines,
   extractSegmentStations,
+  filterCaptureKeysInWindow,
   parseTripEventsResponse,
   type TripEventRow,
 } from '../fixtureFromTrip';
+import { SEOUL_CAPTURE_KEY_PREFIX as SEOUL_CAPTURE_KEY_PREFIX_SSOT } from '../seoulCapture';
+
+describe('SEOUL_CAPTURE_KEY_PREFIX (leaf-safe 재선언, #2586 코드리뷰)', () => {
+  it('seoulCapture.ts의 SEOUL_CAPTURE_KEY_PREFIX와 값이 같다(SSoT 드리프트 가드)', () => {
+    expect(SEOUL_CAPTURE_KEY_PREFIX).toBe(SEOUL_CAPTURE_KEY_PREFIX_SSOT);
+  });
+});
 
 function makeRow(overrides: Partial<TripEventRow> = {}): TripEventRow {
   return { ts: 1000, kind: 'sync-received', station: null, line: null, meta: null, ...overrides };
@@ -179,10 +189,51 @@ describe('extractFireAttempts', () => {
 });
 
 describe('buildFixtureSlug', () => {
-  it('YYYYMMDD_tokenHash 형식', () => {
-    const slug = buildFixtureSlug('aabbccdd', { fromMs: Date.parse('2026-09-13T01:00:00Z'), toMs: 0 });
+  it('YYYYMMDDTHHmmZ_tokenHash 형식(window 시작 시분 UTC 포함)', () => {
+    const slug = buildFixtureSlug('aabbccdd', { fromMs: Date.parse('2026-09-13T01:23:00Z'), toMs: 0 });
 
-    expect(slug).toBe('capture_20260913_aabbccdd');
+    expect(slug).toBe('capture_20260913T0123Z_aabbccdd');
+  });
+
+  it('시/분이 한 자리여도 zero-pad', () => {
+    const slug = buildFixtureSlug('aabbccdd', { fromMs: Date.parse('2026-09-13T00:05:00Z'), toMs: 0 });
+
+    expect(slug).toBe('capture_20260913T0005Z_aabbccdd');
+  });
+});
+
+describe('filterCaptureKeysInWindow', () => {
+  const window = { fromMs: 100_000, toMs: 200_000 };
+
+  it('window ± preRollMs 범위 안의 key만 남긴다', () => {
+    const keys = [
+      'seoul-capture/2026-09-13/5000.json', // window.fromMs - preRoll(90_000) = 10_000보다 작음 → 제외
+      'seoul-capture/2026-09-13/15000.json', // 10_000~200_000 안 → 포함
+      'seoul-capture/2026-09-13/150000.json', // 포함
+      'seoul-capture/2026-09-13/250000.json', // toMs(200_000) 초과 → 제외
+    ];
+
+    expect(filterCaptureKeysInWindow(keys, window)).toEqual([
+      'seoul-capture/2026-09-13/15000.json',
+      'seoul-capture/2026-09-13/150000.json',
+    ]);
+  });
+
+  it('preRollMs를 명시하면 그 값을 쓴다', () => {
+    const keys = ['seoul-capture/2026-09-13/99000.json'];
+
+    expect(filterCaptureKeysInWindow(keys, window, 500)).toEqual([]);
+    expect(filterCaptureKeysInWindow(keys, window, 2000)).toEqual(['seoul-capture/2026-09-13/99000.json']);
+  });
+
+  it('basename이 숫자가 아니면 제외한다', () => {
+    expect(filterCaptureKeysInWindow(['seoul-capture/2026-09-13/not-a-number.json'], window)).toEqual([]);
+  });
+
+  it('기본 preRollMs는 CAPTURE_KEY_PRE_ROLL_MS', () => {
+    const key = `seoul-capture/2026-09-13/${window.fromMs - CAPTURE_KEY_PRE_ROLL_MS}.json`;
+
+    expect(filterCaptureKeysInWindow([key], window)).toEqual([key]);
   });
 });
 
