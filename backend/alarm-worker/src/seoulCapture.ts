@@ -59,7 +59,12 @@ const MAX_TOTAL_BODY_BYTES = 4 * 1024 * 1024;
 const ARRIVAL_URL_PATTERN = new RegExp(`/${SEOUL_ARRIVAL_PATH_SEGMENT}/[^/]+/[^/]+/([^/?]+)`);
 const POSITION_URL_PATTERN = new RegExp(`/${SEOUL_POSITION_PATH_SEGMENT}/[^/]+/[^/]+/([^/?]+)`);
 
-function classifyUrl(url: string): { kind: 'arrival' | 'position'; target: string } | null {
+/**
+ * Seoul API 요청 URL → kind('arrival'|'position')/target(역명 또는 호선명) 분류.
+ * P0-c 재생 하네스(`__tests__/helpers/replayHarness.ts`)가 fixture entry를 찾을 때 이
+ * 함수를 재사용한다 — URL 패턴 정규식 중복 구현 금지 (#2581 설계).
+ */
+export function classifyUrl(url: string): { kind: 'arrival' | 'position'; target: string } | null {
   const arrivalMatch = url.match(ARRIVAL_URL_PATTERN);
   if (arrivalMatch) {
     return { kind: 'arrival', target: decodeURIComponent(arrivalMatch[1]) };
