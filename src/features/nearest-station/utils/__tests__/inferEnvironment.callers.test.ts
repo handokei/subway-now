@@ -52,7 +52,10 @@ jest.mock('../../../route/hooks/useTrainPositions');
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
+// #2589 (code review 2번) — resolveBackendSsotMirrorStation은 실제 구현(순수 함수, 실 stations.json
+// 경유)을 유지. readBackendSsotMirror만 이 파일의 시나리오대로 mock.
 jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  ...jest.requireActual('../../../alarm/utils/backendSsotMirror'),
   readBackendSsotMirror: jest.fn(),
 }));
 // #2099 (P2-2, 리뷰 반영) — 신규 steady-state 통합 테스트가 'surface-weak-nrnsa' vote를 주입하기

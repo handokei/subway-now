@@ -5,10 +5,14 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 const mockIsLiveActivityEnabled = jest.fn(() => true);
 const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
+// #2589 (code review 3번) — 활성 LA 존재 여부. 기본 true — 기존(mirror 도입 전) 테스트가
+// 이 게이트로 인해 영향받지 않도록. mirror-sourced update-only 가드 테스트에서만 false로 override.
+const mockHasActiveLiveActivity = jest.fn(() => true);
 jest.mock('live-activity', () => ({
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
+  hasActiveLiveActivity: () => mockHasActiveLiveActivity(),
 }));
 
 // buildLiveActivityData는 의존이 무거우므로 mock로 격리. 호출 시 인자 검증.
@@ -47,15 +51,19 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
-// #2589 — backend SSoT mirror 채택 경로 mock.
+// #2589 — backend SSoT mirror 채택 경로 mock. readBackendSsotMirror만 mock하고
+// resolveBackendSsotMirrorStation은 실제 구현(순수 함수, stationLookup 경유)을 그대로 사용 —
+// FG(useFusedNearestStation)와 동일 함수를 이 파일도 소비한다는 것 자체를 검증하려면 mock으로
+// 대체하지 않아야 한다(code review 2번 — 판정 3중 구현 해소).
 const mockReadBackendSsotMirror = jest.fn(async () => null as unknown);
 jest.mock('../backendSsotMirror', () => ({
+  ...jest.requireActual('../backendSsotMirror'),
   readBackendSsotMirror: () => mockReadBackendSsotMirror(),
 }));
 
-// stations.json은 lookup 경로에서만 호출. 최소 fixture로 lockFallbackStation 분기를 검증.
-// 성수: mirror가 실제와 다른 line('7')을 실어도 resolveConsistentStationLine이 실제 line('2')로
-// 교정하는지 검증하는 fixture(#2556 성수 7호선색 클래스).
+// stations.json은 lookup 경로에서만 호출. 최소 fixture로 station resolve 분기를 검증.
+// 성수: 실제 서비스 line은 '2'뿐 — mirror가 '7'을 실으면 resolveBackendSsotMirrorStation이
+// "보정"이 아니라 "거부"하는지 검증하는 fixture(#2556 성수 7호선색 클래스, #2589 code review 1번).
 jest.mock('../../../../data/stations.json', () => [
   { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 },
   { id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 },
@@ -97,6 +105,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     mockIsLiveActivityEnabled.mockReturnValue(true);
     mockIsLaDismissed.mockResolvedValue(false);
     mockReadBackendSsotMirror.mockResolvedValue(null);
+    mockHasActiveLiveActivity.mockReturnValue(true);
     Object.defineProperty(Platform, 'OS', { value: 'ios', configurable: true });
   });
 
@@ -260,9 +269,10 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
 
   // #2589 — backend SSoT mirror 1순위 채택 (확정 아키텍처: backend추적 → LA 표시).
   describe('#2589 backend SSoT mirror 1순위 채택', () => {
-    const freshMirror = {
+    // 성수는 fixture 기준 실제 line이 '2'뿐 — 이 값으로 correct-line 케이스를 구성.
+    const freshMirrorCorrectLine = {
       currentStationId: '성수',
-      currentStationLine: '7', // 실제 stations.json fixture의 성수는 2호선 — 정합 가드 검증용
+      currentStationLine: '2',
       motionState: 'moving' as const,
       lastAdvanceEvidence: 'seed',
       lastAdvanceAt: 1_700_000_000_000,
@@ -270,8 +280,8 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       receivedAt: Date.now(),
     };
 
-    it('mirror fresh + station resolve 성공 → GPS(BG_LAST_STATION)와 달라도 mirror 역을 채택, distanceM=0', async () => {
-      mockReadBackendSsotMirror.mockResolvedValue(freshMirror);
+    it('mirror fresh + line 일치 + 활성 LA 있음 → GPS(BG_LAST_STATION)와 달라도 mirror 역을 채택, distanceM=0', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
       setupStorage({
         [DESTINATION_KEY]: JSON.stringify(destination),
         [BG_LAST_STATION_KEY]: JSON.stringify(bgStation), // GPS는 역삼(집) — mirror와 다름
@@ -279,15 +289,32 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       });
       await refreshLiveActivityFromBackgroundContext();
       const [station, distanceM] = mockBuild.mock.calls[0];
-      // #2556 정합 가드: mirror line('7')이 실제 성수 서비스 노선이 아니므로 실제 line('2')로 교정.
       expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
       expect(distanceM).toBe(0);
       expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     });
 
+    // #2589 code review 1/2번 — line 불일치는 "보정"이 아니라 "거부". FG cascade picker와 동일
+    // resolveBackendSsotMirrorStation을 소비하므로 실제 구현(mock 아님)이 거부하는지 검증.
+    it('mirror fresh 이나 line 불일치(성수 7호선 클래스, #2556) → 거부되어 BG_LAST_STATION 폴백', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue({
+        ...freshMirrorCorrectLine,
+        currentStationLine: '7', // 성수의 실제 서비스 line이 아님
+      });
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      const [station, distanceM] = mockBuild.mock.calls[0];
+      expect(station).toEqual(bgStation.station);
+      expect(distanceM).toBe(150);
+    });
+
     it('mirror stale(>180s) → BG_LAST_STATION으로 폴백', async () => {
       mockReadBackendSsotMirror.mockResolvedValue({
-        ...freshMirror,
+        ...freshMirrorCorrectLine,
         receivedAt: Date.now() - 200_000, // 200s > 180s
       });
       setupStorage({
@@ -315,7 +342,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
 
     it('mirror fresh이나 station name이 stations.json에 없음 → BG_LAST_STATION 폴백', async () => {
       mockReadBackendSsotMirror.mockResolvedValue({
-        ...freshMirror,
+        ...freshMirrorCorrectLine,
         currentStationId: '존재하지않는역',
         currentStationLine: undefined,
       });
@@ -329,8 +356,8 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       expect(station).toEqual(bgStation.station);
     });
 
-    it('mirror fresh + BG_LAST_STATION 둘 다 없음 → mirror 채택', async () => {
-      mockReadBackendSsotMirror.mockResolvedValue(freshMirror);
+    it('mirror fresh + line 일치 + BG_LAST_STATION 둘 다 없음 → mirror 채택', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
       setupStorage({
         [DESTINATION_KEY]: JSON.stringify(destination),
         [BG_LAST_STATION_KEY]: null,
@@ -344,7 +371,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
 
     it('mirror stale + BG_LAST_STATION 둘 다 없음 → no-op (기존 안전장치 유지)', async () => {
       mockReadBackendSsotMirror.mockResolvedValue({
-        ...freshMirror,
+        ...freshMirrorCorrectLine,
         receivedAt: Date.now() - 200_000,
       });
       setupStorage({
@@ -357,7 +384,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
 
     it('mirror currentStationLine 부재(legacy v1) + 정상 역명 → name-only resolve로 채택', async () => {
       mockReadBackendSsotMirror.mockResolvedValue({
-        ...freshMirror,
+        ...freshMirrorCorrectLine,
         currentStationId: '강남',
         currentStationLine: undefined,
       });
@@ -371,8 +398,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       expect(station).toEqual(destination);
     });
 
-    it('#2481 backend-authority skip 게이트는 mirror 채택 이후에도 적용된다', async () => {
-      mockReadBackendSsotMirror.mockResolvedValue(freshMirror);
+    it('#2481 backend-authority skip 게이트는 mirror read 전에 적용된다 (효율, code review 5번)', async () => {
       setupStorage({
         [DESTINATION_KEY]: JSON.stringify(destination),
         [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
@@ -383,6 +409,52 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       await refreshLiveActivityFromBackgroundContext();
       expect(mockBuild).not.toHaveBeenCalled();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      // skip 게이트가 route/bg/mirror read보다 먼저 판정되므로 mirror read 자체가 낭비되지 않는다.
+      expect(mockReadBackendSsotMirror).not.toHaveBeenCalled();
+      expect(AsyncStorage.getItem).not.toHaveBeenCalledWith(ROUTE_KEY);
+      expect(AsyncStorage.getItem).not.toHaveBeenCalledWith(BG_LAST_STATION_KEY);
+    });
+
+    // #2589 code review 3번 (P1 #1 클래스) — mirror-sourced 경로는 update-only.
+    describe('mirror-sourced update-only 가드 (활성 LA 없으면 새로 만들지 않음)', () => {
+      it('mirror 채택되었으나 활성 LA 없음 → updateLiveActivity 호출 안 함 (no-op)', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
+        mockHasActiveLiveActivity.mockReturnValue(false);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(destination),
+          [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        expect(mockBuild).not.toHaveBeenCalled();
+        expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      });
+
+      it('mirror 채택 + 활성 LA 있음 → 정상 update (기존 동작)', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
+        mockHasActiveLiveActivity.mockReturnValue(true);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(destination),
+          [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      });
+
+      it('BG_LAST_STATION(gps-bg) 경로는 활성 LA 없어도 기존처럼 update 호출 — 현행 보존', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(null);
+        mockHasActiveLiveActivity.mockReturnValue(false);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(destination),
+          [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        expect(station).toEqual(bgStation.station);
+        expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
@@ -401,57 +473,6 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       expect(__test__.readBgLastStation('{')).toBeNull();
       expect(__test__.readBgLastStation(JSON.stringify({ distanceKm: 0.1 }))).toBeNull();
       expect(__test__.readBgLastStation(JSON.stringify({ station: { id: 's' } }))).toBeNull();
-    });
-
-    it('resolveMirrorStation — line 있음/정합가드 교정/line 없음(legacy)/역명 미존재', () => {
-      expect(
-        __test__.resolveMirrorStation({
-          currentStationId: '강남',
-          currentStationLine: '2',
-          motionState: 'moving',
-          lastAdvanceEvidence: 'seed',
-          lastAdvanceAt: 0,
-          passedStations: [],
-          receivedAt: 0,
-        }),
-      ).toEqual({ id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 });
-
-      // #2556 정합 가드 — mirror line('7')이 실제 서비스 노선이 아니면 실제 line('2')로 교정.
-      expect(
-        __test__.resolveMirrorStation({
-          currentStationId: '성수',
-          currentStationLine: '7',
-          motionState: 'moving',
-          lastAdvanceEvidence: 'seed',
-          lastAdvanceAt: 0,
-          passedStations: [],
-          receivedAt: 0,
-        }),
-      ).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
-
-      // legacy v1 mirror — currentStationLine 부재 시 name-only.
-      expect(
-        __test__.resolveMirrorStation({
-          currentStationId: '강남',
-          motionState: 'moving',
-          lastAdvanceEvidence: 'seed',
-          lastAdvanceAt: 0,
-          passedStations: [],
-          receivedAt: 0,
-        }),
-      ).toEqual({ id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 });
-
-      // 역명 자체가 stations.json에 없음 → null.
-      expect(
-        __test__.resolveMirrorStation({
-          currentStationId: '존재하지않는역',
-          motionState: 'moving',
-          lastAdvanceEvidence: 'seed',
-          lastAdvanceAt: 0,
-          passedStations: [],
-          receivedAt: 0,
-        }),
-      ).toBeNull();
     });
   });
 });

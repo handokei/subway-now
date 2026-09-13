@@ -72,6 +72,16 @@ export function isLiveActivityEnabled(): boolean {
   return LiveActivityModule?.isLiveActivityEnabled() ?? false;
 }
 
+/**
+ * #2589 (code review) — 시스템에 활성(active/stale) Live Activity가 있는지 조회.
+ * update-only 소비자(BG mirror-sourced LA refresh)가 `updateLiveActivity`를 호출하기 전에 확인해,
+ * native `update()`의 start-fallthrough(활성 Activity 없으면 새로 start)로 원치 않는 새 LA가
+ * 생성되는 것을 막는다. 모듈 미설치/비 iOS 환경은 false.
+ */
+export function hasActiveLiveActivity(): boolean {
+  return LiveActivityModule?.hasActiveLiveActivity() ?? false;
+}
+
 export function saveWidgetStation(
   stationName: string,
   lineColor: string,

@@ -49,7 +49,10 @@ jest.mock('../../../route/hooks/useTrainPositions');
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
+// #2589 (code review 2번) — resolveBackendSsotMirrorStation은 실제 구현(순수 함수, 실 stations.json
+// 경유)을 유지. readBackendSsotMirror만 이 파일의 시나리오대로 mock.
 jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  ...jest.requireActual('../../../alarm/utils/backendSsotMirror'),
   readBackendSsotMirror: jest.fn(),
 }));
 

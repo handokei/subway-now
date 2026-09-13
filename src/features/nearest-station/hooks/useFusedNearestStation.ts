@@ -50,7 +50,7 @@ import {
   type FusionPickerTier,
 } from '../../alarm/utils/alarmLog';
 import { haversine } from '../../../shared/utils/haversine';
-import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import {
   checkStationProgression,
@@ -79,6 +79,7 @@ import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import {
   readBackendSsotMirror,
+  resolveBackendSsotMirrorStation,
   type BackendSsotMirrorEntry,
 } from '../../alarm/utils/backendSsotMirror';
 // #2387 — route/lock/legAdvance 권위 line 판정. GPS raw proximity(gps.liveResult)는 line 권위로
@@ -1183,25 +1184,15 @@ export function useFusedNearestStation(
     mirrorLine: LineNumber | null;
   }>(() => {
     if (!backendSsotMirror) return { station: null, lineGuardRejected: false, mirrorLine: null };
-    let resolved: Station | null;
-    if (boardingLock) {
-      // lock 활성: lock.boardingLine으로 단일화 (기존 동작).
-      resolved = findStationByNameAndLine(
-        backendSsotMirror.currentStationId,
-        boardingLock.boardingLine,
-      );
-    } else if (backendSsotMirror.currentStationLine !== undefined) {
-      // #1705 — lockless trip: backend가 forward한 currentStationLine이 있으면 line 정확 매칭.
-      // 동명 환승역(합정 2/6호선, 공덕 5/6호선 등) cross-line confusion 차단.
-      // cast: backend의 Waypoint.line 어휘는 device LineNumber union과 동일 값 집합.
-      resolved = findStationByNameAndLine(
-        backendSsotMirror.currentStationId,
-        backendSsotMirror.currentStationLine as LineNumber,
-      );
-    } else {
-      // currentStationLine 부재(legacy v1 mirror) 시 name-only fallback (기존 동작).
-      resolved = findStationByName(backendSsotMirror.currentStationId);
-    }
+    // #2589 (code review 2번) — mirror→Station 해석은 LA refresh(refreshLiveActivityFromBackgroundContext)
+    // 와 공유하는 단일 함수(resolveBackendSsotMirrorStation)로 추출. lock 활성 시 lock.boardingLine
+    // 단일화 / lockless + currentStationLine 있으면 그 line 정확 매칭(#1705, 동명 환승역 cross-line
+    // confusion 차단) / 둘 다 없으면(legacy v1 mirror) name-only fallback — 기존 동작 100% 동일,
+    // 순수 추출이라 이 파일의 판정 결과는 변하지 않는다.
+    const resolved = resolveBackendSsotMirrorStation(
+      backendSsotMirror,
+      boardingLock ? boardingLock.boardingLine : undefined,
+    );
     const mirrorLine = resolved?.line ?? null;
     if (
       resolved &&

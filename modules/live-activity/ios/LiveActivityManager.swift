@@ -36,6 +36,18 @@ actor LiveActivityManager {
         return ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
+    /// #2589 (code review) — 시스템에 활성(active/stale) Activity가 있는지 조회하는 update-only
+    /// 가드용 primitive. actor 내부 `currentActivity`(in-memory)가 아니라 ActivityKit의 static
+    /// `.activities`(OS 레벨)를 본다 — BG 헤드리스 실행처럼 actor 상태가 프로세스와 함께 리셋된
+    /// 상황(앱 종료 후 silent push로 재기동)에서도 정확해야, 그 상태를 보고 새 LA 생성 여부를
+    /// 판단하는 caller(`refreshLiveActivityFromBackgroundContext`)가 오판하지 않는다.
+    /// `adoptExistingActivityIfNeeded()`가 이미 동일 목적으로 이 static API를 사용한다.
+    static func hasActiveActivity() -> Bool {
+        return Activity<SubwayActivityAttributes>.activities.contains {
+            $0.activityState == .active || $0.activityState == .stale
+        }
+    }
+
     func setEventHandlers(
         onPushTokenHex: @escaping (String) -> Void,
         onActivityEnded: @escaping () -> Void,
