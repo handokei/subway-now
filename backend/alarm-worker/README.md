@@ -195,6 +195,37 @@ cd backend/alarm-worker
 node scripts/buildReplayFixture.mjs --in /tmp/capture-2026-09-13 --out src/__tests__/fixtures/capture_2026-09-13.json
 ```
 
+## trip 토큰 1개 → fixture 자동 생성 (Epic #2239 P1 / #2586)
+
+위 수동 절차(D1 조회 → R2 키 나열 → 다운로드 → 병합)를 trip 토큰 1개로 원커맨드 실행하는
+도구. 로직(SQL 생성/D1 응답 파싱/registry 스켈레톤)은 `src/fixtureFromTrip.ts`(vitest 커버),
+wrangler/aws CLI 실행은 `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸, `buildReplayFixture.mjs`와
+동일 분리 원칙)에 있다.
+
+```bash
+cd backend/alarm-worker
+node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId> \
+  [--out src/__tests__/fixtures/replayLibrary/] [--bucket subway-now-telemetry] [--db subway-now-db]
+```
+
+1. `trip_events`(token_hash 기준, read-only 조회 — 스키마 변경 없음)에서 시간창(min/max
+   ts)·노선·segment 역 목록·실제 fire 이력(`kind='cron-fire-attempt'`)을 뽑는다. 이벤트가
+   없으면(캡처 없음/토큰 오류) 명확한 에러로 즉시 중단한다.
+2. 시간창 ±2분 margin이 걸치는 UTC 날짜마다 R2 seoul-capture 키를 나열·다운로드한다(일부
+   구간 캡처가 없어도 나머지로 계속 진행 — 부분 캡처 허용, stdout에 경고).
+3. `buildReplayFixture`(#2580)로 병합해 `<slug>.fixture.json`을 쓴다.
+4. `src/__tests__/replayLibrary.ts`의 `REPLAY_LIBRARY` 배열에 붙여넣을 entry 텍스트
+   스켈레톤을 stdout에 출력한다 — `cronIntervalMs`는 실 캡처 fixture이므로 항상
+   `'recorded'`, `expect.firedStations`는 segment 역 전체로 채운다. `seedTrips`/
+   `description`은 사람이 채워야 하는 TODO로 남는다 — 사람은 등록 diff 확인만 하면 된다.
+5. fixture가 캡처 유실 신호(`droppedEntries`/`failedCycleStartsMs`, `isLossyFixture`)를
+   가지면 요약에 경고를 찍고 스켈레톤에 `allowLossy: true`를 자동으로 넣는다.
+
+**Stage 2(nightly 자동 수집 workflow)는 이 이슈 범위에서 제외** — repo에 R2 S3 자격증명을
+가진 secret(`CLOUDFLARE_API_TOKEN` 등)이 아직 없어 CI에서 `aws s3api`/`wrangler r2`를
+인증할 수 없다. secret이 준비되면 후속 이슈로 분리해 nightly cron이 전일 캡처를 trip별로
+훑어 이 도구를 반복 호출 → `replay-fixture/<date>` 브랜치 + PR을 여는 자동화를 추가한다.
+
 ## Replay fixture 라이브러리 — PR 게이트 (Epic #2239 P2 / #2585)
 
 `src/__tests__/fixtures/replayLibrary/`에 등록된 fixture는 매 PR(`npm test` → CI `Backend
