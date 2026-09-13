@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parseArgs, resolveWranglerCommand } from '../../scripts/cliUtils.mjs';
+import { parseArgs, resolveWranglerCommand, runCli } from '../../scripts/cliUtils.mjs';
 
 describe('parseArgs', () => {
   it('--key value 쌍을 object로 파싱한다', () => {
@@ -76,5 +76,41 @@ describe('resolveWranglerCommand (#2598 — bare wrangler spawn ENOENT 수리)',
     it('npx --no-install wrangler로 fallback한다(unpinned 설치/interactive prompt 차단, PATH에 글로벌 wrangler 없어도 동작)', () => {
       expect(resolveWranglerCommand(noBinDir)).toEqual({ cmd: 'npx', prefixArgs: ['--no-install', 'wrangler'] });
     });
+  });
+});
+
+describe('runCli — cwd 옵션 (#2600, fixtureFromTrip.mjs 공용화)', () => {
+  // fake scriptDir/../node_modules/.bin/wrangler — 실행되면 자신의 cwd만 stdout에 찍는
+  // 셔블 스크립트. resolveWranglerCommand가 이 fake 로컬 bin을 고르도록 scriptDir 트리를
+  // 구성해, 실제 wrangler.toml/네트워크 없이 "cwd가 실제로 자식 프로세스에 전달되는가"만
+  // 격리해서 검증한다.
+  let fakeScriptDir: string;
+  let workDir: string;
+
+  beforeEach(() => {
+    const root = mkdtempSync(path.join(tmpdir(), 'run-cli-cwd-'));
+    fakeScriptDir = path.join(root, 'scripts');
+    workDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'run-cli-cwd-target-')));
+    const binDir = path.join(root, 'node_modules', '.bin');
+    mkdirSync(fakeScriptDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    const fakeWranglerPath = path.join(binDir, 'wrangler');
+    writeFileSync(fakeWranglerPath, '#!/usr/bin/env node\nprocess.stdout.write(process.cwd());\n');
+    chmodSync(fakeWranglerPath, 0o755);
+  });
+
+  afterEach(() => {
+    rmSync(path.dirname(fakeScriptDir), { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it('cwd 옵션을 지정하면 자식 프로세스가 그 디렉토리에서 실행된다 (repo 루트 등 다른 위치에서 실행해도 wrangler.toml 발견)', () => {
+    const output = runCli(fakeScriptDir, ['--version'], { cwd: workDir });
+    expect(output).toBe(workDir);
+  });
+
+  it('cwd 옵션 미지정 시 기존 동작(현재 process.cwd()) 그대로 유지된다', () => {
+    const output = runCli(fakeScriptDir, ['--version']);
+    expect(output).toBe(process.cwd());
   });
 });

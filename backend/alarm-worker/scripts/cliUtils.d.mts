@@ -12,3 +12,9 @@ export function readCycleFile<T>(
 ): { cycle: T } | { error: string };
 
 export function resolveWranglerCommand(scriptDir: string): { cmd: string; prefixArgs: string[] };
+
+export function runCli(
+  scriptDir: string,
+  args: string[],
+  options?: Record<string, unknown>,
+): string;

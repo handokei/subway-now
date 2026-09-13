@@ -81,11 +81,26 @@ function isConstructibleResponseStatus(status: number): boolean {
  *   SyntaxError를 던져 해당 cron cycle 전체가 오염된다(#2581 리뷰 P2).
  * - entry의 `status`가 Response로 구성 불가능한 값(0 등, fetch 자체 실패 sentinel)이면 그
  *   자체를 reject해 원본의 네트워크 오류를 재현한다(#2581 리뷰 P3).
+ *
+ * `ceilingMs`(#2600) — entry.tMs가 넘을 수 없는 상한. 미지정 시 `simNow`(기존 동작, 옛
+ * "합성 grid" 재생과 100% 동일 — grid tick은 실 cycleStartsMs와 무관해 미래 entry를 허용할
+ * 근거가 없다). `runCaptureReplay`가 'recorded' cadence(cron 미지정)에서 **실 캡처**를
+ * 재생할 때만 다음 tick 시각을 넘겨 넓힌다 — production `handler.scheduled`는
+ * `cycleStartMs = Date.now()`를 fetch **이전**에 stamp하므로(`src/index.ts`), 실 캡처
+ * entry의 tMs는 그 cycle 자신의 `cycleStartMs`보다 항상(네트워크/처리 지연만큼, 실측
+ * 수 초) **뒤**에 찍힌다. `entry.tMs > simNow`를 그대로 두면 이 몇 초 지연 때문에 그 entry가
+ * 자신이 속한 cycle의 tick에서는 "아직 안 옴"으로, 다음 tick에서는 이미 `freshMs`를 넘겨
+ * "너무 오래됨"으로 두 번 다 걸러져 **영영 재생되지 않는다** — 실캡처 fixture(#2600
+ * capture_20260913T1249Z_b00dd879)를 라이브러리에 등록하며 발견(발사 0건 회귀 재현).
+ * `ceilingMs`를 다음 tick(=그 다음 실 cron 실행 시각)으로 넓히면 "이 cycle 동안 캡처된
+ * entry는 이 cycle의 tick에서 보인다"는 실제 의미를 정확히 재현하면서, 여전히 그 다음
+ * cycle의 entry가 이번 tick으로 새는 것은 막는다(합성 grid의 90s 드리프트 회귀 테스트는
+ * `ceilingMs` 미지정 경로라 영향 없음).
  */
 export function makeCaptureFetch(
   fixture: ReplayFixture,
   getNow: () => number,
-  opts?: { freshMs?: number },
+  opts?: { freshMs?: number; ceilingMs?: number },
 ): typeof fetch {
   const freshMs = opts?.freshMs ?? DEFAULT_FRESH_MS;
 
@@ -97,10 +112,11 @@ export function makeCaptureFetch(
     }
 
     const simNow = getNow();
+    const ceilingMs = opts?.ceilingMs ?? simNow;
     let latest: ReplayFixture['entries'][number] | null = null;
     for (const entry of fixture.entries) {
       if (entry.kind !== classified.kind || entry.target !== classified.target) continue;
-      if (entry.tMs > simNow || simNow - entry.tMs >= freshMs) continue;
+      if (entry.tMs > ceilingMs || simNow - entry.tMs >= freshMs) continue;
       if (!latest || entry.tMs > latest.tMs) latest = entry;
     }
 
@@ -248,14 +264,20 @@ export async function runCaptureReplay(opts: {
 
   let pushSeq = 0;
   const cycles: ReplayCycleResult[] = [];
+  // 'recorded' cadence(cronIntervalMs 미지정)에서만 다음 tick을 ceiling으로 넓힌다 —
+  // `makeCaptureFetch` 문서 참고(#2600). 합성 grid(cronIntervalMs 지정)는 ceilingMs를 안
+  // 넘겨 기존 동작(entry.tMs <= simNow)을 그대로 유지한다.
+  const isRecordedCadence = opts.cronIntervalMs === undefined;
 
-  for (const tick of ticks) {
+  for (let tickIdx = 0; tickIdx < ticks.length; tickIdx += 1) {
+    const tick = ticks[tickIdx];
     simNow = tick;
+    const ceilingMs = isRecordedCadence ? (ticks[tickIdx + 1] ?? opts.fixture.window.toMs + 1) : undefined;
     const seoul = new SeoulArrivalClient({
       apiKey: 'KEY',
       host: 'seoul.api',
       now: () => tick,
-      fetchImpl: makeCaptureFetch(opts.fixture, () => tick, { freshMs }),
+      fetchImpl: makeCaptureFetch(opts.fixture, () => tick, { freshMs, ceilingMs }),
     });
 
     const pushCountBefore = capturedPushes.length;

@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
 import type { Trip } from '../types';
+import { makeDesk20260913LockTrip } from './helpers/desk20260913Trip';
 import { makeLine7SynthLockTrip } from './helpers/line7SynthTrip';
 
 export const REPLAY_LIBRARY_DIR = path.join(__dirname, 'fixtures', 'replayLibrary');
@@ -95,6 +96,9 @@ function makeFixtureLoader(fixturePath: string): () => ReplayFixture {
 const LINE7_SYNTH_FIXTURE_PATH = 'capture_20260912_line7_synth.fixture.json';
 const loadLine7SynthFixture = makeFixtureLoader(LINE7_SYNTH_FIXTURE_PATH);
 
+const DESK_20260913_FIXTURE_PATH = 'capture_20260913T1249Z_b00dd879.fixture.json';
+const loadDesk20260913Fixture = makeFixtureLoader(DESK_20260913_FIXTURE_PATH);
+
 export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
   {
     slug: 'capture_20260912_line7_synth',
@@ -114,6 +118,28 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       firedStations: ['어린이대공원(세종대)', '군자(능동)'],
       minPushes: 2,
       tripEnded: { reason: 'destination-arrived' },
+    },
+  },
+  {
+    slug: 'capture_20260913T1249Z_b00dd879',
+    fixturePath: DESK_20260913_FIXTURE_PATH,
+    description: '2026-09-13 데스크 trip — 실캡처 첫 라이브러리 엔트리 (#2239 P1 실측)',
+    seedTrips: () => [
+      makeDesk20260913LockTrip('replay-library-desk-20260913', loadDesk20260913Fixture().window.fromMs),
+    ],
+    // 실 P0-a 캡처 — 실제 cron cycle 시각(fixture.cycleStartsMs)을 그대로 재생한다. 합성 균일
+    // 그리드로 가정하면 실 캡처의 cron 위상/드리프트와 어긋난다(위 인터페이스 설명 참고).
+    cronIntervalMs: 'recorded',
+    // 'recorded' cadence는 이미 실 cron cycle 시각 그대로라 phase sweep이 무의미하다(위 필드
+    // 설명 — "phaseOffsetsMs는 'recorded' cadence라 [0]만" 스펙).
+    phaseOffsetsMs: [0],
+    loadFixture: loadDesk20260913Fixture,
+    expect: {
+      // D1 실측 fire 이력(4건, 2026-09-13T12:52:27Z~12:57:27Z) 1:1 — 중곡/군자(능동)/
+      // 어린이대공원(세종대)는 station-passed, 건대입구는 transfer 안내. leg-2(2호선,
+      // 뚝섬 방면)는 lockless라 fire 없음(trip은 13:02Z user-delete로 종료).
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      minPushes: 4,
     },
   },
 ];

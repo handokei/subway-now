@@ -5,6 +5,7 @@
  * 갖지 않는다 — `parseCycle`(주로 `parseSeoulCaptureCycle`, `../src/replayFixture.ts`)을
  * 호출자가 주입한다.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -75,4 +76,45 @@ export function resolveWranglerCommand(scriptDir) {
     return { cmd: localBinPath, prefixArgs: [] };
   }
   return { cmd: 'npx', prefixArgs: ['--no-install', 'wrangler'] };
+}
+
+/**
+ * `npx --no-install`이 wrangler를 찾지 못했을 때(devDependency 미설치) 뱉는 특징적인 에러
+ * 문구를 감지한다(#2598 리뷰로 fixtureFromTrip.mjs에 있던 것을 #2600에서 이곳으로 이전 —
+ * `runCli`가 공용화되며 같이 옮겨야 동일 안내 메시지를 유지할 수 있다).
+ */
+function isNpxMissingWranglerError(err) {
+  const stderrText = err && err.stderr ? String(err.stderr) : '';
+  const messageText = err instanceof Error ? err.message : String(err);
+  return /could not determine executable to run/i.test(`${stderrText} ${messageText}`);
+}
+
+/**
+ * wrangler CLI 실행 지점을 한 곳으로 수렴(#2598) — 로컬 devDependency bin이 있으면 그것을,
+ * 없으면 `npx --no-install wrangler`로 실행한다. `fixtureFromTrip.mjs` 전용이던 것을 #2600에서
+ * 이곳으로 옮겨 wrangler를 호출하는 스크립트가 늘어나도 재사용한다.
+ *
+ * `cwd` 옵션(#2600) — 지정하지 않으면 Node 기본값(현재 process.cwd())을 그대로 쓴다. wrangler는
+ * `wrangler.toml`을 자신의 cwd 기준으로 찾으므로, repo 루트 등 다른 위치에서 이 스크립트를
+ * 실행해도 정상 동작하려면 호출자가 `backend/alarm-worker` 절대경로를 `cwd`로 명시해야 한다
+ * (재현: 지정 없이 repo 루트에서 실행 시 `wrangler d1 execute`가 wrangler.toml을 못 찾아 실패).
+ *
+ * win32에서는 `.cmd` 셔블(예: npx.cmd/wrangler.cmd)을 `shell` 옵션 없이 `execFileSync`로
+ * 직접 실행하면 EINVAL로 즉사한다(Node 2024-04 CVE-2024-27980가 명시한 Windows 배치 파일
+ * spawn 제약) — win32에서만 `shell: true`를 강제한다.
+ */
+export function runCli(scriptDir, args, options = {}) {
+  const { cmd, prefixArgs } = resolveWranglerCommand(scriptDir);
+  const platformOptions = process.platform === 'win32' ? { shell: true } : {};
+  try {
+    // NOSONAR — dev-only local CLI; wrangler resolution + win32 shell 강제는 의도된 동작(S4036)
+    return execFileSync(cmd, [...prefixArgs, ...args], { encoding: 'utf-8', ...options, ...platformOptions });
+  } catch (err) {
+    if (cmd === 'npx' && isNpxMissingWranglerError(err)) {
+      throw new Error(
+        'wrangler를 찾을 수 없습니다 — backend/alarm-worker에서 npm install 필요(devDependency 미설치, PATH에도 wrangler 없음).',
+      );
+    }
+    throw err;
+  }
 }

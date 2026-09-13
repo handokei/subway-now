@@ -31,7 +31,6 @@
  * `trip_events`에는 `token_hash`만 남는다 — 그 경우 `--token-hash`로 직접 조회한다
  * (`resolveTokenHash`, ../src/fixtureFromTrip.ts).
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -55,10 +54,17 @@ import {
   selectTripSegment,
 } from '../src/fixtureFromTrip.ts';
 import { buildReplayFixture, isLossyFixture, parseSeoulCaptureCycle } from '../src/replayFixture.ts';
-import { parseArgs, readCycleFile, resolveWranglerCommand } from './cliUtils.mjs';
+import { parseArgs, readCycleFile, runCli as runWranglerCli } from './cliUtils.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT_ENV_PATH = path.join(SCRIPT_DIR, '..', '..', '..', '.env');
+/**
+ * `backend/alarm-worker/`(wrangler.toml이 있는 곳) 절대 경로 — 스크립트 파일 위치 기준으로
+ * 계산한다(#2600). repo 루트 등 다른 cwd에서 이 스크립트를 실행해도 wrangler 하위 프로세스는
+ * 항상 이 디렉토리를 cwd로 삼아 `wrangler d1 execute`가 `wrangler.toml`을 찾는다 —
+ * 재현: repo 루트에서 실행 시 이 지정 없이는 "Missing entry-point" 류로 d1 execute 실패.
+ */
+const BACKEND_DIR = path.join(SCRIPT_DIR, '..');
 
 const DEFAULT_OUT_DIR = '.fixture-staging/';
 const REPLAY_LIBRARY_DIR = 'src/__tests__/fixtures/replayLibrary/';
@@ -72,43 +78,12 @@ const USAGE =
   '[--trip-index 0] [--force]';
 
 /**
- * `npx --no-install`이 wrangler를 찾지 못했을 때(devDependency 미설치) 뱉는 특징적인
- * 에러 문구를 감지한다(#2598 리뷰 — `--no-install`은 unpinned 버전을 몰래 설치하거나
- * interactive prompt를 띄우는 것을 막지만, 그 대가로 실패 원인이 애매한 generic exec
- * 에러로만 보인다 — 여기서 명확한 안내로 바꿔치기한다).
- */
-function isNpxMissingWranglerError(err) {
-  const stderrText = err && err.stderr ? String(err.stderr) : '';
-  const messageText = err instanceof Error ? err.message : String(err);
-  return /could not determine executable to run/i.test(`${stderrText} ${messageText}`);
-}
-
-/**
- * wrangler CLI 실행 지점을 한 곳으로 수렴 — 로컬 devDependency bin이 있으면 그것을, 없으면
- * `npx --no-install wrangler`로 실행한다(`resolveWranglerCommand`, cliUtils.mjs, #2598 —
- * 글로벌 wrangler가 PATH에 없는 환경에서 bare spawn ENOENT 수리. `--no-install`은 미설치
- * 시 unpinned 버전을 몰래 내려받거나 interactive 설치 프롬프트를 띄우는 대신 즉시 실패하게
- * 한다). spawn 호출을 여기 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
- *
- * win32에서는 `.cmd` 셔블(예: npx.cmd/wrangler.cmd)을 `shell` 옵션 없이 `execFileSync`로
- * 직접 실행하면 EINVAL로 즉사한다(Node가 2024-04 CVE-2024-27980로 명시한 Windows 배치
- * 파일 spawn 제약) — win32에서만 `shell: true`를 강제한다. 주 개발 플랫폼은 macOS라
- * 이 분기 외에는 기존 동작을 그대로 유지한다(최소 diff).
+ * `runCli`(cliUtils.mjs) 호출 시 항상 `BACKEND_DIR`을 cwd로 고정하는 얇은 래퍼(#2600) —
+ * 이 파일의 모든 wrangler 호출 지점이 개별적으로 cwd를 지정해야 한다는 사실을 잊지 않도록
+ * 한 곳으로 좁힌다.
  */
 function runCli(args, options = {}) {
-  const { cmd, prefixArgs } = resolveWranglerCommand(SCRIPT_DIR);
-  const platformOptions = process.platform === 'win32' ? { shell: true } : {};
-  try {
-    // NOSONAR — dev-only local CLI; wrangler resolution + win32 shell 강제는 의도된 동작(S4036)
-    return execFileSync(cmd, [...prefixArgs, ...args], { encoding: 'utf-8', ...options, ...platformOptions });
-  } catch (err) {
-    if (cmd === 'npx' && isNpxMissingWranglerError(err)) {
-      throw new Error(
-        'wrangler를 찾을 수 없습니다 — backend/alarm-worker에서 npm install 필요(devDependency 미설치, PATH에도 wrangler 없음).',
-      );
-    }
-    throw err;
-  }
+  return runWranglerCli(SCRIPT_DIR, args, { cwd: BACKEND_DIR, ...options });
 }
 
 function runD1Query(db, sql) {

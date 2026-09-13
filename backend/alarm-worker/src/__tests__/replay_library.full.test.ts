@@ -28,15 +28,45 @@ function listFixtureFilesOnDisk(): string[] {
   return fs.readdirSync(REPLAY_LIBRARY_DIR).filter((name) => name.endsWith(FIXTURE_SUFFIX));
 }
 
-/** alert push 중 nextWaypoint를 실은 것 전부 — 시간순, **중복 제거하지 않는다**. 같은 역이
- * 두 번 발사되면(회귀) 그 중복이 그대로 남아야 sorted exact-match가 이를 잡아낸다. */
+/**
+ * alert push 중 "이 역을 지나갔다/환승했다"를 사용자에게 알린 것 전부 — 시간순, **중복
+ * 제거하지 않는다**. 같은 역이 두 번 발사되면(회귀) 그 중복이 그대로 남아야 sorted
+ * exact-match가 이를 잡아낸다.
+ *
+ * 두 채널을 모두 인정한다(#2600 발견 — capture_20260913T1249Z_b00dd879 실캡처로 처음
+ * 드러남):
+ * - `data.nextWaypoint` — arvlcd/vanish-fallback station-passed push(`buildStationPassedImminentPayload`).
+ *   intermediate 매역 통과 + (SSoT 60s 신선도 게이트 통과 시의) transfer/destination 임박 알림.
+ * - `originStation`(+ `hopEndKind==='disembark'`) — 환승 waypoint 전용
+ *   hop-end-prompt(`sendBoardingPromptPush`, "하차했나요?"). #2549(top-level `body` 키 wire,
+ *   expo-notifications iOS가 remote push `content.data`를 `userInfo['body']`에서만 추출)에
+ *   따라 이 push는 `data`가 아니라 **`push.body.body`**에 payload가 실린다 — `data.nextWaypoint`
+ *   채널(arvlcd/vanish-fallback)과 wire 계약 자체가 다르다. transfer waypoint는 advance
+ *   시점에 **항상**(evaluateTransferDestinationGate 60s 신선도와 무관하게, `maybeFireHopEndPrompt`
+ *   자체 dedup만 적용) 발사되는 이 채널이 실제 "환승역 통과를 사용자에게 알린" ground truth다 —
+ *   위 nextWaypoint 채널은 SSoT가 60s 넘게 stale이면(정지/저빈도 cron) 같은 환승을 알리지 못할
+ *   수 있다(N9 방어 게이트, `transferDestinationGate.ts`). 실캡처 fixture 재생에서 정확히 이
+ *   경계(어린이대공원 fire~건대입구 진입 간격이 60001ms로 임계 60000ms를 1ms 초과)로 nextWaypoint
+ *   채널이 막히고 hop-end-prompt만 발사되는 사례를 발견 — `nextWaypoint`만 보던 구 수집 로직은
+ *   이 케이스에서 실제 발사된 환승 알림을 "미발사"로 오판정했다(수집 로직 결함, 기대값 문제 아님).
+ */
 function firedStationOccurrences(pushes: CapturedPush[]): string[] {
   const occurrences: string[] = [];
   for (const push of pushes) {
     if (push.headers.pushType !== 'alert') continue;
     const data = push.body.data as Record<string, unknown> | undefined;
     const station = data?.nextWaypoint;
-    if (typeof station === 'string' && station.length > 0) occurrences.push(station);
+    if (typeof station === 'string' && station.length > 0) {
+      occurrences.push(station);
+      continue;
+    }
+    // #2549 — hop-end-prompt(boarding-prompt) push는 `data`가 아니라 top-level `body` 키에
+    // payload가 실린다(위 함수 설명 참고).
+    const promptBody = push.body.body as Record<string, unknown> | undefined;
+    if (promptBody?.hopEndKind === 'disembark') {
+      const originStation = promptBody?.originStation;
+      if (typeof originStation === 'string' && originStation.length > 0) occurrences.push(originStation);
+    }
   }
   return occurrences;
 }
