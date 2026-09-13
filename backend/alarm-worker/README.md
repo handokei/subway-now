@@ -197,25 +197,39 @@ node scripts/buildReplayFixture.mjs --in /tmp/capture-2026-09-13 --out src/__tes
 
 ## trip 토큰 1개 → fixture 자동 생성 (Epic #2239 P1 / #2586)
 
-위 수동 절차(D1 조회 → R2 키 나열 → 다운로드 → 병합)를 trip 토큰 1개로 원커맨드 실행하는
-도구. 로직(SQL 생성/D1 응답 파싱/registry 스켈레톤)은 `src/fixtureFromTrip.ts`(vitest 커버),
-wrangler/aws CLI 실행은 `scripts/fixtureFromTrip.mjs`(얇은 I/O 셸, `buildReplayFixture.mjs`와
-동일 분리 원칙)에 있다.
+위 수동 절차를 trip 토큰(또는 token_hash) 1개로 원커맨드 실행하는 도구. 로직(SQL 생성/D1
+응답 파싱/token_hash 산출/registry 스켈레톤)은 `src/fixtureFromTrip.ts`(vitest 커버),
+wrangler CLI 실행 + `GET /admin/seoul-capture/keys`(#2595) 호출은
+`scripts/fixtureFromTrip.mjs`(얇은 I/O 셸, `buildReplayFixture.mjs`와 동일 분리 원칙)에
+있다. R2 키 나열에 aws CLI/R2 S3 호환 토큰이 더는 필요 없다 — worker 자신의 TELEMETRY_R2
+바인딩으로 `ADMIN_TOKEN`만으로 조회한다.
+
+인증 준비: env `ADMIN_TOKEN`을 설정하거나, repo 루트 `.env`에 `EXPO_PUBLIC_ADMIN_TOKEN`
+(worker의 `ADMIN_TOKEN` secret과 같은 값)을 채워둔다 — env가 없으면 `.env`를 읽는다.
 
 ```bash
 cd backend/alarm-worker
-node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId> \
+# trip이 이미 종료/삭제돼 KV 원본 토큰이 사라진 경우(이 도구의 전형적 사용 시점) —
+# D1 trip_events에 남은 token_hash(8자리 소문자 hex)로 직접 조회
+node scripts/fixtureFromTrip.mjs --token-hash <8hexTokenHash> [--out .fixture-staging/] [--force]
+
+# trip이 아직 살아있어 원본 토큰을 알 때
+node scripts/fixtureFromTrip.mjs --trip <tripToken> \
+  [--worker-url https://subway-now-alarm-worker.handokei.workers.dev] \
   [--out .fixture-staging/] [--bucket subway-now-telemetry] [--db subway-now-db] [--force]
 ```
+
+`--trip`/`--token-hash`는 정확히 하나만 준다(둘 다 없거나 둘 다 있으면 에러,
+`resolveTokenHash`).
 
 1. `trip_events`(token_hash 기준, read-only 조회 — 스키마 변경 없음)에서 시간창(min/max
    ts)·노선·segment 역 목록·실제 fire 이력(`kind='cron-fire-attempt'`)을 뽑는다. 이벤트가
    없으면(캡처 없음/토큰 오류) 명확한 에러로 즉시 중단한다.
-2. 시간창(±2분 margin, R2 키는 다운로드 전 추가로 ±90초 preRoll 필터) — 걸치는 UTC
-   날짜마다 R2 seoul-capture 키를 나열하고, 시간창 안 키만 `wrangler r2 object get
-   --remote`로 다운로드한다(날짜 prefix 전체를 무조건 받지 않는다 — #2073 quota lesson).
-   일부 날짜 나열이 실패해도 나머지로 계속 진행하고(부분 캡처 허용, stdout에 경고),
-   **전체** 날짜 나열이 실패하면(인증/도구 문제) 원인 에러를 그대로 올려 중단한다.
+2. `GET /admin/seoul-capture/keys?from=<ms>&to=<ms>`(#2595, Bearer `ADMIN_TOKEN`)로 시간창
+   (±2분 margin + ±90초 preRoll)에 해당하는 R2 seoul-capture 키 목록을 받고, 그 키만
+   `wrangler r2 object get --remote`로 다운로드한다(#2073 quota lesson — 날짜 전체를
+   무조건 받지 않는다). 401/400 등 비정상 응답은 status+body를 그대로 노출한다(오진 방지
+   — "캡처 없음"으로 뭉뚱그리지 않는다). 정상 응답 + 매칭 0건일 때만 "캡처 없음"으로 중단.
 3. `buildReplayFixture`(#2580)로 병합해 기본적으로 `.fixture-staging/<slug>.fixture.json`
    (git-ignored)에 쓴다 — `src/__tests__/fixtures/replayLibrary/`(P2 PR 게이트 디렉토리)에
    바로 쓰지 않는다. 이미 같은 파일이 있으면 `--force` 없이는 에러로 중단한다(실수로
@@ -229,10 +243,12 @@ node scripts/fixtureFromTrip.mjs --trip <tripToken> --account-id <cfAccountId> \
 5. fixture가 캡처 유실 신호(`droppedEntries`/`failedCycleStartsMs`, `isLossyFixture`)를
    가지면 요약에 경고를 찍고 스켈레톤에 `allowLossy: true`를 자동으로 넣는다.
 
-**Stage 2(nightly 자동 수집 workflow)는 이 이슈 범위에서 제외** — repo에 R2 S3 자격증명을
-가진 secret(`CLOUDFLARE_API_TOKEN` 등)이 아직 없어 CI에서 `aws s3api`/`wrangler r2`를
-인증할 수 없다. secret이 준비되면 후속 이슈로 분리해 nightly cron이 전일 캡처를 trip별로
-훑어 이 도구를 반복 호출 → `replay-fixture/<date>` 브랜치 + PR을 여는 자동화를 추가한다.
+**Stage 2(nightly 자동 수집 workflow)는 이 이슈 범위에서 제외** — R2 키 나열은
+`ADMIN_TOKEN`만으로 되지만(더는 aws/R2 S3 토큰 불필요), 다운로드(`wrangler r2 object
+get`)와 D1 조회(`wrangler d1 execute`)는 여전히 wrangler CLI의 Cloudflare 인증이 필요하고
+repo에 CI용 wrangler 인증 secret이 아직 없다. secret이 준비되면 후속 이슈로 분리해 nightly
+cron이 전일 캡처를 trip별로 훑어 이 도구를 반복 호출 → `replay-fixture/<date>` 브랜치 + PR을
+여는 자동화를 추가한다.
 
 ## Replay fixture 라이브러리 — PR 게이트 (Epic #2239 P2 / #2585)
 
