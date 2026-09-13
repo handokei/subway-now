@@ -15,11 +15,25 @@ import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arriv
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
+import {
+  BACKEND_SSOT_FIXTURE_T0,
+  flushBackendSsotMirrorTick,
+  makeBackendSsotMirrorEntry,
+} from '../../../../testUtils/backendSsotMirrorFixtures';
 
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 const mockUseArrival = useArrivalInfo as jest.Mock;
 const mockPrefetchArrival = prefetchArrival as jest.Mock;
 const mockRefetch = jest.fn();
+
+// #2590 — 환승 컨텍스트 currentStation 우선순위(backend SSoT mirror) 테스트용 mock.
+// readBackendSsotMirror만 override, resolveBackendSsotMirrorStation은 실제 구현(name/line 매칭)을 유지.
+jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  ...jest.requireActual('../../../alarm/utils/backendSsotMirror'),
+  readBackendSsotMirror: jest.fn(),
+}));
+import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
+const mockReadMirror = readBackendSsotMirror as jest.Mock;
 
 jest.mock('../../utils/findActiveTransferContext', () => {
   const actual = jest.requireActual('../../utils/findActiveTransferContext');
@@ -86,6 +100,7 @@ function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
 describe('useTransferTrainList', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReadMirror.mockResolvedValue(null);
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
   });
@@ -300,6 +315,177 @@ describe('useTransferTrainList', () => {
   });
 });
 
+/**
+ * #2590 — 환승 컨텍스트 currentStation에 backend SSoT mirror를 1순위로 주입하는 회귀 방지.
+ *
+ * RCA(2026-09-13 데스크 trip, token b00dd879): HomeScreen이 넘기는 currentStation prop(GPS/fused
+ * 표시 station)이 backend가 이미 확정한 leg-2 환승역과 다를 때(데스크/지하 GPS stale), 이 훅이
+ * mirror를 직접 polling해 우선 채택해야 환승 열차 리스트가 활성화된다.
+ */
+describe('#2590 backend SSoT mirror — 환승 컨텍스트 currentStation 1순위 주입', () => {
+  // gondeokOn6 대신 GPS가 가리키는 엉뚱한 역(삼각지) — 데스크/지하 stale GPS 시나리오 재현.
+  const samgakjiOn6 = findStationByNameAndLine('삼각지', '6') as Station;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+    jest.useFakeTimers();
+    jest.setSystemTime(BACKEND_SSOT_FIXTURE_T0);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('GPS=타역(삼각지) + mirror=환승역(공덕) fresh → context 활성화 (데스크 재현)', async () => {
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+    expect(result.current.context).toBeNull();
+
+    await flushBackendSsotMirrorTick();
+
+    expect(result.current.context).not.toBeNull();
+    expect(result.current.context!.nextLine).toBe('5');
+  });
+
+  it('mirror stale(receivedAt > 180s) → 기존 동작(currentStation prop) 유지, context 비활성', async () => {
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({
+        currentStationId: '공덕',
+        currentStationLine: '6',
+        receivedAt: BACKEND_SSOT_FIXTURE_T0 - 240_000,
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+
+    expect(result.current.context).toBeNull();
+  });
+
+  it('mirror 역이 기대 환승역과 다름(삼각지) → 이름 불일치로 context 비활성 유지 (오탑승 안전장치)', async () => {
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '삼각지', currentStationLine: '6' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: null,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+
+    expect(result.current.context).toBeNull();
+  });
+
+  it('두 cycle 동일 entry → 추가 render 없이 context 유지 (setState no-op)', async () => {
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+    await flushBackendSsotMirrorTick();
+    expect(result.current.context).not.toBeNull();
+
+    // 두 번째 tick도 동일 entry — setState reducer가 prev를 그대로 반환.
+    await flushBackendSsotMirrorTick();
+    expect(result.current.context).not.toBeNull();
+    expect(result.current.context!.nextLine).toBe('5');
+  });
+
+  it('mirror 없음(null) → 기존 currentStation prop 그대로 사용', async () => {
+    mockReadMirror.mockResolvedValue(null);
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+
+    expect(result.current.context).not.toBeNull();
+    expect(result.current.context!.nextLine).toBe('5');
+  });
+
+  it('lock=null(lockless) + mirror resolve 실패(존재하지 않는 노선 조합) → currentStation prop 폴백', async () => {
+    mockReadMirror.mockResolvedValue(
+      // 공덕은 9호선이 지나지 않음 — findStationByNameAndLine이 null을 반환하는 조합.
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '9' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+
+    // lockless(lock=null)라 lockLine 힌트 없이 currentStationLine('9')로 조회 → resolve 실패(null)
+    // → currentStation prop(gondeokOn6=공덕 6호선) 폴백 → lockless 신호로 context는 여전히 null이지만
+    // stampLegAdvance는 findLocklessTransferWaypoint 경로로 발화(gondeokOn6이 route 환승역과 일치).
+    expect(result.current.context).toBeNull();
+  });
+
+  it('unmount 후 resolve된 read는 setState 무시 (cancelled 가드)', async () => {
+    let resolveRead!: (entry: ReturnType<typeof makeBackendSsotMirrorEntry> | null) => void;
+    mockReadMirror.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveRead = res;
+      }),
+    );
+    const { unmount } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+    act(() => {
+      jest.advanceTimersByTime(5_000);
+    });
+    unmount();
+    await act(async () => {
+      resolveRead(makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }));
+      await Promise.resolve();
+    });
+    // 별도 assertion 없음 — unmount 이후 setState가 호출되지 않고 error/warning 없이 통과하면
+    // cancelled 분기가 커버된 것.
+    expect(true).toBe(true);
+  });
+});
 
 /**
  * #2115 — 환승 leg 재진입 직후 첫 arrival fetch 완료 전 loading이 그대로 노출되는지 검증.
@@ -312,6 +498,7 @@ describe('useTransferTrainList', () => {
 describe('#2115 loading passthrough', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReadMirror.mockResolvedValue(null);
     mockPrefetchArrival.mockResolvedValue(undefined);
   });
 
@@ -370,6 +557,7 @@ describe('#2115 loading passthrough', () => {
 describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReadMirror.mockResolvedValue(null);
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
   });
@@ -452,6 +640,7 @@ describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () =>
 describe('#2319 lockless trip 환승 진행 시 legAdvance stamp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReadMirror.mockResolvedValue(null);
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
   });

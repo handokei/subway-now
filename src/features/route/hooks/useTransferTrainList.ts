@@ -6,16 +6,22 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { prefetchArrival, useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
 import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
+import {
+  readBackendSsotMirror,
+  resolveBackendSsotMirrorStation,
+} from '../../alarm/utils/backendSsotMirror';
+import type { BackendSsotMirrorEntry } from '../../alarm/utils/backendSsotMirror';
 import {
   findActiveTransferContext,
   findLocklessTransferWaypoint,
   findUpcomingTransferPrefetch,
 } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
+import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 import { calculateRemainingLegETA } from '../../../shared/utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -62,9 +68,66 @@ export function useTransferTrainList({
   currentStation,
   arrivalProvider,
 }: UseTransferTrainListInputs): UseTransferTrainListResult {
+  // #2590 — 환승 컨텍스트 판정용 currentStation에 backend SSoT mirror를 1순위로 주입.
+  //
+  // RCA(2026-09-13 데스크 trip, token b00dd879): HomeScreen이 넘기는 `currentStation`은
+  // useFusedNearestStation의 최종 표시 station(GPS/fused)이다. backend가 이미 leg-2로
+  // advance했어도, cascade picker 내부 ADR-038 line 정합 가드(GPS-derived positionTrainResult와
+  // mirror line이 다르면 mirror를 거부)가 표시 station을 GPS 쪽에 묶어둘 수 있다 — 이 가드는
+  // *표시* SSoT 안정성을 위한 것으로 의도적이며(fusion picker 자체는 수정 금지), 그 결과 이
+  // 훅에서는 leg-2 환승역이 영원히 감지되지 않는다.
+  //
+  // 그래서 이 훅은 #2589(LA refresh)와 동일 패턴으로 backend SSoT mirror를 별도로 직접
+  // polling(5s, cascade picker와 동일 주기)해, fresh(≤180s, BACKEND_SSOT_MIRROR_MAX_AGE_MS)하고
+  // resolve 가능하면 그 station을 currentStation보다 우선한다. lock 활성 시 lock.boardingLine으로
+  // 정확 매칭(둘 다 없으면 name-only fallback) — `resolveBackendSsotMirrorStation` 계약은
+  // useFusedNearestStation과 동일.
+  //
+  // 오탑승 안전장치: 여기서는 GPS-line 교차검증을 반복하지 않는다. 대신 `findActiveTransferContext`
+  // (`resolveTransferWaypoint`)가 route가 기대하는 환승역 이름과 정확히 일치할 때만 context를
+  // 활성화하므로, mirror가 엉뚱한 역을 가리키면 이름이 매칭되지 않아 context는 자연히 비활성으로
+  // 남는다(기존 "탑승역만" 안전장치와 동일 계약, 추가 게이트 불필요).
+  const [backendSsotMirror, setBackendSsotMirror] = useState<BackendSsotMirrorEntry | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      void readBackendSsotMirror().then((entry) => {
+        if (cancelled) return;
+        setBackendSsotMirror((prev) => {
+          if (prev === null && entry === null) return prev;
+          if (
+            prev !== null &&
+            entry !== null &&
+            prev.receivedAt === entry.receivedAt &&
+            prev.currentStationId === entry.currentStationId
+          ) {
+            return prev;
+          }
+          return entry;
+        });
+      });
+    };
+    const id = setInterval(tick, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  const transferCurrentStation = useMemo(() => {
+    if (!backendSsotMirror) return currentStation;
+    const fresh = Date.now() - backendSsotMirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+    if (!fresh) return currentStation;
+    const resolved = resolveBackendSsotMirrorStation(
+      backendSsotMirror,
+      lock ? lock.boardingLine : undefined,
+    );
+    return resolved ?? currentStation;
+  }, [backendSsotMirror, currentStation, lock]);
+
   const context = useMemo(
-    () => findActiveTransferContext(lock, route, destinationName, currentStation),
-    [lock, route, destinationName, currentStation],
+    () => findActiveTransferContext(lock, route, destinationName, transferCurrentStation),
+    [lock, route, destinationName, transferCurrentStation],
   );
 
   const transferStationName = context?.transferStationInToLine.name ?? null;
@@ -78,8 +141,8 @@ export function useTransferTrainList({
   // prefetchArrival 자체가 cache TTL(30s) 내 valid 엔트리가 있으면 no-op이라 같은 trigger가
   // 여러 번 호출돼도 중복 네트워크 호출이 없다.
   const upcomingTransfer = useMemo(
-    () => findUpcomingTransferPrefetch(lock, route, destinationName, currentStation),
-    [lock, route, destinationName, currentStation],
+    () => findUpcomingTransferPrefetch(lock, route, destinationName, transferCurrentStation),
+    [lock, route, destinationName, transferCurrentStation],
   );
   const upcomingStation = upcomingTransfer?.transferStationName ?? null;
   const upcomingLine = upcomingTransfer?.nextLine ?? null;
@@ -116,8 +179,9 @@ export function useTransferTrainList({
   // (`findLocklessTransferWaypoint`)로 같은 stamp를 보완 발화한다. arrivals/refetch/autoLock은
   // 여전히 lock-bound `context`만 사용 — stamp 전용 보완 경로다.
   const locklessWaypoint = useMemo(
-    () => (lock ? null : findLocklessTransferWaypoint(route, destinationName, currentStation)),
-    [lock, route, destinationName, currentStation],
+    () =>
+      lock ? null : findLocklessTransferWaypoint(route, destinationName, transferCurrentStation),
+    [lock, route, destinationName, transferCurrentStation],
   );
   const prevLocklessWaypointKeyRef = useRef<string | null>(null);
   useEffect(() => {
