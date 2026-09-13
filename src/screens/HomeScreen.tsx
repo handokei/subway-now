@@ -1062,7 +1062,7 @@ export default function HomeScreen() {
   useLiveActivityPreBoardingLifecycle();
   // #2610 (b) — silent push(BG task) 수신 0인 FG trip에서도 LA가 backend mirror를 따라 전진하도록,
   // silent push 경로와 독립적인 FG mirror 폴링(useBackendSsotMirrorPoll)에 LA refresh를 wire.
-  useForegroundLaMirrorSync(destination, route, fusionBoardingLock?.boardingLine);
+  useForegroundLaMirrorSync(destination, route, fusionBoardingLock ?? null, legAdvanceLine ?? null);
   useApnsTripRegistration({
     route,
     destination,
