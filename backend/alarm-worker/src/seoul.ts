@@ -20,6 +20,14 @@ const MAX_RECPTN_DRIFT_SEC = 120;
 const CACHE_TTL_MS = 15_000;
 const ERROR_CACHE_TTL_MS = 5_000;
 
+/**
+ * Seoul Open API endpoint path segment. `seoulCapture.ts`가 raw fetch URL을
+ * arrival/position으로 분류할 때 이 상수를 소비한다 — URL 빌더와 분류 로직이
+ * 별도 문자열 리터럴로 drift 나는 걸 방지 (#2579 리뷰).
+ */
+export const SEOUL_ARRIVAL_PATH_SEGMENT = 'realtimeStationArrival';
+export const SEOUL_POSITION_PATH_SEGMENT = 'realtimePosition';
+
 export interface ArrivalEntry {
   destination: string;
   arrivalSeconds: number;
@@ -131,7 +139,7 @@ export class SeoulArrivalClient {
     if (cached && cached.expiresAt > now) return cached.data;
 
     const fetchImpl = this.options.fetchImpl ?? fetch;
-    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/realtimePosition/0/100/${encodeURIComponent(lineName)}`;
+    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/${SEOUL_POSITION_PATH_SEGMENT}/0/100/${encodeURIComponent(lineName)}`;
 
     this.callCount += 1;
     const response = await fetchImpl(url);
@@ -159,7 +167,7 @@ export class SeoulArrivalClient {
     }
 
     const fetchImpl = this.options.fetchImpl ?? fetch;
-    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/realtimeStationArrival/0/10/${encodeURIComponent(stationName)}`;
+    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/${SEOUL_ARRIVAL_PATH_SEGMENT}/0/10/${encodeURIComponent(stationName)}`;
 
     this.callCount += 1;
     const response = await fetchImpl(url);
