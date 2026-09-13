@@ -53,11 +53,19 @@ jest.mock('../../../alarm/store/useBoardingLockStore', () => {
 });
 
 // #2305 — useLegAdvanceStore mock. context 활성화 전이 시 stampLegAdvance 호출 검증.
+// #2590 (code review 2/3번) — evaluateBackendSsotCrossLineGuard에 legAdvanceLine을 넘기기 위해
+// 훅이 이제 `useLegAdvanceStore(selector)`로도 호출한다(기존 `.getState()` 호출과 별개) —
+// useBoardingLockStore mock과 동일 패턴으로 selector 호출을 지원하도록 확장.
 const mockStampLegAdvance = jest.fn().mockResolvedValue(undefined);
+let mockLegAdvanceNextLine: BoardingLock['boardingLine'] | null = null;
 jest.mock('../../../alarm/store/useLegAdvanceStore', () => ({
-  useLegAdvanceStore: {
-    getState: () => ({ stampLegAdvance: mockStampLegAdvance }),
-  },
+  useLegAdvanceStore: Object.assign(
+    (selector?: (s: { nextLine: BoardingLock['boardingLine'] | null }) => unknown) =>
+      selector
+        ? selector({ nextLine: mockLegAdvanceNextLine })
+        : { nextLine: mockLegAdvanceNextLine },
+    { getState: () => ({ stampLegAdvance: mockStampLegAdvance }) },
+  ),
 }));
 
 const lock: BoardingLock = {
@@ -330,6 +338,8 @@ describe('#2590 backend SSoT mirror — 환승 컨텍스트 currentStation 1순�
     jest.clearAllMocks();
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
+    mockReadMirror.mockResolvedValue(null);
+    mockLegAdvanceNextLine = null;
     jest.useFakeTimers();
     jest.setSystemTime(BACKEND_SSOT_FIXTURE_T0);
   });
@@ -356,6 +366,78 @@ describe('#2590 backend SSoT mirror — 환승 컨텍스트 currentStation 1순�
 
     expect(result.current.context).not.toBeNull();
     expect(result.current.context!.nextLine).toBe('5');
+    // #2590 (code review 4번) — mirror-driven 활성만으로는 legAdvance stamp가 발생하지 않는다.
+    // GPS(currentStation prop)는 여전히 삼각지에 머물러 있어 gpsConfirmedContext는 비활성이므로
+    // 자기부정 루프(F4) 방지용 stamp 억제가 정상 동작함을 증명.
+    expect(mockStampLegAdvance).not.toHaveBeenCalled();
+  });
+
+  it('mirror-driven 활성 리스트에서 createTransferLock 탭 → GPS 미확정이어도 즉시 legAdvance stamp (code review 4번)', async () => {
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({ trainCode: 'T-TAP' })], down: [] }));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+    await flushBackendSsotMirrorTick();
+    expect(result.current.context).not.toBeNull();
+    expect(mockStampLegAdvance).not.toHaveBeenCalled();
+
+    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'T-TAP' })));
+
+    // 탭 = 명시 의향(ADR-014) → GPS 확정을 기다리지 않고 즉시 stamp.
+    expect(mockStampLegAdvance).toHaveBeenCalledWith('5');
+  });
+
+  it('mirror entry 불변인데 receivedAt만 180s 경과 → 다음 tick에서 stale 전이(context 비활성화) — 영구 fresh 버그 회귀 가드 (code review 1번)', async () => {
+    // 동일 entry를 계속 반환(mockResolvedValue — mockReset 없이 매 tick 동일 참조/값)해도
+    // useBackendSsotMirrorPoll이 tick마다 Date.now() 기준으로 freshness를 재평가하므로,
+    // receivedAt으로부터 180s가 지난 시점의 tick에서는 stale로 전이되어야 한다.
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+    await flushBackendSsotMirrorTick();
+    expect(result.current.context).not.toBeNull();
+
+    // 시스템 시계를 181s 진행(entry.receivedAt 기준 BACKEND_SSOT_MIRROR_MAX_AGE_MS 초과) 후
+    // 다음 5s tick을 발화 — entry 자체는 그대로지만 freshness 재평가로 stale 판정되어야 한다.
+    jest.setSystemTime(BACKEND_SSOT_FIXTURE_T0 + 181_000);
+    await flushBackendSsotMirrorTick();
+
+    expect(result.current.context).toBeNull();
+  });
+
+  it('route=null(여정 없음) → 폴링 자체가 가동되지 않음 — idle 이중 poll 제거 (code review 7번)', async () => {
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route: null,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+    await flushBackendSsotMirrorTick();
+
+    expect(mockReadMirror).not.toHaveBeenCalled();
   });
 
   it('mirror stale(receivedAt > 180s) → 기존 동작(currentStation prop) 유지, context 비활성', async () => {
@@ -458,7 +540,57 @@ describe('#2590 backend SSoT mirror — 환승 컨텍스트 currentStation 1순�
     expect(result.current.context).toBeNull();
   });
 
+  it('lock=null(lockless) + mirror resolve 성공하지만 legAdvanceLine과 cross-line 불일치 → currentStation prop 폴백 (code review 2/3번)', async () => {
+    // 공덕(6호선)으로 정상 resolve되지만, 사용자가 최근 legAdvance로 확인한 line은 '5'라
+    // evaluateBackendSsotCrossLineGuard의 #2387 confirmed-line 대조에서 거부되어야 한다.
+    mockLegAdvanceNextLine = '5';
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+
+    // guard가 거부 → transferCurrentStation은 currentStation(삼각지) 그대로 → route 환승역
+    // (공덕)과 이름 불일치 → context 비활성 유지.
+    expect(result.current.context).toBeNull();
+    mockLegAdvanceNextLine = null;
+  });
+
+  it('lock 활성 + mirror가 lock.boardingLine으로 정확 resolve → cross-line 가드 통과(FG와 동일 tautology)', async () => {
+    // lock 활성 시 resolveBackendSsotMirrorStation은 항상 lock.boardingLine으로 조회하므로
+    // resolved.line은 정의상 lock.boardingLine과 같다 — cross-line 가드는 이 경로에서 항상
+    // 통과해야 한다(거부하면 lock 활성 시 mirror가 전혀 채택되지 않는 회귀).
+    mockReadMirror.mockResolvedValue(
+      makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }),
+    );
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: samgakjiOn6,
+      }),
+    );
+
+    await flushBackendSsotMirrorTick();
+
+    expect(result.current.context).not.toBeNull();
+    expect(result.current.context!.nextLine).toBe('5');
+  });
+
   it('unmount 후 resolve된 read는 setState 무시 (cancelled 가드)', async () => {
+    // #2590 (code review 8번) — 관측 불가능한 `expect(true).toBe(true)` 대신 console.error spy로
+    // React의 "unmounted 컴포넌트에 setState" 경고가 실제로 발생하지 않았음을 직접 검증한다.
+    // cancelled 가드가 없으면 unmount 이후 늦게 resolve된 read가 setState를 호출해 이 경고가 뜬다.
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     let resolveRead!: (entry: ReturnType<typeof makeBackendSsotMirrorEntry> | null) => void;
     mockReadMirror.mockReturnValueOnce(
       new Promise((res) => {
@@ -481,9 +613,8 @@ describe('#2590 backend SSoT mirror — 환승 컨텍스트 currentStation 1순�
       resolveRead(makeBackendSsotMirrorEntry({ currentStationId: '공덕', currentStationLine: '6' }));
       await Promise.resolve();
     });
-    // 별도 assertion 없음 — unmount 이후 setState가 호출되지 않고 error/warning 없이 통과하면
-    // cancelled 분기가 커버된 것.
-    expect(true).toBe(true);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });
 

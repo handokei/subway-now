@@ -12,13 +12,13 @@ import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
 import { useLegAdvanceStore } from '../../alarm/store/useLegAdvanceStore';
 import { resolveBackendSsotMirrorStation } from '../../alarm/utils/backendSsotMirror';
 import { useBackendSsotMirrorPoll } from '../../alarm/hooks/useBackendSsotMirrorPoll';
+import { evaluateBackendSsotCrossLineGuard } from '../utils/approachLine';
 import {
   findActiveTransferContext,
   findLocklessTransferWaypoint,
   findUpcomingTransferPrefetch,
 } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
-import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 import { calculateRemainingLegETA } from '../../../shared/utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -75,31 +75,52 @@ export function useTransferTrainList({
   // 훅에서는 leg-2 환승역이 영원히 감지되지 않는다.
   //
   // 그래서 이 훅은 #2589(LA refresh)와 동일 패턴으로 backend SSoT mirror를 별도로 직접
-  // polling(5s, cascade picker와 동일 주기)해, fresh(≤180s, BACKEND_SSOT_MIRROR_MAX_AGE_MS)하고
-  // resolve 가능하면 그 station을 currentStation보다 우선한다. lock 활성 시 lock.boardingLine으로
-  // 정확 매칭(둘 다 없으면 name-only fallback) — `resolveBackendSsotMirrorStation` 계약은
-  // useFusedNearestStation과 동일.
+  // polling(5s, cascade picker와 동일 주기)해, fresh하고 resolve 가능하면 그 station을
+  // currentStation보다 우선한다. lock 활성 시 lock.boardingLine으로 정확 매칭(둘 다 없으면
+  // name-only fallback) — `resolveBackendSsotMirrorStation` 계약은 useFusedNearestStation과 동일.
   //
-  // 오탑승 안전장치: 여기서는 GPS-line 교차검증을 반복하지 않는다. 대신 `findActiveTransferContext`
-  // (`resolveTransferWaypoint`)가 route가 기대하는 환승역 이름과 정확히 일치할 때만 context를
-  // 활성화하므로, mirror가 엉뚱한 역을 가리키면 이름이 매칭되지 않아 context는 자연히 비활성으로
-  // 남는다(기존 "탑승역만" 안전장치와 동일 계약, 추가 게이트 불필요).
+  // #2590 (code review 1번) — freshness 판정은 `useBackendSsotMirrorPoll` 내부로 이동(그 훅이
+  // 반환하는 값은 이미 fresh 보장). 이 훅에서 별도 `Date.now()` 재계산이 불필요해졌다 — 이전에는
+  // 이 memo의 의존성 배열에 시간이 없어 mirror entry가 그대로면 180s가 지나도 재평가되지 않는
+  // "영구 fresh" 버그가 있었다.
+  //
+  // #2590 (code review 2/3번) — mirror 채택 전 cross-line 가드를 FG cascade picker
+  // (`useFusedNearestStation` ssotGuardResult)와 동일한 `evaluateBackendSsotCrossLineGuard`
+  // (route/utils/approachLine.ts)로 적용한다. FG는 positionTrainResult(GPS 확정 신호)도
+  // 대조하지만, 이 훅은 GPS를 판정 근거로 쓰지 않는 orchestrator라 그 인자에 항상 null을 넘긴다
+  // — 이는 완화가 아니라 원 함수 자체의 의미론(더 강한 신호가 있을 때만 대조, 없으면 그 단계는
+  // 통과)을 그대로 재사용하는 것이다. boardingLock/legAdvanceLine(#2387, 사용자 명시 확인 line)은
+  // 최소 배선 가능해 그대로 전달 — 이 부분은 FG와 완전히 동일한 보호 수준을 제공한다.
+  //
+  // 오탑승 안전장치: 위 cross-line 가드에 더해 `findActiveTransferContext`(`resolveTransferWaypoint`)
+  // 가 route가 기대하는 환승역 이름과 정확히 일치할 때만 context를 활성화하므로, mirror가 엉뚱한
+  // 역을 가리키면 이름이 매칭되지 않아 context는 자연히 비활성으로 남는다(기존 "탑승역만"
+  // 안전장치와 동일 계약).
   //
   // #2590 (SonarCloud dup 해소) — 폴링 boilerplate는 useFusedNearestStation과 공유하는
   // useBackendSsotMirrorPoll로 추출(순수 추출, 동작/타이밍 100% 동일. 상세 계약은 그 훅의
   // docblock 참조).
-  const backendSsotMirror = useBackendSsotMirrorPoll();
+  //
+  // #2590 (code review 7번) — route가 없으면(=활성 여정 없음) 환승 자체가 원천적으로 불가능하므로
+  // 폴링을 아예 가동하지 않는다(`enabled=route !== null`). FG cascade picker는 이미 항상 폴링
+  // 중이라, 여정 없는 idle 사용자에게 같은 AsyncStorage 키를 이중으로 읽는 낭비를 없앤다.
+  const backendSsotMirror = useBackendSsotMirrorPoll(route !== null);
+  const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
 
   const transferCurrentStation = useMemo(() => {
     if (!backendSsotMirror) return currentStation;
-    const fresh = Date.now() - backendSsotMirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
-    if (!fresh) return currentStation;
     const resolved = resolveBackendSsotMirrorStation(
       backendSsotMirror,
       lock ? lock.boardingLine : undefined,
     );
-    return resolved ?? currentStation;
-  }, [backendSsotMirror, currentStation, lock]);
+    if (!resolved) return currentStation;
+    // #2590 (code review 2/3번) — positionTrainResult 없음(null)을 명시 전달. GPS 미배선
+    // orchestrator이므로 그 가드 단계는 자연히 no-op — FG와 동일 함수의 동일 의미론.
+    if (evaluateBackendSsotCrossLineGuard(resolved.line, null, lock, legAdvanceLine)) {
+      return currentStation;
+    }
+    return resolved;
+  }, [backendSsotMirror, currentStation, lock, legAdvanceLine]);
 
   const context = useMemo(
     () => findActiveTransferContext(lock, route, destinationName, transferCurrentStation),
@@ -130,34 +151,54 @@ export function useTransferTrainList({
   // #814 — context가 막 활성화된 순간(release: 사용자가 환승역에 도달해 다음 leg로 전환)
   // useArrivalInfo의 자연 polling 주기를 기다리지 않고 즉시 한 번 강제 fetch. cache가 비어
   // 있으면 첫 응답을 앞당기고, cache가 있어도 latest로 갱신해 stale 데이터 노출 시간을 줄인다.
-  //
-  // #2305 — 같은 활성화 전이(null→non-null)가 곧 fusion(lock+route+currentStation 합의)이
-  // 환승 waypoint 도달을 확정하는 지점이다. 이 사실을 `useLegAdvanceStore`에 durable stamp해
-  // 사용자 탭/hop-end 프롬프트 응답과 무관하게 `getApproachLine`이 다음 leg 노선을 유지하도록
-  // 한다. RCA(2026-08-12 건대입구 7→2 환승): transfer auto-lock(create:other)이 생성된 직후
-  // release되며 legAdvance stamp가 없어 route의 동결된 stopsToTransfer fallback으로 line이
-  // 구노선(7)으로 붕괴했다 — lock 생성/해제 여부와 무관한 이 지점이 유일한 durable 신호여야 한다.
+  // mirror-driven 활성 포함 전체 `context`(=사용자가 실제로 보는 리스트) 기준 — UI는 즉시 최신이어야
+  // 한다.
   const prevContextActiveRef = useRef(false);
   useEffect(() => {
     const active = context !== null;
     if (active && !prevContextActiveRef.current) {
       refetch();
-      void useLegAdvanceStore.getState().stampLegAdvance(context.nextLine);
     }
     prevContextActiveRef.current = active;
   }, [context, refetch]);
 
+  // #2305 — legAdvance durable stamp. `useLegAdvanceStore`에 stamp해 사용자 탭/hop-end 프롬프트
+  // 응답과 무관하게 `getApproachLine`이 다음 leg 노선을 유지하도록 한다. RCA(2026-08-12 건대입구
+  // 7→2 환승): transfer auto-lock(create:other)이 생성된 직후 release되며 legAdvance stamp가
+  // 없어 route의 동결된 stopsToTransfer fallback으로 line이 구노선(7)으로 붕괴했다.
+  //
+  // #2590 (code review 4번) — stamp 트리거를 mirror-driven 활성(`context`/`transferCurrentStation`)
+  // 이 아니라 **GPS 확정 경로**(raw `currentStation` prop 기준 `gpsConfirmedContext`)로 한정한다.
+  // mirror-driven 활성까지 자동 stamp하면 legAdvance(#2387)가 FG의 cross-line 가드 confirmed
+  // 소스로 다시 쓰이는 자기부정 루프(F4: mirror→stamp→FG guard가 그 stamp로 같은 mirror를 재확인)가
+  // 생긴다 — mirror는 "리스트 노출"까지만 책임지고, "leg 전환을 ground truth로 확정"하는 stamp는
+  // 실제 GPS가 그 환승역에 도달했음을 확인했을 때, 또는 사용자가 `createTransferLock`으로 직접
+  // 탭했을 때(아래, ADR-014 "BoardingTrainList 직접 탭 = 명시 의향" 룰)만 발생시킨다.
+  const gpsConfirmedContext = useMemo(
+    () => findActiveTransferContext(lock, route, destinationName, currentStation),
+    [lock, route, destinationName, currentStation],
+  );
+  const prevGpsConfirmedActiveRef = useRef(false);
+  useEffect(() => {
+    const active = gpsConfirmedContext !== null;
+    if (active && !prevGpsConfirmedActiveRef.current) {
+      void useLegAdvanceStore.getState().stampLegAdvance(gpsConfirmedContext!.nextLine);
+    }
+    prevGpsConfirmedActiveRef.current = active;
+  }, [gpsConfirmedContext]);
+
   // #2319 — lockless trip(=origin lock 자체가 없는 trip) 환승 진행 시 durable legAdvance stamp 갭.
-  // 위 effect는 `context`(lock-bound `findActiveTransferContext`)의 null→non-null 전이에서만
-  // 발화하므로 lock이 아예 없는 trip은 영원히 stamp되지 않는다 (#2318 선행 검증 판정, PR #2313
-  // Deviation 절). lock이 있으면 위 effect가 이미 stamp를 책임지므로(lock 존재 시 `context`가
-  // 동일 waypoint에서 활성화됨), 이 effect는 lock=null 상태에서만 lock-비종속 신호
-  // (`findLocklessTransferWaypoint`)로 같은 stamp를 보완 발화한다. arrivals/refetch/autoLock은
-  // 여전히 lock-bound `context`만 사용 — stamp 전용 보완 경로다.
+  // 위 effect는 `gpsConfirmedContext`(lock-bound)의 null→non-null 전이에서만 발화하므로 lock이
+  // 아예 없는 trip은 영원히 stamp되지 않는다 (#2318 선행 검증 판정, PR #2313 Deviation 절). lock이
+  // 있으면 위 effect가 이미 stamp를 책임지므로, 이 effect는 lock=null 상태에서만 lock-비종속 신호
+  // (`findLocklessTransferWaypoint`)로 같은 stamp를 보완 발화한다.
+  //
+  // #2590 (code review 4번, F3) — 이 waypoint도 raw `currentStation`(GPS 확정) 기준으로 판정한다.
+  // `transferCurrentStation`(mirror-preferred)을 쓰면 lockless trip에서 mirror만으로 legAdvance가
+  // 조기 stamp되는 동일한 자기부정 루프가 생긴다.
   const locklessWaypoint = useMemo(
-    () =>
-      lock ? null : findLocklessTransferWaypoint(route, destinationName, transferCurrentStation),
-    [lock, route, destinationName, transferCurrentStation],
+    () => (lock ? null : findLocklessTransferWaypoint(route, destinationName, currentStation)),
+    [lock, route, destinationName, currentStation],
   );
   const prevLocklessWaypointKeyRef = useRef<string | null>(null);
   useEffect(() => {
@@ -200,6 +241,12 @@ export function useTransferTrainList({
       // (#2154 — D5 device auto-swap effect 삭제, 무탭 트리거 전량 제거). 탑승 확정 evidence가
       // 아니므로 evidence=false — `hasConsumedOriginWait`가 위 initialEtaSeconds 경과 여부로 판정한다.
       }, false);
+      // #2590 (code review 4번) — "BoardingTrainList 직접 탭 = 명시 의향" 룰(ADR-014, CLAUDE.md
+      // 사용자 명시 의향 트립 규칙) — 탭 자체가 GPS 확정과 동급 이상의 ground truth이므로 즉시
+      // legAdvance를 stamp한다. mirror-driven 활성만으로는 stamp하지 않지만(위 gpsConfirmedContext
+      // 참조), 사용자가 실제로 그 리스트에서 열차를 골라 탭한 순간은 GPS 도달을 기다릴 필요 없이
+      // 신뢰할 수 있는 두 번째 stamp 트리거다.
+      void useLegAdvanceStore.getState().stampLegAdvance(context.nextLine);
     },
     [context, lock, route, createLock],
   );

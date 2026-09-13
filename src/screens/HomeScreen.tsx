@@ -1044,6 +1044,9 @@ export default function HomeScreen() {
     boardingLock,
     route,
     destinationName: destination?.name ?? null,
+    // #2590 (code review 6번) — useTransferTrainList가 이미 산출한 활성 여부를 그대로 전달해
+    // 두 hook의 "planned transfer" 판정이 (mirror 주입 이후에도) 항상 일치하도록 한다.
+    plannedTransferActive: transferContext !== null,
     onAutoLock: hydrateLockFromCandidate,
   });
   const handleTransferDetectConfirm = useCallback(
@@ -1692,7 +1695,19 @@ export default function HomeScreen() {
                             //  사용자 명시 설정이라 게이트 면제. 게이트 미통과 시 list 비노출 + 안내 텍스트.
                             // #2407 Gap B — pending fallback lock도 이 분기(train picker)로
                             // 흘러야 하므로 !boardingLock 대신 !isRealBoardingLock 사용.
-                            if (i === 0 && stop.mark === 'filled' && !isRealBoardingLock(boardingLock) && effectiveOrigin) {
+                            // #2590 (code review 5번) — transferContext 활성(=환승 리스트가 이미
+                            // 노출 중) 시 origin BoardingTrainList picker는 억제(상호배타). mirror
+                            // 주입으로 GPS가 아직 origin에 머물러 있어도 환승 리스트가 뜰 수 있게
+                            // 되면서, 억제하지 않으면 사용자가 두 개의 서로 다른 leg 열차 picker를
+                            // 동시에 보게 된다 — 사용자는 이미 다음 leg로 넘어간 것으로 backend가
+                            // 판단했으므로 origin picker는 더 이상 유효하지 않다.
+                            if (
+                              i === 0 &&
+                              stop.mark === 'filled' &&
+                              !isRealBoardingLock(boardingLock) &&
+                              effectiveOrigin &&
+                              !transferContext
+                            ) {
                               const distanceToCurrentM = (result?.distanceKm ?? Infinity) * 1000;
                               const nearBoardingStation =
                                 isCustomOrigin || distanceToCurrentM < BOARDING_PROXIMITY_THRESHOLD_M;

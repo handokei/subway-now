@@ -285,6 +285,94 @@ describe('useTransferAutoDetect', () => {
   });
 
   /**
+   * #2590 (code review 6번) — `plannedTransferActive`가 전달되면 내부 GPS 기반 재계산 대신
+   * 그 값을 그대로 채택한다. `useTransferTrainList`가 backend SSoT mirror로 이미 활성 판정을
+   * 내렸을 때, 이 hook의 raw GPS 계산과 어긋나지 않도록 SSoT를 하나로 통일하는 정합 가드.
+   */
+  describe('#2590 plannedTransferActive 정합', () => {
+    it('plannedTransferActive 미전달(undefined) → 기존 내부 GPS 계산대로 detect 진행 (baseline)', () => {
+      // route/lock/destinationName 모두 없음 → 내부 findActiveTransferContext=null이라
+      // internalOnPlannedTransfer=false, onRouteStation도 route=null이라 false → detect 진행.
+      const onAutoLock = jest.fn();
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+      ]);
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({ nearestStations: transferNearest, arrival, onAutoLock }),
+        ),
+      );
+      expect(result.current.candidateLines).toEqual(['4']);
+      expect(result.current.modalVisible).toBe(true);
+    });
+
+    it('plannedTransferActive=true 명시 전달 → 동일 입력(baseline과 100% 동일)인데도 detect skip', () => {
+      // 위 baseline과 nearestStations/arrival/route/lock 모두 동일 — 유일한 차이는
+      // plannedTransferActive=true 명시. 내부 계산(false)을 무시하고 override가 우선함을 증명.
+      const onAutoLock = jest.fn();
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+      ]);
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest,
+            arrival,
+            onAutoLock,
+            plannedTransferActive: true,
+          }),
+        ),
+      );
+      expect(result.current.candidateLines).toEqual([]);
+      expect(result.current.modalVisible).toBe(false);
+    });
+
+    it('plannedTransferActive=false 명시 전달 → 내부 GPS 계산이 true(=planned)인 상황에서도 detect 진행', () => {
+      // 동대문역사문화공원(2/4/5호선 실제 환승역) 5호선 variant를 currentStation으로 두고
+      // route는 2↔4호선 transfer로 구성 — `findActiveTransferContext`는 이름만 매칭하므로
+      // (5호선 variant라도) transferName 일치로 non-null(=internalOnPlannedTransfer=true)이지만,
+      // `isStationOnRoute(DDP_5, route)`는 5호선이 route(2,4)에 없어 false(onRouteStation=false).
+      // 이 조합으로 override 없이는 internal=true라 스킵될 상황을, override=false로 강제 진행시켜
+      // "override가 내부 계산을 실제로 대체한다"는 것을 순수하게 격리해 증명한다.
+      const onAutoLock = jest.fn();
+      const route = {
+        type: 'transfer' as const,
+        transferName: '동대문역사문화공원',
+        fromLine: '2' as const,
+        toLine: '4' as const,
+        stopsToTransfer: 1,
+        stopsFromTransfer: 2,
+        secondsToTransfer: 60,
+        secondsFromTransfer: 120,
+      };
+      const nearestDdp5: NearestStationsResult = {
+        primary: DDP_5,
+        variants: [DDP_2, DDP_4, DDP_5],
+        distanceKm: 0.03,
+        isTransfer: true,
+      };
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+      ]);
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: nearestDdp5,
+            arrival,
+            boardingLock: makeLock({ boardingLine: '2', boardingStationId: DDP_2.id }),
+            route,
+            destinationName: '서울역',
+            onAutoLock,
+            plannedTransferActive: false,
+          }),
+        ),
+      );
+      expect(result.current.candidateLines).toEqual(['4']);
+      expect(result.current.modalVisible).toBe(true);
+    });
+  });
+
+  /**
    * #U1 — 통과역(pass-through) 오출현 회귀 가드. 군자(5/7호선)는 물리적 환승역이지만 활성
    * route(7호선 direct)가 이미 그 line을 안다 — 재확인 모달이 뜨면 안 된다. 군자를 벗어나
    * route가 모르는 line(다른 물리 환승역)으로 진짜 갈아탄 경우엔 계속 detect되어야 한다(과억제 방지).

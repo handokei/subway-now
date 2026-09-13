@@ -23,21 +23,41 @@
  *     추가 render 방지, null→null 전이 포함)
  *   - unmount 시 cancelled 가드로 이미 진행 중인 read의 늦은 resolve가 setState하지 않도록 차단
  *
- * freshness(≤180s, `BACKEND_SSOT_MIRROR_MAX_AGE_MS`) 판정과 `resolveBackendSsotMirrorStation`
- * 호출은 각 소비처가 lock/route 등 자신의 컨텍스트에 맞춰 별도로 수행한다(그 로직은 소비처마다
- * 달라 공유 대상이 아님 — 실제 중복은 이 폴링 boilerplate뿐이었다).
+ * #2590 (code review 1번) — freshness(≤180s, `BACKEND_SSOT_MIRROR_MAX_AGE_MS`) 판정을 이 훅
+ * 내부로 이동. 이전에는 각 소비처가 `Date.now() - receivedAt`을 자신의 useMemo 안에서 계산했는데,
+ * 그 memo의 의존성 배열에 시간 자체가 없어(`backendSsotMirror`/`currentStation`/`lock` 등만 있음)
+ * mirror entry가 그대로고 다른 의존성도 안 바뀌면 실제로 180s가 지나 stale이 되어도 memo가
+ * 재평가되지 않아 "한 번 fresh였던 값이 영구 fresh로 갇히는" 버그가 있었다(useTransferTrainList처럼
+ * 재렌더 트리거가 드문 소비처에서 특히 노출). 이제는 5s tick마다 `Date.now()` 기준으로 freshness를
+ * 재평가해, 새 push 없이 시간만 지나도(entry 자체는 동일) stale 전이 시 mirror를 null로 되돌린다
+ * — 이 훅을 쓰는 모든 소비처가 반환값(`!== null`)만으로 "지금 이 순간 fresh"를 신뢰할 수 있다.
+ *
+ * #2590 (code review 7번) — `enabled` 파라미터(기본 true, FG cascade picker 호출부는 인자 없이
+ * 호출해 기존 동작 100% 동일 유지). `useTransferTrainList`처럼 route/여정이 활성일 때만 의미
+ * 있는 소비처는 `enabled=false`로 넘겨 idle 사용자(여정 없음)의 5s AsyncStorage 폴링을
+ * 완전히 멈춘다 — FG cascade picker가 이미 항상 폴링하므로, 여정 없는 상태에서까지 같은
+ * 데이터를 이중으로 읽는 낭비를 없앤다. `enabled=false` 전환 시 보유 중이던 mirror도 null로
+ * 비운다(재활성 시 stale 값을 들고 있지 않도록).
  */
 import { useEffect, useState } from 'react';
 import { readBackendSsotMirror } from '../utils/backendSsotMirror';
 import type { BackendSsotMirrorEntry } from '../utils/backendSsotMirror';
+import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
 
-export function useBackendSsotMirrorPoll(): BackendSsotMirrorEntry | null {
+export function useBackendSsotMirrorPoll(enabled = true): BackendSsotMirrorEntry | null {
   const [mirror, setMirror] = useState<BackendSsotMirrorEntry | null>(null);
   useEffect(() => {
+    if (!enabled) {
+      setMirror(null);
+      return;
+    }
     let cancelled = false;
     const tick = () => {
-      void readBackendSsotMirror().then((entry) => {
+      void readBackendSsotMirror().then((raw) => {
         if (cancelled) return;
+        const fresh =
+          raw !== null && Date.now() - raw.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+        const entry = fresh ? raw : null;
         setMirror((prev) => {
           if (prev === null && entry === null) return prev;
           if (
@@ -59,6 +79,6 @@ export function useBackendSsotMirrorPoll(): BackendSsotMirrorEntry | null {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [enabled]);
   return mirror;
 }

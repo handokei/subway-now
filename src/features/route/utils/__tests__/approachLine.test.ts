@@ -1,4 +1,4 @@
-import { getApproachLine } from '../approachLine';
+import { evaluateBackendSsotCrossLineGuard, getApproachLine } from '../approachLine';
 import type {
   Route,
   DirectRoute,
@@ -199,5 +199,52 @@ describe('getApproachLine', () => {
       // currentStation이 없으면 검증할 대상이 없어 기존 동작 유지.
       expect(getApproachLine(null, makeLock('7'), null)).toBe('7');
     });
+  });
+});
+
+/**
+ * #2590 (code review 2/3번) — useFusedNearestStation ssotGuardResult에서 순수 추출한
+ * cross-line 가드. useFusedNearestStation/useTransferTrainList 두 소비처가 공유한다.
+ */
+describe('evaluateBackendSsotCrossLineGuard', () => {
+  it('positionTrainResult 없음 + lock/legAdvance 없음 → 거부하지 않음(판정 근거 자체가 없음)', () => {
+    expect(evaluateBackendSsotCrossLineGuard('6', null, null, null)).toBe(false);
+  });
+
+  it('positionTrainResult line과 다름 → 거부', () => {
+    const positionTrainResult = { station: makeStation('2') };
+    expect(evaluateBackendSsotCrossLineGuard('6', positionTrainResult, null, null)).toBe(true);
+  });
+
+  it('positionTrainResult line과 동일 → 통과', () => {
+    const positionTrainResult = { station: makeStation('6') };
+    expect(evaluateBackendSsotCrossLineGuard('6', positionTrainResult, null, null)).toBe(false);
+  });
+
+  it('positionTrainResult 없음 + boardingLock line과 다름(#2387 confirmed) → 거부', () => {
+    expect(evaluateBackendSsotCrossLineGuard('6', null, makeLock('7'), null)).toBe(true);
+  });
+
+  it('positionTrainResult 없음 + boardingLock line과 동일 → 통과', () => {
+    expect(evaluateBackendSsotCrossLineGuard('6', null, makeLock('6'), null)).toBe(false);
+  });
+
+  it('lock 없음 + legAdvanceLine과 다름(#2387 confirmed) → 거부', () => {
+    expect(evaluateBackendSsotCrossLineGuard('6', null, null, '5')).toBe(true);
+  });
+
+  it('lock 없음 + legAdvanceLine과 동일 → 통과', () => {
+    expect(evaluateBackendSsotCrossLineGuard('6', null, null, '6')).toBe(false);
+  });
+
+  it('lock/legAdvance 둘 다 없음(미확정) → confirmed=false라 거부하지 않음', () => {
+    expect(evaluateBackendSsotCrossLineGuard('6', null, null, null)).toBe(false);
+  });
+
+  it('positionTrainResult 통과 + lock/legAdvance 불일치 → 두 번째 가드에서 거부(OR 조건)', () => {
+    const positionTrainResult = { station: makeStation('6') };
+    expect(evaluateBackendSsotCrossLineGuard('6', positionTrainResult, makeLock('7'), null)).toBe(
+      true,
+    );
   });
 });
