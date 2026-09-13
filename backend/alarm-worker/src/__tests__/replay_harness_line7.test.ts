@@ -15,13 +15,12 @@ import { describe, expect, it } from 'vitest';
 import type { Trip } from '../types';
 import { SEOUL_ARRIVAL_PATH_SEGMENT, SEOUL_POSITION_PATH_SEGMENT } from '../seoul';
 import { makeCaptureFetch, runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
+import { LINE7_SYNTH_LOCK_TRAIN, makeLine7SynthLockTrip } from './helpers/line7SynthTrip';
 import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
 import fixtureJson from './fixtures/replayLibrary/capture_20260912_line7_synth.fixture.json';
 
 const fixture = parseReplayFixture(fixtureJson);
 
-const LOCK_TRAIN = '7204';
-const SEGMENT = ['건대입구', '어린이대공원(세종대)', '군자(능동)', '중곡'];
 const NOW = fixture.window.fromMs;
 
 /** 합성 fixture는 15~16s 간격 샘플 — 60s cron이 이를 읽는 시나리오를 재현하려면 명시 옵트인. */
@@ -38,27 +37,7 @@ function positionUrl(line: string): string {
 }
 
 function makeLockTrip(token: string): Trip {
-  return {
-    token,
-    route: { type: 'direct', line: '7', stops: 3 },
-    destination: '중곡',
-    waypoints: [
-      { stationName: '어린이대공원(세종대)', line: '7', kind: 'intermediate' },
-      { stationName: '군자(능동)', line: '7', kind: 'intermediate' },
-      { stationName: '중곡', line: '7', kind: 'destination' },
-    ],
-    boardingLock: {
-      trainCode: LOCK_TRAIN,
-      line: '7',
-      subwayId: '1007',
-      selectedDepartureTime: NOW,
-      segmentStations: SEGMENT,
-      expiresAt: NOW + 60 * 60_000,
-    },
-    expiresAt: NOW + 60 * 60_000,
-    createdAt: NOW,
-    alarmAtEpochMs: NOW,
-  };
+  return makeLine7SynthLockTrip(token, NOW);
 }
 
 /**
@@ -106,7 +85,7 @@ describe('runCaptureReplay — fixture 시간창 cron 재생', () => {
       .filter((v): v is string => typeof v === 'string');
     expect(trainCodes.length).toBeGreaterThan(0);
     for (const code of trainCodes) {
-      expect(code).toBe(LOCK_TRAIN);
+      expect(code).toBe(LINE7_SYNTH_LOCK_TRAIN);
     }
   });
 

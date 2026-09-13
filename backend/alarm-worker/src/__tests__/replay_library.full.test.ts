@@ -9,37 +9,48 @@
  * - 이 파일: registry 데이터 기반 "전 시나리오 × 전 위상 회귀 없음" 게이트.
  * - `replay_harness_line7.test.ts`: 하네스 자체의 기계적 정확성 단위 검증(freshness 경계,
  *   truncated/status=0 매핑, cron drift, KV TTL 벽시계 독립성, trainCode 파싱 관통) — 특정
- *   trip 시나리오의 "매역 발사 결론"을 다시 주장하지 않는다(이중 유지보수 방지, 이 이슈
- *   구현 시 해당 파일에서 라이브러리와 중복되던 결론 assertion을 제거했다).
+ *   trip 시나리오의 "매역 발사 결론"을 다시 주장하지 않는다(이중 유지보수 방지).
+ *
+ * fixture는 각 entry의 `loadFixture()`(메모이즈, `it()` 본문에서만 호출)로 얻는다 — describe
+ * 본문(collection 시점)에서 파싱하면 malformed fixture 하나가 라이브러리 전체 collection을
+ * 죽인다. `entry.loadFixture`가 그 격리를 책임진다(#2585 리뷰).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { REPLAY_LIBRARY } from './replayLibrary';
-import { parseReplayFixture } from '../replayFixture';
+import { DEFAULT_PHASE_OFFSETS_MS, REPLAY_LIBRARY, REPLAY_LIBRARY_DIR, type ReplayLibraryEntry } from './replayLibrary';
+import { isLossyFixture } from '../replayFixture';
 import { runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
 
-const REPLAY_LIBRARY_DIR = path.join(__dirname, 'fixtures', 'replayLibrary');
 const FIXTURE_SUFFIX = '.fixture.json';
 
 function listFixtureFilesOnDisk(): string[] {
   return fs.readdirSync(REPLAY_LIBRARY_DIR).filter((name) => name.endsWith(FIXTURE_SUFFIX));
 }
 
-/** alert push 중 nextWaypoint를 실은 것만 "매역 발사"로 집계 — 최초 등장 순서 보존, 중복 제거. */
-function orderedFiredStations(pushes: CapturedPush[]): string[] {
-  const seen = new Set<string>();
-  const ordered: string[] = [];
+/** alert push 중 nextWaypoint를 실은 것 전부 — 시간순, **중복 제거하지 않는다**. 같은 역이
+ * 두 번 발사되면(회귀) 그 중복이 그대로 남아야 sorted exact-match가 이를 잡아낸다. */
+function firedStationOccurrences(pushes: CapturedPush[]): string[] {
+  const occurrences: string[] = [];
   for (const push of pushes) {
     if (push.headers.pushType !== 'alert') continue;
     const data = push.body.data as Record<string, unknown> | undefined;
     const station = data?.nextWaypoint;
-    if (typeof station === 'string' && station.length > 0 && !seen.has(station)) {
-      seen.add(station);
-      ordered.push(station);
-    }
+    if (typeof station === 'string' && station.length > 0) occurrences.push(station);
   }
-  return ordered;
+  return occurrences;
+}
+
+function tripEndedFired(pushes: CapturedPush[], reason: string): boolean {
+  return pushes.some((push) => {
+    if (push.headers.pushType !== 'alert') return false;
+    const data = push.body.data as Record<string, unknown> | undefined;
+    return data?.kind === 'trip-ended' && data?.reason === reason;
+  });
+}
+
+function resolveCronIntervalMs(cronIntervalMs: ReplayLibraryEntry['cronIntervalMs']): number | undefined {
+  return cronIntervalMs === 'recorded' ? undefined : cronIntervalMs;
 }
 
 describe('replay library — 디렉터리 ↔ registry 1:1 대조', () => {
@@ -49,6 +60,12 @@ describe('replay library — 디렉터리 ↔ registry 1:1 대조', () => {
     expect(onDisk.sort()).toEqual(registered.sort());
   });
 
+  it('각 entry의 slug는 fixturePath의 basename(.fixture.json 제외)과 일치한다', () => {
+    for (const entry of REPLAY_LIBRARY) {
+      expect(entry.slug).toBe(path.basename(entry.fixturePath, FIXTURE_SUFFIX));
+    }
+  });
+
   it('REPLAY_LIBRARY entry가 최소 1개 이상이다 (조용한 0-test 통과 방지)', () => {
     expect(REPLAY_LIBRARY.length).toBeGreaterThan(0);
   });
@@ -56,38 +73,39 @@ describe('replay library — 디렉터리 ↔ registry 1:1 대조', () => {
 
 for (const entry of REPLAY_LIBRARY) {
   describe(`replay library — ${entry.slug}`, () => {
-    const fixturePath = path.join(REPLAY_LIBRARY_DIR, entry.fixturePath);
-    const fixture = parseReplayFixture(JSON.parse(fs.readFileSync(fixturePath, 'utf8')));
-
-    if ((fixture.droppedEntries ?? 0) > 0 || (fixture.failedCycleStartsMs?.length ?? 0) > 0) {
-      it('lossy 캡처는 명시 allowLossy:true 없이 라이브러리에 들어올 수 없다', () => {
+    it('lossy 캡처(droppedEntries/failedCycleStartsMs)는 명시 allowLossy:true 없이 라이브러리에 들어올 수 없다', () => {
+      const fixture = entry.loadFixture();
+      if (isLossyFixture(fixture)) {
         expect(entry.allowLossy).toBe(true);
-      });
-    } else if (entry.allowLossy) {
-      it('allowLossy:true인데 fixture에 실제 lossy 신호가 없다 — 플래그가 무의미해졌는지 확인', () => {
-        // fixture가 나중에 정제돼 lossy 신호가 사라졌다면 플래그도 같이 제거해야 한다는 신호.
-        const isLossy = (fixture.droppedEntries ?? 0) > 0 || (fixture.failedCycleStartsMs?.length ?? 0) > 0;
-        expect(isLossy).toBe(false);
-      });
-    }
+      }
+    });
 
-    for (const phaseOffsetMs of entry.phaseOffsetsMs) {
-      it(`위상 offset=${phaseOffsetMs}ms — 기대 발사/차단 충족`, async () => {
+    it('allowLossy:true는 fixture에 실제 lossy 신호가 있을 때만 유효하다 (stale 플래그 방지)', () => {
+      const fixture = entry.loadFixture();
+      const staleAllowLossy = Boolean(entry.allowLossy) && !isLossyFixture(fixture);
+      expect(staleAllowLossy).toBe(false);
+    });
+
+    const phaseOffsets = entry.phaseOffsetsMs ?? DEFAULT_PHASE_OFFSETS_MS;
+
+    for (const phaseOffsetMs of phaseOffsets) {
+      it(`위상 offset=${phaseOffsetMs}ms — 기대 발사/차단/완결 충족`, async () => {
+        const fixture = entry.loadFixture();
         const result = await runCaptureReplay({
           fixture,
           seedTrips: entry.seedTrips(),
-          cronIntervalMs: entry.cronIntervalMs,
+          cronIntervalMs: resolveCronIntervalMs(entry.cronIntervalMs),
           phaseOffsetMs,
           apns: 'capture',
         });
 
-        const fired = orderedFiredStations(result.pushes);
+        const fired = firedStationOccurrences(result.pushes);
 
-        // 정확히 일치 — 하나라도 누락/추가/순서 어긋나면 실패한다(수락 기준: registry
-        // expect에서 역 하나 제거 시 red 재현). forbiddenStations는 이 exact match와
-        // 별개로, 향후 firedStations를 완전 열거하지 않는 entry가 추가될 때를 대비한 별도
-        // 명시적 오발사 가드다.
-        expect(fired).toEqual(entry.expect.firedStations);
+        // 순서 무시, 정렬 후 exact-match — 역 하나 누락/추가되면 실패하고(수락 기준: registry
+        // expect에서 역 하나 제거 시 red), 위상별로 인접 tick 사이에서 발사 순서가 뒤바뀌는
+        // 것(회귀 아님)은 false-red를 만들지 않는다. 중복 제거를 하지 않은 채로 비교하므로
+        // 같은 역이 두 번 발사되면(회귀) sorted 배열 길이가 달라져 그 자체로 실패한다.
+        expect([...fired].sort()).toEqual([...entry.expect.firedStations].sort());
 
         for (const forbidden of entry.expect.forbiddenStations ?? []) {
           expect(fired).not.toContain(forbidden);
@@ -95,6 +113,10 @@ for (const entry of REPLAY_LIBRARY) {
 
         if (entry.expect.minPushes !== undefined) {
           expect(result.pushes.length).toBeGreaterThanOrEqual(entry.expect.minPushes);
+        }
+
+        if (entry.expect.tripEnded) {
+          expect(tripEndedFired(result.pushes, entry.expect.tripEnded.reason)).toBe(true);
         }
       });
     }
