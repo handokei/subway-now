@@ -5,7 +5,8 @@
  * 갖지 않는다 — `parseCycle`(주로 `parseSeoulCaptureCycle`, `../src/replayFixture.ts`)을
  * 호출자가 주입한다.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
 /**
  * `--key value` 형태 CLI 인자를 object로 파싱한다. `booleanFlags`에 나열된 키(예: `force`)는
@@ -48,4 +49,30 @@ export function readCycleFile(filePath, parseCycle) {
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * wrangler CLI 실행 지점 해석(#2598) — 글로벌 wrangler가 PATH에 없는 환경(repo 표준=npx
+ * 사용)에서 bare `wrangler` spawn이 ENOENT로 즉사하는 문제 수리. `scriptDir/../node_modules/
+ * .bin/wrangler`(devDependency 로컬 설치, `backend/alarm-worker/scripts/`의 부모 =
+ * `backend/alarm-worker/`)가 존재하면 그것을 직접 실행하고, 없으면 `npx --no-install
+ * wrangler`로 fallback한다 — 어느 쪽이든 PATH에 wrangler가 없어도 동작한다.
+ *
+ * `--no-install`(#2598 리뷰): plain `npx wrangler`는 로컬에 없으면 npm registry에서
+ * unpinned 최신 버전을 몰래 내려받거나(devDependency `^4.105.0`과 버전 drift 위험)
+ * interactive 설치 확인 프롬프트를 띄운다(비대화형 CLI 실행 흐름을 멈춤). `--no-install`은
+ * 그 대신 즉시 실패한다 — 호출자(`fixtureFromTrip.mjs`)가 그 실패를 감지해 "npm install
+ * 필요"로 명확히 안내한다.
+ *
+ * 반환값 `{ cmd, prefixArgs }`를 `execFileSync(cmd, [...prefixArgs, ...args])`에 그대로
+ * 펼쳐 쓴다. `buildReplayFixture.mjs`는 현재 wrangler를 호출하지 않지만(로컬 캡처 디렉토리만
+ * 읽음), 향후 wrangler 호출이 필요해지면 이 헬퍼를 그대로 재사용한다.
+ */
+export function resolveWranglerCommand(scriptDir) {
+  const binName = process.platform === 'win32' ? 'wrangler.cmd' : 'wrangler';
+  const localBinPath = path.join(scriptDir, '..', 'node_modules', '.bin', binName);
+  if (existsSync(localBinPath)) {
+    return { cmd: localBinPath, prefixArgs: [] };
+  }
+  return { cmd: 'npx', prefixArgs: ['--no-install', 'wrangler'] };
 }

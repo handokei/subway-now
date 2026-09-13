@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { parseArgs } from '../../scripts/cliUtils.mjs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parseArgs, resolveWranglerCommand } from '../../scripts/cliUtils.mjs';
 
 describe('parseArgs', () => {
   it('--key value 쌍을 object로 파싱한다', () => {
@@ -42,6 +45,36 @@ describe('parseArgs', () => {
         in: '/tmp/in',
         out: '/tmp/out',
       });
+    });
+  });
+});
+
+describe('resolveWranglerCommand (#2598 — bare wrangler spawn ENOENT 수리)', () => {
+  const scriptsDir = path.join(__dirname, '..', '..', 'scripts');
+  const localBinPath = path.join(scriptsDir, '..', 'node_modules', '.bin', 'wrangler');
+
+  it('scriptDir/../node_modules/.bin/wrangler가 존재하면 그 경로를 그대로 cmd로 쓴다', () => {
+    // devDependency 로컬 설치를 전제 — repo 표준 워크플로우에서 항상 참이어야 한다.
+    expect(existsSync(localBinPath)).toBe(true);
+
+    expect(resolveWranglerCommand(scriptsDir)).toEqual({ cmd: localBinPath, prefixArgs: [] });
+  });
+
+  describe('로컬 bin 없음 → npx --no-install fallback (#2598 리뷰 — 실제 빈 디렉토리로 검증, repo 부모 경로 의존 제거)', () => {
+    let noBinDir: string;
+
+    beforeEach(() => {
+      // scriptDir/../node_modules/.bin/wrangler가 절대 존재할 수 없는 격리된 임시 디렉토리.
+      // 이전 구현(scriptsDir의 조상 경로 하드코딩)은 repo 구조 변경에 취약했다.
+      noBinDir = mkdtempSync(path.join(tmpdir(), 'resolve-wrangler-no-bin-'));
+    });
+
+    afterEach(() => {
+      rmSync(noBinDir, { recursive: true, force: true });
+    });
+
+    it('npx --no-install wrangler로 fallback한다(unpinned 설치/interactive prompt 차단, PATH에 글로벌 wrangler 없어도 동작)', () => {
+      expect(resolveWranglerCommand(noBinDir)).toEqual({ cmd: 'npx', prefixArgs: ['--no-install', 'wrangler'] });
     });
   });
 });

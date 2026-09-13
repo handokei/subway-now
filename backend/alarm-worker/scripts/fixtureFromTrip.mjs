@@ -42,15 +42,20 @@ import {
   buildTripEventsQuery,
   CAPTURE_KEY_PRE_ROLL_MS,
   computeTripCaptureWindow,
+  describeSegments,
   extractFireAttempts,
   extractLines,
   extractSegmentStations,
+  MEANINGFUL_ROW_MIN_COUNT,
   parseEnvValue,
   parseTripEventsResponse,
   resolveTokenHash,
+  segmentTripEvents,
+  selectDefaultTripSegment,
+  selectTripSegment,
 } from '../src/fixtureFromTrip.ts';
 import { buildReplayFixture, isLossyFixture, parseSeoulCaptureCycle } from '../src/replayFixture.ts';
-import { parseArgs, readCycleFile } from './cliUtils.mjs';
+import { parseArgs, readCycleFile, resolveWranglerCommand } from './cliUtils.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT_ENV_PATH = path.join(SCRIPT_DIR, '..', '..', '..', '.env');
@@ -63,20 +68,52 @@ const DEFAULT_WORKER_URL = 'https://subway-now-alarm-worker.handokei.workers.dev
 
 const USAGE =
   'Usage: node scripts/fixtureFromTrip.mjs (--trip <tripToken> | --token-hash <8hex>) ' +
-  `[--worker-url ${DEFAULT_WORKER_URL}] [--out ${DEFAULT_OUT_DIR}] [--bucket ${DEFAULT_BUCKET}] [--db ${DEFAULT_DB}] [--force]`;
+  `[--worker-url ${DEFAULT_WORKER_URL}] [--out ${DEFAULT_OUT_DIR}] [--bucket ${DEFAULT_BUCKET}] [--db ${DEFAULT_DB}] ` +
+  '[--trip-index 0] [--force]';
 
 /**
- * wrangler CLI 실행 지점을 한 곳으로 수렴 — 이 스크립트는 개발자 로컬 전용 CLI로 CI/서버에서
- * 실행되지 않으므로, PATH에서 wrangler를 해석하는 것은 의도된 동작이다. spawn 호출을 여기
- * 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
+ * `npx --no-install`이 wrangler를 찾지 못했을 때(devDependency 미설치) 뱉는 특징적인
+ * 에러 문구를 감지한다(#2598 리뷰 — `--no-install`은 unpinned 버전을 몰래 설치하거나
+ * interactive prompt를 띄우는 것을 막지만, 그 대가로 실패 원인이 애매한 generic exec
+ * 에러로만 보인다 — 여기서 명확한 안내로 바꿔치기한다).
  */
-function runCli(cmd, args, options = {}) {
-  return execFileSync(cmd, args, { encoding: 'utf-8', ...options }); // NOSONAR — dev-only local CLI; PATH resolution of wrangler is intentional (S4036)
+function isNpxMissingWranglerError(err) {
+  const stderrText = err && err.stderr ? String(err.stderr) : '';
+  const messageText = err instanceof Error ? err.message : String(err);
+  return /could not determine executable to run/i.test(`${stderrText} ${messageText}`);
+}
+
+/**
+ * wrangler CLI 실행 지점을 한 곳으로 수렴 — 로컬 devDependency bin이 있으면 그것을, 없으면
+ * `npx --no-install wrangler`로 실행한다(`resolveWranglerCommand`, cliUtils.mjs, #2598 —
+ * 글로벌 wrangler가 PATH에 없는 환경에서 bare spawn ENOENT 수리. `--no-install`은 미설치
+ * 시 unpinned 버전을 몰래 내려받거나 interactive 설치 프롬프트를 띄우는 대신 즉시 실패하게
+ * 한다). spawn 호출을 여기 하나로 좁혀 S4036 위험 수용 표식(NOSONAR)도 1곳만 필요하게 한다.
+ *
+ * win32에서는 `.cmd` 셔블(예: npx.cmd/wrangler.cmd)을 `shell` 옵션 없이 `execFileSync`로
+ * 직접 실행하면 EINVAL로 즉사한다(Node가 2024-04 CVE-2024-27980로 명시한 Windows 배치
+ * 파일 spawn 제약) — win32에서만 `shell: true`를 강제한다. 주 개발 플랫폼은 macOS라
+ * 이 분기 외에는 기존 동작을 그대로 유지한다(최소 diff).
+ */
+function runCli(args, options = {}) {
+  const { cmd, prefixArgs } = resolveWranglerCommand(SCRIPT_DIR);
+  const platformOptions = process.platform === 'win32' ? { shell: true } : {};
+  try {
+    // NOSONAR — dev-only local CLI; wrangler resolution + win32 shell 강제는 의도된 동작(S4036)
+    return execFileSync(cmd, [...prefixArgs, ...args], { encoding: 'utf-8', ...options, ...platformOptions });
+  } catch (err) {
+    if (cmd === 'npx' && isNpxMissingWranglerError(err)) {
+      throw new Error(
+        'wrangler를 찾을 수 없습니다 — backend/alarm-worker에서 npm install 필요(devDependency 미설치, PATH에도 wrangler 없음).',
+      );
+    }
+    throw err;
+  }
 }
 
 function runD1Query(db, sql) {
   try {
-    return runCli('wrangler', ['d1', 'execute', db, '--remote', '--json', '--command', sql], {
+    return runCli(['d1', 'execute', db, '--remote', '--json', '--command', sql], {
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
@@ -140,7 +177,7 @@ function downloadCaptureKey(bucket, key, destDir) {
   const fileName = path.basename(key);
   const destPath = path.join(destDir, fileName);
   try {
-    runCli('wrangler', ['r2', 'object', 'get', `${bucket}/${key}`, '--file', destPath, '--remote']);
+    runCli(['r2', 'object', 'get', `${bucket}/${key}`, '--file', destPath, '--remote']);
     return destPath;
   } catch (err) {
     console.warn(`[skip] ${key} 다운로드 실패: ${err instanceof Error ? err.message : String(err)}`);
@@ -167,6 +204,18 @@ async function main() {
   const db = args.db ?? DEFAULT_DB;
   const force = args.force === true;
 
+  // #2598 리뷰 — `args['trip-index'] ?? '0'`는 "플래그 자체가 없음"과 "플래그는 있는데
+  // 값이 없음"(예: 맨 끝에 `--trip-index`만 씀)을 구분하지 못해 후자를 조용히 0으로
+  // 흡수했다(swallow). `in` 연산자로 플래그 존재 자체를 먼저 확인한다(parseArgs는 값이
+  // undefined여도 키는 항상 설정한다, cliUtils.mjs 참고).
+  const tripIndexProvided = 'trip-index' in args;
+  const tripIndexRaw = args['trip-index'];
+  if (tripIndexProvided && (tripIndexRaw === undefined || !/^\d+$/.test(tripIndexRaw))) {
+    console.error(USAGE);
+    throw new Error(`--trip-index는 0 이상의 정수여야 합니다 (받은 값: ${tripIndexRaw})`);
+  }
+  const tripIndex = tripIndexProvided ? Number(tripIndexRaw) : 0;
+
   const adminToken = resolveAdminToken();
   if (!adminToken) {
     throw new Error(
@@ -174,13 +223,60 @@ async function main() {
     );
   }
 
-  // 1) D1 조회 — 시간창/노선/segment 역/fire 이력.
+  // 1) D1 조회 — token_hash 전체 이벤트(디바이스 수명 단위, 여러 trip 혼재 가능).
   const sql = buildTripEventsQuery(tokenHash);
   const stdout = runD1Query(db, sql);
-  const rows = parseTripEventsResponse(stdout, tokenHash);
+  const allRows = parseTripEventsResponse(stdout, tokenHash);
+
+  // #2598 결함1 — trip-end 마커 + 30분 gap으로 세그먼트 분리. window/segment/fire 이력은
+  // 선택된 세그먼트 범위로만 계산해 과거 trip 혼입 오염을 막는다.
+  const segments = segmentTripEvents(allRows);
+  const segmentSummaries = describeSegments(segments);
+
+  // #2598 리뷰 — 사용자가 --trip-index를 판단할 수 있도록 보유 세그먼트 전체를 먼저 보여준다.
+  // 라벨은 --trip-index 인자값(뒤에서부터)과 1:1 대응(explicit 선택 경로 selectTripSegment와
+  // 동일한 인덱싱).
+  console.log(
+    [
+      `보유 trip 세그먼트 ${segments.length}개 (tokenHash=${tokenHash} 전체 ${allRows.length}건):`,
+      ...segmentSummaries.map((summary, i) => {
+        const tripIndexLabel = segments.length - 1 - i;
+        const flags = [
+          summary.significant ? null : `insignificant(<${MEANINGFUL_ROW_MIN_COUNT} rows) — 기본 선택 skip 대상`,
+          summary.terminated ? null : 'unterminated',
+        ]
+          .filter(Boolean)
+          .join(', ');
+        return (
+          `  [--trip-index ${tripIndexLabel}] rows=${summary.rowCount} ` +
+          `${new Date(summary.fromMs).toISOString()} ~ ${new Date(summary.toMs).toISOString()}` +
+          (flags ? ` (${flags})` : '')
+        );
+      }),
+    ].join('\n'),
+  );
+
+  const selected = tripIndexProvided ? selectTripSegment(segments, tripIndex) : selectDefaultTripSegment(segments);
+  if ('error' in selected) {
+    throw new Error(
+      tripIndexProvided
+        ? `--trip-index ${tripIndex}에 해당하는 trip이 없습니다 (tokenHash=${tokenHash}에서 발견된 trip 세그먼트 수: ${segments.length})`
+        : `의미 있는(trip-end 제외 row ${MEANINGFUL_ROW_MIN_COUNT}개 이상) trip 세그먼트를 찾지 못했습니다 ` +
+          `(tokenHash=${tokenHash}) — 위 목록에서 --trip-index로 직접 선택해보세요.`,
+    );
+  }
+  const { rows } = selected.segment;
+
+  const lastRow = rows[rows.length - 1];
+  if (lastRow.kind !== 'trip-end') {
+    console.warn(
+      '[경고] 선택된 trip 세그먼트가 trip-end로 끝나지 않습니다(unterminated) — 다음 trip과 병합됐거나 ' +
+        '이벤트가 유실됐을 수 있습니다. window/segment 역 목록을 재검토하세요.',
+    );
+  }
 
   const window = computeTripCaptureWindow(rows);
-  const segmentStations = extractSegmentStations(rows);
+  const { stations: segmentStations, suspiciousCodeRowCount } = extractSegmentStations(rows);
   const lines = extractLines(rows);
   const fireAttempts = extractFireAttempts(rows);
 
@@ -241,11 +337,19 @@ async function main() {
     console.log(
       [
         `trip tokenHash: ${tokenHash}`,
-        `trip_events: ${rows.length}건`,
+        `선택 세그먼트: rows=${rows.length}건 (--trip-index ${tripIndex}${
+          tripIndexProvided ? '' : ' — 기본값, 최신 significant 세그먼트'
+        }, tokenHash 전체 ${allRows.length}건 중)`,
         `capture cycles: ${cycles.length} (skipped: ${skipped}, admin endpoint 매칭 키: ${keysInWindow.length})`,
         `window: ${new Date(window.fromMs).toISOString()} ~ ${new Date(window.toMs).toISOString()}`,
         `노선: ${lines.join(', ') || '(미확인)'}`,
         `segment 역: ${segmentStations.join(' → ') || '(없음)'}`,
+        ...(suspiciousCodeRowCount > 0
+          ? [
+              `[경고] station 필드가 코드 패턴(N-NNN)인 non-trip-end row ${suspiciousCodeRowCount}건 발견 — ` +
+                'writer가 destination station ID를 잘못된 kind에 기록했을 가능성(후속 조사 필요, PR 본문 참고).',
+            ]
+          : []),
         `실제 fire 이력: ${fireAttempts.length}건${
           fireAttempts.length > 0
             ? '\n' + fireAttempts.map((f) => `  - ${new Date(f.ts).toISOString()} ${f.station ?? '?'} (${f.outcome ?? 'unknown'})`).join('\n')

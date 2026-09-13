@@ -146,13 +146,176 @@ export function computeTripCaptureWindow(rows: TripEventRow[], marginMs: number 
   return { fromMs: minTs - marginMs, toMs: maxTs + marginMs };
 }
 
+/** trip_events 1건 — `segmentTripEvents`가 나눈 세그먼트 1개(오래된 trip 순서 보존). */
+export interface TripSegment {
+  rows: TripEventRow[];
+}
+
+/**
+ * 인접 row 간 시간 간격이 이 값을 넘으면 `trip-end` 마커가 없어도 새 세그먼트로 분리한다
+ * (#2598 리뷰 — trip-end 기록 자체가 누락된 trip이 다음 trip과 한 세그먼트로 병합되는 결함
+ * 수리). 30분은 지하철 편도 trip이 통상 그 안에 끝난다는 전제의 보수적 임계값 — 실제
+ * 최장 편도 trip(환승 포함)도 크게 못 미친다.
+ */
+export const TRIP_GAP_MS = 30 * 60 * 1000;
+
+/**
+ * token_hash 전체 조회 결과(ts asc, 여러 trip 혼재)를 세그먼트로 분리한다(#2598 결함1 —
+ * token_hash는 디바이스 수명 단위라 D1 조회가 과거 trip들을 전부 포함해 window/segment
+ * 역이 오염됨). 두 기준으로 분리한다:
+ *
+ * 1. `kind === 'trip-end'` 마커 — 그 row를 끝맺는 세그먼트에 포함시키고 그 지점에서 닫는다.
+ * 2. 인접 row 간격이 `TRIP_GAP_MS`를 넘으면 — trip-end가 기록되지 못한 채(앱 kill/push
+ *    drop 등) 종료된 trip과 다음 trip이 한 세그먼트로 병합되는 것을 막는다.
+ *
+ * 마지막 trip-end 이후 남은 row(아직 종료 마커가 D1에 적재되지 않은 진행 중 trip 포함)는
+ * 별도 세그먼트로 남긴다. 반환 배열은 오래된 trip이 먼저(index 0) 오는 순서.
+ */
+export function segmentTripEvents(rows: TripEventRow[]): TripSegment[] {
+  const segments: TripSegment[] = [];
+  let current: TripEventRow[] = [];
+  for (const row of rows) {
+    const previous = current[current.length - 1];
+    if (previous !== undefined && row.ts - previous.ts > TRIP_GAP_MS) {
+      segments.push({ rows: current });
+      current = [];
+    }
+    current.push(row);
+    if (row.kind === 'trip-end') {
+      segments.push({ rows: current });
+      current = [];
+    }
+  }
+  if (current.length > 0) {
+    segments.push({ rows: current });
+  }
+  return segments;
+}
+
+/** `isSignificantTripSegment` 판정 기준 — trip-end 마커 자체는 세지 않는다(그것만 있으면 실질 이벤트 0건). */
+export const MEANINGFUL_ROW_MIN_COUNT = 2;
+
+/**
+ * `trip-end`가 아닌 row가 `MEANINGFUL_ROW_MIN_COUNT`개 이상인 세그먼트만 "실제 trip"으로
+ * 취급한다(#2598 리뷰 — 잔여 row 1~2개짜리 파편 세그먼트가 "최신 trip"으로 잘못 선택되는
+ * 결함 수리).
+ */
+export function isSignificantTripSegment(segment: TripSegment): boolean {
+  const meaningfulRowCount = segment.rows.filter((row) => row.kind !== 'trip-end').length;
+  return meaningfulRowCount >= MEANINGFUL_ROW_MIN_COUNT;
+}
+
+export interface TripSegmentSummary {
+  rowCount: number;
+  fromMs: number;
+  toMs: number;
+  significant: boolean;
+  terminated: boolean;
+}
+
+/**
+ * `segmentTripEvents` 결과를 사람이 읽을 CLI 요약으로 변환한다(#2598 리뷰 — 사용자가
+ * `--trip-index`를 판단할 수 있도록 세그먼트 목록을 노출). 각 세그먼트는 항상 row가
+ * 1개 이상이라 `rows[0]`/`rows[rows.length - 1]` 접근이 안전하다(`segmentTripEvents`가
+ * 빈 세그먼트를 만들지 않음).
+ */
+export function describeSegments(segments: TripSegment[]): TripSegmentSummary[] {
+  return segments.map((segment) => {
+    const { rows } = segment;
+    const first = rows[0];
+    const last = rows[rows.length - 1];
+    return {
+      rowCount: rows.length,
+      fromMs: first.ts,
+      toMs: last.ts,
+      significant: isSignificantTripSegment(segment),
+      terminated: last.kind === 'trip-end',
+    };
+  });
+}
+
+export type SelectTripSegmentError = 'trip_index_out_of_range';
+
+/**
+ * `segmentTripEvents` 결과(오래된 순) + `--trip-index`(뒤에서부터, 0=최신)로 세그먼트
+ * 1개를 선택한다. 사용자가 명시적으로 index를 지정한 경로 전용 — significance 필터 없이
+ * 전체 세그먼트를 그대로 센다(사용자가 `describeSegments` 출력을 보고 직접 골랐다는 전제).
+ * `tripIndexFromEnd`는 호출 전에 0 이상 정수임이 보장된다(스크립트 인자 파싱 단계에서
+ * 검증) — 그 전제하에 `index`는 항상 `segments.length - 1` 이하이므로 상한 초과 분기는
+ * 존재하지 않는다(#2598 리뷰 — 도달 불가 분기 제거).
+ */
+export function selectTripSegment(
+  segments: TripSegment[],
+  tripIndexFromEnd: number,
+): { segment: TripSegment } | { error: SelectTripSegmentError } {
+  const index = segments.length - 1 - tripIndexFromEnd;
+  if (tripIndexFromEnd < 0 || index < 0) {
+    return { error: 'trip_index_out_of_range' };
+  }
+  return { segment: segments[index] };
+}
+
+export type SelectDefaultTripSegmentError = 'no_significant_segment';
+
+/**
+ * `--trip-index` 미지정 시(기본 선택) 사용 — 가장 최근 세그먼트부터 역순으로 훑어
+ * `isSignificantTripSegment`가 true인 첫 세그먼트를 반환한다(#2598 리뷰 — trip-end만
+ * 남은 파편 잔여 세그먼트가 최신 trip으로 잘못 선택되는 결함 수리). 전 세그먼트가
+ * insignificant면 `no_significant_segment`.
+ */
+export function selectDefaultTripSegment(
+  segments: TripSegment[],
+): { segment: TripSegment } | { error: SelectDefaultTripSegmentError } {
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (isSignificantTripSegment(segments[i])) {
+      return { segment: segments[i] };
+    }
+  }
+  return { error: 'no_significant_segment' };
+}
+
 function utcDateKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/** segment 역 목록 — station이 있는 row에서 첫 등장 순서로 dedup. */
-export function extractSegmentStations(rows: TripEventRow[]): string[] {
-  return dedupInOrder(rows.map((row) => row.station));
+/**
+ * raw station 코드(`2-010`/`7-015` 형식) 패턴 — 역명이 아니라서 `extractSegmentStations`가
+ * 제외 대상 후보로 쓴다(#2598 결함2, 2차 가드 — 1차 규칙은 `kind==='trip-end'` 제외 참고).
+ */
+const STATION_CODE_PATTERN = /^\d+-\d+$/;
+
+export interface SegmentStationsResult {
+  stations: string[];
+  /**
+   * `trip-end`가 아닌 row인데 station 필드가 코드 패턴이었던 건수(#2598 리뷰 — writer-side
+   * root: `trip-end`만이 destination station ID를 station 컬럼에 기록하는 것으로 파악됐으나,
+   * 다른 kind에서도 코드 패턴이 나타나면 그 전제가 깨진 것 — 후속 조사가 필요한 신호라
+   * 조용히 걸러내지 않고 카운트로 노출한다).
+   */
+  suspiciousCodeRowCount: number;
+}
+
+/**
+ * segment 역 목록 — station이 있는 row에서 첫 등장 순서로 dedup.
+ *
+ * 1차 규칙(#2598 리뷰): `kind === 'trip-end'` row를 역명 후보에서 제외한다 — station
+ * 컬럼에 raw 코드(`2-010` 등, destination station ID)를 기록하는 유일한 writer가 trip-end
+ * 경로(`liveActivity.ts`)이기 때문. 근본 원인은 writer 쪽(destination ID를 station 컬럼에
+ * 잘못 기록)이라 별도 후속 수리가 필요 — 본 PR은 소비 측 필터만 수리한다.
+ * 2차 가드: 그 외 kind인데도 코드 패턴인 row는 여전히 제외하되(`STATION_CODE_PATTERN`),
+ * 전제가 깨졌다는 신호이므로 `suspiciousCodeRowCount`로 건수를 보고한다.
+ */
+export function extractSegmentStations(rows: TripEventRow[]): SegmentStationsResult {
+  let suspiciousCodeRowCount = 0;
+  const stations = rows.map((row) => {
+    if (row.kind === 'trip-end') return null;
+    if (row.station !== null && STATION_CODE_PATTERN.test(row.station)) {
+      suspiciousCodeRowCount += 1;
+      return null;
+    }
+    return row.station;
+  });
+  return { stations: dedupInOrder(stations), suspiciousCodeRowCount };
 }
 
 /** 관련 노선 목록 — line이 있는 row에서 첫 등장 순서로 dedup. */
