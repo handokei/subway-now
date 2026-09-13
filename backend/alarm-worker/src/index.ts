@@ -77,7 +77,13 @@ import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled, toSilentPushSsot } from './scheduled';
-import { createSeoulCaptureRecorder, flushSeoulCapture, buildSeoulCaptureKey } from './seoulCapture';
+import {
+  createSeoulCaptureRecorder,
+  flushSeoulCapture,
+  buildSeoulCaptureKey,
+  type SeoulCaptureRecorder,
+  type SeoulCaptureCycle,
+} from './seoulCapture';
 import * as Sentry from '@sentry/cloudflare';
 import {
   addValidateRejectBreadcrumb,
@@ -2973,6 +2979,57 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
   };
 }
 
+/**
+ * #2579 (Epic #2239 P0-a, 리뷰 반영) — seoul-capture recorder를 R2로 flush할지 판정 + 스케줄.
+ * `handler.scheduled`의 정상 완료 경로/throw 경로 양쪽에서 호출된다 — runScheduled가
+ * throw해도 그 cycle의 recorder.entries(RCA에 가장 필요한 실패 cycle)가 유실되지 않도록.
+ *
+ * - `scanned`가 확보된(정상 완료) 경우: `scanned > 0` 게이트로 idle cycle write 0 유지.
+ * - `scanned`가 없는(throw) 경우: 게이트를 `entries.length > 0`만으로 완화 — stats 자체를
+ *   구할 수 없었던 실패 cycle이므로 scanned 게이트를 적용할 수 없다.
+ * - active cycle(scanned>0)인데 entries가 0건이면 캡처 자체가 죽은 blackout 신호이므로
+ *   flush 없이도 관측 가능하도록 로그 1줄을 남긴다.
+ */
+function scheduleSeoulCaptureFlush(
+  env: Env,
+  ctx: ExecutionContext,
+  log: (msg: string, meta?: Record<string, unknown>) => void,
+  cycleStartMs: number,
+  recorder: SeoulCaptureRecorder,
+  scanned: number | undefined,
+): void {
+  if (!env.TELEMETRY_R2) return;
+
+  if (recorder.entries.length === 0) {
+    if (scanned !== undefined && scanned > 0) {
+      log('seoul-capture empty on active cycle', { scanned });
+    }
+    return;
+  }
+
+  // 정상 완료 경로인데 idle(scanned=0)이면 write 0 게이트 유지 (#2073 lesson).
+  if (scanned !== undefined && scanned <= 0) return;
+
+  const cycle: SeoulCaptureCycle = {
+    schemaVersion: 1,
+    cycleStartMs,
+    // throw 경로는 runScheduled stats를 구하지 못해 실 scanned 값을 모른다 — -1 sentinel로
+    // "cycle 실패로 scanned 미확보"를 표시(0과 구분, RCA에서 실패 cycle 식별용).
+    scanned: scanned ?? -1,
+    seoulCalls: recorder.entries.length,
+    entries: recorder.entries,
+    ...(recorder.droppedEntries > 0 ? { droppedEntries: recorder.droppedEntries } : {}),
+  };
+  const r2 = env.TELEMETRY_R2;
+  const key = buildSeoulCaptureKey(cycleStartMs);
+  const bytes = recorder.totalBodyBytes;
+  ctx.waitUntil(
+    flushSeoulCapture(r2, cycle)
+      .then(() => log('seoul-capture flushed', { key, entries: cycle.entries.length, bytes }))
+      .catch((err) => void captureBackendException(env, err, { path: 'scheduled/seoulCapture' })),
+  );
+}
+
 // #2073 — named export(테스트 전용). default export는 Sentry.withSentry HOC로 감싸져 있어
 // `handler.scheduled`를 직접 단위 테스트하려면 HOC를 우회할 진입점이 필요하다.
 export const handler = {
@@ -3025,28 +3082,16 @@ export const handler = {
       });
     } catch (err) {
       void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
+      // #2579 리뷰 — runScheduled가 throw해도 이번 cycle의 seoul-capture entries(RCA에
+      // 가장 필요한 실패 cycle)를 유실하지 않도록 rethrow 전에 flush 스케줄.
+      // scanned를 구하지 못했으므로 scanned 게이트 없이 entries>0이면 flush(함수 내부 처리).
+      scheduleSeoulCaptureFlush(env, ctx, log, cycleStartMs, seoulCaptureRecorder, undefined);
       throw err;
     }
     // #2579 (Epic #2239 P0-a) — active trip이 있던 cycle(scanned>0)에 한해 캡처를 R2로
     // flush. idle cycle write 0 게이트(#2073 lesson 재발 금지). flush 실패는 cron 본
-    // 흐름에 영향을 주면 안 되므로 waitUntil + swallow.
-    if (env.TELEMETRY_R2 && scheduledStats.scanned > 0 && seoulCaptureRecorder.entries.length > 0) {
-      const cycle = {
-        schemaVersion: 1 as const,
-        cycleStartMs,
-        scanned: scheduledStats.scanned,
-        polled: seoulCaptureRecorder.entries.length,
-        entries: seoulCaptureRecorder.entries,
-      };
-      const r2 = env.TELEMETRY_R2;
-      const key = buildSeoulCaptureKey(cycleStartMs);
-      const bytes = cycle.entries.reduce((sum, e) => sum + e.body.length, 0);
-      ctx.waitUntil(
-        flushSeoulCapture(r2, cycle)
-          .then(() => log('seoul-capture flushed', { key, entries: cycle.entries.length, bytes }))
-          .catch((err) => void captureBackendException(env, err, { path: 'scheduled/seoulCapture' })),
-      );
-    }
+    // 흐름에 영향을 주면 안 되므로 waitUntil + swallow (함수 내부 처리).
+    scheduleSeoulCaptureFlush(env, ctx, log, cycleStartMs, seoulCaptureRecorder, scheduledStats.scanned);
     // #2160 (follow-up of #2151) — boardingPrompt counter를 이번 tick의 delta로 누적 KV 키에
     // read-modify-write. delta 전부 0이면 accumulate 함수 내부에서 KV read/write 자체를 skip
     // 한다 — obs-metrics 1h 갱신 게이트와 독립적으로 매분 호출해야 tick 간 delta 유실이 없다

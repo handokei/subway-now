@@ -140,4 +140,62 @@ describe('handler.scheduled — #2579 seoul-capture R2 flush wiring', () => {
 
     expect(flushSeoulCaptureMock).toHaveBeenCalledTimes(1);
   });
+
+  // #2579 리뷰(item 1) — runScheduled throw 시 그 cycle의 recorder.entries(RCA에 가장
+  // 필요한 실패 cycle)가 flush 없이 통째로 버려지던 결함 회귀 테스트.
+  it('runScheduled가 throw해도 그 cycle의 entries를 flush한다 (scanned 게이트 미적용) + rethrow 유지', async () => {
+    const r2 = {} as R2Bucket;
+    const boom = new Error('runScheduled boom');
+    runScheduledMock.mockImplementation(async (_env: Env, deps: { seoul: SeoulArrivalClient }) => {
+      await deps.seoul.fetchArrivals('교대');
+      throw boom;
+    });
+
+    const kv = new InMemoryKV();
+    const ctx = makeExecutionContext();
+    await expect(handler.scheduled(makeScheduledController(), makeEnv(kv, r2), ctx)).rejects.toThrow(
+      'runScheduled boom',
+    );
+    await drainWaitUntil(ctx);
+
+    expect(flushSeoulCaptureMock).toHaveBeenCalledTimes(1);
+    const [, cycle] = flushSeoulCaptureMock.mock.calls[0];
+    expect(cycle.entries).toHaveLength(1);
+    // scanned를 구하지 못한 throw 경로 — -1 sentinel로 "cycle 실패" 표시(0=idle과 구분).
+    expect(cycle.scanned).toBe(-1);
+  });
+
+  it('runScheduled가 throw했지만 entries가 0건이면 flush하지 않는다', async () => {
+    const r2 = {} as R2Bucket;
+    runScheduledMock.mockRejectedValue(new Error('boom before any fetch'));
+
+    const kv = new InMemoryKV();
+    const ctx = makeExecutionContext();
+    await expect(handler.scheduled(makeScheduledController(), makeEnv(kv, r2), ctx)).rejects.toThrow(
+      'boom before any fetch',
+    );
+    await drainWaitUntil(ctx);
+
+    expect(flushSeoulCaptureMock).not.toHaveBeenCalled();
+  });
+
+  // #2579 리뷰(item 5) — active cycle(scanned>0)인데 캡처 0건이면 캡처 자체가 죽은 blackout
+  // 신호이므로 flush 없이도 관측 가능하도록 로그 1줄을 남긴다.
+  it('scanned>0 인데 entries=0(캡처 blackout)이면 flush 없이 관측 로그를 남긴다', async () => {
+    const r2 = {} as R2Bucket;
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    runScheduledMock.mockImplementation(async () => baseScheduledStats({ scanned: 1 }));
+
+    const kv = new InMemoryKV();
+    const ctx = makeExecutionContext();
+    await handler.scheduled(makeScheduledController(), makeEnv(kv, r2), ctx);
+    await drainWaitUntil(ctx);
+
+    expect(flushSeoulCaptureMock).not.toHaveBeenCalled();
+    const loggedEmptyMsg = consoleLogSpy.mock.calls.some((call) =>
+      String(call[0]).includes('seoul-capture empty on active cycle'),
+    );
+    expect(loggedEmptyMsg).toBe(true);
+    consoleLogSpy.mockRestore();
+  });
 });

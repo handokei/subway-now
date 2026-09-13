@@ -10,6 +10,7 @@
  *
  * 캡처는 순수 관찰자다: 실패해도 cron 본 흐름(push 발사)에 영향을 주면 안 된다.
  */
+import { SEOUL_ARRIVAL_PATH_SEGMENT, SEOUL_POSITION_PATH_SEGMENT } from './seoul';
 
 /** capture cycle 파일 스키마 v1 — P0-b 번들러/P0-c 재생 하네스가 공유. */
 export interface SeoulCaptureEntry {
@@ -33,23 +34,30 @@ export interface SeoulCaptureCycle {
   schemaVersion: 1;
   cycleStartMs: number;
   scanned: number;
-  polled: number;
+  /** 이번 cycle에서 캡처된 Seoul API 호출(entries) 수 — ScheduledStats.polled(락 활성 trip 수)와 의미가 달라 별도 명명 (#2579 리뷰). */
+  seoulCalls: number;
   entries: SeoulCaptureEntry[];
+  /** entries 개수 상한 또는 body 바이트 상한으로 온전히 캡처되지 못한 건수. 0/undefined면 무손실. */
+  droppedEntries?: number;
 }
 
 export interface SeoulCaptureRecorder {
   /** base fetch를 감싼 recording fetch — SeoulArrivalClient의 fetchImpl로 주입한다. */
   fetchImpl: typeof fetch;
   entries: SeoulCaptureEntry[];
+  /** 지금까지 캡처된 body의 UTF-8 바이트 합계. index.ts log의 `bytes`가 재계산 대신 이 값을 쓴다. */
+  totalBodyBytes: number;
+  /** entries 상한/byte 상한으로 온전히 캡처되지 못한 건수 (silent drop 관측용, #2579 리뷰). */
+  droppedEntries: number;
 }
 
 /** entries 개수 상한 — 이후 요청은 위임만 하고 캡처하지 않는다. */
 const MAX_ENTRIES = 200;
-/** body 바이트 합계 상한 — 초과분은 body를 비우고 truncated 마킹. */
+/** body 바이트(UTF-8) 합계 상한 — 초과분은 body를 비우고 truncated 마킹. */
 const MAX_TOTAL_BODY_BYTES = 4 * 1024 * 1024;
 
-const ARRIVAL_URL_PATTERN = /\/realtimeStationArrival\/[^/]+\/[^/]+\/([^/?]+)/;
-const POSITION_URL_PATTERN = /\/realtimePosition\/[^/]+\/[^/]+\/([^/?]+)/;
+const ARRIVAL_URL_PATTERN = new RegExp(`/${SEOUL_ARRIVAL_PATH_SEGMENT}/[^/]+/[^/]+/([^/?]+)`);
+const POSITION_URL_PATTERN = new RegExp(`/${SEOUL_POSITION_PATH_SEGMENT}/[^/]+/[^/]+/([^/?]+)`);
 
 function classifyUrl(url: string): { kind: 'arrival' | 'position'; target: string } | null {
   const arrivalMatch = url.match(ARRIVAL_URL_PATTERN);
@@ -67,6 +75,10 @@ function maskApiKey(url: string, apiKey: string): string {
   return apiKey ? url.split(apiKey).join('***') : url;
 }
 
+function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
 /**
  * base fetch를 감싼 recording fetchImpl을 만든다. `SeoulArrivalClient`의 `fetchImpl`
  * 옵션으로 주입하면 cron cycle 동안의 모든 Seoul API 요청/응답이 `entries`에 쌓인다.
@@ -75,10 +87,13 @@ function maskApiKey(url: string, apiKey: string): string {
  *   요청 형태를 억지로 분류하지 않는다).
  * - fetch 자체가 throw해도(네트워크 오류 등) status=0, body=''로 entry를 남기고 원래
  *   예외를 그대로 재throw한다 — 캡처가 seoul.ts의 에러 핸들링을 바꾸면 안 된다.
+ * - body 바이트 예산이 이미 소진된 상태면 clone/text 디코드 자체를 건너뛰고 곧장
+ *   truncated entry를 남긴다(불필요한 디코드 비용 회피, #2579 리뷰).
  */
 export function createSeoulCaptureRecorder(apiKey: string, now: () => number = Date.now): SeoulCaptureRecorder {
   const entries: SeoulCaptureEntry[] = [];
   let totalBodyBytes = 0;
+  let droppedEntries = 0;
 
   const fetchImpl: typeof fetch = async (input, init) => {
     // seoul.ts는 fetchImpl을 항상 plain string URL로 호출한다(RequestInfo/URL 형태는
@@ -98,39 +113,64 @@ export function createSeoulCaptureRecorder(apiKey: string, now: () => number = D
     } catch (err) {
       if (entries.length < MAX_ENTRIES) {
         entries.push({ tMs, ...classified, url: maskedUrl, status: 0, body: '' });
+      } else {
+        droppedEntries += 1;
       }
       throw err;
     }
 
-    if (entries.length < MAX_ENTRIES) {
-      const cloned = response.clone();
-      let body = '';
-      let truncated = false;
-      try {
-        body = await cloned.text();
-      } catch {
-        body = '';
-      }
-      if (totalBodyBytes + body.length > MAX_TOTAL_BODY_BYTES) {
-        body = '';
-        truncated = true;
-      } else {
-        totalBodyBytes += body.length;
-      }
-      entries.push({
-        tMs,
-        ...classified,
-        url: maskedUrl,
-        status: response.status,
-        body,
-        ...(truncated ? { truncated: true } : {}),
-      });
+    if (entries.length >= MAX_ENTRIES) {
+      droppedEntries += 1;
+      return response;
     }
+
+    if (totalBodyBytes >= MAX_TOTAL_BODY_BYTES) {
+      // budget 이미 소진 — clone/text 디코드를 생략하고 곧장 truncated entry.
+      entries.push({ tMs, ...classified, url: maskedUrl, status: response.status, body: '', truncated: true });
+      droppedEntries += 1;
+      return response;
+    }
+
+    const cloned = response.clone();
+    let body = '';
+    try {
+      body = await cloned.text();
+    } catch {
+      body = '';
+    }
+
+    let truncated = false;
+    const bodyBytes = utf8ByteLength(body);
+    if (totalBodyBytes + bodyBytes > MAX_TOTAL_BODY_BYTES) {
+      body = '';
+      truncated = true;
+      droppedEntries += 1;
+    } else {
+      totalBodyBytes += bodyBytes;
+    }
+
+    entries.push({
+      tMs,
+      ...classified,
+      url: maskedUrl,
+      status: response.status,
+      body,
+      ...(truncated ? { truncated: true } : {}),
+    });
 
     return response;
   };
 
-  return { fetchImpl, entries };
+  return {
+    fetchImpl,
+    entries,
+    get totalBodyBytes() {
+      return totalBodyBytes;
+    },
+    get droppedEntries() {
+      return droppedEntries;
+    },
+  };
 }
 
 /** R2 key prefix. */
