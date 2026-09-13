@@ -181,13 +181,25 @@ export function createSeoulCaptureRecorder(apiKey: string, now: () => number = D
 /** R2 key prefix. */
 export const SEOUL_CAPTURE_KEY_PREFIX = 'seoul-capture/';
 
-function utcDateKey(ms: number): string {
+/** UTC 날짜 key(`YYYY-MM-DD`) — #2592 admin/seoul-capture/keys의 날짜 prefix 분할이 재사용. */
+export function utcDateKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
 /** R2 key 포맷을 caller(index.ts log 호출)와 공유하기 위한 export. */
 export function buildSeoulCaptureKey(cycleStartMs: number): string {
   return `${SEOUL_CAPTURE_KEY_PREFIX}${utcDateKey(cycleStartMs)}/${cycleStartMs}.json`;
+}
+
+/**
+ * `buildSeoulCaptureKey`의 역함수 — key basename(`{cycleStartMs}.json`)에서 cycleStartMs를
+ * 파싱한다. 포맷 불일치(basename이 숫자.json이 아님)면 null (#2592).
+ */
+export function parseSeoulCaptureKey(key: string): number | null {
+  const match = key.match(/\/(\d+)\.json$/);
+  if (!match) return null;
+  const ms = Number(match[1]);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /**

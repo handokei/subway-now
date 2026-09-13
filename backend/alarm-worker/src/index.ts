@@ -81,10 +81,10 @@ import {
   createSeoulCaptureRecorder,
   flushSeoulCapture,
   buildSeoulCaptureKey,
-  SEOUL_CAPTURE_KEY_PREFIX,
   type SeoulCaptureRecorder,
   type SeoulCaptureCycle,
 } from './seoulCapture';
+import { parseSeoulCaptureRangeQuery, listSeoulCaptureKeys } from './seoulCaptureKeys';
 import * as Sentry from '@sentry/cloudflare';
 import {
   addValidateRejectBreadcrumb,
@@ -465,65 +465,6 @@ app.get('/admin/alarm-log-stats', async (c) => {
   return c.json(stats);
 });
 
-const SEOUL_CAPTURE_KEYS_MAX_RESULTS = 5000;
-
-/**
- * seoul-capture R2 object key basename(`{cycleStartMs}.json`)에서 cycleStartMs를 파싱한다.
- * 매칭 실패(포맷 불일치)면 null.
- */
-function parseSeoulCaptureCycleStartMs(key: string): number | null {
-  const match = key.match(/\/(\d+)\.json$/);
-  if (!match) return null;
-  const ms = Number(match[1]);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-/** UTC 날짜 key(`YYYY-MM-DD`) — `seoulCapture.ts`의 동명 비export 함수와 동일 포맷. */
-function utcDateKeyFromMs(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-/** from~to(둘 다 epoch ms)가 걸치는 UTC 날짜 key 목록(포함) — 하루 단위 prefix 분할용. */
-function enumerateUtcDateKeys(fromMs: number, toMs: number): string[] {
-  const MS_PER_DAY = 24 * 60 * 60 * 1000;
-  const startDay = Math.floor(fromMs / MS_PER_DAY) * MS_PER_DAY;
-  const endDay = Math.floor(toMs / MS_PER_DAY) * MS_PER_DAY;
-  const dateKeys: string[] = [];
-  for (let day = startDay; day <= endDay; day += MS_PER_DAY) {
-    dateKeys.push(utcDateKeyFromMs(day));
-  }
-  return dateKeys;
-}
-
-/**
- * `seoul-capture/` prefix(들)를 페이지네이션으로 전체 순회하며 [from, to] 범위의
- * cycleStartMs를 가진 key만 matched에 누적한다. matched가 상한을 넘으면 즉시 'too_wide'.
- */
-async function scanSeoulCaptureKeys(
-  r2: R2Bucket,
-  prefixes: string[],
-  from: number | undefined,
-  to: number | undefined,
-): Promise<{ keys: string[] } | { tooWide: true }> {
-  const matched: string[] = [];
-  for (const prefix of prefixes) {
-    let cursor: string | undefined;
-    do {
-      const result = await r2.list({ prefix, cursor, limit: 1000 });
-      for (const obj of result.objects) {
-        const cycleStartMs = parseSeoulCaptureCycleStartMs(obj.key);
-        if (cycleStartMs === null) continue;
-        if (from !== undefined && cycleStartMs < from) continue;
-        if (to !== undefined && cycleStartMs > to) continue;
-        matched.push(obj.key);
-        if (matched.length > SEOUL_CAPTURE_KEYS_MAX_RESULTS) return { tooWide: true };
-      }
-      cursor = result.truncated ? result.cursor : undefined;
-    } while (cursor);
-  }
-  return { keys: matched };
-}
-
 /**
  * #2592 (Epic #2239 P1 후속) — seoul-capture R2 캡처 key 목록 조회 endpoint.
  *
@@ -531,7 +472,8 @@ async function scanSeoulCaptureKeys(
  * list-objects` + R2 S3 호환 API 토큰이 필요했다. wrangler에는 `r2 object list`가
  * 없고(4.131 확인) 사용자에게 별도 R2 토큰 발급을 요구하는 건 불필요한 마찰이라, worker
  * 자신의 TELEMETRY_R2 바인딩으로 목록만 읽어 반환한다(객체 본문은 반환하지 않음 —
- * 다운로드는 `wrangler r2 object get --remote` 그대로 유지).
+ * 다운로드는 `wrangler r2 object get --remote` 그대로 유지). 스캔 로직은 `seoulCaptureKeys.ts`
+ * (단위테스트도 그쪽에 위치) — 라우트는 위임만 한다.
  *
  * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
  * Query: `?from=<epochMs>&to=<epochMs>` — 둘 다 선택. 미지정 시 전체 범위.
@@ -540,8 +482,8 @@ async function scanSeoulCaptureKeys(
  *   "https://<worker>/admin/seoul-capture/keys?from=1757750000000&to=1757760000000"
  *
  * Response 200: `{ keys: string[], count: number }`
- * Response 400: `{ error: 'invalid_range' }` — from/to가 비숫자이거나 from > to.
- * Response 400: `{ error: 'range_too_wide' }` — 매칭 key가 5000개 초과.
+ * Response 400: `{ error: 'invalid_range' }` — from/to가 비숫자(공백 포함)이거나 from > to.
+ * Response 400: `{ error: 'range_too_wide' }` — from~to 걸치는 날짜 45일 초과 또는 매칭 key 5000개 초과.
  * Response 401/503: 인증/binding 정책 동일 (TELEMETRY_R2 미바인딩 시 503).
  */
 app.get('/admin/seoul-capture/keys', async (c) => {
@@ -550,27 +492,11 @@ app.get('/admin/seoul-capture/keys', async (c) => {
   const r2 = c.env.TELEMETRY_R2;
   if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
 
-  const fromRaw = c.req.query('from');
-  const toRaw = c.req.query('to');
-  const from = fromRaw === undefined ? undefined : Number(fromRaw);
-  const to = toRaw === undefined ? undefined : Number(toRaw);
-  if (
-    (fromRaw !== undefined && !Number.isFinite(from)) ||
-    (toRaw !== undefined && !Number.isFinite(to)) ||
-    (from !== undefined && to !== undefined && from > to)
-  ) {
-    return c.json({ error: 'invalid_range' }, 400);
-  }
+  const range = parseSeoulCaptureRangeQuery(c.req.query('from'), c.req.query('to'));
+  if ('error' in range) return c.json({ error: range.error }, 400);
 
-  const prefixes =
-    from !== undefined && to !== undefined
-      ? enumerateUtcDateKeys(from, to).map((dateKey) => `${SEOUL_CAPTURE_KEY_PREFIX}${dateKey}/`)
-      : [SEOUL_CAPTURE_KEY_PREFIX];
-
-  const result = await scanSeoulCaptureKeys(r2, prefixes, from, to);
-  if ('tooWide' in result) {
-    return c.json({ error: 'range_too_wide' }, 400);
-  }
+  const result = await listSeoulCaptureKeys(r2, range.from, range.to);
+  if ('error' in result) return c.json({ error: result.error }, 400);
   return c.json({ keys: result.keys, count: result.keys.length });
 });
 
