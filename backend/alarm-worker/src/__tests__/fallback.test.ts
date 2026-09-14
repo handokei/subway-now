@@ -1,11 +1,23 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FALLBACK_THRESHOLD_MS, runFallbackPushes } from '../fallback';
+import {
+  FALLBACK_ALERT_COLLAPSE_ID_PREFIX,
+  FALLBACK_THRESHOLD_MS,
+  fallbackAlertCollapseId,
+  runFallbackPushes,
+} from '../fallback';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
 import { putTrip } from '../trips';
 import type { Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 import { makeTripFixture } from './helpers/testFixtures';
+
+function makeMockDb(): D1Database & { bind: ReturnType<typeof vi.fn> } {
+  const run = vi.fn().mockResolvedValue({ success: true });
+  const bind = vi.fn().mockReturnValue({ run });
+  const prepare = vi.fn().mockReturnValue({ bind });
+  return { prepare, bind } as unknown as D1Database & { bind: typeof bind };
+}
 
 let privateKeyPem = '';
 beforeAll(async () => {
@@ -389,6 +401,79 @@ describe('runFallbackPushes (#572 P2c)', () => {
         now: () => NOW,
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(stats.pushed).toBe(1);
+    });
+  });
+
+  describe('#2610 — RCA-A: collapseId 전달 + D1 계측', () => {
+    it('fallbackAlertCollapseId는 trip+station 단위 결정적 id를 만든다', () => {
+      const entry = makeEntry({ tripToken: 'tok-collapse-1234567890', stationName: '강남' });
+      expect(fallbackAlertCollapseId(entry)).toBe(
+        `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}tok-collapse-123-강남`,
+      );
+    });
+
+    it('tripToken 누락(구 entry)이면 device token으로 대체', () => {
+      const entry = makeEntry({ stationName: '강남' });
+      const { tripToken: _tripToken, ...withoutTripToken } = entry;
+      expect(fallbackAlertCollapseId(withoutTripToken as PendingPush)).toBe(
+        `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}devicetoken-hex-강남`,
+      );
+    });
+
+    it('alert 발사 시 apns-collapse-id 헤더를 전달한다', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-collapse', tripToken: 'tok-collapse', stationName: '강남' }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await runFallbackPushes(makeEnv(kv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const headers = init.headers as Record<string, string>;
+      expect(headers['apns-collapse-id']).toBe(`${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}tok-collapse-강남`);
+    });
+
+    it('fallback 발사 시 D1 trip_events에 fallback-alert-fired kind를 기록한다', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-d1', tripToken: 'tok-d1', stationName: '강남' }),
+      );
+      const db = makeMockDb();
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      await runFallbackPushes(
+        { ...makeEnv(kv), DB: db },
+        {
+          apnsConfig: apnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          now: () => NOW,
+        },
+      );
+      expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO trip_events'));
+      expect(db.bind).toHaveBeenCalledWith(
+        expect.any(String),
+        NOW,
+        'fallback-alert-fired',
+        '강남',
+        null,
+        JSON.stringify({ pushId: 'p-d1', ageMs: FALLBACK_THRESHOLD_MS }),
+      );
+    });
+
+    it('DB 미바인딩이면 D1 계측 없이 정상 발사(graceful no-op)', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-no-db' }));
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runFallbackPushes(makeEnv(kv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
       expect(stats.pushed).toBe(1);
     });
   });

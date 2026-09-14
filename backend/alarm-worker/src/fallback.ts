@@ -33,6 +33,8 @@ import { buildAlertContent } from './alertContent';
 import { listPending, removePending, type PendingPush } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
 import { isBoardingLockActive } from './scheduled';
+import { hashTripToken } from './sentry';
+import { recordTripEvent } from './tripEventLog';
 import { getTrip } from './trips';
 import type { ApnsEnv, Env } from './types';
 
@@ -94,11 +96,25 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
       continue;
     }
 
+    const ageMs = Math.max(0, now - entry.sentAt);
     log('alert fallback fire', {
       pushId: entry.pushId,
       station: entry.stationName,
-      ageMs: Math.max(0, now - entry.sentAt),
+      ageMs,
     });
+    // #2610 (RCA-A) — fallback 발사 계측. KV(pending)는 발사 후 즉시 삭제되어 사후 추적이
+    // 불가능했다 — D1 trip_events에 append-only로 남겨 pile(같은 station 반복 발사) 재발 시
+    // wrangler d1 조회만으로 즉시 확정할 수 있게 한다.
+    await recordTripEvent(
+      env.DB,
+      {
+        tokenHash: hashTripToken(entry.tripToken ?? entry.token),
+        kind: 'fallback-alert-fired',
+        station: entry.stationName,
+        meta: { pushId: entry.pushId, ageMs },
+      },
+      now,
+    );
     const result = await sendOneFallback(entry, deps);
     if (result.ok) {
       stats.pushed += 1;
@@ -162,6 +178,29 @@ async function isStaleIntermediateWhileLocked(
 }
 
 /**
+ * #2610 (RCA-A) — fallback alert `apns-collapse-id` prefix.
+ * silent → alert fallback 자체가 "원본 alert 없이 새로 뜨는 독립 알림"이라 collapseId가
+ * 없었다. lockless intermediate cron이 같은 station을 반복 등록하면(leg-2 매 cycle) fallback도
+ * 반복 발사돼 알림센터에 이중·삼중 적층한다(2026-09-14 06:48:37 4건 정체 관측 — RCA-A).
+ * trip+station 단위로 collapse해 재발사가 이전 것을 알림센터에서 교체하게 한다.
+ * station-notif(`stationNotifCollapseId`, scheduled.ts, prefix `station-`)와 다른 네임스페이스를
+ * 쓴다 — 서로 다른 알림 종류(무소리 매역 통과 vs visible fallback)가 우발적으로 서로를
+ * 교체해버리는 충돌을 피하기 위함.
+ */
+export const FALLBACK_ALERT_COLLAPSE_ID_PREFIX = 'fallback-alert-';
+
+/**
+ * fallback alert collapseId 빌더. `entry.tripToken`이 없는 구 entry(#2522 이전 putPending)는
+ * device token(`entry.token`)으로 대체 — 유니크성은 유지되고, 해당 legacy entry는 KV
+ * TTL(120s) 내 자연 소멸이라 영향 범위가 제한적이다. `slice(0, 16)`은 station-notif/
+ * prepare-alarm과 동일 패턴(APNs `apns-collapse-id` 64B 한도 방어).
+ */
+export function fallbackAlertCollapseId(entry: PendingPush): string {
+  const identity = entry.tripToken ?? entry.token;
+  return `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}${identity.slice(0, 16)}-${entry.stationName}`;
+}
+
+/**
  * 한 pending entry를 alert로 발사한다.
  * intermediate kind는 phase 무관 단일 본문 — alertContent의 discriminated union이 강제.
  */
@@ -185,6 +224,7 @@ async function sendOneFallback(
     title: content.title,
     body: content.body,
     pushId: entry.pushId,
+    collapseId: fallbackAlertCollapseId(entry),
     config: deps.apnsConfig,
     host: deps.apnsHosts[env],
     fetchImpl: deps.fetchImpl,
