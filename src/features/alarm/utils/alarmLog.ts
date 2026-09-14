@@ -813,17 +813,21 @@ export function logFiredAlarmsTripBoundaryReset(input: {
 }
 
 export function logSuppressedDedupStation(source: AlarmLogSource, station: Station): void {
-  // #2618 — 60s TTL(DEDUP_SUPPRESS_ENTRY_TTL_MS)로 확장. 버퍼 엔트리 적재만 억제 — 카운터
-  // 산출 로직(summarizeAlarmLogByReason/Counters)은 무변경.
-  if (isBurstDuplicate('dedup-station', station.name, DEDUP_SUPPRESS_ENTRY_TTL_MS)) return;
-  appendAlarmLog({
-    ts: Date.now(),
-    source,
-    outcome: 'suppressed',
-    reason: 'dedup-station',
-    stationName: station.name,
-    kind: 'station-passed',
-  });
+  // #2618 — 60s TTL(DEDUP_SUPPRESS_ENTRY_TTL_MS) 내 재발생은 drop 대신 count 증분
+  // (appendOrIncrementDedupEntry). 키에 source 포함 — source 미포함 시 fg가 bg-scheduled의
+  // dedup 로그를 가리는 교차 은폐(cross-source masking)가 발생한다(리뷰 지적).
+  appendOrIncrementDedupEntry(
+    `dedup-station|${source}|${station.name}`,
+    DEDUP_SUPPRESS_ENTRY_TTL_MS,
+    () => ({
+      ts: Date.now(),
+      source,
+      outcome: 'suppressed',
+      reason: 'dedup-station',
+      stationName: station.name,
+      kind: 'station-passed',
+    }),
+  );
 }
 
 /**
@@ -893,9 +897,9 @@ export function _resetRefMismatchWindowForTests(): void {
  * 평가될 때 한쪽이 다른 쪽을 silence하지 않게 (실제 firedAlarms도 type까지 구분함).
  *
  * #2618 — 24분 실측에서 dedup-alarm이 반복 적재돼 RCA 유효 이벤트를 밀어내는 것을 관측.
- * 전용 Map(옛 `lastDedupLogTs`)을 제거하고 공용 `isBurstDuplicate`(DEDUP_SUPPRESS_ENTRY_TTL_MS
- * = 60s)로 통합 — 버퍼 엔트리 적재만 억제하고 summarizeAlarmLogByReason/Counters 산출 로직은
- * 무변경(버퍼에 실제로 쌓인 엔트리 기준 그대로 집계).
+ * 전용 Map(옛 `lastDedupLogTs`)을 제거하고 60s TTL 내 재발생은 drop 대신 count 증분
+ * (`appendOrIncrementDedupEntry`, 리뷰 fix) — 버퍼 점령은 억제하되 Suppress Reasons/
+ * Counters 산출 로직(summarizeAlarmLogByReason/Counters)은 무변경, 관측 손실 없음.
  */
 export const DEDUP_LOG_WINDOW_MS = 5_000;
 
@@ -903,22 +907,24 @@ export function logSuppressedDedupAlarm(
   source: AlarmLogSource,
   event: Pick<AlarmEvent, 'phaseId' | 'type' | 'stationName'>,
 ): void {
-  const key = `${source}|${event.type}|${event.phaseId}|${event.stationName}`;
-  if (isBurstDuplicate('dedup-alarm', key, DEDUP_SUPPRESS_ENTRY_TTL_MS)) return;
-  appendAlarmLog({
-    ts: Date.now(),
-    source,
-    outcome: 'suppressed',
-    reason: 'dedup-alarm',
-    stationName: event.stationName,
-    kind: event.type,
-    phaseId: event.phaseId,
-  });
+  appendOrIncrementDedupEntry(
+    `dedup-alarm|${source}|${event.type}|${event.phaseId}|${event.stationName}`,
+    DEDUP_SUPPRESS_ENTRY_TTL_MS,
+    () => ({
+      ts: Date.now(),
+      source,
+      outcome: 'suppressed',
+      reason: 'dedup-alarm',
+      stationName: event.stationName,
+      kind: event.type,
+      phaseId: event.phaseId,
+    }),
+  );
 }
 
-/** 테스트용 — 윈도우 캐시 리셋. #2618 이후 lastBurstSuppressTs로 통합돼 그 clear를 위임한다. */
+/** 테스트용 — 윈도우 캐시 리셋. #2618 이후 dedupEntryTrackers로 통합돼 그 clear를 위임한다. */
 export function _resetDedupAlarmWindowForTests(): void {
-  _resetBurstSuppressWindowForTests();
+  _resetDedupEntryTrackersForTests();
 }
 
 /**
@@ -973,6 +979,100 @@ function isBurstDuplicate(
 /** 테스트용 — burst dedup 윈도우 캐시 리셋. */
 export function _resetBurstSuppressWindowForTests(): void {
   lastBurstSuppressTs.clear();
+}
+
+/**
+ * #2618 (리뷰 fix) — dedup-station/dedup-alarm 전용: TTL 내 동일 키 재발생 시 drop 대신
+ * count 증분.
+ *
+ * `appendAlarmLog`의 #1024 inline counter(직전 pendingEntry와 시그니처가 같으면 count++)는
+ * flush 주기(최대 FLUSH_MAX_DELAY_MS=5s) 안에서만 동작한다. dedup-station/dedup-alarm은
+ * 실측상 재발생 간격이 수십 초 단위라 대부분 flush 이후 도착 — isBurstDuplicate로 단순
+ * drop하면 그 재발생은 Suppress Reasons/Counters 어디에도 반영되지 않고 사라진다(관측 손실).
+ *
+ * 이 helper는 (a) 아직 flush되지 않고 `pendingEntries`에 남아있으면 해당 entry를 in-place로
+ * mutate(count++/ts 갱신) — flush 시 자연히 반영, (b) 이미 flush돼 storage에만 있으면
+ * 최근 매칭 entry를 찾아 count/ts를 직접 patch한다(fire-and-forget, `flushInFlight`가 있으면
+ * 먼저 대기해 같은 storage 키에 대한 RMW 충돌 가능성을 줄인다 — best-effort, 카운터 성격상
+ * 완벽한 직렬화는 요구하지 않는다).
+ */
+interface DedupEntryMatch {
+  source: AlarmLogSource;
+  reason: AlarmLogReason;
+  kind?: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+  stationName?: string;
+}
+
+function matchesDedupEntry(entry: AlarmLogEntry, match: DedupEntryMatch): boolean {
+  return (
+    entry.source === match.source &&
+    entry.reason === match.reason &&
+    entry.kind === match.kind &&
+    entry.phaseId === match.phaseId &&
+    entry.stationName === match.stationName
+  );
+}
+
+async function incrementPersistedDedupEntry(match: DedupEntryMatch): Promise<void> {
+  if (flushInFlight) await flushInFlight;
+  try {
+    const raw = await AsyncStorage.getItem(ALARM_LOG_KEY);
+    if (!raw) return;
+    const existing: AlarmLogEntry[] = safeParse(raw);
+    for (let i = existing.length - 1; i >= 0; i--) {
+      if (matchesDedupEntry(existing[i], match)) {
+        existing[i].count = (existing[i].count ?? 1) + 1;
+        existing[i].ts = Date.now();
+        await AsyncStorage.setItem(ALARM_LOG_KEY, JSON.stringify(existing));
+        return;
+      }
+    }
+  } catch (e) {
+    logger.error('suppress entry count 증분 실패:', e);
+  }
+}
+
+const dedupEntryTrackers = new Map<string, { ts: number; match: DedupEntryMatch }>();
+
+function appendOrIncrementDedupEntry(
+  key: string,
+  windowMs: number,
+  buildEntry: () => AlarmLogEntry,
+): void {
+  const now = Date.now();
+  const tracked = dedupEntryTrackers.get(key);
+  // 창 anchor(tracked.ts)는 최초 발생 시각으로 고정 — isBurstDuplicate 원 시맨틱과 동일하게
+  // 재발생마다 ts를 갱신(sliding window)하지 않는다. sliding이면 재발생이 끊이지 않는 한
+  // 창이 영원히 만료되지 않아 60s 이후에도 새 entry가 생성되지 않는 회귀가 생긴다.
+  if (tracked && now - tracked.ts < windowMs) {
+    const pendingMatch = pendingEntries.find((e) => matchesDedupEntry(e, tracked.match));
+    if (pendingMatch) {
+      pendingMatch.count = (pendingMatch.count ?? 1) + 1;
+      pendingMatch.ts = now;
+    } else {
+      void incrementPersistedDedupEntry(tracked.match);
+    }
+    return;
+  }
+  const entry = buildEntry();
+  dedupEntryTrackers.set(key, {
+    ts: now,
+    match: {
+      source: entry.source,
+      // dedup-station/dedup-alarm 빌더는 항상 reason을 명시하므로 non-null 단언 없이 캐스팅.
+      reason: entry.reason as AlarmLogReason,
+      kind: entry.kind,
+      phaseId: entry.phaseId,
+      stationName: entry.stationName,
+    },
+  });
+  appendAlarmLog(entry);
+}
+
+/** 테스트용 — dedupEntryTrackers 캐시 리셋. */
+export function _resetDedupEntryTrackersForTests(): void {
+  dedupEntryTrackers.clear();
 }
 
 /**
@@ -1091,16 +1191,19 @@ export function _resetFusionPickerTierWindowForTests(): void {
  * #1545 (S12) — trip 종료 시 dedup 윈도우 Map을 모두 클리어.
  *
  * 사용자가 직전 trip에서 동일 destination/같은 phaseId를 가진 새 trip을 즉시 시작하면,
- * 윈도우 안의 lastBurstSuppressTs(#2618부터 dedup-alarm도 통합) / lastRefMismatchTs 엔트리가
- * 새 trip의 정상 신호를 silence할 수 있다. trip 경계에서 두 Map을 함께 비워 다음
- * trip이 깨끗한 상태로 시작하도록 보장. `TRIP_BOUND_CLEANUPS`에 wiring (BG silent push
- * trip-ended 경로 + FG setDestination(null/switch) 양쪽 커버).
+ * 윈도우 안의 lastBurstSuppressTs / lastRefMismatchTs / dedupEntryTrackers(#2618, dedup-station·
+ * dedup-alarm TTL 추적) 엔트리가 새 trip의 정상 신호를 silence할 수 있다. trip 경계에서
+ * 세 Map을 함께 비워 다음 trip이 깨끗한 상태로 시작하도록 보장. `TRIP_BOUND_CLEANUPS`에
+ * wiring (BG silent push trip-ended 경로 + FG setDestination(null/switch) 양쪽 커버).
  *
  * 멱등 — 빈 Map에서도 graceful no-op.
  */
 export function clearAlarmLogWindows(): Promise<void> {
   lastRefMismatchTs.clear();
   lastBurstSuppressTs.clear();
+  // #2618 (리뷰 fix) — dedup-station/dedup-alarm TTL 추적이 dedupEntryTrackers로 이전됨에
+  // 따라 trip 경계 clear 대상에도 포함한다.
+  dedupEntryTrackers.clear();
   return Promise.resolve();
 }
 

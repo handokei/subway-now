@@ -1388,14 +1388,21 @@ function formatBufferAgeSuffix(args: BuildDumpArgs): string {
  * #2618 — BG task heartbeat 1줄 표시. alarmLog ring 적재(bg-task-heartbeat source)를
  * 폐지하고 AsyncStorage 단일 키로 전환한 뒤에도 "BG task가 죽지 않았다" 생존 확인은
  * 보존해야 하므로 DebugModal에 "마지막 BG heartbeat: N초 전" 1줄로 노출한다.
+ *
+ * #2618 (리뷰 fix) — 포맷을 share dump builder(buildBgHeartbeatSection)와 JSX 렌더가
+ * 공유하는 단일 함수로 뽑았다. 이전엔 두 곳이 각자 accuracy null 처리를 다르게 해
+ * 표기가 발산했다(JSX는 괄호 자체를 생략, dump는 '(accuracy=-)'로 표기).
  */
+function formatBgHeartbeatLine(snapshot: BgTaskHeartbeatSnapshot, nowMs: number): string {
+  const ageSec = Math.max(0, Math.round((nowMs - snapshot.ts) / 1000));
+  const acc = snapshot.acc != null ? `${Math.round(snapshot.acc)}m` : '-';
+  return `마지막 BG heartbeat: ${ageSec}초 전 (accuracy=${acc})`;
+}
+
 function buildBgHeartbeatSection(args: BuildDumpArgs): string[] {
   const snapshot = args.bgTaskLastHeartbeat;
   if (!snapshot) return ['(no BG heartbeat)'];
-  const now = args.nowMs ?? Date.now();
-  const ageSec = Math.max(0, Math.round((now - snapshot.ts) / 1000));
-  const acc = snapshot.acc != null ? `${Math.round(snapshot.acc)}m` : '-';
-  return [`마지막 BG heartbeat: ${ageSec}초 전 (accuracy=${acc})`];
+  return [formatBgHeartbeatLine(snapshot, args.nowMs ?? Date.now())];
 }
 
 function buildBoardingLockDriftLogSection(args: BuildDumpArgs): string[] {
@@ -3052,11 +3059,7 @@ function DebugModalInner({
           <Section title="BG Heartbeat" colors={colors}>
             {bgTaskLastHeartbeat ? (
               <Text style={[typography.mono, { color: colors.ink }]} testID="debug-bg-heartbeat">
-                마지막 BG heartbeat:{' '}
-                {Math.max(0, Math.round((Date.now() - bgTaskLastHeartbeat.ts) / 1000))}초 전
-                {bgTaskLastHeartbeat.acc != null
-                  ? ` (accuracy=${Math.round(bgTaskLastHeartbeat.acc)}m)`
-                  : ''}
+                {formatBgHeartbeatLine(bgTaskLastHeartbeat, Date.now())}
               </Text>
             ) : (
               <Text
@@ -4111,8 +4114,9 @@ export const __test__ = {
   formatFusionDebugLine,
   formatBoardingLockDriftLine,
   buildBoardingLockDriftLogSection,
-  // #2618 — BG task heartbeat section builder. 단위 테스트에서 직접 검증.
+  // #2618 — BG task heartbeat section builder + 공유 포맷터. 단위 테스트에서 직접 검증.
   buildBgHeartbeatSection,
+  formatBgHeartbeatLine,
   formatLockLifecycleLine,
   buildLockLifecycleSection,
   formatTokenTail,

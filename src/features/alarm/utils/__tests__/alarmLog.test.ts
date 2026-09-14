@@ -1877,14 +1877,15 @@ describe('alarmLog', () => {
       expect(saved).toHaveLength(2);
     });
 
-    // #2618 — Suppress Reasons/Counters 산출 로직(summarizeAlarmLogByReason/Counters)은
-    // 무변경이다. TTL(60s) 억제로 버퍼에 1건만 남아도, 그 1건 기준으로 정확히 집계되는지
-    // 확인 — "버퍼 엔트리만 억제, 카운터 산출 로직은 그대로"를 증명하는 회귀 가드.
-    it('#2618 카운터 경로 보존: dedup-station TTL 억제 후에도 summarizeAlarmLogByReason/Counters가 버퍼 상태 그대로 집계한다', async () => {
+    // #2618 (리뷰 fix) — Suppress Reasons/Counters 산출 로직(summarizeAlarmLogByReason/Counters)
+    // 자체는 무변경이다. TTL(60s) 내 재발생은 drop이 아니라 기존 entry의 count 증분으로
+    // 처리되므로(appendOrIncrementDedupEntry), 버퍼엔 entry 1건만 남지만 그 count는 실제
+    // 억제 횟수(3)를 정확히 반영해야 한다 — "이벤트를 통째로 버려 집계가 축소"되면 회귀.
+    it('#2618 카운터 경로 보존: dedup-station TTL 억제 3회는 drop이 아니라 count=3으로 합산된다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
       logSuppressedDedupStation('fg', station);
-      logSuppressedDedupStation('fg', station); // TTL 내 — 버퍼 미적재
-      logSuppressedDedupStation('fg', station); // TTL 내 — 버퍼 미적재
+      logSuppressedDedupStation('fg', station); // TTL 내 — 새 entry 대신 count 증분
+      logSuppressedDedupStation('fg', station); // TTL 내 — 새 entry 대신 count 증분
       await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
@@ -1892,8 +1893,114 @@ describe('alarmLog', () => {
       expect(logs).toHaveLength(1);
       expect(summarizeAlarmLogByReason(logs)).toEqual({ 'dedup-station': 1 });
       expect(summarizeAlarmLogCounters(logs)).toEqual([
-        { reason: 'dedup-station', count: 1, lastTs: logs[0].ts },
+        { reason: 'dedup-station', count: 3, lastTs: logs[0].ts },
       ]);
+    });
+
+    // #2618 (리뷰 fix) — appendOrIncrementDedupEntry의 "이미 flush됨" 분기(storage RMW).
+    // 실측상 dedup-station 재발생 간격(수십 초)이 flush 주기(최대 5s)보다 길어, 대부분의
+    // TTL-hit는 이 경로를 탄다. pendingEntries in-place mutate만으론 커버되지 않는 케이스.
+    it('#2618 (review) TTL 내 재발생인데 이미 flush됐으면 storage를 직접 patch해 count를 증분한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedDedupStation('fg', station);
+      await flushAlarmLog();
+      const [, firstJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(firstJson);
+
+      logSuppressedDedupStation('fg', station); // 같은 station, TTL 내, 이미 flush된 뒤
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const secondCall = (AsyncStorage.setItem as jest.Mock).mock.calls[1];
+      expect(secondCall).toBeDefined();
+      const patched: AlarmLogEntry[] = JSON.parse(secondCall[1]);
+      expect(patched).toHaveLength(1);
+      expect(patched[0]).toMatchObject({ reason: 'dedup-station', count: 2 });
+    });
+
+    it('#2618 (review) persisted patch: flush 진행 중이면 flushInFlight를 먼저 대기한 뒤 patch한다', async () => {
+      // getItem이 항상 "가장 최근 setItem이 쓴 값"을 반환하도록 실제 storage처럼 동작시킨다 —
+      // flush의 자체 RMW와 increment의 RMW가 순서대로 겹쳐도 두 쓰기 모두 반영되는지 검증.
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(() => {
+        const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+        const last = calls[calls.length - 1];
+        return Promise.resolve(last ? last[1] : null);
+      });
+      logSuppressedDedupStation('fg', station);
+      const flushPromise = flushAlarmLog();
+      // flushAlarmLog 호출의 동기 구간(doFlushOnce 진입부)이 이미 실행돼 pendingEntries가
+      // 비워지고 flushInFlight가 설정된 시점 — 여기서 재호출하면 "이미 flush 진행 중" 분기.
+      logSuppressedDedupStation('fg', station);
+      await flushPromise;
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      const last = JSON.parse(calls[calls.length - 1][1]);
+      const dedupEntries = last.filter((e: AlarmLogEntry) => e.reason === 'dedup-station');
+      expect(dedupEntries).toHaveLength(1);
+      expect(dedupEntries[0].count).toBe(2);
+    });
+
+    it('#2618 (review) persisted patch: storage가 비어있으면 no-op(graceful)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedDedupStation('fg', station);
+      await flushAlarmLog();
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      const callsBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+
+      logSuppressedDedupStation('fg', station);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsBefore);
+    });
+
+    it('#2618 (review) persisted patch: 매칭 entry가 storage에 없으면 no-op(graceful)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedDedupStation('fg', station);
+      await flushAlarmLog();
+      const otherStationEntry = JSON.stringify([
+        { ts: 1, source: 'fg', outcome: 'suppressed', reason: 'dedup-station', stationName: '역삼', kind: 'station-passed' },
+      ]);
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(otherStationEntry);
+      const callsBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+
+      logSuppressedDedupStation('fg', station); // 강남 — storage엔 역삼만 있음, 매칭 없음
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsBefore);
+    });
+
+    it('#2618 (review) persisted patch: getItem 실패 시 graceful catch(크래시 없음)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedDedupStation('fg', station);
+      await flushAlarmLog();
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+
+      expect(() => logSuppressedDedupStation('fg', station)).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // #2618 (리뷰 fix) — 교차 은폐(cross-source masking) 차단: 키에 source 포함.
+    it('#2618 (review) 교차 은폐 차단: source가 다르면 같은 station이어도 별개 윈도우 — 둘 다 적재', async () => {
+      logSuppressedDedupStation('fg', station);
+      logSuppressedDedupStation('bg-scheduled', station);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const dedupEntries = saved.filter((e) => e.reason === 'dedup-station');
+      expect(dedupEntries).toHaveLength(2);
+      expect(dedupEntries.map((e) => e.source).sort()).toEqual(['bg-scheduled', 'fg']);
     });
 
     it('#1023 burst Map cap 초과 시 만료 엔트리 sweep — logSuppressedMovement 사용', async () => {

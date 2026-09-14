@@ -5066,6 +5066,21 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## Boarding-Lock Drift (2)');
     });
 
+    // #2618 (리뷰 fix) — dump builder와 JSX가 이 함수 하나를 공유한다(포맷 발산 방지).
+    it('formatBgHeartbeatLine: accuracy 있음/없음 포맷 (#2618 review)', () => {
+      const { formatBgHeartbeatLine } = __test__;
+      expect(formatBgHeartbeatLine({ ts: 3_000, acc: 12.4 }, 10_000)).toBe(
+        '마지막 BG heartbeat: 7초 전 (accuracy=12m)',
+      );
+      expect(formatBgHeartbeatLine({ ts: 3_000, acc: null }, 10_000)).toBe(
+        '마지막 BG heartbeat: 7초 전 (accuracy=-)',
+      );
+      // 음수 age 방어 — ts가 now보다 미래여도 0초로 클램프.
+      expect(formatBgHeartbeatLine({ ts: 20_000, acc: null }, 10_000)).toBe(
+        '마지막 BG heartbeat: 0초 전 (accuracy=-)',
+      );
+    });
+
     it('buildBgHeartbeatSection: null/스냅샷 cover + share dump 포함 (#2618)', () => {
       const { buildBgHeartbeatSection } = __test__;
       expect(buildBgHeartbeatSection(baselineDumpArgs)).toEqual(['(no BG heartbeat)']);
