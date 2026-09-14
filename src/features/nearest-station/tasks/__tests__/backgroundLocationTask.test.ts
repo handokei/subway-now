@@ -1227,12 +1227,26 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
       expect(mockUploadPosition).toHaveBeenCalledWith({
         token: 'apns-tok-1',
+        appState: 'bg',
         lat: 37.498,
         lng: 127.028,
         accuracy: 10,
         ts: fixTs,
         motion: 'unknown',
       });
+    });
+
+    it('#2617 — appState는 항상 bg로 송신 (fallback implicit ACK 계약)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetCurrentMotionStationary.mockReturnValue(false);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockUploadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({ appState: 'bg' }),
+      );
     });
 
     it('motion stationary=true → motion=stationary로 송신', async () => {

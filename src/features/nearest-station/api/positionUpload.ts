@@ -71,6 +71,14 @@ export type PositionMotion = 'stationary' | 'walking' | 'automotive' | 'unknown'
 export interface PositionUploadPayload {
   /** APNs device token (hex) — backend가 같은 키로 series 적재. */
   token: string;
+  /**
+   * #2617 (코드리뷰 반영) — 이 fix를 보낸 채널이 FG 폴링(`useFgPositionUpload`)인지
+   * BG location task(`backgroundLocationTask`)인지 명시하는 계약. `/position`은 두 채널이 같은
+   * ~10초 주기로 호출하므로 "이 엔드포인트에 도달했다" 자체는 FG를 증명하지 않는다 — backend가
+   * fallback implicit ACK(deviceContact stamp) 판정을 위해 `appState==='fg'`만 채택한다.
+   * 구버전 클라(필드 미전송)는 backend가 보수적으로 BG 취급(stamp 안 함) — 안전망 유지.
+   */
+  appState?: 'fg' | 'bg';
   lat: number;
   lng: number;
   /** GPS accuracy meters. backend가 ≥ 50m sample은 hop 계산에서 제외. */

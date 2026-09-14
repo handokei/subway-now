@@ -31,6 +31,7 @@
 import { sendAlertPush, type ApnsConfig, type SendPushResult } from './apns';
 import { buildAlertContent } from './alertContent';
 import { fallbackAlertCollapseId } from './collapseId';
+import { readDeviceContact } from './deviceContact';
 import { listPending, removePending, type PendingPush } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
 import { isBoardingLockActive } from './scheduled';
@@ -68,6 +69,47 @@ export interface FallbackStats {
    * 이 카운터와 D1 push_failure_log의 fallback push 로그로 교차 확인한다.
    */
   skippedLocked: number;
+  /**
+   * #2617 — device 접촉(`/position` appState==='fg'만, `/boarding-lock/sync`)이 entry.sentAt
+   * 이후이자 now 기준으로도 최근(`IMPLICIT_ACK_RECENCY_MS`)에 관측되어 "device 살아있음 + FG
+   * 수신 중"으로 implicit ACK 판정하고 발사를 skip한 수. kind==='destination'(#1995
+   * must-refire)과 tripToken 부재 entry는 대상에서 제외된다. D1 `fallback-implicit-ack`(기존
+   * `fallback-alert-fired`와 대칭)와 교차 확인용 운영 가시성.
+   */
+  implicitAcked: number;
+}
+
+/**
+ * #2617 (코드리뷰 반영) — implicit ACK 판정에 쓰는 recency 창. `contactAt >= entry.sentAt`
+ * 만으로는 sentAt 직후 단발 접촉(예: 앱을 잠깐 열었다 바로 끔) 이후 device가 실제로는 조용해진
+ * 케이스를 "계속 살아있음"으로 오판한다 — `now - contactAt`도 함께 만족해야 implicit ACK로
+ * 채택한다. FALLBACK_THRESHOLD_MS(60s)보다 여유를 둬 정상 폴링 주기(FG ~10s)의 지터를 흡수.
+ */
+export const IMPLICIT_ACK_RECENCY_MS = 90_000;
+
+/**
+ * #2617 (코드리뷰 반영) — D1 trip_events에 fallback 처리 결과(implicit-ack 또는 alert-fired)를
+ * 기록하는 공유 블록. 두 분기가 같은 모양(tokenHash/kind/station/meta{pushId,ageMs})이라
+ * ageMs를 caller가 1회만 계산해 넘기고 기록 로직은 여기 하나로 합친다(중복 제거).
+ */
+async function recordFallbackDisposition(
+  env: Env,
+  entry: PendingPush,
+  tokenHash: string,
+  kind: 'fallback-implicit-ack' | 'fallback-alert-fired',
+  ageMs: number,
+  now: number,
+): Promise<void> {
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash,
+      kind,
+      station: entry.stationName,
+      meta: { pushId: entry.pushId, ageMs },
+    },
+    now,
+  );
 }
 
 /**
@@ -77,7 +119,14 @@ export interface FallbackStats {
 export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<FallbackStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
-  const stats: FallbackStats = { scanned: 0, pushed: 0, errors: 0, deferred: 0, skippedLocked: 0 };
+  const stats: FallbackStats = {
+    scanned: 0,
+    pushed: 0,
+    errors: 0,
+    deferred: 0,
+    skippedLocked: 0,
+    implicitAcked: 0,
+  };
 
   for await (const entry of listPending(env.PENDING_PUSHES)) {
     stats.scanned += 1;
@@ -85,19 +134,57 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
       stats.deferred += 1;
       continue;
     }
+    const ageMs = Math.max(0, now - entry.sentAt);
 
+    // #2522 — lock 활성 시 stale intermediate "통과" 발사 차단. implicit ACK 판정보다 먼저
+    // 평가해 skippedLocked 관측 계약(기존 D1/카운터 교차확인 습관)을 그대로 보존한다(코드리뷰
+    // 반영 — 순서를 바꾸면 이 경로가 implicit-ack 카운터에 흡수돼 lock 활성 회귀 관측이 죽는다).
     if (entry.kind === 'intermediate' && (await isStaleIntermediateWhileLocked(entry, env, now))) {
       stats.skippedLocked += 1;
       log('alert fallback skip (lock active)', {
         pushId: entry.pushId,
         station: entry.stationName,
-        ageMs: Math.max(0, now - entry.sentAt),
+        ageMs,
       });
       await removePending(env.PENDING_PUSHES, entry.pushId);
       continue;
     }
 
-    const ageMs = Math.max(0, now - entry.sentAt);
+    // #2617 (코드리뷰 반영) — implicit ACK 판정.
+    //   (b) kind==='destination'은 대상에서 제외 — #1995 "must-refire" 정책(도착 알림은 device
+    //       접촉 여부와 무관하게 항상 재발사)과 충돌하지 않게 한다.
+    //   (d) entry.tripToken이 없는 구 entry는 스킵 — device token(entry.token) 해시로 대신
+    //       조회하면 deviceContact(트립 단위 stamp)와 다른 토큰 공간을 섞어 엉뚱한 trip의 접촉을
+    //       implicit ACK로 오채택할 위험이 있다(D1 기록도 같은 이유로 트립 단위 tokenHash만 쓴다).
+    //   (a) recency — sentAt 이후 접촉(freshness)뿐 아니라 지금(now) 기준으로도 최근이어야
+    //       (IMPLICIT_ACK_RECENCY_MS) 채택 — 오래전 단발 접촉을 "계속 살아있음"으로 오판 방지.
+    if (entry.kind !== 'destination' && entry.tripToken !== undefined) {
+      const tokenHash = hashTripToken(entry.tripToken);
+      const contactAt = await readDeviceContact(env.TRIPS, tokenHash);
+      if (
+        contactAt !== null &&
+        contactAt >= entry.sentAt &&
+        now - contactAt < IMPLICIT_ACK_RECENCY_MS
+      ) {
+        stats.implicitAcked += 1;
+        log('alert fallback skip (implicit ack)', {
+          pushId: entry.pushId,
+          station: entry.stationName,
+          ageMs,
+        });
+        await recordFallbackDisposition(
+          env,
+          entry,
+          tokenHash,
+          'fallback-implicit-ack',
+          ageMs,
+          now,
+        );
+        await removePending(env.PENDING_PUSHES, entry.pushId);
+        continue;
+      }
+    }
+
     log('alert fallback fire', {
       pushId: entry.pushId,
       station: entry.stationName,
@@ -112,14 +199,12 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
       // 시점만 기록" 원칙과 동일 위험). KV(pending)는 발사 성공 직후 삭제되어 사후 추적이
       // 불가능했다 — D1 trip_events에 append-only로 남겨 pile(같은 station 반복 발사) 재발
       // 시 wrangler d1 조회만으로 즉시 확정할 수 있게 한다.
-      await recordTripEvent(
-        env.DB,
-        {
-          tokenHash: hashTripToken(entry.tripToken ?? entry.token),
-          kind: 'fallback-alert-fired',
-          station: entry.stationName,
-          meta: { pushId: entry.pushId, ageMs },
-        },
+      await recordFallbackDisposition(
+        env,
+        entry,
+        hashTripToken(entry.tripToken ?? entry.token),
+        'fallback-alert-fired',
+        ageMs,
         now,
       );
       await removePending(env.PENDING_PUSHES, entry.pushId);

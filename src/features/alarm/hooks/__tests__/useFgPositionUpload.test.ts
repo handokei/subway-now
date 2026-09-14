@@ -82,6 +82,12 @@ describe('useFgPositionUpload (#1280)', () => {
     );
   });
 
+  it('#2617 — appState는 항상 fg로 송신 (fallback implicit ACK 계약)', async () => {
+    renderUpload();
+    await flushAsyncStorage();
+    expect(mockedUpload.mock.calls[0][0]).toEqual(expect.objectContaining({ appState: 'fg' }));
+  });
+
   it('motionStationary 미지정 → motion=unknown', async () => {
     renderUpload();
     await flushAsyncStorage();

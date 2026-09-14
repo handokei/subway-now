@@ -1924,6 +1924,63 @@ describe('POST /position (#819)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('#2617 — appState="fg" payload → deviceContact stamp를 KV에 남긴다(fallback implicit ACK 입력)', async () => {
+    const env = makeKvEnv();
+    await post(
+      '/position',
+      {
+        token: 'tok-pos-contact',
+        appState: 'fg',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 1234,
+        motion: 'walking',
+      },
+      env,
+    );
+    // scheduleTripEvent가 executionCtx 미제공 시 fire-and-forget으로 degrade — 마이크로태스크
+    // 완료를 기다린다 (기존 #2283 테스트 관례, index.test.ts:4180 참고).
+    await new Promise((r) => setTimeout(r, 0));
+    const tokenHash = sentryModule.hashTripToken('tok-pos-contact');
+    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
+    expect(stamped).not.toBeNull();
+  });
+
+  it('#2617 (코드리뷰 반영) — appState="bg" payload → deviceContact stamp 없음(BG 접촉을 FG로 오인하지 않음, 안전망 보존)', async () => {
+    const env = makeKvEnv();
+    await post(
+      '/position',
+      {
+        token: 'tok-pos-bg',
+        appState: 'bg',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 1234,
+        motion: 'walking',
+      },
+      env,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const tokenHash = sentryModule.hashTripToken('tok-pos-bg');
+    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
+    expect(stamped).toBeNull();
+  });
+
+  it('#2617 (코드리뷰 반영) — appState 미전송(구버전 클라) payload → deviceContact stamp 없음(BG로 보수 취급)', async () => {
+    const env = makeKvEnv();
+    await post(
+      '/position',
+      { token: 'tok-pos-legacy', lat: 1, lng: 2, accuracy: 5, ts: 1234, motion: 'walking' },
+      env,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const tokenHash = sentryModule.hashTripToken('tok-pos-legacy');
+    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
+    expect(stamped).toBeNull();
+  });
+
   it.each([
     ['missing token', { lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
     ['empty token', { token: '', lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
@@ -3707,6 +3764,22 @@ describe('POST /boarding-lock/sync (#901)', () => {
     ]);
   });
 
+  it('#2617 — sync 성공 시 deviceContact stamp를 KV에 남긴다(fallback implicit ACK 입력, FG 전용 액션이라 별도 appState 게이트 없음)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    // scheduleTripEvent가 executionCtx 미제공 시 fire-and-forget으로 degrade — 마이크로태스크
+    // 완료를 기다린다 (기존 #2283 테스트 관례, index.test.ts:4180 참고).
+    await new Promise((r) => setTimeout(r, 0));
+    const tokenHash = sentryModule.hashTripToken('tok-sync');
+    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
+    expect(stamped).not.toBeNull();
+  });
+
   it('waypoints[1] 일치 → 2 hop catch-up advance', async () => {
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);
@@ -3939,7 +4012,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
       );
     }
 
-    it('sync-received/advance 2종 모두 waitUntil로 스케줄된다 (응답을 막지 않음)', async () => {
+    it('deviceContact stamp + sync-received/advance 3건 모두 waitUntil로 스케줄된다 (응답을 막지 않음)', async () => {
       const env = makeKvEnv();
       const prepare = vi.fn().mockReturnValue({
         bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }),
@@ -3958,9 +4031,11 @@ describe('POST /boarding-lock/sync (#901)', () => {
       );
       expect(res.status).toBe(200);
 
-      // 2건(sync-received/advance) 모두 waitUntil에 넘겨졌는지 확인.
-      expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
+      // #2617 — deviceContact stamp(1건) + sync-received/advance(2건) = 3건 모두 waitUntil에
+      // 넘겨졌는지 확인.
+      expect(ctx.waitUntil).toHaveBeenCalledTimes(3);
       // waitUntil로 넘긴 프로미스가 실제로 완료되면 각 kind에 대해 D1 INSERT가 실행됐어야 한다.
+      // deviceContact stamp는 KV get/put이라 D1 INSERT 카운트에는 잡히지 않는다(2건 그대로).
       const scheduled = ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>);
       await Promise.all(scheduled);
       const kinds = prepare.mock.calls
