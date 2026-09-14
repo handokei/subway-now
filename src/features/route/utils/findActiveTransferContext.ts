@@ -12,10 +12,10 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import {
   findStationByNameAndLine,
   getRemainingStops,
-  getStationsOnLine,
   isSameStationName,
 } from '../../../shared/utils/stationRoute';
 import { resolveAllTargets } from '../../alarm/utils/stationAlarm';
+import { directionOnLine } from './directionOnLine';
 import type { TripDirection } from './tripDirection';
 
 export interface ActiveTransferContext {
@@ -25,7 +25,12 @@ export interface ActiveTransferContext {
   nextLine: LineNumber;
   /** 환승 직후 다음 waypoint(=destination 또는 다음 transfer)의 이름. */
   nextWaypointName: string;
-  /** toLine 기준 새 진행방향. 좌표/index 비교 실패 시 null — 양방향 합산 fallback. */
+  /**
+   * toLine 기준 새 진행방향 — `directionOnLine`(station id 두 개, #2455)으로 산출한다.
+   * `shortestLinePathIndices` 기반 단일 알고리즘이라 2호선 순환선 wraparound seam(시청↔충정로)도
+   * 정확히 처리한다(#2609). nextWaypoint의 toLine station을 못 찾거나(예: 데이터 정합성 문제)
+   * 같은 station이면 null — 호출자는 양방향 합산으로 fallback한다.
+   */
   direction: TripDirection | null;
   /**
    * 사용자가 방금 도달해서 환승을 끝낸 transfer의 인덱스 (#604).
@@ -44,7 +49,8 @@ export interface ActiveTransferContext {
  * - resolveAllTargets로 waypoint 목록 산출 후 currentStation.name과 매칭되는 target 탐색
  * - 매칭된 target이 transfer가 아니거나 그 다음 target이 없으면 null (도착역이거나 환승 없음)
  * - 매칭된 target의 다음 target.approachLine을 nextLine으로 사용 — 환승 후 진행할 노선
- * - direction은 transferStationInToLine.id ↔ nextWaypointName의 line stations index 비교로 산출
+ * - direction은 transferStationInToLine.id → nextWaypoint(toLine 변형)의 id를 directionOnLine
+ *   (#2455, shortestLinePathIndices 기반 단일 알고리즘)으로 판정한다(#2609).
  */
 export function findActiveTransferContext(
   lock: BoardingLock | null,
@@ -63,11 +69,13 @@ export function findActiveTransferContext(
   // 환승역에 머무는 경우, 가드 없으면 같은 list가 다시 노출되어 lock 중복 생성 가능.
   if (lock.boardingLine === nextLine) return null;
 
-  const direction = resolveDirectionInLine(
-    nextLine,
-    transferStationInToLine.id,
-    nextWaypointName,
-  );
+  // nextWaypoint(destination/다음 transfer)의 toLine 변형 station을 조회해 id 기반으로
+  // directionOnLine에 넘긴다 — #1410 BLDN_NM drift도 findStationByNameAndLine의 정규화
+  // fallback으로 흡수된다. lookup 실패(데이터 정합성 문제)면 direction=null로 안전 폴백.
+  const nextWaypointStation = findStationByNameAndLine(nextWaypointName, nextLine);
+  const direction = nextWaypointStation
+    ? directionOnLine(nextLine, transferStationInToLine.id, nextWaypointStation.id)
+    : null;
 
   return {
     transferStationInToLine,
@@ -213,23 +221,4 @@ export function findUpcomingTransferPrefetch(
   if (remainingStops > PREFETCH_IMMINENT_STOPS) return null;
 
   return { nextLine, transferStationName: upcoming.name };
-}
-
-/**
- * 한 노선 내에서 from station id ↔ to station name의 index 비교로 방향 산출.
- * tripDirection.ts의 resolveTripDirection은 route의 첫 leg만 보므로 환승 후 leg에는 쓸 수 없음 — 별도 유틸.
- * 테스트 노출용 export — 실데이터 의존이라 정/역방향 양쪽 분기 강제하기 위해 직접 호출.
- */
-export function resolveDirectionInLine(
-  line: LineNumber,
-  fromStationId: string,
-  toStationName: string,
-): TripDirection | null {
-  const stations = getStationsOnLine(line);
-  const currIdx = stations.findIndex((s) => s.id === fromStationId);
-  const nextIdx = stations.findIndex((s) => s.name === toStationName);
-  /* istanbul ignore next -- 호출 직전 findStationByNameAndLine과 next.approachLine 일관성으로
-     실제 데이터에서는 도달 불가. 정합성 깨진 데이터를 위한 방어 코드. */
-  if (currIdx < 0 || nextIdx < 0 || currIdx === nextIdx) return null;
-  return nextIdx > currIdx ? 'down' : 'up';
 }

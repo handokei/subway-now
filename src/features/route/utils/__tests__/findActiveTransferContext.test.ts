@@ -1,9 +1,8 @@
 import {
   findActiveTransferContext,
   findUpcomingTransferPrefetch,
-  resolveDirectionInLine,
 } from '../findActiveTransferContext';
-import { findStationByNameAndLine, getStationsOnLine } from '../../../../shared/utils/stationRoute';
+import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import {
@@ -63,8 +62,9 @@ describe('findActiveTransferContext', () => {
     expect(ctx!.nextLine).toBe('5');
     expect(ctx!.transferStationInToLine.id).toBe(gondeokOnLine5.id);
     expect(ctx!.nextWaypointName).toBe('여의나루');
-    // direction은 5호선 index 비교 결과 — 동작 검증만 (down/up/null 중 하나).
-    expect(['up', 'down', null]).toContain(ctx!.direction);
+    // directionOnLine(#2455/#2609)은 non-loop 노선(5호선 등 분기 포함)에서 index 비교 폴백으로
+    // 항상 확정 방향을 낸다 — 공덕(idx19)→여의나루(idx17)는 index 감소 → 'up'.
+    expect(ctx!.direction).toBe('up');
     // transfer 라우트: completedTransferIdx는 항상 0
     expect(ctx!.completedTransferIdx).toBe(0);
   });
@@ -93,8 +93,8 @@ describe('findActiveTransferContext', () => {
   });
 
   it('환승 후 방향이 up인 케이스 (toLine 인덱스 역전)', () => {
-    // 충무로(4→3 환승) → 종로3가(line 3 → line 1 환승). 3호선에서 충무로 인덱스 > 종로3가 인덱스
-    // → resolveDirectionInLine은 'up' 반환.
+    // 충무로(4→3 환승) → 종로3가(line 3 → line 1 환승). 3호선에서 충무로(idx22) → 종로3가(idx20)는
+    // index 감소 → directionOnLine은 'up' 반환.
     const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
@@ -104,10 +104,8 @@ describe('findActiveTransferContext', () => {
     });
     const chungmuroOn4 = findStationByNameAndLine('충무로', '4') as Station;
     const ctx = findActiveTransferContext(lock, route, '서울역', chungmuroOn4);
-    // direction이 'up' 또는 'down' — toLine 인덱스 검증. 실데이터 의존이라 둘 다 허용해
-    // resolveDirectionInLine의 두 return 분기 중 하나는 확실히 커버.
     expect(ctx).not.toBeNull();
-    expect(['up', 'down']).toContain(ctx!.direction);
+    expect(ctx!.direction).toBe('up');
   });
 
   it('multi-transfer route + 첫 환승역 도달 시 두 번째 leg 컨텍스트', () => {
@@ -155,7 +153,12 @@ describe('findActiveTransferContext', () => {
     expect(findActiveTransferContext(lock, route, '여의나루', hyochang)).toBeNull();
   });
 
-  it('환승 시 direction이 명시적으로 산출됨 (resolveDirectionInLine 성공 경로)', () => {
+  it('환승 후 toLine이 분기 노선(5호선)이어도 directionOnLine이 baseline 방향을 산출 (#2455/#2609 semantics)', () => {
+    // 5호선은 lineTopology.json monotonicLines에도 closedLoops에도 없는 분기(마천/방화) 노선이다.
+    // directionOnLine은 non-loop line에서 `shortestLinePathIndices`가 단순 forward slice로
+    // fallback하므로(`lineLoopPath.ts` buildForward), 구 naive index 비교와 동일한 baseline 방향을
+    // 그대로 산출한다 — null-양방향으로 격하하지 않는다. 분기(마천/방화)로 인한 오판 가능성은
+    // pre-existing 한계이며 branch-aware 정밀화는 이 PR 범위 밖(#2609 후속).
     const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
@@ -165,8 +168,43 @@ describe('findActiveTransferContext', () => {
     });
     const ctx = findActiveTransferContext(lock, route, '여의나루', gondeokOnLine6);
     expect(ctx).not.toBeNull();
-    // 5호선 공덕→여의나루는 stations.json index가 다르므로 direction은 non-null
-    expect(ctx!.direction === 'up' || ctx!.direction === 'down').toBe(true);
+    // 공덕(idx19)→여의나루(idx17): index 감소 → 'up'.
+    expect(ctx!.direction).toBe('up');
+  });
+
+  it('2호선 순환선 wraparound seam을 넘는 pair — directionOnLine이 naive index 비교와 다른(정확한) 방향 산출 (#2609)', () => {
+    // RCA 재현: 을지로3가(2호선 idx2) → 이대(2호선 idx40)는 forward(정방향) 38 stop, backward(wrap)
+    // 5 stop — 실제로 훨씬 짧은 backward wrap이 정답('up')인데, 구 naive 비교
+    // (`nextIdx > currIdx ? 'down' : 'up'`)는 wraparound을 고려하지 않아 'down'을 반환했다
+    // (RED 확인, PR 본문 evidence 참조). directionOnLine(#2455)은 `shortestLinePathIndices` 기반
+    // 단일 알고리즘이라 이 seam을 정확히 처리한다.
+    const route = makeTransferRoute({
+      transferName: '을지로3가',
+      fromLine: '3',
+      toLine: '2',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 2,
+    });
+    const euljiro3gaOn3 = findStationByNameAndLine('을지로3가', '3') as Station;
+    const ctx = findActiveTransferContext(lock, route, '이대', euljiro3gaOn3);
+    expect(ctx).not.toBeNull();
+    expect(ctx!.nextLine).toBe('2');
+    expect(ctx!.direction).toBe('up');
+  });
+
+  it('nextWaypoint의 toLine station을 못 찾으면 direction=null (context 자체는 유지)', () => {
+    // transferName은 toLine에 존재하지만(컨텍스트 매칭 자체는 성공), destinationName이
+    // 데이터 정합성 문제 등으로 toLine에 없는 경우 — direction만 안전하게 null로 폴백한다.
+    const route = makeTransferRoute({
+      transferName: '공덕',
+      fromLine: '6',
+      toLine: '5',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 3,
+    });
+    const ctx = findActiveTransferContext(lock, route, '존재하지않는역Y', gondeokOnLine6);
+    expect(ctx).not.toBeNull();
+    expect(ctx!.direction).toBeNull();
   });
 
   it('lock.boardingLine이 이미 nextLine이면 null (환승 lock 교체 직후 재노출 방지)', () => {
@@ -346,21 +384,6 @@ describe('findActiveTransferContext', () => {
       expect(result).not.toBeNull();
       expect(result!.transferStationName).toBe('공덕');
       expect(result!.nextLine).toBe('5');
-    });
-  });
-
-  describe('resolveDirectionInLine (직접 호출)', () => {
-    // 5호선 stations.json에서 첫 2개 역의 id/이름으로 양 방향 케이스 강제.
-    const line5 = getStationsOnLine('5');
-    const early = line5[0];
-    const late = line5[line5.length - 1];
-
-    it('nextIdx > currIdx → down', () => {
-      expect(resolveDirectionInLine('5', early.id, late.name)).toBe('down');
-    });
-
-    it('nextIdx < currIdx → up', () => {
-      expect(resolveDirectionInLine('5', late.id, early.name)).toBe('up');
     });
   });
 
