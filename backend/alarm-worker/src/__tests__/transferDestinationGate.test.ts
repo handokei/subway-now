@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  TRANSFER_DESTINATION_FRESH_WINDOW_MS,
+  CRON_INTERVAL_MS,
+  TRANSFER_DESTINATION_FRESH_CYCLES,
   evaluateTransferDestinationGate,
   isAtOrApproachingTransferDestination,
   isSsotAdvanceRecent,
@@ -17,11 +18,19 @@ import type { Trip, Waypoint } from '../types';
  * 본 suite는 evidence 시나리오(transferScenarios)를 it.each로 박제해 N9 회귀(2026-06-19 정지
  * trip "환승임박 건대입구" false 발사) 차단을 직접 단언한다. integration 레벨 wire-up은
  * scheduled.test.ts의 T4 suite가 cover.
+ *
+ * #2602 — freshness 판정이 시간창에서 cron cycle 수 이산화로 바뀌면서 경계값도 cycle 기준으로
+ * 갱신 (60,001ms / 128,365ms 실캡처 재생 evidence — 둘 다 2 cycle 이내라 신선 판정돼야 함).
  */
 
 const NOW = 1_750_000_000_000;
 const FRESH_LAST_ADVANCE = NOW - 30_000;
-const STALE_LAST_ADVANCE = NOW - 90_000;
+// #2602 실캡처 재생 evidence — 기존 60s 시간창에서는 stale(razor-edge)이었으나, 2 cycle
+// 이산화에서는 신선(2×60,000ms=120,000ms 이내)해야 하는 경계 케이스.
+const CAPTURE_60001MS_LAST_ADVANCE = NOW - 60_001;
+const CAPTURE_128365MS_LAST_ADVANCE = NOW - 128_365;
+// 3 cycle(180,000ms) 이상 경과 — 정지 trip false advance 차단(N9) 의미를 유지하는 stale 값.
+const STALE_LAST_ADVANCE = NOW - 3 * CRON_INTERVAL_MS;
 
 function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
   return {
@@ -125,21 +134,29 @@ describe('isAtOrApproachingTransferDestination', () => {
 });
 
 describe('isSsotAdvanceRecent', () => {
-  it('fresh — lastAdvanceAt within window → true', () => {
+  it('fresh — lastAdvanceAt within 1 cycle → true', () => {
     expect(isSsotAdvanceRecent({ lastAdvanceAt: NOW - 30_000 }, NOW)).toBe(true);
   });
 
-  it('exactly window boundary → true (≤ inclusive)', () => {
+  it('#2602 실캡처 60,001ms 간격 — 시간창 기준으론 stale이지만 1 cycle 이내 → true', () => {
+    expect(isSsotAdvanceRecent({ lastAdvanceAt: CAPTURE_60001MS_LAST_ADVANCE }, NOW)).toBe(true);
+  });
+
+  it('#2602 실캡처 128,365ms 간격 — 2 cycle 이내 → true (오늘 아침 건대입구 회귀 앵커)', () => {
+    expect(isSsotAdvanceRecent({ lastAdvanceAt: CAPTURE_128365MS_LAST_ADVANCE }, NOW)).toBe(true);
+  });
+
+  it('exactly 2-cycle boundary → true (≤ inclusive)', () => {
     expect(
       isSsotAdvanceRecent(
-        { lastAdvanceAt: NOW - TRANSFER_DESTINATION_FRESH_WINDOW_MS },
+        { lastAdvanceAt: NOW - TRANSFER_DESTINATION_FRESH_CYCLES * CRON_INTERVAL_MS },
         NOW,
       ),
     ).toBe(true);
   });
 
-  it('stale — beyond window → false', () => {
-    expect(isSsotAdvanceRecent({ lastAdvanceAt: NOW - 90_000 }, NOW)).toBe(false);
+  it('stale — 3 cycle 이상 경과 → false (N9 정지 trip 차단 유지)', () => {
+    expect(isSsotAdvanceRecent({ lastAdvanceAt: STALE_LAST_ADVANCE }, NOW)).toBe(false);
   });
 
   it('lastAdvanceAt===0 (미advance, lazy-seed 직후) → true (dormant, T4 unknown 통과 정책과 정합)', () => {
@@ -180,7 +197,7 @@ describe('evaluateTransferDestinationGate', () => {
       expectReason: 'ssot-not-at-or-approaching',
     },
     {
-      name: 'N9-stale at-transfer 인데 60s 초과 → block(ssot-stale)',
+      name: 'N9-stale at-transfer 인데 3 cycle 이상 경과 → block(ssot-stale)',
       currentStationId: '건대입구',
       lastAdvanceAt: STALE_LAST_ADVANCE,
       expectPass: false,
@@ -190,6 +207,18 @@ describe('evaluateTransferDestinationGate', () => {
       name: 'P3 at-transfer 인데 lastAdvanceAt===0 (legacy / lazy-seed 직후) → pass(dormant)',
       currentStationId: '건대입구',
       lastAdvanceAt: 0,
+      expectPass: true,
+    },
+    {
+      name: 'P4 #2602 60,001ms 간격 실캡처 — at-transfer + 1 cycle 이내 → pass',
+      currentStationId: '건대입구',
+      lastAdvanceAt: CAPTURE_60001MS_LAST_ADVANCE,
+      expectPass: true,
+    },
+    {
+      name: 'P5 #2602 128,365ms 간격 실캡처 — 직전 1 hop + 2 cycle 이내 → pass (오늘 아침 회귀 앵커)',
+      currentStationId: '성수',
+      lastAdvanceAt: CAPTURE_128365MS_LAST_ADVANCE,
       expectPass: true,
     },
   ];

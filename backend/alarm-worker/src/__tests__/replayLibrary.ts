@@ -118,12 +118,21 @@ const loadLine7SynthFixture = makeFixtureLoader(LINE7_SYNTH_FIXTURE_PATH);
 const DESK_20260913_FIXTURE_PATH = 'capture_20260913T1249Z_b00dd879.fixture.json';
 const loadDesk20260913Fixture = makeFixtureLoader(DESK_20260913_FIXTURE_PATH);
 
+// #2602 — 오늘 아침(2026-09-14 06:xx KST) 실캡처(17 cycles). RCA 확정 코멘트가 지정한
+// 회귀 앵커: 건대입구 transfer alert가 어린이대공원 advance 이후 128,365ms(>구 60,000ms
+// 시간창, ≤신규 2 cycle) 지연 평가돼 구 코드에서는 ssot-stale로 차단됐다.
+const RIDE_20260914_MORNING_FIXTURE_PATH = 'capture_20260913T2127Z_b00dd879.fixture.json';
+const loadRide20260914MorningFixture = makeFixtureLoader(RIDE_20260914_MORNING_FIXTURE_PATH);
+// 오늘 아침 라이드는 desk20260913Trip과 동일 경로(용마산 승차→건대입구 환승)이지만 실제 탑승
+// 열차 lock은 7301이 아니라 7039(D1 실측) — helper의 기본 trainCode를 override.
+const RIDE_20260914_MORNING_LOCK_TRAIN = '7039';
+
 export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
   {
     slug: 'capture_20260912_line7_synth',
     fixturePath: LINE7_SYNTH_FIXTURE_PATH,
     description:
-      '#2571/#2581 — 7호선 건대입구→중곡 lock trip, cron 위상 무관 intermediate 매역 발사 + destination trip-ended 완결(합성 캡처)',
+      '#2571/#2581 — 7호선 건대입구→중곡 lock trip, cron 위상 무관 매역 발사(intermediate + destination, #2602) + destination trip-ended 완결(합성 캡처)',
     seedTrips: () => [
       makeLine7SynthLockTrip('replay-library-line7-synth', loadLine7SynthFixture().window.fromMs),
     ],
@@ -134,8 +143,15 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
     phaseOffsetsMs: DEFAULT_PHASE_OFFSETS_MS,
     loadFixture: loadLine7SynthFixture,
     expect: {
-      firedStations: ['어린이대공원(세종대)', '군자(능동)'],
-      minPushes: 2,
+      // #2602 — freshness 게이트가 시간창(60s)에서 cron cycle 수(2) 이산화로 바뀌면서 군자(능동)
+      // →중곡(destination) 구간의 recorded 간격(120,000ms=정확히 2 cycle)이 기존엔
+      // ssot-stale로 차단됐으나(구 60s 시간창의 razor-edge — 오늘 아침 실캡처 128,365ms
+      // 사례와 구조적으로 동일: 이미 직전 hop에 도달해 position 게이트는 통과, freshness만
+      // 경계에서 갈림) 신선 판정으로 바뀌어 중곡도 nextWaypoint 채널로 발사된다. destination
+      // 도착은 이 station-passed push(“도착”)와 아래 trip-ended(“trip 종료”)가 함께 발사되는
+      // 것이 정상 — 서로 다른 채널(#2600 계약)이라 이중 집계가 아니다.
+      firedStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
+      minPushes: 3,
       tripEnded: { reason: 'destination-arrived' },
     },
   },
@@ -154,24 +170,49 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
     phaseOffsetsMs: [0],
     loadFixture: loadDesk20260913Fixture,
     expect: {
-      // station-passed alert(nextWaypoint 채널) — 중곡/군자(능동)/어린이대공원(세종대) 3역.
+      // station-passed alert(nextWaypoint 채널) — 중곡/군자(능동)/어린이대공원(세종대)/건대입구 4역.
       //
-      // #2600 코드리뷰 항목2 조사 결과(PR 본문에 상세 기록): production D1 ground truth는
-      // 건대입구도 이 채널(cron-fire-attempt kind='sent')로 발사됐다고 시사하지만, 이
-      // fixture(Seoul-capture만 담고 backend KV/SSoT 히스토리는 담지 않음)를 execLagMs
-      // 보정(아래 helper 참고)까지 적용해 최대한 충실히 재생해도 재현되지 않는다 — 어린이
-      // 대공원 advance(cycle4)~건대입구 평가(cycle5) 간 recorded cron 간격 자체가
-      // 60001ms로 이미 60000ms 게이트를 넘는다. execLagMs는 두 cycle 모두에 **균일하게**
-      // 더해지는 상수라 간격(delta) 자체를 절대 좁히지 못한다(수학적으로 증명: tick[5]-tick[4]
-      // = (cs[5]+lag)-(cs[4]+lag) = cs[5]-cs[4], lag와 무관). 이 게이트 통과에 필요한 신호
-      // (예: 건대입구 도착 이전 자체 position 기반 SSoT 갱신)가 fixture 캡처 범위 밖에
-      // 있다면 이 fixture만으로는 재현 불가 — 기대값을 억지로 4로 맞추지 않고 재생이 실제로
-      // 재현하는 3역만 이 채널의 ground truth로 유지한다("완화"가 아니라 이 채널의 실측
-      // 재현 한계를 정직하게 반영. hop-end-prompt 채널은 아래에서 별도로 건대입구를 검증).
-      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)'],
-      // 건대입구는 hop-end-prompt("하차했나요?") 채널로는 재생에서도 항상 발사된다(#2600
-      // 코드리뷰 항목1 — nextWaypoint 채널과 별개, 60s 신선도 게이트 무관하게
-      // `maybeFireHopEndPrompt` 자체 dedup만 적용).
+      // #2600 코드리뷰 항목2 조사 결과(PR 본문에 상세 기록)에서는 어린이대공원 advance(cycle4)
+      // ~건대입구 평가(cycle5) 간 recorded cron 간격이 60001ms로 구 60,000ms 시간창 게이트를
+      // ms 단위로 넘어(razor-edge) 이 채널만 3역으로 정직 유지했었다("건대입구는 hop-end-prompt
+      // 채널로만 재현, nextWaypoint 채널은 재현 한계"). #2602 — freshness 판정을 시간창에서
+      // cron cycle 수(≤2) 이산화로 바꿔 ms 지터 무관하게 만들면서 이 60,001ms(1 cycle) 간격도
+      // 신선 판정 → 건대입구가 이 채널에서도 결정론적으로 발사된다(4역 복원, 이슈 acceptance
+      // 1번 항목).
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      // 건대입구는 hop-end-prompt("하차했나요?") 채널로도 재생에서 항상 발사된다(#2600
+      // 코드리뷰 항목1 — nextWaypoint 채널과 별개, freshness 게이트 무관하게
+      // `maybeFireHopEndPrompt` 자체 dedup만 적용). 같은 역이 두 채널 모두에서 발사되는 것은
+      // 정상(#2600 계약) — 위 firedStations와 합산 집계하지 않는다.
+      hopEndPromptStations: ['건대입구'],
+      minPushes: 4,
+    },
+  },
+  {
+    slug: 'capture_20260913T2127Z_b00dd879',
+    fixturePath: RIDE_20260914_MORNING_FIXTURE_PATH,
+    description:
+      '#2602 — 2026-09-14 06:xx 아침 라이드(7039 lock) 실캡처. RCA 확정 회귀 앵커: 어린이대공원' +
+      ' advance~건대입구 평가 간 128,365ms 지연(구 60,000ms 시간창 초과, 신규 2 cycle 이내)이' +
+      ' production 06:41 skip(EVT 315, D1)과 동일 root — freshness cycle 이산화 fix로 4역 발사.',
+    seedTrips: () => {
+      const trip = makeDesk20260913LockTrip(
+        'replay-library-ride-20260914-morning',
+        loadRide20260914MorningFixture().window.fromMs,
+      );
+      // 오늘 아침 실 탑승 열차는 7039(D1 실측) — helper 기본값(7301, 어제 데스크 trip)을 override.
+      if (trip.boardingLock) trip.boardingLock.trainCode = RIDE_20260914_MORNING_LOCK_TRAIN;
+      return [trip];
+    },
+    // 실 P0-a 캡처 — 실제 cron cycle 시각(fixture.cycleStartsMs)을 그대로 재생한다.
+    cronIntervalMs: 'recorded',
+    phaseOffsetsMs: [0],
+    loadFixture: loadRide20260914MorningFixture,
+    expect: {
+      // #2602 fix 전: 건대입구가 ssot-stale(128,365ms>60,000ms)로 nextWaypoint 채널에서
+      // 차단돼 3역만 발사(red). fix 후: freshness가 cron cycle(≤2) 이산화로 바뀌어 128,365ms
+      // (2 cycle 이내)도 신선 판정 → 4역 모두 발사(green) — 회귀 앵커.
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
       hopEndPromptStations: ['건대입구'],
       minPushes: 4,
     },

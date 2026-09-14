@@ -10961,13 +10961,15 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
  *   - P1 transfer at-target + 신선 SSoT → fire
  *   - P2 transfer 직전 1 hop + 신선 SSoT → fire
  *   - N9 transfer SSoT 다른 station + 신선 → block(ssot-not-at-or-approaching)
- *   - N9-stale transfer at-target 인데 lastAdvanceAt 60s 초과 → block(ssot-stale)
+ *   - N9-stale transfer at-target 인데 lastAdvanceAt 3 cycle 이상 경과 → block(ssot-stale)
  *   - destination 동일 매트릭스 1개로 cover (N10)
  */
 describe('runScheduled — ADR-017 T7 (#1560) transfer/destination SSoT gate', () => {
   const TOKEN = 't7-tok';
   const FRESH_LAST_ADVANCE = NOW - 30_000;
-  const STALE_LAST_ADVANCE = NOW - 90_000;
+  // #2602 — freshness가 시간창에서 cron cycle 수(2) 이산화로 바뀌어, stale 경계도 3 cycle
+  // (180,000ms) 이상 경과로 갱신 (N9 정지 trip 차단 의미는 유지).
+  const STALE_LAST_ADVANCE = NOW - 3 * 60_000;
 
   type T7Scenario = {
     name: string;
@@ -11009,7 +11011,7 @@ describe('runScheduled — ADR-017 T7 (#1560) transfer/destination SSoT gate', (
       expectReason: 'ssot-not-at-or-approaching',
     },
     {
-      name: 'N9-stale transfer at-target 인데 60s 초과 → block(ssot-stale)',
+      name: 'N9-stale transfer at-target 인데 3 cycle 이상 경과 → block(ssot-stale)',
       waypointKind: 'transfer',
       waypointStation: '중곡',
       ssotCurrentStation: '중곡',

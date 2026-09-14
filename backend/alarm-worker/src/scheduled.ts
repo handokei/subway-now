@@ -2396,8 +2396,8 @@ export interface FireArvlCdStationPushInputs {
 /**
  * #1614 Phase C — stale SSoT lock false-fire 차단 임계.
  *
- * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_WINDOW_MS` (60s) 는 transfer/destination
- * kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용 — transfer 게이트보다 보수적
+ * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_CYCLES` (2 cron cycle, #2602 이산화) 는
+ * transfer/destination kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용 — transfer 게이트보다 보수적
  * (3분) 으로 두어 정상 운영(역 간 hop 평균 1~2분 + cron jitter) 을 차단하지 않으면서, 멈춘 trip
  * 의 stale lock 에서 cron 누적 misfire(2026-06-19 evidence) 를 차단한다.
  *
@@ -3565,13 +3565,15 @@ async function tryAdvanceAndFireArvlcd(inputs: {
   // 직전 1 hop 인지 (2) 마지막 advance 가 60s 이내 신선한지 확인. intermediate kind는 본 게이트
   // 우회 — T4/T5 6단 게이트만으로 충분. 정지 trip "환승임박 건대입구" false fire(N9) 차단.
   if (isTransferOrDestination(waypoint)) {
+    // #2321 — device sync stale 시 cycle 신선도 검사 dormant (arvlCd ground truth 신뢰).
+    const deviceSyncStale = isDeviceSyncStale(ssot, now);
     const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
-      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
-      deviceSyncStale: isDeviceSyncStale(ssot, now),
+      deviceSyncStale,
     });
     if (!transferGate.pass) {
       stats.arvlCdFireBlocked += 1;
       stats.transferDestinationGateBlocked += 1;
+      const passedStations = trip.passedStations ?? [];
       log('arvlcd-fire: transfer/destination gate blocked', {
         token: trip.token.slice(0, 8),
         trainCode: lock.trainCode,
@@ -3580,6 +3582,13 @@ async function tryAdvanceAndFireArvlcd(inputs: {
         reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
         ssotCurrent: ssot.currentStationId,
         ssotLastAdvanceAt: ssot.lastAdvanceAt,
+        // #2602 — 게이트 입력 스탬프. position 차단(ssot-not-at-or-approaching) 재발 시
+        // currentStationId/lastPassed 조합으로 즉시 root 특정 (production skipped meta 미기록 갭 해소).
+        currentStationId: ssot.currentStationId,
+        lastPassed: passedStations[passedStations.length - 1],
+        lastAdvanceAt: ssot.lastAdvanceAt,
+        lastAdvanceAtDeltaMs: ssot.lastAdvanceAt === 0 ? undefined : now - ssot.lastAdvanceAt,
+        deviceSyncStale,
       });
       if (transferGate.blockReason !== undefined) {
         await recordFireBlockReasonTransition(env, trip, waypoint, ssot, transferGate.blockReason, now);
@@ -3798,12 +3807,14 @@ export async function fireVanishFallbackStationPush(
   // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 일관성 검증.
   // SSoT 부재 trip(legacy)은 본 게이트 통과시켜 기존 vanish-fallback 흐름 유지 — graceful.
   if (ssot !== null && isTransferOrDestination(waypoint)) {
+    // #2321 — device sync stale 시 cycle 신선도 검사 dormant (arvlCd ground truth 신뢰).
+    const deviceSyncStale = isDeviceSyncStale(ssot, now);
     const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
-      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
-      deviceSyncStale: isDeviceSyncStale(ssot, now),
+      deviceSyncStale,
     });
     if (!transferGate.pass) {
       stats.transferDestinationGateBlocked += 1;
+      const passedStations = trip.passedStations ?? [];
       log(`${logPrefix}: transfer/destination gate blocked`, {
         token: trip.token.slice(0, 8),
         trainCode: lock.trainCode,
@@ -3813,6 +3824,12 @@ export async function fireVanishFallbackStationPush(
         reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
         ssotCurrent: ssot.currentStationId,
         ssotLastAdvanceAt: ssot.lastAdvanceAt,
+        // #2602 — 게이트 입력 스탬프 (위 arvlcd-fire 경로와 동일 계약).
+        currentStationId: ssot.currentStationId,
+        lastPassed: passedStations[passedStations.length - 1],
+        lastAdvanceAt: ssot.lastAdvanceAt,
+        lastAdvanceAtDeltaMs: ssot.lastAdvanceAt === 0 ? undefined : now - ssot.lastAdvanceAt,
+        deviceSyncStale,
       });
       return;
     }
