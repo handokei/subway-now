@@ -443,9 +443,9 @@ export async function advanceTripPosition(
   // stall 재현). deviceSyncStale 여부와 무관하게, 열차 자체의 arvlCd 진행이 device motion보다
   // 강한 ground truth이므로 motion gate를 면제한다. false-positive 방어는 gate #5(train identity
   // — `lock.trainCode` 불일치 시 blocked('train-mismatch'))와 T7
-  // `evaluateTransferDestinationGate`(transfer/destination kind 60s 신선도, 2026-06-19 회귀 방어)가
-  // 유지 — 본 게이트에서 lock 없음/trainCode 확증 없는 evidence(예: `position-train`)는 기존대로
-  // 차단된다.
+  // `evaluateTransferDestinationGate`(transfer/destination kind freshness 게이트 — #2602 이후
+  // cron cycle 이산화, 경로별 관용치 상이, 2026-06-19 회귀 방어)가 유지 — 본 게이트에서 lock
+  // 없음/trainCode 확증 없는 evidence(예: `position-train`)는 기존대로 차단된다.
   const lockedTrainArvlcdBypass = lock !== undefined && evidence.type === 'arvlcd-confirmed-train';
   if (
     ssot.motionState === 'stationary' &&

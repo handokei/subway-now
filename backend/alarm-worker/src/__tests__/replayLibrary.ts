@@ -76,8 +76,9 @@ export interface ReplayLibraryEntry {
     /**
      * transfer waypoint 전용 hop-end-prompt 채널(`sendBoardingPromptPush`, "하차했나요?")에서
      * 발사돼야 하는 역들(#2600 코드리뷰 항목1) — `push.body.body.originStation`
-     * (+ `hopEndKind==='disembark'`)로 식별. `evaluateTransferDestinationGate`의 60s 신선도
-     * 게이트와 무관하게(자체 dedup만 적용) 항상 발사되는 channel이라 `firedStations`(alert
+     * (+ `hopEndKind==='disembark'`)로 식별. `evaluateTransferDestinationGate`의 freshness
+     * 게이트(#2602 이후 cron cycle 이산화)와 무관하게(자체 dedup만 적용) 항상 발사되는
+     * channel이라 `firedStations`(alert
      * nextWaypoint 채널)와는 발사 조건이 다르다 — 같은 transfer 역이 두 채널 모두에서 발사될
      * 수 있으므로 별도 필드로 분리한다. 미지정 시 이 채널은 검증하지 않는다(N/A, 예:
      * intermediate/destination만 있는 trip).
@@ -195,15 +196,16 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       '#2602 — 2026-09-14 06:xx 아침 라이드(7039 lock) 실캡처. RCA 확정 회귀 앵커: 어린이대공원' +
       ' advance~건대입구 평가 간 128,365ms 지연(구 60,000ms 시간창 초과, 신규 2 cycle 이내)이' +
       ' production 06:41 skip(EVT 315, D1)과 동일 root — freshness cycle 이산화 fix로 4역 발사.',
-    seedTrips: () => {
-      const trip = makeDesk20260913LockTrip(
+    // 오늘 아침 실 탑승 열차는 7039(D1 실측) — helper 기본값(7301, 어제 데스크 trip)을
+    // overrides 파라미터로 명시 override(#2602 코드리뷰 항목8 — silent-skip mutation 대신
+    // helper가 boardingLock 생성 시점에 직접 반영, `makeFixtureTrip` 관례).
+    seedTrips: () => [
+      makeDesk20260913LockTrip(
         'replay-library-ride-20260914-morning',
         loadRide20260914MorningFixture().window.fromMs,
-      );
-      // 오늘 아침 실 탑승 열차는 7039(D1 실측) — helper 기본값(7301, 어제 데스크 trip)을 override.
-      if (trip.boardingLock) trip.boardingLock.trainCode = RIDE_20260914_MORNING_LOCK_TRAIN;
-      return [trip];
-    },
+        { trainCode: RIDE_20260914_MORNING_LOCK_TRAIN },
+      ),
+    ],
     // 실 P0-a 캡처 — 실제 cron cycle 시각(fixture.cycleStartsMs)을 그대로 재생한다.
     cronIntervalMs: 'recorded',
     phaseOffsetsMs: [0],
