@@ -88,6 +88,7 @@ import {
   ARVL_CD_ARRIVED_MAX_AGE_MS,
   CANDIDATE_ANCHOR_WINDOW_DEFAULT,
   CANDIDATE_ANCHOR_WINDOW_EXPANDED,
+  CANDIDATE_ENV_REJECT_TTL_MS,
   CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD,
   CURRENT_STATION_STALE_DEMOTE_MS,
   DETECTION_FUSED_MAX_DISTANCE_KM,
@@ -687,6 +688,10 @@ export function useFusedNearestStation(
   // #1748 — candidate-reject 연속 카운트. 같은 noLine 5+ cycle 연속 reject → anchor window 2배 확장.
   // key: LineNumber, value: 연속 reject 횟수. 채택 성공 시 해당 line 카운트 리셋.
   const consecutiveRejectByLineRef = useRef<Map<string, number>>(new Map());
+
+  // #2619 (#2594 후속) — candidate-env reject TTL 캐시. key: `${stationName}:${line}`,
+  // value: 마지막 reject push epoch ms. CANDIDATE_ENV_REJECT_TTL_MS 이내 재평가 skip.
+  const candidateEnvRejectTtlRef = useRef<Map<string, number>>(new Map());
 
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
@@ -1657,13 +1662,25 @@ export function useFusedNearestStation(
   // dedup: 매 candidates 갱신 cycle에 한 번만 push (useEffect deps에 [candidates, environment]).
   // environment === 'unknown' 또는 candidate.station.environment 미정의/mixed인 entry는 보수적
   // 무시 — `isCandidateEnvMismatch`가 false 반환.
+  //
+  // #2619 (#2594 후속) — 같은 (station,line) 조합은 CANDIDATE_ENV_REJECT_TTL_MS(30s) 동안
+  // 재평가 자체를 skip (로그 dedup이 아니라 `isCandidateEnvMismatch` 호출 자체를 건너뜀).
+  // 데스크 실증: 정지 상태의 같은 후보가 초당 14~21회 reject 루프에 재진입 — 게이트 판정은
+  // 옳지만 즉시 재평가되는 빈도가 발열 root. TTL 만료 후에는 정상적으로 다시 평가된다.
   useEffect(() => {
     if (candidates.length === 0) return;
+    const now = Date.now();
     for (const cand of candidates) {
+      const ttlKey = `${cand.station.name}:${cand.station.line}`;
+      const lastRejectedAt = candidateEnvRejectTtlRef.current.get(ttlKey);
+      if (lastRejectedAt !== undefined && now - lastRejectedAt < CANDIDATE_ENV_REJECT_TTL_MS) {
+        continue;
+      }
       if (!isCandidateEnvMismatch(environment, cand)) continue;
+      candidateEnvRejectTtlRef.current.set(ttlKey, now);
       pushCandidateRejectEntry({
         kind: 'candidate-reject',
-        ts: Date.now(),
+        ts: now,
         reason: 'candidate-env',
         stationName: cand.station.name,
         line: cand.station.line,

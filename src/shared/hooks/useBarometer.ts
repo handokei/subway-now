@@ -136,6 +136,59 @@ export function useBarometer(): BarometerSignal {
     }
     let cancelled = false;
     let subscription: { remove(): void } | null = null;
+    let flushIntervalId: ReturnType<typeof setInterval> | null = null;
+
+    // #2619 (#2594 후속) — 1Hz 집계 evaluate. native `Barometer.setUpdateInterval`은 iOS
+    // CMAltimeter에서 사실상 no-op("Nothing we can do", expo-sensors BarometerModule.swift)이라
+    // 실측 콜백 빈도는 uncontrolled(데스크 dump: 초당 14~21회) — listener 콜백마다 setState하면
+    // 그 빈도 그대로 렌더/fusion 재평가가 폭주한다(#2619). 신호 산출 로직(hysteresis/threshold)은
+    // 그대로 두고, ring buffer read + verdict 평가 + setState 적용만 이 1Hz interval로 옮긴다.
+    const evaluateAndFlush = (): void => {
+      const now = Date.now();
+      // #1398 — reading 수 dump 노출. ring buffer는 60s TTL이라 안정 시 약 60.
+      setReadingCount(getBarometerReadings().length);
+
+      const subVerdict = evaluateLatestSubsurface(now);
+      const subDetected = subVerdict?.detected === true;
+      if (subDetected === lastSubsurfaceRef.current) {
+        subsurfacePendingRef.current = 0;
+      } else {
+        subsurfacePendingRef.current += 1;
+        if (subsurfacePendingRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
+          lastSubsurfaceRef.current = subDetected;
+          subsurfacePendingRef.current = 0;
+          setSubsurface(subDetected);
+          void setSubsurfaceState(subDetected);
+        }
+      }
+
+      const stopVerdict = evaluateLatestStop(now);
+      const stopDetected: boolean | undefined =
+        stopVerdict === null ? undefined : stopVerdict.detected;
+      if (stopDetected === lastStopRef.current) {
+        stopPendingRef.current = 0;
+        // unavailable 상태가 유지될 때 reason도 'readings'로 유지.
+        if (stopDetected === undefined) setUnavailableReason('readings');
+        return;
+      }
+      if (stopDetected === undefined) {
+        // 평가 불가(reading 부족)는 hysteresis 없이 즉시 반영 — fusion 입력 정확성 우선.
+        lastStopRef.current = undefined;
+        stopPendingRef.current = 0;
+        setStop(undefined);
+        // #1398 — readings 게이트 단계. sensor/permission이 통과한 후의 unavailable.
+        setUnavailableReason('readings');
+        return;
+      }
+      stopPendingRef.current += 1;
+      if (stopPendingRef.current >= BAROMETER_STOP_CONFIRM_SAMPLES) {
+        lastStopRef.current = stopDetected;
+        stopPendingRef.current = 0;
+        setStop(stopDetected);
+        // #1398 — stop이 boolean으로 결정됨 → unavailable 해제.
+        setUnavailableReason(undefined);
+      }
+    };
 
     const init = async (): Promise<void> => {
       const available = await safeIsAvailable();
@@ -159,58 +212,21 @@ export function useBarometer(): BarometerSignal {
       subscription = Barometer.addListener((m: BarometerMeasurement) => {
         // m.timestamp는 boot 이후 초 — wall-clock과 직접 비교 불가.
         // ring buffer는 epoch ms 윈도우로 평가하므로 Date.now()로 직접 stamp.
-        const now = Date.now();
-        appendBarometerReading({ t: now, pressureHpa: m.pressure });
-        // #1398 — reading 수 dump 노출. ring buffer는 60s TTL이라 안정 시 약 60.
-        setReadingCount(getBarometerReadings().length);
-
-        const subVerdict = evaluateLatestSubsurface(now);
-        const subDetected = subVerdict?.detected === true;
-        if (subDetected === lastSubsurfaceRef.current) {
-          subsurfacePendingRef.current = 0;
-        } else {
-          subsurfacePendingRef.current += 1;
-          if (subsurfacePendingRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
-            lastSubsurfaceRef.current = subDetected;
-            subsurfacePendingRef.current = 0;
-            setSubsurface(subDetected);
-            void setSubsurfaceState(subDetected);
-          }
-        }
-
-        const stopVerdict = evaluateLatestStop(now);
-        const stopDetected: boolean | undefined =
-          stopVerdict === null ? undefined : stopVerdict.detected;
-        if (stopDetected === lastStopRef.current) {
-          stopPendingRef.current = 0;
-          // unavailable 상태가 유지될 때 reason도 'readings'로 유지.
-          if (stopDetected === undefined) setUnavailableReason('readings');
-          return;
-        }
-        if (stopDetected === undefined) {
-          // 평가 불가(reading 부족)는 hysteresis 없이 즉시 반영 — fusion 입력 정확성 우선.
-          lastStopRef.current = undefined;
-          stopPendingRef.current = 0;
-          setStop(undefined);
-          // #1398 — readings 게이트 단계. sensor/permission이 통과한 후의 unavailable.
-          setUnavailableReason('readings');
-          return;
-        }
-        stopPendingRef.current += 1;
-        if (stopPendingRef.current >= BAROMETER_STOP_CONFIRM_SAMPLES) {
-          lastStopRef.current = stopDetected;
-          stopPendingRef.current = 0;
-          setStop(stopDetected);
-          // #1398 — stop이 boolean으로 결정됨 → unavailable 해제.
-          setUnavailableReason(undefined);
-        }
+        // #2619 — 여기서는 ring buffer append만 한다(React state 미호출). native 콜백이
+        // uncontrolled rate로 발화해도 렌더에는 영향 없음 — evaluate/setState는 아래 1Hz
+        // interval(evaluateAndFlush)이 전담.
+        appendBarometerReading({ t: Date.now(), pressureHpa: m.pressure });
       });
+
+      // #2619 — state 반영 주기를 1Hz(BAROMETER_SAMPLE_INTERVAL_MS)로 고정.
+      flushIntervalId = setInterval(evaluateAndFlush, BAROMETER_SAMPLE_INTERVAL_MS);
     };
 
     void init();
 
     return () => {
       cancelled = true;
+      if (flushIntervalId !== null) clearInterval(flushIntervalId);
       if (subscription !== null) subscription.remove();
       resetBarometerState();
       // 주의: unmount 후 setSubsurface 호출은 React가 무시(unmounted state warning). state는

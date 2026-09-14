@@ -38,6 +38,7 @@ type Listener = (m: { pressure: number; timestamp: number }) => void;
 const ORIGINAL_ARCH_ENV = process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
 
 beforeEach(() => {
+  jest.useFakeTimers();
   mockIsAvailable.mockReset();
   mockRequestPermissions.mockReset();
   mockSetUpdateInterval.mockReset();
@@ -49,6 +50,10 @@ beforeEach(() => {
   resetBarometerState();
   // #2006 — 각 테스트 전 flag 초기화 (기본 OFF).
   delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 afterAll(() => {
@@ -63,6 +68,19 @@ async function flush(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
+  });
+}
+
+/**
+ * #2619 — evaluate/setState가 1Hz interval(evaluateAndFlush)로 이전됨에 따라, listener 발화
+ * 후 다음 flush tick까지 fake timer를 advance해야 result.current가 갱신된다. native 콜백
+ * 자체는 uncontrolled rate로 여러 번 발화할 수 있지만(#2619 RCA), 여기서는 매 샘플마다 1회
+ * flush를 advance해 기존 "콜백 1회 = 평가 1회" 테스트 의도를 유지한다.
+ */
+function fireAndFlush(listener: Listener, sample: { pressure: number; timestamp: number }): void {
+  act(() => {
+    listener(sample);
+    jest.advanceTimersByTime(BAROMETER_SAMPLE_INTERVAL_MS);
   });
 }
 
@@ -102,6 +120,8 @@ function fireListenerWindow(
     nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
     act(() => {
       listener({ pressure: pressureAt(i), timestamp: 30 + i });
+      // #2619 — evaluate/setState가 1Hz interval로 이전됨에 따라 flush tick을 함께 advance.
+      jest.advanceTimersByTime(BAROMETER_SAMPLE_INTERVAL_MS);
     });
   }
 }
@@ -223,9 +243,7 @@ describe('useBarometer (#875)', () => {
     const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
 
     // t=0 baseline.
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     expect(result.current.subsurface).toBe(false);
 
     // 30s 경과 + 임계 이상 dP — confirm 3회 누적.
@@ -245,9 +263,7 @@ describe('useBarometer (#875)', () => {
     // 임계 부근 진동 시 카운터는 누적 못 하고 같은 verdict 1회 도착마다 리셋 → state flip 발생 안 함.
     const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
 
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
 
     // 임계+, 임계-, 임계+ 진동 — 같은 카운트(true)가 2회 누적되나 사이의 false가 reset.
     fireListenerWindow(listener, nowSpy, baseT, 6, (i) => {
@@ -270,9 +286,7 @@ describe('useBarometer (#875)', () => {
     const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
 
     // t=0 baseline.
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     // 첫 sample은 readings 1개 + baseline 부재 — verdict null → undefined.
     expect(result.current.stop).toBeUndefined();
 
@@ -286,9 +300,7 @@ describe('useBarometer (#875)', () => {
   it('#921 — |dP|가 stop 임계 초과(이동 중)면 stop=false (hysteresis 후)', async () => {
     const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
 
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     // 정차 → 이동 전환: dP=0.1 hPa(임계 0.05 초과) 3회 연속.
     fireListenerWindow(
       listener,
@@ -306,18 +318,14 @@ describe('useBarometer (#875)', () => {
     const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
 
     // 정차 신호 확립.
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     fireListenerWindow(listener, nowSpy, baseT, 3, () => 1013);
     expect(result.current.stop).toBe(true);
 
     // resetBarometerState로 readings를 비워 verdict null 유도 — 첫 새 reading은 baseline 부재.
     resetBarometerState();
     nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS * 3);
-    act(() => {
-      listener({ pressure: 1013.5, timestamp: 100 });
-    });
+    fireAndFlush(listener, { pressure: 1013.5, timestamp: 100 });
     expect(result.current.stop).toBeUndefined();
 
     nowSpy.mockRestore();
@@ -327,9 +335,7 @@ describe('useBarometer (#875)', () => {
     const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
 
     // baseline.
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     // stop=true 2번만 — confirm 3 미달.
     fireListenerWindow(listener, nowSpy, baseT, 2, () => 1013);
     expect(result.current.stop).toBeUndefined();
@@ -340,9 +346,7 @@ describe('useBarometer (#875)', () => {
   it('#1279 — subsurface flip 시 setSubsurfaceState 호출', async () => {
     const { listener, nowSpy, baseT } = await setupBarometerWithListener();
 
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     // hysteresis 3회 미달 — setSubsurfaceState 미호출.
     expect(mockSetSubsurfaceState).not.toHaveBeenCalled();
 
@@ -361,9 +365,7 @@ describe('useBarometer (#875)', () => {
 
   it('#903 — unmount 시 subscription remove + ring buffer reset', async () => {
     const { result, unmount, listener, nowSpy, baseT } = await setupBarometerWithListener();
-    act(() => {
-      listener({ pressure: 1013, timestamp: 0 });
-    });
+    fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
     fireListenerWindow(
       listener,
       nowSpy,
@@ -409,9 +411,7 @@ describe('useBarometer (#875)', () => {
     it('stop이 boolean 결정 → unavailableReason=undefined (정상) + readingCount > 0', async () => {
       const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
       // baseline + 30s 후 dP≈0 정상 stop 신호.
-      act(() => {
-        listener({ pressure: 1013, timestamp: 0 });
-      });
+      fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
       fireListenerWindow(listener, nowSpy, baseT, 3, () => 1013);
       expect(result.current.stop).toBe(true);
       expect(result.current.unavailableReason).toBeUndefined();
@@ -421,9 +421,7 @@ describe('useBarometer (#875)', () => {
 
     it('stop이 boolean 결정된 후 reading buffer reset → unavailableReason="readings"로 회귀', async () => {
       const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
-      act(() => {
-        listener({ pressure: 1013, timestamp: 0 });
-      });
+      fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
       fireListenerWindow(listener, nowSpy, baseT, 3, () => 1013);
       expect(result.current.stop).toBe(true);
       expect(result.current.unavailableReason).toBeUndefined();
@@ -431,9 +429,7 @@ describe('useBarometer (#875)', () => {
       // ring buffer reset → 새 tick은 baseline 부재 → verdict null → readings.
       resetBarometerState();
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS * 3);
-      act(() => {
-        listener({ pressure: 1013.5, timestamp: 100 });
-      });
+      fireAndFlush(listener, { pressure: 1013.5, timestamp: 100 });
       expect(result.current.stop).toBeUndefined();
       expect(result.current.unavailableReason).toBe('readings');
       nowSpy.mockRestore();
@@ -442,14 +438,10 @@ describe('useBarometer (#875)', () => {
     it('unavailable 유지 (같은 undefined verdict 반복) → reason="readings" 그대로 유지', async () => {
       const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
       // baseline 1건 — 30s 윈도우 부족 → verdict null 유지.
-      act(() => {
-        listener({ pressure: 1013, timestamp: 0 });
-      });
+      fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
       // 그 후 1초 후 한 번 더 — 여전히 baseline 부재(첫 reading=30s 이전 아님) → verdict null.
       nowSpy.mockReturnValue(baseT + 1_000);
-      act(() => {
-        listener({ pressure: 1013, timestamp: 1 });
-      });
+      fireAndFlush(listener, { pressure: 1013, timestamp: 1 });
       expect(result.current.stop).toBeUndefined();
       expect(result.current.unavailableReason).toBe('readings');
       nowSpy.mockRestore();
