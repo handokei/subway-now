@@ -15,8 +15,7 @@ import {
   isSameStationName,
 } from '../../../shared/utils/stationRoute';
 import { resolveAllTargets } from '../../alarm/utils/stationAlarm';
-import { resolveTravelDirection } from './travelDirection';
-import { inferLoopDirection } from './loopDirection';
+import { directionOnLine } from './directionOnLine';
 import type { TripDirection } from './tripDirection';
 
 export interface ActiveTransferContext {
@@ -26,7 +25,12 @@ export interface ActiveTransferContext {
   nextLine: LineNumber;
   /** 환승 직후 다음 waypoint(=destination 또는 다음 transfer)의 이름. */
   nextWaypointName: string;
-  /** toLine 기준 새 진행방향. 좌표/index 비교 실패 시 null — 양방향 합산 fallback. */
+  /**
+   * toLine 기준 새 진행방향 — `directionOnLine`(station id 두 개, #2455)으로 산출한다.
+   * `shortestLinePathIndices` 기반 단일 알고리즘이라 2호선 순환선 wraparound seam(시청↔충정로)도
+   * 정확히 처리한다(#2609). nextWaypoint의 toLine station을 못 찾거나(예: 데이터 정합성 문제)
+   * 같은 station이면 null — 호출자는 양방향 합산으로 fallback한다.
+   */
   direction: TripDirection | null;
   /**
    * 사용자가 방금 도달해서 환승을 끝낸 transfer의 인덱스 (#604).
@@ -45,8 +49,8 @@ export interface ActiveTransferContext {
  * - resolveAllTargets로 waypoint 목록 산출 후 currentStation.name과 매칭되는 target 탐색
  * - 매칭된 target이 transfer가 아니거나 그 다음 target이 없으면 null (도착역이거나 환승 없음)
  * - 매칭된 target의 다음 target.approachLine을 nextLine으로 사용 — 환승 후 진행할 노선
- * - direction은 transferStationInToLine.name → nextWaypointName을 resolveDirectionInLine으로
- *   판정 — 단조 노선은 resolveTravelDirection, 순환선(2호선)은 inferLoopDirection(#2609).
+ * - direction은 transferStationInToLine.id → nextWaypoint(toLine 변형)의 id를 directionOnLine
+ *   (#2455, shortestLinePathIndices 기반 단일 알고리즘)으로 판정한다(#2609).
  */
 export function findActiveTransferContext(
   lock: BoardingLock | null,
@@ -65,11 +69,13 @@ export function findActiveTransferContext(
   // 환승역에 머무는 경우, 가드 없으면 같은 list가 다시 노출되어 lock 중복 생성 가능.
   if (lock.boardingLine === nextLine) return null;
 
-  const direction = resolveDirectionInLine(
-    nextLine,
-    transferStationInToLine.name,
-    nextWaypointName,
-  );
+  // nextWaypoint(destination/다음 transfer)의 toLine 변형 station을 조회해 id 기반으로
+  // directionOnLine에 넘긴다 — #1410 BLDN_NM drift도 findStationByNameAndLine의 정규화
+  // fallback으로 흡수된다. lookup 실패(데이터 정합성 문제)면 direction=null로 안전 폴백.
+  const nextWaypointStation = findStationByNameAndLine(nextWaypointName, nextLine);
+  const direction = nextWaypointStation
+    ? directionOnLine(nextLine, transferStationInToLine.id, nextWaypointStation.id)
+    : null;
 
   return {
     transferStationInToLine,
@@ -215,32 +221,4 @@ export function findUpcomingTransferPrefetch(
   if (remainingStops > PREFETCH_IMMINENT_STOPS) return null;
 
   return { nextLine, transferStationName: upcoming.name };
-}
-
-/**
- * 한 노선 내에서 from station name → to station name의 진행 방향을 산출한다 (#2609 RCA).
- *
- * tripDirection.ts의 resolveTripDirection은 route의 첫 leg만 보므로 환승 후 leg에는 쓸 수 없음 — 별도 유틸.
- * 이전에는 이 함수가 `getStationsOnLine` index를 naive하게(순환선 wraparound 미고려) 비교했는데,
- * 2호선처럼 closed loop인 toLine에서 실제 물리적으로 더 짧은 호(弧)가 반대편(index wraparound)일 때
- * 오판정할 수 있었다(#2609 — 건대입구 7→2 환승 실 라이드에서 구의/성수 양방향 동시 노출).
- *
- * 앱 전역에서 이미 검증된 canonical 패턴(alarmDirection.ts, boardingPromptContext.ts,
- * nextAdjacentStation.ts의 resolveNextAdjacentStationName)을 그대로 재사용한다:
- *   1. 단조 노선(`lineTopology.json`의 monotonicLines)은 `resolveTravelDirection`.
- *   2. 순환/하이브리드 노선(2호선/6호선)은 `inferLoopDirection`(짧은 호 기준, wraparound-aware).
- *   3. 위 둘 다 실패(분기 노선인 5호선 등 방향 도출 자체가 불가능한 케이스)하면 null —
- *      호출자(findActiveTransferContext)가 null을 받으면 양방향 합산으로 안전 폴백한다.
- *
- * 테스트 노출용 export — 실데이터 의존이라 각 분기(단조/순환/도출불가)를 직접 호출로 강제한다.
- */
-export function resolveDirectionInLine(
-  line: LineNumber,
-  fromStationName: string,
-  toStationName: string,
-): TripDirection | null {
-  return (
-    resolveTravelDirection(line, fromStationName, toStationName)?.direction ??
-    inferLoopDirection(line, fromStationName, toStationName)
-  );
 }
