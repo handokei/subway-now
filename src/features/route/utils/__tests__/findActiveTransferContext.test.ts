@@ -63,7 +63,7 @@ describe('findActiveTransferContext', () => {
     expect(ctx!.nextLine).toBe('5');
     expect(ctx!.transferStationInToLine.id).toBe(gondeokOnLine5.id);
     expect(ctx!.nextWaypointName).toBe('여의나루');
-    // direction은 5호선 index 비교 결과 — 동작 검증만 (down/up/null 중 하나).
+    // 5호선은 분기 노선이라 resolveDirectionInLine이 null 산출(#2609) — 동작 검증만.
     expect(['up', 'down', null]).toContain(ctx!.direction);
     // transfer 라우트: completedTransferIdx는 항상 0
     expect(ctx!.completedTransferIdx).toBe(0);
@@ -155,7 +155,10 @@ describe('findActiveTransferContext', () => {
     expect(findActiveTransferContext(lock, route, '여의나루', hyochang)).toBeNull();
   });
 
-  it('환승 시 direction이 명시적으로 산출됨 (resolveDirectionInLine 성공 경로)', () => {
+  it('환승 후 toLine이 분기 노선(5호선)이면 방향 도출 불가 → null (#2609 fix 후 정확한 동작)', () => {
+    // 5호선은 lineTopology.json monotonicLines에도 closedLoops에도 없는 분기(마천/방화) 노선이라
+    // resolveTravelDirection/inferLoopDirection 둘 다 실패 → null. 호출자는 양방향 노출로 폴백한다
+    // (이슈 #2609 Acceptance: "방향 도출 불가 시에만 양방향 노출").
     const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
@@ -165,8 +168,25 @@ describe('findActiveTransferContext', () => {
     });
     const ctx = findActiveTransferContext(lock, route, '여의나루', gondeokOnLine6);
     expect(ctx).not.toBeNull();
-    // 5호선 공덕→여의나루는 stations.json index가 다르므로 direction은 non-null
-    expect(ctx!.direction === 'up' || ctx!.direction === 'down').toBe(true);
+    expect(ctx!.direction).toBeNull();
+  });
+
+  it('환승 후 toLine이 순환선(2호선)이면 inferLoopDirection으로 wraparound-aware 방향 산출 (#2609 건대입구 7→2 환승 실 라이드 회귀)', () => {
+    const route = makeTransferRoute({
+      transferName: '건대입구',
+      fromLine: '7',
+      toLine: '2',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 2,
+    });
+    const geondaeOn7 = findStationByNameAndLine('건대입구', '7') as Station;
+    const ctx = findActiveTransferContext(lock, route, '성수', geondaeOn7);
+    expect(ctx).not.toBeNull();
+    expect(ctx!.nextLine).toBe('2');
+    // 2호선(순환선): 건대입구→성수는 짧은 backward arc(1 stop) → inferLoopDirection이 'up' 산출.
+    // 회귀 전에는 naive index 비교(non-wraparound-aware)라 우연히 같은 결과였으나, wraparound
+    // 케이스(nextWaypointName이 loop 반대편)에서는 오판정 — 이 테스트는 canonical 유틸 재사용 자체를 검증.
+    expect(ctx!.direction).toBe('up');
   });
 
   it('lock.boardingLine이 이미 nextLine이면 null (환승 lock 교체 직후 재노출 방지)', () => {
@@ -349,18 +369,27 @@ describe('findActiveTransferContext', () => {
     });
   });
 
-  describe('resolveDirectionInLine (직접 호출)', () => {
-    // 5호선 stations.json에서 첫 2개 역의 id/이름으로 양 방향 케이스 강제.
-    const line5 = getStationsOnLine('5');
-    const early = line5[0];
-    const late = line5[line5.length - 1];
-
-    it('nextIdx > currIdx → down', () => {
-      expect(resolveDirectionInLine('5', early.id, late.name)).toBe('down');
+  describe('resolveDirectionInLine (직접 호출, #2609)', () => {
+    it('단조 노선(7호선)은 resolveTravelDirection 경로로 산출', () => {
+      const line7 = getStationsOnLine('7');
+      const early = line7[0];
+      const late = line7[line7.length - 1];
+      expect(resolveDirectionInLine('7', early.name, late.name)).toBe('down');
+      expect(resolveDirectionInLine('7', late.name, early.name)).toBe('up');
     });
 
-    it('nextIdx < currIdx → up', () => {
-      expect(resolveDirectionInLine('5', late.id, early.name)).toBe('up');
+    it('순환선(2호선)은 resolveTravelDirection 실패 후 inferLoopDirection 경로로 산출', () => {
+      // 건대입구→성수: 짧은 backward arc(1 stop) → 'up'.
+      expect(resolveDirectionInLine('2', '건대입구', '성수')).toBe('up');
+      // 성수→건대입구: 반대 방향 → 'down'.
+      expect(resolveDirectionInLine('2', '성수', '건대입구')).toBe('down');
+    });
+
+    it('단조/순환 모두 아닌 분기 노선(5호선)은 방향 도출 불가 → null', () => {
+      const line5 = getStationsOnLine('5');
+      const early = line5[0];
+      const late = line5[line5.length - 1];
+      expect(resolveDirectionInLine('5', early.name, late.name)).toBeNull();
     });
   });
 

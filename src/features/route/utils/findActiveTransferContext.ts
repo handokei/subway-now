@@ -12,10 +12,11 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import {
   findStationByNameAndLine,
   getRemainingStops,
-  getStationsOnLine,
   isSameStationName,
 } from '../../../shared/utils/stationRoute';
 import { resolveAllTargets } from '../../alarm/utils/stationAlarm';
+import { resolveTravelDirection } from './travelDirection';
+import { inferLoopDirection } from './loopDirection';
 import type { TripDirection } from './tripDirection';
 
 export interface ActiveTransferContext {
@@ -44,7 +45,8 @@ export interface ActiveTransferContext {
  * - resolveAllTargets로 waypoint 목록 산출 후 currentStation.name과 매칭되는 target 탐색
  * - 매칭된 target이 transfer가 아니거나 그 다음 target이 없으면 null (도착역이거나 환승 없음)
  * - 매칭된 target의 다음 target.approachLine을 nextLine으로 사용 — 환승 후 진행할 노선
- * - direction은 transferStationInToLine.id ↔ nextWaypointName의 line stations index 비교로 산출
+ * - direction은 transferStationInToLine.name → nextWaypointName을 resolveDirectionInLine으로
+ *   판정 — 단조 노선은 resolveTravelDirection, 순환선(2호선)은 inferLoopDirection(#2609).
  */
 export function findActiveTransferContext(
   lock: BoardingLock | null,
@@ -65,7 +67,7 @@ export function findActiveTransferContext(
 
   const direction = resolveDirectionInLine(
     nextLine,
-    transferStationInToLine.id,
+    transferStationInToLine.name,
     nextWaypointName,
   );
 
@@ -216,20 +218,29 @@ export function findUpcomingTransferPrefetch(
 }
 
 /**
- * 한 노선 내에서 from station id ↔ to station name의 index 비교로 방향 산출.
+ * 한 노선 내에서 from station name → to station name의 진행 방향을 산출한다 (#2609 RCA).
+ *
  * tripDirection.ts의 resolveTripDirection은 route의 첫 leg만 보므로 환승 후 leg에는 쓸 수 없음 — 별도 유틸.
- * 테스트 노출용 export — 실데이터 의존이라 정/역방향 양쪽 분기 강제하기 위해 직접 호출.
+ * 이전에는 이 함수가 `getStationsOnLine` index를 naive하게(순환선 wraparound 미고려) 비교했는데,
+ * 2호선처럼 closed loop인 toLine에서 실제 물리적으로 더 짧은 호(弧)가 반대편(index wraparound)일 때
+ * 오판정할 수 있었다(#2609 — 건대입구 7→2 환승 실 라이드에서 구의/성수 양방향 동시 노출).
+ *
+ * 앱 전역에서 이미 검증된 canonical 패턴(alarmDirection.ts, boardingPromptContext.ts,
+ * nextAdjacentStation.ts의 resolveNextAdjacentStationName)을 그대로 재사용한다:
+ *   1. 단조 노선(`lineTopology.json`의 monotonicLines)은 `resolveTravelDirection`.
+ *   2. 순환/하이브리드 노선(2호선/6호선)은 `inferLoopDirection`(짧은 호 기준, wraparound-aware).
+ *   3. 위 둘 다 실패(분기 노선인 5호선 등 방향 도출 자체가 불가능한 케이스)하면 null —
+ *      호출자(findActiveTransferContext)가 null을 받으면 양방향 합산으로 안전 폴백한다.
+ *
+ * 테스트 노출용 export — 실데이터 의존이라 각 분기(단조/순환/도출불가)를 직접 호출로 강제한다.
  */
 export function resolveDirectionInLine(
   line: LineNumber,
-  fromStationId: string,
+  fromStationName: string,
   toStationName: string,
 ): TripDirection | null {
-  const stations = getStationsOnLine(line);
-  const currIdx = stations.findIndex((s) => s.id === fromStationId);
-  const nextIdx = stations.findIndex((s) => s.name === toStationName);
-  /* istanbul ignore next -- 호출 직전 findStationByNameAndLine과 next.approachLine 일관성으로
-     실제 데이터에서는 도달 불가. 정합성 깨진 데이터를 위한 방어 코드. */
-  if (currIdx < 0 || nextIdx < 0 || currIdx === nextIdx) return null;
-  return nextIdx > currIdx ? 'down' : 'up';
+  return (
+    resolveTravelDirection(line, fromStationName, toStationName)?.direction ??
+    inferLoopDirection(line, fromStationName, toStationName)
+  );
 }
