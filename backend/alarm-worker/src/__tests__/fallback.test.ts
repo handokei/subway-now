@@ -1,8 +1,10 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FALLBACK_ALERT_COLLAPSE_ID_PREFIX, fallbackAlertCollapseId } from '../collapseId';
+import { stampDeviceContact } from '../deviceContact';
 import { FALLBACK_THRESHOLD_MS, runFallbackPushes } from '../fallback';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
+import { hashTripToken } from '../sentry';
 import { putTrip } from '../trips';
 import type { Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -80,7 +82,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 0, pushed: 0, errors: 0, deferred: 0, skippedLocked: 0 });
+    expect(stats).toEqual({ scanned: 0, pushed: 0, errors: 0, deferred: 0, skippedLocked: 0, implicitAcked: 0 });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -96,7 +98,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 0, deferred: 1, skippedLocked: 0 });
+    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 0, deferred: 1, skippedLocked: 0, implicitAcked: 0 });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(kv.store.has(pendingKey('push-1'))).toBe(true);
   });
@@ -110,7 +112,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 1, pushed: 1, errors: 0, deferred: 0, skippedLocked: 0 });
+    expect(stats).toEqual({ scanned: 1, pushed: 1, errors: 0, deferred: 0, skippedLocked: 0, implicitAcked: 0 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`https://${APNS_HOSTS.sandbox}/3/device/devicetoken-hex`);
@@ -168,7 +170,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 1, deferred: 0, skippedLocked: 0 });
+    expect(stats).toEqual({ scanned: 1, pushed: 0, errors: 1, deferred: 0, skippedLocked: 0, implicitAcked: 0 });
     expect(kv.store.has(pendingKey('p-perm'))).toBe(false);
   });
 
@@ -398,6 +400,87 @@ describe('runFallbackPushes (#572 P2c)', () => {
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(stats.pushed).toBe(1);
+    });
+  });
+
+  describe('#2617 — fallback implicit ACK (device 접촉 stamp)', () => {
+    it('entry.sentAt 이후 device 접촉 존재 → fallback 미발사 + entry 삭제 + D1 fallback-implicit-ack 기록', async () => {
+      const tripsKv = new InMemoryKV();
+      await putTrip(tripsKv as unknown as KVNamespace, makeTripFixture({ token: 'tok-implicit' }));
+      // sentAt 이후 시각으로 접촉 stamp (FG /position 채널 시뮬레이션).
+      await stampDeviceContact(
+        tripsKv as unknown as KVNamespace,
+        hashTripToken('tok-implicit'),
+        NOW - FALLBACK_THRESHOLD_MS + 1_000,
+      );
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-implicit', tripToken: 'tok-implicit', stationName: '뚝섬' }),
+      );
+      const db = makeMockDb();
+      const fetchImpl = vi.fn();
+      const stats = await runFallbackPushes(
+        { ...makeEnv(kv, tripsKv), DB: db },
+        {
+          apnsConfig: apnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          now: () => NOW,
+        },
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(kv.store.has(pendingKey('p-implicit'))).toBe(false);
+      expect(stats.implicitAcked).toBe(1);
+      expect(stats.pushed).toBe(0);
+      expect(db.bind).toHaveBeenCalledWith(
+        expect.any(String),
+        NOW,
+        'fallback-implicit-ack',
+        '뚝섬',
+        null,
+        JSON.stringify({ pushId: 'p-implicit', ageMs: FALLBACK_THRESHOLD_MS }),
+      );
+    });
+
+    it('device 접촉이 entry.sentAt 이전(오래된 접촉)이면 implicit ACK로 인정하지 않고 기존대로 발사', async () => {
+      const tripsKv = new InMemoryKV();
+      await stampDeviceContact(
+        tripsKv as unknown as KVNamespace,
+        hashTripToken('tok-stale-contact'),
+        NOW - FALLBACK_THRESHOLD_MS - 5_000, // entry.sentAt보다 이전 접촉
+      );
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-stale-contact', tripToken: 'tok-stale-contact' }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runFallbackPushes(makeEnv(kv, tripsKv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(stats.implicitAcked).toBe(0);
+      expect(stats.pushed).toBe(1);
+    });
+
+    it('device 접촉 기록 없음(BG trip) → 기존 fallback 동작 불변(회귀 0)', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-no-contact', tripToken: 'tok-no-contact' }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runFallbackPushes(makeEnv(kv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(stats.implicitAcked).toBe(0);
+      expect(stats.pushed).toBe(1);
+      expect(kv.store.has(pendingKey('p-no-contact'))).toBe(false);
     });
   });
 

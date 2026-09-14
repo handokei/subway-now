@@ -100,7 +100,8 @@ export type TripEventKind =
   | 'leg2-estimate'
   | 'leg-boarding-prompt'
   | 'hop-end-prompt'
-  | 'fallback-alert-fired';
+  | 'fallback-alert-fired'
+  | 'fallback-implicit-ack';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

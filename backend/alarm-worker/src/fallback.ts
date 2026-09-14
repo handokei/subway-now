@@ -31,6 +31,7 @@
 import { sendAlertPush, type ApnsConfig, type SendPushResult } from './apns';
 import { buildAlertContent } from './alertContent';
 import { fallbackAlertCollapseId } from './collapseId';
+import { readDeviceContact } from './deviceContact';
 import { listPending, removePending, type PendingPush } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
 import { isBoardingLockActive } from './scheduled';
@@ -68,6 +69,12 @@ export interface FallbackStats {
    * 이 카운터와 D1 push_failure_log의 fallback push 로그로 교차 확인한다.
    */
   skippedLocked: number;
+  /**
+   * #2617 — device 접촉(`/position`, `/boarding-lock/sync`)이 entry.sentAt 이후 관측되어
+   * "device 살아있음 + FG 수신 중"으로 implicit ACK 판정하고 발사를 skip한 수. D1
+   * `fallback-implicit-ack`(기존 `fallback-alert-fired`와 대칭)와 교차 확인용 운영 가시성.
+   */
+  implicitAcked: number;
 }
 
 /**
@@ -77,12 +84,46 @@ export interface FallbackStats {
 export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<FallbackStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
-  const stats: FallbackStats = { scanned: 0, pushed: 0, errors: 0, deferred: 0, skippedLocked: 0 };
+  const stats: FallbackStats = {
+    scanned: 0,
+    pushed: 0,
+    errors: 0,
+    deferred: 0,
+    skippedLocked: 0,
+    implicitAcked: 0,
+  };
 
   for await (const entry of listPending(env.PENDING_PUSHES)) {
     stats.scanned += 1;
     if (now - entry.sentAt < FALLBACK_THRESHOLD_MS) {
       stats.deferred += 1;
+      continue;
+    }
+
+    // #2617 — implicit ACK 우선 판정. entry.sentAt 이후 device 접촉이 관측됐으면 kind 무관하게
+    // "device 살아있음 + FG 수신 중"으로 보고 alert 발사 없이 entry만 정리한다. 판정 불가(접촉
+    // 기록 없음/read 실패)는 `readDeviceContact`가 null을 반환해 기존 fallback 동작으로 낙하한다
+    // (보수 방향 — 늦게 보이면 한 번 더 fallback, #2617 spec).
+    const tokenHash = hashTripToken(entry.tripToken ?? entry.token);
+    const contactAt = await readDeviceContact(env.TRIPS, tokenHash);
+    if (contactAt !== null && contactAt >= entry.sentAt) {
+      stats.implicitAcked += 1;
+      log('alert fallback skip (implicit ack)', {
+        pushId: entry.pushId,
+        station: entry.stationName,
+        ageMs: Math.max(0, now - entry.sentAt),
+      });
+      await recordTripEvent(
+        env.DB,
+        {
+          tokenHash,
+          kind: 'fallback-implicit-ack',
+          station: entry.stationName,
+          meta: { pushId: entry.pushId, ageMs: Math.max(0, now - entry.sentAt) },
+        },
+        now,
+      );
+      await removePending(env.PENDING_PUSHES, entry.pushId);
       continue;
     }
 

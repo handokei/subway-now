@@ -1924,6 +1924,18 @@ describe('POST /position (#819)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('#2617 — valid payload → deviceContact stamp를 KV에 남긴다(fallback implicit ACK 입력)', async () => {
+    const env = makeKvEnv();
+    await post(
+      '/position',
+      { token: 'tok-pos-contact', lat: 1, lng: 2, accuracy: 5, ts: 1234, motion: 'walking' },
+      env,
+    );
+    const tokenHash = sentryModule.hashTripToken('tok-pos-contact');
+    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
+    expect(stamped).not.toBeNull();
+  });
+
   it.each([
     ['missing token', { lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
     ['empty token', { token: '', lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
@@ -3705,6 +3717,19 @@ describe('POST /boarding-lock/sync (#901)', () => {
       '역삼',
       '선릉',
     ]);
+  });
+
+  it('#2617 — sync 성공 시 deviceContact stamp를 KV에 남긴다(fallback implicit ACK 입력)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    const tokenHash = sentryModule.hashTripToken('tok-sync');
+    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
+    expect(stamped).not.toBeNull();
   });
 
   it('waypoints[1] 일치 → 2 hop catch-up advance', async () => {

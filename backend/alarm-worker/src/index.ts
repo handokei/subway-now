@@ -29,6 +29,7 @@ import {
   validateBoardingPromptOutcome,
 } from './boardingPromptOutcome';
 import { stampPushActivity } from './cronIdleGate';
+import { stampDeviceContact } from './deviceContact';
 import { markTripRegistered } from './activeTripsGate';
 import { runFallbackPushes } from './fallback';
 import { runRetryPushes } from './retryPushes';
@@ -1744,6 +1745,10 @@ app.post('/position', async (c) => {
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
   await appendPositionPoint(c.env.TRIPS, payload.token, payload.point);
+  // #2617 — fallback implicit ACK 입력. FG trip은 silent push 명시 ACK(push/ack received)가
+  // iOS 레벨 전달 불확실성으로 오지 않을 수 있어(2026-09-14 실측), 이 10초 주기 채널의 도달
+  // 자체를 "device가 살아있고 화면을 보고 있음" 증거로 stamp한다(deviceContact.ts RCA 참고).
+  await stampDeviceContact(c.env.TRIPS, hashTripToken(payload.token), Date.now());
   // #2153 (리뷰 P1) — boarding-prompt 신선도 게이트 anchor(`originProximityAt`)의 실시간 입력.
   // `trip.promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips 재등록 시에만 갱신되는
   // 정적 스냅샷이라(useApnsTripRegistration.ts는 currentStation을 register effect deps에서 제외),
@@ -2236,6 +2241,9 @@ app.post('/boarding-lock/sync', async (c) => {
   // KV가 사라져도 사후 재구성 가능해야 함). DB 미바인딩/실패는 recordTripEvent 내부 graceful no-op.
   // #2283 리뷰 P2-2 — 핫패스 응답 latency에 얹지 않도록 waitUntil로 스케줄(scheduleTripEvent 참고).
   const tokenHash = hashTripToken(payload.token);
+  // #2617 — fallback implicit ACK 입력. boarding-lock/sync는 사용자가 화면에서 역을 관측/탭한
+  // 결과이므로 `/position`과 동일하게 device 접촉으로 stamp한다.
+  await stampDeviceContact(c.env.TRIPS, tokenHash, now);
   scheduleTripEvent(
     c,
     recordTripEvent(c.env.DB, {
