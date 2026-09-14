@@ -336,6 +336,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       const wifiStation = lookupStationBySsid(wifiSsid);
       void uploadPosition({
         token: apnsToken,
+        // #2617 — BG location task 채널임을 backend에 명시(fallback implicit ACK 계약,
+        // "접촉=FG"로 오인하면 BG 사용자 fallback 안전망이 꺼짐).
+        appState: 'bg',
         lat,
         lng,
         accuracy: accuracy ?? 0,

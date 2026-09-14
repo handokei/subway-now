@@ -126,6 +126,8 @@ async function fireUpload(input: FireUploadInput): Promise<void> {
   const stationName = input.currentStationName;
   void uploadPosition({
     token,
+    // #2617 — FG 폴링 채널임을 backend에 명시(fallback implicit ACK 계약).
+    appState: 'fg',
     lat: input.lat,
     lng: input.lng,
     accuracy: input.accuracy,

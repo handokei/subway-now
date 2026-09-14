@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CRON_READ_CACHE_TTL_SEC } from '../kvConsistency';
-import { DEVICE_CONTACT_TTL_SEC, readDeviceContact, stampDeviceContact } from '../deviceContact';
+import {
+  DEVICE_CONTACT_TTL_SEC,
+  STAMP_RATE_LIMIT_MS,
+  readDeviceContact,
+  stampDeviceContact,
+} from '../deviceContact';
 import { InMemoryKV } from './inMemoryKv';
 
 describe('deviceContact (#2617 fallback implicit ACK)', () => {
@@ -71,10 +76,44 @@ describe('deviceContact (#2617 fallback implicit ACK)', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('re-stamping updates the timestamp', async () => {
+    it('re-stamping after STAMP_RATE_LIMIT_MS updates the timestamp', async () => {
       await stampDeviceContact(kv as unknown as KVNamespace, TOKEN_HASH, NOW);
-      await stampDeviceContact(kv as unknown as KVNamespace, TOKEN_HASH, NOW + 1_000);
-      expect(await readDeviceContact(kv as unknown as KVNamespace, TOKEN_HASH)).toBe(NOW + 1_000);
+      await stampDeviceContact(
+        kv as unknown as KVNamespace,
+        TOKEN_HASH,
+        NOW + STAMP_RATE_LIMIT_MS,
+      );
+      expect(await readDeviceContact(kv as unknown as KVNamespace, TOKEN_HASH)).toBe(
+        NOW + STAMP_RATE_LIMIT_MS,
+      );
+    });
+
+    it('#2617 (코드리뷰 반영) — STAMP_RATE_LIMIT_MS 이내 재호출은 write를 skip한다 (KV quota 보호)', async () => {
+      await stampDeviceContact(kv as unknown as KVNamespace, TOKEN_HASH, NOW);
+      const putSpy = vi.spyOn(kv, 'put');
+      await stampDeviceContact(
+        kv as unknown as KVNamespace,
+        TOKEN_HASH,
+        NOW + STAMP_RATE_LIMIT_MS - 1,
+      );
+      expect(putSpy).not.toHaveBeenCalled();
+      expect(await readDeviceContact(kv as unknown as KVNamespace, TOKEN_HASH)).toBe(NOW);
+    });
+
+    it('read 실패(rate-limit 확인 불가) → 보수적으로 "기존 stamp 없음" 취급하고 write를 강행한다', async () => {
+      let getCalls = 0;
+      const flakyKv = {
+        get: async () => {
+          getCalls += 1;
+          throw new Error('kv read down');
+        },
+        put: vi.fn().mockResolvedValue(undefined),
+      } as unknown as KVNamespace;
+      await stampDeviceContact(flakyKv, TOKEN_HASH, NOW);
+      expect(getCalls).toBe(1);
+      expect((flakyKv as unknown as { put: ReturnType<typeof vi.fn> }).put).toHaveBeenCalledTimes(
+        1,
+      );
     });
   });
 });
