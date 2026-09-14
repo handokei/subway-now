@@ -1,41 +1,37 @@
 /**
- * #2615 (서비스체인① 1단계, cycle 내 +30초 재폴링·재발사 pass) — 재생 3 fixture 전량
- * (capture_20260912_line7_synth / capture_20260913T1249Z_b00dd879 /
+ * #2615 (서비스체인① 1단계, cycle 내 +30초 재폴링 pass, 재설계 — allowlist in-memory 연속)
+ * — 재생 3 fixture 전량(capture_20260912_line7_synth / capture_20260913T1249Z_b00dd879 /
  * capture_20260913T2127Z_b00dd879, 이슈 본문 지정) 검증:
  *
  *   1. 2-pass(`runCaptureReplay({ twoPass: true })`) 재생에서도 역당 발사가 정확히 1회
- *      (double-fire 0) — 기존 dedup(`stationPassedFiredKey` 등)이 t+30 경량 pass 추가로
- *      깨지지 않는지 확인.
+ *      (double-fire 0) — `runMidCycleFireOnly`의 dedup(in-memory + 발사 직전 1건 KV GET)이
+ *      1차 pass의 기존 dedup과 충돌 없이 동작하는지 확인.
  *   2. 1-pass vs 2-pass 발사 지연(첫 발사 tick) 비교표 — p50 개선 수치 산출(acceptance).
  *      "지연"은 각 fixture의 1-pass 재생 스케줄(twoPass:false, 기존 REPLAY_LIBRARY 게이트와
- *      동일 tick)과 2-pass 재생 스케줄(twoPass:true, t+30 tick 추가)에서 같은 역이 처음
+ *      동일 tick)과 2-pass 재생 스케줄(twoPass:true, t+30 mid pass 추가)에서 같은 역이 처음
  *      발사되는 tick의 차이로 정의한다 — 2-pass 스케줄은 1-pass 스케줄의 상위집합(같은 tick
  *      + 중간 tick)이므로 항상 t2 <= t1 (음의 개선 불가능).
  */
 import { describe, expect, it } from 'vitest';
 import { REPLAY_LIBRARY, type ReplayLibraryEntry } from './replayLibrary';
-import { runCaptureReplay, type CapturedPush, type ReplayRunResult } from './helpers/replayHarness';
-
-/** replay_library.full.test.ts와 동일 정의(#2600 계약) — station-passed(nextWaypoint) 채널 전용. */
-function firedStationOccurrences(pushes: CapturedPush[]): string[] {
-  const occurrences: string[] = [];
-  for (const push of pushes) {
-    if (push.headers.pushType !== 'alert') continue;
-    const data = push.body.data as Record<string, unknown> | undefined;
-    const station = data?.nextWaypoint;
-    if (typeof station === 'string' && station.length > 0) occurrences.push(station);
-  }
-  return occurrences;
-}
+import { runCaptureReplay, type ReplayRunResult } from './helpers/replayHarness';
+import { firedStationOccurrences } from './helpers/pushAssertions';
 
 function resolveCronIntervalMs(cronIntervalMs: ReplayLibraryEntry['cronIntervalMs']): number | undefined {
   return cronIntervalMs === 'recorded' ? undefined : cronIntervalMs;
 }
 
-/** 재생 결과에서 특정 역이 nextWaypoint 채널로 처음 발사된 tick(simNowMs). 없으면 undefined. */
+/**
+ * 재생 결과에서 특정 역이 nextWaypoint 채널로 처음 발사된 tick(simNowMs) — 1차(cycles)와
+ * mid(midCycles) 양쪽을 시간순으로 합쳐서 찾는다.
+ */
 function firstFireTick(result: ReplayRunResult, station: string): number | undefined {
-  for (const cycle of result.cycles) {
-    if (firedStationOccurrences(cycle.pushes).includes(station)) return cycle.simNowMs;
+  const entries = [
+    ...result.cycles.map((c) => ({ simNowMs: c.simNowMs, pushes: c.pushes })),
+    ...result.midCycles.map((c) => ({ simNowMs: c.simNowMs, pushes: c.pushes })),
+  ].sort((a, b) => a.simNowMs - b.simNowMs);
+  for (const entry of entries) {
+    if (firedStationOccurrences(entry.pushes).includes(station)) return entry.simNowMs;
   }
   return undefined;
 }

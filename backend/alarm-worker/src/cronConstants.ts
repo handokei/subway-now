@@ -22,10 +22,21 @@ export const CRON_INTERVAL_MS = 60_000;
 export const MID_CYCLE_OFFSET_MS = CRON_INTERVAL_MS / 2;
 
 /**
- * #2615 — midCycle pass 시작 가드 임계값(cycle 시작 기준 경과 ms).
+ * #2615 (재설계, 코드리뷰 F7) — mid-cycle pass 시작에 필요한 최소 남은 시간(ms).
  *
- * `handler.scheduled`가 바쁘거나 waitUntil 스케줄이 밀려 `MID_CYCLE_OFFSET_MS`(30s) 대기 후
- * 실제 시작 시각이 이 임계값을 넘으면 다음 cron tick(t+60)과 겹칠 위험이 있어 pass 자체를
- * skip한다 — "겹침" 리스크 관리(#2615 이슈 본문 항목 3).
+ * `scheduleMidCyclePass`가 t+30 anchor까지 남은 시간(`MID_CYCLE_OFFSET_MS -
+ * 경과시간`, F5 드리프트 보정)을 계산했을 때 이 값 미만이면 스케줄 자체를 skip한다 —
+ * 대기가 너무 짧으면(또는 이미 지났으면) 다음 cron과 경합할 실익이 없다. 아래
+ * `MID_CYCLE_START_GUARD_MS`의 파생 기준이기도 하다(같은 여유값 재사용, magic number 중복 방지).
  */
-export const MID_CYCLE_START_GUARD_MS = 50_000;
+export const MID_CYCLE_MIN_REMAINING_MS = 10_000;
+
+/**
+ * #2615 (재설계, 코드리뷰 F7) — mid-cycle pass 시작 가드 임계값(cycle 시작 기준 경과 ms).
+ *
+ * `CRON_INTERVAL_MS - MID_CYCLE_MIN_REMAINING_MS`로 파생 — cron 주기가 바뀌어도 magic
+ * number 재조정 없이 따라온다. `handler.scheduled`가 바쁘거나 waitUntil 스케줄이 밀려
+ * 대기 후 실제 시작 시각이 이 임계값을 넘으면 다음 cron tick(t+60)과 겹칠 위험이 있어
+ * pass 자체를 skip한다 — "겹침" 리스크 관리(#2615 이슈 본문 항목 3).
+ */
+export const MID_CYCLE_START_GUARD_MS = CRON_INTERVAL_MS - MID_CYCLE_MIN_REMAINING_MS;

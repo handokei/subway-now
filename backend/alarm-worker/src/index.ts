@@ -77,8 +77,17 @@ import { updateSsotMotion } from './motionState';
 import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
-import { runScheduled, toSilentPushSsot } from './scheduled';
-import { MID_CYCLE_OFFSET_MS, MID_CYCLE_START_GUARD_MS } from './cronConstants';
+import {
+  runMidCycleFireOnly,
+  runScheduled,
+  toSilentPushSsot,
+  type MidCycleTripSnapshot,
+} from './scheduled';
+import {
+  MID_CYCLE_MIN_REMAINING_MS,
+  MID_CYCLE_OFFSET_MS,
+  MID_CYCLE_START_GUARD_MS,
+} from './cronConstants';
 import {
   createSeoulCaptureRecorder,
   flushSeoulCapture,
@@ -3069,46 +3078,61 @@ function scheduleSeoulCaptureFlush(
 }
 
 /**
- * #2615 — midCycle pass 시작 가드(리스크 항목 3, "겹침"). 순수 함수로 분리해 sleep/setTimeout
- * 없이 단독 단위 테스트 가능하게 한다. `elapsedMs`(pass가 실제로 시작하려는 시각 - cron cycle
- * 시작 시각)가 `MID_CYCLE_START_GUARD_MS`(50s)를 넘으면 다음 cron tick(t+60)과 겹칠 위험이
- * 있어 true(guarded=skip)를 반환한다.
+ * #2615 (재설계, 코드리뷰 F5/F7) — 순수 함수로 분리한 mid-cycle 시작 가드. `elapsedMs`(pass가
+ * 실제로 시작하려는 시각 - cron cycle 시작 시각)가 `MID_CYCLE_START_GUARD_MS`를 넘으면 다음
+ * cron tick(t+60)과 겹칠 위험이 있어 true(guarded=skip)를 반환한다. 대기(setTimeout) 이후
+ * 최종 확인용 — F5 드리프트 보정 후에도 극단적으로 콜백 실행 자체가 지연된 경우의 이중 안전판.
  */
 export function isMidCycleStartGuarded(elapsedMs: number): boolean {
-  return elapsedMs > MID_CYCLE_START_GUARD_MS;
+  return elapsedMs >= MID_CYCLE_START_GUARD_MS;
 }
 
 /**
- * #2615 (서비스체인① 1단계, cycle 내 +30초 재폴링·재발사 pass) — 1차 `runScheduled` 완료 후
- * 활성 trip이 있었던 cycle(scanned>0)에 한해 `MID_CYCLE_OFFSET_MS`(30s) 뒤 경량 2차 pass를
- * `ctx.waitUntil`로 스케줄한다. 발사 양자화를 60초→30초로 절반화(9/14 실측 root — 매역 발사가
- * cron 정각에 양자화돼 도착~발사 사이 0~60초 지연).
+ * #2615 (재설계, 코드리뷰 10건 판정 — denylist runScheduled 재진입 → allowlist in-memory
+ * 연속) — 1차 `runScheduled`가 반환한 `stats.midCycleSnapshot`(lock-active인데 이번 tick에
+ * 미확증인 trip 목록)을 클로저로 들고 있다가 `MID_CYCLE_OFFSET_MS`(30s) 뒤 `runMidCycleFireOnly`
+ * (fire-only, KV/SSoT 상태 변형 0)로 넘긴다. `runScheduled`를 재진입하지 않는다.
  *
- * 리스크 관리(이슈 본문):
- *   1. double-fire — `runScheduled`의 기존 dedup(`stationPassedFiredKey` 등)을 그대로 재사용.
- *      2차 pass는 별도 dedup 경로를 추가하지 않는다.
- *   2. quota — `scanned > 0`(활성 trip 존재) 게이트로 idle cycle 추가 Seoul/KV 호출 0 유지.
- *      2차 pass 자체도 lock-active fire 경로만 수행해(`midCycle: true`) self-poll 등 광역
- *      폴링을 반복하지 않는다(scheduled.ts ScheduledDeps.midCycle 참조).
- *   3. 겹침 — `isMidCycleStartGuarded`로 t+50 초과 시작을 skip.
+ * F5 — t+30 anchor 드리프트 보정: 1차 pass 자체가 처리에 걸린 시간(`elapsedSoFar`)만큼
+ * 대기 시간에서 빼 `cycleStartMs + MID_CYCLE_OFFSET_MS`에 최대한 가깝게 착지시킨다. 보정
+ * 후 남은 대기가 `MID_CYCLE_MIN_REMAINING_MS`(10s) 미만이면(이미 늦었거나 거의 안 남았으면)
+ * 스케줄 자체를 스킵한다 — 짧은 대기 뒤 곧바로 다음 cron과 경합할 실익이 없다.
+ * F7 — 가드 상수(`MID_CYCLE_START_GUARD_MS`)는 `CRON_INTERVAL_MS - 10_000`으로 파생해
+ * cron 주기가 바뀌어도 magic number 재조정 없이 따라오게 한다.
  *
- * fresh `SeoulArrivalClient`를 사용해 1차 pass의 15s in-memory 캐시와 분리한다(15s 캐시가 2차
- * pass의 fetch를 그대로 무력화하지 않도록). seoul-capture recorder는 주입하지 않는다 — R2 flush는
- * 1차 pass가 전담(이슈 본문 skip 목록).
+ * 리스크 관리(이슈 본문 + 리뷰 반영):
+ *   1. double-fire — mid pass는 KV dedup GET을 하지 않고 in-memory로만 이번 pass 내 중복을
+ *      막는다(`runMidCycleFireOnly`). cross-cycle 중복은 device의 동일 collapse-id가 1개로
+ *      교체 — D1엔 `midCycle:true` meta로 구분되는 중복 fire-attempt가 남을 수 있음(트레이드오프).
+ *   2. quota — `polled > 0`(lock-active trip 존재) 게이트로 idle cycle 추가 호출 0. mid pass는
+ *      스냅샷의 trip만 재조회(광역 self-poll 없음) + KV는 발사 성공 시 best-effort 1 put만.
+ *   3. 겹침 — 위 F5 사전 보정 + `isMidCycleStartGuarded` 사후 확인의 이중 가드.
+ *
+ * fresh `SeoulArrivalClient`를 사용해 1차 pass의 15s in-memory 캐시와 분리한다.
  */
 function scheduleMidCyclePass(
   env: Env,
   ctx: ExecutionContext,
   cycleStartMs: number,
-  scanned: number,
+  polled: number,
+  snapshot: readonly MidCycleTripSnapshot[],
   archFlag: ArchFlagValue,
-  killSwitchLocklessIntermediate: boolean,
   log: (msg: string, meta?: Record<string, unknown>) => void,
 ): void {
-  if (scanned <= 0) return;
+  if (!(polled > 0) || !snapshot || snapshot.length === 0) return;
+
+  const elapsedSoFar = Date.now() - cycleStartMs;
+  const remainingMs = MID_CYCLE_OFFSET_MS - elapsedSoFar;
+  if (remainingMs < MID_CYCLE_MIN_REMAINING_MS) {
+    log('mid-cycle: skip (insufficient remaining time before t+30 anchor)', {
+      elapsedSoFar,
+      remainingMs,
+    });
+    return;
+  }
 
   ctx.waitUntil(
-    new Promise<void>((resolve) => setTimeout(resolve, MID_CYCLE_OFFSET_MS)).then(async () => {
+    new Promise<void>((resolve) => setTimeout(resolve, remainingMs)).then(async () => {
       const elapsedMs = Date.now() - cycleStartMs;
       if (isMidCycleStartGuarded(elapsedMs)) {
         log('mid-cycle: skip (start guard, would overlap next cron)', { elapsedMs });
@@ -3123,21 +3147,15 @@ function scheduleMidCyclePass(
       };
       const apnsHosts = { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX };
       try {
-        const midStats = await runScheduled(env, {
-          seoul,
-          apnsConfig,
-          apnsHosts,
+        const midStats = await runMidCycleFireOnly(
+          env,
+          snapshot,
+          { seoul, apnsConfig, apnsHosts, archFlag },
+          Date.now(),
           log,
-          archFlag,
-          killSwitchLocklessIntermediate,
-          midCycle: true,
-        });
-        log('mid-cycle pass complete', {
-          scanned: midStats.scanned,
-          polled: midStats.polled,
-          arvlCdFireFired: midStats.arvlCdFireFired,
-          vanishFallbackFired: midStats.vanishFallbackFired,
-        });
+          () => crypto.randomUUID(),
+        );
+        log('mid-cycle pass complete', { ...midStats });
       } catch (err) {
         void captureBackendException(env, err, { path: 'scheduled/midCyclePass' });
       }
@@ -3203,16 +3221,17 @@ export const handler = {
       scheduleSeoulCaptureFlush(env, ctx, log, cycleStartMs, seoulCaptureRecorder, undefined);
       throw err;
     }
-    // #2615 (서비스체인① 1단계) — 1차 pass에 활성 trip이 있었으면(scanned>0) t+30 경량 2차
-    // pass를 스케줄한다. runScheduled가 throw한 cycle(위 catch → throw)은 scheduledStats를
-    // 구하지 못하므로 이 라인에 도달하지 않는다 — 2차 pass도 자연히 skip(보수적).
+    // #2615 (서비스체인① 1단계, 재설계) — 1차 pass가 만든 mid-cycle 스냅샷(lock-active인데
+    // 이번 tick에 미확증인 trip)을 t+30 경량 fire-only pass로 넘긴다. runScheduled가 throw한
+    // cycle(위 catch → throw)은 scheduledStats를 구하지 못하므로 이 라인에 도달하지 않는다 —
+    // 2차 pass도 자연히 skip(보수적).
     scheduleMidCyclePass(
       env,
       ctx,
       cycleStartMs,
-      scheduledStats.scanned,
+      scheduledStats.polled,
+      scheduledStats.midCycleSnapshot,
       archFlag,
-      killSwitchLocklessIntermediate,
       log,
     );
     // #2579 (Epic #2239 P0-a) — active trip이 있던 cycle(scanned>0)에 한해 캡처를 R2로

@@ -10,7 +10,12 @@
  * `ScheduledStats` + 발사된 push 목록 — 어떤 가설이든 라이드 0으로 오프라인 검증한다.
  */
 import { generateKeyPair, exportPKCS8 } from 'jose';
-import { runScheduled, type ScheduledStats } from '../../scheduled';
+import {
+  runMidCycleFireOnly,
+  runScheduled,
+  type MidCycleFireStats,
+  type ScheduledStats,
+} from '../../scheduled';
 import { resetApnsJwtCache, type ApnsConfig } from '../../apns';
 import { putTrip } from '../../trips';
 import { classifyUrl } from '../../seoulCapture';
@@ -43,15 +48,25 @@ export interface ReplayCycleResult {
   simNowMs: number;
   stats: ScheduledStats;
   pushes: CapturedPush[];
-  /**
-   * #2615 — `runCaptureReplay({ twoPass: true })`가 생성한 t+30 경량 2차 pass(midCycle)
-   * cycle이면 true. 1차(정각) pass는 undefined(기존 재생 소비자 호환 — optional 필드).
-   */
-  midCycle?: boolean;
+}
+
+/**
+ * #2615 (재설계) — `runCaptureReplay({ twoPass: true })`가 생성하는 t+30 경량 fire-only
+ * pass 1회분 결과. 1차 `ReplayCycleResult`와 다른 타입 — mid pass는 `runScheduled`를
+ * 재진입하지 않고 `runMidCycleFireOnly`(fire-only, `MidCycleFireStats`)만 실행하므로
+ * 전체 `ScheduledStats` shape을 만들 근거가 없다(F8: allowlist 함수를 직접 단위로 다루기
+ * 위한 분리이기도 하다).
+ */
+export interface MidCycleReplayResult {
+  simNowMs: number;
+  stats: MidCycleFireStats;
+  pushes: CapturedPush[];
 }
 
 export interface ReplayRunResult {
   cycles: ReplayCycleResult[];
+  /** #2615 — `twoPass: true`일 때만 채워짐(기본 `[]`). */
+  midCycles: MidCycleReplayResult[];
   pushes: CapturedPush[];
   /**
    * fixture에 캡처 유실 신호(`droppedEntries`/`failedCycleStartsMs`)가 있으면 true —
@@ -317,6 +332,7 @@ export async function runCaptureReplay(opts: {
 
   let pushSeq = 0;
   const cycles: ReplayCycleResult[] = [];
+  const midCycles: MidCycleReplayResult[] = [];
   // 'recorded' cadence(cronIntervalMs 미지정)에서만 다음 "실" cycle 경계를 ceiling으로
   // 넓힌다 — `makeCaptureFetch` 문서 참고(#2600). 합성 grid(cronIntervalMs 지정)는
   // ceilingMs를 안 넘겨 기존 동작(entry.tMs <= simNow)을 그대로 유지한다.
@@ -358,9 +374,10 @@ export async function runCaptureReplay(opts: {
 
     cycles.push({ simNowMs: tick, stats, pushes: capturedPushes.slice(pushCountBefore) });
 
-    // #2615 — production `index.ts:scheduleMidCyclePass`와 동일 게이트(1차 scanned>0에만
-    // 실행) + 동일 스코프(`midCycle: true`)로 t+30 경량 2차 pass를 재생한다.
-    if (opts.twoPass && stats.scanned > 0) {
+    // #2615 (재설계) — production `index.ts:scheduleMidCyclePass`와 동일 게이트(1차
+    // `polled>0` + 스냅샷 non-empty에만 실행) + 동일 함수(`runMidCycleFireOnly`, fire-only,
+    // `runScheduled` 재진입 없음)로 t+30 경량 pass를 재생한다.
+    if (opts.twoPass && stats.polled > 0 && stats.midCycleSnapshot.length > 0) {
       const midTick = tick + MID_CYCLE_OFFSET_MS;
       simNow = midTick;
       // ceilingMs를 primary tick 것(다음 recorded cycle 경계)을 그대로 물려주지 않는다 — 그
@@ -377,23 +394,21 @@ export async function runCaptureReplay(opts: {
         fetchImpl: makeCaptureFetch(opts.fixture, () => midTick, { freshMs }),
       });
       const midPushCountBefore = capturedPushes.length;
-      const midStats = await runScheduled(env, {
-        seoul: midSeoul,
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetchImpl,
-        now: () => midTick,
-        generatePushId: () => `replay-mid-${midTick}-${pushSeq++}`,
-        midCycle: true,
-      });
-      cycles.push({
+      const midStats: MidCycleFireStats = await runMidCycleFireOnly(
+        env,
+        stats.midCycleSnapshot,
+        { seoul: midSeoul, apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: apnsFetchImpl },
+        midTick,
+        () => undefined,
+        () => `replay-mid-${midTick}-${pushSeq++}`,
+      );
+      midCycles.push({
         simNowMs: midTick,
         stats: midStats,
         pushes: capturedPushes.slice(midPushCountBefore),
-        midCycle: true,
       });
     }
   }
 
-  return { cycles, pushes: capturedPushes, lossyCapture: isLossyFixture(opts.fixture) };
+  return { cycles, midCycles, pushes: capturedPushes, lossyCapture: isLossyFixture(opts.fixture) };
 }

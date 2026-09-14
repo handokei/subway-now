@@ -163,6 +163,7 @@ function makeFullEmptyStats(): ScheduledStats {
     prepareAlarmRolledBack: 0,
     etaMissingDemoted: 0,
     trainReconfirmFired: 0,
+    midCycleSnapshot: [],
   };
 }
 
