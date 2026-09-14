@@ -30,9 +30,12 @@
 
 import { sendAlertPush, type ApnsConfig, type SendPushResult } from './apns';
 import { buildAlertContent } from './alertContent';
+import { fallbackAlertCollapseId } from './collapseId';
 import { listPending, removePending, type PendingPush } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
 import { isBoardingLockActive } from './scheduled';
+import { hashTripToken } from './sentry';
+import { recordTripEvent } from './tripEventLog';
 import { getTrip } from './trips';
 import type { ApnsEnv, Env } from './types';
 
@@ -94,14 +97,31 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
       continue;
     }
 
+    const ageMs = Math.max(0, now - entry.sentAt);
     log('alert fallback fire', {
       pushId: entry.pushId,
       station: entry.stationName,
-      ageMs: Math.max(0, now - entry.sentAt),
+      ageMs,
     });
     const result = await sendOneFallback(entry, deps);
     if (result.ok) {
       stats.pushed += 1;
+      // #2610 (RCA-A) — fallback 발사 "성공" 계측. transient 실패(503 등)는 entry가 KV에
+      // 남아 다음 cron이 재시도하므로, 실패 시점에 기록하면 재시도 때마다 중복 row +
+      // 실제로는 아직 발사 안 된 push를 "fired"로 오기록하게 된다(#2177의 "영구 실패 판정
+      // 시점만 기록" 원칙과 동일 위험). KV(pending)는 발사 성공 직후 삭제되어 사후 추적이
+      // 불가능했다 — D1 trip_events에 append-only로 남겨 pile(같은 station 반복 발사) 재발
+      // 시 wrangler d1 조회만으로 즉시 확정할 수 있게 한다.
+      await recordTripEvent(
+        env.DB,
+        {
+          tokenHash: hashTripToken(entry.tripToken ?? entry.token),
+          kind: 'fallback-alert-fired',
+          station: entry.stationName,
+          meta: { pushId: entry.pushId, ageMs },
+        },
+        now,
+      );
       await removePending(env.PENDING_PUSHES, entry.pushId);
     } else {
       stats.errors += 1;
@@ -185,6 +205,12 @@ async function sendOneFallback(
     title: content.title,
     body: content.body,
     pushId: entry.pushId,
+    // #2610 (RCA-A) — trip+station 단위 collapse. lockless intermediate cron이 같은 station을
+    // 반복 등록하면(leg-2 매 cycle) fallback도 반복 발사돼 알림센터에 이중·삼중 적층한다
+    // (2026-09-14 06:48:37 4건 정체 관측). `entry.tripToken`이 없는 구 entry(#2522 이전
+    // putPending)는 device token(`entry.token`)으로 대체 — 유니크성은 유지되고, 해당 legacy
+    // entry는 KV TTL(120s) 내 자연 소멸이라 영향 범위가 제한적이다.
+    collapseId: fallbackAlertCollapseId(entry.tripToken ?? entry.token, entry.stationName),
     config: deps.apnsConfig,
     host: deps.apnsHosts[env],
     fetchImpl: deps.fetchImpl,
@@ -201,5 +227,11 @@ function isUnrecoverableAlertError(status: number, reason: string | undefined): 
   if (status === 410) return true; // Unregistered
   if (status === 400 && reason === 'BadDeviceToken') return true;
   if (status === 400 && reason === 'PayloadTooLarge') return true;
+  // #2610 코드리뷰 P1-3 — collapseId(#2610 RCA-A) 도입의 방어 계층. 공유 빌더
+  // (`fallbackAlertCollapseId`/`collapseId.ts`)가 64B 한도를 항상 준수하므로 정상 경로에서는
+  // 발생하지 않지만, APNs가 그래도 BadCollapseId를 반환하면(예: 향후 빌더 회귀) 무한 재시도
+  // 대신 영구 실패로 분류해 entry를 정리한다 — retry해도 같은 collapseId로 같은 에러가
+  // 반복될 뿐이라 transient 취급은 무의미.
+  if (status === 400 && reason === 'BadCollapseId') return true;
   return false;
 }

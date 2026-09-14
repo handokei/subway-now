@@ -77,6 +77,12 @@ import { captureXEvent } from './sentry';
  *   (`LegBoardingPromptOutcome`). SSoT 마커(`legBoardingPromptOutcome`)와 비교해 다를 때만 append.
  * - `hop-end-prompt` — `maybeFireHopEndPrompt`(scheduled.ts)의 fire 여부/skip 사유
  *   (`HopEndPromptOutcome`). SSoT 마커(`hopEndPromptOutcome`)와 비교해 다를 때만 append.
+ *
+ * `fallback-alert-fired` (#2610, RCA-A) — `runFallbackPushes`(fallback.ts)가 pending silent
+ * push의 60s ACK 임계 초과로 alert fallback을 실제로 발사 시도한 시점에 1건 append. KV
+ * pending entry는 발사 직후 삭제되어 사후 추적이 불가능했다 — 반복 발사(pile) 재발 여부를
+ * D1만으로 즉시 확정하기 위한 계측 전용 kind. fire/advance 동작에는 관여하지 않는다.
+ * `meta`에 `{ pushId, ageMs }`를 싣는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -93,7 +99,8 @@ export type TripEventKind =
   | 'transfer-advance'
   | 'leg2-estimate'
   | 'leg-boarding-prompt'
-  | 'hop-end-prompt';
+  | 'hop-end-prompt'
+  | 'fallback-alert-fired';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

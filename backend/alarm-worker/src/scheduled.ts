@@ -5,6 +5,12 @@
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
 import {
+  boardingPromptCollapseId,
+  prepareAlarmCollapseId,
+  sleepAlarmCollapseId,
+  stationNotifCollapseId,
+} from './collapseId';
+import {
   attemptBoardingAnchorResolution,
   LEG_RESOLVE_STREAK_THRESHOLD,
   type BoardingResolveOutcome,
@@ -2428,35 +2434,6 @@ export interface FireArvlCdStationPushInputs {
 export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
 
 /**
- * #2063 (ADR-023 개정) — 매역 알림(station-notif) apns-collapse-id prefix.
- * 같은 trip 의 매역 알림은 알림센터에서 최신 것으로 교체(스택 방지).
- */
-export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
-
-/**
- * #2063 — 매역 알림 apns-collapse-id 빌더.
- * #2086 — device token(64 hex)을 통째로 넣으면 `station-<64hex>` ≈ 72B로 APNs
- * `apns-collapse-id` 64B 한도를 초과할 수 있어 `slice(0, 16)`로 축약한다
- * (`sleepAlarmCollapseId`와 동일 패턴, PR #2085 리뷰 P2-2). collapse는 같은 trip 내
- * 최신으로 교체하는 용도라 16 hex prefix로 유니크성 충분.
- */
-export function stationNotifCollapseId(tripToken: string): string {
-  return `${STATION_NOTIF_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
-}
-
-/**
- * #2130 (Part B-be-2) — boarding-prompt(반복 발사, A4) apns-collapse-id prefix.
- * 새 열차의 prompt가 이전 무응답 배너를 알림센터에서 최신으로 교체(스택 금지) — #2086 규칙
- * (`stationNotifCollapseId`/`sleepAlarmCollapseId`와 동일하게 `slice(0, 16)`로 64B 한도 방어).
- */
-export const BOARDING_PROMPT_COLLAPSE_ID_PREFIX = 'boarding-prompt-';
-
-/** #2130 — boarding-prompt apns-collapse-id 빌더. */
-export function boardingPromptCollapseId(tripToken: string): string {
-  return `${BOARDING_PROMPT_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}`;
-}
-
-/**
  * #2063 — 매역 알림 apns-expiration 유예(ms). 지하 데이터 순단 후 stale 알림이 뒤늦게
  * 표시되는 것을 방지한다 (now + 90s 이후 APNs가 폐기).
  */
@@ -2592,16 +2569,6 @@ interface MaybeFireSleepAlarmInputs {
   now: number;
   log: Logger;
   generatePushId: () => string;
-}
-
-/**
- * #2066 (Phase 2-backend) — visible alert push의 `apns-collapse-id` prefix.
- * PR #2085 리뷰 P2-2 — device token(64 hex)을 통째로 넣으면 APNs `apns-collapse-id` 64B
- * 한도를 초과할 수 있어(`alarm-<64hex>-<station>` ≈ 77~92B) `slice(0, 16)`로 축약한다.
- * collapse는 같은 trip·station 내에서 최신으로 교체하는 용도라 16 hex prefix로 유니크성 충분.
- */
-function sleepAlarmCollapseId(tripToken: string, targetStation: string): string {
-  return `alarm-${tripToken.slice(0, 16)}-${targetStation}`;
 }
 
 /**
@@ -2838,10 +2805,6 @@ export function prepareAlarmFireKey(tripToken: string, targetStation: string): s
 
 /** #2510 — 준비 진동 dedup TTL (1h, sleep 알람과 동일 정책). */
 export const PREPARE_ALARM_FIRE_DEDUP_TTL_SEC = 60 * 60;
-
-function prepareAlarmCollapseId(tripToken: string, targetStation: string): string {
-  return `prepare-${tripToken.slice(0, 16)}-${targetStation}`;
-}
 
 interface MaybeFirePrepareAlarmInputs {
   trip: Trip;
