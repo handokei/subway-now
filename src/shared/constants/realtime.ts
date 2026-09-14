@@ -167,15 +167,6 @@ export const CANDIDATE_ANCHOR_WINDOW_DEFAULT = 3;
 export const CANDIDATE_ANCHOR_WINDOW_EXPANDED = 6;
 
 /**
- * #2619 (#2594 후속) — 동일 (station, line) candidate-env reject 재평가 TTL.
- *
- * 데스크 실증: 정지 상태에서 같은 후보(사가정)가 초당 14~21회 candidate-env reject 루프에
- * 재진입 — 게이트 판정 자체는 옳지만(surface cascade vs underground candidate) 반려된 후보가
- * 즉시 재평가되는 빈도가 발열 root. 같은 (station,line) 조합은 TTL 동안 재평가 자체를 skip.
- */
-export const CANDIDATE_ENV_REJECT_TTL_MS = 30_000;
-
-/**
  * #1749 — station hop > 5 detect: 1 cycle 안에 이 hop 이상 점프 시 anomaly로 간주해
  * silent skip (이전 result 유지). 정상 환승 hop (최대 2~3)은 통과한다.
  *
