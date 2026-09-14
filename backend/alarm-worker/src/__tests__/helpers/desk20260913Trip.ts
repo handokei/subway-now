@@ -19,7 +19,18 @@ const DESK_20260913_LOCK_TRAIN = '7301';
 /** leg-1(용마산 승차 → 건대입구 환승) 구간 정차역 시퀀스 — hop 거리 산출용(`segmentStations`). */
 const DESK_20260913_SEGMENT = ['용마산', '중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'];
 
-export function makeDesk20260913LockTrip(token: string, now: number): Trip {
+export function makeDesk20260913LockTrip(
+  token: string,
+  now: number,
+  // #2602 코드리뷰 항목8 — 다른 실캡처(2026-09-14 아침 라이드, 7039 lock)가 이 helper의 경로
+  // 형태(용마산 승차 → 건대입구 환승)를 재사용하되 실 탑승 열차 trainCode만 다르다. 호출부에서
+  // `trip.boardingLock`이 undefined일 수 있다고 방어적으로 가정해 `if (trip.boardingLock)`로
+  // 조용히 override를 건너뛰면(silent-skip), boardingLock 생성 로직이 바뀌어도 테스트가 그
+  // 실패를 감추고 계속 green을 낼 위험이 있다 — `makeFixtureTrip`(evidence_20260703_junggok_seongsu.ts)
+  // 관례대로 overrides 파라미터를 받아 이 함수가 항상 확정적으로 boardingLock을 만드는 지점에서
+  // 직접 반영한다(사후 optional-mutation 없음).
+  overrides?: { trainCode?: string },
+): Trip {
   return {
     token,
     route: {
@@ -40,7 +51,7 @@ export function makeDesk20260913LockTrip(token: string, now: number): Trip {
       { stationName: '뚝섬', line: '2', kind: 'destination' },
     ],
     boardingLock: {
-      trainCode: DESK_20260913_LOCK_TRAIN,
+      trainCode: overrides?.trainCode ?? DESK_20260913_LOCK_TRAIN,
       line: '7',
       subwayId: '1007',
       selectedDepartureTime: now,

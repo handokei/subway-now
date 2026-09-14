@@ -24,6 +24,7 @@ import {
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
+import { CRON_INTERVAL_MS } from './cronConstants';
 import {
   evaluateBoardingPromptGates,
   evaluateBoardingPromptRepeatGate,
@@ -97,8 +98,10 @@ import {
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { dedupeTripsByDeviceToken, listTrips, putTrip, resolveTripDeviceToken } from './trips';
 import {
+  buildTransferGateBlockMeta,
   evaluateTransferDestinationGate,
   isTransferOrDestination,
+  TRANSFER_DESTINATION_FRESH_CYCLES_VANISH,
   type TransferDestinationBlockReason,
 } from './transferDestinationGate';
 import type {
@@ -523,8 +526,12 @@ export const PASSED_STATIONS_MAX_LEN = 20;
  * 정상 운영: jitter < 1s. Cloudflare scheduler 부하 시 수 초~수십 초까지 늘어날 수 있고,
  * device 매역 알림 누락의 1차 원인 중 하나(epic #1533 ADR-016 §3 결정 5). 이 값이 P99로
  * 추적되면 cron 윈도우 확장(S5) 영향 평가의 정량 근거가 된다.
+ *
+ * #2602 코드리뷰 항목5 — 실제 값은 `cronConstants.ts`의 `CRON_INTERVAL_MS`(transferDestinationGate.ts
+ * 와 공유하는 단일 source)로 옮기고 이 이름은 하위 호환 alias로 유지한다(기존 다수 caller/테스트가
+ * 이 이름으로 import).
  */
-export const CRON_NOMINAL_INTERVAL_MS = 60_000;
+export const CRON_NOMINAL_INTERVAL_MS = CRON_INTERVAL_MS;
 
 /**
  * #1539 (S6) — `Trip.passedStations`에 stationName을 cap 적용해 누적.
@@ -842,8 +849,10 @@ export interface ScheduledStats extends LiveActivityStats {
   /**
    * ADR-017 T7 (#1560) — transfer/destination kind 의 station-passed/transfer-release fire 시점에
    * `evaluateTransferDestinationGate`가 차단한 누적 횟수. SSoT.currentStationId 가 waypoint 또는
-   * 직전 1 hop 아님 / lastAdvanceAt 60s stale / 미advance 분포를 production tail 로 확인. 2026-06-19
-   * 정지 trip "환승임박 건대입구" false 발사(N9) 회귀를 직접 차단하는 게이트.
+   * 직전 1 hop 아님 / lastAdvanceAt stale(경로별 관용치 상이, #2602 — arvlCd/position 확증 경로는
+   * 2 cycle≈180s, vanish-fallback/release 경로는 `TRANSFER_DESTINATION_FRESH_CYCLES_VANISH`로
+   * 구 60s와 동등) / 미advance 분포를 production tail 로 확인. 2026-06-19 정지 trip "환승임박
+   * 건대입구" false 발사(N9) 회귀를 직접 차단하는 게이트.
    */
   transferDestinationGateBlocked: number;
   /**
@@ -934,9 +943,12 @@ export interface ScheduledStats extends LiveActivityStats {
   stationPollError: number;
   /**
    * #1614 Phase C — `fireArvlCdStationPush` 진입 시 SSoT.lastAdvanceAt이 stale(>3분 경과)이라
-   * fire를 차단한 누적 횟수. transferDestinationGate(60s)보다 보수적이지만 모든 fire kind에
-   * 동일 적용. 정상 운영에서는 0에 가깝고, 0이 아니면 motion 추적 cascade fail 또는 stale lock
-   * misfire 회귀 신호. (transferDestinationGateBlocked와 별도 계측 — 본 가드는 intermediate 포함.)
+   * fire를 차단한 누적 횟수. arvlCd/position 확증 경로의 transferDestinationGate와는 #2602
+   * 이후 사실상 동일 임계(180s)지만 모든 fire kind(intermediate 포함)에 동일 적용된다는 점이
+   * 다르다 — transferDestinationGate는 transfer/destination 전용 + vanish-fallback/release
+   * (약한 evidence) 경로에서만 더 엄격(구 60s, `TRANSFER_DESTINATION_FRESH_CYCLES_VANISH`)하다.
+   * 정상 운영에서는 0에 가깝고, 0이 아니면 motion 추적 cascade fail 또는 stale lock misfire
+   * 회귀 신호. (transferDestinationGateBlocked와 별도 계측 — 본 가드는 intermediate 포함.)
    */
   staleLockFireSkipped: number;
   /**
@@ -2396,10 +2408,19 @@ export interface FireArvlCdStationPushInputs {
 /**
  * #1614 Phase C — stale SSoT lock false-fire 차단 임계.
  *
- * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_WINDOW_MS` (60s) 는 transfer/destination
- * kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용 — transfer 게이트보다 보수적
- * (3분) 으로 두어 정상 운영(역 간 hop 평균 1~2분 + cron jitter) 을 차단하지 않으면서, 멈춘 trip
- * 의 stale lock 에서 cron 누적 misfire(2026-06-19 evidence) 를 차단한다.
+ * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_CYCLES` (2 cron cycle, #2602 이산화) 는
+ * transfer/destination kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용.
+ *
+ * #2602 코드리뷰 항목3 — arvlCd/position 확증 경로에서는 두 임계가 이제 사실상 동일하다:
+ * `TRANSFER_DESTINATION_FRESH_CYCLES=2`는 대수적으로 `elapsed < 180,000ms`(3분)와 동치라
+ * (transferDestinationGate.ts 상단 주석 참고), 아래 3분 값과 같은 wall-clock 경계를 가리킨다.
+ * "60s보다 보수적"이라는 과거 서술은 더 이상 정확하지 않다. 그런데도 T7 transfer freshness
+ * 체크를 별도로 유지하는 이유는 (1) 본 게이트가 intermediate 포함 **모든** kind에 적용되는
+ * 범용 가드인 반면 T7은 transfer/destination 전용이라 위치 확증(`isAtOrApproachingTransferDestination`)
+ * 이 추가로 결합돼 있고, (2) vanish-fallback/release(약한 evidence) 경로는 T7이
+ * `TRANSFER_DESTINATION_FRESH_CYCLES_VANISH`(구 60s 시간창과 동등, #2602 코드리뷰 항목1)로
+ * 이 본 가드(3분)보다 **더 엄격하게** 차등 적용되기 때문이다 — vanish 경로가 다시 1이 아닌
+ * 별도 값을 쓰면서 두 임계의 계층 관계(T7이 케이스별로 더 엄격하거나 동등)가 복원된다.
  *
  * `lastAdvanceAt===0` (lazy-seed 직후, 미advance) 은 본 가드 dormant — T4 motion 게이트의
  * 'unknown' 통과 정책과 동일 ([[transferDestinationGate.isSsotAdvanceRecent]] 와 같은 의미론).
@@ -3241,7 +3262,8 @@ export async function fireArvlCdStationPush(
     return { dirty: false };
   }
   // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
-  // transferDestinationGate (60s) 보다 보수적이지만 intermediate 까지 보호. lazy-seed (==0) 통과.
+  // arvlCd/position 확증 경로의 transferDestinationGate(#2602 이후 사실상 동일 180s 임계)와
+  // 달리 intermediate 까지 모든 kind에 적용되는 범용 가드. lazy-seed (==0) 통과.
   // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
   //
   // #2321 (O1-B) — device sync stale일 때는 본 가드도 dormant 전환. 정상 흐름에서는 본 함수
@@ -3562,12 +3584,15 @@ async function tryAdvanceAndFireArvlcd(inputs: {
   }
   // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 추가 SSoT 일관성 검증.
   // pre-advance SSoT 스냅샷으로 (1) currentStationId가 transfer/destination waypoint 또는
-  // 직전 1 hop 인지 (2) 마지막 advance 가 60s 이내 신선한지 확인. intermediate kind는 본 게이트
-  // 우회 — T4/T5 6단 게이트만으로 충분. 정지 trip "환승임박 건대입구" false fire(N9) 차단.
+  // 직전 1 hop 인지 (2) 마지막 advance 가 신선한지(cron cycle 이산화, #2602) 확인. intermediate
+  // kind는 본 게이트 우회 — T4/T5 6단 게이트만으로 충분. 정지 trip "환승임박 건대입구" false
+  // fire(N9) 차단. 이 경로는 arvlCd ground truth 확증이라 기본 관용치(2 cycle)를 그대로 쓴다 —
+  // vanish-fallback(약한 evidence) 경로는 더 엄격한 값을 명시 전달한다(아래 함수 참고).
   if (isTransferOrDestination(waypoint)) {
+    // #2321 — device sync stale 시 cycle 신선도 검사 dormant (arvlCd ground truth 신뢰).
+    const deviceSyncStale = isDeviceSyncStale(ssot, now);
     const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
-      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
-      deviceSyncStale: isDeviceSyncStale(ssot, now),
+      deviceSyncStale,
     });
     if (!transferGate.pass) {
       stats.arvlCdFireBlocked += 1;
@@ -3578,8 +3603,9 @@ async function tryAdvanceAndFireArvlcd(inputs: {
         station: waypoint.stationName,
         kind: waypoint.kind,
         reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
-        ssotCurrent: ssot.currentStationId,
-        ssotLastAdvanceAt: ssot.lastAdvanceAt,
+        // #2602 — 게이트 입력 스탬프. position 차단(ssot-not-at-or-approaching) 재발 시
+        // currentStationId/lastPassed 조합으로 즉시 root 특정 (production skipped meta 미기록 갭 해소).
+        ...buildTransferGateBlockMeta(ssot, transferGate, deviceSyncStale, now),
       });
       if (transferGate.blockReason !== undefined) {
         await recordFireBlockReasonTransition(env, trip, waypoint, ssot, transferGate.blockReason, now);
@@ -3797,10 +3823,17 @@ export async function fireVanishFallbackStationPush(
   });
   // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 일관성 검증.
   // SSoT 부재 trip(legacy)은 본 게이트 통과시켜 기존 vanish-fallback 흐름 유지 — graceful.
+  //
+  // #2602 코드리뷰 항목1 — vanish-fallback/release는 arvlCd 확증 없이 "trainCode 사라짐 + hop
+  // 시간 경과"만으로 통과를 추정하는 약한 evidence다. 여기에 arvlCd/position 확증 경로의 넓어진
+  // 관용(2 cycle, #2602)까지 적용하면 "약한 evidence + stale 위치"가 겹친 복합 false-positive를
+  // 못 막는다 — `TRANSFER_DESTINATION_FRESH_CYCLES_VANISH`(구 60s 시간창과 동등)로 엄격 유지.
   if (ssot !== null && isTransferOrDestination(waypoint)) {
+    // #2321 — device sync stale 시 cycle 신선도 검사 dormant (arvlCd ground truth 신뢰).
+    const deviceSyncStale = isDeviceSyncStale(ssot, now);
     const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, {
-      // #2321 — device sync stale 시 60s 신선도 검사 dormant (arvlCd ground truth 신뢰).
-      deviceSyncStale: isDeviceSyncStale(ssot, now),
+      deviceSyncStale,
+      maxFreshCycles: TRANSFER_DESTINATION_FRESH_CYCLES_VANISH,
     });
     if (!transferGate.pass) {
       stats.transferDestinationGateBlocked += 1;
@@ -3811,8 +3844,8 @@ export async function fireVanishFallbackStationPush(
         kind: waypoint.kind,
         origin,
         reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
-        ssotCurrent: ssot.currentStationId,
-        ssotLastAdvanceAt: ssot.lastAdvanceAt,
+        // #2602 — 게이트 입력 스탬프 (위 arvlcd-fire 경로와 동일 계약).
+        ...buildTransferGateBlockMeta(ssot, transferGate, deviceSyncStale, now),
       });
       return;
     }
