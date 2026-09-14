@@ -297,3 +297,8 @@ export const BG_WAYPOINT_ARRIVAL_POLLED_AT_KEY = 'subway-now:bg-waypoint-arrival
 // 실패 시 이 캐시를 isImminentByArrivalCode 입력으로 재사용(quota 보호 + graceful fallback).
 // 형식: StationArrival JSON. 키 부재 = 캐시 없음(null).
 export const BG_WAYPOINT_ARRIVAL_CACHE_KEY = 'subway-now:bg-waypoint-arrival-cache';
+// #2618 — BG task 발화 heartbeat 단일 키. 기존에는 매 tick alarmLog ring(200-cap)에 적재해
+// bg-task-heartbeat 62건(24분/~2s 간격)이 RCA 유효 이벤트를 밀어냈다. 생존 확인 목적만
+// 보존하면 되므로 ring 적재 대신 최신 1건만 덮어쓴다. DebugModal이 "마지막 BG heartbeat: N초 전"
+// 1줄로 표시. 형식: {"ts": number, "acc": number | null} JSON. 키 부재 = BG task 미기동.
+export const BG_TASK_LAST_HEARTBEAT_KEY = 'subway-now:bg-task-last-heartbeat';

@@ -1,6 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus } from 'react-native';
-import { ALARM_LOG_KEY, FIRED_ALARM_LOG_KEY } from '../../../shared/constants/storageKeys';
+import {
+  ALARM_LOG_KEY,
+  FIRED_ALARM_LOG_KEY,
+  BG_TASK_LAST_HEARTBEAT_KEY,
+} from '../../../shared/constants/storageKeys';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { captureXEvent } from '../../../shared/infra/monitoring/captureXEvent';
 import { createLogger } from '../../../shared/utils/logger';
@@ -134,13 +138,10 @@ export type AlarmLogSource =
   // #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 계측. `useBoardingPromptDisplayLogger`
   // `tryLogDisplayed`가 early-return(categoryIdentifier 미스매치) 직전 매 수신 건마다 적재 —
   // "backend push에 aps.category가 실제로 실렸는가"를 device 덤프로 판정한다.
-  | 'boarding-prompt-category-received'
-  // #2403 — BG 지하 실시간성 계측. `BACKGROUND_LOCATION_TASK`가 매 tick `latest` fix를 확보한
-  // 직후, 기존 gate(gate-age/gate-accuracy)/발사 로직보다 먼저 1건 적재한다. gate에 걸려 조기
-  // return하거나 position-train 경로로 fire하는 tick도 이 heartbeat는 남으므로, 덤프에서
-  // "BG task가 실제로 몇 초/분 간격으로 깨어났는지"(starvation 여부)와 fix staleness(ageMs)를
-  // 직접 측정할 수 있다. 순수 진단 stamp — behavior 무변경.
-  | 'bg-task-heartbeat';
+  | 'boarding-prompt-category-received';
+  // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
+  // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
+  // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -325,13 +326,9 @@ export type AlarmLogReason =
   // (Stage 1/2/3 누적) 효과를 직접 측정 — 1주 production 카운트 ≪ baseline trip 수면 V1 회복 신호.
   // dedup 1분 윈도우 + (ui, ssot) 쌍 키 — 같은 mismatch가 폴링 cycle마다 반복 적재되는 회귀 차단.
   | 'v1-mismatch'
-  // #1628 — fusion candidate distance hard gate(R12-a) reject 사유. distanceKm/trainNo/stationName/line은
-  // 엔트리 컨텍스트로 별도 적재되지 않으므로 dedup 키는 (trainNo|stationName)으로 station 단위 burst 차단.
-  | 'candidate-distance-reject'
-  // #1902 (RC-18) — fusion candidate line filter reject. trip route 활성 line 화이트리스트
-  // (`allowedLinesFromRoute`)와 무관한 line 후보가 enumerate 단계에서 차단됐을 때 적재.
-  // burst dedup 키는 line 단위 — 같은 line이 5s 안에 반복 reject되면 첫 1건만 적재.
-  | 'candidate-line-reject'
+  // #1628/#1902 — fusion candidate distance/line reject의 alarmLog mirror('candidate-distance-reject'
+  // / 'candidate-line-reject')는 #2618에서 삭제됐다. candidateRejectBuffer(표시 전담, 별도 ring)만
+  // 유지 — DebugModal 'reject:candidate-*' 표시는 그쪽으로 단일화.
   // #1628 — R11 cross-trip mirror skip(PR #1613) 차단 1건. 같은 site에서 burst 발사하는 race 케이스를
   // 차단하기 위해 5s 윈도우 burst dedup 적용.
   | 'cross-trip-mirror-skip'
@@ -816,7 +813,9 @@ export function logFiredAlarmsTripBoundaryReset(input: {
 }
 
 export function logSuppressedDedupStation(source: AlarmLogSource, station: Station): void {
-  if (isBurstDuplicate('dedup-station', station.name)) return;
+  // #2618 — 60s TTL(DEDUP_SUPPRESS_ENTRY_TTL_MS)로 확장. 버퍼 엔트리 적재만 억제 — 카운터
+  // 산출 로직(summarizeAlarmLogByReason/Counters)은 무변경.
+  if (isBurstDuplicate('dedup-station', station.name, DEDUP_SUPPRESS_ENTRY_TTL_MS)) return;
   appendAlarmLog({
     ts: Date.now(),
     source,
@@ -887,39 +886,27 @@ export function _resetRefMismatchWindowForTests(): void {
  *
  * #626: in-memory time-window dedup. FG polling cycle이 매초 같은 phase를 평가해
  * dedup-alarm 로그가 alarmLog 버퍼를 채우는 회귀 차단 (alarmLog 46개 중 41개가 같은
- * 이벤트인 케이스 관측). 같은 (source/type/phaseId/stationName)이 DEDUP_LOG_WINDOW_MS
- * 안에 재호출되면 drop — dedup이 동작 중인지 운영 신호는 첫 1건으로 충분.
+ * 이벤트인 케이스 관측). 같은 (source/type/phaseId/stationName)이 윈도우 안에 재호출되면
+ * drop — dedup이 동작 중인지 운영 신호는 첫 1건으로 충분.
  *
  * 키에 type 포함 — 환승역에서 같은 phaseId가 destination/transfer 두 type으로 동시
  * 평가될 때 한쪽이 다른 쪽을 silence하지 않게 (실제 firedAlarms도 type까지 구분함).
+ *
+ * #2618 — 24분 실측에서 dedup-alarm이 반복 적재돼 RCA 유효 이벤트를 밀어내는 것을 관측.
+ * 전용 Map(옛 `lastDedupLogTs`)을 제거하고 공용 `isBurstDuplicate`(DEDUP_SUPPRESS_ENTRY_TTL_MS
+ * = 60s)로 통합 — 버퍼 엔트리 적재만 억제하고 summarizeAlarmLogByReason/Counters 산출 로직은
+ * 무변경(버퍼에 실제로 쌓인 엔트리 기준 그대로 집계).
  */
 export const DEDUP_LOG_WINDOW_MS = 5_000;
-const lastDedupLogTs = new Map<string, number>();
-
-/**
- * Map 무한 성장 방지. size가 cap을 넘으면 윈도우 만료된 엔트리 일괄 정리.
- * 정상 trip(소스 × type × phase × 역 ~수십)에선 트리거 안 됨 — 비정상 입력 안전망.
- */
-const DEDUP_LOG_MAP_CAP = 64;
-function sweepExpiredDedupEntries(now: number): void {
-  if (lastDedupLogTs.size <= DEDUP_LOG_MAP_CAP) return;
-  for (const [k, ts] of lastDedupLogTs) {
-    if (now - ts >= DEDUP_LOG_WINDOW_MS) lastDedupLogTs.delete(k);
-  }
-}
 
 export function logSuppressedDedupAlarm(
   source: AlarmLogSource,
   event: Pick<AlarmEvent, 'phaseId' | 'type' | 'stationName'>,
 ): void {
-  const now = Date.now();
   const key = `${source}|${event.type}|${event.phaseId}|${event.stationName}`;
-  const last = lastDedupLogTs.get(key);
-  if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return;
-  lastDedupLogTs.set(key, now);
-  sweepExpiredDedupEntries(now);
+  if (isBurstDuplicate('dedup-alarm', key, DEDUP_SUPPRESS_ENTRY_TTL_MS)) return;
   appendAlarmLog({
-    ts: now,
+    ts: Date.now(),
     source,
     outcome: 'suppressed',
     reason: 'dedup-alarm',
@@ -929,9 +916,9 @@ export function logSuppressedDedupAlarm(
   });
 }
 
-/** 테스트용 — 윈도우 캐시 리셋. */
+/** 테스트용 — 윈도우 캐시 리셋. #2618 이후 lastBurstSuppressTs로 통합돼 그 clear를 위임한다. */
 export function _resetDedupAlarmWindowForTests(): void {
-  lastDedupLogTs.clear();
+  _resetBurstSuppressWindowForTests();
 }
 
 /**
@@ -942,6 +929,16 @@ export function _resetDedupAlarmWindowForTests(): void {
  * 키: `${reason}|${stationName}` — 같은 역의 같은 reason 반복 스팸 차단.
  * stationName까지 구분해야 역이 바뀌었을 때 첫 신호를 drop하지 않는다.
  */
+const DEDUP_LOG_MAP_CAP = 64;
+
+/**
+ * #2618 — dedup-station / dedup-alarm 전용 억제 TTL. 24분 실측(bg-task-heartbeat 62건 +
+ * dedup-station 38~51건)에서 5s 윈도우로는 여전히 alarmLog(200-cap)를 점령하는 것을 관측 —
+ * 60s로 확장해 버퍼 엔트리 적재 빈도를 낮춘다. 카운터(summarizeAlarmLogByReason/Counters)
+ * 산출 로직은 무변경 — 버퍼에 실제로 남는 엔트리 기준 그대로 집계한다.
+ */
+export const DEDUP_SUPPRESS_ENTRY_TTL_MS = 60_000;
+
 const lastBurstSuppressTs = new Map<string, { ts: number; windowMs: number }>();
 
 function sweepExpiredBurstEntries(now: number): void {
@@ -979,54 +976,12 @@ export function _resetBurstSuppressWindowForTests(): void {
 }
 
 /**
- * #1628 — fusion candidate distance reject 1건 적재 (R12-a 효과 측정).
- *
- * 호출 site: `src/features/nearest-station/hooks/useFusedNearestStation.ts:533-543`
- * `pickCandidateTrains`의 `onCandidateDistanceReject` 콜백. 기존 `pushFusionDebugEntry`
- * (kind='candidate-reject', reason='candidate-distance')는 fusionLog ring buffer에 적재되어
- * DebugModal에서만 확인 가능. `/admin/alarm-log-stats` (kind='alarmLog' 만 카운트) 응답에
- * 노출되도록 alarmLog kind에도 mirror 적재.
- *
- * burst dedup: stationName 키 — 같은 station이 5s 윈도우 안에 반복 reject되면 첫 1건만 적재.
- * trainNo는 동일 station에서 다양해도 측정 목적(reject 분포)에는 영향 없음 — appendAlarmLog의
- * inline burst counter도 (source, reason, stationName) 동등성으로 합쳐 station 단위 카운트만 유의미.
+ * #1628/#1902 — fusion candidate distance/line reject의 alarmLog mirror(`logFusionCandidateDistanceReject`
+ * / `logFusionCandidateLineReject`)는 #2618에서 삭제됐다. `/admin/alarm-log-stats` 소비자가
+ * 없음이 확인돼(2026-09-14 감사) 이중 적재를 제거 — candidateRejectBuffer(표시 전담, 별도 ring)만
+ * 유지한다. 호출부는 `src/features/nearest-station/hooks/useFusedNearestStation.ts`의
+ * `pushCandidateRejectEntry` 호출만 남는다.
  */
-export function logFusionCandidateDistanceReject(input: { stationName: string }): void {
-  if (isBurstDuplicate('candidate-distance-reject', input.stationName)) return;
-  appendAlarmLog({
-    ts: Date.now(),
-    source: 'fusion-candidate-reject',
-    outcome: 'suppressed',
-    reason: 'candidate-distance-reject',
-    stationName: input.stationName,
-  });
-}
-
-/**
- * #1902 (RC-18) — fusion candidate line filter reject 1건 적재.
- *
- * `useFusedNearestStation.ts`의 candidateTrains useMemo가 `allowedLinesFromRoute`로 trip 경로
- * 외 line 후보를 enumerate 단계에서 차단할 때 호출. RC-18 evidence(T4 trip 18 line cross-blast)
- * 회복 측정용 — `/admin/alarm-log-stats` reason='candidate-line-reject' 카운트로 line filter
- * 효과 추적.
- *
- * burst dedup: line 키 — 같은 line이 5s 윈도우 안에 반복 reject되면 첫 1건만 적재. enumerate
- * 단계라 polling cycle마다 같은 line이 다발로 들어와도 측정 의미는 line 단위 카운트.
- *
- * stationName slot에 `line:<n>` prefix로 line을 stamp — `appendAlarmLog`의 inline burst dedup이
- * `stationName` key까지 비교하므로 line별 분포가 entry 단위로 보존된다(distance reject와 같은 패턴).
- * dump에서도 line 정보가 가시.
- */
-export function logFusionCandidateLineReject(input: { line: string }): void {
-  if (isBurstDuplicate('candidate-line-reject', input.line)) return;
-  appendAlarmLog({
-    ts: Date.now(),
-    source: 'fusion-candidate-reject',
-    outcome: 'suppressed',
-    reason: 'candidate-line-reject',
-    stationName: `line:${input.line}`,
-  });
-}
 
 /**
  * #1628 — R11 cross-trip mirror skip 1건 적재 (PR #1613 효과 측정).
@@ -1133,11 +1088,11 @@ export function _resetFusionPickerTierWindowForTests(): void {
 }
 
 /**
- * #1545 (S12) — trip 종료 시 3개 dedup 윈도우 Map을 모두 클리어.
+ * #1545 (S12) — trip 종료 시 dedup 윈도우 Map을 모두 클리어.
  *
  * 사용자가 직전 trip에서 동일 destination/같은 phaseId를 가진 새 trip을 즉시 시작하면,
- * 5s 윈도우 안의 lastDedupLogTs / lastBurstSuppressTs / lastRefMismatchTs 엔트리가
- * 새 trip의 정상 신호를 silence할 수 있다. trip 경계에서 3개 Map을 함께 비워 다음
+ * 윈도우 안의 lastBurstSuppressTs(#2618부터 dedup-alarm도 통합) / lastRefMismatchTs 엔트리가
+ * 새 trip의 정상 신호를 silence할 수 있다. trip 경계에서 두 Map을 함께 비워 다음
  * trip이 깨끗한 상태로 시작하도록 보장. `TRIP_BOUND_CLEANUPS`에 wiring (BG silent push
  * trip-ended 경로 + FG setDestination(null/switch) 양쪽 커버).
  *
@@ -1145,7 +1100,6 @@ export function _resetFusionPickerTierWindowForTests(): void {
  */
 export function clearAlarmLogWindows(): Promise<void> {
   lastRefMismatchTs.clear();
-  lastDedupLogTs.clear();
   lastBurstSuppressTs.clear();
   return Promise.resolve();
 }
@@ -1505,8 +1459,6 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'category-registration': null,
   // #2398 — 수신 categoryIdentifier 진단 stamp도 silent push outcome과 무관.
   'boarding-prompt-category-received': null,
-  // #2403 — BG task heartbeat는 silent push와 무관한 순수 진단 stamp.
-  'bg-task-heartbeat': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1572,8 +1524,6 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'category-registration': false,
   // #2398 — 수신 categoryIdentifier 진단 stamp(outcome='received')도 fire 분모 제외.
   'boarding-prompt-category-received': false,
-  // #2403 — BG task heartbeat(outcome='received')는 사용자 노출 알람이 아닌 진단 stamp. fire 분모 제외.
-  'bg-task-heartbeat': false,
 };
 
 /**
@@ -1694,24 +1644,42 @@ export function logSuppressedGate(
   });
 }
 
+/** #2618 — BG task heartbeat 단일 스냅샷 형태. ts+acc만 보존(생존 확인 목적). */
+export interface BgTaskHeartbeatSnapshot {
+  ts: number;
+  acc: number | null;
+}
+
 /**
- * #2403 — BG task 발화 heartbeat 1건 적재. 순수 진단 계측 — behavior 무변경.
+ * #2403 — BG task 발화 heartbeat 갱신. 순수 진단 계측 — behavior 무변경.
  *
  * `BACKGROUND_LOCATION_TASK`가 `latest` fix를 확보한 직후, 기존 gate-age/gate-accuracy 게이트나
- * position-train-lock 발사 경로보다 먼저 호출한다. 그 아래 경로가 조기 return하거나 fire하는
- * tick도 이 heartbeat는 남으므로, 덤프에서 BG task 발화 간격(starvation vs O1 threshold 병목
- * 확정)과 fix staleness(ageMs)/accuracy를 직접 측정할 수 있다.
+ * position-train-lock 발사 경로보다 먼저 호출한다.
  *
- * 다른 suppress 계열 helper와 달리 burst dedup을 적용하지 않는다 — 이 stamp 자체가 "발화
- * 간격"의 측정 대상이므로 연속 tick을 하나로 합치면 간격 측정이 불가능해진다.
+ * #2618 — 기존에는 alarmLog ring(200-cap)에 매 tick(~2s 간격) 적재해 24분간 62건이 RCA 유효
+ * 이벤트를 밀어내는 회귀를 유발했다. "BG task가 죽지 않았다"는 생존 확인만이 목적이므로 ring
+ * 적재 대신 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)를 최신 값으로 덮어쓴다.
+ * DebugModal이 `readBgTaskLastHeartbeat()`로 읽어 "마지막 BG heartbeat: N초 전" 1줄로 표시.
  */
 export function logBgTaskHeartbeat(location: AlarmLogLocation): void {
-  appendAlarmLog({
-    ts: Date.now(),
-    source: 'bg-task-heartbeat',
-    outcome: 'received',
-    location,
+  const snapshot: BgTaskHeartbeatSnapshot = { ts: Date.now(), acc: location.accuracy };
+  void AsyncStorage.setItem(BG_TASK_LAST_HEARTBEAT_KEY, JSON.stringify(snapshot)).catch((e) => {
+    logger.error('BG heartbeat 적재 실패:', e);
   });
+}
+
+/** #2618 — DebugModal이 폴링해 "마지막 BG heartbeat: N초 전"을 표시하기 위한 read. */
+export async function readBgTaskLastHeartbeat(): Promise<BgTaskHeartbeatSnapshot | null> {
+  try {
+    const raw = await AsyncStorage.getItem(BG_TASK_LAST_HEARTBEAT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<BgTaskHeartbeatSnapshot>;
+    if (typeof parsed.ts !== 'number') return null;
+    return { ts: parsed.ts, acc: typeof parsed.acc === 'number' ? parsed.acc : null };
+  } catch (e) {
+    logger.error('BG heartbeat 읽기 실패:', e);
+    return null;
+  }
 }
 
 /**

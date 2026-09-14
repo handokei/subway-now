@@ -33,6 +33,7 @@ import {
   clearAlarmLogWindows,
   _simulateAppStateForTest,
   DEDUP_LOG_WINDOW_MS,
+  DEDUP_SUPPRESS_ENTRY_TTL_MS,
   FLUSH_DEBOUNCE_MS,
   FLUSH_MAX_DELAY_MS,
   logSuppressedChannelAgnosticDedup,
@@ -59,8 +60,6 @@ import {
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
   logSuppressedLocklessForwardOnly,
-  logFusionCandidateDistanceReject,
-  logFusionCandidateLineReject,
   logFusionPickerTier,
   _resetFusionPickerTierWindowForTests,
   formatFusionPickerTierDistribution,
@@ -88,6 +87,7 @@ import {
   logCategoryRegistrationFailed,
   logBoardingPromptCategoryReceived,
   logBgTaskHeartbeat,
+  readBgTaskLastHeartbeat,
   logPositionTrainFireDiagnostic,
   logWaypointArvlcdFireDiagnostic,
   logBoardingPromptResponded,
@@ -118,7 +118,11 @@ import {
   type AlarmLogReasonCounter,
   type BoardingPromptWindowKey,
 } from '../alarmLog';
-import { ALARM_LOG_KEY, FIRED_ALARM_LOG_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  ALARM_LOG_KEY,
+  FIRED_ALARM_LOG_KEY,
+  BG_TASK_LAST_HEARTBEAT_KEY,
+} from '../../../../shared/constants/storageKeys';
 import type { AlarmEvent } from '../stationAlarm';
 import type { Station } from '../../../../shared/types/station';
 
@@ -1085,87 +1089,9 @@ describe('alarmLog', () => {
       expect(matching).toHaveLength(1);
     });
 
-    it('#1628 logFusionCandidateDistanceReject: reason=candidate-distance-reject + source=fusion-candidate-reject + stationName stamped', async () => {
-      _resetBurstSuppressWindowForTests();
-      logFusionCandidateDistanceReject({ stationName: '시청' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'fusion-candidate-reject',
-        outcome: 'suppressed',
-        reason: 'candidate-distance-reject',
-        stationName: '시청',
-      });
-    });
-
-    it('#1628 logFusionCandidateDistanceReject: burst dedup applies — same stationName within window dropped', async () => {
-      _resetBurstSuppressWindowForTests();
-      logFusionCandidateDistanceReject({ stationName: '시청' });
-      logFusionCandidateDistanceReject({ stationName: '시청' });
-      logFusionCandidateDistanceReject({ stationName: '시청' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      const matching = saved.filter((e) => e.reason === 'candidate-distance-reject');
-      expect(matching).toHaveLength(1);
-    });
-
-    it('#1628 logFusionCandidateDistanceReject: different stationName entries are NOT deduped', async () => {
-      _resetBurstSuppressWindowForTests();
-      logFusionCandidateDistanceReject({ stationName: '시청' });
-      logFusionCandidateDistanceReject({ stationName: '종각' });
-      logFusionCandidateDistanceReject({ stationName: '종로3가' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      const matching = saved.filter((e) => e.reason === 'candidate-distance-reject');
-      expect(matching).toHaveLength(3);
-    });
-
-    it('#1902 logFusionCandidateLineReject: reason=candidate-line-reject + source=fusion-candidate-reject + line stamp in stationName', async () => {
-      _resetBurstSuppressWindowForTests();
-      logFusionCandidateLineReject({ line: '6' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'fusion-candidate-reject',
-        outcome: 'suppressed',
-        reason: 'candidate-line-reject',
-        stationName: 'line:6',
-      });
-    });
-
-    it('#1902 logFusionCandidateLineReject: burst dedup per line — same line within window dropped', async () => {
-      _resetBurstSuppressWindowForTests();
-      logFusionCandidateLineReject({ line: '6' });
-      logFusionCandidateLineReject({ line: '6' });
-      logFusionCandidateLineReject({ line: '6' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      const matching = saved.filter((e) => e.reason === 'candidate-line-reject');
-      expect(matching).toHaveLength(1);
-    });
-
-    it('#1902 logFusionCandidateLineReject: different lines are NOT deduped', async () => {
-      _resetBurstSuppressWindowForTests();
-      logFusionCandidateLineReject({ line: '5' });
-      logFusionCandidateLineReject({ line: '6' });
-      logFusionCandidateLineReject({ line: '7' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      const matching = saved.filter((e) => e.reason === 'candidate-line-reject');
-      expect(matching).toHaveLength(3);
-    });
+    // #2618 — logFusionCandidateDistanceReject/logFusionCandidateLineReject(alarmLog mirror)는
+    // 소비자 0 감사 후 삭제됐다. candidateRejectBuffer(표시 전담)만 유지 — 해당 테스트는
+    // src/features/nearest-station/utils/__tests__/candidateRejectBuffer.test.ts 참고.
 
     it.each([
       ['register' as const, 'cross-trip-mirror-register' as const],
@@ -1404,14 +1330,14 @@ describe('alarmLog', () => {
         await flushAlarmLog();
         const callsAfterFirst = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
 
-        // 윈도우 내 재호출 — drop
-        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+        // 윈도우 내 재호출 — drop (#2618: 60s TTL)
+        nowSpy.mockReturnValue(baseTs + DEDUP_SUPPRESS_ENTRY_TTL_MS - 1);
         logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
         await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst);
 
         // 윈도우 경계 통과 — 통과
-        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+        nowSpy.mockReturnValue(baseTs + DEDUP_SUPPRESS_ENTRY_TTL_MS + 1);
         logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
         await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst + 1);
@@ -1452,7 +1378,7 @@ describe('alarmLog', () => {
         const callsBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
 
         // 윈도우 충분히 넘긴 후 새 키 1개 → sweep 발동, 기존 만료 엔트리 정리.
-        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS * 2);
+        nowSpy.mockReturnValue(baseTs + DEDUP_SUPPRESS_ENTRY_TTL_MS * 2);
         logSuppressedDedupAlarm('fg', {
           phaseId: 'early',
           type: 'destination',
@@ -1573,32 +1499,76 @@ describe('alarmLog', () => {
       expect(matching).toHaveLength(1);
     });
 
-    it('#2403 logBgTaskHeartbeat: source=bg-task-heartbeat, outcome=received로 location과 함께 적재한다', async () => {
+    // #2618 — logBgTaskHeartbeat는 alarmLog ring 적재를 폐지하고 AsyncStorage 단일 키로
+    // 전환됐다. 회귀 방지 관점: appendAlarmLog(따라서 setItem(ALARM_LOG_KEY, ...))를
+    // 더 이상 호출하지 않아야 한다. 값 자체(ts+acc)의 정확성은 readBgTaskLastHeartbeat
+    // 테스트가 담당.
+    it('#2618 logBgTaskHeartbeat: alarmLog ring에는 더 이상 적재하지 않는다 (AsyncStorage 단일 키로 전환)', async () => {
       const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
       logBgTaskHeartbeat(location);
       await flushAlarmLog();
 
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'bg-task-heartbeat',
-        outcome: 'received',
-        location,
-      });
+      const alarmLogWrites = (AsyncStorage.setItem as jest.Mock).mock.calls.filter(
+        ([key]) => key === ALARM_LOG_KEY,
+      );
+      expect(alarmLogWrites).toHaveLength(0);
     });
 
-    it('#2403 logBgTaskHeartbeat: burst dedup 없이 연속 호출마다 개별 entry를 적재한다 (발화 간격 측정 목적)', async () => {
-      _resetBurstSuppressWindowForTests();
-      const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
-      logBgTaskHeartbeat(location);
-      logBgTaskHeartbeat(location);
-      logBgTaskHeartbeat(location);
-      await flushAlarmLog();
+    it('#2618 logBgTaskHeartbeat: BG_TASK_LAST_HEARTBEAT_KEY에 {ts, acc}를 기록한다', async () => {
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      try {
+        const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
+        logBgTaskHeartbeat(location);
+        await Promise.resolve();
+        await Promise.resolve();
 
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      const matching = saved.filter((e) => e.source === 'bg-task-heartbeat');
-      expect(matching).toHaveLength(3);
+        const [key, valueJson] = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([k]) => k === BG_TASK_LAST_HEARTBEAT_KEY,
+        );
+        expect(key).toBe(BG_TASK_LAST_HEARTBEAT_KEY);
+        expect(JSON.parse(valueJson)).toEqual({ ts: 1_700_000_000_000, acc: 12 });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('#2618 logBgTaskHeartbeat: setItem 실패 시 graceful catch(크래시 없음)', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('storage full'));
+      const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
+      expect(() => logBgTaskHeartbeat(location)).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    it('#2618 readBgTaskLastHeartbeat: 저장된 값을 파싱해 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) =>
+        key === BG_TASK_LAST_HEARTBEAT_KEY
+          ? Promise.resolve(JSON.stringify({ ts: 123, acc: 8 }))
+          : Promise.resolve(null),
+      );
+      await expect(readBgTaskLastHeartbeat()).resolves.toEqual({ ts: 123, acc: 8 });
+    });
+
+    it('#2618 readBgTaskLastHeartbeat: 키 부재 시 null을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      await expect(readBgTaskLastHeartbeat()).resolves.toBeNull();
+    });
+
+    it('#2618 readBgTaskLastHeartbeat: JSON 파싱 실패 시 null을 반환한다(graceful)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue('not-json');
+      await expect(readBgTaskLastHeartbeat()).resolves.toBeNull();
+    });
+
+    it('#2618 readBgTaskLastHeartbeat: ts가 숫자가 아니면(손상된 저장값) null을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify({ ts: 'bad', acc: 5 }));
+      await expect(readBgTaskLastHeartbeat()).resolves.toBeNull();
+    });
+
+    it('#2618 readBgTaskLastHeartbeat: acc가 숫자가 아니면 null로 정규화한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(
+        JSON.stringify({ ts: 456, acc: 'bad' }),
+      );
+      await expect(readBgTaskLastHeartbeat()).resolves.toEqual({ ts: 456, acc: null });
     });
 
     it('#2474 logPositionTrainFireDiagnostic: context 생략 시 기본값({})으로 적재한다', async () => {
@@ -1870,12 +1840,13 @@ describe('alarmLog', () => {
         await flushAlarmLog();
         const callsAfterFirst = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
 
-        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+        // #2618: 60s TTL
+        nowSpy.mockReturnValue(baseTs + DEDUP_SUPPRESS_ENTRY_TTL_MS - 1);
         logSuppressedDedupStation('fg', station);
         await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst);
 
-        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+        nowSpy.mockReturnValue(baseTs + DEDUP_SUPPRESS_ENTRY_TTL_MS + 1);
         logSuppressedDedupStation('fg', station);
         await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst + 1);
@@ -1897,12 +1868,32 @@ describe('alarmLog', () => {
     it('#1023 logSuppressedMovement dedup은 logSuppressedDedupAlarm dedup과 독립 — 크로스 간섭 없음', async () => {
       // movement dedup에 등록
       logSuppressedMovement({ source: 'fg', stationName: '강남', reason: 'movement-static-speed' });
-      // dedup-alarm은 별개 Map → 영향 없이 통과
+      // #2618: dedup-alarm도 공용 burst map으로 통합됐지만 key namespace(reason prefix)가
+      // 달라 movement dedup과 충돌하지 않고 통과.
       logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
       await flushAlarmLog();
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       expect(saved).toHaveLength(2);
+    });
+
+    // #2618 — Suppress Reasons/Counters 산출 로직(summarizeAlarmLogByReason/Counters)은
+    // 무변경이다. TTL(60s) 억제로 버퍼에 1건만 남아도, 그 1건 기준으로 정확히 집계되는지
+    // 확인 — "버퍼 엔트리만 억제, 카운터 산출 로직은 그대로"를 증명하는 회귀 가드.
+    it('#2618 카운터 경로 보존: dedup-station TTL 억제 후에도 summarizeAlarmLogByReason/Counters가 버퍼 상태 그대로 집계한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logSuppressedDedupStation('fg', station);
+      logSuppressedDedupStation('fg', station); // TTL 내 — 버퍼 미적재
+      logSuppressedDedupStation('fg', station); // TTL 내 — 버퍼 미적재
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const logs: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(logs).toHaveLength(1);
+      expect(summarizeAlarmLogByReason(logs)).toEqual({ 'dedup-station': 1 });
+      expect(summarizeAlarmLogCounters(logs)).toEqual([
+        { reason: 'dedup-station', count: 1, lastTs: logs[0].ts },
+      ]);
     });
 
     it('#1023 burst Map cap 초과 시 만료 엔트리 sweep — logSuppressedMovement 사용', async () => {

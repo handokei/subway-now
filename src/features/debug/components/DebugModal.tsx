@@ -58,12 +58,14 @@ import {
   getAlarmLog,
   getFiredAlarmLog,
   getFusionTierLog,
+  readBgTaskLastHeartbeat,
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   summarizeAlarmLogCounters,
   type AlarmLogEntry,
   type AlarmLogReason,
   type AlarmLogReasonCounter,
+  type BgTaskHeartbeatSnapshot,
   type FiredAlarmLogEntry,
   type FusionTierLogEntry,
 } from '../../../features/alarm/utils/alarmLog';
@@ -633,6 +635,12 @@ interface BuildDumpArgs {
    * null/미전달 시 dump는 `(no recent SSoT push)` 한 줄만 출력 — backend 호환성 추적용.
    */
   backendSsotMirror?: BackendSsotMirrorEntry | null;
+  /**
+   * #2618 — BG task 발화 heartbeat 최신 스냅샷(ts+acc). alarmLog ring 적재를 폐지하고
+   * AsyncStorage 단일 키로 전환한 것을 "마지막 BG heartbeat: N초 전" 1줄로 표시하기 위함.
+   * null/미전달 시 dump는 `(no BG heartbeat)` 한 줄만 출력.
+   */
+  bgTaskLastHeartbeat?: BgTaskHeartbeatSnapshot | null;
   logs: AlarmLogEntry[];
   /**
    * #2284 — fired-only 독립 영속 링버퍼 스냅샷. alarmLog 200-cap rotate와 무관하게 보존되는
@@ -1376,6 +1384,20 @@ function formatBufferAgeSuffix(args: BuildDumpArgs): string {
   return ` (buffer age since launch = ${ageSec}s)`;
 }
 
+/**
+ * #2618 — BG task heartbeat 1줄 표시. alarmLog ring 적재(bg-task-heartbeat source)를
+ * 폐지하고 AsyncStorage 단일 키로 전환한 뒤에도 "BG task가 죽지 않았다" 생존 확인은
+ * 보존해야 하므로 DebugModal에 "마지막 BG heartbeat: N초 전" 1줄로 노출한다.
+ */
+function buildBgHeartbeatSection(args: BuildDumpArgs): string[] {
+  const snapshot = args.bgTaskLastHeartbeat;
+  if (!snapshot) return ['(no BG heartbeat)'];
+  const now = args.nowMs ?? Date.now();
+  const ageSec = Math.max(0, Math.round((now - snapshot.ts) / 1000));
+  const acc = snapshot.acc != null ? `${Math.round(snapshot.acc)}m` : '-';
+  return [`마지막 BG heartbeat: ${ageSec}초 전 (accuracy=${acc})`];
+}
+
 function buildBoardingLockDriftLogSection(args: BuildDumpArgs): string[] {
   const entries = args.boardingLockDriftLog ?? [];
   if (entries.length === 0) return ['(empty)'];
@@ -1997,6 +2019,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildLockLifecycleSection,
     suffix: (args) => ` (${args.lockLifecycleLog?.length ?? 0})${formatBufferAgeSuffix(args)}`,
   },
+  // #2618 — BG task heartbeat 단일 스냅샷(생존 확인). alarmLog ring 적재 폐지 대체.
+  { title: 'BG Heartbeat', build: buildBgHeartbeatSection },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
   {
@@ -2245,6 +2269,24 @@ function DebugModalInner({
       });
     };
     // 첫 read 즉시 실행 — DebugModal은 사용자가 명시적으로 연 화면이라 첫 entry를 빠르게 표시.
+    tick();
+    const id = setInterval(tick, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+  // #2618 — BG task heartbeat 폴링. alarmLog ring 적재를 폐지하고 AsyncStorage 단일 키로
+  // 전환한 뒤에도 "BG task가 죽지 않았다" 생존 확인은 5s 간격 폴링으로 보존.
+  const [bgTaskLastHeartbeat, setBgTaskLastHeartbeat] =
+    useState<BgTaskHeartbeatSnapshot | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      void readBgTaskLastHeartbeat().then((snapshot) => {
+        if (!cancelled) setBgTaskLastHeartbeat(snapshot);
+      });
+    };
     tick();
     const id = setInterval(tick, 5_000);
     return () => {
@@ -2564,6 +2606,8 @@ function DebugModalInner({
       silentPush,
       // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror.
       backendSsotMirror,
+      // #2618 — BG task heartbeat 최신 스냅샷.
+      bgTaskLastHeartbeat,
       logs,
       // #2284 — fired-only 독립 버퍼 entries를 share dump에 포함. alarmLog rotate와 무관 보존.
       firedAlarmLog,
@@ -2659,6 +2703,7 @@ function DebugModalInner({
     isMock,
     silentPush,
     backendSsotMirror,
+    bgTaskLastHeartbeat,
     logs,
     lowPowerMode,
     scheduledDump,
@@ -2995,6 +3040,30 @@ function DebugModalInner({
                 testID="debug-backend-ssot-empty"
               >
                 (no recent SSoT push)
+              </Text>
+            )}
+          </Section>
+
+          {/*
+           * #2618 — BG task heartbeat 1줄 표시. alarmLog ring 적재(bg-task-heartbeat source,
+           * 24분/62건)를 폐지하고 AsyncStorage 단일 키로 전환한 뒤에도 "BG task가 죽지
+           * 않았다" 생존 확인은 이 1줄로 보존한다.
+           */}
+          <Section title="BG Heartbeat" colors={colors}>
+            {bgTaskLastHeartbeat ? (
+              <Text style={[typography.mono, { color: colors.ink }]} testID="debug-bg-heartbeat">
+                마지막 BG heartbeat:{' '}
+                {Math.max(0, Math.round((Date.now() - bgTaskLastHeartbeat.ts) / 1000))}초 전
+                {bgTaskLastHeartbeat.acc != null
+                  ? ` (accuracy=${Math.round(bgTaskLastHeartbeat.acc)}m)`
+                  : ''}
+              </Text>
+            ) : (
+              <Text
+                style={[typography.mono, { color: colors.muted }]}
+                testID="debug-bg-heartbeat-empty"
+              >
+                (no BG heartbeat)
               </Text>
             )}
           </Section>
@@ -4042,6 +4111,8 @@ export const __test__ = {
   formatFusionDebugLine,
   formatBoardingLockDriftLine,
   buildBoardingLockDriftLogSection,
+  // #2618 — BG task heartbeat section builder. 단위 테스트에서 직접 검증.
+  buildBgHeartbeatSection,
   formatLockLifecycleLine,
   buildLockLifecycleSection,
   formatTokenTail,
