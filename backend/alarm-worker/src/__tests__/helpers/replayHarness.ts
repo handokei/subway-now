@@ -16,6 +16,7 @@ import { putTrip } from '../../trips';
 import { classifyUrl } from '../../seoulCapture';
 import { SeoulArrivalClient } from '../../seoul';
 import { isLossyFixture, type ReplayFixture } from '../../replayFixture';
+import { MID_CYCLE_OFFSET_MS } from '../../cronConstants';
 import type { Env, Trip } from '../../types';
 import { InMemoryKV } from '../inMemoryKv';
 
@@ -42,6 +43,11 @@ export interface ReplayCycleResult {
   simNowMs: number;
   stats: ScheduledStats;
   pushes: CapturedPush[];
+  /**
+   * #2615 — `runCaptureReplay({ twoPass: true })`가 생성한 t+30 경량 2차 pass(midCycle)
+   * cycle이면 true. 1차(정각) pass는 undefined(기존 재생 소비자 호환 — optional 필드).
+   */
+  midCycle?: boolean;
 }
 
 export interface ReplayRunResult {
@@ -272,6 +278,14 @@ export async function runCaptureReplay(opts: {
   phaseOffsetMs?: number;
   freshMs?: number;
   apns?: 'capture';
+  /**
+   * #2615 — 각 1차(정각) tick 뒤 `MID_CYCLE_OFFSET_MS`(30s)에 경량 2차(midCycle) pass를
+   * 추가로 재생한다. production `index.ts:scheduleMidCyclePass`와 동일 게이트(1차
+   * `stats.scanned > 0`일 때만) + 동일 스코프(`runScheduled({ midCycle: true })`)를
+   * 그대로 흉내낸다. fresh `SeoulArrivalClient`를 매 pass 새로 생성해 1차와 캐시를
+   * 분리한다(production과 동일 — 1차의 15s in-memory 캐시가 2차를 무력화하지 않도록).
+   */
+  twoPass?: boolean;
 }): Promise<ReplayRunResult> {
   const phaseOffsetMs = opts.phaseOffsetMs ?? 0;
   const freshMs = opts.freshMs ?? DEFAULT_FRESH_MS;
@@ -343,6 +357,42 @@ export async function runCaptureReplay(opts: {
     });
 
     cycles.push({ simNowMs: tick, stats, pushes: capturedPushes.slice(pushCountBefore) });
+
+    // #2615 — production `index.ts:scheduleMidCyclePass`와 동일 게이트(1차 scanned>0에만
+    // 실행) + 동일 스코프(`midCycle: true`)로 t+30 경량 2차 pass를 재생한다.
+    if (opts.twoPass && stats.scanned > 0) {
+      const midTick = tick + MID_CYCLE_OFFSET_MS;
+      simNow = midTick;
+      // ceilingMs를 primary tick 것(다음 recorded cycle 경계)을 그대로 물려주지 않는다 — 그
+      // ceiling은 "실 캡처 entry가 자기 소속 cycle 경계를 살짝 넘겨 찍혀도 그 cycle에서
+      // 보이게" 하려는 recorded-cadence 전용 보정(#2600)이라, cycle 경계가 아닌 임의
+      // 중간 시각(midTick)에 그대로 적용하면 아직 도래하지 않은(다음 실 cycle 몫) entry까지
+      // 조기에 노출해 순서를 어긋나게 한다. production의 실제 의미(t+30 시점에 Seoul을 살아
+      // 있는 그 순간으로 다시 호출)는 `ceilingMs` 미지정(default: `simNow`=midTick, 그 시각
+      // 이전 entry만 허용)이 정확히 재현한다.
+      const midSeoul = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'seoul.api',
+        now: () => midTick,
+        fetchImpl: makeCaptureFetch(opts.fixture, () => midTick, { freshMs }),
+      });
+      const midPushCountBefore = capturedPushes.length;
+      const midStats = await runScheduled(env, {
+        seoul: midSeoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetchImpl,
+        now: () => midTick,
+        generatePushId: () => `replay-mid-${midTick}-${pushSeq++}`,
+        midCycle: true,
+      });
+      cycles.push({
+        simNowMs: midTick,
+        stats: midStats,
+        pushes: capturedPushes.slice(midPushCountBefore),
+        midCycle: true,
+      });
+    }
   }
 
   return { cycles, pushes: capturedPushes, lossyCapture: isLossyFixture(opts.fixture) };

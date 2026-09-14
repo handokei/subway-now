@@ -58,6 +58,7 @@ import { computeAlarmLogStats } from './alarmLogStats';
 import { computeBaselineCheck } from './baselineCheck';
 import {
   ARCH_FLAG_DEFAULT,
+  type ArchFlagValue,
   getArchFlag,
   isArchFlagValue,
   setArchFlag,
@@ -77,6 +78,7 @@ import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled, toSilentPushSsot } from './scheduled';
+import { MID_CYCLE_OFFSET_MS, MID_CYCLE_START_GUARD_MS } from './cronConstants';
 import {
   createSeoulCaptureRecorder,
   flushSeoulCapture,
@@ -3066,6 +3068,83 @@ function scheduleSeoulCaptureFlush(
   );
 }
 
+/**
+ * #2615 — midCycle pass 시작 가드(리스크 항목 3, "겹침"). 순수 함수로 분리해 sleep/setTimeout
+ * 없이 단독 단위 테스트 가능하게 한다. `elapsedMs`(pass가 실제로 시작하려는 시각 - cron cycle
+ * 시작 시각)가 `MID_CYCLE_START_GUARD_MS`(50s)를 넘으면 다음 cron tick(t+60)과 겹칠 위험이
+ * 있어 true(guarded=skip)를 반환한다.
+ */
+export function isMidCycleStartGuarded(elapsedMs: number): boolean {
+  return elapsedMs > MID_CYCLE_START_GUARD_MS;
+}
+
+/**
+ * #2615 (서비스체인① 1단계, cycle 내 +30초 재폴링·재발사 pass) — 1차 `runScheduled` 완료 후
+ * 활성 trip이 있었던 cycle(scanned>0)에 한해 `MID_CYCLE_OFFSET_MS`(30s) 뒤 경량 2차 pass를
+ * `ctx.waitUntil`로 스케줄한다. 발사 양자화를 60초→30초로 절반화(9/14 실측 root — 매역 발사가
+ * cron 정각에 양자화돼 도착~발사 사이 0~60초 지연).
+ *
+ * 리스크 관리(이슈 본문):
+ *   1. double-fire — `runScheduled`의 기존 dedup(`stationPassedFiredKey` 등)을 그대로 재사용.
+ *      2차 pass는 별도 dedup 경로를 추가하지 않는다.
+ *   2. quota — `scanned > 0`(활성 trip 존재) 게이트로 idle cycle 추가 Seoul/KV 호출 0 유지.
+ *      2차 pass 자체도 lock-active fire 경로만 수행해(`midCycle: true`) self-poll 등 광역
+ *      폴링을 반복하지 않는다(scheduled.ts ScheduledDeps.midCycle 참조).
+ *   3. 겹침 — `isMidCycleStartGuarded`로 t+50 초과 시작을 skip.
+ *
+ * fresh `SeoulArrivalClient`를 사용해 1차 pass의 15s in-memory 캐시와 분리한다(15s 캐시가 2차
+ * pass의 fetch를 그대로 무력화하지 않도록). seoul-capture recorder는 주입하지 않는다 — R2 flush는
+ * 1차 pass가 전담(이슈 본문 skip 목록).
+ */
+function scheduleMidCyclePass(
+  env: Env,
+  ctx: ExecutionContext,
+  cycleStartMs: number,
+  scanned: number,
+  archFlag: ArchFlagValue,
+  killSwitchLocklessIntermediate: boolean,
+  log: (msg: string, meta?: Record<string, unknown>) => void,
+): void {
+  if (scanned <= 0) return;
+
+  ctx.waitUntil(
+    new Promise<void>((resolve) => setTimeout(resolve, MID_CYCLE_OFFSET_MS)).then(async () => {
+      const elapsedMs = Date.now() - cycleStartMs;
+      if (isMidCycleStartGuarded(elapsedMs)) {
+        log('mid-cycle: skip (start guard, would overlap next cron)', { elapsedMs });
+        return;
+      }
+      const seoul = new SeoulArrivalClient({ apiKey: env.SEOUL_API_KEY, host: env.SEOUL_API_HOST });
+      const apnsConfig = {
+        keyId: env.APNS_KEY_ID,
+        teamId: env.APNS_TEAM_ID,
+        privateKeyPem: env.APNS_PRIVATE_KEY,
+        bundleId: env.APNS_BUNDLE_ID,
+      };
+      const apnsHosts = { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX };
+      try {
+        const midStats = await runScheduled(env, {
+          seoul,
+          apnsConfig,
+          apnsHosts,
+          log,
+          archFlag,
+          killSwitchLocklessIntermediate,
+          midCycle: true,
+        });
+        log('mid-cycle pass complete', {
+          scanned: midStats.scanned,
+          polled: midStats.polled,
+          arvlCdFireFired: midStats.arvlCdFireFired,
+          vanishFallbackFired: midStats.vanishFallbackFired,
+        });
+      } catch (err) {
+        void captureBackendException(env, err, { path: 'scheduled/midCyclePass' });
+      }
+    }),
+  );
+}
+
 // #2073 — named export(테스트 전용). default export는 Sentry.withSentry HOC로 감싸져 있어
 // `handler.scheduled`를 직접 단위 테스트하려면 HOC를 우회할 진입점이 필요하다.
 export const handler = {
@@ -3124,6 +3203,18 @@ export const handler = {
       scheduleSeoulCaptureFlush(env, ctx, log, cycleStartMs, seoulCaptureRecorder, undefined);
       throw err;
     }
+    // #2615 (서비스체인① 1단계) — 1차 pass에 활성 trip이 있었으면(scanned>0) t+30 경량 2차
+    // pass를 스케줄한다. runScheduled가 throw한 cycle(위 catch → throw)은 scheduledStats를
+    // 구하지 못하므로 이 라인에 도달하지 않는다 — 2차 pass도 자연히 skip(보수적).
+    scheduleMidCyclePass(
+      env,
+      ctx,
+      cycleStartMs,
+      scheduledStats.scanned,
+      archFlag,
+      killSwitchLocklessIntermediate,
+      log,
+    );
     // #2579 (Epic #2239 P0-a) — active trip이 있던 cycle(scanned>0)에 한해 캡처를 R2로
     // flush. idle cycle write 0 게이트(#2073 lesson 재발 금지). flush 실패는 cron 본
     // 흐름에 영향을 주면 안 되므로 waitUntil + swallow (함수 내부 처리).

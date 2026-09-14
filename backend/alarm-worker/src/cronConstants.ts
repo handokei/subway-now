@@ -11,3 +11,21 @@
  * 빌드 타임 검증은 없고 수동 동기화다. cron 트리거 주기를 바꾸면 이 상수도 함께 갱신할 것.
  */
 export const CRON_INTERVAL_MS = 60_000;
+
+/**
+ * #2615 — cycle 내 +30초 재폴링·재발사 pass(midCycle) 오프셋.
+ *
+ * cron 명목 주기(`CRON_INTERVAL_MS`)의 정확히 절반 뒤에 경량 2차 pass를 실행해 발사
+ * 양자화를 60초→30초로 절반화한다. `CRON_INTERVAL_MS`를 소비하는 파생 상수라 주기가
+ * 바뀌어도 이 파일 하나만 갱신하면 자동으로 따라온다.
+ */
+export const MID_CYCLE_OFFSET_MS = CRON_INTERVAL_MS / 2;
+
+/**
+ * #2615 — midCycle pass 시작 가드 임계값(cycle 시작 기준 경과 ms).
+ *
+ * `handler.scheduled`가 바쁘거나 waitUntil 스케줄이 밀려 `MID_CYCLE_OFFSET_MS`(30s) 대기 후
+ * 실제 시작 시각이 이 임계값을 넘으면 다음 cron tick(t+60)과 겹칠 위험이 있어 pass 자체를
+ * skip한다 — "겹침" 리스크 관리(#2615 이슈 본문 항목 3).
+ */
+export const MID_CYCLE_START_GUARD_MS = 50_000;
