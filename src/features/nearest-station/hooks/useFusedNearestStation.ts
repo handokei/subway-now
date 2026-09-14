@@ -1657,6 +1657,13 @@ export function useFusedNearestStation(
   // dedup: 매 candidates 갱신 cycle에 한 번만 push (useEffect deps에 [candidates, environment]).
   // environment === 'unknown' 또는 candidate.station.environment 미정의/mixed인 entry는 보수적
   // 무시 — `isCandidateEnvMismatch`가 false 반환.
+  //
+  // #2619 review (F1) — candidate-env 전용 TTL 캐시는 도입하지 않는다. #2619의 barometer 1Hz
+  // fix가 렌더/재평가 폭주 root를 제거해 이 평가 자체의 비용은 무시 가능한 수준으로 줄었고,
+  // 남은 candidate-env reject burst는 `candidateRejectBuffer`의 기존
+  // `CANDIDATE_REJECT_AGGREGATION_WINDOW_MS`(10s) in-place 집계(`×N` count)가 이미 ring buffer
+  // 점령을 막는다 — 그 집계 자체가 reject 폭주 여부를 진단하는 유일한 도구라 별도 TTL로
+  // 평가를 skip해버리면 이 도구가 눈멀게 된다(원 회귀를 다시 잡아낼 방법이 사라짐).
   useEffect(() => {
     if (candidates.length === 0) return;
     for (const cand of candidates) {
