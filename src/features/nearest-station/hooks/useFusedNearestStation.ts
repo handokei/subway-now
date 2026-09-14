@@ -43,8 +43,6 @@ import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pi
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
 import {
-  logFusionCandidateDistanceReject,
-  logFusionCandidateLineReject,
   logFusionPickerTier,
   logSuppressedLocklessForwardOnly,
   type FusionPickerTier,
@@ -713,8 +711,6 @@ export function useFusedNearestStation(
           reason: 'candidate-line',
           line: lp.line,
         });
-        // alarmLog mirror — `/admin/alarm-log-stats` 운영 가시성용.
-        logFusionCandidateLineReject({ line: lp.line });
         continue;
       }
       const anchor = candidates.find((c) => c.station.line === lp.line)?.station.name;
@@ -752,9 +748,6 @@ export function useFusedNearestStation(
             line: info.line,
             distanceKm: info.distanceKm,
           });
-          // #1628 — alarmLog kind에도 mirror 적재. `/admin/alarm-log-stats`는 kind='alarmLog'만
-          // 카운트하므로 R12-a reject 효과를 측정하려면 alarmLog 적재가 필수.
-          logFusionCandidateDistanceReject({ stationName: info.stationName });
         },
       });
       // #1748 — 이번 cycle에 후보가 채택됐으면(reject 없이 통과) 해당 line 카운트 리셋.

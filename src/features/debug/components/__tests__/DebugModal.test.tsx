@@ -45,6 +45,8 @@ const mockGetFusionTierLog = jest.fn();
 // clearAllMocks 이후에도 유지된다. 개별 describe가 매번 명시적으로 재설정할 필요 없음.
 const mockGetFiredAlarmLog = jest.fn().mockResolvedValue([]);
 const mockClearFiredAlarmLog = jest.fn().mockResolvedValue(undefined);
+// #2618 — BG task heartbeat 단일 키 read mock. 기본 null(미존재) — 개별 테스트가 override.
+const mockReadBgTaskLastHeartbeat = jest.fn().mockResolvedValue(null);
 const mockUseBarometer = jest.fn();
 const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
@@ -101,6 +103,8 @@ jest.mock('../../../alarm/utils/alarmLog', () => {
     // #2284 — fired-only 독립 버퍼 mock. alarmLog와 분리된 채널이라 별도 mock 필요.
     getFiredAlarmLog: () => mockGetFiredAlarmLog(),
     clearFiredAlarmLog: () => mockClearFiredAlarmLog(),
+    // #2618 — BG task heartbeat 단일 키 read mock. AsyncStorage 실제 왕복 없이 폴링 결과를 제어.
+    readBgTaskLastHeartbeat: () => mockReadBgTaskLastHeartbeat(),
   };
 });
 
@@ -252,6 +256,8 @@ const setupHookDefaults = () => {
   mockGetTripStartedAt.mockResolvedValue(null);
   // #1568 (T8b) — backend SSoT mirror 기본 null (backend가 forward 안 함).
   mockReadBackendSsotMirror.mockResolvedValue(null);
+  // #2618 — BG task heartbeat 기본 null (BG task 미기동). 개별 테스트가 명시 주입.
+  mockReadBgTaskLastHeartbeat.mockResolvedValue(null);
   // #1898 — accelerometer raw snapshot 기본 null (native 모듈 미포함 / jest 환경).
   mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
   // #1982 (ADR-022 Phase 0) — Feature Flag remote 기본 unconfigured (테스트 env 에는 backend URL 없음).
@@ -2812,6 +2818,32 @@ describe('DebugModal — Backend SSoT 섹션 (#1568, T8b)', () => {
     expect(screen.getByText('(no recent SSoT push)')).toBeTruthy();
   });
 
+  // #2618 — BG task heartbeat AsyncStorage 단일 키 폴링 UI. 존재/미존재 두 분기 모두 커버.
+  it('UI: BG heartbeat 미존재 시 "(no BG heartbeat)" 노출', async () => {
+    mockReadBgTaskLastHeartbeat.mockResolvedValue(null);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('debug-bg-heartbeat-empty')).toBeTruthy();
+    });
+    expect(screen.getByText('(no BG heartbeat)')).toBeTruthy();
+  });
+
+  it('UI: BG heartbeat 존재 시 "마지막 BG heartbeat" 1줄 노출 (accuracy 있음)', async () => {
+    mockReadBgTaskLastHeartbeat.mockResolvedValue({ ts: Date.now() - 5_000, acc: 12 });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('debug-bg-heartbeat')).toBeTruthy();
+    });
+  });
+
+  it('UI: BG heartbeat 존재 시 accuracy 없어도(acc=null) 렌더된다', async () => {
+    mockReadBgTaskLastHeartbeat.mockResolvedValue({ ts: Date.now() - 5_000, acc: null });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('debug-bg-heartbeat')).toBeTruthy();
+    });
+  });
+
   it('UI: mirror 존재 시 4 row 노출', async () => {
     mockReadBackendSsotMirror.mockResolvedValue(mirrorEntry);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
@@ -5032,6 +5064,49 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(result[1]).toContain('drift=1020m');
       const dump = buildDumpText(makeDumpArgs({ boardingLockDriftLog: entries }));
       expect(dump).toContain('## Boarding-Lock Drift (2)');
+    });
+
+    // #2618 (리뷰 fix) — dump builder와 JSX가 이 함수 하나를 공유한다(포맷 발산 방지).
+    it('formatBgHeartbeatLine: accuracy 있음/없음 포맷 (#2618 review)', () => {
+      const { formatBgHeartbeatLine } = __test__;
+      expect(formatBgHeartbeatLine({ ts: 3_000, acc: 12.4 }, 10_000)).toBe(
+        '마지막 BG heartbeat: 7초 전 (accuracy=12m)',
+      );
+      expect(formatBgHeartbeatLine({ ts: 3_000, acc: null }, 10_000)).toBe(
+        '마지막 BG heartbeat: 7초 전 (accuracy=-)',
+      );
+      // 음수 age 방어 — ts가 now보다 미래여도 0초로 클램프.
+      expect(formatBgHeartbeatLine({ ts: 20_000, acc: null }, 10_000)).toBe(
+        '마지막 BG heartbeat: 0초 전 (accuracy=-)',
+      );
+    });
+
+    it('buildBgHeartbeatSection: null/스냅샷 cover + share dump 포함 (#2618)', () => {
+      const { buildBgHeartbeatSection } = __test__;
+      expect(buildBgHeartbeatSection(baselineDumpArgs)).toEqual(['(no BG heartbeat)']);
+      expect(
+        buildBgHeartbeatSection({ ...baselineDumpArgs, bgTaskLastHeartbeat: null }),
+      ).toEqual(['(no BG heartbeat)']);
+
+      const withAcc = buildBgHeartbeatSection({
+        ...baselineDumpArgs,
+        nowMs: 10_000,
+        bgTaskLastHeartbeat: { ts: 3_000, acc: 12.4 },
+      });
+      expect(withAcc).toEqual(['마지막 BG heartbeat: 7초 전 (accuracy=12m)']);
+
+      const withoutAcc = buildBgHeartbeatSection({
+        ...baselineDumpArgs,
+        nowMs: 10_000,
+        bgTaskLastHeartbeat: { ts: 3_000, acc: null },
+      });
+      expect(withoutAcc).toEqual(['마지막 BG heartbeat: 7초 전 (accuracy=-)']);
+
+      const dump = buildDumpText(
+        makeDumpArgs({ bgTaskLastHeartbeat: { ts: 3_000, acc: 12.4 } }),
+      );
+      expect(dump).toContain('## BG Heartbeat');
+      expect(dump).toContain('마지막 BG heartbeat:');
     });
 
     it('buildLockLifecycleSection: 빈/entries cover + share dump 포함 (#2152)', () => {
