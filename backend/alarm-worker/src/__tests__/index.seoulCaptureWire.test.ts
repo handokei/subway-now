@@ -73,9 +73,25 @@ function triggerSeoulFetch(stats: ReturnType<typeof baseScheduledStats>) {
   };
 }
 
-/** waitUntil로 넘겨진 프로미스를 전부 기다린다 (Sentry HOC의 자체 waitUntil 포함, 무해). */
+/**
+ * waitUntil로 넘겨진 프로미스를 전부 기다린다 (Sentry HOC의 자체 waitUntil 포함, 무해).
+ *
+ * #2615 — `scheduleMidCyclePass`(scanned>0일 때 `handler.scheduled`가 함께 스케줄)가 실
+ * `setTimeout(30_000)` 뒤에야 resolve되는 별도 waitUntil 프로미스를 추가한다. 이 파일은
+ * seoul-capture flush wiring만 검증하고 fake timers를 쓰지 않으므로, 각 프로미스를 짧은
+ * 타임아웃과 race시켜 "이 테스트의 관심사(flush)가 아닌 장기 백그라운드 프로미스"에 걸려
+ * 테스트가 30초 real-time으로 타임아웃 나는 것을 막는다 — midCycle pass 자체의 동작은
+ * `scheduled.midCycle.test.ts`/`index.midCycleWire.test.ts`가 전담 검증한다.
+ */
 async function drainWaitUntil(ctx: ExecutionContext & { waitUntil: ReturnType<typeof vi.fn> }) {
-  await Promise.all(ctx.waitUntil.mock.calls.map((call) => (call[0] as Promise<unknown>).catch(() => {})));
+  await Promise.all(
+    ctx.waitUntil.mock.calls.map((call) =>
+      Promise.race([
+        (call[0] as Promise<unknown>).catch(() => {}),
+        new Promise<void>((resolve) => setTimeout(resolve, 50)),
+      ]),
+    ),
+  );
 }
 
 describe('handler.scheduled — #2579 seoul-capture R2 flush wiring', () => {

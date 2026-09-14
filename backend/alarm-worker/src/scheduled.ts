@@ -577,6 +577,21 @@ assertCronCacheTtl(CRON_PROGRESS_CACHE_TTL_SEC);
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
+/**
+ * #2615 (서비스체인① 1단계, cycle 내 +30초 재폴링 pass 재설계) — 1차 `runScheduled`가 이번
+ * cycle에 lock-active였지만 waypoint advance가 일어나지 않은(=아직 확증 발사되지 않은) trip을
+ * 담는 최소 스냅샷. `index.ts`의 `scheduleMidCyclePass`가 이 배열을 클로저로 들고 있다가
+ * t+30에 `runMidCycleFireOnly`로 넘긴다 — mid pass는 이 스냅샷만 참조하고 `listTrips`/
+ * `readSsot` 등 KV 재조회를 하지 않는다(리뷰 F2/F3/F4: KV LIST quota 소진 + 상태 변형
+ * 이중화 회귀를 구조적으로 제거). `trip`/`lock`은 1차 pass가 이번 cycle에 이미 mutate한
+ * 최신 참조(예: vanish-swap으로 trainCode가 바뀌었으면 그 값)를 그대로 담는다.
+ */
+export interface MidCycleTripSnapshot {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+}
+
 export interface ScheduledStats extends LiveActivityStats {
   scanned: number;
   polled: number;
@@ -1094,6 +1109,12 @@ export interface ScheduledStats extends LiveActivityStats {
    * dedup으로 skip된 케이스는 `etaMissingDemoted`에는 잡히되 본 카운터에는 잡히지 않는다.
    */
   trainReconfirmFired: number;
+  /**
+   * #2615 — 이번 cycle 종료 시점에 lock-active이면서 waypoint advance가 없었던 trip들의
+   * 스냅샷(재폴링 mid pass 후보). 1차 pass 자신은 이 값을 소비하지 않는다 — `index.ts`
+   * `scheduleMidCyclePass`가 읽어 t+30 `runMidCycleFireOnly` 호출에 그대로 넘긴다.
+   */
+  midCycleSnapshot: MidCycleTripSnapshot[];
 }
 
 /**
@@ -1308,6 +1329,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     trainReconfirmFired: 0,
     // #2073 (Issue A) — 아래 idle 판정 이후 실제 값으로 덮어쓴다. 기본 true = 보수적(항상 실행).
     pendingActivityPossible: true,
+    // #2615 — 아래 main loop에서 lock-active 미확증 trip을 append.
+    midCycleSnapshot: [],
   };
 
   // #2283 — trip_events 보존 기간(7일) 초과분 cleanup. cron이 60s마다(1440회/일) 도는데 매
@@ -1815,6 +1838,20 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     } catch (e) {
       stats.errors += 1;
       log('boarding-lock: poll error', { error: String(e), token: trip.token.slice(0, 8) });
+    }
+    // #2615 — mid-cycle 재폴링 후보 축적. 이번 tick에 advance가 일어나지 않은(=아직 확증
+    // 발사되지 않은) lock-active trip만 후보로 남긴다 — 이미 전진한 trip은 이번 cycle에
+    // 더 볼 것이 없다(다음 waypoint의 조기 도착은 30초 내 가능성이 낮고, 봐도 이 스냅샷의
+    // 목적(같은 waypoint 재확인) 밖이라 단순함을 위해 제외). trip/lock은 이번 tick 중
+    // mutate됐을 수 있는 최신 참조를 그대로 담는다(예: vanish-swap trainCode 교체).
+    const postWaypoint = pickActiveWaypoint(trip);
+    if (
+      isBoardingLockActive(trip, now) &&
+      postWaypoint !== null &&
+      postWaypoint.stationName === waypoint.stationName &&
+      postWaypoint.kind === waypoint.kind
+    ) {
+      stats.midCycleSnapshot.push({ trip, waypoint: postWaypoint, lock: trip.boardingLock });
     }
   }
 
@@ -3156,6 +3193,10 @@ async function recordFireAttempt(
   outcome: 'sent' | 'failed' | 'skipped-reason',
   now: number,
   reason?: string,
+  // #2615 — mid-cycle(t+30 재폴링) 경로의 발사 시도를 production D1에서 구분하기 위한 meta
+  // 플래그. 측정 plan(PR 본문)이 이 필드로 :00 정각 외(:30 부근) fire-attempt 분포를 조회한다.
+  // 생략(1차 pass, 기존 전체 call site)은 meta에 필드 자체를 싣지 않아 기존 row 형태 불변.
+  midCycle?: boolean,
 ): Promise<void> {
   await recordTripEvent(
     env.DB,
@@ -3163,7 +3204,13 @@ async function recordFireAttempt(
       tokenHash: hashTripToken(trip.token),
       kind: 'cron-fire-attempt',
       station: waypoint.stationName,
-      meta: { waypointKind: fireLogWaypointKind(waypoint.kind), phase: 'imminent', outcome, reason },
+      meta: {
+        waypointKind: fireLogWaypointKind(waypoint.kind),
+        phase: 'imminent',
+        outcome,
+        reason,
+        ...(midCycle ? { midCycle: true } : {}),
+      },
     },
     now,
   );
@@ -3498,6 +3545,159 @@ export async function fireArvlCdStationPush(
   // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
   await recordFireAttempt(env, trip, waypoint, 'sent', now);
   return { dirty };
+}
+
+/** `runMidCycleFireOnly`의 fetch 재조회에 필요한 최소 deps — 전체 `ScheduledDeps`를 요구하지 않는다. */
+export interface MidCycleFireDeps {
+  seoul: SeoulArrivalClient;
+  apnsConfig: ApnsConfig;
+  apnsHosts: Record<ApnsEnv, string>;
+  fetchImpl?: typeof fetch;
+  archFlag?: ArchFlagValue;
+}
+
+export interface MidCycleFireStats {
+  evaluated: number;
+  fired: number;
+  errors: number;
+}
+
+/**
+ * #2615 (재설계, 코드리뷰 F1~F10) — cycle 내 +30초 재폴링 pass의 fire-only 진입점.
+ *
+ * `runScheduled`를 재진입하지 않는다(F3/F4) — 1차 pass가 만든 `MidCycleTripSnapshot[]`만
+ * 소비하고 `listTrips`/`readSsot` 등 KV 재조회를 하지 않는다(F2, LIST quota 소진 차단).
+ * trip/SSoT를 어떤 형태로도 mutate하지 않는다 — advance 없음, `putTrip` 없음, vanish-swap
+ * 없음. "확증(evidence-confirmed) 발사"만 담당한다:
+ *
+ *   1. snapshot의 각 (trip, waypoint, lock)에 대해 `estimateBoardingLockArrival`로 fresh
+ *      arrivals/positions만 재조회(광역 self-poll 아님 — 이 trip 하나 분량).
+ *   2. 발사 직전 표준 dedup 키(`stationPassedFiredKey`) 1건만 GET — 재생 실증(#2615, 리뷰
+ *      후속): in-memory `firedKeys`(이번 호출 1회분)만으로는 "이전 cycle의 mid pass가 이미
+ *      이 역을 쐈다"를 알 수 없어, primary가 여러 cycle 연속 advance를 못 얻는 trip(종착역
+ *      근접 구간 등)에서 매 cycle 무한 재발사가 재현됐다(capture_20260912_line7_synth). 이
+ *      GET은 `listTrips`/`readSsot` 같은 광역 재조회(F2/F3/F4가 금지하는 대상)가 아니라
+ *      아래 3번에서 어차피 쓰는 바로 그 키에 대응하는 read이므로 리뷰 취지(광역 재조회 금지)를
+ *      해치지 않는다. cross-cycle 최악 케이스는 정확히 1회 초과 발사로 상한된다(그 write가
+ *      다음 GET에 아직 안 보이는 KV 가시성 race) — device의 동일 collapse-id가 흡수(교체돼
+ *      사용자에겐 1개), D1엔 fire-attempt가 2건 남을 수 있으나 `midCycle:true` meta로
+ *      구분 가능(트레이드오프, PR 본문 명시).
+ *   3. 도착 확증(`estimate.arrived`)이면 기존 station-passed alert payload/collapse-id를
+ *      그대로 재사용해 push 1건만 발사, 성공 시 위 dedup 키에 put.
+ *   4. LA push/advance/consecutiveEtaMissing 갱신/vanish-fallback 등은 전부 범위 밖 —
+ *      1차 pass 소관 그대로 유지(상태 일관성 회귀 없음).
+ */
+export async function runMidCycleFireOnly(
+  env: Env,
+  snapshot: readonly MidCycleTripSnapshot[],
+  deps: MidCycleFireDeps,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<MidCycleFireStats> {
+  const stats: MidCycleFireStats = { evaluated: 0, fired: 0, errors: 0 };
+  const firedKeys = new Set<string>();
+
+  for (const { trip, waypoint, lock } of snapshot) {
+    stats.evaluated += 1;
+    if (trip.sleepModeEnabled === true) continue;
+    const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
+    if (firedKeys.has(dedupKey)) continue;
+    // #2615 (재생 실증) — 이 1건은 예외적으로 KV GET을 허용한다. 스냅샷에 담긴 trip이 primary
+    // pass에서 여러 cycle 연속 advance를 못 얻는 경우(예: 종착역 근접 구간에서 positions 신호가
+    // 짧게 스치고 사라지는 위상), in-memory `firedKeys`(pass 1회분)만으로는 "이전 cycle의 mid
+    // pass가 이미 이 역을 쐈다"는 사실을 알 수 없어 매 cycle 무한 재발사가 재생으로 실증됐다
+    // (capture_20260912_line7_synth 중곡). 같은 키를 어차피 발사 성공 시 best-effort put하므로,
+    // 발사 *전* 그 키 하나만 조회하는 것은 새 KV 소비 유형이 아니라 기존 write에 대응하는 read를
+    // 앞으로 당긴 것뿐이다 — listTrips/readSsot 등 광역 재조회 금지(F2/F3/F4)와는 무관.
+    try {
+      if ((await env.TRIPS.get(dedupKey)) !== null) continue;
+    } catch {
+      // read 실패는 보수적으로 계속 진행(발사 시도) — swallow.
+    }
+
+    try {
+      const estimate = await estimateBoardingLockArrival({ seoul: deps.seoul } as ScheduledDeps, lock, waypoint, now);
+      if (!estimate?.arrived) continue;
+
+      const pushId = generatePushId();
+      const payload = buildStationPassedImminentPayload({
+        trip,
+        waypoint,
+        lock,
+        pushId,
+        now,
+        origin: 'arvlcd',
+        ssot: null,
+        archFlag: deps.archFlag,
+      });
+      const content = buildStationNotifContent(trip, waypoint, trip.locale);
+      const soundFields = stationNotifSoundFields(waypoint.kind);
+      const heal = await sendWithEnvHeal(
+        (host) =>
+          sendAlertPush({
+            deviceToken: resolveTripDeviceToken(trip),
+            title: content.title,
+            body: content.body,
+            pushId,
+            tripToken: trip.token,
+            sound: soundFields.sound,
+            interruptionLevel: soundFields.interruptionLevel,
+            // #2615 — 기존 arvlcd 발사 경로와 동일 collapse-id. 다음 정각 cron이 같은 역을
+            // 또 쏴도 iOS가 알림센터에서 최신으로 교체 — 사용자에겐 항상 1개.
+            collapseId: stationNotifCollapseId(trip.token),
+            expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+            data: buildSilentPushData(payload),
+            contentAvailable: true,
+            config: deps.apnsConfig,
+            host,
+            fetchImpl: deps.fetchImpl,
+            now,
+          }),
+        trip.apnsEnv,
+        deps.apnsHosts,
+        log,
+        trip.token.slice(0, 8),
+        { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+      );
+
+      if (!heal.result.ok) {
+        stats.errors += 1;
+        log('mid-cycle-fire: push failed', {
+          status: heal.result.status,
+          reason: heal.result.reason,
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+        });
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, true);
+        continue;
+      }
+
+      stats.fired += 1;
+      firedKeys.add(dedupKey);
+      log('mid-cycle-fire: station-passed push', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+      });
+      try {
+        await env.TRIPS.put(dedupKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+      } catch (e) {
+        // best-effort 힌트 — 실패해도 correctness는 device collapse-id가 보장(위 doc 참고).
+        log('mid-cycle-fire: dedup marker put failed (best-effort, swallowed)', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
+      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, true);
+    } catch (e) {
+      stats.errors += 1;
+      log('mid-cycle-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
+    }
+  }
+
+  return stats;
 }
 
 /**

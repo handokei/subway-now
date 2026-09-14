@@ -228,6 +228,7 @@ function makeFullEmptyStats(): ScheduledStats {
     prepareAlarmRolledBack: 0,
     etaMissingDemoted: 0,
     trainReconfirmFired: 0,
+    midCycleSnapshot: [],
   };
 }
 
@@ -11450,62 +11451,9 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
     const trip = makeLockTripFixture(TOKEN);
     await putTrip(kv as unknown as KVNamespace, trip);
     if (opts.setupSsot) await opts.setupSsot(kv, trip);
-    const stats: ScheduledStats = {
-      scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-      lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
-      laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
-      boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
-      phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
-      autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-      boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
-    boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-      hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0,
-      arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
-      arvlCdFireBlocked: 0, arvlCdFireFired: 0,
-      boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
-      vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
-      vanishFallbackMotionGateBlocked: 0,
-      cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
-      realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
-      // #1828 Phase 5 — station-level arrivals polling.
-      stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
-      staleLockFireSkipped: 0,
-      // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=OFF 시 항상 0).
-      arvlCdFireOnceSkipped: 0,
-      // #1652 — staged lifecycle backstop.
-      lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
-      // #1680 — stationary cron skip.
-      lifecycleStationarySkipped: 0,
-      // #1683 — silent push fired by kind.
-      silentPushFiredByKind: {
-        intermediate: 0,
-        transfer: 0,
-        destination: 0,
-        boardingPrompt: 0,
-        reschedule: 0,
-      },
-      // #1824 — Seoul API outage schedule hop fallback.
-      scheduleEtaFallback: 0,
-      // #1707 — destination cross-check 결과 분포.
-      destinationCrossCheck: {
-        within: 0,
-        gpsFar: 0,
-        staleGps: 0,
-        noGps: 0,
-        stationUnknown: 0,
-      },
-      // #2073 (Issue A) — pending/retry push 존재 가능성 게이트. 기본 true(보수적).
-      pendingActivityPossible: true,
-      // #2066 (Phase 2-backend) — 취침 알람(환승/도착 직전역) 발사/skip 카운터.
-      sleepAlarmFired: 0,
-      sleepAlarmDedupSkipped: 0,
-      sleepAlarmRolledBack: 0,
-      prepareAlarmFired: 0,
-      prepareAlarmDedupSkipped: 0,
-      prepareAlarmRolledBack: 0,
-      etaMissingDemoted: 0,
-      trainReconfirmFired: 0,
-    };
+    // #2615 — 로컬 인라인 리터럴 대신 이 파일 상단의 makeFullEmptyStats() 재사용(drift 방지,
+    // 그 헬퍼의 doc-comment가 원래 의도한 목적).
+    const stats: ScheduledStats = makeFullEmptyStats();
     const { dirty } = await fireArvlCdStationPush({
       trip,
       waypoint: trip.waypoints[0],
