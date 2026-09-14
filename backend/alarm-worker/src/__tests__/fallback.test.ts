@@ -1,11 +1,7 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  FALLBACK_ALERT_COLLAPSE_ID_PREFIX,
-  FALLBACK_THRESHOLD_MS,
-  fallbackAlertCollapseId,
-  runFallbackPushes,
-} from '../fallback';
+import { FALLBACK_ALERT_COLLAPSE_ID_PREFIX, fallbackAlertCollapseId } from '../collapseId';
+import { FALLBACK_THRESHOLD_MS, runFallbackPushes } from '../fallback';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
 import { putTrip } from '../trips';
 import type { Env } from '../types';
@@ -407,18 +403,44 @@ describe('runFallbackPushes (#572 P2c)', () => {
 
   describe('#2610 — RCA-A: collapseId 전달 + D1 계측', () => {
     it('fallbackAlertCollapseId는 trip+station 단위 결정적 id를 만든다', () => {
-      const entry = makeEntry({ tripToken: 'tok-collapse-1234567890', stationName: '강남' });
-      expect(fallbackAlertCollapseId(entry)).toBe(
+      expect(fallbackAlertCollapseId('tok-collapse-1234567890', '강남')).toBe(
         `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}tok-collapse-123-강남`,
       );
     });
 
     it('tripToken 누락(구 entry)이면 device token으로 대체', () => {
       const entry = makeEntry({ stationName: '강남' });
-      const { tripToken: _tripToken, ...withoutTripToken } = entry;
-      expect(fallbackAlertCollapseId(withoutTripToken as PendingPush)).toBe(
+      const { tripToken, ...withoutTripToken } = entry;
+      expect(tripToken).toBeDefined();
+      expect(fallbackAlertCollapseId(withoutTripToken.token, withoutTripToken.stationName)).toBe(
         `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}devicetoken-hex-강남`,
       );
+    });
+
+    it('64B를 초과하는 긴 한글 역명은 문자 경계를 보존하며 바이트 단위로 절단된다 (코드리뷰 P1)', () => {
+      // '남한산성입구(성남법원.검찰청)' — 코드리뷰 실측 최악 케이스. UTF-8 기준
+      // prefix(15) + tripToken 16자 + '-'(1) + 역명(각 글자 3바이트, 괄호/마침표는 3바이트 한글
+      // 인접 문자와 혼재)을 합치면 64바이트를 넘는다.
+      const tripToken = 'tok-1234567890123456';
+      const longStationName = '남한산성입구(성남법원.검찰청)';
+      const collapseId = fallbackAlertCollapseId(tripToken, longStationName);
+      const base = `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}${tripToken.slice(0, 16)}-`;
+      expect(new TextEncoder().encode(collapseId).length).toBeLessThanOrEqual(64);
+      expect(collapseId.startsWith(base)).toBe(true);
+      const truncatedStation = collapseId.slice(base.length);
+      // 절단이 실제로 station suffix에서 발생했는지 — 원본보다 짧다.
+      expect(truncatedStation.length).toBeLessThan(longStationName.length);
+      // 문자 경계 보존 확인 — 절단된 접미사가 원본 역명의 코드 포인트 단위 앞부분과
+      // 정확히 일치해야 한다(멀티바이트 문자 중간에서 잘렸다면 마지막 문자가 원본과 달라진다).
+      const truncatedChars = [...truncatedStation];
+      const originalChars = [...longStationName];
+      expect(truncatedChars).toEqual(originalChars.slice(0, truncatedChars.length));
+    });
+
+    it('짧은 역명은 절단 없이 그대로 유지된다 (회귀 방지)', () => {
+      const collapseId = fallbackAlertCollapseId('tok-collapse', '강남');
+      expect(collapseId).toBe(`${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}tok-collapse-강남`);
+      expect(new TextEncoder().encode(collapseId).length).toBeLessThanOrEqual(64);
     });
 
     it('alert 발사 시 apns-collapse-id 헤더를 전달한다', async () => {
@@ -438,7 +460,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       expect(headers['apns-collapse-id']).toBe(`${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}tok-collapse-강남`);
     });
 
-    it('fallback 발사 시 D1 trip_events에 fallback-alert-fired kind를 기록한다', async () => {
+    it('fallback 발사 성공 시에만 D1 trip_events에 fallback-alert-fired kind를 기록한다', async () => {
       await putPending(
         kv as unknown as KVNamespace,
         makeEntry({ pushId: 'p-d1', tripToken: 'tok-d1', stationName: '강남' }),
@@ -465,6 +487,41 @@ describe('runFallbackPushes (#572 P2c)', () => {
       );
     });
 
+    it('transient 실패(재시도 대상)는 D1에 기록하지 않는다 — 재시도 시 중복 row/거짓 fired 방지 (코드리뷰 P1-2)', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-retry', tripToken: 'tok-retry', stationName: '강남' }),
+      );
+      const db = makeMockDb();
+      // 1회차: 503(transient) — entry는 KV에 유지되고 D1엔 기록되지 않아야 한다.
+      const fetchImpl1 = vi.fn(async () => new Response('', { status: 503 }));
+      const stats1 = await runFallbackPushes(
+        { ...makeEnv(kv), DB: db },
+        {
+          apnsConfig: apnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: fetchImpl1 as unknown as typeof fetch,
+          now: () => NOW,
+        },
+      );
+      expect(stats1.errors).toBe(1);
+      expect(db.prepare).not.toHaveBeenCalled();
+      expect(kv.store.has(pendingKey('p-retry'))).toBe(true);
+
+      // 2회차(다음 cron 재시도): 다시 503 — 여전히 D1 0건.
+      const fetchImpl2 = vi.fn(async () => new Response('', { status: 503 }));
+      await runFallbackPushes(
+        { ...makeEnv(kv), DB: db },
+        {
+          apnsConfig: apnsConfig(),
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: fetchImpl2 as unknown as typeof fetch,
+          now: () => NOW,
+        },
+      );
+      expect(db.prepare).not.toHaveBeenCalled();
+    });
+
     it('DB 미바인딩이면 D1 계측 없이 정상 발사(graceful no-op)', async () => {
       await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-no-db' }));
       const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
@@ -475,6 +532,24 @@ describe('runFallbackPushes (#572 P2c)', () => {
         now: () => NOW,
       });
       expect(stats.pushed).toBe(1);
+    });
+
+    it('400/BadCollapseId는 영구 실패로 분류 — entry 삭제 + logPushFailure 기록 (코드리뷰 P1-3 방어 계층)', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p-badcollapse', tripToken: 'tok-badcollapse' }),
+      );
+      const fetchImpl = vi.fn(
+        async () => new Response(JSON.stringify({ reason: 'BadCollapseId' }), { status: 400 }),
+      );
+      const stats = await runFallbackPushes(makeEnv(kv), {
+        apnsConfig: apnsConfig(),
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.errors).toBe(1);
+      expect(kv.store.has(pendingKey('p-badcollapse'))).toBe(false);
     });
   });
 });

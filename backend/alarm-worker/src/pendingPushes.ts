@@ -48,8 +48,10 @@ export interface PendingPush {
    * PendingPush에 trip을 되찾을 방법이 없어 lock 상태를 볼 수 없었다(runFallbackPushes.ts 참고).
    * 구 entry(본 필드 추가 전 putPending)는 undefined일 수 있다 — fallback.ts가 "검증 불가"로
    * 취급해 intermediate는 발사하지 않는다(보수적 기본값, "락 활성 중 통과" 회귀 방지 우선).
+   * #2610 코드리뷰 — 타입을 런타임 계약(구 entry는 필드 자체가 없음)과 일치시켜 optional로
+   * 선언한다. 신규 putPending 호출부는 여전히 항상 값을 채운다 — 타입만 실제 가능성을 반영.
    */
-  tripToken: string;
+  tripToken?: string;
   /** dedup 식별자 — 디바이스 FIRED_ALARMS와 매칭. `${stationName}:${kind}:${phase}` 형태. */
   alarmKey: string;
   /** 백엔드 발사 시점 epoch ms. P2c가 30s 임계 판단. */
