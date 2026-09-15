@@ -311,12 +311,23 @@ export interface Trip {
    * #903 (Seam G) — 클라이언트 기압계가 지하 진입을 시사하는가.
    *
    * #2644 — 2026-09-15 실측상 device 기압계 native 콜백이 세션 전체 0건(사실상 사망)이라
-   * backend는 더 이상 이 필드로 어떤 판정/분기도 하지 않는다(#2623이 gate/advance environment를,
-   * #2637이 boardingPrompt gate environment를, #2644가 마지막 잔존 소비처였던
-   * `resolveEtaMissingThreshold` 임계 판정과 push payload `subsurface` flag를 모두 stations.json
-   * 기반 waypoint environment로 교체 완료). 이 필드는 이제 device가 보내는 값을 수신·저장하고
-   * D1/덤프로 관측(기압계 회복 여부 모니터링, 향후 재도입 대비)하는 용도로만 남는다 — 필드
-   * 자체는 device 계속 전송 + 관측 가치 때문에 제거하지 않는다.
+   * backend는 이 필드로 더 이상 게이트/임계를 판정하지 않는다:
+   * - #2623이 발사/advance gate의 environment 입력을, #2637이 boardingPrompt gate의
+   *   environment 입력을 stations.json 기반 waypoint environment로 교체했다.
+   * - #2644가 `resolveEtaMissingThreshold` 임계 판정의 입력을 동일하게 교체했고,
+   *   `/trips` re-register 시 subsurface 전환에 따라 `consecutiveEtaMissing`을 리셋하던
+   *   구 분기(index.ts)도 제거했다(그 리셋이 막던 회귀 자체가 threshold 입력 교체로 더 이상
+   *   성립하지 않음).
+   * - push payload(`subsurface` flag, device GPS 게이트 우회용)는 stations.json 치환을
+   *   시도했으나 2026-09-15 리뷰로 철회됐다 — device의 `silentPushLocationGate`가 이 flag를
+   *   받으면 거리/stale-position 게이트를 통째로 우회하는데, 533역 중 375역이 underground라
+   *   대부분의 intermediate push에서 좀비/stale lock 오발사 방어(ADR-010상 miss와 동급)를
+   *   끄는 부작용이 있었다. 이 필드는 device가 판단할 몫으로 남기고 payload에서 아예
+   *   생략한다(값과 무관하게 omit).
+   *
+   * 남은 용도는 device가 보내는 값을 수신·저장하고 D1/덤프로 관측(기압계 회복 여부 모니터링,
+   * 향후 재도입 대비)하는 것뿐이다 — 필드 자체는 device 계속 전송 + 관측 가치 때문에
+   * 제거하지 않는다.
    */
   subsurface?: boolean;
   /**

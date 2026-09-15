@@ -1044,15 +1044,17 @@ describe('runScheduled', () => {
       expect('hopIndex' in data).toBe(false);
     });
 
-    // #1307 — lockless intermediate도 server-authoritative subsurface flag forward.
-    // #2644 — 입력을 device 기압계(trip.subsurface)에서 발사 대상 waypoint의 stations.json
-    // environment로 교체. 강남(line 2)=underground, 성수(line 2)=surface(stations.json 실측).
-    // trip.subsurface는 각 케이스에서 waypoint 판정과 반대로 설정해 device 값이 더 이상
-    // 영향을 주지 않음을 함께 증명한다.
+    // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — lockless intermediate payload에서
+    // subsurface flag를 device 기압계에서 stations.json waypoint environment로 교체하려
+    // 했으나 반려됐다. `silentPushLocationGate.ts`의 `isSubsurfaceBypass`가 subsurface=true를
+    // 받으면 거리/stale-position 게이트를 통째로 우회하는데, 533역 중 375역이 underground라
+    // 이 치환은 거의 모든 intermediate push에서 좀비/stale lock 오발사 방어(ADR-010상 miss와
+    // 동급)를 끄는 부작용이 있다. 대신 필드를 아예 보내지 않는다(omit) — waypoint가
+    // underground/surface 무엇이든, trip.subsurface가 무엇이든 결과는 항상 omit이어야 한다.
     it.each([
-      ['underground waypoint(강남) — trip.subsurface=false여도 wire', '강남', false, true],
-      ['surface waypoint(성수) — trip.subsurface=true여도 omit', '성수', true, false],
-    ])('lockless intermediate subsurface %s (#2644)', async (_label, stationName, tripSubsurface, expectPresent) => {
+      ['underground waypoint(강남)', '강남', true],
+      ['surface waypoint(성수)', '성수', false],
+    ])('lockless intermediate — payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface) => {
       const { apnsFetch } = await runLocklessCycle({
         trip: makeTrip({
           waypoints: [
@@ -1066,8 +1068,7 @@ describe('runScheduled', () => {
         apnsOk: true,
       });
       const data = parseLocklessIntermediateData(apnsFetch);
-      expect('subsurface' in data).toBe(expectPresent);
-      if (expectPresent) expect(data.subsurface).toBe(true);
+      expect('subsurface' in data).toBe(false);
     });
 
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
@@ -9299,15 +9300,16 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.hopIndex).toBeUndefined();
   });
 
-  // #1307 — server-authoritative subsurface flag forward (arvlCd-fire 경로).
-  // #2644 — 입력을 device 기압계(trip.subsurface)에서 발사 대상 waypoint의 stations.json
-  // environment로 교체. 중곡(line 7)=underground, 도봉산(line 7)=surface(stations.json 실측).
-  // 각 케이스에서 trip.subsurface를 waypoint 판정과 반대로 설정해 device 값이 더 이상
-  // 결과에 영향을 주지 않음을 함께 증명한다.
+  // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — arvlCd-fire 경로 payload에서도
+  // subsurface flag를 device 기압계에서 stations.json waypoint environment로 교체하려 했으나
+  // 반려됐다(lockless intermediate와 동일 근거 — `silentPushLocationGate.ts`
+  // `isSubsurfaceBypass`가 거리/stale-position 게이트를 통째로 우회, 533역 중 375역이
+  // underground). 필드를 아예 보내지 않는다(omit) — waypoint underground/surface, trip.subsurface
+  // 값 어느 쪽이든 결과는 항상 omit이어야 한다.
   it.each([
-    ['underground waypoint(중곡) — trip.subsurface=false여도 forward', '중곡', false, true, 'p-arvl-sub'],
-    ['surface waypoint(도봉산) — trip.subsurface=true여도 omit', '도봉산', true, false, 'p-arvl-no-sub'],
-  ])('payload.subsurface %s (#2644)', async (_label, stationName, tripSubsurface, expectPresent, pushId) => {
+    ['underground waypoint(중곡)', '중곡', false, 'p-arvl-sub'],
+    ['surface waypoint(도봉산)', '도봉산', true, 'p-arvl-no-sub'],
+  ])('payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface, pushId) => {
     const { apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul(stationName, 0, 1),
       trip: makeLockTripFixture('arvl-tok', {
@@ -9323,8 +9325,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
       string,
       unknown
     >;
-    expect('subsurface' in data).toBe(expectPresent);
-    if (expectPresent) expect(data.subsurface).toBe(true);
+    expect('subsurface' in data).toBe(false);
   });
 
   // #1322 — lock-path fire는 boardingLine/trainCode를 self-describing으로 실어 보낸다.

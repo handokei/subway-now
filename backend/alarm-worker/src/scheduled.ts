@@ -510,6 +510,14 @@ export function isFallbackAdvanceBlockedByMotion(motion: PositionPoint['motion']
  *
  * 'hybrid'(mixed)는 underground와 동일시하지 않는다 — `consensusGate.ts`의 기존 관례
  * (underground와 분리된 더 보수적인 별도 분기, evaluateConsensus 참조)를 따른다.
+ *
+ * 트레이드오프(2026-09-15 리뷰) — 기압계 사망으로 사실상 전역 5였던 임계가 이제 533역 중
+ * 375역(underground)에서 10으로 되돌아간다(#903 원 의도 복원). 대가: 잘못된 lock에 물린
+ * 사용자의 train-reconfirm push까지의 침묵이 최대 약 5분(cron 1분 주기 기준)에서 약 10분으로
+ * 늘고, seoul-outage 분기의 trip auto-end도 같은 비율로 지연된다. 지하 dead zone에서의
+ * false auto-end/조기 재확인(false positive)을 줄이는 대신 오류 trip 발견까지의 지연(miss
+ * 방향 비용)이 커지는 방향 — ADR-010 "두 실패 모드는 동급" 원칙에 따라 어느 한쪽이 우월하지
+ * 않으며, #903이 애초에 의도한 정책(지하 dead zone 인내)으로 되돌리는 결정이다.
  */
 export function resolveEtaMissingThreshold(environment: EvidenceEnvironment): number {
   return environment === 'underground'
@@ -2412,17 +2420,18 @@ function buildStationPassedImminentPayload(
     // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
     // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
     occupiedLine: waypoint.line,
-    // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
-    // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-    // #2644 — 입력을 device 기압계(trip.subsurface, 실측상 사망)에서 이 push가 발사되는
-    // waypoint의 stations.json environment(#2623 `deriveWaypointEnvironment`)로 교체.
-    // `resolveWaypointEnvironment` wrapper(lookup-miss 관측)가 아닌 raw 함수를 쓰는 이유:
-    // 이 헬퍼(buildStationPassedImminentPayload)의 일부 호출부(runMidCycleFireOnly,
-    // fireSyncSkippedStationPasses)는 자체 지역 stats 타입(ScheduledStats 아님)만 들고 있어
-    // wrapper가 요구하는 `stats: ScheduledStats`를 줄 수 없다 — lookup-miss 관측은 이미 gate/advance
-    // 판정 경로(:4642 등)에서 매 cycle 별도로 수행되므로 payload flag 산출에서 중복 관측할
-    // 필요가 없다. 'hybrid'는 underground와 동일시하지 않는다(consensusGate.ts 기존 관례).
-    subsurface: deriveWaypointEnvironment(waypoint) === 'underground',
+    // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — 이 필드를 device 기압계
+    // (trip.subsurface)에서 stations.json waypoint environment로 교체하려 했으나 반려됐다.
+    // 근거: `silentPushLocationGate.ts`의 `isSubsurfaceBypass`가 subsurface=true를 받으면
+    // 거리 게이트 + stale-position 게이트를 통째로 우회한다. trip.subsurface는 "device가
+    // 지금 GPS를 못 믿는 상태"(동적, device 신호)였고 station environment는 "그 역이 지하"
+    // (정적, 역 속성)라 의미가 다르다 — 533역 중 375역이 underground라 이 치환은 거의 모든
+    // intermediate push에서 backend의 마지막 오발사 방어(좀비/stale lock 클래스, ADR-010상
+    // miss와 동급)를 끄는 부작용을 낳는다. 기압계가 죽은 지금은 "내 GPS를 믿을 수 있나"를
+    // backend가 역 속성으로 단정할 근거가 없으므로, 필드를 아예 보내지 않는다(omit) —
+    // `silentPushTask.ts`의 `validSubsurface` 정규화가 누락/false를 undefined로 접어 device
+    // 로컬 stamp fallback으로 넘기므로, 현재(사실상 항상 false→omit) 동작과 동치이며 게이트
+    // 우회 범위를 넓히지 않는다.
     // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
     // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
     // #2021 (ADR-022) — archFlag=on 시 undefined 로 forward 하여 device 의
@@ -6118,11 +6127,10 @@ export async function runLocklessIntermediate(
       // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
       // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
       occupiedLine: waypoint.line,
-      // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
-      // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-      // #2644 — 같은 소비처(buildStationPassedImminentPayload :2408)와 동일 근거로 입력을
-      // device 기압계(trip.subsurface)에서 waypoint의 stations.json environment로 교체.
-      subsurface: deriveWaypointEnvironment(waypoint) === 'underground',
+      // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — 같은 소비처
+      // (buildStationPassedImminentPayload :2408 근방 주석 참조)와 동일 근거로 필드를 아예
+      // 보내지 않는다(omit). stations.json 기반 waypoint environment로의 치환은 거리/
+      // stale-position 게이트를 우회시켜 좀비/stale lock 오발사 방어를 끄는 부작용이 있었다.
       // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
       // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
       tripToken: trip.token,
