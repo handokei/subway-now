@@ -2320,6 +2320,20 @@ app.post('/boarding-lock/sync', async (c) => {
     }),
   );
   const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  if (advance.rejected) {
+    // #2646 — jump 상한 초과로 advance를 거부한 전이만 계측(#2073 quota 정책 — 매 sync가 아니라
+    // 거부가 실제로 발생한 시점 1건). 신규 kind 추가 없이 기존 'advance' kind를 재사용, meta로
+    // 거부 사유를 구분한다.
+    scheduleTripEvent(
+      c,
+      recordTripEvent(c.env.DB, {
+        tokenHash,
+        kind: 'advance',
+        station: payload.observedStationName,
+        meta: { rejected: advance.rejected },
+      }),
+    );
+  }
 
   let working: Trip = existing;
   if (advance.shiftedCount > 0) {
@@ -2642,12 +2656,30 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
 }
 
 /**
+ * Seam E jump 상한 (#2646) — sync 관측역이 waypoints 안에서 이 hop 수를 초과해 앞서 있으면
+ * "비정상 점프"로 간주해 advance 자체를 거부한다(waypoints 불변, D1 계측만). 원래 이
+ * endpoint는 idx만 보고 `shiftedCount = idx + 1`을 무조건 slice했다 — 상한이 없어 구버전/버그
+ * 클라이언트나 지연·중복 전달된 sync가 head를 waypoints 끝까지 무제한으로 튀게 할 수 있었다.
+ *
+ * 값 산출 근거: 이 endpoint의 기존 설계(바로 아래 정책 주석)는 "긴 음영 구간 후 재진입"에서
+ * 발생하는 다중 hop catch-up을 의도적으로 허용한다 — 정상 운영에서 관측되는 catch-up 폭은
+ * 한 자릿수~10대 초반 hop 수준이다. `POSITION_TRAIN_MAX_HOP=2`(advanceTripPosition.ts)는 매
+ * cron tick마다 Seoul API로 재확증되는 evidence 기준이라 훨씬 타이트하다 — 이 endpoint는 그
+ * evidence 없이 device GPS 단발 신호만으로 다중 hop을 확정하므로 원래도 더 관대해야 하지만,
+ * 상한이 전혀 없으면 실제 이동으로는 불가능한 거리(waypoints 전체 길이 등)로도 advance가
+ * 통과한다. 정상 catch-up 폭 대비 넉넉한 여유(정상 관측치의 수배)를 두면서도 명백한 이상치는
+ * 걸러내도록 30으로 잡는다 — 정상 범위 sync의 동작은 전혀 바뀌지 않는다.
+ */
+export const SEAM_E_SYNC_MAX_HOP_JUMP = 30;
+
+/**
  * Seam E 진행 판단 — 관측 역이 waypoints 시퀀스 안 어디인지 찾고 shift 개수를 산출.
  *
  * 정책:
  *   - waypoints[0] 일치: 현재 다음 hop 도달 → 1 hop advance
  *   - waypoints[1] 일치: 1 hop 앞서감 (cron이 한 사이클 늦었음) → 2 hop catch-up advance
- *   - waypoints[k≥2] 일치: k hop catch-up advance (긴 음영 후 재진입 케이스)
+ *   - waypoints[k≥2] 일치: k hop catch-up advance (긴 음영 후 재진입 케이스), 단
+ *     `SEAM_E_SYNC_MAX_HOP_JUMP` 초과 시 거부(`rejected: 'jump'`) — waypoints 불변.
  *   - 미일치: 사용자가 진행 방향 뒤에 있거나 다른 트립 → no-op (lock 보존)
  *
  * "사용자 뒤 1 hop은 grace 1 cycle 후 advance"는 Seam E가 아닌 cron의 자연 추적이 담당 —
@@ -2656,10 +2688,14 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
 export function computeLockSyncAdvance(
   waypoints: Trip['waypoints'],
   observedStationName: string,
-): { shiftedCount: number } {
+): { shiftedCount: number; rejected?: 'jump' } {
   const idx = waypoints.findIndex((w) => w.stationName === observedStationName);
   if (idx < 0) return { shiftedCount: 0 };
-  return { shiftedCount: idx + 1 };
+  const shiftedCount = idx + 1;
+  if (shiftedCount > SEAM_E_SYNC_MAX_HOP_JUMP) {
+    return { shiftedCount: 0, rejected: 'jump' };
+  }
+  return { shiftedCount };
 }
 
 /**

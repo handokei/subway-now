@@ -9,6 +9,7 @@ import {
   isSsotSyncAdvanceMonotonic,
   LOCK_TTL_REFRESH_MS,
   resolveProgressWaypoints,
+  SEAM_E_SYNC_MAX_HOP_JUMP,
   SESSION_DRIFT_WINDOW_MS,
   validateBoardingLockSync,
   validateLiveActivityRegister,
@@ -3899,6 +3900,23 @@ describe('computeLockSyncAdvance (#901)', () => {
   it('빈 waypoints → 0', () => {
     expect(computeLockSyncAdvance([], 'A')).toEqual({ shiftedCount: 0 });
   });
+
+  it('#2646 — 정확히 SEAM_E_SYNC_MAX_HOP_JUMP hop → 상한 이내, 정상 shift(회귀 없음)', () => {
+    const waypoints = Array.from({ length: SEAM_E_SYNC_MAX_HOP_JUMP + 1 }, (_, i) => w(`S${i}`));
+    const idx = SEAM_E_SYNC_MAX_HOP_JUMP - 1; // shiftedCount === SEAM_E_SYNC_MAX_HOP_JUMP
+    expect(computeLockSyncAdvance(waypoints, `S${idx}`)).toEqual({
+      shiftedCount: SEAM_E_SYNC_MAX_HOP_JUMP,
+    });
+  });
+
+  it('#2646 — SEAM_E_SYNC_MAX_HOP_JUMP + 1 hop → 상한 초과, 거부(shiftedCount 0, rejected=jump)', () => {
+    const waypoints = Array.from({ length: SEAM_E_SYNC_MAX_HOP_JUMP + 2 }, (_, i) => w(`S${i}`));
+    const idx = SEAM_E_SYNC_MAX_HOP_JUMP; // shiftedCount === SEAM_E_SYNC_MAX_HOP_JUMP + 1
+    expect(computeLockSyncAdvance(waypoints, `S${idx}`)).toEqual({
+      shiftedCount: 0,
+      rejected: 'jump',
+    });
+  });
 });
 
 describe('isSsotSyncAdvanceMonotonic (#2624)', () => {
@@ -4052,6 +4070,61 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(body.currentWaypoint).toBe('강남');
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
     expect(stored.waypoints).toHaveLength(3);
+  });
+
+  it('#2646 — jump 상한(SEAM_E_SYNC_MAX_HOP_JUMP) 초과 관측역 → advance 거부, waypoints 불변', async () => {
+    const env = makeKvEnv();
+    const manyWaypoints = Array.from({ length: SEAM_E_SYNC_MAX_HOP_JUMP + 5 }, (_, i) => ({
+      stationName: `역${i}`,
+      line: '2',
+      kind: i === SEAM_E_SYNC_MAX_HOP_JUMP + 4 ? ('destination' as const) : ('intermediate' as const),
+    }));
+    const trip = validateTrip(tripWithLock({ waypoints: manyWaypoints }));
+    await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
+    // 상한(SEAM_E_SYNC_MAX_HOP_JUMP)을 넘는 인덱스(shiftedCount = SEAM_E_SYNC_MAX_HOP_JUMP + 5)를 관측.
+    const res = await post(
+      '/boarding-lock/sync',
+      {
+        token: 'tok-sync',
+        observedStationName: `역${manyWaypoints.length - 1}`,
+        observedAtMs: 1,
+        accuracy: 5,
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean; currentWaypoint: string | null };
+    expect(body.advanced).toBe(false);
+    expect(body.currentWaypoint).toBe('역0');
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.waypoints).toHaveLength(manyWaypoints.length);
+  });
+
+  it('#2646 — jump 상한 이내(정확히 SEAM_E_SYNC_MAX_HOP_JUMP hop) 관측역 → 정상 advance 통과(회귀 없음)', async () => {
+    const env = makeKvEnv();
+    const waypointsAtCap = Array.from({ length: SEAM_E_SYNC_MAX_HOP_JUMP + 2 }, (_, i) => ({
+      stationName: `역${i}`,
+      line: '2',
+      kind: i === SEAM_E_SYNC_MAX_HOP_JUMP + 1 ? ('destination' as const) : ('intermediate' as const),
+    }));
+    const trip = validateTrip(tripWithLock({ waypoints: waypointsAtCap }));
+    await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
+    const observedIdx = SEAM_E_SYNC_MAX_HOP_JUMP - 1; // shiftedCount === SEAM_E_SYNC_MAX_HOP_JUMP (상한 이내)
+    const res = await post(
+      '/boarding-lock/sync',
+      {
+        token: 'tok-sync',
+        observedStationName: `역${observedIdx}`,
+        observedAtMs: 1,
+        accuracy: 5,
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean };
+    expect(body.advanced).toBe(true);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.waypoints).toHaveLength(waypointsAtCap.length - SEAM_E_SYNC_MAX_HOP_JUMP);
   });
 
   it('마지막 waypoint(destination) 일치 → 전체 소진 + currentWaypoint=null', async () => {
