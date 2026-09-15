@@ -74,7 +74,11 @@ export type EvidenceType =
   | 'time-only'
   | 'manual-user-intent'
   | 'seed-override'
-  | 'consensus-train';
+  | 'consensus-train'
+  // #2624 — `/boarding-lock/sync` 핸들러(index.ts)가 사용자 관측(device sync) 기반으로
+  // SSoT.currentStationId를 직접 advance시킬 때 stamp. cron `advanceTripPosition`의 6단
+  // 게이트 evidence type과 구분되는 별도 채널임을 명시(합의 게이트 미적용 — 단조성 가드만 적용).
+  | 'device-sync';
 
 /**
  * Evidence가 어느 데이터 출처에서 왔는지. T2 합의 게이트가 source 분산을 평가할 때 사용.

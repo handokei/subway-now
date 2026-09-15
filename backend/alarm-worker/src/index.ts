@@ -147,7 +147,7 @@ import {
   writeRegressionDataPoints,
 } from './regressionTelemetry';
 import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
-import { deleteSsot, readSsot } from './tripPositionSsot';
+import { deleteSsot, readSsot, writeSsot } from './tripPositionSsot';
 import {
   computeObservabilityMetrics,
   readLastSuccessfulMetrics,
@@ -2303,6 +2303,39 @@ app.post('/boarding-lock/sync', async (c) => {
         meta: { shiftedCount: advance.shiftedCount },
       }),
     );
+    // #2624 — advance 이원화 fix. sync 기반 waypoint advance(위)가 tripPositionSsot을 건드리지
+    // 않아 mirror/LA가 죽은 SSoT를 따라가는 회귀(2026-09-15 실 라이드 b00dd879)를 막는다. 사용자
+    // 접점(device sync 관측)은 ground truth이므로 advanceTripPosition의 합의 게이트는 미적용
+    // (#2623 소관 유지) — 단조성 가드만 적용: cron(advanceTripPosition)이 이미 이 waypoint
+    // 프레임 상 더 앞선 station으로 SSoT를 전진시켰다면 후퇴시키지 않는다.
+    const ssot = await readSsot(c.env.TRIPS, payload.token);
+    if (
+      ssot &&
+      isSsotSyncAdvanceMonotonic(existing.waypoints, ssot.currentStationId, payload.observedStationName)
+    ) {
+      // advance.shiftedCount = idx+1이므로 observedStationName은 existing.waypoints[idx]와 동일 —
+      // 그 waypoint의 line을 함께 동봉해 currentStationLine cross-line confusion을 방지한다.
+      const matchedWaypoint = existing.waypoints[advance.shiftedCount - 1];
+      await writeSsot(
+        c.env.TRIPS,
+        {
+          ...ssot,
+          currentStationId: payload.observedStationName,
+          // 서버 수신 시각(`now`)이 아닌 device 관측 시각을 stamp — 다른 evidence 소스
+          // (`AdvanceEvidence.ts`, advanceTripPosition.ts:566)와 동일하게 "언제 그 station이
+          // 관측됐는지"를 반영한다(서버 처리 지연과 분리).
+          lastAdvanceAt: payload.observedAtMs,
+          // 신규 어휘 — device sync 채널로 advance됐음을 구분(cron advanceTripPosition evidence와
+          // 혼동 방지). device 측 소비부(`backendSsotMirror.ts`/`DebugModal.tsx`)는 lastAdvanceEvidence를
+          // 임의 string으로만 다뤄 분기하지 않는다(확인 완료) — 신규 값 추가가 안전하다.
+          lastAdvanceEvidence: 'device-sync',
+          ...(matchedWaypoint?.line !== undefined
+            ? { currentStationLine: matchedWaypoint.line }
+            : {}),
+        },
+        { expiresAt: existing.expiresAt },
+      );
+    }
   }
 
   // #2560 (ADR-038 Phase 2, ROOT fix) — lock 승격. backend가 active boardingLock이 없는데 device가
@@ -2485,6 +2518,31 @@ export function computeLockSyncAdvance(
   const idx = waypoints.findIndex((w) => w.stationName === observedStationName);
   if (idx < 0) return { shiftedCount: 0 };
   return { shiftedCount: idx + 1 };
+}
+
+/**
+ * #2624 — sync 기반 SSoT advance의 단조성 가드.
+ *
+ * `waypoints`(sync 도달 시점의 pre-slice 잔여 경로)를 프레임으로 삼아, SSoT.currentStationId와
+ * candidate(sync 관측역)의 상대 순서를 비교한다.
+ *
+ *   - SSoT.currentStationId가 이 waypoints 프레임에 없으면(이미 지나간 역이거나 이 경로 프레임보다
+ *     뒤에 있는 경우) 후퇴 우려가 없어 허용(true).
+ *   - candidate가 이 waypoints 프레임에 없으면(호출부가 항상 findIndex-matched 역만 넘기므로
+ *     실질 발생 X, defense-in-depth) 허용(true).
+ *   - 둘 다 프레임 내에 있고 candidate가 SSoT보다 앞선 index(더 이른 순번)면 후퇴 — 차단(false).
+ *     cron(`advanceTripPosition`)이 이미 이 sync보다 앞서 SSoT를 전진시킨 경우가 여기 해당.
+ */
+export function isSsotSyncAdvanceMonotonic(
+  waypoints: Trip['waypoints'],
+  ssotCurrentStationId: string,
+  candidateStationName: string,
+): boolean {
+  const ssotIdx = waypoints.findIndex((w) => w.stationName === ssotCurrentStationId);
+  if (ssotIdx < 0) return true;
+  const candidateIdx = waypoints.findIndex((w) => w.stationName === candidateStationName);
+  if (candidateIdx < 0) return true;
+  return candidateIdx >= ssotIdx;
 }
 
 /**

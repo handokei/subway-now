@@ -6,6 +6,7 @@ import {
   buildBoardingConfirmEventMeta,
   computeLockSyncAdvance,
   dualWriteTripDo,
+  isSsotSyncAdvanceMonotonic,
   LOCK_TTL_REFRESH_MS,
   resolveProgressWaypoints,
   validateBoardingLockSync,
@@ -3684,6 +3685,31 @@ describe('computeLockSyncAdvance (#901)', () => {
   });
 });
 
+describe('isSsotSyncAdvanceMonotonic (#2624)', () => {
+  const w = (name: string) => ({ stationName: name, line: '2', kind: 'intermediate' as const });
+  const waypoints = [w('A'), w('B'), w('C')];
+
+  it('SSoT가 candidate보다 뒤(더 이른 순번) → 허용', () => {
+    expect(isSsotSyncAdvanceMonotonic(waypoints, 'A', 'B')).toBe(true);
+  });
+
+  it('SSoT와 candidate가 같은 station → 허용(idempotent)', () => {
+    expect(isSsotSyncAdvanceMonotonic(waypoints, 'B', 'B')).toBe(true);
+  });
+
+  it('SSoT가 candidate보다 앞(더 늦은 순번) → 차단(후퇴)', () => {
+    expect(isSsotSyncAdvanceMonotonic(waypoints, 'C', 'A')).toBe(false);
+  });
+
+  it('SSoT.currentStationId가 waypoints 프레임에 없음(이미 지나감) → 허용', () => {
+    expect(isSsotSyncAdvanceMonotonic(waypoints, 'origin', 'B')).toBe(true);
+  });
+
+  it('candidate가 waypoints 프레임에 없음(defense-in-depth) → 허용', () => {
+    expect(isSsotSyncAdvanceMonotonic(waypoints, 'A', 'unknown')).toBe(true);
+  });
+});
+
 describe('POST /boarding-lock/sync (#901)', () => {
   const FUTURE_LOCK = Date.now() + 30 * 60 * 1000;
 
@@ -3962,6 +3988,87 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).not.toHaveProperty('autoLockCandidate');
+  });
+
+  // #2624 — advance 이원화 fix. sync waypoint advance가 tripPositionSsot을 동반 갱신하는지 검증.
+  describe('tripPositionSsot 동반 갱신 (#2624)', () => {
+    it('SSoT가 이미 seed된 trip에서 sync advance → SSoT.currentStationId가 관측역으로 갱신된다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { seedSsot, readSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, 'tok-sync', '강남');
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1_000, accuracy: 5 },
+        env,
+      );
+      const ssot = await readSsot(env.TRIPS, 'tok-sync');
+      expect(ssot?.currentStationId).toBe('역삼');
+      expect(ssot?.lastAdvanceEvidence).toBe('device-sync');
+      expect(ssot?.lastAdvanceAt).toBe(1_000);
+      expect(ssot?.currentStationLine).toBe('2');
+    });
+
+    it('SSoT가 없는 trip에서 sync advance → SSoT 미생성(no-op), 기존 waypoint slice 동작은 그대로', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { readSsot } = await import('../tripPositionSsot');
+      const res = await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await readSsot(env.TRIPS, 'tok-sync')).toBeNull();
+    });
+
+    it('단조성 가드 — cron이 이미 SSoT를 waypoints 프레임상 더 앞선 역으로 전진시켰으면 sync가 후퇴시키지 않는다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { seedSsot, writeSsot, readSsot } = await import('../tripPositionSsot');
+      // cron(advanceTripPosition)이 이미 '선릉'(waypoints 상 강남보다 뒤)으로 SSoT를 전진시킨 상태.
+      const seeded = await seedSsot(env.TRIPS, 'tok-sync', '선릉');
+      await writeSsot(env.TRIPS, { ...seeded, lastAdvanceEvidence: 'arvlcd-confirmed-train' });
+      // sync는 뒤처진 관측(강남)으로 도달 — SSoT를 후퇴시키면 안 된다.
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 2_000, accuracy: 5 },
+        env,
+      );
+      const ssot = await readSsot(env.TRIPS, 'tok-sync');
+      expect(ssot?.currentStationId).toBe('선릉');
+      expect(ssot?.lastAdvanceEvidence).toBe('arvlcd-confirmed-train');
+    });
+
+    it('SSoT.currentStationId가 waypoints 프레임에 없으면(이미 지나간 역) 후퇴 우려 없이 sync가 전진시킨다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { seedSsot, readSsot } = await import('../tripPositionSsot');
+      // SSoT는 trip 시작 이전 origin('사당' — 현재 waypoints 프레임에 없음)으로 seed.
+      await seedSsot(env.TRIPS, 'tok-sync', '사당');
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 3_000, accuracy: 5 },
+        env,
+      );
+      const ssot = await readSsot(env.TRIPS, 'tok-sync');
+      expect(ssot?.currentStationId).toBe('강남');
+      expect(ssot?.lastAdvanceEvidence).toBe('device-sync');
+    });
+
+    it('waypoints 미일치(advance 없음) → SSoT는 갱신하지 않는다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { seedSsot, readSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, 'tok-sync', '강남');
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const ssot = await readSsot(env.TRIPS, 'tok-sync');
+      expect(ssot?.currentStationId).toBe('강남');
+    });
   });
 
   // #1364 — read-after-write verification.
