@@ -297,6 +297,55 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
     expect(logBoardingPromptFired).not.toHaveBeenCalled();
   });
 
+  // #2627 — drain은 category-received 계측을 절대 적재하지 않는다 (트레이 전체 재적재로 인한
+  // 가짜 "3연발 backend 재발사" 오진 차단).
+  describe('drain은 category-received 계측 미호출 (#2627)', () => {
+    it('트레이에 비프롬프트 알림 3건 → drain 1회 → category-received 0건 적재', async () => {
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-1', categoryIdentifier: 'OTHER_CATEGORY' }),
+        makeNotification({ identifier: 'tray-2', categoryIdentifier: null }),
+        makeNotification({ identifier: 'tray-3', categoryIdentifier: 'OTHER_CATEGORY' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => {
+        expect(Notifications.getPresentedNotificationsAsync).toHaveBeenCalled();
+      });
+      expect(logBoardingPromptCategoryReceived).not.toHaveBeenCalled();
+    });
+
+    it('BOARDING_PROMPT 알림이 트레이에 있어도 drain 경로에서는 category-received 미호출', async () => {
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'bg-3' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => {
+        expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
+      });
+      expect(logBoardingPromptCategoryReceived).not.toHaveBeenCalled();
+    });
+
+    it('AppState active 재진입 drain 반복 호출에도 category-received는 계속 0건', async () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => expect(appStateHandler).not.toBeNull());
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'bg-4' }),
+      ]);
+      appStateHandler!('active');
+      await waitFor(() => {
+        expect(logBoardingPromptFired).toHaveBeenCalledWith({ originStation: '강남', line: '2' });
+      });
+      expect(logBoardingPromptCategoryReceived).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2627 — FG 신규 수신 경로에서 같은 identifier 재수신 시 category-received 재적재 dedup.
+  it('FG 신규 수신 — 같은 identifier 재수신 시 category-received 재적재 0', () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    registeredHandler!(makeNotification({ identifier: 'cat-dup-1' }));
+    registeredHandler!(makeNotification({ identifier: 'cat-dup-1' }));
+    expect(logBoardingPromptCategoryReceived).toHaveBeenCalledTimes(1);
+  });
+
   it('drain — getPresentedNotificationsAsync 예외 swallow', async () => {
     (Notifications.getPresentedNotificationsAsync as jest.Mock).mockRejectedValue(
       new Error('tray boom'),

@@ -43,6 +43,14 @@ const log = createLogger('boardingPromptDisplayLogger');
 const displayedIdentifiers = new Set<string>();
 
 /**
+ * #2627 — category-received 진단 계측(#2398) 전용 dedup set. FG receive listener 경로에서만
+ * 적재하며, drain(`drainPresentedBoardingPrompts`)은 호출하지 않는다 — 트레이 전체가 재적재되어
+ * "가짜 backend 재발사"로 오진되는 것을 막는다. `displayedIdentifiers`와는 목적이 달라(계측 vs
+ * displayed 적재) 별도 Set으로 관리한다.
+ */
+const categoryReceivedIdentifiers = new Set<string>();
+
+/**
  * 같은 notification에 대해 displayed 적재가 이미 이루어졌는지 확인.
  * `useBoardingPromptResponder`가 cold-start 보완 시 이 helper로 dedup 체크.
  */
@@ -61,6 +69,27 @@ export function markBoardingPromptDisplayed(identifier: string): void {
 /** 테스트 격리용 — dedup set을 비운다. production 코드에서는 호출하지 않는다. */
 export function __resetBoardingPromptDisplayedDedup(): void {
   displayedIdentifiers.clear();
+  categoryReceivedIdentifiers.clear();
+}
+
+/**
+ * #2398 진단 계측: FG receive listener 경로에서만 호출. 수신한 categoryIdentifier 실제 값(null
+ * 포함) + payload 매칭 여부를 device 덤프로 가시화한다. #2627 — drain 경로에서는 절대 호출하지
+ * 않는다 (트레이 전체 재적재로 인한 계측 오염 방지). 같은 identifier는 1회만 기록한다.
+ */
+function logFgCategoryReceived(notification: Notifications.Notification): void {
+  const request = notification.request;
+  const content = request.content;
+  const identifier = request.identifier;
+  if (typeof identifier === 'string' && identifier.length > 0) {
+    if (categoryReceivedIdentifiers.has(identifier)) return;
+    categoryReceivedIdentifiers.add(identifier);
+  }
+  const payload = extractBoardingPromptPayload(content.data);
+  logBoardingPromptCategoryReceived({
+    categoryIdentifier: content.categoryIdentifier ?? null,
+    payloadMatched: payload !== null,
+  });
 }
 
 /**
@@ -75,12 +104,6 @@ function tryLogDisplayed(notification: Notifications.Notification): void {
     const request = notification.request;
     const content = request.content;
     const payload = extractBoardingPromptPayload(content.data);
-    // #2398 — 진단 계측: early-return 판정 직전, 수신한 categoryIdentifier 실제 값(null 포함)
-    // + payload 매칭 여부를 매 수신 건마다 device 덤프로 가시화. behavior 무변경.
-    logBoardingPromptCategoryReceived({
-      categoryIdentifier: content.categoryIdentifier ?? null,
-      payloadMatched: payload !== null,
-    });
     // #2282 — hop-end 는 DISEMBARK_PROMPT_CATEGORY로 분리 발사되므로 두 category 모두 displayed 적재.
     if (
       content.categoryIdentifier !== BOARDING_PROMPT_CATEGORY &&
@@ -131,6 +154,12 @@ async function drainPresentedBoardingPrompts(): Promise<void> {
 export function useBoardingPromptDisplayLogger(): void {
   useEffect(() => {
     const sub = Notifications.addNotificationReceivedListener((notification) => {
+      try {
+        logFgCategoryReceived(notification);
+      } catch (err) {
+        // FG receive 콜백은 절대 throw 금지 — 오작동 시 silent log만.
+        log.warn('boarding-prompt category-received 계측 실패', err as Error);
+      }
       tryLogDisplayed(notification);
     });
     // 마운트 시점에 1회 drain — cold start로 진입한 경우 tray에 이미 표시된 prompt를 흡수.
