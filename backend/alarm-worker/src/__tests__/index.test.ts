@@ -932,7 +932,12 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.consecutiveEtaMissing).toBe(4);
   });
 
-  // #903 (Seam G) — subsurface 전환에 따른 누적 카운터 정책.
+  // #903 (Seam G) — subsurface 전환과 무관하게 누적 카운터를 보존한다.
+  // #2644 — 구 버전은 subsurface true→false(지상 복귀) 전환 시 카운터를 0으로 리셋했으나,
+  // resolveEtaMissingThreshold의 입력이 trip.subsurface에서 waypoint의 stations.json
+  // environment로 바뀌며 그 리셋이 막던 회귀(지하 임계 10 누적분이 지상 임계 5에 곧장 걸려
+  // 즉시 종료)가 더 이상 성립하지 않는다 — re-register 시 subsurface 전환은 이제 카운터에
+  // 어떤 영향도 주지 않아야 한다(#706 backend-only state 보존 정책과 동일하게).
   // helper: existing trip을 (subsurface, count) 상태로 셋업.
   async function seedExistingTrip(
     env: ReturnType<typeof makeKvEnv>,
@@ -948,11 +953,11 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
 
   it.each([
     {
-      label: 'true→false 전환(지상 복귀) → counter 리셋',
+      label: 'true→false 전환(지상 복귀) → counter 보존 (#2644, 구 리셋 제거)',
       initial: true,
       seed: 7,
       next: false,
-      expectedCount: 0,
+      expectedCount: 7,
       expectedSubsurface: false,
     },
     {

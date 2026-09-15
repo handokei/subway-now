@@ -1086,12 +1086,13 @@ app.post('/trips', async (c) => {
           activityState: existing.activityState,
           // #706: 연속 etaMissing 카운터는 backend-only state — 디바이스가 같은 세션으로 re-register해도
           // 누적치를 보존해야 자동 종료가 정상 동작 (re-register마다 0으로 초기화되면 무한 폴링 회귀).
-          // #903 (Seam G) — 지상 복귀(subsurface true→false) 시 누적 카운터 리셋. 지하 인내 임계(10)로
-          // 누적된 값이 지상 임계(5)에 곧장 걸려 trip이 즉시 자동 종료되는 회귀 방지. 신호 회복 = trust restored.
-          consecutiveEtaMissing:
-            existing.subsurface === true && incoming.subsurface !== true
-              ? 0
-              : existing.consecutiveEtaMissing,
+          // #903 (Seam G) — 구 버전은 여기서 지상 복귀(subsurface true→false) 전환 시 카운터를
+          // 0으로 리셋했다(지하 인내 임계 10 누적분이 지상 임계 5에 곧장 걸려 즉시 자동 종료되는
+          // 회귀 방지 목적). #2644가 `resolveEtaMissingThreshold`의 입력을 trip.subsurface에서
+          // waypoint의 stations.json environment로 교체하면서 그 회귀 자체가 성립하지 않게 됐다
+          // (threshold는 이제 device register 시점 신호가 아니라 그 cycle의 waypoint 정적 속성으로
+          // 결정) — 이 리셋은 더 이상 아무 회귀도 막지 않는 죽은 분기라 제거한다.
+          consecutiveEtaMissing: existing.consecutiveEtaMissing,
           // #819: boarding-prompt 발사 카운터는 backend-only state — 디바이스가 같은 세션으로
           // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
           // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.

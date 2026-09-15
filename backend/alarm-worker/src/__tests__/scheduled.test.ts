@@ -1044,27 +1044,31 @@ describe('runScheduled', () => {
       expect('hopIndex' in data).toBe(false);
     });
 
-    // #1307 — lockless intermediate도 server-authoritative subsurface flag forward.
-    // trip.subsurface=true면 payload에 wire, 미설정이면 본문에서 omit.
+    // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — lockless intermediate payload에서
+    // subsurface flag를 device 기압계에서 stations.json waypoint environment로 교체하려
+    // 했으나 반려됐다. `silentPushLocationGate.ts`의 `isSubsurfaceBypass`가 subsurface=true를
+    // 받으면 거리/stale-position 게이트를 통째로 우회하는데, 533역 중 375역이 underground라
+    // 이 치환은 거의 모든 intermediate push에서 좀비/stale lock 오발사 방어(ADR-010상 miss와
+    // 동급)를 끄는 부작용이 있다. 대신 필드를 아예 보내지 않는다(omit) — waypoint가
+    // underground/surface 무엇이든, trip.subsurface가 무엇이든 결과는 항상 omit이어야 한다.
     it.each([
-      ['true면 payload.subsurface로 wire', true, true],
-      ['미설정이면 payload 본문에서 omit', undefined, false],
-    ])('lockless intermediate subsurface %s (#1307)', async (_label, input, expectPresent) => {
+      ['underground waypoint(강남)', '강남', true],
+      ['surface waypoint(성수)', '성수', false],
+    ])('lockless intermediate — payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface) => {
       const { apnsFetch } = await runLocklessCycle({
         trip: makeTrip({
           waypoints: [
-            { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
+            { stationName, line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
           ],
           infoModeEnabled: true,
-          ...(input === undefined ? {} : { subsurface: input }),
+          subsurface: tripSubsurface,
         }),
         arrivals: [ARVL_ARRIVED],
         apnsOk: true,
       });
       const data = parseLocklessIntermediateData(apnsFetch);
-      expect('subsurface' in data).toBe(expectPresent);
-      if (expectPresent) expect(data.subsurface).toBe(true);
+      expect('subsurface' in data).toBe(false);
     });
 
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
@@ -1811,10 +1815,45 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     });
 
     // #2157 (2026-08-05 결정 A) — trip을 강제 종료하는 대신 lock만 해제 + lockless 강등.
-    it('demotes trip to lockless (lock detach, trip survives) when consecutiveEtaMissing reaches threshold', async () => {
+    // #2644 — 임계 입력이 waypoint environment 기반으로 바뀌었으므로, 이 케이스는 명시적으로
+    // surface waypoint(도봉산, line 7)를 써서 기본 threshold(5)가 적용됨을 고정한다
+    // (기본 fixture인 중곡/군자는 stations.json상 underground라 #2644 이후 threshold가 10으로
+    // 늘어나 이 테스트가 의도한 "기본 임계 5에서 강등"과 어긋난다).
+    it('demotes trip to lockless (lock detach, trip survives) when consecutiveEtaMissing reaches surface threshold(5)', async () => {
       // 임계치 -1 상태 → 한 번 더 miss → threshold 도달 → 강등 (trip 생존).
       const kv = new InMemoryKV();
+      await seedLockTrip(kv, {
+        consecutiveEtaMissing: MAX_CONSECUTIVE_ETA_MISSING - 1,
+        waypoints: [
+          { stationName: '도봉산', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      });
+      await runMissScenario(kv);
+      const stored = await readStoredTrip(kv);
+      expect(stored).not.toBeNull();
+      expect(stored?.boardingLock).toBeUndefined();
+      expect(stored?.consecutiveEtaMissing).toBe(0);
+      expect(stored?.infoModeEnabled).toBe(true);
+    });
+
+    // #2644 — 잔존 소비처 fix 핵심 시나리오. 기본 fixture(중곡, line 7)는 stations.json상
+    // underground라 임계가 10(SUBSURFACE_ETA_MISSING_TOLERANCE)이어야 한다. 기압계 사망으로
+    // 이 값이 항상 기본(5)으로 고정돼 지하 trip이 조기 강등되던 결함을 직접 재현/방지한다.
+    it('underground waypoint(중곡) — MAX_CONSECUTIVE_ETA_MISSING(5) 도달만으로는 강등하지 않는다 (#2644)', async () => {
+      const kv = new InMemoryKV();
       await seedLockTrip(kv, { consecutiveEtaMissing: MAX_CONSECUTIVE_ETA_MISSING - 1 });
+      await runMissScenario(kv);
+      const stored = await readStoredTrip(kv);
+      expect(stored).not.toBeNull();
+      // 강등되지 않음 — lock 유지, 카운터가 threshold(5)에서 계속 누적.
+      expect(stored?.boardingLock).toBeDefined();
+      expect(stored?.consecutiveEtaMissing).toBe(MAX_CONSECUTIVE_ETA_MISSING);
+    });
+
+    it('underground waypoint(중곡) — SUBSURFACE_ETA_MISSING_TOLERANCE(10) 도달 시 강등 (#2644)', async () => {
+      const kv = new InMemoryKV();
+      await seedLockTrip(kv, { consecutiveEtaMissing: SUBSURFACE_ETA_MISSING_TOLERANCE - 1 });
       await runMissScenario(kv);
       const stored = await readStoredTrip(kv);
       expect(stored).not.toBeNull();
@@ -1871,22 +1910,30 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     });
   });
 
-  // #903 (Seam G) — 기압계 subsurface trip은 인내 threshold(10) 적용.
+  // #903 (Seam G) — underground waypoint는 인내 threshold(10) 적용.
+  // #2644 — 입력을 device 기압계(trip.subsurface)에서 stations.json 기반
+  // EvidenceEnvironment(#2623)로 교체.
   describe('#903 SUBSURFACE_ETA_MISSING_TOLERANCE', () => {
     it('is 10 (기본의 2배)', () => {
       expect(SUBSURFACE_ETA_MISSING_TOLERANCE).toBe(10);
     });
 
-    it('resolveEtaMissingThreshold(subsurface=true) → 10', () => {
-      expect(resolveEtaMissingThreshold({ subsurface: true })).toBe(SUBSURFACE_ETA_MISSING_TOLERANCE);
+    it('resolveEtaMissingThreshold(underground) → 10 (#2644)', () => {
+      expect(resolveEtaMissingThreshold('underground')).toBe(SUBSURFACE_ETA_MISSING_TOLERANCE);
     });
 
-    it('resolveEtaMissingThreshold(subsurface=false) → 5 (기본)', () => {
-      expect(resolveEtaMissingThreshold({ subsurface: false })).toBe(MAX_CONSECUTIVE_ETA_MISSING);
+    it('resolveEtaMissingThreshold(surface) → 5 (기본, #2644)', () => {
+      expect(resolveEtaMissingThreshold('surface')).toBe(MAX_CONSECUTIVE_ETA_MISSING);
     });
 
-    it('resolveEtaMissingThreshold(subsurface=undefined) → 5 (graceful default)', () => {
-      expect(resolveEtaMissingThreshold({})).toBe(MAX_CONSECUTIVE_ETA_MISSING);
+    it('resolveEtaMissingThreshold(unknown) → 5 (graceful default, #2644)', () => {
+      expect(resolveEtaMissingThreshold('unknown')).toBe(MAX_CONSECUTIVE_ETA_MISSING);
+    });
+
+    // consensusGate.ts 기존 관례(underground와 분리된 보수 분기)를 따라 hybrid는 underground와
+    // 동일시하지 않는다 — 이 함수의 목적(underground dead zone 인내)에서 hybrid 역은 대상 밖.
+    it('resolveEtaMissingThreshold(hybrid) → 5 (underground와 동일시하지 않음, #2644)', () => {
+      expect(resolveEtaMissingThreshold('hybrid')).toBe(MAX_CONSECUTIVE_ETA_MISSING);
     });
   });
 
@@ -4858,6 +4905,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
   }
 
   // 본 describe 안에서만 쓰이는 fixture — makeLockTrip은 outer scope에 있어 재사용 불가.
+  // waypoint(중곡, line 7)는 stations.json상 underground — #2644 이후
+  // resolveEtaMissingThreshold가 SUBSURFACE_ETA_MISSING_TOLERANCE(10)를 적용하므로, 아래 각
+  // 호출부의 missCount는 threshold-1(=9)로 맞춘다(이전엔 device subsurface 미설정 가정의
+  // 기본 threshold(5)-1=4를 사용했다).
   function makeEtaThresholdTrip(token: string, missCount: number) {
     return makeTrip({
       token,
@@ -4881,7 +4932,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
   // 백엔드가 사용자 trip을 일방 종료하는 상황 자체를 제거한다.
   it('demotes trip to lockless (lock detach, no trip-ended) when consecutiveEtaMissing exceeds threshold', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('end-tok', 4));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeEtaThresholdTrip('end-tok', SUBSURFACE_ETA_MISSING_TOLERANCE - 1),
+    );
     const fetchImpl = makeOkFetch();
     // arrivals 비어 있음 → estimate=null → miss 1 더 → 5 도달 → 구동작이면 auto-end, 신동작은 강등.
     // top-level makeSeoul은 positions endpoint도 같은 fetchImpl을 사용 — realtimePositionList 키가
@@ -4935,7 +4989,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
   // #1425 cooldown 면제 판정이 깨진다.
   it('still ends trip (reason=seoul-outage) when Seoul API HTTP error observed this cycle', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('outage-tok', 4));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeEtaThresholdTrip('outage-tok', SUBSURFACE_ETA_MISSING_TOLERANCE - 1),
+    );
     const erroredFetch = vi.fn(
       async () => new Response('boom', { status: 500 }),
     ) as unknown as typeof fetch;
@@ -4967,7 +5024,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
   // 계속 초과하면(재선택 전까지 consecutiveEtaMissing이 다시 쌓이는 상황) 중복 발사를 막는다.
   it('does not re-fire train-reconfirm push when dedup KV already stamped', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('dedup-tok', 4));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeEtaThresholdTrip('dedup-tok', SUBSURFACE_ETA_MISSING_TOLERANCE - 1),
+    );
     await kv.put(`trainReconfirmAlert:dedup-tok:${NOW}`, '1');
     const fetchImpl = makeOkFetch();
     await runScheduled(makeEnv(kv), {
@@ -4998,7 +5058,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     await kv.put(`trainReconfirmAlert:re-tok:${NOW}`, '1');
     // 사용자가 재선택(boardingPrompt/직접 탭)해 lock이 재부착된 상태. 두 번째 demotion 직전:
     // consecutiveEtaMissing이 threshold-1까지 다시 쌓인 상태로 seed.
-    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('re-tok', 4));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeEtaThresholdTrip('re-tok', SUBSURFACE_ETA_MISSING_TOLERANCE - 1),
+    );
     const fetchImpl = makeOkFetch();
     await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
@@ -5075,7 +5138,10 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
   // 쓰고, `deps.fetchImpl`은 push 발사에만 쓰인다.
   it('#868 P2-1 — trip-ended push fetch throw해도 cleanup 흐름 계속 (trip 삭제됨)', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('thr-tok', 4));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeEtaThresholdTrip('thr-tok', SUBSURFACE_ETA_MISSING_TOLERANCE - 1),
+    );
     const erroredSeoul = new SeoulArrivalClient({
       apiKey: 'K',
       host: 'h',
@@ -9234,23 +9300,32 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.hopIndex).toBeUndefined();
   });
 
-  // #1307 — server-authoritative subsurface flag forward (arvlCd-fire 경로).
-  // trip.subsurface=true면 본문으로 forward, 미설정이면 omit.
+  // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — arvlCd-fire 경로 payload에서도
+  // subsurface flag를 device 기압계에서 stations.json waypoint environment로 교체하려 했으나
+  // 반려됐다(lockless intermediate와 동일 근거 — `silentPushLocationGate.ts`
+  // `isSubsurfaceBypass`가 거리/stale-position 게이트를 통째로 우회, 533역 중 375역이
+  // underground). 필드를 아예 보내지 않는다(omit) — waypoint underground/surface, trip.subsurface
+  // 값 어느 쪽이든 결과는 항상 omit이어야 한다.
   it.each([
-    ['true면 본문으로 forward', true, true, 'p-arvl-sub'],
-    ['미설정이면 본문에서 omit', undefined, false, 'p-arvl-no-sub'],
-  ])('payload.subsurface %s (#1307)', async (_label, input, expectPresent, pushId) => {
+    ['underground waypoint(중곡)', '중곡', false, 'p-arvl-sub'],
+    ['surface waypoint(도봉산)', '도봉산', true, 'p-arvl-no-sub'],
+  ])('payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface, pushId) => {
     const { apnsFetch } = await runArvlScheduled({
-      seoul: makeArrivalSeoul('중곡', 0, 1),
-      ...(input === undefined ? {} : { trip: makeLockTripFixture('arvl-tok', { subsurface: input }) }),
+      seoul: makeArrivalSeoul(stationName, 0, 1),
+      trip: makeLockTripFixture('arvl-tok', {
+        waypoints: [
+          { stationName, line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+        subsurface: tripSubsurface,
+      }),
       pushId,
     });
     const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]) as Record<
       string,
       unknown
     >;
-    expect('subsurface' in data).toBe(expectPresent);
-    if (expectPresent) expect(data.subsurface).toBe(true);
+    expect('subsurface' in data).toBe(false);
   });
 
   // #1322 — lock-path fire는 boardingLine/trainCode를 self-describing으로 실어 보낸다.
