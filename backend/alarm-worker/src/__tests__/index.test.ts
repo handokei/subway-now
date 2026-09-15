@@ -9,6 +9,7 @@ import {
   isSsotSyncAdvanceMonotonic,
   LOCK_TTL_REFRESH_MS,
   resolveProgressWaypoints,
+  SESSION_DRIFT_WINDOW_MS,
   validateBoardingLockSync,
   validateLiveActivityRegister,
   validatePushAck,
@@ -2680,6 +2681,21 @@ describe('POST /boarding-prompt/dismiss (#819)', () => {
     vi.useRealTimers();
   });
 
+  // #2628 (리뷰 P1-2) — 이 endpoint도 `POST /trips/:token/boarding-confirm`의 'not-boarded'와
+  // 완전히 동일 의미의 boarding-prompt 응답 채널이다. `markBoardingPromptResponded` 공용 헬퍼로
+  // 동일하게 stamp되는지 검증 — 이 경로만 쓰는(boarding-confirm을 타지 않는) 구/병행 클라의
+  // trip이 boarding_prompt_responded=0으로 영구히 남지 않도록.
+  it('boardingPromptResponded=true stamp (#2628)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await post('/boarding-prompt/dismiss', { token: 'tok-dis' }, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-dis')) as string);
+    expect(stored.boardingPromptResponded).toBe(true);
+    vi.useRealTimers();
+  });
+
   it('invalid_json → 400', async () => {
     const env = makeKvEnv();
     const res = await post('/boarding-prompt/dismiss', '{', env);
@@ -2960,7 +2976,12 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.boardingLock).toBeUndefined();
     });
 
-    it('boardingLock 없어도(cron이 이미 release) idempotent — lockState released, no-op write', async () => {
+    // #2628 (리뷰 P1-1) — lock이 이미 해제/만료된 상태(existing.boardingLock===undefined)로
+    // disembarked 응답이 와도 boardingPromptResponded는 stamp돼야 한다. 수정 전에는 이 stamp가
+    // `if (existing.boardingLock !== undefined)` 블록 안의 putTrip에만 있어 이 분기는 아예
+    // write를 타지 않았고(옛 제목 "no-op write"), 이 PR이 닫으려던 boarding_prompt_responded
+    // 하드코딩 0 갭이 정확히 이 케이스에서 재발했다 — 공통 경로로 옮겨 근본 차단했는지 검증.
+    it('boardingLock 없어도(cron이 이미 release) idempotent — lockState released, boardingPromptResponded는 그래도 stamp', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
 
@@ -2971,6 +2992,10 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, lockState: 'released' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.boardingPromptResponded).toBe(true);
     });
   });
 
@@ -2991,6 +3016,60 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.boardingPromptState.silencedUntil).toBe(CREATED + 5 * 60 * 1000);
       // 락 생성 없음.
       expect(stored.boardingLock).toBeUndefined();
+    });
+  });
+
+  // #2628 — boarding_prompt_responded 컬럼이 항상 0으로 하드코딩되던 갭. 이 endpoint가 유일한
+  // boarding-prompt 응답 채널이라 action 값(boarded/disembarked/not-boarded) 무관하게 요청
+  // 자체가 응답이다 — trip.boardingPromptResponded를 stamp한다.
+  describe('boardingPromptResponded stamp (#2628)', () => {
+    it('boarded 응답 → boardingPromptResponded=true stamp', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), {
+          status: 200,
+        }),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptResponded).toBe(true);
+    });
+
+    it('disembarked 응답(기존 lock 있음) → boardingPromptResponded=true stamp', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            boardingLock: {
+              trainCode: '7246',
+              line: '7',
+              subwayId: '1007',
+              selectedDepartureTime: CREATED,
+              segmentStations: ['중곡', '어린이대공원'],
+              expiresAt: CREATED + 60 * 60_000,
+            },
+          }),
+        ),
+      );
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody({ action: 'disembarked' }), env);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptResponded).toBe(true);
+    });
+
+    it('not-boarded 응답 → boardingPromptResponded=true stamp', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody({ action: 'not-boarded' }), env);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptResponded).toBe(true);
     });
   });
 
@@ -3485,6 +3564,133 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
     await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
     expect(stored.boardingPromptState).toBeUndefined();
+    vi.useRealTimers();
+  });
+});
+
+// #2628 — lock 생애 이력(lockEverAttached)/boarding-prompt 응답(boardingPromptResponded)도
+// boardingPromptState와 동일 정책(same-session 보존, new-session 리셋)으로 carry-over돼야
+// trip_metrics 집계가 재등록 사이에 유실되지 않는다.
+describe('POST /trips — #2628 lockEverAttached / boardingPromptResponded carry over same session', () => {
+  const CREATED = 1_700_000_000_000;
+  function tripBody(): Record<string, unknown> {
+    return {
+      token: 'tok-lea',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+    };
+  }
+
+  // #2628 (리뷰 사후 자체 검증) — fake timers 없이는 CREATED(고정 epoch)가 실제 wall clock보다
+  // 훨씬 과거라 `validateTrip`의 `expiresAt <= Date.now()` 게이트에 매번 reject되어 POST가
+  // 항상 400으로 끝나고 KV write 자체가 일어나지 않는다 — merge 로직을 전혀 태우지 못한 채
+  // "초기 seed 값 그대로 읽힘"으로 우연히 통과하는 거짓양성이었다(재현: fake timers 제거 후
+  // 실행하면 `validateTrip reject: invalid-expiresAt` 로그와 함께 여전히 green — 즉 assertion이
+  // merge를 전혀 검증하지 않고 있었다). fake timers로 고정해 POST가 실제로 200을 받고 merge
+  // 경로를 타는지부터 보장한다.
+  it('same session re-register(lock 이미 해제된 상태) → lockEverAttached/boardingPromptResponded 보존', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:tok-lea',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        boardingLock: undefined,
+        lockEverAttached: true,
+        boardingPromptResponded: true,
+      }),
+    );
+    const res = await post('/trips', tripBody(), env);
+    expect(res.status).toBe(200);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-lea')) as string);
+    expect(stored.lockEverAttached).toBe(true);
+    expect(stored.boardingPromptResponded).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('new session (createdAt drift > 5s) → 둘 다 초기화', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:tok-lea',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        boardingLock: undefined,
+        lockEverAttached: true,
+        boardingPromptResponded: true,
+      }),
+    );
+    const res = await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+    expect(res.status).toBe(200);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-lea')) as string);
+    expect(stored.lockEverAttached).toBeUndefined();
+    expect(stored.boardingPromptResponded).toBeUndefined();
+    vi.useRealTimers();
+  });
+});
+
+// #2628 (리뷰 P1-3) — same-session 재등록 merge가 이전에는 `baseTrip = {...incoming, ...}`라
+// createdAt(세션 시작 시각)을 매 재등록마다 incoming.createdAt(client가 보낸 값)으로 덮어썼다.
+// device(`resolveTripCreatedAt`)는 보통 같은 값을 재송신하지만, 그 불변성은 backend가 직접
+// 보장하지 않는 client 신뢰였다 — `evaluateSameSession`의 트레인코드 미사용 fallback이
+// SESSION_DRIFT_WINDOW_MS(5s) 이내 createdAt 차이를 "같은 세션"으로 허용하므로, 매 재등록이
+// 그 허용 범위 안에서 조금씩 다른 값을 보내면 진짜 세션 시작이 재등록 횟수에 걸쳐 서서히
+// 밀릴 수 있었다. trip_metrics.started_at과 fired_count 집계 window(trip.createdAt~endedAt)의
+// 하한이 이 값을 그대로 쓰므로, window가 진짜 세션 시작보다 늦어지면 그 사이 발사된
+// cron-fire-attempt가 누락된다. existing.createdAt으로 명시 고정해 backend가 직접 불변성을
+// 보장하도록 수리했다 — 아래는 그 고정이 실제로 동작하는지(1회 + 누적) 검증한다.
+describe('POST /trips — #2628 createdAt(세션 시작 시각) 고정, 누적 드리프트 방지 (리뷰 P1-3)', () => {
+  const CREATED = 1_700_000_000_000;
+  function tripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      token: 'tok-createdat',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+      ...overrides,
+    };
+  }
+
+  it('same session 재등록 시 incoming.createdAt이 드리프트 윈도우 안에서 달라도 existing.createdAt으로 고정된다', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await env.TRIPS.put('trip:tok-createdat', JSON.stringify(validateTrip(tripBody())));
+
+    const drifted = CREATED + (SESSION_DRIFT_WINDOW_MS - 1_000);
+    const res = await post('/trips', tripBody({ createdAt: drifted }), env);
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-createdat')) as string);
+    expect(stored.createdAt).toBe(CREATED);
+    vi.useRealTimers();
+  });
+
+  it('연속 재등록 여러 회를 거쳐도 세션 시작 createdAt이 누적 드리프트하지 않는다', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await env.TRIPS.put('trip:tok-createdat', JSON.stringify(validateTrip(tripBody())));
+
+    // 매 재등록이 "최초 저장값(CREATED)" 대비 드리프트 윈도우 안이라도(fix 전이었다면 매번
+    // incoming을 그대로 영속화해 다음 비교 기준점 자체가 밀려나갔을 것) fix 후에는 항상
+    // 최초 existing.createdAt으로 수렴해야 한다.
+    for (let i = 1; i <= 3; i++) {
+      const res = await post('/trips', tripBody({ createdAt: CREATED + i * 1_000 }), env);
+      expect(res.status).toBe(200);
+    }
+
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-createdat')) as string);
+    expect(stored.createdAt).toBe(CREATED);
     vi.useRealTimers();
   });
 });

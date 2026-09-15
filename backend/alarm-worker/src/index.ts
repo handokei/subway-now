@@ -1033,6 +1033,19 @@ app.post('/trips', async (c) => {
       ? {
           ...incoming,
           waypoints: existing.waypoints,
+          // #2628 (리뷰 P1-3) — createdAt(세션 시작 시각)을 existing 값으로 고정한다. 이전에는
+          // `...incoming` spread가 매 재등록마다 incoming.createdAt(client가 보낸 값)으로
+          // 덮어썼다 — device(`resolveTripCreatedAt`, useApnsTripRegistration.ts)는 같은
+          // sessionKey 동안 값을 ref에 캐싱해 보통 불변으로 재송신하지만, 그 불변성은 client
+          // 구현에 대한 신뢰일 뿐 backend가 직접 보장하지 않았다. `evaluateSameSession`의
+          // createdAt-drift 분기(트레인코드 미사용 시 ≤5s 허용)를 통과할 때마다 backend가 그
+          // incoming 값을 그대로 영속화하면, client 버그/다른 코드 경로가 매 재등록마다 조금씩
+          // 다른 값을 보내는 경우 "진짜 세션 시작"이 수십~수백 회 재등록에 걸쳐 서서히
+          // 밀릴 수 있다 — trip_metrics.started_at(D1)과 fired_count 집계 window(`trip.createdAt`
+          // ~`endedAt`)의 하한이 이 값을 그대로 쓰므로 window가 진짜 세션 시작보다 늦게 시작해
+          // 그 사이 발사된 cron-fire-attempt가 누락될 수 있다. existing.createdAt으로 고정해
+          // client 송신값과 무관하게 backend가 직접 불변성을 보장한다.
+          createdAt: existing.createdAt,
           lastFiredPhase: existing.lastFiredPhase,
           // #1367 — cross-station dedup marker는 token 단위로 보존돼야 같은 trip 재등록 race에서
           // 윈도우 안 fire가 다시 통과하지 않는다.
@@ -1096,6 +1109,12 @@ app.post('/trips', async (c) => {
           legBoardingEligibleAt: existing.legBoardingEligibleAt,
           legBoardingPromptState: existing.legBoardingPromptState,
           legResolveStreak: existing.legResolveStreak,
+          // #2628 — lock 생애 이력 / boarding-prompt 응답 stamp도 backend-only state. same-session
+          // 재등록마다 `...incoming`(둘 다 안 보내는 필드)로 덮이면, lock이 이번 요청 시점에 일시
+          // 해제돼 있어도(예: disembark 후 GPS update 재등록) putTrip의 자동 stamp(현재 boardingLock
+          // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
+          lockEverAttached: existing.lockEverAttached,
+          boardingPromptResponded: existing.boardingPromptResponded,
         }
       : {
           ...incoming,
@@ -1977,6 +1996,11 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
  * boarding-prompt 사용자 [미탑승]/dismiss 신호 (#819 게이트 #9).
  * 클라이언트가 사용자 응답을 받아 호출한다. silencedUntil을 set해 5분간 재발사 차단.
  *
+ * `POST /trips/:token/boarding-confirm`의 action='not-boarded'와 완전히 동일한 의미(구/병행
+ * 클라가 쓰는 경로) — #2628(리뷰 P1-2) `markBoardingPromptResponded` 공용 헬퍼로 동일하게
+ * boarding_prompt_responded를 stamp한다. 두 경로 중 하나만 stamp하면 그 경로만 쓰는 클라의
+ * trip은 계속 0으로 남는다.
+ *
  * Body: { token }
  * Trip 부재 시 idempotent — 200 deleted:false.
  */
@@ -1993,10 +2017,10 @@ app.post('/boarding-prompt/dismiss', async (c) => {
   const existing = await getTrip(c.env.TRIPS, payload.token);
   if (!existing) return c.json({ ok: true, applied: false });
 
-  const updated: Trip = {
+  const updated: Trip = markBoardingPromptResponded({
     ...existing,
     boardingPromptState: markPromptSilenced(existing.boardingPromptState, Date.now()),
-  };
+  });
   await putTrip(c.env.TRIPS, updated);
   return c.json({ ok: true, applied: true });
 });
@@ -2010,6 +2034,17 @@ export function validateDismissPayload(input: unknown): DismissPayload | null {
   const obj = input as Record<string, unknown>;
   if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
   return { token: obj.token };
+}
+
+/**
+ * #2628 (리뷰 P1-2) — boarding-prompt 응답 stamp 공용 헬퍼. `POST
+ * /trips/:token/boarding-confirm`(action 무관)과 `POST /boarding-prompt/dismiss`(구/병행
+ * 클라가 쓰는 'not-boarded'의 동의어 경로) 둘 다 사용자가 boarding-prompt에 응답했다는 동일
+ * ground truth를 나른다 — 한쪽만 stamp하면 그 경로를 쓰는 클라의 trip은
+ * `trip_metrics.boarding_prompt_responded`가 계속 0으로 남는다.
+ */
+function markBoardingPromptResponded(trip: Trip): Trip {
+  return { ...trip, boardingPromptResponded: true };
 }
 
 /**
@@ -2032,7 +2067,9 @@ export function validateDismissPayload(input: unknown): DismissPayload | null {
  *   - `disembarked` — 환승 하차 확정(#2278 "사용자 명시 [하차함] 응답 = ground truth"와 동일
  *     신뢰 수준). `trip.boardingLock`을 해제한다. waypoint/currentLegAnchor는 건드리지 않는다 —
  *     그 advance는 cron(`scheduled.ts` transfer 블록, arvlCd 기반)의 책임 그대로이며, 이미
- *     advance됐다면(currentLegAnchor 존재) 본 분기는 lock이 이미 없어 idempotent no-op이다.
+ *     advance됐다면(currentLegAnchor 존재) 본 분기는 boardingLock을 건드리지 않는다. #2628
+ *     (리뷰 P1-1) — lock 유무와 무관하게 이 요청 자체가 boarding-prompt 응답이라 핸들러 끝
+ *     공통 경로에서 항상 1회 putTrip한다(더 이상 lock 보유 시에만 쓰는 no-op이 아니다).
  *   - `not-boarded` — `POST /boarding-prompt/dismiss`와 완전히 동일한 의미(재현) —
  *     `boardingPromptState`를 `markPromptSilenced`로 갱신해 5분 재발사를 차단한다. 락 생성 없음.
  *
@@ -2107,12 +2144,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
-    await putTrip(c.env.TRIPS, working);
   } else if (payload.action === 'disembarked') {
     if (existing.boardingLock !== undefined) {
       working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
       await deleteProgress(c.env.TRIPS, token);
-      await putTrip(c.env.TRIPS, working);
     }
     lockState = 'released';
   } else {
@@ -2121,9 +2156,15 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       ...existing,
       boardingPromptState: markPromptSilenced(existing.boardingPromptState, now),
     };
-    await putTrip(c.env.TRIPS, working);
     lockState = 'none';
   }
+
+  // #2628 (리뷰 P1-1) — 이 endpoint가 boarding-prompt 응답 채널. action/분기 결과(락 보유 여부
+  // 포함) 무관하게 "요청 자체가 응답"이므로 분기 공통 경로에서 1회만 stamp + write한다. 이전
+  // 버전은 stamp가 분기별 putTrip 안에 있어 disembarked인데 existing.boardingLock===undefined인
+  // 케이스(lock이 이미 해제/만료된 상태에서 응답)가 putTrip 자체를 타지 않아 responded=0으로
+  // 남았다(이 PR이 수리하려던 하드코딩 0 갭이 그 분기에서 재발) — 공통 경로로 올려 근본 차단.
+  await putTrip(c.env.TRIPS, markBoardingPromptResponded(working));
 
   // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
   // user-controlled 값이라 신규코드 게이트에서 taint로 잡힌다(tokenPrefix로 마스킹해도

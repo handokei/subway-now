@@ -209,6 +209,26 @@ export interface Trip {
    */
   boardingPromptState?: BoardingPromptState;
   /**
+   * #2628 — lock이 trip 생애 중 한 번이라도 부착됐는지(생애 이력 스냅샷). 기존 `boardingLock`
+   * (현재 부착 상태)만으로 trip_metrics.lock_attached를 판정하면, trip 종료 직전 사용자가 lock을
+   * 해제한 케이스(RCA: 도착 후 lock 해제 → 1초 뒤 trip 삭제)가 실제로는 lock이 부착됐던 trip인데도
+   * 0으로 오기록된다. `trips.ts`의 `putTrip`이 단일 기록 지점 — boardingLock이 부착 상태로 쓰일
+   * 때마다 자동으로 true로 stamp하고, 이후 해제/재등록에도 되돌아가지 않는다. same-session
+   * 재등록은 아래(`index.ts` baseTrip)에서 명시 보존, new-session(다른 trip 컨텍스트)은
+   * `boardingPromptState`와 동일하게 자연 리셋된다.
+   */
+  lockEverAttached?: boolean;
+  /**
+   * #2628 — boarding-prompt(탑승/하차/미탑승) 응답을 사용자가 1회라도 보냈는지. 응답 채널은
+   * 두 곳 — `POST /trips/:token/boarding-confirm`(action 값 boarded/disembarked/not-boarded
+   * 무관) + `POST /boarding-prompt/dismiss`(구/병행 클라가 쓰는 'not-boarded'의 동의어 경로).
+   * 둘 다 `index.ts`의 `markBoardingPromptResponded` 공용 헬퍼로 동일하게 stamp한다 — 한쪽만
+   * stamp하면 그 경로만 쓰는 클라의 trip이 계속 0으로 남는다(기존 `boarding_prompt_responded`
+   * 컬럼이 항상 0으로 하드코딩되던 갭 수리). same-session 재등록 시 보존, new-session은
+   * `boardingPromptState`와 동일하게 리셋.
+   */
+  boardingPromptResponded?: boolean;
+  /**
    * #916 follow-up B — backend auto-lock 또는 boarding-prompt가 발사된 마지막 시각(epoch ms).
    * `boardingPromptState`와 별개로 유지되는 dedup 마커.
    *
