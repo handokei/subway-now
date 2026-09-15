@@ -7004,7 +7004,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
  * trip을 영구 차단한다 — leg-2는 이미 `maybeFireLegBoardingPrompt`(GPS-free)로 해결됐지만
  * leg-1만 GPS에 갇혀 있었다(#2531 본문). 본 함수는 그 leg-2 GPS-free 패턴을 origin용으로
  * 그대로 미러한다 — `resolveTrainCodeFromPositions`의 "탑승역만 매칭" 안전장치와 9단 게이트
- * 자체는 손대지 않고, GPS를 아예 쓰지 않는 별도 발사 경로만 추가한다.
+ * 자체는 손대지 않고, GPS 9단 AND 게이트(accuracy/direction/window/speed/motion)는 이식하지
+ * 않는 별도 발사 경로만 추가한다.
  *
  * caller: lockMissing 분기에서 `evaluateAndMaybeFireBoardingPrompt` 직후 호출. GPS 경로가
  * 먼저 평가되어 우선권을 갖는다 — 이 함수는 GPS 경로가 막혔거나(지하) 아직 평가/발사되지
@@ -7017,6 +7018,11 @@ export async function evaluateAndMaybeFireBoardingPrompt(
  *   - `trip.infoModeEnabled !== true` → no-op (사용자 명시 의향 trip만 대상 — C 토글 ON 동급 보장).
  *   - `trip.boardingLock !== undefined`(F2 방어) → no-op. caller가 `isBoardingLockActive===false`를
  *     이미 보장하지만 GPS 경로와 동일하게 방어적으로 재확인한다.
+ *   - #2653 거리 가드 — "GPS를 신뢰할 수 있을 때만" 거른다. register 시점 정적 스냅샷
+ *     (`trip.promptGeoContext.originDistanceM/originAccuracyM`)이 존재하고(hasProximityReading)
+ *     `isNearOrigin`이 false이며 `trip.originProximityAt`이 한 번도 stamp되지 않았으면 skip.
+ *     스냅샷 부재(지하/구 클라)는 신뢰 불가로 보고 항상 통과(#2532 취지 보존). 자세한 근거/함정은
+ *     함수 본문 인라인 주석 참고.
  *   - dedup: `evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now)` — **GPS 경로
  *     (`evaluateAndMaybeFireBoardingPrompt` 내부 `evaluateBoardingPromptGates`)와 완전히 동일한
  *     게이트 함수 + 동일 `trip.boardingPromptState` ledger를 공유한다.** GPS 경로가 먼저
@@ -7204,6 +7210,39 @@ export async function maybeFireOriginBoardingPromptGpsFree(
 
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;
+
+  // #2653 — "GPS를 신뢰할 수 있을 때만" 거리 가드. 이 함수 직전(같은 cron cycle) 먼저 호출되는
+  // `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트 경로)가 이미 사용하는 판정을 그대로
+  // 재사용한다(#2153/#2358 검증된 설계, scheduled.ts:6626~6685) — 새 필드/새 쓰기 경로 없음.
+  //
+  //   hasProximityReading = register 시점 정적 스냅샷(`trip.promptGeoContext.originDistanceM/
+  //     originAccuracyM`)이 존재하는가. 지하/구 클라는 애초에 이 스냅샷이 없다.
+  //   함정(이슈 본문 명시) — `isNearOrigin(...)`은 distance/accuracy가 부재하면 false를 반환한다.
+  //     `!isNearOrigin(...)`을 그대로 차단 조건으로 쓰면 지하(부재)가 전부 막혀 #2532가 무력화된다.
+  //     반드시 "존재(hasProximityReading) AND 멀다(!isNearOrigin)"로 분리 판정해야 한다.
+  //   신선도 — `trip.originProximityAt`이 한 번이라도 stamp됐다면(=`/position` 실시간 채널 또는
+  //     방금 이 cycle의 GPS 경로가 근접을 관측) 그 이후에는 register 시점의 오래된 "멀다" 스냅샷으로
+  //     영구 차단하지 않는다 — 멀리서 안내를 시작한 뒤 역에 도착하는 정상 시나리오 보호.
+  const geo = trip.promptGeoContext;
+  const originDistanceM = geo?.originDistanceM;
+  const originAccuracyM = geo?.originAccuracyM;
+  const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
+  const isTooFarFromOrigin =
+    hasProximityReading &&
+    !isNearOrigin(originDistanceM, originAccuracyM) &&
+    trip.originProximityAt === undefined;
+  if (isTooFarFromOrigin) {
+    stats.originGpsFreeBoardingPromptBlocked += 1;
+    log('origin-boarding-prompt-gps-free: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: 'origin-too-far',
+      originDistanceM,
+      originAccuracyM,
+      originStation: display.originStation,
+      line: display.line,
+    });
+    return;
+  }
 
   // #2531 — GPS 경로(`evaluateBoardingPromptGates`)와 동일 dedup 게이트 + 동일 ledger 공유.
   const repeatOutcome = evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now);

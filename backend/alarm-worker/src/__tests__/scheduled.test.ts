@@ -12917,6 +12917,107 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(body.body.line).toBe('7');
   });
 
+  describe('#2653 — GPS를 신뢰할 수 있을 때만 거리 가드', () => {
+    it('red: 오늘 실측값(용마산, distance 222m, accuracy 6.7m) 지상 원거리 정지 → 차단', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    });
+
+    it('함정 고정 — distance/accuracy 부재(지하) → hasProximityReading=false로 무게이트 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // promptGeoContext 자체가 없는 지하 케이스. `!isNearOrigin(undefined, undefined)`는 true를
+      // 반환하므로 이 함정을 "존재 AND 멀다"로 분리하지 않으면 이 테스트가 실패해야 한다.
+      const trip = makeTrip();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+    });
+
+    it('근접(distance 80m, accuracy 10m) → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 80,
+          originAccuracyM: 10,
+        },
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+    });
+
+    it('신선도 — register 시점엔 원거리 스냅샷이었지만 이후 originProximityAt이 stamp됨(역 도착) → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // register 시점 스냅샷은 여전히 멀지만(원거리에서 "안내 시작"), `/position`(또는 같은 cycle
+      // 먼저 도는 GPS 경로)이 이미 근접을 실시간 관측해 originProximityAt을 stamp한 상태 —
+      // 오래된 "멀다" 스냅샷으로 영구 차단하면 안 된다.
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 5000,
+          originAccuracyM: 10,
+        },
+        originProximityAt: NOW - 60_000,
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+    });
+  });
+
   it('GPS 경로가 먼저 발사(boardingPromptState.fired + 최근 lastFiredAt) → 공유 dedup으로 skip (더블발사 0)', async () => {
     const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
     const trip = makeTrip({
