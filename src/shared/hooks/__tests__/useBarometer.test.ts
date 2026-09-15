@@ -30,7 +30,9 @@ import {
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
 } from '../../constants/barometer';
 import {
+  getBarometerInstrumentation,
   getBarometerReadings,
+  resetBarometerInstrumentationForTest,
   resetBarometerState,
 } from '../../utils/barometerState';
 
@@ -49,6 +51,7 @@ beforeEach(() => {
   mockSetSubsurfaceState.mockResolvedValue(undefined);
   mockAddListener.mockReturnValue({ remove: mockRemove });
   resetBarometerState();
+  resetBarometerInstrumentationForTest();
   // #2006 — 각 테스트 전 flag 초기화 (기본 OFF).
   delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
 });
@@ -582,6 +585,62 @@ describe('useBarometer (#875)', () => {
       expect(mockAddListener).toHaveBeenCalledTimes(1);
       // 정상 등록 후 첫 tick 전 warmup: reason 'readings'.
       expect(result.current.unavailableReason).toBe('readings');
+    });
+  });
+
+  describe('#2626 — native listener 계측 wire-up', () => {
+    it('addListener 성공 → listenerRegisteredCount 증가, 콜백마다 totalCallbackCount/firstCallbackAtMs 갱신', async () => {
+      const { listener, nowSpy, baseT } = await setupBarometerWithListener();
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(1);
+      expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(0);
+      expect(getBarometerInstrumentation().firstCallbackAtMs).toBeNull();
+      expect(getBarometerInstrumentation().totalCallbackCount).toBe(0);
+
+      fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
+      const inst = getBarometerInstrumentation();
+      expect(inst.totalCallbackCount).toBe(1);
+      expect(inst.firstCallbackAtMs).toBe(baseT);
+
+      nowSpy.mockRestore();
+    });
+
+    it('addListener 호출이 예외를 던지면 listenerRegistrationFailedCount 증가 + flush interval 미시작', async () => {
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: true });
+      mockAddListener.mockImplementation(() => {
+        throw new Error('native registration failed');
+      });
+
+      renderHook(() => useBarometer());
+      await flush();
+
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(0);
+      expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(1);
+    });
+
+    it('게이트 실패(isAvailable=false) → addListener 자체가 호출되지 않으므로 등록/실패 카운트 모두 0', async () => {
+      mockIsAvailable.mockResolvedValue(false);
+      renderHook(() => useBarometer());
+      await flush();
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(0);
+      expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(0);
+    });
+
+    it('이중 mount — 두 훅 인스턴스가 각각 등록되고, 각 unmount마다 resetCount가 누적', async () => {
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: true });
+
+      const first = renderHook(() => useBarometer());
+      await flush();
+      const second = renderHook(() => useBarometer());
+      await flush();
+
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(2);
+
+      first.unmount();
+      expect(getBarometerInstrumentation().resetCount).toBe(1);
+      second.unmount();
+      expect(getBarometerInstrumentation().resetCount).toBe(2);
     });
   });
 });

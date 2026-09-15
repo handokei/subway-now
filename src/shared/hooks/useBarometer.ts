@@ -35,6 +35,9 @@ import {
   evaluateLatestStop,
   evaluateLatestSubsurface,
   getBarometerReadings,
+  recordBarometerCallback,
+  recordBarometerListenerRegistered,
+  recordBarometerListenerRegistrationFailed,
   resetBarometerState,
 } from '../utils/barometerState';
 import { setSubsurfaceState } from '../utils/subsurfaceState';
@@ -257,14 +260,27 @@ export function useBarometer(): BarometerSignal {
       setUnavailableReason('readings');
 
       Barometer.setUpdateInterval(BAROMETER_SAMPLE_INTERVAL_MS);
-      subscription = Barometer.addListener((m: BarometerMeasurement) => {
-        // m.timestamp는 boot 이후 초 — wall-clock과 직접 비교 불가.
-        // ring buffer는 epoch ms 윈도우로 평가하므로 Date.now()로 직접 stamp.
-        // #2619 — 여기서는 ring buffer append만 한다(React state 미호출). native 콜백이
-        // uncontrolled rate로 발화해도 렌더에는 영향 없음 — evaluate/setState는 아래 1Hz
-        // interval(evaluateAndFlush)이 전담.
-        appendBarometerReading({ t: Date.now(), pressureHpa: m.pressure });
-      });
+      // #2626 — addListener() 자체가 던지는 실패(예: 네이티브 등록 거부)를 명시적으로 포착해
+      // 계측한다. 9/15 실기기 세션(reason='readings'까지 게이트 통과했는데 콜백 0회)처럼
+      // addListener는 성공(예외 없음)했지만 콜백이 안 오는 케이스와, addListener 자체가
+      // 실패하는 케이스를 dump에서 구분하기 위함.
+      try {
+        subscription = Barometer.addListener((m: BarometerMeasurement) => {
+          // m.timestamp는 boot 이후 초 — wall-clock과 직접 비교 불가.
+          // ring buffer는 epoch ms 윈도우로 평가하므로 Date.now()로 직접 stamp.
+          // #2619 — 여기서는 ring buffer append만 한다(React state 미호출). native 콜백이
+          // uncontrolled rate로 발화해도 렌더에는 영향 없음 — evaluate/setState는 아래 1Hz
+          // interval(evaluateAndFlush)이 전담.
+          const now = Date.now();
+          // #2626 — 콜백 도달 자체를 ring buffer append와 별개로 계측(prune 영향 없음).
+          recordBarometerCallback(now);
+          appendBarometerReading({ t: now, pressureHpa: m.pressure });
+        });
+        recordBarometerListenerRegistered();
+      } catch {
+        recordBarometerListenerRegistrationFailed();
+        return;
+      }
 
       // #2619 — state 반영 주기를 1Hz(BAROMETER_SAMPLE_INTERVAL_MS)로 고정.
       flushIntervalId = setInterval(evaluateAndFlush, BAROMETER_SAMPLE_INTERVAL_MS);

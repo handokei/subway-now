@@ -111,6 +111,90 @@ export function evaluateLatestStop(now: number): SubsurfaceVerdict | null {
  */
 export function resetBarometerState(): void {
   readings = [];
+  // #2626 — resetCount는 의도적으로 여기서 증가시킨다. ring buffer(readings)와 달리 이
+  // 카운터는 "몇 번 reset됐는지"(hook unmount 횟수 — 이중 mount 진단 신호) 자체가 관측
+  // 대상이라 reset 시 0으로 되돌리면 안 된다.
+  instrumentation = {
+    ...instrumentation,
+    resetCount: instrumentation.resetCount + 1,
+  };
+}
+
+/**
+ * #2626 — native listener 계측(등록 성공/실패, 첫 콜백 도달 시각, 누적 콜백 수, reset 횟수).
+ *
+ * 9/15 실기기 세션에서 listener 등록 게이트(reason='readings')는 통과했는데 native 콜백이
+ * 19분 내내 0회 발화한 회귀를 dump로 격리하기 위한 1차 계측 — 원인 추정 fix는 후속(2차).
+ *
+ * ring buffer(`readings`)와 별개 카운터: ring buffer는 60s TTL로 prune되지만
+ * `totalCallbackCount`/`firstCallbackAtMs`는 세션 전체 누적이라 "콜백이 한 번도 안 왔는지"와
+ * "왔었는데 다 만료됐는지"를 구분한다. `resetCount`는 `resetBarometerState()`(hook unmount마다
+ * 호출)가 몇 번 실행됐는지 — HomeScreen + DebugModal 이중 mount 시 subscribe/reset이 겹치는
+ * 상호작용을 dump 한 줄로 노출한다.
+ */
+export interface BarometerInstrumentation {
+  /** `Barometer.addListener()` 호출이 예외 없이 완료된(subscription 획득) 누적 횟수. */
+  listenerRegisteredCount: number;
+  /** `Barometer.addListener()` 호출이 예외를 던진 누적 횟수. */
+  listenerRegistrationFailedCount: number;
+  /** 세션 내 첫 native 콜백 도달 epoch ms. 콜백이 한 번도 없으면 null. */
+  firstCallbackAtMs: number | null;
+  /** 세션 누적 native 콜백 수 — ring buffer TTL prune과 무관하게 계속 증가. */
+  totalCallbackCount: number;
+  /** `resetBarometerState()` 호출 누적 횟수(hook unmount 카운트, 이중 mount 진단용). */
+  resetCount: number;
+}
+
+let instrumentation: BarometerInstrumentation = {
+  listenerRegisteredCount: 0,
+  listenerRegistrationFailedCount: 0,
+  firstCallbackAtMs: null,
+  totalCallbackCount: 0,
+  resetCount: 0,
+};
+
+/** useBarometer가 `Barometer.addListener()` 성공(subscription 획득) 직후 호출. */
+export function recordBarometerListenerRegistered(): void {
+  instrumentation = {
+    ...instrumentation,
+    listenerRegisteredCount: instrumentation.listenerRegisteredCount + 1,
+  };
+}
+
+/** useBarometer가 `Barometer.addListener()` 호출 실패(예외)를 catch했을 때 호출. */
+export function recordBarometerListenerRegistrationFailed(): void {
+  instrumentation = {
+    ...instrumentation,
+    listenerRegistrationFailedCount: instrumentation.listenerRegistrationFailedCount + 1,
+  };
+}
+
+/** useBarometer의 native 콜백마다 호출(ring buffer append와 별개 — prune에 영향받지 않음). */
+export function recordBarometerCallback(t: number): void {
+  instrumentation = {
+    ...instrumentation,
+    totalCallbackCount: instrumentation.totalCallbackCount + 1,
+    firstCallbackAtMs: instrumentation.firstCallbackAtMs ?? t,
+  };
+}
+
+/** 현재 계측 스냅샷. DebugModal이 직접 pull(다른 ambient state와 동일 패턴). */
+export function getBarometerInstrumentation(): Readonly<BarometerInstrumentation> {
+  return instrumentation;
+}
+
+/**
+ * 테스트 전용 — 계측 카운터 초기화. `resetBarometerState()`는 의도적으로 이 카운터를
+ * 건드리지 않으므로(resetCount 자체가 측정 대상), 테스트 간 격리를 위해 별도 제공.
+ */
+export function resetBarometerInstrumentationForTest(): void {
+  instrumentation = {
+    listenerRegisteredCount: 0,
+    listenerRegistrationFailedCount: 0,
+    firstCallbackAtMs: null,
+    totalCallbackCount: 0,
+    resetCount: 0,
+  };
 }
 
 /**
