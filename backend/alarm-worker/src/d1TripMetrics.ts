@@ -5,6 +5,24 @@
  * `env.DB` 미바인딩 시 graceful no-op.
  *
  * 적재 실패는 trip cleanup 흐름을 차단하지 않는다 (내부 try/catch로 swallow).
+ *
+ * ## 컬럼 의미 변경 이력 (#2628 리뷰 P2-7 — 스키마는 불변, 컬럼 "의미"만 시점별로 바뀌었다)
+ *
+ * `fired_count`:
+ *   - #1835 (최초): 하드코딩 0.
+ *   - #2281: `trip.boardingPromptState`/`hopEndPromptState`의 fireCount 합산(prompt 발사 수).
+ *   - #2628 (현재): D1 `trip_events`(kind='cron-fire-attempt', outcome='sent') COUNT — 매역
+ *     station-passed/transfer/destination alert push 실제 발사 수. **#2281 이전 기간 데이터와
+ *     #2628 이후 데이터를 같은 컬럼으로 시계열 비교하면 안 된다** — 신호 자체가 다르다(prompt
+ *     발사 횟수 vs alert push 발사 횟수).
+ * `lock_attached`:
+ *   - #1835~#2281 (최초): 종료 시점 `boardingLock` 스냅샷(truthy 여부).
+ *   - #2628 (현재): `trip.lockEverAttached`(생애 이력) — 종료 시점에 해제돼 있어도 생애 중 한
+ *     번이라도 부착됐으면 1.
+ * `boarding_prompt_responded`:
+ *   - #1835~#2281 (최초): 하드코딩 0.
+ *   - #2628 (현재): `trip.boardingPromptResponded` — boarding-prompt 응답 채널(boarding-confirm/
+ *     dismiss) 호출 여부.
  */
 
 import { hashTripToken } from './sentry';
@@ -68,18 +86,35 @@ export async function recordTripMetrics(
         // 횟수를 D1 trip_events(kind='cron-fire-attempt')에서 직접 집계. #2281의 trip 객체 카운터
         // (boardingPromptState/hopEndPromptState fireCount 합산)는 prompt 발사만 셌을 뿐 매역
         // alert 발사를 전혀 포함하지 않았고, D1이 이미 SSoT라 POST /trips 재등록으로 trip 객체가
-        // 교체돼도 유실되지 않는다(trip.createdAt이 재등록 후에도 같은 세션에선 불변이라 집계
-        // window가 흔들리지 않음).
+        // 교체돼도 유실되지 않는다. window 하한(trip.createdAt)은 `index.ts`의 same-session 재등록
+        // merge가 `existing.createdAt`으로 명시 고정한다(리뷰 P1-3 — client가 보낸 incoming.createdAt을
+        // 그대로 믿지 않고 backend가 직접 불변성을 보장, `evaluateSameSession`/`SESSION_DRIFT_WINDOW_MS`
+        // 참고) — 그래서 재등록을 여러 번 거쳐도 window가 진짜 세션 시작보다 늦게 밀리지 않는다.
         firedCount,
         0, // suppressed_count: 동상
         boardingPromptState?.fired ? 1 : 0,
-        // #2628 — POST /trips/:token/boarding-confirm 응답 시 stamp되는 생애 플래그. 기존
+        // #2628 — POST /trips/:token/boarding-confirm 또는 POST /boarding-prompt/dismiss 응답
+        // 시(`index.ts` markBoardingPromptResponded 공용 헬퍼) stamp되는 생애 플래그. 기존
         // 하드코딩 0("Phase 2 follow-up") 수리.
         trip.boardingPromptResponded ? 1 : 0,
         // #2628 — "현재 부착 상태"(boardingLock truthy)만이 아니라 "생애 중 한 번이라도
         // 부착됐는지"(lockEverAttached, trips.ts putTrip이 stamp)도 함께 본다. 종료 직전 lock을
-        // 해제한 trip이 0으로 오기록되던 RCA를 차단 — 방어적으로 현재 부착 상태도 OR로 포함해
-        // lockEverAttached 배선이 누락된 레거시 경로가 있어도 최소한 현재 상태는 반영한다.
+        // 해제한 trip이 0으로 오기록되던 RCA를 차단.
+        //
+        // #2628 (리뷰 P2-5) — `boardingLock !== undefined` OR 항은 putTrip 단일 choke point
+        // 도입 후에도 죽은 코드가 아니다: 이 배포 시점에 이미 KV에 존재하던(=이 PR 배포 전에
+        // 부착된) 진행 중 trip은 lockEverAttached가 아직 stamp되지 않은 채 남아 있다 — 다음
+        // putTrip 호출 시점부터 자동 backfill되지만(putTrip의 stamp 조건), `cleanupTripWithLa`가
+        // (`scheduled.ts` 9곳) 쓰는 `trip` 변수는 사이클 시작 시 `listTrips`가 스냅샷한 것이라
+        // 해당 사이클 안에서 lock이 부착→해제까지 일어나면 cleanup 시점엔 boardingLock도
+        // lockEverAttached도 둘 다 비어 있어 OR도 이 케이스는 구조적으로 못 구한다(별도 결함
+        // 아님 — 그 순간엔 "생애 중 부착"이 실제로 true인데 in-memory 스냅샷이 그 사실 자체를
+        // 담지 못하는 것, putTrip에 위임된 stamp가 다음 read부터는 정상 반영됨). OR가 실제로
+        // 구제하는 것은 "배포 시점에 이미 lock이 부착된 채 KV에 있던 trip이, 배포 후 lock 해제
+        // 없이 그대로 종료되는" 전환기 케이스 — lockEverAttached는 없지만 boardingLock은 아직
+        // truthy라 이 OR가 없으면 배포 직후 그런 trip들만 0으로 오기록된다. 배포 후 시간이
+        // 지나 모든 활성 trip이 lockEverAttached를 한 번이라도 stamp받으면(다음 lock 관련
+        // putTrip) 이 분기는 실질적으로 도달하지 않게 되지만, 무해하고 값싼 방어라 유지한다.
         trip.lockEverAttached === true || boardingLock !== undefined ? 1 : 0,
         chainComplete ? 1 : 0,
       )

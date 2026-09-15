@@ -219,9 +219,11 @@ export interface Trip {
    */
   lockEverAttached?: boolean;
   /**
-   * #2628 — boarding-prompt(탑승/하차/미탑승) 응답을 사용자가 1회라도 보냈는지. `POST
-   * /trips/:token/boarding-confirm`이 유일한 응답 채널 — action 값(boarded/disembarked/
-   * not-boarded) 무관하게 응답 자체가 있었다는 사실만 stamp한다(기존 `boarding_prompt_responded`
+   * #2628 — boarding-prompt(탑승/하차/미탑승) 응답을 사용자가 1회라도 보냈는지. 응답 채널은
+   * 두 곳 — `POST /trips/:token/boarding-confirm`(action 값 boarded/disembarked/not-boarded
+   * 무관) + `POST /boarding-prompt/dismiss`(구/병행 클라가 쓰는 'not-boarded'의 동의어 경로).
+   * 둘 다 `index.ts`의 `markBoardingPromptResponded` 공용 헬퍼로 동일하게 stamp한다 — 한쪽만
+   * stamp하면 그 경로만 쓰는 클라의 trip이 계속 0으로 남는다(기존 `boarding_prompt_responded`
    * 컬럼이 항상 0으로 하드코딩되던 갭 수리). same-session 재등록 시 보존, new-session은
    * `boardingPromptState`와 동일하게 리셋.
    */
