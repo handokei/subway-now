@@ -3993,10 +3993,15 @@ describe('POST /boarding-lock/sync (#901)', () => {
   // #2624 — advance 이원화 fix. sync waypoint advance가 tripPositionSsot을 동반 갱신하는지 검증.
   describe('tripPositionSsot 동반 갱신 (#2624)', () => {
     it('SSoT가 이미 seed된 trip에서 sync advance → SSoT.currentStationId가 관측역으로 갱신된다', async () => {
+      vi.useFakeTimers();
+      const NOW = Date.now();
+      vi.setSystemTime(NOW);
       const env = makeKvEnv();
       await post('/trips', tripWithLock(), env);
       const { seedSsot, readSsot } = await import('../tripPositionSsot');
       await seedSsot(env.TRIPS, 'tok-sync', '강남');
+      // #2624 코드리뷰 반영(P1-4a) — observedAtMs(device 관측, clock skew 노출)가 아니라 서버
+      // 수신 시각(now)이 lastAdvanceAt으로 stamp되는지 검증. 일부러 observedAtMs를 다른 값으로.
       await post(
         '/boarding-lock/sync',
         { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1_000, accuracy: 5 },
@@ -4005,8 +4010,103 @@ describe('POST /boarding-lock/sync (#901)', () => {
       const ssot = await readSsot(env.TRIPS, 'tok-sync');
       expect(ssot?.currentStationId).toBe('역삼');
       expect(ssot?.lastAdvanceEvidence).toBe('device-sync');
-      expect(ssot?.lastAdvanceAt).toBe(1_000);
+      expect(ssot?.lastAdvanceAt).toBe(NOW);
       expect(ssot?.currentStationLine).toBe('2');
+      // #2624 코드리뷰 반영(P1-3) — 이전 currentStationId('강남')가 passedStations에 stamp.
+      expect(ssot?.passedStations).toEqual(['강남']);
+      // #2624 코드리뷰 반영(P2-7) — 직접 FG device 접촉이므로 lastDeviceSyncAt도 함께 stamp.
+      expect(ssot?.lastDeviceSyncAt).toBe(NOW);
+      vi.useRealTimers();
+    });
+
+    it('catch-up(waypoints[1] 일치, 2 hop) → 건너뛴 중간 waypoint까지 passedStations에 포함된다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { seedSsot, readSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, 'tok-sync', '사당'); // waypoints 프레임 밖 origin
+      // 역삼(waypoints[1])에 도달 — 강남(waypoints[0])은 건너뛴 것으로 확정돼야 한다.
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const ssot = await readSsot(env.TRIPS, 'tok-sync');
+      expect(ssot?.currentStationId).toBe('역삼');
+      // 이전 currentStationId('사당') + 건너뛴 중간 waypoint('강남') 순서로 append.
+      expect(ssot?.passedStations).toEqual(['사당', '강남']);
+    });
+
+    it('SSoT.currentStationId가 이미 관측역과 동일(no-op) — 기존 lastAdvanceEvidence/lastAdvanceAt를 덮어쓰지 않는다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const { seedSsot, writeSsot, readSsot } = await import('../tripPositionSsot');
+      // 이미 다른 강한 evidence(arvlcd-confirmed-train)로 '역삼'에 도달한 상태.
+      const seeded = await seedSsot(env.TRIPS, 'tok-sync', '역삼');
+      await writeSsot(env.TRIPS, {
+        ...seeded,
+        lastAdvanceEvidence: 'arvlcd-confirmed-train',
+        lastAdvanceAt: 999,
+      });
+      // sync가 뒤늦게 같은 '역삼' 관측을 도달 — no-op이어야 한다(약한 evidence로 덮어쓰기 금지).
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 5_000, accuracy: 5 },
+        env,
+      );
+      const ssot = await readSsot(env.TRIPS, 'tok-sync');
+      expect(ssot?.currentStationId).toBe('역삼');
+      expect(ssot?.lastAdvanceEvidence).toBe('arvlcd-confirmed-train');
+      expect(ssot?.lastAdvanceAt).toBe(999);
+    });
+
+    it('putTrip verify 실패(503) → SSoT는 전혀 갱신되지 않는다 (trip persist 성공 이후로 write 이동, P2-5)', async () => {
+      const inner = new InMemoryKV();
+      const initial = {
+        token: 'tok-2624-503',
+        route: { type: 'direct' as const, line: '2', stops: 3 },
+        destination: 'dst',
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' as const },
+          { stationName: '역삼', line: '2', kind: 'destination' as const },
+        ],
+        expiresAt: FUTURE,
+        alarmAtEpochMs: FUTURE - 30 * 60 * 1000,
+        boardingLock: {
+          trainCode: 'T-1',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: 1,
+          segmentStations: ['강남', '역삼'],
+          expiresAt: Date.now() + 60_000,
+        },
+      };
+      await inner.put('trip:tok-2624-503', JSON.stringify(initial));
+      const { seedSsot } = await import('../tripPositionSsot');
+      await seedSsot(inner as unknown as KVNamespace, 'tok-2624-503', '사당');
+
+      const kv = {
+        get: (key: string, opts?: { cacheTtl?: number }) => inner.get(key, opts),
+        put: (key: string) => {
+          // trip:* put만 drop해 verification 실패를 유도 — ssot:* put은 정상 통과시켜
+          // "SSoT write가 애초에 시도조차 안 됨"을 검증할 수 있게 한다.
+          if (key.startsWith('trip:')) return Promise.resolve();
+          return inner.put(key, '{}');
+        },
+        delete: (key: string) => inner.delete(key),
+        list: (opts?: { prefix?: string; cursor?: string }) => inner.list(opts),
+      };
+      const env = makeEnv({ TRIPS: kv as unknown as Env['TRIPS'] });
+
+      const res = await post(
+        '/boarding-lock/sync',
+        { token: 'tok-2624-503', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      expect(res.status).toBe(503);
+      const { readSsot } = await import('../tripPositionSsot');
+      const ssot = await readSsot(inner as unknown as KVNamespace, 'tok-2624-503');
+      // SSoT write 코드에 도달하지 못했으므로 seed 당시 값 그대로.
+      expect(ssot?.currentStationId).toBe('사당');
     });
 
     it('SSoT가 없는 trip에서 sync advance → SSoT 미생성(no-op), 기존 waypoint slice 동작은 그대로', async () => {

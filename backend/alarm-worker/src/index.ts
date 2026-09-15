@@ -148,6 +148,7 @@ import {
 } from './regressionTelemetry';
 import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
 import { deleteSsot, readSsot, writeSsot } from './tripPositionSsot';
+import { appendUnique } from './advanceTripPosition';
 import {
   computeObservabilityMetrics,
   readLastSuccessfulMetrics,
@@ -2303,39 +2304,6 @@ app.post('/boarding-lock/sync', async (c) => {
         meta: { shiftedCount: advance.shiftedCount },
       }),
     );
-    // #2624 — advance 이원화 fix. sync 기반 waypoint advance(위)가 tripPositionSsot을 건드리지
-    // 않아 mirror/LA가 죽은 SSoT를 따라가는 회귀(2026-09-15 실 라이드 b00dd879)를 막는다. 사용자
-    // 접점(device sync 관측)은 ground truth이므로 advanceTripPosition의 합의 게이트는 미적용
-    // (#2623 소관 유지) — 단조성 가드만 적용: cron(advanceTripPosition)이 이미 이 waypoint
-    // 프레임 상 더 앞선 station으로 SSoT를 전진시켰다면 후퇴시키지 않는다.
-    const ssot = await readSsot(c.env.TRIPS, payload.token);
-    if (
-      ssot &&
-      isSsotSyncAdvanceMonotonic(existing.waypoints, ssot.currentStationId, payload.observedStationName)
-    ) {
-      // advance.shiftedCount = idx+1이므로 observedStationName은 existing.waypoints[idx]와 동일 —
-      // 그 waypoint의 line을 함께 동봉해 currentStationLine cross-line confusion을 방지한다.
-      const matchedWaypoint = existing.waypoints[advance.shiftedCount - 1];
-      await writeSsot(
-        c.env.TRIPS,
-        {
-          ...ssot,
-          currentStationId: payload.observedStationName,
-          // 서버 수신 시각(`now`)이 아닌 device 관측 시각을 stamp — 다른 evidence 소스
-          // (`AdvanceEvidence.ts`, advanceTripPosition.ts:566)와 동일하게 "언제 그 station이
-          // 관측됐는지"를 반영한다(서버 처리 지연과 분리).
-          lastAdvanceAt: payload.observedAtMs,
-          // 신규 어휘 — device sync 채널로 advance됐음을 구분(cron advanceTripPosition evidence와
-          // 혼동 방지). device 측 소비부(`backendSsotMirror.ts`/`DebugModal.tsx`)는 lastAdvanceEvidence를
-          // 임의 string으로만 다뤄 분기하지 않는다(확인 완료) — 신규 값 추가가 안전하다.
-          lastAdvanceEvidence: 'device-sync',
-          ...(matchedWaypoint?.line !== undefined
-            ? { currentStationLine: matchedWaypoint.line }
-            : {}),
-        },
-        { expiresAt: existing.expiresAt },
-      );
-    }
   }
 
   // #2560 (ADR-038 Phase 2, ROOT fix) — lock 승격. backend가 active boardingLock이 없는데 device가
@@ -2403,6 +2371,83 @@ app.post('/boarding-lock/sync', async (c) => {
     const retryOk = await verifyBoardingLockPersisted(c.env.TRIPS, working);
     if (!retryOk) {
       return c.json({ ok: false, reason: 'sync-verification-failed' }, 503);
+    }
+  }
+
+  // #2624 — advance 이원화 fix. sync 기반 waypoint advance(위)가 tripPositionSsot을 건드리지
+  // 않아 mirror/LA가 죽은 SSoT를 따라가는 회귀(2026-09-15 실 라이드 b00dd879)를 막는다. 사용자
+  // 접점(device sync 관측)은 ground truth이므로 advanceTripPosition의 합의 게이트는 미적용
+  // (#2623 소관 유지) — 단조성 가드만 적용: cron(advanceTripPosition)이 이미 이 waypoint
+  // 프레임 상 더 앞선 station으로 SSoT를 전진시켰다면 후퇴시키지 않는다.
+  //
+  // 코드리뷰 반영(P2-5) — trip persist(putTrip + read-after-write verify) 성공 이후로 이동.
+  // verify가 실패해 503을 반환하는 경로에서는 waypoint/SSoT 둘 다 미전진 상태로 남는다
+  // (이전엔 SSoT가 putTrip보다 먼저 확정돼 waypoint/SSoT가 서로 다른 실패 시맨틱을 가졌다).
+  //
+  // 코드리뷰 반영(P1-1/P1-2) — read를 이 지점까지 최대한 늦춰 "다른 요청(cron
+  // advanceTripPosition / POST /position)이 이 read와 write 사이에 alarmEvents/motionEvidence/
+  // legConsensus/lockSuggestion을 갱신했는데 우리가 stale 전체를 덮어써 되돌리는" race 창을
+  // 구조적으로 좁힌다. KV는 CAS가 없어 read-modify-write가 원자적이지 않다는 한계는
+  // advanceTripPosition.ts 상단 주석("last write wins" 허용)과 동일하게 이 PR 스코프에서도
+  // 유지한다 — 완전 원자화(Durable Object 등)는 별도 이슈로 분리 검토.
+  // cacheTtl은 KV 런타임 floor(CRON_READ_CACHE_TTL_SEC=30s) 명시 — assertKvCacheTtl 규약 준수.
+  if (advance.shiftedCount > 0) {
+    const freshSsot = await readSsot(c.env.TRIPS, payload.token, {
+      cacheTtl: CRON_READ_CACHE_TTL_SEC,
+    });
+    // 코드리뷰 반영(P1-4b) — 이미 같은 station이면(다른 경로가 더 강한 evidence로 먼저 그
+    // station에 도달시켰을 수 있음) no-op. 'device-sync'로 lastAdvanceEvidence를 덮어써
+    // 더 강한 evidence(예: 'arvlcd-confirmed-train')를 약화시키지 않는다.
+    if (freshSsot && freshSsot.currentStationId !== payload.observedStationName) {
+      if (
+        isSsotSyncAdvanceMonotonic(
+          existing.waypoints,
+          freshSsot.currentStationId,
+          payload.observedStationName,
+        )
+      ) {
+        // advance.shiftedCount = idx+1이므로 observedStationName은 existing.waypoints[idx]와
+        // 항상 일치(computeLockSyncAdvance가 findIndex로 idx를 산출했으므로 배열 범위 내 보장,
+        // Waypoint.line은 required 필드) — matchedWaypoint/line 둘 다 non-null이 보장된다.
+        const matchedWaypoint = existing.waypoints[advance.shiftedCount - 1];
+        // 코드리뷰 반영(P1-3) — advanceTripPosition.ts:564와 동형: advance 시 "이전"
+        // currentStationId를 passedStations에 stamp. catch-up(shiftedCount>1) 시에는 그 사이
+        // 건너뛴 중간 waypoint(index 0..shiftedCount-2)도 함께 passed로 확정한다 —
+        // ssotFireGate의 gate-station-already-passed / trip_metrics origin 소비부가 스킵된
+        // 중간역을 놓치지 않도록.
+        const skippedIntermediate = existing.waypoints
+          .slice(0, advance.shiftedCount - 1)
+          .map((w) => w.stationName);
+        let passedStations = freshSsot.passedStations;
+        for (const stationName of [freshSsot.currentStationId, ...skippedIntermediate]) {
+          passedStations = appendUnique(passedStations, stationName);
+        }
+        await writeSsot(
+          c.env.TRIPS,
+          {
+            ...freshSsot,
+            currentStationId: payload.observedStationName,
+            currentStationLine: matchedWaypoint.line,
+            passedStations,
+            // 코드리뷰 반영(P1-4a) — device 관측 시각(payload.observedAtMs)은 클록 skew에
+            // 노출돼 과거로 이동할 수 있고, scheduled.ts의 stale-fire 3분 가드가 이를 오판해
+            // 매역 발사를 막을 수 있다. 서버 수신 시각(`now`)을 stamp한다 — 다른 서버측
+            // evidence(advanceTripPosition.ts:566 evidence.ts, 그러나 그쪽은 caller가 이미
+            // 신뢰된 서버측 fetch 시각을 forward)와 동일하게 서버 시계를 SSoT.
+            lastAdvanceAt: now,
+            // 신규 어휘 — device sync 채널로 advance됐음을 구분(cron advanceTripPosition
+            // evidence와 혼동 방지). device 측 소비부(`backendSsotMirror.ts`/`DebugModal.tsx`)는
+            // lastAdvanceEvidence를 임의 string으로만 다뤄 분기하지 않는다(확인 완료) — 신규
+            // 값 추가가 안전하다.
+            lastAdvanceEvidence: 'device-sync',
+            // 코드리뷰 반영(P2-7) — 직접 FG device 접촉(이 endpoint 자체가 FG 전용, 상단 #2617
+            // 주석 참고)이므로 isDeviceSyncStale 판정 갱신 — suspend 후 재개 시 false staleness로
+            // motion 게이트 오판을 막는다(motionState.ts:215 updateSsotMotion과 동일 정책).
+            lastDeviceSyncAt: now,
+          },
+          { expiresAt: working.expiresAt },
+        );
+      }
     }
   }
 
