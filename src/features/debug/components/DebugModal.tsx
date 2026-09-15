@@ -877,13 +877,13 @@ function formatSubsurfaceDumpLine(args: BuildDumpArgs): string {
 function formatBarometerInstrumentationDumpLine(args: BuildDumpArgs): string | null {
   const inst = args.barometerInstrumentation;
   if (inst == null) return null;
-  const firstCallbackAt =
-    inst.firstCallbackAtMs === null
-      ? '(never)'
-      : formatClockTimeWithSeconds(inst.firstCallbackAtMs);
+  // #2626 review — formatClockTimeWithSeconds가 이미 null→'(never)'를 처리하므로
+  // 여기서 sentinel을 중복 구현하지 않고 nullable을 그대로 넘긴다.
+  const firstCallbackAt = formatClockTimeWithSeconds(inst.firstCallbackAtMs);
   return (
     `barometer: listeners=${inst.listenerRegisteredCount} ` +
     `failures=${inst.listenerRegistrationFailedCount} ` +
+    `lastError=${inst.lastRegistrationError ?? '(none)'} ` +
     `firstCallbackAt=${firstCallbackAt} total=${inst.totalCallbackCount} ` +
     `resets=${inst.resetCount}`
   );
@@ -2913,11 +2913,12 @@ function DebugModalInner({
             <KeyValue
               label="barometer firstCallbackAt"
               value={
+                // #2626 review — formatClockTimeWithSeconds가 이미 null→'(never)'를
+                // 처리하므로 sentinel을 여기서 중복 구현하지 않는다. barometerInstrumentation
+                // 자체가 null(첫 폴링 tick 전)인 경우만 '—'로 구분.
                 barometerInstrumentation === null
                   ? '—'
-                  : barometerInstrumentation.firstCallbackAtMs === null
-                    ? '(never)'
-                    : formatClockTimeWithSeconds(barometerInstrumentation.firstCallbackAtMs)
+                  : formatClockTimeWithSeconds(barometerInstrumentation.firstCallbackAtMs)
               }
               colors={colors}
             />
@@ -2927,6 +2928,17 @@ function DebugModalInner({
                 barometerInstrumentation === null
                   ? '—'
                   : `total=${barometerInstrumentation.totalCallbackCount} resets=${barometerInstrumentation.resetCount}`
+              }
+              colors={colors}
+            />
+            {/* #2626 review — addListener 실패 시 예외 메시지를 계측에 보존한 것을 dump에서만
+                아니라 UI에서도 확인 가능하게. 권한 vs expo-sensors 문제 판별 단서. */}
+            <KeyValue
+              label="barometer lastError"
+              value={
+                barometerInstrumentation === null
+                  ? '—'
+                  : (barometerInstrumentation.lastRegistrationError ?? '(none)')
               }
               colors={colors}
             />

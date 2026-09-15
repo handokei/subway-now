@@ -604,18 +604,29 @@ describe('useBarometer (#875)', () => {
       nowSpy.mockRestore();
     });
 
-    it('addListener 호출이 예외를 던지면 listenerRegistrationFailedCount 증가 + flush interval 미시작', async () => {
+    it('#2626 review — addListener 호출이 예외를 던지면 listenerRegistrationFailedCount 증가 + 예외 메시지 보존 + reason="listener-failed" + flush interval(setInterval) 미시작', async () => {
       mockIsAvailable.mockResolvedValue(true);
       mockRequestPermissions.mockResolvedValue({ granted: true });
       mockAddListener.mockImplementation(() => {
         throw new Error('native registration failed');
       });
+      // #2626 review — "flush interval 미시작" 주장을 실제로 assert하기 위해 setInterval 자체를
+      // spy. 이전 버전은 카운터 2개만 확인해 회귀(예: catch 안에서도 setInterval이 호출되는
+      // 버그)를 잡지 못했다.
+      const setIntervalSpy = jest.spyOn(global, 'setInterval');
 
-      renderHook(() => useBarometer());
+      const { result } = renderHook(() => useBarometer());
       await flush();
 
       expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(0);
       expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(1);
+      // #2626 review — 예외 메시지가 계측에 보존되는지(권한 vs expo-sensors 문제 판별 단서).
+      expect(getBarometerInstrumentation().lastRegistrationError).toBe('native registration failed');
+      // #2626 review — 게이트 통과 상태('readings')로 남아 9/15 회귀와 dump가 동일해지면 안 됨.
+      expect(result.current.unavailableReason).toBe('listener-failed');
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+
+      setIntervalSpy.mockRestore();
     });
 
     it('게이트 실패(isAvailable=false) → addListener 자체가 호출되지 않으므로 등록/실패 카운트 모두 0', async () => {

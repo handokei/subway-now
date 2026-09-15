@@ -19,6 +19,7 @@ import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime'
 import {
   recordBarometerCallback,
   recordBarometerListenerRegistered,
+  recordBarometerListenerRegistrationFailed,
   resetBarometerInstrumentationForTest,
 } from '../../../../shared/utils/barometerState';
 import {
@@ -1555,12 +1556,13 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
       expect(dump).not.toContain('barometer: listeners=');
     });
 
-    it('콜백 0회(firstCallbackAtMs=null) → "firstCallbackAt=(never)" 표기', () => {
+    it('콜백 0회(firstCallbackAtMs=null) → "firstCallbackAt=(never)" 표기 + lastError=(none)', () => {
       const dump = __test__.buildDumpText(
         makeDumpArgs({
           barometerInstrumentation: {
             listenerRegisteredCount: 1,
             listenerRegistrationFailedCount: 0,
+            lastRegistrationError: null,
             firstCallbackAtMs: null,
             totalCallbackCount: 0,
             resetCount: 0,
@@ -1568,7 +1570,7 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
         }),
       );
       expect(dump).toContain(
-        'barometer: listeners=1 failures=0 firstCallbackAt=(never) total=0 resets=0',
+        'barometer: listeners=1 failures=0 lastError=(none) firstCallbackAt=(never) total=0 resets=0',
       );
     });
 
@@ -1579,6 +1581,7 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
           barometerInstrumentation: {
             listenerRegisteredCount: 2,
             listenerRegistrationFailedCount: 1,
+            lastRegistrationError: null,
             firstCallbackAtMs,
             totalCallbackCount: 842,
             resetCount: 1,
@@ -1586,8 +1589,24 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
         }),
       );
       expect(dump).toContain(
-        `barometer: listeners=2 failures=1 firstCallbackAt=${formatClockTimeWithSeconds(firstCallbackAtMs)} total=842 resets=1`,
+        `barometer: listeners=2 failures=1 lastError=(none) firstCallbackAt=${formatClockTimeWithSeconds(firstCallbackAtMs)} total=842 resets=1`,
       );
+    });
+
+    it('#2626 review — addListener 실패 시 lastRegistrationError 메시지가 dump에 그대로 노출', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerInstrumentation: {
+            listenerRegisteredCount: 0,
+            listenerRegistrationFailedCount: 1,
+            lastRegistrationError: 'native registration failed',
+            firstCallbackAtMs: null,
+            totalCallbackCount: 0,
+            resetCount: 0,
+          },
+        }),
+      );
+      expect(dump).toContain('lastError=native registration failed');
     });
   });
 });
@@ -1667,9 +1686,25 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(screen.getByText('barometer listeners')).toBeTruthy();
     expect(screen.getByText('barometer firstCallbackAt')).toBeTruthy();
     expect(screen.getByText('barometer callbacks/resets')).toBeTruthy();
+    expect(screen.getByText('barometer lastError')).toBeTruthy();
     expect(await screen.findByText('registered=0 failures=0')).toBeTruthy();
     expect(screen.getAllByText('(never)').length).toBeGreaterThan(0);
     expect(screen.getByText('total=0 resets=0')).toBeTruthy();
+    expect(screen.getAllByText('(none)').length).toBeGreaterThan(0);
+  });
+
+  it('#2626 review — addListener 실패 후 barometer lastError row에 예외 메시지 렌더', async () => {
+    resetBarometerInstrumentationForTest();
+    recordBarometerListenerRegistrationFailed(new Error('native registration failed'));
+    try {
+      mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(await screen.findByText('registered=0 failures=1')).toBeTruthy();
+      expect(screen.getByText('native registration failed')).toBeTruthy();
+    } finally {
+      resetBarometerInstrumentationForTest();
+    }
   });
 
   it('#2626 GPS 섹션: 콜백 도달 후 firstCallbackAt이 로컬 시각으로 렌더', async () => {

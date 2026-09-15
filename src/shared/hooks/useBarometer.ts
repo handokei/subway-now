@@ -58,6 +58,10 @@ import { isSimpleArchEnabled } from '../config/archFlag';
  * - 'sensor'          : `Barometer.isAvailableAsync()` false (iPhone 6 이하 등 기기 미지원)
  * - 'permission'      : NSMotionUsageDescription 권한 거절
  * - 'readings'        : 센서 활성이지만 30s 윈도우를 채울 reading 부족 (warm-up 초기)
+ * - 'listener-failed' : #2626 review — 게이트(sensor/permission)는 통과했지만
+ *   `Barometer.addListener()` 호출 자체가 예외를 던짐. 9/15 회귀(콜백 0회)와 같은 dump
+ *   문구('reason=readings')로 뭉개지지 않도록 별도 원인으로 분리 —
+ *   `getBarometerInstrumentation().lastRegistrationError`에 예외 메시지 보존.
  * - 'flag-on-dormant' : #2006 — arrival-api-ssot-v1 flag ON. 기압계 SPOF 배터리 절약.
  * - undefined         : 정상 (stop이 true|false로 결정됨)
  */
@@ -65,6 +69,7 @@ export type BarometerUnavailableReason =
   | 'sensor'
   | 'permission'
   | 'readings'
+  | 'listener-failed'
   | 'flag-on-dormant';
 
 /**
@@ -277,8 +282,12 @@ export function useBarometer(): BarometerSignal {
           appendBarometerReading({ t: now, pressureHpa: m.pressure });
         });
         recordBarometerListenerRegistered();
-      } catch {
-        recordBarometerListenerRegistrationFailed();
+      } catch (error) {
+        // #2626 review — 예외를 계측에 보존(lastRegistrationError)하고, 게이트 통과
+        // 상태('readings')를 그대로 두면 9/15 실기기 회귀(콜백 0회, reason='readings')와
+        // dump가 동일해져 구분이 안 된다. 별도 reason으로 분기.
+        recordBarometerListenerRegistrationFailed(error);
+        setUnavailableReason('listener-failed');
         return;
       }
 

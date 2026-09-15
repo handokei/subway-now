@@ -137,6 +137,12 @@ export interface BarometerInstrumentation {
   listenerRegisteredCount: number;
   /** `Barometer.addListener()` 호출이 예외를 던진 누적 횟수. */
   listenerRegistrationFailedCount: number;
+  /**
+   * #2626 review — 가장 최근 `Barometer.addListener()` 실패의 예외 메시지. 권한 문제 vs
+   * expo-sensors/네이티브 문제를 가르는 가장 강한 단서라 통째로 버리면 안 된다(리뷰 지적).
+   * 실패 이력이 없으면 null.
+   */
+  lastRegistrationError: string | null;
   /** 세션 내 첫 native 콜백 도달 epoch ms. 콜백이 한 번도 없으면 null. */
   firstCallbackAtMs: number | null;
   /** 세션 누적 native 콜백 수 — ring buffer TTL prune과 무관하게 계속 증가. */
@@ -148,6 +154,7 @@ export interface BarometerInstrumentation {
 let instrumentation: BarometerInstrumentation = {
   listenerRegisteredCount: 0,
   listenerRegistrationFailedCount: 0,
+  lastRegistrationError: null,
   firstCallbackAtMs: null,
   totalCallbackCount: 0,
   resetCount: 0,
@@ -161,11 +168,19 @@ export function recordBarometerListenerRegistered(): void {
   };
 }
 
-/** useBarometer가 `Barometer.addListener()` 호출 실패(예외)를 catch했을 때 호출. */
-export function recordBarometerListenerRegistrationFailed(): void {
+/**
+ * useBarometer가 `Barometer.addListener()` 호출 실패(예외)를 catch했을 때 호출.
+ *
+ * #2626 review — 예외 객체를 통째로 버리면 9/15 회귀(reason='readings', 콜백 0회)와
+ * addListener 자체가 실패한 케이스가 dump에서 구분 안 된다. 메시지를 `lastRegistrationError`에
+ * 보존해 권한 문제(예: "permission" 관련 문자열) vs expo-sensors/네이티브 문제(그 외 메시지)를
+ * 가를 단서를 남긴다.
+ */
+export function recordBarometerListenerRegistrationFailed(error: unknown): void {
   instrumentation = {
     ...instrumentation,
     listenerRegistrationFailedCount: instrumentation.listenerRegistrationFailedCount + 1,
+    lastRegistrationError: error instanceof Error ? error.message : String(error),
   };
 }
 
@@ -191,6 +206,7 @@ export function resetBarometerInstrumentationForTest(): void {
   instrumentation = {
     listenerRegisteredCount: 0,
     listenerRegistrationFailedCount: 0,
+    lastRegistrationError: null,
     firstCallbackAtMs: null,
     totalCallbackCount: 0,
     resetCount: 0,
