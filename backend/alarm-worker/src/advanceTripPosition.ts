@@ -727,7 +727,11 @@ function pickActiveLock(trip: Trip, ts: number): BoardingLockMeta | undefined {
   return lock;
 }
 
-function appendUnique(arr: readonly string[], next: string): string[] {
+/**
+ * #2624 (코드리뷰 반영) — `/boarding-lock/sync`(index.ts)도 동일 append+cap 정책을 재사용하도록
+ * export. ring buffer cap(`MOTION_EVIDENCE_CAP`) 동일 적용.
+ */
+export function appendUnique(arr: readonly string[], next: string): string[] {
   if (arr.includes(next)) return arr.slice();
   const copy = arr.slice();
   copy.push(next);
