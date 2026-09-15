@@ -211,6 +211,37 @@ function makeLaStats(): LiveActivityStats {
   return { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
 }
 
+/**
+ * #2653 (SonarCloud MINOR "Log Injection via unsanitized user input", 2026-09-15) —
+ * `console.log(JSON.stringify({ msg, ...meta }))` 패턴이 이 파일에 4곳 중복돼 있었다(각자
+ * 인라인 람다로 재정의). 단일 공용 헬퍼로 추출한다.
+ *
+ * meta 값 중 문자열(예: 요청 본문 유래 `observedStationName`)에서 개행/캐리지리턴만 제거해
+ * log forging(가짜 로그 줄 주입)을 차단한다. `JSON.stringify`가 이미 처리하는 따옴표/이스케이프는
+ * 중복 처리하지 않는다 — 여기서는 stringify 이전 원시 문자열의 제어문자만 정규화한다. 역명에
+ * 쓰이는 한글/괄호/중점 등 정상 문자는 건드리지 않는다(회귀 테스트로 고정).
+ *
+ * `extraContext`는 매 호출에 고정 병합할 필드(예: scheduled 핸들러의 archFlag/killSwitch)가
+ * 있는 호출부용 — 기존 스프레드 순서(`{ msg, ...meta, ...extraContext }`)를 그대로 보존해
+ * 출력 바이트가 기존과 동일하다(호출부 대부분은 extraContext 없이 씀).
+ */
+export function sanitizeLogMeta(meta: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    sanitized[key] = typeof value === 'string' ? value.replace(/[\r\n]/g, '') : value;
+  }
+  return sanitized;
+}
+
+export function createJsonLogger(
+  extraContext?: Record<string, unknown>,
+): (msg: string, meta?: Record<string, unknown>) => void {
+  return (msg: string, meta?: Record<string, unknown>) => {
+    const sanitizedMeta = meta === undefined ? undefined : sanitizeLogMeta(meta);
+    console.log(JSON.stringify({ msg, ...sanitizedMeta, ...extraContext }));
+  };
+}
+
 export const app = new Hono<{ Bindings: Env }>();
 
 /**
@@ -2360,8 +2391,7 @@ app.post('/boarding-lock/sync', async (c) => {
         bundleId: c.env.APNS_BUNDLE_ID,
       };
       const apnsHosts = { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX };
-      const log = (msg: string, meta?: Record<string, unknown>) =>
-        console.log(JSON.stringify({ msg, ...meta }));
+      const log = createJsonLogger();
       const archFlag = await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
 
       // #2625 — 관측역 이전에 건너뛴 intermediate station-passed waypoint는 기존 경로로 발사.
@@ -2481,8 +2511,7 @@ app.post('/boarding-lock/sync', async (c) => {
           bundleId: c.env.APNS_BUNDLE_ID,
         };
         const apnsHosts = { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX };
-        const log = (msg: string, meta?: Record<string, unknown>) =>
-          console.log(JSON.stringify({ msg, ...meta }));
+        const log = createJsonLogger();
         // #2283 리뷰 P2-2 관례 — archFlag read + push 발사 모두 응답 latency에 얹지 않도록
         // waitUntil 체인 안에서 수행한다. 코드리뷰 P1-6 — 다른 발사 경로와 동일하게 archFlag를
         // forward해야 archFlag='on' 시 `boardingLine`이 undefined로 실려 device lockless
@@ -3049,7 +3078,7 @@ app.delete('/trips/:token', async (c) => {
     buildLaDeps(c.env),
     makeLaStats(),
     Date.now(),
-    (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
+    createJsonLogger(),
     { metricsReason },
   );
   return c.json({ ok: true, deleted: true });
@@ -3535,8 +3564,7 @@ export const handler = {
     const killSwitchLocklessIntermediate = await getKillSwitch(env.TRIPS, 'lockless_intermediate')
       .then((value) => value === 'true')
       .catch(() => KILL_SWITCH_DEFAULT === 'true');
-    const log = (msg: string, meta?: Record<string, unknown>) =>
-      console.log(JSON.stringify({ msg, ...meta, archFlag, killSwitchLocklessIntermediate }));
+    const log = createJsonLogger({ archFlag, killSwitchLocklessIntermediate });
 
     let scheduledStats: Awaited<ReturnType<typeof runScheduled>>;
     try {
