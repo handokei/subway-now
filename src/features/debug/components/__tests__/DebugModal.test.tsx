@@ -14,6 +14,14 @@ import type { RawSignalEntry } from '../../../observability/utils/rawSignalBuffe
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime';
+// #2626 — barometer native listener 계측. 실제 module singleton(mock 아님)에 직접 record해
+// UI가 non-null firstCallbackAt 분기(formatClockTimeWithSeconds 경로)를 타는지 검증.
+import {
+  recordBarometerCallback,
+  recordBarometerListenerRegistered,
+  recordBarometerListenerRegistrationFailed,
+  resetBarometerInstrumentationForTest,
+} from '../../../../shared/utils/barometerState';
 import {
   fetchObservabilityMetrics,
   __test__ as observabilityMetricsClientTestUtils,
@@ -1541,6 +1549,66 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
       expect(dump).not.toContain('(readings=');
     });
   });
+
+  describe('#2626 — barometer native listener 계측 dump', () => {
+    it('barometerInstrumentation 미전달 → barometer 라인 미노출 (기존 호출자 호환)', () => {
+      const dump = __test__.buildDumpText(makeDumpArgs());
+      expect(dump).not.toContain('barometer: listeners=');
+    });
+
+    it('콜백 0회(firstCallbackAtMs=null) → "firstCallbackAt=(never)" 표기 + lastError=(none)', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerInstrumentation: {
+            listenerRegisteredCount: 1,
+            listenerRegistrationFailedCount: 0,
+            lastRegistrationError: null,
+            firstCallbackAtMs: null,
+            totalCallbackCount: 0,
+            resetCount: 0,
+          },
+        }),
+      );
+      expect(dump).toContain(
+        'barometer: listeners=1 failures=0 lastError=(none) firstCallbackAt=(never) total=0 resets=0',
+      );
+    });
+
+    it('콜백 도달 → firstCallbackAt이 로컬 시각 포맷으로 노출 + 누적 카운트 반영', () => {
+      const firstCallbackAtMs = Date.UTC(2026, 8, 15, 5, 0, 0);
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerInstrumentation: {
+            listenerRegisteredCount: 2,
+            listenerRegistrationFailedCount: 1,
+            lastRegistrationError: null,
+            firstCallbackAtMs,
+            totalCallbackCount: 842,
+            resetCount: 1,
+          },
+        }),
+      );
+      expect(dump).toContain(
+        `barometer: listeners=2 failures=1 lastError=(none) firstCallbackAt=${formatClockTimeWithSeconds(firstCallbackAtMs)} total=842 resets=1`,
+      );
+    });
+
+    it('#2626 review — addListener 실패 시 lastRegistrationError 메시지가 dump에 그대로 노출', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerInstrumentation: {
+            listenerRegisteredCount: 0,
+            listenerRegistrationFailedCount: 1,
+            lastRegistrationError: 'native registration failed',
+            firstCallbackAtMs: null,
+            totalCallbackCount: 0,
+            resetCount: 0,
+          },
+        }),
+      );
+      expect(dump).toContain('lastError=native registration failed');
+    });
+  });
 });
 
 // #1215 (D9) — UI 렌더 분기. setupHookDefaults를 그대로 활용해 hook 입력은 최소화.
@@ -1606,6 +1674,54 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     expect(screen.getByText('subsurface reason')).toBeTruthy();
     expect(screen.getAllByText('flag-on-dormant').length).toBeGreaterThan(0);
+  });
+
+  // #2626 — barometer native listener 계측 row. barometerState는 이 테스트 파일에서
+  // 미mock인 real 모듈이라 getBarometerInstrumentation()은 항상 초기(0/null) 스냅샷을
+  // 반환한다 — useBarometer는 mock이라 instrumentation과 subsurface hook state는 독립.
+  it('#2626 GPS 섹션: barometer listener 계측 row 노출(초기 0/null 스냅샷)', async () => {
+    mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('barometer listeners')).toBeTruthy();
+    expect(screen.getByText('barometer firstCallbackAt')).toBeTruthy();
+    expect(screen.getByText('barometer callbacks/resets')).toBeTruthy();
+    expect(screen.getByText('barometer lastError')).toBeTruthy();
+    expect(await screen.findByText('registered=0 failures=0')).toBeTruthy();
+    expect(screen.getAllByText('(never)').length).toBeGreaterThan(0);
+    expect(screen.getByText('total=0 resets=0')).toBeTruthy();
+    expect(screen.getAllByText('(none)').length).toBeGreaterThan(0);
+  });
+
+  it('#2626 review — addListener 실패 후 barometer lastError row에 예외 메시지 렌더', async () => {
+    resetBarometerInstrumentationForTest();
+    recordBarometerListenerRegistrationFailed(new Error('native registration failed'));
+    try {
+      mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(await screen.findByText('registered=0 failures=1')).toBeTruthy();
+      expect(screen.getByText('native registration failed')).toBeTruthy();
+    } finally {
+      resetBarometerInstrumentationForTest();
+    }
+  });
+
+  it('#2626 GPS 섹션: 콜백 도달 후 firstCallbackAt이 로컬 시각으로 렌더', async () => {
+    resetBarometerInstrumentationForTest();
+    recordBarometerListenerRegistered();
+    const t = Date.UTC(2026, 8, 15, 5, 0, 0);
+    recordBarometerCallback(t);
+    try {
+      mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(await screen.findByText('registered=1 failures=0')).toBeTruthy();
+      expect(screen.getByText(formatClockTimeWithSeconds(t))).toBeTruthy();
+      expect(screen.getByText('total=1 resets=0')).toBeTruthy();
+    } finally {
+      resetBarometerInstrumentationForTest();
+    }
   });
 
   it('fusionDetection 미전달 시 tier/signalMask = —', async () => {

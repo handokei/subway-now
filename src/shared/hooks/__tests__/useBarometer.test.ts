@@ -30,7 +30,9 @@ import {
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
 } from '../../constants/barometer';
 import {
+  getBarometerInstrumentation,
   getBarometerReadings,
+  resetBarometerInstrumentationForTest,
   resetBarometerState,
 } from '../../utils/barometerState';
 
@@ -49,6 +51,7 @@ beforeEach(() => {
   mockSetSubsurfaceState.mockResolvedValue(undefined);
   mockAddListener.mockReturnValue({ remove: mockRemove });
   resetBarometerState();
+  resetBarometerInstrumentationForTest();
   // #2006 — 각 테스트 전 flag 초기화 (기본 OFF).
   delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
 });
@@ -582,6 +585,73 @@ describe('useBarometer (#875)', () => {
       expect(mockAddListener).toHaveBeenCalledTimes(1);
       // 정상 등록 후 첫 tick 전 warmup: reason 'readings'.
       expect(result.current.unavailableReason).toBe('readings');
+    });
+  });
+
+  describe('#2626 — native listener 계측 wire-up', () => {
+    it('addListener 성공 → listenerRegisteredCount 증가, 콜백마다 totalCallbackCount/firstCallbackAtMs 갱신', async () => {
+      const { listener, nowSpy, baseT } = await setupBarometerWithListener();
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(1);
+      expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(0);
+      expect(getBarometerInstrumentation().firstCallbackAtMs).toBeNull();
+      expect(getBarometerInstrumentation().totalCallbackCount).toBe(0);
+
+      fireAndFlush(listener, { pressure: 1013, timestamp: 0 });
+      const inst = getBarometerInstrumentation();
+      expect(inst.totalCallbackCount).toBe(1);
+      expect(inst.firstCallbackAtMs).toBe(baseT);
+
+      nowSpy.mockRestore();
+    });
+
+    it('#2626 review — addListener 호출이 예외를 던지면 listenerRegistrationFailedCount 증가 + 예외 메시지 보존 + reason="listener-failed" + flush interval(setInterval) 미시작', async () => {
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: true });
+      mockAddListener.mockImplementation(() => {
+        throw new Error('native registration failed');
+      });
+      // #2626 review — "flush interval 미시작" 주장을 실제로 assert하기 위해 setInterval 자체를
+      // spy. 이전 버전은 카운터 2개만 확인해 회귀(예: catch 안에서도 setInterval이 호출되는
+      // 버그)를 잡지 못했다.
+      const setIntervalSpy = jest.spyOn(global, 'setInterval');
+
+      const { result } = renderHook(() => useBarometer());
+      await flush();
+
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(0);
+      expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(1);
+      // #2626 review — 예외 메시지가 계측에 보존되는지(권한 vs expo-sensors 문제 판별 단서).
+      expect(getBarometerInstrumentation().lastRegistrationError).toBe('native registration failed');
+      // #2626 review — 게이트 통과 상태('readings')로 남아 9/15 회귀와 dump가 동일해지면 안 됨.
+      expect(result.current.unavailableReason).toBe('listener-failed');
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+
+      setIntervalSpy.mockRestore();
+    });
+
+    it('게이트 실패(isAvailable=false) → addListener 자체가 호출되지 않으므로 등록/실패 카운트 모두 0', async () => {
+      mockIsAvailable.mockResolvedValue(false);
+      renderHook(() => useBarometer());
+      await flush();
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(0);
+      expect(getBarometerInstrumentation().listenerRegistrationFailedCount).toBe(0);
+    });
+
+    it('이중 mount — 두 훅 인스턴스가 각각 등록되고, 각 unmount마다 resetCount가 누적', async () => {
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: true });
+
+      const first = renderHook(() => useBarometer());
+      await flush();
+      const second = renderHook(() => useBarometer());
+      await flush();
+
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(2);
+
+      first.unmount();
+      expect(getBarometerInstrumentation().resetCount).toBe(1);
+      second.unmount();
+      expect(getBarometerInstrumentation().resetCount).toBe(2);
     });
   });
 });

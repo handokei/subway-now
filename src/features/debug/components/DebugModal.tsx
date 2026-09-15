@@ -166,6 +166,11 @@ import { useTripGroundTruthStore } from '../store/useTripGroundTruthStore';
 // #1956 (S-m3-1) — Operation Dashboard 4 metric → TripDetailModal drill-down 진입.
 import { TripDetailModal } from './TripDetailModal';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
+// #2626 — native listener 계측(등록 성공/실패, 첫 콜백 도달, 누적 콜백 수, reset 횟수) 가시화.
+import {
+  getBarometerInstrumentation,
+  type BarometerInstrumentation,
+} from '../../../shared/utils/barometerState';
 import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
 import { RegressionsSection } from './RegressionsSection';
 // SPIKE (throwaway, dev 미머지) — 가속도계 train-fingerprint 검증용 로거 섹션. 추가만, 기존 로직 변경 없음.
@@ -663,6 +668,11 @@ interface BuildDumpArgs {
    * 미전달 시 dump 미노출 (graceful).
    */
   barometerReadingCount?: number;
+  /**
+   * #2626 — native listener 계측 스냅샷(등록 성공/실패 횟수, 첫 콜백 도달 시각, 누적 콜백 수,
+   * reset 횟수). 미전달 시 dump 미노출 (graceful — 기존 호출자/테스트 호환).
+   */
+  barometerInstrumentation?: BarometerInstrumentation | null;
   fusionDetection?: FusionDetectionSummary | null;
   trip?: TripDebugState | null;
   sleep?: SleepDebugState | null;
@@ -823,6 +833,8 @@ function buildGpsSection(args: BuildDumpArgs): string[] {
     `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
     formatSubsurfaceDumpLine(args),
   );
+  const barometerLine = formatBarometerInstrumentationDumpLine(args);
+  if (barometerLine !== null) lines.push(barometerLine);
   return lines;
 }
 
@@ -849,6 +861,32 @@ function formatSubsurfaceDumpLine(args: BuildDumpArgs): string {
     parts.push(`readings=${args.barometerReadingCount}`);
   }
   return parts.length > 0 ? `${subsurface} (${parts.join(', ')})` : subsurface;
+}
+
+/**
+ * #2626 — barometer native listener 계측 라인.
+ *
+ * 예: `barometer: listeners=1 failures=0 firstCallbackAt=14:32:05 total=842 resets=1`
+ *
+ * 9/15 실기기 세션(listener 등록 게이트 통과, 콜백 0회) 회귀를 dump 한 줄로 격리하기 위함.
+ * firstCallbackAtMs=null(콜백 0회)이면 `firstCallbackAt=(never)`로 명시 — root 후보 1~3 격리 시
+ * "콜백이 한 번도 안 왔다"를 dump만으로 즉시 판별 가능해야 한다.
+ *
+ * 미전달 시(기존 호출자/테스트 호환) null 반환 — 호출자가 라인 자체를 생략한다.
+ */
+function formatBarometerInstrumentationDumpLine(args: BuildDumpArgs): string | null {
+  const inst = args.barometerInstrumentation;
+  if (inst == null) return null;
+  // #2626 review — formatClockTimeWithSeconds가 이미 null→'(never)'를 처리하므로
+  // 여기서 sentinel을 중복 구현하지 않고 nullable을 그대로 넘긴다.
+  const firstCallbackAt = formatClockTimeWithSeconds(inst.firstCallbackAtMs);
+  return (
+    `barometer: listeners=${inst.listenerRegisteredCount} ` +
+    `failures=${inst.listenerRegistrationFailedCount} ` +
+    `lastError=${inst.lastRegistrationError ?? '(none)'} ` +
+    `firstCallbackAt=${firstCallbackAt} total=${inst.totalCallbackCount} ` +
+    `resets=${inst.resetCount}`
+  );
 }
 
 function buildNearestSection(args: BuildDumpArgs): string[] {
@@ -2309,6 +2347,23 @@ function DebugModalInner({
     unavailableReason: barometerUnavailableReason,
     readingCount: barometerReadingCount,
   } = useBarometer();
+  // #2626 — native listener 계측 폴링. instrumentation은 ambient module singleton이라
+  // useBarometer() 반환값과 무관하게 직접 pull(다른 ambient state와 동일 패턴 — readings
+  // ring buffer도 hook state가 아니라 getBarometerReadings() 직접 조회).
+  // 5s 간격은 bgTaskLastHeartbeat 폴링과 동일 cadence — native 콜백이 14~21Hz로 발화해도
+  // 이 폴링 자체는 렌더를 그 빈도로 폭주시키지 않는다.
+  const [barometerInstrumentation, setBarometerInstrumentation] =
+    useState<BarometerInstrumentation | null>(null);
+  useEffect(() => {
+    // getBarometerInstrumentation()은 동기 함수(비동기 gap 없음) — 다른 폴링 effect(예:
+    // bgTaskLastHeartbeat)의 `cancelled` 가드는 async 응답이 unmount 이후 도착할 수 있어
+    // 필요하지만, 여기는 setInterval 자체가 unmount cleanup에서 clearInterval로 끊기므로
+    // tick()이 unmount 이후 실행될 경로가 없다 — 불필요한 가드 생략(단순성 우선).
+    const tick = () => setBarometerInstrumentation(getBarometerInstrumentation());
+    tick();
+    const id = setInterval(tick, 5_000);
+    return () => clearInterval(id);
+  }, []);
   // #1308 — iOS 저전력 모드. silent push throttle 측정용 텔레메트리 (동작 변경 없음).
   const lowPowerMode = useLowPowerMode();
   const fusedLabel = formatStationLabel(result);
@@ -2624,6 +2679,8 @@ function DebugModalInner({
       // #1398 — 기압계 unavailable 원인/reading 수도 share dump에 포함.
       barometerUnavailableReason,
       barometerReadingCount,
+      // #2626 — native listener 계측(등록 성공/실패, 첫 콜백 도달, 누적 콜백, reset 횟수).
+      barometerInstrumentation,
       fusionDetection,
       trip,
       sleep,
@@ -2718,6 +2775,8 @@ function DebugModalInner({
     // #1398 — 기압계 진단 필드 deps. reason flip 시 share 텍스트 자동 갱신.
     barometerUnavailableReason,
     barometerReadingCount,
+    // #2626 — 계측 스냅샷 flip(5s 폴링) 시 share 텍스트 자동 갱신.
+    barometerInstrumentation,
     fusionDetection,
     trip,
     sleep,
@@ -2837,6 +2896,50 @@ function DebugModalInner({
             <KeyValue
               label="subsurface readings"
               value={barometerReadingCount === undefined ? '—' : String(barometerReadingCount)}
+              colors={colors}
+            />
+            {/* #2626 — barometer native listener 계측. 등록 성공/실패, 첫 콜백 도달 시각,
+                누적 콜백 수, reset(hook unmount) 횟수. barometerInstrumentation이 null이면
+                아직 첫 폴링 tick 전(mount 직후) — '—' 표기. */}
+            <KeyValue
+              label="barometer listeners"
+              value={
+                barometerInstrumentation === null
+                  ? '—'
+                  : `registered=${barometerInstrumentation.listenerRegisteredCount} failures=${barometerInstrumentation.listenerRegistrationFailedCount}`
+              }
+              colors={colors}
+            />
+            <KeyValue
+              label="barometer firstCallbackAt"
+              value={
+                // #2626 review — formatClockTimeWithSeconds가 이미 null→'(never)'를
+                // 처리하므로 sentinel을 여기서 중복 구현하지 않는다. barometerInstrumentation
+                // 자체가 null(첫 폴링 tick 전)인 경우만 '—'로 구분.
+                barometerInstrumentation === null
+                  ? '—'
+                  : formatClockTimeWithSeconds(barometerInstrumentation.firstCallbackAtMs)
+              }
+              colors={colors}
+            />
+            <KeyValue
+              label="barometer callbacks/resets"
+              value={
+                barometerInstrumentation === null
+                  ? '—'
+                  : `total=${barometerInstrumentation.totalCallbackCount} resets=${barometerInstrumentation.resetCount}`
+              }
+              colors={colors}
+            />
+            {/* #2626 review — addListener 실패 시 예외 메시지를 계측에 보존한 것을 dump에서만
+                아니라 UI에서도 확인 가능하게. 권한 vs expo-sensors 문제 판별 단서. */}
+            <KeyValue
+              label="barometer lastError"
+              value={
+                barometerInstrumentation === null
+                  ? '—'
+                  : (barometerInstrumentation.lastRegistrationError ?? '(none)')
+              }
               colors={colors}
             />
           </Section>

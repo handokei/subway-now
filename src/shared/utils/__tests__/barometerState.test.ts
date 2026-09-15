@@ -2,9 +2,14 @@ import {
   appendBarometerReading,
   evaluateLatestStop,
   evaluateLatestSubsurface,
+  getBarometerInstrumentation,
   getBarometerReadings,
   narrowStationsByDepthAndEta,
   narrowStationsByPressure,
+  recordBarometerCallback,
+  recordBarometerListenerRegistered,
+  recordBarometerListenerRegistrationFailed,
+  resetBarometerInstrumentationForTest,
   resetBarometerState,
 } from '../barometerState';
 import {
@@ -481,6 +486,82 @@ describe('narrowStationsByDepthAndEta (#920 후속)', () => {
         barometerStable: false,
       });
       expect(result).toEqual([JONGNO3GA_5, SEOLLEUNG_2]);
+    });
+  });
+
+  describe('#2626 — native listener 계측', () => {
+    beforeEach(() => {
+      resetBarometerInstrumentationForTest();
+    });
+
+    it('초기 상태 → 전부 0/null', () => {
+      expect(getBarometerInstrumentation()).toEqual({
+        listenerRegisteredCount: 0,
+        listenerRegistrationFailedCount: 0,
+        lastRegistrationError: null,
+        firstCallbackAtMs: null,
+        totalCallbackCount: 0,
+        resetCount: 0,
+      });
+    });
+
+    it('recordBarometerListenerRegistered 누적', () => {
+      recordBarometerListenerRegistered();
+      recordBarometerListenerRegistered();
+      expect(getBarometerInstrumentation().listenerRegisteredCount).toBe(2);
+    });
+
+    it('recordBarometerListenerRegistrationFailed 누적 + Error 메시지 보존', () => {
+      recordBarometerListenerRegistrationFailed(new Error('boom'));
+      const inst = getBarometerInstrumentation();
+      expect(inst.listenerRegistrationFailedCount).toBe(1);
+      expect(inst.lastRegistrationError).toBe('boom');
+    });
+
+    it('recordBarometerListenerRegistrationFailed — Error 아닌 값도 String()으로 보존 + 최신 실패로 덮어씀', () => {
+      recordBarometerListenerRegistrationFailed(new Error('first'));
+      recordBarometerListenerRegistrationFailed('non-error-throw');
+      const inst = getBarometerInstrumentation();
+      expect(inst.listenerRegistrationFailedCount).toBe(2);
+      expect(inst.lastRegistrationError).toBe('non-error-throw');
+    });
+
+    it('recordBarometerCallback — 첫 호출의 t가 firstCallbackAtMs로 고정, 이후 호출은 갱신 안 함', () => {
+      recordBarometerCallback(NOW);
+      recordBarometerCallback(NOW + 5_000);
+      recordBarometerCallback(NOW + 10_000);
+      const inst = getBarometerInstrumentation();
+      expect(inst.firstCallbackAtMs).toBe(NOW);
+      expect(inst.totalCallbackCount).toBe(3);
+    });
+
+    it('resetBarometerState 호출 시 resetCount만 증가, 다른 계측 필드는 유지', () => {
+      recordBarometerListenerRegistered();
+      recordBarometerCallback(NOW);
+      resetBarometerState();
+      resetBarometerState();
+      const inst = getBarometerInstrumentation();
+      expect(inst.resetCount).toBe(2);
+      // ring buffer는 초기화되지만 계측 카운터는 세션 누적 유지(이중 mount 진단 목적).
+      expect(inst.listenerRegisteredCount).toBe(1);
+      expect(inst.totalCallbackCount).toBe(1);
+      expect(getBarometerReadings()).toEqual([]);
+    });
+
+    it('resetBarometerInstrumentationForTest — 모든 계측 필드 0/null로 초기화', () => {
+      recordBarometerListenerRegistered();
+      recordBarometerListenerRegistrationFailed(new Error('boom'));
+      recordBarometerCallback(NOW);
+      resetBarometerState();
+      resetBarometerInstrumentationForTest();
+      expect(getBarometerInstrumentation()).toEqual({
+        listenerRegisteredCount: 0,
+        listenerRegistrationFailedCount: 0,
+        lastRegistrationError: null,
+        firstCallbackAtMs: null,
+        totalCallbackCount: 0,
+        resetCount: 0,
+      });
     });
   });
 });
