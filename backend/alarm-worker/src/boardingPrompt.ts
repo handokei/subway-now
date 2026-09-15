@@ -25,6 +25,14 @@
  *   적용하여 arrival + lockAttachable 2-of-2 신호로 통과 판정한다. 본 함수는 environment
  *   인자가 underground/mixed/unknown 이면 #8(motion) + #9(silence/fired) 만 평가 — caller가
  *   consensusGate 통과 책임을 진다. surface(또는 환경 미상 = undefined)는 기존 9단 AND 동작 유지.
+ *
+ * #2651 (fix, 회귀 #2637) — environment bypass 는 단독 조건이 아니다. "역이 지하다"는
+ *   stations.json 기준 정적 속성일 뿐 "지금 GPS를 못 믿는다"는 동적 기기 상태를 보장하지
+ *   않는다(정지 상태·accuracy 6.7m로 지상 대기 중에도 지하역이면 무조건 통과하던 회귀).
+ *   `isGpsUntrustworthy(metrics)`(avgAccuracyMeters ≥ ACCURACY_CUTOFF_M)를 AND 조건으로
+ *   추가했다 — environment bypass 후보 + GPS 실제 저신뢰(또는 유효 sample 없음)일 때만
+ *   geometry 게이트(#3~#5)를 skip한다. GPS가 실제로 양호하면 environment 무관하게 원래
+ *   9단 geometry 게이트(origin 100m 포함)를 그대로 평가한다.
  */
 
 import { ARRIVAL_CODE } from './alarm';
@@ -327,10 +335,31 @@ function evaluateFusedSpeedGate(
 }
 
 /**
- * #1536 — 환경 분기 판정. underground / mixed / unknown 은 GPS 의존 게이트 byPass.
+ * #1536 — 환경 분기 판정. underground / mixed / unknown 은 GPS 의존 게이트 byPass **후보**.
+ * #2651 — 이 값만으로는 bypass 하지 않는다. `isGpsUntrustworthy`와 AND로 합쳐야 한다(아래).
  */
 function isGpsDependentBypassEnv(env: StationEnvironment | undefined): boolean {
   return env === 'underground' || env === 'mixed' || env === 'unknown';
+}
+
+/**
+ * #2651 (fix, 회귀 #2637) — "역이 지하다"(stations.json 정적 속성)와 "지금 GPS를 못 믿는다"
+ * (동적 기기 상태)를 동일시한 것이 root cause. #2637 이후 environment 입력이 device 기압계에서
+ * stations.json 정적 판정으로 바뀌면서, GPS accuracy 6.7m·정지 상태에서도 underground 역이면
+ * 무조건 geometry 게이트(#3~#5) 전체를 skip했다 — 그 결과 origin 100m 근접 게이트가 평가되지
+ * 않아 222m 떨어진 곳에서 boarding-prompt가 발사됐다(용마산 실증).
+ *
+ * fix: environment=underground/mixed/unknown 이어도 GPS가 실제로 신뢰 가능(accuracy가 게이트
+ * #3 임계치 미만)하면 bypass 하지 않는다 — geometry 게이트를 그대로 평가해 origin-too-far로
+ * 정상 차단한다. 진짜 지하(GPS stale → avgAccuracyMeters가 크거나 유효 sample 자체가 없어
+ * Infinity)는 기존대로 bypass 되어 #1536이 막으려던 "지하 100% fail" 회귀를 그대로 방지한다.
+ *
+ * `evaluateWindow`는 유효 hop sample이 0개(윈도우 sample 0~1개 포함)면 avgAccuracyMeters를
+ * Infinity로 반환하므로 별도 count 체크 없이 이 accuracy 비교 하나로 "GPS 신뢰 불가" 전체를
+ * 포괄한다.
+ */
+function isGpsUntrustworthy(metrics: WindowedMetrics): boolean {
+  return metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M;
 }
 
 /**
@@ -365,7 +394,9 @@ export function evaluateBoardingPromptGates(
     return { pass: true, metrics, fusedSpeedKmh: 0 };
   }
 
-  const gpsDependentBypass = isGpsDependentBypassEnv(inputs.environment);
+  // #2651 — environment bypass 후보 + GPS 실제 신뢰 불가(AND) 일 때만 geometry 게이트 skip.
+  const gpsDependentBypass =
+    isGpsDependentBypassEnv(inputs.environment) && isGpsUntrustworthy(metrics);
 
   // surface / undefined 만 GPS 의존 게이트 평가 — underground/mixed/unknown 은 byPass.
   if (!gpsDependentBypass) {

@@ -6227,20 +6227,53 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
       );
     });
 
-    it('underground 역(강남/2) + 동일한 먼 series → 기존처럼 GPS 게이트 bypass, 발사 도달(회귀 없음)', async () => {
+    // #2651 (fix, 회귀 #2637) — 이 시나리오(underground 역 + GPS accuracy 양호(10m) + origin에서
+    // 먼 series)가 오늘 용마산 실증의 코드 패턴이다. environment=underground 만으로 무조건
+    // bypass 하면 origin 100m 근접 게이트가 전혀 평가되지 않아 오발사한다. fix 후에는 GPS가
+    // 실제로 신뢰 가능(accuracy < ACCURACY_CUTOFF_M)하면 bypass 하지 않고 9단 GPS 게이트로
+    // 복귀해 origin-too-far로 정상 차단한다 — surface 케이스와 동일한 보호를 받는다.
+    it('underground 역(강남/2) + GPS accuracy 양호(10m) + origin에서 먼 series → 더 이상 bypass 되지 않고 origin-too-far로 차단 (#2651)', async () => {
       const kv = new InMemoryKV();
       await putTrip(
         kv as unknown as KVNamespace,
         makeUnlockedTrip({ promptDisplay: { originStation: '강남', line: '2' } }),
       );
-      // surface 케이스와 동일하게 origin에서 아주 먼 series — underground는 GPS 의존 게이트를
-      // bypass하므로 motion(automotive, stationary 아님)만 만족하면 그대로 발사돼야 한다.
       await kv.put(
         'pos:bp-tok',
         JSON.stringify([
           { lat: 10, lng: 10, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
           { lat: 10, lng: 10, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
           { lat: 10, lng: 10, accuracy: 10, ts: NOW, motion: 'automotive' },
+        ]),
+      );
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const log = vi.fn();
+
+      const stats = await runScheduled(makeEnv(kv), { ...makeBoardingPromptDeps(fetchImpl), log });
+
+      expect(stats.boardingPromptEvaluated).toBe(1);
+      expect(stats.boardingPromptBlocked).toBe(1);
+      expect(stats.boardingPromptFired).toBe(0);
+      expect(log).toHaveBeenCalledWith(
+        'boarding-prompt: gate blocked',
+        expect.objectContaining({ reason: 'origin-too-far', environment: 'underground' }),
+      );
+    });
+
+    // #2651 — 진짜 지하(GPS 신호 저하로 accuracy 자체가 나쁨)는 기존대로 bypass 되어 보호받는다
+    // (#1536이 막으려던 "지하 GPS stale → 9단 AND 100% fail" 회귀 재발 방지).
+    it('underground 역(강남/2) + GPS accuracy 저하(300m, 진짜 지하) + 먼 series → GPS 게이트 bypass, 발사 도달(회귀 없음)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({ promptDisplay: { originStation: '강남', line: '2' } }),
+      );
+      await kv.put(
+        'pos:bp-tok',
+        JSON.stringify([
+          { lat: 10, lng: 10, accuracy: 300, ts: NOW - 60_000, motion: 'automotive' },
+          { lat: 10, lng: 10, accuracy: 300, ts: NOW - 30_000, motion: 'automotive' },
+          { lat: 10, lng: 10, accuracy: 300, ts: NOW, motion: 'automotive' },
         ]),
       );
       const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;

@@ -432,6 +432,11 @@ describe('evaluateBoardingPromptGates — #833 pre-computed metrics 재사용', 
  * #4 origin-too-far / #5 direction-mismatch 등으로 100% fail → 7일 누적 0건 회귀.
  * environment='underground' 분기는 GPS 의존 게이트(#3~#7) byPass 후 #8 motion 만 평가.
  * accuracy 는 surface 분기의 #4 origin-too-far reason 분리를 위해 cutoff(50m) 미만 사용.
+ *
+ * #2651 — 이 fixture는 accuracy가 좋다(10m). #2637 이후 이 케이스가 environment=underground
+ * 라는 이유만으로 bypass 되어 오발사 회귀를 만들었다. fix 후에는 이 fixture로는 더 이상
+ * bypass 되지 않는다 — 아래 테스트에서 그 회귀 차단을 직접 검증한다. 진짜 지하(accuracy 저하)
+ * 시나리오는 `genuineUndergroundSeries`를 사용한다.
  */
 function staleGpsSeries(n: number): PositionPoint[] {
   // 출발역(0,0) 에서 1km 떨어진 wrong 좌표 + 잘못된 방향 진행 (서쪽). accuracy 10m.
@@ -442,12 +447,47 @@ function staleGpsSeries(n: number): PositionPoint[] {
   ];
 }
 
+/**
+ * #2651 — 진짜 지하(GPS 신호 저하)를 모델링. accuracy 300m(≥ ACCURACY_CUTOFF_M=50m)이라
+ * `evaluateWindow`가 hop을 하나도 받아들이지 않아 avgAccuracyMeters=Infinity → 확실히
+ * GPS 신뢰 불가로 판정된다. #1536이 막으려던 "지하 GPS stale → 9단 AND 100% fail" 회귀가
+ * fix 이후에도 여전히 bypass 되어 보호받는지 검증하는 fixture.
+ */
+function genuineUndergroundSeries(n: number): PositionPoint[] {
+  return [
+    { lat: 0.01, lng: 0.01, accuracy: 300, ts: n - 60_000, motion: 'automotive' },
+    { lat: 0.01, lng: 0.009, accuracy: 300, ts: n - 30_000, motion: 'automotive' },
+    { lat: 0.01, lng: 0.008, accuracy: 300, ts: n, motion: 'automotive' },
+  ];
+}
+
+/**
+ * #2651 — red fixture. 2026-09-16 실측 그대로 재구성: GPS accuracy 6.7m, speed 0(정지),
+ * 용마산(7, underground)까지 실거리 222m(> ORIGIN_RADIUS_KM=100m), motion=stationary 연속.
+ * lat 0 기준 0.002deg ≈ 222m(적도 근사, haversineKm 계산과 정합) 로 origin에서 벗어난
+ * 고정 위치를 모델링(사용자가 그 자리에 서 있었으므로 "이동"이 아니라 "정지 상태로 222m
+ * 떨어진 곳에 있음"이 fixture 의도).
+ *
+ * fix 전 코드(#2637, environment만으로 bypass)에서는 environment='underground'이면
+ * evaluateGpsGeometryGates 자체가 호출되지 않아 origin 근접 게이트(#4)가 전혀 평가되지
+ * 않고 그대로 pass=true(fusedSpeedKmh=0)를 반환했다 — 이것이 오늘 오발사의 직접 기전이다.
+ * fix 후에는 accuracy(6.7m)가 ACCURACY_CUTOFF_M(50m) 미만이라 GPS를 신뢰 가능으로 보고
+ * bypass 하지 않는다 → geometry 게이트가 그대로 평가되어 origin-too-far로 차단된다.
+ */
+function realIncidentSeries(n: number): PositionPoint[] {
+  return [
+    { lat: 0.002, lng: 0, accuracy: 6.7, ts: n - 60_000, motion: 'stationary' },
+    { lat: 0.002, lng: 0, accuracy: 6.7, ts: n - 30_000, motion: 'stationary' },
+    { lat: 0.002, lng: 0, accuracy: 6.7, ts: n, motion: 'stationary' },
+  ];
+}
+
 describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
   const now = 1_000_000;
 
-  it('underground: stale GPS series 도 motion=automotive 면 통과 (fusedSpeedKmh=0)', () => {
+  it('underground: 진짜 지하(accuracy 저하) + motion=automotive 면 통과 (fusedSpeedKmh=0)', () => {
     const r = evaluateBoardingPromptGates({
-      series: staleGpsSeries(now),
+      series: genuineUndergroundSeries(now),
       origin: ORIGIN,
       nextStation: NEXT,
       now,
@@ -457,8 +497,8 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
     if (r.pass) expect(r.fusedSpeedKmh).toBe(0);
   });
 
-  it('underground: motion=stationary 면 #8 게이트로 차단 (motion-stationary)', () => {
-    const stationary = staleGpsSeries(now).map((p) => ({
+  it('underground: 진짜 지하 + motion=stationary 면 #8 게이트로 차단 (motion-stationary)', () => {
+    const stationary = genuineUndergroundSeries(now).map((p) => ({
       ...p,
       motion: 'stationary' as const,
     }));
@@ -474,7 +514,8 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
   });
 
   // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. underground 분기에서도 반복 발사 게이트
-  // (fired-too-recently)가 #9로 우선 평가된다.
+  // (fired-too-recently)가 #9로 우선 평가된다 — #9는 geometry/accuracy 판단보다 먼저
+  // 평가되므로 accuracy가 좋은 staleGpsSeries로도 동일하게 검증 가능.
   it('underground: 최근 발사(5분 미만) = fired-too-recently (게이트 #9 우선 평가)', () => {
     const r = evaluateBoardingPromptGates({
       series: staleGpsSeries(now),
@@ -488,9 +529,9 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
     if (!r.pass) expect(r.reason).toBe('fired-too-recently');
   });
 
-  it('mixed: GPS 의존 게이트 byPass (underground 와 동일 분기)', () => {
+  it('mixed: 진짜 지하(accuracy 저하)면 GPS 의존 게이트 byPass (underground 와 동일 분기)', () => {
     const r = evaluateBoardingPromptGates({
-      series: staleGpsSeries(now),
+      series: genuineUndergroundSeries(now),
       origin: ORIGIN,
       nextStation: NEXT,
       now,
@@ -499,15 +540,43 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
     expect(r.pass).toBe(true);
   });
 
-  it('unknown: GPS 의존 게이트 byPass (보수적 분기)', () => {
+  it('unknown: 진짜 지하(accuracy 저하)면 GPS 의존 게이트 byPass (보수적 분기)', () => {
     const r = evaluateBoardingPromptGates({
-      series: staleGpsSeries(now),
+      series: genuineUndergroundSeries(now),
       origin: ORIGIN,
       nextStation: NEXT,
       now,
       environment: 'unknown',
     });
     expect(r.pass).toBe(true);
+  });
+
+  // #2651 — 회귀 재현 (2026-09-16 용마산 실측): environment=underground 여도 GPS accuracy가
+  // 실제로 양호(6.7m < 50m)하면 더 이상 bypass 하지 않는다 — geometry 게이트가 평가되어
+  // 222m(> 100m) 떨어진 위치는 origin-too-far로 차단된다. #2637 이전 동작(기압계 기반 판정)과
+  // 동일한 결과로 복원.
+  it('underground + GPS 실제 양호(accuracy 6.7m) + origin 222m → origin-too-far로 차단 (#2651 회귀 재현)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: realIncidentSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('origin-too-far');
+  });
+
+  it('underground: stale(좌표는 잘못됐지만 accuracy 양호)한 series도 더 이상 bypass 되지 않는다 (#2651)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('origin-too-far');
   });
 
   it('surface: stale GPS series 는 기존 9단 AND 그대로 — origin-too-far 차단', () => {
@@ -554,9 +623,11 @@ describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
 describe('evaluateBoardingPromptGates — #1820 motion grace (GPS-bypass 환경)', () => {
   const now = 1_000_000;
 
-  // underground stale GPS series (모든 motion=unknown 로 덮어쓸 것)
+  // 진짜 지하(accuracy 저하) series (모든 motion=unknown 로 덮어쓸 것). #2651 — accuracy가
+  // 좋은 staleGpsSeries는 더 이상 bypass 되지 않으므로 motion 단독 게이트를 격리 검증하려면
+  // genuineUndergroundSeries(accuracy 저하로 확실히 bypass)를 base로 써야 한다.
   function unknownMotionSeries(n: number): PositionPoint[] {
-    return staleGpsSeries(n).map((p) => ({ ...p, motion: 'unknown' as const }));
+    return genuineUndergroundSeries(n).map((p) => ({ ...p, motion: 'unknown' as const }));
   }
 
   it('underground + motion=unknown → pass (warmup grace)', () => {
@@ -572,7 +643,7 @@ describe('evaluateBoardingPromptGates — #1820 motion grace (GPS-bypass 환경)
   });
 
   it('underground + motion=stationary → fail (motion-stationary)', () => {
-    const stationary = staleGpsSeries(now).map((p) => ({
+    const stationary = genuineUndergroundSeries(now).map((p) => ({
       ...p,
       motion: 'stationary' as const,
     }));
@@ -588,7 +659,7 @@ describe('evaluateBoardingPromptGates — #1820 motion grace (GPS-bypass 환경)
   });
 
   it('underground + motion=walking → pass', () => {
-    const walking = staleGpsSeries(now).map((p) => ({
+    const walking = genuineUndergroundSeries(now).map((p) => ({
       ...p,
       motion: 'walking' as const,
     }));
