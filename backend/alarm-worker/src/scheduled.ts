@@ -154,6 +154,7 @@ import {
   type LegBoardingPromptOutcome,
   type TransferAdvanceOutcome,
   type TransferAdvancePath,
+  type VanishFallbackMotionGatePath,
 } from './tripEventLog';
 import { hashTripToken } from './sentry';
 
@@ -3255,6 +3256,56 @@ async function recordFireBlockReasonTransition(
   await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, reason);
 }
 
+/**
+ * ADR-037 D2c (#2640, 진단 계측 only) — `handleEtaMissing`의 vanish-fallback motion gate
+ * (`isFallbackAdvanceBlockedByMotion`) 차단을 SSoT 마커(`lastVanishFallbackMotionGateBlocked`)와
+ * 비교해 다를 때만(전이 시에만, #2073 quota 보호) 기존 `cron-fire-attempt`(outcome='skipped-reason')
+ * kind로 D1 append한다 — 신규 kind 없이 #2542 패턴을 재사용. `advanceTripPosition` 6단 게이트 /
+ * `transferDestinationGate`가 쓰는 `lastFireBlockReason`과는 별개 게이트라 전용 마커를 둔다.
+ *
+ * meta에 motion/consecutiveEtaMissing/lastTrackedArrivalEpoch를 실어 #2629 §1 F4의 (a) motion
+ * 오분류 때문인지 (b) 카운터가 리셋을 반복해서인지 사후 구분 가능하게 한다. 게이트 판정/advance
+ * 로직에는 관여하지 않는다 — caller가 이미 차단을 결정한 뒤에만 호출한다.
+ */
+async function recordVanishFallbackMotionGateTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  path: VanishFallbackMotionGatePath,
+  motion: PositionPoint['motion'],
+  consecutiveEtaMissing: number,
+  lastTrackedArrivalEpoch: number | undefined,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.lastVanishFallbackMotionGateBlocked === true) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, lastVanishFallbackMotionGateBlocked: true },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'cron-fire-attempt',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: {
+        waypointKind: fireLogWaypointKind(waypoint.kind),
+        phase: 'imminent',
+        outcome: 'skipped-reason',
+        reason: `vanish-fallback-motion-gate:${path}`,
+        path,
+        motion,
+        consecutiveEtaMissing,
+        lastTrackedArrivalEpoch,
+      },
+    },
+    now,
+  );
+}
+
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
 // path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
@@ -4560,9 +4611,13 @@ interface HandleEtaMissingInputs {
   now: number;
   log: Logger;
   generatePushId: () => string;
+  // #2640 — vanish-fallback motion gate 차단 D1 관측의 dedup 마커 소스. runTrainCodeTracking이
+  // 이미 읽어둔 SSoT를 그대로 전달(추가 KV read 없음). null이면 관측 no-op(기존 다른 D2c 이벤트와
+  // 동일 패턴).
+  ssot: TripPositionSSoT | null;
 }
 async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
-  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId } = inputs;
+  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId, ssot } = inputs;
   stats.etaMissing += 1;
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   const nextMissCount = previousMissCount + 1;
@@ -4602,6 +4657,18 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
           lastTrackedArrivalEpoch: lastEpoch,
           motion: fallbackMotion,
         });
+        // #2640 — D1 관측(전이 시에만). 게이트 판정에는 관여하지 않는다.
+        await recordVanishFallbackMotionGateTransition(
+          env,
+          trip,
+          waypoint,
+          ssot,
+          'advance-fallback',
+          fallbackMotion,
+          nextMissCount,
+          lastEpoch,
+          now,
+        );
         trip.consecutiveEtaMissing = nextMissCount;
         await putTrip(env.TRIPS, trip);
         return;
@@ -4706,6 +4773,18 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         station: waypoint.stationName,
         motion: releaseMotion,
       });
+      // #2640 — D1 관측(전이 시에만). 게이트 판정에는 관여하지 않는다.
+      await recordVanishFallbackMotionGateTransition(
+        env,
+        trip,
+        waypoint,
+        ssot,
+        'release',
+        releaseMotion,
+        nextMissCount,
+        lastEpoch,
+        now,
+      );
     }
     log('boarding-lock: trainCode vanished — releasing lock (hop time not yet elapsed)', {
       token: trip.token.slice(0, 8),
@@ -4837,6 +4916,7 @@ export async function runTrainCodeTracking(
       now,
       log,
       generatePushId,
+      ssot,
     });
     return;
   }

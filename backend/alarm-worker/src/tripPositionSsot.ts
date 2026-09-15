@@ -355,6 +355,18 @@ export interface TripPositionSSoT {
    */
   lastFireBlockReason?: string;
   /**
+   * ADR-037 D2c (#2640, 진단 계측 전용) — `handleEtaMissing`(scheduled.ts)의 vanish-fallback
+   * motion gate(`isFallbackAdvanceBlockedByMotion`)가 직전 tick에 차단 중이었는지. caller가 이
+   * 값과 이번 tick 차단 여부를 비교해 다를 때만 D1 `trip_events`(kind='cron-fire-attempt',
+   * outcome='skipped-reason')로 append한다(#2073 quota 보호). `lastFireBlockReason`이 커버하는
+   * `advanceTripPosition`/`transferDestinationGate`/lock-active waypoint advance 게이트와는
+   * 별개 게이트라 전용 마커를 둔다(#2542는 이 경로를 커버하지 않음). 발사/게이트 판정에는
+   * 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  lastVanishFallbackMotionGateBlocked?: boolean;
+  /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.
    * v2: currentStationLine 추가 (#1705).

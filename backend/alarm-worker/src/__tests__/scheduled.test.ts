@@ -2284,28 +2284,40 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         tripOverrides?: Partial<Trip>;
         apnsFetch?: ReturnType<typeof vi.fn>;
         pending?: InMemoryKV;
+        // #2640 — D1 관측 검증용. 명시 시 handleEtaMissing에 SSoT가 전달되도록
+        // seedSsot('중곡', ...)로 lazy-seed를 시뮬레이션한다(seed 없으면 recordVanish...는 no-op).
+        db?: D1Database;
+        seedSsotStation?: string;
+        kv?: InMemoryKV;
+        now?: number;
       }) {
-        const kv = new InMemoryKV();
-        await putTrip(
-          kv as unknown as KVNamespace,
-          makeLockTrip({
-            consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
-            lastTrackedArrivalEpoch: setup.hopElapsed ? LAST_EPOCH_ELAPSED : LAST_EPOCH_NOT_ELAPSED,
-            ...setup.tripOverrides,
-          }),
-        );
-        await seedLocklessMotionSeries(kv, 'lock-tok', setup.motion);
+        const kv = setup.kv ?? new InMemoryKV();
+        if (!setup.kv) {
+          await putTrip(
+            kv as unknown as KVNamespace,
+            makeLockTrip({
+              consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+              lastTrackedArrivalEpoch: setup.hopElapsed ? LAST_EPOCH_ELAPSED : LAST_EPOCH_NOT_ELAPSED,
+              ...setup.tripOverrides,
+            }),
+          );
+          await seedLocklessMotionSeries(kv, 'lock-tok', setup.motion);
+          if (setup.seedSsotStation !== undefined) {
+            await seedSsot(kv as unknown as KVNamespace, 'lock-tok', setup.seedSsotStation);
+          }
+        }
         const apnsFetch = setup.apnsFetch ?? makeOkFetch();
-        const stats = await runScheduled(makeEnv(kv, setup.pending), {
+        const now = setup.now ?? NOW;
+        const stats = await runScheduled(makeEnv(kv, setup.pending, setup.db), {
           seoul: makeSeoulCombo([], []),
           apnsConfig,
           apnsHosts: APNS_HOSTS,
           fetchImpl: apnsFetch as unknown as typeof fetch,
-          now: () => NOW,
+          now: () => now,
           generatePushId: () => setup.pushId,
         });
         const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
-        return { stats, stored, apnsFetch };
+        return { stats, stored, apnsFetch, kv };
       }
 
       it('motion=stationary → fallback advance 보류 + station-passed push X (카운터 누적)', async () => {
@@ -2330,6 +2342,108 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.boardingLock).toBeDefined();
         // 카운터 누적 유지 — motion 회복 시 다음 cycle에서 정상 advance, 회복 안 되면 auto-end가 종료 보장
         expect(stored.consecutiveEtaMissing).toBe(FALLBACK_TRIGGER);
+      });
+
+      // #2640 — vanish-fallback motion gate 차단의 D1 trip_events 관측. #2542(recordFireBlockReasonTransition)
+      // 는 advanceTripPosition/transferDestinationGate blockReason만 커버하고 이 경로(handleEtaMissing의
+      // isFallbackAdvanceBlockedByMotion)는 stats+log-only였다 — 실기기 라이드 없이 replay/유닛만으로
+      // H1(motion gate가 매 cycle 차단)을 판정할 수 있어야 한다는 acceptance(이슈 본문).
+      describe('#2640 D1 관측 — vanish-fallback motion gate 차단', () => {
+        function findInserts(inserts: unknown[][]): unknown[][] {
+          return inserts.filter(
+            (args) =>
+              args[2] === 'cron-fire-attempt' &&
+              typeof args[5] === 'string' &&
+              (args[5] as string).includes('vanish-fallback-motion-gate'),
+          );
+        }
+
+        it('advance-fallback 경로 — SSoT 부재(lazy-seed 이전)면 append 없음(no-op)', async () => {
+          const { db, inserts } = makeFireLogDb();
+          await runFallbackMotionScenario({
+            motion: 'stationary',
+            hopElapsed: true,
+            pushId: 'p2640-no-ssot',
+            db,
+            // seedSsotStation 미지정 — SSoT null 재현.
+          });
+          expect(findInserts(inserts)).toHaveLength(0);
+        });
+
+        it('advance-fallback 경로 — motion=stationary 1회 append, 연속 cycle 중복 append 0', async () => {
+          const { db, inserts } = makeFireLogDb();
+          const first = await runFallbackMotionScenario({
+            motion: 'stationary',
+            hopElapsed: true,
+            pushId: 'p2640-first',
+            db,
+            seedSsotStation: '중곡',
+          });
+          expect(first.stats.vanishFallbackMotionGateBlocked).toBe(1);
+          const firstInserts = findInserts(inserts);
+          expect(firstInserts).toHaveLength(1);
+          const meta = JSON.parse(firstInserts[0][5] as string) as {
+            waypointKind: string;
+            phase: string;
+            outcome: string;
+            reason: string;
+            path: string;
+            motion: string;
+            consecutiveEtaMissing: number;
+            lastTrackedArrivalEpoch: number;
+          };
+          expect(meta).toEqual({
+            waypointKind: 'station-passed',
+            phase: 'imminent',
+            outcome: 'skipped-reason',
+            reason: 'vanish-fallback-motion-gate:advance-fallback',
+            path: 'advance-fallback',
+            motion: 'stationary',
+            consecutiveEtaMissing: FALLBACK_TRIGGER,
+            lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+          });
+
+          // 같은 trip으로 다음 cycle도 동일하게 차단(모션 회복 없음) → 재기록 없음(#2073 quota 보호).
+          await runFallbackMotionScenario({
+            motion: 'stationary',
+            hopElapsed: true,
+            pushId: 'p2640-second',
+            db,
+            kv: first.kv,
+            now: NOW + 60_000,
+          });
+          expect(findInserts(inserts)).toHaveLength(1);
+        });
+
+        it('release 경로(hop 시간 미경과) — motion=stationary 1회 append, meta.path=release', async () => {
+          const { db, inserts } = makeFireLogDb();
+          const { stats } = await runFallbackMotionScenario({
+            motion: 'stationary',
+            hopElapsed: false,
+            pushId: 'p2640-release',
+            db,
+            seedSsotStation: '중곡',
+          });
+          expect(stats.vanishFallbackMotionGateBlocked).toBe(1);
+          const events = findInserts(inserts);
+          expect(events).toHaveLength(1);
+          const meta = JSON.parse(events[0][5] as string) as { path: string; motion: string };
+          expect(meta.path).toBe('release');
+          expect(meta.motion).toBe('stationary');
+        });
+
+        it('motion=automotive(차단 없음) → append 없음', async () => {
+          const { db, inserts } = makeFireLogDb();
+          const { stats } = await runFallbackMotionScenario({
+            motion: 'automotive',
+            hopElapsed: true,
+            pushId: 'p2640-nogate',
+            db,
+            seedSsotStation: '중곡',
+          });
+          expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
+          expect(findInserts(inserts)).toHaveLength(0);
+        });
       });
 
       // walking/automotive — positive 비정지 신호 → advance 진행.

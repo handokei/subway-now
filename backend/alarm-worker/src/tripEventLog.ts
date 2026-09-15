@@ -83,6 +83,17 @@ import { captureXEvent } from './sentry';
  * pending entry는 발사 직후 삭제되어 사후 추적이 불가능했다 — 반복 발사(pile) 재발 여부를
  * D1만으로 즉시 확정하기 위한 계측 전용 kind. fire/advance 동작에는 관여하지 않는다.
  * `meta`에 `{ pushId, ageMs }`를 싣는다.
+ *
+ * `cron-fire-attempt` (outcome='skipped-reason') 재사용 — ADR-037 D2c (#2640) — vanish-fallback
+ * motion gate(`isFallbackAdvanceBlockedByMotion`, scheduled.ts `handleEtaMissing`)가 차단할 때도
+ * 새 kind를 만들지 않고 기존 `cron-fire-attempt`/`skipped-reason`을 재사용한다(#2542가 커버한
+ * `advanceTripPosition`/`transferDestinationGate` blockReason 경로와 별개 게이트라 SSoT 마커는
+ * 전용 필드 `lastVanishFallbackMotionGateBlocked`를 쓰지만, D1 kind는 공유). `meta`에
+ * `{ waypointKind, phase, outcome, reason, path, motion, consecutiveEtaMissing,
+ * lastTrackedArrivalEpoch }` — `reason`/`path`는 `VanishFallbackMotionGatePath`
+ * ('advance-fallback' | 'release') 구분, `motion`/`consecutiveEtaMissing`/`lastTrackedArrivalEpoch`는
+ * 차단이 (a) motion 오분류 때문인지 (b) 카운터 리셋 반복 때문인지 사후 구분하기 위한 판정 입력값.
+ * 전이 시에만(#2073 quota 보호) 게이트 판정에는 관여하지 않는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -129,6 +140,15 @@ export type TransferAdvanceOutcome = 'no-arvlcd' | 'not-fires' | 'advanced';
 
 /** `transfer-advance` 이벤트가 어느 코드 경로에서 관측됐는지(데이터 주도). */
 export type TransferAdvancePath = 'lockless' | 'lock-active';
+
+/**
+ * ADR-037 D2c (#2640) — `handleEtaMissing`(scheduled.ts) 내 vanish-fallback motion gate
+ * (`isFallbackAdvanceBlockedByMotion`) 차단이 어느 하위 경로에서 관측됐는지(데이터 주도).
+ * `advance-fallback` = hop 시간 경과 후 waypoint optimistic advance 시도 경로,
+ * `release` = hop 시간 미경과로 lock release 하기 전 floor push 시도 경로. 둘 다 같은
+ * `stats.vanishFallbackMotionGateBlocked` 카운터를 공유하던 기존 정책을 그대로 따른다.
+ */
+export type VanishFallbackMotionGatePath = 'advance-fallback' | 'release';
 
 /**
  * ADR-037 D2c (#2537) — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
