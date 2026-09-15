@@ -6119,6 +6119,102 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
       },
     );
   });
+
+  // #2637 (#2623 후속) — leg-1 GPS 경로의 environment 입력을 device 기압계(trip.subsurface)에서
+  // stations.json(deriveWaypointEnvironment) 기반으로 교체. 이 게이트는 underground/unknown을
+  // 이미 bypass(차단 아님) 방향으로 처리하므로, 교체의 실질 효과는 "지상역이 기압계 오분류로
+  // bypass에 잘못 들어가지 않고 9단 GPS 게이트로 정상 복귀"하는 것 — 아래 3개 시나리오로 확정.
+  describe('#2637 — environment 입력 stations.json 교체', () => {
+    it('surface 역(소요산/1) + origin에서 먼 series → 9단 GPS 게이트로 복귀, origin-too-far로 차단', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({
+          promptDisplay: { originStation: '소요산', line: '1' },
+          // #2351 origin-leg 가드(waypoints[0].line === display.line) 통과용 — 기본 waypoints는
+          // line '2'라 line '1' display와 불일치해 조기 stale skip된다.
+          waypoints: [{ stationName: '동두천', line: '1', kind: 'destination' }],
+        }),
+      );
+      // origin(0,0)에서 아주 먼 series. device subsurface가 undefined(구 로직 environment=
+      // 'unknown')였다면 GPS 의존 게이트 전부 bypass돼 이 series로도 발사됐을 것 — #2637이
+      // stations.json(소요산=surface)로 교체하며 막는 회귀.
+      await kv.put(
+        'pos:bp-tok',
+        JSON.stringify([
+          { lat: 10, lng: 10, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
+          { lat: 10, lng: 10, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
+          { lat: 10, lng: 10, accuracy: 10, ts: NOW, motion: 'automotive' },
+        ]),
+      );
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const log = vi.fn();
+
+      const stats = await runScheduled(makeEnv(kv), { ...makeBoardingPromptDeps(fetchImpl), log });
+
+      expect(stats.boardingPromptEvaluated).toBe(1);
+      expect(stats.boardingPromptBlocked).toBe(1);
+      expect(stats.boardingPromptFired).toBe(0);
+      expect(log).toHaveBeenCalledWith(
+        'boarding-prompt: gate blocked',
+        expect.objectContaining({ reason: 'origin-too-far', environment: 'surface' }),
+      );
+    });
+
+    it('underground 역(강남/2) + 동일한 먼 series → 기존처럼 GPS 게이트 bypass, 발사 도달(회귀 없음)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({ promptDisplay: { originStation: '강남', line: '2' } }),
+      );
+      // surface 케이스와 동일하게 origin에서 아주 먼 series — underground는 GPS 의존 게이트를
+      // bypass하므로 motion(automotive, stationary 아님)만 만족하면 그대로 발사돼야 한다.
+      await kv.put(
+        'pos:bp-tok',
+        JSON.stringify([
+          { lat: 10, lng: 10, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
+          { lat: 10, lng: 10, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
+          { lat: 10, lng: 10, accuracy: 10, ts: NOW, motion: 'automotive' },
+        ]),
+      );
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const log = vi.fn();
+
+      const stats = await runScheduled(makeEnv(kv), { ...makeBoardingPromptDeps(fetchImpl), log });
+
+      expect(stats.boardingPromptEvaluated).toBe(1);
+      expect(stats.boardingPromptFired).toBe(1);
+      expect(log).toHaveBeenCalledWith(
+        'boarding-prompt: fired',
+        expect.objectContaining({ environment: 'underground' }),
+      );
+    });
+
+    it('promptDisplay 역명/line lookup 실패 → environment=unknown(보수적 bypass) + lookup-miss 카운터/로그', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeUnlockedTrip({
+          // 실존하지 않는 역명 + 실제 line(2호선, Seoul arrival mock과 매칭돼 후보 채워짐) —
+          // lookup miss 원인을 역명 drift로 한정하고 line 자체는 정상 형식 유지.
+          promptDisplay: { originStation: '존재하지않는역', line: '2' },
+        }),
+      );
+      await seedHappySeries(kv);
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const log = vi.fn();
+
+      const stats = await runScheduled(makeEnv(kv), { ...makeBoardingPromptDeps(fetchImpl), log });
+
+      // lookup miss → 'unknown' fallback → GPS 의존 게이트 bypass(#2623과 동일 보수 정책) → 발사.
+      expect(stats.boardingPromptFired).toBe(1);
+      expect(stats.waypointEnvironmentLookupMiss).toBeGreaterThanOrEqual(1);
+      expect(log).toHaveBeenCalledWith('waypoint-environment-lookup-miss', {
+        stationName: '존재하지않는역',
+        line: '2',
+      });
+    });
+  });
 });
 
 /**
@@ -7014,11 +7110,7 @@ describe('resolveWaypointEnvironment (#2623 P1-2 리뷰 — lookup miss 관측)'
   it('lookup 성공 — 역/line 매칭 시 환경 반환, stats/log 무변화', () => {
     const stats = makeFullEmptyStats();
     const log = vi.fn();
-    const environment = resolveWaypointEnvironment(
-      { stationName: '군자', line: '7', kind: 'intermediate' },
-      stats,
-      log,
-    );
+    const environment = resolveWaypointEnvironment({ stationName: '군자', line: '7' }, stats, log);
     expect(environment).toBe('underground');
     expect(stats.waypointEnvironmentLookupMiss).toBe(0);
     expect(log).not.toHaveBeenCalled();
@@ -7028,7 +7120,7 @@ describe('resolveWaypointEnvironment (#2623 P1-2 리뷰 — lookup miss 관측)'
     const stats = makeFullEmptyStats();
     const log = vi.fn();
     const environment = resolveWaypointEnvironment(
-      { stationName: '없는역이름', line: '2', kind: 'intermediate' },
+      { stationName: '없는역이름', line: '2' },
       stats,
       log,
     );
@@ -7045,11 +7137,7 @@ describe('resolveWaypointEnvironment (#2623 P1-2 리뷰 — lookup miss 관측)'
     // 합정은 line 2/6에만 존재 — line 1에는 없음(stationsLookup.test.ts와 동일 fixture).
     const stats = makeFullEmptyStats();
     const log = vi.fn();
-    const environment = resolveWaypointEnvironment(
-      { stationName: '합정', line: '1', kind: 'intermediate' },
-      stats,
-      log,
-    );
+    const environment = resolveWaypointEnvironment({ stationName: '합정', line: '1' }, stats, log);
     expect(environment).toBe('unknown');
     expect(stats.waypointEnvironmentLookupMiss).toBe(1);
   });

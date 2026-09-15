@@ -59,7 +59,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
-import { computeAllowedLines, type StationEnvironment } from './consensusGate';
+import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
 import { filterCandidateDirection, filterCandidateLine } from './legCandidateFilters';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
@@ -4089,7 +4089,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
  * 그 waypoint를 영구히 보수 분기로 떨어뜨리므로, 무로그 상태로 두지 않고 식별 가능하게 한다.
  */
 export function resolveWaypointEnvironment(
-  waypoint: Waypoint,
+  waypoint: Pick<Waypoint, 'stationName' | 'line'>,
   stats: ScheduledStats,
   log: Logger,
 ): EvidenceEnvironment {
@@ -4102,28 +4102,6 @@ export function resolveWaypointEnvironment(
     });
   }
   return environment;
-}
-
-/**
- * Trip.subsurface → EvidenceEnvironment 매핑. `consensusGate.StationEnvironment` 어휘로 변환은
- * `mapEvidenceEnvironment`가 담당하므로 본 함수는 device upload 어휘만 산출한다.
- */
-function deriveEvidenceEnvironment(trip: Trip): EvidenceEnvironment {
-  if (trip.subsurface === true) return 'underground';
-  if (trip.subsurface === false) return 'surface';
-  return 'unknown';
-}
-
-/**
- * #1536 (S3) — Trip.subsurface → consensusGate.StationEnvironment 매핑.
- *
- * `deriveEvidenceEnvironment` (EvidenceEnvironment 어휘) 결과를 `mapEvidenceEnvironment`
- * 로 한 단계 변환해 single source 유지 (S4144 회피). trip 데이터 자체가 device 어휘인
- * `subsurface` boolean 만 갖고 'mixed' 표현이 없으므로 mapping 결과는 underground / surface
- * / unknown 셋 중 하나(추후 trip.environment 필드 도입 시 'mixed' 분기 자연 확장).
- */
-function deriveTripEnvironment(trip: Trip): StationEnvironment {
-  return mapEvidenceEnvironment(deriveEvidenceEnvironment(trip));
 }
 
 /**
@@ -6694,7 +6672,19 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // #2014 (ADR-022 B8) — deps.archFlag='on' 시 GPS/motion/speed 게이트(#3~#8) 전부 skip,
   // #9 (fired/silenced) 만 평가. arvlCd=1 관측 기반 fire 판정은 아래 fetchArrivals 후
   // `pickAutoTrainCode` 로 별도 진행. 즉 gate 통과 = "silence/fired dedup OK"만 의미.
-  const environment = deriveTripEnvironment(trip);
+  //
+  // #2637 (#2623 후속) — environment 입력을 device 기압계(trip.subsurface)에서 stations.json
+  // (`display.originStation`/`display.line`)로 교체. 이 게이트는 unknown/underground를 이미
+  // bypass(차단 아님) 방향으로 처리하므로(위 주석 참조) 이 교체의 실질 효과는 "차단 완화"가
+  // 아니라 "지상역이 기압계 오분류(subsurface=undefined→unknown)로 bypass에 잘못 들어가지 않고
+  // 9단 GPS 게이트로 정상 복귀"하는 것 — device 신호 의존 제거 + 정확도 개선(과도한 bypass 축소).
+  const environment = mapEvidenceEnvironment(
+    resolveWaypointEnvironment(
+      { stationName: display.originStation, line: display.line },
+      stats,
+      log,
+    ),
+  );
   const outcome = evaluateBoardingPromptGates({
     series: fusion.series,
     origin: geo.origin,
@@ -6928,6 +6918,10 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       // #2032 (Issue D) — monitoring dimension. fire 시 device sleep 상태 기록 (device suppress 여부와 대조 가능).
       // ADR-023: backend는 sleep 무관 발사 유지. device의 shouldSuppressBySleepRule이 UI suppress 판정.
       sleepMode: trip.sleepModeEnabled,
+      // #2637 — 이 경로(leg-1 GPS 9단 게이트)는 D1 logTripEvent가 없어 fire/block이 wrangler
+      // tail 로그로만 관측 가능하다. environment 소스가 stations.json으로 바뀐 뒤 실제 gate
+      // 분포(surface strict 진입 빈도)를 tail 쿼리로 확인할 수 있도록 fire 시점에도 stamp.
+      environment,
     });
   } else {
     stats.errors += 1;
