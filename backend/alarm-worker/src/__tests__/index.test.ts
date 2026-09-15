@@ -3533,7 +3533,14 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
     };
   }
 
+  // #2636 — fake timers 없이는 CREATED(고정 epoch)가 실제 wall clock보다 훨씬 과거라
+  // `validateTrip`의 `expiresAt <= Date.now()` 게이트에 매번 reject되어 POST가 항상 400으로
+  // 끝나고 KV write 자체가 일어나지 않는다 — merge 로직을 전혀 태우지 못한 채 seed로 직접 심은
+  // 값을 그대로 읽어 통과하는 거짓양성이었다. fake timers로 고정해 POST가 실제로 200을 받고
+  // merge 경로를 타는지부터 보장한다(#2628의 인접 블록과 동일 패턴).
   it('same session re-register → 이전 fired state 보존', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
     const env = makeKvEnv();
     // 첫 등록 후 backend가 state.fired=true 적재했다고 가정
     await env.TRIPS.put(
@@ -3544,9 +3551,11 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
       }),
     );
     // re-register
-    await post('/trips', tripBody(), env);
+    const res = await post('/trips', tripBody(), env);
+    expect(res.status).toBe(200);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
     expect(stored.boardingPromptState).toEqual({ fired: true, lastFiredAt: CREATED - 10_000 });
+    vi.useRealTimers();
   });
 
   it('new session (createdAt drift > 5s) → state 초기화', async () => {
@@ -3561,7 +3570,8 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
         boardingPromptState: { fired: true, lastFiredAt: CREATED - 10_000 },
       }),
     );
-    await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+    const res = await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+    expect(res.status).toBe(200);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
     expect(stored.boardingPromptState).toBeUndefined();
     vi.useRealTimers();
