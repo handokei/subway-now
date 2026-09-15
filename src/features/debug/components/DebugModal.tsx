@@ -1419,14 +1419,22 @@ function buildCandidateRejectLogSection(args: BuildDumpArgs): string[] {
  * #2594 (옵션 D) — rate snapshot 수치 부분만 포맷(label 없이). 표본 2개 미만(avg/min/max/
  * perSecond 모두 null)이면 "insufficient samples"로 명시 — 0/0 같은 오해 유발 표기를 피한다.
  * dump 라인(label 접두)과 UI KeyValue(label 별도 렌더)가 이 값을 공유한다.
+ *
+ * #2594 (PR #2639 리뷰 P2) — `perSecond`는 표본 부족(avgIntervalMs===null)뿐 아니라
+ * avgIntervalMs가 0 이하(같은 ms에 2건 이상 도착하거나 timestamp 역행)일 때도 null이다
+ * (reevalInstrumentation.ts의 snapshotRate 참고). 이 케이스는 오히려 가장 고빈도인 burst
+ * 상황이라 관측 목적과 정면으로 충돌하므로, `perSecond`가 null이면 "rate=n/a/s"로 명시하고
+ * `${undefined}` 문자열 노출(`rate=undefined/s`)을 만들지 않는다 — avg/min/max는 그대로 보여
+ * "표본은 있는데 rate만 계산 불가"임을 구분 가능하게 한다.
  */
 function formatRateSnapshotValue(snap: RateSnapshot): string {
   if (snap.avgIntervalMs === null) {
     return `n=${snap.sampleCount} (insufficient samples)`;
   }
+  const rateLabel = snap.perSecond === null ? 'n/a' : snap.perSecond.toFixed(2);
   return (
     `n=${snap.sampleCount} avg=${snap.avgIntervalMs.toFixed(0)}ms ` +
-    `min=${snap.minIntervalMs}ms max=${snap.maxIntervalMs}ms rate=${snap.perSecond?.toFixed(2)}/s`
+    `min=${snap.minIntervalMs}ms max=${snap.maxIntervalMs}ms rate=${rateLabel}/s`
   );
 }
 
@@ -1462,6 +1470,11 @@ function buildReevalInstrumentationSection(args: BuildDumpArgs): string[] {
   const snap = args.reevalInstrumentation;
   if (snap == null) return ['(not sampled yet)'];
   return [
+    // #2594 (PR #2639 리뷰 P1) — 이 계측은 HomeScreen의 'primary' useFusedNearestStation
+    // 인스턴스 기준으로만 쌓인다. DebugModal 자체가 표시용으로 추가 마운트하는 인스턴스는
+    // 'observer'로 태깅되어 record 호출을 skip한다(useFusedNearestStation.ts 참고) — 이 줄이
+    // "어느 인스턴스 기준 수치인지"를 dump만으로도 명확히 한다.
+    'source=primary (DebugModal 자체 useFusedNearestStation 인스턴스는 계측 제외)',
     formatRateSnapshotLine('gpsFix', snap.gpsFix),
     formatRateSnapshotLine('candidatesRecompute', snap.candidatesRecompute),
     formatFireRateSnapshotLine('candidateDistance', snap.candidateDistance),
@@ -2356,7 +2369,24 @@ function DebugModalInner({
     // #1678 — S9 accelerometer fingerprint vote 상태. 'automotive' = train 진동 env 1표.
     // 'unknown' = 60s window 미수렴 또는 네이티브 모듈 미지원(EAS rebuild 전).
     accelerometerPattern,
-  } = useFusedNearestStation(undefined, undefined, routeContext);
+  } = useFusedNearestStation(
+    undefined,
+    undefined,
+    routeContext,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    // #2594 (P1 리뷰 fix) — DebugModal은 표시용으로 자체 useFusedNearestStation 인스턴스를
+    // 추가 마운트한다(HomeScreen의 'primary' 인스턴스와 별개). 계측 카운터(reevalInstrumentation)는
+    // module-level singleton이라 태깅 없이는 이 인스턴스의 GPS fix/재평가가 HomeScreen 것과
+    // 합산되어 모든 계측값이 약 2배로 관측되는 회귀가 있었다(리뷰에서 발견) — 'observer'로
+    // 명시해 이 인스턴스는 계측에 기여하지 않게 한다. 실제 fusion 결과(위 구조분해 값들)는
+    // 영향 없음 — role은 순수 계측 게이팅 전용.
+    'observer',
+  );
   // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
   const routeHopCount = arcStations.length;
   const stationName = result?.station.name ?? null;
@@ -3339,6 +3369,14 @@ function DebugModalInner({
               candidatesRecompute rate) 때문인지, 재평가당 reject 수(avg/fire) 때문인지 분해해
               보여준다. reevalInstrumentation이 null이면 아직 첫 폴링 tick 전(mount 직후). */}
           <Section title="Reeval Instrumentation" colors={colors}>
+            {/* #2594 (PR #2639 리뷰 P1) — 이 계측이 어느 인스턴스 기준인지 UI에서도 명시.
+                DebugModal 자체의 useFusedNearestStation 마운트는 'observer'로 계측 제외.
+                fusion "source"(sticky/live) 라벨과 겹치지 않도록 별도 라벨 사용. */}
+            <KeyValue
+              label="instrumentation source"
+              value="primary (DebugModal 인스턴스 제외)"
+              colors={colors}
+            />
             <KeyValue
               label="gpsFix"
               value={

@@ -15,6 +15,13 @@
  *
  * DebugModal이 5s 폴링(barometerInstrumentation과 동일 cadence)으로
  * `getReevalInstrumentationSnapshot()`을 직접 pull한다.
+ *
+ * #2594 (PR #2639 리뷰 P1) — 이 모듈은 module-level singleton이라 record* 호출자가 여럿이면
+ * (예: HomeScreen의 'primary' useFusedNearestStation 인스턴스 + DebugModal 자체의 관찰용
+ * 인스턴스) 카운트가 그대로 합산된다. 호출자(useNearestStation.ts/useFusedNearestStation.ts)가
+ * 'observer' 인스턴스의 record 호출을 스스로 skip해 이 모듈은 항상 'primary' 단일 인스턴스
+ * 기준 수치만 쌓는다 — 이 모듈 자체는 owner 개념을 모른다(호출 측 게이팅으로 충분, 불필요한
+ * 복잡도 회피).
  */
 
 /** ring buffer에 보관할 최근 이벤트 timestamp 수. #2618/#2626과 동일하게 가벼운 고정 capacity. */
@@ -42,7 +49,13 @@ export interface RateSnapshot {
   minIntervalMs: number | null;
   /** 최근 표본 구간의 최대 inter-arrival 간격(ms). 표본 2개 미만이면 null. */
   maxIntervalMs: number | null;
-  /** avgIntervalMs로 환산한 초당 이벤트 수. 표본 2개 미만이면 null. */
+  /**
+   * avgIntervalMs로 환산한 초당 이벤트 수. 표본 2개 미만이거나(null), 같은 ms에 2건 이상
+   * 몰리거나 timestamp가 역행해 avgIntervalMs가 0 이하인 경우(#2594 PR #2639 리뷰 P2 —
+   * 이 케이스가 오히려 가장 고빈도 burst 상황이라 관측 목적과 정면으로 충돌한다)에도 null.
+   * 호출자는 perSecond와 avgIntervalMs를 함께 보고 null의 두 원인(표본 부족 vs burst로 인한
+   * 0/음수 간격)을 구분해야 한다 — avgIntervalMs가 null이 아니면서 perSecond만 null이면 후자.
+   */
   perSecond: number | null;
 }
 
@@ -76,10 +89,32 @@ function snapshotRate(tracker: EventTracker): RateSnapshot {
   };
 }
 
+/**
+ * #2594 (PR #2639 리뷰 P3) — 발화(재평가) rate와 "발화 1회당 reject 수"를 같은 표본 window로
+ * 비교 가능하게 하기 위해, timestamp ring과 나란히 reject count ring을 유지한다. 두 배열은
+ * 항상 같은 길이로 push/shift되어 인덱스가 1:1 대응한다.
+ */
+interface FireTracker extends EventTracker {
+  rejectCounts: number[];
+}
+
+function createFireTracker(): FireTracker {
+  return { timestamps: [], rejectCounts: [] };
+}
+
+function recordFireEvent(tracker: FireTracker, ts: number, rejectCount: number): void {
+  tracker.timestamps.push(ts);
+  tracker.rejectCounts.push(rejectCount);
+  if (tracker.timestamps.length > RING_CAPACITY) {
+    tracker.timestamps.shift();
+    tracker.rejectCounts.shift();
+  }
+}
+
 const gpsFixTracker = createEventTracker();
 const candidatesRecomputeTracker = createEventTracker();
-const candidateDistanceFireTracker = createEventTracker();
-const candidateEnvFireTracker = createEventTracker();
+const candidateDistanceFireTracker = createFireTracker();
+const candidateEnvFireTracker = createFireTracker();
 
 let candidateDistanceFireTotal = 0;
 let candidateDistanceRejectTotal = 0;
@@ -109,7 +144,7 @@ export function recordCandidatesRecompute(ts: number = Date.now()): void {
  * 분해하기 위한 값.
  */
 export function recordCandidateDistanceFire(rejectCount: number, ts: number = Date.now()): void {
-  recordEvent(candidateDistanceFireTracker, ts);
+  recordFireEvent(candidateDistanceFireTracker, ts, rejectCount);
   candidateDistanceFireTotal += 1;
   candidateDistanceRejectTotal += rejectCount;
 }
@@ -119,7 +154,7 @@ export function recordCandidateDistanceFire(rejectCount: number, ts: number = Da
  * 실행에서 environment mismatch로 판정된 candidate 수.
  */
 export function recordCandidateEnvFire(rejectCount: number, ts: number = Date.now()): void {
-  recordEvent(candidateEnvFireTracker, ts);
+  recordFireEvent(candidateEnvFireTracker, ts, rejectCount);
   candidateEnvFireTotal += 1;
   candidateEnvRejectTotal += rejectCount;
 }
@@ -129,7 +164,18 @@ export interface FireRateSnapshot extends RateSnapshot {
   fireTotal: number;
   /** 세션 누적 reject 후보/열차 수. */
   rejectTotal: number;
-  /** rejectTotal / fireTotal — 발화 1회당 평균 reject 수. fireTotal=0이면 null. */
+  /**
+   * #2594 (PR #2639 리뷰 P3) — 최근 ring window(=sampleCount건, rate 계산과 정확히 같은 표본)에
+   * 대한 reject 합. avgRejectPerFire의 분자로 쓰여 perSecond와 "같은 시간대"를 대표한다 —
+   * 세션 누적(rejectTotal/fireTotal)을 rate(최근 20건 창)와 나란히 비교하면 10초 버스트가
+   * 세션 평균에 희석되는 window mismatch가 생기므로, 반드시 이 값을 분자로 써야 한다.
+   */
+  windowedRejectCount: number;
+  /**
+   * windowedRejectCount / sampleCount — 최근 window 기준 발화 1회당 평균 reject 수.
+   * sampleCount=0이면 null. rate(perSecond)와 동일 window라 직접 비교 가능
+   * ("perSecond 높으면 A/C, avgRejectPerFire 높으면 B" 판정이 같은 시간대를 본다).
+   */
   avgRejectPerFire: number | null;
 }
 
@@ -141,15 +187,18 @@ export interface ReevalInstrumentationSnapshot {
 }
 
 function buildFireRateSnapshot(
-  tracker: EventTracker,
+  tracker: FireTracker,
   fireTotal: number,
   rejectTotal: number,
 ): FireRateSnapshot {
+  const rate = snapshotRate(tracker);
+  const windowedRejectCount = tracker.rejectCounts.reduce((sum, n) => sum + n, 0);
   return {
-    ...snapshotRate(tracker),
+    ...rate,
     fireTotal,
     rejectTotal,
-    avgRejectPerFire: fireTotal > 0 ? rejectTotal / fireTotal : null,
+    windowedRejectCount,
+    avgRejectPerFire: rate.sampleCount > 0 ? windowedRejectCount / rate.sampleCount : null,
   };
 }
 
@@ -176,7 +225,9 @@ export function resetReevalInstrumentationForTest(): void {
   gpsFixTracker.timestamps = [];
   candidatesRecomputeTracker.timestamps = [];
   candidateDistanceFireTracker.timestamps = [];
+  candidateDistanceFireTracker.rejectCounts = [];
   candidateEnvFireTracker.timestamps = [];
+  candidateEnvFireTracker.rejectCounts = [];
   candidateDistanceFireTotal = 0;
   candidateDistanceRejectTotal = 0;
   candidateEnvFireTotal = 0;

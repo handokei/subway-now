@@ -34,11 +34,13 @@ describe('reevalInstrumentation (#2594 옵션 D)', () => {
     expect(snap.candidateDistance).toMatchObject({
       fireTotal: 0,
       rejectTotal: 0,
+      windowedRejectCount: 0,
       avgRejectPerFire: null,
     });
     expect(snap.candidateEnv).toMatchObject({
       fireTotal: 0,
       rejectTotal: 0,
+      windowedRejectCount: 0,
       avgRejectPerFire: null,
     });
   });
@@ -116,10 +118,47 @@ describe('reevalInstrumentation (#2594 옵션 D)', () => {
     const { candidateDistance } = getReevalInstrumentationSnapshot();
     expect(candidateDistance.fireTotal).toBe(3);
     expect(candidateDistance.rejectTotal).toBe(8);
+    expect(candidateDistance.windowedRejectCount).toBe(8);
     expect(candidateDistance.avgRejectPerFire).toBeCloseTo(8 / 3);
     // fire 자체의 rate도 함께 노출(재평가 빈도).
     expect(candidateDistance.sampleCount).toBe(3);
     expect(candidateDistance.avgIntervalMs).toBe(100);
+  });
+
+  // #2594 (PR #2639 리뷰 P3) — avgRejectPerFire가 세션 누적이 아니라 rate와 동일한 ring
+  // window(최근 20건)를 분모/분자로 써야 한다. RING_CAPACITY(20)를 넘겨 오래된 fire가 밀려나면
+  // 누적 평균(rejectTotal/fireTotal)과 windowed 평균(windowedRejectCount/sampleCount)이
+  // 서로 달라져야 window mismatch가 실제로 고쳐졌음을 확인할 수 있다.
+  describe('avgRejectPerFire는 rate와 동일 ring window를 공유 (#2594 P3)', () => {
+    it('RING_CAPACITY(20) 초과 시 오래된 fire의 reject는 avgRejectPerFire에서 밀려남', () => {
+      // 처음 20건은 reject=10(높은 버스트), 이후 10건은 reject=0(진정 국면). ring capacity=20이라
+      // 마지막 20건([reject=10 ×10, reject=0 ×10])만 window에 남고, 앞선 10건(reject=10)은 밀려남.
+      for (let i = 0; i < 20; i += 1) recordCandidateDistanceFire(10, i * 100);
+      for (let i = 0; i < 10; i += 1) recordCandidateDistanceFire(0, 2000 + i * 100);
+      const { candidateDistance } = getReevalInstrumentationSnapshot();
+      // 세션 누적: fireTotal=30, rejectTotal=200 → 누적 평균 200/30 ≈ 6.67 (희석됨, 초기 버스트가
+      // 여전히 분모/분자에 섞여있어 "지금" 상황을 대표하지 못함).
+      expect(candidateDistance.fireTotal).toBe(30);
+      expect(candidateDistance.rejectTotal).toBe(200);
+      // window에 남은 20건 = reject=10 ×10(뒤쪽 절반) + reject=0 ×10 → windowedRejectCount=100.
+      expect(candidateDistance.sampleCount).toBe(20);
+      expect(candidateDistance.windowedRejectCount).toBe(100);
+      expect(candidateDistance.avgRejectPerFire).toBe(5);
+      // rate(perSecond)와 avgRejectPerFire가 같은 20건 window를 대표하므로 나란히 비교 가능 —
+      // 누적 평균(6.67)과 windowed 평균(5)이 서로 다르다는 것 자체가 window mismatch가
+      // 실제로 고쳐졌음을 보여준다(같은 로직이었다면 두 값이 항상 같아야 했다).
+      expect(candidateDistance.avgRejectPerFire).not.toBeCloseTo(200 / 30);
+    });
+
+    it('candidateEnv도 동일하게 windowed', () => {
+      for (let i = 0; i < 25; i += 1) recordCandidateEnvFire(4, i * 100);
+      const { candidateEnv } = getReevalInstrumentationSnapshot();
+      expect(candidateEnv.fireTotal).toBe(25);
+      expect(candidateEnv.rejectTotal).toBe(100);
+      expect(candidateEnv.sampleCount).toBe(20);
+      expect(candidateEnv.windowedRejectCount).toBe(80);
+      expect(candidateEnv.avgRejectPerFire).toBe(4);
+    });
   });
 
   it('candidateEnv — candidateDistance와 완전히 독립된 누적', () => {

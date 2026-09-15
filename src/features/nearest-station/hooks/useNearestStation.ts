@@ -229,6 +229,12 @@ export interface UseNearestStationInputs {
    * 기존 정확도를 그대로 유지해야 한다.
    */
   lockActive?: boolean;
+  /**
+   * #2594 (P1 리뷰 fix) — 이 hook 인스턴스가 재평가 빈도 계측(reevalInstrumentation)의
+   * GPS fix 도착 기록에 기여할지 여부. useFusedNearestStation이 그대로 흘려보낸다 — 자세한
+   * 배경은 useFusedNearestStation.ts의 동명 파라미터 주석 참조. 미전달 시 'primary'.
+   */
+  instrumentationRole?: 'primary' | 'observer';
 }
 
 export function useNearestStation(
@@ -258,6 +264,13 @@ export function useNearestStation(
   // #2514 — "lock 활성이라 저전력 강제 중인가"의 SSOT. throttledRef와 동일 패턴 —
   // startWatch가 호출 시점에 이 ref를 읽어 최우선으로 locked 옵션을 고른다.
   const lockActiveRef = useRef(inputs.lockActive === true);
+  // #2594 (P1 리뷰 fix) — GPS fix 계측(recordGpsFixArrival) 게이팅용 SSOT. watch 콜백 클로저가
+  // 매 fix마다 최신 role을 읽어야 하므로 매 render body에서 갱신한다(watch 재시작 트리거는
+  // 불필요 — throttledRef/lockActiveRef와 달리 watch 옵션 자체에는 영향 없는 순수 계측 플래그).
+  const instrumentationRoleRef = useRef<'primary' | 'observer'>(
+    inputs.instrumentationRole ?? 'primary',
+  );
+  instrumentationRoleRef.current = inputs.instrumentationRole ?? 'primary';
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
   // 진단용 누적 카운터: lastKnown 캐시 fix가 freshness/accuracy 게이트에서 거부된 횟수.
@@ -537,7 +550,13 @@ export function useNearestStation(
           // #2594 (옵션 D) — 계측 전용, 동작 변경 없음. 표시 게이트 통과 여부와 무관하게
           // 이 콜백에 도달한 모든 fix를 기록해야 "실제 CoreLocation/watch 콜백 도착 빈도"를
           // 잰다 — 게이트 통과 fix만 세면 표시 게이트에서 걸러지는 burst를 놓친다.
-          recordGpsFixArrival(Date.now());
+          // #2594 (P1 리뷰 fix) — 'observer' 인스턴스(DebugModal 자체 마운트)는 계측에서 제외.
+          // 제외하지 않으면 HomeScreen(primary)과 DebugModal(observer) 두 watch가 동시에 돌며
+          // gpsFix 카운트가 항상 약 2배로 관측돼 "GPS fix 폭주"로 오독, 위험한 옵션 A/C
+          // (둘 다 #1440에서 롤백 이력)로 결론을 끌 위험이 있었다(리뷰에서 발견).
+          if (instrumentationRoleRef.current !== 'observer') {
+            recordGpsFixArrival(Date.now());
+          }
           if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
             // #1516: setLocationUncertain(true)도 이전 값과 같으면 setState skip.
             // React 자동 bail-out은 hook 단위만 — 84+회/5분 reentry 시 useState reducer 호출
