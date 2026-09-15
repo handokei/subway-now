@@ -3730,23 +3730,34 @@ export interface SyncSkippedFireStats {
  * `working.waypoints.slice(advance.shiftedCount)`로 건너뛰는 station-passed waypoint를
  * 무발사·무계측으로 드롭하던 회귀 fix (2026-09-15 실 라이드 b00dd879, 건대입구/성수 무발사).
  *
- * 호출자(`/boarding-lock/sync`)가 slice 직전 `existing.waypoints.slice(0, advance.shiftedCount)`
- * (드롭될 전체 waypoint, 관측역 자체 포함)를 넘긴다. `kind==='intermediate'`(station-passed)만
- * 처리한다 — transfer/destination은 기존 전용 fire 경로를 그대로 유지(스코프 밖, 이슈 "하지
- * 말 것" 명시).
+ * 호출자(`/boarding-lock/sync`)는 **`advance.shiftedCount > 1`일 때만**(코드리뷰 P1-1) slice
+ * 직전 `existing.waypoints.slice(0, advance.shiftedCount - 1)` — sync 관측역 자신은 제외한,
+ * 그 이전에 건너뛴 waypoint만 — 넘긴다. 관측역 자신은 GPS 근접만으로 "도착 확정"할 수 없어
+ * (`/boarding-lock/sync`는 반경 내 최근접역 + 5s 디바운스로도 트리거되는 약한 신호) 기존
+ * arvlCd 확증 cron 경로에 맡긴다 — 여기서 함께 쏘면 조기 도착 오탐 + 그 dedup stamp가 뒤이은
+ * 정확한 cron 발사를 억제해버린다(정확한 발사를 부정확한 발사로 대체하는 역효과).
  *
- * 사용자가 직접 관측(GPS 확정 sync)해 이 역을 이미 지나쳤음이 확정된 상태이므로 arvlCd
+ * `kind==='intermediate'`(station-passed)만 발사한다 — transfer/destination은 기존 전용 fire
+ * 경로를 그대로 유지(스코프 밖, 이슈 "하지 말 것" 명시)하되, "발사 여부와 무관 전량 계측"
+ * 약속을 지키기 위해 skip 자체는 D1에 남긴다(코드리뷰 P2-7).
+ *
+ * 사용자가 직접 관측(GPS 확정 sync)해 이 역들을 이미 지나쳤음이 확정된 상태이므로 arvlCd
  * 확증 게이트(`fireArvlCdStationPush`의 stale/transfer-destination 게이트)는 적용하지
  * 않는다 — sync 자체가 arvlCd보다 강한 evidence라는 전제는 #2624
  * `isSsotSyncAdvanceMonotonic`과 동일하다. dedup은 기존 경로-무관 공용 마커
  * (`stationPassedFiredKey`, #2571)를 그대로 재사용해 arvlCd/position/vanish-fallback 경로가
  * 이미 이 역을 발사했으면 재발사하지 않는다.
  *
- * 발사 여부와 무관하게 모든 dropped station-passed waypoint를 D1 `trip_events`
- * (kind='cron-fire-attempt', 기존 어휘 재사용)에 outcome별로 남긴다:
+ * 순회는 newest-first(코드리뷰 P1-2) — 관측역에 가장 가까운(가장 최근에 지나친) 역부터
+ * 발사를 시도한다. `SYNC_SKIPPED_STATION_FIRE_CAP` 초과 시 뒤로 밀리는(=버려지는) 쪽은
+ * 그만큼 오래된 역이 된다 — oldest-first였다면 사용자에게 가장 가까운(가장 유의미한) 역이
+ * 버려지는 역효과가 있었다.
+ *
+ * 발사 여부와 무관하게 모든 dropped waypoint를 D1 `trip_events`(kind='cron-fire-attempt',
+ * 기존 어휘 재사용)에 outcome별로 남긴다:
  *   - 'sent'             — push 발사 성공
  *   - 'failed'           — push 발사 실패
- *   - 'skipped-reason'   — 이미 발사된 역(경로-무관 dedup)
+ *   - 'skipped-reason'   — 이미 발사된 역(경로-무관 dedup) 또는 kind!=='intermediate'(스코프 밖)
  *   - 'skipped-by-shift' — `SYNC_SKIPPED_STATION_FIRE_CAP` 초과로 발사 자체를 시도하지 않음
  */
 export async function fireSyncSkippedStationPasses(
@@ -3762,9 +3773,25 @@ export async function fireSyncSkippedStationPasses(
   const stats: SyncSkippedFireStats = { fired: 0, failed: 0, dedupSkipped: 0, capSkipped: 0 };
   if (trip.sleepModeEnabled === true) return stats;
 
-  for (const waypoint of skippedWaypoints) {
-    // transfer/destination kind의 기존 전용 발사 경로는 변경하지 않는다(이슈 "하지 말 것").
-    if (waypoint.kind !== 'intermediate') continue;
+  // 코드리뷰 P1-2 — newest-first. 관측역에 가장 가까운 역부터 cap 예산을 소비해, 초과분이
+  // 발생하면 가장 오래된 역부터 밀려난다(`stats.fired >= CAP` 체크가 이 순서를 그대로 따름).
+  const orderedNewestFirst = [...skippedWaypoints].reverse();
+
+  for (const waypoint of orderedNewestFirst) {
+    // transfer/destination kind의 기존 전용 발사 경로는 변경하지 않는다(이슈 "하지 말 것") —
+    // 단 코드리뷰 P2-7: skip 자체는 계측한다("전량 계측" 약속이 가장 손실 큰 지점에서
+    // 깨지지 않도록).
+    if (waypoint.kind !== 'intermediate') {
+      await recordFireAttempt(
+        env,
+        trip,
+        waypoint,
+        'skipped-reason',
+        now,
+        'sync-skip-non-intermediate',
+      );
+      continue;
+    }
 
     const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
     let alreadyFired = false;
@@ -3816,9 +3843,12 @@ export async function fireSyncSkippedStationPasses(
             tripToken: trip.token,
             sound: soundFields.sound,
             interruptionLevel: soundFields.interruptionLevel,
-            // #2571 — 경로-무관 공용 collapse-id. 같은 역을 다른 경로가 또 쏴도 iOS 알림센터에서
-            // 교체 — 사용자에겐 항상 1개.
-            collapseId: stationNotifCollapseId(trip.token),
+            // 코드리뷰 P1-5 — 역 단위 collapse-id. 이 함수는 한 sync 호출에서 여러 station의
+            // push를 연속 발사할 수 있어(다른 arvlcd/vanish-fallback 경로와 달리 tick당
+            // 1건 보장이 없음) trip 단위 collapse를 쓰면 APNs가 N건을 배너 1개로 collapse하며
+            // 순서 보장이 없어 과거 역명이 살아남을 위험이 있었다. 기존 매역 alert 관례
+            // (`prepareAlarmCollapseId` 등)와 동일하게 station을 명시해 역 단위로 분리한다.
+            collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
             expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
             data: buildSilentPushData(payload),
             contentAvailable: true,

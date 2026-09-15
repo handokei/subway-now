@@ -80,6 +80,7 @@ import { deleteProgress, getProgress, putProgress, type TripProgress } from './p
 import { SeoulArrivalClient } from './seoul';
 import {
   fireSyncSkippedStationPasses,
+  isBoardingLockActive,
   runMidCycleFireOnly,
   runScheduled,
   toSilentPushSsot,
@@ -2322,10 +2323,17 @@ app.post('/boarding-lock/sync', async (c) => {
 
   let working: Trip = existing;
   if (advance.shiftedCount > 0) {
-    // #2625 — slice 직전에 드롭될 station-passed waypoint(관측역 자체 포함)를 보존해 둔다.
-    // multi-shift(shiftedCount>1) 시 아래 slice가 이 waypoint들을 무발사·무계측으로
-    // 소멸시키던 회귀(2026-09-15 실 라이드 b00dd879, 건대입구/성수 무발사) fix.
-    const skippedStationPassed = working.waypoints.slice(0, advance.shiftedCount);
+    // #2625 코드리뷰 P1-1 — sync 관측역 자신(`existing.waypoints[advance.shiftedCount - 1]`)은
+    // 제외하고, 그 *이전에* 건너뛴 station-passed waypoint만 보존한다. `/boarding-lock/sync`는
+    // GPS 반경 근접 + 5s 디바운스로도 트리거되는 약한 신호라, 관측역 자신까지 여기서 쏘면
+    // 단일 hop(shiftedCount===1)마다 조기 도착 오탐이 나가고 그 dedup stamp가 뒤이은 정확한
+    // arvlCd 확증 cron 발사를 억제해버린다(정확한 발사를 부정확한 발사로 대체). 관측역 자신은
+    // 기존 cron 경로에 맡긴다 — `shiftedCount > 1`(즉 이전에 건너뛴 waypoint가 1개 이상)일
+    // 때만 대상이 존재한다. 발사 대상 waypoint는 슬라이스 *이전* `existing.waypoints`에서
+    // 뽑아야 원래 인덱스가 보존돼 `buildStationNotifContent`의 남은 정거장 계산이 정확하다
+    // (코드리뷰 P1-3 — 슬라이스 후 배열을 넘기면 indexOf가 -1이 돼 환승 대신 목적지를 가리킴).
+    const skippedStationPassed =
+      advance.shiftedCount > 1 ? existing.waypoints.slice(0, advance.shiftedCount - 1) : [];
     const remaining = working.waypoints.slice(advance.shiftedCount);
     working = {
       ...working,
@@ -2350,10 +2358,13 @@ app.post('/boarding-lock/sync', async (c) => {
         meta: { shiftedCount: advance.shiftedCount },
       }),
     );
-    // #2625 — 드롭된 station-passed waypoint를 발사+계측. lock 없는(lockless) trip은 매역
-    // 알림 발사 자체가 이 backend 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라
-    // 대상이 없다 — boardingLock 없으면 no-op (maybeMirrorLockSyncProgress와 동일 전제).
-    if (existing.boardingLock) {
+    // #2625 — 관측역 이전에 건너뛴 station-passed waypoint를 발사+계측. 코드리뷰 P1-4 —
+    // `existing.boardingLock` 존재만으로 판단하지 않고 다른 모든 발사 경로와 동일하게
+    // `isBoardingLockActive`(만료 검사 포함)를 강제한다 — 만료된 lock의 stale trainCode로
+    // 발사되는 것을 막는다. lock 비활성(lockless 포함)이면 매역 알림 발사 자체가 이 backend
+    // 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라 대상이 없다 —
+    // `maybeMirrorLockSyncProgress`와 동일 전제.
+    if (skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
       const lock = existing.boardingLock;
       const apnsConfig = {
         keyId: c.env.APNS_KEY_ID,
@@ -2364,19 +2375,30 @@ app.post('/boarding-lock/sync', async (c) => {
       const apnsHosts = { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX };
       const log = (msg: string, meta?: Record<string, unknown>) =>
         console.log(JSON.stringify({ msg, ...meta }));
-      // #2283 리뷰 P2-2 관례 — push 발사도 응답 latency에 얹지 않도록 waitUntil로 스케줄.
+      // #2283 리뷰 P2-2 관례 — archFlag read + push 발사 모두 응답 latency에 얹지 않도록
+      // waitUntil 체인 안에서 수행한다. 코드리뷰 P1-6 — 다른 발사 경로와 동일하게 archFlag를
+      // forward해야 archFlag='on' 시 `boardingLine`이 undefined로 실려 device lockless
+      // opt-out 게이트를 우회하지 않는다.
       scheduleTripEvent(
         c,
-        fireSyncSkippedStationPasses(
-          c.env,
-          working,
-          skippedStationPassed,
-          lock,
-          { apnsConfig, apnsHosts },
-          now,
-          log,
-          () => crypto.randomUUID(),
-        ).then(() => undefined),
+        getArchFlag(c.env.TRIPS)
+          .catch(() => ARCH_FLAG_DEFAULT)
+          .then((archFlag) =>
+            fireSyncSkippedStationPasses(
+              c.env,
+              // 코드리뷰 P1-3 — 슬라이스 이전(pre-slice) trip 스냅샷을 넘긴다. `waypoints`가
+              // 원본 순서를 그대로 유지해야 `buildStationNotifContent`가 건너뛴 waypoint의
+              // 올바른 위치에서 남은 정거장/환승 여부를 계산한다.
+              existing,
+              skippedStationPassed,
+              lock,
+              { apnsConfig, apnsHosts, archFlag },
+              now,
+              log,
+              () => crypto.randomUUID(),
+            ),
+          )
+          .then(() => undefined),
       );
     }
   }

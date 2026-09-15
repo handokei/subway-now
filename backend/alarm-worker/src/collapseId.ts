@@ -58,9 +58,19 @@ function buildCollapseId(prefix: string, tripToken: string, station?: string): s
  */
 export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
 
-/** #2063 — 매역 알림 apns-collapse-id 빌더. */
-export function stationNotifCollapseId(tripToken: string): string {
-  return buildCollapseId(STATION_NOTIF_COLLAPSE_ID_PREFIX, tripToken);
+/**
+ * #2063 — 매역 알림 apns-collapse-id 빌더.
+ *
+ * `station` 생략(기존 arvlcd/vanish-fallback 호출부) 시 trip 단위 collapse를 그대로
+ * 유지한다 — 그 경로들은 cron tick당 최대 1건만 발사하므로 trip 단위 collapse로 충분하다.
+ *
+ * #2625 코드리뷰 P1-5 — `fireSyncSkippedStationPasses`는 한 sync 호출에서 여러 station의
+ * push를 연속 발사할 수 있다. trip 단위 collapse를 공유하면 APNs가 N건을 배너 1개로
+ * collapse하면서 순서 보장이 없어 "살아남는 배너가 과거 역명"일 위험이 있다 — station을
+ * 명시해 역 단위로 collapse를 분리한다.
+ */
+export function stationNotifCollapseId(tripToken: string, station?: string): string {
+  return buildCollapseId(STATION_NOTIF_COLLAPSE_ID_PREFIX, tripToken, station);
 }
 
 /**
