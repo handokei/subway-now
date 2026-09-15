@@ -498,12 +498,21 @@ export function isFallbackAdvanceBlockedByMotion(motion: PositionPoint['motion']
 }
 
 /**
- * trip별 etaMissing 임계 결정. subsurface=true면 늘려 잡고, 그 외엔 기본값.
- * 클라가 매 register POST에 기압계 신호를 동봉하므로 한 trip 내에서 지상→지하 전이 시
- * threshold가 자연 갱신된다(stale 가능 윈도우는 다음 register 까지 ≤ ALARM_TIME_BUCKET_MS).
+ * trip별 etaMissing 임계 결정. environment==='underground'면 늘려 잡고, 그 외엔 기본값.
+ *
+ * #2644 — 입력을 device 기압계(`trip.subsurface`, 2026-09-15 실측상 native 콜백 세션 전체
+ * 0건 = 사실상 사망)에서 stations.json 기반 environment(#2623 `resolveWaypointEnvironment`)로
+ * 교체. 판정 대상은 이 cycle에 실제 eta-missing이 발생한 현재 waypoint 기준 — 호출부
+ * (`handleEtaMissing`)가 그 waypoint를 이미 들고 있고, `resolveWaypointEnvironment`가 같은
+ * 함수 내 다른 분기(:4642 근방)에서도 waypoint 기준으로 호출되는 기존 패턴과 일관된다.
+ * trip 전체 route 순회(모든 남은 waypoint 중 지하역 존재 여부)는 이 cycle에서 실제로
+ * eta-missing이 발생한 역과 무관한 역의 지하 여부로 임계를 완화시킬 수 있어 채택하지 않았다.
+ *
+ * 'hybrid'(mixed)는 underground와 동일시하지 않는다 — `consensusGate.ts`의 기존 관례
+ * (underground와 분리된 더 보수적인 별도 분기, evaluateConsensus 참조)를 따른다.
  */
-export function resolveEtaMissingThreshold(trip: Pick<Trip, 'subsurface'>): number {
-  return trip.subsurface === true
+export function resolveEtaMissingThreshold(environment: EvidenceEnvironment): number {
+  return environment === 'underground'
     ? SUBSURFACE_ETA_MISSING_TOLERANCE
     : MAX_CONSECUTIVE_ETA_MISSING;
 }
@@ -2405,7 +2414,15 @@ function buildStationPassedImminentPayload(
     occupiedLine: waypoint.line,
     // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
     // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-    subsurface: trip.subsurface === true,
+    // #2644 — 입력을 device 기압계(trip.subsurface, 실측상 사망)에서 이 push가 발사되는
+    // waypoint의 stations.json environment(#2623 `deriveWaypointEnvironment`)로 교체.
+    // `resolveWaypointEnvironment` wrapper(lookup-miss 관측)가 아닌 raw 함수를 쓰는 이유:
+    // 이 헬퍼(buildStationPassedImminentPayload)의 일부 호출부(runMidCycleFireOnly,
+    // fireSyncSkippedStationPasses)는 자체 지역 stats 타입(ScheduledStats 아님)만 들고 있어
+    // wrapper가 요구하는 `stats: ScheduledStats`를 줄 수 없다 — lookup-miss 관측은 이미 gate/advance
+    // 판정 경로(:4642 등)에서 매 cycle 별도로 수행되므로 payload flag 산출에서 중복 관측할
+    // 필요가 없다. 'hybrid'는 underground와 동일시하지 않는다(consensusGate.ts 기존 관례).
+    subsurface: deriveWaypointEnvironment(waypoint) === 'underground',
     // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
     // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
     // #2021 (ADR-022) — archFlag=on 시 undefined 로 forward 하여 device 의
@@ -4702,8 +4719,9 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     return;
   }
 
-  // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
-  const threshold = resolveEtaMissingThreshold(trip);
+  // #903 (Seam G) — underground waypoint는 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
+  // #2644 — 입력을 device 기압계(trip.subsurface)에서 현재 waypoint의 stations.json environment로 교체.
+  const threshold = resolveEtaMissingThreshold(resolveWaypointEnvironment(waypoint, stats, log));
   if (nextMissCount >= threshold) {
     // #1663 — Seoul API HTTP error가 이 cron 사이클에 1건이라도 관측됐으면 'seoul-outage'로 구분.
     // trip auto-end 원인이 Seoul API 장애(일시 HTTP error)였다고 판별해 #1425 cooldown을 면제한다.
@@ -6102,7 +6120,9 @@ export async function runLocklessIntermediate(
       occupiedLine: waypoint.line,
       // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
       // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-      subsurface: trip.subsurface === true,
+      // #2644 — 같은 소비처(buildStationPassedImminentPayload :2408)와 동일 근거로 입력을
+      // device 기압계(trip.subsurface)에서 waypoint의 stations.json environment로 교체.
+      subsurface: deriveWaypointEnvironment(waypoint) === 'underground',
       // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
       // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
       tripToken: trip.token,

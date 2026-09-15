@@ -308,12 +308,15 @@ export interface Trip {
    */
   stationPhase?: StationPhaseState;
   /**
-   * #903 (Seam G) — 클라이언트 기압계가 지하 진입을 시사하는가. true면 backend가
-   * consecutiveEtaMissing threshold를 5→10(SUBSURFACE_ETA_MISSING_TOLERANCE)으로 늘려 일시 GPS/arrival
-   * 누락을 더 인내한다. 부재/false면 기존 threshold(MAX_CONSECUTIVE_ETA_MISSING=5) 유지.
+   * #903 (Seam G) — 클라이언트 기압계가 지하 진입을 시사하는가.
    *
-   * 운영 정책: 기압계 신호는 client가 매 register POST에 동봉. 새 POST가 오면 갱신되며,
-   * 한 trip 내에서 지상→지하 전이로 false→true 변동 가능. cron 사이클 사이의 stale은 next register로 자연 정정.
+   * #2644 — 2026-09-15 실측상 device 기압계 native 콜백이 세션 전체 0건(사실상 사망)이라
+   * backend는 더 이상 이 필드로 어떤 판정/분기도 하지 않는다(#2623이 gate/advance environment를,
+   * #2637이 boardingPrompt gate environment를, #2644가 마지막 잔존 소비처였던
+   * `resolveEtaMissingThreshold` 임계 판정과 push payload `subsurface` flag를 모두 stations.json
+   * 기반 waypoint environment로 교체 완료). 이 필드는 이제 device가 보내는 값을 수신·저장하고
+   * D1/덤프로 관측(기압계 회복 여부 모니터링, 향후 재도입 대비)하는 용도로만 남는다 — 필드
+   * 자체는 device 계속 전송 + 관측 가치 때문에 제거하지 않는다.
    */
   subsurface?: boolean;
   /**
