@@ -1238,11 +1238,14 @@ function collectActiveStations(trips: readonly Trip[], now: number): Set<string>
   return stations;
 }
 
-export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
-  const now = deps.now?.() ?? Date.now();
-  const log = deps.log ?? (() => undefined);
-  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
-  const stats: ScheduledStats = {
+/**
+ * #2645 — `ScheduledStats` 빈 초기값 factory. 원래 `runScheduled` 내부 inline literal이었으나,
+ * `/boarding-lock/sync`(index.ts)가 `advanceBoardingLockWaypoint`를 직접 호출하려면 동일 모양의
+ * stats 객체가 필요해 extract-function으로 재사용 가능하게 뽑았다(새 채널이 아니라 기존 초기화
+ * 로직의 재사용).
+ */
+export function createEmptyScheduledStats(now: number): ScheduledStats {
+  return {
     scanned: 0,
     polled: 0,
     pushed: 0,
@@ -1360,6 +1363,13 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #2615 — 아래 main loop에서 lock-active 미확증 trip을 append.
     midCycleSnapshot: [],
   };
+}
+
+export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
+  const now = deps.now?.() ?? Date.now();
+  const log = deps.log ?? (() => undefined);
+  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
+  const stats: ScheduledStats = createEmptyScheduledStats(now);
 
   // #2283 — trip_events 보존 기간(7일) 초과분 cleanup. cron이 60s마다(1440회/일) 도는데 매
   // tick마다 DELETE를 부르면 D1 free plan write quota를 불필요하게 소진한다(#2073 lesson). 시(hour)
@@ -5054,6 +5064,22 @@ export async function estimateBoardingLockArrival(
  * lastLaPushEpoch는 reset 상태(undefined)로 두어 다음 폴링에서 첫 estimate가 들어오면
  * 임계 검사 없이 발사되도록 한다.
  */
+/**
+ * #2645 PR 코드리뷰 (HIGH-2, 2026-09-15) — `advanceBoardingLockWaypoint` 호출 결과 신호.
+ *
+ * 호출자(`/boarding-lock/sync`)가 KV 재읽기 없이 in-place mutate된 trip 객체만으로 다음 단계를
+ * 판단해야 해서 도입 — 재읽기는 같은 요청 안의 colo 캐시가 stale을 반환해 방금 적용한 advance를
+ * 되돌리는 회귀(#864 실패 모드)를 유발할 수 있다.
+ *
+ * - `consumed`: 이 waypoint가 실제로 처리(waypoints에서 제거되거나 trip 자체가 cleanup)됐는지.
+ *   evidence 게이트 blocked거나 gps-far cross-check로 advance 자체가 유예되면 false.
+ * - `tripEnded`: trip이 cleanup(KV에서 삭제)됐는지. destination 도착 또는 waypoints 소진.
+ */
+export interface AdvanceBoardingLockWaypointResult {
+  consumed: boolean;
+  tripEnded: boolean;
+}
+
 export async function advanceBoardingLockWaypoint(
   trip: Trip,
   waypoint: Waypoint,
@@ -5071,7 +5097,7 @@ export async function advanceBoardingLockWaypoint(
   // #2066 (Phase 2-backend) — 취침 알람 visible/companion push 발사용 pushId 발급자.
   // optional — legacy 테스트 호출자는 미전달 시 `crypto.randomUUID` fallback.
   generatePushId: () => string = () => crypto.randomUUID(),
-): Promise<void> {
+): Promise<AdvanceBoardingLockWaypointResult> {
   // ADR-017 T5 (#1558) — SSoT 통합 게이트.
   // evidence 가 제공되면 `advanceTripPosition`이 동의해야만 trip.waypoints / cleanup 이 진행된다.
   // 정지 trip + arvlcd ARRIVED → SSoT motion 게이트(#2)가 blocked('motion-stationary') 반환 →
@@ -5150,7 +5176,7 @@ export async function advanceBoardingLockWaypoint(
           now,
         );
       }
-      return;
+      return { consumed: false, tripEnded: false };
     }
     // P0-1 (#1577) — Site 1 of 6: boarding-lock waypoint advance.
     writeMetric(env, {
@@ -5226,7 +5252,7 @@ export async function advanceBoardingLockWaypoint(
         });
         await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
         await deleteSsot(env.TRIPS, trip.token);
-        return;
+        return { consumed: true, tripEnded: true };
       }
       // trip 보존 — advance 자체를 abort. trip.waypoints 미변동 → 다음 cycle 재평가 진입.
       // anchor stamp(신규 stamp된 경우)를 persist해 다음 cycle이 경과 시간을 정확히 판단하게 한다.
@@ -5237,7 +5263,7 @@ export async function advanceBoardingLockWaypoint(
         kind: waypoint.kind,
         backstopElapsedMs,
       });
-      return;
+      return { consumed: false, tripEnded: false };
     }
   }
 
@@ -5251,12 +5277,13 @@ export async function advanceBoardingLockWaypoint(
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
     });
-    return;
+    return { consumed: true, tripEnded: true };
   }
   // #2323 rework (break #1) — waypoint advance 공통 블록(anchor stamp + hop-end prompt +
   // waypoints slice + LA/putTrip/mirrorProgress)을 lock-independent 헬퍼로 추출.
   // 이 시점 이전(evidence 게이트, destination cleanup)은 lock 활성 경로 전용이라 그대로 유지.
-  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  const { tripEnded } = await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  return { consumed: true, tripEnded };
 }
 
 /**
@@ -5282,7 +5309,7 @@ async function completeWaypointAdvance(
   now: number,
   log: Logger,
   generatePushId: () => string,
-): Promise<void> {
+): Promise<{ tripEnded: boolean }> {
   // #2066 (Phase 2-backend) — 취침 알람 평가. waypoints shift 전이라 trip.waypoints[1]이
   // waypoint(방금 arvlCd 확정된 직전역 후보) 바로 다음 대상(환승/도착 여부 판정용).
   await maybeFireSleepAlarm({
@@ -5486,7 +5513,7 @@ async function completeWaypointAdvance(
     await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
-    return;
+    return { tripEnded: true };
   }
   // stopsRemaining 변동 즉시 LA 발사 — 사용자에게 새 hop 정보를 즉시 노출.
   const nextWaypoint = trip.waypoints[0];
@@ -5503,6 +5530,7 @@ async function completeWaypointAdvance(
   // #705 — shift된 진행분을 progress KV에 +1 누적. 이후 POST /trips race가 trip.waypoints를
   // 다시 wipe해도 progress 기반 slice로 복원된다.
   await mirrorProgress(env.TRIPS, trip, 1);
+  return { tripEnded: false };
 }
 
 /**

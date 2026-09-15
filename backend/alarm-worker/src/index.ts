@@ -78,13 +78,17 @@ import { updateSsotMotion } from './motionState';
 import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
+import { isTransferOrDestination } from './transferDestinationGate';
 import {
+  advanceBoardingLockWaypoint,
+  createEmptyScheduledStats,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   runMidCycleFireOnly,
   runScheduled,
   toSilentPushSsot,
   type MidCycleTripSnapshot,
+  type ScheduledDeps,
 } from './scheduled';
 import {
   MID_CYCLE_MIN_REMAINING_MS,
@@ -205,6 +209,37 @@ function buildLaDeps(env: Env): LiveActivityDeps {
 /** scheduled cycle 통계와 분리된, 단일 HTTP 정리용 throwaway stats. */
 function makeLaStats(): LiveActivityStats {
   return { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
+}
+
+/**
+ * #2653 (SonarCloud MINOR "Log Injection via unsanitized user input", 2026-09-15) —
+ * `console.log(JSON.stringify({ msg, ...meta }))` 패턴이 이 파일에 4곳 중복돼 있었다(각자
+ * 인라인 람다로 재정의). 단일 공용 헬퍼로 추출한다.
+ *
+ * meta 값 중 문자열(예: 요청 본문 유래 `observedStationName`)에서 개행/캐리지리턴만 제거해
+ * log forging(가짜 로그 줄 주입)을 차단한다. `JSON.stringify`가 이미 처리하는 따옴표/이스케이프는
+ * 중복 처리하지 않는다 — 여기서는 stringify 이전 원시 문자열의 제어문자만 정규화한다. 역명에
+ * 쓰이는 한글/괄호/중점 등 정상 문자는 건드리지 않는다(회귀 테스트로 고정).
+ *
+ * `extraContext`는 매 호출에 고정 병합할 필드(예: scheduled 핸들러의 archFlag/killSwitch)가
+ * 있는 호출부용 — 기존 스프레드 순서(`{ msg, ...meta, ...extraContext }`)를 그대로 보존해
+ * 출력 바이트가 기존과 동일하다(호출부 대부분은 extraContext 없이 씀).
+ */
+export function sanitizeLogMeta(meta: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(meta)) {
+    sanitized[key] = typeof value === 'string' ? value.replace(/[\r\n]/g, '') : value;
+  }
+  return sanitized;
+}
+
+export function createJsonLogger(
+  extraContext?: Record<string, unknown>,
+): (msg: string, meta?: Record<string, unknown>) => void {
+  return (msg: string, meta?: Record<string, unknown>) => {
+    const sanitizedMeta = meta === undefined ? undefined : sanitizeLogMeta(meta);
+    console.log(JSON.stringify({ msg, ...sanitizedMeta, ...extraContext }));
+  };
 }
 
 export const app = new Hono<{ Bindings: Env }>();
@@ -2323,50 +2358,21 @@ app.post('/boarding-lock/sync', async (c) => {
   const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
 
   let working: Trip = existing;
+  // #2645 PR 코드리뷰 (코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/LOW-5, 2026-09-15) — 실제로 적용된 hop 수.
+  // `advance.shiftedCount`(요청/관측값)와 다를 수 있다 — drift 가드, 관측역-intermediate defer,
+  // `advanceBoardingLockWaypoint`의 gps-far 유예 등으로 루프가 조기 중단되면 적용치가 더 작다.
+  // 아래 D1 관측 / SSoT write / HTTP 응답 모두 요청값이 아니라 이 실제 적용값을 SSoT로 삼는다.
+  let appliedShiftedCount = 0;
   if (advance.shiftedCount > 0) {
-    // #2625 코드리뷰 P1-1 — sync 관측역 자신(`existing.waypoints[advance.shiftedCount - 1]`)은
-    // 제외하고, 그 *이전에* 건너뛴 station-passed waypoint만 보존한다. `/boarding-lock/sync`는
-    // GPS 반경 근접 + 5s 디바운스로도 트리거되는 약한 신호라, 관측역 자신까지 여기서 쏘면
-    // 단일 hop(shiftedCount===1)마다 조기 도착 오탐이 나가고 그 dedup stamp가 뒤이은 정확한
-    // arvlCd 확증 cron 발사를 억제해버린다(정확한 발사를 부정확한 발사로 대체). 관측역 자신은
-    // 기존 cron 경로에 맡긴다 — `shiftedCount > 1`(즉 이전에 건너뛴 waypoint가 1개 이상)일
-    // 때만 대상이 존재한다. 발사 대상 waypoint는 슬라이스 *이전* `existing.waypoints`에서
-    // 뽑아야 원래 인덱스가 보존돼 `buildStationNotifContent`의 남은 정거장 계산이 정확하다
-    // (코드리뷰 P1-3 — 슬라이스 후 배열을 넘기면 indexOf가 -1이 돼 환승 대신 목적지를 가리킴).
-    const skippedStationPassed =
-      advance.shiftedCount > 1 ? existing.waypoints.slice(0, advance.shiftedCount - 1) : [];
-    const remaining = working.waypoints.slice(advance.shiftedCount);
-    working = {
-      ...working,
-      waypoints: remaining,
-      // 새 waypoint의 첫 push를 보장하기 위해 baseline reset (advanceBoardingLockWaypoint와 동형).
-      lastTrackedArrivalEpoch: undefined,
-      lastLaPushEpoch: undefined,
-      // #900 Seam D — heartbeat 기준점도 함께 reset (baseline 동형).
-      lastLaPushAt: undefined,
-    };
-    // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
-    await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
-    // #2283 — advance 이벤트 관측. 새 head waypoint를 기록해 "언제 어디로 advance했는지" 사후 조회.
-    // #2283 리뷰 P2-2 — waitUntil로 스케줄.
-    const advancedHead = remaining[0];
-    scheduleTripEvent(
-      c,
-      recordTripEvent(c.env.DB, {
-        tokenHash,
-        kind: 'advance',
-        station: advancedHead ? advancedHead.stationName : undefined,
-        meta: { shiftedCount: advance.shiftedCount },
-      }),
-    );
-    // #2625 — 관측역 이전에 건너뛴 station-passed waypoint를 발사+계측. 코드리뷰 P1-4 —
-    // `existing.boardingLock` 존재만으로 판단하지 않고 다른 모든 발사 경로와 동일하게
-    // `isBoardingLockActive`(만료 검사 포함)를 강제한다 — 만료된 lock의 stale trainCode로
-    // 발사되는 것을 막는다. lock 비활성(lockless 포함)이면 매역 알림 발사 자체가 이 backend
-    // 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라 대상이 없다 —
-    // `maybeMirrorLockSyncProgress`와 동일 전제.
-    if (skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
-      const lock = existing.boardingLock;
+    const consumedWaypoints = existing.waypoints.slice(0, advance.shiftedCount);
+    // #2645 — consumed 범위(관측역 자신 포함) 안에 transfer/destination waypoint가 있으면 전용
+    // 경로(아래)로 처리한다. 열차가 이미 환승역을 떠나 arvlCd/positions를 못 잡는 상황에서도
+    // "사용자가 그 역에 있었다"는 이 sync 관측 자체가 독립 확증이기 때문 — cron의
+    // `estimateBoardingLockArrival`이 구조적으로 못 잡는 걸 여기서 잡는다(이슈 #2645 근본 fix).
+    // 그 외(순수 intermediate 소비)는 기존 bulk-slice 경로를 그대로 유지한다.
+    const transferOrDestConsumed = consumedWaypoints.filter(isTransferOrDestination);
+
+    if (transferOrDestConsumed.length > 0) {
       const apnsConfig = {
         keyId: c.env.APNS_KEY_ID,
         teamId: c.env.APNS_TEAM_ID,
@@ -2374,32 +2380,217 @@ app.post('/boarding-lock/sync', async (c) => {
         bundleId: c.env.APNS_BUNDLE_ID,
       };
       const apnsHosts = { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX };
-      const log = (msg: string, meta?: Record<string, unknown>) =>
-        console.log(JSON.stringify({ msg, ...meta }));
-      // #2283 리뷰 P2-2 관례 — archFlag read + push 발사 모두 응답 latency에 얹지 않도록
-      // waitUntil 체인 안에서 수행한다. 코드리뷰 P1-6 — 다른 발사 경로와 동일하게 archFlag를
-      // forward해야 archFlag='on' 시 `boardingLine`이 undefined로 실려 device lockless
-      // opt-out 게이트를 우회하지 않는다.
+      const log = createJsonLogger();
+      const archFlag = await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
+
+      // #2625 — 관측역 이전에 건너뛴 intermediate station-passed waypoint는 기존 경로로 발사.
+      // 이 분기에서는 아래 advanceBoardingLockWaypoint 루프가 trip.waypoints를 순차 전진시키므로
+      // (그 결과에 의존해 이어지는 lock 승격/TTL/SSoT 로직을 진행해야 함) fire-and-forget
+      // (waitUntil)이 아니라 inline으로 await한다 — transfer/destination이 섞이지 않은 순수
+      // intermediate 소비(아래 else 분기)는 기존과 동일하게 waitUntil을 유지.
+      const skippedStationPassed =
+        advance.shiftedCount > 1 ? existing.waypoints.slice(0, advance.shiftedCount - 1) : [];
+      if (skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
+        await fireSyncSkippedStationPasses(
+          c.env,
+          existing,
+          skippedStationPassed,
+          existing.boardingLock,
+          { apnsConfig, apnsHosts, archFlag },
+          now,
+          log,
+          () => crypto.randomUUID(),
+        );
+      }
+
+      // #2645 — transfer/destination waypoint를 `advanceBoardingLockWaypoint`(scheduled.ts)로
+      // 순차 처리한다. cron의 arvlCd-확증 transfer advance와 **동일한 함수** — 환승 alert
+      // (transfer-release push) / 하차 프롬프트(hop-end) / lock 해제(isRealLineChange) / sleep·
+      // prepare 알람 / waypoints 전진을 전부 그 안에서 기존 로직 그대로 재사용한다(새 채널 없음).
+      // evidence를 넘기지 않아(undefined) `advanceTripPosition`의 6단 게이트를 건너뛴다 — 이
+      // sync 관측 자체가 device GPS/WiFi 확증(ground truth)이므로 cron 전용 motion/environment
+      // 합의 게이트를 다시 통과시킬 필요가 없다(기존 legacy-caller 계약과 동일 패턴).
+      // 중간에 끼인 intermediate waypoint(관측역이 아닌 것)는 Phase 1에서 이미 발사됐으므로 여기서는
+      // 재발사 없이 배열에서만 제거한다. 관측역 자신이 intermediate이면(즉 transfer/destination이
+      // 그보다 앞에 있었던 드문 catch-up 케이스) 기존 정책대로 cron에 위임 — 건드리지 않고 멈춘다.
+      const scheduledDeps: ScheduledDeps = {
+        seoul: new SeoulArrivalClient({ apiKey: c.env.SEOUL_API_KEY, host: c.env.SEOUL_API_HOST }),
+        apnsConfig,
+        apnsHosts,
+        archFlag,
+      };
+      // #2645 PR 코드리뷰 HIGH-1 (코드리뷰 확정) — waypoints 배열을 독립 스냅샷으로 clone한다.
+      // `completeWaypointAdvance`(scheduled.ts)는 `trip.waypoints = trip.waypoints.slice(1)`로
+      // 인자를 in-place mutate한다. cursor가 `existing`과 객체 참조를 공유하면(과거 `cursor =
+      // existing`) 이 mutate가 `existing.waypoints`까지 잘라내 이후 SSoT write 블록의
+      // `existing.waypoints[...]` 인덱싱이 밀린 원소(예: 다음 leg의 다른 노선)를 잡는 회귀가
+      // 있었다 — 건대입구(7호선) 환승에서 성수(2호선)로 currentStationLine이 잘못 찍히거나,
+      // 배열이 짧아지면 undefined 인덱싱으로 500까지 가능했다.
+      let cursor: Trip = { ...existing, waypoints: [...existing.waypoints] };
+      let tripEnded = false;
+      try {
+        for (let i = 0; i < consumedWaypoints.length; i++) {
+          const wp = consumedWaypoints[i];
+          const isObserved = i === consumedWaypoints.length - 1;
+          if (cursor.waypoints[0]?.stationName !== wp.stationName) {
+            // 방어적 drift 가드 — KV last-write-wins 하에서 동시 요청이 먼저 이 waypoint를
+            // 처리했을 가능성. 남은 항목은 다음 sync/cron cycle 재평가에 맡기고 멈춘다.
+            break;
+          }
+          if (!isTransferOrDestination(wp)) {
+            if (isObserved) break; // 관측역 자신이 intermediate — 기존 정책대로 cron에 위임.
+            cursor = { ...cursor, waypoints: cursor.waypoints.slice(1) };
+            appliedShiftedCount += 1;
+            continue;
+          }
+          const stats = createEmptyScheduledStats(now);
+          // #2645 PR 코드리뷰 HIGH-2 (코드리뷰 확정) — putTrip 직후 같은 요청 안에서 getTrip으로 재읽기하지
+          // 않는다. 기본 cacheTtl(60s)에 이 요청 앞부분(2336 read)이 이미 colo 캐시를 옛 값으로
+          // 덥혀놨을 수 있어, 재읽기가 stale을 반환하면 이 함수 끝의 무조건 `putTrip(working)`이
+          // 방금 적용한 advance를 되돌리고 이미 release한 lock을 되살린다(push는 이미 나간 뒤라
+          // 사용자는 "해제됐다가 되살아난 옛 trainCode lock"을 갖게 됨, #864 실패 모드).
+          // `advanceBoardingLockWaypoint`는 넘겨받은 trip 객체(cursor)를 in-place mutate하고
+          // 결과를 반환값으로 알려주므로 그 mutate된 cursor 자체를 계속 신뢰한다.
+          const result = await advanceBoardingLockWaypoint(
+            cursor,
+            wp,
+            c.env,
+            scheduledDeps,
+            stats,
+            now,
+            log,
+            undefined,
+            () => crypto.randomUUID(),
+          );
+          if (!result.consumed) break; // gps-far 유예 등 — trip 보존, 더 진행하지 않는다.
+          appliedShiftedCount += 1;
+          if (result.tripEnded) {
+            tripEnded = true;
+            break;
+          }
+        }
+      } catch (e) {
+        // #2645 PR 코드리뷰 MEDIUM-4 (코드리뷰 확정) — 루프 중 실패해도 이미 나간 push(환승 alert/하차
+        // 프롬프트)는 되돌릴 수 없다. 여기서 그대로 throw하면 이후 persist/verify/SSoT 단계를
+        // 전부 건너뛰어 "push는 나갔는데 trip 상태는 진행 전"인 반쪽 상태로 500이 된다 — 지금까지
+        // 실제로 적용된 진행분(appliedShiftedCount, cursor)을 그대로 들고 persist 단계로 넘어간다.
+        log('boarding-lock/sync: transfer/destination advance loop error (partial progress persisted)', {
+          token: existing.token.slice(0, 8),
+          error: String(e),
+          appliedShiftedCount,
+        });
+      }
+
+      if (tripEnded) {
+        if (appliedShiftedCount > 0) {
+          scheduleTripEvent(
+            c,
+            recordTripEvent(c.env.DB, {
+              tokenHash,
+              kind: 'advance',
+              station: undefined,
+              meta: { shiftedCount: appliedShiftedCount },
+            }),
+          );
+        }
+        // destination 도착으로 trip이 종료됨(advanceBoardingLockWaypoint 내부 cleanup) — 이후
+        // lock 승격/TTL refresh/putTrip/SSoT sync-write는 대상 trip이 없어 전부 moot.
+        return c.json({
+          ok: true,
+          advanced: appliedShiftedCount > 0,
+          currentWaypoint: null,
+          nextStation: null,
+        });
+      }
+      working = cursor;
+      // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
+      await maybeMirrorLockSyncProgress(c.env.TRIPS, working, appliedShiftedCount);
+    } else {
+      // 기존 경로 — 순수 intermediate 소비(transfer/destination 없음), 변경 없음. 이 분기는
+      // 드리프트/유예 없이 항상 요청된 전체를 적용한다.
+      appliedShiftedCount = advance.shiftedCount;
+      //
+      // #2625 코드리뷰 P1-1 — sync 관측역 자신(`existing.waypoints[advance.shiftedCount - 1]`)은
+      // 제외하고, 그 *이전에* 건너뛴 station-passed waypoint만 보존한다. `/boarding-lock/sync`는
+      // GPS 반경 근접 + 5s 디바운스로도 트리거되는 약한 신호라, 관측역 자신까지 여기서 쏘면
+      // 단일 hop(shiftedCount===1)마다 조기 도착 오탐이 나가고 그 dedup stamp가 뒤이은 정확한
+      // arvlCd 확증 cron 발사를 억제해버린다(정확한 발사를 부정확한 발사로 대체). 관측역 자신은
+      // 기존 cron 경로에 맡긴다 — `shiftedCount > 1`(즉 이전에 건너뛴 waypoint가 1개 이상)일
+      // 때만 대상이 존재한다. 발사 대상 waypoint는 슬라이스 *이전* `existing.waypoints`에서
+      // 뽑아야 원래 인덱스가 보존돼 `buildStationNotifContent`의 남은 정거장 계산이 정확하다
+      // (코드리뷰 P1-3 — 슬라이스 후 배열을 넘기면 indexOf가 -1이 돼 환승 대신 목적지를 가리킴).
+      const skippedStationPassed =
+        advance.shiftedCount > 1 ? existing.waypoints.slice(0, advance.shiftedCount - 1) : [];
+      const remaining = working.waypoints.slice(advance.shiftedCount);
+      working = {
+        ...working,
+        waypoints: remaining,
+        // 새 waypoint의 첫 push를 보장하기 위해 baseline reset (advanceBoardingLockWaypoint와 동형).
+        lastTrackedArrivalEpoch: undefined,
+        lastLaPushEpoch: undefined,
+        // #900 Seam D — heartbeat 기준점도 함께 reset (baseline 동형).
+        lastLaPushAt: undefined,
+      };
+      // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
+      await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
+      // #2625 — 관측역 이전에 건너뛴 station-passed waypoint를 발사+계측. 코드리뷰 P1-4 —
+      // `existing.boardingLock` 존재만으로 판단하지 않고 다른 모든 발사 경로와 동일하게
+      // `isBoardingLockActive`(만료 검사 포함)를 강제한다 — 만료된 lock의 stale trainCode로
+      // 발사되는 것을 막는다. lock 비활성(lockless 포함)이면 매역 알림 발사 자체가 이 backend
+      // 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라 대상이 없다 —
+      // `maybeMirrorLockSyncProgress`와 동일 전제.
+      if (skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
+        const lock = existing.boardingLock;
+        const apnsConfig = {
+          keyId: c.env.APNS_KEY_ID,
+          teamId: c.env.APNS_TEAM_ID,
+          privateKeyPem: c.env.APNS_PRIVATE_KEY,
+          bundleId: c.env.APNS_BUNDLE_ID,
+        };
+        const apnsHosts = { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX };
+        const log = createJsonLogger();
+        // #2283 리뷰 P2-2 관례 — archFlag read + push 발사 모두 응답 latency에 얹지 않도록
+        // waitUntil 체인 안에서 수행한다. 코드리뷰 P1-6 — 다른 발사 경로와 동일하게 archFlag를
+        // forward해야 archFlag='on' 시 `boardingLine`이 undefined로 실려 device lockless
+        // opt-out 게이트를 우회하지 않는다.
+        scheduleTripEvent(
+          c,
+          getArchFlag(c.env.TRIPS)
+            .catch(() => ARCH_FLAG_DEFAULT)
+            .then((archFlag) =>
+              fireSyncSkippedStationPasses(
+                c.env,
+                // 코드리뷰 P1-3 — 슬라이스 이전(pre-slice) trip 스냅샷을 넘긴다. `waypoints`가
+                // 원본 순서를 그대로 유지해야 `buildStationNotifContent`가 건너뛴 waypoint의
+                // 올바른 위치에서 남은 정거장/환승 여부를 계산한다.
+                existing,
+                skippedStationPassed,
+                lock,
+                { apnsConfig, apnsHosts, archFlag },
+                now,
+                log,
+                () => crypto.randomUUID(),
+              ),
+            )
+            .then(() => undefined),
+        );
+      }
+    }
+
+    // #2645 PR 코드리뷰 LOW-5 (코드리뷰 확정) — D1 'advance' 이벤트를 요청값이 아니라 실제 적용값으로
+    // 기록한다(위 두 분기 공통 지점). 조기 종료(드리프트 가드/관측역-intermediate defer/gps-far
+    // 유예)로 `appliedShiftedCount < advance.shiftedCount`면 이 시점의 `working.waypoints[0]`이
+    // 실제 도달한 head다.
+    if (appliedShiftedCount > 0) {
+      const advancedHead = working.waypoints[0];
       scheduleTripEvent(
         c,
-        getArchFlag(c.env.TRIPS)
-          .catch(() => ARCH_FLAG_DEFAULT)
-          .then((archFlag) =>
-            fireSyncSkippedStationPasses(
-              c.env,
-              // 코드리뷰 P1-3 — 슬라이스 이전(pre-slice) trip 스냅샷을 넘긴다. `waypoints`가
-              // 원본 순서를 그대로 유지해야 `buildStationNotifContent`가 건너뛴 waypoint의
-              // 올바른 위치에서 남은 정거장/환승 여부를 계산한다.
-              existing,
-              skippedStationPassed,
-              lock,
-              { apnsConfig, apnsHosts, archFlag },
-              now,
-              log,
-              () => crypto.randomUUID(),
-            ),
-          )
-          .then(() => undefined),
+        recordTripEvent(c.env.DB, {
+          tokenHash,
+          kind: 'advance',
+          station: advancedHead ? advancedHead.stationName : undefined,
+          meta: { shiftedCount: appliedShiftedCount },
+        }),
       );
     }
   }
@@ -2489,32 +2680,36 @@ app.post('/boarding-lock/sync', async (c) => {
   // advanceTripPosition.ts 상단 주석("last write wins" 허용)과 동일하게 이 PR 스코프에서도
   // 유지한다 — 완전 원자화(Durable Object 등)는 별도 이슈로 분리 검토.
   // cacheTtl은 KV 런타임 floor(CRON_READ_CACHE_TTL_SEC=30s) 명시 — assertKvCacheTtl 규약 준수.
-  if (advance.shiftedCount > 0) {
+  //
+  // #2645 PR 코드리뷰 MEDIUM-3 (코드리뷰 확정) — `advance.shiftedCount`(요청값)이 아니라 `appliedShiftedCount`
+  // (실제 적용값)로 게이트한다. destination sync가 series stale로 advance가 중단됐는데(trip은
+  // 보존) SSoT만 목적지로 점프하던 발산(#2624가 고친 것과 동형 회귀)을 차단한다.
+  if (appliedShiftedCount > 0) {
     const freshSsot = await readSsot(c.env.TRIPS, payload.token, {
       cacheTtl: CRON_READ_CACHE_TTL_SEC,
     });
-    // 코드리뷰 반영(P1-4b) — 이미 같은 station이면(다른 경로가 더 강한 evidence로 먼저 그
-    // station에 도달시켰을 수 있음) no-op. 'device-sync'로 lastAdvanceEvidence를 덮어써
-    // 더 강한 evidence(예: 'arvlcd-confirmed-train')를 약화시키지 않는다.
-    if (freshSsot && freshSsot.currentStationId !== payload.observedStationName) {
+    // #2645 PR 코드리뷰 HIGH-1 (코드리뷰 확정) — `existing.waypoints`는 위 루프에서 더 이상 mutate되지
+    // 않는다(cursor가 독립 clone) — 여기서 그대로 원본 순서로 인덱싱해도 안전하다.
+    // advance.shiftedCount = idx+1이므로 observedStationName은 existing.waypoints[idx]와
+    // 항상 일치(computeLockSyncAdvance가 findIndex로 idx를 산출했으므로 배열 범위 내 보장,
+    // Waypoint.line은 required 필드) — 단, `appliedShiftedCount`가 요청값보다 작을 수 있으므로
+    // (조기 중단) 실제로 도달한 마지막 waypoint는 `appliedShiftedCount - 1` 인덱스다.
+    const matchedWaypoint = existing.waypoints[appliedShiftedCount - 1];
+    if (freshSsot && matchedWaypoint && freshSsot.currentStationId !== matchedWaypoint.stationName) {
       if (
         isSsotSyncAdvanceMonotonic(
           existing.waypoints,
           freshSsot.currentStationId,
-          payload.observedStationName,
+          matchedWaypoint.stationName,
         )
       ) {
-        // advance.shiftedCount = idx+1이므로 observedStationName은 existing.waypoints[idx]와
-        // 항상 일치(computeLockSyncAdvance가 findIndex로 idx를 산출했으므로 배열 범위 내 보장,
-        // Waypoint.line은 required 필드) — matchedWaypoint/line 둘 다 non-null이 보장된다.
-        const matchedWaypoint = existing.waypoints[advance.shiftedCount - 1];
         // 코드리뷰 반영(P1-3) — advanceTripPosition.ts:564와 동형: advance 시 "이전"
-        // currentStationId를 passedStations에 stamp. catch-up(shiftedCount>1) 시에는 그 사이
-        // 건너뛴 중간 waypoint(index 0..shiftedCount-2)도 함께 passed로 확정한다 —
+        // currentStationId를 passedStations에 stamp. catch-up(appliedShiftedCount>1) 시에는 그
+        // 사이 건너뛴 중간 waypoint(index 0..appliedShiftedCount-2)도 함께 passed로 확정한다 —
         // ssotFireGate의 gate-station-already-passed / trip_metrics origin 소비부가 스킵된
         // 중간역을 놓치지 않도록.
         const skippedIntermediate = existing.waypoints
-          .slice(0, advance.shiftedCount - 1)
+          .slice(0, appliedShiftedCount - 1)
           .map((w) => w.stationName);
         let passedStations = freshSsot.passedStations;
         for (const stationName of [freshSsot.currentStationId, ...skippedIntermediate]) {
@@ -2524,7 +2719,11 @@ app.post('/boarding-lock/sync', async (c) => {
           c.env.TRIPS,
           {
             ...freshSsot,
-            currentStationId: payload.observedStationName,
+            // #2645 PR 코드리뷰 MEDIUM-3 — 요청 payload의 observedStationName이 아니라 실제로 적용된
+            // matchedWaypoint.stationName을 SSoT에 기록한다. 전체 적용(appliedShiftedCount ===
+            // advance.shiftedCount) 시에는 둘이 항상 동일(computeLockSyncAdvance가 매칭한 바로
+            // 그 station)하지만, 조기 중단 시에는 관측값과 실제 도달점이 달라질 수 있다.
+            currentStationId: matchedWaypoint.stationName,
             currentStationLine: matchedWaypoint.line,
             passedStations,
             // 코드리뷰 반영(P1-4a) — device 관측 시각(payload.observedAtMs)은 클록 skew에
@@ -2555,7 +2754,8 @@ app.post('/boarding-lock/sync', async (c) => {
   // 않으므로 함께 제거 — 없는 채널을 있다고 관측하는 오탐 신호를 막는다.
   return c.json({
     ok: true,
-    advanced: advance.shiftedCount > 0,
+    // #2645 PR 코드리뷰 MEDIUM-3 — 요청값(advance.shiftedCount)이 아니라 실제 적용값.
+    advanced: appliedShiftedCount > 0,
     currentWaypoint: head ? head.stationName : null,
     nextStation: head ? head.stationName : null,
   });
@@ -2941,7 +3141,7 @@ app.delete('/trips/:token', async (c) => {
     buildLaDeps(c.env),
     makeLaStats(),
     Date.now(),
-    (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
+    createJsonLogger(),
     { metricsReason },
   );
   return c.json({ ok: true, deleted: true });
@@ -3427,8 +3627,7 @@ export const handler = {
     const killSwitchLocklessIntermediate = await getKillSwitch(env.TRIPS, 'lockless_intermediate')
       .then((value) => value === 'true')
       .catch(() => KILL_SWITCH_DEFAULT === 'true');
-    const log = (msg: string, meta?: Record<string, unknown>) =>
-      console.log(JSON.stringify({ msg, ...meta, archFlag, killSwitchLocklessIntermediate }));
+    const log = createJsonLogger({ archFlag, killSwitchLocklessIntermediate });
 
     let scheduledStats: Awaited<ReturnType<typeof runScheduled>>;
     try {

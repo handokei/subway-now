@@ -4059,7 +4059,12 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(stored.waypoints).toHaveLength(3);
   });
 
-  it('마지막 waypoint(destination) 일치 → 전체 소진 + currentWaypoint=null', async () => {
+  it('마지막 waypoint(destination) 일치 → advanceBoardingLockWaypoint로 즉시 cleanup(#2645)', async () => {
+    // #2645 — destination waypoint를 관측역이 직접 가리키면 이제
+    // `advanceBoardingLockWaypoint`(scheduled.ts, cron의 arvlCd-확증 destination 도착과 동일
+    // 함수)로 즉시 처리한다. 종전엔 waypoints만 `[]`로 비우고 실제 종료(trip-ended push/delete)는
+    // 다음 cron tick(`trip.waypoints.length===0` 분기)에 맡겼으나, 이제 sync 관측 시점에 바로
+    // cleanup되므로 trip 자체가 KV에서 사라진다 — cron 지연 없이 더 정확해진 것이지 회귀가 아니다.
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);
     const res = await post(
@@ -4076,8 +4081,8 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(body.advanced).toBe(true);
     expect(body.currentWaypoint).toBeNull();
     expect(body.nextStation).toBeNull();
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
-    expect(stored.waypoints).toEqual([]);
+    const stored = await env.TRIPS.get('trip:tok-sync');
+    expect(stored).toBeNull();
   });
 
   it('boardingLock TTL refresh — expiresAt이 now+30min 이상으로 연장', async () => {
