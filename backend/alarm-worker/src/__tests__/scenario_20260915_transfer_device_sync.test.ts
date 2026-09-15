@@ -24,7 +24,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import app from '../index';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { isBoardingLockActive } from '../scheduled';
+import { appendPositionPoint } from '../positionSeries';
 import { getTrip, putTrip } from '../trips';
+import { readSsot, seedSsot } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -264,5 +266,316 @@ describe('#2645 환승역 하차 확정 — /boarding-lock/sync가 slice하는 �
     const after = await getTrip(kv as unknown as KVNamespace, trip.token);
     expect(after?.waypoints[0]?.stationName).toBe('군자(능동)');
     expect(isBoardingLockActive(after as Trip, NOW)).toBe(true);
+  });
+});
+
+/**
+ * PR #2649 재설계본 코드리뷰(2026-09-15) HIGH-1/HIGH-2/MEDIUM-3/MEDIUM-4/LOW-5 red→green.
+ *
+ * HIGH-1(aliasing): `completeWaypointAdvance`가 `trip.waypoints = trip.waypoints.slice(1)`로
+ * 인자를 in-place mutate한다. 루프가 `cursor = existing`으로 시작하면 이 mutate가
+ * `existing.waypoints`까지 잘라내, 이후 SSoT write 블록의 `existing.waypoints[...]` 인덱싱이
+ * 밀린 원소를 잡는다 — flagship 테스트(군자→건대입구, index 0이 intermediate)는 첫 waypoint가
+ * intermediate라 그 pop이 이미 `cursor`를 새 객체로 재할당해 이 경로를 타지 않아 미검출이었다.
+ * 여기서는 ①observed waypoint 자체가 배열의 첫 원소인 케이스, ②`shiftedCount > 1`이며 앞쪽
+ * waypoint가 transfer인 케이스를 각각 직접 겨냥한다.
+ *
+ * HIGH-2(stale-read rollback): `advanceBoardingLockWaypoint`가 putTrip한 직후 핸들러가 같은
+ * 요청 안에서 getTrip으로 재읽기하면, colo 캐시가 stale을 반환할 때 끝의 무조건 putTrip이
+ * advance를 되돌리고 해제된 lock을 되살릴 수 있다. trip key의 "옵션 없는"(getTrip(kv, token)
+ * 시그니처, 재읽기가 썼던 것과 동일) GET 호출이 최초 1회를 넘으면 고의로 stale(동기화 이전)
+ * 스냅샷을 반환하는 KV 더블로 이 경로 자체가 사라졌는지 검증한다.
+ */
+describe('PR #2649 코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/MEDIUM-4/LOW-5 (2026-09-15)', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('HIGH-1 케이스① observed waypoint가 배열의 첫 원소(index 0)인 transfer — SSoT currentStationLine이 훼손되지 않는다', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const trip = makeTrip({
+      token: 'hi1-case1-tok',
+      waypoints: [
+        { stationName: '건대입구', line: '7', kind: 'transfer' },
+        { stationName: '성수', line: '2', kind: 'intermediate' },
+        { stationName: '뚝섬', line: '2', kind: 'destination' },
+      ],
+      boardingLock: makeLock({ line: '7', segmentStations: ['어린이대공원(세종대)', '건대입구'] }),
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // SSoT write 블록을 실제로 태우기 위해 사전 seed(핸들러는 SSoT가 이미 있을 때만 갱신한다).
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '어린이대공원(세종대)', {
+      expiresAt: trip.expiresAt,
+      line: '7',
+    });
+
+    const res = await app.fetch(
+      syncRequest({ token: trip.token, observedStationName: '건대입구', observedAtMs: NOW, accuracy: 20 }),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean; currentWaypoint: string | null };
+    expect(body.advanced).toBe(true);
+    expect(body.currentWaypoint).toBe('성수');
+
+    // aliasing 버그였다면 `existing.waypoints`가 밀려 성수(line '2')가 currentStationLine에
+    // 찍혔을 것 — 실제로는 건대입구 자신의 line('7')이어야 한다.
+    const ssot = await readSsot(kv as unknown as KVNamespace, trip.token, { cacheTtl: 30 });
+    expect(ssot?.currentStationId).toBe('건대입구');
+    expect(ssot?.currentStationLine).toBe('7');
+    // 관측역 자신이 passedStations에 오염되지 않아야 한다(device Gate B 억제 위험 방지).
+    expect(ssot?.passedStations).not.toContain('건대입구');
+  });
+
+  it('HIGH-1 케이스② shiftedCount>1 + 앞쪽에 transfer가 있는 케이스 — matchedWaypoint가 undefined로 밀리지 않는다(500 방지)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    // 연속 환승 2회: 왕십리(2호선→5호선 환승) → 건대입구(5호선→다른 노선 환승, 관측역) → 까치산(intermediate).
+    // consumedWaypoints = [왕십리(transfer), 건대입구(transfer)] — 둘 다 transfer라 루프가 둘 다
+    // advanceBoardingLockWaypoint로 처리하고, aliasing 버그가 있었다면 existing.waypoints가
+    // 두 번 잘려나가 길이 1(까치산만 남음)이 되어 existing.waypoints[shiftedCount-1](index 1)이
+    // undefined였을 것이다.
+    const trip = makeTrip({
+      token: 'hi1-case2-tok',
+      waypoints: [
+        { stationName: '왕십리', line: '2', kind: 'transfer' },
+        { stationName: '건대입구', line: '5', kind: 'transfer' },
+        { stationName: '까치산', line: '3', kind: 'intermediate' },
+      ],
+      boardingLock: makeLock({
+        trainCode: 'X1',
+        line: '2',
+        segmentStations: ['성수', '왕십리'],
+      }),
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', {
+      expiresAt: trip.expiresAt,
+      line: '2',
+    });
+
+    const res = await app.fetch(
+      syncRequest({ token: trip.token, observedStationName: '건대입구', observedAtMs: NOW, accuracy: 20 }),
+      env,
+    );
+
+    // aliasing 버그였다면 `existing.waypoints[advance.shiftedCount - 1]`이 undefined가 되어
+    // `.line` 접근에서 500이 났을 것 — 여기서는 정상 200을 기대한다.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean; currentWaypoint: string | null };
+    // 둘 다 transfer라 드리프트/유예 없이 순서대로 모두 적용 — shiftedCount(2) 전부 적용.
+    expect(body.advanced).toBe(true);
+    expect(body.currentWaypoint).toBe('까치산');
+
+    const after = await getTrip(kv as unknown as KVNamespace, trip.token);
+    expect(after?.waypoints[0]?.stationName).toBe('까치산');
+    // 왕십리(2→5 실 노선변경) 처리 시 lock 해제됐고, 이후 건대입구 처리 시 lock이 이미 없으므로
+    // 추가 release 없이 그대로 undefined 유지.
+    expect(after?.boardingLock).toBeUndefined();
+
+    // matchedWaypoint가 정확히 건대입구(방금 적용된 마지막 waypoint)를 가리켜야 한다 — line은
+    // 건대입구 자신의 '5'(성수의 '2'나 까치산의 '3'으로 밀리면 안 됨).
+    const ssot = await readSsot(kv as unknown as KVNamespace, trip.token, { cacheTtl: 30 });
+    expect(ssot?.currentStationId).toBe('건대입구');
+    expect(ssot?.currentStationLine).toBe('5');
+  });
+
+  it('HIGH-2: putTrip 직후 같은 요청 안에서 getTrip 재읽기가 없다 — stale colo 캐시가 advance를 되돌리지 못한다', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const trip = makeTrip(); // 군자(intermediate) → 건대입구(transfer) → 성수 → 뚝섬, lock=7035(7호선)
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    // trip key에 대한 "옵션 없는" GET(=재읽기가 썼던 것과 동일한 시그니처, `getTrip(kv, token)`)이
+    // 최초 1회를 넘으면 sync 이전 스냅샷(stale)을 반환하도록 고의로 오염시킨다.
+    // `verifyBoardingLockPersisted`는 항상 `{cacheTtl: 30}`을 명시하므로 이 오염과 무관 — 정상
+    // 검증은 그대로 통과한다.
+    const tripKey = `trip:${trip.token}`;
+    const staleSnapshot = JSON.stringify(trip);
+    let noOptionsGetCount = 0;
+    const originalGet = kv.get.bind(kv);
+    kv.get = (async (key: string, options?: { cacheTtl?: number }) => {
+      if (key === tripKey && options === undefined) {
+        noOptionsGetCount += 1;
+        if (noOptionsGetCount > 1) {
+          return staleSnapshot;
+        }
+      }
+      return originalGet(key, options);
+    }) as typeof kv.get;
+
+    const res = await app.fetch(
+      syncRequest({ token: trip.token, observedStationName: '건대입구', observedAtMs: NOW, accuracy: 20 }),
+      env,
+    );
+
+    // 요청이 끝난 뒤에는 오염을 해제한다 — 이 시점부터는 테스트 자신의 검증 read이지, 핸들러가
+    // 요청 처리 중 수행하는 read가 아니다(오염 해제 없이는 우리 자신의 assertion read까지
+    // stale을 받아 "고쳤는데도 stale이 보인다"는 오탐이 난다).
+    kv.get = originalGet as typeof kv.get;
+
+    expect(res.status).toBe(200);
+    // 재읽기가 있었다면(HIGH-2 미수정) stale 스냅샷이 `working`을 덮어써 아래 최종 putTrip이
+    // advance를 되돌리고 lock(7035)을 되살렸을 것 — 재읽기가 없으므로 advance가 그대로 유지된다.
+    const after = await getTrip(kv as unknown as KVNamespace, trip.token);
+    expect(after?.waypoints[0]?.stationName).toBe('성수');
+    expect(after?.boardingLock).toBeUndefined();
+    // 최소 1회(최초 read)는 이 시그니처로 호출돼야 정상 — 오염 자체가 트리거된 적 없는지가 아니라
+    // "재읽기가 실제로 일어났다면 그 결과가 최종 상태를 오염시키지 않는지"를 검증하는 테스트다.
+    expect(noOptionsGetCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('MEDIUM-3: gps-far 유예로 advance가 중단되면 SSoT가 목적지로 점프하지 않는다(#2624 발산 재발 방지)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    // 홍대입구(line 2) 목적지, GPS는 약 1.1km 떨어진 합정 좌표(fresh) — evaluateDestinationCrossCheck
+    // 가 'gps-far'를 반환하도록(scheduled.test.ts의 동일 좌표 fixture 재사용, 이미 gps-far 산출이
+    // 검증된 값). backstop(DESTINATION_REACH_BACKSTOP_MS) 미경과라 advance 자체가 유예된다 —
+    // "trip 보존, waypoints 미변동" 분기.
+    const HAPJEONG_LAT = 37.549457;
+    const HAPJEONG_LNG = 126.913808;
+    const trip = makeTrip({
+      token: 'med3-dest-tok',
+      waypoints: [{ stationName: '홍대입구', line: '2', kind: 'destination' }],
+      boardingLock: makeLock({ line: '2', segmentStations: ['합정', '홍대입구'] }),
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+      lat: HAPJEONG_LAT,
+      lng: HAPJEONG_LNG,
+      accuracy: 10,
+      // 핸들러 내부 `now`는 `Date.now()`(실 벽시계)를 쓴다 — payload의 observedAtMs가 아니라.
+      // 신선도 판정(DESTINATION_GPS_STALE_THRESHOLD_MS=5분)이 실 시각 기준이므로 여기도 맞춘다.
+      ts: Date.now() - 30_000,
+      motion: 'automotive',
+    });
+    // SSoT를 목적지가 아닌 이전 역(합정)에 seed — gps-far 유예가 이 값을 목적지로 밀어붙이면
+    // (#2624와 동형의 발산) 아래 assertion이 실패한다.
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '합정', {
+      expiresAt: trip.expiresAt,
+      line: '2',
+    });
+
+    const res = await app.fetch(
+      syncRequest({ token: trip.token, observedStationName: '홍대입구', observedAtMs: NOW, accuracy: 20 }),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean; currentWaypoint: string | null };
+    // MEDIUM-3 핵심 — gps-far 유예로 아무것도 실제 적용되지 않았으므로 advanced=false, waypoints도
+    // 미변동(홍대입구가 여전히 head, null이 아님 — trip이 끝나지도 않았다).
+    expect(body.advanced).toBe(false);
+    expect(body.currentWaypoint).toBe('홍대입구');
+
+    const after = await getTrip(kv as unknown as KVNamespace, trip.token);
+    expect(after).not.toBeNull();
+    expect(after?.waypoints[0]?.stationName).toBe('홍대입구');
+    expect(after?.boardingLock).toBeDefined();
+
+    // SSoT가 목적지(홍대입구)로 점프하지 않고 여전히 합정에 머문다 — appliedShiftedCount=0이라
+    // SSoT write 블록 자체가 게이트에서 스킵됐다는 증거.
+    const ssot = await readSsot(kv as unknown as KVNamespace, trip.token, { cacheTtl: 30 });
+    expect(ssot?.currentStationId).toBe('합정');
+  });
+
+  it('MEDIUM-4: 루프 중간 실패해도 이미 적용된 진행분은 persist된다(반쪽 500 방지)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    // 연속 환승 2회(HIGH-1 케이스②와 동일 구조) — 왕십리 처리가 완전히 끝난 뒤 건대입구 처리
+    // 중간에 KV 오류를 주입한다.
+    const trip = makeTrip({
+      token: 'med4-tok',
+      waypoints: [
+        { stationName: '왕십리', line: '2', kind: 'transfer' },
+        { stationName: '건대입구', line: '5', kind: 'transfer' },
+        { stationName: '까치산', line: '3', kind: 'intermediate' },
+      ],
+      boardingLock: makeLock({ trainCode: 'X1', line: '2', segmentStations: ['성수', '왕십리'] }),
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', {
+      expiresAt: trip.expiresAt,
+      line: '2',
+    });
+
+    // `ssot:<token>` GET은 왕십리 처리 중 2회(lock-release push의 SSoT snapshot + hop-end 프롬프트
+    // 게이트 평가), 건대입구 처리 중 1회(hop-end 프롬프트만, lock은 이미 release됨) 호출된다 —
+    // 3번째 호출(건대입구 처리 중)에서 던져 "첫 waypoint는 이미 완전히 커밋된 뒤" 실패를 재현한다.
+    const ssotKey = `ssot:${trip.token}`;
+    let ssotGetCount = 0;
+    const originalGet = kv.get.bind(kv);
+    kv.get = (async (key: string, options?: { cacheTtl?: number }) => {
+      if (key === ssotKey) {
+        ssotGetCount += 1;
+        if (ssotGetCount === 3) {
+          throw new Error('simulated KV outage mid-loop');
+        }
+      }
+      return originalGet(key, options);
+    }) as typeof kv.get;
+
+    const res = await app.fetch(
+      syncRequest({ token: trip.token, observedStationName: '건대입구', observedAtMs: NOW, accuracy: 20 }),
+      env,
+    );
+
+    // try/catch 없이 그대로 throw했다면 Hono가 이 요청 전체를 500으로 응답했을 것이고, putTrip/
+    // verify/SSoT write 단계를 전부 건너뛰어 "push는 나갔는데 trip 상태는 진행 전"인 반쪽 상태가
+    // 됐을 것이다 — 지금은 지금까지 적용된 진행분(왕십리만)을 들고 정상 200을 반환한다.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean };
+    expect(body.advanced).toBe(true);
+
+    const after = await getTrip(kv as unknown as KVNamespace, trip.token);
+    // 왕십리는 이미 advanceBoardingLockWaypoint 내부에서 완전히 커밋(putTrip)됐다 — lock
+    // release(실 노선변경 2→5)와 waypoints 전진이 최종 persist까지 살아남아야 한다.
+    expect(after?.boardingLock).toBeUndefined();
+    expect(after?.waypoints[0]?.stationName).not.toBe('왕십리');
+    expect(ssotGetCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('LOW-5: D1 advance 이벤트의 shiftedCount가 요청값이 아니라 실제 적용값이다', async () => {
+    const kv = new InMemoryKV();
+    const rows: { kind: string; station: string | null; meta: Record<string, unknown> | null }[] = [];
+    const db = {
+      prepare: () => ({
+        bind: (...args: unknown[]) => {
+          rows.push({
+            kind: args[2] as string,
+            station: (args[3] as string | null) ?? null,
+            meta: args[5] ? (JSON.parse(args[5] as string) as Record<string, unknown>) : null,
+          });
+          return { run: async () => ({ success: true }) };
+        },
+      }),
+    } as unknown as D1Database;
+    const envWithDb: Env = { ...makeEnv(kv), DB: db };
+
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    await app.fetch(
+      syncRequest({ token: trip.token, observedStationName: '건대입구', observedAtMs: NOW, accuracy: 20 }),
+      envWithDb,
+    );
+
+    const advanceEvents = rows.filter((r) => r.kind === 'advance');
+    expect(advanceEvents.length).toBeGreaterThan(0);
+    // 요청(shiftedCount=2, 군자+건대입구)과 실제 적용(2, 둘 다 transfer 경로 없이 하나는
+    // intermediate-skip, 하나는 advanceBoardingLockWaypoint로 온전히 적용)이 일치하는 정상
+    // 케이스 — 이 값이 항상 실제 적용치임을 고정한다(요청값을 그대로 베끼지 않음).
+    const last = advanceEvents[advanceEvents.length - 1];
+    expect(last.meta?.shiftedCount).toBe(2);
+    expect(last.station).toBe('성수');
   });
 });
