@@ -26,7 +26,9 @@
  *                             motion gate를 면제한다(지하 GPS 끊김으로 motion 신호가 고정되는 사각
  *                             차단). false-positive 방어는 #5 train identity + T7
  *                             `evaluateTransferDestinationGate`가 담당.
- *   #3 Environment 게이트  — evaluateConsensusGate 통과 필수 (지하 GPS-only false positive 차단)
+ *   #3 Environment 게이트  — evaluateConsensusGate 통과 필수 (지하 GPS-only false positive 차단).
+ *      #2623 — lock 활성 + `arvlcd-confirmed-train` evidence는 게이트 #2의 lockedTrainArvlcdBypass와
+ *      대칭으로 본 게이트도 면제 (locked trainCode 진행 자체가 environment 신호보다 강한 ground truth).
  *   #4 Evidence type 게이트 — ADR-015 §E4: 'time-only' evidence 절대 거부
  *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train evidence면 trainCode 일치 필수
  *   #6 Lockless arvlcd 단독 게이트 — lock 없는 trip에서 arvlcd-lockless 단독은 60s 윈도우 내
@@ -456,16 +458,22 @@ export async function advanceTripPosition(
     return { result: 'blocked', blockReason: 'motion-stationary', ssot };
   }
 
-  // #3 Environment 게이트
-  const consensusOutcome = evaluateConsensusGate(
-    mapEvidenceEnvironment(evidence.environment),
-    buildSignalsFromEvidence(evidence, {
-      gatePassed: options.gatePassed,
-      lockAttachable: options.lockAttachable,
-    }),
-  );
-  if (!consensusOutcome.pass) {
-    return { result: 'blocked', blockReason: 'env-consensus-fail', ssot };
+  // #3 Environment 게이트 — #2432 게이트 #2 lockedTrainArvlcdBypass와 대칭 우회 (#2623).
+  // lock 활성 + arvlcd-confirmed-train evidence는 그 자체가 "locked trainCode가 실제 이동
+  // 중"이라는 독립 확증이므로(gate #2 주석 동일 근거), device 기압계/GPS 기반 environment
+  // 합의보다 강한 ground truth로 취급해 면제한다. false-positive 방어는 게이트 #5 train
+  // identity(`lock.trainCode` 불일치 시 blocked('train-mismatch'))가 유지.
+  if (!lockedTrainArvlcdBypass) {
+    const consensusOutcome = evaluateConsensusGate(
+      mapEvidenceEnvironment(evidence.environment),
+      buildSignalsFromEvidence(evidence, {
+        gatePassed: options.gatePassed,
+        lockAttachable: options.lockAttachable,
+      }),
+    );
+    if (!consensusOutcome.pass) {
+      return { result: 'blocked', blockReason: 'env-consensus-fail', ssot };
+    }
   }
 
   // #4 Evidence type 게이트 (ADR-015 §E4 — time-only 절대 거부)

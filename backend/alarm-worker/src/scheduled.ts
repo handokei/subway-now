@@ -88,7 +88,7 @@ import {
   readSeries,
   type WindowedMetrics,
 } from './positionSeries';
-import { findStationCoordsByNameAndLine } from './stationsLookup';
+import { deriveWaypointEnvironment, findStationCoordsByNameAndLine } from './stationsLookup';
 import { assertCronCacheTtl } from './kvConsistency';
 import { buildAlarmKey, putPending } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
@@ -3788,7 +3788,9 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       type: 'arvlcd-confirmed-train',
       stationId: waypoint.stationName,
       ts: now,
-      environment: deriveEvidenceEnvironment(trip),
+      // #2623 — 발사/advance 판정 입력을 device 기압계(trip.subsurface)에서 stations.json
+      // environment로 교체. 관측(writeMetric)은 device 신호를 유지(아래 별도 호출).
+      environment: deriveWaypointEnvironment(waypoint),
       arvlcdTrainCode: lock.trainCode,
       arvlCd,
       arcOvershootDetected,
@@ -4417,7 +4419,8 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
           type: 'arvlcd-confirmed-train',
           stationId: waypoint.stationName,
           ts: now,
-          environment: deriveEvidenceEnvironment(trip),
+          // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
+          environment: deriveWaypointEnvironment(waypoint),
           arvlcdTrainCode: activeLock.trainCode,
         },
         generatePushId,
@@ -4677,13 +4680,14 @@ export async function runTrainCodeTracking(
     // #1665 — arvlCd=null (positions-fallback arrived) 경로를 'position-train' evidence로 마이그레이션.
     // positionEntryFetchedAt=now: estimateBoardingLockArrival이 Seoul API를 직접 호출
     // (15s in-memory cache 안)하므로 fresh snapshot. stale 가드는 30s 임계 — false reject 없음.
+    // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
     const arvlCdEvidence: AdvanceEvidence =
       estimate.arvlCd !== null
         ? {
             type: 'arvlcd-confirmed-train',
             stationId: waypoint.stationName,
             ts: now,
-            environment: deriveEvidenceEnvironment(trip),
+            environment: deriveWaypointEnvironment(waypoint),
             arvlcdTrainCode: activeLock.trainCode,
             arvlCd: estimate.arvlCd,
           }
@@ -4691,7 +4695,7 @@ export async function runTrainCodeTracking(
             type: 'position-train',
             stationId: waypoint.stationName,
             ts: now,
-            environment: deriveEvidenceEnvironment(trip),
+            environment: deriveWaypointEnvironment(waypoint),
             positionEntryFetchedAt: now,
           };
     await advanceBoardingLockWaypoint(
@@ -5602,7 +5606,8 @@ async function tryFireConsensusTrainLeg(
       type: 'consensus-train',
       stationId: waypoint.stationName,
       ts: now,
-      environment: deriveEvidenceEnvironment(trip),
+      // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
+      environment: deriveWaypointEnvironment(waypoint),
       arvlcdTrainCode: outcome.record.confirmedTrainCode,
       arvlCd: confirmedEntry.arvlCd,
     },

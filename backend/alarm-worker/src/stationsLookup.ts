@@ -13,8 +13,9 @@
  * Backend가 frontend shared를 import하는 패턴은 [[lesson_backend_imports_frontend_shared]] 참조.
  * tsconfig include로 shared file 직접 컴파일.
  */
+import type { EvidenceEnvironment } from './advanceTripPosition';
 import { findStationByNameAndLine } from '../../../src/shared/utils/stationLookup';
-import type { LineNumber } from './types';
+import type { LineNumber, Waypoint } from './types';
 
 /** Station 좌표 (좌표만 필요한 호출자가 전체 Station 객체에 의존하지 않도록 좁힌 shape). */
 export interface StationCoord {
@@ -39,4 +40,29 @@ export function findStationCoordsByNameAndLine(
   );
   if (station === null) return null;
   return { lat: station.lat, lng: station.lng };
+}
+
+/**
+ * #2623 — waypoint(다음 정차역) → stations.json `environment` 필드 파생.
+ *
+ * 발사/advance 판정(`advanceTripPosition` gate #3 evidence.environment)의 environment 입력을
+ * device 기압계(`trip.subsurface`)가 아닌 역 데이터로 산출한다. `consensusGate.StationEnvironment`
+ * docstring(E1 #1444)이 원래 stations.json 필드를 명시했으나 wire가 device subsurface로 잘못
+ * 연결돼 지하 GPS 사망 상황에서 env=unknown이 GPS 증명을 강제하는 자기모순 회귀(#2623)를 냈다.
+ *
+ * `AdvanceEvidence.environment`(EvidenceEnvironment 어휘)와 타입 정합을 위해 stations.json
+ * `mixed`는 `hybrid`로 매핑 — `mapEvidenceEnvironment`의 역방향 관례(advanceTripPosition.ts:97
+ * 주석)와 동일. 역 lookup 실패 / environment 필드 부재 시 'unknown' fallback (기존 보수 정책 유지).
+ */
+export function deriveWaypointEnvironment(
+  waypoint: Pick<Waypoint, 'stationName' | 'line'>,
+): EvidenceEnvironment {
+  const station = findStationByNameAndLine(
+    waypoint.stationName,
+    waypoint.line as Parameters<typeof findStationByNameAndLine>[1],
+  );
+  const environment = station?.environment;
+  if (environment === 'mixed') return 'hybrid';
+  if (environment === 'surface' || environment === 'underground') return environment;
+  return 'unknown';
 }

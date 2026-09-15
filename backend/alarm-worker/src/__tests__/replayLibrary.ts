@@ -180,13 +180,21 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // cron cycle 수(≤2) 이산화로 바꿔 ms 지터 무관하게 만들면서 이 60,001ms(1 cycle) 간격도
       // 신선 판정 → 건대입구가 이 채널에서도 결정론적으로 발사된다(4역 복원, 이슈 acceptance
       // 1번 항목).
-      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      // #2623 — leg-2(건대입구 환승 후 2호선, lockless `tryFireConsensusTrainLeg` consensus-train
+      // evidence)의 첫 waypoint 성수는 stations.json상 surface 역이다. fix 전에는 environment
+      // 입력이 device 기압계(trip.subsurface, leg-1 지하 구간 내내 uploaded)를 그대로 물려받아
+      // 'unknown'/'underground'로 오분류돼 gate #3(env consensus)이 대부분 차단했다(§3
+      // mixed/unknown 분기는 lockAttachable=false인 이 lockless leg에서 항상 실패) — 실 라이드는
+      // 13:02Z user-delete로 leg-2 도달 전 trip이 끝나 이 차단이 관측되지 않았을 뿐, 재생에서는
+      // fix 후 정확한 environment(surface)로 legConsensus가 이미 confirmed한 열차의 발사가
+      // 정상 복원된다(회귀 아님 — #2623 fix가 의도한 교정).
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구', '성수'],
       // 건대입구는 hop-end-prompt("하차했나요?") 채널로도 재생에서 항상 발사된다(#2600
       // 코드리뷰 항목1 — nextWaypoint 채널과 별개, freshness 게이트 무관하게
       // `maybeFireHopEndPrompt` 자체 dedup만 적용). 같은 역이 두 채널 모두에서 발사되는 것은
       // 정상(#2600 계약) — 위 firedStations와 합산 집계하지 않는다.
       hopEndPromptStations: ['건대입구'],
-      minPushes: 4,
+      minPushes: 5,
     },
   },
   {
@@ -214,9 +222,11 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // #2602 fix 전: 건대입구가 ssot-stale(128,365ms>60,000ms)로 nextWaypoint 채널에서
       // 차단돼 3역만 발사(red). fix 후: freshness가 cron cycle(≤2) 이산화로 바뀌어 128,365ms
       // (2 cycle 이내)도 신선 판정 → 4역 모두 발사(green) — 회귀 앵커.
-      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      // #2623 — 위 desk20260913 entry와 동일 이유(leg-2 성수 surface 오분류→차단 fix). 동일
+      // 경로(makeDesk20260913LockTrip)를 공유하는 이 아침 라이드 fixture도 성수가 복원된다.
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구', '성수'],
       hopEndPromptStations: ['건대입구'],
-      minPushes: 4,
+      minPushes: 5,
     },
   },
 ];
