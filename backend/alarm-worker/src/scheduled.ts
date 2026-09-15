@@ -3190,7 +3190,10 @@ async function recordFireAttempt(
   env: Env,
   trip: Trip,
   waypoint: Waypoint,
-  outcome: 'sent' | 'failed' | 'skipped-reason',
+  // #2625 — 'skipped-by-shift'는 `fireSyncSkippedStationPasses`의 발사 상한
+  // (`SYNC_SKIPPED_STATION_FIRE_CAP`) 초과분 전용 outcome. 기존 kind='cron-fire-attempt'는
+  // 그대로 재사용(신규 kind 남발 금지 — 이슈 spec).
+  outcome: 'sent' | 'failed' | 'skipped-reason' | 'skipped-by-shift',
   now: number,
   reason?: string,
   // #2615 — mid-cycle(t+30 재폴링) 경로의 발사 시도를 production D1에서 구분하기 위한 meta
@@ -3694,6 +3697,176 @@ export async function runMidCycleFireOnly(
     } catch (e) {
       stats.errors += 1;
       log('mid-cycle-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
+    }
+  }
+
+  return stats;
+}
+
+/**
+ * #2625 — 한 sync당 dropped station-passed waypoint 발사 상한. `shiftedCount`는 긴 음영
+ * 구간 재진입 등(catch-up)에서 이론상 클 수 있어, 상한 없이 순회하면 한 sync에서 다수의
+ * push가 한꺼번에 발사되는 storm 위험이 있다. 초과분은 발사 없이 D1 계측만 남긴다.
+ */
+export const SYNC_SKIPPED_STATION_FIRE_CAP = 3;
+
+/** `fireSyncSkippedStationPasses`가 필요로 하는 최소 deps — 전체 `ScheduledDeps` 불필요(`MidCycleFireDeps`와 동형). */
+export interface SyncSkippedFireDeps {
+  apnsConfig: ApnsConfig;
+  apnsHosts: Record<ApnsEnv, string>;
+  fetchImpl?: typeof fetch;
+  archFlag?: ArchFlagValue;
+}
+
+export interface SyncSkippedFireStats {
+  fired: number;
+  failed: number;
+  dedupSkipped: number;
+  capSkipped: number;
+}
+
+/**
+ * #2625 — `/boarding-lock/sync`의 multi-shift advance(`advance.shiftedCount > 1`)가
+ * `working.waypoints.slice(advance.shiftedCount)`로 건너뛰는 station-passed waypoint를
+ * 무발사·무계측으로 드롭하던 회귀 fix (2026-09-15 실 라이드 b00dd879, 건대입구/성수 무발사).
+ *
+ * 호출자(`/boarding-lock/sync`)가 slice 직전 `existing.waypoints.slice(0, advance.shiftedCount)`
+ * (드롭될 전체 waypoint, 관측역 자체 포함)를 넘긴다. `kind==='intermediate'`(station-passed)만
+ * 처리한다 — transfer/destination은 기존 전용 fire 경로를 그대로 유지(스코프 밖, 이슈 "하지
+ * 말 것" 명시).
+ *
+ * 사용자가 직접 관측(GPS 확정 sync)해 이 역을 이미 지나쳤음이 확정된 상태이므로 arvlCd
+ * 확증 게이트(`fireArvlCdStationPush`의 stale/transfer-destination 게이트)는 적용하지
+ * 않는다 — sync 자체가 arvlCd보다 강한 evidence라는 전제는 #2624
+ * `isSsotSyncAdvanceMonotonic`과 동일하다. dedup은 기존 경로-무관 공용 마커
+ * (`stationPassedFiredKey`, #2571)를 그대로 재사용해 arvlCd/position/vanish-fallback 경로가
+ * 이미 이 역을 발사했으면 재발사하지 않는다.
+ *
+ * 발사 여부와 무관하게 모든 dropped station-passed waypoint를 D1 `trip_events`
+ * (kind='cron-fire-attempt', 기존 어휘 재사용)에 outcome별로 남긴다:
+ *   - 'sent'             — push 발사 성공
+ *   - 'failed'           — push 발사 실패
+ *   - 'skipped-reason'   — 이미 발사된 역(경로-무관 dedup)
+ *   - 'skipped-by-shift' — `SYNC_SKIPPED_STATION_FIRE_CAP` 초과로 발사 자체를 시도하지 않음
+ */
+export async function fireSyncSkippedStationPasses(
+  env: Env,
+  trip: Trip,
+  skippedWaypoints: readonly Waypoint[],
+  lock: BoardingLockMeta,
+  deps: SyncSkippedFireDeps,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<SyncSkippedFireStats> {
+  const stats: SyncSkippedFireStats = { fired: 0, failed: 0, dedupSkipped: 0, capSkipped: 0 };
+  if (trip.sleepModeEnabled === true) return stats;
+
+  for (const waypoint of skippedWaypoints) {
+    // transfer/destination kind의 기존 전용 발사 경로는 변경하지 않는다(이슈 "하지 말 것").
+    if (waypoint.kind !== 'intermediate') continue;
+
+    const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
+    let alreadyFired = false;
+    try {
+      alreadyFired = (await env.TRIPS.get(dedupKey)) !== null;
+    } catch {
+      // read 실패는 보수적으로 계속 진행(발사 시도) — runMidCycleFireOnly와 동일 정책.
+    }
+    if (alreadyFired) {
+      stats.dedupSkipped += 1;
+      await recordFireAttempt(
+        env,
+        trip,
+        waypoint,
+        'skipped-reason',
+        now,
+        'sync-station-passed-dedup',
+      );
+      continue;
+    }
+
+    if (stats.fired >= SYNC_SKIPPED_STATION_FIRE_CAP) {
+      stats.capSkipped += 1;
+      await recordFireAttempt(env, trip, waypoint, 'skipped-by-shift', now);
+      continue;
+    }
+
+    try {
+      const pushId = generatePushId();
+      const payload = buildStationPassedImminentPayload({
+        trip,
+        waypoint,
+        lock,
+        pushId,
+        now,
+        origin: 'device-sync',
+        ssot: null,
+        archFlag: deps.archFlag,
+      });
+      const content = buildStationNotifContent(trip, waypoint, trip.locale);
+      const soundFields = stationNotifSoundFields(waypoint.kind);
+      const heal = await sendWithEnvHeal(
+        (host) =>
+          sendAlertPush({
+            deviceToken: resolveTripDeviceToken(trip),
+            title: content.title,
+            body: content.body,
+            pushId,
+            tripToken: trip.token,
+            sound: soundFields.sound,
+            interruptionLevel: soundFields.interruptionLevel,
+            // #2571 — 경로-무관 공용 collapse-id. 같은 역을 다른 경로가 또 쏴도 iOS 알림센터에서
+            // 교체 — 사용자에겐 항상 1개.
+            collapseId: stationNotifCollapseId(trip.token),
+            expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+            data: buildSilentPushData(payload),
+            contentAvailable: true,
+            config: deps.apnsConfig,
+            host,
+            fetchImpl: deps.fetchImpl,
+            now,
+          }),
+        trip.apnsEnv,
+        deps.apnsHosts,
+        log,
+        trip.token.slice(0, 8),
+        { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+      );
+
+      if (!heal.result.ok) {
+        log('sync-skipped-fire: push failed', {
+          status: heal.result.status,
+          reason: heal.result.reason,
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+        });
+        stats.failed += 1;
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
+        continue;
+      }
+
+      stats.fired += 1;
+      log('sync-skipped-fire: station-passed push', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+      });
+      try {
+        await env.TRIPS.put(dedupKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+      } catch (e) {
+        // best-effort 힌트 — 실패해도 correctness는 device collapse-id가 보장.
+        log('sync-skipped-fire: dedup marker put failed (best-effort, swallowed)', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
+      await recordFireAttempt(env, trip, waypoint, 'sent', now);
+    } catch (e) {
+      stats.failed += 1;
+      log('sync-skipped-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
+      await recordFireAttempt(env, trip, waypoint, 'failed', now, String(e));
     }
   }
 

@@ -4377,6 +4377,102 @@ describe('POST /boarding-lock/sync (#901)', () => {
     });
   });
 
+  // #2625 — multi-shift advance가 건너뛴 station-passed waypoint 무발사 드롭 fix. 라우트
+  // 레벨에서 실제로 `fireSyncSkippedStationPasses`가 호출되는지(D1 계측 존재)만 검증한다 —
+  // 발사 성공/실패/dedup/cap 세부 로직은 `scheduled.syncSkippedFire.test.ts` 단위 테스트가 커버.
+  describe('#2625 — 드롭된 station-passed waypoint 발사+계측', () => {
+    function captureEventInserts(): { db: Env['DB']; inserts: unknown[][] } {
+      const inserts: unknown[][] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      }));
+      return { db: { prepare } as unknown as Env['DB'], inserts };
+    }
+
+    it('2칸 shift(건너뛴 강남+역삼) — 두 station-passed 모두 cron-fire-attempt로 계측된다', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await post('/trips', tripWithLock(), env);
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      // scheduleTripEvent가 executionCtx 미제공 시 fire-and-forget으로 degrade — 마이크로태스크
+      // 완료를 기다린다(#2283/#2617 관례).
+      await new Promise((r) => setTimeout(r, 0));
+
+      const fireEvents = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(fireEvents.map((args) => args[3])).toEqual(['강남', '역삼']);
+    });
+
+    it('boardingLock 없는(lockless) trip — 드롭된 waypoint 발사/계측 자체가 없다', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      const tripNoLock = tripWithLock();
+      delete tripNoLock.boardingLock;
+      await post('/trips', tripNoLock, env);
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      await new Promise((r) => setTimeout(r, 0));
+
+      const fireEvents = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(fireEvents).toHaveLength(0);
+    });
+
+    it('경로-무관 dedup 키가 이미 존재하는 역은 재발사 시도 없이 skipped-reason만 계측', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await post('/trips', tripWithLock(), env);
+      const { stationPassedFiredKey } = await import('../scheduled');
+      await env.TRIPS.put(stationPassedFiredKey('tok-sync', 'T-1', '강남'), '1');
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      await new Promise((r) => setTimeout(r, 0));
+
+      const fireEvents = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      const meta = (args: unknown[]) => JSON.parse(args[5] as string) as Record<string, unknown>;
+      const gangnam = fireEvents.find((args) => args[3] === '강남');
+      expect(gangnam).toBeDefined();
+      expect(meta(gangnam!).outcome).toBe('skipped-reason');
+    });
+
+    it('destination(선릉) 일치(전체 소진) — transfer/destination은 건드리지 않아 강남만 계측된다', async () => {
+      const { db, inserts } = captureEventInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await post('/trips', tripWithLock(), env);
+
+      // 강남(intermediate)/역삼(intermediate)/선릉(destination) 전체 소진 — destination kind는
+      // 기존 전용 경로 스코프이므로 본 함수는 intermediate 2건(강남/역삼)만 계측해야 한다.
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '선릉', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      await new Promise((r) => setTimeout(r, 0));
+
+      const fireEvents = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(fireEvents.map((args) => args[3])).toEqual(['강남', '역삼']);
+    });
+  });
+
   // #1364 — read-after-write verification.
   //
   // sync handler가 putTrip 후 cacheTtl=0으로 KV propagation을 확인한다. 정상 path는 1회로
@@ -4444,17 +4540,20 @@ describe('POST /boarding-lock/sync (#901)', () => {
       );
       expect(res.status).toBe(200);
 
-      // #2617 — deviceContact stamp(1건) + sync-received/advance(2건) = 3건 모두 waitUntil에
-      // 넘겨졌는지 확인.
-      expect(ctx.waitUntil).toHaveBeenCalledTimes(3);
+      // #2617 — deviceContact stamp(1건) + sync-received/advance(2건) = 3건.
+      // #2625 — 드롭된 station-passed waypoint('강남', 관측역 자체 포함) 발사+계측이 4번째로
+      // waitUntil에 추가로 스케줄된다(boardingLock 존재 trip).
+      expect(ctx.waitUntil).toHaveBeenCalledTimes(4);
       // waitUntil로 넘긴 프로미스가 실제로 완료되면 각 kind에 대해 D1 INSERT가 실행됐어야 한다.
-      // deviceContact stamp는 KV get/put이라 D1 INSERT 카운트에는 잡히지 않는다(2건 그대로).
+      // deviceContact stamp는 KV get/put이라 D1 INSERT 카운트에는 잡히지 않는다.
       const scheduled = ctx.waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>);
       await Promise.all(scheduled);
       const kinds = prepare.mock.calls
         .map((call) => call[0] as string)
         .filter((sql) => sql.includes('INSERT INTO trip_events'));
-      expect(kinds).toHaveLength(2);
+      // sync-received + advance + cron-fire-attempt(#2625, push는 invalid test PEM으로 실패하지만
+      // outcome='failed'로도 계측은 남는다) = 3건.
+      expect(kinds).toHaveLength(3);
     });
 
     it('executionCtx 미제공(기존 단위 테스트 관례) 시에도 throw 없이 정상 응답한다', async () => {

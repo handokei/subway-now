@@ -79,6 +79,7 @@ import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import {
+  fireSyncSkippedStationPasses,
   runMidCycleFireOnly,
   runScheduled,
   toSilentPushSsot,
@@ -2321,6 +2322,10 @@ app.post('/boarding-lock/sync', async (c) => {
 
   let working: Trip = existing;
   if (advance.shiftedCount > 0) {
+    // #2625 — slice 직전에 드롭될 station-passed waypoint(관측역 자체 포함)를 보존해 둔다.
+    // multi-shift(shiftedCount>1) 시 아래 slice가 이 waypoint들을 무발사·무계측으로
+    // 소멸시키던 회귀(2026-09-15 실 라이드 b00dd879, 건대입구/성수 무발사) fix.
+    const skippedStationPassed = working.waypoints.slice(0, advance.shiftedCount);
     const remaining = working.waypoints.slice(advance.shiftedCount);
     working = {
       ...working,
@@ -2345,6 +2350,35 @@ app.post('/boarding-lock/sync', async (c) => {
         meta: { shiftedCount: advance.shiftedCount },
       }),
     );
+    // #2625 — 드롭된 station-passed waypoint를 발사+계측. lock 없는(lockless) trip은 매역
+    // 알림 발사 자체가 이 backend 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라
+    // 대상이 없다 — boardingLock 없으면 no-op (maybeMirrorLockSyncProgress와 동일 전제).
+    if (existing.boardingLock) {
+      const lock = existing.boardingLock;
+      const apnsConfig = {
+        keyId: c.env.APNS_KEY_ID,
+        teamId: c.env.APNS_TEAM_ID,
+        privateKeyPem: c.env.APNS_PRIVATE_KEY,
+        bundleId: c.env.APNS_BUNDLE_ID,
+      };
+      const apnsHosts = { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX };
+      const log = (msg: string, meta?: Record<string, unknown>) =>
+        console.log(JSON.stringify({ msg, ...meta }));
+      // #2283 리뷰 P2-2 관례 — push 발사도 응답 latency에 얹지 않도록 waitUntil로 스케줄.
+      scheduleTripEvent(
+        c,
+        fireSyncSkippedStationPasses(
+          c.env,
+          working,
+          skippedStationPassed,
+          lock,
+          { apnsConfig, apnsHosts },
+          now,
+          log,
+          () => crypto.randomUUID(),
+        ).then(() => undefined),
+      );
+    }
   }
 
   // #2560 (ADR-038 Phase 2, ROOT fix) — lock 승격. backend가 active boardingLock이 없는데 device가
