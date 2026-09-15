@@ -4785,6 +4785,47 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
   await mirrorProgress(env.TRIPS, trip, 0);
 }
 
+/**
+ * #2645 — 환승/도착 waypoint의 arvlCd/positions 확증 실패("no-arvlcd")를 device sync 관측으로
+ * 구제할지 판정.
+ *
+ * 배경(이슈 #2645 실측 b00dd879): 06:35:30 `/boarding-lock/sync`가 사용자의 건대입구(환승
+ * waypoint) 도착을 이미 확정 — `index.ts`가 SSoT.currentStationId를 그 즉시 advance시킨다(게이트
+ * 미적용, ground truth). 그러나 `runTrainCodeTracking`의 `estimateBoardingLockArrival`은 lock의
+ * trainCode 기준 arvlCd/positions만 보는 독립 트랙이라 이 확증을 전혀 참조하지 않았다 — 열차가
+ * 이미 떠난 뒤라 06:36:58 `no-arvlcd`로 영구 고착, 환승 alert/하차 프롬프트/lock 해제 3종이
+ * 동시에 죽었다.
+ *
+ * 본 함수가 잇는 지점: `runTrainCodeTracking`(scheduled.ts, cron 폴링) → 본 함수가 SSoT를 읽어
+ * → `index.ts` `/boarding-lock/sync`가 그 전에 이미 write한 `currentStationId`/`lastAdvanceEvidence`/
+ * `lastDeviceSyncAt`을 확인. 방향은 단방향 read-only — scheduled.ts가 index.ts의 결과를 읽기만
+ * 하고 SSoT를 다시 쓰지 않는다(그 write는 caller가 기존 `advanceBoardingLockWaypoint` →
+ * `advanceTripPosition` 경로로 별도 수행).
+ *
+ * ADR-015 §E4 — 근거는 "관측 시각"이 아니라 "사용자가 그 station에 있었다는 device 확증"이다.
+ * 조건 3개 모두 필요(AND):
+ *   1. `ssot.currentStationId === waypoint.stationName` — 관측역이 정확히 이 transfer/destination
+ *      waypoint와 일치(오발사 방어 — 다른 역 관측을 이 waypoint에 잘못 적용하지 않음).
+ *   2. `ssot.lastAdvanceEvidence === 'device-sync'` — 그 advance가 실제로 device sync 채널로
+ *      들어왔음(cron arvlCd/position 등 다른 경로가 이미 이 station으로 advance시킨 경우까지
+ *      재확증할 필요 없음 — 그 경로는 이미 정상 발사했을 것).
+ *   3. `!isDeviceSyncStale(ssot, now)` — 5분 이내 신선한 관측만 인정(오래된 sync로 현재 상태를
+ *      추정하지 않음).
+ *
+ * 범위 한정 — 호출부가 `waypoint.kind==='transfer'|'destination'`일 때만 호출한다(일반 매역
+ * arvlCd 확증 요구는 불변).
+ */
+function isWaypointConfirmedByDeviceSync(
+  ssot: TripPositionSSoT | null,
+  waypoint: Waypoint,
+  now: number,
+): boolean {
+  if (ssot === null) return false;
+  if (ssot.currentStationId !== waypoint.stationName) return false;
+  if (ssot.lastAdvanceEvidence !== 'device-sync') return false;
+  return !isDeviceSyncStale(ssot, now);
+}
+
 export async function runTrainCodeTracking(
   trip: Trip,
   waypoint: Waypoint,
@@ -4805,6 +4846,24 @@ export async function runTrainCodeTracking(
       activeLock = swappedLock;
       estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
     }
+  }
+  // #2645 — arvlCd/positions 둘 다 못 잡은(estimate===null) transfer/destination waypoint를
+  // device sync 관측(`/boarding-lock/sync`가 이미 확정한 SSoT.currentStationId)으로 구제.
+  // 일반 intermediate waypoint(매역 알림)는 범위 밖 — arvlCd 확증 요구 불변.
+  let deviceSyncConfirmedArrival = false;
+  if (
+    estimate === null &&
+    (waypoint.kind === 'transfer' || waypoint.kind === 'destination') &&
+    isWaypointConfirmedByDeviceSync(ssot, waypoint, now)
+  ) {
+    deviceSyncConfirmedArrival = true;
+    estimate = { epoch: now, arrived: true, arvlCd: null };
+    log('boarding-lock: transfer/destination confirmed by device-sync (arvlCd/positions unavailable)', {
+      token: trip.token.slice(0, 8),
+      trainCode: activeLock.trainCode,
+      station: waypoint.stationName,
+      kind: waypoint.kind,
+    });
   }
   // ADR-037 D2b (#2535, 진단 계측 only) — leg-2(환승 후) lock의 trainCode 매칭 여부.
   // leg-1(currentLegAnchor 미stamp)은 caller 관심사 밖(#2533/D2가 이미 leg-1 intermediate를 커버).
@@ -4927,6 +4986,13 @@ export async function runTrainCodeTracking(
     // positionEntryFetchedAt=now: estimateBoardingLockArrival이 Seoul API를 직접 호출
     // (15s in-memory cache 안)하므로 fresh snapshot. stale 가드는 30s 임계 — false reject 없음.
     // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
+    // #2645 — deviceSyncConfirmedArrival 경로는 실제로는 Seoul API positions가 아니라
+    // `/boarding-lock/sync`의 device GPS/WiFi 확증에서 온 synthetic arrival(위에서 조립)이므로,
+    // 'position-train'으로 stamp하면 이 evidence가 실제로 Seoul positions에서 왔다고 거짓 진술하는
+    // 셈이 된다(ADR-015 §E4 — evidence는 실제 출처를 정직하게 반영해야 함). 별도 'device-sync'
+    // type으로 stamp해 advanceTripPosition 게이트 #2/#3이 이를 device ground truth로 식별하고
+    // (`deviceSyncEvidenceBypass`), D1/observability에서도 "이 advance가 device sync로 구제됐다"가
+    // 정확히 남는다.
     const arvlCdEvidence: AdvanceEvidence =
       estimate.arvlCd !== null
         ? {
@@ -4937,19 +5003,27 @@ export async function runTrainCodeTracking(
             arvlcdTrainCode: activeLock.trainCode,
             arvlCd: estimate.arvlCd,
           }
-        : {
-            type: 'position-train',
-            stationId: waypoint.stationName,
-            ts: now,
-            environment: resolveWaypointEnvironment(waypoint, stats, log),
-            positionEntryFetchedAt: now,
-            // #2623 (P1-1 리뷰) — 이 evidence는 `estimateBoardingLockArrival`이 이미
-            // `positions.find((p) => p.trainCode === lock.trainCode)`로 activeLock.trainCode와
-            // 매칭한 realtimePosition만 사용한다(호출 시점 확정 사실 — 다른 trainCode의 position은
-            // 애초에 이 분기에 도달하지 않는다). stamp해 gate #5/#3 bypass가 이 identity를
-            // 자체 검증하도록 한다(caller-side 신뢰 단독 의존 대신 defense-in-depth).
-            arvlcdTrainCode: activeLock.trainCode,
-          };
+        : deviceSyncConfirmedArrival
+          ? {
+              type: 'device-sync',
+              stationId: waypoint.stationName,
+              ts: now,
+              environment: resolveWaypointEnvironment(waypoint, stats, log),
+              arvlcdTrainCode: activeLock.trainCode,
+            }
+          : {
+              type: 'position-train',
+              stationId: waypoint.stationName,
+              ts: now,
+              environment: resolveWaypointEnvironment(waypoint, stats, log),
+              positionEntryFetchedAt: now,
+              // #2623 (P1-1 리뷰) — 이 evidence는 `estimateBoardingLockArrival`이 이미
+              // `positions.find((p) => p.trainCode === lock.trainCode)`로 activeLock.trainCode와
+              // 매칭한 realtimePosition만 사용한다(호출 시점 확정 사실 — 다른 trainCode의 position은
+              // 애초에 이 분기에 도달하지 않는다). stamp해 gate #5/#3 bypass가 이 identity를
+              // 자체 검증하도록 한다(caller-side 신뢰 단독 의존 대신 defense-in-depth).
+              arvlcdTrainCode: activeLock.trainCode,
+            };
     await advanceBoardingLockWaypoint(
       trip,
       waypoint,
