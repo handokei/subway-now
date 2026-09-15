@@ -31,6 +31,7 @@ import {
 import { createLogger } from '../../../shared/utils/logger';
 import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
 import { pushGpsDropEntry } from '../utils/gpsDropBuffer';
+import { recordGpsFixArrival } from '../utils/reevalInstrumentation';
 import { haversine } from '../../../shared/utils/haversine';
 import { useStickyStation } from './useStickyStation';
 import { usePolling } from '../../../shared/hooks/usePolling';
@@ -533,6 +534,10 @@ export function useNearestStation(
       subscriptionRef.current = await Location.watchPositionAsync(
         fgWatchOptionsFor(throttledRef.current, lockActiveRef.current),
         (location) => {
+          // #2594 (옵션 D) — 계측 전용, 동작 변경 없음. 표시 게이트 통과 여부와 무관하게
+          // 이 콜백에 도달한 모든 fix를 기록해야 "실제 CoreLocation/watch 콜백 도착 빈도"를
+          // 잰다 — 게이트 통과 fix만 세면 표시 게이트에서 걸러지는 burst를 놓친다.
+          recordGpsFixArrival(Date.now());
           if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
             // #1516: setLocationUncertain(true)도 이전 값과 같으면 setState skip.
             // React 자동 bail-out은 hook 단위만 — 84+회/5분 reentry 시 useState reducer 호출

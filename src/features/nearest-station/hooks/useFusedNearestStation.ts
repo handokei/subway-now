@@ -13,6 +13,12 @@ import {
 } from '../utils/fusionDebugBuffer';
 // #1902 (RC-18) — candidate reject 별 buffer. fusionDebugBuffer 200 cap 점령 자기 파괴 차단.
 import { pushCandidateRejectEntry } from '../utils/candidateRejectBuffer';
+// #2594 (옵션 D) — 재평가 빈도 계측. 동작 변경 없음(관측 전용).
+import {
+  recordCandidateDistanceFire,
+  recordCandidateEnvFire,
+  recordCandidatesRecompute,
+} from '../utils/reevalInstrumentation';
 // #1896 (RC-8) — boarding-lock drift 별 buffer. stuck 시나리오에서 매 cycle push되는 entry가
 // fusionDebugBuffer를 점령하는 self-pollution 차단 (candidateRejectBuffer 패턴 동일).
 import { pushBoardingLockDriftEntry } from '../utils/boardingLockDriftBuffer';
@@ -620,6 +626,9 @@ export function useFusedNearestStation(
   const candidates = useMemo<NearestStationResult[]>(() => {
     if (stationaryBackoffActive) return lastCandidatesRef.current;
     if (!gps.userLocation) return [];
+    // #2594 (옵션 D) — 계측 전용. backoff로 캐시를 재사용하는 분기(위 early return)는
+    // 528역 스캔이 실제로 돌지 않으므로 카운트하지 않는다 — "재평가 횟수"는 실제 재계산만.
+    recordCandidatesRecompute(Date.now());
     const next = findTopNearestStations(
       gps.userLocation.lat,
       gps.userLocation.lng,
@@ -691,6 +700,9 @@ export function useFusedNearestStation(
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
     const out: CandidateTrain[] = [];
+    // #2594 (옵션 D) — 이번 memo 실행(=1회 재평가) 동안 candidate-distance reject된 총 건수.
+    // 발화 종료 시 recordCandidateDistanceFire로 1회만 push — "재평가 1회당 reject 수" 분해용.
+    let candidateDistanceRejectCount = 0;
     // #1616 (R12-a): candidate별 GPS 거리 hard gate. userLocation + line별 station 좌표 lookup을
     // pickCandidateTrains에 전달해 anchor GPS drift 시 잘못된 영역 train 후보 진입을 차단.
     // candidateRejectBuffer로 reject 측정 — DebugModal에서 'reject:candidate-distance' 표시.
@@ -738,6 +750,8 @@ export function useFusedNearestStation(
             info.line,
             (consecutiveRejectByLineRef.current.get(info.line) ?? 0) + 1,
           );
+          // #2594 (옵션 D) — 계측 전용 카운터. 클로저 로컬 변수라 side-effect 없음.
+          candidateDistanceRejectCount += 1;
           // #1902 — candidate-reject 별 buffer로 이전. fusionDebugBuffer 200 cap 보호.
           pushCandidateRejectEntry({
             kind: 'candidate-reject',
@@ -756,6 +770,10 @@ export function useFusedNearestStation(
       }
       out.push(...picked);
     }
+    // #2594 (옵션 D) — memo 실행마다 정확히 1회 push. lps가 전부 null이거나 candidateDistanceGate
+    // 미적용(userLocation/stationCoordinates 없음)이면 rejectCount=0으로 그대로 기록 — "발화는
+    // 있었지만 reject 없었음"도 분포에 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
+    recordCandidateDistanceFire(candidateDistanceRejectCount, Date.now());
     return out;
   }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation, allowedLines]);
 
@@ -1666,8 +1684,11 @@ export function useFusedNearestStation(
   // 평가를 skip해버리면 이 도구가 눈멀게 된다(원 회귀를 다시 잡아낼 방법이 사라짐).
   useEffect(() => {
     if (candidates.length === 0) return;
+    // #2594 (옵션 D) — 이번 effect 실행(=1회 재평가) 동안 env mismatch로 판정된 candidate 수.
+    let candidateEnvRejectCount = 0;
     for (const cand of candidates) {
       if (!isCandidateEnvMismatch(environment, cand)) continue;
+      candidateEnvRejectCount += 1;
       pushCandidateRejectEntry({
         kind: 'candidate-reject',
         ts: Date.now(),
@@ -1678,6 +1699,7 @@ export function useFusedNearestStation(
         candidateEnvironment: cand.station.environment,
       });
     }
+    recordCandidateEnvFire(candidateEnvRejectCount, Date.now());
   }, [candidates, environment]);
 
   // #1936 (Epic #1927 G4) — cascade tier 채택 Sentry breadcrumb. delta-only emit.

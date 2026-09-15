@@ -112,6 +112,15 @@ import {
   subscribeCandidateReject,
   type CandidateRejectEntry,
 } from '../../../features/nearest-station/utils/candidateRejectBuffer';
+// #2594 (옵션 D) — 재평가 빈도 계측(GPS fix 도착 간격, candidates 재계산, candidate-distance/
+// candidate-env 발화 및 발화당 reject 수). ambient module — getBarometerInstrumentation과
+// 동일하게 DebugModal이 직접 polling pull.
+import {
+  getReevalInstrumentationSnapshot,
+  type FireRateSnapshot,
+  type RateSnapshot,
+  type ReevalInstrumentationSnapshot,
+} from '../../../features/nearest-station/utils/reevalInstrumentation';
 // #1896 (RC-8) — boarding-lock drift 전용 buffer. stuck 시나리오 매 cycle push가 fusionDebugBuffer
 // 점령하는 self-pollution 차단 (candidateRejectBuffer 패턴 동일).
 import {
@@ -750,6 +759,12 @@ interface BuildDumpArgs {
    * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출.
    */
   candidateRejectLog?: readonly CandidateRejectEntry[];
+  /**
+   * #2594 (옵션 D) — 재평가 빈도 계측 스냅샷(GPS fix inter-arrival, candidates 재계산,
+   * candidate-distance/candidate-env 발화 및 발화당 reject 수). 미전달 시 dump는
+   * "(not sampled yet)" 한 줄만 출력 — 순수 관측, 동작 변경 없음.
+   */
+  reevalInstrumentation?: ReevalInstrumentationSnapshot | null;
   /**
    * #1898 — RC-12 결함 A 가시화. trip route arcStations 목록. arcStations에서 distinct
    * line sequence를 도출해 dump/UI 양쪽에 trip line context 노출. 미전달 시 (no route).
@@ -1398,6 +1413,60 @@ function buildCandidateRejectLogSection(args: BuildDumpArgs): string[] {
   const entries = args.candidateRejectLog ?? [];
   if (entries.length === 0) return ['(empty)'];
   return [...entries].reverse().map(formatCandidateRejectLine);
+}
+
+/**
+ * #2594 (옵션 D) — rate snapshot 수치 부분만 포맷(label 없이). 표본 2개 미만(avg/min/max/
+ * perSecond 모두 null)이면 "insufficient samples"로 명시 — 0/0 같은 오해 유발 표기를 피한다.
+ * dump 라인(label 접두)과 UI KeyValue(label 별도 렌더)가 이 값을 공유한다.
+ */
+function formatRateSnapshotValue(snap: RateSnapshot): string {
+  if (snap.avgIntervalMs === null) {
+    return `n=${snap.sampleCount} (insufficient samples)`;
+  }
+  return (
+    `n=${snap.sampleCount} avg=${snap.avgIntervalMs.toFixed(0)}ms ` +
+    `min=${snap.minIntervalMs}ms max=${snap.maxIntervalMs}ms rate=${snap.perSecond?.toFixed(2)}/s`
+  );
+}
+
+/** #2594 (옵션 D) — dump 전용: label을 붙인 rate snapshot 한 줄. */
+function formatRateSnapshotLine(label: string, snap: RateSnapshot): string {
+  return `${label}: ${formatRateSnapshotValue(snap)}`;
+}
+
+/**
+ * #2594 (옵션 D) — reject 발화(재평가) rate snapshot 수치 부분만 포맷(label 없이).
+ * rate 부분은 formatRateSnapshotValue와 동일 컬럼을 재사용하고, "발화 1회당 reject 수"
+ * 분해값을 덧붙인다.
+ */
+function formatFireRateSnapshotValue(snap: FireRateSnapshot): string {
+  const avgReject = snap.avgRejectPerFire === null ? '-' : snap.avgRejectPerFire.toFixed(2);
+  return (
+    `${formatRateSnapshotValue(snap)} fires=${snap.fireTotal} rejects=${snap.rejectTotal} ` +
+    `avg/fire=${avgReject}`
+  );
+}
+
+/** #2594 (옵션 D) — dump 전용: label을 붙인 발화 rate snapshot 한 줄. */
+function formatFireRateSnapshotLine(label: string, snap: FireRateSnapshot): string {
+  return `${label}: ${formatFireRateSnapshotValue(snap)}`;
+}
+
+/**
+ * #2594 (옵션 D) — 재평가 빈도 계측 섹션. `reject:candidate-distance ×345/10초` 같은 집계가
+ * "재평가 빈도"(gpsFix/candidatesRecompute rate)와 "재평가당 reject 수"(avg/fire) 중 어느
+ * 쪽이 지배적인지 dump 한 화면에서 판별 가능하게 한다. 동작 변경 없음 — 순수 관측.
+ */
+function buildReevalInstrumentationSection(args: BuildDumpArgs): string[] {
+  const snap = args.reevalInstrumentation;
+  if (snap == null) return ['(not sampled yet)'];
+  return [
+    formatRateSnapshotLine('gpsFix', snap.gpsFix),
+    formatRateSnapshotLine('candidatesRecompute', snap.candidatesRecompute),
+    formatFireRateSnapshotLine('candidateDistance', snap.candidateDistance),
+    formatFireRateSnapshotLine('candidateEnv', snap.candidateEnv),
+  ];
 }
 
 /**
@@ -2050,6 +2119,9 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildCandidateRejectLogSection,
     suffix: (args) => ` (${args.candidateRejectLog?.length ?? 0})`,
   },
+  // #2594 (옵션 D) — 재평가 빈도 계측. Candidate rejects 직후 배치해 같은 화면에서
+  // "reject 집계"와 "그 집계를 만든 재평가 빈도/발화당 reject 수" 분해를 함께 읽을 수 있게 한다.
+  { title: 'Reeval Instrumentation', build: buildReevalInstrumentationSection },
   // #1896 (RC-8) — boarding-lock-drift 별 buffer (GPS displacement gate trigger). fusionDebugBuffer 점령 회귀 차단.
   // #2268 (C2) — buffer age suffix 추가: (0)이 "이벤트 없음"인지 "재기동 증발"인지 구분.
   {
@@ -2360,6 +2432,17 @@ function DebugModalInner({
     // 필요하지만, 여기는 setInterval 자체가 unmount cleanup에서 clearInterval로 끊기므로
     // tick()이 unmount 이후 실행될 경로가 없다 — 불필요한 가드 생략(단순성 우선).
     const tick = () => setBarometerInstrumentation(getBarometerInstrumentation());
+    tick();
+    const id = setInterval(tick, 5_000);
+    return () => clearInterval(id);
+  }, []);
+  // #2594 (옵션 D) — 재평가 빈도 계측 폴링. barometerInstrumentation과 동일 패턴(ambient module
+  // singleton, 5s polling) — record 호출 자체는 setState를 유발하지 않으므로 이 폴링만이
+  // 계측을 렌더에 반영하는 유일한 경로다.
+  const [reevalInstrumentation, setReevalInstrumentation] =
+    useState<ReevalInstrumentationSnapshot | null>(null);
+  useEffect(() => {
+    const tick = () => setReevalInstrumentation(getReevalInstrumentationSnapshot());
     tick();
     const id = setInterval(tick, 5_000);
     return () => clearInterval(id);
@@ -2690,6 +2773,8 @@ function DebugModalInner({
       gpsDropLog: gpsDropLogs,
       // #1902 (RC-18) — candidate-reject entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
       candidateRejectLog: candidateRejectLogs,
+      // #2594 (옵션 D) — 재평가 빈도 계측 스냅샷을 share dump에 포함.
+      reevalInstrumentation,
       // #2049 (#1896 RC-8) — boarding-lock-drift entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
       boardingLockDriftLog,
       // #2152 — BoardingLock lifecycle entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
@@ -2786,6 +2871,8 @@ function DebugModalInner({
     gpsDropLogs,
     // #1902 (RC-18) — candidate-reject entries 변경 시 share 텍스트 자동 갱신.
     candidateRejectLogs,
+    // #2594 (옵션 D) — reevalInstrumentation 폴링 갱신 시 share 텍스트 자동 갱신.
+    reevalInstrumentation,
     // #2049 (#1896 RC-8) — boarding-lock-drift entries 변경 시 share 텍스트 자동 갱신.
     boardingLockDriftLog,
     // #2152 — BoardingLock lifecycle entries 변경 시 share 텍스트 자동 갱신.
@@ -3247,6 +3334,48 @@ function DebugModalInner({
             entryTestId="debug-candidate-reject-log-entry"
             colors={colors}
           />
+
+          {/* #2594 (옵션 D) — 재평가 빈도 계측. "reject ×N/10초" 집계가 재평가 빈도(gpsFix/
+              candidatesRecompute rate) 때문인지, 재평가당 reject 수(avg/fire) 때문인지 분해해
+              보여준다. reevalInstrumentation이 null이면 아직 첫 폴링 tick 전(mount 직후). */}
+          <Section title="Reeval Instrumentation" colors={colors}>
+            <KeyValue
+              label="gpsFix"
+              value={
+                reevalInstrumentation === null
+                  ? '—'
+                  : formatRateSnapshotValue(reevalInstrumentation.gpsFix)
+              }
+              colors={colors}
+            />
+            <KeyValue
+              label="candidatesRecompute"
+              value={
+                reevalInstrumentation === null
+                  ? '—'
+                  : formatRateSnapshotValue(reevalInstrumentation.candidatesRecompute)
+              }
+              colors={colors}
+            />
+            <KeyValue
+              label="candidateDistance"
+              value={
+                reevalInstrumentation === null
+                  ? '—'
+                  : formatFireRateSnapshotValue(reevalInstrumentation.candidateDistance)
+              }
+              colors={colors}
+            />
+            <KeyValue
+              label="candidateEnv"
+              value={
+                reevalInstrumentation === null
+                  ? '—'
+                  : formatFireRateSnapshotValue(reevalInstrumentation.candidateEnv)
+              }
+              colors={colors}
+            />
+          </Section>
 
           {/* #2049 (#1896 RC-8) — boarding-lock-drift 별 buffer. candidate-reject와 동일 표시 패턴. */}
           {/* #2268 (C2) — 헤더에 launch 이후 경과 초를 표시해 (0)이 "이벤트 없음"인지
@@ -4280,6 +4409,12 @@ export const __test__ = {
   // #2541 (obs: whole-chain 관측) — Whole Chain section builder/helper. 단위 테스트에서 직접 검증.
   computeWholeChainLines,
   buildWholeChainSection,
+  // #2594 (옵션 D) — 재평가 빈도 계측 포맷/섹션. 단위 테스트에서 직접 검증.
+  formatRateSnapshotValue,
+  formatRateSnapshotLine,
+  formatFireRateSnapshotValue,
+  formatFireRateSnapshotLine,
+  buildReevalInstrumentationSection,
 };
 
 const styles = StyleSheet.create({
