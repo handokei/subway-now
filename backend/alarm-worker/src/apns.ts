@@ -290,6 +290,7 @@ export type LockReleasedReason = 'transfer' | 'vanish';
  * | `lockless`           | lockless intermediate fire                                  |
  * | `reschedule`         | ETA shift threshold 초과 reschedule push                    |
  * | `alert-fallback`     | 60s ACK 미수신 후 alert push fallback (#1894 30s→60s 완화)  |
+ * | `device-sync`        | #2625 — `/boarding-lock/sync` multi-shift advance가 건너뛴 station-passed 확정 발사 |
  *
  * 새 origin 추가 시 device alarmLog의 expected enum도 함께 갱신해야 한다.
  */
@@ -300,7 +301,8 @@ export type PushOrigin =
   | 'transfer-release'
   | 'lockless'
   | 'reschedule'
-  | 'alert-fallback';
+  | 'alert-fallback'
+  | 'device-sync';
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
   if (jwtCache && jwtCache.expiresAt > now + 60_000) {
