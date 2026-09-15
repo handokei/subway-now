@@ -13,6 +13,12 @@ import {
 } from '../utils/fusionDebugBuffer';
 // #1902 (RC-18) — candidate reject 별 buffer. fusionDebugBuffer 200 cap 점령 자기 파괴 차단.
 import { pushCandidateRejectEntry } from '../utils/candidateRejectBuffer';
+// #2594 (옵션 D) — 재평가 빈도 계측. 동작 변경 없음(관측 전용).
+import {
+  recordCandidateDistanceFire,
+  recordCandidateEnvFire,
+  recordCandidatesRecompute,
+} from '../utils/reevalInstrumentation';
 // #1896 (RC-8) — boarding-lock drift 별 buffer. stuck 시나리오에서 매 cycle push되는 entry가
 // fusionDebugBuffer를 점령하는 self-pollution 차단 (candidateRejectBuffer 패턴 동일).
 import { pushBoardingLockDriftEntry } from '../utils/boardingLockDriftBuffer';
@@ -513,9 +519,26 @@ export function useFusedNearestStation(
    * 호환을 위해 유지 — 향후 BG 전용 게이트로 재도입 시 이 자리를 재사용한다.
    */
   silentPushHealthy?: boolean,
+  /**
+   * #2594 (P1 리뷰 fix) — 이 hook 인스턴스가 재평가 빈도 계측(reevalInstrumentation)에
+   * 기여할지 여부. DebugModal이 표시용으로 자체 `useFusedNearestStation` 인스턴스를 추가
+   * 마운트하는데(HomeScreen의 'primary' 인스턴스와 별개), 계측 카운터가 module-level
+   * singleton이라 태깅 없이는 두 인스턴스의 GPS fix/재평가가 합산되어 모든 계측값이 실제의
+   * 약 2배로 관측되는 회귀가 있었다(리뷰에서 발견) — 하필 "GPS fix 폭주"로 오독되기 쉬운
+   * 방향이라 위험한 fix(옵션 A/C, 둘 다 #1440에서 롤백 이력)로 결론을 끌 수 있었다.
+   *
+   * 'observer'면 이 인스턴스의 record* 호출을 전부 skip — 계측 값은 항상 'primary'
+   * (HomeScreen) 단일 인스턴스 기준으로만 쌓인다. 미전달 시 'primary'(기존 동작,
+   * HomeScreen 호출부는 이 파라미터를 아예 넘기지 않음).
+   */
+  instrumentationRole?: 'primary' | 'observer',
 ): UseFusedNearestStationReturn {
   const barometerSubsurface = barometer?.subsurface;
   const barometerSignal = barometer?.signal;
+  // #2594 (P1 리뷰 fix) — 미전달 시 'primary'. 이 값 자체는 렌더 중 변하지 않는 게 기대
+  // 계약(호출부가 고정 role로 하나의 hook을 지속 사용)이라 ref 없이 매 render 재계산해도
+  // 무해 — useNearestStation에 그대로 흘려 GPS fix 계측도 동일 role로 게이팅한다.
+  const resolvedInstrumentationRole = instrumentationRole ?? 'primary';
   // D6 (#1212) — trip 활성(origin+destination+route 모두 채워진 상태)을 sticky 게이트에 전달.
   // routeContext는 HomeScreen에서 trip 시작 시 채워지고 종료 시 undefined로 돌아간다.
   const tripActive = routeContext != null;
@@ -523,7 +546,12 @@ export function useFusedNearestStation(
   // realtimePosition으로 열차를 GPS-독립적으로 추적하므로 lock 활성 중에는 device GPS 고정밀
   // 추적이 불필요(발열/배터리 절감). lock 활성 전(origin-proximity/boarding-prompt 감지 구간)은
   // boardingLock == null이라 기존 정확도가 그대로 유지된다.
-  const gps = useNearestStation({ barometerSubsurface, tripActive, lockActive: boardingLock != null });
+  const gps = useNearestStation({
+    barometerSubsurface,
+    tripActive,
+    lockActive: boardingLock != null,
+    instrumentationRole: resolvedInstrumentationRole,
+  });
   // #2387 — approachLine(route/lock/legAdvance 권위 line 판정)의 legAdvance 입력. reactive 구독
   // 필수 — getState()는 useMemo 재계산을 트리거하지 않아 store 값이 바뀌어도 ssotGuardResult가
   // stale하게 남는다.
@@ -615,11 +643,24 @@ export function useFusedNearestStation(
   // 직전 candidate enumeration 결과. backoff 활성 중엔 재계산 없이 이 값을 재사용해 참조를
   // 고정 — 하류(activeLines/[candidates,environment] effect)의 불필요 재실행도 함께 차단한다.
   const lastCandidatesRef = useRef<NearestStationResult[]>([]);
+  // #2594 (P5 리뷰 fix) — 아래 memo가 "실제 528역 스캔을 수행한 pass"였는지를 다음 effect에
+  // 전달하는 플래그. backoff 분기/userLocation 없음 분기는 매번 새 배열 참조([]) 또는
+  // ref 참조 전환으로 `candidates`의 identity가 바뀔 수 있어(예: "위치 없음" 빈 배열 →
+  // backoff 빈 배열 ref로 전환), effect deps([candidates]) 참조 변화만으로는 "진짜 재계산"과
+  // "그냥 빈 배열 전환"을 구분할 수 없다 — 이 플래그로 구분한다.
+  const candidatesRecomputedThisPassRef = useRef(false);
 
   // GPS 좌표 → 거리순 후보 N개. 좌표 갱신 시에만 재계산 (정지 backoff 시엔 skip).
   const candidates = useMemo<NearestStationResult[]>(() => {
-    if (stationaryBackoffActive) return lastCandidatesRef.current;
-    if (!gps.userLocation) return [];
+    if (stationaryBackoffActive) {
+      candidatesRecomputedThisPassRef.current = false;
+      return lastCandidatesRef.current;
+    }
+    if (!gps.userLocation) {
+      candidatesRecomputedThisPassRef.current = false;
+      return [];
+    }
+    candidatesRecomputedThisPassRef.current = true;
     const next = findTopNearestStations(
       gps.userLocation.lat,
       gps.userLocation.lng,
@@ -630,6 +671,18 @@ export function useFusedNearestStation(
     lastCandidatesRef.current = next;
     return next;
   }, [gps.userLocation, allowedLines, stationaryBackoffActive]);
+
+  // #2594 (P5 리뷰 fix) — 계측 기록을 useMemo 본문에서 useEffect로 이전. useMemo 콜백은
+  // React가 (StrictMode 이중 호출, 폐기된 렌더 등으로) 값 자체를 커밋하지 않고도 재실행할 수
+  // 있어 memo 본문 안의 record 호출은 "하한만 보장, 상한 보장 없음"이었다(리뷰 지적). 반면
+  // useEffect는 실제로 커밋된 렌더에서만, 그리고 deps 참조가 실제로 바뀔 때만 실행된다.
+  // candidatesRecomputedThisPassRef로 "실제 재계산" pass만 골라 기록 — backoff/no-location
+  // 분기의 빈 배열 참조 전환은 카운트하지 않는다(원래 memo-body 구현과 동일한 카운팅 대상).
+  useEffect(() => {
+    if (resolvedInstrumentationRole === 'observer') return;
+    if (!candidatesRecomputedThisPassRef.current) return;
+    recordCandidatesRecompute(Date.now());
+  }, [candidates, resolvedInstrumentationRole]);
 
   // arrival 폴링: 후보 역명 단위 K=3 고정.
   // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한
@@ -687,10 +740,18 @@ export function useFusedNearestStation(
   // #1748 — candidate-reject 연속 카운트. 같은 noLine 5+ cycle 연속 reject → anchor window 2배 확장.
   // key: LineNumber, value: 연속 reject 횟수. 채택 성공 시 해당 line 카운트 리셋.
   const consecutiveRejectByLineRef = useRef<Map<string, number>>(new Map());
+  // #2594 (P5 리뷰 fix) — 이번 memo pass에서 계산된 candidate-distance reject 건수를 아래
+  // effect로 전달하는 handoff ref. memo 본문에서 직접 record 호출하지 않는 이유는 아래 effect
+  // 주석 참조(React가 memo를 커밋 없이 재실행할 수 있어 "하한만 보장"되는 문제).
+  const candidateDistanceRejectCountRef = useRef(0);
 
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
     const out: CandidateTrain[] = [];
+    // #2594 (옵션 D) — 이번 memo 실행(=1회 재평가) 동안 candidate-distance reject된 총 건수.
+    // memo 종료 시 ref에 저장 — 아래 effect가 이 값을 읽어 recordCandidateDistanceFire를
+    // 정확히 1회만 push한다("재평가 1회당 reject 수" 분해용).
+    let candidateDistanceRejectCount = 0;
     // #1616 (R12-a): candidate별 GPS 거리 hard gate. userLocation + line별 station 좌표 lookup을
     // pickCandidateTrains에 전달해 anchor GPS drift 시 잘못된 영역 train 후보 진입을 차단.
     // candidateRejectBuffer로 reject 측정 — DebugModal에서 'reject:candidate-distance' 표시.
@@ -738,6 +799,8 @@ export function useFusedNearestStation(
             info.line,
             (consecutiveRejectByLineRef.current.get(info.line) ?? 0) + 1,
           );
+          // #2594 (옵션 D) — 계측 전용 카운터. 클로저 로컬 변수라 side-effect 없음.
+          candidateDistanceRejectCount += 1;
           // #1902 — candidate-reject 별 buffer로 이전. fusionDebugBuffer 200 cap 보호.
           pushCandidateRejectEntry({
             kind: 'candidate-reject',
@@ -756,8 +819,23 @@ export function useFusedNearestStation(
       }
       out.push(...picked);
     }
+    // #2594 (P5 리뷰 fix) — memo 본문에서는 ref에만 저장, record는 아래 effect가 수행.
+    // lps가 전부 null이거나 candidateDistanceGate 미적용(userLocation/stationCoordinates
+    // 없음)이면 rejectCount=0으로 그대로 저장 — "발화는 있었지만 reject 없었음"도 분포에
+    // 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
+    candidateDistanceRejectCountRef.current = candidateDistanceRejectCount;
     return out;
   }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation, allowedLines]);
+
+  // #2594 (P5 리뷰 fix) — record 호출을 memo 본문에서 이 effect로 이전. useEffect는 실제로
+  // 커밋된 렌더에서, deps([candidateTrains]) 참조가 실제로 바뀔 때만 실행되므로 React가 memo를
+  // 버리거나(StrictMode 이중 호출) 폐기된 렌더에서 재계산하는 경우에도 과다 카운트되지 않는다
+  // (리뷰 P5). candidateTrains는 memo 본문이 실행될 때마다 항상 새 배열(`const out = []`)이라
+  // "실제 재계산 1회 = candidateTrains 참조 변경 1회"가 정확히 대응한다.
+  useEffect(() => {
+    if (resolvedInstrumentationRole === 'observer') return;
+    recordCandidateDistanceFire(candidateDistanceRejectCountRef.current, Date.now());
+  }, [candidateTrains, resolvedInstrumentationRole]);
 
   // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
   // 기존 arcStations useMemo(ADR-008 estimator용)는 아래에서 이 값을 재사용한다.
@@ -1665,9 +1743,14 @@ export function useFusedNearestStation(
   // 점령을 막는다 — 그 집계 자체가 reject 폭주 여부를 진단하는 유일한 도구라 별도 TTL로
   // 평가를 skip해버리면 이 도구가 눈멀게 된다(원 회귀를 다시 잡아낼 방법이 사라짐).
   useEffect(() => {
-    if (candidates.length === 0) return;
+    // #2594 (P4 리뷰 fix) — candidates.length===0일 때도 record는 계속 수행한다(구 코드는 여기서
+    // early return해 이 cadence 자체가 기록에서 빠졌다). candidateDistanceFire는 반대로 reject=0인
+    // 발화도 의도적으로 기록하므로(위 candidateTrains effect 주석), 두 열의 "재평가 cadence" 분모가
+    // 비대칭이면 나란히 비교할 수 없다 — 0건 evaluate도 "발화 1회, reject 0"으로 대칭 기록한다.
+    let candidateEnvRejectCount = 0;
     for (const cand of candidates) {
       if (!isCandidateEnvMismatch(environment, cand)) continue;
+      candidateEnvRejectCount += 1;
       pushCandidateRejectEntry({
         kind: 'candidate-reject',
         ts: Date.now(),
@@ -1678,7 +1761,10 @@ export function useFusedNearestStation(
         candidateEnvironment: cand.station.environment,
       });
     }
-  }, [candidates, environment]);
+    if (resolvedInstrumentationRole !== 'observer') {
+      recordCandidateEnvFire(candidateEnvRejectCount, Date.now());
+    }
+  }, [candidates, environment, resolvedInstrumentationRole]);
 
   // #1936 (Epic #1927 G4) — cascade tier 채택 Sentry breadcrumb. delta-only emit.
   // dedup은 recordFusionTierAdopted 내부에서 처리(prev === next 시 no-op).

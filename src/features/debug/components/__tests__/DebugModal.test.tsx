@@ -1693,6 +1693,26 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(screen.getAllByText('(none)').length).toBeGreaterThan(0);
   });
 
+  // #2594 (옵션 D) — 재평가 빈도 계측 row. reevalInstrumentation은 이 테스트 파일에서 미mock인
+  // real ambient module이라 getReevalInstrumentationSnapshot()은 초기(표본 0) 스냅샷을 반환한다.
+  it('#2594 Reeval Instrumentation 섹션: row 노출(초기 표본 0 스냅샷)', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Reeval Instrumentation')).toBeTruthy();
+    expect(screen.getByText('instrumentation source')).toBeTruthy();
+    expect(screen.getByText('primary (DebugModal 인스턴스 제외)')).toBeTruthy();
+    expect(screen.getByText('gpsFix')).toBeTruthy();
+    expect(screen.getByText('candidatesRecompute')).toBeTruthy();
+    expect(screen.getByText('candidateDistance')).toBeTruthy();
+    expect(screen.getByText('candidateEnv')).toBeTruthy();
+    expect(
+      screen.getAllByText('n=0 (insufficient samples)').length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText('n=0 (insufficient samples) fires=0 rejects=0 avg/fire=-').length,
+    ).toBeGreaterThan(0);
+  });
+
   it('#2626 review — addListener 실패 후 barometer lastError row에 예외 메시지 렌더', async () => {
     resetBarometerInstrumentationForTest();
     recordBarometerListenerRegistrationFailed(new Error('native registration failed'));
@@ -5145,6 +5165,172 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       expect(dump).toContain('## Candidate rejects (0)');
       const section = dump.slice(dump.indexOf('## Candidate rejects'));
       expect(section).toContain('(empty)');
+    });
+
+    // #2594 (옵션 D) — 재평가 빈도 계측 섹션. Candidate rejects 집계를 "재평가 빈도"와
+    // "재평가당 reject 수"로 분해해 노출.
+    describe('Reeval Instrumentation 섹션 (#2594)', () => {
+      const {
+        formatRateSnapshotValue,
+        formatRateSnapshotLine,
+        formatFireRateSnapshotValue,
+        formatFireRateSnapshotLine,
+        buildReevalInstrumentationSection,
+      } = __test__;
+
+      const insufficientSnap = {
+        sampleCount: 1,
+        avgIntervalMs: null,
+        minIntervalMs: null,
+        maxIntervalMs: null,
+        perSecond: null,
+      };
+
+      const sampledSnap = {
+        sampleCount: 5,
+        avgIntervalMs: 250,
+        minIntervalMs: 200,
+        maxIntervalMs: 300,
+        perSecond: 4,
+      };
+
+      it('formatRateSnapshotValue: 표본 2개 미만이면 insufficient samples', () => {
+        expect(formatRateSnapshotValue(insufficientSnap)).toBe('n=1 (insufficient samples)');
+      });
+
+      it('formatRateSnapshotValue: 표본 충분하면 avg/min/max/rate 전부 노출', () => {
+        expect(formatRateSnapshotValue(sampledSnap)).toBe(
+          'n=5 avg=250ms min=200ms max=300ms rate=4.00/s',
+        );
+      });
+
+      it('formatRateSnapshotLine: label 접두 + value 동일', () => {
+        expect(formatRateSnapshotLine('gpsFix', sampledSnap)).toBe(
+          `gpsFix: ${formatRateSnapshotValue(sampledSnap)}`,
+        );
+      });
+
+      // #2594 (PR #2639 리뷰 P2) — avgIntervalMs가 non-null(표본 충분)인데 perSecond만 null인
+      // 케이스(같은 ms burst/timestamp 역행, reevalInstrumentation.ts snapshotRate 참고). 구
+      // 코드는 `snap.perSecond?.toFixed(2)`로 optional chaining해 "rate=undefined/s"를 그대로
+      // 노출했다 — 이 케이스가 가장 고빈도인 burst 상황이라 관측 목적과 정면 충돌했다(리뷰 지적).
+      it('formatRateSnapshotValue: avgIntervalMs<=0(burst/시계 역행)이라 perSecond=null이면 rate=n/a/s (undefined 노출 금지)', () => {
+        const burstSnap = {
+          sampleCount: 3,
+          avgIntervalMs: 0,
+          minIntervalMs: 0,
+          maxIntervalMs: 0,
+          perSecond: null,
+        };
+        const value = formatRateSnapshotValue(burstSnap);
+        expect(value).toBe('n=3 avg=0ms min=0ms max=0ms rate=n/a/s');
+        expect(value).not.toContain('undefined');
+      });
+
+      it('formatFireRateSnapshotValue: avgRejectPerFire null이면 "-", 아니면 소수 2자리', () => {
+        expect(
+          formatFireRateSnapshotValue({
+            ...insufficientSnap,
+            fireTotal: 0,
+            rejectTotal: 0,
+            windowedRejectCount: 0,
+            avgRejectPerFire: null,
+          }),
+        ).toBe('n=1 (insufficient samples) fires=0 rejects=0 avg/fire=-');
+        expect(
+          formatFireRateSnapshotValue({
+            ...sampledSnap,
+            fireTotal: 3,
+            rejectTotal: 8,
+            windowedRejectCount: 8,
+            avgRejectPerFire: 8 / 3,
+          }),
+        ).toBe('n=5 avg=250ms min=200ms max=300ms rate=4.00/s fires=3 rejects=8 avg/fire=2.67');
+      });
+
+      it('formatFireRateSnapshotLine: label 접두 + value 동일', () => {
+        const snap = {
+          ...sampledSnap,
+          fireTotal: 3,
+          rejectTotal: 8,
+          windowedRejectCount: 8,
+          avgRejectPerFire: 8 / 3,
+        };
+        expect(formatFireRateSnapshotLine('candidateDistance', snap)).toBe(
+          `candidateDistance: ${formatFireRateSnapshotValue(snap)}`,
+        );
+      });
+
+      it('buildReevalInstrumentationSection: 미전달 시 (not sampled yet)', () => {
+        expect(buildReevalInstrumentationSection(baselineDumpArgs)).toEqual([
+          '(not sampled yet)',
+        ]);
+      });
+
+      it('buildReevalInstrumentationSection: 스냅샷 제공 시 4줄(gpsFix/candidatesRecompute/candidateDistance/candidateEnv)', () => {
+        const snapshot = {
+          gpsFix: sampledSnap,
+          candidatesRecompute: insufficientSnap,
+          candidateDistance: {
+            ...sampledSnap,
+            fireTotal: 3,
+            rejectTotal: 8,
+            windowedRejectCount: 8,
+            avgRejectPerFire: 8 / 3,
+          },
+          candidateEnv: {
+            ...insufficientSnap,
+            fireTotal: 0,
+            rejectTotal: 0,
+            windowedRejectCount: 0,
+            avgRejectPerFire: null,
+          },
+        };
+        const result = buildReevalInstrumentationSection({
+          ...baselineDumpArgs,
+          reevalInstrumentation: snapshot,
+        });
+        // #2594 (PR #2639 리뷰 P1) — 첫 줄은 항상 "어느 인스턴스 기준인지" 명시하는 source 라인.
+        expect(result).toHaveLength(5);
+        expect(result[0]).toBe('source=primary (DebugModal 자체 useFusedNearestStation 인스턴스는 계측 제외)');
+        expect(result[1]).toContain('gpsFix: n=5 avg=250ms');
+        expect(result[2]).toContain('candidatesRecompute: n=1 (insufficient samples)');
+        expect(result[3]).toContain('candidateDistance: n=5');
+        expect(result[3]).toContain('avg/fire=2.67');
+        expect(result[4]).toContain('candidateEnv: n=1 (insufficient samples)');
+        expect(result[4]).toContain('avg/fire=-');
+      });
+
+      it('share dump가 Reeval Instrumentation 섹션을 포함한다', () => {
+        const snapshot = {
+          gpsFix: sampledSnap,
+          candidatesRecompute: sampledSnap,
+          candidateDistance: {
+            ...sampledSnap,
+            fireTotal: 3,
+            rejectTotal: 8,
+            windowedRejectCount: 8,
+            avgRejectPerFire: 8 / 3,
+          },
+          candidateEnv: {
+            ...sampledSnap,
+            fireTotal: 2,
+            rejectTotal: 6,
+            windowedRejectCount: 6,
+            avgRejectPerFire: 3,
+          },
+        };
+        const dump = buildDumpText(makeDumpArgs({ reevalInstrumentation: snapshot }));
+        expect(dump).toContain('## Reeval Instrumentation');
+        expect(dump).toContain('gpsFix: n=5 avg=250ms');
+      });
+
+      it('share dump: reevalInstrumentation 미전달 시 (not sampled yet)', () => {
+        const dump = buildDumpText(makeDumpArgs());
+        expect(dump).toContain('## Reeval Instrumentation');
+        const section = dump.slice(dump.indexOf('## Reeval Instrumentation'));
+        expect(section).toContain('(not sampled yet)');
+      });
     });
 
     it('buildBoardingLockDriftLogSection: 빈/entries cover + share dump 포함 (#1896)', () => {
