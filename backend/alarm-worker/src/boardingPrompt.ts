@@ -74,6 +74,31 @@ export function isNearOrigin(
   return originDistanceM - originAccuracyM <= PROMPT_PROXIMITY_MARGIN_M;
 }
 /**
+ * #2653 (코드리뷰 MEDIUM-2) — GPS-free origin 거리 가드 전용 교차검증 순수 함수.
+ *
+ * register 시점 정적 스냅샷(`trip.promptGeoContext.originDistanceM/originAccuracyM`)은
+ * 타임스탬프가 없어 스냅샷 자체만으로는 신선도를 판단할 수 없다. device의 `buildOriginGpsStamp`
+ * (`haversine(마지막 GPS fix, 현재 fused 역)`)는 GPS가 지하에서 끊기면 fix는 "마지막 지상 좌표"에
+ * 고정되는 반면 fused 역은 lockless 추론으로 계속 전진한다 — 그 순간엔 정확했던(작은 accuracy)
+ * fix가 이제는 먼 거리로 오판정되는 스냅샷을 만든다.
+ *
+ * `/position` 채널이 독립적으로 쌓는 `positionSeries`의 최신 sample을 교차검증 입력으로 쓴다 —
+ * 그 sample이 지금(`now`) 기준 `freshnessMs` 이내이고 accuracy가 `accuracyCutoffM` 미만이면
+ * "GPS가 지금 살아있다"고 보고 정적 스냅샷을 신뢰한다. 그렇지 않으면(series 비어있음/stale/
+ * 저정확도) 신뢰하지 않는다 — caller는 이 경우 스냅샷을 "부재"와 동일하게 취급해 관대 허용해야
+ * 한다(#2532 취지 재적용, #2531/#2532가 없애려던 지하 영구 침묵의 재발 방지).
+ */
+export function hasFreshOriginProximityCorroboration(
+  newestSeriesPoint: { ts: number; accuracy: number } | undefined,
+  now: number,
+  freshnessMs: number,
+  accuracyCutoffM: number,
+): boolean {
+  if (newestSeriesPoint === undefined) return false;
+  if (now - newestSeriesPoint.ts > freshnessMs) return false;
+  return newestSeriesPoint.accuracy < accuracyCutoffM;
+}
+/**
  * #2130 (Part B-be-1) — 신선도 게이트. trip 등록(또는 heal) 후 이 시간이 지나면 boarding-prompt
  * 자격이 만료된다 — 오래된 trip에 뒤늦게 발사되는 stale prompt 방지 + 반복 발사(A4) 창의 상한.
  */
