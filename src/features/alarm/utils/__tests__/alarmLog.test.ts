@@ -2842,6 +2842,97 @@ describe('alarmLog', () => {
       expect(saved[0].stationName).toBe('category=null:payloadMatched=false');
     });
 
+    // #2627 P1 — identifier 기준 burst dedup. 같은 identifier의 backend 진짜 재발사(collapseId=
+    // trip token이라 request.identifier가 trip당 동일, scheduled.ts)를 계측에서 영구히 지우지
+    // 않기 위해 짧은 DEDUP_LOG_WINDOW_MS 창만 dedup하고 창 밖 재수신은 다시 적재해야 한다.
+    describe('#2627: identifier 기준 bounded burst dedup', () => {
+      it('같은 identifier가 DEDUP_LOG_WINDOW_MS 안에 재수신되면 drop', async () => {
+        const baseTs = 1_700_000_000_000;
+        const spy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+        try {
+          (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+          logBoardingPromptCategoryReceived({
+            categoryIdentifier: 'BOARDING_PROMPT',
+            payloadMatched: true,
+            identifier: 'trip-tok-1',
+          });
+          await flushAlarmLog();
+          const n = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+          spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+          logBoardingPromptCategoryReceived({
+            categoryIdentifier: 'BOARDING_PROMPT',
+            payloadMatched: true,
+            identifier: 'trip-tok-1',
+          });
+          await flushAlarmLog();
+          expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      // 이것이 P1 fix의 핵심 — 영구 dedup이었다면 아래 두 번째 호출도 drop됐을 것이다.
+      // backend collapseId=tripToken 재발사는 request.identifier가 trip 내내 동일하므로,
+      // 창 밖 재수신을 진짜 재발사로 인정해 다시 적재해야 "재발사 0건" 오진을 피한다.
+      it('같은 identifier가 DEDUP_LOG_WINDOW_MS 밖에서 재수신되면 다시 적재 (진짜 backend 재발사 계측 보존)', async () => {
+        const baseTs = 1_700_000_000_000;
+        const spy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+        try {
+          (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+          logBoardingPromptCategoryReceived({
+            categoryIdentifier: 'BOARDING_PROMPT',
+            payloadMatched: true,
+            identifier: 'trip-tok-1',
+          });
+          await flushAlarmLog();
+          const n = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+          spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+          logBoardingPromptCategoryReceived({
+            categoryIdentifier: 'BOARDING_PROMPT',
+            payloadMatched: true,
+            identifier: 'trip-tok-1',
+          });
+          await flushAlarmLog();
+          expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n + 1);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('identifier 미상 시에도 categoryIdentifier 기준 bounded discriminator로 dedup (무경계 재적재 방지)', async () => {
+        const baseTs = 1_700_000_000_000;
+        const spy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+        try {
+          (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+          logBoardingPromptCategoryReceived({ categoryIdentifier: null, payloadMatched: false });
+          await flushAlarmLog();
+          const n = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+          spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+          logBoardingPromptCategoryReceived({ categoryIdentifier: null, payloadMatched: false });
+          await flushAlarmLog();
+          expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('다른 identifier는 별개 dedup 창 — 둘 다 적재', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+        logBoardingPromptCategoryReceived({
+          categoryIdentifier: 'BOARDING_PROMPT',
+          payloadMatched: true,
+          identifier: 'trip-tok-a',
+        });
+        logBoardingPromptCategoryReceived({
+          categoryIdentifier: 'BOARDING_PROMPT',
+          payloadMatched: true,
+          identifier: 'trip-tok-b',
+        });
+        await flushAlarmLog();
+        expect(JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1])).toHaveLength(2);
+      });
+    });
+
     it('#2284 (P1 wire matrix gap): logLastTrainAlarmFired가 last-train-alarm entry를 적재한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
       logLastTrainAlarmFired({ stationName: '소요산' });

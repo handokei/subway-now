@@ -159,6 +159,7 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
       expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
         categoryIdentifier: null,
         payloadMatched: true,
+        identifier: 'noti-1',
       });
       expect(logBoardingPromptFired).not.toHaveBeenCalled();
     });
@@ -169,6 +170,7 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
       expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
         categoryIdentifier: 'OTHER_CATEGORY',
         payloadMatched: true,
+        identifier: 'noti-1',
       });
       expect(logBoardingPromptFired).not.toHaveBeenCalled();
     });
@@ -179,6 +181,7 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
       expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
         categoryIdentifier: BOARDING_PROMPT_CATEGORY,
         payloadMatched: true,
+        identifier: 'n-diag',
       });
       expect(logBoardingPromptFired).toHaveBeenCalledWith({
         originStation: '강남',
@@ -192,6 +195,20 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
       expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
         categoryIdentifier: BOARDING_PROMPT_CATEGORY,
         payloadMatched: false,
+        identifier: 'noti-1',
+      });
+    });
+
+    // #2627 P1-2 — identifier가 비문자열/빈 값이면 alarmLog.ts의 burst dedup discriminator가
+    // categoryIdentifier로 대체되도록 identifier 필드 자체를 undefined로 전달한다(hook은
+    // 무경계 dedup을 직접 하지 않는다 — 뒷단 alarmLog.ts가 bounded TTL로 처리).
+    it('identifier 누락 → identifier: undefined로 전달(무경계 재적재 방지 책임은 alarmLog.ts)', () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      registeredHandler!(makeNotification({ identifier: '' }));
+      expect(logBoardingPromptCategoryReceived).toHaveBeenCalledWith({
+        categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+        payloadMatched: true,
+        identifier: undefined,
       });
     });
   });
@@ -295,6 +312,67 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
       expect(Notifications.getPresentedNotificationsAsync).toHaveBeenCalled();
     });
     expect(logBoardingPromptFired).not.toHaveBeenCalled();
+  });
+
+  // #2627 — drain은 category-received 계측을 절대 적재하지 않는다 (트레이 전체 재적재로 인한
+  // 가짜 "3연발 backend 재발사" 오진 차단).
+  describe('drain은 category-received 계측 미호출 (#2627)', () => {
+    it('트레이에 비프롬프트 알림 3건 → drain 1회 → category-received 0건 적재', async () => {
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-1', categoryIdentifier: 'OTHER_CATEGORY' }),
+        makeNotification({ identifier: 'tray-2', categoryIdentifier: null }),
+        makeNotification({ identifier: 'tray-3', categoryIdentifier: 'OTHER_CATEGORY' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => {
+        expect(Notifications.getPresentedNotificationsAsync).toHaveBeenCalled();
+      });
+      expect(logBoardingPromptCategoryReceived).not.toHaveBeenCalled();
+    });
+
+    it('BOARDING_PROMPT 알림이 트레이에 있어도 drain 경로에서는 category-received 미호출', async () => {
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'bg-3' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => {
+        expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
+      });
+      expect(logBoardingPromptCategoryReceived).not.toHaveBeenCalled();
+    });
+
+    it('AppState active 재진입 drain 반복 호출에도 category-received는 계속 0건', async () => {
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => expect(appStateHandler).not.toBeNull());
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'bg-4' }),
+      ]);
+      appStateHandler!('active');
+      await waitFor(() => {
+        expect(logBoardingPromptFired).toHaveBeenCalledWith({ originStation: '강남', line: '2' });
+      });
+      expect(logBoardingPromptCategoryReceived).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2627 — FG 신규 수신 경로에서 같은 identifier로 매 수신마다 logBoardingPromptCategoryReceived를
+  // 호출한다(hook 자체는 dedup하지 않음) — burst dedup은 alarmLog.ts의 bounded TTL이 담당하므로
+  // 그쪽 테스트(alarmLog.test.ts)에서 검증한다.
+  it('FG 신규 수신 — 같은 identifier 재수신 시에도 매번 identifier와 함께 호출(dedup은 alarmLog.ts 책임)', () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    registeredHandler!(makeNotification({ identifier: 'cat-dup-1' }));
+    registeredHandler!(makeNotification({ identifier: 'cat-dup-1' }));
+    expect(logBoardingPromptCategoryReceived).toHaveBeenCalledTimes(2);
+    expect(logBoardingPromptCategoryReceived).toHaveBeenNthCalledWith(1, {
+      categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+      payloadMatched: true,
+      identifier: 'cat-dup-1',
+    });
+    expect(logBoardingPromptCategoryReceived).toHaveBeenNthCalledWith(2, {
+      categoryIdentifier: BOARDING_PROMPT_CATEGORY,
+      payloadMatched: true,
+      identifier: 'cat-dup-1',
+    });
   });
 
   it('drain — getPresentedNotificationsAsync 예외 swallow', async () => {

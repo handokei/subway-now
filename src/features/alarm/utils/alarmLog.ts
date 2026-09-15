@@ -135,9 +135,13 @@ export type AlarmLogSource =
   // (등록 성공, id+버튼 개수/타이틀 기록) 또는 outcome='suppressed'(등록 실패, catch 삼킨 에러
   // 가시화)를 적재한다. 순수 진단 — 등록 로직/graceful catch는 무변경.
   | 'category-registration'
-  // #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 계측. `useBoardingPromptDisplayLogger`
-  // `tryLogDisplayed`가 early-return(categoryIdentifier 미스매치) 직전 매 수신 건마다 적재 —
-  // "backend push에 aps.category가 실제로 실렸는가"를 device 덤프로 판정한다.
+  // #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 계측. #2627 이후
+  // `useBoardingPromptDisplayLogger`의 FG `addNotificationReceivedListener` 콜백(`logFgCategoryReceived`)
+  // 경로에서만 적재한다 — BG drain(`drainPresentedBoardingPrompts`)이 트레이 전체(도착 알림 등
+  // 비프롬프트 알림 포함)를 mount/AppState active마다 재적재해 가짜 "backend 재발사"로 오진되던
+  // 회귀를 차단(2026-09-15 덤프). identifier(또는 identifier 부재 시 categoryIdentifier) 기준
+  // burst dedup(`isBurstDuplicate`, 기본 DEDUP_LOG_WINDOW_MS)을 적용 — 같은 identifier가 창
+  // 밖에서 재수신되면(진짜 backend 재발사 가능성) 다시 적재된다.
   | 'boarding-prompt-category-received';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
@@ -2327,14 +2331,27 @@ export function logCategoryRegistrationFailed(input: {
 
 /**
  * #2398 — boardingPrompt 알림 수신 시 실제 categoryIdentifier 값 1건 적재.
- * `useBoardingPromptDisplayLogger.tryLogDisplayed`가 early-return 여부 판정 직전, 매 수신
- * notification마다 호출한다. categoryIdentifier가 null이면 문자열 'null'로 인코딩(AlarmLogEntry
- * stationName은 string만 허용).
+ * #2627 — `useBoardingPromptDisplayLogger`의 FG `addNotificationReceivedListener` 콜백
+ * (`logFgCategoryReceived`)에서만 호출한다 — BG drain(트레이 전체 재적재) 경로는 절대 호출하지
+ * 않는다. categoryIdentifier가 null이면 문자열 'null'로 인코딩(AlarmLogEntry stationName은
+ * string만 허용).
+ *
+ * `identifier`(notification.request.identifier)를 burst dedup 키로 사용 — 같은 identifier가
+ * DEDUP_LOG_WINDOW_MS(기본 5s) 안에 재수신되면 drop(같은 notification이 FG 재전달되는 케이스),
+ * 창 밖 재수신은 다시 적재한다(backend가 같은 collapseId로 진짜 재발사한 trip당 반복 신호를
+ * 계측에서 지우지 않기 위함 — #2627 P1). identifier가 비어있으면(비정상 payload) categoryIdentifier
+ * 값으로 bounded discriminator를 구성해 무경계 재적재를 막는다.
  */
 export function logBoardingPromptCategoryReceived(input: {
   categoryIdentifier: string | null;
   payloadMatched: boolean;
+  identifier?: string;
 }): void {
+  const discriminator =
+    typeof input.identifier === 'string' && input.identifier.length > 0
+      ? input.identifier
+      : `no-identifier:${input.categoryIdentifier ?? 'null'}`;
+  if (isBurstDuplicate('boarding-prompt-category-received', discriminator)) return;
   appendAlarmLog({
     ts: Date.now(),
     source: 'boarding-prompt-category-received',
