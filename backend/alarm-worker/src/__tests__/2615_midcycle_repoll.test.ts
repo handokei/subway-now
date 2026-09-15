@@ -13,7 +13,7 @@
  *      + 중간 tick)이므로 항상 t2 <= t1 (음의 개선 불가능).
  */
 import { describe, expect, it } from 'vitest';
-import { REPLAY_LIBRARY, type ReplayLibraryEntry } from './replayLibrary';
+import { expectedFiredStationsUnion, REPLAY_LIBRARY, type ReplayLibraryEntry } from './replayLibrary';
 import { runCaptureReplay, type ReplayRunResult } from './helpers/replayHarness';
 import { firedStationOccurrences } from './helpers/pushAssertions';
 
@@ -53,7 +53,8 @@ describe('#2615 — 재생 3 fixture: 2-pass 역당 발사 정확히 1회 (doubl
       // 중복 없음 — 배열 길이와 Set 크기가 같아야 한다(같은 역 2회 발사 시 length > size).
       expect(fired.length).toBe(new Set(fired).size);
       // 기대 발사 집합 자체도 t+30 pass 추가로 달라지지 않는다(순서 무시 exact-match).
-      expect([...fired].sort()).toEqual([...entry.expect.firedStations].sort());
+      // #2623 P2-6 — 실측 앵커(firedStations) + fix로 파생된 station(derivedFiredStations) 합집합.
+      expect([...fired].sort()).toEqual(expectedFiredStationsUnion(entry).sort());
     });
   }
 });

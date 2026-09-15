@@ -129,8 +129,14 @@ export type ConsensusOutcome =
  * 정책: 본 함수는 contradict만 식별. 일치 vote가 OR 통과를 추가로 열어주진 않는다
  * (false positive 차단 우선 — surface GPS jitter가 cellular 4G와 동시에 거짓 합의를 만들면
  *  지상 false positive로 새는 회귀를 막기 위함).
+ *
+ * #2623 P2-3 리뷰 — `advanceTripPosition` 게이트 #3의 lock-arvlCd(+position-train) bypass가
+ * `evaluateConsensusGate` 호출 자체를 skip하면 본 hard-reject까지 함께 우회돼버린다. environment가
+ * stations.json(고정)으로, vote는 여전히 device(독립 소스)로 분리되면서 모순 가능성이 오히려
+ * 커졌으므로(source 독립성 증가), bypass 여부와 무관하게 caller가 이 함수를 별도로 먼저 평가할 수
+ * 있도록 export한다.
  */
-function cellularContradictsEnvironment(
+export function cellularContradictsEnvironment(
   environment: StationEnvironment,
   vote: ConsensusSignals['cellularEnvironmentVote'],
 ): boolean {

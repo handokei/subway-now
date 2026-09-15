@@ -419,6 +419,60 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       expectedReason: 'env-consensus-fail',
     },
     {
+      name: 'P10 (#2623) lock + unknown env + arvlcd-confirmed-train(trainCode 일치) + lockAttachable=false → advanced (lock-arvlCd bypass, #2432와 대칭)',
+      motion: 'moving',
+      userIntent: false,
+      hasLock: true,
+      env: 'unknown',
+      evidenceType: 'arvlcd-confirmed-train',
+      trainMatch: true,
+      gatePassed: true,
+      lockAttachable: false,
+      extraStrongInRing: 0,
+      expected: 'advanced',
+    },
+    {
+      name: 'N6b (#2623 회귀방어) lock + unknown env + arvlcd 확증 없는 evidence(position-train, trainCode 불일치) + lockAttachable=false → blocked(env-consensus-fail) (미확증/불일치 position-train은 bypass 대상 아님)',
+      motion: 'moving',
+      userIntent: false,
+      hasLock: true,
+      env: 'unknown',
+      evidenceType: 'position-train',
+      trainMatch: false,
+      gatePassed: true,
+      lockAttachable: false,
+      extraStrongInRing: 0,
+      expected: 'blocked',
+      expectedReason: 'env-consensus-fail',
+    },
+    {
+      name: 'P11 (#2623 P1-1 리뷰) lock + unknown env + position-train(trainCode 일치, #1665 positions-fallback) + lockAttachable=false → advanced (env consensus bypass 확장, 375개 underground 역 영구 차단 회귀 방지)',
+      motion: 'moving',
+      userIntent: false,
+      hasLock: true,
+      env: 'unknown',
+      evidenceType: 'position-train',
+      trainMatch: true,
+      gatePassed: true,
+      lockAttachable: false,
+      extraStrongInRing: 0,
+      expected: 'advanced',
+    },
+    {
+      name: 'N6c (#2623 P1-1 리뷰, 게이트 #5c 대칭 방어) lock + surface env(base gate만으로 통과) + position-train(trainCode 불일치, stamp됨) → blocked(train-mismatch) — bypass 확장이 identity 검증을 약화시키지 않음',
+      motion: 'moving',
+      userIntent: false,
+      hasLock: true,
+      env: 'surface',
+      evidenceType: 'position-train',
+      trainMatch: false,
+      gatePassed: true,
+      lockAttachable: false,
+      extraStrongInRing: 0,
+      expected: 'blocked',
+      expectedReason: 'train-mismatch',
+    },
+    {
       name: 'N7 time-only evidence → blocked(time-only-forbidden) (ADR-015 §E4)',
       motion: 'moving',
       userIntent: false,
@@ -571,6 +625,59 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
     );
     const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
     expect(after?.passedStations.filter((s) => s === '용마산').length).toBe(1);
+  });
+});
+
+describe('advanceTripPosition — 게이트 #3 cellular contradiction은 env consensus bypass와 무관하게 항상 평가 (#2623 P2-3 리뷰)', () => {
+  let kv: InMemoryKV;
+
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('lock + arvlcd-confirmed-train(trainCode 일치, envConsensusBypass 대상) + cellularTechVote가 environment와 모순 → blocked(env-consensus-fail) (bypass가 모순 체크를 우회하지 않음)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({
+        type: 'arvlcd-confirmed-train',
+        environment: 'underground',
+        cellularTechVote: 'surface', // 지상 4G/5G 잡힘 — environment=underground와 정면 모순
+        arvlcdTrainCode: '7246',
+        arvlCd: 1,
+      }),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(out.result).toBe('blocked');
+    expect(out.blockReason).toBe('env-consensus-fail');
+  });
+
+  it('lock + arvlcd-confirmed-train(trainCode 일치) + cellularTechVote가 environment와 일치(모순 아님) → advanced (bypass 정상 동작)', async () => {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({
+        type: 'arvlcd-confirmed-train',
+        environment: 'underground',
+        cellularTechVote: 'underground',
+        arvlcdTrainCode: '7246',
+        arvlCd: 1,
+      }),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(out.result).toBe('advanced');
   });
 });
 
