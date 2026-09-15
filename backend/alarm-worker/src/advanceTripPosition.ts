@@ -460,22 +460,11 @@ export async function advanceTripPosition(
   // cron cycle 이산화, 경로별 관용치 상이, 2026-06-19 회귀 방어)가 유지 — 본 게이트에서 lock
   // 없음/trainCode 확증 없는 evidence(예: `position-train`)는 기존대로 차단된다.
   const lockedTrainArvlcdBypass = lock !== undefined && evidence.type === 'arvlcd-confirmed-train';
-  // #2645 — `'device-sync'` evidence는 `/boarding-lock/sync`가 이미 device GPS/WiFi 확증
-  // (`GOOD_FIX_ACCURACY_MAX_M` 게이트 통과분)으로 SSoT.currentStationId를 이 station으로
-  // advance시킨 *이후* caller(runTrainCodeTracking)가 그 관측을 transfer/destination waypoint
-  // 진행으로 재사용할 때만 stamp한다(evidence.arvlcdTrainCode는 caller가 activeLock.trainCode로
-  // 채움). 사용자가 방금 그 station에 도착해 정지했다는 것(motionState='stationary') 자체가
-  // 오히려 하차 확증과 일치하는 정상 신호이므로, 다른 cron-기반 motionState 신호와 달리 이 게이트가
-  // 그 정지를 "아직 안 내렸다"는 오판으로 되치기하지 않도록 면제한다(gate #2 lockedTrainArvlcdBypass
-  // 와 동일 근거 — ground truth가 motion 신호보다 강하다). false-positive 방어는 caller가 이미
-  // 수행한 "관측역===waypoint.stationName" 일치 검증 + gate #5c(arvlcdTrainCode 미일치 시 차단).
-  const deviceSyncEvidenceBypass = evidence.type === 'device-sync';
   if (
     ssot.motionState === 'stationary' &&
     !ssot.userIntentDeclared &&
     !deviceSyncStaleBypass &&
-    !lockedTrainArvlcdBypass &&
-    !deviceSyncEvidenceBypass
+    !lockedTrainArvlcdBypass
   ) {
     return { result: 'blocked', blockReason: 'motion-stationary', ssot };
   }
@@ -497,12 +486,8 @@ export async function advanceTripPosition(
   // 자체 검증(evidence.arvlcdTrainCode===lock.trainCode)해야만 우회한다(legacy caller가
   // arvlcdTrainCode를 stamp하지 않는 케이스까지 무조건 신뢰하지 않기 위함 — 그런 미stamp
   // evidence는 기존대로 정상 env consensus 평가를 받는다). 대칭 방어는 게이트 #5c.
-  // #2645 — gate #2 deviceSyncEvidenceBypass와 대칭 우회. device sync 관측은 device
-  // 기압계/GPS environment 합의보다 강한 ground truth(사용자가 실제로 그 station에 있었다는
-  // 확증)이므로 면제한다.
   const envConsensusBypass =
     lockedTrainArvlcdBypass ||
-    deviceSyncEvidenceBypass ||
     (lock !== undefined &&
       evidence.type === 'position-train' &&
       evidence.arvlcdTrainCode === lock.trainCode);
@@ -554,11 +539,9 @@ export async function advanceTripPosition(
   // envConsensusBypass가 신뢰하는 것과 같은 identity claim) lock.trainCode와 일치까지 검증한다.
   // arvlcdTrainCode 미stamp(legacy caller, optional 필드)는 기존대로 dormant — 하위 호환 보존
   // (gate #7 position-train jump/stale 단위 테스트가 이 미stamp 경로를 다수 검증).
-  // #2645 — device-sync도 동일 패턴 적용(caller가 activeLock.trainCode를 항상 stamp하지만,
-  // gate #2/#3 bypass를 받는 evidence type이라 identity 검증만은 defense-in-depth로 유지).
   if (
     lock !== undefined &&
-    (evidence.type === 'position-train' || evidence.type === 'device-sync') &&
+    evidence.type === 'position-train' &&
     evidence.arvlcdTrainCode !== undefined &&
     evidence.arvlcdTrainCode !== lock.trainCode
   ) {
