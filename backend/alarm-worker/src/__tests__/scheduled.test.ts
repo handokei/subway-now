@@ -54,6 +54,7 @@ import {
   toSilentPushSsot,
   shouldSkipStationary,
   resolveBoardingLinePayload,
+  resolveWaypointEnvironment,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -71,7 +72,7 @@ import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAgg
 import { putTrip } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
 import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
-import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
+import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -181,7 +182,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0, waypointEnvironmentLookupMiss: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -7009,6 +7010,51 @@ describe('ScheduledStats 초기값 (#826 E4)', () => {
   });
 });
 
+describe('resolveWaypointEnvironment (#2623 P1-2 리뷰 — lookup miss 관측)', () => {
+  it('lookup 성공 — 역/line 매칭 시 환경 반환, stats/log 무변화', () => {
+    const stats = makeFullEmptyStats();
+    const log = vi.fn();
+    const environment = resolveWaypointEnvironment(
+      { stationName: '군자', line: '7', kind: 'intermediate' },
+      stats,
+      log,
+    );
+    expect(environment).toBe('underground');
+    expect(stats.waypointEnvironmentLookupMiss).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('lookup 실패(존재하지 않는 역명) — unknown 반환 + 카운터 증가 + log 1회(stationName/line 식별)', () => {
+    const stats = makeFullEmptyStats();
+    const log = vi.fn();
+    const environment = resolveWaypointEnvironment(
+      { stationName: '없는역이름', line: '2', kind: 'intermediate' },
+      stats,
+      log,
+    );
+    expect(environment).toBe('unknown');
+    expect(stats.waypointEnvironmentLookupMiss).toBe(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith('waypoint-environment-lookup-miss', {
+      stationName: '없는역이름',
+      line: '2',
+    });
+  });
+
+  it('lookup 실패(알려진 역명이지만 line 불일치) — unknown 반환 + 카운터 증가', () => {
+    // 합정은 line 2/6에만 존재 — line 1에는 없음(stationsLookup.test.ts와 동일 fixture).
+    const stats = makeFullEmptyStats();
+    const log = vi.fn();
+    const environment = resolveWaypointEnvironment(
+      { stationName: '합정', line: '1', kind: 'intermediate' },
+      stats,
+      log,
+    );
+    expect(environment).toBe('unknown');
+    expect(stats.waypointEnvironmentLookupMiss).toBe(1);
+  });
+});
+
 describe('ScheduledStats 초기값 (#1683 silentPushFiredByKind)', () => {
   it('silentPushFiredByKind 모든 kind 초기값 0 — trip 없는 빈 실행', async () => {
     const kv = new InMemoryKV();
@@ -10740,6 +10786,50 @@ describe('silent push SSoT forward (#1561 T8 / S2 흡수)', () => {
     expect(locklessBody).toBeDefined();
     expect(locklessBody!.data.ssot).toBeDefined();
     expect(locklessBody!.data.ssot.currentStationId).toBe('강남');
+  });
+});
+
+describe('arvlcd-fire writeMetric environment stamp (#2623 P2-4 리뷰)', () => {
+  // #2623 — 판정(evidence.environment)은 stations.json(역 데이터)으로 교체됐지만, writeMetric
+  // 관측 dimension이 여전히 device 기압계(trip.subsurface)를 stamp하면 판정-관측 차원이
+  // 어긋나 이슈 본문의 측정 plan(env-consensus-fail 분포로 효과 확인)이 성립하지 않는다.
+  // 소요산(line 1)은 stations.json상 surface 역 — device가 subsurface=true(지하 주장)를
+  // 보낸 상태로 판정/관측이 그 device 신호가 아니라 실제 station 데이터(surface)로
+  // 일치하는지 검증한다.
+  it('advance 성공 시 writeMetric env 태그가 device subsurface가 아니라 판정에 쓴 station 데이터(surface)와 일치', async () => {
+    const kv = new InMemoryKV();
+    const token = 'metric-env-advance';
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token,
+        route: { type: 'direct', line: '1', stops: 3 },
+        waypoints: [{ stationName: '소요산', line: '1', kind: 'destination' }],
+        boardingLock: { ...ARVLCD_LOCK_BOILER, line: '1', segmentStations: ['동두천', '소요산'] },
+        // device 기압계가 'underground'라고 주장 — 실제 소요산은 stations.json상 surface.
+        subsurface: true,
+      }),
+    );
+    const writeDataPoint = vi.fn();
+    const writer: AnalyticsEngineWriter = { writeDataPoint };
+    const env: Env = { ...makeEnv(kv), TRIP_METRICS: writer };
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(env, {
+      seoul: makeLockedSeoul(0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.arvlCdFireFired).toBe(1);
+    const advanceCall = writeDataPoint.mock.calls.find((c) => {
+      const point = c[0] as { blobs?: string[] };
+      return point.blobs?.[0] === 'advance';
+    });
+    expect(advanceCall).toBeDefined();
+    const blobs = (advanceCall![0] as { blobs: string[] }).blobs;
+    expect(blobs).toContain('env:surface');
+    expect(blobs).not.toContain('env:underground');
   });
 });
 

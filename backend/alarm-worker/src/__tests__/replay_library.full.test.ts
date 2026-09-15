@@ -18,7 +18,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PHASE_OFFSETS_MS, REPLAY_LIBRARY, REPLAY_LIBRARY_DIR, type ReplayLibraryEntry } from './replayLibrary';
+import {
+  DEFAULT_PHASE_OFFSETS_MS,
+  expectedFiredStationsUnion,
+  REPLAY_LIBRARY,
+  REPLAY_LIBRARY_DIR,
+  type ReplayLibraryEntry,
+} from './replayLibrary';
 import { isLossyFixture } from '../replayFixture';
 import { runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
 import { firedStationOccurrences } from './helpers/pushAssertions';
@@ -133,7 +139,8 @@ for (const entry of REPLAY_LIBRARY) {
         // 같은 역이 두 번 발사되면(회귀) sorted 배열 길이가 달라져 그 자체로 실패한다.
         // alert nextWaypoint 채널 전용 — hop-end-prompt 채널은 별도 아래에서 검증한다
         // (#2600 코드리뷰 항목1, 두 채널 합산 시 정상 이중 발사가 false-red가 되는 결함 수정).
-        expect([...fired].sort()).toEqual([...entry.expect.firedStations].sort());
+        // #2623 P2-6 — 실측 앵커(firedStations) + fix로 파생된 station(derivedFiredStations) 합집합.
+        expect([...fired].sort()).toEqual(expectedFiredStationsUnion(entry).sort());
 
         if (entry.expect.hopEndPromptStations !== undefined) {
           const firedHopEnd = firedHopEndPromptStations(result.pushes);

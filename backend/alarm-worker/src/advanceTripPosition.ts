@@ -29,8 +29,13 @@
  *   #3 Environment 게이트  — evaluateConsensusGate 통과 필수 (지하 GPS-only false positive 차단).
  *      #2623 — lock 활성 + `arvlcd-confirmed-train` evidence는 게이트 #2의 lockedTrainArvlcdBypass와
  *      대칭으로 본 게이트도 면제 (locked trainCode 진행 자체가 environment 신호보다 강한 ground truth).
+ *      #2623 P1-1 — lock 활성 + `position-train`도 evidence.arvlcdTrainCode가 lock.trainCode와
+ *      일치할 때만 동일 우회(#1665 positions-fallback "arrived" 경로가 375개 underground 역에서
+ *      영구 차단되던 회귀 — arvlCd=null이 본질이라 underground 분기 arrival 요구 OR 항을 전부 실패).
  *   #4 Evidence type 게이트 — ADR-015 §E4: 'time-only' evidence 절대 거부
- *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train evidence면 trainCode 일치 필수
+ *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train/consensus-train evidence면
+ *      trainCode 일치 필수. #2623 P1-1 — position-train도 arvlcdTrainCode가 stamp돼 있으면
+ *      동일 검증(#5c, 미stamp는 legacy dormant 유지 — 게이트 #3 우회 대상과 대칭 방어).
  *   #6 Lockless arvlcd 단독 게이트 — lock 없는 trip에서 arvlcd-lockless 단독은 60s 윈도우 내
  *                                    strong evidence 1+개가 추가로 있어야 통과
  *   #8 arc-overshoot 게이트 (#2023, ADR-022) — device `mapMatchedArcM` 시간 적분 폭주 감지.
@@ -63,7 +68,11 @@
  */
 
 import type { ArchFlagValue } from './archFlag';
-import { evaluateConsensusGate, type StationEnvironment } from './consensusGate';
+import {
+  cellularContradictsEnvironment,
+  evaluateConsensusGate,
+  type StationEnvironment,
+} from './consensusGate';
 import { hashTripToken } from './sentry';
 import type { ArrivalEntry, PositionEntry } from './seoul';
 import {
@@ -126,7 +135,9 @@ export type CellularTechVote = 'surface' | 'underground' | 'unknown';
 /**
  * 단일 advance 후보 evidence. caller(T3/T4+ fire path)가 본 객체로 advance 시도.
  *
- * - `arvlcdTrainCode` — evidence type 이 arvlcd 계열일 때 lock.trainCode와 cross-check (E8)
+ * - `arvlcdTrainCode` — evidence type 이 arvlcd 계열일 때 lock.trainCode와 cross-check (E8).
+ *   #2623 P1-1 — `position-train`도 stamp 시 게이트 #3 envConsensusBypass / #5c에서 동일하게
+ *   cross-check(미stamp는 legacy dormant).
  * - `wifiSsid` — 'wifi-ssid-match'일 때 caller가 lookup 결과를 stamp (E6)
  * - `cellularTechVote` — `consensusGate.cellularEnvironmentVote`로 forward (S10)
  */
@@ -463,7 +474,39 @@ export async function advanceTripPosition(
   // 중"이라는 독립 확증이므로(gate #2 주석 동일 근거), device 기압계/GPS 기반 environment
   // 합의보다 강한 ground truth로 취급해 면제한다. false-positive 방어는 게이트 #5 train
   // identity(`lock.trainCode` 불일치 시 blocked('train-mismatch'))가 유지.
-  if (!lockedTrainArvlcdBypass) {
+  //
+  // #2623 P1-1 리뷰 — environment 입력을 stations.json(고정 375개 underground 역)으로 바꾼 뒤,
+  // lock+`position-train`(#1665 positions-fallback "arrived", `estimateBoardingLockArrival`이
+  // Seoul arrivals lag를 realtimePosition으로 보정하는 유일한 매역 발사 경로) evidence가 underground
+  // 역에서 영구 차단되는 회귀가 드러났다 — underground 분기 OR 항(strongBE/CB/DB)이 전부
+  // arrivalSignalPresent를 요구하는데 이 경로는 arvlCd=null이 본질(§comment)이라 항상 false.
+  // 이 evidence는 caller(scheduled.ts)가 이미 `positions.find((p) => p.trainCode ===
+  // lock.trainCode)`로 lock.trainCode와 매칭한 realtimePosition만으로 만들어지므로
+  // arvlcd-confirmed-train과 동급의 "locked trainCode 독립 확증"이다 — 단, 그 사실을 본 게이트가
+  // 자체 검증(evidence.arvlcdTrainCode===lock.trainCode)해야만 우회한다(legacy caller가
+  // arvlcdTrainCode를 stamp하지 않는 케이스까지 무조건 신뢰하지 않기 위함 — 그런 미stamp
+  // evidence는 기존대로 정상 env consensus 평가를 받는다). 대칭 방어는 게이트 #5c.
+  const envConsensusBypass =
+    lockedTrainArvlcdBypass ||
+    (lock !== undefined &&
+      evidence.type === 'position-train' &&
+      evidence.arvlcdTrainCode === lock.trainCode);
+  // #2623 P2-3 리뷰 — cellular contradiction hard-reject(S10 #1543)는 bypass 여부와 무관하게 항상
+  // 평가한다. environment가 stations.json(고정)으로, cellularTechVote는 여전히 device 신호로
+  // 소스가 분리되며 모순 가능성이 오히려 커졌다 — lock+arvlcd 계열이라도 device가 명시적으로
+  // 반대 환경(예: environment=underground인데 vote=surface, 즉 지상 4G/5G가 잡힌 상태)을 투표하면
+  // "locked trainCode 확증"보다 그 모순 자체를 우선 신뢰해 발사하지 않는다. `evaluateConsensusGate`
+  // 내부에도 동일 체크가 있어(다른 caller 계약 보존을 위해 그대로 유지) bypass=false 경로에서는
+  // 중복 평가되지만 멱등이라 무해하다.
+  if (
+    cellularContradictsEnvironment(
+      mapEvidenceEnvironment(evidence.environment),
+      evidence.cellularTechVote,
+    )
+  ) {
+    return { result: 'blocked', blockReason: 'env-consensus-fail', ssot };
+  }
+  if (!envConsensusBypass) {
     const consensusOutcome = evaluateConsensusGate(
       mapEvidenceEnvironment(evidence.environment),
       buildSignalsFromEvidence(evidence, {
@@ -490,6 +533,19 @@ export async function advanceTripPosition(
     if (evidence.arvlcdTrainCode !== lock.trainCode) {
       return { result: 'blocked', blockReason: 'train-mismatch', ssot };
     }
+  }
+
+  // #5c (#2623 P1-1 리뷰) — position-train evidence가 arvlcdTrainCode를 stamp했다면(게이트 #3
+  // envConsensusBypass가 신뢰하는 것과 같은 identity claim) lock.trainCode와 일치까지 검증한다.
+  // arvlcdTrainCode 미stamp(legacy caller, optional 필드)는 기존대로 dormant — 하위 호환 보존
+  // (gate #7 position-train jump/stale 단위 테스트가 이 미stamp 경로를 다수 검증).
+  if (
+    lock !== undefined &&
+    evidence.type === 'position-train' &&
+    evidence.arvlcdTrainCode !== undefined &&
+    evidence.arvlcdTrainCode !== lock.trainCode
+  ) {
+    return { result: 'blocked', blockReason: 'train-mismatch', ssot };
   }
 
   // #5b consensus-train 게이트 (#2329, consensus-C, 설계 SSoT #2323) — legConsensus 상태기계가

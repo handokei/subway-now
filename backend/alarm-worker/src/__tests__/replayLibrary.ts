@@ -74,6 +74,17 @@ export interface ReplayLibraryEntry {
      */
     firedStations: string[];
     /**
+     * #2623 P2-6 리뷰 — `firedStations`는 실캡처 fixture 한정으로 **실측 ground truth**(실제
+     * 그 trip에서 관측/재현되도록 확정된 발사)만 담는 앵커다. 코드 fix가 환경 판정을
+     * 정확하게 바꾸면서 fixture 재생 결과가 실측 당시엔 도달하지 못했던(예: trip이 조기
+     * 종료돼 미관측) 구간까지 legitimate하게 발사시킬 수 있는데, 그 파생 기대치를
+     * `firedStations`에 섞으면 "실측 앵커"의 의미가 흐려진다(회귀 anchor로서의 신뢰 저하).
+     * 이런 station은 이 필드에 별도로 담아 재생 assertion에는 포함시키되(합집합으로 검증),
+     * "왜 실측이 아니라 파생인지"를 주석으로 각 entry에 명시한다. 합성(synthetic) fixture
+     * entry는 애초에 실측이 없으므로 이 구분이 불필요 — `firedStations`만 사용.
+     */
+    derivedFiredStations?: string[];
+    /**
      * transfer waypoint 전용 hop-end-prompt 채널(`sendBoardingPromptPush`, "하차했나요?")에서
      * 발사돼야 하는 역들(#2600 코드리뷰 항목1) — `push.body.body.originStation`
      * (+ `hopEndKind==='disembark'`)로 식별. `evaluateTransferDestinationGate`의 freshness
@@ -96,6 +107,17 @@ export interface ReplayLibraryEntry {
      */
     tripEnded?: { reason: string };
   };
+}
+
+/**
+ * #2623 P2-6 리뷰 — `expect.firedStations`(실측 앵커) + `expect.derivedFiredStations`(fix로
+ * legitimate하게 파생되지만 실측된 적 없는 station)의 합집합. 재생 harness의 실제 발사 결과와
+ * exact-match 비교할 때는 이 합집합을 써야 한다(실측 앵커만 쓰면 파생 station이 "예상 밖 발사"로
+ * 오판정된다) — 두 필드를 각 entry 정의부에서 분리 유지하는 이유는 문서화 목적(회귀 anchor의
+ * 신뢰도)뿐, 재생 assertion 자체는 항상 합집합을 target으로 삼는다.
+ */
+export function expectedFiredStationsUnion(entry: Pick<ReplayLibraryEntry, 'expect'>): string[] {
+  return [...entry.expect.firedStations, ...(entry.expect.derivedFiredStations ?? [])];
 }
 
 /** 위상 스윕 기본값 — cron 60s 주기 내 임의 위상에서 캡처가 시작됐다고 가정. */
@@ -180,21 +202,24 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // cron cycle 수(≤2) 이산화로 바꿔 ms 지터 무관하게 만들면서 이 60,001ms(1 cycle) 간격도
       // 신선 판정 → 건대입구가 이 채널에서도 결정론적으로 발사된다(4역 복원, 이슈 acceptance
       // 1번 항목).
-      // #2623 — leg-2(건대입구 환승 후 2호선, lockless `tryFireConsensusTrainLeg` consensus-train
-      // evidence)의 첫 waypoint 성수는 stations.json상 surface 역이다. fix 전에는 environment
-      // 입력이 device 기압계(trip.subsurface, leg-1 지하 구간 내내 uploaded)를 그대로 물려받아
-      // 'unknown'/'underground'로 오분류돼 gate #3(env consensus)이 대부분 차단했다(§3
-      // mixed/unknown 분기는 lockAttachable=false인 이 lockless leg에서 항상 실패) — 실 라이드는
-      // 13:02Z user-delete로 leg-2 도달 전 trip이 끝나 이 차단이 관측되지 않았을 뿐, 재생에서는
-      // fix 후 정확한 environment(surface)로 legConsensus가 이미 confirmed한 열차의 발사가
-      // 정상 복원된다(회귀 아님 — #2623 fix가 의도한 교정).
-      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구', '성수'],
+      // #2623 — 실측 앵커는 4역 그대로(leg-1만, 실 라이드가 실제 도달·관측한 구간).
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      // #2623 P2-6 리뷰 — leg-2(건대입구 환승 후 2호선, lockless `tryFireConsensusTrainLeg`
+      // consensus-train evidence)의 첫 waypoint 성수는 stations.json상 surface 역이다. fix
+      // 전에는 environment 입력이 device 기압계(trip.subsurface, leg-1 지하 구간 내내
+      // uploaded)를 그대로 물려받아 'unknown'/'underground'로 오분류돼 gate #3(env consensus)이
+      // 대부분 차단했다(§3 mixed/unknown 분기는 lockAttachable=false인 이 lockless leg에서
+      // 항상 실패). 실 라이드는 13:02Z user-delete로 leg-2 도달 전 trip이 끝나 **실측된 적이
+      // 없다** — 재생에서 fix 후 정확한 environment(surface)로 legConsensus가 이미 confirmed한
+      // 열차의 발사가 legitimate하게 파생될 뿐, 실측 ground truth가 아니므로 위 실측 앵커
+      // `firedStations`에는 섞지 않고 이 필드로 분리한다(회귀 아님 — #2623 fix가 의도한 교정).
+      derivedFiredStations: ['성수'],
       // 건대입구는 hop-end-prompt("하차했나요?") 채널로도 재생에서 항상 발사된다(#2600
       // 코드리뷰 항목1 — nextWaypoint 채널과 별개, freshness 게이트 무관하게
       // `maybeFireHopEndPrompt` 자체 dedup만 적용). 같은 역이 두 채널 모두에서 발사되는 것은
       // 정상(#2600 계약) — 위 firedStations와 합산 집계하지 않는다.
       hopEndPromptStations: ['건대입구'],
-      minPushes: 5,
+      minPushes: 4,
     },
   },
   {
@@ -222,11 +247,13 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // #2602 fix 전: 건대입구가 ssot-stale(128,365ms>60,000ms)로 nextWaypoint 채널에서
       // 차단돼 3역만 발사(red). fix 후: freshness가 cron cycle(≤2) 이산화로 바뀌어 128,365ms
       // (2 cycle 이내)도 신선 판정 → 4역 모두 발사(green) — 회귀 앵커.
-      // #2623 — 위 desk20260913 entry와 동일 이유(leg-2 성수 surface 오분류→차단 fix). 동일
-      // 경로(makeDesk20260913LockTrip)를 공유하는 이 아침 라이드 fixture도 성수가 복원된다.
-      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구', '성수'],
+      // #2623 — 실측 앵커는 4역 그대로. (P2-6 리뷰 — 아래 derivedFiredStations 분리 이유는
+      // 위 desk20260913 entry와 동일 — leg-2 성수는 이 아침 라이드도 13:02Z 이전 종료로 실측 X.
+      // 동일 경로(makeDesk20260913LockTrip)를 공유하므로 fix 후 재생에서 동일하게 파생 발사.)
+      firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      derivedFiredStations: ['성수'],
       hopEndPromptStations: ['건대입구'],
-      minPushes: 5,
+      minPushes: 4,
     },
   },
 ];

@@ -679,6 +679,16 @@ export interface ScheduledStats extends LiveActivityStats {
    * trainCode 바인딩이 닿지 않는 lockless 정적 구간이 그만큼 있었다는 신호.
    */
   locklessMotionGateBlocked: number;
+  /**
+   * #2623 P1-2 리뷰 — `deriveWaypointEnvironment`(stations.json 기반)가 역명/line lookup 실패로
+   * 'unknown' fallback을 반환한 누적 횟수. stations.json 실측상 environment 필드 자체가
+   * 'unknown'인 entry는 0건(station.ts 주석)이므로 이 카운터가 0이 아니면 사실상 역명 drift
+   * (#1410/#2566) 또는 line 불일치로 인한 lookup miss다. environment가 device 신호에서
+   * 정적 역 데이터로 바뀌면서(#2623) lookup miss는 해당 waypoint를 매 cycle 영구적으로
+   * mixed/unknown 보수 분기(lockAttachable 요구)로 떨어뜨린다 — 무로그 상태면 조용한 열화.
+   * 정상 운영에서 0건 기대. 0이 아니면 로그의 stationName/line으로 drift 원인 역 식별.
+   */
+  waypointEnvironmentLookupMiss: number;
   /** #819 — boarding-prompt 게이트 평가가 한 번이라도 시도된 trip 수 (lockMissing 부분집합). */
   boardingPromptEvaluated: number;
   /** #819 — 9단 AND 게이트를 모두 통과해 alert push가 발사된 횟수 (측정 인프라). */
@@ -1232,6 +1242,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     killSwitchLocklessIntermediateSkipped: 0,
     locklessIntermediateFired: 0,
     locklessMotionGateBlocked: 0,
+    waypointEnvironmentLookupMiss: 0,
     laPushSent: 0,
     laPushFailed: 0,
     laTokenCleared: 0,
@@ -3780,6 +3791,11 @@ async function tryAdvanceAndFireArvlcd(inputs: {
   // series read + 감지 결과를 evidence에 stamp. archFlag='off' 시 dormant (기존 동작 유지).
   const arcOvershootSeries = await readSeries(env.TRIPS, trip.token);
   const arcOvershootDetected = detectArcOvershoot(arcOvershootSeries);
+  // #2623 — 발사/advance 판정 입력을 device 기압계(trip.subsurface)에서 stations.json
+  // environment로 교체. #2623 P2-4 리뷰 — 아래 writeMetric도 이 값(판정에 실제 쓰인 값)을 그대로
+  // stamp한다(device 신호 재조회 X — 판정-관측 차원 불일치 방지 + resolveWaypointEnvironment
+  // 중복 호출로 인한 waypointEnvironmentLookupMiss 카운터/로그 이중 적재 방지, 1회만 호출).
+  const environment = resolveWaypointEnvironment(waypoint, stats, log);
   const outcome = await advanceTripPosition(
     env.TRIPS,
     trip.token,
@@ -3788,9 +3804,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       type: 'arvlcd-confirmed-train',
       stationId: waypoint.stationName,
       ts: now,
-      // #2623 — 발사/advance 판정 입력을 device 기압계(trip.subsurface)에서 stations.json
-      // environment로 교체. 관측(writeMetric)은 device 신호를 유지(아래 별도 호출).
-      environment: deriveWaypointEnvironment(waypoint),
+      environment,
       arvlcdTrainCode: lock.trainCode,
       arvlCd,
       arcOvershootDetected,
@@ -3819,7 +3833,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       tripToken: trip.token,
       stationId: waypoint.stationName,
       reason: outcome.blockReason ?? 'advance-blocked',
-      environment: deriveEvidenceEnvironment(trip),
+      environment,
       hopIndex: waypoint.hopIndex,
     });
     // ADR-037 D2c (#2542) — 모든 blockReason을 전이 시에만(#2073 quota 보호) D1 관측 대상으로
@@ -3845,7 +3859,7 @@ async function tryAdvanceAndFireArvlcd(inputs: {
     tripToken: trip.token,
     stationId: waypoint.stationName,
     reason: 'arvlcd-confirmed-train',
-    environment: deriveEvidenceEnvironment(trip),
+    environment,
     hopIndex: waypoint.hopIndex,
   });
   // #2063 (ADR-023 개정) — 매역 알림(station-notif)은 backend가 sleepModeEnabled로 mute 분기.
@@ -3861,6 +3875,30 @@ async function tryAdvanceAndFireArvlcd(inputs: {
     log,
     generatePushId,
   });
+}
+
+/**
+ * #2623 P1-2 리뷰 — `deriveWaypointEnvironment`(stationsLookup.ts, stations.json 기반) wrapper.
+ * lookup 실패로 'unknown' fallback이 나오면 log + `stats.waypointEnvironmentLookupMiss` 카운터를
+ * 남긴다. stations.json 실측상 environment 필드 자체가 'unknown'인 entry는 0건(station.ts
+ * 주석)이므로 'unknown' 반환은 사실상 항상 lookup miss(역명 drift #1410/#2566 또는 line 불일치)다.
+ * environment 입력이 device 신호(매 cycle 갱신)에서 정적 역 데이터로 바뀌며(#2623) lookup miss가
+ * 그 waypoint를 영구히 보수 분기로 떨어뜨리므로, 무로그 상태로 두지 않고 식별 가능하게 한다.
+ */
+export function resolveWaypointEnvironment(
+  waypoint: Waypoint,
+  stats: ScheduledStats,
+  log: Logger,
+): EvidenceEnvironment {
+  const environment = deriveWaypointEnvironment(waypoint);
+  if (environment === 'unknown') {
+    stats.waypointEnvironmentLookupMiss += 1;
+    log('waypoint-environment-lookup-miss', {
+      stationName: waypoint.stationName,
+      line: waypoint.line,
+    });
+  }
+  return environment;
 }
 
 /**
@@ -4420,7 +4458,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
           stationId: waypoint.stationName,
           ts: now,
           // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
-          environment: deriveWaypointEnvironment(waypoint),
+          environment: resolveWaypointEnvironment(waypoint, stats, log),
           arvlcdTrainCode: activeLock.trainCode,
         },
         generatePushId,
@@ -4687,7 +4725,7 @@ export async function runTrainCodeTracking(
             type: 'arvlcd-confirmed-train',
             stationId: waypoint.stationName,
             ts: now,
-            environment: deriveWaypointEnvironment(waypoint),
+            environment: resolveWaypointEnvironment(waypoint, stats, log),
             arvlcdTrainCode: activeLock.trainCode,
             arvlCd: estimate.arvlCd,
           }
@@ -4695,8 +4733,14 @@ export async function runTrainCodeTracking(
             type: 'position-train',
             stationId: waypoint.stationName,
             ts: now,
-            environment: deriveWaypointEnvironment(waypoint),
+            environment: resolveWaypointEnvironment(waypoint, stats, log),
             positionEntryFetchedAt: now,
+            // #2623 (P1-1 리뷰) — 이 evidence는 `estimateBoardingLockArrival`이 이미
+            // `positions.find((p) => p.trainCode === lock.trainCode)`로 activeLock.trainCode와
+            // 매칭한 realtimePosition만 사용한다(호출 시점 확정 사실 — 다른 trainCode의 position은
+            // 애초에 이 분기에 도달하지 않는다). stamp해 gate #5/#3 bypass가 이 identity를
+            // 자체 검증하도록 한다(caller-side 신뢰 단독 의존 대신 defense-in-depth).
+            arvlcdTrainCode: activeLock.trainCode,
           };
     await advanceBoardingLockWaypoint(
       trip,
@@ -5607,7 +5651,7 @@ async function tryFireConsensusTrainLeg(
       stationId: waypoint.stationName,
       ts: now,
       // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
-      environment: deriveWaypointEnvironment(waypoint),
+      environment: resolveWaypointEnvironment(waypoint, stats, log),
       arvlcdTrainCode: outcome.record.confirmedTrainCode,
       arvlCd: confirmedEntry.arvlCd,
     },
