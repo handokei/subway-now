@@ -81,9 +81,22 @@ export function resolveTripDeviceToken(trip: Trip): string {
   return trip.token;
 }
 
+/**
+ * #2628 — KV trip 쓰기 단일 지점. `boardingLock`이 부착 상태로 저장될 때마다 `lockEverAttached`를
+ * true로 자동 stamp한다(이미 true면 그대로 유지 — 재확인 불필요). 이렇게 하면 trip.boardingLock을
+ * 구성하는 모든 호출부(`index.ts`의 register-time 승격 / boarding-confirm / boarding-lock/sync
+ * promoted lock 등)를 개별적으로 수정하지 않아도 "lock이 생애 중 한 번이라도 부착됐는지"를 놓치지
+ * 않는다. `index.ts`의 same-session 재등록 merge는 이 필드를 명시 보존해 lock이 일시 해제된 뒤
+ * re-register돼도 히스토리가 유지된다(putTrip은 "이번 쓰기 시점"만 보고 stamp하므로 그 보존은
+ * caller 책임).
+ */
 export async function putTrip(kv: KVNamespace, trip: Trip): Promise<void> {
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
-  await kv.put(tripKey(trip.token), JSON.stringify(trip), { expirationTtl: ttlSec });
+  const toWrite: Trip =
+    trip.boardingLock !== undefined && trip.lockEverAttached !== true
+      ? { ...trip, lockEverAttached: true }
+      : trip;
+  await kv.put(tripKey(trip.token), JSON.stringify(toWrite), { expirationTtl: ttlSec });
 }
 
 /**

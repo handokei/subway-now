@@ -2993,6 +2993,60 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     });
   });
 
+  // #2628 — boarding_prompt_responded 컬럼이 항상 0으로 하드코딩되던 갭. 이 endpoint가 유일한
+  // boarding-prompt 응답 채널이라 action 값(boarded/disembarked/not-boarded) 무관하게 요청
+  // 자체가 응답이다 — trip.boardingPromptResponded를 stamp한다.
+  describe('boardingPromptResponded stamp (#2628)', () => {
+    it('boarded 응답 → boardingPromptResponded=true stamp', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), {
+          status: 200,
+        }),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptResponded).toBe(true);
+    });
+
+    it('disembarked 응답(기존 lock 있음) → boardingPromptResponded=true stamp', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          tripBody({
+            boardingLock: {
+              trainCode: '7246',
+              line: '7',
+              subwayId: '1007',
+              selectedDepartureTime: CREATED,
+              segmentStations: ['중곡', '어린이대공원'],
+              expiresAt: CREATED + 60 * 60_000,
+            },
+          }),
+        ),
+      );
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody({ action: 'disembarked' }), env);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptResponded).toBe(true);
+    });
+
+    it('not-boarded 응답 → boardingPromptResponded=true stamp', async () => {
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(tripBody()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody({ action: 'not-boarded' }), env);
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingPromptResponded).toBe(true);
+    });
+  });
+
   // ADR-037 D2b (#2535, 진단 계측 only) — buildBoardingConfirmEventMeta 순수 함수 단위 테스트.
   describe('buildBoardingConfirmEventMeta (#2535)', () => {
     it('outcome 있으면 meta에 포함', () => {
@@ -3484,6 +3538,61 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
     await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
     expect(stored.boardingPromptState).toBeUndefined();
+    vi.useRealTimers();
+  });
+});
+
+// #2628 — lock 생애 이력(lockEverAttached)/boarding-prompt 응답(boardingPromptResponded)도
+// boardingPromptState와 동일 정책(same-session 보존, new-session 리셋)으로 carry-over돼야
+// trip_metrics 집계가 재등록 사이에 유실되지 않는다.
+describe('POST /trips — #2628 lockEverAttached / boardingPromptResponded carry over same session', () => {
+  const CREATED = 1_700_000_000_000;
+  function tripBody(): Record<string, unknown> {
+    return {
+      token: 'tok-lea',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+    };
+  }
+
+  it('same session re-register(lock 이미 해제된 상태) → lockEverAttached/boardingPromptResponded 보존', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:tok-lea',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        boardingLock: undefined,
+        lockEverAttached: true,
+        boardingPromptResponded: true,
+      }),
+    );
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-lea')) as string);
+    expect(stored.lockEverAttached).toBe(true);
+    expect(stored.boardingPromptResponded).toBe(true);
+  });
+
+  it('new session (createdAt drift > 5s) → 둘 다 초기화', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:tok-lea',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        boardingLock: undefined,
+        lockEverAttached: true,
+        boardingPromptResponded: true,
+      }),
+    );
+    await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-lea')) as string);
+    expect(stored.lockEverAttached).toBeUndefined();
+    expect(stored.boardingPromptResponded).toBeUndefined();
     vi.useRealTimers();
   });
 });

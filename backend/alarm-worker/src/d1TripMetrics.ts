@@ -8,7 +8,7 @@
  */
 
 import { hashTripToken } from './sentry';
-import type { BoardingPromptState, Trip } from './types';
+import type { Trip } from './types';
 
 /**
  * trip_metrics 에 trip 종료 기록을 적재한다.
@@ -36,6 +36,9 @@ export async function recordTripMetrics(
 
     const lineList = extractLineList(trip);
     const chainComplete = isChainComplete(trip);
+    // #2628 — trip_events(D1 SSoT)에서 직접 집계. INSERT 직전에 미리 구해 bind 인자 목록을
+    // 동기 표현식으로 유지한다(가독성 — await를 .bind() 인자 중간에 섞지 않음).
+    const firedCount = await countSentFireAttempts(db, tokenHash, trip.createdAt, endedAt);
 
     // #2268 — INSERT OR IGNORE + migration 0004의 (trip_token_hash, started_at) UNIQUE index.
     // DELETE /trips/:token이 getTrip→cleanupTripWithLa 사이 race하면 동일 trip 종료가
@@ -61,13 +64,23 @@ export async function recordTripMetrics(
         extractOriginStation(trip),
         trip.destination ?? null,
         JSON.stringify(lineList),
-        // #2281 — hop-end/boarding prompt가 trip.hopEndPromptState / trip.boardingPromptState에
-        // 이미 남기는 per-trip fireCount를 집계. 기존 컬럼(fired_count) 재사용 — 스키마 변경 없음.
-        computeFiredCount(trip),
+        // #2628 — station-passed/transfer/destination alert push가 실제로 발사(outcome='sent')된
+        // 횟수를 D1 trip_events(kind='cron-fire-attempt')에서 직접 집계. #2281의 trip 객체 카운터
+        // (boardingPromptState/hopEndPromptState fireCount 합산)는 prompt 발사만 셌을 뿐 매역
+        // alert 발사를 전혀 포함하지 않았고, D1이 이미 SSoT라 POST /trips 재등록으로 trip 객체가
+        // 교체돼도 유실되지 않는다(trip.createdAt이 재등록 후에도 같은 세션에선 불변이라 집계
+        // window가 흔들리지 않음).
+        firedCount,
         0, // suppressed_count: 동상
         boardingPromptState?.fired ? 1 : 0,
-        0, // boarding_prompt_responded: 현재 Trip 타입에 responded 필드 없음 — Phase 2 follow-up에서 추가
-        boardingLock ? 1 : 0,
+        // #2628 — POST /trips/:token/boarding-confirm 응답 시 stamp되는 생애 플래그. 기존
+        // 하드코딩 0("Phase 2 follow-up") 수리.
+        trip.boardingPromptResponded ? 1 : 0,
+        // #2628 — "현재 부착 상태"(boardingLock truthy)만이 아니라 "생애 중 한 번이라도
+        // 부착됐는지"(lockEverAttached, trips.ts putTrip이 stamp)도 함께 본다. 종료 직전 lock을
+        // 해제한 trip이 0으로 오기록되던 RCA를 차단 — 방어적으로 현재 부착 상태도 OR로 포함해
+        // lockEverAttached 배선이 누락된 레거시 경로가 있어도 최소한 현재 상태는 반영한다.
+        trip.lockEverAttached === true || boardingLock !== undefined ? 1 : 0,
         chainComplete ? 1 : 0,
       )
       .run();
@@ -103,30 +116,42 @@ function extractOriginStation(trip: Trip): string | null {
 }
 
 /**
- * #2281 — trip 전체에서 실제 발사된 prompt 수를 집계한다.
+ * #2628 — station-passed/transfer/destination alert push가 실제로 발사(outcome='sent')된 횟수를
+ * D1 `trip_events`(kind='cron-fire-attempt', `scheduled.ts` `recordFireAttempt`)에서 직접
+ * COUNT한다. D1이 append-only SSoT라 POST /trips 재등록으로 trip KV 객체가 교체돼도 유실되지
+ * 않는다(#2281의 trip 객체 카운터 방식이 갖던 근본 결함).
  *
- * 대상: boarding-prompt(`trip.boardingPromptState`) + hop-end prompt(`trip.hopEndPromptState`,
- * leg별 dedup key로 여러 개 존재 가능) — 둘 다 사용자에게 응답을 요구하는 alert push이자, trip
- * 객체에 이미 per-trip 발사 상태(`fireCount`/`fired`)를 갖고 있어 새 스키마 없이 집계 가능하다.
+ * `trip.createdAt`~`endedAt` window로 한정 — 같은 token이 이후 완전히 새 trip(다른 세션)으로
+ * 재등록되면 `createdAt`이 바뀌므로 이전 trip의 fire-attempt와 섞이지 않는다.
  *
- * 범위 밖(전수 감사, PR 본문 표 참조): intermediate/transfer/destination 알림, reschedule,
- * lockless-intermediate, sleep-alarm companion, vanish release/fallback, train-reconfirm push는
- * cron 단위(`ScheduledStats`) 집계만 있고 trip 객체에 영속 상태가 없다 — 포함하려면 Trip 스키마에
- * 새 필드를 추가해야 해 이번 최소 변경 범위를 벗어난다(follow-up 후보).
+ * 범위 밖(#2281 감사 표 그대로 승계): boarding-prompt/hop-end-prompt 자체의 발사 횟수는
+ * `fired_count`에 포함하지 않는다(alert push와 별개 신호) — `boarding_prompt_displayed` 컬럼이
+ * boarding-prompt 발사 여부를 이미 담당한다.
+ *
+ * DB 조회 실패는 swallow하고 0을 반환 — 상위 `recordTripMetrics`의 INSERT 흐름을 막지 않는다.
  */
-function computeFiredCount(trip: Trip): number {
-  const boardingFired = countPromptFires(trip.boardingPromptState);
-  const hopEndFired = Object.values(trip.hopEndPromptState ?? {}).reduce(
-    (sum, state) => sum + countPromptFires(state),
-    0,
-  );
-  return boardingFired + hopEndFired;
-}
-
-/** 단일 `BoardingPromptState`의 발사 횟수. `fireCount`(반복 발사 지원) 우선, 없으면 `fired` boolean. */
-function countPromptFires(state: BoardingPromptState | undefined): number {
-  if (state?.fireCount !== undefined) return state.fireCount;
-  return state?.fired ? 1 : 0;
+async function countSentFireAttempts(
+  db: D1Database,
+  tokenHash: string,
+  startedAt: number,
+  endedAt: number,
+): Promise<number> {
+  try {
+    const result = await db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM trip_events
+         WHERE token_hash = ? AND kind = 'cron-fire-attempt' AND ts >= ? AND ts <= ?
+           AND json_extract(meta, '$.outcome') = 'sent'`,
+      )
+      .bind(tokenHash, startedAt, endedAt)
+      .first<{ count: number }>();
+    return result?.count ?? 0;
+  } catch (e) {
+    console.warn(
+      JSON.stringify({ msg: 'd1TripMetrics fired_count query failed', err: String(e) }),
+    );
+    return 0;
+  }
 }
 
 /**

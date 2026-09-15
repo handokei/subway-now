@@ -81,6 +81,57 @@ describe('trips KV CRUD', () => {
     expect(loaded?.waypoints[0].stationName).toBe('강남');
   });
 
+  // #2628 — putTrip이 boardingLock 부착 상태를 쓸 때 lockEverAttached를 자동 stamp한다(단일
+  // 기록 지점). trip_metrics.lock_attached가 "종료 시점 스냅샷"이 아니라 "생애 이력"을 반영하도록
+  // 하는 root fix.
+  describe('putTrip lockEverAttached 자동 stamp (#2628)', () => {
+    const lock = {
+      trainCode: '7246',
+      line: '7' as const,
+      subwayId: '1007',
+      selectedDepartureTime: Date.now(),
+      segmentStations: ['상봉', '중화'],
+      expiresAt: Date.now() + 3600_000,
+    };
+
+    it('boardingLock이 부착 상태로 쓰이면 lockEverAttached=true가 stamp된다', async () => {
+      const trip = makeTrip({ boardingLock: lock });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const loaded = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(loaded?.lockEverAttached).toBe(true);
+    });
+
+    it('boardingLock이 없으면 lockEverAttached를 stamp하지 않는다(undefined 유지)', async () => {
+      const trip = makeTrip();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const loaded = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(loaded?.lockEverAttached).toBeUndefined();
+    });
+
+    it('lock이 해제된 뒤(boardingLock=undefined) re-write해도 이미 true였던 lockEverAttached는 caller가 보존하면 유지된다', async () => {
+      const attached = makeTrip({ boardingLock: lock });
+      await putTrip(kv as unknown as KVNamespace, attached);
+      const afterAttach = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(afterAttach?.lockEverAttached).toBe(true);
+
+      // 해제 — caller(index.ts boarding-confirm 'disembarked')가 기존 필드를 spread로 보존.
+      const released = { ...afterAttach!, boardingLock: undefined };
+      await putTrip(kv as unknown as KVNamespace, released);
+      const afterRelease = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(afterRelease?.lockEverAttached).toBe(true);
+      expect(afterRelease?.boardingLock).toBeUndefined();
+    });
+
+    it('이미 lockEverAttached=true인 trip을 boardingLock 그대로 재write해도 값이 유지된다(원본 trip 객체 mutate 없음)', async () => {
+      const trip = makeTrip({ boardingLock: lock, lockEverAttached: true });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      // 호출자에게 전달된 원본 객체는 mutate되지 않아야 한다(putTrip이 새 객체를 만들어 쓴다).
+      expect(trip.lockEverAttached).toBe(true);
+      const loaded = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(loaded?.lockEverAttached).toBe(true);
+    });
+  });
+
   it('get returns null for unknown key', async () => {
     expect(await getTrip(kv as unknown as KVNamespace, 'missing')).toBeNull();
   });

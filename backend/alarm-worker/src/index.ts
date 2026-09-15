@@ -1095,6 +1095,12 @@ app.post('/trips', async (c) => {
           legBoardingEligibleAt: existing.legBoardingEligibleAt,
           legBoardingPromptState: existing.legBoardingPromptState,
           legResolveStreak: existing.legResolveStreak,
+          // #2628 — lock 생애 이력 / boarding-prompt 응답 stamp도 backend-only state. same-session
+          // 재등록마다 `...incoming`(둘 다 안 보내는 필드)로 덮이면, lock이 이번 요청 시점에 일시
+          // 해제돼 있어도(예: disembark 후 GPS update 재등록) putTrip의 자동 stamp(현재 boardingLock
+          // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
+          lockEverAttached: existing.lockEverAttached,
+          boardingPromptResponded: existing.boardingPromptResponded,
         }
       : {
           ...incoming,
@@ -2106,10 +2112,19 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
+    // #2628 — 이 endpoint(`POST /trips/:token/boarding-confirm`)가 유일한 boarding-prompt 응답
+    // 채널. action 값 무관하게 요청 자체가 응답 — trip_metrics.boarding_prompt_responded가 항상
+    // 0으로 하드코딩되던 갭을 수리한다.
+    working = { ...working, boardingPromptResponded: true };
     await putTrip(c.env.TRIPS, working);
   } else if (payload.action === 'disembarked') {
     if (existing.boardingLock !== undefined) {
-      working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
+      working = {
+        ...existing,
+        boardingLock: undefined,
+        consecutiveEtaMissing: 0,
+        boardingPromptResponded: true,
+      };
       await deleteProgress(c.env.TRIPS, token);
       await putTrip(c.env.TRIPS, working);
     }
@@ -2119,6 +2134,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     working = {
       ...existing,
       boardingPromptState: markPromptSilenced(existing.boardingPromptState, now),
+      boardingPromptResponded: true,
     };
     await putTrip(c.env.TRIPS, working);
     lockState = 'none';
