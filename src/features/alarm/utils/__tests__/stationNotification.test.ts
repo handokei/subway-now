@@ -75,8 +75,8 @@ jest.mock('../liveActivityPushChannel', () => ({
     mockShouldSkipDeviceLiveActivityWrite(...args),
   // #2667 — LA 생성 가능 호출 직전에 ambient token 구독을 보장한다(멱등). 구독 동작 자체는
   // liveActivityPushChannel.test.ts가 단독 검증 — 여기서는 wire-up만 본다.
-  startAmbientLiveActivityTokenRegistration: (...args: unknown[]) =>
-    mockStartAmbientLiveActivityTokenRegistration(...args),
+  startAmbientLiveActivityTokenRegistration: () =>
+    mockStartAmbientLiveActivityTokenRegistration(),
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
