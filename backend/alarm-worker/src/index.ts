@@ -13,6 +13,9 @@
 
 import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
+// #2655 — 역명 정규화(#1410/#2566 drift 흡수). scheduled.ts의 transfer anchor 비교와 동일 함수를
+// 써야 "sync가 stamp한 역명"과 "cron이 advance하는 waypoint 역명"이 조용히 어긋나지 않는다.
+import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
@@ -2356,6 +2359,36 @@ app.post('/boarding-lock/sync', async (c) => {
     }),
   );
   const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  // #2655 — 사용자가 환승역에 **도착한 시각**을 backend advance 타이밍과 분리해 기록한다.
+  // device sync는 accuracy≤50m 게이트를 통과한 확정 관측이라(`useBoardingLockSync`) "지금 이 역에
+  // 있다"의 ground truth로 다룬다(#2645가 하차 확정에 쓰는 것과 동일 근거). 아래 transfer stamp
+  // (`advanceBoardingLockWaypoint`)가 이 값을 도보 게이트 기준점으로 쓴다 — cron이 지하 침묵으로
+  // 수 분 늦게 advance해도 도보 시계는 실제 도착 시각부터 흐른다.
+  //
+  // advance 여부와 무관하게 stamp한다: 정작 문제가 된 케이스는 sync가 waypoint를 소비하지 못한
+  // (drift 가드/유예) 채 cron이 한참 뒤에 advance하는 조합이다. 같은 역은 **최초 관측만** 유지해
+  // 재보고로 시계가 뒤로 밀리지 않게 한다.
+  // 코드리뷰 P2-2 — 이름만으로 배열 전체를 뒤지면 순환선 재방문/동명 역 라우팅에서 **훨씬 뒤에 올**
+  // transfer가 먼저 stamp될 수 있다. 남은 waypoint 중 **가장 앞선** transfer(=진짜 다음 환승)만
+  // 대상으로 한다.
+  const nextTransfer = existing.waypoints.find((wp) => wp.kind === 'transfer');
+  const upcomingTransfer =
+    nextTransfer &&
+    normalizeStationName(nextTransfer.stationName) ===
+      normalizeStationName(payload.observedStationName)
+      ? nextTransfer
+      : undefined;
+  if (
+    upcomingTransfer &&
+    normalizeStationName(existing.transferObservedAt?.stationName ?? '') !==
+      normalizeStationName(upcomingTransfer.stationName)
+  ) {
+    existing.transferObservedAt = {
+      stationName: upcomingTransfer.stationName,
+      line: upcomingTransfer.line,
+      atMs: now,
+    };
+  }
 
   let working: Trip = existing;
   // #2645 PR 코드리뷰 (코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/LOW-5, 2026-09-15) — 실제로 적용된 hop 수.

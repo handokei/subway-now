@@ -271,6 +271,25 @@ export interface Trip {
    */
   legBoardingEligibleAt?: number;
   /**
+   * #2655 — device가 **환승역에 있다고 관측한 최초 시각**(epoch ms)과 그 역.
+   *
+   * 왜 필요한가: `legBoardingEligibleAt`(도보 게이트 만료)는 backend가 transfer waypoint를
+   * advance한 **그 순간**을 기준으로 stamp된다. 그런데 lock 활성 구간의 transfer advance는
+   * cron이 잠긴 trainCode를 환승역에서 확증(arvlCd/realtimePosition)해야 일어나고, 지하에서는
+   * 그 신호가 수 분 침묵한다. 2026-09-16 실측: device sync가 06:34:59에 건대입구를 보고했는데
+   * cron transfer-advance는 **06:41:10**(+6분)에야 일어나 도보 시계가 그때부터 흘렀고, leg-2
+   * 탑승 프롬프트가 06:42/43/44 세 번 연속 `walk-gated`로 죽었다(leg-2 lock 0건 → 매역 알림 0건).
+   *
+   * 이 필드는 "사용자가 언제 환승역에 도착했는가"를 backend advance 타이밍과 분리해 보관한다.
+   * `/boarding-lock/sync`(device가 좋은 GPS fix로 확정한 역, accuracy≤50m 게이트를 이미 통과)가
+   * 다가오는 transfer waypoint와 같은 역을 보고하면 stamp한다. 같은 역에 대해서는 **최초 관측만**
+   * 유지한다(재보고로 시계가 뒤로 밀리지 않도록).
+   *
+   * 도보 게이트 자체(#2515 오탑승 방지)는 제거하지 않는다 — 기준점만 "backend가 알아챈 시각"에서
+   * "사용자가 실제로 도착한 시각"으로 옮긴다.
+   */
+  transferObservedAt?: { stationName: string; line: string; atMs: number };
+  /**
    * #2515 — leg 2 "탑승하셨나요?" 프롬프트 발사 상태. `boardingPromptState`(leg 1 전용, GPS 9단
    * 게이트 경로)/`hopEndPromptState`(환승역 "하차했나요?")와 별개 네임스페이스 — 셋 다 같은 trip에
    * 공존 가능하므로 충돌 방지. `currentLegAnchor`가 재stamp될 때마다(=새 환승) undefined로 함께

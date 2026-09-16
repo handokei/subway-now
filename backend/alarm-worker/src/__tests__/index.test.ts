@@ -3983,6 +3983,66 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(await res.json()).toEqual({ error: 'trip_not_found' });
   });
 
+  // #2655 — 사용자가 환승역에 도착한 시각을 backend advance 타이밍과 분리해 기록한다. cron이
+  // 지하 침묵으로 수 분 늦게 transfer를 advance해도 도보 게이트는 이 관측 시각부터 흐른다.
+  describe('#2655 transferObservedAt stamp', () => {
+    function tripWithTransfer(): Record<string, unknown> {
+      return tripWithLock({
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '교대', line: '2', kind: 'transfer' },
+          { stationName: '남부터미널', line: '3', kind: 'destination' },
+        ],
+      });
+    }
+
+    it('관측역이 다가오는 transfer waypoint면 최초 관측 시각을 stamp한다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithTransfer(), env);
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+      expect(stored.transferObservedAt?.stationName).toBe('교대');
+      expect(typeof stored.transferObservedAt?.atMs).toBe('number');
+    });
+
+    it('같은 환승역 재보고는 최초 관측 시각을 덮어쓰지 않는다 (시계가 뒤로 밀리지 않도록)', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithTransfer(), env);
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const first = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string)
+        .transferObservedAt.atMs as number;
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 2, accuracy: 5 },
+        env,
+      );
+      const second = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string)
+        .transferObservedAt.atMs as number;
+      expect(second).toBe(first);
+    });
+
+    it('환승역이 아닌 역 관측은 stamp하지 않는다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithTransfer(), env);
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+      expect(stored.transferObservedAt).toBeUndefined();
+    });
+  });
+
   it('현재 waypoints[0] 일치 → 1 hop advance + currentWaypoint=역삼', async () => {
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);

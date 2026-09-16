@@ -17,6 +17,7 @@ import {
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
   STALE_LOCK_FIRE_THRESHOLD_MS,
+  TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
   VANISH_RE_ATTACH_THRESHOLD,
   BACKEND_TRIP_LIFECYCLE_SILENCE_MS,
@@ -2741,6 +2742,72 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
     expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
     expect(stored.legBoardingPromptState).toBeUndefined();
+  });
+
+  // #2655 — 도보 게이트 기준점을 "backend advance 시각"이 아니라 "사용자 도착 시각"으로.
+  // 2026-09-16 실측 재현: device sync가 06:34:59에 건대입구를 보고했는데 lock 활성 cron의
+  // transfer advance는 06:41:10(+6분)에야 일어났다. 기준점이 advance 시각이면 도보 시계가 통째로
+  // 6분 밀려 leg-2 탑승 프롬프트가 3회 연속 walk-gated로 죽는다(실측 leg-2 lock 0건).
+  it('#2655 — transferObservedAt(device sync 관측)이 있으면 도보 게이트가 그 시각 기준으로 만료된다', async () => {
+    const kv = new InMemoryKV();
+    const observedAt = NOW - 6 * 60_000; // 사용자는 6분 전에 환승역 도착
+    await runArrivedScenario(
+      kv,
+      {
+        transferObservedAt: { stationName: '군자', line: '7', atMs: observedAt },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-observed-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+    expect(stored.legBoardingEligibleAt).toBe(observedAt + expectedWalkSeconds * 1000);
+    // 도보시간(수 분)보다 관측이 더 오래됐으므로 게이트는 이미 열려 있어야 한다 —
+    // 이것이 leg-2 프롬프트가 살아나는 조건이다.
+    expect(stored.legBoardingEligibleAt).toBeLessThanOrEqual(NOW);
+  });
+
+  it('#2655 (리뷰 P2-1) — 도보시간 배수 상한을 넘는 오래된 관측은 채택하지 않는다 (조기 게이트 만료 차단)', async () => {
+    const kv = new InMemoryKV();
+    const walkSeconds = getTransferSeconds('7', '5', '군자');
+    const tooOld = NOW - walkSeconds * 1000 * (TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER + 1);
+    await runArrivedScenario(
+      kv,
+      {
+        transferObservedAt: { stationName: '군자', line: '7', atMs: tooOld },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-observed-too-old',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.legBoardingEligibleAt).toBe(NOW + walkSeconds * 1000);
+  });
+
+  it('#2655 — 다른 역 관측이거나 미래 값이면 채택하지 않고 기존대로 advance 시각 기준', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        // 다른 환승역 관측(멀티 환승에서 이전 leg 잔재) — 이번 waypoint에는 쓰면 안 된다.
+        transferObservedAt: { stationName: '잠실나루', line: '7', atMs: NOW - 10 * 60_000 },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-observed-mismatch',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.legBoardingEligibleAt).toBe(NOW + getTransferSeconds('7', '5', '군자') * 1000);
   });
 
   // #2564 (ADR-038 다중 환승 leg-agnostic) — 이미 이전 환승에서 stamp된 currentLegAnchor가
