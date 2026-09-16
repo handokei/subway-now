@@ -125,6 +125,45 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     expect(hook.result.current.displayOnlyEstimate?.index).toBe(0);
   });
 
+  // #2669 — 경로 역행 가드의 **거부 분기**를 훅 레벨에서 실제로 태운다(코드리뷰 P1: 순수 함수만
+  // 검증하면 부품 green / whole inert). 2026-09-16 재현: backend가 leg-2에서 전진을 멈춰
+  // lastAdvanceAt이 10분째 고정인데 receivedAt만 계속 갱신돼 "fresh"였고, 사용자는 GPS상 경로
+  // 끝(청담)에 도착해 있었다. 그 상태에서 backend가 표시를 origin으로 되돌리면 안 된다.
+  it('#2669 — backend 정체 + GPS가 경로상 앞 → backend-ssot 채택 거부(표시 역행 차단)', async () => {
+    const { routeContext } = setupLocklessTripAtYongmasan();
+    const nowMs = T0 + 60 * 60_000;
+    jest.setSystemTime(nowMs);
+    // GPS는 경로 끝(청담)을 신뢰 가능하게 가리킨다 — arc index가 mirror(용마산, idx 0)보다 크다.
+    const live = { station: chungdam, distanceKm: 0 };
+    mockNearest.mockReturnValue({
+      result: live,
+      liveResult: live,
+      stickyDisplayOnly: null,
+      variants: [chungdam],
+      userLocation: { lat: chungdam.lat, lng: chungdam.lng },
+      ...GPS_BASE_DEFAULTS,
+      accuracyMeters: 12,
+      refresh: jest.fn(),
+    });
+    mockFindTop.mockReturnValue([{ station: chungdam, distanceKm: 0 }]);
+    mockRead.mockResolvedValue(
+      makeBackendSsotMirrorEntry({
+        currentStationId: yongmasan.name,
+        lastAdvanceAt: nowMs - 10 * 60_000, // backend는 10분째 전진 없음
+        receivedAt: nowMs, // 그런데 mirror 자체는 방금 갱신돼 "fresh"
+      }),
+    );
+
+    const hook = renderHook(() => useFusedNearestStation(undefined, undefined, routeContext));
+    await flushBackendSsotMirrorTick();
+
+    // 표시 채널: backend-ssot-override로 되돌아가지 않는다.
+    expect(hook.result.current.displayOnlyEstimate?.strategy).not.toBe('backend-ssot-override');
+    // fire path: cascade도 backend-ssot tier를 채택하지 않는다.
+    expect(hook.result.current.source).not.toBe('backend-ssot');
+    expect(hook.result.current.result?.station.id).not.toBe(yongmasan.id);
+  });
+
   it('mirror null → estimator 그대로 (lockless-route-hop) — fallback graceful', async () => {
     const { routeContext } = setupLocklessTripAtYongmasan();
     const nowMs = T0 + 60 * 60_000;

@@ -80,6 +80,7 @@ import {
   estimateStationProgress,
 } from '../../route/utils/stationProgressEstimator';
 import { hopTimeMsAt } from '../../route/utils/hopTime';
+import { isBackendSsotRouteRegression } from '../utils/backendSsotRegressionGuard';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { resolveBackendSsotMirrorStation } from '../../alarm/utils/backendSsotMirror';
 import { useBackendSsotMirrorPoll } from '../../alarm/hooks/useBackendSsotMirrorPoll';
@@ -1294,7 +1295,23 @@ export function useFusedNearestStation(
   // 이미 backend 생존 + pull 채널 정상 도달을 증명하므로, silent push 건강도와 별개로 채택한다.
   // 기존 게이트(#1677)는 "push 60s 미수신 + advance 180s 미갱신"의 이중 조건이 지하·정지 trip을
   // 영구 미채택시키는 deadlock을 유발했다 — 단일 조건(pull receivedAt 180s)으로 통합해 해소.
-  const backendSsotAccepts = ssotStation !== null;
+  // #2669 — 경로 역행 가드. backend가 **전진을 멈춘** 상태(leg-2처럼 lock 없이 추적이 끊긴 구간)
+  // 에서는 같은 SSoT가 계속 재전송되며 `receivedAt`만 갱신돼 영원히 "fresh"로 남는다. 그 얼어붙은
+  // 값이 신뢰 가능한 GPS보다 우선 채택되면 표시가 경로를 거슬러 되돌아간다 — 2026-09-16 라이드에서
+  // 사용자가 목적지(뚝섬)에 도착하는 순간 화면이 3정거장 뒤 환승역(건대입구, idx 7→0)으로 회귀했다.
+  // 판정은 순수 함수로 분리(근거/조건은 그 파일 헤더). 지하·정지(GPS 죽음)에서는 조건이 깨져
+  // 가드가 비활성 — #2261이 해소한 "lastAdvanceAt 기준 영구 미채택" deadlock을 되살리지 않는다.
+  const ssotRouteRegressionRejected =
+    ssotStation !== null &&
+    backendSsotMirror !== null &&
+    isBackendSsotRouteRegression({
+      mirrorLastAdvanceAt: backendSsotMirror.lastAdvanceAt,
+      mirrorArcIndex: arcIndexOfStation(arcStations, ssotStation),
+      gpsArcIndex: gps.result ? arcIndexOfStation(arcStations, gps.result.station) : -1,
+      gpsQualityDegraded: gps.gpsQualityDegraded,
+      now: Date.now(),
+    });
+  const backendSsotAccepts = ssotStation !== null && !ssotRouteRegressionRejected;
 
   // #1932 (Epic #1927 G2) — environment SSOT 단일화 + cascade 직전 산출.
   //
