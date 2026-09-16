@@ -10052,6 +10052,57 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
       expect(inserts.filter((args) => args[2] === 'cron-fire-attempt')).toHaveLength(1);
     });
   });
+
+  // #2662 — `fireArvlCdStationPush`의 조용한 skip 지점(로그/AE만 남기던 곳)을 D1에 기록한다.
+  // "재발해도 또 못 찾는다"를 끝내는 것이 유일한 목적 — 발사/게이트 판정은 불변.
+  describe('#2662 발사 skip 지점 D1 기록', () => {
+    it('sleepModeEnabled로 매역 알림이 mute되면 reason=station-notif-sleep 1건 기록', async () => {
+      const { db, inserts } = makeFireLogDb();
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeLockTrip({ sleepModeEnabled: true }));
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2662-sleep',
+      });
+      const skipInserts = inserts
+        .filter((args) => args[2] === 'cron-fire-attempt')
+        .map((args) => JSON.parse(args[5] as string) as { outcome: string; reason?: string });
+      expect(skipInserts).toContainEqual(
+        expect.objectContaining({ outcome: 'skipped-reason', reason: 'station-notif-sleep' }),
+      );
+    });
+
+    it('같은 사유라도 역이 바뀌면 다시 기록된다 (마커가 reason@station — 어느 역이 침묵했는지 확정)', async () => {
+      const { db, inserts } = makeFireLogDb();
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeLockTrip({ sleepModeEnabled: true }));
+      const deps = {
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        generatePushId: () => 'p-2662-multi',
+      };
+      await runScheduled(makeEnv(kv, undefined, db), {
+        ...deps,
+        seoul: makeArrivalSeoul('중곡', 0, 1),
+        now: () => NOW,
+      });
+      await runScheduled(makeEnv(kv, undefined, db), {
+        ...deps,
+        seoul: makeArrivalSeoul('군자', 0, 1),
+        now: () => NOW + 60_000,
+      });
+      const sleepSkips = inserts
+        .filter((args) => args[2] === 'cron-fire-attempt')
+        .filter((args) => (JSON.parse(args[5] as string) as { reason?: string }).reason === 'station-notif-sleep')
+        .map((args) => args[3]);
+      expect(sleepSkips).toEqual(['중곡', '군자']);
+    });
+  });
 });
 
 /**

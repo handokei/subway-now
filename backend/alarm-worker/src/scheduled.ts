@@ -3298,14 +3298,41 @@ async function recordFireBlockReasonTransition(
   reason: string,
   now: number,
 ): Promise<void> {
-  if (ssot === null || ssot.lastFireBlockReason === reason) return;
+  if (ssot === null) return;
+  // #2662 — dedup 마커를 `reason@station`으로 키잉한다. reason만 비교하면 같은 사유가 다음 역에서
+  // 재발했을 때(예: 매 역 dedup skip) 첫 역 1건만 남아 "어느 역이 침묵했는가"를 D1로 못 가린다 —
+  // 이 계측의 목적이 바로 그 확정이다. 매 tick 반복 기록 억제(#2073 quota)는 그대로 유지된다.
+  const marker = `${reason}@${waypoint.stationName}`;
+  if (ssot.lastFireBlockReason === marker) return;
   await writeSsot(
     env.TRIPS,
-    { ...ssot, lastFireBlockReason: reason },
+    { ...ssot, lastFireBlockReason: marker },
     { expiresAt: trip.expiresAt },
   );
   await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, reason);
 }
+
+/**
+ * #2662 (계측 전용) — `fireArvlCdStationPush`의 조용한 skip 사유(데이터 주도).
+ *
+ * 2026-09-16 라이드 조사에서 발사 skip 경로 다수가 **D1에 아무것도 남기지 않는다**는 것이
+ * 이 조사의 최대 자산이었다(stale 가드=AE only, dedup=log only, legacy gate mismatch=log only).
+ * 로그는 실시간 tail로만 볼 수 있고 AE dataset은 주석 처리돼 no-op이라, 재발해도 사후에
+ * "왜 이 역이 침묵했는가"를 확정할 수단이 없었다. 신규 계측 채널을 만들지 않고 이미 있는
+ * 전이-기록 헬퍼(`recordFireBlockReasonTransition`, kind='cron-fire-attempt',
+ * outcome='skipped-reason')에 skip 지점을 연결하는 것이 본 계측의 전부다.
+ *
+ * 발사/게이트 판정에는 일절 관여하지 않는다 — 각 분기의 return/조건은 그대로다.
+ */
+const FIRE_SKIP_REASON = {
+  sleep: 'station-notif-sleep',
+  stationPassedDedup: 'station-passed-dedup',
+  staleSsot: 'stale-ssot',
+  fireOnceCycle: 'fire-once-cycle-already',
+  arvlCdDedup: 'arvlcd-dedup',
+  crossStationDedup: 'cross-station-dedup',
+  legacyGateMismatch: 'legacy-gate-mismatch',
+} as const;
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
@@ -3314,11 +3341,25 @@ export async function fireArvlCdStationPush(
   inputs: FireArvlCdStationPushInputs,
 ): Promise<{ dirty: boolean }> {
   const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
+  // #2662 — 아래 skip 분기들이 D1에 사유를 남기려면 SSoT 전이 마커가 필요하다. stale 가드가
+  // 이미 같은 파라미터로 읽던 read를 함수 앞으로 끌어올려 재사용한다(read 횟수 불변, 발사
+  // 경로에서는 fire payload의 `ssot` forward로도 계속 재사용된다).
+  const ssotForFireGate = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
   if (trip.sleepModeEnabled === true) {
     log('station-notif skip: sleep', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
     });
+    await recordFireBlockReasonTransition(
+      env,
+      trip,
+      waypoint,
+      ssotForFireGate,
+      FIRE_SKIP_REASON.sleep,
+      now,
+    );
     return { dirty: false };
   }
   // #2506 재정의 (#2571, 2026-09-12 실측 재생 근거) — "역당 알림 1개"는 유지하되 트리거를
@@ -3335,6 +3376,14 @@ export async function fireArvlCdStationPush(
       station: waypoint.stationName,
       arvlCd,
     });
+    await recordFireBlockReasonTransition(
+      env,
+      trip,
+      waypoint,
+      ssotForFireGate,
+      FIRE_SKIP_REASON.stationPassedDedup,
+      now,
+    );
     return { dirty: false };
   }
   // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
@@ -3345,9 +3394,7 @@ export async function fireArvlCdStationPush(
   // #2321 (O1-B) — device sync stale일 때는 본 가드도 dormant 전환. 정상 흐름에서는 본 함수
   // 호출 직전 advanceTripPosition이 이미 lastAdvanceAt을 방금 갱신해 staleMs≈0이 되므로
   // 무영향이지만, defense-in-depth로 게이트 #1~#3과 동일 staleness 정책을 명시적으로 정합시킨다.
-  const ssotForStale = await readSsot(env.TRIPS, trip.token, {
-    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-  });
+  const ssotForStale = ssotForFireGate;
   if (
     ssotForStale !== null &&
     !isDeviceSyncStale(ssotForStale, now) &&
@@ -3370,6 +3417,14 @@ export async function fireArvlCdStationPush(
       hopIndex: waypoint.hopIndex,
       staleMs: now - ssotForStale.lastAdvanceAt,
     });
+    await recordFireBlockReasonTransition(
+      env,
+      trip,
+      waypoint,
+      ssotForStale,
+      FIRE_SKIP_REASON.staleSsot,
+      now,
+    );
     return { dirty: false };
   }
   // ADR-022 Phase 1-1 (#1985) → #2448 확장 — arvlCd fire-once TTL 게이트.
@@ -3403,6 +3458,14 @@ export async function fireArvlCdStationPush(
         reason: 'fire-once-cycle-already',
         hopIndex: waypoint.hopIndex,
       });
+      await recordFireBlockReasonTransition(
+        env,
+        trip,
+        waypoint,
+        ssotForFireGate,
+        FIRE_SKIP_REASON.fireOnceCycle,
+        now,
+      );
       return { dirty: false };
     }
   }
@@ -3424,6 +3487,14 @@ export async function fireArvlCdStationPush(
       reason: 'arvlcd-dedup',
       hopIndex: waypoint.hopIndex,
     });
+    await recordFireBlockReasonTransition(
+      env,
+      trip,
+      waypoint,
+      ssotForFireGate,
+      FIRE_SKIP_REASON.arvlCdDedup,
+      now,
+    );
     return { dirty: false };
   }
 
@@ -3453,6 +3524,14 @@ export async function fireArvlCdStationPush(
       reason: 'cross-station-dedup',
       hopIndex: waypoint.hopIndex,
     });
+    await recordFireBlockReasonTransition(
+      env,
+      trip,
+      waypoint,
+      ssotForFireGate,
+      FIRE_SKIP_REASON.crossStationDedup,
+      now,
+    );
     return { dirty: false };
   }
   const pushId = generatePushId();
@@ -4923,6 +5002,18 @@ export async function runTrainCodeTracking(
         station: waypoint.stationName,
         arvlCd: estimate.arvlCd,
       });
+      // #2662 — arvlCd가 있는데(≠null) 게이트가 mismatch면 이 역은 조용히 침묵한다(아래
+      // vanish-fallback은 arvlCd===null일 때만 발사). 기존엔 log만 남아 사후 확정이 불가능했다.
+      if (estimate.arvlCd !== null) {
+        await recordFireBlockReasonTransition(
+          env,
+          trip,
+          waypoint,
+          ssot,
+          FIRE_SKIP_REASON.legacyGateMismatch,
+          now,
+        );
+      }
       // #2571 (2026-09-12 실측 재생 근거) — position-fallback arrived(arvlCd=null)도 station-passed
       // 발사. arvlCd∈{진입0,도착1} 창은 실측 ~30초인데 cron은 60초 주기라 그 창을 통째로 놓치는
       // 위상이 존재한다(replay_20260912 하네스). 그때 estimateBoardingLockArrival이 realtimePosition
