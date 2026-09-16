@@ -1,0 +1,28 @@
+{
+  "tripStartedAt": "2026-06-21T08:15:00+09:00",
+  "tripEndedAt": "2026-06-21T08:50:00+09:00",
+  "actualStations": [
+    {
+      "stationId": "2-035",
+      "name": "건대입구",
+      "arrivedAt": "2026-06-21T08:17:23+09:00",
+      "departedAt": "2026-06-21T08:17:45+09:00"
+    }
+  ],
+  "actualTransfers": [
+    {
+      "fromStationId": "2-022",
+      "toLineId": "1",
+      "arrivedAt": "2026-06-21T08:32:10+09:00",
+      "departedAt": "2026-06-21T08:34:20+09:00"
+    }
+  ],
+  "actualDestination": {
+    "stationId": "1-031",
+    "name": "종로3가",
+    "arrivedAt": "2026-06-21T08:48:50+09:00"
+  },
+  "environment": "underground",
+  "lineIds": ["2", "1"],
+  "notes": "예시 출근 trip. 실제 시각으로 교체."
+}

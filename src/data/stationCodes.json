@@ -1,0 +1,2122 @@
+{
+  "1-001": {
+    "stationCd": "1916",
+    "frCode": "100"
+  },
+  "1-002": {
+    "stationCd": "1915",
+    "frCode": "101"
+  },
+  "1-003": {
+    "stationCd": "1914",
+    "frCode": "102"
+  },
+  "1-004": {
+    "stationCd": "1913",
+    "frCode": "103"
+  },
+  "1-005": {
+    "stationCd": "1912",
+    "frCode": "104"
+  },
+  "1-006": {
+    "stationCd": "1911",
+    "frCode": "105"
+  },
+  "1-007": {
+    "stationCd": "1910",
+    "frCode": "106"
+  },
+  "1-008": {
+    "stationCd": "1909",
+    "frCode": "107"
+  },
+  "1-009": {
+    "stationCd": "1908",
+    "frCode": "108"
+  },
+  "1-010": {
+    "stationCd": "1907",
+    "frCode": "109"
+  },
+  "1-011": {
+    "stationCd": "1906",
+    "frCode": "110"
+  },
+  "1-012": {
+    "stationCd": "1905",
+    "frCode": "111"
+  },
+  "1-013": {
+    "stationCd": "1904",
+    "frCode": "112"
+  },
+  "1-014": {
+    "stationCd": "1903",
+    "frCode": "113"
+  },
+  "1-015": {
+    "stationCd": "1902",
+    "frCode": "114"
+  },
+  "1-016": {
+    "stationCd": "1901",
+    "frCode": "115"
+  },
+  "1-017": {
+    "stationCd": "1022",
+    "frCode": "116"
+  },
+  "1-018": {
+    "stationCd": "1021",
+    "frCode": "117"
+  },
+  "1-019": {
+    "stationCd": "1020",
+    "frCode": "118"
+  },
+  "1-020": {
+    "stationCd": "1019",
+    "frCode": "119"
+  },
+  "1-021": {
+    "stationCd": "1018",
+    "frCode": "120"
+  },
+  "1-022": {
+    "stationCd": "1017",
+    "frCode": "121"
+  },
+  "1-023": {
+    "stationCd": "1016",
+    "frCode": "122"
+  },
+  "1-024": {
+    "stationCd": "1015",
+    "frCode": "123"
+  },
+  "1-025": {
+    "stationCd": "0158",
+    "frCode": "124"
+  },
+  "1-026": {
+    "stationCd": "0157",
+    "frCode": "125"
+  },
+  "1-027": {
+    "stationCd": "0156",
+    "frCode": "126"
+  },
+  "1-028": {
+    "stationCd": "0159",
+    "frCode": "127"
+  },
+  "1-029": {
+    "stationCd": "0155",
+    "frCode": "128"
+  },
+  "1-030": {
+    "stationCd": "0154",
+    "frCode": "129"
+  },
+  "1-031": {
+    "stationCd": "0153",
+    "frCode": "130"
+  },
+  "1-032": {
+    "stationCd": "0152",
+    "frCode": "131"
+  },
+  "1-033": {
+    "stationCd": "0151",
+    "frCode": "132"
+  },
+  "1-034": {
+    "stationCd": "0150",
+    "frCode": "133"
+  },
+  "1-035": {
+    "stationCd": "1002",
+    "frCode": "134"
+  },
+  "1-036": {
+    "stationCd": "1003",
+    "frCode": "135"
+  },
+  "1-037": {
+    "stationCd": "1004",
+    "frCode": "136"
+  },
+  "1-038": {
+    "stationCd": "1005",
+    "frCode": "137"
+  },
+  "1-039": {
+    "stationCd": "1032",
+    "frCode": "138"
+  },
+  "1-040": {
+    "stationCd": "1006",
+    "frCode": "139"
+  },
+  "1-041": {
+    "stationCd": "1007",
+    "frCode": "140"
+  },
+  "1-042": {
+    "stationCd": "1701",
+    "frCode": "141"
+  },
+  "1-043": {
+    "stationCd": "1813",
+    "frCode": "142"
+  },
+  "1-044": {
+    "stationCd": "1801",
+    "frCode": "143"
+  },
+  "1-045": {
+    "stationCd": "1802",
+    "frCode": "144"
+  },
+  "1-046": {
+    "stationCd": "1821",
+    "frCode": "145"
+  },
+  "1-047": {
+    "stationCd": "1803",
+    "frCode": "146"
+  },
+  "1-048": {
+    "stationCd": "1814",
+    "frCode": "147"
+  },
+  "1-049": {
+    "stationCd": "1804",
+    "frCode": "148"
+  },
+  "1-050": {
+    "stationCd": "1822",
+    "frCode": "149"
+  },
+  "1-051": {
+    "stationCd": "1805",
+    "frCode": "150"
+  },
+  "1-052": {
+    "stationCd": "1815",
+    "frCode": "151"
+  },
+  "1-053": {
+    "stationCd": "1806",
+    "frCode": "152"
+  },
+  "1-054": {
+    "stationCd": "1807",
+    "frCode": "153"
+  },
+  "1-055": {
+    "stationCd": "1808",
+    "frCode": "154"
+  },
+  "1-056": {
+    "stationCd": "1816",
+    "frCode": "155"
+  },
+  "1-057": {
+    "stationCd": "1809",
+    "frCode": "156"
+  },
+  "1-058": {
+    "stationCd": "1823",
+    "frCode": "157"
+  },
+  "1-059": {
+    "stationCd": "1810",
+    "frCode": "158"
+  },
+  "1-060": {
+    "stationCd": "1817",
+    "frCode": "159"
+  },
+  "1-061": {
+    "stationCd": "1811",
+    "frCode": "160"
+  },
+  "1-062": {
+    "stationCd": "1812",
+    "frCode": "161"
+  },
+  "1-100": {
+    "stationCd": "1702",
+    "frCode": "P142"
+  },
+  "2-001": {
+    "stationCd": "0201",
+    "frCode": "201"
+  },
+  "2-002": {
+    "stationCd": "0202",
+    "frCode": "202"
+  },
+  "2-003": {
+    "stationCd": "0203",
+    "frCode": "203"
+  },
+  "2-004": {
+    "stationCd": "0204",
+    "frCode": "204"
+  },
+  "2-005": {
+    "stationCd": "0205",
+    "frCode": "205"
+  },
+  "2-006": {
+    "stationCd": "0206",
+    "frCode": "206"
+  },
+  "2-007": {
+    "stationCd": "0207",
+    "frCode": "207"
+  },
+  "2-008": {
+    "stationCd": "0208",
+    "frCode": "208"
+  },
+  "2-009": {
+    "stationCd": "0209",
+    "frCode": "209"
+  },
+  "2-010": {
+    "stationCd": "0210",
+    "frCode": "210"
+  },
+  "2-011": {
+    "stationCd": "0211",
+    "frCode": "211"
+  },
+  "2-012": {
+    "stationCd": "0212",
+    "frCode": "212"
+  },
+  "2-013": {
+    "stationCd": "0213",
+    "frCode": "213"
+  },
+  "2-014": {
+    "stationCd": "0214",
+    "frCode": "214"
+  },
+  "2-015": {
+    "stationCd": "0215",
+    "frCode": "215"
+  },
+  "2-016": {
+    "stationCd": "0216",
+    "frCode": "216"
+  },
+  "2-017": {
+    "stationCd": "0217",
+    "frCode": "217"
+  },
+  "2-018": {
+    "stationCd": "0218",
+    "frCode": "218"
+  },
+  "2-019": {
+    "stationCd": "0219",
+    "frCode": "219"
+  },
+  "2-020": {
+    "stationCd": "0220",
+    "frCode": "220"
+  },
+  "2-021": {
+    "stationCd": "0221",
+    "frCode": "221"
+  },
+  "2-022": {
+    "stationCd": "0222",
+    "frCode": "222"
+  },
+  "2-023": {
+    "stationCd": "0223",
+    "frCode": "223"
+  },
+  "2-024": {
+    "stationCd": "0224",
+    "frCode": "224"
+  },
+  "2-025": {
+    "stationCd": "0225",
+    "frCode": "225"
+  },
+  "2-026": {
+    "stationCd": "0226",
+    "frCode": "226"
+  },
+  "2-027": {
+    "stationCd": "0227",
+    "frCode": "227"
+  },
+  "2-028": {
+    "stationCd": "0228",
+    "frCode": "228"
+  },
+  "2-029": {
+    "stationCd": "0229",
+    "frCode": "229"
+  },
+  "2-030": {
+    "stationCd": "0230",
+    "frCode": "230"
+  },
+  "2-031": {
+    "stationCd": "0231",
+    "frCode": "231"
+  },
+  "2-032": {
+    "stationCd": "0232",
+    "frCode": "232"
+  },
+  "2-033": {
+    "stationCd": "0233",
+    "frCode": "233"
+  },
+  "2-034": {
+    "stationCd": "0234",
+    "frCode": "234"
+  },
+  "2-035": {
+    "stationCd": "0235",
+    "frCode": "235"
+  },
+  "2-036": {
+    "stationCd": "0236",
+    "frCode": "236"
+  },
+  "2-037": {
+    "stationCd": "0237",
+    "frCode": "237"
+  },
+  "2-038": {
+    "stationCd": "0238",
+    "frCode": "238"
+  },
+  "2-039": {
+    "stationCd": "0239",
+    "frCode": "239"
+  },
+  "2-040": {
+    "stationCd": "0240",
+    "frCode": "240"
+  },
+  "2-041": {
+    "stationCd": "0241",
+    "frCode": "241"
+  },
+  "2-042": {
+    "stationCd": "0242",
+    "frCode": "242"
+  },
+  "2-043": {
+    "stationCd": "0243",
+    "frCode": "243"
+  },
+  "2-105": {
+    "stationCd": "0200",
+    "frCode": "234-4"
+  },
+  "2-205": {
+    "stationCd": "0246",
+    "frCode": "211-4"
+  },
+  "3-001": {
+    "stationCd": "1958",
+    "frCode": "309"
+  },
+  "3-002": {
+    "stationCd": "1957",
+    "frCode": "310"
+  },
+  "3-003": {
+    "stationCd": "1956",
+    "frCode": "311"
+  },
+  "3-004": {
+    "stationCd": "1955",
+    "frCode": "312"
+  },
+  "3-005": {
+    "stationCd": "1954",
+    "frCode": "313"
+  },
+  "3-006": {
+    "stationCd": "1953",
+    "frCode": "314"
+  },
+  "3-007": {
+    "stationCd": "1952",
+    "frCode": "315"
+  },
+  "3-008": {
+    "stationCd": "1951",
+    "frCode": "316"
+  },
+  "3-009": {
+    "stationCd": "1948",
+    "frCode": "317"
+  },
+  "3-010": {
+    "stationCd": "1950",
+    "frCode": "318"
+  },
+  "3-011": {
+    "stationCd": "0309",
+    "frCode": "319"
+  },
+  "3-012": {
+    "stationCd": "0310",
+    "frCode": "320"
+  },
+  "3-013": {
+    "stationCd": "0311",
+    "frCode": "321"
+  },
+  "3-014": {
+    "stationCd": "0312",
+    "frCode": "322"
+  },
+  "3-015": {
+    "stationCd": "0313",
+    "frCode": "323"
+  },
+  "3-016": {
+    "stationCd": "0314",
+    "frCode": "324"
+  },
+  "3-017": {
+    "stationCd": "0315",
+    "frCode": "325"
+  },
+  "3-018": {
+    "stationCd": "0316",
+    "frCode": "326"
+  },
+  "3-019": {
+    "stationCd": "0317",
+    "frCode": "327"
+  },
+  "3-020": {
+    "stationCd": "0318",
+    "frCode": "328"
+  },
+  "3-021": {
+    "stationCd": "0319",
+    "frCode": "329"
+  },
+  "3-022": {
+    "stationCd": "0320",
+    "frCode": "330"
+  },
+  "3-023": {
+    "stationCd": "0321",
+    "frCode": "331"
+  },
+  "3-024": {
+    "stationCd": "0322",
+    "frCode": "332"
+  },
+  "3-025": {
+    "stationCd": "0323",
+    "frCode": "333"
+  },
+  "3-026": {
+    "stationCd": "0324",
+    "frCode": "334"
+  },
+  "3-027": {
+    "stationCd": "0325",
+    "frCode": "335"
+  },
+  "3-028": {
+    "stationCd": "0326",
+    "frCode": "336"
+  },
+  "3-029": {
+    "stationCd": "0327",
+    "frCode": "337"
+  },
+  "3-030": {
+    "stationCd": "0328",
+    "frCode": "338"
+  },
+  "3-031": {
+    "stationCd": "0329",
+    "frCode": "339"
+  },
+  "3-032": {
+    "stationCd": "0330",
+    "frCode": "340"
+  },
+  "3-033": {
+    "stationCd": "0331",
+    "frCode": "341"
+  },
+  "3-034": {
+    "stationCd": "0332",
+    "frCode": "342"
+  },
+  "3-035": {
+    "stationCd": "0333",
+    "frCode": "343"
+  },
+  "3-036": {
+    "stationCd": "0334",
+    "frCode": "344"
+  },
+  "3-037": {
+    "stationCd": "0335",
+    "frCode": "345"
+  },
+  "3-038": {
+    "stationCd": "0336",
+    "frCode": "346"
+  },
+  "3-039": {
+    "stationCd": "0337",
+    "frCode": "347"
+  },
+  "3-040": {
+    "stationCd": "0338",
+    "frCode": "348"
+  },
+  "3-041": {
+    "stationCd": "0339",
+    "frCode": "349"
+  },
+  "3-042": {
+    "stationCd": "0340",
+    "frCode": "350"
+  },
+  "3-043": {
+    "stationCd": "0341",
+    "frCode": "351"
+  },
+  "3-044": {
+    "stationCd": "0342",
+    "frCode": "352"
+  },
+  "4-002": {
+    "stationCd": "0410",
+    "frCode": "410"
+  },
+  "4-003": {
+    "stationCd": "0411",
+    "frCode": "411"
+  },
+  "4-004": {
+    "stationCd": "0412",
+    "frCode": "412"
+  },
+  "4-005": {
+    "stationCd": "0413",
+    "frCode": "413"
+  },
+  "4-006": {
+    "stationCd": "0414",
+    "frCode": "414"
+  },
+  "4-007": {
+    "stationCd": "0416",
+    "frCode": "416"
+  },
+  "4-008": {
+    "stationCd": "0415",
+    "frCode": "415"
+  },
+  "4-009": {
+    "stationCd": "0417",
+    "frCode": "417"
+  },
+  "4-010": {
+    "stationCd": "0418",
+    "frCode": "418"
+  },
+  "4-011": {
+    "stationCd": "0419",
+    "frCode": "419"
+  },
+  "4-012": {
+    "stationCd": "0420",
+    "frCode": "420"
+  },
+  "4-013": {
+    "stationCd": "0421",
+    "frCode": "421"
+  },
+  "4-014": {
+    "stationCd": "0422",
+    "frCode": "422"
+  },
+  "4-015": {
+    "stationCd": "0423",
+    "frCode": "423"
+  },
+  "4-016": {
+    "stationCd": "0424",
+    "frCode": "424"
+  },
+  "4-017": {
+    "stationCd": "0425",
+    "frCode": "425"
+  },
+  "4-018": {
+    "stationCd": "0426",
+    "frCode": "426"
+  },
+  "4-019": {
+    "stationCd": "0427",
+    "frCode": "427"
+  },
+  "4-020": {
+    "stationCd": "0428",
+    "frCode": "428"
+  },
+  "4-021": {
+    "stationCd": "0429",
+    "frCode": "429"
+  },
+  "4-022": {
+    "stationCd": "0430",
+    "frCode": "430"
+  },
+  "4-023": {
+    "stationCd": "0431",
+    "frCode": "431"
+  },
+  "4-024": {
+    "stationCd": "0432",
+    "frCode": "432"
+  },
+  "4-025": {
+    "stationCd": "0433",
+    "frCode": "433"
+  },
+  "4-026": {
+    "stationCd": "0434",
+    "frCode": "434"
+  },
+  "4-027": {
+    "stationCd": "1450",
+    "frCode": "435"
+  },
+  "4-028": {
+    "stationCd": "1451",
+    "frCode": "436"
+  },
+  "4-029": {
+    "stationCd": "1452",
+    "frCode": "437"
+  },
+  "4-030": {
+    "stationCd": "1453",
+    "frCode": "438"
+  },
+  "4-031": {
+    "stationCd": "1454",
+    "frCode": "439"
+  },
+  "4-032": {
+    "stationCd": "1455",
+    "frCode": "440"
+  },
+  "4-033": {
+    "stationCd": "1456",
+    "frCode": "441"
+  },
+  "4-034": {
+    "stationCd": "1457",
+    "frCode": "442"
+  },
+  "4-035": {
+    "stationCd": "1458",
+    "frCode": "443"
+  },
+  "4-036": {
+    "stationCd": "1751",
+    "frCode": "444"
+  },
+  "4-037": {
+    "stationCd": "1763",
+    "frCode": "445"
+  },
+  "4-038": {
+    "stationCd": "1752",
+    "frCode": "446"
+  },
+  "4-039": {
+    "stationCd": "1753",
+    "frCode": "447"
+  },
+  "4-040": {
+    "stationCd": "1754",
+    "frCode": "448"
+  },
+  "4-041": {
+    "stationCd": "1755",
+    "frCode": "449"
+  },
+  "4-042": {
+    "stationCd": "1756",
+    "frCode": "450"
+  },
+  "4-043": {
+    "stationCd": "1757",
+    "frCode": "451"
+  },
+  "4-044": {
+    "stationCd": "1758",
+    "frCode": "452"
+  },
+  "4-045": {
+    "stationCd": "1759",
+    "frCode": "453"
+  },
+  "4-046": {
+    "stationCd": "1760",
+    "frCode": "454"
+  },
+  "4-047": {
+    "stationCd": "1761",
+    "frCode": "455"
+  },
+  "4-048": {
+    "stationCd": "1762",
+    "frCode": "456"
+  },
+  "5-001": {
+    "stationCd": "2511",
+    "frCode": "510"
+  },
+  "5-002": {
+    "stationCd": "2512",
+    "frCode": "511"
+  },
+  "5-003": {
+    "stationCd": "2513",
+    "frCode": "512"
+  },
+  "5-004": {
+    "stationCd": "2514",
+    "frCode": "513"
+  },
+  "5-005": {
+    "stationCd": "2515",
+    "frCode": "514"
+  },
+  "5-006": {
+    "stationCd": "2516",
+    "frCode": "515"
+  },
+  "5-007": {
+    "stationCd": "2517",
+    "frCode": "516"
+  },
+  "5-008": {
+    "stationCd": "2518",
+    "frCode": "517"
+  },
+  "5-009": {
+    "stationCd": "2519",
+    "frCode": "518"
+  },
+  "5-010": {
+    "stationCd": "2520",
+    "frCode": "519"
+  },
+  "5-011": {
+    "stationCd": "2521",
+    "frCode": "520"
+  },
+  "5-012": {
+    "stationCd": "2522",
+    "frCode": "521"
+  },
+  "5-013": {
+    "stationCd": "2523",
+    "frCode": "522"
+  },
+  "5-014": {
+    "stationCd": "2524",
+    "frCode": "523"
+  },
+  "5-015": {
+    "stationCd": "2525",
+    "frCode": "524"
+  },
+  "5-016": {
+    "stationCd": "2526",
+    "frCode": "525"
+  },
+  "5-017": {
+    "stationCd": "2527",
+    "frCode": "526"
+  },
+  "5-018": {
+    "stationCd": "2528",
+    "frCode": "527"
+  },
+  "5-019": {
+    "stationCd": "2529",
+    "frCode": "528"
+  },
+  "5-020": {
+    "stationCd": "2530",
+    "frCode": "529"
+  },
+  "5-021": {
+    "stationCd": "2531",
+    "frCode": "530"
+  },
+  "5-022": {
+    "stationCd": "2532",
+    "frCode": "531"
+  },
+  "5-023": {
+    "stationCd": "2533",
+    "frCode": "532"
+  },
+  "5-024": {
+    "stationCd": "2534",
+    "frCode": "533"
+  },
+  "5-025": {
+    "stationCd": "2535",
+    "frCode": "534"
+  },
+  "5-026": {
+    "stationCd": "2536",
+    "frCode": "535"
+  },
+  "5-027": {
+    "stationCd": "2537",
+    "frCode": "536"
+  },
+  "5-028": {
+    "stationCd": "2538",
+    "frCode": "537"
+  },
+  "5-029": {
+    "stationCd": "2539",
+    "frCode": "538"
+  },
+  "5-030": {
+    "stationCd": "2540",
+    "frCode": "539"
+  },
+  "5-031": {
+    "stationCd": "2541",
+    "frCode": "540"
+  },
+  "5-032": {
+    "stationCd": "2542",
+    "frCode": "541"
+  },
+  "5-033": {
+    "stationCd": "2543",
+    "frCode": "542"
+  },
+  "5-034": {
+    "stationCd": "2544",
+    "frCode": "543"
+  },
+  "5-035": {
+    "stationCd": "2545",
+    "frCode": "544"
+  },
+  "5-036": {
+    "stationCd": "2546",
+    "frCode": "545"
+  },
+  "5-037": {
+    "stationCd": "2547",
+    "frCode": "546"
+  },
+  "5-038": {
+    "stationCd": "2548",
+    "frCode": "547"
+  },
+  "5-039": {
+    "stationCd": "2549",
+    "frCode": "548"
+  },
+  "5-040": {
+    "stationCd": "2555",
+    "frCode": "P549"
+  },
+  "5-041": {
+    "stationCd": "2556",
+    "frCode": "P550"
+  },
+  "5-042": {
+    "stationCd": "2557",
+    "frCode": "P551"
+  },
+  "5-043": {
+    "stationCd": "2558",
+    "frCode": "P552"
+  },
+  "5-044": {
+    "stationCd": "2559",
+    "frCode": "P553"
+  },
+  "5-045": {
+    "stationCd": "2560",
+    "frCode": "P554"
+  },
+  "5-046": {
+    "stationCd": "2561",
+    "frCode": "P555"
+  },
+  "6-001": {
+    "stationCd": "2611",
+    "frCode": "610"
+  },
+  "6-002": {
+    "stationCd": "2612",
+    "frCode": "611"
+  },
+  "6-003": {
+    "stationCd": "2613",
+    "frCode": "612"
+  },
+  "6-004": {
+    "stationCd": "2614",
+    "frCode": "613"
+  },
+  "6-005": {
+    "stationCd": "2615",
+    "frCode": "614"
+  },
+  "6-006": {
+    "stationCd": "2616",
+    "frCode": "615"
+  },
+  "6-007": {
+    "stationCd": "2617",
+    "frCode": "616"
+  },
+  "6-008": {
+    "stationCd": "2618",
+    "frCode": "617"
+  },
+  "6-009": {
+    "stationCd": "2619",
+    "frCode": "618"
+  },
+  "6-010": {
+    "stationCd": "2620",
+    "frCode": "619"
+  },
+  "6-011": {
+    "stationCd": "2621",
+    "frCode": "620"
+  },
+  "6-012": {
+    "stationCd": "2622",
+    "frCode": "621"
+  },
+  "6-013": {
+    "stationCd": "2623",
+    "frCode": "622"
+  },
+  "6-014": {
+    "stationCd": "2624",
+    "frCode": "623"
+  },
+  "6-015": {
+    "stationCd": "2625",
+    "frCode": "624"
+  },
+  "6-016": {
+    "stationCd": "2626",
+    "frCode": "625"
+  },
+  "6-017": {
+    "stationCd": "2627",
+    "frCode": "626"
+  },
+  "6-018": {
+    "stationCd": "2628",
+    "frCode": "627"
+  },
+  "6-019": {
+    "stationCd": "2629",
+    "frCode": "628"
+  },
+  "6-020": {
+    "stationCd": "2630",
+    "frCode": "629"
+  },
+  "6-021": {
+    "stationCd": "2631",
+    "frCode": "630"
+  },
+  "6-022": {
+    "stationCd": "2632",
+    "frCode": "631"
+  },
+  "6-023": {
+    "stationCd": "2633",
+    "frCode": "632"
+  },
+  "6-024": {
+    "stationCd": "2634",
+    "frCode": "633"
+  },
+  "6-025": {
+    "stationCd": "2635",
+    "frCode": "634"
+  },
+  "6-026": {
+    "stationCd": "2636",
+    "frCode": "635"
+  },
+  "6-027": {
+    "stationCd": "2637",
+    "frCode": "636"
+  },
+  "6-028": {
+    "stationCd": "2638",
+    "frCode": "637"
+  },
+  "6-029": {
+    "stationCd": "2639",
+    "frCode": "638"
+  },
+  "6-030": {
+    "stationCd": "2640",
+    "frCode": "639"
+  },
+  "6-031": {
+    "stationCd": "2641",
+    "frCode": "640"
+  },
+  "6-032": {
+    "stationCd": "2642",
+    "frCode": "641"
+  },
+  "6-033": {
+    "stationCd": "2643",
+    "frCode": "642"
+  },
+  "6-034": {
+    "stationCd": "2644",
+    "frCode": "643"
+  },
+  "6-035": {
+    "stationCd": "2645",
+    "frCode": "644"
+  },
+  "6-036": {
+    "stationCd": "2646",
+    "frCode": "645"
+  },
+  "6-037": {
+    "stationCd": "2647",
+    "frCode": "646"
+  },
+  "6-038": {
+    "stationCd": "2648",
+    "frCode": "647"
+  },
+  "6-039": {
+    "stationCd": "2649",
+    "frCode": "648"
+  },
+  "7-001": {
+    "stationCd": "2711",
+    "frCode": "709"
+  },
+  "7-002": {
+    "stationCd": "2712",
+    "frCode": "710"
+  },
+  "7-003": {
+    "stationCd": "2713",
+    "frCode": "711"
+  },
+  "7-004": {
+    "stationCd": "2714",
+    "frCode": "712"
+  },
+  "7-005": {
+    "stationCd": "2715",
+    "frCode": "713"
+  },
+  "7-006": {
+    "stationCd": "2716",
+    "frCode": "714"
+  },
+  "7-007": {
+    "stationCd": "2717",
+    "frCode": "715"
+  },
+  "7-008": {
+    "stationCd": "2718",
+    "frCode": "716"
+  },
+  "7-009": {
+    "stationCd": "2719",
+    "frCode": "717"
+  },
+  "7-010": {
+    "stationCd": "2720",
+    "frCode": "718"
+  },
+  "7-011": {
+    "stationCd": "2721",
+    "frCode": "719"
+  },
+  "7-012": {
+    "stationCd": "2722",
+    "frCode": "720"
+  },
+  "7-013": {
+    "stationCd": "2723",
+    "frCode": "721"
+  },
+  "7-014": {
+    "stationCd": "2724",
+    "frCode": "722"
+  },
+  "7-015": {
+    "stationCd": "2725",
+    "frCode": "723"
+  },
+  "7-016": {
+    "stationCd": "2726",
+    "frCode": "724"
+  },
+  "7-017": {
+    "stationCd": "2727",
+    "frCode": "725"
+  },
+  "7-018": {
+    "stationCd": "2728",
+    "frCode": "726"
+  },
+  "7-019": {
+    "stationCd": "2729",
+    "frCode": "727"
+  },
+  "7-020": {
+    "stationCd": "2730",
+    "frCode": "728"
+  },
+  "7-021": {
+    "stationCd": "2731",
+    "frCode": "729"
+  },
+  "7-022": {
+    "stationCd": "2732",
+    "frCode": "730"
+  },
+  "7-023": {
+    "stationCd": "2733",
+    "frCode": "731"
+  },
+  "7-024": {
+    "stationCd": "2734",
+    "frCode": "732"
+  },
+  "7-025": {
+    "stationCd": "2735",
+    "frCode": "733"
+  },
+  "7-026": {
+    "stationCd": "2736",
+    "frCode": "734"
+  },
+  "7-027": {
+    "stationCd": "2737",
+    "frCode": "735"
+  },
+  "7-028": {
+    "stationCd": "2738",
+    "frCode": "736"
+  },
+  "7-029": {
+    "stationCd": "2739",
+    "frCode": "737"
+  },
+  "7-030": {
+    "stationCd": "2740",
+    "frCode": "738"
+  },
+  "7-031": {
+    "stationCd": "2741",
+    "frCode": "739"
+  },
+  "7-032": {
+    "stationCd": "2742",
+    "frCode": "740"
+  },
+  "7-033": {
+    "stationCd": "2743",
+    "frCode": "741"
+  },
+  "7-034": {
+    "stationCd": "2744",
+    "frCode": "742"
+  },
+  "7-035": {
+    "stationCd": "2745",
+    "frCode": "743"
+  },
+  "7-036": {
+    "stationCd": "2746",
+    "frCode": "744"
+  },
+  "7-037": {
+    "stationCd": "2747",
+    "frCode": "745"
+  },
+  "7-038": {
+    "stationCd": "2748",
+    "frCode": "746"
+  },
+  "7-039": {
+    "stationCd": "2749",
+    "frCode": "747"
+  },
+  "7-040": {
+    "stationCd": "2750",
+    "frCode": "748"
+  },
+  "7-041": {
+    "stationCd": "2751",
+    "frCode": "749"
+  },
+  "7-042": {
+    "stationCd": "2752",
+    "frCode": "750"
+  },
+  "7-043": {
+    "stationCd": "3753",
+    "frCode": "751"
+  },
+  "7-044": {
+    "stationCd": "3754",
+    "frCode": "752"
+  },
+  "7-045": {
+    "stationCd": "3755",
+    "frCode": "753"
+  },
+  "7-046": {
+    "stationCd": "3756",
+    "frCode": "754"
+  },
+  "7-047": {
+    "stationCd": "3757",
+    "frCode": "755"
+  },
+  "7-048": {
+    "stationCd": "3758",
+    "frCode": "756"
+  },
+  "7-049": {
+    "stationCd": "3759",
+    "frCode": "757"
+  },
+  "7-050": {
+    "stationCd": "3760",
+    "frCode": "758"
+  },
+  "7-051": {
+    "stationCd": "3761",
+    "frCode": "759"
+  },
+  "8-001": {
+    "stationCd": "2811",
+    "frCode": "810"
+  },
+  "8-002": {
+    "stationCd": "2812",
+    "frCode": "811"
+  },
+  "8-003": {
+    "stationCd": "2813",
+    "frCode": "812"
+  },
+  "8-004": {
+    "stationCd": "2814",
+    "frCode": "813"
+  },
+  "8-005": {
+    "stationCd": "2815",
+    "frCode": "814"
+  },
+  "8-006": {
+    "stationCd": "2816",
+    "frCode": "815"
+  },
+  "8-007": {
+    "stationCd": "2817",
+    "frCode": "816"
+  },
+  "8-008": {
+    "stationCd": "2818",
+    "frCode": "817"
+  },
+  "8-009": {
+    "stationCd": "2819",
+    "frCode": "818"
+  },
+  "8-010": {
+    "stationCd": "2820",
+    "frCode": "819"
+  },
+  "8-011": {
+    "stationCd": "2821",
+    "frCode": "820"
+  },
+  "8-012": {
+    "stationCd": "2828",
+    "frCode": "821"
+  },
+  "8-013": {
+    "stationCd": "2822",
+    "frCode": "822"
+  },
+  "8-014": {
+    "stationCd": "2823",
+    "frCode": "823"
+  },
+  "8-015": {
+    "stationCd": "2824",
+    "frCode": "824"
+  },
+  "8-016": {
+    "stationCd": "2825",
+    "frCode": "825"
+  },
+  "8-017": {
+    "stationCd": "2826",
+    "frCode": "826"
+  },
+  "8-018": {
+    "stationCd": "2827",
+    "frCode": "827"
+  },
+  "9-001": {
+    "stationCd": "4101",
+    "frCode": "901"
+  },
+  "9-002": {
+    "stationCd": "4102",
+    "frCode": "902"
+  },
+  "9-003": {
+    "stationCd": "4103",
+    "frCode": "903"
+  },
+  "9-004": {
+    "stationCd": "4104",
+    "frCode": "904"
+  },
+  "9-005": {
+    "stationCd": "4105",
+    "frCode": "905"
+  },
+  "9-006": {
+    "stationCd": "4106",
+    "frCode": "906"
+  },
+  "9-007": {
+    "stationCd": "4107",
+    "frCode": "907"
+  },
+  "9-008": {
+    "stationCd": "4108",
+    "frCode": "908"
+  },
+  "9-009": {
+    "stationCd": "4109",
+    "frCode": "909"
+  },
+  "9-010": {
+    "stationCd": "4110",
+    "frCode": "910"
+  },
+  "9-011": {
+    "stationCd": "4111",
+    "frCode": "911"
+  },
+  "9-012": {
+    "stationCd": "4112",
+    "frCode": "912"
+  },
+  "9-013": {
+    "stationCd": "4113",
+    "frCode": "913"
+  },
+  "9-014": {
+    "stationCd": "4114",
+    "frCode": "914"
+  },
+  "9-015": {
+    "stationCd": "4115",
+    "frCode": "915"
+  },
+  "9-016": {
+    "stationCd": "4116",
+    "frCode": "916"
+  },
+  "9-017": {
+    "stationCd": "4117",
+    "frCode": "917"
+  },
+  "9-018": {
+    "stationCd": "4118",
+    "frCode": "918"
+  },
+  "9-019": {
+    "stationCd": "4119",
+    "frCode": "919"
+  },
+  "9-020": {
+    "stationCd": "4120",
+    "frCode": "920"
+  },
+  "9-021": {
+    "stationCd": "4121",
+    "frCode": "921"
+  },
+  "9-022": {
+    "stationCd": "4122",
+    "frCode": "922"
+  },
+  "9-023": {
+    "stationCd": "4123",
+    "frCode": "923"
+  },
+  "9-024": {
+    "stationCd": "4124",
+    "frCode": "924"
+  },
+  "9-025": {
+    "stationCd": "4125",
+    "frCode": "925"
+  },
+  "9-026": {
+    "stationCd": "4126",
+    "frCode": "926"
+  },
+  "9-027": {
+    "stationCd": "4127",
+    "frCode": "927"
+  },
+  "9-028": {
+    "stationCd": "4128",
+    "frCode": "928"
+  },
+  "9-029": {
+    "stationCd": "4129",
+    "frCode": "929"
+  },
+  "9-030": {
+    "stationCd": "4130",
+    "frCode": "930"
+  },
+  "9-031": {
+    "stationCd": "4131",
+    "frCode": "931"
+  },
+  "9-032": {
+    "stationCd": "4132",
+    "frCode": "932"
+  },
+  "9-033": {
+    "stationCd": "4133",
+    "frCode": "933"
+  },
+  "9-034": {
+    "stationCd": "4134",
+    "frCode": "934"
+  },
+  "9-035": {
+    "stationCd": "4135",
+    "frCode": "935"
+  },
+  "9-036": {
+    "stationCd": "4137",
+    "frCode": "937"
+  },
+  "9-037": {
+    "stationCd": "4138",
+    "frCode": "938"
+  },
+  "9-038": {
+    "stationCd": "4136",
+    "frCode": "936"
+  },
+  "airport-001": {
+    "stationCd": "4201",
+    "frCode": "A01"
+  },
+  "airport-002": {
+    "stationCd": "4202",
+    "frCode": "A02"
+  },
+  "airport-003": {
+    "stationCd": "4203",
+    "frCode": "A03"
+  },
+  "airport-004": {
+    "stationCd": "4204",
+    "frCode": "A04"
+  },
+  "airport-005": {
+    "stationCd": "4206",
+    "frCode": "A042"
+  },
+  "airport-006": {
+    "stationCd": "4207",
+    "frCode": "A05"
+  },
+  "airport-007": {
+    "stationCd": "4208",
+    "frCode": "A06"
+  },
+  "airport-008": {
+    "stationCd": "4209",
+    "frCode": "A07"
+  },
+  "airport-009": {
+    "stationCd": "4210",
+    "frCode": "A071"
+  },
+  "airport-010": {
+    "stationCd": "4211",
+    "frCode": "A08"
+  },
+  "airport-011": {
+    "stationCd": "4212",
+    "frCode": "A09"
+  },
+  "airport-012": {
+    "stationCd": "4213",
+    "frCode": "A10"
+  },
+  "airport-013": {
+    "stationCd": "4215",
+    "frCode": "A11"
+  },
+  "bundang-001": {
+    "stationCd": "1891",
+    "frCode": "K272"
+  },
+  "bundang-002": {
+    "stationCd": "1890",
+    "frCode": "K271"
+  },
+  "bundang-003": {
+    "stationCd": "1889",
+    "frCode": "K270"
+  },
+  "bundang-004": {
+    "stationCd": "1888",
+    "frCode": "K269"
+  },
+  "bundang-005": {
+    "stationCd": "1886",
+    "frCode": "K267"
+  },
+  "bundang-006": {
+    "stationCd": "1885",
+    "frCode": "K266"
+  },
+  "bundang-007": {
+    "stationCd": "1884",
+    "frCode": "K265"
+  },
+  "bundang-008": {
+    "stationCd": "1883",
+    "frCode": "K264"
+  },
+  "bundang-009": {
+    "stationCd": "1882",
+    "frCode": "K263"
+  },
+  "bundang-010": {
+    "stationCd": "1881",
+    "frCode": "K262"
+  },
+  "bundang-011": {
+    "stationCd": "1880",
+    "frCode": "K261"
+  },
+  "bundang-012": {
+    "stationCd": "1879",
+    "frCode": "K260"
+  },
+  "bundang-013": {
+    "stationCd": "1878",
+    "frCode": "K259"
+  },
+  "bundang-014": {
+    "stationCd": "1877",
+    "frCode": "K250"
+  },
+  "bundang-015": {
+    "stationCd": "1876",
+    "frCode": "K249"
+  },
+  "bundang-016": {
+    "stationCd": "1875",
+    "frCode": "K248"
+  },
+  "bundang-017": {
+    "stationCd": "1874",
+    "frCode": "K247"
+  },
+  "bundang-018": {
+    "stationCd": "1873",
+    "frCode": "K246"
+  },
+  "bundang-019": {
+    "stationCd": "1846",
+    "frCode": "K245"
+  },
+  "bundang-020": {
+    "stationCd": "1872",
+    "frCode": "K244"
+  },
+  "bundang-021": {
+    "stationCd": "1871",
+    "frCode": "K243"
+  },
+  "bundang-022": {
+    "stationCd": "1870",
+    "frCode": "K242"
+  },
+  "bundang-023": {
+    "stationCd": "1869",
+    "frCode": "K241"
+  },
+  "bundang-024": {
+    "stationCd": "1868",
+    "frCode": "K240"
+  },
+  "bundang-025": {
+    "stationCd": "1867",
+    "frCode": "K239"
+  },
+  "bundang-026": {
+    "stationCd": "1866",
+    "frCode": "K238"
+  },
+  "bundang-027": {
+    "stationCd": "1865",
+    "frCode": "K237"
+  },
+  "bundang-028": {
+    "stationCd": "1864",
+    "frCode": "K236"
+  },
+  "bundang-029": {
+    "stationCd": "1863",
+    "frCode": "K235"
+  },
+  "bundang-030": {
+    "stationCd": "1861",
+    "frCode": "K234"
+  },
+  "bundang-031": {
+    "stationCd": "1862",
+    "frCode": "K233"
+  },
+  "bundang-032": {
+    "stationCd": "1859",
+    "frCode": "K232"
+  },
+  "bundang-033": {
+    "stationCd": "1858",
+    "frCode": "K231"
+  },
+  "bundang-034": {
+    "stationCd": "1857",
+    "frCode": "K230"
+  },
+  "bundang-035": {
+    "stationCd": "1856",
+    "frCode": "K229"
+  },
+  "bundang-036": {
+    "stationCd": "1855",
+    "frCode": "K228"
+  },
+  "bundang-037": {
+    "stationCd": "1860",
+    "frCode": "K227"
+  },
+  "bundang-038": {
+    "stationCd": "1854",
+    "frCode": "K226"
+  },
+  "bundang-039": {
+    "stationCd": "1853",
+    "frCode": "K225"
+  },
+  "bundang-040": {
+    "stationCd": "1852",
+    "frCode": "K224"
+  },
+  "bundang-041": {
+    "stationCd": "1851",
+    "frCode": "K223"
+  },
+  "bundang-041a": {
+    "stationCd": "1031",
+    "frCode": "K222"
+  },
+  "bundang-042": {
+    "stationCd": "1030",
+    "frCode": "K221"
+  },
+  "bundang-043": {
+    "stationCd": "1028",
+    "frCode": "K220"
+  },
+  "bundang-044": {
+    "stationCd": "1027",
+    "frCode": "K219"
+  },
+  "bundang-045": {
+    "stationCd": "1026",
+    "frCode": "K218"
+  },
+  "bundang-046": {
+    "stationCd": "1025",
+    "frCode": "K217"
+  },
+  "bundang-047": {
+    "stationCd": "1024",
+    "frCode": "K216"
+  },
+  "bundang-048": {
+    "stationCd": "1023",
+    "frCode": "K215"
+  },
+  "bundang-049": {
+    "stationCd": "1850",
+    "frCode": "K214"
+  },
+  "bundang-050": {
+    "stationCd": "1849",
+    "frCode": "K213"
+  },
+  "bundang-051": {
+    "stationCd": "1848",
+    "frCode": "K212"
+  },
+  "bundang-052": {
+    "stationCd": "1847",
+    "frCode": "K211"
+  },
+  "bundang-053": {
+    "stationCd": "102C",
+    "frCode": "K210"
+  },
+  "bundang-054": {
+    "stationCd": "1845",
+    "frCode": "K209"
+  },
+  "gyeongui-001": {
+    "stationCd": "1286",
+    "frCode": "K336"
+  },
+  "gyeongui-002": {
+    "stationCd": "1285",
+    "frCode": "K337"
+  },
+  "gyeongui-003": {
+    "stationCd": "1284",
+    "frCode": "K335"
+  },
+  "gyeongui-004": {
+    "stationCd": "1283",
+    "frCode": "K334"
+  },
+  "gyeongui-005": {
+    "stationCd": "1282",
+    "frCode": "K333"
+  },
+  "gyeongui-006": {
+    "stationCd": "1280",
+    "frCode": "K331"
+  },
+  "gyeongui-007": {
+    "stationCd": "1279",
+    "frCode": "K330"
+  },
+  "gyeongui-008": {
+    "stationCd": "1278",
+    "frCode": "K329"
+  },
+  "gyeongui-009": {
+    "stationCd": "1277",
+    "frCode": "K328"
+  },
+  "gyeongui-010": {
+    "stationCd": "1276",
+    "frCode": "K327"
+  },
+  "gyeongui-011": {
+    "stationCd": "1275",
+    "frCode": "K326"
+  },
+  "gyeongui-012": {
+    "stationCd": "1274",
+    "frCode": "K325"
+  },
+  "gyeongui-013": {
+    "stationCd": "1273",
+    "frCode": "K324"
+  },
+  "gyeongui-014": {
+    "stationCd": "1272",
+    "frCode": "K323"
+  },
+  "gyeongui-015": {
+    "stationCd": "1271",
+    "frCode": "K321"
+  },
+  "gyeongui-016": {
+    "stationCd": "1270",
+    "frCode": "K320"
+  },
+  "gyeongui-017": {
+    "stationCd": "1269",
+    "frCode": "K319"
+  },
+  "gyeongui-019": {
+    "stationCd": "1267",
+    "frCode": "K317"
+  },
+  "gyeongui-020": {
+    "stationCd": "1266",
+    "frCode": "K316"
+  },
+  "gyeongui-021": {
+    "stationCd": "1265",
+    "frCode": "K315"
+  },
+  "gyeongui-022": {
+    "stationCd": "1264",
+    "frCode": "K314"
+  },
+  "gyeongui-023": {
+    "stationCd": "1263",
+    "frCode": "K313"
+  },
+  "gyeongui-024": {
+    "stationCd": "1262",
+    "frCode": "K312"
+  },
+  "gyeongui-025": {
+    "stationCd": "1261",
+    "frCode": "K826"
+  },
+  "gyeongui-026": {
+    "stationCd": "1252",
+    "frCode": "P312"
+  },
+  "gyeongui-027": {
+    "stationCd": "1251",
+    "frCode": "P313"
+  },
+  "gyeongui-028": {
+    "stationCd": "100C",
+    "frCode": "K110"
+  },
+  "gyeongui-029": {
+    "stationCd": "1008",
+    "frCode": "K111"
+  },
+  "gyeongui-030": {
+    "stationCd": "1009",
+    "frCode": "K112"
+  },
+  "gyeongui-031": {
+    "stationCd": "1010",
+    "frCode": "K113"
+  },
+  "gyeongui-032": {
+    "stationCd": "1011",
+    "frCode": "K114"
+  },
+  "gyeongui-033": {
+    "stationCd": "1012",
+    "frCode": "K115"
+  },
+  "gyeongui-034": {
+    "stationCd": "1013",
+    "frCode": "K116"
+  },
+  "gyeongui-035": {
+    "stationCd": "1014",
+    "frCode": "K117"
+  },
+  "gyeongui-037": {
+    "stationCd": "101C",
+    "frCode": "K118"
+  },
+  "gyeongui-038": {
+    "stationCd": "1201",
+    "frCode": "K119"
+  },
+  "gyeongui-039": {
+    "stationCd": "1202",
+    "frCode": "K120"
+  },
+  "gyeongui-040": {
+    "stationCd": "1203",
+    "frCode": "K121"
+  },
+  "gyeongui-041": {
+    "stationCd": "1204",
+    "frCode": "K122"
+  },
+  "gyeongui-042": {
+    "stationCd": "1205",
+    "frCode": "K123"
+  },
+  "gyeongui-043": {
+    "stationCd": "1206",
+    "frCode": "K124"
+  },
+  "gyeongui-044": {
+    "stationCd": "1207",
+    "frCode": "K125"
+  },
+  "gyeongui-045": {
+    "stationCd": "1208",
+    "frCode": "K126"
+  },
+  "gyeongui-046": {
+    "stationCd": "1209",
+    "frCode": "K127"
+  },
+  "gyeongui-047": {
+    "stationCd": "1210",
+    "frCode": "K128"
+  },
+  "gyeongui-048": {
+    "stationCd": "1211",
+    "frCode": "K129"
+  },
+  "gyeongui-049": {
+    "stationCd": "1212",
+    "frCode": "K130"
+  },
+  "gyeongui-050": {
+    "stationCd": "1213",
+    "frCode": "K131"
+  },
+  "gyeongui-051": {
+    "stationCd": "1214",
+    "frCode": "K132"
+  },
+  "gyeongui-052": {
+    "stationCd": "1215",
+    "frCode": "K133"
+  },
+  "gyeongui-053": {
+    "stationCd": "1216",
+    "frCode": "K134"
+  },
+  "gyeongui-054": {
+    "stationCd": "1217",
+    "frCode": "K135"
+  },
+  "gyeongui-055": {
+    "stationCd": "1218",
+    "frCode": "K136"
+  },
+  "gyeongui-056": {
+    "stationCd": "1219",
+    "frCode": "K137"
+  },
+  "gyeongui-057": {
+    "stationCd": "1220",
+    "frCode": "K138"
+  },
+  "sinbundang-001": {
+    "stationCd": "4319",
+    "frCode": "D19"
+  },
+  "sinbundang-002": {
+    "stationCd": "4318",
+    "frCode": "D18"
+  },
+  "sinbundang-003": {
+    "stationCd": "4317",
+    "frCode": "D17"
+  },
+  "sinbundang-004": {
+    "stationCd": "4316",
+    "frCode": "D16"
+  },
+  "sinbundang-005": {
+    "stationCd": "4315",
+    "frCode": "D15"
+  },
+  "sinbundang-006": {
+    "stationCd": "4314",
+    "frCode": "D14"
+  },
+  "sinbundang-007": {
+    "stationCd": "4313",
+    "frCode": "D13"
+  },
+  "sinbundang-008": {
+    "stationCd": "4312",
+    "frCode": "D12"
+  },
+  "sinbundang-009": {
+    "stationCd": "4311",
+    "frCode": "D11"
+  },
+  "sinbundang-010": {
+    "stationCd": "4310",
+    "frCode": "D10"
+  },
+  "sinbundang-011": {
+    "stationCd": "4309",
+    "frCode": "D9"
+  },
+  "sinbundang-012": {
+    "stationCd": "4308",
+    "frCode": "D8"
+  },
+  "sinbundang-013": {
+    "stationCd": "4307",
+    "frCode": "D7"
+  },
+  "sinbundang-014": {
+    "stationCd": "4306",
+    "frCode": "D6"
+  },
+  "sinbundang-015": {
+    "stationCd": "4305",
+    "frCode": "D5"
+  },
+  "sinbundang-016": {
+    "stationCd": "4304",
+    "frCode": "D4"
+  }
+}
