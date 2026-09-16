@@ -55,6 +55,7 @@ import {
   shouldSkipStationary,
   resolveBoardingLinePayload,
   resolveWaypointEnvironment,
+  resolveWalkGateAnchor,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -71,7 +72,14 @@ import {
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
-import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
+import {
+  DEVICE_SYNC_STALE_THRESHOLD_MS,
+  readSsot,
+  seedSsot,
+  ssotKey,
+  writeSsot,
+  type TripPositionSSoT,
+} from '../tripPositionSsot';
 import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -2741,6 +2749,158 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
     expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
     expect(stored.legBoardingPromptState).toBeUndefined();
+  });
+
+  // #2655 — walk-gate 기준점을 backend 처리 시각(`now`)이 아니라 device 관측 도착 시각
+  // (SSoT `lastDeviceSyncAt`)으로 앵커링. 2026-09-16 실측(처리 지연 → 도보 게이트 시계가
+  // 통째로 밀려 leg-2 lock 0건)의 root fix.
+  describe('#2655 — walk-gate 기준점 device 관측 도착 시각 앵커링', () => {
+    it('처리 지연 시나리오 — SSoT lastDeviceSyncAt(도착 관측)이 backend 처리 시각(now)보다 앞서면 그 시각으로 앵커링 (fix 전: now 기준 → 미래라 walk-gated / fix 후: 관측 시각 기준 → 이미 경과해 즉시 eligible)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          waypoints: [
+            { stationName: '군자', line: '7', kind: 'transfer' },
+            { stationName: '아차산', line: '5', kind: 'destination' },
+          ],
+        }),
+      );
+      const walkSeconds = getTransferSeconds('7', '5', '군자');
+      // device는 도보 이동 시간(walkSeconds)이 다 지나고도 1초가 더 지난 시점에 이미 도착을
+      // 관측·보고했다 — 그런데도 backend 처리(cron tick)는 지금(NOW)에서야 일어난다. 옛
+      // now-anchored 코드라면 여기서부터 다시 walkSeconds를 세어 walk-gated로 재차단됐을
+      // 시점이다.
+      const observedArrivalAt = NOW - (walkSeconds * 1000 + 1000);
+      // DEVICE_SYNC_STALE_THRESHOLD_MS(5분) 이내 — 신뢰 가능한 관측값 조건을 만족시킨다.
+      expect(NOW - observedArrivalAt).toBeLessThan(DEVICE_SYNC_STALE_THRESHOLD_MS);
+      const ssot = await seedSsot(kv as unknown as KVNamespace, 'lock-tok', '용마산');
+      ssot.lastDeviceSyncAt = observedArrivalAt;
+      await writeSsot(kv as unknown as KVNamespace, ssot, {});
+
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-walkgate-anchor',
+      });
+
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      // fix 후 — 관측 도착 시각 기준으로 앵커링돼 이미 도보시간이 경과, 즉시 eligible.
+      expect(stored.legBoardingEligibleAt).toBe(observedArrivalAt + walkSeconds * 1000);
+      expect(stored.legBoardingEligibleAt).toBeLessThanOrEqual(NOW);
+      // fix 전(now 기준)이었다면 NOW + walkSeconds*1000(미래, walk-gated)였을 값과 달라야 한다.
+      expect(stored.legBoardingEligibleAt).not.toBe(NOW + walkSeconds * 1000);
+    });
+
+    it('SSoT 관측값 부재(legacy row) — 기존 now fallback 동작 보존', async () => {
+      const kv = new InMemoryKV();
+      // seedSsot를 호출하지 않는다 — advanceBoardingLockWaypoint의 lazy-seed가 lastDeviceSyncAt
+      // 없는 row를 만들도록 유도(legacy/미상 케이스).
+      await runArrivedScenario(
+        kv,
+        {
+          waypoints: [
+            { stationName: '군자', line: '7', kind: 'transfer' },
+            { stationName: '아차산', line: '5', kind: 'destination' },
+          ],
+        },
+        '군자',
+        'p-walkgate-fallback',
+      );
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+      expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
+    });
+
+    it('SSoT 관측값이 DEVICE_SYNC_STALE_THRESHOLD_MS보다 오래됨 — 신뢰 불가로 now fallback (오탑승 방지 게이트 무력화 방지)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          waypoints: [
+            { stationName: '군자', line: '7', kind: 'transfer' },
+            { stationName: '아차산', line: '5', kind: 'destination' },
+          ],
+        }),
+      );
+      const ssot = await seedSsot(kv as unknown as KVNamespace, 'lock-tok', '용마산');
+      // threshold(5분)보다 오래된 관측값 — 신뢰 불가.
+      ssot.lastDeviceSyncAt = NOW - DEVICE_SYNC_STALE_THRESHOLD_MS - 1;
+      await writeSsot(kv as unknown as KVNamespace, ssot, {});
+
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-walkgate-stale',
+      });
+
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+      expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
+    });
+
+    it('정상(처리=도착) 시나리오 — 관측값이 now보다 미래(clock skew 방어)면 now fallback', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          waypoints: [
+            { stationName: '군자', line: '7', kind: 'transfer' },
+            { stationName: '아차산', line: '5', kind: 'destination' },
+          ],
+        }),
+      );
+      const ssot = await seedSsot(kv as unknown as KVNamespace, 'lock-tok', '용마산');
+      ssot.lastDeviceSyncAt = NOW + 1000; // 미래 — 오염/clock skew 데이터.
+      await writeSsot(kv as unknown as KVNamespace, ssot, {});
+
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-walkgate-future',
+      });
+
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+      expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
+    });
+  });
+
+  describe('#2655 — resolveWalkGateAnchor (순수 함수 단위 테스트)', () => {
+    it('관측값 undefined → now', () => {
+      expect(resolveWalkGateAnchor(NOW, undefined)).toBe(NOW);
+    });
+
+    it('관측값이 now보다 미래 → now (clock skew 방어)', () => {
+      expect(resolveWalkGateAnchor(NOW, NOW + 1)).toBe(NOW);
+    });
+
+    it('관측값이 DEVICE_SYNC_STALE_THRESHOLD_MS보다 오래됨 → now (신뢰 불가)', () => {
+      expect(resolveWalkGateAnchor(NOW, NOW - DEVICE_SYNC_STALE_THRESHOLD_MS - 1)).toBe(NOW);
+    });
+
+    it('관측값이 threshold 경계(정확히 THRESHOLD_MS 전) → 신뢰 가능, 관측값 그대로', () => {
+      expect(resolveWalkGateAnchor(NOW, NOW - DEVICE_SYNC_STALE_THRESHOLD_MS)).toBe(
+        NOW - DEVICE_SYNC_STALE_THRESHOLD_MS,
+      );
+    });
+
+    it('신선한 관측값 → 관측값 그대로(now 대신 실제 도착 시각 사용)', () => {
+      expect(resolveWalkGateAnchor(NOW, NOW - 60_000)).toBe(NOW - 60_000);
+    });
+
+    it('관측값이 now와 같음 → 관측값(=now) 그대로', () => {
+      expect(resolveWalkGateAnchor(NOW, NOW)).toBe(NOW);
+    });
   });
 
   // #2564 (ADR-038 다중 환승 leg-agnostic) — 이미 이전 환승에서 stamp된 currentLegAnchor가

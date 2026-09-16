@@ -74,6 +74,7 @@ import {
 } from './advanceTripPosition';
 import {
   deleteSsot,
+  DEVICE_SYNC_STALE_THRESHOLD_MS,
   isDeviceSyncStale,
   readSsot,
   seedSsot,
@@ -5287,6 +5288,39 @@ export async function advanceBoardingLockWaypoint(
 }
 
 /**
+ * #2655 — walk-gate(`legBoardingEligibleAt`) 기준점을 backend 처리 시각(`now`)이 아니라 device가
+ * 최근에 관측을 보고한 시각(SSoT `lastDeviceSyncAt`)으로 앵커링한다.
+ *
+ * `now`는 backend가 이 환승 waypoint를 처리한 시각이지 사용자가 환승역에 도착한 시각이 아니다.
+ * 처리가 늦어지면(캐시/cron 지연/arvlCd 결측 등, 원인 불문) 도보 게이트 시계 전체가 그만큼
+ * 통째로 밀려 leg-2 탑승 프롬프트가 `walk-gated`로 계속 차단되는 회귀가 있었다(2026-09-16 실측:
+ * 도착 06:34:59 → transfer 처리 06:41:10 → 06:42~44 3연속 차단, leg-2 lock 0건).
+ *
+ * `lastDeviceSyncAt`은 "이 환승역 도착"만을 정밀히 가리키는 값이 아니라 "device가 마지막으로
+ * `POST /position`을 보낸 시각"(매 호출마다 갱신)이라는 한계가 있다 — 그러나 backend 처리
+ * 시각보다는 항상 실제 진행 상황에 더 가깝다(#2655 코디네이터 확정). 아래 중 하나라도
+ * 해당하면(신뢰 불가) 기존 `now` fallback으로 동작을 보존한다:
+ *   - 값 자체가 없음(legacy row / seed 직후 / SSoT read 실패)
+ *   - `now`보다 미래(clock skew/오염 데이터 방어)
+ *   - `DEVICE_SYNC_STALE_THRESHOLD_MS`(5분)보다 오래된 값 — 오래된 값을 그대로 신뢰하면
+ *     walk-gate가 과거 시각으로 앵커링돼 즉시 통과 판정이 나버려, 오탑승 방지 게이트(#2515)가
+ *     무력화되는 반대 방향 회귀가 생긴다.
+ *
+ * 기준점이 과거가 되어 `legBoardingEligibleAt`이 이미 지난 시각이 되는 것은 의도된 동작이다 —
+ * 사용자가 이미 도보 이동 시간을 다 쓴 상태이므로 즉시 eligible 판정이 맞다.
+ */
+export function resolveWalkGateAnchor(now: number, observedArrivalAt: number | undefined): number {
+  if (
+    observedArrivalAt === undefined ||
+    observedArrivalAt > now ||
+    now - observedArrivalAt > DEVICE_SYNC_STALE_THRESHOLD_MS
+  ) {
+    return now;
+  }
+  return observedArrivalAt;
+}
+
+/**
  * #2323 rework (break #1) — waypoint advance의 lock-independent 공통 처리.
  *
  * 원래 `advanceBoardingLockWaypoint` 본문 일부였다(ADR-017 T5 evidence 게이트 통과 이후 블록).
@@ -5372,6 +5406,10 @@ async function completeWaypointAdvance(
   // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
   // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
   const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
+  // #2655 — 아래 lock-release 블록에서 이미 읽은 SSoT가 있으면 walk-gate anchor 계산에 재사용
+  // (KV read 횟수를 늘리지 않는다 — #2645 PR 코드리뷰 MEDIUM-4 mid-loop 실패 테스트가 정확한
+  // SSoT read 횟수에 의존).
+  let ssotReadForWaypoint: TripPositionSSoT | null | undefined;
   if (lockReleasedOnTransfer) {
     trip.boardingLock = undefined;
     trip.consecutiveEtaMissing = 0;
@@ -5387,9 +5425,10 @@ async function completeWaypointAdvance(
   if (lockReleasedOnTransfer && releasedLockSnapshot !== undefined) {
     const pushId = crypto.randomUUID();
     // #1561 (T8, ADR-017 / S2 흡수) — transfer-release fire 직전 SSoT 권위 스냅샷 forward.
-    const ssotForTransfer = await readSsot(env.TRIPS, trip.token, {
+    ssotReadForWaypoint = await readSsot(env.TRIPS, trip.token, {
       cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
     });
+    const ssotForTransfer = ssotReadForWaypoint;
     // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
     const transferPayload = buildStationPassedImminentPayload({
       trip,
@@ -5469,7 +5508,16 @@ async function completeWaypointAdvance(
       waypoint.stationName,
     );
     trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
-    trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
+    // #2655 — 게이트 기준점을 backend 처리 시각(`now`)이 아니라 device 관측 도착 시각으로
+    // 앵커링(`resolveWalkGateAnchor` 참고). 위 lock-release 블록이 이미 SSoT를 읽었으면
+    // (`ssotReadForWaypoint`) 재사용 — 없을 때만(lockless leg) 새로 읽는다.
+    if (ssotReadForWaypoint === undefined) {
+      ssotReadForWaypoint = await readSsot(env.TRIPS, trip.token, {
+        cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+      });
+    }
+    const walkGateAnchor = resolveWalkGateAnchor(now, ssotReadForWaypoint?.lastDeviceSyncAt);
+    trip.legBoardingEligibleAt = walkGateAnchor + transferWalkSeconds * 1000;
     trip.legBoardingPromptState = undefined;
     // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
     // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
