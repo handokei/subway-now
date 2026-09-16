@@ -268,16 +268,20 @@ describe('#2645 환승역 하차 확정 — /boarding-lock/sync가 slice하는 �
     expect(isBoardingLockActive(after as Trip, NOW)).toBe(true);
   });
 
-  // #2655 — sync 경로도 completeWaypointAdvance를 공유하므로 동일 anchor 재처리 시(예: cron이
-  // 같은 환승을 이미 stamp해둔 직후 sync가 같은 waypoint를 처리하는 KV 레이스) 멱등해야 한다.
-  // waypoints는 아직 미소진(건대입구가 head)인 채로 currentLegAnchor만 이미 이번 환승과 동일하게
-  // stamp돼 있는 상태를 시뮬레이션 — 실제 레이스에서 cron/sync 중 한쪽이 먼저 anchor를 쓰고
-  // waypoints slice는 아직 반영 전인 순간을 재현한다.
-  it('#2655 — 동일 anchor가 이미 stamp된 상태에서 sync가 같은 transfer waypoint 처리 시 재-stamp 없음(멱등)', async () => {
+  // #2655 — sync 경로도 completeWaypointAdvance를 공유하므로 동일 anchor가 "최초 stamp 기준
+  // 도보시간 창 안에서" 재처리되면(예: cron이 같은 환승을 이미 stamp해둔 직후 sync가 같은
+  // waypoint를 처리하는 KV 레이스) 멱등해야 한다. waypoints는 아직 미소진(건대입구가 head)인
+  // 채로 currentLegAnchor만 이미 이번 환승과 동일하게 stamp돼 있는 상태를 시뮬레이션 — 실제
+  // 레이스에서 cron/sync 중 한쪽이 먼저 anchor를 쓰고 waypoints slice는 아직 반영 전인 순간을
+  // 재현한다. 도보시간(건대입구 7→2 = 278초)보다 짧은 간격(60초)으로 재처리를 시뮬레이션.
+  it('#2655 — 동일 anchor가 도보시간 창 안에서 이미 stamp된 상태에서 sync가 같은 transfer waypoint 처리 시 재-stamp 없음(멱등)', async () => {
     const kv = new InMemoryKV();
     const env = makeEnv(kv);
-    const firstProcessedEligibleAt = NOW - 300_000;
-    const preservedPromptState = { lastFiredAt: NOW - 200_000, fired: true };
+    // 핸들러 내부 `now`는 `Date.now()`(실 벽시계)를 쓴다 — payload의 observedAtMs가 아니라(위
+    // 498라인 주석과 동일 제약). 도보시간(278초) 창 안에 들어오도록 실 벽시계 기준으로 stamp.
+    const realNow = Date.now();
+    const firstProcessedEligibleAt = realNow - 60_000; // 첫 처리 기준 60초 전 — 도보시간(278초) 창 안
+    const preservedPromptState = { lastFiredAt: realNow - 40_000, fired: true };
     const preservedStreak = { trainCode: '2555', count: 1 };
     const trip = makeTrip({
       currentLegAnchor: { boardingStation: '건대입구', line: '2' },

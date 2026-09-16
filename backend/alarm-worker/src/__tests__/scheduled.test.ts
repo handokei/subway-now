@@ -2774,14 +2774,16 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.boardingLock).toBeUndefined();
   });
 
-  // #2655 — 같은 anchor(같은 boardingStation + 다음 leg line)가 재처리되면(예: sync가 이미
-  // 처리한 환승을 cron이 재차 처리하는 KV 레이스) legBoardingEligibleAt/legBoardingPromptState/
-  // legResolveStreak가 다시 리셋돼 walk-gate 시계가 밀리는 회귀(2026-09-16 실측)가 있었다.
-  // 이미 stamp된 anchor와 이번 환승의 anchor가 동일하면 재-stamp는 no-op이어야 한다.
-  it('#2655 — 동일 anchor 재처리 시 legBoardingEligibleAt/legBoardingPromptState/legResolveStreak를 리셋하지 않음(멱등)', async () => {
+  // #2655 — 같은 anchor(같은 boardingStation + 다음 leg line)가 "최초 stamp 기준 한 도보시간
+  // 창 안에서" 재처리되면(예: sync가 이미 처리한 환승을 cron이 곧바로 재차 처리하는 KV 레이스,
+  // 2026-09-16 실측 06:36:19→06:41:10, 간격 < 도보시간 180초) legBoardingEligibleAt/
+  // legBoardingPromptState/legResolveStreak가 다시 리셋돼 walk-gate 시계가 밀리는 회귀가
+  // 있었다. 이 창 안의 재처리는 no-op이어야 한다(멱등). 도보시간(군자 7→5 = 180초)보다 짧은
+  // 간격(60초)으로 재처리를 시뮬레이션.
+  it('#2655 — 동일 anchor가 도보시간 창 안에서 재처리 시 legBoardingEligibleAt/legBoardingPromptState/legResolveStreak를 리셋하지 않음(멱등)', async () => {
     const kv = new InMemoryKV();
-    const firstProcessedEligibleAt = NOW - 300_000; // 첫 처리 기준(이미 지난 시각) — 재처리로 밀리면 안 됨
-    const preservedPromptState = { lastFiredAt: NOW - 200_000, fired: true };
+    const firstProcessedEligibleAt = NOW - 60_000; // 첫 처리 기준 60초 전 — 도보시간(180초) 창 안
+    const preservedPromptState = { lastFiredAt: NOW - 40_000, fired: true };
     const preservedStreak = { trainCode: '5123', count: 1 };
     await runArrivedScenario(
       kv,
@@ -2803,6 +2805,78 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
     // 재처리 이전(첫 처리) 기준 그대로 유지 — now 기준으로 다시 계산돼 밀리면 안 된다.
     expect(stored.legBoardingEligibleAt).toBe(firstProcessedEligibleAt);
+    expect(stored.legBoardingPromptState).toEqual(preservedPromptState);
+    expect(stored.legResolveStreak).toEqual(preservedStreak);
+  });
+
+  // #2655 (코디네이터 리뷰 MEDIUM-2, 2026-09-16) — 무조건 suppress는 새 위험을 만든다: 잘못된
+  // fused 역/cleanup 경로로 transfer waypoint가 실제 도착보다 훨씬 이르게 advance되면(오탑승
+  // 원인) legBoardingEligibleAt이 너무 이른 시각으로 stamp된다. 종전 코드는 진짜 환승이 나중에
+  // (도보시간 창을 훌쩍 넘겨) 재처리될 때 시계를 자가 교정했다 — 이 교정까지 막으면 사용자가
+  // 아직 환승 통로를 걷는 중에 게이트가 만료돼 leg-2 auto-lock이 조기 발동한다(#2515가 막으려던
+  // 위험 그 자체). 재처리가 "최초 stamp 결과 + 도보시간" 창을 넘겨 들어오면(= 명백히 낡은/조기
+  // stamp) 기존대로 전부 교정(덮어쓰기)해야 한다.
+  it('#2655 — 동일 anchor라도 도보시간 창을 넘겨 재처리되면 조기/낡은 stamp를 교정(덮어씀) — 오탑승 방지', async () => {
+    const kv = new InMemoryKV();
+    // 최초 stamp가 600초 전 — 도보시간(180초) 창을 훌쩍 넘겨 재처리되는 "명백히 낡은 stamp" 케이스.
+    const staleEligibleAt = NOW - 600_000;
+    const staleStreak = { trainCode: 'STALE', count: 3 };
+    await runArrivedScenario(
+      kv,
+      {
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        legBoardingEligibleAt: staleEligibleAt,
+        legBoardingPromptState: { lastFiredAt: NOW - 590_000, fired: true },
+        legResolveStreak: staleStreak,
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-stale-anchor-correction',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
+    // now 기준으로 재계산돼야 한다 — 낡은 stamp를 그대로 두면 사용자가 아직 걷는 중에 게이트가
+    // 만료돼 조기 auto-lock 위험이 생긴다.
+    const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+    expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
+    expect(stored.legBoardingPromptState).toBeUndefined();
+    expect(stored.legResolveStreak).toBeUndefined();
+  });
+
+  // #2655 (코디네이터 리뷰 LOW-3, 2026-09-16) — anchor 동일성을 raw stationName으로 비교하면
+  // #1410/#2566류 역명 정규화 drift(예: '군자' vs '군자(능동)' 괄호 부제)에서 isSameAnchor가
+  // 조용히 false가 돼 멱등 가드가 무력화된다(신호도 안 남음). currentLegAnchor에는 괄호 부제가
+  // 붙은 이름('군자(능동)')이 저장돼 있고 이번 환승 waypoint는 부제 없는 이름('군자')인 drift
+  // 케이스에서도 정규화 비교로 동일 anchor임을 인식해 멱등하게 동작해야 한다.
+  it('#2655 — 역명 정규화 drift(괄호 부제)가 있어도 동일 anchor로 인식해 멱등 동작', async () => {
+    const kv = new InMemoryKV();
+    const freshEligibleAt = NOW - 60_000; // 도보시간(180초) 창 안
+    const preservedPromptState = { lastFiredAt: NOW - 40_000, fired: true };
+    const preservedStreak = { trainCode: '5123', count: 1 };
+    await runArrivedScenario(
+      kv,
+      {
+        // drift: anchor는 괄호 부제 포함 이름으로 저장돼 있음(예: 이전 stamp 시점의 표기).
+        currentLegAnchor: { boardingStation: '군자(능동)', line: '5' },
+        legBoardingEligibleAt: freshEligibleAt,
+        legBoardingPromptState: preservedPromptState,
+        legResolveStreak: preservedStreak,
+        waypoints: [
+          // 이번 환승 waypoint는 부제 없는 이름.
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-normalize-drift-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    // 정규화 비교로 동일 anchor 인식 → 재-stamp 없음(원래 저장된 표기 그대로 유지).
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자(능동)', line: '5' });
+    expect(stored.legBoardingEligibleAt).toBe(freshEligibleAt);
     expect(stored.legBoardingPromptState).toEqual(preservedPromptState);
     expect(stored.legResolveStreak).toEqual(preservedStreak);
   });

@@ -64,6 +64,7 @@ import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
 import { filterCandidateDirection, filterCandidateLine } from './legCandidateFilters';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
+import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import type { ObservedDeparture } from './transferLegConsensus';
 import {
   advanceTripPosition,
@@ -5478,22 +5479,38 @@ async function completeWaypointAdvance(
   // leg만 가리킨다. `legBoardingEligibleAt`(도보시간 게이트) 이전에는 `resolveActiveLegOrigin`과
   // `maybeFireLegBoardingPrompt` 둘 다 이 anchor를 못 본 것처럼 동작한다 — 오탑승 lock 방지.
   if (waypoint.kind === 'transfer' && nextLegWaypoint && isRealLineChange) {
+    const transferWalkSeconds = getTransferSeconds(
+      waypoint.line as Parameters<typeof getTransferSeconds>[0],
+      nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
+      waypoint.stationName,
+    );
     // #2655 — 같은 환승(같은 anchor)이 재처리되면(KV 레이스/cron·sync 중복 처리) 아래 3개
     // 필드를 다시 덮어써 walk-gate 시계·dedup 원장·연속확증 카운터가 리셋되는 회귀가 있었다
     // (2026-09-16 실측: 06:36:19 sync 처리 후 06:41:10 cron 재처리 → 시계 6분 밀림 → leg-2
-    // 프롬프트 3연속 walk-gated). anchor가 동일하면 재-stamp를 no-op으로 만들어 방지한다.
-    // anchor가 다르면(다중 환승의 다음 환승) 기존대로 전부 덮어써 항상 "지금" leg만 가리킨다
-    // (위 주석 참조).
+    // 프롬프트 3연속 walk-gated). anchor가 동일하고 그 stamp가 아직 "타당한 범위"(재처리가
+    // 최초 stamp 직후 한 도보시간 창 안에 들어옴 — 정확히 이 레이스 패턴)면 재-stamp를
+    // no-op으로 만들어 방지한다. 역명 비교는 #1410/#2566 정규화 drift(괄호 부제 등) 흡수를
+    // 위해 `normalizeStationName`을 거친다 — raw 문자열 비교는 drift 시 조용히 false가 되어
+    // 원래 리셋 회귀가 무신호로 되살아난다.
+    //
+    // 리뷰(coordinator, 2026-09-16 MEDIUM-2) — 무조건 suppress하면 새 위험이 생긴다: 잘못된
+    // fused 역/cleanup 경로로 transfer waypoint가 "실제 도착보다 훨씬 이르게" advance된 뒤
+    // (오탑승 원인) 한참 지나 진짜 재처리가 들어오면, 종전 코드는 시계를 실제 도착 시각 기준으로
+    // 자가 교정했다. 그 교정까지 막아버리면 도보시간 게이트가 사용자가 아직 걷는 중에 만료돼
+    // leg-2 auto-lock이 조기 발동한다(#2515가 막으려던 위험 그 자체). 그래서 suppress는
+    // "재처리가 최초 stamp 결과(legBoardingEligibleAt) 기준 한 도보시간 창 안에 들어온 경우"로
+    // 한정한다 — 이 KV 레이스는 수 분 내 재처리되는 패턴(실측 06:36:19→06:41:10, 도보시간보다
+    // 짧은 간격)이라 이 창 안에 들어오고, 진짜 조기-advance 교정은 이 창 밖(훨씬 나중)에서
+    // 일어나므로 그대로 재-stamp(교정)된다.
     const isSameAnchor =
       trip.currentLegAnchor !== undefined &&
-      trip.currentLegAnchor.boardingStation === waypoint.stationName &&
+      normalizeStationName(trip.currentLegAnchor.boardingStation) === normalizeStationName(waypoint.stationName) &&
       trip.currentLegAnchor.line === nextLegWaypoint.line;
-    if (!isSameAnchor) {
-      const transferWalkSeconds = getTransferSeconds(
-        waypoint.line as Parameters<typeof getTransferSeconds>[0],
-        nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
-        waypoint.stationName,
-      );
+    const isFreshReprocess =
+      isSameAnchor &&
+      trip.legBoardingEligibleAt !== undefined &&
+      now < trip.legBoardingEligibleAt + transferWalkSeconds * 1000;
+    if (!isFreshReprocess) {
       trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
       trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
       trip.legBoardingPromptState = undefined;
