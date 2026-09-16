@@ -10076,6 +10076,73 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
       );
     });
 
+    // 코드리뷰 P2-2 — 각 skip 지점이 **자기 사유**를 정확히 싣는지 지점별로 검증한다. 이 PR의
+    // 목적 자체가 "사후에 어느 skip인지 D1로 확정"이라, 사유가 뒤바뀌어도 CI가 못 잡으면 계측이
+    // 무의미해진다. 조건 세팅만 다르고 assert 형태는 동일하므로 테이블 주도로 돌린다.
+    const SKIP_CASES: {
+      name: string;
+      reason: string;
+      station: string;
+      seed: (kv: InMemoryKV, trip: Trip) => Promise<void>;
+    }[] = [
+      {
+        name: 'arvlCd dedup 키 기존재',
+        reason: 'arvlcd-dedup',
+        station: '중곡',
+        seed: async (kv, trip) => {
+          await kv.put(arvlCdFireKey(trip.token, '7246', '중곡', 1), '1');
+        },
+      },
+      {
+        name: 'cross-station dedup 윈도우',
+        reason: 'cross-station-dedup',
+        station: '중곡',
+        seed: async (kv, trip) => {
+          await putTrip(kv as unknown as KVNamespace, {
+            ...trip,
+            lastFiredStation: { stationName: '용마산', epochMs: NOW - 1_000 },
+          });
+        },
+      },
+    ];
+    // 나머지 두 지점(stale-ssot / fire-once-cycle)은 이 경로에서 재현되지 않는다:
+    //   - stale-ssot: `fireArvlCdStationPush` 직전에 `advanceTripPosition`이 항상 `lastAdvanceAt`을
+    //     갱신해 진입 시 staleMs≈0이 된다(2026-09-16 조사에서 "advance 없이 fire" 경로가 코드에
+    //     없음을 확인). 가드가 dormant인 것이지 계측이 틀린 게 아니라, 배선만 해두고 그 가드가
+    //     언젠가 실제로 발동하면 그때 D1에 남도록 한다.
+    //   - fire-once-cycle: arch flag ON에서만 도달(`isSimpleArchEnabled`) — 전용 describe가 따로 있다.
+
+    for (const testCase of SKIP_CASES) {
+      it(`${testCase.name} → reason=${testCase.reason} 기록`, async () => {
+        const { db, inserts } = makeFireLogDb();
+        const kv = new InMemoryKV();
+        const trip = makeLockTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await testCase.seed(kv, trip);
+        await runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeArrivalSeoul('중곡', 0, 1),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => `p-2662-${testCase.reason}`,
+        });
+        const rows = inserts
+          .filter((args) => args[2] === 'cron-fire-attempt')
+          .map((args) => ({
+            station: args[3],
+            ...(JSON.parse(args[5] as string) as { outcome: string; reason?: string }),
+          }));
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            station: testCase.station,
+            outcome: 'skipped-reason',
+            reason: testCase.reason,
+          }),
+        );
+      });
+    }
+
     it('같은 사유라도 역이 바뀌면 다시 기록된다 (마커가 reason@station — 어느 역이 침묵했는지 확정)', async () => {
       const { db, inserts } = makeFireLogDb();
       const kv = new InMemoryKV();

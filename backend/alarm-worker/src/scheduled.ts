@@ -3331,7 +3331,6 @@ const FIRE_SKIP_REASON = {
   fireOnceCycle: 'fire-once-cycle-already',
   arvlCdDedup: 'arvlcd-dedup',
   crossStationDedup: 'cross-station-dedup',
-  legacyGateMismatch: 'legacy-gate-mismatch',
 } as const;
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
@@ -3342,8 +3341,14 @@ export async function fireArvlCdStationPush(
 ): Promise<{ dirty: boolean }> {
   const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
   // #2662 — 아래 skip 분기들이 D1에 사유를 남기려면 SSoT 전이 마커가 필요하다. stale 가드가
-  // 이미 같은 파라미터로 읽던 read를 함수 앞으로 끌어올려 재사용한다(read 횟수 불변, 발사
-  // 경로에서는 fire payload의 `ssot` forward로도 계속 재사용된다).
+  // 이미 같은 파라미터로 읽던 read를 함수 앞으로 끌어올려 재사용한다.
+  //
+  // 비용 정직하게(코드리뷰 P2-1): stale 가드까지 도달하는 경로(발사 포함)는 read 횟수 **불변**
+  // 이지만, 그 앞에서 조기 반환하던 두 분기(sleep mute / station-passed dedup)는 0회 → 1회로
+  // 늘어난다. 이 read는 `cacheTtl` 적용 KV read이고 무료 플랜 read quota는 write보다 여유가
+  // 크지만(문제였던 #2073은 write), 공짜는 아니다 — "왜 이 역이 침묵했는가"를 사후에 확정할 수
+  // 있게 하는 값과 맞바꾼 것이고, 취침 모드처럼 매 tick 반복되는 분기가 여기 포함된다는 점을
+  // 명시해 둔다(전이가 없으면 write는 발생하지 않으므로 늘어나는 것은 read뿐이다).
   const ssotForFireGate = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
@@ -5002,18 +5007,12 @@ export async function runTrainCodeTracking(
         station: waypoint.stationName,
         arvlCd: estimate.arvlCd,
       });
-      // #2662 — arvlCd가 있는데(≠null) 게이트가 mismatch면 이 역은 조용히 침묵한다(아래
-      // vanish-fallback은 arvlCd===null일 때만 발사). 기존엔 log만 남아 사후 확정이 불가능했다.
-      if (estimate.arvlCd !== null) {
-        await recordFireBlockReasonTransition(
-          env,
-          trip,
-          waypoint,
-          ssot,
-          FIRE_SKIP_REASON.legacyGateMismatch,
-          now,
-        );
-      }
+      // #2662 — 이 분기에 D1 기록을 붙이려다 **도달 불가**임을 확인해 넣지 않았다. 여기 오는
+      // 조합은 두 가지뿐이다: (a) `estimate.arvlCd === null`(positions-fallback arrived) —
+      // 바로 아래 vanish-fallback이 발사하므로 침묵이 아니다. (b) lock 만료 — 상류
+      // `isBoardingLockActive` 게이트를 이미 통과했으므로 성립하지 않는다.
+      // `estimateBoardingLockArrival`(:5136~)이 `arrived===true`일 때 arvlCd를 ∈{0,1} 또는 null로만
+      // 반환하기 때문이다. 즉 "arvlCd가 있는데 게이트가 막아 조용히 침묵"하는 경로는 코드에 없다.
       // #2571 (2026-09-12 실측 재생 근거) — position-fallback arrived(arvlCd=null)도 station-passed
       // 발사. arvlCd∈{진입0,도착1} 창은 실측 ~30초인데 cron은 60초 주기라 그 창을 통째로 놓치는
       // 위상이 존재한다(replay_20260912 하네스). 그때 estimateBoardingLockArrival이 realtimePosition
