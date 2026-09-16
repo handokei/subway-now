@@ -42,13 +42,14 @@ export interface UsePrevTrainCandidateResult {
   loading: boolean;
 }
 
-/** 만료 재평가 tick 간격(ms) — 테스트에서 회귀 시나리오 구성 시 참조. */
-export const PREV_TRAIN_TTL_TICK_MS = 5_000;
+/** 만료 재평가 tick 간격(ms) — 캐시가 존재하는 동안에만 이 주기로 재평가한다. */
+const PREV_TRAIN_TTL_TICK_MS = 5_000;
 
 interface PrevTrainCacheEntry {
   contextKey: string;
   candidate: PrevTrainCandidate;
-  cachedAtMs: number;
+  /** 이 후보를 마지막으로 실제 관측(폴링)한 시각 — "최초 목격 시각"이 아니다. */
+  lastSeenAtMs: number;
 }
 
 /**
@@ -64,15 +65,26 @@ interface PrevTrainCacheEntry {
  * #2179 — 탑승한 열차가 다음 역마저 통과하면 도착정보 API 응답(현재역/다음역 모두)에서 완전히
  * 사라져 pool이 비고 candidate가 0건이 된다("탑승 직후 못 누르고 뒤늦게 누르려 하면 목록에 없다"는
  * 실사용자 재발 #2179). 직전에 산출됐던 후보를 `PREV_TRAIN_CANDIDATE_TTL_MS` 동안 캐시로 보존해,
- * 이 구간에서도 최소 1건은 탭 가능하게 한다. 캐시는 trip context(출발역+호선+방향)가 바뀌면
- * 즉시 무효화된다.
+ * 이 구간에서도 최소 1건은 탭 가능하게 한다. 캐시는 trip context(출발역+다음역+호선+방향)가
+ * 바뀌면 즉시 무효화된다.
+ *
+ * TTL 시계는 "최초 목격 시각"이 아니라 "마지막으로 관측된 시각"부터 흐른다(#2656 리뷰 MEDIUM-1).
+ * 떠난 열차가 다음역 도착목록에 보통 2~2.5분 머무르므로, 최초 목격 시각을 고정하면 캐시가 실제로
+ * 쓰이기 시작하는 시점(pool이 비는 순간)엔 이미 TTL의 상당 부분이 소진돼 있어 "탑승 후 뒤늦게
+ * 누르려는" 사용자 요구를 깎는다. 그래서 동일 후보가 계속 관측되는 동안에도 `lastSeenAtMs`를
+ * 매 폴링마다 갱신한다 — 캐시 실제 사용 구간(pool이 빈 이후)에 TTL을 온전히 쓸 수 있다.
  *
  * 캐시는 state(`cacheEntry`)로 보관하고 갱신/무효화는 전부 effect 안에서만 일어난다(렌더 중 ref
- * mutation 금지 — StrictMode 이중 렌더나 discard된 렌더에서 캐시가 오염될 수 있다). 만료 판정은
- * `now` tick(자체 interval, `PREV_TRAIN_TTL_TICK_MS` 간격)에 의존한다. candidate pool이 계속 0건으로
- * 유지되는 동안에는 `freshCandidate`/`contextKey`가 매 폴링 값 그대로(둘 다 불변)라 이 두 값만
- * useMemo 의존성으로 쓰면 만료 분기가 다시는 실행되지 않는다(재현된 버그) — 그래서 만료는 상위
- * 폴링 유무와 무관하게 스스로 흐르는 `now`에 걸어 wall-clock 기준으로 반드시 재평가되게 한다.
+ * mutation 금지 — StrictMode 이중 렌더나 discard된 렌더에서 캐시가 오염될 수 있다). 캐시 갱신
+ * effect는 `arrival`(useArrivalInfo가 실제로 새 데이터를 받았을 때만 참조가 바뀜 — 동일 content는
+ * arrivalEqual로 걸러져 setState 자체가 안 일어난다) 변경에 걸어, "렌더가 일어난 매 순간"이 아니라
+ * "진짜 새 폴링이 도착한 순간"에만 재기록되게 한다. 이렇게 하지 않고 `freshCandidate`(파생 객체라
+ * caller가 currentArrivals/route 등을 매 렌더 새 참조로 넘기면 내용이 같아도 매번 다른 객체) 자체를
+ * 의존성으로 쓰면 setState→리렌더→effect 재실행이 무한 반복될 수 있다(실제로 재현된 버그).
+ *
+ * 만료 판정은 `now` tick(자체 interval, `PREV_TRAIN_TTL_TICK_MS` 간격)에 의존한다. 이 interval은
+ * 캐시가 존재하는 동안에만 등록되고(#2656 리뷰 — 캐시가 없을 때 5초마다 리렌더를 만드는 건 순수
+ * 낭비이자 재렌더/발열 이슈(#2594)와 방향이 어긋난다), 캐시가 만료되거나 무효화되면 정지한다.
  */
 export function usePrevTrainCandidate({
   route,
@@ -90,7 +102,9 @@ export function usePrevTrainCandidate({
     return resolveTripDirection(route, destinationName, currentStation.id);
   }, [route, destinationName, currentStation]);
 
-  const contextKey = `${currentStation?.id ?? ''}|${line ?? ''}|${direction ?? ''}`;
+  // #2656 리뷰 LOW-3 — nextStationName을 key에 포함. origin/line/direction이 같아도 경로 재계산 등으로
+  // 하류 기준역(nextStationName)만 바뀌면 이전 후보는 다른 구간 기준으로 뽑힌 것이라 무효화해야 한다.
+  const contextKey = `${currentStation?.id ?? ''}|${nextStationName ?? ''}|${line ?? ''}|${direction ?? ''}`;
 
   const freshCandidate = useMemo<PrevTrainCandidate | null>(() => {
     if (!arrival || !currentStation || !nextStationName || !line) return null;
@@ -115,40 +129,42 @@ export function usePrevTrainCandidate({
   }, [arrival, currentStation, nextStationName, direction, currentArrivals, line]);
 
   const [cacheEntry, setCacheEntry] = useState<PrevTrainCacheEntry | null>(null);
-  // 만료 재평가용 tick — freshCandidate/contextKey가 폴링 내내 그대로여도(candidates 계속 0건)
-  // 이 state가 PREV_TRAIN_TTL_TICK_MS마다 스스로 바뀌어 아래 prevTrain useMemo를 강제로 재실행시킨다.
   const [now, setNow] = useState<number>(() => Date.now());
 
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), PREV_TRAIN_TTL_TICK_MS);
-    return () => clearInterval(id);
-  }, []);
-
+  // 캐시 갱신/무효화 — "진짜 새 폴링(arrival 참조 변경)"에서만 실행. freshCandidate를 의도적으로
+  // deps에서 제외한다(위 함수 doc 참조 — 무한 렌더 루프 재발 방지).
   useEffect(() => {
     if (freshCandidate) {
-      setCacheEntry((prev) => {
-        // 동일 후보(같은 trainCode)면 이전 state 그대로 반환 — React가 동일 참조 setState를
-        // bail-out하므로 리렌더가 발생하지 않는다. 호출부가 currentArrivals/route 등을 매 렌더
-        // 새 배열/객체로 넘겨 freshCandidate 참조가 매번 달라지는 경우(흔한 caller 패턴)에도
-        // 이 값 비교가 없으면 effect→setState→리렌더→effect가 무한 반복된다.
-        const sameCandidate =
-          prev && prev.contextKey === contextKey && prev.candidate.train.trainCode === freshCandidate.train.trainCode;
-        if (sameCandidate) {
-          return prev;
-        }
-        return { contextKey, candidate: freshCandidate, cachedAtMs: Date.now() };
-      });
+      setCacheEntry({ contextKey, candidate: freshCandidate, lastSeenAtMs: Date.now() });
       return;
     }
-    // fresh candidate가 없어졌을 때(candidates=0) 캐시 자체는 지우지 않는다 — 여기서 지우면
-    // TTL 만료 판정(아래 prevTrain useMemo)이 무의미해진다. context가 바뀐 경우에만 즉시 무효화.
     setCacheEntry((prev) => (prev && prev.contextKey !== contextKey ? null : prev));
-  }, [freshCandidate, contextKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrival, contextKey]);
+
+  // 만료된 캐시를 실제로 비운다 — 이게 있어야 아래 interval 게이팅이 "캐시 없음"으로 판정해
+  // tick을 멈출 수 있다.
+  useEffect(() => {
+    if (!cacheEntry) return;
+    if (now - cacheEntry.lastSeenAtMs >= PREV_TRAIN_CANDIDATE_TTL_MS) {
+      setCacheEntry(null);
+    }
+  }, [now, cacheEntry]);
+
+  // #2656 리뷰 — 캐시가 있을 때만 tick을 돌린다. 만료 대상이 없는데 5초마다 리렌더를 만드는 건
+  // 순수 낭비이고, 이 hook은 HomeScreen에서 2회 마운트되므로(prevTrain + transferPrevTrain) 상시
+  // interval 2개를 추가하는 셈 — 재렌더/발열 문제(#2594)와 방향이 어긋난다.
+  const hasCache = cacheEntry !== null;
+  useEffect(() => {
+    if (!hasCache) return;
+    const id = setInterval(() => setNow(Date.now()), PREV_TRAIN_TTL_TICK_MS);
+    return () => clearInterval(id);
+  }, [hasCache]);
 
   const prevTrain = useMemo<PrevTrainCandidate | null>(() => {
     if (freshCandidate) return freshCandidate;
     if (!cacheEntry || cacheEntry.contextKey !== contextKey) return null;
-    const ageMs = now - cacheEntry.cachedAtMs;
+    const ageMs = now - cacheEntry.lastSeenAtMs;
     if (ageMs >= PREV_TRAIN_CANDIDATE_TTL_MS) return null;
     return {
       train: cacheEntry.candidate.train,
