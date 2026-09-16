@@ -28,8 +28,22 @@ import {
 } from '../shared/types/station';
 
 export default function MapScreen() {
+  // #2667 — 지도 탭은 한 번 열면 계속 mount된 채 남는다(탭 네비게이션). 기본값으로 이 훅을 쓰면
+  // 그 순간부터 앱 수명 내내 **두 번째 FG GPS watch**가 돌아 HomeScreen의 watch와 중복된다
+  // (발열/배터리 + 계측 이중 카운트 — #2594 리뷰가 DebugModal에서 잡았던 것과 같은 클래스).
+  // 화면이 보일 때만 위치가 필요하므로 포커스에 묶고, 계측에는 기여하지 않도록 'observer'로 태깅한다.
+  // 포커스 판정은 이미 이 화면이 쓰고 있는 `useFocusEffect`(expo-router)로 한다 —
+  // `@react-navigation/native`의 `useIsFocused`는 transitive 의존이라 직접 import하면
+  // 선언되지 않은 의존성이 된다.
+  const [isFocused, setIsFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setIsFocused(true);
+      return () => setIsFocused(false);
+    }, []),
+  );
   const { userLocation, result, loading, error, permissionDenied, refresh, requestCurrentLocation, accuracyMeters, locationUncertain } =
-    useNearestStation();
+    useNearestStation({ enabled: isFocused, instrumentationRole: 'observer' });
   const allStations = stationsData as Station[];
   const { colors } = useTheme();
   const customOrigin = useDestinationStore((s) => s.customOrigin);

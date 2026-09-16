@@ -151,6 +151,62 @@ describe('useNearestStation — watch 구독 세대 가드 (#2660)', () => {
     expect(result.current.error).toBeNull();
   });
 
+  // #2667 — 포커스되지 않은 탭(예: MapScreen)이 앱 수명 내내 두 번째 watch를 돌리지 않도록.
+  describe('enabled 게이트 (#2667)', () => {
+    // jest 환경의 AppState.currentState는 'unknown'일 수 있어 재시작 경로가 active 가드에
+    // 걸린다 — 기존 watch 프로파일 테스트와 동일하게 'active'로 고정한다.
+    const originalCurrentState = AppState.currentState;
+    beforeEach(() => {
+      (AppState as { currentState: string }).currentState = 'active';
+    });
+    afterEach(() => {
+      (AppState as { currentState: string }).currentState = originalCurrentState;
+    });
+
+    it('enabled=false로 마운트하면 watch 자체를 시작하지 않는다', async () => {
+      renderHook(() => useNearestStation({ enabled: false }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(Location.watchPositionAsync).not.toHaveBeenCalled();
+    });
+
+    it('true→false 전이에서 구독을 끊고, false→true에서 다시 시작한다', async () => {
+      const { rerender } = renderHook(
+        ({ enabled }: { enabled: boolean }) => useNearestStation({ enabled }),
+        { initialProps: { enabled: true } },
+      );
+      await waitFor(() => expect(pendingResolvers).toHaveLength(1));
+      await act(async () => {
+        pendingResolvers[0]();
+        await Promise.resolve();
+      });
+
+      rerender({ enabled: false });
+      expect(subscriptions[0].remove).toHaveBeenCalled();
+
+      rerender({ enabled: true });
+      await waitFor(() => expect(pendingResolvers).toHaveLength(2));
+    });
+
+    it('백그라운드 중 false→true 전이는 FG watch를 켜지 않는다 (active 가드, 기존 규약과 동일)', async () => {
+      const { rerender } = renderHook(
+        ({ enabled }: { enabled: boolean }) => useNearestStation({ enabled }),
+        { initialProps: { enabled: true } },
+      );
+      await waitFor(() => expect(pendingResolvers).toHaveLength(1));
+
+      rerender({ enabled: false });
+      (AppState as { currentState: string }).currentState = 'background';
+      rerender({ enabled: true });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(pendingResolvers).toHaveLength(1);
+    });
+  });
+
   it('userLocation은 매 fix마다 갱신된다 — 시간창 소비자(usePositionStability)의 샘플을 굶기지 않는다', async () => {
     const { result } = renderHook(() => useNearestStation());
     await waitFor(() => expect(pendingResolvers).toHaveLength(1));

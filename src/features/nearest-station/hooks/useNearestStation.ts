@@ -235,6 +235,15 @@ export interface UseNearestStationInputs {
    * 배경은 useFusedNearestStation.ts의 동명 파라미터 주석 참조. 미전달 시 'primary'.
    */
   instrumentationRole?: 'primary' | 'observer';
+  /**
+   * #2667 — 이 인스턴스가 FG watch를 유지할지 여부(기본 true = 기존 동작).
+   *
+   * 탭 네비게이션에서 화면은 한 번 방문하면 계속 mount된 채 남는다. `MapScreen`처럼 화면이
+   * 보일 때만 위치가 필요한 소비자가 기본값으로 이 훅을 쓰면, 그 탭을 한 번 열어본 뒤부터
+   * **앱 수명 내내 두 번째 GPS watch가 돈다**(HomeScreen의 것과 별개). false로 내리면 진행
+   * 중인 구독을 정리하고 새로 시작하지 않는다 — 다시 true가 되면 즉시 복구된다.
+   */
+  enabled?: boolean;
 }
 
 export function useNearestStation(
@@ -271,6 +280,11 @@ export function useNearestStation(
     inputs.instrumentationRole ?? 'primary',
   );
   instrumentationRoleRef.current = inputs.instrumentationRole ?? 'primary';
+  // #2667 — watch 유지 여부 SSOT. startWatch가 호출 시점에 읽는다(콜백 identity 안정 유지 —
+  // instrumentationRoleRef와 동일 패턴). false면 어떤 트리거로 startWatch가 불려도 구독을
+  // 만들지 않는다(AppState 'active' 복귀 / 프로파일 flip / refresh 포함).
+  const enabledRef = useRef(inputs.enabled !== false);
+  enabledRef.current = inputs.enabled !== false;
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
   // 진단용 누적 카운터: lastKnown 캐시 fix가 freshness/accuracy 게이트에서 거부된 횟수.
@@ -473,6 +487,14 @@ export function useNearestStation(
     const generation = ++watchGenerationRef.current;
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
+    // #2667 — 비활성 인스턴스(예: 포커스되지 않은 탭)는 구독을 만들지 않는다. 세대는 이미
+    // 올렸으므로 in-flight였던 이전 start의 결과도 뒤늦게 살아남지 못한다. 이 게이트를
+    // startWatch 안에 두는 이유: mount/AppState 'active'/프로파일 flip/refresh 등 start 트리거가
+    // 여러 곳이라 호출부마다 조건을 복제하면 한 곳만 빠져도 조용히 watch가 되살아난다.
+    if (!enabledRef.current) {
+      setLoading(false);
+      return;
+    }
     if (IS_E2E_MOCK) {
       setError(null);
       setPermissionDenied(false);
@@ -782,6 +804,26 @@ export function useNearestStation(
   // #2514 — lockActive 변화도 동일 재시작 트리거로 다룬다. throttled/lockActive 둘 중 하나라도
   // 바뀌면 재시작 — fgWatchOptionsFor가 locked를 최우선으로 판정하므로 throttled 값 변화가
   // lockActive=true 상태에서 일어나도(예: 지하 진입/탈출) 옵션 자체는 계속 locked로 고정된다.
+  // #2667 — enabled 전이 처리. false로 내려가면 즉시 구독을 끊고(탭을 떠난 순간 GPS 정지),
+  // true로 돌아오면 다시 시작한다. AppState가 active가 아니면 시작하지 않는다 — 'background'
+  // 진입 시 stopWatch를 거는 기존 규약과 충돌하지 않게.
+  const prevEnabledRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const enabled = inputs.enabled !== false;
+    const prev = prevEnabledRef.current;
+    prevEnabledRef.current = enabled;
+    // 마운트 pass는 건너뛴다 — 시작은 아래 마운트 effect가 담당한다(중복 start 금지, 기존
+    // 프로파일 flip effect와 동일한 "변화 시에만" 계약). 처음부터 비활성이면 startWatch 내부
+    // 게이트가 구독을 만들지 않으므로 추가 처리가 필요 없다.
+    if (prev === null || prev === enabled) return;
+    if (!enabled) {
+      stopWatch();
+      return;
+    }
+    if (AppState.currentState !== 'active') return;
+    void startWatch();
+  }, [inputs.enabled, startWatch, stopWatch]);
+
   useEffect(() => {
     const nextThrottled = inputs.barometerSubsurface === true || profileWatchDegraded;
     const nextLockActive = inputs.lockActive === true;
