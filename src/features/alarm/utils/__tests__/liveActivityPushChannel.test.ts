@@ -583,6 +583,37 @@ describe('liveActivityPushChannel', () => {
       expect(registeredTokens).toContain('tok-new');
     });
 
+    it('trip 종료(endLiveActivityWithDeregister)는 in-flight ambient 재시도를 취소한다 (리뷰 P1-2)', async () => {
+      // trip이 아직 없어 대기 루프에 들어간 상태에서 trip이 종료되는 시나리오 —
+      // 취소가 없으면 늦은 POST가 DELETE 뒤에 도착해 죽은 trip의 token을 되살린다.
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      const handle = setupListener();
+      startAmbientLiveActivityTokenRegistration();
+      handle.emit('tok-cancel');
+
+      await endLiveActivityWithDeregister('trip-ended');
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-ended');
+      await jest.runAllTimersAsync();
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+    });
+
+    it('trip 종료 후 새 trip에서는 다시 등록된다 (취소가 영구 차단이 아니다)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-1');
+      const handle = setupListener();
+      startAmbientLiveActivityTokenRegistration();
+      handle.emit('tok-1');
+      await jest.runAllTimersAsync();
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-1', 'tok-1');
+
+      await endLiveActivityWithDeregister('trip-1');
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-2');
+      handle.emit('tok-2');
+      await jest.runAllTimersAsync();
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-2', 'tok-2');
+    });
+
     it('AsyncStorage read 실패는 graceful — 등록만 skip하고 throw하지 않는다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('storage down'));
       const handle = setupListener();

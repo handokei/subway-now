@@ -14,6 +14,9 @@ const mockUpdateLiveActivity = jest.fn();
 jest.mock('live-activity', () => ({
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
+  // #2667 — 이 훅의 update 직전에 ambient token 구독(멱등)이 시작된다. 구독 자체의 동작은
+  // liveActivityPushChannel.test.ts가 검증하므로 여기서는 API 존재만 채운다.
+  addPushTokenListener: () => ({ remove: () => undefined }),
 }));
 
 const mockClearStationNotification = jest.fn();

@@ -128,6 +128,20 @@ async function registerWithRetry(
 let lastEmittedPushToken: string | null = null;
 /** 이미 backend에 반영한 (tripToken, pushToken) 조합 — 중복 POST 차단. */
 let lastRegisteredAmbientKey: string | null = null;
+/**
+ * ambient 재시도 취소 신호(코드리뷰 P1-2). 세션 경로(#2310)가 trip 종료 시 in-flight 재시도를
+ * 끊는 것과 동일한 장치 — ambient도 trip이 끝나면 즉시 멈춰야 한다. 그렇지 않으면 최대 수십 초
+ * 짜리 재시도 창 동안 `endLiveActivityWithDeregister`의 DELETE 뒤에 늦은 POST가 도착해 방금
+ * 지운 trip의 activityPushToken을 되살린다.
+ */
+let ambientRetrySession: RetrySession = { cancelled: false };
+
+/** trip 종료/전환 시 ambient in-flight 재시도를 끊고 dedup 기억을 비운다. */
+function resetAmbientRegistrationState(): void {
+  ambientRetrySession.cancelled = true;
+  ambientRetrySession = { cancelled: false };
+  lastRegisteredAmbientKey = null;
+}
 
 /** trip 등록(ACTIVE_TRIP_KEY)이 아직 없을 때 재시도 횟수 — LA가 trip보다 먼저 뜨는 순서 흡수. */
 const AMBIENT_TRIP_WAIT_ATTEMPTS = 5;
@@ -135,14 +149,16 @@ const AMBIENT_TRIP_WAIT_ATTEMPTS = 5;
 async function registerAmbientToken(): Promise<void> {
   const activityPushToken = lastEmittedPushToken;
   if (!activityPushToken) return;
+  const session = ambientRetrySession;
   for (let attempt = 1; attempt <= AMBIENT_TRIP_WAIT_ATTEMPTS; attempt += 1) {
+    if (session.cancelled) return; // trip이 끝났다 — 죽은 trip에 token을 되살리지 않는다.
     // 매 attempt마다 다시 읽는다 — 그 사이 trip이 등록됐을 수 있고, 다른 trip으로 바뀌었을 수도 있다.
     const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
     if (lastEmittedPushToken !== activityPushToken) return; // 더 새 token이 왔다 — 그쪽이 이어받는다.
     if (tripToken) {
       const key = `${tripToken}:${activityPushToken}`;
       if (key === lastRegisteredAmbientKey) return;
-      const ok = await registerWithRetry(tripToken, activityPushToken, { cancelled: false });
+      const ok = await registerWithRetry(tripToken, activityPushToken, session);
       if (ok) {
         lastRegisteredAmbientKey = key;
         log.info('ambient LA token 등록 완료 — backend LA push 채널 활성');
@@ -312,6 +328,10 @@ export async function endLiveActivityWithDeregister(
     activeTeardown = null;
   }
   activeTripToken = null;
+  // #2667 (코드리뷰 P1-2/P2-2) — "trip 종료 = LA push 관련 모듈 상태 전부 정리"를 세션/ambient
+  // 양쪽에 동일하게 적용한다. in-flight ambient 재시도가 DELETE 뒤에 POST를 흘리면 backend가
+  // 방금 지운 token을 되살린다.
+  resetAmbientRegistrationState();
   try {
     await endLiveActivity();
   } finally {
@@ -336,5 +356,5 @@ export function __resetLiveActivityPushChannelForTests(): void {
   ambientSubscription?.remove();
   ambientSubscription = null;
   lastEmittedPushToken = null;
-  lastRegisteredAmbientKey = null;
+  resetAmbientRegistrationState();
 }
