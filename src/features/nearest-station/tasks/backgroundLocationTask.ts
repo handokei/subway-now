@@ -18,6 +18,7 @@ import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample 
 import { logSuppressedGate, logBgTaskHeartbeat } from '../../alarm/utils/alarmLog';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } from '../../../shared/constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
+import { refreshLiveActivityOnMirrorAdvance } from '../../alarm/utils/refreshLiveActivityFromBackgroundContext';
 import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../shared/constants/location';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import {
@@ -334,6 +335,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       // `reference_ios_wifi_api_constraint.md`: 사용자가 5G/LTE만 쓰면 항상 undefined.
       const wifiSsid = await getCurrentWifiSsid().catch(() => null);
       const wifiStation = lookupStationBySsid(wifiSsid);
+      // #2659 — position 응답(#2261 full SSoT forward)이 backend SSoT mirror를 갱신하므로, 그
+      // 직후에 mirror-전진 여부만 보고 LA를 깨운다. 이전에는 BG에서 LA를 갱신할 수 있는 device
+      // 경로가 silent push 핸들러 하나뿐이라, 지하에서 push가 밀리면 HTTP가 살아 있어도 LA가
+      // 탑승역에 얼어붙었다(2026-09-16 라이드 13분). fire-and-forget — 실패/보류는 graceful이고
+      // 다음 tick에 재시도된다.
       void uploadPosition({
         token: apnsToken,
         // #2617 — BG location task 채널임을 backend에 명시(fallback implicit ACK 계약,
@@ -346,7 +352,12 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         motion,
         accelSummary,
         ...(wifiStation ? { wifiSsidStationName: wifiStation.name } : {}),
-      });
+      })
+        .then(() => refreshLiveActivityOnMirrorAdvance())
+        // `uploadPosition`이 reject하지 않는 것은 그 구현의 암묵적 계약일 뿐 타입으로 강제되지
+        // 않는다 — 계약이 깨지는 날 unhandled rejection으로 LA 갱신이 원인 불명으로 죽지 않도록
+        // 체인 자체를 graceful하게 닫는다(다음 tick 재시도).
+        .catch(() => undefined);
     }
 
     // #1291 — BG 알람 모션 게이트. FG(`useStationAlarm`/`evaluateMovement`)와 동일 정책:

@@ -113,15 +113,15 @@ describe('updateLiveActivityFromMirrorStation', () => {
     expect(applied).toBe(false);
   });
 
-  it('backend-authority 활성 trip이면(#2481) no-op, false 반환', async () => {
+  it('#2659 — backend-authority 활성 trip이어도 mirror-sourced 쓰기는 진행된다 (게이트는 GPS 전용)', async () => {
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) =>
       key === ACTIVE_TRIP_KEY ? 'apns-token-abc' : null,
     );
     mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(true);
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
-    expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
-    expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
-    expect(applied).toBe(false);
+    expect(mockShouldSkipDeviceLiveActivityWrite).not.toHaveBeenCalled();
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    expect(applied).toBe(true);
   });
 
   it('GPS writer가 arbitration 창 내에 최근 썼으면 양보(no-op), false 반환', async () => {

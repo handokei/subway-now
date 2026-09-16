@@ -127,12 +127,14 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     }
 
     // #2481 — backend-authority 모드 + 이미 backend가 이 trip의 LA push 채널을 쥐고 있으면
-    // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2). route/bg/mirror
-    // read 전에 판정해 skip 트립에서 그 read들을 낭비하지 않는다(code review 효율 항목).
-    if (shouldSkipDeviceLiveActivityWrite(tripToken)) {
-      logger.info('backend-authority active trip — skip BG LA refresh write');
-      return;
-    }
+    // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2).
+    //
+    // #2659 — 이 판정을 **GPS 분기 직전으로 미룬다**(이전에는 여기서 early return). mirror 분기가
+    // 쓰는 값은 GPS 추정치가 아니라 backend 자신의 SSoT라 이 게이트의 근거가 적용되지 않는데,
+    // early return이 두 분기를 한꺼번에 막아 LA writer가 backend LA push 하나만 남아 있었다
+    // (2026-09-16 라이드: `laPushDelivery=0/0` → LA 13분 정체). read 낭비(route/bg/mirror)는
+    // GPS-only로 skip되는 trip에서만 발생하며, mirror 채널을 살리는 값에 비해 무시할 수준이다.
+    const backendAuthoritySkipsGpsWrite = shouldSkipDeviceLiveActivityWrite(tripToken);
 
     // #2589 — currentStation SSoT 결정 순서 (확정 아키텍처: backend추적 → LA 표시).
     // 1순위: backend SSoT mirror (fresh ≤180s — cascade picker와 동일 상한,
@@ -169,6 +171,11 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       return;
     }
 
+    if (backendAuthoritySkipsGpsWrite) {
+      logger.info('backend-authority active trip — skip BG LA refresh write (gps 분기)');
+      return;
+    }
+
     if (!bg) {
       logger.info(
         'no currentStation source (mirror stale/absent/rejected + BG_LAST_STATION absent) — skip refresh (preserve last LA state)',
@@ -199,9 +206,58 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
   }
 }
 
+/**
+ * #2659 — mirror가 **전진했을 때만** LA refresh를 1회 돌리는 push-독립 진입점.
+ *
+ * 배경: 이 모듈의 본 진입점을 호출하는 곳은 silent push 핸들러 하나뿐이었다(코드 확인,
+ * 2026-09-16). 그래서 BG 상태에서 LA를 갱신할 수 있는 device 경로가 push 배달에 100% 종속됐고,
+ * 지하에서 push가 13분 밀린 라이드에서 LA가 탑승역에 얼어붙었다. 반면 backend SSoT mirror는
+ * `backgroundLocationTask` → `uploadPosition` → `POST /position` 응답(#2261)으로 같은 구간 내내
+ * HTTP로 갱신되고 있었다 — 즉 **pull 채널은 열려 있는데 LA를 깨우는 트리거가 없었다.**
+ *
+ * `backgroundLocationTask`가 position upload 직후 호출한다. mirror의 `currentStationId`가
+ * 직전 호출과 같으면 no-op — BG tick(~10초)마다 native LA update를 호출하면 #2660(발열) 맥락에
+ * 역행하므로, "backend가 역을 전진시켰을 때"로만 좁힌다.
+ *
+ * mirror 부재/stale(=trip 종료 후 clear 포함)이면 dedup 기억을 비워, 다음 trip이 같은 역에서
+ * 시작해도 첫 전진을 놓치지 않는다.
+ */
+let lastMirrorAdvanceKey: string | null = null;
+
+/**
+ * dedup 키 — 역명 단독이 아니라 `역명:노선`. `currentStationId`는 실제로는 역 **이름**이고
+ * 노선은 `currentStationLine`에 따로 실린다(`resolveBackendSsotMirrorStation` 참조). 환승역은
+ * 이름이 그대로인 채 노선만 바뀌므로(왕십리/잠실/종로3가…), 이름만 비교하면 환승 advance를
+ * "같은 역"으로 보고 LA를 안 깨운다 — 이 앱의 핵심 시나리오에서 조용히 깨지는 함정
+ * ([[lesson_transfer_graph_name_normalization_drift]]과 같은 클래스).
+ */
+function mirrorAdvanceKey(mirror: { currentStationId: string; currentStationLine?: string }): string {
+  return `${mirror.currentStationId}:${mirror.currentStationLine ?? ''}`;
+}
+
+export async function refreshLiveActivityOnMirrorAdvance(): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  try {
+    const mirror = await readBackendSsotMirror();
+    if (!isBackendSsotMirrorFresh(mirror) || !mirror) {
+      lastMirrorAdvanceKey = null;
+      return;
+    }
+    const key = mirrorAdvanceKey(mirror);
+    if (key === lastMirrorAdvanceKey) return;
+    lastMirrorAdvanceKey = key;
+    await refreshLiveActivityFromBackgroundContext();
+  } catch (e) {
+    logger.warn('mirror-advance LA refresh 실패 (graceful)', e);
+  }
+}
+
 // Test 환경 노출. 내부 helper들도 부분적으로 검증 가능하도록 노출하지만 production import는
 // 본 진입점 함수 하나만 사용한다.
 export const __test__ = {
   readBgLastStation,
   readDestination,
+  resetMirrorAdvanceDedup: () => {
+    lastMirrorAdvanceKey = null;
+  },
 };

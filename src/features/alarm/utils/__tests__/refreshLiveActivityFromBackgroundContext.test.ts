@@ -73,6 +73,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   refreshLiveActivityFromBackgroundContext,
+  refreshLiveActivityOnMirrorAdvance,
   __test__,
 } from '../refreshLiveActivityFromBackgroundContext';
 import {
@@ -398,7 +399,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       expect(station).toEqual(destination);
     });
 
-    it('#2481 backend-authority skip 게이트는 mirror read 전에 적용된다 (효율, code review 5번)', async () => {
+    it('#2481/#2659 backend-authority skip 게이트는 GPS 분기에만 적용된다 (mirror 부재 시 차단)', async () => {
       setupStorage({
         [DESTINATION_KEY]: JSON.stringify(destination),
         [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
@@ -407,12 +408,22 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       });
       mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
       await refreshLiveActivityFromBackgroundContext();
+      expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
       expect(mockBuild).not.toHaveBeenCalled();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
-      // skip 게이트가 route/bg/mirror read보다 먼저 판정되므로 mirror read 자체가 낭비되지 않는다.
-      expect(mockReadBackendSsotMirror).not.toHaveBeenCalled();
-      expect(AsyncStorage.getItem).not.toHaveBeenCalledWith(ROUTE_KEY);
-      expect(AsyncStorage.getItem).not.toHaveBeenCalledWith(BG_LAST_STATION_KEY);
+    });
+
+    it('#2659 backend-authority 활성이어도 mirror 분기는 진행된다 (LA writer가 push 단일 채널로 좁혀지지 않도록)', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+      });
+      mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     });
 
     // #2589 code review 3번 (P1 #1 클래스) — mirror-sourced 경로는 update-only.
@@ -455,6 +466,93 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
         expect(station).toEqual(bgStation.station);
         expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  // #2659 — push-독립 트리거. "silent push 0건 + HTTP(/position) 정상" 조건에서 LA가 전진하는가.
+  describe('#2659 refreshLiveActivityOnMirrorAdvance (push-독립 트리거)', () => {
+    const mirrorAt = (currentStationId: string) => ({
+      currentStationId,
+      currentStationLine: '2',
+      motionState: 'moving' as const,
+      lastAdvanceEvidence: 'cron',
+      lastAdvanceAt: 1_700_000_000_000,
+      passedStations: [],
+      receivedAt: Date.now(),
+    });
+
+    beforeEach(() => {
+      __test__.resetMirrorAdvanceDedup();
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+      });
+    });
+
+    it('mirror가 전진하면 silent push 없이도 LA를 갱신한다', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(mirrorAt('성수'));
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    });
+
+    it('같은 역이 반복되면 no-op — BG tick(~10s)마다 native update를 부르지 않는다', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(mirrorAt('성수'));
+      await refreshLiveActivityOnMirrorAdvance();
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    });
+
+    it('mirror 부재/stale이면 no-op이고 dedup 기억이 비워져 다음 trip 첫 전진을 놓치지 않는다', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(mirrorAt('성수'));
+      await refreshLiveActivityOnMirrorAdvance();
+      mockReadBackendSsotMirror.mockResolvedValue(null);
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      mockReadBackendSsotMirror.mockResolvedValue(mirrorAt('성수'));
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+    });
+
+    it('환승(역명 동일, 노선만 전진)도 전진으로 인식한다 — dedup 키가 역명:노선 (code review P1-2)', async () => {
+      // GPS 폴백을 막아 "트리거가 실제로 발화했는가"만 update 호출로 관측되게 한다.
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: null,
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+      });
+      mockReadBackendSsotMirror.mockResolvedValue({ ...mirrorAt('강남'), currentStationLine: '2' });
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      // 역명은 같고 노선 정보만 달라진 mirror — 이름만 비교하는 dedup이면 여기서 LA가 안 깨어난다.
+      mockReadBackendSsotMirror.mockResolvedValue({
+        ...mirrorAt('강남'),
+        currentStationLine: undefined,
+      });
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+    });
+
+    it('stale mirror(수명 초과)도 no-op', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue({
+        ...mirrorAt('성수'),
+        receivedAt: Date.now() - 10 * 60_000,
+      });
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('non-iOS면 mirror read조차 하지 않는다', async () => {
+      Object.defineProperty(Platform, 'OS', { value: 'android', configurable: true });
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockReadBackendSsotMirror).not.toHaveBeenCalled();
+    });
+
+    it('mirror read가 throw해도 BG task 흐름을 깨지 않는다 (graceful)', async () => {
+      mockReadBackendSsotMirror.mockRejectedValueOnce(new Error('storage down'));
+      await expect(refreshLiveActivityOnMirrorAdvance()).resolves.toBeUndefined();
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     });
   });
 
