@@ -110,7 +110,7 @@ const SUCCESS_APNS_FETCH: typeof fetch = (async () =>
   new Response('', { status: 200 })) as unknown as typeof fetch;
 
 describe('#2625 — fireSyncSkippedStationPasses', () => {
-  it('건대입구/성수 2칸 shift — newest-first(성수→건대입구) 순서로 둘 다 발사 + D1 outcome=sent', async () => {
+  it('#2661 — 건대입구/성수 2칸 shift에서 가장 최근 역(성수) 1건만 발사, 나머지는 skipped-by-shift로 계측만', async () => {
     const kv = new InMemoryKV(() => NOW);
     const { db, rows } = makeDbMock();
     const trip = makeTrip();
@@ -129,11 +129,14 @@ describe('#2625 — fireSyncSkippedStationPasses', () => {
       () => 'push-1',
     );
 
-    expect(stats).toEqual({ fired: 2, failed: 0, dedupSkipped: 0, capSkipped: 0 });
+    expect(stats).toEqual({ fired: 1, failed: 0, dedupSkipped: 0, capSkipped: 1 });
     const fireRows = rows.filter((r) => r.kind === 'cron-fire-attempt');
-    // newest-first — 관측역(성수)에 가까운 쪽부터 처리.
-    expect(fireRows.map((r) => r.station)).toEqual(['성수', '건대입구']);
-    expect(fireRows.every((r) => r.meta?.outcome === 'sent')).toBe(true);
+    // newest-first — 관측역(성수)에 가까운 쪽부터 처리. cap=1이라 성수만 발사되고 건대입구는
+    // 발사 없이 D1에만 남는다(#2661: 이미 지나간 역 알림 몰림 제거, 관측 가능성은 유지).
+    expect(fireRows.map((r) => ({ station: r.station, outcome: r.meta?.outcome }))).toEqual([
+      { station: '성수', outcome: 'sent' },
+      { station: '건대입구', outcome: 'skipped-by-shift' },
+    ]);
   });
 
   it('transfer/destination kind는 발사하지 않되 skip 자체는 D1에 계측한다(코드리뷰 P2-7)', async () => {
@@ -217,12 +220,13 @@ describe('#2625 — fireSyncSkippedStationPasses', () => {
       capSkipped: 2,
     });
     const fireRows = rows.filter((r) => r.kind === 'cron-fire-attempt');
-    // 5개(역0..역4) 중 newest-first로 cap(3)개가 발사 — 가장 최근(역4,역3,역2)이 발사되고
-    // 가장 오래된(역1,역0)이 버려진다.
+    // newest-first로 cap개가 발사되고 나머지(가장 오래된 쪽)가 버려진다. cap 값 자체에
+    // 의존하지 않도록 기대값을 상수에서 산출한다(#2661에서 3→1로 바뀌어도 이 계약은 불변).
+    const newestFirst = [...waypoints].reverse().map((w) => w.stationName);
     const sentStations = fireRows.filter((r) => r.meta?.outcome === 'sent').map((r) => r.station);
-    expect(sentStations).toEqual(['역4', '역3', '역2']);
+    expect(sentStations).toEqual(newestFirst.slice(0, SYNC_SKIPPED_STATION_FIRE_CAP));
     const capRows = fireRows.filter((r) => r.meta?.outcome === 'skipped-by-shift');
-    expect(capRows.map((r) => r.station)).toEqual(['역1', '역0']);
+    expect(capRows.map((r) => r.station)).toEqual(newestFirst.slice(SYNC_SKIPPED_STATION_FIRE_CAP));
   });
 
   it('push 실패 — outcome=failed, 발사 카운트 미증가', async () => {
@@ -308,16 +312,14 @@ describe('#2625 — fireSyncSkippedStationPasses', () => {
       () => 'push-1',
     );
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // #2661 — cap=1이라 한 sync에서 발사되는 건 newest(성수) 1건. collapse-id는 여전히 **역
+    // 단위**여야 한다(연속된 sync들이 각각 다른 역을 발사할 때 trip 단위 collapse면 이전 역
+    // 배너가 교체되며 순서 보장이 없어 과거 역명이 살아남을 수 있다 — #2625 P1-5의 원래 근거).
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     const collapseIds = fetchSpy.mock.calls.map(
       (call) => (call[1] as { headers: Record<string, string> }).headers['apns-collapse-id'],
     );
-    // newest-first이므로 성수가 먼저.
-    expect(collapseIds).toEqual([
-      stationNotifCollapseId(trip.token, '성수'),
-      stationNotifCollapseId(trip.token, '건대입구'),
-    ]);
-    expect(new Set(collapseIds).size).toBe(2);
+    expect(collapseIds).toEqual([stationNotifCollapseId(trip.token, '성수')]);
   });
 
   it("코드리뷰 P1-6 — archFlag='on'이면 payload.boardingLine이 undefined로 실린다(device lockless opt-out 게이트 존중)", async () => {

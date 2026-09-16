@@ -3771,7 +3771,19 @@ export async function runMidCycleFireOnly(
  * 구간 재진입 등(catch-up)에서 이론상 클 수 있어, 상한 없이 순회하면 한 sync에서 다수의
  * push가 한꺼번에 발사되는 storm 위험이 있다. 초과분은 발사 없이 D1 계측만 남긴다.
  */
-export const SYNC_SKIPPED_STATION_FIRE_CAP = 3;
+/**
+ * #2661 (사용자 결정: "최근 것만") — 3 → 1.
+ *
+ * 2026-09-16 라이드에서 한 sync가 어린이대공원/군자를 같은 초에 연속 발사해, 지상 복귀 순간
+ * 이미 지나간 역 알림이 배너로 쌓였다("왜 지금 3개가 떴지"). 백필 알림은 **역 단위** collapse-id를
+ * 쓰기 때문에 APNs가 합쳐주지도 않는다(그건 의도 — #2625 코드리뷰 P1-5). 이미 지나간 역을 뒤늦게
+ * 여러 건 알리는 것은 사용자 가치가 낮고 소음에 가깝다는 판정.
+ *
+ * 순회가 newest-first라 cap=1은 정확히 "관측역에 가장 가까운(가장 최근 지나친) 역 1건만 발사"가
+ * 된다. 나머지는 발사 없이 outcome='skipped-by-shift'로 D1에만 남아 관측 가능성은 유지된다 —
+ * #2625가 고친 "무발사·무계측 드롭"으로 되돌아가지 않는다.
+ */
+export const SYNC_SKIPPED_STATION_FIRE_CAP = 1;
 
 /** `fireSyncSkippedStationPasses`가 필요로 하는 최소 deps — 전체 `ScheduledDeps` 불필요(`MidCycleFireDeps`와 동형). */
 export interface SyncSkippedFireDeps {
