@@ -34,7 +34,7 @@ import {
   type BoardingPromptContext,
   type GpsFix,
 } from '../utils/boardingPromptContext';
-import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY, DESTINATION_KEY } from '../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
   CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
@@ -871,6 +871,28 @@ export function useApnsTripRegistration({
       if (!route || !destination) {
         const prevTokenRaw = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
         if (cancelled) return;
+        // #2673 — **hydration 중의 null을 "trip 종료"로 오인하지 않는다.**
+        //
+        // 이 훅에는 hydration 게이트가 없어서, 앱이 mount되거나 FG로 복귀하는 매 순간
+        // `useStateRehydration`의 `loadDestination()`이 끝나기 전까지 store의 destination/route는
+        // null이다. 그 찰나에 이 분기가 그대로 실행돼 **backend trip을 DELETE**했다.
+        // 실측(2026-09-17 D1): hydrate마다 `trip-end {reason:"user-delete"}`가 3~5초 뒤 따라붙고
+        // (06:35:12/14 hydrate → 06:35:17/18 delete, 06:42:17 → 06:42:20, 06:45:20 → 06:45:24),
+        // 환승역에서 알림을 탭해 앱이 뜬 순간 trip이 삭제돼 leg-2 anchor가 사라졌다
+        // (이후 `leg-boarding-prompt {outcome:"no-anchor"}`).
+        //
+        // 판정 기준을 메모리 store가 아니라 **storage**로 바꾼다: `DESTINATION_KEY`가 남아 있으면
+        // 아직 hydrate 전이거나 정리가 진행 중인 것이지 "사용자가 trip을 끝냈다"가 아니다.
+        // 진짜 종료 경로는 이 분기에 의존하지 않는다 — `setDestination(null)`이 태우는
+        // `runTripBoundCleanups`가 자체적으로 `clearActiveTrip` + storage 정리를 수행한다
+        // (tripBoundCleanups.ts). 즉 이 분기는 그 경로가 놓친 잔재를 회수하는 안전망이고,
+        // 안전망이 storage까지 비어 있을 때만 동작하도록 좁히는 것이다.
+        const persistedDestination = await AsyncStorage.getItem(DESTINATION_KEY).catch(() => null);
+        if (cancelled) return;
+        if (persistedDestination) {
+          logger.info('trip clear skip — destination이 storage에 남아 있음(hydration 전/정리 중)');
+          return;
+        }
         if (prevTokenRaw) {
           await clearActiveTrip(prevTokenRaw);
           await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);

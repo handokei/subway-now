@@ -54,7 +54,7 @@ import i18next from 'i18next';
 import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../../../shared/types/station';
 import type { Route } from '../../../../shared/utils/stationRoute';
-import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
+import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY, DESTINATION_KEY } from '../../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
   CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
@@ -247,6 +247,62 @@ describe('useApnsTripRegistration', () => {
     );
     await waitFor(() => expect(mockClear).toHaveBeenCalledWith('token-abc'));
     await waitFor(() => expect(AsyncStorage.removeItem).toHaveBeenCalledWith(ACTIVE_TRIP_KEY));
+  });
+
+  // #2673 — hydration 중의 null을 "trip 종료"로 오인해 backend trip을 지우던 회귀.
+  // 실측(2026-09-17 D1): 앱이 FG로 올라오는 매 순간 hydrate 3~5초 뒤 `trip-end user-delete`가
+  // 따라붙었고, 환승역에서 알림을 탭해 앱이 뜬 순간 trip이 삭제돼 leg-2 anchor가 사라졌다.
+  it('#2673 — destination이 storage에 남아 있으면(hydration 전) clear하지 않는다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+      if (key === APNS_TOKEN_KEY) return 'token-abc';
+      if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+      // 아직 store로 hydrate되지 않았을 뿐, 사용자의 trip은 살아 있다.
+      if (key === DESTINATION_KEY) return JSON.stringify(station);
+      return null;
+    });
+    renderHook(() =>
+      useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
+    );
+    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalledWith(DESTINATION_KEY));
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith(ACTIVE_TRIP_KEY);
+  });
+
+  it('#2673 — destination storage read가 실패하면 보수적으로 기존 clear 경로를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+      if (key === APNS_TOKEN_KEY) return 'token-abc';
+      if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+      if (key === DESTINATION_KEY) throw new Error('storage down');
+      return null;
+    });
+    renderHook(() =>
+      useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
+    );
+    // read 실패는 "판정 불가" — 잔재 회수 안전망을 막지 않는다(기존 동작 유지).
+    await waitFor(() => expect(mockClear).toHaveBeenCalledWith('token-abc'));
+  });
+
+  it('#2673 — destination storage read 도중 unmount되면 clear를 진행하지 않는다', async () => {
+    let releaseRead: (() => void) | null = null;
+    (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+      if (key === APNS_TOKEN_KEY) return 'token-abc';
+      if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+      if (key === DESTINATION_KEY) {
+        await new Promise<void>((resolve) => {
+          releaseRead = resolve;
+        });
+        return null;
+      }
+      return null;
+    });
+    const { unmount } = renderHook(() =>
+      useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
+    );
+    await waitFor(() => expect(releaseRead).not.toBeNull());
+    unmount();
+    (releaseRead as unknown as () => void)();
+    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalledWith(DESTINATION_KEY));
+    expect(mockClear).not.toHaveBeenCalled();
   });
 
   it('route/destination 없고 이전 트립도 없으면 clear 안 함', async () => {
