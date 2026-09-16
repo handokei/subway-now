@@ -2774,6 +2774,39 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.boardingLock).toBeUndefined();
   });
 
+  // #2655 — 같은 anchor(같은 boardingStation + 다음 leg line)가 재처리되면(예: sync가 이미
+  // 처리한 환승을 cron이 재차 처리하는 KV 레이스) legBoardingEligibleAt/legBoardingPromptState/
+  // legResolveStreak가 다시 리셋돼 walk-gate 시계가 밀리는 회귀(2026-09-16 실측)가 있었다.
+  // 이미 stamp된 anchor와 이번 환승의 anchor가 동일하면 재-stamp는 no-op이어야 한다.
+  it('#2655 — 동일 anchor 재처리 시 legBoardingEligibleAt/legBoardingPromptState/legResolveStreak를 리셋하지 않음(멱등)', async () => {
+    const kv = new InMemoryKV();
+    const firstProcessedEligibleAt = NOW - 300_000; // 첫 처리 기준(이미 지난 시각) — 재처리로 밀리면 안 됨
+    const preservedPromptState = { lastFiredAt: NOW - 200_000, fired: true };
+    const preservedStreak = { trainCode: '5123', count: 1 };
+    await runArrivedScenario(
+      kv,
+      {
+        // 이미 이번 환승과 동일한 anchor({군자,5})가 stamp돼 있는 상태 — "재처리" 시뮬레이션.
+        currentLegAnchor: { boardingStation: '군자', line: '5' },
+        legBoardingEligibleAt: firstProcessedEligibleAt,
+        legBoardingPromptState: preservedPromptState,
+        legResolveStreak: preservedStreak,
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-idempotent-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
+    // 재처리 이전(첫 처리) 기준 그대로 유지 — now 기준으로 다시 계산돼 밀리면 안 된다.
+    expect(stored.legBoardingEligibleAt).toBe(firstProcessedEligibleAt);
+    expect(stored.legBoardingPromptState).toEqual(preservedPromptState);
+    expect(stored.legResolveStreak).toEqual(preservedStreak);
+  });
+
   // 대조군 — 같은 호선 내 오라벨 transfer(실제 환승 아님)는 currentLegAnchor를 stamp하지 않는다.
   // lock도 유지되므로(위 테스트) leg 2 anchor 개념 자체가 성립하지 않는다.
   it('#2515 — 같은 line 내 오라벨 transfer는 currentLegAnchor를 stamp하지 않음', async () => {

@@ -5478,17 +5478,29 @@ async function completeWaypointAdvance(
   // leg만 가리킨다. `legBoardingEligibleAt`(도보시간 게이트) 이전에는 `resolveActiveLegOrigin`과
   // `maybeFireLegBoardingPrompt` 둘 다 이 anchor를 못 본 것처럼 동작한다 — 오탑승 lock 방지.
   if (waypoint.kind === 'transfer' && nextLegWaypoint && isRealLineChange) {
-    const transferWalkSeconds = getTransferSeconds(
-      waypoint.line as Parameters<typeof getTransferSeconds>[0],
-      nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
-      waypoint.stationName,
-    );
-    trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
-    trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
-    trip.legBoardingPromptState = undefined;
-    // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
-    // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
-    trip.legResolveStreak = undefined;
+    // #2655 — 같은 환승(같은 anchor)이 재처리되면(KV 레이스/cron·sync 중복 처리) 아래 3개
+    // 필드를 다시 덮어써 walk-gate 시계·dedup 원장·연속확증 카운터가 리셋되는 회귀가 있었다
+    // (2026-09-16 실측: 06:36:19 sync 처리 후 06:41:10 cron 재처리 → 시계 6분 밀림 → leg-2
+    // 프롬프트 3연속 walk-gated). anchor가 동일하면 재-stamp를 no-op으로 만들어 방지한다.
+    // anchor가 다르면(다중 환승의 다음 환승) 기존대로 전부 덮어써 항상 "지금" leg만 가리킨다
+    // (위 주석 참조).
+    const isSameAnchor =
+      trip.currentLegAnchor !== undefined &&
+      trip.currentLegAnchor.boardingStation === waypoint.stationName &&
+      trip.currentLegAnchor.line === nextLegWaypoint.line;
+    if (!isSameAnchor) {
+      const transferWalkSeconds = getTransferSeconds(
+        waypoint.line as Parameters<typeof getTransferSeconds>[0],
+        nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
+        waypoint.stationName,
+      );
+      trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
+      trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
+      trip.legBoardingPromptState = undefined;
+      // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
+      // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
+      trip.legResolveStreak = undefined;
+    }
   }
   // #2034 — 환승 waypoint advance = "환승역 도착". 사용자에게 "하차했나요?" hop-end 프롬프트를
   // 발사해 다음 leg 진입을 명시 확인하도록 유도. lock 활성 여부와 무관 (transfer 직후 lock 은 이미
