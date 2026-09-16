@@ -1,9 +1,11 @@
 import { renderHook } from '@testing-library/react-native';
 import { usePrevTrainCandidate } from '../usePrevTrainCandidate';
+import type { UsePrevTrainCandidateInputs } from '../usePrevTrainCandidate';
 import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import { PREV_TRAIN_CANDIDATE_TTL_MS } from '../../../../shared/constants/eta';
 
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 const mockUseArrival = useArrivalInfo as jest.Mock;
@@ -389,5 +391,104 @@ describe('usePrevTrainCandidate', () => {
     );
 
     expect(mockResolveTripDirection).not.toHaveBeenCalled();
+  });
+
+  describe('#2179 — 다음역마저 통과해 candidate pool이 0으로 떨어져도 TTL 내에는 직전 후보를 유지', () => {
+    const baseProps = {
+      route,
+      destinationName: '잠실',
+      currentStation,
+      nextStationName: nextStation.name,
+      line: '2' as const,
+      currentArrivals: [],
+    };
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('탑승 열차가 다음역도 통과해 pool이 비면(candidates=0) 직전 후보를 캐시에서 반환한다', () => {
+      jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      const nextArrivalWithTrain: StationArrival = {
+        up: [],
+        down: [makeTrain({ trainCode: 'T-DEPARTED', arrivalSeconds: 30 })],
+      };
+      mockUseArrival.mockReturnValue(arrivalRet(nextArrivalWithTrain));
+
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: baseProps,
+      });
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED');
+      // stopSeconds(150) - arrivalSeconds(30) = 120
+      expect(result.current.prevTrain?.elapsedSeconds).toBe(120);
+
+      // 열차가 다음역마저 통과 — API 응답에서 완전히 사라짐(candidates=0)
+      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
+      jest.spyOn(Date, 'now').mockReturnValue(1_000_000 + 45_000); // 45초 경과
+      rerender(baseProps);
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED');
+      expect(result.current.prevTrain?.elapsedSeconds).toBe(120 + 45);
+    });
+
+    it('TTL(PREV_TRAIN_CANDIDATE_TTL_MS) 경과 후에는 캐시도 만료되어 null', () => {
+      jest.spyOn(Date, 'now').mockReturnValue(2_000_000);
+      const nextArrivalWithTrain: StationArrival = {
+        up: [],
+        down: [makeTrain({ trainCode: 'T-EXPIRING', arrivalSeconds: 30 })],
+      };
+      mockUseArrival.mockReturnValue(arrivalRet(nextArrivalWithTrain));
+
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: baseProps,
+      });
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-EXPIRING');
+
+      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
+      jest.spyOn(Date, 'now').mockReturnValue(2_000_000 + PREV_TRAIN_CANDIDATE_TTL_MS + 1);
+      rerender(baseProps);
+
+      expect(result.current.prevTrain).toBeNull();
+    });
+
+    it('trip context(출발역)가 바뀌면 이전 캐시를 즉시 무효화한다', () => {
+      jest.spyOn(Date, 'now').mockReturnValue(3_000_000);
+      const nextArrivalWithTrain: StationArrival = {
+        up: [],
+        down: [makeTrain({ trainCode: 'T-STALE-CONTEXT', arrivalSeconds: 30 })],
+      };
+      mockUseArrival.mockReturnValue(arrivalRet(nextArrivalWithTrain));
+
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: baseProps,
+      });
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-STALE-CONTEXT');
+
+      const newStation: Station = { ...currentStation, id: 'stn-new-origin' };
+      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
+      jest.spyOn(Date, 'now').mockReturnValue(3_000_000 + 10_000);
+      rerender({ ...baseProps, currentStation: newStation });
+
+      expect(result.current.prevTrain).toBeNull();
+    });
+
+    it('신선한 candidate가 다시 나타나면 캐시된 오래된 후보 대신 최신 candidate로 갱신한다', () => {
+      jest.spyOn(Date, 'now').mockReturnValue(4_000_000);
+      mockUseArrival.mockReturnValue(
+        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-OLD', arrivalSeconds: 30 })] }),
+      );
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: baseProps,
+      });
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-OLD');
+
+      mockUseArrival.mockReturnValue(
+        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-NEW-FRESH', arrivalSeconds: 20 })] }),
+      );
+      jest.spyOn(Date, 'now').mockReturnValue(4_000_000 + 30_000);
+      rerender(baseProps);
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-NEW-FRESH');
+    });
   });
 });
