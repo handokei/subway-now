@@ -35,6 +35,7 @@ import {
   evaluateBoardingPromptGates,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
+  hasFreshOriginProximityCorroboration,
   isNearOrigin,
   markPromptFired,
   pickAutoTrainCode,
@@ -74,6 +75,7 @@ import {
 } from './advanceTripPosition';
 import {
   deleteSsot,
+  DEVICE_SYNC_STALE_THRESHOLD_MS,
   isDeviceSyncStale,
   readSsot,
   seedSsot,
@@ -82,6 +84,7 @@ import {
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import {
+  ACCURACY_CUTOFF_M,
   detectArcOvershoot,
   evaluateWindow,
   haversineKm,
@@ -848,6 +851,17 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   originGpsFreeBoardingPromptBlocked: number;
   /**
+   * #2653 — GPS-free origin 거리 가드가 register 시점 정적 스냅샷(`trip.promptGeoContext.
+   * originDistanceM/originAccuracyM`)을 "신뢰 불가"로 보고 차단을 건너뛴(=발사를 허용한) 누적
+   * 횟수. 스냅샷이 있어도 이 cron cycle 시점의 positionSeries에 최근(`DEVICE_SYNC_STALE_
+   * THRESHOLD_MS`, 5분 이내) 양호한(`ACCURACY_CUTOFF_M` 미만) GPS 샘플이 없으면(=GPS가 죽은
+   * 지하에서 device가 마지막으로 살아있던 기록의 좌표를 정적 스냅샷에 그대로 남긴 채 fused
+   * origin만 전진한 경우 — 실제 관측 아닌 오탐) 그 스냅샷을 신뢰하지 않는다. `originGpsFree
+   * BoardingPromptBlocked`(reason:'origin-too-far'/'origin-too-far-stale-anchor')와 반드시
+   * 구분해서 관측해야 한다 — 이 카운터가 오르는 것은 차단이 아니라 "차단을 안 한" 이벤트다.
+   */
+  originGpsFreeSnapshotDistrusted: number;
+  /**
    * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 arvlCd(ENTERING/ARRIVED)
    * ground truth로 통과(anchor stamp + hop-end prompt + waypoint slice)한 누적 횟수. 종전에는
    * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만 반응해
@@ -1291,6 +1305,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     legBoardingPromptBlocked: 0,
     originGpsFreeBoardingPromptFired: 0,
     originGpsFreeBoardingPromptBlocked: 0,
+    originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -7004,7 +7019,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
  * trip을 영구 차단한다 — leg-2는 이미 `maybeFireLegBoardingPrompt`(GPS-free)로 해결됐지만
  * leg-1만 GPS에 갇혀 있었다(#2531 본문). 본 함수는 그 leg-2 GPS-free 패턴을 origin용으로
  * 그대로 미러한다 — `resolveTrainCodeFromPositions`의 "탑승역만 매칭" 안전장치와 9단 게이트
- * 자체는 손대지 않고, GPS를 아예 쓰지 않는 별도 발사 경로만 추가한다.
+ * 자체는 손대지 않고, GPS 9단 AND 게이트(accuracy/direction/window/speed/motion)는 이식하지
+ * 않는 별도 발사 경로만 추가한다.
  *
  * caller: lockMissing 분기에서 `evaluateAndMaybeFireBoardingPrompt` 직후 호출. GPS 경로가
  * 먼저 평가되어 우선권을 갖는다 — 이 함수는 GPS 경로가 막혔거나(지하) 아직 평가/발사되지
@@ -7017,6 +7033,14 @@ export async function evaluateAndMaybeFireBoardingPrompt(
  *   - `trip.infoModeEnabled !== true` → no-op (사용자 명시 의향 trip만 대상 — C 토글 ON 동급 보장).
  *   - `trip.boardingLock !== undefined`(F2 방어) → no-op. caller가 `isBoardingLockActive===false`를
  *     이미 보장하지만 GPS 경로와 동일하게 방어적으로 재확인한다.
+ *   - #2653 거리 가드 — "GPS를 신뢰할 수 있을 때만" 거른다. register 시점 정적 스냅샷
+ *     (`trip.promptGeoContext.originDistanceM/originAccuracyM`)이 존재하고, 이 cron 시점의
+ *     positionSeries에 최근(5분)·양호한(<50m) GPS 샘플로 그 스냅샷이 교차 검증되고(그렇지
+ *     않으면 "신뢰 불가"로 skip 없이 통과 — `originGpsFreeSnapshotDistrusted`),
+ *     `isNearOrigin`이 false이며, `trip.originProximityAt`가 없거나 최신성(5분,
+ *     `shouldStampOriginProximity`)을 잃었으면 차단한다. 스냅샷 자체가 부재(지하/구 클라)면
+ *     항상 통과(#2532 취지 보존). 자세한 근거/함정은 함수 본문 인라인 주석(코드리뷰
+ *     2026-09-16 HIGH-1/MEDIUM-2 반영) 참고.
  *   - dedup: `evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now)` — **GPS 경로
  *     (`evaluateAndMaybeFireBoardingPrompt` 내부 `evaluateBoardingPromptGates`)와 완전히 동일한
  *     게이트 함수 + 동일 `trip.boardingPromptState` ledger를 공유한다.** GPS 경로가 먼저
@@ -7204,6 +7228,85 @@ export async function maybeFireOriginBoardingPromptGpsFree(
 
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;
+
+  // #2653 — "GPS를 신뢰할 수 있을 때만" 거리 가드. 이 함수 직전(같은 cron cycle) 먼저 호출되는
+  // `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트 경로)가 이미 사용하는 판정
+  // (#2153/#2358, scheduled.ts:6626~6685)을 베이스로 하되, 코드리뷰(2026-09-16)가 지적한 구멍
+  // 2개를 추가로 막는다:
+  //
+  //   ① 함정(이슈 본문 명시) — `isNearOrigin(...)`은 distance/accuracy가 부재하면 false를
+  //     반환한다. `!isNearOrigin(...)`을 그대로 차단 조건으로 쓰면 지하(부재)가 전부 막혀
+  //     #2532가 무력화된다. 반드시 "존재 AND 멀다"로 분리 판정한다.
+  //   ② [리뷰 HIGH-1] `trip.originProximityAt`는 단조 증가 필드라 "한 번이라도 근접 관측"이
+  //     영구 탈출구가 된다 — 근접 대기하다(매 cycle 재stamp) 포기하고 밖으로 걸어나가 멈추면
+  //     스냅샷은 여전히 멀지만 탈출구가 살아있어 9/16과 동일하게 오발사된다. 탈출구를
+  //     `shouldStampOriginProximity`(ORIGIN_PROXIMITY_RENEWAL_MS=5분, `/position`이 근접 중
+  //     계속 재stamp하는 바로 그 주기)로 최신성 제한한다 — 진짜 근접 중이면 이 주기 안에
+  //     항상 재stamp되므로 탈출구가 계속 살아있고, 벗어나면 자연히 한 주기 안에 만료된다.
+  //   ③ [리뷰 MEDIUM-2] register 시점 정적 스냅샷(`trip.promptGeoContext.originDistanceM/
+  //     originAccuracyM`)은 타임스탬프가 없다. device의 `buildOriginGpsStamp`는
+  //     `haversine(마지막 GPS fix, 현재 fused 역)`인데, 지하에서 GPS가 끊기면 fix는 "마지막
+  //     지상 좌표"에 고정되는 반면 fused 역은 lockless 추론으로 계속 전진한다(useNearestStation.ts,
+  //     device 변경 범위 밖) — accuracy는 그 순간엔 좋았던(작은) 값이라 "정확도 좋은데 먼"
+  //     스냅샷이 만들어지고, 근접이 한 번도 없었으니 ②의 탈출구도 없어 **영구 차단**된다
+  //     (#2531/#2532가 없애려던 침묵의 재발). backend는 스냅샷 자체의 시각을 모르므로,
+  //     "지금(cron 평가 시점) GPS가 실제로 살아있는가"를 `/position` 채널이 독립적으로 쌓은
+  //     `positionSeries`(readSeries)로 교차 검증한다 — 최근(`DEVICE_SYNC_STALE_THRESHOLD_MS`,
+  //     기존 device-sync staleness 관례 5분) + 양호한 정확도(`ACCURACY_CUTOFF_M`, 기존
+  //     평균속도 게이트 정확도 컷오프 50m 재사용) 샘플이 없으면 그 정적 스냅샷을 신뢰하지
+  //     않는다(=존재하지 않는 것처럼 취급, #2532 관대 허용 원칙 재적용).
+  //
+  // 관측 — ②와 ③ 각각 별도 reason/counter로 찍어 1주 측정에서 "진짜 원거리 차단"·"근접 후
+  // 재이탈 차단"·"신뢰 불가로 차단 생략(발사 허용)"을 구분한다(같은 reason 'origin-too-far'로
+  // 뭉치면 구분 불가 — 코드리뷰 지적).
+  const geo = trip.promptGeoContext;
+  const originDistanceM = geo?.originDistanceM;
+  const originAccuracyM = geo?.originAccuracyM;
+  const staticSnapshotPresent = originDistanceM !== undefined && originAccuracyM !== undefined;
+
+  let hasProximityReading = false;
+  if (staticSnapshotPresent) {
+    const series = await readSeries(env.TRIPS, trip.token);
+    const newest = series.length > 0 ? series[series.length - 1] : undefined;
+    hasProximityReading = hasFreshOriginProximityCorroboration(
+      newest,
+      now,
+      DEVICE_SYNC_STALE_THRESHOLD_MS,
+      ACCURACY_CUTOFF_M,
+    );
+    if (!hasProximityReading) {
+      stats.originGpsFreeSnapshotDistrusted += 1;
+      log('origin-boarding-prompt-gps-free: distance snapshot distrusted (no fresh live GPS corroboration)', {
+        token: trip.token.slice(0, 8),
+        originDistanceM,
+        originAccuracyM,
+        newestSeriesAgeMs: newest !== undefined ? now - newest.ts : null,
+        newestSeriesAccuracyM: newest?.accuracy ?? null,
+      });
+    }
+  }
+
+  const anchorFresh =
+    trip.originProximityAt !== undefined &&
+    !shouldStampOriginProximity(trip.originProximityAt, now);
+  const isTooFarFromOrigin =
+    hasProximityReading && !isNearOrigin(originDistanceM, originAccuracyM) && !anchorFresh;
+  if (isTooFarFromOrigin) {
+    const reason =
+      trip.originProximityAt === undefined ? 'origin-too-far' : 'origin-too-far-stale-anchor';
+    stats.originGpsFreeBoardingPromptBlocked += 1;
+    log('origin-boarding-prompt-gps-free: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason,
+      originDistanceM,
+      originAccuracyM,
+      originProximityAgeMs:
+        trip.originProximityAt !== undefined ? now - trip.originProximityAt : null,
+      originStation: display.originStation,
+      line: display.line,
+    });
+    return;
+  }
 
   // #2531 — GPS 경로(`evaluateBoardingPromptGates`)와 동일 dedup 게이트 + 동일 ledger 공유.
   const repeatOutcome = evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now);

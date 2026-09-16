@@ -4,6 +4,7 @@ import {
   DISMISS_SILENCE_MS,
   evaluateBoardingPromptGates,
   evaluateHopEndPromptGates,
+  hasFreshOriginProximityCorroboration,
   markPromptFired,
   markPromptSilenced,
   pickAutoTrainCode,
@@ -752,6 +753,31 @@ describe('markPromptFired / markPromptSilenced', () => {
     const r = markPromptSilenced({ fired: true, lastFiredAt: 500 }, 1000);
     expect(r.fired).toBe(true);
     expect(r.lastFiredAt).toBe(500);
+  });
+});
+
+describe('hasFreshOriginProximityCorroboration (#2653, 코드리뷰 MEDIUM-2)', () => {
+  const NOW = 1_700_000_000_000;
+  const FRESH_MS = 5 * 60_000;
+  const CUTOFF_M = 50;
+
+  it('최신 sample 부재 → false', () => {
+    expect(hasFreshOriginProximityCorroboration(undefined, NOW, FRESH_MS, CUTOFF_M)).toBe(false);
+  });
+
+  it('최신 sample이 신선하고(≤freshnessMs) 정확도 양호(<cutoff) → true', () => {
+    const point = { ts: NOW - 60_000, accuracy: 10 };
+    expect(hasFreshOriginProximityCorroboration(point, NOW, FRESH_MS, CUTOFF_M)).toBe(true);
+  });
+
+  it('최신 sample이 freshnessMs를 초과해 stale → false', () => {
+    const point = { ts: NOW - (FRESH_MS + 1), accuracy: 10 };
+    expect(hasFreshOriginProximityCorroboration(point, NOW, FRESH_MS, CUTOFF_M)).toBe(false);
+  });
+
+  it('최신 sample은 신선하지만 accuracy가 cutoff 이상(저정확도) → false', () => {
+    const point = { ts: NOW, accuracy: CUTOFF_M };
+    expect(hasFreshOriginProximityCorroboration(point, NOW, FRESH_MS, CUTOFF_M)).toBe(false);
   });
 });
 

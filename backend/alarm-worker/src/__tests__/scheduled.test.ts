@@ -3,7 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DISEMBARK_PROMPT_CATEGORY, resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
-import type { WindowedMetrics } from '../positionSeries';
+import { appendPositionPoint, type WindowedMetrics } from '../positionSeries';
 import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
   ARVLCD_FIRE_KEY_PREFIX,
@@ -189,7 +189,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -12915,6 +12915,254 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const body = JSON.parse(init.body as string);
     expect(body.body.originStation).toBe('용마산');
     expect(body.body.line).toBe('7');
+  });
+
+  describe('#2653 — GPS를 신뢰할 수 있을 때만 거리 가드', () => {
+    // 정적 스냅샷을 backend가 신뢰하려면(hasProximityReading=true) 같은 token의 positionSeries에
+    // 최근(DEVICE_SYNC_STALE_THRESHOLD_MS 이내) + 양호한(ACCURACY_CUTOFF_M 미만) 샘플이 있어야
+    // 한다(#2653 코드리뷰 MEDIUM-2) — 대부분의 시나리오는 이 교차검증이 통과하는(실 GPS가
+    // 살아있는) 케이스를 전제로 한다.
+    async function seedLiveGps(kv: InMemoryKV, token: string, ts: number, accuracy: number): Promise<void> {
+      await appendPositionPoint(kv as unknown as KVNamespace, token, {
+        lat: 0,
+        lng: 0,
+        accuracy,
+        ts,
+        motion: 'stationary',
+      });
+    }
+
+    it('red: 오늘 실측값(용마산, distance 222m, accuracy 6.7m) 지상 원거리 정지 + 살아있는 GPS → 차단', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 6.7);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      expect(stats.originGpsFreeSnapshotDistrusted).toBe(0);
+    });
+
+    it('함정 고정 — distance/accuracy 부재(지하) → hasProximityReading=false로 무게이트 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // promptGeoContext 자체가 없는 지하 케이스. `!isNearOrigin(undefined, undefined)`는 true를
+      // 반환하므로 이 함정을 "존재 AND 멀다"로 분리하지 않으면 이 테스트가 실패해야 한다.
+      const trip = makeTrip();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+      // 스냅샷 자체가 없으므로 신뢰 판정 자체가 스킵된다 — distrusted 카운터도 오르지 않는다.
+      expect(stats.originGpsFreeSnapshotDistrusted).toBe(0);
+    });
+
+    it('근접(distance 80m, accuracy 10m) + 살아있는 GPS → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 80,
+          originAccuracyM: 10,
+        },
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 10);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+      expect(stats.originGpsFreeSnapshotDistrusted).toBe(0);
+    });
+
+    it('신선도 — register 시점엔 원거리 스냅샷이었지만 originProximityAt이 방금(1분 전) stamp됨(역 도착) → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // register 시점 스냅샷은 여전히 멀지만(원거리에서 "안내 시작"), `/position`(또는 같은 cycle
+      // 먼저 도는 GPS 경로)이 이미 근접을 실시간 관측해 originProximityAt을 stamp한 상태 —
+      // 오래된 "멀다" 스냅샷으로 영구 차단하면 안 된다. 1분 전 stamp는 5분 갱신 주기 이내라 fresh.
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 5000,
+          originAccuracyM: 10,
+        },
+        originProximityAt: NOW - 60_000,
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 10);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+    });
+
+    it('[코드리뷰 HIGH-1 red] 근접 탈출구가 5분 이상 stale → 원거리 스냅샷 차단이 재적용(reason 구분)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // 시나리오: 용마산에서 대기하며 근접이 stamp됐지만(5분+ 전), 포기하고 222m 밖으로 걸어나가
+      // 멈췄다 — 정적 스냅샷은 여전히 "멀다"를 가리키고, 탈출구(originProximityAt)는 최신성을
+      // 잃었으므로 다시 차단돼야 한다. 고치기 전에는 탈출구가 무기한 유효해 이 케이스가 오발사됐다.
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+        originProximityAt: NOW - 6 * 60_000,
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 6.7);
+      const stats = makeStats();
+      const logCalls: Array<[string, Record<string, unknown> | undefined]> = [];
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        (message, meta) => {
+          logCalls.push([message, meta]);
+        },
+        () => 'pid-origin',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      const blockedCall = logCalls.find(([message]) => message === 'origin-boarding-prompt-gps-free: gate blocked');
+      expect(blockedCall?.[1]?.reason).toBe('origin-too-far-stale-anchor');
+    });
+
+    it('[코드리뷰 MEDIUM-2 red] positionSeries 자체가 없음(지하에서 최근 GPS 무갱신) → 스냅샷 불신 → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // 시나리오: device의 buildOriginGpsStamp가 "마지막 지상 GPS fix"와 "전진한 fused 역" 사이
+      // 거리를 계산해 정확도 좋은(6.7m) 원거리(222m) 스냅샷을 남겼지만, 그 이후 GPS가 죽어(지하)
+      // /position 채널에 새 샘플이 전혀 없다 — positionSeries가 비어 있으므로 이 스냅샷을 지금
+      // 신뢰할 근거가 없다. 고치기 전에는 이 스냅샷만으로 영구 차단(#2531/#2532가 없애려던 침묵).
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+      expect(stats.originGpsFreeSnapshotDistrusted).toBe(1);
+    });
+
+    it('[코드리뷰 MEDIUM-2] positionSeries 최신 샘플이 5분 넘게 stale → 스냅샷 불신 → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW - 6 * 60_000, 6.7);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+      expect(stats.originGpsFreeSnapshotDistrusted).toBe(1);
+    });
+
+    it('[코드리뷰 MEDIUM-2] positionSeries 최신 샘플이 신선하지만 정확도 불량(>=50m) → 스냅샷 불신 → 통과(발사)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 60);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+      expect(stats.originGpsFreeSnapshotDistrusted).toBe(1);
+    });
   });
 
   it('GPS 경로가 먼저 발사(boardingPromptState.fired + 최근 lastFiredAt) → 공유 dedup으로 skip (더블발사 0)', async () => {
