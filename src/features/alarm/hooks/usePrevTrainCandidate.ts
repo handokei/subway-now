@@ -6,7 +6,7 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine, getStopSeconds } from '../../../shared/utils/stationRoute';
@@ -42,6 +42,15 @@ export interface UsePrevTrainCandidateResult {
   loading: boolean;
 }
 
+/** 만료 재평가 tick 간격(ms) — 테스트에서 회귀 시나리오 구성 시 참조. */
+export const PREV_TRAIN_TTL_TICK_MS = 5_000;
+
+interface PrevTrainCacheEntry {
+  contextKey: string;
+  candidate: PrevTrainCandidate;
+  cachedAtMs: number;
+}
+
 /**
  * "전열차"(출발역을 방금 떠난 열차) 후보 도출 — #2139.
  *
@@ -56,7 +65,14 @@ export interface UsePrevTrainCandidateResult {
  * 사라져 pool이 비고 candidate가 0건이 된다("탑승 직후 못 누르고 뒤늦게 누르려 하면 목록에 없다"는
  * 실사용자 재발 #2179). 직전에 산출됐던 후보를 `PREV_TRAIN_CANDIDATE_TTL_MS` 동안 캐시로 보존해,
  * 이 구간에서도 최소 1건은 탭 가능하게 한다. 캐시는 trip context(출발역+호선+방향)가 바뀌면
- * 즉시 무효화되고, 살아있는 동안은 경과 시간을 실제 wall clock으로 계속 갱신한다.
+ * 즉시 무효화된다.
+ *
+ * 캐시는 state(`cacheEntry`)로 보관하고 갱신/무효화는 전부 effect 안에서만 일어난다(렌더 중 ref
+ * mutation 금지 — StrictMode 이중 렌더나 discard된 렌더에서 캐시가 오염될 수 있다). 만료 판정은
+ * `now` tick(자체 interval, `PREV_TRAIN_TTL_TICK_MS` 간격)에 의존한다. candidate pool이 계속 0건으로
+ * 유지되는 동안에는 `freshCandidate`/`contextKey`가 매 폴링 값 그대로(둘 다 불변)라 이 두 값만
+ * useMemo 의존성으로 쓰면 만료 분기가 다시는 실행되지 않는다(재현된 버그) — 그래서 만료는 상위
+ * 폴링 유무와 무관하게 스스로 흐르는 `now`에 걸어 wall-clock 기준으로 반드시 재평가되게 한다.
  */
 export function usePrevTrainCandidate({
   route,
@@ -75,7 +91,6 @@ export function usePrevTrainCandidate({
   }, [route, destinationName, currentStation]);
 
   const contextKey = `${currentStation?.id ?? ''}|${line ?? ''}|${direction ?? ''}`;
-  const cacheRef = useRef<{ contextKey: string; candidate: PrevTrainCandidate; cachedAtMs: number } | null>(null);
 
   const freshCandidate = useMemo<PrevTrainCandidate | null>(() => {
     if (!arrival || !currentStation || !nextStationName || !line) return null;
@@ -99,26 +114,47 @@ export function usePrevTrainCandidate({
     return { train: closest, elapsedSeconds };
   }, [arrival, currentStation, nextStationName, direction, currentArrivals, line]);
 
-  const prevTrain = useMemo<PrevTrainCandidate | null>(() => {
-    const cache = cacheRef.current;
-    if (cache && cache.contextKey !== contextKey) {
-      cacheRef.current = null;
-    }
+  const [cacheEntry, setCacheEntry] = useState<PrevTrainCacheEntry | null>(null);
+  // 만료 재평가용 tick — freshCandidate/contextKey가 폴링 내내 그대로여도(candidates 계속 0건)
+  // 이 state가 PREV_TRAIN_TTL_TICK_MS마다 스스로 바뀌어 아래 prevTrain useMemo를 강제로 재실행시킨다.
+  const [now, setNow] = useState<number>(() => Date.now());
 
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), PREV_TRAIN_TTL_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
     if (freshCandidate) {
-      cacheRef.current = { contextKey, candidate: freshCandidate, cachedAtMs: Date.now() };
-      return freshCandidate;
+      setCacheEntry((prev) => {
+        // 동일 후보(같은 trainCode)면 이전 state 그대로 반환 — React가 동일 참조 setState를
+        // bail-out하므로 리렌더가 발생하지 않는다. 호출부가 currentArrivals/route 등을 매 렌더
+        // 새 배열/객체로 넘겨 freshCandidate 참조가 매번 달라지는 경우(흔한 caller 패턴)에도
+        // 이 값 비교가 없으면 effect→setState→리렌더→effect가 무한 반복된다.
+        const sameCandidate =
+          prev && prev.contextKey === contextKey && prev.candidate.train.trainCode === freshCandidate.train.trainCode;
+        if (sameCandidate) {
+          return prev;
+        }
+        return { contextKey, candidate: freshCandidate, cachedAtMs: Date.now() };
+      });
+      return;
     }
-
-    const cached = cacheRef.current;
-    if (!cached || cached.contextKey !== contextKey) return null;
-    const ageMs = Date.now() - cached.cachedAtMs;
-    if (ageMs >= PREV_TRAIN_CANDIDATE_TTL_MS) {
-      cacheRef.current = null;
-      return null;
-    }
-    return { train: cached.candidate.train, elapsedSeconds: cached.candidate.elapsedSeconds + Math.floor(ageMs / 1000) };
+    // fresh candidate가 없어졌을 때(candidates=0) 캐시 자체는 지우지 않는다 — 여기서 지우면
+    // TTL 만료 판정(아래 prevTrain useMemo)이 무의미해진다. context가 바뀐 경우에만 즉시 무효화.
+    setCacheEntry((prev) => (prev && prev.contextKey !== contextKey ? null : prev));
   }, [freshCandidate, contextKey]);
+
+  const prevTrain = useMemo<PrevTrainCandidate | null>(() => {
+    if (freshCandidate) return freshCandidate;
+    if (!cacheEntry || cacheEntry.contextKey !== contextKey) return null;
+    const ageMs = now - cacheEntry.cachedAtMs;
+    if (ageMs >= PREV_TRAIN_CANDIDATE_TTL_MS) return null;
+    return {
+      train: cacheEntry.candidate.train,
+      elapsedSeconds: cacheEntry.candidate.elapsedSeconds + Math.floor(ageMs / 1000),
+    };
+  }, [freshCandidate, cacheEntry, contextKey, now]);
 
   return { prevTrain, loading };
 }
