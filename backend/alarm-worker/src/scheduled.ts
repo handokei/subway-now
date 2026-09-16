@@ -2283,6 +2283,25 @@ export function arvlCdFireKey(
  * 사용자 결정 #2506 "역당 알림 1개"를 **트리거 무관**하게 보장하려면 (token, trainCode, station)
  * 단위의 공용 마커가 있어야 한다. 모든 발사 경로가 발사 전 이 키를 확인하고, 발사 성공 시 stamp한다.
  */
+/**
+ * #2672 (코드리뷰 P1-1) — hop-end("하차하셨나요?") 프롬프트의 **요청 무관** dedup 마커.
+ *
+ * 배경: 이 프롬프트는 이제 두 요청에서 발사될 수 있다 — cron의 transfer advance, 그리고
+ * `/boarding-lock/sync`의 환승역 최초 관측(#2672). 두 경로의 dedup을 `trip.hopEndPromptState`
+ * (trip 객체 필드)에만 맡기면 **동시에 실행되는 별개 요청** 사이에서는 무력하다: `putTrip`은
+ * CAS 없는 단순 put이라, cron이 sync보다 먼저 trip을 읽었다면 그 스냅샷엔 sync가 방금 찍은
+ * `hopEndPromptState`가 없어 게이트를 그대로 통과하고 푸시가 두 번 나간다(그리고 늦게 끝난 쪽의
+ * put이 상대 상태를 덮어써 흔적도 지운다).
+ *
+ * 그래서 trip 객체와 **독립된** KV 마커를 둔다 — `stationPassedFiredKey`(#2571)가 같은 이유로
+ * "경로 무관 단일 dedup"을 도입한 것과 동일한 패턴이다. 발사 직전 확인하고, 성공 시 stamp한다.
+ * 키 단위는 leg(환승역 + 다음 노선) — 여러 번 환승해도 leg마다 한 번씩 발사된다.
+ */
+export const HOP_END_PROMPT_FIRED_KEY_PREFIX = 'hop-end-prompt-fired:';
+export function hopEndPromptFiredKey(token: string, legKey: string): string {
+  return `${HOP_END_PROMPT_FIRED_KEY_PREFIX}${token}|${legKey}`;
+}
+
 export const STATION_PASSED_FIRED_KEY_PREFIX = 'station-passed-fired:';
 export function stationPassedFiredKey(
   token: string,
@@ -7599,24 +7618,44 @@ export async function maybeFireHopEndPrompt(inputs: {
   generatePushId: () => string;
   /** #2177 — push 최종 실패 D1 기록용. */
   env: Env;
+  /**
+   * #2672 — "다음 leg 첫 역"을 호출자가 명시할 때 쓰는 override.
+   *
+   * 기존 cron 경로는 `completeWaypointAdvance` **이후**에 호출돼 `trip.waypoints[0]`이 이미 다음 leg
+   * 첫 역이다(그래서 기본값이 그것). 반면 device sync가 환승역 도착을 관측한 **시점**에 부르는
+   * 경로는 아직 waypoint를 소비하지 않았을 수 있어, 그때 `waypoints[0]`은 환승역 자신(또는 그
+   * 이전 역)이라 안내 문구의 "다음 역"이 틀린다. 그 경로만 명시 전달한다 — 기존 호출부는 인자를
+   * 넘기지 않아 동작 100% 불변.
+   */
+  nextWaypointOverride?: Waypoint | null;
 }): Promise<void> {
   const { trip, transferWaypoint, deps, stats, now, log, generatePushId, env } = inputs;
-  const nextWaypoint = trip.waypoints[0];
+  const nextWaypoint =
+    inputs.nextWaypointOverride !== undefined
+      ? (inputs.nextWaypointOverride ?? undefined)
+      : trip.waypoints[0];
   const nextLine = nextWaypoint?.line ?? null;
   const nextStation = nextWaypoint?.stationName ?? null;
   const legKey = `${transferWaypoint.stationName}|${nextLine ?? ''}`;
   const stateMap = trip.hopEndPromptState ?? {};
   const outcome = evaluateHopEndPromptGates({ promptState: stateMap[legKey], now });
+  // #2672 (코드리뷰 P1-1) — trip 객체와 독립된 요청-무관 마커. cron advance와 sync 관측이 동시에
+  // 이 프롬프트를 시도할 때 `hopEndPromptState`만으로는 dedup이 되지 않는다(사유는 키 정의 주석).
+  // 읽기 실패는 보수적으로 "미발사"로 간주해 진행한다 — 알림을 잃는 쪽보다 중복 위험을 택한다
+  // (그 중복은 아래 state 게이트가 대부분 흡수한다).
+  const firedKey = hopEndPromptFiredKey(trip.token, legKey);
+  const alreadyFiredAcrossRequests =
+    outcome.pass && (await env.TRIPS.get(firedKey).catch(() => null)) !== null;
   // ADR-037 D2c (#2537, 진단 계측 only) — 이 함수의 fire/skip 사유를 SSoT 마커
   // (`hopEndPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 게이트 판정/발사
   // 로직 자체는 무변경.
   const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
-  if (!outcome.pass) {
+  if (!outcome.pass || alreadyFiredAcrossRequests) {
     stats.hopEndPromptBlocked += 1;
     log('hop-end-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       legKey,
-      reason: outcome.reason,
+      reason: outcome.pass ? 'already-fired-marker' : outcome.reason,
     });
     await recordHopEndPromptTransition(
       env,
@@ -7677,6 +7716,14 @@ export async function maybeFireHopEndPrompt(inputs: {
       ...stateMap,
       [legKey]: markPromptFired(now),
     };
+    // #2672 — 요청-무관 마커 stamp. trip put이 레이스로 유실돼도 이 키는 남아 다른 요청의
+    // 재발사를 막는다. 실패는 swallow — 마커가 없으면 기존 state 게이트로 폴백될 뿐이다.
+    await env.TRIPS.put(firedKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC }).catch(() => {
+      log('hop-end-prompt: fired marker put failed (best-effort)', {
+        token: trip.token.slice(0, 8),
+        legKey,
+      });
+    });
     log('hop-end-prompt: fired', {
       token: trip.token.slice(0, 8),
       transferStation: transferWaypoint.stationName,

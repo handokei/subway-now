@@ -4030,6 +4030,42 @@ describe('POST /boarding-lock/sync (#901)', () => {
       expect(second).toBe(first);
     });
 
+    // #2672 — "하차하셨나요?"를 backend advance가 아니라 **관측 시점**에 쏜다. 이 테스트 env는
+    // APNs 키가 더미라 실제 발사는 throw로 끝나므로, 게이트가 막히는 상태(이미 발사된 leg)를 만들어
+    // `recordHopEndPromptTransition`이 D1에 남기는 것으로 호출부 배선(whole path)을 확정한다.
+    it('#2672 — 환승역 관측 시점에 hop-end 프롬프트 경로를 태운다 (D1 transition 기록)', async () => {
+      const inserts: unknown[][] = [];
+      const db = {
+        prepare: () => ({
+          bind: (...args: unknown[]) => {
+            inserts.push(args);
+            return { run: async () => ({ success: true }) };
+          },
+        }),
+      } as unknown as D1Database;
+      const env = makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'], DB: db });
+      // `validateTrip`은 hopEndPromptState를 body에서 받지 않으므로(내부 상태) KV에 직접 심는다.
+      // 이미 이 leg에서 발사된 상태 → 게이트가 막고 transition('silenced')만 기록된다.
+      await env.TRIPS.put(
+        'trip:tok-sync',
+        JSON.stringify({
+          ...tripWithTransfer(),
+          hopEndPromptState: { '교대|3': { fired: true, lastFiredAt: Date.now() } },
+        }),
+      );
+      // transition 기록은 SSoT 마커 대조로 dedup되므로(#2537) SSoT가 있어야 남는다.
+      const { seedSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, 'tok-sync', '강남', { expiresAt: FUTURE });
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const kinds = inserts.map((args) => args[2]);
+      expect(kinds).toContain('hop-end-prompt');
+    });
+
     it('환승역이 아닌 역 관측은 stamp하지 않는다', async () => {
       const env = makeKvEnv();
       await post('/trips', tripWithTransfer(), env);
