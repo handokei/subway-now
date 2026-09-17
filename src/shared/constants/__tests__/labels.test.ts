@@ -1,5 +1,7 @@
+import i18next from 'i18next';
 import {
   buildFallbackSequenceLabel,
+  buildPrevTrainArrivalLabel,
   buildPrevTrainLabel,
   buildSilentPushCountValue,
   SILENT_PUSH_LABELS,
@@ -52,6 +54,23 @@ describe('buildPrevTrainLabel (#2139)', () => {
     expect(buildPrevTrainLabel(60)).toBe('출발 약 1분 전');
     expect(buildPrevTrainLabel(90)).toBe('출발 약 2분 전');
     expect(buildPrevTrainLabel(150)).toBe('출발 약 3분 전');
+  });
+});
+
+describe('buildPrevTrainArrivalLabel (#2697)', () => {
+  afterEach(async () => {
+    await i18next.changeLanguage('ko');
+  });
+
+  it.each<[string, string]>([
+    // [lang, expected]
+    ['ko', '06:28 도착'],
+    ['en', 'Arrived 06:28'],
+    ['ja', '06:28着'],
+    ['zh', '06:28 到达'],
+  ])('lang=%s → %s', async (lang, expected) => {
+    await i18next.changeLanguage(lang);
+    expect(buildPrevTrainArrivalLabel('06:28')).toBe(expected);
   });
 });
 

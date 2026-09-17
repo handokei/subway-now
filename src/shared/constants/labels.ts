@@ -1,3 +1,5 @@
+import i18next from 'i18next';
+
 /**
  * 사용자 노출 라벨 상수 모음.
  *
@@ -51,6 +53,22 @@ export function buildPrevTrainLabel(elapsedSeconds: number): string {
   if (elapsedSeconds < 60) return '방금 출발';
   const minutes = Math.round(elapsedSeconds / 60);
   return `출발 약 ${minutes}분 전`;
+}
+
+/**
+ * BoardingTrainList "전열차" row 도착 시각 라벨 — #2697.
+ *
+ * usePrevTrainCandidate가 출발역 이탈 관측 시점에 stamp한 실제 A역 도착 시각(#634 `formatClockTime`
+ * 으로 이미 "HH:mm" 포맷된 문자열을 인자로 받는다 — 새 시각 포맷터를 만들지 않는다)을 라벨로 만든다.
+ *
+ * 라이브 row의 "{{time}} 도착 예정"(#634/#749)과 달리 이미 지나간 사실을 표기하므로 예정형 문구를
+ * 쓰지 않는다 — i18n 키(`home.boardingTrainPrevArrivalLabel`)로 4개 locale(ko/en/ja/zh) 분리.
+ *
+ * stamp 실패(receivedAtMs=0 등 degrade) 시 호출자는 이 함수를 호출하지 않고 기존
+ * `buildPrevTrainLabel(elapsedSeconds)` 상대 표기로 degrade한다(크래시 없이 동작, 회귀 없음).
+ */
+export function buildPrevTrainArrivalLabel(clockTime: string): string {
+  return i18next.t('home.boardingTrainPrevArrivalLabel', { time: clockTime });
 }
 
 /**

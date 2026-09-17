@@ -32,6 +32,17 @@ export interface PrevTrainCandidate {
   train: ArrivalInfo;
   /** 출발역을 떠난 지 대략 몇 초 지났는지(전이 관측 시각부터 경과). */
   elapsedSeconds: number;
+  /**
+   * 이 열차가 출발역(A역)에 실제 도착한 절대 시각(epoch ms) — #2697.
+   *
+   * 열차가 currentArrivals에서 사라지기 직전 마지막 관측(`receivedAtMs + arrivalSeconds * 1000`)에
+   * 고정(stamp)한 값이다. 사라진 뒤에는 재계산하지 않는다 — "사라진 시각"으로 대체하면 폴링 간격만큼
+   * 어긋나 사용자가 기억하는 실제 시각과 안 맞는다.
+   *
+   * 마지막 관측 시점의 receivedAtMs가 0(mock/누락)이면 stamp 불가 — null. 호출자(라벨 렌더링)는
+   * null을 "시각 표기 불가" degrade로 다뤄야 한다(기존 elapsedSeconds 기반 상대 라벨로 대체 등).
+   */
+  arrivedAtMs: number | null;
 }
 
 export interface UsePrevTrainCandidateResult {
@@ -51,6 +62,28 @@ interface DepartedCandidate {
   train: ArrivalInfo;
   /** 이 열차가 currentArrivals에서 사라진(=출발한) 것을 관측한 시각. */
   detectedAtMs: number;
+  /** #2697 — 사라지기 직전 마지막 관측에 stamp한 실제 A역 도착 시각(epoch ms). 산출 불가 시 null. */
+  arrivedAtMs: number | null;
+}
+
+/**
+ * A역(출발역) 실제 도착 시각 stamp — #2697.
+ *
+ * `receivedAtMs`(응답 수신 시각) + `arrivalSeconds`(그 시점 남은 초)*1000 = 그 열차가 A역에
+ * 도착하는(했던) 절대 시각. `arrivalAt`(#897, `shared/utils/arrivalClock.ts`)은 매 렌더마다
+ * `Date.now()` 기준으로 재계산해 "아직 목록에 있는" 열차의 카운트다운과 동기화하는 용도라 여기서는
+ * 쓸 수 없다 — 이 열차는 목록에서 사라진 뒤에도 라벨을 유지해야 하므로, 사라지기 직전 마지막
+ * 관측 시점의 값에 고정(freeze)해야 한다.
+ *
+ * 호출자가 이 값을 열차가 currentArrivals에 남아있던 마지막 tick의 레코드에 적용하면, 그 레코드는
+ * 통상 사라지기 직전 상태(arvlCd 도착(1)/출발(2))를 반영한 가장 최근 관측이므로 "특히 arrivalCode가
+ * 도착/출발에 도달한 시점에 stamp"하라는 요구를 별도 분기 없이 자연스럽게 만족한다.
+ *
+ * `receivedAtMs`가 0(mock/누락)이면 stamp 불가 — null 반환(호출자가 degrade 처리, 크래시 없음).
+ */
+function stampArrivalAtMs(train: ArrivalInfo): number | null {
+  if (train.receivedAtMs <= 0) return null;
+  return train.receivedAtMs + train.arrivalSeconds * 1000;
 }
 
 /**
@@ -167,7 +200,12 @@ export function usePrevTrainCandidate({
       (min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min),
       departedTrains[0],
     );
-    setDeparted({ contextKey, train: newest, detectedAtMs: Date.now() });
+    setDeparted({
+      contextKey,
+      train: newest,
+      detectedAtMs: Date.now(),
+      arrivedAtMs: stampArrivalAtMs(newest),
+    });
   }, [currentArrivals, contextKey, isActive]);
 
   // backstop 만료 — 이게 있어야 아래 interval 게이팅이 "후보 없음"으로 판정해 tick을 멈출 수 있다.
@@ -192,7 +230,11 @@ export function usePrevTrainCandidate({
     if (!isActive || !departed || departed.contextKey !== contextKey) return null;
     const ageMs = now - departed.detectedAtMs;
     if (ageMs >= PREV_TRAIN_CANDIDATE_BACKSTOP_MS) return null;
-    return { train: departed.train, elapsedSeconds: Math.floor(ageMs / 1000) };
+    return {
+      train: departed.train,
+      elapsedSeconds: Math.floor(ageMs / 1000),
+      arrivedAtMs: departed.arrivedAtMs,
+    };
   }, [isActive, departed, contextKey, now]);
 
   return { prevTrain };
