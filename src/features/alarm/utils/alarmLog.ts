@@ -142,7 +142,14 @@ export type AlarmLogSource =
   // 회귀를 차단(2026-09-15 덤프). identifier(또는 identifier 부재 시 categoryIdentifier) 기준
   // burst dedup(`isBurstDuplicate`, 기본 DEDUP_LOG_WINDOW_MS)을 적용 — 같은 identifier가 창
   // 밖에서 재수신되면(진짜 backend 재발사 가능성) 다시 적재된다.
-  | 'boarding-prompt-category-received';
+  | 'boarding-prompt-category-received'
+  // #2687 — LA fallback 알림(iOS LA 비활성/예외 시 expo-notifications로 대체 발사되는
+  // NOTIFICATION_ID 경로) 발사/억제 stamp. 기존에는 이 경로가 alarmLog에 전혀 적재되지
+  // 않아 "Notifications fired" 집계에 안 잡혀 실사용자 체감(동일 내용 30회+ 배너)과
+  // 덤프 로그(9건)의 갭이 생겼다. outcome='fired'는 content dedup 통과 후 실제 재예약,
+  // outcome='suppressed'(reason='dedup-la-fallback-content')는 직전과 동일 (title, body)라
+  // 재예약을 건너뛴 경우.
+  | 'la-fallback-notification';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -453,7 +460,10 @@ export type AlarmLogReason =
   | 'skip-no-next-target'
   | 'skip-not-imminent'
   | 'skip-no-target-station'
-  | 'engaged';
+  | 'engaged'
+  // #2687 — LA fallback 알림 content dedup 적중. 직전 발사와 (title, body)가 완전히 동일해
+  // 재예약을 건너뛴 경우. 시간 기반이 아닌 내용 동일성 기준 — 내용이 바뀌면 즉시 재적재된다.
+  | 'dedup-la-fallback-content';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -929,6 +939,39 @@ export function logSuppressedDedupAlarm(
 /** 테스트용 — 윈도우 캐시 리셋. #2618 이후 dedupEntryTrackers로 통합돼 그 clear를 위임한다. */
 export function _resetDedupAlarmWindowForTests(): void {
   _resetDedupEntryTrackersForTests();
+}
+
+/**
+ * #2687 — LA fallback 알림(iOS LA 비활성/예외, Android)이 실제로 재예약된 1건 적재.
+ * `updateStationNotification`의 content dedup 통과 후에만 호출된다.
+ */
+export function logFiredLaFallbackNotification(stationName: string): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'la-fallback-notification',
+    outcome: 'fired',
+    stationName,
+  });
+}
+
+/**
+ * #2687 — LA fallback 알림 content dedup 적중(직전 발사와 (title, body) 동일)으로
+ * 재예약을 건너뛴 1건. GPS 폴링마다 반복 억제되는 케이스가 흔해 dedup-alarm과 동일하게
+ * 60s TTL 내 재발생은 drop 대신 count 증분(`appendOrIncrementDedupEntry`) — 억제가 계속
+ * 관측되되 alarmLog 200-cap 버퍼를 점령하지 않는다.
+ */
+export function logSuppressedLaFallbackContentDedup(stationName: string): void {
+  appendOrIncrementDedupEntry(
+    `dedup-la-fallback-content|${stationName}`,
+    DEDUP_SUPPRESS_ENTRY_TTL_MS,
+    () => ({
+      ts: Date.now(),
+      source: 'la-fallback-notification',
+      outcome: 'suppressed',
+      reason: 'dedup-la-fallback-content',
+      stationName,
+    }),
+  );
 }
 
 /**
@@ -1566,6 +1609,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'category-registration': null,
   // #2398 — 수신 categoryIdentifier 진단 stamp도 silent push outcome과 무관.
   'boarding-prompt-category-received': null,
+  // #2687 — LA fallback 알림은 silent push와 무관한 device 로컬 채널(expo-notifications).
+  'la-fallback-notification': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1631,6 +1676,10 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'category-registration': false,
   // #2398 — 수신 categoryIdentifier 진단 stamp(outcome='received')도 fire 분모 제외.
   'boarding-prompt-category-received': false,
+  // #2687 — LA fallback 알림은 실제 사용자에게 노출되는 알림(배너/잠금화면)이므로 fire
+  // 분모에 포함. outcome='suppressed'(content dedup 적중)는 FIRED_ALARM_SOURCES와 무관하게
+  // countFiredAlarms가 outcome 필터로 자동 제외한다.
+  'la-fallback-notification': true,
 };
 
 /**

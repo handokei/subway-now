@@ -112,6 +112,8 @@ import {
   logPushContractKindSkew,
   logPushContractValueSkew,
   logPushContractVersionSkew,
+  logFiredLaFallbackNotification,
+  logSuppressedLaFallbackContentDedup,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -2247,6 +2249,60 @@ describe('alarmLog', () => {
         kind: 'destination',
         phaseId: 'imminent',
       });
+    });
+
+    it('logFiredLaFallbackNotification: source=la-fallback-notification, outcome=fired 적재 (#2687)', async () => {
+      logFiredLaFallbackNotification('용마산');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'la-fallback-notification',
+        outcome: 'fired',
+        stationName: '용마산',
+      });
+    });
+
+    it('logFiredLaFallbackNotification: fire 분모(countFiredAlarms)에 포함된다 (#2687)', async () => {
+      logFiredLaFallbackNotification('용마산');
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(countFiredAlarms(saved)).toBe(1);
+    });
+
+    it('logSuppressedLaFallbackContentDedup: source=la-fallback-notification, outcome=suppressed, reason=dedup-la-fallback-content 적재 (#2687)', async () => {
+      logSuppressedLaFallbackContentDedup('용마산');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'la-fallback-notification',
+        outcome: 'suppressed',
+        reason: 'dedup-la-fallback-content',
+        stationName: '용마산',
+      });
+    });
+
+    it('logSuppressedLaFallbackContentDedup: fire 분모에 포함되지 않는다 — outcome=suppressed라 자동 제외 (#2687)', async () => {
+      logSuppressedLaFallbackContentDedup('용마산');
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(countFiredAlarms(saved)).toBe(0);
+    });
+
+    it('logSuppressedLaFallbackContentDedup: 60s TTL 내 재발생은 count 증분(버퍼 점령 방지) (#2687)', async () => {
+      logSuppressedLaFallbackContentDedup('용마산');
+      logSuppressedLaFallbackContentDedup('용마산');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].count).toBe(2);
     });
 
     it('helper는 fire-and-forget: void 반환 + AsyncStorage 실패 시 throw 안 함', async () => {

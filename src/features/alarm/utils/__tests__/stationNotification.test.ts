@@ -13,6 +13,7 @@ import {
   fireLocalAlarmNotification,
   fireLocalBoardingPromptNotification,
   buildLiveActivityData,
+  _resetFallbackNotificationDedupForTests,
 } from '../stationNotification';
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
 import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
@@ -137,6 +138,17 @@ jest.mock('../../../../data/quickExit.json', () => ({
   '2-008': { elevator: [{ doorNumber: '5-1' }] },
 }));
 
+// #2687 — LA fallback 알림 content dedup 발사/억제 stamp. alarmLog 실제 AsyncStorage 배치
+// flush(FLUSH_DEBOUNCE_MS)와 무관하게 호출 여부/인자만 검증하기 위해 mock으로 격리.
+const mockLogFiredLaFallbackNotification = jest.fn();
+const mockLogSuppressedLaFallbackContentDedup = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logFiredLaFallbackNotification: (...args: unknown[]) =>
+    mockLogFiredLaFallbackNotification(...args),
+  logSuppressedLaFallbackContentDedup: (...args: unknown[]) =>
+    mockLogSuppressedLaFallbackContentDedup(...args),
+}));
+
 const mockStation: Station = {
   id: 'si-cheong-1',
   name: '시청',
@@ -187,6 +199,9 @@ describe('stationNotification', () => {
     (Notifications.scheduleNotificationAsync as jest.Mock).mockResolvedValue('current-station');
     (Notifications.setNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
     mockIsLiveActivityEnabled.mockReturnValue(true);
+    // #2687 — 모듈 in-memory content dedup 상태를 test case 사이에 격리. 리셋하지 않으면 이전
+    // test의 마지막 fallback 내용이 다음 test의 첫 발사를 우연히 dedup으로 억제할 수 있다.
+    _resetFallbackNotificationDedupForTests();
   });
 
   describe('setupNotificationHandler', () => {
@@ -558,6 +573,29 @@ describe('stationNotification', () => {
       expectNotificationContent('시청역', '1호선 · 약 154m');
     });
 
+    describe('#2687 — LA 실패(catch) fallback content dedup', () => {
+      it('연속 LA 실패로 같은 내용이 재발사 시도되면 한 번만 예약한다', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        mockEnsureLiveActivityRegistered.mockRejectedValue(new Error('LA 등록 실패'));
+        await updateStationNotification(mockStation, 154);
+        await updateStationNotification(mockStation, 154);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledWith('시청');
+      });
+
+      it('LA 비활성 fallback과 LA catch fallback이 같은 dedup 상태를 공유한다', async () => {
+        // 1) LA 비활성 상태로 fallback 발사
+        mockIsLiveActivityEnabled.mockReturnValue(false);
+        await updateStationNotification(mockStation, 154);
+        // 2) 이후 LA가 (일시) 활성으로 보였다가 update가 실패해 같은 내용으로 catch fallback 진입
+        mockIsLiveActivityEnabled.mockReturnValue(true);
+        mockEnsureLiveActivityRegistered.mockRejectedValueOnce(new Error('LA 등록 실패'));
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        await updateStationNotification(mockStation, 154);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      });
+    });
+
     // #2481 — backend-authority(dogfood 플래그 OFF) + backend가 이 trip의 LA push 채널을 이미
     // 쥐고 있으면(shouldSkipDeviceLiveActivityWrite=true) device는 LA content를 전혀 쓰지 않는다
     // (backend push가 단독 저자, Wave 2).
@@ -876,6 +914,47 @@ describe('stationNotification', () => {
       await updateStationNotification(mockStation, 154);
       expect(mockStartLiveActivity).not.toHaveBeenCalled();
     });
+
+    describe('#2687 — content dedup', () => {
+      it('직전과 (title, body)가 동일하면 재예약하지 않는다', async () => {
+        await updateStationNotification(mockStation, 154);
+        await updateStationNotification(mockStation, 154);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      });
+
+      it('내용이 바뀌면(distance 변경) 즉시 재예약된다 — 시간 기반 throttle 아님', async () => {
+        await updateStationNotification(mockStation, 154);
+        await updateStationNotification(mockStation, 100);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
+      });
+
+      it('발사 1건 적재 — logFiredLaFallbackNotification(stationName)', async () => {
+        await updateStationNotification(mockStation, 154);
+        expect(mockLogFiredLaFallbackNotification).toHaveBeenCalledWith('시청');
+        expect(mockLogSuppressedLaFallbackContentDedup).not.toHaveBeenCalled();
+      });
+
+      it('억제 1건 적재 — logSuppressedLaFallbackContentDedup(stationName)', async () => {
+        await updateStationNotification(mockStation, 154);
+        mockLogFiredLaFallbackNotification.mockClear();
+        await updateStationNotification(mockStation, 154);
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledWith('시청');
+        expect(mockLogFiredLaFallbackNotification).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('#2687 — 도착 시 목적지 title 분기', () => {
+      it('현재역 == 목적지면 "OO역 도착" 문구를 쓴다("OO → OO" 금지)', async () => {
+        const arrivedDestination: Station = { ...mockStation, id: 'other-id' };
+        await updateStationNotification(mockStation, 0, arrivedDestination, makeDirectRoute(0, '1'));
+        expectNotificationContent('시청역 도착', '1호선 · 0정거장 남음');
+      });
+
+      it('현재역 != 목적지면 기존처럼 "현재 → 목적지" 문구를 쓴다', async () => {
+        await updateStationNotification(mockStation, 154, mockDestination, directRoute);
+        expectNotificationContent('시청 → 성신여대입구', '1호선 · 4정거장 남음');
+      });
+    });
   });
 
   describe('clearStationNotification', () => {
@@ -936,6 +1015,17 @@ describe('stationNotification', () => {
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('current-station');
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-passed');
       expect(mockEndLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('#2687 — clear 후 다음 trip 첫 발사가 이전 trip과 같은 내용이어도 dedup에 막히지 않는다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await updateStationNotification(mockStation, 154);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+
+      await clearStationNotification();
+
+      await updateStationNotification(mockStation, 154);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
     });
   });
 
