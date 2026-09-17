@@ -123,6 +123,7 @@ const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
 const mockLogSuppressedHopWindow = jest.fn();
+const mockLogSuppressedNotDeparted = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -135,6 +136,7 @@ jest.mock('../alarmLog', () => ({
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
   logSuppressedHopWindow: (...args: unknown[]) => mockLogSuppressedHopWindow(...args),
+  logSuppressedNotDeparted: (...args: unknown[]) => mockLogSuppressedNotDeparted(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
   logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
@@ -246,6 +248,7 @@ describe('processLocationUpdate', () => {
       expect.any(Set),
       undefined,
       expect.any(Array),
+      expect.any(Array),
     );
   });
 
@@ -272,6 +275,7 @@ describe('processLocationUpdate', () => {
         expect.any(Set),
         undefined,
         expect.any(Array),
+        expect.any(Array),
       );
     });
 
@@ -287,7 +291,110 @@ describe('processLocationUpdate', () => {
         expect.any(Set),
         undefined,
         expect.any(Array),
+        expect.any(Array),
       );
+    });
+
+    // #2688 — early phase 출발 확인 게이트. lock.boardingStationId(이미 존재하는 필드)와
+    // nearest.station.id(이미 계산된 값) 비교로 "승차역을 실제로 벗어났는가"를 판정해
+    // evaluateAlarmPhase의 AlarmSource.departed로 전달한다. 성수→뚝섬 40초 오발사(2026-09-17
+    // 아침) 회귀 방지.
+    describe('#2688 early phase 출발 확인 게이트', () => {
+      const lockAtNearestStation = {
+        destinationId: 'station-2',
+        trainCode: 'T-2',
+        boardingStationId: 'station-1', // mockNearestResult.station.id와 동일 — 아직 승차역
+        boardingLine: '2' as const,
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 60_000,
+      };
+      const lockAtOtherStation = {
+        ...lockAtNearestStation,
+        boardingStationId: 'station-0', // nearest.station.id와 다름 — 승차역을 벗어남
+      };
+
+      it('candidate가 여전히 lock.boardingStationId면 departed=false를 전달한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult); // station.id = 'station-1'
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockGetBoardingLock.mockResolvedValue(lockAtNearestStation);
+
+        await call();
+
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: false }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        );
+      });
+
+      it('candidate가 lock.boardingStationId와 다르면 departed=true를 전달한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockGetBoardingLock.mockResolvedValue(lockAtOtherStation);
+
+        await call();
+
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: true }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        );
+      });
+
+      it('lock이 없으면(lockless) departed는 undefined — 게이트 미적용, 기존 동작 보존', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockGetBoardingLock.mockResolvedValue(null);
+
+        await call();
+
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: undefined }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        );
+      });
+
+      it('evaluateAlarmPhase가 heldOut(5번째 인자)에 적재한 이벤트를 gate-not-departed로 계측한다', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockGetBoardingLock.mockResolvedValue(lockAtNearestStation);
+        const heldEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '뚝섬' };
+        mockEvaluateAlarmPhase.mockImplementation((...args: unknown[]) => {
+          const heldOut = args[4] as AlarmEvent[];
+          heldOut.push(heldEvent);
+          return null;
+        });
+
+        await call();
+
+        expect(mockLogSuppressedNotDeparted).toHaveBeenCalledWith({
+          source: 'bg',
+          stationName: '뚝섬',
+          kind: 'destination',
+          phaseId: 'early',
+        });
+      });
+
+      // #2688 요구사항 3 — 2정거장 이상 일반 구간의 기존 동작은 변하지 않는다. departed 값과
+      // 무관하게 evaluateAlarmPhase가 heldOut을 채우지 않으면(=remainingStops>1이라 애초에
+      // 애매하지 않으면) 보류 계측이 발생하지 않는다.
+      it('일반 구간(heldOut 미적재)은 gate-not-departed를 계측하지 않는다 — 회귀 방지', async () => {
+        mockFindNearestStation.mockReturnValue(mockNearestResult);
+        mockFindRoute.mockReturnValue(mockRoute);
+        mockGetBoardingLock.mockResolvedValue(lockAtNearestStation);
+        mockEvaluateAlarmPhase.mockReturnValue(null);
+
+        await call();
+
+        expect(mockLogSuppressedNotDeparted).not.toHaveBeenCalled();
+      });
     });
 
     // #796 P1-1: resolveNextTarget도 같은 lock-degraded currentLine을 사용해야 함.
@@ -338,6 +445,7 @@ describe('processLocationUpdate', () => {
       expect.objectContaining({ etaSeconds: 360 }),
       expect.any(Set),
       undefined,
+      expect.any(Array),
       expect.any(Array),
     );
   });
@@ -537,6 +645,7 @@ describe('processLocationUpdate', () => {
       expect.objectContaining({ route: storedRoute }),
       expect.any(Set),
       undefined,
+      expect.any(Array),
       expect.any(Array),
     );
   });

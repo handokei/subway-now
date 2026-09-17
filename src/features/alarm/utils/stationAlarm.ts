@@ -129,6 +129,13 @@ export interface AlarmSource {
    * 미전달/false면 기존 동작 유지(graceful — 기압계 미지원 환경 호환).
    */
   degradedConfidence?: boolean;
+  /**
+   * #2688 — 승차역을 실제로 벗어났는가. 호출자가 이미 갖고 있는 신호(예: BG의
+   * `lock.boardingStationId` vs `nearest.station.id`)로 산출해 전달한다. early phase의
+   * `AlarmContext.departed`로 그대로 전달된다 — 새 신호를 만들지 않고 기존 값을 재사용한다.
+   * 미전달(undefined)이면 게이트 미적용(기존 동작 보존).
+   */
+  departed?: boolean;
 }
 
 /**
@@ -144,12 +151,16 @@ export interface AlarmSource {
  * - #580 옵셔널 out-param `suppressedOut`: phase 조건은 만족했으나 firedAlarms로 dedup된 이벤트를
  *   배열에 push. caller가 alarmLog에 'dedup-alarm' 엔트리를 적재해 dedup 동작을 관찰 가능하게 한다.
  *   미전달이면 dedup은 silent (이전 동작 유지).
+ * - #2688 옵셔널 out-param `heldOut`: `source.departed === false`가 아니었다면(=출발 확인됐다면)
+ *   발사됐을 phase를 배열에 push. caller가 alarmLog에 'gate-not-departed' 엔트리를 적재해 보류를
+ *   관찰 가능하게 한다. 미전달이면 보류는 silent.
  */
 export function evaluateAlarmPhase(
   source: AlarmSource,
   firedAlarms: Set<string>,
   phases: AlarmPhase[] = ALARM_PHASES,
   suppressedOut?: AlarmEvent[],
+  heldOut?: AlarmEvent[],
 ): AlarmEvent | null {
   if (!source.route) return null;
   const { currentLine } = source;
@@ -174,6 +185,7 @@ export function evaluateAlarmPhase(
     const context: AlarmContext = {
       remainingStops: target.stops,
       etaSeconds: isFinal ? source.etaSeconds : null,
+      departed: source.departed,
     };
 
     for (const phase of phases) {
@@ -186,7 +198,15 @@ export function evaluateAlarmPhase(
         }
         continue;
       }
-      if (!phase.evaluate(context)) continue;
+      if (!phase.evaluate(context)) {
+        // #2688 — context.departed===false가 유일한 미충족 사유였다면(=departed:true였다면
+        // 발사됐을 조건) 'gate-not-departed'로 관찰 가능하게 적재. 다른 사유(remainingStops>1 등)로
+        // 미충족인 경우는 노이즈라 기록하지 않는다.
+        if (heldOut && context.departed === false && phase.evaluate({ ...context, departed: true })) {
+          heldOut.push({ phaseId: phase.id, type: target.alarmType, stationName: target.name });
+        }
+        continue;
+      }
       // #903 (Seam G) — confidence 'gps-only-underground' 강등 시 early phase / transfer 카테고리 보류.
       // 지하 진입 진행 중엔 정거장 단위 추정이 부정확해 환승역 미리 알림이나 다음 hop 도달 알람이
       // 잘못 발사될 위험. imminent + destination만 통과 — useStationAlarm의 accuracy 200m 게이트와

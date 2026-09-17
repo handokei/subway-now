@@ -4,6 +4,7 @@ function ctx(partial: Partial<AlarmContext>): AlarmContext {
   return {
     remainingStops: partial.remainingStops ?? 99,
     etaSeconds: partial.etaSeconds ?? null,
+    departed: partial.departed,
   };
 }
 
@@ -24,6 +25,22 @@ describe('ALARM_PHASES', () => {
     it('does not fire when remainingStops > 1', () => {
       expect(earlyPhase.evaluate(ctx({ remainingStops: 2 }))).toBe(false);
       expect(earlyPhase.evaluate(ctx({ remainingStops: 5 }))).toBe(false);
+    });
+
+    // #2688 — 승차역 미출발(departed=false) 상태에서는 remainingStops<=1이어도 보류한다.
+    describe('departure gate (#2688)', () => {
+      it('does not fire when departed is explicitly false, even if remainingStops <= 1', () => {
+        expect(earlyPhase.evaluate(ctx({ remainingStops: 1, departed: false }))).toBe(false);
+        expect(earlyPhase.evaluate(ctx({ remainingStops: 0, departed: false }))).toBe(false);
+      });
+
+      it('fires when departed is true', () => {
+        expect(earlyPhase.evaluate(ctx({ remainingStops: 1, departed: true }))).toBe(true);
+      });
+
+      it('fires when departed is undefined (no signal — conservative fallback, existing behavior)', () => {
+        expect(earlyPhase.evaluate(ctx({ remainingStops: 1 }))).toBe(true);
+      });
     });
   });
 
