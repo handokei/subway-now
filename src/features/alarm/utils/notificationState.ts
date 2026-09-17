@@ -5,6 +5,8 @@ import {
   LAST_FIRED_ALARM_STATION_NAME_KEY,
 } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+// #2679 — firedAlarms를 trip 경계로 스코프하기 위한 trip 식별자(같은 슬라이스 내 util).
+import { getTripStartedAt } from './tripStartStorage';
 
 // Foreground/Background 양쪽에서 호출되는 알림 상태 저장소.
 // React 라이프사이클 외부(TaskManager 콜백)에서도 동작해야 하므로
@@ -92,9 +94,18 @@ export function clearLastNotifiedStationId(): Promise<void> {
 // #462: destinationId로 entry를 격리해 cross-trip leak을 차단한다. 저장 포맷은
 // `{ destinationId, alarms }` 객체. read 시점 destinationId가 저장된 것과 다르면
 // stale로 간주하고 빈 set을 반환한다. destinationId가 null이면 항상 빈 set.
+//
+// #2679 — destinationId만으로는 **같은 목적지로 다시 시작한 trip**을 구분하지 못한다. 정상 종료
+// 경로(`runTripBoundCleanups`)는 `clearFiredAlarms`를 호출하지만, 그 경로를 타지 않는 teardown
+// (예: #2673의 hydration DELETE)이 한 번이라도 끼면 옛 trip의 "이미 발사됨" 표시가 그대로 살아남아
+// 새 trip에서 그 phase가 **영구 침묵**한다. 2026-09-17 실측: 같은 목적지(뚝섬)로 재등록한 trip에서
+// `early`(1개역 전 "하차 준비")가 dedup으로 죽고 `imminent`만 발사됐다 — 사용자는 하차 준비 알림을
+// 못 받았다. 그래서 trip 식별자(`tripStartedAt`)를 함께 stamp해 trip 경계에서 자동 무효화한다.
 interface FiredAlarmsRecord {
   destinationId: string;
   alarms: string[];
+  /** 이 기록을 만든 trip의 시작 시각. 구 저장분(부재)은 같은 trip으로 취급 — 후방 호환. */
+  tripStartedAt?: number;
 }
 
 function isFiredAlarmsRecord(value: unknown): value is FiredAlarmsRecord {
@@ -114,6 +125,17 @@ export async function getFiredAlarms(destinationId: string | null): Promise<Set<
     const parsed: unknown = JSON.parse(raw);
     if (!isFiredAlarmsRecord(parsed)) return new Set();
     if (parsed.destinationId !== destinationId) return new Set();
+    // #2679 — 같은 목적지라도 **다른 trip**의 기록이면 빈 set. 판정 불가(둘 중 하나라도 부재)일
+    // 때는 기존 동작 유지 — hydration 중 tripStartedAt이 아직 없을 때 살아 있는 trip의 dedup을
+    // 날려 같은 알람이 재발사되는 반대 회귀를 막는다.
+    const tripStartedAt = await getTripStartedAt();
+    if (
+      parsed.tripStartedAt !== undefined &&
+      tripStartedAt !== null &&
+      parsed.tripStartedAt !== tripStartedAt
+    ) {
+      return new Set();
+    }
     return new Set(parsed.alarms);
   } catch (e) {
     logger.error(`${FIRED_ALARMS_KEY} 파싱 실패:`, e);
@@ -121,8 +143,15 @@ export async function getFiredAlarms(destinationId: string | null): Promise<Set<
   }
 }
 
-export function setFiredAlarms(destinationId: string, keys: Set<string>): Promise<void> {
-  const record: FiredAlarmsRecord = { destinationId, alarms: [...keys] };
+export async function setFiredAlarms(destinationId: string, keys: Set<string>): Promise<void> {
+  // #2679 — 기록 시점의 trip 식별자를 함께 남긴다. 부재(trip 미시작)면 필드를 생략해 구 포맷과
+  // 동일하게 동작한다.
+  const tripStartedAt = await getTripStartedAt();
+  const record: FiredAlarmsRecord = {
+    destinationId,
+    alarms: [...keys],
+    ...(tripStartedAt !== null ? { tripStartedAt } : {}),
+  };
   return safeSetItem(FIRED_ALARMS_KEY, JSON.stringify(record));
 }
 
