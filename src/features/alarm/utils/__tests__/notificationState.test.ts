@@ -14,6 +14,7 @@ import {
   LAST_NOTIFIED_STATION_KEY,
   FIRED_ALARMS_KEY,
   LAST_FIRED_ALARM_STATION_NAME_KEY,
+  TRIP_STARTED_AT_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -156,6 +157,58 @@ describe('notificationState', () => {
       const result = await getFiredAlarms('dest-2');
 
       expect(result).toEqual(new Set());
+    });
+
+    // #2679 — 같은 목적지로 **다시 시작한 trip**은 옛 trip의 "이미 발사됨" 표시를 물려받으면 안 된다.
+    // 실측(2026-09-17): 같은 목적지(뚝섬)로 재등록한 trip에서 `early`(1개역 전 "하차 준비")가
+    // dedup으로 죽고 imminent만 발사 — 사용자는 하차 준비 알림을 못 받았다.
+    it('#2679 — 같은 destination이라도 다른 trip의 기록이면 빈 Set (하차 준비 알림 영구 침묵 차단)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === FIRED_ALARMS_KEY) {
+          return JSON.stringify({
+            destinationId: 'dest-1',
+            alarms: ['early:뚝섬'],
+            tripStartedAt: 1000,
+          });
+        }
+        if (key === TRIP_STARTED_AT_KEY) return '2000'; // 새 trip
+        return null;
+      });
+
+      const result = await getFiredAlarms('dest-1');
+
+      expect(result).toEqual(new Set());
+    });
+
+    it('#2679 — 같은 trip이면 그대로 유지한다 (정상 dedup 보존)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === FIRED_ALARMS_KEY) {
+          return JSON.stringify({
+            destinationId: 'dest-1',
+            alarms: ['early:뚝섬'],
+            tripStartedAt: 2000,
+          });
+        }
+        if (key === TRIP_STARTED_AT_KEY) return '2000';
+        return null;
+      });
+
+      const result = await getFiredAlarms('dest-1');
+
+      expect(result).toEqual(new Set(['early:뚝섬']));
+    });
+
+    it('#2679 — trip 식별자가 한쪽이라도 없으면 기존 동작 유지 (hydration 중 오무효화 방지)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === FIRED_ALARMS_KEY) {
+          // 구 저장분 — tripStartedAt 없음.
+          return JSON.stringify({ destinationId: 'dest-1', alarms: ['early:뚝섬'] });
+        }
+        if (key === TRIP_STARTED_AT_KEY) return '2000';
+        return null;
+      });
+
+      expect(await getFiredAlarms('dest-1')).toEqual(new Set(['early:뚝섬']));
     });
 
     it('destinationId가 null이면 빈 Set을 반환한다 (storage read 스킵)', async () => {
