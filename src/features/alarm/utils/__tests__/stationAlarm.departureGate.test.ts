@@ -1,4 +1,4 @@
-import { evaluateAlarmPhase, type AlarmSource } from '../stationAlarm';
+import { evaluateAlarmPhase, hasDepartedBoardingStation, type AlarmSource } from '../stationAlarm';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
 // #2688 — 2026-09-17 아침 성수→뚝섬 실측(06:43:58 lock-create, 06:44:38 fired early, 40초).
@@ -77,5 +77,40 @@ describe('#2688 — early phase departure gate (1-stop leg)', () => {
     const result = evaluateAlarmPhase(src, new Set(), undefined, undefined, heldOut);
     expect(result).toBeNull();
     expect(heldOut).toEqual([]);
+  });
+});
+
+// #2703 — BG(stationPipeline.ts)는 이 게이트 도입(#2688/#2702) 이전부터 인라인으로
+// `nearest.station.id !== lockForLineGuard.boardingStationId`를 계산했다. FG(useStationAlarm.ts)를
+// 같은 채널 비대칭 결함 클래스(#2373/#2306)로 만들지 않으려면 두 채널이 정확히 같은 신호로
+// departed를 산출해야 한다 — hasDepartedBoardingStation은 그 단일 출처이며, 이 테스트는
+// BG의 원래 인라인 표현과 동일한 값을 내는지(대칭성) 고정한다.
+describe('#2703 — hasDepartedBoardingStation: BG/FG 공유 신호 대칭성', () => {
+  const lock = { boardingStationId: 'S-BOARD' };
+
+  it('현재역이 승차역과 같으면(아직 출발 전) false — BG 인라인 표현과 동일', () => {
+    const currentStationId = 'S-BOARD';
+    expect(hasDepartedBoardingStation(lock, currentStationId)).toBe(false);
+    // BG stationPipeline.ts의 원래 인라인 표현과 값이 일치하는지 직접 대조.
+    expect(hasDepartedBoardingStation(lock, currentStationId)).toBe(
+      currentStationId !== lock.boardingStationId,
+    );
+  });
+
+  it('현재역이 승차역과 다르면(출발 확인) true — BG 인라인 표현과 동일', () => {
+    const currentStationId = 'S-NEXT';
+    expect(hasDepartedBoardingStation(lock, currentStationId)).toBe(true);
+    expect(hasDepartedBoardingStation(lock, currentStationId)).toBe(
+      currentStationId !== lock.boardingStationId,
+    );
+  });
+
+  it('lock이 없으면(lockless) undefined — 게이트 미적용', () => {
+    expect(hasDepartedBoardingStation(null, 'S-ANY')).toBeUndefined();
+  });
+
+  it('현재역 신호가 없으면(null/undefined) undefined — 게이트 미적용', () => {
+    expect(hasDepartedBoardingStation(lock, null)).toBeUndefined();
+    expect(hasDepartedBoardingStation(lock, undefined)).toBeUndefined();
   });
 });

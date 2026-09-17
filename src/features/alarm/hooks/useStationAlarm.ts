@@ -20,7 +20,13 @@ import {
 } from '../../../shared/utils/stationRoute';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
-import { alarmKey, parseAlarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
+import {
+  alarmKey,
+  parseAlarmKey,
+  evaluateAlarmPhase,
+  hasDepartedBoardingStation,
+  type AlarmEvent,
+} from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
@@ -60,6 +66,7 @@ import {
   logSuppressedSsotFireGate,
   logSuppressedStationPassedWarmup,
   logSuppressedLocklessNoUserIntent,
+  logSuppressedNotDeparted,
   type HydrationPhase,
 } from '../utils/alarmLog';
 import { fireAlarmOnce } from '../utils/fireAlarmOnce';
@@ -710,6 +717,14 @@ export function useStationAlarm({
   // destinationArrival 갱신)로 sync 한다. lock 부재면 null → resolveCurrentLine이
   // nearestStation.line으로 자연 fallback.
   const [currentLockLine, setCurrentLockLine] = useState<LineNumber | null>(null);
+  // #2703 — lock.boardingStationId 동기 mirror. Epic #1204 N8이 currentLockLine(boardingLine)을
+  // 이미 이 패턴으로 mirror했다 — evaluateAlarmPhase 입력을 만드는 phase 효과(아래)는 sync 함수라
+  // getBoardingLock()(AsyncStorage, 비동기)을 직접 await할 수 없다. #2688(PR #2702)이 BG 채널에만
+  // departed 게이트를 배선하고 FG를 보류한 이유가 바로 이 동기성 제약 — currentLockLine과 동일한
+  // 주기(destinationId/destinationArrival)로 함께 mirror해 해소한다.
+  const [currentLockBoardingStationId, setCurrentLockBoardingStationId] = useState<string | null>(
+    null,
+  );
   const sleepMode = useSettingsStore((s) => s.sleepMode);
   const setAlarmEvent = useAlarmEventStore((s) => s.setAlarmEvent);
   // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
@@ -729,6 +744,7 @@ export function useStationAlarm({
     if (!destinationId) {
       setTrackedTrainCode(null);
       setCurrentLockLine(null);
+      setCurrentLockBoardingStationId(null);
       return;
     }
     let cancelled = false;
@@ -738,9 +754,12 @@ export function useStationAlarm({
     })();
     // N8 — lock.boardingLine 동기 mirror. trackedTrainCode와 동일 주기로 refresh되어
     // phase 알람 effect가 GPS jitter와 무관하게 lock 노선을 currentLine으로 사용한다.
+    // #2703 — lock.boardingStationId도 같은 fetch 결과에서 함께 mirror한다(추가 AsyncStorage read 아님).
     void (async () => {
       const lock: BoardingLock | null = await getBoardingLock();
-      if (!cancelled) setCurrentLockLine(lock?.boardingLine ?? null);
+      if (cancelled) return;
+      setCurrentLockLine(lock?.boardingLine ?? null);
+      setCurrentLockBoardingStationId(lock?.boardingStationId ?? null);
     })();
     return () => {
       cancelled = true;
@@ -1168,6 +1187,15 @@ export function useStationAlarm({
     //   early/transfer 알람 게이트 자동 해제. 의도된 cascade 결합 효과(verdict가 알람 발사에 실제 기여).
     //   false positive 방어는 subsurfaceStationDetected의 ≥2 합의 + 근접 조건이 담당.
     const degraded = arrivalConfidence === 'gps-only-underground';
+    // #2703 — early phase 출발 확인 게이트를 FG에도 배선. BG(stationPipeline.ts)와 동일 신호
+    // (lock.boardingStationId vs 현재 최근접역)를 hasDepartedBoardingStation(shared, stationAlarm.ts)
+    // 로 산출해 채널 비대칭을 없앤다. lock 없거나(lockless) nearestStation 미확정이면 undefined —
+    // 게이트 미적용(기존 동작 보존).
+    const departed = hasDepartedBoardingStation(
+      currentLockBoardingStationId ? { boardingStationId: currentLockBoardingStationId } : null,
+      nearestStation?.id,
+    );
+    const held: AlarmEvent[] = [];
     const rawEvent = evaluateAlarmPhase(
       {
         route,
@@ -1178,12 +1206,23 @@ export function useStationAlarm({
         // currentLine='5'로 유지되어 다른 leg의 hop fire를 차단한다.
         currentLine: resolveCurrentLine(currentLockLine, nearestStation),
         degradedConfidence: degraded,
+        departed,
       },
       firedAlarmsRef.current,
       undefined,
       suppressed,
+      held,
     );
     for (const event of suppressed) logSuppressedDedupAlarm('fg', event);
+    // #2703 — BG와 동일 reason('gate-not-departed')으로 보류를 alarmLog에 기록해 채널별 비교 가능.
+    for (const event of held) {
+      logSuppressedNotDeparted({
+        source: 'fg',
+        stationName: event.stationName,
+        kind: event.type,
+        phaseId: event.phaseId,
+      });
+    }
     // #699: fireAndLog가 setFiredAlarms를 await하므로 promise를 명시적으로 흘려보낸다.
     // #754: in-flight dedup은 fireAndLog 진입부의 sync firedAlarmsRef.current.add(key) 가
     // 보장한다 (await getBoardingLock 전에 set에 들어가므로 같은 키의 동시 호출은 즉시 return).
@@ -1243,6 +1282,8 @@ export function useStationAlarm({
     nearestStation?.line,
     // Epic #1204 N8 — lock.boardingLine 변경 시(환승 leg 교체 등) currentLine 재평가.
     currentLockLine,
+    // #2703 — lock.boardingStationId 변경 시(새 trip lock/lockless 전환) departed 재평가.
+    currentLockBoardingStationId,
     positionStability,
     motionStationary,
     trainProgressing,
