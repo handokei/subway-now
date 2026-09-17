@@ -1532,6 +1532,18 @@ describe('alarmLog', () => {
       }
     });
 
+    // #2681 — heartbeat는 "BG task가 실제로 깨어났는가"의 유일한 신호다. fire-and-forget이면
+    // 짧게 끝나는 BG tick에서 write가 flush 전에 잘려 "안 돌았다"로 보인다(2026-09-17 덤프:
+    // bg 알람 5건이 찍힌 tick인데 heartbeat는 24시간 전). 호출부가 await할 수 있어야 한다.
+    it('#2681 logBgTaskHeartbeat: await하면 그 시점에 write가 완료돼 있다', async () => {
+      const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };
+      await logBgTaskHeartbeat(location);
+      const written = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+        ([k]) => k === BG_TASK_LAST_HEARTBEAT_KEY,
+      );
+      expect(written).toBeDefined();
+    });
+
     it('#2618 logBgTaskHeartbeat: setItem 실패 시 graceful catch(크래시 없음)', async () => {
       (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('storage full'));
       const location = { lat: 37.5, lng: 127.0, accuracy: 12, ageMs: 500 };

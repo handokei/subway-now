@@ -1768,11 +1768,23 @@ export interface BgTaskHeartbeatSnapshot {
  * 적재 대신 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)를 최신 값으로 덮어쓴다.
  * DebugModal이 `readBgTaskLastHeartbeat()`로 읽어 "마지막 BG heartbeat: N초 전" 1줄로 표시.
  */
-export function logBgTaskHeartbeat(location: AlarmLogLocation): void {
+export async function logBgTaskHeartbeat(location: AlarmLogLocation): Promise<void> {
   const snapshot: BgTaskHeartbeatSnapshot = { ts: Date.now(), acc: location.accuracy };
-  void AsyncStorage.setItem(BG_TASK_LAST_HEARTBEAT_KEY, JSON.stringify(snapshot)).catch((e) => {
+  // #2681 — fire-and-forget이 아니라 **await 가능한** write로 바꾼다.
+  //
+  // 이 heartbeat는 "BG task가 실제로 깨어났는가"를 판정하는 유일한 신호인데, 호출부가 결과를
+  // 기다리지 않으면 BG 컨텍스트가 짧게 끝나는 tick에서 setItem이 flush 전에 잘려 **돌았는데도
+  // 안 돈 것처럼** 보인다. 2026-09-17 덤프가 정확히 그 모순을 보여줬다 — 같은 덤프 안에서
+  // `bg` 알람 로그 5건이 06:44:37~44 한 tick에 몰려 있는데(= BG가 돌았다는 증거), BG heartbeat는
+  // "86507초 전"(24시간)이었다. 진단이 여기서 멈췄다.
+  //
+  // 반환 promise를 호출부가 await하면 그 tick 안에서 flush가 보장된다. 실패는 그대로 swallow —
+  // 계측 하나가 BG 파이프라인을 막으면 안 된다.
+  try {
+    await AsyncStorage.setItem(BG_TASK_LAST_HEARTBEAT_KEY, JSON.stringify(snapshot));
+  } catch (e) {
     logger.error('BG heartbeat 적재 실패:', e);
-  });
+  }
 }
 
 /** #2618 — DebugModal이 폴링해 "마지막 BG heartbeat: N초 전"을 표시하기 위한 read. */
