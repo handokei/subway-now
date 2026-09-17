@@ -147,11 +147,13 @@ jest.mock('../../../../data/quickExit.json', () => ({
 // flush(FLUSH_DEBOUNCE_MS)와 무관하게 호출 여부/인자만 검증하기 위해 mock으로 격리.
 const mockLogFiredLaFallbackNotification = jest.fn();
 const mockLogSuppressedLaFallbackContentDedup = jest.fn();
+const mockLogLiveActivityUpdated = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredLaFallbackNotification: (...args: unknown[]) =>
     mockLogFiredLaFallbackNotification(...args),
   logSuppressedLaFallbackContentDedup: (...args: unknown[]) =>
     mockLogSuppressedLaFallbackContentDedup(...args),
+  logLiveActivityUpdated: (...args: unknown[]) => mockLogLiveActivityUpdated(...args),
 }));
 
 const mockStation: Station = {

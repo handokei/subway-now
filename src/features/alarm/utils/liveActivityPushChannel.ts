@@ -31,6 +31,7 @@ import {
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
+import { logLiveActivityUpdated } from './alarmLog';
 
 const log = createLogger('liveActivityPushChannel');
 
@@ -303,6 +304,8 @@ export async function ensureLiveActivityRegistered(
 ): Promise<void> {
   if (activeTeardown !== null && activeTripToken === tripToken) {
     await updateLiveActivity(data);
+    // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
+    logLiveActivityUpdated();
     return;
   }
   if (activeTeardown !== null && activeTripToken !== null && activeTripToken !== tripToken) {

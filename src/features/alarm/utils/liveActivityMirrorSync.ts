@@ -43,6 +43,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
+import { logLiveActivityUpdated } from './alarmLog';
 
 const logger = createLogger('LiveActivityMirrorSync');
 
@@ -96,6 +97,8 @@ export async function updateLiveActivityFromMirrorStation(
   // 겨냥한 지하 push 공백) 애초에 지킬 ETA가 존재하지 않는다.
   const data = buildLiveActivityData(mirrorStation, 0, destination, route, null, false, null);
   await LiveActivity.updateLiveActivity(data);
+  // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
+  logLiveActivityUpdated();
   logger.info(`la-refresh source=backend-ssot: ${mirrorStation.name} → ${destination.name}`);
   return true;
 }
