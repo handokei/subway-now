@@ -59,6 +59,7 @@ import {
   logSuppressedStationPassedWarmup,
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
+  logSuppressedNotDeparted,
   logSuppressedLocklessForwardOnly,
   logFusionPickerTier,
   _resetFusionPickerTierWindowForTests,
@@ -1041,6 +1042,27 @@ describe('alarmLog', () => {
         phaseId: 'early',
         currentHopIndex: 1,
         candidateIndex: 3,
+      });
+    });
+
+    it('#2688 logSuppressedNotDeparted: reason=gate-not-departed + kind/phaseId stamp (early 출발 확인 게이트 보류)', async () => {
+      logSuppressedNotDeparted({
+        source: 'bg',
+        stationName: '뚝섬',
+        kind: 'destination',
+        phaseId: 'early',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'gate-not-departed',
+        stationName: '뚝섬',
+        kind: 'destination',
+        phaseId: 'early',
       });
     });
 

@@ -467,7 +467,12 @@ export type AlarmLogReason =
   | 'engaged'
   // #2687 — LA fallback 알림 content dedup 적중. 직전 발사와 (title, body)가 완전히 동일해
   // 재예약을 건너뛴 경우. 시간 기반이 아닌 내용 동일성 기준 — 내용이 바뀌면 즉시 재적재된다.
-  | 'dedup-la-fallback-content';
+  | 'dedup-la-fallback-content'
+  // #2688 — early phase 출발 확인 게이트(evaluateAlarmPhase heldOut) 적중. 승차역을 아직
+  // 벗어나지 않은 상태(`departed===false`)에서 remainingStops<=1(early 조건)이 만족돼도 발사를
+  // 보류한 1건. 억제(dedup류)와 달리 영구 소멸이 아니다 — 출발이 확인되면 다음 tick에 동일
+  // 조건으로 그대로 발사된다(2026-09-17 성수→뚝섬 40초 오발사 evidence 회귀 방지).
+  | 'gate-not-departed';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -2111,6 +2116,32 @@ export function logSuppressedHopWindowNoSource(input: {
     reason: 'gate-hop-window-no-source',
     stationName: input.stationName,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * #2688 — early phase 출발 확인 게이트가 보류한 1건 적재.
+ *
+ * `evaluateAlarmPhase`의 `heldOut` out-param(승차역을 아직 벗어나지 않은 상태에서
+ * remainingStops<=1이 만족된 이벤트)을 caller가 이 함수로 alarmLog에 기록한다. 억제(suppressed
+ * dedup류)와 의미가 다르다 — 발사가 사라지는 게 아니라 다음 tick(출발 확인 후)으로 미뤄진다.
+ * outcome은 그래도 'suppressed'로 적재(이번 tick 발사는 안 됐다는 사실 관측 목적)하되 reason으로
+ * 구분 가능하게 한다.
+ */
+export function logSuppressedNotDeparted(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'gate-not-departed',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
   });
 }
 

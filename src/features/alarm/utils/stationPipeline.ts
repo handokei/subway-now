@@ -31,6 +31,7 @@ import {
   logSuppressedDismissSilence,
   logSuppressedHopWindow,
   logSuppressedMovement,
+  logSuppressedNotDeparted,
   logSuppressedSleepFirstTransfer,
   logSuppressedSleepStationPassed,
   type AlarmLogSource,
@@ -426,20 +427,39 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // (중복 AsyncStorage read 방지 — 재사용).
   const currentLine = lockForLineGuard?.boardingLine ?? nearest.station.line;
 
+  // #2688 — early phase 출발 확인 게이트. lock.boardingStationId(이미 존재하는 필드)와
+  // nearest.station.id(이미 계산된 값) 비교로 "승차역을 실제로 벗어났는가"를 판정한다 — 새 신호
+  // 없음. lock이 없으면(lockless) 판정 근거가 없어 undefined(게이트 미적용, 기존 동작 보존 —
+  // isStationPassedFirstHop과 동일한 "신호 부재 시 차단하지 않는다" 보수적 fallback).
+  const departed = lockForLineGuard
+    ? nearest.station.id !== lockForLineGuard.boardingStationId
+    : undefined;
+
   const suppressed: AlarmEvent[] = [];
+  const held: AlarmEvent[] = [];
   const alarmEvent = evaluateAlarmPhase(
     {
       route,
       destinationName: destination.name,
       etaSeconds,
       currentLine,
+      departed,
     },
     firedAlarms,
     undefined,
     suppressed,
+    held,
   );
 
   for (const event of suppressed) logSuppressedDedupAlarm(source, event);
+  for (const event of held) {
+    logSuppressedNotDeparted({
+      source,
+      stationName: event.stationName,
+      kind: event.type,
+      phaseId: event.phaseId,
+    });
+  }
 
   // #746 — dismiss silence 게이트. BG path는 storage helper를 직접 read해 store와 동일 결과.
   // 한 cycle 안에서 phase + station-passed 분기가 모두 사용하므로 1회 read.
