@@ -125,6 +125,7 @@ const mockLogFiredAlarmsTripBoundaryReset = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
 const mockLogSuppressedLocklessNoUserIntent = jest.fn();
 const mockLogSuppressedFireAlarmOnce = jest.fn();
+const mockLogSuppressedNotDeparted = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -165,6 +166,7 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedLocklessNoUserIntent(...args),
   logSuppressedFireAlarmOnce: (...args: unknown[]) =>
     mockLogSuppressedFireAlarmOnce(...args),
+  logSuppressedNotDeparted: (...args: unknown[]) => mockLogSuppressedNotDeparted(...args),
 }));
 
 // #1893 (RC-17) — trip-boundary detection effect는 tripStartedAt storage를 read한다.
@@ -478,6 +480,7 @@ describe('useStationAlarm', () => {
         expect.any(Set),
         undefined,
         expect.any(Array),
+        expect.any(Array),
       ),
     );
   });
@@ -504,6 +507,7 @@ describe('useStationAlarm', () => {
           expect.any(Set),
           undefined,
           expect.any(Array),
+          expect.any(Array),
         ),
       );
     });
@@ -518,6 +522,7 @@ describe('useStationAlarm', () => {
           expect.any(Set),
           undefined,
           expect.any(Array),
+          expect.any(Array),
         ),
       );
     });
@@ -529,6 +534,7 @@ describe('useStationAlarm', () => {
           expect.objectContaining({ degradedConfidence: false }),
           expect.any(Set),
           undefined,
+          expect.any(Array),
           expect.any(Array),
         ),
       );
@@ -584,6 +590,7 @@ describe('useStationAlarm', () => {
         expect.any(Set),
         undefined,
         expect.any(Array),
+        expect.any(Array),
       );
     });
 
@@ -608,6 +615,7 @@ describe('useStationAlarm', () => {
         expect.objectContaining({ degradedConfidence: false }),
         expect.any(Set),
         undefined,
+        expect.any(Array),
         expect.any(Array),
       );
     });
@@ -665,6 +673,7 @@ describe('useStationAlarm', () => {
           expect.any(Set),
           undefined,
           expect.any(Array),
+          expect.any(Array),
         ),
       );
     });
@@ -677,6 +686,7 @@ describe('useStationAlarm', () => {
           expect.objectContaining({ currentLine: '2' }),
           expect.any(Set),
           undefined,
+          expect.any(Array),
           expect.any(Array),
         ),
       );
@@ -702,8 +712,137 @@ describe('useStationAlarm', () => {
           expect.any(Set),
           undefined,
           expect.any(Array),
+          expect.any(Array),
         ),
       );
+    });
+  });
+
+  // #2703 — BG(stationPipeline.ts)가 #2688(PR #2702)로 배선받은 early phase 출발 확인 게이트를
+  // FG(useStationAlarm.ts)에도 배선한다. PR #2702는 "FG가 boardingStationId를 동기적으로
+  // 미러하지 않는다"를 전제로 FG 배선을 보류했다 — 이 전제는 실재한다: phase 평가 effect는
+  // sync 함수라 getBoardingLock()(AsyncStorage 비동기)을 직접 await할 수 없고, N8이 이미
+  // boardingLine을 위해 썼던 것과 동일한 "비동기 fetch → sync state mirror(currentLockLine과
+  // 같은 패턴)" 우회가 필요했다(currentLockBoardingStationId). 이 describe는 그 mirror가
+  // BG와 동일 신호(lock.boardingStationId vs 현재 최근접역)로 departed를 산출해 evaluateAlarmPhase에
+  // 전달하는지 검증한다.
+  describe('#2703 — FG departed 게이트 배선', () => {
+    const route = makeDirectRoute(1, '2');
+    const boardingStation = makeStation('S-BOARD', '성수');
+    const nextStation = makeStation('S-NEXT', '뚝섬');
+
+    const baseInputs = (overrides: Partial<UseStationAlarmInputs> = {}) =>
+      defaultInputs({
+        route,
+        destination,
+        userLocation: { lat: 37.4, lng: 127.0 },
+        speedMps: 10,
+        accuracyMeters: 100,
+        ...overrides,
+      });
+
+    it('nearestStation.id === lock.boardingStationId(승차역 그대로) → departed=false 전달', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, boardingStationId: 'S-BOARD' });
+      renderHook(() => useStationAlarm(baseInputs({ nearestStation: boardingStation })));
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: false }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+    });
+
+    it('nearestStation.id !== lock.boardingStationId(출발 확인) → departed=true 전달', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, boardingStationId: 'S-BOARD' });
+      renderHook(() => useStationAlarm(baseInputs({ nearestStation: nextStation })));
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: true }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+    });
+
+    it('lock 없음(lockless) → departed=undefined 전달 (게이트 미적용, 기존 동작 보존)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() => useStationAlarm(baseInputs({ nearestStation: boardingStation })));
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: undefined }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+    });
+
+    it('nearestStation 없음 → lock 활성이어도 departed=undefined 전달 (신호 부재 시 게이트 미적용)', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, boardingStationId: 'S-BOARD' });
+      renderHook(() => useStationAlarm(baseInputs({ nearestStation: null })));
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ departed: undefined }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+    });
+
+    // 실 evaluateAlarmPhase(mock 아님)를 이 describe에 한해 delegate — departed 파라미터 배선
+    // 뿐 아니라 실제 fire 여부(red→green)까지 end-to-end로 검증한다.
+    describe('실제 게이트 통과 여부 (real evaluateAlarmPhase)', () => {
+      const actualStationAlarm: typeof import('../../utils/stationAlarm') =
+        jest.requireActual('../../utils/stationAlarm');
+
+      beforeEach(() => {
+        mockEvaluateAlarmPhase.mockImplementation(
+          (...args: Parameters<typeof actualStationAlarm.evaluateAlarmPhase>) =>
+            actualStationAlarm.evaluateAlarmPhase(...args),
+        );
+      });
+
+      // 이 테스트는 fix 이전엔 실패한다(red) — #2702 이전 FG는 departed를 전달하지 않아
+      // evaluateAlarmPhase가 즉시 발사했다. #2703 배선 이후에는 승차 즉시(departed=false) 보류된다.
+      it('1정거장 leg 승차 즉시(departed=false) → early 미발사 + gate-not-departed 로그 (red repro, 고정된 fix)', async () => {
+        mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, boardingStationId: 'S-BOARD' });
+        renderHook(() => useStationAlarm(baseInputs({ nearestStation: boardingStation })));
+        await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+        expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+        expect(mockLogSuppressedNotDeparted).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: destination.name,
+          kind: 'destination',
+          phaseId: 'early',
+        });
+      });
+
+      it('출발 확인 후(departed=true) → early가 정상 발사된다 (영구 침묵 아님)', async () => {
+        mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, boardingStationId: 'S-BOARD' });
+        renderHook(() => useStationAlarm(baseInputs({ nearestStation: nextStation })));
+        await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
+        expect(mockLogSuppressedNotDeparted).not.toHaveBeenCalled();
+      });
+
+      it('2정거장 이상 일반 구간은 승차 즉시(departed=false)여도 회귀 없음 — remainingStops>1이라 early 애초 미충족', async () => {
+        const twoStopRoute = makeDirectRoute(2, '2');
+        mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, boardingStationId: 'S-BOARD' });
+        renderHook(() =>
+          useStationAlarm(baseInputs({ route: twoStopRoute, nearestStation: boardingStation })),
+        );
+        await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+        expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+        // remainingStops>1로 애초에 early 조건 미충족 — gate-not-departed로 관측할 대상 자체가 아님(노이즈 아님).
+        expect(mockLogSuppressedNotDeparted).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -724,6 +863,7 @@ describe('useStationAlarm', () => {
         expect.any(Set),
         undefined,
         expect.any(Array),
+        expect.any(Array),
       ),
     );
   });
@@ -736,6 +876,7 @@ describe('useStationAlarm', () => {
         expect.objectContaining({ etaSeconds: null }),
         expect.any(Set),
         undefined,
+        expect.any(Array),
         expect.any(Array),
       ),
     );

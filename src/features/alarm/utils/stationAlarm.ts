@@ -2,6 +2,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { isSameStationName } from '../../../shared/utils/stationRoute';
 import type { LineNumber } from '../../../shared/types/station';
 import type { AlarmType, AlarmEvent } from '../../../shared/types/alarm';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { ALARM_PHASES, type AlarmContext, type AlarmPhase, type AlarmPhaseId } from './alarmPhases';
 
 // AlarmType/AlarmEvent는 shared/types/alarm으로 추출됨 (#890, Phase 5).
@@ -222,4 +223,19 @@ export function evaluateAlarmPhase(
   }
 
   return null;
+}
+
+/**
+ * #2703 — BG(`stationPipeline.ts`)와 FG(`useStationAlarm.ts`) 두 채널이 `AlarmSource.departed`를
+ * 동일한 신호로 산출하도록 하는 단일 출처. BG는 #2688/#2702부터 인라인으로
+ * `nearest.station.id !== lockForLineGuard.boardingStationId`를 계산해왔다 — 그 표현을 그대로
+ * 추출한 것이며 새 판정 로직이 아니다. lock 또는 currentStationId가 없으면(신호 부재) undefined —
+ * "신호가 없으면 차단하지 않는다"(`isStationPassedFirstHop`과 동일 패턴)는 게이트 미적용 fallback.
+ */
+export function hasDepartedBoardingStation(
+  lock: Pick<BoardingLock, 'boardingStationId'> | null,
+  currentStationId: string | null | undefined,
+): boolean | undefined {
+  if (!lock || !currentStationId) return undefined;
+  return currentStationId !== lock.boardingStationId;
 }
