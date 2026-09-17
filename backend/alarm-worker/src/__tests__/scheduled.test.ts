@@ -72,7 +72,7 @@ import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAgg
 import { putTrip } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
 import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
-import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
+import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Route, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -12896,6 +12896,81 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(stats.legBoardingPromptFired).toBe(0);
     expect(stats.legBoardingPromptSkippedWalking).toBe(0);
+  });
+
+  // #2693 — `no-anchor` 라벨이 정상(환승 전)과 결함(환승 후 anchor 부재)을 합산하던 문제 분리.
+  // 발사/게이트 판정은 무변경 — D1 계측 라벨(`recordLegBoardingPromptTransition`이 append하는
+  // `meta.outcome`)만 검증한다.
+  describe('#2693 — no-anchor 정상/결함 계측 분리', () => {
+    const transferRoute: Route = {
+      type: 'transfer',
+      transferName: '건대입구',
+      fromLine: '2',
+      toLine: '7',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 2,
+    };
+
+    function findOutcomeInserts(inserts: unknown[][]): Array<{ outcome: string }> {
+      return inserts
+        .filter((args) => args[2] === 'leg-boarding-prompt')
+        .map((args) => JSON.parse(args[5] as string) as { outcome: string });
+    }
+
+    it('환승 전(회귀) — route에 환승 있고 waypoints에 transfer가 아직 남아있으면 여전히 no-anchor', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        currentLegAnchor: undefined,
+        legBoardingEligibleAt: undefined,
+        route: transferRoute,
+        waypoints: [
+          { stationName: '건대입구', line: '2', kind: 'transfer' },
+          { stationName: '용마산', line: '7', kind: 'destination' },
+        ],
+      });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '강변', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
+      expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'no-anchor' }]);
+    });
+
+    it('RED였던 케이스 — 환승 후(route 환승 수 > waypoints에 남은 transfer 수)인데 anchor가 애초에 stamp 안 됨 → anchor-not-stamped-after-transfer (구 코드는 no-anchor로 합산)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        currentLegAnchor: undefined,
+        legBoardingEligibleAt: undefined,
+        route: transferRoute,
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      });
+      // 직전 SSoT 마커가 없음(seed 직후, legBoardingPromptOutcome 미설정) — anchor가 한 번도
+      // stamp된 적 없는 상태(#2693 갈래 B)를 재현.
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
+      expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'anchor-not-stamped-after-transfer' }]);
+    });
+
+    it('환승 후 anchor가 stamp된 적 있음(직전 SSoT 마커=walk-gated) → 소실 후 재평가는 anchor-lost-after-transfer (#2693 갈래 A)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        currentLegAnchor: undefined,
+        legBoardingEligibleAt: undefined,
+        route: transferRoute,
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      });
+      const seeded = await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      await writeSsot(
+        kv as unknown as KVNamespace,
+        { ...seeded, legBoardingPromptOutcome: 'walk-gated' },
+        { expiresAt: trip.expiresAt ?? NOW + 3_600_000 },
+      );
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
+      expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'anchor-lost-after-transfer' }]);
+    });
   });
 
   it('도보시간 미경과(now < legBoardingEligibleAt) → skippedWalking 증가, seoul 호출 안 함 (오탑승 방지 핵심)', async () => {

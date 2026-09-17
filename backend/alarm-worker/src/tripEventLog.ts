@@ -131,14 +131,26 @@ export type TransferAdvanceOutcome = 'no-arvlcd' | 'not-fires' | 'advanced';
 export type TransferAdvancePath = 'lockless' | 'lock-active';
 
 /**
- * ADR-037 D2c (#2537) — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
- * `no-anchor` = `trip.currentLegAnchor` 없음(leg-1 이거나 아직 환승 전), `walk-gated` =
- * `now < trip.legBoardingEligibleAt`(도보시간 미경과), `no-candidates` = Seoul API 열차 후보 0건,
- * `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우, 두 사유를 단일 값으로
- * 합산), `fired` = 실제 발사 성공.
+ * ADR-037 D2c (#2537, #2693 분리) — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire/skip
+ * 사유(데이터 주도). `trip.currentLegAnchor`가 없을 때 원인이 정상(아직 환승 전)인지 결함(환승
+ * 후인데 anchor가 없음)인지를 `trip.route`의 총 환승 수 대비 `trip.waypoints`에 남은 `transfer`
+ * kind 개수로 판별한다(#2693 — 이 함수가 이미 읽는 `trip` 필드만 사용, 신규 read 없음):
+ *
+ * - `no-anchor` = 아직 환승 전(leg-1, 정상) — 남은 `transfer` waypoint 수가 route의 총 환승
+ *   수와 같다. 기존 의미 그대로 유지(회귀 비교용).
+ * - `anchor-not-stamped-after-transfer` = 환승 후인데 anchor가 애초에 stamp되지 않음(#2693 갈래
+ *   B) — SSoT의 직전 `legBoardingPromptOutcome`이 anchor 존재를 전제하는 값(`walk-gated`/
+ *   `no-candidates`/`silenced`/`fired`/`anchor-lost-after-transfer`)이 아니었다.
+ * - `anchor-lost-after-transfer` = 환승 후 anchor가 stamp된 적은 있으나 소실됨(#2693 갈래 A) —
+ *   SSoT의 직전 `legBoardingPromptOutcome`이 anchor 존재를 전제하는 값이었다.
+ * - `walk-gated` = `now < trip.legBoardingEligibleAt`(도보시간 미경과), `no-candidates` = Seoul
+ *   API 열차 후보 0건, `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우,
+ *   두 사유를 단일 값으로 합산), `fired` = 실제 발사 성공.
  */
 export type LegBoardingPromptOutcome =
   | 'no-anchor'
+  | 'anchor-not-stamped-after-transfer'
+  | 'anchor-lost-after-transfer'
   | 'walk-gated'
   | 'no-candidates'
   | 'silenced'
