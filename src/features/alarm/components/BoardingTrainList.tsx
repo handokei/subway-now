@@ -163,7 +163,7 @@ interface Props {
   fallbackReason?: 'autolock-empty' | 'autolock-ambiguity' | 'autolock-station-lookup' | null;
   /**
    * "전열차" 후보 — #2139. 출발역을 방금 떠난(도착 예정 목록에서 이미 사라진) 열차.
-   * usePrevTrainCandidate가 다음역 arrivals 역산으로 산출해 호출자가 전달한다.
+   * usePrevTrainCandidate가 출발역 도착목록 이탈 전이(#2689)로 산출해 호출자가 전달한다.
    * null/미전달이면 기존 동작 100% 보존(전열차 row 미노출) — 식별 불가/기점 등 fallback 케이스.
    * 탭 시 다른 row와 동일하게 onSelect(prevTrain.train) 호출 — 신규 분기 없이 기존 lock 생성 경로 재사용.
    */
