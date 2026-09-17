@@ -14976,5 +14976,207 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       expect(findInserts(inserts, 'leg2-estimate')).toHaveLength(0);
     });
   });
+
+  // #2700 — advance가 no-arvlcd로 실패해도(D2b describe 바로 위 테스트들이 이 실패 자체를
+  // 이미 검증) transferObservedAt이 유효하면 anchor가 stamp되는지. red 재현은 "관측이 있어도
+  // 현재 코드가 no-arvlcd에서 anchor를 절대 stamp하지 않는다"는 사실 자체이므로, 이 describe의
+  // 첫 테스트가 그 사실을 문서화하고 나머지가 fix 후 동작(green + 멱등 + 도보게이트 무변경)을
+  // 검증한다.
+  describe('#2700 — advance no-arvlcd에서도 transferObservedAt이 유효하면 anchor를 stamp', () => {
+    function findInserts(inserts: unknown[][], kind: string): unknown[][] {
+      return inserts.filter((args) => args[2] === kind);
+    }
+
+    it('lock-active — no-arvlcd + 유효한 transferObservedAt → anchor가 stamp되고 도보시간 경과분만큼 게이트가 계산된다', async () => {
+      const kv = new InMemoryKV();
+      const observedAt = NOW - 60_000; // 사용자는 1분 전에 환승역(건대입구) 도착 관측
+      const trip = makeTransferTrip(TOKEN_A1, {
+        boardingLock: makeBoardingLock({
+          trainCode: '2246',
+          line: '2',
+          subwayId: '1002',
+          segmentStations: ['성수', '건대입구'],
+        }),
+        transferObservedAt: { stationName: '건대입구', line: '2', atMs: observedAt },
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        // 열차가 이미 떠나 arvlCd/positions 둘 다 못 잡음 — 2026-09-15 실측(#2700 이슈 본문) 재현.
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2700-lock-a',
+      });
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_A1}`)) as string);
+      // waypoint(건대입구)는 아직 advance되지 않았다 — 관측은 시계만 시작시키고 열차 확증
+      // 요구(발사/waypoint advance)는 전혀 느슨해지지 않는다(#2700 금지사항).
+      expect(stored.waypoints[0].stationName).toBe('건대입구');
+      expect(stored.boardingLock).toMatchObject({ trainCode: '2246' });
+      expect(stored.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '7' });
+      expect(stored.legBoardingEligibleAt).toBe(observedAt + WALK_SECONDS * 1000);
+
+      const events = findInserts(inserts, 'leg-anchor-observed');
+      expect(events).toHaveLength(1);
+      expect(events[0][3]).toBe('건대입구');
+      expect(events[0][4]).toBe('7');
+      expect(JSON.parse(events[0][5] as string)).toEqual({ observedAtMs: observedAt });
+    });
+
+    it('lockless — no-arvlcd + 유효한 transferObservedAt → anchor가 stamp된다', async () => {
+      const kv = new InMemoryKV();
+      const observedAt = NOW - 60_000;
+      const trip = makeTransferTrip(TOKEN_A2, {
+        transferObservedAt: { stationName: '건대입구', line: '2', atMs: observedAt },
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2700-lockless-a',
+      });
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
+      expect(stored.waypoints[0].stationName).toBe('건대입구');
+      expect(stored.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '7' });
+      expect(stored.legBoardingEligibleAt).toBe(observedAt + WALK_SECONDS * 1000);
+      expect(findInserts(inserts, 'leg-anchor-observed')).toHaveLength(1);
+    });
+
+    it('관측이 없으면(advance 실패만으로는) 여전히 anchor가 stamp되지 않는다 — 2026-09-15 실측 회귀 재현', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferTrip(TOKEN_A1, {
+        boardingLock: makeBoardingLock({
+          trainCode: '2246',
+          line: '2',
+          subwayId: '1002',
+          segmentStations: ['성수', '건대입구'],
+        }),
+        // transferObservedAt 없음 — 실측 회귀 원인 그대로.
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2700-noobs',
+      });
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_A1}`)) as string);
+      expect(stored.currentLegAnchor).toBeUndefined();
+      expect(findInserts(inserts, 'leg-anchor-observed')).toHaveLength(0);
+    });
+
+    it('멱등: 관측으로 먼저 stamp된 뒤 advance가 도보시간 창 안에서 성공해도 legBoardingEligibleAt이 리셋되지 않는다(#2655 회귀 클래스)', async () => {
+      const kv = new InMemoryKV();
+      const observedAt = NOW - 60_000;
+      const trip = makeTransferTrip(TOKEN_A1, {
+        boardingLock: makeBoardingLock({
+          trainCode: '2246',
+          line: '2',
+          subwayId: '1002',
+          segmentStations: ['성수', '건대입구'],
+        }),
+        transferObservedAt: { stationName: '건대입구', line: '2', atMs: observedAt },
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      // 1차 tick — arvlCd 없음(no-arvlcd) → 관측 기반 stamp.
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2700-idem-a',
+      });
+      const afterFirst = JSON.parse((await kv.get(`trip:${TOKEN_A1}`)) as string);
+      const expectedEligibleAt = observedAt + WALK_SECONDS * 1000;
+      expect(afterFirst.legBoardingEligibleAt).toBe(expectedEligibleAt);
+
+      // 2차 tick(60초 후, 도보시간 창 안) — arvlCd ARRIVED로 실제 advance 성공.
+      const nowSecondTick = NOW + 60_000;
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 0, 1, '2246')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowSecondTick,
+        generatePushId: () => 'p-2700-idem-b',
+      });
+      const afterSecond = JSON.parse((await kv.get(`trip:${TOKEN_A1}`)) as string);
+      // waypoint가 실제로 advance됐는지(전진) — 열차 확증 자체는 그대로 작동함을 확인.
+      expect(afterSecond.waypoints[0].stationName).toBe('용마산');
+      // 재-stamp로 시계가 리셋되지 않았는지 — 이 회귀 클래스(#2655)가 재발하지 않았는지의 핵심 단언.
+      expect(afterSecond.legBoardingEligibleAt).toBe(expectedEligibleAt);
+      expect(afterSecond.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '7' });
+      // 관측 기반 stamp는 최초 1건만 — advance 성공은 같은 anchor의 창 안 재처리라 별도 기록 없음.
+      expect(findInserts(inserts, 'leg-anchor-observed')).toHaveLength(1);
+    });
+
+    it('도보 게이트는 관측 기반 stamp 후에도 그대로 강제된다 — 게이트 통과 전엔 leg-boarding-prompt가 walk-gated', async () => {
+      const kv = new InMemoryKV();
+      const observedAt = NOW; // 방금 도착(도보시간 미경과)
+      const trip = makeTransferTrip(TOKEN_A2, {
+        transferObservedAt: { stationName: '건대입구', line: '2', atMs: observedAt },
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt });
+      const { db, inserts } = makeFireLogDb();
+      // 1차 tick — no-arvlcd로 관측 기반 stamp.
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({}),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2700-walkgate-a',
+      });
+      const afterStamp = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
+      expect(afterStamp.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '7' });
+      const eligibleAt = observedAt + WALK_SECONDS * 1000;
+      expect(afterStamp.legBoardingEligibleAt).toBe(eligibleAt);
+
+      // 2차 tick — 도보시간 미경과 시점. leg-boarding-prompt 후보 조회는 anchor 역(건대입구)
+      // 기준이라 그 역에 후보가 있어도 게이트가 먼저 막아야 한다.
+      const nowMidWalk = NOW + Math.floor((WALK_SECONDS * 1000) / 2);
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowMidWalk,
+        generatePushId: () => 'p-2700-walkgate-b',
+      });
+      const midEvents = findInserts(inserts, 'leg-boarding-prompt');
+      expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'walk-gated')).toBe(true);
+      expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(false);
+
+      // 3차 tick — 도보시간 경과 후에는 프롬프트가 실제로 발사돼야 한다(#2700 요구사항 close 조건 —
+      // "관측이 시계를 시작시켰고, 도보시간 경과 후 프롬프트가 발사된다"의 end-to-end 증거).
+      // arvlCd=1(ARRIVED)로 anchor 역(건대입구)에 후보 열차가 임박했음을 알린다.
+      const nowAfterWalk = eligibleAt + 1_000;
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('7', '건대입구', 60, 1, '7911')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2700-walkgate-c',
+      });
+      const afterWalkEvents = findInserts(inserts, 'leg-boarding-prompt');
+      expect(afterWalkEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(true);
+    });
+  });
 });
 
