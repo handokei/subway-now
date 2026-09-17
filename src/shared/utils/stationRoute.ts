@@ -11,7 +11,7 @@ import { normalizeStationName as baseNormalizeStationName } from './normalizeSta
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
 import { getTransferSeconds } from './transferTimes';
 import { getStopSecondsFromDistance } from './lineSpeeds';
-import { shortestLinePathIndices } from './lineLoopPath';
+import { shortestLinePathIndices, isClosedLoopMainStation } from './lineLoopPath';
 
 const logger = createLogger('StationRoute');
 
@@ -1255,6 +1255,62 @@ export function getNextStationOnLine(
   /* istanbul ignore next -- currentIdx !== targetIdx invariant → path.length >= 2 */
   if (path.length < 2) return null;
   return lineStations[path[1]].name;
+}
+
+/**
+ * #2696 — 열차 종착역(terminusName)이 사용자의 다음 목표역(targetStationName)에
+ * 도달하는지(=지나치기 전에 조기 종착하지 않는지) 판정한다.
+ *
+ * `direction`은 (line, currId, nextId)별 `resolveTripDirection`이 산출하는 값과 동일 관례
+ * ('down' = id 오름차순 방향, 'up' = 내림차순 방향)를 공유한다 — Seoul Open API의 up/down
+ * bucket과도 정렬되어 있어(구 코드의 `pool = direction==='up' ? arrival.up : arrival.down`),
+ * 별도 변환 없이 그대로 재사용 가능하다.
+ *
+ * 역명 lookup 실패(정규화 후에도 매칭 안 됨) 또는 종착역===목표역이면 "판정 불가/도달함"으로
+ * 간주해 true(배제하지 않음) — 과도 필터링(후보 0건 회귀)보다 미검출 쪽이 안전하다는 기존
+ * 코드베이스 관례(graceful degrade)를 따른다.
+ *
+ * 2호선 본선 closed loop(#1698)은 순환선이라 단순 idx 비교로는 방향을 못 살린다. 두 역이 모두
+ * 본선 range 안이면 본선 subset 안에서 direction 부호(+1=down, -1=up)로 "목표역→종착역"과
+ * "종착역→목표역" 각각의 forward-hop 수를 구해 비교한다 — 더 짧은 쪽(실제 단거리 단축 운행)이
+ * "앞쪽"이다. 목표역은 항상 사용자의 현재역 바로 다음 역이므로, 종착역이 현재역(=목표역 바로
+ * 이전 역, forward-hop 0)과 같은 경우가 실무에서 관측된 조기종착의 전형(#2696 evidence:
+ * 8387/성수, 종착역이 조회 대상 역 자체).
+ */
+export function terminusReachesTarget(
+  line: LineNumber,
+  direction: 'up' | 'down',
+  terminusName: string,
+  targetStationName: string,
+): boolean {
+  const nameIndex = getLineNameIndexCached(line);
+  const terminusIdx = lookupNameIdx(nameIndex, terminusName);
+  const targetIdx = lookupNameIdx(nameIndex, targetStationName);
+  if (terminusIdx === undefined || targetIdx === undefined) return true;
+  if (terminusIdx === targetIdx) return true;
+
+  const lineStations = getLineStationsCached(line);
+  const terminusId = lineStations[terminusIdx].id;
+  const targetId = lineStations[targetIdx].id;
+  const sign = direction === 'down' ? 1 : -1;
+
+  if (!isClosedLoopMainStation(line, terminusId) || !isClosedLoopMainStation(line, targetId)) {
+    // 직선 구간(또는 지선) — wraparound 없이 idx 비교만으로 충분.
+    return sign === 1 ? terminusIdx >= targetIdx : terminusIdx <= targetIdx;
+  }
+
+  const mainLineIndices: number[] = [];
+  for (let i = 0; i < lineStations.length; i++) {
+    if (isClosedLoopMainStation(line, lineStations[i].id)) mainLineIndices.push(i);
+  }
+  const subLen = mainLineIndices.length;
+  const terminusSub = mainLineIndices.indexOf(terminusIdx);
+  const targetSub = mainLineIndices.indexOf(targetIdx);
+  const forwardHops = (fromSub: number, toSub: number): number =>
+    (((toSub - fromSub) * sign) % subLen + subLen) % subLen;
+  // 목표역에서 순방향으로 몇 hop 만에 종착역에 닿는지 vs 그 반대 — 더 짧은 쪽이 실제 방향.
+  // 종착역이 목표역보다 "뒤"(반대편)라면 순방향 hop 수가 훨씬 크다(거의 한 바퀴).
+  return forwardHops(targetSub, terminusSub) <= forwardHops(terminusSub, targetSub);
 }
 
 export function getNextStationName(

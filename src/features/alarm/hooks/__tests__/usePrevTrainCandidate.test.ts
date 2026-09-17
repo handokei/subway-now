@@ -11,6 +11,8 @@ jest.mock('../../../route/utils/tripDirection', () => ({
   resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
 }));
 
+// #2696 — isBoardableCandidate가 관측 단계에서 상태 게이트(0/1/2)를 적용하므로, 기본 fixture도
+// 그 범위 안(2=출발)으로 맞춘다. 아직 오지 않은 열차(99 등) 시나리오는 개별 테스트에서 override.
 function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: '종착',
@@ -20,7 +22,7 @@ function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
     trainCode: 'T-DEFAULT',
     line: '2',
     receivedAtMs: 0,
-    arrivalCode: -1,
+    arrivalCode: 2,
     isLastTrain: false,
     trainType: 'normal',
     ...overrides,
@@ -305,5 +307,73 @@ describe('usePrevTrainCandidate (#2689 — 다음 열차 출발 기준 만료)',
     act(() => rerender({ ...baseProps, currentArrivals: [] }));
     unmount();
     expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+});
+
+// #2696 — 공유 술어(isBoardableCandidate) 단일화. 관측 단계에만 적용하고 이탈(departed) 판정
+// 단계에서는 재적용하지 않는다는 설계를 직접 검증한다(메인 세션 스펙 보강 지시).
+describe('usePrevTrainCandidate (#2696 — isBoardableCandidate 관측 단계 적용)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    mockResolveTripDirection.mockReturnValue('down');
+  });
+
+  afterEach(() => {
+    act(() => jest.runOnlyPendingTimers());
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  // 요구사항 핵심 red 시나리오: 방향/노선/종착 모두 유효한 열차가 관측 단계를 통과해 추적
+  // 대상이 된 뒤 다음 tick에 목록에서 사라지면(=정상 출발) 전열차 후보로 남아야 한다.
+  // 술어를 이탈 판정에도 재적용하면 사라진 열차는 arrival 레코드가 없어(상태값 부재)
+  // 항상 상태 게이트에서 탈락 — #2689가 고친 동작이 다시 죽는다.
+  it('#2696 — 술어를 통과해 추적된 열차가 다음 tick에 사라지면(정상 출발) 전열차 후보로 유지된다(이탈 판정에서 술어 재적용 금지)', () => {
+    jest.setSystemTime(0);
+    const boardableTrain = makeTrain({ trainCode: 'T-BOARDABLE', arrivalSeconds: 30, arrivalCode: 2, line: '2' });
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [boardableTrain] },
+    });
+    expect(result.current.prevTrain).toBeNull(); // 아직 목록에 있음 — 출발 전
+
+    // 다음 tick — arrival 레코드 자체가 사라짐(사라진 열차는 상태값이 없다).
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-BOARDABLE');
+  });
+
+  // 대조군: 방향이 틀린 열차는 "관측 단계"에서부터 애초에 추적 대상에 들어가지 않으므로,
+  // 나중에 사라져도 전열차 후보가 되지 않는다.
+  it('#2696 — 노선 불일치 열차는 관측 단계에서 배제되어, 사라져도 전열차 후보가 되지 않는다', () => {
+    jest.setSystemTime(0);
+    const wrongLineTrain = makeTrain({ trainCode: 'T-WRONG-LINE', arrivalSeconds: 30, arrivalCode: 2, line: '9' });
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [wrongLineTrain] },
+    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain).toBeNull();
+  });
+
+  // direction 미해결(resolveTripDirection이 null) — 술어가 후보 전체를 무효화한다.
+  it('#2696 — direction 미해결(resolveTripDirection null)이면 후보가 관측 단계에서부터 무효화된다', () => {
+    jest.setSystemTime(0);
+    mockResolveTripDirection.mockReturnValue(null);
+    const train = makeTrain({ trainCode: 'T-NO-DIRECTION', arrivalSeconds: 30, arrivalCode: 2, line: '2' });
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [train] },
+    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain).toBeNull();
+  });
+
+  // 아직 오지 않은 열차(arvlCd=99)는 상태 게이트에서 관측 단계부터 배제된다.
+  it('#2696 — arvlCd=99(아직 오지 않은 열차)는 관측 단계에서 배제되어 전열차 후보가 되지 않는다', () => {
+    jest.setSystemTime(0);
+    const notYetTrain = makeTrain({ trainCode: 'T-NOT-YET', arrivalSeconds: 400, arrivalCode: 99, line: '2' });
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [notYetTrain] },
+    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain).toBeNull();
   });
 });

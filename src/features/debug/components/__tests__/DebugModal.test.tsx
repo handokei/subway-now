@@ -930,6 +930,18 @@ describe('DebugModal', () => {
     expect(el.props.children).toContain('pending=1');
   });
 
+  // #2696 — direction 미해결로 후보 전체가 무효화된 케이스도 autoLock(1h) row에 노출.
+  it('#2696: autoLock(1h) row — direction-unresolved 분포 표기', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 1_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-direction-unresolved' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    const el = screen.getByTestId('debug-autolock-telemetry-1h');
+    expect(el.props.children).toContain('dir=1');
+  });
+
   it('#1693/#1706: Fusion Tier (1h) 섹션이 별 ring tier 분포를 표시한다', async () => {
     const now = Date.now();
     // #1706 — alarmLog ring이 아닌 fusionTierLog 별 ring에서 집계.

@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -2189,5 +2189,47 @@ describe('allowedLinesFromRoute (#1436 / #1449)', () => {
     const lines = allowedLinesFromRoute(route);
     expect(lines).toBeDefined();
     expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['1', '2', '8']);
+  });
+});
+
+describe('terminusReachesTarget (#2696)', () => {
+  describe('직선 구간(3호선 대화-주엽-정발산-마두)', () => {
+    it('종착역이 목표역보다 앞(조기종착, down 방향) → false', () => {
+      // down(오름차순 idx) 방향으로 정발산이 목표인데 종착역이 대화(더 앞) → 조기종착.
+      expect(terminusReachesTarget('3', 'down', '대화', '정발산')).toBe(false);
+    });
+
+    it('종착역이 목표역보다 뒤(정상, down 방향) → true', () => {
+      expect(terminusReachesTarget('3', 'down', '마두', '정발산')).toBe(true);
+    });
+
+    it('down/up 반전 — up 방향에서는 앞/뒤 판정도 반전된다', () => {
+      expect(terminusReachesTarget('3', 'up', '마두', '정발산')).toBe(false);
+      expect(terminusReachesTarget('3', 'up', '대화', '정발산')).toBe(true);
+    });
+
+    it('종착역===목표역 → true(도달)', () => {
+      expect(terminusReachesTarget('3', 'down', '정발산', '정발산')).toBe(true);
+    });
+
+    it('역명 lookup 실패(존재하지 않는 이름) → true(판정 불가, 배제하지 않음)', () => {
+      expect(terminusReachesTarget('3', 'down', '존재하지않는역', '정발산')).toBe(true);
+      expect(terminusReachesTarget('3', 'down', '정발산', '존재하지않는역')).toBe(true);
+    });
+  });
+
+  // #2696 evidence — 2호선 본선 closed loop(뚝섬-성수-건대입구, 9/17 8387 사고).
+  describe('closed loop 본선(2호선 뚝섬-성수-건대입구)', () => {
+    it('종착역이 목표역 바로 이전(=조회역 자체) → false (2026-09-17 8387 evidence)', () => {
+      expect(terminusReachesTarget('2', 'down', '성수', '건대입구')).toBe(false);
+    });
+
+    it('종착역이 목표역보다 한참 뒤(정상 장거리 운행) → true', () => {
+      expect(terminusReachesTarget('2', 'down', '잠실나루', '건대입구')).toBe(true);
+    });
+
+    it('종착역===목표역 → true', () => {
+      expect(terminusReachesTarget('2', 'down', '건대입구', '건대입구')).toBe(true);
+    });
   });
 });

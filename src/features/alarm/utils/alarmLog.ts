@@ -278,6 +278,9 @@ export type AlarmLogReason =
   //   'autolock-fallback-pending': #2407 root fix — train 확정 실패해도 pending trainCode로 lock 생성.
   //   'fallback-skipped-position-contradiction': #2408 위험1 guard — fresh BG_LAST_STATION이
   //     payload.line과 모순(다른 노선에 위치)돼 stale prompt로 판단, pending fallback lock을 skip.
+  //   'autolock-direction-unresolved': #2696 — payload.destinationDirection 미해결(undefined).
+  //     isBoardableCandidate가 후보 전체를 무효화해 항상 pending fallback으로 이어진다
+  //     (2026-09-17 8387 반대방향 오채택 재발 방지 — 양방향 병합 대신 명시적 실패 신호).
   | 'autolock-success'
   | 'autolock-no-trip'
   | 'autolock-arrivals-empty'
@@ -286,6 +289,7 @@ export type AlarmLogReason =
   | 'fallback-skipped-position-contradiction'
   | 'autolock-station-lookup'
   | 'autolock-lock-failed'
+  | 'autolock-direction-unresolved'
   // #1170 — boarding-prompt 사용자 응답 측정. 9단 게이트 통과 후 발사된 prompt에 대한 응답.
   //   'response-boarded': [탑승] 또는 default 탭 액션.
   //   'response-dismissed': [미탑승] 또는 dismiss.
@@ -2509,7 +2513,9 @@ export type BoardingPromptAutoLockReason =
   | 'autolock-fallback-pending'
   // #2408 — 위험1 guard: fresh BG_LAST_STATION이 payload.line과 모순돼 stale prompt로 판단,
   // pending fallback lock 생성을 skip.
-  | 'fallback-skipped-position-contradiction';
+  | 'fallback-skipped-position-contradiction'
+  // #2696 — payload.destinationDirection 미해결. isBoardableCandidate가 후보를 전부 배제한다.
+  | 'autolock-direction-unresolved';
 
 export function logBoardingPromptAutoLock(input: {
   reason: BoardingPromptAutoLockReason;
@@ -2536,6 +2542,7 @@ function createEmptyAutoLockReasonCounts(): Record<BoardingPromptAutoLockReason,
     'autolock-lock-failed': 0,
     'autolock-fallback-pending': 0,
     'fallback-skipped-position-contradiction': 0,
+    'autolock-direction-unresolved': 0,
   };
 }
 

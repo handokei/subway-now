@@ -3225,6 +3225,7 @@ describe('alarmLog', () => {
         'autolock-lock-failed': 1,
         'autolock-fallback-pending': 1,
         'fallback-skipped-position-contradiction': 1,
+        'autolock-direction-unresolved': 0,
       });
     });
 
@@ -3289,6 +3290,7 @@ describe('alarmLog', () => {
         'autolock-lock-failed': 1,
         'autolock-fallback-pending': 1,
         'fallback-skipped-position-contradiction': 1,
+        'autolock-direction-unresolved': 0,
       });
     });
 

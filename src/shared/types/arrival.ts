@@ -30,6 +30,13 @@ export interface ArrivalInfo {
   isLastTrain: boolean;
   /** btrainSttus 매핑. 'normal'은 라벨 빈 문자열로 배지 미표시. */
   trainType: TrainType;
+  /**
+   * #2696 — 이 열차가 최종적으로 정차하는 종착역명(Seoul Open API `bstatnNm`).
+   * `destination`(raw `trainLineNm`, UI 라벨용 — 의미/소비자 변경 금지)과 별개 필드다.
+   * 조기 종착(사용자의 다음 목표역 전에 정차) 판정에 사용 — `isBoardableCandidate` 참고.
+   * 파싱 실패/누락 시 undefined — 판정 불가는 배제하지 않음(그레이스풀)으로 처리한다.
+   */
+  terminalStation?: string;
 }
 
 export type ArrivalSource = 'realtime' | 'schedule' | 'closed';
