@@ -170,6 +170,35 @@ describe('#1568 (T8b) cascade picker — backend-ssot tier', () => {
     expect(hook.result.current.result?.station.id).toBe(yongmasan.id);
   });
 
+  // #2669 — 경로 역행 가드는 GPS를 판정 근거로 쓴다. GPS 결과 자체가 없으면(cold start / 실내)
+  // 판정 불가이므로 가드는 비활성이고 backend 채택은 기존대로 유지돼야 한다 — 가드가 "GPS 없음"을
+  // 역행으로 오해해 backend 권위를 끊으면 지하에서 표시가 통째로 죽는다.
+  it('#2669 — GPS result가 없으면 역행 가드는 비활성(backend 채택 유지)', async () => {
+    setupBaselineGpsAt('청담');
+    mockNearest.mockReturnValue({
+      result: null,
+      liveResult: null,
+      stickyDisplayOnly: null,
+      variants: [],
+      userLocation: null,
+      ...GPS_BASE_DEFAULTS,
+      accuracyMeters: null,
+      refresh: jest.fn(),
+    });
+    mockRead.mockResolvedValue(
+      makeMirror({
+        currentStationId: yongmasan.name,
+        lastAdvanceAt: T0 - 10 * 60_000, // backend 정체 상태
+        receivedAt: T0,
+      }),
+    );
+    const hook = renderHook(() => useFusedNearestStation());
+    await flushSsotRead();
+    await waitFor(() => {
+      expect(hook.result.current.source).toBe('backend-ssot');
+    });
+  });
+
   it('mirror lock 활성 + line mismatch → station resolve 실패 → 채택 거부', async () => {
     // mirror가 2호선 강남을 가리키지만 lock은 7호선 → findStationByNameAndLine('강남', '7') = null.
     setupBaselineGpsAt('청담');
