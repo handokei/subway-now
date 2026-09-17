@@ -3983,6 +3983,102 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(await res.json()).toEqual({ error: 'trip_not_found' });
   });
 
+  // #2655 — 사용자가 환승역에 도착한 시각을 backend advance 타이밍과 분리해 기록한다. cron이
+  // 지하 침묵으로 수 분 늦게 transfer를 advance해도 도보 게이트는 이 관측 시각부터 흐른다.
+  describe('#2655 transferObservedAt stamp', () => {
+    function tripWithTransfer(): Record<string, unknown> {
+      return tripWithLock({
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '교대', line: '2', kind: 'transfer' },
+          { stationName: '남부터미널', line: '3', kind: 'destination' },
+        ],
+      });
+    }
+
+    it('관측역이 다가오는 transfer waypoint면 최초 관측 시각을 stamp한다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithTransfer(), env);
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+      expect(stored.transferObservedAt?.stationName).toBe('교대');
+      expect(typeof stored.transferObservedAt?.atMs).toBe('number');
+    });
+
+    it('같은 환승역 재보고는 최초 관측 시각을 덮어쓰지 않는다 (시계가 뒤로 밀리지 않도록)', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithTransfer(), env);
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const first = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string)
+        .transferObservedAt.atMs as number;
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 2, accuracy: 5 },
+        env,
+      );
+      const second = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string)
+        .transferObservedAt.atMs as number;
+      expect(second).toBe(first);
+    });
+
+    // #2672 — "하차하셨나요?"를 backend advance가 아니라 **관측 시점**에 쏜다. 이 테스트 env는
+    // APNs 키가 더미라 실제 발사는 throw로 끝나므로, 게이트가 막히는 상태(이미 발사된 leg)를 만들어
+    // `recordHopEndPromptTransition`이 D1에 남기는 것으로 호출부 배선(whole path)을 확정한다.
+    it('#2672 — 환승역 관측 시점에 hop-end 프롬프트 경로를 태운다 (D1 transition 기록)', async () => {
+      const inserts: unknown[][] = [];
+      const db = {
+        prepare: () => ({
+          bind: (...args: unknown[]) => {
+            inserts.push(args);
+            return { run: async () => ({ success: true }) };
+          },
+        }),
+      } as unknown as D1Database;
+      const env = makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'], DB: db });
+      // `validateTrip`은 hopEndPromptState를 body에서 받지 않으므로(내부 상태) KV에 직접 심는다.
+      // 이미 이 leg에서 발사된 상태 → 게이트가 막고 transition('silenced')만 기록된다.
+      await env.TRIPS.put(
+        'trip:tok-sync',
+        JSON.stringify({
+          ...tripWithTransfer(),
+          hopEndPromptState: { '교대|3': { fired: true, lastFiredAt: Date.now() } },
+        }),
+      );
+      // transition 기록은 SSoT 마커 대조로 dedup되므로(#2537) SSoT가 있어야 남는다.
+      const { seedSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, 'tok-sync', '강남', { expiresAt: FUTURE });
+
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '교대', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const kinds = inserts.map((args) => args[2]);
+      expect(kinds).toContain('hop-end-prompt');
+    });
+
+    it('환승역이 아닌 역 관측은 stamp하지 않는다', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithTransfer(), env);
+      await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+      expect(stored.transferObservedAt).toBeUndefined();
+    });
+  });
+
   it('현재 waypoints[0] 일치 → 1 hop advance + currentWaypoint=역삼', async () => {
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);

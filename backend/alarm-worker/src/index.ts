@@ -13,6 +13,9 @@
 
 import { Hono, type Context } from 'hono';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
+// #2655 — 역명 정규화(#1410/#2566 drift 흡수). scheduled.ts의 transfer anchor 비교와 동일 함수를
+// 써야 "sync가 stamp한 역명"과 "cron이 advance하는 waypoint 역명"이 조용히 어긋나지 않는다.
+import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
@@ -84,6 +87,7 @@ import {
   createEmptyScheduledStats,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
+  maybeFireHopEndPrompt,
   runMidCycleFireOnly,
   runScheduled,
   toSilentPushSsot,
@@ -2323,6 +2327,25 @@ app.post('/metrics/boarding-prompt', async (c) => {
  * Trip 부재 시 lock 재생성 책임은 본 endpoint가 지지 않음 — 클라가 useApnsTripRegistration으로
  * POST /trips를 호출하면 같은 경로로 lock이 들어온다 (분리된 lock store가 없는 현 backend 구조).
  */
+/**
+ * #2672 — `/boarding-lock/sync` 안에서 `scheduled.ts` 함수(`maybeFireHopEndPrompt` /
+ * `advanceBoardingLockWaypoint`)를 부를 때 쓰는 `ScheduledDeps` 조립. 두 호출부가 같은 구성을
+ * 손으로 두 번 쓰면 한쪽만 바뀌는 drift가 생기므로 단일 지점으로 모은다.
+ */
+function buildSyncScheduledDeps(env: Env, archFlag: ArchFlagValue): ScheduledDeps {
+  return {
+    seoul: new SeoulArrivalClient({ apiKey: env.SEOUL_API_KEY, host: env.SEOUL_API_HOST }),
+    apnsConfig: {
+      keyId: env.APNS_KEY_ID,
+      teamId: env.APNS_TEAM_ID,
+      privateKeyPem: env.APNS_PRIVATE_KEY,
+      bundleId: env.APNS_BUNDLE_ID,
+    },
+    apnsHosts: { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX },
+    archFlag,
+  };
+}
+
 app.post('/boarding-lock/sync', async (c) => {
   let body: unknown;
   try {
@@ -2356,6 +2379,80 @@ app.post('/boarding-lock/sync', async (c) => {
     }),
   );
   const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  // #2655 — 사용자가 환승역에 **도착한 시각**을 backend advance 타이밍과 분리해 기록한다.
+  // device sync는 accuracy≤50m 게이트를 통과한 확정 관측이라(`useBoardingLockSync`) "지금 이 역에
+  // 있다"의 ground truth로 다룬다(#2645가 하차 확정에 쓰는 것과 동일 근거). 아래 transfer stamp
+  // (`advanceBoardingLockWaypoint`)가 이 값을 도보 게이트 기준점으로 쓴다 — cron이 지하 침묵으로
+  // 수 분 늦게 advance해도 도보 시계는 실제 도착 시각부터 흐른다.
+  //
+  // advance 여부와 무관하게 stamp한다: 정작 문제가 된 케이스는 sync가 waypoint를 소비하지 못한
+  // (drift 가드/유예) 채 cron이 한참 뒤에 advance하는 조합이다. 같은 역은 **최초 관측만** 유지해
+  // 재보고로 시계가 뒤로 밀리지 않게 한다.
+  // 코드리뷰 P2-2 — 이름만으로 배열 전체를 뒤지면 순환선 재방문/동명 역 라우팅에서 **훨씬 뒤에 올**
+  // transfer가 먼저 stamp될 수 있다. 남은 waypoint 중 **가장 앞선** transfer(=진짜 다음 환승)만
+  // 대상으로 한다.
+  const nextTransfer = existing.waypoints.find((wp) => wp.kind === 'transfer');
+  const upcomingTransfer =
+    nextTransfer &&
+    normalizeStationName(nextTransfer.stationName) ===
+      normalizeStationName(payload.observedStationName)
+      ? nextTransfer
+      : undefined;
+  if (
+    upcomingTransfer &&
+    normalizeStationName(existing.transferObservedAt?.stationName ?? '') !==
+      normalizeStationName(upcomingTransfer.stationName)
+  ) {
+    existing.transferObservedAt = {
+      stationName: upcomingTransfer.stationName,
+      line: upcomingTransfer.line,
+      atMs: now,
+    };
+    // #2672 — "하차하셨나요?" 프롬프트도 이 관측 시점에 발사한다.
+    //
+    // 기존에는 `advanceBoardingLockWaypoint`(= backend가 환승 waypoint를 실제로 소비하는 순간)
+    // 에서만 발사됐다. lock 활성 구간에서 그 소비는 cron이 잠긴 trainCode를 환승역에서 확증해야
+    // 일어나는데 지하에서 그 신호가 침묵한다 — 2026-09-16 실측: 사용자는 06:34:59에 건대입구에
+    // 도착했는데 프롬프트는 **06:41:10**(+6분)에 떴고, 그 사이 도착한 중간역 알림들보다 뒤에
+    // 깔려 순서까지 뒤집혔다("하차하셨나요?"가 이미 지나간 역 알림 뒤에).
+    //
+    // device sync 관측은 accuracy≤50m 게이트를 통과한 "사용자가 지금 이 역에 있다"는 확증이라
+    // 열차 위치 확증보다 늦을 이유가 없다. 중복 발사는 기존 leg-key dedup
+    // (`hopEndPromptState` + `evaluateHopEndPromptGates`)이 그대로 흡수한다 — 뒤이어 cron이
+    // advance하며 같은 프롬프트를 시도해도 silenced로 떨어진다(새 dedup 채널 없음).
+    //
+    // `nextWaypointOverride`: 이 시점엔 아직 waypoint를 소비하지 않았을 수 있어 `waypoints[0]`이
+    // 환승역 자신일 수 있다. 안내 문구의 "다음 역"이 틀리지 않도록 배열에서 환승역 **다음** 항목을
+    // 명시 전달한다(없으면 null — 문구에서 다음역 부분만 생략, 기존 graceful 계약과 동일).
+    const transferIdx = existing.waypoints.indexOf(upcomingTransfer);
+    const nextLegWaypoint = existing.waypoints[transferIdx + 1] ?? null;
+    const syncLog = createJsonLogger();
+    try {
+      await maybeFireHopEndPrompt({
+        trip: existing,
+        transferWaypoint: upcomingTransfer,
+        deps: buildSyncScheduledDeps(
+          c.env,
+          await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT),
+        ),
+        stats: createEmptyScheduledStats(now),
+        now,
+        log: syncLog,
+        generatePushId: () => crypto.randomUUID(),
+        env: c.env,
+        nextWaypointOverride: nextLegWaypoint,
+      });
+    } catch (e) {
+      // 프롬프트 발사 실패가 이 엔드포인트 전체를 500으로 만들면 안 된다 — `/boarding-lock/sync`는
+      // waypoint advance / lock 승격 / SSoT 동기화까지 싣고 있는 주 채널이라, 부가 알림 하나 때문에
+      // 그 전부가 죽는 쪽이 훨씬 큰 손실이다(APNs 설정 오류·키 만료가 곧장 추적 중단으로 번진다).
+      syncLog('boarding-lock/sync: hop-end prompt on observation failed (swallowed)', {
+        token: existing.token.slice(0, 8),
+        station: upcomingTransfer.stationName,
+        error: String(e),
+      });
+    }
+  }
 
   let working: Trip = existing;
   // #2645 PR 코드리뷰 (코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/LOW-5, 2026-09-15) — 실제로 적용된 hop 수.
@@ -2413,12 +2510,8 @@ app.post('/boarding-lock/sync', async (c) => {
       // 중간에 끼인 intermediate waypoint(관측역이 아닌 것)는 Phase 1에서 이미 발사됐으므로 여기서는
       // 재발사 없이 배열에서만 제거한다. 관측역 자신이 intermediate이면(즉 transfer/destination이
       // 그보다 앞에 있었던 드문 catch-up 케이스) 기존 정책대로 cron에 위임 — 건드리지 않고 멈춘다.
-      const scheduledDeps: ScheduledDeps = {
-        seoul: new SeoulArrivalClient({ apiKey: c.env.SEOUL_API_KEY, host: c.env.SEOUL_API_HOST }),
-        apnsConfig,
-        apnsHosts,
-        archFlag,
-      };
+      // #2672 (코드리뷰 P2-1) — 이 핸들러의 두 호출부가 같은 조립을 각자 쓰지 않도록 헬퍼 공유.
+      const scheduledDeps: ScheduledDeps = buildSyncScheduledDeps(c.env, archFlag);
       // #2645 PR 코드리뷰 HIGH-1 (코드리뷰 확정) — waypoints 배열을 독립 스냅샷으로 clone한다.
       // `completeWaypointAdvance`(scheduled.ts)는 `trip.waypoints = trip.waypoints.slice(1)`로
       // 인자를 in-place mutate한다. cursor가 `existing`과 객체 참조를 공유하면(과거 `cursor =

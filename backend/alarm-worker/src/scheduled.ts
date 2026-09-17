@@ -2283,6 +2283,25 @@ export function arvlCdFireKey(
  * 사용자 결정 #2506 "역당 알림 1개"를 **트리거 무관**하게 보장하려면 (token, trainCode, station)
  * 단위의 공용 마커가 있어야 한다. 모든 발사 경로가 발사 전 이 키를 확인하고, 발사 성공 시 stamp한다.
  */
+/**
+ * #2672 (코드리뷰 P1-1) — hop-end("하차하셨나요?") 프롬프트의 **요청 무관** dedup 마커.
+ *
+ * 배경: 이 프롬프트는 이제 두 요청에서 발사될 수 있다 — cron의 transfer advance, 그리고
+ * `/boarding-lock/sync`의 환승역 최초 관측(#2672). 두 경로의 dedup을 `trip.hopEndPromptState`
+ * (trip 객체 필드)에만 맡기면 **동시에 실행되는 별개 요청** 사이에서는 무력하다: `putTrip`은
+ * CAS 없는 단순 put이라, cron이 sync보다 먼저 trip을 읽었다면 그 스냅샷엔 sync가 방금 찍은
+ * `hopEndPromptState`가 없어 게이트를 그대로 통과하고 푸시가 두 번 나간다(그리고 늦게 끝난 쪽의
+ * put이 상대 상태를 덮어써 흔적도 지운다).
+ *
+ * 그래서 trip 객체와 **독립된** KV 마커를 둔다 — `stationPassedFiredKey`(#2571)가 같은 이유로
+ * "경로 무관 단일 dedup"을 도입한 것과 동일한 패턴이다. 발사 직전 확인하고, 성공 시 stamp한다.
+ * 키 단위는 leg(환승역 + 다음 노선) — 여러 번 환승해도 leg마다 한 번씩 발사된다.
+ */
+export const HOP_END_PROMPT_FIRED_KEY_PREFIX = 'hop-end-prompt-fired:';
+export function hopEndPromptFiredKey(token: string, legKey: string): string {
+  return `${HOP_END_PROMPT_FIRED_KEY_PREFIX}${token}|${legKey}`;
+}
+
 export const STATION_PASSED_FIRED_KEY_PREFIX = 'station-passed-fired:';
 export function stationPassedFiredKey(
   token: string,
@@ -2532,6 +2551,18 @@ export interface FireArvlCdStationPushInputs {
  * 'unknown' 통과 정책과 동일 ([[transferDestinationGate.isSsotAdvanceRecent]] 와 같은 의미론).
  */
 export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
+
+/**
+ * #2655 (코드리뷰 P2-1) — `transferObservedAt`(device sync가 관측한 환승역 도착 시각)을 도보 게이트
+ * 기준점으로 채택할 수 있는 최대 나이 = 해당 구간 도보시간 × 이 배수.
+ *
+ * 절대 시간 상수 대신 도보시간 배수인 이유: 환승 구간마다 도보시간이 다르고(`getTransferSeconds`,
+ * 역·노선쌍 데이터 주도), "얼마나 오래된 관측까지 믿을까"는 그 구간 도보시간에 비례하는 게 자연스럽다.
+ * 이보다 오래된 관측은 보수적으로 무시하고 advance 시각(now)을 쓴다 — 지나쳐 가며 찍힌 이른
+ * 관측이 도보 게이트를 조기 만료시켜 leg-2 오탑승 lock을 유발하는 경로(#2515)를 막는다.
+ * 실측 회귀(2026-09-16, 관측→advance 6분 = 도보시간의 약 2배)는 이 상한 안에 들어온다.
+ */
+export const TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER = 4;
 
 /**
  * #2063 — 매역 알림 apns-expiration 유예(ms). 지하 데이터 순단 후 stale 알림이 뒤늦게
@@ -5613,8 +5644,32 @@ async function completeWaypointAdvance(
       trip.legBoardingEligibleAt !== undefined &&
       now < trip.legBoardingEligibleAt + transferWalkSeconds * 1000;
     if (!isFreshReprocess) {
+      // #2655 — 도보 게이트 기준점을 "backend가 이 waypoint를 advance한 시각(now)"이 아니라
+      // "사용자가 이 환승역에 도착한 시각"으로 잡는다. lock 활성 구간의 transfer advance는 cron이
+      // 잠긴 trainCode를 환승역에서 확증해야 일어나는데, 지하에서 그 신호가 침묵하면 advance가
+      // 수 분 늦고 도보 시계가 그만큼 통째로 밀린다(2026-09-16 실측: device sync 06:34:59 관측 →
+      // cron advance 06:41:10 → leg-2 프롬프트 06:42/43/44 전부 walk-gated → leg-2 lock 0건).
+      // `transferObservedAt`은 accuracy≤50m 게이트를 통과한 device sync 관측이라 도착 ground truth로
+      // 쓴다(#2645와 동일 근거). 미래 값/다른 역 관측은 채택하지 않고, 부재하면 기존대로 now.
+      // 게이트 자체(#2515 오탑승 방지)는 그대로 — 기준점만 실제 도착 시각으로 옮긴다.
+      // 코드리뷰 P2-1 — 관측 시각을 무제한 신뢰하지 않는다. `transferObservedAt`은 accuracy≤50m
+      // 단일 sync 샘플이라, 예컨대 환승역을 **지나쳐 가는** 중에 찍힌 이른 타임스탬프가 그대로
+      // 기준점이 되면 도보 게이트가 사용자가 아직 걷는 중에 만료돼 leg-2 조기 auto-lock(#2515가
+      // 막으려던 바로 그 위험)이 재발할 수 있다. 상한은 매직넘버 대신 해당 구간 도보시간의 배수로
+      // 잡는다 — 그보다 오래된 관측이면 보수적으로 `now` 기준(기존 동작)으로 되돌린다.
+      // 실측 회귀(6분 지연, 도보시간의 약 2배)는 이 상한 안에 들어와 그대로 구제된다.
+      const observed = trip.transferObservedAt;
+      const observationMaxAgeMs =
+        transferWalkSeconds * 1000 * TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER;
+      const arrivedAt =
+        observed !== undefined &&
+        normalizeStationName(observed.stationName) === normalizeStationName(waypoint.stationName) &&
+        observed.atMs <= now &&
+        now - observed.atMs <= observationMaxAgeMs
+          ? observed.atMs
+          : now;
       trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
-      trip.legBoardingEligibleAt = now + transferWalkSeconds * 1000;
+      trip.legBoardingEligibleAt = arrivedAt + transferWalkSeconds * 1000;
       trip.legBoardingPromptState = undefined;
       // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
       // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
@@ -7665,24 +7720,44 @@ export async function maybeFireHopEndPrompt(inputs: {
   generatePushId: () => string;
   /** #2177 — push 최종 실패 D1 기록용. */
   env: Env;
+  /**
+   * #2672 — "다음 leg 첫 역"을 호출자가 명시할 때 쓰는 override.
+   *
+   * 기존 cron 경로는 `completeWaypointAdvance` **이후**에 호출돼 `trip.waypoints[0]`이 이미 다음 leg
+   * 첫 역이다(그래서 기본값이 그것). 반면 device sync가 환승역 도착을 관측한 **시점**에 부르는
+   * 경로는 아직 waypoint를 소비하지 않았을 수 있어, 그때 `waypoints[0]`은 환승역 자신(또는 그
+   * 이전 역)이라 안내 문구의 "다음 역"이 틀린다. 그 경로만 명시 전달한다 — 기존 호출부는 인자를
+   * 넘기지 않아 동작 100% 불변.
+   */
+  nextWaypointOverride?: Waypoint | null;
 }): Promise<void> {
   const { trip, transferWaypoint, deps, stats, now, log, generatePushId, env } = inputs;
-  const nextWaypoint = trip.waypoints[0];
+  const nextWaypoint =
+    inputs.nextWaypointOverride !== undefined
+      ? (inputs.nextWaypointOverride ?? undefined)
+      : trip.waypoints[0];
   const nextLine = nextWaypoint?.line ?? null;
   const nextStation = nextWaypoint?.stationName ?? null;
   const legKey = `${transferWaypoint.stationName}|${nextLine ?? ''}`;
   const stateMap = trip.hopEndPromptState ?? {};
   const outcome = evaluateHopEndPromptGates({ promptState: stateMap[legKey], now });
+  // #2672 (코드리뷰 P1-1) — trip 객체와 독립된 요청-무관 마커. cron advance와 sync 관측이 동시에
+  // 이 프롬프트를 시도할 때 `hopEndPromptState`만으로는 dedup이 되지 않는다(사유는 키 정의 주석).
+  // 읽기 실패는 보수적으로 "미발사"로 간주해 진행한다 — 알림을 잃는 쪽보다 중복 위험을 택한다
+  // (그 중복은 아래 state 게이트가 대부분 흡수한다).
+  const firedKey = hopEndPromptFiredKey(trip.token, legKey);
+  const alreadyFiredAcrossRequests =
+    outcome.pass && (await env.TRIPS.get(firedKey).catch(() => null)) !== null;
   // ADR-037 D2c (#2537, 진단 계측 only) — 이 함수의 fire/skip 사유를 SSoT 마커
   // (`hopEndPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 게이트 판정/발사
   // 로직 자체는 무변경.
   const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
-  if (!outcome.pass) {
+  if (!outcome.pass || alreadyFiredAcrossRequests) {
     stats.hopEndPromptBlocked += 1;
     log('hop-end-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       legKey,
-      reason: outcome.reason,
+      reason: outcome.pass ? 'already-fired-marker' : outcome.reason,
     });
     await recordHopEndPromptTransition(
       env,
@@ -7743,6 +7818,14 @@ export async function maybeFireHopEndPrompt(inputs: {
       ...stateMap,
       [legKey]: markPromptFired(now),
     };
+    // #2672 — 요청-무관 마커 stamp. trip put이 레이스로 유실돼도 이 키는 남아 다른 요청의
+    // 재발사를 막는다. 실패는 swallow — 마커가 없으면 기존 state 게이트로 폴백될 뿐이다.
+    await env.TRIPS.put(firedKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC }).catch(() => {
+      log('hop-end-prompt: fired marker put failed (best-effort)', {
+        token: trip.token.slice(0, 8),
+        legKey,
+      });
+    });
     log('hop-end-prompt: fired', {
       token: trip.token.slice(0, 8),
       transferStation: transferWaypoint.stationName,

@@ -17,6 +17,7 @@ import {
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
   STALE_LOCK_FIRE_THRESHOLD_MS,
+  TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
   VANISH_RE_ATTACH_THRESHOLD,
   BACKEND_TRIP_LIFECYCLE_SILENCE_MS,
@@ -42,6 +43,7 @@ import {
   resolveEtaMissingThreshold,
   buildBoardingPromptMessage,
   buildHopEndPromptMessage,
+  hopEndPromptFiredKey,
   maybeFireHopEndPrompt,
   maybeFireLegBoardingPrompt,
   maybeFireOriginBoardingPromptGpsFree,
@@ -2741,6 +2743,72 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
     expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
     expect(stored.legBoardingPromptState).toBeUndefined();
+  });
+
+  // #2655 — 도보 게이트 기준점을 "backend advance 시각"이 아니라 "사용자 도착 시각"으로.
+  // 2026-09-16 실측 재현: device sync가 06:34:59에 건대입구를 보고했는데 lock 활성 cron의
+  // transfer advance는 06:41:10(+6분)에야 일어났다. 기준점이 advance 시각이면 도보 시계가 통째로
+  // 6분 밀려 leg-2 탑승 프롬프트가 3회 연속 walk-gated로 죽는다(실측 leg-2 lock 0건).
+  it('#2655 — transferObservedAt(device sync 관측)이 있으면 도보 게이트가 그 시각 기준으로 만료된다', async () => {
+    const kv = new InMemoryKV();
+    const observedAt = NOW - 6 * 60_000; // 사용자는 6분 전에 환승역 도착
+    await runArrivedScenario(
+      kv,
+      {
+        transferObservedAt: { stationName: '군자', line: '7', atMs: observedAt },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-observed-anchor',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
+    expect(stored.legBoardingEligibleAt).toBe(observedAt + expectedWalkSeconds * 1000);
+    // 도보시간(수 분)보다 관측이 더 오래됐으므로 게이트는 이미 열려 있어야 한다 —
+    // 이것이 leg-2 프롬프트가 살아나는 조건이다.
+    expect(stored.legBoardingEligibleAt).toBeLessThanOrEqual(NOW);
+  });
+
+  it('#2655 (리뷰 P2-1) — 도보시간 배수 상한을 넘는 오래된 관측은 채택하지 않는다 (조기 게이트 만료 차단)', async () => {
+    const kv = new InMemoryKV();
+    const walkSeconds = getTransferSeconds('7', '5', '군자');
+    const tooOld = NOW - walkSeconds * 1000 * (TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER + 1);
+    await runArrivedScenario(
+      kv,
+      {
+        transferObservedAt: { stationName: '군자', line: '7', atMs: tooOld },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-observed-too-old',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.legBoardingEligibleAt).toBe(NOW + walkSeconds * 1000);
+  });
+
+  it('#2655 — 다른 역 관측이거나 미래 값이면 채택하지 않고 기존대로 advance 시각 기준', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        // 다른 환승역 관측(멀티 환승에서 이전 leg 잔재) — 이번 waypoint에는 쓰면 안 된다.
+        transferObservedAt: { stationName: '잠실나루', line: '7', atMs: NOW - 10 * 60_000 },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-observed-mismatch',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.legBoardingEligibleAt).toBe(NOW + getTransferSeconds('7', '5', '군자') * 1000);
   });
 
   // #2564 (ADR-038 다중 환승 leg-agnostic) — 이미 이전 환승에서 stamp된 currentLegAnchor가
@@ -12858,6 +12926,75 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     expect(body.body.nextStation).toBe('왕십리');
     // #2282 — hop-end fire는 BOARDING_PROMPT가 아닌 전용 DISEMBARK_PROMPT category로 나가야 한다.
     expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
+  });
+
+  // #2672 — device sync가 환승역 도착을 관측한 시점에 부르는 경로는 아직 waypoint를 소비하지
+  // 않았을 수 있어 `waypoints[0]`이 환승역 자신이다. 그때 안내 문구의 "다음 역"이 틀리지 않도록
+  // 호출자가 명시 전달한다(리뷰 P2-2 — payload까지 assert).
+  it('#2672 — nextWaypointOverride를 주면 payload의 nextStation/nextLine이 그 값으로 나간다', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const trip = makeTrip();
+    // 아직 소비 전 상태 재현: waypoints[0]이 환승역 자신.
+    trip.waypoints = [transferWaypoint, ...trip.waypoints];
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-hop-override',
+      env: makeEnv(new InMemoryKV()),
+      nextWaypointOverride: { stationName: '왕십리', line: 'K', kind: 'intermediate' },
+    });
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.body.nextStation).toBe('왕십리');
+    expect(body.body.nextLine).toBe('K');
+    // override 없었으면 waypoints[0]=성수(환승역 자신)가 "다음 역"으로 나갔을 것.
+    expect(trip.waypoints[0].stationName).toBe('성수');
+  });
+
+  // #2672 (리뷰 P1-1) — trip 객체 dedup은 **동시 실행되는 별개 요청**(cron advance vs sync 관측)
+  // 사이에서 무력하다(putTrip은 CAS 없음). 요청-무관 KV 마커가 그 창을 막는다.
+  it('#2672 — 다른 요청이 이미 발사해 KV 마커가 있으면, trip 상태가 깨끗해도 재발사하지 않는다', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const kv = new InMemoryKV();
+    const trip = makeTrip();
+    // 상대 요청이 발사하며 남긴 마커만 존재 — 이 요청의 trip 스냅샷에는 hopEndPromptState가 없다.
+    await kv.put(hopEndPromptFiredKey(trip.token, '성수|K'), '1');
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-hop-marker',
+      env: makeEnv(kv),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.hopEndPromptFired).toBe(0);
+    expect(stats.hopEndPromptBlocked).toBe(1);
+  });
+
+  it('#2672 — 발사 성공 시 요청-무관 마커를 stamp한다', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const kv = new InMemoryKV();
+    const trip = makeTrip();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats: makeStats(),
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-hop-stamp',
+      env: makeEnv(kv),
+    });
+    expect(await kv.get(hopEndPromptFiredKey(trip.token, '성수|K'))).toBe('1');
   });
 
   it('promptState.fired=true → blocked 카운터 증가 + push 미발사', async () => {
