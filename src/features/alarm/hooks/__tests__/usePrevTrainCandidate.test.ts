@@ -1,30 +1,15 @@
 import { renderHook, act } from '@testing-library/react-native';
 import { usePrevTrainCandidate } from '../usePrevTrainCandidate';
 import type { UsePrevTrainCandidateInputs } from '../usePrevTrainCandidate';
-import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
-import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arrival';
+import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
-import { PREV_TRAIN_CANDIDATE_TTL_MS } from '../../../../shared/constants/eta';
-
-jest.mock('../../../arrival/hooks/useArrivalInfo');
-const mockUseArrival = useArrivalInfo as jest.Mock;
+import { PREV_TRAIN_CANDIDATE_BACKSTOP_MS } from '../../../../shared/constants/eta';
 
 const mockResolveTripDirection = jest.fn();
 jest.mock('../../../route/utils/tripDirection', () => ({
   resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
 }));
-
-const mockFindStationByNameAndLine = jest.fn();
-const mockGetStopSeconds = jest.fn();
-jest.mock('../../../../shared/utils/stationRoute', () => ({
-  findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
-  getStopSeconds: (...args: unknown[]) => mockGetStopSeconds(...args),
-}));
-
-function arrivalRet(arrival: StationArrival | null, loading = false) {
-  return { arrival, loading, isMock: false, refetch: jest.fn() };
-}
 
 function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
@@ -32,7 +17,7 @@ function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
     arrivalMinutes: 2,
     arrivalSeconds: 120,
     statusMessage: '',
-    trainCode: 'T-NEW',
+    trainCode: 'T-DEFAULT',
     line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
@@ -50,296 +35,176 @@ const currentStation: Station = {
   lng: 127.027,
 } as Station;
 
-const nextStation: Station = {
-  id: 'stn-next',
-  name: '역삼',
-  line: '2',
-  lat: 37.5,
-  lng: 127.036,
-} as Station;
-
 const route = makeDirectRoute(5, '2');
 
-describe('usePrevTrainCandidate', () => {
+const baseProps: UsePrevTrainCandidateInputs = {
+  route,
+  destinationName: '잠실',
+  currentStation,
+  nextStationName: '역삼',
+  line: '2',
+  currentArrivals: [],
+};
+
+describe('usePrevTrainCandidate (#2689 — 다음 열차 출발 기준 만료)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseArrival.mockReturnValue(arrivalRet(null));
+    jest.useFakeTimers();
     mockResolveTripDirection.mockReturnValue('down');
-    mockFindStationByNameAndLine.mockReturnValue(nextStation);
-    mockGetStopSeconds.mockReturnValue(150);
   });
 
-  it('다음역 도착 목록에서 출발역 목록에 없는 동일 line/방향 열차 중 최소 ETA를 전열차로 채택한다', () => {
-    const currentArrivals = [makeTrain({ trainCode: 'T-STILL-AT-ORIGIN', arrivalSeconds: 200 })];
-    const nextArrival: StationArrival = {
-      up: [],
-      down: [
-        makeTrain({ trainCode: 'T-DEPARTED-FAR', arrivalSeconds: 90 }),
-        makeTrain({ trainCode: 'T-DEPARTED-CLOSE', arrivalSeconds: 30 }),
-        makeTrain({ trainCode: 'T-STILL-AT-ORIGIN', arrivalSeconds: 250 }), // 출발역 목록에도 있음 → 제외
-      ],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals,
-      }),
-    );
-
-    expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED-CLOSE');
-    // stopSeconds(150) - arrivalSeconds(30) = 120
-    expect(result.current.prevTrain?.elapsedSeconds).toBe(120);
+  afterEach(() => {
+    act(() => jest.runOnlyPendingTimers());
+    jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
-  it('candidate가 이미 최소인 상태에서 뒤 순서 후보가 더 크면 기존 min을 유지한다', () => {
-    // reduce 비교의 false 분기(cur.arrivalSeconds < min.arrivalSeconds가 거짓) 커버.
-    const nextArrival: StationArrival = {
-      up: [],
-      down: [
-        makeTrain({ trainCode: 'T-MIN-FIRST', arrivalSeconds: 20 }),
-        makeTrain({ trainCode: 'T-LARGER-LATER', arrivalSeconds: 80 }),
-      ],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+  it('currentArrivals에서 trainCode가 사라지면(=출발) 그 열차를 전열차 후보로 채택한다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-28MIN', arrivalSeconds: 60 })] },
+    });
+    expect(result.current.prevTrain).toBeNull(); // 아직 출발 전 — 목록에 있음
 
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain?.train.trainCode).toBe('T-MIN-FIRST');
-  });
-
-  it('음수 elapsedSeconds는 0으로 clamp한다', () => {
-    mockGetStopSeconds.mockReturnValue(60);
-    const nextArrival: StationArrival = {
-      up: [],
-      down: [makeTrain({ trainCode: 'T-DEPARTED', arrivalSeconds: 200 })],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
+    // T-28MIN이 목록에서 사라짐 = 출발
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-28MIN');
     expect(result.current.prevTrain?.elapsedSeconds).toBe(0);
   });
 
-  it('direction이 up이면 up 버킷만 candidate pool로 사용한다', () => {
-    mockResolveTripDirection.mockReturnValue('up');
-    const nextArrival: StationArrival = {
-      up: [makeTrain({ trainCode: 'T-UP', arrivalSeconds: 40 })],
-      down: [makeTrain({ trainCode: 'T-DOWN', arrivalSeconds: 10 })],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+  describe('red 재현 — 배차 2분(러시아워) 시나리오: 고정 5분 TTL이면 이미 지나간 열차가 계속 노출된다', () => {
+    it('green: 다음 열차(32분)가 출발하는 즉시 전열차 후보가 28분 열차→32분 열차로 교체된다', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: [
+            makeTrain({ trainCode: 'T-28MIN', arrivalSeconds: 30 }),
+            makeTrain({ trainCode: 'T-32MIN', arrivalSeconds: 270 }),
+          ],
+        },
+      });
 
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
+      // T-28MIN 출발(사라짐) — 전열차 후보로 채택.
+      act(() =>
+        rerender({ ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-32MIN', arrivalSeconds: 240 })] }),
+      );
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-28MIN');
 
-    expect(result.current.prevTrain?.train.trainCode).toBe('T-UP');
+      // 배차 2분 뒤(t=120_000) — 아직 T-32MIN은 목록에 있음(출발 전). 구현이 고정 5분 TTL이었다면
+      // 5분(300_000ms)이 지나기 전까지 T-28MIN이 계속 노출됐을 것 — 하지만 실제 acceptance는
+      // "다음 열차가 출발하기 전까지"이지 "5분간"이 아니다.
+      act(() => jest.advanceTimersByTime(120_000));
+      act(() =>
+        rerender({ ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-32MIN', arrivalSeconds: 240 })] }),
+      );
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-28MIN'); // 아직 32분 열차 출발 전 — 유지
+
+      // T-32MIN 출발(사라짐) — 이 시점(t=120_000, 5분 TTL 도달 전)에 즉시 교체돼야 한다.
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-32MIN');
+      expect(result.current.prevTrain?.elapsedSeconds).toBe(0);
+    });
   });
 
-  it('direction을 알 수 없으면(null) up+down 합집합에서 채택한다', () => {
-    mockResolveTripDirection.mockReturnValue(null);
-    const nextArrival: StationArrival = {
-      up: [makeTrain({ trainCode: 'T-UP', arrivalSeconds: 40 })],
-      down: [makeTrain({ trainCode: 'T-DOWN', arrivalSeconds: 10 })],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+  describe('red 재현 — 배차 12분(심야) 시나리오: 고정 5분 TTL이면 5분 만에 후보가 사라진다', () => {
+    it('green: 다음 열차가 출발하기 전까지(12분 내내) 전열차 후보가 유지된다', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-NIGHT', arrivalSeconds: 30 })] },
+      });
 
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
+      act(() => rerender({ ...baseProps, currentArrivals: [] })); // 출발
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-NIGHT');
 
-    expect(result.current.prevTrain?.train.trainCode).toBe('T-DOWN');
+      // 5분(TTL이었던 값) 경과 — 구버전이면 여기서 null이 됐다.
+      act(() => jest.advanceTimersByTime(5 * 60_000));
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-NIGHT'); // 다음 열차가 아직 출발 안 함
+
+      // 배차 12분 전체 경과 — 여전히 다음 열차 출발 전이면 유지.
+      act(() => jest.advanceTimersByTime(7 * 60_000)); // 총 12분
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-NIGHT');
+      expect(result.current.prevTrain?.elapsedSeconds).toBe(12 * 60);
+    });
   });
 
-  it('다른 line 열차는 후보에서 제외한다', () => {
-    const nextArrival: StationArrival = {
-      up: [],
-      down: [makeTrain({ trainCode: 'T-OTHER-LINE', arrivalSeconds: 20, line: '5' })],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+  it('#2179 회귀 — 다음역마저 통과해 도착정보 API 응답에서 완전히 사라져도(currentArrivals 자체 관측과 무관), 다음 열차가 출발하기 전까지는 탭 가능하다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-PASSED-NEXT', arrivalSeconds: 20 })] },
+    });
 
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
+    act(() => rerender({ ...baseProps, currentArrivals: [] })); // 출발
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-PASSED-NEXT');
 
+    // 다음역도 한참 통과할 시간(예: 10분) 동안 currentArrivals가 계속 비어 있어도(다음 열차 출발
+    // 신호가 없으므로) 후보는 계속 탭 가능해야 한다 — TTL로 인위적 유지기간을 뒀던 구버전보다 더
+    // 정확한 acceptance.
+    act(() => jest.advanceTimersByTime(10 * 60_000));
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-PASSED-NEXT');
+  });
+
+  it('여러 대가 한 번에(폴링 간격 > 배차) 사라지면 마지막으로 도착 예정이었던(arrivalSeconds 최솟값) 열차를 채택한다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: {
+        ...baseProps,
+        currentArrivals: [
+          makeTrain({ trainCode: 'T-EARLIER', arrivalSeconds: 200 }),
+          makeTrain({ trainCode: 'T-LATEST', arrivalSeconds: 30 }),
+        ],
+      },
+    });
+
+    act(() => rerender({ ...baseProps, currentArrivals: [] })); // 둘 다 사라짐
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-LATEST');
+  });
+
+  it('여러 대 이탈 시 min 갱신 비교의 false 분기(순서상 뒤 후보의 arrivalSeconds가 더 큰 경우)도 정상 처리한다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: {
+        ...baseProps,
+        currentArrivals: [
+          makeTrain({ trainCode: 'T-MIN-FIRST', arrivalSeconds: 20 }),
+          makeTrain({ trainCode: 'T-LARGER-LATER', arrivalSeconds: 80 }),
+        ],
+      },
+    });
+
+    act(() => rerender({ ...baseProps, currentArrivals: [] })); // 둘 다 사라짐
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-MIN-FIRST');
+  });
+
+  it('trip context(출발역)가 바뀌면 전열차 후보를 즉시 무효화한다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-STALE-CONTEXT', arrivalSeconds: 30 })] },
+    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-STALE-CONTEXT');
+
+    const newStation: Station = { ...currentStation, id: 'stn-new-origin' };
+    act(() => rerender({ ...baseProps, currentStation: newStation, currentArrivals: [] }));
     expect(result.current.prevTrain).toBeNull();
   });
 
-  it('이미 지나간(arrivalSeconds < 0) 열차는 후보에서 제외한다', () => {
-    const nextArrival: StationArrival = {
-      up: [],
-      down: [makeTrain({ trainCode: 'T-PASSED', arrivalSeconds: -5 })],
-    };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+  it('#2656 리뷰 LOW-3 계승 — 출발역/호선/방향이 같아도 nextStationName만 바뀌면 후보를 무효화한다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-OLD-NEXT', arrivalSeconds: 30 })] },
+    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-OLD-NEXT');
 
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
+    act(() => rerender({ ...baseProps, nextStationName: '삼성', currentArrivals: [] }));
     expect(result.current.prevTrain).toBeNull();
   });
 
-  it('후보가 없으면 null', () => {
-    const nextArrival: StationArrival = { up: [], down: [] };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain).toBeNull();
-  });
-
-  it('arrival이 아직 null이면(첫 폴링 전) prevTrain null', () => {
-    mockUseArrival.mockReturnValue(arrivalRet(null, true));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain).toBeNull();
-    expect(result.current.loading).toBe(true);
-  });
-
-  it('currentStation이 null이면 prevTrain null (route/destination 유무와 무관)', () => {
-    const nextArrival: StationArrival = { up: [], down: [makeTrain({ trainCode: 'T-X', arrivalSeconds: 10 })] };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation: null,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain).toBeNull();
-  });
-
-  it('nextStationName이 null이면 prevTrain null', () => {
-    const nextArrival: StationArrival = { up: [], down: [makeTrain({ trainCode: 'T-X', arrivalSeconds: 10 })] };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: null,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain).toBeNull();
-  });
-
-  it('line이 null이면 prevTrain null', () => {
-    const nextArrival: StationArrival = { up: [], down: [makeTrain({ trainCode: 'T-X', arrivalSeconds: 10 })] };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: null,
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain).toBeNull();
-  });
-
-  it('nextStation lookup 실패(findStationByNameAndLine이 undefined 반환) 시 prevTrain null', () => {
-    mockFindStationByNameAndLine.mockReturnValue(undefined);
-    const nextArrival: StationArrival = { up: [], down: [makeTrain({ trainCode: 'T-X', arrivalSeconds: 10 })] };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
-    const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
-    );
-
-    expect(result.current.prevTrain).toBeNull();
-  });
-
-  it('#2179 — 환승역(origin과 다른 line) currentStation을 넘겨도 동일하게 전열차를 산출한다 (재사용 검증, 복제 구현 없음)', () => {
+  it('환승 슬롯(다른 line의 currentStation)도 동일 규칙을 재사용한다 — 복제 구현 없음', () => {
     const transferStation: Station = {
       id: 'stn-transfer',
       name: '건대입구',
@@ -347,282 +212,98 @@ describe('usePrevTrainCandidate', () => {
       lat: 37.54,
       lng: 127.07,
     } as Station;
-    const transferNextStation: Station = {
-      id: 'stn-transfer-next',
-      name: '뚝섬유원지',
+    jest.setSystemTime(0);
+    const transferProps: UsePrevTrainCandidateInputs = {
+      route,
+      destinationName: '잠실',
+      currentStation: transferStation,
+      nextStationName: '뚝섬유원지',
       line: '7',
-      lat: 37.531,
-      lng: 127.066,
-    } as Station;
-    mockFindStationByNameAndLine.mockReturnValue(transferNextStation);
-    const nextArrival: StationArrival = {
-      up: [],
-      down: [makeTrain({ trainCode: 'T-TRANSFER-DEPARTED', arrivalSeconds: 30, line: '7' })],
+      currentArrivals: [makeTrain({ trainCode: 'T-TRANSFER', arrivalSeconds: 30, line: '7' })],
     };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: transferProps,
+    });
+    act(() => rerender({ ...transferProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-TRANSFER');
+  });
 
+  it('backstop — 다음 열차 출발 전이가 오래(PREV_TRAIN_CANDIDATE_BACKSTOP_MS) 관측되지 않으면 결국 만료된다', () => {
+    jest.setSystemTime(0);
+    const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-STUCK', arrivalSeconds: 30 })] },
+    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-STUCK');
+
+    act(() => jest.advanceTimersByTime(PREV_TRAIN_CANDIDATE_BACKSTOP_MS - 10_000));
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain?.train.trainCode).toBe('T-STUCK'); // 아직 backstop 전
+
+    act(() => jest.advanceTimersByTime(20_000));
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(result.current.prevTrain).toBeNull(); // backstop 도달
+  });
+
+  it('currentStation이 null이면 prevTrain null (게이트)', () => {
     const { result } = renderHook(() =>
-      usePrevTrainCandidate({
-        route,
-        destinationName: '잠실',
-        currentStation: transferStation,
-        nextStationName: transferNextStation.name,
-        line: '7',
-        currentArrivals: [],
-      }),
+      usePrevTrainCandidate({ ...baseProps, currentStation: null, currentArrivals: [] }),
     );
+    expect(result.current.prevTrain).toBeNull();
+  });
 
-    expect(result.current.prevTrain?.train.trainCode).toBe('T-TRANSFER-DEPARTED');
+  it('nextStationName이 null이면 prevTrain null (게이트)', () => {
+    const { result } = renderHook(() =>
+      usePrevTrainCandidate({ ...baseProps, nextStationName: null, currentArrivals: [] }),
+    );
+    expect(result.current.prevTrain).toBeNull();
+  });
+
+  it('line이 null이면 prevTrain null (게이트)', () => {
+    const { result } = renderHook(() => usePrevTrainCandidate({ ...baseProps, line: null, currentArrivals: [] }));
+    expect(result.current.prevTrain).toBeNull();
   });
 
   it('route/destinationName이 없으면 direction 계산 없이(null) 진행 — resolveTripDirection 미호출', () => {
-    const nextArrival: StationArrival = { up: [], down: [makeTrain({ trainCode: 'T-X', arrivalSeconds: 10 })] };
-    mockUseArrival.mockReturnValue(arrivalRet(nextArrival));
-
     renderHook(() =>
-      usePrevTrainCandidate({
-        route: null,
-        destinationName: null,
-        currentStation,
-        nextStationName: nextStation.name,
-        line: '2',
-        currentArrivals: [],
-      }),
+      usePrevTrainCandidate({ ...baseProps, route: null, destinationName: null, currentArrivals: [] }),
     );
-
     expect(mockResolveTripDirection).not.toHaveBeenCalled();
   });
 
-  describe('#2179 — 다음역마저 통과해 candidate pool이 0으로 떨어져도 TTL 내에는 직전 후보를 유지', () => {
-    const baseProps: UsePrevTrainCandidateInputs = {
-      route,
-      destinationName: '잠실',
-      currentStation,
-      nextStationName: nextStation.name,
-      line: '2',
-      currentArrivals: [],
-    };
-
-    beforeEach(() => {
-      jest.useFakeTimers();
+  it('후보가 없으면(아무것도 출발 전이) tick interval이 등록되지 않는다', () => {
+    jest.setSystemTime(0);
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-STILL-THERE', arrivalSeconds: 30 })] },
     });
+    act(() => jest.advanceTimersByTime(60_000));
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
 
-    afterEach(() => {
-      act(() => jest.runOnlyPendingTimers());
-      jest.useRealTimers();
-      jest.restoreAllMocks();
+  it('후보가 생기면 tick interval이 시작되고, backstop 만료로 후보가 사라지면 clearInterval된다', () => {
+    jest.setSystemTime(0);
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    const { rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-GATED', arrivalSeconds: 30 })] },
     });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(clearIntervalSpy).not.toHaveBeenCalled();
 
-    it('탑승 열차가 다음역도 통과해 pool이 비면(candidates=0) 직전 후보를 캐시에서 반환하고, 빈 폴링이 반복돼도 유지된다', () => {
-      jest.setSystemTime(1_000_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-DEPARTED', arrivalSeconds: 30 })] }),
-      );
+    act(() => jest.advanceTimersByTime(PREV_TRAIN_CANDIDATE_BACKSTOP_MS + 10_000));
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
 
-      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED');
-      // stopSeconds(150) - arrivalSeconds(30) = 120
-      expect(result.current.prevTrain?.elapsedSeconds).toBe(120);
-
-      // 1차 빈 폴링 — 열차가 다음역마저 통과, pool에서 완전히 사라짐(candidates=0)
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED');
-
-      act(() => jest.advanceTimersByTime(30_000));
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED');
-      expect(result.current.prevTrain?.elapsedSeconds).toBe(150); // 120 + 30
-
-      // 2차 빈 폴링(freshCandidate가 연속으로 null인 케이스 재현) — 여전히 캐시 유지.
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-DEPARTED');
+  it('tick interval은 후보가 있는 상태에서 언마운트 시 정리된다', () => {
+    jest.setSystemTime(0);
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    const { rerender, unmount } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+      initialProps: { ...baseProps, currentArrivals: [makeTrain({ trainCode: 'T-UNMOUNT', arrivalSeconds: 30 })] },
     });
-
-    it('빈 폴링을 여러 차례 거친 뒤 TTL(PREV_TRAIN_CANDIDATE_TTL_MS) 경과 시 캐시도 만료되어 null — #2656 리뷰 회귀 가드 (freshCandidate/contextKey만으로는 만료 분기가 재실행되지 않던 버그 재현)', () => {
-      jest.setSystemTime(2_000_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-EXPIRING', arrivalSeconds: 30 })] }),
-      );
-
-      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-EXPIRING');
-
-      // 이후 모든 폴링에서 pool이 비어있음 — freshCandidate/contextKey는 이 시퀀스 내내 각각
-      // null/동일 key로 고정된다(구코드가 만료를 감지하지 못하던 정확한 조건). 이 케이스는 최초
-      // 목격과 마지막 목격이 동일 시각(첫 폴링에서 딱 한 번만 관측)이라 last-seen 기준 TTL과
-      // first-seen 기준 TTL이 우연히 일치 — 순수 "만료 재실행" 회귀만 검증한다.
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
-
-      const pollStepMs = 60_000;
-      const stepsBeforeTtl = Math.floor(PREV_TRAIN_CANDIDATE_TTL_MS / pollStepMs) - 1;
-      // TTL 도달 전 — 빈 폴링을 여러 차례 거쳐도 캐시 유지.
-      for (let i = 0; i < stepsBeforeTtl; i += 1) {
-        act(() => jest.advanceTimersByTime(pollStepMs));
-        act(() => rerender(baseProps));
-      }
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-EXPIRING');
-
-      // TTL을 확실히 초과하는 추가 경과.
-      const remainingToExceedTtl = PREV_TRAIN_CANDIDATE_TTL_MS - stepsBeforeTtl * pollStepMs + pollStepMs;
-      act(() => jest.advanceTimersByTime(remainingToExceedTtl));
-      act(() => rerender(baseProps));
-
-      expect(result.current.prevTrain).toBeNull();
-    });
-
-    it('#2656 리뷰 MEDIUM-1 회귀 — TTL 시계는 최초 목격이 아니라 마지막 목격 시각부터 흐른다', () => {
-      // 도착정보 API 특성상 "떠난 열차"가 다음역 도착목록에 보통 2~2.5분간 계속 관측된다(매 폴링마다
-      // 새 arrival 참조). 이 구간 동안 cachedAt이 최초 목격 시각에 고정되면(구버전 버그), pool이
-      // 실제로 비어 캐시가 "쓰이기 시작"하는 시점엔 이미 TTL의 상당 부분이 소진돼 있다.
-      jest.setSystemTime(0);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-LINGER', arrivalSeconds: 30 })] }),
-      );
-      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-LINGER'); // t=0, 최초 목격
-
-      act(() => jest.advanceTimersByTime(60_000)); // t=60_000
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-LINGER', arrivalSeconds: 25 })] }),
-      );
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-LINGER');
-
-      act(() => jest.advanceTimersByTime(60_000)); // t=120_000 — 마지막 실제 목격 시각
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-LINGER', arrivalSeconds: 20 })] }),
-      );
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-LINGER');
-
-      // 다음역마저 통과 — pool에서 사라짐(t=130_000 폴링)
-      act(() => jest.advanceTimersByTime(10_000)); // t=130_000
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-LINGER'); // 캐시로 유지 시작
-
-      // t=350_000 — "최초 목격(t=0)" 기준 TTL(5분)이라면 t=300_000에 이미 만료됐어야 하지만,
-      // "마지막 목격(t=120_000)" 기준이면 만료 시각은 t=420_000이라 아직 유효해야 한다.
-      act(() => jest.advanceTimersByTime(220_000));
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-LINGER');
-
-      // t=430_000 — 마지막 목격(120_000) 기준으로도 TTL을 넘겨 결국 만료된다(무한 캐시 아님).
-      act(() => jest.advanceTimersByTime(80_000));
-      act(() => rerender(baseProps));
-      expect(result.current.prevTrain).toBeNull();
-    });
-
-    it('trip context(출발역)가 바뀌면 이전 캐시를 즉시 무효화한다', () => {
-      jest.setSystemTime(3_000_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-STALE-CONTEXT', arrivalSeconds: 30 })] }),
-      );
-
-      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-STALE-CONTEXT');
-
-      const newStation: Station = { ...currentStation, id: 'stn-new-origin' };
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
-      act(() => jest.advanceTimersByTime(10_000));
-      act(() => rerender({ ...baseProps, currentStation: newStation }));
-
-      expect(result.current.prevTrain).toBeNull();
-    });
-
-    it('#2656 리뷰 LOW-3 — 출발역/호선/방향이 같아도 nextStationName만 바뀌면 캐시를 무효화한다', () => {
-      jest.setSystemTime(3_500_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-OLD-NEXT', arrivalSeconds: 30 })] }),
-      );
-
-      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-OLD-NEXT');
-
-      const otherNextStation: Station = { ...nextStation, id: 'stn-other-next', name: '삼성' };
-      mockFindStationByNameAndLine.mockReturnValue(otherNextStation);
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
-      act(() => jest.advanceTimersByTime(10_000));
-      act(() => rerender({ ...baseProps, nextStationName: otherNextStation.name }));
-
-      expect(result.current.prevTrain).toBeNull();
-    });
-
-    it('신선한 candidate가 다시 나타나면 캐시된 오래된 후보 대신 최신 candidate로 갱신한다', () => {
-      jest.setSystemTime(4_000_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-OLD', arrivalSeconds: 30 })] }),
-      );
-      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-OLD');
-
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-NEW-FRESH', arrivalSeconds: 20 })] }),
-      );
-      act(() => jest.advanceTimersByTime(30_000));
-      act(() => rerender(baseProps));
-
-      expect(result.current.prevTrain?.train.trainCode).toBe('T-NEW-FRESH');
-    });
-
-    it('#2656 리뷰 — 캐시가 없으면(candidate 산출 자체가 없으면) tick interval이 아예 등록되지 않는다', () => {
-      jest.setSystemTime(7_000_000);
-      mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
-      const setIntervalSpy = jest.spyOn(global, 'setInterval');
-
-      renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      act(() => jest.advanceTimersByTime(60_000));
-
-      expect(setIntervalSpy).not.toHaveBeenCalled();
-    });
-
-    it('#2656 리뷰 — 캐시가 생기면 tick interval이 시작되고, TTL 만료로 캐시가 사라지면 clearInterval된다', () => {
-      jest.setSystemTime(8_000_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-GATED', arrivalSeconds: 30 })] }),
-      );
-      const setIntervalSpy = jest.spyOn(global, 'setInterval');
-      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
-
-      renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
-      expect(clearIntervalSpy).not.toHaveBeenCalled();
-
-      act(() => jest.advanceTimersByTime(PREV_TRAIN_CANDIDATE_TTL_MS + 10_000));
-
-      expect(clearIntervalSpy).toHaveBeenCalled();
-    });
-
-    it('TTL tick interval은 캐시가 있는 상태에서 언마운트 시 정리된다', () => {
-      jest.setSystemTime(9_000_000);
-      mockUseArrival.mockReturnValue(
-        arrivalRet({ up: [], down: [makeTrain({ trainCode: 'T-UNMOUNT', arrivalSeconds: 30 })] }),
-      );
-      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
-
-      const { unmount } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
-        initialProps: baseProps,
-      });
-      unmount();
-
-      expect(clearIntervalSpy).toHaveBeenCalled();
-    });
+    act(() => rerender({ ...baseProps, currentArrivals: [] }));
+    unmount();
+    expect(clearIntervalSpy).toHaveBeenCalled();
   });
 });
