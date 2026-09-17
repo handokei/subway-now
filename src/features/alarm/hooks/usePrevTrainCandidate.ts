@@ -127,7 +127,10 @@ export function usePrevTrainCandidate({
 
     // 폴링 간격이 배차보다 넓어 한 번에 여러 대가 사라졌다면, 마지막으로 도착 예정이었던(=arrivalSeconds
     // 최솟값) 열차가 가장 나중에 출발한 열차다 — 그 열차를 새 전열차 후보로 채택한다.
-    const newest = departedTrains.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min));
+    const newest = departedTrains.reduce(
+      (min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min),
+      departedTrains[0],
+    );
     setDeparted({ contextKey, train: newest, detectedAtMs: Date.now() });
   }, [currentArrivals, contextKey, isActive]);
 
