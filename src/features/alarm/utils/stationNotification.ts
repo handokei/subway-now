@@ -52,6 +52,7 @@ import { getLegAdvance } from './legAdvanceStorage';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
 import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from './notificationCategory';
 import type { LineNumber } from '../../../shared/types/station';
+import { logFiredLaFallbackNotification, logSuppressedLaFallbackContentDedup } from './alarmLog';
 import {
   logPushReceipt,
   mapWaypointKindToReceiptKind,
@@ -115,6 +116,46 @@ async function scheduleNotification(
     content,
     trigger: null,
   });
+}
+
+/**
+ * #2687 — LA fallback 알림(iOS LA 비활성/예외, Android) content dedup.
+ *
+ * LA가 죽어 있으면 GPS/BG 파이프라인(stationPipeline.ts)과 FG effect(HomeScreen.tsx)가
+ * 고빈도로 `updateStationNotification`을 호출하는데, 직전 발사와 (title, body)가 완전히
+ * 같아도 무조건 재예약해 iOS가 매번 새 배너를 띄우던 회귀(동일 내용 30회+ 폭주)를 막는다.
+ *
+ * 기준은 **내용 동일성**이지 시간이 아니다 — 내용이 바뀌면 dedup 없이 즉시 갱신돼야 한다.
+ * (title, body)가 조금이라도 다르면 통과시킨다.
+ */
+let lastFallbackNotificationContent: { title: string; body: string } | null = null;
+
+/** trip 종료/알림 해제 시 리셋 — 다음 trip 첫 발사가 이전 trip 내용과 우연히 같아도 막히지 않게. */
+function resetFallbackNotificationDedup(): void {
+  lastFallbackNotificationContent = null;
+}
+
+/** 테스트용 — 모듈 in-memory dedup 상태를 test case 사이에 격리. */
+export function _resetFallbackNotificationDedupForTests(): void {
+  resetFallbackNotificationDedup();
+}
+
+async function scheduleFallbackStationNotification(
+  stationName: string,
+  content: { title: string; body: string },
+): Promise<void> {
+  const { title, body } = content;
+  if (
+    lastFallbackNotificationContent != null &&
+    lastFallbackNotificationContent.title === title &&
+    lastFallbackNotificationContent.body === body
+  ) {
+    logSuppressedLaFallbackContentDedup(stationName);
+    return;
+  }
+  lastFallbackNotificationContent = { title, body };
+  await scheduleNotification(NOTIFICATION_ID, content);
+  logFiredLaFallbackNotification(stationName);
 }
 
 export function setupNotificationHandler(): void {
@@ -422,9 +463,14 @@ function buildContent(
 
   // destination layer: 목적지 있으면 title에 반영
   const currentName = getStationDisplayName(currentStation);
-  const title = destination
-    ? `${currentName} → ${getStationDisplayName(destination)}`
-    : i18next.t('route.currentStation', { name: currentName });
+  // #2687 — 현재역 == 목적지(도착)면 "용마산 → 용마산" 대신 도착 문구. 기존 station-passed
+  // 알림이 쓰던 'route.stationPassed' 키 재사용 — 새 키 추가 없이 동일 "N역 도착" 의미 공유.
+  const hasArrived = destination != null && isSameStationName(currentStation.name, destination.name);
+  const title = hasArrived
+    ? i18next.t('route.stationPassed', { name: currentName })
+    : destination
+      ? `${currentName} → ${getStationDisplayName(destination)}`
+      : i18next.t('route.currentStation', { name: currentName });
 
   // route layer: 경로 정보가 있으면 body에 반영
   if (destination && route) {
@@ -646,7 +692,7 @@ export async function updateStationNotification(
     if (!liveActivityEnabled) {
       notifLogger.info('Live Activity 비활성 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
-      await scheduleNotification(NOTIFICATION_ID, { title, body });
+      await scheduleFallbackStationNotification(currentStation.name, { title, body });
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
@@ -683,7 +729,7 @@ export async function updateStationNotification(
       liveActivityLogger.error('업데이트 실패:', e);
       notifLogger.info('Live Activity 실패 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
-      await scheduleNotification(NOTIFICATION_ID, { title, body });
+      await scheduleFallbackStationNotification(currentStation.name, { title, body });
     }
     return;
   }
@@ -691,7 +737,7 @@ export async function updateStationNotification(
   // Android: 기존 expo-notifications 유지
   const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
   notifLogger.info('Android 알림:', title, body);
-  await scheduleNotification(NOTIFICATION_ID, { title, body });
+  await scheduleFallbackStationNotification(currentStation.name, { title, body });
   notifLogger.info('알림 예약 완료');
 }
 
@@ -703,6 +749,9 @@ export async function clearStationNotification(): Promise<void> {
   // #1094: 위젯은 nearest station 결과를 따로 mirror 하므로 여기서 비우지 않는다.
   // destination이 없거나 경로가 끝나도 사용자가 500m 내 역 근처에 있는 동안엔
   // 위젯이 계속 현재 역을 보여줘야 한다. 위젯 lifecycle은 HomeScreen mirror effect가 담당.
+  // #2687 — 알림을 내리는 유일한 지점. 다음 trip의 첫 fallback 발사가 이전 trip과 우연히
+  // 같은 (title, body)라 dedup에 막히지 않도록 여기서 무조건 리셋한다.
+  resetFallbackNotificationDedup();
   if (Platform.OS === 'ios') {
     if (!LiveActivity.isLiveActivityEnabled()) {
       notifLogger.info('알림 해제 (Live Activity 비활성)');
