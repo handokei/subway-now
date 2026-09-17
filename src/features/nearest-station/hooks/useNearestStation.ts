@@ -235,6 +235,15 @@ export interface UseNearestStationInputs {
    * 배경은 useFusedNearestStation.ts의 동명 파라미터 주석 참조. 미전달 시 'primary'.
    */
   instrumentationRole?: 'primary' | 'observer';
+  /**
+   * #2667 — 이 인스턴스가 FG watch를 유지할지 여부(기본 true = 기존 동작).
+   *
+   * 탭 네비게이션에서 화면은 한 번 방문하면 계속 mount된 채 남는다. `MapScreen`처럼 화면이
+   * 보일 때만 위치가 필요한 소비자가 기본값으로 이 훅을 쓰면, 그 탭을 한 번 열어본 뒤부터
+   * **앱 수명 내내 두 번째 GPS watch가 돈다**(HomeScreen의 것과 별개). false로 내리면 진행
+   * 중인 구독을 정리하고 새로 시작하지 않는다 — 다시 true가 되면 즉시 복구된다.
+   */
+  enabled?: boolean;
 }
 
 export function useNearestStation(
@@ -271,6 +280,11 @@ export function useNearestStation(
     inputs.instrumentationRole ?? 'primary',
   );
   instrumentationRoleRef.current = inputs.instrumentationRole ?? 'primary';
+  // #2667 — watch 유지 여부 SSOT. startWatch가 호출 시점에 읽는다(콜백 identity 안정 유지 —
+  // instrumentationRoleRef와 동일 패턴). false면 어떤 트리거로 startWatch가 불려도 구독을
+  // 만들지 않는다(AppState 'active' 복귀 / 프로파일 flip / refresh 포함).
+  const enabledRef = useRef(inputs.enabled !== false);
+  enabledRef.current = inputs.enabled !== false;
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
   // 진단용 누적 카운터: lastKnown 캐시 fix가 freshness/accuracy 게이트에서 거부된 횟수.
@@ -408,6 +422,14 @@ export function useNearestStation(
     // userLocation 변화에 의존하므로 throttle 안에 두면 천천히 이동할 때 후보가 잠긴다.
     setSpeedMps(isValidGpsSpeedMps(speed) ? speed : null);
     setAccuracyMeters(accuracy ?? null);
+    // #2660 — "좌표 동일하면 이전 참조 유지(bail-out)"를 시도했다가 **되돌렸다**. 이 참조는
+    // 표시/후보 메모만 쓰는 게 아니라 `usePositionStability`가 **fix 도착 이벤트**로 소비한다
+    // (`useEffect(..., [userLocation])`가 매 갱신마다 타임스탬프 샘플을 push → 60s 창으로
+    // static/moving 판정). 참조를 고정하면 정지 사용자(같은 좌표 반복)에게 샘플이 끊겨 판정이
+    // 마지막 값에 얼어붙고, motion 권한 거절 + speed=null 조합에서 `movementGate`의 정적 차단
+    // (#733)이 무력화된다. 상태 전파 억제와 시간창 이력 수집은 다른 관심사라 한 참조로 겸용할 수
+    // 없다 — 하려면 `usePositionStability`를 fix-도착 신호(`lastFixAtMs`)에 붙이는 선행 작업이
+    // 필요하고, 그건 이 PR의 범위(중복 구독 제거)를 넘는다.
     setUserLocation({ lat: latitude, lng: longitude });
 
     // 표시값(result/variants)은 3m throttle 유지 — 잦은 리렌더 방지.
@@ -441,14 +463,38 @@ export function useNearestStation(
     }
   }, [evaluateGpsQuality]);
 
+  // #2660 — watch 구독 세대(generation) 토큰. `startWatch`는 `await watchPositionAsync` 앞뒤로
+  // 비동기 창이 있는데, 그 사이에 다른 `startWatch`(프로파일 flip / AppState active → refresh /
+  // effect 재실행)나 `stopWatch`(BG 전환 / unmount)가 끼어들 수 있다. 기존 코드는 결과 구독을
+  // 무조건 `subscriptionRef.current`에 덮어썼기 때문에, 먼저 시작된 구독의 핸들이 **유실되어 영영
+  // remove되지 않는 고아 watcher**가 남았다 — 그 고아는 앱 수명 내내 콜백을 계속 쏘고, 재시작이
+  // 반복될수록 누적되어 fix 콜백 빈도가 배수로 뛴다(#2594 실측: 이동 중 16.65/s, 최소 간격 11ms —
+  // 단일 CoreLocation 스트림으로는 설명되지 않는 값). `stopWatch` 직후 resolve되는 구독이
+  // 그대로 살아남아 BG에서 GPS가 계속 도는 경로도 같은 뿌리다.
+  //
+  // OS watch 옵션은 전혀 건드리지 않는다 — #1416에서 distanceInterval을 올렸다가 정지 상태
+  // 정확도 고착으로 #1440에서 되돌린 이력이 있고, 이 수정은 그 축과 무관하다(중복 구독 제거).
+  const watchGenerationRef = useRef(0);
+
   const stopWatch = useCallback(() => {
+    // 진행 중인 startWatch가 만들어낼 구독까지 무효화한다(아래 세대 대조에서 즉시 remove).
+    watchGenerationRef.current += 1;
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
   }, []);
 
   const startWatch = useCallback(async () => {
+    const generation = ++watchGenerationRef.current;
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
+    // #2667 — 비활성 인스턴스(예: 포커스되지 않은 탭)는 구독을 만들지 않는다. 세대는 이미
+    // 올렸으므로 in-flight였던 이전 start의 결과도 뒤늦게 살아남지 못한다. 이 게이트를
+    // startWatch 안에 두는 이유: mount/AppState 'active'/프로파일 flip/refresh 등 start 트리거가
+    // 여러 곳이라 호출부마다 조건을 복제하면 한 곳만 빠져도 조용히 watch가 되살아난다.
+    if (!enabledRef.current) {
+      setLoading(false);
+      return;
+    }
     if (IS_E2E_MOCK) {
       setError(null);
       setPermissionDenied(false);
@@ -544,7 +590,7 @@ export function useNearestStation(
       //  stopWatch→startWatch로 재구성한다(아래 useEffect).
       // 참고: pausesUpdatesAutomatically / activityType은 expo-location foreground 옵션에
       //  노출되지 않아 적용 불가. background task 옵션에서만 사용 가능.
-      subscriptionRef.current = await Location.watchPositionAsync(
+      const subscription = await Location.watchPositionAsync(
         fgWatchOptionsFor(throttledRef.current, lockActiveRef.current),
         (location) => {
           // #2594 (옵션 D) — 계측 전용, 동작 변경 없음. 표시 게이트 통과 여부와 무관하게
@@ -640,8 +686,19 @@ export function useNearestStation(
           applyLocation(location.coords, location.timestamp);
         },
       );
+      // #2660 — await하는 사이에 다른 start/stop이 세대를 올렸다면 이 구독은 이미 "이전 세대"다.
+      // ref에 넣지 않고 즉시 remove한다 — 넣으면 현재 세대의 핸들을 덮어써 그쪽이 고아가 된다.
+      if (watchGenerationRef.current !== generation) {
+        subscription.remove();
+        return;
+      }
+      subscriptionRef.current = subscription;
       setLoading(false);
     } catch {
+      // #2660 (코드리뷰 P2) — 실패 경로도 같은 세대 가드를 받아야 한다. 이미 추월당한 stale
+      // 호출의 실패가 error/loading을 덮어쓰면, 최신 세대가 성공적으로 구독 중인데도 화면이
+      // "위치를 가져오는 데 실패"로 바뀐다.
+      if (watchGenerationRef.current !== generation) return;
       setError('위치를 가져오는 데 실패했습니다.');
       setLoading(false);
     }
@@ -747,6 +804,26 @@ export function useNearestStation(
   // #2514 — lockActive 변화도 동일 재시작 트리거로 다룬다. throttled/lockActive 둘 중 하나라도
   // 바뀌면 재시작 — fgWatchOptionsFor가 locked를 최우선으로 판정하므로 throttled 값 변화가
   // lockActive=true 상태에서 일어나도(예: 지하 진입/탈출) 옵션 자체는 계속 locked로 고정된다.
+  // #2667 — enabled 전이 처리. false로 내려가면 즉시 구독을 끊고(탭을 떠난 순간 GPS 정지),
+  // true로 돌아오면 다시 시작한다. AppState가 active가 아니면 시작하지 않는다 — 'background'
+  // 진입 시 stopWatch를 거는 기존 규약과 충돌하지 않게.
+  const prevEnabledRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const enabled = inputs.enabled !== false;
+    const prev = prevEnabledRef.current;
+    prevEnabledRef.current = enabled;
+    // 마운트 pass는 건너뛴다 — 시작은 아래 마운트 effect가 담당한다(중복 start 금지, 기존
+    // 프로파일 flip effect와 동일한 "변화 시에만" 계약). 처음부터 비활성이면 startWatch 내부
+    // 게이트가 구독을 만들지 않으므로 추가 처리가 필요 없다.
+    if (prev === null || prev === enabled) return;
+    if (!enabled) {
+      stopWatch();
+      return;
+    }
+    if (AppState.currentState !== 'active') return;
+    void startWatch();
+  }, [inputs.enabled, startWatch, stopWatch]);
+
   useEffect(() => {
     const nextThrottled = inputs.barometerSubsurface === true || profileWatchDegraded;
     const nextLockActive = inputs.lockActive === true;
