@@ -35,6 +35,8 @@
 import { useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BOARDING_PROMPT_DISPLAYED_IDS_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from '../utils/notificationCategory';
 import { logBoardingPromptFired, logBoardingPromptCategoryReceived } from '../utils/alarmLog';
 import { extractBoardingPromptPayload, type BoardingPromptPayload } from './useBoardingPromptResponder';
@@ -50,6 +52,56 @@ const log = createLogger('boardingPromptDisplayLogger');
 const displayedIdentifiers = new Set<string>();
 
 /**
+ * #2677 — dedup set을 **앱 재시작 너머로** 유지한다.
+ *
+ * 문제: 이 set은 모듈 스코프 in-memory라 프로세스가 죽으면 비워진다. 그런데
+ * `drainPresentedBoardingPrompts`는 mount + AppState 'active'마다 **알림 트레이 전체**를 읽어
+ * "아직 적재 안 된" 항목을 displayed로 센다. 즉 사용자가 트레이에서 치우지 않은 옛 프롬프트 1건이
+ * 앱을 켤 때마다 새로 센 것으로 집계된다.
+ *
+ * 실측(2026-09-17 덤프): 사용자는 프롬프트를 **한 번도 못 봤다고 보고**했는데
+ * `boardingPrompt(all)=8`, `displayed=8`, `responded=0`. 8건 전부 같은 옛 항목("7·건대입구")이
+ * hydrate 4회 × 2(mount+active)로 재계수된 것이었다. 실제로는 그 trip에 프롬프트가 0건이었고,
+ * 계측은 정반대를 가리켜 진단을 오도했다(#2627이 `category-received`에서 고친 것과 같은 병,
+ * 한 층 아래).
+ *
+ * identifier는 OS가 알림마다 부여하는 안정 키라 그대로 영속화해 "알림 1건은 평생 1회만 센다"는
+ * 원래 계약을 프로세스 경계 너머로 복원한다. 무한 증가를 막기 위해 최근 N개만 유지한다 —
+ * 트레이에 남을 수 있는 알림 수보다 충분히 크고, 그보다 오래된 항목은 이미 트레이에서 사라져
+ * 재계수 대상이 아니다.
+ */
+const DISPLAYED_ID_HISTORY_LIMIT = 100;
+/** storage hydrate 1회 보장용 — 동시 호출이 중복 read하지 않도록 promise를 공유한다. */
+let displayedIdentifiersHydration: Promise<void> | null = null;
+
+async function hydrateDisplayedIdentifiers(): Promise<void> {
+  displayedIdentifiersHydration ??= (async () => {
+    try {
+      const raw = await AsyncStorage.getItem(BOARDING_PROMPT_DISPLAYED_IDS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return;
+      for (const id of parsed) {
+        if (typeof id === 'string' && id.length > 0) displayedIdentifiers.add(id);
+      }
+    } catch (err) {
+      // graceful — 복원 실패는 "이번 세션엔 in-memory만" 으로 자연 degrade(기존 동작).
+      log.warn('displayed dedup 복원 실패', err as Error);
+    }
+  })();
+  return displayedIdentifiersHydration;
+}
+
+function persistDisplayedIdentifiers(): void {
+  const recent = Array.from(displayedIdentifiers).slice(-DISPLAYED_ID_HISTORY_LIMIT);
+  void AsyncStorage.setItem(BOARDING_PROMPT_DISPLAYED_IDS_KEY, JSON.stringify(recent)).catch(
+    (err: unknown) => {
+      log.warn('displayed dedup 영속화 실패', err as Error);
+    },
+  );
+}
+
+/**
  * 같은 notification에 대해 displayed 적재가 이미 이루어졌는지 확인.
  * `useBoardingPromptResponder`가 cold-start 보완 시 이 helper로 dedup 체크.
  */
@@ -63,11 +115,13 @@ export function wasBoardingPromptDisplayed(identifier: string): boolean {
  */
 export function markBoardingPromptDisplayed(identifier: string): void {
   displayedIdentifiers.add(identifier);
+  persistDisplayedIdentifiers();
 }
 
 /** 테스트 격리용 — dedup set을 비운다. production 코드에서는 호출하지 않는다. */
 export function __resetBoardingPromptDisplayedDedup(): void {
   displayedIdentifiers.clear();
+  displayedIdentifiersHydration = null;
 }
 
 /**
@@ -150,6 +204,8 @@ function tryLogDisplayed(
     if (!isValidNotificationIdentifier(identifier)) return;
     if (displayedIdentifiers.has(identifier)) return;
     displayedIdentifiers.add(identifier);
+    // #2677 — 이 알림을 셌다는 사실을 앱 재시작 너머로 남긴다(같은 알림 재계수 차단).
+    persistDisplayedIdentifiers();
     logBoardingPromptFired({
       originStation: payload.originStation,
       line: payload.line,
@@ -168,6 +224,9 @@ function tryLogDisplayed(
  * BG 수신분을 replay하지 않으므로 displayed 카운터가 0으로 굳는 회귀를 해결한다.
  */
 async function drainPresentedBoardingPrompts(): Promise<void> {
+  // #2677 — 트레이를 읽기 **전에** 이전 세션의 dedup 기록을 복원한다. 복원 전에 세면 같은 알림이
+  // 앱 재시작마다 새로 센 것으로 집계된다(실측: 프롬프트 0건인 trip에서 displayed=8).
+  await hydrateDisplayedIdentifiers();
   let presented: Notifications.Notification[];
   try {
     presented = await Notifications.getPresentedNotificationsAsync();

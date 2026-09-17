@@ -67,6 +67,10 @@ export const BG_HOP_WINDOW_STATION_KEY = 'subway-now:bg-hop-window-station';
 // 형식: {"tripKey": string, "promptedAt": number, "dismissedAt"?: number} JSON.
 // tripKey는 `${destinationId}|${createdAtBucketMs}` — destination 변경 시 자동 reset.
 export const BOARDING_PROMPT_STATE_KEY = 'subway-now:boarding-prompt-state';
+// #2677 — boarding/disembark prompt "displayed" 계수의 dedup 키(notification identifier) 이력.
+// `useBoardingPromptDisplayLogger`의 tray drain이 앱 재시작마다 같은 옛 알림을 새로 세는 것을
+// 막는다(실측: 프롬프트 0건인 trip에서 displayed=8). 최근 100개만 유지하는 string 배열 JSON.
+export const BOARDING_PROMPT_DISPLAYED_IDS_KEY = 'subway-now:boarding-prompt-displayed-ids';
 // #746 — 사용자가 알람을 dismiss한 시점의 timestamp + 좌표(좌표는 null 가능).
 // dismiss 후 5분 또는 200m 이동까지 모든 카테고리 알람 silence하는 게이트의 SSOT.
 // 형식: {"sinceTs": number, "sinceLat": number | null, "sinceLng": number | null} JSON.

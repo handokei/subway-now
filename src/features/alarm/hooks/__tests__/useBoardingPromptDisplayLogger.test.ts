@@ -12,7 +12,13 @@ import {
   __resetBoardingPromptDisplayedDedup,
 } from '../useBoardingPromptDisplayLogger';
 import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from '../../utils/notificationCategory';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BOARDING_PROMPT_DISPLAYED_IDS_KEY } from '../../../../shared/constants/storageKeys';
 
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn().mockResolvedValue(null),
+  setItem: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock('expo-notifications', () => ({
   addNotificationReceivedListener: jest.fn(),
   getPresentedNotificationsAsync: jest.fn().mockResolvedValue([]),
@@ -316,6 +322,77 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
 
   // #2627 — drain은 category-received 계측을 절대 적재하지 않는다 (트레이 전체 재적재로 인한
   // 가짜 "3연발 backend 재발사" 오진 차단).
+  // #2677 — dedup을 앱 재시작 너머로 유지. 이 set이 in-memory였을 때는 트레이에 남아 있던 옛
+  // 프롬프트 1건이 앱을 켤 때마다 새로 세어져, 실제로는 프롬프트가 0건인 trip에서 displayed=8이
+  // 찍혔다(2026-09-17 덤프 — 사용자는 "탑승 여부 알림 없음"이라 보고).
+  describe('displayed dedup 영속화 (#2677)', () => {
+    it('이전 세션에서 이미 센 알림은 앱 재시작 후 drain해도 다시 세지 않는다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify(['tray-old']));
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-old' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => {
+        expect(Notifications.getPresentedNotificationsAsync).toHaveBeenCalled();
+      });
+      expect(logBoardingPromptFired).not.toHaveBeenCalled();
+    });
+
+    it('처음 세는 알림은 적재하고 그 identifier를 storage에 남긴다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-new' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => expect(logBoardingPromptFired).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+          BOARDING_PROMPT_DISPLAYED_IDS_KEY,
+          expect.stringContaining('tray-new'),
+        ),
+      );
+    });
+
+    it('storage 값이 배열이 아니거나 항목이 손상됐으면 무시하고 진행한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify({ not: 'an array' }));
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-corrupt' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => expect(logBoardingPromptFired).toHaveBeenCalledTimes(1));
+    });
+
+    it('배열 안 잘못된 항목(빈 문자열/숫자)은 건너뛴다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify(['', 42, 'tray-kept']));
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-kept' }),
+        makeNotification({ identifier: 'tray-fresh' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      // 'tray-kept'는 복원돼 skip, 'tray-fresh'만 새로 적재.
+      await waitFor(() => expect(logBoardingPromptFired).toHaveBeenCalledTimes(1));
+    });
+
+    it('영속화 write 실패는 graceful — 적재 자체는 정상 진행', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (AsyncStorage.setItem as jest.Mock).mockRejectedValue(new Error('disk full'));
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-write-fail' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => expect(logBoardingPromptFired).toHaveBeenCalledTimes(1));
+    });
+
+    it('storage 복원 실패는 graceful — 기존(in-memory only) 동작으로 degrade', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('storage down'));
+      (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+        makeNotification({ identifier: 'tray-degraded' }),
+      ]);
+      renderHook(() => useBoardingPromptDisplayLogger());
+      await waitFor(() => expect(logBoardingPromptFired).toHaveBeenCalledTimes(1));
+    });
+  });
+
   describe('drain은 category-received 계측 미호출 (#2627)', () => {
     it('트레이에 비프롬프트 알림 3건 → drain 1회 → category-received 0건 적재', async () => {
       (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
