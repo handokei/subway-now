@@ -70,6 +70,7 @@ import {
 } from '../utils/tripEndedSentinel';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
+import { notifyTripEnded } from '../utils/tripEndedNotification';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { appendAlarmLog, getAlarmLog } from '../utils/alarmLog';
@@ -208,6 +209,13 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
 
         // silent push trip-ended / lifecycle-backstop force-end 와 동일 시퀀스.
         // recall이 cleanup 전에 호출돼야 ROUTE_KEY / DESTINATION_KEY / TRIP_STARTED_AT_KEY 를 읽을 수 있다.
+        // #2675 — 자동 종료를 사용자에게 알린다. 이 경로는 앱이 BG/종료 상태에서도 발화하므로
+        // 화면 내 배너/토스트로는 도달하지 못한다("도착 안내도 종료 알림도 없이 조용히 사라짐",
+        // 2026-09-17 사용자 보고). cleanup 전에 destination snapshot을 읽어 문구에 역명을 싣는다.
+        void notifyTripEnded({
+          destination: useDestinationStore.getState().destination,
+          reason: 'arrived',
+        });
         await triggerTripEndRecall();
         await runTripBoundCleanups();
         await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
