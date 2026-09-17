@@ -178,6 +178,51 @@ describe('useApnsTripRegistration', () => {
       expect(mockLogCrossTripMirrorSkip).toHaveBeenCalledTimes(1);
     });
 
+    // #2683 — 같은 trip의 **재등록**에서는 mirror를 지우지 않는다. 이 effect는 `subsurface`(기압계
+    // 지하 판정)를 deps로 갖고 있어 주행 중 수십 초마다 재실행되는데, 그때마다 mirror를 지우면
+    // device가 backend SSoT를 한 번도 손에 쥐지 못해 표시가 출발역에 얼어붙는다.
+    // 실측(2026-09-17 저녁): 한 trip에 POST /trips 29회 → mirror 29회 삭제 → "성수→용마산"이
+    // 환승역을 지나도 그대로.
+    it('#2683 — 같은 trip 재등록(subsurface 토글 등)에서는 mirror를 지우지 않는다', async () => {
+      const { rerender } = renderHook(
+        ({ subsurface }: { subsurface: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            subsurface,
+          }),
+        { initialProps: { subsurface: false } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 최초 등록은 clear.
+
+      // 지하 진입 → 같은 trip 재등록.
+      rerender({ subsurface: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 추가 clear 없음.
+    });
+
+    it('#2683 — 목적지가 바뀐 새 trip이면 다시 지운다 (race A 차단 의도 보존)', async () => {
+      const otherStation: Station = { ...station, id: '2-999', name: '뚝섬' };
+      const { rerender } = renderHook(
+        ({ dest }: { dest: Station }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+          }),
+        { initialProps: { dest: station } },
+      );
+      await waitFor(() => expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1));
+
+      // #2197 — 이미 등록된 trip의 destination 변경은 ROUTE_CHANGE_DEBOUNCE_MS만큼 지연 발사된다.
+      rerender({ dest: otherStation });
+      await waitFor(() => expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(2), {
+        timeout: ROUTE_CHANGE_DEBOUNCE_MS + 1500,
+      });
+    });
+
     it('route/destination 없으면 clearBackendSsotMirror 호출 안 함 (trip 종료 경로는 별경로)', async () => {
       renderHook(() =>
         useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),

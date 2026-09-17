@@ -965,9 +965,29 @@ export function useApnsTripRegistration({
       // → 이전 SSoT mirror 강제 clear". 본 호출이 register API보다 먼저여야 race A
       // (cleanup 후 OLD trip 지연 push로 mirror 부활) 차단의 1단계로 작동한다.
       // 호출은 멱등 (clearBackendSsotMirror 키 부재 시 graceful no-op).
-      await clearBackendSsotMirror();
-      // #1628 — R11-a 차단 1건 측정. burst dedup으로 같은 site 반복은 첫 1건만 적재.
-      logCrossTripMirrorSkip('register');
+      //
+      // #2683 — **단, "새 trip 등록"일 때만.** 스펙이 요구한 것은 `trip 등록(new)` 시점의 clear인데
+      // 이 지점은 같은 trip의 **재등록**에서도 매번 실행됐다. 재등록은 생각보다 훨씬 잦다 —
+      // 이 effect의 deps에 `subsurface`(기압계 지하 판정)가 들어 있어 지하/지상을 오가는 주행
+      // 중에는 수십 초마다 재실행된다. 2026-09-17 저녁 라이드 실측: 한 trip 동안
+      // `POST /trips` **29회**, 그때마다 mirror가 통째로 지워졌다.
+      //
+      // 그 결과 device는 backend SSoT를 **한 번도 손에 쥐지 못한다** — 표시가 출발역(성수)에
+      // 얼어붙고 환승역을 지나도 갱신되지 않는다(사용자 보고: "성수→용마산 같은 알림이 계속
+      // 날아왔고 건대에서 환승/하차 알림이 없었다").
+      //
+      // 새 trip 판정은 이미 있는 "성공적으로 등록된 trip" 추적을 재사용한다 — route/destination이
+      // 직전 성공분과 같으면 같은 trip의 재등록이므로 mirror를 지우지 않는다. race A(옛 trip의
+      // 지연 push가 mirror를 부활시키는 것)는 trip이 실제로 바뀔 때만 성립하므로 차단 의도는
+      // 그대로 보존된다.
+      const isSameTripReregister =
+        lastSuccessfulRouteSigRef.current === routeSig &&
+        lastSuccessfulDestinationIdRef.current === destination.id;
+      if (!isSameTripReregister) {
+        await clearBackendSsotMirror();
+        // #1628 — R11-a 차단 1건 측정. burst dedup으로 같은 site 반복은 첫 1건만 적재.
+        logCrossTripMirrorSkip('register');
+      }
       // #2129 — token-refresh listener와 동일한 latestInputsRef 단일 출처로 register. 이 시점의
       // ref는 이미 이번 render의 최신 값으로 동기화돼 있어(ref-sync effect가 이 effect보다 먼저
       // 실행) closure의 route/currentStation을 직접 쓰는 것과 결과가 같지만, 두 register 경로가
