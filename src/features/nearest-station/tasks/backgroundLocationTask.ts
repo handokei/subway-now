@@ -150,9 +150,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
   // #2403 — BG task 발화 heartbeat. behavior 무변경 순수 진단 계측: 이 tick이 실제로 깨어났다는
   // 사실 자체와 fix staleness(ageMs)/accuracy를 덤프에 남겨 지하 발화 간격 측정을 가능하게 한다.
-  // 아래 gate/position-train/consensus 발사 로직보다 먼저 fire-and-forget으로 적재 — 그 경로가
-  // 조기 return하거나 fire해도 이 heartbeat는 항상 남는다.
-  logBgTaskHeartbeat({
+  // 아래 gate/position-train/consensus 발사 로직보다 먼저 적재 — 그 경로가 조기 return하거나
+  // fire해도 이 heartbeat는 항상 남는다.
+  // #2681 — await한다. fire-and-forget이면 짧게 끝나는 BG tick에서 write가 flush 전에 잘려
+  // "BG가 안 돌았다"로 보인다(2026-09-17 덤프: bg 알람 5건이 찍힌 tick인데 heartbeat는 24시간 전).
+  await logBgTaskHeartbeat({
     lat: latest.coords.latitude,
     lng: latest.coords.longitude,
     accuracy: latest.coords.accuracy,
