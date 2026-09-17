@@ -83,6 +83,14 @@ import { captureXEvent } from './sentry';
  * pending entry는 발사 직후 삭제되어 사후 추적이 불가능했다 — 반복 발사(pile) 재발 여부를
  * D1만으로 즉시 확정하기 위한 계측 전용 kind. fire/advance 동작에는 관여하지 않는다.
  * `meta`에 `{ pushId, ageMs }`를 싣는다.
+ *
+ * `leg-anchor-observed` (#2700) — `maybeStampLegAnchorFromObservation`(scheduled.ts)이 환승
+ * waypoint advance가 `no-arvlcd`로 실패했음에도 `trip.transferObservedAt`(device sync 관측)이
+ * 유효해 `currentLegAnchor`/`legBoardingEligibleAt`을 stamp한 시점에 1건 append. 같은 anchor의
+ * 창-밖 재-stamp(시각 보정)는 재기록하지 않는다(#2073 quota 보호). `transfer-advance`(outcome=
+ * 'advanced', advance 성공 경로)와 `leg-boarding-prompt`(anchor 소비 결과)와는 별개 kind라
+ * D1에서 "관측이 anchor를 살렸는지"를 독립적으로 조회할 수 있다. `meta`에 `{ observedAtMs }`를
+ * 싣는다. fire/advance/도보 게이트 판정에는 관여하지 않는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -101,7 +109,8 @@ export type TripEventKind =
   | 'leg-boarding-prompt'
   | 'hop-end-prompt'
   | 'fallback-alert-fired'
-  | 'fallback-implicit-ack';
+  | 'fallback-implicit-ack'
+  | 'leg-anchor-observed';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

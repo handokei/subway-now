@@ -4971,6 +4971,9 @@ export async function runTrainCodeTracking(
   // 마커를 건드리지 않는다 — 다음 전이(no-arvlcd↔advanced)에서 자연히 감지된다.
   if (waypoint.kind === 'transfer' && estimate === null) {
     await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lock-active', 'no-arvlcd', now);
+    // #2700 — advance가 no-arvlcd로 침묵해도 사용자 도착 관측이 유효하면 leg anchor를 stamp해
+    // 도보 시계를 시작시킨다(발사/waypoint advance 게이트 자체는 무변경).
+    await maybeStampLegAnchorFromObservation(trip, waypoint, env, now);
   }
   if (estimate === null) {
     // #1824 — Seoul API outage 시 arrivals + positions 모두 없어도 FALLBACK_HOP_SEC(90s) 기반
@@ -5450,6 +5453,147 @@ export async function advanceBoardingLockWaypoint(
  * `waypoint.kind === 'destination'`은 이 함수 호출 전 caller가 먼저 처리해야 한다(cleanup 후
  * return) — 이 함수는 transfer/intermediate 통과만 다룬다.
  */
+/**
+ * #2700 — `currentLegAnchor`가 이번 waypoint/다음 leg 조합과 이미 일치하는지(같은 anchor).
+ * `completeWaypointAdvance`(advance 성공)와 `maybeStampLegAnchorFromObservation`(관측 기반,
+ * #2700)이 공유한다 — 두 트리거 중 어느 쪽이 먼저 stamp했든 같은 판정 기준을 써야 서로를
+ * 멱등하게 무시할 수 있다(#2655 회귀 클래스: 재-stamp가 도보 시계를 리셋). 역명 비교는
+ * #1410/#2566 정규화 drift(괄호 부제 등) 흡수를 위해 `normalizeStationName`을 거친다.
+ */
+function isSameLegAnchor(trip: Trip, waypoint: Waypoint, nextLegWaypoint: Waypoint): boolean {
+  return (
+    trip.currentLegAnchor !== undefined &&
+    normalizeStationName(trip.currentLegAnchor.boardingStation) === normalizeStationName(waypoint.stationName) &&
+    trip.currentLegAnchor.line === nextLegWaypoint.line
+  );
+}
+
+/**
+ * #2655 (#2700에서 공유 추출) — 재처리가 최초 stamp 결과(legBoardingEligibleAt) 기준 한
+ * 도보시간 창 안에 들어오면 재-stamp를 no-op으로 만든다(KV 레이스/중복 트리거 대비). 창 밖이면
+ * 재-stamp를 허용해 조기-advance 교정(#2655 코드리뷰 MEDIUM-2)을 그대로 살린다.
+ */
+function isFreshLegAnchorReprocess(
+  trip: Trip,
+  isSameAnchor: boolean,
+  transferWalkSeconds: number,
+  now: number,
+): boolean {
+  return (
+    isSameAnchor &&
+    trip.legBoardingEligibleAt !== undefined &&
+    now < trip.legBoardingEligibleAt + transferWalkSeconds * 1000
+  );
+}
+
+/**
+ * #2655 (#2700에서 공유 추출) — `trip.transferObservedAt`(accuracy≤50m device sync 관측)이 이
+ * waypoint 도착 시각으로 신뢰 가능하면 그 시각을, 아니면 undefined를 반환한다. 채택 조건(역명
+ * 정규화 일치 / 미래 값 배제 / `TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER` 상한)은
+ * #2645/#2655가 확립한 것 그대로다 — #2700 요구사항 2("새 게이트 금지")에 따라 이 함수 밖에서
+ * 별도 조건을 추가하지 않는다.
+ */
+function resolveTrustedTransferObservedAt(
+  trip: Trip,
+  waypoint: Waypoint,
+  transferWalkSeconds: number,
+  now: number,
+): number | undefined {
+  const observed = trip.transferObservedAt;
+  const observationMaxAgeMs = transferWalkSeconds * 1000 * TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER;
+  if (
+    observed !== undefined &&
+    normalizeStationName(observed.stationName) === normalizeStationName(waypoint.stationName) &&
+    observed.atMs <= now &&
+    now - observed.atMs <= observationMaxAgeMs
+  ) {
+    return observed.atMs;
+  }
+  return undefined;
+}
+
+/**
+ * #2515/#2655 (#2700에서 공유 추출) — leg anchor(도보 게이트 시작점) 필드를 stamp한다. 도보
+ * 게이트(`legBoardingEligibleAt`) 자체는 이 함수가 만들 뿐 우회하지 않는다 — 게이트 강제는
+ * `maybeFireLegBoardingPrompt`가 여전히 전담한다(#2700 요구사항 3).
+ */
+function stampCurrentLegAnchor(
+  trip: Trip,
+  waypoint: Waypoint,
+  nextLegWaypoint: Waypoint,
+  arrivedAt: number,
+  transferWalkSeconds: number,
+): void {
+  trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
+  trip.legBoardingEligibleAt = arrivedAt + transferWalkSeconds * 1000;
+  trip.legBoardingPromptState = undefined;
+  // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
+  // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
+  trip.legResolveStreak = undefined;
+}
+
+/**
+ * #2700 — advance가 `no-arvlcd`로 실패해도(Seoul arvlCd/positions 둘 다 침묵) 사용자가 이미
+ * 환승역에 도착했다는 관측(`trip.transferObservedAt`)이 유효하면 leg anchor를 stamp해 도보
+ * 시계를 시작시킨다. advance 성공(`completeWaypointAdvance`)이 갖고 있던 "유일한 트리거"를
+ * 관측으로도 열어주는 것 — 이 함수는 시계의 시작점만 앞당길 뿐, 발사/waypoint advance 자체가
+ * 요구하는 열차 확증(no-arvlcd 게이트)은 전혀 느슨해지지 않는다(#2700 금지 사항 — advance 게이트
+ * 자체를 느슨하게 하지 말 것).
+ *
+ * 신뢰 조건은 `completeWaypointAdvance`와 완전히 동일한 `resolveTrustedTransferObservedAt`을
+ * 공유한다(#2700 요구사항 2 — 새 게이트 금지). 도보 게이트 자체(`legBoardingEligibleAt`)는 그대로
+ * 강제되고(#2700 요구사항 3), `isFreshLegAnchorReprocess`를 공유해 advance가 나중에 성공해도
+ * 같은 창 안이면 재-stamp가 no-op이 되어 시계가 리셋되지 않는다(#2700 요구사항 4, #2655 회귀
+ * 클래스 재발 방지).
+ *
+ * caller 계약: `waypoint`는 아직 advance되지 않은(=`trip.waypoints[0]`) transfer waypoint —
+ * `runTrainCodeTracking`(lock-active)과 `runLocklessTransfer`(lockless) 양쪽의 `no-arvlcd` 분기가
+ * 호출한다. anchor를 처음 stamp할 때만(#2700 요구사항 5) D1 `trip_events`(kind=
+ * 'leg-anchor-observed')에 append한다 — 같은 anchor의 창-밖 재-stamp(교정)는 이미 있던 사실의
+ * 시각 보정일 뿐이라 별도 이벤트로 남기지 않는다(#2073 quota 보호).
+ */
+async function maybeStampLegAnchorFromObservation(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  now: number,
+): Promise<void> {
+  if (waypoint.kind !== 'transfer') return;
+  const nextLegWaypoint = trip.waypoints[1];
+  if (!nextLegWaypoint) return;
+  // 잠실나루 redundant transfer 오라벨(같은 호선 내 waypoint) 방지 — completeWaypointAdvance와
+  // 동일 조건(#2515).
+  const isRealLineChange = nextLegWaypoint.line !== trip.boardingLock?.line;
+  if (!isRealLineChange) return;
+  const transferWalkSeconds = getTransferSeconds(
+    waypoint.line as Parameters<typeof getTransferSeconds>[0],
+    nextLegWaypoint.line as Parameters<typeof getTransferSeconds>[1],
+    waypoint.stationName,
+  );
+  const isSameAnchor = isSameLegAnchor(trip, waypoint, nextLegWaypoint);
+  if (isFreshLegAnchorReprocess(trip, isSameAnchor, transferWalkSeconds, now)) return;
+  const trustedObservedAt = resolveTrustedTransferObservedAt(trip, waypoint, transferWalkSeconds, now);
+  // 관측이 없거나 신뢰 조건 미달이면 이 경로는 트리거하지 않는다 — advance 실패만으로는 여전히
+  // anchor를 stamp하지 않는다(요구사항 1의 반대쪽 절반: advance 성공이 "유일한" 트리거는
+  // 아니되, 관측 없는 실패만으로 새 트리거가 열리지도 않는다).
+  if (trustedObservedAt === undefined) return;
+  stampCurrentLegAnchor(trip, waypoint, nextLegWaypoint, trustedObservedAt, transferWalkSeconds);
+  await putTrip(env.TRIPS, trip);
+  if (!isSameAnchor) {
+    await recordTripEvent(
+      env.DB,
+      {
+        tokenHash: hashTripToken(trip.token),
+        kind: 'leg-anchor-observed',
+        station: waypoint.stationName,
+        line: nextLegWaypoint.line,
+        meta: { observedAtMs: trustedObservedAt },
+      },
+      now,
+    );
+  }
+}
+
 async function completeWaypointAdvance(
   trip: Trip,
   waypoint: Waypoint,
@@ -5636,14 +5780,8 @@ async function completeWaypointAdvance(
     // 한정한다 — 이 KV 레이스는 수 분 내 재처리되는 패턴(실측 06:36:19→06:41:10, 도보시간보다
     // 짧은 간격)이라 이 창 안에 들어오고, 진짜 조기-advance 교정은 이 창 밖(훨씬 나중)에서
     // 일어나므로 그대로 재-stamp(교정)된다.
-    const isSameAnchor =
-      trip.currentLegAnchor !== undefined &&
-      normalizeStationName(trip.currentLegAnchor.boardingStation) === normalizeStationName(waypoint.stationName) &&
-      trip.currentLegAnchor.line === nextLegWaypoint.line;
-    const isFreshReprocess =
-      isSameAnchor &&
-      trip.legBoardingEligibleAt !== undefined &&
-      now < trip.legBoardingEligibleAt + transferWalkSeconds * 1000;
+    const isSameAnchor = isSameLegAnchor(trip, waypoint, nextLegWaypoint);
+    const isFreshReprocess = isFreshLegAnchorReprocess(trip, isSameAnchor, transferWalkSeconds, now);
     if (!isFreshReprocess) {
       // #2655 — 도보 게이트 기준점을 "backend가 이 waypoint를 advance한 시각(now)"이 아니라
       // "사용자가 이 환승역에 도착한 시각"으로 잡는다. lock 활성 구간의 transfer advance는 cron이
@@ -5651,30 +5789,11 @@ async function completeWaypointAdvance(
       // 수 분 늦고 도보 시계가 그만큼 통째로 밀린다(2026-09-16 실측: device sync 06:34:59 관측 →
       // cron advance 06:41:10 → leg-2 프롬프트 06:42/43/44 전부 walk-gated → leg-2 lock 0건).
       // `transferObservedAt`은 accuracy≤50m 게이트를 통과한 device sync 관측이라 도착 ground truth로
-      // 쓴다(#2645와 동일 근거). 미래 값/다른 역 관측은 채택하지 않고, 부재하면 기존대로 now.
+      // 쓴다(#2645와 동일 근거). 미래 값/다른 역 관측은 채택하지 않고, 부재하면 기존대로 now
+      // (`resolveTrustedTransferObservedAt`, #2700에서 공유 추출).
       // 게이트 자체(#2515 오탑승 방지)는 그대로 — 기준점만 실제 도착 시각으로 옮긴다.
-      // 코드리뷰 P2-1 — 관측 시각을 무제한 신뢰하지 않는다. `transferObservedAt`은 accuracy≤50m
-      // 단일 sync 샘플이라, 예컨대 환승역을 **지나쳐 가는** 중에 찍힌 이른 타임스탬프가 그대로
-      // 기준점이 되면 도보 게이트가 사용자가 아직 걷는 중에 만료돼 leg-2 조기 auto-lock(#2515가
-      // 막으려던 바로 그 위험)이 재발할 수 있다. 상한은 매직넘버 대신 해당 구간 도보시간의 배수로
-      // 잡는다 — 그보다 오래된 관측이면 보수적으로 `now` 기준(기존 동작)으로 되돌린다.
-      // 실측 회귀(6분 지연, 도보시간의 약 2배)는 이 상한 안에 들어와 그대로 구제된다.
-      const observed = trip.transferObservedAt;
-      const observationMaxAgeMs =
-        transferWalkSeconds * 1000 * TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER;
-      const arrivedAt =
-        observed !== undefined &&
-        normalizeStationName(observed.stationName) === normalizeStationName(waypoint.stationName) &&
-        observed.atMs <= now &&
-        now - observed.atMs <= observationMaxAgeMs
-          ? observed.atMs
-          : now;
-      trip.currentLegAnchor = { boardingStation: waypoint.stationName, line: nextLegWaypoint.line };
-      trip.legBoardingEligibleAt = arrivedAt + transferWalkSeconds * 1000;
-      trip.legBoardingPromptState = undefined;
-      // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
-      // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
-      trip.legResolveStreak = undefined;
+      const arrivedAt = resolveTrustedTransferObservedAt(trip, waypoint, transferWalkSeconds, now) ?? now;
+      stampCurrentLegAnchor(trip, waypoint, nextLegWaypoint, arrivedAt, transferWalkSeconds);
     }
   }
   // #2034 — 환승 waypoint advance = "환승역 도착". 사용자에게 "하차했나요?" hop-end 프롬프트를
@@ -6168,6 +6287,9 @@ async function runLocklessTransfer(
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'no-arvlcd', now);
+    // #2700 — advance가 no-arvlcd로 침묵해도 사용자 도착 관측이 유효하면 leg anchor를 stamp해
+    // 도보 시계를 시작시킨다(발사/waypoint advance 게이트 자체는 무변경).
+    await maybeStampLegAnchorFromObservation(trip, waypoint, env, now);
     return false;
   }
   const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
