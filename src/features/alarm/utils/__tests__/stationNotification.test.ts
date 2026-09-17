@@ -65,6 +65,7 @@ const mockEndLiveActivityWithDeregister = jest.fn().mockResolvedValue(undefined)
 // 단독 검증하고, 여기서는 updateStationNotification이 이 판정 결과를 존중해 조기 return하는지만
 // wire-up 검증한다.
 const mockShouldSkipDeviceLiveActivityWrite = jest.fn().mockReturnValue(false);
+const mockStartAmbientLiveActivityTokenRegistration = jest.fn(() => () => undefined);
 jest.mock('../liveActivityPushChannel', () => ({
   ensureLiveActivityRegistered: (...args: unknown[]) =>
     mockEnsureLiveActivityRegistered(...args),
@@ -72,6 +73,10 @@ jest.mock('../liveActivityPushChannel', () => ({
     mockEndLiveActivityWithDeregister(...args),
   shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
     mockShouldSkipDeviceLiveActivityWrite(...args),
+  // #2667 — LA 생성 가능 호출 직전에 ambient token 구독을 보장한다(멱등). 구독 동작 자체는
+  // liveActivityPushChannel.test.ts가 단독 검증 — 여기서는 wire-up만 본다.
+  startAmbientLiveActivityTokenRegistration: () =>
+    mockStartAmbientLiveActivityTokenRegistration(),
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -549,6 +554,21 @@ describe('stationNotification', () => {
         expect.objectContaining({ stationName: '시청', distanceM: 154 }),
       );
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+
+    // #2667 (리뷰 P1-1) — 이 함수는 BG headless JS(backgroundLocationTask)에서도 실행되고,
+    // 그 인스턴스에는 HomeScreen이 mount된 적이 없어 훅으로 건 ambient 구독이 존재하지 않는다.
+    // LA를 만들 수 있는 호출 직전에 여기서 직접 구독을 보장하지 않으면 그 컨텍스트에서 emit된
+    // push token이 그대로 버려진다(= 이 PR이 고치려는 증상이 BG에서 그대로 재현).
+    it('#2667 — trip 유무와 무관하게 LA 호출 직전에 ambient token 구독을 보장한다', async () => {
+      await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+      await updateStationNotification(mockStation, 154);
+      expect(mockStartAmbientLiveActivityTokenRegistration).toHaveBeenCalled();
+
+      mockStartAmbientLiveActivityTokenRegistration.mockClear();
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+      await updateStationNotification(mockStation, 154);
+      expect(mockStartAmbientLiveActivityTokenRegistration).toHaveBeenCalled();
     });
 
     it('#1288 — ensureLiveActivityRegistered 실패 시 expo-notifications fallback', async () => {

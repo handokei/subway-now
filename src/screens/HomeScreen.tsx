@@ -53,6 +53,7 @@ import { useLocalBoardingPromptGate } from '../features/alarm/hooks/useLocalBoar
 import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
 import { useLiveActivityPreBoardingLifecycle } from '../features/alarm/hooks/useLiveActivityPreBoardingLifecycle';
 import { useForegroundLaMirrorSync } from '../features/alarm/hooks/useForegroundLaMirrorSync';
+import { useLiveActivityTokenRegistration } from '../features/alarm/hooks/useLiveActivityTokenRegistration';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
@@ -1063,6 +1064,10 @@ export default function HomeScreen() {
   // #2610 (b) — silent push(BG task) 수신 0인 FG trip에서도 LA가 backend mirror를 따라 전진하도록,
   // silent push 경로와 독립적인 FG mirror 폴링(useBackendSsotMirrorPoll)에 LA refresh를 wire.
   useForegroundLaMirrorSync(destination, route, fusionBoardingLock ?? null, legAdvanceLine ?? null);
+  // #2667 — backend가 LA push를 보낼 수 있으려면 trip에 activityPushToken이 실려 있어야 한다.
+  // 그 등록이 LA 세션 시작 함수 하나에만 묶여 있어, 실제로 LA를 띄우는 경로(pre-boarding /
+  // lock 이전 GPS)에서는 token이 emit되고도 버려졌다(실측 laPushDelivery=0/0).
+  useLiveActivityTokenRegistration(destination?.id ?? null);
   useApnsTripRegistration({
     route,
     destination,

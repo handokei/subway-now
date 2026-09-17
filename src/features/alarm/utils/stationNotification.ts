@@ -20,6 +20,7 @@ import {
   ensureLiveActivityRegistered,
   endLiveActivityWithDeregister,
   shouldSkipDeviceLiveActivityWrite,
+  startAmbientLiveActivityTokenRegistration,
 } from './liveActivityPushChannel';
 import { stopVibration } from './alarmSound';
 import { createLogger } from '../../../shared/utils/logger';
@@ -661,6 +662,14 @@ export async function updateStationNotification(
         liveActivityLogger.info('backend-authority 활성 trip — device LA 쓰기 스킵(backend push 단독 저자)');
         return;
       }
+      // #2667 (코드리뷰 P1-1) — LA를 만들 수 있는 호출 **직전**에 ambient token 구독을 보장한다.
+      // 이 함수는 FG 컴포넌트 트리뿐 아니라 `backgroundLocationTask`(headless JS)에서도 실행되는데,
+      // 그 인스턴스에는 HomeScreen이 mount된 적이 없어 훅으로 건 구독이 존재하지 않는다
+      // (`liveActivityGpsWriteArbitration.ts` 헤더가 같은 클래스의 모듈-상태 비공유를 문서화).
+      // native `update()`는 활성 Activity가 없으면 `start()`로 fall-through하며 `pushType: .token`
+      // 으로 Activity를 만들고 token을 emit하므로, 구독이 없으면 그 token이 그대로 버려진다.
+      // 구독 시작은 멱등이라 매 호출 비용은 사실상 0.
+      startAmbientLiveActivityTokenRegistration();
       if (tripToken) {
         await ensureLiveActivityRegistered(tripToken, data);
       } else {

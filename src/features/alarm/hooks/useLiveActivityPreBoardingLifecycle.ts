@@ -48,6 +48,7 @@ import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { clearStationNotification, buildBoardingPromptContent } from '../utils/stationNotification';
+import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('useLiveActivityPreBoardingLifecycle');
@@ -165,6 +166,10 @@ export function useLiveActivityPreBoardingLifecycle(): void {
     const tripToken = getCurrentTripCorrIdSync();
     const data = buildPreBoardingLiveActivityData(destination, tripOrigin, tripToken);
     preBoardingActiveRef.current = true;
+    // #2667 — 이 update가 native `start()`로 fall-through해 Activity를 만들면 push token이
+    // emit된다. 구독이 없으면 그 token이 버려져 backend가 LA push를 영영 못 보낸다(실측
+    // laPushDelivery=0/0). 구독 시작은 멱등.
+    startAmbientLiveActivityTokenRegistration();
     LiveActivity.updateLiveActivity(data).catch((e) => {
       log.warn('pre-boarding LA 갱신 실패', e);
     });
