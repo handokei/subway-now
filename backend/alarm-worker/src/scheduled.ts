@@ -121,6 +121,7 @@ import type {
   Env,
   LineNumber,
   PositionPoint,
+  Route,
   StationPhaseState,
   TrainReconfirmAlertPushPayload,
   Trip,
@@ -7562,6 +7563,51 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   });
 }
 
+/** route의 총 환승 수(데이터 주도 — transfer 개수 하드코딩 없이 route.type으로 분기). */
+function countRouteTransfers(route: Route | undefined): number {
+  if (route === undefined || route.type === 'direct') return 0;
+  if (route.type === 'transfer') return 1;
+  return route.transfers.length;
+}
+
+/**
+ * #2693 — `trip.currentLegAnchor` 부재의 원인을 정상(아직 환승 전)/결함(환승 후인데 anchor
+ * 없음)으로 분리 판정한다. 이 함수가 받는 `trip`/`ssot`는 `maybeFireLegBoardingPrompt`가 이미
+ * 읽은 데이터 그대로다 — 신규 KV read/API 호출/stamp 필드 추가 없음(이슈 금지사항).
+ *
+ * 1단계(정상 vs 결함): `trip.route`의 총 환승 수와 `trip.waypoints`에 아직 남아있는(=아직 통과
+ * 안 한) `transfer` kind waypoint 개수를 비교한다. 남은 개수가 총 개수와 같으면 아직 한 번도
+ * 환승하지 않은 것(leg-1, 정상) — `waypoints`는 통과된 항목이 `shift()`로 빠지는 큐이므로, 남은
+ * 개수가 총 개수보다 적다는 것은 곧 최소 1회 환승이 이미 일어났다는 뜻이다.
+ *
+ * 2단계(결함 세분화, 갈래 A/B): SSoT의 직전 `legBoardingPromptOutcome`(이 함수 caller가 이미
+ * `readSsot`로 로드한 값)이 anchor 존재를 전제하는 값이었는지로 판별한다. 그런 값이었다면
+ * anchor가 한 번 stamp된 뒤 소실된 것(갈래 A) — `anchor-lost-after-transfer`. 아니었다면(직전이
+ * `no-anchor`였거나 SSoT가 아직 없었다면) 애초에 stamp되지 않은 것(갈래 B) —
+ * `anchor-not-stamped-after-transfer`.
+ */
+const ANCHOR_PRESENT_OUTCOMES: readonly LegBoardingPromptOutcome[] = [
+  'walk-gated',
+  'no-candidates',
+  'silenced',
+  'fired',
+  'anchor-lost-after-transfer',
+];
+
+function classifyMissingLegAnchor(
+  trip: Trip,
+  ssot: TripPositionSSoT | null,
+): LegBoardingPromptOutcome {
+  const totalTransfers = countRouteTransfers(trip.route);
+  const remainingTransfers = trip.waypoints.filter((w) => w.kind === 'transfer').length;
+  if (totalTransfers === 0 || remainingTransfers >= totalTransfers) return 'no-anchor';
+
+  const priorOutcome = ssot?.legBoardingPromptOutcome;
+  return priorOutcome !== undefined && ANCHOR_PRESENT_OUTCOMES.includes(priorOutcome)
+    ? 'anchor-lost-after-transfer'
+    : 'anchor-not-stamped-after-transfer';
+}
+
 /**
  * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 "탑승하셨나요?" prompt 평가 + 발사.
  *
@@ -7599,7 +7645,17 @@ export async function maybeFireLegBoardingPrompt(
 
   const { currentLegAnchor } = trip;
   if (!currentLegAnchor) {
-    await recordLegBoardingPromptTransition(env, trip, undefined, undefined, ssot, 'no-anchor', now);
+    // #2693 — no-anchor 라벨이 정상(환승 전)/결함(환승 후 anchor 부재)을 합산하던 문제 분리.
+    // 발사/게이트 판정 자체는 무변경 — 여전히 return, D1 라벨만 세분화.
+    await recordLegBoardingPromptTransition(
+      env,
+      trip,
+      undefined,
+      undefined,
+      ssot,
+      classifyMissingLegAnchor(trip, ssot),
+      now,
+    );
     return;
   }
 
