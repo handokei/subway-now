@@ -164,6 +164,11 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     expect(hook.result.current.result?.station.id).not.toBe(yongmasan.id);
   });
 
+  // #2686 — 지하(GPS 저하) 되감김 재현은 boardingLock(pending) + reanchored-hop 조합이 필요해
+  // `useFusedNearestStation.backendSsotLastObserved.test.ts`(#2414, lastObserved 앵커 시나리오와
+  // 동일 fixture)에 추가했다 — lockless 경로(estimateStationProgress)는 reanchored-hop을 아예
+  // 시도하지 않는다(lock 필수, 본 파일 상단 참고).
+
   it('mirror null → estimator 그대로 (lockless-route-hop) — fallback graceful', async () => {
     const { routeContext } = setupLocklessTripAtYongmasan();
     const nowMs = T0 + 60 * 60_000;

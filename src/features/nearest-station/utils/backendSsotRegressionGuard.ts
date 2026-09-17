@@ -24,6 +24,21 @@
  * 지하/정지(=GPS 죽음)에서는 2번이 깨져 가드가 비활성 → backend 권위가 그대로 유지된다
  * (ADR 확정 아키텍처 "backend추적 → LA 표시" 불변). 사용자가 실제로 되돌아가는 경우(역주행)도
  * 3번이 "앞서 있을 때만"이라 거부하지 않는다.
+ *
+ * #2686 — 위 GPS 경로 하나만으로는 지하에서 무방비다. backend가 멈추는 곳이 정확히 지하이고,
+ * 지하에서 GPS는 저하 상태(2번 깨짐)라 가드가 꺼진 채로 남는다. 그런데 지하에서 실제로 전진하는
+ * 주체는 GPS가 아니라 `reanchored-hop`(시간 적분 추정) — 그 전진이 mirror보다 앞서 있어도 이
+ * 함수는 무조건 통과(거부 안 함)시켜, 얼어붙은 mirror가 채택되고 표시가 되감긴다(2026-09-17 저녁,
+ * 17분 3바퀴).
+ *
+ * 그래서 `deviceEstimateArcIndex`(source 무관 — reanchored-hop 포함, device가 현재 채택 중인
+ * 추정치의 arc index)를 **독립 경로**로 추가한다. GPS 경로(2·3번)와 별개로, "backend 정체 AND
+ * deviceEstimateArcIndex가 mirror보다 앞섬"만으로도 거부한다 — GPS 품질 게이트는 이 경로에
+ * 적용하지 않는다(지하가 정확히 GPS 저하 상태이므로, 그 게이트를 걸면 이 경로 자체가 무의미).
+ * 기존 GPS 경로는 그대로 유지(OR 결합) — 하나만 성립해도 거부.
+ *
+ * 금지: `reanchored-hop`을 mirror보다 무조건 우선시키지 않는다. "backend 멈춤" 전제(stale)가
+ * 여전히 두 경로 모두의 공통 게이트다.
  */
 
 /**
@@ -42,6 +57,12 @@ export interface BackendSsotRegressionInputs {
   gpsArcIndex: number;
   /** GPS 품질 게이트 저하 여부(#2070). true면 GPS를 판정 근거로 쓰지 않는다. */
   gpsQualityDegraded: boolean;
+  /**
+   * #2686 — device가 현재 채택 중인 추정치(source 무관 — `reanchored-hop` 포함)의 arc index.
+   * GPS 품질 게이트와 무관한 독립 판정 경로. -1/미지정이면 이 경로는 판정하지 않는다
+   * (기존 GPS 전용 호출부가 이 필드 없이 호출해도 동작이 회귀하지 않는다).
+   */
+  deviceEstimateArcIndex?: number;
   now: number;
 }
 
@@ -49,12 +70,22 @@ export interface BackendSsotRegressionInputs {
  * @returns true면 이 mirror 채택을 거부해야 한다(= 경로를 거스르는 표시 회귀).
  */
 export function isBackendSsotRouteRegression(inputs: BackendSsotRegressionInputs): boolean {
-  const { mirrorLastAdvanceAt, mirrorArcIndex, gpsArcIndex, gpsQualityDegraded, now } = inputs;
+  const {
+    mirrorLastAdvanceAt,
+    mirrorArcIndex,
+    gpsArcIndex,
+    gpsQualityDegraded,
+    deviceEstimateArcIndex = -1,
+    now,
+  } = inputs;
   // lazy-seed(0) 상태는 "아직 전진한 적 없음"이라 stale 판정 대상이 아니다 — 갓 시작한 trip을
   // 거부하면 backend 채택이 영영 부트스트랩되지 않는다.
   if (mirrorLastAdvanceAt <= 0) return false;
   if (now - mirrorLastAdvanceAt <= BACKEND_SSOT_ADVANCE_STALE_MS) return false;
-  if (gpsQualityDegraded) return false;
-  if (mirrorArcIndex < 0 || gpsArcIndex < 0) return false;
-  return gpsArcIndex > mirrorArcIndex;
+  if (mirrorArcIndex < 0) return false;
+  // 기존 GPS 경로 — GPS 품질이 신뢰 가능하고 GPS가 경로상 mirror보다 앞설 때만 성립.
+  const gpsAhead = !gpsQualityDegraded && gpsArcIndex >= 0 && gpsArcIndex > mirrorArcIndex;
+  // #2686 — source 무관 device 추정치 경로. GPS 품질 게이트 없이 독립 판정(지하에서도 동작).
+  const deviceAhead = deviceEstimateArcIndex >= 0 && deviceEstimateArcIndex > mirrorArcIndex;
+  return gpsAhead || deviceAhead;
 }

@@ -51,6 +51,7 @@ import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
 import {
   logFusionPickerTier,
   logSuppressedLocklessForwardOnly,
+  logBackendSsotRouteRegressionReject,
   type FusionPickerTier,
 } from '../../alarm/utils/alarmLog';
 import { haversine } from '../../../shared/utils/haversine';
@@ -2246,12 +2247,35 @@ export function useFusedNearestStation(
   //
   // arc index 계산: ssotStation이 arc 위에 있으면 그 idx, 아니면 estimator의 idx 유지 (사용자가
   // arc 밖 station에 있는 case는 estimator idx fallback이 더 의미 있는 추적값).
+  //
+  // #2686 — 위 backendSsotAccepts(#2669, GPS 전용)는 지하(GPS 저하)에서 무방비다. 지하에서
+  // 실제로 전진하는 신호는 GPS가 아니라 estimator(reanchored-hop 등, source 무관) — 그 신호가
+  // 경로상 mirror보다 앞서 있으면 여기서 한 번 더 거부한다. 표시 채널(Estimator State/LA) 전용
+  // 판정이라 fire path(backendSsotAccepts 자체, fusionSignals)는 그대로 유지 — 확장이지 교체가
+  // 아니다.
+  const displayRegressionRejected =
+    backendSsotAccepts && ssotStation != null && backendSsotMirror != null
+      ? isBackendSsotRouteRegression({
+          mirrorLastAdvanceAt: backendSsotMirror.lastAdvanceAt,
+          mirrorArcIndex: arcIndexOfStation(arcStations, ssotStation),
+          gpsArcIndex: gps.result ? arcIndexOfStation(arcStations, gps.result.station) : -1,
+          gpsQualityDegraded: gps.gpsQualityDegraded,
+          deviceEstimateArcIndex: estimate?.index ?? -1,
+          now: Date.now(),
+        })
+      : false;
+  useEffect(() => {
+    if (displayRegressionRejected && ssotStation && estimate) {
+      logBackendSsotRouteRegressionReject(ssotStation.name, estimate.station.name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- displayRegressionRejected 전이에만 반응.
+  }, [displayRegressionRejected]);
   const effectiveEstimate: {
     station: Station;
     strategy: import('../../route/utils/stationProgressEstimator').StationProgressStrategy;
     index: number;
   } | null = (() => {
-    if (backendSsotAccepts && ssotStation) {
+    if (backendSsotAccepts && ssotStation && !displayRegressionRejected) {
       const ssotArcIdx = arcIndexOfStation(arcStations, ssotStation);
       return {
         station: ssotStation,

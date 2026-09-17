@@ -236,4 +236,73 @@ describe('#2414 — backend-ssot 채택 시 lastObservedRef 갱신', () => {
       expect(hook.result.current.estimatorStrategy).toBe('reanchored-hop');
     });
   });
+
+  // #2686 — 지하 표시 되감김 재현. #2669 가드(isBackendSsotRouteRegression)는
+  // gpsQualityDegraded===false를 요구해 GPS가 저하된 지하에서는 무방비였다. backend가
+  // 얼어붙은 채(lastAdvanceAt 고정) 같은 station을 재전송하는 동안, device의 reanchored-hop
+  // (본 파일이 검증하는 lastObserved 앵커 + 시간 적분, source 무관)은 실제로 계속 전진한다 —
+  // 2026-09-17 저녁 라이드에서 이 되감김이 17분 동안 3바퀴 반복됐다.
+  it('#2686 — GPS 저하(지하) + reanchored-hop이 경로상 앞 → displayOnlyEstimate가 backend-ssot로 되감기지 않는다', async () => {
+    // 지하 — GPS 저하(gpsQualityDegraded=true). #2669 GPS 전용 가드는 이 상태에서 항상 무력화된다.
+    const live = { station: yongmasan, distanceKm: 0 };
+    mockNearest.mockReturnValue({
+      result: live,
+      liveResult: live,
+      stickyDisplayOnly: null,
+      variants: [yongmasan],
+      userLocation: null,
+      ...GPS_BASE_DEFAULTS,
+      gpsQualityDegraded: true,
+      refresh: jest.fn(),
+    });
+    mockFindTop.mockReturnValue([]);
+    mockArrival.mockReturnValue(arrivalRet(null));
+    mockPos.mockReturnValue(positionRet(null)); // trainCode 미확정(pending lock) — LivePosition skip.
+    const { routeContext } = makeArcContext();
+    const lock = makeLock();
+
+    // backend는 이미 오래 전(T0-200s)에 마지막으로 전진했다 — BACKEND_SSOT_ADVANCE_STALE_MS(180s)를
+    // 처음부터 넘긴 "정체" 상태. receivedAt은 T0+5000 근방으로 최근이라 mirror 자체는 fresh하다
+    // (mirror 전체 신선도 게이트 BACKEND_SSOT_MIRROR_MAX_AGE_MS도 180s).
+    //
+    // #2686 — poll마다 receivedAt을 1ms씩만 증가시켜 매번 "새로 도달한 값"으로 재전송한다
+    // (실제 회귀 상황과 동일 — 같은 station을 계속 재전송하며 receivedAt만 갱신). 이렇게 해야
+    // `useBackendSsotMirrorPoll`의 dedup reducer(동일 receivedAt+station이면 이전 state 재사용,
+    // 재렌더 생략)를 우회해 매 tick 실제 재렌더가 발생 — 그래야 시간 경과가 estimate 재계산에
+    // 반영된다. 1ms 증가분은 실제 5s tick 간격에 비해 무시할 수준이라 #2414 staler-skip 앵커
+    // 갱신도 앵커 시각을 사실상 그대로 유지시킨다(누적된 경과시간을 리셋하지 않음).
+    let pollCount = 0;
+    mockRead.mockImplementation(() => {
+      pollCount += 1;
+      return Promise.resolve(
+        makeBackendSsotMirrorEntry({
+          currentStationId: yongmasan.name,
+          lastAdvanceAt: T0 - 200_000,
+          receivedAt: T0 + 5_000 + pollCount,
+        }),
+      );
+    });
+    const hook = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, routeContext, null, lock),
+    );
+    await flushBackendSsotMirrorTick(); // 1st tick(now=T0+5000) — lastObservedRef 앵커=idx0 set.
+
+    // 추가로 130s 경과(5s tick 26회). hop=120s(STOP_FALLBACK_SECONDS)이므로 idx0 → idx1까지
+    // reanchored-hop이 시간 적분으로 실제 전진한다. mirror 자체 신선도(now-receivedAt≈130s)는
+    // 여전히 180s 미만이라 mirror는 살아있다.
+    for (let i = 0; i < 26; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- 순차 poll tick 시뮬레이션(위 5th 테스트와 동일 패턴).
+      await flushBackendSsotMirrorTick();
+    }
+
+    await waitFor(() => {
+      // raw estimator(reanchored-hop, 시간 적분)는 실제로 전진해 있다.
+      expect(hook.result.current.estimatorStrategy).toBe('reanchored-hop');
+    });
+    expect(hook.result.current.displayOnlyEstimate?.index).toBeGreaterThan(0);
+    // 그런데 GPS가 저하 상태라 해도, backend가 멈춘 상태에서 reanchored-hop이 mirror보다 앞서
+    // 있으므로 표시 채널(displayOnlyEstimate)이 backend-ssot-override로 되감기면 안 된다.
+    expect(hook.result.current.displayOnlyEstimate?.strategy).not.toBe('backend-ssot-override');
+    expect(hook.result.current.displayOnlyEstimate?.station.id).not.toBe(yongmasan.id);
+  });
 });

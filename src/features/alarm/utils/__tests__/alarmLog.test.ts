@@ -68,6 +68,8 @@ import {
   FUSION_TIER_LOG_BUFFER_SIZE,
   type FusionTierLogEntry,
   logCrossTripMirrorSkip,
+  logBackendSsotRouteRegressionReject,
+  logLiveActivityUpdated,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
   LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS,
@@ -1161,6 +1163,70 @@ describe('alarmLog', () => {
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.reason === 'cross-trip-mirror-skip');
+      expect(matching).toHaveLength(3);
+    });
+
+    it('#2686 logBackendSsotRouteRegressionReject: source/outcome/reason/stationName 적재', async () => {
+      _resetBurstSuppressWindowForTests();
+      logBackendSsotRouteRegressionReject('성수', '건대입구');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'backend-ssot-route-regression',
+        outcome: 'suppressed',
+        reason: 'backend-ssot-route-regression',
+        stationName: '성수',
+      });
+    });
+
+    it('#2686 logBackendSsotRouteRegressionReject: 같은 (mirror,device) 쌍은 burst 윈도우 안에서 dedup', async () => {
+      _resetBurstSuppressWindowForTests();
+      logBackendSsotRouteRegressionReject('성수', '건대입구');
+      logBackendSsotRouteRegressionReject('성수', '건대입구');
+      logBackendSsotRouteRegressionReject('성수', '건대입구');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'backend-ssot-route-regression');
+      expect(matching).toHaveLength(1);
+    });
+
+    it('#2686 logBackendSsotRouteRegressionReject: 다른 (mirror,device) 쌍은 독립 dedup 키', async () => {
+      _resetBurstSuppressWindowForTests();
+      logBackendSsotRouteRegressionReject('성수', '건대입구');
+      logBackendSsotRouteRegressionReject('용마산', '중곡');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'backend-ssot-route-regression');
+      expect(matching).toHaveLength(2);
+    });
+
+    it('#2686 logLiveActivityUpdated: source=live-activity-updated / outcome=fired 적재', async () => {
+      logLiveActivityUpdated();
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'live-activity-updated',
+        outcome: 'fired',
+      });
+    });
+
+    it('#2686 logLiveActivityUpdated: dedup 없이 호출마다 그대로 적재된다', async () => {
+      logLiveActivityUpdated();
+      logLiveActivityUpdated();
+      logLiveActivityUpdated();
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.source === 'live-activity-updated');
       expect(matching).toHaveLength(3);
     });
 

@@ -149,7 +149,15 @@ export type AlarmLogSource =
   // 덤프 로그(9건)의 갭이 생겼다. outcome='fired'는 content dedup 통과 후 실제 재예약,
   // outcome='suppressed'(reason='dedup-la-fallback-content')는 직전과 동일 (title, body)라
   // 재예약을 건너뛴 경우.
-  | 'la-fallback-notification';
+  | 'la-fallback-notification'
+  // #2686 — backend SSoT mirror가 경로를 거스르는 표시(되감김)를 시도해 거부된 1건.
+  // `isBackendSsotRouteRegression`(#2669 확장, backendSsotRegressionGuard.ts) 판정 결과를
+  // 관측 채널로 적재 — 현재는 아무 계측도 없어 재발해도 추적 불가했다.
+  | 'backend-ssot-route-regression'
+  // #2686 — 실제 native `LiveActivity.updateLiveActivity()` 호출 1건. 사용자 체감("30번 이상
+  // 반복 표시")과 push 수신 로그(9건)의 갭이 push가 아니라 LA 갱신 빈도일 가능성이 있다는
+  // RCA 추정을 다음 라이드에서 확정하기 위한 순수 계측 — 정책 변경 없음.
+  | 'live-activity-updated';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -472,7 +480,9 @@ export type AlarmLogReason =
   // 벗어나지 않은 상태(`departed===false`)에서 remainingStops<=1(early 조건)이 만족돼도 발사를
   // 보류한 1건. 억제(dedup류)와 달리 영구 소멸이 아니다 — 출발이 확인되면 다음 tick에 동일
   // 조건으로 그대로 발사된다(2026-09-17 성수→뚝섬 40초 오발사 evidence 회귀 방지).
-  | 'gate-not-departed';
+  | 'gate-not-departed'
+  // #2686 — backend SSoT mirror가 경로를 거스르는 표시(되감김)를 시도해 거부된 1건의 reason.
+  | 'backend-ssot-route-regression';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -1167,6 +1177,47 @@ export function logCrossTripMirrorSkip(site: 'register' | 'mismatch' | 'launch')
 }
 
 /**
+ * #2686 — backend SSoT mirror 채택이 경로 역행 가드(`isBackendSsotRouteRegression`)에 거부된
+ * 1건 적재. 되감김이 재발해도 이 reason 분포(`backend-ssot-route-regression: N`)로 다음 라이드
+ * dump에서 즉시 확인 가능하게 한다 — 기존에는 아무 계측도 없어 재발해도 추적 불가했다.
+ *
+ * burst dedup: (mirror station, device station) 쌍 키 — 같은 되감김 판정이 폴링 cycle마다
+ * 반복 적재돼 alarmLog(200-cap)를 점령하는 것을 방지.
+ */
+export function logBackendSsotRouteRegressionReject(
+  mirrorStationName: string,
+  deviceStationName: string,
+): void {
+  const discriminator = `${mirrorStationName}|${deviceStationName}`;
+  if (isBurstDuplicate('backend-ssot-route-regression', discriminator)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'backend-ssot-route-regression',
+    outcome: 'suppressed',
+    reason: 'backend-ssot-route-regression',
+    stationName: mirrorStationName,
+  });
+}
+
+/**
+ * #2686 — 실제 native `LiveActivity.updateLiveActivity()` 호출 1건 적재.
+ *
+ * 사용자 체감("같은 알림이 30번 이상")과 push 수신 로그(9건)의 갭이 push가 아니라 LA 갱신
+ * 빈도일 가능성을 RCA가 지목했으나, 덤프에 LA 갱신 횟수를 직접 셀 수단이 없어 확정하지
+ * 못했다. `summarizeAlarmLogBySource`(DebugModal 헤더/dump)가 이미 source별 카운트를
+ * 데이터 주도로 노출하므로, 새 인프라 없이 이 source 1건만 추가하면 다음 라이드에서
+ * `live-activity-updated=N`으로 즉시 확인 가능하다. dedup 없이 호출 시마다 그대로 적재
+ * (실제 native 호출 횟수를 그대로 반영해야 측정 목적에 부합).
+ */
+export function logLiveActivityUpdated(): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'live-activity-updated',
+    outcome: 'fired',
+  });
+}
+
+/**
  * #1693/#1706 — fusion cascade picker tier 채택 1건 적재.
  *
  * **별 ring buffer (#1706).** PR #1697까지는 `appendAlarmLog`로 alarmLog 200 cap에 적재했으나
@@ -1620,6 +1671,9 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'boarding-prompt-category-received': null,
   // #2687 — LA fallback 알림은 silent push와 무관한 device 로컬 채널(expo-notifications).
   'la-fallback-notification': null,
+  // #2686 — backend SSoT 경로 회귀 거부/LA 갱신 계측은 silent push outcome과 무관.
+  'backend-ssot-route-regression': null,
+  'live-activity-updated': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1689,6 +1743,10 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // 분모에 포함. outcome='suppressed'(content dedup 적중)는 FIRED_ALARM_SOURCES와 무관하게
   // countFiredAlarms가 outcome 필터로 자동 제외한다.
   'la-fallback-notification': true,
+  // #2686 — 되감김 거부/LA 갱신은 station-passed/transfer/destination 알람이 아닌 표시 계층
+  // 측정·진단 stamp. fire 분모(트립 miss ratio) 오염 방지 위해 제외.
+  'backend-ssot-route-regression': false,
+  'live-activity-updated': false,
 };
 
 /**
