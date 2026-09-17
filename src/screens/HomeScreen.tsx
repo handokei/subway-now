@@ -78,6 +78,7 @@ import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetSched
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useDeviceSelfEnd } from '../features/alarm/hooks/useDeviceSelfEnd';
+import { notifyTripEnded } from '../features/alarm/utils/tripEndedNotification';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { useFgPositionUpload } from '../features/alarm/hooks/useFgPositionUpload';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
@@ -420,7 +421,15 @@ export default function HomeScreen() {
   }, []);
 
 
-  const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
+  // #2675 — 자동 종료는 반드시 사용자에게 보여야 한다. 도착 배너는 FG 화면 안에서만 보이는데,
+  // 실제로는 앱이 BG/종료 상태인 동안 종료되는 경우가 많아(사용자 보고 2026-09-17: "FG 진입하니
+  // 알아서 도착 후 종료돼 있음 — 도착 안내도 종료 알림도 없었다") 로컬 알림으로도 알린다.
+  // 사용자가 직접 "안내 종료"를 누른 경로(handleEndNavigation)에는 붙이지 않는다.
+  const handleArrivalClear = useCallback(() => {
+    const cleared = destination;
+    setDestination(null);
+    void notifyTripEnded({ destination: cleared, reason: 'arrived' });
+  }, [destination, setDestination]);
   // #1973 — 안내 시작/중단 명시 trigger. infoMode 자동 wire — backend lockless intermediate
   // gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`) 통과 보장. useBackgroundLocation은
   // useNavigationStore.navigationActive를 deps로 보고 BG GPS lifecycle을 따른다.
@@ -901,6 +910,8 @@ export default function HomeScreen() {
     (cleared: Station) => {
       setDestination(null);
       setAutoDisembarkToast(cleared);
+      // #2675 — toast는 FG 전용이라 BG/종료 상태에서 끝난 trip은 사용자가 영영 모른다. 알림으로도 알린다.
+      void notifyTripEnded({ destination: cleared, reason: 'arrived' });
     },
     [setDestination],
   );
