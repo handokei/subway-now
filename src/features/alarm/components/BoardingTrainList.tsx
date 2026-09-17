@@ -21,7 +21,11 @@ import { recordLockCorrection } from '../utils/lockCorrectionMetrics';
 import { buildDirectionMeta, parseTrainLineDirection } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../../../shared/constants/lineColors';
-import { buildFallbackSequenceLabel, buildPrevTrainLabel } from '../../../shared/constants/labels';
+import {
+  buildFallbackSequenceLabel,
+  buildPrevTrainArrivalLabel,
+  buildPrevTrainLabel,
+} from '../../../shared/constants/labels';
 import type { PrevTrainCandidate } from '../hooks/usePrevTrainCandidate';
 import stationsData from '../../../data/stations.json';
 
@@ -338,8 +342,9 @@ export function BoardingTrainList({
   /**
    * row 렌더 — 일반 도착 row와 #2139 "전열차" row가 공유하는 Pressable 구조.
    *
-   * @param arrivalText null이면 도착 시각 라인 자체를 생략(전열차는 다음역 ETA라 "도착 예정" 표기가
-   *   현재역 기준 사용자에게 오해를 줄 수 있어 표시하지 않음).
+   * @param arrivalText null이면 도착 시각 라인 자체를 생략. 전열차 row는 #2697 — 출발역 이탈 관측
+   *   시점에 stamp된 실제 A역 도착 시각이 있으면 표시하고(과거형 라벨, "도착 예정" 아님), stamp
+   *   불가(receivedAtMs 누락 등 degrade)면 null로 생략한다.
    * @param testKeyPrefix testID 접두어 — 일반 row는 'boarding-train', 전열차는 'boarding-train-prev'.
    *   같은 trainCode라도 testID가 겹치지 않게 분리(전열차는 currentArrivals에서 제외된 trainCode만
    *   후보가 되므로 실제 충돌은 없지만, 접두어로 두 row 종류를 명확히 구분).
@@ -626,7 +631,11 @@ export function BoardingTrainList({
         renderRow(
           prevTrain.train,
           buildPrevTrainLabel(prevTrain.elapsedSeconds),
-          null,
+          // #2697 — stamp된 실제 A역 도착 시각이 있으면 노출(과거형 라벨). stamp 불가(degrade)면
+          // 기존 동작대로 시각 라인 생략(elapsedSeconds 기반 상대 라벨만 위 sequenceText로 유지).
+          prevTrain.arrivedAtMs != null
+            ? buildPrevTrainArrivalLabel(formatClockTime(prevTrain.arrivedAtMs))
+            : null,
           'boarding-train-prev',
           true,
         )}

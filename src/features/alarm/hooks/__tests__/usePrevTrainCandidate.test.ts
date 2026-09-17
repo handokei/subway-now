@@ -74,6 +74,109 @@ describe('usePrevTrainCandidate (#2689 — 다음 열차 출발 기준 만료)',
     expect(result.current.prevTrain?.elapsedSeconds).toBe(0);
   });
 
+  // #2697 red — 이전에는 시각 개념 자체가 없었다(elapsedSeconds만 존재). 사라진 뒤에도
+  // 마지막 관측(목록에 있던 마지막 tick)의 receivedAtMs+arrivalSeconds*1000이 stamp되어
+  // 유지되는지 검증한다. "사라진 시각"(detectedAtMs)으로 대체되면 이 값과 달라진다.
+  describe('#2697 — 출발한 열차의 도착 시각 stamp', () => {
+    it('목록에 있던 마지막 관측(receivedAtMs+arrivalSeconds*1000)이 사라진 뒤에도 stamp로 유지된다', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: [
+            makeTrain({ trainCode: 'T-STAMP', arrivalSeconds: 20, receivedAtMs: 100_000 }),
+          ],
+        },
+      });
+      expect(result.current.prevTrain).toBeNull();
+
+      // 5초 뒤(detectedAtMs가 stamp로 쓰이면 안 됨을 구분하기 위해 시간 이동) 열차가 사라짐.
+      act(() => jest.advanceTimersByTime(5_000));
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-STAMP');
+      // stamp = 마지막 관측의 receivedAtMs(100_000) + arrivalSeconds(20)*1000 = 120_000.
+      // "사라진 시각"(detectedAtMs=5_000)으로 대체됐다면 이 값이 아니게 된다.
+      expect(result.current.prevTrain?.arrivedAtMs).toBe(120_000);
+
+      // 시간이 더 흘러도(elapsedSeconds는 증가) stamp 자체는 재계산되지 않고 고정 유지된다.
+      act(() => jest.advanceTimersByTime(30_000));
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+      expect(result.current.prevTrain?.arrivedAtMs).toBe(120_000);
+    });
+
+    it('열차가 목록에 있는 동안 갱신되는 관측 중 마지막(사라지기 직전) 값이 stamp된다', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: [
+            makeTrain({ trainCode: 'T-UPDATED', arrivalSeconds: 200, receivedAtMs: 1_000, arrivalCode: 0 }),
+          ],
+        },
+      });
+
+      // 다음 폴 — 같은 열차가 arrivalCode 도착(1)에 가까워지며 최신 관측으로 갱신됨.
+      act(() =>
+        rerender({
+          ...baseProps,
+          currentArrivals: [
+            makeTrain({ trainCode: 'T-UPDATED', arrivalSeconds: 5, receivedAtMs: 195_000, arrivalCode: 1 }),
+          ],
+        }),
+      );
+      // 그 다음 폴에서 출발(사라짐) — 위 최신 관측이 stamp돼야 한다(첫 관측 값이 아니라).
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-UPDATED');
+      // 마지막 관측 stamp = 195_000 + 5*1000 = 200_000. 첫 관측(1_000+200_000=201_000)이 아님.
+      expect(result.current.prevTrain?.arrivedAtMs).toBe(200_000);
+    });
+
+    it('마지막 관측의 receivedAtMs=0(mock/누락)이면 stamp 불가 — arrivedAtMs null (degrade, 크래시 없음)', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: [makeTrain({ trainCode: 'T-NO-RECEIVED', arrivalSeconds: 20, receivedAtMs: 0 })],
+        },
+      });
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-NO-RECEIVED');
+      expect(result.current.prevTrain?.arrivedAtMs).toBeNull();
+    });
+
+    // #2689 회귀 — 다음 열차가 출발하는 순간 전열차 후보가 교체될 때, stamp도 새 후보 기준으로
+    // 갱신되어야 한다(옛 stamp가 새 trainCode에 잘못 붙어 남아있지 않아야 한다).
+    it('다음 열차가 출발하면 전열차 후보와 함께 stamp도 새 열차 기준으로 교체된다 (#2689 회귀)', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: [
+            makeTrain({ trainCode: 'T-28MIN', arrivalSeconds: 30, receivedAtMs: 1_000 }),
+            makeTrain({ trainCode: 'T-32MIN', arrivalSeconds: 270, receivedAtMs: 1_000 }),
+          ],
+        },
+      });
+
+      act(() =>
+        rerender({
+          ...baseProps,
+          currentArrivals: [makeTrain({ trainCode: 'T-32MIN', arrivalSeconds: 240, receivedAtMs: 31_000 })],
+        }),
+      );
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-28MIN');
+      expect(result.current.prevTrain?.arrivedAtMs).toBe(1_000 + 30 * 1000);
+
+      // T-32MIN 출발(사라짐) — 후보와 stamp 모두 T-32MIN 기준으로 교체.
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-32MIN');
+      expect(result.current.prevTrain?.arrivedAtMs).toBe(31_000 + 240 * 1000);
+    });
+  });
+
   describe('red 재현 — 배차 2분(러시아워) 시나리오: 고정 5분 TTL이면 이미 지나간 열차가 계속 노출된다', () => {
     it('green: 다음 열차(32분)가 출발하는 즉시 전열차 후보가 28분 열차→32분 열차로 교체된다', () => {
       jest.setSystemTime(0);

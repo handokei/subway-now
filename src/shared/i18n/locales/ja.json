@@ -65,6 +65,7 @@
     "boardingTrainListPending": "乗車を登録中...",
     "boardingTrainListError": "到着情報を読み込めませんでした",
     "boardingTrainListErrorHint": "しばらくしてから自動で再試行します。",
+    "boardingTrainPrevArrivalLabel": "{{time}}着",
     "consensusTrackingBadge": "次の列車を追跡中",
     "consensusEstimatedBadge": "推定",
     "consensusManualSelectHint": "直接選択",

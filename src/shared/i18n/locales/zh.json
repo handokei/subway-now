@@ -65,6 +65,7 @@
     "boardingTrainListPending": "正在登记乘车...",
     "boardingTrainListError": "无法加载到达信息",
     "boardingTrainListErrorHint": "稍后将自动重试。",
+    "boardingTrainPrevArrivalLabel": "{{time}} 到达",
     "consensusTrackingBadge": "正在追踪下一班列车",
     "consensusEstimatedBadge": "推测",
     "consensusManualSelectHint": "直接选择",

@@ -1,8 +1,10 @@
 import { act, fireEvent } from '@testing-library/react-native';
 import * as Haptics from 'expo-haptics';
+import i18next from 'i18next';
 import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
+import { buildPrevTrainArrivalLabel } from '../../../../shared/constants/labels';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { LineNumber } from '../../../../shared/types/station';
 import type { PrevTrainCandidate } from '../../hooks/usePrevTrainCandidate';
@@ -1326,10 +1328,15 @@ describe('BoardingTrainList', () => {
   });
 
   describe('#2139 전열차 row', () => {
-    function makePrevTrain(overrides: Partial<ArrivalInfo> = {}, elapsedSeconds = 90): PrevTrainCandidate {
+    function makePrevTrain(
+      overrides: Partial<ArrivalInfo> = {},
+      elapsedSeconds = 90,
+      arrivedAtMs: number | null = null,
+    ): PrevTrainCandidate {
       return {
         train: makeTrain({ trainCode: 'T-PREV', arrivalSeconds: 40, ...overrides }),
         elapsedSeconds,
+        arrivedAtMs,
       };
     }
 
@@ -1361,14 +1368,58 @@ describe('BoardingTrainList', () => {
       expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
     });
 
-    it('전열차 row는 buildPrevTrainLabel 라벨을 sequence 라인에 노출하고, 도착 시각 라인은 생략한다', () => {
+    it('전열차 row는 buildPrevTrainLabel 라벨을 sequence 라인에 노출하고, stamp 불가(arrivedAtMs=null) 시 도착 시각 라인은 생략한다', () => {
       const train = makeTrain({ trainCode: 'T-A' });
-      const prevTrain = makePrevTrain({}, 90); // 90s → "출발 약 2분 전"
+      const prevTrain = makePrevTrain({}, 90); // 90s → "출발 약 2분 전". arrivedAtMs 미전달 → null(degrade).
       const { getByTestId, queryByTestId } = renderWithTheme(
         <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
       );
       expect(getByTestId('boarding-train-prev-sequence-T-PREV').props.children).toBe('출발 약 2분 전');
       expect(queryByTestId('boarding-train-prev-arrival-T-PREV')).toBeNull();
+    });
+
+    // #2697 — 출발한 열차의 stamp된 실제 A역 도착 시각이 있으면(arrivedAtMs != null) 도착 시각
+    // 라인에 과거형 라벨("HH:mm 도착")로 노출한다. "도착 예정"(라이브 row)과 다른 문구.
+    describe('#2697 — stamp된 도착 시각 라벨', () => {
+      afterEach(async () => {
+        await i18next.changeLanguage('ko');
+      });
+
+      it('arrivedAtMs가 있으면 buildPrevTrainArrivalLabel로 포맷된 도착 시각 라인을 노출한다', () => {
+        const epoch = 1_700_000_000_000;
+        const d = new Date(epoch);
+        const expectedClock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        const prevTrain = makePrevTrain({}, 90, epoch);
+        const { getByTestId } = renderWithTheme(
+          <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+        );
+        expect(getByTestId('boarding-train-prev-arrival-T-PREV').props.children).toBe(
+          buildPrevTrainArrivalLabel(expectedClock),
+        );
+      });
+
+      // trainCode는 stamp 여부와 무관하게 항상(compact 아닌 모드) 노출된다 — 요구사항4.
+      it('trainCode는 stamp 여부와 무관하게 전열차 row에도 상시 노출된다', () => {
+        const prevTrain = makePrevTrain({}, 90, 1_700_000_000_000);
+        const { getByText } = renderWithTheme(
+          <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+        );
+        expect(getByText('T-PREV')).toBeTruthy();
+      });
+
+      it.each(['ko', 'en', 'ja', 'zh'])('locale=%s — 크래시 없이 stamp된 도착 시각 라인을 렌더한다', async (lang) => {
+        await i18next.changeLanguage(lang);
+        const epoch = 1_700_000_000_000;
+        const d = new Date(epoch);
+        const expectedClock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        const prevTrain = makePrevTrain({}, 90, epoch);
+        const { getByTestId } = renderWithTheme(
+          <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
+        );
+        expect(getByTestId('boarding-train-prev-arrival-T-PREV').props.children).toBe(
+          buildPrevTrainArrivalLabel(expectedClock),
+        );
+      });
     });
 
     it('60초 미만 elapsedSeconds는 "방금 출발" 라벨', () => {
@@ -1513,6 +1564,7 @@ describe('BoardingTrainList', () => {
       const prevTrain: PrevTrainCandidate = {
         train: makeTrain({ trainCode: 'T-PREV', arrivalSeconds: 40 }),
         elapsedSeconds: 90,
+        arrivedAtMs: null,
       };
       const { getByTestId } = renderWithTheme(
         <BoardingTrainList
