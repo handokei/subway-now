@@ -23,7 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { renderHook } from '@testing-library/react-native';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
-import { makeTransferRoute } from '../../../../testUtils/routeFixtures';
+import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
@@ -223,11 +223,16 @@ const LINE_MISMATCH_TRAIN: Partial<UpEntry>[] = [{ line: '9' }];
 
 // 공통 fixture — handleResponse describe 블록 2개(#819 행동, #1170 telemetry)가 공유.
 // 모듈 스코프로 끌어올려 중복 제거 (SonarCloud dup).
+// #2696 — destinationDirection: 'up' 고정. isBoardableCandidate가 direction===null을 "후보 없음"
+// 으로 취급하므로(양방향 병합 금지), 이 파일의 arvlCd priority/telemetry 테스트 대부분은 direction과
+// 무관한 관심사라 기본값으로 방향을 해결해둔다. "destinationDirection undefined" 자체를 검증하는
+// 테스트만 아래에서 명시적으로 override한다.
 const HANDLE_RESPONSE_PAYLOAD = {
   kind: 'boarding-prompt' as const,
   originStation: '강남',
   line: '2',
   tripToken: 'tok',
+  destinationDirection: 'up' as const,
 };
 
 function makeHandleResponseDeps(
@@ -373,6 +378,24 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     });
   });
 
+  // #2696 — route/destination widget context가 존재할 때 "다음 목표역" 계산 경로
+  // (getNextStationName 호출)도 정상 동작해 조기종착이 아닌 경우 lock이 그대로 성공해야 한다.
+  it('#2696 — route/destination widget context 존재 시 다음 목표역 계산 경로도 정상 동작(조기종착 아니면 lock 성공)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    readWidgetRefreshContextMock.mockResolvedValueOnce({
+      destination: { id: 'D1', name: '잠실', line: '2' },
+      route: makeDirectRoute(5, '2'),
+      bgContext: null,
+    });
+    const deps = makeDeps();
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: 'T1' }),
+      true,
+      'boarding-prompt-response',
+    );
+  });
+
   it('기본 탭 ($default) → boarded 분기와 동일 처리', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps();
@@ -491,6 +514,18 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   it('#2407 — pending fallback: payload.line이 유효하지 않으면 createLock 안 함', async () => {
     const invalidPayload = { ...PAYLOAD, line: '99' };
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, invalidPayload, deps);
+    expect(createLockMock).not.toHaveBeenCalled();
+    expectAutoLockLogged('autolock-station-lookup', '강남', '99');
+  });
+
+  // #2696 — 위 테스트는 arrivals null로 조기 return돼 validLine===null 분기(신규 코드)를
+  // 통과하지 않는다. arrival이 실제로 존재하는 경우에도 동일하게 graceful skip돼야 한다.
+  it('#2696 — payload.line이 유효하지 않고 arrival도 존재하면(신규 코드 경로) 여전히 createLock 안 함', async () => {
+    const invalidPayload = { ...PAYLOAD, line: '99' };
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () => makeArrival()),
+    });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, invalidPayload, deps);
     expect(createLockMock).not.toHaveBeenCalled();
     expectAutoLockLogged('autolock-station-lookup', '강남', '99');
@@ -684,7 +719,10 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     },
   );
 
-  it('#1740 — destinationDirection undefined → 양방향 모두 후보 (backward compat)', async () => {
+  // #2696 — destinationDirection undefined(방향 미해결)는 더 이상 "양방향 모두 후보"로
+  // 처리되지 않는다. isBoardableCandidate가 direction===null을 후보 0건으로 강제해
+  // pending fallback lock(#2407)으로 이어진다 — 2026-09-17 8387 반대방향 오채택 재발 방지.
+  it('#2696 — destinationDirection undefined(방향 미해결) → 후보 0건, pending fallback lock 생성', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const upTrain = { trainCode: 'UP1', arrivalCode: 2, line: '2' as const };
     const deps = makeDeps({
@@ -692,13 +730,15 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         makeArrivalBothDirections([upTrain], []),
       ),
     });
-    // destinationDirection 미지정 — 기존 동작 유지
-    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).toHaveBeenCalledWith(
+    const payload = { ...PAYLOAD, destinationDirection: undefined };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+    expectPendingFallbackLockCalled('2');
+    expect(createLockMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ trainCode: 'UP1' }),
-      true,
-      'boarding-prompt-response',
+      expect.anything(),
+      expect.anything(),
     );
+    expectAutoLockLogged('autolock-direction-unresolved');
   });
 
   // #1167 — autoLock telemetry. 모든 케이스가 같은 형태로 logBoardingPromptAutoLock을 호출한다.
@@ -1100,6 +1140,21 @@ describe('handleResponse — #1888 RC-13 Sentry breadcrumb evidence', () => {
       'boarding',
       'boarding_prompt_empty_skip',
       { reason: 'line-filtered-empty', originStation: '강남', line: '2' },
+    );
+  });
+
+  // #2696 (요구사항6) — line/방향은 맞지만 술어(상태 게이트)가 배제한 후보가 있으면
+  // boardable_candidate_excluded breadcrumb이 발사된다(과도 필터링 회귀 감시).
+  it('#2696 — line 매칭되나 상태 게이트로 배제된 후보 존재 → boardable_candidate_excluded breadcrumb 발사', async () => {
+    const notYetTrain = { trainCode: 'T-NOT-YET', arrivalCode: 99, line: '2' as const };
+    const deps = makeHandleResponseDeps({
+      fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp([notYetTrain])),
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, deps);
+    expect(addDomainBreadcrumb).toHaveBeenCalledWith(
+      'boarding',
+      'boardable_candidate_excluded',
+      { excludedCount: 1, totalCount: 1, originStation: '강남', line: '2' },
     );
   });
 

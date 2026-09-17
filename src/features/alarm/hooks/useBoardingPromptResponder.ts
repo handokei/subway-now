@@ -33,6 +33,8 @@ import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
+import { isBoardableCandidate, type BoardableCandidateContext } from '../utils/isBoardableCandidate';
+import { getNextStationName } from '../../../shared/utils/stationRoute';
 import {
   logBoardingPromptAutoLock,
   logBoardingPromptFired,
@@ -75,7 +77,9 @@ export interface BoardingPromptPayload {
   tripToken: string;
   /**
    * #1740 — 목적지 방향 filter. backend가 forward하는 경우 'up' | 'down'.
-   * 미지정 시 양방향 모두 후보로 허용 (backward compat).
+   * #2696 — 미지정(undefined)은 "방향 미해결"로 취급되어 `isBoardableCandidate`가 후보 전체를
+   * 무효화한다(양방향 병합 금지 — 2026-09-17 8387 반대방향 오채택 evidence). 더 이상
+   * "양방향 모두 후보" backward-compat 경로가 아니다.
    */
   destinationDirection?: 'up' | 'down';
   /**
@@ -373,11 +377,14 @@ async function tryAutoLock(
 ): Promise<void> {
   const telemetry = { originStation: payload.originStation, line: payload.line };
 
+  // #2696 — route/destination도 필요(다음 목표역 산출)해서 destinationId fallback read와
+  // 통합한다. 실패/부재는 각 필드 null(readWidgetRefreshContext 자체가 graceful).
+  const widgetContext = await readWidgetRefreshContext();
+
   // #2430 (cold-start race) — deps.destinationId(HomeScreen in-memory state)가 null이면
   // storage(DESTINATION_KEY)를 live-read해 hydrate-전 일시 null과 진짜 trip 종료를 구분한다.
   // deps.destinationId가 있으면 storage read는 short-circuit으로 건너뛴다(정상 경로 비용 無).
-  const destinationId =
-    deps.destinationId ?? (await readWidgetRefreshContext()).destination?.id ?? null;
+  const destinationId = deps.destinationId ?? widgetContext.destination?.id ?? null;
 
   if (!destinationId) {
     // storage에도 destination이 없음 — 진짜 trip 종료. lock 시도 안 함, dismiss로 backend silence.
@@ -404,27 +411,71 @@ async function tryAutoLock(
     return;
   }
 
-  // #1740 — destination 방향 filter. payload.destinationDirection이 있으면 해당 방향만 선택.
-  // 없으면 양방향 모두 후보 (backward compat). 이후 line + arrivalSeconds 필터 적용.
-  const { destinationDirection } = payload;
-  const directionSlice: readonly ArrivalInfo[] =
-    destinationDirection === 'up' || destinationDirection === 'down'
-      ? arrival[destinationDirection]
-      : ([] as ArrivalInfo[]).concat(arrival.up, arrival.down);
-  const sameLine = directionSlice.filter(
+  // #1740 — backend가 forward하는 목적지 방향. #2696 — undefined(구버전 backend/미해결)는
+  // "방향 미해결"로 취급한다. ArrivalInfo 자체는 up/down 소속 정보를 필드로 갖지 않으므로
+  // (Seoul API 응답이 이미 up/down 배열로 나뉘어 온다), 방향 판정은 여기서 올바른 배열을
+  // 선택하는 것으로 수행하고 — 술어(`isBoardableCandidate`)는 방향 미해결(null) 자체를
+  // 방어적으로 재확인해 후보 전체를 무효화한다(양방향 병합 금지, 위반② 재발 방지).
+  const direction: 'up' | 'down' | null = payload.destinationDirection ?? null;
+  const directionPool: readonly ArrivalInfo[] = direction ? arrival[direction] : [];
+  // #2696 — line + arrivalSeconds 필터(후보 pool). 조기종착/상태는 아래 공유 술어가 판정한다 —
+  // 두 picker(여기, `usePrevTrainCandidate`)가 각자 다르게 구현했던 불변식을 한 곳으로
+  // 단일화(#2696 설계).
+  const lineMatched: readonly ArrivalInfo[] = directionPool.filter(
     (a) => a.line === payload.line && a.arrivalSeconds > 0,
   );
-  const chosen = pickAutoTrainCodeFromArrivals(sameLine, destinationDirection);
+
+  if (direction === null) {
+    // #2696 (요구사항5) — direction 해결 실패 계측. 9/17 저녁 건이 위반①/②(자동락 vs
+    // 리스트 후보) 어느 쪽인지 이 신호 부재 때문에 확정 못 했다.
+    addDomainBreadcrumb('boarding', 'boardable_direction_unresolved', { ...telemetry });
+  }
+
+  const validLine = isValidLineNumber(payload.line) ? payload.line : null;
+  // #2696 — 조기 종착 판정용 "다음 목표역". originStation을 route 위에서 찾아 destination까지의
+  // 다음 정거장을 산출한다. route/destination/originStation 중 하나라도 없으면 null(판정 skip).
+  const originStationForTarget = validLine
+    ? findStationByNameAndLine(payload.originStation, validLine)
+    : null;
+  const nextTargetStationName =
+    originStationForTarget && widgetContext.route && widgetContext.destination
+      ? getNextStationName(
+          originStationForTarget.id,
+          widgetContext.destination.id,
+          widgetContext.route,
+        )
+      : null;
+
+  const context: BoardableCandidateContext | null = validLine
+    ? { line: validLine, direction, nextTargetStationName }
+    : null;
+  const candidates = context ? lineMatched.filter((a) => isBoardableCandidate(a, context)) : [];
+  const chosen = context ? pickAutoTrainCodeFromArrivals(lineMatched, context) : null;
   if (!chosen) {
     log.info('ambiguity or empty — creating pending fallback lock');
-    // 빈 후보와 ambiguity 구분: sameLine이 1개 이상인데 chosen이 null이면 ambiguity.
-    const reason = sameLine.length === 0 ? 'autolock-arrivals-empty' : 'autolock-ambiguity';
+    // 빈 후보와 ambiguity 구분: candidates가 1개 이상인데 chosen이 null이면 ambiguity.
+    // 방향 미해결은 그 자체가 결정적 원인이므로 별도 reason으로 구분(#2696 요구사항5).
+    const reason =
+      direction === null
+        ? 'autolock-direction-unresolved'
+        : candidates.length === 0
+          ? 'autolock-arrivals-empty'
+          : 'autolock-ambiguity';
     logBoardingPromptAutoLock({ reason, ...telemetry });
-    // #1888 (RC-13) — 빈 후보(line + direction 필터 후 0건) graceful skip evidence.
+    // #1888 (RC-13) — 빈 후보(line 필터 후 0건) graceful skip evidence.
     // ambiguity는 후보가 있으나 자동 선택 불가 — empty와 별 신호이므로 empty case에서만 발사.
-    if (sameLine.length === 0) {
+    if (candidates.length === 0 && direction !== null) {
       addDomainBreadcrumb('boarding', 'boarding_prompt_empty_skip', {
         reason: 'line-filtered-empty',
+        ...telemetry,
+      });
+    }
+    // #2696 (요구사항6) — 술어로 배제된 후보 수(과도 필터링 = 후보 0건 회귀 감시).
+    const excludedCount = lineMatched.length - candidates.length;
+    if (excludedCount > 0) {
+      addDomainBreadcrumb('boarding', 'boardable_candidate_excluded', {
+        excludedCount,
+        totalCount: lineMatched.length,
         ...telemetry,
       });
     }

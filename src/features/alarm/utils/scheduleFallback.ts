@@ -176,6 +176,10 @@ function makeTrain(
     arrivalCode: -1,
     isLastTrain: false,
     trainType: 'normal',
+    // #2696 — 시간표 fallback은 실제 up/down 종착역명(lineTerminals.json)을 이미 destination으로
+    // 쓰고 있다. 같은 값을 terminalStation에도 채워 실시간 API 경로와 동일한 필드로 조기 종착
+    // 판정이 가능하게 한다 (destination의 기존 의미/소비자는 변경하지 않는다).
+    terminalStation: destination.length > 0 ? destination : undefined,
   };
 }
 

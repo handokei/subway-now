@@ -22,12 +22,12 @@ const log = createLogger('arrivalApi');
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
-    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '상행 종착역' },
+    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '상행 종착역' },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
-    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '하행 종착역' },
+    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '하행 종착역' },
   ],
   isMock: true,
 });
@@ -192,6 +192,8 @@ export async function fetchArrivalInfo(
         arrivalCode: Number.isFinite(parsedCode) ? parsedCode : -1,
         isLastTrain: item.lstcarAt === '1' || item.lstcarAt === 1,
         trainType: parseTrainType(item.btrainSttus),
+        // #2696 — bstatnNm(종착역). 조기 종착 판정용, destination(raw trainLineNm)과는 별개.
+        terminalStation: typeof item.bstatnNm === 'string' && item.bstatnNm.length > 0 ? item.bstatnNm : undefined,
       };
       if (UP_DIRECTION_VALUES.includes(item.updnLine)) {
         up.push(info);

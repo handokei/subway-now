@@ -105,6 +105,10 @@ describe('#2405 whole-trip wire RED — 용마산(7) boardingPrompt → tryAutoL
       originStation: ORIGIN_STATION,
       line: LINE,
       tripToken: 'trip-2026-08-28',
+      // #2696 — destinationDirection 미해결(undefined)은 isBoardableCandidate가 후보 전체를
+      // 무효화한다(양방향 병합 금지). 이 fixture의 관심사(train 확정 성공/실패, #2407 root fix)와
+      // 무관하므로 방향을 'up'으로 고정 — 아래 arrival fixture도 전부 up 배열을 사용한다.
+      destinationDirection: 'up',
     };
   }
 

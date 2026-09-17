@@ -12,6 +12,8 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import { PREV_TRAIN_CANDIDATE_BACKSTOP_MS } from '../../../shared/constants/eta';
+import { isBoardableCandidate, type BoardableCandidateContext } from '../utils/isBoardableCandidate';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 
 export interface UsePrevTrainCandidateInputs {
   route: Route;
@@ -103,6 +105,14 @@ export function usePrevTrainCandidate({
   const seenRef = useRef<SeenArrivals | null>(null);
 
   // 이탈 전이 관측 — 직전 tick의 currentArrivals trainCode 집합과 비교해 사라진 열차를 채택한다.
+  //
+  // #2696 — 술어(`isBoardableCandidate`)는 "관측 단계"에만 적용한다. currentArrivals에 아직
+  // 남아 있는 시점에 노선/방향/조기종착/상태를 판정해 통과한 열차만 추적 대상(seenRef)에
+  // 들어간다. 일단 추적 대상이 된 뒤 다음 tick에 목록에서 사라지는 것(아래 departedTrains)은
+  // "정상 출발" 판정이며 이 시점에서 술어를 재적용하지 않는다 — 사라진 열차는 arrival
+  // 레코드 자체가 없어(arvlCd 등 상태값 부재) 술어를 다시 돌리면 상태 게이트에서 항상
+  // 탈락해 #2689가 고친 "다음역마저 통과해도 5분간 tap 가능" 동작을 죽인다(회귀 방지 —
+  // 아래 usePrevTrainCandidate.test.ts red 시나리오 참고).
   useEffect(() => {
     if (!isActive) {
       seenRef.current = null;
@@ -110,12 +120,38 @@ export function usePrevTrainCandidate({
       return;
     }
 
-    const nextCodes = new Map(currentArrivals.map((train) => [train.trainCode, train]));
+    const context: BoardableCandidateContext = {
+      // isActive가 line 존재를 보장 — non-null 단언 대신 타입 좁히기용 캐스트.
+      line: line as NonNullable<typeof line>,
+      direction,
+      nextTargetStationName: nextStationName,
+    };
+    const boardableArrivals = currentArrivals.filter((train) => isBoardableCandidate(train, context));
+    // #2696 (요구사항6) — 술어로 배제된 후보 수(과도 필터링 = 후보 0건 회귀 감시).
+    const excludedCount = currentArrivals.length - boardableArrivals.length;
+
+    const nextCodes = new Map(boardableArrivals.map((train) => [train.trainCode, train]));
     const prevSeen = seenRef.current;
     seenRef.current = { contextKey, codes: nextCodes };
 
     if (!prevSeen || prevSeen.contextKey !== contextKey) {
-      // trip context(출발역+다음역+호선+방향) 변경 — 즉시 무효화하고 새 baseline부터 관측 시작.
+      // trip context(출발역+다음역+호선+방향) 변경 — 새 baseline 시작 시점에만 direction 미해결/
+      // 배제 신호를 계측한다(폴링마다 반복 적재하지 않기 위해 contextKey 전환 시 1회로 제한).
+      // isActive가 이미 currentStation/line 존재를 보장하므로 여기서는 non-null로 다룬다.
+      if (direction === null) {
+        addDomainBreadcrumb('boarding', 'boardable_direction_unresolved', {
+          stationName: (currentStation as NonNullable<typeof currentStation>).name,
+          line,
+        });
+      }
+      if (excludedCount > 0) {
+        addDomainBreadcrumb('boarding', 'boardable_candidate_excluded', {
+          excludedCount,
+          totalCount: currentArrivals.length,
+          stationName: (currentStation as NonNullable<typeof currentStation>).name,
+          line,
+        });
+      }
       setDeparted(null);
       return;
     }

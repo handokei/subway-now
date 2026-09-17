@@ -356,6 +356,25 @@ describe('fetchArrivalInfo', () => {
       expect(result.up.map((i) => i.isLastTrain)).toEqual([true, true, false, false]);
     });
 
+    // #2696 — bstatnNm(종착역) 파싱. 조기 종착 판정(isBoardableCandidate)용 신규 필드.
+    it('bstatnNm: 문자열 → terminalStation, 누락/빈 문자열/비문자열 → undefined', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', bstatnNm: '성수', subwayId: '1002' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', bstatnNm: '', subwayId: '1002' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', subwayId: '1002' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', bstatnNm: 12345, subwayId: '1002' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.terminalStation)).toEqual(['성수', undefined, undefined, undefined]);
+    });
+
     it('btrainSttus → trainType 매핑', async () => {
       process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
       global.fetch = jest.fn().mockResolvedValue({

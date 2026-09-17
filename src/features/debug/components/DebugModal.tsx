@@ -4096,12 +4096,14 @@ function AutoLockTelemetryRow({
     counts['autolock-no-trip'] +
     counts['autolock-station-lookup'] +
     counts['autolock-lock-failed'] +
-    counts['autolock-fallback-pending'];
+    counts['autolock-fallback-pending'] +
+    counts['autolock-direction-unresolved'];
   const value =
     total === 0
       ? '—'
       // #2407 — pending: root-fix fallback lock 카운트(train 미확정이어도 lock은 생성됨).
-      : `ok=${counts['autolock-success']} amb=${counts['autolock-ambiguity']} empty=${counts['autolock-arrivals-empty']} fail=${counts['autolock-lock-failed']} pending=${counts['autolock-fallback-pending']}`;
+      // #2696 — dir: destinationDirection 미해결로 후보 전체가 무효화된 카운트.
+      : `ok=${counts['autolock-success']} amb=${counts['autolock-ambiguity']} empty=${counts['autolock-arrivals-empty']} fail=${counts['autolock-lock-failed']} pending=${counts['autolock-fallback-pending']} dir=${counts['autolock-direction-unresolved']}`;
   return (
     <KeyValue
       label="autoLock(1h)"
