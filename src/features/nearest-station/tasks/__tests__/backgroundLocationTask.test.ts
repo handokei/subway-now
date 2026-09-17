@@ -55,6 +55,12 @@ jest.mock('../../api/positionUpload', () => ({
   uploadPosition: (...args: unknown[]) => mockUploadPosition(...args),
 }));
 
+// #2659 — position upload 직후 mirror 전진 시 LA를 깨우는 push-독립 트리거.
+const mockRefreshLiveActivityOnMirrorAdvance = jest.fn();
+jest.mock('../../../alarm/utils/refreshLiveActivityFromBackgroundContext', () => ({
+  refreshLiveActivityOnMirrorAdvance: () => mockRefreshLiveActivityOnMirrorAdvance(),
+}));
+
 // ── motionActivity 모킹 (#819 stationary 분류) ──
 const mockGetCurrentMotionStationary = jest.fn();
 jest.mock('../../utils/motionActivity', () => ({
@@ -248,6 +254,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // #2659 — 실제 uploadPosition은 항상 Promise를 반환한다(내부 graceful catch). 후속
+    // `.then(refreshLiveActivityOnMirrorAdvance)` 체인이 런타임과 동일하게 흐르도록 mock도 동일 계약.
+    mockUploadPosition.mockResolvedValue({ ok: true });
+    mockRefreshLiveActivityOnMirrorAdvance.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
     mockGetFiredAlarms.mockResolvedValue(new Set());
@@ -1259,6 +1269,31 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
       const call = mockUploadPosition.mock.calls[0]?.[0];
       expect(call?.motion).toBe('stationary');
+    });
+
+    it('#2659 — position upload 직후 LA mirror-advance 트리거를 호출한다 (push 없이 LA 전진)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetCurrentMotionStationary.mockReturnValue(false);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+      await Promise.resolve();
+
+      expect(mockRefreshLiveActivityOnMirrorAdvance).toHaveBeenCalledTimes(1);
+    });
+
+    it('#2659 — uploadPosition이 reject해도 BG tick이 깨지지 않는다 (체인 graceful)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetCurrentMotionStationary.mockReturnValue(false);
+      mockUploadPosition.mockRejectedValueOnce(new Error('network down'));
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await expect(
+        taskCallback({ data: { locations: [loc] }, error: null }),
+      ).resolves.toBeUndefined();
+      expect(mockRefreshLiveActivityOnMirrorAdvance).not.toHaveBeenCalled();
     });
 
     it('APNs token 부재 → uploadPosition 미호출 (graceful)', async () => {
