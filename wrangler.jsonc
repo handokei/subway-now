@@ -1,0 +1,11 @@
+{
+  // 웹(Expo export) 정적 에셋 배포 전용 config. backend/alarm-worker/wrangler.toml과는
+  // 완전히 다른 worker(subway-now)를 대상으로 한다. #2698 — 과거 이 파일이 git에
+  // 추적되지 않아 backend 디렉토리에서 bare `wrangler deploy`를 실행하면 wrangler가
+  // 이 config를 잘못 채택해 cron/바인딩 없는 이 worker를 배포하는 사고가 2회 발생했다.
+  // 반드시 `npm run deploy:web`(루트) — `--config wrangler.jsonc` 명시 — 로만 배포한다.
+  "name": "subway-now",
+  "compatibility_date": "2026-09-11",
+  "observability": { "enabled": true },
+  "assets": { "directory": "dist" }
+}

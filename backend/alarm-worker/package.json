@@ -9,8 +9,8 @@
     "node": ">=23.6"
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy": "bash scripts/deploy.sh",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit"
