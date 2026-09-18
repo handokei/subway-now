@@ -114,6 +114,10 @@ import {
   POSITION_TRAIN_TTL_MS,
   WIFI_SSID_MAX_DISTANCE_KM,
 } from '../../../shared/constants/realtime';
+// #2713 (ADR-039 1단계) — 결정 tier GPS 좌표 소비 지점 공통 fix 신선도 임계값. #2070에서
+// 이미 정의된 15s 상수를 재사용(신규 임계값 아님) — 이 이슈 범위는 "정의된 게이트를 실제
+// 소비 지점에 배선"뿐이다.
+import { GPS_QUALITY_GATE_MAX_AGE_MS } from '../../../shared/constants/gpsQualityGate';
 import { hopsOnLine } from '../../../shared/utils/lineLoopPath';
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
@@ -554,13 +558,39 @@ export function useFusedNearestStation(
     lockActive: boardingLock != null,
     instrumentationRole: resolvedInstrumentationRole,
   });
+  // #2713 (ADR-039 1단계) — 결정 tier GPS 좌표 소비 지점 공통 fix 신선도 게이트.
+  //
+  // 배경: gps.userLocation은 마지막으로 채택된 fix가 얼어붙어도(watch 콜백 자체가 끊겨도)
+  // React state에 그대로 남아있다 — "존재 여부"만으로는 그 좌표가 방금 온 것인지 7분 전
+  // 것인지 구분할 수 없다. 결정 tier(positionTrainResult, passesFusionDistanceGate 호출자 등)가
+  // 이 좌표로 거리 sanity를 계산하면, 얼어붙은 좌표가 실측 열차 신호(trainCode 일치)를 "너무
+  // 멀다"며 거부하는 역설이 생긴다(2026-09-18 라이드: 7256/중곡 3030m reject, ADR-039 §1).
+  //
+  // 기존 isGpsQualityGateAcceptable(#2070)의 15s 임계(GPS_QUALITY_GATE_MAX_AGE_MS)를 age 단독
+  // 검사로 재사용한다 — accuracy 검사는 여기서 하지 않는다(각 소비 지점의 fusionDistanceGate/
+  // movementGate가 이미 자기 accuracy 정책을 갖고 있어 이중 게이팅을 피한다). stale이면
+  // decisionUserLocation=null — 각 소비 지점의 "userLocation 없음" 자연 fallback 경로로
+  // 귀결시킨다(신규 게이트가 아니라 배선).
+  //
+  // gps.lastFixAtMs가 number가 아니면(테스트 mock 등에서 미제공) age를 계산할 근거가 없으므로
+  // "판단 불가 시 stale로 단정하지 않는다" 원칙(memory/feedback_no_gps_for_decision.md)에 따라
+  // 신선한 것으로 취급 — 기존 동작(원본 gps.userLocation 그대로 사용) 보존.
+  //
+  // 표시 경로(gps.userLocation 원본)는 이 값과 무관하게 그대로 노출된다 — ADR-039 매트릭스에서
+  // GPS는 표시 권한을 유지한다.
+  const gpsFixAgeMs = typeof gps.lastFixAtMs === 'number' ? Date.now() - gps.lastFixAtMs : null;
+  const isDecisionGpsStale = gpsFixAgeMs !== null && gpsFixAgeMs >= GPS_QUALITY_GATE_MAX_AGE_MS;
+  const decisionUserLocation = isDecisionGpsStale ? null : gps.userLocation;
   // #2387 — approachLine(route/lock/legAdvance 권위 line 판정)의 legAdvance 입력. reactive 구독
   // 필수 — getState()는 useMemo 재계산을 트리거하지 않아 store 값이 바뀌어도 ssotGuardResult가
   // stale하게 남는다.
   const legAdvanceLine = useLegAdvanceStore((s) => s.nextLine);
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
-  const positionStability = usePositionStability(gps.userLocation);
+  // #2713 (ADR-039 1단계) — 얼어붙은 fix는 새 sample로 취급하지 않는다. usePositionStability
+  // 자체의 "null 입력 시 직전 판정 보존" 로직(판정 로직)은 바꾸지 않는다 — 여기서 넘기는 입력만
+  // 신선도로 거른다. 얼어붙은 좌표가 반복 sample로 쌓여 "정지"를 스스로 강화하는 것을 차단한다.
+  const positionStability = usePositionStability(decisionUserLocation);
 
   // #1574 (ADR-017 T11) — CTRadioAccessTechnology 환경 vote. iOS BG에서도 동작
   // (CTServiceRadioAccessTechnologyDidChangeNotification observer). underground SSOT 4-signal
@@ -686,6 +716,24 @@ export function useFusedNearestStation(
     recordCandidatesRecompute(Date.now());
   }, [candidates, resolvedInstrumentationRole]);
 
+  // #2713 (ADR-039 1단계, 요구사항 4) — stale로 결정 tier 입력에서 배제된 GPS 건수 계측.
+  // 새 인프라를 만들지 않고 기존 candidateRejectBuffer('gps-stale' reason)를 재사용 —
+  // DebugModal 'Candidate rejects' 섹션에서 그대로 노출된다(집계 윈도우/ring cap도 공유).
+  // candidates[0]의 line을 태그로 사용 — GPS 좌표는 있으니(stale일 뿐) 최근접 후보 line은
+  // 여전히 유효한 참고값이다. candidates가 비어있으면(라인 필터 등으로 후보 자체가 없음)
+  // 태그할 line이 없어 push를 생략한다.
+  useEffect(() => {
+    if (!isDecisionGpsStale) return;
+    const line = candidates[0]?.station.line;
+    if (!line) return;
+    pushCandidateRejectEntry({
+      kind: 'candidate-reject',
+      ts: Date.now(),
+      reason: 'gps-stale',
+      line,
+    });
+  }, [isDecisionGpsStale, candidates]);
+
   // arrival 폴링: 후보 역명 단위 K=3 고정.
   // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한
   // 호선을 사용하도록 한다 (#469).
@@ -792,7 +840,10 @@ export function useFusedNearestStation(
         line: lp.line,
         anchorStationName: anchor,
         windowStations,
-        userLocation: gps.userLocation,
+        // #2713 (ADR-039 1단계) — stale fix로 실측 열차 신호(trainCode 일치)를 거리로 오거부하는
+        // 회귀의 실제 발생 지점(2026-09-18 라이드 7256/중곡 3030m reject 실측). stale이면
+        // decisionUserLocation=null → distanceGateActive=false(가드 자체 비활성, graceful fallback).
+        userLocation: decisionUserLocation,
         stationCoordinates,
         onCandidateDistanceReject: (info) => {
           // #1748 — reject 카운트 누적 (useMemo 내부라 ref 직접 수정은 side-effect지만
@@ -827,7 +878,7 @@ export function useFusedNearestStation(
     // 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
     candidateDistanceRejectCountRef.current = candidateDistanceRejectCount;
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation, allowedLines]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, decisionUserLocation, allowedLines]);
 
   // #2594 (P5 리뷰 fix) — record 호출을 memo 본문에서 이 effect로 이전. useEffect는 실제로
   // 커밋된 렌더에서, deps([candidateTrains]) 참조가 실제로 바뀔 때만 실행되므로 React가 memo를
@@ -956,10 +1007,14 @@ export function useFusedNearestStation(
     // #444 거리 sanity — fused/route와 공통 헬퍼 재사용.
     // #1016 hole (b): boardingLock 활성 시 lockActive=true로 accuracy>200m bypass 거부.
     const candidate = { station, distanceKm };
+    // #2713 (ADR-039 1단계) — 여기 인용된 코드가 이슈가 지목한 "배선 빠진" 지점 그 자체.
+    // stale이면 decisionUserLocation=null → passesFusionDistanceGate의 `!userLocation → return
+    // true` 경로로 귀결(거리 sanity 자체를 건너뛴다). distanceKm 자체는 raw 좌표로 그대로 두어도
+    // 무해 — gate가 null userLocation일 때 candidate.distanceKm을 읽지 않는다.
     if (
       !passesFusionDistanceGate({
         candidate,
-        userLocation: gps.userLocation,
+        userLocation: decisionUserLocation,
         accuracyMeters: gps.accuracyMeters,
         gpsNearest: candidates[0],
         maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
@@ -1022,6 +1077,7 @@ export function useFusedNearestStation(
   }, [
     trainProgress,
     gps.userLocation,
+    decisionUserLocation,
     gps.accuracyMeters,
     candidates,
     boardingLock,
@@ -1046,8 +1102,11 @@ export function useFusedNearestStation(
   // R13-a (#1612): lockActive를 fused/route caller에도 전달 — lock 활성 trip의 fused/route는
   // strict bad-accuracy 가드 면제 (positionTrain caller와 동일 정신). lockless trip은 lockActive=false로
   // R13-a strict reject 자연 적용 — 지하 dead zone 누수 차단.
+  // #2713 (ADR-039 1단계) — fused/route 후보의 거리 sanity도 stale fix로 왜곡되지 않도록
+  // decisionUserLocation(신선도 게이트 통과분만)을 전달. stale이면 passesFusionDistanceGate가
+  // userLocation===null 경로로 통과시킨다(요구사항 2, 신규 게이트 아님).
   const gateOpts = {
-    userLocation: gps.userLocation,
+    userLocation: decisionUserLocation,
     accuracyMeters: gps.accuracyMeters,
     gpsNearest: candidates[0],
     maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
@@ -1128,11 +1187,11 @@ export function useFusedNearestStation(
       targetLine && targetLine !== wifiStation.line
         ? (findStationByNameAndLine(wifiStation.name, targetLine) ?? wifiStation)
         : wifiStation;
-    // 거리 게이트 — GPS가 있을 때만 적용. dead zone(null)은 자동 면제.
-    if (gps.userLocation) {
+    // 거리 게이트 — GPS가 신선할 때만 적용. dead zone(null)/stale(#2713)은 자동 면제.
+    if (decisionUserLocation) {
       const distanceKm = haversine(
-        gps.userLocation.lat,
-        gps.userLocation.lng,
+        decisionUserLocation.lat,
+        decisionUserLocation.lng,
         resolvedStation.lat,
         resolvedStation.lng,
       );
@@ -1569,15 +1628,14 @@ export function useFusedNearestStation(
   //
   // Evidence: T2 trip 12:19 GPS=신당(979m), lock=동대문역사문화공원(78m) → lock stuck 8분.
   const lockGpsDriftMeters = (lockStation: Station): number | null => {
-    // 호출자는 positionTrainBoardingLockMatch(positionTrainResult != null → userLocation 필수) 또는
-    // arvlCdArrivedMatch(candidates != null → userLocation 필수) 조건 하에서만 호출 —
-    // userLocation=null은 실용적으로 도달 불가. 방어적 guard 유지, 커버리지 면제.
-    /* istanbul ignore next */
-    if (!gps.userLocation) return null;
+    // #2713 (ADR-039 1단계) — stale fix로 계산한 "drift"는 진짜 이탈이 아니라 얼어붙은 좌표의
+    // 착시다. decisionUserLocation을 써서 stale이면 null(= 위 문서의 "dead zone" 경로와 동일하게
+    // drift 계산 불가 → gate 통과, lock 유지)로 귀결시킨다.
+    if (!decisionUserLocation) return null;
     return (
       haversine(
-        gps.userLocation.lat,
-        gps.userLocation.lng,
+        decisionUserLocation.lat,
+        decisionUserLocation.lng,
         lockStation.lat,
         lockStation.lng,
       ) * 1000
