@@ -173,4 +173,54 @@ describe('#2713 (ADR-039 1단계) GPS 신선도 게이트 배선', () => {
     expect(result.current.source).not.toBe('position-train');
     expect(result.current.source).not.toBe('boarding-lock');
   });
+
+  it('stale + candidates 없음(라인 필터 등으로 GPS-nearest 후보 자체가 없음) — gps-stale 카운터 태그할 line이 없어 push 생략', () => {
+    mockNearest.mockReturnValue(gpsBase({ lastFixAtMs: NOW - (GPS_QUALITY_GATE_MAX_AGE_MS + 5_000) }));
+    // candidates 배열이 비어있는 상황 — gps-stale 카운터가 태그할 line이 없다.
+    mockFindTop.mockReturnValue([]);
+    mockPos.mockReturnValue(
+      positionRet({
+        line: '7',
+        trains: [train(junggok.name, TRAIN_STATUS.ARRIVED, { trainNo: TRAIN_CODE })],
+      }),
+    );
+    renderHook(() =>
+      useFusedNearestStation(undefined, undefined, routeContext, TRAIN_CODE, makeLock()),
+    );
+
+    const entries = getCandidateRejectEntries();
+    expect(entries.some((e) => e.reason === 'gps-stale')).toBe(false);
+  });
+
+  it('stale + positionTrainResult가 게이트를 우회해 채택 — lockGpsDriftMeters가 decisionUserLocation=null로 drift 계산을 건너뛴다(lock 유지)', () => {
+    // #2713이 없었다면 이 시나리오 자체가 positionTrainResult 자체의 distance gate(0.6km)에
+    // 막혀 도달 불가능했다 — 이제 stale bypass로 positionTrainBoardingLockMatch까지 도달하고,
+    // lockGpsDriftMeters도 같은 decisionUserLocation을 참조해 drift를 "계산 불가"로 처리한다.
+    mockNearest.mockReturnValue(
+      gpsBase({ lastFixAtMs: NOW - (GPS_QUALITY_GATE_MAX_AGE_MS + 5_000) }),
+    );
+    mockFindTop.mockReturnValue([{ station: konkuk, distanceKm: 0 }]);
+    mockPos.mockReturnValue(
+      positionRet({
+        line: '7',
+        trains: [train(junggok.name, TRAIN_STATUS.ARRIVED, { trainNo: TRAIN_CODE })],
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      useFusedNearestStation(
+        undefined,
+        undefined,
+        routeContext,
+        TRAIN_CODE,
+        makeLock(),
+        undefined,
+        { subsurface: true }, // cascadeEnvironment='underground' → positionTrainBoardingLockMatch 활성화 조건.
+      ),
+    );
+
+    // drift 계산 불가(decisionUserLocation=null) → gate 통과 → lock 유지.
+    expect(result.current.source).toBe('boarding-lock');
+    expect(result.current.result?.station.id).toBe(junggok.id);
+  });
 });
