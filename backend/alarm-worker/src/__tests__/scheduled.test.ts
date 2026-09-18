@@ -189,7 +189,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
     hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
@@ -2743,6 +2743,55 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     const expectedWalkSeconds = getTransferSeconds('7', '5', '군자');
     expect(stored.legBoardingEligibleAt).toBe(NOW + expectedWalkSeconds * 1000);
     expect(stored.legBoardingPromptState).toBeUndefined();
+  });
+
+  // #2708 — 2026-09-18 실측: currentLegAnchor가 leg-2(건대입구/7호선)로 정상 stamp된 뒤에도
+  // leg-1의 promptDisplay(성수/2호선)가 남아 evaluateAndMaybeFireBoardingPrompt가 이전 노선
+  // 열차로 "탑승하셨나요?"를 반복 발사했다(탭해도 노선 불일치로 lock 불가). 새 leg anchor를
+  // stamp하는 지점(stampCurrentLegAnchor)에서 legBoardingPromptState/legResolveStreak과 함께
+  // promptDisplay도 지워야 한다(요구사항 1).
+  it('#2708 — 실제 노선 변경 transfer waypoint 통과 시 leg-1의 stale promptDisplay가 함께 정리된다', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        promptDisplay: { originStation: '성수', line: '2' },
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      },
+      '군자',
+      'p-leg2-anchor-clears-display',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toEqual({ boardingStation: '군자', line: '5' });
+    expect(stored.promptDisplay).toBeUndefined();
+  });
+
+  // #2708 (회귀 방지) — leg-1 주행 중(아직 환승 전, transfer waypoint를 통과하지 않음)에는
+  // promptDisplay를 절대 지우면 안 된다 — 지우면 leg-1 boarding-prompt 자체가 죽는다.
+  // stampCurrentLegAnchor는 진짜 노선 변경(transfer waypoint 통과)에서만 호출되므로, 같은 line
+  // 내 오라벨 transfer(#2515 대조군, 실제 환승 아님)는 anchor도 promptDisplay도 건드리지 않는다.
+  it('#2708 — 같은 line 내 오라벨 transfer(실제 환승 아님) 통과 시 promptDisplay가 보존된다', async () => {
+    const kv = new InMemoryKV();
+    await runArrivedScenario(
+      kv,
+      {
+        promptDisplay: { originStation: '성수', line: '2' },
+        waypoints: [
+          // 목적지 line이 lock.line('7')과 동일 — 실제 환승이 아니므로 stampCurrentLegAnchor가
+          // 호출되지 않아야 한다.
+          { stationName: '잠실나루', line: '7', kind: 'transfer' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      },
+      '잠실나루',
+      'p-same-line-preserves-display',
+    );
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.currentLegAnchor).toBeUndefined();
+    expect(stored.promptDisplay).toEqual({ originStation: '성수', line: '2' });
   });
 
   // #2655 — 도보 게이트 기준점을 "backend advance 시각"이 아니라 "사용자 도착 시각"으로.
@@ -5537,6 +5586,50 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
     expect(stats.boardingPromptSkippedNoContext).toBe(1);
     expect(stats.boardingPromptEvaluated).toBe(0);
+  });
+
+  // #2708 — 방어선. 정상 경로에서는 stampCurrentLegAnchor가 anchor stamp와 동시에
+  // promptDisplay를 지워 이 trip 형태(currentLegAnchor + stale promptDisplay 공존) 자체가
+  // 발생하지 않는다 — 이 테스트는 그 전제가 깨진 레거시 KV 레코드를 직접 구성해 방어선이
+  // 실제로 leg-1 경로를 차단하고 사유를 D1에 남기는지 검증한다(요구사항 2/3/4). 2026-09-18
+  // 실측 재현: 이 방어선이 없으면 promptDisplay.line(2호선) 기준 후보로 fetch를 시도해
+  // 이전 노선 열차로 프롬프트가 발사된다.
+  it('#2708 — currentLegAnchor 활성 중 stale promptDisplay가 있어도 발사하지 않고 D1에 사유를 남긴다', async () => {
+    const kv = new InMemoryKV();
+    // 이 trip은 currentLegAnchor(7호선)만 없으면 seedHappySeries + DEFAULT_BP_ARRIVAL(2호선)
+    // 조합으로 실제로 fire하는 것이 이미 검증된 형태다(위 '9단 통과 + APNs 200' 테스트와 동일
+    // baseline) — 방어선이 없으면 이 조합이 그대로 2026-09-18 실측(이전 노선 2321 열차 발사)을
+    // 재현한다.
+    const trip = makeUnlockedTrip({
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedHappySeries(kv, trip.token);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+      expiresAt: trip.expiresAt ?? NOW + 3_600_000,
+    });
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const { db, inserts } = makeFireLogDb();
+    const stats = await runScheduled(
+      makeEnv(kv, undefined, db),
+      makeBoardingPromptDeps(fetchImpl),
+    );
+    // 노선 불일치(promptDisplay.line='2' vs currentLegAnchor.line='7') 후보로 fetch 자체를
+    // 시도하지 않는다 — 발사됐다면 반드시 2호선(이전 노선) 열차였을 것.
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptSkippedLegAnchorActive).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    const mismatchInserts = inserts
+      .filter((args) => args[2] === 'boarding-prompt-leg-mismatch')
+      .map((args) => ({
+        station: args[3],
+        line: args[4],
+        meta: JSON.parse(args[5] as string) as { staleDisplayLine?: string },
+      }));
+    expect(mismatchInserts).toEqual([
+      { station: '건대입구', line: '7', meta: { staleDisplayLine: '2' } },
+    ]);
   });
 
   // #2130 (Part B-be-1) — 신선도 게이트. trip 등록 후 15분 경과 시 evaluate 자체를 skip.

@@ -91,6 +91,15 @@ import { captureXEvent } from './sentry';
  * 'advanced', advance 성공 경로)와 `leg-boarding-prompt`(anchor 소비 결과)와는 별개 kind라
  * D1에서 "관측이 anchor를 살렸는지"를 독립적으로 조회할 수 있다. `meta`에 `{ observedAtMs }`를
  * 싣는다. fire/advance/도보 게이트 판정에는 관여하지 않는다.
+ *
+ * `boarding-prompt-leg-mismatch` (#2708, 방어선 계측 only) — leg-1 전용
+ * `evaluateAndMaybeFireBoardingPrompt`(scheduled.ts)가 `trip.currentLegAnchor` 활성(leg-2 진입
+ * 후) 중에 진입해 stale `trip.promptDisplay`(이전 leg 기준)로 발사를 시도할 뻔한 지점을 skip한
+ * 시점에 1건 append. 정상 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에
+ * `promptDisplay`를 지워(#2708 요구사항 1) 이 분기 도달 자체가 없다 — 도달했다면 그 자체가
+ * 회귀 신호(레거시 KV 레코드 등). SSoT 마커(`originPromptSkippedForLegAnchor`)와 비교해 최초
+ * 전이 시에만 append한다(#2073 quota 보호). `meta`에 `{ staleDisplayLine }`을 싣는다.
+ * 발사/advance/lock 판정에는 관여하지 않는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -110,7 +119,8 @@ export type TripEventKind =
   | 'hop-end-prompt'
   | 'fallback-alert-fired'
   | 'fallback-implicit-ack'
-  | 'leg-anchor-observed';
+  | 'leg-anchor-observed'
+  | 'boarding-prompt-leg-mismatch';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

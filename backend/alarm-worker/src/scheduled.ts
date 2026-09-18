@@ -766,6 +766,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedLockActive: number;
   /**
+   * #2708 — leg-1 전용 `evaluateAndMaybeFireBoardingPrompt`가 `trip.currentLegAnchor` 활성 중
+   * (leg-2 진입 후) 진입해 stale `trip.promptDisplay`(이전 노선)로 발사를 시도할 뻔해 즉시
+   * return한 누적 횟수. 정상 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에
+   * `promptDisplay`를 지워(#2708 요구사항 1) 0에 수렴한다 — 0이 아니면 그 전제가 깨진 trip
+   * (레거시 KV 레코드 등)이 남아있다는 회귀 신호.
+   */
+  boardingPromptSkippedLegAnchorActive: number;
+  /**
    * #2131 (Part A-1) — `evaluateAndMaybeFireBoardingPrompt`가 `trip.promptGeoContext` 또는
    * `trip.promptDisplay` 부재로 게이트 평가 자체를 시도하지 못하고 무음 return한 누적 횟수.
    * 기존엔 counter/log 없이 조용히 skip돼 "boardingPromptEvaluated=0인데 이유를 알 수 없는" 관측
@@ -1293,6 +1301,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0,
     boardingPromptSkippedLockActive: 0,
+    boardingPromptSkippedLegAnchorActive: 0,
     boardingPromptSkippedNoContext: 0,
     boardingPromptSkippedStale: 0,
     boardingPromptSkippedTooFar: 0,
@@ -1660,6 +1669,15 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           trip.legResolveStreak = undefined;
           await putTrip(env.TRIPS, trip);
         }
+        // #2708 (요구사항 2 검토) — 이 OR은 발사 게이트가 아니라 순수 모니터링 카운터
+        // (`boardingAnchorUnresolved`)라 fire path에는 관여하지 않는다. 실 회귀는 leg-1
+        // 프롬프트 fire 경로(`evaluateAndMaybeFireBoardingPrompt`)가 `trip.currentLegAnchor` 존재
+        // 여부와 무관하게 stale `trip.promptDisplay`만으로 발사를 시도한 것이었다 — 그 root는
+        // `stampCurrentLegAnchor`가 anchor stamp와 동시에 `promptDisplay`를 지우도록 고쳤고
+        // (요구사항 1), 방어선은 `evaluateAndMaybeFireBoardingPrompt`에 `currentLegAnchor` 존재 시
+        // 즉시 skip을 추가했다(요구사항 3). 그 결과 이 두 필드는 정상 trip에서 항상 상호배타적이라
+        // 이 OR은 "이번 cycle에 활성 prompt anchor context가 있었는지"를 그대로 정확히 반영한다 —
+        // 값 변경 불필요.
         if (trip.infoModeEnabled === true && (trip.promptDisplay || trip.currentLegAnchor)) {
           stats.boardingAnchorUnresolved += 1;
         }
@@ -3276,6 +3294,40 @@ async function recordHopEndPromptTransition(
       station,
       line,
       meta: { outcome },
+    },
+    now,
+  );
+}
+
+/**
+ * #2708 (방어선 계측 only) — leg-1 전용 `evaluateAndMaybeFireBoardingPrompt`가
+ * `trip.currentLegAnchor` 활성 중 stale `trip.promptDisplay`로 발사를 시도할 뻔해 skip한 시점을
+ * SSoT 마커(`originPromptSkippedForLegAnchor`)와 비교해 최초 전이 시에만 D1
+ * `trip_events`(kind='boarding-prompt-leg-mismatch')로 append한다(#2073 quota 보호). 정상
+ * 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에 `promptDisplay`를 지워(#2708
+ * 요구사항 1) 이 분기 도달 자체가 없다 — 도달했다면 그 자체가 회귀 신호다. 발사/advance/lock
+ * 판정에는 관여하지 않는다.
+ */
+async function recordOriginPromptLegMismatchSkip(
+  env: Env,
+  trip: Trip,
+  ssot: TripPositionSSoT | null,
+  now: number,
+): Promise<void> {
+  if (ssot === null || ssot.originPromptSkippedForLegAnchor === true) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, originPromptSkippedForLegAnchor: true },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'boarding-prompt-leg-mismatch',
+      station: trip.currentLegAnchor?.boardingStation,
+      line: trip.currentLegAnchor?.line,
+      meta: { staleDisplayLine: trip.promptDisplay?.line },
     },
     now,
   );
@@ -5516,6 +5568,16 @@ function resolveTrustedTransferObservedAt(
  * #2515/#2655 (#2700에서 공유 추출) — leg anchor(도보 게이트 시작점) 필드를 stamp한다. 도보
  * 게이트(`legBoardingEligibleAt`) 자체는 이 함수가 만들 뿐 우회하지 않는다 — 게이트 강제는
  * `maybeFireLegBoardingPrompt`가 여전히 전담한다(#2700 요구사항 3).
+ *
+ * #2708 — 새 leg anchor를 stamp하는 이 지점에서 `trip.promptDisplay`(leg-1 origin anchor)도
+ * 함께 지운다. 2026-09-18 실측: `currentLegAnchor`가 건대입구/7호선으로 정상 stamp된 뒤에도
+ * `promptDisplay`(성수/2호선)가 살아남아 `evaluateAndMaybeFireBoardingPrompt`(leg-1 전용)가 매
+ * cron마다 이전 노선(2호선) 열차로 "탑승하셨나요?" 프롬프트를 반복 발사했다 — 탭해도 노선
+ * 불일치로 lock이 생성/검증되지 않았다. `legBoardingPromptState`/`legResolveStreak`와 같은 이
+ * 자리에서 리셋해야 다음에 또 갈라지지 않는다(요구사항 1). leg-1 주행 중(이 함수 호출 전)에는
+ * `promptDisplay`를 절대 건드리지 않는다 — leg-1 프롬프트가 죽는 회귀를 막기 위해 이 함수는
+ * 오직 진짜 노선 변경(`completeWaypointAdvance`/`maybeStampLegAnchorFromObservation`의
+ * `isRealLineChange` 게이트를 통과한 caller)에서만 호출된다.
  */
 function stampCurrentLegAnchor(
   trip: Trip,
@@ -5530,6 +5592,9 @@ function stampCurrentLegAnchor(
   // #2539 — 새 leg anchor마다 이전 leg의 연속확증 카운터를 리셋한다(다른 leg의 stale
   // trainCode 매칭이 새 leg 승격에 이어지지 않도록).
   trip.legResolveStreak = undefined;
+  // #2708 — 위 주석 참고. leg-1의 stale origin anchor를 지워 leg-1 boarding-prompt 경로가
+  // 새 leg에서 되살아나지 않게 한다.
+  trip.promptDisplay = undefined;
 }
 
 /**
@@ -6910,6 +6975,26 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
       sleepMode: trip.sleepModeEnabled,
     });
+    return;
+  }
+
+  // #2708 — currentLegAnchor가 stamp되면 leg-2(`maybeFireLegBoardingPrompt`)가 권위다. 정상
+  // 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에 stale `trip.promptDisplay`(이전
+  // leg)를 지워(#2708 요구사항 1) 이 leg-1 전용 함수가 바로 아래 `!display` 분기로 자연 skip된다.
+  // 아래는 그 전제가 깨진 경우(레거시 KV 레코드 등)의 방어선(#2708 요구사항 2/3) — 이 함수는
+  // `promptDisplay.line`(이전 노선) 기준으로만 후보를 찾으므로 currentLegAnchor.line과 애초에
+  // 일치할 수 없어, 발사되면 반드시 이전 노선 열차다. 평가 자체를 skip하고 사유를 D1에 남긴다
+  // (#2708 요구사항 3/4).
+  if (trip.currentLegAnchor !== undefined) {
+    stats.boardingPromptSkippedLegAnchorActive += 1;
+    log('boarding-prompt: skip (currentLegAnchor active — leg-2 authoritative, stale leg-1 promptDisplay ignored)', {
+      token: trip.token.slice(0, 8),
+      anchorLine: trip.currentLegAnchor.line,
+      anchorStation: trip.currentLegAnchor.boardingStation,
+      displayLine: trip.promptDisplay?.line,
+    });
+    const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+    await recordOriginPromptLegMismatchSkip(env, trip, ssot, now);
     return;
   }
 
