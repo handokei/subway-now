@@ -19,13 +19,21 @@ import type { LineNumber } from '../../../shared/types/station';
  *  - `candidate-env` (#1934 G3 option B, #1936 G4 통합): 후보 station.environment가 cascade
  *    environment SSOT와 불일치 시 카운트만 누적 (filter는 #1950 consensus 게이트가 처리).
  *    enumeration 단계 가시화 — DebugModal에서 분포 표시.
+ *  - `gps-stale` (#2713, ADR-039 1단계): 결정 tier GPS 좌표 소비 지점에서 fix age가
+ *    GPS_QUALITY_GATE_MAX_AGE_MS(15s)를 넘어 거리 sanity 검사 자체를 건너뛴(=userLocation을
+ *    null 취급한) 횟수. reject가 아니라 "GPS를 결정 입력에서 배제"한 사건이지만, 같은
+ *    candidateRejectBuffer/DebugModal 채널을 재사용해 별도 인프라 없이 가시화한다.
  *
- * 세 reason을 같은 buffer로 묶은 이유: 셋 다 사용자 GPS / route / environment 기반 후보 정확도
+ * 네 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
  * 신호로 진단 시점에 비교 관찰이 유효. DebugModal에서 reason 키별 분포 표시.
  */
 export const CANDIDATE_REJECT_BUFFER_CAPACITY = 50;
 
-export type CandidateRejectReason = 'candidate-distance' | 'candidate-line' | 'candidate-env';
+export type CandidateRejectReason =
+  | 'candidate-distance'
+  | 'candidate-line'
+  | 'candidate-env'
+  | 'gps-stale';
 
 export interface CandidateRejectEntry {
   kind: 'candidate-reject';
