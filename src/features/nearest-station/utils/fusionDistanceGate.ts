@@ -27,6 +27,17 @@ export interface FusionDistanceGateInput {
    * true이면 accuracy>MAX_ACCURACY_M bypass를 거부 — 지하라도 lock이 있으면 거리 게이트를 엄격히 적용.
    */
   lockActive?: boolean;
+  /**
+   * ADR-039 2단계(#2728) — 이 candidate가 boardingLock.trainCode와 일치하는 실측 열차
+   * 위치 신호(positionTrainResult)일 때만 전달한다. 존재하면 GPS 절대/상대 거리 검사
+   * (maxAbsoluteKm/maxDeltaKm)를 건너뛰고 arc(경로) 정합성 검사로 대체한다 — 열차 피드
+   * 신호는 GPS 거리로 거부되지 않는다(ADR-039 D 매트릭스 2번). trainCode 불일치 후보에는
+   * 전달하지 않아 #444 원래 목적(엉뚱한 역 채택 방지)의 거리 검사가 그대로 적용된다.
+   */
+  trainMatchArc?: {
+    arcStations: readonly Station[];
+    boardingStationId: string;
+  };
 }
 
 /**
@@ -54,7 +65,7 @@ export function isWithinArcWindow(
 }
 
 export function passesFusionDistanceGate(input: FusionDistanceGateInput): boolean {
-  const { candidate, userLocation, accuracyMeters, gpsNearest, maxAbsoluteKm, maxDeltaKm, lockActive } = input;
+  const { candidate, userLocation, accuracyMeters, gpsNearest, maxAbsoluteKm, maxDeltaKm, lockActive, trainMatchArc } = input;
   if (!userLocation) return true;
   // R13-a (#1612): accuracy null strict reject (지하 dead zone 자동 통과 차단).
   // lock 활성 trip은 보호 — lockActive=true면 면제 (사용자 명시 의향 trip 동급 보장).
@@ -62,6 +73,11 @@ export function passesFusionDistanceGate(input: FusionDistanceGateInput): boolea
   // R13-a (#1612): lock 비활성 + bad accuracy strict reject (지하 dead zone 누수).
   // lock 활성 trip은 strict 거리 검사로 진행 (#1016 hole b 기존 동작 보존).
   if (!lockActive && accuracyMeters > MAX_ACCURACY_M) return false;
+  // ADR-039 2단계(#2728) — trainCode 일치 실측 신호는 GPS 거리로 거부하지 않는다.
+  // 검증 기준을 arc 정합성으로 교체 (#444 원목적은 arc 검사가 승계).
+  if (trainMatchArc) {
+    return isWithinArcWindow(trainMatchArc.arcStations, candidate.station.id, trainMatchArc.boardingStationId);
+  }
   if (candidate.distanceKm > maxAbsoluteKm) return false;
   if (
     gpsNearest &&

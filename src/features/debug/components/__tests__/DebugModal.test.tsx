@@ -2504,6 +2504,22 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('d=5400m');
   });
 
+  it('#2728 (ADR-039 2단계) candidate-arc reject: candidate-distance와 동일 포맷 컬럼 사용', () => {
+    const line = formatCandidateRejectLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-09-18T17:47:21Z').getTime(),
+      reason: 'candidate-arc',
+      trainNo: '7256',
+      stationName: '용마산',
+      line: '7',
+      distanceKm: 3.03,
+    });
+    expect(line).toContain('reject:candidate-arc');
+    expect(line).toContain('7256');
+    expect(line).toContain('용마산(7)');
+    expect(line).toContain('d=3030m');
+  });
+
   it('#2093 (G) candidate-distance reject: count 집계 시 "×N" suffix 표시', () => {
     const line = formatCandidateRejectLine({
       kind: 'candidate-reject',

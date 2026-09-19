@@ -1252,6 +1252,31 @@ describe('useFusedNearestStation', () => {
       }
     });
 
+    it('#2728 (ADR-039 2단계) trainCode 불일치 + arc 밖 → trainMatchArc 미적용, 기존 #1016 hole(c) 가드가 차단', () => {
+      // trainMatchArc는 trainProgress.trainNo===boardingLock.trainCode일 때만 활성.
+      // 불일치 후보는 arcStations가 있어도 예전 그대로 line 1082~1085의 arc-window 가드로 걸러진다.
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 3 * 90_000);
+        const myeonmok = findStationByNameAndLine('면목', '7')!;
+        setupGpsAt(myeonmok);
+        const tOff = train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'OTHER-TRAIN' });
+        mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [tOff] }));
+
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        // trainCode 불일치라 positionTrainResult가 'position-train'/'boarding-lock' 어느 tier로도
+        // 승격되지 않는다 — arc-window 가드(line 1082~1085)가 station 채택 자체를 차단했기 때문.
+        // GPS 자체가 면목에 있어 최종 cascade가 GPS fallback으로 면목을 노출할 수 있으므로
+        // confidence만으로 positionTrainResult 강등 여부를 검증한다(#444/#1016 계열과 동일 관례).
+        expect(result.current.confidence).not.toBe('boarding-lock');
+        expect(result.current.confidence).not.toBe('position-train');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('routeContext.origin null → arcStations 비어 interp 비활성', () => {
       jest.useFakeTimers();
       try {

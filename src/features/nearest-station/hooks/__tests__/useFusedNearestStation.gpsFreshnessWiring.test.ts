@@ -9,7 +9,9 @@
  * 실측 신호가 거부됐다. 본 파일은 그 정확한 상황(건대입구↔중곡, ≈3.03km)을 재현한다.
  *
  * - stale(fix age ≥ 15s, GPS_QUALITY_GATE_MAX_AGE_MS): 거리 sanity를 건너뛰고 실측 신호를 채택.
- * - fresh(fix age < 15s): #444가 막던 "엉뚱한 역 채택"이 여전히 막히는 회귀 테스트.
+ * - fresh(fix age < 15s): #2728(ADR-039 2단계) 이전엔 #444가 막던 "엉뚱한 역 채택"이 여전히
+ *   막혔으나, 2단계 이후엔 trainCode 일치 실측 신호가 GPS 거리 대신 arc 정합성으로 검증되어
+ *   채택된다(trainMatchArc, arcStations 존재 + 중곡이 arc window 내).
  */
 import { renderHook } from '@testing-library/react-native';
 import { useFusedNearestStation } from '../useFusedNearestStation';
@@ -133,12 +135,12 @@ describe('#2713 (ADR-039 1단계) GPS 신선도 게이트 배선', () => {
     expect(result.current.result?.station.id).toBe(junggok.id);
   });
 
-  it('fresh fix(age < 15s) — 회귀 방지: #444가 막던 거리 sanity가 여전히 동작해 같은 조건에서 거부된다', () => {
+  it('fresh fix(age < 15s) — #2728(ADR-039 2단계): trainCode 일치 실측 신호는 arc 정합성으로 검증돼 GPS 거리(3.03km)와 무관하게 채택된다', () => {
     const { result } = setup({ fixAgeMs: GPS_QUALITY_GATE_MAX_AGE_MS - 5_000 });
 
-    // fresh GPS는 그대로 거리 계산에 쓰여 3.03km > MAX_FUSION_DISTANCE_KM(0.6km) → 거부.
-    expect(result.current.source).not.toBe('position-train');
-    expect(result.current.source).not.toBe('boarding-lock');
+    // fresh GPS라도 trainCode(7256)가 lock과 일치 + 중곡이 arc window 내 → arc 정합성 통과.
+    expect(result.current.source).toBe('boarding-lock');
+    expect(result.current.result?.station.id).toBe(junggok.id);
   });
 
   it('stale fix에서 candidateRejectBuffer에 gps-stale 배제 카운터가 기록된다 (요구사항 4 계측)', () => {
@@ -155,9 +157,10 @@ describe('#2713 (ADR-039 1단계) GPS 신선도 게이트 배선', () => {
     expect(entries.some((e) => e.reason === 'gps-stale')).toBe(false);
   });
 
-  it('lastFixAtMs 미제공(테스트 mock 등 판단 불가) — 신선한 것으로 취급해 기존 거리 sanity 동작 보존', () => {
+  it('lastFixAtMs 미제공(테스트 mock 등 판단 불가) — 신선한 것으로 취급해도 #2728(ADR-039 2단계) arc 정합성으로 채택된다', () => {
     // gps.lastFixAtMs가 number가 아니면 "판단 불가 시 stale로 단정하지 않는다" 원칙에 따라
-    // decisionUserLocation=gps.userLocation 그대로 — 기존(이슈 이전) 동작과 동일해야 한다.
+    // decisionUserLocation=gps.userLocation 그대로("fresh" 취급) — 그러나 2단계 이후엔 fresh
+    // 여부와 무관하게 trainCode 일치 + arc 정합성이면 채택된다.
     mockNearest.mockReturnValue(gpsBase({ lastFixAtMs: null }));
     mockFindTop.mockReturnValue([{ station: konkuk, distanceKm: 0 }]);
     mockPos.mockReturnValue(
@@ -170,8 +173,8 @@ describe('#2713 (ADR-039 1단계) GPS 신선도 게이트 배선', () => {
       useFusedNearestStation(undefined, undefined, routeContext, TRAIN_CODE, makeLock()),
     );
 
-    expect(result.current.source).not.toBe('position-train');
-    expect(result.current.source).not.toBe('boarding-lock');
+    expect(result.current.source).toBe('boarding-lock');
+    expect(result.current.result?.station.id).toBe(junggok.id);
   });
 
   it('stale + candidates 없음(라인 필터 등으로 GPS-nearest 후보 자체가 없음) — gps-stale 카운터 태그할 line이 없어 push 생략', () => {

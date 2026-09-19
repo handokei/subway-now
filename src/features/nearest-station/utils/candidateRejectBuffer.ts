@@ -23,8 +23,11 @@ import type { LineNumber } from '../../../shared/types/station';
  *    GPS_QUALITY_GATE_MAX_AGE_MS(15s)를 넘어 거리 sanity 검사 자체를 건너뛴(=userLocation을
  *    null 취급한) 횟수. reject가 아니라 "GPS를 결정 입력에서 배제"한 사건이지만, 같은
  *    candidateRejectBuffer/DebugModal 채널을 재사용해 별도 인프라 없이 가시화한다.
+ *  - `candidate-arc` (#2728, ADR-039 2단계): boardingLock.trainCode와 일치하는 실측 열차
+ *    신호가 GPS 거리 검사 대신 arc(경로) 정합성 검사에서 탈락한 횟수. `candidate-distance`와
+ *    분리해 "GPS 거리로 거부됐는지" vs "arc 밖으로 판정됐는지"를 구분 관찰한다.
  *
- * 네 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
+ * 다섯 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
  * 신호로 진단 시점에 비교 관찰이 유효. DebugModal에서 reason 키별 분포 표시.
  */
 export const CANDIDATE_REJECT_BUFFER_CAPACITY = 50;
@@ -33,7 +36,8 @@ export type CandidateRejectReason =
   | 'candidate-distance'
   | 'candidate-line'
   | 'candidate-env'
-  | 'gps-stale';
+  | 'gps-stale'
+  | 'candidate-arc';
 
 export interface CandidateRejectEntry {
   kind: 'candidate-reject';

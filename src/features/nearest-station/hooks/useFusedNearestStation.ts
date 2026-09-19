@@ -795,6 +795,19 @@ export function useFusedNearestStation(
   // 주석 참조(React가 memo를 커밋 없이 재실행할 수 있어 "하한만 보장"되는 문제).
   const candidateDistanceRejectCountRef = useRef(0);
 
+  // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
+  // #2728 (ADR-039 2단계) — candidateTrains(pickCandidateTrains)의 trainCode-lock 매칭 arc
+  // 검사에도 필요해 candidateTrains 이전으로 승격.
+  const arcStations = useMemo<Station[]>(() => {
+    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
+    const arc = computeRouteArc(
+      routeContext.route,
+      routeContext.origin,
+      routeContext.destination,
+    );
+    return arc?.stations ?? [];
+  }, [routeContext]);
+
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
     const out: CandidateTrain[] = [];
@@ -845,6 +858,14 @@ export function useFusedNearestStation(
         // decisionUserLocation=null → distanceGateActive=false(가드 자체 비활성, graceful fallback).
         userLocation: decisionUserLocation,
         stationCoordinates,
+        // #2728 (ADR-039 2단계) — boardingLock.trainCode와 일치하는 candidate는 GPS 거리 대신
+        // arc(경로) 정합성으로 검증한다. lock 없으면 lockedTrainCode=null → 기존 동작 그대로
+        // (lockless trip 미변경). arcStations가 비어있으면(routeContext 없음) arc 정합성
+        // 자체를 판정할 근거가 없으므로 bypass를 비활성화 — #1896(RC-8) GPS drift 게이트처럼
+        // route 없이 GPS 거리만으로 안전을 보장하던 기존 보호 장치를 무력화하지 않는다.
+        lockedTrainCode: boardingLock?.trainCode ?? null,
+        arcStations: boardingLock && arcStations.length > 0 ? arcStations : undefined,
+        boardingStationId: boardingLock?.boardingStationId,
         onCandidateDistanceReject: (info) => {
           // #1748 — reject 카운트 누적 (useMemo 내부라 ref 직접 수정은 side-effect지만
           // 이 값은 다음 render cycle의 window 계산에만 사용 — 현재 render에 영향 없음).
@@ -855,10 +876,11 @@ export function useFusedNearestStation(
           // #2594 (옵션 D) — 계측 전용 카운터. 클로저 로컬 변수라 side-effect 없음.
           candidateDistanceRejectCount += 1;
           // #1902 — candidate-reject 별 buffer로 이전. fusionDebugBuffer 200 cap 보호.
+          // #2728 (ADR-039 2단계) — arc 정합성 실패로 reject된 경우 'candidate-arc'로 구분.
           pushCandidateRejectEntry({
             kind: 'candidate-reject',
             ts: Date.now(),
-            reason: 'candidate-distance',
+            reason: info.viaArcCheck ? 'candidate-arc' : 'candidate-distance',
             trainNo: info.trainNo,
             stationName: info.stationName,
             line: info.line,
@@ -878,7 +900,7 @@ export function useFusedNearestStation(
     // 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
     candidateDistanceRejectCountRef.current = candidateDistanceRejectCount;
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions, decisionUserLocation, allowedLines]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, decisionUserLocation, allowedLines, boardingLock, arcStations]);
 
   // #2594 (P5 리뷰 fix) — record 호출을 memo 본문에서 이 effect로 이전. useEffect는 실제로
   // 커밋된 렌더에서, deps([candidateTrains]) 참조가 실제로 바뀔 때만 실행되므로 React가 memo를
@@ -889,18 +911,6 @@ export function useFusedNearestStation(
     if (resolvedInstrumentationRole === 'observer') return;
     recordCandidateDistanceFire(candidateDistanceRejectCountRef.current, Date.now());
   }, [candidateTrains, resolvedInstrumentationRole]);
-
-  // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
-  // 기존 arcStations useMemo(ADR-008 estimator용)는 아래에서 이 값을 재사용한다.
-  const arcStations = useMemo<Station[]>(() => {
-    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
-    const arc = computeRouteArc(
-      routeContext.route,
-      routeContext.origin,
-      routeContext.destination,
-    );
-    return arc?.stations ?? [];
-  }, [routeContext]);
 
   // #1616 (R8a) — lockless 시 forward-only 가드 활성화.
   // boardingLock이 있으면 기존 동작(#1017): arcStations + lock.boardingStationId 그대로 사용.
@@ -1011,6 +1021,18 @@ export function useFusedNearestStation(
     // stale이면 decisionUserLocation=null → passesFusionDistanceGate의 `!userLocation → return
     // true` 경로로 귀결(거리 sanity 자체를 건너뛴다). distanceKm 자체는 raw 좌표로 그대로 두어도
     // 무해 — gate가 null userLocation일 때 candidate.distanceKm을 읽지 않는다.
+    // #2728 (ADR-039 2단계) — trainProgress.trainNo가 boardingLock.trainCode와 일치하면(=실측
+    // 열차 위치 신호) GPS 거리 대신 arc 정합성으로 검증한다. 신선한(non-stale) GPS가 단순히
+    // 부정확/드리프트해 3030m처럼 먼 값을 보고해도 이 신호는 더 이상 거리로 거부되지 않는다.
+    // arcStations가 비어있으면(routeContext 없음) arc 정합성을 판정할 근거가 없어 bypass를
+    // 비활성화 — #1896(RC-8) GPS drift 게이트처럼 route 없이 GPS 거리만으로 보호하던 기존
+    // 장치를 무력화하지 않는다.
+    const trainMatchArc =
+      boardingLock != null &&
+      trainProgress.trainNo === boardingLock.trainCode &&
+      arcStations.length > 0
+        ? { arcStations, boardingStationId: boardingLock.boardingStationId }
+        : undefined;
     if (
       !passesFusionDistanceGate({
         candidate,
@@ -1020,6 +1042,7 @@ export function useFusedNearestStation(
         maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
         maxDeltaKm: MAX_FUSION_DELTA_KM,
         lockActive: boardingLock != null,
+        trainMatchArc,
       })
     ) {
       return null;

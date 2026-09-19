@@ -243,6 +243,80 @@ describe('passesFusionDistanceGate', () => {
   });
 });
 
+// ADR-039 2단계(#2728) — trainMatchArc: trainCode 일치 실측 신호는 GPS 거리로 거부되지 않는다.
+describe('passesFusionDistanceGate — trainMatchArc (ADR-039 2단계, #2728)', () => {
+  const userLocation = { lat: 37.5, lng: 127.0 };
+  const arc: Station[] = ['건대입구', '중곡', '용마산', '사가정', 'S4', 'S5'].map((id) =>
+    makeStation(id, 0, 0),
+  );
+
+  it('실측(2026-09-18) 재현: trainCode 일치 + GPS 3030m 초과여도 arc 정합성 통과 시 채택된다 (GREEN)', () => {
+    // 건대입구(고착 GPS) ↔ 중곡 실거리 3030m 조건 그대로 — 절대/상대 거리 모두 threshold 초과.
+    const candidate = makeResult('중곡', 0, 0, 3.03);
+    expect(
+      passesFusionDistanceGate({
+        candidate,
+        userLocation,
+        accuracyMeters: 74,
+        gpsNearest: makeResult('건대입구', 0, 0, 0),
+        maxAbsoluteKm: 0.6,
+        maxDeltaKm: 0.2,
+        lockActive: true,
+        trainMatchArc: { arcStations: arc, boardingStationId: '건대입구' },
+      }),
+    ).toBe(true);
+  });
+
+  it('RED 재현 — trainMatchArc 없이 같은 입력이면 절대 거리 초과로 거부된다(수정 전 동작)', () => {
+    const candidate = makeResult('중곡', 0, 0, 3.03);
+    expect(
+      passesFusionDistanceGate({
+        candidate,
+        userLocation,
+        accuracyMeters: 74,
+        gpsNearest: makeResult('건대입구', 0, 0, 0),
+        maxAbsoluteKm: 0.6,
+        maxDeltaKm: 0.2,
+        lockActive: true,
+        // trainMatchArc 미전달 — 기존(2단계 이전) 동작 그대로 reject.
+      }),
+    ).toBe(false);
+  });
+
+  it('trainMatchArc 있어도 arc window 초과 후보면 거부된다 (#444 목적 승계)', () => {
+    // S4(idx 4)는 건대입구(idx 0) 기준 LOCK_NEXT_HOP_WINDOW(3) 밖 — arc 정합성 자체가 실패해야 한다.
+    const candidate = makeResult('S4', 0, 0, 0.05);
+    expect(
+      passesFusionDistanceGate({
+        candidate,
+        userLocation,
+        accuracyMeters: 10,
+        gpsNearest: undefined,
+        maxAbsoluteKm: 0.6,
+        maxDeltaKm: 0.2,
+        lockActive: true,
+        trainMatchArc: { arcStations: arc, boardingStationId: '건대입구' },
+      }),
+    ).toBe(false);
+  });
+
+  it('trainCode 불일치 후보(trainMatchArc 미전달)는 기존 거리 검사가 그대로 적용된다 (#444 회귀 보존)', () => {
+    // #1817 시나리오 취지 — mismatch 후보는 arc가 아무리 유효해도 여기선 거리 게이트로 걸러진다.
+    const candidate = makeResult('중곡', 0, 0, 3.03);
+    expect(
+      passesFusionDistanceGate({
+        candidate,
+        userLocation,
+        accuracyMeters: 10,
+        gpsNearest: makeResult('건대입구', 0, 0, 0),
+        maxAbsoluteKm: 0.6,
+        maxDeltaKm: 0.2,
+        lockActive: true,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('isWithinArcWindow (#1016 hole c)', () => {
   const arc: Station[] = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'].map((id) =>
     makeStation(id, 0, 0),
