@@ -27,7 +27,11 @@ import {
 } from './replayLibrary';
 import { isLossyFixture } from '../replayFixture';
 import { runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
-import { firedStationOccurrences } from './helpers/pushAssertions';
+import {
+  firedLocklessIntermediateStations,
+  firedPrepareAlarmTargets,
+  firedStationOccurrences,
+} from './helpers/pushAssertions';
 
 const FIXTURE_SUFFIX = '.fixture.json';
 
@@ -129,6 +133,7 @@ for (const entry of REPLAY_LIBRARY) {
           cronIntervalMs: resolveCronIntervalMs(entry.cronIntervalMs),
           phaseOffsetMs,
           apns: 'capture',
+          seedPositionSeries: entry.seedPositionSeries?.(),
         });
 
         const fired = firedStationOccurrences(result.pushes);
@@ -157,6 +162,18 @@ for (const entry of REPLAY_LIBRARY) {
 
         if (entry.expect.tripEnded) {
           expect(tripEndedFired(result.pushes, entry.expect.tripEnded.reason)).toBe(true);
+        }
+
+        if (entry.expect.locklessIntermediateStations !== undefined) {
+          const firedLockless = firedLocklessIntermediateStations(result.pushes);
+          expect([...firedLockless].sort()).toEqual(
+            [...entry.expect.locklessIntermediateStations].sort(),
+          );
+        }
+
+        if (entry.expect.prepareAlarmTargets !== undefined) {
+          const firedPrepare = firedPrepareAlarmTargets(result.pushes);
+          expect([...firedPrepare].sort()).toEqual([...entry.expect.prepareAlarmTargets].sort());
         }
       });
     }

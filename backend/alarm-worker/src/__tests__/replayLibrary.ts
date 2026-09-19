@@ -18,9 +18,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
-import type { Trip } from '../types';
+import type { PositionPoint, Trip } from '../types';
 import { makeDesk20260913LockTrip } from './helpers/desk20260913Trip';
 import { makeLine7SynthLockTrip } from './helpers/line7SynthTrip';
+import { makeRide20260918LocklessTrip } from './helpers/ride20260918Trip';
+import { buildRide20260918PositionSeries } from './helpers/ride20260918PositionSeries';
 
 export const REPLAY_LIBRARY_DIR = path.join(__dirname, 'fixtures', 'replayLibrary');
 
@@ -33,6 +35,15 @@ export interface ReplayLibraryEntry {
   description: string;
   /** 재생 시작 시점(cron tick 0) trip 상태. */
   seedTrips: () => Trip[];
+  /**
+   * #2718 — 실측 device position/motion series 주입(`runCaptureReplay`의
+   * `seedPositionSeries` 그대로 전달). key = seed trip의 `token`. `runLocklessIntermediate`/
+   * `advanceTripPosition`의 motion 게이트가 이 series 없이는 항상 `unknown`(=차단)으로
+   * 떨어져, 실측 없이 이 필드를 생략하면 "backend가 침묵했다"는 fixture 인공물을 결함으로
+   * 오판하는 회귀가 생긴다(2차 fidelity 지적). lock 활성 경로(`fireArvlCdStationPush`)는 이
+   * 게이트 자체가 없어 영향받지 않는다 — lockless entry만 필요.
+   */
+  seedPositionSeries?: () => Record<string, PositionPoint[]>;
   /**
    * cron tick 스케줄 선택 — 암묵 기본값 없음, 매 entry가 명시적으로 골라야 한다(#2585 리뷰):
    * - `'recorded'`: fixture가 기록한 실제 cron cycle 시각(`fixture.cycleStartsMs`)을 그대로
@@ -106,6 +117,20 @@ export interface ReplayLibraryEntry {
      * `data.kind==='trip-ended' && data.reason===reason`인 alert push가 있어야 한다.
      */
     tripEnded?: { reason: string };
+    /**
+     * #2718 — lockless intermediate 통과(`runLocklessIntermediate`, silent/background push,
+     * `firedLocklessIntermediateStations`) 채널로 발사돼야 하는 역들. lock 활성 채널
+     * (`firedStations`)과 wire 계약이 달라 별도 필드로 분리한다(위 hopEndPromptStations와
+     * 동일 이유). 미지정 시 이 채널은 검증하지 않는다(N/A — lock-active entry는 애초에
+     * 발생하지 않는 채널).
+     */
+    locklessIntermediateStations?: string[];
+    /**
+     * #2718 — "1정거장 전" 준비 알림(`maybeFirePrepareAlarm`, `firedPrepareAlarmTargets`)이
+     * 발사돼야 하는 목적지(prepare target) 역들. lock 활성/lockless 무관 채널. 미지정 시
+     * 검증하지 않는다.
+     */
+    prepareAlarmTargets?: string[];
   };
 }
 
@@ -149,6 +174,15 @@ const loadRide20260914MorningFixture = makeFixtureLoader(RIDE_20260914_MORNING_F
 // 오늘 아침 라이드는 desk20260913Trip과 동일 경로(용마산 승차→건대입구 환승)이지만 실제 탑승
 // 열차 lock은 7301이 아니라 7039(D1 실측) — helper의 기본 trainCode를 override.
 const RIDE_20260914_MORNING_LOCK_TRAIN = '7039';
+
+// #2718 — 2026-09-18 저녁 라이드(건대입구→용마산, 사용자가 목적지를 지나침) 실캡처(15
+// cycle, 17:38:29~17:52:29 KST). ADR-039 close 조건 1(도착 알림 ≥1건)·4(목적지 통과 0건)를
+// 라이드 없이 판정한다. 나머지 2개 close 조건(`reject:candidate-distance`/`gate-phase-*`
+// 억제 0건)은 frontend 전용 개념이라 이 backend 하네스로는 원리적으로 재현 불가 —
+// `useFusedNearestStation.gpsFreshnessWiring.test.ts`(#2713)가 이미 같은 실측 상수
+// (7256/중곡/≈3.03km/74m)로 hook 레벨에서 직접 측정한다(PR 본문 상세).
+const RIDE_20260918_FIXTURE_PATH = 'capture_20260918_line7_yongmasan_overshoot.fixture.json';
+const loadRide20260918Fixture = makeFixtureLoader(RIDE_20260918_FIXTURE_PATH);
 
 export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
   {
@@ -254,6 +288,58 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       derivedFiredStations: ['성수'],
       hopEndPromptStations: ['건대입구'],
       minPushes: 4,
+    },
+  },
+  {
+    slug: 'capture_20260918_line7_yongmasan_overshoot',
+    fixturePath: RIDE_20260918_FIXTURE_PATH,
+    description:
+      '#2718 (ADR-039 close 조건 재생, fidelity 3차 정정) — 2026-09-18 저녁 라이드(뚝섬→' +
+      '건대입구 환승→용마산, 트레인 7256) 실캡처. **lockless가 실측이다** — 라이딩 중 KV' +
+      ' 직접 확인(17:42/17:48:58/17:49:57 전부 `boardingLock: None`) 결과 device' +
+      ' lock(17:40:32 생성, 7256)이 `/boarding-lock/sync` 13분 침묵 + `POST /trips`' +
+      ' isLockConsistentWithRoute 불일치(#2709)로 끝내 backend에 부착되지 못했다. 2차 정정으로' +
+      ' 덤프 Raw Signal의 실측 device motion series(walking/automotive 우세, #2718 comment)를' +
+      ' `seedPositionSeries`로 주입 — 주입 전 관측된 "station-passed 채널 0건"은 **fixture가' +
+      ' motion 신호를 안 줘서 생긴 인공물**이었다(주입 후 어린이대공원/군자/중곡 lockless' +
+      ' intermediate 정상 발사 확인, 아래 `locklessIntermediateStations`). 주입 후에도 남는' +
+      ' 유일한 진짜 결함은 **목적지(용마산) 자체의 도착 확정 알림이 없다는 것** —' +
+      ' `runLocklessIntermediate`가 `kind===\'destination\'` waypoint를 코드로 명시 skip하고' +
+      ' (types.ts:184), `infoModeEnabled=true`(실측)는 대안 경로(`tryFireConsensusTrainLeg`,' +
+      ' auto-lock)를 원천 비활성화한다 — motion 데이터와 무관한 구조적 gap. "1정거장 전" 준비' +
+      ' 알림(`maybeFirePrepareAlarm`, 아래 `prepareAlarmTargets`)은 정상 발사되지만 "곧 도착"' +
+      ' 경고일 뿐 "지금 하차" 확정이 아니다. lock 부착 시 비교는 아래' +
+      ' `replay_20260918_lock_seeded_contrast.test.ts`(REPLAY_LIBRARY 비등록) 참고.',
+    seedTrips: () => [makeRide20260918LocklessTrip('replay-library-ride-20260918')],
+    // #2718 (2차 fidelity 정정) — 실측 device motion series 주입. 주입 없이는
+    // `isAdvanceAllowedByMotion` 게이트가 series 부재로 결정론적 `unknown`(차단)이 되어
+    // fixture 인공물을 결함으로 오판한다(PR 본문 상세).
+    seedPositionSeries: () => ({
+      'replay-library-ride-20260918': buildRide20260918PositionSeries(),
+    }),
+    // 실 P0-a 캡처 — 실제 cron cycle 시각(fixture.cycleStartsMs)을 그대로 재생한다.
+    cronIntervalMs: 'recorded',
+    phaseOffsetsMs: [0],
+    loadFixture: loadRide20260918Fixture,
+    expect: {
+      // station-passed(alert, nextWaypoint) 채널은 lock-active 전용이라 lockless trip에서는
+      // 애초에 발생하지 않는다 — 아래 locklessIntermediateStations(silent/background 채널)가
+      // lockless의 실제 "통과" 신호다.
+      firedStations: [],
+      forbiddenStations: ['어린이대공원(세종대)', '군자(능동)', '중곡', '용마산', '사가정', '면목'],
+      // 건대입구 환승 waypoint는 `locklessTransferAdvanced`(motion 게이트 미적용, 별도 경로)로
+      // cycle 1에 즉시 advance — hop-end-prompt("하차했나요?") 채널로만 발사된다.
+      hopEndPromptStations: ['건대입구'],
+      // ADR-039 조건 1 재판정(3차, motion 주입 후) — 경유역 3개는 정상 통과 알림이 뜬다
+      // (silent push, device가 로컬 알림 구성). **RED는 여기 없음** — 2차 결론(0건) 철회.
+      locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
+      // "곧 용마산 도착, 하차 준비" 경고는 정상 발사(중곡 통과 시점) — 그러나 이것으로 조건 1을
+      // 만족한다고 보지 않는다(하차 확정 아님, 아래 결론 참고).
+      prepareAlarmTargets: ['용마산'],
+      // 진짜 RED: 목적지 도착 확정 신호(trip-ended destination-arrived 또는 동급)가 전혀 없다
+      // — `tripEnded` 미지정(이 재생에서 그 신호가 존재하지 않음을 의미). lock-seeded
+      // 대조군(별도 파일)은 동일 R2 캡처로 이 신호가 정상 발사됨을 보여준다.
+      minPushes: 6,
     },
   },
 ];
