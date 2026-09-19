@@ -6,6 +6,12 @@ import { act, renderHook } from '@testing-library/react-native';
 import { useBoardingLockSync, GOOD_FIX_ACCURACY_MAX_M, SYNC_DEBOUNCE_MS } from '../useBoardingLockSync';
 import { syncBoardingLock } from '../../../nearest-station/api/boardingLockSync';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  LOCK_ONLY_SYNC_ACCURACY_METERS,
+  LOCK_SYNC_RETRY_BACKOFF_MS,
+} from '../../../../shared/constants/boardingLock';
+import { logLockSyncDelivery } from '../../utils/alarmLog';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
 jest.mock('../../../nearest-station/api/boardingLockSync', () => ({
   syncBoardingLock: jest.fn(),
@@ -20,7 +26,14 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
+// #2709 — lock-identity 계측 채널을 spy로 격리. AsyncStorage 실 mock을 통한 alarmLog ring buffer
+// round-trip은 다른 스위트(alarmLog.test.ts)에서 검증되므로 여기선 호출 자체만 확인한다.
+jest.mock('../../utils/alarmLog', () => ({
+  logLockSyncDelivery: jest.fn(),
+}));
+
 const mockedSync = syncBoardingLock as jest.MockedFunction<typeof syncBoardingLock>;
+const mockedLogLockSyncDelivery = logLockSyncDelivery as jest.MockedFunction<typeof logLockSyncDelivery>;
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -543,5 +556,312 @@ describe('useBoardingLockSync (#901)', () => {
     act(() => jest.advanceTimersByTime(2000));
     await flushAsyncStorage();
     expect(mockedSync).not.toHaveBeenCalled();
+  });
+
+  // #2709 — lock 신원 → backend 전달 경로 통합. GPS 상태와 무관하게 발동, 실패 시 재시도,
+  // station 관측과는 필드 단위로 게이트가 분리됨을 검증.
+  describe('#2709 lock identity — GPS 무관 통합 경로', () => {
+    const boardingStationId = '2-022'; // stations.json 강남(2호선) — 실 lookup 대상.
+    const boardingStationName = canonicalStationName('강남', '2');
+
+    it('red 재현 조건(GPS accuracyMeters==null + currentStationName null) + lock 존재 → boarding station fallback anchor로 발사', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: boardingStationId,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      const sent = mockedSync.mock.calls[0][0];
+      expect(sent.observedStationName).toBe(boardingStationName);
+      expect(sent.accuracy).toBe(LOCK_ONLY_SYNC_ACCURACY_METERS);
+      expect(sent.trainCode).toBe('7246');
+      expect(sent.boardingLine).toBe('2');
+      expect(mockedLogLockSyncDelivery).toHaveBeenCalledWith({ outcome: 'attempt' });
+      expect(mockedLogLockSyncDelivery).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'success' }),
+      );
+    });
+
+    it('red 재현 조건(accuracy > 50m, GPS 신뢰 불가) + lock 존재 → 여전히 boarding station fallback으로 발사(station 게이트와 독립)', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '사가정', // GPS가 잡았지만 신뢰 불가 — advance 오염 방지 위해 미사용.
+          accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 200,
+          tripActive: true,
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '7',
+          boardingLockBoardingStationId: boardingStationId,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      const sent = mockedSync.mock.calls[0][0];
+      // 신뢰 불가 GPS station('사가정')이 아니라 lock의 boarding station이 나가야 한다.
+      expect(sent.observedStationName).toBe(boardingStationName);
+      expect(sent.accuracy).toBe(LOCK_ONLY_SYNC_ACCURACY_METERS);
+    });
+
+    it('전달 성공 시 lock.boardedAt으로부터 경과 초(delaySeconds)를 계측', async () => {
+      const boardedAt = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(boardedAt + 12_000);
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: boardingStationId,
+          boardingLockBoardedAt: boardedAt,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedLogLockSyncDelivery).toHaveBeenCalledWith({
+        outcome: 'success',
+        delaySeconds: 12,
+      });
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('boarding station lookup 실패(존재하지 않는 id) + GPS도 없으면 시도 자체가 불가 — blocked 계측, POST 없음', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: '__no_such_station_id__',
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).not.toHaveBeenCalled();
+      expect(mockedLogLockSyncDelivery).toHaveBeenCalledWith({ outcome: 'blocked' });
+      expect(mockedLogLockSyncDelivery).not.toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'attempt' }),
+      );
+    });
+
+    it('POST 실패 시 backoff 재시도 — 재시도에서 성공하면 delivered로 확정', async () => {
+      mockedSync
+        .mockResolvedValueOnce({ ok: false })
+        .mockResolvedValueOnce({ ok: true, advanced: false, currentWaypoint: null });
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: boardingStationId,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+
+      // 재시도 backoff 전에는 추가 호출 없음.
+      act(() => jest.advanceTimersByTime(LOCK_SYNC_RETRY_BACKOFF_MS[0] - 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+
+      // backoff 경과 → 재시도 발사, 성공.
+      act(() => jest.advanceTimersByTime(200));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(2);
+      expect(mockedLogLockSyncDelivery).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'success' }),
+      );
+    });
+
+    it('스케줄 fallback(SCHED-*) / pending sentinel trainCode는 lock 신원 전달 대상에서 제외(GPS 없으면 완전 무발사)', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          boardingLockTrainCode: 'SCHED-UP-1',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: boardingStationId,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).not.toHaveBeenCalled();
+    });
+
+    it('회귀 — route/destination 변경과 무관, forceTriggerKey 경로도 lock identity fallback을 동일하게 지원', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          forceTriggerKey: 'register-done',
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: boardingStationId,
+        }),
+      );
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      const sent = mockedSync.mock.calls[0][0];
+      expect(sent.observedStationName).toBe(boardingStationName);
+      expect(sent.trainCode).toBe('7246');
+    });
+
+    it('재시도 상한(LOCK_SYNC_RETRY_MAX_ATTEMPTS) 도달 시 추가 재시도 없이 중단', async () => {
+      mockedSync.mockResolvedValue({ ok: false });
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: null,
+          accuracyMeters: null,
+          tripActive: true,
+          boardingLockTrainCode: '7246',
+          boardingLockLine: '2',
+          boardingLockBoardingStationId: boardingStationId,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 최초 시도(항상 실패)
+
+      // backoff 3단계를 모두 소진 — 매번 실패하므로 재시도마다 1회씩 추가.
+      for (const backoffMs of LOCK_SYNC_RETRY_BACKOFF_MS) {
+        act(() => jest.advanceTimersByTime(backoffMs + 100));
+        await flushAsyncStorage();
+      }
+      expect(mockedSync).toHaveBeenCalledTimes(1 + LOCK_SYNC_RETRY_BACKOFF_MS.length);
+
+      // 상한 도달 후 추가 시간이 지나도 더 이상 재시도하지 않음.
+      act(() => jest.advanceTimersByTime(60_000));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1 + LOCK_SYNC_RETRY_BACKOFF_MS.length);
+    });
+
+    it('재시도 대기 중 lock이 pending sentinel로 전환되면 재시도 시점에 조용히 중단(usable 아님)', async () => {
+      mockedSync.mockResolvedValueOnce({ ok: false });
+      const { rerender } = renderHook(
+        ({ tc }: { tc: string }) =>
+          useBoardingLockSync({
+            currentStationName: null,
+            accuracyMeters: null,
+            tripActive: true,
+            boardingLockTrainCode: tc,
+            boardingLockLine: '2',
+            boardingLockBoardingStationId: boardingStationId,
+          }),
+        { initialProps: { tc: '7246' } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 실패 — 재시도 armed
+
+      // 대기 중 lock이 pending fallback으로 전환(예: 환승 중 trainCode 미확정) — 새 effect run은
+      // hasUsableLockIdentity=false + GPS도 없어 자체적으로는 아무 것도 발사하지 않는다.
+      rerender({ tc: 'PENDING-TRAIN-CODE' });
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 새 dispatch 없음(anchor 자체가 null)
+
+      // stale 재시도 타이머가 그대로 발화 — 그 시점 latest trainCode는 pending이라 조용히 중단.
+      act(() => jest.advanceTimersByTime(LOCK_SYNC_RETRY_BACKOFF_MS[0] + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 재시도가 실제 POST를 내지 않음
+    });
+
+    it('재시도 대기 중 lock이 다른 trainCode로 교체되면 stale 재시도는 sig 불일치로 중단', async () => {
+      mockedSync.mockResolvedValueOnce({ ok: false });
+      const invalidBoardingStationId = '__no_such_station_for_new_lock__';
+      const { rerender } = renderHook(
+        ({ tc, bid }: { tc: string; bid: string }) =>
+          useBoardingLockSync({
+            currentStationName: null,
+            accuracyMeters: null,
+            tripActive: true,
+            boardingLockTrainCode: tc,
+            boardingLockLine: '2',
+            boardingLockBoardingStationId: bid,
+          }),
+        { initialProps: { tc: '7246', bid: boardingStationId } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 실패 — 재시도 armed(sig='7246|2')
+
+      // 새 trainCode로 교체. boardingStationId를 의도적으로 무효화해 새 lock 자체의 즉시 시도는
+      // blocked로 끝나게 하고(=경쟁 타이머 미생성), stale 재시도만 단독으로 발화하게 만든다.
+      rerender({ tc: '9999', bid: invalidBoardingStationId });
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 새 lock 자체 시도는 anchor 없음(blocked)
+
+      // stale 재시도(sig='7246|2') 발화 — 그 시점 latest trainCode는 '9999'라 sig 불일치로 중단.
+      act(() => jest.advanceTimersByTime(LOCK_SYNC_RETRY_BACKOFF_MS[0] + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('재시도 대기 중 GPS/anchor 둘 다 사라지면 stale 재시도는 blocked로 조용히 중단', async () => {
+      mockedSync.mockResolvedValueOnce({ ok: false });
+      const { rerender } = renderHook(
+        ({ bid }: { bid: string }) =>
+          useBoardingLockSync({
+            currentStationName: null,
+            accuracyMeters: null,
+            tripActive: true,
+            boardingLockTrainCode: '7246',
+            boardingLockLine: '2',
+            boardingLockBoardingStationId: bid,
+          }),
+        { initialProps: { bid: boardingStationId } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 실패 — 재시도 armed
+
+      // 같은 trainCode/line(sig 불변) — effect deps가 boardingLockBoardingStationId도 포함하므로
+      // 새 render는 발생하지만, 새 anchor 자체가 없어(blocked) 경쟁 타이머는 생기지 않는다.
+      rerender({ bid: '__no_such_station_after_all__' });
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+
+      // stale 재시도 발화 — sig는 일치하지만 그 시점 boarding station lookup이 실패해 anchor가
+      // 없다(blocked) — 조용히 중단.
+      act(() => jest.advanceTimersByTime(LOCK_SYNC_RETRY_BACKOFF_MS[0] + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('재시도 대기 중 trip이 종료되면 대기 타이머를 취소(clearLockRetry non-null 분기)', async () => {
+      mockedSync.mockResolvedValueOnce({ ok: false });
+      const { rerender } = renderHook(
+        ({ active }: { active: boolean }) =>
+          useBoardingLockSync({
+            currentStationName: null,
+            accuracyMeters: null,
+            tripActive: active,
+            boardingLockTrainCode: '7246',
+            boardingLockLine: '2',
+            boardingLockBoardingStationId: boardingStationId,
+          }),
+        { initialProps: { active: true } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 실패 — 재시도 armed
+
+      rerender({ active: false }); // trip 종료 — armed된 재시도 타이머를 취소.
+      act(() => jest.advanceTimersByTime(LOCK_SYNC_RETRY_BACKOFF_MS[0] + 1000));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1); // 취소됐으므로 재시도 POST 없음
+    });
   });
 });

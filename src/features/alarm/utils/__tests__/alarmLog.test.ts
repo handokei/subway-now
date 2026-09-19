@@ -70,6 +70,7 @@ import {
   logCrossTripMirrorSkip,
   logBackendSsotRouteRegressionReject,
   logLiveActivityUpdated,
+  logLockSyncDelivery,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
   LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS,
@@ -1228,6 +1229,56 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.source === 'live-activity-updated');
       expect(matching).toHaveLength(3);
+    });
+
+    it('#2709 logLockSyncDelivery: outcome=attempt → source=lock-sync-delivery / outcome=received', async () => {
+      logLockSyncDelivery({ outcome: 'attempt' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'lock-sync-delivery',
+        outcome: 'received',
+      });
+      expect(saved[0].reason).toBeUndefined();
+      expect(saved[0].delaySeconds).toBeUndefined();
+    });
+
+    it('#2709 logLockSyncDelivery: outcome=success + delaySeconds → outcome=fired + delaySeconds 적재', async () => {
+      logLockSyncDelivery({ outcome: 'success', delaySeconds: 42 });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'lock-sync-delivery',
+        outcome: 'fired',
+        delaySeconds: 42,
+      });
+    });
+
+    it('#2709 logLockSyncDelivery: outcome=success인데 delaySeconds 미제공 → delaySeconds 필드 자체 생략', async () => {
+      logLockSyncDelivery({ outcome: 'success' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({ source: 'lock-sync-delivery', outcome: 'fired' });
+      expect(saved[0].delaySeconds).toBeUndefined();
+    });
+
+    it('#2709 logLockSyncDelivery: outcome=blocked → outcome=suppressed + reason=lock-sync-blocked-no-anchor', async () => {
+      logLockSyncDelivery({ outcome: 'blocked' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'lock-sync-delivery',
+        outcome: 'suppressed',
+        reason: 'lock-sync-blocked-no-anchor',
+      });
     });
 
     it('#1514 logSuppressedOriginHopLockless: reason=gate-origin-hop-lockless + kind=station-passed', async () => {
