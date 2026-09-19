@@ -21,7 +21,7 @@ import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
 import type { Trip } from '../types';
 import { makeDesk20260913LockTrip } from './helpers/desk20260913Trip';
 import { makeLine7SynthLockTrip } from './helpers/line7SynthTrip';
-import { makeRide20260918LockTrip } from './helpers/ride20260918Trip';
+import { makeRide20260918LocklessTrip } from './helpers/ride20260918Trip';
 
 export const REPLAY_LIBRARY_DIR = path.join(__dirname, 'fixtures', 'replayLibrary');
 
@@ -270,32 +270,38 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
     slug: 'capture_20260918_line7_yongmasan_overshoot',
     fixturePath: RIDE_20260918_FIXTURE_PATH,
     description:
-      '#2718 (ADR-039 close 조건 재생) — 2026-09-18 저녁 라이드(건대입구→용마산, 7256 lock)' +
-      ' 실캡처. R2 원본상 사용자가 실제로 승차한 열차는 매 cycle 정확히 추적됐다(용마산 arvlCd' +
-      ' 8→6→4→3분 카운트다운 실측) — backend는 실측 궤적 전 구간에서 도착 알림을 정상 발사하고' +
-      ' 목적지(용마산) 밖(사가정/면목)으로 추적을 잇지 않는다. 실제 사용자 목적지 통과는 device/UI' +
-      ' 층(useFusedNearestStation GPS 신선도 게이트, #2713)의 사건이라 이 backend entry는 그' +
-      ' 원인을 재현하지 못한다 — PR 본문 "정직 경계" 참고.',
-    seedTrips: () => [
-      makeRide20260918LockTrip('replay-library-ride-20260918', loadRide20260918Fixture().window.fromMs),
-    ],
+      '#2718 (ADR-039 close 조건 재생, fidelity 정정) — 2026-09-18 저녁 라이드(뚝섬→건대입구' +
+      ' 환승→용마산, 트레인 7256) 실캡처. **lockless가 실측이다** — 라이딩 중 KV 직접 확인' +
+      '(17:42/17:48:58/17:49:57 전부 `boardingLock: None`) 결과 device lock(17:40:32 생성,' +
+      ' 7256)이 `/boarding-lock/sync` 13분 침묵 + `POST /trips` isLockConsistentWithRoute' +
+      ' 불일치(#2709)로 끝내 backend에 부착되지 못했다. 최초 구현은 이 trip에 boardingLock을' +
+      ' 잘못 심어 "backend는 문제없다"는 근거 없는 결론을 냈다(대조군은 아래' +
+      ' `replay_20260918_lock_seeded_contrast.test.ts` 참고, REPLAY_LIBRARY 비등록).',
+    seedTrips: () => [makeRide20260918LocklessTrip('replay-library-ride-20260918')],
     // 실 P0-a 캡처 — 실제 cron cycle 시각(fixture.cycleStartsMs)을 그대로 재생한다.
     cronIntervalMs: 'recorded',
     phaseOffsetsMs: [0],
     loadFixture: loadRide20260918Fixture,
     expect: {
-      // 실측: 용마산(destination)은 station-passed(nextWaypoint) 채널로는 발사되지 않는다 —
-      // `replay_harness_line7.test.ts` 헤더 코멘트와 동일 실측 패턴("60s cron 간격에서는
-      // destination waypoint의 SSoT-freshness 게이트가 마지막 position 확증 시점으로부터
-      // 시간이 지나 stale 판정되어 intermediate와 같은 station-passed push로는 발사되지
-      // 않는다"). 도착 알림은 아래 `tripEnded`(trip-ended alert, reason=destination-arrived)
-      // 로만 확인된다 — ADR-039 조건 1("도착 알림 ≥1건")은 이 채널로 충족된다.
-      firedStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
-      // ADR-039 조건 4 — 실 궤적상 열차가 용마산 이후에도 계속 운행했다(사가정→면목)지만
-      // trip.waypoints는 용마산에서 끝나므로 backend가 그 밖으로 station-passed를 잇지 않는다.
-      forbiddenStations: ['용마산', '사가정', '면목'],
-      minPushes: 3,
-      tripEnded: { reason: 'destination-arrived' },
+      // 실측 재생 결과(정직 기록, PR 본문 상세) — station-passed(nextWaypoint) 채널로는
+      // 15 cycle 전체에서 **단 한 역도 발사되지 않는다**(어린이대공원/군자/중곡/용마산 전부
+      // 0건). `runLocklessIntermediate`(#816 C, infoModeEnabled=true)의
+      // `isAdvanceAllowedByMotion` 게이트(scheduled.ts:482)가 매 cycle
+      // `locklessMotionGateBlocked`로 진행을 보류한다 — 이 게이트는 device가 별도 엔드포인트로
+      // 업로드하는 GPS position series(`readSeries`, `env.TRIPS` 다른 key)의 motion 분류
+      // (walking/automotive만 통과, unknown/stationary는 차단)에 의존하는데, 이번 R2 캡처는
+      // `seoul-capture/`(Seoul Open API 응답)만 포함하고 이 position series는 포함하지
+      // 않는다 — 그 실측 데이터를 확보하지 못해 조작하지 않는다(#2718 금지사항). 즉 이 0건은
+      // "backend가 확실히 침묵했다"의 증거이자 동시에 "우리가 모션 신호를 못 넣어서 침묵했다"
+      // 일 가능성을 배제 못하는 fixture 완결성 한계다 — 둘 다 PR 본문에 명시.
+      // ADR-039 조건 1(도착 알림 ≥1건)은 이 재생에서 **RED**(0건, 실제 사고와 정합) — 25건
+      // 머지 상태 dev에서도 미해결(어떤 fix도 이 게이트를 건드리지 않음).
+      firedStations: [],
+      forbiddenStations: ['어린이대공원(세종대)', '군자(능동)', '중곡', '용마산', '사가정', '면목'],
+      // 건대입구 환승 waypoint는 `locklessTransferAdvanced`(motion 게이트 미적용, 별도 경로)로
+      // cycle 1에 즉시 advance — hop-end-prompt("하차했나요?") 채널로만 발사된다.
+      hopEndPromptStations: ['건대입구'],
+      minPushes: 2,
     },
   },
 ];
