@@ -7,7 +7,7 @@
  */
 
 /**
- * #2726 (ADR-039 close 조건 2·3, 2026-09-18 용마산 목적지 통과 라이드 device 층 재생).
+ * #2726/#2728 (ADR-039 close 조건 2·3, 2026-09-18 용마산 목적지 통과 라이드 device 층 재생).
  *
  * 배경: #2718(PR #2719, 머지됨)이 이 라이드를 backend 재생 fixture로 고정했으나, 조건 2
  * (`reject:candidate-distance`)·3(`gate-phase-accuracy`/`gate-phase-time-integration`)은
@@ -25,8 +25,13 @@
  *    억제한다(RED) — #2713 이후엔 stale bypass로 boarding-lock이 채택돼 억제되지 않는다(GREEN).
  *  - "약 source 창"(17:46:57~17:53:41, src=gps conf=gps-only) — 덤프가 실제로 관측한
  *    fusionSource=gps를 그대로 useStationAlarm에 주입한다(재도출 아님 — position-train 후보가
- *    이 창에서 왜 사라졌는지는 미공급 입력, README/PR 본문 §미공급 입력 표 참고). 이 창은 현재
- *    dev 코드에서도 gate-phase-time-integration이 억제한다 — #2713 범위 밖의 별도 결함이다.
+ *    이 창에서 왜 사라졌는지는 미공급 입력, README/PR 본문 §미공급 입력 표 참고). 실측 라이드는
+ *    이 창에서도 열차 7256에 대한 lock이 계속 활성이었다(강 source 창 진입 전 boarding, 20분
+ *    expectedDurationMs) — #2728(ADR-039 §5 4단계) 이전에는 lock 활성 여부와 무관하게
+ *    gate-phase-time-integration이 억제했다(FAIL). 4단계 이후에는 lock 활성 trip에서 이 게이트가
+ *    fusionSource 약(estimator/GPS)만으로는 더 이상 발사를 막지 않는다 — D 매트릭스상 GPS/estimator에
+ *    발사 거부 권한이 없고, 3단계(#2730)가 ETA를 Seoul 피드로 단일화해 게이트의 전제가 사라졌기
+ *    때문이다(PASS). lockless(사용자 명시 의향 없음)는 여전히 억제된다 — 아래 회귀 테스트 참고.
  */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { findStationByNameAndLine } from '../../../shared/utils/stationRoute';
@@ -340,15 +345,31 @@ describe('#2726 (ADR-039 조건 2·3) — 2026-09-18 용마산 통과 라이드 
   });
 
   describe(WEAK_SOURCE_WINDOW_LABEL, () => {
-    it('덤프가 실측한 fusionSource=gps를 그대로 주입하면 gate-phase-time-integration이 용마산을 억제한다 (조건 3 FAIL — #2713 범위 밖 잔여 결함)', async () => {
+    // ADR-039 §5 4단계 (#2728) — 2026-09-18 실측 라이드는 17:40:29(강 source 창 진입 전)부터
+    // 열차 7256에 lock이 걸린 채로 진행됐다(makeLock() boardedAt=NOW-3분, expectedDurationMs=20분).
+    // 약한 source 창(17:46:57~17:53:41)도 같은 lock이 유지된 상태다 — lock은 강/약 source 창
+    // 전환과 무관하게 trip 종료까지 활성이다. 이전 버전의 이 테스트는 `currentLock`을
+    // beforeEach 기본값(null)에 방치해 이 창을 사실상 lockless로 재생했다 — 실제 라이드의
+    // lock 상태를 반영하지 못한 재생 오류였다(fixture 데이터 자체는 무변경, 재생 harness의
+    // lock 배선만 교정). lock을 명시 세팅해 실측과 일치시킨다.
+    beforeEach(() => {
+      currentLock = makeLock();
+    });
+
+    it('lock 활성 + 덤프가 실측한 fusionSource=gps를 그대로 주입하면 gate-phase-time-integration이 더 이상 용마산을 억제하지 않는다 (조건 3 FAIL → PASS, #2728 4단계)', async () => {
       renderStationAlarmWith('gps', { userLocation: FROZEN_GPS_FIX });
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
-      const suppressedReasonsForYongmasan = mockLogSuppressedPhaseGate.mock.calls
-        .filter((c) => c[1] === yongmasan.name)
-        .map((c) => c[0]);
-      // 🔴 evidence와 일치: 이 창에서는 여전히 gate-phase-time-integration이 억제한다.
-      expect(suppressedReasonsForYongmasan).toContain('gate-phase-time-integration');
+      // 🟢 ADR-039 4단계 이후: lock 활성 trip은 fusionSource가 약(gps)이어도
+      // gate-phase-time-integration이 더 이상 destination을 억제하지 않는다 — D 매트릭스상
+      // GPS/estimator에는 발사 거부 권한이 없고, 3단계(#2730)가 ETA를 Seoul 피드로 단일화했으므로
+      // "ETA 계산에 GPS가 필요하다"는 이 게이트의 전제가 lock 활성 trip에서는 사라졌다.
+      await waitFor(() => {
+        const suppressedReasonsForYongmasan = mockLogSuppressedPhaseGate.mock.calls
+          .filter((c) => c[1] === yongmasan.name)
+          .map((c) => c[0]);
+        expect(suppressedReasonsForYongmasan).not.toContain('gate-phase-time-integration');
+      });
     });
 
     it('accuracy 자체는 74m(<200m 게이트)로 정상이라 gate-phase-accuracy는 이 창의 억제 원인이 아니다', async () => {
@@ -359,6 +380,18 @@ describe('#2726 (ADR-039 조건 2·3) — 2026-09-18 용마산 통과 라이드 
         .filter((c) => c[1] === yongmasan.name)
         .map((c) => c[0]);
       expect(suppressedReasonsForYongmasan).not.toContain('gate-phase-accuracy');
+    });
+
+    it('회귀 — lockless(같은 fusionSource=gps 입력)이면 gate-phase-time-integration이 여전히 용마산을 억제한다 (요구사항 2, lockless 무변경)', async () => {
+      currentLock = null;
+      renderStationAlarmWith('gps', { userLocation: FROZEN_GPS_FIX });
+
+      await waitFor(() => {
+        const suppressedReasonsForYongmasan = mockLogSuppressedPhaseGate.mock.calls
+          .filter((c) => c[1] === yongmasan.name)
+          .map((c) => c[0]);
+        expect(suppressedReasonsForYongmasan).toContain('gate-phase-time-integration');
+      });
     });
   });
 });
