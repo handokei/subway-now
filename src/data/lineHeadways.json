@@ -1,0 +1,67 @@
+{
+  "1": {
+    "weekday": { "peak": 180, "offPeak": 360, "late": 600 },
+    "saturday": { "peak": 420, "offPeak": 420, "late": 660 },
+    "sunday": { "peak": 480, "offPeak": 480, "late": 660 }
+  },
+  "2": {
+    "weekday": { "peak": 150, "offPeak": 270, "late": 480 },
+    "saturday": { "peak": 330, "offPeak": 330, "late": 540 },
+    "sunday": { "peak": 360, "offPeak": 360, "late": 540 }
+  },
+  "3": {
+    "weekday": { "peak": 210, "offPeak": 360, "late": 600 },
+    "saturday": { "peak": 420, "offPeak": 420, "late": 660 },
+    "sunday": { "peak": 480, "offPeak": 480, "late": 660 }
+  },
+  "4": {
+    "weekday": { "peak": 200, "offPeak": 360, "late": 600 },
+    "saturday": { "peak": 420, "offPeak": 420, "late": 660 },
+    "sunday": { "peak": 480, "offPeak": 480, "late": 660 }
+  },
+  "5": {
+    "weekday": { "peak": 210, "offPeak": 360, "late": 600 },
+    "saturday": { "peak": 420, "offPeak": 420, "late": 660 },
+    "sunday": { "peak": 480, "offPeak": 480, "late": 660 }
+  },
+  "6": {
+    "weekday": { "peak": 240, "offPeak": 420, "late": 720 },
+    "saturday": { "peak": 480, "offPeak": 480, "late": 780 },
+    "sunday": { "peak": 540, "offPeak": 540, "late": 780 }
+  },
+  "7": {
+    "weekday": { "peak": 210, "offPeak": 360, "late": 600 },
+    "saturday": { "peak": 420, "offPeak": 420, "late": 660 },
+    "sunday": { "peak": 480, "offPeak": 480, "late": 660 }
+  },
+  "8": {
+    "weekday": { "peak": 240, "offPeak": 480, "late": 720 },
+    "saturday": { "peak": 540, "offPeak": 540, "late": 780 },
+    "sunday": { "peak": 600, "offPeak": 600, "late": 780 }
+  },
+  "9": {
+    "weekday": { "peak": 240, "offPeak": 480, "late": 720 },
+    "saturday": { "peak": 540, "offPeak": 540, "late": 780 },
+    "sunday": { "peak": 600, "offPeak": 600, "late": 780 }
+  },
+  "airport": {
+    "weekday": { "peak": 360, "offPeak": 480, "late": 720 },
+    "saturday": { "peak": 540, "offPeak": 540, "late": 780 },
+    "sunday": { "peak": 600, "offPeak": 600, "late": 780 }
+  },
+  "gyeongui": {
+    "weekday": { "peak": 540, "offPeak": 900, "late": 1200 },
+    "saturday": { "peak": 1080, "offPeak": 1080, "late": 1320 },
+    "sunday": { "peak": 1200, "offPeak": 1200, "late": 1320 }
+  },
+  "bundang": {
+    "weekday": { "peak": 360, "offPeak": 540, "late": 900 },
+    "saturday": { "peak": 660, "offPeak": 660, "late": 1020 },
+    "sunday": { "peak": 720, "offPeak": 720, "late": 1020 }
+  },
+  "sinbundang": {
+    "weekday": { "peak": 270, "offPeak": 360, "late": 540 },
+    "saturday": { "peak": 420, "offPeak": 420, "late": 600 },
+    "sunday": { "peak": 480, "offPeak": 480, "late": 600 }
+  }
+}

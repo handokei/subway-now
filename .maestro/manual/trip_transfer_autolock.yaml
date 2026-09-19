@@ -1,0 +1,65 @@
+appId: com.subwaynow.app
+name: "manual - 환승 autoLock 회귀 (보고 4/9)"
+# 사용자 trip 2026-06-12 evidence — 건대입구(7→2) 환승 후 호선 자동 선택 안 됨.
+# Root cause: useTransferAutoDetect onPlannedTransfer 분기에서 boardingPrompt autoLock 미트리거.
+# 회귀 12 (Epic #1008 §7.1): 환승 발생 후 N분 내 boardingPrompt evaluated 횟수 0건 trip 비율.
+# 실기기에서 환승 leg autoLock 트리거(D5) 검증.
+---
+- setLocation:
+    latitude: 37.5732
+    longitude: 127.0846
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+- waitForAnimationToEnd
+
+# 목적지: 성수 (환승 포함 경로)
+- assertVisible:
+    id: "destination-button"
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(1000)
+- setClipboard: "성수"
+- evalScript: maestro.wait(500)
+- pasteText
+- evalScript: maestro.wait(2000)
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    text: "성수"
+- waitForAnimationToEnd
+
+# 건대입구 환승 지점으로 이동
+- setLocation:
+    latitude: 37.5403
+    longitude: 127.0699
+- evalScript: maestro.wait(10000)
+
+# 회귀 검증: 환승 시점에 boardingPrompt push 또는 BoardingTrainList 노출 + autoLock 트리거.
+- extendedWaitUntil:
+    visible:
+      id: "boarding-train-list"
+    timeout: 60000
+
+# DebugModal Trip 섹션에서 새 leg currentHopIndex 갱신 확인 (실기기).
+- tapOn:
+    text: ".*debug.*|.*디버그.*"
+    optional: true
+- evalScript: maestro.wait(500)
+- assertVisible:
+    id: "debug-modal-trip-section"
+- assertVisible:
+    id: "alarm-log-modal-content"

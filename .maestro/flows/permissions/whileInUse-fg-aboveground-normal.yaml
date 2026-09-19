@@ -1,0 +1,53 @@
+appId: com.subwaynow.app
+name: "permissions - WhileInUse × FG × 지상 × 일반 (#923 E2 baseline)"
+# 권한 매트릭스 baseline cell.
+# 차원: permission=whileInUse, appState=fg, environment=aboveground, mode=normal, os=ios18
+#
+# 검증 목표:
+#   - 위치 권한 "사용하는 동안"만 부여된 상태에서 앱이 정상 부팅되고
+#     매역 알람 경로(홈 화면 + 현재역 노출)가 동작함을 보장한다.
+#   - 권한이 always가 아니어도 FG 상태에서는 핵심 UX가 깨지지 않아야 한다.
+#
+# 전제:
+#   - EXPO_PUBLIC_E2E_MOCK=1 빌드. useNearestStation이 강남역(지상) 고정 fixture 반환.
+#   - GPS 좌표는 강남역(2호선 지상)으로 set → environment=aboveground 충족.
+#
+# 후속 PR에서 추가될 15+ cell flow는 본 파일을 템플릿으로 사용한다.
+---
+- setLocation:
+    latitude: 37.497942
+    longitude: 127.027621
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: inuse
+      notifications: allow
+
+# Expo dev-client(개발 빌드 한정) 안내 화면 — release 빌드에서는 없음
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+# Dev menu가 떴을 경우를 위한 swipe-down (smoke와 동일 패턴)
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 홈 화면 노출 — 권한이 always가 아니어도 destination-button이 렌더되어야 함
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 강남(지상) — useNearestStation이 fixture를 반환해야 한다
+- assertVisible:
+    text: "강남|Gangnam"
+
+# 매역 알람 경로의 진입점인 "목적지 설정" CTA가 보여야 한다
+- assertVisible:
+    text: "목적지 설정|Set destination"

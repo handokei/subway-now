@@ -1,0 +1,350 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: trip-end 시점에 route(stations 시퀀스 재구성) + alarm(log 윈도우)
+ * + telemetry(backend upload)를 한 곳에서 묶어 호출하는 trigger. route 슬라이스의
+ * `computeRouteArc`를 직접 참조하는 것이 본질이므로 file-level disable로 옵트인 처리.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
+/**
+ * Trip 종료 시 매역 알림 recall KPI 1건을 backend `/telemetry/recall`로 upload하는 trigger (#919).
+ *
+ * 호출자 (두 경로):
+ *  1. silent push `trip-ended` BG handler — backend가 trip을 자동 종료할 때.
+ *  2. FG `useDestinationStore.setDestination(null)` — 사용자가 destination 직접 클리어할 때.
+ *
+ * 두 경로 모두 `runTripBoundCleanups` *이전* 에 호출되어야 한다. cleanup이 `ROUTE_KEY` /
+ * `DESTINATION_KEY` / `TRIP_ORIGIN_KEY` / `TRIP_STARTED_AT_KEY`를 제거하므로 trigger가
+ * 그 뒤에 돌면 recall 입력이 비어 자동 skip ('empty')된다.
+ *
+ * Idempotency (P2-2):
+ *  - 같은 `tripStart`로 두 번 호출되면 두 번째는 `LAST_UPLOADED_RECALL_TRIP_START_KEY`
+ *    비교로 skip한다. silent push trip-ended 직후 FG 복귀 시 useStateRehydration이
+ *    `setDestination(null)`을 다시 호출하는 race 경로(#899 sentinel)에서 중복 upload 차단.
+ *
+ * 동작 변경 없음 — 순수 측정. routeStops 미구성 / tripStart 부재 / backend 실패 모두
+ * 호출자 흐름 차단 없이 graceful skip.
+ */
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  APNS_TOKEN_KEY,
+  DESTINATION_KEY,
+  ROUTE_KEY,
+  TRIP_ORIGIN_KEY,
+  LAST_UPLOADED_RECALL_TRIP_START_KEY,
+  LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY,
+} from '../../../shared/constants/storageKeys';
+import type { Station } from '../../../shared/types/station';
+import type { Route } from '../../../shared/utils/stationRoute';
+import { computeRouteArc } from '../../route/utils/routeProgress';
+import {
+  computeAndUploadTripPrescheduled,
+  computeAndUploadTripRecall,
+} from './alarmLogTelemetry';
+import { getTripStartedAt } from './tripStartStorage';
+import { createLogger } from '../../../shared/utils/logger';
+import { flushRegressionCounters } from '../../../shared/utils/regressionMetrics';
+import {
+  getCurrentTripCorrIdSync,
+  getCurrentTripCorrId,
+} from '../../observability/utils/tripCorrId';
+import { getRawSignalEntries } from '../../observability/utils/rawSignalBuffer';
+import { uploadSignalDump } from '../api/signalDumpBackend';
+import {
+  buildDeviceMetadata,
+  forwardTripTelemetry,
+} from '../api/telemetryForward';
+import {
+  countFiredAlarms,
+  getAlarmLog,
+  getFusionTierLog,
+  logLocklessTripEnd,
+} from './alarmLog';
+import { getFusionDebugEntries } from '../../nearest-station/utils/fusionDebugBuffer';
+import { getGpsDropEntries } from '../../nearest-station/utils/gpsDropBuffer';
+import { readBackendSsotMirror } from './backendSsotMirror';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useUserIntentStore } from '../store/useUserIntentStore';
+
+const log = createLogger('triggerTripEndRecall');
+
+/**
+ * #2129 — trip당 1회 in-flight/완료 가드 (tripStart 기준, in-memory).
+ *
+ * 배경: 4개 독립 호출자(silent push trip-ended / useLaunchTripReconciliation Signal 4 +
+ * status=ended 분기 / useDeviceSelfEnd 3-signal / useDestinationStore FG setDestination(null))가
+ * 각자 인스턴스/cycle 가드만 갖고 공유 가드는 없었다. 18:05 hydration storm(FG 직후 3 cycle)에서
+ * 서로 다른 force-end 경로가 같은 trip에 대해 거의 동시에 진입하면, 기존 AsyncStorage 기반
+ * duplicate 체크(`LAST_UPLOADED_RECALL_TRIP_START_KEY`)는 read(await) → write(await) 사이 race
+ * window가 넓어(네트워크 upload를 포함한 전체 async 체인) 3건 모두 통과, `lockless-trip-end`
+ * stamp가 3중 적재됐다(#2129 evidence).
+ *
+ * 이 Set은 tripStart를 안 뒤 **동기적으로** 즉시 체크+등록한다 — 두 호출이 거의 동시에
+ * `getTripStartedAt()` await에서 깨어나도, 먼저 재개된 쪽이 add()까지 await 없이 끝내므로
+ * 뒤에 재개되는 쪽은 반드시 갱신된 Set을 본다(JS 단일 스레드 특성). AsyncStorage 기반
+ * duplicate 체크는 앱 재시작 간 지속성을 위해 그대로 유지 — 이 in-memory 가드는 같은 세션 내
+ * 동시 호출만 추가로 차단한다.
+ */
+const guardedTripStarts = new Set<number>();
+
+export function _resetTripEndRecallGuardForTests(): void {
+  guardedTripStarts.clear();
+}
+
+export type TriggerTripEndRecallSkipReason =
+  | 'no-trip-start'
+  | 'no-route'
+  | 'no-destination'
+  | 'no-origin'
+  | 'route-arc-failed'
+  | 'duplicate'
+  | 'error';
+
+export interface TriggerTripEndRecallResult {
+  uploaded: boolean;
+  skipped?: TriggerTripEndRecallSkipReason;
+}
+
+/**
+ * Trip-end recall trigger. 호출자(`trip-ended` silent push handler / FG setDestination(null))는
+ * 이 함수를 fire-and-forget으로 호출한 뒤 `runTripBoundCleanups`로 storage를 정리한다.
+ *
+ * 절대 throw 하지 않는다 — 호출자 흐름(cleanup, route reset)의 critical path를
+ * 측정 인프라가 차단하면 안 된다.
+ */
+export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult> {
+  try {
+    const tripStart = await getTripStartedAt();
+    if (tripStart === null) {
+      // #1928 F-E1 — tripStart 부재 fallback. 9h+ force-end / silent push trip-ended
+      // 단독 경로에서 tripStartedAt이 이미 정리된 상태로 진입한 케이스. alarmLog 윈도우 자체는
+      // 살아있을 수 있으므로 24h backstop으로 forward 발사. token 부재 / payload 빈은
+      // triggerAlarmLogForward 내부에서 graceful skip.
+      await triggerAlarmLogForward(Date.now() - 24 * 60 * 60 * 1000);
+      return { uploaded: false, skipped: 'no-trip-start' };
+    }
+
+    // #2129 — 동시 호출 가드. AsyncStorage 기반 duplicate 체크보다 먼저, 동기적으로 체크+등록.
+    if (guardedTripStarts.has(tripStart)) {
+      log.info(`concurrent duplicate trip-end recall skip: tripStart=${tripStart}`);
+      return { uploaded: false, skipped: 'duplicate' };
+    }
+    guardedTripStarts.add(tripStart);
+
+    // Idempotency 가드 (P2-2). silent push trip-ended → FG 복귀 → useStateRehydration의
+    // setDestination(null) 재호출 같은 race에서도 중복 upload 차단.
+    const lastUploadedRaw = await AsyncStorage.getItem(LAST_UPLOADED_RECALL_TRIP_START_KEY);
+    if (lastUploadedRaw !== null && Number(lastUploadedRaw) === tripStart) {
+      log.info(`duplicate trip-end recall skip: tripStart=${tripStart}`);
+      return { uploaded: false, skipped: 'duplicate' };
+    }
+
+    const routeStops = await loadRouteStops();
+    if (routeStops === null) {
+      // #1928 F-E2 — ROUTE_KEY race fallback. HomeScreen.tsx:464의 fire-and-forget
+      // removeItem이 trigger의 loadRouteStops보다 먼저 끝나면 routeStops=null이지만
+      // alarmLog/fusionLog 등 in-memory ring buffer는 살아있다. recall은 route arc
+      // 계산 불가로 skip이 맞지만 telemetry forward는 R2 dashboard 회복 critical path.
+      await triggerAlarmLogForward(tripStart);
+      return { uploaded: false, skipped: 'route-arc-failed' };
+    }
+
+    const result = await computeAndUploadTripRecall({
+      routeStops,
+      tripStart,
+    });
+
+    if (result.uploaded) {
+      // tripStart를 idempotency 키로 기록. 다음 trip 시작 시 tripBoundCleanups에서 제거되므로
+      // 새 trip은 다시 upload 가능.
+      await AsyncStorage.setItem(LAST_UPLOADED_RECALL_TRIP_START_KEY, String(tripStart));
+    }
+
+    // #918 A3 — recall과 같은 trip 종료 시점에 사전 예약 텔레메트리도 upload. recall과 별도
+    // idempotency 키를 사용 — recall 실패/skip이 prescheduled upload를 막지 않게.
+    await triggerPrescheduledUpload(tripStart);
+
+    // Epic #1204 그룹 0 PR B — trip 동안 누적된 회귀(regression) 카운터를 backend로 flush.
+    // 별도 idempotency 키 불필요 — flush는 합계 0일 때 자동 skip하며, 200 응답 시 카운터를
+    // 즉시 reset하므로 같은 trip이 두 번 trigger되어도 두 번째는 자연스럽게 no-op이 된다.
+    await triggerRegressionFlush();
+
+    // #1520 (ADR-015 §10 P5 / PR-B) — fusion raw signal dump upload. tripBoundCleanups가
+    // 도착하기 *전*에 호출되어야 corrId/entries가 유효. fire-and-forget — silent push ack
+    // 같은 critical path와 분리해 실패해도 trip-end 흐름은 정상 동작.
+    await triggerSignalDumpUpload();
+
+    // #1579 (Phase 0 epic #1576 P0-3) — alarmLog/fusionLog/gpsDrops/ssotMirror snapshot을
+    // backend R2로 forward. cleanup 전에 호출되어야 ring buffer가 유효. fire-and-forget —
+    // 짧은 trip(<30s)/payload 비었음은 함수가 자체 skip.
+    await triggerAlarmLogForward(tripStart);
+
+    return { uploaded: result.uploaded };
+  } catch (e) {
+    log.warn('trigger error', e);
+    return { uploaded: false, skipped: 'error' };
+  }
+}
+
+/**
+ * 사전 예약 텔레메트리 1건 upload + idempotency 키 기록.
+ * recall과 분리한 이유: recall은 route arc 계산이 실패하면 skip하지만 prescheduled는 ledger만
+ * 보면 되므로 routeStops 부재 케이스(custom origin 사용 등)에서도 발사 가능해야 한다.
+ *
+ * 에러는 흡수 — trip-end 흐름을 측정 인프라가 차단하지 않는다.
+ */
+async function triggerPrescheduledUpload(tripStart: number): Promise<void> {
+  try {
+    const lastRaw = await AsyncStorage.getItem(LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY);
+    if (lastRaw !== null && Number(lastRaw) === tripStart) {
+      log.info(`duplicate prescheduled upload skip: tripStart=${tripStart}`);
+      return;
+    }
+    const result = await computeAndUploadTripPrescheduled({ tripStart });
+    if (result.uploaded) {
+      await AsyncStorage.setItem(
+        LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY,
+        String(tripStart),
+      );
+    }
+  } catch (e) {
+    log.warn('prescheduled trigger error', e);
+  }
+}
+
+/**
+ * #1520 — fusion raw signal dump upload. corrId(sync 우선, 부재 시 storage hydrate) +
+ * token + 현재 ring buffer entries를 upload한다.
+ *
+ * cleanup 전에 호출되어야 한다 — tripBoundCleanups가 corrId/buffer를 모두 비우기 때문.
+ * graceful: corrId 부재 / token 부재 / entries 빈 어떤 경우도 trip-end critical path 차단 안 함.
+ */
+async function triggerSignalDumpUpload(): Promise<void> {
+  try {
+    // sync 우선 (fusion hot path 정합). 부재 시 storage hydrate fallback.
+    const corrId =
+      getCurrentTripCorrIdSync() ?? (await getCurrentTripCorrId());
+    if (corrId === null) {
+      return;
+    }
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) {
+      return;
+    }
+    const entries = getRawSignalEntries();
+    if (entries.length === 0) {
+      return;
+    }
+    await uploadSignalDump(corrId, token, entries);
+  } catch (e) {
+    log.warn('signal dump trigger error', e);
+  }
+}
+
+/**
+ * #1579 (P0-3) — alarmLog/fusionLog/gpsDrops/ssotMirror snapshot을 backend로 forward.
+ *
+ * tripBoundCleanups 전에 호출되어야 한다 — cleanup 시점에 alarmLog 모듈 in-memory 윈도우
+ * (`clearAlarmLogWindows`)가 초기화되고 ssotMirror가 storage에서 사라진다.
+ *
+ * graceful: token 부재 / 30s 미만 trip / payload 빈 케이스는 forward 함수 내부에서 skip.
+ * 모든 오류는 흡수 — trip-end critical path 보호.
+ */
+async function triggerAlarmLogForward(tripStart: number): Promise<void> {
+  try {
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) return;
+    const [alarmLog, ssotMirror] = await Promise.all([
+      getAlarmLog(),
+      readBackendSsotMirror(),
+    ]);
+    // #1972 (#1503 잔여 3/3) — lockless trip 분기 stamp. boarding-lock 미활성 trip이
+    // 종료될 때만 1건 적재. 이 stamp는 본 함수의 alarmLog snapshot에는 포함되지 않지만
+    // appendAlarmLog의 동기 push로 ring에 즉시 들어가 다음 trip의 forward에 반영된다 —
+    // 본 PR의 R2 forward 기준 시점에서는 한 cycle 지연. backend는 R2 ndjson 도착 순서로
+    // window 집계하므로 정합. paradigm shift 기록을 forward와 떼지 않기 위해 동기 호출.
+    stampLocklessTripEndIfApplicable(alarmLog);
+    // stamp 직후 다시 getAlarmLog()를 부르면 동기 ring 에 막 추가된 entry가 포함된다.
+    const alarmLogWithStamp = await getAlarmLog();
+    await forwardTripTelemetry({
+      token,
+      tripStartedAt: tripStart,
+      tripEndedAt: Date.now(),
+      alarmLog: alarmLogWithStamp,
+      fusionLog: getFusionDebugEntries(),
+      // #1706 — fusion picker tier 별 ring buffer. alarmLog ring 점령 회귀 차단용 채널 분리.
+      fusionTierLog: getFusionTierLog(),
+      gpsDrops: getGpsDropEntries(),
+      backendSsotSnapshot: ssotMirror,
+      deviceMetadata: buildDeviceMetadata(),
+    });
+  } catch (e) {
+    log.warn('alarm log forward trigger error', e);
+  }
+}
+
+/**
+ * #1972 (#1503 잔여 3/3) — lockless trip 종료 분기 stamp helper.
+ *
+ * boarding-lock 활성 trip은 분류 X (early return) — backendSsotSnapshot의 lock 정보는
+ * 이미 R2 forward에 포함되며, lockless miss는 lock 없는 trip만의 metric.
+ *
+ * fireCount는 trip 동안 사용자에게 노출된 알람 수 (countFiredAlarms 기반).
+ * userIntentDeclared는 `useUserIntentStore.infoModeEnabled` 현재 값.
+ *
+ * stamp 자체는 fire-and-forget — 실패해도 forward critical path 차단 안 함.
+ */
+function stampLocklessTripEndIfApplicable(
+  alarmLog: readonly Parameters<typeof countFiredAlarms>[0][number][],
+): void {
+  // lock 활성 trip은 lockless 분류 X — silent return.
+  const lockActive = useBoardingLockStore.getState().lock !== null;
+  if (lockActive) return;
+  const userIntentDeclared = useUserIntentStore.getState().infoModeEnabled;
+  const fireCount = countFiredAlarms(alarmLog);
+  logLocklessTripEnd({ fireCount, userIntentDeclared });
+}
+
+/**
+ * 회귀 카운터 flush 1회. token이 없으면 graceful skip. 모든 에러는 흡수.
+ * `flushRegressionCounters` 자체가 throw 하지 않지만 token 조회 단계 보호를 위해 try-catch.
+ */
+async function triggerRegressionFlush(): Promise<void> {
+  try {
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) return;
+    await flushRegressionCounters(token);
+  } catch (e) {
+    log.warn('regression flush trigger error', e);
+  }
+}
+
+/**
+ * AsyncStorage의 route/origin/destination를 읽어 ordered station name 시퀀스를 만든다.
+ * 하나라도 누락 / parse 실패 / arc 계산 실패 시 null — caller가 graceful skip.
+ *
+ * origin은 TRIP_ORIGIN_KEY(#700 — destination set 시점에 캡처된 진짜 출발역)를 사용한다.
+ * customOrigin은 GPS와 별개라 trip 시작 시점의 진짜 출발 지점을 보장하지 못한다.
+ */
+async function loadRouteStops(): Promise<string[] | null> {
+  const [routeRaw, originRaw, destinationRaw] = await Promise.all([
+    AsyncStorage.getItem(ROUTE_KEY),
+    AsyncStorage.getItem(TRIP_ORIGIN_KEY),
+    AsyncStorage.getItem(DESTINATION_KEY),
+  ]);
+  if (!routeRaw || !originRaw || !destinationRaw) return null;
+
+  let route: Route;
+  let origin: Station;
+  let destination: Station;
+  try {
+    route = JSON.parse(routeRaw) as Route;
+    origin = JSON.parse(originRaw) as Station;
+    destination = JSON.parse(destinationRaw) as Station;
+  } catch {
+    return null;
+  }
+
+  const arc = computeRouteArc(route, origin, destination);
+  if (!arc) return null;
+  return arc.stations.map((s) => s.name);
+}
