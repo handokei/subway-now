@@ -880,6 +880,16 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   locklessTransferAdvanced: number;
   /**
+   * #2720 — lockless leg가 kind:'destination' waypoint를 arvlCd(ENTERING/ARRIVED) ground
+   * truth로 통과(→ `completeWaypointAdvance` → `cleanupTripWithLa('destination-arrived')`)한
+   * 누적 횟수. 선례(#2323, `locklessTransferAdvanced`)와 동일 목적 — 종전에는
+   * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만
+   * 반응해 destination waypoint만 남은 lockless trip이 영원히 shift되지 않아(waypoints 소진
+   * 불가) `destination-arrived`에 도달할 수 없었다 — 이 카운터가 0이 아니면 그 gap이 실제로
+   * 닫혔다는 증거.
+   */
+  locklessDestinationAdvanced: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -1311,6 +1321,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     hopEndPromptFired: 0,
     hopEndPromptBlocked: 0,
     locklessTransferAdvanced: 0,
+    locklessDestinationAdvanced: 0,
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
@@ -1857,6 +1868,30 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         } catch (e) {
           stats.errors += 1;
           log('lockless-transfer: poll error', { error: String(e), token: trip.token.slice(0, 8) });
+        }
+        if (advanced) continue;
+      }
+      // #2720 — lockless leg가 kind:'destination' waypoint에서 영구 정지하던 gap 차단(#2323의
+      // transfer fix와 동일 클래스, 같은 arvlCd ground truth). C 토글 ON/OFF 무관 — destination
+      // waypoint 통과는 lock 유무와 무관하게 판정한다. advance 성공 시 `completeWaypointAdvance`가
+      // 이미 trip을 persist/cleanup(waypoints 소진 → `destination-arrived`)했으므로 continue로
+      // 이 cycle의 나머지를 skip한다(transfer 분기와 동일 이유).
+      if (waypoint.kind === 'destination') {
+        let advanced = false;
+        try {
+          advanced = await runLocklessDestination(
+            trip,
+            waypoint,
+            env,
+            deps,
+            stats,
+            now,
+            log,
+            generatePushId,
+          );
+        } catch (e) {
+          stats.errors += 1;
+          log('lockless-destination: poll error', { error: String(e), token: trip.token.slice(0, 8) });
         }
         if (advanced) continue;
       }
@@ -6371,6 +6406,60 @@ async function runLocklessTransfer(
     arvlCd: signal.arvlCd,
   });
   await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'advanced', now);
+  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  return true;
+}
+
+/**
+ * #2720 — lockless leg가 kind:'destination' waypoint에서 영구 정지하던 gap 차단. 선례
+ * #2323(`runLocklessTransfer`, 바로 위)과 동일 패턴이다: C 토글(`infoModeEnabled`) ON/OFF
+ * 둘 다 대상 — dispatch에서 `runLocklessIntermediate`(C ON)/`tryFireConsensusTrainLeg`(C
+ * OFF) 둘 다 kind==='intermediate' 전용이라 destination waypoint에는 반응하지 않는다.
+ * trip 종료는 `completeWaypointAdvance` 내부의 `trip.waypoints.length === 0` 분기에서만
+ * 일어나는데, 그 shift가 intermediate 분기 안에서만 실행돼 `[...,destination]` 하나만 남은
+ * trip이 영원히 shift되지 않아(waypoints 소진 불가) `destination-arrived`에 도달할 수
+ * 없었다(#2720 RCA).
+ *
+ * ground truth = #2323 transfer와 동일 신호(arvlCd ENTERING/ARRIVED, waypoint.line 기준) —
+ * 새 신호·새 게이트 도입 금지. motion 게이트는 두지 않는다(`runLocklessTransfer`와 동일 근거
+ * — lock-active destination advance인 `fireArvlCdStationPush`도 이 단일 신호만으로
+ * advance한다).
+ *
+ * 발사 성공 시 `completeWaypointAdvance`를 그대로 호출 — 그 함수가 waypoints 소진을 감지해
+ * `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. 신규 종료 경로 없음.
+ *
+ * 반환값 true = advance 완료(trip이 이미 persist/cleanup됨 — caller는 이 cycle에서 trip을
+ * 더 이상 건드리지 않고 continue해야 한다). false = 신호 미확보/미도착(caller는 기존
+ * lockMissing 경로로 정상 fallthrough).
+ */
+async function runLocklessDestination(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<boolean> {
+  if (waypoint.kind !== 'destination') return false;
+
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  if (signal === null || signal.arvlCd === null) {
+    stats.etaMissing += 1;
+    return false;
+  }
+  const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
+  if (!fires) return false;
+
+  stats.locklessDestinationAdvanced += 1;
+  log('lockless-destination: waypoint advance (ground truth arvlCd)', {
+    token: trip.token.slice(0, 8),
+    station: waypoint.stationName,
+    line: waypoint.line,
+    arvlCd: signal.arvlCd,
+  });
   await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
   return true;
 }

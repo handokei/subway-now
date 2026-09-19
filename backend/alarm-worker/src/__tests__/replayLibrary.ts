@@ -336,9 +336,10 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // "곧 용마산 도착, 하차 준비" 경고는 정상 발사(중곡 통과 시점) — 그러나 이것으로 조건 1을
       // 만족한다고 보지 않는다(하차 확정 아님, 아래 결론 참고).
       prepareAlarmTargets: ['용마산'],
-      // 진짜 RED: 목적지 도착 확정 신호(trip-ended destination-arrived 또는 동급)가 전혀 없다
-      // — `tripEnded` 미지정(이 재생에서 그 신호가 존재하지 않음을 의미). lock-seeded
-      // 대조군(별도 파일)은 동일 R2 캡처로 이 신호가 정상 발사됨을 보여준다.
+      // #2720 fix — lockless 경로가 destination waypoint를 arvlCd ground truth로 처리해
+      // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. fix 전에는 이 신호가
+      // 전혀 없었다(#2720 RED — `tripEnded` 미지정 상태로 이 필드를 추가하면 실패했다).
+      tripEnded: { reason: 'destination-arrived' },
       minPushes: 6,
     },
   },
