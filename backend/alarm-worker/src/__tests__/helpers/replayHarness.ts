@@ -22,7 +22,8 @@ import { classifyUrl } from '../../seoulCapture';
 import { SeoulArrivalClient } from '../../seoul';
 import { isLossyFixture, type ReplayFixture } from '../../replayFixture';
 import { MID_CYCLE_OFFSET_MS } from '../../cronConstants';
-import type { Env, Trip } from '../../types';
+import { appendPositionPoint } from '../../positionSeries';
+import type { Env, PositionPoint, Trip } from '../../types';
 import { InMemoryKV } from '../inMemoryKv';
 
 /** Seoul 갱신 주기 근사 — 이 창 안의 최신 관측만 유효(#2571 하네스와 동일 정책). */
@@ -301,6 +302,21 @@ export async function runCaptureReplay(opts: {
    * 분리한다(production과 동일 — 1차의 15s in-memory 캐시가 2차를 무력화하지 않도록).
    */
   twoPass?: boolean;
+  /**
+   * #2718 (main coordinator 지적, 2차 fidelity 정정) — `POST /position`으로 device가
+   * 실제 보낸 위치/모션 series를 재생에 주입한다. key = seed trip의 `token`(`runFusionStep`이
+   * `readSeries(env.TRIPS, trip.token)`으로 조회하는 바로 그 키). `runLocklessIntermediate`/
+   * `advanceTripPosition`의 `isAdvanceAllowedByMotion` 게이트는 이 series의 motion 최빈값
+   * (`evaluateWindow`, `positionSeries.ts`)에만 의존하는데, `seoul-capture`(Seoul Open API
+   * 응답)에는 이 신호가 전혀 없다 — 실측 없이 이 옵션을 생략하면 매 cycle 결정론적으로
+   * motion='unknown'(빈 series)이 되어 "backend가 진행을 못 시켰다"는 **fixture 인공물**을
+   * "코드 결함"으로 오판하는 회귀를 낳는다(#2718 2차 지적). point는 `appendPositionPoint`로
+   * ts 오름차순 주입하되, 각 cron tick 이전에 도착한 point까지만 반영해(아래 루프) 미래
+   * 데이터가 과거 tick에 새는 것을 막는다 — `appendPositionPoint`의 실 30s 쓰기 스로틀
+   * (`POSITION_SERIES_WRITE_MIN_INTERVAL_MS`)도 그대로 적용되어 production KV 상태를
+   * 충실히 재현한다.
+   */
+  seedPositionSeries?: Record<string, PositionPoint[]>;
 }): Promise<ReplayRunResult> {
   const phaseOffsetMs = opts.phaseOffsetMs ?? 0;
   const freshMs = opts.freshMs ?? DEFAULT_FRESH_MS;
@@ -308,6 +324,12 @@ export async function runCaptureReplay(opts: {
 
   const startMs = ticks[0] ?? opts.fixture.window.fromMs + phaseOffsetMs;
   let simNow = startMs;
+  const positionSeriesQueues = new Map<string, PositionPoint[]>(
+    Object.entries(opts.seedPositionSeries ?? {}).map(([token, points]) => [
+      token,
+      [...points].sort((a, b) => a.ts - b.ts),
+    ]),
+  );
   // #2581 리뷰 P4 — `trips.ts:putTrip`의 KV TTL clamp(`max(60, floor((expiresAt-Date.now())/1000))`)는
   // production 코드 내부에서 **실** `Date.now()`를 쓴다(못 바꿈). fixture의 `trip.expiresAt`은
   // fixture 앵커(과거 고정 epoch) 기준이라 실 Date.now()와의 차는 항상 음수 → 이 clamp가 항상
@@ -351,6 +373,15 @@ export async function runCaptureReplay(opts: {
   for (let tickIdx = 0; tickIdx < ticks.length; tickIdx += 1) {
     const tick = ticks[tickIdx];
     simNow = tick;
+    // #2718 — 이 tick 이전(ts <= tick)에 device가 실제 보냈을 position point만 지금 append한다
+    // (미래 point가 과거 tick으로 새는 것을 막는다). 큐는 ts 오름차순이라 앞에서부터 소비하고
+    // 남은 point는 다음 tick으로 넘긴다.
+    for (const [token, queue] of positionSeriesQueues) {
+      while (queue.length > 0 && queue[0].ts <= tick) {
+        const point = queue.shift();
+        if (point) await appendPositionPoint(kv as unknown as KVNamespace, token, point);
+      }
+    }
     const ceilingMs = isRecordedCadence
       ? (recordedCycleStarts[tickIdx + 1] ?? opts.fixture.window.toMs + 1)
       : undefined;
