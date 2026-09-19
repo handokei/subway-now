@@ -21,6 +21,7 @@ import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
 import type { Trip } from '../types';
 import { makeDesk20260913LockTrip } from './helpers/desk20260913Trip';
 import { makeLine7SynthLockTrip } from './helpers/line7SynthTrip';
+import { makeRide20260918LockTrip } from './helpers/ride20260918Trip';
 
 export const REPLAY_LIBRARY_DIR = path.join(__dirname, 'fixtures', 'replayLibrary');
 
@@ -150,6 +151,15 @@ const loadRide20260914MorningFixture = makeFixtureLoader(RIDE_20260914_MORNING_F
 // 열차 lock은 7301이 아니라 7039(D1 실측) — helper의 기본 trainCode를 override.
 const RIDE_20260914_MORNING_LOCK_TRAIN = '7039';
 
+// #2718 — 2026-09-18 저녁 라이드(건대입구→용마산, 사용자가 목적지를 지나침) 실캡처(15
+// cycle, 17:38:29~17:52:29 KST). ADR-039 close 조건 1(도착 알림 ≥1건)·4(목적지 통과 0건)를
+// 라이드 없이 판정한다. 나머지 2개 close 조건(`reject:candidate-distance`/`gate-phase-*`
+// 억제 0건)은 frontend 전용 개념이라 이 backend 하네스로는 원리적으로 재현 불가 —
+// `useFusedNearestStation.gpsFreshnessWiring.test.ts`(#2713)가 이미 같은 실측 상수
+// (7256/중곡/≈3.03km/74m)로 hook 레벨에서 직접 측정한다(PR 본문 상세).
+const RIDE_20260918_FIXTURE_PATH = 'capture_20260918_line7_yongmasan_overshoot.fixture.json';
+const loadRide20260918Fixture = makeFixtureLoader(RIDE_20260918_FIXTURE_PATH);
+
 export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
   {
     slug: 'capture_20260912_line7_synth',
@@ -254,6 +264,38 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       derivedFiredStations: ['성수'],
       hopEndPromptStations: ['건대입구'],
       minPushes: 4,
+    },
+  },
+  {
+    slug: 'capture_20260918_line7_yongmasan_overshoot',
+    fixturePath: RIDE_20260918_FIXTURE_PATH,
+    description:
+      '#2718 (ADR-039 close 조건 재생) — 2026-09-18 저녁 라이드(건대입구→용마산, 7256 lock)' +
+      ' 실캡처. R2 원본상 사용자가 실제로 승차한 열차는 매 cycle 정확히 추적됐다(용마산 arvlCd' +
+      ' 8→6→4→3분 카운트다운 실측) — backend는 실측 궤적 전 구간에서 도착 알림을 정상 발사하고' +
+      ' 목적지(용마산) 밖(사가정/면목)으로 추적을 잇지 않는다. 실제 사용자 목적지 통과는 device/UI' +
+      ' 층(useFusedNearestStation GPS 신선도 게이트, #2713)의 사건이라 이 backend entry는 그' +
+      ' 원인을 재현하지 못한다 — PR 본문 "정직 경계" 참고.',
+    seedTrips: () => [
+      makeRide20260918LockTrip('replay-library-ride-20260918', loadRide20260918Fixture().window.fromMs),
+    ],
+    // 실 P0-a 캡처 — 실제 cron cycle 시각(fixture.cycleStartsMs)을 그대로 재생한다.
+    cronIntervalMs: 'recorded',
+    phaseOffsetsMs: [0],
+    loadFixture: loadRide20260918Fixture,
+    expect: {
+      // 실측: 용마산(destination)은 station-passed(nextWaypoint) 채널로는 발사되지 않는다 —
+      // `replay_harness_line7.test.ts` 헤더 코멘트와 동일 실측 패턴("60s cron 간격에서는
+      // destination waypoint의 SSoT-freshness 게이트가 마지막 position 확증 시점으로부터
+      // 시간이 지나 stale 판정되어 intermediate와 같은 station-passed push로는 발사되지
+      // 않는다"). 도착 알림은 아래 `tripEnded`(trip-ended alert, reason=destination-arrived)
+      // 로만 확인된다 — ADR-039 조건 1("도착 알림 ≥1건")은 이 채널로 충족된다.
+      firedStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
+      // ADR-039 조건 4 — 실 궤적상 열차가 용마산 이후에도 계속 운행했다(사가정→면목)지만
+      // trip.waypoints는 용마산에서 끝나므로 backend가 그 밖으로 station-passed를 잇지 않는다.
+      forbiddenStations: ['용마산', '사가정', '면목'],
+      minPushes: 3,
+      tripEnded: { reason: 'destination-arrived' },
     },
   },
 ];
