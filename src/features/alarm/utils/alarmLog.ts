@@ -495,7 +495,14 @@ export type AlarmLogReason =
   // #2709 — lock-sync-delivery(outcome='suppressed') 전용. 좋은 GPS fix도, lock의
   // boardingStationId station lookup도 실패해 backend에 보낼 observedStationName 앵커가
   // 전혀 없는 경우 — 시도 자체가 불가능해 attempt/success 어느 쪽도 적재되지 않는다.
-  | 'lock-sync-blocked-no-anchor';
+  | 'lock-sync-blocked-no-anchor'
+  // #2728 (ADR-039 §5 3단계) — lock 활성 trip의 destination phase ETA 산출 출처 관측.
+  //   'eta-source-train-feed'  : Seoul 열차 피드(trainCode 일치 arrivalSeconds)를 사용(1순위).
+  //   'eta-source-gps-fallback': 피드 매칭 실패(장애/미도달/미확정)로 GPS 거리 계산으로 강등.
+  // 순수 관측 — 값 자체는 evaluateAlarmPhase 입력(etaSeconds)에 어느 쪽이든 그대로 전달되며
+  // 발사 판정 로직은 변경하지 않는다.
+  | 'eta-source-train-feed'
+  | 'eta-source-gps-fallback';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -2069,6 +2076,20 @@ export function logSuppressedPhaseGate(reason: 'gate-phase-accuracy' | 'gate-pha
   const name = stationName ?? '(unknown)';
   if (isBurstDuplicate(reason, name)) return;
   appendAlarmLog({ ts: Date.now(), source: 'fg-evaluated', outcome: 'suppressed', reason, stationName: name });
+}
+
+/**
+ * ADR-039 §5 3단계 (#2728) — lock 활성 trip의 destination phase ETA 산출 출처 1건 적재.
+ * 순수 관측(outcome='received') — 발사 판정에 영향 없음. isBurstDuplicate로 DEDUP_LOG_WINDOW_MS
+ * 안의 같은 (reason, station) 중복은 drop해 매 FG cycle(5s 안팎)마다의 ring 점령을 막는다.
+ */
+export function logEtaSource(
+  reason: 'eta-source-train-feed' | 'eta-source-gps-fallback',
+  stationName: string | undefined,
+): void {
+  const name = stationName ?? '(unknown)';
+  if (isBurstDuplicate(reason, name)) return;
+  appendAlarmLog({ ts: Date.now(), source: 'fg-evaluated', outcome: 'received', reason, stationName: name });
 }
 
 /**

@@ -49,6 +49,7 @@ import {
   logSuppressedGate,
   logSuppressedMovement,
   logSuppressedPhaseGate,
+  logEtaSource,
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
   logSilentPushTripEndedReceived,
@@ -2787,6 +2788,57 @@ describe('alarmLog', () => {
       logSuppressedPhaseGate('gate-phase-accuracy', '역삼');
       await flushAlarmLog();
       expect(JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1])).toHaveLength(2);
+    });
+  });
+  describe('logEtaSource (ADR-039 §5 3단계, #2728)', () => {
+    it('eta-source-train-feed: fg-evaluated/received로 적재', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logEtaSource('eta-source-train-feed', '용마산');
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-evaluated',
+        outcome: 'received',
+        reason: 'eta-source-train-feed',
+        stationName: '용마산',
+      });
+    });
+    it('eta-source-gps-fallback: fg-evaluated/received로 적재', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logEtaSource('eta-source-gps-fallback', '강남');
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-evaluated',
+        outcome: 'received',
+        reason: 'eta-source-gps-fallback',
+        stationName: '강남',
+      });
+    });
+    it('stationName undefined이면 (unknown)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logEtaSource('eta-source-train-feed', undefined);
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0].stationName).toBe('(unknown)');
+    });
+    it('DEDUP_LOG_WINDOW_MS 내 같은 reason+station은 drop', async () => {
+      const baseTs = 1_700_000_000_000;
+      const spy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        logEtaSource('eta-source-train-feed', '용마산');
+        await flushAlarmLog();
+        const n = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+        spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+        logEtaSource('eta-source-train-feed', '용마산');
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n);
+        spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+        logEtaSource('eta-source-train-feed', '용마산');
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n + 1);
+      } finally { spy.mockRestore(); }
     });
   });
   describe('clearAlarmLog', () => {

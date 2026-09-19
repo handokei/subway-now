@@ -30,6 +30,7 @@ import {
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
+import { findTrainFeedEtaSeconds } from '../../arrival/utils/trainFeedEta';
 import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
 import type { StationArrival } from '../../../shared/types/arrival';
 import { getStoredTripTrainCode } from '../../route/utils/tripTrainCode';
@@ -67,6 +68,7 @@ import {
   logSuppressedStationPassedWarmup,
   logSuppressedLocklessNoUserIntent,
   logSuppressedNotDeparted,
+  logEtaSource,
   type HydrationPhase,
 } from '../utils/alarmLog';
 import { fireAlarmOnce } from '../utils/fireAlarmOnce';
@@ -725,6 +727,11 @@ export function useStationAlarm({
   const [currentLockBoardingStationId, setCurrentLockBoardingStationId] = useState<string | null>(
     null,
   );
+  // ADR-039 §5 3단계 (#2728) — lock.trainCode 동기 mirror. currentLockLine/currentLockBoardingStationId와
+  // 동일 패턴(같은 fetch 결과 재사용, 추가 AsyncStorage read 아님). destination phase ETA 효과가
+  // Seoul 열차 피드에서 이 trainCode와 일치하는 행을 찾아 1순위 ETA로 쓴다(#396 trackedTrainCode는
+  // TRIP_TRAIN_CODE_KEY를 쓰는 별도 미배선 경로라 재사용 불가 — lock의 trainCode가 SSOT, #2728 2단계와 동일 근거).
+  const [currentLockTrainCode, setCurrentLockTrainCode] = useState<string | null>(null);
   const sleepMode = useSettingsStore((s) => s.sleepMode);
   const setAlarmEvent = useAlarmEventStore((s) => s.setAlarmEvent);
   // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
@@ -745,6 +752,7 @@ export function useStationAlarm({
       setTrackedTrainCode(null);
       setCurrentLockLine(null);
       setCurrentLockBoardingStationId(null);
+      setCurrentLockTrainCode(null);
       return;
     }
     let cancelled = false;
@@ -760,6 +768,8 @@ export function useStationAlarm({
       if (cancelled) return;
       setCurrentLockLine(lock?.boardingLine ?? null);
       setCurrentLockBoardingStationId(lock?.boardingStationId ?? null);
+      // ADR-039 §5 3단계 — 같은 fetch 결과에서 trainCode도 함께 mirror(추가 read 아님).
+      setCurrentLockTrainCode(lock?.trainCode ?? null);
     })();
     return () => {
       cancelled = true;
@@ -1165,17 +1175,33 @@ export function useStationAlarm({
       return;
     }
 
+    // ADR-039 §5 3단계 (#2728) — lock 활성 trip(currentLockTrainCode 존재)의 destination ETA는
+    // Seoul 열차 피드의 해당 trainCode 실측 ETA를 1순위로 쓴다. GPS 거리 기반 계산(아래)은
+    // 피드 매칭 실패(장애/미도달/미확정) 시에만 쓰는 fallback으로 강등한다 — 삭제 아님.
+    // lockless(currentLockTrainCode=null)는 범위 밖 — 기존 GPS 계산 그대로(ADR-039는 lock 활성
+    // 경로 한정, #444/#1816 lockless 안전장치 무변경).
+    const trainFeedEtaSeconds = currentLockTrainCode
+      ? findTrainFeedEtaSeconds(destinationArrival, currentLockTrainCode)
+      : null;
     let etaSeconds: number | null = null;
-    if (userLocation) {
-      const distM = distanceMetersBetween(
-        userLocation.lat,
-        userLocation.lng,
-        destination.lat,
-        destination.lng,
-      );
-      // #2279 — route는 이 effect 상단(!route return)에서 이미 non-null 보장.
-      // haversine 직선거리÷순간속도의 정거장수-무관 과대추정을 실측 hop 시간 합으로 clamp.
-      etaSeconds = estimateTransitEtaSeconds(distM, speedMps, getRouteRemainingSeconds(route));
+    if (trainFeedEtaSeconds !== null) {
+      etaSeconds = trainFeedEtaSeconds;
+      logEtaSource('eta-source-train-feed', destination.name);
+    } else {
+      if (userLocation) {
+        const distM = distanceMetersBetween(
+          userLocation.lat,
+          userLocation.lng,
+          destination.lat,
+          destination.lng,
+        );
+        // #2279 — route는 이 effect 상단(!route return)에서 이미 non-null 보장.
+        // haversine 직선거리÷순간속도의 정거장수-무관 과대추정을 실측 hop 시간 합으로 clamp.
+        etaSeconds = estimateTransitEtaSeconds(distM, speedMps, getRouteRemainingSeconds(route));
+      }
+      if (currentLockTrainCode) {
+        logEtaSource('eta-source-gps-fallback', destination.name);
+      }
     }
 
     const suppressed: AlarmEvent[] = [];
@@ -1284,6 +1310,10 @@ export function useStationAlarm({
     currentLockLine,
     // #2703 — lock.boardingStationId 변경 시(새 trip lock/lockless 전환) departed 재평가.
     currentLockBoardingStationId,
+    // ADR-039 §5 3단계 (#2728) — lock.trainCode 변경(새 trip lock/lockless 전환) 시 ETA 출처 재평가.
+    currentLockTrainCode,
+    // ADR-039 §5 3단계 — 목적지 도착정보 갱신마다(폴링 주기) train-feed ETA 재계산.
+    destinationArrival,
     positionStability,
     motionStationary,
     trainProgressing,
