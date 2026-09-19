@@ -328,6 +328,121 @@ describe('pickCandidateTrains', () => {
     });
   });
 
+  // ADR-039 2단계(#2728) — trainCode가 boardingLock과 일치하는 candidate는 GPS 거리 hard gate
+  // 대신 arc(경로) 정합성으로 검증한다(2026-09-18 라이드 7256/중곡 3030m reject 실측 재현).
+  describe('trainCode-locked arc gate (ADR-039 2단계, #2728)', () => {
+    const lineStations = getStationsOnLine(LINE);
+    const sicheong = lineStations.find((s) => s.name === '시청')!;
+    const eulji = lineStations.find((s) => s.name === '을지로입구')!;
+    const gangbyeon = lineStations.find((s) => s.name === '강변(동서울터미널)')!;
+    const SICHEONG = { lat: 37.5636, lng: 126.9754 };
+    function makeCoords(): Map<string, { lat: number; lng: number }> {
+      return new Map([
+        ['시청', { lat: 37.563588, lng: 126.975411 }],
+        ['을지로입구', { lat: 37.566014, lng: 126.982618 }],
+        ['강변(동서울터미널)', { lat: 37.535095, lng: 127.094681 }],
+      ]);
+    }
+
+    it('RED 재현 — lockedTrainCode 미전달이면 trainCode 일치해도 기존 거리 게이트로 거부된다', () => {
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        onCandidateDistanceReject: onReject,
+        // lockedTrainCode/arcStations/boardingStationId 미전달 — 2단계 이전 동작 그대로.
+      });
+      expect(result).toEqual([]);
+      expect(onReject).toHaveBeenCalledWith(expect.objectContaining({ trainNo: 'LOCKED' }));
+      expect(onReject.mock.calls[0][0].viaArcCheck).toBeUndefined();
+    });
+
+    it('GREEN — lockedTrainCode 일치 + arc 정합성 통과 시 GPS 거리(11.2km) 무관 채택된다', () => {
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        lockedTrainCode: 'LOCKED',
+        arcStations: [sicheong, eulji, gangbyeon],
+        boardingStationId: sicheong.id,
+        onCandidateDistanceReject: onReject,
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['LOCKED']);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it('lockedTrainCode 일치하지만 arc 밖(candidate-arc)이면 거부된다 (#444 목적 승계)', () => {
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        lockedTrainCode: 'LOCKED',
+        arcStations: [sicheong], // gangbyeon이 arc에 없음 → arc 정합성 자체가 실패.
+        boardingStationId: sicheong.id,
+        onCandidateDistanceReject: onReject,
+      });
+      expect(result).toEqual([]);
+      expect(onReject).toHaveBeenCalledWith(
+        expect.objectContaining({ trainNo: 'LOCKED', viaArcCheck: true }),
+      );
+    });
+
+    it('trainCode 불일치 후보는 arcStations가 있어도 기존 거리 검사가 그대로 적용된다 (#444 회귀 보존)', () => {
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([makeTrain({ trainNo: 'OTHER', statnNm: gangbyeon.name })])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        lockedTrainCode: 'LOCKED', // candidate trainNo('OTHER')와 불일치.
+        arcStations: [sicheong, eulji, gangbyeon],
+        boardingStationId: sicheong.id,
+        onCandidateDistanceReject: onReject,
+      });
+      expect(result).toEqual([]);
+      expect(onReject).toHaveBeenCalledWith(expect.objectContaining({ trainNo: 'OTHER' }));
+      expect(onReject.mock.calls[0][0].viaArcCheck).toBeUndefined();
+    });
+
+    it('arcStations가 빈 배열이면 free-trip 취급으로 GPS 거리 무관 통과한다', () => {
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        lockedTrainCode: 'LOCKED',
+        arcStations: [],
+        boardingStationId: sicheong.id,
+        onCandidateDistanceReject: onReject,
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['LOCKED']);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it('boardingStationId가 arcStations에 없으면(데이터 불일치) 통과한다', () => {
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        lockedTrainCode: 'LOCKED',
+        arcStations: [sicheong, eulji, gangbyeon],
+        boardingStationId: 'UNKNOWN-STATION-ID',
+        onCandidateDistanceReject: onReject,
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['LOCKED']);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+  });
+
   describe('2호선 본선 wraparound (#1722)', () => {
     // 본선 closed loop: 시청(2-001, idx 0) ↔ 충정로(2-043) 인접.
     // 직선 Math.abs로는 시청 → 합정(2-038) 거리가 37이라 window=10이면 reject.

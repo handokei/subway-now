@@ -1385,6 +1385,8 @@ function buildGpsDropLogSection(args: BuildDumpArgs): string[] {
 /**
  * #1902 (RC-18) — candidate reject 한 줄 포맷. reason별로 다른 컬럼:
  *   - candidate-distance: trainNo + station + 측정 거리 (R12-a, #1616).
+ *   - candidate-arc (#2728, ADR-039 2단계): trainNo + station + 측정 거리 — candidate-distance와
+ *     동일 컬럼(arc 정합성 실패도 진단상 거리와 함께 보는 것이 유용).
  *   - candidate-line: line만 노출 — enumerate 단계 reject라 train picking 전.
  */
 function formatCandidateRejectLine(entry: CandidateRejectEntry): string {
@@ -1393,7 +1395,7 @@ function formatCandidateRejectLine(entry: CandidateRejectEntry): string {
   // 같은 reason이 반복 reject되면 entry.count가 2 이상 — "×N" suffix로 burst 집계를 노출.
   // count 미설정/1은 기존 개별 entry와 동일 출력(하위 호환).
   const suffix = entry.count != null && entry.count > 1 ? ` ×${entry.count}` : '';
-  if (entry.reason === 'candidate-distance') {
+  if (entry.reason === 'candidate-distance' || entry.reason === 'candidate-arc') {
     const train = entry.trainNo ?? '-';
     const station = entry.stationName ?? '-';
     const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';

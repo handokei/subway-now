@@ -3,6 +3,7 @@ import type { LineNumber, Station } from '../../../shared/types/station';
 import { getStationsOnLine } from '../../../shared/utils/stationRoute';
 import { hopsOnLine } from '../../../shared/utils/lineLoopPath';
 import { haversine } from '../../../shared/utils/haversine';
+import { LOCK_NEXT_HOP_WINDOW } from '../../../shared/constants/realtime';
 
 // CandidateTrain은 shared/types/position으로 추출됨 (#890, Phase 5). re-export 유지.
 import type { CandidateTrain } from '../../../shared/types/position';
@@ -41,7 +42,41 @@ export interface PickCandidateTrainsInput {
     line: LineNumber;
     stationName: string;
     distanceKm: number;
+    /**
+     * ADR-039 2단계(#2728) — true면 이 reject가 GPS 절대거리가 아니라 arc(경로) 정합성
+     * 검사 실패다. distanceKm은 진단용으로 그대로 채워지되 reject 사유는 아니다.
+     */
+    viaArcCheck?: boolean;
   }) => void;
+  /**
+   * ADR-039 2단계(#2728) — BoardingLock.trainCode. distanceGateActive 상태에서 이 trainNo와
+   * 일치하는 candidate는 GPS 거리 hard gate 대신 arc(경로) 정합성으로 검증한다 — 열차 피드
+   * 실측 신호는 GPS 거리로 거부되지 않는다. `arcStations`/`boardingStationId` 중 하나라도
+   * 없으면 기존 거리 검사 그대로(#444 원목적 보존, trainCode 불일치 후보도 동일).
+   */
+  lockedTrainCode?: string | null;
+  /** ADR-039 2단계(#2728) — lockedTrainCode 검증에 쓰이는 arc(경로) station 목록. */
+  arcStations?: readonly Station[];
+  /** ADR-039 2단계(#2728) — arc 내 탑승역 id. */
+  boardingStationId?: string;
+}
+
+/**
+ * ADR-039 2단계(#2728) — arcStations 내에서 candidateId가 boardingStationId 기준
+ * arc window(±N hop) 이내인지. `fusionDistanceGate.ts`/`lockedStationGate.ts`의 동일 이름
+ * 함수와 같은 계약 — arrival feature는 디렉토리 경계 룰상 nearest-station을 import할 수
+ * 없어 순수 부분만 여기 재정의한다.
+ */
+function isWithinArcWindow(
+  arcStations: readonly Station[],
+  candidateId: string,
+  boardingStationId: string,
+): boolean {
+  if (arcStations.length === 0) return true;
+  const boardingIdx = arcStations.findIndex((s) => s.id === boardingStationId);
+  if (boardingIdx === -1) return true;
+  const candidateIdx = arcStations.findIndex((s) => s.id === candidateId);
+  return candidateIdx !== -1 && candidateIdx <= boardingIdx + LOCK_NEXT_HOP_WINDOW;
 }
 
 const DEFAULT_WINDOW_STATIONS = 3;
@@ -77,6 +112,9 @@ export function pickCandidateTrains(input: PickCandidateTrainsInput): CandidateT
     userLocation,
     stationCoordinates,
     onCandidateDistanceReject,
+    lockedTrainCode,
+    arcStations,
+    boardingStationId,
   } = input;
 
   const linePositions = positions.find((p) => p.line === line);
@@ -121,7 +159,27 @@ export function pickCandidateTrains(input: PickCandidateTrainsInput): CandidateT
           stationCoord.lat,
           stationCoord.lng,
         );
-        if (distanceKm > CANDIDATE_DISTANCE_THRESHOLD_KM) {
+        // ADR-039 2단계(#2728) — trainCode가 boardingLock과 일치하는 실측 열차 신호는 GPS
+        // 거리로 거부하지 않는다. 검증 기준을 arc(경로) 정합성으로 교체 — #444 원목적(엉뚱한
+        // 역 채택 방지)은 arc 검사로 유지된다. trainCode 불일치 후보는 기존 거리 검사 그대로.
+        const isLockedTrainSignal =
+          lockedTrainCode != null &&
+          train.trainNo === lockedTrainCode &&
+          arcStations != null &&
+          boardingStationId != null;
+        if (isLockedTrainSignal) {
+          const stationOnLine = stationsOnLine[stationIdx];
+          if (!isWithinArcWindow(arcStations, stationOnLine.id, boardingStationId)) {
+            onCandidateDistanceReject?.({
+              trainNo: train.trainNo,
+              line,
+              stationName: train.statnNm,
+              distanceKm,
+              viaArcCheck: true,
+            });
+            continue;
+          }
+        } else if (distanceKm > CANDIDATE_DISTANCE_THRESHOLD_KM) {
           onCandidateDistanceReject?.({
             trainNo: train.trainNo,
             line,
