@@ -126,6 +126,7 @@ const mockLogSuppressedSsotFireGate = jest.fn();
 const mockLogSuppressedLocklessNoUserIntent = jest.fn();
 const mockLogSuppressedFireAlarmOnce = jest.fn();
 const mockLogSuppressedNotDeparted = jest.fn();
+const mockLogEtaSource = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -167,6 +168,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedFireAlarmOnce: (...args: unknown[]) =>
     mockLogSuppressedFireAlarmOnce(...args),
   logSuppressedNotDeparted: (...args: unknown[]) => mockLogSuppressedNotDeparted(...args),
+  logEtaSource: (...args: unknown[]) => mockLogEtaSource(...args),
 }));
 
 // #1893 (RC-17) — trip-boundary detection effect는 tripStartedAt storage를 read한다.
@@ -880,6 +882,129 @@ describe('useStationAlarm', () => {
         expect.any(Array),
       ),
     );
+  });
+
+  // ADR-039 §5 3단계 (#2728) — lock 활성 trip의 destination ETA는 Seoul 열차 피드(trainCode 일치
+  // arrivalSeconds)를 1순위로 쓴다. GPS 거리 기반 계산(estimateTransitEtaSeconds)은 피드 매칭
+  // 실패 시에만 쓰는 fallback으로 강등한다 — 삭제 아님(ADR-039 §2 E).
+  describe('ADR-039 §5 3단계 (#2728) — 잠금 활성 trip ETA 출처: Seoul 열차 피드 1순위', () => {
+    const route = makeDirectRoute(3, '2');
+    const lockedTrainCode = 'T-7256';
+
+    it('lock.trainCode가 destinationArrival에 일치하면 Seoul 피드 ETA(arrivalSeconds)를 사용한다 (GREEN — fix 전엔 GPS 계산값 360이 대신 전달됨, red 재현은 PR 본문 참고)', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, trainCode: lockedTrainCode });
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: {
+          up: [],
+          down: [{ trainCode: lockedTrainCode, arrivalSeconds: 96, line: '2' }],
+        },
+        loading: false,
+        isMock: false,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            // GPS 계산이 살아있다면 hop 기반 fallback(3 stops × 120s = 360s)이 나온다 — Seoul
+            // 피드값(96)과 명확히 다른 숫자라 어느 경로가 채택됐는지 assertion으로 구분 가능.
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: null,
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ etaSeconds: 96 }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+      expect(mockLogEtaSource).toHaveBeenCalledWith('eta-source-train-feed', destination.name);
+    });
+
+    it('Seoul 피드에 lock.trainCode가 없으면 GPS 거리 기반 계산으로 fallback한다 (강등, 삭제 아님)', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, trainCode: lockedTrainCode });
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: {
+          up: [],
+          down: [{ trainCode: 'OTHER-TRAIN', arrivalSeconds: 30, line: '2' }],
+        },
+        loading: false,
+        isMock: false,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: null,
+          }),
+        ),
+      );
+      // hop-based fallback(3 stops × 120s = 360s, speed=null) — Seoul 미매칭 row(30)는 무시된다.
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ etaSeconds: 360 }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+      expect(mockLogEtaSource).toHaveBeenCalledWith('eta-source-gps-fallback', destination.name);
+    });
+
+    it('Seoul 피드 자체가 없으면(장애/null) GPS 거리 기반 계산으로 fallback한다', async () => {
+      mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, trainCode: lockedTrainCode });
+      mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: null }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ etaSeconds: 360 }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+      expect(mockLogEtaSource).toHaveBeenCalledWith('eta-source-gps-fallback', destination.name);
+    });
+
+    it('lockless(lock=null) trip은 Seoul 피드에 매칭 행이 있어도 영향받지 않는다 (ADR-039는 lock 활성 경로 한정) — GPS 계산 그대로, 출처 계측도 미적재', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: {
+          up: [],
+          // lockless라 트래킹 중인 trainCode 자체가 없다 — 우연히 아무 행이나 있어도 무관해야 한다.
+          down: [{ trainCode: 'ANY-TRAIN', arrivalSeconds: 5, line: '2' }],
+        },
+        loading: false,
+        isMock: false,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: null }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ etaSeconds: 360 }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+          expect.any(Array),
+        ),
+      );
+      expect(mockLogEtaSource).not.toHaveBeenCalled();
+    });
   });
 
   it('sends alarm notification with the full event', async () => {
