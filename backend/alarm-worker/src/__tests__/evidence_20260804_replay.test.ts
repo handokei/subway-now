@@ -220,13 +220,21 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
   const TOKEN = 'repeat-fire-evidence-tok';
   const FIVE_MIN_MS = 5 * 60 * 1000;
 
+  // #2720 — destination waypoint를 origin('강남')과 다른 역으로 분리한다. `makeSeoul`은
+  // 요청 station을 무시하고 항상 같은 응답을 반환해, waypoint station이 origin과 같으면
+  // boardingPrompt 평가용 arvlCd=1 신호를 lockless destination 경로(`runLocklessDestination`,
+  // #2720)도 같은 신호로 오인해 매 cycle 첫 발사 직후 trip을 종료시키는 테스트 아티팩트가
+  // 생긴다(실제 서비스는 origin/destination이 다른 역이라 Seoul 응답도 station별로 분리돼
+  // 이런 교차가 없다). 아래 `makeOriginScopedSeoul`로 조회 station을 실제로 구분한다.
+  const NEARBY_TRIP_DESTINATION_STATION = '역삼';
+
   // 등록 근접(스탬프 150m 이내) — originDistanceM=50, originAccuracyM=10 (50-10=40 <= 150).
   function makeNearbyTrip(overrides: Partial<Trip> = {}): Trip {
     return {
       token: TOKEN,
       route: { type: 'direct', line: '2', stops: 5 },
       destination: 'dst',
-      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      waypoints: [{ stationName: NEARBY_TRIP_DESTINATION_STATION, line: '2', kind: 'destination' }],
       expiresAt: NOW + 60 * 60_000,
       createdAt: NOW,
       alarmAtEpochMs: NOW + 60_000,
@@ -253,9 +261,40 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     };
   }
 
+  // #2720 — `makeSeoul`과 달리 요청 URL에 인코딩된 station이 `originStation`('강남')과 일치할
+  // 때만 arrivals를 반환한다(그 외 = destination 조회 → 빈 배열). 위 설명 참고.
+  function makeOriginScopedSeoul(originStation: string, arrivals: ArrivalEntry[]): SeoulArrivalClient {
+    const encodedOrigin = encodeURIComponent(originStation);
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (input: unknown) => {
+        const url = typeof input === 'string' ? input : String(input);
+        const matchesOrigin = url.endsWith(`/${encodedOrigin}`);
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: matchesOrigin
+              ? arrivals.map((a) => ({
+                  barvlDt: String(a.arrivalSeconds),
+                  recptnDt: '',
+                  updnLine: a.isUp ? '상행' : '하행',
+                  trainLineNm: a.destination,
+                  btrainNo: a.trainCode,
+                  subwayNm: a.subwayNm,
+                  arvlCd: a.arvlCd,
+                }))
+              : [],
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    });
+  }
+
   function makeDeps(now: number, trainCode: string, pushId: string): ScheduledDeps {
     return {
-      seoul: makeSeoul([arrivedTrain(trainCode)]),
+      seoul: makeOriginScopedSeoul('강남', [arrivedTrain(trainCode)]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       now: () => now,

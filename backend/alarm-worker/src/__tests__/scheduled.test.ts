@@ -191,7 +191,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -3802,7 +3802,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       makeLockTrip({ waypoints: [{ stationName: station, line: '7', kind }] }),
     );
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    await runScheduled(makeEnv(kv), {
+    const stats = await runScheduled(makeEnv(kv), {
       seoul: makeSeoulCombo([arrivalForLock(station, 0, 1)], []),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
@@ -3810,11 +3810,20 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       now: () => NOW,
       generatePushId: () => 'p-arrive',
     });
+    // #2720 (요구사항 4) — lock 활성 trip은 lock-active 경로(`advanceBoardingLockWaypoint`)로만
+    // 종료돼야 한다. lockless destination 경로(`runLocklessDestination`)는 `isBoardingLockActive`
+    // 게이트 안(lock 없음)에서만 진입 가능한 구조라 이 cycle에서는 절대 호출되지 않는다 — 중복
+    // 종료 불가를 카운터로 명시 확인한다.
+    expect(stats.locklessDestinationAdvanced).toBe(0);
     expect(await kv.get('trip:lock-tok')).toBeNull();
   });
 
-  // #640 — lock 만료 trip도 lockMissing 게이트로 차단되어야 한다 (이전엔 legacy phase 경로로 fall-through 됐었음).
-  it('lock 만료 trip은 게이트에서 차단 — push 없음', async () => {
+  // #640 — lock 만료 trip은 lockMissing 게이트로 차단되어야 한다 (이전엔 legacy phase 경로로
+  // fall-through 됐었음). destination waypoint는 #2720부터 lock 유무와 무관한 lockless ground
+  // truth(arvlCd) 경로(`runLocklessDestination`)로 처리되므로, 이 케이스(arvlCd=1 ARRIVED)는
+  // lockMissing이 아니라 destination advance로 귀결된다 — lock-active 매역 fire 경로
+  // (`arvlCdFireSuccess`)는 여전히 진입하지 않는다는 것이 이 테스트가 실제로 지키려는 불변식.
+  it('lock 만료 trip — destination은 lockless ground truth로 advance(#2720), lock-active fire 경로는 미진입', async () => {
     const kv = new InMemoryKV();
     await putTrip(
       kv as unknown as KVNamespace,
@@ -3832,9 +3841,10 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       now: () => NOW,
       generatePushId: () => 'p8',
     });
-    expect(stats.pushed).toBe(0);
-    expect(stats.lockMissing).toBe(1);
-    expect(apnsFetch).not.toHaveBeenCalled();
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.lockMissing).toBe(0);
+    expect(stats.locklessDestinationAdvanced).toBe(1);
+    expect(await kv.get('trip:lock-tok')).toBeNull();
   });
 
   it('counts error when reschedule push fails (apns 400)', async () => {
@@ -6560,9 +6570,20 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
  * 본 describe 는 archFlag='on' 배선 시 실제 fire 경로가 열리는지 + FP 방어 유지되는지 검증.
  */
 describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
+  // #2720 — makeTrip() 기본 waypoint(kind:'destination', station '강남')를 그대로 쓰면 이
+  // describe 블록의 promptDisplay.originStation('강남')과 station명이 우연히 겹쳐, 아래
+  // `makeSeoul`(station 무관 고정 응답 mock)이 boardingPrompt 평가용으로 만든 arvlCd
+  // 신호를 lockless destination 경로(`runLocklessDestination`, #2720)도 같은 신호로 오인해
+  // trip을 종료시키는 테스트 아티팩트가 생긴다(실제 서비스는 origin/destination이 다른 역이라
+  // Seoul 응답도 station별로 분리돼 이런 교차가 없다). destination waypoint station을
+  // origin과 다르게 분리해 이 describe 블록이 검증하려는 boardingPrompt 전용 동작과
+  // destination advance를 실제 운영과 동일하게 독립시킨다.
+  const UNLOCKED_TRIP_DESTINATION_STATION = '역삼';
+
   function makeUnlockedTrip(overrides: Partial<Trip> = {}): Trip {
     return makeTrip({
       token: 'b8-tok',
+      waypoints: [{ stationName: UNLOCKED_TRIP_DESTINATION_STATION, line: '2', kind: 'destination' }],
       promptGeoContext: {
         origin: { lat: 0, lng: 0 },
         nextStation: { lat: 0, lng: 0.01 },
@@ -6583,13 +6604,49 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     arvlCd: 1,
   };
 
+  /**
+   * #2720 — station-aware 대체 mock. `makeSeoul`은 요청 URL의 station을 무시하고 항상 같은
+   * 응답을 반환해 boardingPrompt 평가(origin 조회)와 lockless destination advance(destination
+   * 조회)가 같은 신호를 공유하는 테스트 아티팩트를 만든다. 이 helper는 URL에 인코딩된
+   * station명이 `originStation`과 일치할 때만 `arrivals`를 반환하고, 그 외(= destination
+   * 조회)에는 빈 배열을 반환해 두 조회를 실제 서비스처럼 분리한다.
+   */
+  function makeOriginScopedSeoul(originStation: string, arrivals: ArrivalEntry[]): SeoulArrivalClient {
+    const encodedOrigin = encodeURIComponent(originStation);
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (input: unknown) => {
+        const url = typeof input === 'string' ? input : String(input);
+        const matchesOrigin = url.endsWith(`/${encodedOrigin}`);
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: matchesOrigin
+              ? arrivals.map((a) => ({
+                  barvlDt: String(a.arrivalSeconds),
+                  recptnDt: '',
+                  updnLine: a.isUp ? '상행' : '하행',
+                  trainLineNm: a.destination,
+                  btrainNo: a.trainCode,
+                  subwayNm: a.subwayNm,
+                  arvlCd: a.arvlCd,
+                }))
+              : [],
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    });
+  }
+
   function makeArchFlagDeps(
     fetchImpl: typeof fetch,
     seoul?: SeoulArrivalClient,
     archFlag: 'on' | 'off' | undefined = 'on',
   ) {
     return {
-      seoul: seoul ?? makeSeoul([ARVL_ARRIVED_SINGLE]),
+      seoul: seoul ?? makeOriginScopedSeoul('강남', [ARVL_ARRIVED_SINGLE]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       now: () => NOW,
@@ -6696,7 +6753,7 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const deps = makeArchFlagDeps(
       fetchImpl,
-      makeSeoul([AMBIGUOUS_TRAIN_A, AMBIGUOUS_TRAIN_B]),
+      makeOriginScopedSeoul('강남', [AMBIGUOUS_TRAIN_A, AMBIGUOUS_TRAIN_B]),
     );
 
     const stats = await runScheduled(makeEnv(kv), deps);
@@ -6778,7 +6835,7 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
     const fetchImpl = vi.fn() as unknown as typeof fetch;
-    const deps = makeArchFlagDeps(fetchImpl, makeSeoul([ENTERING_ONLY]));
+    const deps = makeArchFlagDeps(fetchImpl, makeOriginScopedSeoul('강남', [ENTERING_ONLY]));
 
     const stats = await runScheduled(makeEnv(kv), deps);
 
@@ -9717,19 +9774,24 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(1);
   });
 
-  it('#640 회귀 가드 — lock 부재 trip은 lockMissing 게이트에 막혀 매역 fire 경로 진입 자체 X', async () => {
+  it('#640 회귀 가드 — lock 부재 trip은 lock-active 매역 fire 경로(arvlCdFireSuccess) 진입 자체 X', async () => {
     // lock 없는 trip + arrivals에 임의 trainCode arvlCd=1 → 외부에서 보면 "매역 신호"지만
-    // lockMissing 게이트가 차단해야 한다.
+    // lock-active 경로(`fireArvlCdStationPush`/`arvlCdFireSuccess`)는 여전히 차단돼야 한다.
+    // #2720 — makeTrip() 기본 waypoint는 kind:'destination' 단일 waypoint라, lock 부재
+    // trip이라도 이 신호는 이제 lockless destination ground-truth 경로
+    // (`runLocklessDestination`)로 advance된다 — lockMissing으로 떨어지지 않는다(#640 게이트가
+    // 막는 대상은 lock-active 경로뿐, lockless destination advance는 별개 경로).
     const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('강남', 0, 1),
       trip: makeTrip(), // boardingLock undefined
       pushId: 'p-arvl-nolock',
     });
-    expect(stats.lockMissing).toBe(1);
     expect(stats.arvlCdFireSuccess).toBe(0);
-    // mismatch도 0 — 게이트가 더 위에서 차단해 fire 경로 진입 자체가 없음.
+    // mismatch도 0 — lock-active fire 경로 진입 자체가 없음.
     expect(stats.arvlCdFireMismatch).toBe(0);
-    expect(apnsFetch).not.toHaveBeenCalled();
+    expect(stats.lockMissing).toBe(0);
+    expect(stats.locklessDestinationAdvanced).toBe(1);
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
   });
 
   it('waypoint advance는 매역 push 발사 후에도 정상 수행 (push와 progress는 독립)', async () => {
@@ -14462,6 +14524,52 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       { stationName: '용마산', line: '7', kind: 'destination' },
     ]);
   });
+
+  // #2720 — A2가 남긴 `[{용마산, destination}]` 단일 waypoint에서 lockless leg가 영원히
+  // 정지하던 결함(이 describe 헤더의 break #1과 동일 클래스, destination 버전)의 회귀 가드.
+  // infoModeEnabled를 명시하지 않아(요구사항 3) C 토글 무관 동작을 확인한다.
+  it.each([
+    ['infoModeEnabled 미설정(false 취급)', undefined] as const,
+    ['infoModeEnabled=true(C 토글 ON)', true] as const,
+  ])(
+    'A2d (#2720) — 용마산 도착 신호(arvlCd=1) → lockless destination advance + destination-arrived 완결 (%s)',
+    async (_label, infoModeEnabled) => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_A2, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: NOW,
+          ...(infoModeEnabled !== undefined ? { infoModeEnabled } : {}),
+        }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull({ 용마산: [arrivalOnLine('7', '용마산', 0, 1, '7256')] }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2323-a2d',
+      });
+      expect(stats.locklessDestinationAdvanced).toBe(1);
+      // lock-active 매역 fire 경로는 여전히 미진입 — 중복 종료 불가(요구사항 4).
+      expect(stats.arvlCdFireSuccess).toBe(0);
+      const tripEndedCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+        (call) => {
+          try {
+            const body = JSON.parse(call[1].body as string);
+            return body?.data?.kind === 'trip-ended' && body?.data?.reason === 'destination-arrived';
+          } catch {
+            return false;
+          }
+        },
+      );
+      expect(tripEndedCall).toBeDefined();
+      expect(await kv.get(`trip:${TOKEN_A2}`)).toBeNull();
+    },
+  );
 
   it('A3 — 도보시간 미경과 시 leg-2 boarding prompt skip (walking silence, 회귀 아님)', async () => {
     const kv = new InMemoryKV();
