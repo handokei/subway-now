@@ -502,7 +502,20 @@ export type AlarmLogReason =
   // 순수 관측 — 값 자체는 evaluateAlarmPhase 입력(etaSeconds)에 어느 쪽이든 그대로 전달되며
   // 발사 판정 로직은 변경하지 않는다.
   | 'eta-source-train-feed'
-  | 'eta-source-gps-fallback';
+  | 'eta-source-gps-fallback'
+  // #2728 (ADR-039 §5 4단계) — lock 활성 trip에서 GPS 기반 발사 게이트가 발사를 막지 않고
+  // 통과시킨(예외 처리한) 1건 관측. 순수 관측(outcome='received') — 발사를 억제하지 않는다.
+  //   'gate-phase-accuracy-lock-exempt'        : accuracyMeters 불량이었지만 lock 활성이라 통과.
+  //   'gate-phase-time-integration-lock-exempt': fusionSource 약(gps/route-progress)이었지만
+  //                                               lock 활성이라 통과(fusionSource 명시 전달 시에만 —
+  //                                               #1817 legacy fallback 경로(estimatorIsTimeIntegration
+  //                                               단독)는 예외 대상이 아니다, useStationAlarm.ts 참고).
+  //   'movement-low-accuracy-lock-exempt'      : movementGate.ts의 low-accuracy 판정이었지만
+  //                                               lock 활성이라 통과. movementGate.ts 판정 로직 자체는
+  //                                               불변 — 호출부(destination/transfer phase 발사 2곳)에서만 예외.
+  | 'gate-phase-accuracy-lock-exempt'
+  | 'gate-phase-time-integration-lock-exempt'
+  | 'movement-low-accuracy-lock-exempt';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -2085,6 +2098,28 @@ export function logSuppressedPhaseGate(reason: 'gate-phase-accuracy' | 'gate-pha
  */
 export function logEtaSource(
   reason: 'eta-source-train-feed' | 'eta-source-gps-fallback',
+  stationName: string | undefined,
+): void {
+  const name = stationName ?? '(unknown)';
+  if (isBurstDuplicate(reason, name)) return;
+  appendAlarmLog({ ts: Date.now(), source: 'fg-evaluated', outcome: 'received', reason, stationName: name });
+}
+
+/**
+ * ADR-039 §5 4단계 (#2728) — lock 활성 trip에서 GPS 기반 발사 게이트가 발사를 억제하지 않고
+ * 통과(예외 처리)시킨 1건 적재. 순수 관측(outcome='received') — 발사 판정에는 영향 없다(게이트를
+ * 건너뛰었다는 사실만 기록). isBurstDuplicate로 DEDUP_LOG_WINDOW_MS 안의 같은 (reason, station)
+ * 중복은 drop.
+ *
+ * 다음 라이드에서 "lock 활성이라 게이트를 건너뛴" 건수를 alarmLog dump에서 관측하기 위한 계측
+ * (요구사항 4). lockless trip에는 호출되지 않는다 — 호출자(useStationAlarm.ts)가 lock 활성일 때만
+ * 호출한다.
+ */
+export function logLockExemptGate(
+  reason:
+    | 'gate-phase-accuracy-lock-exempt'
+    | 'gate-phase-time-integration-lock-exempt'
+    | 'movement-low-accuracy-lock-exempt',
   stationName: string | undefined,
 ): void {
   const name = stationName ?? '(unknown)';
