@@ -8,10 +8,10 @@ cd "$(dirname "$0")/.."
 
 EXPECTED_NAME="subway-now"
 
-npx expo export -p web
+npx --no-install expo export -p web
 
 echo "── 배포: ${EXPECTED_NAME} (wrangler.jsonc) ──"
-DEPLOY_OUT=$(npx wrangler deploy --config wrangler.jsonc 2>&1)
+DEPLOY_OUT=$(npx --no-install wrangler deploy --config wrangler.jsonc 2>&1)
 echo "$DEPLOY_OUT"
 echo ""
 DEPLOY_OUT_PLAIN=$(echo "$DEPLOY_OUT" | sed -E 's/\x1b\[[0-9;]*m//g')

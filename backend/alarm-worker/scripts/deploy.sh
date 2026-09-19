@@ -19,11 +19,11 @@ EXPECTED_CRON="*/1 * * * *"
 EXPECTED_BINDING_COUNT=7
 
 echo "── [1/2] predeploy dry-run: 바인딩 ${EXPECTED_BINDING_COUNT}종 확인 ──"
-DRY_OUT=$(npx wrangler deploy --dry-run --outdir /tmp/subway-now-alarm-worker-dryrun --config wrangler.toml 2>&1)
+DRY_OUT=$(npx --no-install wrangler deploy --dry-run --outdir /tmp/subway-now-alarm-worker-dryrun --config wrangler.toml 2>&1)
 echo "$DRY_OUT"
 # ANSI 컬러 코드 제거 후 리소스 바인딩(KV/D1/R2/DO)만 카운트. 평문 Environment Variable은 제외.
 BINDING_COUNT=$(echo "$DRY_OUT" | sed -E 's/\x1b\[[0-9;]*m//g' | grep -E "^env\." | grep -vc "Environment Variable")
-if [ "$BINDING_COUNT" -ne "$EXPECTED_BINDING_COUNT" ]; then
+if [[ "$BINDING_COUNT" -ne "$EXPECTED_BINDING_COUNT" ]]; then
   echo "" >&2
   echo "❌ predeploy 검증 실패: 바인딩 ${EXPECTED_BINDING_COUNT}종을 기대했으나 ${BINDING_COUNT}종만 발견." >&2
   echo "   루트 wrangler.jsonc 로 config 가 하이재킹됐을 가능성이 높다(#2698). 실배포를 중단한다." >&2
@@ -33,7 +33,7 @@ echo "✅ 바인딩 ${BINDING_COUNT}종 확인 (${EXPECTED_NAME})"
 echo ""
 
 echo "── [2/2] 실배포 ──"
-DEPLOY_OUT=$(npx wrangler deploy --config wrangler.toml 2>&1)
+DEPLOY_OUT=$(npx --no-install wrangler deploy --config wrangler.toml 2>&1)
 echo "$DEPLOY_OUT"
 echo ""
 DEPLOY_OUT_PLAIN=$(echo "$DEPLOY_OUT" | sed -E 's/\x1b\[[0-9;]*m//g')
