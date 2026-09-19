@@ -836,6 +836,9 @@ export default function HomeScreen() {
     stationFromWifi: confidence === 'wifi-ssid',
     boardingLockTrainCode: boardingLock?.trainCode ?? null,
     boardingLockLine: boardingLock?.boardingLine ?? null,
+    // #2709 — lock-identity effect가 GPS 무관 fallback anchor(탑승역)와 전달 지연 계측에 사용.
+    boardingLockBoardingStationId: boardingLock?.boardingStationId ?? null,
+    boardingLockBoardedAt: boardingLock?.boardedAt ?? null,
   });
   // #1280 — FG(WhileInUse) 위치 채널. BG task가 안 도는 WhileInUse 권한에서 FG fix-watch가
   // ~10s throttle로 좌표를 backend에 송신해 POST /position 0건 회귀를 메운다. useBoardingLockSync와

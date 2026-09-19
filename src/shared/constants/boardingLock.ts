@@ -285,3 +285,30 @@ export const ROUTE_CHANGE_DEBOUNCE_MS = 1500;
  * 1회(AsyncStorage/UserDefaults 수준)라 무시할 만하다.
  */
 export const LIVE_ACTIVITY_INTENT_POLL_MS = 5_000;
+
+/**
+ * #2709 — lock 신원(trainCode/boardingLine) → backend 전달 경로 통합. `useBoardingLockSync`의
+ * lock-identity effect가 POST 실패(네트워크/5xx) 시 이 backoff로 재시도한다. lock이 backend
+ * ADR-038 Phase 2(#2560, `buildLockFromKnownTrainCode`) 승격 경로의 유일한 입력이므로 — 이
+ * POST가 도달하지 못하면 backend는 영원히 lock 없이 anchor waypoint 폴링에 머문다(2026-09-18
+ * 13분 미도달 실측, #2709). `REGISTER_RETRY_BACKOFF_MS`와 동일 정신이나 별도 상수로 분리 —
+ * 두 재시도 루프는 서로 다른 endpoint(/trips vs /boarding-lock/sync)를 대상으로 독립 동작한다.
+ */
+export const LOCK_SYNC_RETRY_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000];
+
+/**
+ * #2709 — lock-identity 전용 sync 발사 시, 신뢰 가능한 GPS 관측(≤50m 또는 WiFi SSID)이 없어
+ * lock의 boarding station(ground truth, GPS 무관)을 observedStationName fallback으로 쓸 때
+ * 함께 실어 보내는 accuracy sentinel(m). backend `/boarding-lock/sync`는 이 값을 advance
+ * 로직에 사용하지 않는다(검증만) — 이 상수는 "실제 GPS 관측이 아님"을 로그/dump에서 구분하기
+ * 위한 표기 목적. 값 자체는 임의로 크게 잡아 혹시라도 향후 backend가 accuracy를 소비하게
+ * 되어도 "신뢰 불가"로 해석되도록 한다.
+ */
+export const LOCK_ONLY_SYNC_ACCURACY_METERS = 999_999;
+
+/**
+ * #2709 — lock-identity 전용 sync 재시도 세션당 상한. `REGISTER_RETRY_BACKOFF_MS.length`와
+ * 동일한 정신(무한 재시도로 backend rate limit 소진 방지) — 상한 도달 후에는 다음 lock 변경
+ * (trainCode/boardingLine 전환)이 있을 때만 재개.
+ */
+export const LOCK_SYNC_RETRY_MAX_ATTEMPTS = LOCK_SYNC_RETRY_BACKOFF_MS.length;

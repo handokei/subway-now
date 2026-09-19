@@ -241,35 +241,28 @@ describe('alarmBackend', () => {
         expect(reregister).toEqual({ ok: true, status: 200 });
       });
 
-      it('boardingLock 송신: body에 포함 + key 변경 시 재등록 (#622)', async () => {
-        const lock = {
-          trainCode: '7246',
-          line: '7',
-          subwayId: '1007',
-          selectedDepartureTime: NOW,
-          segmentStations: ['면목', '용마산'],
-          expiresAt: NOW + 600_000,
-        };
-        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingLock: lock });
-        expect(first.ok).toBe(true);
+      // #2709 — lock 신원(trainCode/boardingLine) 전달 경로 통합. POST /trips(본 파일)는 더 이상
+      // boardingLock을 실어 나르지 않는다 — 유일 경로는 `/boarding-lock/sync`
+      // (useBoardingLockSync.test.ts의 "boardingLock trainCode/line forward (#1210)" +
+      // "#2709 lock identity" describe가 그 경로가 실제로 trainCode/boardingLine을 나른다는 것을
+      // 증명한다). 구조적 assert(grep 아님): 타입에 없는 필드를 강제 캐스팅으로 흘려보내도
+      // `performRegisterFetch`의 명시적 body 구성이 이를 그대로 무시한다는 것을 실행으로 확인.
+      it('#2709 — POST /trips body는 boardingLock 필드를 실어 나르지 않는다 (경로 통합 구조 assert)', async () => {
+        const payloadWithForeignBoardingLock = {
+          ...SAMPLE_PAYLOAD,
+          boardingLock: {
+            trainCode: '7246',
+            line: '2',
+            subwayId: '1002',
+            selectedDepartureTime: NOW,
+            segmentStations: ['강남', '역삼'],
+            expiresAt: NOW + 600_000,
+          },
+        } as unknown as RegisterTripPayload;
+        const result = await registerActiveTrip(payloadWithForeignBoardingLock);
+        expect(result.ok).toBe(true);
         const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-        expect(body.boardingLock).toEqual(lock);
-
-        // 동일 lock 재호출 → dedup
-        const dup = await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingLock: lock });
-        expect(dup).toEqual({ ok: true, skipped: true });
-
-        // 다른 trainCode → 재등록
-        const newLock = { ...lock, trainCode: '7301' };
-        const reregister = await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingLock: newLock });
-        expect(reregister).toEqual({ ok: true, status: 200 });
-        expect(global.fetch).toHaveBeenCalledTimes(2);
-      });
-
-      it('boardingLock 없으면 body에 미포함', async () => {
-        await registerActiveTrip(SAMPLE_PAYLOAD);
-        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-        expect(body.boardingLock).toBeUndefined();
+        expect(body).not.toHaveProperty('boardingLock');
       });
 
       // #903 (Seam G) — subsurface 동봉

@@ -747,139 +747,6 @@ describe('useApnsTripRegistration', () => {
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2), { timeout: 3000 });
   });
 
-  describe('#622 boardingLock 송신', () => {
-    // 강남(2-022)이 stations.json에 실제 존재해야 segmentStations 추론 성공.
-    // buildBoardingLockMeta는 boardingStationId('2-022')로 lookup 후 segment를 만든다.
-    const lockFor7 = {
-      destinationId: station.id,
-      trainCode: '7246',
-      boardingStationId: station.id, // 강남 (2호선) — boardingLine=2와 일치
-      boardingLine: '2' as const,
-      boardedAt: 1_700_000_000_000,
-      expectedDurationMs: 600_000,
-    };
-
-    it('boardingLock 전달 시 callRegister payload.boardingLock에 schema 변환된 객체 포함', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-          currentStation: station,
-          boardingLock: lockFor7,
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
-      const args = mockRegister.mock.calls[0][0];
-      expect(args.boardingLock).toBeDefined();
-      expect(args.boardingLock).toMatchObject({
-        trainCode: '7246',
-        line: '2',
-        subwayId: '1002',
-        selectedDepartureTime: lockFor7.boardedAt,
-      });
-      expect(args.boardingLock.segmentStations.length).toBeGreaterThan(0);
-    });
-
-    it('#1366 boardingLock line ↔ route line 불일치 시 metadata skip (transient transfer state)', async () => {
-      const mismatchedLock = { ...lockFor7, boardingLine: '7' as const };
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute, // line='2'
-          destination: station,
-          nextStationEtaSeconds: 120,
-          currentStation: station,
-          boardingLock: mismatchedLock,
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
-      const args = mockRegister.mock.calls[0][0];
-      expect(args.boardingLock).toBeUndefined();
-    });
-
-    it('boardingLock null이면 payload.boardingLock 누락', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-          currentStation: station,
-          boardingLock: null,
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
-      const args = mockRegister.mock.calls[0][0];
-      expect(args.boardingLock).toBeUndefined();
-    });
-
-    it('boardingLock 내용이 같으면 reference만 달라도 재등록 안 함 (sig 기반 deps)', async () => {
-      const sameContent = { ...lockFor7 };
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockFor7 }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: lockFor7 } },
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      rerender({ lock: sameContent }); // 새 object reference, 같은 내용
-      // 한 틱 대기해도 추가 호출 없어야 함
-      await new Promise((r) => setTimeout(r, 50));
-      expect(mockRegister).toHaveBeenCalledTimes(1);
-    });
-
-    it('boardingLock 변경 시 재등록 (deps 포함 확인)', async () => {
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockFor7 | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: null as typeof lockFor7 | null } },
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      rerender({ lock: lockFor7 });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-    });
-
-    it('boardingLock 있지만 boardingStationId가 stations.json에 없으면 meta 없이 송신', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-          currentStation: station,
-          boardingLock: { ...lockFor7, boardingStationId: '__no_such_id__' },
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
-      const args = mockRegister.mock.calls[0][0];
-      expect(args.boardingLock).toBeUndefined();
-    });
-
-    it('#865 — SCHED-* 시간표 fallback trainCode면 payload.boardingLock 누락 (backend 누설 차단)', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-          currentStation: station,
-          boardingLock: { ...lockFor7, trainCode: 'SCHED-UP-1' },
-        }),
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
-      const args = mockRegister.mock.calls[0][0];
-      expect(args.boardingLock).toBeUndefined();
-    });
-  });
-
   describe('#767 boardingLock 해제 race 차단 (debounce)', () => {
     // PR #765 evidence: lock A → null → 새 lock B로 빠르게 swap하면 25초 안에 3 POST 발사,
     // 첫 null POST가 backend KV의 옛 lock을 unset해 새 lock POST의 existingHasLock=false 회귀.
@@ -950,7 +817,6 @@ describe('useApnsTripRegistration', () => {
       const { rerender } = mountWithLock(lockA);
       await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
-      expect(mockRegister.mock.calls[0][0].boardingLock.trainCode).toBe('7246');
 
       // 옛 lock release
       rerender({ lock: null });
@@ -969,11 +835,6 @@ describe('useApnsTripRegistration', () => {
 
       // 총 2회만 호출 (lock A + lock B). null POST는 발사 안 됨.
       expect(mockRegister).toHaveBeenCalledTimes(2);
-      expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7415');
-      // 어떤 호출도 boardingLock=undefined로 backend에 가지 않음
-      mockRegister.mock.calls.forEach((c) => {
-        expect(c[0].boardingLock).toBeDefined();
-      });
     });
 
     it('lock → null 후 debounce window 경과하면 null POST 발사 (true release 의도)', async () => {
@@ -988,7 +849,6 @@ describe('useApnsTripRegistration', () => {
       await flushMicrotasks();
 
       expect(mockRegister).toHaveBeenCalledTimes(2);
-      expect(mockRegister.mock.calls[1][0].boardingLock).toBeUndefined();
     });
 
     it('null → lock 전환(초기 lock 부여)은 debounce 미적용 — 즉시 발사', async () => {
@@ -1001,7 +861,6 @@ describe('useApnsTripRegistration', () => {
       rerender({ lock: lockA });
       await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(2);
-      expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7246');
     });
 
     it('lock → 다른 lock 직접 교체(swap)는 debounce 미적용 — 즉시 발사', async () => {
@@ -1013,7 +872,6 @@ describe('useApnsTripRegistration', () => {
       rerender({ lock: lockB });
       await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(2);
-      expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7415');
     });
 
     it('lock 보유 중 트립 종료(route/destination 모두 null)는 debounce 미적용 — 즉시 clear', async () => {
@@ -1092,12 +950,11 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       });
 
-      // 새 토큰으로 register 호출됨 (lockA 포함)
+      // 새 토큰으로 register 호출됨
       const refreshed = mockRegister.mock.calls.find(
         (c) => (c[0] as { token: string }).token === 'token-NEW',
       );
-      expect(refreshed?.[0].boardingLock).toBeDefined();
-      expect(refreshed?.[0].boardingLock.trainCode).toBe('7246');
+      expect(refreshed).toBeDefined();
     });
   });
 
@@ -1327,14 +1184,13 @@ describe('useApnsTripRegistration', () => {
       });
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
-      // 15s 경과 → 재시도 발사, lock이 여전히 동봉된 채로 성공.
+      // 15s 경과 → 재시도 발사, 성공.
       await act(async () => {
         jest.advanceTimersByTime(200);
         await Promise.resolve();
         await Promise.resolve();
       });
       expect(mockRegister).toHaveBeenCalledTimes(2);
-      expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7246');
 
       // 성공 후 재시도 상태가 초기화돼 추가 backoff가 지나도 3번째 호출 없음.
       await act(async () => {
@@ -1344,7 +1200,7 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(2);
     });
 
-    it('APNs token 미가용 skip 시 재시도 — 토큰 발급 후 lock 동봉 register 성공', async () => {
+    it('APNs token 미가용 skip 시 재시도 — 토큰 발급 후 register 성공', async () => {
       let tokenAvailable = false;
       (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
         if (key === APNS_TOKEN_KEY) return tokenAvailable ? 'token-late' : null;
@@ -1373,7 +1229,6 @@ describe('useApnsTripRegistration', () => {
       });
       expect(mockRegister).toHaveBeenCalledTimes(1);
       expect(mockRegister.mock.calls[0][0].token).toBe('token-late');
-      expect(mockRegister.mock.calls[0][0].boardingLock.trainCode).toBe('7246');
     });
 
     it('상한(sessionKey당 3회) 도달 후 추가 재시도 없음 — 다음 정상 effect cycle에 위임', async () => {
@@ -3830,127 +3685,5 @@ describe('useApnsTripRegistration', () => {
       };
       expect(refreshedArgs.promptDisplay).toEqual({ originStation: '서초', line: '2' });
     });
-  });
-});
-
-// #1366 Layer 2 — route ↔ lock line 일치 검증 헬퍼.
-describe('isLockConsistentWithRoute (#1366 Layer 2)', () => {
-  const { isLockConsistentWithRoute } = jest.requireActual<{
-    isLockConsistentWithRoute: (lock: unknown, route: unknown) => boolean;
-  }>('../useApnsTripRegistration');
-
-  function makeLock(boardingLine: string): unknown {
-    return {
-      trainCode: 'TC',
-      boardingLine,
-      boardingStationId: 'S1',
-      boardedAt: 0,
-    };
-  }
-
-  it('lock null이면 항상 통과', () => {
-    expect(isLockConsistentWithRoute(null, { type: 'direct', line: '2', stops: 3, travelSeconds: 0 })).toBe(true);
-  });
-
-  it('route null이면 항상 통과', () => {
-    expect(isLockConsistentWithRoute(makeLock('2'), null)).toBe(true);
-  });
-
-  it('direct route line == lock.boardingLine → 통과', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('2'), { type: 'direct', line: '2', stops: 3, travelSeconds: 0 }),
-    ).toBe(true);
-  });
-
-  it('direct route line != lock.boardingLine → 불일치 (stale state)', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('2'), { type: 'direct', line: '7', stops: 3, travelSeconds: 0 }),
-    ).toBe(false);
-  });
-
-  it('transfer route fromLine == lock.boardingLine → 통과', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('7'), {
-        type: 'transfer',
-        transferName: '건대입구',
-        fromLine: '7',
-        toLine: '2',
-        stopsToTransfer: 2,
-        stopsFromTransfer: 1,
-        secondsToTransfer: 0,
-        secondsFromTransfer: 0,
-      }),
-    ).toBe(true);
-  });
-
-  it('transfer route fromLine != lock.boardingLine → 불일치 (환승 후 stale)', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('2'), {
-        type: 'transfer',
-        transferName: '건대입구',
-        fromLine: '7',
-        toLine: '2',
-        stopsToTransfer: 2,
-        stopsFromTransfer: 1,
-        secondsToTransfer: 0,
-        secondsFromTransfer: 0,
-      }),
-    ).toBe(false);
-  });
-
-  it('multi-transfer route — transfers[0].fromLine == lock.boardingLine → 통과', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('7'), {
-        type: 'multi-transfer',
-        transfers: [
-          {
-            transferName: '건대입구',
-            fromLine: '7',
-            toLine: '2',
-            stopsToTransfer: 2,
-            secondsToTransfer: 0,
-          },
-          {
-            transferName: '왕십리',
-            fromLine: '2',
-            toLine: '5',
-            stopsToTransfer: 3,
-            secondsToTransfer: 0,
-          },
-        ],
-        stopsAfterLastTransfer: 1,
-        secondsAfterLastTransfer: 0,
-      }),
-    ).toBe(true);
-  });
-
-  it('multi-transfer route — transfers[0].fromLine != lock.boardingLine → 불일치', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('2'), {
-        type: 'multi-transfer',
-        transfers: [
-          {
-            transferName: '건대입구',
-            fromLine: '7',
-            toLine: '2',
-            stopsToTransfer: 2,
-            secondsToTransfer: 0,
-          },
-        ],
-        stopsAfterLastTransfer: 1,
-        secondsAfterLastTransfer: 0,
-      }),
-    ).toBe(false);
-  });
-
-  it('multi-transfer route — transfers 배열이 비어 있으면 검증 대상 없음 → 통과', () => {
-    expect(
-      isLockConsistentWithRoute(makeLock('7'), {
-        type: 'multi-transfer',
-        transfers: [],
-        stopsAfterLastTransfer: 1,
-        secondsAfterLastTransfer: 0,
-      }),
-    ).toBe(true);
   });
 });

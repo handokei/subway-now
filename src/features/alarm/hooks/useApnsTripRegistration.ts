@@ -22,10 +22,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
-import { routeSignature, getStationById } from '../../../shared/utils/stationRoute';
-import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../api/alarmBackend';
+import { routeSignature } from '../../../shared/utils/stationRoute';
+import { registerActiveTrip, clearActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
-import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip } from '../utils/alarmLog';
@@ -187,32 +186,6 @@ function lockSig(lock: BoardingLock | null): string | null {
   return lock ? `${lock.trainCode}|${lock.boardingLine}|${lock.boardedAt}` : null;
 }
 
-/**
- * #1366 Layer 2 — route ↔ lock line 일치 검증.
- *
- * 환승 hop 진입 시 frontend store 업데이트 race로 새 leg의 trainCode를 가진 lock이
- * 이전 leg의 route 상태에서 effect를 trigger할 수 있다. callRegister가 stale route로
- * boardingLock metadata를 빌드하면 trainCode(새 leg) + segmentStations(이전 leg) 조합이
- * backend로 전송되어 cron "trainCode not found in arrivals" 회귀 → trip auto-end로 이어진다.
- *
- * route의 첫 leg line을 추출해 lock.boardingLine과 비교:
- *  - 일치 → consistent (정상 진행)
- *  - 불일치 → route 업데이트 전 lock 변경. 본 effect 사이클에서는 lock 미전송 — 다음
- *    route 업데이트 시 일관 상태로 재시도.
- *
- * lock 또는 route 가 null이면 검증 대상 없음(true).
- */
-export function isLockConsistentWithRoute(lock: BoardingLock | null, route: Route): boolean {
-  if (!lock || !route) return true;
-  let firstLegLine: string | null = null;
-  if (route.type === 'direct') firstLegLine = route.line;
-  else if (route.type === 'transfer') firstLegLine = route.fromLine;
-  else if (route.type === 'multi-transfer' && route.transfers.length > 0)
-    firstLegLine = route.transfers[0].fromLine;
-  if (firstLegLine === null) return true;
-  return firstLegLine === lock.boardingLine;
-}
-
 /** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
 async function callRegister(
   input: RegisterCallInputs,
@@ -224,29 +197,14 @@ async function callRegister(
     promptContext: BoardingPromptContext | null;
   }
 > {
-  // #622: BoardingLock metadata 빌드. lock의 boardingStationId로 station name 조회 후 schema 변환.
-  // 조회/추론 실패 시 null → backend는 anchor waypoint 폴링으로 fallback (기존 동작).
+  // #2709 — lock 신원(trainCode/line) 전달은 useBoardingLockSync(/boarding-lock/sync)로
+  // 통합됐다. 과거 이 지점에서 buildBoardingLockMeta로 boardingLock metadata를 만들어
+  // POST /trips에 실었으나(#622), isLockConsistentWithRoute 불일치 시 통째로 드롭되고
+  // (환승 직후 transient route/lock 상태) 다음 cycle 회복을 기대했던 전제가 2026-09-18
+  // 실측에서 13분간 깨졌다(#2709). backend는 ADR-038 Phase 2(#2560)가 /boarding-lock/sync의
+  // trainCode+boardingLine만으로 waypoints 기준 lock을 직접 합성하므로 이 경로의 metadata는
+  // 불필요 — 경로를 하나로 남기기 위해 이 지점의 송신을 제거한다(buildBoardingLockMeta 삭제).
   //
-  // #1366 Layer 2 — route ↔ lock line 일치 검증. 환승 hop 진입 시 store 업데이트 race로
-  // route는 아직 이전 leg, lock은 새 leg인 transient 상태가 관측된다. 이 상태에서 metadata를
-  // 빌드하면 trainCode(새) + segmentStations(이전) stale 결합이 backend로 송신돼 cron
-  // "trainCode not found" 회귀(item 4)를 유발한다. 불일치면 본 사이클에서 lock metadata 없이
-  // POST → 다음 effect 사이클이 일관 상태에서 정확한 lock을 전송한다 (trip 본체는 정상 진행).
-  let boardingLockMeta: AlarmBoardingLock | null = null;
-  if (input.boardingLock && isLockConsistentWithRoute(input.boardingLock, input.route)) {
-    const boardingStation = getStationById(input.boardingLock.boardingStationId);
-    if (boardingStation) {
-      boardingLockMeta = buildBoardingLockMeta({
-        lock: input.boardingLock,
-        route: input.route,
-        destinationName: input.destination.name,
-        boardingStationName: boardingStation.name,
-      });
-    }
-  } else if (input.boardingLock) {
-    logger.info('boarding-lock: skip metadata (route ↔ lock line mismatch, transient transfer state)');
-  }
-
   // #1028 / #1284: boarding-prompt 평가 컨텍스트 (#819). 둘 다 있어야 backend가 9단 게이트를
   // 돌리므로 항상 함께 송신. currentStation이 BG GPS 누락으로 일시 null이면 캐시된 컨텍스트를
   // fallback으로 사용 — backend cron 진입 전 최소 한 번은 컨텍스트가 stamped되도록 보장.
@@ -287,7 +245,6 @@ async function callRegister(
     createdAt: input.createdAt,
     // #2120 — trip 인스턴스 corrId. null 허용 — sync cache 미수화 시점에도 register 자체는 진행.
     corrId: getCurrentTripCorrIdSync(),
-    ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
     // #819 / #1028 — boarding-prompt 평가/표시 컨텍스트. 짝으로만 송신.
     ...(promptContext
       ? {

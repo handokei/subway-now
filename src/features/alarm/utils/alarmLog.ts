@@ -157,7 +157,16 @@ export type AlarmLogSource =
   // #2686 — 실제 native `LiveActivity.updateLiveActivity()` 호출 1건. 사용자 체감("30번 이상
   // 반복 표시")과 push 수신 로그(9건)의 갭이 push가 아니라 LA 갱신 빈도일 가능성이 있다는
   // RCA 추정을 다음 라이드에서 확정하기 위한 순수 계측 — 정책 변경 없음.
-  | 'live-activity-updated';
+  | 'live-activity-updated'
+  // #2709 — lock 신원(trainCode/boardingLine) → backend 전달 경로 통합 계측. 과거
+  // POST /trips의 boardingLockMeta 경로(#622)가 isLockConsistentWithRoute 불일치로 통째로
+  // 드롭되고 /boarding-lock/sync는 GPS 정확도 게이트로 0회 발사되는 이중 실패가 2026-09-18
+  // 라이드에서 13분간 lock 미전달로 이어졌다(#2709 evidence). 이제 유일한 경로인
+  // useBoardingLockSync의 lock-identity effect가 시도/성공/차단을 이 source로 적재한다:
+  //   outcome='received'   — POST 시도(attempt)
+  //   outcome='fired'      — backend 200 응답(성공). delaySeconds = (성공 시각 - lock.boardedAt)/1000
+  //   outcome='suppressed' — 시도 자체가 불가능(관측 station 앵커 없음, reason='lock-sync-blocked-no-anchor')
+  | 'lock-sync-delivery';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -482,7 +491,11 @@ export type AlarmLogReason =
   // 조건으로 그대로 발사된다(2026-09-17 성수→뚝섬 40초 오발사 evidence 회귀 방지).
   | 'gate-not-departed'
   // #2686 — backend SSoT mirror가 경로를 거스르는 표시(되감김)를 시도해 거부된 1건의 reason.
-  | 'backend-ssot-route-regression';
+  | 'backend-ssot-route-regression'
+  // #2709 — lock-sync-delivery(outcome='suppressed') 전용. 좋은 GPS fix도, lock의
+  // boardingStationId station lookup도 실패해 backend에 보낼 observedStationName 앵커가
+  // 전혀 없는 경우 — 시도 자체가 불가능해 attempt/success 어느 쪽도 적재되지 않는다.
+  | 'lock-sync-blocked-no-anchor';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -570,6 +583,10 @@ export interface AlarmLogEntry {
   // candidatesCount: pickCandidateTrains가 반환한 후보 열차 수 (매칭 실패 원인 분석용).
   hasTrainCode?: boolean;
   candidatesCount?: number;
+  // #2709 — lock-sync-delivery(outcome='fired') 전용. lock 생성(boardedAt) → backend 반영
+  // 확인(POST /boarding-lock/sync 200 응답) 사이 경과 초. 전달 지연 실측 — 과거엔 ∞였으나
+  // 관측조차 안 남던 사실 자체가 회귀 재발 시 재확인을 불가능하게 했다(#2709 요구사항 7).
+  delaySeconds?: number;
 }
 
 /**
@@ -1218,6 +1235,44 @@ export function logLiveActivityUpdated(): void {
 }
 
 /**
+ * #2709 — lock 신원(trainCode/boardingLine) → backend 전달(`/boarding-lock/sync`) 계측.
+ *
+ * 과거 두 경로(POST /trips의 boardingLockMeta + /boarding-lock/sync)가 각자 다른 이유로
+ * 조용히 lock을 누락했다 — 2026-09-18 라이드에서 13분간 backend가 lock을 못 받았는데도
+ * 그 사실이 어디에도 남지 않았다(#2709 요구사항 7). 통합된 유일 경로(useBoardingLockSync
+ * lock-identity effect)가 시도/성공/차단 3종을 이 한 곳으로 적재한다:
+ *   - 'attempt'  → outcome='received' — POST 발사 직전.
+ *   - 'success'  → outcome='fired' — backend 200 응답. `delaySeconds`에 lock.boardedAt으로부터
+ *     경과 초를 함께 실어 전달 지연을 실측 가능하게 한다.
+ *   - 'blocked'  → outcome='suppressed', reason='lock-sync-blocked-no-anchor' — 좋은 GPS fix도
+ *     lock의 boardingStationId station lookup도 없어 backend에 보낼 observedStationName 자체가
+ *     없는 경우(시도조차 불가능).
+ */
+export function logLockSyncDelivery(input: {
+  outcome: 'attempt' | 'success' | 'blocked';
+  /** 'success'에서만 의미 — lock.boardedAt(생성 시각)으로부터 경과 초. */
+  delaySeconds?: number;
+}): void {
+  if (input.outcome === 'blocked') {
+    appendAlarmLog({
+      ts: Date.now(),
+      source: 'lock-sync-delivery',
+      outcome: 'suppressed',
+      reason: 'lock-sync-blocked-no-anchor',
+    });
+    return;
+  }
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'lock-sync-delivery',
+    outcome: input.outcome === 'success' ? 'fired' : 'received',
+    ...(input.outcome === 'success' && input.delaySeconds !== undefined
+      ? { delaySeconds: input.delaySeconds }
+      : {}),
+  });
+}
+
+/**
  * #1693/#1706 — fusion cascade picker tier 채택 1건 적재.
  *
  * **별 ring buffer (#1706).** PR #1697까지는 `appendAlarmLog`로 alarmLog 200 cap에 적재했으나
@@ -1674,6 +1729,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   // #2686 — backend SSoT 경로 회귀 거부/LA 갱신 계측은 silent push outcome과 무관.
   'backend-ssot-route-regression': null,
   'live-activity-updated': null,
+  // #2709 — lock 신원 전달 계측은 silent push와 무관한 별도 채널(POST /boarding-lock/sync).
+  'lock-sync-delivery': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1747,6 +1804,8 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // 측정·진단 stamp. fire 분모(트립 miss ratio) 오염 방지 위해 제외.
   'backend-ssot-route-regression': false,
   'live-activity-updated': false,
+  // #2709 — lock 신원 전달 시도/성공/차단은 진단 계측이지 사용자에게 노출되는 알람이 아니다.
+  'lock-sync-delivery': false,
 };
 
 /**
