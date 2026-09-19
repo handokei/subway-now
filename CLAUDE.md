@@ -104,6 +104,18 @@ eas build --profile development --platform ios   # 개발 빌드 (실기기 테�
 eas submit --platform ios --latest               # TestFlight 업로드
 ```
 
+### Cloudflare Workers 배포 (웹 export + backend, #2698)
+
+**절대 bare `wrangler deploy`(또는 `wrangler dev`)를 직접 실행하지 않는다.** 레포에 `wrangler.jsonc`(루트, 웹 export용 `subway-now`)와 `wrangler.toml`(`backend/alarm-worker/`, `subway-now-alarm-worker`) 두 config가 공존하며, `backend/alarm-worker/`에서 실행해도 wrangler 4.x가 상위 디렉토리의 루트 `wrangler.jsonc`를 채택해 cron·바인딩 없는 엉뚱한 worker를 배포하는 사고가 실제 발생했다(2026-09-17, 사용자·에이전트 각 1회). 반드시 아래 npm 스크립트로만 배포한다 — 두 스크립트 모두 `--config` 명시 + 배포 후 worker명/바인딩/cron 자동 검증을 내장하고 있어 실수 시 스크립트가 실패로 알린다.
+
+```bash
+npm run deploy:web                                # 웹(Expo export) 정적 에셋 → subway-now (루트에서 실행)
+cd backend/alarm-worker && npm run deploy          # backend cron worker → subway-now-alarm-worker
+```
+
+- 배포 전 config 해석만 확인하고 싶으면(실배포 없이): `cd backend/alarm-worker && npx wrangler deploy --dry-run --config wrangler.toml` — 바인딩 7종(KV×4/D1/R2/DO)이 나오면 정상, `No bindings found`면 config 하이재킹.
+- 배포 결과 재확인: `cd backend/alarm-worker && npx wrangler deployments list --config wrangler.toml` (최신 항목의 날짜/author 확인).
+
 ### 버전/빌드 번호 관리 정책
 
 | 값 | 의미 | 출처 (SSOT) | 변경 방법 |

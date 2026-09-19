@@ -52,7 +52,9 @@ npx wrangler secret put APNS_PRIVATE_KEY  # .p8 PEM 전체 (BEGIN/END 포함) �
 npx wrangler secret put APNS_BUNDLE_ID
 
 # 4) 배포
-npm run deploy
+npm run deploy       # #2698 — 배포 전 바인딩 7종 dry-run 확인 + 배포 후 worker명/cron 확인을 자동 수행한다.
+                      # bare `wrangler deploy`는 절대 직접 실행하지 말 것 — 상위 디렉토리의
+                      # 루트 wrangler.jsonc(웹 export용)를 잘못 채택하는 사고가 실제 발생했다.
 ```
 
 ## 개발

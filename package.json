@@ -13,6 +13,7 @@
     "type-check": "tsc --noEmit",
     "lint": "eslint --ext .ts,.tsx src --max-warnings=0",
     "lint:orphan": "bash scripts/check-orphan-exports.sh",
+    "deploy:web": "bash scripts/deploy-web.sh",
     "data:merge": "node scripts/merge-station-names-en.js && node scripts/merge-station-names-multilang.js",
     "data:fetch-exit-side": "node scripts/fetch-exit-side.js",
     "data:fetch-quick-exit": "node scripts/fetch-quick-exit.js",
