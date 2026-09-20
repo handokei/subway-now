@@ -19,6 +19,7 @@ import {
   findUpcomingTransferPrefetch,
 } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
+import { isDuplicateBoardingLock } from '../../alarm/utils/duplicateBoardingLock';
 import { calculateRemainingLegETA } from '../../../shared/utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -220,6 +221,10 @@ export function useTransferTrainList({
   const createTransferLock = useCallback(
     (train: ArrivalInfo) => {
       if (!context || !lock) return;
+      // #2722 — LA 버튼/알림 "탑승했어요"가 같은 환승역·다음 노선으로 이미 lock을 만든 직후
+      // 사용자가 같은 목록에서 탭해도 lock을 다시 만들지 않는다(동시 진입 → lock 1개).
+      // LA/알림과 동일한 shared predicate(`isDuplicateBoardingLock`) — 새 판정 로직 아님.
+      if (isDuplicateBoardingLock(context.nextLine, context.transferStationInToLine.name)) return;
       // #604: 잔여 leg 기준 ETA로 lock의 expectedDurationMs를 정밀화. 전체 trip 시간으로 잡으면
       // BOARDING_LOCK_EXPIRY_FACTOR(=1.5)와 곱해져 만료 타이머가 도착 후에도 한참 활성 상태로 남는다.
       // calculateRemainingLegETA가 null이면(=route가 직접/idx 불일치 등 예기치 못한 상태) fallback.
@@ -240,7 +245,10 @@ export function useTransferTrainList({
       // #2290 P1 — 이 함수는 사용자가 BoardingTrainList에서 직접 탭한 경우에만 호출된다
       // (#2154 — D5 device auto-swap effect 삭제, 무탭 트리거 전량 제거). 탑승 확정 evidence가
       // 아니므로 evidence=false — `hasConsumedOriginWait`가 위 initialEtaSeconds 경과 여부로 판정한다.
-      }, false);
+      // #2722 — reason='user-tap' 명시. 기존에는 누락돼 lifecycle breadcrumb이 'other'로
+      // 뭉뚱그려졌다(useBoardingLockController.createLockFromTrain과 동일한 명시 탭 경로인데
+      // 소거법 진단에서 구분이 안 됐다). 기존 reason 라벨 체계는 그대로 — 새 라벨 추가 아님.
+      }, false, 'user-tap');
       // #2590 (code review 4번) — "BoardingTrainList 직접 탭 = 명시 의향" 룰(ADR-014, CLAUDE.md
       // 사용자 명시 의향 트립 규칙) — 탭 자체가 GPS 확정과 동급 이상의 ground truth이므로 즉시
       // legAdvance를 stamp한다. mirror-driven 활성만으로는 stamp하지 않지만(위 gpsConfirmedContext

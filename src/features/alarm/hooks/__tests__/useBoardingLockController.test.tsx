@@ -455,6 +455,27 @@ describe('useBoardingLockController', () => {
       );
     });
 
+    // #2722 — 동시 진입 방어: LA·알림 응답이 같은 역/노선으로 이미 lock을 만든 직후 사용자가
+    // BoardingTrainList에서 탭해도 lock을 다시 만들지 않는다(isDuplicateBoardingLock).
+    it('같은 역/노선으로 이미 active lock 존재 → createLockFromTrain no-op (동시 진입 dedup)', async () => {
+      mockFindStationByNameAndLine.mockReturnValue(stationA);
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'dest-1',
+          trainCode: 'ALREADY-LOCKED',
+          boardingStationId: 'stn-A',
+          boardingLine: '2',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        },
+      });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'NEW', line: '2' }));
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
     // #1449 (ADR-015 §9 frontend) — trip route allowedLines 외 line traincode reject.
     describe('#1449 trip route line filter', () => {
       it('direct route(line 2) 일 때 trip 외 line(7) train 탭 → no-op (lock 채택 차단)', async () => {

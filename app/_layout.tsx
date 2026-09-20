@@ -31,7 +31,6 @@ import {
 } from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
 import { useLiveActivityIntentBridge } from '../src/features/alarm/hooks/useLiveActivityIntentBridge';
-import { useAlarmEndTripResponder } from '../src/features/alarm/hooks/useAlarmEndTripResponder';
 import { useBoardingPromptDisplayLogger } from '../src/features/alarm/hooks/useBoardingPromptDisplayLogger';
 import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
 import { useDeferredNavigate } from '../src/shared/hooks/useDeferredNavigate';
@@ -153,6 +152,10 @@ function RootContent() {
   // arvlCd 우선순위로 trainCode 자동 lock 또는 5분 silence POST. 미bound trip(destinationId=null)에서도
   // 마운트 — payload만 들어오면 silence POST는 동작.
   // #1888 (RC-13) — banner를 직접 탭한 경우 home 화면으로 navigate해 BoardingTrainList를 노출.
+  // #2722 — 앱 전체에서 유일한 `addNotificationResponseReceivedListener` 등록점. boarding-prompt가
+  // 아닌 응답(예: ALARM_CATEGORY [trip 종료])은 내부에서 `handleAlarmEndTripResponse`로 위임하고,
+  // 마운트 시 `getLastNotificationResponse()`로 cold-start(앱 종료 상태에서 탭) 응답도 회수한다 —
+  // 구 `useAlarmEndTripResponder` 별도 listener는 제거됐다(단일 listener화).
   useBoardingPromptResponder({
     fetchArrivalsForStation: (stationName) => fetchArrivalInfo(stationName),
     destinationId,
@@ -173,10 +176,6 @@ function RootContent() {
   // #1385 — boardingPrompt displayed 카운트. FG에서 actionable notification 수신 시 즉시
   // alarm log에 fired 1건 적재한다. responder의 cold-start 보완과 dedup된다.
   useBoardingPromptDisplayLogger();
-
-  // #2428 — ALARM_CATEGORY 알림 [trip 종료] 액션(ALARM_ACTION_END_TRIP) 응답 listener.
-  // 탭 시 cleanupUserInitiatedEndedTrip으로 trip을 완전히 종료한다(기존 dead wire 수정).
-  useAlarmEndTripResponder();
 
   // #899 (Seam C) — trip-bound 상태 단일 hydration seam. AppState 'active' 진입 시
   // destination/customOrigin/tripOrigin/lock을 storage에서 재수화하고, BG silent push가

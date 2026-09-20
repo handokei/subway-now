@@ -27,6 +27,10 @@ import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeF
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
+  // #2722 B — cold-start 회수 API. 기본값 null(캐시된 응답 없음) — 기존 테스트는 전부 이 경로가
+  // no-op이어야 영향받지 않는다. 개별 테스트가 mockReturnValueOnce로 재정의해 회수 로직을 검증.
+  getLastNotificationResponse: jest.fn(() => null),
+  clearLastNotificationResponse: jest.fn(),
   DEFAULT_ACTION_IDENTIFIER: '$default',
 }));
 // #2408 — 위험1 guard: BG_LAST_STATION_KEY read. 기본값은 부재(null) → guard 미작동(기존 동작).
@@ -35,6 +39,12 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 jest.mock('../../../nearest-station/api/positionUpload', () => ({
   dismissBoardingPrompt: jest.fn(),
+}));
+// #2722 C — 리스너 단일화 검증용. `useBoardingPromptResponder`의 단일 dispatcher가 boarding-prompt가
+// 아닌 응답을 이 함수로 위임하는지만 확인하면 되므로, 로직 자체(별도 파일에서 이미 검증됨)는 mock.
+const mockHandleAlarmEndTripResponse = jest.fn();
+jest.mock('../useAlarmEndTripResponder', () => ({
+  handleAlarmEndTripResponse: (...args: unknown[]) => mockHandleAlarmEndTripResponse(...args),
 }));
 jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: jest.fn(),
@@ -888,6 +898,120 @@ describe('useBoardingPromptResponder hook wiring', () => {
     // hook의 비동기 handleResponse 처리 후 검증
     await new Promise((r) => setTimeout(r, 0));
     expect(createLockMock).toHaveBeenCalled();
+  });
+});
+
+// #2722 C — 리스너 단일화. 구 `useAlarmEndTripResponder`가 별도로 등록하던 listener를 이 훅의
+// dispatcher로 흡수했다 — boarding-prompt가 아닌 응답(ALARM_ACTION_END_TRIP 등)이 이 훅의 유일한
+// listener를 통해 여전히 처리되는지 검증한다.
+describe('useBoardingPromptResponder #2722 C — 리스너 단일화 (ALARM_ACTION_END_TRIP 흡수)', () => {
+  let registeredHandler: ((response: any) => void) | null = null;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    registeredHandler = null;
+    displayLoggerMock.__resetMockDedup();
+    (Notifications.addNotificationResponseReceivedListener as jest.Mock).mockImplementation(
+      (handler) => {
+        registeredHandler = handler;
+        return { remove: jest.fn() };
+      },
+    );
+  });
+
+  it('boarding-prompt가 아닌 응답(ALARM_ACTION_END_TRIP)은 handleAlarmEndTripResponse로 위임', async () => {
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+    await registeredHandler!({
+      actionIdentifier: 'ALARM_ACTION_END_TRIP',
+      notification: { request: { content: { data: { kind: 'alarm' } } } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockHandleAlarmEndTripResponse).toHaveBeenCalledWith('ALARM_ACTION_END_TRIP');
+  });
+
+  // 앱 전체 listener 등록 수가 정확히 1개임을 재확인 — 구 코드는 이 훅 + useAlarmEndTripResponder
+  // 2곳에서 각각 addNotificationResponseReceivedListener를 호출해 사실상 listener가 2개였다.
+  it('훅 1개 마운트 시 addNotificationResponseReceivedListener는 정확히 1회만 호출', () => {
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+    expect(Notifications.addNotificationResponseReceivedListener).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #2722 B — 앱 종료 상태 응답 회수. `getLastNotificationResponse()`가 반환한 캐시된 응답을
+// 마운트 시 즉시 dispatch로 흘려보내고, 처리 후 `clearLastNotificationResponse()`로 비우는지 검증.
+describe('useBoardingPromptResponder #2722 B — cold-start 응답 회수', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    displayLoggerMock.__resetMockDedup();
+    (Notifications.addNotificationResponseReceivedListener as jest.Mock).mockImplementation(() => ({
+      remove: jest.fn(),
+    }));
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+  });
+
+  it('마운트 시 캐시된 응답이 없으면(null) dispatch/clear 미호출', () => {
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(null);
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+    expect(Notifications.clearLastNotificationResponse).not.toHaveBeenCalled();
+  });
+
+  it('마운트 시 캐시된 boarding-prompt 응답이 있으면 즉시 handleResponse 발화 + clear', async () => {
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue({
+      actionIdentifier: BOARDING_PROMPT_ACTION_BOARDED,
+      notification: {
+        request: {
+          identifier: 'cold-cached-1',
+          content: {
+            categoryIdentifier: 'BOARDING_PROMPT',
+            data: { kind: 'boarding-prompt', originStation: '강남', line: '2', tripToken: 'tok' },
+          },
+        },
+      },
+    });
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: async () => makeArrival(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(createLockMock).toHaveBeenCalled();
+    expect(Notifications.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('마운트 시 캐시된 ALARM_ACTION_END_TRIP 응답도 회수해 handleAlarmEndTripResponse로 위임', async () => {
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue({
+      actionIdentifier: 'ALARM_ACTION_END_TRIP',
+      notification: { request: { content: { data: { kind: 'alarm' } } } },
+    });
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(Notifications.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
   });
 });
 

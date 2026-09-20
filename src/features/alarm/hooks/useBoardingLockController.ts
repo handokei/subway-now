@@ -32,6 +32,7 @@ import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSy
 import { useLockSuggestion } from '../api/useLockSuggestion';
 import type { LockSuggestionMirror } from '../utils/backendSsotMirror';
 import { recordConsensusMismatch } from '../utils/consensusMismatchMetrics';
+import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -398,6 +399,10 @@ export function useBoardingLockController({
       // 정확 매칭되는 stop id를 사용. 매칭 실패(데이터 누락 가상 케이스)는 currentStation.id로 안전 폴백.
       const correctedStation = findStationByNameAndLine(currentStation.name, train.line);
       const boardingStationId = correctedStation?.id ?? currentStation.id;
+      // #2722 — LA 버튼/알림 "탑승했어요"가 같은 역·노선으로 이미 lock을 만든 직후 사용자가
+      // BoardingTrainList에서 탭해도 lock을 다시 만들지 않는다(동시 진입 → lock 1개). LA와
+      // 동일한 shared predicate(`isDuplicateBoardingLock`) — 새 판정 로직 아님.
+      if (isDuplicateBoardingLock(train.line, currentStation.name)) return;
       void createLock({
         destinationId,
         trainCode: train.trainCode,
