@@ -19,6 +19,7 @@ import { normalizeStationName } from '../../../src/shared/utils/normalizeStation
 import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
+  resolveActiveLegOrigin,
   type BoardingResolveOutcome,
 } from './boardingAnchorResolver';
 import {
@@ -2095,17 +2096,24 @@ function markBoardingPromptResponded(trip: Trip): Trip {
  * `tryAutoLock`, `handleHopEndResponse`)을 서버-사이드로 재현한다 — 새 정책을 만들지 않는다.
  *
  * Body: `{ action: 'boarded' | 'disembarked' | 'not-boarded', station: string, line: string }`
- * station/line은 native가 버튼을 표시한 컨텍스트 echo — 진단 로그(wrangler tail)용으로만 쓰고
- * lock 판정 입력으로는 쓰지 않는다(판정은 trip 자신의 `promptDisplay`/`currentLegAnchor`가
- * SSoT — device의 "지금 이 역"보다 backend anchor가 신뢰 가능하다는 기존 아키텍처와 동일).
+ *
+ * #2739 (정정 — 이전 버전은 아래 내용이 틀렸다) — station/line은 더 이상 진단 echo로만 쓰이지
+ * 않는다. `attemptBoardingAnchorResolution`에 `tapAnchor`로 전달되어, trip 자신의
+ * `currentLegAnchor`(도보 게이트 통과)/`promptDisplay`가 **둘 다 없을 때만** 1순위 fallback
+ * anchor로 쓰인다 — 이미 있는 backend anchor(및 그 게이트)는 그대로 우선하며 절대 우회되지
+ * 않는다. route(waypoints/originStationName)와 정합하지 않는 station/line은 거부되고 사유가
+ * D1(`outcome:'invalid-route'`)에 남는다. 근거: 탭은 사용자가 승차역·노선을 직접 실어 보내는
+ * 가장 강한 명시 의향이고(ADR-010), backend anchor가 아직 없는 상태에서 그 정보를 버리는 것은
+ * 판정 근거 자체가 없는 것과 같다(#2739).
  *
  * 의미 매핑(#2527 이슈 본문):
  *   - `boarded` — register-time resolver(`index.ts` `resolveBoardingAnchorAtRegister`)와 동일한
- *     `attemptBoardingAnchorResolution(trip, seoul, now, { allowLegTransfer: true })`를 재사용.
- *     이미 `boardingLock`이 있으면 재평가하지 않는다(#1729 active lock 재평가 금지와 동일 원칙,
- *     POST /trips register-time 가드 재현). 정확히 1개 resolve되면 lock 승격 + 해당 leg의
- *     prompt state를 `markPromptFired`로 갱신(재발사 dedup 목적 — 새 필드 없이 기존 함수 재사용).
- *     ambiguous/none이면 락 생성 금지(#1729) — `infoModeEnabled=true` stamp만 반영.
+ *     `attemptBoardingAnchorResolution(trip, seoul, now, { allowLegTransfer: true, tapAnchor })`를
+ *     재사용. 이미 `boardingLock`이 있으면 재평가하지 않는다(#1729 active lock 재평가 금지와
+ *     동일 원칙, POST /trips register-time 가드 재현). 정확히 1개 resolve되면 lock 승격 + 해당
+ *     leg의 prompt state를 `markPromptFired`로 갱신(재발사 dedup 목적 — 새 필드 없이 기존 함수
+ *     재사용). ambiguous/none/invalid-route면 락 생성 금지(#1729) — `infoModeEnabled=true`
+ *     stamp만 반영.
  *   - `disembarked` — 환승 하차 확정(#2278 "사용자 명시 [하차함] 응답 = ground truth"와 동일
  *     신뢰 수준). `trip.boardingLock`을 해제한다. waypoint/currentLegAnchor는 건드리지 않는다 —
  *     그 advance는 cron(`scheduled.ts` transfer 블록, arvlCd 기반)의 책임 그대로이며, 이미
@@ -2138,6 +2146,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   const now = Date.now();
   let lockState: 'leg1' | 'leg2' | 'released' | 'none' = 'none';
   let resolveOutcome: BoardingResolveOutcome | undefined;
+  // #2739 요구사항 4 — anchor 출처(D1 meta용). activeOrigin(currentLegAnchor/promptDisplay)이
+  // 있으면 그 출처, 없고 walk-gate도 아니면 탭이 시도된 것 — resolve 성공 여부와 무관하게
+  // "무엇을 근거로 시도했는지"를 남긴다(invalid-route 거부도 anchorSource:'tap'으로 남는다).
+  let anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined;
   let working: Trip = existing;
 
   if (payload.action === 'boarded') {
@@ -2151,18 +2163,51 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           apiKey: c.env.SEOUL_API_KEY,
           host: c.env.SEOUL_API_HOST,
         });
+        // #2739 — 기존 backend anchor(currentLegAnchor 게이트 통과 / promptDisplay)가 있는지
+        // 미리 확인해 anchorSource를 정한다. activeOrigin이 있으면 탭 fallback 분기 자체에
+        // 진입하지 않으므로(resolver 내부 동일 판정) 회귀 없음 — 요구사항 2.
+        const activeOrigin = resolveActiveLegOrigin(working, now, { allowLegTransfer: true });
+        const isWalkGated =
+          working.currentLegAnchor !== undefined &&
+          (working.legBoardingEligibleAt === undefined || now < working.legBoardingEligibleAt);
+        if (activeOrigin) {
+          anchorSource = working.currentLegAnchor !== undefined ? 'currentLegAnchor' : 'promptDisplay';
+        } else if (!isWalkGated) {
+          anchorSource = 'tap';
+        }
+
+        let tapAdvance: { waypoints: Trip['waypoints']; boardingStation: string; line: string } | undefined;
         const anchorLock = await attemptBoardingAnchorResolution(
           working,
           seoul,
           now,
-          { allowLegTransfer: true },
+          { allowLegTransfer: true, tapAnchor: { boardingStation: payload.station, line: payload.line } },
           // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
           // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.
           (outcome) => {
             resolveOutcome = outcome;
           },
+          // #2739 — 탭이 leg 2+(환승 지점) 경유로 채택되면 waypoints가 그 leg부터 다시 시작하도록
+          // advance 정보를 받는다. 아래에서 lock과 함께 반영해야 다음 cron이 올바른 정거장
+          // (환승 직후 waypoint)을 추적한다.
+          (advance) => {
+            tapAdvance = advance;
+          },
         );
         if (anchorLock) {
+          if (tapAdvance) {
+            // #2739 — 탭 = 사용자가 이미 물리적으로 그 환승 지점에 있었다는 명시 확인이므로
+            // 도보 게이트는 즉시 통과된 것으로 stamp한다(#2515 게이트 자체는 currentLegAnchor가
+            // 아직 없을 때만 이 분기에 온다 — 기존 게이트 우회가 아니라 새 anchor 최초 생성).
+            working = {
+              ...working,
+              waypoints: tapAdvance.waypoints,
+              currentLegAnchor: { boardingStation: tapAdvance.boardingStation, line: tapAdvance.line },
+              legBoardingEligibleAt: now,
+              legBoardingPromptState: undefined,
+              legResolveStreak: undefined,
+            };
+          }
           const isLeg2 = isLegTwoActive(working, now);
           working = {
             ...working,
@@ -2221,7 +2266,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(token),
     kind: 'boarding-confirm-result',
-    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome),
+    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome, anchorSource),
   });
   return c.json({ ok: true, lockState });
 });
@@ -2230,12 +2275,25 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
  * ADR-037 D2b (#2535, 진단 계측 only) — `boarding-confirm-result` D1 이벤트 meta 빌더(순수 함수,
  * 테스트 용이). `resolveOutcome`은 `action==='boarded'`이고 신규 resolve를 실제로 시도했을 때만
  * 존재 — 그 외(이미 lock 활성/disembarked/not-boarded)는 undefined라 meta에서 생략한다.
+ *
+ * #2739 요구사항 4 — `anchorSource`(`'tap' | 'currentLegAnchor' | 'promptDisplay'`)도 같은 규칙
+ * (undefined면 생략)으로 남긴다. resolve를 시도조차 안 한 경로(이미 lock 활성/disembarked/
+ * not-boarded/walk-gated)는 anchorSource도 undefined다.
  */
 export function buildBoardingConfirmEventMeta(
   lockState: 'leg1' | 'leg2' | 'released' | 'none',
   resolveOutcome: BoardingResolveOutcome | undefined,
-): { lockState: 'leg1' | 'leg2' | 'released' | 'none'; outcome?: BoardingResolveOutcome } {
-  return { lockState, ...(resolveOutcome !== undefined ? { outcome: resolveOutcome } : {}) };
+  anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined,
+): {
+  lockState: 'leg1' | 'leg2' | 'released' | 'none';
+  outcome?: BoardingResolveOutcome;
+  anchorSource?: 'tap' | 'currentLegAnchor' | 'promptDisplay';
+} {
+  return {
+    lockState,
+    ...(resolveOutcome !== undefined ? { outcome: resolveOutcome } : {}),
+    ...(anchorSource !== undefined ? { anchorSource } : {}),
+  };
 }
 
 interface BoardingConfirmPayload {
