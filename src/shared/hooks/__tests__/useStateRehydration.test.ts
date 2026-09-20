@@ -204,7 +204,9 @@ describe('useStateRehydration', () => {
     expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
       reason: 'sentinel-rehydration',
     });
-    expect(mockReleaseLock).toHaveBeenCalled();
+    // #2715 — sentinel 기반 자동 reset은 releaseLock('user')로 오기록되면 안 된다. 같은
+    // breadcrumb reason을 그대로 lock release reason으로도 사용한다.
+    expect(mockReleaseLock).toHaveBeenCalledWith('sentinel-rehydration');
   });
 
   it('sentinel 있음 + prev destination null (isSwitch=false) — cleanup 정상 실행 (R2 핵심 회귀)', async () => {
@@ -470,7 +472,9 @@ describe('useStateRehydration', () => {
         customOrigin: null,
         tripOrigin: null,
       });
-      expect(mockReleaseLock).toHaveBeenCalled();
+      // #2715 — 9h+ force-end는 자동 backstop이다. 같은 breadcrumb reason을 그대로
+      // lock release reason으로도 사용해 'user' 오기록을 막는다.
+      expect(mockReleaseLock).toHaveBeenCalledWith('lifecycle-9h-force-end');
       expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
         reason: 'lifecycle-9h-force-end',
       });
@@ -532,7 +536,8 @@ describe('useStateRehydration', () => {
         customOrigin: null,
         tripOrigin: null,
       });
-      expect(mockReleaseLock).toHaveBeenCalled();
+      // #2715 — 일시정지 자동종료도 자동 사유로 기록돼야 한다.
+      expect(mockReleaseLock).toHaveBeenCalledWith('navigation-pause-auto-end');
       expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
         reason: 'navigation-pause-auto-end',
       });

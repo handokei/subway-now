@@ -169,6 +169,9 @@ describe('useBoardingLockAutoRelease', () => {
       rerender(baseInputs({ releaseLock, distanceKm: proximityKm - 0.01 }));
     });
     expect(releaseLock).toHaveBeenCalledTimes(1);
+    // #2715 — 자동 release는 'user'가 아니라 자동 사유로 기록돼야 한다. 인자 없이
+    // releaseLock()을 호출하면(구 회귀) 이 assertion이 실패한다.
+    expect(releaseLock).toHaveBeenCalledWith('auto-release-destination');
     expect(mockLoggerInfo).toHaveBeenCalledWith('destination grace 충족 → lock 자동 release');
   });
 
@@ -286,6 +289,9 @@ describe('useBoardingLockAutoRelease', () => {
       rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
     });
     expect(releaseLock).toHaveBeenCalledTimes(1);
+    // #2715 — transfer 분기도 자동 사유로 기록돼야 한다(기존 값 'transfer'는 backend silent
+    // push 채널 전용이라 재사용하지 않는다 — PR 본문 판단 근거 참조).
+    expect(releaseLock).toHaveBeenCalledWith('auto-release-transfer');
     expect(mockLoggerInfo).toHaveBeenCalledWith('transfer grace 충족 → lock 자동 release');
   });
 

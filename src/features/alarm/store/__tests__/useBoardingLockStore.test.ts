@@ -110,16 +110,19 @@ describe('useBoardingLockStore', () => {
     it('state=null + storage 정리', async () => {
       useBoardingLockStore.setState({ lock: sample });
       await act(async () => {
-        await useBoardingLockStore.getState().releaseLock();
+        await useBoardingLockStore.getState().releaseLock('user');
       });
       expect(useBoardingLockStore.getState().lock).toBeNull();
       expect(mockClearBoardingLock).toHaveBeenCalled();
     });
 
-    it('release breadcrumb는 직전 lock이 있을 때만 추가 (default reason=user)', async () => {
+    // #2715 — 과거에는 reason 기본값이 'user'였다(자동 해제 호출부가 인자를 생략하면
+    // 전부 'user'로 오기록되는 결함의 근원). 기본값을 제거하고 reason을 필수 인자로
+    // 만들어, 호출부가 항상 실제 사유를 명시하도록 강제한다.
+    it('release breadcrumb는 직전 lock이 있을 때만 추가 (reason은 호출부가 명시)', async () => {
       useBoardingLockStore.setState({ lock: sample });
       await act(async () => {
-        await useBoardingLockStore.getState().releaseLock();
+        await useBoardingLockStore.getState().releaseLock('user');
       });
       expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-release', {
         trainCode: sample.trainCode,
@@ -130,7 +133,7 @@ describe('useBoardingLockStore', () => {
 
     it('lock이 없으면 release breadcrumb skip (noise 방지)', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().releaseLock();
+        await useBoardingLockStore.getState().releaseLock('user');
       });
       expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
     });
@@ -153,7 +156,7 @@ describe('useBoardingLockStore', () => {
 
     it('#2152 — lock이 없으면 lifecycle buffer에도 적재 안 됨', async () => {
       await act(async () => {
-        await useBoardingLockStore.getState().releaseLock();
+        await useBoardingLockStore.getState().releaseLock('user');
       });
       expect(getLockLifecycleEntries()).toHaveLength(0);
     });

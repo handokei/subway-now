@@ -336,7 +336,10 @@ describe('useDeviceSelfEnd', () => {
         customOrigin: null,
         tripOrigin: null,
       });
-      expect(mockReleaseLock).toHaveBeenCalled();
+      // #2715 — 자동 self-end 경로는 releaseLock('user')가 아니라 signal별 실제 사유로
+      // 기록돼야 한다. 이 값이 'user'로 찍히면 자동 해제가 사용자 조작으로 오기록되는
+      // 회귀(#2715)가 재발한 것이다.
+      expect(mockReleaseLock).toHaveBeenCalledWith('trip-device-self-end-fusion-destination');
       expect(mockAppendAlarmLog).toHaveBeenCalledWith(
         expect.objectContaining({
           source: 'lifecycle-backstop',
