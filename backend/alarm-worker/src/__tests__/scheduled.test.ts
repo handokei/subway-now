@@ -25,6 +25,7 @@ import {
   DESTINATION_REACH_BACKSTOP_MS,
   evaluateDestinationCrossCheck,
   recordDestinationCrossCheck,
+  STATION_PASSED_FIRED_KEY_PREFIX,
   stationPassedFiredKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
@@ -9497,6 +9498,39 @@ describe('ARVLCD_FIRE_DEDUP_TTL_SEC (#917 A2)', () => {
   });
 });
 
+// PR #2773 리뷰 보강 #9 — 삭제된 (구)`arvlCdFireKey / ARVLCD_FIRE_KEY_PREFIX` describe의
+// prefix/레이아웃/token-격리 assert를 이제 경로 무관 단일 dedup 마커인 `stationPassedFiredKey`로
+// 이식한다. PR #2764 이후 이 키가 station-passed dedup의 유일한 소스이므로, 그 key shape가
+// 과거 arvlCdFireKey와 동등한 보장(prefix 고정/토큰 격리)을 제공하는지 직접 검증한다.
+describe('stationPassedFiredKey / STATION_PASSED_FIRED_KEY_PREFIX (#2571, PR #2773 이식)', () => {
+  it('prefix는 station-passed-fired:', () => {
+    expect(STATION_PASSED_FIRED_KEY_PREFIX).toBe('station-passed-fired:');
+  });
+
+  it('key는 token|trainCode|station 조합 (arvlCd 미포함 — 경로 무관 단일 마커)', () => {
+    expect(stationPassedFiredKey('tok1', '7246', '중곡')).toBe('station-passed-fired:tok1|7246|중곡');
+  });
+
+  it('token이 다르면 다른 key — 같은 train 다른 trip이 서로 silence하지 않음 (cross-trip leak 차단)', () => {
+    // 두 사용자가 같은 train(5025) 탄 채 같은 역(강남) 도착 시 각 trip별 dedup entry.
+    expect(stationPassedFiredKey('tokA', '5025', '강남')).not.toBe(
+      stationPassedFiredKey('tokB', '5025', '강남'),
+    );
+  });
+
+  // PR #2773 리뷰 보강 #9 — 신규 케이스. 같은 token·같은 station인데 trainCode만 다르면(예:
+  // #902 Seam F vanish swap으로 activeLock.trainCode가 교체된 경우) 다른 key여야 한다 — 이
+  // assert가 없으면 향후 리팩토링에서 "trainCode는 같은 trip 안에서 항상 동일하니 빼도 되지
+  // 않나"라는 오판으로 trainCode를 키에서 드롭할 위험이 있다. trainCode가 키에서 빠지면 4번
+  // 항목(origin 필드 주석)이 정정한 대로 "swap 전/후 station 재발사 가능성"이 이 키만으로 막히는
+  // 것처럼 착각하게 되므로, 그 전제 자체가 성립하려면 trainCode-scoped가 유지돼야 한다.
+  it('같은 token·같은 station이라도 trainCode가 다르면 다른 key (vanish swap 후 trainCode 교체 시나리오, trainCode 드롭 리팩토링 방지)', () => {
+    expect(stationPassedFiredKey('tok1', '7246', '중곡')).not.toBe(
+      stationPassedFiredKey('tok1', '9999', '중곡'),
+    );
+  });
+});
+
 describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
   const lock: BoardingLockMeta = {
     trainCode: '7246',
@@ -9614,6 +9648,56 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
       expect(result?.arrived).toBe(true);
       expect([0, 1, null]).toContain(result?.arvlCd);
     }
+  });
+
+  // PR #2773 리뷰 보강 #1 — 위 '#2764 계약' 테스트는 coercion 분기(arrivals에 arvlCd∉{0,1}
+  // 매칭 + positions도 동시에 ARRIVED)를 태우지 않아 동어반복이었다. arrivals가 matched이지만
+  // arvlCd=99(비 매역 신호)라서 위 첫 if를 통과하지 못하고, 그다음 positions 확증으로
+  // arrived=true + arvlCd=null이 강제 변환(coerce)되는 경로를 직접 태운다(:5191~5211 정확히
+  // 이 순서로 실행돼야 함).
+  it('arrivals matched(arvlCd=99, 비 매역 신호) + positions ARRIVED 동시 → coercion으로 arvlCd=null', async () => {
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          return new Response(
+            JSON.stringify({
+              realtimePositionList: [
+                { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '0', lastRecptnDt: '' },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '0',
+                recptnDt: '',
+                updnLine: '상행',
+                trainLineNm: '중곡',
+                btrainNo: '7246',
+                subwayNm: '지하철7호선',
+                arvlCd: 99,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    });
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(seoul),
+      lock,
+      waypoint,
+      NOW,
+    );
+    // arrivals matched(99)만으로는 arrived===true를 못 만든다 — positions 확증이 강제한다.
+    expect(result?.arrived).toBe(true);
+    expect(result?.arvlCd).toBeNull();
   });
 });
 
@@ -10401,6 +10485,18 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
       seed: (kv: InMemoryKV, trip: Trip) => Promise<void>;
     }[] = [
       {
+        // PR #2773 리뷰 보강 #3 — 삭제된 'arvlCd dedup 키 기존재'(reason=arvlcd-dedup) 케이스의
+        // 대체. (구)arvlCdFireKey가 흡수하던 dedup 역할은 이제 stationFiredKey(경로 무관 단일
+        // 마커) 단독이 맡는다 — 이 마커가 이미 stamp된 상태에서 D1에 reason=station-passed-dedup
+        // 이 기록됨을 직접 검증한다(함수 진입부 최우선 dedup 체크, #2571).
+        name: 'station-passed 마커 기존재 (경로 무관 dedup)',
+        reason: 'station-passed-dedup',
+        station: '중곡',
+        seed: async (kv, trip) => {
+          await kv.put(stationPassedFiredKey(trip.token, '7246', '중곡'), '1');
+        },
+      },
+      {
         name: 'cross-station dedup 윈도우',
         reason: 'cross-station-dedup',
         station: '중곡',
@@ -10413,8 +10509,8 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
       },
     ];
     // #2764 (게이트 전수감사 A) — arvlcd-dedup / stale-ssot 두 사유는 여기서 삭제됐다.
-    //   - arvlcd-dedup: (구)arvlCdFireKey per-arvlCd dedup 자체를 제거(도달불가 확증) — 같은
-    //     역할은 station-passed-dedup(stationFiredKey, 함수 진입부에서 선행 검사)이 흡수한다.
+    //   - arvlcd-dedup: (구)arvlCdFireKey per-arvlCd dedup 자체를 제거(도달불가 확증) — 위
+    //     'station-passed 마커 기존재' 케이스가 같은 역할(경로 무관 dedup)의 D1 기록을 검증한다.
     //   - stale-ssot: 3분 가드 자체를 제거(상시 신선 확증, defense-in-depth 폐기 결정) — reason도
     //     함께 삭제.
     // 남은 지점(fire-once-cycle)은 이 경로에서 재현되지 않는다: arch flag ON에서만
