@@ -489,6 +489,8 @@ export default function HomeScreen() {
     currentStationName: result?.station.name,
     distanceKm: result?.distanceKm,
     distanceSource: source,
+    // #2741 — wifi-ssid tier가 GPS 부재로 distanceKm=0 placeholder를 낸 경우를 표시.
+    distanceIsPlaceholder: result?.distanceIsPlaceholder,
     destinationArrivalConfirmed,
     destinationName: destination?.name,
     onClear: handleArrivalClear,

@@ -89,6 +89,14 @@ export interface FavoriteEntry {
 export interface NearestStationResult {
   station: Station;
   distanceKm: number;
+  /**
+   * #2741 — true면 `distanceKm`이 실측이 아니라 "거리를 모른다"는 placeholder(관례적으로 0)다.
+   * WiFi SSID tier가 GPS 없이 역을 확정할 때(useFusedNearestStation.ts wifiStationResolved)가
+   * 대표 예. `backend-ssot` tier(pickFusionTier.ts)도 동일 성격이지만 그 경로는 #2716에서
+   * `distanceSource==='backend-ssot'` 분기로 이미 처리돼 있어 이 필드를 세팅하지 않는다.
+   * 생략 시(undefined) 실측 거리로 간주한다 — 기존 producer는 변경 없이 하위 호환.
+   */
+  distanceIsPlaceholder?: boolean;
 }
 
 export interface NearestStationsResult {
