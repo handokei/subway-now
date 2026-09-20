@@ -89,10 +89,13 @@ export function useArrivalAutoClear({
     ) {
       firedForRef.current = destinationName;
       setArrivedBanner(true);
-      // #2768 — 자동 종료 발동 시점 stamp (측정 목적, 정책 변경 없음).
-      logArrivalAutoClearFired(destinationName);
       timeoutRef.current = setTimeout(() => {
         onClearRef.current();
+        // #2770 code review 4번 — 트리거(조건 충족) 시점이 아니라 실제 clear가 실행되는
+        // 시점(이 타임아웃 콜백)에 stamp한다. unmount로 타이머가 취소되면(cleanup effect의
+        // clearTimeout) 이 콜백 자체가 실행되지 않으므로 발동 안 한 auto-clear가 'fired'로
+        // 남는 거짓 양성이 없다.
+        logArrivalAutoClearFired(destinationName);
         setArrivedBanner(false);
         timeoutRef.current = null;
       }, CLEAR_DELAY_MS);
