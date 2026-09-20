@@ -91,6 +91,7 @@ import {
   isDeviceSyncStale,
   isSameLockSuggestion,
   MOTION_EVIDENCE_CAP,
+  pushMotionEvidence,
   readSsot,
   setLockSuggestion,
   writeSsot,
@@ -125,6 +126,21 @@ export const STRONG_EVIDENCE_TYPES: ReadonlySet<EvidenceType> = new Set<Evidence
   // gate #5b가 legConsensus.status==='confirmed'를 별도로 강제하므로 seedOverride 등에서
   // strong 취급해도 false positive 우려 없음(이미 2+ waypoint match 확정 신호).
   'consensus-train',
+]);
+
+/**
+ * #2763 — arvlCd/realtimePosition으로 열차 진행 자체가 확인된 evidence type.
+ *
+ * motionState.ts:113 `hasArvlcdTrainProgress`가 기대하는 `source:'seoul-arvlcd'`
+ * motionEvidence의 유일 writer 지점(advance 확증 성공 시)이 이 Set을 기준으로 stamp 여부를
+ * 결정한다. Seoul API arvlCd 원본(`arvlcd-confirmed-train` / `arvlcd-lockless`) 또는
+ * realtimePosition(`position-train`)으로 확증된 evidence만 포함 — GPS/wifi/cellular/accel처럼
+ * device 신호로 확증된 evidence는 제외(그 자체로는 "열차가 실제 진행 중"이라는 증거가 아님).
+ */
+export const ARVLCD_TRAIN_PROGRESS_EVIDENCE_TYPES: ReadonlySet<EvidenceType> = new Set<EvidenceType>([
+  'arvlcd-confirmed-train',
+  'arvlcd-lockless',
+  'position-train',
 ]);
 
 /**
@@ -642,6 +658,19 @@ export async function advanceTripPosition(
     evidence,
     waypointLine: trip.waypoints[0]?.line,
   });
+
+  // #2763 — arvlCd/realtimePosition으로 열차 진행이 확인된 advance는 motionEvidence에
+  // source:'seoul-arvlcd' sample을 stamp한다. hasArvlcdTrainProgress(motionState.ts:113)의
+  // 유일 writer — 이 stamp가 없으면 지하 GPS 정지 + 실제 열차 진행 trip이 상시 'stationary'로
+  // 오판되어 advance/발사가 침묵한다(감사 확증, tasks/audit-2026-09-20-gate-census-backend.md
+  // §3-⑤1).
+  if (ARVLCD_TRAIN_PROGRESS_EVIDENCE_TYPES.has(evidence.type)) {
+    pushMotionEvidence(next, {
+      source: 'seoul-arvlcd',
+      ts: evidence.ts,
+      signal: { stationId: candidateStationId },
+    });
+  }
 
   // #1572 (T9) — advance 성공 = 이전 currentStationId가 통과 확정 → station-passed alarmEvent
   // stamp. device가 silent push payload `ssot.alarmEvents`로 동일 list를 받아 fire path 5개에서
