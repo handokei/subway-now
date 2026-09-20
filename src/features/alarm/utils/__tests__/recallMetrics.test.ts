@@ -218,6 +218,34 @@ describe('computeTripRecall', () => {
 
     expect(result.firedStops).toBe(2);
   });
+
+  // #2770 code review 1번 — recall KPI 오염 차단. arrival-auto-clear-fired는 목적지 알람이
+  // 실제로 발사됐는지와 무관한 부수효과(사용자 화면상 도착 배너 자동 클리어) stamp인데
+  // outcome='fired'로 적재되므로, 필터 없이 카운트하면 목적지 알람이 진짜 miss여도
+  // auto-clear가 발동한 것만으로 recall이 거짓으로 100%에 가깝게 오른다 — recall이 잡아야
+  // 할 정확히 그 회귀(목적지-miss)를 가린다. FIRED_ALARM_SOURCES(alarmLog.ts, 단일 권위)를
+  // consult해 metadata/진단 stamp를 분자에서 배제한다.
+  it('arrival-auto-clear-fired 엔트리는 recall 분자에 집계되지 않는다 (#2770 recall KPI 오염 차단)', () => {
+    const route = ['용마산'];
+    const entries: AlarmLogEntry[] = [
+      entry({
+        ts: 100,
+        source: 'arrival-auto-clear-fired',
+        outcome: 'fired',
+        stationName: '용마산',
+      }),
+    ];
+
+    const result = computeTripRecall({
+      routeStops: route,
+      entries,
+      tripStart: 0,
+      tripEnd: 1000,
+    });
+
+    expect(result.firedStops).toBe(0);
+    expect(result.recallPct).toBe(0);
+  });
 });
 
 describe('computeTripRecall — gateSuppressionCounts', () => {

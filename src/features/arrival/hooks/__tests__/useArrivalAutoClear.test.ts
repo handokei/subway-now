@@ -56,13 +56,39 @@ describe('useArrivalAutoClear', () => {
 
     expect(result.current.arrivedBanner).toBe(true);
     expect(onClear).not.toHaveBeenCalled();
-    // #2768 — 발동(trigger) 시점에 alarmLog로 1건 적재된다.
-    expect(mockLogArrivalAutoClearFired).toHaveBeenCalledWith('용마산');
+    // #2770 code review 4번 — 실제 clear(onClear)가 실행되는 시점(2s 타임아웃 콜백)까지는
+    // alarmLog에 적재하지 않는다. 트리거 시점 stamp는 unmount로 타이머가 취소될 수 있어
+    // 발동 안 한 auto-clear가 'fired'로 남는 거짓 양성을 만든다.
+    expect(mockLogArrivalAutoClearFired).not.toHaveBeenCalled();
 
     act(() => { jest.advanceTimersByTime(2_000); });
 
     expect(onClear).toHaveBeenCalledTimes(1);
     expect(result.current.arrivedBanner).toBe(false);
+    // #2770 code review 4번 — 실제 clear 실행 시점(타임아웃 콜백)에 alarmLog 적재.
+    expect(mockLogArrivalAutoClearFired).toHaveBeenCalledWith('용마산');
+  });
+
+  // #2770 code review 4번 — 트리거 시점 stamp는 거짓 양성(발동 안 했는데 'fired' 기록)을
+  // 만든다. unmount로 타이머(clearTimeout)가 취소되면 타임아웃 콜백 자체가 실행되지 않으므로
+  // 로그도 없어야 한다.
+  it('트리거 후 2s 내 unmount → 로그 없음 (#2770 code review 4번, 거짓 양성 차단)', () => {
+    const onClear = jest.fn();
+    const { unmount } = renderHook((props: Params) => useArrivalAutoClear(props), {
+      initialProps: baseProps({
+        currentStationName: '용마산',
+        destinationName: '용마산',
+        distanceKm: 0.3,
+        onClear,
+      }),
+    });
+
+    act(() => { jest.advanceTimersByTime(500); });
+    unmount();
+    act(() => { jest.advanceTimersByTime(2_000); });
+
+    expect(onClear).not.toHaveBeenCalled();
+    expect(mockLogArrivalAutoClearFired).not.toHaveBeenCalled();
   });
 
   it('도착 후 2초 안에 distanceKm이 여러 번 바뀌어도 타이머가 살아남아 onClear가 호출된다 (#551 회귀)', () => {
