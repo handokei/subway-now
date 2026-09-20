@@ -15,6 +15,7 @@ import {
   resolveActiveLegOrigin,
   resolveTrainCodeFromPositions,
   type BoardingAnchor,
+  type LegBoardingConfirmation,
 } from '../boardingAnchorResolver';
 import { SeoulArrivalClient, type PositionEntry } from '../seoul';
 import type { Trip, Waypoint } from '../types';
@@ -402,6 +403,60 @@ describe('attemptBoardingAnchorResolution', () => {
     expect(result).not.toBeNull();
     expect(result?.trainCode).toBe('7246');
     expect(result?.segmentStations).toEqual(['중곡']);
+  });
+
+  // #2754 — options.legTransition 배선(cron leg-2 전용 경로).
+  describe('options.legTransition (#2754)', () => {
+    it('pending 없음 + 이번 cycle resolved(첫 관측) → confirmed 아님, null 반환 + onLegTransition(pending) 통지', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '중곡', line: '7' },
+        legBoardingEligibleAt: NOW - 1,
+        promptDisplay: undefined,
+      });
+      let onOutcomeCalled: string | undefined;
+      let transition: LegBoardingConfirmation | undefined;
+      const result = await attemptBoardingAnchorResolution(
+        trip,
+        seoul,
+        NOW,
+        { allowLegTransfer: true, legTransition: {} },
+        (o) => {
+          onOutcomeCalled = o;
+        },
+        undefined,
+        (c) => {
+          transition = c;
+        },
+      );
+      expect(result).toBeNull();
+      expect(onOutcomeCalled).toBe('none');
+      expect(transition).toMatchObject({ status: 'pending', trainCode: '7246' });
+    });
+
+    it('pending(7246) + 이번 cycle 7246 DEPARTED 전이 관측 → confirmed, BoardingLockMeta 반환', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246', trainSttus: 2 }]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '중곡', line: '7' },
+        legBoardingEligibleAt: NOW - 1,
+        promptDisplay: undefined,
+      });
+      let transition: LegBoardingConfirmation | undefined;
+      const result = await attemptBoardingAnchorResolution(
+        trip,
+        seoul,
+        NOW,
+        { allowLegTransfer: true, legTransition: { pending: { trainCode: '7246', firstObservedAt: NOW - 60_000 } } },
+        undefined,
+        undefined,
+        (c) => {
+          transition = c;
+        },
+      );
+      expect(result).not.toBeNull();
+      expect(result?.trainCode).toBe('7246');
+      expect(transition?.status).toBe('confirmed');
+    });
   });
 });
 

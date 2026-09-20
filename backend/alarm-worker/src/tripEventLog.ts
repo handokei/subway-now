@@ -112,6 +112,15 @@ import { captureXEvent } from './sentry';
  * 회귀 신호(레거시 KV 레코드 등). SSoT 마커(`originPromptSkippedForLegAnchor`)와 비교해 최초
  * 전이 시에만 append한다(#2073 quota 보호). `meta`에 `{ staleDisplayLine }`을 싣는다.
  * 발사/advance/lock 판정에는 관여하지 않는다.
+ *
+ * `leg-resolve-attempt` (#2754, 요구사항 1) — leg-2 cron 자동 resolve(`evaluateLegBoardingTransition`,
+ * `boardingAnchorResolver.ts`)가 매 cron tick 시도한 결과를 승격/보류/거부/무후보 **전부**
+ * append한다(throttle 없음 — 이슈가 "승격/보류 양쪽 다 기록"을 명시했고, 이 평가는 walk-gate
+ * 통과 이후 lock이 확정될 때까지의 짧은 창에서만 발생해 D1 quota 위험이 낮다). 사용자가 실제로
+ * 탄 열차가 아닌 다른 열차가 왜/어떻게 선택되는지(streak 값, 경과 시간, 후보 목록)를 사후에
+ * D1만으로 재구성하지 못했던 것이 #2754 진단 과정의 병목이었다 — 이 kind가 그 gap을 메운다.
+ * `meta`에 `{ elapsedSinceAnchorMs, candidates, streakCount, outcome, selectedTrainCode? }`를
+ * 싣는다. `station`/`line`은 anchor station/line. 발사/advance 동작에는 관여하지 않는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -133,7 +142,8 @@ export type TripEventKind =
   | 'fallback-implicit-ack'
   | 'leg-anchor-observed'
   | 'boarding-prompt-leg-mismatch'
-  | 'route-signature-mismatch';
+  | 'route-signature-mismatch'
+  | 'leg-resolve-attempt';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

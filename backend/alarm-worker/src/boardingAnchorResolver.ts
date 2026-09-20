@@ -91,11 +91,49 @@
  * `POST /trips/:token/boarding-confirm`)에만 의존했다. 그러나 그 탭(leg 2 프롬프트) 자체가
  * 뜨지 않으면 lock 형성 경로가 통째로 없다는 것이 실측으로 확정됐다(#2539 root). 이제 cron도
  * `{ allowLegTransfer: true }`로 leg 2를 평가하되(walk-gate는 위 문단 그대로 강제), register-time과
- * 달리 **연속확증**을 추가로 요구한다 — 같은 trainCode가 `LEG_RESOLVE_STREAK_THRESHOLD`회
- * 연속 cron tick에서 resolved일 때만 실제 lock 승격이 일어난다(`scheduled.ts`
- * `trip.legResolveStreak` 카운터, 이 함수 자체는 무변경 — 게이트는 caller 쪽에 있다). trainCode
- * 변경/none/ambiguous 판정은 카운터를 리셋시킨다. register-time/boarding-confirm 탭 경로는
- * 사용자 확인이 이미 있으므로 이 카운터를 전혀 보지 않고 기존처럼 1회 resolved로 즉시 승격한다.
+ * 달리 **연속확증**을 추가로 요구한다(#2754 재설계 — 아래 문단). register-time/boarding-confirm
+ * 탭 경로는 사용자 확인이 이미 있으므로 연속확증을 전혀 보지 않고 기존처럼 1회 resolved로
+ * 즉시 승격한다.
+ *
+ * leg 2 연속확증 재설계 — ARRIVED/APPROACHING → DEPARTED 전이 (#2754, #2539의 연속확증을 대체)
+ * ============================================================================================
+ * #2539가 도입한 원 설계("같은 trainCode가 `LEG_RESOLVE_STREAK_THRESHOLD`회 연속 cron tick에서
+ * resolved")는 #2751(recptnMs 파싱 fix)로 이 경로가 처음 살아나면서 9/18 실캡처 재생에서
+ * **정반대로 동작한다는 것이 드러났다**: 사용자가 실제로 탄 열차는 탑승 직후 곧바로 출발하므로
+ * ARRIVED/APPROACHING 상태를 2 cycle 연속 유지할 수 없다 — 반대로 플랫폼에 오래 머무는(=탑승
+ * 대상이 아닌) 열차만 연속확증을 통과했다(9/18 사례: 7256은 17:40:31 ARRIVED → 17:41:32
+ * DEPARTED로 1 cycle 만에 후보 탈락, 9분 뒤 들어온 무관한 7260이 2 cycle 연속 ARRIVED로
+ * 관측돼 lock을 형성).
+ *
+ * `evaluateLegBoardingTransition`은 "연속 cycle 수"가 아니라 **전이(transition) 발생**을
+ * 확증으로 쓴다: 직전 cycle에 resolved(ARRIVED/APPROACHING)로 관측된 candidate가 이번 cycle에
+ * 같은 anchor station에서 DEPARTED(2)로 관측되면 "탑승 후 즉시 출발"이라는 실측 신호로 간주해
+ * 즉시 confirmed한다. 같은 candidate가 다음 cycle에도 여전히 ARRIVED/APPROACHING로 남아 있으면
+ * (아직 출발하지 않음) pending을 유지할 뿐 confirmed하지 않는다 — APPROACHING→ARRIVED처럼
+ * "아직 그 열차"인 정상적인 상태 전이는 firstObservedAt을 보존한 채 계속 관찰하고, 다른
+ * trainCode로 바뀌거나(교체) ambiguous/none으로 떨어지면(관측 상실) pending을 리셋한다
+ * (rejected). `trip.legResolveStreak`가 이 pending 상태의 영속 저장소를 그대로 재사용한다
+ * (`{trainCode, count, firstObservedAt}` — `count`는 진단용 연속 관측 횟수, 승격 판정에는
+ * 더 이상 관여하지 않는다).
+ *
+ * 안전성: 이 설계는 leg-1(register-time, 1회 resolved 즉시 승격)보다 오히려 더 보수적이다 —
+ * "한 번 봤다"가 아니라 "탑승 후 출발까지 봤다"를 요구한다. 잔존 위험은 실측 evidence 없이는
+ * 완전히 제거되지 않는다: 우연히 사용자의 anchor station에서 ARRIVED→DEPARTED 전이를 보이는
+ * 무관한 열차가 있다면(예: 반대편 승강장 열차가 방향 필터를 뚫는 경우) 오탑승 lock 위험이
+ * 이론적으로 남는다 — 다만 이는 leg-1이 이미 감수하는 "그 역에 있다=탄 것"이라는 동일 신뢰
+ * 수준을 넘지 않는다(위 "잔존 위험" 문단 참고, 새로 높이지 않는다).
+ *
+ * staleness 상한(요구사항 2) — 도입 보류
+ * ======================================
+ * 이슈(#2754)는 "anchor stamp 이후 일정 시간이 지나면 그 anchor로 resolve하지 않는다"는
+ * 상한을 요구하되, 값은 실캡처의 "환승 후 실제 탑승까지 걸린 시간 분포"로 근거를 대라고
+ * 명시했다. 이 저장소가 보유한 leg-2 실캡처는 9/18 1건(N=1)뿐이고, 그마저도 위 전이 재설계로
+ * 탑승이 anchor 도달 직후(1 cycle, ≈61초) 확정돼 "얼마나 오래 기다려야 했는가"를 관측할
+ * 표본이 되지 못한다 — 분포는커녕 단일 값도 만들 수 없다(N=1 편향 금지, `lesson_n1_root_cause_bias`).
+ * 따라서 이 PR은 staleness 상한을 도입하지 않는다. 위 전이 기반 확증 자체가 "머무는 열차는
+ * 절대 confirmed되지 않는다"는 무기한 안전판을 이미 제공하므로(rejected 판정이 ambiguous/none
+ * 조건에서 발생), 상한 부재가 즉각적인 오탑승 위험을 재도입하지는 않는다. 실측이 쌓이면 별도
+ * PR로 추가.
  */
 
 import { TRAIN_STATUS } from './alarm';
@@ -110,18 +148,6 @@ import type { BoardingLockMeta, Trip, Waypoint } from './types';
  * MAX_RECPTN_DRIFT_SEC(120s)와 동일 정책 — 두 값은 각자 로컬 모듈에 선언해 순환 import를
  * 피한다(`arrivalsFromPositions.ts`의 HOP_SEC 중복 선언과 동일 선례). */
 export const POSITION_FRESHNESS_MS = 120_000;
-
-/**
- * #2539 — leg 2 cron 자동 resolve 연속확증 임계값. register-time(탭)은 사용자 확인(#1729
- * 안전 원칙 + ADR-014 명시 의향 stamp)이 트리거라 1회 resolved로 충분하지만, cron은 탭 없이
- * 매 cycle 배경 폴링만으로 leg 2 승격을 시도하므로(#2518 오탑승 우려로 그동안 skip돼 있었음)
- * "플랫폼에 우연히 서 있는 열차 1대"와의 transient 매칭을 방어하기 위해 같은 trainCode가 이
- * 값만큼 연속 cron tick 동안 resolved일 때만 lock으로 승격한다(`scheduled.ts` cron 분기,
- * `trip.legResolveStreak` SSoT). leg 1 cron(promptDisplay 경로)과 register-time(탭)/
- * boarding-confirm 탭 엔드포인트는 이 게이트를 거치지 않는다(기존 1회 승격 유지 — 사용자
- * 확인이 이미 있는 경로이기 때문).
- */
-export const LEG_RESOLVE_STREAK_THRESHOLD = 2;
 
 export interface BoardingAnchor {
   /** 탑승 확정 대상 노선 (Waypoint.line / BoardingLockMeta.line과 동일 표기). */
@@ -153,6 +179,25 @@ export type BoardingResolution =
 export type BoardingResolveOutcome = 'resolved' | 'none' | 'ambiguous' | 'walk-gated' | 'invalid-route';
 
 /**
+ * anchor(방향/역명) 조건을 만족하고 신선한(POSITION_FRESHNESS_MS 이내) position 항목 전부 —
+ * trainSttus 무관(DEPARTED 포함). `resolveTrainCodeFromPositions`(ARRIVED/APPROACHING만
+ * 우선순위 채택)와 `evaluateLegBoardingTransition`(#2754, DEPARTED 전이 탐지) 둘 다 이
+ * 공통 필터를 재사용한다 — 중복 구현 대신 단일 SSoT.
+ */
+function freshCandidatesAtAnchor(
+  anchor: BoardingAnchor,
+  positions: readonly PositionEntry[],
+  now: number,
+): PositionEntry[] {
+  const directional =
+    anchor.direction !== null
+      ? positions.filter((p) => p.isUp === (anchor.direction === 'up'))
+      : positions;
+  const atStation = directional.filter((p) => p.stationName === anchor.boardingStation);
+  return atStation.filter((p) => p.recptnMs > 0 && now - p.recptnMs <= POSITION_FRESHNESS_MS);
+}
+
+/**
  * realtimePosition snapshot에서 anchor 조건에 맞는 정확히 1개의 trainCode를 찾는다. Pure —
  * KV/네트워크 의존 없음. caller(`attemptBoardingAnchorResolution`)가 `seoul.fetchPositions`
  * 결과를 전달한다.
@@ -162,14 +207,7 @@ export function resolveTrainCodeFromPositions(
   positions: readonly PositionEntry[],
   now: number,
 ): BoardingResolution {
-  const directional =
-    anchor.direction !== null
-      ? positions.filter((p) => p.isUp === (anchor.direction === 'up'))
-      : positions;
-  const atStation = directional.filter((p) => p.stationName === anchor.boardingStation);
-  const fresh = atStation.filter(
-    (p) => p.recptnMs > 0 && now - p.recptnMs <= POSITION_FRESHNESS_MS,
-  );
+  const fresh = freshCandidatesAtAnchor(anchor, positions, now);
 
   // ARRIVED(1) 우선 — "지금 이 역에 서 있음" 확정 신호. APPROACHING(0)은 차선.
   // DEPARTED(2)/그 외는 priority list 밖이라 자연히 후보에서 배제된다.
@@ -180,6 +218,87 @@ export function resolveTrainCodeFromPositions(
     if (tier.length > 1) return { status: 'ambiguous' };
   }
   return { status: 'none' };
+}
+
+/** `evaluateLegBoardingTransition`이 pending으로 기억하는 직전 cycle의 미확정 후보(#2754). */
+export interface LegPendingCandidate {
+  trainCode: string;
+  /** 이 trainCode가 최초로 resolved 관측된 시각(ms) — 진단용, 승격 판정에는 미사용. */
+  firstObservedAt: number;
+}
+
+/** `evaluateLegBoardingTransition`의 D1 진단 로그(요구사항 1)용 후보 스냅샷. */
+export interface LegResolveCandidate {
+  trainCode: string;
+  trainSttus: number | null;
+}
+
+/**
+ * `evaluateLegBoardingTransition`의 판정 결과(#2754). `confirmed` = 탑승 확정(lock 승격
+ * 대상), `pending` = 아직 미확정(다음 cycle에 재평가), `rejected` = 이전 pending을 리셋(관측
+ * 상실/ambiguous), `none` = pending도 없고 이번 cycle도 후보 없음(정상 유휴). 모든 variant가
+ * `candidates`(이번 cycle 이 anchor station에서 관측된 신선한 후보 전부, 상태 무관)를 실어
+ * D1 진단 로그(요구사항 1)가 "왜 배제/선택됐는지"를 그대로 기록할 수 있게 한다.
+ */
+export type LegBoardingConfirmation =
+  | { status: 'confirmed'; trainCode: string; candidates: readonly LegResolveCandidate[] }
+  | {
+      status: 'pending';
+      trainCode: string;
+      firstObservedAt: number;
+      candidates: readonly LegResolveCandidate[];
+    }
+  | { status: 'rejected'; candidates: readonly LegResolveCandidate[] }
+  | { status: 'none'; candidates: readonly LegResolveCandidate[] };
+
+/**
+ * leg-2 cron 자동 resolve 연속확증 재설계(#2754) — 파일 헤더 "leg 2 연속확증 재설계" 참고.
+ * "같은 trainCode가 N cycle 연속 ARRIVED/APPROACHING"(구 설계, #2539) 대신 ARRIVED/
+ * APPROACHING → DEPARTED **전이**를 확증으로 쓴다:
+ *
+ *   1. `pending`(직전 cycle의 미확정 후보)이 있고, 이번 cycle에 같은 trainCode가 같은 anchor
+ *      station에서 DEPARTED(2)로 관측되면 → `confirmed`("탑승 후 즉시 출발" 실측 신호).
+ *   2. 그 외 이번 cycle이 resolved(ARRIVED/APPROACHING 유일 후보)면 → `pending`. 직전
+ *      pending과 같은 trainCode면 `firstObservedAt`을 보존(연속 관찰), 다르면 교체(신규
+ *      후보, `firstObservedAt`=now) — 같은 trainCode가 계속 ARRIVED/APPROACHING로 남아
+ *      있는 것(9/18의 7260처럼 플랫폼에 머무는 열차)은 이 분기에 계속 머물 뿐 confirmed로
+ *      승격되지 않는다.
+ *   3. 그 외(ambiguous/none, DEPARTED 전이도 없음) — pending이 있었다면 `rejected`(리셋),
+ *      없었다면 `none`.
+ *
+ * Pure — KV/네트워크 의존 없음. `attemptBoardingAnchorResolution`이 leg-2 cron 경로에서만
+ * 호출한다(register-time/boarding-confirm 탭 경로는 무변경, 1회 resolved 즉시 승격).
+ */
+export function evaluateLegBoardingTransition(
+  anchor: BoardingAnchor,
+  positions: readonly PositionEntry[],
+  now: number,
+  pending: LegPendingCandidate | undefined,
+): LegBoardingConfirmation {
+  const fresh = freshCandidatesAtAnchor(anchor, positions, now);
+  const candidates: LegResolveCandidate[] = fresh.map((p) => ({
+    trainCode: p.trainCode,
+    trainSttus: p.trainSttus,
+  }));
+
+  if (pending) {
+    const departed = fresh.some(
+      (p) => p.trainCode === pending.trainCode && p.trainSttus === TRAIN_STATUS.DEPARTED,
+    );
+    if (departed) return { status: 'confirmed', trainCode: pending.trainCode, candidates };
+  }
+
+  const resolution = resolveTrainCodeFromPositions(anchor, positions, now);
+  if (resolution.status === 'resolved') {
+    return {
+      status: 'pending',
+      trainCode: resolution.trainCode,
+      firstObservedAt:
+        pending && pending.trainCode === resolution.trainCode ? pending.firstObservedAt : now,
+      candidates,
+    };
+  }
+  return pending ? { status: 'rejected', candidates } : { status: 'none', candidates };
 }
 
 /** `resolveActiveLegOrigin`이 반환하는 "지금 leg"의 origin 컨텍스트. */
@@ -266,6 +385,14 @@ export interface LegOriginResolutionOptions {
    * `findTapLegStart`로 route 정합을 검증해 실패하면 `'invalid-route'`로 거부한다(요구사항 3).
    */
   tapAnchor?: { boardingStation: string; line: string };
+  /**
+   * #2754 — true면 leg-2 cron 자동 resolve가 `resolveTrainCodeFromPositions`(단순 1회 매칭)
+   * 대신 `evaluateLegBoardingTransition`(ARRIVED/APPROACHING→DEPARTED 전이 확증)을 사용한다.
+   * `pending`은 직전 cycle에 저장된 미확정 후보(`trip.legResolveStreak`) — caller(`scheduled.ts`
+   * cron)만 전달한다. register-time/boarding-confirm 탭 경로는 이 옵션을 전달하지 않아
+   * 기존과 동일하게 1회 resolved 즉시 승격을 유지한다(무변경).
+   */
+  legTransition?: { pending?: LegPendingCandidate };
 }
 
 /**
@@ -341,6 +468,12 @@ export function resolveActiveLegOrigin(
  * `currentLegAnchor`/`promptDisplay`가 이미 있으면 이 분기에 진입하지 않으므로 기존 3개
  * 호출자(tapAnchor 미전달)는 100% 무변경이다. leg 2+ 경유(sliceFrom>0)로 채택된 경우에만
  * `onTapLegAdvance`로 advance된 waypoints를 caller에 통지한다(leg 1은 advance 불필요).
+ *
+ * #2754 — `options.legTransition`이 전달되면(cron leg-2 전용) realtimePosition 매칭을
+ * `evaluateLegBoardingTransition`으로 대체한다 — `confirmed`일 때만 아래 lock 합성으로
+ * 이어지고, 그 외(`pending`/`rejected`/`none`)는 `onLegTransition` 콜백으로 caller
+ * (`scheduled.ts`)에 전체 판정을 통지한 뒤 null을 반환한다. 이 옵션을 전달하지 않는 기존
+ * 3개 호출자(index.ts register-time/boarding-confirm)는 100% 무변경.
  */
 export async function attemptBoardingAnchorResolution(
   trip: Trip,
@@ -349,6 +482,7 @@ export async function attemptBoardingAnchorResolution(
   options?: LegOriginResolutionOptions,
   onOutcome?: (outcome: BoardingResolveOutcome) => void,
   onTapLegAdvance?: (advance: TapLegAdvance) => void,
+  onLegTransition?: (confirmation: LegBoardingConfirmation) => void,
 ): Promise<BoardingLockMeta | null> {
   if (trip.infoModeEnabled !== true) {
     onOutcome?.('none');
@@ -404,14 +538,29 @@ export async function attemptBoardingAnchorResolution(
       : null;
 
   const positions = await seoul.fetchPositions(anchor.line);
-  const resolution = resolveTrainCodeFromPositions(
-    { line: anchor.line, boardingStation: anchor.originStation, direction },
-    positions,
-    now,
-  );
-  if (resolution.status !== 'resolved') {
-    onOutcome?.(resolution.status);
-    return null;
+  const resolutionAnchor = { line: anchor.line, boardingStation: anchor.originStation, direction };
+
+  let resolvedTrainCode: string;
+  if (options?.legTransition) {
+    const confirmation = evaluateLegBoardingTransition(
+      resolutionAnchor,
+      positions,
+      now,
+      options.legTransition.pending,
+    );
+    onLegTransition?.(confirmation);
+    if (confirmation.status !== 'confirmed') {
+      onOutcome?.('none');
+      return null;
+    }
+    resolvedTrainCode = confirmation.trainCode;
+  } else {
+    const resolution = resolveTrainCodeFromPositions(resolutionAnchor, positions, now);
+    if (resolution.status !== 'resolved') {
+      onOutcome?.(resolution.status);
+      return null;
+    }
+    resolvedTrainCode = resolution.trainCode;
   }
 
   // segmentStations — 탑승역(anchor.originStation) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
@@ -426,7 +575,7 @@ export async function attemptBoardingAnchorResolution(
 
   onOutcome?.('resolved');
   return {
-    trainCode: resolution.trainCode,
+    trainCode: resolvedTrainCode,
     line: anchor.line,
     subwayId,
     selectedDepartureTime: now,

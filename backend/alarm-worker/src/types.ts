@@ -298,16 +298,23 @@ export interface Trip {
    */
   legBoardingPromptState?: BoardingPromptState;
   /**
-   * #2539 — leg 2 cron 자동 resolve 연속확증 카운터. register-time(탭)은 사용자 확인이 있어
-   * 1회 resolved로 lock을 승격하지만, cron은 탭 없이 매 cycle 배경 폴링만으로 leg 2 승격을
-   * 시도하므로 "플랫폼에 우연히 서 있는 열차 1대"와의 transient 매칭을 방어하기 위해 같은
-   * trainCode가 `LEG_RESOLVE_STREAK_THRESHOLD`(`boardingAnchorResolver.ts`, 기본 2)회 연속
-   * resolved일 때만 승격한다. trainCode가 바뀌거나 판정이 none/ambiguous가 되면 리셋된다
+   * #2539 — leg 2 cron 자동 resolve의 미확정 후보(pending candidate) 저장소. register-time(탭)은
+   * 사용자 확인이 있어 1회 resolved로 lock을 승격하지만, cron은 탭 없이 매 cycle 배경 폴링만으로
+   * leg 2 승격을 시도하므로 추가 확증이 필요하다.
+   *
+   * #2754 재설계 — 원래는 "같은 trainCode가 N cycle 연속 resolved"(`count` 임계)를 승격
+   * 조건으로 썼으나, 사용자가 실제로 탄 열차는 탑승 직후 곧바로 출발해 ARRIVED/APPROACHING을
+   * 2 cycle 연속 유지할 수 없다는 실측(9/18 실캡처)과 정반대로 동작했다 — 플랫폼에 오래 머무는
+   * (=탑승 대상이 아닌) 열차만 이 조건을 통과했다. 지금은 `evaluateLegBoardingTransition`
+   * (`boardingAnchorResolver.ts`)이 ARRIVED/APPROACHING → DEPARTED **전이**를 확증으로 쓴다 —
+   * `count`는 같은 trainCode가 연속 관찰된 cycle 수(진단용)로만 남고 승격 판정에는 관여하지
+   * 않는다. `firstObservedAt`은 이 trainCode가 최초로 resolved 관측된 시각(진단/D1 로그용).
+   * trainCode가 바뀌거나 판정이 ambiguous/none(DEPARTED 전이도 없이)이 되면 리셋된다
    * (`scheduled.ts` cron 분기). `currentLegAnchor`가 재stamp될 때마다(=새 환승) undefined로
    * 함께 리셋된다. leg 1 cron(promptDisplay 경로)과 register-time/boarding-confirm 탭 경로는
    * 이 필드를 전혀 쓰지 않는다(기존 1회 승격 유지).
    */
-  legResolveStreak?: { trainCode: string; count: number };
+  legResolveStreak?: { trainCode: string; count: number; firstObservedAt?: number };
   /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
