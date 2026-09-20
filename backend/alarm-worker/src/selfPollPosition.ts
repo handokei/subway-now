@@ -173,8 +173,8 @@ export async function readFreshSelfPollPosition(
  * `SeoulArrivalClient.fetchPositions(line)` 결과를 KV에 30s TTL로 stamp.
  *
  * Seoul API 호출 실패 시 빈 배열을 받을 수 있음(SeoulArrivalClient 내부에서 error→[] 매핑) —
- * 본 함수는 그대로 stamp한다. caller가 빈 배열을 "positionTrainAgreement undefined"로 자연
- * fallback (strongBE 분기 유지).
+ * 본 함수는 그대로 stamp한다. caller가 빈 배열이면 position-train evidence를 합성하지 못해
+ * strongBE(arrival + lockAttachable) 분기로 자연 fallback한다.
  *
  * @param kv TRIPS KV namespace
  * @param line `LineNumber`

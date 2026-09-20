@@ -3,17 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   POSITION_TRAIN_MAX_HOP,
   POSITION_TRAIN_STALE_THRESHOLD_MS,
-  STRONG_EVIDENCE_TYPES,
   advanceTripPosition,
   applyLegConsensusTick,
   buildConsensusTickMeta,
   buildSignalsFromEvidence,
   computePositionTrainHopDistance,
-  consecutiveDurationMs,
-  countStrongEvidence,
   lookupStationFromWifiSsid,
   mapEvidenceEnvironment,
-  trySeedOverride,
   type AdvanceBlockReason,
   type AdvanceEvidence,
   type AdvanceResult,
@@ -94,87 +90,6 @@ describe('mapEvidenceEnvironment', () => {
   });
 });
 
-describe('STRONG_EVIDENCE_TYPES', () => {
-  it('6종 strong evidence (arvlcd-confirmed-train / wifi / cellular / position / accel / consensus-train)', () => {
-    expect(STRONG_EVIDENCE_TYPES.size).toBe(6);
-    for (const t of [
-      'arvlcd-confirmed-train',
-      'wifi-ssid-match',
-      'cellular-tech-change',
-      'position-train',
-      'accel-fingerprint',
-      // #2329 (consensus-C) — transferLegConsensus 상태기계 confirmed evidence.
-      'consensus-train',
-    ] as const) {
-      expect(STRONG_EVIDENCE_TYPES.has(t)).toBe(true);
-    }
-  });
-  it('GPS / time-only / arvlcd-lockless 는 strong 아님 (false positive 차단 정책)', () => {
-    expect(STRONG_EVIDENCE_TYPES.has('gps-displacement')).toBe(false);
-    expect(STRONG_EVIDENCE_TYPES.has('time-only')).toBe(false);
-    expect(STRONG_EVIDENCE_TYPES.has('arvlcd-lockless')).toBe(false);
-  });
-});
-
-describe('countStrongEvidence', () => {
-  const makeMe = (signal: unknown, ts: number): MotionEvidence => ({
-    source: 'device-position',
-    ts,
-    signal,
-  });
-
-  it('윈도우 밖 evidence 미카운트', () => {
-    const list = [makeMe({ type: 'wifi-ssid-match' }, NOW - 90_000)];
-    expect(countStrongEvidence(list, NOW - 60_000)).toBe(0);
-  });
-
-  it('signal.type / signal.evidenceType 둘 다 인식', () => {
-    const list = [
-      makeMe({ type: 'wifi-ssid-match' }, NOW),
-      makeMe({ evidenceType: 'cellular-tech-change' }, NOW + 1),
-    ];
-    expect(countStrongEvidence(list, NOW - 60_000)).toBe(2);
-  });
-
-  it('weak/unknown signal은 0 (보수)', () => {
-    const list = [
-      makeMe({ type: 'gps-displacement' }, NOW),
-      makeMe(null, NOW),
-      makeMe('raw-string', NOW),
-      makeMe({ type: 123 }, NOW),
-      makeMe({}, NOW),
-    ];
-    expect(countStrongEvidence(list, NOW - 60_000)).toBe(0);
-  });
-});
-
-describe('consecutiveDurationMs', () => {
-  const ev = (stationId: string, ts: number): AdvanceEvidence =>
-    makeEvidence({ stationId, ts });
-
-  it('빈 list / 단일 entry → 0', () => {
-    expect(consecutiveDurationMs([])).toBe(0);
-    expect(consecutiveDurationMs([ev('A', NOW)])).toBe(0);
-  });
-
-  it('같은 station 30s 연속 → 30_000', () => {
-    expect(consecutiveDurationMs([ev('A', NOW), ev('A', NOW + 30_000)])).toBe(30_000);
-  });
-
-  it('다른 stationId 섞임 → 첫 station만 카운트', () => {
-    // 첫 entry stationId='A' 기준으로 filter — 'B'는 무시. A 단일 남아 0.
-    expect(consecutiveDurationMs([ev('A', NOW), ev('B', NOW + 10_000)])).toBe(0);
-  });
-
-  it('60s gap 초과 → 연속 끊김 → 0', () => {
-    expect(consecutiveDurationMs([ev('A', NOW), ev('A', NOW + 61_000)])).toBe(0);
-  });
-
-  it('정렬 비순서 입력도 정상 처리', () => {
-    expect(consecutiveDurationMs([ev('A', NOW + 30_000), ev('A', NOW)])).toBe(30_000);
-  });
-});
-
 describe('buildSignalsFromEvidence', () => {
   it('gatePassed=true → GateOutcome.pass=true', () => {
     const signals = buildSignalsFromEvidence(makeEvidence(), {
@@ -193,7 +108,7 @@ describe('buildSignalsFromEvidence', () => {
   });
 
   it('arvlcd 계열 evidence → arrivalSignalPresent=true', () => {
-    const signals = buildSignalsFromEvidence(makeEvidence({ type: 'arvlcd-lockless' }), {
+    const signals = buildSignalsFromEvidence(makeEvidence({ type: 'arvlcd-confirmed-train' }), {
       gatePassed: true,
       lockAttachable: true,
     });
@@ -221,25 +136,12 @@ describe('buildSignalsFromEvidence', () => {
     expect(b.arrivalSignalPresent).toBe(false);
   });
 
-  it('position-train / wifi-ssid-match evidence → 해당 강신호 stamp', () => {
-    const pt = buildSignalsFromEvidence(makeEvidence({ type: 'position-train' }), {
+  it('consensus-train evidence → consensusConfirmed stamp', () => {
+    const signals = buildSignalsFromEvidence(makeEvidence({ type: 'consensus-train' }), {
       gatePassed: true,
       lockAttachable: true,
     });
-    expect(pt.positionTrainAgreement).toBe(true);
-    const wf = buildSignalsFromEvidence(makeEvidence({ type: 'wifi-ssid-match' }), {
-      gatePassed: true,
-      lockAttachable: true,
-    });
-    expect(wf.wifiSsidMatch).toBe(true);
-  });
-
-  it('cellularTechVote forward', () => {
-    const signals = buildSignalsFromEvidence(
-      makeEvidence({ cellularTechVote: 'surface' }),
-      { gatePassed: true, lockAttachable: true },
-    );
-    expect(signals.cellularEnvironmentVote).toBe('surface');
+    expect(signals.consensusConfirmed).toBe(true);
   });
 });
 
@@ -278,8 +180,11 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
   });
 
   /**
-   * 시나리오 fixture — Positive 3 + Negative 6.
-   * acceptance 매핑: P1/P3/P8/N1/N4/N5/N6/N7 + extra N(no-seed)
+   * 시나리오 fixture — Positive + Negative.
+   * acceptance 매핑: P1/P8/N1/N4/N6 + extra N(no-seed)
+   *
+   * #2765 (게이트 전수감사 A) — P3/N1b/N5(arvlcd-lockless + 구 게이트 #6)와 N7(time-only + 구
+   * 게이트 #4)는 생산자 0건이 확정돼 제거된 게이트를 검증하던 시나리오라 함께 제거했다.
    */
   const scenarios: Array<{
     name: string;
@@ -291,7 +196,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
     trainMatch: boolean;
     gatePassed: boolean;
     lockAttachable: boolean;
-    extraStrongInRing: number;
     expected: AdvanceResult;
     expectedReason?: AdvanceBlockReason;
   }> = [
@@ -306,20 +210,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: true,
       gatePassed: true,
       lockAttachable: true,
-      extraStrongInRing: 0,
-      expected: 'advanced',
-    },
-    {
-      name: 'P3 lockless + walking + arvlcd-lockless + 추가 strong evidence → advanced',
-      motion: 'moving',
-      userIntent: false,
-      hasLock: false,
-      env: 'surface',
-      evidenceType: 'arvlcd-lockless',
-      trainMatch: false,
-      gatePassed: true,
-      lockAttachable: false,
-      extraStrongInRing: 1, // 60s 윈도우 내 wifi-ssid-match 1개
       expected: 'advanced',
     },
     {
@@ -332,7 +222,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: true,
       gatePassed: true,
       lockAttachable: true,
-      extraStrongInRing: 0,
       expected: 'advanced',
     },
     // Negative
@@ -346,14 +235,13 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: true,
       gatePassed: true,
       lockAttachable: true,
-      extraStrongInRing: 0,
       expected: 'advanced',
     },
     {
       // #2763 (코드리뷰 항목4, 감사 ②-4) — 게이트 #2가 tripHasDeclaredIntent(trip) live-OR를
       // 갖게 되면서, lock이 부착된 trip은 `ssot.userIntentDeclared`가 stale(false)이어도 motion
       // gate를 통과한다(lock 부착 자체가 명시 의향 — cron 게이트와 동일 정책, ADR-014 동급
-      // 보장). 여전히 evidence의 train identity는 gate #5c가 검증하므로, trainCode 불일치
+      // 보장). 여전히 evidence의 train identity는 gate #4c가 검증하므로, trainCode 불일치
       // evidence는 차단 자체는 유지되고 사유만 motion-stationary → train-mismatch로 바뀐다
       // (보호 결과 동일, 더 정확한 사유로 교체).
       name: 'N1 (#2432 회귀방어 → #2763 갱신) 정지 + lock(명시 의향) + trainCode 불일치 position-train → blocked(train-mismatch)',
@@ -365,21 +253,19 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: false,
       gatePassed: true,
       lockAttachable: true,
-      extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'train-mismatch',
     },
     {
-      name: 'N1b (#2432 회귀방어) lockless + 정지 + arvlcd-lockless → blocked(motion-stationary)',
+      name: 'N1b lockless + 정지 + userIntent 없음 + bypass 신호 없음 → blocked(motion-stationary)',
       motion: 'stationary',
       userIntent: false,
       hasLock: false,
       env: 'surface',
-      evidenceType: 'arvlcd-lockless',
+      evidenceType: 'gps-displacement',
       trainMatch: false,
       gatePassed: true,
       lockAttachable: false,
-      extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'motion-stationary',
     },
@@ -393,23 +279,8 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: false,
       gatePassed: true,
       lockAttachable: true,
-      extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'train-mismatch',
-    },
-    {
-      name: 'N5 lockless + arvlcd-lockless 단독(추가 strong 0) → blocked(lockless-arvlcd-alone)',
-      motion: 'moving',
-      userIntent: false,
-      hasLock: false,
-      env: 'surface',
-      evidenceType: 'arvlcd-lockless',
-      trainMatch: false,
-      gatePassed: true,
-      lockAttachable: false,
-      extraStrongInRing: 0,
-      expected: 'blocked',
-      expectedReason: 'lockless-arvlcd-alone',
     },
     {
       name: 'N6 underground + gps-displacement만 → blocked(env-consensus-fail)',
@@ -421,7 +292,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: false,
       gatePassed: true,
       lockAttachable: false,
-      extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'env-consensus-fail',
     },
@@ -435,7 +305,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: true,
       gatePassed: true,
       lockAttachable: false,
-      extraStrongInRing: 0,
       expected: 'advanced',
     },
     {
@@ -448,7 +317,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: false,
       gatePassed: true,
       lockAttachable: false,
-      extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'env-consensus-fail',
     },
@@ -462,11 +330,10 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: true,
       gatePassed: true,
       lockAttachable: false,
-      extraStrongInRing: 0,
       expected: 'advanced',
     },
     {
-      name: 'N6c (#2623 P1-1 리뷰, 게이트 #5c 대칭 방어) lock + surface env(base gate만으로 통과) + position-train(trainCode 불일치, stamp됨) → blocked(train-mismatch) — bypass 확장이 identity 검증을 약화시키지 않음',
+      name: 'N6c (#2623 P1-1 리뷰, 게이트 #4c 대칭 방어) lock + surface env(base gate만으로 통과) + position-train(trainCode 불일치, stamp됨) → blocked(train-mismatch) — bypass 확장이 identity 검증을 약화시키지 않음',
       motion: 'moving',
       userIntent: false,
       hasLock: true,
@@ -475,23 +342,8 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       trainMatch: false,
       gatePassed: true,
       lockAttachable: false,
-      extraStrongInRing: 0,
       expected: 'blocked',
       expectedReason: 'train-mismatch',
-    },
-    {
-      name: 'N7 time-only evidence → blocked(time-only-forbidden) (ADR-015 §E4)',
-      motion: 'moving',
-      userIntent: false,
-      hasLock: true,
-      env: 'surface',
-      evidenceType: 'time-only',
-      trainMatch: true,
-      gatePassed: true,
-      lockAttachable: true,
-      extraStrongInRing: 0,
-      expected: 'blocked',
-      expectedReason: 'time-only-forbidden',
     },
   ];
 
@@ -501,15 +353,6 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       userIntentDeclared: sc.userIntent,
     });
     ssot.motionState = sc.motion;
-    if (sc.extraStrongInRing > 0) {
-      for (let i = 0; i < sc.extraStrongInRing; i += 1) {
-        ssot.motionEvidence.push({
-          source: 'device-wifi',
-          ts: NOW - 30_000 + i,
-          signal: { type: 'wifi-ssid-match' },
-        });
-      }
-    }
     await writeSsot(kv as unknown as KVNamespace, ssot);
 
     // Seed Trip
@@ -522,11 +365,7 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       type: sc.evidenceType,
       environment: sc.env,
       arvlcdTrainCode: sc.trainMatch ? '7246' : '9999',
-      // arvlcd-lockless는 lock-아닌 trip evidence — arvlCd는 set
-      arvlCd:
-        sc.evidenceType === 'arvlcd-confirmed-train' || sc.evidenceType === 'arvlcd-lockless'
-          ? 1
-          : null,
+      arvlCd: sc.evidenceType === 'arvlcd-confirmed-train' ? 1 : null,
     });
 
     const out = await advanceTripPosition(
@@ -589,16 +428,17 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
     const expiredLock = makeLock({ expiresAt: NOW - 1_000 });
     await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: expiredLock }));
 
-    // lock 만료 + lockless 단독 arvlcd-lockless → 게이트 #6 blocked (lock 없음 동급)
+    // lock 만료 → pickActiveLock이 undefined 반환 → 게이트 #4 trainIdentityMismatches가
+    // lock===undefined로 즉시 false(mismatch 아님) — trainCode 불일치 evidence도 통과.
     const out = await advanceTripPosition(
       kv as unknown as KVNamespace,
       TOKEN,
       '중곡',
-      makeEvidence({ type: 'arvlcd-lockless', arvlcdTrainCode: undefined }),
+      makeEvidence({ type: 'arvlcd-confirmed-train', arvlcdTrainCode: '9999' }),
       { gatePassed: true, lockAttachable: false },
     );
-    expect(out.result).toBe('blocked');
-    expect(out.blockReason).toBe('lockless-arvlcd-alone');
+    expect(out.result).toBe('advanced');
+    expect(out.blockReason).toBeUndefined();
   });
 
   it('currentStationId 빈 문자열도 no-seed 처리', async () => {
@@ -635,60 +475,7 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
   });
 });
 
-describe('advanceTripPosition — 게이트 #3 cellular contradiction은 env consensus bypass와 무관하게 항상 평가 (#2623 P2-3 리뷰)', () => {
-  let kv: InMemoryKV;
-
-  beforeEach(() => {
-    kv = new InMemoryKV();
-  });
-
-  it('lock + arvlcd-confirmed-train(trainCode 일치, envConsensusBypass 대상) + cellularTechVote가 environment와 모순 → blocked(env-consensus-fail) (bypass가 모순 체크를 우회하지 않음)', async () => {
-    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    ssot.motionState = 'moving';
-    await writeSsot(kv as unknown as KVNamespace, ssot);
-    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
-
-    const out = await advanceTripPosition(
-      kv as unknown as KVNamespace,
-      TOKEN,
-      '중곡',
-      makeEvidence({
-        type: 'arvlcd-confirmed-train',
-        environment: 'underground',
-        cellularTechVote: 'surface', // 지상 4G/5G 잡힘 — environment=underground와 정면 모순
-        arvlcdTrainCode: '7246',
-        arvlCd: 1,
-      }),
-      { gatePassed: true, lockAttachable: true },
-    );
-    expect(out.result).toBe('blocked');
-    expect(out.blockReason).toBe('env-consensus-fail');
-  });
-
-  it('lock + arvlcd-confirmed-train(trainCode 일치) + cellularTechVote가 environment와 일치(모순 아님) → advanced (bypass 정상 동작)', async () => {
-    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    ssot.motionState = 'moving';
-    await writeSsot(kv as unknown as KVNamespace, ssot);
-    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
-
-    const out = await advanceTripPosition(
-      kv as unknown as KVNamespace,
-      TOKEN,
-      '중곡',
-      makeEvidence({
-        type: 'arvlcd-confirmed-train',
-        environment: 'underground',
-        cellularTechVote: 'underground',
-        arvlcdTrainCode: '7246',
-        arvlCd: 1,
-      }),
-      { gatePassed: true, lockAttachable: true },
-    );
-    expect(out.result).toBe('advanced');
-  });
-});
-
-describe('advanceTripPosition — #8 arc-overshoot 게이트 (#2023, archFlag)', () => {
+describe('advanceTripPosition — #5 arc-overshoot 게이트 (#2023, archFlag)', () => {
   /**
    * #2023 — device arc 시간 적분 폭주 감지 → hop 진행 pause.
    *
@@ -1105,66 +892,6 @@ describe('advanceTripPosition — lockSuggestion 추론 (S1 T9b, #1534)', () => 
   });
 });
 
-describe('trySeedOverride (E5)', () => {
-  let kv: InMemoryKV;
-  beforeEach(() => {
-    kv = new InMemoryKV();
-  });
-
-  const ev = (stationId: string, ts: number, type: AdvanceEvidence['type']): AdvanceEvidence => ({
-    type,
-    stationId,
-    ts,
-    environment: 'surface',
-  });
-
-  it('SSoT 없음 → reject', async () => {
-    const r = await trySeedOverride(kv as unknown as KVNamespace, TOKEN, '중곡', []);
-    expect(r).toBe('reject');
-  });
-
-  it('strong evidence 2+ + 30s 연속 일치 → override (currentStationId 정정 + passedStations 초기화 + count+1)', async () => {
-    await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    const list = [
-      ev('중곡', NOW, 'wifi-ssid-match'),
-      ev('중곡', NOW + 30_000, 'cellular-tech-change'),
-    ];
-    const r = await trySeedOverride(kv as unknown as KVNamespace, TOKEN, '중곡', list);
-    expect(r).toBe('override');
-    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
-    expect(after?.currentStationId).toBe('중곡');
-    expect(after?.passedStations).toEqual([]);
-    expect(after?.seedOverrideCount).toBe(1);
-    expect(after?.lastAdvanceEvidence).toBe('seed-override');
-  });
-
-  it('strong evidence 1개만 → reject (2+ 미달)', async () => {
-    await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    const r = await trySeedOverride(kv as unknown as KVNamespace, TOKEN, '중곡', [
-      ev('중곡', NOW, 'wifi-ssid-match'),
-    ]);
-    expect(r).toBe('reject');
-  });
-
-  it('strong evidence 2개지만 연속 30s 미달 → reject', async () => {
-    await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    const r = await trySeedOverride(kv as unknown as KVNamespace, TOKEN, '중곡', [
-      ev('중곡', NOW, 'wifi-ssid-match'),
-      ev('중곡', NOW + 10_000, 'position-train'),
-    ]);
-    expect(r).toBe('reject');
-  });
-
-  it('trip 미존재 → override 적용되지만 expiresAt 미지정 (writeSsot 기본 TTL)', async () => {
-    await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    const r = await trySeedOverride(kv as unknown as KVNamespace, TOKEN, '중곡', [
-      ev('중곡', NOW, 'wifi-ssid-match'),
-      ev('중곡', NOW + 30_000, 'cellular-tech-change'),
-    ]);
-    expect(r).toBe('override');
-  });
-});
-
 describe('AdvanceStats / AdvanceResult / AdvanceBlockReason — type 보장', () => {
   it('AdvanceStats 모든 필드 추적 가능 (compile-time check)', () => {
     const stats: AdvanceStats = {
@@ -1173,13 +900,9 @@ describe('AdvanceStats / AdvanceResult / AdvanceBlockReason — type 보장', ()
       blockedNoTrip: 0,
       blockedMotionStationary: 0,
       blockedEnvConsensus: 0,
-      blockedTimeOnly: 0,
       blockedTrainMismatch: 0,
-      blockedLocklessArvlcdAlone: 0,
-      seedOverrideAttempted: 0,
-      seedOverrideAccepted: 0,
     };
-    expect(Object.keys(stats)).toHaveLength(10);
+    expect(Object.keys(stats)).toHaveLength(6);
   });
 });
 
@@ -1238,11 +961,11 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
     // #2763 (코드리뷰 항목4) — lock 활성 trip은 tripHasDeclaredIntent(trip)로 motion gate #2도
     // 우회하므로(setupAndAdvance가 boardingLock을 부착), 예전엔 motion-stationary로 막히던
     // position-train(미확증) evidence가 이제 게이트 #2를 통과한다 — 본 테스트는 "blocked 시
-    // alarmEvents 미stamp"만 검증하면 되므로, 게이트 #2와 무관하게 항상 차단되는
-    // time-only(ADR-015 §E4)로 교체해 시나리오 목적을 유지한다.
+    // alarmEvents 미stamp"만 검증하면 되므로, motion 상태와 무관하게 항상 차단되는
+    // trainCode 불일치(게이트 #4 train-mismatch)로 교체해 시나리오 목적을 유지한다.
     const { result, after } = await setupAndAdvance(
       'stationary',
-      makeEvidence({ type: 'time-only', arvlCd: null, arvlcdTrainCode: undefined }),
+      makeEvidence({ type: 'arvlcd-confirmed-train', arvlCd: 1, arvlcdTrainCode: '9999' }),
     );
     expect(result).toBe('blocked');
     expect(after?.alarmEvents).toEqual([]);
@@ -1320,9 +1043,16 @@ describe("advanceTripPosition — motionEvidence 'seoul-arvlcd' stamping (#2763)
   });
 
   it('blocked advance → motionEvidence에 stamp 안 함', async () => {
+    // gps-displacement는 hasArvlcdTrainProgressSignal 대상 type이 아니므로 stamp되지 않고,
+    // underground + arrival 신호 없음 → env-consensus-fail로 항상 blocked.
     const { result, after } = await setupAndAdvance(
       '중곡',
-      makeEvidence({ type: 'time-only', arvlCd: null, arvlcdTrainCode: undefined }),
+      makeEvidence({
+        type: 'gps-displacement',
+        environment: 'underground',
+        arvlCd: null,
+        arvlcdTrainCode: undefined,
+      }),
     );
     expect(result).toBe('blocked');
     const arvlcdSamples = after?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
@@ -1410,7 +1140,7 @@ describe("advanceTripPosition — motionEvidence 'seoul-arvlcd' stamping (#2763)
       kv as unknown as KVNamespace,
       TOKEN,
       '중곡',
-      makeEvidence({ type: 'wifi-ssid-match' }),
+      makeEvidence(),
       { gatePassed: true, lockAttachable: false },
     );
     expect(out.result).toBe('advanced');

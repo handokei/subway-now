@@ -11,10 +11,12 @@
  *     - `environment=surface`: 기존 9단 게이트(GPS+arrival+motion 합의) 통과로 충분.
  *     - `environment=underground`: GPS는 입력 set에서 reject — 9단 게이트 결과를 그대로 신뢰하면
  *       지하 false positive(GPS jitter 기반 origin proximity / 방향 cosine)가 통과할 수 있다.
- *       따라서 underground에서는 strong B(arrival arvlCd 1~3) + strong C(position-train 일치)
- *       또는 strong D(WiFi) 의 2-of-2 합의가 필요. 본 백엔드는 현재 cycle에서 position-train과
- *       WiFi SSID를 갖지 않으므로(추후 E7 이후 wire), underground 분기는 arrival 단독으로 통과를
- *       허용하지 않고 reject — boarding-prompt fallback은 게이트 미통과로 자연 silent.
+ *       따라서 underground에서는 strong B(arrival arvlCd 1~3) + strong E(lockAttachable) 의
+ *       2-of-2 합의(또는 strong G consensusConfirmed 단독)가 필요 — arrival 단독으로 통과를
+ *       허용하지 않고 reject. boarding-prompt fallback은 게이트 미통과로 자연 silent.
+ *       #2765 (게이트 전수감사 A) — strong C(position-train)/D(WiFi)/F(cellular) 분기는 생산자
+ *       0건(2026-09-03 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)이 감사로 확정돼
+ *       제거됐다.
  *     - `environment=mixed`: 보수적. strong 2개(arrival + arvlCd 우선순위 확정 + 단일 trainCode)
  *       충족 시에만 통과 — `pickAutoTrainCode`가 단일 후보로 수렴(ambiguity 없음)한 시점이 곧
  *       arrival(strong B) + lock-line(strong E surrogate) 합의로 해석된다.
@@ -60,29 +62,21 @@ export type StationEnvironment = 'surface' | 'underground' | 'mixed' | 'unknown'
  * - `arrivalSignalPresent`: 다음 waypoint의 arvlCd ∈ {0,1,2,3} 신호 존재 여부 (strong B)
  * - `lockAttachable`: `pickAutoTrainCode`가 단일 trainCode로 수렴 (strong E surrogate — 사용자가
  *   실제 그 열차에 타고 있다는 강한 cross-check)
- *
- * 추후 wire 대상(현 cycle 미지원, undefined로 무시):
- * - `positionTrainAgreement`: device fusion이 산출한 position-train 일치 (strong C)
- * - `wifiSsidMatch`: 역 WiFi SSID 일치 (strong D)
- * - `cellularEnvironmentVote`: device CTRadioAccessTechnology 기반 환경 vote (S10 #1543)
- *     - 'surface'      : 4G/5G 잡힘 → 지상 환경 vote (strong F)
- *     - 'underground'  : 2G/3G fallback → 지하 환경 vote (strong F)
- *     - 'unknown'/미전송 : vote 미투표 (정책 영향 0)
- *
  * - `consensusConfirmed`: #2329 (consensus-C, 설계 SSoT #2323) — `transferLegConsensus.ts`
  *   상태기계가 'confirmed'로 수렴했다는 surrogate 신호(strong G). underground 분기에서
  *   `lockAttachable`(=lock 부착, strong E)의 대체 surrogate로 취급한다 — 2+ waypoint 연속
  *   match(±90s) + mismatch=0 확정은 실제 lock 부착과 동급의 강 신호이기 때문이다(설계 SSoT
  *   (1) "confirmed = lockAttachable surrogate"). true일 때만 의미 있고, false/undefined는
  *   기존 정책 무영향(다른 OR 분기가 그대로 평가된다).
+ *
+ * #2765 (게이트 전수감사 A) — `positionTrainAgreement`(strong C) / `wifiSsidMatch`(strong D) /
+ * `cellularEnvironmentVote`(strong F, cellular hard-reject 포함)는 생산자 0건이 감사로 확정돼
+ * signal 자체가 제거됐다.
  */
 export interface ConsensusSignals {
   gateOutcome: GateOutcome;
   arrivalSignalPresent: boolean;
   lockAttachable: boolean;
-  positionTrainAgreement?: boolean;
-  wifiSsidMatch?: boolean;
-  cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
   consensusConfirmed?: boolean;
 }
 
@@ -100,8 +94,7 @@ export type ConsensusOutcome =
       reason:
         | 'base-gate-failed'
         | 'environment-no-gps-consensus'
-        | 'mixed-strong-signals-insufficient'
-        | 'cellular-environment-contradicts';
+        | 'mixed-strong-signals-insufficient';
     };
 
 /**
@@ -109,58 +102,23 @@ export type ConsensusOutcome =
  *
  * - surface: base 9단 게이트 통과로 충분 (GPS+arrival+motion 합의)
  * - underground: GPS reject. arrival(B) + lockAttachable(E surrogate) 2-of-2 또는
- *   positionTrainAgreement(C) / wifiSsidMatch(D)가 arrival과 함께. 현 cycle에서 후자는 미wire라
- *   B+E 2-of-2 강제.
+ *   consensusConfirmed(G) 단독.
  * - mixed/unknown: 보수적. arrival + lockAttachable 동시 충족 강제. base 9단 게이트 통과도
  *   동시에 요구해 false positive 누적 차단.
+ *
+ * #2765 (게이트 전수감사 A) — cellular hard-reject(S10 #1543, `cellularContradictsEnvironment`)와
+ * underground strong C(position-train)/D(WiFi) 분기는 생산자 0건이 감사로 확정돼 제거됐다.
  */
-/**
- * S10 #1543 — cellular vote가 trip 환경과 정면 충돌하는지 판정.
- *
- * 충돌 케이스(둘 다 명시적 surface ↔ underground일 때만 contradict):
- *   - environment=surface + cellularEnvironmentVote=underground
- *   - environment=underground + cellularEnvironmentVote=surface
- *
- * 비충돌 케이스 (모두 false):
- *   - vote가 'unknown' / undefined (미투표) — 모르는 상태는 차단 안 함
- *   - environment=mixed/unknown — 환경 자체가 보수적이라 vote로 추가 거절 X
- *   - vote가 environment와 일치 — 정상
- *
- * 정책: 본 함수는 contradict만 식별. 일치 vote가 OR 통과를 추가로 열어주진 않는다
- * (false positive 차단 우선 — surface GPS jitter가 cellular 4G와 동시에 거짓 합의를 만들면
- *  지상 false positive로 새는 회귀를 막기 위함).
- *
- * #2623 P2-3 리뷰 — `advanceTripPosition` 게이트 #3의 lock-arvlCd(+position-train) bypass가
- * `evaluateConsensusGate` 호출 자체를 skip하면 본 hard-reject까지 함께 우회돼버린다. environment가
- * stations.json(고정)으로, vote는 여전히 device(독립 소스)로 분리되면서 모순 가능성이 오히려
- * 커졌으므로(source 독립성 증가), bypass 여부와 무관하게 caller가 이 함수를 별도로 먼저 평가할 수
- * 있도록 export한다.
- */
-export function cellularContradictsEnvironment(
-  environment: StationEnvironment,
-  vote: ConsensusSignals['cellularEnvironmentVote'],
-): boolean {
-  if (vote === undefined || vote === 'unknown') return false;
-  if (environment === 'surface' && vote === 'underground') return true;
-  if (environment === 'underground' && vote === 'surface') return true;
-  return false;
-}
-
 export function evaluateConsensusGate(
   environment: StationEnvironment,
   signals: ConsensusSignals,
   archFlag?: ArchFlagValue,
 ): ConsensusOutcome {
-  // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 자체가 SSoT. 환경 분기 / GPS 합의 / cellular vote
-  // 모두 우회한다. arrival API 신호(=arvlCd) 를 유일한 진실로 삼는다는 B8 정책 정합.
+  // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 자체가 SSoT. 환경 분기 / GPS 합의 모두 우회한다.
+  // arrival API 신호(=arvlCd) 를 유일한 진실로 삼는다는 B8 정책 정합.
   // caller(scheduled.ts) 가 실제 arvlCd 관측 + `pickAutoTrainCode` 로 별도 검증.
   if (archFlag === 'on') {
     return { pass: true, environment };
-  }
-  // S10 #1543 — cellular vote가 환경과 정면 충돌하면 즉시 reject.
-  // 본 게이트는 base 통과/미통과와 무관하게 적용 — 환경 자체가 신뢰 불가하다는 강한 신호.
-  if (cellularContradictsEnvironment(environment, signals.cellularEnvironmentVote)) {
-    return { pass: false, environment, reason: 'cellular-environment-contradicts' };
   }
   const baseGatePassed = signals.gateOutcome.pass;
   if (environment === 'surface') {
@@ -172,15 +130,13 @@ export function evaluateConsensusGate(
     // GPS reject — base 9단 게이트는 motion/arrival/speed 등 비-GPS 신호도 포함하지만
     // origin proximity와 방향 cosine은 GPS 의존이라 underground 환경에서는 신뢰 못한다.
     // 대신 arrival(B) + lockAttachable(E surrogate)가 함께 만족하면 사용자가 실제 그 열차에
-    // 타고 있다는 강한 cross-check가 된다. 추후 C/D wire 시 OR 분기 확장.
+    // 타고 있다는 강한 cross-check가 된다.
     const strongBE = signals.arrivalSignalPresent && signals.lockAttachable;
-    const strongCB = (signals.positionTrainAgreement ?? false) && signals.arrivalSignalPresent;
-    const strongDB = (signals.wifiSsidMatch ?? false) && signals.arrivalSignalPresent;
     // #2329 (consensus-C) — consensusConfirmed는 lockAttachable(strong E) surrogate.
     // arrival(B) 없이도 confirmed 단독으로 통과시킨다 — 상태기계 자체가 이미 다중 waypoint
     // match(±90s)/mismatch=0 확정이라 arrival 신호 재요구는 이중 게이트(설계 SSoT (1)).
     const strongG = signals.consensusConfirmed === true;
-    if (strongBE || strongCB || strongDB || strongG) return { pass: true, environment };
+    if (strongBE || strongG) return { pass: true, environment };
     return { pass: false, environment, reason: 'environment-no-gps-consensus' };
   }
   // mixed/unknown: 보수적 — base 9단 + arrival + lockAttachable 모두 통과 시에만.

@@ -57,18 +57,25 @@ KV 정책:
 
 `advanceTripPosition(token, candidate, evidence, env): 'advanced' | 'blocked' | 'noop'`
 
-내부 6단 게이트 (위에서 거부되면 아래 안 봄):
+내부 게이트 (위에서 거부되면 아래 안 봄):
 
 1. **Seed 게이트** — SSoT.currentStation 있어야 (S1 GAP A)
 2. **Motion 게이트** — `motionState !== 'stationary'`
 3. **Environment 게이트** — `evaluateConsensusGate(env, signals)` 통과
-4. **Evidence type 게이트** — `time-only` 거부 (ADR-015 E4 enforce)
-5. **Train identity 게이트** — lock 활성 시 arvlcd `btrainNo == lock.trainCode` (Seoul API `seoul.ts:165`)
-6. **Lockless arvlcd 단독 게이트** — lockless면 arvlcd 단독 advance X
+4. **Train identity 게이트** — lock 활성 시 arvlcd `btrainNo == lock.trainCode` (Seoul API `seoul.ts:165`)
 
 추가:
-- **Seed override (E5)** — 강 신호 2개 이상 + 30s 연속 일치 시 currentStationId 정정 (`seedOverrideCount++`)
 - **WiFi SSID evidence (E6)** — `subwayWifiSsidMap.json` 445/445 매핑 활용
+
+> **superseded-by-#2765** — 위 목록은 T2(#1555) 당시 설계한 원본 6단 게이트다. 게이트
+> 전수감사(2026-09-20)에서 구 게이트 #4("Evidence type 게이트" — `time-only` 거부)와 구 게이트
+> #6("Lockless arvlcd 단독 게이트")는 `'time-only'`/`'arvlcd-lockless'` evidence type 생산자가
+> 코드 전체에 0건(2026-09-03 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)으로 확정돼
+> 제거됐다(PR 본문 참조). `trySeedOverride`(Seed override E5, 강 신호 2개+30s 연속 일치)도
+> 호출자 0건으로 함께 삭제됐다. 현재 코드의 게이트 번호는 #1 Seed → #2 Motion → #3 Environment →
+> #4 Train identity(+#4b consensus-train, +#4c position-train 대칭) → #5 arc-overshoot(#2023) →
+> #6 position-train jump/stale(#1665)이다 — 원본 T2 설계와 대응관계가 아니므로 최신 번호는
+> `advanceTripPosition.ts` 헤더 주석을 SSoT로 삼는다.
 
 ### 원칙 3 — fire path는 reader only
 
@@ -105,7 +112,7 @@ if (result === 'advanced') await fireStationPassedPush(token, SSoT.currentStatio
 | Task | 내용 | 의존성 | 본 ADR 원칙 |
 |---|---|---|---|
 | **T1 #1554** | `TripPositionSSoT` 스키마 + KV helpers + 본 ADR doc | (선행 X) | 원칙 1 |
-| **T2 #1555** | `advanceTripPosition` + 6단 게이트 + seedOverride(E5) + WiFi evidence(E6) + train identity(E8) | T1 | 원칙 2 |
+| **T2 #1555** | `advanceTripPosition` + 게이트(#2765 이후 축소, 원칙 2 참조) + WiFi evidence(E6) + train identity(E8) | T1 | 원칙 2 |
 | **T3 #1556** | Motion state machine (`/position` 수신부) | T1 | 원칙 4 |
 | **T4 #1557** | `arvlcdFire` → `advanceTripPosition` 호출로 refactor | T2, T3 | 원칙 3 |
 | **T5 #1558** | `advanceBoardingLockWaypoint` → 통합 | T2, T3 | 원칙 3 |
@@ -182,7 +189,7 @@ ADR-017이 ADR-016을 대체하지 않음. backend 구조를 잡고 ADR-016 sub�
 | "정답은 backend가 안다" | SSoT가 backend 단일 SSOT |
 | "device는 받기만 한다" | silent push payload에 SSoT.currentStationId forward (T8) |
 | "GPS는 결정 권한 X" | gps 단독은 evidence 1개. 다른 신호 동의 필요 (게이트 #3) |
-| "시간 적분 fire 권한 박탈" | evidence='time-only' → 게이트 #4 거부 |
+| "시간 적분 fire 권한 박탈" | (구) evidence='time-only' → 게이트 #4 거부. #2765로 `'time-only'` type 자체가 생산자 0건 확정 제거 — 시간 적분 evidence는 애초에 stamp되지 않으므로 거부 게이트 자체가 불필요해졌다. |
 | "사용자 명시 의향 trip = lock 동급" | userIntentDeclared=true → lock 활성과 동치 |
 | "alarm ≠ notification" | SSoT.advance = alarm 결정. notification은 device 측 banner |
 | "한 번 lock 잡으면 X" | 강 신호 2개 + 30s → seedOverride |

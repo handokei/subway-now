@@ -61,7 +61,7 @@ import {
 import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
-import { filterCandidateDirection, filterCandidateLine } from './legCandidateFilters';
+import { filterCandidateDirection } from './legCandidateFilters';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import type { ObservedDeparture } from './transferLegConsensus';
@@ -1024,7 +1024,9 @@ export interface ScheduledStats extends LiveActivityStats {
   /**
    * #1614 Phase A (S4 #1537) — cron 진입부 self-poll realtimePosition fetch 횟수.
    * 활성 trip line union에 대해 Seoul API를 1회 호출(KV cache miss). 호선당 30s TTL.
-   * positionTrainAgreement strongCB wire의 입력 단(端) 카운터.
+   * `evidence.type='position-train'` 합성의 입력 단(端) 카운터(#2765 — consensusGate strongCB
+   * 분기 자체는 생산자 0건으로 제거됐으나, position-train evidence는 게이트 #4c train identity
+   * 등에서 계속 사용된다).
    */
   realtimePositionFetch: number;
   /**
@@ -6214,7 +6216,8 @@ async function tryFireConsensusTrainLeg(
   for (const a of arrivals) {
     if (a.arvlCd === null) continue;
     if (!matchLine(a.subwayNm, waypoint.line)) continue;
-    if (filterCandidateLine(waypoint.line, trip.route, trip.waypoints).kind === 'reject') continue;
+    // #2765 (게이트 전수감사 A) — filterCandidateLine 호출은 항등 참(waypoint.line은 항상
+    // trip.route/waypoints의 allowedLines 안)으로 확정돼 제거됐다.
     if (
       filterCandidateDirection(waypoint.line, a.isUp, ssot.currentStationId, waypoint.stationName)
         .kind === 'reject'
