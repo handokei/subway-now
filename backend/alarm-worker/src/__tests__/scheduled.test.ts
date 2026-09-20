@@ -31,6 +31,7 @@ import {
   estimateBoardingLockArrival,
   evaluatePrepareAlarmTrigger,
   fireArvlCdStationPush,
+  fireVanishFallbackStationPush,
   flipApnsEnv,
   maybeCountDrift,
   pickActiveWaypoint,
@@ -10505,6 +10506,299 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
         .map((args) => args[3]);
       expect(sleepSkips).toEqual(['중곡', '군자']);
     });
+  });
+});
+
+/**
+ * #2779 — `fireVanishFallbackStationPush`(vanish-fallback/vanish-release 공용, origin으로만
+ * 구분)의 모든 종료 경로가 D1 `trip_events`(kind='cron-fire-attempt')에 0건이었다(2026-09-21
+ * 실라이드에서 leg-2 완전 침묵 진단 불가로 실증). 대조군 `tryAdvanceAndFireArvlcd`와 동일한
+ * kind·outcome 어휘를 재사용하되, meta.path로 경로를 구분한다(신규 kind 신설 금지).
+ *
+ * 발사/게이트 판정 로직은 이 PR에서 전혀 건드리지 않는다 — 아래 각 케이스의 push 여부(발사
+ * 성공/실패/스킵)는 이 PR 이전과 완전히 동일해야 한다(각 it의 apnsFetch 호출 수/응답 코드가
+ * 그 불변을 고정한다).
+ */
+describe('fireVanishFallbackStationPush — #2779 fire-attempt D1 기록', () => {
+  const TOKEN = 'vanish-fire-log-tok';
+
+  function makeVanishTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeLockTripFixture(TOKEN, overrides);
+  }
+
+  // fireVanishFallbackStationPush는 deps.seoul을 사용하지 않지만 ScheduledDeps 타입이 요구한다
+  // — 값 자체는 무의미(다른 direct-call 테스트와 동일하게 makeArvlCdFireSeoul을 stub으로 재사용).
+  function stubSeoul(): SeoulArrivalClient {
+    return makeArvlCdFireSeoul('중곡', 0, null);
+  }
+
+  function extractFireAttemptRows(
+    inserts: unknown[][],
+  ): Array<{ station: string | null; outcome: string; reason?: string; path?: string }> {
+    return inserts
+      .filter((args) => args[2] === 'cron-fire-attempt')
+      .map((args) => ({
+        station: args[3] as string | null,
+        ...(JSON.parse(args[5] as string) as { outcome: string; reason?: string; path?: string }),
+      }));
+  }
+
+  it('발사 성공(origin=vanish-fallback) → outcome=sent + meta.path=vanish-fallback 기록', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', { expiresAt: trip.expiresAt });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      env: makeEnv(kv, undefined, db),
+      deps: {
+        seoul: stubSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats: makeFullEmptyStats(),
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-2779-sent',
+      origin: 'vanish-fallback',
+    });
+    // 발사 동작 불변 — push는 정상 1회 발사된다(이 PR 전후 동일).
+    expect(apnsFetch.mock.calls).toHaveLength(1);
+    expect(extractFireAttemptRows(inserts)).toContainEqual(
+      expect.objectContaining({ station: '중곡', outcome: 'sent', path: 'vanish-fallback' }),
+    );
+  });
+
+  it('발사 성공(origin=vanish-release) → outcome=sent + meta.path=vanish-release 기록 (경로 구분)', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', { expiresAt: trip.expiresAt });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      env: makeEnv(kv, undefined, db),
+      deps: {
+        seoul: stubSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats: makeFullEmptyStats(),
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-2779-release-sent',
+      origin: 'vanish-release',
+    });
+    expect(apnsFetch.mock.calls).toHaveLength(1);
+    const rows = extractFireAttemptRows(inserts);
+    expect(rows).toContainEqual(
+      expect.objectContaining({ station: '중곡', outcome: 'sent', path: 'vanish-release' }),
+    );
+    // arvlcd-fire 경로(path 미지정)와 섞이지 않는다 — 이 케이스는 vanish-fallback origin도 아니다.
+    expect(rows.some((r) => r.path === 'vanish-fallback')).toBe(false);
+  });
+
+  it('push 실패(400) → outcome=failed + reason + path=vanish-fallback 기록', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', { expiresAt: trip.expiresAt });
+    const apnsFetch = vi.fn(
+      async () => new Response(JSON.stringify({ reason: 'BadFoo' }), { status: 400 }),
+    );
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      env: makeEnv(kv, undefined, db),
+      deps: {
+        seoul: stubSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats: makeFullEmptyStats(),
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-2779-failed',
+      origin: 'vanish-fallback',
+    });
+    // 발사 동작 불변 — 실패 시에도 push 시도 자체는 여전히 1회(retry queue 적재는 기존 동작 유지).
+    expect(apnsFetch.mock.calls).toHaveLength(1);
+    expect(extractFireAttemptRows(inserts)).toContainEqual(
+      expect.objectContaining({ station: '중곡', outcome: 'failed', reason: 'BadFoo', path: 'vanish-fallback' }),
+    );
+  });
+
+  it('sleepModeEnabled=true → outcome=skipped-reason reason=station-notif-sleep + path=vanish-fallback 기록 (push 미발사 불변)', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip({ sleepModeEnabled: true });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', { expiresAt: trip.expiresAt });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      env: makeEnv(kv, undefined, db),
+      deps: {
+        seoul: stubSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats: makeFullEmptyStats(),
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-2779-sleep',
+      origin: 'vanish-fallback',
+    });
+    // 발사 동작 불변 — sleep mute는 이 PR 이전과 동일하게 push 0건.
+    expect(apnsFetch.mock.calls).toHaveLength(0);
+    expect(extractFireAttemptRows(inserts)).toContainEqual(
+      expect.objectContaining({
+        station: '중곡',
+        outcome: 'skipped-reason',
+        reason: 'station-notif-sleep',
+        path: 'vanish-fallback',
+      }),
+    );
+  });
+
+  it('station-passed dedup(경로 무관 마커 기존재) → outcome=skipped-reason reason=station-passed-dedup + path=vanish-fallback 기록', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', { expiresAt: trip.expiresAt });
+    await kv.put(stationPassedFiredKey(trip.token, trip.boardingLock!.trainCode, '중곡'), '1');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      env: makeEnv(kv, undefined, db),
+      deps: {
+        seoul: stubSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats: makeFullEmptyStats(),
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-2779-dedup',
+      origin: 'vanish-fallback',
+    });
+    // 발사 동작 불변 — station-passed dedup 마커 기존재 시 push 0건(경로 무관 #2571 정책 그대로).
+    expect(apnsFetch.mock.calls).toHaveLength(0);
+    expect(extractFireAttemptRows(inserts)).toContainEqual(
+      expect.objectContaining({
+        station: '중곡',
+        outcome: 'skipped-reason',
+        reason: 'station-passed-dedup',
+        path: 'vanish-fallback',
+      }),
+    );
+  });
+
+  it('transfer/destination gate blocked(ssot-not-at-or-approaching) → outcome=skipped-reason + path=vanish-fallback 기록', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip({
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'transfer' },
+        { stationName: '군자', line: '7', kind: 'destination' },
+      ],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // SSoT가 waypoint(중곡)도, 직전 hop도 아닌 역(강남)을 가리켜 게이트가 차단하도록 seed.
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionState = 'moving';
+    ssot.lastAdvanceAt = NOW - 30_000;
+    ssot.lastAdvanceEvidence = 'arvlcd-confirmed-train';
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      env: makeEnv(kv, undefined, db),
+      deps: {
+        seoul: stubSeoul(),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats: makeFullEmptyStats(),
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-2779-gate',
+      origin: 'vanish-fallback',
+    });
+    // 발사 동작 불변 — 게이트 차단 시 push 0건(기존 동작 그대로).
+    expect(apnsFetch.mock.calls).toHaveLength(0);
+    expect(extractFireAttemptRows(inserts)).toContainEqual(
+      expect.objectContaining({
+        station: '중곡',
+        outcome: 'skipped-reason',
+        reason: 'ssot-not-at-or-approaching',
+        path: 'vanish-fallback',
+      }),
+    );
+  });
+
+  // #2073 quota 보호 — 매 tick 무조건 append 금지. 같은 사유가 연속 tick에도 반복되면(정지 등)
+  // 전이 시에만 기록해 write를 억제해야 한다(기존 recordFireBlockReasonTransition 정책 재사용).
+  it('동일 skip 사유가 연속 tick에도 반복되면 1건만 기록(D1 쓰기량 throttle)', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip({ sleepModeEnabled: true });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', { expiresAt: trip.expiresAt });
+    const runOnce = (pushId: string, now: number) =>
+      fireVanishFallbackStationPush({
+        trip,
+        waypoint: trip.waypoints[0],
+        lock: trip.boardingLock!,
+        env: makeEnv(kv, undefined, db),
+        deps: {
+          seoul: stubSeoul(),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+          now: () => now,
+        },
+        stats: makeFullEmptyStats(),
+        now,
+        log: () => undefined,
+        generatePushId: () => pushId,
+        origin: 'vanish-fallback',
+      });
+    await runOnce('p-2779-throttle-1', NOW);
+    expect(extractFireAttemptRows(inserts)).toHaveLength(1);
+    // 다음 tick — sleepModeEnabled 상태 불변이라 동일 사유 재현. 전이가 아니므로 추가 기록 없음.
+    await runOnce('p-2779-throttle-2', NOW + 60_000);
+    expect(extractFireAttemptRows(inserts)).toHaveLength(1);
   });
 });
 
