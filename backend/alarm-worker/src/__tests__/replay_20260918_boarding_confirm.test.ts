@@ -44,13 +44,23 @@
  * #2751 fix로 `parsePositionEntry`가 `item.recptnDt`(전체 타임스탬프)를 읽게 되면서, 이
  * 탭 시각의 건대입구/7호선/상행 스냅샷에서 7256이 유일 후보로 실제로 resolved되어 leg-2
  * lock으로 즉시 승격한다 — 아래 첫 테스트가 이 실측 결과(anchorSource:'tap',
- * outcome:'resolved', lockState:'leg2')를 그대로 기록한다. 두 번째 테스트("cron을 이어
- * 재생하면")는 lock을 다시 떼어낸(seed를 lockless로 재구성) 대조 시나리오라 이 fix와
- * 무관하게 여전히 매역 발사 0건이다 — 단, 그 재생 경로도 leg-2 cron 자동 resolve(#2539)를
- * 다시 태울 수 있어(같은 실캡처가 `replayLibrary.ts` entry에서 그렇게 관측됨) 실측 device
- * motion series(`buildRide20260918PositionSeries`)를 주입해 fixture fidelity를 맞춘다(#2718
- * 선례와 동일 근거) — 그 결과로도 이 재생 구간(15 cycle) 안에서는 station-passed 발사가
- * 없다(REPLAY_LIBRARY entry와 동일 결론, `replayLibrary.ts` 주석 참고).
+ * outcome:'resolved', lockState:'leg2')를 그대로 기록한다. 탭 경로(register-time과 동일,
+ * streak 게이트 없이 1회 resolved로 즉시 승격)는 사용자가 탭한 바로 그 시각의 스냅샷만
+ * 보므로 여기서는 정확한 trainCode(7256)를 잡는다.
+ *
+ * 두 번째 테스트("cron을 이어 재생하면")는 lock을 다시 떼어낸(seed를 lockless로 재구성)
+ * 대조 시나리오라 이 fix와 무관하게 여전히 매역 발사 0건이다 — 단, 그 재생 경로도 leg-2 cron
+ * 자동 resolve(#2539)를 다시 태울 수 있어(같은 실캡처가 `replayLibrary.ts` entry에서 그렇게
+ * 관측됨) 실측 device motion series(`buildRide20260918PositionSeries`)를 주입해 fixture
+ * fidelity를 맞춘다(#2718 선례와 동일 근거). 그 결과로도 이 재생 구간(15 cycle) 안에서는
+ * station-passed 발사가 없는데, 그 사유는 창 길이가 아니라 **#2754(새로 드러난 결함)** —
+ * `LEG_RESOLVE_STREAK_THRESHOLD=2` 연속확증이 이미 떠난 열차(7256, 17:41:32 건대입구
+ * DEPARTED로 후보 탈락)를 구조적으로 배제하고, 9분 뒤 플랫폼에 들어온 무관한 열차 7260을
+ * 2연속 resolved로 오인해 lock을 형성하기 때문이다(그 시점 사용자는 이미 용마산~면목 근방,
+ * `replayLibrary.ts` 해당 entry 주석에 궤적 상세). 즉 cron 재생이 "여전히 lockless와 같은
+ * 결론"에 도달하는 것은 우연이며, 실제로는 lockless가 아니라 오탑승 lock(7260)이 흐름을
+ * 가로챈 것이다 — #2754가 streak 기전을 고치면 이 재생의 실측(및 관련 기대값)도 재판정돼야
+ * 한다.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../index';
