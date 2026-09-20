@@ -9,11 +9,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   attemptBoardingAnchorResolution,
+  evaluateLegBoardingTransition,
   findTapLegStart,
   POSITION_FRESHNESS_MS,
   resolveActiveLegOrigin,
   resolveTrainCodeFromPositions,
   type BoardingAnchor,
+  type LegBoardingConfirmation,
 } from '../boardingAnchorResolver';
 import { SeoulArrivalClient, type PositionEntry } from '../seoul';
 import type { Trip, Waypoint } from '../types';
@@ -142,6 +144,97 @@ describe('resolveTrainCodeFromPositions', () => {
       NOW,
     );
     expect(result).toEqual({ status: 'resolved', trainCode: '7246' });
+  });
+});
+
+/**
+ * #2754 red② — leg-2 cron 연속확증 재설계. "사용자가 탄 열차는 타자마자 출발하므로 ARRIVED를
+ * 2 cycle 연속 유지할 수 없다"는 실측 제약(9/18 실캡처, 이슈 본문)에 따라, 구 설계(같은
+ * trainCode가 2 cycle 연속 ARRIVED/APPROACHING)를 ARRIVED/APPROACHING → DEPARTED **전이**
+ * 확증으로 대체한다. 직전 cycle에 resolved된 candidate가 이번 cycle에 같은 anchor station에서
+ * DEPARTED로 관측되면 "탑승 후 즉시 출발"로 간주해 즉시 confirmed — 반대로 같은 trainCode가
+ * 계속 ARRIVED로 남아 있으면(플랫폼에 머무는, 사용자가 타지 않은 열차) confirmed되지 않는다.
+ */
+describe('evaluateLegBoardingTransition (#2754)', () => {
+  it('red → green: pending 없음 + resolved(ARRIVED) → pending(신규 후보, firstObservedAt=now)', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '7256' })],
+      NOW,
+      undefined,
+    );
+    expect(result).toEqual({
+      status: 'pending',
+      trainCode: '7256',
+      firstObservedAt: NOW,
+      candidates: [{ trainCode: '7256', trainSttus: 1 }],
+    });
+  });
+
+  it('red → green: pending(7256) + 이번 cycle 같은 anchor station에서 7256 DEPARTED 관측 → confirmed(탑승 확정)', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '7256', trainSttus: 2 })],
+      NOW,
+      { trainCode: '7256', firstObservedAt: NOW - 60_000 },
+    );
+    expect(result.status).toBe('confirmed');
+    expect(result).toMatchObject({ status: 'confirmed', trainCode: '7256' });
+  });
+
+  it('red → green(핵심 회귀 방지): pending(7260) + 이번 cycle도 7260이 계속 ARRIVED(DEPARTED 전이 없음) → confirmed 아님, pending 유지 — 9/18 실캡처의 오탑승(7260) 재현', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '7260', trainSttus: 1 })],
+      NOW,
+      { trainCode: '7260', firstObservedAt: NOW - 60_000 },
+    );
+    // 구 설계라면 이 시점(같은 trainCode 2 cycle 연속 resolved)에 승격했다 — 그것이 정확히
+    // 9/18 실캡처의 오탑승 결함이다. 새 설계는 DEPARTED 전이가 없으므로 계속 pending이다.
+    expect(result).toEqual({
+      status: 'pending',
+      trainCode: '7260',
+      firstObservedAt: NOW - 60_000, // 최초 관측 시각 유지(같은 trainCode 연장)
+      candidates: [{ trainCode: '7260', trainSttus: 1 }],
+    });
+  });
+
+  it('pending(7911) + 이번 cycle 다른 trainCode(7922)만 resolved(7911은 DEPARTED로도 관측 안 됨) → 새 후보로 교체(pending, firstObservedAt=now)', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '7922' })],
+      NOW,
+      { trainCode: '7911', firstObservedAt: NOW - 60_000 },
+    );
+    expect(result).toEqual({
+      status: 'pending',
+      trainCode: '7922',
+      firstObservedAt: NOW,
+      candidates: [{ trainCode: '7922', trainSttus: 1 }],
+    });
+  });
+
+  it('pending 있음 + 이번 cycle ambiguous(후보 2개+) → rejected(리셋, 승격 안 함)', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '7911' }), position({ trainCode: '7922' })],
+      NOW,
+      { trainCode: '7911', firstObservedAt: NOW - 60_000 },
+    );
+    expect(result.status).toBe('rejected');
+  });
+
+  it('pending 있음 + 이번 cycle 후보 0개(DEPARTED 전이도 못 봄) → rejected(관측 공백, 승격 안 함)', () => {
+    const result = evaluateLegBoardingTransition(ANCHOR, [], NOW, {
+      trainCode: '7911',
+      firstObservedAt: NOW - 60_000,
+    });
+    expect(result.status).toBe('rejected');
+  });
+
+  it('pending 없음 + 이번 cycle 후보 0개 → none(리셋할 pending 자체가 없음)', () => {
+    const result = evaluateLegBoardingTransition(ANCHOR, [], NOW, undefined);
+    expect(result).toEqual({ status: 'none', candidates: [] });
   });
 });
 
@@ -310,6 +403,60 @@ describe('attemptBoardingAnchorResolution', () => {
     expect(result).not.toBeNull();
     expect(result?.trainCode).toBe('7246');
     expect(result?.segmentStations).toEqual(['중곡']);
+  });
+
+  // #2754 — options.legTransition 배선(cron leg-2 전용 경로).
+  describe('options.legTransition (#2754)', () => {
+    it('pending 없음 + 이번 cycle resolved(첫 관측) → confirmed 아님, null 반환 + onLegTransition(pending) 통지', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '중곡', line: '7' },
+        legBoardingEligibleAt: NOW - 1,
+        promptDisplay: undefined,
+      });
+      let onOutcomeCalled: string | undefined;
+      let transition: LegBoardingConfirmation | undefined;
+      const result = await attemptBoardingAnchorResolution(
+        trip,
+        seoul,
+        NOW,
+        { allowLegTransfer: true, legTransition: {} },
+        (o) => {
+          onOutcomeCalled = o;
+        },
+        undefined,
+        (c) => {
+          transition = c;
+        },
+      );
+      expect(result).toBeNull();
+      expect(onOutcomeCalled).toBe('none');
+      expect(transition).toMatchObject({ status: 'pending', trainCode: '7246' });
+    });
+
+    it('pending(7246) + 이번 cycle 7246 DEPARTED 전이 관측 → confirmed, BoardingLockMeta 반환', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246', trainSttus: 2 }]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '중곡', line: '7' },
+        legBoardingEligibleAt: NOW - 1,
+        promptDisplay: undefined,
+      });
+      let transition: LegBoardingConfirmation | undefined;
+      const result = await attemptBoardingAnchorResolution(
+        trip,
+        seoul,
+        NOW,
+        { allowLegTransfer: true, legTransition: { pending: { trainCode: '7246', firstObservedAt: NOW - 60_000 } } },
+        undefined,
+        undefined,
+        (c) => {
+          transition = c;
+        },
+      );
+      expect(result).not.toBeNull();
+      expect(result?.trainCode).toBe('7246');
+      expect(transition?.status).toBe('confirmed');
+    });
   });
 });
 

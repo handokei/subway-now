@@ -49,18 +49,23 @@
  * 보므로 여기서는 정확한 trainCode(7256)를 잡는다.
  *
  * 두 번째 테스트("cron을 이어 재생하면")는 lock을 다시 떼어낸(seed를 lockless로 재구성)
- * 대조 시나리오라 이 fix와 무관하게 여전히 매역 발사 0건이다 — 단, 그 재생 경로도 leg-2 cron
- * 자동 resolve(#2539)를 다시 태울 수 있어(같은 실캡처가 `replayLibrary.ts` entry에서 그렇게
- * 관측됨) 실측 device motion series(`buildRide20260918PositionSeries`)를 주입해 fixture
- * fidelity를 맞춘다(#2718 선례와 동일 근거). 그 결과로도 이 재생 구간(15 cycle) 안에서는
- * station-passed 발사가 없는데, 그 사유는 창 길이가 아니라 **#2754(새로 드러난 결함)** —
- * `LEG_RESOLVE_STREAK_THRESHOLD=2` 연속확증이 이미 떠난 열차(7256, 17:41:32 건대입구
- * DEPARTED로 후보 탈락)를 구조적으로 배제하고, 9분 뒤 플랫폼에 들어온 무관한 열차 7260을
- * 2연속 resolved로 오인해 lock을 형성하기 때문이다(그 시점 사용자는 이미 용마산~면목 근방,
- * `replayLibrary.ts` 해당 entry 주석에 궤적 상세). 즉 cron 재생이 "여전히 lockless와 같은
- * 결론"에 도달하는 것은 우연이며, 실제로는 lockless가 아니라 오탑승 lock(7260)이 흐름을
- * 가로챈 것이다 — #2754가 streak 기전을 고치면 이 재생의 실측(및 관련 기대값)도 재판정돼야
- * 한다.
+ * 대조 시나리오다. 그 재생 경로도 leg-2 cron 자동 resolve(#2539)를 태울 수 있어(같은
+ * 실캡처가 `replayLibrary.ts` entry에서 그렇게 관측됨) 실측 device motion series
+ * (`buildRide20260918PositionSeries`)를 주입해 fixture fidelity를 맞춘다(#2718 선례와
+ * 동일 근거).
+ *
+ * ## #2754 — 두 번째 결함(오탑승 lock) 발견 및 fix (2026-09-20)
+ * #2751 fix 직후에는 leg-2 cron 자동 resolve(당시 설계: 같은 trainCode 2 cycle 연속
+ * ARRIVED)가 사용자가 실제로 탄 7256이 아니라 9분 뒤 플랫폼에 들어온 무관한 7260을 lock해
+ * (17:41:32 7256 DEPARTED로 후보 탈락 → 9분 뒤 7260이 2연속 ARRIVED로 오인 승격), 이
+ * cron 재생이 station-passed 발사 0건에 도달한 것은 lockless와 같은 결론이 아니라 오탑승
+ * lock(7260)이 흐름을 가로챈 우연이었다(`replayLibrary.ts` 해당 entry 주석에 궤적 상세).
+ * #2754가 ARRIVED/APPROACHING→DEPARTED **전이** 확증으로 재설계한 뒤 다시 실측한 결과:
+ * `legBoardingEligibleAt`(도보시간 walk-gate)이 7256의 ARRIVED~DEPARTED 창보다 늦게
+ * 열려 7256은 이 resolver에 애초에 도달하지 못하고, walk-gate 이후 관측되는 7260은 새
+ * 전이 확증을 통과하지 못해(2 cycle 연속 ARRIVED만 있고 DEPARTED 전이가 없음) 끝내
+ * lock되지 않는다 — 결과적으로 lock 없이 lockless 경로가 목적지까지 완주한다(아래 테스트가
+ * 그 결과를 그대로 기록).
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../index';
@@ -192,7 +197,7 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     });
   });
 
-  it('lock 미부착 상태로 cron을 이어 재생하면 — 실측(REPLAY_LIBRARY 엔트리)과 동일하게 매역 발사 0건이다', async () => {
+  it('lock 미부착 상태로 cron을 이어 재생하면 — lockless 경로가 목적지까지 완주한다(#2754 fix 후)', async () => {
     // 위 테스트가 만든 상태(lockState:'none', boardingLock 없음 — 사유는 #2739 fix 이후에도
     // direction 인코딩 gap으로 여전히 'none')를 그대로 물려받아 cron이 15 cycle을 어떻게
     // 이어가는지 관찰한다 — "버튼을 눌렀다면 완주했을까"의 후반부.
@@ -214,13 +219,15 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
       seedPositionSeries: { [seedToken]: buildRide20260918PositionSeries() },
     });
 
-    // lock이 없으므로 station-passed(alert) 채널은 원리적으로 못 뜬다 — 실측 REPLAY_LIBRARY
-    // entry(`replayLibrary.ts`의 `capture_20260918_line7_yongmasan_overshoot`)와 동일 결론.
-    // lock이 부착됐다면(예: `replay_20260918_lock_seeded_contrast.test.ts`) 같은 실캡처로
-    // 어린이대공원/군자(능동)/중곡 발사 + destination-arrived 완결까지 이어진다는 것은 이미
-    // 별도 테스트로 증명돼 있다 — lock 부착 여부만이 이 사건의 분기점이라는 결론은 그대로다.
+    // #2754 fix 후 실측 재확인 — lock이 형성되지 않으므로(위 파일 헤더 "#2751 정정" 갱신
+    // 참고, `replayLibrary.ts` 동일 entry에서 상세) station-passed(alert, lock-active 전용)
+    // 채널은 여전히 원리적으로 못 뜬다. 그러나 lockless 경로 자체는 목적지까지 완주한다 —
+    // #2754 이전(오탑승 lock 7260이 흐름을 가로챈 상태)에는 이 destination-arrived 완결에
+    // 도달하지 못했지만, lock이 끝내 형성되지 않는 지금은 lockless 경로가 어린이대공원/
+    // 군자(능동)/중곡을 모두 통과해 destination-arrived까지 이어진다(`replayLibrary.ts`
+    // 동일 entry의 `locklessIntermediateStations`/`tripEnded`와 동일 결론).
     expect(firedStationOccurrences(result.pushes)).toEqual([]);
-    expect(destinationArrivedFired(result.pushes)).toBe(false);
+    expect(destinationArrivedFired(result.pushes)).toBe(true);
   });
 
   it('대조: promptDisplay가 seed에 있었다면(가정) anchor가 잡혀 lock이 부착됐을 것 — 미공급 입력의 영향력 확인용', async () => {

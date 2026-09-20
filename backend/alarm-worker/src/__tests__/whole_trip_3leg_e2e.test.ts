@@ -156,9 +156,10 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
     expect(await getTrip(env.TRIPS, token)).toBeNull();
   });
 
-  // 3번 강화 — device sync/재탭 없이 backend가 realtimePosition streak만으로 leg-N lock 부착.
-  // currentLegAnchor(leg-agnostic) + attemptBoardingAnchorResolution + LEG_RESOLVE_STREAK_THRESHOLD=2.
-  it('device-독립: 환승 후 sync 없이 Seoul positions streak(2회)만으로 leg-2 lock 자동 부착', async () => {
+  // 3번 강화 — device sync/재탭 없이 backend가 realtimePosition ARRIVED→DEPARTED 전이만으로
+  // leg-N lock 부착. currentLegAnchor(leg-agnostic) + attemptBoardingAnchorResolution +
+  // evaluateLegBoardingTransition(#2754 — "사용자가 탄 열차는 타자마자 출발한다" 확증).
+  it('device-독립: 환승 후 sync 없이 Seoul positions ARRIVED→DEPARTED 전이만으로 leg-2 lock 자동 부착', async () => {
     const kv = new InMemoryKV();
     const env = makeEnv(kv);
     const token = 'streak-leg2';
@@ -182,9 +183,11 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
       }),
     );
 
-    // Seoul positions: 건대입구(anchor)에 line-2 열차 TB2 정확히 1대(unambiguous). 양방향 모두 제공해도
+    // Seoul positions: 건대입구(anchor)에 line-2 열차 TB2 정확히 1대(unambiguous) — cycle 1
+    // ARRIVED, cycle 2 DEPARTED(탑승 후 즉시 출발, #2754 확증 신호). 양방향 모두 제공해도
     // resolveTrainCodeFromPositions는 direction 필터 후 1대면 resolved — 여기선 direction 무관하게
     // 1대만 두어 확실히 resolved.
+    let cycleTrainSttus = 1; // ARRIVED
     const posClient = {
       stats: { callCount: 0, cacheSize: 0, httpErrorCount: 0 },
       async fetchArrivals(): Promise<ArrivalEntry[]> {
@@ -192,7 +195,9 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
       },
       async fetchPositions(line: string): Promise<PositionEntry[]> {
         if (line !== '2') return [];
-        return [{ trainCode: 'TB2', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: NOW }];
+        return [
+          { trainCode: 'TB2', stationName: '건대입구', trainSttus: cycleTrainSttus, isUp: true, recptnMs: NOW },
+        ];
       },
     } as unknown as SeoulArrivalClient;
 
@@ -204,8 +209,9 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
       });
     }
 
-    // cycle 1: streak pending(1). cycle 2: streak=2 → 승격.
+    // cycle 1: TB2 ARRIVED → pending. cycle 2: TB2 DEPARTED(전이 확증) → 승격.
     await tick(1);
+    cycleTrainSttus = 2; // DEPARTED
     await tick(2);
     const promoted = await getTrip(env.TRIPS, token);
     expect(promoted?.boardingLock?.trainCode).toBe('TB2');

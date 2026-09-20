@@ -14749,12 +14749,18 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
 
   // #2539 — leg-2 lock 형성이 사용자 탭(register-time/boarding-confirm)에만 단일경로로 매달려
   // 있던 gap을 cron 강화 자동resolve(연속확증)로 메운다. A4가 확인한 "cron이 조용히 auto-lock
-  // 하지 않는다"는 원칙은 유지하되(1회 resolved만으로는 여전히 승격 안 됨), 같은 trainCode가
-  // LEG_RESOLVE_STREAK_THRESHOLD회 연속 확증되면 cron도 스스로 승격한다.
-  describe('#2539 — leg-2 cron 연속확증(streak) 게이트', () => {
+  // 하지 않는다"는 원칙은 유지하되(1회 resolved만으로는 여전히 승격 안 됨).
+  //
+  // #2754 재설계 — 원 설계("같은 trainCode가 N cycle 연속 resolved")는 9/18 실캡처 재생에서
+  // 정반대로 동작한다는 것이 드러났다: 사용자가 실제로 탄 열차는 탑승 직후 곧바로 출발하므로
+  // ARRIVED/APPROACHING을 2 cycle 연속 유지할 수 없다 — 반대로 플랫폼에 머무는(=탑승 대상이
+  // 아닌) 열차만 이 조건을 통과했다. 아래 테스트는 ARRIVED/APPROACHING→DEPARTED **전이**를
+  // 확증으로 쓰는 새 설계(`evaluateLegBoardingTransition`)를 검증한다 — "같은 trainCode 2
+  // cycle 연속 ARRIVED"는 이제 승격되지 않는다(그것이 정확히 9/18의 오탑승 결함이었다).
+  describe('#2754 — leg-2 cron 연속확증(ARRIVED→DEPARTED 전이) 게이트', () => {
     const TOKEN_STREAK = '2539-leg2-streak-tok';
 
-    it('K 미달(1회 resolved) → 승격 X, legResolveStreak count=1만 기록', async () => {
+    it('K 미달(1회 resolved, 아직 DEPARTED 전이 없음) → 승격 X, legResolveStreak pending만 기록', async () => {
       const kv = new InMemoryKV();
       const nowAfterWalk = NOW + WALK_SECONDS * 1000;
       await putTrip(
@@ -14782,10 +14788,14 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       expect(stats.boardingAnchorLegStreakPending).toBe(1);
       const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
       expect(stored.boardingLock).toBeUndefined();
-      expect(stored.legResolveStreak).toEqual({ trainCode: '7911', count: 1 });
+      expect(stored.legResolveStreak).toEqual({
+        trainCode: '7911',
+        count: 1,
+        firstObservedAt: nowAfterWalk,
+      });
     });
 
-    it('K회(기본 2) 연속 같은 trainCode resolved → 승격 O', async () => {
+    it('같은 trainCode가 2 cycle 연속 ARRIVED(전이 없음) → 승격 안 됨 (9/18 오탑승 결함 재발 방지)', async () => {
       const kv = new InMemoryKV();
       const nowAfterWalk = NOW + WALK_SECONDS * 1000;
       await putTrip(
@@ -14812,14 +14822,69 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       const firstTick = await runScheduled(makeEnv(kv), deps);
       expect(firstTick.boardingAnchorResolved).toBe(0);
 
+      // 2nd tick — 같은 trainCode(7911)가 여전히 ARRIVED(DEPARTED 전이 없음). 구 설계라면 이
+      // 시점(2 cycle 연속 resolved)에 승격했다 — 그것이 정확히 9/18 실캡처의 7260 오탑승
+      // 결함이다. 새 설계는 DEPARTED 전이가 없으므로 계속 pending이다.
       const secondTick = await runScheduled(makeEnv(kv), { ...deps, generatePushId: () => 'p-2539-k2b' });
+      expect(secondTick.boardingAnchorResolved).toBe(0);
+      expect(secondTick.boardingAnchorLegStreakPending).toBe(1);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.legResolveStreak).toEqual({
+        trainCode: '7911',
+        count: 2,
+        firstObservedAt: nowAfterWalk,
+      });
+    });
+
+    it('red②: 같은 trainCode가 ARRIVED → DEPARTED로 전이 → 즉시 승격(사용자가 탄 열차의 실제 모양)', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+          legBoardingEligibleAt: nowAfterWalk,
+          infoModeEnabled: true,
+        }),
+      );
+      // 1st tick — trainCode '7911' ARRIVED(1).
+      const firstTick = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull(
+          { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] },
+          [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-depart-a',
+      });
+      expect(firstTick.boardingAnchorResolved).toBe(0);
+
+      // 2nd tick — 같은 trainCode '7911'이 같은 anchor station에서 DEPARTED(2)로 전이(탑승
+      // 후 즉시 출발 — 9/18 실캡처의 7256과 동일 모양).
+      const secondTick = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull(
+          {},
+          [{ trainCode: '7911', stationName: '건대입구', trainSttus: 2, isUp: true, recptnMs: nowAfterWalk }],
+          nowAfterWalk,
+        ),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => nowAfterWalk,
+        generatePushId: () => 'p-2539-depart-b',
+      });
       expect(secondTick.boardingAnchorResolved).toBe(1);
       const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
       expect(stored.boardingLock).toMatchObject({ trainCode: '7911', line: '7' });
       expect(stored.legResolveStreak).toBeUndefined();
     });
 
-    it('trainCode 변경 시 streak 리셋(count=1로 재시작, 승격 안 됨)', async () => {
+    it('trainCode 변경 시(전이 없이 다른 열차) pending 교체(count=1로 재시작, 승격 안 됨)', async () => {
       const kv = new InMemoryKV();
       const nowAfterWalk = NOW + WALK_SECONDS * 1000;
       await putTrip(
@@ -14844,7 +14909,8 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
         now: () => nowAfterWalk,
         generatePushId: () => 'p-2539-swap-a',
       });
-      // 2nd tick — 다른 열차 '7922'가 대신 그 역에 서 있음(다른 trainCode).
+      // 2nd tick — 다른 열차 '7922'가 대신 그 역에 서 있음(다른 trainCode, 7911의 DEPARTED
+      // 전이는 관측되지 않음).
       const secondTick = await runScheduled(makeEnv(kv), {
         seoul: makeSeoulFull(
           { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7922')] },
@@ -14860,7 +14926,11 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       expect(secondTick.boardingAnchorResolved).toBe(0);
       const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
       expect(stored.boardingLock).toBeUndefined();
-      expect(stored.legResolveStreak).toEqual({ trainCode: '7922', count: 1 });
+      expect(stored.legResolveStreak).toEqual({
+        trainCode: '7922',
+        count: 1,
+        firstObservedAt: nowAfterWalk,
+      });
     });
 
     it('walk-gate 미통과(아직 도보 이동 중) → 평가 자체 skip, streak 생성 안 됨, 승격 X', async () => {
