@@ -71,6 +71,7 @@ import {
   type FusionTierLogEntry,
   logCrossTripMirrorSkip,
   logBackendSsotRouteRegressionReject,
+  logLiveActivityAuthorityState,
   logLiveActivityUpdated,
   logLockSyncDelivery,
   logSuppressedOriginHopLockless,
@@ -1231,6 +1232,21 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.source === 'live-activity-updated');
       expect(matching).toHaveLength(3);
+    });
+
+    it('#2735 logLiveActivityAuthorityState: 상태 3종 모두 source=state / outcome=fired 적재', async () => {
+      logLiveActivityAuthorityState('live-activity-authority-device-write');
+      logLiveActivityAuthorityState('live-activity-authority-backend-pending');
+      logLiveActivityAuthorityState('live-activity-authority-backend-active');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toMatchObject([
+        { source: 'live-activity-authority-device-write', outcome: 'fired' },
+        { source: 'live-activity-authority-backend-pending', outcome: 'fired' },
+        { source: 'live-activity-authority-backend-active', outcome: 'fired' },
+      ]);
     });
 
     it('#2709 logLockSyncDelivery: outcome=attempt → source=lock-sync-delivery / outcome=received', async () => {

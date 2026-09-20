@@ -25,6 +25,16 @@ jest.mock('../../api/alarmBackend', () => ({
     mockClearLiveActivityToken(...args),
 }));
 
+// #2735 — 계측 dedup 검증을 위해 logLiveActivityAuthorityState만 spy 가능하게 mock한다.
+// logLiveActivityUpdated는 다른 describe 블록에서 실호출 경로로 이미 검증되던 것과 동일하게
+// no-op으로 유지(호출 여부를 검증하지 않는 기존 테스트에 영향 없음).
+const mockLogLiveActivityAuthorityState = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logLiveActivityAuthorityState: (...args: unknown[]) =>
+    mockLogLiveActivityAuthorityState(...args),
+  logLiveActivityUpdated: jest.fn(),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   __resetLiveActivityPushChannelForTests,
@@ -71,6 +81,7 @@ describe('liveActivityPushChannel', () => {
     mockAddPushTokenListener.mockReset();
     mockRegisterLiveActivityToken.mockReset();
     mockClearLiveActivityToken.mockReset();
+    mockLogLiveActivityAuthorityState.mockReset();
     mockStartLiveActivity.mockResolvedValue(undefined);
     mockUpdateLiveActivity.mockResolvedValue(undefined);
     mockEndLiveActivity.mockResolvedValue(undefined);
@@ -422,9 +433,10 @@ describe('liveActivityPushChannel', () => {
     });
   });
 
-  // #2481 (backend-authority device 쓰기 억제 게이트, Wave 2) — device W2/W3 두 writer가 공유하는
-  // 판정 함수 단독 검증. flag는 EXPO_PUBLIC_MINIMAL_ALARM(isMinimalAlarmEnabled SSoT)로 제어한다.
-  describe('shouldSkipDeviceLiveActivityWrite (#2481)', () => {
+  // #2481 (backend-authority device 쓰기 억제 게이트, Wave 2) → #2735 (권위 이양 조건 수정) —
+  // device W2/W3 두 writer가 공유하는 판정 함수 단독 검증. flag는
+  // EXPO_PUBLIC_MINIMAL_ALARM(isMinimalAlarmEnabled SSoT)로 제어한다.
+  describe('shouldSkipDeviceLiveActivityWrite (#2481, #2735)', () => {
     const originalFlag = process.env.EXPO_PUBLIC_MINIMAL_ALARM;
 
     afterEach(() => {
@@ -435,17 +447,71 @@ describe('liveActivityPushChannel', () => {
       }
     });
 
-    it('backend-authority(flag OFF) + 이 trip의 LA push 세션이 이미 등록됨 → true(스킵)', async () => {
+    // #2735 RED — 이 테스트가 수정 전 코드(activeTripToken 기준)에서는 실패했다: 세션이
+    // "시작"만 됐을 뿐 backend register 응답이 아직 안 왔는데도 구 코드는 activeTripToken을
+    // 세션 시작 시점에 즉시 세팅해 스킵(true)을 반환했다 — device도 backend도 안 쓰는 구간의
+    // 근본 원인. PR 본문에 이 테스트의 실패 로그(수정 전)를 첨부한다.
+    it('세션 시작 직후, backend register 응답이 아직 안 왔으면 false(device가 계속 쓴다) — RED였던 케이스', async () => {
       delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
-      setupListener();
+      // register가 절대 resolve되지 않는 상황(응답 대기 중)을 흉내— 세션은 시작됐지만 확인 전.
+      mockRegisterLiveActivityToken.mockImplementation(() => new Promise(() => undefined));
+      const handle = setupListener();
       await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
+    });
+
+    // #2735 GREEN — registerWithRetry가 3회 모두 실패해 재시도를 소진해도 device는 계속 쓴다.
+    it('backend register가 재시도 끝에 완전히 실패하면 false(device가 계속 쓴다) — LA freeze 방지', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      mockRegisterLiveActivityToken.mockResolvedValue({ ok: false, status: 500 });
+      const handle = setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await jest.advanceTimersByTimeAsync(500);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
+    });
+
+    it('backend register가 실제로 성공(ok===true)한 뒤에만 true(스킵) — #2735 수정된 조건', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      const handle = setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await Promise.resolve();
       expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(true);
     });
 
-    it('dogfood 모드(flag ON)면 세션이 등록돼 있어도 false(device가 계속 쓴다) — 회귀 방지', async () => {
-      process.env.EXPO_PUBLIC_MINIMAL_ALARM = 'true';
-      setupListener();
+    // 회귀 가드(#2481) — backend 등록 성공 + 아직 신선한 동안에는 device가 덮어쓰지 않는다.
+    it('backend 등록 성공 + push 수신 중(신선함)에는 device가 덮어쓰지 않는다 (#2481 보존)', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      const handle = setupListener();
       await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await Promise.resolve();
+      jest.advanceTimersByTime(4 * 60 * 1000); // 4분 — staleness backstop(5분) 이전
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(true);
+    });
+
+    // #2735 요구사항 3 — 등록 성공 후에도 오래 재확인이 없으면 device가 쓰기를 재개한다.
+    it('backend 등록 성공 후 재확인 없이 stale window(5분)를 넘기면 false(device 쓰기 재개)', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      const handle = setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await Promise.resolve();
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(true);
+      jest.advanceTimersByTime(5 * 60 * 1000 + 1);
+      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
+    });
+
+    it('dogfood 모드(flag ON)면 등록에 성공했어도 false(device가 계속 쓴다) — 회귀 방지', async () => {
+      process.env.EXPO_PUBLIC_MINIMAL_ALARM = 'true';
+      const handle = setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await Promise.resolve();
       expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
     });
 
@@ -460,11 +526,49 @@ describe('liveActivityPushChannel', () => {
       expect(shouldSkipDeviceLiveActivityWrite('trip-never-registered')).toBe(false);
     });
 
-    it('다른 tripToken의 세션이 등록돼 있으면(불일치) false — 새 trip 부트스트랩 허용', async () => {
+    it('다른 tripToken이 등록에 성공해 있으면(불일치) false — 새 trip 부트스트랩 허용', async () => {
       delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
-      setupListener();
+      const handle = setupListener();
       await startLiveActivityWithRegistration('trip-old', SAMPLE_DATA);
+      handle.emit('tok');
+      await Promise.resolve();
       expect(shouldSkipDeviceLiveActivityWrite('trip-new')).toBe(false);
+    });
+  });
+
+  // #2735 요구사항 4 — 권위 상태 전이 계측이 alarmLog(덤프에서 관측 가능)로 남는지 검증.
+  describe('LA 권위 상태 계측 (#2735)', () => {
+    afterEach(() => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+    });
+
+    it('상태가 바뀔 때만 alarmLog에 적재한다 — 같은 상태 반복 호출은 dedup', async () => {
+      delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
+      // 1) trip 없음 → device-write
+      shouldSkipDeviceLiveActivityWrite(null);
+      shouldSkipDeviceLiveActivityWrite(null);
+      expect(mockLogLiveActivityAuthorityState).toHaveBeenCalledTimes(1);
+      expect(mockLogLiveActivityAuthorityState).toHaveBeenLastCalledWith(
+        'live-activity-authority-device-write',
+      );
+
+      // 2) trip은 있지만 미등록 → backend-pending으로 전이 (1건 추가)
+      shouldSkipDeviceLiveActivityWrite('trip-1');
+      expect(mockLogLiveActivityAuthorityState).toHaveBeenCalledTimes(2);
+      expect(mockLogLiveActivityAuthorityState).toHaveBeenLastCalledWith(
+        'live-activity-authority-backend-pending',
+      );
+
+      // 3) 등록 성공 → backend-active로 전이 (1건 추가)
+      const handle = setupListener();
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await Promise.resolve();
+      shouldSkipDeviceLiveActivityWrite('trip-1');
+      expect(mockLogLiveActivityAuthorityState).toHaveBeenCalledTimes(3);
+      expect(mockLogLiveActivityAuthorityState).toHaveBeenLastCalledWith(
+        'live-activity-authority-backend-active',
+      );
     });
   });
 

@@ -166,7 +166,17 @@ export type AlarmLogSource =
   //   outcome='received'   — POST 시도(attempt)
   //   outcome='fired'      — backend 200 응답(성공). delaySeconds = (성공 시각 - lock.boardedAt)/1000
   //   outcome='suppressed' — 시도 자체가 불가능(관측 station 앵커 없음, reason='lock-sync-blocked-no-anchor')
-  | 'lock-sync-delivery';
+  | 'lock-sync-delivery'
+  // #2735 — LA 권위(device 쓰기 / backend 등록 대기 / backend 활성) 상태 전이 계측. 기존
+  // `liveActivityLogger.info`는 덤프에 안 남아 "권위가 언제 backend로 넘어갔는지/못 넘어갔는지"를
+  // 사후 확인할 수 없었다(2026-09-18 28분 freeze 실측 당시 근거 부재). 상태가 바뀔 때만 1건
+  // 적재(호출자가 dedup) — `summarizeAlarmLogBySource`가 source별 카운트를 그대로 dump에 노출한다.
+  //   'live-activity-authority-device-write'   — device GPS 추정치로 LA를 쓰는 중.
+  //   'live-activity-authority-backend-pending' — trip은 있지만 backend 등록 미확인/stale.
+  //   'live-activity-authority-backend-active'  — backend가 이 trip의 LA push 채널을 확인 등록함.
+  | 'live-activity-authority-device-write'
+  | 'live-activity-authority-backend-pending'
+  | 'live-activity-authority-backend-active';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -1255,6 +1265,24 @@ export function logLiveActivityUpdated(): void {
 }
 
 /**
+ * #2735 — LA 권위 상태 전이 1건 적재. 호출자(`liveActivityPushChannel.ts`)가 직전 상태와 달라졌을
+ * 때만 호출한다(dedup은 호출자 책임 — 매 write 시도마다(수십초 간격) 호출되면 ring이 상태값으로
+ * 도배되어 다른 RCA 신호를 밀어낸다). outcome은 상태 구분용일 뿐 성공/실패 의미가 아니다.
+ */
+export function logLiveActivityAuthorityState(
+  state:
+    | 'live-activity-authority-device-write'
+    | 'live-activity-authority-backend-pending'
+    | 'live-activity-authority-backend-active',
+): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: state,
+    outcome: 'fired',
+  });
+}
+
+/**
  * #2709 — lock 신원(trainCode/boardingLine) → backend 전달(`/boarding-lock/sync`) 계측.
  *
  * 과거 두 경로(POST /trips의 boardingLockMeta + /boarding-lock/sync)가 각자 다른 이유로
@@ -1751,6 +1779,10 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'live-activity-updated': null,
   // #2709 — lock 신원 전달 계측은 silent push와 무관한 별도 채널(POST /boarding-lock/sync).
   'lock-sync-delivery': null,
+  // #2735 — LA 권위 상태 전이는 silent push와 무관한 별도 채널.
+  'live-activity-authority-device-write': null,
+  'live-activity-authority-backend-pending': null,
+  'live-activity-authority-backend-active': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1826,6 +1858,10 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'live-activity-updated': false,
   // #2709 — lock 신원 전달 시도/성공/차단은 진단 계측이지 사용자에게 노출되는 알람이 아니다.
   'lock-sync-delivery': false,
+  // #2735 — LA 권위 상태 전이는 진단 계측이지 사용자에게 노출되는 알람이 아니다.
+  'live-activity-authority-device-write': false,
+  'live-activity-authority-backend-pending': false,
+  'live-activity-authority-backend-active': false,
 };
 
 /**
