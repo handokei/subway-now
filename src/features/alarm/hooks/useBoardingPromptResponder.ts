@@ -18,8 +18,25 @@
  *
  *   - [미탑승] 액션 / dismiss: backend `POST /boarding-prompt/dismiss` → 5분 silence.
  *
- * `Notifications.addNotificationResponseReceivedListener`는 단일 listener라 app/_layout의
- * 진동 정지 listener와 겹치지만, expo-notifications는 multi-listener를 허용한다 (FlatList 식).
+ * #2722 — `Notifications.addNotificationResponseReceivedListener`는 앱 전체에서 **정말로 1곳**
+ * (이 훅)에서만 등록한다. 예전 주석은 "단일 listener라 겹치지만 multi-listener를 허용한다"고
+ * 적었으나 실제로는 `useAlarmEndTripResponder`가 별도로 2번째 listener를 등록하고 있었다
+ * (dead-wire는 아니었지만 "단일 listener" 서술과 사실이 달랐다) — 그 등록을 이 훅의 dispatcher로
+ * 흡수해 `ALARM_ACTION_END_TRIP`도 여기서 분기 처리한다(`handleAlarmEndTripResponse` 재사용,
+ * 새 로직 아님).
+ *
+ * #2722 B — 앱이 완전 종료된 상태에서 액션이 탭되면 이 listener는 그 이벤트를 **못 받는다**
+ * (JS 런타임이 그 시점엔 존재하지 않았다). `Notifications.getLastNotificationResponse()`는
+ * "이번 launch를 유발한 응답"을 native 캐시에서 동기로 1회 회수하는 API라, 마운트 시 이 값을
+ * 먼저 확인해 cold-start 응답을 같은 dispatcher로 흘려보낸다.
+ *
+ * 이 회수가 **항상** 보장되는 건 아니다 — `notificationCategory.ts`에서 `BOARDING_PROMPT_ACTION_
+ * BOARDED`/`DISEMBARK_ACTION_DISEMBARKED`(lock 생성/해제를 유발하는 두 액션)는 둘 다
+ * `opensAppToForeground: true`라 그 액션 탭 자체가 이번 launch를 일으키므로 회수가 항상
+ * 가능하다(플랫폼이 보장). 반면 `BOARDING_PROMPT_ACTION_NOT_BOARDED`/`DISEMBARK_ACTION_NOT_YET`/
+ * `ALARM_ACTION_*`는 `opensAppToForeground: false`라 앱이 완전 종료 상태였다면 그 탭이 JS를
+ * 재부팅시키지 않는다 — 사용자가 나중에 앱을 수동으로 열 때까지 회수가 지연된다. 이건
+ * expo-notifications/iOS 자체의 한계이지 이 구현의 결함이 아니다(PR 본문에 근거로 명시).
  */
 
 import { useEffect } from 'react';
@@ -41,6 +58,7 @@ import {
   logBoardingPromptResponded,
 } from '../utils/alarmLog';
 import {
+  ALARM_ACTION_END_TRIP,
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
   BOARDING_PROMPT_CATEGORY,
@@ -62,6 +80,7 @@ import {
   markBoardingPromptDisplayed,
   wasBoardingPromptDisplayed,
 } from './useBoardingPromptDisplayLogger';
+import { handleAlarmEndTripResponse } from './useAlarmEndTripResponder';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -159,10 +178,20 @@ export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps)
   const createLock = useBoardingLockStore((s) => s.createLock);
 
   useEffect(() => {
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+    // #2722 — 앱 전체의 유일한 `addNotificationResponseReceivedListener` 콜백. boarding-prompt
+    // payload면 기존 tryAutoLock/dismiss 분기로, 아니면(예: ALARM_CATEGORY [trip 종료])
+    // `handleAlarmEndTripResponse`로 위임한다 — 두 회수 경로(아래 cold-start 캐시 / 이 live
+    // listener)가 완전히 같은 분기를 타도록 함수 하나로 뽑아둔다.
+    const dispatch = (response: Notifications.NotificationResponse): void => {
       const request = response.notification.request;
       const payload = extractBoardingPromptPayload(request.content.data);
-      if (!payload) return;
+      if (!payload) {
+        // #2722 C — 구 `useAlarmEndTripResponder`가 별도로 등록하던 listener를 여기로 흡수.
+        // `handleAlarmEndTripResponse`는 actionIdentifier가 ALARM_ACTION_END_TRIP이 아니면
+        // 자체적으로 no-op이므로 무조건 호출해도 안전(기존 별도 listener와 동일 계약).
+        void handleAlarmEndTripResponse(response.actionIdentifier);
+        return;
+      }
       // #1385 — BG cold-start fired 보완. FG receive listener가 못 잡은 케이스(killed-app 상태에서
       // prompt 표시 → 사용자가 곧장 응답)에서도 displayed 카운트를 살린다. dedup은
       // notification.request.identifier 기준 — FG receive가 먼저 적재했으면 skip.
@@ -188,7 +217,20 @@ export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps)
         ...deps,
         createLock,
       });
-    });
+    };
+
+    // #2722 B — 앱이 완전 종료된 상태에서 액션이 탭되면 이 훅이 마운트되기 전에 응답이 이미
+    // 발생했으므로 아래 live listener는 그 이벤트를 받지 못한다. `getLastNotificationResponse()`는
+    // "이번 launch를 유발한 응답"을 native 캐시에서 동기로 1회 회수하는 API — 마운트 시 먼저
+    // 확인해 같은 dispatch로 흘려보낸다. 처리 후 `clearLastNotificationResponse()`로 비워
+    // (dev 환경 hot-reload 등에 의한) 재마운트 시 같은 응답을 중복 처리하지 않는다.
+    const lastResponse = Notifications.getLastNotificationResponse();
+    if (lastResponse) {
+      dispatch(lastResponse);
+      Notifications.clearLastNotificationResponse();
+    }
+
+    const sub = Notifications.addNotificationResponseReceivedListener(dispatch);
     return () => sub.remove();
   }, [createLock, deps]);
 }

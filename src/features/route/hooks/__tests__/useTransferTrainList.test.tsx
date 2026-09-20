@@ -43,12 +43,19 @@ import { findActiveTransferContext } from '../../utils/findActiveTransferContext
 const mockFindActiveTransferContext = findActiveTransferContext as jest.Mock;
 
 const mockCreateLock = jest.fn().mockResolvedValue(undefined);
+// #2722 — isDuplicateBoardingLock(duplicateBoardingLock.ts)이 useBoardingLockStore.getState().lock을
+// 읽으므로 mock에도 getState를 추가한다. 기본값 null(중복 없음, 기존 테스트 전부 영향 없음) —
+// 개별 테스트가 mockActiveLock을 채워 dedup 경로를 검증한다.
+let mockActiveLock: BoardingLock | null = null;
 jest.mock('../../../alarm/store/useBoardingLockStore', () => {
   const actual = jest.requireActual('../../../alarm/store/useBoardingLockStore');
   return {
     ...actual,
-    useBoardingLockStore: ((selector?: (s: { createLock: jest.Mock }) => unknown) =>
-      selector ? selector({ createLock: mockCreateLock }) : { createLock: mockCreateLock }) as jest.Mock,
+    useBoardingLockStore: Object.assign(
+      ((selector?: (s: { createLock: jest.Mock }) => unknown) =>
+        selector ? selector({ createLock: mockCreateLock }) : { createLock: mockCreateLock }) as jest.Mock,
+      { getState: () => ({ createLock: mockCreateLock, lock: mockActiveLock }) },
+    ),
   };
 });
 
@@ -108,6 +115,7 @@ function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
 describe('useTransferTrainList', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockActiveLock = null;
     mockReadMirror.mockResolvedValue(null);
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
@@ -180,6 +188,8 @@ describe('useTransferTrainList', () => {
         initialEtaSeconds: 240,
       }),
       false,
+      // #2722 — reason='user-tap' 명시(기존 누락, 소거법 진단 구분 불가 회귀 fix).
+      'user-tap',
     );
   });
 
@@ -193,6 +203,30 @@ describe('useTransferTrainList', () => {
       }),
     );
     act(() => result.current.createTransferLock(makeTrain({})));
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  // #2722 — 동시 진입 방어: LA·알림 응답이 같은 환승역/노선으로 이미 lock을 만든 직후,
+  // 사용자가 같은 목록에서 탭해도 lock을 다시 만들지 않는다(isDuplicateBoardingLock).
+  it('같은 환승역/노선으로 이미 active lock 존재 → createTransferLock no-op (동시 진입 dedup)', () => {
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({ trainCode: 'NEW' })], down: [] }));
+    mockActiveLock = {
+      destinationId: 'dest-X',
+      trainCode: 'ALREADY-LOCKED',
+      boardingStationId: (findStationByNameAndLine('공덕', '5') as Station).id,
+      boardingLine: '5',
+      boardedAt: Date.now(),
+      expectedDurationMs: 1_000_000,
+    };
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'NEW' })));
     expect(mockCreateLock).not.toHaveBeenCalled();
   });
 
@@ -336,6 +370,7 @@ describe('#2590 backend SSoT mirror — 환승 컨텍스트 currentStation 1순�
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockActiveLock = null;
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
     mockReadMirror.mockResolvedValue(null);
@@ -688,6 +723,7 @@ describe('#2115 loading passthrough', () => {
 describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockActiveLock = null;
     mockReadMirror.mockResolvedValue(null);
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
@@ -771,6 +807,7 @@ describe('#2305 durable legAdvance stamp — context 활성화 시 stamp', () =>
 describe('#2319 lockless trip 환승 진행 시 legAdvance stamp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockActiveLock = null;
     mockReadMirror.mockResolvedValue(null);
     mockUseArrival.mockReturnValue(arrivalRet(null));
     mockPrefetchArrival.mockResolvedValue(undefined);
@@ -841,6 +878,48 @@ describe('#2319 lockless trip 환승 진행 시 legAdvance stamp', () => {
     expect(mockStampLegAdvance).toHaveBeenCalledTimes(1);
     expect(mockStampLegAdvance).toHaveBeenCalledWith('5');
   });
+});
+
+// #2722 D — leg 번호 무관성. createTransferLock은 `context.completedTransferIdx`(#604)만 읽어
+// 잔여 ETA를 계산할 뿐, leg 번호에 따른 if/switch 분기가 코드에 없다. completedTransferIdx를
+// 0(leg-1→2)/1(leg-2→3)/2(leg-3→4)로 바꿔가며 같은 동작(같은 createLock 호출 + user-tap reason)이
+// 유지되는지 고정한다 — "leg-1/2가 되면 leg-3에서 또 깨진다"는 회귀 패턴(#2722 이슈 D) 차단.
+describe('#2722 D — leg 번호 무관성 (leg-1/2/3 동일 동작)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockActiveLock = null;
+    mockReadMirror.mockResolvedValue(null);
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({ trainCode: 'NEW' })], down: [] }));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+  });
+
+  it.each([0, 1, 2])(
+    'completedTransferIdx=%i(leg-%i→%i 전환)이어도 createTransferLock이 동일하게 동작',
+    (completedTransferIdx) => {
+      mockFindActiveTransferContext.mockReturnValue({
+        transferStationInToLine: gondeokOn6,
+        nextLine: '5',
+        nextWaypointName: '여의나루',
+        direction: null,
+        completedTransferIdx,
+      });
+      const { result } = renderHook(() =>
+        useTransferTrainList({
+          lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      );
+      act(() => result.current.createTransferLock(makeTrain({ trainCode: 'NEW' })));
+      expect(mockCreateLock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'NEW', boardingLine: '5' }),
+        false,
+        'user-tap',
+      );
+      expect(mockStampLegAdvance).toHaveBeenCalledWith('5');
+    },
+  );
 });
 
 describe('filterArrivalsByDirection', () => {

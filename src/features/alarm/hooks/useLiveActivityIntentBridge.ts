@@ -36,10 +36,8 @@ import {
 } from 'live-activity';
 import { usePolling } from '../../../shared/hooks/usePolling';
 import { LIVE_ACTIVITY_INTENT_POLL_MS } from '../../../shared/constants/boardingLock';
-import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
-import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
-import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
@@ -120,14 +118,14 @@ interface BridgeDeps extends UseBoardingPromptResponderDeps {
  * #2438 ⑥ — 이미 같은 탑승역/노선으로 active lock이 있으면 true(중복 boarding intent).
  * 알림 [탑승] 액션이 먼저 처리돼 lock이 생성된 뒤 LA 버튼(같은 트립)이 뒤이어 도착하는
  * 케이스, 또는 그 반대 순서 모두 이 체크로 흡수한다.
+ *
+ * #2722 — 판정 로직은 `isDuplicateBoardingLock`(shared)으로 이전했다. 이 함수는 그 predicate를
+ * PendingBoardingIntent shape에 맞게 얇게 감싸는 어댑터일 뿐 — 동작은 100% 동일하다. 수동 탭
+ * 진입점(`useTransferTrainList`/`useBoardingLockController`)도 같은 shared predicate를 직접
+ * 재사용해, LA·알림·수동 탭 세 채널이 하나의 dedup 규칙을 공유한다.
  */
 function isDuplicateBoardingIntent(intent: PendingBoardingIntent): boolean {
-  const lock = useBoardingLockStore.getState().lock;
-  if (!lock) return false;
-  if (isBoardingLockExpired(lock, Date.now())) return false;
-  if (!isValidLineNumber(intent.line) || lock.boardingLine !== intent.line) return false;
-  const station = findStationByNameAndLine(intent.originStation, intent.line);
-  return station !== null && station.id === lock.boardingStationId;
+  return isDuplicateBoardingLock(intent.line, intent.originStation);
 }
 
 async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
