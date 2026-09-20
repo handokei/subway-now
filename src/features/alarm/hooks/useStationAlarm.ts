@@ -29,11 +29,9 @@ import {
 } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateTransitEtaSeconds } from '../../../shared/utils/stationEta';
-import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
 import { findTrainFeedEtaSeconds } from '../../arrival/utils/trainFeedEta';
 import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
 import type { StationArrival } from '../../../shared/types/arrival';
-import { getStoredTripTrainCode } from '../../route/utils/tripTrainCode';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import {
   getLastNotifiedStationId,
@@ -114,9 +112,9 @@ const logger = createLogger('StationAlarm');
  * #1984 (Phase 1-4, ADR-022 B3) — client 채널 통합 fire path.
  *
  * flag OFF (default, `EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH !== 'true'`): 기존 fire 흐름 유지
- * (Phase ETA + API imminent 두 useEffect가 각각 `fireAndLog` 직접 호출). backward-compat 보장.
+ * (Phase ETA useEffect가 `fireAndLog` 직접 호출). backward-compat 보장.
  *
- * flag ON (`EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH === 'true'` — dogfood 빌드): 두 useEffect가
+ * flag ON (`EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH === 'true'` — dogfood 빌드): 이 useEffect가
  * `fireAlarmOnce` unified ledger를 통과한 뒤에만 `fireAndLog` 호출. ledger key =
  * `${stationName}|${line}|${kind}|${phase}` — 같은 초 동시 dispatch race 차단.
  *
@@ -563,7 +561,7 @@ export interface UseStationAlarmInputs {
    * 폴링 station은 nearestStation(또는 origin)이 일반적이며, 매역 fast-path effect는
    * 그 arrival.up/down row 중 lock.trainCode 일치 + arvlCd∈{0,1}을 트리거 신호로 본다.
    *
-   * 미전달이면 fast-path 효과는 no-op — 기존 ETA/API imminent path와 backend cron 1차 source만 동작.
+   * 미전달이면 fast-path 효과는 no-op — 기존 ETA path와 backend cron 1차 source만 동작.
    */
   currentStationArrival?: StationArrival | null;
   /**
@@ -651,8 +649,8 @@ export function useStationAlarm({
     prevSpeedMpsRef.current = speedMps ?? null;
   }, [speedMps]);
 
-  // #1405 — 동일 5-arg evaluateMovement 호출 helper. Phase ETA / API imminent / movementSuppressionReason
-  // 3곳에서 같은 인자로 호출돼 SonarCloud CPD가 dup 검출. helper로 추출해 회피.
+  // #1405 — 동일 5-arg evaluateMovement 호출 helper. Phase ETA / movementSuppressionReason
+  // 2곳에서 같은 인자로 호출돼 SonarCloud CPD가 dup 검출. helper로 추출해 회피.
   // 매 render에 새 클로저지만, callback 내부에서만 호출되므로 reference 안정성 불필요.
   const runMovementGate = (): ReturnType<typeof evaluateMovement> =>
     evaluateMovement(
@@ -712,13 +710,10 @@ export function useStationAlarm({
     destination?.name ?? null,
     destination?.line ?? null,
   );
-  // 트립에 lock된 사용자 열차 코드. AsyncStorage에서 비동기 로드. lock 실패 상태(null)면
-  // API 신호 평가는 보수적으로 false 반환 — 잘못된 train으로 imminent 오발사 방지.
-  const [trackedTrainCode, setTrackedTrainCode] = useState<string | null>(null);
   // Epic #1204 N8 — phase 알람의 currentLine 입력에 lock.boardingLine을 우선 반영하기 위한
-  // 동기 mirror. getBoardingLock은 비동기이므로 trackedTrainCode와 같은 주기(destinationId /
-  // destinationArrival 갱신)로 sync 한다. lock 부재면 null → resolveCurrentLine이
-  // nearestStation.line으로 자연 fallback.
+  // 동기 mirror. getBoardingLock은 비동기이므로 destinationId / destinationArrival 갱신과
+  // 같은 주기로 sync 한다. lock 부재면 null → resolveCurrentLine이 nearestStation.line으로
+  // 자연 fallback.
   const [currentLockLine, setCurrentLockLine] = useState<LineNumber | null>(null);
   // #2703 — lock.boardingStationId 동기 mirror. Epic #1204 N8이 currentLockLine(boardingLine)을
   // 이미 이 패턴으로 mirror했다 — evaluateAlarmPhase 입력을 만드는 phase 효과(아래)는 sync 함수라
@@ -730,8 +725,7 @@ export function useStationAlarm({
   );
   // ADR-039 §5 3단계 (#2728) — lock.trainCode 동기 mirror. currentLockLine/currentLockBoardingStationId와
   // 동일 패턴(같은 fetch 결과 재사용, 추가 AsyncStorage read 아님). destination phase ETA 효과가
-  // Seoul 열차 피드에서 이 trainCode와 일치하는 행을 찾아 1순위 ETA로 쓴다(#396 trackedTrainCode는
-  // TRIP_TRAIN_CODE_KEY를 쓰는 별도 미배선 경로라 재사용 불가 — lock의 trainCode가 SSOT, #2728 2단계와 동일 근거).
+  // Seoul 열차 피드에서 이 trainCode와 일치하는 행을 찾아 1순위 ETA로 쓴다.
   const [currentLockTrainCode, setCurrentLockTrainCode] = useState<string | null>(null);
   const sleepMode = useSettingsStore((s) => s.sleepMode);
   const setAlarmEvent = useAlarmEventStore((s) => s.setAlarmEvent);
@@ -745,24 +739,17 @@ export function useStationAlarm({
     sleepModeRef.current = sleepMode;
   }, [sleepMode]);
 
-  // #396: 트립 trainCode lock-in 상태를 destination 도착정보 갱신마다 재로드.
-  // lock-in은 첫 valid arrival 캡처 시점에 일어나므로, arrival이 들어올 때마다 확인하면
-  // lock 직후 곧바로 API 신호 평가에 반영된다. destinationId가 없으면 null.
+  // lock-in 상태를 destination 도착정보 갱신마다 재로드. destinationId가 없으면 null.
   useEffect(() => {
     if (!destinationId) {
-      setTrackedTrainCode(null);
       setCurrentLockLine(null);
       setCurrentLockBoardingStationId(null);
       setCurrentLockTrainCode(null);
       return;
     }
     let cancelled = false;
-    void (async () => {
-      const code = await getStoredTripTrainCode(destinationId);
-      if (!cancelled) setTrackedTrainCode(code);
-    })();
-    // N8 — lock.boardingLine 동기 mirror. trackedTrainCode와 동일 주기로 refresh되어
-    // phase 알람 effect가 GPS jitter와 무관하게 lock 노선을 currentLine으로 사용한다.
+    // N8 — lock.boardingLine 동기 mirror. destinationId/destinationArrival과 동일 주기로
+    // refresh되어 phase 알람 effect가 GPS jitter와 무관하게 lock 노선을 currentLine으로 사용한다.
     // #2703 — lock.boardingStationId도 같은 fetch 결과에서 함께 mirror한다(추가 AsyncStorage read 아님).
     void (async () => {
       const lock: BoardingLock | null = await getBoardingLock();
@@ -856,7 +843,7 @@ export function useStationAlarm({
     };
   }, [destinationId, destinationArrival]);
 
-  // 알람 발사 + 로깅 헬퍼. ETA effect와 API 신호 effect가 동일 시퀀스를 수행하므로 통합.
+  // 알람 발사 + 로깅 헬퍼. Phase ETA effect가 이 시퀀스를 통해 발사한다.
   // route/destination은 호출자가 가드 후 non-null로 전달 — 함수 내부 가드 중복 제거.
   //
   // #699: setFiredAlarms를 await — fire-and-forget이면 다음 evaluation(또는 destination
@@ -887,7 +874,7 @@ export function useStationAlarm({
     const lock = await getBoardingLock();
     // #1816 (paradigm shift Phase 1 보강) — lockless trip + 사용자 명시 의향 없음 시 ETA/imminent phase 발사 차단.
     // #2387: lockless+무의향 억제 — isLocklessNoUserIntent 참고. 이 상태에서 transfer/destination
-    // phase 알람(ETA 기반 early/imminent + API imminent)을 fire하면 paradigm shift 위반.
+    // phase 알람(ETA 기반 early/imminent)을 fire하면 paradigm shift 위반.
     // firedAlarmsRef.current.delete(key): 진입부 add를 복구해 storage net-zero 유지 (sleep/cross-category 차단과 동일 패턴).
     if (isLocklessNoUserIntent(lock)) {
       firedAlarmsRef.current.delete(key);
@@ -1080,8 +1067,8 @@ export function useStationAlarm({
    * flag OFF (default): 바로 `fireAndLog` 호출 — 기존 흐름 그대로.
    * flag ON: `fireAlarmOnce` ledger를 sync entry-guard로 통과한 뒤에만
    * `fireAndLog` 호출. 같은 (stationName, line, kind, phase) 조합이 30s 안에 이미 fire됐으면
-   * skip + `logSuppressedFireAlarmOnce` 적재. Phase ETA + API imminent 두 useEffect가 같은
-   * 초에 dispatch 시도한 회귀(2026-07-01 08:32:09 성수 fg fired station-passed 2건)를 차단.
+   * skip + `logSuppressedFireAlarmOnce` 적재. 같은 조합의 fire path가 같은
+   * 초에 중복 dispatch 시도한 회귀(2026-07-01 08:32:09 성수 fg fired station-passed 2건)를 차단.
    *
    * currentLine = lock.boardingLine 우선(currentLockLine) → nearestStation.line fallback.
    * `resolveCurrentLine` SSOT와 동일 규약.
@@ -1361,92 +1348,6 @@ export function useStationAlarm({
     estimatorIsTimeIntegration,
     // #2204 — fusionSource 전환(약→강/강→약) 시 즉시 재평가.
     fusionSource,
-  ]);
-
-  // #396: 도착정보 API 신호로 imminent 발사.
-  // lock된 trainCode가 목적지 역에 진입/도착하면 즉시 발사 — speedMps/accuracy 무관.
-  // 기존 ETA 기반 effect와 firedAlarms를 공유하므로 한쪽이 먼저 발사하면 다른 쪽은 dedup된다.
-  // silent push(#478) 핸들러도 동일 isImminentByArrivalCode를 사용해 BG에서 같은 판정.
-  //
-  // #727: 정적 misfire 가드 — speedMps/accuracy 무관 정책은 *trackedTrainCode가 잘못 lock된*
-  // 케이스에서 잘못된 발사를 막지 못한다 (정적 사용자 근처 통과 열차를 fusion이 momentary
-  // adoption → 그 trainCode가 목적지역 도착하면 ENTERED → 알람 발사). evaluateMovement로
-  // 정적/저신호 거부.
-  useEffect(() => {
-    if (hydrationPhase !== 'ready') return;
-    if (!route || !destination) return;
-    // #699: ETA effect와 동일 guard — destination 전환 race로 stale ref가 imminent를
-    // 잘못 발사하는 것을 차단한다.
-    // #580 M4: mismatch stamp.
-    if (firedAlarmsRefDestIdRef.current !== destination.id) {
-      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
-      return;
-    }
-    if (!isImminentByArrivalCode(destinationArrival, trackedTrainCode)) return;
-
-    const imminentKey = `imminent:${destination.name}`;
-    if (firedAlarmsRef.current.has(imminentKey)) return;
-
-    // #746 — dismiss silence 게이트. dismiss 후 5분/200m 이내라면 imminent도 차단.
-    const silenceGate = applySilenceGate(
-      dismissSilence,
-      Date.now(),
-      userLocation,
-      clearDismissSilenceAction,
-    );
-    if (silenceGate.silenced) {
-      logSuppressedDismissSilence({
-        source: 'fg',
-        stationName: destination.name,
-        kind: 'destination',
-        phaseId: 'imminent',
-      });
-      return;
-    }
-
-    // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
-    // #733 — speed=null 시 positionStability fallback 사용.
-    // #728 — motionStationary 추가. API imminent 경로의 destination 카테고리 보호 (13:53:53 회귀).
-    // #1401 — trainProgressing 추가. fusion arc advance 시 device 정적 신호 우회.
-    // #1405 — runMovementGate helper로 동일 5-arg evaluateMovement 호출 추출.
-    const movement = runMovementGate();
-    if (!movement.reliable && movement.reason) {
-      logSuppressedMovement({
-        source: 'fg',
-        stationName: destination.name,
-        kind: 'destination',
-        phaseId: 'imminent',
-        reason: MOVEMENT_TO_ALARM_LOG_REASON[movement.reason],
-      });
-      return;
-    }
-
-    const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
-    // #699: setFiredAlarms 영속화 완료를 await — silent push BG 핸들러가 같은 imminent를
-    // 재발사하지 않도록 storage가 sync된 후 다음 cycle 진입.
-    // #1984: flag ON 시 unified fire ledger가 Phase ETA effect와의 동일 초
-    // 재발사 race를 sync entry-guard로 차단.
-    void fireViaUnifiedGate(rawEvent, 'api', route, destination);
-  }, [
-    hydrationPhase,
-    route,
-    destination?.id,
-    destination?.name,
-    destinationArrival,
-    trackedTrainCode,
-    setAlarmEvent,
-    nearestStation?.id,
-    speedMps,
-    accuracyMeters,
-    positionStability,
-    motionStationary,
-    trainProgressing,
-    dismissSilence,
-    clearDismissSilenceAction,
-    userLocation?.lat,
-    userLocation?.lng,
-    // #903 — 위 ETA effect와 동일 사유. degraded 단독 전환에 본 API-신호 effect도 즉시 반응.
-    arrivalConfidence,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
