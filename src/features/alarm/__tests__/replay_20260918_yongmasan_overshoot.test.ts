@@ -122,19 +122,9 @@ jest.mock('../utils/scheduledAlarmReceiver', () => ({
   awaitInitialScheduledAlarmDrain: () => mockAwaitInitialScheduledAlarmDrain(),
 }));
 
-const mockIsImminentByArrivalCode = jest.fn().mockReturnValue(false);
-jest.mock('../../arrival/utils/imminentArrivalSignal', () => ({
-  isImminentByArrivalCode: (...args: unknown[]) => mockIsImminentByArrivalCode(...args),
-}));
-
 const mockFindFgArvlCdFireSignal = jest.fn().mockReturnValue(null);
 jest.mock('../utils/fgArvlCdFastPath', () => ({
   findFgArvlCdFireSignal: (...args: unknown[]) => mockFindFgArvlCdFireSignal(...args),
-}));
-
-const mockGetStoredTripTrainCode = jest.fn().mockResolvedValue(null);
-jest.mock('../../route/utils/tripTrainCode', () => ({
-  getStoredTripTrainCode: (...args: unknown[]) => mockGetStoredTripTrainCode(...args),
 }));
 
 // 실제 조건 3(destination phase gate) 앞단에서 evaluate 자체를 관찰하고 싶을 뿐 실 evaluator

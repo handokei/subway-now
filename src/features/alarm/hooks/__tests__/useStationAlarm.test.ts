@@ -3120,6 +3120,14 @@ describe('useStationAlarm', () => {
     });
 
     it('trainProgressing=false면 기존 동작 (motion=stationary 차단 그대로)', async () => {
+      // Phase rawEvent를 명시적으로 부여해 Phase ETA effect가 실제로 fireAndLog 시도를
+      // 하도록 만든다 — 그래야 movement gate가 이를 차단하는지(가드 제거 시 red) 검증된다.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      });
+
       renderTrainProgressingAlarm({
         speedMps: 0.69,
         accuracyMeters: 50,
@@ -3136,6 +3144,14 @@ describe('useStationAlarm', () => {
     });
 
     it('trainProgressing=undefined(기본값)면 기존 동작 (graceful fallback)', async () => {
+      // Phase rawEvent를 명시적으로 부여해 Phase ETA effect가 실제로 fireAndLog 시도를
+      // 하도록 만든다 — 그래야 movement gate가 이를 차단하는지(가드 제거 시 red) 검증된다.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      });
+
       renderTrainProgressingAlarm({
         speedMps: 0,
         accuracyMeters: 50,
@@ -6340,6 +6356,13 @@ describe('useStationAlarm', () => {
 
     it('flag OFF (기본) + motionStationary=true → 기존 동작 (motion gate 차단 + movement-motion-stationary 적재)', async () => {
       delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
+      // Phase rawEvent를 명시적으로 부여해 Phase ETA effect가 실제로 fireAndLog 시도를
+      // 하도록 만든다 — 그래야 movement gate가 이를 차단하는지(가드 제거 시 red) 검증된다.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: '강남',
+      });
 
       renderHook(() =>
         useStationAlarm(

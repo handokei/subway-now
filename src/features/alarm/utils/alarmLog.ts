@@ -528,9 +528,11 @@ export type AlarmLogReason =
   | 'movement-low-accuracy-lock-exempt';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
-// #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
-// early phase 등 imminent 외 발사에선 미설정.
-export type AlarmLogTrigger = 'api' | 'eta';
+// imminent 발사 신호 출처. 'eta'는 ETA 임계 기반 발사. early phase 등 imminent 외 발사에선 미설정.
+// #2767 — 'api'(도착정보 arrivalCode 단독 신호, #396 유래) 발사 경로는 writer 0건 dead code로
+// 삭제됨. 과거 실기기 alarmLog에는 trigger:'api' 기록이 남아있을 수 있으나(문자열로만 보존,
+// 재검증 대상 아님) 신규 발사는 더 이상 'api'를 생산하지 않아 타입에서도 제거한다.
+export type AlarmLogTrigger = 'eta';
 
 export interface AlarmLogLocation {
   lat: number;

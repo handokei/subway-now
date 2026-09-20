@@ -704,8 +704,10 @@ export function useStationAlarm({
   // 명시화 + alarmLog로 측정 — DebugModal Gates 섹션에서 자동 카운트.
   const [hydrationPhase, setHydrationPhase] = useState<HydrationPhase>('pre-hydrate');
   const destinationId = destination?.id ?? null;
-  // #396: 목적지 역의 도착정보를 별도로 폴링. arrivalCode가 ENTERING/ARRIVED가 되는 순간
-  // imminent 신호로 사용. useArrivalInfo는 모듈 스코프 TtlCache를 공유해 추가 호출 비용이 적다.
+  // 목적지 역의 도착정보를 별도로 폴링. ADR-039 §5 3단계(#2728) — lock 활성 trip의 destination
+  // ETA는 이 도착정보에서 currentLockTrainCode와 일치하는 Seoul 열차 피드 행을 찾아
+  // findTrainFeedEtaSeconds(:1196)로 1순위 ETA를 산출한다(GPS 거리 계산은 fallback).
+  // useArrivalInfo는 모듈 스코프 TtlCache를 공유해 추가 호출 비용이 적다.
   const { arrival: destinationArrival } = useArrivalInfo(
     destination?.name ?? null,
     destination?.line ?? null,
@@ -852,7 +854,7 @@ export function useStationAlarm({
   // write 완료까지 기다려 FG/BG 단일 출처 일관성을 보장한다.
   async function fireAndLog(
     rawEvent: AlarmEvent,
-    trigger: 'api' | 'eta',
+    trigger: 'eta',
     activeRoute: NonNullable<Route>,
     activeDestination: Station,
   ): Promise<void> {
@@ -1078,7 +1080,7 @@ export function useStationAlarm({
    */
   async function fireViaUnifiedGate(
     rawEvent: AlarmEvent,
-    trigger: 'api' | 'eta',
+    trigger: 'eta',
     activeRoute: NonNullable<Route>,
     activeDestination: Station,
   ): Promise<void> {
