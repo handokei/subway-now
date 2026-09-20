@@ -19,7 +19,7 @@ backend가 **fire 결정을 여러 path에서 독립 수행** → patch가 1개 
 
 | Fire path | 현재 게이트 | 누락 |
 |---|---|---|
-| `scheduled.ts:795 evaluateArvlCdFireGate` | lock 활성 + arvlCd ARRIVED/ENTERING | motion, train identity, env |
+| `scheduled.ts:795 evaluateArvlCdFireGate` (**superseded-by-#2764** — 함수 자체가 삭제됨, `estimate.arvlCd !== null` 단독 체크와 항상 동치였다는 도달불가 확증) | lock 활성 + arvlCd ARRIVED/ENTERING | motion, train identity, env |
 | `scheduled.ts:1525 advanceBoardingLockWaypoint` | (cron 호출 직후 무조건) | 합의 게이트 |
 | `scheduled.ts:1705 maybeReschedulePush` | 임계치 변동 | motion |
 | `boardingPrompt.ts:95 evaluateBoardingPromptGates` | 9-AND (GPS series 5개) | env 분기 |
@@ -84,6 +84,13 @@ await advanceBoardingLockWaypoint(...);
 const result = await advanceTripPosition(token, candidate, { type: 'arvlcd', arvlcdTrainCode, lock }, env);
 if (result === 'advanced') await fireStationPassedPush(token, SSoT.currentStationId);
 ```
+
+> **superseded-by-#2764** — `evaluateArvlCdFireGate`(위 Before 샘플의 legacyGate)는 T4~T7 reader
+> migration 완료 후에도 "잔존 호출자 보존용"으로 남아 있었으나, 게이트 전수감사(2026-09-20)에서
+> `estimate.arrived===true` 분기에 도달하는 시점의 lock은 이미 상류 `isBoardingLockActive`로 활성
+> 검증돼 있어 `gate === 'fire'`가 `estimate.arvlCd !== null`과 항상 동치였음이 확증돼 함수 자체를
+> 삭제했다(PR #2764). 이 위 Before/After 샘플은 T4 당시의 마이그레이션 의도를 보여주는 역사적
+> 기록으로 남긴다 — `evaluateArvlCdFireGate`는 더 이상 코드에 존재하지 않는다.
 
 ### 원칙 4 — Motion strict update (T3 #1556)
 

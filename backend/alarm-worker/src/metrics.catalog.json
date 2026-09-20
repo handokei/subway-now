@@ -92,7 +92,7 @@
       "constantName": "ARVLCD_FIRE_DEDUP",
       "format": "rate",
       "display": "percentage",
-      "description": "#917 A2 — 같은 (trainCode, station, arvlCd) 조합 dedup KV로 차단된 비율 — Seoul API 갱신 지연으로 중복 신호 차단 효과 측정"
+      "description": "#917 A2 — 매역 알림 dedup으로 차단된 비율(station-passed 마커 + cross-station 45s 윈도우 합산). #2764 — 소스가 (구)per-arvlCd dedup KV(arvlCdFireKey)에서 stationPassedFiredKey(경로 무관 station-passed 마커, #2571)로 이전됐다. 값 자체(카운터 정의·집계 방식)는 변경 없음 — 소스 이전만, dedup 회귀 아님"
     },
     {
       "key": "arvlCdFireMismatch",

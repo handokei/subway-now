@@ -1183,13 +1183,6 @@ describe('AdvanceStats / AdvanceResult / AdvanceBlockReason — type 보장', ()
   });
 });
 
-describe('evaluateArvlCdFireGate — @deprecated jsdoc 보존 (T2가 export keep)', () => {
-  it('signature 그대로 사용 가능 (jsdoc deprecated만 마킹)', async () => {
-    const mod = await import('../scheduled');
-    expect(typeof mod.evaluateArvlCdFireGate).toBe('function');
-  });
-});
-
 // #1572 (T9, ADR-017) — advance 성공 시 alarmEvents stamping acceptance.
 describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
   let kv: InMemoryKV;

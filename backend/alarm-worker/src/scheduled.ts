@@ -915,15 +915,24 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   arvlCdFireSuccess: number;
   /**
-   * #917 A2 — 같은 (trainCode, station, arvlCd) 조합에 대해 이미 발사한 dedup KV가 있어
-   * 매역 push가 차단된 횟수. cron 60s × Seoul API 갱신 지연으로 같은 신호가 2~3 cycle 반복
-   * 노출되는데, 클라가 같은 알림을 중복 수신하는 회귀를 차단한다.
+   * #917 A2 — 매역 push가 dedup으로 차단된 누적 횟수. cron 60s × Seoul API 갱신 지연으로 같은
+   * 신호가 2~3 cycle 반복 노출되는데, 클라가 같은 알림을 중복 수신하는 회귀를 차단한다.
+   *
+   * #2764 (PR 리뷰 보강 #5) — 소스가 두 지점으로 이전됐다: (1) 경로 무관 station-passed
+   * 마커(`stationFiredKey`, #2571) — 같은 역에 대해 arvlCd/position/vanish 어느 경로가 먼저
+   * 발사했든 재발사를 차단. (2) cross-station 45s 윈도우(`SAME_PHASE_STATION_DEDUP_WINDOW_MS`).
+   * (구)per-(trainCode, station, arvlCd) 전용 dedup KV(`arvlCdFireKey`)는 stationFiredKey가
+   * 이미 함수 진입부에서 먼저 검사해 도달불가였던 것이 확증돼 삭제됐다(PR #2764) — 카운터
+   * 정의·집계 의미는 그대로, 소스 이전만이며 dedup 효과 자체의 회귀는 아니다.
    */
   arvlCdFireDedup: number;
   /**
-   * #917 A2 — 매역 fire path 진입했지만 prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패로
-   * push 미발사된 횟수. positions-fallback arrived(arvlCd=null) 등 SSOT가 arvlCd가 아닌
-   * 경로를 측정한다. #640 회귀(lock 없는 trip 발사) 방어 신호 — 정상 운영에서는 0이어야 한다.
+   * #917 A2 — 매역 fire path에서 `estimate.arvlCd===null`(positions-fallback arrived — SSOT가
+   * arvlCd가 아닌 realtimePosition 확증 경로)로 분류돼 arvlcd-fire 분기 대신 vanish-fallback으로
+   * 넘어간 누적 횟수. #2764 — 과거 이름인 "prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패"는
+   * `evaluateArvlCdFireGate`(legacyGate) 제거로 더 이상 정확한 서술이 아니다 — 이 시점의 lock은
+   * 상류에서 이미 활성 검증됐으므로 실제 분기 조건은 arvlCd 유무 단독이다. 정상 운영에서는 0이
+   * 아니어도 회귀 신호가 아니다(vanish-fallback으로 정상 발사되는 케이스가 포함).
    */
   arvlCdFireMismatch: number;
   /**
@@ -1042,16 +1051,6 @@ export interface ScheduledStats extends LiveActivityStats {
    * 0이 아니면 Seoul API 오류 또는 KV write 실패 신호.
    */
   stationPollError: number;
-  /**
-   * #1614 Phase C — `fireArvlCdStationPush` 진입 시 SSoT.lastAdvanceAt이 stale(>3분 경과)이라
-   * fire를 차단한 누적 횟수. arvlCd/position 확증 경로의 transferDestinationGate와는 #2602
-   * 이후 사실상 동일 임계(180s)지만 모든 fire kind(intermediate 포함)에 동일 적용된다는 점이
-   * 다르다 — transferDestinationGate는 transfer/destination 전용 + vanish-fallback/release
-   * (약한 evidence) 경로에서만 더 엄격(구 60s, `TRANSFER_DESTINATION_FRESH_CYCLES_VANISH`)하다.
-   * 정상 운영에서는 0에 가깝고, 0이 아니면 motion 추적 cascade fail 또는 stale lock misfire
-   * 회귀 신호. (transferDestinationGateBlocked와 별도 계측 — 본 가드는 intermediate 포함.)
-   */
-  staleLockFireSkipped: number;
   /**
    * ADR-022 Phase 1-1 (#1985) — flag=ON 시 fire-once TTL 게이트가 차단한 누적 횟수.
    * 같은 (tripToken, stationName, arvlCd cycle) 조합에서 이미 5분 이내 fire 된 경우 skip.
@@ -1376,8 +1375,6 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     stationPollFetch: 0,
     stationPollCacheHit: 0,
     stationPollError: 0,
-    // #1614 Phase C — stale SSoT 가드 fire 차단.
-    staleLockFireSkipped: 0,
     // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 차단 (flag=OFF 시 항상 0).
     arvlCdFireOnceSkipped: 0,
     // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
@@ -2335,15 +2332,6 @@ export const ARVLCD_FIRE_DEDUP_TTL_SEC = 60 * 60;
 export const SAME_PHASE_STATION_DEDUP_WINDOW_MS = 45_000;
 
 /**
- * #917 A2 — 매역 알림 dedup KV key prefix.
- * Key 형식: `${prefix}${token}|${trainCode}|${stationName}|${arvlCd}`
- *
- * 주의: trip token이 key에 포함된다 — 같은 train(trainCode)을 탄 여러 사용자가 같은 역에
- * 도착할 때 한 명만 push 받고 나머지가 dedup으로 silence되는 cross-trip leak을 차단한다.
- */
-export const ARVLCD_FIRE_KEY_PREFIX = 'arvlcd-fire:';
-
-/**
  * ADR-022 Phase 1-1 (#1985) → #2448 확장 — fire-once TTL key 의 cycle slot 값.
  *
  * arvlCd cycle 은 (0진입→1도착→2출발→5전역도착) monotone 시퀀스로 한 pass 를 이룬다. 원래는
@@ -2373,19 +2361,6 @@ export function arvlCdFireOnceBucket(waypointKind: Waypoint['kind'], arvlCd: num
     return ARVLCD_FIRE_ONCE_ENTERING_BUCKET;
   }
   return ARVLCD_FIRE_ONCE_ARRIVED_BUCKET;
-}
-
-/**
- * dedup KV key 빌더. arvlCd 0(ENTERING) vs 1(ARRIVED)은 별 entry로 분리(둘 다 신호).
- * token은 trip 단위 격리 — 같은 train 다른 trip이 서로 silence하지 않도록.
- */
-export function arvlCdFireKey(
-  token: string,
-  trainCode: string,
-  stationName: string,
-  arvlCd: number,
-): string {
-  return `${ARVLCD_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}|${arvlCd}`;
 }
 
 /**
@@ -2423,38 +2398,6 @@ export function stationPassedFiredKey(
   stationName: string,
 ): string {
   return `${STATION_PASSED_FIRED_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
-}
-
-/**
- * arvlCd∈{0(ENTERING), 1(ARRIVED)} 신호로 매역 알림 발사 가능한지 prereq 평가 (#917 A2 가드).
- *
- * Returns:
- *   - 'fire'      — push 발사 진행
- *   - 'mismatch'  — prereq 실패. push X. arvlCdFireMismatch++로 카운트해 회귀 측정.
- *
- * 가드:
- *   1. lock 활성 (호출 전 isBoardingLockActive로 이미 검증되지만 defensive recheck)
- *   2. estimate.arvlCd가 ARRIVED(1) 또는 ENTERING(0)
- *
- * #640 회귀 차단: lock 없는 trip은 애초에 runTrainCodeTracking에 도달하지 못한다.
- * positions-fallback arrived(arvlCd=null)는 매역 알림 SSOT(arvlCd)와 다른 신호 →
- * mismatch로 분류해 push 미발사 + 운영 가시성 카운트.
- *
- * @deprecated ADR-017 T2 (#1555) — 본 게이트는 분산된 fire path 잔존 호출자 보존용. 신규 호출자는
- *   `advanceTripPosition` (단일 mutation 진입점)을 사용해 6단 게이트(seed/motion/env/type/train
- *   identity/lockless arvlcd 단독)를 전부 거치게 해야 한다. T4~T7 reader migration에서 호출자
- *   교체가 완료되면 본 함수는 제거 예정.
- */
-export function evaluateArvlCdFireGate(
-  lock: BoardingLockMeta | undefined,
-  estimateArvlCd: number | null,
-  now: number,
-): 'fire' | 'mismatch' {
-  if (lock === undefined || lock.expiresAt <= now) return 'mismatch';
-  if (estimateArvlCd !== ARRIVAL_CODE.ARRIVED && estimateArvlCd !== ARRIVAL_CODE.ENTERING) {
-    return 'mismatch';
-  }
-  return 'fire';
 }
 
 /**
@@ -2643,28 +2586,6 @@ export interface FireArvlCdStationPushInputs {
   log: Logger;
   generatePushId: () => string;
 }
-
-/**
- * #1614 Phase C — stale SSoT lock false-fire 차단 임계.
- *
- * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_CYCLES` (2 cron cycle, #2602 이산화) 는
- * transfer/destination kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용.
- *
- * #2602 코드리뷰 항목3 — arvlCd/position 확증 경로에서는 두 임계가 이제 사실상 동일하다:
- * `TRANSFER_DESTINATION_FRESH_CYCLES=2`는 대수적으로 `elapsed < 180,000ms`(3분)와 동치라
- * (transferDestinationGate.ts 상단 주석 참고), 아래 3분 값과 같은 wall-clock 경계를 가리킨다.
- * "60s보다 보수적"이라는 과거 서술은 더 이상 정확하지 않다. 그런데도 T7 transfer freshness
- * 체크를 별도로 유지하는 이유는 (1) 본 게이트가 intermediate 포함 **모든** kind에 적용되는
- * 범용 가드인 반면 T7은 transfer/destination 전용이라 위치 확증(`isAtOrApproachingTransferDestination`)
- * 이 추가로 결합돼 있고, (2) vanish-fallback/release(약한 evidence) 경로는 T7이
- * `TRANSFER_DESTINATION_FRESH_CYCLES_VANISH`(구 60s 시간창과 동등, #2602 코드리뷰 항목1)로
- * 이 본 가드(3분)보다 **더 엄격하게** 차등 적용되기 때문이다 — vanish 경로가 다시 1이 아닌
- * 별도 값을 쓰면서 두 임계의 계층 관계(T7이 케이스별로 더 엄격하거나 동등)가 복원된다.
- *
- * `lastAdvanceAt===0` (lazy-seed 직후, 미advance) 은 본 가드 dormant — T4 motion 게이트의
- * 'unknown' 통과 정책과 동일 ([[transferDestinationGate.isSsotAdvanceRecent]] 와 같은 의미론).
- */
-export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
 
 /**
  * #2655 (코드리뷰 P2-1) — `transferObservedAt`(device sync가 관측한 환승역 도착 시각)을 도보 게이트
@@ -3548,15 +3469,29 @@ async function recordFireBlockReasonTransition(
 const FIRE_SKIP_REASON = {
   sleep: 'station-notif-sleep',
   stationPassedDedup: 'station-passed-dedup',
-  staleSsot: 'stale-ssot',
   fireOnceCycle: 'fire-once-cycle-already',
-  arvlCdDedup: 'arvlcd-dedup',
   crossStationDedup: 'cross-station-dedup',
 } as const;
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
 // path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
+/**
+ * **호출 계약(Contract)** — 이 함수는 반드시 `advanceTripPosition`이 `{ result: 'advanced' }`를
+ * 반환한 **직후**에만 호출한다. 현재 두 호출자(`tryAdvanceAndFireArvlcd`, consensus-fire 경로,
+ * 둘 다 `scheduled.ts`) 모두 `outcome.result !== 'advanced'`면 조기 return하고 절대 이 함수를
+ * 부르지 않는다 — 즉 "advance 없는 fire"는 오늘 코드에 존재하지 않는다.
+ *
+ * PR #2773 리뷰 보강 #10 — 이 불변을 타입 시스템으로 강제할지(예: `AdvanceOutcome`의
+ * `{result:'advanced'}` 분기를 필수 파라미터로 받기) 검토했으나 **채택하지 않았다**: 그 방식은
+ * 실질적 방어가 아니라 방어처럼 보이는 서명일 뿐이다 — `{ result: 'advanced' as const, ssot:
+ * null }`를 아무 caller나 그 자리에서 그냥 만들어 넘기면 타입 체커를 그대로 통과한다(같은
+ * 모듈 안이라 위조 비용이 0에 가깝다). 진짜 강제(예: `advanceTripPosition`만 발급 가능한
+ * unforgeable 토큰/brand, 또는 fire를 advance 함수 내부로 흡수)는 이번 PR의 "동작 불변 삭제"
+ * 범위를 넘는 구조 변경이라 별도 follow-up으로 남긴다(이슈 #2774) — 지금은 위 주석 + 호출자
+ * 2곳의 `if (outcome.result !== 'advanced') return`/`if (advanceOutcome.result !== 'advanced')
+ * return` 코드 자체가 유일한 방어선임을 명시적으로 기록해 둔다.
+ */
 export async function fireArvlCdStationPush(
   inputs: FireArvlCdStationPushInputs,
 ): Promise<{ dirty: boolean }> {
@@ -3612,47 +3547,11 @@ export async function fireArvlCdStationPush(
     );
     return { dirty: false };
   }
-  // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
-  // arvlCd/position 확증 경로의 transferDestinationGate(#2602 이후 사실상 동일 180s 임계)와
-  // 달리 intermediate 까지 모든 kind에 적용되는 범용 가드. lazy-seed (==0) 통과.
-  // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
-  //
-  // #2321 (O1-B) — device sync stale일 때는 본 가드도 dormant 전환. 정상 흐름에서는 본 함수
-  // 호출 직전 advanceTripPosition이 이미 lastAdvanceAt을 방금 갱신해 staleMs≈0이 되므로
-  // 무영향이지만, defense-in-depth로 게이트 #1~#3과 동일 staleness 정책을 명시적으로 정합시킨다.
-  const ssotForStale = ssotForFireGate;
-  if (
-    ssotForStale !== null &&
-    !isDeviceSyncStale(ssotForStale, now) &&
-    ssotForStale.lastAdvanceAt > 0 &&
-    now - ssotForStale.lastAdvanceAt > STALE_LOCK_FIRE_THRESHOLD_MS
-  ) {
-    stats.staleLockFireSkipped += 1;
-    log('arvlcd-fire: stale SSoT skip', {
-      token: trip.token.slice(0, 8),
-      trainCode: lock.trainCode,
-      station: waypoint.stationName,
-      lastAdvanceAt: ssotForStale.lastAdvanceAt,
-      staleMs: now - ssotForStale.lastAdvanceAt,
-    });
-    writeMetric(env, {
-      eventType: 'suppress',
-      tripToken: trip.token,
-      stationId: waypoint.stationName,
-      reason: 'stale-lock-fire',
-      hopIndex: waypoint.hopIndex,
-      staleMs: now - ssotForStale.lastAdvanceAt,
-    });
-    await recordFireBlockReasonTransition(
-      env,
-      trip,
-      waypoint,
-      ssotForStale,
-      FIRE_SKIP_REASON.staleSsot,
-      now,
-    );
-    return { dirty: false };
-  }
+  // #2764 (게이트 전수감사 A) — stale SSoT 3분 가드는 여기서 삭제됐다. 호출 직전
+  // advanceTripPosition이 lastAdvanceAt=now를 갱신해 staleMs≈0이 상시(주석 자인, PR #2764) —
+  // 명시적 defense-in-depth 폐기 결정. 발사 payload가 여전히 SSoT 스냅샷을 필요로 하므로
+  // 아래에서는 ssotForFireGate를 그대로 재사용한다(PR #2773 리뷰 보강 #8 — 가드 삭제로 무의미해진
+  // `ssotForStale` 별칭을 제거하고 실제 이름을 직접 쓴다).
   // ADR-022 Phase 1-1 (#1985) → #2448 확장 — arvlCd fire-once TTL 게이트.
   // flag=ON 시 같은 (tripToken, stationName, arvlCd bucket) 조합에서 5분 이내 이미 fire 된 경우
   // skip. #2448 이전에는 cycle 전체(0→1→2→5)를 단일 bucket 으로 묶어 어린이대공원 반복 4회
@@ -3695,34 +3594,10 @@ export async function fireArvlCdStationPush(
       return { dirty: false };
     }
   }
-  const key = arvlCdFireKey(trip.token, lock.trainCode, waypoint.stationName, arvlCd);
-  const existing = await env.TRIPS.get(key);
-  if (existing !== null) {
-    stats.arvlCdFireDedup += 1;
-    log('arvlcd-fire: dedup skip', {
-      token: trip.token.slice(0, 8),
-      trainCode: lock.trainCode,
-      station: waypoint.stationName,
-      arvlCd,
-    });
-    // P0-1 (#1577) — Site 2 of 6: cross-category station dedup suppress.
-    writeMetric(env, {
-      eventType: 'suppress',
-      tripToken: trip.token,
-      stationId: waypoint.stationName,
-      reason: 'arvlcd-dedup',
-      hopIndex: waypoint.hopIndex,
-    });
-    await recordFireBlockReasonTransition(
-      env,
-      trip,
-      waypoint,
-      ssotForFireGate,
-      FIRE_SKIP_REASON.arvlCdDedup,
-      now,
-    );
-    return { dirty: false };
-  }
+  // #2764 (게이트 전수감사 A, 옵션 (a)) — arvlCdFireKey per-arvlCd dedup은 여기서 삭제됐다.
+  // stationFiredKey(경로 무관 station-passed 마커) 검사가 이미 이 함수 진입부(위)에서 선행하고,
+  // 아래에서 stationFiredKey를 자기 stamp보다 먼저 put하도록 순서를 교체해 crash-창 방어
+  // (push 성공 후 crash 시 다음 tick 재발사 차단)를 stationFiredKey 단일 키로 이전했다.
 
   // #1367 — cross-station 동시 fire 차단. 같은 trip에서 이전 station-passed push로부터
   // SAME_PHASE_STATION_DEDUP_WINDOW_MS 이내에 *다른* station 발사는 보류 (client 채널 2 banner 회귀 차단).
@@ -3773,7 +3648,8 @@ export async function fireArvlCdStationPush(
     sleepMode: trip.sleepModeEnabled,
   });
   // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward.
-  // #1614 Phase C — stale guard 단계에서 이미 read한 ssotForStale 재사용 (KV read 1회 절약).
+  // #2764 — (구)stale SSoT 가드 삭제 후에도 이 함수 앞부분에서 이미 read한 ssotForFireGate를
+  // 그대로 재사용한다(KV read 1회 절약, 가드 삭제 이전과 동일한 재사용 목적).
   // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
   const arvlcdPayload = buildStationPassedImminentPayload({
     trip,
@@ -3782,7 +3658,7 @@ export async function fireArvlCdStationPush(
     pushId,
     now,
     origin: 'arvlcd',
-    ssot: ssotForStale,
+    ssot: ssotForFireGate,
     // #2021 (ADR-022) — flag=on 시 boardingLine 봉인, device lockless-opt-out gate 존중.
     archFlag: deps.archFlag,
   });
@@ -3890,10 +3766,12 @@ export async function fireArvlCdStationPush(
   // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
   // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
   // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
-  // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
-  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // #2571 — 경로 무관 station-passed 마커. 진입/도착/position/vanish 어느 경로가 먼저 발사하든
   // 이후 다른 경로의 같은 역 재발사를 차단(역당 1개, #2506 유지).
+  // #2764 (게이트 전수감사 A, 옵션 (a)) — 이 stamp를 (구)arvlCdFireKey stamp보다 **먼저** put하도록
+  // 순서를 교체했다. push 성공 후 이 put과 다음 put 사이 crash/KV 정합성 창에서도 이 키 하나만
+  // 남으면 다음 tick의 station-passed dedup(함수 진입부)이 재발사를 차단한다 — crash-창 방어를
+  // stationFiredKey 단일 키에 위임.
   await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // ADR-022 Phase 1-1 (#1985) — fire-once TTL stamp (flag=ON 시에만). 성공 fire 직후 stamp
   // 해 다음 cycle 이내 arvlCd 재노출을 통합 차단. flag=OFF 시 이 write 는 실행되지 않아
@@ -3905,13 +3783,18 @@ export async function fireArvlCdStationPush(
   trip.lastFiredStation = { stationName: waypoint.stationName, epochMs: now };
   dirty = true;
   // P0-1 (#1577) — Site 3 of 6: arvlcd fire 적재 (X3 stale fire 검증).
+  // #2764 — 이 staleMs는 이제 상시 무의미(≈0)하다: (구)stale SSoT 3분 가드가 근거하던 것과
+  // 동일한 사실(호출 직전 advanceTripPosition이 lastAdvanceAt=now를 갱신)이 이 값에도 그대로
+  // 적용된다. 가드는 삭제했지만 이 X3 관측 필드는 남겨둔다 — 0이 아닌 값이 관측되면 그 자체가
+  // "advance 없이 fire" 회귀(가드가 방어하려던 것과 동일 신호)를 사후 확인할 유일한 수단이라
+  // defense-in-depth 관측치로서는 여전히 값이 있다(가드처럼 fire를 막지는 않는다).
   writeMetric(env, {
     eventType: 'fire',
     tripToken: trip.token,
     stationId: waypoint.stationName,
     reason: `arvlcd:${waypoint.kind}`,
     hopIndex: waypoint.hopIndex,
-    staleMs: ssotForStale?.lastAdvanceAt ? now - ssotForStale.lastAdvanceAt : undefined,
+    staleMs: ssotForFireGate?.lastAdvanceAt ? now - ssotForFireGate.lastAdvanceAt : undefined,
   });
   // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
   await recordFireAttempt(env, trip, waypoint, 'sent', now);
@@ -4496,31 +4379,24 @@ interface FireVanishFallbackStationPushInputs {
   generatePushId: () => string;
   /**
    * #1402 — 발사 경로 식별자. 기존 hop-elapsed advance 직전 fire는 `'vanish-fallback'`,
-   * 신규 hop-not-elapsed lock release 직전 floor fire는 `'vanish-release'`. dedup key는
-   * origin별로 격리해 두 경로가 같은 station에서 둘 다 한 번씩 발사될 수 있게 한다 — release
-   * 후 lock 재부착(swap 성공)으로 같은 station에서 advance 경로가 추가 발사되는 시나리오를
-   * 차단하지 않기 위함.
+   * 신규 hop-not-elapsed lock release 직전 floor fire는 `'vanish-release'`. log prefix/payload
+   * origin 태깅에 사용 — 좀비 알림 RCA + alarmLog `pushOrigin` 매핑 목적.
+   *
+   * #2764 (게이트 전수감사 A) — 과거 이 필드로 origin별 dedup key(`vanishFallbackFireKey` /
+   * `vanishReleaseFireKey`)를 분리해 "release 후 lock 재부착(swap 성공)으로 같은 station에서
+   * advance 경로가 추가 발사"를 **허용**하려 했다.
+   *
+   * PR #2773 리뷰 보강 #4 — 삭제 근거를 정정한다. (구)origin별 키도 `stationPassedFiredKey`와
+   * 동일하게 **trainCode-scoped**였고(`vanishFallbackFireKey(token, trainCode, stationName)`),
+   * `attemptVanishSwap`(#902 Seam F)이 성립하는 swap은 항상 **새 trainCode**로 activeLock을
+   * 교체한다 — 즉 (구)키든 stationFiredKey든 swap 전/후 키가 애초에 다른 값이라, 어느 쪽도 "같은
+   * station 재발사"를 막지 못했다. 그래서 origin별 키 삭제는 **이 시나리오에 대해서는 동작
+   * 보존**(둘 다 막지 않았으므로) — #2571이 이 특정 race를 "무효화"한 것이 아니라, 애초에 두
+   * dedup 계층 모두 이 race의 방어 수단이 아니었다는 뜻이다. **같은 역에서 swap 전/후 origin이
+   * 각각 한 번씩 발사되는 이중 push 가능성은 여전히 열려 있다** — 이는 이 PR이 새로 만든 갭이
+   * 아니라 삭제 전부터 존재하던 것이다.
    */
   origin: 'vanish-fallback' | 'vanish-release';
-}
-
-export const VANISH_FALLBACK_FIRE_KEY_PREFIX = 'vanish-fallback-fire:';
-export const VANISH_RELEASE_FIRE_KEY_PREFIX = 'vanish-release-fire:';
-
-export function vanishFallbackFireKey(
-  token: string,
-  trainCode: string,
-  stationName: string,
-): string {
-  return `${VANISH_FALLBACK_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
-}
-
-export function vanishReleaseFireKey(
-  token: string,
-  trainCode: string,
-  stationName: string,
-): string {
-  return `${VANISH_RELEASE_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
 }
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. fireArvlCdStationPush와
@@ -4548,28 +4424,11 @@ export async function fireVanishFallbackStationPush(
     });
     return;
   }
-  const key =
-    origin === 'vanish-release'
-      ? vanishReleaseFireKey(trip.token, lock.trainCode, waypoint.stationName)
-      : vanishFallbackFireKey(trip.token, lock.trainCode, waypoint.stationName);
   const logPrefix = origin === 'vanish-release' ? 'vanish-release-fire' : 'vanish-fallback-fire';
-  const existing = await env.TRIPS.get(key);
-  if (existing !== null) {
-    log(`${logPrefix}: dedup skip`, {
-      token: trip.token.slice(0, 8),
-      trainCode: lock.trainCode,
-      station: waypoint.stationName,
-    });
-    // P0-1 (#1577) — Site 4 of 6: vanish-fallback dedup suppress.
-    writeMetric(env, {
-      eventType: 'suppress',
-      tripToken: trip.token,
-      stationId: waypoint.stationName,
-      reason: `${origin}-dedup`,
-      hopIndex: waypoint.hopIndex,
-    });
-    return;
-  }
+  // #2764 (게이트 전수감사 A, 옵션 (a)) — origin별 vanishFallbackFireKey/vanishReleaseFireKey
+  // dedup은 여기서 삭제됐다. stationFiredKey(경로 무관 station-passed 마커) 검사가 이미 이
+  // 함수 진입부(위)에서 선행하고, 아래에서 그 stamp를 발사 성공 직후 put한다 — crash-창 방어를
+  // stationFiredKey 단일 키에 위임(fireArvlCdStationPush와 동일 패턴).
   // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
   const ssot = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
@@ -4731,7 +4590,6 @@ export async function fireVanishFallbackStationPush(
   // #2063 (ADR-023 개정) — visible alert push 직접 발사이므로 60s ACK 기반 alert fallback
   // 안전망(runFallbackPushes)은 더 이상 필요 없다 — PENDING_PUSHES 등록을 생략한다
   // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
-  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // #2571 — 경로 무관 station-passed 마커 stamp (arvlCd 경로와 공유).
   await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
 }
@@ -5212,9 +5070,14 @@ export async function runTrainCodeTracking(
     }
     // #917 A2 — 매역 알림 1차 source는 arvlCd∈{0(ENTERING), 1(ARRIVED)}.
     // positions-fallback arrived(arvlCd=null)는 SSOT 다름 — mismatch로 분류해 push X.
-    // prereq 게이트(레거시): lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
-    const legacyGate = evaluateArvlCdFireGate(activeLock, estimate.arvlCd, now);
-    if (legacyGate === 'fire' && estimate.arvlCd !== null) {
+    // #2764 (게이트 전수감사 A) — 과거 이 분기는 evaluateArvlCdFireGate(레거시 prereq: lock 활성 +
+    // arvlCd∈{0,1})를 거쳤으나, 이 시점의 activeLock은 상류 isBoardingLockActive로 이미 활성
+    // 검증됐고, estimateBoardingLockArrival은 arrived===true일 때 arvlCd를 ∈{0,1} 또는 null로만
+    // 반환한다(계약 — scheduled.test.ts의 'estimateBoardingLockArrival arvlCd exposure' describe
+    // 참고) — 즉 `legacyGate === 'fire'`는
+    // `estimate.arvlCd !== null`과 항상 동치였다(도달불가 확증, PR #2764). 게이트 삭제, 동치
+    // 조건만 남긴다.
+    if (estimate.arvlCd !== null) {
       // ADR-017 T4 (#1557) — 분산된 fire 게이트를 `advanceTripPosition` 단일 진입점으로 통합.
       // 6단 게이트(seed/motion/env/type/train identity/lockless arvlcd 단독)를 통과한 advance
       // 결과만 push 발사로 이어진다. 2026-06-19 정지 trip false 발사 회귀(N1)를 직접 차단.
@@ -5357,12 +5220,25 @@ export async function runTrainCodeTracking(
  * arrived 판정: arrivals 경로는 arvlCd가 ENTERING(0, 진입) 또는 ARRIVED(1, 도착)인 경우.
  * positions 경로는 estimateArrivalFromPosition이 sttus와 station 매치로 결정.
  */
+/**
+ * #2764 (PR 리뷰 보강 #2) — `estimateBoardingLockArrival`의 반환 계약을 discriminated union으로
+ * 구조화한다. `runTrainCodeTracking`의 arvlCd-arrived 분기(위 legacyGate 제거 근거 주석 참고)가
+ * "arrived===true ⇒ arvlCd∈{0,1,null}"에 의존하는데, 과거엔 이 계약이 `number | null` 타입 +
+ * 테스트/주석으로만 지켜졌다 — 컴파일러가 강제하지 않아 향후 새 반환 지점이 실수로 이 불변을
+ * 깨도 타입 레벨에서 못 잡았다. 이제 `arrived: true`인 지점만 `arvlCd: 0 | 1 | null`을 반환하도록
+ * 타입이 강제한다(현 4개 반환 지점 — arrivals arvlCd∈{0,1} 확증 / positions-fallback arrived /
+ * arrivals 도착 전 / positions 도착 전 — 모두 이미 이 형태를 만족, 동작 변경 없음).
+ */
+export type BoardingLockArrivalEstimate =
+  | { epoch: number; arrived: true; arvlCd: 0 | 1 | null }
+  | { epoch: number; arrived: false; arvlCd: number | null };
+
 export async function estimateBoardingLockArrival(
   deps: ScheduledDeps,
   lock: BoardingLockMeta,
   waypoint: Waypoint,
   now: number,
-): Promise<{ epoch: number; arrived: boolean; arvlCd: number | null } | null> {
+): Promise<BoardingLockArrivalEstimate | null> {
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const matched = arrivals.find((a) => a.trainCode === lock.trainCode);
   // arvlCd∈{진입0,도착1} 확증 → 즉시 arrived(1차 source, dedup key용 arvlCd 노출).

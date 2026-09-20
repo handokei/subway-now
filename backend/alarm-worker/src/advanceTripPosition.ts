@@ -5,7 +5,8 @@
  * ====
  * 2026-06-19 evidence: 정지 trip + lock active + arvlcd ARRIVED → wrong "transfer imminent
  * 건대입구" 발사. 분산된 fire path별 게이트가 다 달랐다:
- *   - `scheduled.ts:795 evaluateArvlCdFireGate` — lock+arvlCd만
+ *   - (구)`scheduled.ts:795 evaluateArvlCdFireGate` — lock+arvlCd만 (2026-06-20 당시 상태 —
+ *     이 함수는 게이트 전수감사에서 도달불가 확증 후 PR #2764로 삭제됐다)
  *   - lockless `LOCKLESS_ADVANCE_MOTION_MODES` — lockless만 motion 검증
  *   - vanish path `isFallbackAdvanceBlockedByMotion` — vanish만 stationary 차단
  *   - `evaluateConsensusGate` — 호출자 미적용

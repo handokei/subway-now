@@ -11,9 +11,28 @@
  *   13:37:14 silent-push-received 어린이대공원   ← 5분 후 또
  *   13:38:14 silent-push-received station-passed imminent 어린이대공원
  *
- * Backend cron 60s 폴링 + arvlCd=1 지속(~30초) — 매 폴링마다 감지 시 push 재발사. 기존
- * `arvlCdFireKey` dedup 은 `arvlCd` 값을 key 에 포함해 0(진입) 과 1(도착) 을 별 entry 로 분리
- * stamp → 같은 train 이 한 station 을 지나가는 동안 최소 2번 fire 가능.
+ * Backend cron 60s 폴링 + arvlCd=1 지속(~30초) — 매 폴링마다 감지 시 push 재발사가 근본 원인.
+ *
+ * PR #2773 리뷰 보강 #7 — 이 helper 의 존재 근거를 (구)`arvlCdFireKey`(PR #2764 로 삭제)와
+ * 대비해 서술하던 과거 버전은 유령 근거였다. 그 dedup 은 애초에 `stationPassedFiredKey`(#2571,
+ * 경로 무관 station-passed 단일 마커)가 함수 진입부에서 먼저 검사해 도달불가였음이 확증돼
+ * 삭제됐다 — 즉 이 helper 는 (구)`arvlCdFireKey`가 아니라 **`stationPassedFiredKey`와의 목적
+ * 차이**로 존재를 정당화해야 한다.
+ *
+ * `stationPassedFiredKey`(1시간 TTL)는 설계상 "이 역이 이미 발사됐는가"만 본다 — 경로(arvlCd/
+ * position/vanish) 무관, arvlCd 값 무관, 무조건 1역당 1회, **성공 fire 직후에만 stamp**. 이
+ * fire-once TTL(5분)은 flag=ON 시에만 켜지는 별도 storm guard로, 같은 station 안에서 arvlCd
+ * 값이 0→1→2→5 로 monotone 진행하는 cycle **전체**를 단일 fire 이벤트로 묶어 (token, station,
+ * cycle bucket) 조합당 1회만 fire 하도록 설계됐다(#1980/#2200 어린이대공원 storm 대응).
+ *
+ * **미확인 — 다음 감사 항목.** `fireArvlCdStationPush`의 현재 호출 순서(`scheduled.ts`)는
+ * `stationPassedFiredKey` 검사가 이 fire-once 체크보다 **먼저** 실행되고, 두 stamp 모두 "성공
+ * fire 직후"에만 찍힌다 — 즉 station 최초 fire 성공 이후의 모든 재관측은 이미 stationFiredKey
+ * 선검사에서 걸러져 이 fire-once 로직에 도달하지 못할 가능성이 있다(검증 안 함, PR #2764/#2773
+ * 범위 밖). 만약 사실이면 이 helper 전체가 #2571 이후 도달불가 후보다 — 단, 이는 이 PR이 만든
+ * 변화가 아니라 #2571(2026-09-12) 시점부터의 기존 순서이므로 별도 게이트 감사로 검증할 것.
+ * "존재 이유가 없어 보인다"는 추정만으로 삭제하지 말 것 — 이 파일이 겪은 실수(유령 근거 인용)를
+ * 반복하지 않는다.
  *
  * ## 정책
  *
@@ -44,15 +63,15 @@ import type { Env } from './types';
 
 /**
  * 5분 (300s). Train 이 같은 station 을 5분 안에 재방문할 수 없다는 실제 운영 특성 기반.
- * `ARVLCD_FIRE_DEDUP_TTL_SEC` (1시간, per-arvlCd key) 와 별개 정책 — 이 TTL 은 cycle 단위
- * 전체를 커버하며 flag=ON 시에만 적용된다.
+ * `ARVLCD_FIRE_DEDUP_TTL_SEC` (1시간, 현재는 `stationPassedFiredKey`가 사용) 와 별개 정책 —
+ * 이 TTL 은 cycle 단위 전체를 커버하며 flag=ON 시에만 적용된다.
  */
 export const ARVLCD_FIRE_ONCE_TTL_SEC = 5 * 60;
 
 /**
  * KV key prefix. 형식: `fireOnce:{tripToken}:{stationName}:{arvlCdCycle}`.
  *
- * 주의: `arvlCdFireKey` (`arvlcd-fire:` prefix, per-arvlCd 분리) 와 namespace 격리 —
+ * 주의: `station-passed-fired:` prefix(`stationPassedFiredKey`, #2571) 와 namespace 격리 —
  * 두 dedup layer 가 동일 KV 에서 서로 오염하지 않는다.
  */
 export const ARVLCD_FIRE_ONCE_KEY_PREFIX = 'fireOnce:';
