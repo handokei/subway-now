@@ -12,11 +12,12 @@
  *     - `environment=underground`: GPS는 입력 set에서 reject — 9단 게이트 결과를 그대로 신뢰하면
  *       지하 false positive(GPS jitter 기반 origin proximity / 방향 cosine)가 통과할 수 있다.
  *       따라서 underground에서는 strong B(arrival arvlCd 1~3) + strong E(lockAttachable) 의
- *       2-of-2 합의(또는 strong G consensusConfirmed 단독)가 필요 — arrival 단독으로 통과를
- *       허용하지 않고 reject. boarding-prompt fallback은 게이트 미통과로 자연 silent.
+ *       2-of-2 합의가 필요 — arrival 단독으로 통과를 허용하지 않고 reject. boarding-prompt
+ *       fallback은 게이트 미통과로 자연 silent.
  *       #2765 (게이트 전수감사 A) — strong C(position-train)/D(WiFi)/F(cellular) 분기는 생산자
  *       0건(2026-09-03 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)이 감사로 확정돼
- *       제거됐다.
+ *       제거됐다. #2766 (결정 D1) — strong G(consensusConfirmed, 'consensus-train' evidence
+ *       surrogate)도 유일 생산자 `tryFireConsensusTrainLeg`가 제거되며 함께 제거됐다.
  *     - `environment=mixed`: 보수적. strong 2개(arrival + arvlCd 우선순위 확정 + 단일 trainCode)
  *       충족 시에만 통과 — `pickAutoTrainCode`가 단일 후보로 수렴(ambiguity 없음)한 시점이 곧
  *       arrival(strong B) + lock-line(strong E surrogate) 합의로 해석된다.
@@ -62,22 +63,16 @@ export type StationEnvironment = 'surface' | 'underground' | 'mixed' | 'unknown'
  * - `arrivalSignalPresent`: 다음 waypoint의 arvlCd ∈ {0,1,2,3} 신호 존재 여부 (strong B)
  * - `lockAttachable`: `pickAutoTrainCode`가 단일 trainCode로 수렴 (strong E surrogate — 사용자가
  *   실제 그 열차에 타고 있다는 강한 cross-check)
- * - `consensusConfirmed`: #2329 (consensus-C, 설계 SSoT #2323) — `transferLegConsensus.ts`
- *   상태기계가 'confirmed'로 수렴했다는 surrogate 신호(strong G). underground 분기에서
- *   `lockAttachable`(=lock 부착, strong E)의 대체 surrogate로 취급한다 — 2+ waypoint 연속
- *   match(±90s) + mismatch=0 확정은 실제 lock 부착과 동급의 강 신호이기 때문이다(설계 SSoT
- *   (1) "confirmed = lockAttachable surrogate"). true일 때만 의미 있고, false/undefined는
- *   기존 정책 무영향(다른 OR 분기가 그대로 평가된다).
  *
  * #2765 (게이트 전수감사 A) — `positionTrainAgreement`(strong C) / `wifiSsidMatch`(strong D) /
  * `cellularEnvironmentVote`(strong F, cellular hard-reject 포함)는 생산자 0건이 감사로 확정돼
- * signal 자체가 제거됐다.
+ * signal 자체가 제거됐다. #2766 (결정 D1) — `consensusConfirmed`(strong G, 'consensus-train'
+ * evidence surrogate)도 유일 생산자 `tryFireConsensusTrainLeg`가 제거되며 함께 제거됐다.
  */
 export interface ConsensusSignals {
   gateOutcome: GateOutcome;
   arrivalSignalPresent: boolean;
   lockAttachable: boolean;
-  consensusConfirmed?: boolean;
 }
 
 /**
@@ -101,13 +96,14 @@ export type ConsensusOutcome =
  * §3 분기별 fire 게이트 평가.
  *
  * - surface: base 9단 게이트 통과로 충분 (GPS+arrival+motion 합의)
- * - underground: GPS reject. arrival(B) + lockAttachable(E surrogate) 2-of-2 또는
- *   consensusConfirmed(G) 단독.
+ * - underground: GPS reject. arrival(B) + lockAttachable(E surrogate) 2-of-2 필수.
  * - mixed/unknown: 보수적. arrival + lockAttachable 동시 충족 강제. base 9단 게이트 통과도
  *   동시에 요구해 false positive 누적 차단.
  *
  * #2765 (게이트 전수감사 A) — cellular hard-reject(S10 #1543, `cellularContradictsEnvironment`)와
  * underground strong C(position-train)/D(WiFi) 분기는 생산자 0건이 감사로 확정돼 제거됐다.
+ * #2766 (결정 D1) — underground strong G(consensusConfirmed 단독 통과)도 유일 생산자
+ * `tryFireConsensusTrainLeg`가 제거되며 함께 제거됐다.
  */
 export function evaluateConsensusGate(
   environment: StationEnvironment,
@@ -132,11 +128,7 @@ export function evaluateConsensusGate(
     // 대신 arrival(B) + lockAttachable(E surrogate)가 함께 만족하면 사용자가 실제 그 열차에
     // 타고 있다는 강한 cross-check가 된다.
     const strongBE = signals.arrivalSignalPresent && signals.lockAttachable;
-    // #2329 (consensus-C) — consensusConfirmed는 lockAttachable(strong E) surrogate.
-    // arrival(B) 없이도 confirmed 단독으로 통과시킨다 — 상태기계 자체가 이미 다중 waypoint
-    // match(±90s)/mismatch=0 확정이라 arrival 신호 재요구는 이중 게이트(설계 SSoT (1)).
-    const strongG = signals.consensusConfirmed === true;
-    if (strongBE || strongG) return { pass: true, environment };
+    if (strongBE) return { pass: true, environment };
     return { pass: false, environment, reason: 'environment-no-gps-consensus' };
   }
   // mixed/unknown: 보수적 — base 9단 + arrival + lockAttachable 모두 통과 시에만.

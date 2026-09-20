@@ -1,20 +1,21 @@
 /**
- * 2026-08-12 저녁 25분 침묵 evidence의 leg2 공백 replay — consensus-C(#2329, 설계 SSoT #2323).
+ * 2026-08-12 저녁 25분 침묵 evidence의 leg2 공백 replay — #2766 (결정 D1, 게이트 전수감사 A).
  *
- * `evidence_20260812_replay.test.ts`(#2321)가 다룬 것은 lock 활성 trip의 device-sync-stale
- * 4중 게이트 회귀였다. 본 파일은 그 evidence의 다른 절반 — 오토락 재부착이 삭제된(#2154) 이후
- * 환승 직후 leg2가 진짜 lockless가 되는 구조 자체를 재현한다: C 토글(infoModeEnabled) OFF인
- * lockless trip은 `runLocklessIntermediate`(C 토글 전용 경로)로 진입하지 못해 종전엔
- * `stats.lockMissing`만 누적된 채 advance/fire가 영구 0이었다(08-12 실측: 25분 침묵 + 알림 0건).
+ * 이 파일은 원래(#2329, consensus-C) `tryFireConsensusTrainLeg`가 봉인 해제 시 2 cycle 연속
+ * match로 'confirmed'에 도달해 중곡 imminent를 발사하는 것을 검증했다. 감사(tasks/audit-
+ * 2026-09-20-gate-census.md §D1) 결과 그 fire 진입점은 이중 봉인(seedSsot lock 경로 2곳뿐이라
+ * 도달 전 ssot===null 조기 return + lockAttachable:false 하드코딩)으로 프로덕션 출력이 0건이었다
+ * (ADR-037 정합). 사용자 확정: "안내 시작조차 안 한 무의향 trip은 알림 0이 맞다" — 봉인 해제가
+ * 아니라 fire 진입점 자체를 제거했다.
  *
- * 08-12 저녁 페이퍼 시뮬레이션(#2323 설계안 (7)) 파라미터를 그대로 사용한다:
- *   W(transferTimeSec)=278s(건대입구 2→7), hop 80s. 두 cron cycle(80s 간격) 연속 match로
- *   confirmed에 도달 — CONFIRM_MIN_MATCH_COUNT=2.
- *
- * acceptance:
- *  - confirmed 전(cycle 1, match=1) → advance/fire 0.
- *  - confirmed 후(cycle 2, match=2) → advance 1 + 기존 `fireArvlCdStationPush` 재사용 발사 1건
- *    (신규 emitter 없음 — dedup/APNs 전송 경로 전부 arvlCd fire path 그대로).
+ * 본 파일은 그 결정을 replay 형태로 고정한다:
+ *  - 무의향(C 토글 OFF, infoModeEnabled=false) lockless trip의 intermediate leg는 실차가
+ *    2 cycle 연속 확증되어도 advance/fire가 영구 0이고 legConsensus 상태기계 자체가 시작되지
+ *    않는다(완전 침묵, 제거된 fire 진입점의 유일한 writer가 사라졌으므로).
+ *  - 명시의향(C 토글 ON, infoModeEnabled=true) trip은 기존 `runLocklessIntermediate` 경로가
+ *    무변화로 계속 동작한다 — 이 결정이 사용자 명시 의향 trip의 매역 push를 건드리지 않는다는
+ *    회귀 방어(ADR-014 "사용자 명시 의향 trip = lock 활성과 동급" 동급 보장과 무관 — 이 leg는
+ *    애초에 infoModeEnabled 게이트로 무변화).
  */
 
 import { generateKeyPair, exportPKCS8 } from 'jose';
@@ -23,7 +24,7 @@ import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { runScheduled, type ScheduledDeps, type ScheduledStats } from '../scheduled';
 import { SeoulArrivalClient } from '../seoul';
 import { putTrip } from '../trips';
-import { seedSsot, writeSsot } from '../tripPositionSsot';
+import { readSsot, seedSsot, writeSsot } from '../tripPositionSsot';
 import type { Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -66,6 +67,8 @@ function makeEnv(kv: InMemoryKV): Env {
 
 // 장암행 후보 trainCode '8801' — 7호선 상행(중곡 방향), ETA는 cycle마다 80s씩 카운트다운
 // (실제 열차가 일관되게 접근 중이라는 신호. 예측 절대 도착시각은 두 cycle 모두 T0+300s로 동일).
+// #2329 설계 당시엔 이 신호가 legConsensus 'confirmed'로 수렴시켰다 — #2766 이후엔 fire
+// 진입점 자체가 없어 이 신호를 관측하는 코드가 더 이상 존재하지 않는다.
 function makeConsensusSeoul(now: number, etaSeconds: number): SeoulArrivalClient {
   return new SeoulArrivalClient({
     apiKey: 'K',
@@ -125,8 +128,8 @@ async function runOnce(
   } satisfies ScheduledDeps);
 }
 
-describe('evidence 2026-08-12 leg2 공백 replay — consensus-train confirmed-only fire (#2329)', () => {
-  it('T0 → cycle1(match=1, confirmed 전) fire 0 → cycle2(match=2, confirmed) 중곡 imminent 1회 발사', async () => {
+describe('evidence 2026-08-12 leg2 공백 replay — #2766 결정 D1(무의향 lockless trip = 완전 침묵)', () => {
+  it('무의향(infoModeEnabled=false) trip — 실차 2 cycle 연속 확증돼도 advance/fire/legConsensus 전부 영구 0 (완전 침묵)', async () => {
     const kv = new InMemoryKV();
     const trip = makeTrip();
     await putTrip(kv as unknown as KVNamespace, trip);
@@ -138,42 +141,37 @@ describe('evidence 2026-08-12 leg2 공백 replay — consensus-train confirmed-o
     ssot.lastDeviceSyncAt = T0;
     await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
 
-    // cycle 1 — T0+80s. 후보 최초 관측(init). match=1(<CONFIRM_MIN_MATCH_COUNT=2) → confirmed 전.
+    // cycle 1 — T0+80s. #2329 설계였다면 후보 최초 관측(init, match=1)이었을 tick.
     const now1 = T0 + HOP_MS;
     const fetchImpl1 = vi.fn(async () => new Response('', { status: 200 }));
     const stats1 = await runOnce(kv, makeConsensusSeoul(now1, 220), fetchImpl1, now1);
     expect(stats1.arvlCdFireFired).toBe(0);
-    expect(fetchImpl1).not.toHaveBeenCalled(); // confirmed 전 — 기존 fire path(APNs 전송) 미도달.
+    expect(fetchImpl1).not.toHaveBeenCalled();
 
-    const afterCycle1 = await ((await import('../tripPositionSsot')).readSsot(
-      kv as unknown as KVNamespace,
-      trip.token,
-    ));
-    expect(afterCycle1?.legConsensus?.status).toBe('tracking');
+    const afterCycle1 = await readSsot(kv as unknown as KVNamespace, trip.token);
+    // #2329 설계였다면 'tracking'이었을 상태 — fire 진입점 제거로 legConsensus 상태기계
+    // 자체가 시작되지 않는다(유일 writer였던 tryFireConsensusTrainLeg가 없음).
+    expect(afterCycle1?.legConsensus).toBeUndefined();
 
-    // cycle 2 — T0+160s. 같은 실차가 80s만큼 더 카운트다운(ETA 220→140, 절대 도착시각 동일)
-    // → deltaSec≈0 → match=2 → confirmed. confirmed 후에만 advance+fire 1회.
+    // cycle 2 — T0+160s. #2329 설계였다면 같은 실차가 80s만큼 더 카운트다운해
+    // match=2(CONFIRM_MIN_MATCH_COUNT)로 'confirmed'에 도달, 중곡 imminent 1회를 발사했을 tick.
     const now2 = T0 + 2 * HOP_MS;
     const fetchImpl2 = vi.fn(async () => new Response('', { status: 200 }));
     const stats2 = await runOnce(kv, makeConsensusSeoul(now2, 140), fetchImpl2, now2);
 
-    expect(stats2.arvlCdFireFired).toBe(1);
-    expect(stats2.arvlCdFireSuccess).toBe(1);
-    expect(fetchImpl2).toHaveBeenCalled(); // 기존 arvlCd alert push 경로(신규 emitter 없음) 재사용.
+    expect(stats2.arvlCdFireFired).toBe(0);
+    expect(stats2.arvlCdFireSuccess).toBe(0);
+    expect(fetchImpl2).not.toHaveBeenCalled(); // 완전 침묵 — 알림 0건.
 
-    const afterCycle2 = await ((await import('../tripPositionSsot')).readSsot(
-      kv as unknown as KVNamespace,
-      trip.token,
-    ));
-    expect(afterCycle2?.legConsensus?.status).toBe('confirmed');
-    expect(afterCycle2?.legConsensus?.confirmedTrainCode).toBe('8801');
-    expect(afterCycle2?.lockSuggestion?.confidence).toBe('consensus');
-    // lock 승격 금지 — trip.boardingLock은 여전히 미부착.
+    const afterCycle2 = await readSsot(kv as unknown as KVNamespace, trip.token);
+    expect(afterCycle2?.legConsensus).toBeUndefined();
+    expect(afterCycle2?.lockSuggestion).toBeUndefined();
+    // lock도 당연히 미부착.
     const storedTrip = JSON.parse((await kv.get(`trip:${trip.token}`)) ?? 'null') as Trip | null;
     expect(storedTrip?.boardingLock).toBeUndefined();
   });
 
-  it('무회귀 — infoModeEnabled=true(C 토글 ON) trip은 기존 runLocklessIntermediate 경로 그대로(consensus 미개입)', async () => {
+  it('무회귀 — infoModeEnabled=true(C 토글 ON) trip의 runLocklessIntermediate 매역 push 경로는 무변화(legConsensus 미개입)', async () => {
     const kv = new InMemoryKV();
     const trip = makeTrip({ infoModeEnabled: true });
     await putTrip(kv as unknown as KVNamespace, trip);
@@ -187,11 +185,9 @@ describe('evidence 2026-08-12 leg2 공백 replay — consensus-train confirmed-o
     const fetchImpl1 = vi.fn(async () => new Response('', { status: 200 }));
     await runOnce(kv, makeConsensusSeoul(now1, 220), fetchImpl1, now1);
 
-    const after = await ((await import('../tripPositionSsot')).readSsot(
-      kv as unknown as KVNamespace,
-      trip.token,
-    ));
-    // consensus 경로가 개입하지 않았으므로 legConsensus는 여전히 미설정.
+    const after = await readSsot(kv as unknown as KVNamespace, trip.token);
+    // consensus 경로 자체가 제거됐으므로(#2766) legConsensus는 여전히 미설정 — 이 trip의
+    // 매역 push 판정은 오직 runLocklessIntermediate(motion/arvlCd ground truth)에 달려있다.
     expect(after?.legConsensus).toBeUndefined();
   });
 });

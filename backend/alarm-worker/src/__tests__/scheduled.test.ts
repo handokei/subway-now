@@ -1335,77 +1335,10 @@ describe('runScheduled', () => {
         expect(JSON.parse(events[0][5] as string)).toEqual({ branch: 'consensus' });
       });
 
-      it('consensus-tick — arrivals=0(지하 arvlCd 침묵) never-ran phase, 전이 시에만 append', async () => {
-        const kv = new InMemoryKV();
-        const trip = intermediateTrip({ infoModeEnabled: false });
-        await putTrip(kv as unknown as KVNamespace, trip);
-        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
-        const { db, inserts } = makeFireLogDb();
-        const deps = {
-          seoul: makeSeoul([]),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: vi.fn() as unknown as typeof fetch,
-          now: () => NOW,
-        };
-        await runScheduled(makeEnv(kv, undefined, db), deps);
-        const first = findInserts(inserts, 'consensus-tick');
-        expect(first).toHaveLength(1);
-        expect(JSON.parse(first[0][5] as string)).toEqual({ phase: 'no-arrivals' });
-
-        // 같은 사유 반복 tick → 재기록 없음.
-        await runScheduled(makeEnv(kv, undefined, db), { ...deps, now: () => NOW + 60_000 });
-        expect(findInserts(inserts, 'consensus-tick')).toHaveLength(1);
-      });
-
-      it('consensus-tick — arrivals 있으나 필터 배제(#2328) never-ran phase=candidates-filtered', async () => {
-        const kv = new InMemoryKV();
-        const trip = intermediateTrip({ infoModeEnabled: false });
-        await putTrip(kv as unknown as KVNamespace, trip);
-        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
-        const { db, inserts } = makeFireLogDb();
-        await runScheduled(makeEnv(kv, undefined, db), {
-          // arvlCd=null → candidate 진입 전 배제(#2328 필터 이전 단계).
-          seoul: makeSeoul([ARVL_NO_SIGNAL]),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: vi.fn() as unknown as typeof fetch,
-          now: () => NOW,
-        });
-        const events = findInserts(inserts, 'consensus-tick');
-        expect(events).toHaveLength(1);
-        expect(JSON.parse(events[0][5] as string)).toEqual({ phase: 'candidates-filtered' });
-      });
-
-      it('consensus-tick — never-ran → candidate 확보(정상 진행) 전이 시 마커 clear (재기록 없이 SSoT만 갱신)', async () => {
-        const kv = new InMemoryKV();
-        const trip = intermediateTrip({ infoModeEnabled: false });
-        await putTrip(kv as unknown as KVNamespace, trip);
-        // currentStationId == waypoint.stationName → inferLegDirection 불가(null) → 방향 필터 dormant(pass).
-        await seedSsot(kv as unknown as KVNamespace, trip.token, '강남', { expiresAt: trip.expiresAt });
-        const { db, inserts } = makeFireLogDb();
-        await runScheduled(makeEnv(kv, undefined, db), {
-          seoul: makeSeoul([]),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: vi.fn() as unknown as typeof fetch,
-          now: () => NOW,
-        });
-        expect(findInserts(inserts, 'consensus-tick')).toHaveLength(1);
-
-        await runScheduled(makeEnv(kv, undefined, db), {
-          seoul: makeSeoul([ARVL_ARRIVED]),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: vi.fn() as unknown as typeof fetch,
-          now: () => NOW + 60_000,
-        });
-        // 정상 진행 전이 자체는 D1에 추가 append하지 않는다(phase=undefined는 이벤트 없음) —
-        // no-arrivals 1건에서 늘어나지 않아야 한다.
-        expect(findInserts(inserts, 'consensus-tick')).toHaveLength(1);
-        const ssotAfter = await readSsot(kv as unknown as KVNamespace, trip.token);
-        expect(ssotAfter?.consensusNeverRanPhase).toBeUndefined();
-      });
+      // #2766 (결정 D1, 게이트 전수감사 A) — 'consensus-tick' never-ran phase 진단 계측
+      // (recordConsensusPhaseTransition/consensusNeverRanPhase)은 유일 writer였던
+      // `tryFireConsensusTrainLeg`가 fire 진입점째 제거되며 함께 제거됐다. 3개 red 테스트
+      // (no-arrivals / candidates-filtered / 정상 진행 전이 마커 clear)도 함께 삭제.
     });
   });
 });

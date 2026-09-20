@@ -44,12 +44,12 @@ import { captureXEvent } from './sentry';
  * waypoint 라우팅 분기를 관측한다. fire/advance 동작에는 관여하지 않는다.
  *
  * - `consensus-tick` — `applyLegConsensusTick`(advanceTripPosition.ts)의 legConsensus.status
- *   전이(confirm/demote/suppress 이벤트가 별도로 남는 전이는 중복 제외) + `tryFireConsensusTrainLeg`
- *   (scheduled.ts)의 candidate 관측 전 조기 반환 사유(`ConsensusNeverRanPhase`) 전이. 둘 다 상태
- *   자체가 바뀔 때만 append(#2073 quota 보호).
+ *   전이(confirm/demote/suppress 이벤트가 별도로 남는 전이는 중복 제외)만 append(#2073 quota
+ *   보호). #2766 (결정 D1) — 구 `tryFireConsensusTrainLeg`(scheduled.ts)의 candidate 관측 전
+ *   조기 반환 사유(`ConsensusNeverRanPhase`) 전이 writer는 fire 진입점 제거와 함께 삭제됐다.
  * - `intermediate-route` — intermediate waypoint에서 `lockless`(C 토글 ON,
- *   `runLocklessIntermediate`)/`consensus`(C 토글 OFF, `tryFireConsensusTrainLeg`) 중 어느 분기로
- *   dispatch됐는지. 직전 분기와 다를 때만 append.
+ *   `runLocklessIntermediate`)/`consensus`(C 토글 OFF, #2766에서 fire 시도가 제거돼 현재는
+ *   완전 침묵) 중 어느 분기로 dispatch됐는지. 직전 분기와 다를 때만 append.
  *
  * `boarding-confirm-result` / `transfer-advance` / `leg2-estimate` (ADR-037 D2b, #2535) — 진단
  * 계측 전용. #2533(D2)이 커버하지 못한 3개 조건부 stall 지점(boarding-confirm 탭 처리 결과,
@@ -147,17 +147,10 @@ export type TripEventKind =
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
- * `lockless` = C 토글 ON(`runLocklessIntermediate`), `consensus` = C 토글 OFF
- * (`tryFireConsensusTrainLeg`). 데이터 주도 — scheduled.ts 하드코딩 분기 대신 본 유니온으로 구동.
+ * `lockless` = C 토글 ON(`runLocklessIntermediate`), `consensus` = C 토글 OFF(#2766 결정 D1 —
+ * fire 시도 없이 완전 침묵). 데이터 주도 — scheduled.ts 하드코딩 분기 대신 본 유니온으로 구동.
  */
 export type IntermediateRouteBranch = 'lockless' | 'consensus';
-
-/**
- * ADR-037 D2 (#2533) — `tryFireConsensusTrainLeg`가 legConsensus 상태기계 진입 전 조기 반환하는
- * 사유(진단 전용). `no-arrivals` = Seoul arrivals 자체가 0건(지하 arvlCd 침묵), `candidates-filtered`
- * = arrivals는 있으나 line/direction 필터(#2328)로 전부 배제.
- */
-export type ConsensusNeverRanPhase = 'no-arrivals' | 'candidates-filtered';
 
 /**
  * ADR-037 D2b (#2535) — 환승 waypoint advance 진단 표식(데이터 주도). `no-arvlcd` = 해당 역

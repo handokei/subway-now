@@ -36,7 +36,6 @@
 import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
 import type { LegConsensusRecord } from './transferLegConsensus';
 import type {
-  ConsensusNeverRanPhase,
   HopEndPromptOutcome,
   IntermediateRouteBranch,
   LegBoardingPromptOutcome,
@@ -64,6 +63,10 @@ const SSOT_MIN_TTL_SEC = 60;
  * #2765 (게이트 전수감사 A) — `'wifi-ssid-match' | 'cellular-tech-change' | 'accel-fingerprint' |
  * 'time-only' | 'arvlcd-lockless'` 5종은 생산자 0건(코드 전체에 stamp하는 caller 없음, 2026-09-03
  * 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)이 감사로 확정돼 제거됐다.
+ *
+ * #2766 (결정 D1, 게이트 전수감사 A) — `'consensus-train'`도 유일 생산자 `tryFireConsensusTrainLeg`
+ * (scheduled.ts)가 이중 봉인으로 프로덕션 출력 0(ADR-037 정합)이라 fire 진입점째 제거되며 함께
+ * 제거됐다. 무의향(infoModeEnabled=false) lockless intermediate leg는 완전 침묵이 결정.
  */
 export type EvidenceType =
   | 'gps-displacement'
@@ -72,7 +75,6 @@ export type EvidenceType =
   | 'position-train'
   | 'manual-user-intent'
   | 'seed-override'
-  | 'consensus-train'
   // #2624 — `/boarding-lock/sync` 핸들러(index.ts)가 사용자 관측(device sync) 기반으로
   // SSoT.currentStationId를 직접 advance시킬 때 stamp. cron `advanceTripPosition`의 6단
   // 게이트 evidence type과 구분되는 별도 채널임을 명시(합의 게이트 미적용 — 단조성 가드만 적용).
@@ -285,8 +287,12 @@ export interface TripPositionSSoT {
    *
    * lockless leg(환승 직후 lock 미부착 구간)에서 후보 열차 관측/판정 진행 상태를 trip KV 객체
    * 내부에 보존한다(별도 KV row 금지 — #2073 cron KV quota lesson). caller(scheduled.ts)가
-   * `stepLegConsensus`로 매 tick 갱신 후 write. `status==='confirmed'`일 때만
-   * `advanceTripPosition`의 'consensus-train' evidence 게이트가 통과한다.
+   * `stepLegConsensus`로 매 tick 갱신 후 write.
+   *
+   * #2766 (결정 D1, 게이트 전수감사 A) — 이 record를 소비하던 유일한 fire 게이트
+   * (`advanceTripPosition`의 옛 게이트 #4b, 'consensus-train' evidence)는 제거됐다. 본 필드
+   * (및 `applyLegConsensusTick` wire)는 leg-2 자동 lock 재획득 재설계(#2754/#2761/#2760)
+   * 트랙이 존폐를 결정할 때까지 유지 — 현재 production 호출자는 0이다(범위 밖, 보고만).
    *
    * 구 backend 호환을 위해 optional — v3 이하 row 또는 leg에 consensus 추적이 시작되지 않은
    * trip은 undefined.
@@ -302,14 +308,6 @@ export interface TripPositionSSoT {
    * 다음 tick에서 자연히 전이 감지).
    */
   intermediateRouteBranch?: IntermediateRouteBranch;
-  /**
-   * ADR-037 D2 (#2533) — 진단 계측 전용 dedup 마커. `tryFireConsensusTrainLeg`가 직전 tick에
-   * candidate 관측 전 조기 반환한 사유. undefined = 정상 진행(engine 진입) 또는 최초 tick.
-   * caller가 이 값과 이번 tick 사유(또는 진행 시 undefined)를 비교해 다를 때만 D1
-   * `trip_events`(kind='consensus-tick')로 append한다(#2073 quota 보호). 발사/advance 판정에는
-   * 관여하지 않는다.
-   */
-  consensusNeverRanPhase?: ConsensusNeverRanPhase;
   /**
    * ADR-037 D2b (#2535) — 진단 계측 전용 dedup 마커. 환승(transfer) waypoint advance 직전 관측된
    * 결과(`no-arvlcd`/`not-fires`/`advanced`, `TransferAdvanceOutcome`). caller(scheduled.ts)가

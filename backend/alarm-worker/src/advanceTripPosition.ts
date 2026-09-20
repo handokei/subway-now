@@ -39,9 +39,15 @@
  *      #2623 P1-1 — lock 활성 + `position-train`도 evidence.arvlcdTrainCode가 lock.trainCode와
  *      일치할 때만 동일 우회(#1665 positions-fallback "arrived" 경로가 375개 underground 역에서
  *      영구 차단되던 회귀 — arvlCd=null이 본질이라 underground 분기 arrival 요구 OR 항을 전부 실패).
- *   #4 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train/consensus-train evidence면
- *      trainCode 일치 필수. #2623 P1-1 — position-train도 arvlcdTrainCode가 stamp돼 있으면
- *      동일 검증(#4c, 미stamp는 legacy dormant 유지 — 게이트 #3 우회 대상과 대칭 방어).
+ *   #4 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train evidence면 trainCode 일치
+ *      필수. #2623 P1-1 — position-train도 arvlcdTrainCode가 stamp돼 있으면 동일 검증(#4c,
+ *      미stamp는 legacy dormant 유지 — 게이트 #3 우회 대상과 대칭 방어).
+ *      #2766 (결정 D1, 게이트 전수감사 A) — 구 게이트 #4b(consensus-train, legConsensus
+ *      상태기계 confirmed 강제)는 유일 생산자 `tryFireConsensusTrainLeg`(scheduled.ts)가
+ *      이중 봉인으로 프로덕션 출력 0(ADR-037 정합)이라 제거됐다. `'consensus-train'`
+ *      evidence type 자체도 함께 제거 — legConsensus 상태기계(`transferLegConsensus.ts`,
+ *      `applyLegConsensusTick`)는 유지되나 leg-2 자동 lock(#2760) 트랙이 재설계 중이라
+ *      본 PR은 그 모듈을 건드리지 않는다.
  *   #5 arc-overshoot 게이트 (#2023, ADR-022) — device `mapMatchedArcM` 시간 적분 폭주 감지.
  *      options.archFlag='on' + evidence.arcOvershootDetected=true 시 blocked('arc-overshoot').
  *      archFlag='off' / 미제공 시 dormant — backward compat 및 rollback 안전.
@@ -118,8 +124,9 @@ export type EvidenceEnvironment = 'surface' | 'underground' | 'hybrid' | 'unknow
  * (`position-train`)으로 확증된 evidence만 포함 — GPS/wifi/cellular/accel처럼 device 신호로
  * 확증된 evidence는 제외(그 자체로는 "열차가 실제 진행 중"이라는 증거가 아님).
  *
- * `'consensus-train'`도 의도적으로 미포함 — legConsensus 경로는 #2766(결정 D1)에서 별도
- * 재검토/제거 대상이라, 본 PR이 그 경로를 motion evidence 소스로 새로 고정시키지 않는다.
+ * `'consensus-train'`은 #2766(결정 D1, 게이트 전수감사 A)에서 evidence type 자체가 제거됐다 —
+ * 유일 생산자 `tryFireConsensusTrainLeg`가 프로덕션 출력 0(ADR-037 정합)으로 확정돼 fire
+ * 진입점째 삭제.
  *
  * module-private (외부 소비자 없음 — orphan export 방지).
  */
@@ -152,7 +159,7 @@ function hasArvlcdTrainProgressSignal(evidence: AdvanceEvidence): boolean {
  * 불일치하면 true(mismatch). lock 없음이거나 evidence가 identity를 주장하지 않으면(position-train
  * 미stamp) false(mismatch 아님 — dormant).
  *
- * 게이트 #4(arvlcd-confirmed-train/consensus-train, arvlcdTrainCode 미stamp도 mismatch 취급)
+ * 게이트 #4(arvlcd-confirmed-train, arvlcdTrainCode 미stamp도 mismatch 취급)
  * + #4c(position-train, stamp된 경우만 mismatch 취급)가 원래 각자 검사하던 조건을 단일 지점으로
  * 추출한 것 — 두 게이트를 이 helper 하나로 대체해도 동일하게 동작한다(아래 gate 재사용 확인).
  *
@@ -167,8 +174,7 @@ function trainIdentityMismatches(
   lock: BoardingLockMeta | undefined,
 ): boolean {
   if (lock === undefined) return false;
-  const requiresMatch =
-    evidence.type === 'arvlcd-confirmed-train' || evidence.type === 'consensus-train';
+  const requiresMatch = evidence.type === 'arvlcd-confirmed-train';
   const positionTrainClaimsIdentity =
     evidence.type === 'position-train' && evidence.arvlcdTrainCode !== undefined;
   if (!requiresMatch && !positionTrainClaimsIdentity) return false;
@@ -229,8 +235,7 @@ export type AdvanceBlockReason =
   | 'train-mismatch'
   | 'position-train-jump'
   | 'position-train-stale'
-  | 'arc-overshoot'
-  | 'consensus-not-confirmed';
+  | 'arc-overshoot';
 
 /** advance 호출 결과 — caller가 SSoT 후속 작업(fire 발사 등)을 진행할지 결정. */
 export interface AdvanceOutcome {
@@ -339,10 +344,6 @@ export function buildSignalsFromEvidence(
       : { pass: false, reason: 'window-too-small' },
     arrivalSignalPresent,
     lockAttachable: options.lockAttachable,
-    // #2329 (consensus-C) — consensus-train evidence는 그 자체가 underground lockAttachable
-    // surrogate(strong G, consensusGate.ts). gate #4b가 legConsensus confirmed를 이미 강제하므로
-    // 여기서는 evidence.type만으로 forward — 이중 확인 불필요.
-    consensusConfirmed: evidence.type === 'consensus-train' ? true : undefined,
   };
 }
 
@@ -475,33 +476,15 @@ export async function advanceTripPosition(
     }
   }
 
-  // #4 Train identity 게이트 (lock 활성 시 arvlcd-confirmed-train/consensus-train은 lock.trainCode
-  // 일치를 강제, #2329 consensus-C 포함) + #4c (#2623 P1-1 리뷰, position-train evidence가
-  // arvlcdTrainCode를 stamp했다면 게이트 #3 envConsensusBypass가 신뢰하는 것과 같은 identity
-  // claim이므로 lock.trainCode와 일치까지 검증 — 미stamp는 dormant, 하위 호환 보존).
+  // #4 Train identity 게이트 (lock 활성 시 arvlcd-confirmed-train은 lock.trainCode 일치를
+  // 강제) + #4c (#2623 P1-1 리뷰, position-train evidence가 arvlcdTrainCode를 stamp했다면
+  // 게이트 #3 envConsensusBypass가 신뢰하는 것과 같은 identity claim이므로 lock.trainCode와
+  // 일치까지 검증 — 미stamp는 dormant, 하위 호환 보존).
   //
   // #2763 — 두 게이트가 각자 검사하던 조건을 `trainIdentityMismatches`로 단일화(중복 구현
   // 방지). pre-gate motionEvidence stamp도 동일 helper를 재사용한다(메인 검증 발견, #2685 사례).
   if (trainIdentityMismatches(evidence, lock)) {
     return { result: 'blocked', blockReason: 'train-mismatch', ssot };
-  }
-
-  // #4b consensus-train 게이트 (#2329, consensus-C, 설계 SSoT #2323) — legConsensus 상태기계가
-  // 'confirmed'로 수렴했을 때만 통과. tracking/ambiguous/demoted/suppressed 또는 상태기계
-  // 미시작(undefined)은 전부 blocked — "confirmed에서만 alert 발사" 정책의 SSoT 강제 지점.
-  // confirmedTrainCode와 evidence.arvlcdTrainCode가 둘 다 있으면 일치까지 확인(caller가 다른
-  // trainCode를 잘못 forward하는 회귀 방지). demote 발생 직후(status='demoted')는 발사권을
-  // 즉시 회수 — 이 게이트가 재평가마다 항상 재검증하므로 별도 revoke 로직 불필요.
-  if (evidence.type === 'consensus-train') {
-    const consensus = ssot.legConsensus;
-    const confirmed =
-      consensus !== undefined &&
-      consensus.status === 'confirmed' &&
-      (evidence.arvlcdTrainCode === undefined ||
-        evidence.arvlcdTrainCode === consensus.confirmedTrainCode);
-    if (!confirmed) {
-      return { result: 'blocked', blockReason: 'consensus-not-confirmed', ssot };
-    }
   }
 
   // #5 arc-overshoot 게이트 (#2023)
@@ -668,18 +651,11 @@ function deriveLockSuggestion(input: {
       decidedAt: evidence.ts,
     };
   }
-  // consensus (#2329, consensus-C) — legConsensus 상태기계 confirmed. gate #4b가 이미 confirmed +
-  // trainCode 일치를 강제했으므로 여기 도달한 evidence.arvlcdTrainCode는 신뢰 가능. lock 승격은
-  // 하지 않는다 — confidence='consensus'는 device 측에서 high/medium과 별도로 다뤄지는 표식.
-  if (evidence.type === 'consensus-train' && evidence.arvlcdTrainCode) {
-    return {
-      stationId: candidateStationId,
-      trainCode: evidence.arvlcdTrainCode,
-      lineId: waypointLine,
-      confidence: 'consensus',
-      decidedAt: evidence.ts,
-    };
-  }
+  // #2766 (결정 D1, 게이트 전수감사 A) — 'consensus-train' evidence type이 제거되며 이
+  // 분기(legConsensus 상태기계 confirmed → confidence='consensus' suggestion)의 유일
+  // 생산자도 사라졌다. `LockSuggestion.confidence`의 'consensus' union member 자체와
+  // device 측 소비 코드(BoardingTrainList/useBoardingLockController 등)는 본 PR 범위
+  // 밖 — 이제 backend가 절대 만들어내지 않는 값이라는 사실만 기록한다(PR 본문 참고).
   return null;
 }
 

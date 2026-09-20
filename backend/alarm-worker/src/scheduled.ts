@@ -61,13 +61,10 @@ import {
 import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
-import { filterCandidateDirection } from './legCandidateFilters';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
-import type { ObservedDeparture } from './transferLegConsensus';
 import {
   advanceTripPosition,
-  applyLegConsensusTick,
   mapEvidenceEnvironment,
   type AdvanceBlockReason,
   type AdvanceEvidence,
@@ -158,7 +155,6 @@ import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
 import {
   cleanupTripEvents,
   recordTripEvent,
-  type ConsensusNeverRanPhase,
   type HopEndPromptOutcome,
   type IntermediateRouteBranch,
   type LegBoardingPromptOutcome,
@@ -1886,18 +1882,11 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         }
         continue;
       }
-      // #2329 (consensus-C, 설계 SSoT #2323) — C 토글 OFF(infoModeEnabled=false) lockless leg는
-      // `runLocklessIntermediate`(위 분기)로 진입하지 못해 종전엔 이 지점에서 아무 진행/발사 없이
-      // `lockMissing`만 누적됐다(08-12 25분 침묵 evidence의 leg2 공백). `!trip.infoModeEnabled`
-      // 조건으로 위 분기와 상호 배타적 — 이중 발사 경로가 겹치지 않는다.
-      if (!trip.infoModeEnabled && waypoint.kind === 'intermediate') {
-        try {
-          await tryFireConsensusTrainLeg(trip, waypoint, env, deps, stats, now, log, generatePushId);
-        } catch (e) {
-          stats.errors += 1;
-          log('consensus-fire: poll error', { error: String(e), token: trip.token.slice(0, 8) });
-        }
-      }
+      // #2766 (결정 D1, 게이트 전수감사 A) — C 토글 OFF(infoModeEnabled=false, 무의향)
+      // intermediate leg는 봉인된 `tryFireConsensusTrainLeg`(이중 봉인으로 프로덕션 출력 0,
+      // ADR-037 정합)를 제거하고 완전 침묵으로 확정한다. 안내 시작조차 안 한 trip은 알림 0이
+      // 맞다는 결정 — 봉인 해제가 아니라 제거. 명시의향 trip의 매역 push는 위
+      // `runLocklessIntermediate`(infoModeEnabled 분기)가 무변화로 계속 담당한다.
       // #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint에서 영구 정지하던
       // gap 차단. C 토글 ON/OFF 무관 — 환승 waypoint 통과는 lock 유무와 무관한 ground truth
       // (arvlCd)로 판정한다(#864 lock-active transfer advance와 동일 신호). advance 성공 시
@@ -3187,41 +3176,6 @@ async function recordIntermediateRouteTransition(
       station: waypoint.stationName,
       line: waypoint.line,
       meta: { branch },
-    },
-    now,
-  );
-}
-
-/**
- * ADR-037 D2 (#2533, 진단 계측 only) — `tryFireConsensusTrainLeg`가 legConsensus 상태기계 진입
- * 전 조기 반환한 사유(`no-arrivals`=지하 arvlCd 침묵 / `candidates-filtered`=#2328 필터 배제 /
- * `undefined`=정상 진행)를 SSoT 마커(`consensusNeverRanPhase`)와 비교해 다를 때만 D1
- * `trip_events`(kind='consensus-tick')로 append한다(#2073 quota 보호). 발사/advance 동작에는
- * 관여하지 않는다.
- */
-async function recordConsensusPhaseTransition(
-  env: Env,
-  trip: Trip,
-  waypoint: Waypoint,
-  ssot: TripPositionSSoT,
-  phase: ConsensusNeverRanPhase | undefined,
-  now: number,
-): Promise<void> {
-  if (ssot.consensusNeverRanPhase === phase) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, consensusNeverRanPhase: phase },
-    { expiresAt: trip.expiresAt },
-  );
-  if (phase === undefined) return;
-  await recordTripEvent(
-    env.DB,
-    {
-      tokenHash: hashTripToken(trip.token),
-      kind: 'consensus-tick',
-      station: waypoint.stationName,
-      line: waypoint.line,
-      meta: { phase },
     },
     now,
   );
@@ -6167,174 +6121,13 @@ export async function maybeReschedulePush(
   return { cleanedUp: false };
 }
 
-/** #2329 (consensus-C) — legConsensus 미 wire 시 headway 데이터 부재 conservative fallback (초). */
-export const CONSENSUS_DEFAULT_HEADWAY_SEC = 300;
-
-/**
- * #2329 (consensus-C, 설계 SSoT #2323) — lock 없는 leg(환승 직후, 오토락 재부착 미실행 — #2154
- * 삭제 대상 chain)에서 `transferLegConsensus` 상태기계로 후보 열차를 추적하고, confirmed 상태에
- * 도달했을 때만 기존 `fireArvlCdStationPush`(dedup 포함)를 재사용해 imminent alert를 발사한다.
- *
- * 신규 emitter 없음 — 확정된 trainCode를 `BoardingLockMeta` 모양의 synthetic lock으로 감싸
- * 기존 arvlCd fire path에 그대로 위임한다(dedup key도 trainCode 기반이라 자연 중복 방지).
- * `runLocklessIntermediate`(C 토글 ON 전용)와는 caller가 `!trip.infoModeEnabled`로 상호
- * 배타적으로 호출해 이중 발사 경로가 원천적으로 겹치지 않는다.
- *
- * candidate 관측: waypoint arrivals(이미 이 cycle에서 필요한 신규 fetch — lockMissing 분기는
- * 기존에 Seoul 호출이 0건이었다)를 line/direction 필터(#2328, legCandidateFilters)로 사전 배제한
- * 뒤 `transferLegConsensus` 상태기계에 forward한다. 각 candidate의 departureEpochMs는 상태기계
- * 최초 관측 시점의 예측 도착 epoch로 고정되고(engine이 재기록하지 않음), 이후 tick의 deltaSec은
- * "이번 tick 예측 - 최초 예측"으로 산출 — 같은 실차가 일관되게 카운트다운하면 0에 수렴(match),
- * 후보가 바뀌거나 사라지면 발산(mismatch/missed)한다.
- *
- * confirmed 이벤트가 발생한 tick에서만 advance+fire를 시도한다(매 tick 재발사 방지 — dedup으로도
- * 막히지만 SSoT write/advance 비용을 아낀다).
- */
-async function tryFireConsensusTrainLeg(
-  trip: Trip,
-  waypoint: Waypoint,
-  env: Env,
-  deps: ScheduledDeps,
-  stats: ScheduledStats,
-  now: number,
-  log: Logger,
-  generatePushId: () => string,
-): Promise<void> {
-  if (waypoint.kind !== 'intermediate') return;
-
-  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
-  if (ssot === null || !ssot.currentStationId) return;
-
-  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  if (arrivals.length === 0) {
-    // ADR-037 D2 (#2533, 진단 계측 only) — 지하 arvlCd 침묵 never-ran 사유.
-    await recordConsensusPhaseTransition(env, trip, waypoint, ssot, 'no-arrivals', now);
-    return;
-  }
-
-  const candidates: { trainCode: string; arvlCd: number; arrivalSeconds: number }[] = [];
-  for (const a of arrivals) {
-    if (a.arvlCd === null) continue;
-    if (!matchLine(a.subwayNm, waypoint.line)) continue;
-    // #2765 (게이트 전수감사 A) — filterCandidateLine 호출은 항등 참(waypoint.line은 항상
-    // trip.route/waypoints의 allowedLines 안)으로 확정돼 제거됐다.
-    if (
-      filterCandidateDirection(waypoint.line, a.isUp, ssot.currentStationId, waypoint.stationName)
-        .kind === 'reject'
-    ) {
-      continue;
-    }
-    candidates.push({ trainCode: a.trainCode, arvlCd: a.arvlCd, arrivalSeconds: a.arrivalSeconds });
-  }
-  if (candidates.length === 0) {
-    // ADR-037 D2 (#2533, 진단 계측 only) — #2328 line/direction 필터 배제 never-ran 사유.
-    await recordConsensusPhaseTransition(env, trip, waypoint, ssot, 'candidates-filtered', now);
-    return;
-  }
-  // ADR-037 D2 (#2533, 진단 계측 only) — 정상 진행(candidate 확보). 직전 tick이 never-ran
-  // 사유로 마킹돼 있었다면 전이로 간주해 마커를 clear한다(다음 침묵 재발 시 다시 관측 가능).
-  await recordConsensusPhaseTransition(env, trip, waypoint, ssot, undefined, now);
-
-  const observedDepartures: ObservedDeparture[] = candidates.map((c) => ({
-    trainCode: c.trainCode,
-    departureEpochMs: now + c.arrivalSeconds * 1000,
-  }));
-
-  const existingBaseline = new Map(
-    (ssot.legConsensus?.candidates ?? []).map((c) => [c.trainCode, c.departureEpochMs]),
-  );
-  const observations = observedDepartures.map((d) => {
-    const baseline = existingBaseline.get(d.trainCode);
-    return {
-      trainCode: d.trainCode,
-      deltaSec: baseline !== undefined ? (d.departureEpochMs - baseline) / 1000 : 0,
-    };
-  });
-
-  // frontend LineNumber(엄격 union)와 backend LineNumber(=string) 어휘 차이 — legDirection.ts/
-  // legCandidateFilters.ts와 동일한 caster 패턴(런타임은 `===` 비교라 안전).
-  const transferTimeSec = getTransferSeconds(
-    (ssot.currentStationLine ?? waypoint.line) as Parameters<typeof getTransferSeconds>[0],
-    waypoint.line as Parameters<typeof getTransferSeconds>[1],
-    ssot.currentStationId,
-  );
-
-  const outcome = await applyLegConsensusTick(env.TRIPS, env.DB, trip.token, {
-    init: ssot.legConsensus
-      ? undefined
-      : {
-          t0EpochMs: ssot.lastAdvanceAt > 0 ? ssot.lastAdvanceAt : now,
-          transferTimeSec,
-          headwaySec: CONSENSUS_DEFAULT_HEADWAY_SEC,
-          observedDepartures,
-        },
-    tick: { now, observations },
-    station: waypoint.stationName,
-    line: waypoint.line,
-  });
-  if (outcome === null) return;
-
-  const justConfirmed = outcome.events.some((e) => e.kind === 'consensus-confirm');
-  if (!justConfirmed || outcome.record.confirmedTrainCode === undefined) return;
-
-  const confirmedEntry = candidates.find((c) => c.trainCode === outcome.record.confirmedTrainCode);
-  if (!confirmedEntry) return;
-
-  const advanceOutcome = await advanceTripPosition(
-    env.TRIPS,
-    trip.token,
-    waypoint.stationName,
-    {
-      type: 'consensus-train',
-      stationId: waypoint.stationName,
-      ts: now,
-      // #2623 — 발사/advance 판정 입력을 stations.json environment로 교체.
-      environment: resolveWaypointEnvironment(waypoint, stats, log),
-      arvlcdTrainCode: outcome.record.confirmedTrainCode,
-      arvlCd: confirmedEntry.arvlCd,
-    },
-    { gatePassed: true, lockAttachable: false, archFlag: deps.archFlag },
-  );
-  if (advanceOutcome.result !== 'advanced') {
-    stats.arvlCdFireBlocked += 1;
-    log('consensus-fire: blocked', {
-      token: trip.token.slice(0, 8),
-      trainCode: outcome.record.confirmedTrainCode,
-      station: waypoint.stationName,
-      reason: advanceOutcome.blockReason satisfies AdvanceBlockReason | undefined,
-    });
-    return;
-  }
-  stats.arvlCdFireFired += 1;
-
-  const syntheticLock: BoardingLockMeta = {
-    trainCode: outcome.record.confirmedTrainCode,
-    line: waypoint.line,
-    subwayId: '',
-    selectedDepartureTime: now,
-    segmentStations: [waypoint.stationName],
-    expiresAt: trip.expiresAt,
-  };
-  await fireArvlCdStationPush({
-    trip,
-    waypoint,
-    lock: syntheticLock,
-    arvlCd: confirmedEntry.arvlCd,
-    env,
-    deps,
-    stats,
-    now,
-    log,
-    generatePushId,
-  });
-}
-
 /**
  * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 통과하도록 하는 lock-
  * independent 헬퍼. C 토글(`infoModeEnabled`) ON/OFF 둘 다 대상이다 — dispatch에서
- * `runLocklessIntermediate`(C ON, intermediate 전용) / `tryFireConsensusTrainLeg`(C OFF,
- * intermediate 전용) 둘 다 kind==='transfer'에 반응하지 않아 lockless leg-1이 환승 waypoint에서
- * 영구 정지(`currentLegAnchor` 미stamp → leg-2가 태어나지 못함)하던 gap을 메운다.
+ * `runLocklessIntermediate`(C ON, intermediate 전용) / (C OFF, intermediate 전용 — #2766에서
+ * 제거된 `tryFireConsensusTrainLeg`가 과거 이 역할이었다) 둘 다 kind==='transfer'에 반응하지
+ * 않아 lockless leg-1이 환승 waypoint에서 영구 정지(`currentLegAnchor` 미stamp → leg-2가
+ * 태어나지 못함)하던 gap을 메운다.
  *
  * ground truth = 잠실나루/#864 시나리오의 lock-active transfer advance와 동일 신호
  * (`arrivalForLock(station, 0, 1)` 류 fixture) — waypoint.line(방금 통과한 현재 leg의 line)
