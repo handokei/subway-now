@@ -1219,9 +1219,12 @@ export function useFusedNearestStation(
         resolvedStation.lng,
       );
       if (distanceKm > WIFI_SSID_MAX_DISTANCE_KM) return null;
-      return { station: resolvedStation, distanceKm };
+      return { station: resolvedStation, distanceKm, distanceIsPlaceholder: false };
     }
-    return { station: resolvedStation, distanceKm: 0 };
+    // #2741 — GPS 없음(지하 dead zone)이면 SSID는 사용자-역 거리를 모른다. distanceKm=0은
+    // "실측 0m"가 아니라 placeholder다 — distanceIsPlaceholder=true로 명시해 useArrivalAutoClear
+    // (#2716이 만든 distanceSource 기반 대체 확증 메커니즘)가 이를 구분해 처리하게 한다.
+    return { station: resolvedStation, distanceKm: 0, distanceIsPlaceholder: true };
   })();
 
   // #1513 (ADR-015 §3) — multi-signal verdict cascade 결합 prereq.
