@@ -756,6 +756,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingPromptSkippedLockActive: number;
   /**
+   * #2651 — `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 leg-1 경로)가 `trip.promptOptIn !== true`
+   * (사용자가 "안내 시작"을 누르지 않은 trip — 목적지만 설정)로 즉시 return한 누적 횟수. 이전엔
+   * 이 경로에 opt-in 게이트가 전혀 없어 등록만으로 지상 프롬프트가 발사됐다(결정 모델 위반) —
+   * 0이 아닌 것이 정상(무의향 trip이 실제로 차단되고 있다는 신호). GPS-free 경로
+   * (`maybeFireOriginBoardingPromptGpsFree`)의 동일 게이트와 짝.
+   */
+  boardingPromptSkippedNoOptIn: number;
+  /**
    * #2708 — leg-1 전용 `evaluateAndMaybeFireBoardingPrompt`가 `trip.currentLegAnchor` 활성 중
    * (leg-2 진입 후) 진입해 stale `trip.promptDisplay`(이전 노선)로 발사를 시도할 뻔해 즉시
    * return한 누적 횟수. 정상 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에
@@ -1301,6 +1309,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0,
     boardingPromptSkippedLockActive: 0,
+    boardingPromptSkippedNoOptIn: 0,
     boardingPromptSkippedLegAnchorActive: 0,
     boardingPromptSkippedNoContext: 0,
     boardingPromptSkippedStale: 0,
@@ -7137,6 +7146,17 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     return;
   }
 
+  // #2651 — boarding-prompt opt-in(안내 시작) trip만 대상. 이전엔 이 GPS 9단 경로에 opt-in
+  // 게이트가 전혀 없어, route+destination만 설정(안내 시작 안 누름)해도 프롬프트가 발사됐다 —
+  // GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`)와 동일 게이트를 여기도 추가한다.
+  if (trip.promptOptIn !== true) {
+    stats.boardingPromptSkippedNoOptIn += 1;
+    log('boarding-prompt: skip (no promptOptIn — 안내 시작 안 함)', {
+      token: trip.token.slice(0, 8),
+    });
+    return;
+  }
+
   // #2708 — currentLegAnchor가 stamp되면 leg-2(`maybeFireLegBoardingPrompt`)가 권위다. 정상
   // 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에 stale `trip.promptDisplay`(이전
   // leg)를 지워(#2708 요구사항 1) 이 leg-1 전용 함수가 바로 아래 `!display` 분기로 자연 skip된다.
@@ -7776,8 +7796,10 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   const display = trip.promptDisplay;
   if (!display) return;
 
-  // 사용자 명시 의향(C 토글 ON) trip만 대상 — ADR-014 동급 보장 정책과 정합.
-  if (trip.infoModeEnabled !== true) return;
+  // #2651 — boarding-prompt opt-in(안내 시작) trip만 대상. infoModeEnabled(응답/직접 탭 stamp)는
+  // "매역 통과 알림" 대상 판정이라 목적이 다르다 — 안내 시작만 하고 아직 응답 전인 trip도
+  // promptOptIn===true라 이 게이트를 통과해야 한다(그래야 애초에 응답할 프롬프트를 받는다).
+  if (trip.promptOptIn !== true) return;
 
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;

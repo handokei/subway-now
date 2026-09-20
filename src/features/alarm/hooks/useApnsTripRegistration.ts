@@ -91,6 +91,13 @@ export interface UseApnsTripRegistrationInputs {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useNavigationStore.navigationActive`
+   * ("안내 시작" 버튼)에서 읽어 전달한다. `infoModeEnabled`(응답/직접 탭으로만 stamp)와 달리
+   * 안내 시작만 눌러도 즉시 true — backend가 GPS-free/GPS 9단 leg-1 boarding-prompt를 발사할지
+   * 판정하는 유일한 신호다. 미지정/false: 두 경로 모두 no-op(완전 침묵).
+   */
+  promptOptIn?: boolean;
+  /**
    * #2524 — 탑승 커밋(PENDING fallback lock 생성) 시그널. `infoModeEnabled`와 별개로
    * `useUserIntentStore.boardingCommitted`에서 읽어 전달한다. 안내 시작(HomeScreen
    * handleStartNavigation)에서는 세팅되지 않아 backend가 "탑승 커밋 + lock 미확정"과
@@ -154,6 +161,8 @@ interface RegisterCallInputs {
   subsurface: boolean;
   /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
   infoModeEnabled: boolean;
+  /** #2651 — boarding-prompt opt-in(안내 시작) 시그널. true면 backend boarding-prompt 발사 gate 활성. */
+  promptOptIn: boolean;
   /** #2524 — 탑승 커밋(PENDING lock) 시그널. true면 backend가 lockless "통과" push를 억제. */
   boardingCommitted: boolean;
   /** #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 (ADR-023 결정 gate 미사용). */
@@ -258,6 +267,8 @@ async function callRegister(
     ...(locale ? { locale } : {}),
     // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
     ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
+    // #2651 — boarding-prompt opt-in(안내 시작) 신호. ON일 때만 송신 — backend는 부재 시 false default.
+    ...(input.promptOptIn ? { promptOptIn: true } : {}),
     // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신 — backend는 부재 시 false default.
     ...(input.boardingCommitted ? { boardingCommitted: true } : {}),
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
@@ -279,6 +290,7 @@ export function useApnsTripRegistration({
   boardingLock = null,
   subsurface = false,
   infoModeEnabled = false,
+  promptOptIn = false,
   boardingCommitted = false,
   sleepMode = false,
   gpsFix = null,
@@ -300,6 +312,7 @@ export function useApnsTripRegistration({
     boardingLock,
     subsurface,
     infoModeEnabled,
+    promptOptIn,
     boardingCommitted,
     sleepMode,
     gpsFix,
@@ -315,6 +328,7 @@ export function useApnsTripRegistration({
       boardingLock,
       subsurface,
       infoModeEnabled,
+      promptOptIn,
       boardingCommitted,
       sleepMode,
       gpsFix,
@@ -465,6 +479,7 @@ export function useApnsTripRegistration({
       boardingLock: bl,
       subsurface: sub,
       infoModeEnabled: ime,
+      promptOptIn: poi,
       boardingCommitted: bc,
       sleepMode: sm,
       gpsFix: gf,
@@ -497,6 +512,7 @@ export function useApnsTripRegistration({
       boardingLock: bl,
       subsurface: sub,
       infoModeEnabled: ime,
+      promptOptIn: poi,
       boardingCommitted: bc,
       sleepMode: sm,
       createdAt: resolveTripCreatedAt(sessionKey),
@@ -1075,6 +1091,8 @@ export function useApnsTripRegistration({
     // suppress 판정. 토글 빈도는 사용자 명시 설정 시점만이므로 deps churn 위험 낮음.
     // #2524: boardingCommitted 변화 시 backend 억제 gate(runLocklessIntermediate "통과")를 즉시
     // 활성화. 토글 빈도는 PENDING fallback lock 생성 시점 1회뿐이므로 deps churn 위험 낮음.
+    // #2651: promptOptIn 변화(안내 시작/중단) 시 backend boarding-prompt opt-in gate를 즉시
+    // 활성화/비활성화. 토글 빈도는 사용자 명시 trigger 탭 시점만이므로 deps churn 위험 낮음.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     routeSig,
@@ -1082,6 +1100,7 @@ export function useApnsTripRegistration({
     boardingLockSig,
     subsurface,
     infoModeEnabled,
+    promptOptIn,
     boardingCommitted,
     sleepMode,
   ]);

@@ -43,6 +43,7 @@ import {
   resolveEtaMissingThreshold,
   buildBoardingPromptMessage,
   buildHopEndPromptMessage,
+  evaluateAndMaybeFireBoardingPrompt,
   hopEndPromptFiredKey,
   maybeFireHopEndPrompt,
   maybeFireLegBoardingPrompt,
@@ -189,7 +190,7 @@ function makeFullEmptyStats(): ScheduledStats {
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
-    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
+    boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
     hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
@@ -428,6 +429,11 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     expiresAt: NOW + 60 * 60_000,
     createdAt: NOW,
     alarmAtEpochMs: NOW + 60_000, // 알람 1분 후 → 폴링 윈도우 진입
+    // #2651 — boarding-prompt opt-in 기본값. 이 함수를 쓰는 대다수 기존 테스트는 "사용자가
+    // 안내를 시작한(opt-in) trip"을 전제로 구성돼 있다 — 이 필드 신설 전에는 opt-in 게이트
+    // 자체가 없었으므로 기존 케이스가 그 전제를 명시하지 않았을 뿐이다. opt-in 게이트 자체를
+    // 검증하는 테스트는 명시적으로 `promptOptIn: false`(또는 undefined)로 override한다.
+    promptOptIn: true,
     ...overrides,
   };
 }
@@ -5647,15 +5653,25 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
 
   // #2130 (Part B-be-1) — 신선도 게이트. trip 등록 후 15분 경과 시 evaluate 자체를 skip.
   it('#2130 — trip 등록 후 15분 경과 시 boardingPromptSkippedStale +1, evaluate 미도달', async () => {
+    // #2651 — GPS-free(`maybeFireOriginBoardingPromptGpsFree`)는 15분 신선도 게이트가 없다
+    // (지하 backstop 설계상 의도적 permissive). 이 테스트는 GPS 9단 경로의 신선도 게이트만
+    // 검증하는 것이 목적이므로 `runScheduled`(양쪽 경로 모두 실행) 대신 대상 함수를 직접
+    // 호출해 GPS-free의 독립 발사가 이 단위 테스트의 의도를 오염시키지 않게 한다.
     const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeUnlockedTrip({ createdAt: NOW - 15 * 60 * 1000 - 1 }),
-    );
+    const trip = makeUnlockedTrip({ createdAt: NOW - 15 * 60 * 1000 - 1 });
     await seedHappySeries(kv);
     const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const stats = makeFullEmptyStats();
 
-    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    await evaluateAndMaybeFireBoardingPrompt(
+      trip,
+      makeEnv(kv),
+      makeBoardingPromptDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'bp-push-1',
+    );
     expect(stats.boardingPromptSkippedStale).toBe(1);
     expect(stats.boardingPromptEvaluated).toBe(0);
     expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
@@ -5955,6 +5971,25 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
       fireCount: 1,
       firedTrainCodes: ['T1'],
     });
+  });
+
+  // #2651 — GPS 9단 경로에는 opt-in 게이트가 전혀 없었다(등록만으로 발사). 결정 모델은
+  // "안내 시작(promptOptIn) 없이는 프롬프트도 0건"을 요구한다 — 위 '9단 통과' happy path와
+  // 동일한 trip을 promptOptIn만 false로 바꿔 차단되는지 검증한다.
+  it('#2651 — promptOptIn !== true → 9단 게이트 진입 자체를 안 함 (등록만으로 발사되지 않는다)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip({ promptOptIn: false }));
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+
+    expect(stats.boardingPromptSkippedNoOptIn).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('이미 fired된 trip은 미발사 + blocked 카운트', async () => {
@@ -6687,14 +6722,26 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     });
   });
 
+  // #2651 — 이 describe의 테스트들은 GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`)의
+  // archFlag/arvlCd 로직만을 대상으로 한다. `runScheduled`(양쪽 경로 모두 실행)를 그대로 쓰면
+  // promptOptIn=true(새 opt-in 게이트 통과에 필요)인 trip에서 GPS-free 경로가 독립적으로
+  // 함께 평가돼(GPS-free는 15분 신선도/arvlCd 게이트가 없는 permissive 설계) "blocked" 기대
+  // 테스트가 실제로는 GPS-free가 대신 발사해버리는 것으로 오염된다 — 대상 함수를 직접 호출해
+  // 격리한다.
   it('archFlag=off + series=[] → 기존 no-candidates 차단 유지 (회귀 방어)', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const trip = makeUnlockedTrip();
     const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const stats = makeFullEmptyStats();
 
-    const stats = await runScheduled(
+    await evaluateAndMaybeFireBoardingPrompt(
+      trip,
       makeEnv(kv),
       makeArchFlagDeps(fetchImpl, undefined, 'off'),
+      stats,
+      NOW,
+      () => {},
+      () => 'b8-push-1',
     );
 
     expect(stats.boardingPromptEvaluated).toBe(1);
@@ -6752,14 +6799,23 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
       trainCode: 'AMB-B',
     };
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const trip = makeUnlockedTrip();
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const deps = makeArchFlagDeps(
       fetchImpl,
       makeOriginScopedSeoul('강남', [AMBIGUOUS_TRAIN_A, AMBIGUOUS_TRAIN_B]),
     );
+    const stats = makeFullEmptyStats();
 
-    const stats = await runScheduled(makeEnv(kv), deps);
+    await evaluateAndMaybeFireBoardingPrompt(
+      trip,
+      makeEnv(kv),
+      deps,
+      stats,
+      NOW,
+      () => {},
+      () => 'b8-push-1',
+    );
 
     expect(stats.boardingPromptEvaluated).toBe(1);
     expect(stats.boardingPromptFired).toBe(0);
@@ -6836,11 +6892,20 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
       arvlCd: 0, // ENTERING
     };
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const trip = makeUnlockedTrip();
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const deps = makeArchFlagDeps(fetchImpl, makeOriginScopedSeoul('강남', [ENTERING_ONLY]));
+    const stats = makeFullEmptyStats();
 
-    const stats = await runScheduled(makeEnv(kv), deps);
+    await evaluateAndMaybeFireBoardingPrompt(
+      trip,
+      makeEnv(kv),
+      deps,
+      stats,
+      NOW,
+      () => {},
+      () => 'b8-push-1',
+    );
 
     expect(stats.boardingPromptEvaluated).toBe(1);
     expect(stats.boardingPromptFired).toBe(0);
@@ -6857,11 +6922,20 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
       arvlCd: 2, // DEPARTED
     };
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const trip = makeUnlockedTrip();
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const deps = makeArchFlagDeps(fetchImpl, makeSeoul([DEPARTED_ONLY]));
+    const stats = makeFullEmptyStats();
 
-    const stats = await runScheduled(makeEnv(kv), deps);
+    await evaluateAndMaybeFireBoardingPrompt(
+      trip,
+      makeEnv(kv),
+      deps,
+      stats,
+      NOW,
+      () => {},
+      () => 'b8-push-1',
+    );
 
     expect(stats.boardingPromptEvaluated).toBe(1);
     expect(stats.boardingPromptFired).toBe(0);
@@ -9220,31 +9294,50 @@ describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
     expect(stored.lastAutoPromptedAt).toBe(NOW);
   });
 
+  // #2651 — `runOneCycle`(=runScheduled)은 GPS 9단 경로와 GPS-free 경로를 둘 다 실행한다.
+  // GPS-free는 `lastAutoPromptedAt` dedup 게이트를 공유하지 않는(permissive backstop 설계)
+  // 별도 경로라 promptOptIn=true(신규 opt-in 게이트 통과에 필요) trip에서 9단 경로가 dedup으로
+  // skip해도 GPS-free가 독립 발사해버려 "재평가 자체 차단"이라는 이 테스트의 의도가 오염된다.
+  // 대상 함수(`evaluateAndMaybeFireBoardingPrompt`)를 직접 호출해 격리한다.
   it('lastAutoPromptedAt 윈도우 안(=push 직후) → 재평가 자체 차단 (dedup)', async () => {
     const kv = new InMemoryKV();
     const token = 'fub-dedup';
     // 시뮬레이션: 직전 cycle에서 boardingPrompt push 발사 후 lock 클리어 + boardingPromptState 리셋.
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makePromptTrip({
-        token,
-        lastAutoPromptedAt: NOW - 5 * 60_000, // 5분 전 — window(30분) 안
-        boardingPromptState: undefined,
-      }),
-    );
+    const trip = makePromptTrip({
+      token,
+      lastAutoPromptedAt: NOW - 5 * 60_000, // 5분 전 — window(30분) 안
+      boardingPromptState: undefined,
+    });
     await seedHappySeries(kv, token);
-    const stats = await runOneCycle(kv, [
-      { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-    ]);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const stats = makeFullEmptyStats();
+
+    await evaluateAndMaybeFireBoardingPrompt(
+      trip,
+      makeEnv(kv),
+      {
+        seoul: makeSeoul([
+          { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+        ]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        now: () => NOW,
+        fetchImpl,
+        generatePushId: () => 'fub-1',
+      },
+      stats,
+      NOW,
+      () => {},
+      () => 'fub-1',
+    );
     // 평가 자체에 안 들어감 — 측정 인프라가 별도 dedup 카운터로 잡는다.
     expect(stats.boardingPromptAutoDeduped).toBe(1);
     expect(stats.boardingPromptEvaluated).toBe(0);
     expect(stats.autoLockSuccess).toBe(0);
     expect(stats.boardingPromptFired).toBe(0);
     // trip은 그대로 — auto-prompt 마커는 유지된다.
-    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
-    expect(stored.lastAutoPromptedAt).toBe(NOW - 5 * 60_000);
-    expect(stored.boardingLock).toBeUndefined();
+    expect(trip.lastAutoPromptedAt).toBe(NOW - 5 * 60_000);
+    expect(trip.boardingLock).toBeUndefined();
   });
 
   it('lastAutoPromptedAt 윈도우 밖 → 정상 평가 + boardingPrompt push 발사', async () => {
@@ -13485,6 +13578,8 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       apnsEnv: 'production',
       registeredAt: NOW,
       infoModeEnabled: true,
+      // #2651 — 이 describe의 게이트는 infoModeEnabled가 아니라 promptOptIn을 본다.
+      promptOptIn: true,
       promptDisplay: { originStation: '용마산', line: '7' },
       ...overrides,
     } as unknown as Trip;
@@ -13808,9 +13903,29 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
   });
 
-  it('infoModeEnabled !== true → no-op (fetch 안 함, 카운터 불변)', async () => {
+  // #2651 — 기존엔 이 함수의 opt-in 게이트가 infoModeEnabled였다. 결정 모델 변경으로 게이트가
+  // promptOptIn으로 교체됐다 — infoModeEnabled=false(응답/직접 탭 전)라도 promptOptIn=true
+  // (안내 시작)면 프롬프트는 발사돼야 한다("안내시작이 stamp를 찍지 않는다" ≠ "프롬프트가 안 온다").
+  it('#2651 — infoModeEnabled=false라도 promptOptIn=true면 발사 (안내시작만 한 무탭 trip)', async () => {
     const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
-    const trip = makeTrip({ infoModeEnabled: false });
+    const trip = makeTrip({ infoModeEnabled: false, promptOptIn: true });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+  });
+
+  it('#2651 — promptOptIn !== true → no-op (fetch 안 함, 카운터 불변) — 안내 시작 안 한 trip은 완전 침묵', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ promptOptIn: false });
     const stats = makeStats();
     await maybeFireOriginBoardingPromptGpsFree(
       trip,

@@ -189,6 +189,24 @@ export interface Trip {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. device의
+   * `useNavigationStore.navigationActive`("안내 시작" 버튼) 상태를 그대로 forward한다.
+   *
+   * `infoModeEnabled`(boardingPrompt 응답/BoardingTrainList 직접 탭으로만 stamp, ADR-014
+   * "lock 동급 보장" 대상)와는 목적이 다르다 — infoModeEnabled는 "탑승 후 매역 통과 알림을
+   * 받을지"의 신호이고, promptOptIn은 "탑승 프롬프트 자체를 받을지"의 신호다. 안내 시작만
+   * 누르고 아직 아무 응답도 하지 않은 trip은 promptOptIn=true, infoModeEnabled=false다.
+   *
+   * backend 분기:
+   *   - `maybeFireOriginBoardingPromptGpsFree`(GPS-free leg-1): `promptOptIn===true &&
+   *     trip.boardingLock===undefined`
+   *   - `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 leg-1): 동일 게이트 추가 —
+   *     안내 시작을 누르지 않은 trip(목적지만 설정)은 등록만으로 프롬프트가 발사되지 않는다.
+   *
+   * 미송신/비boolean이면 undefined(=false 취급) — 두 경로 모두 opt-in 없는 trip은 완전 침묵.
+   */
+  promptOptIn?: boolean;
+  /**
    * #2524 — 사용자가 boardingPrompt [탑승] 응답/배너 탭으로 승차를 "커밋"했지만 지하/arrivals
    * 공백·ambiguity로 실 trainCode를 못 구해 device가 PENDING fallback lock을 생성한 경우에만
    * true로 송신되는 시그널. `infoModeEnabled`(안내 시작/info-mode도 true로 만듦)만으로는 backend가

@@ -1052,12 +1052,18 @@ app.post('/trips', async (c) => {
     // 다른 trainCode/none이면 progress 폐기.
     // #1285: lockless opt-in trip(boardingLock 없음 + infoModeEnabled===true)은
     // token 기준 lockless progress로 보존 — trainCode 없이 lockless===true 마커로 매칭.
+    // #2651 — infoModeEnabled는 이제 boardingPrompt 응답/직접 탭에서만 stamp되고 "안내 시작"만
+    // 누른 trip(promptOptIn===true)은 더 이상 자동으로 true가 되지 않는다. infoModeEnabled만
+    // 조건으로 두면 이런 무탭 trip이 재등록마다 progressApplies=false → progress 삭제 →
+    // waypoint가 origin으로 되감기는 회귀가 생긴다. promptOptIn===true도 동일하게 보존 대상으로
+    // 인정해 무탭 trip의 진행분을 지킨다.
     const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
     const progressApplies =
       progress !== null &&
       ((incoming.boardingLock !== undefined &&
         progress.trainCode === incoming.boardingLock.trainCode) ||
-        (progress.lockless === true && incoming.infoModeEnabled === true));
+        (progress.lockless === true &&
+          (incoming.infoModeEnabled === true || incoming.promptOptIn === true)));
     if (progress !== null && !progressApplies) {
       await deleteProgress(c.env.TRIPS, incoming.token);
     }
@@ -3494,6 +3500,10 @@ export function validateTrip(input: unknown): Trip | null {
         : typeof obj.locklessStationPassed === 'boolean'
           ? obj.locklessStationPassed
           : undefined,
+    // #2651 — boarding-prompt opt-in 시그널(useNavigationStore.navigationActive forward).
+    // 미송신/비boolean이면 undefined(default false, 기존 gate-less 발사 동작 보존 X — 신규 게이트
+    // 자체가 opt-in 없으면 완전 침묵으로 바뀌는 것이 이번 이슈의 목적).
+    promptOptIn: typeof obj.promptOptIn === 'boolean' ? obj.promptOptIn : undefined,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. 미송신/비boolean이면 undefined(default false, 기존
     // lockless "통과" 동작 보존).
     boardingCommitted:

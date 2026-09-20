@@ -162,15 +162,16 @@ export default function HomeScreen() {
   // lockless intermediate gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`)를 통과시킨다.
   // 트리거: tryAutoLock(boardingPrompt 응답) / createLockFromTrain(BoardingTrainList 탭) 양쪽에서 stamp.
   const infoModeEnabled = useUserIntentStore((s) => s.infoModeEnabled);
-  const setInfoModeEnabled = useUserIntentStore((s) => s.setInfoModeEnabled);
   const loadInfoModeEnabled = useUserIntentStore((s) => s.loadInfoModeEnabled);
   // #2524 — 탑승 커밋(PENDING lock) 시그널. infoModeEnabled와 별도로 forward해 backend가
   // "탑승 커밋 + lock 미확정"과 "정보용 안내 시작"을 구분하도록 한다(전자에서만 lockless
   // intermediate "통과" push 억제). handleStartNavigation은 이 값을 세팅하지 않는다.
   const boardingCommitted = useUserIntentStore((s) => s.boardingCommitted);
   const loadBoardingCommitted = useUserIntentStore((s) => s.loadBoardingCommitted);
-  // #1973 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
-  // BG GPS 지속 가능 (네이버 패턴). startNavigation은 setInfoModeEnabled(true) 자동 wire.
+  // #1973 / #2651 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
+  // BG GPS 지속 가능 (네이버 패턴). startNavigation은 더 이상 infoModeEnabled를 자동 stamp하지
+  // 않는다 — useApnsTripRegistration에 promptOptIn으로 forward되어 backend boarding-prompt
+  // opt-in 게이트에만 쓰인다.
   const navigationActive = useNavigationStore((s) => s.navigationActive);
   // #2293 — 일시정지 배지 카운트다운 소스(메모리, FG 전용). cold-start 자동 종료 판정은
   // useStateRehydration이 별도 영속 채널(NAVIGATION_PAUSED_AT_KEY)로 처리.
@@ -431,23 +432,26 @@ export default function HomeScreen() {
     setDestination(null);
     void notifyTripEnded({ destination: cleared, reason: 'arrived' });
   }, [destination, setDestination]);
-  // #1973 — 안내 시작/중단 명시 trigger. infoMode 자동 wire — backend lockless intermediate
-  // gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`) 통과 보장. useBackgroundLocation은
-  // useNavigationStore.navigationActive를 deps로 보고 BG GPS lifecycle을 따른다.
+  // #1973 / #2651 — 안내 시작/중단 명시 trigger. infoMode(`useUserIntentStore.infoModeEnabled`)
+  // 자동 wire는 2026-09-20 결정으로 제거됐다 — stamp 진입점은 boardingPrompt [탑승] 응답 /
+  // BoardingTrainList 직접 탭 2곳뿐(순환 deadlock 해소, useUserIntentStore.ts 문서 참고).
+  // 안내 시작은 이제 trip 등록 + boarding-prompt opt-in(`promptOptIn`, useApnsTripRegistration에
+  // navigationActive로 forward) 역할만 한다. useBackgroundLocation은 useNavigationStore.navigationActive를
+  // deps로 보고 BG GPS lifecycle을 따른다.
   const handleStartNavigation = useCallback(() => {
     startNavigation();
-    void setInfoModeEnabled(true);
     // #2293 — 재개 시 일시정지 stamp 제거(cold-start backstop이 재개된 trip을 잘못 종료하지 않도록).
     void clearNavigationPausedAt();
-  }, [startNavigation, setInfoModeEnabled]);
+  }, [startNavigation]);
   // #2293 (Part of #2285 결정 ①+③) — "일시정지" 진입. navigationActive off + BG GPS 중단은
   // 유지하되(#1973), destination/trip은 보존한다. pausedAt을 함께 stamp해 배지 카운트다운 +
   // PAUSE_AUTO_END_MS(15분) 경과 시 자동 종료 backstop의 기준점으로 쓴다.
+  // #2651 — infoMode 자동 해제 wire도 제거(위 handleStartNavigation과 대칭) — 의향 해제 권한은
+  // trip 종료 cleanup(resetUserIntentInfoMode, tripBoundCleanups) 한 곳으로 좁힌다.
   const handleStopNavigation = useCallback(() => {
     stopNavigation();
-    void setInfoModeEnabled(false);
     void setNavigationPausedAt();
-  }, [stopNavigation, setInfoModeEnabled]);
+  }, [stopNavigation]);
   // #2238 — "안내 종료" 명시 trigger. "일시정지"(navigationActive만 off, BG GPS 토글)와 달리
   // trip 자체를 종료한다: setDestination(null)이 기존 cleanup chain(runTripBoundCleanups →
   // #2129 backend DELETE /trips wire, tripBoundCleanups.ts:259)을 그대로 태워 로컬 정리 +
@@ -1111,6 +1115,10 @@ export default function HomeScreen() {
     // #1923 — 사용자 명시 의향 토글. backend가 lockless intermediate gate 진입에 사용 →
     // station-passed silent push 발사. 미stamp(false) trip은 기존 lockMissing skip 동작.
     infoModeEnabled,
+    // #2651 — boarding-prompt opt-in(안내 시작) 시그널. navigationActive를 그대로 forward —
+    // backend GPS-free/GPS 9단 leg-1 boarding-prompt 발사 게이트에 사용. 안내 시작 안 한 trip은
+    // 등록만으로 프롬프트가 발사되지 않는다(#2651 결정 모델).
+    promptOptIn: navigationActive,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. backend가 lockless intermediate "통과" push를
     // 억제하는 gate에 사용 (안내 시작 trip은 이 값이 서지 않아 기존 "통과" 그대로 발사).
     boardingCommitted,

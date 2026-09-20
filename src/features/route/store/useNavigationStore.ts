@@ -15,17 +15,19 @@
  *
  * Lifecycle:
  *  - 사용자 안내 시작 탭: `startNavigation()` — memory state true. HomeScreen이
- *    `setInfoModeEnabled(true)` 자동 wire (useUserIntentStore, #1923).
- *  - 사용자 안내 중단 탭: `stopNavigation()` — memory state false. HomeScreen이
- *    `setInfoModeEnabled(false)` 자동 wire.
+ *    `useApnsTripRegistration`에 `promptOptIn: navigationActive`로 forward
+ *    (backend boarding-prompt opt-in 게이트, #2651).
+ *  - 사용자 안내 중단 탭: `stopNavigation()` — memory state false. `promptOptIn`도
+ *    자동으로 false가 되어 다음 register부터 boarding-prompt가 no-op.
  *  - 앱 재시작 / trip 종료: 휘발성 false 유지 — persist 의도적 미적용. 명시 의향이
  *    cold start 사이 leak되지 않도록.
  *
- * `useUserIntentStore`와 별개 store인 이유:
- *  - infoModeEnabled는 trip-bound persist (boardingPrompt 응답/직접 탭 흐름에서도
- *    사용). navigationActive는 명시 trigger 전용 + 휘발성.
- *  - HomeScreen에서 두 store를 명시적으로 wire (startNavigation → setInfoModeEnabled(true))
- *    해야 backend lockless intermediate gate 통과.
+ * `useUserIntentStore`(`infoModeEnabled`)와 별개 store인 이유:
+ *  - infoModeEnabled는 trip-bound persist이며 stamp 진입점이 boardingPrompt [탑승] 응답 /
+ *    BoardingTrainList 직접 탭 2곳뿐이다(#2651 — HomeScreen의 자동 wire는 순환 deadlock
+ *    (프롬프트를 받아야 stamp가 생기는데 stamp가 있어야 프롬프트가 나가는) 때문에 제거됨).
+ *    navigationActive는 명시 trigger 전용 + 휘발성이며, "프롬프트 자체를 받을지"(promptOptIn)만
+ *    담당한다 — "매역 통과 알림을 받을지"(infoModeEnabled)와는 목적이 다르다.
  */
 
 import { create } from 'zustand';
