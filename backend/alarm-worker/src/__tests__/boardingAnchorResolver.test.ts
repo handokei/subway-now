@@ -174,7 +174,7 @@ describe('attemptBoardingAnchorResolution', () => {
               trainNo: p.trainCode,
               statnNm: p.stationName ?? '중곡',
               trainSttus: p.trainSttus ?? 1,
-              updnLine: p.isUp === true ? '상행' : '하행',
+              updnLine: p.isUp === true ? '0' : '1', // #2746 숫자코드: 0=상행/내선, 1=하행/외선
               lastRecptnDt: recptnDtFor(p.recptnMs ?? NOW),
             })),
           }),
@@ -363,7 +363,7 @@ describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', (
               trainNo: p.trainCode,
               statnNm: p.stationName ?? '건대입구',
               trainSttus: p.trainSttus ?? 1,
-              updnLine: p.isUp === true ? '상행' : '하행',
+              updnLine: p.isUp === true ? '0' : '1', // #2746 숫자코드: 0=상행/내선, 1=하행/외선
               lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
                 .toISOString()
                 .slice(0, 19)
@@ -537,7 +537,7 @@ describe('#2739 — attemptBoardingAnchorResolution({ tapAnchor })', () => {
               trainNo: p.trainCode,
               statnNm: p.stationName ?? defaultStation,
               trainSttus: p.trainSttus ?? 1,
-              updnLine: p.isUp === true ? '상행' : '하행',
+              updnLine: p.isUp === true ? '0' : '1', // #2746 숫자코드: 0=상행/내선, 1=하행/외선
               lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
                 .toISOString()
                 .slice(0, 19)

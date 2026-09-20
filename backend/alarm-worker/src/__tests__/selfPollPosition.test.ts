@@ -63,7 +63,8 @@ function makeSeoulClient(options: {
             realtimePositionList: positions.map((p) => ({
               trainNo: p.trainCode,
               statnNm: p.stationName,
-              updnLine: p.isUp ? '상행' : '하행',
+              // #2746 — realtimePosition updnLine은 숫자 코드('0'=상행/내선, '1'=하행/외선).
+              updnLine: p.isUp ? '0' : '1',
               trainSttus: p.trainSttus,
               lastRecptnDt: '',
             })),

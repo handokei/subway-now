@@ -15,6 +15,15 @@ import {
 } from '../../../src/shared/constants/trainTypes';
 
 const UP_DIRECTION_VALUES = ['상행', '내선'] as const;
+/**
+ * #2746 — `realtimePosition` 엔드포인트의 `updnLine`은 `realtimeStationArrival`(한글 '상행'/'하행')과
+ * 달리 숫자 문자열이다. R2 실캡처(seoul-capture/2026-09-17/1789642190359.json) 대조로 확정:
+ * 같은 trainCode(8387/2389/7355/7351/7353/3370/6604/7322/7320/7318, 10쌍 전수 일치)가 arrival에서
+ * '외선'/'하행'이면 position에서는 항상 '1', arrival에서 '내선'/'상행'이면 position은 항상 '0'.
+ * → '0'=상행/내선, '1'=하행/외선. 추정이 아니라 실측 대조 결과.
+ */
+const UP_POSITION_CODE = '0';
+const DOWN_POSITION_CODE = '1';
 const SEOUL_API_TZ_OFFSET = '+09:00';
 const MAX_RECPTN_DRIFT_SEC = 120;
 const CACHE_TTL_MS = 15_000;
@@ -118,11 +127,28 @@ export class SeoulArrivalClient {
    * not just that the specific trainCode disappeared.
    */
   private httpErrorCount = 0;
+  /**
+   * #2746 — `realtimePosition` 항목 중 `updnLine`이 '0'/'1' 어느 쪽으로도 해석 안 되는(누락·구
+   * 한글값·그 외 미지 값) 항목 누적 카운트. 이런 항목은 방향 판정 오염을 막기 위해 결과에서
+   * 제외되므로(parsePositionEntry가 null 반환), "조용히 false로 떨어뜨리는" 대신 이 카운터로
+   * 관측 가능하게 남긴다.
+   */
+  private positionUnknownDirectionCount = 0;
 
   constructor(private readonly options: FetchSeoulOptions) {}
 
-  get stats(): { callCount: number; cacheSize: number; httpErrorCount: number } {
-    return { callCount: this.callCount, cacheSize: this.cache.size, httpErrorCount: this.httpErrorCount };
+  get stats(): {
+    callCount: number;
+    cacheSize: number;
+    httpErrorCount: number;
+    positionUnknownDirectionCount: number;
+  } {
+    return {
+      callCount: this.callCount,
+      cacheSize: this.cache.size,
+      httpErrorCount: this.httpErrorCount,
+      positionUnknownDirectionCount: this.positionUnknownDirectionCount,
+    };
   }
 
   /**
@@ -152,7 +178,7 @@ export class SeoulArrivalClient {
     const data = (await response.json()) as { realtimePositionList?: unknown[] };
     const items = Array.isArray(data.realtimePositionList) ? data.realtimePositionList : [];
     const parsed = items
-      .map(parsePositionEntry)
+      .map((raw) => parsePositionEntry(raw, () => (this.positionUnknownDirectionCount += 1)))
       .filter((e): e is PositionEntry => e !== null);
 
     this.positionCache.set(lineName, { expiresAt: now + CACHE_TTL_MS, data: parsed });
@@ -247,19 +273,31 @@ export function parseTerminusStationName(trainLineNm: string): string | null {
   return null;
 }
 
-function parsePositionEntry(raw: unknown): PositionEntry | null {
+function parsePositionEntry(raw: unknown, onUnknownDirection: () => void): PositionEntry | null {
   if (!raw || typeof raw !== 'object') return null;
   const item = raw as Record<string, unknown>;
   const trainCode = typeof item.trainNo === 'string' ? item.trainNo : '';
   if (!trainCode) return null;
   const stationName = typeof item.statnNm === 'string' ? item.statnNm : '';
   const updnLine = typeof item.updnLine === 'string' ? item.updnLine : '';
+  // #2746 — realtimePosition의 updnLine은 숫자 코드('0'=상행/내선, '1'=하행/외선)다.
+  // 그 외 값(누락·구 한글 오염값 등)은 방향을 알 수 없으므로 조용히 false로 떨어뜨리지 않고
+  // 항목 자체를 제외한다 — 관측은 onUnknownDirection() 카운터로.
+  let isUp: boolean;
+  if (updnLine === UP_POSITION_CODE) {
+    isUp = true;
+  } else if (updnLine === DOWN_POSITION_CODE) {
+    isUp = false;
+  } else {
+    onUnknownDirection();
+    return null;
+  }
   const statnTnm = typeof item.statnTnm === 'string' ? item.statnTnm.trim() : '';
   return {
     trainCode,
     stationName,
     trainSttus: parseArvlCd(item.trainSttus),
-    isUp: (UP_DIRECTION_VALUES as readonly string[]).includes(updnLine),
+    isUp,
     recptnMs: parseRecptnDt(item.lastRecptnDt),
     trainType: parseTrainTypeFromDirectAt(item.directAt),
     terminus: statnTnm.length > 0 ? statnTnm : null,
