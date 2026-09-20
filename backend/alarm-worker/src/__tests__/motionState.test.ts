@@ -138,7 +138,10 @@ describe('hasArvlcdTrainProgress', () => {
     expect(hasArvlcdTrainProgress(ssot, 0)).toBe(false);
   });
 
-  it('같은 stationId 여러 건은 progress 아님', () => {
+  // #2763 (2026-09-20 코드리뷰) — 역간 정차 4~5분(9/15 어대~건대 실측)에서는 5분 창 안에 같은
+  // station 1개만 확정 도착할 수 있어, 예전 "distinct 2개" 요건이 상시 false였다(실효 무력).
+  // seoul-arvlcd sample은 advanceTripPosition의 advance 확증(강신호)에서만 나오므로 1건으로 완화.
+  it('같은 stationId 여러 건도 progress (true) — 1건 이상이면 충분 (window 의미론 완화)', () => {
     const ssot = makeSsot({
       motionEvidence: [
         arvlcdEvidence('0228', 10),
@@ -146,7 +149,7 @@ describe('hasArvlcdTrainProgress', () => {
         arvlcdEvidence('0228', 30),
       ],
     });
-    expect(hasArvlcdTrainProgress(ssot, 0)).toBe(false);
+    expect(hasArvlcdTrainProgress(ssot, 0)).toBe(true);
   });
 
   it('다른 stationId 2건 이상 → progress (true)', () => {
@@ -190,8 +193,8 @@ describe('hasArvlcdTrainProgress', () => {
         arvlcdEvidence('0228', 15),
       ],
     });
-    // 유효 stationId 1개 → false
-    expect(hasArvlcdTrainProgress(ssot, 0)).toBe(false);
+    // 유효 stationId 1개 → true (window 의미론 완화, #2763)
+    expect(hasArvlcdTrainProgress(ssot, 0)).toBe(true);
   });
 });
 
@@ -226,6 +229,18 @@ describe('computeMotionState — 보강 섹션 6 양방향 시나리오 (it.each
       displacement: 0,
       arvlcdProgress: false,
       expected: 'stationary' as const,
+    },
+    {
+      // #2763 (2026-09-20 코드리뷰) — CMMotionActivity가 승차 중 간헐적으로 'stationary'를
+      // 보내는 실측 패턴이 있어, device explicit stationary도 arvlcd train-progress를
+      // consult해야 한다(motionState.ts:147). 서버 열차데이터가 device 모션보다 권위(확정
+      // 아키텍처 2026-09-03).
+      name: 'device stationary + arvlcd progress → unknown (완화, #2763)',
+      deviceMotion: 'stationary' as const,
+      samples: 0,
+      displacement: 0,
+      arvlcdProgress: true,
+      expected: 'unknown' as const,
     },
     {
       name: 'unknown + 10 samples + displ <10m + no progress → stationary',
