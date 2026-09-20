@@ -20,6 +20,7 @@ import {
   type AdvanceStats,
   type WifiSsidEntry,
 } from '../advanceTripPosition';
+import { hasArvlcdTrainProgress } from '../motionState';
 import { detectArcOvershoot } from '../positionSeries';
 import type { LegConsensusRecord } from '../transferLegConsensus';
 import type { PositionPoint } from '../types';
@@ -1242,6 +1243,89 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
     );
     expect(result).toBe('blocked');
     expect(after?.alarmEvents).toEqual([]);
+  });
+});
+
+// #2763 — advance 확증 경로가 SSoT.motionEvidence에 source:'seoul-arvlcd' sample을 stamp하는지
+// 검증. hasArvlcdTrainProgress(motionState.ts:113)의 유일 소비 조건(source==='seoul-arvlcd' +
+// signal.stationId 2종 이상)을 충족하는 writer가 감사 시점(2026-09-20)에 0건이었다 — 이 결함으로
+// 지하 GPS 정지 + 실제 열차 진행 trip이 상시 'stationary'로 오판되어 advance/발사가 침묵했다.
+describe("advanceTripPosition — motionEvidence 'seoul-arvlcd' stamping (#2763)", () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  async function setupAndAdvance(
+    stationId: string,
+    evidence: AdvanceEvidence,
+  ): Promise<{ result: AdvanceResult; after: TripPositionSSoT | null }> {
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+    const out = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      stationId,
+      evidence,
+      { gatePassed: true, lockAttachable: true },
+    );
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    return { result: out.result, after };
+  }
+
+  it("advance 성공(arvlcd-confirmed-train) → motionEvidence에 source:'seoul-arvlcd', signal.stationId=candidate stamp", async () => {
+    const { result, after } = await setupAndAdvance('중곡', makeEvidence());
+    expect(result).toBe('advanced');
+    const arvlcdSamples = after?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
+    expect(arvlcdSamples).toHaveLength(1);
+    expect(arvlcdSamples[0].signal).toMatchObject({ stationId: '중곡' });
+  });
+
+  it("advance 성공(position-train) → 동일하게 source:'seoul-arvlcd' stamp (realtimePosition 확증도 동일 신호)", async () => {
+    const { result, after } = await setupAndAdvance(
+      '중곡',
+      makeEvidence({ type: 'position-train', arvlCd: null }),
+    );
+    expect(result).toBe('advanced');
+    const arvlcdSamples = after?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
+    expect(arvlcdSamples).toHaveLength(1);
+  });
+
+  it('blocked advance → motionEvidence에 stamp 안 함', async () => {
+    const { result, after } = await setupAndAdvance(
+      '중곡',
+      makeEvidence({ type: 'time-only', arvlCd: null, arvlcdTrainCode: undefined }),
+    );
+    expect(result).toBe('blocked');
+    const arvlcdSamples = after?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
+    expect(arvlcdSamples).toHaveLength(0);
+  });
+
+  it('열차 진행 확인 tick 2회(다른 stationId) 이후 hasArvlcdTrainProgress=true — 결함 재현(수정 전 상시 false)', async () => {
+    const first = await setupAndAdvance('중곡', makeEvidence({ stationId: '중곡' }));
+    expect(first.result).toBe('advanced');
+
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        boardingLock: makeLock({ segmentStations: ['용마산', '중곡', '군자(능동)'] }),
+      }),
+    );
+    const second = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '군자(능동)',
+      makeEvidence({ stationId: '군자(능동)', ts: NOW + 60_000 }),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(second.result).toBe('advanced');
+
+    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(after).not.toBeNull();
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    expect(hasArvlcdTrainProgress(after!, NOW - 5 * 60_000)).toBe(true);
   });
 });
 
