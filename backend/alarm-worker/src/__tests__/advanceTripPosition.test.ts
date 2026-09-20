@@ -8,13 +8,11 @@ import {
   buildConsensusTickMeta,
   buildSignalsFromEvidence,
   computePositionTrainHopDistance,
-  lookupStationFromWifiSsid,
   mapEvidenceEnvironment,
   type AdvanceBlockReason,
   type AdvanceEvidence,
   type AdvanceResult,
   type AdvanceStats,
-  type WifiSsidEntry,
 } from '../advanceTripPosition';
 import { hasArvlcdTrainProgress } from '../motionState';
 import { detectArcOvershoot } from '../positionSeries';
@@ -142,33 +140,6 @@ describe('buildSignalsFromEvidence', () => {
       lockAttachable: true,
     });
     expect(signals.consensusConfirmed).toBe(true);
-  });
-});
-
-describe('lookupStationFromWifiSsid', () => {
-  const entries: WifiSsidEntry[] = [
-    { stationId: '용마산', patterns: ['^T_subway_용마산', '^Olleh_Subway_용마산'] },
-    { stationId: '중곡', patterns: ['^T_subway_중곡'] },
-  ];
-
-  it.each([
-    [null, null],
-    [undefined, null],
-    ['', null],
-    ['   ', null],
-    ['T_subway_용마산_5G', '용마산'],
-    ['t_subway_중곡', '중곡'], // case-insensitive
-    ['Free_Wifi_별빛마을', null],
-  ] as const)('"%s" → %s', (ssid, expected) => {
-    expect(lookupStationFromWifiSsid(ssid, entries)).toBe(expected);
-  });
-
-  it('invalid regex pattern은 silent skip — 다음 pattern으로 진행', () => {
-    const buggy: WifiSsidEntry[] = [
-      { stationId: '잘못', patterns: ['['] }, // 잘못된 regex
-      { stationId: '중곡', patterns: ['^T_subway_중곡'] },
-    ];
-    expect(lookupStationFromWifiSsid('T_subway_중곡', buggy)).toBe('중곡');
   });
 });
 
@@ -1188,7 +1159,6 @@ describe('toSilentPushSsot — alarmEvents forward (#1572 T9)', () => {
       lastAdvanceEvidence: 'arvlcd-confirmed-train',
       passedStations: [],
       userIntentDeclared: false,
-      seedOverrideCount: 0,
       alarmEvents: [
         { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 1 },
       ],
@@ -1209,7 +1179,6 @@ describe('toSilentPushSsot — alarmEvents forward (#1572 T9)', () => {
       lastAdvanceEvidence: 'arvlcd-confirmed-train',
       passedStations: [],
       userIntentDeclared: false,
-      seedOverrideCount: 0,
       schemaVersion: 1,
     };
     const payload = toSilentPushSsot(ssot);

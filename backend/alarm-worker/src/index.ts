@@ -2017,7 +2017,10 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       ? obj.cellularEnvironmentVote
       : undefined;
   // #1667 (ADR-015 strongDB) — WiFi SSID 매핑 역명. 디바이스가 lookupStationBySsid 결과를 forward.
-  // 빈 문자열은 "매칭 없음"과 동일 → graceful omit (consensusGate wifiSsidMatch=false fallback).
+  // 빈 문자열은 "매칭 없음"과 동일 → graceful omit.
+  // #2765 (게이트 전수감사 A) — 이 값을 소비하던 consensusGate strongDB(`wifiSsidMatch`)는
+  // 생산자 0건이 감사로 확정돼 제거됐다. 현재 intake-only(types.ts:747 참조) — 저장만 되고
+  // backend 게이트 판정에는 쓰이지 않는다.
   const wifiSsidStationName =
     typeof obj.wifiSsidStationName === 'string' && obj.wifiSsidStationName.length > 0
       ? obj.wifiSsidStationName

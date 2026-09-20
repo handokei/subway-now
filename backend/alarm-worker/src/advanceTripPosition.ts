@@ -61,9 +61,12 @@
  * ====================
  * - 기존 fire path 변경 (T4~T7가 reader migration)
  * - KV CAS retry (issue 본문 §Race safety — "last write wins" 허용. motionEvidence ring buffer로 손실 X)
- * - WiFi SSID map 데이터 자체 (`subwayWifiSsidMap.json`) backend 임포트 — `lookupStationFromWifiSsid`는
- *   injectable entries 인자를 받는 순수 함수로 두고, 실제 매핑 데이터 wire는 T3 (device/position upload
- *   payload에 `wifiSsid` 추가 + backend wire) 또는 별도 데이터 module로 분리한다.
+ *
+ * #2765 (게이트 전수감사 A, 코드리뷰 후속) — `lookupStationFromWifiSsid`(injectable WiFi SSID
+ * lookup 순수 함수) + `WifiSsidEntry` 타입 + `AdvanceEvidence.wifiSsid` 필드는 유일한 소비
+ * 경로였던 `'wifi-ssid-match'` evidence type이 본 PR에서 제거되며 생산자 0건으로 확정돼 함께
+ * 제거했다 — 이 함수를 살려두던 유일한 근거는 자기 unit 테스트뿐이었다(이 감사가 잡는 클래스와
+ * 동일 패턴). 실제 WiFi SSID 매핑 wire가 필요해지면 그때 별도 설계로 재도입한다.
  */
 
 import type { ArchFlagValue } from './archFlag';
@@ -204,8 +207,6 @@ export interface AdvanceEvidence {
    * 부재 시(레거시 caller) 게이트 dormant — backward compat 보장.
    */
   positionEntryFetchedAt?: number;
-  /** WiFi SSID 원본 — 진단/observability stamp용. lookup은 caller가 수행. */
-  wifiSsid?: string;
   /**
    * #2023 — device `mapMatchedArcM` 시간 적분 폭주 감지 결과 (`positionSeries.detectArcOvershoot`).
    *
@@ -248,12 +249,6 @@ export interface AdvanceStats {
   blockedMotionStationary: number;
   blockedEnvConsensus: number;
   blockedTrainMismatch: number;
-}
-
-/** 단일 WiFi SSID → stationId(=stationName canonical) lookup entry. */
-export interface WifiSsidEntry {
-  stationId: string;
-  patterns: readonly string[];
 }
 
 /**
@@ -349,33 +344,6 @@ export function buildSignalsFromEvidence(
     // 여기서는 evidence.type만으로 forward — 이중 확인 불필요.
     consensusConfirmed: evidence.type === 'consensus-train' ? true : undefined,
   };
-}
-
-/**
- * WiFi SSID → stationId 조회. 미매칭 시 null.
- *
- * 본 함수는 injectable `entries` 리스트를 받는다 — 실제 매핑 데이터(`subwayWifiSsidMap.json`)는
- * T3 wire-up에서 주입 (본 PR은 함수 logic + 테스트만). pattern은 case-insensitive regex.
- */
-export function lookupStationFromWifiSsid(
-  ssid: string | null | undefined,
-  entries: readonly WifiSsidEntry[],
-): string | null {
-  if (typeof ssid !== 'string') return null;
-  const trimmed = ssid.trim();
-  if (trimmed.length === 0) return null;
-  for (const entry of entries) {
-    for (const pattern of entry.patterns) {
-      let re: RegExp;
-      try {
-        re = new RegExp(pattern, 'i');
-      } catch {
-        continue;
-      }
-      if (re.test(trimmed)) return entry.stationId;
-    }
-  }
-  return null;
 }
 
 /**

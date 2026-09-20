@@ -222,14 +222,21 @@ export interface TripPositionSSoT {
   motionEvidence: MotionEvidence[];
   /** 마지막 advance 발생 시각 (epoch ms). 미발생 시 0. */
   lastAdvanceAt: number;
-  /** 마지막 advance를 통과시킨 evidence type. 미발생 시 별도 placeholder 없음 — `lastAdvanceAt===0`로 구분. */
+  /**
+   * 마지막 advance를 통과시킨 evidence type. `seedSsot`이 초기값으로 `'seed-override'`를
+   * placeholder stamp한다 — 실제 advance 발생 여부는 이 값이 아니라 `lastAdvanceAt===0`로
+   * 구분한다(placeholder도 유효 advance처럼 보이는 혼동 방지).
+   *
+   * #2765 (게이트 전수감사 A, 코드리뷰 후속) — `trySeedOverride`(E5, 강 신호 2개+30s 연속 일치로
+   * currentStationId 정정 시 `seedOverrideCount`를 +1하던 유일한 producer)가 호출자 0건으로
+   * 삭제되며 `seedOverrideCount` 필드도 함께 제거됐다. `'seed-override'` literal은 이제 위
+   * placeholder 용도로만 남아 있다 — 실제 seed-override advance를 의미하지 않는다.
+   */
   lastAdvanceEvidence: EvidenceType;
   /** 통과 확인된 station 누적 (S6 #1551 Trip.passedStations migration target). */
   passedStations: string[];
   /** C 토글 ON / boardingPrompt 응답 / BoardingTrainList tap. ADR-014 §사용자 명시 의향 trip. */
   userIntentDeclared: boolean;
-  /** seed override 발생 횟수 (E5 강 신호 2개 + 30s 연속 일치로 currentStationId 정정 시 +1). */
-  seedOverrideCount: number;
   /**
    * #1572 (T9) — Alarm 결정 ring buffer (append-only, ALARM_EVENTS_CAP=50 cap).
    *
@@ -467,7 +474,7 @@ export async function deleteSsot(kv: KVNamespace, token: string): Promise<void> 
  * 스코프 외, T2/T3에서 atomic 보장).
  *
  * motionState는 `'unknown'`으로 시작 — T3 motion state machine이 첫 GPS sample 수신 후 갱신.
- * userIntentDeclared / seedOverrideCount는 false / 0.
+ * userIntentDeclared는 false로 시작.
  *
  * #1534 (S1 GAP A) — currentStationId는 빈 문자열("") 허용. device가 currentStation 미상으로
  * trip을 등록할 때 backend는 빈 stationId로 seed하고, /position upload + 후속 advance 수렴으로
@@ -490,7 +497,6 @@ export async function seedSsot(
     lastAdvanceEvidence: 'seed-override',
     passedStations: [],
     userIntentDeclared: options?.userIntentDeclared ?? false,
-    seedOverrideCount: 0,
     alarmEvents: [],
     // #1705 — line 지정 시 currentStationLine 박제 (cross-line confusion 차단).
     ...(options?.line !== undefined ? { currentStationLine: options.line } : {}),

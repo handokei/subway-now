@@ -43,10 +43,12 @@ interface TripPositionSSoT {
   lastAdvanceEvidence: EvidenceType;
   passedStations: string[];
   userIntentDeclared: boolean; // C 토글 / boardingPrompt 응답 / BoardingTrainList tap
-  seedOverrideCount: number;
   schemaVersion: 1;
 }
 ```
+
+> **superseded-by-#2765** — 위 스키마는 T1(#1554) 당시 원본이다. `seedOverrideCount`(E5 seed
+> override 횟수)는 유일 producer `trySeedOverride`가 호출자 0건으로 확정돼 제거됐다.
 
 KV 정책:
 - prefix `ssot:`. row TTL은 trip lifecycle 정합 (`putTrip` 패턴, `trips.ts:42`).
@@ -192,7 +194,7 @@ ADR-017이 ADR-016을 대체하지 않음. backend 구조를 잡고 ADR-016 sub�
 | "시간 적분 fire 권한 박탈" | (구) evidence='time-only' → 게이트 #4 거부. #2765로 `'time-only'` type 자체가 생산자 0건 확정 제거 — 시간 적분 evidence는 애초에 stamp되지 않으므로 거부 게이트 자체가 불필요해졌다. |
 | "사용자 명시 의향 trip = lock 동급" | userIntentDeclared=true → lock 활성과 동치 |
 | "alarm ≠ notification" | SSoT.advance = alarm 결정. notification은 device 측 banner |
-| "한 번 lock 잡으면 X" | 강 신호 2개 + 30s → seedOverride |
+| "한 번 lock 잡으면 X" | (구) 강 신호 2개 + 30s → `trySeedOverride`가 currentStationId 정정. #2765로 호출자 0건 확정돼 `trySeedOverride`/`seedOverrideCount` 함께 제거 — lock 정정 메커니즘 자체가 현재 코드에 없다. 필요해지면 별도 설계로 재도입. |
 
 ## 참고
 

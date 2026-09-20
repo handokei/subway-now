@@ -4112,7 +4112,6 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
             lastAdvanceEvidence: 'seed-override',
             passedStations: [],
             userIntentDeclared: false,
-            seedOverrideCount: 0,
             schemaVersion: 1,
           });
         }
@@ -11507,7 +11506,6 @@ describe('silent push SSoT forward (#1561 T8 / S2 흡수)', () => {
       lastAdvanceEvidence: 'arvlcd-confirmed-train',
       passedStations: ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
       userIntentDeclared: false,
-      seedOverrideCount: 0,
       schemaVersion: 1,
     };
     const payload = toSilentPushSsot(ssot);

@@ -44,7 +44,6 @@ function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
     lastAdvanceEvidence: 'seed-override',
     passedStations: [],
     userIntentDeclared: false,
-    seedOverrideCount: 0,
     alarmEvents: [],
     schemaVersion: 1,
     ...overrides,
