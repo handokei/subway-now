@@ -39,6 +39,15 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
+const mockLogLiveActivityUpdated = jest.fn();
+const mockLogLiveActivityMirrorSkip = jest.fn();
+const mockResetLiveActivityMirrorSkipTracking = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logLiveActivityUpdated: () => mockLogLiveActivityUpdated(),
+  logLiveActivityMirrorSkip: (...args: unknown[]) => mockLogLiveActivityMirrorSkip(...args),
+  resetLiveActivityMirrorSkipTracking: () => mockResetLiveActivityMirrorSkipTracking(),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
@@ -89,6 +98,9 @@ describe('updateLiveActivityFromMirrorStation', () => {
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
+    // #2768 — 성공 tick은 skip 로그를 남기지 않고, 상태 전이 추적을 리셋해 다음 skip이 다시 적재되게 한다.
+    expect(mockLogLiveActivityMirrorSkip).not.toHaveBeenCalled();
+    expect(mockResetLiveActivityMirrorSkipTracking).toHaveBeenCalledTimes(1);
   });
 
   it('route가 null이어도 정상 동작', async () => {
@@ -104,6 +116,11 @@ describe('updateLiveActivityFromMirrorStation', () => {
     expect(mockBuild).not.toHaveBeenCalled();
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     expect(applied).toBe(false);
+    // #2768 — update-only skip 사유가 alarmLog로 배선된다.
+    expect(mockLogLiveActivityMirrorSkip).toHaveBeenCalledWith(
+      'la-mirror-skip-no-active-la',
+      mirrorStation.name,
+    );
   });
 
   it('LA dismiss sentinel 활성이면 no-op, false 반환 (#926 대칭)', async () => {
@@ -111,6 +128,11 @@ describe('updateLiveActivityFromMirrorStation', () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     expect(applied).toBe(false);
+    // #2768 — dismiss sentinel skip 사유가 alarmLog로 배선된다.
+    expect(mockLogLiveActivityMirrorSkip).toHaveBeenCalledWith(
+      'la-mirror-skip-dismissed',
+      mirrorStation.name,
+    );
   });
 
   it('#2659 — backend-authority 활성 trip이어도 mirror-sourced 쓰기는 진행된다 (게이트는 GPS 전용)', async () => {
@@ -129,6 +151,11 @@ describe('updateLiveActivityFromMirrorStation', () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     expect(applied).toBe(false);
+    // #2768 — GPS writer 양보 skip 사유가 alarmLog로 배선된다.
+    expect(mockLogLiveActivityMirrorSkip).toHaveBeenCalledWith(
+      'la-mirror-skip-gps-writer-recent',
+      mirrorStation.name,
+    );
   });
 
   it('GPS writer가 arbitration 창 밖에 썼으면 정상 update 진행', async () => {

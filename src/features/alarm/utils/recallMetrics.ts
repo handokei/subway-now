@@ -13,7 +13,7 @@
  * 결과를 telemetry payload 로 backend 에 누적 upload (별도 PR 에서 wire).
  */
 
-import type { AlarmLogEntry, AlarmLogReason } from './alarmLog';
+import { FIRED_ALARM_SOURCES, type AlarmLogEntry, type AlarmLogReason } from './alarmLog';
 
 export interface TripRecallInput {
   /** route 의 역 이름 배열 (출발 ~ 목적지 사이 모든 정차역, 순서 무관). */
@@ -93,11 +93,25 @@ function isInWindow(entry: AlarmLogEntry, tripStart: number, tripEnd: number): b
   return entry.ts > tripStart && entry.ts <= tripEnd;
 }
 
+/**
+ * #2770 code review 1번 (최우선) — recall KPI 오염 차단.
+ *
+ * outcome='fired' + stationName∈routeStops만으로 분자를 세면, alarmLog.ts에 추가되는
+ * metadata/진단 stamp(예: `arrival-auto-clear-fired` — 목적지 알람 발사 여부와 무관한
+ * 부수효과 stamp)가 목적지 alarmLog에 fire된 것처럼 recall 분자를 오염시킨다. 정확히
+ * recall이 잡아야 할 회귀(목적지-miss)를 가리는 결과가 된다.
+ *
+ * `FIRED_ALARM_SOURCES`(alarmLog.ts, countFiredAlarms/flushFiredAlarmLog와 동일 SSoT)를
+ * consult해 "실제 사용자에게 노출된 알람"만 분자에 포함한다 — source 분류 기준이 alarmLog.ts
+ * 한 곳에만 있으므로 신규 metadata source가 추가돼도 이 함수를 다시 건드릴 필요가 없다
+ * (재발 원천 차단).
+ */
 function accountForFiredEntry(
   entry: AlarmLogEntry,
   routeSet: ReadonlySet<string>,
   firedRouteStations: Set<string>,
 ): void {
+  if (!FIRED_ALARM_SOURCES[entry.source]) return;
   const name = entry.stationName;
   if (name && routeSet.has(name)) {
     firedRouteStations.add(name);

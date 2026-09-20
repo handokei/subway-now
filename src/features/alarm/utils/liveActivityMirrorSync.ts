@@ -43,7 +43,11 @@ import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
-import { logLiveActivityUpdated } from './alarmLog';
+import {
+  logLiveActivityUpdated,
+  logLiveActivityMirrorSkip,
+  resetLiveActivityMirrorSkipTracking,
+} from './alarmLog';
 
 const logger = createLogger('LiveActivityMirrorSync');
 
@@ -62,6 +66,8 @@ export async function updateLiveActivityFromMirrorStation(
 ): Promise<boolean> {
   if (await isLaDismissed()) {
     logger.info('LA dismiss sentinel active — skip mirror-sourced refresh');
+    // #2768 — 콘솔 전용이던 skip 사유를 alarmLog로도 적재(상태 전이 시에만).
+    logLiveActivityMirrorSkip('la-mirror-skip-dismissed', mirrorStation.name);
     return false;
   }
   // #2659 — backend-authority 게이트(`shouldSkipDeviceLiveActivityWrite`, #2481)는 **GPS-sourced**
@@ -78,12 +84,16 @@ export async function updateLiveActivityFromMirrorStation(
     logger.info(
       'GPS writer wrote recently — mirror writer yields this tick (avoid ETA/alarm badge blank)',
     );
+    // #2768 — 콘솔 전용이던 skip 사유를 alarmLog로도 적재(상태 전이 시에만).
+    logLiveActivityMirrorSkip('la-mirror-skip-gps-writer-recent', mirrorStation.name);
     return false;
   }
   if (!LiveActivity.hasActiveLiveActivity()) {
     logger.info(
       `la-refresh source=backend-ssot but no active LA — skip (update-only, no create): ${mirrorStation.name}`,
     );
+    // #2768 — 콘솔 전용이던 skip 사유를 alarmLog로도 적재(상태 전이 시에만).
+    logLiveActivityMirrorSkip('la-mirror-skip-no-active-la', mirrorStation.name);
     return false;
   }
   // #2659 (code review P1-1) — ActivityKit update는 content-state **전체 교체**라, 이 경로가
@@ -99,6 +109,8 @@ export async function updateLiveActivityFromMirrorStation(
   await LiveActivity.updateLiveActivity(data);
   // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
   logLiveActivityUpdated();
+  // #2768 — 성공 tick은 skip 상태 전이 tracker를 리셋해 다음 skip이 다시 적재되게 한다.
+  resetLiveActivityMirrorSkipTracking();
   logger.info(`la-refresh source=backend-ssot: ${mirrorStation.name} → ${destination.name}`);
   return true;
 }

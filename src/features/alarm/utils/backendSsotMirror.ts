@@ -16,6 +16,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { BACKEND_SSOT_MIRROR_MAX_AGE_MS } from '../../../shared/constants/realtime';
+import { logBackendSsotMirrorStaleSkip } from './alarmLog';
 
 const logger = createLogger('BackendSsotMirror');
 
@@ -169,6 +170,12 @@ async function persistBackendSsotMirrorSerialized(
           logger.info(
             `ssot-mirror-stale-skip: incoming station=${ssot.currentStationId} lastAdvanceAt=${ssot.lastAdvanceAt} existing station=${existing.currentStationId} lastAdvanceAt=${existing.lastAdvanceAt}`,
           );
+          // #2768 — 콘솔 전용이던 stale-skip 사유를 alarmLog로도 적재.
+          logBackendSsotMirrorStaleSkip(
+            'ssot-mirror-stale-skip-lastadvance',
+            ssot.currentStationId,
+            existing.currentStationId,
+          );
           return;
         }
         if (
@@ -179,6 +186,12 @@ async function persistBackendSsotMirrorSerialized(
         ) {
           logger.info(
             `ssot-mirror-stale-skip: incoming station=${ssot.currentStationId} sentAt=${ssot.sentAt} existing station=${existing.currentStationId} sentAt=${existing.sentAt} (lastAdvanceAt tie)`,
+          );
+          // #2768 — 콘솔 전용이던 tie-break stale-skip 사유를 alarmLog로도 적재.
+          logBackendSsotMirrorStaleSkip(
+            'ssot-mirror-stale-skip-tiebreak',
+            ssot.currentStationId,
+            existing.currentStationId,
           );
           return;
         }

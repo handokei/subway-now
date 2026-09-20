@@ -73,6 +73,10 @@ import {
   logBackendSsotRouteRegressionReject,
   logLiveActivityAuthorityState,
   logLiveActivityUpdated,
+  logLiveActivityMirrorSkip,
+  resetLiveActivityMirrorSkipTracking,
+  logBackendSsotMirrorStaleSkip,
+  logArrivalAutoClearFired,
   logLockSyncDelivery,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
@@ -1296,6 +1300,181 @@ describe('alarmLog', () => {
         source: 'lock-sync-delivery',
         outcome: 'suppressed',
         reason: 'lock-sync-blocked-no-anchor',
+      });
+    });
+
+    // #2768 — LA mirror sync skip 사유 계측. mirror sync는 5s 폴링 경로라 상태 전이 시에만
+    // 적재해야 alarmLog ring이 도배되지 않는다.
+    describe('#2768 logLiveActivityMirrorSkip (상태 전이 시에만 적재)', () => {
+      beforeEach(() => {
+        resetLiveActivityMirrorSkipTracking();
+      });
+
+      it('첫 skip 호출은 source=live-activity-mirror-skip / outcome=suppressed + reason + stationName 적재', async () => {
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({
+          source: 'live-activity-mirror-skip',
+          outcome: 'suppressed',
+          reason: 'la-mirror-skip-dismissed',
+          stationName: '용마산',
+        });
+      });
+
+      it('같은 reason이 연속 호출되면(5s 폴링 반복) 두 번째부터는 적재하지 않는다', async () => {
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toHaveLength(1);
+      });
+
+      it('reason이 바뀌면(상태 전이) 다시 적재한다', async () => {
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        logLiveActivityMirrorSkip('la-mirror-skip-gps-writer-recent', '용마산');
+        logLiveActivityMirrorSkip('la-mirror-skip-no-active-la', '용마산');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.map((e) => e.reason)).toEqual([
+          'la-mirror-skip-dismissed',
+          'la-mirror-skip-gps-writer-recent',
+          'la-mirror-skip-no-active-la',
+        ]);
+      });
+
+      it('resetLiveActivityMirrorSkipTracking 호출(성공 tick) 후에는 같은 reason도 다시 적재한다', async () => {
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        resetLiveActivityMirrorSkipTracking();
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        // #1024 inline counter — 같은 flush 배치 안에서 동일 시그니처 엔트리는 count++로
+        // 병합된다(신규 push 대신). reset이 tracker를 비워 두 번째 호출이 appendAlarmLog까지
+        // 도달했다는 사실은 count=2로 확인한다.
+        expect(saved).toHaveLength(1);
+        expect(saved[0].count).toBe(2);
+      });
+
+      // #2770 code review 2번 — trip 경계 리셋. LA가 한 번도 안 뜬 trip이 끝나고 다음 trip이
+      // 같은 사유로 skip하면 전이가 없어(직전 reason과 동일) 0건이 되던 회귀.
+      it('clearAlarmLogWindows(trip 경계) 호출 후에는 같은 reason도 다시 적재한다 (#2770 code review 2번)', async () => {
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        await clearAlarmLogWindows();
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '건대입구');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.map((e) => e.stationName)).toEqual(['용마산', '건대입구']);
+      });
+
+      // #2770 code review 3번 — flood backstop. 전이-only dedup은 사유가 A↔B로 빠르게
+      // 교번하면(5s tick마다) 매번 "전이"로 판정돼 재적재된다. 시간창 backstop이 reason별로
+      // 추가 억제해야 한다.
+      it('교번 사유가 창 내에서는 재기록되지 않는다 (#2770 code review 3번, flood backstop)', async () => {
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산'); // A — 최초, 적재
+        logLiveActivityMirrorSkip('la-mirror-skip-gps-writer-recent', '용마산'); // B — 최초, 적재
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산'); // A — 전이지만 창 내 재발생, 억제
+        logLiveActivityMirrorSkip('la-mirror-skip-gps-writer-recent', '용마산'); // B — 전이지만 창 내 재발생, 억제
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.map((e) => e.reason)).toEqual([
+          'la-mirror-skip-dismissed',
+          'la-mirror-skip-gps-writer-recent',
+        ]);
+      });
+
+      it('DEDUP_LOG_WINDOW_MS 밖에서는 같은 reason이 다시 적재된다', async () => {
+        const nowSpy = jest.spyOn(Date, 'now');
+        const baseTs = 1_700_000_000_000;
+        nowSpy.mockReturnValue(baseTs);
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        nowSpy.mockReturnValue(baseTs + 100);
+        logLiveActivityMirrorSkip('la-mirror-skip-gps-writer-recent', '용마산');
+        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+        logLiveActivityMirrorSkip('la-mirror-skip-dismissed', '용마산');
+        await flushAlarmLog();
+        nowSpy.mockRestore();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.map((e) => e.reason)).toEqual([
+          'la-mirror-skip-dismissed',
+          'la-mirror-skip-gps-writer-recent',
+          'la-mirror-skip-dismissed',
+        ]);
+      });
+    });
+
+    // #2768 — backend SSoT mirror 단조성 가드 stale-skip 계측.
+    describe('#2768 logBackendSsotMirrorStaleSkip', () => {
+      it('lastAdvanceAt stale-skip → source=backend-ssot-mirror-stale-skip / reason=ssot-mirror-stale-skip-lastadvance', async () => {
+        logBackendSsotMirrorStaleSkip('ssot-mirror-stale-skip-lastadvance', '중곡', '군자');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({
+          source: 'backend-ssot-mirror-stale-skip',
+          outcome: 'suppressed',
+          reason: 'ssot-mirror-stale-skip-lastadvance',
+          stationName: '중곡',
+          // #2770 code review 5번 — 되감김이 거부된 기존 mirror station을 기존 stamp 필드
+          // (actualLastNotifiedStation, #372)에 persist해 "무엇 대비 되감김인지"가 덤프에 남는다.
+          actualLastNotifiedStation: '군자',
+        });
+      });
+
+      it('sentAt tie-break stale-skip → reason=ssot-mirror-stale-skip-tiebreak', async () => {
+        logBackendSsotMirrorStaleSkip('ssot-mirror-stale-skip-tiebreak', '중곡', '군자');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({
+          source: 'backend-ssot-mirror-stale-skip',
+          outcome: 'suppressed',
+          reason: 'ssot-mirror-stale-skip-tiebreak',
+          actualLastNotifiedStation: '군자',
+        });
+      });
+
+      it('같은 (reason, incoming, existing) 조합이 burst window 안에 반복되면 1건만 적재', async () => {
+        logBackendSsotMirrorStaleSkip('ssot-mirror-stale-skip-lastadvance', '중곡', '군자');
+        logBackendSsotMirrorStaleSkip('ssot-mirror-stale-skip-lastadvance', '중곡', '군자');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toHaveLength(1);
+      });
+    });
+
+    // #2768 — useArrivalAutoClear 자동 종료 발동 계측.
+    describe('#2768 logArrivalAutoClearFired', () => {
+      it('source=arrival-auto-clear-fired / outcome=fired + stationName 적재', async () => {
+        logArrivalAutoClearFired('용마산');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({
+          source: 'arrival-auto-clear-fired',
+          outcome: 'fired',
+          stationName: '용마산',
+        });
       });
     });
 

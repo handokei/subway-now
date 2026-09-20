@@ -1,5 +1,12 @@
+/* eslint-disable import/no-restricted-paths --
+ * #2768 (게이트 전수감사 C, ⑤) — 자동 종료 발동을 alarmLog로 stamp한다. cross-feature 적재는
+ * computeBoardableWaitsForRoute.ts/useV1MismatchDetector.ts 등과 같은 기존 패턴 — 다른 feature
+ * 슬라이스가 alarm feature의 alarmLog(관측 전용 ring buffer)에 직접 적재하는 것은 이미 여러
+ * 곳에서 옵트인된 공용 관측 채널이다.
+ */
 import { useEffect, useRef, useState } from 'react';
 import type { FusionSource } from '../../../shared/types/fusion';
+import { logArrivalAutoClearFired } from '../../alarm/utils/alarmLog';
 
 const ARRIVAL_THRESHOLD_KM = 0.5;
 const CLEAR_DELAY_MS = 2000;
@@ -84,6 +91,11 @@ export function useArrivalAutoClear({
       setArrivedBanner(true);
       timeoutRef.current = setTimeout(() => {
         onClearRef.current();
+        // #2770 code review 4번 — 트리거(조건 충족) 시점이 아니라 실제 clear가 실행되는
+        // 시점(이 타임아웃 콜백)에 stamp한다. unmount로 타이머가 취소되면(cleanup effect의
+        // clearTimeout) 이 콜백 자체가 실행되지 않으므로 발동 안 한 auto-clear가 'fired'로
+        // 남는 거짓 양성이 없다.
+        logArrivalAutoClearFired(destinationName);
         setArrivedBanner(false);
         timeoutRef.current = null;
       }, CLEAR_DELAY_MS);

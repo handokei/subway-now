@@ -176,7 +176,18 @@ export type AlarmLogSource =
   //   'live-activity-authority-backend-active'  — backend가 이 trip의 LA push 채널을 확인 등록함.
   | 'live-activity-authority-device-write'
   | 'live-activity-authority-backend-pending'
-  | 'live-activity-authority-backend-active';
+  | 'live-activity-authority-backend-active'
+  // #2768 (게이트 전수감사 C, ⑤) — LA mirror 갱신 skip 사유. 기존 콘솔 전용
+  // logger.info(liveActivityMirrorSync.ts)를 대체하지 않고 alarmLog에도 적재한다.
+  // mirror sync는 5s 폴링 경로라 매 tick 적재 시 ring(200-cap)을 점령한다 — 호출자가
+  // 아니라 이 helper 자신이 모듈 레벨 tracker로 직전 reason과 비교해 상태 전이 시에만 적재한다
+  // (logLiveActivityMirrorSkip 주석 참고).
+  | 'live-activity-mirror-skip'
+  // #2768 — backend SSoT mirror 단조성 가드(persistBackendSsotMirror) stale-skip. 기존
+  // logger.info만 있던 두 분기(lastAdvanceAt 역행 / sentAt tie-break 역행)를 적재.
+  | 'backend-ssot-mirror-stale-skip'
+  // #2768 — useArrivalAutoClear가 trip을 자동 종료시키는 부수효과(onClear) 발동 stamp.
+  | 'arrival-auto-clear-fired';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -525,7 +536,27 @@ export type AlarmLogReason =
   //                                               불변 — 호출부(destination/transfer phase 발사 2곳)에서만 예외.
   | 'gate-phase-accuracy-lock-exempt'
   | 'gate-phase-time-integration-lock-exempt'
-  | 'movement-low-accuracy-lock-exempt';
+  | 'movement-low-accuracy-lock-exempt'
+  // #2768 — LA mirror sync 3개 skip 사이트 discriminator. liveActivityMirrorSync.ts 순서대로:
+  //   'la-mirror-skip-dismissed'         : LA dismiss sentinel(#926) 활성.
+  //   'la-mirror-skip-gps-writer-recent' : GPS writer가 arbitration 창 내에 최근 씀 — mirror 양보.
+  //   'la-mirror-skip-no-active-la'      : update-only 가드 — 활성 LA 없음(create 안 함).
+  | 'la-mirror-skip-dismissed'
+  | 'la-mirror-skip-gps-writer-recent'
+  | 'la-mirror-skip-no-active-la'
+  // #2768 — backend SSoT mirror 단조성 가드(persistBackendSsotMirror) stale-skip 2 분기.
+  //   'ssot-mirror-stale-skip-lastadvance' : incoming.lastAdvanceAt < existing.lastAdvanceAt.
+  //   'ssot-mirror-stale-skip-tiebreak'    : lastAdvanceAt 동률 + incoming.sentAt < existing.sentAt.
+  | 'ssot-mirror-stale-skip-lastadvance'
+  | 'ssot-mirror-stale-skip-tiebreak';
+
+/**
+ * #2770 code review 6번 — LA mirror skip 3-사유 유니온이 AlarmLogReason 본체/tracker
+ * 변수/함수 파라미터 3곳에 리터럴로 중복되지 않도록 named alias 하나로 파생한다.
+ * `AlarmLogReason`에 `la-mirror-skip-*` 사유가 추가/제거되면 이 alias가 자동 반영.
+ */
+export type LiveActivityMirrorSkipReason = Extract<AlarmLogReason, `la-mirror-skip-${string}`>;
+
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -1282,6 +1313,98 @@ export function logLiveActivityAuthorityState(
   });
 }
 
+// #2768 — LA mirror sync는 5s 폴링 경로(useForegroundLaMirrorSync/BG mirror advance trigger)라
+// 매 tick 적재하면 alarmLog ring(200-cap)을 skip 엔트리로 도배해 다른 RCA 신호를 밀어낸다.
+// 직전에 적재한 skip reason을 모듈 레벨로 기억해, 같은 reason이 반복되는 동안은 추가 적재를
+// 생략하고 reason이 바뀔 때(=상태 전이)만 1건 적재한다.
+let lastLiveActivityMirrorSkipReason: LiveActivityMirrorSkipReason | null = null;
+
+// #2770 code review 3번 — 전이 판정만으로는 reason이 두 값 사이를 빠르게 교번(A→B→A→B, 5s
+// tick마다)하면 매번 "전이"로 판정돼 ring(200-cap)을 ~17분에 잠식한다. reason별 마지막 적재
+// 시각을 별도로 추적해, 전이 조건을 통과해도 같은 reason이 최근에 이미 적재됐으면 한 번 더
+// 억제한다(기존 isBurstDuplicate 시간창 패턴과 동일 아이디어, 다만 성공 tick에서
+// resetLiveActivityMirrorSkipTracking()이 이 창도 함께 비워야 "성공 이후 첫 skip은 즉시
+// 다시 보인다" 의미가 유지되므로 전역 공유 맵(lastBurstSuppressTs)을 재사용하지 않고 이
+// 채널 전용 맵을 둔다).
+const lastLiveActivityMirrorSkipLoggedAt = new Map<LiveActivityMirrorSkipReason, number>();
+
+export function logLiveActivityMirrorSkip(
+  reason: LiveActivityMirrorSkipReason,
+  stationName: string,
+): void {
+  const isTransition = lastLiveActivityMirrorSkipReason !== reason;
+  lastLiveActivityMirrorSkipReason = reason;
+  if (!isTransition) return;
+  const now = Date.now();
+  const lastLoggedAt = lastLiveActivityMirrorSkipLoggedAt.get(reason);
+  if (lastLoggedAt !== undefined && now - lastLoggedAt < DEDUP_LOG_WINDOW_MS) return;
+  lastLiveActivityMirrorSkipLoggedAt.set(reason, now);
+  appendAlarmLog({
+    ts: now,
+    source: 'live-activity-mirror-skip',
+    outcome: 'suppressed',
+    reason,
+    stationName,
+  });
+}
+
+/**
+ * mirror sync가 실제로 `updateLiveActivity`를 호출(성공 tick)했을 때 호출한다 — 다음 skip이
+ * 이전 reason과 같더라도 "성공 이후 첫 skip"이므로 다시 적재되게 전이 tracker와 시간창
+ * backstop을 모두 비운다. trip 경계(clearAlarmLogWindows, #2770 code review 2번)에서도
+ * 호출해, LA가 한 번도 뜨지 않은 trip이 끝나고 다음 trip이 같은 사유로 skip해도(전이 없음)
+ * 0건으로 사라지지 않게 한다. 테스트에서도 상태 격리용으로 사용.
+ */
+export function resetLiveActivityMirrorSkipTracking(): void {
+  lastLiveActivityMirrorSkipReason = null;
+  lastLiveActivityMirrorSkipLoggedAt.clear();
+}
+
+/**
+ * #2768 — backend SSoT mirror 단조성 가드(`persistBackendSsotMirror`)가 stale write를 거부한
+ * 1건 적재. 기존에는 `logger.info`만 있어 "왜 mirror가 멈췄나" RCA에서 재구성 불가했다
+ * (#2732 acceptance 진행 중 반복 이력). push 수신 시점에만 호출되는 경로라 5s 폴링만큼 폭주하지
+ * 않지만, 동일 stale push가 재전송되는 경우를 대비해 burst dedup을 적용한다.
+ *
+ * #2770 code review 5번 — `existingStationId`(되감김이 거부된 기존 mirror station)를 기존
+ * dedup 판별자로만 쓰고 버리면 "무엇 대비 되감김인지"가 덤프에 안 남는다. 기존 stamp 필드
+ * `actualLastNotifiedStation`(#372, "그 시점 실제로 유효했던 station"이라는 의미를 그대로
+ * 재사용 가능)에 persist한다 — 새 필드 추가 없이 기존 패턴 재사용.
+ */
+export function logBackendSsotMirrorStaleSkip(
+  reason: 'ssot-mirror-stale-skip-lastadvance' | 'ssot-mirror-stale-skip-tiebreak',
+  incomingStationId: string,
+  existingStationId: string,
+): void {
+  const discriminator = `${incomingStationId}|${existingStationId}`;
+  if (isBurstDuplicate(reason, discriminator)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'backend-ssot-mirror-stale-skip',
+    outcome: 'suppressed',
+    reason,
+    stationName: incomingStationId,
+    actualLastNotifiedStation: existingStationId,
+  });
+}
+
+/**
+ * #2768 — `useArrivalAutoClear`가 도착 조건 충족으로 trip을 자동 종료시키는 부수효과(onClear)를
+ * 발동시킨 1건 적재. 기존에는 로그가 전혀 없어 오종료 시 사후 재구성이 불가했다.
+ *
+ * #2770 code review 4번 — 호출 시점은 반드시 실제 clear(onClear)가 실행되는 시점(2s 타임아웃
+ * 콜백 내부)이어야 한다. 트리거(조건 충족) 시점에 적재하면 그 직후 unmount로 타이머가
+ * 취소돼 실제로는 발동 안 한 auto-clear가 'fired'로 남는 거짓 양성이 생긴다.
+ */
+export function logArrivalAutoClearFired(stationName: string): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'arrival-auto-clear-fired',
+    outcome: 'fired',
+    stationName,
+  });
+}
+
 /**
  * #2709 — lock 신원(trainCode/boardingLine) → backend 전달(`/boarding-lock/sync`) 계측.
  *
@@ -1414,6 +1537,10 @@ export function clearAlarmLogWindows(): Promise<void> {
   // #2618 (리뷰 fix) — dedup-station/dedup-alarm TTL 추적이 dedupEntryTrackers로 이전됨에
   // 따라 trip 경계 clear 대상에도 포함한다.
   dedupEntryTrackers.clear();
+  // #2770 code review 2번 — LA mirror skip 전이 tracker는 "성공 tick"에서만 리셋됐다. LA가
+  // 한 번도 뜨지 않은 trip이 끝나고 다음 trip이 같은 사유로 skip하면 전이가 없어 0건으로
+  // 사라지는 회귀 차단 — trip 경계(runTripBoundCleanups → 이 함수)에서도 리셋한다.
+  resetLiveActivityMirrorSkipTracking();
   return Promise.resolve();
 }
 
@@ -1783,6 +1910,11 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'live-activity-authority-device-write': null,
   'live-activity-authority-backend-pending': null,
   'live-activity-authority-backend-active': null,
+  // #2768 — LA mirror skip / backend mirror stale-skip / arrival auto-clear는 silent push와
+  // 무관한 별도 채널(관측 전용 stamp).
+  'live-activity-mirror-skip': null,
+  'backend-ssot-mirror-stale-skip': null,
+  'arrival-auto-clear-fired': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -1812,7 +1944,11 @@ export function countSilentPushOutcomes(
  *
  * 새 source 추가 시 본 Record에 한 줄만 더하면 자동 반영 (글로벌 룰 3 — 데이터 주도).
  */
-const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
+// #2770 code review 1번 — export해 recallMetrics.ts(computeTripRecall)의 accountForFiredEntry가
+// consult할 수 있게 한다. countFiredAlarms/flushFiredAlarmLog와 동일한 단일 권위 — "실제 사용자
+// 노출 알람"과 "metadata/진단 stamp"를 나누는 기준이 여러 곳에 흩어지면 신규 metadata source
+// 추가 시 recall 같은 다른 KPI가 재오염될 수 있다(재발 원천 차단).
+export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   fg: true,
   bg: true,
   'fg-evaluated': true,
@@ -1862,6 +1998,12 @@ const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'live-activity-authority-device-write': false,
   'live-activity-authority-backend-pending': false,
   'live-activity-authority-backend-active': false,
+  // #2768 — LA mirror skip / backend mirror stale-skip은 표시 계층 진단 stamp, arrival
+  // auto-clear는 trip 종료 부수효과 — 셋 다 station-passed/transfer/destination 알람이
+  // 아니므로 fire 분모(트립 miss ratio) 오염 방지 위해 제외.
+  'live-activity-mirror-skip': false,
+  'backend-ssot-mirror-stale-skip': false,
+  'arrival-auto-clear-fired': false,
 };
 
 /**

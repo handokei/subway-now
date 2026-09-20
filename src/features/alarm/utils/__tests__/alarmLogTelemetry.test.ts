@@ -22,6 +22,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 jest.mock('../alarmLog', () => ({
   getAlarmLog: (...args: unknown[]) => mockGetAlarmLog(...args),
+  // #2770 code review 1번 — recallMetrics.ts(computeTripRecall)가 실제 alarmLog.ts의
+  // FIRED_ALARM_SOURCES(단일 권위)를 consult한다. 이 파일은 getAlarmLog만 mock하고
+  // computeTripRecall은 실제 구현을 그대로 쓰므로, FIRED_ALARM_SOURCES도 실제 값을 노출해야
+  // fixedEntry의 fg-evaluated/silent-push-fired 등이 정상적으로 분자에 카운트된다.
+  FIRED_ALARM_SOURCES: jest.requireActual('../alarmLog').FIRED_ALARM_SOURCES,
 }));
 
 jest.mock('../../api/telemetryBackend', () => ({
