@@ -12,6 +12,7 @@ import {
   deviceTripIndexKey,
   getDeviceTripIndex,
   getTrip,
+  isRouteProgressOnly,
   listTrips,
   putDeviceTripIndex,
   putTrip,
@@ -23,6 +24,69 @@ import {
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
 import type { Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
+
+/** #2723 — recordTripEvent(D1) bind 인자를 캡처하는 mock. tripEventLog.test.ts와 동일 패턴. */
+function makeMockDb(): { db: D1Database; insertArgs: () => unknown[][] } {
+  const rows: unknown[][] = [];
+  const prepare = vi.fn().mockReturnValue({
+    bind: vi.fn().mockImplementation((...args: unknown[]) => {
+      rows.push(args);
+      return { run: vi.fn().mockResolvedValue({ success: true }) };
+    }),
+  });
+  return { db: { prepare } as unknown as D1Database, insertArgs: () => rows };
+}
+
+// #2723 — isRouteProgressOnly 순수 함수 단위 테스트. 이슈의 "미확정" 절(signature가 정확히
+// 어느 방향으로 갈렸는지 원인 불명)을 존중해, 이 불변식은 방향을 특정하지 않고 "한쪽이 다른
+// 쪽의 접미사"라는 대칭적 조건만 검증한다.
+describe('isRouteProgressOnly (#2723)', () => {
+  function wp(stationName: string, overrides: Partial<Trip['waypoints'][number]> = {}) {
+    return { stationName, line: '2' as const, kind: 'destination' as const, ...overrides };
+  }
+
+  it('destination이 다르면 무조건 false (waypoints 동일해도)', () => {
+    const a = makeTrip({ destination: 'D-1' });
+    const b = makeTrip({ destination: 'D-2' });
+    expect(isRouteProgressOnly(a, b)).toBe(false);
+  });
+
+  it('완전히 동일한 waypoints면 true (접미사 관계의 자명한 특수 케이스)', () => {
+    const a = makeTrip({ waypoints: [wp('A')] });
+    const b = makeTrip({ waypoints: [wp('A')] });
+    expect(isRouteProgressOnly(a, b)).toBe(true);
+  });
+
+  it('a가 b의 접미사(backend가 앞서 shift)면 true', () => {
+    const a = makeTrip({ waypoints: [wp('A')] });
+    const b = makeTrip({
+      waypoints: [wp('B', { kind: 'intermediate' }), wp('A')],
+    });
+    expect(isRouteProgressOnly(a, b)).toBe(true);
+  });
+
+  it('b가 a의 접미사(device가 앞서 shift)면 true', () => {
+    const a = makeTrip({
+      waypoints: [wp('B', { kind: 'intermediate' }), wp('A')],
+    });
+    const b = makeTrip({ waypoints: [wp('A')] });
+    expect(isRouteProgressOnly(a, b)).toBe(true);
+  });
+
+  it('접미사 위치의 waypoint 내용 자체가 다르면(line 등) false', () => {
+    const a = makeTrip({ waypoints: [wp('A', { line: '2' })] });
+    const b = makeTrip({
+      waypoints: [wp('B', { kind: 'intermediate' }), wp('A', { line: '7' })],
+    });
+    expect(isRouteProgressOnly(a, b)).toBe(false);
+  });
+
+  it('둘 다 비어있지 않지만 접미사 관계가 아니면(중간 경유지 자체가 다름) false', () => {
+    const a = makeTrip({ waypoints: [wp('X', { kind: 'transfer', line: '3' }), wp('A')] });
+    const b = makeTrip({ waypoints: [wp('Y', { kind: 'transfer', line: '7' }), wp('A')] });
+    expect(isRouteProgressOnly(a, b)).toBe(false);
+  });
+});
 
 function makeTrip(overrides: Partial<Trip> = {}): Trip {
   return {
@@ -545,7 +609,14 @@ describe('trips KV CRUD', () => {
         expect(await getTrip(kv as unknown as KVNamespace, 'tok-old')).not.toBeNull();
       });
 
-      it('다른 waypoints (같은 destination): reset 발동 (reset=true)', async () => {
+      // #2723 — 이 fixture([A] vs [B,A], 같은 destination)는 waypoints "다른 시퀀스"이지만
+      // existing([A])가 incoming([B,A])의 접미사(suffix)다 — 정확히 backend가 B를
+      // waypoints.shift()로 이미 통과시킨 뒤 device가 (아직 진행 반영 전) 원래 route를
+      // 재등록한 자기 진행분 케이스와 구분 불가능하다. #2723 요구사항 2(불변식: backend 자기
+      // 진행분은 route 변경이 아니다)에 따라 reset하지 않는다 — 과거(이 테스트가 reset=true를
+      // 기대하던 버전)엔 이 케이스도 무조건 리셋해 #2547 보존 목록 전체가 소실됐다(이슈 확정
+      // evidence, 2026-09-18 라이딩). 진짜 다른 route(접미사 관계 아님)는 아래 별도 테스트로 고정.
+      it('#2723 — existing이 incoming의 접미사(자기 진행분): reset 안 함 (구 기대값 reset=true는 회귀였다)', async () => {
         const existing = makeTrip({
           token: 'tok-old',
           destination: 'D-1',
@@ -566,8 +637,142 @@ describe('trips KV CRUD', () => {
           existing,
           { simpleArchEnabled: true },
         );
+        expect(result).toEqual({ existing, reset: false });
+      });
+
+      // #2723 요구사항 3 — 진짜 route 변경(같은 destination, 다른 경유지 — 접미사 관계 아님)은
+      // 계속 리셋돼야 한다. existing 접미사([A])도 incoming 접미사([A])도 서로의 시퀀스에
+      // 포함되지 않는다(중간 waypoint 자체가 다른 역/노선으로 대체됨) — 자기 진행분이 아니라
+      // 사용자가 실제로 다른 경로를 선택한 경우다.
+      it('#2723 — 같은 destination이어도 접미사 관계가 아니면(진짜 다른 route) reset 발동', async () => {
+        const existing = makeTrip({
+          token: 'tok-old',
+          destination: 'D-1',
+          waypoints: [
+            { stationName: 'X', line: '3', kind: 'transfer' },
+            { stationName: 'A', line: '2', kind: 'destination' },
+          ],
+        });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({
+          token: 'tok-old',
+          destination: 'D-1',
+          waypoints: [
+            { stationName: 'Y', line: '7', kind: 'transfer' },
+            { stationName: 'A', line: '2', kind: 'destination' },
+          ],
+        });
+        const result = await resetTripStateForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true },
+        );
         expect(result.reset).toBe(true);
         expect(result.existing).toBeNull();
+      });
+
+      // #2723 요구사항 2 — 반대 방향(device가 backend보다 앞서 shift된 뷰를 보낸 경우)도 동일
+      // 불변식으로 커버된다: incoming([A])이 existing([B,A])의 접미사.
+      it('#2723 — incoming이 existing의 접미사(반대 방향 자기 진행분): reset 안 함', async () => {
+        const existing = makeTrip({
+          token: 'tok-old',
+          destination: 'D-1',
+          waypoints: [
+            { stationName: 'B', line: '2', kind: 'intermediate' },
+            { stationName: 'A', line: '2', kind: 'destination' },
+          ],
+        });
+        await putTrip(kv as unknown as KVNamespace, existing);
+        const incoming = makeTrip({
+          token: 'tok-old',
+          destination: 'D-1',
+          waypoints: [{ stationName: 'A', line: '2', kind: 'destination' }],
+        });
+        const result = await resetTripStateForNewRoute(
+          kv as unknown as KVNamespace,
+          incoming,
+          existing,
+          { simpleArchEnabled: true },
+        );
+        expect(result).toEqual({ existing, reset: false });
+      });
+
+      // #2723 요구사항 1 — signature 불일치가 발생하면(자기 진행분이든 진짜 reset이든 무관)
+      // 항상 양쪽 signature를 D1 trip_events에 남긴다. 원인 확정 전 계측이 1순위.
+      describe('#2723 — signature 불일치 D1 계측', () => {
+        it('자기 진행분(reset 안 함)도 D1에 양쪽 signature를 기록한다', async () => {
+          const { db, insertArgs } = makeMockDb();
+          const existing = makeTrip({
+            token: 'tok-old',
+            destination: 'D-1',
+            waypoints: [{ stationName: 'A', line: '2', kind: 'destination' }],
+          });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({
+            token: 'tok-old',
+            destination: 'D-1',
+            waypoints: [
+              { stationName: 'B', line: '2', kind: 'intermediate' },
+              { stationName: 'A', line: '2', kind: 'destination' },
+            ],
+          });
+          await resetTripStateForNewRoute(kv as unknown as KVNamespace, incoming, existing, {
+            simpleArchEnabled: true,
+            db,
+          });
+
+          expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO trip_events'));
+          const [, , kind, , , metaJson] = insertArgs()[0];
+          expect(kind).toBe('route-signature-mismatch');
+          const meta = JSON.parse(metaJson as string);
+          expect(meta).toEqual({
+            existingSig: computeRouteSignature(existing),
+            incomingSig: computeRouteSignature(incoming),
+            selfProgress: true,
+          });
+        });
+
+        it('진짜 reset도 D1에 기록하되 selfProgress=false로 구분한다', async () => {
+          const { db, insertArgs } = makeMockDb();
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+          await resetTripStateForNewRoute(kv as unknown as KVNamespace, incoming, existing, {
+            simpleArchEnabled: true,
+            db,
+          });
+
+          const [, , kind, , , metaJson] = insertArgs()[0];
+          expect(kind).toBe('route-signature-mismatch');
+          expect(JSON.parse(metaJson as string).selfProgress).toBe(false);
+        });
+
+        it('signature가 일치하면 기록하지 않는다', async () => {
+          const { db, insertArgs } = makeMockDb();
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await resetTripStateForNewRoute(kv as unknown as KVNamespace, incoming, existing, {
+            simpleArchEnabled: true,
+            db,
+          });
+
+          expect(insertArgs()).toHaveLength(0);
+        });
+
+        it('db 미바인딩(undefined)이어도 no-op — reset 판정 자체는 그대로 동작', async () => {
+          const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
+          await putTrip(kv as unknown as KVNamespace, existing);
+          const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
+          const result = await resetTripStateForNewRoute(
+            kv as unknown as KVNamespace,
+            incoming,
+            existing,
+            { simpleArchEnabled: true },
+          );
+          expect(result.reset).toBe(true);
+        });
       });
 
       it('다른 route: incoming.token 소유 pending push cleanup (다른 token 소유는 보존)', async () => {
