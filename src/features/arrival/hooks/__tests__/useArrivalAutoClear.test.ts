@@ -1,4 +1,12 @@
 import { renderHook, act } from '@testing-library/react-native';
+
+// #2768 — 자동 종료 발동을 alarmLog로 배선(computeBoardableWaitsForRoute.ts 등과 같은
+// cross-feature 적재 패턴, eslint-disable import/no-restricted-paths로 옵트인).
+const mockLogArrivalAutoClearFired = jest.fn();
+jest.mock('../../../alarm/utils/alarmLog', () => ({
+  logArrivalAutoClearFired: (...args: unknown[]) => mockLogArrivalAutoClearFired(...args),
+}));
+
 import { useArrivalAutoClear, type UseArrivalAutoClearParams } from '../useArrivalAutoClear';
 
 type Params = UseArrivalAutoClearParams;
@@ -21,6 +29,7 @@ const baseProps = (overrides: Partial<Params> = {}): Params => ({
 describe('useArrivalAutoClear', () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    mockLogArrivalAutoClearFired.mockClear();
   });
 
   afterEach(() => {
@@ -47,6 +56,8 @@ describe('useArrivalAutoClear', () => {
 
     expect(result.current.arrivedBanner).toBe(true);
     expect(onClear).not.toHaveBeenCalled();
+    // #2768 — 발동(trigger) 시점에 alarmLog로 1건 적재된다.
+    expect(mockLogArrivalAutoClearFired).toHaveBeenCalledWith('용마산');
 
     act(() => { jest.advanceTimersByTime(2_000); });
 
@@ -97,6 +108,8 @@ describe('useArrivalAutoClear', () => {
 
     expect(result.current.arrivedBanner).toBe(false);
     expect(onClear).not.toHaveBeenCalled();
+    // #2768 — trigger 안 됐으므로 alarmLog도 적재되지 않는다.
+    expect(mockLogArrivalAutoClearFired).not.toHaveBeenCalled();
   });
 
   it('거리가 0.5km를 초과하면 trigger하지 않는다', () => {

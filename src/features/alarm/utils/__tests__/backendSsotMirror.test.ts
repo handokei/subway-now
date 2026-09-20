@@ -24,6 +24,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+// #2768 — 단조성 가드 stale-skip이 alarmLog로 배선되는지 검증하기 위한 mock.
+const mockLogBackendSsotMirrorStaleSkip = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logBackendSsotMirrorStaleSkip: (...args: unknown[]) =>
+    mockLogBackendSsotMirrorStaleSkip(...args),
+}));
+
 const mockRemoveItem = AsyncStorage.removeItem as jest.Mock;
 const mockGetItem = AsyncStorage.getItem as jest.Mock;
 const mockSetItem = AsyncStorage.setItem as jest.Mock;
@@ -327,6 +334,7 @@ describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
     mockSetItem.mockReset();
     mockGetItem.mockReset();
     mockSetItem.mockResolvedValue(undefined);
+    mockLogBackendSsotMirrorStaleSkip.mockClear();
   });
 
   it('(a) 같은 corrId + stale(lastAdvanceAt 과거) 주입 시 미적용 — 기존 군자 mirror 유지 (RCA 재현, red→green)', async () => {
@@ -335,6 +343,12 @@ describe('persistBackendSsotMirror 단조성 가드 (#2593)', () => {
     );
     await persistBackendSsotMirror({ ...staleJungok, corrId: 'corr-A' }, jungokActualAt + 15_000);
     expect(mockSetItem).not.toHaveBeenCalled();
+    // #2768 — stale-skip이 alarmLog로 배선된다 (incoming=중곡, existing=군자).
+    expect(mockLogBackendSsotMirrorStaleSkip).toHaveBeenCalledWith(
+      'ssot-mirror-stale-skip-lastadvance',
+      '중곡',
+      '군자',
+    );
   });
 
   it('(b) 새 corrId + lastAdvanceAt=0 → 수용 (register-retry가 옛 trip mirror를 안 지운 채 재등록한 시나리오)', async () => {
@@ -424,6 +438,7 @@ describe('persistBackendSsotMirror sentAt tie-break (#2593)', () => {
     mockSetItem.mockReset();
     mockGetItem.mockReset();
     mockSetItem.mockResolvedValue(undefined);
+    mockLogBackendSsotMirrorStaleSkip.mockClear();
   });
 
   it('lastAdvanceAt 동률 + incoming.sentAt < existing.sentAt → stale-skip (재정렬 창)', async () => {
@@ -438,6 +453,12 @@ describe('persistBackendSsotMirror sentAt tie-break (#2593)', () => {
     };
     await persistBackendSsotMirror(staleReorderedPush, advanceAt + 2_000);
     expect(mockSetItem).not.toHaveBeenCalled();
+    // #2768 — tie-break stale-skip이 alarmLog로 배선된다 (incoming=중곡, existing=군자).
+    expect(mockLogBackendSsotMirrorStaleSkip).toHaveBeenCalledWith(
+      'ssot-mirror-stale-skip-tiebreak',
+      '중곡',
+      '군자',
+    );
   });
 
   it('lastAdvanceAt 동률 + incoming.sentAt >= existing.sentAt → 수용', async () => {
