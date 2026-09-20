@@ -47,6 +47,11 @@ import { captureXEvent } from './sentry';
  *   전이(confirm/demote/suppress 이벤트가 별도로 남는 전이는 중복 제외)만 append(#2073 quota
  *   보호). #2766 (결정 D1) — 구 `tryFireConsensusTrainLeg`(scheduled.ts)의 candidate 관측 전
  *   조기 반환 사유(`ConsensusNeverRanPhase`) 전이 writer는 fire 진입점 제거와 함께 삭제됐다.
+ *   **writer 0 (#2766)** — `applyLegConsensusTick` 자체도 유일 production 호출자가
+ *   `tryFireConsensusTrainLeg`였고 그 제거로 프로덕션 caller가 0건이 됐다(함수 자체는 존치,
+ *   존폐는 #2754/#2761/#2760 트랙 결정 범위 — PR #2776 참고). D1 `trip_events`를 `kind=
+ *   'consensus-tick'`으로 조회해 0행이 나와도 "전이가 없었다"가 아니라 "이 kind를 쓰는 코드가
+ *   현재 아예 실행되지 않는다"로 해석해야 한다 — 오독 방지.
  * - `intermediate-route` — intermediate waypoint에서 `lockless`(C 토글 ON,
  *   `runLocklessIntermediate`)/`consensus`(C 토글 OFF, #2766에서 fire 시도가 제거돼 현재는
  *   완전 침묵) 중 어느 분기로 dispatch됐는지. 직전 분기와 다를 때만 append.
@@ -147,10 +152,17 @@ export type TripEventKind =
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
- * `lockless` = C 토글 ON(`runLocklessIntermediate`), `consensus` = C 토글 OFF(#2766 결정 D1 —
+ * `lockless` = C 토글 ON(`runLocklessIntermediate`), `no-intent` = C 토글 OFF(#2766 결정 D1 —
  * fire 시도 없이 완전 침묵). 데이터 주도 — scheduled.ts 하드코딩 분기 대신 본 유니온으로 구동.
+ *
+ * #2766 (결정 D1, 코드리뷰 후속) — 이 값의 라벨은 원래 `'consensus'`였다(제거된
+ * `tryFireConsensusTrainLeg` 메커니즘 이름). 그 메커니즘이 완전 삭제된 뒤에도 D1
+ * `trip_events`에 'consensus'라는 이름을 계속 새로 태우면, 나중에 이 kind를 조회하는 사람이
+ * "consensus 엔진이 아직 관여한다"고 오독할 위험이 있어 `'no-intent'`로 개명했다. 개명 이전에
+ * 이미 적재된 `meta.branch:'consensus'` 행은 히스토리로 그대로 남겨두고 마이그레이션하지
+ * 않는다(append-only 로그 원칙, #2283).
  */
-export type IntermediateRouteBranch = 'lockless' | 'consensus';
+export type IntermediateRouteBranch = 'lockless' | 'no-intent';
 
 /**
  * ADR-037 D2b (#2535) — 환승 waypoint advance 진단 표식(데이터 주도). `no-arvlcd` = 해당 역

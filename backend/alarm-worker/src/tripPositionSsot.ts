@@ -186,6 +186,10 @@ export async function computeAlarmId(
  *                   trainCode. lock 승격은 절대 하지 않는다 — device `useLockSuggestion`이
  *                   기존 high/medium과 동일하게 reader-only 채택하되, 오토락 부활(#2154에서
  *                   삭제 대상인 자동 lock 부착 chain)과 구조적으로 구분되는 confidence 값이다.
+ *                   #2766 (결정 D1) — 이 값의 유일 생산자였던 `deriveLockSuggestion`의
+ *                   consensus-train 분기가 제거되며 backend는 이제 이 값을 절대 만들어내지
+ *                   않는다. union member 자체와 device 소비 코드는 본 PR 범위 밖(추후 정리
+ *                   이슈 대상) — 현재는 도달불가 dead value.
  *   - 'low'       : 향후 cellular/accel single signal 채택 (현재 미사용 — 미래 확장 slot)
  */
 export interface LockSuggestion {
@@ -300,7 +304,8 @@ export interface TripPositionSSoT {
   legConsensus?: LegConsensusRecord;
   /**
    * ADR-037 D2 (#2533) — 진단 계측 전용 dedup 마커. intermediate waypoint에서 직전에 dispatch된
-   * 라우팅 분기(`lockless`/`consensus`). caller(scheduled.ts)가 이 값과 이번 tick 분기를 비교해
+   * 라우팅 분기(`lockless`/`no-intent`, #2766에서 구 'consensus'를 개명). caller(scheduled.ts)가
+   * 이 값과 이번 tick 분기를 비교해
    * 다를 때만 D1 `trip_events`(kind='intermediate-route')로 append한다(#2073 quota 보호). 발사/
    * advance 판정에는 관여하지 않는다.
    *

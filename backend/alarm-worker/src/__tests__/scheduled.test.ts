@@ -1317,7 +1317,7 @@ describe('runScheduled', () => {
         expect(findInserts(inserts, 'intermediate-route')).toHaveLength(1);
       });
 
-      it('intermediate-route — 토글 OFF(consensus) 분기 meta.branch=consensus', async () => {
+      it('intermediate-route — 토글 OFF(무의향) 분기 meta.branch=no-intent (#2766 — 구 consensus 라벨 개명)', async () => {
         const kv = new InMemoryKV();
         const trip = intermediateTrip({ infoModeEnabled: false });
         await putTrip(kv as unknown as KVNamespace, trip);
@@ -1332,7 +1332,7 @@ describe('runScheduled', () => {
         });
         const events = findInserts(inserts, 'intermediate-route');
         expect(events).toHaveLength(1);
-        expect(JSON.parse(events[0][5] as string)).toEqual({ branch: 'consensus' });
+        expect(JSON.parse(events[0][5] as string)).toEqual({ branch: 'no-intent' });
       });
 
       // #2766 (결정 D1, 게이트 전수감사 A) — 'consensus-tick' never-ran phase 진단 계측

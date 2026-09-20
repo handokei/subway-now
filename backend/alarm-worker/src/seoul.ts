@@ -68,15 +68,18 @@ export interface ArrivalEntry {
    */
   synthesized?: boolean;
   /**
-   * #2328 (consensus-B, 설계 SSoT #2323) — Seoul API `btrainSttus`(열차종류) 파싱.
-   * `legCandidateFilters.ts` 급행 정차 필터(④)의 입력. optional — 구 caller/테스트 fixture가
-   * 이 필드 없이 리터럴을 구성해도 컴파일 호환(#1720 `synthesized?`와 동일 정책).
+   * #2328 (consensus-B, 설계 SSoT #2323) — Seoul API `btrainSttus`(열차종류) 파싱. 원래는
+   * `legCandidateFilters.ts` 급행 정차 필터(④)의 입력이었으나, 그 필터는 caller(consensus-C,
+   * #2329)에 끝내 배선되지 않은 채 생산자 0건으로 남아 #2765(게이트 전수감사 A)에서 제거됐고,
+   * 파일 자체도 유일 caller였던 `tryFireConsensusTrainLeg` 제거로 #2766에서 삭제됐다. 이 필드는
+   * 여전히 파싱은 되지만 현재 소비자가 없다(생산-후 미소비) — 정리는 후속 이슈(#2754 트랙) 범위.
    */
   trainType?: TrainType;
   /**
-   * #2328 — Seoul API `trainLineNm`(행선지) 텍스트에서 추출한 순수 종착역명.
-   * `legCandidateFilters.ts` 지선 필터(③)의 입력. 이산 종점이 없는 순환선(내선/외선순환) 또는
-   * 인식 불가 포맷은 null.
+   * #2328 — Seoul API `trainLineNm`(행선지) 텍스트에서 추출한 순수 종착역명. 원래는
+   * `legCandidateFilters.ts` 지선 필터(③)의 입력이었으나 위 trainType과 동일하게 미배선 상태로
+   * #2765에서 필터가, #2766에서 그 파일 자체가 제거됐다. 이산 종점이 없는 순환선(내선/외선순환)
+   * 또는 인식 불가 포맷은 null — 파싱은 유지되나 현재 소비자 없음(정리는 후속 이슈 범위).
    */
   terminus?: string | null;
 }
@@ -272,7 +275,8 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
 /**
  * #2328 — Seoul API `trainLineNm`(행선지 텍스트, 예: "성수행"/"내선순환"/"장암방면")에서 순수
  * 종착역명을 추출한다. 순환선(내선/외선순환)은 이산 종점이 없어 null. 인식 못하는 포맷도 null
- * (보수적 — `legCandidateFilters.ts`가 정보 부재를 오판단하지 않도록 미상 처리).
+ * (보수적 — 정보 부재를 오판단하지 않도록 미상 처리. 원래 소비자였던 `legCandidateFilters.ts`
+ * 지선 필터는 #2765/#2766에서 제거됐다 — 이 함수는 여전히 값을 산출하지만 현재 소비자 없음).
  *
  * frontend `src/features/route/utils/trainLineDirection.ts:parseTrainLineDirection`과 동일
  * 포맷 인식이지만 i18n/표시명 조회 없이 원본 역명만 반환한다 — `legDirection.ts`(#1719)와 동일

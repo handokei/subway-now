@@ -1839,15 +1839,18 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         });
       }
       // ADR-037 D2 (#2533, 진단 계측 only) — intermediate waypoint에서 실제 dispatch될 분기
-      // (lockless=C 토글 ON / consensus=C 토글 OFF)를 직전 tick 마커와 비교해 전이 시에만 D1에
+      // (lockless=C 토글 ON / no-intent=C 토글 OFF)를 직전 tick 마커와 비교해 전이 시에만 D1에
       // 남긴다. 발사/advance 동작 무변경 — 관측만 추가.
+      // #2766 (결정 D1, 코드리뷰 후속) — 'no-intent' 라벨은 구 'consensus'(제거된
+      // `tryFireConsensusTrainLeg` 메커니즘 이름)를 개명한 것 — 삭제된 메커니즘 이름으로
+      // KV/D1을 계속 태우는 오독 방지(tripEventLog.ts:IntermediateRouteBranch 참고).
       if (waypoint.kind === 'intermediate') {
         await recordIntermediateRouteTransition(
           env,
           trip,
           waypoint,
           stationarySsot,
-          trip.infoModeEnabled ? 'lockless' : 'consensus',
+          trip.infoModeEnabled ? 'lockless' : 'no-intent',
           now,
         );
       }
@@ -2488,6 +2491,13 @@ export function toSilentPushSsot(
       ? { currentStationLine: ssot.currentStationLine }
       : {}),
     // #2329 (consensus-C) — legConsensus suppress floor forward (#2155 소비 대상, supply만).
+    // #2766 (결정 D1, PR #2776 리뷰) — 이 필드를 채우던 유일한 writer 경로(`tryFireConsensusTrainLeg`
+    // → `applyLegConsensusTick`)가 fire 진입점째 제거되며 신규 legConsensus 레코드가 더 이상
+    // 생기지 않는다. 단, 이미 KV에 남아있던 구 레코드는 trip TTL까지 그대로 남아 있을 수 있어
+    // (별도 마이그레이션 없음, append-only 원칙) 이 forward 자체는 그 잔존 기간 동안 stale
+    // floor 값을 device로 계속 실어 나른다 — device 측(`legConsensusFloorEpochMs`) 소비자는
+    // 검색 결과 0건이라 현재 이 forward는 순수 dead wire다. 필드/forward 정리는 #2754/#2761/
+    // #2760(leg-2 자동 lock 재설계) 트랙 결정 범위.
     ...(ssot.legConsensus?.suppressFloorEpochMs !== undefined
       ? { legConsensusFloorEpochMs: ssot.legConsensus.suppressFloorEpochMs }
       : {}),
@@ -3149,8 +3159,9 @@ async function recordLegResolveAttempt(
 
 /**
  * ADR-037 D2 (#2533, 진단 계측 only) — intermediate waypoint에서 dispatch된 라우팅 분기
- * (`lockless`/`consensus`)를 SSoT 마커(`intermediateRouteBranch`)와 비교해 다를 때만 D1
- * `trip_events`(kind='intermediate-route')로 append한다. 매 tick 동일 분기 반복은 write하지
+ * (`lockless`/`no-intent`, #2766에서 구 'consensus'를 개명)를 SSoT 마커
+ * (`intermediateRouteBranch`)와 비교해 다를 때만 D1 `trip_events`(kind='intermediate-route')로
+ * append한다. 매 tick 동일 분기 반복은 write하지
  * 않는다(#2073 quota 보호). SSoT 부재(lazy-seed 이전) 시 no-op — 다음 cycle의 seed 이후 tick에서
  * 자연히 관측된다. 발사/advance 동작에는 관여하지 않는다.
  */
@@ -6187,8 +6198,9 @@ async function runLocklessTransfer(
 /**
  * #2720 — lockless leg가 kind:'destination' waypoint에서 영구 정지하던 gap 차단. 선례
  * #2323(`runLocklessTransfer`, 바로 위)과 동일 패턴이다: C 토글(`infoModeEnabled`) ON/OFF
- * 둘 다 대상 — dispatch에서 `runLocklessIntermediate`(C ON)/`tryFireConsensusTrainLeg`(C
- * OFF) 둘 다 kind==='intermediate' 전용이라 destination waypoint에는 반응하지 않는다.
+ * 둘 다 대상 — dispatch에서 `runLocklessIntermediate`(C ON, intermediate 전용 — #2766에서
+ * 제거된 `tryFireConsensusTrainLeg`가 C OFF 시절 과거 이 역할이었다) 둘 다 kind==='intermediate'
+ * 전용이라 destination waypoint에는 반응하지 않는다.
  * trip 종료는 `completeWaypointAdvance` 내부의 `trip.waypoints.length === 0` 분기에서만
  * 일어나는데, 그 shift가 intermediate 분기 안에서만 실행돼 `[...,destination]` 하나만 남은
  * trip이 영원히 shift되지 않아(waypoints 소진 불가) `destination-arrived`에 도달할 수
