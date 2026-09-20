@@ -1336,6 +1336,36 @@ describe("advanceTripPosition — motionEvidence 'seoul-arvlcd' stamping (#2763)
     expect(arvlcdSamples).toHaveLength(0);
   });
 
+  // 메인 검증 발견 (2026-09-20, #2685 사례 — user-tap lock 8387이 train-mismatch로 18분간 매
+  // cycle 게이트 #5 blocked) — stamp가 게이트 #5(train identity)보다 앞으로 가면서, lock과
+  // trainCode가 불일치해 gate #5/#5c에서 결국 거부될 evidence도 "열차 진행" 증거로
+  // stamp되는 의미 구멍이 있었다. payload(arvlCd/positionEntry)만 확인하고 identity는
+  // 확인하지 않았기 때문. advance 근거로 못 믿는 열차를 motion 근거로 믿으면 안 된다.
+  it('lock 활성 + arvlcdTrainCode 불일치 evidence → advance blocked(train-mismatch)이고 motionEvidence에 seoul-arvlcd sample이 추가되지 않는다', async () => {
+    // #2685 사례처럼 caller(scheduled.ts)가 blocked outcome의 `outcome.ssot`를
+    // `recordFireBlockReasonTransition`로 그대로 KV에 write할 수 있으므로, advanceTripPosition이
+    // "advance는 blocked지만 게이트 #2 평가 전 pre-gate stamp가 outcome.ssot에는 남아있다"는
+    // 것 자체가 결함이다. setupAndAdvance(KV 재조회)는 blocked가 KV에 미persist라 이 결함을 못
+    // 잡으므로, 여기서는 반환된 `outcome.ssot`(in-memory, caller가 실제로 쓰는 참조)를 직접
+    // 검사한다.
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
+    ssot.motionState = 'moving';
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
+    const outcome = await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      '중곡',
+      makeEvidence({ arvlcdTrainCode: '9999' }),
+      { gatePassed: true, lockAttachable: true },
+    );
+    expect(outcome.result).toBe('blocked');
+    expect(outcome.blockReason).toBe('train-mismatch');
+    const arvlcdSamples =
+      outcome.ssot?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
+    expect(arvlcdSamples).toHaveLength(0);
+  });
+
   // #2763 (2026-09-20 코드리뷰 CONFIRMED, 항목 1) — stamp가 advance 성공 후(mutation 단계)에만
   // 일어나면, motionState가 이미 'stationary'로 확정된 trip은 게이트 #2가 매번 먼저 막아 이
   // evidence가 SSoT에 영원히 도달 못하는 순환이 남는다. lock 있는 arvlcd-confirmed-train은
