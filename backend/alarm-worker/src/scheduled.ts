@@ -1969,6 +1969,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     log('scheduled run complete', {
       ...stats,
       seoulCalls: deps.seoul.stats.callCount,
+      // #2746 — updnLine 미지 값으로 방향 판정 대상에서 제외된 position 항목 누적. 0이 정상.
+      seoulPositionUnknownDirection: deps.seoul.stats.positionUnknownDirectionCount,
     });
   } else if (await shouldEmitHeartbeat(env.TRIPS, now)) {
     const samples = await readJitterSamples(env.TRIPS);

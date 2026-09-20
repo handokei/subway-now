@@ -326,7 +326,8 @@ function makePositionsFallbackSeoul(): SeoulArrivalClient {
         return new Response(
           JSON.stringify({
             realtimePositionList: [
-              { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '상행', lastRecptnDt: '' },
+              // #2746 — realtimePosition의 updnLine은 숫자 코드('0'=상행/내선, '1'=하행/외선). R2 실캡처 대조로 확정.
+              { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '0', lastRecptnDt: '' },
             ],
           }),
           { status: 200 },
@@ -1432,7 +1433,8 @@ describe('runScheduled — boarding anchor trainCode resolution (backend-authori
               trainNo: p.trainCode,
               statnNm: p.stationName ?? '중곡',
               trainSttus: p.trainSttus ?? 1,
-              updnLine: p.isUp === true ? '상행' : '하행',
+              // #2746 — realtimePosition updnLine은 숫자 코드('0'=상행/내선, '1'=하행/외선).
+              updnLine: p.isUp === true ? '0' : '1',
               lastRecptnDt: recptnDtFor(p.recptnMs ?? NOW),
             })),
           }),
@@ -1551,7 +1553,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
                 trainNo: p.trainCode,
                 statnNm: p.stationName ?? '',
                 trainSttus: p.trainSttus ?? 0,
-                updnLine: p.isUp === false ? '하행' : '상행',
+                updnLine: p.isUp === false ? '1' : '0' /* #2746 숫자코드: 0=상행/내선, 1=하행/외선 */,
                 lastRecptnDt: '',
               })),
             }),
@@ -12063,7 +12065,8 @@ describe('runScheduled — #1614 Phase A self-poll realtimePosition (S4)', () =>
               realtimePositionList: positions.map((p) => ({
                 trainNo: p.trainCode,
                 statnNm: p.stationName,
-                updnLine: p.isUp ? '상행' : '하행',
+                // #2746 — realtimePosition updnLine은 숫자 코드('0'=상행/내선, '1'=하행/외선).
+                updnLine: p.isUp ? '0' : '1',
                 trainSttus: p.trainSttus,
                 lastRecptnDt: '',
               })),
@@ -14383,7 +14386,7 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
                 trainNo: p.trainCode,
                 statnNm: p.stationName ?? '',
                 trainSttus: p.trainSttus ?? 0,
-                updnLine: p.isUp === false ? '하행' : '상행',
+                updnLine: p.isUp === false ? '1' : '0' /* #2746 숫자코드: 0=상행/내선, 1=하행/외선 */,
                 lastRecptnDt: recptnDtFor(p.recptnMs ?? now),
               })),
             }),

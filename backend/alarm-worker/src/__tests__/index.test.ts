@@ -2750,7 +2750,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       trainNo: '7246',
       statnNm: '중곡',
       trainSttus: 1,
-      updnLine: '하행',
+      updnLine: '1',
       lastRecptnDt: recptnDtFor(CREATED),
       ...overrides,
     };
@@ -2913,7 +2913,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         new Response(
           JSON.stringify({
             // 건대입구('7')→어린이대공원('7')은 inferLegDirection 'up' — updnLine override.
-            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '상행', trainNo: '7256' })],
+            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7256' })],
           }),
           { status: 200 },
         ),
@@ -2974,7 +2974,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       fetchSpy.mockResolvedValue(
         new Response(
           JSON.stringify({
-            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '상행', trainNo: '7256' })],
+            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7256' })],
           }),
           { status: 200 },
         ),
@@ -3049,9 +3049,9 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         new Response(
           JSON.stringify({
             // '건대입구'→'어린이대공원'(7호선)은 inferLegDirection이 'up'으로 추론 —
-            // positionEntry 기본 updnLine('하행')은 방향 필터에서 제외되므로 '상행'으로 override.
+            // positionEntry 기본 updnLine('1'=하행)은 방향 필터에서 제외되므로 '0'(상행)으로 override.
             realtimePositionList: [
-              positionEntry({ statnNm: '건대입구', updnLine: '상행' }),
+              positionEntry({ statnNm: '건대입구', updnLine: '0' }),
             ],
           }),
           { status: 200 },
@@ -4970,7 +4970,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
                 trainNo: '7246',
                 statnNm: '중곡',
                 trainSttus: 1,
-                updnLine: '하행',
+                updnLine: '1',
                 lastRecptnDt: recptnDtFor(Date.now()),
               },
             ],
@@ -5056,7 +5056,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
                 trainNo: '7246',
                 statnNm: '중곡',
                 trainSttus: 1,
-                updnLine: '하행',
+                updnLine: '1',
                 lastRecptnDt: recptnDtFor(Date.now()),
               },
             ],
