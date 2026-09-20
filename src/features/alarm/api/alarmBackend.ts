@@ -111,6 +111,26 @@ export interface RegisterTripPayload {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useUserIntentStore.promptOptIn`
+   * (restart-durable, "안내 시작" 버튼 탭에서 stamp)을 forward한다. `useNavigationStore
+   * .navigationActive`는 의도적으로 휘발성이라 이 필드의 직접 소스가 아니다 — PR #2772 리뷰:
+   * navigationActive를 직접 forward하면 mid-trip 콜드 재시작 후 첫 재등록에서 opt-in이 사라져
+   * 안내시작 trip의 프롬프트가 침묵하는 회귀가 있었다.
+   *
+   * `infoModeEnabled`(응답/직접 탭으로만 stamp, "매역 통과 알림" 대상 판정)와는 목적이 다르다 —
+   * 안내 시작만 누르고 아직 응답 전인 trip도 promptOptIn만은 true라 프롬프트 자체는 받는다
+   * (그래야 응답할 프롬프트가 존재).
+   *
+   * backend 분기: GPS-free leg-1(`maybeFireOriginBoardingPromptGpsFree`) + GPS 9단 leg-1
+   * (`evaluateAndMaybeFireBoardingPrompt`) 둘 다 `trip.promptOptIn === true ||
+   * trip.infoModeEnabled === true` → 대상(PR #2772 리뷰 — 이미 응답/직접 탭으로 의향을 표명한
+   * trip은 안내 시작을 다시 안 눌러도 재프롬프트 보호 유지, ADR-014 동급 보장).
+   *
+   * 미설정/false: 필드 미송신(graceful) — backend는 opt-in 없음(false)으로 처리, infoModeEnabled도
+   * 함께 없으면 두 경로 모두 완전 침묵(#2651 결정 모델 — "안내 시작 안 누름 = 프롬프트도 0건").
+   */
+  promptOptIn?: boolean;
+  /**
    * #2524 — 사용자가 boardingPrompt [탑승] 응답/배너 탭으로 승차를 "커밋"했지만 지하/arrivals
    * 공백·ambiguity로 실 trainCode를 못 구해 device가 PENDING fallback lock을 생성했을 때만
    * true. `infoModeEnabled`(안내 시작/info-mode 경로도 true)만으로는 backend가 "탑승 커밋 +
@@ -221,6 +241,7 @@ function buildRegisterHash(body: {
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   infoModeEnabled?: boolean;
+  promptOptIn?: boolean;
   boardingCommitted?: boolean;
   sleepModeEnabled?: boolean;
 }): string {
@@ -247,6 +268,9 @@ function buildRegisterHash(body: {
     // 사용자가 의향 표명 직후 backend lockless intermediate gate가 즉시 활성화되어야 다음
     // cron cycle부터 station-passed silent push 발사가 가능. 같은 값 연속 호출은 hash 동일 → skip.
     infoModeEnabled: body.infoModeEnabled === true,
+    // #2651 — promptOptIn(안내 시작) 전환 시 즉시 재등록 보장 — 사용자가 안내를 시작/중단하면
+    // backend의 boarding-prompt opt-in 게이트가 다음 cron cycle부터 바로 반영돼야 한다.
+    promptOptIn: body.promptOptIn === true,
     // #2524 — boardingCommitted 전환(탑승 커밋 ↔ 실 lock 승격) 시 즉시 재등록 보장. 승격 후에는
     // device가 이 플래그를 다시 false로 내리지 않지만(실 lock 존재 자체가 backend 분기를
     // isBoardingLockActive 경로로 우회시킴), 값이 바뀌는 유일한 실제 케이스(커밋 시점)에서
@@ -326,6 +350,9 @@ async function performRegisterFetch(
     // #1923 — 사용자 명시 의향 토글. ON일 때만 송신. backend는 부재 시 false default 처리 (backward-compat).
     // device SSoT 동기화 시점에 false로 명시 송신 vs 미송신 둘 다 backend 동일 처리 → 송신 skip로 트래픽 절약.
     ...(payload.infoModeEnabled === true ? { infoModeEnabled: true } : {}),
+    // #2651 — boarding-prompt opt-in(안내 시작) 시그널. ON일 때만 송신. backend는 부재 시
+    // false default 처리(backward-compat) — 미송신 trip은 두 boarding-prompt 경로 모두 no-op.
+    ...(payload.promptOptIn === true ? { promptOptIn: true } : {}),
     // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신. backend는 부재 시 false default
     // 처리 (backward-compat) — 기존 lockless "통과" 발사 동작 완전 보존.
     ...(payload.boardingCommitted === true ? { boardingCommitted: true } : {}),
@@ -433,6 +460,8 @@ export function registerActiveTrip(
     locale: payload.locale,
     // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).
     infoModeEnabled: payload.infoModeEnabled,
+    // #2651 — promptOptIn(안내 시작) 변경 시 hash 갱신해 재등록 보장.
+    promptOptIn: payload.promptOptIn,
     // #2524 — boardingCommitted 변경 시 hash 갱신해 재등록 보장 (탑승 커밋 직후 backend 억제 gate 즉시 활성화).
     boardingCommitted: payload.boardingCommitted,
     // #2032 (Issue D) — sleepMode 변경 시 hash 갱신해 재등록 보장 (backend 저장값 즉시 동기화).

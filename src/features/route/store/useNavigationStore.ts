@@ -14,18 +14,32 @@
  *    (silent push 0건 정상, `lesson_silent_push_zero_is_paradigm_intent`).
  *
  * Lifecycle:
- *  - 사용자 안내 시작 탭: `startNavigation()` — memory state true. HomeScreen이
- *    `setInfoModeEnabled(true)` 자동 wire (useUserIntentStore, #1923).
- *  - 사용자 안내 중단 탭: `stopNavigation()` — memory state false. HomeScreen이
- *    `setInfoModeEnabled(false)` 자동 wire.
- *  - 앱 재시작 / trip 종료: 휘발성 false 유지 — persist 의도적 미적용. 명시 의향이
- *    cold start 사이 leak되지 않도록.
+ *  - 사용자 안내 시작 탭: `startNavigation()` — memory state true. HomeScreen이 같은 탭에서
+ *    `useUserIntentStore.setPromptOptIn(true)`도 함께 stamp한다(restart-durable, PR #2772
+ *    리뷰) — `navigationActive` 자체는 휘발성이라 backend boarding-prompt opt-in 신호로
+ *    직접 forward하지 않는다(mid-trip 콜드 재시작 시 재등록에서 opt-in이 사라지는 회귀 방지).
+ *  - 사용자 안내 중단("일시정지") 탭: `stopNavigation()` — memory state false. HomeScreen이
+ *    `promptOptIn`도 함께 false로 stamp한다(PR #2772 전체 리뷰, 트레이드오프 결정) — 일시정지는
+ *    trip을 포기하는 게 아니지만, "지금 프롬프트를 받고 있다"는 opt-in 신호는 pause 중 꺼져야
+ *    한다(안 그러면 화면을 안 보는 pause 상태에서도 boarding-prompt가 계속 발사될 수 있다).
+ *    `infoModeEnabled`(응답/직접 탭 이력)는 명시 의향이라 pause와 무관하게 절대 건드리지
+ *    않는다 — 이미 lock급 정확도가 확립된 trip은 pause 중에도 매역 push를 계속 받는다
+ *    (PAUSE_AUTO_END_MS 15분 자동 종료가 상한).
+ *  - 재개("안내 시작" 재탭): 위 lifecycle 첫 줄과 동일 — `promptOptIn`이 다시 true로 stamp된다.
+ *  - 앱 재시작: `navigationActive`는 휘발성 false로 reset(persist 의도적 미적용)되지만,
+ *    `promptOptIn`은 AsyncStorage에 남아 있어(pause 중이 아닌 한) mid-trip 재등록에서도
+ *    살아있다.
+ *  - trip 종료: `promptOptIn`은 `resetPromptOptIn`(tripBoundCleanups)에서 false로 reset.
  *
- * `useUserIntentStore`와 별개 store인 이유:
- *  - infoModeEnabled는 trip-bound persist (boardingPrompt 응답/직접 탭 흐름에서도
- *    사용). navigationActive는 명시 trigger 전용 + 휘발성.
- *  - HomeScreen에서 두 store를 명시적으로 wire (startNavigation → setInfoModeEnabled(true))
- *    해야 backend lockless intermediate gate 통과.
+ * `useUserIntentStore`(`infoModeEnabled` / `promptOptIn`)와 별개 store인 이유:
+ *  - infoModeEnabled는 trip-bound persist이며 stamp 진입점이 boardingPrompt [탑승] 응답 /
+ *    BoardingTrainList 직접 탭 2곳뿐이다(#2651 — HomeScreen의 자동 wire는 순환 deadlock
+ *    (프롬프트를 받아야 stamp가 생기는데 stamp가 있어야 프롬프트가 나가는) 때문에 제거됨).
+ *    "프롬프트 자체를 받을지"(promptOptIn)는 안내 시작 탭이 유일한 stamp 진입점이며
+ *    "매역 통과 알림을 받을지"(infoModeEnabled)와는 목적이 다르다.
+ *  - `navigationActive`는 명시 trigger + BG GPS lifecycle 전용이며 의도적으로 휘발성이다.
+ *    HomeScreen이 안내 시작/종료 탭 지점에서 이 store와 `useUserIntentStore.promptOptIn`을
+ *    함께 wire한다.
  */
 
 import { create } from 'zustand';
@@ -33,7 +47,7 @@ import { create } from 'zustand';
 export interface NavigationState {
   /**
    * 사용자 명시 의향 토글. true면 useBackgroundLocation이 BG GPS 추적 활성화 +
-   * HomeScreen이 useUserIntentStore.setInfoModeEnabled(true) wire.
+   * HomeScreen이 useUserIntentStore.setPromptOptIn(true) wire (durable, #2651).
    * 의도적으로 휘발성 (persist 미적용) — cold start 시 false로 reset.
    */
   navigationActive: boolean;
@@ -53,8 +67,9 @@ export interface NavigationState {
   startNavigation: () => void;
   /**
    * 안내 중단(일시정지). 사용자가 HomeScreen "일시정지" 버튼을 탭할 때 호출.
-   * memory state false로 set + pausedAt stamp. HomeScreen이 useBackgroundLocation cleanup
-   * + infoMode reset wire.
+   * memory state false로 set + pausedAt stamp. HomeScreen이 useBackgroundLocation cleanup +
+   * `useUserIntentStore.setPromptOptIn(false)`를 함께 wire한다(PR #2772 전체 리뷰) —
+   * `infoModeEnabled`는 명시 의향이라 건드리지 않는다.
    */
   stopNavigation: () => void;
   /**

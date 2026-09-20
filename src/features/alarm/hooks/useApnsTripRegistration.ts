@@ -91,6 +91,27 @@ export interface UseApnsTripRegistrationInputs {
    */
   infoModeEnabled?: boolean;
   /**
+   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useUserIntentStore.promptOptIn`
+   * (restart-durable, "안내 시작" 버튼 탭에서 stamp)에서 읽어 전달한다 — `useNavigationStore
+   * .navigationActive`는 의도적으로 휘발성이라 여기 전달하지 않는다(PR #2772 리뷰: mid-trip
+   * 콜드 재시작 후 재등록에서 opt-in이 사라지는 회귀 방지). `infoModeEnabled`(응답/직접 탭으로만
+   * stamp)와 달리 안내 시작만 눌러도 즉시 true — backend가 GPS-free/GPS 9단 leg-1
+   * boarding-prompt를 발사할지 판정하는 신호(infoModeEnabled와 OR로 결합, ADR-014 동급 보장).
+   * 미지정/false + infoModeEnabled도 없으면: 두 경로 모두 no-op(완전 침묵).
+   */
+  promptOptIn?: boolean;
+  /**
+   * #2651 (PR #2772 전체 리뷰, 항목 5) — `useUserIntentStore.loadPromptOptIn()`의 cold-start
+   * storage hydrate가 완료됐는지. `promptOptIn` 자체는 zustand 모듈이 항상 `false`로
+   * 초기화되므로, hydrate가 끝나기 **전에** 첫 register가 나가면 실제로는 true(persist된 값)인
+   * trip이 `promptOptIn: undefined`로 backend에 전송되어 KV를 잘못 덮어쓴다(#2673 hydration
+   * race와 동일 클래스). 이 값이 `false`인 동안은 register를 억제하고(스케줄만 재시도), hydrate가
+   * 끝나(deps 변경) 이 값이 `true`가 된 시점의 register부터 정확한 promptOptIn으로 1회 등록한다.
+   * 미지정 시 `true`(gate 열림, 기존 호출자/테스트 하위호환 — HomeScreen만 실제 hydrate 상태를
+   * 명시 전달).
+   */
+  promptOptInHydrated?: boolean;
+  /**
    * #2524 — 탑승 커밋(PENDING fallback lock 생성) 시그널. `infoModeEnabled`와 별개로
    * `useUserIntentStore.boardingCommitted`에서 읽어 전달한다. 안내 시작(HomeScreen
    * handleStartNavigation)에서는 세팅되지 않아 backend가 "탑승 커밋 + lock 미확정"과
@@ -154,6 +175,8 @@ interface RegisterCallInputs {
   subsurface: boolean;
   /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
   infoModeEnabled: boolean;
+  /** #2651 — boarding-prompt opt-in(안내 시작) 시그널. true면 backend boarding-prompt 발사 gate 활성. */
+  promptOptIn: boolean;
   /** #2524 — 탑승 커밋(PENDING lock) 시그널. true면 backend가 lockless "통과" push를 억제. */
   boardingCommitted: boolean;
   /** #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 (ADR-023 결정 gate 미사용). */
@@ -258,6 +281,8 @@ async function callRegister(
     ...(locale ? { locale } : {}),
     // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
     ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
+    // #2651 — boarding-prompt opt-in(안내 시작) 신호. ON일 때만 송신 — backend는 부재 시 false default.
+    ...(input.promptOptIn ? { promptOptIn: true } : {}),
     // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신 — backend는 부재 시 false default.
     ...(input.boardingCommitted ? { boardingCommitted: true } : {}),
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
@@ -279,6 +304,8 @@ export function useApnsTripRegistration({
   boardingLock = null,
   subsurface = false,
   infoModeEnabled = false,
+  promptOptIn = false,
+  promptOptInHydrated = true,
   boardingCommitted = false,
   sleepMode = false,
   gpsFix = null,
@@ -300,6 +327,8 @@ export function useApnsTripRegistration({
     boardingLock,
     subsurface,
     infoModeEnabled,
+    promptOptIn,
+    promptOptInHydrated,
     boardingCommitted,
     sleepMode,
     gpsFix,
@@ -315,6 +344,8 @@ export function useApnsTripRegistration({
       boardingLock,
       subsurface,
       infoModeEnabled,
+      promptOptIn,
+      promptOptInHydrated,
       boardingCommitted,
       sleepMode,
       gpsFix,
@@ -465,6 +496,8 @@ export function useApnsTripRegistration({
       boardingLock: bl,
       subsurface: sub,
       infoModeEnabled: ime,
+      promptOptIn: poi,
+      promptOptInHydrated: poih,
       boardingCommitted: bc,
       sleepMode: sm,
       gpsFix: gf,
@@ -472,6 +505,18 @@ export function useApnsTripRegistration({
     } = latestInputsRef.current;
     if (!r || !d) return null;
     const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
+
+    // #2651 (PR #2772 전체 리뷰, 항목 5) — `useUserIntentStore.loadPromptOptIn()` cold-start
+    // hydrate가 끝나기 전(#2673과 동일 클래스 race)에는 실제 POST를 내지 않는다. hydrate 전
+    // `promptOptIn`은 항상 zustand 초기값(false)이라, 여기서 그대로 보내면 storage에 true가
+    // 남아있던 trip을 backend KV에서 false로 덮어쓴다. 이 함수가 모든 register 경로의 유일한
+    // 발사 chokepoint이므로(위 #2197 주석) 여기 한 곳의 skip이 전체 경로에 적용된다 — 억제 중인
+    // 동안은 net 호출 없이 조용히 반환하고, main effect의 deps(`promptOptInHydrated`)가
+    // hydrate 완료로 재실행되면 정확한 값으로 자연 재시도된다(별도 스케줄 불필요).
+    if (!poih) {
+      logger.info('register: promptOptIn storage hydrate 미완료 — 억제(hydrate 후 자동 재시도)');
+      return { ok: false, hadPromptContext: false, promptContext: null };
+    }
 
     // #2197 — 서버가 지시한 억제 구간이면 네트워크 호출 자체를 내지 않는다. 모든 register
     // 경로(main effect / token-refresh / Tier 1 / Tier 2 / register-retry)가 이 함수를 통해서만
@@ -497,6 +542,7 @@ export function useApnsTripRegistration({
       boardingLock: bl,
       subsurface: sub,
       infoModeEnabled: ime,
+      promptOptIn: poi,
       boardingCommitted: bc,
       sleepMode: sm,
       createdAt: resolveTripCreatedAt(sessionKey),
@@ -928,6 +974,7 @@ export function useApnsTripRegistration({
         return;
       }
 
+
       // #1284 — buildBoardingPromptContext가 성공하면 캐시 갱신. 이후 currentStation이
       // 일시 null이 돼도 cachedPromptContext로 fallback하여 backend 9단 게이트가 계속 진입 가능.
       // #1921 — lock 동봉. cross-trip 자동 전환 시 stale stamp 차단(callRegister 분기와 동일 입력).
@@ -1075,6 +1122,10 @@ export function useApnsTripRegistration({
     // suppress 판정. 토글 빈도는 사용자 명시 설정 시점만이므로 deps churn 위험 낮음.
     // #2524: boardingCommitted 변화 시 backend 억제 gate(runLocklessIntermediate "통과")를 즉시
     // 활성화. 토글 빈도는 PENDING fallback lock 생성 시점 1회뿐이므로 deps churn 위험 낮음.
+    // #2651: promptOptIn 변화(안내 시작/중단) 시 backend boarding-prompt opt-in gate를 즉시
+    // 활성화/비활성화. 토글 빈도는 사용자 명시 trigger 탭 시점만이므로 deps churn 위험 낮음.
+    // #2651 (PR #2772 전체 리뷰, 항목 5): promptOptInHydrated가 false→true로 바뀌는 순간(cold
+    // start hydrate 완료) 이 effect가 재실행돼야 억제됐던 register가 정확한 값으로 1회 나간다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     routeSig,
@@ -1082,6 +1133,8 @@ export function useApnsTripRegistration({
     boardingLockSig,
     subsurface,
     infoModeEnabled,
+    promptOptIn,
+    promptOptInHydrated,
     boardingCommitted,
     sleepMode,
   ]);

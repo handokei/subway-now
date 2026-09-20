@@ -184,6 +184,9 @@ describe('evidence 2026-08-04 — geo 부재 무음 skip (#2134)', () => {
       expiresAt: NOW + 60 * 60_000,
       createdAt: NOW,
       alarmAtEpochMs: NOW + 60_000,
+      // #2651 — GPS 9단 경로에 promptOptIn opt-in 게이트가 신설됐다. 이 evidence는 geo/display
+      // 부재 skip을 검증하는 것이 목적이므로, opt-in 게이트에서 먼저 막히지 않도록 true로 채운다.
+      promptOptIn: true,
       ...overrides,
     };
   }
@@ -246,6 +249,9 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
         originAccuracyM: 10,
       },
       promptDisplay: { originStation: '강남', line: '2' },
+      // #2651 — GPS 9단 경로 opt-in 게이트 신설. 이 evidence는 반복 발사 정책(min-interval/
+      // max-fires/train-duplicate/too-far)을 검증하는 것이 목적이라 opt-in은 항상 true.
+      promptOptIn: true,
       ...overrides,
     };
   }

@@ -247,7 +247,15 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // 없다** — 재생에서 fix 후 정확한 environment(surface)로 legConsensus가 이미 confirmed한
       // 열차의 발사가 legitimate하게 파생될 뿐, 실측 ground truth가 아니므로 위 실측 앵커
       // `firedStations`에는 섞지 않고 이 필드로 분리한다(회귀 아님 — #2623 fix가 의도한 교정).
-      derivedFiredStations: ['성수'],
+      //
+      // #2651 (PR #2772 리뷰) — 이 trip(makeDesk20260913LockTrip)에 `infoModeEnabled: true`를
+      // 명시했다(위 helper 참고 — 직접 탭 lock은 실제로 이 값을 stamp한다, hop-end/leg-2
+      // boarding-prompt OR 게이트 재생 전제조건). 부수효과로 leg-2 intermediate(성수)의 dispatch
+      // 분기 자체가 `!trip.infoModeEnabled` 전용이던 `tryFireConsensusTrainLeg`(consensus)에서
+      // `runLocklessIntermediate`(lockless, 실 trainCode 필요)로 전환된다 — 이 재생 구간의 실측
+      // motion/position 데이터로는 후자가 성수를 발사시키지 못해(derived 발사가 자연 소멸)
+      // 빈 배열로 정정한다. 성수는 애초에 13:02Z user-delete 이전 실측된 적이 없는 파생값이었다.
+      derivedFiredStations: [],
       // 건대입구는 hop-end-prompt("하차했나요?") 채널로도 재생에서 항상 발사된다(#2600
       // 코드리뷰 항목1 — nextWaypoint 채널과 별개, freshness 게이트 무관하게
       // `maybeFireHopEndPrompt` 자체 dedup만 적용). 같은 역이 두 채널 모두에서 발사되는 것은
@@ -285,7 +293,10 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // 위 desk20260913 entry와 동일 — leg-2 성수는 이 아침 라이드도 13:02Z 이전 종료로 실측 X.
       // 동일 경로(makeDesk20260913LockTrip)를 공유하므로 fix 후 재생에서 동일하게 파생 발사.)
       firedStations: ['중곡', '군자(능동)', '어린이대공원(세종대)', '건대입구'],
-      derivedFiredStations: ['성수'],
+      // #2651 (PR #2772 리뷰) — 위 desk20260913 entry와 동일 이유(makeDesk20260913LockTrip에
+      // infoModeEnabled: true 추가 → leg-2 intermediate dispatch가 consensus에서 lockless로
+      // 전환 → 이 재생 구간 실측 데이터로는 성수 발사 없음)로 빈 배열 정정.
+      derivedFiredStations: [],
       hopEndPromptStations: ['건대입구'],
       minPushes: 4,
     },

@@ -2195,6 +2195,84 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #2651 — boarding-prompt opt-in(안내 시작, promptOptIn) backend forward 검증. infoModeEnabled와
+  // 동일 wiring pattern이지만 별개 필드 — backend GPS-free/GPS 9단 boarding-prompt 발사 게이트.
+  describe('promptOptIn (#2651)', () => {
+    const baseInputs = (promptOptIn?: boolean) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      ...(promptOptIn === undefined ? {} : { promptOptIn }),
+    });
+    const renderPromptOptIn = (initial?: boolean) =>
+      renderHook(
+        ({ poi }: { poi?: boolean }) => useApnsTripRegistration(baseInputs(poi)),
+        { initialProps: { poi: initial } },
+      );
+
+    it.each([
+      { label: 'promptOptIn=true → payload에 포함', poi: true, expected: true },
+      { label: 'promptOptIn 미지정 → payload에 미포함 (graceful)', poi: undefined, expected: undefined },
+      { label: 'promptOptIn=false → payload에 미포함 (graceful)', poi: false, expected: undefined },
+    ])('$label', async ({ poi, expected }) => {
+      renderPromptOptIn(poi);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].promptOptIn).toBe(expected);
+    });
+
+    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend boarding-prompt opt-in gate 즉시 활성화)', async () => {
+      const { rerender } = renderPromptOptIn(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].promptOptIn).toBeUndefined();
+      rerender({ poi: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].promptOptIn).toBe(true);
+    });
+  });
+
+  // #2651 (PR #2772 전체 리뷰, 항목 5) — cold-start hydrate race. `useUserIntentStore
+  // .loadPromptOptIn()`이 끝나기 전에는 `promptOptInHydrated=false`가 전달된다 — 그 상태에서
+  // register가 나가면 실제로는 storage에 true가 남아있던 trip의 promptOptIn이 undefined로
+  // backend KV를 덮어쓴다(#2673과 동일 클래스). hydrate 억제 → hydrate 완료 후 정확한 값으로
+  // 딱 1회 등록되는지 검증한다.
+  describe('promptOptInHydrated (#2651, PR #2772 전체 리뷰 항목 5)', () => {
+    const baseInputs = (promptOptIn: boolean, promptOptInHydrated: boolean) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      promptOptIn,
+      promptOptInHydrated,
+    });
+
+    it('hydrate 미완료(promptOptInHydrated=false) 상태에서는 promptOptIn=true여도 register 자체가 억제된다', async () => {
+      renderHook(() => useApnsTripRegistration(baseInputs(true, false)));
+      // token 발급 등 비동기 초기화가 흐를 시간을 준 뒤에도 register가 나가지 않아야 한다.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+    });
+
+    it('hydrate 완료(promptOptInHydrated: false→true) 후 정확한 promptOptIn 값으로 딱 1회 등록된다', async () => {
+      const { rerender } = renderHook(
+        ({ hydrated }: { hydrated: boolean }) =>
+          useApnsTripRegistration(baseInputs(true, hydrated)),
+        { initialProps: { hydrated: false } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+
+      // hydrate 완료 — 실제 HomeScreen에서 loadPromptOptIn() resolve 시점과 동일한 전이.
+      rerender({ hydrated: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].promptOptIn).toBe(true);
+    });
+  });
+
   // #2524 — 탑승 커밋(PENDING lock) 시그널 backend forward 검증. infoModeEnabled와 동일 wiring pattern.
   describe('boardingCommitted (#2524)', () => {
     const baseInputs = (boardingCommitted?: boolean) => ({

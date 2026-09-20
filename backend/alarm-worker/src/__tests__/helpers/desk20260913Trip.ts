@@ -61,5 +61,12 @@ export function makeDesk20260913LockTrip(
     expiresAt: now + 60 * 60_000,
     createdAt: now,
     alarmAtEpochMs: now,
+    // #2651 (PR #2772 리뷰) — 이 trip은 "사용자 탭으로 lock"(위 파일 doc comment)돼 생성됐다.
+    // 실제 architecture상 BoardingTrainList 직접 탭은 항상 `infoModeEnabled=true`를 함께
+    // stamp한다(`useBoardingLockController.ts`) — 이 필드가 캡처 시점(#2651 신설 전)엔
+    // 존재하지 않았을 뿐, lock이 실재한다는 사실 자체가 이 값을 함의한다. leg-2/hop-end
+    // boarding-prompt 게이트(OR: promptOptIn || infoModeEnabled)를 재생이 통과하려면 명시해야
+    // 한다 — 측정된 push 횟수/타이밍을 조정하는 게 아니라 당시 실제 상태를 구조적으로 복원.
+    infoModeEnabled: true,
   };
 }

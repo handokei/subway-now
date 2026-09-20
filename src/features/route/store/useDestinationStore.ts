@@ -27,6 +27,7 @@ import {
 import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
+import { useUserIntentStore } from '../../alarm/store/useUserIntentStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { extractCallerFrame } from '../../../shared/utils/extractCallerFrame';
@@ -233,6 +234,19 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       // 무효 (storage clear는 tripBoundCleanups에서 처리).
       if (alarmStore.dismissSilence !== null) {
         useAlarmEventStore.setState({ dismissSilence: null });
+      }
+      // #2651 (PR #2772 전체 리뷰, 항목 6b) — promptOptIn 메모리 상태도 동기화. `resetPromptOptIn`
+      // (tripBoundCleanups)이 storage(removeItem)까지 처리하지만, 그 호출은 `tripTransitionQueue`
+      // 뒤(triggerTripEndRecall 이후)에 있는 async chain이다 — 바로 위 `set({ destination: station })`
+      // 은 이미 동기로 렌더를 트리거했으므로, 새 trip의 첫 register effect가 cleanup보다 먼저
+      // 실행되면 옛 trip의 stale promptOptIn=true가 새 trip(목적지만 바뀐, 아직 안내 시작
+      // 안 누른) 첫 register payload에 실려 backend KV를 잘못 덮어쓰는 race가 있었다. alarmEvent/
+      // dismissSilence와 동일 패턴 — 여기서 memory만 즉시 false로 동기화하고(storage는
+      // resetPromptOptIn이 비동기로 뒤따라 정리), cleanup→register 순서와 무관하게 새 trip의
+      // 첫 render부터 정확한 값이 읽힌다.
+      const userIntentStore = useUserIntentStore.getState();
+      if (userIntentStore.promptOptIn) {
+        useUserIntentStore.setState({ promptOptIn: false });
       }
     }
   },

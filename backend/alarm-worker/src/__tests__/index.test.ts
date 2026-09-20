@@ -4123,6 +4123,10 @@ describe('POST /boarding-lock/sync (#901)', () => {
         segmentStations: ['강남', '역삼', '선릉'],
         expiresAt: FUTURE_LOCK,
       },
+      // #2651 (PR #2772 리뷰) — lock이 존재하는 trip은 실제로 직접 탭/auto-lock 경로를 거쳤다는
+      // 뜻이고 두 경로 모두 infoModeEnabled=true를 함께 stamp한다 — hop-end boarding-prompt OR
+      // 게이트(promptOptIn || infoModeEnabled)를 이 describe의 시나리오가 통과하려면 필요하다.
+      infoModeEnabled: true,
       ...overrides,
     };
   }

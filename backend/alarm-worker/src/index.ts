@@ -1052,6 +1052,14 @@ app.post('/trips', async (c) => {
     // 다른 trainCode/none이면 progress 폐기.
     // #1285: lockless opt-in trip(boardingLock 없음 + infoModeEnabled===true)은
     // token 기준 lockless progress로 보존 — trainCode 없이 lockless===true 마커로 매칭.
+    // #2651 (PR #2772 리뷰, 스펙 4항 재검토) — 최초 구현은 여기에 `promptOptIn===true`도 OR로
+    // 추가했으나(무탭 trip의 progress 되감김 방지 의도) dead code였다: `progress.lockless===true`
+    // 레코드의 **유일한 write 지점**(`mirrorLocklessProgress`, scheduled.ts)은
+    // `runLocklessIntermediate` 내부에서만 호출되고, 그 함수 자체가
+    // `trip.infoModeEnabled && waypoint.kind === 'intermediate'`(scheduled.ts dispatch)일 때만
+    // 진입한다 — 즉 `promptOptIn===true && infoModeEnabled!==true`인 trip은 애초에
+    // `progress.lockless===true` 레코드가 생성되지 않으므로, 이 read-side OR은 절대 참이 될 수
+    // 없는 조건을 추가한 것에 불과했다. 원 조건(infoModeEnabled 단독)으로 되돌린다.
     const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
     const progressApplies =
       progress !== null &&
@@ -3494,6 +3502,10 @@ export function validateTrip(input: unknown): Trip | null {
         : typeof obj.locklessStationPassed === 'boolean'
           ? obj.locklessStationPassed
           : undefined,
+    // #2651 — boarding-prompt opt-in 시그널(useNavigationStore.navigationActive forward).
+    // 미송신/비boolean이면 undefined(default false, 기존 gate-less 발사 동작 보존 X — 신규 게이트
+    // 자체가 opt-in 없으면 완전 침묵으로 바뀌는 것이 이번 이슈의 목적).
+    promptOptIn: typeof obj.promptOptIn === 'boolean' ? obj.promptOptIn : undefined,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. 미송신/비boolean이면 undefined(default false, 기존
     // lockless "통과" 동작 보존).
     boardingCommitted:
@@ -3845,6 +3857,9 @@ export const handler = {
           skippedTooFar: scheduledStats.boardingPromptSkippedTooFar,
           skippedEmpty: scheduledStats.boardingPromptSkippedEmpty,
           skippedTrainDuplicate: scheduledStats.boardingPromptSkippedTrainDuplicate,
+          // #2651 (PR #2772 전체 리뷰, 항목 6a) — opt-in 게이트 skip도 forward해야 1주 측정
+          // plan이 "무의향 trip이 실제로 차단되는지"를 obs-metrics에서 관측할 수 있다.
+          skippedNoOptIn: scheduledStats.boardingPromptSkippedNoOptIn,
         },
         Date.now(),
       );

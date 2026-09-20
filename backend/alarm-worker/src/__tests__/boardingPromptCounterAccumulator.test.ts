@@ -22,6 +22,7 @@ const ZERO_DELTA: BoardingPromptCounterDelta = {
   skippedTooFar: 0,
   skippedEmpty: 0,
   skippedTrainDuplicate: 0,
+  skippedNoOptIn: 0,
 };
 
 describe('readBoardingPromptCounters', () => {
@@ -80,6 +81,7 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
       skippedTooFar: 0,
       skippedEmpty: 0,
       skippedTrainDuplicate: 0,
+      skippedNoOptIn: 0,
       window: '24h-rolling-ttl',
       sampledAt: NOW,
     });
@@ -109,6 +111,7 @@ describe('accumulateBoardingPromptCounters — 활성 trip tick 누적', () => {
       skippedTooFar: 0,
       skippedEmpty: 0,
       skippedTrainDuplicate: 1,
+      skippedNoOptIn: 0,
       window: '24h-rolling-ttl',
       sampledAt: NOW + 60_000,
     });
@@ -195,6 +198,7 @@ describe('EMPTY_BOARDING_PROMPT_COUNTERS', () => {
       skippedTooFar: 0,
       skippedEmpty: 0,
       skippedTrainDuplicate: 0,
+      skippedNoOptIn: 0,
       window: '24h-rolling-ttl',
       sampledAt: 0,
     });

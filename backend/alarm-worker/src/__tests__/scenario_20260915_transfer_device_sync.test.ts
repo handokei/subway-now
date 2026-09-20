@@ -101,6 +101,11 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     createdAt: NOW - 10 * 60_000,
     alarmAtEpochMs: NOW,
     boardingLock: makeLock(),
+    // #2651 (PR #2772 리뷰) — lock이 존재하는 trip은 실제로 BoardingTrainList 직접 탭 또는
+    // backend auto-lock 경로를 거쳤다는 뜻이고, 두 경로 모두 infoModeEnabled=true를 함께
+    // stamp한다 — leg-2/hop-end boarding-prompt OR 게이트(promptOptIn || infoModeEnabled)를
+    // 이 시나리오가 통과하려면 명시해야 한다.
+    infoModeEnabled: true,
     ...overrides,
   };
 }

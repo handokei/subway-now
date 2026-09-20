@@ -135,6 +135,9 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     expiresAt: NOW + 60 * 60_000,
     createdAt: NOW - TWENTY_MIN_MS,
     alarmAtEpochMs: NOW - 60_000,
+    // #2651 — GPS 9단 경로 opt-in 게이트 신설. 이 evidence는 boarding-prompt 9단 게이트 자체를
+    // 검증하는 것이 목적이라 opt-in은 항상 true.
+    promptOptIn: true,
     ...overrides,
   };
 }
