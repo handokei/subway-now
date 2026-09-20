@@ -224,7 +224,9 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
           customOrigin: null,
           tripOrigin: null,
         });
-        await releaseLock();
+        // #2715 — device self-end는 자동 종료다. 이미 alarmLog에 매핑해둔 REASON_TO_ALARM_LOG_REASON
+        // 값을 그대로 lock release reason으로도 재사용 — 새 사유 체계를 만들지 않는다.
+        await releaseLock(REASON_TO_ALARM_LOG_REASON[reason]);
         // #2114 (방안 C′) — sentinel에 corrId 동봉.
         await setTripEndedSentinel(now, endedCorrIdSnapshot);
       } catch (e) {

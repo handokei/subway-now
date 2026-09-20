@@ -17,7 +17,13 @@ import {
 /**
  * #1438 (E5) — release 사유 식별자.
  *
- * - 'user'            — 사용자가 "하차" 직접 탭 (default).
+ * #2715 — 과거 `releaseLock`은 `reason: LockReleaseReason = 'user'`로 기본값을 가졌다. 인자 없이
+ * 호출하는 모든 경로(자동 해제 포함)가 "사용자가 직접 해제했다"로 오기록되어 `BoardingLock
+ * Lifecycle` 덤프의 `lock-release:user`를 진단 evidence로 쓸 수 없게 만든 결함의 근원이었다.
+ * 기본값을 제거해 `reason`을 필수 인자로 만들었다 — 호출부가 사유를 누락하면 컴파일이 실패한다.
+ *
+ * - 'user'            — 사용자가 "하차" 직접 탭, mis-boarding 재선택, cold-start mismatch 재선택
+ *   등 명시적 UI 조작.
  * - 'transfer'        — backend silent push로 환승 release 통보.
  * - 'vanish'          — backend silent push로 trainCode 소실 release 통보.
  * - 'destination-change' — 화면에서 destination이 바뀌어 stale lock 자동 release (controller).
@@ -28,6 +34,24 @@ import {
  *   FG setDestination(null/switch) / useStateRehydration sentinel / cold-launch reconciliation
  *   4개 진입점이 모두 `runTripBoundCleanups`만 호출하므로 개별 사유를 구분할 수 없다 — 그 지점에서
  *   lock이 살아있었다는 사실 자체가 진단 가치(오토락 범인 소거법).
+ * - 'auto-release-destination' — `useBoardingLockAutoRelease`가 목적지 도달 + grace 충족을
+ *   device-side로 판정해 자동 release (matchKind==='destination').
+ * - 'auto-release-transfer'    — 같은 hook이 환승 leg 도달을 device-side로 판정해 자동 release
+ *   (matchKind==='transfer'). 기존 'transfer' 값은 backend silent push 채널 전용으로 이미 문서화돼
+ *   있어(위) 재사용하지 않는다 — device 판정과 backend 통보를 같은 라벨로 뭉개면 향후 "이 환승
+ *   release가 device 감지였는지 backend 확정이었는지" 구분이 다시 불가능해진다.
+ * - 'silent-push-fg-immediate' — `silentPushTask`가 FG 상태에서 trip-ended push를 즉시 반영하며
+ *   release. 바로 위 `addDomainBreadcrumb('trip', 'end', { reason: 'silent-push-fg-immediate' })`와
+ *   동일 사유 문자열을 그대로 재사용.
+ * - 'trip-device-self-end-fusion-destination' / 'trip-device-self-end-arc-completion' /
+ *   'trip-device-self-end-eta-backstop' — `useDeviceSelfEnd`의 3-signal 자동 종료. 이미
+ *   `REASON_TO_ALARM_LOG_REASON`에 존재하는 alarmLog 사유 문자열을 그대로 재사용.
+ * - 'sentinel-rehydration' — `useStateRehydration`이 trip-ended sentinel을 보고 lock을 reset.
+ *   같은 함수의 `addDomainBreadcrumb('trip', 'end', { reason: 'sentinel-rehydration' })`와 동일 문자열.
+ * - 'lifecycle-9h-force-end' — `useStateRehydration`의 9시간+ lifecycle backstop force-end.
+ *   같은 breadcrumb 문자열 재사용.
+ * - 'navigation-pause-auto-end' — `useStateRehydration`의 "일시정지" 15분 경과 자동 종료 backstop.
+ *   같은 breadcrumb 문자열 재사용.
  */
 export type LockReleaseReason =
   | 'user'
@@ -36,7 +60,16 @@ export type LockReleaseReason =
   | 'destination-change'
   | 'expired'
   | 'train-code-mismatch'
-  | 'trip-cleanup';
+  | 'trip-cleanup'
+  | 'auto-release-destination'
+  | 'auto-release-transfer'
+  | 'silent-push-fg-immediate'
+  | 'trip-device-self-end-fusion-destination'
+  | 'trip-device-self-end-arc-completion'
+  | 'trip-device-self-end-eta-backstop'
+  | 'sentinel-rehydration'
+  | 'lifecycle-9h-force-end'
+  | 'navigation-pause-auto-end';
 
 /**
  * #2290 P1 (PR #2295 리뷰 2회차) — `createLock` 호출부가 만드는 lock payload. `boardingEvidence`는
@@ -86,7 +119,7 @@ export interface BoardingLockState {
    * 같은 진입점으로 호출. reason은 breadcrumb 메타에만 stamp되며 멱등 — lock=null에서 호출돼도
    * graceful no-op.
    */
-  releaseLock: (reason?: LockReleaseReason) => Promise<void>;
+  releaseLock: (reason: LockReleaseReason) => Promise<void>;
   /** 앱 마운트 시 storage에서 복원. */
   loadLock: () => Promise<void>;
   /**
@@ -163,7 +196,7 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
     });
   },
 
-  releaseLock: async (reason: LockReleaseReason = 'user') => {
+  releaseLock: async (reason: LockReleaseReason) => {
     const prev = get().lock;
     set({ lock: null });
     await clearBoardingLock();

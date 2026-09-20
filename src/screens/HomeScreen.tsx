@@ -818,8 +818,9 @@ export default function HomeScreen() {
     currentArrivals: boardingListArrivals,
   });
   // #1844 — cold start mismatch 재확인: lock 해제 → 사용자가 다시 탑승 선택 가능.
+  // #2715 — 사용자의 명시 "재선택" 탭이므로 reason='user'.
   const handleColdStartMismatchReselect = useCallback(() => {
-    releaseBoardingLock?.();
+    releaseBoardingLock?.('user');
   }, [releaseBoardingLock]);
   // #915 (C1 destination-only baseline UX) — destination 설정 직후 backend로 좋은 fix sync 발사.
   // lock 활성 여부와 무관하게 trip 활성 동안 폴링. #2352 — backend가 응답에 부착하던
@@ -1708,7 +1709,8 @@ export default function HomeScreen() {
                               return (
                                 <BoardingLockHopCard
                                   lock={boardingLock}
-                                  onRelease={releaseBoardingLock}
+                                  // #2715 — 카드의 "하차" 버튼 = 사용자 명시 탭 → reason='user'.
+                                  onRelease={() => releaseBoardingLock('user')}
                                   currentEtaSeconds={matchedTrain?.arrivalSeconds}
                                 />
                               );
@@ -1878,7 +1880,11 @@ export default function HomeScreen() {
                        reset되므로 동시에 true가 될 수 없다 — misBoardingReason이 현재 노출 상태와
                        항상 일치. */}
                   {boardingLock && (misBoardingDetected || wrongDirectionDetected) && (
-                    <MisBoardingBanner onReselect={releaseBoardingLock} reason={misBoardingReason} />
+                    // #2715 — 배너의 "다시 선택" 탭 = 사용자 명시 조작 → reason='user'.
+                    <MisBoardingBanner
+                      onReselect={() => releaseBoardingLock('user')}
+                      reason={misBoardingReason}
+                    />
                   )}
                   {/* #649 — BoardingTrainList 두 인스턴스(현재역/환승)는 EditorialTimeline의
                        renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기.
