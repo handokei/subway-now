@@ -31,24 +31,36 @@
  * route(이 trip은 뚝섬→건대입구 환승→용마산, 건대입구가 `kind:'transfer'` waypoint)와
  * 정합하면 1순위 fallback anchor로 채택된다 — D1 meta `anchorSource:'tap'`이 이를 증명한다.
  *
- * ## 별개 발견 (out of scope, 2026-09-20) — 이 특정 실캡처의 direction 인코딩 gap
- * anchor는 정상 채택되지만(`anchorSource:'tap'`), 이어지는 realtimePosition 조회에서
- * `resolveTrainCodeFromPositions`가 여전히 `outcome:'none'`을 낸다. 원인을 추적한 결과 —
- * `inferLegDirection('7','건대입구','어린이대공원(세종대)')`는 `'up'`을 반환하는데, 이 R2
- * 실캡처(`capture_20260918_line7_yongmasan_overshoot.fixture.json`)의 line7 realtimePosition
- * 엔트리는 `updnLine`이 Korean 텍스트(`'상행'`/`'내선'`)가 아니라 숫자 문자열('0'/'1')로
- * 온다 — `seoul.ts:parsePositionEntry`의 `isUp` 파싱(`UP_DIRECTION_VALUES=['상행','내선']`
- * 포함 여부)이 이 포맷을 인식하지 못해 모든 항목이 `isUp:false`로 떨어진다. 이 gap은
- * **#2739(탭 payload 미사용)와 무관한 별개의 사전 존재 결함**이다 — anchor 판정 로직
- * 자체는 이 fix로 정확히 고쳐졌고(탭이 사용됨을 D1로 증명), direction 포맷 gap은 이
- * PR의 스코프 밖이라 손대지 않는다(surgical change 원칙).
+ * ## #2751 정정 — 위 "별개 발견"(direction 인코딩)은 오진단이었다, 진짜 사유는 recptnMs 파싱
+ * 2026-09-20 당시 이 파일은 anchor는 정상 채택되지만(`anchorSource:'tap'`) 이어지는
+ * realtimePosition 조회에서 `resolveTrainCodeFromPositions`가 여전히 `outcome:'none'`을
+ * 내는 원인을 "`updnLine` 숫자 인코딩을 `isUp` 파서가 인식 못 한다"고 적었다 — **이는 틀렸다.**
+ * `updnLine` 숫자 코드 파싱은 #2746이 이미 고쳐 이 파일 작성 시점에도 정상 동작했다(방향은
+ * 실제로 일치했다). 진짜 사유는 `seoul.ts:parsePositionEntry`가 수신시각을 `item.lastRecptnDt`
+ * (실 API는 여기에 날짜만, 'YYYYMMDD' — 시각 없음)에서 읽어 `recptnMs`가 항상 0으로 떨어지고,
+ * `boardingAnchorResolver.ts`의 신선도 필터(`recptnMs>0`)가 방향/역명/trainSttus를 전부
+ * 만족하는 7256까지 포함해 후보를 전량 배제했기 때문이다(#2751 — 실캡처로 확정).
  *
- * 아래 첫 테스트는 이 실측 결과(anchorSource:'tap', outcome:'none' — 사유가 이전과
- * 다르다는 것)를 그대로 기록한다. "lock 부착 + trainCode 확인 + cron 완주"의 완전한 green
- * 데모는 `index.test.ts`(`boarded — 탭 anchor fallback (#2739)`, 통제된 synthetic position
- * 데이터로 같은 anchor/segment 모양을 검증)와 기존 `replay_20260918_lock_seeded_contrast.test.ts`
- * (같은 실캡처로 lock 부착 후 cron이 정상 완주함을 이미 증명, direction 필터를 타지 않는
- * 경로)의 조합이 담당한다.
+ * #2751 fix로 `parsePositionEntry`가 `item.recptnDt`(전체 타임스탬프)를 읽게 되면서, 이
+ * 탭 시각의 건대입구/7호선/상행 스냅샷에서 7256이 유일 후보로 실제로 resolved되어 leg-2
+ * lock으로 즉시 승격한다 — 아래 첫 테스트가 이 실측 결과(anchorSource:'tap',
+ * outcome:'resolved', lockState:'leg2')를 그대로 기록한다. 탭 경로(register-time과 동일,
+ * streak 게이트 없이 1회 resolved로 즉시 승격)는 사용자가 탭한 바로 그 시각의 스냅샷만
+ * 보므로 여기서는 정확한 trainCode(7256)를 잡는다.
+ *
+ * 두 번째 테스트("cron을 이어 재생하면")는 lock을 다시 떼어낸(seed를 lockless로 재구성)
+ * 대조 시나리오라 이 fix와 무관하게 여전히 매역 발사 0건이다 — 단, 그 재생 경로도 leg-2 cron
+ * 자동 resolve(#2539)를 다시 태울 수 있어(같은 실캡처가 `replayLibrary.ts` entry에서 그렇게
+ * 관측됨) 실측 device motion series(`buildRide20260918PositionSeries`)를 주입해 fixture
+ * fidelity를 맞춘다(#2718 선례와 동일 근거). 그 결과로도 이 재생 구간(15 cycle) 안에서는
+ * station-passed 발사가 없는데, 그 사유는 창 길이가 아니라 **#2754(새로 드러난 결함)** —
+ * `LEG_RESOLVE_STREAK_THRESHOLD=2` 연속확증이 이미 떠난 열차(7256, 17:41:32 건대입구
+ * DEPARTED로 후보 탈락)를 구조적으로 배제하고, 9분 뒤 플랫폼에 들어온 무관한 열차 7260을
+ * 2연속 resolved로 오인해 lock을 형성하기 때문이다(그 시점 사용자는 이미 용마산~면목 근방,
+ * `replayLibrary.ts` 해당 entry 주석에 궤적 상세). 즉 cron 재생이 "여전히 lockless와 같은
+ * 결론"에 도달하는 것은 우연이며, 실제로는 lockless가 아니라 오탑승 lock(7260)이 흐름을
+ * 가로챈 것이다 — #2754가 streak 기전을 고치면 이 재생의 실측(및 관련 기대값)도 재판정돼야
+ * 한다.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../index';
@@ -62,6 +74,7 @@ import {
   RIDE_20260918_CREATED_AT_MS,
   RIDE_20260918_TRAIN,
 } from './helpers/ride20260918Trip';
+import { buildRide20260918PositionSeries } from './helpers/ride20260918PositionSeries';
 import { firedStationOccurrences } from './helpers/pushAssertions';
 import { parseReplayFixture } from '../replayFixture';
 import fixtureJson from './fixtures/replayLibrary/capture_20260918_line7_yongmasan_overshoot.fixture.json';
@@ -146,31 +159,35 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     const json = (await res.json()) as { ok: boolean; lockState: string };
     expect(json.ok).toBe(true);
 
-    // ---- 결과 기록 (#2739 fix 이후 — 해석은 파일 헤더 "별개 발견" 참고) ----
+    // ---- 결과 기록 (#2751 fix 이후 — 실측 재확인, 파일 헤더 "#2751 정정" 참고) ----
     // 탭(건대입구/7)이 route(뚝섬→건대입구 환승→용마산)와 정합해 1순위 fallback anchor로
-    // 채택된다(D1 meta anchorSource:'tap' — 아래에서 확인) — #2739가 고치는 것은 정확히 이
-    // 지점("탭 값이 판정에 쓰이는가")이며 여기까지는 fix로 green이다. 그러나 이 실캡처의
-    // line7 realtimePosition `updnLine`이 숫자 인코딩이라 direction 필터가 정확한 후보
-    // (7256)를 걸러내 outcome은 여전히 'none'이다 — 원인이 이전(anchor 자체 부재)과 다르다는
-    // 것이 이 테스트의 핵심 관측이다(별개의 pre-existing gap, #2739 스코프 밖).
-    expect(json.lockState).toBe('none');
+    // 채택된다(D1 meta anchorSource:'tap' — 아래에서 확인, #2739가 고친 지점). #2751 이전에는
+    // `parsePositionEntry`가 `lastRecptnDt`(날짜만)를 읽어 `recptnMs`가 항상 0으로 떨어져
+    // 신선도 필터가 후보를 전량 배제했다 — 그래서 방향/역명 조건을 만족하는 7256이 있어도
+    // outcome은 구조적으로 'none'이었다. #2751 fix로 `recptnDt`(전체 타임스탬프)를 정확히
+    // 읽게 되면서, 이 탭 시각(17:40:32)의 건대입구/7호선/상행 스냅샷에서 유일 후보인 7256이
+    // 실제로 resolved되어 leg-2 lock으로 즉시 승격한다(탭 경로는 register-time과 동일하게
+    // streak 게이트 없이 1회 resolved로 승격 — #2539 leg-2 cron 자동 resolve와 다른 경로).
+    expect(json.lockState).toBe('leg2');
 
     const stored = await getTrip(kv as unknown as Env['TRIPS'], TOKEN);
-    expect(stored?.boardingLock).toBeUndefined();
-    // #1923 — 락 미확정이어도 명시 탭 의향(infoModeEnabled)은 stamp된다(ADR-014, 이 trip은
-    // seed 시점부터 이미 true — 회귀 없음을 재확인).
+    expect(stored?.boardingLock?.trainCode).toBe(RIDE_20260918_TRAIN);
+    expect(stored?.boardingLock?.line).toBe('7');
+    // #1923 — 명시 탭 의향(infoModeEnabled)은 lock 승격 여부와 무관하게 stamp된다(ADR-014,
+    // 이 trip은 seed 시점부터 이미 true — 회귀 없음을 재확인).
     expect(stored?.infoModeEnabled).toBe(true);
 
     // D1 `boarding-confirm-result` 이벤트는 lockState/outcome과 무관하게 매 호출 1회 append —
     // #2734가 관측한 "실사용 0건"이 이 엔드포인트 자체의 결함(호출은 됐는데 기록 안 됨)이
     // 아니라는 것을 확인한다. anchorSource:'tap'이 #2739 fix가 실제로 탭 값을 anchor 판정에
-    // 사용했음을 증명한다(요구사항 4).
+    // 사용했음을 증명하고, outcome:'resolved'가 #2751 fix로 leg-2 역추론 경로가 실제로
+    // 살아났음을 증명한다(요구사항 4 — 이슈가 명시한 측정 plan 그 자체).
     expect(prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO trip_events'));
     const [, , kind, , , metaJson] = bind.mock.calls[0] as [string, number, string, unknown, unknown, string | null];
     expect(kind).toBe('boarding-confirm-result');
     expect(JSON.parse(metaJson ?? '{}')).toEqual({
-      lockState: 'none',
-      outcome: 'none',
+      lockState: 'leg2',
+      outcome: 'resolved',
       anchorSource: 'tap',
     });
   });
@@ -188,6 +205,13 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
       fixture,
       seedTrips: [tripAfterConfirm],
       apns: 'capture',
+      // #2751 — `replayLibrary.ts`의 동일 entry(`capture_20260918_line7_yongmasan_overshoot`)와
+      // 동일 근거로 실측 motion series를 주입한다(fixture 헤더 #2718). 이 옵션 없이는
+      // `isAdvanceAllowedByMotion` 게이트가 결정론적으로 차단돼 lockless intermediate 발사
+      // 자체가 fixture 인공물로 억제된다 — 이 테스트가 그동안 이 누락에도 통과했던 것은
+      // leg-2 anchor resolve가 #2751 결함으로 구조적으로 항상 'none'이라 lock-active 경로도
+      // 함께 죽어 있었기 때문이다.
+      seedPositionSeries: { [seedToken]: buildRide20260918PositionSeries() },
     });
 
     // lock이 없으므로 station-passed(alert) 채널은 원리적으로 못 뜬다 — 실측 REPLAY_LIBRARY

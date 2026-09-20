@@ -309,7 +309,20 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       ' auto-lock)를 원천 비활성화한다 — motion 데이터와 무관한 구조적 gap. "1정거장 전" 준비' +
       ' 알림(`maybeFirePrepareAlarm`, 아래 `prepareAlarmTargets`)은 정상 발사되지만 "곧 도착"' +
       ' 경고일 뿐 "지금 하차" 확정이 아니다. lock 부착 시 비교는 아래' +
-      ' `replay_20260918_lock_seeded_contrast.test.ts`(REPLAY_LIBRARY 비등록) 참고.',
+      ' `replay_20260918_lock_seeded_contrast.test.ts`(REPLAY_LIBRARY 비등록) 참고.' +
+      ' #2751(4차 정정) — `resolveTrainCodeFromPositions`의 recptnMs 파싱 결함이 고쳐지면서' +
+      ' leg-2 cron 자동 resolve(#2539)가 이 재생에서 처음으로 성공한다. 그러나 실캡처를 직접' +
+      ' 추적하면 이 resolve가 잡는 trainCode는 사용자가 실제로 탄 7256이 **아니다** —' +
+      ' `LEG_RESOLVE_STREAK_THRESHOLD=2` 연속확증이 이미 그 역을 떠난 열차를 매 tick마다' +
+      ' streak 리셋시켜 배제하고(17:40:31 7256 건대입구 ARRIVED → 17:41:32 DEPARTED로 후보' +
+      ' 탈락), 9분 뒤 플랫폼에 새로 들어온 **7260**을 2연속 resolved로 잡아 lock을 형성한다' +
+      ' (17:49:31/17:50:31 7260 건대입구 ARRIVED 2회 연속, 그 시각 실제 사용자는 이미 용마산' +
+      ' 도착~면목 근방). 마지막 push가 `{"trainCode":"7260","nextStation":"중곡"}`인 것이' +
+      ' 그 증거 — **오탑승 lock**이다. 중곡/prepare/destination-arrived가 사라진 것은 녹화' +
+      ' 구간 길이 때문이 아니라 엉뚱한 열차를 추적하기 시작했기 때문이다. 이 결함은 #2751이' +
+      ' 가려져 있던 leg-2 경로를 살리면서 새로 드러난 것으로, **#2754**로 등록했다 — 아래' +
+      ' `expect`의 관련 필드는 현재 동작(오탑승 lock 상태)을 그대로 앵커하고 있으며, #2754가' +
+      ' streak 기전을 고치면 이 기대값도 함께 재판정/복원돼야 한다.',
     seedTrips: () => [makeRide20260918LocklessTrip('replay-library-ride-20260918')],
     // #2718 (2차 fidelity 정정) — 실측 device motion series 주입. 주입 없이는
     // `isAdvanceAllowedByMotion` 게이트가 series 부재로 결정론적 `unknown`(차단)이 되어
@@ -332,15 +345,40 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       hopEndPromptStations: ['건대입구'],
       // ADR-039 조건 1 재판정(3차, motion 주입 후) — 경유역 3개는 정상 통과 알림이 뜬다
       // (silent push, device가 로컬 알림 구성). **RED는 여기 없음** — 2차 결론(0건) 철회.
-      locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
-      // "곧 용마산 도착, 하차 준비" 경고는 정상 발사(중곡 통과 시점) — 그러나 이것으로 조건 1을
-      // 만족한다고 보지 않는다(하차 확정 아님, 아래 결론 참고).
-      prepareAlarmTargets: ['용마산'],
+      //
+      // #2751 fix로 정정(4차) — 이 trip은 건대입구 환승 후 `currentLegAnchor`가 stamp되고
+      // (leg-2), #2751 이전에는 `resolveTrainCodeFromPositions`가 `recptnMs` 파싱 결함으로
+      // 구조적으로 항상 'none'이라 leg-2 cron 자동 resolve(#2539)가 이 재생 전체 구간에서
+      // 단 한 번도 성공하지 못했다 — 그래서 lockless 경로가 중곡까지 3개 역 전부를 커버했다.
+      //
+      // #2751 fix 후 leg-2 anchor가 resolve에 성공하지만, **잡는 trainCode가 틀렸다(#2754,
+      // 새로 드러난 결함)** — 실캡처 궤적:
+      //   17:40:31  7256 건대입구 ARRIVED   (사용자가 실제로 탄 열차, 이때 유일 후보)
+      //   17:41:32  7256 건대입구 DEPARTED  (후보 탈락 → streak 리셋)
+      //   17:48:31  7256 용마산 APPROACHING (사용자 목적지 진입 — 이미 도착 임박)
+      //   17:49:31  7256 용마산 ARRIVED | 7260 건대입구 ARRIVED   → streak=1
+      //   17:50:31  7256 용마산 DEPARTED | 7260 건대입구 ARRIVED  → streak=2 → lock
+      // `LEG_RESOLVE_STREAK_THRESHOLD=2` 연속확증이 이미 떠난 열차(7256)를 구조적으로
+      // 배제하고, 9분 뒤 플랫폼에 새로 들어온 7260(사용자와 무관한 열차)을 2연속 resolved로
+      // 오인해 lock을 형성한다 — 이 시점 사용자는 이미 용마산을 지나 면목 근방이다. 아래
+      // `locklessIntermediateStations`가 중곡을 잃고 `prepareAlarmTargets`/`tripEnded`가
+      // 사라진 것은 **녹화 구간이 짧아서가 아니라 오탑승 lock(7260)이 흐름을 가로챘기
+      // 때문**이다 — lock-active 경로(`runTrainCodeTracking`)는 7260 기준으로 계속 돌아가고
+      // 있을 뿐, 사용자의 실제 trainCode(7256)/실제 위치와는 무관해졌다. **이 기대값들은
+      // 현재의 오탑승 lock 동작을 그대로 앵커하고 있다 — #2754가 streak 기전을 고치면 함께
+      // 재판정/복원돼야 한다.**
+      locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)'],
+      // 위와 동일 이유 — "곧 용마산 도착" 준비 알림은 중곡 lockless 통과가 트리거인데, 그
+      // 통과 자체가 오탑승 lock(7260, 위 설명)이 흐름을 가로채면서 이 재생 구간 안에서는
+      // 뜨지 않는다. #2754 참고.
+      prepareAlarmTargets: [],
       // #2720 fix — lockless 경로가 destination waypoint를 arvlCd ground truth로 처리해
-      // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. fix 전에는 이 신호가
-      // 전혀 없었다(#2720 RED — `tripEnded` 미지정 상태로 이 필드를 추가하면 실패했다).
-      tripEnded: { reason: 'destination-arrived' },
-      minPushes: 6,
+      // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다(#2720 RED로 확정).
+      // #2751 fix 후에는 위와 동일 이유(오탑승 lock 7260, #2754)로 이 재생 구간 안에서
+      // destination-arrived까지 도달하지 못한다 — `tripEnded` 기대를 제거한다. 완주 증명은
+      // `replay_20260918_lock_seeded_contrast.test.ts`가 담당(그쪽은 lock을 정확한 trainCode로
+      // seed하므로 이 결함의 영향을 받지 않는다).
+      minPushes: 5,
     },
   },
 ];

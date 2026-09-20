@@ -1971,6 +1971,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       seoulCalls: deps.seoul.stats.callCount,
       // #2746 — updnLine 미지 값으로 방향 판정 대상에서 제외된 position 항목 누적. 0이 정상.
       seoulPositionUnknownDirection: deps.seoul.stats.positionUnknownDirectionCount,
+      // #2751 — recptnDt 누락/파싱 불가로 recptnMs=0으로 떨어진 position 항목 누적. 0이 정상 —
+      // 지속적으로 0보다 크면 boardingAnchorResolver 신선도 필터가 구조적으로 후보를 계속
+      // 배제하고 있다는 신호다(이 이슈가 고친 결함의 재발 감시).
+      seoulPositionMissingRecptn: deps.seoul.stats.positionMissingRecptnCount,
     });
   } else if (await shouldEmitHeartbeat(env.TRIPS, now)) {
     const samples = await readJitterSamples(env.TRIPS);

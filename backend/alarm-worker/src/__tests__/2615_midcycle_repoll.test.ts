@@ -47,6 +47,13 @@ describe('#2615 — 재생 3 fixture: 2-pass 역당 발사 정확히 1회 (doubl
         phaseOffsetMs: 0,
         apns: 'capture',
         twoPass: true,
+        // #2751 — `replay_library.full.test.ts`와 동일하게 entry의 실측 motion series를
+        // 주입한다. 이 옵션 없이는 `isAdvanceAllowedByMotion` 게이트가 결정론적으로 차단되어
+        // (fixture 헤더 #2718 참고) 이 파일이 그동안 그 상태로 통과했던 것은 leg-2 anchor
+        // resolve가 구조적으로 항상 'none'이라(#2751 결함) lock-active 경로 자체가 열리지
+        // 않아 motion 게이트 여부와 무관했기 때문이다 — #2751 fix로 그 경로가 열리면서
+        // 이 누락이 표면화됐다(잠재적 fidelity gap, 새로 만든 결함 아님).
+        seedPositionSeries: entry.seedPositionSeries?.(),
       });
 
       const fired = firedStationOccurrences(result.pushes);
@@ -75,6 +82,8 @@ describe('#2615 — 재생 측정표: 1-pass vs 2-pass 발사 지연(p50 개선)
         phaseOffsetMs: 0,
         apns: 'capture',
         twoPass: false,
+        // #2751 — 위 dedup 테스트와 동일 근거로 fidelity 주입(fixture 헤더 #2718 참고).
+        seedPositionSeries: entry.seedPositionSeries?.(),
       });
       const twoPass = await runCaptureReplay({
         fixture,
@@ -83,6 +92,7 @@ describe('#2615 — 재생 측정표: 1-pass vs 2-pass 발사 지연(p50 개선)
         phaseOffsetMs: 0,
         apns: 'capture',
         twoPass: true,
+        seedPositionSeries: entry.seedPositionSeries?.(),
       });
 
       for (const station of entry.expect.firedStations) {

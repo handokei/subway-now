@@ -134,6 +134,17 @@ export class SeoulArrivalClient {
    * 관측 가능하게 남긴다.
    */
   private positionUnknownDirectionCount = 0;
+  /**
+   * #2751 — `realtimePosition` 항목 중 수신시각(`recptnDt`)이 누락되었거나 파싱 불가한 항목
+   * 누적 카운트. `lastRecptnDt`는 날짜만('YYYYMMDD', 시각 없음)이라 수신시각으로 쓸 수 없고
+   * `recptnDt`(공백구분 전체 타임스탬프)를 읽어야 한다(`parsePositionEntry`) — 그래도 값 자체가
+   * 없거나 깨진 항목은 있을 수 있다. `positionUnknownDirectionCount`(#2746)와 달리 이 경우는
+   * 항목을 결과에서 배제하지 않는다: `recptnMs=0`인 항목은 `boardingAnchorResolver.ts`의
+   * 신선도 필터(`recptnMs > 0`)가 이미 걸러내므로 여기서 이중으로 제외할 필요가 없고,
+   * stationName/isUp/trainSttus 등 나머지 필드는 여전히 유효해 다른 소비처(있다면)를 막을
+   * 이유가 없다 — "조용히 0으로 떨어뜨리지 말 것"의 관측은 이 카운터가 담당한다.
+   */
+  private positionMissingRecptnCount = 0;
 
   constructor(private readonly options: FetchSeoulOptions) {}
 
@@ -142,12 +153,14 @@ export class SeoulArrivalClient {
     cacheSize: number;
     httpErrorCount: number;
     positionUnknownDirectionCount: number;
+    positionMissingRecptnCount: number;
   } {
     return {
       callCount: this.callCount,
       cacheSize: this.cache.size,
       httpErrorCount: this.httpErrorCount,
       positionUnknownDirectionCount: this.positionUnknownDirectionCount,
+      positionMissingRecptnCount: this.positionMissingRecptnCount,
     };
   }
 
@@ -178,7 +191,13 @@ export class SeoulArrivalClient {
     const data = (await response.json()) as { realtimePositionList?: unknown[] };
     const items = Array.isArray(data.realtimePositionList) ? data.realtimePositionList : [];
     const parsed = items
-      .map((raw) => parsePositionEntry(raw, () => (this.positionUnknownDirectionCount += 1)))
+      .map((raw) =>
+        parsePositionEntry(
+          raw,
+          () => (this.positionUnknownDirectionCount += 1),
+          () => (this.positionMissingRecptnCount += 1),
+        ),
+      )
       .filter((e): e is PositionEntry => e !== null);
 
     this.positionCache.set(lineName, { expiresAt: now + CACHE_TTL_MS, data: parsed });
@@ -273,7 +292,11 @@ export function parseTerminusStationName(trainLineNm: string): string | null {
   return null;
 }
 
-function parsePositionEntry(raw: unknown, onUnknownDirection: () => void): PositionEntry | null {
+function parsePositionEntry(
+  raw: unknown,
+  onUnknownDirection: () => void,
+  onMissingRecptn: () => void,
+): PositionEntry | null {
   if (!raw || typeof raw !== 'object') return null;
   const item = raw as Record<string, unknown>;
   const trainCode = typeof item.trainNo === 'string' ? item.trainNo : '';
@@ -293,12 +316,16 @@ function parsePositionEntry(raw: unknown, onUnknownDirection: () => void): Posit
     return null;
   }
   const statnTnm = typeof item.statnTnm === 'string' ? item.statnTnm.trim() : '';
+  // #2751 — `lastRecptnDt`는 날짜만('YYYYMMDD', 시각 없음)이라 수신시각으로 쓸 수 없다.
+  // `recptnDt`(arrival과 동일 포맷, 공백구분 전체 타임스탬프)가 실제 수신시각 필드다.
+  const recptnMs = parseRecptnDt(item.recptnDt);
+  if (recptnMs === 0) onMissingRecptn();
   return {
     trainCode,
     stationName,
     trainSttus: parseArvlCd(item.trainSttus),
     isUp,
-    recptnMs: parseRecptnDt(item.lastRecptnDt),
+    recptnMs,
     trainType: parseTrainTypeFromDirectAt(item.directAt),
     terminus: statnTnm.length > 0 ? statnTnm : null,
   };
