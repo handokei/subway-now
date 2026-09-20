@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
+import type { LockReleaseReason } from '../store/useBoardingLockStore';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,
@@ -22,8 +23,13 @@ export interface UseBoardingLockAutoReleaseInputs {
   currentStation: Station | null;
   /** Fusion 현재역까지 거리(km). useFusedNearestStation의 result.distanceKm. */
   distanceKm: number | null;
-  /** Lock 해제 액션. useBoardingLockController.releaseLock 또는 store releaseLock 위임. */
-  releaseLock: () => void;
+  /**
+   * Lock 해제 액션. useBoardingLockController.releaseLock 또는 store releaseLock 위임.
+   *
+   * #2715 — 호출자(본 hook)가 matchKind로 판정한 실제 사유를 넘긴다. 인자 없이 호출하면
+   * 상위 store에서 'user'로 오기록되던 결함(#2715)의 재발을 막기 위해 필수 인자로 강제.
+   */
+  releaseLock: (reason: LockReleaseReason) => void;
   /**
    * 활성 trip route. null이면 환승 leg 분기는 동작하지 않고 도착 분기만 평가.
    * #899 (Seam C) — 환승 leg 도달 시 lock 자동 release을 위해 추가.
@@ -152,7 +158,10 @@ export function useBoardingLockAutoRelease({
     firstArrivedAtRef.current = null;
     firstStationaryAtRef.current = null;
     logger.info(`${matchKind} grace 충족 → lock 자동 release`);
-    releaseLock();
+    // #2715 — matchKind를 그대로 release reason에 반영. 'transfer' 단독 값은 backend silent
+    // push 채널 전용으로 이미 예약돼 있어(useBoardingLockStore 문서 참조) device 판정에는
+    // 'auto-release-' 접두를 붙인 전용 값을 쓴다.
+    releaseLock(matchKind === 'destination' ? 'auto-release-destination' : 'auto-release-transfer');
     // #1887 (RC-14) — leg 전환 evidence 적재. transfer 분기 release만 leg-transition으로 분류.
     // device-side self-contained evidence — push notification fire는 backend cascade(RC-13/RC-16)
     // 의존이라 본 PR 범위 외. alarmLog로 detect 시점 + 정거장 컨텍스트만 stamp.

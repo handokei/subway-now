@@ -2719,11 +2719,13 @@ describe('silentPushTask', () => {
           });
         });
 
-        it('AppState=active 시 boardingLockStore.releaseLock 호출', async () => {
+        it("AppState=active 시 boardingLockStore.releaseLock('silent-push-fg-immediate') 호출", async () => {
           mockAppStateHolder.currentState = 'active';
           mockStoreReleaseLock.mockClear();
           await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
-          expect(mockStoreReleaseLock).toHaveBeenCalledTimes(1);
+          // #2715 — FG 즉시 release는 backend silent push가 트리거한 자동 종료다. 인자 없이
+          // 호출하면(구 회귀) 'user'로 오기록된다.
+          expect(mockStoreReleaseLock).toHaveBeenCalledWith('silent-push-fg-immediate');
         });
 
         it('AppState=active 시 setTripEndedSentinel 이후 clearTripEndedSentinel 호출 (중복 처리 방지)', async () => {

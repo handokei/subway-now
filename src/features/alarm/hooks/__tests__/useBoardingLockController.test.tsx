@@ -1112,7 +1112,8 @@ describe('useBoardingLockController', () => {
       });
       const { result } = renderHook(() => useBoardingLockController(defaultInputs));
       await act(async () => {
-        result.current.releaseLock();
+        // #2715 — 이 진입점은 UI의 명시 탭(하차 버튼/재선택 등)에서만 호출된다 — 'user' 필수.
+        result.current.releaseLock('user');
       });
       await waitFor(() => expect(mockClearBoardingLock).toHaveBeenCalled());
     });

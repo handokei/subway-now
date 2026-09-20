@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useBoardingLockStore, type LockReleaseReason } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
@@ -101,8 +101,14 @@ export interface UseBoardingLockControllerResult {
    * lock 생성을 위한 컨텍스트(destinationId / currentStation / line valid) 부족 시 no-op.
    */
   hydrateLockFromCandidate: (candidate: AutoLockCandidate) => void;
-  /** 명시 하차. lock 없는 상태에서 호출돼도 안전. */
-  releaseLock: () => void;
+  /**
+   * lock 해제. lock 없는 상태에서 호출돼도 안전.
+   *
+   * #2715 — 이 진입점은 UI 명시 조작(하차 버튼, mis-boarding 재선택, cold-start mismatch 재선택)과
+   * `useBoardingLockAutoRelease`의 자동 grace release 양쪽이 공유한다. 서로 사유가 다르므로
+   * `reason`을 필수 인자로 받아 호출부가 실제 사유를 명시하도록 강제한다.
+   */
+  releaseLock: (reason: LockReleaseReason) => void;
 }
 
 /**
@@ -215,7 +221,9 @@ export function useBoardingLockController({
     if (!lock) return;
     if (lock.destinationId === destinationId) return;
     if (destinationId === null && lock.destinationId === FREE_TRIP_DESTINATION_SENTINEL) return;
-    void releaseLock();
+    // #2715 — destination이 바뀌어 stale lock을 자동 정리하는 경로. 사용자가 직접 해제한 것이
+    // 아니므로 'user'가 아닌 'destination-change'로 기록한다.
+    void releaseLock('destination-change');
   }, [lock, destinationId, releaseLock]);
 
   // AppState active 진입 시 만료 검사 + 마운트 직후 1회.
@@ -424,9 +432,14 @@ export function useBoardingLockController({
     [destinationId, currentStation, expectedDurationMinutes, createLock, allowedLines, lockSuggestion],
   );
 
-  const release = useCallback(() => {
-    void releaseLock();
-  }, [releaseLock]);
+  // #2715 — 이 진입점을 공유하는 모든 호출부(UI 탭 / 자동 release hook)가 reason을 넘기도록
+  // 강제한다. 여기서 기본값을 다시 두면 원 결함이 이 wrapper 뒤에서 재발한다.
+  const release = useCallback(
+    (reason: LockReleaseReason) => {
+      void releaseLock(reason);
+    },
+    [releaseLock],
+  );
 
   // candidate(현재는 useTransferAutoDetect의 device-side 단일 후보 detect, #924)를 받아 client
   // BoardingLock store hydrate. #2352 — 구 backend #915/#916 autoLockCandidate 채널은 삭제됨.

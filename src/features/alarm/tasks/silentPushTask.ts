@@ -1191,7 +1191,8 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
             addDomainBreadcrumb('trip', 'end', {
               reason: 'silent-push-fg-immediate',
             });
-            await useBoardingLockStore.getState().releaseLock();
+            // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
+            await useBoardingLockStore.getState().releaseLock('silent-push-fg-immediate');
             await clearTripEndedSentinel();
           } catch (e) {
             logger.warn('FG 즉시 store reset 실패 (graceful — sentinel 유지):', e);

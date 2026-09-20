@@ -111,7 +111,8 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
         tripOrigin: null,
       });
       addDomainBreadcrumb('trip', 'end', { reason: 'sentinel-rehydration' });
-      await useBoardingLockStore.getState().releaseLock();
+      // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
+      await useBoardingLockStore.getState().releaseLock('sentinel-rehydration');
       await clearTripEndedSentinel();
     }
   }
@@ -225,7 +226,8 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
       tripOrigin: null,
     });
     addDomainBreadcrumb('trip', 'end', { reason: 'lifecycle-9h-force-end' });
-    await useBoardingLockStore.getState().releaseLock();
+    // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
+    await useBoardingLockStore.getState().releaseLock('lifecycle-9h-force-end');
     // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
     await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
@@ -270,7 +272,8 @@ async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<
       tripOrigin: null,
     });
     addDomainBreadcrumb('trip', 'end', { reason: 'navigation-pause-auto-end' });
-    await useBoardingLockStore.getState().releaseLock();
+    // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
+    await useBoardingLockStore.getState().releaseLock('navigation-pause-auto-end');
     // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
     // force-end 경로와 동일 — BG 채널(silent push 등)이 이 종료를 인지하도록 mirror 남김.
     await setTripEndedSentinel(now, endedCorrIdSnapshot);
