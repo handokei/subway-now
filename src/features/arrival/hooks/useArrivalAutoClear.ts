@@ -30,6 +30,8 @@ export interface UseArrivalAutoClearParams {
 export function useArrivalAutoClear({
   currentStationName,
   distanceKm,
+  distanceSource,
+  destinationArrivalConfirmed,
   destinationName,
   onClear,
 }: UseArrivalAutoClearParams): { arrivedBanner: boolean } {
@@ -50,12 +52,19 @@ export function useArrivalAutoClear({
 
   useEffect(() => {
     if (arrivedBanner) return;
+    // #2716 — 'backend-ssot' tier는 사용자 위치를 모르는 mirror라 distanceKm=0을 placeholder로
+    // 보고한다(실측 0m가 아니다). 이 값을 임계값 비교에 그대로 쓰면 역명 일치만으로 항상
+    // 통과해버려 2차 거리 가드가 무력화된다 — 이 경우 대신 목적지 arvlCd 확증
+    // (destinationArrivalConfirmed, 기존 열차 피드 신호 재사용)을 요구한다.
+    const distanceGatePasses =
+      distanceSource === 'backend-ssot'
+        ? destinationArrivalConfirmed
+        : distanceKm != null && distanceKm <= ARRIVAL_THRESHOLD_KM;
     if (
       currentStationName != null &&
       destinationName != null &&
       currentStationName === destinationName &&
-      distanceKm != null &&
-      distanceKm <= ARRIVAL_THRESHOLD_KM &&
+      distanceGatePasses &&
       firedForRef.current !== destinationName
     ) {
       firedForRef.current = destinationName;
@@ -66,7 +75,14 @@ export function useArrivalAutoClear({
         timeoutRef.current = null;
       }, CLEAR_DELAY_MS);
     }
-  }, [arrivedBanner, currentStationName, distanceKm, destinationName]);
+  }, [
+    arrivedBanner,
+    currentStationName,
+    distanceKm,
+    distanceSource,
+    destinationArrivalConfirmed,
+    destinationName,
+  ]);
 
   useEffect(() => {
     return () => {
