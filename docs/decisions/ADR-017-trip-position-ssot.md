@@ -75,9 +75,14 @@ KV 정책:
 > 코드 전체에 0건(2026-09-03 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)으로 확정돼
 > 제거됐다(PR 본문 참조). `trySeedOverride`(Seed override E5, 강 신호 2개+30s 연속 일치)도
 > 호출자 0건으로 함께 삭제됐다. 현재 코드의 게이트 번호는 #1 Seed → #2 Motion → #3 Environment →
-> #4 Train identity(+#4b consensus-train, +#4c position-train 대칭) → #5 arc-overshoot(#2023) →
+> #4 Train identity(+#4c position-train 대칭) → #5 arc-overshoot(#2023) →
 > #6 position-train jump/stale(#1665)이다 — 원본 T2 설계와 대응관계가 아니므로 최신 번호는
 > `advanceTripPosition.ts` 헤더 주석을 SSoT로 삼는다.
+>
+> **superseded-by-#2766** — 구 게이트 #4b(consensus-train, legConsensus 상태기계 confirmed
+> 강제)는 유일 생산자 `tryFireConsensusTrainLeg`가 이중 봉인으로 프로덕션 출력 0건(ADR-037
+> 정합)이라 fire 진입점째 제거되며 함께 삭제됐다(결정 D1 — 무의향 trip 완전 침묵). 위 게이트
+> 번호에서 #4b는 더 이상 존재하지 않는다.
 
 ### 원칙 3 — fire path는 reader only
 

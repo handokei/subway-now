@@ -475,9 +475,10 @@ export interface Trip {
    * (`transferLegConsensus.ts:LegConsensusRecord`). 별도 KV row가 아닌 trip 객체 내부 필드로
    * 저장한다(#2073 cron KV quota lesson — 새 row는 free plan quota를 소진한다).
    *
-   * 본 필드는 순수 상태 저장소다. 실제 confirmed/demoted 상태를 fire/advance 판단에 연결하는
-   * wire(consensus-train evidence, confirmed-only alert, suppress→floor 공급)는 #2329
-   * (consensus-C) 범위 — 본 이슈(#2327)는 엔진+상태기계+본 필드까지만 제공한다.
+   * 본 필드는 순수 상태 저장소다. 실제 confirmed/demoted 상태를 fire/advance 판단에 연결하던
+   * wire(구 'consensus-train' evidence, confirmed-only alert, suppress→floor 공급, #2329
+   * consensus-C)는 #2766(결정 D1)에서 fire 진입점째 제거됐다 — 본 필드 자체의 존폐는 leg-2
+   * 자동 lock 재설계(#2754/#2761/#2760) 트랙 결정 범위.
    */
   legConsensus?: LegConsensusRecord;
 }
