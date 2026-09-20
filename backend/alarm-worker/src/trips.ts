@@ -6,6 +6,8 @@ import {
   CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL,
 } from './kvConsistency';
 import { listPending, pendingKey } from './pendingPushes';
+import { hashTripToken } from './sentry';
+import { recordTripEvent } from './tripEventLog';
 import type { Trip } from './types';
 
 /**
@@ -265,6 +267,45 @@ export function computeRouteSignature(trip: Trip): string {
   return `${trip.destination}::${waypointSig}`;
 }
 
+function waypointSignatureKey(w: Trip['waypoints'][number]): string {
+  return `${w.stationName}|${w.line}|${w.kind}|${w.occurrenceIdx ?? 0}`;
+}
+
+/**
+ * #2723 — backend 자기 진행(`waypoints.shift()`, scheduled.ts)이 "route 변경"으로 오판되지 않기
+ * 위한 불변식.
+ *
+ * 배경(#2723 확정 evidence, 2026-09-18 라이딩): backend cron이 진행할 때마다 KV의
+ * `trip.waypoints`에서 이미 통과한 head를 shift한다. device가 뒤이어 `POST /trips`로
+ * 재등록(GPS update마다 재등록, #578)하면 그 payload의 waypoints는 device 시점 기준이라
+ * backend가 이미 shift한 것과 시퀀스 길이/내용이 달라질 수 있다 — `computeRouteSignature`가
+ * 이 둘을 단순 문자열 비교하면 "route가 바뀌었다"로 오판해 `existing: null`로 전면 교체돼
+ * `#2547` 보존 목록(currentLegAnchor 등 backend-only state)이 통째로 사라진다.
+ *
+ * 이슈 본문의 "미확정" 절 — signature가 정확히 어느 방향으로/왜 갈렸는지(device가 route를
+ * 재계산했는지, backend shift와 device 재전송 타이밍이 어긋났는지)는 로그 없이 확정할 수
+ * 없다. 그래서 이 함수는 원인을 특정하지 않고 **대칭적** 불변식만 검증한다: 두 waypoints
+ * 배열 중 한쪽이 다른 쪽의 접미사(suffix)이면, 어느 쪽이 더 진행됐는지와 무관하게 "같은
+ * route를 진행 중"이라는 뜻이다 — genuine한 route 변경(사용자가 실제로 다른 경로/목적지를
+ * 선택)이라면 접미사 관계가 성립할 이유가 없다(중간 경유지 자체가 다른 역/노선으로
+ * 대체되므로).
+ *
+ * destination이 다르면 그 자체로 다른 route(접미사 판정 이전에 즉시 false) — 목적지 변경은
+ * 요구사항 3에 따라 항상 진짜 route 변경으로 취급돼야 한다.
+ */
+export function isRouteProgressOnly(a: Trip, b: Trip): boolean {
+  if (a.destination !== b.destination) return false;
+  const aKeys = a.waypoints.map(waypointSignatureKey);
+  const bKeys = b.waypoints.map(waypointSignatureKey);
+  const [shorter, longer] = aKeys.length <= bKeys.length ? [aKeys, bKeys] : [bKeys, aKeys];
+  if (shorter.length === 0) return false;
+  const offset = longer.length - shorter.length;
+  for (let i = 0; i < shorter.length; i += 1) {
+    if (shorter[i] !== longer[offset + i]) return false;
+  }
+  return true;
+}
+
 /**
  * ADR-025 (#2194) — trip 신원 안정화: route 변경은 rotation(새 token 발급) 대신 in-place reset.
  *
@@ -301,6 +342,8 @@ export interface RouteResetResult {
 export interface RouteResetDeps {
   /** flag override — 미지정 시 `getArchFlag(kv) === 'on'` 조회. */
   simpleArchEnabled?: boolean;
+  /** #2723 — signature 불일치 계측(D1 trip_events) 대상 binding. 미바인딩 시 계측만 no-op. */
+  db?: D1Database;
 }
 
 export async function resetTripStateForNewRoute(
@@ -326,7 +369,20 @@ export async function resetTripStateForNewRoute(
   if (existingSig === incomingSig) {
     return { existing, reset: false };
   }
-  // 다른 route: 신원(token)은 그대로 유지, 구 route의 잔재 pending push만 제거.
+  // #2723 요구사항 2 — backend 자기 진행(waypoints shift)으로 갈라진 시퀀스는 route 변경이
+  // 아니다(불변식: `isRouteProgressOnly`). 먼저 판정해 계측(meta.selfProgress)에 함께 싣는다.
+  const selfProgress = isRouteProgressOnly(existing, incoming);
+  // #2723 요구사항 1 — signature 불일치는 self-progress 여부와 무관하게 항상 D1에 남긴다.
+  // 원인(signature가 정확히 왜 갈렸는지)을 확정하기 전에는 이 계측이 유일한 관측 지점이다.
+  await recordTripEvent(deps?.db, {
+    tokenHash: hashTripToken(incoming.token),
+    kind: 'route-signature-mismatch',
+    meta: { existingSig, incomingSig, selfProgress },
+  });
+  if (selfProgress) {
+    return { existing, reset: false };
+  }
+  // 진짜 다른 route: 신원(token)은 그대로 유지, 구 route의 잔재 pending push만 제거.
   await cleanupPendingPushesForToken(kv, incoming.token);
   return { existing: null, reset: true };
 }

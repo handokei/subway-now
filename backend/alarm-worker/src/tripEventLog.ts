@@ -92,6 +92,18 @@ import { captureXEvent } from './sentry';
  * D1에서 "관측이 anchor를 살렸는지"를 독립적으로 조회할 수 있다. `meta`에 `{ observedAtMs }`를
  * 싣는다. fire/advance/도보 게이트 판정에는 관여하지 않는다.
  *
+ * `route-signature-mismatch` (#2723, 진단 계측 전용) — `resetTripStateForNewRoute`(trips.ts)가
+ * `computeRouteSignature(existing) !== computeRouteSignature(incoming)`를 감지한 시점마다
+ * 1건 append(self-progress로 판정돼 reset하지 않는 경우 포함 — throttle 없음, POST /trips
+ * 호출 단위라 매 tick 반복이 아니다). 2026-09-18 라이딩 중 KV 직접 조회로만 발견된 상태
+ * 소실(currentLegAnchor/legBoardingEligibleAt/passedStations/lockEverAttached 등 `#2547`
+ * 보존 목록 전체 소실)의 원인이, backend가 진행할 때마다 자기 waypoints를 shift해 device가
+ * 재등록한 route와 signature가 갈라지는 것이었다 — 그 갈림이 실제로 얼마나/언제 발생하는지
+ * 로그가 전혀 없었다(#2723 요구사항 1). `meta`에 `{ existingSig, incomingSig, selfProgress }`를
+ * 싣는다 — `selfProgress`(`isRouteProgressOnly`)가 true면 backend 자기 진행으로 판정돼
+ * reset하지 않은 것, false면 진짜 route 변경으로 in-place reset된 것. fire/advance 동작에는
+ * 관여하지 않는다(계측 전용).
+ *
  * `boarding-prompt-leg-mismatch` (#2708, 방어선 계측 only) — leg-1 전용
  * `evaluateAndMaybeFireBoardingPrompt`(scheduled.ts)가 `trip.currentLegAnchor` 활성(leg-2 진입
  * 후) 중에 진입해 stale `trip.promptDisplay`(이전 leg 기준)로 발사를 시도할 뻔한 지점을 skip한
@@ -120,7 +132,8 @@ export type TripEventKind =
   | 'fallback-alert-fired'
   | 'fallback-implicit-ack'
   | 'leg-anchor-observed'
-  | 'boarding-prompt-leg-mismatch';
+  | 'boarding-prompt-leg-mismatch'
+  | 'route-signature-mismatch';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

@@ -1021,7 +1021,9 @@ app.post('/trips', async (c) => {
       // 오늘 evidence(2026-07-03): 사용자 중곡→성수 trip 시작 시 이전 trip(중곡→용마산) 잔재
       // pending push 가 계속 발사돼 `08:37:25 bg fired station-passed 성수` 관측. route reset이
       // helper 의 `cleanupPendingPushesForToken` 을 실제 호출해 잔재 pending 제거.
-      const routeReset = await resetTripStateForNewRoute(c.env.TRIPS, incoming, directExisting);
+      const routeReset = await resetTripStateForNewRoute(c.env.TRIPS, incoming, directExisting, {
+        db: c.env.DB,
+      });
       if (routeReset.reset) {
         console.log(
           JSON.stringify({
