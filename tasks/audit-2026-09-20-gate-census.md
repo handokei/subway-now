@@ -5,8 +5,36 @@
 - `audit-2026-09-20-gate-census-device.md` — device(src/) 전수 + 빌드 플래그 실측
 
 판정 기준 5종: ① 약속됐으나 미배선 / ② 모순 / ③ 중복 목적 / ④ 도달불가·상시 동일값 / ⑤ 조용한 억제.
-주석 불신 — 모든 판정은 호출 전수 grep으로 확증. 스팟체크 5건(seoul-arvlcd writer 0 / evidence
-producer 0 / .env 플래그 / silentPushLocationGate 소비자 0 / evaluateConsensusGate 호출 1곳) 메인 세션 재검증 완료.
+주석 불신 — 모든 판정은 호출 전수 grep으로 확증.
+
+## 0-b. 메인 세션 독립 재검증 (2026-09-20, 전 load-bearing 주장 대상)
+
+**확증 (코드 직접 확인)**: seoul-arvlcd writer 0건(유일 stamp는 motionState.ts updateSsotMotion,
+source='device-position') / evidence 5종 생산자 0건(14 hit 전부 타입정의·소비측) / trySeedOverride·
+filterCandidateBranchTerminus·filterCandidateExpressStop 호출 0건 / trackedTrainCode writer 프로덕션
+0건 / silentPushLocationGate 소비 0건(주석 3곳만) / evaluateConsensusGate 호출 1곳(advanceTripPosition.ts:510) /
+consensusGate mixed 분기 strongG 부재(consensusGate.ts:186-193 vs underground :177-183) /
+filterCandidateLine 항등 참(인자가 waypoint.line인데 computeAllowedLines가 waypoints line 포함,
+consensusGate.ts:228-230) / applyLegConsensusTick tick 입력 3종 미전달(scheduled.ts:6361-6372
+`tick:{now, observations}`) / legacyGate @deprecated 자인+mismatch 분기 도달불가(코드 자체 주석
+:5225~ "#2662 — D1 기록을 붙이려다 도달 불가임을 확인") / staleSSoT 가드 상시 신선(주석 :3594-3598
+자인 "무영향... defense-in-depth") / movementGate.ts:353 simple-arch 전면 bypass + .env 실측 /
+HomeScreen.tsx:439 자동 stamp / tryFireConsensusTrainLeg ssot null 조기 return 무계측(scheduled.ts
+:6305-6306) + lockAttachable:false 하드코딩(:6398).
+
+**정정 2건 (에이전트 판정 과장 — 아래 표·이슈에 반영)**:
+1. **arvlCdFireKey·vanish 키는 순수 ④가 아니다** — push 발송이 stamp 2개(자기 키+stationFiredKey,
+   scheduled.ts:3872-3875, 4713-4715)보다 **앞서므로**, 두 put 사이 crash/KV 정합성 창에서는
+   stationFiredKey만 유실되고 자기 키가 남아 **재발사를 막는 backstop**이 성립한다. happy-path
+   도달불가는 맞지만 "삭제해도 동작 불변"은 아님 → 제거하려면 stamp 원자화/순서 재설계가 짝.
+2. **프로덕션 archFlag = 'on' (KV `arch:simple-arrival-v1` 직접 read로 확정)** — backend 문서의
+   "코드로 확정 불가"를 해소. 따라서 evaluateConsensusGate는 프로덕션에서 무조건 pass
+   (consensusGate.ts:157-159) → consensus 봉인 (b)(mixed 상시 reject)는 flag=off 한정이고, 살아있는
+   봉인은 ssot=null(무lock trip) + streak 구조 배제뿐. **#2641도 동일 함의: 지금 배선해도 flag=on에선
+   무조건 pass라 실효 0 — 실효 있는 2차 검증은 flag 분기 설계(#2757)와 함께 가야 한다.**
+
+**추정으로 남는 것(실측 미확인)**: transferLegConsensus init t0 stale → terminal suppress 시나리오,
+adv#1 "사실상 ④", lastFiredPhase dedup "crash 경로만" — 판정 문구에 추정 표기 유지.
 
 ## 집계
 
@@ -47,7 +75,7 @@ true로 타던 분기 전부가 false로 바뀌는 게 의도와 맞는지 한 �
 | 대상 | 근거 (상세는 동반 문서) | 이슈 |
 |---|---|---|
 | backend evidence 4종(wifi/cellular/accel/time-only) 타입+소비 게이트(adv#4·#6, cellular hard-reject ×2, consensusGate strongCB/strongDB, countStrongEvidence, trySeedOverride, legCandidateFilters 미배선 필터 2종) | 생산자 0건 확증. 폐기된 device-fusion 패러다임 잔재 (2026-09-03 확정 아키텍처) | 신규 |
-| backend 도달불가 dedup/가드 4종: arvlCdFireKey·vanish origin키(stationPassedFiredKey 선행으로 히트 불가)·staleSSoT 3분 가드(상시 신선, 주석 자인)·legacyGate(@deprecated 자인) | ④ 전수 표 D·E 섹션 | 신규 |
+| backend dedup/가드 4종 정리: **legacyGate(@deprecated 자인, 동작 불변 확증)·staleSSoT 3분 가드(상시 신선 자인 — 단 명시적 defense-in-depth라 제거=방어 의도 폐기 결정)는 제거**, **arvlCdFireKey·vanish origin키는 §0-b 정정 1 — crash-창 backstop이라 단순 삭제 불가, stamp 원자화/순서 재설계와 짝** | 표 D·E 섹션 + §0-b | 신규 (#2764, 정정 코멘트 반영) |
 | backend `tryFireConsensusTrainLeg` 진입점 (D1 결정) | 이중 봉인·출력 0. transferLegConsensus 모듈 자체는 #2754/#2761 재설계 범위라 이 이슈에서 안 건드림 | 신규 |
 | device `silentPushLocationGate.ts` 333줄 + 오도 주석 3곳 | 소비자 #2064에서 제거, 호출 0 | **#2759 (기존)** |
 | device #396류 API-imminent 경로 (useStationAlarm.ts:1375-1450) | trackedTrainCode writer 프로덕션 0건 → 상시 no-op, 내부 게이트 동반 dead. fg-arvlcd fast-path(#640, lock.trainCode)는 별개 — 유지 | 신규 |
