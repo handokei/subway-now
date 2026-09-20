@@ -127,6 +127,7 @@ const mockLogSuppressedLocklessNoUserIntent = jest.fn();
 const mockLogSuppressedFireAlarmOnce = jest.fn();
 const mockLogSuppressedNotDeparted = jest.fn();
 const mockLogEtaSource = jest.fn();
+const mockLogLockExemptGate = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -169,6 +170,7 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedFireAlarmOnce(...args),
   logSuppressedNotDeparted: (...args: unknown[]) => mockLogSuppressedNotDeparted(...args),
   logEtaSource: (...args: unknown[]) => mockLogEtaSource(...args),
+  logLockExemptGate: (...args: unknown[]) => mockLogLockExemptGate(...args),
 }));
 
 // #1893 (RC-17) — trip-boundary detection effect는 tripStartedAt storage를 read한다.
@@ -354,6 +356,13 @@ describe('useStationAlarm', () => {
 
     it('GPS 게이트 차단 + arrivalConfidence=arrival-confirmed → station-passed 감지 (#2064 알림은 미발사)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
+      // ADR-039 §5 4단계 (#2728) — lock 활성이면 gate-phase-accuracy가 더 이상 phase 알람을
+      // 차단하지 않는다(요구사항 1). 이 테스트의 의도(station-passed는 GPS 정확도와 무관하게
+      // 감지되고, phase 알람은 GPS 게이트로 차단된다는 대비)를 보존하려면 lockless로 고정해야
+      // 한다 — lockless trip은 여전히 GPS 거리 기반 ETA에 의존하므로 게이트가 그대로 유지된다.
+      // infoModeEnabled=true로 #1816 lockless-no-user-intent 가드(본 테스트의 관심사 밖)를 우회.
+      mockGetBoardingLock.mockResolvedValue(null);
+      useUserIntentStore.setState({ infoModeEnabled: true });
       renderHook(() =>
         useStationAlarm(
           defaultInputs({
@@ -2799,7 +2808,11 @@ describe('useStationAlarm', () => {
 
   describe('#1019 phase gate stamps', () => {
     const route = makeDirectRoute(3, '2');
-    it('accuracy 초과 시 gate-phase-accuracy stamp', async () => {
+    // ADR-039 §5 4단계 (#2728) — lockless trip은 여전히 GPS 거리 기반 ETA 계산에 의존하므로
+    // (#444/#1816 안전장치 무변경) gate-phase-accuracy가 계속 차단해야 한다. lock 활성 exempt
+    // 동작은 아래 'ADR-039 §5 4단계' describe에서 별도 검증.
+    it('lockless + accuracy 초과 시 gate-phase-accuracy stamp', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 500 })));
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-accuracy', destination.name);
@@ -2815,6 +2828,159 @@ describe('useStationAlarm', () => {
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 100 })));
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       expect(mockLogSuppressedPhaseGate.mock.calls.filter((c) => c[0] === 'gate-phase-warmup')).toHaveLength(0);
+    });
+  });
+
+  // ADR-039 §5 4단계 (#2728) — D 매트릭스: GPS는 판정·발사 권한이 없다. lock 활성 trip
+  // (currentLockTrainCode 존재)에 한해 gate-phase-accuracy / gate-phase-time-integration /
+  // movement-low-accuracy가 destination/transfer 발사를 막지 않는다. lockless는 무변경(요구사항 2).
+  describe('ADR-039 §5 4단계 (#2728) — lock 활성 경로 GPS 발사 게이트 예외', () => {
+    const route = makeDirectRoute(3, '2');
+
+    it('lock 활성 + accuracy 초과(500m) → gate-phase-accuracy 건너뛰고 evaluateAlarmPhase 호출 + lock-exempt 계측', async () => {
+      // defaultInputs는 beforeEach에서 mockGetBoardingLock을 DEFAULT_LOCK(활성)으로 초기화 —
+      // 별도 override 불필요.
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 500,
+            fusionSource: 'boarding-lock',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate).not.toHaveBeenCalledWith('gate-phase-accuracy', destination.name);
+      expect(mockLogLockExemptGate).toHaveBeenCalledWith('gate-phase-accuracy-lock-exempt', destination.name);
+    });
+
+    it('lock 활성 + fusionSource 약(gps) → gate-phase-time-integration 건너뛰고 evaluateAlarmPhase 호출 + lock-exempt 계측', async () => {
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            fusionSource: 'gps',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate).not.toHaveBeenCalledWith(
+        'gate-phase-time-integration',
+        destination.name,
+      );
+      expect(mockLogLockExemptGate).toHaveBeenCalledWith(
+        'gate-phase-time-integration-lock-exempt',
+        destination.name,
+      );
+    });
+
+    it('회귀 — lockless + fusionSource 약(gps) → gate-phase-time-integration 계속 억제(요구사항 2)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            fusionSource: 'gps',
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith(
+          'gate-phase-time-integration',
+          destination.name,
+        ),
+      );
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+      expect(mockLogLockExemptGate).not.toHaveBeenCalled();
+    });
+
+    it('회귀 — #1817 조기 오발사 시나리오(lock 활성이어도 fusionSource 미전달 legacy fallback)는 계속 차단된다', async () => {
+      // Day 1 evidence: 13:49:38 fu=마장 gp=왕십리 mismatch. fusionSource가 명시 전달되지 않는
+      // legacy 호출 경로(estimatorIsTimeIntegration 단독 판정)는 lock 활성 exempt 대상이 아니다 —
+      // 프로덕션(HomeScreen.tsx)은 항상 fusionSource를 전달하므로 이 경로는 실사용 lock 활성 trip에
+      // 영향을 주지 않는다(위 두 테스트가 그 실사용 경로를 검증). 이 테스트는 fusionSource 없이도
+      // 안전측으로 계속 차단됨을 보존한다 — #1817 회귀 재발 차단.
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            estimatorIsTimeIntegration: true,
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith(
+          'gate-phase-time-integration',
+          destination.name,
+        ),
+      );
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+      expect(mockLogLockExemptGate).not.toHaveBeenCalled();
+    });
+
+    it('lock 활성 + movement-low-accuracy(GPS accuracy 100~200m, movementGate만 차단) → 예외 처리 후 발사 진행', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            // gate-phase-accuracy 임계(200m)는 통과하지만 movementGate 임계(100m)는 초과 —
+            // Phase ETA effect의 movement gate만 단독으로 걸리는 값.
+            accuracyMeters: 150,
+            speedMps: 10,
+            fusionSource: 'boarding-lock',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'movement-low-accuracy' }),
+      );
+      expect(mockLogLockExemptGate).toHaveBeenCalledWith(
+        'movement-low-accuracy-lock-exempt',
+        destination.name,
+      );
+    });
+
+    it('회귀 — lockless + movement-low-accuracy(accuracy 150m) → 계속 억제된다', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            accuracyMeters: 150,
+            speedMps: 10,
+            fusionSource: 'boarding-lock',
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-low-accuracy' }),
+        );
+      });
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+      expect(mockLogLockExemptGate).not.toHaveBeenCalled();
     });
   });
 
@@ -5416,6 +5582,13 @@ describe('useStationAlarm', () => {
         isTransfer: false,
         stopsToDestination: 2,
       });
+      // ADR-039 §5 4단계 (#2728) — lock 활성이면 gate-phase-accuracy가 더 이상 phase 알람을
+      // 차단하지 않는다. 이 테스트의 의도(station-passed는 subsurface verdict로 GPS 게이트를
+      // 우회하지만 phase 알람은 여전히 GPS 게이트로 차단된다는 대비)를 보존하려면 lockless로
+      // 고정해야 한다 — lockless trip은 게이트가 그대로 유지된다(요구사항 2).
+      // infoModeEnabled=true로 #1816 lockless-no-user-intent 가드(본 테스트의 관심사 밖)를 우회.
+      mockGetBoardingLock.mockResolvedValue(null);
+      useUserIntentStore.setState({ infoModeEnabled: true });
 
       renderHook(() => useStationAlarm(subsurfaceInputs()));
 

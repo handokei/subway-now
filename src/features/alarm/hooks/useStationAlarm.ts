@@ -69,6 +69,7 @@ import {
   logSuppressedLocklessNoUserIntent,
   logSuppressedNotDeparted,
   logEtaSource,
+  logLockExemptGate,
   type HydrationPhase,
 } from '../utils/alarmLog';
 import { fireAlarmOnce } from '../utils/fireAlarmOnce';
@@ -1135,13 +1136,26 @@ export function useStationAlarm({
       return;
     }
 
+    // ADR-039 §5 4단계 (#2728) — D 매트릭스: GPS는 판정·발사 권한이 없다. lock 활성 trip
+    // (currentLockTrainCode 존재 — #2729/#2730이 확립한 SSOT)은 destination ETA를 이제 Seoul
+    // 열차 피드 1순위로 계산하므로(3단계), "ETA 계산에 GPS 거리가 필요하다"는 아래 게이트들의
+    // 전제가 사라졌다. lockless trip은 여전히 GPS 거리 계산에 의존하므로 게이트를 그대로 유지한다
+    // (요구사항 2 — lockless 무변경, #444/#1816 안전장치 보존).
+    const lockActive = currentLockTrainCode !== null;
+
     // 알람 경로는 표시 경로보다 엄격한 정확도 게이트(MAX_ACCURACY_M=200m)를 적용한다.
     // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
     // 그대로 알람을 울리면 잘못된 역에서 false alarm이 발생한다.
     // Phase 알람은 ETA 거리 계산이 필요해 GPS 게이트가 통과한 경우에만 평가한다.
+    // ADR-039 §5 4단계 — lock 활성 trip은 위 전제가 사라졌으므로 이 게이트에서 제외한다.
+    // 예외 발동은 logLockExemptGate로 계측(요구사항 4) — 발사 판정에는 영향 없이 관측만.
     if (!isAccuracyAcceptable(accuracyMeters)) {
-      logSuppressedPhaseGate('gate-phase-accuracy', destination.name);
-      return;
+      if (lockActive) {
+        logLockExemptGate('gate-phase-accuracy-lock-exempt', destination.name);
+      } else {
+        logSuppressedPhaseGate('gate-phase-accuracy', destination.name);
+        return;
+      }
     }
 
     // #670/#672/#1316: 하이드레이션 직후 warmup window 동안 발사 보류 — stale firedAlarms·
@@ -1171,8 +1185,19 @@ export function useStationAlarm({
     const phaseGateBlockedByWeakSource =
       fusionSource !== undefined ? !isStrongFusionSource(fusionSource) : estimatorIsTimeIntegration;
     if (phaseGateBlockedByWeakSource) {
-      logSuppressedPhaseGate('gate-phase-time-integration', destination.name);
-      return;
+      // ADR-039 §5 4단계 (#2728) — lock 활성 trip은 이 게이트에서 제외한다. 단 `fusionSource`가
+      // 명시 전달된 SSOT 판정(#2204)에서만 — `fusionSource` 미전달 legacy fallback
+      // (estimatorIsTimeIntegration 단독)은 예외 대상에서 뺀다: #1817 회귀(fu=마장 gp=왕십리,
+      // fusion station과 GPS 실관측 station이 불일치하는데 fusionSource 정보 없이 estimator
+      // 전략만으로 판정하는 구 경로)를 그대로 보존하기 위함이다. 프로덕션 caller(HomeScreen.tsx)는
+      // 항상 fusionSource를 전달하므로 이 fallback은 legacy 테스트 경로에서만 실행된다 — lock
+      // 활성 실사용 trip에는 영향 없다.
+      if (lockActive && fusionSource !== undefined) {
+        logLockExemptGate('gate-phase-time-integration-lock-exempt', destination.name);
+      } else {
+        logSuppressedPhaseGate('gate-phase-time-integration', destination.name);
+        return;
+      }
     }
 
     // ADR-039 §5 3단계 (#2728) — lock 활성 trip(currentLockTrainCode 존재)의 destination ETA는
@@ -1281,14 +1306,23 @@ export function useStationAlarm({
       // #1405 — runMovementGate helper로 동일 5-arg evaluateMovement 호출 추출(SonarCloud CPD).
       const movement = runMovementGate();
       if (!movement.reliable && movement.reason) {
-        logSuppressedMovement({
-          source: 'fg',
-          stationName: rawEvent.stationName,
-          kind: rawEvent.type,
-          phaseId: rawEvent.phaseId,
-          reason: MOVEMENT_TO_ALARM_LOG_REASON[movement.reason],
-        });
-        return;
+        // ADR-039 §5 4단계 (#2728) — movement-low-accuracy는 순수 GPS accuracy 판정(movementGate.ts:
+        // loc.accuracyM > MAX_ACCURACY_M)이라 D 매트릭스상 lock 활성 trip 발사를 막을 권한이 없다.
+        // movementGate.ts 판정 로직 자체는 불변(요구사항 5) — 호출부에서 lockActive일 때만 예외
+        // 처리한다. 다른 movement reason(static-speed/motion-stationary 등)은 GPS accuracy와
+        // 무관한 정당한 정적 misfire 가드(ADR-039 §4-3 실측 근거)이므로 그대로 유지한다.
+        if (movement.reason === 'low-accuracy' && lockActive) {
+          logLockExemptGate('movement-low-accuracy-lock-exempt', rawEvent.stationName);
+        } else {
+          logSuppressedMovement({
+            source: 'fg',
+            stationName: rawEvent.stationName,
+            kind: rawEvent.type,
+            phaseId: rawEvent.phaseId,
+            reason: MOVEMENT_TO_ALARM_LOG_REASON[movement.reason],
+          });
+          return;
+        }
       }
       void fireViaUnifiedGate(rawEvent, 'eta', route, destination);
     }
