@@ -1358,7 +1358,11 @@ describe('alarmLog', () => {
 
         const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
         const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-        expect(saved).toHaveLength(2);
+        // #1024 inline counter — 같은 flush 배치 안에서 동일 시그니처 엔트리는 count++로
+        // 병합된다(신규 push 대신). reset이 tracker를 비워 두 번째 호출이 appendAlarmLog까지
+        // 도달했다는 사실은 count=2로 확인한다.
+        expect(saved).toHaveLength(1);
+        expect(saved[0].count).toBe(2);
       });
     });
 

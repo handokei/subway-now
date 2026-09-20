@@ -1,5 +1,12 @@
+/* eslint-disable import/no-restricted-paths --
+ * #2768 (게이트 전수감사 C, ⑤) — 자동 종료 발동을 alarmLog로 stamp한다. cross-feature 적재는
+ * computeBoardableWaitsForRoute.ts/useV1MismatchDetector.ts 등과 같은 기존 패턴 — 다른 feature
+ * 슬라이스가 alarm feature의 alarmLog(관측 전용 ring buffer)에 직접 적재하는 것은 이미 여러
+ * 곳에서 옵트인된 공용 관측 채널이다.
+ */
 import { useEffect, useRef, useState } from 'react';
 import type { FusionSource } from '../../../shared/types/fusion';
+import { logArrivalAutoClearFired } from '../../alarm/utils/alarmLog';
 
 const ARRIVAL_THRESHOLD_KM = 0.5;
 const CLEAR_DELAY_MS = 2000;
@@ -82,6 +89,8 @@ export function useArrivalAutoClear({
     ) {
       firedForRef.current = destinationName;
       setArrivedBanner(true);
+      // #2768 — 자동 종료 발동 시점 stamp (측정 목적, 정책 변경 없음).
+      logArrivalAutoClearFired(destinationName);
       timeoutRef.current = setTimeout(() => {
         onClearRef.current();
         setArrivedBanner(false);
