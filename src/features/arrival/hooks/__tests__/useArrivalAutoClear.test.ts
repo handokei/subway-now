@@ -6,6 +6,10 @@ type Params = UseArrivalAutoClearParams;
 const baseProps = (overrides: Partial<Params> = {}): Params => ({
   currentStationName: undefined,
   distanceKm: undefined,
+  // #2716 — 기본값은 'gps'(실측 거리) + 확증 불필요. 기존 테스트 전부가 이 기본값으로
+  // distanceKm 임계값 게이트 경로를 그대로 타므로 회귀 없이 하위 호환된다.
+  distanceSource: 'gps',
+  destinationArrivalConfirmed: false,
   destinationName: undefined,
   onClear: jest.fn(),
   ...overrides,
@@ -228,5 +232,73 @@ describe('useArrivalAutoClear', () => {
 
     expect(onClear1).not.toHaveBeenCalled();
     expect(onClear2).toHaveBeenCalledTimes(1);
+  });
+
+  // #2716 — backend-ssot tier는 mirror가 사용자 위치를 모르는 상태에서 distanceKm=0을
+  // placeholder로 보고한다(실측 아님, "0m 떨어짐"이 아니라 "모름"). 실측 덤프
+  // (2026-09-17 저녁): src=backend-ssot d=0m인데 GPS-nearest는 다른 역(용마산)이었다.
+  // 이 값을 실측 0m와 동일하게 취급하면 역명 일치만으로 trip이 종료된다.
+  describe('#2716 — backend-ssot 거리 placeholder', () => {
+    it('red 재현: distanceSource=backend-ssot + distanceKm=0 + 역명 일치만으로는 trigger하지 않는다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '성수',
+          destinationName: '성수',
+          distanceKm: 0,
+          distanceSource: 'backend-ssot',
+          destinationArrivalConfirmed: false,
+          onClear,
+        }),
+      });
+
+      act(() => { jest.advanceTimersByTime(3_000); });
+
+      expect(result.current.arrivedBanner).toBe(false);
+      expect(onClear).not.toHaveBeenCalled();
+    });
+
+    it('distanceSource=backend-ssot이어도 목적지 arvlCd 확증(destinationArrivalConfirmed=true)이 있으면 trigger한다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '성수',
+          destinationName: '성수',
+          distanceKm: 0,
+          distanceSource: 'backend-ssot',
+          destinationArrivalConfirmed: true,
+          onClear,
+        }),
+      });
+
+      expect(result.current.arrivedBanner).toBe(true);
+      expect(onClear).not.toHaveBeenCalled();
+
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+      expect(result.current.arrivedBanner).toBe(false);
+    });
+
+    it('회귀: distanceSource=gps(실측 거리)로 목적지 도착 시 기존 동작(배너+자동클리어) 유지', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '용마산',
+          destinationName: '용마산',
+          distanceKm: 0.1,
+          distanceSource: 'gps',
+          destinationArrivalConfirmed: false,
+          onClear,
+        }),
+      });
+
+      expect(result.current.arrivedBanner).toBe(true);
+
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+      expect(result.current.arrivedBanner).toBe(false);
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { FusionSource } from '../../../shared/types/fusion';
 
 const ARRIVAL_THRESHOLD_KM = 0.5;
 const CLEAR_DELAY_MS = 2000;
@@ -6,6 +7,18 @@ const CLEAR_DELAY_MS = 2000;
 export interface UseArrivalAutoClearParams {
   currentStationName: string | undefined;
   distanceKm: number | undefined;
+  /**
+   * #2716 — distanceKm의 출처. `backend-ssot` tier는 mirror가 사용자 위치를 모르는 상태에서
+   * distanceKm=0을 placeholder로 보고한다(실측 아님). 이 값이 'backend-ssot'이면 distanceKm
+   * 임계값 비교를 신뢰하지 않고 destinationArrivalConfirmed로 대체한다.
+   */
+  distanceSource: FusionSource | undefined;
+  /**
+   * #2716 — distanceSource==='backend-ssot'일 때 요구하는 대체 확증. 새 신호를 만들지 않고
+   * 기존 열차 피드 arvlCd(useDestinationAutoClear.pickDestinationArvlCd와 동일 신호)가
+   * ARRIVAL_CODE.ARRIVED인지 여부를 caller가 계산해 전달한다.
+   */
+  destinationArrivalConfirmed: boolean;
   destinationName: string | undefined;
   onClear: () => void;
 }
@@ -17,6 +30,8 @@ export interface UseArrivalAutoClearParams {
 export function useArrivalAutoClear({
   currentStationName,
   distanceKm,
+  distanceSource,
+  destinationArrivalConfirmed,
   destinationName,
   onClear,
 }: UseArrivalAutoClearParams): { arrivedBanner: boolean } {
@@ -37,12 +52,19 @@ export function useArrivalAutoClear({
 
   useEffect(() => {
     if (arrivedBanner) return;
+    // #2716 — 'backend-ssot' tier는 사용자 위치를 모르는 mirror라 distanceKm=0을 placeholder로
+    // 보고한다(실측 0m가 아니다). 이 값을 임계값 비교에 그대로 쓰면 역명 일치만으로 항상
+    // 통과해버려 2차 거리 가드가 무력화된다 — 이 경우 대신 목적지 arvlCd 확증
+    // (destinationArrivalConfirmed, 기존 열차 피드 신호 재사용)을 요구한다.
+    const distanceGatePasses =
+      distanceSource === 'backend-ssot'
+        ? destinationArrivalConfirmed
+        : distanceKm != null && distanceKm <= ARRIVAL_THRESHOLD_KM;
     if (
       currentStationName != null &&
       destinationName != null &&
       currentStationName === destinationName &&
-      distanceKm != null &&
-      distanceKm <= ARRIVAL_THRESHOLD_KM &&
+      distanceGatePasses &&
       firedForRef.current !== destinationName
     ) {
       firedForRef.current = destinationName;
@@ -53,7 +75,14 @@ export function useArrivalAutoClear({
         timeoutRef.current = null;
       }, CLEAR_DELAY_MS);
     }
-  }, [arrivedBanner, currentStationName, distanceKm, destinationName]);
+  }, [
+    arrivedBanner,
+    currentStationName,
+    distanceKm,
+    distanceSource,
+    destinationArrivalConfirmed,
+    destinationName,
+  ]);
 
   useEffect(() => {
     return () => {

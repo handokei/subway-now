@@ -12,6 +12,7 @@ import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
 import { LINE_NAMES } from '../shared/constants/lineColors';
+import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
@@ -76,7 +77,7 @@ import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLo
 import { usePrevTrainCandidate } from '../features/alarm/hooks/usePrevTrainCandidate';
 import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetScheduler';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
-import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
+import { useDestinationAutoClear, pickDestinationArvlCd } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useDeviceSelfEnd } from '../features/alarm/hooks/useDeviceSelfEnd';
 import { notifyTripEnded } from '../features/alarm/utils/tripEndedNotification';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
@@ -472,9 +473,23 @@ export default function HomeScreen() {
       ],
     );
   }, [t, handleEndNavigation]);
+  // #2716 — backend-ssot tier는 mirror가 사용자 위치를 모르는 상태에서 distanceKm=0을
+  // placeholder로 보고한다(실측 아님). useArrivalAutoClear의 2차 거리 가드가 이 값을 실측
+  // 0m로 오인하지 않도록, source==='backend-ssot'일 때 대신 요구할 확증을 여기서 계산한다.
+  // 새 신호를 만들지 않고 useDestinationAutoClear가 이미 쓰는 목적지 arvlCd(열차 피드
+  // 도착 확정)를 재사용한다 — useArrivalInfo는 모듈 스코프 TtlCache로 dedup되어(같은
+  // destination.name/line 키를 useDestinationAutoClear도 폴링) 추가 네트워크 비용이 없다.
+  const { arrival: destinationArrival } = useArrivalInfo(
+    destination?.name ?? null,
+    destination?.line ?? null,
+  );
+  const destinationArrivalConfirmed =
+    pickDestinationArvlCd(destinationArrival) === ARRIVAL_CODE.ARRIVED;
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
     distanceKm: result?.distanceKm,
+    distanceSource: source,
+    destinationArrivalConfirmed,
     destinationName: destination?.name,
     onClear: handleArrivalClear,
   });
