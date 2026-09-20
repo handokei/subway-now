@@ -9,6 +9,9 @@ const baseProps = (overrides: Partial<Params> = {}): Params => ({
   // #2716 — 기본값은 'gps'(실측 거리) + 확증 불필요. 기존 테스트 전부가 이 기본값으로
   // distanceKm 임계값 게이트 경로를 그대로 타므로 회귀 없이 하위 호환된다.
   distanceSource: 'gps',
+  // #2741 — 기본값은 false(실측 거리) — 기존 테스트 전부가 distanceKm 임계값 게이트 경로를
+  // 그대로 타므로 회귀 없이 하위 호환된다.
+  distanceIsPlaceholder: false,
   destinationArrivalConfirmed: false,
   destinationName: undefined,
   onClear: jest.fn(),
@@ -299,6 +302,98 @@ describe('useArrivalAutoClear', () => {
 
       expect(onClear).toHaveBeenCalledTimes(1);
       expect(result.current.arrivedBanner).toBe(false);
+    });
+  });
+
+  // #2741 — wifi-ssid tier도 GPS 부재 시 distanceKm=0 placeholder를 쓴다(#2716과 동일 결함
+  // 클래스). SSID는 사용자-역 거리를 모르므로 0을 "실측 0m"로 오인하면 안 된다. GPS가 있어
+  // 실측 거리를 낸 wifi-ssid(1222행)는 기존 거리 가드를 그대로 타야 하므로, distanceSource만으로는
+  // 두 케이스를 구분할 수 없다 — placeholder 여부를 별도 신호(distanceIsPlaceholder)로 전달한다.
+  describe('#2741 — wifi-ssid 거리 placeholder', () => {
+    it('red 재현: source=wifi-ssid + distanceIsPlaceholder=true(GPS 부재 placeholder) + 역명 일치만으로는 trigger하지 않는다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '용마산',
+          destinationName: '용마산',
+          distanceKm: 0,
+          distanceSource: 'wifi-ssid',
+          distanceIsPlaceholder: true,
+          destinationArrivalConfirmed: false,
+          onClear,
+        }),
+      });
+
+      act(() => { jest.advanceTimersByTime(3_000); });
+
+      // 왜 통과하면 안 되는지: distanceIsPlaceholder=true인 wifi-ssid는 destinationArrivalConfirmed
+      // 대체 확증이 필요하다 — distanceKm=0을 실측 거리로 오인해 통과해서는 안 된다.
+      expect(result.current.arrivedBanner).toBe(false);
+      expect(onClear).not.toHaveBeenCalled();
+    });
+
+    it('source=wifi-ssid + distanceIsPlaceholder=true여도 목적지 arvlCd 확증(destinationArrivalConfirmed=true)이 있으면 trigger한다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '용마산',
+          destinationName: '용마산',
+          distanceKm: 0,
+          distanceSource: 'wifi-ssid',
+          distanceIsPlaceholder: true,
+          destinationArrivalConfirmed: true,
+          onClear,
+        }),
+      });
+
+      expect(result.current.arrivedBanner).toBe(true);
+      expect(onClear).not.toHaveBeenCalled();
+
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+      expect(result.current.arrivedBanner).toBe(false);
+    });
+
+    it('회귀: source=wifi-ssid + distanceIsPlaceholder=false(GPS 있음, 실측 거리)면 기존 거리 가드가 그대로 동작한다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '용마산',
+          destinationName: '용마산',
+          distanceKm: 0.1,
+          distanceSource: 'wifi-ssid',
+          distanceIsPlaceholder: false,
+          destinationArrivalConfirmed: false,
+          onClear,
+        }),
+      });
+
+      // distanceIsPlaceholder=false → destinationArrivalConfirmed=false여도 실측 거리 게이트로 통과.
+      expect(result.current.arrivedBanner).toBe(true);
+
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+      expect(result.current.arrivedBanner).toBe(false);
+    });
+
+    it('회귀: source=wifi-ssid + distanceIsPlaceholder=false + 거리가 0.5km 초과면 trigger하지 않는다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: baseProps({
+          currentStationName: '용마산',
+          destinationName: '용마산',
+          distanceKm: 0.6,
+          distanceSource: 'wifi-ssid',
+          distanceIsPlaceholder: false,
+          destinationArrivalConfirmed: true,
+          onClear,
+        }),
+      });
+
+      expect(result.current.arrivedBanner).toBe(false);
+      expect(onClear).not.toHaveBeenCalled();
     });
   });
 });
