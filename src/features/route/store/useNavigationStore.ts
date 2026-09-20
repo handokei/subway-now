@@ -18,10 +18,17 @@
  *    `useUserIntentStore.setPromptOptIn(true)`도 함께 stamp한다(restart-durable, PR #2772
  *    리뷰) — `navigationActive` 자체는 휘발성이라 backend boarding-prompt opt-in 신호로
  *    직접 forward하지 않는다(mid-trip 콜드 재시작 시 재등록에서 opt-in이 사라지는 회귀 방지).
- *  - 사용자 안내 중단("일시정지") 탭: `stopNavigation()` — memory state false. `promptOptIn`은
- *    건드리지 않는다 — 일시정지는 BG GPS만 중단할 뿐 trip을 포기하는 게 아니다.
+ *  - 사용자 안내 중단("일시정지") 탭: `stopNavigation()` — memory state false. HomeScreen이
+ *    `promptOptIn`도 함께 false로 stamp한다(PR #2772 전체 리뷰, 트레이드오프 결정) — 일시정지는
+ *    trip을 포기하는 게 아니지만, "지금 프롬프트를 받고 있다"는 opt-in 신호는 pause 중 꺼져야
+ *    한다(안 그러면 화면을 안 보는 pause 상태에서도 boarding-prompt가 계속 발사될 수 있다).
+ *    `infoModeEnabled`(응답/직접 탭 이력)는 명시 의향이라 pause와 무관하게 절대 건드리지
+ *    않는다 — 이미 lock급 정확도가 확립된 trip은 pause 중에도 매역 push를 계속 받는다
+ *    (PAUSE_AUTO_END_MS 15분 자동 종료가 상한).
+ *  - 재개("안내 시작" 재탭): 위 lifecycle 첫 줄과 동일 — `promptOptIn`이 다시 true로 stamp된다.
  *  - 앱 재시작: `navigationActive`는 휘발성 false로 reset(persist 의도적 미적용)되지만,
- *    `promptOptIn`은 AsyncStorage에 남아 있어 mid-trip 재등록에서도 살아있다.
+ *    `promptOptIn`은 AsyncStorage에 남아 있어(pause 중이 아닌 한) mid-trip 재등록에서도
+ *    살아있다.
  *  - trip 종료: `promptOptIn`은 `resetPromptOptIn`(tripBoundCleanups)에서 false로 reset.
  *
  * `useUserIntentStore`(`infoModeEnabled` / `promptOptIn`)와 별개 store인 이유:
@@ -60,9 +67,9 @@ export interface NavigationState {
   startNavigation: () => void;
   /**
    * 안내 중단(일시정지). 사용자가 HomeScreen "일시정지" 버튼을 탭할 때 호출.
-   * memory state false로 set + pausedAt stamp. HomeScreen이 useBackgroundLocation cleanup을
-   * wire한다 — `useUserIntentStore.promptOptIn`/`infoModeEnabled`는 건드리지 않는다(#2651,
-   * trip을 포기하는 게 아니므로).
+   * memory state false로 set + pausedAt stamp. HomeScreen이 useBackgroundLocation cleanup +
+   * `useUserIntentStore.setPromptOptIn(false)`를 함께 wire한다(PR #2772 전체 리뷰) —
+   * `infoModeEnabled`는 명시 의향이라 건드리지 않는다.
    */
   stopNavigation: () => void;
   /**

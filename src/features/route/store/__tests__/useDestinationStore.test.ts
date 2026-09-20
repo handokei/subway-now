@@ -7,6 +7,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useDestinationStore } from '../useDestinationStore';
 import { useAlarmEventStore } from '../../../alarm/store/useAlarmEventStore';
+import { useUserIntentStore } from '../../../alarm/store/useUserIntentStore';
 import { Station } from '../../../../shared/types/station';
 import { setTripStartedAt } from '../../../alarm/utils/tripStartStorage';
 import { triggerTripEndRecall } from '../../../alarm/utils/triggerTripEndRecall';
@@ -86,6 +87,12 @@ describe('useDestinationStore', () => {
       routePreference: 'optimal',
     });
     useAlarmEventStore.setState({ alarmEvent: null, dismissSilence: null });
+    useUserIntentStore.setState({
+      infoModeEnabled: false,
+      boardingCommitted: false,
+      promptOptIn: false,
+      promptOptInHydrated: false,
+    });
     jest.clearAllMocks();
     // jest.clearAllMocks가 mock implementations도 리셋 — #919 trigger/setTripStartedAt이
     // Promise를 반환하지 않으면 setDestination의 .then chain이 깨진다. 기본 impl 복구.
@@ -268,6 +275,27 @@ describe('useDestinationStore', () => {
     setDestination(mockStation2);
 
     expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
+  });
+
+  // #2651 (PR #2772 전체 리뷰, 항목 6b) — destination 전환 race. `resetPromptOptIn`(tripBoundCleanups)
+  // 의 storage 정리는 `tripTransitionQueue`(triggerTripEndRecall 이후) 뒤에 있는 async chain이라,
+  // `setDestination(mockStation2)` 호출이 **동기로 반환한 직후**(cleanup 마이크로태스크가 아직
+  // resolve되기 전) 시점에 새 trip의 첫 register effect가 읽을 in-memory promptOptIn이 이미
+  // false여야 한다 — 그렇지 않으면 옛 trip의 stale promptOptIn=true가 새 trip(안내 시작 안 누름)
+  // 첫 register payload에 실려 backend KV를 잘못 덮어쓴다.
+  it('setDestination(#2651): switch 시 promptOptIn 메모리 state가 cleanup chain 완료를 기다리지 않고 동기로 false가 된다', () => {
+    const { setDestination } = useDestinationStore.getState();
+    setDestination(mockStation);
+    // 이전 trip(mockStation)에서 안내 시작으로 promptOptIn이 true로 확립된 상태를 재현.
+    useUserIntentStore.setState({ promptOptIn: true });
+    expect(useUserIntentStore.getState().promptOptIn).toBe(true);
+
+    // destination switch — 반환은 동기다(setDestination 자체가 async 함수가 아님).
+    setDestination(mockStation2);
+
+    // cleanup chain(tripTransitionQueue)의 어떤 await도 아직 resolve되지 않은 이 시점에서
+    // 이미 promptOptIn 메모리가 false여야 한다 — resetPromptOptIn(비동기)을 기다리면 안 된다.
+    expect(useUserIntentStore.getState().promptOptIn).toBe(false);
   });
 
   it('setDestination(#702/#799): 같은 목적지 재설정 시에는 trip-bound storage 전부 유지', () => {

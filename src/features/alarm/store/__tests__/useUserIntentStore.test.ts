@@ -266,6 +266,27 @@ describe('useUserIntentStore (#1923)', () => {
       ).resolves.toBeUndefined();
       expect(useUserIntentStore.getState().promptOptIn).toBe(false);
     });
+
+    // #2651 (PR #2772 전체 리뷰, 항목 4) — 일시정지/재개 의미론. HomeScreen.handleStopNavigation은
+    // setPromptOptIn(false)를, handleStartNavigation(재개)은 setPromptOptIn(true)를 호출한다.
+    // "안내시작 → 일시정지 → 재개" 흐름에서 재등록 payload에 실릴 값(memory state = 실제 HTTP
+    // body에 forward되는 값)이 정확히 false → true로 전이하는지 store 레벨에서 직접 재현한다.
+    it('#2651 (PR #2772 전체 리뷰) — 안내시작(true) → 일시정지(false) → 재개(true): 각 단계에서 재등록 payload에 실릴 값이 정확히 전이한다', async () => {
+      // 1) 안내 시작.
+      await useUserIntentStore.getState().setPromptOptIn(true);
+      expect(useUserIntentStore.getState().promptOptIn).toBe(true);
+
+      // 2) 일시정지 — handleStopNavigation과 동일 호출. 다음 재등록 payload는 promptOptIn=false여야
+      // boarding-prompt가 pause 중 침묵한다.
+      await useUserIntentStore.getState().setPromptOptIn(false);
+      expect(useUserIntentStore.getState().promptOptIn).toBe(false);
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(USER_INTENT_PROMPT_OPT_IN_KEY);
+
+      // 3) 재개 — handleStartNavigation과 동일 호출. 다음 재등록 payload는 다시 promptOptIn=true.
+      await useUserIntentStore.getState().setPromptOptIn(true);
+      expect(useUserIntentStore.getState().promptOptIn).toBe(true);
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(USER_INTENT_PROMPT_OPT_IN_KEY, 'true');
+    });
   });
 
   describe('loadPromptOptIn', () => {

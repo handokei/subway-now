@@ -75,21 +75,35 @@ export interface UserIntentState {
    * #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) 시그널의 restart-durable SSoT.
    * `useNavigationStore.navigationActive`는 의도적으로 휘발성이라, mid-trip 콜드 재시작 후
    * 첫 재등록에서 opt-in이 미송신되는 회귀를 막기 위해 이 store가 AsyncStorage에 별도 persist한다.
-   * `HomeScreen.handleStartNavigation`에서 true로 stamp. "일시정지"(handleStopNavigation)는
-   * BG GPS만 중단할 뿐 trip을 포기하는 게 아니므로 이 값을 건드리지 않는다 — trip 종료
-   * cleanup(`resetPromptOptIn`)에서만 false로 reset.
+   * `HomeScreen.handleStartNavigation`에서 true로 stamp, `handleStopNavigation`("일시정지")에서
+   * false로 stamp한다(PR #2772 전체 리뷰, 트레이드오프 결정) — 일시정지는 trip을 포기하는 게
+   * 아니지만 "지금 프롬프트를 받고 있다"는 opt-in 신호는 pause 중 꺼져야 boarding-prompt 침묵이
+   * 복원된다. `infoModeEnabled`(명시 의향 이력)는 이와 무관하게 pause에서 절대 건드리지 않는다.
+   * 재개 시 다시 true로 stamp. trip 종료 cleanup(`resetPromptOptIn`)에서도 false로 reset.
    */
   promptOptIn: boolean;
   /** memory + AsyncStorage 동기 영속화. `setInfoModeEnabled`와 동일 pattern. */
   setPromptOptIn: (optIn: boolean) => Promise<void>;
-  /** cold start 시 storage hydrate. parse 실패/키 부재는 false 유지. */
+  /**
+   * cold start 시 storage hydrate. parse 실패/키 부재는 false 유지. 완료 시(성공/실패 무관)
+   * `promptOptInHydrated`를 true로 stamp한다.
+   */
   loadPromptOptIn: () => Promise<void>;
+  /**
+   * #2651 (PR #2772 전체 리뷰, 항목 5) — `loadPromptOptIn()`이 완료됐는지(성공/실패 무관 —
+   * AsyncStorage 조회 시도 자체가 끝났으면 true). 초기값 false. `useApnsTripRegistration`이
+   * 이 값을 `promptOptInHydrated`로 forward해 hydrate 완료 전 register를 억제한다(#2673과
+   * 동일 클래스 race — hydrate 전 `promptOptIn`은 항상 초기값 false라 그대로 보내면 storage에
+   * true가 남아있던 trip을 backend KV에서 false로 덮어쓴다).
+   */
+  promptOptInHydrated: boolean;
 }
 
 export const useUserIntentStore = create<UserIntentState>((set) => ({
   infoModeEnabled: false,
   boardingCommitted: false,
   promptOptIn: false,
+  promptOptInHydrated: false,
 
   setInfoModeEnabled: async (enabled: boolean) => {
     set({ infoModeEnabled: enabled });
@@ -153,8 +167,12 @@ export const useUserIntentStore = create<UserIntentState>((set) => ({
   loadPromptOptIn: async () => {
     try {
       const raw = await AsyncStorage.getItem(USER_INTENT_PROMPT_OPT_IN_KEY);
-      set({ promptOptIn: raw === STORAGE_VALUE_TRUE });
+      set({ promptOptIn: raw === STORAGE_VALUE_TRUE, promptOptInHydrated: true });
     } catch (e) {
+      // #2651 (PR #2772 전체 리뷰, 항목 5) — 실패해도 hydrate "시도"는 끝났으므로
+      // promptOptInHydrated는 true로 stamp한다 — 그렇지 않으면 register가 영구 억제된다.
+      // promptOptIn 값 자체는 안전한 default(false) 그대로.
+      set({ promptOptInHydrated: true });
       log.warn('promptOptIn hydrate failed', e);
     }
   },

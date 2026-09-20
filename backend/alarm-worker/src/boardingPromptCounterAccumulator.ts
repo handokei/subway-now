@@ -57,6 +57,13 @@ export interface BoardingPromptCounterDelta {
   /** #2350 — candidateTrains 0건(RC-13). evaluated>0인데 fired=0의 잔여 판별 경로. */
   skippedEmpty: number;
   skippedTrainDuplicate: number;
+  /**
+   * #2651 (PR #2772 전체 리뷰, 항목 6a) — GPS 9단 leg-1(`evaluateAndMaybeFireBoardingPrompt`)의
+   * opt-in 게이트(`promptOptIn === true || infoModeEnabled === true`) 미충족으로 즉시 skip한
+   * 누적. 이 필드를 추가하지 않으면 1주 측정 plan이 opt-in 게이트 자체의 동작(무의향 trip이
+   * 실제로 차단되는지)을 obs-metrics에서 볼 수 없다.
+   */
+  skippedNoOptIn: number;
 }
 
 /**
@@ -83,6 +90,7 @@ export const EMPTY_BOARDING_PROMPT_COUNTERS: BoardingPromptCounters = {
   skippedTooFar: 0,
   skippedEmpty: 0,
   skippedTrainDuplicate: 0,
+  skippedNoOptIn: 0,
   window: '24h-rolling-ttl',
   sampledAt: 0,
 };
@@ -129,7 +137,8 @@ export async function accumulateBoardingPromptCounters(
     delta.skippedStale > 0 ||
     delta.skippedTooFar > 0 ||
     delta.skippedEmpty > 0 ||
-    delta.skippedTrainDuplicate > 0;
+    delta.skippedTrainDuplicate > 0 ||
+    delta.skippedNoOptIn > 0;
   if (!hasDelta) return null;
 
   const existing = await readBoardingPromptCounters(tripsKv);
@@ -142,6 +151,7 @@ export async function accumulateBoardingPromptCounters(
     skippedTooFar: (existing?.skippedTooFar ?? 0) + delta.skippedTooFar,
     skippedEmpty: (existing?.skippedEmpty ?? 0) + delta.skippedEmpty,
     skippedTrainDuplicate: (existing?.skippedTrainDuplicate ?? 0) + delta.skippedTrainDuplicate,
+    skippedNoOptIn: (existing?.skippedNoOptIn ?? 0) + delta.skippedNoOptIn,
     window: '24h-rolling-ttl',
     sampledAt: now,
   };

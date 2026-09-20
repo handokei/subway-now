@@ -171,10 +171,14 @@ export default function HomeScreen() {
   // #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) restart-durable SSoT.
   // useApnsTripRegistration에 이 값(navigationActive 아님)을 promptOptIn으로 forward한다 —
   // navigationActive는 휘발성이라 mid-trip 콜드 재시작 후 첫 재등록에서 opt-in이 사라지는
-  // 회귀가 있었다. handleStartNavigation에서만 true로 stamp, "일시정지"는 건드리지 않는다.
+  // 회귀가 있었다. handleStartNavigation에서 true로 stamp, handleStopNavigation("일시정지")에서
+  // false로 stamp(PR #2772 전체 리뷰, 트레이드오프 결정 — pause 중 boarding-prompt 침묵 복원).
   const promptOptIn = useUserIntentStore((s) => s.promptOptIn);
   const setPromptOptIn = useUserIntentStore((s) => s.setPromptOptIn);
   const loadPromptOptIn = useUserIntentStore((s) => s.loadPromptOptIn);
+  // #2651 (PR #2772 전체 리뷰, 항목 5) — loadPromptOptIn() cold-start hydrate 완료 여부.
+  // useApnsTripRegistration에 forward해 hydrate 전 register를 억제한다(#2673과 동일 클래스 race).
+  const promptOptInHydrated = useUserIntentStore((s) => s.promptOptInHydrated);
   // #1973 / #2651 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
   // BG GPS 지속 가능 (네이버 패턴). startNavigation은 더 이상 infoModeEnabled를 자동 stamp하지
   // 않는다 — useApnsTripRegistration에는 (휘발성인 이 값이 아니라) 위 durable `promptOptIn`이
@@ -458,14 +462,20 @@ export default function HomeScreen() {
   // PAUSE_AUTO_END_MS(15분) 경과 시 자동 종료 backstop의 기준점으로 쓴다.
   // #2651 — infoMode 자동 해제 wire도 제거(위 handleStartNavigation과 대칭) — 의향 해제 권한은
   // trip 종료 cleanup(resetUserIntentInfoMode, tripBoundCleanups) 한 곳으로 좁힌다.
-  // #2651 (PR #2772 리뷰) — promptOptIn도 여기서 건드리지 않는다. "일시정지"는 BG GPS만
-  // 중단할 뿐 trip을 포기하는 게 아니므로(destination/trip 보존) opt-in 의향 자체는 살아있어야
-  // 한다 — 재개(handleStartNavigation) 시 다시 true로 stamp할 필요 없이 그대로 유지된다.
-  // opt-in 해제는 trip 종료 cleanup(resetPromptOptIn, tripBoundCleanups) 한 곳으로 좁힌다.
+  // #2651 (PR #2772 전체 리뷰) — promptOptIn은 false로 stamp한다(트레이드오프 결정, PR 본문
+  // 명시). "일시정지"는 trip을 포기하는 게 아니지만, 프롬프트 opt-in 신호는 "지금 안내 받는
+  // 중"을 의미해야 한다 — pause 중에도 promptOptIn=true를 유지하면 boarding-prompt가 계속
+  // 침묵되지 않아야 할 것 같지만(사용자가 화면을 보고 있지 않은 pause 상태), 실제로는 GPS-free/
+  // GPS 9단 경로가 pause 중에도 프롬프트를 계속 쏠 수 있어 "일시정지했는데 알림이 온다"는
+  // 혼란을 만든다 — 재개(handleStartNavigation)가 다시 true로 stamp한다. infoModeEnabled(응답/
+  // 직접 탭 이력)는 명시 의향이므로 pause와 무관하게 절대 건드리지 않는다 — 이미 lock급
+  // 정확도가 확립된 trip은 pause 중에도 매역 push를 계속 받는다(15분 후 PAUSE_AUTO_END_MS
+  // 자동 종료가 상한이므로 무기한 지속은 아니다).
   const handleStopNavigation = useCallback(() => {
     stopNavigation();
+    void setPromptOptIn(false);
     void setNavigationPausedAt();
-  }, [stopNavigation]);
+  }, [stopNavigation, setPromptOptIn]);
   // #2238 — "안내 종료" 명시 trigger. "일시정지"(navigationActive만 off, BG GPS 토글)와 달리
   // trip 자체를 종료한다: setDestination(null)이 기존 cleanup chain(runTripBoundCleanups →
   // #2129 backend DELETE /trips wire, tripBoundCleanups.ts:259)을 그대로 태워 로컬 정리 +
@@ -1135,6 +1145,10 @@ export default function HomeScreen() {
     // 재등록에서 opt-in이 사라지는 회귀가 있어 durable store 값을 쓴다. 안내 시작 안 한 trip은
     // 등록만으로 프롬프트가 발사되지 않는다(#2651 결정 모델).
     promptOptIn,
+    // #2651 (PR #2772 전체 리뷰, 항목 5) — loadPromptOptIn() cold-start hydrate 완료 여부.
+    // hydrate 전에는 register 자체를 억제해 storage에 true가 남아있던 trip을 backend KV에서
+    // false로 덮어쓰는 race를 막는다.
+    promptOptInHydrated,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. backend가 lockless intermediate "통과" push를
     // 억제하는 gate에 사용 (안내 시작 trip은 이 값이 서지 않아 기존 "통과" 그대로 발사).
     boardingCommitted,

@@ -192,7 +192,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -13161,7 +13161,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     kind: 'transfer',
   };
 
-  function makeTrip(): Trip {
+  function makeTrip(overrides: Partial<Trip> = {}): Trip {
     return {
       token: 'trip-hop-end',
       createdAt: NOW,
@@ -13171,6 +13171,10 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
       ],
       apnsEnv: 'production',
       registeredAt: NOW,
+      // #2651 (PR #2772 리뷰) — 이 describe는 hop-end 프롬프트 발사 메커니즘 자체를 검증하는
+      // 것이 목적이라 opt-in은 기본 true. opt-in 게이트 자체를 검증하는 케이스만 override.
+      promptOptIn: true,
+      ...overrides,
     } as unknown as Trip;
   }
 
@@ -13201,6 +13205,30 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     expect(body.body.nextStation).toBe('왕십리');
     // #2282 — hop-end fire는 BOARDING_PROMPT가 아닌 전용 DISEMBARK_PROMPT category로 나가야 한다.
     expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
+  });
+
+  // #2651 (PR #2772 리뷰) — 이 함수는 lock 활성 여부와 무관하게 환승 waypoint advance마다
+  // 무조건 호출된다(#2034). 목적지-only trip(안내 시작도 안 누르고 응답/탭 이력도 없음)이
+  // 환승만 하면 "하차했나요?" 프롬프트를 받던 구멍을 OR 게이트로 막는다.
+  it('#2651 (PR #2772 리뷰) — promptOptIn/infoModeEnabled 둘 다 false(무opt-in) → 프롬프트 0건', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const trip = makeTrip({ promptOptIn: false, infoModeEnabled: false });
+    const stats = makeStats();
+    await maybeFireHopEndPrompt({
+      trip,
+      transferWaypoint,
+      deps: makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      now: NOW,
+      log: () => {},
+      generatePushId: () => 'pid-hop',
+      env: makeEnv(new InMemoryKV()),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.hopEndPromptFired).toBe(0);
+    expect(stats.hopEndPromptBlocked).toBe(0);
+    expect(stats.hopEndPromptSkippedNoOptIn).toBe(1);
+    expect(trip.hopEndPromptState).toBeUndefined();
   });
 
   // #2672 — device sync가 환승역 도착을 관측한 시점에 부르는 경로는 아직 waypoint를 소비하지
@@ -13414,6 +13442,10 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
       registeredAt: NOW,
       currentLegAnchor: { boardingStation: '건대입구', line: '7' },
       legBoardingEligibleAt: NOW,
+      // #2651 (PR #2772 리뷰) — 이 describe는 leg-2 프롬프트 발사 메커니즘(도보시간/dedup/후보)
+      // 자체를 검증하는 것이 목적이라 opt-in은 기본 true. opt-in 게이트 자체를 검증하는 케이스만
+      // override.
+      promptOptIn: true,
       ...overrides,
     } as unknown as Trip;
   }
@@ -13426,6 +13458,21 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(stats.legBoardingPromptFired).toBe(0);
     expect(stats.legBoardingPromptSkippedWalking).toBe(0);
+  });
+
+  // #2651 (PR #2772 리뷰) — 무opt-in transfer trip(목적지-only, 안내 시작도 안 누르고 응답/탭
+  // 이력도 없음)이 anchor + 도보시간 조건을 모두 충족해도 leg-2 "탑승하셨나요?" 프롬프트를
+  // 받아선 안 된다 — GPS 9단/GPS-free leg-1과 동일 OR 게이트.
+  it('#2651 (PR #2772 리뷰) — promptOptIn/infoModeEnabled 둘 다 false(무opt-in) → anchor+walk-time 충족해도 leg-2 프롬프트 0건', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ promptOptIn: false, infoModeEnabled: false });
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stats.legBoardingPromptFired).toBe(0);
+    expect(stats.legBoardingPromptBlocked).toBe(0);
+    expect(stats.legBoardingPromptSkippedWalking).toBe(0);
+    expect(stats.legBoardingPromptSkippedNoOptIn).toBe(1);
   });
 
   // #2693 — `no-anchor` 라벨이 정상(환승 전)과 결함(환승 후 anchor 부재)을 합산하던 문제 분리.

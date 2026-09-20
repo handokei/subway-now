@@ -833,6 +833,15 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   hopEndPromptBlocked: number;
   /**
+   * #2651 (PR #2772 리뷰) — `maybeFireHopEndPrompt`("하차했나요?")가
+   * `trip.promptOptIn !== true && trip.infoModeEnabled !== true`(안내 시작도 안 눌렀고 응답/탭
+   * 이력도 없는 trip)로 즉시 return한 누적 횟수. 이 함수는 lock 활성 여부와 무관하게 환승
+   * waypoint advance마다 무조건 호출돼(#2034) 목적지-only trip에도 opt-in 게이트 없이
+   * 발사되던 구멍 — GPS 9단/GPS-free leg-1과 동일 OR 게이트(`boardingPromptSkippedNoOptIn`)를
+   * 적용한다.
+   */
+  hopEndPromptSkippedNoOptIn: number;
+  /**
    * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 boarding prompt가 도보시간
    * 게이트 통과 + dedup 게이트 통과로 실제 발사된 누적 횟수. `hopEndPromptFired`(환승역 "하차했나요?")
    * 와 별개 — 이 카운터는 도보시간 후 "탑승하셨나요?" 발사만 센다.
@@ -849,6 +858,14 @@ export interface ScheduledStats extends LiveActivityStats {
    * 차단된 누적 횟수.
    */
   legBoardingPromptBlocked: number;
+  /**
+   * #2651 (PR #2772 리뷰) — `maybeFireLegBoardingPrompt`(leg-2 "탑승하셨나요?")가
+   * `trip.promptOptIn !== true && trip.infoModeEnabled !== true`(안내 시작도 안 눌렀고 응답/탭
+   * 이력도 없는 trip)로 즉시 return한 누적 횟수. 목적지-only trip이 환승 경로를 타면 이 게이트
+   * 없이 leg-2 프롬프트를 받던 구멍 — GPS 9단/GPS-free leg-1과 동일 OR 게이트
+   * (`boardingPromptSkippedNoOptIn`)를 적용한다.
+   */
+  legBoardingPromptSkippedNoOptIn: number;
   /**
    * #2531 — leg-1(origin) "탑승했냐?" 프롬프트가 GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`)
    * 로 실제 발사된 누적 횟수. `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트)가 지하에서
@@ -1323,11 +1340,13 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     boardingPromptSkippedTrainDuplicate: 0,
     hopEndPromptFired: 0,
     hopEndPromptBlocked: 0,
+    hopEndPromptSkippedNoOptIn: 0,
     locklessTransferAdvanced: 0,
     locklessDestinationAdvanced: 0,
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
+    legBoardingPromptSkippedNoOptIn: 0,
     originGpsFreeBoardingPromptFired: 0,
     originGpsFreeBoardingPromptBlocked: 0,
     originGpsFreeSnapshotDistrusted: 0,
@@ -8047,6 +8066,18 @@ export async function maybeFireLegBoardingPrompt(
   log: Logger,
   generatePushId: () => string,
 ): Promise<void> {
+  // #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) 또는 이미 응답/직접 탭으로 의향을
+  // 표명한 이력(infoModeEnabled) 중 하나라도 있어야 대상. 이 함수는 lock 활성 여부와 무관하게
+  // 환승 leg마다 평가되므로, GPS 9단/GPS-free leg-1과 동일 OR 게이트 없이는 목적지-only
+  // trip(둘 다 false)도 환승 경로를 타면 leg-2 "탑승하셨나요?"를 받는 구멍이 있었다.
+  if (trip.promptOptIn !== true && trip.infoModeEnabled !== true) {
+    stats.legBoardingPromptSkippedNoOptIn += 1;
+    log('leg-boarding-prompt: skip (no promptOptIn/infoModeEnabled — 안내 시작 안 함 + 의향 이력 없음)', {
+      token: trip.token.slice(0, 8),
+    });
+    return;
+  }
+
   // ADR-037 D2c (#2537, 진단 계측 only) — 이 함수의 fire/skip 사유를 SSoT 마커
   // (`legBoardingPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 아래 게이트
   // 판정/발사 로직 자체는 무변경.
@@ -8197,6 +8228,19 @@ export async function maybeFireHopEndPrompt(inputs: {
   nextWaypointOverride?: Waypoint | null;
 }): Promise<void> {
   const { trip, transferWaypoint, deps, stats, now, log, generatePushId, env } = inputs;
+  // #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) 또는 이미 응답/직접 탭으로 의향을
+  // 표명한 이력(infoModeEnabled) 중 하나라도 있어야 대상. 이 함수는 lock 활성 여부와 무관하게
+  // 환승 waypoint advance마다 무조건 호출되므로(#2034), 같은 OR 게이트 없이는 목적지-only
+  // trip(둘 다 false)도 환승만 하면 "하차했나요?" 프롬프트를 받는 구멍이 있었다. 실제 lock
+  // 형성 경로(BoardingTrainList 직접 탭/backend auto-lock)는 모두 infoModeEnabled를 함께
+  // stamp하므로 이 게이트가 정상 lock trip을 침묵시키지 않는다.
+  if (trip.promptOptIn !== true && trip.infoModeEnabled !== true) {
+    stats.hopEndPromptSkippedNoOptIn += 1;
+    log('hop-end-prompt: skip (no promptOptIn/infoModeEnabled — 안내 시작 안 함 + 의향 이력 없음)', {
+      token: trip.token.slice(0, 8),
+    });
+    return;
+  }
   const nextWaypoint =
     inputs.nextWaypointOverride !== undefined
       ? (inputs.nextWaypointOverride ?? undefined)
