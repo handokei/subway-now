@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { FusionSource } from '../../../shared/types/fusion';
 
 const ARRIVAL_THRESHOLD_KM = 0.5;
 const CLEAR_DELAY_MS = 2000;
@@ -6,6 +7,18 @@ const CLEAR_DELAY_MS = 2000;
 export interface UseArrivalAutoClearParams {
   currentStationName: string | undefined;
   distanceKm: number | undefined;
+  /**
+   * #2716 — distanceKm의 출처. `backend-ssot` tier는 mirror가 사용자 위치를 모르는 상태에서
+   * distanceKm=0을 placeholder로 보고한다(실측 아님). 이 값이 'backend-ssot'이면 distanceKm
+   * 임계값 비교를 신뢰하지 않고 destinationArrivalConfirmed로 대체한다.
+   */
+  distanceSource: FusionSource | undefined;
+  /**
+   * #2716 — distanceSource==='backend-ssot'일 때 요구하는 대체 확증. 새 신호를 만들지 않고
+   * 기존 열차 피드 arvlCd(useDestinationAutoClear.pickDestinationArvlCd와 동일 신호)가
+   * ARRIVAL_CODE.ARRIVED인지 여부를 caller가 계산해 전달한다.
+   */
+  destinationArrivalConfirmed: boolean;
   destinationName: string | undefined;
   onClear: () => void;
 }
