@@ -9,8 +9,15 @@
  * content-state schema (#613)는 widget의 `SubwayActivityAttributes.ContentState`에 1:1 정렬.
  * ActivityKit의 update는 content-state 전체 교체이므로, widget의 non-optional 필드
  * (stationName, lineName, lineColorHex)는 backend가 반드시 채워야 decode 실패가 없다.
- * 그 외 텍스트 필드(alarmBody/etaText/distanceText 등)는 비워 두고, widget이 `resolvedXxx`
- * 폴백 helper로 raw 필드(etaMinutes, distanceM, alarmType 등)에서 derive 한다.
+ * 그 외 텍스트 필드(alarmBody/etaText/distanceText 등)는 비워 둔다. widget은 `resolvedXxx`
+ * 폴백 helper(`_shared/SubwayActivityAttributes.swift`)로 raw 필드(etaMinutes, stopsRemaining,
+ * distanceM, transferStationName/stopsToTransfer 등)에서 derive 한다 — 단, #2747 이전에는 이
+ * helper가 `resolvedDistanceText` 하나뿐이라 etaMinutes/stopsRemaining/transfer 관련 8개
+ * 필드는 backend가 채워도 widget이 전혀 읽지 않았다(lock 이후 "역 → 목적지"만 보이는 원인).
+ * #2747에서 `resolvedEtaText`/`resolvedEtaSubtext`/`resolvedRouteSubtext`를 추가해 그 8개 중
+ * 4개(stopsRemaining/etaMinutes/transferStationName/stopsToTransfer)를 실제로 노출하고,
+ * 나머지 2차 환승 체인 4개는 lock screen 정보 과밀을 근거로 의도적 미노출(allowlist는
+ * `backend/alarm-worker/src/__tests__/liveActivityWidgetWireContract.test.ts` 참고).
  */
 
 import {

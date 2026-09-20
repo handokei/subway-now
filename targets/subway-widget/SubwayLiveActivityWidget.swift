@@ -197,13 +197,13 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                if let etaText = state.etaText {
+                if let etaText = state.resolvedEtaText {
                     VStack(spacing: 2) {
                         Text(etaText)
                             .font(.title3)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
-                        Text(state.etaSubtext ?? "")
+                        Text(state.resolvedEtaSubtext ?? "")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -347,7 +347,7 @@ private struct LockScreenRouteView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.white)
 
-            if let subtext = state.routeSubtext {
+            if let subtext = state.resolvedRouteSubtext {
                 Text(subtext)
                     .font(.caption)
                     .foregroundColor(.secondary)

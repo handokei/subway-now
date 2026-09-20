@@ -65,11 +65,25 @@ function isReferencedInWidgetSource(field: string): boolean {
  * 계속 emit한다(이 PR에서 지우지 않음) — Dynamic Island 확장(ExpandedRouteView) 등 더 넓은
  * 표면이 생기면 재검토할 수 있도록 값 자체는 살려둔다. 노출 여부만 위젯 쪽 결정이다.
  */
-// RED 단계(#2747 test-first): 아직 어떤 필드도 노출/보류를 결정하지 않은 상태 — 빈 allowlist로
-// "emit되는 모든 필드는 위젯 소스에서 참조되어야 한다"는 순수 계약만 검증한다. 최소 8개 필드가
-// 이 상태에서 실패해야 한다(#2747 검증 절차 1번). fix 커밋에서 실제 설계 결정(노출/보류 + 근거)을
-// 채워 넣는다.
-const NOT_EXPOSED_ALLOWLIST: Record<string, string> = {};
+/**
+ * 노출하지 않기로 결정한 필드 (#2747 요구사항 4) — 항목별 근거.
+ *
+ * 2차 환승(second transfer) chain은 lock screen 잠금화면 폭 제약상 노출하지 않는다. 1차
+ * 환승(transferStationName/stopsToTransfer)까지만 `resolvedRouteSubtext`로 파생 노출한다
+ * (`_shared/SubwayActivityAttributes.swift`). backend는 계속 emit한다(이 PR에서 지우지 않음) —
+ * Dynamic Island 확장(ExpandedRouteView) 등 더 넓은 표면이 생기면 재검토할 수 있도록 값 자체는
+ * 살려둔다. 노출 여부만 위젯 쪽 결정이다.
+ */
+const NOT_EXPOSED_ALLOWLIST: Record<string, string> = {
+  stopsFromTransfer:
+    '#2747 — single-transfer 이후 남은 정거장 수. lock screen 폭 제약으로 1차 환승 지점까지의 진행(transferStationName/stopsToTransfer)만 노출하고, 환승 이후 잔여는 노출하지 않는다. destinationName/stopsRemaining 조합으로 최종 도착 정보는 이미 커버.',
+  stopsToSecondTransfer:
+    '#2747 — 2차 환승까지의 정거장 수. 이중 환승 trip은 드물고, lock screen 한 줄에 2단계 환승 체인을 모두 담으면 정보 과밀 — 1차 환승만 노출. 후속 이슈로 Dynamic Island 확장 시 재검토 제안.',
+  secondTransferStationName:
+    '#2747 — 2차 환승역 이름. 위 stopsToSecondTransfer와 동일 근거(정보 과밀) — 2차 환승 노출은 세트로 판단해야 하므로 함께 보류.',
+  stopsAfterLastTransfer:
+    '#2747 — 마지막 환승 이후 최종 목적지까지 남은 정거장 수. 2차 환승 자체를 노출하지 않기로 했으므로 그 이후 값도 함께 보류.',
+};
 
 describe('LA ContentState wire contract (#2747)', () => {
   it('backend가 emit하는 모든 필드는 위젯 Swift 소스에서 참조되거나 명시적 allowlist에 있어야 한다', () => {
