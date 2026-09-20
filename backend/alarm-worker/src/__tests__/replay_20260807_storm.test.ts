@@ -135,7 +135,6 @@ function makeFullEmptyStats(): ScheduledStats {
     cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
     stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
-    staleLockFireSkipped: 0,
     arvlCdFireOnceSkipped: 0,
     lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
     lifecycleStationarySkipped: 0,

@@ -6,7 +6,6 @@ import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState }
 import { appendPositionPoint, type WindowedMetrics } from '../positionSeries';
 import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
-  ARVLCD_FIRE_KEY_PREFIX,
   ARVLCD_FIRE_ONCE_ENTERING_BUCKET,
   ARVLCD_FIRE_ONCE_ARRIVED_BUCKET,
   arvlCdFireOnceBucket,
@@ -16,7 +15,6 @@ import {
   FALLBACK_HOP_SEC,
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
-  STALE_LOCK_FIRE_THRESHOLD_MS,
   TRANSFER_OBSERVATION_MAX_AGE_WALK_MULTIPLIER,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
   VANISH_RE_ATTACH_THRESHOLD,
@@ -27,11 +25,9 @@ import {
   DESTINATION_REACH_BACKSTOP_MS,
   evaluateDestinationCrossCheck,
   recordDestinationCrossCheck,
-  arvlCdFireKey,
   stationPassedFiredKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
-  evaluateArvlCdFireGate,
   evaluatePrepareAlarmTrigger,
   fireArvlCdStationPush,
   flipApnsEnv,
@@ -201,7 +197,6 @@ function makeFullEmptyStats(): ScheduledStats {
     cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
     stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
-    staleLockFireSkipped: 0,
     // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=OFF 시 항상 0).
     arvlCdFireOnceSkipped: 0,
     lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
@@ -9496,63 +9491,9 @@ describe('hasArrivedSignal (#2022 ADR-022 B8 caller fire trigger)', () => {
   });
 });
 
-describe('arvlCdFireKey / ARVLCD_FIRE_KEY_PREFIX (#917 A2)', () => {
-  it('prefix는 arvlcd-fire:', () => {
-    expect(ARVLCD_FIRE_KEY_PREFIX).toBe('arvlcd-fire:');
-  });
-
-  it('key는 token|trainCode|station|arvlCd 조합 — arvlCd 0과 1을 별 entry로 분리', () => {
-    expect(arvlCdFireKey('tok1', '7246', '중곡', 0)).toBe('arvlcd-fire:tok1|7246|중곡|0');
-    expect(arvlCdFireKey('tok1', '7246', '중곡', 1)).toBe('arvlcd-fire:tok1|7246|중곡|1');
-    expect(arvlCdFireKey('tok1', '7246', '중곡', 0)).not.toBe(arvlCdFireKey('tok1', '7246', '중곡', 1));
-  });
-
-  it('token이 다르면 다른 key — 같은 train 다른 trip이 서로 silence하지 않음 (cross-trip leak 차단)', () => {
-    // 두 사용자가 같은 train(5025) 탄 채 같은 역(강남) 도착 시 각 trip별 dedup entry.
-    expect(arvlCdFireKey('tokA', '5025', '강남', 1)).not.toBe(arvlCdFireKey('tokB', '5025', '강남', 1));
-  });
-
-  it('dedup TTL은 1시간 (60s × 60)', () => {
+describe('ARVLCD_FIRE_DEDUP_TTL_SEC (#917 A2)', () => {
+  it('dedup TTL은 1시간 (60s × 60) — stationFiredKey stamp에 사용', () => {
     expect(ARVLCD_FIRE_DEDUP_TTL_SEC).toBe(60 * 60);
-  });
-});
-
-describe('evaluateArvlCdFireGate (#917 A2 prereq guard)', () => {
-  const activeLock: BoardingLockMeta = {
-    trainCode: '7246',
-    line: '7',
-    subwayId: '1007',
-    selectedDepartureTime: NOW,
-    segmentStations: ['용마산', '중곡'],
-    expiresAt: NOW + 60 * 60_000,
-  };
-
-  it('lock 활성 + arvlCd=1(ARRIVED) → fire', () => {
-    expect(evaluateArvlCdFireGate(activeLock, 1, NOW)).toBe('fire');
-  });
-
-  it('lock 활성 + arvlCd=0(ENTERING) → fire', () => {
-    expect(evaluateArvlCdFireGate(activeLock, 0, NOW)).toBe('fire');
-  });
-
-  it('#640 회귀 — lock undefined → mismatch (push X)', () => {
-    expect(evaluateArvlCdFireGate(undefined, 1, NOW)).toBe('mismatch');
-  });
-
-  it('#640 회귀 — lock 만료 → mismatch (push X)', () => {
-    const expired = { ...activeLock, expiresAt: NOW - 1 };
-    expect(evaluateArvlCdFireGate(expired, 1, NOW)).toBe('mismatch');
-  });
-
-  it('positions-fallback (arvlCd=null) → mismatch (push X)', () => {
-    expect(evaluateArvlCdFireGate(activeLock, null, NOW)).toBe('mismatch');
-  });
-
-  it('arvlCd=2(DEPARTED) 등 비-매역 신호 → mismatch', () => {
-    expect(evaluateArvlCdFireGate(activeLock, 2, NOW)).toBe('mismatch');
-    expect(evaluateArvlCdFireGate(activeLock, 4, NOW)).toBe('mismatch');
-    expect(evaluateArvlCdFireGate(activeLock, 5, NOW)).toBe('mismatch');
-    expect(evaluateArvlCdFireGate(activeLock, 99, NOW)).toBe('mismatch');
   });
 });
 
@@ -9644,6 +9585,36 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
     );
     expect(result).toBeNull();
   });
+
+  // #2764 (게이트 전수감사 A) — legacyGate(evaluateArvlCdFireGate) 제거 전제 계약 테스트.
+  // scheduled.ts의 arvlCd-arrived 분기가 이 계약(arrived===true ⇒ arvlCd∈{0,1,null})에 의존해
+  // legacyGate 없이도 `estimate.arvlCd !== null` 단독 체크가 legacyGate와 항상 동치임을 보장한다.
+  // 이 세 케이스(arrivals arvlCd=0/1, positions-fallback arvlCd=null)가 arrived===true를
+  // 반환하는 코드 경로의 전부 — 다른 값으로 arrived===true를 반환하는 경로는 없다.
+  it('#2764 계약 — arrived===true인 모든 반환 경로에서 arvlCd∈{0,1,null} (다른 값 없음)', async () => {
+    const arrivedEntering = await estimateBoardingLockArrival(
+      makeArrivalDeps(makeArrivalSeoul(0)),
+      lock,
+      waypoint,
+      NOW,
+    );
+    const arrivedArrived = await estimateBoardingLockArrival(
+      makeArrivalDeps(makeArrivalSeoul(1)),
+      lock,
+      waypoint,
+      NOW,
+    );
+    const arrivedPositionFallback = await estimateBoardingLockArrival(
+      makeArrivalDeps(makePositionsFallbackSeoul()),
+      lock,
+      waypoint,
+      NOW,
+    );
+    for (const result of [arrivedEntering, arrivedArrived, arrivedPositionFallback]) {
+      expect(result?.arrived).toBe(true);
+      expect([0, 1, null]).toContain(result?.arvlCd);
+    }
+  });
 });
 
 describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
@@ -9697,8 +9668,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.etaSeconds).toBe(0);
     expect(data.pushId).toBe('p-arvl-1');
     expect(data.sentAt).toBe(NOW);
-    // dedup KV stamp 확인 (TTL은 InMemoryKV가 그대로 보관 — expiration 무시)
-    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBe('1');
+    // #2764 — (구)per-arvlCd dedup key 삭제. 경로 무관 stationFiredKey 단일 stamp로 확인
+    // (TTL은 InMemoryKV가 그대로 보관 — expiration 무시).
+    expect(await kv.get(stationPassedFiredKey('arvl-tok', '7246', '중곡'))).toBe('1');
   });
 
   // #2086 — 짧은 mock token('arvl-tok')은 `slice(0, 16)`가 no-op이라 apns-collapse-id
@@ -9850,13 +9822,14 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(await kv.get(stationPassedFiredKey('arvl-tok', '7246', '중곡'))).toBe('1');
   });
 
-  it('dedup — 같은 (trainCode, station, arvlCd) 이미 stamp되어 있으면 push 미발사', async () => {
+  it('dedup — 경로 무관 station-passed 마커가 이미 stamp되어 있으면 push 미발사', async () => {
+    // #2764 — (구)per-arvlCd dedup key 삭제. 이제 단일 stationFiredKey가 같은 역할을 한다.
     const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
       pushId: 'p-arvl-dup',
       seedKv: async (kv) => {
-        // 이전 cycle에서 같은 신호로 이미 stamp된 상태
-        await kv.put(arvlCdFireKey('arvl-tok', '7246', '중곡', 1), '1');
+        // 이전 cycle에서 같은 역이 이미 발사된 상태
+        await kv.put(stationPassedFiredKey('arvl-tok', '7246', '중곡'), '1');
       },
     });
     expect(stats.arvlCdFireSuccess).toBe(0);
@@ -9955,7 +9928,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(stats.arvlCdFireSuccess).toBe(0);
     expect(stats.errors).toBeGreaterThanOrEqual(1);
     // 실패는 dedup stamp X — 다음 cycle 재시도 가능.
-    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
+    expect(await kv.get(stationPassedFiredKey('arvl-tok', '7246', '중곡'))).toBeNull();
   });
 
   it('destination waypoint도 arvlCd=1이면 매역 push 발사 (kind=destination)', async () => {
@@ -10000,7 +9973,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
       expect(stats.arvlCdFireSuccess).toBe(0);
       expect(stats.pushed).toBe(0);
       expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
-      expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
+      expect(await kv.get(stationPassedFiredKey('arvl-tok', '7246', '중곡'))).toBeNull();
     });
 
     it('sleepModeEnabled=false → 매역 push 정상 발사', async () => {
@@ -10428,14 +10401,6 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
       seed: (kv: InMemoryKV, trip: Trip) => Promise<void>;
     }[] = [
       {
-        name: 'arvlCd dedup 키 기존재',
-        reason: 'arvlcd-dedup',
-        station: '중곡',
-        seed: async (kv, trip) => {
-          await kv.put(arvlCdFireKey(trip.token, '7246', '중곡', 1), '1');
-        },
-      },
-      {
         name: 'cross-station dedup 윈도우',
         reason: 'cross-station-dedup',
         station: '중곡',
@@ -10447,12 +10412,13 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
         },
       },
     ];
-    // 나머지 두 지점(stale-ssot / fire-once-cycle)은 이 경로에서 재현되지 않는다:
-    //   - stale-ssot: `fireArvlCdStationPush` 직전에 `advanceTripPosition`이 항상 `lastAdvanceAt`을
-    //     갱신해 진입 시 staleMs≈0이 된다(2026-09-16 조사에서 "advance 없이 fire" 경로가 코드에
-    //     없음을 확인). 가드가 dormant인 것이지 계측이 틀린 게 아니라, 배선만 해두고 그 가드가
-    //     언젠가 실제로 발동하면 그때 D1에 남도록 한다.
-    //   - fire-once-cycle: arch flag ON에서만 도달(`isSimpleArchEnabled`) — 전용 describe가 따로 있다.
+    // #2764 (게이트 전수감사 A) — arvlcd-dedup / stale-ssot 두 사유는 여기서 삭제됐다.
+    //   - arvlcd-dedup: (구)arvlCdFireKey per-arvlCd dedup 자체를 제거(도달불가 확증) — 같은
+    //     역할은 station-passed-dedup(stationFiredKey, 함수 진입부에서 선행 검사)이 흡수한다.
+    //   - stale-ssot: 3분 가드 자체를 제거(상시 신선 확증, defense-in-depth 폐기 결정) — reason도
+    //     함께 삭제.
+    // 남은 지점(fire-once-cycle)은 이 경로에서 재현되지 않는다: arch flag ON에서만
+    // 도달(`isSimpleArchEnabled`) — 전용 describe가 따로 있다.
 
     for (const testCase of SKIP_CASES) {
       it(`${testCase.name} → reason=${testCase.reason} 기록`, async () => {
@@ -12254,28 +12220,21 @@ describe('runScheduled — #1614 Phase A self-poll realtimePosition (S4)', () =>
 });
 
 /**
- * #1614 Phase C — fireArvlCdStationPush stale SSoT 가드 (단위).
+ * #2764 (게이트 전수감사 A, 옵션 (a)) — fireArvlCdStationPush stamp 순서 교체 회귀 테스트.
  *
- * SSoT.lastAdvanceAt > 0 + (now - lastAdvanceAt > 3분) 시 fire 차단. lazy-seed (==0) /
- * SSoT 부재 (legacy) 는 dormant 통과.
- *
- * 정상 runScheduled flow 는 advanceTripPosition이 우선 → SSoT fresh이므로 본 가드는
- * defense-in-depth (외부 race / 다른 entry point). 단위 호출로 가드 자체 효과를 검증.
+ * 과거엔 (구)arvlCdFireKey(자기 stamp) → stationFiredKey 순으로 2개 키를 put했다 — 정정
+ * 코멘트(PR #2762 §0-b)가 지적한 대로, 그 두 put 사이 crash/KV 정합성 창에서는 stationFiredKey만
+ * 유실되고 자기 키가 남아 "다음 tick 재발사 차단" backstop이 성립했다. 이 PR은 자기 키(arvlCdFireKey)
+ * 자체를 삭제하고 stationFiredKey **단일 put**으로 순서를 교체했다 — 이제 put이 하나뿐이므로
+ * "두 put 사이 crash 창"은 애초에 존재하지 않는다(원자적 단일 put). 아래는 이 단일 키만으로도
+ * "push 성공 후 다음 tick 재발사 차단"이 유지됨을 직접 검증한다(#1614 Phase C stale SSoT 3분
+ * 가드는 defense-in-depth 폐기 결정으로 이 PR에서 함께 삭제 — 상시 신선 확증, 주석 자인).
  */
-describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
-  const TOKEN = 'phase-c-tok';
+describe('fireArvlCdStationPush — #2764 stationFiredKey 단일 stamp 회귀', () => {
+  const TOKEN = 'stamp-order-tok';
 
-  async function callFireDirectly(opts: {
-    setupSsot?: (kv: InMemoryKV, trip: Trip) => Promise<void>;
-  }) {
-    const kv = new InMemoryKV();
-    const trip = makeLockTripFixture(TOKEN);
-    await putTrip(kv as unknown as KVNamespace, trip);
-    if (opts.setupSsot) await opts.setupSsot(kv, trip);
-    // #2615 — 로컬 인라인 리터럴 대신 이 파일 상단의 makeFullEmptyStats() 재사용(drift 방지,
-    // 그 헬퍼의 doc-comment가 원래 의도한 목적).
-    const stats: ScheduledStats = makeFullEmptyStats();
-    const { dirty } = await fireArvlCdStationPush({
+  async function callFireDirectly(kv: InMemoryKV, trip: Trip, stats: ScheduledStats) {
+    return fireArvlCdStationPush({
       trip,
       waypoint: trip.waypoints[0],
       lock: trip.boardingLock!,
@@ -12293,55 +12252,26 @@ describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
       log: () => undefined,
       generatePushId: () => 'p-direct',
     });
-    return { stats, dirty };
   }
 
-  it('SSoT.lastAdvanceAt > 3분 stale → fire skip + staleLockFireSkipped++', async () => {
-    const { stats, dirty } = await callFireDirectly({
-      setupSsot: async (kv, trip) => {
-        const seeded = await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', {
-          expiresAt: trip.expiresAt,
-        });
-        seeded.lastAdvanceAt = NOW - 4 * 60 * 1000;
-        await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
-      },
-    });
-    expect(stats.staleLockFireSkipped).toBe(1);
-    expect(dirty).toBe(false);
-  });
+  it('push 성공 → stationFiredKey 단일 stamp, 같은 tick 재호출("crash 후 재시도" 시뮬) → dedup skip', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN);
+    await putTrip(kv as unknown as KVNamespace, trip);
 
-  it('SSoT.lastAdvanceAt 60s fresh → 가드 통과', async () => {
-    const { stats } = await callFireDirectly({
-      setupSsot: async (kv, trip) => {
-        const seeded = await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', {
-          expiresAt: trip.expiresAt,
-        });
-        seeded.lastAdvanceAt = NOW - 30_000;
-        await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
-      },
-    });
-    expect(stats.staleLockFireSkipped).toBe(0);
-  });
+    const stats1: ScheduledStats = makeFullEmptyStats();
+    const first = await callFireDirectly(kv, trip, stats1);
+    expect(first.dirty).toBe(true);
+    expect(stats1.arvlCdFireSuccess).toBe(1);
+    expect(await kv.get(stationPassedFiredKey(TOKEN, '7246', '중곡'))).toBe('1');
 
-  it('SSoT.lastAdvanceAt===0 (lazy-seed) → 가드 dormant 통과', async () => {
-    const { stats } = await callFireDirectly({
-      setupSsot: async (kv, trip) => {
-        await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', {
-          expiresAt: trip.expiresAt,
-        });
-        // lastAdvanceAt 0 (seed default).
-      },
-    });
-    expect(stats.staleLockFireSkipped).toBe(0);
-  });
-
-  it('SSoT 부재 (legacy) → 가드 dormant 통과', async () => {
-    const { stats } = await callFireDirectly({});
-    expect(stats.staleLockFireSkipped).toBe(0);
-  });
-
-  it('STALE_LOCK_FIRE_THRESHOLD_MS는 3분 (transferDestinationGate 60s 보다 보수적)', () => {
-    expect(STALE_LOCK_FIRE_THRESHOLD_MS).toBe(3 * 60 * 1000);
+    // "crash 시뮬" — 다음 tick(같은 KV 상태, put이 하나뿐이므로 재현할 반쪽 상태가 없다)에서
+    // 재발사를 시도해도 stationFiredKey 하나만으로 차단되는지 확인.
+    const stats2: ScheduledStats = makeFullEmptyStats();
+    const second = await callFireDirectly(kv, trip, stats2);
+    expect(second.dirty).toBe(false);
+    expect(stats2.arvlCdFireSuccess).toBe(0);
+    expect(stats2.arvlCdFireDedup).toBe(1);
   });
 });
 
