@@ -209,6 +209,15 @@ export const USER_INTENT_INFO_MODE_KEY = 'subway-now:user-intent-info-mode';
 // 안내 시작(handleStartNavigation)에서는 세팅되지 않아 backend가 "탑승 커밋 + lock 미확정"과
 // "정보용 안내 시작"을 구분할 수 있다. trip 종료 시 runTripBoundCleanups에서 false로 reset.
 export const USER_INTENT_BOARDING_COMMITTED_KEY = 'subway-now:user-intent-boarding-committed';
+// #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) 시그널의 restart-durable SSoT.
+// `useNavigationStore.navigationActive`는 의도적으로 휘발성(persist 미적용)이라, mid-trip
+// 콜드 재시작 후 첫 재등록 시 promptOptIn이 미송신되어 안내시작 trip의 프롬프트가 침묵하는
+// 회귀가 있었다 — infoModeEnabled와 동일 AsyncStorage 패턴으로 이 키에 별도 persist한다.
+// 안내 시작(handleStartNavigation) 시 true로 stamp. "일시정지"(handleStopNavigation)는 BG GPS만
+// 중단할 뿐 trip을 포기하는 게 아니므로 이 값은 건드리지 않는다 — trip 종료 cleanup
+// (runTripBoundCleanups)에서만 false로 reset.
+// 형식: 'true' 또는 키 부재(=false).
+export const USER_INTENT_PROMPT_OPT_IN_KEY = 'subway-now:user-intent-prompt-opt-in';
 // #2045 (Signal 4, Issue #2043 β 후속) — 마지막 silent push 수신 시각 (epoch ms).
 // silentPushTask.handleSilentPush가 유효 payload 진입점(handleSilentPush)에서 stamp,
 // useLaunchTripReconciliation이 launch 시점에 read해 backend-timeout self-end 판정에 사용.

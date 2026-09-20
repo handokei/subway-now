@@ -190,20 +190,25 @@ export interface Trip {
   infoModeEnabled?: boolean;
   /**
    * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. device의
-   * `useNavigationStore.navigationActive`("안내 시작" 버튼) 상태를 그대로 forward한다.
+   * `useUserIntentStore.promptOptIn`(restart-durable, "안내 시작" 버튼 탭에서 stamp)을 forward한다.
+   * `useNavigationStore.navigationActive`는 의도적으로 휘발성이라 이 필드의 직접 소스가 아니다
+   * (PR #2772 리뷰 — mid-trip 콜드 재시작 후 첫 재등록에서 opt-in이 사라지는 회귀 방지).
    *
    * `infoModeEnabled`(boardingPrompt 응답/BoardingTrainList 직접 탭으로만 stamp, ADR-014
    * "lock 동급 보장" 대상)와는 목적이 다르다 — infoModeEnabled는 "탑승 후 매역 통과 알림을
    * 받을지"의 신호이고, promptOptIn은 "탑승 프롬프트 자체를 받을지"의 신호다. 안내 시작만
    * 누르고 아직 아무 응답도 하지 않은 trip은 promptOptIn=true, infoModeEnabled=false다.
    *
-   * backend 분기:
-   *   - `maybeFireOriginBoardingPromptGpsFree`(GPS-free leg-1): `promptOptIn===true &&
-   *     trip.boardingLock===undefined`
-   *   - `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 leg-1): 동일 게이트 추가 —
-   *     안내 시작을 누르지 않은 trip(목적지만 설정)은 등록만으로 프롬프트가 발사되지 않는다.
+   * backend 분기 — 둘 다 `promptOptIn===true || infoModeEnabled===true`로 OR(#2651, PR #2772
+   * 리뷰): 이미 응답/직접 탭으로 명시 의향을 표명한 trip(`infoModeEnabled=true`)이 lock 해제 후
+   * lockMissing으로 돌아왔을 때 "안내 시작"을 다시 누르지 않았다는 이유로 재프롬프트가 막히면
+   * ADR-014 동급 보장 위반이다.
+   *   - `maybeFireOriginBoardingPromptGpsFree`(GPS-free leg-1): `(promptOptIn===true ||
+   *     infoModeEnabled===true) && trip.boardingLock===undefined`
+   *   - `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 leg-1): 동일 게이트 —
+   *     둘 다 없는 trip(목적지만 설정, 의향 이력 없음)만 등록만으로 프롬프트가 발사되지 않는다.
    *
-   * 미송신/비boolean이면 undefined(=false 취급) — 두 경로 모두 opt-in 없는 trip은 완전 침묵.
+   * 미송신/비boolean이면 undefined(=false 취급) — 둘 다 없는 trip만 완전 침묵.
    */
   promptOptIn?: boolean;
   /**

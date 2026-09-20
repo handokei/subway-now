@@ -111,16 +111,23 @@ export interface RegisterTripPayload {
    */
   infoModeEnabled?: boolean;
   /**
-   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useNavigationStore.navigationActive`
-   * ("안내 시작" 버튼)를 그대로 forward한다. `infoModeEnabled`(응답/직접 탭으로만 stamp, "매역 통과
-   * 알림" 대상 판정)와는 목적이 다르다 — 안내 시작만 누르고 아직 응답 전인 trip도 promptOptIn만은
-   * true라 프롬프트 자체는 받는다(그래야 응답할 프롬프트가 존재).
+   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useUserIntentStore.promptOptIn`
+   * (restart-durable, "안내 시작" 버튼 탭에서 stamp)을 forward한다. `useNavigationStore
+   * .navigationActive`는 의도적으로 휘발성이라 이 필드의 직접 소스가 아니다 — PR #2772 리뷰:
+   * navigationActive를 직접 forward하면 mid-trip 콜드 재시작 후 첫 재등록에서 opt-in이 사라져
+   * 안내시작 trip의 프롬프트가 침묵하는 회귀가 있었다.
+   *
+   * `infoModeEnabled`(응답/직접 탭으로만 stamp, "매역 통과 알림" 대상 판정)와는 목적이 다르다 —
+   * 안내 시작만 누르고 아직 응답 전인 trip도 promptOptIn만은 true라 프롬프트 자체는 받는다
+   * (그래야 응답할 프롬프트가 존재).
    *
    * backend 분기: GPS-free leg-1(`maybeFireOriginBoardingPromptGpsFree`) + GPS 9단 leg-1
-   * (`evaluateAndMaybeFireBoardingPrompt`) 둘 다 `trip.promptOptIn !== true` → no-op.
+   * (`evaluateAndMaybeFireBoardingPrompt`) 둘 다 `trip.promptOptIn === true ||
+   * trip.infoModeEnabled === true` → 대상(PR #2772 리뷰 — 이미 응답/직접 탭으로 의향을 표명한
+   * trip은 안내 시작을 다시 안 눌러도 재프롬프트 보호 유지, ADR-014 동급 보장).
    *
-   * 미설정/false: 필드 미송신(graceful) — backend는 opt-in 없음(false)으로 처리해 두 경로 모두
-   * 완전 침묵(#2651 결정 모델 — "안내 시작 안 누름 = 프롬프트도 0건").
+   * 미설정/false: 필드 미송신(graceful) — backend는 opt-in 없음(false)으로 처리, infoModeEnabled도
+   * 함께 없으면 두 경로 모두 완전 침묵(#2651 결정 모델 — "안내 시작 안 누름 = 프롬프트도 0건").
    */
   promptOptIn?: boolean;
   /**

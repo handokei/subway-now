@@ -91,10 +91,13 @@ export interface UseApnsTripRegistrationInputs {
    */
   infoModeEnabled?: boolean;
   /**
-   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useNavigationStore.navigationActive`
-   * ("안내 시작" 버튼)에서 읽어 전달한다. `infoModeEnabled`(응답/직접 탭으로만 stamp)와 달리
-   * 안내 시작만 눌러도 즉시 true — backend가 GPS-free/GPS 9단 leg-1 boarding-prompt를 발사할지
-   * 판정하는 유일한 신호다. 미지정/false: 두 경로 모두 no-op(완전 침묵).
+   * #2651 — boarding-prompt(탑승 프롬프트) 발사 opt-in 시그널. `useUserIntentStore.promptOptIn`
+   * (restart-durable, "안내 시작" 버튼 탭에서 stamp)에서 읽어 전달한다 — `useNavigationStore
+   * .navigationActive`는 의도적으로 휘발성이라 여기 전달하지 않는다(PR #2772 리뷰: mid-trip
+   * 콜드 재시작 후 재등록에서 opt-in이 사라지는 회귀 방지). `infoModeEnabled`(응답/직접 탭으로만
+   * stamp)와 달리 안내 시작만 눌러도 즉시 true — backend가 GPS-free/GPS 9단 leg-1
+   * boarding-prompt를 발사할지 판정하는 신호(infoModeEnabled와 OR로 결합, ADR-014 동급 보장).
+   * 미지정/false + infoModeEnabled도 없으면: 두 경로 모두 no-op(완전 침묵).
    */
   promptOptIn?: boolean;
   /**

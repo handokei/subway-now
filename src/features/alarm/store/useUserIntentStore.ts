@@ -23,6 +23,12 @@
  *
  * `useBoardingLockStore`와 다른 lifecycle (lock 없어도 의향만 살아있을 수 있음) —
  * 책임 분리 위해 별도 store. 옵션 C-2 (이슈 #1923 §3.2 Fix C).
+ *
+ * #2651 (PR #2772 리뷰) — `promptOptIn` 필드가 이 store에 추가됐다. `infoModeEnabled`("매역 통과
+ * 알림을 받을지", 응답/직접 탭 2곳에서만 stamp)와 목적이 다르다 — `promptOptIn`은 "탑승 프롬프트
+ * 자체를 받을지"의 신호이며, "안내 시작" 버튼 탭이 유일한 stamp 진입점이다. `useNavigationStore
+ * .navigationActive`(휘발성)를 그대로 쓰지 않고 이 store에 별도 persist하는 이유는 mid-trip
+ * 콜드 재시작 후에도 첫 재등록에서 opt-in이 살아있어야 하기 때문이다.
  */
 
 import { create } from 'zustand';
@@ -30,6 +36,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   USER_INTENT_INFO_MODE_KEY,
   USER_INTENT_BOARDING_COMMITTED_KEY,
+  USER_INTENT_PROMPT_OPT_IN_KEY,
 } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -64,11 +71,25 @@ export interface UserIntentState {
   setBoardingCommitted: (committed: boolean) => Promise<void>;
   /** cold start 시 storage hydrate. parse 실패/키 부재는 false 유지. */
   loadBoardingCommitted: () => Promise<void>;
+  /**
+   * #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) 시그널의 restart-durable SSoT.
+   * `useNavigationStore.navigationActive`는 의도적으로 휘발성이라, mid-trip 콜드 재시작 후
+   * 첫 재등록에서 opt-in이 미송신되는 회귀를 막기 위해 이 store가 AsyncStorage에 별도 persist한다.
+   * `HomeScreen.handleStartNavigation`에서 true로 stamp. "일시정지"(handleStopNavigation)는
+   * BG GPS만 중단할 뿐 trip을 포기하는 게 아니므로 이 값을 건드리지 않는다 — trip 종료
+   * cleanup(`resetPromptOptIn`)에서만 false로 reset.
+   */
+  promptOptIn: boolean;
+  /** memory + AsyncStorage 동기 영속화. `setInfoModeEnabled`와 동일 pattern. */
+  setPromptOptIn: (optIn: boolean) => Promise<void>;
+  /** cold start 시 storage hydrate. parse 실패/키 부재는 false 유지. */
+  loadPromptOptIn: () => Promise<void>;
 }
 
 export const useUserIntentStore = create<UserIntentState>((set) => ({
   infoModeEnabled: false,
   boardingCommitted: false,
+  promptOptIn: false,
 
   setInfoModeEnabled: async (enabled: boolean) => {
     set({ infoModeEnabled: enabled });
@@ -115,6 +136,28 @@ export const useUserIntentStore = create<UserIntentState>((set) => ({
       log.warn('boardingCommitted hydrate failed', e);
     }
   },
+
+  setPromptOptIn: async (optIn: boolean) => {
+    set({ promptOptIn: optIn });
+    try {
+      if (optIn) {
+        await AsyncStorage.setItem(USER_INTENT_PROMPT_OPT_IN_KEY, STORAGE_VALUE_TRUE);
+      } else {
+        await AsyncStorage.removeItem(USER_INTENT_PROMPT_OPT_IN_KEY);
+      }
+    } catch (e) {
+      log.warn('promptOptIn persist failed', e);
+    }
+  },
+
+  loadPromptOptIn: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(USER_INTENT_PROMPT_OPT_IN_KEY);
+      set({ promptOptIn: raw === STORAGE_VALUE_TRUE });
+    } catch (e) {
+      log.warn('promptOptIn hydrate failed', e);
+    }
+  },
 }));
 
 /**
@@ -135,4 +178,15 @@ export function resetUserIntentInfoMode(): Promise<void> {
  */
 export function resetBoardingCommitted(): Promise<void> {
   return useUserIntentStore.getState().setBoardingCommitted(false);
+}
+
+/**
+ * #2651 (PR #2772 리뷰) — trip 종료 시 `runTripBoundCleanups`에서 호출하는 cleanup helper.
+ *
+ * 이전 trip의 안내시작(promptOptIn) 신호가 새 trip에 leak되지 않도록 memory + storage 동시
+ * false 처리. "일시정지"(handleStopNavigation)는 이 함수를 호출하지 않는다 — 이 값은 trip
+ * 종료에서만 해제된다. `resetUserIntentInfoMode`/`resetBoardingCommitted`와 동일 wiring pattern.
+ */
+export function resetPromptOptIn(): Promise<void> {
+  return useUserIntentStore.getState().setPromptOptIn(false);
 }

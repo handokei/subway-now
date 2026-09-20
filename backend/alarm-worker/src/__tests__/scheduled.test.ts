@@ -5992,6 +5992,29 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  // #2651 (PR #2772 리뷰) — promptOptIn 단독 게이트는 이미 응답/직접 탭으로 명시 의향을 표명한
+  // trip(infoModeEnabled=true)이 lock 해제 후 lockMissing으로 돌아왔을 때 "안내 시작"을 다시
+  // 안 눌렀다는 이유로 재프롬프트를 침묵시킨다 — ADR-014 동급 보장 위반. OR 게이트로 이 trip도
+  // 9단 게이트에 진입(평가/발사 가능)해야 한다. 위 '9단 통과' happy path와 동일 trip에
+  // promptOptIn만 undefined로 바꿔 검증(infoModeEnabled=true만으로 gate 통과 증명).
+  it('#2651 (PR #2772 리뷰) — infoModeEnabled=true(응답/탭 이력) + promptOptIn=undefined → 9단 게이트 진입 (동급 보장)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ infoModeEnabled: true, promptOptIn: undefined }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+
+    expect(stats.boardingPromptSkippedNoOptIn).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(1);
+  });
+
   it('이미 fired된 trip은 미발사 + blocked 카운트', async () => {
     const kv = new InMemoryKV();
     await putTrip(
@@ -13923,9 +13946,11 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
   });
 
-  it('#2651 — promptOptIn !== true → no-op (fetch 안 함, 카운터 불변) — 안내 시작 안 한 trip은 완전 침묵', async () => {
+  // #2651 (PR #2772 리뷰) — promptOptIn/infoModeEnabled 둘 다 false여야 진짜 무음(둘 중 하나라도
+  // true면 OR로 대상 — 이 describe의 `makeTrip` 기본값이 infoModeEnabled:true라 명시 override 필요).
+  it('#2651 — promptOptIn !== true && infoModeEnabled !== true → no-op (fetch 안 함, 카운터 불변) — 완전 무의향 trip은 완전 침묵', async () => {
     const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
-    const trip = makeTrip({ promptOptIn: false });
+    const trip = makeTrip({ promptOptIn: false, infoModeEnabled: false });
     const stats = makeStats();
     await maybeFireOriginBoardingPromptGpsFree(
       trip,
@@ -13938,6 +13963,27 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+  });
+
+  // #2651 (PR #2772 리뷰) — promptOptIn 단독 게이트는 이미 boardingPrompt [탑승] 응답/직접 탭으로
+  // 명시 의향을 표명한 trip(infoModeEnabled=true)이 lock 해제 후 lockMissing으로 돌아왔을 때
+  // "안내 시작"을 다시 안 눌렀다는 이유로 재프롬프트를 침묵시킨다 — ADR-014 동급 보장 위반.
+  // OR 게이트(promptOptIn===true || infoModeEnabled===true)로 이 trip도 대상이어야 한다.
+  it('#2651 (PR #2772 리뷰) — infoModeEnabled=true(응답/탭 이력) + promptOptIn=undefined → 발사 (동급 보장)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ infoModeEnabled: true, promptOptIn: undefined });
+    const stats = makeStats();
+    await maybeFireOriginBoardingPromptGpsFree(
+      trip,
+      makeEnv(new InMemoryKV()),
+      makeDeps(fetchImpl),
+      stats,
+      NOW,
+      () => {},
+      () => 'pid-origin',
+    );
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
     expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
   });
 

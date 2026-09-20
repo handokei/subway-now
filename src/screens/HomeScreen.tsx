@@ -168,10 +168,17 @@ export default function HomeScreen() {
   // intermediate "통과" push 억제). handleStartNavigation은 이 값을 세팅하지 않는다.
   const boardingCommitted = useUserIntentStore((s) => s.boardingCommitted);
   const loadBoardingCommitted = useUserIntentStore((s) => s.loadBoardingCommitted);
+  // #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) restart-durable SSoT.
+  // useApnsTripRegistration에 이 값(navigationActive 아님)을 promptOptIn으로 forward한다 —
+  // navigationActive는 휘발성이라 mid-trip 콜드 재시작 후 첫 재등록에서 opt-in이 사라지는
+  // 회귀가 있었다. handleStartNavigation에서만 true로 stamp, "일시정지"는 건드리지 않는다.
+  const promptOptIn = useUserIntentStore((s) => s.promptOptIn);
+  const setPromptOptIn = useUserIntentStore((s) => s.setPromptOptIn);
+  const loadPromptOptIn = useUserIntentStore((s) => s.loadPromptOptIn);
   // #1973 / #2651 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
   // BG GPS 지속 가능 (네이버 패턴). startNavigation은 더 이상 infoModeEnabled를 자동 stamp하지
-  // 않는다 — useApnsTripRegistration에 promptOptIn으로 forward되어 backend boarding-prompt
-  // opt-in 게이트에만 쓰인다.
+  // 않는다 — useApnsTripRegistration에는 (휘발성인 이 값이 아니라) 위 durable `promptOptIn`이
+  // forward되어 backend boarding-prompt opt-in 게이트에 쓰인다.
   const navigationActive = useNavigationStore((s) => s.navigationActive);
   // #2293 — 일시정지 배지 카운트다운 소스(메모리, FG 전용). cold-start 자동 종료 판정은
   // useStateRehydration이 별도 영속 채널(NAVIGATION_PAUSED_AT_KEY)로 처리.
@@ -435,19 +442,26 @@ export default function HomeScreen() {
   // #1973 / #2651 — 안내 시작/중단 명시 trigger. infoMode(`useUserIntentStore.infoModeEnabled`)
   // 자동 wire는 2026-09-20 결정으로 제거됐다 — stamp 진입점은 boardingPrompt [탑승] 응답 /
   // BoardingTrainList 직접 탭 2곳뿐(순환 deadlock 해소, useUserIntentStore.ts 문서 참고).
-  // 안내 시작은 이제 trip 등록 + boarding-prompt opt-in(`promptOptIn`, useApnsTripRegistration에
-  // navigationActive로 forward) 역할만 한다. useBackgroundLocation은 useNavigationStore.navigationActive를
-  // deps로 보고 BG GPS lifecycle을 따른다.
+  // 안내 시작은 이제 trip 등록 + boarding-prompt opt-in(`promptOptIn`, restart-durable
+  // useUserIntentStore 필드, PR #2772 리뷰) 역할만 한다. useBackgroundLocation은
+  // useNavigationStore.navigationActive를 deps로 보고 BG GPS lifecycle을 따른다.
   const handleStartNavigation = useCallback(() => {
     startNavigation();
+    // #2651 (PR #2772 리뷰) — promptOptIn을 durable하게 persist. navigationActive(휘발성)만
+    // 쓰면 mid-trip 콜드 재시작 후 재등록에서 opt-in이 사라지는 회귀가 있었다.
+    void setPromptOptIn(true);
     // #2293 — 재개 시 일시정지 stamp 제거(cold-start backstop이 재개된 trip을 잘못 종료하지 않도록).
     void clearNavigationPausedAt();
-  }, [startNavigation]);
+  }, [startNavigation, setPromptOptIn]);
   // #2293 (Part of #2285 결정 ①+③) — "일시정지" 진입. navigationActive off + BG GPS 중단은
   // 유지하되(#1973), destination/trip은 보존한다. pausedAt을 함께 stamp해 배지 카운트다운 +
   // PAUSE_AUTO_END_MS(15분) 경과 시 자동 종료 backstop의 기준점으로 쓴다.
   // #2651 — infoMode 자동 해제 wire도 제거(위 handleStartNavigation과 대칭) — 의향 해제 권한은
   // trip 종료 cleanup(resetUserIntentInfoMode, tripBoundCleanups) 한 곳으로 좁힌다.
+  // #2651 (PR #2772 리뷰) — promptOptIn도 여기서 건드리지 않는다. "일시정지"는 BG GPS만
+  // 중단할 뿐 trip을 포기하는 게 아니므로(destination/trip 보존) opt-in 의향 자체는 살아있어야
+  // 한다 — 재개(handleStartNavigation) 시 다시 true로 stamp할 필요 없이 그대로 유지된다.
+  // opt-in 해제는 trip 종료 cleanup(resetPromptOptIn, tripBoundCleanups) 한 곳으로 좁힌다.
   const handleStopNavigation = useCallback(() => {
     stopNavigation();
     void setNavigationPausedAt();
@@ -1115,10 +1129,12 @@ export default function HomeScreen() {
     // #1923 — 사용자 명시 의향 토글. backend가 lockless intermediate gate 진입에 사용 →
     // station-passed silent push 발사. 미stamp(false) trip은 기존 lockMissing skip 동작.
     infoModeEnabled,
-    // #2651 — boarding-prompt opt-in(안내 시작) 시그널. navigationActive를 그대로 forward —
-    // backend GPS-free/GPS 9단 leg-1 boarding-prompt 발사 게이트에 사용. 안내 시작 안 한 trip은
+    // #2651 (PR #2772 리뷰) — boarding-prompt opt-in(안내 시작) 시그널. restart-durable
+    // useUserIntentStore.promptOptIn을 forward — backend GPS-free/GPS 9단 leg-1 boarding-prompt
+    // 발사 게이트에 사용. navigationActive(휘발성)를 직접 쓰면 mid-trip 콜드 재시작 후 첫
+    // 재등록에서 opt-in이 사라지는 회귀가 있어 durable store 값을 쓴다. 안내 시작 안 한 trip은
     // 등록만으로 프롬프트가 발사되지 않는다(#2651 결정 모델).
-    promptOptIn: navigationActive,
+    promptOptIn,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. backend가 lockless intermediate "통과" push를
     // 억제하는 gate에 사용 (안내 시작 trip은 이 값이 서지 않아 기존 "통과" 그대로 발사).
     boardingCommitted,
@@ -1181,6 +1197,11 @@ export default function HomeScreen() {
     // #2524 — cold start 시 탑승 커밋 시그널 hydrate. infoModeEnabled와 동일한 이유(trip 종료 시
     // runTripBoundCleanups가 storage 정리).
     void loadBoardingCommitted();
+    // #2651 (PR #2772 리뷰) — cold start 시 boarding-prompt opt-in(안내 시작) 시그널 hydrate.
+    // navigationActive(휘발성, 재시작 시 항상 false로 reset)와 달리 이 값은 mid-trip 재시작에도
+    // 살아있어야 재등록 payload에 promptOptIn=true가 계속 실린다 — infoModeEnabled와 동일한
+    // storage 복원 패턴.
+    void loadPromptOptIn();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
     // #700 — tripOrigin을 먼저 await으로 hydrate한 다음 destination을 set한다.
