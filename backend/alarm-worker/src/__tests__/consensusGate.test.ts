@@ -67,26 +67,6 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
       });
     });
 
-    it('positionTrainAgreement(C) + arrival(B) → 통과', () => {
-      expect(
-        runGate('underground', {
-          gateOutcome: FAIL_GATE,
-          lockAttachable: false,
-          positionTrainAgreement: true,
-        }).pass,
-      ).toBe(true);
-    });
-
-    it('wifiSsidMatch(D) + arrival(B) → 통과', () => {
-      expect(
-        runGate('underground', {
-          gateOutcome: FAIL_GATE,
-          lockAttachable: false,
-          wifiSsidMatch: true,
-        }).pass,
-      ).toBe(true);
-    });
-
     it('전 신호 침묵 → silent (reject) — ADR-015 §4 silent 한정 케이스', () => {
       expect(
         runGate('underground', {
@@ -157,50 +137,6 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
     });
   });
 
-  describe('S10 #1543 — cellularEnvironmentVote contradict 게이트', () => {
-    it('surface env + cellular=underground → reject (cellular-environment-contradicts)', () => {
-      expect(runGate('surface', { cellularEnvironmentVote: 'underground' })).toEqual({
-        pass: false,
-        environment: 'surface',
-        reason: 'cellular-environment-contradicts',
-      });
-    });
-
-    it('underground env + cellular=surface → reject (contradicts) — base 통과 무시', () => {
-      expect(runGate('underground', { cellularEnvironmentVote: 'surface' })).toEqual({
-        pass: false,
-        environment: 'underground',
-        reason: 'cellular-environment-contradicts',
-      });
-    });
-
-    it('surface env + cellular=surface (일치) → 기존 base 게이트 결과 그대로', () => {
-      expect(runGate('surface', { cellularEnvironmentVote: 'surface' }).pass).toBe(true);
-    });
-
-    it('underground env + cellular=underground (일치) → 기존 B+E 합의 통과', () => {
-      expect(runGate('underground', { cellularEnvironmentVote: 'underground' }).pass).toBe(true);
-    });
-
-    it('cellular=unknown → vote 미투표, 게이트 정책 영향 0', () => {
-      expect(runGate('surface', { cellularEnvironmentVote: 'unknown' }).pass).toBe(true);
-      expect(runGate('underground', { cellularEnvironmentVote: 'unknown' }).pass).toBe(true);
-    });
-
-    it('cellular undefined (필드 미전송) → vote 미투표', () => {
-      expect(runGate('surface').pass).toBe(true);
-    });
-
-    it('mixed env — cellular vote는 contradict 판정 대상이 아님 (보수)', () => {
-      expect(runGate('mixed', { cellularEnvironmentVote: 'surface' }).pass).toBe(true);
-      expect(runGate('mixed', { cellularEnvironmentVote: 'underground' }).pass).toBe(true);
-    });
-
-    it('unknown env — mixed와 동일 (cellular vote는 contradict 판정 X)', () => {
-      expect(runGate('unknown', { cellularEnvironmentVote: 'surface' }).pass).toBe(true);
-    });
-  });
-
   describe('#2014 (ADR-022 B8) — archFlag=on 시 환경 분기 우회', () => {
     it('archFlag=on + surface + base 실패 → pass (base 게이트 무시)', () => {
       // legacy 경로에선 base-gate-failed 로 reject. archFlag=on 은 arvlCd SSoT 로 우회.
@@ -223,17 +159,6 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
             arrivalSignalPresent: false,
             lockAttachable: false,
           }),
-          'on',
-        ).pass,
-      ).toBe(true);
-    });
-
-    it('archFlag=on + cellular contradict → pass (cellular vote 도 무시)', () => {
-      // legacy 경로에선 cellular-environment-contradicts. archFlag=on 은 우회.
-      expect(
-        evaluateConsensusGate(
-          'surface',
-          signals({ cellularEnvironmentVote: 'underground' }),
           'on',
         ).pass,
       ).toBe(true);

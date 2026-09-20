@@ -59,19 +59,17 @@ const SSOT_MIN_TTL_SEC = 60;
 /**
  * Trip별 advance 결정에 사용되는 evidence type.
  *
- * ADR-017 T2(`advanceTripPosition`) 6단 게이트가 `'time-only'`을 거부(ADR-015 E4 enforce).
- * 그 외 type은 합의 게이트(#3)에서 환경별로 가중치 평가.
+ * 합의 게이트(#3)에서 환경별로 가중치 평가.
+ *
+ * #2765 (게이트 전수감사 A) — `'wifi-ssid-match' | 'cellular-tech-change' | 'accel-fingerprint' |
+ * 'time-only' | 'arvlcd-lockless'` 5종은 생산자 0건(코드 전체에 stamp하는 caller 없음, 2026-09-03
+ * 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)이 감사로 확정돼 제거됐다.
  */
 export type EvidenceType =
   | 'gps-displacement'
   | 'gps-stationary'
   | 'arvlcd-confirmed-train'
-  | 'arvlcd-lockless'
   | 'position-train'
-  | 'wifi-ssid-match'
-  | 'cellular-tech-change'
-  | 'accel-fingerprint'
-  | 'time-only'
   | 'manual-user-intent'
   | 'seed-override'
   | 'consensus-train'
@@ -181,7 +179,7 @@ export async function computeAlarmId(
  *
  * confidence:
  *   - 'high'      : arvlcd-confirmed-train evidence (trainCode/line 명확)
- *   - 'medium'    : position-train / wifi-ssid-match evidence (train 후보 좁힘 + 정합)
+ *   - 'medium'    : position-train evidence (train 후보 좁힘 + 정합)
  *   - 'consensus' : #2329 (consensus-C) — transferLegConsensus 상태기계가 confirmed로 수렴한
  *                   trainCode. lock 승격은 절대 하지 않는다 — device `useLockSuggestion`이
  *                   기존 high/medium과 동일하게 reader-only 채택하되, 오토락 부활(#2154에서
@@ -224,14 +222,21 @@ export interface TripPositionSSoT {
   motionEvidence: MotionEvidence[];
   /** 마지막 advance 발생 시각 (epoch ms). 미발생 시 0. */
   lastAdvanceAt: number;
-  /** 마지막 advance를 통과시킨 evidence type. 미발생 시 `'time-only'` placeholder가 아닌 별도 표기 필요 없음 — `lastAdvanceAt===0`로 구분. */
+  /**
+   * 마지막 advance를 통과시킨 evidence type. `seedSsot`이 초기값으로 `'seed-override'`를
+   * placeholder stamp한다 — 실제 advance 발생 여부는 이 값이 아니라 `lastAdvanceAt===0`로
+   * 구분한다(placeholder도 유효 advance처럼 보이는 혼동 방지).
+   *
+   * #2765 (게이트 전수감사 A, 코드리뷰 후속) — `trySeedOverride`(E5, 강 신호 2개+30s 연속 일치로
+   * currentStationId 정정 시 `seedOverrideCount`를 +1하던 유일한 producer)가 호출자 0건으로
+   * 삭제되며 `seedOverrideCount` 필드도 함께 제거됐다. `'seed-override'` literal은 이제 위
+   * placeholder 용도로만 남아 있다 — 실제 seed-override advance를 의미하지 않는다.
+   */
   lastAdvanceEvidence: EvidenceType;
   /** 통과 확인된 station 누적 (S6 #1551 Trip.passedStations migration target). */
   passedStations: string[];
   /** C 토글 ON / boardingPrompt 응답 / BoardingTrainList tap. ADR-014 §사용자 명시 의향 trip. */
   userIntentDeclared: boolean;
-  /** seed override 발생 횟수 (E5 강 신호 2개 + 30s 연속 일치로 currentStationId 정정 시 +1). */
-  seedOverrideCount: number;
   /**
    * #1572 (T9) — Alarm 결정 ring buffer (append-only, ALARM_EVENTS_CAP=50 cap).
    *
@@ -469,7 +474,7 @@ export async function deleteSsot(kv: KVNamespace, token: string): Promise<void> 
  * 스코프 외, T2/T3에서 atomic 보장).
  *
  * motionState는 `'unknown'`으로 시작 — T3 motion state machine이 첫 GPS sample 수신 후 갱신.
- * userIntentDeclared / seedOverrideCount는 false / 0.
+ * userIntentDeclared는 false로 시작.
  *
  * #1534 (S1 GAP A) — currentStationId는 빈 문자열("") 허용. device가 currentStation 미상으로
  * trip을 등록할 때 backend는 빈 stationId로 seed하고, /position upload + 후속 advance 수렴으로
@@ -492,7 +497,6 @@ export async function seedSsot(
     lastAdvanceEvidence: 'seed-override',
     passedStations: [],
     userIntentDeclared: options?.userIntentDeclared ?? false,
-    seedOverrideCount: 0,
     alarmEvents: [],
     // #1705 — line 지정 시 currentStationLine 박제 (cross-line confusion 차단).
     ...(options?.line !== undefined ? { currentStationLine: options.line } : {}),

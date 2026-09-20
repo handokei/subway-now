@@ -74,6 +74,14 @@ fire는 다중 신호 합의 게이트 통과 시에만 허용. 점수 기반 1�
 - `environment=underground`: C + B 또는 D + B 2-of-2. **GPS는 입력 set에서 reject** (acc 좋아도 무시)
 - `environment=mixed`: 보수적. strong 2개 충족 시에만
 
+> **superseded-by-#2765** — backend E6 구현(`consensusGate.ts`)의 underground 분기는 strong C
+> (`positionTrainAgreement`)/D(`wifiSsidMatch`) OR 항을 게이트 전수감사(2026-09-20)에서 생산자
+> 0건(2026-09-03 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재)으로 확정해 제거했다. 현재
+> underground 분기는 `strong B(arrival) + strong E(lockAttachable)` 2-of-2 또는 strong G
+> (`consensusConfirmed`, #2329 consensus-C) 단독으로만 통과한다 — 이 표의 strong C/D 행과
+> 위 underground 공식의 C/D 항은 backend에서 더 이상 구현되지 않는다(cellular hard-reject,
+> S10 #1543도 동일 사유로 제거). device-side strong C/D 신호(WiFi lookup 상시 null, cellular
+> vote 미wire)가 되살아나면 그때 별도 설계로 재도입한다.
 ### §4 합의 안 됨 = fire X
 
 합의 게이트 미통과 시 fire 권한 박탈. UI는 마지막 합의 위치 + 추적 신호 표시, 알림 발사 X.

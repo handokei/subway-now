@@ -47,7 +47,6 @@ function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
     lastAdvanceEvidence: 'arvlcd-confirmed-train',
     passedStations: ['뚝섬', '성수'],
     userIntentDeclared: false,
-    seedOverrideCount: 0,
     schemaVersion: 1,
     ...overrides,
   };

@@ -11,8 +11,14 @@
  *   - vanish path `isFallbackAdvanceBlockedByMotion` — vanish만 stationary 차단
  *   - `evaluateConsensusGate` — 호출자 미적용
  *
- * 본 T2는 단일 진입점 `advanceTripPosition`을 도입해 6단 게이트를 강제한다.
+ * 본 T2는 단일 진입점 `advanceTripPosition`을 도입해 게이트를 강제한다.
  * 본 PR은 함수 + 테스트만 추가하고 기존 fire path를 변경하지 않는다 (T4~T7가 reader migration).
+ *
+ * #2765 (게이트 전수감사 A) — 생산자 0건이 확정된 게이트 3종(구 #4 time-only 거부, 구 #6 lockless
+ * arvlcd 단독 게이트, cellular hard-reject 2곳)을 제거하고 아래 번호를 재부여했다. `'time-only'`,
+ * `'arvlcd-lockless'`, `cellularTechVote`(및 evaluateConsensusGate의 대응 signal)는 evidence type/
+ * signal 자체가 삭제됐다 — 2026-09-03 확정 아키텍처가 폐기한 device-fusion 패러다임 잔재(WiFi/
+ * cellular/accel device 신호는 상시 null 또는 dormant)였다.
  *
  * 게이트 (순서 강제, ADR-017 / ADR-022)
  * ===============================
@@ -25,7 +31,7 @@
  *                            #2432 — lock 활성 + `arvlcd-confirmed-train` evidence는 locked trainCode
  *                             자체가 실제 이동 중이라는 독립 확증이므로 device sync 신선도와 무관하게
  *                             motion gate를 면제한다(지하 GPS 끊김으로 motion 신호가 고정되는 사각
- *                             차단). false-positive 방어는 #5 train identity + T7
+ *                             차단). false-positive 방어는 #4 train identity + T7
  *                             `evaluateTransferDestinationGate`가 담당.
  *   #3 Environment 게이트  — evaluateConsensusGate 통과 필수 (지하 GPS-only false positive 차단).
  *      #2623 — lock 활성 + `arvlcd-confirmed-train` evidence는 게이트 #2의 lockedTrainArvlcdBypass와
@@ -33,18 +39,15 @@
  *      #2623 P1-1 — lock 활성 + `position-train`도 evidence.arvlcdTrainCode가 lock.trainCode와
  *      일치할 때만 동일 우회(#1665 positions-fallback "arrived" 경로가 375개 underground 역에서
  *      영구 차단되던 회귀 — arvlCd=null이 본질이라 underground 분기 arrival 요구 OR 항을 전부 실패).
- *   #4 Evidence type 게이트 — ADR-015 §E4: 'time-only' evidence 절대 거부
- *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train/consensus-train evidence면
+ *   #4 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train/consensus-train evidence면
  *      trainCode 일치 필수. #2623 P1-1 — position-train도 arvlcdTrainCode가 stamp돼 있으면
- *      동일 검증(#5c, 미stamp는 legacy dormant 유지 — 게이트 #3 우회 대상과 대칭 방어).
- *   #6 Lockless arvlcd 단독 게이트 — lock 없는 trip에서 arvlcd-lockless 단독은 60s 윈도우 내
- *                                    strong evidence 1+개가 추가로 있어야 통과
- *   #8 arc-overshoot 게이트 (#2023, ADR-022) — device `mapMatchedArcM` 시간 적분 폭주 감지.
+ *      동일 검증(#4c, 미stamp는 legacy dormant 유지 — 게이트 #3 우회 대상과 대칭 방어).
+ *   #5 arc-overshoot 게이트 (#2023, ADR-022) — device `mapMatchedArcM` 시간 적분 폭주 감지.
  *      options.archFlag='on' + evidence.arcOvershootDetected=true 시 blocked('arc-overshoot').
  *      archFlag='off' / 미제공 시 dormant — backward compat 및 rollback 안전.
- *      #7보다 먼저 배치: position-train jump/stale은 특수 evidence type 케이스, arc overshoot은
+ *      #6보다 먼저 배치: position-train jump/stale은 특수 evidence type 케이스, arc overshoot은
  *      모든 evidence type의 신호 신뢰도 회귀이므로 광범위 게이트가 우선.
- *   #7 position-train jump/stale 게이트 — position-train evidence에만 적용 (#1665):
+ *   #6 position-train jump/stale 게이트 — position-train evidence에만 적용 (#1665):
  *      (a) Jump 가드: candidate stationId가 ssot.currentStationId 기준 hop 거리 ≥ 3 → blocked
  *          ('position-train-jump'). express 9호선은 1-2 hop이 전형 → 3 미만 임계는 보수적.
  *          lock 활성: lock.segmentStations 기준. lockless trip: ssot.passedStations +
@@ -54,26 +57,20 @@
  *          30s → blocked('position-train-stale'). Seoul API 30s 폴링 주기와 동일 임계.
  *          부재 시 dormant (backward compat).
  *
- * Seed override (E5)
- * ==================
- * `trySeedOverride`가 strong evidence 2+개 + 30s 연속 일치 시 currentStationId 정정.
- * passedStations은 초기화 (잘못 stamp된 station 폐기). seedOverrideCount += 1.
- *
  * Out of scope (본 PR)
  * ====================
  * - 기존 fire path 변경 (T4~T7가 reader migration)
  * - KV CAS retry (issue 본문 §Race safety — "last write wins" 허용. motionEvidence ring buffer로 손실 X)
- * - WiFi SSID map 데이터 자체 (`subwayWifiSsidMap.json`) backend 임포트 — `lookupStationFromWifiSsid`는
- *   injectable entries 인자를 받는 순수 함수로 두고, 실제 매핑 데이터 wire는 T3 (device/position upload
- *   payload에 `wifiSsid` 추가 + backend wire) 또는 별도 데이터 module로 분리한다.
+ *
+ * #2765 (게이트 전수감사 A, 코드리뷰 후속) — `lookupStationFromWifiSsid`(injectable WiFi SSID
+ * lookup 순수 함수) + `WifiSsidEntry` 타입 + `AdvanceEvidence.wifiSsid` 필드는 유일한 소비
+ * 경로였던 `'wifi-ssid-match'` evidence type이 본 PR에서 제거되며 생산자 0건으로 확정돼 함께
+ * 제거했다 — 이 함수를 살려두던 유일한 근거는 자기 unit 테스트뿐이었다(이 감사가 잡는 클래스와
+ * 동일 패턴). 실제 WiFi SSID 매핑 wire가 필요해지면 그때 별도 설계로 재도입한다.
  */
 
 import type { ArchFlagValue } from './archFlag';
-import {
-  cellularContradictsEnvironment,
-  evaluateConsensusGate,
-  type StationEnvironment,
-} from './consensusGate';
+import { evaluateConsensusGate, type StationEnvironment } from './consensusGate';
 import { hasArvlcdTrainProgress, MOTION_WINDOW_MS } from './motionState';
 import { hashTripToken } from './sentry';
 import type { ArrivalEntry, PositionEntry } from './seoul';
@@ -99,7 +96,6 @@ import {
   writeSsot,
   type EvidenceType,
   type LockSuggestion,
-  type MotionEvidence,
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import { getTrip, tripHasDeclaredIntent } from './trips';
@@ -114,23 +110,6 @@ import type { BoardingLockMeta, Trip } from './types';
 export type EvidenceEnvironment = 'surface' | 'underground' | 'hybrid' | 'unknown';
 
 /**
- * Strong evidence type — 게이트 #6 + seedOverride 공통.
- *
- * 단일 신호만으로 advance를 견인할 수 있는 weight. GPS는 의도적으로 제외 (지하 false positive 차단).
- */
-export const STRONG_EVIDENCE_TYPES: ReadonlySet<EvidenceType> = new Set<EvidenceType>([
-  'arvlcd-confirmed-train',
-  'wifi-ssid-match',
-  'cellular-tech-change',
-  'position-train',
-  'accel-fingerprint',
-  // #2329 (consensus-C) — transferLegConsensus 상태기계가 confirmed로 수렴한 evidence.
-  // gate #5b가 legConsensus.status==='confirmed'를 별도로 강제하므로 seedOverride 등에서
-  // strong 취급해도 false positive 우려 없음(이미 2+ waypoint match 확정 신호).
-  'consensus-train',
-]);
-
-/**
  * #2763 — arvlCd/realtimePosition으로 열차 진행 자체가 확인된 evidence type.
  *
  * motionState.ts:113 `hasArvlcdTrainProgress`가 기대하는 `source:'seoul-arvlcd'`
@@ -139,8 +118,6 @@ export const STRONG_EVIDENCE_TYPES: ReadonlySet<EvidenceType> = new Set<Evidence
  * (`position-train`)으로 확증된 evidence만 포함 — GPS/wifi/cellular/accel처럼 device 신호로
  * 확증된 evidence는 제외(그 자체로는 "열차가 실제 진행 중"이라는 증거가 아님).
  *
- * 2026-09-20 코드리뷰 — `'arvlcd-lockless'`는 제외한다: 생산자 0건이 감사로 확정됐고(현재
- * evidence.type으로 stamp되는 실사용 caller 없음), 타입 자체가 #2765에서 삭제될 예정이다.
  * `'consensus-train'`도 의도적으로 미포함 — legConsensus 경로는 #2766(결정 D1)에서 별도
  * 재검토/제거 대상이라, 본 PR이 그 경로를 motion evidence 소스로 새로 고정시키지 않는다.
  *
@@ -156,7 +133,7 @@ const ARVLCD_TRAIN_PROGRESS_EVIDENCE_TYPES: ReadonlySet<EvidenceType> = new Set<
  * stamp하지 않는다. type만으로 판단하면 `{type:'position-train', positionEntry: undefined}`
  * 같은 "미확증" evidence(N1/blocked-alarmEvents 테스트가 stationary 차단을 검증하려고 의도적으로
  * 구성한 케이스)까지 "열차 진행 확증"으로 오인해, 게이트 #2를 부당하게 통과시키고 이후 게이트
- * (#5c train-mismatch 등)에서 다른 사유로 막히거나, 심하면 검증 없이 advance된다.
+ * (#4c train-mismatch 등)에서 다른 사유로 막히거나, 심하면 검증 없이 advance된다.
  *
  * - `arvlcd-confirmed-train`: `arvlCd`가 Seoul API 유효 범위(0~3)일 때만 확증.
  * - `position-train`: `positionEntry`가 실제로 stamp됐을 때만 확증 (caller가 realtimePosition
@@ -175,12 +152,12 @@ function hasArvlcdTrainProgressSignal(evidence: AdvanceEvidence): boolean {
  * 불일치하면 true(mismatch). lock 없음이거나 evidence가 identity를 주장하지 않으면(position-train
  * 미stamp) false(mismatch 아님 — dormant).
  *
- * 게이트 #5(arvlcd-confirmed-train/consensus-train, arvlcdTrainCode 미stamp도 mismatch 취급)
- * + #5c(position-train, stamp된 경우만 mismatch 취급)가 원래 각자 검사하던 조건을 단일 지점으로
+ * 게이트 #4(arvlcd-confirmed-train/consensus-train, arvlcdTrainCode 미stamp도 mismatch 취급)
+ * + #4c(position-train, stamp된 경우만 mismatch 취급)가 원래 각자 검사하던 조건을 단일 지점으로
  * 추출한 것 — 두 게이트를 이 helper 하나로 대체해도 동일하게 동작한다(아래 gate 재사용 확인).
  *
  * pre-gate stamp(`hasArvlcdTrainProgressSignal`)도 이 helper를 재사용한다: #2685 사례처럼
- * lock.trainCode와 불일치해 게이트 #5/#5c에서 결국 거부될 evidence까지 "열차 진행 확증"으로
+ * lock.trainCode와 불일치해 게이트 #4/#4c에서 결국 거부될 evidence까지 "열차 진행 확증"으로
  * stamp하면, caller(scheduled.ts `recordFireBlockReasonTransition`)가 blocked outcome의 SSoT를
  * 그대로 KV에 write하는 경로로 남의 열차 진행이 motion 증거로 적재될 수 있다 — advance 근거로
  * 못 믿는 열차를 motion 근거로 믿으면 안 된다.
@@ -199,24 +176,17 @@ function trainIdentityMismatches(
 }
 
 /**
- * Cellular tech vote — `evaluateConsensusGate.cellularEnvironmentVote` 입력 호환.
- */
-export type CellularTechVote = 'surface' | 'underground' | 'unknown';
-
-/**
  * 단일 advance 후보 evidence. caller(T3/T4+ fire path)가 본 객체로 advance 시도.
  *
  * - `arvlcdTrainCode` — evidence type 이 arvlcd 계열일 때 lock.trainCode와 cross-check (E8).
- *   #2623 P1-1 — `position-train`도 stamp 시 게이트 #3 envConsensusBypass / #5c에서 동일하게
+ *   #2623 P1-1 — `position-train`도 stamp 시 게이트 #3 envConsensusBypass / #4c에서 동일하게
  *   cross-check(미stamp는 legacy dormant).
- * - `wifiSsid` — 'wifi-ssid-match'일 때 caller가 lookup 결과를 stamp (E6)
- * - `cellularTechVote` — `consensusGate.cellularEnvironmentVote`로 forward (S10)
  */
 export interface AdvanceEvidence {
   type: EvidenceType;
-  /** evidence 발생 stationId. seedOverride consecutive 윈도우 일치 비교 + passedStations stamp용. */
+  /** evidence 발생 stationId. passedStations stamp용. */
   stationId: string;
-  /** evidence 발생 시각 (epoch ms). 게이트 #5 lock.expiresAt 비교 + window 산출. */
+  /** evidence 발생 시각 (epoch ms). 게이트 #4 lock.expiresAt 비교 + window 산출. */
   ts: number;
   /** device가 upload한 environment vote ([[reference_wifi_ssid_100pct_mapped]] 게이트 #3). */
   environment: EvidenceEnvironment;
@@ -232,21 +202,15 @@ export interface AdvanceEvidence {
    * #1665 — position-train evidence의 Seoul API 응답 적재 시각 (epoch ms).
    *
    * caller가 Seoul API fetch 시점의 `now`를 forward한다.
-   * 게이트 #7(b) stale 가드: evidence.ts - positionEntryFetchedAt > 30s이면 Seoul API 응답이
+   * 게이트 #6(b) stale 가드: evidence.ts - positionEntryFetchedAt > 30s이면 Seoul API 응답이
    * 최신 cron cycle의 것이 아닌 stale snapshot으로 판단 → blocked('position-train-stale').
    * 부재 시(레거시 caller) 게이트 dormant — backward compat 보장.
    */
   positionEntryFetchedAt?: number;
-  /** WiFi SSID 원본 — 진단/observability stamp용. lookup은 caller가 수행. */
-  wifiSsid?: string;
-  /** consensusGate에 forward할 cellular vote (S10 #1543). */
-  cellularTechVote?: CellularTechVote;
-  /** accel fingerprint 식별자 (S9, type='accel-fingerprint' 시). */
-  accelFingerprint?: string;
   /**
    * #2023 — device `mapMatchedArcM` 시간 적분 폭주 감지 결과 (`positionSeries.detectArcOvershoot`).
    *
-   * caller가 미리 계산해 stamp. 값이 true + options.archFlag='on' 시 게이트 #8이
+   * caller가 미리 계산해 stamp. 값이 true + options.archFlag='on' 시 게이트 #5가
    * blocked('arc-overshoot')을 반환한다. undefined(미stamp)면 게이트 dormant — backward compat.
    * archFlag='off' 시에도 dormant — flag rollback 안전.
    */
@@ -262,9 +226,7 @@ export type AdvanceBlockReason =
   | 'no-trip'
   | 'motion-stationary'
   | 'env-consensus-fail'
-  | 'time-only-forbidden'
   | 'train-mismatch'
-  | 'lockless-arvlcd-alone'
   | 'position-train-jump'
   | 'position-train-stale'
   | 'arc-overshoot'
@@ -286,17 +248,7 @@ export interface AdvanceStats {
   blockedNoTrip: number;
   blockedMotionStationary: number;
   blockedEnvConsensus: number;
-  blockedTimeOnly: number;
   blockedTrainMismatch: number;
-  blockedLocklessArvlcdAlone: number;
-  seedOverrideAttempted: number;
-  seedOverrideAccepted: number;
-}
-
-/** 단일 WiFi SSID → stationId(=stationName canonical) lookup entry. */
-export interface WifiSsidEntry {
-  stationId: string;
-  patterns: readonly string[];
 }
 
 /**
@@ -357,58 +309,10 @@ export function computePositionTrainHopDistance(
 }
 
 /**
- * MotionEvidence ring buffer 내에서 윈도우 [sinceMs, +∞) strong evidence 카운트.
- *
- * `MotionEvidence.signal`은 unknown payload — caller(T3)가 evidence type을 어떤 key로 stamp하는지에
- * 의존. 본 함수는 보수적으로 signal이 객체이면 `.type` 또는 `.evidenceType` 키를 찾아 type 추출.
- * 그 외(원시값 / type 키 부재)는 미카운트 — strong 신호로 보장 못 함.
- */
-export function countStrongEvidence(motionEvidence: readonly MotionEvidence[], sinceMs: number): number {
-  let count = 0;
-  for (const e of motionEvidence) {
-    if (e.ts < sinceMs) continue;
-    const type = extractEvidenceType(e.signal);
-    if (type !== null && STRONG_EVIDENCE_TYPES.has(type)) count += 1;
-  }
-  return count;
-}
-
-function extractEvidenceType(signal: unknown): EvidenceType | null {
-  if (signal === null || typeof signal !== 'object') return null;
-  const obj = signal as { type?: unknown; evidenceType?: unknown };
-  const raw = obj.type ?? obj.evidenceType;
-  if (typeof raw !== 'string') return null;
-  return raw as EvidenceType;
-}
-
-/**
- * 같은 stationId를 가리키는 strong evidence가 끊김 없이 도착한 윈도우의 ts 범위 (max - min).
- *
- * 인접 evidence 사이 gap ≤ 60s를 "연속"으로 본다. 첫 evidence stationId 기준으로 필터한 뒤
- * sort + gap 검증 후 끝-시작 차이를 반환. 연속 끊기면 0.
- *
- * 입력 list가 비어 있거나 단일 entry면 0 (단일은 "연속 윈도우"가 아니므로).
- */
-export function consecutiveDurationMs(strongEvidence: readonly AdvanceEvidence[]): number {
-  if (strongEvidence.length === 0) return 0;
-  const first = strongEvidence[0];
-  const sorted = strongEvidence
-    .filter((e) => e.stationId === first.stationId)
-    .slice()
-    .sort((a, b) => a.ts - b.ts);
-  if (sorted.length < 2) return 0;
-  for (let i = 1; i < sorted.length; i += 1) {
-    if (sorted[i].ts - sorted[i - 1].ts > 60_000) return 0;
-  }
-  return sorted[sorted.length - 1].ts - sorted[0].ts;
-}
-
-/**
  * AdvanceEvidence → evaluateConsensusGate 신호 변환.
  *
  * `gateOutcome`는 외부에서 산출되어야 하는 9단 AND 게이트 결과 — 본 함수는 caller가 stamp한 값을
- * 그대로 forward한다. arrivalSignalPresent / lockAttachable / positionTrainAgreement /
- * wifiSsidMatch는 evidence type 기반으로 유도.
+ * 그대로 forward한다. arrivalSignalPresent / lockAttachable는 evidence type 기반으로 유도.
  */
 export function buildSignalsFromEvidence(
   evidence: AdvanceEvidence,
@@ -416,10 +320,7 @@ export function buildSignalsFromEvidence(
 ): Parameters<typeof evaluateConsensusGate>[1] {
   const arvlCdValid =
     typeof evidence.arvlCd === 'number' && evidence.arvlCd >= 0 && evidence.arvlCd <= 3;
-  const arrivalSignalPresent =
-    evidence.type === 'arvlcd-confirmed-train' ||
-    evidence.type === 'arvlcd-lockless' ||
-    arvlCdValid;
+  const arrivalSignalPresent = evidence.type === 'arvlcd-confirmed-train' || arvlCdValid;
   return {
     gateOutcome: options.gatePassed
       ? {
@@ -438,41 +339,11 @@ export function buildSignalsFromEvidence(
       : { pass: false, reason: 'window-too-small' },
     arrivalSignalPresent,
     lockAttachable: options.lockAttachable,
-    positionTrainAgreement: evidence.type === 'position-train' ? true : undefined,
-    wifiSsidMatch: evidence.type === 'wifi-ssid-match' ? true : undefined,
-    cellularEnvironmentVote: evidence.cellularTechVote,
     // #2329 (consensus-C) — consensus-train evidence는 그 자체가 underground lockAttachable
-    // surrogate(strong G, consensusGate.ts). gate #5b가 legConsensus confirmed를 이미 강제하므로
+    // surrogate(strong G, consensusGate.ts). gate #4b가 legConsensus confirmed를 이미 강제하므로
     // 여기서는 evidence.type만으로 forward — 이중 확인 불필요.
     consensusConfirmed: evidence.type === 'consensus-train' ? true : undefined,
   };
-}
-
-/**
- * WiFi SSID → stationId 조회. 미매칭 시 null.
- *
- * 본 함수는 injectable `entries` 리스트를 받는다 — 실제 매핑 데이터(`subwayWifiSsidMap.json`)는
- * T3 wire-up에서 주입 (본 PR은 함수 logic + 테스트만). pattern은 case-insensitive regex.
- */
-export function lookupStationFromWifiSsid(
-  ssid: string | null | undefined,
-  entries: readonly WifiSsidEntry[],
-): string | null {
-  if (typeof ssid !== 'string') return null;
-  const trimmed = ssid.trim();
-  if (trimmed.length === 0) return null;
-  for (const entry of entries) {
-    for (const pattern of entry.patterns) {
-      let re: RegExp;
-      try {
-        re = new RegExp(pattern, 'i');
-      } catch {
-        continue;
-      }
-      if (re.test(trimmed)) return entry.stationId;
-    }
-  }
-  return null;
 }
 
 /**
@@ -519,7 +390,7 @@ export async function advanceTripPosition(
   // blocked으로 끝나는 호출은 writeSsot를 타지 않으므로 KV에는 영향 없음(기존 "blocked 시
   // SSoT 미변경" 불변식 유지) — 단, 이 함수가 반환하는 `ssot`(in-memory)는 caller가 별도
   // 경로로 write할 수 있어(예: scheduled.ts `recordFireBlockReasonTransition`가 blocked
-  // outcome.ssot를 KV에 write) 게이트 #5/#5c가 결국 거부할 evidence는 애초에 stamp하지
+  // outcome.ssot를 KV에 write) 게이트 #4/#4c가 결국 거부할 evidence는 애초에 stamp하지
   // 않는다(메인 검증 발견, #2685 사례 — trainIdentityMismatches로 identity도 함께 확인).
   if (hasArvlcdTrainProgressSignal(evidence) && !trainIdentityMismatches(evidence, lock)) {
     pushMotionEvidence(ssot, {
@@ -537,7 +408,7 @@ export async function advanceTripPosition(
   const userIntentBypass = ssot.userIntentDeclared || tripHasDeclaredIntent(trip);
   //
   // #2321 (O1-B) — device sync stale(`lastDeviceSyncAt` 5분 초과 무갱신) + arvlcd-confirmed-train
-  // evidence(lock trainCode 일치, 게이트 #5가 별도로 재검증)인 cycle은 motionState 신호 자체를
+  // evidence(lock trainCode 일치, 게이트 #4가 별도로 재검증)인 cycle은 motionState 신호 자체를
   // 신뢰하지 않는다. suspend 직전 값에 영구 고정된 stale motionState가 backend 자율 전진까지
   // 동결시키던 회귀(#2306 RCA)를 차단 — arvlCd ground truth로만 dormant 전환, 다른 evidence
   // type(예: position-train)은 기존 게이트 그대로 유지(스코프: trainCode 보유 leg 자율 전진만,
@@ -572,7 +443,7 @@ export async function advanceTripPosition(
   // #3 Environment 게이트 — #2432 게이트 #2 lockedTrainArvlcdBypass와 대칭 우회 (#2623).
   // lock 활성 + arvlcd-confirmed-train evidence는 그 자체가 "locked trainCode가 실제 이동
   // 중"이라는 독립 확증이므로(gate #2 주석 동일 근거), device 기압계/GPS 기반 environment
-  // 합의보다 강한 ground truth로 취급해 면제한다. false-positive 방어는 게이트 #5 train
+  // 합의보다 강한 ground truth로 취급해 면제한다. false-positive 방어는 게이트 #4 train
   // identity(`lock.trainCode` 불일치 시 blocked('train-mismatch'))가 유지.
   //
   // #2623 P1-1 리뷰 — environment 입력을 stations.json(고정 375개 underground 역)으로 바꾼 뒤,
@@ -585,27 +456,12 @@ export async function advanceTripPosition(
   // arvlcd-confirmed-train과 동급의 "locked trainCode 독립 확증"이다 — 단, 그 사실을 본 게이트가
   // 자체 검증(evidence.arvlcdTrainCode===lock.trainCode)해야만 우회한다(legacy caller가
   // arvlcdTrainCode를 stamp하지 않는 케이스까지 무조건 신뢰하지 않기 위함 — 그런 미stamp
-  // evidence는 기존대로 정상 env consensus 평가를 받는다). 대칭 방어는 게이트 #5c.
+  // evidence는 기존대로 정상 env consensus 평가를 받는다). 대칭 방어는 게이트 #4c.
   const envConsensusBypass =
     lockedTrainArvlcdBypass ||
     (lock !== undefined &&
       evidence.type === 'position-train' &&
       evidence.arvlcdTrainCode === lock.trainCode);
-  // #2623 P2-3 리뷰 — cellular contradiction hard-reject(S10 #1543)는 bypass 여부와 무관하게 항상
-  // 평가한다. environment가 stations.json(고정)으로, cellularTechVote는 여전히 device 신호로
-  // 소스가 분리되며 모순 가능성이 오히려 커졌다 — lock+arvlcd 계열이라도 device가 명시적으로
-  // 반대 환경(예: environment=underground인데 vote=surface, 즉 지상 4G/5G가 잡힌 상태)을 투표하면
-  // "locked trainCode 확증"보다 그 모순 자체를 우선 신뢰해 발사하지 않는다. `evaluateConsensusGate`
-  // 내부에도 동일 체크가 있어(다른 caller 계약 보존을 위해 그대로 유지) bypass=false 경로에서는
-  // 중복 평가되지만 멱등이라 무해하다.
-  if (
-    cellularContradictsEnvironment(
-      mapEvidenceEnvironment(evidence.environment),
-      evidence.cellularTechVote,
-    )
-  ) {
-    return { result: 'blocked', blockReason: 'env-consensus-fail', ssot };
-  }
   if (!envConsensusBypass) {
     const consensusOutcome = evaluateConsensusGate(
       mapEvidenceEnvironment(evidence.environment),
@@ -619,13 +475,8 @@ export async function advanceTripPosition(
     }
   }
 
-  // #4 Evidence type 게이트 (ADR-015 §E4 — time-only 절대 거부)
-  if (evidence.type === 'time-only') {
-    return { result: 'blocked', blockReason: 'time-only-forbidden', ssot };
-  }
-
-  // #5 Train identity 게이트 (lock 활성 시 arvlcd-confirmed-train/consensus-train은 lock.trainCode
-  // 일치를 강제, #2329 consensus-C 포함) + #5c (#2623 P1-1 리뷰, position-train evidence가
+  // #4 Train identity 게이트 (lock 활성 시 arvlcd-confirmed-train/consensus-train은 lock.trainCode
+  // 일치를 강제, #2329 consensus-C 포함) + #4c (#2623 P1-1 리뷰, position-train evidence가
   // arvlcdTrainCode를 stamp했다면 게이트 #3 envConsensusBypass가 신뢰하는 것과 같은 identity
   // claim이므로 lock.trainCode와 일치까지 검증 — 미stamp는 dormant, 하위 호환 보존).
   //
@@ -635,7 +486,7 @@ export async function advanceTripPosition(
     return { result: 'blocked', blockReason: 'train-mismatch', ssot };
   }
 
-  // #5b consensus-train 게이트 (#2329, consensus-C, 설계 SSoT #2323) — legConsensus 상태기계가
+  // #4b consensus-train 게이트 (#2329, consensus-C, 설계 SSoT #2323) — legConsensus 상태기계가
   // 'confirmed'로 수렴했을 때만 통과. tracking/ambiguous/demoted/suppressed 또는 상태기계
   // 미시작(undefined)은 전부 blocked — "confirmed에서만 alert 발사" 정책의 SSoT 강제 지점.
   // confirmedTrainCode와 evidence.arvlcdTrainCode가 둘 다 있으면 일치까지 확인(caller가 다른
@@ -653,15 +504,7 @@ export async function advanceTripPosition(
     }
   }
 
-  // #6 Lockless arvlcd 단독 게이트 — 60s 윈도우 내 추가 strong evidence 1+ 필요
-  if (lock === undefined && evidence.type === 'arvlcd-lockless') {
-    const otherStrong = countStrongEvidence(ssot.motionEvidence, evidence.ts - 60_000);
-    if (otherStrong < 1) {
-      return { result: 'blocked', blockReason: 'lockless-arvlcd-alone', ssot };
-    }
-  }
-
-  // #8 arc-overshoot 게이트 (#2023)
+  // #5 arc-overshoot 게이트 (#2023)
   // device `mapMatchedArcM` 시간 적분 폭주 감지 시 hop 진행 pause. archFlag='on' 시에만 활성.
   // 미stamp 또는 archFlag != 'on' 시 dormant (backward compat).
   //
@@ -674,7 +517,7 @@ export async function advanceTripPosition(
     return { result: 'blocked', blockReason: 'arc-overshoot', ssot };
   }
 
-  // #7 position-train jump / stale 게이트 (#1665)
+  // #6 position-train jump / stale 게이트 (#1665)
   // Seoul API stale (30s 지연) 또는 trainCode 모호 시 잘못된 next waypoint advance 차단.
   // (a) jump 가드: hop 거리 > POSITION_TRAIN_MAX_HOP → reject.
   //     lock 활성: lock.segmentStations 기준.
@@ -825,7 +668,7 @@ function deriveLockSuggestion(input: {
       decidedAt: evidence.ts,
     };
   }
-  // consensus (#2329, consensus-C) — legConsensus 상태기계 confirmed. gate #5b가 이미 confirmed +
+  // consensus (#2329, consensus-C) — legConsensus 상태기계 confirmed. gate #4b가 이미 confirmed +
   // trainCode 일치를 강제했으므로 여기 도달한 evidence.arvlcdTrainCode는 신뢰 가능. lock 승격은
   // 하지 않는다 — confidence='consensus'는 device 측에서 high/medium과 별도로 다뤄지는 표식.
   if (evidence.type === 'consensus-train' && evidence.arvlcdTrainCode) {
@@ -838,39 +681,6 @@ function deriveLockSuggestion(input: {
     };
   }
   return null;
-}
-
-/**
- * Seed override (E5).
- *
- * Strong evidence 2+개가 같은 stationId를 30s 이상 연속 가리키면 currentStationId를 정정.
- * passedStations는 초기화 (잘못 stamp된 station 폐기). seedOverrideCount += 1.
- *
- * @returns 'override' (적용됨) | 'reject' (조건 미달 / SSoT 없음)
- */
-export async function trySeedOverride(
-  kv: KVNamespace,
-  token: string,
-  newStationId: string,
-  evidenceList: readonly AdvanceEvidence[],
-): Promise<'override' | 'reject'> {
-  const ssot = await readSsot(kv, token);
-  if (ssot === null) return 'reject';
-  const strong = evidenceList.filter((e) => STRONG_EVIDENCE_TYPES.has(e.type));
-  if (strong.length < 2) return 'reject';
-  const duration = consecutiveDurationMs(strong);
-  if (duration < 30_000) return 'reject';
-  const trip = await getTrip(kv, token);
-  const expiresAt = trip?.expiresAt;
-  const next: TripPositionSSoT = {
-    ...ssot,
-    currentStationId: newStationId,
-    passedStations: [],
-    seedOverrideCount: ssot.seedOverrideCount + 1,
-    lastAdvanceEvidence: 'seed-override',
-  };
-  await writeSsot(kv, next, expiresAt !== undefined ? { expiresAt } : undefined);
-  return 'override';
 }
 
 /**

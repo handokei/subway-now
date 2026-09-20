@@ -722,9 +722,13 @@ export interface PositionPoint {
    * - 'underground'  : 2G/3G fallback → 지하 환경 vote
    * - 'unknown' / 미전송 : vote 미투표 (게이트 영향 0)
    *
-   * 본 필드는 backend `evaluateConsensusGate`가 `cellularEnvironmentVote`로 입력받아 4분면 SSOT
-   * 합의 게이트의 환경 contradict 판정에 사용한다. iOS only — Android는 본 값을 보내지 않으며
-   * backend는 undefined를 'unknown' 동급으로 graceful 처리.
+   * iOS only — Android는 본 값을 보내지 않으며 backend는 undefined를 'unknown' 동급으로
+   * graceful 처리.
+   *
+   * #2765 (게이트 전수감사 A) — 본 필드를 입력받던 `evaluateConsensusGate`의
+   * `cellularEnvironmentVote` signal(4분면 SSOT 합의 게이트 환경 contradict 판정)은 생산자
+   * 0건이 감사로 확정돼 제거됐다. `positionSeries.ts`가 validity만 검사하는 intake-only 필드로
+   * 남아 있다 — backend consumer 재도입 시 이 필드를 다시 wire한다.
    */
   cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
   /**
@@ -734,10 +738,11 @@ export interface PositionPoint {
    * stations.json을 갖지 않으므로 lookup은 device 책임 (`mapMatchedLine/ArcM`과 동일 패턴).
    *
    * - 매칭 성공: `Station.name` 문자열 (예: '강남')
-   * - 미연결 / 매칭 실패 / Android: undefined → consensusGate strongDB는 자연 false fallback
-   *   (undefined → `wifiSsidMatch ?? false` → false, strongBE/strongCB fallback 유지)
    * - iOS WiFi constraint: 사용자가 연결된 SSID만 얻을 수 있음 (5G/LTE 전용 시 undefined).
    *   `reference_ios_wifi_api_constraint.md` 참조.
+   *
+   * #2765 (게이트 전수감사 A) — 본 필드가 먹이던 `evaluateConsensusGate`의 strongDB
+   * (`wifiSsidMatch`) 분기는 생산자 0건이 감사로 확정돼 제거됐다. 현재 intake-only.
    */
   wifiSsidStationName?: string;
 }

@@ -41,7 +41,6 @@ function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
     lastAdvanceEvidence: 'seed-override',
     passedStations: [],
     userIntentDeclared: false,
-    seedOverrideCount: 0,
     alarmEvents: [],
     schemaVersion: 1,
     ...overrides,
@@ -63,7 +62,6 @@ describe('tripPositionSsot — key + CRUD', () => {
       currentStationId: '0150',
       motionState: 'moving',
       passedStations: ['용마산', '중곡'],
-      seedOverrideCount: 2,
     });
     await writeSsot(kv as unknown as KVNamespace, ssot);
     const got = await readSsot(kv as unknown as KVNamespace, ssot.tripToken);
@@ -145,7 +143,6 @@ describe('tripPositionSsot — seedSsot (S1 GAP A 수신부)', () => {
     expect(ssot.motionEvidence).toEqual([]);
     expect(ssot.passedStations).toEqual([]);
     expect(ssot.userIntentDeclared).toBe(false);
-    expect(ssot.seedOverrideCount).toBe(0);
     // #2321 — lastDeviceSyncAt 추가로 schemaVersion 3.
     expect(ssot.schemaVersion).toBe(3);
     expect(ssot.lastAdvanceAt).toBe(0);
