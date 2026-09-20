@@ -105,7 +105,13 @@ import {
   readFreshSelfPollPosition,
 } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
-import { dedupeTripsByDeviceToken, listTrips, putTrip, resolveTripDeviceToken } from './trips';
+import {
+  dedupeTripsByDeviceToken,
+  listTrips,
+  putTrip,
+  resolveTripDeviceToken,
+  tripHasDeclaredIntent,
+} from './trips';
 import {
   buildTransferGateBlockMeta,
   evaluateTransferDestinationGate,
@@ -369,22 +375,6 @@ export function recordDestinationCrossCheck(
       stats.destinationCrossCheck.stationUnknown += 1;
       return;
   }
-}
-
-/**
- * #2554 (ADR-038, ADR-014 §사용자 명시 의향) — trip이 "사용자 명시 의향"을 선언했는지.
- *
- * 사용자가 열차를 직접 탭(BoardingTrainList / boardingPrompt 응답 → `boardingLock`) 하거나
- * C 토글을 켜면(`infoModeEnabled`) "나는 이 trip을 명시적으로 추적 중"이라는 확정 신호다.
- * 이 확정은 device 모션(정지)보다 우선한다 — backend가 trainCode를 TOPIS로 device-독립 추적하므로
- * 지하 GPS 정지 오판으로 추적을 굶겨선 안 된다(ADR-014 동급 보장).
- *
- * SSoT.userIntentDeclared는 원래 이 값을 담기 위한 필드였으나 프로덕션에서 true로 세팅하는 배선이
- * 없어(dead wire) stationary 게이트가 탭한 trip까지 skip하던 회귀(2026-09-10 leg-1 침묵)의
- * 원인이었다. 본 helper가 trip 상태에서 직접 파생해 seed/게이트에 배선한다.
- */
-export function tripHasDeclaredIntent(trip: Pick<Trip, 'boardingLock' | 'infoModeEnabled'>): boolean {
-  return trip.boardingLock !== undefined || trip.infoModeEnabled === true;
 }
 
 /**

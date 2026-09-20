@@ -60,6 +60,27 @@ export function tripKey(token: string): string {
 }
 
 /**
+ * #2554 (ADR-038, ADR-014 §사용자 명시 의향) — trip이 "사용자 명시 의향"을 선언했는지.
+ *
+ * 사용자가 열차를 직접 탭(BoardingTrainList / boardingPrompt 응답 → `boardingLock`) 하거나
+ * C 토글을 켜면(`infoModeEnabled`) "나는 이 trip을 명시적으로 추적 중"이라는 확정 신호다.
+ * 이 확정은 device 모션(정지)보다 우선한다 — backend가 trainCode를 TOPIS로 device-독립 추적하므로
+ * 지하 GPS 정지 오판으로 추적을 굶겨선 안 된다(ADR-014 동급 보장).
+ *
+ * SSoT.userIntentDeclared는 원래 이 값을 담기 위한 필드였으나 프로덕션에서 true로 세팅하는 배선이
+ * 없어(dead wire) stationary 게이트가 탭한 trip까지 skip하던 회귀(2026-09-10 leg-1 침묵)의
+ * 원인이었다. 본 helper가 trip 상태에서 직접 파생해 seed/게이트에 배선한다.
+ *
+ * #2763 — scheduled.ts(cron)와 advanceTripPosition.ts(게이트 #2) 양쪽이 같은 live-OR 정책을
+ * 써야 해서(감사 문서 ②-4, 게이트 #2만 seed 스냅샷 `ssot.userIntentDeclared`에 의존하던 모순)
+ * trips.ts로 이전 — advanceTripPosition.ts가 scheduled.ts를 import하면 순환 참조가 생겨
+ * 저수준 trip 모듈로 옮긴다(scheduled.ts는 advanceTripPosition.ts를 import).
+ */
+export function tripHasDeclaredIntent(trip: Pick<Trip, 'boardingLock' | 'infoModeEnabled'>): boolean {
+  return trip.boardingLock !== undefined || trip.infoModeEnabled === true;
+}
+
+/**
  * #2174 (P1-A) — push 발사용 실 APNs deviceToken을 단일 지점에서 해석한다.
  *
  * 로테이션(`rotateTripTokenForNewRoute`)이 `trip.token`을 `crypto.randomUUID()`로 교체해도

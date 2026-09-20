@@ -350,7 +350,13 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       expected: 'advanced',
     },
     {
-      name: 'N1 (#2432 회귀방어) 정지 + lock + arvlcd 확증 없는 evidence(position-train) → blocked(motion-stationary)',
+      // #2763 (코드리뷰 항목4, 감사 ②-4) — 게이트 #2가 tripHasDeclaredIntent(trip) live-OR를
+      // 갖게 되면서, lock이 부착된 trip은 `ssot.userIntentDeclared`가 stale(false)이어도 motion
+      // gate를 통과한다(lock 부착 자체가 명시 의향 — cron 게이트와 동일 정책, ADR-014 동급
+      // 보장). 여전히 evidence의 train identity는 gate #5c가 검증하므로, trainCode 불일치
+      // evidence는 차단 자체는 유지되고 사유만 motion-stationary → train-mismatch로 바뀐다
+      // (보호 결과 동일, 더 정확한 사유로 교체).
+      name: 'N1 (#2432 회귀방어 → #2763 갱신) 정지 + lock(명시 의향) + trainCode 불일치 position-train → blocked(train-mismatch)',
       motion: 'stationary',
       userIntent: false,
       hasLock: true,
@@ -361,7 +367,7 @@ describe('advanceTripPosition — 6단 게이트 양방향 시나리오 (accepta
       lockAttachable: true,
       extraStrongInRing: 0,
       expected: 'blocked',
-      expectedReason: 'motion-stationary',
+      expectedReason: 'train-mismatch',
     },
     {
       name: 'N1b (#2432 회귀방어) lockless + 정지 + arvlcd-lockless → blocked(motion-stationary)',
@@ -1235,11 +1241,15 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
   });
 
   it('blocked advance → alarmEvents stamp 안 함', async () => {
-    // #2432 — arvlcd-confirmed-train evidence는 lock 활성 + stationary여도 motion gate를 우회하므로,
-    // 본 blocked 시나리오는 확증 없는 evidence type(position-train)으로 motion gate를 차단시킨다.
+    // #2432 — arvlcd-confirmed-train evidence는 lock 활성 + stationary여도 motion gate를 우회한다.
+    // #2763 (코드리뷰 항목4) — lock 활성 trip은 tripHasDeclaredIntent(trip)로 motion gate #2도
+    // 우회하므로(setupAndAdvance가 boardingLock을 부착), 예전엔 motion-stationary로 막히던
+    // position-train(미확증) evidence가 이제 게이트 #2를 통과한다 — 본 테스트는 "blocked 시
+    // alarmEvents 미stamp"만 검증하면 되므로, 게이트 #2와 무관하게 항상 차단되는
+    // time-only(ADR-015 §E4)로 교체해 시나리오 목적을 유지한다.
     const { result, after } = await setupAndAdvance(
       'stationary',
-      makeEvidence({ type: 'position-train', arvlCd: null, arvlcdTrainCode: undefined }),
+      makeEvidence({ type: 'time-only', arvlCd: null, arvlcdTrainCode: undefined }),
     );
     expect(result).toBe('blocked');
     expect(after?.alarmEvents).toEqual([]);
@@ -1283,14 +1293,37 @@ describe("advanceTripPosition — motionEvidence 'seoul-arvlcd' stamping (#2763)
     expect(arvlcdSamples[0].signal).toMatchObject({ stationId: '중곡' });
   });
 
-  it("advance 성공(position-train) → 동일하게 source:'seoul-arvlcd' stamp (realtimePosition 확증도 동일 신호)", async () => {
+  it("advance 성공(position-train, positionEntry 확증 있음) → 동일하게 source:'seoul-arvlcd' stamp (realtimePosition 확증도 동일 신호)", async () => {
+    // #2763 (코드리뷰 회귀 수정) — position-train은 `positionEntry`가 실제로 stamp된 경우만
+    // "확증"으로 인정한다(hasArvlcdTrainProgressSignal). positionEntry 미stamp면 evidence
+    // type만으로는 확증 아님 — 아래 별도 테스트가 그 dormant 경로를 검증.
+    const { result, after } = await setupAndAdvance(
+      '중곡',
+      makeEvidence({
+        type: 'position-train',
+        arvlCd: null,
+        positionEntry: {
+          trainCode: '7246',
+          stationName: '중곡',
+          trainSttus: 1,
+          isUp: true,
+          recptnMs: NOW,
+        },
+      }),
+    );
+    expect(result).toBe('advanced');
+    const arvlcdSamples = after?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
+    expect(arvlcdSamples).toHaveLength(1);
+  });
+
+  it("advance 성공(position-train, positionEntry 미stamp) → 확증 아님이므로 stamp 안 함 (legacy caller dormant)", async () => {
     const { result, after } = await setupAndAdvance(
       '중곡',
       makeEvidence({ type: 'position-train', arvlCd: null }),
     );
     expect(result).toBe('advanced');
     const arvlcdSamples = after?.motionEvidence.filter((e) => e.source === 'seoul-arvlcd') ?? [];
-    expect(arvlcdSamples).toHaveLength(1);
+    expect(arvlcdSamples).toHaveLength(0);
   });
 
   it('blocked advance → motionEvidence에 stamp 안 함', async () => {

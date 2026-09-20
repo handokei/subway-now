@@ -8,10 +8,13 @@
  * fire. T3는 POST /position 수신 시 SSOT.motionState를 정확히 판정/누적해 게이트 #2의 입력을
  * 제공한다.
  *
- * 알고리즘 (issue #1556 보강 섹션)
+ * 알고리즘 (issue #1556 보강 섹션, #2763로 2단계 개정)
  * ================================
  * 1. device explicit motion(walking/automotive) → 'moving' 즉시
- * 2. device explicit 'stationary' → 'stationary' 즉시 (보수적 판정 안 함 — 사용자 의도 신뢰)
+ * 2. device explicit 'stationary' → 'stationary', 단 arvlcd train-progress 있으면 'unknown'으로
+ *    완화 (#2763 — CMMotionActivity가 승차 중에도 간헐적으로 'stationary'를 보내는 실측 패턴이
+ *    있어, 서버 열차데이터가 device 모션보다 권위라는 확정 아키텍처(2026-09-03)를 이 분기에도
+ *    적용. 원 판정 없음/사용자 의도 신뢰 정책은 arvlcd train-progress 부재 시 그대로 유지)
  * 3. device 'unknown' → backend가 GPS displacement 5분 윈도우로 판정
  *    - sample 10건 미만 → 'unknown' (샘플 부족)
  *    - displacement < 10m AND no arvlcd train-progress → 'stationary'
@@ -104,26 +107,29 @@ export function maxDisplacementMeters(samples: readonly MotionEvidence[]): numbe
 }
 
 /**
- * 같은 line 내 다른 station을 진행 중인 arvlcd evidence가 sinceMs 이후 2건 이상이면 true.
+ * SSOT.motionEvidence 중 `source === 'seoul-arvlcd'`인 sample이 sinceMs 이후 1건 이상이면 true.
  *
- * SSOT.motionEvidence 중 `source === 'seoul-arvlcd'`인 sample의 `signal.stationId`가
- * 2가지 이상이면 train progress로 판단. 사용자가 정지 GPS 상태에서도 실제로는 탑승해 다른 역을
- * 지나치는 케이스를 보수적으로 'unknown' 유지하기 위함.
+ * 사용자가 정지 GPS 상태에서도 실제로는 탑승해 열차가 진행 중인 케이스를 보수적으로 'unknown'
+ * 유지하기 위함.
+ *
+ * #2763 (2026-09-20 코드리뷰) — 원래는 distinct stationId 2개 이상을 요구했으나, 역간 정차가
+ * 4~5분 걸리는 구간(9/15 어대~건대 실측)에서는 5분 창 안에 arvlCd 확정 도착이 1개 station만
+ * 잡혀 이 조건이 상시 false였다(실효 무력). `source:'seoul-arvlcd'`의 유일 writer가
+ * advanceTripPosition의 advance 확증(arvlCd 원본/realtimePosition으로 이미 검증된 강신호)이므로,
+ * 1건만으로도 "열차가 실제 진행 중"이라는 충분한 증거다 — device GPS/가속도처럼 노이즈가 있는
+ * 신호가 아니라 Seoul API 확정 도착 기반이라 2건 연속 요구가 과보수적이었다.
  */
 export function hasArvlcdTrainProgress(
   ssot: TripPositionSSoT,
   sinceMs: number,
 ): boolean {
-  const stationIds = new Set<string>();
   for (const e of ssot.motionEvidence) {
     if (e.ts < sinceMs) continue;
     if (e.source !== 'seoul-arvlcd') continue;
     const sig = e.signal;
     if (!sig || typeof sig !== 'object') continue;
     const o = sig as Record<string, unknown>;
-    if (typeof o.stationId !== 'string' || o.stationId.length === 0) continue;
-    stationIds.add(o.stationId);
-    if (stationIds.size >= 2) return true;
+    if (typeof o.stationId === 'string' && o.stationId.length > 0) return true;
   }
   return false;
 }
@@ -142,12 +148,16 @@ export function computeMotionState(
   if (devicePosition.motion === 'walking' || devicePosition.motion === 'automotive') {
     return 'moving';
   }
-  // 2. device explicit stationary — 즉시 stationary (사용자 의도 신뢰)
+  const sinceMs = now - MOTION_WINDOW_MS;
+  // 2. device explicit stationary — 원칙은 즉시 stationary(사용자 의도 신뢰), 단 arvlcd
+  //    train-progress 확증이 있으면 'unknown'으로 완화한다 (#2763). CMMotionActivity가 승차
+  //    중에도 간헐적으로 'stationary'를 보내는 실측 패턴이 있어, 이 분기를 무조건 신뢰하면
+  //    서버 열차데이터(더 강한 ground truth, 확정 아키텍처 2026-09-03)가 있어도 무시된다.
   if (devicePosition.motion === 'stationary') {
+    if (hasArvlcdTrainProgress(ssot, sinceMs)) return 'unknown';
     return 'stationary';
   }
   // 3. device 'unknown' → GPS displacement 윈도우 판정
-  const sinceMs = now - MOTION_WINDOW_MS;
   const recentGps = ssot.motionEvidence.filter(
     (e) => e.ts >= sinceMs && e.source === 'device-position',
   );
