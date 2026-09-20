@@ -251,12 +251,15 @@ describe('SeoulArrivalClient', () => {
   });
 
   describe('fetchPositions (#585)', () => {
+    // #2746 — realtimePosition의 updnLine은 realtimeStationArrival(한글 '상행'/'하행')과 달리
+    // 숫자 문자열('0'/'1')이다. R2 실캡처(seoul-capture/2026-09-17) trainCode 8387/2389/7355등
+    // 교차 대조로 확정: '0'=상행/내선, '1'=하행/외선.
     function makePositionItem(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
       return {
         trainNo: '7246',
         statnNm: '중곡',
         trainSttus: 1,
-        updnLine: '상행',
+        updnLine: '0',
         lastRecptnDt: '2025-01-15 10:30:00',
         ...overrides,
       };
@@ -264,7 +267,7 @@ describe('SeoulArrivalClient', () => {
 
     it('parses position list for known line', async () => {
       const fetchImpl = vi.fn(async () =>
-        makeResponse({ realtimePositionList: [makePositionItem(), makePositionItem({ trainNo: '7248', updnLine: '하행' })] }),
+        makeResponse({ realtimePositionList: [makePositionItem(), makePositionItem({ trainNo: '7248', updnLine: '1' })] }),
       );
       const client = new SeoulArrivalClient({
         apiKey: 'KEY',
@@ -280,6 +283,86 @@ describe('SeoulArrivalClient', () => {
       expect(positions[0].isUp).toBe(true);
       expect(positions[1].isUp).toBe(false);
       expect(positions[0].recptnMs).toBe(FIXED_NOW);
+    });
+
+    it('#2746 — updnLine="0"(숫자, 상행/내선)을 isUp:true로 판정한다 (한글 매칭이 아니라 숫자 코드 매칭이어야 통과)', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem({ trainNo: '7246', updnLine: '0' })] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions[0].isUp).toBe(true);
+    });
+
+    it('#2746 — updnLine="1"(숫자, 하행/외선)을 isUp:false로 판정한다', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem({ trainNo: '7248', updnLine: '1' })] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions[0].isUp).toBe(false);
+    });
+
+    it('#2746 — R2 실캡처 대조: 같은 trainCode(8387)가 arrival(한글 "외선")과 position(숫자 "1") 양쪽에서 같은 방향(하행)으로 해석된다', async () => {
+      // seoul-capture/2026-09-17/1789642190359.json 실측: trainCode 8387 → arrival.updnLine="외선", position.updnLine="1"
+      const fetchArrivalImpl = vi.fn(async () =>
+        makeResponse({ realtimeArrivalList: [makeItem({ updnLine: '외선', btrainNo: '8387' })] }),
+      );
+      const arrivalClient = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchArrivalImpl as unknown as typeof fetch,
+      });
+      const arrivals = await arrivalClient.fetchArrivals('건대입구');
+      expect(arrivals[0].isUp).toBe(false);
+
+      const fetchPositionImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem({ trainNo: '8387', updnLine: '1' })] }),
+      );
+      const positionClient = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchPositionImpl as unknown as typeof fetch,
+      });
+      const positions = await positionClient.fetchPositions('2');
+      expect(positions[0].isUp).toBe(false);
+      // 두 엔드포인트가 같은 trainCode를 같은 방향으로 해석해야 한다
+      expect(positions[0].isUp).toBe(arrivals[0].isUp);
+    });
+
+    it('#2746 — 알 수 없는 updnLine 값은 방향 판정에서 제외되고(null 반환) 카운터로 관측된다 (조용히 false로 떨어뜨리지 않는다)', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimePositionList: [
+            makePositionItem({ trainNo: '7246', updnLine: '0' }),
+            makePositionItem({ trainNo: '9999', updnLine: '상행' }), // 옛 한글 오염 값 — 숫자 파서 기준 미지
+            makePositionItem({ trainNo: '8888', updnLine: '' }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      // 미지 값 항목(9999, 8888)은 방향 판정 대상에서 제외 — 결과 목록에 없어야 한다
+      expect(positions).toHaveLength(1);
+      expect(positions[0].trainCode).toBe('7246');
+      expect(client.stats.positionUnknownDirectionCount).toBe(2);
     });
 
     it('returns empty array for unmapped line (no API call)', async () => {
@@ -384,8 +467,10 @@ describe('SeoulArrivalClient', () => {
     });
 
     it('defaults trainSttus / stationName when missing', async () => {
+      // #2746 — updnLine 누락은 "미지 값"으로 취급돼 항목 자체가 제외되므로(방향 판정 오염 방지),
+      // 이 케이스에선 유효한 updnLine('0')을 명시해 stationName/trainSttus/recptnMs 기본값만 검증한다.
       const fetchImpl = vi.fn(async () =>
-        makeResponse({ realtimePositionList: [{ trainNo: '7246' }] }),
+        makeResponse({ realtimePositionList: [{ trainNo: '7246', updnLine: '0' }] }),
       );
       const client = new SeoulArrivalClient({
         apiKey: 'KEY',
@@ -397,6 +482,21 @@ describe('SeoulArrivalClient', () => {
       expect(positions[0].stationName).toBe('');
       expect(positions[0].trainSttus).toBeNull();
       expect(positions[0].recptnMs).toBe(0);
+    });
+
+    it('#2746 — updnLine 누락 항목은 제외되고 카운터가 증가한다', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [{ trainNo: '7246' }] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions).toHaveLength(0);
+      expect(client.stats.positionUnknownDirectionCount).toBe(1);
     });
   });
 
