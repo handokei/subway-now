@@ -204,19 +204,9 @@ jest.mock('../../utils/scheduledAlarmReceiver', () => ({
   awaitInitialScheduledAlarmDrain: () => mockAwaitInitialScheduledAlarmDrain(),
 }));
 
-const mockIsImminentByArrivalCode = jest.fn();
-jest.mock('../../../arrival/utils/imminentArrivalSignal', () => ({
-  isImminentByArrivalCode: (...args: unknown[]) => mockIsImminentByArrivalCode(...args),
-}));
-
 const mockFindFgArvlCdFireSignal = jest.fn();
 jest.mock('../../utils/fgArvlCdFastPath', () => ({
   findFgArvlCdFireSignal: (...args: unknown[]) => mockFindFgArvlCdFireSignal(...args),
-}));
-
-const mockGetStoredTripTrainCode = jest.fn();
-jest.mock('../../../route/utils/tripTrainCode', () => ({
-  getStoredTripTrainCode: (...args: unknown[]) => mockGetStoredTripTrainCode(...args),
 }));
 
 const mockUseArrivalInfo = jest.fn();
@@ -290,8 +280,6 @@ describe('useStationAlarm', () => {
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
-    mockIsImminentByArrivalCode.mockReturnValue(false);
-    mockGetStoredTripTrainCode.mockResolvedValue(null);
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
     // #1816 — 기본 lock 활성. lockless(lock=null) 케이스는 개별 테스트에서 명시적으로 재설정.
     mockGetBoardingLock.mockResolvedValue(DEFAULT_LOCK);
@@ -1404,36 +1392,6 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
 
-    it('sleep ON + lock 활성 + imminent API path도 동일 게이트 적용 (firstHop transfer면 suppress)', async () => {
-      useSettingsStore.setState({ sleepMode: true });
-      mockGetBoardingLock.mockResolvedValue(lock);
-      // imminent path는 destination event를 발사하므로 게이트 trigger 안 됨 — 회귀 확인용.
-      // 별도 시나리오: imminent transfer는 phase 평가 한쪽뿐이라 case는 ETA effect에서 cover.
-      // 본 케이스는 imminent destination 정상 동작 검증 (다른 path가 transfer 차단하는 정책에 의해
-      // 우발 차단되지 않음).
-      const route = makeDirectRoute(1, '2');
-      mockEvaluateAlarmPhase.mockReturnValue(null);
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-      mockGetStoredTripTrainCode.mockResolvedValue('T-1');
-      mockUseArrivalInfo.mockReturnValue({
-        arrival: { arrivalCode: '1' },
-        loading: false,
-        isMock: false,
-      });
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            userLocation: { lat: 37.4, lng: 127.0 },
-            speedMps: 10,
-            accuracyMeters: 100,
-          }),
-        ),
-      );
-      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
-    });
   });
 
   describe('station-passed notification', () => {
@@ -2384,252 +2342,6 @@ describe('useStationAlarm', () => {
     });
   });
 
-  describe('#396 API 신호 기반 imminent', () => {
-    const route = makeDirectRoute(3, '2');
-    const station = makeStation('S1', '시청');
-
-    it('isImminentByArrivalCode가 true이고 미발사 상태면 imminent 알람 발사 + logFiredAlarm("fg", _, "api")', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockUseArrivalInfo.mockReturnValue({
-        arrival: { up: [], down: [], isMock: false },
-        loading: false,
-        isMock: false,
-      });
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(
-          // #727 — speed=2.0, accuracy=50으로 명시해 movement 가드 통과
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: station,
-            speedMps: 2,
-            accuracyMeters: 50,
-          }),
-        ),
-      );
-
-      await waitFor(() => {
-        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
-          'fg',
-          expect.objectContaining({ phaseId: 'imminent', stationName: '강남', type: 'destination' }),
-          'api',
-        );
-      });
-      expect(mockLogFiredAlarm).toHaveBeenCalled();
-    });
-
-    // #727 — speed/accuracy 가드. 정적 사용자의 잘못된 trainCode/fusion 신호로 인한 misfire 차단.
-    it('#727 speed=0(정적)이면 API imminent 발사 차단 + movement-static-speed 적재', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: station,
-            speedMps: 0,
-            accuracyMeters: 50,
-          }),
-        ),
-      );
-
-      await waitFor(() => {
-        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
-          expect.objectContaining({
-            source: 'fg',
-            stationName: '강남',
-            kind: 'destination',
-            phaseId: 'imminent',
-            reason: 'movement-static-speed',
-          }),
-        );
-      });
-      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
-      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
-      expect(apiCalls).toHaveLength(0);
-    });
-
-    it('#727 accuracy>100m(저신뢰)이면 API imminent 발사 차단 + movement-low-accuracy 적재', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: station,
-            speedMps: 2,
-            accuracyMeters: 1500,
-          }),
-        ),
-      );
-
-      await waitFor(() => {
-        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'movement-low-accuracy' }),
-        );
-      });
-      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
-    });
-
-    it('#727 speed/accuracy 모두 누락(null)이어도 API imminent 발사 (graceful pass)', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: station,
-            speedMps: null,
-            accuracyMeters: null,
-          }),
-        ),
-      );
-
-      await waitFor(() => {
-        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
-          'fg',
-          expect.objectContaining({ phaseId: 'imminent' }),
-          'api',
-        );
-      });
-    });
-
-    it('API 신호 false면 발사하지 않는다', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(false);
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      // hydration 완료 대기
-      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
-      await Promise.resolve();
-
-      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
-      expect(apiCalls).toHaveLength(0);
-    });
-
-    it('이미 imminent가 firedAlarms에 있으면 dedup으로 재발사하지 않는다', async () => {
-      mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
-      await Promise.resolve();
-
-      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
-      expect(apiCalls).toHaveLength(0);
-    });
-
-    it('hydration 완료 전에는 API 신호 평가를 보류한다', () => {
-      // getFiredAlarms를 영원히 pending 상태로 두면 firedHydrated가 false 유지
-      mockGetFiredAlarms.mockReturnValue(new Promise(() => {}));
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
-    });
-
-    it('sleepMode면 setAlarmEvent도 함께 호출', async () => {
-      useSettingsStore.setState({ sleepMode: true });
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-      const setAlarmEventSpy = jest.spyOn(useAlarmEventStore.getState(), 'setAlarmEvent');
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      await waitFor(() => {
-        expect(setAlarmEventSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ phaseId: 'imminent', stationName: '강남' }),
-        );
-      });
-      setAlarmEventSpy.mockRestore();
-    });
-
-    it('resolveAlarmDirection 결과가 있으면 event에 direction 포함', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-      mockResolveAlarmDirection.mockReturnValue('up');
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-      );
-
-      await waitFor(() => {
-        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
-          'fg',
-          expect.objectContaining({ direction: 'up' }),
-          expect.any(String),
-        );
-      });
-    });
-
-    it('destination이 없으면 평가하지 않는다', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() => useStationAlarm(defaultInputs({ route })));
-
-      await Promise.resolve();
-      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
-      expect(apiCalls).toHaveLength(0);
-    });
-
-    it('nearestStation이 null이면 direction 미부착 (resolveAlarmDirection 호출 안 함)', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: null })),
-      );
-
-      await waitFor(() => {
-        expect(mockLogFiredAlarm).toHaveBeenCalled();
-      });
-      // nearestStation null이면 direction 분기를 거치지 않음
-      const apiLogCall = mockLogFiredAlarm.mock.calls[0];
-      expect(apiLogCall[1]).not.toHaveProperty('direction');
-    });
-
-    it('destinationId 없으면 trackedTrainCode를 null로 리셋한다', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-
-      const { rerender } = renderHook(
-        ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
-        { initialProps: { inputs: defaultInputs({ route, destination }) } },
-      );
-
-      await waitFor(() => expect(mockGetStoredTripTrainCode).toHaveBeenCalledWith('D1'));
-
-      rerender({ inputs: defaultInputs({ route, destination: null }) });
-
-      // destination null이면 effect는 setTrackedTrainCode(null) 호출 후 종료
-      // getStoredTripTrainCode 추가 호출 없음
-      const callCountBefore = mockGetStoredTripTrainCode.mock.calls.length;
-      await Promise.resolve();
-      expect(mockGetStoredTripTrainCode.mock.calls.length).toBe(callCountBefore);
-    });
-  });
-
   // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거로 fusionSource → notificationSource
   // 라벨을 조립하던 useMemo 자체가 죽은 코드가 되어 제거됨(#2067 리뷰 P2-1, 투기적 보존 금지).
   // fusionSource 입력값이 station-passed dedup bookkeeping을 깨지 않는지만 남겨 검증한다.
@@ -2781,27 +2493,6 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta'));
-    });
-
-    it('imminent API 신호도 setFiredAlarms write 완료를 기다린 후 logFiredAlarm을 호출한다', async () => {
-      let releaseSetFired: (() => void) | undefined;
-      mockSetFiredAlarms.mockReturnValueOnce(
-        new Promise<void>((resolve) => {
-          releaseSetFired = () => resolve();
-        }),
-      );
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-
-      await waitFor(() => expect(mockSetFiredAlarms).toHaveBeenCalled());
-      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
-
-      releaseSetFired!();
-      await waitFor(() =>
-        expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', imminentDest, 'api'),
-      );
     });
   });
 
@@ -3244,42 +2935,11 @@ describe('useStationAlarm', () => {
     });
   });
 
-  // #728 — CMMotionActivity motionStationary 신호. 3개 effect(Phase ETA / API imminent / station-passed)
-  // 전부 동일 가드 적용. speed=0.69(임계 우회) phantom과 destination/transfer 카테고리 무방비 회귀를 잡는다.
+  // #728 — CMMotionActivity motionStationary 신호. Phase ETA / station-passed 양쪽 effect에
+  // 동일 가드 적용. speed=0.69(임계 우회) phantom과 destination/transfer 카테고리 무방비 회귀를 잡는다.
   describe('#728 motionStationary gate', () => {
     const route = makeDirectRoute(1, '2');
     const onRouteStation = makeStation('S2-DST', '강남');
-
-    it('API imminent + motionStationary=true (speed=0.69 임계 우회) → 차단 + movement-motion-stationary 적재', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            speedMps: 0.69, // 임계값 0.5 우회
-            accuracyMeters: 50,
-            motionStationary: true,
-          }),
-        ),
-      );
-
-      await waitFor(() => {
-        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
-          expect.objectContaining({
-            source: 'fg',
-            stationName: '강남',
-            kind: 'destination',
-            phaseId: 'imminent',
-            reason: 'movement-motion-stationary',
-          }),
-        );
-      });
-      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
-    });
 
     it('Phase rawEvent (early destination) + motionStationary=true → 차단 + movement-motion-stationary 적재', async () => {
       mockEvaluateAlarmPhase.mockReturnValue({
@@ -3427,58 +3087,6 @@ describe('useStationAlarm', () => {
       );
     }
 
-    it('API imminent + motionStationary=true + trainProgressing=true → device 정적 가드 우회 → 정상 발사', async () => {
-      // 역삼 회귀 시나리오: motion=stationary지만 fusion arc advance가 확인되면 발사 허용.
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderTrainProgressingAlarm({
-        speedMps: 0.69,
-        accuracyMeters: 50,
-        motionStationary: true,
-        trainProgressing: true,
-      });
-
-      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'movement-motion-stationary' }),
-      );
-    });
-
-    it('API imminent + speed=0(static-speed) + trainProgressing=true → 정상 발사', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderTrainProgressingAlarm({
-        speedMps: 0,
-        accuracyMeters: 50,
-        trainProgressing: true,
-      });
-
-      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'movement-static-speed' }),
-      );
-    });
-
-    it('API imminent + speed=null + positionStability=static + trainProgressing=true → 정상 발사 (역삼 회귀)', async () => {
-      // 역삼 13:37 정확 시나리오: GPS speed=null + position=static → 기존엔 static-position 차단.
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderTrainProgressingAlarm({
-        speedMps: null,
-        accuracyMeters: 50,
-        positionStability: 'static',
-        trainProgressing: true,
-      });
-
-      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'movement-static-position' }),
-      );
-    });
-
     it('Phase rawEvent (early destination) + motionStationary=true + trainProgressing=true → 정상 발사', async () => {
       mockEvaluateAlarmPhase.mockReturnValue({
         phaseId: 'early',
@@ -3512,8 +3120,13 @@ describe('useStationAlarm', () => {
     });
 
     it('trainProgressing=false면 기존 동작 (motion=stationary 차단 그대로)', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
+      // Phase rawEvent를 명시적으로 부여해 Phase ETA effect가 실제로 fireAndLog 시도를
+      // 하도록 만든다 — 그래야 movement gate가 이를 차단하는지(가드 제거 시 red) 검증된다.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      });
 
       renderTrainProgressingAlarm({
         speedMps: 0.69,
@@ -3531,8 +3144,13 @@ describe('useStationAlarm', () => {
     });
 
     it('trainProgressing=undefined(기본값)면 기존 동작 (graceful fallback)', async () => {
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
+      // Phase rawEvent를 명시적으로 부여해 Phase ETA effect가 실제로 fireAndLog 시도를
+      // 하도록 만든다 — 그래야 movement gate가 이를 차단하는지(가드 제거 시 red) 검증된다.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      });
 
       renderTrainProgressingAlarm({
         speedMps: 0,
@@ -3771,11 +3389,6 @@ describe('useStationAlarm', () => {
     function seedExpiredSilence() {
       seedSilence({ sinceTs: Date.now() - 10 * 60_000, sinceLat: null, sinceLng: null });
     }
-    function setupApiImminent() {
-      mockGetStoredTripTrainCode.mockResolvedValue('T-1');
-      mockUseArrivalInfo.mockReturnValue({ arrival: { up: [], down: [] }, loading: false, isMock: false });
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-    }
     function renderForSilence() {
       renderHook(() => useStationAlarm(defaultInputs(ALARM_INPUTS)));
     }
@@ -3791,22 +3404,6 @@ describe('useStationAlarm', () => {
             stationName: earlyDest.stationName,
             kind: earlyDest.type,
             phaseId: earlyDest.phaseId,
-          }),
-        ),
-      );
-      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
-    });
-
-    it('API imminent path: silence 활성이면 imminent도 차단', async () => {
-      seedActiveSilence();
-      setupApiImminent();
-      renderForSilence();
-      await waitFor(() =>
-        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
-          expect.objectContaining({
-            stationName: imminentDest.stationName,
-            kind: 'destination',
-            phaseId: 'imminent',
           }),
         ),
       );
@@ -3838,16 +3435,6 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       expect(setStateSpy).toHaveBeenCalled();
       setStateSpy.mockRestore();
-    });
-
-    it('API imminent path: silence 만료(시간) 시 clear 호출 + 정상 발사', async () => {
-      const clearSpy = jest.spyOn(useAlarmEventStore.getState(), 'clearDismissSilence');
-      seedExpiredSilence();
-      setupApiImminent();
-      renderForSilence();
-      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-      expect(clearSpy).toHaveBeenCalled();
-      clearSpy.mockRestore();
     });
 
     it('silence 만료(거리 200m 이상) → 게이트 통과', async () => {
@@ -6769,8 +6356,13 @@ describe('useStationAlarm', () => {
 
     it('flag OFF (기본) + motionStationary=true → 기존 동작 (motion gate 차단 + movement-motion-stationary 적재)', async () => {
       delete process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY];
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
+      // Phase rawEvent를 명시적으로 부여해 Phase ETA effect가 실제로 fireAndLog 시도를
+      // 하도록 만든다 — 그래야 movement gate가 이를 차단하는지(가드 제거 시 red) 검증된다.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: '강남',
+      });
 
       renderHook(() =>
         useStationAlarm(
@@ -6795,10 +6387,13 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
-    it('flag ON + motionStationary=true → motion gate bypass → 정상 발사 (arrival API SSoT)', async () => {
+    it('flag ON + motionStationary=true (Phase rawEvent) → motion gate bypass → 정상 발사', async () => {
       process.env[SIMPLE_ARRIVAL_ARCH_ENV_KEY] = 'true';
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: '강남',
+      });
 
       renderHook(() =>
         useStationAlarm(
@@ -6813,7 +6408,7 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      // motion=stationary인데도 알람 발사 — arrival API SSoT 아키텍처는 arvlCd 단독 신호로 판정.
+      // motion=stationary인데도 알람 발사 — flag ON에서 motion gate가 전면 bypass된다.
       await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
       // movement 게이트 skip 로그 미적재 (dormant).
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(

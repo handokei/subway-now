@@ -47,7 +47,7 @@ describe('triggerTripGroundTruthPrompt (#1502 M2 / #1597)', () => {
   // 신호이므로 trip 종료 즉시 수동 응답 없이 accurate로 확정돼야 한다.
   it('#2309 — destination imminent 발사 직후(3초 내) user-delete 시 accurate로 즉시 확정, modal(prompt) 미노출', async () => {
     jest.spyOn(Date, 'now').mockReturnValueOnce(1000); // fire 시각
-    logFiredAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '뚝섬' }, 'api');
+    logFiredAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '뚝섬' }, 'eta');
 
     jest.spyOn(Date, 'now').mockReturnValue(3000); // 3초 뒤 user-delete → trip end
     await triggerTripGroundTruthPrompt('trip-2309');
@@ -71,7 +71,7 @@ describe('triggerTripGroundTruthPrompt (#1502 M2 / #1597)', () => {
 
   it('#2309 — destination 이외 kind(transfer) imminent 발사는 auto-confirm 대상 아님', async () => {
     jest.spyOn(Date, 'now').mockReturnValueOnce(1000);
-    logFiredAlarm('fg', { phaseId: 'imminent', type: 'transfer', stationName: '건대입구' }, 'api');
+    logFiredAlarm('fg', { phaseId: 'imminent', type: 'transfer', stationName: '건대입구' }, 'eta');
     jest.spyOn(Date, 'now').mockReturnValue(2000);
     await triggerTripGroundTruthPrompt('trip-transfer-only');
     expect(useTripGroundTruthStore.getState().pendingPrompt).toEqual({
