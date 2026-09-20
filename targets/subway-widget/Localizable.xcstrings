@@ -406,6 +406,122 @@
           }
         }
       }
+    },
+    "widget.la.eta.value" : {
+      "comment" : "ETA text derived from backend etaMinutes when JS-built etaText is absent (#2747)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "~%dm"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "約%d分"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "약 %d분"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "约%d分钟"
+          }
+        }
+      }
+    },
+    "widget.la.stopsRemaining" : {
+      "comment" : "Stops remaining text derived from backend stopsRemaining when JS-built etaSubtext is absent (#2747)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d stops left"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残り%d駅"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d정거장 남음"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余%d站"
+          }
+        }
+      }
+    },
+    "widget.la.routeSubtext.transfer" : {
+      "comment" : "Transfer progress text derived from backend transferStationName/stopsToTransfer when JS-built routeSubtext is absent (#2747). Args: %1$d stops, %2$@ transfer station name",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transfer at %2$@ in %1$d stops"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d駅先の%2$@で乗換"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d역 후 %2$@ 환승"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d站后在%2$@换乘"
+          }
+        }
+      }
+    },
+    "widget.la.routeSubtext.arrival" : {
+      "comment" : "Arrival progress text derived from backend destinationName/stopsRemaining when JS-built routeSubtext is absent (#2747). Args: %1$d stops, %2$@ destination name",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d stops to %2$@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$@まで残り%1$d駅"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$d역 후 %2$@ 도착"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "距%2$@还有%1$d站"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
