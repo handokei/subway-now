@@ -14,19 +14,41 @@
  * `runCaptureReplay`(`replayHarness.ts`), `firedStationOccurrences`(`pushAssertions.ts`) — 전부
  * 기존 하네스. 새 포맷/하네스 신설 없음. fixture는 원본 그대로(`parseReplayFixture`만 통과).
  *
- * ## 미공급 입력 (중요 — 결과 해석의 전제)
- * `attemptBoardingAnchorResolution`의 leg-1 anchor는 `trip.promptDisplay`(등록 시 device가
- * 보내는 `{originStation, line}`, GPS-nearest 기준 계산)에서만 온다 — `resolveActiveLegOrigin`
- * (`boardingAnchorResolver.ts:222`)이 `trip.currentLegAnchor`(leg 2, 이 trip은 아직 도달 전이라
- * 없음)가 없으면 `promptDisplay`로 fallback하는데, `makeRide20260918LocklessTrip`은
- * **promptDisplay를 세팅하지 않는다** — 그 헬퍼 자신의 문서(주석 34~43줄)가 명시하듯 등록
- * 시점(17:26:01)의 실제 promptDisplay 값은 KV 스냅샷으로 확보하지 못했다(17:48:29에는 이미
- * `{건대입구,7}`로 바뀌어 있었고 "재등록 흔적으로 추정"이라고만 기록돼 있다 — 17:26:01 원본
- * 값은 불명).
+ * ## #2739 — red→green 전환 (2026-09-20)
+ * `makeRide20260918LocklessTrip`은 `promptDisplay`를 세팅하지 않는다 — 등록 시점(17:26:01)의
+ * 실제 값을 KV 스냅샷으로 확보하지 못했기 때문이다(불명, 확정 아님). 이 파일의 최초 버전은
+ * 그 미공급 입력 때문에 `attemptBoardingAnchorResolution`이 anchor를 못 찾아 `lockState:'none'`
+ * 이 나오는 것을 **그대로 관측만** 했다(#2734 재생).
  *
- * 즉 이 재생에서 `attemptBoardingAnchorResolution`이 anchor를 못 찾는다면, 그 원인이
- * "backend 코드 결함"인지 "seed가 promptDisplay라는 미공급 입력을 갖고 있지 않아서"인지 이
- * 재생만으로는 구분할 수 없다 — 아래 테스트는 그 사실을 그대로 관측하고 보고한다(추정 배제).
+ * #2739가 확정한 결함: 탭이 실어 보내는 `{station:'건대입구', line:'7'}`이 핸들러에 도착은
+ * 하지만(validator가 필수로 받음) `attemptBoardingAnchorResolution` 호출에는 전달되지
+ * 않았다(코드로 확정 — `payload.station`/`payload.line` 사용 횟수 0). `promptDisplay`가
+ * 미확정이든 아니든, **탭 자체가 승차역/노선을 명시했으므로 그 정보를 판정에 써야 한다**는
+ * 것이 이 fix의 근거다("9/18에 버튼을 눌렀다면 실패했을 것"이라는 사실 단정은 여전히 하지
+ * 않는다 — `trip.promptDisplay`의 그 시점 실측값은 지금도 불명이다).
+ *
+ * fix 이후: `promptDisplay`/`currentLegAnchor` 둘 다 없어도 탭 값(`payload.station/line`)이
+ * route(이 trip은 뚝섬→건대입구 환승→용마산, 건대입구가 `kind:'transfer'` waypoint)와
+ * 정합하면 1순위 fallback anchor로 채택된다 — D1 meta `anchorSource:'tap'`이 이를 증명한다.
+ *
+ * ## 별개 발견 (out of scope, 2026-09-20) — 이 특정 실캡처의 direction 인코딩 gap
+ * anchor는 정상 채택되지만(`anchorSource:'tap'`), 이어지는 realtimePosition 조회에서
+ * `resolveTrainCodeFromPositions`가 여전히 `outcome:'none'`을 낸다. 원인을 추적한 결과 —
+ * `inferLegDirection('7','건대입구','어린이대공원(세종대)')`는 `'up'`을 반환하는데, 이 R2
+ * 실캡처(`capture_20260918_line7_yongmasan_overshoot.fixture.json`)의 line7 realtimePosition
+ * 엔트리는 `updnLine`이 Korean 텍스트(`'상행'`/`'내선'`)가 아니라 숫자 문자열('0'/'1')로
+ * 온다 — `seoul.ts:parsePositionEntry`의 `isUp` 파싱(`UP_DIRECTION_VALUES=['상행','내선']`
+ * 포함 여부)이 이 포맷을 인식하지 못해 모든 항목이 `isUp:false`로 떨어진다. 이 gap은
+ * **#2739(탭 payload 미사용)와 무관한 별개의 사전 존재 결함**이다 — anchor 판정 로직
+ * 자체는 이 fix로 정확히 고쳐졌고(탭이 사용됨을 D1로 증명), direction 포맷 gap은 이
+ * PR의 스코프 밖이라 손대지 않는다(surgical change 원칙).
+ *
+ * 아래 첫 테스트는 이 실측 결과(anchorSource:'tap', outcome:'none' — 사유가 이전과
+ * 다르다는 것)를 그대로 기록한다. "lock 부착 + trainCode 확인 + cron 완주"의 완전한 green
+ * 데모는 `index.test.ts`(`boarded — 탭 anchor fallback (#2739)`, 통제된 synthetic position
+ * 데이터로 같은 anchor/segment 모양을 검증)와 기존 `replay_20260918_lock_seeded_contrast.test.ts`
+ * (같은 실캡처로 lock 부착 후 cron이 정상 완주함을 이미 증명, direction 필터를 타지 않는
+ * 경로)의 조합이 담당한다.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../index';
@@ -124,10 +146,13 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     const json = (await res.json()) as { ok: boolean; lockState: string };
     expect(json.ok).toBe(true);
 
-    // ---- 결과 기록 (해석은 파일 헤더 "미공급 입력" 참고) ----
-    // promptDisplay가 seed에 없어 `resolveActiveLegOrigin`이 anchor 자체를 못 찾는다 —
-    // realtimePosition 조회(전역 fetch)조차 시도되지 않고 lockState는 'none'이다. 이 결과는
-    // "backend 코드가 틀렸다"가 아니라 "이 재생 입력(seed)에 leg-1 anchor가 없다"는 뜻이다.
+    // ---- 결과 기록 (#2739 fix 이후 — 해석은 파일 헤더 "별개 발견" 참고) ----
+    // 탭(건대입구/7)이 route(뚝섬→건대입구 환승→용마산)와 정합해 1순위 fallback anchor로
+    // 채택된다(D1 meta anchorSource:'tap' — 아래에서 확인) — #2739가 고치는 것은 정확히 이
+    // 지점("탭 값이 판정에 쓰이는가")이며 여기까지는 fix로 green이다. 그러나 이 실캡처의
+    // line7 realtimePosition `updnLine`이 숫자 인코딩이라 direction 필터가 정확한 후보
+    // (7256)를 걸러내 outcome은 여전히 'none'이다 — 원인이 이전(anchor 자체 부재)과 다르다는
+    // 것이 이 테스트의 핵심 관측이다(별개의 pre-existing gap, #2739 스코프 밖).
     expect(json.lockState).toBe('none');
 
     const stored = await getTrip(kv as unknown as Env['TRIPS'], TOKEN);
@@ -138,16 +163,22 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
 
     // D1 `boarding-confirm-result` 이벤트는 lockState/outcome과 무관하게 매 호출 1회 append —
     // #2734가 관측한 "실사용 0건"이 이 엔드포인트 자체의 결함(호출은 됐는데 기록 안 됨)이
-    // 아니라는 것을 확인한다.
+    // 아니라는 것을 확인한다. anchorSource:'tap'이 #2739 fix가 실제로 탭 값을 anchor 판정에
+    // 사용했음을 증명한다(요구사항 4).
     expect(prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO trip_events'));
     const [, , kind, , , metaJson] = bind.mock.calls[0] as [string, number, string, unknown, unknown, string | null];
     expect(kind).toBe('boarding-confirm-result');
-    expect(JSON.parse(metaJson ?? '{}')).toEqual({ lockState: 'none', outcome: 'none' });
+    expect(JSON.parse(metaJson ?? '{}')).toEqual({
+      lockState: 'none',
+      outcome: 'none',
+      anchorSource: 'tap',
+    });
   });
 
   it('lock 미부착 상태로 cron을 이어 재생하면 — 실측(REPLAY_LIBRARY 엔트리)과 동일하게 매역 발사 0건이다', async () => {
-    // 위 테스트가 만든 상태(lockState:'none', boardingLock 없음)를 그대로 물려받아 cron이
-    // 15 cycle을 어떻게 이어가는지 관찰한다 — "버튼을 눌렀다면 완주했을까"의 후반부.
+    // 위 테스트가 만든 상태(lockState:'none', boardingLock 없음 — 사유는 #2739 fix 이후에도
+    // direction 인코딩 gap으로 여전히 'none')를 그대로 물려받아 cron이 15 cycle을 어떻게
+    // 이어가는지 관찰한다 — "버튼을 눌렀다면 완주했을까"의 후반부.
     const kv = new InMemoryKV(() => TAP_MS);
     const seedToken = TOKEN + '-cron-continuation';
     const tripAfterConfirm: Trip = { ...makeRide20260918LocklessTrip(seedToken) };
@@ -161,6 +192,9 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
 
     // lock이 없으므로 station-passed(alert) 채널은 원리적으로 못 뜬다 — 실측 REPLAY_LIBRARY
     // entry(`replayLibrary.ts`의 `capture_20260918_line7_yongmasan_overshoot`)와 동일 결론.
+    // lock이 부착됐다면(예: `replay_20260918_lock_seeded_contrast.test.ts`) 같은 실캡처로
+    // 어린이대공원/군자(능동)/중곡 발사 + destination-arrived 완결까지 이어진다는 것은 이미
+    // 별도 테스트로 증명돼 있다 — lock 부착 여부만이 이 사건의 분기점이라는 결론은 그대로다.
     expect(firedStationOccurrences(result.pushes)).toEqual([]);
     expect(destinationArrivedFired(result.pushes)).toBe(false);
   });
@@ -193,11 +227,13 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     );
     const json = (await res.json()) as { ok: boolean; lockState: string };
 
-    // anchor.line은 promptDisplay.line('2')에서 온다 — 사용자가 실제로 탭한 것은 7호선 열차인데
-    // anchor는 2호선 뚝섬 기준으로 조회하므로, 이 대조군조차 정확한 lock을 만들 것이라는 보장이
-    // 없다(포지션 fixture에 2호선 뚝섬 항목이 없으면 lockState는 여전히 'none'이다). 이 사실
-    // 자체가 관측 대상 — "탭 payload의 station/line은 판정에 쓰이지 않는다"는 index.ts 주석의
-    // 실제 함의를 드러낸다.
+    // anchor.line은 promptDisplay.line('2')에서 온다 — #2739 fix 이후에도 promptDisplay가
+    // 있으면 그것이 currentLegAnchor 다음 우선순위이고 탭은 그 뒤 fallback이라(요구사항 1/2,
+    // 회귀 없음) 탭이 실제로 실어 보낸 7호선 값은 여기서 쓰이지 않는다 — 이는 결함이 아니라
+    // "backend anchor가 있으면 그것을 신뢰한다"는 의도된 우선순위다. 그래서 사용자가 실제로
+    // 탭한 것은 7호선 열차인데 anchor는 2호선 뚝섬 기준으로 조회되고, 이 대조군조차 정확한
+    // lock을 만들 것이라는 보장이 없다(포지션 fixture에 2호선 뚝섬 항목이 없으면 lockState는
+    // 여전히 'none'이다).
     expect(['none', 'leg1']).toContain(json.lockState);
     if (json.lockState === 'leg1') {
       const stored = await getTrip(kv as unknown as Env['TRIPS'], contrastToken);

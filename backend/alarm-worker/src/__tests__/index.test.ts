@@ -2882,6 +2882,156 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     });
   });
 
+  // #2739 — 탭이 실어 보낸 station/line을 anchor 판정 입력으로 쓴다. promptDisplay/
+  // currentLegAnchor 둘 다 없을 때의 1순위 fallback(요구사항 1) + route 밖 값 거부(요구사항 3) +
+  // currentLegAnchor와 충돌 시 currentLegAnchor 우선(요구사항 2, 게이트/기존 SSoT 우회 금지).
+  describe('boarded — 탭 anchor fallback (#2739)', () => {
+    function legTransferTripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return tripBody({
+        route: {
+          type: 'transfer',
+          transferName: '건대입구',
+          fromLine: '2',
+          toLine: '7',
+          stopsToTransfer: 2,
+          stopsFromTransfer: 4,
+        },
+        destination: '용마산',
+        waypoints: [
+          { stationName: '건대입구', line: '2', kind: 'transfer' },
+          { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+          { stationName: '용마산', line: '7', kind: 'destination' },
+        ],
+        originStationName: '뚝섬',
+        promptDisplay: undefined,
+        ...overrides,
+      });
+    }
+
+    it('promptDisplay/currentLegAnchor 둘 다 없음 + 탭(건대입구/7) → 현재는 실패(none)하지만 fix 후 성공해야 한다(red→green)', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            // 건대입구('7')→어린이대공원('7')은 inferLegDirection 'up' — updnLine override.
+            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '상행', trainNo: '7256' })],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(legTransferTripBody()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '건대입구', line: '7' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; lockState: string };
+      // 탭이 판정에 쓰이면 lock이 부착된다 — 'none'이 아니어야 한다.
+      expect(json.lockState).not.toBe('none');
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7256');
+      expect(stored.boardingLock?.line).toBe('7');
+      expect(stored.boardingLock?.segmentStations).toEqual(['건대입구', '어린이대공원', '용마산']);
+      // leg 전환(환승 이후) — waypoints가 건대입구 소비 후로 advance돼야 다음 cron이 올바른
+      // 정거장(어린이대공원)을 추적한다.
+      expect(stored.waypoints).toEqual([
+        { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ]);
+    });
+
+    it('탭 값이 route 밖(존재하지 않는 역/노선) → 거부, lockState none, D1 사유는 invalid-route(요구사항 3)', async () => {
+      const { db, inserts } = captureEventInsertsGlobal();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(legTransferTripBody()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '전혀다른역', line: '9' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({
+        lockState: 'none',
+        outcome: 'invalid-route',
+        anchorSource: 'tap',
+      });
+    });
+
+    it('탭 값이 currentLegAnchor와 충돌 → currentLegAnchor가 이긴다(탭 무시, 도보게이트 우회 금지)', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '상행', trainNo: '7256' })],
+          }),
+          { status: 200 },
+        ),
+      );
+      const { db, inserts } = captureEventInsertsGlobal();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(
+          legTransferTripBody({
+            currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+            legBoardingEligibleAt: CREATED,
+            waypoints: [
+              { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+              { stationName: '용마산', line: '7', kind: 'destination' },
+            ],
+            infoModeEnabled: true,
+          }),
+        ),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        // 탭이 route 밖 값을 보내도 currentLegAnchor가 이미 governs하므로 무관해야 한다.
+        confirmBody({ station: '전혀다른역', line: '9' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7256');
+      expect(stored.boardingLock?.segmentStations[0]).toBe('건대입구');
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toEqual({
+        lockState: 'leg2',
+        outcome: 'resolved',
+        anchorSource: 'currentLegAnchor',
+      });
+    });
+
+    function captureEventInsertsGlobal(): { db: Env['DB']; inserts: unknown[][] } {
+      const inserts: unknown[][] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      }));
+      return { db: { prepare } as unknown as Env['DB'], inserts };
+    }
+  });
+
   describe('boarded — leg 2 (currentLegAnchor, #2515 도보시간 게이트)', () => {
     function leg2TripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
       return tripBody({
@@ -3079,17 +3229,33 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
   });
 
   // ADR-037 D2b (#2535, 진단 계측 only) — buildBoardingConfirmEventMeta 순수 함수 단위 테스트.
-  describe('buildBoardingConfirmEventMeta (#2535)', () => {
+  describe('buildBoardingConfirmEventMeta (#2535, #2739 anchorSource 추가)', () => {
     it('outcome 있으면 meta에 포함', () => {
-      expect(buildBoardingConfirmEventMeta('leg1', 'resolved')).toEqual({
+      expect(buildBoardingConfirmEventMeta('leg1', 'resolved', undefined)).toEqual({
         lockState: 'leg1',
         outcome: 'resolved',
       });
     });
 
     it('outcome undefined면 meta에서 생략(시도 자체를 안 한 경로)', () => {
-      expect(buildBoardingConfirmEventMeta('released', undefined)).toEqual({
+      expect(buildBoardingConfirmEventMeta('released', undefined, undefined)).toEqual({
         lockState: 'released',
+      });
+    });
+
+    // #2739 요구사항 4 — anchor 출처(tap/currentLegAnchor/promptDisplay)를 meta에 남긴다.
+    it('anchorSource 있으면 meta에 포함', () => {
+      expect(buildBoardingConfirmEventMeta('leg1', 'resolved', 'promptDisplay')).toEqual({
+        lockState: 'leg1',
+        outcome: 'resolved',
+        anchorSource: 'promptDisplay',
+      });
+    });
+
+    it('anchorSource undefined면 meta에서 생략', () => {
+      expect(buildBoardingConfirmEventMeta('none', 'walk-gated', undefined)).toEqual({
+        lockState: 'none',
+        outcome: 'walk-gated',
       });
     });
   });
@@ -3110,7 +3276,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       return { db: { prepare } as unknown as Env['DB'], inserts };
     }
 
-    it('resolved — meta={lockState:leg1, outcome:resolved}', async () => {
+    it('resolved — meta={lockState:leg1, outcome:resolved, anchorSource:promptDisplay}(#2739 — confirmBody 기본값이 promptDisplay와 일치하므로 tap fallback 미사용)', async () => {
       fetchSpy.mockResolvedValue(
         new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), {
           status: 200,
@@ -3128,10 +3294,11 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(JSON.parse(events[0][5] as string)).toEqual({
         lockState: 'leg1',
         outcome: 'resolved',
+        anchorSource: 'promptDisplay',
       });
     });
 
-    it('ambiguous — meta={lockState:none, outcome:ambiguous}', async () => {
+    it('ambiguous — meta={lockState:none, outcome:ambiguous, anchorSource:promptDisplay}(#2739)', async () => {
       fetchSpy.mockResolvedValue(
         new Response(
           JSON.stringify({
@@ -3155,6 +3322,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(JSON.parse(events[0][5] as string)).toEqual({
         lockState: 'none',
         outcome: 'ambiguous',
+        anchorSource: 'promptDisplay',
       });
     });
 

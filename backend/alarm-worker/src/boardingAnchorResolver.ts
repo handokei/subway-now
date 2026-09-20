@@ -102,8 +102,9 @@ import { TRAIN_STATUS } from './alarm';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import { inferLegDirection } from './legDirection';
 import { subwayIdForLine } from './lineAlias';
+import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import type { PositionEntry, SeoulArrivalClient } from './seoul';
-import type { BoardingLockMeta, Trip } from './types';
+import type { BoardingLockMeta, Trip, Waypoint } from './types';
 
 /** realtimePosition 항목을 신뢰 가능한 최신 관측으로 볼 임계값(ms). seoul.ts의 arrivals용
  * MAX_RECPTN_DRIFT_SEC(120s)와 동일 정책 — 두 값은 각자 로컬 모듈에 선언해 순환 import를
@@ -143,7 +144,13 @@ export type BoardingResolution =
  * 동명 status와 동일 의미(후보 2개+/0개), `resolved` = 승격 성공. 반환 타입 자체는 바꾸지
  * 않는다(기존 caller 전부 무변경) — `onOutcome` 콜백으로만 부가 관측.
  */
-export type BoardingResolveOutcome = 'resolved' | 'none' | 'ambiguous' | 'walk-gated';
+/**
+ * #2739 — `'invalid-route'` 추가. 탭(`options.tapAnchor`)이 실어 보낸 station/line이 trip
+ * route(waypoints/originStationName) 어디와도 정합하지 않을 때(findTapLegStart가 null 반환)
+ * 이 값을 낸다 — `'none'`(anchor 자체가 없음)과 구분해 "탭이 왔지만 신뢰할 수 없어 거부했다"는
+ * 사유를 D1에서 바로 읽을 수 있게 한다(요구사항 3).
+ */
+export type BoardingResolveOutcome = 'resolved' | 'none' | 'ambiguous' | 'walk-gated' | 'invalid-route';
 
 /**
  * realtimePosition snapshot에서 anchor 조건에 맞는 정확히 1개의 trainCode를 찾는다. Pure —
@@ -181,6 +188,50 @@ export interface ActiveLegOrigin {
   line: string;
 }
 
+/**
+ * #2739 — 탭(`POST /trips/:token/boarding-confirm`)이 실어 보낸 station/line을 route와
+ * 정합 검증한 뒤 그 leg의 waypoints slice 시작점을 반환한다. 하드코딩 인덱스 없이 waypoints
+ * 배열을 순회하므로 다중 환승(leg 3+)도 동일 로직으로 커버한다.
+ *
+ * 두 경우만 유효한 "탑승 지점"으로 인정한다(그 외는 route 밖 — null, 요구사항 3):
+ *   1. leg 1 origin — `trip.originStationName`(등록 시 SSoT 출발역)과 `tapStation`이 일치하고
+ *      `waypoints[0].line`이 `tapLine`과 일치. sliceFrom=0(waypoints 그대로 사용).
+ *   2. leg 2+ 환승 지점 — `kind==='transfer'`인 waypoint(그 leg가 끝나는 지점)의
+ *      stationName이 `tapStation`과 일치하고, 바로 다음 waypoint의 line이 `tapLine`과
+ *      일치. sliceFrom=그 다음 waypoint의 index(`scheduled.ts` `stampCurrentLegAnchor`가
+ *      환승 통과 시 `waypoints.slice(1)`로 shift하는 것과 동일 관례 — 이 함수는 그 shift를
+ *      cron의 arvlCd 확증 없이 탭 시점에 미리 계산만 한다, mutate는 caller 책임).
+ *
+ * 역명 비교는 #1410/#2566 정규화 drift(괄호 부제 등) 흡수를 위해 `normalizeStationName`을
+ * 거친다(`scheduled.ts` `isSameLegAnchor`와 동일 관례).
+ */
+export function findTapLegStart(
+  trip: Pick<Trip, 'waypoints' | 'originStationName'>,
+  tapStation: string,
+  tapLine: string,
+): { originStation: string; sliceFrom: number } | null {
+  const { waypoints, originStationName } = trip;
+  if (
+    originStationName !== undefined &&
+    normalizeStationName(originStationName) === normalizeStationName(tapStation) &&
+    waypoints[0]?.line === tapLine
+  ) {
+    return { originStation: originStationName, sliceFrom: 0 };
+  }
+  for (let i = 0; i < waypoints.length - 1; i += 1) {
+    const current = waypoints[i];
+    const next = waypoints[i + 1];
+    if (
+      current.kind === 'transfer' &&
+      normalizeStationName(current.stationName) === normalizeStationName(tapStation) &&
+      next.line === tapLine
+    ) {
+      return { originStation: current.stationName, sliceFrom: i + 1 };
+    }
+  }
+  return null;
+}
+
 /** `resolveActiveLegOrigin`/`attemptBoardingAnchorResolution` 호출 컨텍스트 (break #2, #2323 rework). */
 export interface LegOriginResolutionOptions {
   /**
@@ -205,6 +256,31 @@ export interface LegOriginResolutionOptions {
    * 필요하다는 판단.
    */
   allowLegTransfer?: boolean;
+  /**
+   * #2739 — `POST /trips/:token/boarding-confirm`이 LA 탭에서 받은 station/line.
+   * `resolveActiveLegOrigin(trip, now, options)`가 null을 반환하고(=`currentLegAnchor`도
+   * `promptDisplay`도 없음) **도보 게이트(walk-gated)가 원인이 아닐 때만** 1순위 fallback
+   * anchor로 시도한다 — 이미 있는 backend anchor(currentLegAnchor/promptDisplay)를 절대
+   * 덮어쓰지 않고(요구사항 2, 회귀 없음), 도보 게이트도 우회하지 않는다(요구사항 2 — 게이트가
+   * 막고 있는 currentLegAnchor가 있으면 tapAnchor가 있어도 그대로 walk-gated로 끝난다).
+   * `findTapLegStart`로 route 정합을 검증해 실패하면 `'invalid-route'`로 거부한다(요구사항 3).
+   */
+  tapAnchor?: { boardingStation: string; line: string };
+}
+
+/**
+ * #2739 — 탭 anchor가 leg 2+(환승 지점) 경유로 채택됐을 때, caller(`index.ts` boarding-confirm
+ * 핸들러)에게 "이 leg부터 다시 시작하는 waypoints"를 통지한다. caller는 이 값으로 `trip.waypoints`
+ * (그리고 `currentLegAnchor`/`legBoardingEligibleAt`)를 갱신해야 다음 cron이 올바른 정거장을
+ * 추적한다 — 갱신하지 않으면 `trip.waypoints[0]`이 여전히 이미 통과한 환승 waypoint를 가리켜
+ * `estimateBoardingLockArrival`이 엉뚱한 역의 arrivals를 조회하게 된다.
+ *
+ * leg 1(탭이 origin과 일치, sliceFrom=0)에서는 advance가 필요 없으므로 호출되지 않는다.
+ */
+export interface TapLegAdvance {
+  waypoints: Waypoint[];
+  boardingStation: string;
+  line: string;
 }
 
 /**
@@ -258,6 +334,13 @@ export function resolveActiveLegOrigin(
  * `BoardingResolveOutcome`을 관측한다. 반환값(`BoardingLockMeta | null`)과 기존 호출자 동작은
  * 완전히 무변경 — 콜백을 전달하지 않는 기존 3개 호출자(index.ts register-time, scheduled.ts
  * cron)는 영향 없다.
+ *
+ * #2739 — `options.tapAnchor`(optional, `POST /trips/:token/boarding-confirm` 전용)와
+ * `onTapLegAdvance` 콜백(optional)을 추가했다. `resolveActiveLegOrigin`이 null을 반환하고
+ * walk-gate가 원인이 아닐 때만 `findTapLegStart`로 route 정합을 검증해 anchor를 합성한다 —
+ * `currentLegAnchor`/`promptDisplay`가 이미 있으면 이 분기에 진입하지 않으므로 기존 3개
+ * 호출자(tapAnchor 미전달)는 100% 무변경이다. leg 2+ 경유(sliceFrom>0)로 채택된 경우에만
+ * `onTapLegAdvance`로 advance된 waypoints를 caller에 통지한다(leg 1은 advance 불필요).
  */
 export async function attemptBoardingAnchorResolution(
   trip: Trip,
@@ -265,21 +348,44 @@ export async function attemptBoardingAnchorResolution(
   now: number,
   options?: LegOriginResolutionOptions,
   onOutcome?: (outcome: BoardingResolveOutcome) => void,
+  onTapLegAdvance?: (advance: TapLegAdvance) => void,
 ): Promise<BoardingLockMeta | null> {
   if (trip.infoModeEnabled !== true) {
     onOutcome?.('none');
     return null;
   }
-  const anchor = resolveActiveLegOrigin(trip, now, options);
+  let anchor = resolveActiveLegOrigin(trip, now, options);
+  let legWaypoints = trip.waypoints;
   if (!anchor) {
     const walkGated =
       trip.currentLegAnchor !== undefined &&
       options?.allowLegTransfer === true &&
       (trip.legBoardingEligibleAt === undefined || now < trip.legBoardingEligibleAt);
-    onOutcome?.(walkGated ? 'walk-gated' : 'none');
-    return null;
+    if (walkGated) {
+      onOutcome?.('walk-gated');
+      return null;
+    }
+    if (!options?.tapAnchor) {
+      onOutcome?.('none');
+      return null;
+    }
+    // #2739 — 탭은 currentLegAnchor/promptDisplay 둘 다 없을 때만(요구사항 2 — 위에서 anchor
+    // null + walk-gate 아님을 이미 확인) 1순위 fallback으로 쓴다. route 밖 값은 거부(요구사항 3).
+    const tapStart = findTapLegStart(trip, options.tapAnchor.boardingStation, options.tapAnchor.line);
+    if (!tapStart) {
+      onOutcome?.('invalid-route');
+      return null;
+    }
+    anchor = { originStation: tapStart.originStation, line: options.tapAnchor.line };
+    legWaypoints = trip.waypoints.slice(tapStart.sliceFrom);
+    if (tapStart.sliceFrom > 0) {
+      onTapLegAdvance?.({
+        waypoints: legWaypoints,
+        boardingStation: tapStart.originStation,
+        line: options.tapAnchor.line,
+      });
+    }
   }
-  const { waypoints } = trip;
 
   const subwayId = subwayIdForLine(anchor.line);
   if (!subwayId) {
@@ -287,11 +393,11 @@ export async function attemptBoardingAnchorResolution(
     return null;
   }
 
-  // #1719 — direction 추론. waypoints[0]은 "지금" leg의 다음 정차역(anchor.originStation 자체는
-  // waypoints에 포함되지 않는다 — leg 1은 `dijkstraRoute.ts:routeToInferredWaypoints`의 "출발역 —
-  // push 안 함" 계약, leg 2는 `scheduled.ts` transfer advance가 이미 `waypoints.slice(1)`로 shift).
-  // 추론 불가 노선/매칭 실패는 null(양방향 허용) — 기존 `attachTrainCodeForLeg`와 동일 fallback 정책.
-  const nextWaypoint = waypoints[0];
+  // #1719 — direction 추론. legWaypoints[0]은 "지금" leg의 다음 정차역(anchor.originStation
+  // 자체는 legWaypoints에 포함되지 않는다 — leg 1은 `dijkstraRoute.ts:routeToInferredWaypoints`의
+  // "출발역 — push 안 함" 계약, leg 2+는 이미 origin 이후로 slice됨). 추론 불가 노선/매칭 실패는
+  // null(양방향 허용) — 기존 `attachTrainCodeForLeg`와 동일 fallback 정책.
+  const nextWaypoint = legWaypoints[0];
   const direction =
     nextWaypoint && nextWaypoint.line === anchor.line
       ? inferLegDirection(anchor.line, anchor.originStation, nextWaypoint.stationName)
@@ -309,8 +415,8 @@ export async function attemptBoardingAnchorResolution(
   }
 
   // segmentStations — 탑승역(anchor.originStation) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
-  // `buildLegSegmentStations`는 waypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
-  const legSegment = buildLegSegmentStations(waypoints, anchor.line);
+  // `buildLegSegmentStations`는 legWaypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
+  const legSegment = buildLegSegmentStations(legWaypoints, anchor.line);
   if (legSegment.length === 0) {
     onOutcome?.('none');
     return null;
