@@ -9,13 +9,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   attemptBoardingAnchorResolution,
+  findTapLegStart,
   POSITION_FRESHNESS_MS,
   resolveActiveLegOrigin,
   resolveTrainCodeFromPositions,
   type BoardingAnchor,
 } from '../boardingAnchorResolver';
 import { SeoulArrivalClient, type PositionEntry } from '../seoul';
-import type { Trip } from '../types';
+import type { Trip, Waypoint } from '../types';
 
 const NOW = 1_700_000_000_000;
 
@@ -415,5 +416,286 @@ describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', (
     const trip = makeLeg2Trip();
     const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
     expect(result).toBeNull();
+  });
+});
+
+/**
+ * #2739 — 탭이 실어 보낸 station/line이 trip route와 정합하는지, 그리고 route 상 어느
+ * leg(1 또는 2+)의 origin인지 판정한다. 하드코딩 인덱스 없이 waypoints 배열을 순회해
+ * kind==='transfer' 지점을 탐지하므로 다중 환승도 동일 로직으로 커버된다(요구사항 3).
+ */
+describe('#2739 — findTapLegStart (탭 station/line의 route 정합 검증)', () => {
+  function makeTapTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'tok',
+      route: {
+        type: 'transfer',
+        transferName: '건대입구',
+        fromLine: '2',
+        toLine: '7',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 4,
+      },
+      destination: '용마산',
+      waypoints: [
+        { stationName: '건대입구', line: '2', kind: 'transfer' },
+        { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+      expiresAt: NOW + 60 * 60_000,
+      createdAt: NOW,
+      alarmAtEpochMs: NOW + 60_000,
+      originStationName: '뚝섬',
+      ...overrides,
+    };
+  }
+
+  it('탭이 leg-1 origin(originStationName + 첫 waypoint line)과 일치 → sliceFrom 0', () => {
+    const trip = makeTapTrip();
+    expect(findTapLegStart(trip, '뚝섬', '2')).toEqual({ originStation: '뚝섬', sliceFrom: 0 });
+  });
+
+  it('탭이 leg-2 환승 지점(kind=transfer waypoint + 다음 waypoint line)과 일치 → 그 다음 index부터 slice', () => {
+    const trip = makeTapTrip();
+    expect(findTapLegStart(trip, '건대입구', '7')).toEqual({ originStation: '건대입구', sliceFrom: 1 });
+  });
+
+  it('다중 환승 — 두 번째 transfer waypoint도 배열 순회로 탐지(하드코딩 인덱스 없음)', () => {
+    const trip = makeTapTrip({
+      waypoints: [
+        { stationName: '건대입구', line: '2', kind: 'transfer' },
+        { stationName: '왕십리', line: '7', kind: 'transfer' },
+        { stationName: '상왕십리', line: '5', kind: 'intermediate' },
+        { stationName: '목적지', line: '5', kind: 'destination' },
+      ],
+    });
+    expect(findTapLegStart(trip, '왕십리', '5')).toEqual({ originStation: '왕십리', sliceFrom: 2 });
+  });
+
+  it('탭 line이 route에 없는 노선 → null(거부, 요구사항 3)', () => {
+    const trip = makeTapTrip();
+    expect(findTapLegStart(trip, '건대입구', '9')).toBeNull();
+  });
+
+  it('탭 station이 route에 없는 역 → null(거부, 요구사항 3)', () => {
+    const trip = makeTapTrip();
+    expect(findTapLegStart(trip, '전혀다른역', '7')).toBeNull();
+  });
+
+  it('originStationName 없음(레거시 trip) → leg-1 매칭은 skip되지만 transfer 매칭은 그대로 평가', () => {
+    const trip = makeTapTrip({ originStationName: undefined });
+    expect(findTapLegStart(trip, '뚝섬', '2')).toBeNull();
+    expect(findTapLegStart(trip, '건대입구', '7')).toEqual({ originStation: '건대입구', sliceFrom: 1 });
+  });
+});
+
+/**
+ * #2739 — `attemptBoardingAnchorResolution`이 탭(`options.tapAnchor`)을 anchor 판정에 실제로
+ * 반영하는지 검증한다. 우선순위(PR 본문 근거): `currentLegAnchor`(게이트 통과) > `promptDisplay`
+ * > 탭 — 탭은 **둘 다 없을 때만** 쓰는 1순위 fallback이다. 이미 있는 backend anchor를 탭이
+ * 덮어쓰지 않고(회귀 없음), 도보 게이트(#2515)도 탭으로 우회되지 않는다(요구사항 2).
+ */
+describe('#2739 — attemptBoardingAnchorResolution({ tapAnchor })', () => {
+  function makeTapTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'tok',
+      route: {
+        type: 'transfer',
+        transferName: '건대입구',
+        fromLine: '2',
+        toLine: '7',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 4,
+      },
+      destination: '용마산',
+      waypoints: [
+        { stationName: '건대입구', line: '2', kind: 'transfer' },
+        { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+      expiresAt: NOW + 60 * 60_000,
+      createdAt: NOW,
+      alarmAtEpochMs: NOW + 60_000,
+      infoModeEnabled: true,
+      originStationName: '뚝섬',
+      ...overrides,
+    };
+  }
+
+  function makeSeoulWithPositions(
+    positions: Array<Partial<PositionEntry> & { trainCode: string }>,
+    defaultStation = '건대입구',
+  ): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimePositionList: positions.map((p) => ({
+              trainNo: p.trainCode,
+              statnNm: p.stationName ?? defaultStation,
+              trainSttus: p.trainSttus ?? 1,
+              updnLine: p.isUp === true ? '상행' : '하행',
+              lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
+                .toISOString()
+                .slice(0, 19)
+                .replace('T', ' '),
+            })),
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+  }
+
+  it('promptDisplay/currentLegAnchor 둘 다 없음 + tapAnchor(건대입구/7, leg-2 환승 지점) → resolved, waypoints를 tap 이후로 slice해 onTapLegAdvance로 통지(요구사항 1)', async () => {
+    const seoul = makeSeoulWithPositions([{ trainCode: '7256', isUp: true }]);
+    const trip = makeTapTrip();
+    let outcome: string | undefined;
+    let advance: { waypoints: Waypoint[]; boardingStation: string; line: string } | undefined;
+
+    const result = await attemptBoardingAnchorResolution(
+      trip,
+      seoul,
+      NOW,
+      { allowLegTransfer: true, tapAnchor: { boardingStation: '건대입구', line: '7' } },
+      (o) => {
+        outcome = o;
+      },
+      (a) => {
+        advance = a;
+      },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.trainCode).toBe('7256');
+    expect(result?.line).toBe('7');
+    expect(result?.segmentStations).toEqual(['건대입구', '어린이대공원', '용마산']);
+    expect(outcome).toBe('resolved');
+    expect(advance).toEqual({
+      waypoints: [
+        { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+      boardingStation: '건대입구',
+      line: '7',
+    });
+  });
+
+  it('tapAnchor가 leg-1 origin과 일치(sliceFrom=0) → resolved이지만 leg 전환이 아니므로 onTapLegAdvance는 호출 안 됨', async () => {
+    // 순환선(2호선) direction 추론(arc 비교)의 우연한 방향 불일치를 피하기 위해 monotonic
+    // 노선(7호선)의 origin-leg1 조합으로 구성 — inferLegDirection('7','어린이대공원','건대입구')는
+    // id(018<019)이므로 'down'(기본 mock isUp:false와 일치).
+    const seoul = makeSeoulWithPositions([{ trainCode: '2001' }], '어린이대공원');
+    const trip = makeTapTrip({
+      originStationName: '어린이대공원',
+      waypoints: [
+        { stationName: '건대입구', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+    });
+    let advance: unknown;
+
+    const result = await attemptBoardingAnchorResolution(
+      trip,
+      seoul,
+      NOW,
+      { allowLegTransfer: true, tapAnchor: { boardingStation: '어린이대공원', line: '7' } },
+      undefined,
+      (a) => {
+        advance = a;
+      },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.trainCode).toBe('2001');
+    expect(advance).toBeUndefined();
+  });
+
+  it('tapAnchor가 route 밖(존재하지 않는 조합) → null, outcome=invalid-route, seoul 조회 자체를 안 함(요구사항 3)', async () => {
+    const seoul = makeSeoulWithPositions([{ trainCode: '7256' }]);
+    const trip = makeTapTrip();
+    let outcome: string | undefined;
+
+    const result = await attemptBoardingAnchorResolution(
+      trip,
+      seoul,
+      NOW,
+      { allowLegTransfer: true, tapAnchor: { boardingStation: '없는역', line: '9' } },
+      (o) => {
+        outcome = o;
+      },
+    );
+
+    expect(result).toBeNull();
+    expect(outcome).toBe('invalid-route');
+    expect(seoul.stats.callCount).toBe(0);
+  });
+
+  it('currentLegAnchor 이미 존재(도보게이트 통과) + tapAnchor 충돌 → currentLegAnchor가 승리, tap은 무시된다(요구사항 2 — 우선순위 고정)', async () => {
+    // tap이 이겼다면 findTapLegStart('전혀다른역','9')가 null → invalid-route가 됐을 것.
+    // currentLegAnchor(건대입구/7)가 이겼다면 정상 조회되어 resolved + trainCode 7256.
+    const seoul = makeSeoulWithPositions([{ trainCode: '7256', isUp: true }]);
+    const trip = makeTapTrip({
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW,
+      waypoints: [
+        { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+    });
+    let outcome: string | undefined;
+
+    const result = await attemptBoardingAnchorResolution(
+      trip,
+      seoul,
+      NOW,
+      { allowLegTransfer: true, tapAnchor: { boardingStation: '전혀다른역', line: '9' } },
+      (o) => {
+        outcome = o;
+      },
+    );
+
+    expect(outcome).toBe('resolved');
+    expect(result?.trainCode).toBe('7256');
+    expect(result?.segmentStations[0]).toBe('건대입구');
+  });
+
+  it('currentLegAnchor 존재하지만 도보게이트 미통과 + tapAnchor 있음 → 여전히 walk-gated, tap이 게이트를 우회하지 못한다(요구사항 2)', async () => {
+    const seoul = makeSeoulWithPositions([{ trainCode: '7256' }]);
+    const trip = makeTapTrip({
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW + 60_000,
+    });
+    let outcome: string | undefined;
+
+    const result = await attemptBoardingAnchorResolution(
+      trip,
+      seoul,
+      NOW,
+      { allowLegTransfer: true, tapAnchor: { boardingStation: '건대입구', line: '7' } },
+      (o) => {
+        outcome = o;
+      },
+    );
+
+    expect(result).toBeNull();
+    expect(outcome).toBe('walk-gated');
+    expect(seoul.stats.callCount).toBe(0);
+  });
+
+  it('tapAnchor 미전달(기존 caller — register-time/cron) → 기존 동작 그대로(둘 다 없음이면 outcome=none)', async () => {
+    const seoul = makeSeoulWithPositions([{ trainCode: '7256' }]);
+    const trip = makeTapTrip();
+    let outcome: string | undefined;
+
+    const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, { allowLegTransfer: true }, (o) => {
+      outcome = o;
+    });
+
+    expect(result).toBeNull();
+    expect(outcome).toBe('none');
+    expect(seoul.stats.callCount).toBe(0);
   });
 });
