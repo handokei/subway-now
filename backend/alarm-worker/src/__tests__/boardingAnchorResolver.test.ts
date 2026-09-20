@@ -157,7 +157,7 @@ describe('#2751 — 9/18 실캡처 tap 시각 resolveTrainCodeFromPositions (rec
   // 실측 tMs(fixture 파일 내 entries[29].tMs) — fabricate 아님, 실캡처 원본에서 확인.
   const CAPTURE_T_MS = 1789720831883;
 
-  it('7256이 방향/역/trainSttus 전 조건 충족 + recptnDt 존재(2026-09-18 17:39:05)에도 recptnMs=0 → 신선도 필터가 후보를 전량 배제해 status:none', async () => {
+  it('7256이 방향/역/trainSttus 전 조건 충족 + recptnDt("2026-09-18 17:39:05")를 정확히 읽어 신선한 recptnMs를 얻으면 → 유일 후보로 resolved(fix 이후)', async () => {
     const entry = (fixtureJson as unknown as { entries: Array<{ tMs: number; body: string }> }).entries.find(
       (e) => e.tMs === CAPTURE_T_MS,
     );
@@ -178,14 +178,17 @@ describe('#2751 — 9/18 실캡처 tap 시각 resolveTrainCodeFromPositions (rec
     expect(target?.stationName).toBe('건대입구');
     expect(target?.isUp).toBe(true);
     expect(target?.trainSttus).toBe(1); // ARRIVED
-    // 결함의 핵심 — recptnDt('2026-09-18 17:39:05')가 존재해 recptnMs는 0보다 커야 하지만,
-    // 파서가 lastRecptnDt('20260918', 날짜만)를 읽어 Date.parse가 NaN → 0으로 떨어진다.
-    expect(target?.recptnMs).toBe(0);
+    // fix 이후 — recptnDt('2026-09-18 17:39:05')를 정확히 읽어 recptnMs가 채워진다(0이 아님).
+    // CAPTURE_T_MS(탭 근접 시각)와의 drift는 POSITION_FRESHNESS_MS(120s) 이내다.
+    expect(target?.recptnMs).toBe(Date.parse('2026-09-18T17:39:05+09:00'));
+    expect(CAPTURE_T_MS - (target?.recptnMs ?? 0)).toBeLessThan(120_000);
 
     const anchor: BoardingAnchor = { line: '7', boardingStation: '건대입구', direction: 'up' };
     const result = resolveTrainCodeFromPositions(anchor, positions, CAPTURE_T_MS);
-    // 신선도 필터(recptnMs>0)에서 전량 배제되어 — 방향/역명 불일치가 아니라 — none이 나온다.
-    expect(result).toEqual({ status: 'none' });
+    // fix 전에는 신선도 필터에서 recptnMs=0인 전 후보가 배제되어 'none'이었다(이 파일의 이전
+    // 버전이 red로 기록). fix 후에는 이 스냅샷에 건대입구/상행/ARRIVED가 7256 하나뿐이라
+    // 유일 후보로 resolved된다.
+    expect(result).toEqual({ status: 'resolved', trainCode: '7256' });
   });
 });
 

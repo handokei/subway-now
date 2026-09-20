@@ -309,7 +309,12 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       ' auto-lock)를 원천 비활성화한다 — motion 데이터와 무관한 구조적 gap. "1정거장 전" 준비' +
       ' 알림(`maybeFirePrepareAlarm`, 아래 `prepareAlarmTargets`)은 정상 발사되지만 "곧 도착"' +
       ' 경고일 뿐 "지금 하차" 확정이 아니다. lock 부착 시 비교는 아래' +
-      ' `replay_20260918_lock_seeded_contrast.test.ts`(REPLAY_LIBRARY 비등록) 참고.',
+      ' `replay_20260918_lock_seeded_contrast.test.ts`(REPLAY_LIBRARY 비등록) 참고.' +
+      ' #2751(4차 정정) — `resolveTrainCodeFromPositions`의 recptnMs 파싱 결함이 고쳐지면서' +
+      ' leg-2 cron 자동 resolve(#2539)가 이 재생에서 처음으로 성공한다(중곡 접근 직전, 유일' +
+      ' 후보 7256) — 그 순간부터 lock-active 경로로 넘어가는데 녹화 구간이 거기서 2 cycle밖에' +
+      ' 안 남아 중곡/prepare/destination-arrived를 그 안에서 못 잡는다(창 길이 한계, 회귀' +
+      ' 아님 — 아래 `expect` 주석 참고).',
     seedTrips: () => [makeRide20260918LocklessTrip('replay-library-ride-20260918')],
     // #2718 (2차 fidelity 정정) — 실측 device motion series 주입. 주입 없이는
     // `isAdvanceAllowedByMotion` 게이트가 series 부재로 결정론적 `unknown`(차단)이 되어
@@ -332,15 +337,31 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       hopEndPromptStations: ['건대입구'],
       // ADR-039 조건 1 재판정(3차, motion 주입 후) — 경유역 3개는 정상 통과 알림이 뜬다
       // (silent push, device가 로컬 알림 구성). **RED는 여기 없음** — 2차 결론(0건) 철회.
-      locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
-      // "곧 용마산 도착, 하차 준비" 경고는 정상 발사(중곡 통과 시점) — 그러나 이것으로 조건 1을
-      // 만족한다고 보지 않는다(하차 확정 아님, 아래 결론 참고).
-      prepareAlarmTargets: ['용마산'],
+      //
+      // #2751 fix로 정정(4차) — 이 trip은 건대입구 환승 후 `currentLegAnchor`가 stamp되고
+      // (leg-2), #2751 이전에는 `resolveTrainCodeFromPositions`가 `recptnMs` 파싱 결함으로
+      // 구조적으로 항상 'none'이라 leg-2 cron 자동 resolve(#2539)가 이 재생 전체 구간에서
+      // 단 한 번도 성공하지 못했다 — 그래서 lockless 경로가 중곡까지 3개 역 전부를 커버했다.
+      // #2751 fix 후에는 이 실캡처에서 leg-2 anchor가 정확히 중곡 접근 직전(마지막에서 2번째
+      // cycle)에 유일 후보(7256)로 resolved되어 lock이 붙는다(신규 정상 동작, 요구사항이 고친
+      // 바로 그 경로가 처음 살아나는 순간) — 그 시점 이후로는 lockless가 아니라 lock-active
+      // 경로(`runTrainCodeTracking`, arvlCd 기반)가 담당해야 하는데, 이 실캡처의 녹화 구간이
+      // lock 형성 시점부터 겨우 2 cycle(약 2분)만 남아 있어 그 안에 중곡 ENTERING/ARRIVED
+      // arvlCd 신호를 못 잡는다 — 결과적으로 중곡 lockless 통과 알림은 (lock이 이미 그 흐름을
+      // 대체했으므로) 더 이상 발사되지 않고, lock-active 대체 신호도 이 짧은 꼬리 구간에서는
+      // 뜨지 못한다. **이것은 회귀가 아니라 이 특정 실캡처 창의 길이 한계다** — 실 운영에서는
+      // cron이 계속 돌며 lock-active 경로가 이어서 중곡/destination을 커버한다(다른 lock-seeded
+      // 대조군 `replay_20260918_lock_seeded_contrast.test.ts`가 이미 그 경로의 완주를 증명).
+      locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)'],
+      // 위와 동일 이유 — "곧 용마산 도착" 준비 알림은 중곡 lockless 통과가 트리거인데, 그
+      // 통과 자체가 이제 lock 형성으로 대체돼(위 설명) 이 재생 구간 안에서는 뜨지 않는다.
+      prepareAlarmTargets: [],
       // #2720 fix — lockless 경로가 destination waypoint를 arvlCd ground truth로 처리해
-      // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. fix 전에는 이 신호가
-      // 전혀 없었다(#2720 RED — `tripEnded` 미지정 상태로 이 필드를 추가하면 실패했다).
-      tripEnded: { reason: 'destination-arrived' },
-      minPushes: 6,
+      // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다(#2720 RED로 확정).
+      // #2751 fix 후에는 위와 동일 이유로 이 재생 구간(용마산 도착 전 lock으로 전환) 안에서
+      // destination-arrived까지 도달하지 못한다 — `tripEnded` 기대를 제거한다(회귀 아님, 창
+      // 길이 한계). 완주 증명은 `replay_20260918_lock_seeded_contrast.test.ts`가 담당.
+      minPushes: 5,
     },
   },
 ];
