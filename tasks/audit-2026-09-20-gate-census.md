@@ -33,8 +33,22 @@ HomeScreen.tsx:439 자동 stamp / tryFireConsensusTrainLeg ssot null 조기 retu
    봉인은 ssot=null(무lock trip) + streak 구조 배제뿐. **#2641도 동일 함의: 지금 배선해도 flag=on에선
    무조건 pass라 실효 0 — 실효 있는 2차 검증은 flag 분기 설계(#2757)와 함께 가야 한다.**
 
-**추정으로 남는 것(실측 미확인)**: transferLegConsensus init t0 stale → terminal suppress 시나리오,
-adv#1 "사실상 ④", lastFiredPhase dedup "crash 경로만" — 판정 문구에 추정 표기 유지.
+**잔여 추정 3건 → 전부 확정 (2차 재검증)**:
+1. **transferLegConsensus init t0 stale → terminal suppress: 코드 경로 확정.** t0=lastAdvanceAt
+   (scheduled.ts:6365, >0이면 무조건 채택) → 창 전체가 과거면 `isDepartureEligible` 필터로
+   후보 0 init(status='tracking', transferLegConsensus.ts:137-146) → 다음 tick survivors=0 →
+   'suppressed(all-mismatch)'(:246-257) → terminal("timestamp만 갱신·상태 불변", :307-313) +
+   caller는 `ssot.legConsensus` 존재 시 재init 안 함(:6362-6363) → **leg 발사권 영구 소멸 경로 실재**.
+   프로덕션 발생 빈도만 미측정(D1 consensus-phase 계측으로 확인 가능).
+2. **adv#1 Seed 게이트 'no-seed' 도달불가 확정.** 호출부 전수 3곳(scheduled.ts:4349/5457/6382)
+   모두 사전 lazy-seed(:4295-4300, :5432-5440) 또는 ssot null 조기 return(:6305-6306). :5457은
+   `evidence !== undefined` 블록 내부 확인. 미래 호출자 방어용으로는 무해 — 잔존 무방.
+3. **lastFiredPhase dedup 순수 ④ 확정 (에이전트 추정보다 강함).** set(:6839)→reset(:6887) 사이
+   putTrip 0곳(maybeFireSleepAlarm/maybeFirePrepareAlarm 내부 putTrip 없음 확인, LA는 caller 일괄
+   persist 주석 자인) + crash 시 in-memory 변경 자체가 유실 → **KV의 lastFiredPhase는 어떤 경로로도
+   'imminent'로 저장되지 않는다.** 단 ⚠️ 지뢰: dedup 분기(:6623-6626)가 **waypoint shift 없이 early
+   return**이라, 누군가 set~reset 사이에 putTrip을 추가하면 그 즉시 lockless trip 영구 정체 버그가
+   된다. 제거하거나 "set~reset 사이 persist 금지" 불변식 주석을 남길 것.
 
 ## 집계
 
