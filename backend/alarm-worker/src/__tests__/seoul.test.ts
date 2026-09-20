@@ -260,7 +260,10 @@ describe('SeoulArrivalClient', () => {
         statnNm: '중곡',
         trainSttus: 1,
         updnLine: '0',
-        lastRecptnDt: '2025-01-15 10:30:00',
+        // #2751 — 실 API는 lastRecptnDt에 'YYYYMMDD'(날짜만, 시각 없음)를 보낸다. 수신시각은
+        // recptnDt(arrival과 동일 포맷, 공백구분 전체 타임스탬프)로 온다.
+        recptnDt: '2025-01-15 10:30:00',
+        lastRecptnDt: '20250115',
         ...overrides,
       };
     }
@@ -283,6 +286,32 @@ describe('SeoulArrivalClient', () => {
       expect(positions[0].isUp).toBe(true);
       expect(positions[1].isUp).toBe(false);
       expect(positions[0].recptnMs).toBe(FIXED_NOW);
+    });
+
+    it('#2751 red — lastRecptnDt는 날짜만("YYYYMMDD")이라 파싱 불가, recptnDt(전체 타임스탬프)를 읽어야 recptnMs가 채워진다', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimePositionList: [
+            makePositionItem({
+              trainNo: '7256',
+              statnNm: '건대입구',
+              // 실 API 실측 모양(9/18 캡처) 그대로 — 시각 없는 날짜만 필드.
+              lastRecptnDt: '20260918',
+              recptnDt: '2026-09-18 17:39:05',
+            }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      // fix 전: parsePositionEntry가 lastRecptnDt('20260918')를 읽어 Date.parse가 NaN → 0.
+      // fix 후: recptnDt('2026-09-18 17:39:05')를 읽어 정확한 epoch ms가 나와야 한다.
+      expect(positions[0].recptnMs).toBe(Date.parse('2026-09-18T17:39:05+09:00'));
     });
 
     it('#2746 — updnLine="0"(숫자, 상행/내선)을 isUp:true로 판정한다 (한글 매칭이 아니라 숫자 코드 매칭이어야 통과)', async () => {

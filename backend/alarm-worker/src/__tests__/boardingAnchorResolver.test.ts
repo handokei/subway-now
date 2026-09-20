@@ -17,6 +17,7 @@ import {
 } from '../boardingAnchorResolver';
 import { SeoulArrivalClient, type PositionEntry } from '../seoul';
 import type { Trip, Waypoint } from '../types';
+import fixtureJson from './fixtures/replayLibrary/capture_20260918_line7_yongmasan_overshoot.fixture.json';
 
 const NOW = 1_700_000_000_000;
 
@@ -144,6 +145,50 @@ describe('resolveTrainCodeFromPositions', () => {
   });
 });
 
+/**
+ * #2751 red — 9/18 실캡처(탭 시각 17:40:32 KST, 건대입구/7호선)로 전체 파이프라인
+ * (SeoulArrivalClient.fetchPositions → resolveTrainCodeFromPositions)을 구동한다.
+ * 사용자가 실제로 탄 7256이 방향/역명/trainSttus 조건을 모두 만족하는데도 `parsePositionEntry`가
+ * `lastRecptnDt`(날짜만, '20260918')를 읽어 recptnMs가 0으로 떨어져 신선도 필터에서 걸러진다 —
+ * 그래서 `resolveTrainCodeFromPositions`는 구조적으로 'none'만 낼 수 있다.
+ */
+describe('#2751 — 9/18 실캡처 tap 시각 resolveTrainCodeFromPositions (recptnDt 필드 결함)', () => {
+  // 실캡처 entries 중 tap 시각(17:40:32 KST)에 가장 가까운 realtimePosition(7호선) 항목의
+  // 실측 tMs(fixture 파일 내 entries[29].tMs) — fabricate 아님, 실캡처 원본에서 확인.
+  const CAPTURE_T_MS = 1789720831883;
+
+  it('7256이 방향/역/trainSttus 전 조건 충족 + recptnDt 존재(2026-09-18 17:39:05)에도 recptnMs=0 → 신선도 필터가 후보를 전량 배제해 status:none', async () => {
+    const entry = (fixtureJson as unknown as { entries: Array<{ tMs: number; body: string }> }).entries.find(
+      (e) => e.tMs === CAPTURE_T_MS,
+    );
+    expect(entry).toBeDefined();
+    const body = JSON.parse(entry!.body) as { realtimePositionList: unknown[] };
+
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => CAPTURE_T_MS,
+      fetchImpl: (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch,
+    });
+    const positions = await seoul.fetchPositions('7');
+
+    // sanity — 7256이 파싱 결과에 존재하고, 방향/역명/trainSttus는 전부 anchor 조건을 만족한다.
+    const target = positions.find((p) => p.trainCode === '7256');
+    expect(target).toBeDefined();
+    expect(target?.stationName).toBe('건대입구');
+    expect(target?.isUp).toBe(true);
+    expect(target?.trainSttus).toBe(1); // ARRIVED
+    // 결함의 핵심 — recptnDt('2026-09-18 17:39:05')가 존재해 recptnMs는 0보다 커야 하지만,
+    // 파서가 lastRecptnDt('20260918', 날짜만)를 읽어 Date.parse가 NaN → 0으로 떨어진다.
+    expect(target?.recptnMs).toBe(0);
+
+    const anchor: BoardingAnchor = { line: '7', boardingStation: '건대입구', direction: 'up' };
+    const result = resolveTrainCodeFromPositions(anchor, positions, CAPTURE_T_MS);
+    // 신선도 필터(recptnMs>0)에서 전량 배제되어 — 방향/역명 불일치가 아니라 — none이 나온다.
+    expect(result).toEqual({ status: 'none' });
+  });
+});
+
 describe('attemptBoardingAnchorResolution', () => {
   function makeTrip(overrides: Partial<Trip> = {}): Trip {
     return {
@@ -175,7 +220,8 @@ describe('attemptBoardingAnchorResolution', () => {
               statnNm: p.stationName ?? '중곡',
               trainSttus: p.trainSttus ?? 1,
               updnLine: p.isUp === true ? '0' : '1', // #2746 숫자코드: 0=상행/내선, 1=하행/외선
-              lastRecptnDt: recptnDtFor(p.recptnMs ?? NOW),
+              recptnDt: recptnDtFor(p.recptnMs ?? NOW),
+              lastRecptnDt: recptnDtFor(p.recptnMs ?? NOW).slice(0, 10).replace(/-/g, ''),
             })),
           }),
           { status: 200 },
@@ -364,10 +410,14 @@ describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', (
               statnNm: p.stationName ?? '건대입구',
               trainSttus: p.trainSttus ?? 1,
               updnLine: p.isUp === true ? '0' : '1', // #2746 숫자코드: 0=상행/내선, 1=하행/외선
-              lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
+              recptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
                 .toISOString()
                 .slice(0, 19)
                 .replace('T', ' '),
+              lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
+                .toISOString()
+                .slice(0, 10)
+                .replace(/-/g, ''),
             })),
           }),
           { status: 200 },
@@ -538,10 +588,14 @@ describe('#2739 — attemptBoardingAnchorResolution({ tapAnchor })', () => {
               statnNm: p.stationName ?? defaultStation,
               trainSttus: p.trainSttus ?? 1,
               updnLine: p.isUp === true ? '0' : '1', // #2746 숫자코드: 0=상행/내선, 1=하행/외선
-              lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
+              recptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
                 .toISOString()
                 .slice(0, 19)
                 .replace('T', ' '),
+              lastRecptnDt: new Date((p.recptnMs ?? NOW) + 9 * 60 * 60_000)
+                .toISOString()
+                .slice(0, 10)
+                .replace(/-/g, ''),
             })),
           }),
           { status: 200 },
