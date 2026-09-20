@@ -3372,6 +3372,10 @@ async function recordFireAttempt(
   // 플래그. 측정 plan(PR 본문)이 이 필드로 :00 정각 외(:30 부근) fire-attempt 분포를 조회한다.
   // 생략(1차 pass, 기존 전체 call site)은 meta에 필드 자체를 싣지 않아 기존 row 형태 불변.
   midCycle?: boolean,
+  // #2779 — vanish-fallback/vanish-release 등 arvlcd-fire와 다른 경로의 발사 시도를 D1에서
+  // 구분하기 위한 식별자. 생략(기존 arvlcd-fire call site)은 meta에 필드 자체를 싣지 않아
+  // 기존 row 형태 불변 — 새 kind를 만들지 않고 기존 kind='cron-fire-attempt'를 그대로 쓴다.
+  path?: string,
 ): Promise<void> {
   await recordTripEvent(
     env.DB,
@@ -3385,6 +3389,7 @@ async function recordFireAttempt(
         outcome,
         reason,
         ...(midCycle ? { midCycle: true } : {}),
+        ...(path !== undefined ? { path } : {}),
       },
     },
     now,
@@ -3406,19 +3411,24 @@ async function recordFireBlockReasonTransition(
   ssot: TripPositionSSoT | null,
   reason: string,
   now: number,
+  // #2779 — vanish-fallback/vanish-release 경로 skip 지점도 이 헬퍼로 기록한다. 생략(기존
+  // arvlcd-fire call site)은 기존 marker/meta 형태 불변.
+  path?: string,
 ): Promise<void> {
   if (ssot === null) return;
   // #2662 — dedup 마커를 `reason@station`으로 키잉한다. reason만 비교하면 같은 사유가 다음 역에서
   // 재발했을 때(예: 매 역 dedup skip) 첫 역 1건만 남아 "어느 역이 침묵했는가"를 D1로 못 가린다 —
   // 이 계측의 목적이 바로 그 확정이다. 매 tick 반복 기록 억제(#2073 quota)는 그대로 유지된다.
-  const marker = `${reason}@${waypoint.stationName}`;
+  // #2779 — path를 마커에 포함해 arvlcd-fire와 vanish-fallback/release가 같은 (reason, station)을
+  // 각자 독립적으로 전이-기록하게 한다(한 경로의 기록이 다른 경로의 전이 감지를 가리지 않도록).
+  const marker = `${path ?? 'arvlcd'}:${reason}@${waypoint.stationName}`;
   if (ssot.lastFireBlockReason === marker) return;
   await writeSsot(
     env.TRIPS,
     { ...ssot, lastFireBlockReason: marker },
     { expiresAt: trip.expiresAt },
   );
-  await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, reason);
+  await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, reason, undefined, path);
 }
 
 /**
@@ -4372,12 +4382,21 @@ export async function fireVanishFallbackStationPush(
   inputs: FireVanishFallbackStationPushInputs,
 ): Promise<void> {
   const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId, origin } = inputs;
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
+  // #2779 — 아래 skip 분기(sleep mute / station-passed dedup)가 D1에 사유를 남기려면 SSoT 전이
+  // 마커가 필요하다(arvlcd-fire, #2662가 이미 같은 이유로 이 read를 함수 앞으로 끌어올린 전례와
+  // 동일 패턴). 이 read는 cacheTtl 적용 KV read라 quota 영향은 read 1회뿐(전이 없으면 write는
+  // 발생하지 않음) — 발사/게이트 판정에는 관여하지 않는다.
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
   if (trip.sleepModeEnabled === true) {
     log('station-notif skip: sleep', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
       origin,
     });
+    await recordFireBlockReasonTransition(env, trip, waypoint, ssot, FIRE_SKIP_REASON.sleep, now, origin);
     return;
   }
   // #2571 — 경로 무관 station-passed dedup. arvlCd/position 경로가 이미 이 역을 발사했으면 skip
@@ -4389,6 +4408,15 @@ export async function fireVanishFallbackStationPush(
       station: waypoint.stationName,
       origin,
     });
+    await recordFireBlockReasonTransition(
+      env,
+      trip,
+      waypoint,
+      ssot,
+      FIRE_SKIP_REASON.stationPassedDedup,
+      now,
+      origin,
+    );
     return;
   }
   const logPrefix = origin === 'vanish-release' ? 'vanish-release-fire' : 'vanish-fallback-fire';
@@ -4396,10 +4424,6 @@ export async function fireVanishFallbackStationPush(
   // dedup은 여기서 삭제됐다. stationFiredKey(경로 무관 station-passed 마커) 검사가 이미 이
   // 함수 진입부(위)에서 선행하고, 아래에서 그 stamp를 발사 성공 직후 put한다 — crash-창 방어를
   // stationFiredKey 단일 키에 위임(fireArvlCdStationPush와 동일 패턴).
-  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
-  const ssot = await readSsot(env.TRIPS, trip.token, {
-    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-  });
   // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 일관성 검증.
   // SSoT 부재 trip(legacy)은 본 게이트 통과시켜 기존 vanish-fallback 흐름 유지 — graceful.
   //
@@ -4426,6 +4450,17 @@ export async function fireVanishFallbackStationPush(
         // #2602 — 게이트 입력 스탬프 (위 arvlcd-fire 경로와 동일 계약).
         ...buildTransferGateBlockMeta(ssot, transferGate, deviceSyncStale, now),
       });
+      if (transferGate.blockReason !== undefined) {
+        await recordFireBlockReasonTransition(
+          env,
+          trip,
+          waypoint,
+          ssot,
+          transferGate.blockReason,
+          now,
+          origin,
+        );
+      }
       return;
     }
   }
@@ -4521,6 +4556,8 @@ export async function fireVanishFallbackStationPush(
       deps.archFlag,
       env.DB,
     );
+    // #2779 — fire-attempt(실패) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘.
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
   }
@@ -4559,6 +4596,9 @@ export async function fireVanishFallbackStationPush(
   // (fallback.ts는 이 push kind를 등록 대상에서 자연히 제외).
   // #2571 — 경로 무관 station-passed 마커 stamp (arvlCd 경로와 공유).
   await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  // #2779 — fire-attempt(성공) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘, meta.path로
+  // vanish-fallback/vanish-release를 구분(신규 kind 신설 금지).
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin);
 }
 
 /**
