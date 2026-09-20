@@ -170,6 +170,34 @@ function hasArvlcdTrainProgressSignal(evidence: AdvanceEvidence): boolean {
 }
 
 /**
+ * #2763 (메인 검증 발견, 2026-09-20) — evidence가 특정 trainCode를 주장할 때 lock과
+ * 불일치하면 true(mismatch). lock 없음이거나 evidence가 identity를 주장하지 않으면(position-train
+ * 미stamp) false(mismatch 아님 — dormant).
+ *
+ * 게이트 #5(arvlcd-confirmed-train/consensus-train, arvlcdTrainCode 미stamp도 mismatch 취급)
+ * + #5c(position-train, stamp된 경우만 mismatch 취급)가 원래 각자 검사하던 조건을 단일 지점으로
+ * 추출한 것 — 두 게이트를 이 helper 하나로 대체해도 동일하게 동작한다(아래 gate 재사용 확인).
+ *
+ * pre-gate stamp(`hasArvlcdTrainProgressSignal`)도 이 helper를 재사용한다: #2685 사례처럼
+ * lock.trainCode와 불일치해 게이트 #5/#5c에서 결국 거부될 evidence까지 "열차 진행 확증"으로
+ * stamp하면, caller(scheduled.ts `recordFireBlockReasonTransition`)가 blocked outcome의 SSoT를
+ * 그대로 KV에 write하는 경로로 남의 열차 진행이 motion 증거로 적재될 수 있다 — advance 근거로
+ * 못 믿는 열차를 motion 근거로 믿으면 안 된다.
+ */
+function trainIdentityMismatches(
+  evidence: AdvanceEvidence,
+  lock: BoardingLockMeta | undefined,
+): boolean {
+  if (lock === undefined) return false;
+  const requiresMatch =
+    evidence.type === 'arvlcd-confirmed-train' || evidence.type === 'consensus-train';
+  const positionTrainClaimsIdentity =
+    evidence.type === 'position-train' && evidence.arvlcdTrainCode !== undefined;
+  if (!requiresMatch && !positionTrainClaimsIdentity) return false;
+  return evidence.arvlcdTrainCode !== lock.trainCode;
+}
+
+/**
  * Cellular tech vote — `evaluateConsensusGate.cellularEnvironmentVote` 입력 호환.
  */
 export type CellularTechVote = 'surface' | 'underground' | 'unknown';
@@ -488,8 +516,11 @@ export async function advanceTripPosition(
   // evidence가 SSoT에 영원히 도달하지 못하는 순환이 남는다(stationary 진입 방지는 되지만
   // 회복은 안 됨). 여기서 즉시 stamp해 같은 호출의 hasArvlcdTrainProgress 판정에 반영한다.
   // blocked으로 끝나는 호출은 writeSsot를 타지 않으므로 KV에는 영향 없음(기존 "blocked 시
-  // SSoT 미변경" 불변식 유지) — 이 mutation은 오직 이번 함수 호출 내 게이트 판정용.
-  if (hasArvlcdTrainProgressSignal(evidence)) {
+  // SSoT 미변경" 불변식 유지) — 단, 이 함수가 반환하는 `ssot`(in-memory)는 caller가 별도
+  // 경로로 write할 수 있어(예: scheduled.ts `recordFireBlockReasonTransition`가 blocked
+  // outcome.ssot를 KV에 write) 게이트 #5/#5c가 결국 거부할 evidence는 애초에 stamp하지
+  // 않는다(메인 검증 발견, #2685 사례 — trainIdentityMismatches로 identity도 함께 확인).
+  if (hasArvlcdTrainProgressSignal(evidence) && !trainIdentityMismatches(evidence, lock)) {
     pushMotionEvidence(ssot, {
       source: 'seoul-arvlcd',
       ts: evidence.ts,
@@ -592,27 +623,14 @@ export async function advanceTripPosition(
     return { result: 'blocked', blockReason: 'time-only-forbidden', ssot };
   }
 
-  // #5 Train identity 게이트 — lock 활성 시 arvlcd-confirmed-train과 consensus-train
-  // (#2329, consensus-C) 모두 lock.trainCode 일치를 강제한다.
-  if (
-    lock !== undefined &&
-    (evidence.type === 'arvlcd-confirmed-train' || evidence.type === 'consensus-train')
-  ) {
-    if (evidence.arvlcdTrainCode !== lock.trainCode) {
-      return { result: 'blocked', blockReason: 'train-mismatch', ssot };
-    }
-  }
-
-  // #5c (#2623 P1-1 리뷰) — position-train evidence가 arvlcdTrainCode를 stamp했다면(게이트 #3
-  // envConsensusBypass가 신뢰하는 것과 같은 identity claim) lock.trainCode와 일치까지 검증한다.
-  // arvlcdTrainCode 미stamp(legacy caller, optional 필드)는 기존대로 dormant — 하위 호환 보존
-  // (gate #7 position-train jump/stale 단위 테스트가 이 미stamp 경로를 다수 검증).
-  if (
-    lock !== undefined &&
-    evidence.type === 'position-train' &&
-    evidence.arvlcdTrainCode !== undefined &&
-    evidence.arvlcdTrainCode !== lock.trainCode
-  ) {
+  // #5 Train identity 게이트 (lock 활성 시 arvlcd-confirmed-train/consensus-train은 lock.trainCode
+  // 일치를 강제, #2329 consensus-C 포함) + #5c (#2623 P1-1 리뷰, position-train evidence가
+  // arvlcdTrainCode를 stamp했다면 게이트 #3 envConsensusBypass가 신뢰하는 것과 같은 identity
+  // claim이므로 lock.trainCode와 일치까지 검증 — 미stamp는 dormant, 하위 호환 보존).
+  //
+  // #2763 — 두 게이트가 각자 검사하던 조건을 `trainIdentityMismatches`로 단일화(중복 구현
+  // 방지). pre-gate motionEvidence stamp도 동일 helper를 재사용한다(메인 검증 발견, #2685 사례).
+  if (trainIdentityMismatches(evidence, lock)) {
     return { result: 'blocked', blockReason: 'train-mismatch', ssot };
   }
 
