@@ -5,6 +5,11 @@ import {
   clearLockLifecycleEntries,
   getLockLifecycleEntries,
 } from '../../utils/boardingLockLifecycleBuffer';
+import {
+  getLockCorrectionMetrics,
+  resetLockCorrectionMetrics,
+} from '../../utils/lockCorrectionMetrics';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
@@ -44,6 +49,7 @@ describe('useBoardingLockStore', () => {
     mockClearDismissSilence.mockResolvedValue(undefined);
     useBoardingLockStore.setState({ lock: null });
     clearLockLifecycleEntries();
+    resetLockCorrectionMetrics();
   });
 
   it('초기 상태는 lock=null', () => {
@@ -103,6 +109,58 @@ describe('useBoardingLockStore', () => {
       const entries = getLockLifecycleEntries();
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({ event: 'create', source: 'user-tap' });
+    });
+
+    // #2786 리뷰(항목 4, Wire-completion V/X) — PENDING sentinel lock이 실 trainCode로 승격될 때
+    // 단일 SSOT mutation 지점(createLock)에서 telemetry를 적재해야 이 fix가 프로덕션에서 실제로
+    // 작동하는지 관측할 수 있다.
+    describe('#2786 — PENDING → 실 trainCode 승격 telemetry', () => {
+      it('prev lock이 PENDING sentinel + 새 lock이 실 trainCode → recordPendingLockPromotion 적재', async () => {
+        await act(async () => {
+          await useBoardingLockStore
+            .getState()
+            .createLock({ ...sample, trainCode: PENDING_TRAIN_CODE }, false);
+        });
+        await act(async () => {
+          await useBoardingLockStore.getState().createLock({ ...sample, trainCode: '2371' }, false);
+        });
+        const metrics = getLockCorrectionMetrics();
+        expect(metrics.promoted).toBe(1);
+        expect(metrics.lastPromotedAtMs).toBeGreaterThan(0);
+      });
+
+      it('prev lock이 실 trainCode → 새 lock도 실 trainCode(일반 교체)는 promoted 미적재', async () => {
+        await act(async () => {
+          await useBoardingLockStore.getState().createLock(sample, false);
+        });
+        await act(async () => {
+          await useBoardingLockStore
+            .getState()
+            .createLock({ ...sample, trainCode: 'T-200' }, false);
+        });
+        expect(getLockCorrectionMetrics().promoted).toBe(0);
+      });
+
+      it('prev lock 없음(최초 생성)은 promoted 미적재', async () => {
+        await act(async () => {
+          await useBoardingLockStore.getState().createLock(sample, false);
+        });
+        expect(getLockCorrectionMetrics().promoted).toBe(0);
+      });
+
+      it('prev lock이 PENDING + 새 lock도 PENDING(#2407 재시도)이면 promoted 미적재', async () => {
+        await act(async () => {
+          await useBoardingLockStore
+            .getState()
+            .createLock({ ...sample, trainCode: PENDING_TRAIN_CODE }, false);
+        });
+        await act(async () => {
+          await useBoardingLockStore
+            .getState()
+            .createLock({ ...sample, trainCode: PENDING_TRAIN_CODE, boardedAt: 2_000_000 }, false);
+        });
+        expect(getLockCorrectionMetrics().promoted).toBe(0);
+      });
     });
   });
 
