@@ -18,6 +18,7 @@ import { formatClockTime } from '../../../shared/utils/formatTime';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { recordLockCorrection } from '../utils/lockCorrectionMetrics';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { buildDirectionMeta, parseTrainLineDirection } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../../../shared/constants/lineColors';
@@ -274,6 +275,13 @@ export function BoardingTrainList({
       setPendingTrainCode(null);
       return;
     }
+    // #2786 — lockedTrainCode가 PENDING sentinel(#2407 fallback lock, trainCode 미확정)이면
+    // "정정"이 아니다. 정정 토스트는 pending(사용자가 탭한 실 trainCode) → confirmed(실
+    // trainCode) 방향으로만 의미가 있다 — 사용자가 명시적으로 고른 열차가 미확정 sentinel로
+    // "정정"됐다는 문구를 노출하면(9/21 PM 뚝섬 실측: "2371 → PENDING-TRAIN-CODE") 내부 sentinel
+    // 문자열이 그대로 사용자에게 보이고 방향도 실제 의미와 반대로 읽힌다. pending 상태는 그대로
+    // 유지 — 기존 rollback timer(PENDING_TIMEOUT_MS_DEFAULT)가 최종 안전망.
+    if (isPendingTrainCode(lockedTrainCode)) return;
     // 정정 — pending(A) ≠ confirmed(B).
     clearRollbackTimer();
     recordLockCorrection(pendingTrainCode, lockedTrainCode);

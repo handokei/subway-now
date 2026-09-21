@@ -410,7 +410,9 @@ export function useBoardingLockController({
       // #2722 — LA 버튼/알림 "탑승했어요"가 같은 역·노선으로 이미 lock을 만든 직후 사용자가
       // BoardingTrainList에서 탭해도 lock을 다시 만들지 않는다(동시 진입 → lock 1개). LA와
       // 동일한 shared predicate(`isDuplicateBoardingLock`) — 새 판정 로직 아님.
-      if (isDuplicateBoardingLock(train.line, currentStation.name)) return;
+      // #2786 — train.trainCode를 함께 전달해, 기존 lock이 PENDING sentinel(#2407 fallback)이고
+      // 이 탭이 실 trainCode면 dedup이 아니라 교체 대상으로 판정되도록 한다.
+      if (isDuplicateBoardingLock(train.line, currentStation.name, train.trainCode)) return;
       void createLock({
         destinationId,
         trainCode: train.trainCode,
