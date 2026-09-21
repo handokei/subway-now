@@ -159,24 +159,44 @@ export const BAROMETER_MISMATCH_QUORUM_READINGS = 30;
 export const BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS = 180_000;
 
 /**
- * #2699 — `subsurface` 값이 `useApnsTripRegistration`의 backend register(POST /trips)
- * 트리거/payload로 승격되기까지 필요한 최소 유지 시간(dwell).
+ * #2699 — subsurface 경계 flap 억제 quarantine 창. `useApnsTripRegistration`이 raw
+ * `subsurface` 전환을 backend register(POST /trips) 트리거/payload로 승격할 때 쓴다.
  *
  * 단위: ms.
  *
- * 근거 (2026-09-18/21 실측 — RCA "원인 확정" 코멘트):
- *   - `useBarometer`의 실제 hysteresis는 이전 deps 주석이 주장한 "60s 윈도우 평가"가 아니라
- *     1Hz 샘플 × `BAROMETER_SUBSURFACE_CONFIRM_SAMPLES`(3) = 약 **3초** 디바운스뿐이다.
- *     30s는 dP/dt 회귀 윈도우(`BAROMETER_DPDT_WINDOW_MS`)이지 토글 디바운스가 아니다.
- *   - 지하/지상 경계 부근에서는 이 3초 디바운스를 통과하고도 subsurface가 반복 토글된다 —
- *     9/18 덤프 `sub=` 전환 시각이 `POST /trips` CALL과 초 단위로 정확히 일치(정확 일치 6건),
- *     간격 실측 4~13초.
- *   - `subsurface`가 (구) register effect deps에 raw 그대로 물려 있어 매 토글마다 POST가
- *     나가 18분 trip에 29~37회 폭주했다(#2699).
- *   - 30s는 실측 토글 간격(4~13s)의 2배 이상 — 경계 flapping은 걸러내면서, 실제로 지하
- *     구간에 진입/이탈해 수 분간 안정된 전환은 놓치지 않는다.
- *   - 시간 기반 throttle("N초에 한 번만 POST")이 아니다 — "값이 이 시간 동안 안정적으로
- *     유지됐는가"라는 내용 기준이다. dwell 도중 값이 다시 뒤집히면 타이머가 리셋돼 그
- *     전환 자체가 폐기된다(진짜 확정된 전환은 지연 없이 그대로 반영).
+ * ## 설계가 "항상 30s 지연"에서 "즉시 확정 + 되돌아온 전환만 보정"으로 바뀐 이유
+ *
+ * 최초 구현(v1)은 raw 전환마다 30s 동안 안정을 기다린 뒤에만 확정했다 — 이러면 register
+ * churn은 막히지만 두 가지 진짜 신호를 함께 죽인다:
+ *   - Tier 2 지하 fallback heal(`buildTier2FallbackOverride`)과 boardingPrompt evidence
+ *     environment(backend `boardingPrompt.ts:197`)가 지하 진입 판정 자체를 기다려야 해서,
+ *     실제로 경계에서 flapping이 계속되면(9/18 실측 패턴) 확정이 trip 내내 영원히 안 될 수
+ *     있다 — dwell 게이트의 목적(register 재등록 churn 억제)이 아닌 다른 소비자의 판정을
+ *     의도치 않게 재정의해버린다(리뷰 지적, PR #2789).
+ *   - 진짜 단일 전환(예: 열차가 지하로 진입해 그대로 유지)도 30s를 무조건 기다려야 해서
+ *     backend가 그만큼 늦게 안다.
+ *
+ * v2(현재)는 다음 불변식을 만족한다(재설계 지시, PR #2789):
+ *   1. **즉시 확정** — raw 전환이 발생하면(quarantine 창 밖이면) 지연 없이 즉시 confirm.
+ *      되돌아오지 않는 진짜 전환은 register가 그 즉시(다음 렌더) 나간다.
+ *   2. **quarantine 창 안의 되돌아온 전환만 억제** — 직전 전환으로부터 이 창(`SUBSURFACE_FLAP_QUARANTINE_MS`)
+ *      안에 반대 방향 전환이 다시 오면 "flap"으로 보고, quarantine 진입 **이전**의 안정값으로
+ *      되돌린다(그 사이 바뀐 것 자체를 취소). 추가 bounce는 창을 연장만 할 뿐 추가 상태변화를
+ *      만들지 않는다 — 한 flap episode당 register는 최대 2회(최초 낙관적 확정 1회 + 보정
+ *      1회)로 유계이며, bounce 횟수에 비례해 늘지 않는다. 문자 그대로 0회는 "즉시 확정"과
+ *      수학적으로 양립 불가(미래를 미리 알 수 없다) — 대신 무계수(N=bounce 수) 폭주였던
+ *      원 버그를 유계(상수)로 바꾼다.
+ *   3. **타이머 없음 — 벽시계 의존 제거.** v1의 `setTimeout(30s)`은 iOS BG suspend 중 멈췄다가
+ *      resume 시 "관측 없이 경과"를 확정으로 오인할 위험이 있었다(리뷰 지적). v2는 오직
+ *      raw `subsurface` prop이 실제로 바뀌는(=barometer 샘플이 도착하는) 렌더에서만
+ *      동기적으로 판단한다 — suspend 중엔 아무 effect도 안 돌고, resume 후 첫 실제 샘플이
+ *      도착한 그 사이클에 곧바로 반영된다.
+ *   4. **mount seed 비대칭 없음** — 초기 confirmed는 raw를 그대로 채택하지 않고 `false`
+ *      (미확정)에서 시작해 첫 관측도 다른 전환과 완전히 동일한 알고리즘을 거친다. 리마운트
+ *      순간의 일시 blip도 특별 취급 없이 같은 flap quarantine 로직으로 흡수된다.
+ *
+ * 창 값 근거(2026-09-18/21 실측 — RCA "원인 확정" 코멘트): 관측된 flap 간격 4~13초. 20s는
+ * 그 상한의 1.5배 이상이라 경계 flapping을 안정적으로 같은 episode로 묶으면서도, 훨씬 더
+ * 뒤(예: 108s 뒤)에 오는 별개의 진짜 전환까지 같은 episode로 오인하지 않는다.
  */
-export const SUBSURFACE_REGISTER_DWELL_MS = 30_000;
+export const SUBSURFACE_FLAP_QUARANTINE_MS = 20_000;

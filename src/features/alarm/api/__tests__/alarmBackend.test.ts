@@ -271,18 +271,46 @@ describe('alarmBackend', () => {
       });
 
       // #903 (Seam G) — subsurface 동봉
-      it('subsurface=true 송신 + 토글 변경 시 재등록', async () => {
-        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, subsurface: true });
+      it('subsurface=true 송신 + subsurfaceDedupKey 토글 변경 시 재등록', async () => {
+        const first = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          subsurface: true,
+          subsurfaceDedupKey: true,
+        });
         expect(first.ok).toBe(true);
         const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
         expect(body.subsurface).toBe(true);
+        // #2699 — subsurfaceDedupKey는 dedup 전용 입력이라 body에는 직렬화되지 않는다.
+        expect(body).not.toHaveProperty('subsurfaceDedupKey');
 
-        // subsurface OFF로 재호출 → hash 달라져서 재등록 (dedup 미적용)
-        const off = await registerActiveTrip({ ...SAMPLE_PAYLOAD, subsurface: false });
+        // subsurfaceDedupKey OFF로 재호출 → hash 달라져서 재등록 (dedup 미적용)
+        const off = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          subsurface: true,
+          subsurfaceDedupKey: false,
+        });
         expect(off).toEqual({ ok: true, status: 200 });
         expect(global.fetch).toHaveBeenCalledTimes(2);
-        const offBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
-        expect(offBody.subsurface).toBeUndefined();
+      });
+
+      // #2699 (리뷰 지적, "각도 C" 항목 2) — raw(subsurface)와 confirmed(subsurfaceDedupKey)
+      // 분리 검증: dedup 키가 그대로면 raw 값만 바뀌어도(flap 관측) 재등록되지 않는다 — 이
+      // 필드가 hash에 섞여 들어가면 원래 폭주(#2699 root cause)가 재발한다.
+      it('subsurfaceDedupKey가 동일하면 subsurface(raw)만 바뀌어도 dedup된다 (관측값이 hash를 오염시키지 않음)', async () => {
+        const first = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          subsurface: true,
+          subsurfaceDedupKey: true,
+        });
+        expect(first.ok).toBe(true);
+
+        const second = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          subsurface: false, // raw만 바뀜(관측값) — dedup 키는 동일.
+          subsurfaceDedupKey: true,
+        });
+        expect(second).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
       it('subsurface=false/미설정이면 body에 미포함 (graceful)', async () => {

@@ -3562,18 +3562,24 @@ describe('alarmLog', () => {
     });
 
     it.each([
-      { next: true, expected: 'subsurface=true' },
-      { next: false, expected: 'subsurface=false' },
-    ])('#2699: logSubsurfaceRegisterTransition($next)이 subsurface-register-confirmed entry를 적재한다', async ({ next, expected }) => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
-      logSubsurfaceRegisterTransition(next);
-      await flushAlarmLog();
-      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
-      expect(saved).toHaveLength(1);
-      expect(saved[0].source).toBe('subsurface-register-confirmed');
-      expect(saved[0].outcome).toBe('fired');
-      expect(saved[0].stationName).toBe(expected);
-    });
+      { next: true, hasActiveTrip: true, expected: 'subsurface=true', outcome: 'fired' },
+      { next: false, hasActiveTrip: true, expected: 'subsurface=false', outcome: 'fired' },
+      { next: true, hasActiveTrip: false, expected: 'subsurface=true', outcome: 'received' },
+    ])(
+      '#2699: logSubsurfaceRegisterTransition($next, $hasActiveTrip)이 subsurface-register-confirmed entry를 적재한다(outcome=$outcome)',
+      async ({ next, hasActiveTrip, expected, outcome }) => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+        logSubsurfaceRegisterTransition(next, hasActiveTrip);
+        await flushAlarmLog();
+        const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+        expect(saved).toHaveLength(1);
+        expect(saved[0].source).toBe('subsurface-register-confirmed');
+        // #2699 (리뷰 지적, 항목 3) — outcome이 hasActiveTrip을 인코딩: 'fired'는 register가
+        // 실제로 뒤따를 것으로 기대됨, 'received'는 활성 trip이 없어 POST가 안 나감(정상).
+        expect(saved[0].outcome).toBe(outcome);
+        expect(saved[0].stationName).toBe(expected);
+      },
+    );
 
     it('#2699: subsurface-register-confirmed source는 fire 분모/silent push outcome 집계 모두에서 제외', () => {
       const now = 1_700_000_000_000;

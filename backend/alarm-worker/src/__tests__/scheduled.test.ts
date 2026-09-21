@@ -669,6 +669,48 @@ describe('runScheduled', () => {
     expect(stats.pushed).toBe(0);
   });
 
+  // #2699 (device 측 이슈 — alarmBucket 제거 안전성 근거, 리뷰 "각도 C" 항목 4) —
+  // device `useApnsTripRegistration`이 register dedup hash에서 `alarmAtEpochMs` 유래
+  // `alarmBucket`(시간종속)을 제거하면서, 이 필드가 더 이상 매 register 호출마다
+  // "지금 + ETA"로 자동 갱신되지 않고 과거 값에 동결될 수 있다는 우려가 있었다.
+  // `alarmAtEpochMs`의 유일한 backend 소비처는 아래 `runScheduled`의 one-shot
+  // window-entry 게이트(`trip.alarmAtEpochMs - now > POLLING_WINDOW_MS`)뿐이다 —
+  // backend는 이 값을 스스로 재기록(reschedule)하지 않는다(과거 device 측 주석의
+  // "cron이 reschedule로 보정" 서술은 부정확했다 — 이 게이트를 통과한 뒤의 정확한 발사
+  // 시점은 매 cycle의 Seoul API 실시간 ETA로 별도 판정되지, alarmAtEpochMs 자체가
+  // 갱신되는 것이 아니다). 동결값이 과거로 흘러갈수록 `alarmAtEpochMs - now`는 더
+  // 음수가 될 뿐이라 이 게이트는 자연히 열린 채로 유지된다 — 동결이 무해함을 증명한다.
+  it('#2699 alarmAtEpochMs가 동결(먼 과거)돼도 폴링 게이트는 자연히 열려 있다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({ alarmAtEpochMs: NOW - 10 * 60 * 60_000 }), // 10시간 전에 동결된 값.
+    );
+    // Seoul API fetch 발생 여부로 "폴링 윈도우 게이트를 통과해 실제로 폴링을 시도했는가"를
+    // 직접 관측한다 — stats.polled는 이후 여러 하위 게이트(motion/lockless 평가 등)를 모두
+    // 통과해야 증가하므로 이 테스트의 관심사(윈도우 게이트 자체)에는 너무 늦게 반응한다.
+    const seoulFetchSpy = vi.fn(async () =>
+      new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 }),
+    );
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: seoulFetchSpy as unknown as typeof fetch,
+    });
+    const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // 동결된 과거 alarmAtEpochMs가 영구 skip을 유발하지 않고 게이트가 열려 Seoul API 폴링이
+    // 실제로 시도됐다(대조군인 "윈도우 밖" 테스트는 이 fetch 자체가 0회).
+    expect(seoulFetchSpy).toHaveBeenCalled();
+  });
+
   it('deletes expired trips', async () => {
     const kv = new InMemoryKV();
     await putTrip(

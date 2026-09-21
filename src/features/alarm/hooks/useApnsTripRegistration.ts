@@ -43,7 +43,7 @@ import {
   REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
   ROUTE_CHANGE_DEBOUNCE_MS,
 } from '../../../shared/constants/boardingLock';
-import { SUBSURFACE_REGISTER_DWELL_MS } from '../../../shared/constants/barometer';
+import { SUBSURFACE_FLAP_QUARANTINE_MS } from '../../../shared/constants/barometer';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -80,10 +80,13 @@ export interface UseApnsTripRegistrationInputs {
    * consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival 누락에 더 인내한다.
    * 미설정/false면 기존 threshold(5) 유지 — 기압계 미지원 환경 graceful.
    *
-   * #2699 — raw 값을 그대로 전달해도 안전하다. 이 hook 내부가 `SUBSURFACE_REGISTER_DWELL_MS`
-   * (30s) dwell 게이트로 값을 확정(`confirmedSubsurface`)한 뒤에만 register 트리거/payload에
-   * 반영한다 — `useBarometer`의 실제 hysteresis(3s)만으로는 지하/지상 경계에서 4~13s 간격
-   * 토글이 그대로 POST /trips 폭주로 이어졌다(RCA 9/21 "원인 확정" 코멘트).
+   * #2699 — raw 값을 그대로 전달해도 안전하다. 이 hook 내부가 flap-quarantine 게이트
+   * (`SUBSURFACE_FLAP_QUARANTINE_MS`)로 경계 flapping만 흡수하고 진짜 전환은 즉시
+   * 확정(`confirmedSubsurface`)한 뒤 register 트리거/payload에 반영한다 —
+   * `useBarometer`의 실제 hysteresis(3s)만으로는 지하/지상 경계에서 4~13s 간격 토글이
+   * 그대로 POST /trips 폭주로 이어졌다(RCA 9/21 "원인 확정" 코멘트). Tier 2 fallback
+   * 게이트 등 register-churn과 무관한 다른 소비자는 이 값이 아니라 raw를 그대로 받는다
+   * (`latestInputsRef.rawSubsurface`).
    */
   subsurface?: boolean;
   /**
@@ -177,8 +180,18 @@ interface RegisterCallInputs {
   nextStationEtaSeconds: number | null;
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
-  /** #903 (Seam G) — 기압계 subsurface 신호. true면 backend threshold 5→10. */
+  /**
+   * #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2) — flap-quarantine을 거친 confirmed
+   * 값. dedup hash 키로만 쓰인다(RegisterTripPayload.subsurfaceDedupKey) — backend에 저장되는
+   * 관측값 자체는 `rawSubsurface`가 담당한다.
+   */
   subsurface: boolean;
+  /**
+   * #2699 (리뷰 지적, "각도 C" 항목 2) — 등록 시점 raw subsurface(flap-quarantine 미적용).
+   * backend Trip.subsurface(관측/모니터링 전용, #2644 이후)에 그대로 저장돼 flap 패턴 자체가
+   * POST /trips 채널에서도 보이게 한다.
+   */
+  rawSubsurface: boolean;
   /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
   infoModeEnabled: boolean;
   /** #2651 — boarding-prompt opt-in(안내 시작) 시그널. true면 backend boarding-prompt 발사 gate 활성. */
@@ -281,8 +294,11 @@ async function callRegister(
           promptDisplay: promptContext.promptDisplay,
         }
       : {}),
-    // #903 (Seam G) — 기압계 subsurface ON일 때만 송신. OFF/false는 필드 누락(graceful).
-    ...(input.subsurface ? { subsurface: true } : {}),
+    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2) — backend에 저장되는 관측값은 raw.
+    // dedup hash 키는 confirmed(subsurfaceDedupKey, flap-quarantine 통과분)로 별도 전달 —
+    // 둘 다 ON일 때만 송신(OFF/false는 필드 누락, graceful, backend default false).
+    ...(input.rawSubsurface ? { subsurface: true } : {}),
+    ...(input.subsurface ? { subsurfaceDedupKey: true } : {}),
     // #1895 — device locale (boarding-prompt push 본문 4언어 분기용). 미지원 locale은 송신 skip.
     ...(locale ? { locale } : {}),
     // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
@@ -325,46 +341,93 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
 
-  // #2699 — subsurface dwell 게이트. useBarometer의 실제 hysteresis(3s)만으로는 지하/지상
-  // 경계에서 raw subsurface가 4~13s 간격으로 반복 토글되고, 이 값을 그대로 register effect
-  // deps/payload에 흘리면 매 토글마다 POST /trips가 나가 18분 trip에 29~37회 폭주했다(RCA 9/21
-  // "원인 확정" 코멘트). `confirmedSubsurface`는 raw `subsurface`가 `SUBSURFACE_REGISTER_DWELL_MS`
-  // (30s) 동안 안정적으로 유지된 뒤에만 갱신되는 파생 상태 — 이 hook 내부의 모든 register 경로
-  // (main effect deps, latestInputsRef, Tier 2 fallback 게이트)는 이 값만 본다. 시간 throttle이
-  // 아니다 — dwell 도중 값이 다시 뒤집히면 타이머가 리셋돼 "확정"이 성립하지 않을 뿐, 실제로
-  // 30초간 안정된 전환은 지연 없이 그대로 반영된다.
-  const [confirmedSubsurface, setConfirmedSubsurface] = useState(subsurface);
-  const subsurfaceDwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #2699 (v2 재설계, PR #2789 리뷰) — subsurface flap-quarantine 게이트. useBarometer의 실제
+  // hysteresis(3s)만으로는 지하/지상 경계에서 raw subsurface가 4~13s 간격으로 반복 토글되고,
+  // 이 값을 그대로 register effect deps/payload에 흘리면 매 토글마다 POST /trips가 나가 18분
+  // trip에 29~37회 폭주했다(RCA 9/21 "원인 확정" 코멘트). `confirmedSubsurface`는 이 flap을
+  // 억제하면서도 진짜 단일 전환은 **지연 없이 즉시** 반영하는 파생 상태다 — register
+  // 트리거/payload(main effect deps, latestInputsRef의 subsurface 슬롯)는 이 값만 본다.
+  //
+  // 알고리즘(타이머 없음 — 오직 raw subsurface가 실제로 바뀌는 렌더에서만 동기 판단):
+  //   1) raw가 confirmed와 같으면 안정 상태 — 아무 것도 하지 않는다.
+  //   2) raw가 confirmed와 다르고, 직전 전환(또는 mount)으로부터 SUBSURFACE_FLAP_QUARANTINE_MS
+  //      가 지났으면 — "새로운, 되돌아오지 않을 것으로 간주하는" 전환. settled(quarantine
+  //      진입 직전 안정값 — 지금부터 되돌아올 경우 복귀할 baseline)를 **현재** confirmed 값으로
+  //      스냅샷한 뒤 confirmed를 즉시 raw로 갱신하고 quarantine을 새로 연다. 계측 로그 1건.
+  //   3) raw가 confirmed와 다르지만 quarantine 창 안이면 — 방금 있었던 전환이 flap이었다는
+  //      뜻이다. confirmed를 **raw가 아니라** settled(quarantine 진입 이전 baseline, 고정)로
+  //      되돌리고(취소) quarantine을 연장한다. **반드시 raw가 아니라 settled로 되돌려야 한다**
+  //      — raw를 그대로 채택하면 매 bounce마다 confirmed가 실제로 계속 바뀌어 register effect
+  //      deps를 계속 건드리는 원래 버그가 그대로 재현된다(구현 중 실제로 이 실수를 했었다 —
+  //      회귀 방지로 남긴다). settled로 되돌리면 두 번째 bounce부터는 confirmed가 이미
+  //      settled와 같아 React의 setState same-value bail-out으로 추가 재렌더/register 자체가
+  //      일어나지 않는다 — 로그도 남기지 않는다(취소는 "확정된 전환"이 아니다).
+  //
+  // 한 flap episode(여러 번 왕복)당 register는 최대 2회(최초 낙관적 확정 1회 + 첫 되돌림 보정
+  // 1회)로 유계이며 이후 bounce는 setState same-value bail-out으로 추가 register를 만들지
+  // 않는다 — "즉시 확정"과 "0회"는 미래를 미리 알 수 없어 수학적으로 양립 불가하지만, 무계수
+  // (N=bounce 수) 폭주였던 원 버그를 상수로 바꾼다(상세 근거는 `SUBSURFACE_FLAP_QUARANTINE_MS`
+  // 주석).
+  //
+  // 타이머를 전혀 쓰지 않으므로 iOS BG suspend durability 문제(벽시계 setTimeout이 suspend 중
+  // 멈췄다가 resume 시 "관측 없는 경과"를 확정으로 오인하는 위험)가 구조적으로 사라진다 —
+  // 판단은 오직 barometer 샘플이 실제로 도착해 raw subsurface가 바뀌는 렌더에서만 일어난다.
+  //
+  // 초기값은 raw `subsurface`를 그대로 채택하지 않고 `false`("아직 확정 없음")에서 시작한다 —
+  // mount도 다른 전환과 완전히 동일한 알고리즘(quarantine 첫 진입은 항상 "새 전환"으로 간주,
+  // lastTransitionAtRef 초기값 0이 현재 시각과의 차를 항상 quarantine 밖으로 만든다)을 거치므로
+  // 리마운트 순간의 일시 blip도 특별 취급 없이 flap quarantine으로 흡수된다(mount seed 비대칭
+  // 없음, 리뷰 지적).
+  const [confirmedSubsurface, setConfirmedSubsurface] = useState(false);
+  // quarantine 진입 직전(=가장 최근에 "확정"됐던) 안정값 — flap 감지 시 되돌릴 대상.
+  const settledSubsurfaceRef = useRef(false);
+  // 가장 최근 전환(확정 또는 보정) 시각. 0이면 "아직 전환 없음" — 첫 관측은 항상 quarantine
+  // 밖으로 평가된다.
+  const lastSubsurfaceTransitionAtRef = useRef(0);
   useEffect(() => {
-    // subsurface는 이 effect 자신의 deps라서, 값이 바뀔 때마다 React가 이전 실행의 cleanup
-    // (아래, 대기 중인 타이머를 항상 clear)을 이 effect body보다 먼저 동기 실행한다 — 그래서
-    // 여기 도달하는 시점엔 subsurfaceDwellTimerRef가 항상 비어 있다. subsurface가 이미
-    // confirmedSubsurface와 같다면(예: 되돌아온 전환) 새 타이머를 세우지 않고 조용히 끝낸다.
-    if (subsurface === confirmedSubsurface) {
-      return;
-    }
-    subsurfaceDwellTimerRef.current = setTimeout(() => {
-      subsurfaceDwellTimerRef.current = null;
+    if (subsurface === confirmedSubsurface) return; // 안정 상태.
+    const now = Date.now();
+    const withinQuarantine = now - lastSubsurfaceTransitionAtRef.current < SUBSURFACE_FLAP_QUARANTINE_MS;
+    if (!withinQuarantine) {
+      // 새로운 전환 — 즉시 확정.
+      settledSubsurfaceRef.current = confirmedSubsurface;
       setConfirmedSubsurface(subsurface);
-      // #2699 (요구사항 4) — 확정 전환 1건 계측. 다음 라이드 덤프에서 이 로그와 실제
-      // POST /trips CALL 횟수를 1:1 대조해 RCA를 완전히 닫는다.
-      logSubsurfaceRegisterTransition(subsurface);
-    }, SUBSURFACE_REGISTER_DWELL_MS);
-    return () => {
-      if (subsurfaceDwellTimerRef.current !== null) {
-        clearTimeout(subsurfaceDwellTimerRef.current);
-        subsurfaceDwellTimerRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- confirmedSubsurface는 setState로만
-    // 갱신되며, effect가 그 자신의 최신 값을 읽기 위해서만 deps에 필요하다(무한 루프 아님 —
-    // subsurface===confirmedSubsurface가 되는 순간 위 early return으로 수렴).
+      lastSubsurfaceTransitionAtRef.current = now;
+      // #2699 (요구사항 4) — 확정 전환 1건 계측. hasActiveTrip으로 이 로그가 실제 register를
+      // 유발했을지(trip 활성) 여부를 함께 남겨 다음 라이드 덤프에서 "log 있는데 POST 없음"이
+      // 잔여 결함처럼 오독되지 않게 한다 — trip 비활성 상태의 로그는 정상(register 자체가
+      // 발사 대상이 아님).
+      logSubsurfaceRegisterTransition(subsurface, route != null && destination != null);
+    } else {
+      // quarantine 창 안의 되돌아온 전환 — flap으로 판단, "raw를 따라가는" 것이 아니라
+      // quarantine 진입 **직전**의 안정값(settledSubsurfaceRef)으로 되돌린다. raw를 그대로
+      // 채택하면(예: `setConfirmedSubsurface(subsurface)`) 매 bounce마다 confirmed가 계속
+      // 실제로 바뀌어 register effect deps를 계속 건드리는 원래 버그가 그대로 재현된다 —
+      // settled로 되돌리면 두 번째 bounce부터는 confirmed가 이미 settled와 같아 React의
+      // setState same-value bail-out으로 추가 재렌더/register 자체가 발생하지 않는다.
+      setConfirmedSubsurface(settledSubsurfaceRef.current);
+      lastSubsurfaceTransitionAtRef.current = now; // quarantine 연장 — 계속되는 flap 흡수.
+      // 로그 없음 — "확정된 전환"이 아니라 flap 취소(보정).
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- route/destination(hasActiveTrip
+    // 계산용)은 로그 payload 입력일 뿐 판단 조건이 아니므로 deps에 넣지 않는다 — 값이 바뀌는
+    // 시점에 별도로 이 effect를 재실행할 이유가 없다(메인 register effect가 이미 그 변경을
+    // 처리). confirmedSubsurface는 setState로만 갱신되며 이 effect가 자신의 최신 값을 읽기
+    // 위해서만 필요하다(무한 루프 아님 — subsurface===confirmedSubsurface가 되면 조기 반환).
   }, [subsurface, confirmedSubsurface]);
 
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  // subsurface 슬롯에는 raw prop이 아니라 dwell-확정된 confirmedSubsurface를 저장한다 —
-  // Tier 2 fallback 게이트(buildTier2FallbackOverride)를 포함한 모든 소비자가 동일하게
-  // 확정값만 보게 하기 위함.
+  // subsurface 슬롯에는 raw prop이 아니라 flap-quarantine을 거친 confirmedSubsurface를
+  // 저장한다 — register 트리거/payload(백엔드로 나가는 값)는 확정값만 봐야 게이트의
+  // 목적(POST churn 억제)이 성립한다.
+  //
+  // rawSubsurface는 별도로 항상 최신 raw prop을 보관한다 — 리뷰 지적(PR #2789): Tier 2
+  // fallback 게이트(buildTier2FallbackOverride)가 confirmedSubsurface를 읽으면, raw
+  // subsurface가 경계에서 계속 flapping 중이라 quarantine이 매번 갱신되는 상태(정확히
+  // 9/18 실측 패턴)에서 confirmed가 원치 않는 값에 고착돼 Tier 2 heal이 스스로를 봉쇄할
+  // 수 있다. flap-quarantine 게이트의 목적은 "register 재등록 churn 억제"이지 "다른
+  // 소비자(Tier 2 heal 필요 여부 판단)의 지하 판정을 재정의"하는 것이 아니다 — Tier 2는
+  // raw 값을 그대로 본다.
   const latestInputsRef = useRef({
     route,
     destination,
@@ -372,6 +435,7 @@ export function useApnsTripRegistration({
     currentStation,
     boardingLock,
     subsurface: confirmedSubsurface,
+    rawSubsurface: subsurface,
     infoModeEnabled,
     promptOptIn,
     promptOptInHydrated,
@@ -389,6 +453,7 @@ export function useApnsTripRegistration({
       currentStation,
       boardingLock,
       subsurface: confirmedSubsurface,
+      rawSubsurface: subsurface,
       infoModeEnabled,
       promptOptIn,
       promptOptInHydrated,
@@ -541,6 +606,7 @@ export function useApnsTripRegistration({
       currentStation: cs,
       boardingLock: bl,
       subsurface: sub,
+      rawSubsurface: rawSub,
       infoModeEnabled: ime,
       promptOptIn: poi,
       promptOptInHydrated: poih,
@@ -587,6 +653,7 @@ export function useApnsTripRegistration({
       currentStation: cs,
       boardingLock: bl,
       subsurface: sub,
+      rawSubsurface: rawSub,
       infoModeEnabled: ime,
       promptOptIn: poi,
       boardingCommitted: bc,
@@ -628,8 +695,19 @@ export function useApnsTripRegistration({
    * 고착되는 회귀가 있었다.
    */
   const buildTier2FallbackOverride = (sessionKey: string): BoardingPromptContext | null => {
-    const { route: r, destination: d, currentStation: cs, subsurface: sub, boardingLock: bl, routeOriginStation: origin } =
-      latestInputsRef.current;
+    const {
+      route: r,
+      destination: d,
+      currentStation: cs,
+      // #2699 (리뷰 지적, PR #2789) — 여기서는 raw subsurface를 본다. Tier 2는 "지금 이
+      // 순간 GPS dead zone에 지하 judgement가 필요한가"를 판단하는 것이지 register churn
+      // 억제 대상이 아니다 — confirmedSubsurface(flap-quarantine 게이트 통과분)를 쓰면
+      // raw가 경계에서 계속 flapping 중이라 quarantine이 매번 갱신되는 동안 confirmed가
+      // 원치 않는 값에 고착돼 Tier 2 heal이 스스로 영구 봉쇄될 수 있다.
+      rawSubsurface: sub,
+      boardingLock: bl,
+      routeOriginStation: origin,
+    } = latestInputsRef.current;
     /* istanbul ignore next -- route/destination이 null로 바뀌는 모든 경로(deps: routeSig,
      * destination?.id)는 main register effect의 cleanup이 트립 종료 시점에 tier2TimerRef를
      * 이미 clearTimeout하므로, Tier 2 콜백 경로에서 이 지점에 trip 종료 상태로 도달할 경로가
@@ -638,7 +716,7 @@ export function useApnsTripRegistration({
      * 깨질 경우를 대비한 방어적 가드. */
     if (!r || !d) return null; // trip 종료됨
     if (cs != null) return null; // 이미 GPS로 해소됨 — Tier 2 대상 아님
-    if (!sub) return null; // 지하 판정 아님
+    if (!sub) return null; // 지하 판정 아님(raw)
     if (origin == null) return null; // fallback 대상 route 출발역 없음
     if (healedSessionKeyRef.current === sessionKey) return null; // 이미 heal 성공(Tier 1 포함)
     return buildBoardingPromptContext({
@@ -980,6 +1058,23 @@ export function useApnsTripRegistration({
         // context-heal(Tier 1/2)을 영구히 차단하는 회귀가 있었다.
         registerRetryInFlightSessionKeyRef.current = null;
         registerRetryHealBusyRef.current = { sessionKey: null, count: 0 };
+        // #2699 (리뷰 지적, PR #2789 "각도 C" 항목 3) — trip 종료 시 subsurface flap-quarantine
+        // "창"만 초기화한다(`confirmedSubsurface` 값 자체는 건드리지 않는다). 초기화하지
+        // 않으면 같은 hook 인스턴스가 언마운트 없이 곧바로 새 trip을 시작할 때(예: 목적지만
+        // 바로 재설정) 옛 trip의 quarantine 창이 그대로 승계돼 새 trip의 첫 전환이 "flap
+        // 보정"으로 조용히 흡수될 수 있다 — 다음 trip의 첫 실제 전환은 quarantine과 무관하게
+        // 항상 "새 전환"으로 평가돼야 한다.
+        //
+        // `confirmedSubsurface`를 `false`로 강제 리셋하지 않는 이유: confirmedSubsurface는
+        // trip 존재 여부와 무관하게 "기압계가 현재 관측하는 물리적 상태"를 반영하는 값이다 —
+        // trip이 없어도 raw subsurface prop은 계속 흘러들어온다. 만약 여기서 confirmed를
+        // false로 강제하면(raw가 여전히 true인 채로), 아래 subsurface confirm effect가 그
+        // 차이를 "새 전환"으로 보고 즉시 다시 true로 되돌리고, 그 결과(confirmedSubsurface
+        // 변경)가 다시 이 main effect를 재실행시켜 "트립 없음" 분기가 또 reset하는 무한
+        // 루프가 실제로 재현됐다(리뷰 과정에서 발견, 회귀 방지로 남긴다). settled 값도 같은
+        // 이유로 건드리지 않는다 — quarantine 창이 이미 닫혔으므로(위 리셋) 다음 실제 전환이
+        // 스스로 새 settled를 스냅샷한다.
+        lastSubsurfaceTransitionAtRef.current = 0;
         return;
       }
 
@@ -1159,9 +1254,9 @@ export function useApnsTripRegistration({
     // token-refresh 경로는 여전히 최신값을 사용한다.
     // #903 (Seam G) → #2699 (정정, RCA 9/21 "원인 확정" 코멘트): subsurface 변화 시 backend
     // threshold(5→10)를 빨리 갱신해 지하 진입 직후 일시 GPS/arrival 누락에 인내. **이 deps
-    // slot은 raw prop이 아니라 `confirmedSubsurface`(위 dwell 게이트 참고)다.** 과거 이 주석은
-    // "useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로 deps churn 위험 낮음"이라고
-    // 단정했으나 사실과 달랐다 — useBarometer의 실제 hysteresis는 1Hz 샘플 ×
+    // slot은 raw prop이 아니라 `confirmedSubsurface`(위 flap-quarantine 게이트 참고)다.**
+    // 과거 이 주석은 "useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로 deps churn
+    // 위험 낮음"이라고 단정했으나 사실과 달랐다 — useBarometer의 실제 hysteresis는 1Hz 샘플 ×
     // BAROMETER_SUBSURFACE_CONFIRM_SAMPLES(3) = 약 3초 디바운스뿐이고(30s는 dP/dt 회귀
     // 윈도우지 토글 디바운스가 아니다), 지하/지상 경계에서 raw subsurface는 4~13초 간격으로
     // 반복 토글됐다(실측 6쌍). "alarmBackend dedup hash가 미변화 사이클은 skip한다"는 주장도
@@ -1169,8 +1264,10 @@ export function useApnsTripRegistration({
     // (currentStation 파생, 매 register 호출마다 사실상 항상 변동)가 hash를 사실상 상시-변동
     // 상태로 만들어 dedup이 실제로는 거의 작동하지 않았다(alarmBackend.ts buildRegisterHash
     // 참고, alarmBucket은 #2699에서 제거). 18분 trip에 POST /trips 29~37회 폭주(#2699)가 이
-    // 잘못된 전제의 실측 결과 — 이제는 raw subsurface가 dwell 게이트를 통과해 30초간 안정된
-    // 전환만 이 deps slot에 반영되므로, 개별 토글은 더 이상 effect를 재실행하지 않는다.
+    // 잘못된 전제의 실측 결과 — v2(현재)는 raw subsurface의 단일 전환은 즉시 이 deps slot에
+    // 반영하되(latency 없음), 경계 flapping(직전 전환 SUBSURFACE_FLAP_QUARANTINE_MS 이내의
+    // 되돌아온 전환)만 감지해 원래 값으로 되돌린다 — 한 flap episode당 최대 2회(확정+보정)로
+    // 유계, bounce 횟수에 비례하지 않는다.
     // #1923: infoModeEnabled 변화 시 backend lockless intermediate gate를 즉시 활성화해 다음 cron
     // cycle부터 station-passed silent push 발사가 가능. 토글 빈도는 사용자 명시 의향 표명/trip 종료
     // 시점만이므로 deps churn 위험 낮음. alarmBackend dedup hash가 미변화 사이클은 POST를 skip.

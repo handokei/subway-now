@@ -83,12 +83,29 @@ export interface RegisterTripPayload {
     line: string;
   };
   /**
-   * #903 (Seam G) — 등록 시점 기압계가 지하 진입을 시사하는가.
-   * true면 backend가 consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival
-   * 누락에 더 인내한다(지하 dead zone일 때 trainCode 추적이 자주 끊김).
-   * false/미설정은 기존 동작 그대로 — 기압계 미지원/권한 거절 환경 graceful.
+   * #903 (Seam G) — 등록 시점 기압계가 지하 진입을 시사하는가. 원래는 backend
+   * consecutiveEtaMissing threshold를 5→10으로 늘리는 결정 입력이었으나, #2644에서 그
+   * threshold 판단이 stations.json 기반으로 이관돼 이 필드는 이제 backend
+   * `Trip.subsurface`에 저장되는 **관측/모니터링 전용** 값이다("기압계 회복 모니터링",
+   * backend types.ts:369).
+   *
+   * #2699 (리뷰 지적, PR #2789 "각도 C" 항목 2) — 이 필드는 **raw** 값을 그대로 보낸다
+   * (device의 flap-quarantine 필터를 거치지 않음). register 트리거 여부/dedup은
+   * `subsurfaceDedupKey`(confirmed, 별도 필드)가 담당하도록 분리했다 — 그렇지 않으면
+   * POST /trips 채널로는 정작 가장 보고 싶은 raw flapping 패턴이 구조적으로 안 보이게
+   * 된다(confirmed만 관측되면 flap 자체가 device 레이어에서 흡수돼 backend가 모른다).
+   * false/미설정은 필드 미송신(graceful).
    */
   subsurface?: boolean;
+  /**
+   * #2699 (리뷰 지적, PR #2789 "각도 C" 항목 2) — register dedup hash 계산 전용 입력.
+   * `subsurface`(raw, body에 그대로 실려 관측용으로 저장됨)와 분리한 이유: dedup의 목적은
+   * "의미상 동일 페이로드는 재전송 skip"인데, raw subsurface를 그대로 hash에 넣으면 경계
+   * flapping마다 hash가 흔들려 dedup이 무력화된다(#2699 원 폭주의 재발). 이 필드는 device의
+   * flap-quarantine을 거친 `confirmedSubsurface`를 전달 — hash에만 쓰이고 body에는
+   * 직렬화되지 않는다(`performRegisterFetch` 참고).
+   */
+  subsurfaceDedupKey?: boolean;
   /**
    * #1895 — device locale (ko/en/ja/zh). backend가 boarding-prompt push 본문을
    * 4언어 분기 (`backend/alarm-worker/src/i18n.ts`)에 사용한다. 미지정/비지원은
@@ -203,8 +220,19 @@ const REQUEST_TIMEOUT_MS = 5000;
 // 묶어 `alarmBucket` 필드로 포함했다. `alarmAtEpochMs = now + ETA*1000`이므로 이 값은 register가
 // 호출되는 매 순간의 시계 자체에 종속돼 최소 60s마다 hash가 바뀐다 — 트립 내용이 전혀 바뀌지
 // 않아도 "동일 페이로드"를 dedup이 더 이상 잡아내지 못하는 시간종속 오염이었다(RCA 9/21
-// "원인 확정" 코멘트 요구사항 2). 정확한 발사 시각은 어차피 백엔드 cron이 reschedule로 자체
-// 보정하므로 hash에 필요 없다 — 완전히 제거한다(buildRegisterHash 참고).
+// "원인 확정" 코멘트 요구사항 2). 완전히 제거한다(buildRegisterHash 참고).
+//
+// #2699 (리뷰 지적, "각도 C" 항목 4, 정정) — 제거해도 무해한 이유를 "백엔드 cron이 reschedule로
+// 자체 보정한다"라고 서술했었는데 부정확했다: backend는 `trip.alarmAtEpochMs`를 스스로
+// 재기록(reschedule)하지 않는다 — 저장된 값은 device가 마지막으로 register한 시점 그대로
+// 고정된다. 이 필드의 유일한 backend 소비처는 `scheduled.ts`의 one-shot 윈도우 진입 게이트
+// (`trip.alarmAtEpochMs - now > POLLING_WINDOW_MS`)뿐이며, 게이트를 한 번 통과한 뒤의 실제
+// 발사 판정은 매 cron cycle의 Seoul API 실시간 ETA로 별도 이뤄진다 — alarmAtEpochMs 자체는
+// 그 판정에 관여하지 않는다. 값이 device 재등록 없이 과거에 동결되더라도, `now`는 계속
+// 흐르므로 `alarmAtEpochMs - now`는 시간이 지날수록 더 음수가 될 뿐이라 이 게이트는 자연히
+// 열린 채로 유지된다(backend `scheduled.test.ts` "#2699 alarmAtEpochMs가 동결(먼 과거)돼도
+// 폴링 게이트는 자연히 열려 있다" 테스트로 고정) — 동결이 무해함은 "cron이 보정해서"가 아니라
+// "게이트가 편도(one-directional)라서"다.
 
 /**
  * 마지막으로 백엔드에 성공적으로 등록된 트립 페이로드의 해시.
@@ -235,7 +263,8 @@ function buildRegisterHash(body: {
   waypoints: AlarmWaypoint[];
   apnsEnv: ApnsEnv;
   promptDisplay?: { originStation: string; line: string };
-  subsurface?: boolean;
+  /** #2699 — dedup 전용. confirmed(flap-quarantine 통과)값 — 위 RegisterTripPayload 주석 참고. */
+  subsurfaceDedupKey?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   infoModeEnabled?: boolean;
   promptOptIn?: boolean;
@@ -268,11 +297,11 @@ function buildRegisterHash(body: {
     promptDisplayKey: body.promptDisplay
       ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
       : null,
-    // #903 (Seam G) — subsurface 토글이 바뀌면 backend threshold가 즉시 갱신되도록 dedup 키 포함.
-    // #2699 — 이 필드로 흘러드는 값은 이제 useApnsTripRegistration의 dwell 게이트
-    // (SUBSURFACE_REGISTER_DWELL_MS, 30s)를 통과한 확정 전환뿐이다 — raw 센서 토글은 더 이상
-    // register 호출 자체에 도달하지 않으므로 이 필드 자체의 폭주 위험은 근본에서 해소됐다.
-    subsurface: body.subsurface === true,
+    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2) — subsurface 전환이 바뀌면 재등록을
+    // 보장하되, dedup 키는 body에 실리는 raw 값이 아니라 confirmed(flap-quarantine 통과)
+    // 값만 본다 — raw를 그대로 hash에 넣으면 경계 flapping마다 hash가 흔들려 dedup 자체가
+    // 무력화된다(#2699 원 폭주의 재발 경로). 필드명 subsurfaceDedupKey 참고.
+    subsurface: body.subsurfaceDedupKey === true,
     // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
     // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
     locale: body.locale ?? null,
@@ -466,7 +495,9 @@ export function registerActiveTrip(
     waypoints: payload.waypoints,
     apnsEnv: payload.apnsEnv,
     promptDisplay: payload.promptDisplay,
-    subsurface: payload.subsurface,
+    // #2699 — dedup은 confirmed 값(subsurfaceDedupKey)만 본다. body(관측용)는 raw
+    // (payload.subsurface) — performRegisterFetch가 별도로 직렬화한다.
+    subsurfaceDedupKey: payload.subsurfaceDedupKey,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
     locale: payload.locale,
     // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).

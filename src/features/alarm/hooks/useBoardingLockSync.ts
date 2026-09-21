@@ -39,6 +39,7 @@ import { useEffect, useRef, type MutableRefObject } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { syncBoardingLock } from '../../nearest-station/api/boardingLockSync';
+import { resetAlarmBackendDedup } from '../api/alarmBackend';
 import { getStationById } from '../../../shared/utils/stationRoute';
 import {
   isPendingTrainCode,
@@ -529,5 +530,28 @@ async function fireSync(
     currentWaypoint: res.currentWaypoint ?? null,
     ok: res.ok,
   });
+  // #2699 (리뷰 지적, PR #2789 — "각도 C" 최우선) — 404(trip_not_found) 명시 복구 wire.
+  //
+  // 이 파일 상단 함수 docstring이 오래전부터 "404 → 클라는 useApnsTripRegistration이 다음
+  // cycle에 재등록"이라고 문서화했지만, 실제로는 그 재등록을 가능케 하는 **명시 코드가 이
+  // 저장소 어디에도 없었다**. 지금까지 이 문장이 우연히 맞아떨어진 유일한 이유는
+  // alarmBackend.ts의 register dedup hash에 `alarmBucket`(now+ETA 유래, ≤60s마다 회전)이
+  // 섞여 있어서였다 — 그 필드가 매 register 시도의 hash를 주기적으로 갈아치워, 디바이스가
+  // 아무것도 모른 채로도 다음 register 시도가 우연히 hash-mismatch로 통과해 실제 fetch가
+  // 나갔다. #2699가 그 시간종속 오염을 제거하면서(alarmBackend.ts buildRegisterHash 참고)
+  // 이 "우연한 복구"도 함께 사라진다 — backend가 trip을 잃어도(TTL 2h 만료, KV eviction,
+  // 지하 구간에서 trip-ended silent push 미도달 등) lastRegisteredHash는 그대로 남아
+  // 이후 모든 register 시도가 네트워크 호출 없이 `{ok:true, skipped:true}`로 조용히
+  // 통과한다 — 남은 라이드 전체가 알람 0건으로 죽는데 device는 "등록 정상"으로 오인한다.
+  //
+  // 이제 이 문서화된 계약을 명시 코드로 만든다: sync가 404를 받으면 dedup 상태
+  // (`lastRegisteredHash` + in-flight Map)를 즉시 초기화한다. 이러면 다음에 어떤 경로로든
+  // registerActiveTrip이 호출될 때(메인 effect 재실행, token-refresh, context-heal, lock
+  // 변경 등 — 반드시 즉시일 필요는 없다, 원 문서가 약속한 "다음 cycle"과 동일 계약) hash가
+  // 더 이상 stale 값과 일치하지 않아 실제 fetch가 나가고, backend가 trip을 재생성할 기회를
+  // 얻는다. #2699의 alarmBucket 제거가 안전해지는 전제조건.
+  if (res.status === 404) {
+    void resetAlarmBackendDedup();
+  }
   return res;
 }

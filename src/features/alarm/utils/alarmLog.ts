@@ -188,11 +188,11 @@ export type AlarmLogSource =
   | 'backend-ssot-mirror-stale-skip'
   // #2768 — useArrivalAutoClear가 trip을 자동 종료시키는 부수효과(onClear) 발동 stamp.
   | 'arrival-auto-clear-fired'
-  // #2699 — subsurface(기압계 지하 판정)가 dwell 게이트(SUBSURFACE_REGISTER_DWELL_MS, 30s)를
-  // 통과해 backend register(POST /trips) 트리거/payload로 실제 승격된 시점 1건. 기존에는 이
-  // 전환을 관측할 방법이 없어 "어느 dep이 몇 번 변했는지"를 덤프 교차 대조로만 추정했다(RCA
+  // #2699 — subsurface(기압계 지하 판정)가 flap-quarantine 게이트(SUBSURFACE_FLAP_QUARANTINE_MS,
+  // 20s)를 통과해 backend register(POST /trips) 트리거/payload로 실제 승격된 시점 1건. 기존에는
+  // 이 전환을 관측할 방법이 없어 "어느 dep이 몇 번 변했는지"를 덤프 교차 대조로만 추정했다(RCA
   // 9/21 코멘트) — 다음 라이드에서 이 로그와 실제 POST /trips CALL 횟수를 1:1 대조해 완전
-  // 확정한다.
+  // 확정한다. outcome으로 hasActiveTrip을 인코딩(logSubsurfaceRegisterTransition 참고).
   | 'subsurface-register-confirmed';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
@@ -3167,16 +3167,22 @@ export function logLegTransition(input: { fromLine: string; transferStationName:
 }
 
 /**
- * #2699 (요구사항 4) — subsurface 값이 dwell 게이트를 통과해 backend register 트리거로
- * 실제 승격된 시점 1건 적재. `useApnsTripRegistration`의 dwell 타이머 콜백에서만 호출된다
- * (타이머 자체가 최소 `SUBSURFACE_REGISTER_DWELL_MS`(30s) 간격을 구조적으로 보장하므로
- * 별도 dedup 창은 두지 않는다 — accel-pattern-observed와 달리 호출 빈도가 이미 낮다).
+ * #2699 (요구사항 4) — subsurface 값이 flap-quarantine 게이트를 통과해 backend register
+ * 트리거로 실제 승격된 시점 1건 적재. `useApnsTripRegistration`의 confirm effect가 "새로운
+ * 전환"으로 판단할 때만 호출된다(flap으로 판단해 되돌리는 보정 경로는 호출하지 않음).
+ *
+ * #2699 (리뷰 지적, PR #2789 항목 3) — `hasActiveTrip`을 `outcome`으로 인코딩한다(기존
+ * `AlarmLogEntry.outcome` 필드 재사용 — 새 필드 확장 없음): 활성 trip(route+destination
+ * 존재)이 있었으면 `'fired'`(register가 실제로 뒤따를 것으로 기대), 없었으면 `'received'`
+ * (신호는 확정됐지만 register 대상 trip이 없어 POST가 안 나감 — 잔여 결함이 아니라 정상).
+ * 다음 라이드 덤프에서 이 로그(특히 outcome='fired' 항목)와 실제 `POST /trips` CALL 횟수를
+ * 대조해 RCA를 완전히 닫는다.
  */
-export function logSubsurfaceRegisterTransition(next: boolean): void {
+export function logSubsurfaceRegisterTransition(next: boolean, hasActiveTrip: boolean): void {
   appendAlarmLog({
     ts: Date.now(),
     source: 'subsurface-register-confirmed',
-    outcome: 'fired',
+    outcome: hasActiveTrip ? 'fired' : 'received',
     // stationName 슬롯에 확정된 값 인코딩 — 기존 schema 확장 없이 DebugModal에서 가시화
     // (logAccelPatternObserved와 동일 관례).
     stationName: next ? 'subsurface=true' : 'subsurface=false',
