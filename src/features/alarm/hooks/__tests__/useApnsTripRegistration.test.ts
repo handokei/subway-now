@@ -2183,6 +2183,114 @@ describe('useApnsTripRegistration', () => {
       }
     });
 
+    // #2699 (v3 재설계, PR #2789 리뷰 2라운드 — P1 수렴 결함) — v2는 "raw subsurface가 실제로
+    // 바뀌는 렌더에서만" 재평가했다. 다음 시퀀스(홀수-종료, 짝수-종료 테스트가 가리는 케이스)에서
+    // 수렴에 실패했다: baseline=false → true(quarantine 밖, 즉시 확정) → false(quarantine 안,
+    // settled=false로 되돌림) → true(quarantine 안, 되돌릴 값이 이미 confirmed와 같아 no-op) →
+    // raw는 true로 안정(진짜 지하 진입, 더 이상 안 바뀜). 이 시점부터 subsurface prop이 더
+    // 이상 안 바뀌므로 effect deps가 재평가되지 않아 confirmed가 false에 영구 고착됐다 —
+    // register/Tier 2 context가 지하를 영영 못 본다. v3는 `subsurfaceTickAt`(barometer liveness
+    // heartbeat)을 deps에 추가해 quarantine 만료 자체를 이벤트로 재평가한다. 이 테스트는 그
+    // 수렴을 직접 검증한다 — tick을 계속 흘려보내면 결국 raw(true)로 수렴해야 한다.
+    const renderSubWithTick = (sub: boolean, tick: number) =>
+      renderHook(
+        ({ s, t }: { s: boolean; t: number }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            subsurface: s,
+            subsurfaceTickAt: t,
+          }),
+        { initialProps: { s: sub, t: tick } },
+      );
+
+    it('#2699 홀수-종료 토글([true,false,true]) → tick이 흘러가면 최종 raw(true)로 수렴 + register 1회 추가', async () => {
+      jest.useFakeTimers();
+      try {
+        let tick = 1;
+        const { rerender } = renderSubWithTick(false, tick);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // mount, cold-start.
+
+        // false→true(fresh, 즉시 확정) → false(bounce, 보정) → true(bounce, no-op) — v2와
+        // 동일한 준비 시퀀스. 매 단계 tick도 함께 전진시켜 barometer 샘플 도착을 재현한다.
+        for (const next of [true, false, true]) {
+          tick += 1;
+          rerender({ s: next, t: tick });
+          // eslint-disable-next-line no-await-in-loop -- 시간 순서가 본질적인 quarantine 시나리오.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        // 여기까지는 v2와 동일 — mount(1) + 확정(1,true) + 보정(1,false) = 3, confirmed=false,
+        // raw=true(불일치 — 바로 이 상태가 v2에서 영구 고착되던 지점).
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+
+        // raw는 더 이상 바뀌지 않는다(진짜 지하 안정) — 오직 tick(heartbeat)만 계속 흘려보내
+        // quarantine 만료를 재평가시킨다. quarantine(20s)을 넘길 만큼 tick을 흘려보낸다.
+        for (let i = 0; i < 6; i += 1) {
+          tick += 1;
+          rerender({ s: true, t: tick });
+          // eslint-disable-next-line no-await-in-loop -- 위와 동일한 이유.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000); // 6 × 4s = 24s > quarantine(20s)
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        // 최종적으로 raw(true)로 수렴 — register가 정확히 1회 더 나가야 한다(합계 4).
+        expect(mockRegister).toHaveBeenCalledTimes(4);
+        expect(mockRegister.mock.calls[3][0].subsurface).toBe(true);
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(2); // 최초 확정 + 수렴 확정.
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenLastCalledWith(true, true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('#2699 홀수-종료 토글([true,false,true,false,true]) → tick이 흘러가면 최종 raw(true)로 수렴', async () => {
+      jest.useFakeTimers();
+      try {
+        let tick = 1;
+        const { rerender } = renderSubWithTick(false, tick);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        for (const next of [true, false, true, false, true]) {
+          tick += 1;
+          rerender({ s: next, t: tick });
+          // eslint-disable-next-line no-await-in-loop -- 시간 순서가 본질적인 quarantine 시나리오.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        // raw는 계속 true로 안정 — tick만 흘려보내 수렴을 유도한다.
+        for (let i = 0; i < 6; i += 1) {
+          tick += 1;
+          rerender({ s: true, t: tick });
+          // eslint-disable-next-line no-await-in-loop -- 위와 동일한 이유.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        const calls = mockRegister.mock.calls;
+        expect(calls[calls.length - 1][0].subsurface).toBe(true); // 최종적으로 raw로 수렴.
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     // #2699 v2 재설계 불변식 (a) — 되돌아오지 않는 단일 전환은 지연 없이 즉시(다음 렌더) 확정.
     it('단일 전환(되돌아오지 않음)은 지연 없이 즉시 재등록된다 (#2699 v2 — 타이머 대기 없음)', async () => {
       const { rerender } = renderSub(false);
