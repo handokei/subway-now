@@ -476,6 +476,26 @@ describe('useBoardingLockController', () => {
       expect(mockSetBoardingLock).not.toHaveBeenCalled();
     });
 
+    // #2786 — 9/21 PM 뚝섬 실측 재현: PENDING fallback lock(#2407, trainCode 미확정) 활성 중
+    // 사용자가 BoardingTrainList에서 실제 열차(2371)를 탭하면 dedup으로 차단되지 말고 lock이
+    // 탭 열차로 교체(승격)돼야 한다. 19:04 PENDING 생성 → 사용자 탭 차단 → 19:07 사용자 직접
+    // 해제 → 19:12 탭이 그제서야 동작한 타임라인이 이 결함의 실측 evidence.
+    it('#2786 — PENDING sentinel lock 활성 중 실 trainCode 탭 → dedup 아니라 lock이 탭 열차로 교체된다', async () => {
+      mockFindStationByNameAndLine.mockReturnValue(stationA);
+      useBoardingLockStore.setState({ lock: makePendingLock() });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: '2371', line: '2' }));
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trainCode: '2371',
+          boardingLine: '2',
+          boardingStationId: 'stn-A',
+        }),
+      );
+    });
+
     // #1449 (ADR-015 §9 frontend) — trip route allowedLines 외 line traincode reject.
     describe('#1449 trip route line filter', () => {
       it('direct route(line 2) 일 때 trip 외 line(7) train 탭 → no-op (lock 채택 차단)', async () => {

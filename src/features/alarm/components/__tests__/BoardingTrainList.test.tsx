@@ -795,6 +795,36 @@ describe('BoardingTrainList', () => {
       expect(getLockCorrectionMetrics().fired).toBe(1);
     });
 
+    // #2786 — 9/21 PM 뚝섬 실측: lockedTrainCode가 PENDING sentinel('PENDING-TRAIN-CODE')로
+    // 유입되면(#2407 fallback lock이 아직 실 trainCode로 승격되지 않은 상태) "정정"으로 취급해
+    // sentinel 문자열을 노출하는 반대 방향 토스트("2371 → PENDING-TRAIN-CODE")를 띄우면 안 된다.
+    // pending→confirmed(실 trainCode) 방향으로만 정정 신호를 발화해야 한다.
+    it('lockedTrainCode가 PENDING sentinel이면 onLockCorrected 미호출 + metric 미적재 + pending 유지', () => {
+      const train = makeTrain({ trainCode: '2371' });
+      const onLockCorrected = jest.fn();
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-2371'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="PENDING-TRAIN-CODE"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(onLockCorrected).not.toHaveBeenCalled();
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+      expect(getByTestId('boarding-train-pending-2371')).toBeTruthy();
+    });
+
     it('정정 후 lock 해제되면 같은 row를 다시 탭해 새 pending 진입 가능 (rollback timer 해제 확인)', () => {
       jest.useFakeTimers();
       try {

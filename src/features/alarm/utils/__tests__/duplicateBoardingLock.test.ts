@@ -64,4 +64,40 @@ describe('isDuplicateBoardingLock (#2722)', () => {
     mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-A' });
     expect(isDuplicateBoardingLock('2', '강남')).toBe(true);
   });
+
+  // #2786 — 9/21 PM 뚝섬 실측: PENDING fallback lock(trainCode 미확정) 활성 중 사용자가 실 trainCode를
+  // 탭하면 dedup이 아니라 교체(승격) 대상이어야 한다. trainCode 인자로 이 구분을 반영한다.
+  describe('#2786 — trainCode 반영 (PENDING sentinel 교체 vs 실 lock dedup)', () => {
+    it('기존 lock이 PENDING sentinel + 탭이 실 trainCode → false (dedup 아님, 교체 대상)', () => {
+      useBoardingLockStore.setState({
+        lock: makeLock({ trainCode: 'PENDING-TRAIN-CODE', boardingLine: '2', boardingStationId: 'stn-A' }),
+      });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-A' });
+      expect(isDuplicateBoardingLock('2', '강남', '2371')).toBe(false);
+    });
+
+    it('기존 lock이 PENDING sentinel + trainCode 인자 미전달(LA/알림 채널) → true (기존 dedup 유지)', () => {
+      useBoardingLockStore.setState({
+        lock: makeLock({ trainCode: 'PENDING-TRAIN-CODE', boardingLine: '2', boardingStationId: 'stn-A' }),
+      });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-A' });
+      expect(isDuplicateBoardingLock('2', '강남')).toBe(true);
+    });
+
+    it('기존 lock이 PENDING sentinel + 탭도 PENDING sentinel → true (dedup 유지)', () => {
+      useBoardingLockStore.setState({
+        lock: makeLock({ trainCode: 'PENDING-TRAIN-CODE', boardingLine: '2', boardingStationId: 'stn-A' }),
+      });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-A' });
+      expect(isDuplicateBoardingLock('2', '강남', 'PENDING-TRAIN-CODE')).toBe(true);
+    });
+
+    it('기존 lock이 실 trainCode(T-1) + 탭도 실 trainCode(다른 값) → true (동일 실 trainCode 재탭과 무관하게 기존 dedup 유지)', () => {
+      useBoardingLockStore.setState({
+        lock: makeLock({ trainCode: 'T-1', boardingLine: '2', boardingStationId: 'stn-A' }),
+      });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-A' });
+      expect(isDuplicateBoardingLock('2', '강남', 'T-9999')).toBe(true);
+    });
+  });
 });
