@@ -87,8 +87,17 @@ export interface UseBoardingLockControllerResult {
    * 수 없으므로 빈 집합 — 기존 동작(양쪽 모두 route 라벨 없이 노출) 그대로.
    */
   offRouteTrainCodes: ReadonlySet<string>;
-  /** 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op. */
-  createLockFromTrain: (train: ArrivalInfo) => void;
+  /**
+   * 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op.
+   *
+   * #2786 리뷰(항목 5) — trip route 외 line(allowedLines 필터, #1449) 탭은 `'off-route'`를
+   * 반환한다. 이 early-return은 `isDuplicateBoardingLock`에 닿기도 전에 발생해, PENDING lock이
+   * 활성 중이면 store가 갱신되지 않고 `lockedTrainCode`도 PENDING sentinel(또는 정화 후 null)로
+   * 남는다 — BoardingTrainList의 정정 effect가 반응할 신호가 없어 PENDING_TIMEOUT(5s)까지 무피드백
+   * 침묵이 생긴다. 반환값으로 호출자(HomeScreen)가 즉시 pending 리셋 + 토스트를 줄 수 있게 한다.
+   * 다른 모든 경로(성공/dedup 보존 등)는 기존과 동일하게 `undefined`.
+   */
+  createLockFromTrain: (train: ArrivalInfo) => 'off-route' | void;
   /**
    * candidate(trainCode/line/subwayId)로 lock을 hydrate.
    *
@@ -370,13 +379,14 @@ export function useBoardingLockController({
   }, [directionalArrivals, arrival, direction]);
 
   const createLockFromTrain = useCallback(
-    (train: ArrivalInfo) => {
+    (train: ArrivalInfo): 'off-route' | void => {
       if (!destinationId || !currentStation) return;
       // #1449 (ADR-015 §9 frontend) — trip route 외 line traincode reject.
       // 환승역(왕십리/청량리 등)에서 사용자가 옆 노선 열차를 잘못 탭하거나, fusion이 옆 노선의
       // train arrival을 directionalArrivals에 섞어 노출한 경우 lock 채택을 차단한다.
       // allowedLines === undefined는 trip 비활성 → 필터 미적용(free-trip 등 기존 UX 유지).
-      if (allowedLines && !allowedLines.has(train.line)) return;
+      // #2786 리뷰(항목 5) — 'off-route' 반환으로 호출자가 즉시 UX 피드백을 줄 수 있게 한다.
+      if (allowedLines && !allowedLines.has(train.line)) return 'off-route';
       // #2330 (consensus-D, 설계 SSoT #2323 (3)) — 명시 탭이 항상 우선. backend consensus
       // engine이 confirmed(confidence='consensus')한 제안과 다른 열차를 탭하면 mismatch telemetry
       // 기록 — lock 채택 자체는 아래 기존 흐름 그대로(탭이 SSoT, consensus는 표시 전용이라 차단하지 않음).
