@@ -23,9 +23,22 @@
  *   - #1835~#2281 (최초): 하드코딩 0.
  *   - #2628 (현재): `trip.boardingPromptResponded` — boarding-prompt 응답 채널(boarding-confirm/
  *     dismiss) 호출 여부.
+ * `suppressed_count`:
+ *   - #1835~#2628 (구): 하드코딩 0("동상") — INSERT는 값을 넘기지만 상수.
+ *   - #2783 (현재): D1 `trip_events`(kind='cron-fire-attempt', outcome='skipped-reason') COUNT —
+ *     `fired_count`(outcome='sent')와 동일 패턴으로 실제 skip 건수를 집계한다.
+ *
+ * ## #2783 — Drizzle 엔티티 도입
+ *
+ * INSERT는 `src/db/schema.ts`의 `tripMetrics` 엔티티를 거친다. 컬럼 누락은 이제
+ * `TripMetricsInsertRow`(Required 타입) 컴파일 에러로 드러난다 — 이 이슈의 원 결함
+ * (컬럼 2개가 INSERT 목록에서 조용히 누락)이 구조적으로 재발 불가능해진다.
+ * raw SQL INSERT/UPDATE 재발 차단은 `src/__tests__/noRawSqlGuard.test.ts` 참고.
  */
 
+import { drizzle } from 'drizzle-orm/d1';
 import { hashTripToken } from './sentry';
+import { tripMetrics, type TripMetricsInsertRow } from './db/schema';
 import type { Trip } from './types';
 
 /**
@@ -54,71 +67,71 @@ export async function recordTripMetrics(
 
     const lineList = extractLineList(trip);
     const chainComplete = isChainComplete(trip);
-    // #2628 — trip_events(D1 SSoT)에서 직접 집계. INSERT 직전에 미리 구해 bind 인자 목록을
-    // 동기 표현식으로 유지한다(가독성 — await를 .bind() 인자 중간에 섞지 않음).
-    const firedCount = await countSentFireAttempts(db, tokenHash, trip.createdAt, endedAt);
+    // #2628 — trip_events(D1 SSoT)에서 직접 집계. INSERT 직전에 미리 구해 값 객체를 동기
+    // 표현식으로 유지한다(가독성 — await를 insert values 중간에 섞지 않음).
+    //
+    // #2628 — station-passed/transfer/destination alert push가 실제로 발사(outcome='sent')된
+    // 횟수. #2281의 trip 객체 카운터(boardingPromptState/hopEndPromptState fireCount 합산)는
+    // prompt 발사만 셌을 뿐 매역 alert 발사를 전혀 포함하지 않았고, D1이 이미 SSoT라 POST /trips
+    // 재등록으로 trip 객체가 교체돼도 유실되지 않는다. window 하한(trip.createdAt)은 `index.ts`의
+    // same-session 재등록 merge가 `existing.createdAt`으로 명시 고정한다(리뷰 P1-3).
+    const firedCount = await countFireAttemptsByOutcome(db, tokenHash, trip.createdAt, endedAt, 'sent');
+    // #2783 — skip 지점(발사 게이트가 blocked한 사유)의 실제 발생 건수. fired_count와 동일
+    // window/패턴으로 outcome만 다르게 집계한다. 기존 하드코딩 0("동상")을 수리.
+    const suppressedCount = await countFireAttemptsByOutcome(
+      db,
+      tokenHash,
+      trip.createdAt,
+      endedAt,
+      'skipped-reason',
+    );
 
-    // #2268 — INSERT OR IGNORE + migration 0004의 (trip_token_hash, started_at) UNIQUE index.
-    // DELETE /trips/:token이 getTrip→cleanupTripWithLa 사이 race하면 동일 trip 종료가
+    const row: TripMetricsInsertRow = {
+      tripTokenHash: tokenHash,
+      startedAt: trip.createdAt,
+      endedAt,
+      endReason: reason ?? 'user-delete',
+      originStation: extractOriginStation(trip),
+      destinationStation: trip.destination ?? null,
+      lineList: JSON.stringify(lineList),
+      firedCount,
+      suppressedCount,
+      boardingPromptDisplayed: boardingPromptState?.fired ? 1 : 0,
+      // #2628 — POST /trips/:token/boarding-confirm 또는 POST /boarding-prompt/dismiss 응답
+      // 시(`index.ts` markBoardingPromptResponded 공용 헬퍼) stamp되는 생애 플래그. 기존
+      // 하드코딩 0("Phase 2 follow-up") 수리.
+      boardingPromptResponded: trip.boardingPromptResponded ? 1 : 0,
+      // #2628 — "현재 부착 상태"(boardingLock truthy)만이 아니라 "생애 중 한 번이라도
+      // 부착됐는지"(lockEverAttached, trips.ts putTrip이 stamp)도 함께 본다. 종료 직전 lock을
+      // 해제한 trip이 0으로 오기록되던 RCA를 차단.
+      //
+      // #2628 (리뷰 P2-5) — `boardingLock !== undefined` OR 항은 putTrip 단일 choke point
+      // 도입 후에도 죽은 코드가 아니다: 이 배포 시점에 이미 KV에 존재하던(=이 PR 배포 전에
+      // 부착된) 진행 중 trip은 lockEverAttached가 아직 stamp되지 않은 채 남아 있다 — 다음
+      // putTrip 호출 시점부터 자동 backfill되지만(putTrip의 stamp 조건), `cleanupTripWithLa`가
+      // (`scheduled.ts` 9곳) 쓰는 `trip` 변수는 사이클 시작 시 `listTrips`가 스냅샷한 것이라
+      // 해당 사이클 안에서 lock이 부착→해제까지 일어나면 cleanup 시점엔 boardingLock도
+      // lockEverAttached도 둘 다 비어 있어 OR도 이 케이스는 구조적으로 못 구한다(별도 결함
+      // 아님 — 그 순간엔 "생애 중 부착"이 실제로 true인데 in-memory 스냅샷이 그 사실 자체를
+      // 담지 못하는 것, putTrip에 위임된 stamp가 다음 read부터는 정상 반영됨). OR가 실제로
+      // 구제하는 것은 "배포 시점에 이미 lock이 부착된 채 KV에 있던 trip이, 배포 후 lock 해제
+      // 없이 그대로 종료되는" 전환기 케이스 — lockEverAttached는 없지만 boardingLock은 아직
+      // truthy라 이 OR가 없으면 배포 직후 그런 trip들만 0으로 오기록된다. 배포 후 시간이
+      // 지나 모든 활성 trip이 lockEverAttached를 한 번이라도 stamp받으면(다음 lock 관련
+      // putTrip) 이 분기는 실질적으로 도달하지 않게 되지만, 무해하고 값싼 방어라 유지한다.
+      lockAttached: trip.lockEverAttached === true || boardingLock !== undefined ? 1 : 0,
+      chainComplete: chainComplete ? 1 : 0,
+    };
+
+    // #2268 — onConflictDoNothing() + migration 0004의 (trip_token_hash, started_at) UNIQUE
+    // index. DELETE /trips/:token이 getTrip→cleanupTripWithLa 사이 race하면 동일 trip 종료가
     // recordTripMetrics를 두 번 호출할 수 있다(evidence: 2026-08-10, 동일 trip_token_hash 2행,
     // 521ms차). D1(SQLite)의 UNIQUE 제약이 실제 원자성을 보장 — KV는 compare-and-swap이 없어
     // app-level "먼저 읽고 나만 지웠으면 진행" 가드로는 이 race를 완전히 닫을 수 없다. 두 번째
     // race 호출은 조용히 no-op(0 rows affected) — try/catch에 걸리지 않고 정상 흐름 유지.
-    await db
-      .prepare(
-        `INSERT OR IGNORE INTO trip_metrics (
-          trip_token_hash, started_at, ended_at, end_reason,
-          origin_station, destination_station, line_list,
-          fired_count, suppressed_count,
-          boarding_prompt_displayed, boarding_prompt_responded,
-          lock_attached, chain_complete
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        tokenHash,
-        trip.createdAt,
-        endedAt,
-        reason ?? 'user-delete',
-        extractOriginStation(trip),
-        trip.destination ?? null,
-        JSON.stringify(lineList),
-        // #2628 — station-passed/transfer/destination alert push가 실제로 발사(outcome='sent')된
-        // 횟수를 D1 trip_events(kind='cron-fire-attempt')에서 직접 집계. #2281의 trip 객체 카운터
-        // (boardingPromptState/hopEndPromptState fireCount 합산)는 prompt 발사만 셌을 뿐 매역
-        // alert 발사를 전혀 포함하지 않았고, D1이 이미 SSoT라 POST /trips 재등록으로 trip 객체가
-        // 교체돼도 유실되지 않는다. window 하한(trip.createdAt)은 `index.ts`의 same-session 재등록
-        // merge가 `existing.createdAt`으로 명시 고정한다(리뷰 P1-3 — client가 보낸 incoming.createdAt을
-        // 그대로 믿지 않고 backend가 직접 불변성을 보장, `evaluateSameSession`/`SESSION_DRIFT_WINDOW_MS`
-        // 참고) — 그래서 재등록을 여러 번 거쳐도 window가 진짜 세션 시작보다 늦게 밀리지 않는다.
-        firedCount,
-        0, // suppressed_count: 동상
-        boardingPromptState?.fired ? 1 : 0,
-        // #2628 — POST /trips/:token/boarding-confirm 또는 POST /boarding-prompt/dismiss 응답
-        // 시(`index.ts` markBoardingPromptResponded 공용 헬퍼) stamp되는 생애 플래그. 기존
-        // 하드코딩 0("Phase 2 follow-up") 수리.
-        trip.boardingPromptResponded ? 1 : 0,
-        // #2628 — "현재 부착 상태"(boardingLock truthy)만이 아니라 "생애 중 한 번이라도
-        // 부착됐는지"(lockEverAttached, trips.ts putTrip이 stamp)도 함께 본다. 종료 직전 lock을
-        // 해제한 trip이 0으로 오기록되던 RCA를 차단.
-        //
-        // #2628 (리뷰 P2-5) — `boardingLock !== undefined` OR 항은 putTrip 단일 choke point
-        // 도입 후에도 죽은 코드가 아니다: 이 배포 시점에 이미 KV에 존재하던(=이 PR 배포 전에
-        // 부착된) 진행 중 trip은 lockEverAttached가 아직 stamp되지 않은 채 남아 있다 — 다음
-        // putTrip 호출 시점부터 자동 backfill되지만(putTrip의 stamp 조건), `cleanupTripWithLa`가
-        // (`scheduled.ts` 9곳) 쓰는 `trip` 변수는 사이클 시작 시 `listTrips`가 스냅샷한 것이라
-        // 해당 사이클 안에서 lock이 부착→해제까지 일어나면 cleanup 시점엔 boardingLock도
-        // lockEverAttached도 둘 다 비어 있어 OR도 이 케이스는 구조적으로 못 구한다(별도 결함
-        // 아님 — 그 순간엔 "생애 중 부착"이 실제로 true인데 in-memory 스냅샷이 그 사실 자체를
-        // 담지 못하는 것, putTrip에 위임된 stamp가 다음 read부터는 정상 반영됨). OR가 실제로
-        // 구제하는 것은 "배포 시점에 이미 lock이 부착된 채 KV에 있던 trip이, 배포 후 lock 해제
-        // 없이 그대로 종료되는" 전환기 케이스 — lockEverAttached는 없지만 boardingLock은 아직
-        // truthy라 이 OR가 없으면 배포 직후 그런 trip들만 0으로 오기록된다. 배포 후 시간이
-        // 지나 모든 활성 trip이 lockEverAttached를 한 번이라도 stamp받으면(다음 lock 관련
-        // putTrip) 이 분기는 실질적으로 도달하지 않게 되지만, 무해하고 값싼 방어라 유지한다.
-        trip.lockEverAttached === true || boardingLock !== undefined ? 1 : 0,
-        chainComplete ? 1 : 0,
-      )
-      .run();
+    // `INSERT OR IGNORE`(구 raw SQL)와 동일 의미 — 대상 제약을 지정하지 않아 어떤 제약이든
+    // 위반 시 조용히 무시한다.
+    await drizzle(db).insert(tripMetrics).values(row).onConflictDoNothing();
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'd1TripMetrics write failed', err: String(e) }));
   }
@@ -151,10 +164,12 @@ function extractOriginStation(trip: Trip): string | null {
 }
 
 /**
- * #2628 — station-passed/transfer/destination alert push가 실제로 발사(outcome='sent')된 횟수를
- * D1 `trip_events`(kind='cron-fire-attempt', `scheduled.ts` `recordFireAttempt`)에서 직접
- * COUNT한다. D1이 append-only SSoT라 POST /trips 재등록으로 trip KV 객체가 교체돼도 유실되지
- * 않는다(#2281의 trip 객체 카운터 방식이 갖던 근본 결함).
+ * #2628/#2783 — `trip_events`(kind='cron-fire-attempt', `scheduled.ts` `recordFireAttempt`)에서
+ * 특정 `outcome`(예: 'sent', 'skipped-reason')의 발생 횟수를 직접 COUNT한다. D1이 append-only
+ * SSoT라 POST /trips 재등록으로 trip KV 객체가 교체돼도 유실되지 않는다(#2281의 trip 객체
+ * 카운터 방식이 갖던 근본 결함). `fired_count`(outcome='sent')와 `suppressed_count`
+ * (outcome='skipped-reason')가 이 함수를 outcome만 바꿔 공유한다 — 하드코딩된 두 벌 쿼리를
+ * 두지 않는다.
  *
  * `trip.createdAt`~`endedAt` window로 한정 — 같은 token이 이후 완전히 새 trip(다른 세션)으로
  * 재등록되면 `createdAt`이 바뀌므로 이전 trip의 fire-attempt와 섞이지 않는다.
@@ -164,26 +179,29 @@ function extractOriginStation(trip: Trip): string | null {
  * boarding-prompt 발사 여부를 이미 담당한다.
  *
  * DB 조회 실패는 swallow하고 0을 반환 — 상위 `recordTripMetrics`의 INSERT 흐름을 막지 않는다.
+ * `outcome`은 호출부가 고정 리터럴만 전달하므로(바인드 파라미터화 대상 아님) SQL 텍스트에
+ * 직접 삽입한다 — 사용자 입력이 아니다.
  */
-async function countSentFireAttempts(
+async function countFireAttemptsByOutcome(
   db: D1Database,
   tokenHash: string,
   startedAt: number,
   endedAt: number,
+  outcome: 'sent' | 'skipped-reason',
 ): Promise<number> {
   try {
     const result = await db
       .prepare(
         `SELECT COUNT(*) AS count FROM trip_events
          WHERE token_hash = ? AND kind = 'cron-fire-attempt' AND ts >= ? AND ts <= ?
-           AND json_extract(meta, '$.outcome') = 'sent'`,
+           AND json_extract(meta, '$.outcome') = '${outcome}'`,
       )
       .bind(tokenHash, startedAt, endedAt)
       .first<{ count: number }>();
     return result?.count ?? 0;
   } catch (e) {
     console.warn(
-      JSON.stringify({ msg: 'd1TripMetrics fired_count query failed', err: String(e) }),
+      JSON.stringify({ msg: 'd1TripMetrics fire-attempt count query failed', outcome, err: String(e) }),
     );
     return 0;
   }

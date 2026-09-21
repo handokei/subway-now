@@ -74,6 +74,50 @@ function makeRoutingMockDbCapturing(
 describe('recordTripMetrics (#1835)', () => {
   const NOW = 1_700_000_000_000;
 
+  // #2783 — 기록 동작 불변 회귀(이 PR의 핵심 안전장치). Drizzle 엔티티 전환 전후로 기존
+  // 13개 컬럼의 값이 정확히 동일해야 한다(suppressed_count만 하드코딩 0 -> 실값으로 의도적
+  // 변경 — 요구사항 3). 하나의 canonical trip fixture에 대한 INSERT bind 인자 13개 전체를
+  // 고정값으로 assert해 개별 컬럼 테스트가 놓칠 수 있는 순서/누락 회귀까지 잡는다.
+  it('canonical trip 기록 시 13개 컬럼 값이 전부 고정 스냅샷과 일치한다(리팩터 불변 회귀)', async () => {
+    const trip = makeTripFixture({
+      token: 'tok-snapshot',
+      createdAt: NOW - 600_000,
+      originStationName: '역삼',
+      destination: '선릉',
+      route: { type: 'direct', line: '2', stops: 3 },
+      boardingLock: {
+        trainCode: '1234',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['역삼', '선릉'],
+        expiresAt: NOW + 3600_000,
+      },
+      lockEverAttached: true,
+      boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 },
+      boardingPromptResponded: true,
+    });
+    const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 5, skippedCount: 2 });
+
+    await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+    expect(insertArgs()).toEqual([
+      expect.any(String), // [0] trip_token_hash — 해시값(비결정 salt 무관), 존재만 확인
+      NOW - 600_000, // [1] started_at
+      NOW, // [2] ended_at
+      'destination-arrived', // [3] end_reason
+      '역삼', // [4] origin_station
+      '선릉', // [5] destination_station
+      '["2"]', // [6] line_list
+      5, // [7] fired_count
+      2, // [8] suppressed_count — #2783: 하드코딩 0 -> 실값(skipped-reason COUNT)
+      1, // [9] boarding_prompt_displayed
+      1, // [10] boarding_prompt_responded
+      1, // [11] lock_attached
+      1, // [12] chain_complete
+    ]);
+  });
+
   it('db가 undefined일 때 no-op (graceful)', async () => {
     const trip = makeTripFixture();
     await expect(
@@ -81,13 +125,15 @@ describe('recordTripMetrics (#1835)', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('db가 있을 때 trip_metrics INSERT를 실행한다', async () => {
+  it('db가 있을 때 trip_metrics INSERT(Drizzle, #2783)를 실행한다', async () => {
     const { db } = makeRoutingMockDbCapturing();
     const trip = makeTripFixture();
     await recordTripMetrics(db, trip, 'destination-arrived', NOW);
 
+    // #2783 — raw SQL "INSERT OR IGNORE"에서 Drizzle 엔티티(tripMetrics) 기반
+    // `insert(...).onConflictDoNothing()`로 전환. 생성된 SQL 텍스트로 전환을 확인한다.
     expect(db.prepare).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT OR IGNORE INTO trip_metrics'),
+      expect.stringMatching(/insert into "trip_metrics".*on conflict do nothing/),
     );
   });
 
