@@ -241,7 +241,23 @@ export default function HomeScreen() {
   // #1659 — train-code-mismatch release 시 reason stamp용. controller releaseLock은 () => void라
   // breadcrumb reason을 전달할 수 없어 store를 직접 참조한다.
   const releaseLockWithReason = useBoardingLockStore((s) => s.releaseLock);
-  const lockedTrainCode = fusionBoardingLock?.trainCode ?? null;
+  // #2786 리뷰(항목 3) — PENDING sentinel(#2407 fallback lock, trainCode 미확정)은 이 생산자
+  // 경계에서 정화한다(isRealBoardingLock, shared SSOT predicate). 모든 현재/미래 소비자가 각자
+  // isPendingTrainCode 가드를 반복하지 않아도 되게.
+  //
+  // 소비자 감사(정화 적용 전 확인, 예외 없음):
+  //   - useFusedNearestStation의 lockedTrainCode 인자 — position-train/trainProgress.trainNo
+  //     같은 실 API 값과의 등가 비교에만 쓰인다. PENDING_TRAIN_CODE sentinel 문자열은 그런 실
+  //     API 값과 절대 우연히 일치하지 않으므로 null과 동작이 100% 동일 — 정화 무영향.
+  //   - BoardingTrainList(x2) lockedTrainCode prop — #2786 정정 toast 채널. 정화로 PENDING
+  //     상태 동안 항상 null이 전달돼 `isPendingTrainCode(lockedTrainCode)` defense-in-depth
+  //     가드(BoardingTrainList.tsx)가 사실상 도달 불가해지지만, 이미 위쪽 null-early-return이
+  //     같은 결과(정정 effect no-op)를 내므로 동작 동일 — 가드는 안전망으로 유지.
+  //   - useBoardingLockSync의 boardingLockTrainCode(D4, #1210, 아래 883줄) — 내부
+  //     `isUsableLockIdentity`가 `if (!trainCode || !line) return false`로 null을 이미
+  //     "사용 불가"로 취급해 sentinel을 받았을 때와 동일하게 동작(코드 확인 완료) — 예외 아님.
+  //     같은 값을 재사용해 두 곳에서 "sentinel 제거" 표현을 반복하지 않는다.
+  const lockedTrainCode = isRealBoardingLock(fusionBoardingLock) ? fusionBoardingLock.trainCode : null;
   // #728 — CMMotionActivity 신호. 권한 요청/폴링은 hook 내부에서 lifecycle 관리.
   // 미지원/거절 시 false로 고정되어 기존 가드만 동작 (graceful fallback).
   const motionStationary = useMotionActivity();
@@ -298,6 +314,11 @@ export default function HomeScreen() {
   // BoardingTrainList의 onLockCorrected callback이 채워주며, 같은 메시지가 두 인스턴스(현재역/환승)에
   // 공통 적용된다. dismiss는 Toast의 5초 timer 또는 사용자 tap.
   const [lockCorrectionToast, setLockCorrectionToast] = useState<string | null>(null);
+  // #2786 리뷰(항목 5) — createLockFromTrain이 allowedLines 필터(#1449)로 탭을 동기 거부하면
+  // ('off-route' 반환) store가 갱신되지 않아 lockedTrainCode 채널에 신호가 오지 않는다. 이 탭
+  // 불가 사유 토스트 + rejectedTrainCode(BoardingTrainList의 즉시 pending 리셋 신호)를 함께 관리.
+  const [lockRejectedToast, setLockRejectedToast] = useState<string | null>(null);
+  const [rejectedTrainCode, setRejectedTrainCode] = useState<string | null>(null);
   // #1324 — 목적지 == 현재역(degenerate trip) 선택을 차단했을 때 노출하는 경고 toast.
   const [sameOriginToast, setSameOriginToast] = useState<string | null>(null);
   // #2067 (Phase 2-device, D5) — 취침모드 on + 등록 구간이 1-hop이면 companion/OS 안전망 알람이
@@ -349,6 +370,10 @@ export default function HomeScreen() {
     [t],
   );
   const handleLockCorrectionToastDismiss = useCallback(() => setLockCorrectionToast(null), []);
+  const handleLockRejectedToastDismiss = useCallback(() => {
+    setLockRejectedToast(null);
+    setRejectedTrainCode(null);
+  }, []);
   // #977 — F4 검색 fallback wire. confirm 모달 dismiss(setDismissed=true) + origin picker 오픈.
   // 사용자가 picker에서 station 선택 시 setCustomOrigin → confirm 모달은 hasEffectiveOrigin
   // 으로 자동 차단되어 재오픈하지 않는다.
@@ -840,6 +865,19 @@ export default function HomeScreen() {
     motionStationary,
     speedMps,
   });
+  // #2786 리뷰(항목 5) — 현재역 도착 list의 onSelect wrapper. createLockFromTrain의 'off-route'
+  // 반환(allowedLines 필터, #1449)을 여기서 가로채 즉시 토스트 + rejectedTrainCode를 셋한다.
+  // 성공/dedup 등 다른 모든 경로는 기존과 동일하게 undefined를 반환해 아무 것도 하지 않는다.
+  const handleSelectTrain = useCallback(
+    (train: ArrivalInfo) => {
+      const outcome = createLockFromTrain(train);
+      if (outcome === 'off-route') {
+        setRejectedTrainCode(train.trainCode);
+        setLockRejectedToast(t('home.lockRejectedToast'));
+      }
+    },
+    [createLockFromTrain, t],
+  );
   // #2330 (consensus-D, 설계 SSoT #2323 (3)(6)) — backend legConsensus가 confirmed한 제안만
   // BoardingTrainList 배지/하이라이트로 forward. high/medium/low(9-AND gate 기반)는 이미
   // useBoardingLockController가 자동 lock으로 채택하므로 UI 표시 대상이 아니다(lockSuggestion=null로
@@ -880,7 +918,11 @@ export default function HomeScreen() {
     // #1286 — 지하 GPS dead zone에서 WiFi SSID로 확정된 역(confidence='wifi-ssid')은 accuracy>50m라도
     // backend로 sync. WiFi SSID가 GPS 정확도와 독립적으로 역을 확정하므로 ≤50m 게이트를 우회한다.
     stationFromWifi: confidence === 'wifi-ssid',
-    boardingLockTrainCode: boardingLock?.trainCode ?? null,
+    // #2786 리뷰(항목 3) — lockedTrainCode(위, 생산자 경계 정화)와 동일 SSOT 재사용. boardingLock과
+    // fusionBoardingLock은 같은 store 필드(useBoardingLockStore.lock)의 별도 구독이라 같은 렌더에서
+    // 항상 같은 값 — useBoardingLockSync 내부 isUsableLockIdentity가 이미 null을 "사용 불가"로
+    // 취급해 동작은 sentinel을 그대로 받던 것과 동일(예외 아님, 위 lockedTrainCode 주석 참고).
+    boardingLockTrainCode: lockedTrainCode,
     boardingLockLine: boardingLock?.boardingLine ?? null,
     // #2709 — lock-identity effect가 GPS 무관 fallback anchor(탑승역)와 전달 지연 계측에 사용.
     boardingLockBoardingStationId: boardingLock?.boardingStationId ?? null,
@@ -1846,13 +1888,18 @@ export default function HomeScreen() {
                                     // #797: approachLine 우선 — 환승역에서 effectiveOrigin.line이 trip 방향과
                                     // 어긋날 때 BoardingLock·route SSOT로 정확한 호선 표시.
                                     line={approachLine ?? effectiveOrigin.line}
-                                    onSelect={createLockFromTrain}
+                                    // #2786 리뷰(항목 5) — createLockFromTrain 직접 전달 대신 wrapper.
+                                    // 'off-route' 반환(allowedLines 필터)을 가로채 즉시 토스트 표시.
+                                    onSelect={handleSelectTrain}
                                     compact
                                     nextStationLabel={label}
                                     // #1166: 낙관적 탭 → backend 정정 UX. lockedTrainCode를 prop으로 넘겨야
                                     // pending 일치/정정 effect가 발화한다. fusionBoardingLock 기반 SSOT 사용.
                                     lockedTrainCode={lockedTrainCode}
                                     onLockCorrected={handleLockCorrected}
+                                    // #2786 리뷰(항목 5) — allowedLines 차단 등 동기 거부 시 즉시 pending
+                                    // 리셋 신호. transfer list(아래)는 allowedLines 필터가 없어 미전달.
+                                    rejectedTrainCode={rejectedTrainCode}
                                     // #2115 — trip 재등록/origin 변경 직후 첫 arrival fetch 완료 전에는
                                     // loading skeleton 노출. 이전에는 arrivalLoading이 useArrivalInfo에서
                                     // 계산되고도 이 prop으로 전달되지 않아 fetch 완료 전 빈 배열이 그대로
@@ -2180,6 +2227,13 @@ export default function HomeScreen() {
         message={lockCorrectionToast ?? ''}
         onDismiss={handleLockCorrectionToastDismiss}
         testID="lock-correction-toast"
+      />
+      {/* #2786 리뷰(항목 5) — allowedLines 차단 등 동기 거부 토스트. 5초 자동 dismiss + tap 닫기. */}
+      <Toast
+        visible={lockRejectedToast !== null}
+        message={lockRejectedToast ?? ''}
+        onDismiss={handleLockRejectedToastDismiss}
+        testID="lock-rejected-toast"
       />
       {/* #1324 — 목적지 == 현재역 차단 경고. 5초 자동 dismiss + tap 닫기. */}
       <Toast

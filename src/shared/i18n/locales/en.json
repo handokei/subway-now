@@ -76,6 +76,7 @@
       "undo": "Undo"
     },
     "lockCorrectionToast": "Boarding train corrected: {{prev}} → {{next}}",
+    "lockRejectedToast": "That train doesn't run on this route. Please pick another.",
     "shortRouteToast": "This trip is too short for the alarm to sound",
     "coldStartMismatch": {
       "title": "Check boarding station",

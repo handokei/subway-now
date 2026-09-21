@@ -76,6 +76,7 @@
       "undo": "되돌리기"
     },
     "lockCorrectionToast": "탑승 열차가 {{prev}} → {{next}}로 정정되었어요",
+    "lockRejectedToast": "이 경로에서 탈 수 없는 열차예요. 다시 선택해주세요.",
     "shortRouteToast": "구간이 짧아 알람이 울리지 않아요",
     "coldStartMismatch": {
       "title": "탑승역 확인",
