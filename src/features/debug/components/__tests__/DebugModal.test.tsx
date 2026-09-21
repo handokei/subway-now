@@ -5501,29 +5501,41 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     it('computeLockCorrectionLines / buildLockCorrectionSection: n/a + fired/lastFiredAt 표기 (#2268)', () => {
       const { computeLockCorrectionLines, buildLockCorrectionSection } = __test__;
       expect(computeLockCorrectionLines(undefined)).toEqual(['(n/a)']);
-      expect(computeLockCorrectionLines({ fired: 0, lastFiredAtMs: 0 })).toEqual([
-        'fired=0',
-        'lastFiredAt=(never)',
-      ]);
-      const withTs = computeLockCorrectionLines({ fired: 3, lastFiredAtMs: 1_700_000_000_000 });
+      expect(
+        computeLockCorrectionLines({ fired: 0, lastFiredAtMs: 0, promoted: 0, lastPromotedAtMs: 0 }),
+      ).toEqual(['fired=0', 'lastFiredAt=(never)', 'promoted=0', 'lastPromotedAt=(never)']);
+      const withTs = computeLockCorrectionLines({
+        fired: 3,
+        lastFiredAtMs: 1_700_000_000_000,
+        promoted: 4,
+        lastPromotedAtMs: 1_700_000_000_000,
+      });
       expect(withTs[0]).toBe('fired=3');
       expect(withTs[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+      expect(withTs[2]).toBe('promoted=4');
+      expect(withTs[3]).toMatch(/^lastPromotedAt=\d{2}:\d{2}:\d{2}$/);
       const built = buildLockCorrectionSection({
         ...baselineDumpArgs,
-        lockCorrection: { fired: 2, lastFiredAtMs: 1000 },
+        lockCorrection: { fired: 2, lastFiredAtMs: 1000, promoted: 1, lastPromotedAtMs: 1000 },
       });
       expect(built[0]).toBe('fired=2');
       expect(built[1]).toMatch(/^lastFiredAt=\d{2}:\d{2}:\d{2}$/);
+      expect(built[2]).toBe('promoted=1');
+      expect(built[3]).toMatch(/^lastPromotedAt=\d{2}:\d{2}:\d{2}$/);
     });
 
-    it('Lock Correction 섹션이 share dump에 포함된다 (#2268)', () => {
+    it('Lock Correction 섹션이 share dump에 포함된다 (#2268, #2786 리뷰 — promoted 카운터 포함)', () => {
       const dump = buildDumpText(
-        makeDumpArgs({ lockCorrection: { fired: 5, lastFiredAtMs: 2000 } }),
+        makeDumpArgs({
+          lockCorrection: { fired: 5, lastFiredAtMs: 2000, promoted: 2, lastPromotedAtMs: 3000 },
+        }),
       );
       expect(dump).toContain('## Lock Correction');
       const section = dump.slice(dump.indexOf('## Lock Correction'));
       expect(section).toContain('fired=5');
       expect(section).toMatch(/lastFiredAt=\d{2}:\d{2}:\d{2}/);
+      expect(section).toContain('promoted=2');
+      expect(section).toMatch(/lastPromotedAt=\d{2}:\d{2}:\d{2}/);
     });
 
     it('Lock Correction 섹션이 UI에 노출된다 (#2268)', async () => {
