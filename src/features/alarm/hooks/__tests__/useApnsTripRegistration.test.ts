@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import React from 'react';
 import { renderHook, waitFor, act } from '@testing-library/react-native';
 
 const mockGetDevicePushTokenAsync = jest.fn();
@@ -36,8 +39,11 @@ jest.mock('../../utils/backendSsotMirror', () => ({
 
 // #1628 — R11-a 차단 1건 측정 검증. clear 호출과 짝지어 같은 site에서 1회만 발사.
 const mockLogCrossTripMirrorSkip = jest.fn();
+// #2699 — subsurface dwell 게이트 확정 전환 계측.
+const mockLogSubsurfaceRegisterTransition = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
+  logSubsurfaceRegisterTransition: (...args: unknown[]) => mockLogSubsurfaceRegisterTransition(...args),
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -64,6 +70,8 @@ import {
   REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
   ROUTE_CHANGE_DEBOUNCE_MS,
 } from '../../../../shared/constants/boardingLock';
+import { SUBSURFACE_FLAP_QUARANTINE_MS } from '../../../../shared/constants/barometer';
+import { ETA_POLLING_WINDOW_SEC } from '../../../../shared/constants/eta';
 import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { getStationById } from '../../../../shared/utils/stationRoute';
@@ -179,10 +187,10 @@ describe('useApnsTripRegistration', () => {
     });
 
     // #2683 — 같은 trip의 **재등록**에서는 mirror를 지우지 않는다. 이 effect는 `subsurface`(기압계
-    // 지하 판정)를 deps로 갖고 있어 주행 중 수십 초마다 재실행되는데, 그때마다 mirror를 지우면
-    // device가 backend SSoT를 한 번도 손에 쥐지 못해 표시가 출발역에 얼어붙는다.
-    // 실측(2026-09-17 저녁): 한 trip에 POST /trips 29회 → mirror 29회 삭제 → "성수→용마산"이
-    // 환승역을 지나도 그대로.
+    // 지하 판정, #2699 v2 이후로는 flap-quarantine 확정값)를 deps로 갖고 있어 주행 중 재실행되는데,
+    // 그때마다 mirror를 지우면 device가 backend SSoT를 한 번도 손에 쥐지 못해 표시가 출발역에
+    // 얼어붙는다. 실측(2026-09-17 저녁): 한 trip에 POST /trips 29회 → mirror 29회 삭제 →
+    // "성수→용마산"이 환승역을 지나도 그대로.
     it('#2683 — 같은 trip 재등록(subsurface 토글 등)에서는 mirror를 지우지 않는다', async () => {
       const { rerender } = renderHook(
         ({ subsurface }: { subsurface: boolean }) =>
@@ -194,12 +202,19 @@ describe('useApnsTripRegistration', () => {
           }),
         { initialProps: { subsurface: false } },
       );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
       expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 최초 등록은 clear.
 
-      // 지하 진입 → 같은 trip 재등록.
+      // 지하 진입 — #2699 v2: 단일 전환은 즉시 확정(quarantine 밖) → 같은 trip 재등록.
       rerender({ subsurface: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
       expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 추가 clear 없음.
     });
 
@@ -634,6 +649,81 @@ describe('useApnsTripRegistration', () => {
       await Promise.resolve();
     });
     expect(mockRegister).toHaveBeenCalledTimes(1);
+  });
+
+  // #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 2 red) — ETA>5분 상태로 첫 register하면
+  // alarmAtEpochMs가 미래 5분+로 동결된다. #703이 nextStationEtaSeconds를 deps에서 제외하므로,
+  // ETA가 실제로 폴링 윈도우 경계(5분) 밑으로 줄어들 때 재등록이 트리거되지 않으면
+  // alarmAtEpochMs가 계속 동결값에 머물러 backend 폴링 게이트가 실제 ETA보다 늦게 열린다.
+  it('#2699 ETA>5분 첫 등록 후 ETA가 폴링 윈도우(5분) 밑으로 급감하면 재등록된다(게이트 정렬)', async () => {
+    const { rerender } = renderHook(
+      ({ eta }: { eta: number }) =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: eta,
+        }),
+      { initialProps: { eta: ETA_POLLING_WINDOW_SEC + 180 } }, // 8분 — 윈도우 밖에서 첫 등록.
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    expect(mockRegister.mock.calls[0][0].alarmAtEpochMs).toBeGreaterThan(Date.now() + ETA_POLLING_WINDOW_SEC * 1000);
+
+    // 윈도우 안(5분 밑)으로 급감 — 이 전환 자체가 재등록을 트리거해야 alarmAtEpochMs가
+    // 최신화되고 backend 폴링 게이트가 실제 ETA에 맞춰 열린다.
+    rerender({ eta: ETA_POLLING_WINDOW_SEC - 60 }); // 4분.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(2);
+    expect(mockRegister.mock.calls[1][0].alarmAtEpochMs).toBeLessThanOrEqual(
+      Date.now() + ETA_POLLING_WINDOW_SEC * 1000,
+    );
+
+    // 윈도우 안에서의 추가 jitter(30s 폴링)는 여전히 재등록을 유발하지 않는다 — #703 보존.
+    rerender({ eta: ETA_POLLING_WINDOW_SEC - 90 });
+    rerender({ eta: ETA_POLLING_WINDOW_SEC - 30 });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(2);
+  });
+
+  // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2 red) — hook(sticky, ETA null 무시)과 backend
+  // hash(`alarmAtEpochMs - Date.now() <= threshold`)가 각자 계산하던 구버전은 다음 시나리오에서
+  // 어긋났다: ETA=8분(>5분, sticky=false)으로 첫 register → 이후 ETA가 null(폴링 갭)이 된 채로
+  // **다른 dep**(예: infoModeEnabled)이 register를 트리거하면, `deriveAlarmAtEpochMs(null, now)`가
+  // `now`를 반환해 그 순간의 `alarmAtEpochMs`가 사실상 "즉시"로 붕괴한다 — backend가
+  // `alarmAtEpochMs - Date.now() <= threshold`로 독립 재계산했다면 이는 항상 참(0 <= threshold)
+  // 이라 **hook의 sticky 판단(false)과 정반대인 true**를 hash에 반영했을 것이다. 이 테스트는
+  // payload에 실제로 전달되는 `etaWithinPollingWindow` 값이 hook의 판단(false)과 일치하는지
+  // 검증한다 — 단일 소스(hook)에서 파생해 그대로 전달하므로 항상 일치해야 한다.
+  it('#2699 ETA null 순간 다른 dep으로 트리거돼도 payload.etaWithinPollingWindow는 hook의 sticky 판단과 일치한다', async () => {
+    const { rerender } = renderHook(
+      ({ eta, ime }: { eta: number | null; ime: boolean }) =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: eta,
+          infoModeEnabled: ime,
+        }),
+      { initialProps: { eta: ETA_POLLING_WINDOW_SEC + 180, ime: false } }, // 8분, 윈도우 밖.
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    expect(mockRegister.mock.calls[0][0].etaWithinPollingWindow).toBe(false);
+
+    // ETA가 null(폴링 갭)이 된 채로, 전혀 무관한 dep(infoModeEnabled)이 재등록을 트리거한다.
+    // 이 시점 alarmAtEpochMs = deriveAlarmAtEpochMs(null, now) = now(즉시) — 구버전 backend
+    // 재계산 방식이었다면 이게 true로 뒤집혔을 순간이다.
+    rerender({ eta: null, ime: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(2);
+    // hook의 sticky 판단(직전 확정값 false 유지)과 일치해야 한다 — true가 나오면 hook/backend
+    // 계산이 다시 분리됐다는 뜻(회귀).
+    expect(mockRegister.mock.calls[1][0].etaWithinPollingWindow).toBe(false);
   });
 
   it('#703 — currentStation만 바뀌면 register 재호출 안 함', async () => {
@@ -1388,7 +1478,10 @@ describe('useApnsTripRegistration', () => {
             destination: station,
             nextStationEtaSeconds: 120,
             currentStation: station,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않으므로, "다른 dep이
+            // 바뀌면 즉시 재실행"을 검증하는 이 테스트는 infoModeEnabled(dwell 게이트 없음)로
+            // 트리거한다 — 검증 대상(retry 타이머 갈아치우기 로직)은 어느 dep이든 동일하다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { sub: false } },
       );
@@ -1397,7 +1490,7 @@ describe('useApnsTripRegistration', () => {
       });
       expect(mockRegister).toHaveBeenCalledTimes(1); // 실패 — 15s 재시도 예약
 
-      // 첫 backoff가 발화하기 전, 같은 세션에서 subsurface 토글로 즉시 재실행 → 다시 실패.
+      // 첫 backoff가 발화하기 전, 같은 세션에서 infoModeEnabled 토글로 즉시 재실행 → 다시 실패.
       rerender({ sub: true });
       await act(async () => {
         await Promise.resolve();
@@ -1665,7 +1758,11 @@ describe('useApnsTripRegistration', () => {
             destination: dest,
             nextStationEtaSeconds: 120,
             currentStation: cs,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않는다. 이 테스트가
+            // 검증하는 것은 "별개 dep 변경으로 main effect가 재실행될 때 heal in-flight와
+            // register-retry가 겹치지 않는가"이지 subsurface 자체의 의미가 아니므로
+            // infoModeEnabled(dwell 게이트 없음)로 트리거한다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { cs: null as Station | null, sub: false } },
       );
@@ -1680,7 +1777,7 @@ describe('useApnsTripRegistration', () => {
       rerender({ cs: origin, sub: false });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
 
-      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도 예약(15s).
+      // 별개 dep(infoModeEnabled) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도 예약(15s).
       mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
       rerender({ cs: origin, sub: true });
       await act(async () => {
@@ -1835,7 +1932,7 @@ describe('useApnsTripRegistration', () => {
       //
       // "반대 방향" 테스트와 동일한 순서로 heal을 in-flight 상태로 만든다 — retry가 pending인
       // 동안에는 Tier 1이 스스로 발사하지 않으므로(#2167 P1 이전 가드), Tier 1이 먼저 정상
-      // 발사(retry 없는 상태)된 뒤 별개 dep(subsurface) 변경으로 main effect가 재실행돼 실패해야
+      // 발사(retry 없는 상태)된 뒤 별개 dep(infoModeEnabled) 변경으로 main effect가 재실행돼 실패해야
       // 그 세션에 재시도가 예약된다.
       mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start 성공(currentStation=null → context 결손)
 
@@ -1851,7 +1948,9 @@ describe('useApnsTripRegistration', () => {
             destination: dest,
             nextStationEtaSeconds: 120,
             currentStation: cs,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않으므로, "별개 dep
+            // 변경으로 즉시 재실행"이 필요한 이 테스트는 infoModeEnabled로 트리거한다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { cs: null as Station | null, sub: false } },
       );
@@ -1865,7 +1964,7 @@ describe('useApnsTripRegistration', () => {
       rerender({ cs: origin, sub: false });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
 
-      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도
+      // 별개 dep(infoModeEnabled) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도
       // 예약(15s, attempt=1).
       mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
       rerender({ cs: origin, sub: true });
@@ -1946,7 +2045,9 @@ describe('useApnsTripRegistration', () => {
             destination: dest,
             nextStationEtaSeconds: 120,
             currentStation: cs,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않으므로, 이 테스트는
+            // infoModeEnabled로 트리거한다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { cs: null as Station | null, sub: false } },
       );
@@ -1960,7 +2061,7 @@ describe('useApnsTripRegistration', () => {
       rerender({ cs: origin, sub: false });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
 
-      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 실패해 재시도 예약(15s, attempt=1).
+      // 별개 dep(infoModeEnabled) 변경으로 main effect 재실행 — 실패해 재시도 예약(15s, attempt=1).
       mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
       rerender({ cs: origin, sub: true });
       await act(async () => {
@@ -2096,7 +2197,7 @@ describe('useApnsTripRegistration', () => {
   });
 
   // #903 (Seam G) — 기압계 subsurface 전달
-  describe('subsurface (#903)', () => {
+  describe('subsurface (#903, v2 flap-quarantine 재설계 #2699)', () => {
     const baseInputs = (subsurface?: boolean) => ({
       route: directRoute,
       destination: station,
@@ -2107,30 +2208,281 @@ describe('useApnsTripRegistration', () => {
       renderHook(({ s }: { s?: boolean }) => useApnsTripRegistration(baseInputs(s)), {
         initialProps: { s: sub },
       });
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — React.StrictMode(dev)는 useState
+    // updater(함수형 setState)를 순수성 검증을 위해 2회 호출한다. 이 wrapper로 그 이중 호출
+    // 조건을 실제로 재현해, 부수효과(로그 적재/ref 변이)가 updater 안에 있지 않음을 검증한다.
+    const renderSubStrict = (sub?: boolean) =>
+      renderHook(({ s }: { s?: boolean }) => useApnsTripRegistration(baseInputs(s)), {
+        initialProps: { s: sub },
+        wrapper: ({ children }: { children: React.ReactNode }) =>
+          React.createElement(React.StrictMode, null, children),
+      });
 
+    // #2699 (리뷰 지적, "각도 C" 항목 2) — payload.subsurface는 이제 raw 값(관측용,
+    // subsurfaceDedupKey와 분리)이다. raw는 flap-quarantine을 거치지 않고 매 register 호출
+    // 시점의 latestInputsRef.rawSubsurface를 그대로 싣는다 — 렌더 직후 곧바로 반영되므로
+    // 첫 register(call[0])에도 이미 정확한 값이 실린다.
     it.each([
-      { label: 'subsurface=true → payload에 포함', sub: true, expected: true },
+      { label: 'subsurface=true → payload.subsurface(raw)에 포함', sub: true, expected: true },
       { label: 'subsurface 미지정 → payload에 미포함 (graceful)', sub: undefined, expected: undefined },
     ])('$label', async ({ sub, expected }) => {
       renderSub(sub);
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
       expect(mockRegister.mock.calls[0][0].subsurface).toBe(expected);
     });
 
-    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend threshold 빠른 갱신)', async () => {
-      const { rerender } = renderSub(false);
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      expect(mockRegister.mock.calls[0][0].subsurface).toBeUndefined();
-      rerender({ s: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-      expect(mockRegister.mock.calls[1][0].subsurface).toBe(true);
+    // #2699 (이슈 검증 항목 "red", v2 재설계) — 실측 재현: 지하/지상 경계에서 subsurface가
+    // 4초 간격으로 반복 토글되는 상황(9/18 덤프 실측 6쌍 중 4s 간격 사례)을 시뮬레이션한다.
+    // v1(단순 30s dwell)에서는 매 토글이 register effect deps를 직접 건드려 POST가 매번(4회)
+    // 나갔다. v2(flap-quarantine)는 첫 전환은 즉시 확정(낙관적)하고, quarantine 창 안의
+    // 되돌아온 전환은 이전 안정값으로 되돌린다(보정) — 그 이후의 추가 bounce는 React
+    // setState same-value bail-out으로 register를 더 만들지 않는다. 유계 결과: mount 1회
+    // + 최초 확정 1회 + 보정 1회 = 3회, bounce 횟수(여기선 4회)에 비례하지 않는다.
+    it('#2699 subsurface 4초 간격 반복 토글 → flap 보정 이후 추가 POST 없이 유계(3회)로 수렴', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // 최초 register.
+
+        // 4초 간격으로 false→true→false→true 반복(실측 패턴) — 전체 경과(12s)가 quarantine
+        // 창(20s) 안에 들어와 같은 flap episode로 묶인다.
+        const toggles = [true, false, true, false];
+        for (const next of toggles) {
+          rerender({ s: next });
+          // eslint-disable-next-line no-await-in-loop -- 실제 시간 흐름을 순서대로 재현해야
+          // 하는 quarantine 시나리오라 순차 await가 본질적.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        // mount(1) + 최초 낙관적 확정(1, true) + 보정(1, false로 되돌림) = 3. 이후 bounce는
+        // confirmed가 이미 보정된 값과 같아 setState same-value bail-out — 추가 register 없음.
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+        // 로그는 "확정된 전환"으로 간주된 최초 1건만 — 보정(취소)은 로그하지 않는다.
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(1);
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(true, true);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
-    it('token refresh 경로도 최신 subsurface 값을 송신', async () => {
+    // #2699 (P1 수렴 결함, PR #2789 리뷰 2~3라운드) — v2는 "raw subsurface가 실제로 바뀌는
+    // 렌더에서만" 재평가했다. 다음 시퀀스(홀수-종료, 짝수-종료 테스트가 가리는 케이스)에서
+    // 수렴에 실패했다: baseline=false → true(quarantine 밖, 즉시 확정) → false(quarantine 안,
+    // settled=false로 되돌림) → true(quarantine 안, 되돌릴 값이 이미 confirmed와 같아 no-op) →
+    // raw는 true로 안정(진짜 지하 진입, 더 이상 안 바뀜). 이 시점부터 subsurface prop이 더
+    // 이상 안 바뀌므로 effect deps가 재평가되지 않아 confirmed가 false에 영구 고착됐다 —
+    // register/Tier 2 context가 지하를 영영 못 본다.
+    //
+    // v4(현재)는 pending(raw!==confirmed)인 동안에만 armed되는 hook-local 타이머
+    // (quarantine-expiry watcher)로 이 만료를 감지한다 — useBarometer에 전역 heartbeat를
+    // 추가했던 v3는 barometer 활성 내내 소비자 전체를 1Hz로 리렌더시켜(#2619 F3 역행, 발열
+    // 회귀) 되돌렸다. v4는 별도 prop/외부 tick 없이 fake timer만 흘려보내면 수렴을 검증할 수
+    // 있다.
+    it('#2699 홀수-종료 토글([true,false,true]) → quarantine 만료 후 최종 raw(true)로 수렴 + register 1회 추가', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // mount, cold-start.
+
+        // false→true(fresh, 즉시 확정) → false(bounce, 보정) → true(bounce, no-op) — 4s 간격
+        // 실측 패턴.
+        for (const next of [true, false, true]) {
+          rerender({ s: next });
+          // eslint-disable-next-line no-await-in-loop -- 시간 순서가 본질적인 quarantine 시나리오.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        // 여기까지는 v2와 동일 — mount(1) + 확정(1,true) + 보정(1,false) = 3, confirmed=false,
+        // raw=true(불일치 — 바로 이 상태가 v2에서 영구 고착되던 지점).
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+
+        // raw는 더 이상 바뀌지 않는다(진짜 지하 안정) — quarantine-expiry watcher가 스스로
+        // armed한 로컬 타이머만으로 만료를 감지해야 한다. quarantine(20s)을 넘길 만큼 시간을
+        // 흘려보낸다.
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_FLAP_QUARANTINE_MS + 1_000);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        // 최종적으로 raw(true)로 수렴 — register가 정확히 1회 더 나가야 한다(합계 4).
+        expect(mockRegister).toHaveBeenCalledTimes(4);
+        expect(mockRegister.mock.calls[3][0].subsurface).toBe(true);
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(2); // 최초 확정 + 수렴 확정.
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenLastCalledWith(true, true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('#2699 홀수-종료 토글([true,false,true,false,true]) → quarantine 만료 후 최종 raw(true)로 수렴', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        for (const next of [true, false, true, false, true]) {
+          rerender({ s: next });
+          // eslint-disable-next-line no-await-in-loop -- 시간 순서가 본질적인 quarantine 시나리오.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+        }
+        // raw는 계속 true로 안정 — quarantine-expiry watcher만으로 수렴을 유도한다.
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_FLAP_QUARANTINE_MS + 1_000);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        const calls = mockRegister.mock.calls;
+        expect(calls[calls.length - 1][0].subsurface).toBe(true); // 최종적으로 raw로 수렴.
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    // #2699 v2 재설계 불변식 (a) — 되돌아오지 않는 단일 전환은 지연 없이 즉시(다음 렌더) 확정.
+    it('단일 전환(되돌아오지 않음)은 지연 없이 즉시 재등록된다 (#2699 v2 — 타이머 대기 없음)', async () => {
       const { rerender } = renderSub(false);
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(mockRegister.mock.calls[0][0].subsurface).toBeUndefined();
+
       rerender({ s: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      // 타이머 advance 없이 microtask만 flush — v1(dwell)이었다면 여기서 register가 안 나가야
+      // 하지만 v2는 즉시 확정하므로 이 시점에 바로 재등록된다.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(mockRegister.mock.calls[1][0].subsurface).toBe(true);
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(true, true);
+    });
+
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — React.StrictMode(dev)는 useState에
+    // 넘긴 updater 함수를 순수성 검증을 위해 2회 호출한다. 구현 조사 기록: 되돌린 구버전(옛
+    // `setConfirmedSubsurface((confirmed) => {...})` 형태, side effect가 updater 안에 있던
+    // 버전)을 이 정확한 시나리오(quarantine 밖 fresh 전환)에 대해 직접 계측해보니, 실제로
+    // updater가 2회 호출됐지만(console.log로 확인) **로그 호출 자체는 우연히 1회로
+    // 마스킹됐다** — 첫 호출이 `quarantineAnchorAtRef.current = now`를 먼저 mutate해버려서
+    // (같은 ms 안에 동기 실행되는 두 번째 호출이) "이미 quarantine 안"으로 잘못 판정돼 두
+    // 번째 호출은 로그를 안 남기는 bounce 분기로 빠졌다 — 즉 이 테스트만으로는 옛 코드에서
+    // red를 재현할 수 없었다(로그 카운트가 우연히 정확했을 뿐). 그럼에도 **updater 안에서
+    // side effect(로그/ref 변이)를 실행하는 패턴 자체는 여전히 순수성 위반**이고(React 공식
+    // 문서가 명시적으로 금지), 이 우연한 마스킹은 타이밍(같은 ms 안에 두 호출이 몰리는가)에
+    // 의존해 다른 시나리오·다른 JS 엔진 타이밍에서는 언제든 깨질 수 있는 취약한 보장이다.
+    // v5(현재)는 `setConfirmedSubsurface`에 **함수를 아예 넘기지 않는다** — plain value만
+    // 넘기므로 StrictMode 이중 호출 메커니즘 자체가 구조적으로 적용될 수 없다(우연한 마스킹이
+    // 아니라 원천 차단). 이 테스트는 그 구조를 회귀 방지로 고정한다 — StrictMode 안에서도
+    // 로그가 정확히 1회만 적재됨을 검증(옛 코드에서도 이 특정 경로는 우연히 통과했지만, 다른
+    // 코드 변경이 다시 side-effectful updater 패턴을 도입하면 이 테스트가 잡아낼 가능성이
+    // 높아진다 — 특히 quarantine anchor를 건드리지 않는 다른 실수 형태에서는).
+    it('#2699 StrictMode 이중 렌더에서도 확정 전환당 로그 적재 1회(부수효과가 setState updater 밖에 있음, 구조적 보장)', async () => {
+      const { rerender } = renderSubStrict(false);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      mockLogSubsurfaceRegisterTransition.mockClear(); // mount(false→false, no-op) 이후부터 카운트.
+
+      rerender({ s: true }); // quarantine 밖의 새 전환 — 즉시 확정 + 로그 1건.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(1);
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(true, true);
+    });
+
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — 위 StrictMode 동작 테스트가 우연한
+    // 마스킹으로 통과할 수 있음이 조사 과정에서 드러났으므로(주석 참고), 근본 보장은 행동이
+    // 아니라 **구조**에 있다: `setConfirmedSubsurface`가 함수(업데이터)를 받는 순간 StrictMode
+    // 이중 호출 메커니즘이 적용 대상이 된다 — 애초에 함수를 넘기지 않으면 그 메커니즘 자체가
+    // 무관해진다. 소스를 정적으로 읽어 `setConfirmedSubsurface(`에 화살표/함수 리터럴이
+    // 전달되지 않는지(항상 plain value만 전달되는지) 직접 검증한다.
+    it('#2699 setConfirmedSubsurface는 항상 plain value만 받는다(함수형 updater 금지, 정적 검증)', () => {
+      const source = readFileSync(join(__dirname, '..', 'useApnsTripRegistration.ts'), 'utf-8');
+      const calls = source.match(/setConfirmedSubsurface\([^)]*\)/g) ?? [];
+      expect(calls.length).toBeGreaterThan(0); // 호출부 자체가 사라지면 이 가드도 의미 없음.
+      for (const call of calls) {
+        // 화살표 함수(`=>`) 또는 `function` 키워드가 인자에 섞여 있으면 함수형 updater로 의심.
+        expect(call).not.toMatch(/=>|function\s*\(/);
+      }
+    });
+
+    // #2699 v2 재설계 불변식 (b) — quarantine 창 안의 되돌아온 전환은 이전 안정값으로 보정되고
+    // (register 1회), quarantine이 만료된 뒤에는 그 확정값이 그대로 유지된다(추가 register 없음).
+    it('quarantine 창 안의 되돌아온 전환은 보정된 뒤 만료 후에도 유지된다 (#2699 v2 — flap 흡수)', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        rerender({ s: true });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2); // 낙관적 확정(true).
+
+        // 실측 최대 토글 간격(13s) 이내에 되돌아옴 — quarantine(20s) 안, 보정 발생.
+        await act(async () => {
+          jest.advanceTimersByTime(13_000);
+        });
+        rerender({ s: false });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3); // 보정(false로 되돌림) — 계측 로그는 없음.
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(1); // 최초 확정 1건뿐.
+
+        // quarantine 만료 후에도 값은 그대로(false) — 추가 register 없음.
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_FLAP_QUARANTINE_MS);
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('token refresh 경로도 즉시 확정된 subsurface(raw) 값을 송신', async () => {
+      const { rerender } = renderSub(false);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      rerender({ s: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+
       const listener = mockAddPushTokenListener.mock.calls[0][0];
       await act(async () => {
         listener({ data: 'token-NEW2' });
@@ -2141,6 +2493,49 @@ describe('useApnsTripRegistration', () => {
         (c) => (c[0] as { token: string }).token === 'token-NEW2',
       );
       expect(refreshed?.[0].subsurface).toBe(true);
+    });
+
+    // #2699 (리뷰 지적, PR #2789 "각도 C" 항목 3) — trip 종료 시 quarantine 창을 리셋하지
+    // 않으면, 곧바로 시작된 새 trip의 첫 전환이 옛 trip의 quarantine에 걸려 "flap 보정"으로
+    // 조용히 흡수될 수 있다(로그도 register도 없어 잔여 결함처럼 보임). 이 테스트는 새 trip의
+    // 첫 전환이 언제나 fresh로 취급되는지 검증한다.
+    it('#2699 trip 종료가 quarantine 창을 리셋 — 곧바로 시작된 새 trip의 첫 전환은 flap 보정에 흡수되지 않고 fresh로 확정된다', async () => {
+      const { rerender } = renderHook(
+        ({ r, d, sub }: { r: Route | null; d: Station | null; sub: boolean }) =>
+          useApnsTripRegistration({ route: r, destination: d, nextStationEtaSeconds: 120, subsurface: sub }),
+        { initialProps: { r: directRoute as Route | null, d: station as Station | null, sub: false } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1); // trip A cold-start.
+
+      rerender({ r: directRoute, d: station, sub: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // trip A: 즉시 확정(true) — quarantine 창 오픈.
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(1);
+
+      // trip A 종료(quarantine 창 이내) — quarantine이 리셋된다.
+      rerender({ r: null, d: null, sub: true });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // 곧바로(실제 경과 시간과 무관하게) 새 trip B 시작 — subsurface=false로 시작.
+      // quarantine이 리셋되지 않았다면 이 전환이 trip A의 quarantine(방금 막 연 상태)에 걸려
+      // "flap 보정"으로 흡수되고(로그 없음), 리셋됐다면 fresh 전환으로 확정되어 로그가 남는다.
+      mockLogSubsurfaceRegisterTransition.mockClear();
+      rerender({ r: directRoute, d: station, sub: false });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(1); // fresh로 확정(보정 아님).
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(false, true);
     });
   });
 
@@ -3088,6 +3483,75 @@ describe('useApnsTripRegistration', () => {
         expect(healed.promptDisplay).toEqual({ originStation: '대화', line: '3' });
       });
 
+      // #2699 (리뷰 지적, PR #2789 항목 1) — Tier 2는 confirmedSubsurface(register churn 억제용,
+      // flap-quarantine 통과분)가 아니라 raw subsurface를 봐야 한다. 이 테스트는 raw가 경계에서
+      // 계속 flapping해 confirmed가 false에 "붙잡혀" 있는(정확히 9/18 실측 패턴) 상황에서도,
+      // 60s 시점의 raw가 true면 Tier 2 heal이 정상 발동하는지 검증한다 — confirmed를 봤다면
+      // (구현 결함) heal이 영구 스킵돼 cold-start 무컨텍스트 trip이 trip 내내 프롬프트 불가.
+      it('#2699 raw subsurface가 flapping으로 confirmed=false에 고착돼도, 60s 시점 raw=true면 Tier 2 heal이 발동한다', async () => {
+        const { rerender } = renderHook(
+          ({ sub }: { sub: boolean }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: null,
+              subsurface: sub,
+              routeOriginStation: origin,
+            }),
+          { initialProps: { sub: false } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // cold-start, confirmed=false=raw.
+
+        await act(async () => {
+          jest.advanceTimersByTime(5_000);
+        });
+        rerender({ sub: true }); // 새 전환 — quarantine 밖, 즉시 확정(true).
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          jest.advanceTimersByTime(4_000);
+        });
+        rerender({ sub: false }); // quarantine 안(4s<20s) — 보정: confirmed가 false로 되돌아감.
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3);
+
+        await act(async () => {
+          jest.advanceTimersByTime(4_000);
+        });
+        rerender({ sub: true }); // 다시 flapping — confirmed는 이미 false라 same-value bail-out.
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(3); // confirmed 변화 없음 — 추가 register 없음.
+
+        // 이 시점 raw=true, confirmed=false(고착). Tier 2 타이머는 마지막으로 confirmed가
+        // 실제로 바뀐 시점(직전 보정)부터 60s 후 발동 — 그 시점의 raw(true)로 heal해야 한다.
+        // v4(quarantine-expiry watcher)는 이 60s 구간 안에서 quarantine(20s)도 만료돼 raw로
+        // 자체 수렴한다 — Tier 2가 raw 게이트를 통과하는지와는 별개로 register가 1회 더
+        // 추가된다(수렴 확정 + Tier 2 heal = 총 2회 추가, 합계 5).
+        await act(async () => {
+          jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(5); // 수렴 확정(1) + Tier 2 heal(1).
+        const healed = mockRegister.mock.calls[4][0] as {
+          promptGeoContext?: { origin: { lat: number; lng: number } };
+        };
+        expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+      });
+
       it('60초 후 currentStation이 이미 해소돼 있으면 Tier 2 heal 미발동', async () => {
         const { rerender } = renderHook(
           ({ cs }: { cs: Station | null }) =>
@@ -3200,20 +3664,23 @@ describe('useApnsTripRegistration', () => {
         });
         expect(mockRegister).toHaveBeenCalledTimes(1);
 
-        // subsurface deps 변경 → run() 재실행 → 이미 armed된 타이머를 clear 후 재arm.
+        // #2699 v2 — subsurface deps(confirmed) 변경은 이제 즉시(quarantine 밖) 반영된다.
+        // 재arm 여부를 검증하는 이 테스트 자체는 "다른 전환으로 main effect가 재실행되는가"만
+        // 필요하므로 타이머 대기 없이 바로 rerender한다.
         act(() => {
           jest.advanceTimersByTime(1000);
         });
         rerender({ sub: false });
         await act(async () => {
           await Promise.resolve();
+          await Promise.resolve();
         });
         expect(mockRegister).toHaveBeenCalledTimes(2);
 
         // 재arm된 타이머 기준으로 CONTEXT_HEAL_TIER2_DELAY_MS 경과해야 발동 — subsurface가
-        // 이제 false이므로 Tier 2 조건 자체는 불충족(추가 register 없음)이지만, 옛 타이머가
-        // clear됐다면 이 시점(원래 예정보다 1000ms 늦게 도착)에 register가 정확히 몇 번인지로
-        // "clear+재arm"이 실제로 일어났음을 간접 확인한다.
+        // 이제 false로 확정됐으므로 Tier 2 조건 자체는 불충족(추가 register 없음)이지만, 옛
+        // 타이머가 clear됐다면 이 시점에 register가 정확히 몇 번인지로 "clear+재arm"이 실제로
+        // 일어났음을 간접 확인한다.
         await act(async () => {
           jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
           await Promise.resolve();

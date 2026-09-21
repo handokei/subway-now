@@ -3,8 +3,15 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, renderHook } from '@testing-library/react-native';
-import { useBoardingLockSync, GOOD_FIX_ACCURACY_MAX_M, SYNC_DEBOUNCE_MS } from '../useBoardingLockSync';
+import {
+  useBoardingLockSync,
+  GOOD_FIX_ACCURACY_MAX_M,
+  SYNC_DEBOUNCE_MS,
+  DEDUP_RESET_COOLDOWN_MS,
+  __resetFireSync404GuardForTests,
+} from '../useBoardingLockSync';
 import { syncBoardingLock } from '../../../nearest-station/api/boardingLockSync';
+import { resetAlarmBackendDedup } from '../../api/alarmBackend';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import {
   LOCK_ONLY_SYNC_ACCURACY_METERS,
@@ -15,6 +22,11 @@ import { canonicalStationName } from '../../../../testUtils/canonicalStationName
 
 jest.mock('../../../nearest-station/api/boardingLockSync', () => ({
   syncBoardingLock: jest.fn(),
+}));
+
+// #2699 (리뷰 지적, PR #2789 "각도 C") — 404 self-heal wire 검증용.
+jest.mock('../../api/alarmBackend', () => ({
+  resetAlarmBackendDedup: jest.fn(),
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -34,6 +46,7 @@ jest.mock('../../utils/alarmLog', () => ({
 
 const mockedSync = syncBoardingLock as jest.MockedFunction<typeof syncBoardingLock>;
 const mockedLogLockSyncDelivery = logLockSyncDelivery as jest.MockedFunction<typeof logLockSyncDelivery>;
+const mockedResetAlarmBackendDedup = resetAlarmBackendDedup as jest.MockedFunction<typeof resetAlarmBackendDedup>;
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -42,6 +55,8 @@ beforeEach(async () => {
   await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-tok');
   mockedSync.mockResolvedValue({ ok: true, advanced: true, currentWaypoint: '역삼', nextStation: '역삼' });
   jest.useFakeTimers();
+  // #2699 (리뷰 지적, 항목 3) — 404 churn 가드는 모듈 레벨 state라 테스트 간 격리 필요.
+  __resetFireSync404GuardForTests();
 });
 
 afterEach(() => {
@@ -97,6 +112,119 @@ describe('useBoardingLockSync (#901)', () => {
         accuracy: 10,
       }),
     );
+  });
+
+  // #2699 (리뷰 지적, PR #2789 "각도 C" 최우선) — 이 파일의 원래 docstring이 "404 →
+  // useApnsTripRegistration이 다음 cycle에 재등록"이라 주장했지만 명시 wire가 없었다.
+  // #2699가 register dedup hash에서 시간종속 alarmBucket을 제거하면서, 그 재등록을
+  // 우연히 가능케 했던 hash 회전도 함께 사라진다 — 명시 wire 없이는 backend가 trip을
+  // 잃어도 device가 영원히 모른 채 dedup-skip만 반복한다.
+  it('#2699 sync 응답이 404(trip_not_found)면 alarmBackend dedup을 리셋한다 — 다음 register가 skip 아니라 실 POST로 이어지게', async () => {
+    mockedSync.mockResolvedValueOnce({ ok: false, status: 404 });
+    renderHook(() =>
+      useBoardingLockSync({
+        currentStationName: '강남',
+        accuracyMeters: 10,
+        tripActive: true,
+      }),
+    );
+    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+    await flushAsyncStorage();
+    expect(mockedSync).toHaveBeenCalledTimes(1);
+    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1);
+  });
+
+  // #2699 (리뷰 지적, PR #2789 리뷰 2~3라운드 — 항목 3) — 지속 장애(backend가 계속 404를
+  // 돌려주는 상태) 시나리오. 매 station-change마다 무조건 리셋하면 다음 register가 매번
+  // dedup skip을 우회해 죽어가는 backend에 POST가 계속 쌓인다 — reset 자체가 쿨다운
+  // (DEDUP_RESET_COOLDOWN_MS) 없이 반복되면 안 된다.
+  it('#2699 지속 장애(연속 404) 동안 resetAlarmBackendDedup은 쿨다운 안에서 상한(1회)만 호출된다', async () => {
+    mockedSync.mockResolvedValue({ ok: false, status: 404 });
+    const { rerender } = renderHook(
+      ({ station }: { station: string }) =>
+        useBoardingLockSync({
+          currentStationName: station,
+          accuracyMeters: 10,
+          tripActive: true,
+        }),
+      { initialProps: { station: '강남' } },
+    );
+    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+    await flushAsyncStorage();
+    expect(mockedSync).toHaveBeenCalledTimes(1);
+    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1);
+
+    // 서로 다른 station으로 계속 전환 — 매번 새 sync가 발사되지만(같은 station dedup과
+    // 무관) 여전히 backend는 404. 쿨다운(60s) 안이므로 reset은 최초 1회에서 상한 도달.
+    for (const station of ['역삼', '선릉', '삼성']) {
+      rerender({ station });
+      // eslint-disable-next-line no-await-in-loop -- 실제 station-change 순서가 본질적.
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+      // eslint-disable-next-line no-await-in-loop -- 위와 동일한 이유.
+      await flushAsyncStorage();
+    }
+    expect(mockedSync).toHaveBeenCalledTimes(4); // sync 자체는 매번 발사.
+    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1); // reset은 쿨다운 안 상한 1회.
+  });
+
+  // #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 3 red) — 2라운드 latch(token+sync-ok) 버전은
+  // 이 시나리오에서 스톨했다: 404 → dedup 리셋으로 register 성공(trip 재생성) → 하지만
+  // **sync 자체**는 여전히 404(예: KV 전파 지연) → 이후 진짜 2차 trip 손실이 와도 latch가
+  // "sync 성공"을 못 봐서 재리셋을 skip → trip 영구 사망. 3라운드(쿨다운)는 sync 성공 여부와
+  // 무관하게 쿨다운만 지나면 재리셋하므로 스톨이 불가능하다.
+  it('#2699 404→(쿨다운 경과, sync는 여전히 404)→재404 → 두 번째도 dedup이 리셋된다 (latch 스톨 회귀 방지)', async () => {
+    mockedSync.mockResolvedValueOnce({ ok: false, status: 404 });
+    const { rerender } = renderHook(
+      ({ station }: { station: string }) =>
+        useBoardingLockSync({
+          currentStationName: station,
+          accuracyMeters: 10,
+          tripActive: true,
+        }),
+      { initialProps: { station: '강남' } },
+    );
+    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+    await flushAsyncStorage();
+    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1);
+
+    // 쿨다운 경과 — 하지만 sync는 (register는 성공했을지 몰라도) 여전히 404를 내려준다고
+    // 가정한다(latch를 "sync 성공"에 결속했다면 여기서 영구히 막혔을 시나리오).
+    act(() => jest.advanceTimersByTime(DEDUP_RESET_COOLDOWN_MS));
+    mockedSync.mockResolvedValueOnce({ ok: false, status: 404 });
+    rerender({ station: '역삼' });
+    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+    await flushAsyncStorage();
+    // 쿨다운이 지났으므로 sync 성공 여부와 무관하게 재리셋된다 — 스톨 없음.
+    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(2);
+  });
+
+  it('#2699 sync 응답이 404가 아닌 실패(예: 500)면 dedup을 건드리지 않는다 — trip 손실 신호가 아니므로', async () => {
+    mockedSync.mockResolvedValueOnce({ ok: false, status: 500 });
+    renderHook(() =>
+      useBoardingLockSync({
+        currentStationName: '강남',
+        accuracyMeters: 10,
+        tripActive: true,
+      }),
+    );
+    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+    await flushAsyncStorage();
+    expect(mockedSync).toHaveBeenCalledTimes(1);
+    expect(mockedResetAlarmBackendDedup).not.toHaveBeenCalled();
+  });
+
+  it('#2699 sync 성공(ok:true)이면 dedup을 건드리지 않는다', async () => {
+    renderHook(() =>
+      useBoardingLockSync({
+        currentStationName: '강남',
+        accuracyMeters: 10,
+        tripActive: true,
+      }),
+    );
+    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
+    await flushAsyncStorage();
+    expect(mockedSync).toHaveBeenCalledTimes(1);
+    expect(mockedResetAlarmBackendDedup).not.toHaveBeenCalled();
   });
 
   it('debounce 안에서 station 다시 바뀌면 timer reset → 1회만 발사', async () => {

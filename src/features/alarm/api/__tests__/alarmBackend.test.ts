@@ -12,6 +12,7 @@ import {
 import type { RegisterTripPayload } from '../alarmBackend';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../../shared/constants/storageKeys';
+import { ETA_POLLING_WINDOW_SEC } from '../../../../shared/constants/eta';
 
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -31,6 +32,7 @@ const SAMPLE_PAYLOAD: RegisterTripPayload = {
   destination: '0228',
   waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
   alarmAtEpochMs: NOW + 60000,
+  etaWithinPollingWindow: true,
   createdAt: NOW,
   expiresAt: NOW + 1000,
   apnsEnv: 'sandbox',
@@ -93,6 +95,7 @@ describe('alarmBackend', () => {
         destination: '0228',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
         alarmAtEpochMs: NOW,
+        etaWithinPollingWindow: true,
         apnsEnv: 'sandbox',
       };
       await registerActiveTrip(payload);
@@ -194,7 +197,7 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
-      it('alarmAtEpochMs가 60초 버킷 내 jitter 면 dedup된다', async () => {
+      it('alarmAtEpochMs jitter는 dedup된다 (#2699 — hash 자체가 이 필드를 더 이상 보지 않음)', async () => {
         await registerActiveTrip(SAMPLE_PAYLOAD);
         const jitter = await registerActiveTrip({
           ...SAMPLE_PAYLOAD,
@@ -204,13 +207,56 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
-      it('alarmAtEpochMs가 다른 버킷으로 넘어가면 재등록된다', async () => {
+      // #2699 — 과거에는 alarmAtEpochMs가 60s 버킷(ALARM_TIME_BUCKET_MS)을 넘어가면 hash가
+      // 갱신되어 재등록됐다. 이 버킷은 register 호출 시점의 시계(`now + ETA*1000`)에만
+      // 종속돼 트립 내용이 전혀 바뀌지 않아도 hash가 시간에 따라 계속 갱신되는 시간종속
+      // 오염이었다(RCA 9/21 "원인 확정" 코멘트 요구사항 2) — 완전히 제거했다. 정확한 발사
+      // 시각은 backend cron이 reschedule로 자체 보정하므로 hash에 남길 필요가 없다.
+      it('#2699 alarmAtEpochMs만 바뀌어도(시간종속) 재등록되지 않는다 — 시간 버킷 오염 제거', async () => {
         await registerActiveTrip(SAMPLE_PAYLOAD);
         const next = await registerActiveTrip({
           ...SAMPLE_PAYLOAD,
           alarmAtEpochMs: SAMPLE_PAYLOAD.alarmAtEpochMs + 120_000,
         });
-        expect(next).toEqual({ ok: true, status: 200 });
+        expect(next).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2 red) — 구버전은 여기서 `alarmAtEpochMs`를
+      // `Date.now()`와 비교해 `etaWithinPollingWindow`를 **직접 재계산**했다. device
+      // (`useApnsTripRegistration.ts`)는 ETA가 null(폴링 갭)이 되면 sticky하게 직전 확정값을
+      // 유지하지만, 그 시점에 다른 dep으로 register가 트리거되면 `alarmAtEpochMs =
+      // deriveAlarmAtEpochMs(null, now) = now`로 붕괴한다 — backend가 `alarmAtEpochMs -
+      // Date.now() <= threshold`로 재계산했다면 이는 항상 참(0 <= threshold)이라 device의
+      // sticky 판단(false일 수 있음)과 정반대로 뒤집혔을 것이다. 이 테스트는 `alarmAtEpochMs`가
+      // "즉시"로 붕괴해도(collapsed), 명시 전달된 `etaWithinPollingWindow: false`가 그대로
+      // 유지되면(재계산되지 않으면) dedup이 여전히 적용됨을 검증한다 — 재계산했다면 hash가
+      // 갈라져 이 두 번째 호출이 실제로 fetch를 냈을 것이다(트리거 판단과 dedup 키 불일치).
+      it('#2699 alarmAtEpochMs가 "즉시"로 붕괴해도(ETA null 시뮬) etaWithinPollingWindow가 그대로면 dedup된다 (hash가 alarmAtEpochMs로 재계산하지 않음)', async () => {
+        // 첫 호출은 폴링 윈도우(5분) 훨씬 밖 — 구버전이었다면 여기서 내부적으로 false를
+        // 도출했을 값이다.
+        await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          alarmAtEpochMs: Date.now() + (ETA_POLLING_WINDOW_SEC + 300) * 1000,
+          etaWithinPollingWindow: false,
+        });
+        const collapsed = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          alarmAtEpochMs: Date.now(), // ETA null 순간의 deriveAlarmAtEpochMs(null, now) 시뮬 —
+          // 구버전이었다면 `0 <= threshold`가 참이라 내부적으로 true로 뒤집혔을 값이다.
+          etaWithinPollingWindow: false, // device sticky 판단은 안 바뀜(직전 확정값 유지).
+        });
+        expect(collapsed).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('#2699 etaWithinPollingWindow 값 자체가 바뀌면(alarmAtEpochMs는 동일해도) 재등록된다', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, etaWithinPollingWindow: false });
+        const flipped = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          etaWithinPollingWindow: true, // 동일 alarmAtEpochMs, device 판단만 바뀜.
+        });
+        expect(flipped).toEqual({ ok: true, status: 200 });
         expect(global.fetch).toHaveBeenCalledTimes(2);
       });
 
@@ -265,7 +311,9 @@ describe('alarmBackend', () => {
         expect(body).not.toHaveProperty('boardingLock');
       });
 
-      // #903 (Seam G) — subsurface 동봉
+      // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2, 재정정) — subsurface는 device의
+      // flap-quarantine을 거친 confirmed 값 하나만 쓴다(raw/confirmed 이중 필드 설계는
+      // raw가 스스로 register를 트리거하지 못해 명분이 성립하지 않아 되돌렸다).
       it('subsurface=true 송신 + 토글 변경 시 재등록', async () => {
         const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, subsurface: true });
         expect(first.ok).toBe(true);

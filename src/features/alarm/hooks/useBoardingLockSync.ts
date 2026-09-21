@@ -39,6 +39,7 @@ import { useEffect, useRef, type MutableRefObject } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { syncBoardingLock } from '../../nearest-station/api/boardingLockSync';
+import { resetAlarmBackendDedup } from '../api/alarmBackend';
 import { getStationById } from '../../../shared/utils/stationRoute';
 import {
   isPendingTrainCode,
@@ -498,6 +499,32 @@ async function retryLockIdentity(
   );
 }
 
+// #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 3) — 404 self-heal churn 가드.
+//
+// 지속 장애(backend가 계속 trip을 못 찾는 상태)에서 station-change마다 매번
+// resetAlarmBackendDedup을 호출하면, 다음 register 시도가 매번 dedup skip을 우회해 실제
+// fetch를 낸다 — 이미 죽어가는 backend에 sync 호출당 register POST 1건씩이 추가로 쏟아진다.
+//
+// 2라운드 버전은 "같은 token에 대해 sync가 성공할 때까지 재리셋 금지"(token latch)였으나,
+// 리뷰 3라운드에서 스톨 위험이 지적됐다: 404 → (dedup 리셋으로) register 성공 → 하지만
+// **sync**는 여러 이유(예: KV 전파 지연, 좋은 fix 부재)로 독립적으로 계속 404를 낼 수 있다 —
+// 그러면 latch가 "sync 성공"을 영영 못 보고 걸려 있는 채, 그 **사이에 발생한 완전히 별개의
+// 진짜 2차 trip 손실**까지 리셋을 못 받아 trip이 영구 사망한다. register 성공 자체는 이
+// 파일에서 관측할 수 없다(`useApnsTripRegistration`이 별도 모듈).
+//
+// 3라운드는 latch를 **시간 기반 쿨다운**으로 바꾼다 — "같은 token" 여부와 무관하게, 마지막
+// 리셋으로부터 `DEDUP_RESET_COOLDOWN_MS`가 지나면 다음 404가 무조건 새로 리셋할 수 있다.
+// 지속 장애 동안의 churn은 여전히 쿨다운 간격으로 유계이고(무제한 아님), 진짜 2차 손실
+// 에피소드도 외부 신호(sync 성공) 없이 스스로 최대 쿨다운만큼만 기다리면 복구된다 — "영구
+// 스톨"이 구조적으로 불가능하다(red: "404→성공register→재404 → 두 번째도 리셋되어 실 POST").
+export const DEDUP_RESET_COOLDOWN_MS = 60_000;
+let lastDedupResetAt = 0;
+
+/** 테스트용 — 404 self-heal churn 가드 상태 초기화. */
+export function __resetFireSync404GuardForTests(): void {
+  lastDedupResetAt = 0;
+}
+
 /**
  * AsyncStorage에서 token을 읽어 syncBoardingLock 호출. token/trip 부재는 graceful no-op(null 반환).
  * 정정 자체(currentWaypoint)는 cron silent push 경로가 별도로 client store를 mutate한다.
@@ -529,5 +556,33 @@ async function fireSync(
     currentWaypoint: res.currentWaypoint ?? null,
     ok: res.ok,
   });
+  // #2699 (리뷰 지적, PR #2789 — "각도 C" 최우선) — 404(trip_not_found) 명시 복구 wire.
+  //
+  // 이 파일 상단 함수 docstring이 오래전부터 "404 → 클라는 useApnsTripRegistration이 다음
+  // cycle에 재등록"이라고 문서화했지만, 실제로는 그 재등록을 가능케 하는 **명시 코드가 이
+  // 저장소 어디에도 없었다**. 지금까지 이 문장이 우연히 맞아떨어진 유일한 이유는
+  // alarmBackend.ts의 register dedup hash에 `alarmBucket`(now+ETA 유래, ≤60s마다 회전)이
+  // 섞여 있어서였다 — 그 필드가 매 register 시도의 hash를 주기적으로 갈아치워, 디바이스가
+  // 아무것도 모른 채로도 다음 register 시도가 우연히 hash-mismatch로 통과해 실제 fetch가
+  // 나갔다. #2699가 그 시간종속 오염을 제거하면서(alarmBackend.ts buildRegisterHash 참고)
+  // 이 "우연한 복구"도 함께 사라진다 — backend가 trip을 잃어도(TTL 2h 만료, KV eviction,
+  // 지하 구간에서 trip-ended silent push 미도달 등) lastRegisteredHash는 그대로 남아
+  // 이후 모든 register 시도가 네트워크 호출 없이 `{ok:true, skipped:true}`로 조용히
+  // 통과한다 — 남은 라이드 전체가 알람 0건으로 죽는데 device는 "등록 정상"으로 오인한다.
+  //
+  // 이제 이 문서화된 계약을 명시 코드로 만든다: sync가 404를 받으면 dedup 상태
+  // (`lastRegisteredHash` + in-flight Map)를 즉시 초기화한다. 이러면 다음에 어떤 경로로든
+  // registerActiveTrip이 호출될 때(메인 effect 재실행, token-refresh, context-heal, lock
+  // 변경 등 — 반드시 즉시일 필요는 없다, 원 문서가 약속한 "다음 cycle"과 동일 계약) hash가
+  // 더 이상 stale 값과 일치하지 않아 실제 fetch가 나가고, backend가 trip을 재생성할 기회를
+  // 얻는다. #2699의 alarmBucket 제거가 안전해지는 전제조건.
+  //
+  // #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 3) — 지속 장애 churn 가드(쿨다운 기반,
+  // 위 DEDUP_RESET_COOLDOWN_MS 주석 참고). 마지막 리셋으로부터 쿨다운이 지나지 않았으면
+  // 재리셋하지 않는다 — token 성공 여부에 의존하지 않으므로 스톨 위험이 없다.
+  if (res.status === 404 && Date.now() - lastDedupResetAt >= DEDUP_RESET_COOLDOWN_MS) {
+    lastDedupResetAt = Date.now();
+    void resetAlarmBackendDedup();
+  }
   return res;
 }

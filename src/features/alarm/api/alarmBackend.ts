@@ -54,6 +54,17 @@ export interface RegisterTripPayload {
   expiresAt?: number;
   /** epoch ms — 알람 발사 예상 시각 (5분 윈도우 진입 판정용) */
   alarmAtEpochMs: number;
+  /**
+   * #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — device(`useApnsTripRegistration`)가 유일한
+   * 소스로 계산한 값을 그대로 전달받는다. **hash 계산 전용 입력**(body에는 직렬화되지 않는다 —
+   * `alarmAtEpochMs`가 이미 backend에 필요한 정밀 값을 담고 있다). `buildRegisterHash`가
+   * `alarmAtEpochMs - Date.now()`로 재계산하지 않는 이유: device의 sticky 계산(ETA가 null인
+   * 폴링 갭에는 직전 확정값 유지, `useApnsTripRegistration.ts` 참고)과 backend가
+   * `alarmAtEpochMs`로부터 재도출하는 계산이 서로 다른 공식이라 경계에서 어긋날 수 있다 —
+   * "이 전환이 register를 트리거했는가"(device 판단)와 "이 전환이 dedup 키를 바꿨는가"
+   * (backend 판단)가 항상 일치해야 한다(리뷰 재지적).
+   */
+  etaWithinPollingWindow: boolean;
   /** APNs 토큰 환경 — backend가 sandbox/production host를 선택. */
   apnsEnv: ApnsEnv;
   /**
@@ -83,10 +94,21 @@ export interface RegisterTripPayload {
     line: string;
   };
   /**
-   * #903 (Seam G) — 등록 시점 기압계가 지하 진입을 시사하는가.
-   * true면 backend가 consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival
-   * 누락에 더 인내한다(지하 dead zone일 때 trainCode 추적이 자주 끊김).
-   * false/미설정은 기존 동작 그대로 — 기압계 미지원/권한 거절 환경 graceful.
+   * #903 (Seam G) — 등록 시점 기압계가 지하 진입을 시사하는가. 원래는 backend
+   * consecutiveEtaMissing threshold를 5→10으로 늘리는 결정 입력이었으나, #2644에서 그
+   * threshold 판단이 stations.json 기반으로 이관돼 이 필드는 이제 backend
+   * `Trip.subsurface`에 저장되는 **관측/모니터링 전용** 값이다("기압계 회복 모니터링",
+   * backend types.ts:369).
+   *
+   * #2699 (리뷰 지적, PR #2789 "각도 C" 항목 2, 재정정) — device의 flap-quarantine을 거친
+   * **confirmed** 값을 보낸다. 한때 raw(관측용)/confirmed(dedup 전용)를 별도 필드로 분리했으나,
+   * raw는 스스로 register를 트리거하지도 dedup 키에 관여하지도 않아 실제로는 "다른 dep이
+   * 우연히 register를 쏜 순간의 임의 raw 스냅샷"일 뿐이었다 — "raw를 POST에 실어 flapping을
+   * trips 채널에서 관측"이라는 원래 명분이 성립하지 않았다(리뷰 재지적). raw 자체의 flap
+   * 패턴을 보고 싶으면 이 필드가 아니라 device 쪽 `logSubsurfaceRegisterTransition`(alarmLog
+   * source='subsurface-register-confirmed')을 참조한다 — 확정 전환마다 1건씩 적재되므로
+   * "얼마나 자주 flap이 확정으로 이어지는지"는 그쪽에서 이미 관측 가능하다. false/미설정은
+   * 필드 미송신(graceful).
    */
   subsurface?: boolean;
   /**
@@ -199,14 +221,33 @@ export interface AlarmBackendResult {
 const DEFAULT_TRIP_TTL_MS = 2 * 60 * 60 * 1000;
 /** fetch 타임아웃 — 백엔드 응답 지연으로 알람 등록이 차단되지 않도록 짧게 유지. */
 const REQUEST_TIMEOUT_MS = 5000;
-/**
- * register dedup 시 `alarmAtEpochMs`를 묶는 버킷(ms).
- *
- * `alarmAtEpochMs = now + ETA*1000`이므로 Open API ETA가 30~60초 단위로 흔들리면
- * 매 GPS 폴링마다 다른 값이 된다. 버킷 단위(60s)로 떨어뜨려 동일 트립의 잔jitter를
- * 흡수한다. 정확한 발사 시각은 백엔드 cron이 reschedule로 자체 보정한다.
- */
-const ALARM_TIME_BUCKET_MS = 60 * 1000;
+// #2699 — 과거 register dedup hash는 `alarmAtEpochMs`를 60s 버킷(`ALARM_TIME_BUCKET_MS`)으로
+// 묶어 `alarmBucket` 필드로 포함했다. `alarmAtEpochMs = now + ETA*1000`이므로 이 값은 register가
+// 호출되는 매 순간의 시계 자체에 종속돼 최소 60s마다 hash가 바뀐다 — 트립 내용이 전혀 바뀌지
+// 않아도 "동일 페이로드"를 dedup이 더 이상 잡아내지 못하는 시간종속 오염이었다(RCA 9/21
+// "원인 확정" 코멘트 요구사항 2). 완전히 제거한다(buildRegisterHash 참고).
+//
+// #2699 (리뷰 지적, "각도 C" 항목 4) — 제거해도 무해한 이유를 "백엔드 cron이 reschedule로
+// 자체 보정한다"라고 서술했었는데 부정확했다: backend는 `trip.alarmAtEpochMs`를 스스로
+// 재기록(reschedule)하지 않는다 — 저장된 값은 device가 마지막으로 register한 시점 그대로
+// 고정된다. 이 필드의 유일한 backend 소비처는 `scheduled.ts`의 one-shot 윈도우 진입 게이트
+// (`trip.alarmAtEpochMs - now > POLLING_WINDOW_MS`)뿐이며, 게이트를 한 번 통과한 뒤의 실제
+// 발사 판정은 매 cron cycle의 Seoul API 실시간 ETA로 별도 이뤄진다 — alarmAtEpochMs 자체는
+// 그 판정에 관여하지 않는다. 값이 device 재등록 없이 과거에 동결되더라도, `now`는 계속
+// 흐르므로 `alarmAtEpochMs - now`는 시간이 지날수록 더 음수가 될 뿐이라 이 게이트는 자연히
+// 열린 채로 유지된다(backend `scheduled.test.ts` "#2699 alarmAtEpochMs가 동결(먼 과거)돼도
+// 폴링 게이트는 자연히 열려 있다" 테스트로 고정) — 동결이 무해함은 "cron이 보정해서"가 아니라
+// "게이트가 편도(one-directional)라서"다.
+//
+// #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 2) — 단, **미래 방향**은 위 분석이 놓쳤다.
+// ETA>5분에 첫 register하면 `alarmAtEpochMs`가 미래 5분+로 동결된다 — 이후 실제 ETA가
+// 줄어도(예: 8분→2분) 재등록 트리거가 없으므로(`nextStationEtaSeconds` 자체는 #703로 deps
+// 제외) 폴링 게이트가 **실제 ETA보다 늦게** 열린다. 구 `alarmBucket`이 ≤60s마다 우연히 hash를
+// 갈아치우던 부수효과가 이 지연을 가려왔다. 고친 값: `alarmAtEpochMs` 원본을 hash에 다시
+// 넣는 대신(그러면 alarmBucket 문제가 재발한다), "ETA가 폴링 윈도우 경계를 실제로 넘었는가"만
+// 보는 거친 boolean(`etaWithinPollingWindow`, 아래 `buildRegisterHash` 참고)을 hash에
+// 반영한다 — trip당 사실상 최대 1회만 바뀌므로 시간종속 churn 없이, 게이트가 실제로 열려야
+// 하는 순간에는 반드시 재등록을 통과시킨다.
 
 /**
  * 마지막으로 백엔드에 성공적으로 등록된 트립 페이로드의 해시.
@@ -235,8 +276,14 @@ function buildRegisterHash(body: {
   route: NonNullable<Route>;
   destination: string;
   waypoints: AlarmWaypoint[];
-  alarmAtEpochMs: number;
   apnsEnv: ApnsEnv;
+  /**
+   * #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — device가 유일한 소스로 계산한 값을 그대로
+   * 받는다. 여기서 `alarmAtEpochMs`로부터 **재계산하지 않는다** — 재계산하면 device의 sticky
+   * 계산(ETA null 폴링 갭에는 직전 확정값 유지)과 서로 다른 공식이 되어 경계에서 어긋날 수
+   * 있다(리뷰 재지적, `RegisterTripPayload.etaWithinPollingWindow` 주석 참고).
+   */
+  etaWithinPollingWindow: boolean;
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
@@ -245,21 +292,45 @@ function buildRegisterHash(body: {
   boardingCommitted?: boolean;
   sleepModeEnabled?: boolean;
 }): string {
+  // #2699 (요구사항 2, RCA "원인 확정" 코멘트) — 필드별 hash 포함 여부 재검토 결과:
+  //   - alarmBucket(제거됨): `alarmAtEpochMs` 유래 — register가 호출되는 매 순간의 시계에
+  //     종속돼 트립 내용이 전혀 안 바뀌어도 60s마다 hash가 갱신되는 시간종속 오염이었다.
+  //     완전히 제거 — 위 ALARM_TIME_BUCKET_MS 삭제 주석 참고.
+  //   - etaWithinPollingWindow(재도입, 3라운드 리뷰 — 항목 2; 4라운드에서 device 단일 소스로
+  //     정정): "backend 폴링 윈도우 경계를 넘었는가"만 보는 거친 boolean. ETA>5분 상태에서 첫
+  //     register한 뒤 alarmAtEpochMs가 미래에 동결돼도, 실제 ETA가 그 경계 밑으로 줄어드는
+  //     순간에는 이 값이 뒤집혀 재등록이 통과한다 — trip당 사실상 최대 1회만 바뀌므로
+  //     alarmBucket과 달리 시간종속 churn을 만들지 않는다. 4라운드 리뷰 전에는 여기서
+  //     `alarmAtEpochMs - Date.now()`로 재계산했으나, device(`useApnsTripRegistration.ts`)가
+  //     이미 이 값을 계산하고(sticky ETA null 처리 포함) 있어 두 곳이 서로 다른 공식으로
+  //     각자 계산하면 경계에서 어긋날 수 있었다(리뷰 재지적) — 이제 device가 넘긴 값을 그대로
+  //     쓴다(`RegisterTripPayload.etaWithinPollingWindow` 주석).
+  //   - waypoints / promptDisplayKey(유지): 둘 다 `currentStation` 파생이지만, 이 값은
+  //     의도적으로(#703) register effect의 deps에서 제외돼 있어 **effect 자체의 재실행
+  //     빈도**에는 영향을 주지 않는다 — 영향 범위는 이미 발사가 결정된 순간의 페이로드
+  //     내용뿐이다. 그리고 그 순간에도 currentStation 전환에 따른 갱신은 context-heal
+  //     (Tier 1/2, `useApnsTripRegistration.ts`)이 **의도적으로** 새 waypoints/promptDisplay를
+  //     실어 재전송하려는 경로다 — 여기서 두 필드를 hash에서 빼면 heal POST가 직전 register와
+  //     우연히 다른 필드(route/destination/apnsEnv 등)만 같을 때 hash가 일치해 조용히
+  //     skip되어 heal 자체가 무력화된다(진짜 필요한 재등록을 죽이지 말 것 — 이슈 요구사항 3).
+  //     반면 raw `subsurface`가 만들던 실제 폭주(29~37회/trip)는 이 hash가 아니라 register
+  //     effect deps 자체(dwell 게이트로 해결, `useApnsTripRegistration.ts`)가 원인이었다.
   return JSON.stringify({
     token: body.token,
     route: body.route,
     destination: body.destination,
     waypoints: body.waypoints,
-    alarmBucket: Math.floor(body.alarmAtEpochMs / ALARM_TIME_BUCKET_MS),
     apnsEnv: body.apnsEnv,
+    etaWithinPollingWindow: body.etaWithinPollingWindow,
     // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
     // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
     // 게이트 평가 시점에 KV series로 자체 계산하니 영향 없음.
     promptDisplayKey: body.promptDisplay
       ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
       : null,
-    // #903 (Seam G) — subsurface 토글이 바뀌면 backend threshold가 즉시 갱신되도록 dedup 키 포함.
-    // 빈번한 ON/OFF jitter는 useBarometer의 60s 윈도우 평가가 자체 흡수하므로 폭주 위험 낮음.
+    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2, 재정정) — subsurface는 device의
+    // flap-quarantine을 거친 confirmed 값이므로(RegisterTripPayload 주석 참고) 그대로 hash에
+    // 써도 안전하다 — 경계 flapping 자체는 device 레이어에서 이미 흡수됐다.
     subsurface: body.subsurface === true,
     // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
     // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
@@ -452,8 +523,8 @@ export function registerActiveTrip(
     route: payload.route,
     destination: payload.destination,
     waypoints: payload.waypoints,
-    alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
+    etaWithinPollingWindow: payload.etaWithinPollingWindow,
     promptDisplay: payload.promptDisplay,
     subsurface: payload.subsurface,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
