@@ -116,6 +116,26 @@ cd backend/alarm-worker && npm run deploy          # backend cron worker → sub
 - 배포 전 config 해석만 확인하고 싶으면(실배포 없이): `cd backend/alarm-worker && npx wrangler deploy --dry-run --config wrangler.toml` — 바인딩 7종(KV×4/D1/R2/DO)이 나오면 정상, `No bindings found`면 config 하이재킹.
 - 배포 결과 재확인: `cd backend/alarm-worker && npx wrangler deployments list --config wrangler.toml` (최신 항목의 날짜/author 확인).
 
+### D1 마이그레이션 운영 절차 (#2783)
+
+`trip_metrics` 테이블은 `backend/alarm-worker/src/db/schema.ts`(Drizzle ORM 엔티티)가 SSoT다. write 경로(`d1TripMetrics.ts`)는 이 엔티티만 거친다 — raw SQL INSERT/UPDATE 재발은 `src/__tests__/noRawSqlGuard.test.ts`가 CI에서 차단한다.
+
+**절대 bare `wrangler d1 migrations apply`를 직접 실행하지 않는다** — #2698과 동일한 이유(상위 루트 `wrangler.jsonc` 하이재킹 위험)로 반드시 `--config` 명시 npm 스크립트로만 적용한다.
+
+```bash
+cd backend/alarm-worker
+npm run db:migrate:local     # 로컬 D1(.wrangler/state)에 미적용 migrations/*.sql 적용 + 검증
+npm run db:migrate:remote    # 프로덕션 D1에 적용
+```
+
+스키마 변경 절차:
+1. `src/db/schema.ts`를 손으로 수정(컬럼 추가/제거).
+2. 대응하는 `migrations/NNNN_설명.sql`을 손으로 작성(`0007_trip_metrics_drop_unfilled_columns.sql`이 예시) — 기존 데이터가 있는 테이블은 `ALTER TABLE`로, 컬럼 삭제 근거는 마이그레이션 파일 주석에 남긴다.
+3. `npm run db:migrate:local`로 로컬 검증 후 `npm run db:migrate:remote`로 적용.
+4. `src/db/__tests__/schema.test.ts`의 기대 컬럼 목록을 갱신 — drift 감지 테스트가 엔티티와 실제 DDL의 불일치를 잡는다.
+
+**알려진 갭**: `drizzle-kit generate`(스키마 diff 자동 마이그레이션 생성)는 아직 채택하지 않았다 — 기존 0001~0007이 손으로 작성돼 drizzle-kit 자체 journal이 없고, journal 없이 `generate`를 돌리면 이미 존재하는 테이블에 대해 처음부터 `CREATE TABLE`을 다시 만들어내 프로덕션과 충돌한다. 상세 근거는 `backend/alarm-worker/drizzle.config.ts` 헤더 주석 참고 — journal 부트스트랩이 별도로 검증되기 전까지는 위 수동 절차를 따른다.
+
 ### 버전/빌드 번호 관리 정책
 
 | 값 | 의미 | 출처 (SSOT) | 변경 방법 |

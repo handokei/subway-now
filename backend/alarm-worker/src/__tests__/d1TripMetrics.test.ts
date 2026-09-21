@@ -17,19 +17,29 @@ import { makeTripFixture } from './helpers/testFixtures';
 function makeRoutingMockDb(
   options: {
     sentCount?: number;
+    // #2783 — suppressed_count 집계(outcome='skipped-reason') 전용 mock count. sentCount와
+    // 별도 SQL 텍스트(outcome 리터럴)로 라우팅된다.
+    skippedCount?: number;
     selectThrows?: boolean;
     insertThrows?: boolean;
     onInsertBind?: (args: unknown[]) => void;
   } = {},
 ): D1Database {
-  const { sentCount = 0, selectThrows = false, insertThrows = false, onInsertBind } = options;
+  const {
+    sentCount = 0,
+    skippedCount = 0,
+    selectThrows = false,
+    insertThrows = false,
+    onInsertBind,
+  } = options;
   const prepare = vi.fn().mockImplementation((sql: string) => {
     if (sql.includes('SELECT COUNT')) {
+      const count = sql.includes("outcome') = 'skipped-reason'") ? skippedCount : sentCount;
       return {
         bind: vi.fn().mockReturnValue({
           first: selectThrows
             ? vi.fn().mockRejectedValue(new Error('D1 select error'))
-            : vi.fn().mockResolvedValue({ count: sentCount }),
+            : vi.fn().mockResolvedValue({ count }),
         }),
       };
     }
@@ -64,6 +74,50 @@ function makeRoutingMockDbCapturing(
 describe('recordTripMetrics (#1835)', () => {
   const NOW = 1_700_000_000_000;
 
+  // #2783 — 기록 동작 불변 회귀(이 PR의 핵심 안전장치). Drizzle 엔티티 전환 전후로 기존
+  // 13개 컬럼의 값이 정확히 동일해야 한다(suppressed_count만 하드코딩 0 -> 실값으로 의도적
+  // 변경 — 요구사항 3). 하나의 canonical trip fixture에 대한 INSERT bind 인자 13개 전체를
+  // 고정값으로 assert해 개별 컬럼 테스트가 놓칠 수 있는 순서/누락 회귀까지 잡는다.
+  it('canonical trip 기록 시 13개 컬럼 값이 전부 고정 스냅샷과 일치한다(리팩터 불변 회귀)', async () => {
+    const trip = makeTripFixture({
+      token: 'tok-snapshot',
+      createdAt: NOW - 600_000,
+      originStationName: '역삼',
+      destination: '선릉',
+      route: { type: 'direct', line: '2', stops: 3 },
+      boardingLock: {
+        trainCode: '1234',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['역삼', '선릉'],
+        expiresAt: NOW + 3600_000,
+      },
+      lockEverAttached: true,
+      boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 },
+      boardingPromptResponded: true,
+    });
+    const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 5, skippedCount: 2 });
+
+    await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+    expect(insertArgs()).toEqual([
+      expect.any(String), // [0] trip_token_hash — 해시값(비결정 salt 무관), 존재만 확인
+      NOW - 600_000, // [1] started_at
+      NOW, // [2] ended_at
+      'destination-arrived', // [3] end_reason
+      '역삼', // [4] origin_station
+      '선릉', // [5] destination_station
+      '["2"]', // [6] line_list
+      5, // [7] fired_count
+      2, // [8] suppressed_count — #2783: 하드코딩 0 -> 실값(skipped-reason COUNT)
+      1, // [9] boarding_prompt_displayed
+      1, // [10] boarding_prompt_responded
+      1, // [11] lock_attached
+      1, // [12] chain_complete
+    ]);
+  });
+
   it('db가 undefined일 때 no-op (graceful)', async () => {
     const trip = makeTripFixture();
     await expect(
@@ -71,13 +125,15 @@ describe('recordTripMetrics (#1835)', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('db가 있을 때 trip_metrics INSERT를 실행한다', async () => {
+  it('db가 있을 때 trip_metrics INSERT(Drizzle, #2783)를 실행한다', async () => {
     const { db } = makeRoutingMockDbCapturing();
     const trip = makeTripFixture();
     await recordTripMetrics(db, trip, 'destination-arrived', NOW);
 
+    // #2783 — raw SQL "INSERT OR IGNORE"에서 Drizzle 엔티티(tripMetrics) 기반
+    // `insert(...).onConflictDoNothing()`로 전환. 생성된 SQL 텍스트로 전환을 확인한다.
     expect(db.prepare).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT OR IGNORE INTO trip_metrics'),
+      expect.stringMatching(/insert into "trip_metrics".*on conflict do nothing/),
     );
   });
 
@@ -252,6 +308,51 @@ describe('recordTripMetrics (#1835)', () => {
       await recordTripMetrics(db, trip, 'destination-arrived', NOW);
 
       expect(insertArgs()[7]).toBe(0);
+    });
+  });
+
+  // #2783 (red② — TDD) — suppressed_count는 그동안 하드코딩 0("동상")이었다. countSentFireAttempts
+  // 와 동일 패턴(D1 trip_events, kind='cron-fire-attempt')으로 outcome='skipped-reason' 건수를
+  // 직접 COUNT해야 한다. 아래 두 테스트는 리팩터 전(hardcoded 0) 코드에서 반드시 실패한다 —
+  // "값이 0이 아니기만 하면 통과"가 아니라 "그 값이 skipped-reason 건수와 정확히 일치"를 assert.
+  describe('suppressed_count 집계 — D1 trip_events 소스 (#2783)', () => {
+    it('D1 cron-fire-attempt skipped-reason 3건이면 suppressed_count=3으로 적재된다', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 1, skippedCount: 3 });
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      // suppressed_count = 9번째 bind 인자 (positional index 8, 0-based) — INSERT 컬럼 순서 기준.
+      expect(insertArgs()[8]).toBe(3);
+    });
+
+    it('D1에 skipped-reason 이벤트가 없으면 suppressed_count=0 이다', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 5, skippedCount: 0 });
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      expect(insertArgs()[8]).toBe(0);
+    });
+
+    it('suppressed_count 조회 실패는 swallow하고 0으로 안전 degrade한다(INSERT 흐름 차단 없음)', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ selectThrows: true });
+      const trip = makeTripFixture();
+
+      await expect(
+        recordTripMetrics(db, trip, 'destination-arrived', NOW),
+      ).resolves.toBeUndefined();
+      expect(insertArgs()[8]).toBe(0);
+    });
+
+    it('fired_count(sent)와 suppressed_count(skipped-reason)는 서로 다른 count로 독립 집계된다', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 4, skippedCount: 2 });
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      expect(insertArgs()[7]).toBe(4); // fired_count
+      expect(insertArgs()[8]).toBe(2); // suppressed_count
     });
   });
 
