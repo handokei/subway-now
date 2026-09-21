@@ -522,6 +522,31 @@ describe('useBoardingLockController', () => {
         expect(mockSetBoardingLock).not.toHaveBeenCalled();
       });
 
+      // #2786 리뷰(항목 5) — allowedLines 차단은 createLockFromTrain의 초기 early-return이라
+      // isDuplicateBoardingLock에 닿지도 못한다. PENDING lock이 활성 중이면(#2786 fix로
+      // lockedTrainCode가 PENDING sentinel일 때 BoardingTrainList의 정정 effect가 no-op하므로)
+      // 부모(HomeScreen)가 이 반환값으로 즉시 pending 리셋 + 토스트 피드백을 줄 수 있어야
+      // PENDING_TIMEOUT(5s) 무피드백 침묵을 피한다.
+      it('#2786 리뷰 — allowedLines 차단 탭은 createLockFromTrain이 \'off-route\'를 반환한다', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        let returned: unknown;
+        await act(async () => {
+          returned = result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+        });
+        expect(returned).toBe('off-route');
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('#2786 리뷰 — allowedLines 통과(허용 line) 탭은 createLockFromTrain이 undefined를 반환한다', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        let returned: unknown;
+        await act(async () => {
+          returned = result.current.createLockFromTrain(makeTrain({ trainCode: 'T-2', line: '2' }));
+        });
+        expect(returned).toBeUndefined();
+        expect(mockSetBoardingLock).toHaveBeenCalled();
+      });
+
       it('transfer route(2↔5, 왕십리) 다중 line 환승역에서 양쪽 line 모두 허용', async () => {
         const transferRoute = makeTransferRoute({
           transferName: '왕십리',
