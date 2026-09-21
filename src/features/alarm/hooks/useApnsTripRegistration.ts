@@ -90,6 +90,22 @@ export interface UseApnsTripRegistrationInputs {
    */
   subsurface?: boolean;
   /**
+   * #2699 (리뷰 지적, PR #2789 "각도 A" 항목 1) — `useBarometer().lastEvaluatedAt` liveness
+   * heartbeat. barometer가 실제로 새 reading을 처리할 때만 전진(BG suspend 중엔 멈춤).
+   *
+   * 이 값이 필요한 이유: subsurface flap-quarantine이 "raw 값이 실제로 바뀌는 렌더에서만
+   * 재평가"하면, flap이 멈추고 값이 한 방향(예: true)에 정착해버리면 이후 아무 샘플도 안 와
+   * `subsurface` prop이 더 이상 안 바뀌어 quarantine 만료(그 값을 최종 확정할 시점)를 감지할
+   * 계기 자체가 없다 — confirmed가 옛 값에 영구 고착된다. 이 heartbeat를 effect deps에 추가해
+   * quarantine 만료도 "이벤트"로 만든다. 벽시계 setTimeout과 달리 **BG suspend 중에는 이
+   * 값 자체가 전진을 멈추므로 오확정 위험이 구조적으로 없다** — resume 후 첫 실제 barometer
+   * reading이 처리되는 순간에만 재평가가 일어난다.
+   *
+   * 미지정이면 quarantine 만료 재평가가 일어나지 않는다(기존 sample-only 동작으로 안전
+   * degrade — 테스트/구버전 호출자 호환).
+   */
+  subsurfaceTickAt?: number;
+  /**
    * #1923 — 사용자 명시 의향 토글 (boardingPrompt [탑승] 응답 / BoardingTrainList
    * 직접 탭 중 하나라도 행하면 true; "C 토글"이라는 별도 UI는 존재하지 않는다,
    * #1961 정정). `useUserIntentStore`에서 읽어 전달. backend가 lockless
@@ -181,17 +197,12 @@ interface RegisterCallInputs {
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
   /**
-   * #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2) — flap-quarantine을 거친 confirmed
-   * 값. dedup hash 키로만 쓰인다(RegisterTripPayload.subsurfaceDedupKey) — backend에 저장되는
-   * 관측값 자체는 `rawSubsurface`가 담당한다.
+   * #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2, 재정정) — flap-quarantine을 거친
+   * confirmed 값. backend body/dedup hash 둘 다 이 값 하나만 쓴다(RegisterTripPayload.subsurface
+   * 주석 참고 — raw/confirmed 이중 필드였던 이전 설계는 raw가 스스로 register를 트리거하지
+   * 못해 명분이 성립하지 않아 단순화했다).
    */
   subsurface: boolean;
-  /**
-   * #2699 (리뷰 지적, "각도 C" 항목 2) — 등록 시점 raw subsurface(flap-quarantine 미적용).
-   * backend Trip.subsurface(관측/모니터링 전용, #2644 이후)에 그대로 저장돼 flap 패턴 자체가
-   * POST /trips 채널에서도 보이게 한다.
-   */
-  rawSubsurface: boolean;
   /** #1923 — 사용자 명시 의향 토글. true면 backend lockless intermediate gate 활성. */
   infoModeEnabled: boolean;
   /** #2651 — boarding-prompt opt-in(안내 시작) 시그널. true면 backend boarding-prompt 발사 gate 활성. */
@@ -294,11 +305,9 @@ async function callRegister(
           promptDisplay: promptContext.promptDisplay,
         }
       : {}),
-    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2) — backend에 저장되는 관측값은 raw.
-    // dedup hash 키는 confirmed(subsurfaceDedupKey, flap-quarantine 통과분)로 별도 전달 —
-    // 둘 다 ON일 때만 송신(OFF/false는 필드 누락, graceful, backend default false).
-    ...(input.rawSubsurface ? { subsurface: true } : {}),
-    ...(input.subsurface ? { subsurfaceDedupKey: true } : {}),
+    // #903 (Seam G) — 기압계 subsurface(flap-quarantine 통과한 confirmed 값) ON일 때만 송신.
+    // OFF/false는 필드 누락(graceful).
+    ...(input.subsurface ? { subsurface: true } : {}),
     // #1895 — device locale (boarding-prompt push 본문 4언어 분기용). 미지원 locale은 송신 skip.
     ...(locale ? { locale } : {}),
     // #1923 — 사용자 명시 의향 토글 ON일 때만 송신. false/미설정은 필드 누락(graceful, backend는 false default).
@@ -325,6 +334,7 @@ export function useApnsTripRegistration({
   currentStation = null,
   boardingLock = null,
   subsurface = false,
+  subsurfaceTickAt,
   infoModeEnabled = false,
   promptOptIn = false,
   promptOptInHydrated = true,
@@ -341,80 +351,109 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
 
-  // #2699 (v2 재설계, PR #2789 리뷰) — subsurface flap-quarantine 게이트. useBarometer의 실제
-  // hysteresis(3s)만으로는 지하/지상 경계에서 raw subsurface가 4~13s 간격으로 반복 토글되고,
-  // 이 값을 그대로 register effect deps/payload에 흘리면 매 토글마다 POST /trips가 나가 18분
-  // trip에 29~37회 폭주했다(RCA 9/21 "원인 확정" 코멘트). `confirmedSubsurface`는 이 flap을
-  // 억제하면서도 진짜 단일 전환은 **지연 없이 즉시** 반영하는 파생 상태다 — register
+  // #2699 (v3 재설계, PR #2789 리뷰 2라운드) — subsurface flap-quarantine 게이트. useBarometer의
+  // 실제 hysteresis(3s)만으로는 지하/지상 경계에서 raw subsurface가 4~13s 간격으로 반복
+  // 토글되고, 이 값을 그대로 register effect deps/payload에 흘리면 매 토글마다 POST /trips가
+  // 나가 18분 trip에 29~37회 폭주했다(RCA 9/21 "원인 확정" 코멘트). `confirmedSubsurface`는
+  // 이 flap을 억제하면서도 진짜 단일 전환은 **지연 없이 즉시** 반영하는 파생 상태다 — register
   // 트리거/payload(main effect deps, latestInputsRef의 subsurface 슬롯)는 이 값만 본다.
   //
-  // 알고리즘(타이머 없음 — 오직 raw subsurface가 실제로 바뀌는 렌더에서만 동기 판단):
-  //   1) raw가 confirmed와 같으면 안정 상태 — 아무 것도 하지 않는다.
-  //   2) raw가 confirmed와 다르고, 직전 전환(또는 mount)으로부터 SUBSURFACE_FLAP_QUARANTINE_MS
-  //      가 지났으면 — "새로운, 되돌아오지 않을 것으로 간주하는" 전환. settled(quarantine
-  //      진입 직전 안정값 — 지금부터 되돌아올 경우 복귀할 baseline)를 **현재** confirmed 값으로
-  //      스냅샷한 뒤 confirmed를 즉시 raw로 갱신하고 quarantine을 새로 연다. 계측 로그 1건.
-  //   3) raw가 confirmed와 다르지만 quarantine 창 안이면 — 방금 있었던 전환이 flap이었다는
-  //      뜻이다. confirmed를 **raw가 아니라** settled(quarantine 진입 이전 baseline, 고정)로
-  //      되돌리고(취소) quarantine을 연장한다. **반드시 raw가 아니라 settled로 되돌려야 한다**
-  //      — raw를 그대로 채택하면 매 bounce마다 confirmed가 실제로 계속 바뀌어 register effect
-  //      deps를 계속 건드리는 원래 버그가 그대로 재현된다(구현 중 실제로 이 실수를 했었다 —
-  //      회귀 방지로 남긴다). settled로 되돌리면 두 번째 bounce부터는 confirmed가 이미
-  //      settled와 같아 React의 setState same-value bail-out으로 추가 재렌더/register 자체가
-  //      일어나지 않는다 — 로그도 남기지 않는다(취소는 "확정된 전환"이 아니다).
+  // v2 → v3 재설계 이유(리뷰 지적, PR #2789): v2는 "raw subsurface가 실제로 바뀌는 렌더에서만"
+  // 재평가했다. 이러면 다음 수렴 결함이 생긴다 — baseline=false → raw→true(quarantine 밖,
+  // 즉시 확정) → raw→false(quarantine 안, settled=false로 되돌림) → raw→true(quarantine 안,
+  // 되돌릴 값이 이미 confirmed와 같아 setState same-value bail-out — no-op) → raw가 true로
+  // 안정(진짜 지하 진입, 더 이상 안 바뀜). 이 시점부터 `subsurface` prop이 더 이상 변하지
+  // 않으므로 effect의 deps `[subsurface, confirmedSubsurface]`가 다시는 바뀌지 않아 quarantine
+  // "만료"를 감지할 계기 자체가 없다 — confirmed가 false에 영구 고착되고 register/Tier 2
+  // context가 지하를 영영 못 본다. "샘플 도착에만 반응"하는 설계가 quarantine 창 만료라는
+  // 이벤트를 원천적으로 못 받는 구조적 결함이다.
   //
-  // 한 flap episode(여러 번 왕복)당 register는 최대 2회(최초 낙관적 확정 1회 + 첫 되돌림 보정
-  // 1회)로 유계이며 이후 bounce는 setState same-value bail-out으로 추가 register를 만들지
-  // 않는다 — "즉시 확정"과 "0회"는 미래를 미리 알 수 없어 수학적으로 양립 불가하지만, 무계수
-  // (N=bounce 수) 폭주였던 원 버그를 상수로 바꾼다(상세 근거는 `SUBSURFACE_FLAP_QUARANTINE_MS`
-  // 주석).
+  // v3는 `subsurfaceTickAt`(useBarometer의 liveness heartbeat, barometer가 실제로 새 reading을
+  // 처리할 때만 전진)을 추가 deps로 받아 quarantine 만료도 "이벤트"로 만든다. 단순히 매 tick마다
+  // quarantine을 재연장하면(예: raw!=confirmed일 때마다 anchor를 매번 now로 갱신) quarantine이
+  // 영원히 안 끝나는 반대 방향 결함이 생기므로, **"raw 값 자체가 실제로 바뀐 tick"과 "raw 값은
+  // 그대로인 채 heartbeat만 온 tick"을 구분**한다(`lastProcessedSubsurfaceRef`) — anchor는
+  // 전자에서만 갱신되고, 후자는 오직 "이미 지난 anchor 대비 quarantine이 만료됐는가"만 재확인한다.
   //
-  // 타이머를 전혀 쓰지 않으므로 iOS BG suspend durability 문제(벽시계 setTimeout이 suspend 중
-  // 멈췄다가 resume 시 "관측 없는 경과"를 확정으로 오인하는 위험)가 구조적으로 사라진다 —
-  // 판단은 오직 barometer 샘플이 실제로 도착해 raw subsurface가 바뀌는 렌더에서만 일어난다.
+  // 벽시계 setTimeout과 근본적으로 다르다: BG suspend 중에는 barometer native listener도 함께
+  // 멈춰 `subsurfaceTickAt`(및 `subsurface`)이 전진하지 않는다 — 이 effect 자체가 실행되지
+  // 않으므로 "관측 없는 경과를 확정으로 오인"할 여지가 구조적으로 없다. resume 후 barometer가
+  // 첫 실제 reading을 처리하는 순간에만 재평가가 일어난다.
+  //
+  // 알고리즘 요약:
+  //   1) raw === confirmed → 안정 상태, 아무 것도 하지 않는다(pending 없음).
+  //   2) raw !== confirmed:
+  //      a) 이번 실행이 "raw 값 자체가 바뀐" 것이면(heartbeat 재확인이 아니라 진짜 새 샘플)
+  //         quarantine anchor를 항상 now로 갱신한다 — 새 불안정 증거이므로.
+  //      b) anchor로부터 quarantine 경과 여부를 확인한다.
+  //         - 아직 quarantine 안(값이 방금 바뀌어 anchor를 막 now로 세팅했다면 여기 해당) →
+  //           raw가 아니라 settled(quarantine 진입 직전 안정값)로 되돌린다(보정). raw를 그대로
+  //           채택하면 매 bounce마다 confirmed가 실제로 계속 바뀌어 register effect deps를
+  //           계속 건드리는 원래 버그가 재현된다(구현 중 실제로 이 실수를 했었다 — 회귀 방지로
+  //           남긴다). 두 번째 bounce부터는 confirmed가 이미 settled와 같아 React의 setState
+  //           same-value bail-out으로 추가 register가 발생하지 않는다. 로그 없음(취소는
+  //           "확정된 전환"이 아니다).
+  //         - quarantine이 지났다(직전 anchor로부터 SUBSURFACE_FLAP_QUARANTINE_MS 이상 경과,
+  //           그 사이 값 변화 없이 heartbeat만 왔거나 마침 값이 변한 순간 이미 만료됐다면) →
+  //           settled를 현재 confirmed로 스냅샷하고 raw를 즉시 확정한다. 계측 로그 1건.
+  //
+  // 한 flap episode당 register는 최대 2회(최초 낙관적 확정 1회 + 되돌림 보정 1회)로 유계이며
+  // 이후 bounce는 setState same-value bail-out으로 추가 register를 만들지 않는다 — "즉시 확정"과
+  // "0회"는 미래를 미리 알 수 없어 수학적으로 양립 불가하지만, 무계수(N=bounce 수) 폭주였던
+  // 원 버그를 상수로 바꾼다(상세 근거는 `SUBSURFACE_FLAP_QUARANTINE_MS` 주석).
   //
   // 초기값은 raw `subsurface`를 그대로 채택하지 않고 `false`("아직 확정 없음")에서 시작한다 —
   // mount도 다른 전환과 완전히 동일한 알고리즘(quarantine 첫 진입은 항상 "새 전환"으로 간주,
-  // lastTransitionAtRef 초기값 0이 현재 시각과의 차를 항상 quarantine 밖으로 만든다)을 거치므로
-  // 리마운트 순간의 일시 blip도 특별 취급 없이 flap quarantine으로 흡수된다(mount seed 비대칭
-  // 없음, 리뷰 지적).
+  // anchor 초기값 0이 현재 시각과의 차를 항상 quarantine 밖으로 만든다)을 거치므로 리마운트
+  // 순간의 일시 blip도 특별 취급 없이 flap quarantine으로 흡수된다(mount seed 비대칭 없음).
   const [confirmedSubsurface, setConfirmedSubsurface] = useState(false);
   // quarantine 진입 직전(=가장 최근에 "확정"됐던) 안정값 — flap 감지 시 되돌릴 대상.
   const settledSubsurfaceRef = useRef(false);
-  // 가장 최근 전환(확정 또는 보정) 시각. 0이면 "아직 전환 없음" — 첫 관측은 항상 quarantine
-  // 밖으로 평가된다.
-  const lastSubsurfaceTransitionAtRef = useRef(0);
+  // quarantine anchor — 가장 최근 "raw 값 자체가 바뀐" 시각(확정이든 bounce든). 0이면
+  // "아직 전환 없음" — 첫 관측은 항상 quarantine 밖으로 평가된다. heartbeat-only 재평가는
+  // 이 값을 갱신하지 않는다(그러면 quarantine이 영원히 안 끝난다).
+  const quarantineAnchorAtRef = useRef(0);
+  // 직전 실행에서 처리한 raw 값 — 이번 실행이 "새 샘플"인지 "heartbeat 재확인"인지 구분.
+  const lastProcessedSubsurfaceRef = useRef(subsurface);
   useEffect(() => {
-    if (subsurface === confirmedSubsurface) return; // 안정 상태.
+    const rawChanged = subsurface !== lastProcessedSubsurfaceRef.current;
+    lastProcessedSubsurfaceRef.current = subsurface;
+
+    if (subsurface === confirmedSubsurface) return; // 안정 상태 — pending 없음.
+
     const now = Date.now();
-    const withinQuarantine = now - lastSubsurfaceTransitionAtRef.current < SUBSURFACE_FLAP_QUARANTINE_MS;
-    if (!withinQuarantine) {
-      // 새로운 전환 — 즉시 확정.
-      settledSubsurfaceRef.current = confirmedSubsurface;
-      setConfirmedSubsurface(subsurface);
-      lastSubsurfaceTransitionAtRef.current = now;
-      // #2699 (요구사항 4) — 확정 전환 1건 계측. hasActiveTrip으로 이 로그가 실제 register를
-      // 유발했을지(trip 활성) 여부를 함께 남겨 다음 라이드 덤프에서 "log 있는데 POST 없음"이
-      // 잔여 결함처럼 오독되지 않게 한다 — trip 비활성 상태의 로그는 정상(register 자체가
-      // 발사 대상이 아님).
-      logSubsurfaceRegisterTransition(subsurface, route != null && destination != null);
-    } else {
-      // quarantine 창 안의 되돌아온 전환 — flap으로 판단, "raw를 따라가는" 것이 아니라
-      // quarantine 진입 **직전**의 안정값(settledSubsurfaceRef)으로 되돌린다. raw를 그대로
-      // 채택하면(예: `setConfirmedSubsurface(subsurface)`) 매 bounce마다 confirmed가 계속
-      // 실제로 바뀌어 register effect deps를 계속 건드리는 원래 버그가 그대로 재현된다 —
-      // settled로 되돌리면 두 번째 bounce부터는 confirmed가 이미 settled와 같아 React의
-      // setState same-value bail-out으로 추가 재렌더/register 자체가 발생하지 않는다.
+    // 주의: anchor는 오직 "실제 TRANSITION이 일어난 시각"(확정 또는 보정)만 기록한다.
+    // rawChanged라고 해서 무조건 anchor를 now로 리셋하면 안 된다 — 그러면 첫 divergence를
+    // 평가하는 이 순간에 방금 anchor=now를 세팅한 것과 같아져 "경과 0 < quarantine"이 항상
+    // 참이 되고, 모든 새 전환이 즉시확정 없이 보정 분기로 빠지는 결함이 생긴다(리뷰에서 실제
+    // 발견 — 회귀 방지로 남긴다). anchor 갱신은 아래 두 지점(확정/보정)에서만 일어난다.
+    const withinQuarantine = now - quarantineAnchorAtRef.current < SUBSURFACE_FLAP_QUARANTINE_MS;
+
+    if (withinQuarantine) {
+      if (!rawChanged) return; // heartbeat-only, 아직 quarantine 안 — 대기.
+      // quarantine 안의 새 bounce — settled(quarantine 진입 직전 안정값)로 되돌린다(보정).
+      // 이 보정 자체도 하나의 전환이므로 anchor를 now로 연장해 계속되는 flap을 흡수한다.
       setConfirmedSubsurface(settledSubsurfaceRef.current);
-      lastSubsurfaceTransitionAtRef.current = now; // quarantine 연장 — 계속되는 flap 흡수.
-      // 로그 없음 — "확정된 전환"이 아니라 flap 취소(보정).
+      quarantineAnchorAtRef.current = now;
+      return;
     }
+    // quarantine 밖 — 새로운 전환이거나(rawChanged), 대기하던 값이 quarantine을 살아남아
+    // (heartbeat 재확인) 확정된 것이다. 둘 다 동일하게 즉시 확정하고 anchor를 now로 연다.
+    settledSubsurfaceRef.current = confirmedSubsurface;
+    setConfirmedSubsurface(subsurface);
+    quarantineAnchorAtRef.current = now;
+    // #2699 (요구사항 4) — 확정 전환 1건 계측. hasActiveTrip으로 이 로그가 실제 register를
+    // 유발했을지(trip 활성) 여부를 함께 남겨 다음 라이드 덤프에서 "log 있는데 POST 없음"이
+    // 잔여 결함처럼 오독되지 않게 한다 — trip 비활성 상태의 로그는 정상(register 자체가
+    // 발사 대상이 아님).
+    logSubsurfaceRegisterTransition(subsurface, route != null && destination != null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- route/destination(hasActiveTrip
     // 계산용)은 로그 payload 입력일 뿐 판단 조건이 아니므로 deps에 넣지 않는다 — 값이 바뀌는
     // 시점에 별도로 이 effect를 재실행할 이유가 없다(메인 register effect가 이미 그 변경을
     // 처리). confirmedSubsurface는 setState로만 갱신되며 이 effect가 자신의 최신 값을 읽기
     // 위해서만 필요하다(무한 루프 아님 — subsurface===confirmedSubsurface가 되면 조기 반환).
-  }, [subsurface, confirmedSubsurface]);
+    // subsurfaceTickAt은 값 자체는 쓰지 않고 "재평가를 트리거"하는 용도로만 deps에 포함한다.
+  }, [subsurface, confirmedSubsurface, subsurfaceTickAt]);
 
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
   // subsurface 슬롯에는 raw prop이 아니라 flap-quarantine을 거친 confirmedSubsurface를
@@ -606,7 +645,6 @@ export function useApnsTripRegistration({
       currentStation: cs,
       boardingLock: bl,
       subsurface: sub,
-      rawSubsurface: rawSub,
       infoModeEnabled: ime,
       promptOptIn: poi,
       promptOptInHydrated: poih,
@@ -653,7 +691,6 @@ export function useApnsTripRegistration({
       currentStation: cs,
       boardingLock: bl,
       subsurface: sub,
-      rawSubsurface: rawSub,
       infoModeEnabled: ime,
       promptOptIn: poi,
       boardingCommitted: bc,
@@ -1074,7 +1111,7 @@ export function useApnsTripRegistration({
         // 루프가 실제로 재현됐다(리뷰 과정에서 발견, 회귀 방지로 남긴다). settled 값도 같은
         // 이유로 건드리지 않는다 — quarantine 창이 이미 닫혔으므로(위 리셋) 다음 실제 전환이
         // 스스로 새 settled를 스냅샷한다.
-        lastSubsurfaceTransitionAtRef.current = 0;
+        quarantineAnchorAtRef.current = 0;
         return;
       }
 

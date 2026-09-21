@@ -3561,22 +3561,28 @@ describe('alarmLog', () => {
       expect(counts).toEqual({ received: 0, fired: 1, skipped: 0 });
     });
 
+    // #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 4) — outcome은 항상 'received' 고정.
+    // 이전 버전은 hasActiveTrip을 outcome('fired'/'received')으로 인코딩했으나,
+    // outcome==='fired'를 FIRED_ALARM_SOURCES 화이트리스트 없이 직접 필터링하는 기존
+    // 소비자(recallMetrics.ts, boardingPromptMonitor.ts)의 "실제 알림 발사 수" 집계를
+    // 오염시킬 위험이 있어 되돌렸다 — hasActiveTrip은 stationName 슬롯에 함께 인코딩한다.
     it.each([
-      { next: true, hasActiveTrip: true, expected: 'subsurface=true', outcome: 'fired' },
-      { next: false, hasActiveTrip: true, expected: 'subsurface=false', outcome: 'fired' },
-      { next: true, hasActiveTrip: false, expected: 'subsurface=true', outcome: 'received' },
+      { next: true, hasActiveTrip: true, expected: 'subsurface=true|activeTrip=true' },
+      { next: false, hasActiveTrip: true, expected: 'subsurface=false|activeTrip=true' },
+      { next: true, hasActiveTrip: false, expected: 'subsurface=true|activeTrip=false' },
     ])(
-      '#2699: logSubsurfaceRegisterTransition($next, $hasActiveTrip)이 subsurface-register-confirmed entry를 적재한다(outcome=$outcome)',
-      async ({ next, hasActiveTrip, expected, outcome }) => {
+      '#2699: logSubsurfaceRegisterTransition($next, $hasActiveTrip)이 subsurface-register-confirmed entry를 적재한다(outcome은 항상 received)',
+      async ({ next, hasActiveTrip, expected }) => {
         (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
         logSubsurfaceRegisterTransition(next, hasActiveTrip);
         await flushAlarmLog();
         const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
         expect(saved).toHaveLength(1);
         expect(saved[0].source).toBe('subsurface-register-confirmed');
-        // #2699 (리뷰 지적, 항목 3) — outcome이 hasActiveTrip을 인코딩: 'fired'는 register가
-        // 실제로 뒤따를 것으로 기대됨, 'received'는 활성 trip이 없어 POST가 안 나감(정상).
-        expect(saved[0].outcome).toBe(outcome);
+        // outcome이 hasActiveTrip과 무관하게 항상 'received' — 이 entry는 사용자 노출
+        // 알람이 아닌 진단 stamp이므로 레거시 outcome==='fired' 직접 필터를 절대 오염시키지
+        // 않는다(리뷰 재지적).
+        expect(saved[0].outcome).toBe('received');
         expect(saved[0].stationName).toBe(expected);
       },
     );
@@ -3584,12 +3590,27 @@ describe('alarmLog', () => {
     it('#2699: subsurface-register-confirmed source는 fire 분모/silent push outcome 집계 모두에서 제외', () => {
       const now = 1_700_000_000_000;
       const entries: AlarmLogEntry[] = [
-        { ts: now - 1000, source: 'subsurface-register-confirmed', outcome: 'fired' },
+        { ts: now - 1000, source: 'subsurface-register-confirmed', outcome: 'received' },
         { ts: now - 2000, source: 'fg', outcome: 'fired' },
       ];
       expect(countFiredAlarms(entries)).toBe(1); // subsurface-register-confirmed는 분모 제외.
       const counts = countSilentPushOutcomes(entries);
       expect(counts).toEqual({ received: 0, fired: 0, skipped: 0 });
+    });
+
+    // #2699 (리뷰 지적, 항목 4) — 이 source가 outcome='fired'로 저장될 수 없음(항상
+    // 'received')을 직접 검증한다: recallMetrics.ts/boardingPromptMonitor.ts처럼
+    // FIRED_ALARM_SOURCES 화이트리스트 없이 outcome==='fired'만 직접 필터링하는 레거시
+    // 소비자가 있어도 이 entry는 절대 집계되지 않는다.
+    it('#2699: logSubsurfaceRegisterTransition은 hasActiveTrip=true여도 outcome을 fired로 저장하지 않는다 (레거시 직접 필터 오염 방지)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSubsurfaceRegisterTransition(true, true);
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      const rawFiredFilterCount = (saved as { source: string; outcome: string }[]).filter(
+        (e) => e.outcome === 'fired',
+      ).length;
+      expect(rawFiredFilterCount).toBe(0);
     });
 
     it('countBoardingPromptByWindow가 윈도우별 발사 횟수를 집계한다', () => {

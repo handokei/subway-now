@@ -192,7 +192,8 @@ export type AlarmLogSource =
   // 20s)를 통과해 backend register(POST /trips) 트리거/payload로 실제 승격된 시점 1건. 기존에는
   // 이 전환을 관측할 방법이 없어 "어느 dep이 몇 번 변했는지"를 덤프 교차 대조로만 추정했다(RCA
   // 9/21 코멘트) — 다음 라이드에서 이 로그와 실제 POST /trips CALL 횟수를 1:1 대조해 완전
-  // 확정한다. outcome으로 hasActiveTrip을 인코딩(logSubsurfaceRegisterTransition 참고).
+  // 확정한다. outcome은 항상 'received'(비알람 진단 stamp) — hasActiveTrip은 stationName
+  // 슬롯에 인코딩(logSubsurfaceRegisterTransition 참고, 리뷰 2라운드 항목 4).
   | 'subsurface-register-confirmed';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
@@ -3171,21 +3172,26 @@ export function logLegTransition(input: { fromLine: string; transferStationName:
  * 트리거로 실제 승격된 시점 1건 적재. `useApnsTripRegistration`의 confirm effect가 "새로운
  * 전환"으로 판단할 때만 호출된다(flap으로 판단해 되돌리는 보정 경로는 호출하지 않음).
  *
- * #2699 (리뷰 지적, PR #2789 항목 3) — `hasActiveTrip`을 `outcome`으로 인코딩한다(기존
- * `AlarmLogEntry.outcome` 필드 재사용 — 새 필드 확장 없음): 활성 trip(route+destination
- * 존재)이 있었으면 `'fired'`(register가 실제로 뒤따를 것으로 기대), 없었으면 `'received'`
- * (신호는 확정됐지만 register 대상 trip이 없어 POST가 안 나감 — 잔여 결함이 아니라 정상).
- * 다음 라이드 덤프에서 이 로그(특히 outcome='fired' 항목)와 실제 `POST /trips` CALL 횟수를
- * 대조해 RCA를 완전히 닫는다.
+ * #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 4) — `outcome`은 항상 `'received'`로
+ * 고정한다(이 entry는 사용자에게 노출되는 알람이 아니라 진단 stamp — 다른 non-alarm
+ * source들과 동일 관례, `logAccelPatternObserved` 참고). 이전 버전은 `hasActiveTrip`을
+ * `outcome`('fired'/'received')으로 인코딩했으나, `outcome==='fired'`를
+ * `FIRED_ALARM_SOURCES` 화이트리스트 없이 **직접** 필터링하는 기존 소비자가 이미 여럿
+ * 있다(`recallMetrics.ts`, `boardingPromptMonitor.ts` 등) — 이 entry가 `outcome:'fired'`를
+ * 띠면 그런 소비자들의 "실제 알림 발사 수" 집계를 오염시킨다(리뷰 재지적). `hasActiveTrip`은
+ * 대신 기존 `stationName` 인코딩 슬롯에 함께 실어 DebugModal에서 여전히 가시화한다.
+ *
+ * 다음 라이드 덤프에서 이 로그와 실제 `POST /trips` CALL 횟수를 대조해 RCA를 완전히 닫는다
+ * (`stationName`의 `activeTrip=true` 항목만 register를 유발했을 것으로 기대).
  */
 export function logSubsurfaceRegisterTransition(next: boolean, hasActiveTrip: boolean): void {
   appendAlarmLog({
     ts: Date.now(),
     source: 'subsurface-register-confirmed',
-    outcome: hasActiveTrip ? 'fired' : 'received',
-    // stationName 슬롯에 확정된 값 인코딩 — 기존 schema 확장 없이 DebugModal에서 가시화
-    // (logAccelPatternObserved와 동일 관례).
-    stationName: next ? 'subsurface=true' : 'subsurface=false',
+    outcome: 'received',
+    // stationName 슬롯에 확정된 값 + hasActiveTrip 함께 인코딩 — 기존 schema 확장 없이
+    // DebugModal에서 가시화(logAccelPatternObserved와 동일 관례).
+    stationName: `subsurface=${next}|activeTrip=${hasActiveTrip}`,
   });
 }
 

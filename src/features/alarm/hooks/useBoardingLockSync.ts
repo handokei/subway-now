@@ -499,6 +499,23 @@ async function retryLockIdentity(
   );
 }
 
+// #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 3) — 404 self-heal churn 가드.
+//
+// 지속 장애(backend가 계속 trip을 못 찾는 상태)에서 station-change마다 매번
+// resetAlarmBackendDedup을 호출하면, 다음 register 시도가 매번 dedup skip을 우회해 실제
+// fetch를 낸다 — 이미 죽어가는 backend에 sync 호출당 register POST 1건씩이 추가로 쏟아진다.
+// 같은 token에 대해서는 **한 번만** 리셋하고, 그 token으로 sync가 **성공**(404가 아닌 ok)할
+// 때까지 재리셋을 금지한다 — "재등록 성공 전까지 재리셋 금지"(리뷰 제안)의 직접 신호인
+// registerActiveTrip 성공은 이 파일에서 관측할 수 없으므로, 같은 token의 sync 성공을
+// 회복 proxy로 쓴다: sync가 성공했다는 것은 backend가 그 token의 trip을 다시 찾았다는
+// 뜻이라 다음 진짜 trip 손실 에피소드에 대비해 latch를 다시 연다.
+let lastDedupResetForToken: string | null = null;
+
+/** 테스트용 — 404 self-heal churn 가드 상태 초기화. */
+export function __resetFireSync404GuardForTests(): void {
+  lastDedupResetForToken = null;
+}
+
 /**
  * AsyncStorage에서 token을 읽어 syncBoardingLock 호출. token/trip 부재는 graceful no-op(null 반환).
  * 정정 자체(currentWaypoint)는 cron silent push 경로가 별도로 client store를 mutate한다.
@@ -550,7 +567,16 @@ async function fireSync(
   // 변경 등 — 반드시 즉시일 필요는 없다, 원 문서가 약속한 "다음 cycle"과 동일 계약) hash가
   // 더 이상 stale 값과 일치하지 않아 실제 fetch가 나가고, backend가 trip을 재생성할 기회를
   // 얻는다. #2699의 alarmBucket 제거가 안전해지는 전제조건.
-  if (res.status === 404) {
+  //
+  // #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 3) — 지속 장애 churn 가드. 같은 token에
+  // 대해 이미 리셋했다면(backend가 계속 404를 내려주는 지속 장애) 재리셋하지 않는다 — 매
+  // station-change마다 dedup을 계속 비우면 다음 register 시도가 매번 skip을 우회해 죽어가는
+  // backend에 POST가 계속 쌓인다(원 폭주와 같은 성격의 회귀). sync가 **성공**하면(회복 신호)
+  // latch를 풀어 다음 진짜 trip 손실 에피소드에 다시 대응할 수 있게 한다.
+  if (res.ok) {
+    if (lastDedupResetForToken === token) lastDedupResetForToken = null;
+  } else if (res.status === 404 && lastDedupResetForToken !== token) {
+    lastDedupResetForToken = token;
     void resetAlarmBackendDedup();
   }
   return res;

@@ -112,6 +112,27 @@ export interface BarometerSignal {
    * optional: 위와 동일한 호환성 이유.
    */
   readingCount?: number;
+  /**
+   * #2699 (리뷰 지적, PR #2789 "각도 A" 항목 1) — 마지막으로 native listener가 **새로운**
+   * reading을 실제로 처리한 시각(epoch ms). 센서가 살아있고 앱이 foreground인 동안에만
+   * 전진하는 liveness heartbeat — `evaluateAndFlush`가 stall 게이트(F2, 신규 reading 없음)를
+   * 통과했을 때만 갱신되므로, native listener가 멈추면(BG suspend, throttle) 이 값도 함께
+   * 멈춘다.
+   *
+   * `useApnsTripRegistration`의 subsurface flap-quarantine 만료 재평가가 이 값을 구독한다 —
+   * "raw subsurface 값 변화" 자체를 effect deps로 쓰면 flap이 멈춘 뒤 아무 샘플도 안 와서
+   * quarantine 만료를 감지할 계기가 없어 confirmed가 옛 값에 영구 고착되는 결함이 있었다.
+   * 이 heartbeat를 deps에 추가하면 quarantine 만료도 "이벤트"가 되어 재평가되지만,
+   * 벽시계 setTimeout과 달리 **BG suspend 중에는 이 값 자체가 멈추므로 오확정 위험이
+   * 구조적으로 없다** — resume 후 첫 실제 reading이 처리되는 순간에만 재평가가 일어난다.
+   *
+   * 0이면 아직 한 번도 처리되지 않음(마운트 직후/미지원/권한 거절/dormant).
+   *
+   * optional: `readingCount`와 동일한 호환성 이유 — 기존 fixture/mock(`BarometerSignal`을
+   * 직접 리터럴로 구성하는 다수 테스트)가 이 필드 없이도 컴파일되도록. production 훅이
+   * 반환하는 객체는 항상 채운다.
+   */
+  lastEvaluatedAt?: number;
 }
 
 /**
@@ -139,6 +160,8 @@ export function useBarometer(): BarometerSignal {
   >(flagDormant ? 'flag-on-dormant' : 'sensor');
   // #1398 — ring buffer 누적 reading 수. #2619 review (F3) — quorum 경계 crossing 시에만 갱신.
   const [readingCount, setReadingCount] = useState<number>(0);
+  // #2699 — liveness heartbeat. BarometerSignal.lastEvaluatedAt 주석 참고.
+  const [lastEvaluatedAt, setLastEvaluatedAt] = useState<number>(0);
   // #903 — hysteresis: 임계 부근 노이즈 진동 흡수. lastEmitted와 다른 verdict가 N회 연속
   // 들어와야 state flip. lastEmitted과 같은 verdict가 들어오면 카운터 리셋.
   const lastSubsurfaceRef = useRef<boolean>(false);
@@ -192,6 +215,9 @@ export function useBarometer(): BarometerSignal {
         return;
       }
       lastLatestReadingTsRef.current = latestTs;
+      // #2699 — liveness heartbeat. 신규 reading을 실제로 처리하는 이 지점에서만 갱신 —
+      // stall(위 F2 skip)이면 이 setState 자체가 실행되지 않아 heartbeat도 함께 멈춘다.
+      setLastEvaluatedAt(now);
 
       // #2619 review (F3) — readingCount는 quorum 경계(BAROMETER_MISMATCH_QUORUM_READINGS)를
       // 넘나들 때만 setState. 유일한 다운스트림 소비자(HomeScreen → useStationMismatchDetector의
@@ -307,7 +333,7 @@ export function useBarometer(): BarometerSignal {
     };
   }, []);
 
-  return { subsurface, stop, unavailableReason, readingCount };
+  return { subsurface, stop, unavailableReason, readingCount, lastEvaluatedAt };
 }
 
 /** isAvailableAsync 예외를 false로 폴백 — 일부 시뮬레이터에서 throw. */

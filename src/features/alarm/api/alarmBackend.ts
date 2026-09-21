@@ -89,23 +89,17 @@ export interface RegisterTripPayload {
    * `Trip.subsurface`에 저장되는 **관측/모니터링 전용** 값이다("기압계 회복 모니터링",
    * backend types.ts:369).
    *
-   * #2699 (리뷰 지적, PR #2789 "각도 C" 항목 2) — 이 필드는 **raw** 값을 그대로 보낸다
-   * (device의 flap-quarantine 필터를 거치지 않음). register 트리거 여부/dedup은
-   * `subsurfaceDedupKey`(confirmed, 별도 필드)가 담당하도록 분리했다 — 그렇지 않으면
-   * POST /trips 채널로는 정작 가장 보고 싶은 raw flapping 패턴이 구조적으로 안 보이게
-   * 된다(confirmed만 관측되면 flap 자체가 device 레이어에서 흡수돼 backend가 모른다).
-   * false/미설정은 필드 미송신(graceful).
+   * #2699 (리뷰 지적, PR #2789 "각도 C" 항목 2, 재정정) — device의 flap-quarantine을 거친
+   * **confirmed** 값을 보낸다. 한때 raw(관측용)/confirmed(dedup 전용)를 별도 필드로 분리했으나,
+   * raw는 스스로 register를 트리거하지도 dedup 키에 관여하지도 않아 실제로는 "다른 dep이
+   * 우연히 register를 쏜 순간의 임의 raw 스냅샷"일 뿐이었다 — "raw를 POST에 실어 flapping을
+   * trips 채널에서 관측"이라는 원래 명분이 성립하지 않았다(리뷰 재지적). raw 자체의 flap
+   * 패턴을 보고 싶으면 이 필드가 아니라 device 쪽 `logSubsurfaceRegisterTransition`(alarmLog
+   * source='subsurface-register-confirmed')을 참조한다 — 확정 전환마다 1건씩 적재되므로
+   * "얼마나 자주 flap이 확정으로 이어지는지"는 그쪽에서 이미 관측 가능하다. false/미설정은
+   * 필드 미송신(graceful).
    */
   subsurface?: boolean;
-  /**
-   * #2699 (리뷰 지적, PR #2789 "각도 C" 항목 2) — register dedup hash 계산 전용 입력.
-   * `subsurface`(raw, body에 그대로 실려 관측용으로 저장됨)와 분리한 이유: dedup의 목적은
-   * "의미상 동일 페이로드는 재전송 skip"인데, raw subsurface를 그대로 hash에 넣으면 경계
-   * flapping마다 hash가 흔들려 dedup이 무력화된다(#2699 원 폭주의 재발). 이 필드는 device의
-   * flap-quarantine을 거친 `confirmedSubsurface`를 전달 — hash에만 쓰이고 body에는
-   * 직렬화되지 않는다(`performRegisterFetch` 참고).
-   */
-  subsurfaceDedupKey?: boolean;
   /**
    * #1895 — device locale (ko/en/ja/zh). backend가 boarding-prompt push 본문을
    * 4언어 분기 (`backend/alarm-worker/src/i18n.ts`)에 사용한다. 미지정/비지원은
@@ -263,8 +257,7 @@ function buildRegisterHash(body: {
   waypoints: AlarmWaypoint[];
   apnsEnv: ApnsEnv;
   promptDisplay?: { originStation: string; line: string };
-  /** #2699 — dedup 전용. confirmed(flap-quarantine 통과)값 — 위 RegisterTripPayload 주석 참고. */
-  subsurfaceDedupKey?: boolean;
+  subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   infoModeEnabled?: boolean;
   promptOptIn?: boolean;
@@ -297,11 +290,10 @@ function buildRegisterHash(body: {
     promptDisplayKey: body.promptDisplay
       ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
       : null,
-    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2) — subsurface 전환이 바뀌면 재등록을
-    // 보장하되, dedup 키는 body에 실리는 raw 값이 아니라 confirmed(flap-quarantine 통과)
-    // 값만 본다 — raw를 그대로 hash에 넣으면 경계 flapping마다 hash가 흔들려 dedup 자체가
-    // 무력화된다(#2699 원 폭주의 재발 경로). 필드명 subsurfaceDedupKey 참고.
-    subsurface: body.subsurfaceDedupKey === true,
+    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2, 재정정) — subsurface는 device의
+    // flap-quarantine을 거친 confirmed 값이므로(RegisterTripPayload 주석 참고) 그대로 hash에
+    // 써도 안전하다 — 경계 flapping 자체는 device 레이어에서 이미 흡수됐다.
+    subsurface: body.subsurface === true,
     // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
     // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
     locale: body.locale ?? null,
@@ -495,9 +487,7 @@ export function registerActiveTrip(
     waypoints: payload.waypoints,
     apnsEnv: payload.apnsEnv,
     promptDisplay: payload.promptDisplay,
-    // #2699 — dedup은 confirmed 값(subsurfaceDedupKey)만 본다. body(관측용)는 raw
-    // (payload.subsurface) — performRegisterFetch가 별도로 직렬화한다.
-    subsurfaceDedupKey: payload.subsurfaceDedupKey,
+    subsurface: payload.subsurface,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
     locale: payload.locale,
     // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).
