@@ -157,3 +157,26 @@ export const BAROMETER_MISMATCH_QUORUM_READINGS = 30;
  *     오래 "지하 sticky" 상태를 유지하지 않는 균형점.
  */
 export const BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS = 180_000;
+
+/**
+ * #2699 — `subsurface` 값이 `useApnsTripRegistration`의 backend register(POST /trips)
+ * 트리거/payload로 승격되기까지 필요한 최소 유지 시간(dwell).
+ *
+ * 단위: ms.
+ *
+ * 근거 (2026-09-18/21 실측 — RCA "원인 확정" 코멘트):
+ *   - `useBarometer`의 실제 hysteresis는 이전 deps 주석이 주장한 "60s 윈도우 평가"가 아니라
+ *     1Hz 샘플 × `BAROMETER_SUBSURFACE_CONFIRM_SAMPLES`(3) = 약 **3초** 디바운스뿐이다.
+ *     30s는 dP/dt 회귀 윈도우(`BAROMETER_DPDT_WINDOW_MS`)이지 토글 디바운스가 아니다.
+ *   - 지하/지상 경계 부근에서는 이 3초 디바운스를 통과하고도 subsurface가 반복 토글된다 —
+ *     9/18 덤프 `sub=` 전환 시각이 `POST /trips` CALL과 초 단위로 정확히 일치(정확 일치 6건),
+ *     간격 실측 4~13초.
+ *   - `subsurface`가 (구) register effect deps에 raw 그대로 물려 있어 매 토글마다 POST가
+ *     나가 18분 trip에 29~37회 폭주했다(#2699).
+ *   - 30s는 실측 토글 간격(4~13s)의 2배 이상 — 경계 flapping은 걸러내면서, 실제로 지하
+ *     구간에 진입/이탈해 수 분간 안정된 전환은 놓치지 않는다.
+ *   - 시간 기반 throttle("N초에 한 번만 POST")이 아니다 — "값이 이 시간 동안 안정적으로
+ *     유지됐는가"라는 내용 기준이다. dwell 도중 값이 다시 뒤집히면 타이머가 리셋돼 그
+ *     전환 자체가 폐기된다(진짜 확정된 전환은 지연 없이 그대로 반영).
+ */
+export const SUBSURFACE_REGISTER_DWELL_MS = 30_000;

@@ -36,8 +36,11 @@ jest.mock('../../utils/backendSsotMirror', () => ({
 
 // #1628 — R11-a 차단 1건 측정 검증. clear 호출과 짝지어 같은 site에서 1회만 발사.
 const mockLogCrossTripMirrorSkip = jest.fn();
+// #2699 — subsurface dwell 게이트 확정 전환 계측.
+const mockLogSubsurfaceRegisterTransition = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
+  logSubsurfaceRegisterTransition: (...args: unknown[]) => mockLogSubsurfaceRegisterTransition(...args),
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -64,6 +67,7 @@ import {
   REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
   ROUTE_CHANGE_DEBOUNCE_MS,
 } from '../../../../shared/constants/boardingLock';
+import { SUBSURFACE_REGISTER_DWELL_MS } from '../../../../shared/constants/barometer';
 import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { getStationById } from '../../../../shared/utils/stationRoute';
@@ -179,28 +183,41 @@ describe('useApnsTripRegistration', () => {
     });
 
     // #2683 — 같은 trip의 **재등록**에서는 mirror를 지우지 않는다. 이 effect는 `subsurface`(기압계
-    // 지하 판정)를 deps로 갖고 있어 주행 중 수십 초마다 재실행되는데, 그때마다 mirror를 지우면
-    // device가 backend SSoT를 한 번도 손에 쥐지 못해 표시가 출발역에 얼어붙는다.
+    // 지하 판정, #2699 이후로는 dwell-확정된 값)를 deps로 갖고 있어 주행 중 재실행되는데, 그때마다
+    // mirror를 지우면 device가 backend SSoT를 한 번도 손에 쥐지 못해 표시가 출발역에 얼어붙는다.
     // 실측(2026-09-17 저녁): 한 trip에 POST /trips 29회 → mirror 29회 삭제 → "성수→용마산"이
     // 환승역을 지나도 그대로.
     it('#2683 — 같은 trip 재등록(subsurface 토글 등)에서는 mirror를 지우지 않는다', async () => {
-      const { rerender } = renderHook(
-        ({ subsurface }: { subsurface: boolean }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            subsurface,
-          }),
-        { initialProps: { subsurface: false } },
-      );
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 최초 등록은 clear.
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderHook(
+          ({ subsurface }: { subsurface: boolean }) =>
+            useApnsTripRegistration({
+              route: directRoute,
+              destination: station,
+              nextStationEtaSeconds: 120,
+              subsurface,
+            }),
+          { initialProps: { subsurface: false } },
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+        expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 최초 등록은 clear.
 
-      // 지하 진입 → 같은 trip 재등록.
-      rerender({ subsurface: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-      expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 추가 clear 없음.
+        // 지하 진입 → dwell(#2699, 30s) 경과 후 확정 → 같은 trip 재등록.
+        rerender({ subsurface: true });
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_REGISTER_DWELL_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+        expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1); // 추가 clear 없음.
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('#2683 — 목적지가 바뀐 새 trip이면 다시 지운다 (race A 차단 의도 보존)', async () => {
@@ -1388,7 +1405,10 @@ describe('useApnsTripRegistration', () => {
             destination: station,
             nextStationEtaSeconds: 120,
             currentStation: station,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않으므로, "다른 dep이
+            // 바뀌면 즉시 재실행"을 검증하는 이 테스트는 infoModeEnabled(dwell 게이트 없음)로
+            // 트리거한다 — 검증 대상(retry 타이머 갈아치우기 로직)은 어느 dep이든 동일하다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { sub: false } },
       );
@@ -1397,7 +1417,7 @@ describe('useApnsTripRegistration', () => {
       });
       expect(mockRegister).toHaveBeenCalledTimes(1); // 실패 — 15s 재시도 예약
 
-      // 첫 backoff가 발화하기 전, 같은 세션에서 subsurface 토글로 즉시 재실행 → 다시 실패.
+      // 첫 backoff가 발화하기 전, 같은 세션에서 infoModeEnabled 토글로 즉시 재실행 → 다시 실패.
       rerender({ sub: true });
       await act(async () => {
         await Promise.resolve();
@@ -1665,7 +1685,11 @@ describe('useApnsTripRegistration', () => {
             destination: dest,
             nextStationEtaSeconds: 120,
             currentStation: cs,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않는다. 이 테스트가
+            // 검증하는 것은 "별개 dep 변경으로 main effect가 재실행될 때 heal in-flight와
+            // register-retry가 겹치지 않는가"이지 subsurface 자체의 의미가 아니므로
+            // infoModeEnabled(dwell 게이트 없음)로 트리거한다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { cs: null as Station | null, sub: false } },
       );
@@ -1680,7 +1704,7 @@ describe('useApnsTripRegistration', () => {
       rerender({ cs: origin, sub: false });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
 
-      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도 예약(15s).
+      // 별개 dep(infoModeEnabled) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도 예약(15s).
       mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
       rerender({ cs: origin, sub: true });
       await act(async () => {
@@ -1835,7 +1859,7 @@ describe('useApnsTripRegistration', () => {
       //
       // "반대 방향" 테스트와 동일한 순서로 heal을 in-flight 상태로 만든다 — retry가 pending인
       // 동안에는 Tier 1이 스스로 발사하지 않으므로(#2167 P1 이전 가드), Tier 1이 먼저 정상
-      // 발사(retry 없는 상태)된 뒤 별개 dep(subsurface) 변경으로 main effect가 재실행돼 실패해야
+      // 발사(retry 없는 상태)된 뒤 별개 dep(infoModeEnabled) 변경으로 main effect가 재실행돼 실패해야
       // 그 세션에 재시도가 예약된다.
       mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start 성공(currentStation=null → context 결손)
 
@@ -1851,7 +1875,9 @@ describe('useApnsTripRegistration', () => {
             destination: dest,
             nextStationEtaSeconds: 120,
             currentStation: cs,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않으므로, "별개 dep
+            // 변경으로 즉시 재실행"이 필요한 이 테스트는 infoModeEnabled로 트리거한다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { cs: null as Station | null, sub: false } },
       );
@@ -1865,7 +1891,7 @@ describe('useApnsTripRegistration', () => {
       rerender({ cs: origin, sub: false });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
 
-      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도
+      // 별개 dep(infoModeEnabled) 변경으로 main effect 재실행 — 이번엔 실패해 같은 세션에 재시도
       // 예약(15s, attempt=1).
       mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
       rerender({ cs: origin, sub: true });
@@ -1946,7 +1972,9 @@ describe('useApnsTripRegistration', () => {
             destination: dest,
             nextStationEtaSeconds: 120,
             currentStation: cs,
-            subsurface: sub,
+            // #2699 — subsurface는 dwell 게이트로 즉시 재실행을 유발하지 않으므로, 이 테스트는
+            // infoModeEnabled로 트리거한다.
+            infoModeEnabled: sub,
           }),
         { initialProps: { cs: null as Station | null, sub: false } },
       );
@@ -1960,7 +1988,7 @@ describe('useApnsTripRegistration', () => {
       rerender({ cs: origin, sub: false });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
 
-      // 별개 dep(subsurface) 변경으로 main effect 재실행 — 실패해 재시도 예약(15s, attempt=1).
+      // 별개 dep(infoModeEnabled) 변경으로 main effect 재실행 — 실패해 재시도 예약(15s, attempt=1).
       mockRegister.mockResolvedValueOnce({ ok: false, status: 500 });
       rerender({ cs: origin, sub: true });
       await act(async () => {
@@ -2117,30 +2145,134 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister.mock.calls[0][0].subsurface).toBe(expected);
     });
 
-    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend threshold 빠른 갱신)', async () => {
-      const { rerender } = renderSub(false);
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      expect(mockRegister.mock.calls[0][0].subsurface).toBeUndefined();
-      rerender({ s: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-      expect(mockRegister.mock.calls[1][0].subsurface).toBe(true);
+    // #2699 (이슈 검증 항목 "red") — 실측 재현: 지하/지상 경계에서 subsurface가 4초 간격으로
+    // 반복 토글되는 상황(9/18 덤프 실측 6쌍 중 4s 간격 사례)을 시뮬레이션한다. dwell 게이트
+    // 도입 전에는 매 토글이 register effect deps를 직접 건드려 POST가 매번(3회) 나갔다 —
+    // 이 테스트는 dwell 미달 토글은 전부 무시되고 최초 register 1회만 나가는지 검증한다.
+    it('#2699 subsurface 4초 간격 반복 토글 → dwell 미달로 추가 POST 없이 최초 1회만', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // 최초 register.
+
+        // 4초 간격으로 false→true→false→true 반복(실측 패턴) — 각 전환 모두 dwell(30s) 미달.
+        const toggles = [true, false, true, false];
+        for (const next of toggles) {
+          rerender({ s: next });
+          // eslint-disable-next-line no-await-in-loop -- 실제 시간 흐름을 순서대로 재현해야 하는
+          // dwell 타이머 시나리오라 순차 await가 본질적.
+          await act(async () => {
+            jest.advanceTimersByTime(4_000);
+            await Promise.resolve();
+          });
+        }
+        // dwell(30s) 미달 상태로 계속 뒤집혔으므로 confirmedSubsurface는 한 번도 갱신되지
+        // 않는다 — 추가 POST 없이 최초 1회 그대로.
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+        expect(mockLogSubsurfaceRegisterTransition).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
-    it('token refresh 경로도 최신 subsurface 값을 송신', async () => {
-      const { rerender } = renderSub(false);
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-      rerender({ s: true });
-      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-      const listener = mockAddPushTokenListener.mock.calls[0][0];
-      await act(async () => {
-        listener({ data: 'token-NEW2' });
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-      const refreshed = mockRegister.mock.calls.find(
-        (c) => (c[0] as { token: string }).token === 'token-NEW2',
-      );
-      expect(refreshed?.[0].subsurface).toBe(true);
+    // #2699 — OFF→ON 전환은 더 이상 "즉시" 재등록되지 않는다. useBarometer의 실제
+    // hysteresis(3s)만으로는 지하/지상 경계에서 반복 토글이 그대로 POST /trips 폭주로
+    // 이어졌던 것이 이 이슈의 root cause다 — dwell 게이트(SUBSURFACE_REGISTER_DWELL_MS,
+    // 30s) 통과 후에만 확정 반영된다.
+    it('OFF→ON 전환은 dwell(30s) 경과 후에만 재등록된다 (#2699 — 시간 throttle이 아니라 안정 확정 게이트)', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+        expect(mockRegister.mock.calls[0][0].subsurface).toBeUndefined();
+
+        rerender({ s: true });
+        // dwell 미달 — 아직 재등록되지 않는다.
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_REGISTER_DWELL_MS - 100);
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // dwell 경과 — 이제 확정되어 재등록 + 계측 1건.
+        await act(async () => {
+          jest.advanceTimersByTime(100);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+        expect(mockRegister.mock.calls[1][0].subsurface).toBe(true);
+        expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('dwell 도중 값이 다시 뒤집히면 타이머가 리셋돼 전환이 폐기된다 (#2699 — 경계 flapping 흡수)', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        rerender({ s: true });
+        await act(async () => {
+          jest.advanceTimersByTime(13_000); // 실측 최대 토글 간격(13s) 이내
+          await Promise.resolve();
+        });
+        // 다시 false로 — dwell 타이머가 리셋되고 confirmedSubsurface는 여전히 false.
+        rerender({ s: false });
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_REGISTER_DWELL_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        // 값이 원래 확정값(false)으로 되돌아갔으므로 추가 register도, 계측도 없다.
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+        expect(mockLogSubsurfaceRegisterTransition).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('token refresh 경로도 dwell-확정된 subsurface 값을 송신', async () => {
+      jest.useFakeTimers();
+      try {
+        const { rerender } = renderSub(false);
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        rerender({ s: true });
+        await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_REGISTER_DWELL_MS);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+
+        const listener = mockAddPushTokenListener.mock.calls[0][0];
+        await act(async () => {
+          listener({ data: 'token-NEW2' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        const refreshed = mockRegister.mock.calls.find(
+          (c) => (c[0] as { token: string }).token === 'token-NEW2',
+        );
+        expect(refreshed?.[0].subsurface).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 
@@ -3200,20 +3332,23 @@ describe('useApnsTripRegistration', () => {
         });
         expect(mockRegister).toHaveBeenCalledTimes(1);
 
-        // subsurface deps 변경 → run() 재실행 → 이미 armed된 타이머를 clear 후 재arm.
+        // #2699 — subsurface deps 변경은 이제 dwell(30s) 확정 후에만 run()을 재실행한다.
+        // dwell 경과 시점에 이미 armed된 Tier 2 타이머를 clear 후 재arm하는지 검증한다.
         act(() => {
           jest.advanceTimersByTime(1000);
         });
         rerender({ sub: false });
         await act(async () => {
+          jest.advanceTimersByTime(SUBSURFACE_REGISTER_DWELL_MS);
+          await Promise.resolve();
           await Promise.resolve();
         });
         expect(mockRegister).toHaveBeenCalledTimes(2);
 
         // 재arm된 타이머 기준으로 CONTEXT_HEAL_TIER2_DELAY_MS 경과해야 발동 — subsurface가
-        // 이제 false이므로 Tier 2 조건 자체는 불충족(추가 register 없음)이지만, 옛 타이머가
-        // clear됐다면 이 시점(원래 예정보다 1000ms 늦게 도착)에 register가 정확히 몇 번인지로
-        // "clear+재arm"이 실제로 일어났음을 간접 확인한다.
+        // 이제 false로 확정됐으므로 Tier 2 조건 자체는 불충족(추가 register 없음)이지만, 옛
+        // 타이머가 clear됐다면 이 시점에 register가 정확히 몇 번인지로 "clear+재arm"이 실제로
+        // 일어났음을 간접 확인한다.
         await act(async () => {
           jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
           await Promise.resolve();

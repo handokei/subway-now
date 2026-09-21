@@ -194,7 +194,7 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
-      it('alarmAtEpochMs가 60초 버킷 내 jitter 면 dedup된다', async () => {
+      it('alarmAtEpochMs jitter는 dedup된다 (#2699 — hash 자체가 이 필드를 더 이상 보지 않음)', async () => {
         await registerActiveTrip(SAMPLE_PAYLOAD);
         const jitter = await registerActiveTrip({
           ...SAMPLE_PAYLOAD,
@@ -204,14 +204,19 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
-      it('alarmAtEpochMs가 다른 버킷으로 넘어가면 재등록된다', async () => {
+      // #2699 — 과거에는 alarmAtEpochMs가 60s 버킷(ALARM_TIME_BUCKET_MS)을 넘어가면 hash가
+      // 갱신되어 재등록됐다. 이 버킷은 register 호출 시점의 시계(`now + ETA*1000`)에만
+      // 종속돼 트립 내용이 전혀 바뀌지 않아도 hash가 시간에 따라 계속 갱신되는 시간종속
+      // 오염이었다(RCA 9/21 "원인 확정" 코멘트 요구사항 2) — 완전히 제거했다. 정확한 발사
+      // 시각은 backend cron이 reschedule로 자체 보정하므로 hash에 남길 필요가 없다.
+      it('#2699 alarmAtEpochMs만 바뀌어도(시간종속) 재등록되지 않는다 — 시간 버킷 오염 제거', async () => {
         await registerActiveTrip(SAMPLE_PAYLOAD);
         const next = await registerActiveTrip({
           ...SAMPLE_PAYLOAD,
           alarmAtEpochMs: SAMPLE_PAYLOAD.alarmAtEpochMs + 120_000,
         });
-        expect(next).toEqual({ ok: true, status: 200 });
-        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(next).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
       it('destination 변경 시 재등록된다', async () => {
