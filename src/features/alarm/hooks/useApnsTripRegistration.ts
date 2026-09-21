@@ -16,7 +16,7 @@
  * 권한 거부/토큰 실패 시 graceful skip — 사전 예약(#334)만으로 baseline 동작.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
@@ -27,7 +27,7 @@ import { registerActiveTrip, clearActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
-import { logCrossTripMirrorSkip } from '../utils/alarmLog';
+import { logCrossTripMirrorSkip, logSubsurfaceRegisterTransition } from '../utils/alarmLog';
 import {
   buildBoardingPromptContext,
   type BoardingPromptContext,
@@ -43,6 +43,7 @@ import {
   REGISTER_RETRY_HEAL_BUSY_RECHECK_MS,
   ROUTE_CHANGE_DEBOUNCE_MS,
 } from '../../../shared/constants/boardingLock';
+import { SUBSURFACE_REGISTER_DWELL_MS } from '../../../shared/constants/barometer';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -78,6 +79,11 @@ export interface UseApnsTripRegistrationInputs {
    * #903 (Seam G) — 기압계 dP/dt가 지하 진입을 시사하는가. true면 backend로 함께 전달되어
    * consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival 누락에 더 인내한다.
    * 미설정/false면 기존 threshold(5) 유지 — 기압계 미지원 환경 graceful.
+   *
+   * #2699 — raw 값을 그대로 전달해도 안전하다. 이 hook 내부가 `SUBSURFACE_REGISTER_DWELL_MS`
+   * (30s) dwell 게이트로 값을 확정(`confirmedSubsurface`)한 뒤에만 register 트리거/payload에
+   * 반영한다 — `useBarometer`의 실제 hysteresis(3s)만으로는 지하/지상 경계에서 4~13s 간격
+   * 토글이 그대로 POST /trips 폭주로 이어졌다(RCA 9/21 "원인 확정" 코멘트).
    */
   subsurface?: boolean;
   /**
@@ -318,14 +324,54 @@ export function useApnsTripRegistration({
   // boardingLock도 reference가 아닌 내용 기반 key로 deps — 상위가 매 렌더 새 객체를 내려도 안전.
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
+
+  // #2699 — subsurface dwell 게이트. useBarometer의 실제 hysteresis(3s)만으로는 지하/지상
+  // 경계에서 raw subsurface가 4~13s 간격으로 반복 토글되고, 이 값을 그대로 register effect
+  // deps/payload에 흘리면 매 토글마다 POST /trips가 나가 18분 trip에 29~37회 폭주했다(RCA 9/21
+  // "원인 확정" 코멘트). `confirmedSubsurface`는 raw `subsurface`가 `SUBSURFACE_REGISTER_DWELL_MS`
+  // (30s) 동안 안정적으로 유지된 뒤에만 갱신되는 파생 상태 — 이 hook 내부의 모든 register 경로
+  // (main effect deps, latestInputsRef, Tier 2 fallback 게이트)는 이 값만 본다. 시간 throttle이
+  // 아니다 — dwell 도중 값이 다시 뒤집히면 타이머가 리셋돼 "확정"이 성립하지 않을 뿐, 실제로
+  // 30초간 안정된 전환은 지연 없이 그대로 반영된다.
+  const [confirmedSubsurface, setConfirmedSubsurface] = useState(subsurface);
+  const subsurfaceDwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    // subsurface는 이 effect 자신의 deps라서, 값이 바뀔 때마다 React가 이전 실행의 cleanup
+    // (아래, 대기 중인 타이머를 항상 clear)을 이 effect body보다 먼저 동기 실행한다 — 그래서
+    // 여기 도달하는 시점엔 subsurfaceDwellTimerRef가 항상 비어 있다. subsurface가 이미
+    // confirmedSubsurface와 같다면(예: 되돌아온 전환) 새 타이머를 세우지 않고 조용히 끝낸다.
+    if (subsurface === confirmedSubsurface) {
+      return;
+    }
+    subsurfaceDwellTimerRef.current = setTimeout(() => {
+      subsurfaceDwellTimerRef.current = null;
+      setConfirmedSubsurface(subsurface);
+      // #2699 (요구사항 4) — 확정 전환 1건 계측. 다음 라이드 덤프에서 이 로그와 실제
+      // POST /trips CALL 횟수를 1:1 대조해 RCA를 완전히 닫는다.
+      logSubsurfaceRegisterTransition(subsurface);
+    }, SUBSURFACE_REGISTER_DWELL_MS);
+    return () => {
+      if (subsurfaceDwellTimerRef.current !== null) {
+        clearTimeout(subsurfaceDwellTimerRef.current);
+        subsurfaceDwellTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- confirmedSubsurface는 setState로만
+    // 갱신되며, effect가 그 자신의 최신 값을 읽기 위해서만 deps에 필요하다(무한 루프 아님 —
+    // subsurface===confirmedSubsurface가 되는 순간 위 early return으로 수렴).
+  }, [subsurface, confirmedSubsurface]);
+
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
+  // subsurface 슬롯에는 raw prop이 아니라 dwell-확정된 confirmedSubsurface를 저장한다 —
+  // Tier 2 fallback 게이트(buildTier2FallbackOverride)를 포함한 모든 소비자가 동일하게
+  // 확정값만 보게 하기 위함.
   const latestInputsRef = useRef({
     route,
     destination,
     nextStationEtaSeconds,
     currentStation,
     boardingLock,
-    subsurface,
+    subsurface: confirmedSubsurface,
     infoModeEnabled,
     promptOptIn,
     promptOptInHydrated,
@@ -342,7 +388,7 @@ export function useApnsTripRegistration({
       nextStationEtaSeconds,
       currentStation,
       boardingLock,
-      subsurface,
+      subsurface: confirmedSubsurface,
       infoModeEnabled,
       promptOptIn,
       promptOptInHydrated,
@@ -1111,9 +1157,20 @@ export function useApnsTripRegistration({
     // deps에서 제외한다. 첫 register 후 backend cron(#704/#705)이 자체 progress KV로
     // station-by-station advance를 영속화하므로 client 재등록이 불필요하다. latestInputsRef로
     // token-refresh 경로는 여전히 최신값을 사용한다.
-    // #903 (Seam G): subsurface 변화 시 backend threshold(5→10)를 빨리 갱신해 지하 진입 직후
-    // 일시 GPS/arrival 누락에 인내. useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로
-    // deps churn 위험 낮음. alarmBackend의 dedup hash가 subsurface 미변화 사이클은 POST를 skip.
+    // #903 (Seam G) → #2699 (정정, RCA 9/21 "원인 확정" 코멘트): subsurface 변화 시 backend
+    // threshold(5→10)를 빨리 갱신해 지하 진입 직후 일시 GPS/arrival 누락에 인내. **이 deps
+    // slot은 raw prop이 아니라 `confirmedSubsurface`(위 dwell 게이트 참고)다.** 과거 이 주석은
+    // "useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로 deps churn 위험 낮음"이라고
+    // 단정했으나 사실과 달랐다 — useBarometer의 실제 hysteresis는 1Hz 샘플 ×
+    // BAROMETER_SUBSURFACE_CONFIRM_SAMPLES(3) = 약 3초 디바운스뿐이고(30s는 dP/dt 회귀
+    // 윈도우지 토글 디바운스가 아니다), 지하/지상 경계에서 raw subsurface는 4~13초 간격으로
+    // 반복 토글됐다(실측 6쌍). "alarmBackend dedup hash가 미변화 사이클은 skip한다"는 주장도
+    // 성립하지 않았다 — hash에 함께 포함된 alarmBucket(시간종속)·waypoints/promptDisplayKey
+    // (currentStation 파생, 매 register 호출마다 사실상 항상 변동)가 hash를 사실상 상시-변동
+    // 상태로 만들어 dedup이 실제로는 거의 작동하지 않았다(alarmBackend.ts buildRegisterHash
+    // 참고, alarmBucket은 #2699에서 제거). 18분 trip에 POST /trips 29~37회 폭주(#2699)가 이
+    // 잘못된 전제의 실측 결과 — 이제는 raw subsurface가 dwell 게이트를 통과해 30초간 안정된
+    // 전환만 이 deps slot에 반영되므로, 개별 토글은 더 이상 effect를 재실행하지 않는다.
     // #1923: infoModeEnabled 변화 시 backend lockless intermediate gate를 즉시 활성화해 다음 cron
     // cycle부터 station-passed silent push 발사가 가능. 토글 빈도는 사용자 명시 의향 표명/trip 종료
     // 시점만이므로 deps churn 위험 낮음. alarmBackend dedup hash가 미변화 사이클은 POST를 skip.
@@ -1131,7 +1188,7 @@ export function useApnsTripRegistration({
     routeSig,
     destination?.id,
     boardingLockSig,
-    subsurface,
+    confirmedSubsurface,
     infoModeEnabled,
     promptOptIn,
     promptOptInHydrated,

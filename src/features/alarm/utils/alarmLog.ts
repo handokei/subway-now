@@ -187,7 +187,13 @@ export type AlarmLogSource =
   // logger.info만 있던 두 분기(lastAdvanceAt 역행 / sentAt tie-break 역행)를 적재.
   | 'backend-ssot-mirror-stale-skip'
   // #2768 — useArrivalAutoClear가 trip을 자동 종료시키는 부수효과(onClear) 발동 stamp.
-  | 'arrival-auto-clear-fired';
+  | 'arrival-auto-clear-fired'
+  // #2699 — subsurface(기압계 지하 판정)가 dwell 게이트(SUBSURFACE_REGISTER_DWELL_MS, 30s)를
+  // 통과해 backend register(POST /trips) 트리거/payload로 실제 승격된 시점 1건. 기존에는 이
+  // 전환을 관측할 방법이 없어 "어느 dep이 몇 번 변했는지"를 덤프 교차 대조로만 추정했다(RCA
+  // 9/21 코멘트) — 다음 라이드에서 이 로그와 실제 POST /trips CALL 횟수를 1:1 대조해 완전
+  // 확정한다.
+  | 'subsurface-register-confirmed';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -1917,6 +1923,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'live-activity-mirror-skip': null,
   'backend-ssot-mirror-stale-skip': null,
   'arrival-auto-clear-fired': null,
+  // #2699 — subsurface 확정 전환 계측은 silent push와 무관한 별도 채널.
+  'subsurface-register-confirmed': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -2006,6 +2014,9 @@ export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'live-activity-mirror-skip': false,
   'backend-ssot-mirror-stale-skip': false,
   'arrival-auto-clear-fired': false,
+  // #2699 — subsurface 확정 전환은 backend threshold 조정 신호이지 사용자에게 노출되는
+  // station-passed/transfer/destination 알람이 아니다. fire 분모 오염 방지 위해 제외.
+  'subsurface-register-confirmed': false,
 };
 
 /**
@@ -3152,6 +3163,23 @@ export function logLegTransition(input: { fromLine: string; transferStationName:
     source: 'leg-transition',
     outcome: 'fired',
     stationName: `${input.fromLine}·${input.transferStationName}`,
+  });
+}
+
+/**
+ * #2699 (요구사항 4) — subsurface 값이 dwell 게이트를 통과해 backend register 트리거로
+ * 실제 승격된 시점 1건 적재. `useApnsTripRegistration`의 dwell 타이머 콜백에서만 호출된다
+ * (타이머 자체가 최소 `SUBSURFACE_REGISTER_DWELL_MS`(30s) 간격을 구조적으로 보장하므로
+ * 별도 dedup 창은 두지 않는다 — accel-pattern-observed와 달리 호출 빈도가 이미 낮다).
+ */
+export function logSubsurfaceRegisterTransition(next: boolean): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'subsurface-register-confirmed',
+    outcome: 'fired',
+    // stationName 슬롯에 확정된 값 인코딩 — 기존 schema 확장 없이 DebugModal에서 가시화
+    // (logAccelPatternObserved와 동일 관례).
+    stationName: next ? 'subsurface=true' : 'subsurface=false',
   });
 }
 

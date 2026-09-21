@@ -199,14 +199,12 @@ export interface AlarmBackendResult {
 const DEFAULT_TRIP_TTL_MS = 2 * 60 * 60 * 1000;
 /** fetch 타임아웃 — 백엔드 응답 지연으로 알람 등록이 차단되지 않도록 짧게 유지. */
 const REQUEST_TIMEOUT_MS = 5000;
-/**
- * register dedup 시 `alarmAtEpochMs`를 묶는 버킷(ms).
- *
- * `alarmAtEpochMs = now + ETA*1000`이므로 Open API ETA가 30~60초 단위로 흔들리면
- * 매 GPS 폴링마다 다른 값이 된다. 버킷 단위(60s)로 떨어뜨려 동일 트립의 잔jitter를
- * 흡수한다. 정확한 발사 시각은 백엔드 cron이 reschedule로 자체 보정한다.
- */
-const ALARM_TIME_BUCKET_MS = 60 * 1000;
+// #2699 — 과거 register dedup hash는 `alarmAtEpochMs`를 60s 버킷(`ALARM_TIME_BUCKET_MS`)으로
+// 묶어 `alarmBucket` 필드로 포함했다. `alarmAtEpochMs = now + ETA*1000`이므로 이 값은 register가
+// 호출되는 매 순간의 시계 자체에 종속돼 최소 60s마다 hash가 바뀐다 — 트립 내용이 전혀 바뀌지
+// 않아도 "동일 페이로드"를 dedup이 더 이상 잡아내지 못하는 시간종속 오염이었다(RCA 9/21
+// "원인 확정" 코멘트 요구사항 2). 정확한 발사 시각은 어차피 백엔드 cron이 reschedule로 자체
+// 보정하므로 hash에 필요 없다 — 완전히 제거한다(buildRegisterHash 참고).
 
 /**
  * 마지막으로 백엔드에 성공적으로 등록된 트립 페이로드의 해시.
@@ -235,7 +233,6 @@ function buildRegisterHash(body: {
   route: NonNullable<Route>;
   destination: string;
   waypoints: AlarmWaypoint[];
-  alarmAtEpochMs: number;
   apnsEnv: ApnsEnv;
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
@@ -245,12 +242,25 @@ function buildRegisterHash(body: {
   boardingCommitted?: boolean;
   sleepModeEnabled?: boolean;
 }): string {
+  // #2699 (요구사항 2, RCA "원인 확정" 코멘트) — 필드별 hash 포함 여부 재검토 결과:
+  //   - alarmBucket(제거됨): `alarmAtEpochMs` 유래 — register가 호출되는 매 순간의 시계에
+  //     종속돼 트립 내용이 전혀 안 바뀌어도 60s마다 hash가 갱신되는 시간종속 오염이었다.
+  //     완전히 제거 — 위 ALARM_TIME_BUCKET_MS 삭제 주석 참고.
+  //   - waypoints / promptDisplayKey(유지): 둘 다 `currentStation` 파생이지만, 이 값은
+  //     의도적으로(#703) register effect의 deps에서 제외돼 있어 **effect 자체의 재실행
+  //     빈도**에는 영향을 주지 않는다 — 영향 범위는 이미 발사가 결정된 순간의 페이로드
+  //     내용뿐이다. 그리고 그 순간에도 currentStation 전환에 따른 갱신은 context-heal
+  //     (Tier 1/2, `useApnsTripRegistration.ts`)이 **의도적으로** 새 waypoints/promptDisplay를
+  //     실어 재전송하려는 경로다 — 여기서 두 필드를 hash에서 빼면 heal POST가 직전 register와
+  //     우연히 다른 필드(route/destination/apnsEnv 등)만 같을 때 hash가 일치해 조용히
+  //     skip되어 heal 자체가 무력화된다(진짜 필요한 재등록을 죽이지 말 것 — 이슈 요구사항 3).
+  //     반면 raw `subsurface`가 만들던 실제 폭주(29~37회/trip)는 이 hash가 아니라 register
+  //     effect deps 자체(dwell 게이트로 해결, `useApnsTripRegistration.ts`)가 원인이었다.
   return JSON.stringify({
     token: body.token,
     route: body.route,
     destination: body.destination,
     waypoints: body.waypoints,
-    alarmBucket: Math.floor(body.alarmAtEpochMs / ALARM_TIME_BUCKET_MS),
     apnsEnv: body.apnsEnv,
     // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
     // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
@@ -259,7 +269,9 @@ function buildRegisterHash(body: {
       ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
       : null,
     // #903 (Seam G) — subsurface 토글이 바뀌면 backend threshold가 즉시 갱신되도록 dedup 키 포함.
-    // 빈번한 ON/OFF jitter는 useBarometer의 60s 윈도우 평가가 자체 흡수하므로 폭주 위험 낮음.
+    // #2699 — 이 필드로 흘러드는 값은 이제 useApnsTripRegistration의 dwell 게이트
+    // (SUBSURFACE_REGISTER_DWELL_MS, 30s)를 통과한 확정 전환뿐이다 — raw 센서 토글은 더 이상
+    // register 호출 자체에 도달하지 않으므로 이 필드 자체의 폭주 위험은 근본에서 해소됐다.
     subsurface: body.subsurface === true,
     // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
     // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
@@ -452,7 +464,6 @@ export function registerActiveTrip(
     route: payload.route,
     destination: payload.destination,
     waypoints: payload.waypoints,
-    alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
     promptDisplay: payload.promptDisplay,
     subsurface: payload.subsurface,

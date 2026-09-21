@@ -105,6 +105,7 @@ import {
   logCompanionAlarmFired,
   logLastTrainAlarmFired,
   logLegTransition,
+  logSubsurfaceRegisterTransition,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
@@ -3558,6 +3559,31 @@ describe('alarmLog', () => {
       const counts = countSilentPushOutcomes(entries);
       // leg-transition은 SILENT_PUSH_OUTCOME_SOURCES에서 null bucket — silent push 카운터에 미반영.
       expect(counts).toEqual({ received: 0, fired: 1, skipped: 0 });
+    });
+
+    it.each([
+      { next: true, expected: 'subsurface=true' },
+      { next: false, expected: 'subsurface=false' },
+    ])('#2699: logSubsurfaceRegisterTransition($next)이 subsurface-register-confirmed entry를 적재한다', async ({ next, expected }) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSubsurfaceRegisterTransition(next);
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('subsurface-register-confirmed');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].stationName).toBe(expected);
+    });
+
+    it('#2699: subsurface-register-confirmed source는 fire 분모/silent push outcome 집계 모두에서 제외', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: now - 1000, source: 'subsurface-register-confirmed', outcome: 'fired' },
+        { ts: now - 2000, source: 'fg', outcome: 'fired' },
+      ];
+      expect(countFiredAlarms(entries)).toBe(1); // subsurface-register-confirmed는 분모 제외.
+      const counts = countSilentPushOutcomes(entries);
+      expect(counts).toEqual({ received: 0, fired: 0, skipped: 0 });
     });
 
     it('countBoardingPromptByWindow가 윈도우별 발사 횟수를 집계한다', () => {
