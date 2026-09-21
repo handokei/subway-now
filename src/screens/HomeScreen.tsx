@@ -1136,10 +1136,6 @@ export default function HomeScreen() {
     currentStation: result?.station ?? null,
     boardingLock,
     subsurface: barometerSubsurface,
-    // #2699 (리뷰 지적, PR #2789 "각도 A" 항목 1) — flap-quarantine 만료 재평가용 liveness
-    // heartbeat. barometer가 살아있는 동안만(BG suspend 중엔 멈춤) 전진 — 벽시계 타이머 없이
-    // "quarantine이 만료됐고 raw가 여전히 confirmed와 다르면 확정"을 안전하게 재평가한다.
-    subsurfaceTickAt: barometerSignal.lastEvaluatedAt,
     // #1923 — 사용자 명시 의향 토글. backend가 lockless intermediate gate 진입에 사용 →
     // station-passed silent push 발사. 미stamp(false) trip은 기존 lockMissing skip 동작.
     infoModeEnabled,

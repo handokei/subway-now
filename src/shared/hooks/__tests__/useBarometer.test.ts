@@ -428,14 +428,7 @@ describe('useBarometer (#875)', () => {
     nowSpy.mockRestore();
   });
 
-  // #2619 review (F3)는 원래 이 steady 구간에서 렌더 0을 요구했다. #2699(PR #2789 리뷰
-  // 2라운드)가 `lastEvaluatedAt` liveness heartbeat(매 신규 reading 처리마다 setState, verdict/
-  // quorum 변화와 무관)를 추가하면서 이 불변식이 의도적으로 바뀌었다 — subsurface
-  // flap-quarantine이 "raw 값 자체가 안 바뀌는" 구간에서도 quarantine 만료를 재평가할 신호가
-  // 필요했고(`useApnsTripRegistration.ts` 참고), barometer가 살아있는 동안만 전진하는 이
-  // heartbeat가 그 신호다. 대가는 steady 상태에서도 1Hz(신규 reading 처리 주기) 렌더가
-  // 발생한다는 것 — F3가 막으려던 14~21Hz 네이티브 콜백 폭주에 비하면 여전히 14~21배 개선.
-  it('#2699 이후 steady 상태에서도 신규 reading마다 1Hz 렌더(liveness heartbeat) — F3 0-렌더 불변식은 의도적으로 대체됨', async () => {
+  it('#2619 review (F3) — steady 상태(verdict/quorum 경계 변화 없음)에서는 listener가 계속 발화해도 렌더 0', async () => {
     let renderCount = 0;
     mockIsAvailable.mockResolvedValue(true);
     mockRequestPermissions.mockResolvedValue({ granted: true });
@@ -457,9 +450,8 @@ describe('useBarometer (#875)', () => {
     renderCount = 0;
 
     // 이후 10 tick 동안 listener는 계속 발화(stall 아님 — 신규 reading은 매 tick 들어옴)하지만
-    // dP≈0(verdict 불변) + readingCount는 quorum(30) 미만에 머물러 경계 변화도 없다. verdict/
-    // quorum 자체는 안 바뀌지만, 매 tick 신규 reading을 처리하므로 liveness heartbeat
-    // (lastEvaluatedAt)가 매번 갱신돼 10회 렌더가 발생한다.
+    // dP≈0(verdict 불변) + readingCount는 quorum(30) 미만에 머물러 경계 변화도 없다 — 렌더가
+    // 전혀 없어야 한다(#2619 review F3 — quorum 경계 crossing 시에만 setReadingCount).
     for (let i = 0; i < 10; i++) {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + (3 + i) * 1_000);
       act(() => {
@@ -468,8 +460,7 @@ describe('useBarometer (#875)', () => {
       });
     }
 
-    expect(renderCount).toBe(10);
-    expect(result.current.lastEvaluatedAt).toBe(baseT + BAROMETER_DPDT_WINDOW_MS + 12_000);
+    expect(renderCount).toBe(0);
     nowSpy.mockRestore();
   });
 

@@ -7,6 +7,7 @@ import {
   useBoardingLockSync,
   GOOD_FIX_ACCURACY_MAX_M,
   SYNC_DEBOUNCE_MS,
+  DEDUP_RESET_COOLDOWN_MS,
   __resetFireSync404GuardForTests,
 } from '../useBoardingLockSync';
 import { syncBoardingLock } from '../../../nearest-station/api/boardingLockSync';
@@ -133,11 +134,11 @@ describe('useBoardingLockSync (#901)', () => {
     expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1);
   });
 
-  // #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 3) — 지속 장애(backend가 계속 404를
+  // #2699 (리뷰 지적, PR #2789 리뷰 2~3라운드 — 항목 3) — 지속 장애(backend가 계속 404를
   // 돌려주는 상태) 시나리오. 매 station-change마다 무조건 리셋하면 다음 register가 매번
-  // dedup skip을 우회해 죽어가는 backend에 POST가 계속 쌓인다 — reset 자체가 상한 없이
-  // 반복되면 안 된다.
-  it('#2699 같은 token에 연속 404 × N → resetAlarmBackendDedup은 상한(1회)만 호출된다', async () => {
+  // dedup skip을 우회해 죽어가는 backend에 POST가 계속 쌓인다 — reset 자체가 쿨다운
+  // (DEDUP_RESET_COOLDOWN_MS) 없이 반복되면 안 된다.
+  it('#2699 지속 장애(연속 404) 동안 resetAlarmBackendDedup은 쿨다운 안에서 상한(1회)만 호출된다', async () => {
     mockedSync.mockResolvedValue({ ok: false, status: 404 });
     const { rerender } = renderHook(
       ({ station }: { station: string }) =>
@@ -154,7 +155,7 @@ describe('useBoardingLockSync (#901)', () => {
     expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1);
 
     // 서로 다른 station으로 계속 전환 — 매번 새 sync가 발사되지만(같은 station dedup과
-    // 무관) 여전히 backend는 404. reset은 최초 1회에서 상한 도달.
+    // 무관) 여전히 backend는 404. 쿨다운(60s) 안이므로 reset은 최초 1회에서 상한 도달.
     for (const station of ['역삼', '선릉', '삼성']) {
       rerender({ station });
       // eslint-disable-next-line no-await-in-loop -- 실제 station-change 순서가 본질적.
@@ -163,10 +164,15 @@ describe('useBoardingLockSync (#901)', () => {
       await flushAsyncStorage();
     }
     expect(mockedSync).toHaveBeenCalledTimes(4); // sync 자체는 매번 발사.
-    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1); // reset은 상한 1회.
+    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1); // reset은 쿨다운 안 상한 1회.
   });
 
-  it('#2699 404 리셋 이후 sync가 성공(회복)하면, 다음 404 에피소드에서 다시 리셋할 수 있다', async () => {
+  // #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 3 red) — 2라운드 latch(token+sync-ok) 버전은
+  // 이 시나리오에서 스톨했다: 404 → dedup 리셋으로 register 성공(trip 재생성) → 하지만
+  // **sync 자체**는 여전히 404(예: KV 전파 지연) → 이후 진짜 2차 trip 손실이 와도 latch가
+  // "sync 성공"을 못 봐서 재리셋을 skip → trip 영구 사망. 3라운드(쿨다운)는 sync 성공 여부와
+  // 무관하게 쿨다운만 지나면 재리셋하므로 스톨이 불가능하다.
+  it('#2699 404→(쿨다운 경과, sync는 여전히 404)→재404 → 두 번째도 dedup이 리셋된다 (latch 스톨 회귀 방지)', async () => {
     mockedSync.mockResolvedValueOnce({ ok: false, status: 404 });
     const { rerender } = renderHook(
       ({ station }: { station: string }) =>
@@ -181,18 +187,14 @@ describe('useBoardingLockSync (#901)', () => {
     await flushAsyncStorage();
     expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1);
 
-    // 회복 — sync 성공.
-    mockedSync.mockResolvedValueOnce({ ok: true, advanced: true, currentWaypoint: '역삼', nextStation: '역삼' });
+    // 쿨다운 경과 — 하지만 sync는 (register는 성공했을지 몰라도) 여전히 404를 내려준다고
+    // 가정한다(latch를 "sync 성공"에 결속했다면 여기서 영구히 막혔을 시나리오).
+    act(() => jest.advanceTimersByTime(DEDUP_RESET_COOLDOWN_MS));
+    mockedSync.mockResolvedValueOnce({ ok: false, status: 404 });
     rerender({ station: '역삼' });
     act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
     await flushAsyncStorage();
-    expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(1); // 성공 사이클엔 추가 리셋 없음.
-
-    // 새 404 에피소드 — latch가 풀렸으므로 다시 리셋돼야 한다.
-    mockedSync.mockResolvedValueOnce({ ok: false, status: 404 });
-    rerender({ station: '선릉' });
-    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS));
-    await flushAsyncStorage();
+    // 쿨다운이 지났으므로 sync 성공 여부와 무관하게 재리셋된다 — 스톨 없음.
     expect(mockedResetAlarmBackendDedup).toHaveBeenCalledTimes(2);
   });
 

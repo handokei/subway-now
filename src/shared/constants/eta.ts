@@ -16,3 +16,17 @@ export const ARRIVAL_FRESHNESS_MS = 60_000;
 // 그 최댓값(22분)에 폴링 지연 버퍼를 더해 30분으로 잡아, 정상 최장 배차에서는 절대 조기 소멸시키지
 // 않으면서도 전이 감지가 끊긴 극단 상황에서는 결국 낡은 후보를 내린다.
 export const PREV_TRAIN_CANDIDATE_BACKSTOP_MS = 30 * 60_000;
+
+// #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 2) — backend `scheduled.ts`의 폴링 윈도우
+// 게이트(`trip.alarmAtEpochMs - now > POLLING_WINDOW_MS`)와 정합되는 값(초). #2699가 register
+// dedup hash에서 시간종속 `alarmBucket`을 제거하면서, "ETA>5분에 첫 register → alarmAtEpochMs가
+// 미래 5분+로 동결 → 이후 ETA가 실제로 줄어도(예: 8분→2분) 재등록 트리거가 없어(nextStationEtaSeconds
+// 자체는 #703로 deps 제외) 폴링 게이트가 실제 ETA보다 늦게 열림" 회귀가 드러났다(리뷰 재지적) —
+// 구 `alarmBucket`이 ≤60s마다 우연히 hash를 갈아치우던 부수효과에 암묵적으로 의존하고 있었다.
+//
+// 고친 값: `nextStationEtaSeconds`를 그대로 deps/hash에 넣지 않는다(30s GPS/arrival 폴링마다
+// jitter — #703이 막으려던 churn이 그대로 재발한다). 대신 "ETA가 이 폴링 윈도우 **경계를
+// 넘었는가**"라는 한 번만 바뀌는 거친 boolean(`useApnsTripRegistration`의
+// `etaWithinPollingWindow`)만 deps/hash에 반영한다 — 초 단위 지터는 무시하고, 게이트가 실제로
+// 열려야 할 시점과 정확히 같은 순간에만 재등록을 트리거한다.
+export const ETA_POLLING_WINDOW_SEC = 5 * 60;

@@ -13,6 +13,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { type ApnsEnv, setConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
+import { ETA_POLLING_WINDOW_SEC } from '../../../shared/constants/eta';
 import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
 const log = createLogger('alarmBackend');
@@ -216,7 +217,7 @@ const REQUEST_TIMEOUT_MS = 5000;
 // 않아도 "동일 페이로드"를 dedup이 더 이상 잡아내지 못하는 시간종속 오염이었다(RCA 9/21
 // "원인 확정" 코멘트 요구사항 2). 완전히 제거한다(buildRegisterHash 참고).
 //
-// #2699 (리뷰 지적, "각도 C" 항목 4, 정정) — 제거해도 무해한 이유를 "백엔드 cron이 reschedule로
+// #2699 (리뷰 지적, "각도 C" 항목 4) — 제거해도 무해한 이유를 "백엔드 cron이 reschedule로
 // 자체 보정한다"라고 서술했었는데 부정확했다: backend는 `trip.alarmAtEpochMs`를 스스로
 // 재기록(reschedule)하지 않는다 — 저장된 값은 device가 마지막으로 register한 시점 그대로
 // 고정된다. 이 필드의 유일한 backend 소비처는 `scheduled.ts`의 one-shot 윈도우 진입 게이트
@@ -227,6 +228,16 @@ const REQUEST_TIMEOUT_MS = 5000;
 // 열린 채로 유지된다(backend `scheduled.test.ts` "#2699 alarmAtEpochMs가 동결(먼 과거)돼도
 // 폴링 게이트는 자연히 열려 있다" 테스트로 고정) — 동결이 무해함은 "cron이 보정해서"가 아니라
 // "게이트가 편도(one-directional)라서"다.
+//
+// #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 2) — 단, **미래 방향**은 위 분석이 놓쳤다.
+// ETA>5분에 첫 register하면 `alarmAtEpochMs`가 미래 5분+로 동결된다 — 이후 실제 ETA가
+// 줄어도(예: 8분→2분) 재등록 트리거가 없으므로(`nextStationEtaSeconds` 자체는 #703로 deps
+// 제외) 폴링 게이트가 **실제 ETA보다 늦게** 열린다. 구 `alarmBucket`이 ≤60s마다 우연히 hash를
+// 갈아치우던 부수효과가 이 지연을 가려왔다. 고친 값: `alarmAtEpochMs` 원본을 hash에 다시
+// 넣는 대신(그러면 alarmBucket 문제가 재발한다), "ETA가 폴링 윈도우 경계를 실제로 넘었는가"만
+// 보는 거친 boolean(`etaWithinPollingWindow`, 아래 `buildRegisterHash` 참고)을 hash에
+// 반영한다 — trip당 사실상 최대 1회만 바뀌므로 시간종속 churn 없이, 게이트가 실제로 열려야
+// 하는 순간에는 반드시 재등록을 통과시킨다.
 
 /**
  * 마지막으로 백엔드에 성공적으로 등록된 트립 페이로드의 해시.
@@ -256,6 +267,13 @@ function buildRegisterHash(body: {
   destination: string;
   waypoints: AlarmWaypoint[];
   apnsEnv: ApnsEnv;
+  /**
+   * #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 2) — hash 계산 전용 입력. 원본
+   * `alarmAtEpochMs`를 그대로 hash에 넣지 않는다(그러면 옛 `alarmBucket`과 같은 시간종속
+   * 오염이 재발한다) — 대신 이 값과 `Date.now()`의 차이가 `ETA_POLLING_WINDOW_SEC` 경계를
+   * 넘었는지만(`etaWithinPollingWindow`, 아래) 거친 boolean으로 환산해 hash에 반영한다.
+   */
+  alarmAtEpochMs: number;
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
@@ -268,6 +286,11 @@ function buildRegisterHash(body: {
   //   - alarmBucket(제거됨): `alarmAtEpochMs` 유래 — register가 호출되는 매 순간의 시계에
   //     종속돼 트립 내용이 전혀 안 바뀌어도 60s마다 hash가 갱신되는 시간종속 오염이었다.
   //     완전히 제거 — 위 ALARM_TIME_BUCKET_MS 삭제 주석 참고.
+  //   - etaWithinPollingWindow(재도입, 3라운드 리뷰 — 항목 2): alarmAtEpochMs 원본이 아니라
+  //     "backend 폴링 윈도우 경계를 넘었는가"만 보는 거친 boolean. ETA>5분 상태에서 첫
+  //     register한 뒤 alarmAtEpochMs가 미래에 동결돼도, 실제 ETA가 그 경계 밑으로 줄어드는
+  //     순간에는 이 값이 뒤집혀 재등록이 통과한다 — trip당 사실상 최대 1회만 바뀌므로
+  //     alarmBucket과 달리 시간종속 churn을 만들지 않는다.
   //   - waypoints / promptDisplayKey(유지): 둘 다 `currentStation` 파생이지만, 이 값은
   //     의도적으로(#703) register effect의 deps에서 제외돼 있어 **effect 자체의 재실행
   //     빈도**에는 영향을 주지 않는다 — 영향 범위는 이미 발사가 결정된 순간의 페이로드
@@ -278,12 +301,14 @@ function buildRegisterHash(body: {
   //     skip되어 heal 자체가 무력화된다(진짜 필요한 재등록을 죽이지 말 것 — 이슈 요구사항 3).
   //     반면 raw `subsurface`가 만들던 실제 폭주(29~37회/trip)는 이 hash가 아니라 register
   //     effect deps 자체(dwell 게이트로 해결, `useApnsTripRegistration.ts`)가 원인이었다.
+  const etaWithinPollingWindow = body.alarmAtEpochMs - Date.now() <= ETA_POLLING_WINDOW_SEC * 1000;
   return JSON.stringify({
     token: body.token,
     route: body.route,
     destination: body.destination,
     waypoints: body.waypoints,
     apnsEnv: body.apnsEnv,
+    etaWithinPollingWindow,
     // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
     // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
     // 게이트 평가 시점에 KV series로 자체 계산하니 영향 없음.
@@ -486,6 +511,7 @@ export function registerActiveTrip(
     destination: payload.destination,
     waypoints: payload.waypoints,
     apnsEnv: payload.apnsEnv,
+    alarmAtEpochMs: payload.alarmAtEpochMs,
     promptDisplay: payload.promptDisplay,
     subsurface: payload.subsurface,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.

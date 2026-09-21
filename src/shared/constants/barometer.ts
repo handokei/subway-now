@@ -164,36 +164,41 @@ export const BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS = 180_000;
  *
  * 단위: ms.
  *
- * ## 설계가 "항상 30s 지연"에서 "즉시 확정 + 되돌아온 전환만 보정"으로 바뀐 이유
+ * ## 설계 이력(v1 → v4, PR #2789 리뷰 3라운드)
  *
- * 최초 구현(v1)은 raw 전환마다 30s 동안 안정을 기다린 뒤에만 확정했다 — 이러면 register
- * churn은 막히지만 두 가지 진짜 신호를 함께 죽인다:
- *   - Tier 2 지하 fallback heal(`buildTier2FallbackOverride`)과 boardingPrompt evidence
- *     environment(backend `boardingPrompt.ts:197`)가 지하 진입 판정 자체를 기다려야 해서,
- *     실제로 경계에서 flapping이 계속되면(9/18 실측 패턴) 확정이 trip 내내 영원히 안 될 수
- *     있다 — dwell 게이트의 목적(register 재등록 churn 억제)이 아닌 다른 소비자의 판정을
- *     의도치 않게 재정의해버린다(리뷰 지적, PR #2789).
- *   - 진짜 단일 전환(예: 열차가 지하로 진입해 그대로 유지)도 30s를 무조건 기다려야 해서
- *     backend가 그만큼 늦게 안다.
+ * - **v1(30s 항상-dwell)**: raw 전환마다 30s 동안 안정을 기다린 뒤에만 확정. register churn은
+ *   막히지만 Tier 2 지하 fallback heal(`buildTier2FallbackOverride`)/boardingPrompt evidence
+ *   environment가 지하 진입 판정 자체를 기다려야 해서, 경계에서 flapping이 계속되면(9/18 실측
+ *   패턴) 확정이 trip 내내 영원히 안 될 수 있었다 — dwell 게이트의 목적(register churn
+ *   억제)이 아닌 다른 소비자의 판정까지 의도치 않게 재정의했다.
+ * - **v2(즉시 확정 + quarantine 보정)**: 되돌아오지 않는 전환은 즉시 confirm, quarantine 창
+ *   안의 되돌아온 전환만 이전 안정값으로 보정. 단, "raw 값이 실제로 바뀌는 렌더에서만"
+ *   재평가해서 flap이 한 방향에 정착해버리면(예: 진짜 지하 진입 후 더는 안 흔들림) quarantine
+ *   **만료 자체**를 감지할 계기가 없어 confirmed가 영구 고착되는 수렴 결함이 있었다.
+ * - **v3(전역 heartbeat)**: `useBarometer`에 1Hz liveness heartbeat state를 추가해 만료를
+ *   이벤트로 만들었으나, 그 state가 barometer 활성 내내 소비자 전체(HomeScreen →
+ *   useFusedNearestStation 등)를 1Hz로 리렌더시켰다 — #2619(F3)가 막았던 렌더 폭주를
+ *   되돌리는 발열 회귀(리뷰 재지적).
+ * - **v4(현재, hook-local watcher)**: 전역 state 없이 `useApnsTripRegistration` 내부에서만
+ *   quarantine이 pending(raw!==confirmed)인 동안 로컬 `setTimeout`을 armed한다. steady
+ *   state(대다수 시간)에는 타이머 자체가 없어 barometer/HomeScreen 렌더 빈도가 이 기능 도입
+ *   이전과 동일하게 유지된다.
  *
- * v2(현재)는 다음 불변식을 만족한다(재설계 지시, PR #2789):
+ * 불변식(v4 기준):
  *   1. **즉시 확정** — raw 전환이 발생하면(quarantine 창 밖이면) 지연 없이 즉시 confirm.
- *      되돌아오지 않는 진짜 전환은 register가 그 즉시(다음 렌더) 나간다.
- *   2. **quarantine 창 안의 되돌아온 전환만 억제** — 직전 전환으로부터 이 창(`SUBSURFACE_FLAP_QUARANTINE_MS`)
- *      안에 반대 방향 전환이 다시 오면 "flap"으로 보고, quarantine 진입 **이전**의 안정값으로
- *      되돌린다(그 사이 바뀐 것 자체를 취소). 추가 bounce는 창을 연장만 할 뿐 추가 상태변화를
- *      만들지 않는다 — 한 flap episode당 register는 최대 2회(최초 낙관적 확정 1회 + 보정
- *      1회)로 유계이며, bounce 횟수에 비례해 늘지 않는다. 문자 그대로 0회는 "즉시 확정"과
- *      수학적으로 양립 불가(미래를 미리 알 수 없다) — 대신 무계수(N=bounce 수) 폭주였던
- *      원 버그를 유계(상수)로 바꾼다.
- *   3. **타이머 없음 — 벽시계 의존 제거.** v1의 `setTimeout(30s)`은 iOS BG suspend 중 멈췄다가
- *      resume 시 "관측 없이 경과"를 확정으로 오인할 위험이 있었다(리뷰 지적). v2는 오직
- *      raw `subsurface` prop이 실제로 바뀌는(=barometer 샘플이 도착하는) 렌더에서만
- *      동기적으로 판단한다 — suspend 중엔 아무 effect도 안 돌고, resume 후 첫 실제 샘플이
- *      도착한 그 사이클에 곧바로 반영된다.
+ *   2. **quarantine 창 안의 되돌아온 전환만 억제** — 직전 전환으로부터 이 창
+ *      (`SUBSURFACE_FLAP_QUARANTINE_MS`) 안에 반대 방향 전환이 다시 오면 "flap"으로 보고,
+ *      quarantine 진입 **이전**의 안정값으로 되돌린다(취소). 추가 bounce는 창을 연장만 할 뿐
+ *      추가 상태변화를 만들지 않는다.
+ *   3. **만료도 재평가된다** — pending 동안 armed된 로컬 watcher 타이머가 quarantine 만료
+ *      시점에 최종 값을 재확인해 raw로 수렴시킨다(수렴 보장, v2→v3→v4를 거친 핵심 수정).
  *   4. **mount seed 비대칭 없음** — 초기 confirmed는 raw를 그대로 채택하지 않고 `false`
- *      (미확정)에서 시작해 첫 관측도 다른 전환과 완전히 동일한 알고리즘을 거친다. 리마운트
- *      순간의 일시 blip도 특별 취급 없이 같은 flap quarantine 로직으로 흡수된다.
+ *      (미확정)에서 시작해 첫 관측도 다른 전환과 완전히 동일한 알고리즘을 거친다.
+ *
+ * 한 flap episode당 register는 **최대 3회**(최초 낙관적 확정 1회 + 되돌림 보정 1회 +
+ * quarantine 만료 후 최종 확정 1회)로 유계이며, bounce 횟수에 비례해 늘지 않는다. 문자 그대로
+ * 0회는 "즉시 확정"과 수학적으로 양립 불가(미래를 미리 알 수 없다) — 대신 무계수(N=bounce 수)
+ * 폭주였던 원 버그를 유계(상수)로 바꾼다.
  *
  * 창 값 근거(2026-09-18/21 실측 — RCA "원인 확정" 코멘트): 관측된 flap 간격 4~13초. 20s는
  * 그 상한의 1.5배 이상이라 경계 flapping을 안정적으로 같은 episode로 묶으면서도, 훨씬 더

@@ -499,21 +499,30 @@ async function retryLockIdentity(
   );
 }
 
-// #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 3) — 404 self-heal churn 가드.
+// #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 3) — 404 self-heal churn 가드.
 //
 // 지속 장애(backend가 계속 trip을 못 찾는 상태)에서 station-change마다 매번
 // resetAlarmBackendDedup을 호출하면, 다음 register 시도가 매번 dedup skip을 우회해 실제
 // fetch를 낸다 — 이미 죽어가는 backend에 sync 호출당 register POST 1건씩이 추가로 쏟아진다.
-// 같은 token에 대해서는 **한 번만** 리셋하고, 그 token으로 sync가 **성공**(404가 아닌 ok)할
-// 때까지 재리셋을 금지한다 — "재등록 성공 전까지 재리셋 금지"(리뷰 제안)의 직접 신호인
-// registerActiveTrip 성공은 이 파일에서 관측할 수 없으므로, 같은 token의 sync 성공을
-// 회복 proxy로 쓴다: sync가 성공했다는 것은 backend가 그 token의 trip을 다시 찾았다는
-// 뜻이라 다음 진짜 trip 손실 에피소드에 대비해 latch를 다시 연다.
-let lastDedupResetForToken: string | null = null;
+//
+// 2라운드 버전은 "같은 token에 대해 sync가 성공할 때까지 재리셋 금지"(token latch)였으나,
+// 리뷰 3라운드에서 스톨 위험이 지적됐다: 404 → (dedup 리셋으로) register 성공 → 하지만
+// **sync**는 여러 이유(예: KV 전파 지연, 좋은 fix 부재)로 독립적으로 계속 404를 낼 수 있다 —
+// 그러면 latch가 "sync 성공"을 영영 못 보고 걸려 있는 채, 그 **사이에 발생한 완전히 별개의
+// 진짜 2차 trip 손실**까지 리셋을 못 받아 trip이 영구 사망한다. register 성공 자체는 이
+// 파일에서 관측할 수 없다(`useApnsTripRegistration`이 별도 모듈).
+//
+// 3라운드는 latch를 **시간 기반 쿨다운**으로 바꾼다 — "같은 token" 여부와 무관하게, 마지막
+// 리셋으로부터 `DEDUP_RESET_COOLDOWN_MS`가 지나면 다음 404가 무조건 새로 리셋할 수 있다.
+// 지속 장애 동안의 churn은 여전히 쿨다운 간격으로 유계이고(무제한 아님), 진짜 2차 손실
+// 에피소드도 외부 신호(sync 성공) 없이 스스로 최대 쿨다운만큼만 기다리면 복구된다 — "영구
+// 스톨"이 구조적으로 불가능하다(red: "404→성공register→재404 → 두 번째도 리셋되어 실 POST").
+export const DEDUP_RESET_COOLDOWN_MS = 60_000;
+let lastDedupResetAt = 0;
 
 /** 테스트용 — 404 self-heal churn 가드 상태 초기화. */
 export function __resetFireSync404GuardForTests(): void {
-  lastDedupResetForToken = null;
+  lastDedupResetAt = 0;
 }
 
 /**
@@ -568,15 +577,11 @@ async function fireSync(
   // 더 이상 stale 값과 일치하지 않아 실제 fetch가 나가고, backend가 trip을 재생성할 기회를
   // 얻는다. #2699의 alarmBucket 제거가 안전해지는 전제조건.
   //
-  // #2699 (리뷰 지적, PR #2789 리뷰 2라운드 — 항목 3) — 지속 장애 churn 가드. 같은 token에
-  // 대해 이미 리셋했다면(backend가 계속 404를 내려주는 지속 장애) 재리셋하지 않는다 — 매
-  // station-change마다 dedup을 계속 비우면 다음 register 시도가 매번 skip을 우회해 죽어가는
-  // backend에 POST가 계속 쌓인다(원 폭주와 같은 성격의 회귀). sync가 **성공**하면(회복 신호)
-  // latch를 풀어 다음 진짜 trip 손실 에피소드에 다시 대응할 수 있게 한다.
-  if (res.ok) {
-    if (lastDedupResetForToken === token) lastDedupResetForToken = null;
-  } else if (res.status === 404 && lastDedupResetForToken !== token) {
-    lastDedupResetForToken = token;
+  // #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 3) — 지속 장애 churn 가드(쿨다운 기반,
+  // 위 DEDUP_RESET_COOLDOWN_MS 주석 참고). 마지막 리셋으로부터 쿨다운이 지나지 않았으면
+  // 재리셋하지 않는다 — token 성공 여부에 의존하지 않으므로 스톨 위험이 없다.
+  if (res.status === 404 && Date.now() - lastDedupResetAt >= DEDUP_RESET_COOLDOWN_MS) {
+    lastDedupResetAt = Date.now();
     void resetAlarmBackendDedup();
   }
   return res;
