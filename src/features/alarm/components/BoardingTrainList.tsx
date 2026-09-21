@@ -157,6 +157,17 @@ interface Props {
    */
   onLockCorrected?: (pendingTrainCode: string, confirmedTrainCode: string) => void;
   /**
+   * #2786 리뷰(항목 5) — 호출자가 이 탭을 즉시(동기적으로) 거부했음을 알리는 채널 — 예:
+   * `useBoardingLockController.createLockFromTrain`이 trip route 외 line(allowedLines, #1449)
+   * 이라 `'off-route'`를 반환한 경우. 이런 이른 early-return은 `isDuplicateBoardingLock`에
+   * 닿기도 전에 store를 건드리지 않으므로 `lockedTrainCode` 채널로는 아무 신호도 오지 않는다 —
+   * PENDING_TIMEOUT(5s)까지 pending이 무피드백으로 남는다. 이 값이 `pendingTrainCode`와 일치하면
+   * rollback timer를 기다리지 않고 즉시 pending을 해제한다. `lockedTrainCode`(정정 채널)와 달리
+   * `onLockCorrected`/`recordLockCorrection`을 호출하지 않는다 — 이건 "정정"이 아니라 "거부"다.
+   * 미전달이면 기존 timeout-only rollback 그대로.
+   */
+  rejectedTrainCode?: string | null;
+  /**
    * #1888 (RC-13) — fallback 모드 사유. set 상태에서 list가 empty가 되면 일반 empty placeholder 대신
    * 더 명시적인 fallback 메시지("탑승 후보를 찾을 수 없어요")를 렌더한다.
    *
@@ -238,6 +249,7 @@ export function BoardingTrainList({
   loading = false,
   error = null,
   onLockCorrected,
+  rejectedTrainCode = null,
   fallbackReason = null,
   prevTrain = null,
   consensusSuggestion = null,
@@ -288,6 +300,18 @@ export function BoardingTrainList({
     onLockCorrected?.(pendingTrainCode, lockedTrainCode);
     setPendingTrainCode(null);
   }, [lockedTrainCode, pendingTrainCode, clearRollbackTimer, onLockCorrected]);
+
+  // #2786 리뷰(항목 5) — 호출자가 이 탭을 동기적으로 거부(예: allowedLines 필터, #1449)했을 때
+  // lockedTrainCode 채널로는 아무 신호도 오지 않는 케이스(early-return이 store를 건드리기도 전에
+  // 발생) 전용 즉시 리셋. rejectedTrainCode가 지금 pending인 row와 일치하면 5s rollback timer를
+  // 기다리지 않고 즉시 해제한다. "정정"이 아니므로 recordLockCorrection/onLockCorrected는
+  // 호출하지 않는다 — 부모가 별도 채널(반환값)로 토스트를 직접 표시한다.
+  useEffect(() => {
+    if (rejectedTrainCode == null || pendingTrainCode == null) return;
+    if (rejectedTrainCode !== pendingTrainCode) return;
+    clearRollbackTimer();
+    setPendingTrainCode(null);
+  }, [rejectedTrainCode, pendingTrainCode, clearRollbackTimer]);
 
   // unmount 시 timer 정리.
   useEffect(() => clearRollbackTimer, [clearRollbackTimer]);
