@@ -1564,7 +1564,17 @@ function computeLockCorrectionLines(
 ): string[] {
   if (!metrics) return ['(n/a)'];
   const lastFiredLine = metrics.lastFiredAtMs === 0 ? '(never)' : formatTime(metrics.lastFiredAtMs);
-  return [`fired=${metrics.fired}`, `lastFiredAt=${lastFiredLine}`];
+  // #2786 리뷰(항목 4, Wire-completion V/X) — promoted(PENDING sentinel → 실 trainCode 승격)
+  // 카운터를 같은 섹션에 병기. fired(pending A ≠ confirmed B "정정")와 독립 채널이라 이 fix가
+  // 프로덕션에서 실제로 발동하는지 여기서 확인 가능해야 한다.
+  const lastPromotedLine =
+    metrics.lastPromotedAtMs === 0 ? '(never)' : formatTime(metrics.lastPromotedAtMs);
+  return [
+    `fired=${metrics.fired}`,
+    `lastFiredAt=${lastFiredLine}`,
+    `promoted=${metrics.promoted}`,
+    `lastPromotedAt=${lastPromotedLine}`,
+  ];
 }
 
 function buildLockCorrectionSection(args: BuildDumpArgs): string[] {

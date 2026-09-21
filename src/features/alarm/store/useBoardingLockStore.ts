@@ -13,6 +13,8 @@ import {
   pushLockLifecycleEntry,
   type LockLifecycleCreateSource,
 } from '../utils/boardingLockLifecycleBuffer';
+import { isPendingTrainCode, isRealBoardingLock } from '../../../shared/constants/boardingLock';
+import { recordPendingLockPromotion } from '../utils/lockCorrectionMetrics';
 
 /**
  * #1438 (E5) — release 사유 식별자.
@@ -141,6 +143,8 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
     // 호출부가 lock 객체 리터럴 안에 산발적으로 boardingEvidence를 stamp하던 방식(P1-1)은
     // 새 생성 경로가 추가돼도 stamp를 빠뜨리면 컴파일이 통과했다 — 이 지점 하나로 강제한다.
     const lock: BoardingLock = { ...lockInput, boardingEvidence: evidence };
+    // #2786 리뷰(항목 4) — prev를 flag 분기 밖으로 끌어올려 아래 승격 telemetry와 공유한다.
+    const prev = get().lock;
     // #1996 (Phase 1-7, ADR-022 A4) — boardingStationId 불변 정책 (flag ON 시).
     //
     // route 등록 시 확정된 boardingStationId는 절대 자동 변경 금지 (auto-swap / reanchored /
@@ -153,7 +157,6 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
     // Flag OFF (default) 시 기존 동작 유지 — 어떤 createLock이든 기존 lock을 교체.
     // Flag ON 시 위 정책을 강제해 회귀 방어.
     if (isSimpleArchEnabled()) {
-      const prev = get().lock;
       if (
         prev &&
         prev.destinationId === lock.destinationId &&
@@ -175,6 +178,12 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
       }
     }
     set({ lock });
+    // #2786 리뷰(항목 4, Wire-completion V/X) — 단일 SSOT mutation 지점에서 "PENDING sentinel →
+    // 실 trainCode" 승격을 감지해 telemetry를 적재한다. 어떤 호출자(수동 탭 / 향후 backend
+    // lockSuggestion 승격 경로)를 거쳤는지와 무관하게 한 곳에서 전부 포착한다.
+    if (prev && !isRealBoardingLock(prev) && lock.trainCode.length > 0 && !isPendingTrainCode(lock.trainCode)) {
+      recordPendingLockPromotion(lock.trainCode);
+    }
     await setBoardingLock(lock);
     // #746: 새 lock 생성 = 사용자가 새 leg에 탑승 의사 명시 → 이전 dismiss silence는 무효.
     // 동일 trip 내 환승으로 lock이 교체되는 경우에도 같은 의미 — 즉시 클리어.

@@ -19,9 +19,19 @@ interface Counters {
   fired: number;
   /** 마지막 fire 시각(epoch ms). 호출 전 0. */
   lastFiredAtMs: number;
+  /**
+   * #2786 리뷰(항목 4) — PENDING sentinel(#2407 fallback lock) → 실 trainCode 승격 누적 횟수.
+   * `fired`(사용자가 탭한 A와 backend가 확정한 B가 서로 다른 "정정")와 독립된 채널이다 —
+   * 승격은 pendingTrainCode(component)와 lockedTrainCode(store)가 즉시 같은 값으로 수렴해
+   * `recordLockCorrection`이 아예 호출되지 않으므로, 이 fix가 프로덕션에서 실제로 발동하는지
+   * 확인할 별도 관측 채널이 없었다(Wire-completion #2 V/X 위반).
+   */
+  promoted: number;
+  /** 마지막 승격 시각(epoch ms). 호출 전 0. */
+  lastPromotedAtMs: number;
 }
 
-const counters: Counters = { fired: 0, lastFiredAtMs: 0 };
+const counters: Counters = { fired: 0, lastFiredAtMs: 0, promoted: 0, lastPromotedAtMs: 0 };
 
 /**
  * Pending(A) → 확정(B)으로 정정될 때 호출. log emit + counter 적재.
@@ -41,6 +51,22 @@ export function recordLockCorrection(
   );
 }
 
+/**
+ * #2786 리뷰(항목 4) — PENDING sentinel lock이 실 trainCode로 승격될 때 호출. log emit + counter
+ * 적재. `useBoardingLockStore.createLock`(단일 SSOT mutation 지점)이 prev lock이 PENDING이고
+ * 새 lock이 실 trainCode면 호출자와 무관하게(수동 탭 / 향후 backend lockSuggestion 승격 경로
+ * 모두) 호출한다 — 승격 경로 전체를 한 곳에서 포착한다.
+ *
+ * @param confirmedTrainCode 승격된(확정) train code.
+ */
+export function recordPendingLockPromotion(confirmedTrainCode: string): void {
+  counters.promoted += 1;
+  counters.lastPromotedAtMs = Date.now();
+  log.info(
+    `pending lock promoted confirmed=${confirmedTrainCode} total=${counters.promoted}`,
+  );
+}
+
 /** 현재 누적 counter 스냅샷. DebugModal/테스트 노출. */
 export function getLockCorrectionMetrics(): Readonly<Counters> {
   return { ...counters };
@@ -50,4 +76,6 @@ export function getLockCorrectionMetrics(): Readonly<Counters> {
 export function resetLockCorrectionMetrics(): void {
   counters.fired = 0;
   counters.lastFiredAtMs = 0;
+  counters.promoted = 0;
+  counters.lastPromotedAtMs = 0;
 }

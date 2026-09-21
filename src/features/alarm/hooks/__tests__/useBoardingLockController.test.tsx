@@ -476,6 +476,41 @@ describe('useBoardingLockController', () => {
       expect(mockSetBoardingLock).not.toHaveBeenCalled();
     });
 
+    // #2786 — 9/21 PM 뚝섬 실측 재현: PENDING fallback lock(#2407, trainCode 미확정) 활성 중
+    // 사용자가 BoardingTrainList에서 실제 열차(2371)를 탭하면 dedup으로 차단되지 말고 lock이
+    // 탭 열차로 교체(승격)돼야 한다. 19:04 PENDING 생성 → 사용자 탭 차단 → 19:07 사용자 직접
+    // 해제 → 19:12 탭이 그제서야 동작한 타임라인이 이 결함의 실측 evidence.
+    it('#2786 — PENDING sentinel lock 활성 중 실 trainCode 탭 → dedup 아니라 lock이 탭 열차로 교체된다', async () => {
+      mockFindStationByNameAndLine.mockReturnValue(stationA);
+      useBoardingLockStore.setState({ lock: makePendingLock() });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: '2371', line: '2' }));
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trainCode: '2371',
+          boardingLine: '2',
+          boardingStationId: 'stn-A',
+        }),
+      );
+    });
+
+    // #2786 리뷰(P1 — 정확성 결함) — Seoul API가 btrainNo 누락 행을 trainCode: '' 로 파싱해
+    // arrivals에 노출할 수 있다. 빈 문자열은 PENDING_TRAIN_CODE sentinel과 다른 값이라 길이
+    // 체크 없이는 "실 trainCode"로 오판돼 PENDING lock이 감지 불가능한 빈 trainCode lock으로
+    // 교체되는 결함이 열린다(원래 #2786보다 악화 — 이후 정정도 불가). lock이 교체되지 않아야
+    // 한다(dedup 유지).
+    it('#2786 리뷰 — PENDING sentinel lock 활성 중 trainCode=\'\' 행 탭 → lock이 교체되지 않는다', async () => {
+      mockFindStationByNameAndLine.mockReturnValue(stationA);
+      useBoardingLockStore.setState({ lock: makePendingLock() });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: '', line: '2' }));
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
     // #1449 (ADR-015 §9 frontend) — trip route allowedLines 외 line traincode reject.
     describe('#1449 trip route line filter', () => {
       it('direct route(line 2) 일 때 trip 외 line(7) train 탭 → no-op (lock 채택 차단)', async () => {
@@ -485,6 +520,31 @@ describe('useBoardingLockController', () => {
           result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
         });
         expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      // #2786 리뷰(항목 5) — allowedLines 차단은 createLockFromTrain의 초기 early-return이라
+      // isDuplicateBoardingLock에 닿지도 못한다. PENDING lock이 활성 중이면(#2786 fix로
+      // lockedTrainCode가 PENDING sentinel일 때 BoardingTrainList의 정정 effect가 no-op하므로)
+      // 부모(HomeScreen)가 이 반환값으로 즉시 pending 리셋 + 토스트 피드백을 줄 수 있어야
+      // PENDING_TIMEOUT(5s) 무피드백 침묵을 피한다.
+      it('#2786 리뷰 — allowedLines 차단 탭은 createLockFromTrain이 \'off-route\'를 반환한다', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        let returned: unknown;
+        await act(async () => {
+          returned = result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+        });
+        expect(returned).toBe('off-route');
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('#2786 리뷰 — allowedLines 통과(허용 line) 탭은 createLockFromTrain이 undefined를 반환한다', async () => {
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        let returned: unknown;
+        await act(async () => {
+          returned = result.current.createLockFromTrain(makeTrain({ trainCode: 'T-2', line: '2' }));
+        });
+        expect(returned).toBeUndefined();
+        expect(mockSetBoardingLock).toHaveBeenCalled();
       });
 
       it('transfer route(2↔5, 왕십리) 다중 line 환승역에서 양쪽 line 모두 허용', async () => {

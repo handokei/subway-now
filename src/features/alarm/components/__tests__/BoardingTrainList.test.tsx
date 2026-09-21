@@ -795,6 +795,81 @@ describe('BoardingTrainList', () => {
       expect(getLockCorrectionMetrics().fired).toBe(1);
     });
 
+    // #2786 — 9/21 PM 뚝섬 실측: lockedTrainCode가 PENDING sentinel('PENDING-TRAIN-CODE')로
+    // 유입되면(#2407 fallback lock이 아직 실 trainCode로 승격되지 않은 상태) "정정"으로 취급해
+    // sentinel 문자열을 노출하는 반대 방향 토스트("2371 → PENDING-TRAIN-CODE")를 띄우면 안 된다.
+    // pending→confirmed(실 trainCode) 방향으로만 정정 신호를 발화해야 한다.
+    it('lockedTrainCode가 PENDING sentinel이면 onLockCorrected 미호출 + metric 미적재 + pending 유지', () => {
+      const train = makeTrain({ trainCode: '2371' });
+      const onLockCorrected = jest.fn();
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-2371'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="PENDING-TRAIN-CODE"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(onLockCorrected).not.toHaveBeenCalled();
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+      expect(getByTestId('boarding-train-pending-2371')).toBeTruthy();
+    });
+
+    // #2786 리뷰(항목 5) — allowedLines 차단(#1449) 같은 즉시 early-return 거부는 store가 갱신되지
+    // 않아 lockedTrainCode 채널로는 아무 신호도 오지 않는다(위 PENDING sentinel 케이스와 동일한
+    // "무피드백" 함정). 부모가 `rejectedTrainCode`로 명시적 거부 신호를 주면 PENDING_TIMEOUT(5s)
+    // 대기 없이 즉시 pending을 리셋해야 한다.
+    it('rejectedTrainCode가 pendingTrainCode와 일치하면 즉시 pending 리셋 (5s 대기 없음)', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-OFFROUTE' });
+        const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+          <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+        );
+        fireEvent.press(getByTestId('boarding-train-row-T-OFFROUTE'));
+        expect(getByTestId('boarding-train-pending-T-OFFROUTE')).toBeTruthy();
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={() => {}}
+            rejectedTrainCode="T-OFFROUTE"
+          />,
+        );
+        // 5s 타임아웃 이전이어도 이미 리셋됐어야 한다.
+        expect(queryByTestId('boarding-train-pending-T-OFFROUTE')).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('rejectedTrainCode가 pendingTrainCode와 다르면(다른 row) pending 유지', () => {
+      const train = makeTrain({ trainCode: 'T-KEEP' });
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-KEEP'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          rejectedTrainCode="T-OTHER"
+        />,
+      );
+      expect(getByTestId('boarding-train-pending-T-KEEP')).toBeTruthy();
+    });
+
     it('정정 후 lock 해제되면 같은 row를 다시 탭해 새 pending 진입 가능 (rollback timer 해제 확인)', () => {
       jest.useFakeTimers();
       try {

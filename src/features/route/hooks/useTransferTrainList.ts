@@ -224,7 +224,11 @@ export function useTransferTrainList({
       // #2722 — LA 버튼/알림 "탑승했어요"가 같은 환승역·다음 노선으로 이미 lock을 만든 직후
       // 사용자가 같은 목록에서 탭해도 lock을 다시 만들지 않는다(동시 진입 → lock 1개).
       // LA/알림과 동일한 shared predicate(`isDuplicateBoardingLock`) — 새 판정 로직 아님.
-      if (isDuplicateBoardingLock(context.nextLine, context.transferStationInToLine.name)) return;
+      // #2786 — train.trainCode를 함께 전달해, 기존 lock이 PENDING sentinel(#2407 fallback)이고
+      // 이 탭이 실 trainCode면 dedup이 아니라 교체 대상으로 판정되도록 한다.
+      if (isDuplicateBoardingLock(context.nextLine, context.transferStationInToLine.name, train.trainCode)) {
+        return;
+      }
       // #604: 잔여 leg 기준 ETA로 lock의 expectedDurationMs를 정밀화. 전체 trip 시간으로 잡으면
       // BOARDING_LOCK_EXPIRY_FACTOR(=1.5)와 곱해져 만료 타이머가 도착 후에도 한참 활성 상태로 남는다.
       // calculateRemainingLegETA가 null이면(=route가 직접/idx 불일치 등 예기치 못한 상태) fallback.
