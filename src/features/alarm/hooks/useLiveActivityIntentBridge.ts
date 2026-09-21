@@ -123,9 +123,14 @@ interface BridgeDeps extends UseBoardingPromptResponderDeps {
  * PendingBoardingIntent shape에 맞게 얇게 감싸는 어댑터일 뿐 — 동작은 100% 동일하다. 수동 탭
  * 진입점(`useTransferTrainList`/`useBoardingLockController`)도 같은 shared predicate를 직접
  * 재사용해, LA·알림·수동 탭 세 채널이 하나의 dedup 규칙을 공유한다.
+ *
+ * #2786 리뷰(P2) — trainCode 인자는 명시적으로 `null`. LA 버튼 intent(`PendingBoardingIntent`)는
+ * `originStation`/`line`만 갖고 특정 열차를 지목하지 않으므로 PENDING sentinel 승격 판정에
+ * 참여할 trainCode가 없다 — station+line만으로 판정하는 기존 dedup을 그대로 유지한다는 의도를
+ * `null` 명시로 코드에 남긴다(타입이 필수라 생략은 컴파일 에러).
  */
 function isDuplicateBoardingIntent(intent: PendingBoardingIntent): boolean {
-  return isDuplicateBoardingLock(intent.line, intent.originStation);
+  return isDuplicateBoardingLock(intent.line, intent.originStation, null);
 }
 
 async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {

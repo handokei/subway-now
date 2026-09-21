@@ -2,7 +2,7 @@ import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
-import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
+import { isPendingTrainCode, isRealBoardingLock } from '../../../shared/constants/boardingLock';
 
 /**
  * #2722 — LA 버튼(`useLiveActivityIntentBridge`)이 이미 쓰던 "같은 탑승역·노선에 이미 active
@@ -25,13 +25,28 @@ import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
  * 보고 예전처럼 dedup(무시)하면 사용자가 명시적으로 고른 실 trainCode가 미확정 sentinel에 영영
  * 덮인 채로 남는다.
  *
- * 따라서 trainCode 인자(옵션)를 받아: 기존 lock이 PENDING sentinel이고 전달된 trainCode가 실
- * trainCode(non-sentinel)이면 dedup이 아니라 교체(승격) 대상으로 판정해 false를 반환한다 — 호출자
- * (`createLockFromTrain`/`createTransferLock`)가 이 탭으로 `createLock`을 그대로 진행해 pending
- * lock을 실 trainCode로 교체한다. trainCode를 모르는 채널(LA 버튼 — `originStation`/`line`만 갖고
- * 특정 열차를 지목하지 않음)은 인자를 생략해 기존 station+line dedup을 그대로 유지한다. 동일 실
- * trainCode 재탭, 또는 실 lock에 다른 실 trainCode를 탭하는 케이스는 이 변경과 무관하게 기존
- * station+line dedup을 그대로 유지한다 — trainCode 비교는 "PENDING → 실 승격" 판정 전용이다.
+ * trainCode 인자는 **필수**(`string | null`) — #2786 리뷰(P2). 옵션 인자로 두면 미래의 수동 탭
+ * 진입점이 이 인자를 빠뜨린 채로도 컴파일이 통과해, 이 함수가 조용히 구(#2786 이전) station+line
+ * only dedup으로 회귀할 수 있다. trainCode를 모르는 채널(LA 버튼 — `originStation`/`line`만 갖고
+ * 특정 열차를 지목하지 않음)은 **명시적으로 `null`**을 넘겨 기존 station+line dedup을 그대로
+ * 유지한다는 의도를 코드에 남긴다.
+ *
+ * 판정: 기존 lock이 PENDING sentinel(`isRealBoardingLock`가 false — #2407 fallback, shared SSOT
+ * predicate 재사용)이고 전달된 trainCode가 실 trainCode(non-null, non-sentinel, non-empty)이면
+ * dedup이 아니라 교체(승격) 대상으로 판정해 false를 반환한다 — 호출자(`createLockFromTrain`/
+ * `createTransferLock`)가 이 탭으로 `createLock`을 그대로 진행해 pending lock을 실 trainCode로
+ * 교체한다.
+ *
+ * 빈 문자열('')은 "실 trainCode"로 인정하지 않는다 — Seoul API가 `btrainNo` 누락 행을
+ * `trainCode: item.btrainNo ?? ''`로 파싱해 리스트에 그대로 노출하는 경우가 있다(arrivalApi.ts).
+ * `''`은 `PENDING_TRAIN_CODE` sentinel 문자열과 다르므로 `isPendingTrainCode('')`가 false를
+ * 반환해, 길이 체크 없이는 "실 trainCode"로 오판되어 PENDING lock이 **비어있는 식별 불가 lock**
+ * (trainCode='')으로 교체되는 결함이 열린다 — sentinel보다 더 나쁘다: ''는 하류의 어떤
+ * `isPendingTrainCode` 가드도 통과하는 "감지 불가능한" 비실체 lock이고, 이후 같은 역/노선 탭은
+ * (교체 lock이 이미 "실"로 인정되므로) 이 우회 분기가 다시 열리지 않아 사용자가 정정도 할 수 없다.
+ *
+ * 동일 실 trainCode 재탭, 또는 실 lock에 다른 실 trainCode를 탭하는 케이스는 이 변경과 무관하게
+ * 기존 station+line dedup을 그대로 유지한다 — trainCode 비교는 "PENDING → 실 승격" 판정 전용이다.
  */
 export function isDuplicateBoardingLock(
   boardingLine: string,
@@ -44,7 +59,9 @@ export function isDuplicateBoardingLock(
   if (!isValidLineNumber(boardingLine) || lock.boardingLine !== boardingLine) return false;
   const station = findStationByNameAndLine(originStationName, boardingLine);
   if (station === null || station.id !== lock.boardingStationId) return false;
-  if (trainCode !== undefined && isPendingTrainCode(lock.trainCode) && !isPendingTrainCode(trainCode)) {
+  const isRealTapTrainCode =
+    trainCode !== null && trainCode.length > 0 && !isPendingTrainCode(trainCode);
+  if (!isRealBoardingLock(lock) && isRealTapTrainCode) {
     return false;
   }
   return true;

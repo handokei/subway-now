@@ -496,6 +496,21 @@ describe('useBoardingLockController', () => {
       );
     });
 
+    // #2786 리뷰(P1 — 정확성 결함) — Seoul API가 btrainNo 누락 행을 trainCode: '' 로 파싱해
+    // arrivals에 노출할 수 있다. 빈 문자열은 PENDING_TRAIN_CODE sentinel과 다른 값이라 길이
+    // 체크 없이는 "실 trainCode"로 오판돼 PENDING lock이 감지 불가능한 빈 trainCode lock으로
+    // 교체되는 결함이 열린다(원래 #2786보다 악화 — 이후 정정도 불가). lock이 교체되지 않아야
+    // 한다(dedup 유지).
+    it('#2786 리뷰 — PENDING sentinel lock 활성 중 trainCode=\'\' 행 탭 → lock이 교체되지 않는다', async () => {
+      mockFindStationByNameAndLine.mockReturnValue(stationA);
+      useBoardingLockStore.setState({ lock: makePendingLock() });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: '', line: '2' }));
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
     // #1449 (ADR-015 §9 frontend) — trip route allowedLines 외 line traincode reject.
     describe('#1449 trip route line filter', () => {
       it('direct route(line 2) 일 때 trip 외 line(7) train 탭 → no-op (lock 채택 차단)', async () => {
