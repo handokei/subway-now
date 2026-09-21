@@ -36,7 +36,7 @@ import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 export function isDuplicateBoardingLock(
   boardingLine: string,
   originStationName: string,
-  trainCode?: string,
+  trainCode: string | null,
 ): boolean {
   const lock = useBoardingLockStore.getState().lock;
   if (!lock) return false;
