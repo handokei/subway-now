@@ -12,6 +12,7 @@ import {
 import type { RegisterTripPayload } from '../alarmBackend';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../../shared/constants/storageKeys';
+import { ETA_POLLING_WINDOW_SEC } from '../../../../shared/constants/eta';
 
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -31,6 +32,7 @@ const SAMPLE_PAYLOAD: RegisterTripPayload = {
   destination: '0228',
   waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
   alarmAtEpochMs: NOW + 60000,
+  etaWithinPollingWindow: true,
   createdAt: NOW,
   expiresAt: NOW + 1000,
   apnsEnv: 'sandbox',
@@ -93,6 +95,7 @@ describe('alarmBackend', () => {
         destination: '0228',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
         alarmAtEpochMs: NOW,
+        etaWithinPollingWindow: true,
         apnsEnv: 'sandbox',
       };
       await registerActiveTrip(payload);
@@ -217,6 +220,44 @@ describe('alarmBackend', () => {
         });
         expect(next).toEqual({ ok: true, skipped: true });
         expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2 red) — 구버전은 여기서 `alarmAtEpochMs`를
+      // `Date.now()`와 비교해 `etaWithinPollingWindow`를 **직접 재계산**했다. device
+      // (`useApnsTripRegistration.ts`)는 ETA가 null(폴링 갭)이 되면 sticky하게 직전 확정값을
+      // 유지하지만, 그 시점에 다른 dep으로 register가 트리거되면 `alarmAtEpochMs =
+      // deriveAlarmAtEpochMs(null, now) = now`로 붕괴한다 — backend가 `alarmAtEpochMs -
+      // Date.now() <= threshold`로 재계산했다면 이는 항상 참(0 <= threshold)이라 device의
+      // sticky 판단(false일 수 있음)과 정반대로 뒤집혔을 것이다. 이 테스트는 `alarmAtEpochMs`가
+      // "즉시"로 붕괴해도(collapsed), 명시 전달된 `etaWithinPollingWindow: false`가 그대로
+      // 유지되면(재계산되지 않으면) dedup이 여전히 적용됨을 검증한다 — 재계산했다면 hash가
+      // 갈라져 이 두 번째 호출이 실제로 fetch를 냈을 것이다(트리거 판단과 dedup 키 불일치).
+      it('#2699 alarmAtEpochMs가 "즉시"로 붕괴해도(ETA null 시뮬) etaWithinPollingWindow가 그대로면 dedup된다 (hash가 alarmAtEpochMs로 재계산하지 않음)', async () => {
+        // 첫 호출은 폴링 윈도우(5분) 훨씬 밖 — 구버전이었다면 여기서 내부적으로 false를
+        // 도출했을 값이다.
+        await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          alarmAtEpochMs: Date.now() + (ETA_POLLING_WINDOW_SEC + 300) * 1000,
+          etaWithinPollingWindow: false,
+        });
+        const collapsed = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          alarmAtEpochMs: Date.now(), // ETA null 순간의 deriveAlarmAtEpochMs(null, now) 시뮬 —
+          // 구버전이었다면 `0 <= threshold`가 참이라 내부적으로 true로 뒤집혔을 값이다.
+          etaWithinPollingWindow: false, // device sticky 판단은 안 바뀜(직전 확정값 유지).
+        });
+        expect(collapsed).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('#2699 etaWithinPollingWindow 값 자체가 바뀌면(alarmAtEpochMs는 동일해도) 재등록된다', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, etaWithinPollingWindow: false });
+        const flipped = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          etaWithinPollingWindow: true, // 동일 alarmAtEpochMs, device 판단만 바뀜.
+        });
+        expect(flipped).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
       });
 
       it('destination 변경 시 재등록된다', async () => {

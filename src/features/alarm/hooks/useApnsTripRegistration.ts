@@ -179,6 +179,15 @@ interface RegisterCallInputs {
   route: NonNullable<Route>;
   destination: Station;
   nextStationEtaSeconds: number | null;
+  /**
+   * #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — hook이 유일하게 계산하는 값을 그대로
+   * 전달한다. backend(`alarmBackend.ts` `buildRegisterHash`)는 이 값을 `alarmAtEpochMs`로부터
+   * 다시 계산하지 않는다 — 두 곳이 각자 계산하면(하나는 sticky ETA null 처리, 하나는
+   * `alarmAtEpochMs - Date.now()`) 경계에서 서로 다른 값을 낼 수 있어 "이 전환이 register를
+   * 트리거했는가"와 "이 전환이 dedup 키를 바꿨는가"가 어긋난다(리뷰 재지적) — 단일 소스에서
+   * 파생한 값을 양쪽에 그대로 전달해야 항상 일치한다.
+   */
+  etaWithinPollingWindow: boolean;
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
   /**
@@ -279,6 +288,9 @@ async function callRegister(
     destination: input.destination.id,
     waypoints: routeToWaypoints(input.route, input.destination.name, input.currentStation),
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — hook이 계산한 단일 소스 값을 그대로
+    // 전달. buildRegisterHash가 alarmAtEpochMs로 재계산하지 않는다(RegisterCallInputs 주석).
+    etaWithinPollingWindow: input.etaWithinPollingWindow,
     apnsEnv,
     createdAt: input.createdAt,
     // #2120 — trip 인스턴스 corrId. null 허용 — sync cache 미수화 시점에도 register 자체는 진행.
@@ -412,6 +424,17 @@ export function useApnsTripRegistration({
   // anchor 초기값 0이 현재 시각과의 차를 항상 quarantine 밖으로 만든다)을 거치므로 리마운트
   // 순간의 일시 blip도 특별 취급 없이 flap quarantine으로 흡수된다(mount seed 비대칭 없음).
   const [confirmedSubsurface, setConfirmedSubsurface] = useState(false);
+  // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — confirmedSubsurface state의 ref 미러.
+  // reconcileSubsurface가 이 값을 읽는 유일한 이유는 React state updater(함수형 setState)
+  // 안에서 읽지 않기 위해서다 — updater는 순수해야 하고 StrictMode(dev)/concurrent 렌더링에서
+  // 2회 호출될 수 있는데, 이전 버전은 그 updater 안에서 `logSubsurfaceRegisterTransition`
+  // 호출 + ref(`settledSubsurfaceRef`/`quarantineAnchorAtRef`) 변이를 실행해 StrictMode
+  // 이중 렌더에서 **로그가 확정 전환 1건당 2번 적재**됐다 — 이 로그의 유일 목적("로그:POST
+  // 1:1 대조")이 정확히 그 이중 호출로 깨진다. 이제 다음 값은 setState **밖**에서 순수하게
+  // 계산하고, 부수효과(로그/ref 변이)도 setState 호출 시점에 정확히 1회만 실행한다 —
+  // setConfirmedSubsurface에는 항상 plain value만 넘긴다(updater 함수 형태를 쓰지 않음).
+  const confirmedSubsurfaceRef = useRef(false);
+  confirmedSubsurfaceRef.current = confirmedSubsurface;
   // quarantine 진입 직전(=가장 최근에 "확정"됐던) 안정값 — flap 감지 시 되돌릴 대상.
   const settledSubsurfaceRef = useRef(false);
   // quarantine anchor — 가장 최근 "확정 또는 보정" 전환 시각. 0이면 "아직 전환 없음" — 첫
@@ -424,31 +447,43 @@ export function useApnsTripRegistration({
   const destinationForSubsurfaceLogRef = useRef(destination);
   routeForSubsurfaceLogRef.current = route;
   destinationForSubsurfaceLogRef.current = destination;
+  // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 3) — 항상 최신 raw subsurface를 보관하는 ref.
+  // quarantine-expiry watcher의 setTimeout 콜백이 armed 시점의 stale closure 값이 아니라
+  // fire 시점의 실제 최신 raw를 읽도록 한다(BG resume 시 "armed 시점에는 맞았지만 지금은
+  // 틀린" 값으로 확정할 여지를 원천 제거 — 이전에는 quarantine 판정 자체는 Date.now() 기준이라
+  // 정확하다는 논거로 안전망 취급했으나, 리뷰에서 hand-wave라는 지적을 받아 실제 가드로 바꾼다).
+  const subsurfaceRef = useRef(subsurface);
+  subsurfaceRef.current = subsurface;
 
   const reconcileSubsurface = (raw: boolean): void => {
-    setConfirmedSubsurface((confirmed) => {
-      if (raw === confirmed) return confirmed; // 안정 상태 — pending 없음.
-      const now = Date.now();
-      const withinQuarantine = now - quarantineAnchorAtRef.current < SUBSURFACE_FLAP_QUARANTINE_MS;
-      if (withinQuarantine) {
-        // quarantine 안의 bounce — settled로 되돌린다(보정). 이 보정 자체도 하나의 전환이므로
-        // anchor를 now로 연장해 계속되는 flap을 흡수한다.
-        quarantineAnchorAtRef.current = now;
-        return settledSubsurfaceRef.current;
-      }
-      // quarantine 밖 — 새 전환이거나, pending이 quarantine을 살아남아 확정된 것이다.
-      settledSubsurfaceRef.current = confirmed;
+    const confirmed = confirmedSubsurfaceRef.current;
+    if (raw === confirmed) return; // 안정 상태 — pending 없음. setState조차 부르지 않는다.
+    const now = Date.now();
+    const withinQuarantine = now - quarantineAnchorAtRef.current < SUBSURFACE_FLAP_QUARANTINE_MS;
+    if (withinQuarantine) {
+      // quarantine 안의 bounce — settled로 되돌린다(보정). 이 보정 자체도 하나의 전환이므로
+      // anchor를 now로 연장해 계속되는 flap을 흡수한다.
       quarantineAnchorAtRef.current = now;
-      // #2699 (요구사항 4) — 확정 전환 1건 계측. hasActiveTrip으로 이 로그가 실제 register를
-      // 유발했을지(trip 활성) 여부를 함께 남겨 다음 라이드 덤프에서 "log 있는데 POST 없음"이
-      // 잔여 결함처럼 오독되지 않게 한다 — trip 비활성 상태의 로그는 정상(register 자체가
-      // 발사 대상이 아님). ref를 읽어 stale route/destination 문제를 피한다(항목 4).
-      logSubsurfaceRegisterTransition(
-        raw,
-        routeForSubsurfaceLogRef.current != null && destinationForSubsurfaceLogRef.current != null,
-      );
-      return raw;
-    });
+      const next = settledSubsurfaceRef.current;
+      confirmedSubsurfaceRef.current = next; // setState 전에 ref부터 갱신 — 동기 재호출 안전.
+      setConfirmedSubsurface(next);
+      return;
+    }
+    // quarantine 밖 — 새 전환이거나, pending이 quarantine을 살아남아 확정된 것이다.
+    settledSubsurfaceRef.current = confirmed;
+    quarantineAnchorAtRef.current = now;
+    confirmedSubsurfaceRef.current = raw;
+    setConfirmedSubsurface(raw);
+    // #2699 (요구사항 4) — 확정 전환 1건 계측. hasActiveTrip으로 이 로그가 실제 register를
+    // 유발했을지(trip 활성) 여부를 함께 남겨 다음 라이드 덤프에서 "log 있는데 POST 없음"이
+    // 잔여 결함처럼 오독되지 않게 한다 — trip 비활성 상태의 로그는 정상(register 자체가
+    // 발사 대상이 아님). ref를 읽어 stale route/destination 문제를 피한다(항목 4). setState
+    // updater 밖에서 순수 1회만 실행되므로 StrictMode 이중 렌더에서도 로그가 2번 적재되지
+    // 않는다(항목 1).
+    logSubsurfaceRegisterTransition(
+      raw,
+      routeForSubsurfaceLogRef.current != null && destinationForSubsurfaceLogRef.current != null,
+    );
   };
 
   // sample-driven — raw subsurface prop이 실제로 바뀔 때마다 즉시 재평가(낙관적 확정/보정).
@@ -470,11 +505,14 @@ export function useApnsTripRegistration({
       SUBSURFACE_FLAP_QUARANTINE_MS - (Date.now() - quarantineAnchorAtRef.current),
     );
     const timer = setTimeout(() => {
-      // fire 시점의 최신 raw를 다시 읽어 재평가 — 클로저의 subsurface가 이 타이머가 armed된
-      // 시점 기준이라도, quarantine 만료 판정 자체는 Date.now() 기준으로 항상 정확하다(위
-      // 주석 참고). 더 최근 raw 변화가 있었다면 그 변화가 이미 sample-driven effect를 통해
-      // confirmed/anchor를 갱신했을 것이므로 이 시점의 reconcile은 여전히 올바른 최종 판단이다.
-      reconcileSubsurface(subsurface);
+      // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 3) — fire 시점의 최신 raw를 ref에서 다시
+      // 읽는다(armed 시점의 closure `subsurface`가 아니라). quarantine 판정(withinQuarantine)
+      // 자체는 Date.now() 기준이라 이미 정확했지만, "무엇을 확정할지"의 raw 값은 armed 이후
+      // 바뀌었을 수 있다 — 정상 렌더 경로에서는 raw가 바뀌면 sample-driven effect가 먼저
+      // confirmed/anchor를 갱신하며 이 타이머 자체도 cleanup으로 취소·재arm되지만, BG
+      // suspend처럼 렌더/effect가 지연되는 경로에서는 이 콜백이 "최후 안전망"으로 실행될 수
+      // 있어 ref 재조회가 유일하게 정확한 값이다.
+      reconcileSubsurface(subsurfaceRef.current);
     }, remaining);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcileSubsurface는 위와 동일한
@@ -497,6 +535,7 @@ export function useApnsTripRegistration({
     route,
     destination,
     nextStationEtaSeconds,
+    etaWithinPollingWindow,
     currentStation,
     boardingLock,
     subsurface: confirmedSubsurface,
@@ -515,6 +554,7 @@ export function useApnsTripRegistration({
       route,
       destination,
       nextStationEtaSeconds,
+      etaWithinPollingWindow,
       currentStation,
       boardingLock,
       subsurface: confirmedSubsurface,
@@ -668,6 +708,7 @@ export function useApnsTripRegistration({
       route: r,
       destination: d,
       nextStationEtaSeconds: eta,
+      etaWithinPollingWindow: eww,
       currentStation: cs,
       boardingLock: bl,
       subsurface: sub,
@@ -714,6 +755,7 @@ export function useApnsTripRegistration({
       route: r,
       destination: d,
       nextStationEtaSeconds: eta,
+      etaWithinPollingWindow: eww,
       currentStation: cs,
       boardingLock: bl,
       subsurface: sub,

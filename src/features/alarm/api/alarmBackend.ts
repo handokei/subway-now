@@ -13,7 +13,6 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { type ApnsEnv, setConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
-import { ETA_POLLING_WINDOW_SEC } from '../../../shared/constants/eta';
 import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
 const log = createLogger('alarmBackend');
@@ -55,6 +54,17 @@ export interface RegisterTripPayload {
   expiresAt?: number;
   /** epoch ms — 알람 발사 예상 시각 (5분 윈도우 진입 판정용) */
   alarmAtEpochMs: number;
+  /**
+   * #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — device(`useApnsTripRegistration`)가 유일한
+   * 소스로 계산한 값을 그대로 전달받는다. **hash 계산 전용 입력**(body에는 직렬화되지 않는다 —
+   * `alarmAtEpochMs`가 이미 backend에 필요한 정밀 값을 담고 있다). `buildRegisterHash`가
+   * `alarmAtEpochMs - Date.now()`로 재계산하지 않는 이유: device의 sticky 계산(ETA가 null인
+   * 폴링 갭에는 직전 확정값 유지, `useApnsTripRegistration.ts` 참고)과 backend가
+   * `alarmAtEpochMs`로부터 재도출하는 계산이 서로 다른 공식이라 경계에서 어긋날 수 있다 —
+   * "이 전환이 register를 트리거했는가"(device 판단)와 "이 전환이 dedup 키를 바꿨는가"
+   * (backend 판단)가 항상 일치해야 한다(리뷰 재지적).
+   */
+  etaWithinPollingWindow: boolean;
   /** APNs 토큰 환경 — backend가 sandbox/production host를 선택. */
   apnsEnv: ApnsEnv;
   /**
@@ -268,12 +278,12 @@ function buildRegisterHash(body: {
   waypoints: AlarmWaypoint[];
   apnsEnv: ApnsEnv;
   /**
-   * #2699 (리뷰 지적, PR #2789 리뷰 3라운드 — 항목 2) — hash 계산 전용 입력. 원본
-   * `alarmAtEpochMs`를 그대로 hash에 넣지 않는다(그러면 옛 `alarmBucket`과 같은 시간종속
-   * 오염이 재발한다) — 대신 이 값과 `Date.now()`의 차이가 `ETA_POLLING_WINDOW_SEC` 경계를
-   * 넘었는지만(`etaWithinPollingWindow`, 아래) 거친 boolean으로 환산해 hash에 반영한다.
+   * #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — device가 유일한 소스로 계산한 값을 그대로
+   * 받는다. 여기서 `alarmAtEpochMs`로부터 **재계산하지 않는다** — 재계산하면 device의 sticky
+   * 계산(ETA null 폴링 갭에는 직전 확정값 유지)과 서로 다른 공식이 되어 경계에서 어긋날 수
+   * 있다(리뷰 재지적, `RegisterTripPayload.etaWithinPollingWindow` 주석 참고).
    */
-  alarmAtEpochMs: number;
+  etaWithinPollingWindow: boolean;
   promptDisplay?: { originStation: string; line: string };
   subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
@@ -286,11 +296,15 @@ function buildRegisterHash(body: {
   //   - alarmBucket(제거됨): `alarmAtEpochMs` 유래 — register가 호출되는 매 순간의 시계에
   //     종속돼 트립 내용이 전혀 안 바뀌어도 60s마다 hash가 갱신되는 시간종속 오염이었다.
   //     완전히 제거 — 위 ALARM_TIME_BUCKET_MS 삭제 주석 참고.
-  //   - etaWithinPollingWindow(재도입, 3라운드 리뷰 — 항목 2): alarmAtEpochMs 원본이 아니라
-  //     "backend 폴링 윈도우 경계를 넘었는가"만 보는 거친 boolean. ETA>5분 상태에서 첫
+  //   - etaWithinPollingWindow(재도입, 3라운드 리뷰 — 항목 2; 4라운드에서 device 단일 소스로
+  //     정정): "backend 폴링 윈도우 경계를 넘었는가"만 보는 거친 boolean. ETA>5분 상태에서 첫
   //     register한 뒤 alarmAtEpochMs가 미래에 동결돼도, 실제 ETA가 그 경계 밑으로 줄어드는
   //     순간에는 이 값이 뒤집혀 재등록이 통과한다 — trip당 사실상 최대 1회만 바뀌므로
-  //     alarmBucket과 달리 시간종속 churn을 만들지 않는다.
+  //     alarmBucket과 달리 시간종속 churn을 만들지 않는다. 4라운드 리뷰 전에는 여기서
+  //     `alarmAtEpochMs - Date.now()`로 재계산했으나, device(`useApnsTripRegistration.ts`)가
+  //     이미 이 값을 계산하고(sticky ETA null 처리 포함) 있어 두 곳이 서로 다른 공식으로
+  //     각자 계산하면 경계에서 어긋날 수 있었다(리뷰 재지적) — 이제 device가 넘긴 값을 그대로
+  //     쓴다(`RegisterTripPayload.etaWithinPollingWindow` 주석).
   //   - waypoints / promptDisplayKey(유지): 둘 다 `currentStation` 파생이지만, 이 값은
   //     의도적으로(#703) register effect의 deps에서 제외돼 있어 **effect 자체의 재실행
   //     빈도**에는 영향을 주지 않는다 — 영향 범위는 이미 발사가 결정된 순간의 페이로드
@@ -301,14 +315,13 @@ function buildRegisterHash(body: {
   //     skip되어 heal 자체가 무력화된다(진짜 필요한 재등록을 죽이지 말 것 — 이슈 요구사항 3).
   //     반면 raw `subsurface`가 만들던 실제 폭주(29~37회/trip)는 이 hash가 아니라 register
   //     effect deps 자체(dwell 게이트로 해결, `useApnsTripRegistration.ts`)가 원인이었다.
-  const etaWithinPollingWindow = body.alarmAtEpochMs - Date.now() <= ETA_POLLING_WINDOW_SEC * 1000;
   return JSON.stringify({
     token: body.token,
     route: body.route,
     destination: body.destination,
     waypoints: body.waypoints,
     apnsEnv: body.apnsEnv,
-    etaWithinPollingWindow,
+    etaWithinPollingWindow: body.etaWithinPollingWindow,
     // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
     // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
     // 게이트 평가 시점에 KV series로 자체 계산하니 영향 없음.
@@ -511,7 +524,7 @@ export function registerActiveTrip(
     destination: payload.destination,
     waypoints: payload.waypoints,
     apnsEnv: payload.apnsEnv,
-    alarmAtEpochMs: payload.alarmAtEpochMs,
+    etaWithinPollingWindow: payload.etaWithinPollingWindow,
     promptDisplay: payload.promptDisplay,
     subsurface: payload.subsurface,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.

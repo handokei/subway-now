@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import React from 'react';
 import { renderHook, waitFor, act } from '@testing-library/react-native';
 
 const mockGetDevicePushTokenAsync = jest.fn();
@@ -684,6 +687,43 @@ describe('useApnsTripRegistration', () => {
       await Promise.resolve();
     });
     expect(mockRegister).toHaveBeenCalledTimes(2);
+  });
+
+  // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2 red) — hook(sticky, ETA null 무시)과 backend
+  // hash(`alarmAtEpochMs - Date.now() <= threshold`)가 각자 계산하던 구버전은 다음 시나리오에서
+  // 어긋났다: ETA=8분(>5분, sticky=false)으로 첫 register → 이후 ETA가 null(폴링 갭)이 된 채로
+  // **다른 dep**(예: infoModeEnabled)이 register를 트리거하면, `deriveAlarmAtEpochMs(null, now)`가
+  // `now`를 반환해 그 순간의 `alarmAtEpochMs`가 사실상 "즉시"로 붕괴한다 — backend가
+  // `alarmAtEpochMs - Date.now() <= threshold`로 독립 재계산했다면 이는 항상 참(0 <= threshold)
+  // 이라 **hook의 sticky 판단(false)과 정반대인 true**를 hash에 반영했을 것이다. 이 테스트는
+  // payload에 실제로 전달되는 `etaWithinPollingWindow` 값이 hook의 판단(false)과 일치하는지
+  // 검증한다 — 단일 소스(hook)에서 파생해 그대로 전달하므로 항상 일치해야 한다.
+  it('#2699 ETA null 순간 다른 dep으로 트리거돼도 payload.etaWithinPollingWindow는 hook의 sticky 판단과 일치한다', async () => {
+    const { rerender } = renderHook(
+      ({ eta, ime }: { eta: number | null; ime: boolean }) =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: eta,
+          infoModeEnabled: ime,
+        }),
+      { initialProps: { eta: ETA_POLLING_WINDOW_SEC + 180, ime: false } }, // 8분, 윈도우 밖.
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    expect(mockRegister.mock.calls[0][0].etaWithinPollingWindow).toBe(false);
+
+    // ETA가 null(폴링 갭)이 된 채로, 전혀 무관한 dep(infoModeEnabled)이 재등록을 트리거한다.
+    // 이 시점 alarmAtEpochMs = deriveAlarmAtEpochMs(null, now) = now(즉시) — 구버전 backend
+    // 재계산 방식이었다면 이게 true로 뒤집혔을 순간이다.
+    rerender({ eta: null, ime: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(2);
+    // hook의 sticky 판단(직전 확정값 false 유지)과 일치해야 한다 — true가 나오면 hook/backend
+    // 계산이 다시 분리됐다는 뜻(회귀).
+    expect(mockRegister.mock.calls[1][0].etaWithinPollingWindow).toBe(false);
   });
 
   it('#703 — currentStation만 바뀌면 register 재호출 안 함', async () => {
@@ -2168,6 +2208,15 @@ describe('useApnsTripRegistration', () => {
       renderHook(({ s }: { s?: boolean }) => useApnsTripRegistration(baseInputs(s)), {
         initialProps: { s: sub },
       });
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — React.StrictMode(dev)는 useState
+    // updater(함수형 setState)를 순수성 검증을 위해 2회 호출한다. 이 wrapper로 그 이중 호출
+    // 조건을 실제로 재현해, 부수효과(로그 적재/ref 변이)가 updater 안에 있지 않음을 검증한다.
+    const renderSubStrict = (sub?: boolean) =>
+      renderHook(({ s }: { s?: boolean }) => useApnsTripRegistration(baseInputs(s)), {
+        initialProps: { s: sub },
+        wrapper: ({ children }: { children: React.ReactNode }) =>
+          React.createElement(React.StrictMode, null, children),
+      });
 
     // #2699 (리뷰 지적, "각도 C" 항목 2) — payload.subsurface는 이제 raw 값(관측용,
     // subsurfaceDedupKey와 분리)이다. raw는 flap-quarantine을 거치지 않고 매 register 호출
@@ -2327,6 +2376,56 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(2);
       expect(mockRegister.mock.calls[1][0].subsurface).toBe(true);
       expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(true, true);
+    });
+
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — React.StrictMode(dev)는 useState에
+    // 넘긴 updater 함수를 순수성 검증을 위해 2회 호출한다. 구현 조사 기록: 되돌린 구버전(옛
+    // `setConfirmedSubsurface((confirmed) => {...})` 형태, side effect가 updater 안에 있던
+    // 버전)을 이 정확한 시나리오(quarantine 밖 fresh 전환)에 대해 직접 계측해보니, 실제로
+    // updater가 2회 호출됐지만(console.log로 확인) **로그 호출 자체는 우연히 1회로
+    // 마스킹됐다** — 첫 호출이 `quarantineAnchorAtRef.current = now`를 먼저 mutate해버려서
+    // (같은 ms 안에 동기 실행되는 두 번째 호출이) "이미 quarantine 안"으로 잘못 판정돼 두
+    // 번째 호출은 로그를 안 남기는 bounce 분기로 빠졌다 — 즉 이 테스트만으로는 옛 코드에서
+    // red를 재현할 수 없었다(로그 카운트가 우연히 정확했을 뿐). 그럼에도 **updater 안에서
+    // side effect(로그/ref 변이)를 실행하는 패턴 자체는 여전히 순수성 위반**이고(React 공식
+    // 문서가 명시적으로 금지), 이 우연한 마스킹은 타이밍(같은 ms 안에 두 호출이 몰리는가)에
+    // 의존해 다른 시나리오·다른 JS 엔진 타이밍에서는 언제든 깨질 수 있는 취약한 보장이다.
+    // v5(현재)는 `setConfirmedSubsurface`에 **함수를 아예 넘기지 않는다** — plain value만
+    // 넘기므로 StrictMode 이중 호출 메커니즘 자체가 구조적으로 적용될 수 없다(우연한 마스킹이
+    // 아니라 원천 차단). 이 테스트는 그 구조를 회귀 방지로 고정한다 — StrictMode 안에서도
+    // 로그가 정확히 1회만 적재됨을 검증(옛 코드에서도 이 특정 경로는 우연히 통과했지만, 다른
+    // 코드 변경이 다시 side-effectful updater 패턴을 도입하면 이 테스트가 잡아낼 가능성이
+    // 높아진다 — 특히 quarantine anchor를 건드리지 않는 다른 실수 형태에서는).
+    it('#2699 StrictMode 이중 렌더에서도 확정 전환당 로그 적재 1회(부수효과가 setState updater 밖에 있음, 구조적 보장)', async () => {
+      const { rerender } = renderSubStrict(false);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      mockLogSubsurfaceRegisterTransition.mockClear(); // mount(false→false, no-op) 이후부터 카운트.
+
+      rerender({ s: true }); // quarantine 밖의 새 전환 — 즉시 확정 + 로그 1건.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledTimes(1);
+      expect(mockLogSubsurfaceRegisterTransition).toHaveBeenCalledWith(true, true);
+    });
+
+    // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 1) — 위 StrictMode 동작 테스트가 우연한
+    // 마스킹으로 통과할 수 있음이 조사 과정에서 드러났으므로(주석 참고), 근본 보장은 행동이
+    // 아니라 **구조**에 있다: `setConfirmedSubsurface`가 함수(업데이터)를 받는 순간 StrictMode
+    // 이중 호출 메커니즘이 적용 대상이 된다 — 애초에 함수를 넘기지 않으면 그 메커니즘 자체가
+    // 무관해진다. 소스를 정적으로 읽어 `setConfirmedSubsurface(`에 화살표/함수 리터럴이
+    // 전달되지 않는지(항상 plain value만 전달되는지) 직접 검증한다.
+    it('#2699 setConfirmedSubsurface는 항상 plain value만 받는다(함수형 updater 금지, 정적 검증)', () => {
+      const source = readFileSync(join(__dirname, '..', 'useApnsTripRegistration.ts'), 'utf-8');
+      const calls = source.match(/setConfirmedSubsurface\([^)]*\)/g) ?? [];
+      expect(calls.length).toBeGreaterThan(0); // 호출부 자체가 사라지면 이 가드도 의미 없음.
+      for (const call of calls) {
+        // 화살표 함수(`=>`) 또는 `function` 키워드가 인자에 섞여 있으면 함수형 updater로 의심.
+        expect(call).not.toMatch(/=>|function\s*\(/);
+      }
     });
 
     // #2699 v2 재설계 불변식 (b) — quarantine 창 안의 되돌아온 전환은 이전 안정값으로 보정되고
