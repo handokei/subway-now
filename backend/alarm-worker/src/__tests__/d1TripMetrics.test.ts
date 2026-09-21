@@ -17,19 +17,29 @@ import { makeTripFixture } from './helpers/testFixtures';
 function makeRoutingMockDb(
   options: {
     sentCount?: number;
+    // #2783 — suppressed_count 집계(outcome='skipped-reason') 전용 mock count. sentCount와
+    // 별도 SQL 텍스트(outcome 리터럴)로 라우팅된다.
+    skippedCount?: number;
     selectThrows?: boolean;
     insertThrows?: boolean;
     onInsertBind?: (args: unknown[]) => void;
   } = {},
 ): D1Database {
-  const { sentCount = 0, selectThrows = false, insertThrows = false, onInsertBind } = options;
+  const {
+    sentCount = 0,
+    skippedCount = 0,
+    selectThrows = false,
+    insertThrows = false,
+    onInsertBind,
+  } = options;
   const prepare = vi.fn().mockImplementation((sql: string) => {
     if (sql.includes('SELECT COUNT')) {
+      const count = sql.includes("outcome') = 'skipped-reason'") ? skippedCount : sentCount;
       return {
         bind: vi.fn().mockReturnValue({
           first: selectThrows
             ? vi.fn().mockRejectedValue(new Error('D1 select error'))
-            : vi.fn().mockResolvedValue({ count: sentCount }),
+            : vi.fn().mockResolvedValue({ count }),
         }),
       };
     }
@@ -252,6 +262,51 @@ describe('recordTripMetrics (#1835)', () => {
       await recordTripMetrics(db, trip, 'destination-arrived', NOW);
 
       expect(insertArgs()[7]).toBe(0);
+    });
+  });
+
+  // #2783 (red② — TDD) — suppressed_count는 그동안 하드코딩 0("동상")이었다. countSentFireAttempts
+  // 와 동일 패턴(D1 trip_events, kind='cron-fire-attempt')으로 outcome='skipped-reason' 건수를
+  // 직접 COUNT해야 한다. 아래 두 테스트는 리팩터 전(hardcoded 0) 코드에서 반드시 실패한다 —
+  // "값이 0이 아니기만 하면 통과"가 아니라 "그 값이 skipped-reason 건수와 정확히 일치"를 assert.
+  describe('suppressed_count 집계 — D1 trip_events 소스 (#2783)', () => {
+    it('D1 cron-fire-attempt skipped-reason 3건이면 suppressed_count=3으로 적재된다', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 1, skippedCount: 3 });
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      // suppressed_count = 9번째 bind 인자 (positional index 8, 0-based) — INSERT 컬럼 순서 기준.
+      expect(insertArgs()[8]).toBe(3);
+    });
+
+    it('D1에 skipped-reason 이벤트가 없으면 suppressed_count=0 이다', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 5, skippedCount: 0 });
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      expect(insertArgs()[8]).toBe(0);
+    });
+
+    it('suppressed_count 조회 실패는 swallow하고 0으로 안전 degrade한다(INSERT 흐름 차단 없음)', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ selectThrows: true });
+      const trip = makeTripFixture();
+
+      await expect(
+        recordTripMetrics(db, trip, 'destination-arrived', NOW),
+      ).resolves.toBeUndefined();
+      expect(insertArgs()[8]).toBe(0);
+    });
+
+    it('fired_count(sent)와 suppressed_count(skipped-reason)는 서로 다른 count로 독립 집계된다', async () => {
+      const { db, insertArgs } = makeRoutingMockDbCapturing({ sentCount: 4, skippedCount: 2 });
+      const trip = makeTripFixture();
+
+      await recordTripMetrics(db, trip, 'destination-arrived', NOW);
+
+      expect(insertArgs()[7]).toBe(4); // fired_count
+      expect(insertArgs()[8]).toBe(2); // suppressed_count
     });
   });
 
