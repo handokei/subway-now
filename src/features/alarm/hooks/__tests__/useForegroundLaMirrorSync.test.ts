@@ -292,6 +292,25 @@ describe('useForegroundLaMirrorSync', () => {
     expect(mockUpdateLiveActivityFromMirrorStation).toHaveBeenCalledTimes(2);
   });
 
+  // #2790 red — LA는 backend mirror가 resolve한 raw station이 아니라, in-app이 채택한 현재역
+  // (currentStation)을 따라야 한다. mirror가 다른 역(gangnam)을 가리켜도 currentStation(yeoksam)으로
+  // 호출돼야 한다. 새 계약: useForegroundLaMirrorSync(destination, route, currentStation).
+  it('#2790: LA는 mirror가 resolve한 역이 아니라 in-app 채택 currentStation을 따른다', async () => {
+    mockUseBackendSsotMirrorPoll.mockReturnValue(mirrorEntry);
+    mockResolveBackendSsotMirrorStation.mockReturnValue(gangnam);
+    renderHook(() =>
+      // @ts-expect-error #2790 — 새 계약(3번째 인자=currentStation)이 아직 구현되지 않음
+      useForegroundLaMirrorSync(destination, directRoute, yeoksam),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockUpdateLiveActivityFromMirrorStation).toHaveBeenCalledWith(
+      yeoksam,
+      destination,
+      directRoute,
+    );
+  });
+
   it('updateLiveActivityFromMirrorStation reject는 swallow(logger.warn만)', async () => {
     mockUseBackendSsotMirrorPoll.mockReturnValue(mirrorEntry);
     mockResolveBackendSsotMirrorStation.mockReturnValue(yeoksam);
