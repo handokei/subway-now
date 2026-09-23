@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react-native';
+import { act, renderHook } from '@testing-library/react-native';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
@@ -43,7 +43,9 @@ describe('useBoardingIntentPromotion (#2792 C 하이브리드)', () => {
     useUserIntentStore.setState({ promptOptIn: true });
     const { rerender } = renderHook(() => useBoardingIntentPromotion());
 
-    useBoardingLockStore.setState({ lock: makeRealLock() });
+    act(() => {
+      useBoardingLockStore.setState({ lock: makeRealLock() });
+    });
     rerender({});
 
     expect(setInfoModeEnabled).toHaveBeenCalledTimes(1);
@@ -54,7 +56,9 @@ describe('useBoardingIntentPromotion (#2792 C 하이브리드)', () => {
     useUserIntentStore.setState({ promptOptIn: false });
     const { rerender } = renderHook(() => useBoardingIntentPromotion());
 
-    useBoardingLockStore.setState({ lock: makeRealLock() });
+    act(() => {
+      useBoardingLockStore.setState({ lock: makeRealLock() });
+    });
     rerender({});
 
     expect(setInfoModeEnabled).not.toHaveBeenCalled();
@@ -64,7 +68,9 @@ describe('useBoardingIntentPromotion (#2792 C 하이브리드)', () => {
     useUserIntentStore.setState({ promptOptIn: true, infoModeEnabled: true });
     const { rerender } = renderHook(() => useBoardingIntentPromotion());
 
-    useBoardingLockStore.setState({ lock: makeRealLock() });
+    act(() => {
+      useBoardingLockStore.setState({ lock: makeRealLock() });
+    });
     rerender({});
 
     expect(setInfoModeEnabled).not.toHaveBeenCalled();
@@ -81,7 +87,9 @@ describe('useBoardingIntentPromotion (#2792 C 하이브리드)', () => {
     useUserIntentStore.setState({ promptOptIn: true });
     const { rerender } = renderHook(() => useBoardingIntentPromotion());
 
-    useBoardingLockStore.setState({ lock: makePendingLock() });
+    act(() => {
+      useBoardingLockStore.setState({ lock: makePendingLock() });
+    });
     rerender({});
 
     expect(setInfoModeEnabled).not.toHaveBeenCalled();
@@ -94,7 +102,9 @@ describe('useBoardingIntentPromotion (#2792 C 하이브리드)', () => {
 
     expect(setInfoModeEnabled).not.toHaveBeenCalled();
 
-    useBoardingLockStore.setState({ lock: makeRealLock() });
+    act(() => {
+      useBoardingLockStore.setState({ lock: makeRealLock() });
+    });
     rerender({});
 
     expect(setInfoModeEnabled).toHaveBeenCalledTimes(1);
@@ -104,7 +114,9 @@ describe('useBoardingIntentPromotion (#2792 C 하이브리드)', () => {
   it('lock이 없는 상태로 유지되면 promptOptIn이 true로 바뀌어도 호출하지 않는다', () => {
     const { rerender } = renderHook(() => useBoardingIntentPromotion());
 
-    useUserIntentStore.setState({ promptOptIn: true });
+    act(() => {
+      useUserIntentStore.setState({ promptOptIn: true });
+    });
     rerender({});
 
     expect(setInfoModeEnabled).not.toHaveBeenCalled();
