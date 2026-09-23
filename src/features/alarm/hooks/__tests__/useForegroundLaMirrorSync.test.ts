@@ -96,15 +96,25 @@ describe('useForegroundLaMirrorSync', () => {
     expect(mockUpdateLiveActivityFromMirrorStation).not.toHaveBeenCalled();
   });
 
-  // #2790 — LA는 mirror가 resolve한 raw station이 아니라 in-app이 채택한 currentStation을 따른다.
-  // mirror가 다른 역(강남)을 가리켜도 currentStation(역삼)으로 호출돼야 한다.
-  it('#2790: LA는 mirror가 resolve한 역이 아니라 in-app 채택 currentStation을 따른다', async () => {
-    mockUseBackendSsotMirrorPoll.mockReturnValue(mirrorEntry);
+  // #2790 (code review P3) — mirror의 currentStationId 자체가 currentStation과 발산하는 mirror를
+  // 주입해 "mirror content는 station 결정에 안 쓰인다"는 계약을 명시적으로 실증한다. mirror는
+  // 강남을 가리키지만 currentStation은 역삼 — LA는 강남이 아니라 역삼(currentStation)으로
+  // 호출돼야 한다. (currentStationId='역삼'인 mirrorEntry만으로는 두 값이 우연히 같아 이 계약을
+  // 증명하지 못했다 — mirror는 이제 station 소스가 아니라 트리거일 뿐이므로 content는 무관해야 함.)
+  it('#2790: LA는 mirror가 가리키는 역이 아니라 in-app 채택 currentStation을 따른다 (mirror는 강남, currentStation은 역삼)', async () => {
+    const mirrorPointingElsewhere = { ...mirrorEntry, currentStationId: '강남' };
+    mockUseBackendSsotMirrorPoll.mockReturnValue(mirrorPointingElsewhere);
     renderHook(() => useForegroundLaMirrorSync(destination, directRoute, yeoksam));
     await Promise.resolve();
     await Promise.resolve();
     expect(mockUpdateLiveActivityFromMirrorStation).toHaveBeenCalledWith(
       yeoksam,
+      destination,
+      directRoute,
+    );
+    // mirror가 가리키는 강남으로는 호출되지 않아야 한다 — 실패 사유를 명확히 구분.
+    expect(mockUpdateLiveActivityFromMirrorStation).not.toHaveBeenCalledWith(
+      gangnam,
       destination,
       directRoute,
     );
