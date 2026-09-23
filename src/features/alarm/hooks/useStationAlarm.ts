@@ -197,6 +197,11 @@ function logSuppressedStationPassedLockless(stationName: string): void {
  * infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
  * 권위를 유지한다(lock 재생성 아님 — CLAUDE.md "명시 탭=lock 동급" 정합). fireAndLog phase(:837)와
  * station-passed 두 경로(:1427/:1673) 3곳에서 동일 조건식이 반복돼 SonarCloud CPD 해소.
+ *
+ * #2792 — 이 함수 자체는 `infoModeEnabled`를 그대로 읽으므로 코드 변경이 필요 없다. `infoModeEnabled`
+ * 값에는 boardingPrompt 응답 / BoardingTrainList 직접 탭 stamp 외에 `useBoardingIntentPromotion`의
+ * 3번째 승격 경로(boardingLock 형성 시 promptOptIn을 매역 intent로 승격, "C 하이브리드")가 이미
+ * 반영돼 있다 — auto-lock으로 탑승 확정된 trip도 이 게이트를 leg-2까지 정상 통과한다.
  */
 function isLocklessNoUserIntent(lock: BoardingLock | null): boolean {
   return !lock && !useUserIntentStore.getState().infoModeEnabled;

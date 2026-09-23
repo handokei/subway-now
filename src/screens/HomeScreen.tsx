@@ -41,6 +41,7 @@ import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
 import { saveStationToWidget } from '../features/widget/api/widgetStorage';
 import { buildWidgetTripContext } from '../features/widget/utils/buildTripContext';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
+import { useBoardingIntentPromotion } from '../features/alarm/hooks/useBoardingIntentPromotion';
 import { useLastTrainAlarm } from '../features/alarm/hooks/useLastTrainAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useAccelerometer } from '../features/nearest-station/hooks/useAccelerometer';
@@ -835,6 +836,11 @@ export default function HomeScreen() {
     // #1922 (M1+M3) — station-passed hop window 동적 확장 입력(transfer leg estimator stuck 대응).
     currentHopStrategy: estimatorStrategy,
   });
+
+  // #2792 — C 하이브리드: 탑승 확정(boardingLock) 후 promptOptIn(안내 시작)을 매역 intent
+  // (infoModeEnabled)로 승격. 갭은 auto-lock(device evidence)만 — 프롬프트 응답/열차 탭은 이미
+  // infoModeEnabled를 직접 stamp해 이 훅 없이도 동작한다. 내부에서 store를 직접 구독하므로 인자 없음.
+  useBoardingIntentPromotion();
 
   // #474 — 막차 임박 알람. 취침모드 ON + 활성 trip 있을 때만 매 cycle evaluate.
   // origin = lock-safe tripOrigin (없으면 fused current station) — destination 설정 시점 캡처값.

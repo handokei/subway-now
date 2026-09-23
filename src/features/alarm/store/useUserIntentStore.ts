@@ -6,7 +6,15 @@
  *
  * paradigm Phase 6 (단독 사용자 모드) device-only chain의 진원지. 사용자가
  * boardingPrompt [탑승] 응답 / BoardingTrainList 직접 탭 중 하나라도 행하면
- * 본 store에 `infoModeEnabled=true`로 stamp된다. `useApnsTripRegistration`이 이
+ * 본 store에 `infoModeEnabled=true`로 stamp된다.
+ *
+ * #2792 — 3번째 stamp 경로: `useBoardingIntentPromotion`이 boardingLock 형성(auto-lock 포함) 시점에
+ * `promptOptIn===true && infoModeEnabled===false`이면 `setInfoModeEnabled(true)`로 승격한다("C
+ * 하이브리드" 결정). 위 2개 진입점(응답/탭)은 lock 생성 시점에 이미 이 값을 직접 stamp하므로
+ * 정합적으로 no-op — 갭은 auto-lock(device evidence, 위 2곳 어디도 거치지 않는 경로)뿐이었다.
+ * 이 승격이 없으면 "안내 시작"만 하고 auto-lock으로 탑승한 trip은 환승 후 leg-2에서 lock이 풀릴 때
+ * `infoModeEnabled=false`로 남아 매역(station-passed) 알림이 전멸한다(#2772 회귀).
+ * `useApnsTripRegistration`이 이
  * 값을 읽어 `RegisterTripPayload.infoModeEnabled`로 backend에 송신하며, backend는
  * cron lockless intermediate gate(`trip.infoModeEnabled && waypoint.kind === 'intermediate'`)
  * 가 통과되어 station-passed silent push를 발사한다. admin kill switch(#1967,
