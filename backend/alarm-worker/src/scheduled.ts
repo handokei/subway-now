@@ -1564,8 +1564,23 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       continue;
     }
 
-    if (trip.alarmAtEpochMs - now > POLLING_WINDOW_MS) {
-      // 아직 알람 윈도우 진입 전 — 폴링 스킵
+    // #2794 — cron 폴링윈도우 게이트. `alarmAtEpochMs`는 register 시점에만 갱신되고(#2699)
+    // backend가 재기록하지 않아 5분+ 미래로 굳을 수 있다. 게이트 원 목적은 "알람 한참 전 API
+    // 폴링 절약"이라, 진행 중(디바이스가 활발히 sync 중)인 트립까지 굳은 값으로 통째 스킵되면
+    // 안 된다 — 실기기 회귀(9/23 lock=1 fired=0, 게이트-스킵으로 trip_event 미기록)가 이 지문.
+    // SSoT read를 게이트 앞으로 hoist(#2662 유사 전례)해 디바이스 sync가 fresh
+    // (`!isDeviceSyncStale`)하면 굳은 alarmAtEpochMs와 무관하게 처리를 계속한다. sync 신호 자체가
+    // 없으면(ssot null, 판단 불가) 기존 동작(스킵) 유지 — idle trip의 quota 절감을 보존한다.
+    //
+    // #1680 (V8d) stationary cron skip 게이트가 같은 SSoT read를 아래에서 재사용한다(중복 read
+    // 방지). #2322 (O1-C) la-stale backstop도 이 read를 재사용해 침묵/outage 여부를 판정한다.
+    const stationarySsot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    const cronGateDeviceSyncStale = stationarySsot === null || isDeviceSyncStale(stationarySsot, now);
+
+    if (trip.alarmAtEpochMs - now > POLLING_WINDOW_MS && cronGateDeviceSyncStale) {
+      // 아직 알람 윈도우 진입 전 + 디바이스 sync도 stale — 폴링 스킵
       continue;
     }
 
@@ -1575,12 +1590,6 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #1680 (V8d) — stationary cron skip 게이트. SSoT.motionState === 'stationary' 명시 시
     // Seoul polling + push 발사를 skip한다. motionState='unknown' 또는 SSoT null은 평가 유지.
     // destination/transfer 임박 bypass: 사용자가 환승역/목적지에 정차 중인 케이스를 보호.
-    //
-    // #2322 (O1-C) — la-stale backstop(아래)이 같은 SSoT read를 재사용해 침묵/outage 여부를
-    // 판정하므로 이 블록 밖으로 scope를 넓혔다. 결과 판정 로직 자체는 무변경.
-    const stationarySsot = await readSsot(env.TRIPS, trip.token, {
-      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-    });
     if (
       stationarySsot !== null &&
       shouldSkipStationary(
