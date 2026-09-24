@@ -711,6 +711,138 @@ describe('runScheduled', () => {
     expect(seoulFetchSpy).toHaveBeenCalled();
   });
 
+  // #2794 — 게이트(1567)가 alarmAtEpochMs만 보고 명시 의향(lock/infoMode) 트립까지 통째 스킵하던
+  // 회귀. #2699가 register hash에서 alarmBucket(≤60s churn)을 제거해 alarmAtEpochMs가 굳은
+  // 미래로 남을 수 있게 됐고, 그 결과 사용자가 열차를 탭(intent)해도 매역 발사가 0이 되는 실기기
+  // 회귀가 9/23 확인됐다(D1 trip_metrics: lock=1, fired=0).
+  //
+  // 게이트 판정 기준은 device-sync-freshness가 아니라 '명시 의향'(tripHasDeclaredIntent)이다 —
+  // (1) sync stale해도 lock 트립은 스킵하면 안 되고(지하 수면), (2) sync fresh여도 무의향 lockless는
+  // 조기 폴링/auto-lock에 노출하면 안 되기 때문. RED는 명시 의향(lock) 트립 케이스 두 개다: 'RED —
+  // ...' 단발 발사 테스트와 'whole-trip ...' 테스트 모두 fix 전 굳은 alarmAtEpochMs로 스킵돼 발사 0으로
+  // 실패하고 fix 후 통과한다(검증 완료: 원 게이트 대비 이 둘만 fail, 아래 두 거부 가드는 pass). 나머지
+  // 두 테스트('거부 가드 — ...')는 무의향/idle 트립이 fix 전후 모두 스킵되어 quota 절감·무발사
+  // paradigm을 지키는지 확인하는 거부 가드로, fix 전후 모두 green이며 red 테스트가 아니다.
+  describe('#2794 — 굳은 alarmAtEpochMs여도 명시 의향 트립은 스킵되면 안 된다', () => {
+    // 7호선 용마산→중곡→군자 leg. boardingLock 활성(=사용자 탭 intent, tripHasDeclaredIntent=true)
+    // + arvlCd=0(ENTERING, 임박) 실캡처 형태 arrival 응답 — lock.trainCode(7246)와 매칭돼 fire된다.
+    function makeIntentTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+      return makeLockTripFixture(token, {
+        alarmAtEpochMs: NOW + 10 * 60_000, // #2699 유형 — register 이후 갱신 안 돼 굳은 미래.
+        ...overrides,
+      });
+    }
+
+    it('RED — 명시 의향(lock) 트립 + 굳은 alarmAtEpochMs → 게이트 통과해 cron-fire-attempt(outcome=sent) 기록', async () => {
+      const token = 'intent-frozen';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeIntentTrip(token));
+      // 진행 중 트립의 현실적 SSoT(디바이스 추적 중). lastDeviceSyncAt은 의도적으로 stamp하지
+      // 않는다 — 게이트가 sync 신선도가 아니라 의향을 본다는 것을 이 케이스로도 드러낸다.
+      await seedSsot(kv as unknown as KVNamespace, token, '중곡');
+      const { db, inserts } = makeFireLogDb();
+      const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2794-intent',
+      });
+      const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      // RED(fix 전): 게이트(1567)가 alarmAtEpochMs만 보고 이 지점 이전에 continue해
+      // pickActiveWaypoint/fire 평가 자체에 도달하지 못한다 → fireLogInserts는 0건.
+      expect(fireLogInserts).toHaveLength(1);
+      const meta = JSON.parse(fireLogInserts[0][5] as string) as { outcome: string; waypointKind: string };
+      expect(meta.outcome).toBe('sent');
+      expect(meta.waypointKind).toBe('station-passed');
+    });
+
+    it('거부 가드 — 무의향 lockless 트립은 디바이스 sync가 fresh해도 스킵된다 (조기 폴링/auto-lock 방지, green both)', async () => {
+      // sync-freshness가 게이트 기준이 아님을 증명하는 케이스: SSoT가 방금 sync(fresh)돼도
+      // boardingLock/infoMode가 없으면(tripHasDeclaredIntent=false) 굳은 alarmAtEpochMs로 스킵.
+      const token = 'lockless-fresh-frozen';
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTrip({ token, alarmAtEpochMs: NOW + 10 * 60_000 }), // lock/infoMode 없음 = 무의향
+      );
+      const ssot = await seedSsot(kv as unknown as KVNamespace, token, '중곡');
+      await writeSsot(kv as unknown as KVNamespace, { ...ssot, lastDeviceSyncAt: NOW }); // fresh sync
+      const { db, inserts } = makeFireLogDb();
+      const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2794-lockless',
+      });
+      const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(fireLogInserts).toHaveLength(0);
+      expect(stats.polled).toBe(0);
+    });
+
+    it('거부 가드 — idle 트립(무의향, SSoT 없음) + 굳은 alarmAtEpochMs → 기존대로 스킵 (폴링 절약 보존, green both)', async () => {
+      const token = 'idle-frozen-no-ssot';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ token, alarmAtEpochMs: NOW + 10 * 60_000 }));
+      const seoul = makeSeoul([]);
+      const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.polled).toBe(0);
+      expect(stats.pushed).toBe(0);
+    });
+
+    // whole-trip 검증 — 굳은 alarmAtEpochMs를 가진 명시 의향 트립으로 cron을 연속 2 tick 돌려
+    // 중간역(중곡)과 목적지(군자)가 순차 발사되는지 확인한다. 부품(게이트 단독) green이 아니라
+    // 실제 trip 진행 전체가 살아있음을 증명한다.
+    it('whole-trip: 굳은 alarmAtEpochMs 의향 트립도 연속 cron tick에서 중간역→목적지 순차 발사된다', async () => {
+      const token = 'intent-frozen-wholetrip';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeIntentTrip(token));
+      await seedSsot(kv as unknown as KVNamespace, token, '중곡');
+
+      // tick 1 — 중곡 도착 임박(arvlCd=0).
+      const { db: db1, inserts: inserts1 } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db1), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2794-wt-1',
+      });
+      const tick1Fires = inserts1.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(tick1Fires).toHaveLength(1);
+      expect(tick1Fires[0][3]).toBe('중곡');
+
+      // tick 2 — 30초 후, 중곡 통과해 군자(목적지) 도착 임박(arvlCd=0). alarmAtEpochMs는
+      // 여전히 굳은 미래값 그대로(backend가 재기록하지 않음, #2699 확인 사실).
+      const NOW2 = NOW + 30_000;
+      const { db: db2, inserts: inserts2 } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db2), {
+        seoul: makeArvlCdFireSeoul('군자', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW2,
+        generatePushId: () => 'p-2794-wt-2',
+      });
+      const tick2Fires = inserts2.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(tick2Fires).toHaveLength(1);
+      expect(tick2Fires[0][3]).toBe('군자');
+    });
+  });
+
   it('deletes expired trips', async () => {
     const kv = new InMemoryKV();
     await putTrip(

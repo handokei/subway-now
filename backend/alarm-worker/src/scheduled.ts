@@ -1564,8 +1564,20 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       continue;
     }
 
-    if (trip.alarmAtEpochMs - now > POLLING_WINDOW_MS) {
-      // 아직 알람 윈도우 진입 전 — 폴링 스킵
+    // #2794 — cron 폴링윈도우 게이트. `alarmAtEpochMs`는 register 시점에만 갱신되고, #2699가
+    // 이를 신선 유지하던 부수효과(alarmBucket, ≤60s churn)를 제거해 5분+ 미래로 굳을 수 있다.
+    // 게이트 원 목적은 "알람 한참 전 폴링 절약"이라, 사용자 명시 의향(lock/infoMode) 트립까지
+    // 굳은 값으로 통째 스킵되면 안 된다 — 탭했는데 발사 0이 된 9/23 회귀(D1 trip_metrics
+    // lock=1 fired=0, 게이트-스킵으로 trip_event 미기록)가 이 지문. tripHasDeclaredIntent 트립은
+    // 굳은 alarmAtEpochMs와 무관하게 처리를 계속하고, 무의향 트립은 기존대로 스킵한다 — quota
+    // 절감 + 조기 auto-lock 방지(무의향 lockless = 침묵 paradigm) 유지.
+    //
+    // 기준을 device-sync-freshness가 아니라 '의향'으로 삼는 이유: (1) sync가 stale해도 lock 트립은
+    // 스킵하면 안 된다(지하 수면 중 backend 권위 추적이 존재 이유) → sync 기준은 탭 트립을 오스킵.
+    // (2) sync fresh 기준은 무의향 lockless 트립을 조기 Seoul 폴링/auto-lock 평가에 노출한다.
+    // tripHasDeclaredIntent는 trip 객체 순수 파생(KV read 없음)이라 idle 트립의 read 비용도 없다.
+    if (trip.alarmAtEpochMs - now > POLLING_WINDOW_MS && !tripHasDeclaredIntent(trip)) {
+      // 알람 윈도우 진입 전 + 사용자 명시 의향 없음 — 폴링 스킵
       continue;
     }
 
