@@ -52,6 +52,7 @@ import {
   toCsv,
 } from './feedbackAdmin';
 import { evaluateAndMaybeAlert } from './recallAlerts';
+import { maybeRunTripMetricsRegressionScan } from './tripMetricsRegressionScan';
 import {
   cleanupTripWithLa,
   type LiveActivityDeps,
@@ -3897,6 +3898,24 @@ export const handler = {
       if (result.ran) {
         log('feedback daily stats aggregated', { date: result.date });
       }
+    }
+    // #2795 — trip_metrics 회귀 자동 감시. 명시 의향(lock_attached=1 또는
+    // boarding_prompt_responded=1) 트립이 fired_count=0으로 완료된 회귀를 하루 내 탐지한다
+    // (2026-09-23 매역 알림 전멸 회귀 #2794의 재발 감시). 발사 로직과 완전히 독립된
+    // branch — `maybeRunTripMetricsRegressionScan` 자체가 내부에서 실패를 swallow하지만,
+    // cron 자기참조 회피 원칙을 명시적으로 지키기 위해 이 호출부에도 별도 try/catch를 둔다.
+    // 매분 호출되지만 함수가 자체적으로 00:10 UTC 1분 윈도우 + 같은 날짜 KV 키로
+    // idempotent 게이트한다(#1080 feedback daily stats와 동일 패턴).
+    try {
+      const regressionResult = await maybeRunTripMetricsRegressionScan(env, Date.now());
+      if (regressionResult.ran) {
+        log('trip_metrics regression scan completed', {
+          date: regressionResult.date,
+          regressionCount: regressionResult.regressions?.length ?? 0,
+        });
+      }
+    } catch (err) {
+      void captureBackendException(env, err, { path: 'scheduled/tripMetricsRegressionScan' });
     }
     // #1752 — observability metrics 1h 주기 집계. cron이 매분 실행되지만 1h bucket 키가
     // 이미 KV에 있으면 readObservabilityMetrics가 null을 반환하지 않으므로 computeAndStore는

@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "type-check": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply subway-now-db --local --config wrangler.toml",
-    "db:migrate:remote": "wrangler d1 migrations apply subway-now-db --remote --config wrangler.toml"
+    "db:migrate:remote": "wrangler d1 migrations apply subway-now-db --remote --config wrangler.toml",
+    "check:trip-metrics-regression": "node scripts/checkTripMetricsRegression.mjs"
   },
   "dependencies": {
     "@sentry/cloudflare": "^10.59.0",
