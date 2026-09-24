@@ -40,7 +40,14 @@ export type BackendXEventName =
    * `pushFailureLog.ts` / `d1ErrorLog.ts`의 write catch block에서 사용. D1 write 자체가
    * 실패한 상황이라 D1 sink(logBackendError)로는 escalate할 수 없어 Sentry-only.
    */
-  | 'D1-write-failure';
+  | 'D1-write-failure'
+  /**
+   * #2795 — trip_metrics 회귀 자동 감시. 명시 의향(lock_attached=1 또는
+   * boarding_prompt_responded=1) 있는 완료 trip이 fired_count=0(아무것도 안 쏨)인 회귀 후보를
+   * 매일 1회 스캔해 발견 시 emit (`tripMetricsRegressionScan.ts`). 2026-09-23 매역 알림 전멸
+   * 회귀(#2794)의 재발을 하루 안에 잡기 위한 결과 기반 신호.
+   */
+  | 'X12-trip-metrics-fired-zero';
 
 export type BackendXEventContext = Record<
   string,
