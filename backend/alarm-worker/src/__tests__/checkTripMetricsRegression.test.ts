@@ -11,6 +11,7 @@ import {
   formatRegressionReport,
   parseRegressionCheckResponse,
 } from '../checkTripMetricsRegression';
+import { REGRESSION_WHERE_BASE } from '../tripMetricsRegressionQuery';
 
 describe('buildRegressionCheckQuery (#2795)', () => {
   it('공통 SSoT 조건(ended_at/lock_attached/boarding_prompt_responded/fired_count/window)을 포함한다', () => {
@@ -19,8 +20,18 @@ describe('buildRegressionCheckQuery (#2795)', () => {
     expect(sql).toMatch(/lock_attached\s*=\s*1/);
     expect(sql).toMatch(/boarding_prompt_responded\s*=\s*1/);
     expect(sql).toMatch(/fired_count\s*=\s*0/);
-    expect(sql).toMatch(/started_at\s*>\s*1700000000000/);
     expect(sql).toMatch(/FROM trip_metrics/);
+  });
+
+  it('F1 — window 비교가 started_at이 아니라 ended_at 기준이다(어제 시작해 오늘 끝난 장기 trip도 포착)', () => {
+    const sql = buildRegressionCheckQuery(1_700_000_000_000);
+    expect(sql).toMatch(/ended_at\s*>\s*1700000000000/);
+    expect(sql).not.toMatch(/started_at\s*>\s*1700000000000/);
+  });
+
+  it('F3 — 옵션 A(tripMetricsRegressionScan)와 동일한 공유 WHERE 술어(SSoT)를 사용한다', () => {
+    const sql = buildRegressionCheckQuery(1_700_000_000_000);
+    expect(sql).toContain(REGRESSION_WHERE_BASE);
   });
 });
 
@@ -61,6 +72,16 @@ describe('parseRegressionCheckResponse (#2795)', () => {
   it('결과 0건(정상 상태)은 빈 배열을 반환한다 — throw하지 않음(fixtureFromTrip과 다르게 empty=에러 아님)', () => {
     const stdout = JSON.stringify([{ results: [], success: true }]);
     expect(parseRegressionCheckResponse(stdout)).toEqual([]);
+  });
+
+  it('F5 — top-level bare 빈 배열([])도 형식 오류가 아니라 0건으로 취급한다', () => {
+    expect(parseRegressionCheckResponse('[]')).toEqual([]);
+  });
+
+  it('F5 — top-level이 배열이 아니면(예: 객체) 형식 오류로 throw한다', () => {
+    expect(() => parseRegressionCheckResponse(JSON.stringify({ oops: true }))).toThrow(
+      /예상 형식/,
+    );
   });
 
   it('JSON 파싱 실패 시 명확한 에러 메시지로 throw한다', () => {
