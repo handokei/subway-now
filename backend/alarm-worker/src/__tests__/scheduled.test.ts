@@ -711,6 +711,130 @@ describe('runScheduled', () => {
     expect(seoulFetchSpy).toHaveBeenCalled();
   });
 
+  // #2794 — 게이트(1567)가 alarmAtEpochMs만 보고 진행 중 트립까지 통째 스킵하던 회귀.
+  // #2699가 register hash에서 alarmBucket(≤60s churn)을 제거해 alarmAtEpochMs가 굳은 미래로
+  // 남을 수 있게 됐고, 그 결과 사용자가 열차를 탭(intent)해도 매역 발사가 0이 되는 실기기 회귀가
+  // 9/23 확인됐다(D1 trip_events: lock=1, fired=0). fix 전 이 describe 블록은 모두 RED다.
+  describe('#2794 — 진행 중 트립은 굳은 alarmAtEpochMs로 스킵되면 안 된다', () => {
+    // 7호선 용마산→중곡→군자 leg. boardingLock 활성(=사용자 탭 intent) + arvlCd=0(ENTERING,
+    // 임박) 실캡처 형태 arrival 응답 — lock.trainCode(7246)와 매칭돼 정상 상태라면 fire된다.
+    function makeActiveTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+      return makeLockTripFixture(token, {
+        alarmAtEpochMs: NOW + 10 * 60_000, // #2699 유형 — register 이후 갱신 안 돼 굳은 미래.
+        ...overrides,
+      });
+    }
+
+    it('활성 lock + 디바이스 sync fresh → 게이트를 통과해 cron-fire-attempt(outcome=sent)가 기록된다', async () => {
+      const token = 'active-frozen-fresh';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeActiveTrip(token));
+      // 디바이스가 방금 전(NOW)까지 sync 중 — isDeviceSyncStale=false가 되도록 SSoT를 fresh하게 seed.
+      const ssot = await seedSsot(kv as unknown as KVNamespace, token, '중곡');
+      await writeSsot(kv as unknown as KVNamespace, { ...ssot, lastDeviceSyncAt: NOW });
+      const { db, inserts } = makeFireLogDb();
+      const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2794-fresh',
+      });
+      const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      // RED(현재 코드): 게이트(1567)가 alarmAtEpochMs만 보고 이 지점 이전에 continue해
+      // pickActiveWaypoint/fire 평가 자체에 도달하지 못한다 → fireLogInserts는 0건.
+      expect(fireLogInserts).toHaveLength(1);
+      const meta = JSON.parse(fireLogInserts[0][5] as string) as { outcome: string; waypointKind: string };
+      expect(meta.outcome).toBe('sent');
+      expect(meta.waypointKind).toBe('station-passed');
+    });
+
+    it('활성 lock이어도 디바이스 sync가 stale(5분+)하면 여전히 스킵된다 (거부 케이스 — quota 보호)', async () => {
+      const token = 'active-frozen-stale';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeActiveTrip(token));
+      // 마지막 sync가 6분 전 — DEVICE_SYNC_STALE_THRESHOLD_MS(5분) 초과.
+      const ssot = await seedSsot(kv as unknown as KVNamespace, token, '중곡');
+      await writeSsot(kv as unknown as KVNamespace, {
+        ...ssot,
+        lastDeviceSyncAt: NOW - 6 * 60_000,
+      });
+      const { db, inserts } = makeFireLogDb();
+      const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv, undefined, db), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2794-stale',
+      });
+      const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(fireLogInserts).toHaveLength(0);
+      expect(stats.polled).toBe(0);
+    });
+
+    it('idle 트립(SSoT 자체 없음) + 굳은 alarmAtEpochMs → 기존대로 스킵 (폴링 절약 보존, 회귀 없음)', async () => {
+      const token = 'idle-frozen-no-ssot';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ token, alarmAtEpochMs: NOW + 10 * 60_000 }));
+      const seoul = makeSeoul([]);
+      const fetchSpy = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.polled).toBe(0);
+      expect(stats.pushed).toBe(0);
+    });
+
+    // whole-trip 검증 — 굳은 alarmAtEpochMs를 가진 진행 중 트립으로 cron을 연속 2 tick 돌려
+    // 중간역(중곡)과 목적지(군자)가 순차 발사되는지 확인한다. 부품(게이트 단독) green이 아니라
+    // 실제 trip 진행 전체가 살아있음을 증명한다.
+    it('whole-trip: 굳은 alarmAtEpochMs 트립도 연속 cron tick에서 중간역→목적지 순차 발사된다', async () => {
+      const token = 'active-frozen-wholetrip';
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeActiveTrip(token));
+      const ssot = await seedSsot(kv as unknown as KVNamespace, token, '중곡');
+      await writeSsot(kv as unknown as KVNamespace, { ...ssot, lastDeviceSyncAt: NOW });
+
+      // tick 1 — 중곡 도착 임박(arvlCd=0).
+      const { db: db1, inserts: inserts1 } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db1), {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-2794-wt-1',
+      });
+      const tick1Fires = inserts1.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(tick1Fires).toHaveLength(1);
+      expect(tick1Fires[0][3]).toBe('중곡');
+
+      // tick 2 — 30초 후, 중곡 통과해 군자(목적지) 도착 임박(arvlCd=0). alarmAtEpochMs는
+      // 여전히 굳은 미래값 그대로(backend가 재기록하지 않음, #2699 확인 사실).
+      const NOW2 = NOW + 30_000;
+      const { db: db2, inserts: inserts2 } = makeFireLogDb();
+      await runScheduled(makeEnv(kv, undefined, db2), {
+        seoul: makeArvlCdFireSeoul('군자', 0, 1),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW2,
+        generatePushId: () => 'p-2794-wt-2',
+      });
+      const tick2Fires = inserts2.filter((args) => args[2] === 'cron-fire-attempt');
+      expect(tick2Fires).toHaveLength(1);
+      expect(tick2Fires[0][3]).toBe('군자');
+    });
+  });
+
   it('deletes expired trips', async () => {
     const kv = new InMemoryKV();
     await putTrip(
