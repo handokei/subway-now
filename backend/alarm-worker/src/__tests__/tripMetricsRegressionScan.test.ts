@@ -283,8 +283,10 @@ describe('maybeRunTripMetricsRegressionScan (#2795)', () => {
     } as unknown as Env;
     const result = await maybeRunTripMetricsRegressionScan(env, NOW);
     expect(result).toEqual({ ran: false });
-    // 회귀 alert(captureMessage)는 호출되지 않지만, 실패 자체는 captureException으로 승격된다.
-    expect(captureMessageMock).not.toHaveBeenCalled();
+    // 회귀 alert(X12 captureMessage)는 호출되지 않는다 — captureMessageMock이 다른 이유로
+    // 호출됐더라도(예: mock DB의 D1 write 부작용) X12 이벤트명으로는 호출되지 않아야 한다.
+    expect(captureMessageMock.mock.calls.some(([name]) => name === 'X12-trip-metrics-fired-zero')).toBe(false);
+    // 실패 자체는 captureBackendException 경유로 captureException(Sentry)으로 승격된다.
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
