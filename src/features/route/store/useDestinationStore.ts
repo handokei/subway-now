@@ -191,7 +191,10 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       tripTransitionQueue = tripTransitionQueue
         .then(() => triggerTripEndRecall())
         .catch(noop)
-        .then(() => runTripBoundCleanups())
+        // #2803 — 목적지 설정(station != null)이면 방금 setCustomOrigin으로 지정한 명시
+        // 출발역을 보존해야 한다(지도탭 "출발역 설정 → 목적지 설정" 흐름). trip 종료
+        // (station === null)에서는 기존대로 이전 trip 잔여 customOrigin을 클리어한다.
+        .then(() => runTripBoundCleanups(station ? { preserveCustomOrigin: true } : undefined))
         .catch(noop)
         // #1597 — cleanup 후, 새 trip의 storage write 전에 ground-truth prompt enqueue.
         // prev trip이 실제로 종료된 경우(prev !== null)에만 fire. 첫 trip 시작(prev === null)
@@ -220,7 +223,9 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         void setTripCorrId(generateTripCorrId());
       }
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
-      if (get().customOrigin !== null) {
+      // #2803 — 클리어는 trip 종료(station === null)에서만. 목적지 설정(station != null)은
+      // 사용자가 방금 지도탭에서 명시 설정한 출발역을 보존해야 한다(GPS 폴백 회귀 fix).
+      if (!station && get().customOrigin !== null) {
         set({ customOrigin: null });
       }
       // alarmEvent 메모리 상태 동기화 — 이전 trip 알람이 새 trip UI에 leak되지 않도록.

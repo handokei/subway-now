@@ -87,7 +87,7 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // setDestination(null) 경로는 useDestinationStore가 이미 inline으로 removeItem을 수행하지만,
   // 멱등 호출이라 중복 해도 무해. 이 배열은 BG cleanup의 single source.
   () => AsyncStorage.removeItem(DESTINATION_KEY),
-  () => AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY),
+  clearCustomOriginKey,
   () => AsyncStorage.removeItem(BOARDING_LOCK_KEY),
   // #773/#918 A3 PR4 → #2089 — safety-net(구 bl:/tba: 3종 통합) OS 사전 예약 cancel은
   // ACTIVE_TRIP_KEY(tripToken)를 필요로 하므로 이 배열보다 먼저 읽어야 한다(아래에서
@@ -201,6 +201,19 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
 ];
 
 /**
+ * #2803 — CUSTOM_ORIGIN_KEY storage 제거를 named function으로 분리.
+ *
+ * FG setDestination(station!=null) 경로(사용자가 지도탭에서 출발역을 명시 설정한 뒤
+ * 목적지를 설정하는 흐름)는 이 항목을 제외해야 방금 지정한 customOrigin이 보존된다
+ * (runTripBoundCleanups의 preserveCustomOrigin 옵션 참고). 다른 모든 trip 종료 경로
+ * (BG silent push trip-ended / launch reconciliation / device self-end 등)는 기존대로
+ * 이 항목을 그대로 실행해 이전 trip의 명시 출발역이 leak되지 않도록 한다.
+ */
+function clearCustomOriginKey(): Promise<void> {
+  return AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY);
+}
+
+/**
  * #2293 (PR #2301 리뷰 P1) — 일시정지 storage stamp + memory pausedAt을 한 호출로 동시 clear.
  *
  * 두 채널(navigationPauseStorage의 AsyncStorage stamp / useNavigationStore.pausedAt 메모리)이
@@ -260,11 +273,15 @@ function endLiveActivityCleanup(): Promise<void> {
  * AsyncStorage.removeItem 멱등이라 이 배열의 다른 `BOARDING_LOCK_KEY` removeItem 항목과
  * 병렬 실행돼도 안전하다.
  */
-async function clearTripBoundStoreMemory(): Promise<void> {
+async function clearTripBoundStoreMemory(options?: {
+  preserveCustomOrigin?: boolean;
+}): Promise<void> {
   const destState = useDestinationStore.getState();
   // customOrigin: setDestination 경로는 이미 null로 동기화하지만, BG silent push 경로는
   // 누락. 사용자가 직접 지정한 출발역이 새 trip에 leak되지 않도록 비운다.
-  if (destState.customOrigin !== null) {
+  // #2803 — preserveCustomOrigin이 true면(FG setDestination이 station!=null로 새 목적지를
+  // 설정하는 흐름) 방금 지정한 명시 출발역을 그대로 둔다.
+  if (!options?.preserveCustomOrigin && destState.customOrigin !== null) {
     useDestinationStore.setState({ customOrigin: null });
   }
   // boardingLock: releaseLock을 경유해 lifecycle breadcrumb을 남긴다 (#2152 P1).
@@ -297,7 +314,14 @@ async function clearTripBoundStoreMemory(): Promise<void> {
  * Promise.allSettled로 동시에 띄우고 모든 reject를 흡수한다 (한 항목 실패가
  * 다른 항목 실행이나 호출자에게 전파되지 않도록).
  */
-export function runTripBoundCleanups(): Promise<void> {
+export function runTripBoundCleanups(options?: {
+  // #2803 — true면 CUSTOM_ORIGIN_KEY storage 제거와 customOrigin 메모리 clear를 건너뛴다.
+  // FG setDestination이 새 목적지(station != null)를 설정하는 switch 경로에서만 사용 —
+  // 사용자가 지도탭에서 명시 설정한 출발역이 목적지 설정만으로 사라지지 않게 한다.
+  // 다른 모든 호출자(trip 종료류)는 옵션 없이 호출해 기존 clear 동작을 유지한다.
+  preserveCustomOrigin?: boolean;
+}): Promise<void> {
+  const preserveCustomOrigin = options?.preserveCustomOrigin ?? false;
   // #2089 — TRIP_BOUND_CLEANUPS가 ACTIVE_TRIP_KEY/TRIP_STARTED_AT_KEY를 제거하기 전에
   // effective tripToken을 먼저 읽어야 safetyNetScheduler의 tripToken-scoped cancel이
   // 가능하다(제거 후에는 둘 다 null). #2089 리뷰 P1-2 — backend 등록 없이 device-local id로
@@ -323,16 +347,24 @@ export function runTripBoundCleanups(): Promise<void> {
     // clearActiveTrip을 부르지 않았다). removeItem 전에 이미 읽어둔 backendTripToken(위)을
     // 그대로 사용 — device-local synthetic id(tripToken)는 backend가 모르는 값이라 제외.
     // fire-and-forget + 실패해도 흡수(allSettled) — backend TTL이 최종 안전망(현행 유지).
+    // #2803 — preserveCustomOrigin이 true면 CUSTOM_ORIGIN_KEY storage 제거(clearCustomOriginKey)와
+    // customOrigin 메모리 clear(clearTripBoundStoreMemory)를 배열에서 빼고, customOrigin은
+    // 그대로 둔 채 나머지 메모리만 정리하는 버전으로 교체한다.
+    const baseCleanups = preserveCustomOrigin
+      ? TRIP_BOUND_CLEANUPS.filter(
+          (cleanup) => cleanup !== clearCustomOriginKey && cleanup !== clearTripBoundStoreMemory,
+        ).concat(() => clearTripBoundStoreMemory({ preserveCustomOrigin: true }))
+      : TRIP_BOUND_CLEANUPS;
     const cleanups = tripToken
       ? [
-          ...TRIP_BOUND_CLEANUPS,
+          ...baseCleanups,
           () => cancelAllSafetyNetAlarms(tripToken),
           () => cancelAllPrescheduledAlarms(tripToken),
           ...(backendTripToken
             ? [() => clearActiveTrip(backendTripToken).then(noop)]
             : []),
         ]
-      : TRIP_BOUND_CLEANUPS;
+      : baseCleanups;
     return Promise.allSettled(cleanups.map((cleanup) => cleanup())).then(noop);
   });
 }
