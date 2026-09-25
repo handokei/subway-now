@@ -637,6 +637,41 @@ describe('useDestinationStore', () => {
     expect(customOrigin).toBeNull();
   });
 
+  // #2803 — 지도탭 "출발역 명시 설정 → 목적지 설정" 흐름 회귀 fix.
+  // setDestination이 customOrigin을 목적지 설정(station != null)에도 무조건 클리어해
+  // effectiveOrigin(HomeScreen.tsx)이 GPS 최근접역으로 폴백되던 버그.
+  it('setCustomOrigin(#2803): 출발역 설정 후 목적지 설정 시 customOrigin이 보존된다 (GPS 폴백 회귀 fix)', async () => {
+    const { setCustomOrigin, setDestination } = useDestinationStore.getState();
+
+    // 지도탭 흐름: 출발역을 먼저 명시 설정.
+    setCustomOrigin(mockStation);
+    expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+
+    // 이어서 목적지를 설정(첫 trip 시작, prev destination === null → isSwitch === true).
+    // #1324 degenerate 가드에 걸리지 않도록 customOrigin과 다른 역을 목적지로 지정.
+    setDestination(mockStation2);
+    // runTripBoundCleanups는 tripTransitionQueue의 then-chain으로 비동기 실행되므로
+    // 그 체인이 customOrigin을 뒤늦게 지우지 않는지까지 확인하려면 microtask flush 필요.
+    await flushMicrotasks();
+
+    expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+  });
+
+  it('setCustomOrigin(#2803): trip 종료(setDestination(null))에서는 customOrigin이 여전히 클리어된다 (이전 trip 잔여 leak 방지 보존)', async () => {
+    const { setCustomOrigin, setDestination } = useDestinationStore.getState();
+
+    setCustomOrigin(mockStation);
+    setDestination(mockStation2);
+    await flushMicrotasks();
+    expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+
+    // trip 종료 — 이전 trip의 명시 출발역이 다음 trip으로 leak되면 안 된다.
+    setDestination(null);
+    await flushMicrotasks();
+
+    expect(useDestinationStore.getState().customOrigin).toBeNull();
+  });
+
   // ── #700 tripOrigin 영속화 ──
 
   it('초기 tripOrigin은 null이다', () => {
