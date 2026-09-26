@@ -45,6 +45,18 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 - ADR-010 첫 줄: "두 실패 모드(false positive / miss)는 비대칭이 아니라 **동급**."
 - 출처: `memory/feedback_user_intent_equal_protection.md`, `docs/decisions/ADR-014-decision-process-rules.md`
 
+### 검증은 새 실기기 라이드에 의존하지 않는다 (필수, 2026-09-24 사용자 재지시)
+
+**회귀 fix의 acceptance를 "다음 라이드에서 fired>0 확인"으로 잡지 않는다.** 매번 새 라이드를 요구하는 것은 반복 실패 패턴이며, 라이드로만 알 수 있게 만드는 순간 감시 인프라가 존재할 이유가 없어진다. 검증 자원은 **이미** 있다:
+
+1. **한 달치 실기기 덤프** — `~/.claude/uploads/*.txt`. 새로 계측·라이드하기 전에 **먼저 교차로 읽는다**. "없음" 표기는 왜 비었는지 코드로 확인(신선도 창·종료 시 clear).
+2. **replay 테스트** — 실측 덤프 / D1 레코드를 **불변 fixture**로 박아 CI에서 24/7 재현(`replay_YYYYMMDD_*.test.ts`, `REPLAY_LIBRARY`). fix 검증은 **합성 fixture가 아니라 회귀를 실제로 일으킨 실측 트립**으로 한다. fixture 데이터는 실측이고 불변 — 통과시키려 조정 금지.
+3. **D1 `trip_metrics` / `trip_events`** — authoritative(device 덤프는 밀림). 회귀 정의(예: `lock=1 && fired=0`)를 실 데이터로 **backfill 검증**한다.
+4. **자동 감시(#2795)** — 배포 후 회귀 재발을 24h 내 D1로 잡는다.
+
+**acceptance 문장 규칙**: "실제 라이드 1회 fired>0"이 아니라 "**회귀를 낳은 실측 트립을 replay했을 때 fix 후 fired>0** + backfill 감지 + 프로덕션 측정 회귀 0"으로 쓴다. 실기기 라이드는 배포 후 최종 sanity check일 뿐 **1차 검증 수단이 아니다** — 라이드 없이 실측으로 증명할 수 있는데 라이드를 요구하면 룰 위반.
+- 출처: `memory/feedback_read_existing_logs_before_adding_instrumentation.md`, `memory/lesson_fixture_replay_verification_infrastructure.md`
+
 ### Wire-completion 5단 룰 (#1582)
 
 "코드만 머지되고 실제 연결 안 됨" 회귀 차단. 모든 PR에 5단 체크 필수 (`.github/PULL_REQUEST_TEMPLATE.md`).
