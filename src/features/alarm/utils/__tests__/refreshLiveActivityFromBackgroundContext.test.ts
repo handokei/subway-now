@@ -453,9 +453,27 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
         expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
       });
 
-      it('BG_LAST_STATION(gps-bg) 경로는 활성 LA 없어도 기존처럼 update 호출 — 현행 보존', async () => {
+      // #2806 — 이전에는 "현행 보존"으로 BG_LAST_STATION(gps-bg) 경로가 update-only 가드 없이
+      // 그대로 update를 호출했다. 활성 LA가 없을 때 native update()가 start()로 fall-through해
+      // BG에서 Activity.request가 throw → catch → 일반 알림 폴백 버스트로 이어지는 실측 회귀
+      // (dump la-fallback-notification×14, 전부 트립 경계)의 원인이라 mirror 경로(#2610)와
+      // 동일한 update-only 가드를 이 경로에도 적용한다.
+      it('#2806 — BG_LAST_STATION(gps-bg) 경로도 활성 LA 없으면 update-only 가드로 skip한다', async () => {
         mockReadBackendSsotMirror.mockResolvedValue(null);
         mockHasActiveLiveActivity.mockReturnValue(false);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(destination),
+          [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        expect(mockBuild).not.toHaveBeenCalled();
+        expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      });
+
+      it('#2806 — BG_LAST_STATION(gps-bg) 경로는 활성 LA 있으면 기존처럼 update 호출', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(null);
+        mockHasActiveLiveActivity.mockReturnValue(true);
         setupStorage({
           [DESTINATION_KEY]: JSON.stringify(destination),
           [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
