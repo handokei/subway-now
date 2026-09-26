@@ -13,6 +13,7 @@ import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
+import { SleepModeSilentWarning } from '../features/settings/components/SleepModeSilentWarning';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
@@ -124,6 +125,8 @@ export default function SettingsScreen() {
               accessibilityState={{ checked: sleepMode }}
             />
           </View>
+
+          <SleepModeSilentWarning visible={sleepMode} />
 
           <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
             <View style={styles.settingInfo}>

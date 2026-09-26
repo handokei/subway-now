@@ -207,7 +207,8 @@
   "sleepModeGuide": {
     "title": "Sleep mode notice",
     "message": "If earphones are not connected, the alarm may play through the speaker.\n\nIf you do not want speaker output, turn off 'Allow speaker output' under Settings > Alarm.",
-    "confirm": "OK"
+    "confirm": "OK",
+    "silentModeWarning": "Sleep mode alarms only ring if your phone's sound is turned on. You may not get notified while your phone is on silent."
   },
   "background": {
     "title": "Detecting subway location",
