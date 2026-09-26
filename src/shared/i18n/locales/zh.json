@@ -207,7 +207,8 @@
   "sleepModeGuide": {
     "title": "睡眠模式提示",
     "message": "如果未连接耳机,提醒可能通过扬声器播放。\n\n如不希望扬声器输出,请在 设置 > 提醒 中关闭'允许扬声器输出'。",
-    "confirm": "确定"
+    "confirm": "确定",
+    "silentModeWarning": "睡眠模式提醒需要手机开启声音才会响铃。静音模式下可能收不到通知。"
   },
   "background": {
     "title": "正在检测地铁位置",
