@@ -1,0 +1,76 @@
+appId: com.subwaynow.app
+name: "regression - Seam G (#922) — barometer sticky wireup (#903)"
+# Epic #896 Seam G(#903) 회귀 가드. useBarometer.subsurface가 sticky/fusion/alarm 게이트로
+# 흐르는 wireup이 회귀하면 지하 구간에서 false-positive 알람이 폭발한다(GPS-only 좌표가
+# 인접 역으로 jump → ghost transfer/early 알람).
+#
+# Maestro 시뮬레이터는 expo-sensors Barometer를 토글할 수 없으므로 본 flow는 지하 구간 좌표
+# (보문, 6-029) + 안암(6-030) 단순 trip에서 client UI가 ghost 알람을 발사하지 않고 트립
+# chip이 보문에 안정됨을 검증한다 — Seam G wire-up이 깨지면 sticky 강등 + 알람 게이트 부재
+# 로 false-positive가 표면화한다.
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=seam-g-sticky-wireup PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+- setLocation:
+    latitude: 37.585274
+    longitude: 127.019351
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 보문 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "보문|Bomun"
+
+# 목적지: 안암 (6호선 단순 trip — Seam G의 핵심은 sticky/alarm wire-up 안정성)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "안암"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-6-030"
+- waitForAnimationToEnd
+
+# 트립 형성 후 90초 대기 — arrival 폴링 30s × 3 cycle 확보.
+# Seam G wire-up이 회귀하면 sticky 강등 + 알람 게이트 부재로 ghost 발사가 표면화한다.
+- repeat:
+    times: 90
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# Seam G 회귀 검증: false-positive 알람 발사 시 실패.
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# 트립 chip은 보문에 안정 — sticky 강등이 ghost jump를 만들면 안 됨.
+- assertVisible:
+    text: "보문|Bomun"

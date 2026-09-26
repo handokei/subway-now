@@ -1,0 +1,285 @@
+/**
+ * D1 trip_events append-only 로그 helper (#2283).
+ *
+ * 배경: `/boarding-lock/sync`(index.ts) · `/position`(index.ts)은 KV trip 객체를 in-place
+ * mutate만 한다. trip이 user-delete(HTTP DELETE /trips/:token)되면 KV 객체 + position series까지
+ * 삭제되어, "환승 swap sync가 도달했는지 / advance가 발생했는지"를 사후 재구성할 방법이 없었다
+ * (2026-08-11 RCA blind spot — 08-11 A′ 검증 판정 불가의 직접 원인).
+ *
+ * 본 모듈은 kind 최소 집합(sync-received / advance / hydrate-issued / trip-end)을 D1
+ * `trip_events`에 append-only로 기록한다. trip 삭제와 독립 — token_hash만으로 타임라인을
+ * wrangler d1 SELECT로 재구성할 수 있다(진단 용도가 acceptance).
+ *
+ * Free plan quota 보호: KV write는 하지 않는다(#2073 lesson — cron이 사용자 0명에도 KV quota
+ * 소진). D1 write만 사용하며 이벤트당 정확히 1 insert. `cleanupTripEvents`가 보존 기간(7일)
+ * 초과분을 주기적으로 삭제한다.
+ *
+ * `env.DB` 미바인딩 시 graceful no-op. 적재 실패는 호출 흐름을 차단하지 않는다(swallow) —
+ * d1ErrorLog.ts / d1TripMetrics.ts와 동일 패턴.
+ *
+ * #2283 리뷰 P2-1 — write/cleanup 실패는 console.warn만으로 무음 처리하지 않고
+ * `captureXEvent('D1-write-failure', ...)`(sentry.ts, d1ErrorLog.ts와 동일 기존 이벤트 재사용,
+ * 신규 유니온 추가 없음)로 관측 승격한다.
+ */
+
+import { captureXEvent } from './sentry';
+
+/**
+ * trip_events.kind 최소 집합. 데이터 주도 확장 시 이 유니온에 추가한다.
+ *
+ * `consensus-confirm` / `consensus-demote` / `consensus-suppress` (#2327, consensus-A) —
+ * `transferLegConsensus.ts` 상태기계가 산출하는 `LegConsensusEvent`를 D1에 append할 때 쓰는
+ * kind. 실제 insert 호출(엔진 이벤트 → 본 kind로 write하는 wire)은 #2329(consensus-C) 범위 —
+ * 본 파일은 kind 유니온만 선반영한다.
+ *
+ * `cron-fire-attempt` (#2343) — cron 자율 fire path(`tryAdvanceAndFireArvlcd` /
+ * `fireArvlCdStationPush`, scheduled.ts)가 destination/transfer/station-passed(intermediate)
+ * push를 실제로 발사 시도한 시점에만 append. 매 tick이 아니라 발사 시도(성공/실패/trip 삭제
+ * race skip) 시점 1건만 write — Free plan D1 quota 보호(#2073 lesson). `meta`에
+ * `{ waypointKind, phase, outcome, reason? }`을 싣는다 — 새 kind를 추가하지 않고 기존
+ * trip_events 스키마를 재사용(quota 증분 최소화).
+ *
+ * `consensus-tick` / `intermediate-route` (ADR-037 D2, #2533) — 진단 계측 전용. leg-2 침묵
+ * root를 D1만으로 격리하기 위해 legConsensus 상태기계 진행/조기 반환 사유와 intermediate
+ * waypoint 라우팅 분기를 관측한다. fire/advance 동작에는 관여하지 않는다.
+ *
+ * - `consensus-tick` — `applyLegConsensusTick`(advanceTripPosition.ts)의 legConsensus.status
+ *   전이(confirm/demote/suppress 이벤트가 별도로 남는 전이는 중복 제외)만 append(#2073 quota
+ *   보호). #2766 (결정 D1) — 구 `tryFireConsensusTrainLeg`(scheduled.ts)의 candidate 관측 전
+ *   조기 반환 사유(`ConsensusNeverRanPhase`) 전이 writer는 fire 진입점 제거와 함께 삭제됐다.
+ *   **writer 0 (#2766)** — `applyLegConsensusTick` 자체도 유일 production 호출자가
+ *   `tryFireConsensusTrainLeg`였고 그 제거로 프로덕션 caller가 0건이 됐다(함수 자체는 존치,
+ *   존폐는 #2754/#2761/#2760 트랙 결정 범위 — PR #2776 참고). D1 `trip_events`를 `kind=
+ *   'consensus-tick'`으로 조회해 0행이 나와도 "전이가 없었다"가 아니라 "이 kind를 쓰는 코드가
+ *   현재 아예 실행되지 않는다"로 해석해야 한다 — 오독 방지.
+ * - `intermediate-route` — intermediate waypoint에서 `lockless`(C 토글 ON,
+ *   `runLocklessIntermediate`)/`consensus`(C 토글 OFF, #2766에서 fire 시도가 제거돼 현재는
+ *   완전 침묵) 중 어느 분기로 dispatch됐는지. 직전 분기와 다를 때만 append.
+ *
+ * `boarding-confirm-result` / `transfer-advance` / `leg2-estimate` (ADR-037 D2b, #2535) — 진단
+ * 계측 전용. #2533(D2)이 커버하지 못한 3개 조건부 stall 지점(boarding-confirm 탭 처리 결과,
+ * 환승 waypoint advance 성공/실패, leg-2 estimateBoardingLockArrival trainCode 매칭)을 관측한다.
+ * fire/advance 동작에는 관여하지 않는다.
+ *
+ * - `boarding-confirm-result` — `POST /trips/:token/boarding-confirm`(index.ts) 탭 처리 1건당
+ *   정확히 1회 append(HTTP 요청 단위라 throttle 불필요 — 매 tick 반복 호출이 아니다). `meta`에
+ *   `{ lockState, outcome? }` — `lockState`는 항상 존재('none'/'leg1'/'leg2'/'released'),
+ *   `outcome`은 `action==='boarded'`이고 신규 resolve를 실제로 시도했을 때만 존재
+ *   (`BoardingResolveOutcome`, `boardingAnchorResolver.ts`).
+ * - `transfer-advance` — 환승(transfer) waypoint를 실제로 통과했는지(`lockless`=
+ *   `runLocklessTransfer`, `lock-active`=`runTrainCodeTracking`의 lock 활성 경로) 관측한다.
+ *   SSoT 마커(`transferAdvanceState`)와 비교해 다를 때만 append(#2073 quota 보호).
+ * - `leg2-estimate` — leg-2(환승 후, `trip.currentLegAnchor` 활성) lock의
+ *   `estimateBoardingLockArrival`이 locked trainCode를 Seoul arrivals/positions에서 찾았는지
+ *   (matched=`estimate!==null`). SSoT 마커(`leg2EstimateMatched`)와 비교해 다를 때만 append.
+ *
+ * `leg-boarding-prompt` / `hop-end-prompt` (ADR-037 D2c, #2537) — 진단 계측 전용. 사용자 ground
+ * truth(7→2 환승 시 leg-2에서 탑승 프롬프트도 하차 프롬프트도 뜨지 않음)에 따라 root를 lock/fire
+ * (#2535 D2b)보다 한 단계 위 — 프롬프트 fire 시도 자체가 안 됐는지를 관측한다. fire/advance/lock
+ * 동작에는 관여하지 않는다.
+ *
+ * - `leg-boarding-prompt` — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire 여부/skip 사유
+ *   (`LegBoardingPromptOutcome`). SSoT 마커(`legBoardingPromptOutcome`)와 비교해 다를 때만 append.
+ * - `hop-end-prompt` — `maybeFireHopEndPrompt`(scheduled.ts)의 fire 여부/skip 사유
+ *   (`HopEndPromptOutcome`). SSoT 마커(`hopEndPromptOutcome`)와 비교해 다를 때만 append.
+ *
+ * `fallback-alert-fired` (#2610, RCA-A) — `runFallbackPushes`(fallback.ts)가 pending silent
+ * push의 60s ACK 임계 초과로 alert fallback을 실제로 발사 시도한 시점에 1건 append. KV
+ * pending entry는 발사 직후 삭제되어 사후 추적이 불가능했다 — 반복 발사(pile) 재발 여부를
+ * D1만으로 즉시 확정하기 위한 계측 전용 kind. fire/advance 동작에는 관여하지 않는다.
+ * `meta`에 `{ pushId, ageMs }`를 싣는다.
+ *
+ * `leg-anchor-observed` (#2700) — `maybeStampLegAnchorFromObservation`(scheduled.ts)이 환승
+ * waypoint advance가 `no-arvlcd`로 실패했음에도 `trip.transferObservedAt`(device sync 관측)이
+ * 유효해 `currentLegAnchor`/`legBoardingEligibleAt`을 stamp한 시점에 1건 append. 같은 anchor의
+ * 창-밖 재-stamp(시각 보정)는 재기록하지 않는다(#2073 quota 보호). `transfer-advance`(outcome=
+ * 'advanced', advance 성공 경로)와 `leg-boarding-prompt`(anchor 소비 결과)와는 별개 kind라
+ * D1에서 "관측이 anchor를 살렸는지"를 독립적으로 조회할 수 있다. `meta`에 `{ observedAtMs }`를
+ * 싣는다. fire/advance/도보 게이트 판정에는 관여하지 않는다.
+ *
+ * `route-signature-mismatch` (#2723, 진단 계측 전용) — `resetTripStateForNewRoute`(trips.ts)가
+ * `computeRouteSignature(existing) !== computeRouteSignature(incoming)`를 감지한 시점마다
+ * 1건 append(self-progress로 판정돼 reset하지 않는 경우 포함 — throttle 없음, POST /trips
+ * 호출 단위라 매 tick 반복이 아니다). 2026-09-18 라이딩 중 KV 직접 조회로만 발견된 상태
+ * 소실(currentLegAnchor/legBoardingEligibleAt/passedStations/lockEverAttached 등 `#2547`
+ * 보존 목록 전체 소실)의 원인이, backend가 진행할 때마다 자기 waypoints를 shift해 device가
+ * 재등록한 route와 signature가 갈라지는 것이었다 — 그 갈림이 실제로 얼마나/언제 발생하는지
+ * 로그가 전혀 없었다(#2723 요구사항 1). `meta`에 `{ existingSig, incomingSig, selfProgress }`를
+ * 싣는다 — `selfProgress`(`isRouteProgressOnly`)가 true면 backend 자기 진행으로 판정돼
+ * reset하지 않은 것, false면 진짜 route 변경으로 in-place reset된 것. fire/advance 동작에는
+ * 관여하지 않는다(계측 전용).
+ *
+ * `boarding-prompt-leg-mismatch` (#2708, 방어선 계측 only) — leg-1 전용
+ * `evaluateAndMaybeFireBoardingPrompt`(scheduled.ts)가 `trip.currentLegAnchor` 활성(leg-2 진입
+ * 후) 중에 진입해 stale `trip.promptDisplay`(이전 leg 기준)로 발사를 시도할 뻔한 지점을 skip한
+ * 시점에 1건 append. 정상 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에
+ * `promptDisplay`를 지워(#2708 요구사항 1) 이 분기 도달 자체가 없다 — 도달했다면 그 자체가
+ * 회귀 신호(레거시 KV 레코드 등). SSoT 마커(`originPromptSkippedForLegAnchor`)와 비교해 최초
+ * 전이 시에만 append한다(#2073 quota 보호). `meta`에 `{ staleDisplayLine }`을 싣는다.
+ * 발사/advance/lock 판정에는 관여하지 않는다.
+ *
+ * `leg-resolve-attempt` (#2754, 요구사항 1) — leg-2 cron 자동 resolve(`evaluateLegBoardingTransition`,
+ * `boardingAnchorResolver.ts`)가 매 cron tick 시도한 결과를 승격/보류/거부/무후보 **전부**
+ * append한다(throttle 없음 — 이슈가 "승격/보류 양쪽 다 기록"을 명시했고, 이 평가는 walk-gate
+ * 통과 이후 lock이 확정될 때까지의 짧은 창에서만 발생해 D1 quota 위험이 낮다). 사용자가 실제로
+ * 탄 열차가 아닌 다른 열차가 왜/어떻게 선택되는지(streak 값, 경과 시간, 후보 목록)를 사후에
+ * D1만으로 재구성하지 못했던 것이 #2754 진단 과정의 병목이었다 — 이 kind가 그 gap을 메운다.
+ * `meta`에 `{ elapsedSinceAnchorMs, candidates, streakCount, outcome, selectedTrainCode? }`를
+ * 싣는다. `station`/`line`은 anchor station/line. 발사/advance 동작에는 관여하지 않는다.
+ */
+export type TripEventKind =
+  | 'sync-received'
+  | 'advance'
+  | 'hydrate-issued'
+  | 'trip-end'
+  | 'consensus-confirm'
+  | 'consensus-demote'
+  | 'consensus-suppress'
+  | 'cron-fire-attempt'
+  | 'consensus-tick'
+  | 'intermediate-route'
+  | 'boarding-confirm-result'
+  | 'transfer-advance'
+  | 'leg2-estimate'
+  | 'leg-boarding-prompt'
+  | 'hop-end-prompt'
+  | 'fallback-alert-fired'
+  | 'fallback-implicit-ack'
+  | 'leg-anchor-observed'
+  | 'boarding-prompt-leg-mismatch'
+  | 'route-signature-mismatch'
+  | 'leg-resolve-attempt';
+
+/**
+ * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
+ * `lockless` = C 토글 ON(`runLocklessIntermediate`), `no-intent` = C 토글 OFF(#2766 결정 D1 —
+ * fire 시도 없이 완전 침묵). 데이터 주도 — scheduled.ts 하드코딩 분기 대신 본 유니온으로 구동.
+ *
+ * #2766 (결정 D1, 코드리뷰 후속) — 이 값의 라벨은 원래 `'consensus'`였다(제거된
+ * `tryFireConsensusTrainLeg` 메커니즘 이름). 그 메커니즘이 완전 삭제된 뒤에도 D1
+ * `trip_events`에 'consensus'라는 이름을 계속 새로 태우면, 나중에 이 kind를 조회하는 사람이
+ * "consensus 엔진이 아직 관여한다"고 오독할 위험이 있어 `'no-intent'`로 개명했다. 개명 이전에
+ * 이미 적재된 `meta.branch:'consensus'` 행은 히스토리로 그대로 남겨두고 마이그레이션하지
+ * 않는다(append-only 로그 원칙, #2283).
+ */
+export type IntermediateRouteBranch = 'lockless' | 'no-intent';
+
+/**
+ * ADR-037 D2b (#2535) — 환승 waypoint advance 진단 표식(데이터 주도). `no-arvlcd` = 해당 역
+ * arrivals에서 arvlCd 자체를 못 잡음(지하 침묵), `not-fires` = arvlCd는 잡았으나 ENTERING(0)/
+ * ARRIVED(1)가 아님(아직 통과 전), `advanced` = waypoint를 실제로 통과. `lockless`(`runLocklessTransfer`)
+ * 경로는 3값 전부, `lock-active`(`runTrainCodeTracking`) 경로는 `no-arvlcd`/`advanced` 2값만 쓴다
+ * (lock 활성 경로는 arvlCd ENTERING/ARRIVED 확정 시에만 advance를 시도하므로 `not-fires` 중간
+ * 상태가 없다).
+ */
+export type TransferAdvanceOutcome = 'no-arvlcd' | 'not-fires' | 'advanced';
+
+/** `transfer-advance` 이벤트가 어느 코드 경로에서 관측됐는지(데이터 주도). */
+export type TransferAdvancePath = 'lockless' | 'lock-active';
+
+/**
+ * ADR-037 D2c (#2537, #2693 분리) — `maybeFireLegBoardingPrompt`(scheduled.ts)의 fire/skip
+ * 사유(데이터 주도). `trip.currentLegAnchor`가 없을 때 원인이 정상(아직 환승 전)인지 결함(환승
+ * 후인데 anchor가 없음)인지를 `trip.route`의 총 환승 수 대비 `trip.waypoints`에 남은 `transfer`
+ * kind 개수로 판별한다(#2693 — 이 함수가 이미 읽는 `trip` 필드만 사용, 신규 read 없음):
+ *
+ * - `no-anchor` = 아직 환승 전(leg-1, 정상) — 남은 `transfer` waypoint 수가 route의 총 환승
+ *   수와 같다. 기존 의미 그대로 유지(회귀 비교용).
+ * - `anchor-not-stamped-after-transfer` = 환승 후인데 anchor가 애초에 stamp되지 않음(#2693 갈래
+ *   B) — SSoT의 직전 `legBoardingPromptOutcome`이 anchor 존재를 전제하는 값(`walk-gated`/
+ *   `no-candidates`/`silenced`/`fired`/`anchor-lost-after-transfer`)이 아니었다.
+ * - `anchor-lost-after-transfer` = 환승 후 anchor가 stamp된 적은 있으나 소실됨(#2693 갈래 A) —
+ *   SSoT의 직전 `legBoardingPromptOutcome`이 anchor 존재를 전제하는 값이었다.
+ * - `walk-gated` = `now < trip.legBoardingEligibleAt`(도보시간 미경과), `no-candidates` = Seoul
+ *   API 열차 후보 0건, `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우,
+ *   두 사유를 단일 값으로 합산), `fired` = 실제 발사 성공.
+ */
+export type LegBoardingPromptOutcome =
+  | 'no-anchor'
+  | 'anchor-not-stamped-after-transfer'
+  | 'anchor-lost-after-transfer'
+  | 'walk-gated'
+  | 'no-candidates'
+  | 'silenced'
+  | 'fired';
+
+/**
+ * ADR-037 D2c (#2537) — `maybeFireHopEndPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
+ * `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우 합산), `fired` = 실제
+ * 발사 성공.
+ */
+export type HopEndPromptOutcome = 'silenced' | 'fired';
+
+export interface TripEventInput {
+  /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */
+  tokenHash: string;
+  kind: TripEventKind;
+  station?: string;
+  line?: string;
+  meta?: object;
+}
+
+/**
+ * trip_events에 이벤트 1건을 append한다.
+ *
+ * @param db - D1 binding. undefined 시 no-op.
+ * @param input - 이벤트 메타데이터.
+ * @param now - 적재 시각(epoch ms). 기본값 Date.now() — 테스트에서 고정값 주입 가능.
+ */
+export async function recordTripEvent(
+  db: D1Database | undefined,
+  input: TripEventInput,
+  now: number = Date.now(),
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db
+      .prepare(
+        'INSERT INTO trip_events (token_hash, ts, kind, station, line, meta) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .bind(
+        input.tokenHash,
+        now,
+        input.kind,
+        input.station ?? null,
+        input.line ?? null,
+        input.meta ? JSON.stringify(input.meta) : null,
+      )
+      .run();
+  } catch (e) {
+    console.warn(
+      JSON.stringify({ msg: 'tripEventLog write failed', kind: input.kind, err: String(e) }),
+    );
+    // #2283 리뷰 P2-1 — D1 write 자체가 실패한 상황이라 D1 sink(trip_events)로는 escalate할 수
+    // 없어 Sentry-only(d1ErrorLog.ts와 동일 패턴).
+    captureXEvent('D1-write-failure', { table: 'trip_events', kind: input.kind, err: String(e) });
+  }
+}
+
+/** 보존 기간(ms). 7일 초과분은 cron cleanup이 삭제한다. */
+export const TRIP_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 보존 기간(`TRIP_EVENT_RETENTION_MS`)을 초과한 trip_events 행을 삭제한다.
+ *
+ * 호출자(scheduled.ts)가 호출 빈도를 throttle한다 — 매 cron tick(1분)마다 부르면 D1 write
+ * quota를 불필요하게 소진하므로, 시간 기반(예: 시 단위 1회) 게이트를 호출자 쪽에 둔다.
+ *
+ * @returns 삭제된 행 수. DB 미바인딩/실패 시 0.
+ */
+export async function cleanupTripEvents(
+  db: D1Database | undefined,
+  now: number = Date.now(),
+): Promise<number> {
+  if (!db) return 0;
+  try {
+    const cutoff = now - TRIP_EVENT_RETENTION_MS;
+    const result = await db.prepare('DELETE FROM trip_events WHERE ts < ?').bind(cutoff).run();
+    return result.meta?.changes ?? 0;
+  } catch (e) {
+    console.warn(JSON.stringify({ msg: 'tripEventLog cleanup failed', err: String(e) }));
+    // #2283 리뷰 P2-1 — cleanup(DELETE) 실패도 동일하게 Sentry escalation.
+    captureXEvent('D1-write-failure', { table: 'trip_events', kind: 'cleanup', err: String(e) });
+    return 0;
+  }
+}

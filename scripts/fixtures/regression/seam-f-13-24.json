@@ -1,0 +1,99 @@
+{
+  "name": "Seam F — 13:24~28 trainCode 7174가 OpenAPI에서 사라짐 (어린이대공원)",
+  "seam": "F",
+  "_doc": [
+    "2026-06-05 13:24~28 실기기 회귀: 7호선 어린이대공원에서 trainCode 7174가",
+    "OpenAPI 응답에서 사라짐 → 다음 후보 trainCode 모름 → lockMissing 흐름 진입,",
+    "BG LA 6분 손실. backend Seam F(#902)는 같은 노선/방향 신규 trainCode를 자동",
+    "swap하지만 client 측면에서는 stale trainCode가 사라져도 false-positive 알람을",
+    "발사하지 않아야 한다(Seam F 회귀의 client-observable 표면).",
+    "",
+    "fixture 구성:",
+    "  - 0~25s: 어린이대공원 up 응답에 7174 + 신규 7176 두 후보 노출 (정상 추적)",
+    "  - 25s~ : 7174 사라짐, 7176만 남음 → client는 lockMissing UI나 ghost 알람을",
+    "           띄우지 않고 trip chip은 어린이대공원으로 안정 유지해야 한다.",
+    "",
+    "기대 동작: '곧 도착'/'하차 알림'/'알람 끄기' 발사 0건, 트립 chip = 어린이대공원."
+  ],
+  "arrivals": {
+    "어린이대공원": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "어린이대공원",
+              "arrivalMinutes": 0,
+              "arrivalSeconds": 0,
+              "statusMessage": "도착",
+              "trainCode": "7174",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 1,
+              "isLastTrain": false,
+              "trainType": "normal"
+            },
+            {
+              "destination": "어린이대공원",
+              "arrivalMinutes": 6,
+              "arrivalSeconds": 360,
+              "statusMessage": "6분 후 도착",
+              "trainCode": "7176",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      },
+      {
+        "fromMs": 25000,
+        "body": {
+          "up": [
+            {
+              "destination": "어린이대공원",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "7176",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "군자": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "군자",
+              "arrivalMinutes": 4,
+              "arrivalSeconds": 240,
+              "statusMessage": "4분 후 도착",
+              "trainCode": "7176",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  }
+}

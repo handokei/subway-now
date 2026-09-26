@@ -1,0 +1,64 @@
+appId: com.subwaynow.app
+name: "permissions - Always × BG × 지하 × 일반 (#923 cell)"
+# 권한 매트릭스 cell.
+# 차원: permission=always, appState=bg, environment=underground, mode=normal, os=ios18
+#
+# 검증 목표:
+#   - BG × underground 결합 첫 진입. 매역 알람 SLA가 가장 까다로워지는 조합
+#     (앱 BG + 지하 GPS 약화) 직전 단계의 회귀 가드.
+#   - 지하 GPS 좌표에서 cold-restart(stopApp + relaunch) 후에도 Always 권한이
+#     보존되고 홈 진입점이 유지됨을 보장한다.
+#
+# 전제: baseline cell과 동일 (EXPO_PUBLIC_E2E_MOCK=1, mock fixture는 강남 고정 반환).
+# underground 차원 등록은 dispatch-only — fixture 확장 후속 PR에서
+# "GPS 약화" 배너 / 기압계 fallback 같은 underground UX assert를 추가한다.
+---
+# 신도림 1호선(지하) 좌표 — stations.json id "1-041"
+- setLocation:
+    latitude: 37.508787
+    longitude: 126.891144
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 1차 포그라운드 — 지하 GPS 좌표에서도 홈 진입점 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# mock fixture가 강남 고정 반환. fixture 확장 후 "신도림|Sindorim"으로 교체.
+- assertVisible:
+    text: "강남|Gangnam"
+
+# BG 전이 모사 — stopApp + relaunch (clearState=false로 권한 보존 확인)
+- stopApp:
+    appId: com.subwaynow.app
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: false
+
+# 복귀 후에도 홈 진입점이 유지되어야 한다 (BG × underground 결합 회귀 가드)
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"

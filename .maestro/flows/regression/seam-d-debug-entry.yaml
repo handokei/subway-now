@@ -1,0 +1,80 @@
+appId: com.subwaynow.app
+name: "regression - Seam D (#922) — DebugModal 진입 경로 (#456)"
+# DebugModal(#456) 진입 경로 회귀 가드. 13:24 trainCode 사라짐 같은 야전 회귀에서 사용자가
+# DebugModal에 진입해 진단 dump를 공유할 수 있어야 root cause 식별 latency가 짧아진다.
+# 진입 경로 자체(설정 탭 → 버전 footer 7-tap → debug-modal)가 회귀하면 야전 진단이 막힌다.
+#
+# 검증:
+#   1. 홈 → 설정 탭 이동 후 settings-version-footer가 보인다.
+#   2. version footer를 DEBUG_MODAL_TRIGGER_TAP_COUNT(=7)회 빠르게 탭한다.
+#   3. debug-modal이 노출되고 debug-arrival-summary entry가 표시된다(빈 dump여도 텍스트 존재).
+#   4. debug-modal-close로 모달이 정상 닫힌다.
+#
+# 전제:
+#   - scripts/maestro-mock-backend.js가 SCENARIO=seam-d-debug-entry PORT=8788로 떠 있어야 한다
+#     (arrival 응답은 비어 있어도 됨 — 본 flow는 UI 진입 경로 검증이 목적).
+#   - 빌드 env에 EXPO_PUBLIC_DEBUG_MODAL=true가 주입되어 isDebugModalEnabled()=true여야 한다
+#     (release 빌드 기본은 false. e2e.yml regression job env에 추가).
+---
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 설정 탭 (87.5% — smoke/03_tab_navigation.yaml과 동일 좌표)
+- tapOn:
+    point: "87%,95%"
+- extendedWaitUntil:
+    visible:
+      id: "settings-version-footer"
+    timeout: 10000
+
+# Version footer 7회 빠르게 탭 (DEBUG_MODAL_TRIGGER_TAP_COUNT=7, RESET_MS=1500).
+# 각 탭 사이 간격이 1500ms를 넘으면 카운트가 리셋되므로 명시 wait 없이 연속 탭.
+- tapOn:
+    id: "settings-version-footer"
+- tapOn:
+    id: "settings-version-footer"
+- tapOn:
+    id: "settings-version-footer"
+- tapOn:
+    id: "settings-version-footer"
+- tapOn:
+    id: "settings-version-footer"
+- tapOn:
+    id: "settings-version-footer"
+- tapOn:
+    id: "settings-version-footer"
+
+# DebugModal 진입 검증.
+- extendedWaitUntil:
+    visible:
+      id: "debug-modal"
+    timeout: 10000
+
+# Arrival 섹션 entry 표시(#456 — debug dump의 핵심 패널 중 하나).
+# arrivals fixture가 비어 있어도 placeholder 텍스트가 렌더되어야 한다.
+- assertVisible:
+    id: "debug-arrival-summary"
+
+# 모달이 정상 닫힘 (back 버튼/iOS swipe 의존 X — 명시 close 버튼 검증).
+- tapOn:
+    id: "debug-modal-close"
+- extendedWaitUntil:
+    visible:
+      id: "settings-version-footer"
+    timeout: 5000
