@@ -192,7 +192,7 @@ describe('useDestinationStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-origin');
   });
 
-  it('setDestination(#702): 목적지 switch 시 부수 storage(customOrigin/lock/scheduled/active-trip) 자동 클리어', async () => {
+  it('setDestination(#702): 목적지 switch 시 부수 storage(lock/scheduled/active-trip) 자동 클리어', async () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
     jest.clearAllMocks();
@@ -204,7 +204,10 @@ describe('useDestinationStore', () => {
     // #919 — trigger → cleanup이 then-chain이라 microtask flush 후 검증.
     await flushMicrotasks();
 
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
+    // #2803 — 목적지 switch(station != null)는 더 이상 custom-origin을 클리어하지 않는다.
+    // 이전에는 이 시점에서도 CUSTOM_ORIGIN_KEY가 제거돼, 지도탭에서 방금 설정한 명시
+    // 출발역이 목적지 설정만으로 사라지는 회귀가 있었다.
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:custom-origin');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:boarding-lock');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:active-trip');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-alarms');
@@ -353,14 +356,13 @@ describe('useDestinationStore', () => {
     expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:la-dismissed-at');
   });
 
-  it('setDestination(#702): switch 시 customOrigin 메모리 state도 null로 동기화', () => {
+  it('setDestination(#2803): switch(목적지 재지정) 시 customOrigin 메모리 state는 보존된다', async () => {
     const { setDestination, setCustomOrigin } = useDestinationStore.getState();
     setDestination(mockStation);
     setCustomOrigin(mockStation2);
     expect(useDestinationStore.getState().customOrigin?.id).toBe('2-021');
 
     // #1324 — 새 목적지는 customOrigin(역삼)과 달라야 한다(같으면 degenerate로 거부됨).
-    // switch 시 customOrigin이 클리어되는지 검증하려는 본 테스트 의도 유지.
     const mockStation3: Station = {
       id: '2-020',
       name: '선릉',
@@ -370,8 +372,12 @@ describe('useDestinationStore', () => {
       lng: 127.0492,
     };
     setDestination(mockStation3);
+    // runTripBoundCleanups의 then-chain(비동기)이 뒤늦게 customOrigin을 지우지 않는지까지 확인.
+    await flushMicrotasks();
 
-    expect(useDestinationStore.getState().customOrigin).toBeNull();
+    // #2803 — 목적지 switch(station != null)는 명시 출발역을 보존한다. trip 종료
+    // (setDestination(null))에서만 클리어된다(아래 별도 테스트).
+    expect(useDestinationStore.getState().customOrigin?.id).toBe('2-021');
   });
 
   it('setDestination(#702): loadDestination(hydration)은 부수 storage를 클리어하지 않는다', async () => {
@@ -635,6 +641,41 @@ describe('useDestinationStore', () => {
 
     const { customOrigin } = useDestinationStore.getState();
     expect(customOrigin).toBeNull();
+  });
+
+  // #2803 — 지도탭 "출발역 명시 설정 → 목적지 설정" 흐름 회귀 fix.
+  // setDestination이 customOrigin을 목적지 설정(station != null)에도 무조건 클리어해
+  // effectiveOrigin(HomeScreen.tsx)이 GPS 최근접역으로 폴백되던 버그.
+  it('setCustomOrigin(#2803): 출발역 설정 후 목적지 설정 시 customOrigin이 보존된다 (GPS 폴백 회귀 fix)', async () => {
+    const { setCustomOrigin, setDestination } = useDestinationStore.getState();
+
+    // 지도탭 흐름: 출발역을 먼저 명시 설정.
+    setCustomOrigin(mockStation);
+    expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+
+    // 이어서 목적지를 설정(첫 trip 시작, prev destination === null → isSwitch === true).
+    // #1324 degenerate 가드에 걸리지 않도록 customOrigin과 다른 역을 목적지로 지정.
+    setDestination(mockStation2);
+    // runTripBoundCleanups는 tripTransitionQueue의 then-chain으로 비동기 실행되므로
+    // 그 체인이 customOrigin을 뒤늦게 지우지 않는지까지 확인하려면 microtask flush 필요.
+    await flushMicrotasks();
+
+    expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+  });
+
+  it('setCustomOrigin(#2803): trip 종료(setDestination(null))에서는 customOrigin이 여전히 클리어된다 (이전 trip 잔여 leak 방지 보존)', async () => {
+    const { setCustomOrigin, setDestination } = useDestinationStore.getState();
+
+    setCustomOrigin(mockStation);
+    setDestination(mockStation2);
+    await flushMicrotasks();
+    expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+
+    // trip 종료 — 이전 trip의 명시 출발역이 다음 trip으로 leak되면 안 된다.
+    setDestination(null);
+    await flushMicrotasks();
+
+    expect(useDestinationStore.getState().customOrigin).toBeNull();
   });
 
   // ── #700 tripOrigin 영속화 ──
