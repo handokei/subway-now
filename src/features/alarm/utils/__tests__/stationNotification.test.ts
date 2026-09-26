@@ -52,12 +52,16 @@ const mockStartLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockIsLiveActivityEnabled = jest.fn().mockReturnValue(true);
+// #2806 — 활성 LA 존재 여부. 기본 true — 이 가드 도입 전부터 있던 기존 테스트가 영향받지
+// 않도록. update-only 가드 전용 테스트에서만 false로 override.
+const mockHasActiveLiveActivity = jest.fn().mockReturnValue(true);
 
 jest.mock('live-activity', () => ({
   startLiveActivity: (...args: unknown[]) => mockStartLiveActivity(...args),
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
+  hasActiveLiveActivity: () => mockHasActiveLiveActivity(),
 }));
 
 const mockEnsureLiveActivityRegistered = jest.fn().mockResolvedValue(undefined);
@@ -558,6 +562,7 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       jest.clearAllMocks();
       mockIsLiveActivityEnabled.mockReturnValue(true);
+      mockHasActiveLiveActivity.mockReturnValue(true);
       await AsyncStorage.clear();
       mockEnsureLiveActivityRegistered.mockResolvedValue(undefined);
       mockEndLiveActivityWithDeregister.mockResolvedValue(undefined);
@@ -643,6 +648,36 @@ describe('stationNotification', () => {
         await updateStationNotification(mockStation, 154);
         expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith(null);
         expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // #2806 — GPS writer(ACTIVE_TRIP_KEY 없음, lock 전 구간)가 update-only 가드 없이 native
+    // updateLiveActivity를 호출하면, 활성 LA가 없을 때 native update()가 내부적으로 start()로
+    // fall-through해 BG 컨텍스트에서 `Activity.request`가 throw → catch → 일반 알림 폴백 버스트로
+    // 이어진다(dump la-fallback-notification×14, 전부 트립 경계). mirror 경로(#2610,
+    // updateLiveActivityFromMirrorStation)엔 이미 있는 동일 가드를 이 GPS 경로에도 적용한다.
+    describe('#2806 GPS writer(tripToken 없음) update-only 가드', () => {
+      it('활성 LA 없으면 updateLiveActivity를 호출하지 않고 skip한다(fallback도 발사 안 함 — start-fallthrough 자체를 막는 것이 목적)', async () => {
+        await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+        mockHasActiveLiveActivity.mockReturnValue(false);
+        await updateStationNotification(mockStation, 154);
+        expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+        expect(mockStartLiveActivity).not.toHaveBeenCalled();
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('활성 LA 있으면 기존처럼 updateLiveActivity를 정상 호출한다', async () => {
+        await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+        mockHasActiveLiveActivity.mockReturnValue(true);
+        await updateStationNotification(mockStation, 154);
+        expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      });
+
+      it('tripToken이 있는 정식 세션 경로(ensureLiveActivityRegistered)는 이 가드의 영향을 받지 않는다 — LA start는 트립 시작 경로에서만', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        mockHasActiveLiveActivity.mockReturnValue(false);
+        await updateStationNotification(mockStation, 154);
+        expect(mockEnsureLiveActivityRegistered).toHaveBeenCalledTimes(1);
       });
     });
 
