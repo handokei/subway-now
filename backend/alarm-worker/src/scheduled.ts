@@ -7778,20 +7778,26 @@ function classifyMissingLegAnchor(
  * caller: lockMissing 분기(`attemptBoardingAnchorResolution` 시도 이후). `trip.currentLegAnchor`
  * 없으면(leg 1 이거나 아직 환승 전) no-op. GPS 게이트 없음 — origin의 `evaluateAndMaybeFireBoardingPrompt`
  * (9단 GPS AND 게이트)와 달리 이 함수는 애초에 GPS를 쓰지 않는다:
- *   - fire trigger = `now >= trip.legBoardingEligibleAt`(환승 통과 + 도보시간 경과, ground truth
- *     시간 게이트) — GPS proximity/direction/speed 대신 시간으로 "환승역 도착 후 도보 이동 완료"를
- *     판정한다. 도보 창 동안은 이 함수 자체가 평가되지 않으므로 그 사이 있었던 열차는 자연히
- *     후보에서 배제된다(#2511이 놓친 오탑승 위험의 근본 supersede).
- *   - dedup = `evaluateHopEndPromptGates`(hop-end와 동일 — 1회 발사 + dismiss 5분 silence).
- *     origin의 `evaluateBoardingPromptRepeatGate`(반복 발사 A4)까지는 재사용하지 않는다 —
- *     leg 2는 배차 간격 동안 여러 후보가 반복 관측될 필요가 origin만큼 크지 않고, 단순한
- *     정책이 오탑승 표면적을 더 줄인다.
+ *   - fire trigger = anchor 존재(`trip.currentLegAnchor`) + 의향(promptOptIn/infoModeEnabled) +
+ *     후보열차 존재. **시간 타이머 없음** — #2801(9/18 실캡처)이 도보시간 게이트
+ *     (`legBoardingEligibleAt`)를 제거했다. 이 프롬프트는 **회고형**("탑승하셨나요?", 사용자가
+ *     후보 중 직접 골라 확정)이라 walk-time(예측형 "탈 수 있냐" 게이트)은 애초에 잘못된
+ *     질문이었다 — 도보 창 동안 있던 열차가 사용자 실열차일 수 있는데, 게이트가 열릴 때까지
+ *     기다리는 사이 그 열차가 이미 역을 떠나 후보에서 영구히 사라지는 사례가 실측됐다(7256이
+ *     17:40:31~17:41:32 창에 존재, walk-gate는 17:43:07에야 개방). 자동 매칭(오탑승 위험이
+ *     실재하는 `boardingAnchorResolver.ts`의 `legBoardingEligibleAt` 게이트)은 이 fix로
+ *     건드리지 않는다 — 거기는 사용자 확인 없이 lock을 확정하므로 도보 게이트가 여전히 필요.
+ *   - dedup = `evaluateBoardingPromptRepeatGate`(origin의 #2130 Part B-be-2 반복 발사 정책 재사용
+ *     — silence/max-fires-reached/fired-too-recently) + trainCode 단위
+ *     `firedTrainCodes` 중복 발사 방지(`shouldProceedToSend`, origin GPS-free 경로와 동일 패턴).
+ *     사용자 실열차가 나중 cycle에 후보로 들어와도(candidateTrains 변화) collapse-id
+ *     (`boardingPromptCollapseId`, `fireBoardingPromptForAnchor`가 이미 부여)로 알림센터 배너가
+ *     교체돼 최신 후보로 live 갱신되고, 같은 trainCode 조합 반복 발사는 억제된다.
  *
  * 발사 성공: alert push(kind='boarding-prompt', hopEndKind 없음 — device 는 origin 과 동일하게
  * `tryAutoLock` 경로로 응답을 처리, 신규 device 배선 불필요) + `trip.legBoardingPromptState`
- * markPromptFired + `stats.legBoardingPromptFired += 1`.
- * 차단: 도보시간 미경과 → `stats.legBoardingPromptSkippedWalking += 1`(정상 대기, 회귀 아님).
- * dedup/후보 0건 → `stats.legBoardingPromptBlocked += 1`.
+ * markPromptFired(trainCode 포함) + `stats.legBoardingPromptFired += 1`.
+ * 차단: dedup/후보 0건 → `stats.legBoardingPromptBlocked += 1`.
  */
 export async function maybeFireLegBoardingPrompt(
   trip: Trip,
@@ -7835,23 +7841,14 @@ export async function maybeFireLegBoardingPrompt(
     return;
   }
 
-  const eligibleAt = trip.legBoardingEligibleAt;
-  if (eligibleAt === undefined || now < eligibleAt) {
-    stats.legBoardingPromptSkippedWalking += 1;
-    await recordLegBoardingPromptTransition(
-      env,
-      trip,
-      currentLegAnchor.boardingStation,
-      currentLegAnchor.line,
-      ssot,
-      'walk-gated',
-      now,
-    );
-    return;
-  }
-
-  const outcome = evaluateHopEndPromptGates({ promptState: trip.legBoardingPromptState, now });
-  if (!outcome.pass) {
+  // #2801 — walk-gate(`legBoardingEligibleAt`) 제거. 이 프롬프트는 회고형이라 도보시간 게이트가
+  // 사용자 실열차를 후보 창에서 배제하는 부작용만 있었다(위 함수 헤더 doc 상세). dedup은
+  // origin GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`)와 동일하게
+  // `evaluateBoardingPromptRepeatGate`(silence/max-fires-reached/fired-too-recently)로 대체 —
+  // "1회 발사 후 영구 차단"(구 `evaluateHopEndPromptGates`)이 아니라 반복 발사를 허용하되
+  // 스팸은 하드 캡+최소 간격으로 막는다.
+  const outcome = evaluateBoardingPromptRepeatGate(trip.legBoardingPromptState, now);
+  if (outcome && !outcome.pass) {
     stats.legBoardingPromptBlocked += 1;
     log('leg-boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
@@ -7903,9 +7900,31 @@ export async function maybeFireLegBoardingPrompt(
       });
       promptOutcome = 'no-candidates';
     },
-    onFired: () => {
+    // #2801 — origin GPS-free 경로(#2531 A4 ledger)와 동일 trainCode dedup. 같은 열차가 이미
+    // 발사된 candidateTrains로 재발사(무한 스팸)되는 것만 막는다 — candidateTrains가 바뀌면
+    // (예: 사용자 실열차가 새로 후보에 들어옴) selectedTrainCode가 달라져 정상 통과한다.
+    shouldProceedToSend: (pool) => {
+      const selectedTrainCode =
+        pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
+      if (
+        selectedTrainCode !== null &&
+        trip.legBoardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
+      ) {
+        stats.legBoardingPromptBlocked += 1;
+        log('leg-boarding-prompt: skipped train duplicate', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes: trip.legBoardingPromptState?.firedTrainCodes,
+        });
+        return false;
+      }
+      return true;
+    },
+    onFired: (pool) => {
+      const selectedTrainCode =
+        pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
       stats.legBoardingPromptFired += 1;
-      trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState);
+      trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState, selectedTrainCode);
       promptOutcome = 'fired';
     },
   });

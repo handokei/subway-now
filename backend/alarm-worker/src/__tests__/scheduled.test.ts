@@ -13816,10 +13816,13 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
 });
 
 /**
- * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — 도보시간 게이트 leg 2 "탑승하셨나요?" 프롬프트.
+ * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 "탑승하셨나요?" 프롬프트.
  *
- * 핵심 검증: `now < legBoardingEligibleAt`(도보 이동 중)이면 push 자체를 평가/발사하지 않는다 —
- * #2511의 오탑승 위험(도보 중 플랫폼에 서 있는 열차와 우연히 매칭)을 시간 게이트로 원천 차단.
+ * #2801 — 도보시간 게이트(`legBoardingEligibleAt`)는 제거됐다. 이 프롬프트는 회고형("탑승하셨나요?",
+ * 사용자가 후보 중 직접 확인해 고름)이라 도보 중에도 후보 열차가 있으면 발사돼야 한다 — 9/18
+ * 실캡처에서 사용자 실열차(7256)가 walk-gate 개방 전에 이미 역을 떠나 후보 창에서 영구 배제된
+ * 회귀의 직접 fix. 자동 매칭(`boardingAnchorResolver.ts`, 사용자 확인 없이 lock을 확정)의
+ * walk-gate는 오탑승 방지 목적 그대로 유지된다 — 이 describe는 프롬프트 전용.
  */
 describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
   function makeStats(): ScheduledStats {
@@ -13975,14 +13978,19 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     });
   });
 
-  it('도보시간 미경과(now < legBoardingEligibleAt) → skippedWalking 증가, seoul 호출 안 함 (오탑승 방지 핵심)', async () => {
-    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true }]));
+  // #2801 — walk-gate(legBoardingEligibleAt) 제거. 구 테스트(도보시간 미경과 → skip, 오탑승
+  // 방지 핵심)는 이 fix로 전제가 뒤집힌다: 프롬프트는 회고형이라 도보 중에도 후보가 있으면
+  // 발사돼야 한다(9/18 실캡처, 사용자 실열차 7256이 walk-gate 개방 전에 후보 창에서 사라진
+  // 회귀의 직접 대응 fix). `legBoardingEligibleAt`이 미래여도 게이트로 평가되지 않는다는 것을
+  // 이 테스트가 고정한다.
+  it('#2801 — 도보시간 미경과(now < legBoardingEligibleAt)여도 walk-gate로 차단하지 않고 발사한다', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
     const trip = makeTrip({ legBoardingEligibleAt: NOW + 60_000 });
     const stats = makeStats();
     await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(stats.legBoardingPromptSkippedWalking).toBe(1);
-    expect(stats.legBoardingPromptFired).toBe(0);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(trip.legBoardingPromptState?.fired).toBe(true);
   });
 
   it('도보시간 경과(now === legBoardingEligibleAt, 경계) + 후보 있음 → 발사, legBoardingPromptState.fired=true', async () => {
@@ -15209,32 +15217,46 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     },
   );
 
-  it('A3 — 도보시간 미경과 시 leg-2 boarding prompt skip (walking silence, 회귀 아님)', async () => {
+  // #2801 — 도보시간 게이트가 leg-2 "탑승하셨나요?" 프롬프트를 늦춰(9/18 실캡처, 사용자 실열차
+  // 7256이 그 창 안에서 역을 떠남) 사용자 실열차를 후보에서 배제하던 회귀를 walk-gate 제거로
+  // 고친다 — 프롬프트는 회고형이라 도보 중에도 후보 열차가 있으면(사용자가 직접 확인/선택)
+  // 발사돼야 한다. 구 A3(walking silence 회귀 아님)는 이 fix로 전제가 뒤집혀 아래로 대체.
+  it('A3 (#2801) — 도보시간 미경과 중에도 후보 열차가 있으면 leg-2 boarding prompt가 발사된다 (walk-gate 제거)', async () => {
     const kv = new InMemoryKV();
-    // A2 직후 상태를 직접 seed (walk 게이트 미경과).
+    // A2 직후 상태를 직접 seed (walk 게이트 아직 "미경과"인 시각 — 이 필드는 더 이상 프롬프트
+    // 게이트로 쓰이지 않는다는 것을 이 테스트가 증명).
     await putTrip(
       kv as unknown as KVNamespace,
       makeTransferTrip(TOKEN_A2, {
         waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
         currentLegAnchor: { boardingStation: '건대입구', line: '7' },
         legBoardingEligibleAt: NOW + WALK_SECONDS * 1000,
+        infoModeEnabled: true,
       }),
     );
     const nowMidWalk = NOW + Math.floor((WALK_SECONDS * 1000) / 2);
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoulFull({}),
+      seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('7', '건대입구', 30, 1, '7256')] }),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => nowMidWalk,
       generatePushId: () => 'p-2323-a3',
     });
-    expect(stats.legBoardingPromptSkippedWalking).toBe(1);
-    expect(stats.legBoardingPromptFired).toBe(0);
+    expect(stats.legBoardingPromptFired).toBe(1);
     const stored = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
     expect(stored.boardingLock).toBeUndefined();
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stored.legBoardingPromptState?.fired).toBe(true);
+    const promptCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find((call) => {
+      try {
+        const body = JSON.parse(call[1].body as string);
+        return body?.body?.kind === 'boarding-prompt';
+      } catch {
+        return false;
+      }
+    });
+    expect(promptCall).toBeDefined();
   });
 
   // A4 (핵심, 이 테스트는 #2515 코드 기준으로 RED다) — break #2: #2515 코드는 cron에서도
@@ -16033,7 +16055,12 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       expect(findInserts(inserts, 'leg-anchor-observed')).toHaveLength(1);
     });
 
-    it('도보 게이트는 관측 기반 stamp 후에도 그대로 강제된다 — 게이트 통과 전엔 leg-boarding-prompt가 walk-gated', async () => {
+    // #2801 — leg-boarding-prompt의 도보 게이트는 제거됐다(9/18 실캡처: walk-gate가 사용자
+    // 실열차를 후보 창에서 배제). 관측 기반 stamp(`transferObservedAt`→`legBoardingEligibleAt`)
+    // 자체는 여전히 기록되지만(auto-resolve가 계속 참조), 프롬프트는 더 이상 그 시계를 기다리지
+    // 않고 anchor stamp 직후부터 후보가 있으면 즉시 발사된다 — 구 테스트(walk-gated 강제)는
+    // 이 fix로 전제가 뒤집혀 아래로 대체한다.
+    it('#2801 — 관측 기반 stamp 후 도보시간 미경과 중에도 leg-boarding-prompt가 즉시 발사된다', async () => {
       const kv = new InMemoryKV();
       const observedAt = NOW; // 방금 도착(도보시간 미경과)
       const trip = makeTransferTrip(TOKEN_A2, {
@@ -16054,10 +16081,11 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       const afterStamp = JSON.parse((await kv.get(`trip:${TOKEN_A2}`)) as string);
       expect(afterStamp.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '7' });
       const eligibleAt = observedAt + WALK_SECONDS * 1000;
+      // `legBoardingEligibleAt`은 여전히 stamp된다(auto-resolve 등 다른 소비자용) — 프롬프트가
+      // 이 값을 게이트로 쓰지 않는다는 것만 아래 2차 tick이 증명한다.
       expect(afterStamp.legBoardingEligibleAt).toBe(eligibleAt);
 
-      // 2차 tick — 도보시간 미경과 시점. leg-boarding-prompt 후보 조회는 anchor 역(건대입구)
-      // 기준이라 그 역에 후보가 있어도 게이트가 먼저 막아야 한다.
+      // 2차 tick — 도보시간 미경과 시점인데도 anchor 역(건대입구)에 후보가 있으면 즉시 발사된다.
       const nowMidWalk = NOW + Math.floor((WALK_SECONDS * 1000) / 2);
       await runScheduled(makeEnv(kv, undefined, db), {
         seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] }),
@@ -16068,23 +16096,8 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
         generatePushId: () => 'p-2700-walkgate-b',
       });
       const midEvents = findInserts(inserts, 'leg-boarding-prompt');
-      expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'walk-gated')).toBe(true);
-      expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(false);
-
-      // 3차 tick — 도보시간 경과 후에는 프롬프트가 실제로 발사돼야 한다(#2700 요구사항 close 조건 —
-      // "관측이 시계를 시작시켰고, 도보시간 경과 후 프롬프트가 발사된다"의 end-to-end 증거).
-      // arvlCd=1(ARRIVED)로 anchor 역(건대입구)에 후보 열차가 임박했음을 알린다.
-      const nowAfterWalk = eligibleAt + 1_000;
-      await runScheduled(makeEnv(kv, undefined, db), {
-        seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('7', '건대입구', 60, 1, '7911')] }),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-        now: () => nowAfterWalk,
-        generatePushId: () => 'p-2700-walkgate-c',
-      });
-      const afterWalkEvents = findInserts(inserts, 'leg-boarding-prompt');
-      expect(afterWalkEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(true);
+      expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'walk-gated')).toBe(false);
+      expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(true);
     });
   });
 });
