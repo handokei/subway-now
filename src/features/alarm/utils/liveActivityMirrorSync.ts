@@ -19,8 +19,9 @@
  *   2. (#2659에서 제거) `shouldSkipDeviceLiveActivityWrite`(#2481) backend-authority 스킵 —
  *      그 게이트는 GPS-sourced 쓰기 전용으로 좁혔다. 근거는 함수 본문 주석 참조.
  *   3. GPS writer recency arbitration(`liveActivityGpsWriteArbitration.ts`) — mirror 경로는
- *      ETA/alarmEvent를 계산하지 않아 항상 null로 넘기므로, GPS writer(`updateStationNotification`)가
- *      최근에 쓴 ETA/알람 배지를 blank로 덮어쓰지 않도록 최근 GPS 쓰기가 있으면 이번 tick을 양보한다.
+ *      alarmEvent는 계산하지 않아 항상 null로 넘기므로(ETA는 #2805부터 static ETA floor를 싣는다),
+ *      GPS writer(`updateStationNotification`)가 최근에 쓴 ETA/알람 배지를 blank로 덮어쓰지 않도록
+ *      최근 GPS 쓰기가 있으면 이번 tick을 양보한다.
  *
  * BG 경로(`refreshLiveActivityFromBackgroundContext`)는 이미 자신의 호출부에서 1/2번을 별도로
  * 판정하므로(gps-bg 분기도 같은 가드를 받아야 하기 때문), 여기서 다시 판정해도 같은 storage 상태를
@@ -38,7 +39,7 @@
  */
 import * as LiveActivity from 'live-activity';
 import type { Station } from '../../../shared/types/station';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { calculateStaticETA, type Route } from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
@@ -54,8 +55,10 @@ const logger = createLogger('LiveActivityMirrorSync');
 /**
  * mirror가 resolve한 station으로 Live Activity를 갱신한다.
  *
- * BG 컨텍스트와 동일하게 ETA/alarm은 계산하지 않는다 — silent push/backend push가 알람을 별도로
- * 발사하고, ETA는 backend LA push가 권위. 이 함수는 station/route 변동만 빠르게 반영한다.
+ * alarm은 계산하지 않는다 — silent push/backend push가 알람을 별도로 발사한다. ETA는 backend LA
+ * push가 여전히 권위이지만(전체 교체라 다음 push가 곧 덮는다), 이 함수는 #2805부터 그 사이 공백을
+ * 메울 static ETA floor를 싣는다(null이면 위젯이 "약 0분"으로 렌더하던 회귀). station/route 변동을
+ * 빠르게 반영하는 것이 이 함수의 본래 목적이다.
  *
  * @returns 실제 `updateLiveActivity` 호출 여부.
  */
@@ -97,15 +100,18 @@ export async function updateLiveActivityFromMirrorStation(
     return false;
   }
   // #2659 (code review P1-1) — ActivityKit update는 content-state **전체 교체**라, 이 경로가
-  // 쓰면 backend LA push가 직전에 실은 ETA/알람 배지가 null로 덮인다. device는 backend LA push
-  // 도달을 관측할 수단이 없어(JS를 깨우지 않는다) GPS writer용 arbitration 같은 recency 가드를
-  // 대칭으로 만들 수 없다 — 그래서 이 경로의 노출 범위를 **역 전이당 1회**로 묶는 것이 현재
-  // 가능한 최선의 경계다: BG 트리거(`refreshLiveActivityOnMirrorAdvance`)는 mirror 역/노선이
-  // 바뀔 때만 발화하고, FG 훅(`useForegroundLaMirrorSync`)은 dedup 키로 같은 조합 재적용을 막는다.
-  // 그 1회조차 "역이 방금 바뀐 시점"이라 backend가 실었던 ETA는 이미 이전 역 기준이다. 정상
-  // 상황이면 곧바로 다음 backend push/GPS write가 ETA를 복원하고, 정상이 아니면(=이 fix가
-  // 겨냥한 지하 push 공백) 애초에 지킬 ETA가 존재하지 않는다.
-  const data = buildLiveActivityData(mirrorStation, 0, destination, route, null, false, null);
+  // 쓰면 backend LA push가 직전에 실은 ETA/알람 배지가 덮인다. device는 backend LA push 도달을
+  // 관측할 수단이 없어(JS를 깨우지 않는다) GPS writer용 arbitration 같은 recency 가드를 대칭으로
+  // 만들 수 없다 — 그래서 이 경로의 노출 범위를 **역 전이당 1회**로 묶는 것이 현재 가능한 최선의
+  // 경계다: BG 트리거(`refreshLiveActivityOnMirrorAdvance`)는 mirror 역/노선이 바뀔 때만 발화하고,
+  // FG 훅(`useForegroundLaMirrorSync`)은 dedup 키로 같은 조합 재적용을 막는다.
+  // #2805 — 그 1회를 예전엔 etaMinutes=null로 실어 위젯이 "약 0분"을 렌더했다(지하 push 공백에서
+  // 다음 backend push가 오지 않아 이 null이 그대로 굳음). null 대신 in-app static ETA
+  // (대기+환승+운행 완비, `calculateStaticETA`)를 floor로 싣는다 — mirrorStation은 이미 route가
+  // 반영하는 현재 위치이므로 출발 대기는 소진된 것으로 본다(excludeOriginWait: true). 정상
+  // 상황이면 곧바로 다음 backend push/GPS write(전체 교체)가 이 값을 덮어 이긴다.
+  const etaMinutes = calculateStaticETA(route, { excludeOriginWait: true });
+  const data = buildLiveActivityData(mirrorStation, 0, destination, route, etaMinutes, false, null);
   await LiveActivity.updateLiveActivity(data);
   // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
   logLiveActivityUpdated();
