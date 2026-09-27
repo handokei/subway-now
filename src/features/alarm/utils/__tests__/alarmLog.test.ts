@@ -82,6 +82,7 @@ import {
   logSuppressedPassedEventOnLockOrigin,
   LOCK_ORIGIN_SUPPRESS_COOLDOWN_MS,
   logSuppressedLocklessNoUserIntent,
+  logSuppressedPendingLockUnresolved,
   logSuppressedSsotFireGate,
   logSuppressedSafetyNetRevalidation,
   logSuppressedPrescheduledRevalidation,
@@ -1561,6 +1562,47 @@ describe('alarmLog', () => {
         kind: 'transfer',
         phaseId: 'early',
       });
+    });
+
+    it('#2814 logSuppressedPendingLockUnresolved: reason=lockless-pending-unresolved + kind/phaseId 보존', async () => {
+      logSuppressedPendingLockUnresolved({
+        source: 'fg',
+        stationName: '용마산',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'lockless-pending-unresolved',
+        stationName: '용마산',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('#2814 logSuppressedPendingLockUnresolved: phaseId 생략 시 undefined', async () => {
+      logSuppressedPendingLockUnresolved({
+        source: 'bg',
+        stationName: '중곡',
+        kind: 'station-passed',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'lockless-pending-unresolved',
+        stationName: '중곡',
+        kind: 'station-passed',
+      });
+      expect(saved[0].phaseId).toBeUndefined();
     });
 
     it('#1572 logSuppressedSsotFireGate (Gate A alarm-already-decided): source/kind/phaseId 보존', async () => {
