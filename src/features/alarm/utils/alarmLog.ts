@@ -555,7 +555,13 @@ export type AlarmLogReason =
   //   'ssot-mirror-stale-skip-lastadvance' : incoming.lastAdvanceAt < existing.lastAdvanceAt.
   //   'ssot-mirror-stale-skip-tiebreak'    : lastAdvanceAt 동률 + incoming.sentAt < existing.sentAt.
   | 'ssot-mirror-stale-skip-lastadvance'
-  | 'ssot-mirror-stale-skip-tiebreak';
+  | 'ssot-mirror-stale-skip-tiebreak'
+  // #2814 — PENDING lock(auto-lock fallback으로 실 trainCode 미해결) station-passed 억제.
+  // lock !== null이라 'lockless-no-user-intent'(isLocklessNoUserIntent = !lock && ...) 조건을
+  // 통과해버려 estimate(GPS 동결) 기반 오발사가 발생(2026-09-27 용마산→사가정 실측).
+  // 실 trainCode 해결 전까지는 infoModeEnabled여도 억제 — "명시 의향 = lock 동급"과 별개로
+  // 열차 자체가 미해결이면 어느 역인지 신뢰할 수 없다.
+  | 'lockless-pending-unresolved';
 
 /**
  * #2770 code review 6번 — LA mirror skip 3-사유 유니온이 AlarmLogReason 본체/tracker
@@ -2558,6 +2564,28 @@ export function logSuppressedLocklessNoUserIntent(input: {
     source: input.source,
     outcome: 'suppressed',
     reason: 'lockless-no-user-intent',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #2814 — PENDING lock(auto-lock fallback으로 실 trainCode 미해결) station-passed 억제 적재.
+ * `logSuppressedLocklessNoUserIntent`와 형태는 같으나 reason이 다르다(lockless-pending-unresolved) —
+ * lock !== null이라 lockless 카운트에 섞이면 "명시 의향 없음"과 "열차 미해결"을 구분할 수 없다.
+ */
+export function logSuppressedPendingLockUnresolved(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'lockless-pending-unresolved',
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,
