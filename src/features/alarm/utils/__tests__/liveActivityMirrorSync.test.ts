@@ -51,6 +51,7 @@ jest.mock('../alarmLog', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
+import { calculateStaticETA } from '../../../../shared/utils/stationRoute';
 import { updateLiveActivityFromMirrorStation } from '../liveActivityMirrorSync';
 import {
   markDeviceGpsLiveActivityWrite,
@@ -85,14 +86,17 @@ describe('updateLiveActivityFromMirrorStation', () => {
     arbitrationTestHelpers.reset();
   });
 
-  it('활성 LA가 있고 다른 가드가 모두 통과하면 buildLiveActivityData(distance 0m) → updateLiveActivity, true 반환', async () => {
+  it('활성 LA가 있고 다른 가드가 모두 통과하면 buildLiveActivityData(distance 0m, static ETA) → updateLiveActivity, true 반환', async () => {
+    // #2805 — mirror sync가 null 대신 남은 구간 static ETA를 싣는지 assert(root: "약 0분" 지속).
+    const expectedEta = calculateStaticETA(directRoute, { excludeOriginWait: true });
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+    expect(expectedEta).not.toBeNull();
     expect(mockBuild).toHaveBeenCalledWith(
       mirrorStation,
       0,
       destination,
       directRoute,
-      null,
+      expectedEta,
       false,
       null,
     );
@@ -103,7 +107,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
     expect(mockResetLiveActivityMirrorSkipTracking).toHaveBeenCalledTimes(1);
   });
 
-  it('route가 null이어도 정상 동작', async () => {
+  it('route가 null이면 etaMinutes도 null(기존대로) — #2805 거부 케이스', async () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, null);
     expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null);
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
