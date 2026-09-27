@@ -287,6 +287,25 @@ export const ROUTE_CHANGE_DEBOUNCE_MS = 1500;
 export const LIVE_ACTIVITY_INTENT_POLL_MS = 5_000;
 
 /**
+ * #2813 — App Group pending boarding intent(LA 버튼 탭)의 신선도 게이트(ms).
+ *
+ * 배경: `processPendingBoardingIntent`가 `intent.atMs`를 파싱만 하고 now와 비교하지 않아,
+ * 직전 trip에서 처리 후 clear가 안 된(또는 write 후 처리 전 앱이 종료된) stale intent가
+ * `LIVE_ACTIVITY_INTENT_POLL_MS`(5s) 폴링 tick에 replay되어 유령 boarded + 새 lock을 만드는
+ * 회귀가 실측됐다(9/27 용마산 — disp=0/resp=1/brd=1, 알림 자체가 없었는데 boarded 기록).
+ *
+ * 5분으로 둔 이유:
+ *  - `FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS`(5분, #2408)와 동일 정신 — LA 버튼은
+ *    잠금화면/위젯에서 탭 후 앱이 foreground로 전환되기까지 지연이 있을 수 있어(알림 대비
+ *    사용자가 화면을 안 보고 있다 뒤늦게 확인하는 경우 포함) 프롬프트 유효 응답창으로
+ *    충분히 넉넉한 값.
+ *  - 너무 짧으면(예: 30s) 정상적으로 지연된 탭(백그라운드에서 앱 복귀 지연)까지 stale로
+ *    오판해 진짜 사용자 탑승 응답을 폐기할 위험.
+ *  - 너무 길면(예: 30분) stale intent replay를 사실상 못 막아 회귀 재발 위험이 남는다.
+ */
+export const LIVE_ACTIVITY_INTENT_STALE_MS = 5 * 60_000;
+
+/**
  * #2709 — lock 신원(trainCode/boardingLine) → backend 전달 경로 통합. `useBoardingLockSync`의
  * lock-identity effect가 POST 실패(네트워크/5xx) 시 이 backoff로 재시도한다. lock이 backend
  * ADR-038 Phase 2(#2560, `buildLockFromKnownTrainCode`) 승격 경로의 유일한 입력이므로 — 이
