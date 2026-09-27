@@ -65,6 +65,7 @@ import {
   logSuppressedSsotFireGate,
   logSuppressedStationPassedWarmup,
   logSuppressedLocklessNoUserIntent,
+  logSuppressedPendingLockUnresolved,
   logSuppressedNotDeparted,
   logEtaSource,
   logLockExemptGate,
@@ -83,6 +84,7 @@ import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { resolveCurrentLine } from '../utils/resolveCurrentLine';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
+import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import type { LineNumber } from '../../../shared/types/station';
 import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
@@ -210,8 +212,23 @@ function isLocklessNoUserIntent(lock: BoardingLock | null): boolean {
 /**
  * #2387 — station-passed 경로(GPS IIFE :1427 / subsurface IIFE :1673) 공통 lockless-no-user-intent
  * 억제 블록. `isLocklessNoUserIntent` 참고. true 반환 시 호출자는 즉시 return.
+ *
+ * #2814 — PENDING lock(auto-lock fallback으로 실 trainCode 미해결, `isPendingTrainCode` 참고)도
+ * 이 함수에서 함께 억제한다. `isLocklessNoUserIntent`는 `!lock`만 보므로 lock !== null인 PENDING
+ * lock은 "실 lock"으로 통과해버려 route/시간 estimate(GPS 동결)로 오발사(9/27 사가정 실측)한다.
+ * infoModeEnabled(명시 탭 의향)로도 우회하지 않는다 — 의향이 있어도 열차 자체가 미해결이면
+ * 어느 역인지 신뢰할 수 없다. 순수 lockless(lock=null)는 기존 `isLocklessNoUserIntent` 분기가
+ * 그대로 처리하므로 이 함수의 동작은 변경되지 않는다.
  */
 function suppressIfLocklessStationPassed(lock: BoardingLock | null, candidateStation: Station): boolean {
+  if (lock !== null && isPendingTrainCode(lock.trainCode)) {
+    logSuppressedPendingLockUnresolved({
+      source: 'fg',
+      stationName: candidateStation.name,
+      kind: 'station-passed',
+    });
+    return true;
+  }
   if (isLocklessNoUserIntent(lock)) {
     logSuppressedStationPassedLockless(candidateStation.name);
     return true;
