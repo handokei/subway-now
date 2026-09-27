@@ -33,6 +33,7 @@ import { SIMPLE_ARRIVAL_ARCH_ENV_KEY } from '../../../../shared/config/archFlag'
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../../store/useAlarmEventStore';
 import { useUserIntentStore } from '../../store/useUserIntentStore';
+import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import type { AlarmEvent } from '../../utils/stationAlarm';
 import {
@@ -124,6 +125,7 @@ const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogFiredAlarmsTripBoundaryReset = jest.fn();
 const mockLogSuppressedSsotFireGate = jest.fn();
 const mockLogSuppressedLocklessNoUserIntent = jest.fn();
+const mockLogSuppressedPendingLockUnresolved = jest.fn();
 const mockLogSuppressedFireAlarmOnce = jest.fn();
 const mockLogSuppressedNotDeparted = jest.fn();
 const mockLogEtaSource = jest.fn();
@@ -166,6 +168,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedSsotFireGate(...args),
   logSuppressedLocklessNoUserIntent: (...args: unknown[]) =>
     mockLogSuppressedLocklessNoUserIntent(...args),
+  logSuppressedPendingLockUnresolved: (...args: unknown[]) =>
+    mockLogSuppressedPendingLockUnresolved(...args),
   logSuppressedFireAlarmOnce: (...args: unknown[]) =>
     mockLogSuppressedFireAlarmOnce(...args),
   logSuppressedNotDeparted: (...args: unknown[]) => mockLogSuppressedNotDeparted(...args),
@@ -6150,6 +6154,151 @@ describe('useStationAlarm', () => {
           renderHook(() => useStationAlarm(defaultInputs(gateCases[0].inputs()))),
         ).not.toThrow();
       });
+    });
+  });
+
+  // #2814 — PENDING lock(auto-lock fallback으로 실 trainCode 미해결) station-passed 억제.
+  // isLocklessNoUserIntent(=!lock && !infoModeEnabled)는 lock!==null인 PENDING lock을
+  // "실 lock"으로 취급해 gate를 통과시킨다 — 9/27 사가정 오발사 실측(용마산 탑승 직후
+  // PENDING lock 상태에서 route/시간 estimate로 GPS 동결 station-passed 발사).
+  describe('#2814 PENDING lock station-passed 억제', () => {
+    const onRouteStation = makeStation('S-PASS-PENDING', '한양대', 37.5, 127.0);
+    const routeDirect = makeDirectRoute(3, '2');
+    const pendingLock = {
+      destinationId: destination.id,
+      trainCode: PENDING_TRAIN_CODE,
+      boardingStationId: 'S-BOARD',
+      boardingLine: '2' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 60_000,
+    };
+
+    it('PENDING lock + station-passed candidate + infoModeEnabled=true → 억제 (logSuppressedPendingLockUnresolved)', async () => {
+      mockGetBoardingLock.mockResolvedValue(pendingLock);
+      useUserIntentStore.setState({ infoModeEnabled: true });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '왕십리',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedPendingLockUnresolved).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
+    it('PENDING lock + station-passed candidate + infoModeEnabled=false → 억제 (infoMode 여부 무관)', async () => {
+      mockGetBoardingLock.mockResolvedValue(pendingLock);
+      useUserIntentStore.setState({ infoModeEnabled: false });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '왕십리',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedPendingLockUnresolved).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('real trainCode lock(PENDING 아님) → station-passed 정상 발사 (거부 케이스, backward compat)', async () => {
+      mockGetBoardingLock.mockResolvedValue({
+        ...pendingLock,
+        trainCode: 'T-REAL-2814',
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '왕십리',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockLogSuppressedPendingLockUnresolved).not.toHaveBeenCalled();
+    });
+
+    it('lock=null(순수 lockless) + infoModeEnabled=true → 기존대로 발사 (변경 없음 확인, 거부 케이스)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      useUserIntentStore.setState({ infoModeEnabled: true });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '왕십리',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 10,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      expect(mockLogSuppressedPendingLockUnresolved).not.toHaveBeenCalled();
+      expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
     });
   });
 
