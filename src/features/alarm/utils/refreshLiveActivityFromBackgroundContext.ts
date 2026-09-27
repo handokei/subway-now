@@ -182,6 +182,19 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       );
       return;
     }
+    // #2806 — GPS-BG 분기(BG_LAST_STATION)도 update-only여야 한다. 활성 LA가 없을 때 native
+    // `update()`가 `start()`로 fall-through해 BG 컨텍스트에서 `Activity.request`가 throw →
+    // 이 함수 최상단 catch(:204)로 전파돼 (silent push 핸들러 쪽에서) 일반 알림 폴백으로 이어지는
+    // 경로였다(실기기 dump la-fallback-notification×14, 전부 트립 경계). mirror 경로(#2610,
+    // updateLiveActivityFromMirrorStation)엔 이미 있던 동일 가드를 이 분기에도 적용한다. LA 신규
+    // 생성은 정식 트립 시작 경로(`useLiveActivityPreBoardingLifecycle`)에서만 담당한다.
+    if (!LiveActivity.hasActiveLiveActivity()) {
+      logger.info(
+        'la-refresh source=gps-bg but no active LA — skip (update-only, no create, #2806)',
+      );
+      return;
+    }
+
     const currentStation = bg.station;
     const distanceM = Math.round(bg.distanceKm * 1000);
 

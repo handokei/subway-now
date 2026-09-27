@@ -720,6 +720,20 @@ export async function updateStationNotification(
       if (tripToken) {
         await ensureLiveActivityRegistered(tripToken, data);
       } else {
+        // #2806 — tripToken이 없는 이 분기(lock 전 GPS 파이프라인)는 update-only여야 한다.
+        // native `update()`는 활성 Activity가 없으면 내부적으로 `start()`로 fall-through하며
+        // `Activity.request(pushType: .token)`을 호출하는데, iOS는 BG 컨텍스트에서 신규 LA 생성을
+        // 거부(throw)한다 — 그 throw가 아래 catch로 전파돼 일반 알림 폴백 버스트가 된다(실기기 dump
+        // la-fallback-notification×14, 전부 트립 경계). mirror 경로(#2610,
+        // updateLiveActivityFromMirrorStation)엔 이미 있던 동일 가드를 이 GPS writer에도 적용한다.
+        // LA 신규 생성은 정식 트립 시작 경로(`useLiveActivityPreBoardingLifecycle`, destination
+        // 설정 시점 FG에서만 발화)에서 담당 — 이 분기는 건드리지 않는다.
+        if (!LiveActivity.hasActiveLiveActivity()) {
+          liveActivityLogger.info(
+            '활성 LA 없음 — GPS writer update-only 가드로 skip (start-fallthrough 방지, #2806)',
+          );
+          return;
+        }
         await LiveActivity.updateLiveActivity(data);
         // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
         logLiveActivityUpdated();
