@@ -72,6 +72,7 @@ import { SourceBadge } from '../features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../features/alarm/utils/notificationSource';
 import { ArrivalSourceNotice, shouldHideArrivalEta } from '../features/arrival/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
+import { SleepModeSilentWarning } from '../features/settings/components/SleepModeSilentWarning';
 import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushHealthCheck';
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
@@ -2046,6 +2047,8 @@ export default function HomeScreen() {
                     accessibilityLabel={t('home.sleepModeLabel')}
                   />
                 </View>
+
+                <SleepModeSilentWarning visible={sleepMode} />
 
                 <Hr />
               </>
