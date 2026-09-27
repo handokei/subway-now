@@ -440,6 +440,19 @@ describe('useLiveActivityIntentBridge', () => {
       expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-stale-2');
     });
 
+    it('stale intent skip 경로에서 clearPendingBoardingIntent 실패 → throw 없이 흡수', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
+      mockClearPendingBoardingIntent.mockImplementation(() => {
+        throw new Error('clear failed');
+      });
+      const now = 1_000_000 + LIVE_ACTIVITY_INTENT_STALE_MS + 1;
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => now));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
+    });
+
     it('now 미주입 시 기본값 Date.now 사용 — 실제 stale intent(atMs=1_000_000)는 skip', async () => {
       mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
       renderHook(() => useLiveActivityIntentBridge(baseDeps));
