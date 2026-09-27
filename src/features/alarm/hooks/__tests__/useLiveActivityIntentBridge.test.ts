@@ -69,6 +69,7 @@ import {
   DISEMBARK_ACTION_DISEMBARKED,
   DISEMBARK_ACTION_NOT_YET,
 } from '../../utils/notificationCategory';
+import { LIVE_ACTIVITY_INTENT_STALE_MS } from '../../../../shared/constants/boardingLock';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const g = globalThis as any;
@@ -222,7 +223,7 @@ describe('useLiveActivityIntentBridge', () => {
 
   it('lock 없음 + BOARDING_BOARDED → handleResponse(BOARDED) 호출 후 clear', async () => {
     mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
-    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -242,7 +243,7 @@ describe('useLiveActivityIntentBridge', () => {
 
   it('DISEMBARK_DISEMBARKED → handleResponse(DISEMBARKED, hopEndKind=disembark) 호출 후 clear', async () => {
     mockReadPendingBoardingIntent.mockReturnValue(validDisembarkRaw);
-    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 200 + 1000));
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -256,7 +257,7 @@ describe('useLiveActivityIntentBridge', () => {
 
   it('BOARDING_NOT_BOARDED → handleResponse(NOT_BOARDED, hopEndKind=undefined) 호출 후 clear', async () => {
     mockReadPendingBoardingIntent.mockReturnValue(validNotBoardedRaw);
-    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 300 + 1000));
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -276,7 +277,7 @@ describe('useLiveActivityIntentBridge', () => {
 
   it('DISEMBARK_NOT_YET → handleResponse(NOT_YET, hopEndKind=disembark) 호출 후 clear', async () => {
     mockReadPendingBoardingIntent.mockReturnValue(validDisembarkNotYetRaw);
-    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 400 + 1000));
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -293,7 +294,7 @@ describe('useLiveActivityIntentBridge', () => {
     mockClearPendingBoardingIntent.mockImplementation(() => {
       throw new Error('clear failed');
     });
-    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -315,7 +316,7 @@ describe('useLiveActivityIntentBridge', () => {
       setMockLock(activeLock);
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
       mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
-      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -327,7 +328,7 @@ describe('useLiveActivityIntentBridge', () => {
       setMockLock({ ...activeLock, boardedAt: Date.now() - 100 * 60_000 });
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
       mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
-      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -338,7 +339,7 @@ describe('useLiveActivityIntentBridge', () => {
       setMockLock({ ...activeLock, boardingLine: '2' });
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
       mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
-      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -349,7 +350,7 @@ describe('useLiveActivityIntentBridge', () => {
       setMockLock(activeLock);
       mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-다른역-5' });
       mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
-      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -360,7 +361,7 @@ describe('useLiveActivityIntentBridge', () => {
       setMockLock(activeLock);
       mockFindStationByNameAndLine.mockReturnValue(null);
       mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
-      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -370,11 +371,96 @@ describe('useLiveActivityIntentBridge', () => {
     it('DISEMBARK 액션은 dedup 체크 대상 아님 — lock 있어도 handleResponse 호출', async () => {
       setMockLock(activeLock);
       mockReadPendingBoardingIntent.mockReturnValue(validDisembarkRaw);
-      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 200 + 1000));
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       expect(mockHandleResponse).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('#2813 atMs 신선도 게이트 — stale App Group intent replay 방지', () => {
+    const staleBoardedRaw = JSON.stringify({
+      id: 'trip-stale-1',
+      tripToken: 'trip-stale',
+      action: 'BOARDING_BOARDED',
+      originStation: '용마산',
+      line: '7',
+      atMs: 1_000_000,
+    });
+
+    it('stale intent(now - atMs > STALE_MS) → handleResponse skip, clear는 호출', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
+      const now = 1_000_000 + LIVE_ACTIVITY_INTENT_STALE_MS + 1;
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => now));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
+      expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-stale-1');
+    });
+
+    it('경계값 — now - atMs === STALE_MS(초과 아님) → 정상 처리', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
+      const now = 1_000_000 + LIVE_ACTIVITY_INTENT_STALE_MS;
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => now));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).toHaveBeenCalledTimes(1);
+      expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-stale-1');
+    });
+
+    it('fresh intent(신선도 창 이내) → 정상 처리(거부 케이스)', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
+      const now = 1_000_000 + 1_000;
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => now));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).toHaveBeenCalledTimes(1);
+    });
+
+    it('stale DISEMBARK intent도 게이트 적용 — dedup 예외와 무관하게 skip', async () => {
+      const staleDisembarkRaw = JSON.stringify({
+        id: 'trip-stale-2',
+        tripToken: 'trip-stale',
+        action: 'DISEMBARK_DISEMBARKED',
+        originStation: '용마산',
+        line: '7',
+        atMs: 1_000_000,
+      });
+      mockReadPendingBoardingIntent.mockReturnValue(staleDisembarkRaw);
+      const now = 1_000_000 + LIVE_ACTIVITY_INTENT_STALE_MS + 1;
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => now));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
+      expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-stale-2');
+    });
+
+    it('stale intent skip 경로에서 clearPendingBoardingIntent 실패 → throw 없이 흡수', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
+      mockClearPendingBoardingIntent.mockImplementation(() => {
+        throw new Error('clear failed');
+      });
+      const now = 1_000_000 + LIVE_ACTIVITY_INTENT_STALE_MS + 1;
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => now));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
+    });
+
+    it('now 미주입 시 기본값 Date.now 사용 — 실제 stale intent(atMs=1_000_000)는 skip', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(staleBoardedRaw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
+      expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-stale-1');
     });
   });
 

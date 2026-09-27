@@ -35,7 +35,10 @@ import {
   readPendingBoardingIntent,
 } from 'live-activity';
 import { usePolling } from '../../../shared/hooks/usePolling';
-import { LIVE_ACTIVITY_INTENT_POLL_MS } from '../../../shared/constants/boardingLock';
+import {
+  LIVE_ACTIVITY_INTENT_POLL_MS,
+  LIVE_ACTIVITY_INTENT_STALE_MS,
+} from '../../../shared/constants/boardingLock';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
 import {
@@ -133,7 +136,19 @@ function isDuplicateBoardingIntent(intent: PendingBoardingIntent): boolean {
   return isDuplicateBoardingLock(intent.line, intent.originStation, null);
 }
 
-async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
+/**
+ * #2813 — App Group pending intent를 처리 전 폐기(clear)한다. stale 게이트 skip 경로 전용 —
+ * dedup/handleResponse 로직과 무관하게 intent id만 넘겨 정리한다.
+ */
+function clearStalePendingBoardingIntent(intentId: string): void {
+  try {
+    clearPendingBoardingIntent(intentId);
+  } catch (err) {
+    log.warn('clearPendingBoardingIntent 실패', err as Error);
+  }
+}
+
+async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Promise<void> {
   let raw: string | null;
   try {
     raw = readPendingBoardingIntent();
@@ -146,6 +161,12 @@ async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
   const intent = parsePendingBoardingIntent(raw);
   if (!intent) {
     log.warn('pending boarding intent 파싱 실패 — malformed payload');
+    return;
+  }
+
+  if (nowMs - intent.atMs > LIVE_ACTIVITY_INTENT_STALE_MS) {
+    log.warn('stale pending boarding intent — 신선도 게이트 초과, skip + clear');
+    clearStalePendingBoardingIntent(intent.id);
     return;
   }
 
@@ -175,15 +196,19 @@ async function processPendingBoardingIntent(deps: BridgeDeps): Promise<void> {
  * 확인해 기존 boarding-prompt 응답 로직으로 위임한다. `deps`는 `useBoardingPromptResponder`와
  * 동일한 shape — caller(app/_layout.tsx)가 같은 값을 주입해 두 채널이 동일 컨텍스트를 공유한다.
  */
-export function useLiveActivityIntentBridge(deps: UseBoardingPromptResponderDeps): void {
+export function useLiveActivityIntentBridge(
+  deps: UseBoardingPromptResponderDeps,
+  // #2813 — atMs 신선도 게이트 판정용 now 주입 포인트(테스트 전용). 기본값 Date.now.
+  now: () => number = Date.now,
+): void {
   const createLock = useBoardingLockStore((s) => s.createLock);
 
   // usePolling은 callback을 ref로 잡아 매 tick 최신 클로저를 실행하므로, deps가 caller
   // 렌더마다 새 객체(app/_layout.tsx의 inline object)여도 run이 재생성되는 것과 무관하게
   // interval 자체는 재시작되지 않는다.
   const run = useCallback(() => {
-    void processPendingBoardingIntent({ ...deps, createLock });
-  }, [createLock, deps]);
+    void processPendingBoardingIntent({ ...deps, createLock }, now());
+  }, [createLock, deps, now]);
 
   useEffect(() => {
     run();
