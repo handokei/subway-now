@@ -336,6 +336,39 @@ describe('extractBoardingPromptPayload', () => {
     expect(result?.destinationDirection).toBeUndefined();
   });
 
+  // #2819 (test: red) — backend가 발사 시점 단일 확정 trainCode를 embed하면 그대로 보존돼야 한다.
+  it('#2819 — trainCode 포함 → 보존', () => {
+    const result = extractBoardingPromptPayload({
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      trainCode: 'EMB1',
+    });
+    expect(result?.trainCode).toBe('EMB1');
+  });
+
+  it('#2819 — trainCode 미지정(구 backend) → undefined (backward compat)', () => {
+    const result = extractBoardingPromptPayload({
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+    });
+    expect(result?.trainCode).toBeUndefined();
+  });
+
+  it('#2819 — trainCode 빈 문자열 → undefined', () => {
+    const result = extractBoardingPromptPayload({
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      trainCode: '',
+    });
+    expect(result?.trainCode).toBeUndefined();
+  });
+
   it.each([
     ['null', null],
     ['string', 'oops'],
@@ -819,6 +852,106 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       reason,
       originStation: '강남',
       line: '2',
+    });
+  });
+
+  // #2819 (test: red) — payload.trainCode embed 회귀 fix. device 재조회(arrivals fetch)가
+  // 실패해도 backend가 발사 시점에 확정한 단일 trainCode가 있으면 PENDING 대신 실 lock을
+  // 생성해야 한다.
+  describe('#2819 — payload.trainCode embed fallback', () => {
+    const EMBEDDED_PAYLOAD = { ...PAYLOAD, trainCode: 'EMB1' };
+
+    it('arrivals null(재조회 실패) + payload.trainCode 있음 + station 매칭 성공 → 실 lock 생성(PENDING 아님)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destinationId: 'dst',
+          trainCode: 'EMB1',
+          boardingStationId: 'S1',
+          boardingLine: '2',
+          expectedDurationMs: 600_000,
+        }),
+        true,
+        'boarding-prompt-response',
+      );
+      expect(createLockMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expectAutoLockLogged('autolock-success');
+    });
+
+    it('arrivals null + payload.trainCode 있음 + station 매칭 실패 → 기존 PENDING fallback 유지', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      expectPendingFallbackLockCalled('2');
+    });
+
+    it('arrivals null + payload.trainCode 없음(구 backend) → 기존 PENDING fallback 유지(회귀 없음)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+      expectPendingFallbackLockCalled('2');
+      expectAutoLockLogged('autolock-arrivals-empty');
+    });
+
+    it('ambiguity(chosen null) + payload.trainCode 있음 + station 매칭 성공 → 실 lock 생성(PENDING 아님)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+      });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trainCode: 'EMB1',
+          boardingStationId: 'S1',
+          boardingLine: '2',
+        }),
+        true,
+        'boarding-prompt-response',
+      );
+      expect(createLockMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expectAutoLockLogged('autolock-success');
+    });
+
+    it('ambiguity + payload.trainCode 없음(구 backend) → 기존 PENDING fallback 유지(회귀 없음)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+      });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+      expectPendingFallbackLockCalled('2');
+      expectAutoLockLogged('autolock-ambiguity');
+    });
+
+    // 재조회 성공(chosen 있음) 경로는 절대 무변경 — payload.trainCode가 실려 있어도 device가
+    // 방금 fresh 재조회한 chosen.trainCode가 이긴다(embed는 재조회 실패 fallback 전용).
+    it('재조회 성공(chosen 있음) → payload.trainCode 있어도 device fresh pick 우선(무시)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps();
+      await handleResponse(
+        BOARDING_PROMPT_ACTION_BOARDED,
+        { ...PAYLOAD, trainCode: 'SHOULD-BE-IGNORED' },
+        deps,
+      );
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'T1' }),
+        true,
+        'boarding-prompt-response',
+      );
+      expect(createLockMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'SHOULD-BE-IGNORED' }),
+        expect.anything(),
+        expect.anything(),
+      );
     });
   });
 });

@@ -1348,6 +1348,53 @@ describe('sendBoardingPromptPush (#819)', () => {
     expect(body.aps.alert.subtitle).toBe('2호선 상행방면');
   });
 
+  // #2819 (test: red) — caller가 발사 시점 단일 확정 trainCode를 넘기면 payload.body.trainCode로
+  // wire되어야 한다. 현재 buildBoardingPromptPushData가 trainCode를 다루지 않아 이 assertion은
+  // red(undefined !== 'T1')다.
+  it('#2819 — trainCode 지정 시 payload.body.trainCode에 전달된다', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-traincode',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      trainCode: 'T1',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.body.trainCode).toBe('T1');
+  });
+
+  // #2819 (test: red) — 미지정(ambiguity/구 caller) 시 payload에서 완전히 생략돼야 한다(구 device
+  // byte-level 호환). 현재 구현은 trainCode 필드 자체가 없으므로 이 assertion 자체는 이미 참이지만,
+  // 위 지정 케이스가 fix 후 성공해야 이 omit 케이스가 "회귀 없음"의 증거로 함께 의미를 갖는다.
+  it('#2819 — trainCode 미지정 시 payload.body에서 생략된다', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-notraincode',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: '2',
+      tripToken: 't',
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('trainCode' in body.body).toBe(false);
+  });
+
   it('subtitle 미지정 시 aps.alert.subtitle omit (#1798)', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
     await sendBoardingPromptPush({

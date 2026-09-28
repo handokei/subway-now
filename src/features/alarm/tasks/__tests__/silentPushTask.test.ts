@@ -1296,6 +1296,29 @@ describe('silentPushTask', () => {
         });
       });
 
+      // #2819 (test: red) — backend가 발사 시점 단일 확정 trainCode를 embed하면 보존돼야 한다.
+      it('#2819 — trainCode 포함 → 보존', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'boarding-prompt',
+              originStation: '강남',
+              line: '2',
+              tripToken: 'T',
+              trainCode: 'EMB1',
+            }),
+          ),
+        ).toMatchObject({ trainCode: 'EMB1' });
+      });
+
+      it('#2819 — trainCode 미지정(구 backend) → undefined', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'boarding-prompt', originStation: '강남', line: '2', tripToken: 'T' }),
+          ),
+        ).toMatchObject({ trainCode: undefined });
+      });
+
       it('destinationDirection이 up/down이 아니면 undefined로 정규화', () => {
         expect(
           extractPayload(
