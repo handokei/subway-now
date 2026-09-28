@@ -58,6 +58,8 @@ import {
   logPushReceipt,
   mapWaypointKindToReceiptKind,
 } from '../../observability/utils/pushReceiptLog';
+import { TtlCache } from '../../../shared/utils/ttlCache';
+import { LA_FALLBACK_DEDUP_TTL_MS } from '../../../shared/constants/laFallbackDedup';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
  *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
@@ -120,20 +122,22 @@ async function scheduleNotification(
 }
 
 /**
- * #2687 — LA fallback 알림(iOS LA 비활성/예외, Android) content dedup.
+ * #2817 (구 #2687 content 기준에서 교체) — LA fallback 알림(iOS LA 비활성/예외, Android)
+ * 역 정체성 + TTL dedup.
  *
  * LA가 죽어 있으면 GPS/BG 파이프라인(stationPipeline.ts)과 FG effect(HomeScreen.tsx)가
- * 고빈도로 `updateStationNotification`을 호출하는데, 직전 발사와 (title, body)가 완전히
- * 같아도 무조건 재예약해 iOS가 매번 새 배너를 띄우던 회귀(동일 내용 30회+ 폭주)를 막는다.
- *
- * 기준은 **내용 동일성**이지 시간이 아니다 — 내용이 바뀌면 dedup 없이 즉시 갱신돼야 한다.
- * (title, body)가 조금이라도 다르면 통과시킨다.
+ * 고빈도(매 GPS poll)로 `updateStationNotification`을 호출한다. 과거엔 (title, body)
+ * content 완전 동일성으로 dedup했으나, `buildContent`가 매 cycle 거리(`distanceM`)·ETA를
+ * 새로 채워 넣어 내용이 조금씩 달라지면서 dedup이 무력화돼 같은 역이 초당 여러 번
+ * 재발사되는 버스트가 재발했다(#2817). 기준을 **역 정체성(stationName) + 시간창(TTL)**
+ * 으로 바꾼다 — 같은 역이면 내용이 달라져도 TTL 안에서는 억제, TTL이 지나거나 다른
+ * 역이면 즉시 통과시킨다.
  */
-let lastFallbackNotificationContent: { title: string; body: string } | null = null;
+const fallbackNotificationDedupCache = new TtlCache<string, true>(LA_FALLBACK_DEDUP_TTL_MS);
 
-/** trip 종료/알림 해제 시 리셋 — 다음 trip 첫 발사가 이전 trip 내용과 우연히 같아도 막히지 않게. */
+/** trip 종료/알림 해제 시 리셋 — 다음 trip 첫 발사가 이전 trip과 같은 역이어도 막히지 않게. */
 function resetFallbackNotificationDedup(): void {
-  lastFallbackNotificationContent = null;
+  fallbackNotificationDedupCache.clear();
 }
 
 /** 테스트용 — 모듈 in-memory dedup 상태를 test case 사이에 격리. */
@@ -145,16 +149,11 @@ async function scheduleFallbackStationNotification(
   stationName: string,
   content: { title: string; body: string },
 ): Promise<void> {
-  const { title, body } = content;
-  if (
-    lastFallbackNotificationContent != null &&
-    lastFallbackNotificationContent.title === title &&
-    lastFallbackNotificationContent.body === body
-  ) {
+  if (fallbackNotificationDedupCache.get(stationName) !== undefined) {
     logSuppressedLaFallbackContentDedup(stationName);
     return;
   }
-  lastFallbackNotificationContent = { title, body };
+  fallbackNotificationDedupCache.set(stationName, true);
   await scheduleNotification(NOTIFICATION_ID, content);
   logFiredLaFallbackNotification(stationName);
 }
