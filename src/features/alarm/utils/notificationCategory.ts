@@ -57,6 +57,14 @@ export const TRIP_ENDED_CATEGORY = 'TRIP_ENDED_CATEGORY';
 export const TRIP_ENDED_ACTION_NEXT_TRIP = 'TRIP_ENDED_ACTION_NEXT_TRIP';
 
 /**
+ * #2822 — 로컬 station tracking 알림(`fireFgAuxStationPassedNotification`,
+ * `scheduleFallbackStationNotification`) 전용 category. 액션 버튼이 없는 순수 분류용 식별자라
+ * `setNotificationCategoryAsync` 등록이 불필요 — content에 identifier만 부착해 payload를
+ * "unknown"이 아닌 식별 가능한 알림으로 만든다(유령 알림 근절, root RCA #2822).
+ */
+export const STATION_TRACKING_CATEGORY = 'STATION_TRACKING_CATEGORY';
+
+/**
  * BOARDING_PROMPT category 등록. 앱 부팅 시 1회 호출.
  * 실패는 graceful — category 미등록 시 알림이 평범한 alert로 표시되지만 사용자가 탭하면
  * 같은 listener가 default action으로 호출되니 trainCode 자동 lock은 계속 동작.

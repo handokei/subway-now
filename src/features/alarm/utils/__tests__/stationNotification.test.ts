@@ -16,6 +16,7 @@ import {
   _resetFallbackNotificationDedupForTests,
 } from '../stationNotification';
 import { buildStationNotifCollapseId } from '../stationNotifCollapseId';
+import { STATION_TRACKING_CATEGORY } from '../notificationCategory';
 import { APNS_TOKEN_KEY } from '../../../../shared/constants/storageKeys';
 import { Station } from '../../../../shared/types/station';
 import { setLegAdvance, clearLegAdvance } from '../legAdvanceStorage';
@@ -194,9 +195,21 @@ const multiTransferRoute = makeMultiTransferRoute({
   stopsAfterLastTransfer: 4,
 });
 
+// #2822 — LA fallback(scheduleFallbackStationNotification)은 이 스위트 전체에서 항상
+// mockStation('시청', line '1')을 currentStation으로 호출한다 — payload도 그 값 기준으로 고정
+// assert(유령 알림 근절: data(kind/stationName/line) + categoryIdentifier 항상 실림, kind=
+// 'intermediate'라 sound는 항상 false).
 function expectNotificationContent(title: string, body: string) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-    expect.objectContaining({ content: { title, body } }),
+    expect.objectContaining({
+      content: {
+        title,
+        body,
+        sound: false,
+        categoryIdentifier: STATION_TRACKING_CATEGORY,
+        data: { kind: 'intermediate', stationName: '시청', line: '1' },
+      },
+    }),
   );
 }
 
@@ -1390,7 +1403,7 @@ describe('stationNotification', () => {
     it('device token 보유 시 backend collapse-id와 동일한 identifier로 "역 도착 / N정거장 남음" 로컬 알림을 발사하고 markLocalStationFired를 stamp한다', async () => {
       await AsyncStorage.setItem(APNS_TOKEN_KEY, 'a'.repeat(64));
 
-      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남');
+      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '7');
 
       const expectedId = buildStationNotifCollapseId('a'.repeat(64));
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
@@ -1407,10 +1420,29 @@ describe('stationNotification', () => {
       expect(mockMarkLocalStationFired).toHaveBeenCalledWith('중곡', 'station-passed');
     });
 
+    // #2822 — root RCA: 이 발사점이 data(kind)/categoryIdentifier 없이 발사돼 device가
+    // "유령"(무음+kind=unknown)으로 인식하던 결함. kind='intermediate'(매역 통과, 항상 무음
+    // 유지 — 회귀 안전) + stationName/line이 payload에 실려야 한다.
+    it('#2822 — content.data에 kind=intermediate/stationName/line + categoryIdentifier가 실린다', async () => {
+      await AsyncStorage.setItem(APNS_TOKEN_KEY, 'a'.repeat(64));
+
+      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '7');
+
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            sound: false,
+            categoryIdentifier: STATION_TRACKING_CATEGORY,
+            data: { kind: 'intermediate', stationName: '중곡', line: '7' },
+          }),
+        }),
+      );
+    });
+
     it('targetKind=transfer 전달 시에도 동일 템플릿으로 환승역명이 대상에 채워진다', async () => {
       await AsyncStorage.setItem(APNS_TOKEN_KEY, 'c'.repeat(64));
 
-      await fireFgAuxStationPassedNotification('중곡', 2, 'transfer', '홍대입구');
+      await fireFgAuxStationPassedNotification('중곡', 2, 'transfer', '홍대입구', '7');
 
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1423,13 +1455,13 @@ describe('stationNotification', () => {
 
     it('기존 동일 identifier 알림을 dismiss한 뒤 재발사한다 (scheduleNotification 공용 helper 재사용)', async () => {
       await AsyncStorage.setItem(APNS_TOKEN_KEY, 'b'.repeat(64));
-      await fireFgAuxStationPassedNotification('강남', 3, 'destination', '홍대입구');
+      await fireFgAuxStationPassedNotification('강남', 3, 'destination', '홍대입구', '2');
       const expectedId = buildStationNotifCollapseId('b'.repeat(64));
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith(expectedId);
     });
 
     it('device token 미보유 시(등록 전) 스킵 — 알림 발사/stamp 모두 안 함', async () => {
-      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남');
+      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '1');
       expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
       expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
     });
