@@ -341,6 +341,14 @@ export interface Trip {
    */
   legResolveStreak?: { trainCode: string; count: number; firstObservedAt?: number };
   /**
+   * #2824 — leg-1 boarding-prompt(`evaluateAndMaybeFireBoardingPrompt`)가 발사 시 실제로
+   * 제시한 candidateTrains의 trainCode 목록 + 발사 시각. `/boarding-lock/sync`(index.ts)의
+   * sync-promotion 게이트(`isPromotionCorroborated`)가 device가 보낸 `payload.trainCode`를
+   * 이 목록(TTL 내) 또는 `legResolveStreak.trainCode`와 대조해 근거 없는 승격을 거부한다.
+   * 둘 다 부재면(이 필드가 한 번도 stamp되지 않았으면) backward-safe로 기존대로 승격한다.
+   */
+  recentPromptCandidates?: { trainCodes: string[]; firedAt: number };
+  /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
    * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.

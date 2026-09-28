@@ -126,6 +126,12 @@ import { captureXEvent } from './sentry';
  * D1만으로 재구성하지 못했던 것이 #2754 진단 과정의 병목이었다 — 이 kind가 그 gap을 메운다.
  * `meta`에 `{ elapsedSinceAnchorMs, candidates, streakCount, outcome, selectedTrainCode? }`를
  * 싣는다. `station`/`line`은 anchor station/line. 발사/advance 동작에는 관여하지 않는다.
+ *
+ * `promotion-rejected-uncorroborated` (#2824) — `/boarding-lock/sync`(index.ts)의 sync-promotion
+ * (`isPromotionCorroborated`)이 device가 보낸 `payload.trainCode`가 `trip.recentPromptCandidates`
+ * (TTL 15분)에도 `trip.legResolveStreak.trainCode`에도 없어 lock 승격을 거부한 시점에 1건
+ * append한다. `meta`에 `{ trainCode, line }`을 싣는다. 두 신호가 모두 부재(한 번도 stamp된 적
+ * 없음)면 이 kind는 append되지 않고 기존대로 승격한다(backward-safe).
  */
 export type TripEventKind =
   | 'sync-received'
@@ -148,7 +154,8 @@ export type TripEventKind =
   | 'leg-anchor-observed'
   | 'boarding-prompt-leg-mismatch'
   | 'route-signature-mismatch'
-  | 'leg-resolve-attempt';
+  | 'leg-resolve-attempt'
+  | 'promotion-rejected-uncorroborated';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

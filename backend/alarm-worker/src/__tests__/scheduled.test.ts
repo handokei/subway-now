@@ -6076,6 +6076,22 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     });
   });
 
+  // #2824 (test: red) — 발사 시 제시된 candidateTrains(trainCode 목록)가 trip.recentPromptCandidates에
+  // persist돼야 한다. 이후 `/boarding-lock/sync`(index.ts)의 sync-promotion corroboration 게이트가
+  // 이 필드를 근거로 device가 보낸 trainCode를 검증한다.
+  it('#2824 — 9단 통과 발사 시 candidateTrains(trainCode 목록)이 trip.recentPromptCandidates로 persist', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+
+    const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
+    // DEFAULT_BP_ARRIVAL(trainCode='T1')이 유일한 후보 — pool에서 뽑힌 candidateTrains 그대로.
+    expect(persisted.recentPromptCandidates).toEqual({ trainCodes: ['T1'], firedAt: NOW });
+  });
+
   // #2819 (test: red) — leg-1 GPS 9단 경로. 단일 후보(ambiguity 없음)면 발사 시점 pickAutoTrainCode
   // 결과가 payload.body.trainCode로 전파돼야 한다(device 재조회 실패 fallback 대비).
   it('#2819 — 단일 후보(ambiguity 없음) → payload.body.trainCode에 발사 시점 pick 전파', async () => {
