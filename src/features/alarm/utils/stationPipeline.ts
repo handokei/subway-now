@@ -736,6 +736,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
               target.stopsToNextStation,
               target.isTransfer ? 'transfer' : 'destination',
               target.nextStationName,
+              nearest.station.line,
             );
           }
 

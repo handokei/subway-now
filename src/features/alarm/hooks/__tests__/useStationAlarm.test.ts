@@ -2085,6 +2085,7 @@ describe('useStationAlarm', () => {
             1,
             'destination',
             destination.name,
+            station.line,
           );
         });
         expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg', station.name);
@@ -2130,6 +2131,7 @@ describe('useStationAlarm', () => {
             1,
             'destination',
             destination.name,
+            station.line,
           );
         });
         // logFiredStationPassed는 fireFgAuxStationPassedNotification 성공 후에만 호출 — 실패 시 미호출.
@@ -2168,6 +2170,7 @@ describe('useStationAlarm', () => {
             4,
             'transfer',
             '시청',
+            station.line,
           );
         });
       });
@@ -2204,6 +2207,7 @@ describe('useStationAlarm', () => {
             6,
             'destination',
             destination.name,
+            station.line,
           );
         });
       });
@@ -2239,6 +2243,7 @@ describe('useStationAlarm', () => {
             2,
             'transfer',
             '시청',
+            station.line,
           );
         });
       });
@@ -2276,6 +2281,7 @@ describe('useStationAlarm', () => {
             3,
             'destination',
             destination.name,
+            station.line,
           );
         });
       });

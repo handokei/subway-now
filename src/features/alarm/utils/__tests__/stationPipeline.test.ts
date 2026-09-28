@@ -1816,6 +1816,7 @@ describe('processLocationUpdate', () => {
           mockRoute.stops,
           'destination',
           mockDestination.name,
+          mockStation.line,
         );
       });
 
@@ -1886,6 +1887,7 @@ describe('processLocationUpdate', () => {
           2,
           'transfer',
           '동대문',
+          mockStation.line,
         );
       });
 
