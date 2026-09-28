@@ -6,6 +6,7 @@ import {
   buildBoardingConfirmEventMeta,
   computeLockSyncAdvance,
   dualWriteTripDo,
+  isPromotionCorroborated,
   isSsotSyncAdvanceMonotonic,
   LOCK_TTL_REFRESH_MS,
   resolveProgressWaypoints,
@@ -5077,6 +5078,160 @@ describe('POST /boarding-lock/sync (#901)', () => {
       // fire-and-forget(마이크로태스크) 완료를 기다린다 — executionCtx 없이도 throw 없이 진행.
       await new Promise((r) => setTimeout(r, 0));
     });
+  });
+});
+
+// #2824 — sync-promotion(index.ts:2769) corroboration gate. device가 보낸 payload.trainCode가
+// recentPromptCandidates(TTL 15분)/legResolveStreak 어디에도 없는 완전 외래 값이면 lock 승격을
+// 거부한다. 형제 이슈 #2780(cron 전이 auto-lock)과 다른 sync 경로 — 이 게이트는 sync-promotion만
+// 다룬다.
+describe('isPromotionCorroborated (#2824) — unit', () => {
+  const NOW = 1_800_000_000_000;
+
+  function baseTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'corrob-unit',
+      route: { type: 'direct', line: '7', stops: 3 } as unknown as Trip['route'],
+      destination: '군자',
+      waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+      expiresAt: NOW + 60 * 60_000,
+      createdAt: NOW - 10 * 60_000,
+      alarmAtEpochMs: NOW,
+      ...overrides,
+    };
+  }
+
+  it('(a) 후보/streak 어디에도 없는 trainCode → false(거부)', () => {
+    const trip = baseTrip({ recentPromptCandidates: { trainCodes: ['9999'], firedAt: NOW - 60_000 } });
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
+  });
+
+  it('(b) recentPromptCandidates.trainCodes에 있고 TTL(15분) 내 → true(승격)', () => {
+    const trip = baseTrip({ recentPromptCandidates: { trainCodes: ['7039'], firedAt: NOW - 60_000 } });
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
+  });
+
+  it('(b-2) recentPromptCandidates가 TTL(15분) 초과 → false(거부)', () => {
+    const trip = baseTrip({
+      recentPromptCandidates: { trainCodes: ['7039'], firedAt: NOW - 15 * 60_000 - 1 },
+    });
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
+  });
+
+  it('(c) legResolveStreak.trainCode와 일치 → true(승격)', () => {
+    const trip = baseTrip({ legResolveStreak: { trainCode: '7039', count: 1 } });
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
+  });
+
+  it('(d) 두 신호 모두 부재(한 번도 stamp 안 됨) → true(backward-safe 기존대로 승격)', () => {
+    const trip = baseTrip();
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
+  });
+});
+
+describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)', () => {
+  const NOW = 1_800_000_000_000;
+
+  function captureEventInserts(): { db: Env['DB']; inserts: unknown[][] } {
+    const inserts: unknown[][] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const prepare = vi.fn().mockImplementation((sql: string) => ({
+      bind: (...args: unknown[]) => {
+        if (sql.includes('trip_events')) inserts.push(args);
+        return { run };
+      },
+    }));
+    return { db: { prepare } as unknown as Env['DB'], inserts };
+  }
+
+  function unlockedTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'corrob-tok',
+      route: { type: 'direct', line: '7', stops: 3 } as unknown as Trip['route'],
+      destination: '군자',
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'destination' },
+      ],
+      expiresAt: NOW + 60 * 60_000,
+      createdAt: NOW - 10 * 60_000,
+      alarmAtEpochMs: NOW,
+      ...overrides,
+    };
+  }
+
+  async function syncWithTrainCode(env: Env, trainCode: string) {
+    return post(
+      '/boarding-lock/sync',
+      {
+        token: 'corrob-tok',
+        observedStationName: '용마산',
+        observedAtMs: NOW,
+        accuracy: 20,
+        trainCode,
+        boardingLine: '7',
+      },
+      env,
+    );
+  }
+
+  it('(a) 후보/streak 어디에도 없는 trainCode → 승격 거부 + promotion-rejected-uncorroborated 이벤트', async () => {
+    const { db, inserts } = captureEventInserts();
+    const env = makeKvEnv();
+    env.DB = db;
+    await env.TRIPS.put(
+      'trip:corrob-tok',
+      JSON.stringify(unlockedTrip({ recentPromptCandidates: { trainCodes: ['9999'], firedAt: NOW - 60_000 } })),
+    );
+
+    const res = await syncWithTrainCode(env, '7039');
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+
+    const events = inserts.filter((args) => args[2] === 'promotion-rejected-uncorroborated');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0][5] as string)).toEqual({ trainCode: '7039', line: '7' });
+  });
+
+  it('(b) recentPromptCandidates.trainCodes에 있으면(TTL 15분 내) 승격', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:corrob-tok',
+      JSON.stringify(unlockedTrip({ recentPromptCandidates: { trainCodes: ['7039'], firedAt: NOW - 60_000 } })),
+    );
+
+    const res = await syncWithTrainCode(env, '7039');
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+  });
+
+  it('(c) legResolveStreak.trainCode와 일치하면 승격', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:corrob-tok',
+      JSON.stringify(unlockedTrip({ legResolveStreak: { trainCode: '7039', count: 1 } })),
+    );
+
+    const res = await syncWithTrainCode(env, '7039');
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+  });
+
+  it('(d) 두 신호 모두 부재 → backward-safe 기존대로 승격(false-reject 0, #2560 무회귀)', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put('trip:corrob-tok', JSON.stringify(unlockedTrip()));
+
+    const res = await syncWithTrainCode(env, '7039');
+    expect(res.status).toBe(200);
+
+    const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7039');
   });
 });
 
