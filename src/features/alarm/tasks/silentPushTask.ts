@@ -306,6 +306,12 @@ export interface BoardingPromptSilentPushPayload {
   nextLine?: string;
   /** #2034 — hop-end 시 다음 leg 출발역. 미지정이면 UI 에서 next-line 만 표시. */
   nextStation?: string;
+  /**
+   * #2819 — backend가 발사 시점 `pickAutoTrainCode`로 **단일** 확정한 경우에만 실리는 trainCode.
+   * 이 채널은 remote-only(로컬 알림 미생성)라 현재는 telemetry/schema 정합용 pass-through —
+   * 실 lock 생성은 alert push(`useBoardingPromptResponder`)의 동명 필드가 담당한다.
+   */
+  trainCode?: string;
 }
 
 /**
@@ -805,6 +811,7 @@ function extractBoardingPromptPayload(
     hopEndKind,
     nextLine,
     nextStation,
+    trainCode,
   } = obj;
   if (typeof originStation !== 'string' || originStation.length === 0) return null;
   if (typeof line !== 'string' || line.length === 0) return null;
@@ -827,6 +834,8 @@ function extractBoardingPromptPayload(
     nextLine: typeof nextLine === 'string' && nextLine.length > 0 ? nextLine : undefined,
     nextStation:
       typeof nextStation === 'string' && nextStation.length > 0 ? nextStation : undefined,
+    // #2819 — 발사 시점 단일 확정 trainCode. 빈 문자열/타입 불일치는 미지정과 동일 취급.
+    trainCode: typeof trainCode === 'string' && trainCode.length > 0 ? trainCode : undefined,
   };
 }
 

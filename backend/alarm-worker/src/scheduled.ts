@@ -7289,6 +7289,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
             : undefined,
         // #1888 (RC-13) — 후보 train 목록 동봉. device fallback 렌더.
         candidateTrains,
+        // #2819 — 단일 확정(ambiguity 없음)일 때만 embed. device 재조회 실패 fallback 전용.
+        trainCode: selectedTrainCode ?? undefined,
         // #2130 (Part B-be-2, A4) — 반복 발사 시 이전 무응답 배너를 최신으로 교체(스택 방지).
         collapseId: boardingPromptCollapseId(trip.token),
         config: deps.apnsConfig,
@@ -7492,6 +7494,10 @@ async function fireBoardingPromptForAnchor(inputs: {
 
   const { title, body } = buildBoardingPromptMessage(station, line, nextStation, etaSeconds, now, trip.locale);
 
+  // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
+  // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경).
+  const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, line, direction) : null;
+
   const pushId = generatePushId();
   const heal = await sendWithEnvHeal(
     (host) =>
@@ -7509,6 +7515,7 @@ async function fireBoardingPromptForAnchor(inputs: {
         subtitle:
           direction !== null ? `${line}호선 ${direction === 'up' ? '상행' : '하행'}방면` : undefined,
         candidateTrains,
+        trainCode: selectedTrainCode ?? undefined,
         collapseId: boardingPromptCollapseId(trip.token),
         config: deps.apnsConfig,
         host,

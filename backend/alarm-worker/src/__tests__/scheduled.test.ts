@@ -6076,6 +6076,47 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     });
   });
 
+  // #2819 (test: red) — leg-1 GPS 9단 경로. 단일 후보(ambiguity 없음)면 발사 시점 pickAutoTrainCode
+  // 결과가 payload.body.trainCode로 전파돼야 한다(device 재조회 실패 fallback 대비).
+  it('#2819 — 단일 후보(ambiguity 없음) → payload.body.trainCode에 발사 시점 pick 전파', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+
+    const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+    const [, alertInit] = fetchMock.mock.calls[0];
+    const alertBody = JSON.parse((alertInit as RequestInit).body as string);
+    // DEFAULT_BP_ARRIVAL 단일 후보(arvlCd=2, trainCode='T1') — ambiguity 없음.
+    expect(alertBody.body.trainCode).toBe('T1');
+  });
+
+  // #2819 (test: red) — ambiguity(동일 우선순위 후보 2+)면 pickAutoTrainCode가 null을 반환하므로
+  // payload에서 trainCode가 완전히 생략돼야 한다("틀린 열차 자동 바인딩 금지").
+  it('#2819 — ambiguity(동일 우선순위 후보 2+) → payload.body.trainCode 생략', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    const ambiguousArrivals: ArrivalEntry[] = [
+      { destination: '성수', arrivalSeconds: 90, trainCode: 'AMB-T1', isUp: true, subwayNm: '2호선', arvlCd: 2 },
+      { destination: '성수', arrivalSeconds: 95, trainCode: 'AMB-T2', isUp: true, subwayNm: '2호선', arvlCd: 2 },
+    ];
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl, makeSeoul(ambiguousArrivals)));
+
+    const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+    const [, alertInit] = fetchMock.mock.calls[0];
+    const alertBody = JSON.parse((alertInit as RequestInit).body as string);
+    expect('trainCode' in alertBody.body).toBe(false);
+  });
+
   // #2651 — GPS 9단 경로에는 opt-in 게이트가 전혀 없었다(등록만으로 발사). 결정 모델은
   // "안내 시작(promptOptIn) 없이는 프롬프트도 0건"을 요구한다 — 위 '9단 통과' happy path와
   // 동일한 trip을 promptOptIn만 false로 바꿔 차단되는지 검증한다.
@@ -14007,6 +14048,39 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(body.body.originStation).toBe('건대입구');
     expect(body.body.line).toBe('7');
     expect(body.body.hopEndKind).toBeUndefined();
+  });
+
+  // #2819 (test: red) — leg-2(GPS-free) 공유 발사 본체(fireBoardingPromptForAnchor)도 단일
+  // 확정 trainCode를 payload에 embed해야 한다. 단일 후보(arvlCd=1) → ambiguity 없음.
+  it('#2819 — 단일 후보(ambiguity 없음) → payload.body.trainCode에 발사 시점 pick 전파(leg-2)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid-leg2');
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    expect(alertCall).toBeDefined();
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.body.trainCode).toBe('7246');
+  });
+
+  // #2819 (test: red) — ambiguity(동일 우선순위 후보 2+, 같은 btrainNo 아님)면 trainCode가
+  // payload에서 생략돼야 한다(leg-2).
+  it('#2819 — ambiguity(동일 우선순위 후보 2+) → payload.body.trainCode 생략(leg-2)', async () => {
+    const fetchImpl = vi.fn(
+      makeArrivalsResponse([
+        { btrainNo: '7246', isUp: true, arvlCd: 1 },
+        { btrainNo: '7247', isUp: true, arvlCd: 1 },
+      ]),
+    );
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid-leg2');
+    const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+    expect(alertCall).toBeDefined();
+    const [, init] = alertCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect('trainCode' in body.body).toBe(false);
   });
 
   it('후보 0건(arrivals 빈 배열) → blocked 증가, push 미발사', async () => {

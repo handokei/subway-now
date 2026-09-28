@@ -895,6 +895,15 @@ export interface BoardingPromptPushPayload {
    */
   candidateTrains?: BoardingPromptCandidate[];
   /**
+   * #2819 — 발사 시점 `pickAutoTrainCode`가 **단일** 반환(ambiguity 없음)일 때만 그 trainCode를
+   * 실어 device로 전파한다. device `tryAutoLock`이 재조회(자체 Seoul API fetch)에 실패해도
+   * (arrivals null / chosen null) 이 값으로 PENDING 대신 실 lock을 생성할 수 있다.
+   *
+   * 미지정(ambiguity / pool 0건 / 구버전 caller)이면 device는 기존 재조회 우선 로직 그대로 —
+   * 이 필드는 재조회 실패 fallback에서만 개입한다(정상 경로 무변경).
+   */
+  trainCode?: string;
+  /**
    * #2037 (Issue M) — silent push fallback 채널에서 device 가 local notification 발사 시
    * 그대로 사용할 title. backend 가 사용자 locale 로 i18n resolve 해서 넣어준다.
    *
