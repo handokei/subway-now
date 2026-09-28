@@ -51,7 +51,12 @@ import { markDeviceGpsLiveActivityWrite } from './liveActivityGpsWriteArbitratio
 import { getLegAdvance } from './legAdvanceStorage';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
 import { logLiveActivityUpdated } from './alarmLog';
-import { BOARDING_PROMPT_CATEGORY, DISEMBARK_PROMPT_CATEGORY } from './notificationCategory';
+import {
+  BOARDING_PROMPT_CATEGORY,
+  DISEMBARK_PROMPT_CATEGORY,
+  STATION_TRACKING_CATEGORY,
+} from './notificationCategory';
+import { resolveStationNotifSoundFields } from '../../../shared/constants/stationNotifSound';
 import type { LineNumber } from '../../../shared/types/station';
 import { logFiredLaFallbackNotification, logSuppressedLaFallbackContentDedup } from './alarmLog';
 import {
@@ -145,8 +150,16 @@ export function _resetFallbackNotificationDedupForTests(): void {
   resetFallbackNotificationDedup();
 }
 
+/**
+ * #2822 — root RCA: 이 alarm-worker fallback 발사점이 data(kind)/categoryIdentifier 없이
+ * `{title, body}`만 실어 device가 "유령"(무음+kind=unknown)으로 인식하던 결함. 이 알림은
+ * LA 비활성/실패 시의 "현재 위치 추적" ambient 알림이라 kind는 항상 'intermediate' 고정 —
+ * 매역 tracking과 동일 정책(무음 유지, 회귀 안전)으로 `resolveStationNotifSoundFields`를
+ * 공유한다.
+ */
 async function scheduleFallbackStationNotification(
   stationName: string,
+  line: string,
   content: { title: string; body: string },
 ): Promise<void> {
   if (fallbackNotificationDedupCache.get(stationName) !== undefined) {
@@ -154,7 +167,13 @@ async function scheduleFallbackStationNotification(
     return;
   }
   fallbackNotificationDedupCache.set(stationName, true);
-  await scheduleNotification(NOTIFICATION_ID, content);
+  const soundFields = resolveStationNotifSoundFields('intermediate');
+  await scheduleNotification(NOTIFICATION_ID, {
+    ...content,
+    sound: soundFields.sound,
+    categoryIdentifier: STATION_TRACKING_CATEGORY,
+    data: { kind: 'intermediate', stationName, line },
+  });
   logFiredLaFallbackNotification(stationName);
 }
 
@@ -692,7 +711,7 @@ export async function updateStationNotification(
     if (!liveActivityEnabled) {
       notifLogger.info('Live Activity 비활성 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
-      await scheduleFallbackStationNotification(currentStation.name, { title, body });
+      await scheduleFallbackStationNotification(currentStation.name, currentStation.line, { title, body });
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
@@ -745,7 +764,7 @@ export async function updateStationNotification(
       liveActivityLogger.error('업데이트 실패:', e);
       notifLogger.info('Live Activity 실패 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
-      await scheduleFallbackStationNotification(currentStation.name, { title, body });
+      await scheduleFallbackStationNotification(currentStation.name, currentStation.line, { title, body });
     }
     return;
   }
@@ -753,7 +772,7 @@ export async function updateStationNotification(
   // Android: 기존 expo-notifications 유지
   const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
   notifLogger.info('Android 알림:', title, body);
-  await scheduleFallbackStationNotification(currentStation.name, { title, body });
+  await scheduleFallbackStationNotification(currentStation.name, currentStation.line, { title, body });
   notifLogger.info('알림 예약 완료');
 }
 
@@ -912,18 +931,31 @@ export function buildStationPassedContent(
  *
  * #2362 — count/targetKind/targetName은 caller(`useStationAlarm.dispatchStationPassed`)가
  * route hopIndex/waypoint 기반 정수로 도출해 전달한다(GPS 좌표 추정 금지).
+ *
+ * #2822 — root RCA: data(kind)/categoryIdentifier 없이 `{title, body, sound:false}`만 실려
+ * device가 "유령"(무음+kind=unknown)으로 인식하던 결함. 이 배너는 항상 매역 통과(intermediate)
+ * 알림이다 — targetKind(transfer/destination)는 카운트다운 "대상"일 뿐 이 알림 자체의 kind가
+ * 아니다(회귀 안전: 중간역 tracking은 여전히 무음 유지).
  */
 export async function fireFgAuxStationPassedNotification(
   stationName: string,
   count: number,
   targetKind: StationPassedTargetKind,
   targetName: string,
+  line: string,
 ): Promise<void> {
   const deviceToken = await AsyncStorage.getItem(APNS_TOKEN_KEY);
   if (!deviceToken) return;
   const identifier = buildStationNotifCollapseId(deviceToken);
   const { title, body } = buildStationPassedContent(stationName, count, targetKind, targetName);
-  await scheduleNotification(identifier, { title, body, sound: false });
+  const soundFields = resolveStationNotifSoundFields('intermediate');
+  await scheduleNotification(identifier, {
+    title,
+    body,
+    sound: soundFields.sound,
+    categoryIdentifier: STATION_TRACKING_CATEGORY,
+    data: { kind: 'intermediate', stationName, line },
+  });
   await markLocalStationFired(stationName, 'station-passed');
 }
 

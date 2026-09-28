@@ -401,6 +401,7 @@ async function dispatchStationPassed(params: {
           target.count,
           target.targetKind,
           target.targetName,
+          candidateStation.line,
         );
         logFiredStationPassed(source, candidateStation.name);
       } catch (e) {
