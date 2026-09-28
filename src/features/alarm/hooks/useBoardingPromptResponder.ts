@@ -110,6 +110,13 @@ export interface BoardingPromptPayload {
   nextLine?: string;
   /** #2034 — hop-end 시 다음 leg 출발역. */
   nextStation?: string;
+  /**
+   * #2819 — backend가 발사 시점 `pickAutoTrainCode`로 **단일** 확정한 경우에만 실리는 trainCode.
+   * `tryAutoLock`의 재조회(자체 Seoul API fetch)가 실패해도(arrivals null / chosen null) 이
+   * 값으로 PENDING 대신 실 lock을 생성한다. 재조회 성공(chosen 있음) 시에는 device fresh pick이
+   * 우선이며 이 필드는 무시된다 — 정상 경로 무변경(회귀 안전).
+   */
+  trainCode?: string;
 }
 
 export function extractBoardingPromptPayload(
@@ -130,6 +137,9 @@ export function extractBoardingPromptPayload(
     typeof o.nextLine === 'string' && o.nextLine.length > 0 ? o.nextLine : undefined;
   const nextStation =
     typeof o.nextStation === 'string' && o.nextStation.length > 0 ? o.nextStation : undefined;
+  // #2819 — backend가 발사 시점 단일 확정한 trainCode. 빈 문자열/타입 불일치는 미지정과 동일 취급.
+  const trainCode =
+    typeof o.trainCode === 'string' && o.trainCode.length > 0 ? o.trainCode : undefined;
   return {
     kind: 'boarding-prompt',
     originStation: o.originStation,
@@ -139,6 +149,7 @@ export function extractBoardingPromptPayload(
     hopEndKind,
     nextLine,
     nextStation,
+    trainCode,
   };
 }
 
@@ -437,6 +448,10 @@ async function tryAutoLock(
 
   const arrival = await deps.fetchArrivalsForStation(payload.originStation);
   if (!arrival) {
+    // #2819 — 재조회 실패해도 backend가 발사 시점에 단일 확정한 trainCode가 있으면 PENDING
+    // 대신 실 lock을 시도한다. station lookup 실패 등으로 embed 시도가 실패하면 기존 PENDING
+    // fallback으로 자연 흐른다(회귀 없음).
+    if (await tryEmbeddedTrainCodeLock(payload, deps, destinationId, telemetry)) return;
     log.info('arrivals fetch returned null — creating pending fallback lock');
     logBoardingPromptAutoLock({ reason: 'autolock-arrivals-empty', ...telemetry });
     // #1888 (RC-13) — 빈 후보 graceful skip evidence. arrivals null = API fetch 실패 또는 응답 빈 케이스.
@@ -494,6 +509,9 @@ async function tryAutoLock(
   const candidates = context ? lineMatched.filter((a) => isBoardableCandidate(a, context)) : [];
   const chosen = context ? pickAutoTrainCodeFromArrivals(lineMatched, context) : null;
   if (!chosen) {
+    // #2819 — device 자체 재조회가 ambiguity/빈 후보로 실패해도 backend가 발사 시점에 단일
+    // 확정한 trainCode가 있으면 PENDING 대신 실 lock을 시도한다(정상 chosen 경로는 무변경).
+    if (await tryEmbeddedTrainCodeLock(payload, deps, destinationId, telemetry)) return;
     log.info('ambiguity or empty — creating pending fallback lock');
     // 빈 후보와 ambiguity 구분: candidates가 1개 이상인데 chosen이 null이면 ambiguity.
     // 방향 미해결은 그 자체가 결정적 원인이므로 별도 reason으로 구분(#2696 요구사항5).
@@ -577,6 +595,57 @@ async function readFreshBgLastStationForGuard() {
   } catch (err) {
     log.warn('BG_LAST_STATION read failed — position guard skipped', err as Error);
     return null;
+  }
+}
+
+/**
+ * #2819 — device 자체 재조회(arrivals fetch)가 실패했을 때(arrival null / chosen null)만
+ * 호출되는 fallback. backend가 발사 시점에 `pickAutoTrainCode`로 **단일** 확정한 trainCode
+ * (`payload.trainCode`)가 있으면 기존 성공 경로(`tryAutoLock`의 chosen-확정 블록)와 동일하게
+ * 실 lock을 생성한다 — PENDING sentinel 대신 실제 trainCode가 실린 lock.
+ *
+ * `payload.trainCode` 부재(ambiguity였거나 구버전 backend)면 즉시 false를 반환해 caller가
+ * 기존 PENDING fallback(`createPendingFallbackLock`)으로 그대로 흐르게 한다 — 회귀 없음.
+ *
+ * station lookup 실패(payload.line이 유효 LineNumber가 아니거나 역명 매칭 실패)도 false —
+ * caller가 동일하게 기존 PENDING fallback으로 흐른다("station lookup 실패 시 기존 fallback").
+ *
+ * evidence=true — 사용자가 방금 [탑승] 응답으로 탑승 상태를 명시했고(ADR-014), trainCode는
+ * backend가 이 발사 사이클에 새로 계산한 확정값(device 재전송 stale 아님)이므로 기존 chosen
+ * 성공 경로(:538-553 부근)와 동일하게 평가한다.
+ */
+async function tryEmbeddedTrainCodeLock(
+  payload: BoardingPromptPayload,
+  deps: HandleDeps,
+  destinationId: string,
+  telemetry: { originStation: string; line: string },
+): Promise<boolean> {
+  if (!payload.trainCode) return false;
+  if (!isValidLineNumber(payload.line)) return false;
+  const station = findStationByNameAndLine(payload.originStation, payload.line);
+  if (!station) return false;
+
+  try {
+    await deps.createLock(
+      {
+        destinationId,
+        trainCode: payload.trainCode,
+        boardingStationId: station.id,
+        boardingLine: payload.line,
+        boardedAt: Date.now(),
+        expectedDurationMs: deps.expectedDurationMs,
+        // 재조회 실패로 ETA 관측이 없다 — 기존 legacy lock과 동일하게 graceful(지연 라벨 미노출).
+        initialEtaSeconds: undefined,
+      },
+      true,
+      'boarding-prompt-response',
+    );
+    logBoardingPromptAutoLock({ reason: 'autolock-success', ...telemetry });
+    return true;
+  } catch (err) {
+    // createLock 예외는 caller의 기존 PENDING fallback으로 흡수 — false 반환.
+    log.warn('embedded trainCode createLock failed — falling back to pending', err as Error);
+    return false;
   }
 }
 

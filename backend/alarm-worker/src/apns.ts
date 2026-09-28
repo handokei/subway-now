@@ -860,6 +860,11 @@ export interface SendBoardingPromptPushOptions {
    */
   candidateTrains?: BoardingPromptCandidate[];
   /**
+   * #2819 — caller가 발사 시점에 이미 `pickAutoTrainCode`로 계산한 단일 trainCode(ambiguity
+   * 없을 때만). 미지정 시 payload에서 생략(BoardingPromptPushPayload.trainCode 주석 참고).
+   */
+  trainCode?: string;
+  /**
    * #2034 — hop-end (환승역 하차) 프롬프트 분기 신호. 미지정 = 일반 boarding prompt (승차).
    * 'disembark' = "하차했나요?" 프롬프트. device 가 payload 를 파싱해 title/body/버튼 액션 매핑을
    * 분기 처리. hop-end 시 caller 는 `nextLine` / `nextStation` 도 함께 전달해 UI 에 "다음 열차:
@@ -911,6 +916,9 @@ function buildBoardingPromptPushData(
     destinationDirection: options.destinationDirection,
     // #1888 (RC-13) — candidateTrains는 0건이면 omit (구 device byte-level 호환 + payload 크기 보호).
     ...candidatesFragment,
+    // #2819 — 단일 확정 trainCode만 wire. undefined(ambiguity/미계산)면 자연 누락 — 구 device
+    // byte-level 호환 + "확정 아니면 embed 안 함" 회귀 안전.
+    ...(options.trainCode !== undefined ? { trainCode: options.trainCode } : {}),
     // #2034 — hop-end 프롬프트 (환승역 하차) 필드. 미지정이면 payload 에서 자연 누락 →
     // 기존 boarding-prompt 소비 device 와 byte-level 호환.
     ...(options.hopEndKind !== undefined ? { hopEndKind: options.hopEndKind } : {}),

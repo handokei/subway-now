@@ -884,11 +884,27 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       expectAutoLockLogged('autolock-success');
     });
 
-    it('arrivals null + payload.trainCode 있음 + station 매칭 실패 → 기존 PENDING fallback 유지', async () => {
+    // station lookup이 (embed 시도 + 기존 PENDING fallback 재시도) 양쪽 모두에서 실패하는
+    // 케이스 — embed 도입 전과 동일하게 createLock 자체가 호출되지 않고 'autolock-station-lookup'
+    // 만 로그돼야 한다("station lookup 실패 시 기존 fallback" = 기존 no-lock 동작 그대로).
+    it('arrivals null + payload.trainCode 있음 + payload.line 유효하지 않음 → embed 시도 없이 기존 station-lookup fallback 유지', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(
+        BOARDING_PROMPT_ACTION_BOARDED,
+        { ...PAYLOAD, line: 'INVALID', trainCode: 'EMB1' },
+        deps,
+      );
+      expect(createLockMock).not.toHaveBeenCalled();
+      expectAutoLockLogged('autolock-station-lookup', '강남', 'INVALID');
+    });
+
+    it('arrivals null + payload.trainCode 있음 + station 매칭 실패 → createLock 호출 없이 기존 station-lookup fallback 유지', async () => {
       (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
       const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
       await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
-      expectPendingFallbackLockCalled('2');
+      expect(createLockMock).not.toHaveBeenCalled();
+      expectAutoLockLogged('autolock-station-lookup');
     });
 
     it('arrivals null + payload.trainCode 없음(구 backend) → 기존 PENDING fallback 유지(회귀 없음)', async () => {
@@ -897,6 +913,31 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
       expectPendingFallbackLockCalled('2');
       expectAutoLockLogged('autolock-arrivals-empty');
+    });
+
+    it('arrivals null + payload.trainCode 있음 + station 매칭 성공 + embed createLock 예외 → catch 후 기존 PENDING fallback 시도', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const createLock = jest
+        .fn()
+        .mockImplementationOnce(async () => {
+          throw new Error('embed lock failed');
+        })
+        .mockImplementationOnce(async () => undefined);
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null), createLock });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      expect(createLock).toHaveBeenCalledTimes(2);
+      expect(createLock).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ trainCode: 'EMB1' }),
+        true,
+        'boarding-prompt-response',
+      );
+      expect(createLock).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ trainCode: PENDING_TRAIN_CODE }),
+        false,
+        'boarding-prompt-response',
+      );
     });
 
     it('ambiguity(chosen null) + payload.trainCode 있음 + station 매칭 성공 → 실 lock 생성(PENDING 아님)', async () => {
