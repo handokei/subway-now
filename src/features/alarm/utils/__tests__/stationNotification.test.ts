@@ -972,17 +972,68 @@ describe('stationNotification', () => {
       expect(mockStartLiveActivity).not.toHaveBeenCalled();
     });
 
-    describe('#2687 — content dedup', () => {
-      it('직전과 (title, body)가 동일하면 재예약하지 않는다', async () => {
+    describe('#2817 — 역 정체성 + TTL(45s) dedup (구 #2687 content 기준에서 교체)', () => {
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      it('직전과 (title, body)가 완전히 동일하면 재예약하지 않는다', async () => {
         await updateStationNotification(mockStation, 154);
         await updateStationNotification(mockStation, 154);
         expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
       });
 
-      it('내용이 바뀌면(distance 변경) 즉시 재예약된다 — 시간 기반 throttle 아님', async () => {
+      it('같은 역이면 거리/ETA가 바뀌어도(content 변경) TTL 창 안에서는 재예약하지 않는다 — content 기준 아님, 역 정체성 기준', async () => {
         await updateStationNotification(mockStation, 154);
         await updateStationNotification(mockStation, 100);
+        await updateStationNotification(mockStation, 42);
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledWith('시청');
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledTimes(2);
+      });
+
+      it('거부 케이스 — 다른 역이면 같은 시각이어도 억제하지 않는다', async () => {
+        await updateStationNotification(mockStation, 154);
+        // mockDestination을 currentStation으로 재사용 — 시청과 다른 역명.
+        await updateStationNotification(mockDestination, 200);
         expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
+        expect(mockLogSuppressedLaFallbackContentDedup).not.toHaveBeenCalled();
+        expect(mockLogFiredLaFallbackNotification).toHaveBeenNthCalledWith(1, '시청');
+        expect(mockLogFiredLaFallbackNotification).toHaveBeenNthCalledWith(2, '성신여대입구');
+      });
+
+      it('거부 케이스 — TTL(45s) 경과 후에는 같은 역이라도 재발사한다', async () => {
+        let now = 1_000_000;
+        jest.spyOn(Date, 'now').mockImplementation(() => now);
+
+        await updateStationNotification(mockStation, 154);
+        now += 45_000; // TTL 정확히 도달
+        await updateStationNotification(mockStation, 154);
+
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
+        expect(mockLogSuppressedLaFallbackContentDedup).not.toHaveBeenCalled();
+        expect(mockLogFiredLaFallbackNotification).toHaveBeenCalledTimes(2);
+      });
+
+      it('TTL 경과 전(44.9s)에는 여전히 억제한다', async () => {
+        let now = 1_000_000;
+        jest.spyOn(Date, 'now').mockImplementation(() => now);
+
+        await updateStationNotification(mockStation, 154);
+        now += 44_900;
+        await updateStationNotification(mockStation, 154);
+
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledWith('시청');
+      });
+
+      it('flapping(a↔c) — 역이 번갈아도 각 역은 자신의 TTL 창 기준으로만 억제된다', async () => {
+        await updateStationNotification(mockStation, 154); // a: 시청, 발사
+        await updateStationNotification(mockDestination, 200); // c: 성신여대입구, 다른 역 → 발사
+        await updateStationNotification(mockStation, 160); // a로 복귀, TTL 이내 → 억제
+        expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledWith('시청');
+        expect(mockLogSuppressedLaFallbackContentDedup).toHaveBeenCalledTimes(1);
       });
 
       it('발사 1건 적재 — logFiredLaFallbackNotification(stationName)', async () => {
