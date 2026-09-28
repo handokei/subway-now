@@ -7324,6 +7324,13 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     // #916 follow-up B — prompt push도 같은 dedup 마커를 stamp한다. dismiss + 클리어 후
     // isSameSession=false 분기로 boardingPromptState가 사라져도 window 안에서 재발사 차단.
     trip.lastAutoPromptedAt = now;
+    // #2824 — 발사 시 실제로 제시한 candidateTrains의 trainCode 목록을 persist한다.
+    // `/boarding-lock/sync`(index.ts)의 sync-promotion corroboration 게이트가 device가
+    // 보낸 trainCode를 이 목록(TTL RECENT_PROMPT_CANDIDATES_TTL_MS)과 대조한다.
+    trip.recentPromptCandidates = {
+      trainCodes: candidateTrains.map((candidate) => candidate.trainCode),
+      firedAt: now,
+    };
     dirty = true;
     log('boarding-prompt: fired', {
       token: trip.token.slice(0, 8),

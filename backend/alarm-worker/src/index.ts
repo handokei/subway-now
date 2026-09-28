@@ -2766,6 +2766,14 @@ app.post('/boarding-lock/sync', async (c) => {
   // runTrainCodeTracking에 못 들어가 leg-1 매역 발사가 전멸하던 회귀(2026-09-10/11 실측, cron-fire-attempt=0)
   // 를 sync 채널로 확실히 복구한다. line이 waypoints와 정합할 때만 부착(stale trainCode drop). 부착 시
   // baseline reset으로 다음 cron이 이 lock으로 즉시 추적 시작.
+  //
+  // #2824 (#2780 형제, sync 경로) — 2026-09-28 D1 확정: 위 line 일치 검증만으로는 backend가 한 번도
+  // 제시/관측한 적 없는 trainCode도 그대로 승격됐다(용마산7 leg-2에서 2018을 승격했으나 backend
+  // live resolver는 3056만 봄, legResolveStreak 비어있음). `isPromotionCorroborated`가
+  // trip.recentPromptCandidates(boarding-prompt 발사 시 제시한 후보, TTL 내)/trip.legResolveStreak
+  // (cron 자동 resolve streak) 중 하나라도 그 trainCode를 뒷받침할 때만 승격을 허용한다. 두 신호가
+  // 모두 부재(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로 기존대로 승격한다
+  // (#2820 프롬프트 embed 열차 = candidateTrains 소속 → 항상 통과, 정당 반복열차도 후보에 있어 통과).
   if (
     working.boardingLock === undefined &&
     payload.trainCode !== undefined &&
@@ -2779,23 +2787,35 @@ app.post('/boarding-lock/sync', async (c) => {
       now,
     );
     if (promoted && isBoardingLockConsistentWithWaypoints(promoted, working.waypoints)) {
-      working = {
-        ...working,
-        boardingLock: promoted,
-        lastTrackedArrivalEpoch: undefined,
-        lastLaPushEpoch: undefined,
-        lastLaPushAt: undefined,
-        consecutiveEtaMissing: 0,
-      };
-      scheduleTripEvent(
-        c,
-        recordTripEvent(c.env.DB, {
-          tokenHash,
-          kind: 'sync-received',
-          station: promoted.segmentStations[0],
-          meta: { promotedLock: true, trainCode: promoted.trainCode, line: promoted.line },
-        }),
-      );
+      if (isPromotionCorroborated(payload.trainCode, working, now)) {
+        working = {
+          ...working,
+          boardingLock: promoted,
+          lastTrackedArrivalEpoch: undefined,
+          lastLaPushEpoch: undefined,
+          lastLaPushAt: undefined,
+          consecutiveEtaMissing: 0,
+        };
+        scheduleTripEvent(
+          c,
+          recordTripEvent(c.env.DB, {
+            tokenHash,
+            kind: 'sync-received',
+            station: promoted.segmentStations[0],
+            meta: { promotedLock: true, trainCode: promoted.trainCode, line: promoted.line },
+          }),
+        );
+      } else {
+        scheduleTripEvent(
+          c,
+          recordTripEvent(c.env.DB, {
+            tokenHash,
+            kind: 'promotion-rejected-uncorroborated',
+            station: promoted.segmentStations[0],
+            meta: { trainCode: promoted.trainCode, line: promoted.line },
+          }),
+        );
+      }
     }
   }
 
@@ -2959,6 +2979,38 @@ export async function verifyBoardingLockPersisted(
 
 /** Seam E 정정으로 lock TTL을 연장하는 길이. cron 주기 60s × 30 cycles 마진. */
 export const LOCK_TTL_REFRESH_MS = 30 * 60 * 1000;
+
+/**
+ * #2824 — sync-promotion corroboration 게이트. `trip.recentPromptCandidates`(boarding-prompt
+ * 발사 시 제시한 candidateTrains, `evaluateAndMaybeFireBoardingPrompt` in scheduled.ts)의
+ * 유효 기간. 이 창을 넘긴 후보 목록은 corroboration 근거로 쓰지 않는다(#2824 TTL 요구사항).
+ */
+export const RECENT_PROMPT_CANDIDATES_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * #2824 (#2780 형제, sync 경로) — device가 `/boarding-lock/sync`로 보낸 `trainCode`가 backend가
+ * 실제로 제시/관측한 적 있는 열차인지 검증한다.
+ *
+ * 통과 조건(OR):
+ * - `trip.recentPromptCandidates.trainCodes`에 포함 && `now - firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS`
+ * - `trip.legResolveStreak?.trainCode === trainCode`
+ *
+ * 두 신호가 모두 `undefined`(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로
+ * `true`(기존대로 승격)를 반환한다 — false-reject 0 보장(#2820 프롬프트 embed 열차/정당 반복열차
+ * 무회귀). 신호가 하나라도 존재하는데 그 trainCode와 일치하지 않으면(완전 외래 값) `false`.
+ */
+export function isPromotionCorroborated(trainCode: string, working: Trip, now: number): boolean {
+  const { recentPromptCandidates, legResolveStreak } = working;
+  if (recentPromptCandidates === undefined && legResolveStreak === undefined) {
+    return true;
+  }
+  const withinCandidateWindow =
+    recentPromptCandidates !== undefined &&
+    now - recentPromptCandidates.firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS &&
+    recentPromptCandidates.trainCodes.includes(trainCode);
+  const streakMatch = legResolveStreak?.trainCode === trainCode;
+  return withinCandidateWindow || streakMatch;
+}
 
 interface BoardingLockSyncPayload {
   token: string;
