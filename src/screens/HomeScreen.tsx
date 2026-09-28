@@ -85,7 +85,7 @@ import { notifyTripEnded } from '../features/alarm/utils/tripEndedNotification';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { useFgPositionUpload } from '../features/alarm/hooks/useFgPositionUpload';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
-import { isStrongFusionConfidence } from '../shared/constants/fusionConfidenceStrength';
+import { shouldSsotOverrideCustomOrigin } from './shouldSsotOverrideCustomOrigin';
 import { BAROMETER_MISMATCH_QUORUM_READINGS } from '../shared/constants/barometer';
 import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
@@ -342,17 +342,6 @@ export default function HomeScreen() {
     tripActive: destination !== null,
     onConfirmStation: handleConfirmStation,
   });
-  // #1541 — fusion이 강 confidence로 customOrigin과 다른 station을 SSOT로 가리킬 때
-  // customOrigin을 unlock해 사용자가 trip 내내 stuck되는 회귀를 차단한다. confidence='high'는
-  // ADR-015 §5 consensus gate 통과 신호이며, ADR-014 §4 "사용자 명시 의향 동급 보호" 원칙상
-  // 약한 신호로 덮어쓰지 않는다.
-  useEffect(() => {
-    if (!customOrigin) return;
-    if (!result?.station) return;
-    if (!isStrongFusionConfidence(confidence)) return;
-    if (result.station.id === customOrigin.id) return;
-    clearCustomOriginForSsotOverride(result.station);
-  }, [customOrigin, result?.station, confidence, clearCustomOriginForSsotOverride]);
   useEffect(() => {
     if (confirmModal.autoConfirmedStation) {
       setConfirmAutoToast(
@@ -772,6 +761,19 @@ export default function HomeScreen() {
     };
   }, [destination?.id, effectiveOrigin?.id]);
   const isInTrip = isInTripByEvidence(fusionBoardingLock, Date.now(), legAdvanceLine, hasFiredThisTrip);
+  // #1541/#2826 — fusion이 강 confidence로 customOrigin과 다른 station을 SSOT로 가리킬 때
+  // customOrigin을 unlock해 사용자가 trip 내내 stuck되는 회귀를 차단한다. confidence='high'는
+  // ADR-015 §5 consensus gate 통과 신호이며, ADR-014 §4 "사용자 명시 의향 동급 보호" 원칙상
+  // 약한 신호로 덮어쓰지 않는다. #2826 — 원 #1541 의도는 "trip 진행 중" stuck 차단이지 planning
+  // 단계(trip 시작 전) clobber가 아니므로 isInTrip=false면 override하지 않는다(용마산 stuck 회귀).
+  useEffect(() => {
+    const ssotStation = result?.station ?? null;
+    if (!ssotStation) return;
+    if (!shouldSsotOverrideCustomOrigin({ customOrigin, ssotStation, confidence, inTrip: isInTrip })) {
+      return;
+    }
+    clearCustomOriginForSsotOverride(ssotStation);
+  }, [customOrigin, result?.station, confidence, isInTrip, clearCustomOriginForSsotOverride]);
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route, { excludeOriginWait: isInTrip })
     : null;
