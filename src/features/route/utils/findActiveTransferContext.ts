@@ -91,6 +91,8 @@ export interface LocklessTransferWaypoint {
   transferStationInToLine: Station;
   /** 환승 후 탑승할 노선. */
   nextLine: LineNumber;
+  /** 환승 직후 다음 waypoint(=destination 또는 다음 transfer)의 이름 (#2830). */
+  nextWaypointName: string;
 }
 
 /**
@@ -110,7 +112,11 @@ export function findLocklessTransferWaypoint(
   if (!route || !destinationName || !currentStation) return null;
   const matched = resolveTransferWaypoint(route, destinationName, currentStation);
   if (!matched) return null;
-  return { transferStationInToLine: matched.transferStationInToLine, nextLine: matched.nextLine };
+  return {
+    transferStationInToLine: matched.transferStationInToLine,
+    nextLine: matched.nextLine,
+    nextWaypointName: matched.nextWaypointName,
+  };
 }
 
 interface ResolvedTransferWaypoint {

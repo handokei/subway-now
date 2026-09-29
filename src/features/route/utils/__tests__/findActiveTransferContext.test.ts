@@ -1,5 +1,6 @@
 import {
   findActiveTransferContext,
+  findLocklessTransferWaypoint,
   findUpcomingTransferPrefetch,
 } from '../findActiveTransferContext';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
@@ -398,5 +399,35 @@ describe('findActiveTransferContext', () => {
     });
     const fakeCurrent: Station = { ...gondeokOnLine6, name: '존재하지않는역X' };
     expect(findActiveTransferContext(lock, route, '여의나루', fakeCurrent)).toBeNull();
+  });
+
+  // #2830 — boardingPromptContext의 lockless leg-2 stamp가 환승 직후 다음 waypoint 이름을
+  // 알아야 하므로 findLocklessTransferWaypoint가 nextWaypointName을 노출해야 한다.
+  describe('findLocklessTransferWaypoint — nextWaypointName 노출 (#2830)', () => {
+    it('환승역 도달 → nextLine + nextWaypointName(=목적지명) 반환', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      const result = findLocklessTransferWaypoint(route, '여의나루', gondeokOnLine5);
+      expect(result).not.toBeNull();
+      expect(result!.nextLine).toBe('5');
+      expect(result!.nextWaypointName).toBe('여의나루');
+    });
+
+    it('transfer target 아닌 leg-1 station → null', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      const notTransferStation = findStationByNameAndLine('효창공원앞', '6') as Station;
+      expect(findLocklessTransferWaypoint(route, '여의나루', notTransferStation)).toBeNull();
+    });
   });
 });

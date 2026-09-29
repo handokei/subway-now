@@ -29,7 +29,7 @@
  */
 
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { Station } from '../../../shared/types/station';
+import type { LineNumber, Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import {
   findStationByNameAndLine,
@@ -40,6 +40,7 @@ import {
 import { haversine } from '../../../shared/utils/haversine';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
 import { inferLoopDirection } from '../../route/utils/loopDirection';
+import { findLocklessTransferWaypoint } from '../../route/utils/findActiveTransferContext';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
 
 /** #2130 (B-2) — 등록 시점 GPS fix. 근접 스탬프 입력. */
@@ -117,7 +118,20 @@ export function buildBoardingPromptContext({
     return buildLockActiveContext({ route, currentStation, destination, lock, gpsFix });
   }
 
-  // lock 미활성 — 기존 first-leg 기반 path 보존.
+  // lock 미활성. #2830 — currentStation이 환승 waypoint(=leg-2 진입점)에 도달했으면
+  // leg-aware(환승 후 진행 leg)로 stamp한다. leg-1/mid-leg/direct(=transfer target 아님)는
+  // wp===null이라 기존 getFirstLeg 경로를 그대로 탄다(회귀 안전).
+  const wp = findLocklessTransferWaypoint(route, destination.name, currentStation);
+  if (wp != null) {
+    return buildSegmentContext({
+      currentStation,
+      line: wp.nextLine,
+      segmentEndName: wp.nextWaypointName,
+      gpsFix,
+    });
+  }
+
+  // 기존 first-leg 기반 path 보존.
   const leg = getFirstLeg(route, destination.name);
   const nextName = getNextStationName(currentStation.id, destination.id, route);
   if (!nextName) return null;
@@ -149,6 +163,50 @@ export function buildBoardingPromptContext({
 }
 
 /**
+ * lock-활성 분기(#1921)와 leg-aware lockless 분기(#2830)가 공유하는 순수 세그먼트 stamp 빌더.
+ * currentStation ~ segmentEndName 사이(line 위)의 다음 역 좌표 + 방향을 산출한다.
+ *
+ * 실패 조건 (null 반환 — backend는 자동 skip): currentStation이 line 위에 없거나
+ * 이미 segmentEndName에 도달(다음 역 없음).
+ */
+function buildSegmentContext({
+  currentStation,
+  line,
+  segmentEndName,
+  gpsFix,
+}: {
+  currentStation: Station;
+  line: LineNumber;
+  segmentEndName: string;
+  gpsFix?: GpsFix | null;
+}): BoardingPromptContext | null {
+  const nextName = getNextStationOnLine(line, currentStation.name, segmentEndName);
+  if (nextName == null) return null;
+
+  const nextStation = findStationByNameAndLine(nextName, line);
+  /* istanbul ignore next -- getNextStationOnLine이 line 위에서 찾은 name이므로 재조회 실패 불가 */
+  if (nextStation == null) return null;
+
+  const direction =
+    resolveTravelDirection(line, currentStation.name, segmentEndName)?.direction ??
+    inferLoopDirection(line, currentStation.name, segmentEndName);
+
+  const origin = { lat: currentStation.lat, lng: currentStation.lng };
+  return {
+    promptGeoContext: {
+      origin,
+      nextStation: { lat: nextStation.lat, lng: nextStation.lng },
+      direction,
+      ...buildOriginGpsStamp(origin, gpsFix),
+    },
+    promptDisplay: {
+      originStation: currentStation.name,
+      line,
+    },
+  };
+}
+
+/**
  * #1921 — lock 활성 분기. lock.boardingLine + currentStation을 기준 좌표로 사용해
  * route의 어느 segment가 lock leg인지 찾고 그 segment의 끝 역(다음 환승역 or 최종 도착역)을
  * direction 산출 anchor로 쓴다.
@@ -174,28 +232,10 @@ function buildLockActiveContext({
   const segmentEndName = findSegmentEndStationName(route, lock.boardingLine, destination.name);
   if (segmentEndName == null) return null;
 
-  const nextName = getNextStationOnLine(lock.boardingLine, currentStation.name, segmentEndName);
-  if (nextName == null) return null;
-
-  const nextStation = findStationByNameAndLine(nextName, lock.boardingLine);
-  /* istanbul ignore next -- getNextStationOnLine이 lock.boardingLine 위에서 찾은 name이므로 재조회 실패 불가 */
-  if (nextStation == null) return null;
-
-  const direction =
-    resolveTravelDirection(lock.boardingLine, currentStation.name, segmentEndName)?.direction ??
-    inferLoopDirection(lock.boardingLine, currentStation.name, segmentEndName);
-
-  const origin = { lat: currentStation.lat, lng: currentStation.lng };
-  return {
-    promptGeoContext: {
-      origin,
-      nextStation: { lat: nextStation.lat, lng: nextStation.lng },
-      direction,
-      ...buildOriginGpsStamp(origin, gpsFix),
-    },
-    promptDisplay: {
-      originStation: currentStation.name,
-      line: lock.boardingLine,
-    },
-  };
+  return buildSegmentContext({
+    currentStation,
+    line: lock.boardingLine,
+    segmentEndName,
+    gpsFix,
+  });
 }

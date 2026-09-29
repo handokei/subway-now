@@ -421,4 +421,53 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptDisplay.line).toBe('2');
     });
   });
+
+  // #2830 — lock 미활성(lockless) leg-2 환승 후 프롬프트가 leg-1 line으로 stale 발사되던 회귀.
+  // 뚝섬(2) → 건대입구 환승 → 용마산(7). currentStation=건대입구(환승 완료 지점), lock 없음.
+  describe('#2830 lock 미활성 — leg-2 lockless 환승 후', () => {
+    it('환승역 도달(currentStation=건대입구) → nextLine(7) 기준으로 stamp (leg-1 line=2 아님)', () => {
+      const current = st('7-019'); // 건대입구 (7호선 변형 — 환승 후 toLine 기준 station)
+      const dest = st('7-015'); // 용마산
+      const ctx = buildBoardingPromptContext({
+        route: makeTransferRoute({
+          transferName: '건대입구',
+          fromLine: '2',
+          toLine: '7',
+          stopsToTransfer: 2,
+          stopsFromTransfer: 4,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock: null,
+      });
+      expect(ctx).not.toBeNull();
+      // 회귀: 기존 코드는 getFirstLeg(route)=fromLine('2')를 그대로 써서 line이 '2'로 stale 고정됐다.
+      // fix 후에는 leg-2(환승 후 진행 leg)의 nextLine('7')로 stamp돼야 한다.
+      expect(ctx?.promptDisplay.line).toBe('7');
+      expect(ctx?.promptDisplay.originStation).toBe('건대입구');
+      // 건대입구(7-019) → 용마산(7-015) 방향의 다음 역은 어린이대공원.
+      const next = st('7-018');
+      expect(ctx?.promptGeoContext.nextStation).toEqual({ lat: next.lat, lng: next.lng });
+    });
+
+    it('leg-1 진행 중(currentStation=성수, transfer target 아님) → line 불변(기존 getFirstLeg 경로)', () => {
+      const current = st('2-011'); // 성수 (line 2, leg-1 진행 중 — transfer target 아님)
+      const dest = st('7-015'); // 용마산
+      const ctx = buildBoardingPromptContext({
+        route: makeTransferRoute({
+          transferName: '건대입구',
+          fromLine: '2',
+          toLine: '7',
+          stopsToTransfer: 2,
+          stopsFromTransfer: 4,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock: null,
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptDisplay.line).toBe('2');
+      expect(ctx?.promptDisplay.originStation).toBe('성수');
+    });
+  });
 });
