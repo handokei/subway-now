@@ -54,6 +54,7 @@ import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegi
 import { useLocalBoardingPromptGate } from '../features/alarm/hooks/useLocalBoardingPromptGate';
 import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
 import { useLiveActivityPreBoardingLifecycle } from '../features/alarm/hooks/useLiveActivityPreBoardingLifecycle';
+import { useEnsureLiveActivity } from '../features/alarm/hooks/useEnsureLiveActivity';
 import { useForegroundLaMirrorSync } from '../features/alarm/hooks/useForegroundLaMirrorSync';
 import { useLiveActivityTokenRegistration } from '../features/alarm/hooks/useLiveActivityTokenRegistration';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
@@ -1172,6 +1173,17 @@ export default function HomeScreen() {
   const permissionWatcher = useLocationPermissionWatcher();
   useLiveActivityDismissBridge();
   useLiveActivityPreBoardingLifecycle();
+  // #2828 — lock 이후/BG 재개 시 아무도 LA를 start 안 하던 갭. FG active 상태에서 트립은
+  // 활성인데 LA가 없으면 (update→start fall-through로 멱등) 확보한다. currentStation은
+  // #2790과 동일하게 in-app이 채택한 result?.station 앵커를 따른다.
+  useEnsureLiveActivity(
+    result?.station ?? null,
+    Math.round((result?.distanceKm ?? 0) * 1000),
+    destination,
+    route,
+    etaMinutes,
+    boardingLock,
+  );
   // #2610 (b) — silent push(BG task) 수신 0인 FG trip에서도 LA가 backend mirror를 따라 전진하도록,
   // silent push 경로와 독립적인 FG mirror 폴링(useBackendSsotMirrorPoll)에 LA refresh를 wire.
   // #2790 — LA에 쓰는 station은 mirror 재해석이 아니라 in-app이 채택한 현재역(result.station)을
