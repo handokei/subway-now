@@ -26,7 +26,10 @@ jest.mock('../../utils/tripDeathPullBackstop', () => ({
   getBackendUrl: () => mockGetBackendUrl(),
 }));
 
-import { useTripDeathForegroundBackstop } from '../useTripDeathForegroundBackstop';
+import {
+  useTripDeathForegroundBackstop,
+  TRIP_DEATH_FG_BACKSTOP_POLL_INTERVAL_MS,
+} from '../useTripDeathForegroundBackstop';
 
 describe('useTripDeathForegroundBackstop', () => {
   let removeListenerMock: jest.Mock;
@@ -137,6 +140,24 @@ describe('useTripDeathForegroundBackstop', () => {
     expect(mockCheckTripDeathByPull).toHaveBeenCalledTimes(2);
   });
 
+  it('AppState background 전환 이벤트는 재호출 유발하지 않음', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-token-1');
+
+    renderHook(() => useTripDeathForegroundBackstop());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockCheckTripDeathByPull).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      appStateCallback?.('background');
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockCheckTripDeathByPull).toHaveBeenCalledTimes(1);
+  });
+
   it('checkTripDeathByPull throw해도 graceful (unmount 없이 정상 진행)', async () => {
     mockCheckTripDeathByPull.mockRejectedValue(new Error('network fail'));
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-token-1');
@@ -149,6 +170,22 @@ describe('useTripDeathForegroundBackstop', () => {
 
     expect(mockCheckTripDeathByPull).toHaveBeenCalled();
     unmount();
+  });
+
+  it('FG 30s interval tick마다 재호출', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'trip-token-1');
+
+    renderHook(() => useTripDeathForegroundBackstop());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockCheckTripDeathByPull).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(TRIP_DEATH_FG_BACKSTOP_POLL_INTERVAL_MS);
+      await Promise.resolve();
+    });
+    expect(mockCheckTripDeathByPull).toHaveBeenCalledTimes(2);
   });
 
   it('unmount 시 interval/listener cleanup', async () => {
