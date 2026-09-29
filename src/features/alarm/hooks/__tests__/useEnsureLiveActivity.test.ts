@@ -6,7 +6,7 @@
  * "lock 이후 / BG 재개 시 아무도 LA를 start 안 하던" 갭을 채우는지 순수 JS 결정 레벨로 검증한다.
  */
 import { act, renderHook } from '@testing-library/react-native';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
@@ -20,7 +20,7 @@ jest.mock('live-activity', () => ({
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
 }));
 
-const mockBuildLiveActivityData = jest.fn(() => ({ stationName: '강남', lineName: '2호선' }));
+const mockBuildLiveActivityData = jest.fn((..._args: unknown[]) => ({ stationName: '강남', lineName: '2호선' }));
 jest.mock('../../utils/stationNotification', () => ({
   buildLiveActivityData: (...args: unknown[]) => mockBuildLiveActivityData(...args),
 }));
@@ -110,7 +110,7 @@ describe('useEnsureLiveActivity', () => {
 
   it('재렌더 멱등 — 첫 호출 후 hasActiveLiveActivity=true로 전환되면 중복 호출 없음', () => {
     const { rerender } = renderHook(
-      ({ distanceM }) => useEnsureLiveActivity(gangnam, distanceM, chungmuro, null, 5, LOCK),
+      ({ distanceM }: { distanceM: number }) => useEnsureLiveActivity(gangnam, distanceM, chungmuro, null, 5, LOCK),
       { initialProps: { distanceM: 120 } },
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
@@ -118,6 +118,28 @@ describe('useEnsureLiveActivity', () => {
     mockHasActiveLiveActivity.mockReturnValue(true);
     rerender({ distanceM: 100 });
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('Android → 아무 것도 하지 않는다 (iOS 전용)', () => {
+    const originalOS = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { get: () => 'android' });
+    try {
+      renderHook(() => useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK));
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(Platform, 'OS', { get: () => originalOS });
+    }
+  });
+
+  it('updateLiveActivity 실패 시 경고 로그만 남기고 throw하지 않는다', async () => {
+    const rejection = new Error('native update 실패');
+    mockUpdateLiveActivity.mockRejectedValueOnce(rejection);
+    renderHook(() => useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK));
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockWarn).toHaveBeenCalledWith('LA ensure 갱신 실패', rejection);
   });
 
   it('BG → FG 복귀(AppState change) → 조건 충족 시 updateLiveActivity 호출', () => {
@@ -130,5 +152,14 @@ describe('useEnsureLiveActivity', () => {
       appStateListener?.('active');
     });
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('AppState change가 active가 아니면 호출하지 않는다', () => {
+    setAppState('background');
+    renderHook(() => useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK));
+    act(() => {
+      appStateListener?.('inactive');
+    });
+    expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
   });
 });
