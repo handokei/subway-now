@@ -75,6 +75,7 @@ import { ArrivalSourceNotice, shouldHideArrivalEta } from '../features/arrival/c
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
 import { SleepModeSilentWarning } from '../features/settings/components/SleepModeSilentWarning';
 import { useSilentPushHealthCheck } from '../features/alarm/hooks/useSilentPushHealthCheck';
+import { useTripDeathForegroundBackstop } from '../features/alarm/hooks/useTripDeathForegroundBackstop';
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
 import { usePrevTrainCandidate } from '../features/alarm/hooks/usePrevTrainCandidate';
@@ -286,6 +287,10 @@ export default function HomeScreen() {
   // #1677 — silent push 60s+ 미수신 감지. FG 시 backendSsotAccepts 강제 false → device tier fallback.
   // 신규 폴링 없음 — 기존 arrival/position 30s cycle 재사용.
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
+  // #2832 — backend가 트립을 삭제(user-delete)해도 FG는 이를 감지할 수단이 없어 destination이
+  // 안 지워지고 zombie station-passed 알림이 계속 발사됐다. 기존 BG-only pull-death backstop을
+  // FG poll 주기에도 배선 — 신규 판정/cleanup 로직 없음(기존 checkTripDeathByPull 재사용).
+  useTripDeathForegroundBackstop();
   const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT

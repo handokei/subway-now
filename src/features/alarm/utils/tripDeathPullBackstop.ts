@@ -85,7 +85,7 @@ export function shouldCheckTripDeathOnSilentPush(input: {
   return identityMismatch || contactStale;
 }
 
-export type TripDeathPullCheckSite = 'silent-push' | 'bg-location-tick';
+export type TripDeathPullCheckSite = 'silent-push' | 'bg-location-tick' | 'fg-tick';
 export type TripDeathPullCheckOutcome = 'ended' | 'alive' | 'skipped';
 
 /**
