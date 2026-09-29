@@ -17,7 +17,7 @@
  * caller: HomeScreen.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
@@ -46,12 +46,10 @@ async function tick(): Promise<void> {
 }
 
 export function useTripDeathForegroundBackstop(): void {
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   useEffect(() => {
     void tick();
 
-    intervalRef.current = setInterval(() => {
+    const intervalId = setInterval(() => {
       void tick();
     }, TRIP_DEATH_FG_BACKSTOP_POLL_INTERVAL_MS);
 
@@ -60,8 +58,7 @@ export function useTripDeathForegroundBackstop(): void {
     });
 
     return () => {
-      clearInterval(intervalRef.current ?? undefined);
-      intervalRef.current = null;
+      clearInterval(intervalId);
       sub.remove();
     };
   }, []);
