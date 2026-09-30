@@ -24,7 +24,7 @@ import { useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
 import * as LiveActivity from 'live-activity';
 import type { Station } from '../../../shared/types/station';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { anchorRouteToCurrentStation, type Route } from '../../../shared/utils/stationRoute';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { buildLiveActivityData } from '../utils/stationNotification';
 import { createLogger } from '../../../shared/utils/logger';
@@ -50,7 +50,14 @@ export function useEnsureLiveActivity(
       if (!LiveActivity.isLiveActivityEnabled()) return;
       if (LiveActivity.hasActiveLiveActivity()) return;
 
-      const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes);
+      // #2811 편측 감사(#2848) — etaMinutes는 caller(HomeScreen)가 이미 currentStation 기준으로
+      // 재앵커링해 넘기지만, route는 트립 시작 시점 고정값이었다. route도 같은 wrapper로
+      // 재앵커링해 N정거장 표시가 ETA와 동기화되게 한다(자기모순 방지). destination 없으면
+      // anchor 대상 자체가 없어 route 그대로.
+      const remainingRoute = destination
+        ? anchorRouteToCurrentStation(route, currentStation, destination.id)
+        : route;
+      const data = buildLiveActivityData(currentStation, distanceM, destination, remainingRoute, etaMinutes);
       LiveActivity.updateLiveActivity(data).catch((e) => {
         log.warn('LA ensure 갱신 실패', e);
       });
