@@ -516,6 +516,30 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
         expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
       });
 
+      // #2846 P1 (편측 감사) — GPS 신뢰 proxy 신선도 창이 가드 자체의 GPS-경로 stale 임계
+      // (BACKEND_SSOT_ADVANCE_STALE_GPS_MS, 60s)보다 느슨하면, 정상 advance 중인 신선한 mirror가
+      // 수 분 묵은 BG fix 때문에 오탈락할 수 있다(개악 방향) — proxy 신선도는 가드 임계와 정합돼야 함.
+      it('#2846 P1 — mirror가 정상 advance 중(65s 전, 역간 소요 내 정상)이어도 BG fix가 4분(오래된 관측)이면 신뢰 불가 → mirror 유지', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue({
+          ...staleMirrorAtSeongsu,
+          lastAdvanceAt: Date.now() - 65_000, // 65s 전 — GPS-경로 stale 임계(60s)를 막 넘긴 정상 범위
+        });
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum, // 뚝섬(idx2) — arc상 mirror(성수 idx1)보다 앞
+            distanceKm: 0.05,
+            timestamp: Date.now() - 4 * 60_000, // 4분 전 — 5분 freshness proxy였다면 "신선"으로 오인
+          }),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        // fix 전(5분 proxy): 뚝섬(BG 로컬)로 오탈락 — red. fix 후(60s 정합 proxy): 성수(mirror) 유지.
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
+
       it('route/origin이 arc를 구성 못 함(computeRouteArc null) → 판정 근거 없음 → mirror를 그대로 채택한다(안전 기본)', async () => {
         mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
         setupStorage({

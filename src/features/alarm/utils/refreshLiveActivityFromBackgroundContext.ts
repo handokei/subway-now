@@ -47,8 +47,10 @@ import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMi
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import { arcIndexOfStation } from '../../route/utils/stationProgressEstimator';
-import { isBackendSsotRouteRegression } from '../../nearest-station/utils/backendSsotRegressionGuard';
-import { FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS } from '../../../shared/constants/boardingLock';
+import {
+  isBackendSsotRouteRegression,
+  BACKEND_SSOT_ADVANCE_STALE_GPS_MS,
+} from '../../nearest-station/utils/backendSsotRegressionGuard';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -183,9 +185,14 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     //   - arc: TRIP_ORIGIN_KEY(#700, destination 설정 시점 캡처) + route + destination으로 구성.
     //     origin 부재/route 부재/computeRouteArc 실패 → arcStations=[] → 두 arc index 모두 -1로
     //     귀결돼 가드가 자연히 비활성.
-    //   - gpsArcIndex: BG_LAST_STATION(GPS)의 신선도(FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS,
-    //     #2408과 동일 5분 기준 재사용 — BG 컨텍스트에는 GPS accuracy가 없어 신선도가 유일하게
-    //     구할 수 있는 신뢰도 proxy)를 만족할 때만 산출, 아니면 -1(gpsQualityDegraded=true로 동反).
+    //   - gpsArcIndex: BG_LAST_STATION(GPS)의 신선도가 가드 자체의 GPS-경로 stale 임계
+    //     (`BACKEND_SSOT_ADVANCE_STALE_GPS_MS`, 60s)를 만족할 때만 산출, 아니면 -1
+    //     (gpsQualityDegraded=true로 동伴). 편측 감사 지적(#2846 P1) — 최초 구현은
+    //     `FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS`(5분, #2408)를 재사용했는데, 이 창이 가드
+    //     자체의 60s 임계보다 4배 느슨해 "정상 advance 중(예: 65s 전 advance — 역간 소요 내 정상
+    //     범위)"인 신선한 mirror가 4분 묵은 BG fix 때문에 오탈락할 위험이 있었다(개악 방향).
+    //     GPS 증거가 "backend가 멈췄다고 판정하는 창" 자체보다 오래된 값이면 그 증거로 mirror를
+    //     override할 근거가 없다 — 판정 임계와 증거 신선도 임계를 동일 상수로 정합시킨다.
     //   - deviceEstimateArcIndex(#2686 독립 경로, 지하 대응)는 BG 컨텍스트에 estimator가 없어
     //     의도적으로 채우지 않는다(undefined → 이 경로는 판정하지 않음, 안전 기본).
     let mirrorStation = mirrorStationCandidate;
@@ -194,7 +201,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       const arcStations =
         route && origin ? computeRouteArc(route, origin, destination)?.stations ?? [] : [];
       const bgFresh =
-        bg !== null && Date.now() - bg.timestamp <= FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS;
+        bg !== null && Date.now() - bg.timestamp <= BACKEND_SSOT_ADVANCE_STALE_GPS_MS;
       const gpsArcIndex = bgFresh ? arcIndexOfStation(arcStations, bg.station) : -1;
       const mirrorArcIndex = arcIndexOfStation(arcStations, mirrorStationCandidate);
       if (
