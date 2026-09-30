@@ -33,7 +33,6 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { resetBoardingPromptFireOnceInMemoryForTest } from '../boardingPromptFireOnce';
 import { maybeFireLegBoardingPrompt, type ScheduledDeps, type ScheduledStats } from '../scheduled';
 import type { ArrivalEntry, SeoulArrivalClient } from '../seoul';
 import type { Env, Trip } from '../types';
@@ -51,10 +50,7 @@ beforeAll(async () => {
   };
 });
 
-beforeEach(() => {
-  resetApnsJwtCache();
-  resetBoardingPromptFireOnceInMemoryForTest();
-});
+beforeEach(() => resetApnsJwtCache());
 
 // D1 lock ts(06:34:09)를 epoch 0으로 두고, 이후 오프셋은 실측 분:초 그대로 반영한다.
 const LOCK_AT = 1_700_000_000_000;
@@ -133,7 +129,11 @@ function arrival(trainCode: string, isUp: boolean, arvlCd: number | null): Arriv
 
 describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 발사 회귀', () => {
   it('#2834 게이트가 조기 발사(06:42/06:44 상당)를 억제하고, 열차 도착(06:46 상당)에만 발사하며, 지하 미관측(회귀 안전)에도 fallback 발사한다', async () => {
-    const kv = new InMemoryKV();
+    // #2838 — fire-once KV key(TTL 5분)는 실 벽시계가 아니라 이 replay의 시뮬레이션 시계로
+    // 만료를 판정해야 한다(그렇지 않으면 cycle C의 fire-once stamp가 cycle D까지 실 벽시계
+    // 기준으로는 만료되지 않아, 실측상 6분 지난 cycle D가 인위적으로 차단된다).
+    let simNow = offsetFromLock(0, 0);
+    const kv = new InMemoryKV(() => simNow);
     const env = makeEnv(kv);
     const trip = makeTrip();
     const stats = makeStats();
@@ -145,14 +145,16 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };
 
     // ── cycle A (06:42:11 상당) — 실측에선 fired였던 조기 발사. fix 후엔 억제돼야 한다.
-    await maybeFireLegBoardingPrompt(trip, env, deps, stats, offsetFromLock(8, 11), () => {}, () => 'p-a');
+    simNow = offsetFromLock(8, 11);
+    await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, () => {}, () => 'p-a');
     expect(stats.legBoardingPromptFired).toBe(0);
     expect(stats.legBoardingPromptBlocked).toBe(1);
     expect(trip.legBoardingPromptState?.fired).toBeFalsy();
     expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
 
     // ── cycle B (06:44:10 상당) — 동일 pool, 여전히 억제(구 코드는 5분 우회로 재발사).
-    await maybeFireLegBoardingPrompt(trip, env, deps, stats, offsetFromLock(10, 10), () => {}, () => 'p-b');
+    simNow = offsetFromLock(10, 10);
+    await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, () => {}, () => 'p-b');
     expect(stats.legBoardingPromptFired).toBe(0);
     expect(stats.legBoardingPromptBlocked).toBe(2);
     expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
@@ -160,7 +162,8 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     // ── cycle C (06:46:08 상당) — leg-resolve가 관측한 3056 도착(arvlCd=1)이 pool에 등장.
     // 사용자가 실제 열차 도착 시점에 "탑승하셨나요?"를 받는다(사용자-가시 결과).
     pool = [arrival('3056', true, 1), arrival('3058', true, 3)];
-    await maybeFireLegBoardingPrompt(trip, env, deps, stats, offsetFromLock(12, 8), () => {}, () => 'p-c');
+    simNow = offsetFromLock(12, 8);
+    await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, () => {}, () => 'p-c');
     expect(stats.legBoardingPromptFired).toBe(1);
     expect(stats.legBoardingPromptBlocked).toBe(2);
     expect(trip.legBoardingPromptState?.fired).toBe(true);
@@ -170,7 +173,8 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     // 있어도 fallback-unobservable로 발사돼야 한다(equal-protection, #2801 §2 조항 2 — 지하 miss
     // 재발 방지). MIN_FIRE_INTERVAL_MS(5분) 경과 + 새 trainCode로 dedup 통과시킨다.
     pool = [arrival('3060', true, null)];
-    await maybeFireLegBoardingPrompt(trip, env, deps, stats, offsetFromLock(18, 8), () => {}, () => 'p-d');
+    simNow = offsetFromLock(18, 8);
+    await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, () => {}, () => 'p-d');
     expect(stats.legBoardingPromptFired).toBe(2);
     expect(stats.legBoardingPromptBlocked).toBe(2);
     expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);

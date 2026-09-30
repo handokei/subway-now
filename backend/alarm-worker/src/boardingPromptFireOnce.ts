@@ -18,19 +18,25 @@
  *
  * trip 객체를 경유하지 않는 **독립 KV key**로 "최근 fire 여부"를 보장한다 — cron이 매 cycle
  * `listTrips`로 읽어오는 stale trip 객체와 무관하게, 이 key는 발사 직후 직접 write하고 직접
- * read해 그 자체로 신선하다(30s cacheTtl은 이 key의 KV read에도 적용되지만, TTL 자체가
- * 5분이므로 30s 정도의 read staleness는 정책 위반을 만들지 않는다 — 최악의 경우도 게이트가
- * "이미 발사됨"을 못 보고 몇 초 늦게 인지하는 것이지, 5분 창을 통째로 우회하지는 않는다).
+ * read해 그 자체로 신선하다. 이 key의 KV read 자체도 30s cacheTtl(KV 최소값)의 영향을 받지만,
+ * TTL 자체가 5분이므로 그 정도의 read staleness는 정책 위반(5분 창 전체 우회)을 만들지 않는다
+ * — 최악의 경우도 "이미 발사됨"을 몇 초 늦게 인지하는 정도다.
  *
  * `trip.legBoardingPromptState`/`trip.boardingPromptState`(repeat gate ledger)는 **무변경
  * 유지** — 이 fire-once key는 이중 방어(defense-in-depth)로 얹는다. 정책 변경(MAX_FIRE_COUNT,
  * silence 정책 등)은 전혀 하지 않는다 — "간격" 보강만.
  *
- * ## 인메모리 가드
+ * ## 인메모리 가드를 두지 않은 이유
  *
- * KV round-trip(수 ~수십 ms)보다도 빠르게 같은 isolate 내에서 같은 (token, anchor)가 재평가되는
- * 경우(같은 cycle 이중 평가, 또는 KV eventual consistency 창)를 추가로 방어한다. 이 Map은
- * per-isolate 휘발성 캐시일 뿐 durable 하지 않다 — 진짜 durability는 KV가 담당한다.
+ * 최초 설계는 KV 위에 per-isolate 인메모리 Map(TTL 5분)을 추가로 얹으려 했으나, 이는 실질적으로
+ * KV와 동일한 "최근 5분 발사 여부" 상태를 모듈 전역(`scheduled.ts`가 처리하는 모든 trip에 걸쳐
+ * 공유)으로 중복 유지하는 것과 같다 — cron이 실제로 같은 trip/anchor를 한 invocation 안에서
+ * 두 번 평가하는 호출 지점은 현재 존재하지 않는다(leg-1 GPS 경로/leg-1 GPS-free/leg-2 세 경로가
+ * 각각 1회씩만 `fireBoardingPromptForAnchor`를 호출하며, trip 객체 in-memory mutation
+ * (`markPromptFired`가 동기적으로 trip.*PromptState를 갱신)이 같은 cycle 내 caller 간 이중
+ * 방어를 이미 제공한다). 모듈 전역 Map은 오히려 여러 trip/여러 테스트에 걸친 상태 누수 위험만
+ * 키운다(테스트마다 명시적 reset 필요) — 존재 이유 없는 복잡도는 추가하지 않는다(CLAUDE.md
+ * "Demand Elegance"). 향후 실제 이중 호출 지점이 생기면 그때 좁은 스코프로 재도입한다.
  */
 
 import type { Env } from './types';
@@ -48,9 +54,9 @@ export const BOARDING_PROMPT_FIRE_ONCE_KEY_PREFIX = 'promptFireOnce:';
  * Fire-once KV key 빌더.
  *
  * @param token     trip token (per-trip isolation).
- * @param anchorKey leg-1(origin)은 `origin` 또는 origin station, leg-2는 `currentLegAnchor.
- *                  boardingStation` — caller(`fireBoardingPromptForAnchor`)가 이미 갖고 있는
- *                  `station` 파라미터를 그대로 전달해 leg별 독립 dedup을 보장한다.
+ * @param anchorKey leg-1(origin)은 origin station, leg-2는 `currentLegAnchor.boardingStation`
+ *                  — caller(`fireBoardingPromptForAnchor`)가 이미 갖고 있는 `station` 파라미터를
+ *                  그대로 전달해 leg별 독립 dedup을 보장한다.
  */
 export function boardingPromptFireOnceKey(token: string, anchorKey: string): string {
   return `${BOARDING_PROMPT_FIRE_ONCE_KEY_PREFIX}${token}:${anchorKey}`;
@@ -88,68 +94,12 @@ export async function stampBoardingPromptFireOnce(
 }
 
 /**
- * Per-isolate 인메모리 가드 — 같은 isolate 같은 cycle 이중 평가 대비(KV round-trip보다 빠른
- * 중복 호출 또는 KV eventual consistency 창을 추가 방어). Durable 하지 않음 — KV가 SSoT.
- */
-const inMemoryFireOnce = new Map<string, number>();
-
-function pruneExpiredInMemoryEntries(now: number): void {
-  for (const [key, expiresAt] of inMemoryFireOnce) {
-    if (expiresAt <= now) inMemoryFireOnce.delete(key);
-  }
-}
-
-/** @returns true — 인메모리 캐시상 최근(5분 이내) 발사됨(skip). false — 미기록. */
-export function checkBoardingPromptFireOnceInMemory(
-  token: string,
-  anchorKey: string,
-  now: number,
-): boolean {
-  pruneExpiredInMemoryEntries(now);
-  const expiresAt = inMemoryFireOnce.get(boardingPromptFireOnceKey(token, anchorKey));
-  return expiresAt !== undefined && expiresAt > now;
-}
-
-/** 발사 성공 직후 caller 가 호출 — 인메모리 캐시에도 동일 TTL 로 stamp. */
-export function stampBoardingPromptFireOnceInMemory(
-  token: string,
-  anchorKey: string,
-  now: number,
-): void {
-  inMemoryFireOnce.set(
-    boardingPromptFireOnceKey(token, anchorKey),
-    now + BOARDING_PROMPT_FIRE_ONCE_TTL_SEC * 1000,
-  );
-}
-
-/**
- * 테스트 전용 — 인메모리 캐시를 초기화한다. 모듈 스코프 상태라 테스트 간 누수 방지용.
- */
-export function resetBoardingPromptFireOnceInMemoryForTest(): void {
-  inMemoryFireOnce.clear();
-}
-
-/**
- * caller(`fireBoardingPromptForAnchor`)가 발사 직전 호출하는 통합 판정 — 인메모리 우선(cheap),
- * 없으면 KV(durable) 순서로 검사한다.
+ * caller(`fireBoardingPromptForAnchor`)가 발사 직전 호출하는 판정 — `env.TRIPS` KV를 직접 조회.
  */
 export async function isBoardingPromptFireOnceBlocked(
   env: Env,
   token: string,
   anchorKey: string,
-  now: number,
 ): Promise<boolean> {
-  if (checkBoardingPromptFireOnceInMemory(token, anchorKey, now)) return true;
   return checkBoardingPromptFireOnce(env.TRIPS, token, anchorKey);
-}
-
-/** 발사 성공 직후 caller 가 호출 — 인메모리 + KV 동시 stamp. */
-export async function stampBoardingPromptFireOnceBoth(
-  env: Env,
-  token: string,
-  anchorKey: string,
-  now: number,
-): Promise<void> {
-  stampBoardingPromptFireOnceInMemory(token, anchorKey, now);
-  await stampBoardingPromptFireOnce(env.TRIPS, token, anchorKey, now);
 }
