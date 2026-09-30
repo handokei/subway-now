@@ -109,8 +109,9 @@ import { captureXEvent } from './sentry';
  * reset하지 않은 것, false면 진짜 route 변경으로 in-place reset된 것. fire/advance 동작에는
  * 관여하지 않는다(계측 전용).
  *
- * `boarding-prompt-leg-mismatch` (#2708, 방어선 계측 only) — leg-1 전용
- * `evaluateAndMaybeFireBoardingPrompt`(scheduled.ts)가 `trip.currentLegAnchor` 활성(leg-2 진입
+ * `boarding-prompt-leg-mismatch` (#2708, 방어선 계측 only) — #2844로 은퇴(생산 중단, 과거 D1
+ * row 조회 참고용으로만 남김). leg-1 전용(당시)
+ * `evaluateAndMaybeFireBoardingPrompt`(scheduled.ts, 삭제됨)가 `trip.currentLegAnchor` 활성(leg-2 진입
  * 후) 중에 진입해 stale `trip.promptDisplay`(이전 leg 기준)로 발사를 시도할 뻔한 지점을 skip한
  * 시점에 1건 append. 정상 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에
  * `promptDisplay`를 지워(#2708 요구사항 1) 이 분기 도달 자체가 없다 — 도달했다면 그 자체가

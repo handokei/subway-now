@@ -362,16 +362,10 @@ export interface TripPositionSSoT {
    * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
    */
   lastFireBlockReason?: string;
-  /**
-   * #2708 (방어선 계측 전용) — leg-1 전용 `evaluateAndMaybeFireBoardingPrompt`(scheduled.ts)가
-   * `trip.currentLegAnchor` 활성 중 stale `trip.promptDisplay`로 발사를 시도할 뻔해 skip한
-   * 적이 있는지. caller가 이 값이 아직 true가 아닐 때만 D1
-   * `trip_events`(kind='boarding-prompt-leg-mismatch')로 1회 append한다(#2073 quota 보호).
-   * 발사/advance/lock 판정에는 관여하지 않는다.
-   *
-   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 아직 미관측).
-   */
-  originPromptSkippedForLegAnchor?: boolean;
+  // #2844 — `originPromptSkippedForLegAnchor`(#2708 방어선 계측 전용) 필드 삭제. 은퇴한
+  // `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트) 자체의 내부 defense-in-depth 진단
+  // 전용 마커였다 — 그 함수와 함께 유일한 read/write caller(`recordOriginPromptLegMismatchSkip`)도
+  // 삭제됐다. 기존 KV row에 값이 남아있어도(true) 아무도 읽지 않아 무해하다.
   /**
    * schemaVersion. 향후 마이그레이션 분기용.
    * v1: 최초 스키마.

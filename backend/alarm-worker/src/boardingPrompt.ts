@@ -1,60 +1,33 @@
 /**
- * "탑승했냐?" 푸시 (#819 B 슬라이스) — 9단 AND 게이트 + arvlCd 우선순위 trainCode 선택.
+ * "탑승했냐?" 푸시 (#819 B 슬라이스).
  *
- * 게이트 (ADR Section 2):
- *   1. trip 활성 (caller가 listTrips로 보장)
- *   2. BoardingLock 없음 (caller가 lockMissing trip 분기에서만 호출)
- *   3. GPS accuracy < 50m (윈도우 평균 기준)
- *   4. 출발역 100m 이내 (마지막 sample 기준 haversine)
- *   5. 방향 cosine ≥ 0.7 (velocity vector vs 출발역→다음역)
- *   6. 60s 윈도우 sample N≥1 (#1886 RC-2 옵션 D: 사용자 paradigm 1정거장 이내 발사)
- *   7. fused speed ≥ 5 km/h AND confidence ≠ 'low'
- *   8. motion ∈ {walking, automotive}
- *   9. trip당 1회 + 5분 silence
+ * #2844 (subsumption 증명 기반 은퇴, 2026-09-30) — 이 파일이 원래 구현하던 GPS 9단 AND 게이트
+ * (accuracy/origin-distance/direction-cosine/window/fused-speed/motion + trip당 1회/5분 silence,
+ * ADR Section 2)와 그 게이트를 평가하던 `evaluateBoardingPromptGates`는 유일한 caller였던
+ * `scheduled.ts`의 `evaluateAndMaybeFireBoardingPrompt`와 함께 삭제됐다 — prod 고정 운용인
+ * `archFlag='on'`에서 GPS 9단이 정당하게 발사하는 모든 상황을 GPS-free 공유 경로
+ * (`maybeFireOriginBoardingPromptGpsFree`/`maybeFireLegBoardingPrompt`, scheduled.ts)가 이미
+ * 포함(subsume)한다는 코드 대조 증명 기반. 유일한 차이(9단이 유해하게 더 넓었던 발사 창 —
+ * `originProximityAt` 15분 freshness만 재검사, 5분 anchor renewal 없음)는 GPS-free 쪽이 이미
+ * 더 엄격하게 막고 있었다. 아래 남은 함수들(근접/신선도 판정, 반복 발사 dedup, arvlCd 임박
+ * 판정, hop-end 게이트, trainCode 선택)은 GPS-free/leg-2 공유 경로가 여전히 사용한다.
  *
- * arvlCd 우선순위 (ADR Section 1.2):
+ * arvlCd 우선순위(trainCode 선택, ADR Section 1.2):
  *   2 (출발) > 1 (도착) > 0 (진입) > 그 외 receivedAt 가까운 + 방향 매칭
  *   ambiguity → 자동 안 함 → 클라가 manual fallback.
- *
- * #1536 (S3, Epic #1533) — 환경 분기 추가.
- *   inputs.environment 가 underground / mixed / unknown 인 경우 GPS 의존 게이트
- *   (#3 accuracy / #4 origin / #5 direction / #6 window / #7 speed) 를 byPass 한다.
- *   이 게이트들은 모두 GPS series 신호에서 유도되므로 지하 GPS stale 환경에서는
- *   100% fail → 7일 누적 boardingPrompt 0건 회귀 (mem `lesson_boarding_prompt_9and_gate_gps_only`).
- *   대신 caller(scheduled.ts)가 evaluateConsensusGate(environment, signals)로 합의 게이트를
- *   적용하여 arrival + lockAttachable 2-of-2 신호로 통과 판정한다. 본 함수는 environment
- *   인자가 underground/mixed/unknown 이면 #8(motion) + #9(silence/fired) 만 평가 — caller가
- *   consensusGate 통과 책임을 진다. surface(또는 환경 미상 = undefined)는 기존 9단 AND 동작 유지.
  */
 
 import { ARRIVAL_CODE } from './alarm';
-import type { ArchFlagValue } from './archFlag';
-import type { StationEnvironment } from './consensusGate';
-import { fusedSpeed } from './fusedSpeed';
 import { matchLine } from './lineAlias';
-import {
-  ACCURACY_CUTOFF_M,
-  cosineDirection,
-  evaluateWindow,
-  haversineKm,
-  type WindowedMetrics,
-} from './positionSeries';
+import { evaluateWindow, type WindowedMetrics } from './positionSeries';
 import type { ArrivalEntry } from './seoul';
-import type { BoardingPromptState, PositionPoint } from './types';
+import type { BoardingPromptState } from './types';
 
-/** 게이트 #4 — 출발역 거리 임계 (km 변환). */
-export const ORIGIN_RADIUS_KM = 0.1;
-/** 게이트 #5 — 방향 cosine 임계. */
-export const DIRECTION_COSINE_THRESHOLD = 0.7;
-/**
- * 게이트 #6 — 60s 윈도우 최소 sample.
- * #1886 RC-2 옵션 D: 3 → 1로 완화. 사용자 paradigm "1정거장 이내 발사" 충족을 위해
- * 지하/지상 모두 sample 1개 이상이면 평가 진행. false positive는 #8 motion + consensusGate로 차단.
- */
-export const MIN_WINDOW_SAMPLES = 1;
-/** 게이트 #7 — fused speed 임계 (km/h). */
-export const MIN_FUSED_SPEED_KMH = 5;
-/** 게이트 #9 — dismiss 후 silence 길이. */
+// #2844 — 구 게이트 #4(ORIGIN_RADIUS_KM)/#5(DIRECTION_COSINE_THRESHOLD)/#6(MIN_WINDOW_SAMPLES)/
+// #7(MIN_FUSED_SPEED_KMH)는 은퇴한 `evaluateBoardingPromptGates`(GPS 9단) 전용 상수였다 —
+// 함께 삭제. `DISMISS_SILENCE_MS`(구 게이트 #9)는 `markPromptSilenced`/`evaluateSilenceGate`가
+// 계속 쓴다(hop-end 게이트 + 발사 후 dismiss silence 전반).
+/** dismiss 후 silence 길이. */
 export const DISMISS_SILENCE_MS = 5 * 60 * 1000;
 /**
  * #2130 (Part B-be-1) — 근접 게이트 임계(m). `originDistanceM - originAccuracyM`가 이 값을
@@ -98,19 +71,14 @@ export function hasFreshOriginProximityCorroboration(
   if (now - newestSeriesPoint.ts > freshnessMs) return false;
   return newestSeriesPoint.accuracy < accuracyCutoffM;
 }
+// #2844 — `PROMPT_FRESHNESS_MS`(구 #2130 Part B-be-1, 15분 신선도 게이트)는 은퇴한 GPS 9단
+// 경로(`evaluateAndMaybeFireBoardingPrompt`) 전용이었다 — 함께 삭제. GPS-free 경로는 15분
+// freshness 재검사가 없다(#2653 설계 — anchor 5분 renewal만으로 유해 발사 창을 막는다).
 /**
- * #2130 (Part B-be-1) — 신선도 게이트. trip 등록(또는 heal) 후 이 시간이 지나면 boarding-prompt
- * 자격이 만료된다 — 오래된 trip에 뒤늦게 발사되는 stale prompt 방지 + 반복 발사(A4) 창의 상한.
- */
-export const PROMPT_FRESHNESS_MS = 15 * 60 * 1000;
-/**
- * #2358 — 근접 관측(anchor, `trip.originProximityAt`) 갱신 주기. 최초 1회만 stamp하고 영구
- * 고정하면(#2153 원안) "출발역에서 계속 대기 중"인 실 시나리오(배차 간격이 긴 노선의 열차 대기,
- * "원점 대기~탑승")가 PROMPT_FRESHNESS_MS(15분)를 넘기는 순간 영구히 SkippedStale로 막힌다 —
- * 근접이 실시간으로 계속 확인되는 중인데도 "오래된 컨텍스트"로 오분류하는 RCA 결함(#2358).
- * anchor를 이 주기(5분)마다 재stamp해 "계속 근접 확인 중"이면 15분 창이 절대 만료되지 않게
- * 한다 — 매 cycle(cron 1분 / `/position` 10초) 무조건 쓰지 않고 스로틀링해 KV write를
- * 최소화한다(#2073 lesson: CF free tier quota).
+ * #2358 — 근접 관측(anchor, `trip.originProximityAt`) 갱신 주기. anchor를 이 주기(5분)마다
+ * 재stamp해 GPS-free 거리 가드(#2653)의 anchor freshness 판정 입력이 된다 — 매 cycle(cron 1분
+ * / `/position` 10초) 무조건 쓰지 않고 스로틀링해 KV write를 최소화한다(#2073 lesson: CF free
+ * tier quota).
  */
 export const ORIGIN_PROXIMITY_RENEWAL_MS = 5 * 60 * 1000;
 /**
@@ -190,76 +158,15 @@ export type GateOutcome =
   | { pass: true; metrics: WindowedMetrics; fusedSpeedKmh: number }
   | { pass: false; reason: GateSkipReason; metrics?: WindowedMetrics };
 
+// #2844 — 'no-series'/'window-too-small'/'no-candidates'/'accuracy-too-poor'/'origin-too-far'/
+// 'direction-mismatch'/'speed-too-low'/'motion-not-moving'/'motion-stationary'는 은퇴한
+// `evaluateBoardingPromptGates`(GPS 9단) 전용 reason이었다 — 함께 제거. 남은 4개는
+// `evaluateSilenceGate`(hop-end)/`evaluateBoardingPromptRepeatGate`(boarding-prompt)가 계속 쓴다.
 export type GateSkipReason =
-  | 'no-series'
-  | 'window-too-small'
-  | 'no-candidates'
-  | 'accuracy-too-poor'
-  | 'origin-too-far'
-  | 'direction-mismatch'
-  | 'speed-too-low'
-  | 'motion-not-moving'
-  | 'motion-stationary'
   | 'silenced'
   | 'already-fired'
   | 'fired-too-recently'
   | 'max-fires-reached';
-
-export interface OriginCoord {
-  lat: number;
-  lng: number;
-}
-
-export interface NextStationCoord {
-  lat: number;
-  lng: number;
-}
-
-export interface EvaluateBoardingPromptInputs {
-  series: readonly PositionPoint[];
-  origin: OriginCoord;
-  /** trip 출발역 → 다음역의 좌표 — 방향 cosine 계산용. */
-  nextStation: NextStationCoord;
-  now: number;
-  /** trip의 boarding-prompt 상태 — 게이트 #9 평가. */
-  promptState?: BoardingPromptState;
-  /**
-   * Phase 3 Kalman smoothed velocity (#824). 호출자가 kalmanFilter.runKalmanStep으로
-   * 산출해 전달. 미적용 단계는 null/undefined — fusedSpeed가 가중치 0으로 자연 무시
-   * (Phase 1/2 회귀 없음).
-   */
-  kalmanKmh?: number | null;
-  /**
-   * Pre-computed window metrics (#833). 호출자가 이미 동일 series/now로
-   * `evaluateWindow`를 계산했다면(예: Kalman observation 산출용) 결과를 그대로 전달해
-   * hot path redundancy를 제거한다. 미지정 시 내부에서 1회 계산 — 회귀 없음.
-   */
-  metrics?: WindowedMetrics;
-  /**
-   * #1536 (S3) — trip 환경. 'underground' | 'mixed' | 'unknown' 이면 GPS 의존 게이트
-   * (#3 accuracy / #4 origin / #5 direction / #6 window / #7 speed) 를 byPass 한다.
-   * 'surface' 또는 undefined(legacy 호출자) 는 기존 9단 AND 게이트를 그대로 평가한다.
-   *
-   * caller(scheduled.ts)가 trip.subsurface → deriveEvidenceEnvironment → mapEvidenceEnvironment
-   * 로 변환된 값을 그대로 forward한다. underground 분기에서도 #8 motion + #9 silence/fired는
-   * 반드시 평가 — caller는 별도로 evaluateConsensusGate(environment, signals)로 arrival+
-   * lockAttachable 2-of-2 합의를 검증해야 한다(false positive 차단).
-   */
-  environment?: StationEnvironment;
-  /**
-   * #2014 (ADR-022 B8) — arrival API SSoT 아키텍처 활성화 여부.
-   *
-   * `'on'` 이면 GPS/motion/speed 게이트(#3~#8) 전부 skip, #9 (fired/silenced) 만 평가한다.
-   * B8 정책: "boardingPrompt 발사 = arvlCd=1 도착 시 즉시. motion / speed 게이트 없음".
-   * arvlCd=1 관측 자체는 caller(scheduled.ts) 가 fetchArrivals 후 별도 검사 — 본 게이트는
-   * `promptState.fired` / `silencedUntil` 만으로 dedup + silence 정책을 유지해 false-positive
-   * repeat push 를 차단한다.
-   *
-   * `'off'` 또는 undefined(legacy 호출자) 는 기존 9단 AND 게이트(또는 environment 분기) 그대로
-   * 평가 — 회귀 방어.
-   */
-  archFlag?: ArchFlagValue;
-}
 
 /**
  * 게이트 #9 — silence / 1회 발사 dedup. promptState 부재 = 첫 시도, 통과 (null 반환).
@@ -291,18 +198,16 @@ function evaluateSilenceGate(
  * "trip당 1회(`fired` 영구 차단)" 정책 폐기 — 15분 창 내 arvlCd=1 열차 도착마다 재발사를
  * 허용하되 다음 정지 조건으로 스팸을 막는다:
  *   ① 응답 — caller(scheduled.ts)의 F2 defense(`trip.boardingLock !== undefined`)가 별도 차단.
- *   ② 15분 신선도 만료 — caller가 `trip.createdAt` 기준으로 별도 게이트(Part B-be-1).
- *   ③ dismiss 후 silence — `silencedUntil` (기존 `DISMISS_SILENCE_MS` 유지).
+ *   ② dismiss 후 silence — `silencedUntil` (기존 `DISMISS_SILENCE_MS` 유지).
  *   [신규] 최대 발사 횟수 hard cap(3회) — `promptState.fireCount`.
- *   ④ 최소 발사 간격(5분) — `promptState.lastFiredAt`.
+ *   ③ 최소 발사 간격(5분) — `promptState.lastFiredAt`.
  * `fired` 필드 자체는 더 이상 검사하지 않는다 — 관측 전용 플래그로만 유지된다(d1TripMetrics 등).
  *
  * hop-end는 여전히 `evaluateSilenceGate`(1회 정책)를 사용 — 이 함수는 boarding-prompt 전용.
  *
- * #2531 — export. leg-1 GPS 9단 게이트 경로(`evaluateBoardingPromptGates` 내부)뿐 아니라
- * `scheduled.ts`의 GPS-free 신규 함수(`maybeFireOriginBoardingPromptGpsFree`)도 동일
- * `trip.boardingPromptState` ledger로 이 게이트를 직접 호출한다 — 두 발사 경로가 같은 dedup
- * 상태를 공유해 더블발사를 구조적으로 차단한다(#2531 본문 설계).
+ * #2531 — export. GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`/`maybeFireLegBoardingPrompt`,
+ * scheduled.ts)가 동일 `trip.boardingPromptState`/`trip.legBoardingPromptState` ledger로 이
+ * 게이트를 직접 호출한다.
  */
 export function evaluateBoardingPromptRepeatGate(
   promptState: BoardingPromptState | undefined,
@@ -325,161 +230,6 @@ export function evaluateBoardingPromptRepeatGate(
     return { pass: false, reason: 'fired-too-recently' };
   }
   return null;
-}
-
-/**
- * GPS 의존 게이트 #3~#5 + #6 평가 (window + accuracy + origin + direction).
- * 통과 시 null 반환, fail 시 GateOutcome.
- */
-function evaluateGpsGeometryGates(
-  inputs: EvaluateBoardingPromptInputs,
-  metrics: WindowedMetrics,
-): GateOutcome | null {
-  if (metrics.count < MIN_WINDOW_SAMPLES) {
-    // #1886 RC-2 — MIN_WINDOW_SAMPLES=1이므로 count=0(데이터 전무) 만 여기서 차단.
-    // caller 및 GPS-bypass 분기의 count=0 체크와 동일 의미 — reason을 통일해 관측 편의 확보.
-    return { pass: false, reason: 'no-candidates', metrics };
-  }
-  // no-candidates가 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 1).
-  // TypeScript narrowing을 위해 명시 assert로 진행.
-  if (!metrics.start || !metrics.end) {
-    return { pass: false, reason: 'no-candidates', metrics };
-  }
-  // #3 — accuracy. 평균 accuracy가 50m 이상이면 신뢰 불가.
-  if (metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M) {
-    return { pass: false, reason: 'accuracy-too-poor', metrics };
-  }
-  // #4 — 출발역 100m 이내. 마지막 sample 기준 (가장 최신 위치).
-  const originDistanceKm = haversineKm(
-    metrics.end.lat,
-    metrics.end.lng,
-    inputs.origin.lat,
-    inputs.origin.lng,
-  );
-  if (originDistanceKm > ORIGIN_RADIUS_KM) {
-    return { pass: false, reason: 'origin-too-far', metrics };
-  }
-  // #5 — 방향 cosine ≥ 0.7. expected vector는 출발역 → 다음역.
-  const cos = cosineDirection(
-    metrics.start.lat,
-    metrics.start.lng,
-    metrics.end.lat,
-    metrics.end.lng,
-    inputs.origin.lat,
-    inputs.origin.lng,
-    inputs.nextStation.lat,
-    inputs.nextStation.lng,
-  );
-  if (cos < DIRECTION_COSINE_THRESHOLD) {
-    return { pass: false, reason: 'direction-mismatch', metrics };
-  }
-  return null;
-}
-
-/**
- * 게이트 #7 — fused speed 평가. mapMatchedKmh + kalmanKmh 가중 합산.
- * 통과 시 fusedSpeedKmh, fail 시 reason.
- */
-function evaluateFusedSpeedGate(
-  inputs: EvaluateBoardingPromptInputs,
-  metrics: WindowedMetrics,
-): { pass: true; fusedSpeedKmh: number } | { pass: false; reason: GateSkipReason } {
-  const fused = fusedSpeed({
-    gpsAvgKmh: metrics.gpsAvgKmh,
-    gpsAccuracyMeters: metrics.avgAccuracyMeters,
-    motion: metrics.motion,
-    mapMatchedKmh: metrics.mapMatchedKmh,
-    kalmanKmh: inputs.kalmanKmh ?? null,
-  });
-  if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
-    return { pass: false, reason: 'speed-too-low' };
-  }
-  return { pass: true, fusedSpeedKmh: fused.speed };
-}
-
-/**
- * #1536 — 환경 분기 판정. underground / mixed / unknown 은 GPS 의존 게이트 byPass.
- */
-function isGpsDependentBypassEnv(env: StationEnvironment | undefined): boolean {
-  return env === 'underground' || env === 'mixed' || env === 'unknown';
-}
-
-/**
- * 9단 AND 게이트 평가. 한 게이트라도 실패하면 즉시 reason과 함께 fail.
- * 게이트 #1/#2는 caller가 미리 보장 (listTrips × lockMissing 분기) — 본 함수는 #3~#9만 평가.
- *
- * #1536 (S3) — `inputs.environment` 가 'underground' | 'mixed' | 'unknown' 이면 GPS 의존
- * 게이트(#3~#7) 를 byPass 한다. 지하 GPS stale 환경에서 series 신호가 항상 wrong → 100%
- * fail 회귀 차단. 이 분기에서는 #8 motion + #9 silence/fired 만 평가하며, caller(scheduled.ts)
- * 가 evaluateConsensusGate(environment, signals) 로 arrival + lockAttachable 합의를 별도 검증해
- * false positive 를 차단해야 한다. `environment` 미지정 또는 'surface' 면 기존 9단 AND 평가.
- *
- * #2014 (ADR-022 B8) — `inputs.archFlag === 'on'` 시 GPS/motion/speed 게이트(#3~#8) 전부 skip.
- * #9 (fired/silenced) 만 평가해 dedup + silence 만 유지. B8 정책 "arvlCd=1 도착 시 즉시 발사"
- * 를 지원 — arvlCd 관측 자체는 caller 가 별도로 fetchArrivals + `pickAutoTrainCode` 로 검증.
- * `fusedSpeedKmh=0` 으로 반환 (bypass 분기와 동일) — 호출자는 fusedSpeed 를 로깅 외 용도로
- * 신뢰하지 않는다.
- */
-export function evaluateBoardingPromptGates(
-  inputs: EvaluateBoardingPromptInputs,
-): GateOutcome {
-  // #9 — 반복 발사 정책(#2130 Part B-be-2, 가장 cheap한 가드 우선).
-  const silenceOutcome = evaluateBoardingPromptRepeatGate(inputs.promptState, inputs.now);
-  if (silenceOutcome) return silenceOutcome;
-
-  // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면 결과 재사용.
-  const metrics = inputs.metrics ?? evaluateWindow(inputs.series, inputs.now);
-
-  // #2014 (ADR-022 B8) — archFlag=on 시 #9 만 평가 후 즉시 pass. 나머지 게이트는 skip.
-  // arvlCd=1 관측 기반 fire 정책은 caller(scheduled.ts) 가 별도 검증한다.
-  if (inputs.archFlag === 'on') {
-    return { pass: true, metrics, fusedSpeedKmh: 0 };
-  }
-
-  const gpsDependentBypass = isGpsDependentBypassEnv(inputs.environment);
-
-  // surface / undefined 만 GPS 의존 게이트 평가 — underground/mixed/unknown 은 byPass.
-  if (!gpsDependentBypass) {
-    const geomOutcome = evaluateGpsGeometryGates(inputs, metrics);
-    if (geomOutcome) return geomOutcome;
-  }
-
-  // #8 — motion 게이트. 환경에 따라 정책이 다르다.
-  //
-  // GPS-bypass 환경(underground/mixed/unknown):
-  //   iOS CMMotionActivity는 trip 시작 직후 5~10분 lag으로 unknown 상태가 normal.
-  //   지하에서는 walking/automotive 수렴까지 시간이 더 필요하므로 unknown 허용.
-  //   단, count=0(series 완전 비어 있음)은 "warmup lag"이 아닌 "데이터 전무" — no-candidates로 차단.
-  //   (#1886 RC-2: window-too-small → no-candidates로 reason 통일)
-  //   stationary만 차단 — 이동 중 아님이 확실한 경우만.
-  //   caller consensusGate(arrival+lockAttachable 2-of-2)가 false positive를 추가 차단.
-  //   (#1820: Day 2 production 36건 evidence — environment=unknown + motion=unknown 100% 차단)
-  //
-  // GPS 환경(surface/undefined):
-  //   기존 정책 유지 — walking/automotive만 통과.
-  if (gpsDependentBypass) {
-    if (metrics.count === 0) {
-      return { pass: false, reason: 'no-candidates', metrics };
-    }
-    if (metrics.motion === 'stationary') {
-      return { pass: false, reason: 'motion-stationary', metrics };
-    }
-    // walking / automotive / unknown 모두 통과
-  } else {
-    if (metrics.motion !== 'walking' && metrics.motion !== 'automotive') {
-      return { pass: false, reason: 'motion-not-moving', metrics };
-    }
-  }
-
-  // #7 — fused speed. GPS bypass 분기는 fusedSpeed 산출 자체가 의미 없어 0 으로 표기.
-  if (gpsDependentBypass) {
-    return { pass: true, metrics, fusedSpeedKmh: 0 };
-  }
-  const speedOutcome = evaluateFusedSpeedGate(inputs, metrics);
-  if (!speedOutcome.pass) {
-    return { pass: false, reason: speedOutcome.reason, metrics };
-  }
-  return { pass: true, metrics, fusedSpeedKmh: speedOutcome.fusedSpeedKmh };
 }
 
 /**
