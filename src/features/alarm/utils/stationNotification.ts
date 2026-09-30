@@ -736,6 +736,19 @@ export async function updateStationNotification(
       // 구독 시작은 멱등이라 매 호출 비용은 사실상 0.
       startAmbientLiveActivityTokenRegistration();
       if (tripToken) {
+        // #2806 잔여 절반 — 이 분기도 활성 LA가 전혀 없으면 update-only 가드를 적용한다.
+        // `ensureLiveActivityRegistered`는 채널 세션이 없어도 native LA가 살아있으면 adopt
+        // (native start 생략)하지만, native LA가 아예 없는 상태(예: BG 첫 tick, lock 직후
+        // pre-boarding 훅이 아직 start하지 않은 순간)에서는 여전히 `startLiveActivityWithRegistration`
+        // → native start()로 fall-through해 BG 컨텍스트에서 throw할 수 있다. FG의 정식 LA 생성은
+        // 별도 경로(pre-boarding 훅 / useEnsureLiveActivity, AppState==='active'에서만 start)가
+        // 담당하므로 이 GPS writer는 skip해도 FG 생성 능력에 영향이 없다.
+        if (!LiveActivity.hasActiveLiveActivity()) {
+          liveActivityLogger.info(
+            '활성 LA 없음 — tripToken 분기 update-only 가드로 skip (BG start-fallthrough 방지, #2806 잔여)',
+          );
+          return;
+        }
         await ensureLiveActivityRegistered(tripToken, data);
       } else {
         // #2806 — tripToken이 없는 이 분기(lock 전 GPS 파이프라인)는 update-only여야 한다.
