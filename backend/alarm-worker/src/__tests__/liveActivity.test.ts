@@ -8,6 +8,7 @@ import {
   fireLiveActivityDismissal,
   fireLiveActivityUpdate,
   isApnsTokenInvalid,
+  resolveCurrentStationName,
   staleDurationSecForKind,
   type LiveActivityDeps,
   type LiveActivityStats,
@@ -157,6 +158,79 @@ describe('buildLiveActivityContentState (#613)', () => {
       expect(cs.lineName).toBe('2호선');
       expect(cs.lineColorHex).toBe('#009D3E');
     });
+  });
+
+  describe('#2849 — currentStationName override (SSoT 현재역, waypoint명 전송 금지)', () => {
+    it('5번째 인자(currentStationName) 전달 시 waypoint.stationName 대신 그 값을 stationName으로 사용', () => {
+      const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, undefined, '용마산');
+      expect(cs.stationName).toBe('용마산');
+    });
+
+    it('currentStationName 미전달 시 기존 동작(waypoint.stationName) 유지 — 하위 호환', () => {
+      const cs = buildLiveActivityContentState(WAYPOINT, 90, 3);
+      expect(cs.stationName).toBe('강남');
+    });
+
+    it('환승 waypoint + currentStationName 전달 — lineName은 다음 leg 그대로, stationName만 override', () => {
+      const transferWp: Waypoint = { stationName: '홍대입구', line: 'K', kind: 'transfer' };
+      const trip = makeTrip({ waypoints: [transferWp, { stationName: '당산', line: '2', kind: 'destination' }] });
+      const cs = buildLiveActivityContentState(transferWp, 30, 3, trip, '합정');
+      expect(cs.lineName).toBe('2호선');
+      expect(cs.stationName).toBe('합정');
+    });
+  });
+});
+
+describe('resolveCurrentStationName (#2849)', () => {
+  it('SSoT.currentStationId가 정착되어 있으면 최우선 사용', () => {
+    const trip = makeTrip();
+    const ssot = {
+      tripToken: 'devtoken',
+      currentStationId: '용마산',
+      motionState: 'unknown' as const,
+      motionEvidence: [],
+      lastAdvanceAt: 0,
+      lastAdvanceEvidence: 'seed-override' as const,
+      passedStations: [],
+      userIntentDeclared: false,
+      alarmEvents: [],
+      schemaVersion: 3 as const,
+    };
+    expect(resolveCurrentStationName(trip, ssot)).toBe('용마산');
+  });
+
+  it('SSoT 미정착(null)이면 trip.originStationName으로 폴백 — waypoint명 사용 금지', () => {
+    const trip = makeTrip({ originStationName: '역삼' });
+    expect(resolveCurrentStationName(trip, null)).toBe('역삼');
+    // waypoints[0].stationName('강남')이 아니라 origin('역삼')이어야 한다.
+    expect(resolveCurrentStationName(trip, null)).not.toBe(trip.waypoints[0]?.stationName);
+  });
+
+  it('SSoT.currentStationId가 빈 문자열(미상)이면 origin 폴백', () => {
+    const trip = makeTrip({ originStationName: '역삼' });
+    const ssot = {
+      tripToken: 'devtoken',
+      currentStationId: '',
+      motionState: 'unknown' as const,
+      motionEvidence: [],
+      lastAdvanceAt: 0,
+      lastAdvanceEvidence: 'seed-override' as const,
+      passedStations: [],
+      userIntentDeclared: false,
+      alarmEvents: [],
+      schemaVersion: 3 as const,
+    };
+    expect(resolveCurrentStationName(trip, ssot)).toBe('역삼');
+  });
+
+  it('SSoT null + originStationName 미부재 시 passedStations[0]로 폴백', () => {
+    const trip = makeTrip({ originStationName: undefined, passedStations: ['성수'] });
+    expect(resolveCurrentStationName(trip, null)).toBe('성수');
+  });
+
+  it('SSoT null + origin/passedStations 모두 부재 시 빈 문자열(waypoint명 금지)', () => {
+    const trip = makeTrip({ originStationName: undefined, passedStations: undefined });
+    expect(resolveCurrentStationName(trip, null)).toBe('');
   });
 });
 
