@@ -12452,6 +12452,152 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // 전까지 담당하던 동일 필드 — GPS-free는 별도 30분 dedup 게이트 없이 stamp만 유지).
     expect(trip.lastAutoPromptedAt).toBe(NOW);
   });
+
+  // #2851 — leg-1 origin fire/suppress가 D1 trip_events에 무기록(#2834의 candidateArvlCds/
+  // gateDecision 계측이 leg-2 전용 kind='leg-boarding-prompt' 경유라 편측)이었던 갭을 메운다.
+  // 발사/게이트 판정 자체는 무변경 — D1 계측만 검증.
+  describe('#2851 — origin boarding-prompt D1 계측 (기존 leg-boarding-prompt kind 재사용, meta.leg=origin)', () => {
+    function findOriginOutcomeInserts(inserts: unknown[][]): Array<{ leg: string; outcome: string; candidateArvlCds?: unknown }> {
+      return inserts
+        .filter((args) => args[2] === 'leg-boarding-prompt')
+        .map((args) => JSON.parse(args[5] as string) as { leg: string; outcome: string; candidateArvlCds?: unknown });
+    }
+
+    it('발사 성공 → D1에 kind=leg-boarding-prompt, meta={leg:origin, outcome:fired, candidateArvlCds}로 1건 기록', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip();
+      const kv = new InMemoryKV();
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'fired', candidateArvlCds: [1] }]);
+    });
+
+    it('억제(#2653 거리 가드, too-far) → D1에 meta.outcome=too-far로 기록', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 6.7,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'too-far' }]);
+    });
+
+    it('같은 outcome(too-far)이 연속 tick에서 반복 → 두 번째 호출은 D1 재기록 안 함(#2073 quota, 전이 시에만 append)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 6.7,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(2);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'too-far' }]);
+    });
+
+    it('SSoT 부재(lazy-seed 이전) → D1 기록 no-op(발사/게이트 판정은 무변경, 여전히 차단)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 6.7,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      // seedSsot 호출 없음 — SSoT 미존재.
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([]);
+    });
+  });
 });
 
 // #2844 — subsumption 증명(이슈 본문)의 유일 반례: 은퇴 전 GPS 9단 경로는 `originProximityAt`의
