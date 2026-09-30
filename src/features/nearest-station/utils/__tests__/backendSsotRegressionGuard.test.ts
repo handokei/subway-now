@@ -5,6 +5,7 @@
  * 재전송했고, 06:44:46에 사용자가 뚝섬에 도착했는데도 표시가 건대입구(idx 7→0)로 되돌아갔다.
  */
 import {
+  BACKEND_SSOT_ADVANCE_STALE_GPS_MS,
   BACKEND_SSOT_ADVANCE_STALE_MS,
   isBackendSsotRouteRegression,
 } from '../backendSsotRegressionGuard';
@@ -29,9 +30,13 @@ describe('isBackendSsotRouteRegression (#2669)', () => {
   });
 
   it('backend가 최근에 전진했으면 거부하지 않는다 (정상 추적 중)', () => {
+    // #2841 — 이 케이스는 gpsAhead 경로(gpsQualityDegraded=false, gpsArcIndex>mirrorArcIndex)를
+    // 태운다. GPS 경로의 stale 임계가 60s(BACKEND_SSOT_ADVANCE_STALE_GPS_MS)로 완화됐으므로,
+    // "최근 전진"의 경계값도 그 임계 기준으로 재정의한다(기존 180s 경계값은 gpsAhead에는 더 이상
+    // 유효하지 않다 — 이 테스트가 바로 그 변경 대상 상수를 검증하므로 boundary 조정이 불가피).
     expect(
       isBackendSsotRouteRegression(
-        inputs({ mirrorLastAdvanceAt: NOW - (BACKEND_SSOT_ADVANCE_STALE_MS - 1_000) }),
+        inputs({ mirrorLastAdvanceAt: NOW - (BACKEND_SSOT_ADVANCE_STALE_GPS_MS - 1_000) }),
       ),
     ).toBe(false);
   });
@@ -131,6 +136,82 @@ describe('isBackendSsotRouteRegression — #2686 source-무관 device 추정치 
       isBackendSsotRouteRegression(
         undergroundInputs({ gpsQualityDegraded: false, gpsArcIndex: 5, deviceEstimateArcIndex: -1 }),
       ),
+    ).toBe(true);
+  });
+});
+
+/**
+ * #2841 — 트립 꼬리(마지막 1-hop) 미보호 fix.
+ *
+ * 재현 기준(2026-09-30 트립 e25e1158, 지상·FG, Estimator State 실측):
+ * ```
+ * 06:51:49 | backend-ssot-override | 성수(2) idx=6
+ * 06:54:33 | lockless-route-hop    | 뚝섬(2) idx=7  ← 사용자 실제 뚝섬 도착(GPS acc 23m)
+ * 06:54:35 | backend-ssot-override | 성수(2) idx=6  ← 표시가 도로 성수로 되감김
+ * ```
+ * 경과 164s(<180s)라 기존 공통 stale 게이트가 비활성 → 거부되지 않았다. 역간 이동이 보통
+ * 2~3분이라 트립의 마지막 한 정거장은 항상 180s 미만 — 구조적 사각지대.
+ */
+describe('isBackendSsotRouteRegression — #2841 트립 꼬리(GPS 경로 완화 임계) 확장', () => {
+  it('9/30 성수 실측값 그대로: 경과 164s + GPS(뚝섬, idx7)가 mirror(성수, idx6)보다 앞 → 거부', () => {
+    expect(
+      isBackendSsotRouteRegression({
+        mirrorLastAdvanceAt: NOW - 164_000,
+        mirrorArcIndex: 6,
+        gpsArcIndex: 7,
+        gpsQualityDegraded: false,
+        now: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('① 지하(GPS 저하) + 164s + deviceEstimateArcIndex가 앞서도 거부하지 않는다 — deviceAhead는 180s 그대로(지하 불변)', () => {
+    expect(
+      isBackendSsotRouteRegression({
+        mirrorLastAdvanceAt: NOW - 164_000,
+        mirrorArcIndex: 6,
+        gpsArcIndex: -1,
+        gpsQualityDegraded: true,
+        deviceEstimateArcIndex: 7,
+        now: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('② 경과 30s + GPS가 앞서 있어도 거부하지 않는다 — 같은 틱 jitter 보호(60s 미만)', () => {
+    expect(
+      isBackendSsotRouteRegression({
+        mirrorLastAdvanceAt: NOW - 30_000,
+        mirrorArcIndex: 6,
+        gpsArcIndex: 7,
+        gpsQualityDegraded: false,
+        now: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('③ GPS가 mirror보다 뒤(역주행)면 경과와 무관하게 거부하지 않는다', () => {
+    expect(
+      isBackendSsotRouteRegression({
+        mirrorLastAdvanceAt: NOW - 164_000,
+        mirrorArcIndex: 6,
+        gpsArcIndex: 5,
+        gpsQualityDegraded: false,
+        now: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('④ 경과 200s + deviceAhead(지하) → 거부 — 기존 180s 경로 무회귀', () => {
+    expect(
+      isBackendSsotRouteRegression({
+        mirrorLastAdvanceAt: NOW - 200_000,
+        mirrorArcIndex: 6,
+        gpsArcIndex: -1,
+        gpsQualityDegraded: true,
+        deviceEstimateArcIndex: 7,
+        now: NOW,
+      }),
     ).toBe(true);
   });
 });

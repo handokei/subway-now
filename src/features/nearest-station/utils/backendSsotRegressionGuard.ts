@@ -39,6 +39,30 @@
  *
  * 금지: `reanchored-hop`을 mirror보다 무조건 우선시키지 않는다. "backend 멈춤" 전제(stale)가
  * 여전히 두 경로 모두의 공통 게이트다.
+ *
+ * #2841 — 트립 꼬리(마지막 1-hop) 미보호 fix (2026-09-30 성수 실측, 트립 e25e1158).
+ *
+ * 관측(Estimator State, 지상·FG):
+ * ```
+ * 06:51:49 | backend-ssot-override   | 성수(2)     idx=6
+ * 06:54:33 | lockless-route-hop      | 뚝섬(2)     idx=7   ← 사용자가 실제 뚝섬 도착(GPS acc 23m)
+ * 06:54:35 | backend-ssot-override   | 성수(2)     idx=6   ← 표시가 도로 성수로 되감김
+ * ```
+ * 경과 164s(<180s, `BACKEND_SSOT_ADVANCE_STALE_MS`)라 공통 stale 게이트가 비활성 → 거부되지 않았다.
+ * 역간 소요가 보통 2~3분이라, **트립의 마지막 한 정거장은 언제나 180s 미만**이다 — 즉 "얼어붙은
+ * mirror가 신뢰 가능한 GPS보다 앞서 있는" 케이스 중 꼬리 구간만 이 가드로 원리적으로 못 막는
+ * 구조적 사각지대였다.
+ *
+ * fix: GPS 경로(`gpsAhead`)에만 완화된 stale 임계 `BACKEND_SSOT_ADVANCE_STALE_GPS_MS`(60s)를
+ * 별도로 둔다. cron pull 주기(~10s tick)의 1틱 + 여유를 감안한 값 — 같은 틱 안에서의 GPS/backend
+ * jitter는 여전히 보호하면서, 꼬리 구간(경과 60~180s)의 되감김을 막는다.
+ *
+ * `deviceAhead`(지하, GPS 품질과 무관한 경로)는 **건드리지 않는다** — 지하에서 GPS 자체가
+ * garbage이므로 짧은 임계를 적용할 근거가 없고, #2686이 막은 "arc 폭주"(reanchored-hop 시간
+ * 적분 오차가 짧은 창에서 mirror를 성급히 override) 재발을 피하기 위해 기존 180s를 그대로 유지한다.
+ *
+ * 금지(변경 안 함): 공통 180s 상수 자체 변경 / deviceAhead 경로 완화 / mirror 채택 로직
+ * (`backendSsotMirror.ts`) / #2481 게이트 / GPS에 표시 외 결정권 부여(이 가드는 "낡은 mirror 거부"만).
  */
 
 /**
@@ -47,6 +71,15 @@
  * 같은 값을 쓰되 의미가 다르므로(내용 신선도 vs 도달 신선도) 별 상수로 둔다.
  */
 export const BACKEND_SSOT_ADVANCE_STALE_MS = 180_000;
+
+/**
+ * #2841 — GPS 경로(`gpsAhead`)에만 적용하는 완화된 stale 임계. 트립의 마지막 1-hop은 역간
+ * 소요(2~3분)보다 항상 짧아 공통 180s 게이트가 원리적으로 비활성 상태에 머문다. cron pull
+ * 주기(~10s tick)의 1틱 + 여유를 감안한 값 — 같은 틱 안 GPS/backend jitter는 여전히 보호한다.
+ * `deviceAhead`(지하) 경로에는 적용하지 않는다 — 지하에서 GPS는 저하 상태라 이 임계를 적용할
+ * 근거가 없고, #2686이 막은 arc 폭주 재발을 피하기 위해 기존 180s를 그대로 유지한다.
+ */
+export const BACKEND_SSOT_ADVANCE_STALE_GPS_MS = 60_000;
 
 export interface BackendSsotRegressionInputs {
   /** mirror가 보고한 backend의 마지막 advance 시각(epoch ms). 0/미정착이면 판정하지 않는다. */
@@ -81,11 +114,21 @@ export function isBackendSsotRouteRegression(inputs: BackendSsotRegressionInputs
   // lazy-seed(0) 상태는 "아직 전진한 적 없음"이라 stale 판정 대상이 아니다 — 갓 시작한 trip을
   // 거부하면 backend 채택이 영영 부트스트랩되지 않는다.
   if (mirrorLastAdvanceAt <= 0) return false;
-  if (now - mirrorLastAdvanceAt <= BACKEND_SSOT_ADVANCE_STALE_MS) return false;
   if (mirrorArcIndex < 0) return false;
+  // #2841 — 공통 단일 stale 게이트를 폐지하고 경로별로 분리한다. 마지막 1-hop(<180s)이 GPS 경로를
+  // 원리적으로 통과하지 못하던 구조적 사각지대가 원인 — deviceAhead(지하)는 기존 180s를 그대로
+  // 재사용(무회귀), gpsAhead만 완화된 60s 임계를 쓴다.
+  const elapsed = now - mirrorLastAdvanceAt;
   // 기존 GPS 경로 — GPS 품질이 신뢰 가능하고 GPS가 경로상 mirror보다 앞설 때만 성립.
-  const gpsAhead = !gpsQualityDegraded && gpsArcIndex >= 0 && gpsArcIndex > mirrorArcIndex;
+  const gpsAhead =
+    elapsed > BACKEND_SSOT_ADVANCE_STALE_GPS_MS &&
+    !gpsQualityDegraded &&
+    gpsArcIndex >= 0 &&
+    gpsArcIndex > mirrorArcIndex;
   // #2686 — source 무관 device 추정치 경로. GPS 품질 게이트 없이 독립 판정(지하에서도 동작).
-  const deviceAhead = deviceEstimateArcIndex >= 0 && deviceEstimateArcIndex > mirrorArcIndex;
+  const deviceAhead =
+    elapsed > BACKEND_SSOT_ADVANCE_STALE_MS &&
+    deviceEstimateArcIndex >= 0 &&
+    deviceEstimateArcIndex > mirrorArcIndex;
   return gpsAhead || deviceAhead;
 }

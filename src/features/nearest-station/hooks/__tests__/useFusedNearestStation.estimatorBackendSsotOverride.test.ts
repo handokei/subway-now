@@ -34,6 +34,7 @@ import {
   makeBackendSsotMirrorEntry,
 } from '../../../../testUtils/backendSsotMirrorFixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
+import { computeRouteArc } from '../../../route/utils/routeProgress';
 
 // #1605 — useFusedNearestStation 의존 hook/util mock + cascade I/O mock 세트.
 // jest.mock은 호이스팅돼 module scope에서만 가능 — 공통 helper로 추출 불가.
@@ -162,6 +163,51 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     // fire path: cascade도 backend-ssot tier를 채택하지 않는다.
     expect(hook.result.current.source).not.toBe('backend-ssot');
     expect(hook.result.current.result?.station.id).not.toBe(yongmasan.id);
+  });
+
+  // #2841 — 트립 꼬리(마지막 1-hop) 되감김 wire 검증. #2669 테스트(위)는 mirror가 10분째
+  // 정체된 극단값만 다뤄 소비부(displayOnlyEstimate)가 "180s 미만인데도 거부해야 하는" 꼬리
+  // 구간을 실제로 거부하는지는 검증하지 못했다 — 순수 함수만 검증하면 부품 green/whole inert
+  // (lesson_parts_green_whole_inert_last_consumer). 2026-09-30 성수 실측(경과 164s)과 동일
+  // 경계값으로 훅 레벨까지 재현한다.
+  it('#2841 — backend 정체 164s(<180s, 트립 꼬리) + GPS가 경로상 앞(목적지) → backend-ssot 채택 거부', async () => {
+    const { routeContext, route } = setupLocklessTripAtYongmasan();
+    const nowMs = T0 + 60 * 60_000;
+    jest.setSystemTime(nowMs);
+    // mirror는 목적지 바로 앞 정거장(idx=arcEnd-1)에 얼어붙어 있다 — arc 전체는 production과
+    // 동일한 computeRouteArc로 산출해 하드코딩 없이 실제 경로 topology를 그대로 쓴다.
+    const arc = computeRouteArc(route, yongmasan, chungdam);
+    const tailStation = arc!.stations[arc!.stations.length - 2];
+    // GPS는 경로 끝(청담=목적지)을 신뢰 가능하게 가리킨다 — mirror(tailStation)보다 arc index가 크다.
+    const live = { station: chungdam, distanceKm: 0 };
+    mockNearest.mockReturnValue({
+      result: live,
+      liveResult: live,
+      stickyDisplayOnly: null,
+      variants: [chungdam],
+      userLocation: { lat: chungdam.lat, lng: chungdam.lng },
+      ...GPS_BASE_DEFAULTS,
+      accuracyMeters: 23, // 9/30 실측 accuracy
+      refresh: jest.fn(),
+    });
+    mockFindTop.mockReturnValue([{ station: chungdam, distanceKm: 0 }]);
+    mockRead.mockResolvedValue(
+      makeBackendSsotMirrorEntry({
+        currentStationId: tailStation.name,
+        lastAdvanceAt: nowMs - 164_000, // 9/30 실측 경과값 그대로(180s 미만)
+        receivedAt: nowMs,
+      }),
+    );
+
+    const hook = renderHook(() => useFusedNearestStation(undefined, undefined, routeContext));
+    await flushBackendSsotMirrorTick();
+
+    // 표시 채널: 얼어붙은 tailStation으로 되감기지 않는다.
+    expect(hook.result.current.displayOnlyEstimate?.strategy).not.toBe('backend-ssot-override');
+    expect(hook.result.current.displayOnlyEstimate?.station.id).not.toBe(tailStation.id);
+    // fire path도 동일하게 거부한다.
+    expect(hook.result.current.source).not.toBe('backend-ssot');
+    expect(hook.result.current.result?.station.id).not.toBe(tailStation.id);
   });
 
   // #2686 — 지하(GPS 저하) 되감김 재현은 boardingLock(pending) + reanchored-hop 조합이 필요해
