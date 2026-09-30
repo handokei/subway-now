@@ -38,7 +38,7 @@ import {
   TRIP_ORIGIN_KEY,
 } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { anchorRouteToCurrentStation, type Route } from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
@@ -263,11 +263,16 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
 
     // BG 컨텍스트는 ETA/alarm을 계산하지 않는다 — silent push가 알람을 별도로 발사하고,
     // ETA는 backend LA push가 권위. LA refresh는 station/route 변동을 빠르게 반영하는 용도.
+    // #2811 편측 감사(#2848) — etaMinutes는 애초에 null이라 ETA 자체는 문제없지만, route(정거장
+    // 수 파생원)는 ROUTE_KEY(트립 시작 시점 고정값) 그대로였다. mirror 경로(updateLiveActivityFromMirrorStation)와
+    // 동일 wrapper로 재앵커링해 정거장 수도 currentStation 기준으로 정정한다. 이 경로는 ETA/alarm
+    // 계산과 무관한 순수 표시 갱신이라 anchoring이 알람 타이밍에 영향을 주지 않는다.
+    const remainingRoute = anchorRouteToCurrentStation(route, currentStation, destination.id);
     const data = buildLiveActivityData(
       currentStation,
       distanceM,
       destination,
-      route,
+      remainingRoute,
       null,
       false,
       null,

@@ -8,6 +8,7 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, Platform } from 'react-native';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
+import { getStationsOnLine } from '../../../../shared/utils/stationRoute';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 const mockIsLiveActivityEnabled = jest.fn();
@@ -161,5 +162,33 @@ describe('useEnsureLiveActivity', () => {
       appStateListener?.('inactive');
     });
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+  });
+
+  // #2811 편측 감사 — 이 훅은 etaMinutes는 이미 caller(HomeScreen)가 currentStation 기준으로
+  // 재앵커링해 전달하지만, route는 트립 시작 시점에 고정된 값을 그대로 받아 buildLiveActivityData에
+  // 넘겼다 — "ETA는 줄어드는데 N정거장은 트립 시작값 그대로"인 자기모순(#2848 편측 감사 지적).
+  // route도 currentStation 기준으로 재앵커링해서 buildLiveActivityData에 넘겨야 한다.
+  it('#2811 편측 감사: route도 currentStation 기준 remaining으로 재앵커링해 buildLiveActivityData에 넘긴다', () => {
+    // 성수(2-011) → 뚝섬(2-010) 실제 인접 1정거장. staleRoute는 트립 시작 시점 고정값(5정거장)을
+    // 흉내 — fix 전에는 이 값이 그대로 buildLiveActivityData에 전달돼 self-contradiction이 난다.
+    const seongsu = getStationsOnLine('2').find((s) => s.id === '2-011')!;
+    const ddukseom = getStationsOnLine('2').find((s) => s.id === '2-010')!;
+    const staleRoute = { type: 'direct' as const, line: '2' as const, stops: 5, travelSeconds: 600 };
+    renderHook(() => useEnsureLiveActivity(seongsu, 50, ddukseom, staleRoute, 2, null));
+    expect(mockBuildLiveActivityData).toHaveBeenCalledTimes(1);
+    const [, , , routeArg] = mockBuildLiveActivityData.mock.calls[0] as [
+      unknown,
+      unknown,
+      unknown,
+      { type: string; stops: number },
+    ];
+    // 회귀 상태(fix 전)라면 routeArg === staleRoute(stops:5)로 실패한다.
+    expect(routeArg.stops).toBe(1);
+  });
+
+  it('#2811 편측 감사: destination이 없으면(lock만으로 트립 활성) route를 그대로 전달한다(anchor 대상 없음)', () => {
+    const staleRoute = { type: 'direct' as const, line: '2' as const, stops: 5, travelSeconds: 600 };
+    renderHook(() => useEnsureLiveActivity(gangnam, 120, null, staleRoute, 5, LOCK));
+    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, null, staleRoute, 5);
   });
 });
