@@ -25,7 +25,7 @@
 현재 알림 정확도는 다음 신호를 결합해 판정한다:
 
 - device: GPS(`useNearestStation`), fusion cascade(`useFusedNearestStation` 8-tier), motion(`accelMotion`), speed(`fusedSpeed`), WiFi SSID(`wifiSsidLookup`), 기압계(`useBarometer` + `barometerSubsurface`), sticky station cache(`useStickyStation`)
-- backend: Kalman filter(`kalmanFilter.ts`), position series(`positionSeries.ts`), boardingPrompt 9단 게이트(`evaluateBoardingPromptGates`), consensus gate(`consensusGate.ts`), fused speed(`fusedSpeed.ts`)
+- backend: Kalman filter(`kalmanFilter.ts`), position series(`positionSeries.ts`), boardingPrompt 9단 게이트(`evaluateBoardingPromptGates`, **은퇴됨 2026-09-30 #2844** — 아래 "삭제 대상" 표 note 참고), consensus gate(`consensusGate.ts`), fused speed(`fusedSpeed.ts`)
 - estimator: `stationProgressEstimator.ts` (Phase A pull + Phase B push, `live-position` 모드 포함)
 
 이 신호들이 서로 sync가 어긋나면 매번 다른 layer에서 깨진다. 지금까지 각 layer마다 별도의 방어 로직(sticky cascade, hydration seam, dedup key, 정적 misfire guard, 5-layer regression fix)을 추가했지만, 새 layer가 늘어날수록 sync 실패 표면적도 함께 늘어 회귀가 종결되지 않는다.
@@ -86,7 +86,7 @@
 | `src/data/stationAbsolutePressure.json` | 삭제 | 위 |
 | `backend/alarm-worker/src/kalmanFilter.ts` | 삭제 | Kalman 불필요 |
 | `backend/alarm-worker/src/positionSeries.ts` | 삭제 | GPS series 폴링 불필요 |
-| `backend/alarm-worker/src/boardingPrompt.ts` `evaluateBoardingPromptGates` 9단 게이트 | 삭제 | `arvlCd=1`로 대체 |
+| `backend/alarm-worker/src/boardingPrompt.ts` `evaluateBoardingPromptGates` 9단 게이트 | **삭제 완료(2026-09-30 #2844)** — GPS-free 공유 본체(`maybeFireOriginBoardingPromptGpsFree`→`fireBoardingPromptForAnchor`) 단일화, subsumption 증명은 이슈 #2844 본문. 표의 나머지 항목(kalmanFilter.ts/positionSeries.ts 등)은 이 PR 범위 밖 — 미실행 | `arvlCd=1`로 대체 |
 | `src/features/route/utils/stationProgressEstimator.ts` `live-position` 모드 | 삭제 or 최소화 | backend arrival API가 SSOT |
 | `src/features/nearest-station/hooks/useFusedNearestStation.ts` cascade 8-tier | 대량 축소 | fusion 불필요 |
 

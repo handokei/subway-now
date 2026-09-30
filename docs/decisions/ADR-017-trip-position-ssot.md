@@ -22,7 +22,7 @@ backend가 **fire 결정을 여러 path에서 독립 수행** → patch가 1개 
 | `scheduled.ts:795 evaluateArvlCdFireGate` (**superseded-by-#2764** — 함수 자체가 삭제됨, `estimate.arvlCd !== null` 단독 체크와 항상 동치였다는 도달불가 확증) | lock 활성 + arvlCd ARRIVED/ENTERING | motion, train identity, env |
 | `scheduled.ts:1525 advanceBoardingLockWaypoint` | (cron 호출 직후 무조건) | 합의 게이트 |
 | `scheduled.ts:1705 maybeReschedulePush` | 임계치 변동 | motion |
-| `boardingPrompt.ts:95 evaluateBoardingPromptGates` | 9-AND (GPS series 5개) | env 분기 |
+| `boardingPrompt.ts:95 evaluateBoardingPromptGates` (**은퇴됨, 2026-09-30 #2844** — GPS 9단 발사 경로가 GPS-free 공유 본체(`maybeFireOriginBoardingPromptGpsFree`→`fireBoardingPromptForAnchor`)로 단일화, subsumption 증명은 이슈 #2844 본문) | 9-AND (GPS series 5개) | env 분기 |
 | `consensusGate.ts:107 evaluateConsensusGate` | env + signals | 호출자가 적용 안 함 |
 
 = **"lock 활성 = fire OK"라는 잘못된 동치**. lock은 fire의 전제일 뿐.
