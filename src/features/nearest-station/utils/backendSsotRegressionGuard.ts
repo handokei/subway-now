@@ -39,6 +39,30 @@
  *
  * 금지: `reanchored-hop`을 mirror보다 무조건 우선시키지 않는다. "backend 멈춤" 전제(stale)가
  * 여전히 두 경로 모두의 공통 게이트다.
+ *
+ * #2841 — 트립 꼬리(마지막 1-hop) 미보호 fix (2026-09-30 성수 실측, 트립 e25e1158).
+ *
+ * 관측(Estimator State, 지상·FG):
+ * ```
+ * 06:51:49 | backend-ssot-override   | 성수(2)     idx=6
+ * 06:54:33 | lockless-route-hop      | 뚝섬(2)     idx=7   ← 사용자가 실제 뚝섬 도착(GPS acc 23m)
+ * 06:54:35 | backend-ssot-override   | 성수(2)     idx=6   ← 표시가 도로 성수로 되감김
+ * ```
+ * 경과 164s(<180s, `BACKEND_SSOT_ADVANCE_STALE_MS`)라 공통 stale 게이트가 비활성 → 거부되지 않았다.
+ * 역간 소요가 보통 2~3분이라, **트립의 마지막 한 정거장은 언제나 180s 미만**이다 — 즉 "얼어붙은
+ * mirror가 신뢰 가능한 GPS보다 앞서 있는" 케이스 중 꼬리 구간만 이 가드로 원리적으로 못 막는
+ * 구조적 사각지대였다.
+ *
+ * fix: GPS 경로(`gpsAhead`)에만 완화된 stale 임계 `BACKEND_SSOT_ADVANCE_STALE_GPS_MS`(60s)를
+ * 별도로 둔다. cron pull 주기(~10s tick)의 1틱 + 여유를 감안한 값 — 같은 틱 안에서의 GPS/backend
+ * jitter는 여전히 보호하면서, 꼬리 구간(경과 60~180s)의 되감김을 막는다.
+ *
+ * `deviceAhead`(지하, GPS 품질과 무관한 경로)는 **건드리지 않는다** — 지하에서 GPS 자체가
+ * garbage이므로 짧은 임계를 적용할 근거가 없고, #2686이 막은 "arc 폭주"(reanchored-hop 시간
+ * 적분 오차가 짧은 창에서 mirror를 성급히 override) 재발을 피하기 위해 기존 180s를 그대로 유지한다.
+ *
+ * 금지(변경 안 함): 공통 180s 상수 자체 변경 / deviceAhead 경로 완화 / mirror 채택 로직
+ * (`backendSsotMirror.ts`) / #2481 게이트 / GPS에 표시 외 결정권 부여(이 가드는 "낡은 mirror 거부"만).
  */
 
 /**
