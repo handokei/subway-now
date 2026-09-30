@@ -26,6 +26,8 @@ GPS-only로는 정확도 마지노선이 두 가지 면에서 깨졌다:
 
 ### B 흐름 — "탑승했냐?" 푸시 + 자동 lock 생성
 
+> **현행화 note (2026-09-30 #2844)**: 2단계의 `evaluateBoardingPromptGates`(9단 게이트)는 은퇴 — GPS-free 공유 본체로 단일화. 상세는 아래 "False positive 9단 AND 게이트" 절 note 참고.
+
 | 단계 | 동작 | 위치 |
 |---|---|---|
 | 1 | backend cron이 GPS series · 가속도 · Kalman 평가 (60s 주기) | `backend/alarm-worker/src/scheduled.ts` |
@@ -54,6 +56,8 @@ GPS-only로는 정확도 마지노선이 두 가지 면에서 깨졌다:
 **Lockless trip 보완은 §B (boardingPrompt)가 1순위 경로** — 본 토글은 사용자 명시 의향의 정보 모드. 통합 우선순위는 ADR-013 §결정 참조.
 
 ### False positive 9단 AND 게이트 (B 흐름의 핵심)
+
+> **현행화 note (2026-09-30 #2844)**: GPS 9단 발사 경로 은퇴 — GPS-free 공유 본체(`maybeFireOriginBoardingPromptGpsFree`→`fireBoardingPromptForAnchor`) 단일화. subsumption 증명은 이슈 #2844 본문. 아래 게이트 #3~#8(GPS/방향/speed/motion) 및 `evaluateBoardingPromptGates`는 코드에서 삭제됐다 — 본 절은 역사적 설계 기록으로 유지.
 
 ADR-006 silent push와 달리 본 게이트는 **사용자에게 직접 visible alert**를 띄운다 → false positive 비용이 silent보다 한 자릿수 크다. 따라서 **AND 결합 + 각 게이트 단독 차단 가능**으로 설계.
 

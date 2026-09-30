@@ -341,7 +341,10 @@ export function buildSignalsFromEvidence(
           },
           fusedSpeedKmh: 0,
         }
-      : { pass: false, reason: 'window-too-small' },
+      : // #2844 — `reason`은 `evaluateConsensusGate`가 `.pass`만 읽고 실제로 참조하지 않는다
+        // (은퇴한 GPS 9단 게이트 시절의 구 reason 값들은 삭제됐다) — 타입 형태를 맞추기 위한
+        // placeholder일 뿐이다.
+        { pass: false, reason: 'silenced' },
     arrivalSignalPresent,
     lockAttachable: options.lockAttachable,
   };

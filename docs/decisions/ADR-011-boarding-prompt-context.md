@@ -12,6 +12,8 @@ ADR Roadmap: "Feature-based + Ports & Adapters Phase 5" (#890) — cross-feature
 
 ## 배경 — 9단 게이트가 조용히 스킵되고 있었다
 
+> **현행화 note (2026-09-30 #2844)**: GPS 9단 발사 경로 은퇴 — GPS-free 공유 본체(`maybeFireOriginBoardingPromptGpsFree`→`fireBoardingPromptForAnchor`) 단일화. subsumption 증명은 이슈 #2844 본문. 아래 `evaluateAndMaybeFireBoardingPrompt`는 코드에서 삭제됐고, `trip.promptGeoContext`/`trip.promptDisplay` 두 필드의 역할(특히 `promptDisplay`)은 GPS-free 경로로 이관됐다 — `promptGeoContext`의 GPS 게이트(#4/#5)용 좌표는 더 이상 사용되지 않는다.
+
 ADR-010에서 정의한 D 방향 B 흐름(자동 BOARDING_PROMPT)은 `backend/alarm-worker/src/scheduled.ts` `evaluateAndMaybeFireBoardingPrompt`에서 9단 AND 게이트를 평가한다. 게이트가 동작하려면 두 필드가 필수다:
 
 - `trip.promptGeoContext` — 게이트 #4(출발역 100m), #5(방향 cosine ≥ 0.7) 평가에 필요한 origin/nextStation 좌표 + 진행 vector

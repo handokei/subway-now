@@ -20,7 +20,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  evaluateBoardingPromptGates,
+  evaluateBoardingPromptRepeatGate,
   pickAutoTrainCode,
 } from '../boardingPrompt';
 import { getArchFlag, setArchFlag, ARCH_FLAG_DEFAULT } from '../archFlag';
@@ -150,21 +150,15 @@ describe('Issue C (#2022) — arvlCd=1 관측 시 boardingPrompt 즉시 발사 c
   /**
    * 사용자 오늘 evidence: 7일 boardingPrompt acceptance = 0/0/0/0. 발사 자체 0회.
    *
-   * gate 는 `archFlag=on` 시 #9(silence/fired) 만 평가 후 pass (`boardingPrompt.ts:258` 확인).
-   * 하지만 caller (scheduled.ts) 에 "arvlCd=1 관측 즉시 발사" 로직 자체가 미구현.
-   * → fix 후 예상: caller 가 archFlag=on + arvlCd=1 explicit check + 즉시 fire path 추가.
+   * #2844 — 이 시절의 gate(`evaluateBoardingPromptGates`, archFlag=on 시 #9만 평가 후 pass)는
+   * subsumption 증명 기반으로 은퇴했다. 남은 dedup 게이트(`evaluateBoardingPromptRepeatGate`)는
+   * archFlag 분기 자체가 없다 — GPS-free 공유 경로가 항상 이 게이트만 직접 호출한다. 아래는 같은
+   * 취지("promptState 부재 = 게이트 준비 OK")를 현재 게이트 함수로 재확인한다.
    */
-  it('archFlag=on gate 통과 조건: arvlCd=1 시 boardingPrompt gate 는 이미 통과 상태 (게이트 준비 O)', () => {
-    // gate 자체는 이미 archFlag=on 지원. 게이트 통과 = "발사 gate 통과 OK". 실 fire 는 caller 책임.
-    const outcome = evaluateBoardingPromptGates({
-      series: [], // archFlag=on 은 series 무관
-      origin: { lat: 37.5560, lng: 127.0824 }, // 중곡 좌표 (approx)
-      nextStation: { lat: 37.5574, lng: 127.0797 }, // 군자 좌표 (approx)
-      now: FIXTURE_NOW,
-      promptState: undefined, // 사용자 응답 0 → 미발사 상태
-      archFlag: 'on',
-    });
-    expect(outcome.pass).toBe(true);
+  it('promptState 부재 시 dedup gate 는 이미 통과 상태 (게이트 준비 O)', () => {
+    // gate 통과 = "발사 gate 통과 OK". 실 fire 는 caller(scheduled.ts) 책임.
+    const outcome = evaluateBoardingPromptRepeatGate(undefined, FIXTURE_NOW);
+    expect(outcome).toBeNull();
   });
 
   it('archFlag=on 시 arvlCd=1 관측 후보 존재 시 trainCode 자동 pick 가능', () => {
@@ -396,38 +390,21 @@ describe('Seoul API arrivals fixture 정합 — cron cycle 재현 입력', () =>
   });
 });
 
-describe('boardingPrompt gate archFlag 매트릭스 — 회귀 방어', () => {
+describe('boardingPrompt dedup gate — 회귀 방어', () => {
   /**
-   * Wave 1 완결 후에도 archFlag=off 회귀는 없어야 함 (기존 9단 gate 유지).
+   * #2844 — 구 "archFlag 매트릭스"(off/on 두 변형)는 `evaluateBoardingPromptGates` 은퇴로
+   * 의미를 잃었다: 그 함수는 archFlag 분기와 무관하게 #9(dedup) 게이트를
+   * `evaluateBoardingPromptRepeatGate`에 항상 먼저 위임했으므로 두 변형의 결과는 원래도
+   * 동일했다 — 남은 게이트 함수를 직접 호출해 같은 회귀 방어를 유지한다.
    */
   // #2130 (Part B-be-2) — "trip당 1회" 정책 폐기. makeBoardingPromptFiredState()는
   // lastFiredAt=FIXTURE_NOW-60_000(1분 전)이라 최소 발사 간격(5분) 게이트로 여전히 차단된다 —
   // reason만 already-fired → fired-too-recently로 바뀐다.
-  it('archFlag=off 시 기존 9단 gate 평가 (최근 발사 promptState 는 fired-too-recently로 차단)', () => {
+  it('최근 발사 promptState 는 fired-too-recently로 차단', () => {
     const firedState = makeBoardingPromptFiredState();
-    const outcome = evaluateBoardingPromptGates({
-      series: [],
-      origin: { lat: 37.5560, lng: 127.0824 },
-      nextStation: { lat: 37.5574, lng: 127.0797 },
-      now: FIXTURE_NOW,
-      promptState: firedState,
-      // archFlag 미지정 = 기존 동작
-    });
-    expect(outcome.pass).toBe(false);
-    if (!outcome.pass) expect(outcome.reason).toBe('fired-too-recently');
-  });
-
-  it('archFlag=on 시 최근 발사 상태는 여전히 차단 (반복 발사 최소 간격 정책 유지)', () => {
-    const firedState = makeBoardingPromptFiredState();
-    const outcome = evaluateBoardingPromptGates({
-      series: [],
-      origin: { lat: 37.5560, lng: 127.0824 },
-      nextStation: { lat: 37.5574, lng: 127.0797 },
-      now: FIXTURE_NOW,
-      promptState: firedState,
-      archFlag: 'on',
-    });
-    expect(outcome.pass).toBe(false);
-    if (!outcome.pass) expect(outcome.reason).toBe('fired-too-recently');
+    const outcome = evaluateBoardingPromptRepeatGate(firedState, FIXTURE_NOW);
+    expect(outcome).not.toBeNull();
+    expect(outcome?.pass).toBe(false);
+    if (outcome && !outcome.pass) expect(outcome.reason).toBe('fired-too-recently');
   });
 });

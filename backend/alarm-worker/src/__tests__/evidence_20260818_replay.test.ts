@@ -196,11 +196,13 @@ describe('evidence 2026-08-18 저녁 BG 환승 시나리오 — 조립 체인 re
 
     const stats = await runOnce(kv, seoul, fetchImpl);
 
-    expect(stats.boardingPromptSkippedEmpty).toBe(0);
-    expect(stats.boardingPromptSkippedTooFar).toBe(0);
-    expect(stats.boardingPromptSkippedStale).toBe(0);
-    expect(stats.boardingPromptEvaluated).toBe(1);
-    expect(stats.boardingPromptFired).toBe(1);
+    // #2844 — GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`)는 subsumption 증명 기반으로
+    // 은퇴했다. leg-1 프롬프트의 유일한 평가 경로는 GPS-free(`maybeFireOriginBoardingPromptGpsFree`)
+    // — subwayId 역파생(#2355)이 candidateTrains를 채우고, 근접 갱신(#2358)이 거리 가드를
+    // 통과시켜 발사되는지를 그 경로의 카운터로 확인한다. GPS-free는 15분 신선도 게이트가 없어
+    // (#2653 설계) `boardingPromptSkippedStale` 대응 카운터 자체가 없다.
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
 
     // candidateTrains payload — device BoardingTrainList 렌더 입력이 실제로 채워졌는지.
     const call = fetchImpl.mock.calls[0];

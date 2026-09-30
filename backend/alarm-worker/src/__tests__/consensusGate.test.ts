@@ -23,7 +23,9 @@ const PASS_GATE: GateOutcome = {
   } as unknown as GateOutcome extends { pass: true; metrics: infer M } ? M : never,
   fusedSpeedKmh: 20,
 };
-const FAIL_GATE: GateOutcome = { pass: false, reason: 'speed-too-low' };
+// #2844 — `reason` 값 자체는 evaluateConsensusGate가 읽지 않는다(.pass만 참조) — 은퇴한 GPS
+// 9단 게이트의 구 reason 값(`speed-too-low`)은 GateSkipReason에서 삭제돼 남은 값 중 하나로 교체.
+const FAIL_GATE: GateOutcome = { pass: false, reason: 'silenced' };
 
 /** signals factory — gateOutcome + arrival + lockAttachable + optional surrogates를 한 곳에서 생성. */
 type SignalOverrides = Partial<Parameters<typeof evaluateConsensusGate>[1]>;

@@ -33,6 +33,7 @@ import { app } from '../index';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { putTrip } from '../trips';
+import { appendPositionPoint } from '../positionSeries';
 import { runScheduled, type ScheduledDeps } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import type { Env, Trip } from '../types';
@@ -191,7 +192,11 @@ describe('evidence 2026-08-04 — geo 부재 무음 skip (#2134)', () => {
     };
   }
 
-  it('promptGeoContext 없는 trip이 cron 1 tick 통과 → boardingPromptSkippedNoContext +1, 발사 0건', async () => {
+  // #2844 — GPS 9단 경로 은퇴 후 leg-1 프롬프트의 유일한 평가 경로는 GPS-free
+  // (`maybeFireOriginBoardingPromptGpsFree`)다. 그 함수는 `trip.promptDisplay` 부재 시 카운터
+  // 증가 없이 조용히 no-op한다(9단 경로의 `boardingPromptSkippedNoContext` 같은 전용 skip
+  // counter가 없다) — "무음 skip"이라는 evidence 취지는 오히려 더 정확히 재현된다.
+  it('promptGeoContext/promptDisplay 없는 trip이 cron 1 tick 통과 → 발사 0건, 카운터도 무변화', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeNoGeoTrip());
     const fetchImpl = vi.fn() as unknown as typeof fetch;
@@ -208,9 +213,8 @@ describe('evidence 2026-08-04 — geo 부재 무음 skip (#2134)', () => {
 
     const stats = await runScheduled(makeEnv(kv), deps);
 
-    expect(stats.boardingPromptSkippedNoContext).toBe(1);
-    expect(stats.boardingPromptFired).toBe(0);
-    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(0);
     expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });
@@ -298,7 +302,15 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     });
   }
 
-  function makeDeps(now: number, trainCode: string, pushId: string): ScheduledDeps {
+  // #2844 — GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`)가 subsumption 증명 기반으로
+  // 은퇴하며, 이 evidence가 검증하던 반복 발사 정책(min-interval/max-fires/train-duplicate/
+  // too-far)의 유일한 평가 경로는 GPS-free(`maybeFireOriginBoardingPromptGpsFree`)가 됐다 —
+  // 두 경로는 `evaluateBoardingPromptRepeatGate` + `trip.boardingPromptState` ledger를 이미
+  // 공유했으므로(#2531 설계) 반복 발사 정책 자체(발사/차단 판정)는 동일하게 재현된다. 카운터만
+  // `boardingPrompt*` → `originGpsFreeBoardingPrompt*`로 바뀐다 — GPS-free는 reason별 전용
+  // counter가 없어(#2531 단일 `originGpsFreeBoardingPromptBlocked`) log capture로 reason을
+  // 직접 확인한다. fixture 값(NOW/trainCode/거리/간격)은 원본 그대로 무수정.
+  function makeDeps(now: number, trainCode: string, pushId: string, log?: ScheduledDeps['log']): ScheduledDeps {
     return {
       seoul: makeOriginScopedSeoul('강남', [arrivedTrain(trainCode)]),
       apnsConfig,
@@ -307,6 +319,7 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
       fetchImpl: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
       generatePushId: () => pushId,
       archFlag: 'on',
+      log,
     };
   }
 
@@ -319,33 +332,40 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     const results: Array<{
       fired: number;
       blocked: number;
-      maxFires: number;
+      reasons: string[];
     }> = [];
 
     for (let i = 0; i < trainCodes.length; i++) {
       const now = NOW + i * FIVE_MIN_MS;
-      const stats = await runScheduled(env, makeDeps(now, trainCodes[i], `push-${i}`));
+      const logCalls: Array<[string, Record<string, unknown> | undefined]> = [];
+      const stats = await runScheduled(
+        env,
+        makeDeps(now, trainCodes[i], `push-${i}`, (message, meta) => {
+          logCalls.push([message, meta]);
+        }),
+      );
       results.push({
-        fired: stats.boardingPromptFired,
-        blocked: stats.boardingPromptBlocked,
-        maxFires: stats.boardingPromptSkippedMaxFires,
+        fired: stats.originGpsFreeBoardingPromptFired,
+        blocked: stats.originGpsFreeBoardingPromptBlocked,
+        reasons: logCalls
+          .filter(([message]) => message === 'origin-boarding-prompt-gps-free: gate blocked')
+          .map(([, meta]) => String(meta?.reason)),
       });
     }
 
     // 1~3번째 열차: 각 5분 간격 + 서로 다른 trainCode → 매번 발사.
-    expect(results[0]).toEqual({ fired: 1, blocked: 0, maxFires: 0 });
-    expect(results[1]).toEqual({ fired: 1, blocked: 0, maxFires: 0 });
-    expect(results[2]).toEqual({ fired: 1, blocked: 0, maxFires: 0 });
-    // 4번째: fireCount=3(MAX_FIRE_COUNT) 도달 → hard cap 차단. 15분 신선도 경계는 아직 안 넘음
-    // (now - createdAt === 15분, stale 게이트는 "초과"만 차단하므로 여기 도달).
-    expect(results[3]).toEqual({ fired: 0, blocked: 1, maxFires: 1 });
+    expect(results[0]).toEqual({ fired: 1, blocked: 0, reasons: [] });
+    expect(results[1]).toEqual({ fired: 1, blocked: 0, reasons: [] });
+    expect(results[2]).toEqual({ fired: 1, blocked: 0, reasons: [] });
+    // 4번째: fireCount=3(MAX_FIRE_COUNT) 도달 → hard cap 차단. 15분 신선도 경계는 아직 안 넘음.
+    expect(results[3]).toEqual({ fired: 0, blocked: 1, reasons: ['max-fires-reached'] });
 
     const persisted = JSON.parse((await kv.get(`trip:${TOKEN}`))!);
     expect(persisted.boardingPromptState.fireCount).toBe(3);
     expect(persisted.boardingPromptState.firedTrainCodes).toEqual(['TR-A', 'TR-B', 'TR-C']);
   });
 
-  it('같은 trainCode 재관측 → boardingPromptSkippedTrainDuplicate (반복 발사 대상 아님)', async () => {
+  it('같은 trainCode 재관측 → 반복 발사 대상 아님으로 차단', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeNearbyTrip());
     const env = makeEnv(kv);
@@ -353,27 +373,50 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     // 1차 발사.
     await runScheduled(env, makeDeps(NOW, 'TR-SAME', 'push-0'));
     // 2차: 5분 후, 같은 trainCode 재관측.
-    const stats = await runScheduled(env, makeDeps(NOW + FIVE_MIN_MS, 'TR-SAME', 'push-1'));
+    const logCalls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const stats = await runScheduled(
+      env,
+      makeDeps(NOW + FIVE_MIN_MS, 'TR-SAME', 'push-1', (message, meta) => {
+        logCalls.push([message, meta]);
+      }),
+    );
 
-    expect(stats.boardingPromptFired).toBe(0);
-    expect(stats.boardingPromptSkippedTrainDuplicate).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(
+      logCalls.some(
+        ([message]) => message === 'origin-boarding-prompt-gps-free: skipped train duplicate',
+      ),
+    ).toBe(true);
   });
 
-  it('5분 미만 간격 재발사 시도 → boardingPromptSkippedMinInterval', async () => {
+  it('5분 미만 간격 재발사 시도 → fired-too-recently로 차단', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeNearbyTrip());
     const env = makeEnv(kv);
 
     await runScheduled(env, makeDeps(NOW, 'TR-1', 'push-0'));
     // 2분 후 — 5분 최소 간격 미달. 다른 trainCode라 duplicate 게이트는 통과하지만
-    // min-interval 게이트가 먼저 차단.
-    const stats = await runScheduled(env, makeDeps(NOW + 2 * 60 * 1000, 'TR-2', 'push-1'));
+    // min-interval(fired-too-recently) 게이트가 먼저 차단.
+    const logCalls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const stats = await runScheduled(
+      env,
+      makeDeps(NOW + 2 * 60 * 1000, 'TR-2', 'push-1', (message, meta) => {
+        logCalls.push([message, meta]);
+      }),
+    );
 
-    expect(stats.boardingPromptFired).toBe(0);
-    expect(stats.boardingPromptSkippedMinInterval).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(
+      logCalls.some(
+        ([message, meta]) =>
+          message === 'origin-boarding-prompt-gps-free: gate blocked' &&
+          meta?.reason === 'fired-too-recently',
+      ),
+    ).toBe(true);
   });
 
-  it('스탬프 227m(자택) 차단 → boardingPromptSkippedTooFar', async () => {
+  it('스탬프 227m(자택) 차단 → 근접 가드로 미발사', async () => {
     const kv = new InMemoryKV();
     await putTrip(
       kv as unknown as KVNamespace,
@@ -388,12 +431,21 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
       }),
     );
     const env = makeEnv(kv);
+    // #2653 — GPS-free 거리 가드는 정적 스냅샷을 신뢰하려면 같은 token의 positionSeries에
+    // 최근·양호한 live GPS 샘플이 필요하다(원본 9단 게이트에는 없던 요구사항) — 227m 원거리를
+    // "신뢰 가능한 관측"으로 만들기 위해 시드한다.
+    await appendPositionPoint(kv as unknown as KVNamespace, TOKEN, {
+      lat: 0,
+      lng: 0,
+      accuracy: 9,
+      ts: NOW,
+      motion: 'stationary',
+    });
 
     const stats = await runScheduled(env, makeDeps(NOW, 'TR-HOME', 'push-0'));
 
-    expect(stats.boardingPromptFired).toBe(0);
-    expect(stats.boardingPromptSkippedTooFar).toBe(1);
-    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
   });
 
   it('스탬프 부재(지하) → 근접 게이트 우회, 발사 허용', async () => {
@@ -413,8 +465,7 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
 
     const stats = await runScheduled(env, makeDeps(NOW, 'TR-UNDERGROUND', 'push-0'));
 
-    expect(stats.boardingPromptSkippedTooFar).toBe(0);
-    expect(stats.boardingPromptFired).toBe(1);
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
   });
 });
 

@@ -36,7 +36,7 @@
 | fallback.ts:67,139 | 함정 | stale-intermediate 체크가 implicit-ACK보다 **먼저** — 순서 뒤집히면 회귀 관측 자체가 죽음 | 부분 |
 | alarm.ts:41 | 불변식 | ARRIVAL_CODE 숫자 우연 일치해도 타 코드체계 재사용 금지 | **없음** |
 | scheduled.ts:7405 | 불변식 | 프롬프트는 임박 열차 있을 때만 발사(#2801 재발 방지, arvlCd∈{0,1,2} OR-fallback) | 있음(#2834 + replay_20260930_leg2_prompt) |
-| boardingPrompt.ts:176 / scheduled.ts:6842 | 함정 | boarding-prompt "임박" 게이트 정의가 2벌 공존 — 공유본체(`decideBoardingPromptFire`, leg-1 GPS-free/leg-2)는 arvlCd∈{0,1,2} OR-fallback(관측불가 포함 발사), GPS 9단 경로(`hasArrivedSignal`, archFlag=on 전용)는 arvlCd=1(ARRIVED) 단독 hard check — 의미 drift 주의. 통합은 별도 결정(2026-09-30 교차추적 감사 발견, 이 항목은 기록만 — #2838 범위 아님) | **없음** |
+| ~~boardingPrompt.ts:176 / scheduled.ts:6842~~ | (해소, #2844) | ~~boarding-prompt "임박" 게이트 정의 2벌 공존~~ — GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`/`hasArrivedSignal`)를 subsumption 증명 기반으로 은퇴시켜 게이트 정의가 공유 본체(`decideBoardingPromptFire`, boardingPrompt.ts) 단일화로 수렴. leg-1(`maybeFireOriginBoardingPromptGpsFree`)/leg-2 모두 이 하나만 사용 — drift 재발 불가(구현 자체가 삭제됨) | N/A (게이트 자체 삭제) |
 
 ## 2. Device — alarm / Live Activity / Swift
 

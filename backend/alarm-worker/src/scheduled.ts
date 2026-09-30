@@ -28,21 +28,17 @@ import {
 } from './apns';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
-import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import { CRON_INTERVAL_MS } from './cronConstants';
 import {
   type BoardingFireDecision,
   decideBoardingPromptFire,
-  evaluateBoardingPromptGates,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
   isNearOrigin,
   markPromptFired,
   pickAutoTrainCode,
-  PROMPT_FRESHNESS_MS,
   shouldStampOriginProximity,
-  type GateSkipReason,
 } from './boardingPrompt';
 import { isBoardingPromptFireOnceBlocked, stampBoardingPromptFireOnce } from './boardingPromptFireOnce';
 import { computeMultiHopContext } from './tripMultiHop';
@@ -68,7 +64,6 @@ import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
   advanceTripPosition,
-  mapEvidenceEnvironment,
   type AdvanceBlockReason,
   type AdvanceEvidence,
   type EvidenceEnvironment,
@@ -700,11 +695,16 @@ export interface ScheduledStats extends LiveActivityStats {
    * 정상 운영에서 0건 기대. 0이 아니면 로그의 stationName/line으로 drift 원인 역 식별.
    */
   waypointEnvironmentLookupMiss: number;
-  /** #819 — boarding-prompt 게이트 평가가 한 번이라도 시도된 trip 수 (lockMissing 부분집합). */
+  // #2844 — 아래 boardingPrompt* 카운터 군(evaluated/fired/blocked/skipped*)은 GPS 9단 AND
+  // 게이트 경로(`evaluateAndMaybeFireBoardingPrompt`)가 subsumption 증명 기반으로 은퇴하며
+  // 영구 0으로 수렴한다(필드 자체는 관측 계약 하위호환을 위해 유지). leg-1 발사는 이제
+  // `originGpsFreeBoardingPrompt*` 카운터로만 관측한다 — 1주 측정 plan(PR #2844)이 이 전이를
+  // 확인한다.
+  /** #819 (2026-09-30 #2844로 은퇴, 영구 0) — boarding-prompt 게이트 평가가 시도된 trip 수. */
   boardingPromptEvaluated: number;
-  /** #819 — 9단 AND 게이트를 모두 통과해 alert push가 발사된 횟수 (측정 인프라). */
+  /** #819 (2026-09-30 #2844로 은퇴, 영구 0) — 9단 AND 게이트를 모두 통과해 발사된 횟수. */
   boardingPromptFired: number;
-  /** #819 — 게이트 차단으로 미발사한 횟수 — false positive 1차 방어 효과 측정. */
+  /** #819 (2026-09-30 #2844로 은퇴, 영구 0) — 게이트 차단으로 미발사한 횟수. */
   boardingPromptBlocked: number;
   /**
    * #825 — phase 분류가 'high-confidence non-APPROACHING'으로 lockless imminent 발사를
@@ -1806,30 +1806,26 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           continue;
         }
       }
-      // #2131 (Part A-2, ADR-014 동급 보장) — boarding-prompt 9단 게이트 평가를 lockless
+      // #2131 (Part A-2, ADR-014 동급 보장) — boarding-prompt leg-1 평가를 lockless
       // intermediate 분기보다 앞으로 hoist. 기존엔 `trip.infoModeEnabled && waypoint.kind ===
       // 'intermediate'`인 trip이 이 지점에 도달하지 못하고 `runLocklessIntermediate` +
       // `continue`로 빠져나가 boarding-prompt 평가가 영구 skip되는 회귀가 있었다 — C 토글
       // ON(사용자 명시 의향) trip이 lock 활성 trip과 동급 정확도를 보장받지 못한 것.
       // 조건: lock 없음(바깥 `if (!isBoardingLockActive(...))`가 이미 보장) +
-      // `promptState.fired` 아님 — 두 조건 모두 `evaluateAndMaybeFireBoardingPrompt` 내부에서
-      // 이미 강제된다(F2 lock-active 방어 + 게이트 #9 already-fired dedup). 여기서는 호출
+      // `promptState.fired` 아님 — 두 조건 모두 `maybeFireOriginBoardingPromptGpsFree` 내부에서
+      // 이미 강제된다(F2 lock-active 방어 + repeat-gate already-fired dedup). 여기서는 호출
       // 위치만 앞으로 옮기고 별도 pre-check는 두지 않는다 — 이중 게이트로 인한 관측(counter)
       // 손실을 피하기 위함(기존 boardingPromptBlocked/already-fired 회귀 신호 보존).
       // `runLocklessIntermediate` 호출 자체와 순서는 아래에서 불변 유지 (#1967 kill switch 의미
       // 보존 — kill switch는 그 함수 내부에서만 게이트한다).
-      try {
-        await evaluateAndMaybeFireBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
-      } catch (e) {
-        stats.errors += 1;
-        log('boarding-prompt: evaluation error', {
-          error: String(e),
-          token: trip.token.slice(0, 8),
-        });
-      }
-      // #2531 — 위 GPS 9단 게이트 경로 직후 GPS-free fallback을 호출한다. GPS 경로가 우선권을
-      // 갖고(먼저 평가), 지하 GPS stale로 위 경로가 영구 막힌 origin trip만 이 경로로 보충
-      // 발사된다 — 공유 dedup(`trip.boardingPromptState`)이 더블발사를 구조적으로 차단한다.
+      //
+      // #2844 — GPS 9단 AND 게이트 경로(`evaluateAndMaybeFireBoardingPrompt`)를 subsumption
+      // 증명(코드 대조, 이슈 #2844 본문) 기반으로 은퇴했다. 9단 경로가 정당하게 발사하는 모든
+      // 상황(prod archFlag='on' 전제)에서 아래 GPS-free 경로도 발사했고, 9단 경로에만 있던
+      // 차이는 `originProximityAt`을 5분 갱신 없이 15분만 재검사해 사용자가 origin을 이미 떠난
+      // 뒤에도 발사될 수 있는 유해 발사 창이었다 — 아래 GPS-free 경로는 그 창을 이미 정확히
+      // 차단한다(#2653 anchor freshness). `archFlag`가 'off'로 롤백돼도 9단 경로는 코드 자체가
+      // 삭제되어 되살아나지 않는다(PR #2844 본문 명시).
       try {
         await maybeFireOriginBoardingPromptGpsFree(trip, env, deps, stats, now, log, generatePushId);
       } catch (e) {
@@ -1840,7 +1836,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         });
       }
       // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2(`currentLegAnchor`)에는 위
-      // origin 전용 `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트, `promptDisplay` 기반)가
+      // origin 전용 `maybeFireOriginBoardingPromptGpsFree`(leg-1 전용, `promptDisplay` 기반)가
       // 적용되지 않는다(leg 2에서는 `promptDisplay`가 stale이라 이미 자연 skip). 별도의 GPS-free
       // 도보시간 게이트 함수로 leg 2 "탑승하셨나요?" 프롬프트를 평가한다. `currentLegAnchor` 없으면
       // (leg 1 이거나 아직 환승 전) 함수 내부에서 즉시 no-op.
@@ -3342,39 +3338,13 @@ async function recordHopEndPromptTransition(
   );
 }
 
-/**
- * #2708 (방어선 계측 only) — leg-1 전용 `evaluateAndMaybeFireBoardingPrompt`가
- * `trip.currentLegAnchor` 활성 중 stale `trip.promptDisplay`로 발사를 시도할 뻔해 skip한 시점을
- * SSoT 마커(`originPromptSkippedForLegAnchor`)와 비교해 최초 전이 시에만 D1
- * `trip_events`(kind='boarding-prompt-leg-mismatch')로 append한다(#2073 quota 보호). 정상
- * 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에 `promptDisplay`를 지워(#2708
- * 요구사항 1) 이 분기 도달 자체가 없다 — 도달했다면 그 자체가 회귀 신호다. 발사/advance/lock
- * 판정에는 관여하지 않는다.
- */
-async function recordOriginPromptLegMismatchSkip(
-  env: Env,
-  trip: Trip,
-  ssot: TripPositionSSoT | null,
-  now: number,
-): Promise<void> {
-  if (ssot === null || ssot.originPromptSkippedForLegAnchor === true) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, originPromptSkippedForLegAnchor: true },
-    { expiresAt: trip.expiresAt },
-  );
-  await recordTripEvent(
-    env.DB,
-    {
-      tokenHash: hashTripToken(trip.token),
-      kind: 'boarding-prompt-leg-mismatch',
-      station: trip.currentLegAnchor?.boardingStation,
-      line: trip.currentLegAnchor?.line,
-      meta: { staleDisplayLine: trip.promptDisplay?.line },
-    },
-    now,
-  );
-}
+// #2844 — `recordOriginPromptLegMismatchSkip`(구 #2708 방어선 계측)는 leg-1 전용
+// `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트) 자체의 내부 defense-in-depth 진단이었다
+// (해당 함수가 stale `trip.promptDisplay`로 발사를 시도할 뻔한 순간만 감지). 함수 전체가
+// 은퇴하며 이 진단도 함께 제거한다 — GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`)는
+// `trip.currentLegAnchor` 존재 시 `trip.promptDisplay`를 아예 읽기 전에 즉시 return하므로
+// (scheduled.ts:7652 부근) 같은 클래스의 오발사가 애초에 구조적으로 불가능 — 별도 진단이
+// 필요 없다.
 
 async function recordFireAttempt(
   env: Env,
@@ -4899,7 +4869,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       return;
     }
     // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
-    // isBoardingLockActive=false가 되는 즉시 다음 cycle의 evaluateAndMaybeFireBoardingPrompt 경로 복구.
+    // isBoardingLockActive=false가 되는 즉시 다음 cycle의 boardingPrompt(GPS-free) 경로 복구.
     // #1370 L3 — lock release 후 lockless 인계가 실제로 작동하려면 trip.infoModeEnabled가
     // true여야 한다(`if (!isBoardingLockActive) → if (trip.infoModeEnabled && intermediate)`).
     // OFF인 trip은 다음 cycle에서 lockMissing으로 spin하며 군자/중곡까지 push 0건. vanish fallback은
@@ -5750,7 +5720,7 @@ async function completeWaypointAdvance(
   trip.lastLaPushAt = undefined;
   // #864 — transfer waypoint 통과 = 직전 train segment 종료. lock을 유지하면 다음 cycle이
   // 새 line(예: 5호선)에서 옛 trainCode(예: 7327)를 찾아 etaMissing 5회 후 trip auto-end로 사망.
-  // lock을 release하면 다음 cycle은 isBoardingLockActive=false → evaluateAndMaybeFireBoardingPrompt
+  // lock을 release하면 다음 cycle은 isBoardingLockActive=false → boardingPrompt(GPS-free)
   // 가 사용자에게 환승 train 선택을 prompt하고, 클라이언트의 createTransferLock이 새 lock을 등록.
   // segmentStations도 직전 leg 기준이라 위치 fallback 폴링도 더는 의미 없음.
   //
@@ -5920,7 +5890,7 @@ async function completeWaypointAdvance(
   // `maybeFireSleepAlarm`)으로 이관됐다.
   // #1729 paradigm shift — 환승 직후 자동 trainCode swap 제거(Path B' 환승 버전).
   // 사용자가 BoardingTrainList에서 명시 탭하지 않은 trainCode에 backend가 자동으로 lock 부착 X.
-  // 다음 cron cycle에서 lockMissing → evaluateAndMaybeFireBoardingPrompt → boardingPrompt push 발사.
+  // 다음 cron cycle에서 lockMissing → boardingPrompt(GPS-free) → boardingPrompt push 발사.
   log('boarding-lock: waypoint advanced', {
     token: trip.token.slice(0, 8),
     completed: waypoint.stationName,
@@ -6829,22 +6799,14 @@ export function buildHopEndPromptMessage(
  * 이 조건에 한해서만 self-heal retry를 시도한다.
  */
 
-/**
- * #2022 (ADR-022 B8 caller 완결) — archFlag=on 분기의 fire trigger.
- *
- * Seoul API pool 안에 arvlCd=1(ARRIVED) 신호가 최소 1개 이상 존재하는지 검사.
- * 사용자 확정 flow "A역 도착 판정 → boardingPrompt" 정합 — arvlCd=0(진입 중)/
- * arvlCd=2(출발)/기타 상태에서는 fire trigger 미충족 (UI 오탐 방지).
- *
- * caller 는 archFlag=on 분기에서만 호출. archFlag=off 는 기존 9-AND gate 가
- * fire trigger 이므로 이 함수를 통과하지 않는다 (회귀 방어).
- */
-export function hasArrivedSignal(pool: readonly ArrivalEntry[]): boolean {
-  return pool.some((entry) => entry.arvlCd === ARRIVAL_CODE.ARRIVED);
-}
+// #2844 — `hasArrivedSignal`(#2022, archFlag=on 분기의 fire trigger)는
+// `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트) 전용 ARRIVED-only 검사였다. 함수 전체가
+// 은퇴하며 이 검사도 제거된다 — 공유 발사 본체(`fireBoardingPromptForAnchor`)는 더 관대한
+// `decideBoardingPromptFire`(임박집합 {0,1,2} + null-fallback, boardingPrompt.ts)를 이미 사용한다
+// (#2844 subsumption 증명: 9단 hasArrivedSignal ⊂ decideBoardingPromptFire).
 
 /**
- * #2515 — boarding-prompt 계열(origin `evaluateAndMaybeFireBoardingPrompt` + leg 2
+ * #2515 — boarding-prompt 계열(origin `maybeFireOriginBoardingPromptGpsFree` + leg 2
  * `maybeFireLegBoardingPrompt`) 공용 push 실패 기록. 두 caller의 실패 분기가 동일한
  * `logPushFailure` 인자 구성을 그대로 반복해 SonarCloud 중복 임계를 넘겨 추출(리뷰 요청).
  */
@@ -6869,549 +6831,28 @@ async function logBoardingPromptPushFailure(
 }
 
 /**
- * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
+ * #2531 — leg-1(origin) "탑승했냐?" 프롬프트 GPS-free 경로.
  *
- * lockMissing 분기에서만 호출. promptGeoContext가 없으면 skip — backend는 stations 좌표를
- * 갖지 않으므로 평가 자체 불가. 9단 AND 게이트 평가는 evaluateBoardingPromptGates에 위임.
+ * #2844 (subsumption 증명 기반 은퇴) — 이전엔 GPS 9단 AND 게이트(`evaluateAndMaybeFireBoardingPrompt`)가
+ * 먼저 평가되고 이 함수는 그 경로가 지하 GPS stale로 막혔을 때의 보충 발사였다. 9단 경로가
+ * 발사하는 모든 정당한 상황(archFlag='on' 전제)에서 이 함수도 발사한다는 것을 증명하고 —
+ * 9단 경로 고유의 유일한 차이는 `originProximityAt` 15분 freshness만 재검사해 사용자가 이미
+ * origin을 떠난 뒤에도 발사될 수 있는 유해 발사 창이었다(이 함수의 #2653 거리 가드가 정확히
+ * 그 창을 막는다) — 이제 이 함수가 leg-1(origin) 프롬프트의 유일한 발사 경로다. `archFlag`가
+ * 다시 'off'로 롤백돼도 9단 경로는 되살아나지 않는다(코드 자체가 삭제됨, PR 본문에 명시).
  *
- * 발사 성공:
- *   - alert push (BOARDING_PROMPT category)로 [탑승]/[미탑승] 액션 노출
- *   - trip.boardingPromptState = markPromptFired(now, prev, trainCode) → KV 저장. #2130
- *     (Part B-be-2) 이후 "trip당 1회" 정책 폐기 — 15분 창 내 trainCode별 반복 발사(A4).
- *   - boardingPromptFired stat +1
- *
- * 차단:
- *   - boardingPromptBlocked stat +1 (게이트 reason 로그)
- *
- * 좌표 컨텍스트 부재:
- *   - no-op (silent skip, blocked 카운트 안 함 — 게이트 평가 안 한 것과 평가 후 차단 분리)
- */
-export async function evaluateAndMaybeFireBoardingPrompt(
-  trip: Trip,
-  env: Env,
-  deps: ScheduledDeps,
-  stats: ScheduledStats,
-  now: number,
-  log: Logger,
-  generatePushId: () => string,
-): Promise<void> {
-  // #1921 — F2 defense. boarding-prompt는 boarding 이전 게이트 — lock이 이미 활성인 trip은
-  // cron 진입 자체가 의미 없음. 호출 시점에서 lockMissing 분기를 통과했다는 사실은
-  // `isBoardingLockActive(trip, now) === false`라는 invariant이므로 정상 케이스에서 본 분기는
-  // 발동되지 않는다. lock-active trip이 lockMissing 분기로 진입한다면 race(예: lock 만료 직후
-  // 같은 cycle) 또는 isBoardingLockActive 판정 변경 — counter로 측정해 회귀 진단.
-  if (trip.boardingLock !== undefined) {
-    stats.boardingPromptSkippedLockActive += 1;
-    log('boarding-prompt: skip (lock active, F2 defense)', {
-      token: trip.token.slice(0, 8),
-      boardingLine: trip.boardingLock.line,
-      // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
-      sleepMode: trip.sleepModeEnabled,
-    });
-    return;
-  }
-
-  // #2651 — boarding-prompt opt-in(안내 시작) trip만 대상. 이전엔 이 GPS 9단 경로에 opt-in
-  // 게이트가 전혀 없어, route+destination만 설정(안내 시작 안 누름)해도 프롬프트가 발사됐다 —
-  // GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`)와 동일 게이트를 여기도 추가한다.
-  //
-  // #2651 (PR #2772 리뷰) — `promptOptIn === true || trip.infoModeEnabled === true`로 OR.
-  // `infoModeEnabled`는 boardingPrompt [탑승] 응답 / BoardingTrainList 직접 탭으로만 stamp되는
-  // "사용자 명시 의향" 신호다(CLAUDE.md "C 토글 ON / boardingPrompt 응답 / 직접 탭 = lock 활성과
-  // 동급 정확도 보장 의무"). 이미 응답/탭으로 의향을 표명한 trip이 이후 lock 해제(예: 환승 후
-  // 재확정 실패)로 lockMissing 분기에 돌아왔을 때 재프롬프트를 받으려면, "안내 시작"을 다시
-  // 누르지 않았다는 이유로 침묵시켜선 안 된다 — promptOptIn 단독 게이트는 이 trip을 부당하게
-  // 차단한다. `index.ts`의 lockless progress carry-over 조건도 이미 두 필드를 동등 opt-in으로
-  // 취급한다(같은 PR). backend 자체 stamp 경로(`trip.infoModeEnabled = true`, lockless takeover)도
-  // 이 OR로 자연히 커버된다 — 목적지만 설정하고 둘 다 false인 trip은 기존과 동일하게 침묵한다.
-  if (trip.promptOptIn !== true && trip.infoModeEnabled !== true) {
-    stats.boardingPromptSkippedNoOptIn += 1;
-    log('boarding-prompt: skip (no promptOptIn/infoModeEnabled — 안내 시작 안 함 + 의향 이력 없음)', {
-      token: trip.token.slice(0, 8),
-    });
-    return;
-  }
-
-  // #2708 — currentLegAnchor가 stamp되면 leg-2(`maybeFireLegBoardingPrompt`)가 권위다. 정상
-  // 경로에서는 `stampCurrentLegAnchor`가 anchor stamp와 동시에 stale `trip.promptDisplay`(이전
-  // leg)를 지워(#2708 요구사항 1) 이 leg-1 전용 함수가 바로 아래 `!display` 분기로 자연 skip된다.
-  // 아래는 그 전제가 깨진 경우(레거시 KV 레코드 등)의 방어선(#2708 요구사항 2/3) — 이 함수는
-  // `promptDisplay.line`(이전 노선) 기준으로만 후보를 찾으므로 currentLegAnchor.line과 애초에
-  // 일치할 수 없어, 발사되면 반드시 이전 노선 열차다. 평가 자체를 skip하고 사유를 D1에 남긴다
-  // (#2708 요구사항 3/4).
-  if (trip.currentLegAnchor !== undefined) {
-    stats.boardingPromptSkippedLegAnchorActive += 1;
-    log('boarding-prompt: skip (currentLegAnchor active — leg-2 authoritative, stale leg-1 promptDisplay ignored)', {
-      token: trip.token.slice(0, 8),
-      anchorLine: trip.currentLegAnchor.line,
-      anchorStation: trip.currentLegAnchor.boardingStation,
-      displayLine: trip.promptDisplay?.line,
-    });
-    const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
-    await recordOriginPromptLegMismatchSkip(env, trip, ssot, now);
-    return;
-  }
-
-  const geo = trip.promptGeoContext;
-  const display = trip.promptDisplay;
-  if (!geo || !display) {
-    stats.boardingPromptSkippedNoContext += 1;
-    log('boarding-prompt: skip (no geo/display context)', {
-      token: trip.token.slice(0, 8),
-      hasGeo: geo !== undefined,
-      hasDisplay: display !== undefined,
-      // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
-      sleepMode: trip.sleepModeEnabled,
-    });
-    return;
-  }
-
-  // #2351 (2026-09-12) — 방향 오표시 가드. leg-1 boarding-prompt는 originStation(=display, trip
-  // 최초 출발역, 절대 갱신 안 됨)에 앵커되는데, nextStation은 waypoints[0](advance됨)에서 온다.
-  // trip이 origin의 leg를 벗어나 advance하면(= waypoints[0]이 origin과 다른 노선) origin(고정)과
-  // nextStation(advance)이 발산해 "용마산(7호선)→뚝섬(2호선) 방면" 같은 오방향 메시지가 발사된다.
-  // 환승 후 leg는 currentLegAnchor 기반 maybeFireLegBoardingPrompt가 담당하므로, 여기서는 교차-leg
-  // stale 프롬프트를 조기 skip한다(origin leg 이탈 = 이 origin-앵커 프롬프트는 더 이상 유효하지 않음).
-  const headWaypoint = trip.waypoints[0];
-  if (headWaypoint !== undefined && headWaypoint.line !== display.line) {
-    stats.boardingPromptSkippedStale += 1;
-    log('boarding-prompt: skip (advanced past origin leg — waypoint line != display line)', {
-      token: trip.token.slice(0, 8),
-      displayLine: display.line,
-      headLine: headWaypoint.line,
-      headStation: headWaypoint.stationName,
-    });
-    return;
-  }
-
-  let dirty = false;
-
-  // #2153 — 근접 게이트 판정(`isNearOrigin`, boardingPrompt.ts 공용 함수 — `/position` 핸들러와
-  // 재사용)을 신선도 게이트보다 먼저 계산해 anchor 재정의에 재사용한다. distance/accuracy 둘 다
-  // 있을 때만 "너무 멀다" 판정 가능 — 부재(지하/구 클라)는 관대 허용(too-far 아님).
-  const { originDistanceM, originAccuracyM } = geo;
-  const hasProximityReading = originDistanceM !== undefined && originAccuracyM !== undefined;
-  const nearOrigin = isNearOrigin(originDistanceM, originAccuracyM);
-  // #2350 — live anchor 전환. `promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips
-  // 등록 시점의 정적 스냅샷이라 이후 절대 갱신되지 않는다(index.ts:1564). `/position` 채널이
-  // 이미 근접을 실시간 관측해 `trip.originProximityAt`을 stamp했다면, 그 정적 스냅샷이 여전히
-  // "멀다"를 가리켜도 근접 게이트로 영구 차단해선 안 된다(집에서 경로 미리 설정 후 도보 이동
-  // 케이스). anchor가 아직 없을 때만(=live 근접 확인 이력 없음) 정적 스냅샷으로 판단한다.
-  const isTooFarFromOrigin = hasProximityReading && !nearOrigin && trip.originProximityAt === undefined;
-
-  // #2358 (RCA — #2153 원안 결함) — 최초 1회만 stamp하고 영구 고정하면 "출발역에서 계속
-  // 대기 중"인 실 시나리오가 15분을 넘기는 순간 근접이 실시간으로 계속 확인되는 중에도
-  // 영구히 SkippedStale로 막힌다. `shouldStampOriginProximity`(ORIGIN_PROXIMITY_RENEWAL_MS,
-  // 5분)로 근접이 관측되는 동안 anchor를 주기적으로 재stamp — "계속 근접 확인 중"이면 신선도
-  // 창이 만료되지 않는다. 매 cycle 무조건 쓰지 않고 스로틀링해 KV write 최소화(#2073 lesson).
-  //
-  // #2153 (리뷰 P1) — 이 cron 경로는 `trip.promptGeoContext`가 register 시점의 정적 스냅샷이라
-  // 재등록 트리거(currentStation null→non-null 등)가 안 오면 값이 절대 갱신되지 않는 구조적
-  // 한계가 있다(집에서 route 설정 후 재등록 없이 도보 이동하는 케이스). 실시간 anchor의 주 경로는
-  // `/position`(10초 주기, index.ts stampOriginProximityIfNeeded) — 이 cron 분기는 register/heal로
-  // 이미 갱신된 케이스를 추가로 커버하는 보조 경로로 유지.
-  if (nearOrigin && shouldStampOriginProximity(trip.originProximityAt, now)) {
-    trip.originProximityAt = now;
-    dirty = true;
-  }
-
-  // #2153 — 신선도 게이트 기준 시각(anchor) 재정의. route 설정 시각(`createdAt`)이 아니라
-  // "탑승 근접 시각"(`originProximityAt`) 기준으로 15분 창을 판정한다. 근접 관측 전(stamp
-  // 미존재)에는 fallback으로 createdAt을 그대로 쓴다 — 근접 전에는 아래 근접 게이트가 이미
-  // 발사를 차단하므로 창을 보수적으로 연장하는 효과가 없다(#2153 스펙).
-  const freshnessAnchor = trip.originProximityAt ?? trip.createdAt;
-  if (now - freshnessAnchor > PROMPT_FRESHNESS_MS) {
-    stats.boardingPromptSkippedStale += 1;
-    log('boarding-prompt: skip (stale, past freshness window)', {
-      token: trip.token.slice(0, 8),
-      ageMs: now - freshnessAnchor,
-      anchoredToProximity: trip.originProximityAt !== undefined,
-    });
-    // #2153 (리뷰 P1) — dirty는 이 cycle에 `nearOrigin`이 true일 때만 set되고(위 stamp 블록),
-    // 그 경우 freshnessAnchor는 방금 stamp된 `now`라 age=0 — 이 stale 분기는 같은 cycle에
-    // 도달 불가하다. dirty=true로 이 지점에 도달하는 경로가 없어 putTrip 호출을 넣지 않는다
-    // (도달 불가 dead code 방지).
-    return;
-  }
-
-  // #2130 (Part B-be-1) — 근접 게이트. isTooFarFromOrigin이면 발사 skip.
-  if (isTooFarFromOrigin) {
-    stats.boardingPromptSkippedTooFar += 1;
-    log('boarding-prompt: skip (too far from origin)', {
-      token: trip.token.slice(0, 8),
-      originDistanceM: geo.originDistanceM,
-      originAccuracyM: geo.originAccuracyM,
-    });
-    // #2153 (리뷰 P1) — 위와 동일 이유. isTooFarFromOrigin=true는 nearOrigin=false를 함의하므로
-    // dirty=true(=nearOrigin true였던 cycle)와 동시에 성립할 수 없다 — dead code 방지.
-    return;
-  }
-
-  // #916 follow-up B — fired+clear 분기 회복. 직전 auto-prompt 발사 윈도우 안에 다시 들어왔다면
-  // 평가 자체를 skip — boardingPromptState가 isSameSession=false로 리셋됐거나 lock이 클리어된
-  // 직후 같은 trip token이 lockMissing으로 돌아온 케이스. 같은 trip 컨텍스트의 중복 auto-prompt
-  // 시도/푸시를 차단한다 (윈도우 만료 후엔 자연 재평가 — 새 leg/새 trip은 fresh).
-  //
-  // #2130 (Part B-be-2) — `trip.boardingPromptState !== undefined`(=같은 trip 내 반복 발사 상태가
-  // 살아있음)면 이 30분 게이트를 적용하지 않는다. 반복 발사(A4)는 그보다 촘촘한
-  // `evaluateBoardingPromptRepeatGate`(최소 간격 5분 + 최대 3회 + dismiss silence)가 이미 스팸을
-  // 막으므로, 이 게이트가 겹쳐 걸리면 같은 trip 안에서 2번째 열차조차 30분간 완전히 못 쏜다.
-  // 이 게이트는 원래 목적(boardingPromptState가 undefined로 리셋된 케이스)에서만 발동한다.
-  if (
-    trip.boardingPromptState === undefined &&
-    trip.lastAutoPromptedAt !== undefined &&
-    now - trip.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
-  ) {
-    stats.boardingPromptAutoDeduped += 1;
-    log('boarding-prompt: auto-deduped (within window)', {
-      token: trip.token.slice(0, 8),
-      ageMs: now - trip.lastAutoPromptedAt,
-    });
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  stats.boardingPromptEvaluated += 1;
-
-  // #2007 — archFlag=on 시 runFusionStep 이 Kalman 계산/write/phase 를 skip.
-  // fusion.kalmanKmh=null → boardingPrompt 게이트 #7 fusedSpeed 에서 weight=0 → 자연 참조 skip.
-  const fusion = await runFusionStep(trip, env, now, deps.archFlag);
-  // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
-  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
-  // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
-  if (fusion.phaseState) {
-    trip.stationPhase = fusion.phaseState;
-    dirty = true;
-  }
-
-  // #1536 (S3) — 환경 분기. underground/unknown 은 GPS 의존 게이트(#3~#7) 를 byPass.
-  // 결과(outcome.pass) 는 motion+silence/fired 만 보장하므로 caller 는 별도 consensusGate
-  // 로 arrival+lockAttachable 합의를 검증해야 false positive 차단.
-  //
-  // #2014 (ADR-022 B8) — deps.archFlag='on' 시 GPS/motion/speed 게이트(#3~#8) 전부 skip,
-  // #9 (fired/silenced) 만 평가. arvlCd=1 관측 기반 fire 판정은 아래 fetchArrivals 후
-  // `pickAutoTrainCode` 로 별도 진행. 즉 gate 통과 = "silence/fired dedup OK"만 의미.
-  //
-  // #2637 (#2623 후속) — environment 입력을 device 기압계(trip.subsurface)에서 stations.json
-  // (`display.originStation`/`display.line`)로 교체. 이 게이트는 unknown/underground를 이미
-  // bypass(차단 아님) 방향으로 처리하므로(위 주석 참조) 이 교체의 실질 효과는 "차단 완화"가
-  // 아니라 "지상역이 기압계 오분류(subsurface=undefined→unknown)로 bypass에 잘못 들어가지 않고
-  // 9단 GPS 게이트로 정상 복귀"하는 것 — device 신호 의존 제거 + 정확도 개선(과도한 bypass 축소).
-  const environment = mapEvidenceEnvironment(
-    resolveWaypointEnvironment(
-      { stationName: display.originStation, line: display.line },
-      stats,
-      log,
-    ),
-  );
-  const outcome = evaluateBoardingPromptGates({
-    series: fusion.series,
-    origin: geo.origin,
-    nextStation: geo.nextStation,
-    now,
-    promptState: trip.boardingPromptState,
-    kalmanKmh: fusion.kalmanKmh,
-    // #833 — runFusionStep이 Kalman observation을 위해 이미 evaluateWindow를 1회 돌렸다.
-    // 그 결과를 그대로 재사용해 trip당 redundant window 평가를 제거 (동작 동치).
-    metrics: fusion.posMetrics,
-    environment,
-    archFlag: deps.archFlag,
-  });
-
-  if (!outcome.pass) {
-    stats.boardingPromptBlocked += 1;
-    // #2130 (Part B-be-2) — 반복 발사 게이트가 차단한 두 신규 reason은 전용 counter로도 집계.
-    if (outcome.reason === 'fired-too-recently') stats.boardingPromptSkippedMinInterval += 1;
-    if (outcome.reason === 'max-fires-reached') stats.boardingPromptSkippedMaxFires += 1;
-    log('boarding-prompt: gate blocked', {
-      token: trip.token.slice(0, 8),
-      reason: outcome.reason satisfies GateSkipReason,
-      environment,
-      // #2032 (Issue D) — monitoring dimension. gate block 원인 분류 시 device sleep 상태 참조.
-      sleepMode: trip.sleepModeEnabled,
-    });
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  // #1729 paradigm shift — attemptAutoLock(Path B) 제거.
-  // 9단 게이트 통과 시 backend가 자동 trainCode 결정 X. boardingPrompt push 발사 → 사용자 인지 요구.
-
-  // #1739 — 방면 + 시간 명시. 출발역 arrivals를 fetch해 방향 일치 최소 ETA 추출.
-  // 실패 시 graceful fallback (메시지 없이 push는 항상 발사).
-  // #1888 (RC-13) — pool을 candidateTrains로 가공해 payload에 동봉. device의 BoardingTrainList가
-  // 자체 API 응답 0건일 때 이 배열로 fallback 렌더(IMG_9040 빈 리스트 회귀 차단).
-  const nextStation = trip.waypoints[0]?.stationName ?? null;
-  let etaSeconds: number | null = null;
-  let candidateTrains: BoardingPromptCandidate[] = [];
-  // #2014 — pool 을 catch 밖으로 export 해 archFlag=on ambiguity guard 에서 재사용.
-  let poolForArchFlagCheck: readonly ArrivalEntry[] = [];
-  try {
-    const arrivals = await deps.seoul.fetchArrivals(display.originStation);
-    const directional = arrivals.filter(
-      (a) =>
-        matchLine(a.subwayNm, display.line) &&
-        (geo.direction === null || (geo.direction === 'up' ? a.isUp : !a.isUp)),
-    );
-    const pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, display.line));
-    poolForArchFlagCheck = pool;
-    if (pool.length > 0) {
-      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
-      etaSeconds = best.arrivalSeconds;
-    }
-    // #1888 (RC-13) — pool에서 최대 5건 후보 추출. arrivalSeconds 오름차순 정렬 후 slice.
-    // (a.arrivalSeconds - b.arrivalSeconds)는 음수/양수/0을 그대로 비교 — 정렬 안정성 확보.
-    candidateTrains = [...pool]
-      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
-      .slice(0, 5)
-      .map<BoardingPromptCandidate>((entry) => ({
-        trainCode: entry.trainCode,
-        line: display.line,
-        direction: entry.isUp ? 'up' : 'down',
-        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
-      }));
-  } catch {
-    // Seoul API 장애 시 ETA 없이 push 발사 — 메시지 degradation만 발생, push 자체는 보존.
-  }
-
-  // #2022 (ADR-022 B8 caller 완결) — archFlag=on 시 arvlCd=1(ARRIVED) 관측 explicit check.
-  //
-  // #2014 는 게이트 skip 만 구현 — GPS/motion/speed 없이 통과. 그러나 사용자 확정 flow
-  // "A역 도착 판정 → boardingPrompt" 는 arvlCd=1 관측 시점에만 발사가 정합.
-  // arvlCd=0(진입 중) / arvlCd=2(출발) 상태에서 발사하면 UI 오탐 — "이미 출발한 열차에
-  // 탑승했나?" 같은 잘못된 프롬프트. hasArrivedSignal 이 archFlag=on 분기의 fire trigger.
-  //
-  // pool.length===0 케이스는 아래 candidateTrains 0건 guard 가 `boardingPromptSkippedEmpty`
-  // 로 별도 관측 (RC-13 카운터 의미론 유지) — 여기서는 pool 이 있는데도 arvlCd=1 이 없는
-  // 케이스만 명시 차단해 arvlCd 관점 skip 을 별도 counter 로 가시화.
-  //
-  // archFlag=off 는 기존 9-AND gate 통과가 fire trigger — 여기 check 는 skip (회귀 방어).
-  if (
-    deps.archFlag === 'on' &&
-    poolForArchFlagCheck.length > 0 &&
-    !hasArrivedSignal(poolForArchFlagCheck)
-  ) {
-    stats.boardingPromptBlocked += 1;
-    log('boarding-prompt: skipped no-arvlcd-arrived (#2022 archFlag=on)', {
-      token: trip.token.slice(0, 8),
-      line: display.line,
-      originStation: display.originStation,
-      direction: geo.direction,
-      poolSize: poolForArchFlagCheck.length,
-    });
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  // #2014 (ADR-022 B8) — archFlag=on 시 arvlCd 우선순위 기반 단일 trainCode 수렴 검증.
-  // ambiguity(같은 우선순위 후보 2+) 면 fire skip — false positive 방어(기존 B9 게이트 유지).
-  // pool 이 비어 있으면 (Seoul API 실패 / 매칭 0건) 아래 candidateTrains 0건 guard 로 skip 됨 —
-  // 여기서는 pool.length > 0 인데 pickAutoTrainCode 가 null 인 케이스만 명시 차단해 counter 로
-  // 가시화한다.
-  //
-  // #2130 (Part B-be-2) — 같은 호출로 산출한 selectedTrainCode를 아래 trainCode dedup(반복
-  // 발사, A4)에도 재사용한다. archFlag 무관(off 포함)하게 항상 계산 — GPS 9단 게이트로 발사되는
-  // legacy 경로도 같은 trainCode dedup 혜택을 받는다(pool이 비어 있으면 자연히 null).
-  const selectedTrainCode =
-    poolForArchFlagCheck.length > 0
-      ? pickAutoTrainCode(poolForArchFlagCheck, display.line, geo.direction)
-      : null;
-  if (deps.archFlag === 'on' && poolForArchFlagCheck.length > 0 && selectedTrainCode === null) {
-    stats.boardingPromptBlocked += 1;
-    log('boarding-prompt: skipped ambiguity (#2014 archFlag=on)', {
-      token: trip.token.slice(0, 8),
-      line: display.line,
-      originStation: display.originStation,
-      direction: geo.direction,
-      poolSize: poolForArchFlagCheck.length,
-    });
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  // #1888 (RC-13) — 후보 0건이면 발사 skip. 사용자가 banner를 받아도 빈 BoardingTrainList만 보게 되는
-  // 시나리오를 backend에서 차단. 게이트 통과 후 응답 fail은 회귀 신호 — stat counter로 가시화.
-  if (candidateTrains.length === 0) {
-    stats.boardingPromptSkippedEmpty += 1;
-    log('boarding-prompt: skipped empty candidates (#1888 RC-13)', {
-      token: trip.token.slice(0, 8),
-      line: display.line,
-      originStation: display.originStation,
-      direction: geo.direction,
-    });
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  // #2130 (Part B-be-2, A4) — 반복 발사 trainCode dedup. 이번 cycle에 선택된 trainCode가 이미
-  // 발사된 열차면 skip — 같은 열차가 cron 여러 tick에 걸쳐 재관측돼도 중복 발사하지 않는다.
-  // selectedTrainCode===null(ambiguity 기각 없이 통과한 archFlag=off 경로 등)이면 dedup 대상이
-  // 없어 자연 통과 — 기존 GPS 9단 게이트 기반 fire 는 이 신규 게이트로 인한 회귀가 없다.
-  if (
-    selectedTrainCode !== null &&
-    trip.boardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
-  ) {
-    stats.boardingPromptSkippedTrainDuplicate += 1;
-    log('boarding-prompt: skipped train duplicate (#2130 A4)', {
-      token: trip.token.slice(0, 8),
-      trainCode: selectedTrainCode,
-      firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
-    });
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  // #2838 (교차추적 감사 후속) — fire-once 이중 방어. 이 GPS 9단 경로는 leg-1 GPS-free/leg-2와
-  // 달리 자체 발사 블록을 갖고 있어 공유 본체(`fireBoardingPromptForAnchor`)의 배선을 타지
-  // 않는다 — 동일 key 규약(`station`=origin station)으로 같은 독립 KV를 재사용해 GPS 경로/
-  // GPS-free 경로가 같은 anchor에 대해 서로도 cross-path dedup되게 한다(#2531 설계와 동일 취지:
-  // 두 경로가 같은 trip.boardingPromptState ledger를 공유하듯, fire-once 마커도 공유).
-  if (await isBoardingPromptFireOnceBlocked(env, trip.token, display.originStation, now)) {
-    log('boarding-prompt: gate blocked', {
-      token: trip.token.slice(0, 8),
-      reason: 'fire-once-key',
-      originStation: display.originStation,
-      line: display.line,
-    });
-    stats.boardingPromptBlocked += 1;
-    if (dirty) await putTrip(env.TRIPS, trip);
-    return;
-  }
-
-  const { title, body } = buildBoardingPromptMessage(
-    display.originStation,
-    display.line,
-    nextStation,
-    etaSeconds,
-    now,
-    trip.locale,
-  );
-
-  // 9단 통과 + 후보 ≥1 — alert push 발사.
-  const pushId = generatePushId();
-  const heal = await sendWithEnvHeal(
-    (host) =>
-      sendBoardingPromptPush({
-        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
-        deviceToken: resolveTripDeviceToken(trip),
-        pushId,
-        title,
-        body,
-        originStation: display.originStation,
-        line: display.line,
-        tripToken: trip.token,
-        sentAt: now,
-        // #1536 (S3, T13) — cron loop 경로. POST /trips instant path 와 source 구분.
-        triggerKind: 'cron',
-        // #1740 — geo.direction이 null이면 undefined 전달 → device 양방향 허용 (backward compat).
-        destinationDirection: geo.direction ?? undefined,
-        // #1798 P3 — subtitle: "${line}호선 ${direction}방면". direction이 있을 때만 첨부.
-        subtitle:
-          geo.direction !== null
-            ? `${display.line}호선 ${geo.direction === 'up' ? '상행' : '하행'}방면`
-            : undefined,
-        // #1888 (RC-13) — 후보 train 목록 동봉. device fallback 렌더.
-        candidateTrains,
-        // #2819 — 단일 확정(ambiguity 없음)일 때만 embed. device 재조회 실패 fallback 전용.
-        trainCode: selectedTrainCode ?? undefined,
-        // #2130 (Part B-be-2, A4) — 반복 발사 시 이전 무응답 배너를 최신으로 교체(스택 방지).
-        collapseId: boardingPromptCollapseId(trip.token),
-        config: deps.apnsConfig,
-        host,
-        fetchImpl: deps.fetchImpl,
-        now,
-      }),
-    trip.apnsEnv,
-    deps.apnsHosts,
-    log,
-    trip.token.slice(0, 8),
-    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
-
-  if (heal.correctedEnv) {
-    trip.apnsEnv = heal.correctedEnv;
-    dirty = true;
-    stats.envCorrected += 1;
-    // #1633 — boarding-prompt corrected env 즉시 KV persist. dirty 후속 putTrip(line 2990)이
-    // 정상 경로지만, 본 함수가 trip 종료 / cleanup 경로로 분기하면 누락 가능. 즉시 write로
-    // corrected env가 영구 보존돼 후속 cron / push가 mismatch retry 없이 정상 호스트로 직행.
-    await putTrip(env.TRIPS, trip);
-  }
-  if (heal.result.ok) {
-    stats.boardingPromptFired += 1;
-    // #1683 — boardingPrompt kind 카운터.
-    stats.silentPushFiredByKind.boardingPrompt += 1;
-    // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota). leg-1 GPS-free와
-    // 동일 key(origin station) — cross-path dedup.
-    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, display.originStation, now);
-    // #2130 (Part B-be-2, A4) — prev state + selectedTrainCode를 전달해 firedTrainCodes/fireCount를
-    // 누적한다(반복 발사 dedup + hard cap 입력).
-    trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
-    // #916 follow-up B — prompt push도 같은 dedup 마커를 stamp한다. dismiss + 클리어 후
-    // isSameSession=false 분기로 boardingPromptState가 사라져도 window 안에서 재발사 차단.
-    trip.lastAutoPromptedAt = now;
-    // #2824 — 발사 시 실제로 제시한 candidateTrains의 trainCode 목록을 persist한다.
-    // `/boarding-lock/sync`(index.ts)의 sync-promotion corroboration 게이트가 device가
-    // 보낸 trainCode를 이 목록(TTL RECENT_PROMPT_CANDIDATES_TTL_MS)과 대조한다.
-    trip.recentPromptCandidates = {
-      trainCodes: candidateTrains.map((candidate) => candidate.trainCode),
-      firedAt: now,
-    };
-    dirty = true;
-    log('boarding-prompt: fired', {
-      token: trip.token.slice(0, 8),
-      line: display.line,
-      originStation: display.originStation,
-      fusedSpeedKmh: Math.round(outcome.fusedSpeedKmh * 10) / 10,
-      // #2032 (Issue D) — monitoring dimension. fire 시 device sleep 상태 기록 (device suppress 여부와 대조 가능).
-      // ADR-023: backend는 sleep 무관 발사 유지. device의 shouldSuppressBySleepRule이 UI suppress 판정.
-      sleepMode: trip.sleepModeEnabled,
-      // #2637 — 이 경로(leg-1 GPS 9단 게이트)는 D1 logTripEvent가 없어 fire/block이 wrangler
-      // tail 로그로만 관측 가능하다. environment 소스가 stations.json으로 바뀐 뒤 실제 gate
-      // 분포(surface strict 진입 빈도)를 tail 쿼리로 확인할 수 있도록 fire 시점에도 stamp.
-      environment,
-    });
-  } else {
-    stats.errors += 1;
-    log('boarding-prompt: push failed', {
-      token: trip.token.slice(0, 8),
-      status: heal.result.status,
-      reason: heal.result.reason,
-    });
-    await logBoardingPromptPushFailure(env, trip, heal);
-  }
-
-  // #2069 (Phase 3) — boarding-prompt silent push fallback(B8, #2037) 제거. visible alert push
-  // (B7)만 원격 단일 채널로 유지 — 이중 표시(원격+로컬 identifier 상이로 둘 다 뜨던 문제) 소멸.
-
-  if (dirty) {
-    await putTrip(env.TRIPS, trip);
-  }
-}
-
-/**
- * #2531 — leg-1(origin) "탑승했냐?" 프롬프트 GPS-free fallback.
- *
- * Root: `evaluateAndMaybeFireBoardingPrompt`(9단 GPS AND 게이트)가 지하 GPS stale로 origin
- * trip을 영구 차단한다 — leg-2는 이미 `maybeFireLegBoardingPrompt`(GPS-free)로 해결됐지만
- * leg-1만 GPS에 갇혀 있었다(#2531 본문). 본 함수는 그 leg-2 GPS-free 패턴을 origin용으로
- * 그대로 미러한다 — `resolveTrainCodeFromPositions`의 "탑승역만 매칭" 안전장치와 9단 게이트
- * 자체는 손대지 않고, GPS 9단 AND 게이트(accuracy/direction/window/speed/motion)는 이식하지
- * 않는 별도 발사 경로만 추가한다.
- *
- * caller: lockMissing 분기에서 `evaluateAndMaybeFireBoardingPrompt` 직후 호출. GPS 경로가
- * 먼저 평가되어 우선권을 갖는다 — 이 함수는 GPS 경로가 막혔거나(지하) 아직 평가/발사되지
- * 않았을 때만 보충 발사한다.
+ * caller: lockMissing 분기에서 직접 호출된다(더 이상 GPS 경로 뒤에 붙는 보충 경로가 아니다).
  *
  * 게이트:
  *   - `trip.currentLegAnchor` 있음(leg-2 진입, 환승 후) → no-op. leg-2는
- *     `maybeFireLegBoardingPrompt` 전담 — 이 함수는 leg-1(origin) 전용.
- *   - `trip.promptDisplay` 없음 → no-op (평가 자체 불가, GPS 경로와 동일 계약, #2131 Part A-1).
+ *     `maybeFireLegBoardingPrompt` 전담 — 이 함수는 leg-1(origin) 전용. `trip.promptDisplay`를
+ *     읽기 전에 즉시 return하므로 stale promptDisplay 기반 오발사가 구조적으로 불가능하다(구
+ *     #2708 방어선이 9단 경로 전용이었던 것과 달리 이 함수는 애초에 그 클래스의 버그가 없다).
+ *   - `trip.promptDisplay` 없음 → no-op (평가 자체 불가, #2131 Part A-1).
  *   - `trip.promptOptIn !== true && trip.infoModeEnabled !== true` → no-op (#2651 PR #2772 리뷰 —
  *     안내 시작(promptOptIn) 또는 이미 응답/직접 탭으로 의향을 표명한 이력(infoModeEnabled) 중
  *     하나라도 있으면 대상. 사용자 명시 의향 trip만 대상 — ADR-014 동급 보장).
- *   - `trip.boardingLock !== undefined`(F2 방어) → no-op. caller가 `isBoardingLockActive===false`를
- *     이미 보장하지만 GPS 경로와 동일하게 방어적으로 재확인한다.
+ *   - `trip.boardingLock !== undefined`(F2 방어) → no-op.
  *   - #2653 거리 가드 — "GPS를 신뢰할 수 있을 때만" 거른다. register 시점 정적 스냅샷
  *     (`trip.promptGeoContext.originDistanceM/originAccuracyM`)이 존재하고, 이 cron 시점의
  *     positionSeries에 최근(5분)·양호한(<50m) GPS 샘플로 그 스냅샷이 교차 검증되고(그렇지
@@ -7420,13 +6861,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
  *     `shouldStampOriginProximity`)을 잃었으면 차단한다. 스냅샷 자체가 부재(지하/구 클라)면
  *     항상 통과(#2532 취지 보존). 자세한 근거/함정은 함수 본문 인라인 주석(코드리뷰
  *     2026-09-16 HIGH-1/MEDIUM-2 반영) 참고.
- *   - dedup: `evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now)` — **GPS 경로
- *     (`evaluateAndMaybeFireBoardingPrompt` 내부 `evaluateBoardingPromptGates`)와 완전히 동일한
- *     게이트 함수 + 동일 `trip.boardingPromptState` ledger를 공유한다.** GPS 경로가 먼저
- *     발사하면 `lastFiredAt`/`fireCount`/`silencedUntil`이 stamp되어 이 함수도 즉시 dedup에
- *     걸린다 — 두 경로가 별도 상태를 갖지 않으므로 더블발사가 구조적으로 불가능하다.
+ *   - dedup: `evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now)`.
  *   - 같은 trainCode 재발사 방지: `trip.boardingPromptState?.firedTrainCodes`에 이번 cycle
- *     선택된 trainCode가 이미 있으면 skip (GPS 경로의 #2130 A4 정책과 동일 ledger 재사용).
+ *     선택된 trainCode가 이미 있으면 skip (#2130 A4 정책).
  *
  * 트리거: `deps.seoul.fetchArrivals(promptDisplay.originStation)` → line + direction
  * (`inferLegDirection`) 필터 → 임박 열차(candidateTrains) 있으면 발사. `maybeFireLegBoardingPrompt`
@@ -7434,8 +6871,10 @@ export async function evaluateAndMaybeFireBoardingPrompt(
  *
  * 발사 성공: alert push(kind='boarding-prompt') — device는 기존 `tryAutoLock`/#2529
  * boarding-confirm 엔드포인트로 탭 응답을 처리한다(신규 device 배선 불필요) +
- * `trip.boardingPromptState = markPromptFired(now, prev, selectedTrainCode)`(GPS 경로와 동일
- * 상태 갱신 함수) + `stats.originGpsFreeBoardingPromptFired += 1`.
+ * `trip.boardingPromptState = markPromptFired(now, prev, selectedTrainCode)` +
+ * `stats.originGpsFreeBoardingPromptFired += 1`. #2844 — `trip.recentPromptCandidates`(sync-promotion
+ * corroboration 게이트, index.ts `isPromotionCorroborated`)도 여기서 stamp한다(구 9단 경로가
+ * 유일하게 담당했던 load-bearing 부수효과 — 은퇴하며 이 함수로 이관).
  * 차단: dedup/후보 0건 → `stats.originGpsFreeBoardingPromptBlocked += 1`.
  */
 /**
@@ -7823,9 +7262,21 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     onFired: (pool) => {
       const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
       stats.originGpsFreeBoardingPromptFired += 1;
-      // GPS 경로와 동일한 상태 갱신 함수 + 동일 필드 — ledger 공유가 곧 더블발사 방지 근거.
       trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
       trip.lastAutoPromptedAt = now;
+      // #2844 — 은퇴한 GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`)가 유일하게 담당하던
+      // load-bearing 부수효과. sync-promotion corroboration 게이트(`isPromotionCorroborated`,
+      // index.ts)가 device가 보낸 trainCode를 이 목록과 대조한다 — 이 stamp가 없으면
+      // `recentPromptCandidates`가 leg-1에서 영구히 undefined가 되어 그 게이트가 항상
+      // backward-safe(true) fallback으로만 동작해 corroboration 검증력을 잃는다.
+      trip.recentPromptCandidates = {
+        trainCodes: pool
+          .slice()
+          .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+          .slice(0, 5)
+          .map((entry) => entry.trainCode),
+        firedAt: now,
+      };
     },
   });
 }
@@ -7882,8 +7333,8 @@ function classifyMissingLegAnchor(
  * #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2 "탑승하셨나요?" prompt 평가 + 발사.
  *
  * caller: lockMissing 분기(`attemptBoardingAnchorResolution` 시도 이후). `trip.currentLegAnchor`
- * 없으면(leg 1 이거나 아직 환승 전) no-op. GPS 게이트 없음 — origin의 `evaluateAndMaybeFireBoardingPrompt`
- * (9단 GPS AND 게이트)와 달리 이 함수는 애초에 GPS를 쓰지 않는다:
+ * 없으면(leg 1 이거나 아직 환승 전) no-op. GPS 게이트 없음 — origin의
+ * `maybeFireOriginBoardingPromptGpsFree`와 마찬가지로 이 함수도 GPS를 쓰지 않는다:
  *   - fire trigger = anchor 존재(`trip.currentLegAnchor`) + 의향(promptOptIn/infoModeEnabled) +
  *     후보열차 존재. **시간 타이머 없음** — #2801(9/18 실캡처)이 도보시간 게이트
  *     (`legBoardingEligibleAt`)를 제거했다. 이 프롬프트는 **회고형**("탑승하셨나요?", 사용자가
