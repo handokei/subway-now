@@ -7229,6 +7229,85 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
   });
 });
 
+// #2844 — subsumption 증명(이슈 본문)의 유일 반례: GPS 9단 경로는 `originProximityAt`의 15분
+// freshness만 재검사하고 5분 anchor renewal을 요구하지 않는다 — 근접을 1회라도 관측한 trip은
+// 그 뒤 origin을 실제로 떠나도(신선한 GPS가 800m 이탈을 확인해도) "이미 stamp됨"이라는 이유만
+// 으로 too-far 게이트를 영구히 우회한다. GPS-free 경로(`maybeFireOriginBoardingPromptGpsFree`,
+// #2653)는 anchor가 5분 이상 stale이면(`shouldStampOriginProximity`) 이 탈출구를 닫는다 — 두
+// 경로가 동시에 평가되는 현재 코드에서는 9단 경로가 유해하게 발사하고 GPS-free는 올바르게
+// 차단한다(반례 창). #2844는 9단 경로를 은퇴시켜 이 창을 제거한다 — 은퇴 후에는 GPS-free만
+// 평가되어 총 발사 0건이 된다.
+describe('runScheduled — #2844 GPS 9단 유해 발사 창 (subsumption 반례)', () => {
+  it('originProximityAt 8분 전 stamp + 신선 GPS로 800m 이탈 확인 + origin ARRIVED → 총 발사 0건(사유: origin-too-far-stale-anchor)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'gps9-harmful-window',
+      promptGeoContext: {
+        origin: { lat: 0, lng: 0 },
+        nextStation: { lat: 0, lng: 0.01 },
+        direction: 'up',
+        // 800m - 10m(accuracy) = 790m > 150m 마진 → 명백히 "멀다".
+        originDistanceM: 800,
+        originAccuracyM: 10,
+      },
+      promptDisplay: { originStation: '강남', line: '2' },
+      // 8분 전 — GPS-free의 5분 anchor renewal(shouldStampOriginProximity)은 넘겼지만(anchor
+      // stale), 9단 경로의 15분 freshness 게이트는 아직 넘기지 않았다(9단은 renewal 개념 자체가
+      // 없다 — 이 비대칭이 반례의 root).
+      originProximityAt: NOW - 8 * 60_000,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // 신선한 실시간 GPS 샘플 — GPS-free가 정적 스냅샷(800m)을 "지금도 신뢰 가능"으로 교차
+    // 검증하는 데 필요하다(#2653 MEDIUM-2). 이 샘플이 없으면 GPS-free가 관대 허용으로 통과해
+    // 버려 9단만의 결함이라는 대조가 흐려진다.
+    await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+      lat: 0,
+      lng: 0,
+      accuracy: 10,
+      ts: NOW,
+      motion: 'stationary',
+    });
+
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const arrived: ArrivalEntry = {
+      destination: '성수',
+      arrivalSeconds: 0,
+      trainCode: 'T-HARMFUL',
+      isUp: true,
+      subwayNm: '2호선',
+      arvlCd: 1,
+    };
+    const logCalls: Array<[string, Record<string, unknown> | undefined]> = [];
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([arrived]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'gps9-harmful-push',
+      archFlag: 'on',
+      log: (message, meta) => {
+        logCalls.push([message, meta]);
+      },
+    });
+
+    // #2844 은퇴 전(red): 9단 경로가 originProximityAt 존재만으로 too-far 게이트를 영구
+    // 우회해 boardingPromptFired=1이 되어 이 assertion은 실패한다 — 은퇴(retirement) 후에는
+    // boardingPromptFired가 항상 0이 되고 GPS-free만 평가돼 통과한다(green).
+    expect(stats.boardingPromptFired + stats.originGpsFreeBoardingPromptFired).toBe(0);
+    // 사유까지 assert — GPS-free가 정확히 anchor staleness로 차단했는지 확인.
+    expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    expect(
+      logCalls.some(
+        ([message, meta]) =>
+          message === 'origin-boarding-prompt-gps-free: gate blocked' &&
+          meta?.reason === 'origin-too-far-stale-anchor',
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (#824)', () => {
   /**
    * boarding-prompt 경로에서 Kalman state가 KV에 persist/read되는지 검증.
