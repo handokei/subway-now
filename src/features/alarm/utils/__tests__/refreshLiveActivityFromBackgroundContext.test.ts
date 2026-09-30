@@ -236,6 +236,28 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
   });
 
+  // #2811 편측 감사(#2848) — gps-bg 분기는 etaMinutes를 애초에 null로 보내 ETA 자체는 문제
+  // 없지만, route(stopsRemaining 파생원)가 트립 시작 시점 고정값이라 정거장 수가 트립 진행에도
+  // 줄지 않는 동일 클래스의 self-contradiction. currentStation(bg.station)=목적지(강남) 자체인데
+  // route가 여전히 1정거장 남았다고 주장하면 anchoring 후 0으로 정정돼야 한다.
+  it('#2811 편측 감사: gps-bg 분기도 currentStation 기준 remaining route를 buildLiveActivityData에 넘긴다', async () => {
+    const bgAtDestination = {
+      station: destination, // 강남 — 이미 목적지에 도착(anchoring 대상)
+      distanceKm: 0,
+      timestamp: 1_700_000_000_000,
+    };
+    setupStorage({
+      [DESTINATION_KEY]: JSON.stringify(destination),
+      [BG_LAST_STATION_KEY]: JSON.stringify(bgAtDestination),
+      [ROUTE_KEY]: JSON.stringify(directRoute), // stops: 1 (트립 시작 시점 고정값)
+    });
+    await refreshLiveActivityFromBackgroundContext();
+    expect(mockBuild).toHaveBeenCalledTimes(1);
+    const [, , , route] = mockBuild.mock.calls[0] as [unknown, unknown, unknown, { stops: number }];
+    // 회귀 상태(fix 전)라면 route === directRoute(stops:1)로 실패한다.
+    expect(route.stops).toBe(0);
+  });
+
   it('route JSON 손상은 route=null로 진행 (LA 갱신 계속)', async () => {
     setupStorage({
       [DESTINATION_KEY]: JSON.stringify(destination),
