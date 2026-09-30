@@ -185,4 +185,10 @@ describe('useEnsureLiveActivity', () => {
     // 회귀 상태(fix 전)라면 routeArg === staleRoute(stops:5)로 실패한다.
     expect(routeArg.stops).toBe(1);
   });
+
+  it('#2811 편측 감사: destination이 없으면(lock만으로 트립 활성) route를 그대로 전달한다(anchor 대상 없음)', () => {
+    const staleRoute = { type: 'direct' as const, line: '2' as const, stops: 5, travelSeconds: 600 };
+    renderHook(() => useEnsureLiveActivity(gangnam, 120, null, staleRoute, 5, LOCK));
+    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, null, staleRoute, 5);
+  });
 });

@@ -61,6 +61,7 @@
 | safetyNetScheduler.ts:77,261 | 불변식 | tripStart 미확인 시 절대 무장 안 함 | 부분 |
 | bgPositionTrainFire.ts:35 | 불변식 | accuracy 게이트보다 먼저 시도(지하 GPS garbage 오인 방지) | 부분 |
 | fgArvlCdFastPath.ts:13 / useStationAlarm.ts:1585 | 불변식 | #640 lock 부재 시 lockless 임의 fire 절대 금지 | 있음 |
+| useStationAlarm.ts:1237 | 함정 | GPS-fallback ETA의 `getRouteRemainingSeconds(route)` clamp 상한이 currentStation 기준으로 재앵커링되지 않음(#2811 편측 감사, #2848에서 발견·의도적 미배선) — `estimateTransitEtaSeconds(distM, speedMps, hopBasedSeconds)`가 `Math.min(distanceEstimate, hopBasedSeconds)`이므로 route가 트립 시작 시점 고정값(더 큰 상한)이면 clamp가 실제보다 느슨해진다. `anchorRouteToCurrentStation`으로 앵커링하면 상한이 작아져 `evaluateAlarmPhase`가 소비하는 `etaSeconds`가 달라지고, 이는 곧 early/transfer 알람이 **발사되는 시점 자체**를 바꾼다 — 표시 전용(LA 문구)이 아니라 alarm-critical 경로라 순수 "정거장 수 self-contradiction" fix와 동급 리스크로 취급할 수 없다. ADR-014 "사용자 명시 의향=lock 동급 보호" 원칙상 알람 타이밍 변경은 이 fix의 범위(#2811, ETA/정거장 표시 정합) 밖의 별도 회귀 검증(replay 영향 분석)이 선행돼야 한다. 배선 금지, 기록만 | **없음** |
 | backendSsotMirror.ts:134,186-197 | 불변식 | lastAdvanceAt 역행 push 거부(순서 비보장 APNs) — 단 새 trip의 작은 값은 거부 금지 | 있음 |
 | boardingLockStorage.ts:12 | 함정 | Lock 필드 추가 시 isBoardingLock 가드 동시 갱신(안 하면 silent parse fail) | **없음** |
 | useApnsTripRegistration.ts:626,658 | 함정 | heal flag는 성공 시에만 set / in-flight skip은 재시도 예산 미소모 | **없음** |

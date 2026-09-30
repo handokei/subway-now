@@ -1437,7 +1437,10 @@ export default function HomeScreen() {
         effectiveOrigin,
         isCustomOrigin ? 0 : Math.round((result?.distanceKm ?? 0) * 1000),
         destination,
-        route ?? null,
+        // #2811 편측 감사(#2848) — displayEta는 이미 remainingRoute 기준(anchored)인데 route는
+        // 트립 시작 시점 고정값이라 "ETA는 줄어드는데 N정거장은 그대로"인 자기모순이 있었다.
+        // 같은 remainingRoute를 써 station/route/eta 세 값의 앵커를 일치시킨다.
+        remainingRoute ?? null,
         displayEta,
         arrivalIsMock,
         alarmEvent,
