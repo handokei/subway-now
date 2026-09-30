@@ -410,6 +410,29 @@ export function updateRouteFromPosition(
 }
 
 /**
+ * #2811 — route를 currentStation 기준 "지금부터 남은" 경로로 재앵커링한다.
+ *
+ * root: `calculateStaticETA(route)`/`calculateETA(n, route)`는 route 자체를 그대로 합산하는데,
+ * 일부 소비처(LA mirror sync, HomeScreen in-app 표시)는 트립 시작 시점에 고정된 route(#1883
+ * RC-11 route freeze)를 그대로 쥐고 있어 트립이 진행돼도 ETA가 줄지 않는다. `updateRouteFromPosition`은
+ * 이미 leg-aware(현재역이 어느 leg의 fromLine/toLine에 속하는지 판별해 지나온 구간을 0으로,
+ * 남은 구간만 실측 재계산하는) remaining 계산을 제공하므로 이를 그대로 감싼다 — 새 ETA 산식을
+ * 만들지 않는다(재발명 금지).
+ *
+ * currentStation이 route 위 어느 leg에도 속하지 않으면(GPS/fusion 오차로 노선 불일치 등)
+ * `updateRouteFromPosition`은 null을 반환하는데, 이 경우 원본 route를 그대로 fallback한다 —
+ * 호출자는 항상 "뭔가"를 받아 회귀 없이 기존(전체) ETA로 동작한다.
+ */
+export function anchorRouteToCurrentStation(
+  route: Route,
+  currentStation: Station,
+  destinationId: string,
+): Route {
+  if (!route) return route;
+  return updateRouteFromPosition(route, currentStation, destinationId) ?? route;
+}
+
+/**
  * 경로의 첫 leg(=탑승 단계)의 노선과 종점 역 이름을 반환한다.
  *
  *   - direct       → { line, endName: destinationName }
