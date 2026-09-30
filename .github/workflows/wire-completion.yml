@@ -30,3 +30,14 @@ jobs:
 
       - name: Orphan export 검사 (ts-prune)
         run: npm run lint:orphan
+
+  swift-mirror-check:
+    name: Swift MIRROR Sync Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: MIRROR 사본 diff 검사 (#2839)
+        run: bash scripts/check-swift-mirror.sh
