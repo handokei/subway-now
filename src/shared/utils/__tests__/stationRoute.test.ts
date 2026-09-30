@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -1791,6 +1791,90 @@ describe('updateRouteFromPosition', () => {
       const result = updateRouteFromPosition(storedMultiRoute, jangam7, '1-001');
       expect(result).toBeNull();
     });
+  });
+});
+
+// #2811 — calculateStaticETA/calculateETA가 트립 시작 시점에 고정된 route(전체)를 그대로 받아
+// 트립이 진행돼도 ETA가 줄지 않는 회귀. anchorRouteToCurrentStation은 updateRouteFromPosition(이미
+// 검증된 leg-aware remaining 계산)을 감싸 currentStation 기준 "지금부터 남은" route로 재앵커링한다.
+describe('anchorRouteToCurrentStation', () => {
+  // 용마산(7-015) → 건대입구(7|2) 환승 → 뚝섬(2-010). 성수(2-011)는 건대입구-뚝섬 사이 중간역.
+  const destinationId = '2-010';
+
+  it('#2811 RED: 현재역이 환승 완료 후 leg 중간이면 전체가 아니라 남은 구간만 반영한다', () => {
+    const route = findRoute('7-015', destinationId);
+    expect(route).not.toBeNull();
+    expect(route!.type).toBe('transfer');
+    const seongsu = getStationsOnLine('2').find((s) => s.id === '2-011')!;
+    const anchored = anchorRouteToCurrentStation(route, seongsu, destinationId);
+    const fullEta = calculateStaticETA(route);
+    const remainingEta = calculateStaticETA(anchored);
+    expect(remainingEta).not.toBeNull();
+    // 회귀 상태(fix 전)라면 anchored === route라 remainingEta === fullEta로 실패한다.
+    expect(remainingEta!).toBeLessThan(fullEta!);
+    expect(anchored?.type).toBe('transfer');
+    if (anchored?.type === 'transfer') {
+      // 이미 환승을 마친 leg — 7호선 구간/환승 대기 모두 소진.
+      expect(anchored.stopsToTransfer).toBe(0);
+      expect(anchored.secondsToTransfer).toBe(0);
+      // 성수→뚝섬 1 정거장만 남는다.
+      expect(anchored.stopsFromTransfer).toBe(1);
+    }
+  });
+
+  it('거부: 트립 시작(현재역=출발역)이면 원본 route와 ETA가 동치다', () => {
+    const route = findRoute('7-015', destinationId);
+    const yongma = getStationsOnLine('7').find((s) => s.id === '7-015')!;
+    const anchored = anchorRouteToCurrentStation(route, yongma, destinationId);
+    expect(calculateStaticETA(anchored)).toBe(calculateStaticETA(route));
+  });
+
+  it('현재역=환승역(환승 전, fromLine)이면 환승 도보+다음 leg 전체가 남는다', () => {
+    const route = findRoute('7-015', destinationId);
+    const geondae7 = getStationsOnLine('7').find((s) => s.id === '7-019')!; // 건대입구(7호선)
+    const anchored = anchorRouteToCurrentStation(route, geondae7, destinationId);
+    expect(anchored?.type).toBe('transfer');
+    if (anchored?.type === 'transfer') {
+      expect(anchored.stopsToTransfer).toBe(0);
+      // 아직 2호선 구간(건대입구→뚝섬 2정거장) 전부 남아있다.
+      expect(anchored.stopsFromTransfer).toBe(2);
+    }
+  });
+
+  it('현재역=환승역(환승 후, toLine)이면 남은 것은 toLine 구간뿐이다', () => {
+    const route = findRoute('7-015', destinationId);
+    const geondae2 = getStationsOnLine('2').find((s) => s.id === '2-012')!; // 건대입구(2호선)
+    const anchored = anchorRouteToCurrentStation(route, geondae2, destinationId);
+    expect(anchored?.type).toBe('transfer');
+    if (anchored?.type === 'transfer') {
+      expect(anchored.stopsToTransfer).toBe(0);
+      expect(anchored.secondsToTransfer).toBe(0);
+      expect(anchored.stopsFromTransfer).toBe(2);
+    }
+  });
+
+  it('현재역이 route 위 어느 leg에도 속하지 않으면(다른 노선) 원본 route를 그대로 fallback한다(null 아님)', () => {
+    const route = findRoute('7-015', destinationId);
+    const fake = getStationsOnLine('1').find((s) => s.id === '1-001')!;
+    const anchored = anchorRouteToCurrentStation(route, fake, destinationId);
+    expect(anchored).toBe(route);
+  });
+
+  it('route가 null이면 null을 반환한다', () => {
+    const seongsu = getStationsOnLine('2').find((s) => s.id === '2-011')!;
+    expect(anchorRouteToCurrentStation(null, seongsu, destinationId)).toBeNull();
+  });
+
+  it('DirectRoute도 currentStation 기준으로 재앵커링한다', () => {
+    const route = findRoute('2-010', '2-015');
+    expect(route).not.toBeNull();
+    expect(route!.type).toBe('direct');
+    const midStation = getStationsOnLine('2').find((s) => s.id === '2-012')!;
+    const anchored = anchorRouteToCurrentStation(route, midStation, '2-015');
+    expect(anchored?.type).toBe('direct');
+    const fullEta = calculateStaticETA(route);
+    const remainingEta = calculateStaticETA(anchored);
+    expect(remainingEta!).toBeLessThan(fullEta!);
   });
 });
 
