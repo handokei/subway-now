@@ -55,6 +55,7 @@ import {
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
+  resolveCurrentStationName,
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
@@ -1889,7 +1890,17 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           continue;
         }
         try {
-          await runLocklessIntermediate(trip, waypoint, env, deps, stats, now, log, generatePushId);
+          await runLocklessIntermediate(
+            trip,
+            waypoint,
+            env,
+            deps,
+            stats,
+            now,
+            log,
+            generatePushId,
+            stationarySsot,
+          );
         } catch (e) {
           stats.errors += 1;
           log('lockless: poll error', { error: String(e), token: trip.token.slice(0, 8) });
@@ -1967,7 +1978,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       if (trip.activityPushToken && trip.activityState === 'live') {
         try {
           const laHeartbeatDirty = await maybeFireLiveActivityUpdate(
-            trip, waypoint, now, deps, stats, now, log,
+            trip, waypoint, now, deps, stats, now, log, stationarySsot,
           );
           if (laHeartbeatDirty) {
             await putTrip(env.TRIPS, trip);
@@ -5030,7 +5041,7 @@ export async function runTrainCodeTracking(
       epochOffset: FALLBACK_HOP_SEC,
     });
     // LA heartbeat는 trip.lastLaPushEpoch 기준이라 handleEtaMissing과 충돌하지 않음.
-    await maybeFireLiveActivityUpdate(trip, waypoint, scheduleHopEpoch, deps, stats, now, log);
+    await maybeFireLiveActivityUpdate(trip, waypoint, scheduleHopEpoch, deps, stats, now, log, ssot);
     await handleEtaMissing({
       trip,
       waypoint,
@@ -5197,6 +5208,7 @@ export async function runTrainCodeTracking(
     stats,
     now,
     log,
+    ssot,
   );
   if (laDirty || hadMissCount) {
     await putTrip(env.TRIPS, trip);
@@ -5917,6 +5929,11 @@ async function completeWaypointAdvance(
       0,
       trip.waypoints.length,
       trip,
+      // #2849 — stationName은 방금 ground truth로 확정 통과한 `waypoint`(이 함수의 파라미터,
+      // 지금 물리적으로 있는 역)여야 한다. `nextWaypoint`(다음 추적 대상, 아직 도착 전)를
+      // 그대로 보내면 한 정거장 앞서 표시되는 회귀(#2849). line/kind/stopsRemaining 해석은
+      // 여전히 nextWaypoint 기준 — #1654/#1658 환승 display-line 로직 무변경.
+      waypoint.stationName,
     );
     await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind);
   }
@@ -5954,6 +5971,11 @@ export async function maybeFireLiveActivityUpdate(
   stats: ScheduledStats,
   now: number,
   log: Logger,
+  // #2849 — SSoT 현재역 stationName 해석용. `waypoint`는 이 함수가 ETA countdown 중인
+  // "다음 추적 대상"이라 아직 도착 전인 경우가 대부분 — 그대로 stationName에 쓰면 정지
+  // 상태에서도 한 정거장 앞선 역이 표시된다. optional(default null) — legacy 호출자는
+  // resolveCurrentStationName의 trip-origin 폴백으로 흡수된다.
+  ssot: TripPositionSSoT | null = null,
 ): Promise<boolean> {
   if (!trip.activityPushToken || trip.activityState !== 'live') return false;
   const last = trip.lastLaPushEpoch;
@@ -5991,6 +6013,8 @@ export async function maybeFireLiveActivityUpdate(
     etaSeconds,
     trip.waypoints.length,
     trip,
+    // #2849 — waypoint.stationName(다음 추적 대상) 대신 SSoT 현재역(미정착 시 trip origin).
+    resolveCurrentStationName(trip, ssot),
   );
   const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind);
   if (result.dirty) {
@@ -6304,6 +6328,10 @@ export async function runLocklessIntermediate(
   now: number,
   log: Logger,
   generatePushId: () => string,
+  // #2849 — maybeFireLiveActivityUpdate로 forward할 SSoT 스냅샷 (runLocklessTransfer/
+  // runLocklessDestination과 동일 패턴). optional — 미전달 legacy 호출자는 trip-origin
+  // 폴백으로 흡수.
+  ssot: TripPositionSSoT | null = null,
 ): Promise<void> {
   // #837 P2-1 — dedup gate를 fusion + arrivals fetch + reset 이후로 이동.
   // arvlCd=ARRIVED/ENTERING은 phase보다 강한 ground truth 신호이므로, 이미 imminent 발사한
@@ -6578,7 +6606,7 @@ export async function runLocklessIntermediate(
     // signal.etaSeconds를 ETA로 전달 — station-passed push와 동일 시점의 ETA 추정값.
     // maybeFireLiveActivityUpdate 내 dedup(30s) + heartbeat(90s) 게이트가 중복 발사를 차단한다.
     // 반환 dirty=true여도 trip의 lastLaPushEpoch/lastLaPushAt 갱신분은 아래 putTrip으로 일괄 persist.
-    await maybeFireLiveActivityUpdate(trip, waypoint, now + signal.etaSeconds * 1000, deps, stats, now, log);
+    await maybeFireLiveActivityUpdate(trip, waypoint, now + signal.etaSeconds * 1000, deps, stats, now, log, ssot);
   }
   // #2066 (Phase 2-backend) — 취침 알람 평가. shift 전이라 trip.waypoints[1]이 waypoint(방금
   // arvlCd 확정된 직전역 후보) 바로 다음 대상. lockless도 intermediate만 advance하므로 lock 경로

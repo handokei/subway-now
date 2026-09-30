@@ -151,8 +151,14 @@ function extractLineList(trip: Trip): string[] {
   return lines;
 }
 
-/** trip route의 출발 노선 첫 waypoint 이름을 원본 역으로 추정한다. */
-function extractOriginStation(trip: Trip): string | null {
+/**
+ * trip route의 출발 노선 첫 waypoint 이름을 원본 역으로 추정한다.
+ *
+ * #2849 — LA content-state stationName의 SSoT-미정착 폴백(`liveActivity.ts`
+ * `resolveCurrentStationName`)도 이 함수를 그대로 재사용한다 — "trip origin" 판정 로직이
+ * 이미 여기 있어 중복 구현하지 않는다.
+ */
+export function extractOriginStation(trip: Trip): string | null {
   // #2280 — device가 등록 시점에 stamp한 SSOT 출발역명을 1순위로 채택. 이 필드가 없는(구 client)
   // 경우에만 passedStations[0]로 fallback — waypoints는 남은 경유지 배열이라 종료 시점에는
   // 비어 있을 수 있고, passedStations 역시 advance 이벤트가 한 번도 없던 trip(짧은 trip/조기

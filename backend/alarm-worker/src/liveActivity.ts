@@ -26,13 +26,13 @@ import {
   type LiveActivityContentState,
 } from './apns';
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
-import { recordTripMetrics } from './d1TripMetrics';
+import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { logPushFailure } from './pushFailureLog';
 import { hashTripToken } from './sentry';
 import { computeMultiHopContext } from './tripMultiHop';
-import { deleteSsot } from './tripPositionSsot';
+import { deleteSsot, type TripPositionSSoT } from './tripPositionSsot';
 import { recordTripEvent } from './tripEventLog';
 import {
   cleanupPendingPushesForToken,
@@ -107,12 +107,22 @@ export interface LiveActivityDeps {
  * 환승역 waypoint는 현재 leg(경의중앙선 등)의 line을 갖지만, 사용자가 환승역에 도착하거나
  * 도착 중인 시점에는 이미 새 호선(2호선 등)으로 탑승 준비 중이므로 새 leg의 호선을 즉시 노출한다.
  * trip.waypoints는 매 advance마다 shifted SSOT라 race 없이 현재 시점을 정확히 반영한다.
+ *
+ * `currentStationName` (#2849) — stationName 필드의 override. 미전달 시 기존 동작
+ * (`waypoint.stationName`) 그대로 유지 — 하위 호환(legacy/unit 호출자). 전달 시 그 값을
+ * stationName으로 쓰고 `waypoint`는 여전히 line/kind/multiHop 해석에만 쓰인다.
+ *
+ * 실 프로덕션 caller(`scheduled.ts`)는 이 인자에 **SSoT 현재역**(또는 아직 정착 전이면 trip
+ * origin)을 전달해야 한다 — `waypoint`(이 함수의 다른 인자들이 의미하는 "추적 중인 다음
+ * 대상")를 그대로 stationName에 쓰면 device가 아직 도착하지 않은 역을 현재역처럼 보여주는
+ * 회귀가 된다(#2849 — 10/1 실측, 9/7·9/16 재발).
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
   stopsRemaining: number,
   trip?: Trip,
+  currentStationName?: string,
 ): LiveActivityContentState {
   // #1654 / #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
   // waypoint.kind==='transfer' + trip.waypoints[1]이 존재하면 새 leg의 line을 우선 사용.
@@ -123,7 +133,8 @@ export function buildLiveActivityContentState(
       : waypoint.line;
   const meta = LINE_META[displayLine];
   const base: LiveActivityContentState = {
-    stationName: waypoint.stationName,
+    // #2849 — currentStationName override 우선. 미전달 시 기존 동작(waypoint.stationName).
+    stationName: currentStationName ?? waypoint.stationName,
     // LINE_META는 13개 노선을 모두 커버하지만, stations.json에 없는 신규 line code가 들어와도
     // widget의 non-optional 필드가 비지 않도록 raw line code를 fallback으로 사용한다.
     lineName: meta?.canonical ?? displayLine,
@@ -136,6 +147,20 @@ export function buildLiveActivityContentState(
   // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
   const multiHop = computeMultiHopContext(trip);
   return { ...base, ...multiHop };
+}
+
+/**
+ * #2849 — LA content-state stationName의 "현재역" 해석. 우선순위:
+ *   1. SSoT.currentStationId가 정착(비어 있지 않음)돼 있으면 그 값 (ADR-017 T5 권위 소스).
+ *   2. 미정착(lazy-seed 전/KV 미존재)이면 trip origin(`extractOriginStation` — 등록 시점
+ *      stamp된 originStationName 1순위, 없으면 passedStations[0]).
+ *   3. 둘 다 없으면 빈 문자열 — **waypoint(추적 중인 다음 대상) 이름으로 채우지 않는다.**
+ *      실 프로덕션 trip은 등록 시점에 originStationName이 항상 stamp되므로(#2280) 이
+ *      분기는 사실상 도달하지 않는다.
+ */
+export function resolveCurrentStationName(trip: Trip, ssot: TripPositionSSoT | null): string {
+  if (ssot && ssot.currentStationId) return ssot.currentStationId;
+  return extractOriginStation(trip) ?? '';
 }
 
 export interface LiveActivityFireResult {
