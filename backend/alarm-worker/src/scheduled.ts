@@ -44,6 +44,7 @@ import {
   shouldStampOriginProximity,
   type GateSkipReason,
 } from './boardingPrompt';
+import { isBoardingPromptFireOnceBlocked, stampBoardingPromptFireOnce } from './boardingPromptFireOnce';
 import { computeMultiHopContext } from './tripMultiHop';
 import {
   detectKalmanDrift,
@@ -7260,6 +7261,23 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     return;
   }
 
+  // #2838 (교차추적 감사 후속) — fire-once 이중 방어. 이 GPS 9단 경로는 leg-1 GPS-free/leg-2와
+  // 달리 자체 발사 블록을 갖고 있어 공유 본체(`fireBoardingPromptForAnchor`)의 배선을 타지
+  // 않는다 — 동일 key 규약(`station`=origin station)으로 같은 독립 KV를 재사용해 GPS 경로/
+  // GPS-free 경로가 같은 anchor에 대해 서로도 cross-path dedup되게 한다(#2531 설계와 동일 취지:
+  // 두 경로가 같은 trip.boardingPromptState ledger를 공유하듯, fire-once 마커도 공유).
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, display.originStation, now)) {
+    log('boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: 'fire-once-key',
+      originStation: display.originStation,
+      line: display.line,
+    });
+    stats.boardingPromptBlocked += 1;
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
   const { title, body } = buildBoardingPromptMessage(
     display.originStation,
     display.line,
@@ -7323,6 +7341,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     stats.boardingPromptFired += 1;
     // #1683 — boardingPrompt kind 카운터.
     stats.silentPushFiredByKind.boardingPrompt += 1;
+    // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota). leg-1 GPS-free와
+    // 동일 key(origin station) — cross-path dedup.
+    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, display.originStation, now);
     // #2130 (Part B-be-2, A4) — prev state + selectedTrainCode를 전달해 firedTrainCodes/fireCount를
     // 누적한다(반복 발사 dedup + hard cap 입력).
     trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
@@ -7455,6 +7476,13 @@ async function fireBoardingPromptForAnchor(inputs: {
     decision: BoardingFireDecision['decision'],
     candidateArvlCds: readonly (number | null)[],
   ) => void;
+  /**
+   * #2838 — fire-once KV key(cron stale-read로 `trip.*PromptState.lastFiredAt`이 소실돼
+   * `evaluateBoardingPromptRepeatGate`가 우회되는 경우의 이중 방어)가 최근(5분 이내) 발사를
+   * 이미 확인했을 때 caller가 호출. trip 객체 경유 dedup은 무변경 — 이 콜백은 신규 억제
+   * 사유만 caller stats/log에 추가한다.
+   */
+  onFireOnceSuppressed: () => void;
   shouldProceedToSend?: (pool: readonly ArrivalEntry[]) => boolean;
   onFired: (pool: readonly ArrivalEntry[]) => void;
 }): Promise<void> {
@@ -7473,6 +7501,7 @@ async function fireBoardingPromptForAnchor(inputs: {
     logPrefix,
     onEmptyCandidates,
     onSuppressedNotImminent,
+    onFireOnceSuppressed,
     shouldProceedToSend,
     onFired,
   } = inputs;
@@ -7525,6 +7554,22 @@ async function fireBoardingPromptForAnchor(inputs: {
     return;
   }
 
+  // #2838 — fire-once 이중 방어. `trip.*PromptState.lastFiredAt`(repeat gate 입력)은 cron이
+  // `listTrips`(cacheTtl 30s)로 읽는 trip 객체에 실려 KV를 왕복하므로, 직전 cycle의 putTrip이
+  // 반영되기 전에 다음 cycle이 stale trip을 받으면 repeat gate 자체가 우회된다(9/30 e25e1158
+  // 06:42→06:44 실측). trip 객체와 무관한 독립 key로 "최근 5분 내 발사" 여부를 재확인한다 —
+  // repeat gate(trip 경유)는 무변경, 이 검사는 이중 방어로 얹는다.
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, station, now)) {
+    log(`${logPrefix}: gate blocked`, {
+      token: trip.token.slice(0, 8),
+      reason: 'fire-once-key',
+      station,
+      line,
+    });
+    onFireOnceSuppressed();
+    return;
+  }
+
   const { title, body } = buildBoardingPromptMessage(station, line, nextStation, etaSeconds, now, trip.locale);
 
   // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
@@ -7570,6 +7615,8 @@ async function fireBoardingPromptForAnchor(inputs: {
   }
   if (heal.result.ok) {
     stats.silentPushFiredByKind.boardingPrompt += 1;
+    // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota).
+    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, station, now);
     onFired(pool);
     dirty = true;
     log(`${logPrefix}: fired`, {
@@ -7750,6 +7797,10 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         originStation: display.originStation,
         line: display.line,
       });
+    },
+    // #2838 — fire-once 이중 방어 억제(leg-2와 동일 콜백/의미).
+    onFireOnceSuppressed: () => {
+      stats.originGpsFreeBoardingPromptBlocked += 1;
     },
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
     // 재발사하지 않는다.
@@ -7970,6 +8021,12 @@ export async function maybeFireLegBoardingPrompt(
       });
       promptOutcome = 'suppressed-not-imminent';
       candidateArvlCds = arvlCds;
+    },
+    // #2838 — fire-once 이중 방어 억제. D1 라벨은 repeat gate dedup(`silenced`)과 같은 성격이라
+    // 기존 값을 재사용 — 세부 사유(reason='fire-once-key')는 log()로 wrangler tail에서 구분.
+    onFireOnceSuppressed: () => {
+      stats.legBoardingPromptBlocked += 1;
+      promptOutcome = 'silenced';
     },
     // #2801 — origin GPS-free 경로(#2531 A4 ledger)와 동일 trainCode dedup. 같은 열차가 이미
     // 발사된 candidateTrains로 재발사(무한 스팸)되는 것만 막는다 — candidateTrains가 바뀌면
