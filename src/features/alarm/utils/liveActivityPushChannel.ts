@@ -18,6 +18,7 @@
 import {
   addPushTokenListener,
   endLiveActivity,
+  hasActiveLiveActivity,
   startLiveActivity,
   updateLiveActivity,
   type LiveActivityData,
@@ -237,13 +238,16 @@ export function registerHeldLiveActivityTokenForCurrentTrip(): void {
 }
 
 /**
- * Activity 시작과 동시에 token 구독을 LA 세션 동안 유지.
- * 매 token emit마다 backend register. 동일 token은 dedup.
- * Activity 시작 자체가 실패하면 throw — 호출 측의 기존 fallback(예: 일반 알림) 흐름을 유지.
+ * 채널 세션(token 구독 + activeTeardown/activeTripToken) 부트스트랩 — native 호출만
+ * `nativeCall`로 주입받는다. `startLiveActivityWithRegistration`(native start)과
+ * `adoptLiveActivitySession`(#2806 잔여 절반 — native update만, 이미 활성인 LA를
+ * kill-recreate하지 않고 세션 상태만 채워 흡수)이 이 부트스트랩을 공유한다.
+ * native 호출 자체가 실패하면 throw — 호출 측의 기존 fallback(예: 일반 알림) 흐름을 유지.
  */
-export async function startLiveActivityWithRegistration(
+async function registerLiveActivitySession(
   tripToken: string,
   data: LiveActivityData,
+  nativeCall: (data: LiveActivityData) => Promise<void>,
 ): Promise<void> {
   // 이전 세션이 살아 있으면 정리 — LA는 동시에 하나만.
   if (activeTeardown) {
@@ -288,9 +292,9 @@ export async function startLiveActivityWithRegistration(
   activeTeardown = teardown;
 
   try {
-    await startLiveActivity(data);
+    await nativeCall(data);
   } catch (e) {
-    // start가 실패하면 token은 발급될 일이 없다 — 정리 후 re-throw.
+    // native 호출이 실패하면 token은 발급될 일이 없다 — 정리 후 re-throw.
     // 다른 호출이 await 사이에 activeTeardown을 교체했을 수 있으므로 우리 teardown만 정리한다.
     teardown();
     if (activeTeardown === teardown) {
@@ -299,6 +303,30 @@ export async function startLiveActivityWithRegistration(
     }
     throw e;
   }
+}
+
+/**
+ * Activity 시작과 동시에 token 구독을 LA 세션 동안 유지.
+ * 매 token emit마다 backend register. 동일 token은 dedup.
+ * Activity 시작 자체가 실패하면 throw — 호출 측의 기존 fallback(예: 일반 알림) 흐름을 유지.
+ */
+export async function startLiveActivityWithRegistration(
+  tripToken: string,
+  data: LiveActivityData,
+): Promise<void> {
+  await registerLiveActivitySession(tripToken, data, startLiveActivity);
+}
+
+/**
+ * #2806 잔여 절반 — 채널 세션은 없지만(activeTeardown===null) native LA는 이미 활성일 때 쓰는
+ * adopt 경로. kill-recreate(살아있는 LA를 죽이고 다시 만드는) 대신 native `update`만 호출해
+ * 기존 Activity를 그대로 채널 세션에 편입시킨다(token 구독 배선만 새로, native start는 생략).
+ */
+async function adoptLiveActivitySession(
+  tripToken: string,
+  data: LiveActivityData,
+): Promise<void> {
+  await registerLiveActivitySession(tripToken, data, updateLiveActivity);
 }
 
 /**
@@ -381,11 +409,20 @@ export async function ensureLiveActivityRegistered(
     return;
   }
   if (activeTeardown !== null && activeTripToken !== null && activeTripToken !== tripToken) {
-    // tripToken 변경 — 이전 trip의 LA token을 backend에서도 정리.
+    // tripToken 변경 — 이전 trip의 LA token을 backend에서도 정리(진짜 다른 trip 전환이라
+    // kill-recreate가 맞는 유일한 경로, #2806 금지 목록 — 이 분기는 건드리지 않는다).
     const prev = activeTripToken;
     await endLiveActivityWithDeregister(prev).catch((e) => {
       log.warn('previous LA deregister failed', e);
     });
+  }
+  // #2806 잔여 절반 — 채널 세션은 없지만(activeTeardown===null, 위 정리 분기를 거쳤다면 정리
+  // 이후에도 여전히 null) native LA가 이미 활성이면 FG pre-boarding 훅/useEnsureLiveActivity가
+  // 채널을 거치지 않고 직접 시작한 세션이다. 살아있는 LA를 kill-recreate로 대체하지 않고 adopt
+  // (native start 생략 + update만 + 세션 상태만 채움)한다.
+  if (activeTeardown === null && hasActiveLiveActivity()) {
+    await adoptLiveActivitySession(tripToken, data);
+    return;
   }
   await startLiveActivityWithRegistration(tripToken, data);
 }

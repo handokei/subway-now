@@ -187,10 +187,6 @@ actor LiveActivityManager {
             )
         }
 
-        await endAllActivities()
-        // 새 Activity 세션 — 이전 세션의 alert dedup 상태는 무의미하니 초기화.
-        lastAlertedBoardingPhase = nil
-
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw NSError(
                 domain: "LiveActivity",
@@ -198,6 +194,27 @@ actor LiveActivityManager {
                 userInfo: [NSLocalizedDescriptionKey: "Live Activities가 iOS 설정에서 비활성화됨"]
             )
         }
+
+        // #2806 잔여 절반 — 살아있는 Activity를 "죽이고 나서" request가 BG에서 거부되는 순서를
+        // 없앤다. 시스템에 이미 활성(또는 stale) Activity가 있으면 kill-recreate 대신 채택해서
+        // update만 한다(진짜 kill-recreate는 JS 채널이 다른 tripToken으로 전환할 때 명시적으로
+        // `end()`를 먼저 호출하는 경로에서만 일어난다 — 이 함수는 그 경로를 건드리지 않는다).
+        adoptExistingActivityIfNeeded()
+        if let activity = currentActivity,
+            activity.activityState == .active || activity.activityState == .stale {
+            let state = try decodeState(from: data)
+            let content = ActivityContent(state: state, staleDate: nil)
+            let alertConfiguration = resolveAlertConfiguration(for: state)
+            await activity.update(content, alertConfiguration: alertConfiguration)
+            #if DEBUG
+            print("[LiveActivity] adopted existing activity instead of restart, destination=\(state.destinationName ?? "nil")")
+            #endif
+            return
+        }
+
+        await endAllActivities()
+        // 새 Activity 세션 — 이전 세션의 alert dedup 상태는 무의미하니 초기화.
+        lastAlertedBoardingPhase = nil
 
         let state = try decodeState(from: data)
         let attributes = SubwayActivityAttributes()

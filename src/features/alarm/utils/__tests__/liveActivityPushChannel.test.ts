@@ -2,11 +2,13 @@ const mockStartLiveActivity = jest.fn();
 const mockUpdateLiveActivity = jest.fn();
 const mockEndLiveActivity = jest.fn();
 const mockAddPushTokenListener = jest.fn();
+const mockHasActiveLiveActivity = jest.fn();
 
 jest.mock('../../../../../modules/live-activity', () => ({
   startLiveActivity: (...args: unknown[]) => mockStartLiveActivity(...args),
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
+  hasActiveLiveActivity: () => mockHasActiveLiveActivity(),
   addPushTokenListener: (...args: unknown[]) =>
     mockAddPushTokenListener(...args),
 }));
@@ -82,6 +84,8 @@ describe('liveActivityPushChannel', () => {
     mockRegisterLiveActivityToken.mockReset();
     mockClearLiveActivityToken.mockReset();
     mockLogLiveActivityAuthorityState.mockReset();
+    mockHasActiveLiveActivity.mockReset();
+    mockHasActiveLiveActivity.mockReturnValue(false);
     mockStartLiveActivity.mockResolvedValue(undefined);
     mockUpdateLiveActivity.mockResolvedValue(undefined);
     mockEndLiveActivity.mockResolvedValue(undefined);
@@ -428,6 +432,47 @@ describe('liveActivityPushChannel', () => {
       const second = setupListener();
       await ensureLiveActivityRegistered('trip-2', SAMPLE_DATA);
       expect(mockStartLiveActivity).toHaveBeenCalledTimes(2);
+      second.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-2', 'tok');
+    });
+  });
+
+  // #2806 잔여 절반 — 세션 미등록(activeTeardown===null) + native LA는 이미 활성(FG pre-boarding
+  // 훅/useEnsureLiveActivity가 채널을 거치지 않고 직접 시작한 세션)일 때 kill-recreate가 아니라
+  // adopt(native start 생략 + update만 + 채널 세션 상태만 채움)해야 한다.
+  describe('ensureLiveActivityRegistered — 세션 미등록 + 활성 LA 존재 시 adopt (#2806)', () => {
+    it('kill(endLiveActivity) 미호출 + update만 호출 — 살아있는 LA를 죽이지 않는다', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(true);
+      const handle = setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+      expect(mockStartLiveActivity).not.toHaveBeenCalled();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(SAMPLE_DATA);
+      // adopt 후에도 채널 세션이 채워져 token 구독이 살아있어야 한다.
+      handle.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-1', 'tok');
+    });
+
+    it('adopt 이후 동일 tripToken 재호출은 세션 보존 — update만, kill 없음', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(true);
+      setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+      expect(mockStartLiveActivity).not.toHaveBeenCalled();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+    });
+
+    it('회귀 안전 — 진짜 다른 tripToken의 기존 세션(activeTeardown 존재)이 있으면 여전히 kill+deregister 후 재시작', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(false);
+      const first = setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      const second = setupListener();
+      await ensureLiveActivityRegistered('trip-2', SAMPLE_DATA);
+      expect(mockEndLiveActivity).toHaveBeenCalled();
+      expect(mockClearLiveActivityToken).toHaveBeenCalledWith('trip-1');
+      expect(first.remove).toHaveBeenCalledTimes(1);
+      expect(mockStartLiveActivity).toHaveBeenCalledWith(SAMPLE_DATA);
       second.emit('tok');
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-2', 'tok');
     });

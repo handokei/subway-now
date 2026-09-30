@@ -686,11 +686,24 @@ describe('stationNotification', () => {
         expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
       });
 
-      it('tripToken이 있는 정식 세션 경로(ensureLiveActivityRegistered)는 이 가드의 영향을 받지 않는다 — LA start는 트립 시작 경로에서만', async () => {
+      it('tripToken이 있어도 활성 LA가 없으면 ensureLiveActivityRegistered를 호출하지 않고 skip한다 — BG start-fallthrough 방지(#2806 잔여 절반)', async () => {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
         mockHasActiveLiveActivity.mockReturnValue(false);
         await updateStationNotification(mockStation, 154);
+        expect(mockEnsureLiveActivityRegistered).not.toHaveBeenCalled();
+        expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      // 9/30 BG 시퀀스 모사 — lock 트립(tripToken 존재) + 채널 세션은 없지만(BG headless) native
+      // LA는 이미 활성(FG pre-boarding 훅이 채널 밖에서 직접 start한 세션). 이 경우 adopt 경로를
+      // 타는 ensureLiveActivityRegistered로 정상 진행해야 한다 — fallback 0 + LA 갱신 경로 진입.
+      it('tripToken 존재 + 활성 LA 존재(BG, 채널 세션 미등록)면 fallback 없이 ensureLiveActivityRegistered로 진행한다', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        mockHasActiveLiveActivity.mockReturnValue(true);
+        await updateStationNotification(mockStation, 154);
         expect(mockEnsureLiveActivityRegistered).toHaveBeenCalledTimes(1);
+        expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
       });
     });
 
