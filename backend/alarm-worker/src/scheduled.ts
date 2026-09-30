@@ -23,6 +23,7 @@ import {
   sendSilentPush,
   sendSleepAlarmCompanionPush,
   type ApnsConfig,
+  type LiveActivityContentState,
   type PushOrigin,
   type SilentPushPayload,
 } from './apns';
@@ -696,6 +697,14 @@ export interface ScheduledStats extends LiveActivityStats {
    * 정상 운영에서 0건 기대. 0이 아니면 로그의 stationName/line으로 drift 원인 역 식별.
    */
   waypointEnvironmentLookupMiss: number;
+  /**
+   * #2854 — 프롬프트 발사 성공 순간 LA도 alert(배너+소리)로 병행 발사한 누적 횟수.
+   * `fireBoardingPromptForAnchor`(공유 본체) 내부에서 leg-1/leg-2 모두 이 카운터로 잡힌다.
+   * dashboard: wrangler tail `boarding-prompt-la-alert fired`. 정상 운영에서 notification
+   * 프롬프트 발사 수와 (activityPushToken 보유 trip 비율만큼) 함께 증가해야 정상 —
+   * notification은 오르는데 이 값이 영구 0이면 LA push 경로 자체가 죽은 신호.
+   */
+  boardingPromptLaAlertFired: number;
   // #2844 — 아래 boardingPrompt* 카운터 군(evaluated/fired/blocked/skipped*)은 GPS 9단 AND
   // 게이트 경로(`evaluateAndMaybeFireBoardingPrompt`)가 subsumption 증명 기반으로 은퇴하며
   // 영구 0으로 수렴한다(필드 자체는 관측 계약 하위호환을 위해 유지). leg-1 발사는 이제
@@ -1317,6 +1326,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     locklessIntermediateFired: 0,
     locklessMotionGateBlocked: 0,
     waypointEnvironmentLookupMiss: 0,
+    boardingPromptLaAlertFired: 0,
     laPushSent: 0,
     laPushFailed: 0,
     laTokenCleared: 0,
@@ -7091,6 +7101,62 @@ async function fireBoardingPromptForAnchor(inputs: {
       station,
       line,
     });
+    // #2854 — 발사 성공 순간 LA도 alert(배너+소리)로 병행 갱신. 이 발사 성공 분기 안에서만
+    // 시도하므로 dedup/게이트는 위에서 이미 처리된 것을 그대로 상속(신규 게이트 추가 없음).
+    // 실패는 무해 — notification 프롬프트는 이미 발사됐으므로 LA push 실패가 이 흐름을
+    // 막으면 안 된다(try/catch + stats만).
+    if (trip.activityPushToken && trip.activityState === 'live') {
+      try {
+        const ssot = await readSsot(env.TRIPS, trip.token, {
+          cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+        });
+        const currentStationName = resolveCurrentStationName(trip, ssot);
+        const anchorWaypoint: Waypoint =
+          trip.waypoints[0] ?? { stationName: station, line, kind: 'intermediate' };
+        const laContentState: LiveActivityContentState = {
+          ...buildLiveActivityContentState(
+            anchorWaypoint,
+            etaSeconds ?? 0,
+            trip.waypoints.length,
+            trip,
+            currentStationName,
+          ),
+          // #2434 — BoardingPromptView/BoardingIntents(→boarding-confirm)가 렌더/처리하는
+          // 버튼 컨텍스트. Swift ContentState 필드명과 정확히 일치해야 decode된다.
+          boardingPhase: 'pre-boarding',
+          boardingPromptTripToken: trip.token,
+          boardingPromptOriginStation: station,
+          boardingPromptLine: line,
+          boardingAlertTitle: title,
+          boardingAlertBody: body,
+        };
+        const laPushSentBefore = stats.laPushSent;
+        const laResult = await fireLiveActivityUpdate(
+          trip,
+          laContentState,
+          deps,
+          stats,
+          now,
+          log,
+          undefined,
+          { title, body },
+        );
+        if (laResult.dirty) dirty = true;
+        if (stats.laPushSent > laPushSentBefore) {
+          stats.boardingPromptLaAlertFired += 1;
+          log(`${logPrefix}: la alert fired`, {
+            token: trip.token.slice(0, 8),
+            station,
+            line,
+          });
+        }
+      } catch (e) {
+        log(`${logPrefix}: la alert threw`, {
+          token: trip.token.slice(0, 8),
+          error: String(e),
+        });
+      }
+    }
   } else {
     stats.errors += 1;
     log(`${logPrefix}: push failed`, {

@@ -778,6 +778,13 @@ export interface SendLiveActivityUpdateOptions {
   dismissalDate?: number;
   /** APNs priority. 기본 10 (즉시 전송). 5로 보내면 throttle 대상이 됨. */
   priority?: 5 | 10;
+  /**
+   * #2854 — ActivityKit "alert" Live Activity update. `aps.alert`을 채우면 update push가
+   * lock screen/notification center에 OS 배너 + 소리로도 노출된다(일반 update는 무음
+   * content-state 교체만). apns-push-type은 'liveactivity'로 유지 — Apple 스펙상 LA push는
+   * alert를 포함해도 push-type이 바뀌지 않는다(별도 'alert' push-type이 아님).
+   */
+  alert?: { title: string; body: string; sound?: string };
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -799,6 +806,13 @@ export async function sendLiveActivityUpdate(
   };
   if (options.staleDate !== undefined) aps['stale-date'] = options.staleDate;
   if (options.dismissalDate !== undefined) aps['dismissal-date'] = options.dismissalDate;
+  if (options.alert !== undefined) {
+    aps.alert = {
+      title: options.alert.title,
+      body: options.alert.body,
+      ...(options.alert.sound !== undefined ? { sound: options.alert.sound } : {}),
+    };
+  }
 
   const body = JSON.stringify({ aps });
   const priority = options.priority ?? 10;
