@@ -51,7 +51,7 @@ jest.mock('../alarmLog', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
-import { calculateStaticETA } from '../../../../shared/utils/stationRoute';
+import { calculateStaticETA, findRoute, getStationsOnLine } from '../../../../shared/utils/stationRoute';
 import { updateLiveActivityFromMirrorStation } from '../liveActivityMirrorSync';
 import {
   markDeviceGpsLiveActivityWrite,
@@ -167,5 +167,26 @@ describe('updateLiveActivityFromMirrorStation', () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
+  });
+
+  // #2811 RED: route가 트립 시작 시점에 고정된 전체 경로라도, mirrorStation이 실제 stations.json
+  // 위 station이면 anchorRouteToCurrentStation이 남은 구간만 재앵커링해 etaMinutes/stopsRemaining이
+  // 줄어들어야 한다. fix 전에는 원본 route를 그대로 써 fullEta와 동일해 실패한다.
+  it('#2811 mirrorStation이 route 중반이면 남은 구간만 반영한 ETA를 싣는다', async () => {
+    const fullRoute = findRoute('7-015', '2-010')!; // 용마산 → 건대입구 환승 → 뚝섬
+    expect(fullRoute).not.toBeNull();
+    const seongsu = getStationsOnLine('2').find((s) => s.id === '2-011')!; // 성수(뚝섬 직전)
+    const realDestination = getStationsOnLine('2').find((s) => s.id === '2-010')!;
+    const fullEta = calculateStaticETA(fullRoute, { excludeOriginWait: true });
+
+    await updateLiveActivityFromMirrorStation(seongsu, realDestination, fullRoute);
+
+    expect(mockBuild).toHaveBeenCalledTimes(1);
+    const [, , , routeArg, etaArg] = mockBuild.mock.calls[0];
+    expect(etaArg).not.toBeNull();
+    expect(etaArg as number).toBeLessThan(fullEta!);
+    // route도 남은 구간만 반영 — 전체 route(fromLine=7 구간 포함)가 아니라 stopsToTransfer=0.
+    expect(routeArg.type).toBe('transfer');
+    expect(routeArg.stopsToTransfer).toBe(0);
   });
 });
