@@ -33,6 +33,7 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
+import { resetBoardingPromptFireOnceInMemoryForTest } from '../boardingPromptFireOnce';
 import { maybeFireLegBoardingPrompt, type ScheduledDeps, type ScheduledStats } from '../scheduled';
 import type { ArrivalEntry, SeoulArrivalClient } from '../seoul';
 import type { Env, Trip } from '../types';
@@ -50,7 +51,10 @@ beforeAll(async () => {
   };
 });
 
-beforeEach(() => resetApnsJwtCache());
+beforeEach(() => {
+  resetApnsJwtCache();
+  resetBoardingPromptFireOnceInMemoryForTest();
+});
 
 // D1 lock ts(06:34:09)를 epoch 0으로 두고, 이후 오프셋은 실측 분:초 그대로 반영한다.
 const LOCK_AT = 1_700_000_000_000;
@@ -170,5 +174,45 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     expect(stats.legBoardingPromptFired).toBe(2);
     expect(stats.legBoardingPromptBlocked).toBe(2);
     expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+  });
+
+  it('#2838 — cron stale-read(trip.legBoardingPromptState 소실)로 5분 repeat gate가 우회돼도 fire-once key가 재발사를 억제한다 (06:42→06:44 모사)', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const stats = makeStats();
+    const log = vi.fn();
+
+    // 도착 임박(arvlCd=1) — repeat gate/fire-once 둘 다 통과해야 발사되는 pool로 고정.
+    const pool: readonly ArrivalEntry[] = [arrival('3056', true, 1)];
+    const seoul = makeControllableSeoul(() => pool);
+    const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+    const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };
+
+    // ── cycle A (06:42:11 상당) — 정상 첫 발사. trip.legBoardingPromptState가 stamp된다.
+    const tripCycleA = makeTrip();
+    await maybeFireLegBoardingPrompt(tripCycleA, env, deps, stats, offsetFromLock(8, 11), log, () => 'p-a');
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(tripCycleA.legBoardingPromptState?.lastFiredAt).toBe(offsetFromLock(8, 11));
+    expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+
+    // ── cycle B (06:44:10 상당, 5분 미경과) — cron이 listTrips stale-read로 직전 cycle의
+    // putTrip을 못 보고, `legBoardingPromptState`가 비어있는 **새 trip 객체**를 돌려준
+    // 상황을 모사한다(같은 token, 같은 anchor). 구 코드는 promptState가 undefined라
+    // `evaluateBoardingPromptRepeatGate`가 즉시 통과 → 5분 게이트 우회 재발사(회귀 재현).
+    // fire-once key(#2838)는 trip 객체와 무관한 독립 KV/인메모리 상태이므로 이 stale-read와
+    // 무관하게 억제해야 한다.
+    const tripCycleB = makeTrip();
+    expect(tripCycleB.legBoardingPromptState).toBeUndefined();
+    await maybeFireLegBoardingPrompt(tripCycleB, env, deps, stats, offsetFromLock(10, 10), log, () => 'p-b');
+
+    // fired 1회만 유지 — 우회 재발사가 없어야 한다.
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    // reason='fire-once-key'로 억제 사유가 관측 가능해야 한다(D1 reason 로그 / wrangler tail).
+    expect(
+      log.mock.calls.some(
+        ([, meta]) => (meta as { reason?: string } | undefined)?.reason === 'fire-once-key',
+      ),
+    ).toBe(true);
   });
 });
