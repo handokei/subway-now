@@ -64,9 +64,12 @@ jest.mock('../backendSsotMirror', () => ({
 // stations.json은 lookup 경로에서만 호출. 최소 fixture로 station resolve 분기를 검증.
 // 성수: 실제 서비스 line은 '2'뿐 — mirror가 '7'을 실으면 resolveBackendSsotMirrorStation이
 // "보정"이 아니라 "거부"하는지 검증하는 fixture(#2556 성수 7호선색 클래스, #2589 code review 1번).
+// #2732 gap1 — 뚝섬을 추가해 3역 arc(강남→성수→뚝섬)를 구성. tail-stuck 회귀 가드
+// (isBackendSsotRouteRegression) 테스트가 실제 경로 순서를 필요로 한다.
 jest.mock('../../../../data/stations.json', () => [
   { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 },
   { id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 },
+  { id: '0329', name: '뚝섬', line: '2', lat: 37.547, lng: 127.047 },
 ]);
 
 import { Platform } from 'react-native';
@@ -81,6 +84,7 @@ import {
   BG_LAST_STATION_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
+  TRIP_ORIGIN_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 const destination = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
@@ -141,6 +145,29 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     await refreshLiveActivityFromBackgroundContext();
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+  });
+
+  // #2732 gap2 — 2026-09-30 교차추적 감사. destination read가 비었다고 해서 활성 trip 중인
+  // LA를 무조건 꺼서는 안 된다(BG 레이스/일시 손실로 인한 LA 생존 불변식 위반).
+  describe('#2732 gap2 — 활성 trip 중 destination read 실패로 LA end 금지', () => {
+    it('destination 없음 + ACTIVE_TRIP_KEY 존재(활성 trip) → endLiveActivity 호출 안 함', async () => {
+      setupStorage({
+        [DESTINATION_KEY]: null,
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('destination 없음 + ACTIVE_TRIP_KEY도 없음(정당한 trip 종료) → 기존대로 endLiveActivity 호출', async () => {
+      setupStorage({
+        [DESTINATION_KEY]: null,
+        [ACTIVE_TRIP_KEY]: null,
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('destination JSON 손상이면 endLiveActivity', async () => {
@@ -411,6 +438,142 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
       expect(mockBuild).not.toHaveBeenCalled();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+
+    // #2732 gap1 — 2026-09-30 교차추적 감사. FG(useFusedNearestStation)는
+    // isBackendSsotRouteRegression(#2669/#2841)를 경유해 얼어붙은 mirror가 신뢰 가능한 GPS보다
+    // 우선 채택되는 것을 막지만, BG LA 경로는 이 가드를 전혀 거치지 않아 트립 꼬리(9/30 성수
+    // 실측)에서 잠금화면 LA가 직전 역에 고착될 수 있다. 3역 arc(강남→성수→뚝섬)로 재현.
+    describe('#2732 gap1 — tail-stuck 회귀 가드(isBackendSsotRouteRegression) BG LA 경로 배선', () => {
+      const tripOrigin = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
+      const tripDestination = { id: '0329', name: '뚝섬', line: '2', lat: 37.547, lng: 127.047 };
+      const localTuksum = { id: '0329', name: '뚝섬', line: '2', lat: 37.547, lng: 127.047 };
+
+      // mirror는 성수(idx1)에 얼어붙어 164s 전 마지막 advance(9/30 실측과 동일 elapsed) —
+      // GPS 경로 완화 임계(BACKEND_SSOT_ADVANCE_STALE_GPS_MS, 60s)를 이미 초과.
+      const staleMirrorAtSeongsu = {
+        currentStationId: '성수',
+        currentStationLine: '2',
+        motionState: 'moving' as const,
+        lastAdvanceEvidence: 'seed',
+        lastAdvanceAt: Date.now() - 164_000,
+        passedStations: [],
+        receivedAt: Date.now(),
+      };
+
+      it('BG 로컬(GPS) 관측이 신선하고 mirror보다 arc상 앞서 있으면(뚝섬 idx2 > 성수 idx1) mirror를 거부하고 BG 로컬로 폴백한다', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum,
+            distanceKm: 0.05,
+            timestamp: Date.now(),
+          }),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        // fix 전: station이 성수(mirror)로 고착 — red. fix 후: 뚝섬(BG 로컬)로 폴백.
+        expect(station).toEqual(localTuksum);
+      });
+
+      it('BG 로컬(GPS) 관측이 stale(신선하지 않음)이면 회귀 판정 근거가 없어 mirror를 그대로 채택한다(안전 기본)', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum,
+            distanceKm: 0.05,
+            timestamp: Date.now() - 10 * 60_000, // 10분 전 — 신뢰 불가
+          }),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
+
+      it('mirror가 최근에 advance했으면(정상 추적 중) BG 로컬이 앞서 있어도 거부하지 않는다', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue({
+          ...staleMirrorAtSeongsu,
+          lastAdvanceAt: Date.now() - 5_000, // 5초 전 — 정상 추적
+        });
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum,
+            distanceKm: 0.05,
+            timestamp: Date.now(),
+          }),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
+
+      // #2846 P1 (편측 감사) — GPS 신뢰 proxy 신선도 창이 가드 자체의 GPS-경로 stale 임계
+      // (BACKEND_SSOT_ADVANCE_STALE_GPS_MS, 60s)보다 느슨하면, 정상 advance 중인 신선한 mirror가
+      // 수 분 묵은 BG fix 때문에 오탈락할 수 있다(개악 방향) — proxy 신선도는 가드 임계와 정합돼야 함.
+      it('#2846 P1 — mirror가 정상 advance 중(65s 전, 역간 소요 내 정상)이어도 BG fix가 4분(오래된 관측)이면 신뢰 불가 → mirror 유지', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue({
+          ...staleMirrorAtSeongsu,
+          lastAdvanceAt: Date.now() - 65_000, // 65s 전 — GPS-경로 stale 임계(60s)를 막 넘긴 정상 범위
+        });
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum, // 뚝섬(idx2) — arc상 mirror(성수 idx1)보다 앞
+            distanceKm: 0.05,
+            timestamp: Date.now() - 4 * 60_000, // 4분 전 — 5분 freshness proxy였다면 "신선"으로 오인
+          }),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        // fix 전(5분 proxy): 뚝섬(BG 로컬)로 오탈락 — red. fix 후(60s 정합 proxy): 성수(mirror) 유지.
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
+
+      it('route/origin이 arc를 구성 못 함(computeRouteArc null) → 판정 근거 없음 → mirror를 그대로 채택한다(안전 기본)', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum,
+            distanceKm: 0.05,
+            timestamp: Date.now(),
+          }),
+          // 존재하지 않는 line(9호선 — mock stations.json에 없음)이라 computeRouteArc가 null 반환.
+          [ROUTE_KEY]: JSON.stringify({ type: 'direct', line: '9', stops: 1 }),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
+
+      it('TRIP_ORIGIN_KEY 부재(arc를 못 만듦) → 판정 근거 없음 → mirror를 그대로 채택한다(안전 기본)', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: null,
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum,
+            distanceKm: 0.05,
+            timestamp: Date.now(),
+          }),
+          [ROUTE_KEY]: JSON.stringify(directRoute),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
     });
 
     it('#2659 backend-authority 활성이어도 mirror 분기는 진행된다 (LA writer가 push 단일 채널로 좁혀지지 않도록)', async () => {

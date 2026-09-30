@@ -35,6 +35,7 @@ import {
   BG_LAST_STATION_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
+  TRIP_ORIGIN_KEY,
 } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -44,6 +45,12 @@ import { isLaDismissed } from './laDismissSentinel';
 import { shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
+import { computeRouteArc } from '../../route/utils/routeProgress';
+import { arcIndexOfStation } from '../../route/utils/stationProgressEstimator';
+import {
+  isBackendSsotRouteRegression,
+  BACKEND_SSOT_ADVANCE_STALE_GPS_MS,
+} from '../../nearest-station/utils/backendSsotRegressionGuard';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -121,6 +128,15 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
 
     const destination = readDestination(destRaw);
     if (!destination) {
+      // #2732 (gap2, 2026-09-30 교차추적 감사) — destination read 실패(비었거나 손상)만으로
+      // 활성 trip 중인 LA를 무조건 끄지 않는다. ACTIVE_TRIP_KEY(tripToken)가 존재하면 trip은
+      // 여전히 활성 상태이고, destination 부재는 BG 레이스/AsyncStorage 일시 손실일 수 있다 —
+      // 그 경우 LA를 꺼버리면 활성 trip 중 LA가 사라지는 생존 불변식 위반이 된다. destination과
+      // ACTIVE_TRIP_KEY 둘 다 없을 때만(정당한 trip 종료) 기존대로 end한다.
+      if (tripToken) {
+        logger.info('destination absent but active trip present — skip end (race guard, #2732 gap2)');
+        return;
+      }
       logger.info('destination absent — end LA');
       await LiveActivity.endLiveActivity();
       return;
@@ -146,16 +162,63 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // 2순위: BG_LAST_STATION(GPS, backgroundLocationTask 적재) — mirror 부재/stale/거부 시 폴백.
     // 3순위: 없음 — no-op으로 마지막 정상 LA 상태 유지 (boardingLock fallback은 stale
     //   "탑승역" 표시(P1 #3) 위험이 있어 의도적으로 채택하지 않음 — 기존 동작 유지).
-    const [routeRaw, bgRaw, mirror] = await Promise.all([
+    const [routeRaw, bgRaw, mirror, originRaw] = await Promise.all([
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(BG_LAST_STATION_KEY),
       readBackendSsotMirror(),
+      AsyncStorage.getItem(TRIP_ORIGIN_KEY),
     ]);
     const mirrorFresh = isBackendSsotMirrorFresh(mirror);
-    const mirrorStation = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
+    const mirrorStationCandidate = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
 
     const bg = readBgLastStation(bgRaw);
     const route = safeParse<Route>(routeRaw);
+
+    // #2732 (gap1, 2026-09-30 교차추적 감사) — FG cascade picker(`useFusedNearestStation`)는
+    // `isBackendSsotRouteRegression`(#2669/#2841)을 경유해 얼어붙은 mirror가 신뢰 가능한 GPS보다
+    // 우선 채택되는 것을 막지만, BG LA 경로는 이 가드를 전혀 거치지 않았다 — 트립 꼬리(마지막
+    // 1~2정거장, 역간 소요가 짧아 GPS 완화 임계 60s를 넘기기 쉬운 구간)에서 잠금화면 LA가 직전
+    // 역에 고착될 수 있다(9/30 성수 실측과 동일 클래스).
+    //
+    // 입력은 BG 컨텍스트에서 실제로 구할 수 있는 값만 정직하게 채운다 — 못 채우면 가드가
+    // 발동하지 않는 것이 안전 기본(mirror 무조건 채택, 기존 동작 유지):
+    //   - arc: TRIP_ORIGIN_KEY(#700, destination 설정 시점 캡처) + route + destination으로 구성.
+    //     origin 부재/route 부재/computeRouteArc 실패 → arcStations=[] → 두 arc index 모두 -1로
+    //     귀결돼 가드가 자연히 비활성.
+    //   - gpsArcIndex: BG_LAST_STATION(GPS)의 신선도가 가드 자체의 GPS-경로 stale 임계
+    //     (`BACKEND_SSOT_ADVANCE_STALE_GPS_MS`, 60s)를 만족할 때만 산출, 아니면 -1
+    //     (gpsQualityDegraded=true로 동伴). 편측 감사 지적(#2846 P1) — 최초 구현은
+    //     `FALLBACK_LOCK_POSITION_GUARD_FRESHNESS_MS`(5분, #2408)를 재사용했는데, 이 창이 가드
+    //     자체의 60s 임계보다 4배 느슨해 "정상 advance 중(예: 65s 전 advance — 역간 소요 내 정상
+    //     범위)"인 신선한 mirror가 4분 묵은 BG fix 때문에 오탈락할 위험이 있었다(개악 방향).
+    //     GPS 증거가 "backend가 멈췄다고 판정하는 창" 자체보다 오래된 값이면 그 증거로 mirror를
+    //     override할 근거가 없다 — 판정 임계와 증거 신선도 임계를 동일 상수로 정합시킨다.
+    //   - deviceEstimateArcIndex(#2686 독립 경로, 지하 대응)는 BG 컨텍스트에 estimator가 없어
+    //     의도적으로 채우지 않는다(undefined → 이 경로는 판정하지 않음, 안전 기본).
+    let mirrorStation = mirrorStationCandidate;
+    if (mirrorStationCandidate && mirror) {
+      const origin = readDestination(originRaw);
+      const arcStations =
+        route && origin ? computeRouteArc(route, origin, destination)?.stations ?? [] : [];
+      const bgFresh =
+        bg !== null && Date.now() - bg.timestamp <= BACKEND_SSOT_ADVANCE_STALE_GPS_MS;
+      const gpsArcIndex = bgFresh ? arcIndexOfStation(arcStations, bg.station) : -1;
+      const mirrorArcIndex = arcIndexOfStation(arcStations, mirrorStationCandidate);
+      if (
+        isBackendSsotRouteRegression({
+          mirrorLastAdvanceAt: mirror.lastAdvanceAt,
+          mirrorArcIndex,
+          gpsArcIndex,
+          gpsQualityDegraded: !bgFresh,
+          now: Date.now(),
+        })
+      ) {
+        logger.info(
+          `mirror regression rejected (#2732 gap1): mirror=${mirrorStationCandidate.name} idx=${mirrorArcIndex} → BG 로컬 폴백`,
+        );
+        mirrorStation = null;
+      }
+    }
 
     // #2589 (code review 3번, P1 #1 클래스) — mirror-sourced 경로는 update-only. 활성 LA가
     // 없으면 native `update()`가 내부적으로 `start()`로 fall-through해 BG 컨텍스트에서
