@@ -5,6 +5,7 @@
  * 재전송했고, 06:44:46에 사용자가 뚝섬에 도착했는데도 표시가 건대입구(idx 7→0)로 되돌아갔다.
  */
 import {
+  BACKEND_SSOT_ADVANCE_STALE_GPS_MS,
   BACKEND_SSOT_ADVANCE_STALE_MS,
   isBackendSsotRouteRegression,
 } from '../backendSsotRegressionGuard';
@@ -29,9 +30,13 @@ describe('isBackendSsotRouteRegression (#2669)', () => {
   });
 
   it('backend가 최근에 전진했으면 거부하지 않는다 (정상 추적 중)', () => {
+    // #2841 — 이 케이스는 gpsAhead 경로(gpsQualityDegraded=false, gpsArcIndex>mirrorArcIndex)를
+    // 태운다. GPS 경로의 stale 임계가 60s(BACKEND_SSOT_ADVANCE_STALE_GPS_MS)로 완화됐으므로,
+    // "최근 전진"의 경계값도 그 임계 기준으로 재정의한다(기존 180s 경계값은 gpsAhead에는 더 이상
+    // 유효하지 않다 — 이 테스트가 바로 그 변경 대상 상수를 검증하므로 boundary 조정이 불가피).
     expect(
       isBackendSsotRouteRegression(
-        inputs({ mirrorLastAdvanceAt: NOW - (BACKEND_SSOT_ADVANCE_STALE_MS - 1_000) }),
+        inputs({ mirrorLastAdvanceAt: NOW - (BACKEND_SSOT_ADVANCE_STALE_GPS_MS - 1_000) }),
       ),
     ).toBe(false);
   });
