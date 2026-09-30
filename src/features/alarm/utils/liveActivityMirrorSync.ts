@@ -39,7 +39,11 @@
  */
 import * as LiveActivity from 'live-activity';
 import type { Station } from '../../../shared/types/station';
-import { calculateStaticETA, type Route } from '../../../shared/utils/stationRoute';
+import {
+  calculateStaticETA,
+  anchorRouteToCurrentStation,
+  type Route,
+} from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
@@ -110,8 +114,13 @@ export async function updateLiveActivityFromMirrorStation(
   // (대기+환승+운행 완비, `calculateStaticETA`)를 floor로 싣는다 — mirrorStation은 이미 route가
   // 반영하는 현재 위치이므로 출발 대기는 소진된 것으로 본다(excludeOriginWait: true). 정상
   // 상황이면 곧바로 다음 backend push/GPS write(전체 교체)가 이 값을 덮어 이긴다.
-  const etaMinutes = calculateStaticETA(route, { excludeOriginWait: true });
-  const data = buildLiveActivityData(mirrorStation, 0, destination, route, etaMinutes, false, null);
+  // #2811 — `route`는 트립 시작 시점에 고정된 경로(caller가 ROUTE_KEY/HomeScreen state에서 그대로
+  // 넘김)라 트립이 진행돼도 값이 줄지 않는다. calculateStaticETA 직전에 mirrorStation 기준으로
+  // 재앵커링해 "지금부터 남은" 시간만 싣는다(노선 불일치 등으로 앵커링 불가하면 원본 route로
+  // graceful fallback — 회귀 없음).
+  const remainingRoute = anchorRouteToCurrentStation(route, mirrorStation, destination.id);
+  const etaMinutes = calculateStaticETA(remainingRoute, { excludeOriginWait: true });
+  const data = buildLiveActivityData(mirrorStation, 0, destination, remainingRoute, etaMinutes, false, null);
   await LiveActivity.updateLiveActivity(data);
   // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
   logLiveActivityUpdated();
