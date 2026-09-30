@@ -28,6 +28,10 @@ export const ETA_DELTA_THRESHOLD_SEC = 60;
 export const ARRIVAL_CODE = {
   ENTERING: 0,
   ARRIVED: 1,
+  /** #2801 — boarding-prompt imminent 게이트(`decideBoardingPromptFire`, boardingPrompt.ts)가
+   * 참조. 폴링 갭(cron 60s > 도착 창 ~30s)으로 진입→도착→출발이 한 tick에 지나갈 수 있어
+   * 출발도 "방금 탑승" 신호로 포함한다(pickAutoTrainCode 우선순위 2>1>0과 정합). */
+  DEPARTED: 2,
   PREV_ENTERING: 4,
   PREV_ARRIVED: 5,
 } as const;

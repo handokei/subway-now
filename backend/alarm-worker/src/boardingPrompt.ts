@@ -140,6 +140,52 @@ export const MIN_FIRE_INTERVAL_MS = 5 * 60 * 1000;
  */
 export const MAX_FIRE_COUNT = 3;
 
+/**
+ * #2801 (REOPENED 2026-09-30 정정 스펙 §1/§2) — boarding-prompt 임박 게이트.
+ *
+ * 9/30 실측 트립(e25e1158) D1 RCA: `fireBoardingPromptForAnchor`의 유일 발사 게이트가
+ * `candidateTrains.length === 0`뿐이라 "노선/방향만 필터한 아무 열차"(전역출발/운행중 포함)만
+ * 있어도 발사됐다 — 열차가 아직 도착하지 않은 조기 발사(leg-2 06:42/06:44, 열차는 06:46 도착).
+ *
+ * 임박 정의(0 진입/1 도착/2 출발): 0/1은 승강장 진입/도착. 2(출발)를 포함하는 이유는 cron
+ * 60s 폴링 주기가 도착 창(~30s)보다 길어 진입→도착→출발이 한 폴링 갭에 지나갈 수 있고,
+ * `pickAutoTrainCode`의 lock-pick 우선순위(2>1>0, 회고형 — 푸시 도착·탭 시점엔 열차가 이미
+ * 출발해 있는 게 정상)와 발사 게이트의 의미를 정합시키기 위함이다.
+ */
+export const IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
+  ARRIVAL_CODE.ENTERING, // 0
+  ARRIVAL_CODE.ARRIVED, // 1
+  ARRIVAL_CODE.DEPARTED, // 2
+]);
+
+export type BoardingFireDecision =
+  | { fire: true; decision: 'imminent' }
+  | { fire: true; decision: 'fallback-unobservable' }
+  | { fire: false; decision: 'suppressed-not-imminent' };
+
+/**
+ * OR-fallback 판정 — **arvlCd 하드 필터가 아니다** (caller가 candidateTrains payload에 이
+ * 함수의 pool을 그대로 쓴다는 전제로 설계됨, 이슈 §4 금지사항).
+ *
+ * 1. 임박(§ IMMINENT_BOARDING_ARVLCD) 열차가 하나라도 있으면 발사.
+ * 2. 임박이 없어도, 관측 불가(arvlCd===null) 후보가 하나라도 있으면 "임박이 아니다"를 확정할
+ *    수 없으므로 발사(fallback) — 지하/API 부재에서 기존 동작(발사)을 보존해 miss 재발을
+ *    막는다(equal-protection).
+ * 3. 모든 후보가 관측됐는데(non-null) 임박이 하나도 없을 때만 억제 — 이 PR의 유일한 신규 억제.
+ */
+export function decideBoardingPromptFire(
+  pool: readonly { arvlCd: number | null }[],
+): BoardingFireDecision {
+  const imminent = pool.filter(
+    (a) => a.arvlCd !== null && IMMINENT_BOARDING_ARVLCD.has(a.arvlCd),
+  );
+  if (imminent.length > 0) return { fire: true, decision: 'imminent' };
+  if (pool.some((a) => a.arvlCd === null)) {
+    return { fire: true, decision: 'fallback-unobservable' };
+  }
+  return { fire: false, decision: 'suppressed-not-imminent' };
+}
+
 export type GateOutcome =
   | { pass: true; metrics: WindowedMetrics; fusedSpeedKmh: number }
   | { pass: false; reason: GateSkipReason; metrics?: WindowedMetrics };

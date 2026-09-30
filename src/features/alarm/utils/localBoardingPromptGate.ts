@@ -25,7 +25,14 @@
  *     (`recentLocalStationFires.ts`, #2122 station-passed 선례 재사용)가 담당.
  *   - lock 활성 여부(backend #1)/context 존재(backend #2) — 호출자(`useLocalBoardingPromptGate`)
  *     가 `buildBoardingPromptContext` 호출 전에 사전 보장한다.
+ *
+ * #2801 (REOPENED 2026-09-30 정정 스펙 §1/§3.3) — 근접 통과했지만 후보 열차가 전부 non-imminent
+ * (임박 아님)면 backend `decideBoardingPromptFire`(boardingPrompt.ts)와 동일한 OR-fallback
+ * 게이트로 조기 발사를 차단한다. 값 동기화 규약은 위 근접 게이트와 동일하되, 이 파일은
+ * `src/shared/constants/arrivalCodes.ts`를 직접 import할 수 있다(features → shared는 허용,
+ * features → backend만 금지) — 값 재정의가 아니라 실제 재사용.
  */
+import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import type { BoardingPromptContext } from './boardingPromptContext';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 
@@ -44,12 +51,48 @@ function isNearOriginLocal(
   return originDistanceM - originAccuracyM <= LOCAL_BOARDING_PROMPT_PROXIMITY_MARGIN_M;
 }
 
+/**
+ * #2801 — backend `IMMINENT_BOARDING_ARVLCD`(boardingPrompt.ts)와 동일 값(0 진입/1 도착/2 출발).
+ * 근거는 backend 주석과 동일 — cron/폴링 갭에 진입→도착→출발이 한 tick에 지나갈 수 있어 출발도
+ * "방금 탑승" 신호로 포함한다.
+ */
+const LOCAL_IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
+  ARRIVAL_CODE.ENTERING,
+  ARRIVAL_CODE.ARRIVED,
+  ARRIVAL_CODE.DEPARTED,
+]);
+
+export type LocalBoardingFireDecision =
+  | { fire: true; decision: 'imminent' }
+  | { fire: true; decision: 'fallback-unobservable' }
+  | { fire: false; decision: 'suppressed-not-imminent' };
+
+/**
+ * backend `decideBoardingPromptFire`(boardingPrompt.ts)와 동일 OR-fallback 판정.
+ * `ArrivalInfo.arrivalCode`는 누락/비숫자 시 -1(미관측) — backend의 arvlCd===null과 동치.
+ */
+export function decideLocalBoardingPromptFire(
+  pool: readonly ArrivalInfo[],
+): LocalBoardingFireDecision {
+  const imminent = pool.filter(
+    (a) => a.arrivalCode >= 0 && LOCAL_IMMINENT_BOARDING_ARVLCD.has(a.arrivalCode),
+  );
+  if (imminent.length > 0) return { fire: true, decision: 'imminent' };
+  if (pool.some((a) => a.arrivalCode < 0)) {
+    return { fire: true, decision: 'fallback-unobservable' };
+  }
+  return { fire: false, decision: 'suppressed-not-imminent' };
+}
+
 export interface EvaluateLocalBoardingPromptGateInput {
   context: BoardingPromptContext;
   arrival: StationArrival;
 }
 
-export type LocalBoardingPromptGateSkipReason = 'not-near-origin' | 'no-arriving-train';
+export type LocalBoardingPromptGateSkipReason =
+  | 'not-near-origin'
+  | 'no-arriving-train'
+  | 'suppressed-not-imminent';
 
 export type LocalBoardingPromptGateOutcome =
   | { pass: true }
@@ -72,9 +115,15 @@ export function evaluateLocalBoardingPromptGate(
     direction === 'up' || direction === 'down'
       ? arrival[direction]
       : ([] as ArrivalInfo[]).concat(arrival.up, arrival.down);
-  const hasArrivingTrain = directionSlice.some((a) => a.line === line && a.arrivalSeconds > 0);
-  if (!hasArrivingTrain) {
+  const arrivingPool = directionSlice.filter((a) => a.line === line && a.arrivalSeconds > 0);
+  if (arrivingPool.length === 0) {
     return { pass: false, reason: 'no-arriving-train' };
+  }
+
+  // #2801 — 근접 통과 + 같은 line/방향 후보는 있으나 전부 non-imminent → 조기 발사 억제.
+  const gate = decideLocalBoardingPromptFire(arrivingPool);
+  if (!gate.fire) {
+    return { pass: false, reason: 'suppressed-not-imminent' };
   }
 
   return { pass: true };

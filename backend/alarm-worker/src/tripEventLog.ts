@@ -208,7 +208,9 @@ export type LegBoardingPromptOutcome =
   | 'walk-gated'
   | 'no-candidates'
   | 'silenced'
-  | 'fired';
+  | 'fired'
+  /** #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제. */
+  | 'suppressed-not-imminent';
 
 /**
  * ADR-037 D2c (#2537) — `maybeFireHopEndPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).

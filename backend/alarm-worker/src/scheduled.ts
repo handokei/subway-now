@@ -31,6 +31,8 @@ import type { ArchFlagValue } from './archFlag';
 import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import { CRON_INTERVAL_MS } from './cronConstants';
 import {
+  type BoardingFireDecision,
+  decideBoardingPromptFire,
   evaluateBoardingPromptGates,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
@@ -3281,6 +3283,9 @@ async function recordLegBoardingPromptTransition(
   ssot: TripPositionSSoT | null,
   outcome: LegBoardingPromptOutcome,
   now: number,
+  // #2801 — decideBoardingPromptFire 계측(§3.4). 기존 meta({outcome}) 확장만, 신규 KV write
+  // 없음(#2073 quota 보호, 기존 write 재사용). 값이 있을 때만 필드 첨부.
+  candidateArvlCds?: readonly (number | null)[],
 ): Promise<void> {
   if (ssot === null || ssot.legBoardingPromptOutcome === outcome) return;
   await writeSsot(
@@ -3295,7 +3300,7 @@ async function recordLegBoardingPromptTransition(
       kind: 'leg-boarding-prompt',
       ...(station !== undefined ? { station } : {}),
       ...(line !== undefined ? { line } : {}),
-      meta: { outcome },
+      meta: { outcome, ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}) },
     },
     now,
   );
@@ -7441,6 +7446,15 @@ async function fireBoardingPromptForAnchor(inputs: {
   direction: 'up' | 'down' | null;
   logPrefix: string;
   onEmptyCandidates: () => void;
+  /**
+   * #2801 (REOPENED 2026-09-30 정정 스펙 §3.2) — `decideBoardingPromptFire`가 fire:false를
+   * 반환했을 때(전부 관측됐는데 임박 0건) 호출. caller가 stats(`*Blocked`)/D1 라벨을 기록한다.
+   * arvlCd 하드 필터가 아니다 — candidateTrains(payload)는 이 함수의 pool을 그대로 쓴다.
+   */
+  onSuppressedNotImminent: (
+    decision: BoardingFireDecision['decision'],
+    candidateArvlCds: readonly (number | null)[],
+  ) => void;
   shouldProceedToSend?: (pool: readonly ArrivalEntry[]) => boolean;
   onFired: (pool: readonly ArrivalEntry[]) => void;
 }): Promise<void> {
@@ -7458,6 +7472,7 @@ async function fireBoardingPromptForAnchor(inputs: {
     direction,
     logPrefix,
     onEmptyCandidates,
+    onSuppressedNotImminent,
     shouldProceedToSend,
     onFired,
   } = inputs;
@@ -7492,6 +7507,17 @@ async function fireBoardingPromptForAnchor(inputs: {
 
   if (candidateTrains.length === 0) {
     onEmptyCandidates();
+    return;
+  }
+
+  // #2801 (REOPENED 2026-09-30 정정 스펙 §2/§3.2) — 임박 게이트. candidateTrains(payload)는
+  // 위에서 이미 pool 그대로 구성됐다 — 여기서는 fire 여부만 판정(하드 필터 아님, §4 금지사항).
+  const gate = decideBoardingPromptFire(pool);
+  if (!gate.fire) {
+    onSuppressedNotImminent(
+      gate.decision,
+      pool.map((entry) => entry.arvlCd),
+    );
     return;
   }
 
@@ -7713,6 +7739,18 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         line: display.line,
       });
     },
+    // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제.
+    // arvlCd===null(지하/미관측) 후보가 섞여 있으면 이 콜백 자체가 호출되지 않는다(fallback fire).
+    onSuppressedNotImminent: (decision, candidateArvlCds) => {
+      stats.originGpsFreeBoardingPromptBlocked += 1;
+      log('origin-boarding-prompt-gps-free: gate blocked', {
+        token: trip.token.slice(0, 8),
+        reason: decision,
+        candidateArvlCds,
+        originStation: display.originStation,
+        line: display.line,
+      });
+    },
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
     // 재발사하지 않는다.
     shouldProceedToSend: (pool) => {
@@ -7770,6 +7808,9 @@ const ANCHOR_PRESENT_OUTCOMES: readonly LegBoardingPromptOutcome[] = [
   'silenced',
   'fired',
   'anchor-lost-after-transfer',
+  // #2801 — 이 outcome도 anchor 존재를 전제로만 기록된다(fireBoardingPromptForAnchor 호출 자체가
+  // anchor 있어야 진입). 누락 시 정상 조기-억제 cycle이 anchor-not-stamped로 오분류된다.
+  'suppressed-not-imminent',
 ];
 
 function classifyMissingLegAnchor(
@@ -7891,6 +7932,8 @@ export async function maybeFireLegBoardingPrompt(
   // ADR-037 D2c (#2537, 진단 계측 only) — 콜백은 동기(`() => void`)라 D1 write를 여기서 바로 할 수
   // 없다 — 결과만 캡처해 `fireBoardingPromptForAnchor` 완료 후 기록한다.
   let promptOutcome: LegBoardingPromptOutcome | null = null;
+  // #2801 — decideBoardingPromptFire 계측(§3.4). suppress/fired 경로에서 채워져 D1 meta로 나간다.
+  let candidateArvlCds: readonly (number | null)[] | undefined;
 
   await fireBoardingPromptForAnchor({
     trip,
@@ -7913,6 +7956,20 @@ export async function maybeFireLegBoardingPrompt(
         line: currentLegAnchor.line,
       });
       promptOutcome = 'no-candidates';
+    },
+    // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제.
+    // arvlCd===null(지하/미관측) 후보가 섞여 있으면 이 콜백 자체가 호출되지 않는다(fallback fire).
+    onSuppressedNotImminent: (decision, arvlCds) => {
+      stats.legBoardingPromptBlocked += 1;
+      log('leg-boarding-prompt: gate blocked', {
+        token: trip.token.slice(0, 8),
+        reason: decision,
+        candidateArvlCds: arvlCds,
+        station: currentLegAnchor.boardingStation,
+        line: currentLegAnchor.line,
+      });
+      promptOutcome = 'suppressed-not-imminent';
+      candidateArvlCds = arvlCds;
     },
     // #2801 — origin GPS-free 경로(#2531 A4 ledger)와 동일 trainCode dedup. 같은 열차가 이미
     // 발사된 candidateTrains로 재발사(무한 스팸)되는 것만 막는다 — candidateTrains가 바뀌면
@@ -7940,6 +7997,7 @@ export async function maybeFireLegBoardingPrompt(
       stats.legBoardingPromptFired += 1;
       trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState, selectedTrainCode);
       promptOutcome = 'fired';
+      candidateArvlCds = pool.map((entry) => entry.arvlCd);
     },
   });
 
@@ -7952,6 +8010,7 @@ export async function maybeFireLegBoardingPrompt(
       ssot,
       promptOutcome,
       now,
+      candidateArvlCds,
     );
   }
 }

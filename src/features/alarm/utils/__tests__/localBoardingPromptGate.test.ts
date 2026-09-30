@@ -1,4 +1,5 @@
 import {
+  decideLocalBoardingPromptFire,
   evaluateLocalBoardingPromptGate,
   LOCAL_BOARDING_PROMPT_PROXIMITY_MARGIN_M,
 } from '../localBoardingPromptGate';
@@ -31,11 +32,14 @@ function makeArrival(overrides: Partial<ArrivalInfo> & { direction: 'up' | 'down
     destination: '건대입구',
     arrivalMinutes: 3,
     arrivalSeconds: 180,
-    statusMessage: '전역 출발',
+    statusMessage: '도착',
     trainCode: '1234',
     line: '7',
     receivedAtMs: Date.now(),
-    arrivalCode: 3,
+    // #2801 — imminent(0/1/2) 기본값. 기존 기본값 3(전역출발, non-imminent)은 이 gate의
+    // proximity/line-matching 테스트 의도와 무관한데 신규 imminent 게이트가 이를 차단해버려
+    // 무관 테스트가 깨지는 걸 막는다. imminent 자체를 검증하는 케이스는 명시 override.
+    arrivalCode: 1,
     isLastTrain: false,
     trainType: 'normal',
     ...overrides,
@@ -124,5 +128,80 @@ describe('evaluateLocalBoardingPromptGate', () => {
     const context = makeContext({ originDistanceM: 50, originAccuracyM: 10, direction: null, line: '7' });
     const arrival = makeArrival({ direction: 'down', line: '7' });
     expect(evaluateLocalBoardingPromptGate({ context, arrival }).pass).toBe(true);
+  });
+
+  // #2801 (REOPENED 2026-09-30 정정 스펙 §3.3) — 근접+같은 line 후보가 있어도 전부 non-imminent면
+  // (backend 조기 발사 회귀와 동일 결함이 device 로컬 게이트에도 있었다) 차단해야 한다.
+  it('근접+같은 line 후보 있지만 전부 non-imminent(arrivalCode=3) → suppressed-not-imminent', () => {
+    const context = makeContext({ originDistanceM: 50, originAccuracyM: 10, direction: 'up', line: '7' });
+    const arrival = makeArrival({ direction: 'up', line: '7', arrivalCode: 3 });
+    expect(evaluateLocalBoardingPromptGate({ context, arrival })).toEqual({
+      pass: false,
+      reason: 'suppressed-not-imminent',
+    });
+  });
+
+  it('근접+같은 line 후보 imminent(arrivalCode=1 ARRIVED) → pass', () => {
+    const context = makeContext({ originDistanceM: 50, originAccuracyM: 10, direction: 'up', line: '7' });
+    const arrival = makeArrival({ direction: 'up', line: '7', arrivalCode: 1 });
+    expect(evaluateLocalBoardingPromptGate({ context, arrival })).toEqual({ pass: true });
+  });
+
+  it('근접+같은 line 후보 미관측(arrivalCode=-1) → pass (fallback-unobservable, 지하 miss 방지)', () => {
+    const context = makeContext({ originDistanceM: 50, originAccuracyM: 10, direction: 'up', line: '7' });
+    const arrival = makeArrival({ direction: 'up', line: '7', arrivalCode: -1 });
+    expect(evaluateLocalBoardingPromptGate({ context, arrival })).toEqual({ pass: true });
+  });
+});
+
+describe('#2801 — decideLocalBoardingPromptFire (device 로컬 임박 게이트, backend decideBoardingPromptFire와 parity)', () => {
+  function arrival(arrivalCode: number): ArrivalInfo {
+    return {
+      destination: '건대입구',
+      arrivalMinutes: 3,
+      arrivalSeconds: 180,
+      statusMessage: '도착',
+      trainCode: '1234',
+      line: '7',
+      receivedAtMs: Date.now(),
+      arrivalCode,
+      isLastTrain: false,
+      trainType: 'normal',
+    };
+  }
+
+  it('임박(arrivalCode=1) 존재 → fire:true, decision=imminent', () => {
+    expect(decideLocalBoardingPromptFire([arrival(1), arrival(99)])).toEqual({
+      fire: true,
+      decision: 'imminent',
+    });
+  });
+
+  it('먼 열차만(arrivalCode=[3,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent', () => {
+    expect(decideLocalBoardingPromptFire([arrival(3), arrival(99)])).toEqual({
+      fire: false,
+      decision: 'suppressed-not-imminent',
+    });
+  });
+
+  it('전부 미관측(arrivalCode=-1) → fire:true, decision=fallback-unobservable', () => {
+    expect(decideLocalBoardingPromptFire([arrival(-1), arrival(-1)])).toEqual({
+      fire: true,
+      decision: 'fallback-unobservable',
+    });
+  });
+
+  it('혼합(arrivalCode=[99,-1]) → fire:true, decision=fallback-unobservable (관측 불가 우선)', () => {
+    expect(decideLocalBoardingPromptFire([arrival(99), arrival(-1)])).toEqual({
+      fire: true,
+      decision: 'fallback-unobservable',
+    });
+  });
+
+  it('출발(arrivalCode=2 DEPARTED) → fire:true, decision=imminent (backend와 동일 회고형 정합)', () => {
+    expect(decideLocalBoardingPromptFire([arrival(2)])).toEqual({
+      fire: true,
+      decision: 'imminent',
+    });
   });
 });

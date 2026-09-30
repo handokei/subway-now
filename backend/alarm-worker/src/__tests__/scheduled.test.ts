@@ -14033,6 +14033,28 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
       await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
       expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'anchor-lost-after-transfer' }]);
     });
+
+    // #2801 — suppressed-not-imminent도 anchor 존재를 전제로만 기록된다(ANCHOR_PRESENT_OUTCOMES
+    // 누락 시 정상 조기-억제 cycle이 anchor-not-stamped-after-transfer로 오분류된다).
+    it('환승 후 anchor가 stamp된 적 있음(직전 SSoT 마커=suppressed-not-imminent) → 소실 후 재평가는 anchor-lost-after-transfer', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        currentLegAnchor: undefined,
+        legBoardingEligibleAt: undefined,
+        route: transferRoute,
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      });
+      const seeded = await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      await writeSsot(
+        kv as unknown as KVNamespace,
+        { ...seeded, legBoardingPromptOutcome: 'suppressed-not-imminent' },
+        { expiresAt: trip.expiresAt ?? NOW + 3_600_000 },
+      );
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
+      expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'anchor-lost-after-transfer' }]);
+    });
   });
 
   // #2801 — walk-gate(legBoardingEligibleAt) 제거. 구 테스트(도보시간 미경과 → skip, 오탑승
@@ -14116,6 +14138,76 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(stats.legBoardingPromptBlocked).toBe(1);
     expect(stats.legBoardingPromptFired).toBe(0);
+  });
+
+  // #2801 (REOPENED 2026-09-30 정정 스펙) — 9/30 실측 트립(e25e1158) D1 RCA 재현: leg-2 후보 pool에
+  // 먼 열차만 있어도(arvlCd=3 전역출발/99 운행중, 전부 관측됨) 발사되던 조기 발사 회귀.
+  // RED(fix 전): candidateTrains.length>0 이기만 하면 발사 — 이 테스트가 실패한다.
+  // GREEN(fix 후): decideBoardingPromptFire OR-fallback 게이트가 suppressed-not-imminent로 차단.
+  it('#2801 — 후보 전부 non-imminent(arvlCd=3/99, 전부 관측됨) → 발사 안 함, blocked 증가, outcome=suppressed-not-imminent (9/30 조기 발사 회귀 재현)', async () => {
+    const fetchImpl = vi.fn(
+      makeArrivalsResponse([
+        { btrainNo: '3056', isUp: true, arvlCd: 3 },
+        { btrainNo: '3058', isUp: true, arvlCd: 99 },
+      ]),
+    );
+    const trip = makeTrip();
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(stats.legBoardingPromptFired).toBe(0);
+    expect(stats.legBoardingPromptBlocked).toBe(1);
+    expect(trip.legBoardingPromptState?.fired).toBeFalsy();
+    const outcomeInserts = inserts
+      .filter((args) => args[2] === 'leg-boarding-prompt')
+      .map((args) => JSON.parse(args[5] as string) as { outcome: string; candidateArvlCds?: number[] });
+    expect(outcomeInserts).toEqual([
+      { outcome: 'suppressed-not-imminent', candidateArvlCds: [3, 99] },
+    ]);
+  });
+
+  // GREEN 대조군 — 같은 pool에 임박(arvlCd=1) 열차가 섞이면 정상 발사돼야 한다(과교정 방지).
+  it('#2801 — 후보 중 임박 열차(arvlCd=1) 존재 → 정상 발사(과교정 방지 대조군)', async () => {
+    const fetchImpl = vi.fn(
+      makeArrivalsResponse([
+        { btrainNo: '3056', isUp: true, arvlCd: 1 },
+        { btrainNo: '3058', isUp: true, arvlCd: 99 },
+      ]),
+    );
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(trip.legBoardingPromptState?.fired).toBe(true);
+  });
+
+  // 지하 보존(equal-protection) — arvlCd가 관측 불가(null)인 후보만 있으면 기존 동작(발사) 보존.
+  it('#2801 — 후보 전부 관측 불가(arvlCd=null, 지하) → 기존 동작 보존(발사)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: '120',
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: '건대입구',
+              btrainNo: '3056',
+              subwayNm: '지하철7호선',
+              // arvlCd 필드 자체를 생략 — parseArvlCd(undefined) === null (지하 미관측 시뮬레이션).
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ) as unknown as typeof fetch;
+    const trip = makeTrip();
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(trip.legBoardingPromptState?.fired).toBe(true);
   });
 });
 
