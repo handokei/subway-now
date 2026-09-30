@@ -14033,6 +14033,28 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
       await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
       expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'anchor-lost-after-transfer' }]);
     });
+
+    // #2801 — suppressed-not-imminent도 anchor 존재를 전제로만 기록된다(ANCHOR_PRESENT_OUTCOMES
+    // 누락 시 정상 조기-억제 cycle이 anchor-not-stamped-after-transfer로 오분류된다).
+    it('환승 후 anchor가 stamp된 적 있음(직전 SSoT 마커=suppressed-not-imminent) → 소실 후 재평가는 anchor-lost-after-transfer', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        currentLegAnchor: undefined,
+        legBoardingEligibleAt: undefined,
+        route: transferRoute,
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      });
+      const seeded = await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      await writeSsot(
+        kv as unknown as KVNamespace,
+        { ...seeded, legBoardingPromptOutcome: 'suppressed-not-imminent' },
+        { expiresAt: trip.expiresAt ?? NOW + 3_600_000 },
+      );
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(vi.fn()), stats, NOW, () => {}, () => 'pid');
+      expect(findOutcomeInserts(inserts)).toEqual([{ outcome: 'anchor-lost-after-transfer' }]);
+    });
   });
 
   // #2801 — walk-gate(legBoardingEligibleAt) 제거. 구 테스트(도보시간 미경과 → skip, 오탑승
@@ -14140,8 +14162,10 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(trip.legBoardingPromptState?.fired).toBeFalsy();
     const outcomeInserts = inserts
       .filter((args) => args[2] === 'leg-boarding-prompt')
-      .map((args) => JSON.parse(args[5] as string) as { outcome: string });
-    expect(outcomeInserts).toEqual([{ outcome: 'suppressed-not-imminent' }]);
+      .map((args) => JSON.parse(args[5] as string) as { outcome: string; candidateArvlCds?: number[] });
+    expect(outcomeInserts).toEqual([
+      { outcome: 'suppressed-not-imminent', candidateArvlCds: [3, 99] },
+    ]);
   });
 
   // GREEN 대조군 — 같은 pool에 임박(arvlCd=1) 열차가 섞이면 정상 발사돼야 한다(과교정 방지).
