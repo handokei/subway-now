@@ -74,6 +74,10 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 - CI `Wire-completion CI / Orphan Export Detection` job pass 확인 후 머지.
 - 신규 entry-point export 추가 시 ignore pattern 갱신 PR을 분리하지 말고 같은 PR에 포함.
 
+### 단방향(편측) 감사 룰 (2026-09-30 추가, 필수)
+
+fix 배치 완료 시(머지 전 권장) `/audit-sides` 스킬로 **형제 경로 교차추적 감사를 반드시 실행**한다 — fix가 한 경로/방향/레이어/상태에만 적용됐는지 file:line로 전수 판정(`.claude/skills/audit-sides/SKILL.md`). 근거: #2806 절반-가드가 9/30 LA 사망 root였고, 첫 실전 감사에서 당일 fix 4개 중 2개가 편측 판정(#2842/#2843). 편측 판정 시 처분: 머지 전=같은 PR 확장 / 별개 root=기존 이슈 매핑 / 무해=invariants 기록.
+
 ---
 
 ## Agent skills

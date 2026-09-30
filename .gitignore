@@ -55,6 +55,7 @@ targets/subway-widget/generated.entitlements
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/worktree/
+!.claude/skills/audit-sides/
 
 # Maestro E2E 산출물
 .maestro/screenshots/
