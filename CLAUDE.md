@@ -78,6 +78,10 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 
 ## Agent skills
 
+### Invariants (필독, 2026-09-30 추가)
+
+`docs/agents/invariants.md` — 코드 주석에만 살아있는 불변식·한계·함정의 색인(영역별 + 기계적 강제 여부 + 테스트 승격 큐). **RCA/스펙/fix 착수 전 해당 영역 섹션을 먼저 읽는다.** fix가 "강제: 없음/부분" 불변식을 지나가면 같은 PR에서 그 불변식을 assert하는 테스트(가능하면 whole-trip replay)로 승격한다 — 주석만 남기고 지나가지 않는다. 라인번호는 point-in-time이므로 어긋나면 요약 키워드로 재검색.
+
 ### Issue tracker
 
 GitHub Issues (`handokei/subway-now`). See `docs/agents/issue-tracker.md`.
