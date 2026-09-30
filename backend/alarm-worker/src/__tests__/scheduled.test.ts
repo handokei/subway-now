@@ -4283,6 +4283,10 @@ function makeLockedLaTrip(overrides: Partial<Trip> = {}): Trip {
     activityPushToken: 'la-token',
     activityState: 'live',
     apnsEnv: 'sandbox',
+    // #2849 — SSoT 미정착 시 LA stationName의 폴백 대상(실제 device 등록 시점엔 항상 stamp됨).
+    // segmentStations[0]('역삼')과 정합 — 아직 도착하지 않은 목적지(강남)를 stationName으로
+    // 잘못 노출하던 회귀의 fallback 경로를 검증하기 위한 값.
+    originStationName: '역삼',
     boardingLock: {
       trainCode: 'T',
       line: '2',
@@ -4378,7 +4382,10 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     // #613: widget-aligned schema. etaSeconds → etaMinutes.
     // stationName/lineName/lineColorHex은 widget non-optional 보장.
     // alarmType은 omit — widget 긴급 모드(isUrgent)를 polling 정정마다 강제하지 않기 위함.
-    expect(contentState.stationName).toBe('강남');
+    // #2849 — stationName은 "다음 추적 대상(강남)"이 아니라 SSoT 미정착 시 trip origin
+    // (originStationName='역삼') 폴백이어야 한다. 아직 강남에 도착하지 않았는데 강남을
+    // stationName으로 보내던 것이 이슈의 회귀 증상 그 자체.
+    expect(contentState.stationName).toBe('역삼');
     expect(contentState.lineName).toBe('2호선');
     expect(contentState.lineColorHex).toBe('#009D3E');
     expect(contentState.stopsRemaining).toBe(1);
@@ -4391,6 +4398,62 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(contentState.alarmType).toBeUndefined();
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
+  });
+
+  // #2849 (TDD red-first) — 정지 상태 실측 시나리오: 사용자는 용마산에 정차 중(SSoT 확정)인데
+  // 추적 target(waypoints[0])은 아직 중곡이 아니라 다음 hop(중곡)이다. backend가 target을
+  // stationName으로 그대로 보내면 device(현재역=용마산) 표시와 충돌해 "한 정거장 앞" 점프가
+  // 일어난다 — 10/1 실측(용마산 정지 중 LA가 중곡 표시) + 9/7·9/16 재발.
+  it('#2849 — 정지 상태(SSoT=용마산, 추적 target=중곡) → LA stationName은 SSoT 현재역(용마산)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeLockedLaTrip({
+      waypoints: [{ stationName: '중곡', line: '2', kind: 'destination' }],
+      boardingLock: {
+        trainCode: 'T',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['용마산', '중곡'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt });
+    const fetchImpl = makeOkFetch();
+    // arvlCd 미결(120s, ENTERING/ARRIVED 아님) → 아직 중곡 도착 전, ETA countdown만 갱신.
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(1);
+    const laCalls = getLaCalls(fetchImpl);
+    expect(laCalls).toHaveLength(1);
+    const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+    expect(contentState.stationName).toBe('용마산');
+  });
+
+  // #2849 회귀 안전 — advance 성공 후에는 SSoT.currentStationId가 그 waypoint로 갱신되므로
+  // 다음 LA push도 방금 advance된 역(중곡)을 그대로 보여야 한다(잘못된 이전 역으로 회귀 금지).
+  it('#2849 회귀 안전 — advance 후 SSoT.currentStationId=중곡이면 LA stationName도 중곡', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeLockedLaTrip({
+      waypoints: [{ stationName: '군자', line: '2', kind: 'destination' }],
+      boardingLock: {
+        trainCode: 'T',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['중곡', '군자'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '중곡', { expiresAt: trip.expiresAt });
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(1);
+    const contentState = parseLaBody(getLaCalls(fetchImpl)[0]).aps['content-state'] as Record<
+      string,
+      unknown
+    >;
+    expect(contentState.stationName).toBe('중곡');
   });
 
   it('does not fire LA when delta < 30s (LA threshold separate from reschedule 15s)', async () => {
@@ -4901,7 +4964,10 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     const contentState = body.aps['content-state'] as Record<string, unknown>;
     expect(body.aps.event).toBe('update');
     // #613: widget-aligned schema. alarmType은 omit (긴급 모드 강제 회피).
-    expect(contentState.stationName).toBe('강남');
+    // #2849 — stationName은 방금 확정 통과한 waypoint(중곡, ground truth)여야 한다. "다음
+    // 추적 대상(강남)"을 그대로 보내면 아직 도착하지 않은 역이 현재역처럼 표시되는 회귀.
+    // (nextWaypoint는 line/kind/stopsRemaining 해석에는 그대로 쓰이므로 무변경.)
+    expect(contentState.stationName).toBe('중곡');
     expect(contentState.alarmType).toBeUndefined();
     expect(contentState.stopsRemaining).toBe(1);
     expect(contentState.etaMinutes).toBe(0); // shift 시점은 ETA 0
@@ -4926,6 +4992,8 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
           { stationName: '군자', line: '7', kind: 'transfer' },
           { stationName: '아차산', line: '5', kind: 'destination' },
         ],
+        // #2849 — SSoT 미정착 시 LA stationName 폴백 대상. segmentStations[0]('중곡')과 정합.
+        originStationName: '중곡',
         boardingLock: {
           trainCode: 'T',
           line: '7',
@@ -4977,8 +5045,9 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       // #1654 / #1658 — 환승 waypoint는 7호선이지만 다음 leg(아차산, 5호선)의 line을 LA에 즉시 노출
       expect(contentState.lineName).toBe('5호선');
       expect(contentState.lineColorHex).toBe('#996CAC');
-      // stationName은 transfer station(군자) 그대로 유지
-      expect(contentState.stationName).toBe('군자');
+      // #2849 — 아직 군자에 도착하지 않았다(arvlCd 미결). stationName은 SSoT 미정착 시
+      // trip origin(중곡) 폴백이어야 한다 — 추적 target(군자)을 현재역으로 보내면 안 됨.
+      expect(contentState.stationName).toBe('중곡');
     });
 
     it('환승 waypoint 도착(ARRIVED) → advanceBoardingLockWaypoint LA update도 새 leg(5호선) 반영', async () => {
@@ -5015,9 +5084,11 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       // advanceBoardingLockWaypoint 직후 즉시 LA update 발사 (ETA 임계 무시)
       expect(laCalls).toHaveLength(1);
       const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
-      // nextWaypoint = 아차산(5호선) → LA는 5호선 표시
+      // nextWaypoint = 아차산(5호선) → LA는 5호선 표시(line 해석 무변경)
       expect(contentState.lineName).toBe('5호선');
-      expect(contentState.stationName).toBe('아차산');
+      // #2849 — stationName은 방금 확정 도착(ARRIVED)한 waypoint(군자)여야 한다. 아직 가지
+      // 않은 다음 waypoint(아차산)를 현재역으로 보내면 한 정거장 앞서 표시되는 회귀.
+      expect(contentState.stationName).toBe('군자');
     });
   });
 
