@@ -7266,7 +7266,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // 않는다 — 동일 key 규약(`station`=origin station)으로 같은 독립 KV를 재사용해 GPS 경로/
   // GPS-free 경로가 같은 anchor에 대해 서로도 cross-path dedup되게 한다(#2531 설계와 동일 취지:
   // 두 경로가 같은 trip.boardingPromptState ledger를 공유하듯, fire-once 마커도 공유).
-  if (await isBoardingPromptFireOnceBlocked(env, trip.token, display.originStation)) {
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, display.originStation, now)) {
     log('boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: 'fire-once-key',
@@ -7559,7 +7559,7 @@ async function fireBoardingPromptForAnchor(inputs: {
   // 반영되기 전에 다음 cycle이 stale trip을 받으면 repeat gate 자체가 우회된다(9/30 e25e1158
   // 06:42→06:44 실측). trip 객체와 무관한 독립 key로 "최근 5분 내 발사" 여부를 재확인한다 —
   // repeat gate(trip 경유)는 무변경, 이 검사는 이중 방어로 얹는다.
-  if (await isBoardingPromptFireOnceBlocked(env, trip.token, station)) {
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, station, now)) {
     log(`${logPrefix}: gate blocked`, {
       token: trip.token.slice(0, 8),
       reason: 'fire-once-key',
