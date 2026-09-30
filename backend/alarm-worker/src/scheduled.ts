@@ -7261,6 +7261,23 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     return;
   }
 
+  // #2838 (교차추적 감사 후속) — fire-once 이중 방어. 이 GPS 9단 경로는 leg-1 GPS-free/leg-2와
+  // 달리 자체 발사 블록을 갖고 있어 공유 본체(`fireBoardingPromptForAnchor`)의 배선을 타지
+  // 않는다 — 동일 key 규약(`station`=origin station)으로 같은 독립 KV를 재사용해 GPS 경로/
+  // GPS-free 경로가 같은 anchor에 대해 서로도 cross-path dedup되게 한다(#2531 설계와 동일 취지:
+  // 두 경로가 같은 trip.boardingPromptState ledger를 공유하듯, fire-once 마커도 공유).
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, display.originStation)) {
+    log('boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: 'fire-once-key',
+      originStation: display.originStation,
+      line: display.line,
+    });
+    stats.boardingPromptBlocked += 1;
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+
   const { title, body } = buildBoardingPromptMessage(
     display.originStation,
     display.line,
@@ -7324,6 +7341,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     stats.boardingPromptFired += 1;
     // #1683 — boardingPrompt kind 카운터.
     stats.silentPushFiredByKind.boardingPrompt += 1;
+    // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota). leg-1 GPS-free와
+    // 동일 key(origin station) — cross-path dedup.
+    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, display.originStation, now);
     // #2130 (Part B-be-2, A4) — prev state + selectedTrainCode를 전달해 firedTrainCodes/fireCount를
     // 누적한다(반복 발사 dedup + hard cap 입력).
     trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
