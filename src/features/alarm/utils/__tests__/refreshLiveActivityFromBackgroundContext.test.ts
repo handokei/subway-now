@@ -516,6 +516,24 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
         expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
       });
 
+      it('route/origin이 arc를 구성 못 함(computeRouteArc null) → 판정 근거 없음 → mirror를 그대로 채택한다(안전 기본)', async () => {
+        mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
+        setupStorage({
+          [DESTINATION_KEY]: JSON.stringify(tripDestination),
+          [TRIP_ORIGIN_KEY]: JSON.stringify(tripOrigin),
+          [BG_LAST_STATION_KEY]: JSON.stringify({
+            station: localTuksum,
+            distanceKm: 0.05,
+            timestamp: Date.now(),
+          }),
+          // 존재하지 않는 line(9호선 — mock stations.json에 없음)이라 computeRouteArc가 null 반환.
+          [ROUTE_KEY]: JSON.stringify({ type: 'direct', line: '9', stops: 1 }),
+        });
+        await refreshLiveActivityFromBackgroundContext();
+        const [station] = mockBuild.mock.calls[0];
+        expect(station).toEqual({ id: '0328', name: '성수', line: '2', lat: 37.54, lng: 127.05 });
+      });
+
       it('TRIP_ORIGIN_KEY 부재(arc를 못 만듦) → 판정 근거 없음 → mirror를 그대로 채택한다(안전 기본)', async () => {
         mockReadBackendSsotMirror.mockResolvedValue(staleMirrorAtSeongsu);
         setupStorage({

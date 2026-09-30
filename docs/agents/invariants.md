@@ -52,6 +52,9 @@
 | liveActivityPushChannel.ts:363-367 | 불변식 | #2481/#2735 3-state 권위 게이트 — backendConfirmed 신선 시만 backend 단독 저자 | 있음 |
 | liveActivityMirrorSync.ts:76-85 | 함정 | #2659 backend-authority 게이트는 GPS-sourced 전용 — mirror까지 막으면 LA 13분 정지 재발 | 부분 |
 | liveActivityMirrorSync.ts:102-107 | 갭 | LA update=전체 교체 — mirror가 backend push ETA/배지 덮을 위험, 역 전이당 1회 제한뿐 | **없음** |
+| refreshLiveActivityFromBackgroundContext.ts:169-207 | 불변식 | (#2732 gap1 fix) BG LA 경로도 FG와 동일하게 `isBackendSsotRouteRegression`을 거쳐야 얼어붙은 mirror가 트립 꼬리에서 채택되지 않음 — 입력(arc/gpsArcIndex)을 못 채우면 가드 비활성이 안전 기본 | 있음(refreshLiveActivityFromBackgroundContext.test.ts #2732 gap1) |
+| refreshLiveActivityFromBackgroundContext.ts:123-134 | 불변식 | (#2732 gap2 fix) destination read 실패만으로 활성 trip(ACTIVE_TRIP_KEY 존재) 중 LA를 end하지 않음 — 둘 다 부재일 때만 end | 있음(refreshLiveActivityFromBackgroundContext.test.ts #2732 gap2) |
+| lookupStationFromSsot.ts:33-43 / updateWidgetFromSilentPush.ts:40-71 | 갭 | (#2732 후속) 위젯 경로는 silent push payload 단발 `ssot` 슬라이스만 받아 `isBackendSsotRouteRegression`이 요구하는 `lastAdvanceAt`/arc 컨텍스트가 없다 — BG LA 경로(gap1)와 동일한 tail-stuck 위험이 위젯에도 존재하나 이번 PR 스코프 제외(caller까지 재설계 필요, 과설계 방지) | **없음** |
 | liveActivityGpsWriteArbitration.ts:15-18 | 함정 | in-memory 모듈상태 — BG headless 별도 인스턴스에서 비공유 가능 | **없음** |
 | useLiveActivityPreBoardingLifecycle.ts:24-35 | 함정 | LA 시작경로 이원화(채널 세션 vs 직접 update) — 서로 인지 못 하면 kill/깜빡임(#2806 root) | 부분 |
 | stationNotifCollapseId.ts:11 | 불변식 | collapse id 포맷 변경 금지(backend와 동시 조정) | 부분 |
