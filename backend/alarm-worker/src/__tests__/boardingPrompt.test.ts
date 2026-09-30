@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ARRIVAL_CODE } from '../alarm';
 import {
+  decideBoardingPromptFire,
   DISMISS_SILENCE_MS,
   evaluateBoardingPromptGates,
   evaluateHopEndPromptGates,
@@ -894,5 +895,53 @@ describe('evaluateHopEndPromptGates (#2034)', () => {
       now: NOW,
     });
     expect(r.pass).toBe(true);
+  });
+});
+
+/**
+ * #2801 (REOPENED 2026-09-30 정정 스펙 §2/§5) — 조기 발사 봉합 OR-fallback 게이트.
+ *
+ * 9/30 실측 트립(e25e1158) D1 RCA: leg-2 boarding-prompt가 열차(3056)가 아직 도착 전인데
+ * (candidateTrains에 먼 열차만 있는데도) 발사됐다(06:42/06:44, 열차는 06:46 도착).
+ * `fireBoardingPromptForAnchor`의 유일 게이트가 `candidateTrains.length===0`뿐이라 "아무 열차나
+ * pool에 있으면" 발사되는 구조 — arvlCd(임박 여부) 검사가 아예 없었다.
+ *
+ * RED(fix 전): `decideBoardingPromptFire`가 아직 export되지 않아 이 파일 자체가 컴파일 실패.
+ * GREEN(fix 후): 아래 케이스가 전부 통과.
+ */
+describe('#2801 — decideBoardingPromptFire (조기 발사 OR-fallback 게이트)', () => {
+  it('지상 임박(arvlCd=1 ARRIVED 존재) → fire:true, decision=imminent', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.ARRIVED }, { arvlCd: 99 }]);
+    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  });
+
+  it('지상 먼 열차만(arvlCd=[3,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent (9/30 조기 발사 회귀 재현)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 3 }, { arvlCd: 99 }]);
+    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+
+  it('지하 전부 null → fire:true, decision=fallback-unobservable (miss 재발 방지)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: null }, { arvlCd: null }]);
+    expect(result).toEqual({ fire: true, decision: 'fallback-unobservable' });
+  });
+
+  it('혼합(arvlCd=[99, null]) → fire:true, decision=fallback-unobservable (관측 불가 우선, miss 방지)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 99 }, { arvlCd: null }]);
+    expect(result).toEqual({ fire: true, decision: 'fallback-unobservable' });
+  });
+
+  it('출발만(arvlCd=[2] DEPARTED) → fire:true, decision=imminent (회고형 정합 — 폴링 갭에 진입→도착→출발이 한 tick에 지나갈 수 있음)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.DEPARTED }]);
+    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  });
+
+  it('진입(arvlCd=0 ENTERING) → fire:true, decision=imminent', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.ENTERING }]);
+    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  });
+
+  it('pool 빈 배열 → fire:false, decision=suppressed-not-imminent (imminent 0건 & null 0건 = "전부 관측되고 임박 없음"에 해당)', () => {
+    const result = decideBoardingPromptFire([]);
+    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
   });
 });
