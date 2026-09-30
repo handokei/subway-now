@@ -7171,6 +7171,62 @@ describe('runScheduled — #2014 (ADR-022 B8) archFlag=on 배선', () => {
     expect(stats.boardingPromptFired).toBe(0);
     expect(stats.boardingPromptBlocked).toBe(1);
   });
+
+  // #2838 (교차추적 감사 후속) — GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`)는 leg-2/leg-1
+  // GPS-free 경로(fireBoardingPromptForAnchor 공유 본체)와 달리 자체 sendBoardingPromptPush를
+  // 갖고 있어 fire-once 배선을 타지 않았다 — 동일 stale-read 구조(dedup이 trip.boardingPromptState
+  // 에만 실려 KV 왕복) 취약점이 그대로 남아 있었다.
+  it('#2838 — cron stale-read(trip.boardingPromptState 소실)로 5분 repeat gate가 우회돼도 fire-once key가 재발사를 억제한다', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+    const deps = makeArchFlagDeps(fetchImpl, makeOriginScopedSeoul('강남', [ARVL_ARRIVED_SINGLE]));
+
+    // ── cycle A — 정상 첫 발사. trip.boardingPromptState가 stamp된다.
+    const tripCycleA = makeUnlockedTrip();
+    const statsA = makeFullEmptyStats();
+    await evaluateAndMaybeFireBoardingPrompt(
+      tripCycleA,
+      makeEnv(kv),
+      deps,
+      statsA,
+      NOW,
+      () => {},
+      () => 'b8-push-a',
+    );
+    expect(statsA.boardingPromptFired).toBe(1);
+    expect(tripCycleA.boardingPromptState?.lastFiredAt).toBe(NOW);
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+
+    // ── cycle B (1분 후, 5분 미경과) — cron이 listTrips stale-read로 직전 cycle의 putTrip을
+    // 못 보고 `boardingPromptState`가 비어있는 **새 trip 객체**를 돌려준 상황을 모사한다
+    // (같은 token, 같은 promptDisplay). 구 코드는 promptState가 undefined라 repeat gate가
+    // 즉시 통과 → 5분 게이트 우회 재발사(leg-2/leg-1 GPS-free와 동일 회귀 클래스).
+    const tripCycleB = makeUnlockedTrip();
+    expect(tripCycleB.boardingPromptState).toBeUndefined();
+    const statsB = makeFullEmptyStats();
+    const log = vi.fn();
+    await evaluateAndMaybeFireBoardingPrompt(
+      tripCycleB,
+      makeEnv(kv),
+      deps,
+      statsB,
+      NOW + 60_000,
+      log,
+      () => 'b8-push-b',
+    );
+
+    // fired 재발사가 없어야 한다 — fetchImpl 추가 호출 없음.
+    expect(statsB.boardingPromptFired).toBe(0);
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    // reason='fire-once-key'로 억제 사유가 관측 가능해야 한다(wrangler tail).
+    expect(
+      log.mock.calls.some(
+        ([, meta]) => (meta as { reason?: string } | undefined)?.reason === 'fire-once-key',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (#824)', () => {
