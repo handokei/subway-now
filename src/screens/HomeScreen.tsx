@@ -27,7 +27,7 @@ import {
   setNavigationPausedAt,
   clearNavigationPausedAt,
 } from '../features/alarm/utils/navigationPauseStorage';
-import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
+import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, anchorRouteToCurrentStation, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
@@ -780,15 +780,28 @@ export default function HomeScreen() {
     }
     clearCustomOriginForSsotOverride(ssotStation);
   }, [customOrigin, result?.station, confidence, isInTrip, clearCustomOriginForSsotOverride]);
-  const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
-    ? calculateETA(nextTrainMinutes, route, { excludeOriginWait: isInTrip })
+  // #2811 — route는 destination/routePreference 변경 시에만 재계산되는 trip 고정값(#1883 RC-11
+  // freeze)이라 트립이 진행돼도 그대로다. ETA만큼은 effectiveOrigin(실시간 현재역) 기준으로
+  // 재앵커링해 "지금부터 남은" 시간을 반영한다 — route 자체(journey timeline/segments 등 트립 전체
+  // 표시용)는 건드리지 않는다. 트립 시작 직후(effectiveOrigin===route 계산 시점의 origin)에는
+  // anchorRouteToCurrentStation이 사실상 no-op이라 기존 표시와 동치.
+  const remainingRoute = useMemo(
+    () =>
+      route && effectiveOrigin && destination
+        ? anchorRouteToCurrentStation(route, effectiveOrigin, destination.id)
+        : route,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- id 기반 안정 deps(기존 파일 관례, 예: nextStationName useMemo)
+    [route, effectiveOrigin?.id, destination?.id],
+  );
+  const etaMinutes = remainingRoute && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
+    ? calculateETA(nextTrainMinutes, remainingRoute, { excludeOriginWait: isInTrip })
     : null;
   // #784: rawArrival(useArrivalInfo)을 직접 사용 — useArrivalCountdown(1Hz tick)은 receivedAtMs를
   // 원본으로 유지하면서 arrivalSeconds만 차감해 60s 후 항상 stale로 판정되는 회귀 회피(옵션 B).
   // 분 단위 정수 ETA라 tick 미반영 영향 없음. arrivalsAtTransfers는 환승역별 폴링 인프라가 없어
   // undefined — leg당 DEFAULT_WAIT_MINUTES fallback 유지.
-  const staticEtaMinutes = route
-    ? calculateStaticETA(route, {
+  const staticEtaMinutes = remainingRoute
+    ? calculateStaticETA(remainingRoute, {
         currentLocation: userLocation ?? undefined,
         originStation: effectiveOrigin
           ? { lat: effectiveOrigin.lat, lng: effectiveOrigin.lng }

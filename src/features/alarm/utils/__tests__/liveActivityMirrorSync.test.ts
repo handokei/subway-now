@@ -182,7 +182,13 @@ describe('updateLiveActivityFromMirrorStation', () => {
     await updateLiveActivityFromMirrorStation(seongsu, realDestination, fullRoute);
 
     expect(mockBuild).toHaveBeenCalledTimes(1);
-    const [, , , routeArg, etaArg] = mockBuild.mock.calls[0];
+    const [, , , routeArg, etaArg] = mockBuild.mock.calls[0] as [
+      unknown,
+      unknown,
+      unknown,
+      { type: string; stopsToTransfer: number },
+      number | null,
+    ];
     expect(etaArg).not.toBeNull();
     expect(etaArg as number).toBeLessThan(fullEta!);
     // route도 남은 구간만 반영 — 전체 route(fromLine=7 구간 포함)가 아니라 stopsToTransfer=0.
