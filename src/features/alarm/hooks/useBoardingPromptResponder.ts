@@ -43,7 +43,7 @@ import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
-import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
+import { dismissBoardingPrompt, postBoardingConfirm } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 import { useNavigationStore } from '../../route/store/useNavigationStore';
@@ -300,6 +300,19 @@ export async function handleResponse(
     // 건드리지 않으므로 위 stamp와 중복되지 않는다.
     useNavigationStore.getState().startNavigation();
     await tryAutoLock(payload, deps);
+    // #2852 — tryAutoLock의 성공/실패(arrivals-null PENDING fallback, ambiguity, createLock
+    // 예외, destinationId 부재로 인한 조기 dismiss 등 모든 내부 분기)와 무관하게, 사용자가 방금
+    // [탑승] 응답을 했다는 사실 자체를 backend `POST /trips/:token/boarding-confirm`(#2527)로
+    // 무조건 forward한다. 로컬 lock 재조회(Seoul API)가 실패해도 backend anchor resolver는
+    // 독립적으로 열차를 해결할 수 있는데(9/28 확정, ~90% 배선), 그 신호 자체가 안 오면 트립이
+    // 완전 침묵한다(#2852 root). fire-and-forget — `postBoardingConfirm`은 내부에서 실패를
+    // swallow하므로 이 await가 critical path를 막거나 throw하지 않는다. try/catch는 이중
+    // 방어(#819 invariants "api 절대 throw 금지" 패턴 — 호출부도 독립적으로 안전해야 한다).
+    try {
+      await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+    } catch (err) {
+      log.warn('boarding-confirm forward failed — non-critical', err as Error);
+    }
     // #1888 (RC-13) — banner 탭($default) 케이스만 home 화면으로 navigate. 사용자가 list를 보고 싶다는
     // 명시 의향(action button BOARDED는 silent autolock으로 끝, navigation은 surplus).
     // tryAutoLock 성공/실패와 무관하게 호출 — 실패 시 BoardingTrainList의 fallback UI 노출 의도.
