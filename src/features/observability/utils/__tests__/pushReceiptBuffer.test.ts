@@ -113,6 +113,14 @@ describe('pushReceiptBuffer (#2861 T1 — cycle/enter/exit과 cap 비공유)', (
       expect(AsyncStorage.removeItem).toHaveBeenCalledWith(PUSH_RECEIPT_BUFFER_KEY);
     });
 
+    it('clear의 removeItem reject는 graceful 흡수', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('fail'));
+      expect(() => clearPushReceiptEntries()).not.toThrow();
+      // catch 콜백이 실제로 실행되는 microtask까지 flush.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
     it('setItem reject는 graceful 흡수(throw 없음)', () => {
       jest.useFakeTimers();
       (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('fail'));
@@ -146,6 +154,15 @@ describe('pushReceiptBuffer (#2861 T1 — cycle/enter/exit과 cap 비공유)', (
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify({ a: 1 }));
       await hydratePushReceiptBuffer();
       expect(getPushReceiptEntries()).toHaveLength(0);
+    });
+
+    it('배열 안에 null/primitive 섞이면 그 항목만 skip', async () => {
+      const mixed = [null, 'not-an-object', 42, makeEntry({ ts: 7 })];
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(mixed));
+      await hydratePushReceiptBuffer();
+      const entries = getPushReceiptEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].ts).toBe(7);
     });
 
     it('AsyncStorage.getItem reject는 graceful (빈 buffer)', async () => {
