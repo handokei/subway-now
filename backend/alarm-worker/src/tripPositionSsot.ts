@@ -39,6 +39,7 @@ import type {
   HopEndPromptOutcome,
   IntermediateRouteBranch,
   LegBoardingPromptOutcome,
+  OriginBoardingPromptOutcome,
   TransferAdvanceOutcome,
 } from './tripEventLog';
 import type { Trip } from './types';
@@ -352,6 +353,18 @@ export interface TripPositionSSoT {
    * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
    */
   hopEndPromptOutcome?: HopEndPromptOutcome;
+  /**
+   * #2851 — 진단 계측 전용 dedup 마커. `maybeFireOriginBoardingPromptGpsFree`(scheduled.ts,
+   * leg-1 origin 전용)의 직전 tick fire/suppress 사유(`OriginBoardingPromptOutcome`). caller가
+   * 이 값과 이번 tick 사유를 비교해 다를 때만 D1 `trip_events`(kind='leg-boarding-prompt',
+   * meta.leg='origin')로 append한다(#2073 quota 보호). `legBoardingPromptOutcome`(leg-2 전용)과
+   * 별개 필드 — 두 함수는 `trip.currentLegAnchor` 존재 여부로 상호 배타적으로 실행되지만, 상태
+   * 머신(outcome vocabulary)이 달라 같은 필드를 공유하면 전이 감지가 섞인다. 발사/게이트
+   * 판정에는 관여하지 않는다.
+   *
+   * 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  originBoardingPromptOutcome?: OriginBoardingPromptOutcome;
   /**
    * ADR-037 D2c (#2542, 진단 계측 전용) — 발사 게이트(`advanceTripPosition` 6단 게이트 /
    * `transferDestinationGate` / lock-active waypoint advance)가 blocked될 때 직전 tick의

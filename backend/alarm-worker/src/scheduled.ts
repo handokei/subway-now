@@ -157,6 +157,7 @@ import {
   type HopEndPromptOutcome,
   type IntermediateRouteBranch,
   type LegBoardingPromptOutcome,
+  type OriginBoardingPromptOutcome,
   type TransferAdvanceOutcome,
   type TransferAdvancePath,
 } from './tripEventLog';
@@ -3309,6 +3310,43 @@ async function recordLegBoardingPromptTransition(
       ...(station !== undefined ? { station } : {}),
       ...(line !== undefined ? { line } : {}),
       meta: { outcome, ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}) },
+    },
+    now,
+  );
+}
+
+/**
+ * #2851 (진단 계측 only) — `maybeFireOriginBoardingPromptGpsFree`(leg-1 origin 전용)의
+ * fire/suppress 사유(`OriginBoardingPromptOutcome`)를 SSoT 마커(`originBoardingPromptOutcome`)와
+ * 비교해 다를 때만 기존 kind='leg-boarding-prompt'로 D1 append한다(#2073 quota 보호, 신규 kind
+ * 남발 금지). `meta.leg: 'origin'`으로 leg-2 기록(`recordLegBoardingPromptTransition`)과 같은
+ * kind 안에서 구분한다 — `recordLegBoardingPromptTransition`/`legBoardingPromptOutcome`은
+ * 무변경(leg-2 쪽 기존 row 형태 그대로). 발사/게이트 판정에는 관여하지 않는다.
+ */
+async function recordOriginBoardingPromptTransition(
+  env: Env,
+  trip: Trip,
+  station: string,
+  line: string,
+  ssot: TripPositionSSoT | null,
+  outcome: OriginBoardingPromptOutcome,
+  now: number,
+  candidateArvlCds?: readonly (number | null)[],
+): Promise<void> {
+  if (ssot === null || ssot.originBoardingPromptOutcome === outcome) return;
+  await writeSsot(
+    env.TRIPS,
+    { ...ssot, originBoardingPromptOutcome: outcome },
+    { expiresAt: trip.expiresAt },
+  );
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'leg-boarding-prompt',
+      station,
+      line,
+      meta: { leg: 'origin', outcome, ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}) },
     },
     now,
   );
@@ -7134,6 +7172,11 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;
 
+  // #2851 (진단 계측 only) — 이 함수의 fire/suppress 사유를 SSoT 마커
+  // (`originBoardingPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 아래
+  // 게이트 판정/발사 로직 자체는 무변경.
+  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+
   // #2653 — "GPS를 신뢰할 수 있을 때만" 거리 가드. 이 함수 직전(같은 cron cycle) 먼저 호출되는
   // `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트 경로)가 이미 사용하는 판정
   // (#2153/#2358, scheduled.ts:6626~6685)을 베이스로 하되, 코드리뷰(2026-09-16)가 지적한 구멍
@@ -7210,6 +7253,15 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       originStation: display.originStation,
       line: display.line,
     });
+    await recordOriginBoardingPromptTransition(
+      env,
+      trip,
+      display.originStation,
+      display.line,
+      ssot,
+      'too-far',
+      now,
+    );
     return;
   }
 
@@ -7223,6 +7275,15 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       originStation: display.originStation,
       line: display.line,
     });
+    await recordOriginBoardingPromptTransition(
+      env,
+      trip,
+      display.originStation,
+      display.line,
+      ssot,
+      'silenced',
+      now,
+    );
     return;
   }
 
@@ -7231,6 +7292,12 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     nextWaypoint && nextWaypoint.line === display.line
       ? inferLegDirection(display.line, display.originStation, nextWaypoint.stationName)
       : null;
+
+  // #2851 (진단 계측 only) — 콜백은 동기(`() => void`)라 D1 write를 여기서 바로 할 수 없다 —
+  // 결과만 캡처해 `fireBoardingPromptForAnchor` 완료 후 기록한다(leg-2 `promptOutcome`/
+  // `candidateArvlCds` 캡처 패턴과 동일).
+  let promptOutcome: OriginBoardingPromptOutcome | null = null;
+  let candidateArvlCds: readonly (number | null)[] | undefined;
 
   await fireBoardingPromptForAnchor({
     trip,
@@ -7252,22 +7319,27 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         originStation: display.originStation,
         line: display.line,
       });
+      promptOutcome = 'no-candidates';
     },
     // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제.
     // arvlCd===null(지하/미관측) 후보가 섞여 있으면 이 콜백 자체가 호출되지 않는다(fallback fire).
-    onSuppressedNotImminent: (decision, candidateArvlCds) => {
+    onSuppressedNotImminent: (decision, arvlCds) => {
       stats.originGpsFreeBoardingPromptBlocked += 1;
       log('origin-boarding-prompt-gps-free: gate blocked', {
         token: trip.token.slice(0, 8),
         reason: decision,
-        candidateArvlCds,
+        candidateArvlCds: arvlCds,
         originStation: display.originStation,
         line: display.line,
       });
+      promptOutcome = 'suppressed-not-imminent';
+      candidateArvlCds = arvlCds;
     },
-    // #2838 — fire-once 이중 방어 억제(leg-2와 동일 콜백/의미).
+    // #2838 — fire-once 이중 방어 억제(leg-2와 동일 콜백/의미). D1 라벨은 repeat gate dedup
+    // (`silenced`)과 같은 성격이라 기존 값을 재사용 — 세부 사유는 log()로 wrangler tail에서 구분.
     onFireOnceSuppressed: () => {
       stats.originGpsFreeBoardingPromptBlocked += 1;
+      promptOutcome = 'silenced';
     },
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
     // 재발사하지 않는다.
@@ -7305,8 +7377,23 @@ export async function maybeFireOriginBoardingPromptGpsFree(
           .map((entry) => entry.trainCode),
         firedAt: now,
       };
+      promptOutcome = 'fired';
+      candidateArvlCds = pool.map((entry) => entry.arvlCd);
     },
   });
+
+  if (promptOutcome !== null) {
+    await recordOriginBoardingPromptTransition(
+      env,
+      trip,
+      display.originStation,
+      display.line,
+      ssot,
+      promptOutcome,
+      now,
+      candidateArvlCds,
+    );
+  }
 }
 
 /** route의 총 환승 수(데이터 주도 — transfer 개수 하드코딩 없이 route.type으로 분기). */
