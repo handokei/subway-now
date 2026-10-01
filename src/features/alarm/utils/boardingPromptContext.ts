@@ -40,7 +40,7 @@ import {
 import { haversine } from '../../../shared/utils/haversine';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
 import { inferLoopDirection } from '../../route/utils/loopDirection';
-import { findLocklessTransferWaypoint } from '../../route/utils/findActiveTransferContext';
+import { findLocklessActiveLegWaypoint } from '../../route/utils/findActiveTransferContext';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
 
 /** #2130 (B-2) — 등록 시점 GPS fix. 근접 스탬프 입력. */
@@ -119,9 +119,12 @@ export function buildBoardingPromptContext({
   }
 
   // lock 미활성. #2830 — currentStation이 환승 waypoint(=leg-2 진입점)에 도달했으면
-  // leg-aware(환승 후 진행 leg)로 stamp한다. leg-1/mid-leg/direct(=transfer target 아님)는
-  // wp===null이라 기존 getFirstLeg 경로를 그대로 탄다(회귀 안전).
-  const wp = findLocklessTransferWaypoint(route, destination.name, currentStation);
+  // leg-aware(환승 후 진행 leg)로 stamp한다. #2858 — #2830의 exact-match(findLocklessTransferWaypoint)
+  // 는 환승역 자체일 때만 매칭해, release 후 leg-2를 더 진행하면 다시 getFirstLeg(leg-1)로 fall
+  // back하는 좀비 프롬프트 재발 지점이었다. findLocklessActiveLegWaypoint로 교체해 "지금 어느
+  // leg 위에 있는가"를 역순 스캔으로 넓게 판정한다(leg-1/mid-leg/direct는 여전히 wp===null이라
+  // 기존 getFirstLeg 경로를 그대로 탄다 — 회귀 안전).
+  const wp = findLocklessActiveLegWaypoint(route, destination.name, currentStation);
   if (wp != null) {
     return buildSegmentContext({
       currentStation,

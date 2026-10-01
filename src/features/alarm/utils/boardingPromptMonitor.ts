@@ -65,8 +65,14 @@ const RESPONSE_REASONS: ReadonlySet<AlarmLogReason> = new Set<AlarmLogReason>([
 /**
  * 엔트리를 displayed / boarded / dismissed 중 어디로 분류할지 결정.
  * 분류 안 되면 null (다른 채널 entry — autolock telemetry 등).
+ *
+ * #2861 (T2) — `boardingPromptDailyCounters.ts`(쓰기 시점 영속 카운터)가 이 함수를 그대로
+ * import해 재사용한다. writer(`logBoardingPromptFired`/`logBoardingPromptResponded`,
+ * alarmLog.ts)가 만드는 outcome/reason 리터럴과 이 classify의 계약이 어긋나면 "최근" 뷰(ring
+ * 재집계)와 "영속" 뷰(daily counters) 중 하나만 조용히 깨지는 drift가 가능하므로, 두 뷰가
+ * 반드시 같은 단일 classify 함수를 거치도록 export해 단일 소스로 고정한다.
  */
-function classify(
+export function classify(
   entry: AlarmLogEntry,
 ): 'displayed' | 'boarded' | 'dismissed' | null {
   if (entry.source !== 'boarding-prompt') return null;
@@ -142,13 +148,18 @@ export function computeBoardingPromptMonitor(
 /**
  * 일별 집계를 최근 N일 (오늘 포함) 시계열로 정렬해 반환. dashboard / export 진입점.
  * 누락된 날짜는 0 채움. 정렬: 과거 → 현재.
+ *
+ * #2861 (T2) — 인자를 `BoardingPromptMonitorStats`(ring 재집계 전용) 대신 `byDay` record
+ * 자체로 받는다. 호출자가 ring 기반(`computeBoardingPromptMonitor(...).byDay`, "최근" 뷰)과
+ * 영속 기반(`getBoardingPromptDailyCounters()`, "1주 baseline" 뷰) 중 어느 쪽이든 동일 함수로
+ * N일 시계열을 뽑을 수 있도록 일반화 — 두 뷰가 날짜 정렬/0-채움 로직을 중복 구현하지 않는다.
  */
 export interface BoardingPromptDayRow extends BoardingPromptDayCounts {
   dayKey: string;
 }
 
 export function exportRecentDays(
-  stats: BoardingPromptMonitorStats,
+  byDay: Readonly<Record<string, BoardingPromptDayCounts>>,
   days: number,
   now: number = Date.now(),
 ): BoardingPromptDayRow[] {
@@ -159,7 +170,7 @@ export function exportRecentDays(
   for (let i = days - 1; i >= 0; i -= 1) {
     const ts = now - i * DAY_MS;
     const dayKey = toLocalDayKey(ts);
-    const counts = stats.byDay[dayKey] ?? emptyDay();
+    const counts = byDay[dayKey] ?? emptyDay();
     rows.push({ dayKey, ...counts });
   }
   return rows;

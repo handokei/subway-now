@@ -37,6 +37,7 @@
 | alarm.ts:41 | 불변식 | ARRIVAL_CODE 숫자 우연 일치해도 타 코드체계 재사용 금지 | **없음** |
 | scheduled.ts:7405 | 불변식 | 프롬프트는 임박 열차 있을 때만 발사(#2801 재발 방지, arvlCd∈{0,1,2} OR-fallback) | 있음(#2834 + replay_20260930_leg2_prompt) |
 | ~~boardingPrompt.ts:176 / scheduled.ts:6842~~ | (해소, #2844) | ~~boarding-prompt "임박" 게이트 정의 2벌 공존~~ — GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`/`hasArrivedSignal`)를 subsumption 증명 기반으로 은퇴시켜 게이트 정의가 공유 본체(`decideBoardingPromptFire`, boardingPrompt.ts) 단일화로 수렴. leg-1(`maybeFireOriginBoardingPromptGpsFree`)/leg-2 모두 이 하나만 사용 — drift 재발 불가(구현 자체가 삭제됨) | N/A (게이트 자체 삭제) |
+| ~~scheduled.ts completeWaypointAdvance~~ | (해소, #2861 T3) | ~~lock-경로 advance(`advanceBoardingLockWaypoint` evidence=undefined, 실 production 호출: `/boarding-lock/sync`가 transfer/destination waypoint 처리 시, index.ts:2619-2629)가 SSoT.alarmEvents 미stamp~~ — `tripPositionSsot.ts`의 `stampPassedStationAlarmEvent` 공유 헬퍼로 lockless(`advanceTripPosition.ts`)와 동일 stamp 추가. 신규 advance 경로를 추가할 때는 반드시 이 헬퍼를 거쳐야 DebugModal Whole Chain backend 칼럼이 [none]으로 비는 재발을 막는다 | 있음(scheduled.test.ts #2861 T3 2건) |
 
 ## 2. Device — alarm / Live Activity / Swift
 
@@ -73,6 +74,8 @@
 | useBoardingLockSync.ts:32,417 | 불변식 | 무기한 대기 금지 — backstop 필수 | **없음** |
 | api/signalDumpBackend.ts:176 / telemetryForward.ts:172 | 불변식 | 절대 throw 금지(launch/trip-end critical path) | **없음** |
 | tripBoundCleanups.ts:183 | 불변식 | 여러 소스는 같은 chokepoint에서 함께 clear(산발 금지) | **없음** |
+| ~~pushReceiptLog.ts / rawSignalBuffer.ts~~ | (해소, #2861 T1) | ~~push-receipt가 fusion cycle(30s)과 cap=300 공유 → 긴 트립 초반 receipt 증발~~ — `pushReceiptBuffer.ts`(cap=60, 독립 채널)로 분리. 신규 push-receipt-유사 관측 채널을 추가할 때는 고빈도(cycle급) 채널과 cap을 절대 공유하지 말 것(gpsDropBuffer와 동일 교훈, lesson_gps_drop_fusion_buffer_pollution 재적용) | 있음(pushReceiptLog.test.ts #2861 긴 트립 320건 cycle 모사) |
+| ~~boardingPromptMonitor.ts byDay~~ | (해소, #2861 T2) | ~~"recent 7d" 시계열이 alarmLog 링(cap=200, 전 source 혼합) 재집계라 트립 1회만으로 지난 일자가 증발~~ — `boardingPromptDailyCounters.ts`(쓰기 시점 영속, 14일 rolling)로 분리. ring classify()와 영속 writer의 bucket(outcome/reason) 계약이 둘 다 같은 literal을 봐야 하므로, 신규 boarding-prompt outcome을 추가할 때는 `classify()`와 `logBoardingPromptFired`/`logBoardingPromptResponded`(alarmLog.ts) 양쪽을 **함께** 갱신할 것 — 한쪽만 바뀌면 "최근" 뷰와 "영속" 뷰가 조용히 갈라진다 | 있음(alarmLog.test.ts #2861 T2 교차검증 2건) |
 
 ## 3. Device — fusion / shared / 위젯
 

@@ -9,6 +9,13 @@ jest.mock('react-native', () => ({
   },
 }));
 
+// #2861 (T2) — logBoardingPromptFired/Responded가 write 시점에 영속 daily counter를 호출하는지
+// 격리 검증하기 위한 mock. 실제 AsyncStorage 적재 로직은 boardingPromptDailyCounters.test.ts가
+// 별도로 검증한다 — 여기서는 "호출 여부 + bucket/ts 인자"만 확인.
+jest.mock('../boardingPromptDailyCounters', () => ({
+  recordBoardingPromptDailyCount: jest.fn().mockResolvedValue(undefined),
+}));
+
 import {
   appendAlarmLog,
   flushAlarmLog,
@@ -140,6 +147,9 @@ import {
 } from '../../../../shared/constants/storageKeys';
 import type { AlarmEvent } from '../stationAlarm';
 import type { Station } from '../../../../shared/types/station';
+// #2861 (T2) — writer(logBoardingPromptFired/Responded)와 ring 재집계 classify()의 bucket
+// 계약 교차 검증용.
+import { classify } from '../boardingPromptMonitor';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -3889,6 +3899,53 @@ describe('alarmLog', () => {
       });
     });
   });
+
+  describe(
+    '#2861 (T2) — logBoardingPromptFired/Responded가 쓰기 시점에 영속 daily counter를 호출한다 ' +
+      '(ring 재집계 classify() 계약과 bucket 일치 교차검증)',
+    () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { recordBoardingPromptDailyCount } = jest.requireMock(
+        '../boardingPromptDailyCounters',
+      ) as { recordBoardingPromptDailyCount: jest.Mock };
+
+      beforeEach(() => {
+        recordBoardingPromptDailyCount.mockClear();
+      });
+
+      it('logBoardingPromptFired → recordBoardingPromptDailyCount("displayed", ts) 호출', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+        jest.useFakeTimers().setSystemTime(1_700_000_000_000);
+        logBoardingPromptFired({ originStation: '강남', line: '2' });
+        jest.useRealTimers();
+        await flushAlarmLog();
+
+        // writer가 appendAlarmLog에 넘긴 entry가 classify()로 'displayed'로 분류되는지
+        // (ring "최근" 뷰 계약) + 영속 persister가 같은 bucket으로 호출됐는지(영속 뷰 계약)를
+        // 하나의 entry로 교차 검증 — 둘 중 하나만 깨지는 drift를 잡는다.
+        const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+        const entry = saved[0];
+        expect(classify(entry)).toBe('displayed');
+        expect(recordBoardingPromptDailyCount).toHaveBeenCalledWith('displayed', entry.ts);
+      });
+
+      it.each<['boarded' | 'dismissed']>([['boarded'], ['dismissed']])(
+        'logBoardingPromptResponded(%s) → recordBoardingPromptDailyCount(%s, ts) 호출, classify()와 bucket 일치',
+        async (outcome) => {
+          (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+          jest.useFakeTimers().setSystemTime(1_700_000_001_000);
+          logBoardingPromptResponded({ outcome });
+          jest.useRealTimers();
+          await flushAlarmLog();
+
+          const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+          const entry = saved[0];
+          expect(classify(entry)).toBe(outcome);
+          expect(recordBoardingPromptDailyCount).toHaveBeenCalledWith(outcome, entry.ts);
+        },
+      );
+    },
+  );
 
   describe('logScheduleSkipped (#1357 S1)', () => {
     beforeEach(() => {

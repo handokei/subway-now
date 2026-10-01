@@ -426,6 +426,57 @@ export async function persistFromPositionResponse(
 }
 
 /**
+ * #2852 — notification [탑승] 응답을 backend `POST /trips/:token/boarding-confirm`(#2527)로
+ * 무조건 forward한다.
+ *
+ * 기존 호출자는 LA App Intent(Swift `BoardingIntents.swift`)뿐이었다 — device notification
+ * [탑승] 경로(`useBoardingPromptResponder.handleResponse`→`tryAutoLock`)는 로컬 lock 형성에만
+ * 의존해 backend에 아무 신호도 보내지 않았고(Seoul 재조회 실패/PENDING 등 tryAutoLock의 실패
+ * 모드에서 완전 침묵), backend anchor resolver(9/28 확정, ~90% 배선)가 boarded 신호만 있으면
+ * 서버측 열차 해결이 가능한데 그 신호 자체가 안 왔다.
+ *
+ * body 계약은 Swift 호출자와 완전히 동일 — `{ action, station, line }`(#2527 참조,
+ * `BoardingIntents.swift:77`). action은 backend `validateBoardingConfirmPayload`가 받는
+ * `'boarded' | 'disembarked' | 'not-boarded'` 중 caller가 지정 — 이 fix는 'boarded'만 호출한다
+ * (하차/미탑승은 각각 기존 releaseLock 로컬 경로와 `dismissBoardingPrompt`가 담당, 무변경).
+ *
+ * fire-and-forget — `dismissBoardingPrompt`와 동형으로 실패를 절대 throw하지 않는다(caller의
+ * tryAutoLock/UX critical path에 영향 없음). 이미 lock이 활성인 트립에 중복 호출돼도 backend가
+ * idempotent(#2527 설계, #1729 active lock 재평가 금지 가드)라 회귀 없음.
+ */
+export async function postBoardingConfirm(
+  token: string,
+  action: 'boarded' | 'disembarked' | 'not-boarded',
+  station: string,
+  line: string,
+): Promise<PositionUploadResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip boarding-confirm');
+    return { ok: false, skipped: true };
+  }
+  if (!token) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(
+      `${base}/trips/${encodeURIComponent(token)}/boarding-confirm`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, station, line }),
+      },
+    );
+    if (!res.ok) {
+      log.warn(`boarding-confirm failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('boarding-confirm error', e);
+    return { ok: false };
+  }
+}
+
+/**
  * boarding-prompt 사용자 [미탑승]/dismiss 통보 (#819 게이트 #9).
  * backend가 trip.boardingPromptState.silencedUntil를 5분 후로 set해 재발사 차단.
  */

@@ -9,6 +9,9 @@ import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb
 import { captureXEvent } from '../../../shared/infra/monitoring/captureXEvent';
 import { createLogger } from '../../../shared/utils/logger';
 import { findLineByStationName } from '../../../shared/utils/stationLookup';
+// #2861 (T2) — write 시점에 일별 영속 카운터를 같이 stamp. ring(alarmLog) 재집계만으로는
+// cap=200 회전으로 지난 일자 displayed/responded/boarded/dismissed가 증발한다.
+import { recordBoardingPromptDailyCount } from './boardingPromptDailyCounters';
 import type { AlarmEvent } from './stationAlarm';
 import type { AlarmPhaseId } from './alarmPhases';
 import type { Station } from '../../../shared/types/station';
@@ -2776,12 +2779,16 @@ export function logScheduleSkipped(input: {
 
 /** #1021: boardingPrompt 발사 1건 적재. */
 export function logBoardingPromptFired(input: { originStation: string; line: string }): void {
+  const ts = Date.now();
   appendAlarmLog({
-    ts: Date.now(),
+    ts,
     source: 'boarding-prompt',
     outcome: 'fired',
     stationName: `${input.line}·${input.originStation}`,
   });
+  // #2861 (T2) — fire-and-forget. 실패해도 ring 적재(위)는 이미 완료 — 영속 daily counter 한
+  // 건 손실만 발생(graceful, recordBoardingPromptDailyCount 내부에서 catch).
+  void recordBoardingPromptDailyCount('displayed', ts);
 }
 
 /**
@@ -3015,12 +3022,15 @@ export function countAutoLockReasonsByWindow(
 export function logBoardingPromptResponded(input: {
   outcome: 'boarded' | 'dismissed';
 }): void {
+  const ts = Date.now();
   appendAlarmLog({
-    ts: Date.now(),
+    ts,
     source: 'boarding-prompt',
     outcome: 'received',
     reason: input.outcome === 'boarded' ? 'response-boarded' : 'response-dismissed',
   });
+  // #2861 (T2) — fire-and-forget. logBoardingPromptFired와 동일 trade-off.
+  void recordBoardingPromptDailyCount(input.outcome, ts);
 }
 
 

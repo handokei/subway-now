@@ -39,6 +39,7 @@ import type {
   HopEndPromptOutcome,
   IntermediateRouteBranch,
   LegBoardingPromptOutcome,
+  OriginBoardingPromptOutcome,
   TransferAdvanceOutcome,
 } from './tripEventLog';
 import type { Trip } from './types';
@@ -353,6 +354,18 @@ export interface TripPositionSSoT {
    */
   hopEndPromptOutcome?: HopEndPromptOutcome;
   /**
+   * #2851 — 진단 계측 전용 dedup 마커. `maybeFireOriginBoardingPromptGpsFree`(scheduled.ts,
+   * leg-1 origin 전용)의 직전 tick fire/suppress 사유(`OriginBoardingPromptOutcome`). caller가
+   * 이 값과 이번 tick 사유를 비교해 다를 때만 D1 `trip_events`(kind='leg-boarding-prompt',
+   * meta.leg='origin')로 append한다(#2073 quota 보호). `legBoardingPromptOutcome`(leg-2 전용)과
+   * 별개 필드 — 두 함수는 `trip.currentLegAnchor` 존재 여부로 상호 배타적으로 실행되지만, 상태
+   * 머신(outcome vocabulary)이 달라 같은 필드를 공유하면 전이 감지가 섞인다. 발사/게이트
+   * 판정에는 관여하지 않는다.
+   *
+   * 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  originBoardingPromptOutcome?: OriginBoardingPromptOutcome;
+  /**
    * ADR-037 D2c (#2542, 진단 계측 전용) — 발사 게이트(`advanceTripPosition` 6단 게이트 /
    * `transferDestinationGate` / lock-active waypoint advance)가 blocked될 때 직전 tick의
    * blockReason. caller(scheduled.ts)가 이 값과 이번 tick blockReason을 비교해 다를 때만
@@ -590,6 +603,26 @@ export function appendAlarmEvent(
   while (ssot.alarmEvents.length > ALARM_EVENTS_CAP) {
     ssot.alarmEvents.shift();
   }
+}
+
+/**
+ * #2861 (T3) — `computeAlarmId` + `appendAlarmEvent` 쌍을 묶은 공유 헬퍼. advance 통과 시
+ * alarmEvent를 stamp하는 호출자가 lockless 경로(`advanceTripPosition.ts`)와 lock 경로
+ * (`completeWaypointAdvance`, scheduled.ts) 둘인데, 두 쌍이 각자 중복 구현되면 한쪽만 바뀌는
+ * drift가 가능하므로 단일 함수로 추출했다. caller가 in-place mutate된 `ssot`를 받아
+ * `writeSsot` 책임을 진다(이 함수는 read/write를 하지 않는다 — 두 호출자의 ssot 획득/저장
+ * 방식이 서로 다르기 때문: lockless는 이미 advance 중 메모리에 들고 있는 `next`를 그대로 쓰고,
+ * lock 경로는 별도로 `readSsot`/`writeSsot`를 호출한다).
+ */
+export async function stampPassedStationAlarmEvent(
+  ssot: TripPositionSSoT,
+  tripToken: string,
+  stationId: string,
+  type: AlarmEventType,
+  decidedAt: number,
+): Promise<void> {
+  const alarmId = await computeAlarmId(tripToken, stationId, type);
+  appendAlarmEvent(ssot, { alarmId, stationId, type, decidedAt });
 }
 
 /**

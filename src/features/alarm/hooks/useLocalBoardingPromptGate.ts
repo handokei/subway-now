@@ -31,6 +31,8 @@ import { fireLocalBoardingPromptNotification } from '../utils/stationNotificatio
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
+import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
+import { AUTO_RELEASE_GRACE_MS } from '../../../shared/constants/boardingLock';
 
 const log = createLogger('localBoardingPromptGate');
 
@@ -58,6 +60,17 @@ export function useLocalBoardingPromptGate(params: UseLocalBoardingPromptGatePar
     if (lock != null) return; // #1921/#1921류 F2 defense와 동형 — 탑승 확정 trip은 스킵.
     if (!arrival) return;
     if (inFlightRef.current) return;
+
+    // #2858 — transfer-release 직후 짧은 쿨다운. leg-aware context fix(findLocklessActiveLegWaypoint,
+    // boardingPromptContext.ts)로 "어떤 leg인지"는 정확해졌지만, release 신호 직후 한두 폴링 tick
+    // 동안은 GPS/route가 아직 새 leg로 안정화되지 않았을 edge를 추가로 방어한다.
+    // `useLegAdvanceStore.stampedAt`은 환승 waypoint 도달(lockless, useTransferTrainList) 또는
+    // hop-end 응답(handleHopEndResponse) 시 이미 stamp되는 기존 신호(#2278/#2319) — 신규 저장소
+    // 없이 재사용. 값은 신규 매직넘버 금지 원칙에 따라 `AUTO_RELEASE_GRACE_MS`(boardingLock.ts,
+    // 기존 환승 자동 release grace 45s)를 그대로 재사용한다 — "환승 직후 settle 시간"이라는 동일
+    // 의미를 다른 소비자에 적용하는 것이라 신규 상수가 아니다.
+    const { stampedAt } = useLegAdvanceStore.getState();
+    if (stampedAt != null && Date.now() - stampedAt < AUTO_RELEASE_GRACE_MS) return;
 
     const context = buildBoardingPromptContext({ route, currentStation, destination, gpsFix });
     if (!context) return;
