@@ -74,34 +74,37 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     expect(mockClearStationNotification).not.toHaveBeenCalled();
   });
 
-  it('destination 설정(lock 없음) → pre-boarding LA update 호출', () => {
+  it('destination 설정(lock 없음) → #2854 평범한 추적 content만 update(boardingPhase 미설정 — 유령 배너 제거)', () => {
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: null });
     renderHook(() => useLiveActivityPreBoardingLifecycle());
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     const data = mockUpdateLiveActivity.mock.calls[0][0];
-    expect(data.boardingPhase).toBe('pre-boarding');
+    expect(data.boardingPhase).toBeUndefined();
     expect(data.destinationName).toBeTruthy();
     // GPS 미확정 — placeholder stationName ("감지 중" i18n)
     expect(data.stationName).toBe('감지 중');
     expect(data.boardingPromptOriginStation).toBeUndefined();
   });
 
-  it('tripOrigin 확보되면 실제 역/노선 정보로 pre-boarding LA를 채운다', () => {
+  it('tripOrigin 확보돼도 #2854 — boardingPhase 미설정이므로 #2434 버튼 컨텍스트 필드도 싣지 않는다', () => {
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
     renderHook(() => useLiveActivityPreBoardingLifecycle());
     const data = mockUpdateLiveActivity.mock.calls[0][0];
     expect(data.stationName).toBe(gangnam.name);
     expect(data.lineColorHex).toBe(gangnam.lineColor);
-    expect(data.boardingPromptOriginStation).toBe(gangnam.name);
-    expect(data.boardingPromptLine).toBe(gangnam.line);
+    expect(data.boardingPhase).toBeUndefined();
+    expect(data.boardingPromptOriginStation).toBeUndefined();
+    expect(data.boardingPromptLine).toBeUndefined();
+    expect(data.boardingAlertTitle).toBeUndefined();
+    expect(data.boardingAlertBody).toBeUndefined();
   });
 
-  it('tripToken이 있으면 boardingPromptTripToken을 싣는다', () => {
+  it('#2854 — tripToken이 있어도 시작 시 content엔 boardingPromptTripToken을 싣지 않는다(phase 없는 content는 버튼 컨텍스트 무의미)', () => {
     mockGetCurrentTripCorrIdSync.mockReturnValue('corr-123');
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: null });
     renderHook(() => useLiveActivityPreBoardingLifecycle());
     const data = mockUpdateLiveActivity.mock.calls[0][0];
-    expect(data.boardingPromptTripToken).toBe('corr-123');
+    expect(data.boardingPromptTripToken).toBeUndefined();
   });
 
   it('이미 GPS 경로로 LA가 떠 있어도(활성 세션 판단 불가) 이 훅은 native update만 호출한다 — start 이중 호출 없음', () => {
