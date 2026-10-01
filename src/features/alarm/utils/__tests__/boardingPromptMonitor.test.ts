@@ -154,7 +154,7 @@ describe('toLocalDayKey', () => {
 describe('exportRecentDays', () => {
   it('요청 일수만큼 row 반환, 데이터 없는 날은 0 채움', () => {
     const stats = computeBoardingPromptMonitor([displayed(T0)]);
-    const rows = exportRecentDays(stats, 3, T0);
+    const rows = exportRecentDays(stats.byDay, 3, T0);
     expect(rows).toHaveLength(3);
     // 마지막(=오늘)에 displayed=1, 나머지는 0
     expect(rows[rows.length - 1]).toMatchObject({ displayed: 1 });
@@ -162,14 +162,25 @@ describe('exportRecentDays', () => {
   });
 
   it('과거 → 현재 순서', () => {
-    const rows = exportRecentDays(computeBoardingPromptMonitor([]), 5, T0);
+    const rows = exportRecentDays(computeBoardingPromptMonitor([]).byDay, 5, T0);
     const keys = rows.map((r) => r.dayKey);
     const sorted = [...keys].sort((a, b) => a.localeCompare(b));
     expect(keys).toEqual(sorted);
   });
 
   it('default now 사용 (now 인자 미지정 호환)', () => {
-    const rows = exportRecentDays(computeBoardingPromptMonitor([]), 1);
+    const rows = exportRecentDays(computeBoardingPromptMonitor([]).byDay, 1);
     expect(rows).toHaveLength(1);
+  });
+
+  it('#2861 (T2) — byDay record를 직접 받는다 (영속 daily counters 재사용 가능)', () => {
+    const rows = exportRecentDays(
+      { [toLocalDayKey(T0)]: { displayed: 5, responded: 3, boarded: 2, dismissed: 1 } },
+      1,
+      T0,
+    );
+    expect(rows).toEqual([
+      { dayKey: toLocalDayKey(T0), displayed: 5, responded: 3, boarded: 2, dismissed: 1 },
+    ]);
   });
 });

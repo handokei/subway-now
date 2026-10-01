@@ -315,3 +315,10 @@ export const BG_WAYPOINT_ARRIVAL_CACHE_KEY = 'subway-now:bg-waypoint-arrival-cac
 // 보존하면 되므로 ring 적재 대신 최신 1건만 덮어쓴다. DebugModal이 "마지막 BG heartbeat: N초 전"
 // 1줄로 표시. 형식: {"ts": number, "acc": number | null} JSON. 키 부재 = BG task 미기동.
 export const BG_TASK_LAST_HEARTBEAT_KEY = 'subway-now:bg-task-last-heartbeat';
+// #2861 (T2) — Boarding Prompt Acceptance 일별 영속 카운터. alarmLog 링(cap=200, 모든 source
+// 혼합)을 매번 재집계하는 `computeBoardingPromptMonitor.byDay`는 트립 1회만으로도 링이 수 분 내
+// 회전해 지난 일자 displayed/responded/boarded/dismissed가 증발하는 결함이 있었다 — 쓰기 시점에
+// (logBoardingPromptFired/logBoardingPromptResponded) 이 키로 일자별 카운터를 누적해 영속화한다.
+// 형식: `{ [dayKey: 'YYYY-MM-DD']: { displayed, responded, boarded, dismissed } }` JSON.
+// 14일(BOARDING_PROMPT_DAILY_COUNTERS_RETENTION_DAYS) 초과 날짜는 매 write 시 정리(rolling).
+export const BOARDING_PROMPT_DAILY_COUNTERS_KEY = 'subway-now:boarding-prompt-daily-counters';
