@@ -37,6 +37,17 @@ jest.mock('../../utils/backendSsotMirror', () => ({
   clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
 }));
 
+// #2857 — hydration 안전망 분기(route/destination 모두 null + storage도 비어있음)가
+// clearActiveTrip + removeItem(ACTIVE_TRIP_KEY) 직접 호출 대신 runTripBoundCleanups를
+// 경유하도록 교체. runTripBoundCleanups는 endLiveActivityCleanup을 포함한 전체 trip-bound
+// cleanup chokepoint이며, 그 자체가 LA dismiss를 호출함은 tripBoundCleanups.test.ts가
+// 단위 레벨로 이미 보장한다 — 이 파일에서는 안전망 분기가 그 chokepoint를 "경유하는지"만
+// 검증(다른 hook 테스트들과 동일하게 모듈 레벨 mock, 네이티브 live-activity 체인은 끌지 않음).
+const mockRunTripBoundCleanups = jest.fn();
+jest.mock('../../store/tripBoundCleanups', () => ({
+  runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
+}));
+
 // #1628 — R11-a 차단 1건 측정 검증. clear 호출과 짝지어 같은 site에서 1회만 발사.
 const mockLogCrossTripMirrorSkip = jest.fn();
 // #2699 — subsurface dwell 게이트 확정 전환 계측.
@@ -107,6 +118,7 @@ describe('useApnsTripRegistration', () => {
     mockClear.mockResolvedValue({ ok: true });
     mockCancelTripBoundAlarms.mockResolvedValue(undefined);
     mockClearBackendSsotMirror.mockResolvedValue(undefined);
+    mockRunTripBoundCleanups.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === APNS_TOKEN_KEY) return 'token-abc';
       return null;
@@ -296,7 +308,9 @@ describe('useApnsTripRegistration', () => {
     expect(mockRegister).not.toHaveBeenCalled();
   });
 
-  it('route/destination 없으면 + 이전 트립 있으면 clear', async () => {
+  // #2857 — 이 안전망 분기는 더 이상 clearActiveTrip/removeItem(ACTIVE_TRIP_KEY)을 직접
+  // 호출하지 않고 runTripBoundCleanups(LA dismiss 포함 chokepoint)를 경유한다.
+  it('route/destination 없으면 + 이전 트립 있으면 runTripBoundCleanups 경유로 정리', async () => {
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === APNS_TOKEN_KEY) return 'token-abc';
       if (key === ACTIVE_TRIP_KEY) return 'token-abc';
@@ -305,8 +319,11 @@ describe('useApnsTripRegistration', () => {
     renderHook(() =>
       useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
     );
-    await waitFor(() => expect(mockClear).toHaveBeenCalledWith('token-abc'));
-    await waitFor(() => expect(AsyncStorage.removeItem).toHaveBeenCalledWith(ACTIVE_TRIP_KEY));
+    await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
+    // #2857 fix 전: 이 분기는 clearActiveTrip/removeItem을 직접 호출해 LA dismiss(endLiveActivity)를
+    // 포함한 runTripBoundCleanups를 전혀 경유하지 않았다 — 좀비 LA 영구 생존의 root.
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith(ACTIVE_TRIP_KEY);
   });
 
   // #2673 — hydration 중의 null을 "trip 종료"로 오인해 backend trip을 지우던 회귀.
@@ -339,7 +356,8 @@ describe('useApnsTripRegistration', () => {
       useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
     );
     // read 실패는 "판정 불가" — 잔재 회수 안전망을 막지 않는다(기존 동작 유지).
-    await waitFor(() => expect(mockClear).toHaveBeenCalledWith('token-abc'));
+    // #2857 — 정리는 이제 runTripBoundCleanups 경유.
+    await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
   });
 
   it('#2673 — destination storage read 도중 unmount되면 clear를 진행하지 않는다', async () => {
@@ -363,6 +381,7 @@ describe('useApnsTripRegistration', () => {
     (releaseRead as unknown as () => void)();
     await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalledWith(DESTINATION_KEY));
     expect(mockClear).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
   });
 
   it('route/destination 없고 이전 트립도 없으면 clear 안 함', async () => {
@@ -374,6 +393,7 @@ describe('useApnsTripRegistration', () => {
       await Promise.resolve();
     });
     expect(mockClear).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
   });
 
   it('push token listener: 토큰 갱신 시 AsyncStorage 업데이트 + 활성 트립이면 재등록', async () => {
@@ -536,11 +556,13 @@ describe('useApnsTripRegistration', () => {
     });
     unmount();
     mockClear.mockClear();
+    mockRunTripBoundCleanups.mockClear();
     await act(async () => {
       resolvePrev('token-abc');
       await Promise.resolve();
     });
     expect(mockClear).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
   });
 
   it('#669 unmount/deps 변경 후 register resolve도 ACTIVE_TRIP_KEY 저장 — race로 잃지 않음', async () => {
@@ -992,12 +1014,12 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // 트립 종료 — route/destination 모두 null + lock도 null
-      mockClear.mockClear();
+      mockRunTripBoundCleanups.mockClear();
       rerender({ r: null, d: null, lock: null });
       await flushMicrotasks();
 
-      // clear 즉시 호출 (debounce 안 걸림)
-      expect(mockClear).toHaveBeenCalledWith('token-abc');
+      // 정리 즉시 호출 (debounce 안 걸림) — #2857: runTripBoundCleanups 경유.
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
     });
 
     it('debounce window 안에 unmount되면 옛 null POST도 cancel — 누수 없음', async () => {
@@ -3005,7 +3027,7 @@ describe('useApnsTripRegistration', () => {
 
         // trip 종료: 캐시 reset 트리거
         rerender({ r: null, d: null, cs: null });
-        await waitFor(() => expect(mockClear).toHaveBeenCalled());
+        await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalled());
 
         // 2nd trip: 새 노선 + currentStation=null (GPS 아직 없음)
         rerender({ r: directRoute as Route | null, d: station as Station | null, cs: null });
@@ -3635,7 +3657,7 @@ describe('useApnsTripRegistration', () => {
 
         // 타이머가 발화하기 전에 trip 종료
         rerender({ r: null, d: null });
-        await waitFor(() => expect(mockClear).toHaveBeenCalled());
+        await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalled());
 
         await act(async () => {
           jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
@@ -3948,7 +3970,7 @@ describe('useApnsTripRegistration', () => {
 
       // trip 종료
       rerender({ route: null, destination: null });
-      await waitFor(() => expect(mockClear).toHaveBeenCalled());
+      await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalled());
       expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
 
       // 새 trip 시작 (다른 route) — lastRouteSigRef가 reset되었으므로 cancel 호출 안 함
@@ -4121,7 +4143,7 @@ describe('useApnsTripRegistration', () => {
 
       // trip 종료 — 모든 ref(routeSig/destinationId/lockSig) reset.
       rerender({ route: null, destination: null, boardingLock: null });
-      await waitFor(() => expect(mockClear).toHaveBeenCalled());
+      await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalled());
 
       // 새 trip 시작 — 모든 ref가 null로 reset되었으므로 cancel skip.
       rerender({
