@@ -72,7 +72,15 @@ import {
 import {
   computeBoardingPromptMonitor,
   exportRecentDays,
+  type BoardingPromptDayCounts,
 } from '../../../features/alarm/utils/boardingPromptMonitor';
+// #2861 (T2) — Boarding Prompt Acceptance 일별 영속 카운터. "recent Nd" 시계열은 ring
+// 재집계(computeBoardingPromptMonitor.byDay, cap=200 회전에 취약) 대신 이 영속 소스를 읽는다.
+// totals(displayed/responded/boarded/dismissed 합계 + rate)는 여전히 ring 기반("최근" 뷰).
+import {
+  getBoardingPromptDailyCounters,
+  clearBoardingPromptDailyCounters,
+} from '../../../features/alarm/utils/boardingPromptDailyCounters';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
 // #2268 (C1) — pending→confirmed lock 정정 measurement infra(#1166). fired count 는
 // BoardingTrainList가 이미 기록하지만 DebugModal에 섹션이 없어 관측 불가했다.
@@ -153,6 +161,14 @@ import {
   type RawSignalEntry,
   type PushReceiptDetail,
 } from '../../observability/utils/rawSignalBuffer';
+// #2861 (T1) — push-receipt 독립 버퍼(cycle/enter/exit과 cap 비공유). Whole Chain 패널은
+// rawSignalLog가 아니라 이 채널을 소스로 읽는다(긴 트립 초반 receipt 증발 방지).
+import {
+  clearPushReceiptEntries,
+  getPushReceiptEntries,
+  subscribePushReceipt,
+  type PushReceiptBufferEntry,
+} from '../../observability/utils/pushReceiptBuffer';
 import type { AlarmEventMirror } from '../../alarm/utils/backendSsotMirror';
 import {
   dumpScheduledNotifications,
@@ -657,6 +673,11 @@ interface BuildDumpArgs {
   bgTaskLastHeartbeat?: BgTaskHeartbeatSnapshot | null;
   logs: AlarmLogEntry[];
   /**
+   * #2861 (T2) — Boarding Prompt Acceptance "recent Nd" 시계열 소스. ring(alarmLog cap=200)
+   * 재집계와 무관하게 쓰기 시점에 영속화된 일자별 카운터. 미전달 시 전부 0 채움(단위 테스트 호환).
+   */
+  boardingPromptDailyCounters?: Readonly<Record<string, BoardingPromptDayCounts>>;
+  /**
    * #2284 — fired-only 독립 영속 링버퍼 스냅샷. alarmLog 200-cap rotate와 무관하게 보존되는
    * 발사 기록 SSoT. 미전달 시 (empty) — 단위 테스트 호환.
    */
@@ -749,6 +770,11 @@ interface BuildDumpArgs {
    * 단위 테스트에서 raw signal을 다루지 않는 경우 호환.
    */
   rawSignalLog?: readonly RawSignalEntry[];
+  /**
+   * #2861 (T1) — push-receipt 독립 버퍼 entries (cap=60, cycle/enter/exit과 cap 비공유).
+   * 미전달 시 (empty) 출력.
+   */
+  pushReceiptLog?: readonly PushReceiptBufferEntry[];
   /**
    * #1540 (S7) — GPS drop ring buffer entries. 미전달/빈 배열은 (empty)로 출력.
    * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출한다.
@@ -1587,8 +1613,12 @@ function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
  *
  * backend 쪽: `backendSsotMirror.alarmEvents`(silent push payload가 forward하는 station별
  * 발사 결정 기록 — station-passed/transfer/destination/imminent type). device 쪽:
- * `rawSignalLog`에서 `kind === 'push-receipt'`인 entry들(#2541 `logPushReceipt`가 적재) —
- * pushType(alert/background) + displayed + suppressedReason.
+ * push-receipt 독립 버퍼(#2861 T1, `logPushReceipt`가 적재) entries — pushType(alert/background)
+ * + displayed + suppressedReason.
+ *
+ * #2861 (T1) — 이전에는 `rawSignalLog`(cycle/enter/exit과 cap=300 공유)에서 `kind ===
+ * 'push-receipt'`인 entry를 걸러 썼으나, 긴 트립에서 cycle entry가 초반 receipt를 밀어내
+ * 증발시키는 결함이 있었다. 이제 독립 버퍼의 `PushReceiptDetail[]`을 직접 받는다.
  *
  * "backend=[transfer] device=[none]"처럼 backend는 발사했는데 device 쪽 receipt가 전혀 없으면
  * 배달 단계에서 끊긴 것(BG alert push는 OS가 직접 표시해 JS 수신 핸들러가 아예 안 탈 수 있다는
@@ -1599,14 +1629,11 @@ function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
  */
 function computeWholeChainLines(
   alarmEvents: readonly AlarmEventMirror[] | undefined,
-  rawSignalLog: readonly RawSignalEntry[] | undefined,
+  receipts: readonly PushReceiptDetail[] | undefined,
 ): string[] {
-  const receipts: PushReceiptDetail[] = [];
-  for (const e of rawSignalLog ?? []) {
-    if (e.pushReceipt != null) receipts.push(e.pushReceipt);
-  }
   const events = alarmEvents ?? [];
-  if (events.length === 0 && receipts.length === 0) return ['(empty)'];
+  const allReceipts = receipts ?? [];
+  if (events.length === 0 && allReceipts.length === 0) return ['(empty)'];
 
   const stations: string[] = [];
   const seen = new Set<string>();
@@ -1616,7 +1643,7 @@ function computeWholeChainLines(
       stations.push(e.stationId);
     }
   }
-  for (const detail of receipts) {
+  for (const detail of allReceipts) {
     if (!seen.has(detail.station)) {
       seen.add(detail.station);
       stations.push(detail.station);
@@ -1626,7 +1653,7 @@ function computeWholeChainLines(
   return stations.map((station) => {
     const backendTypes = events.filter((e) => e.stationId === station).map((e) => e.type);
     const backendPart = backendTypes.length > 0 ? backendTypes.join(',') : 'none';
-    const stationReceipts = receipts.filter((detail) => detail.station === station);
+    const stationReceipts = allReceipts.filter((detail) => detail.station === station);
     const devicePart =
       stationReceipts.length > 0
         ? stationReceipts
@@ -1641,7 +1668,8 @@ function computeWholeChainLines(
 }
 
 function buildWholeChainSection(args: BuildDumpArgs): string[] {
-  return computeWholeChainLines(args.backendSsotMirror?.alarmEvents, args.rawSignalLog);
+  const receipts = (args.pushReceiptLog ?? []).map((e) => e.detail);
+  return computeWholeChainLines(args.backendSsotMirror?.alarmEvents, receipts);
 }
 
 /**
@@ -1740,10 +1768,18 @@ function buildBoardingPromptSection(args: BuildDumpArgs): string[] {
 /**
  * #1413 — Boarding Prompt Acceptance dashboard.
  * displayed/responded/boarded/dismissed + 응답률·탑승률 + 최근 7일 시계열.
+ *
+ * #2861 (T2) — totals(상단 6줄)는 여전히 ring(alarmLog) 재집계 기반("최근" 뷰). 일자별
+ * 시계열(recent Nd)만 영속 daily counter(args.boardingPromptDailyCounters)로 교체 — ring
+ * cap=200 회전으로 지난 일자가 증발하던 결함 수정.
  */
 function buildBoardingPromptAcceptanceSection(args: BuildDumpArgs): string[] {
   const stats = computeBoardingPromptMonitor(args.logs);
-  const rows = exportRecentDays(stats, RECENT_DAYS, args.nowMs ?? Date.now());
+  const rows = exportRecentDays(
+    args.boardingPromptDailyCounters ?? {},
+    RECENT_DAYS,
+    args.nowMs ?? Date.now(),
+  );
   const lines: string[] = [
     `displayed=${stats.displayed}`,
     `responded=${stats.responded}`,
@@ -2600,6 +2636,10 @@ function DebugModalInner({
   }, []);
 
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
+  // #2861 (T2) — Boarding Prompt Acceptance 일별 영속 카운터 스냅샷. logs와 함께 refresh.
+  const [boardingPromptDailyCounters, setBoardingPromptDailyCounters] = useState<
+    Readonly<Record<string, BoardingPromptDayCounts>>
+  >({});
   // #2284 — fired-only 독립 영속 버퍼 스냅샷. alarmLog(200-cap, 모든 outcome 혼합) rotate와
   // 무관하게 보존되는 fired count SSoT.
   const [firedAlarmLog, setFiredAlarmLog] = useState<FiredAlarmLogEntry[]>([]);
@@ -2639,6 +2679,10 @@ function DebugModalInner({
   // 모달 마운트 시점 스냅샷으로 초기화, 이후 subscribe로 실시간 갱신.
   const [rawSignalLog, setRawSignalLog] = useState<readonly RawSignalEntry[]>(() =>
     getRawSignalEntries(),
+  );
+  // #2861 (T1) — push-receipt 독립 버퍼. rawSignalLog와 동일 패턴(스냅샷 초기화 + subscribe).
+  const [pushReceiptLog, setPushReceiptLog] = useState<readonly PushReceiptBufferEntry[]>(() =>
+    getPushReceiptEntries(),
   );
   // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
   // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
@@ -2710,6 +2754,11 @@ function DebugModalInner({
     return subscribeRawSignal(() => setRawSignalLog([...getRawSignalEntries()]));
   }, []);
 
+  // #2861 (T1) — push-receipt 독립 버퍼 변경 구독.
+  useEffect(() => {
+    return subscribePushReceipt(() => setPushReceiptLog([...getPushReceiptEntries()]));
+  }, []);
+
   const refreshLogs = useCallback(async () => {
     setLogs(await getAlarmLog());
     // #1706 — fusion picker tier 별 ring buffer 동시 snapshot. AsyncStorage 없는 in-memory ring
@@ -2717,6 +2766,8 @@ function DebugModalInner({
     setFusionTierLogs(getFusionTierLog());
     // #2284 — fired-only 독립 버퍼도 동시 refresh. alarmLog와 별도 key라 별도 read 필요.
     setFiredAlarmLog(await getFiredAlarmLog());
+    // #2861 (T2) — Boarding Prompt Acceptance 영속 daily counter도 동시 refresh.
+    setBoardingPromptDailyCounters(await getBoardingPromptDailyCounters());
   }, []);
 
   useEffect(() => {
@@ -2736,6 +2787,8 @@ function DebugModalInner({
       clearGpsDropEntries(),
       clearBackendCallEntries(),
       clearRawSignalEntries(),
+      // #2861 (T2) — 다른 영속 버퍼(fired-only 등)와 동일하게 전체 Clear에 포함.
+      clearBoardingPromptDailyCounters(),
     ]);
     await refreshLogs();
   }, [refreshLogs]);
@@ -2796,6 +2849,8 @@ function DebugModalInner({
       // #2618 — BG task heartbeat 최신 스냅샷.
       bgTaskLastHeartbeat,
       logs,
+      // #2861 (T2) — Boarding Prompt Acceptance 영속 daily counter를 share dump에 포함.
+      boardingPromptDailyCounters,
       // #2284 — fired-only 독립 버퍼 entries를 share dump에 포함. alarmLog rotate와 무관 보존.
       firedAlarmLog,
       lowPowerMode,
@@ -2832,6 +2887,8 @@ function DebugModalInner({
       backendCalls,
       // #1501 — PR-C. Raw signal buffer entries (직전 N건). share dump가 모달 표시와 동일 SSOT.
       rawSignalLog,
+      // #2861 (T1) — push-receipt 독립 버퍼 entries. share dump가 모달 표시와 동일 SSOT.
+      pushReceiptLog,
       // #1898 — RC-12. trip route line sequence + accelerometer raw snapshot. share dump가
       // UI 표시와 동일 SSOT.
       routeLines,
@@ -2896,6 +2953,8 @@ function DebugModalInner({
     backendSsotMirror,
     bgTaskLastHeartbeat,
     logs,
+    // #2861 (T2) — boardingPromptDailyCounters 변경 시 share 텍스트 자동 갱신.
+    boardingPromptDailyCounters,
     lowPowerMode,
     scheduledDump,
     barometerSubsurface,
@@ -2930,6 +2989,8 @@ function DebugModalInner({
     backendCalls,
     // #1501 — PR-C. raw signal entries 변경 시 share 텍스트 자동 갱신.
     rawSignalLog,
+    // #2861 (T1) — push-receipt 독립 버퍼 entries 변경 시 share 텍스트 자동 갱신.
+    pushReceiptLog,
     // #1898 — routeLines/accelSnapshot 변경 시 share 텍스트 자동 갱신.
     routeLines,
     accelSnapshot,
@@ -3313,7 +3374,7 @@ function DebugModalInner({
               push-receipt 교차 대조. buildWholeChainSection과 동일 SSOT (내부 helper 재사용). */}
           <WholeChainSection
             alarmEvents={backendSsotMirror?.alarmEvents}
-            rawSignalLog={rawSignalLog}
+            pushReceiptLog={pushReceiptLog}
             colors={colors}
           />
 
@@ -3560,7 +3621,11 @@ function DebugModalInner({
           </Section>
 
           {/* #1170: boarding-prompt acceptance dashboard (gate 통과율/응답률) */}
-          <BoardingPromptMonitorSection logs={logs} colors={colors} />
+          <BoardingPromptMonitorSection
+            logs={logs}
+            dailyCounters={boardingPromptDailyCounters}
+            colors={colors}
+          />
 
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
@@ -3590,6 +3655,10 @@ function DebugModalInner({
             onClear={() => {
               clearRawSignalEntries();
               setRawSignalLog([]);
+              // #2861 (T1) — push-receipt는 독립 버퍼라 rawSignalBuffer clear로는 안 비워진다.
+              // Raw Signal clear는 "진단 신호 전체 리셋" 의도이므로 같이 비운다.
+              clearPushReceiptEntries();
+              setPushReceiptLog([]);
             }}
             clearTestId="debug-raw-signal-clear"
             entryTestId="debug-raw-signal-entry"
@@ -4236,17 +4305,18 @@ function LockCorrectionSection({
  */
 function WholeChainSection({
   alarmEvents,
-  rawSignalLog,
+  pushReceiptLog,
   colors,
 }: Readonly<{
   alarmEvents: readonly AlarmEventMirror[] | undefined;
-  rawSignalLog: readonly RawSignalEntry[];
+  pushReceiptLog: readonly PushReceiptBufferEntry[];
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
+  const receipts = pushReceiptLog.map((e) => e.detail);
   return (
     <DumpTextSection
       title="Whole Chain"
-      lines={computeWholeChainLines(alarmEvents, rawSignalLog)}
+      lines={computeWholeChainLines(alarmEvents, receipts)}
       entryTestId="debug-whole-chain"
       colors={colors}
     />
@@ -4348,13 +4418,15 @@ function formatRatePct(value: number | null): string {
 
 function BoardingPromptMonitorSection({
   logs,
+  dailyCounters,
   colors,
 }: Readonly<{
   logs: readonly AlarmLogEntry[];
+  dailyCounters: Readonly<Record<string, BoardingPromptDayCounts>>;
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
   const stats = computeBoardingPromptMonitor(logs);
-  const rows = exportRecentDays(stats, RECENT_DAYS);
+  const rows = exportRecentDays(dailyCounters, RECENT_DAYS);
   return (
     <Section title="Boarding Prompt Acceptance" colors={colors}>
       <KeyValue label="displayed" value={String(stats.displayed)} colors={colors} />

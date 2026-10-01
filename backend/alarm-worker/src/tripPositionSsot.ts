@@ -606,6 +606,26 @@ export function appendAlarmEvent(
 }
 
 /**
+ * #2861 (T3) — `computeAlarmId` + `appendAlarmEvent` 쌍을 묶은 공유 헬퍼. advance 통과 시
+ * alarmEvent를 stamp하는 호출자가 lockless 경로(`advanceTripPosition.ts`)와 lock 경로
+ * (`completeWaypointAdvance`, scheduled.ts) 둘인데, 두 쌍이 각자 중복 구현되면 한쪽만 바뀌는
+ * drift가 가능하므로 단일 함수로 추출했다. caller가 in-place mutate된 `ssot`를 받아
+ * `writeSsot` 책임을 진다(이 함수는 read/write를 하지 않는다 — 두 호출자의 ssot 획득/저장
+ * 방식이 서로 다르기 때문: lockless는 이미 advance 중 메모리에 들고 있는 `next`를 그대로 쓰고,
+ * lock 경로는 별도로 `readSsot`/`writeSsot`를 호출한다).
+ */
+export async function stampPassedStationAlarmEvent(
+  ssot: TripPositionSSoT,
+  tripToken: string,
+  stationId: string,
+  type: AlarmEventType,
+  decidedAt: number,
+): Promise<void> {
+  const alarmId = await computeAlarmId(tripToken, stationId, type);
+  appendAlarmEvent(ssot, { alarmId, stationId, type, decidedAt });
+}
+
+/**
  * #1534 (S1, T9b) — 같은 lockSuggestion이 이미 set 됐는지 비교.
  *
  * stationId / trainCode / lineId가 모두 같으면 동일 suggestion으로 판정. confidence 변화나
