@@ -119,6 +119,57 @@ export function findLocklessTransferWaypoint(
   };
 }
 
+/**
+ * #2858 — 10/1 실측 root. `findLocklessTransferWaypoint`는 currentStation이 **정확히** 환승역
+ * 자체일 때만(exact name match) 매칭한다. 환승 release(backend `lockReleasedReason='transfer'`
+ * → `releaseLock`) 이후 사용자가 leg-2를 한 정거장이라도 더 진행하면 그 매칭이 다시 깨져
+ * `buildBoardingPromptContext`의 lock-null 분기가 `getFirstLeg`(leg-1)로 fall back한다 —
+ * "뚝섬→성수 2호선 탑승하셨나요" 좀비 로컬 프롬프트.
+ *
+ * transfer target을 **가장 진행된 leg(배열 끝)부터 역순**으로 스캔해, currentStation이 그 leg의
+ * nextLine 위에 존재하는 첫 leg를 반환한다. 환승은 항상 line이 바뀌는 지점이라(같은 line으로
+ * "환승"하는 route는 설계상 없음) currentStation이 어떤 nextLine 위에 존재한다는 사실 자체가
+ * "그 leg로 이미 넘어갔다"는 충분조건이다 — 아직 그 leg에 도달하지 않은 이전 leg와 혼동되지
+ * 않는다. 역순 스캔은 드문 edge(동일 역명이 여러 line에 중복 존재)에서도 기존 전제(#1921 cross-trip
+ * 자동전환 등)와 동형인 monotonic 진행 가정에 따라 더 진행된 해석을 우선한다.
+ *
+ * `findActiveTransferContext`(lock-bound)와 `findLocklessTransferWaypoint`(exact-match, legAdvance
+ * stamp 트리거용)는 의도적으로 변경하지 않는다 — 각각 "방금 막 환승역에 도달"이라는 정밀한 순간을
+ * 포착해야 하는 소비자(BoardingTrainList 노출/lock 생성, legAdvance stamp)를 갖고 있어 매칭을
+ * 넓히면 그 소비자들의 의미가 달라진다. 이 함수는 `boardingPromptContext`의 lock-null 분기 전용
+ * (더 넓은 "지금 어느 leg인가" 신호).
+ */
+export function findLocklessActiveLegWaypoint(
+  route: Route,
+  destinationName: string | null,
+  currentStation: Station | null,
+): LocklessTransferWaypoint | null {
+  if (!route || !destinationName || !currentStation) return null;
+  const targets = resolveAllTargets(route, destinationName);
+
+  for (let i = targets.length - 2; i >= 0; i--) {
+    const target = targets[i];
+    /* istanbul ignore next -- resolveAllTargets는 항상 마지막 target만 'destination'이고 그 이전은
+       전부 'transfer'다(stationAlarm.ts 생성 규칙). 이 루프는 마지막 index(destination)를 제외한
+       범위만 스캔하므로 이 분기는 구조적으로 도달 불가 — resolveAllTargets 계약이 바뀌는 경우에
+       대한 방어 코드. */
+    if (target.alarmType !== 'transfer') continue;
+    const next = targets[i + 1];
+    /* istanbul ignore next -- resolveAllTargets는 transfer 다음에 항상 target(destination 또는
+       다음 transfer)을 보장한다(마지막 target은 항상 destination). 방어 코드. */
+    if (!next) continue;
+
+    const nextLine = next.approachLine;
+    if (!findStationByNameAndLine(currentStation.name, nextLine)) continue;
+
+    const transferStationInToLine = findStationByNameAndLine(target.name, nextLine);
+    if (!transferStationInToLine) continue;
+
+    return { transferStationInToLine, nextLine, nextWaypointName: next.name };
+  }
+  return null;
+}
+
 interface ResolvedTransferWaypoint {
   transferStationInToLine: Station;
   nextLine: LineNumber;
