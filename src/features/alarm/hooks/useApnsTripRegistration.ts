@@ -23,9 +23,10 @@ import i18next from 'i18next';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { routeSignature } from '../../../shared/utils/stationRoute';
-import { registerActiveTrip, clearActiveTrip } from '../api/alarmBackend';
+import { registerActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
+import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip, logSubsurfaceRegisterTransition } from '../utils/alarmLog';
 import {
@@ -1125,9 +1126,14 @@ export function useApnsTripRegistration({
           logger.info('trip clear skip — destination이 storage에 남아 있음(hydration 전/정리 중)');
           return;
         }
+        // #2857 — 이 안전망은 clearActiveTrip + removeItem(ACTIVE_TRIP_KEY) 2줄만 직접 처리해
+        // `runTripBoundCleanups`(endLiveActivityCleanup 포함 chokepoint)를 경유하지 않았다.
+        // 결과: backend DELETE는 나가지만 LA는 native dismiss를 받지 못해 영구 생존(실측
+        // 2026-10-01 06:04 user-delete 후 종일 생존). 이 분기도 다른 모든 trip 종료 경로와
+        // 동일하게 chokepoint를 거치도록 교체 — clearActiveTrip은 runTripBoundCleanups 내부에서
+        // 읽어낸 ACTIVE_TRIP_KEY 값으로 동일하게 호출된다.
         if (prevTokenRaw) {
-          await clearActiveTrip(prevTokenRaw);
-          await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+          await runTripBoundCleanups();
         }
         // 트립 없음 분기에서도 lock 시그를 reset — 다음 trip이 새로 등록될 때 첫 cycle은
         // 즉시 발사(debounce 미적용) 보장.

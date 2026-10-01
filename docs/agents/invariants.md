@@ -37,6 +37,7 @@
 | alarm.ts:41 | 불변식 | ARRIVAL_CODE 숫자 우연 일치해도 타 코드체계 재사용 금지 | **없음** |
 | scheduled.ts:7405 | 불변식 | 프롬프트는 임박 열차 있을 때만 발사(#2801 재발 방지, arvlCd∈{0,1,2} OR-fallback) | 있음(#2834 + replay_20260930_leg2_prompt) |
 | ~~boardingPrompt.ts:176 / scheduled.ts:6842~~ | (해소, #2844) | ~~boarding-prompt "임박" 게이트 정의 2벌 공존~~ — GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`/`hasArrivedSignal`)를 subsumption 증명 기반으로 은퇴시켜 게이트 정의가 공유 본체(`decideBoardingPromptFire`, boardingPrompt.ts) 단일화로 수렴. leg-1(`maybeFireOriginBoardingPromptGpsFree`)/leg-2 모두 이 하나만 사용 — drift 재발 불가(구현 자체가 삭제됨) | N/A (게이트 자체 삭제) |
+| liveActivity.ts:364 | 갭 | (#2857 확인) device가 보내는 DELETE는 reason 없음 → `writeTripEndedStatus` 미기록 → FG `tripDeathPullBackstop`이 404를 "alive"로 오판(:122-125)해 후속 정리가 영구 스킵될 수 있다. backend DELETE reason 정책은 의도적으로 무변경(#2857 스코프 — device측 안전망이 chokepoint를 경유하도록 고치는 것으로 이 사각의 실제 노출 빈도를 줄였을 뿐, 사각 자체는 여전히 존재) | **없음** |
 
 ## 2. Device — alarm / Live Activity / Swift
 

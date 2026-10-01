@@ -62,6 +62,18 @@ private func postBoardingConfirm(
     station: String,
     line: String
 ) async {
+    // #2857 — tripToken이 빈 문자열이면(좀비 LA: state.boardingPromptTripToken ?? ""에서
+    // trip이 이미 삭제돼 nil 대신 fallback "" 전달) addingPercentEncoding이 nil을 반환하지
+    // 않고 그대로 ""를 통과시켜 아래 guard를 무사통과한다 — 그 결과 `/trips//boarding-confirm`
+    // 무효 POST가 os.log만 남기고 조용히 실패해 사용자에게 아무 피드백도 없었다. 좀비 LA
+    // 자체는 디바이스 측 runTripBoundCleanups wiring(useApnsTripRegistration.ts) fix로
+    // 막히지만, 이미 떠 있는 좀비 버튼에 대한 최소 가시 피드백으로 배너를 즉시 닫는다
+    // (기존 NotBoardedIntent :264 dismiss 패턴 재사용).
+    guard !tripToken.isEmpty else {
+        intentLog.error("boarding-confirm skipped — tripToken empty (stale/zombie LA button)")
+        await markCurrentActivity(boardingPhase: nil)
+        return
+    }
     guard let encodedToken = tripToken.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
           let url = URL(string: "\(ALARM_BACKEND_URL_BASE)/trips/\(encodedToken)/boarding-confirm")
     else {
