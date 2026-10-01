@@ -10,7 +10,8 @@ import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useTripGroundTruthStore } from '../../store/useTripGroundTruthStore';
 import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
-import type { RawSignalEntry } from '../../../observability/utils/rawSignalBuffer';
+import type { RawSignalEntry, PushReceiptDetail } from '../../../observability/utils/rawSignalBuffer';
+import type { PushReceiptBufferEntry } from '../../../observability/utils/pushReceiptBuffer';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime';
@@ -5599,36 +5600,31 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     // #2541 (obs: whole-chain 관측) — 매역 backend SSoT(alarmEvents) ↔ device push-receipt
     // 교차 대조. Lock Correction/Consensus Mismatch와 동일 패턴(computeXxxLines + buildXxxSection
     // 공유 helper) 검증.
-    describe('computeWholeChainLines / buildWholeChainSection (#2541)', () => {
-      function receiptEntry(
-        overrides: Partial<NonNullable<RawSignalEntry['pushReceipt']>> = {},
-      ): RawSignalEntry {
+    //
+    // #2861 (T1) — receipt 소스가 rawSignalLog(RawSignalEntry[], cycle과 공유 cap=300)에서
+    // pushReceiptLog(PushReceiptBufferEntry[], 독립 cap=60)로 교체됐다. computeWholeChainLines는
+    // 이제 PushReceiptDetail[]을 직접 받는다.
+    describe('computeWholeChainLines / buildWholeChainSection (#2541, #2861 T1)', () => {
+      function receiptDetail(
+        overrides: Partial<PushReceiptDetail> = {},
+      ): PushReceiptDetail {
+        return {
+          pushId: 'push-1',
+          station: '용마산',
+          kind: 'station-passed',
+          pushType: 'background',
+          displayed: false,
+          ...overrides,
+        };
+      }
+
+      function receiptBufferEntry(
+        overrides: Partial<PushReceiptDetail> = {},
+      ): PushReceiptBufferEntry {
         return {
           ts: 1_700_000_000_000,
           corrId: null,
-          kind: 'push-receipt',
-          gps: null,
-          motion: null,
-          accelPattern: null,
-          cellular: null,
-          subsurface: null,
-          barometerHpa: null,
-          arvlCd: null,
-          line: null,
-          dir: null,
-          arcIdx: null,
-          arcProgress: null,
-          stationId: null,
-          source: null,
-          confidence: null,
-          pushReceipt: {
-            pushId: 'push-1',
-            station: '용마산',
-            kind: 'station-passed',
-            pushType: 'background',
-            displayed: false,
-            ...overrides,
-          },
+          detail: receiptDetail(overrides),
         };
       }
 
@@ -5646,7 +5642,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       });
 
       it('device push-receipt만 있으면 backend=[none]', () => {
-        const lines = __test__.computeWholeChainLines(undefined, [receiptEntry()]);
+        const lines = __test__.computeWholeChainLines(undefined, [receiptDetail()]);
         expect(lines).toEqual([
           '용마산: backend=[none] device=[background:displayed=N]',
         ]);
@@ -5658,7 +5654,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
             { alarmId: 'a1', stationId: '용마산', type: 'transfer', decidedAt: 1 },
             { alarmId: 'a2', stationId: '용마산', type: 'imminent', decidedAt: 2 },
           ],
-          [receiptEntry({ displayed: true })],
+          [receiptDetail({ displayed: true })],
         );
         expect(lines).toEqual([
           '용마산: backend=[transfer,imminent] device=[background:displayed=Y]',
@@ -5667,57 +5663,22 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
 
       it('한 station에 여러 receipt는 |로 join, suppressedReason도 표기', () => {
         const lines = __test__.computeWholeChainLines(undefined, [
-          receiptEntry({
+          receiptDetail({
             pushType: 'background',
             displayed: false,
             suppressedReason: 'legacy-station-kind-ignored',
           }),
-          receiptEntry({ pushType: 'alert', displayed: true, suppressedReason: undefined }),
+          receiptDetail({ pushType: 'alert', displayed: true, suppressedReason: undefined }),
         ]);
         expect(lines).toEqual([
           '용마산: backend=[none] device=[background:displayed=N(legacy-station-kind-ignored)|alert:displayed=Y]',
         ]);
       });
 
-      it('rawSignalLog에서 pushReceipt=null인 entry(cycle/enter/exit)는 무시한다', () => {
-        const fusionEntry: RawSignalEntry = {
-          ts: 1,
-          corrId: null,
-          kind: 'cycle',
-          gps: null,
-          motion: null,
-          accelPattern: null,
-          cellular: null,
-          subsurface: null,
-          barometerHpa: null,
-          arvlCd: null,
-          line: null,
-          dir: null,
-          arcIdx: null,
-          arcProgress: null,
-          stationId: '강남',
-          source: null,
-          confidence: null,
-          pushReceipt: null,
-        };
-        expect(__test__.computeWholeChainLines(undefined, [fusionEntry])).toEqual(['(empty)']);
-      });
-
-      it('#2545 — AsyncStorage 복원 legacy entry(pushReceipt 필드 자체가 없어 undefined)는 크래시 없이 무시한다', () => {
-        const legacyEntry = receiptEntry();
-        // v1.2.5 이전 버전이 저장한 entry는 pushReceipt 필드가 아예 없다(JSON에 키 부재) →
-        // 복원 시 undefined. `!== null` 체크는 undefined를 통과시켜 receipts에 undefined를
-        // push하고 이후 구조분해에서 크래시한다(#2545 root). delete로 필드 부재 상태를 재현.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        delete (legacyEntry as any).pushReceipt;
-        expect(() => __test__.computeWholeChainLines(undefined, [legacyEntry])).not.toThrow();
-        expect(__test__.computeWholeChainLines(undefined, [legacyEntry])).toEqual(['(empty)']);
-      });
-
       it('여러 station이면 등장 순서(backend 먼저, 이어서 device-only)로 stations를 나열', () => {
         const lines = __test__.computeWholeChainLines(
           [{ alarmId: 'a1', stationId: '군자', type: 'destination', decidedAt: 1 }],
-          [receiptEntry({ station: '중곡', kind: 'transfer' })],
+          [receiptDetail({ station: '중곡', kind: 'transfer' })],
         );
         expect(lines).toEqual([
           '군자: backend=[destination] device=[none]',
@@ -5725,7 +5686,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         ]);
       });
 
-      it('buildWholeChainSection: backendSsotMirror.alarmEvents + rawSignalLog를 args에서 읽는다', () => {
+      it('buildWholeChainSection: backendSsotMirror.alarmEvents + pushReceiptLog를 args에서 읽는다', () => {
         const built = __test__.buildWholeChainSection({
           ...baselineDumpArgs,
           backendSsotMirror: {
@@ -5737,7 +5698,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
             alarmEvents: [{ alarmId: 'a1', stationId: '군자', type: 'destination', decidedAt: 1 }],
             receivedAt: 1,
           },
-          rawSignalLog: [receiptEntry({ station: '군자' })],
+          pushReceiptLog: [receiptBufferEntry({ station: '군자' })],
         });
         expect(built).toEqual([
           '군자: backend=[destination] device=[background:displayed=N]',
@@ -5745,11 +5706,46 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       });
 
       it('Whole Chain 섹션이 share dump에 포함된다 (#2541)', () => {
-        const dump = buildDumpText(makeDumpArgs({ rawSignalLog: [receiptEntry()] }));
+        const dump = buildDumpText(makeDumpArgs({ pushReceiptLog: [receiptBufferEntry()] }));
         expect(dump).toContain('## Whole Chain');
         const section = dump.slice(dump.indexOf('## Whole Chain'));
         expect(section).toContain('용마산: backend=[none] device=[background:displayed=N]');
       });
+
+      it(
+        '#2861 (T1) — 긴 트립(rawSignalLog가 cycle entry로 가득 차도) pushReceiptLog가 ' +
+          '독립이라 receipt 행이 생략되지 않는다',
+        () => {
+          const manyCycleEntries: RawSignalEntry[] = Array.from({ length: 320 }, (_, i) => ({
+            ts: i,
+            corrId: null,
+            kind: 'cycle',
+            gps: null,
+            motion: null,
+            accelPattern: null,
+            cellular: null,
+            subsurface: null,
+            barometerHpa: null,
+            arvlCd: null,
+            line: null,
+            dir: null,
+            arcIdx: null,
+            arcProgress: null,
+            stationId: null,
+            source: null,
+            confidence: null,
+            pushReceipt: null,
+          }));
+          const built = __test__.buildWholeChainSection({
+            ...baselineDumpArgs,
+            rawSignalLog: manyCycleEntries,
+            pushReceiptLog: [receiptBufferEntry({ station: '어린이대공원' })],
+          });
+          expect(built).toEqual([
+            '어린이대공원: backend=[none] device=[background:displayed=N]',
+          ]);
+        },
+      );
     });
 
     it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
