@@ -430,6 +430,44 @@ describe('fireLiveActivityUpdate', () => {
     expect(stats.laPushFailed).toBe(0);
   });
 
+  // #2854 — alert 인자를 sendLiveActivityUpdate로 그대로 forward. 미전달 시 기존(무음)
+  // 동작과 동일 — 하위 호환.
+  it('#2854 — alert 인자를 그대로 forward해 aps.alert를 포함한다', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeStats();
+    const trip = makeTrip();
+    await fireLiveActivityUpdate(
+      trip,
+      { boardingPhase: 'pre-boarding' },
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+      undefined,
+      { title: '탑승하셨나요?', body: '2호선 · 강남' },
+    );
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.aps.alert).toEqual({ title: '탑승하셨나요?', body: '2호선 · 강남' });
+  });
+
+  it('#2854 — alert 미전달 시 aps.alert가 생성되지 않는다', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeStats();
+    const trip = makeTrip();
+    await fireLiveActivityUpdate(
+      trip,
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect('alert' in body.aps).toBe(false);
+  });
+
   // #1402 — waypoint kind별 staleDate 정합. destination은 짧고(45s) transfer 중간(75s)
   // intermediate 기본(90s). undefined는 legacy 기본값 90s 유지 — 기존 호출자 무영향.
   it.each<[Waypoint['kind'], number]>([

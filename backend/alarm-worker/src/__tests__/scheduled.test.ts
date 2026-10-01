@@ -183,7 +183,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0, waypointEnvironmentLookupMiss: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0, waypointEnvironmentLookupMiss: 0, boardingPromptLaAlertFired: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -11637,6 +11637,33 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(body.body.hopEndKind).toBeUndefined();
   });
 
+  // #2854 — audit-sides: leg-1과 동일한 공유 발사 본체(fireBoardingPromptForAnchor)를 거치므로
+  // leg-2(환승 후)도 LA alert push를 별도 코드 없이 자동으로 받아야 한다(편측 감사).
+  it('#2854 — leg-2도 LA alert push를 발사한다(공유 본체 자동 상속, audit-sides)', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip({ activityPushToken: 'la-leg2-token', activityState: 'live' });
+    const stats = makeStats();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid-leg2');
+    expect(stats.legBoardingPromptFired).toBe(1);
+    const laCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(([, init]) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      return headers['apns-push-type'] === 'liveactivity';
+    });
+    expect(laCall).toBeDefined();
+    const [url, init] = laCall as unknown as [string, RequestInit];
+    expect(url).toContain('/3/device/la-leg2-token');
+    const body = JSON.parse(init.body as string) as {
+      aps: { alert?: { title: string; body: string }; 'content-state': Record<string, unknown> };
+    };
+    expect(body.aps.alert?.title).toBeTruthy();
+    expect(body.aps['content-state']).toMatchObject({
+      boardingPhase: 'pre-boarding',
+      boardingPromptTripToken: trip.token,
+      boardingPromptOriginStation: '건대입구',
+      boardingPromptLine: '7',
+    });
+  });
+
   // #2819 (test: red) — leg-2(GPS-free) 공유 발사 본체(fireBoardingPromptForAnchor)도 단일
   // 확정 trainCode를 payload에 embed해야 한다. 단일 후보(arvlCd=1) → ambiguity 없음.
   it('#2819 — 단일 후보(ambiguity 없음) → payload.body.trainCode에 발사 시점 pick 전파(leg-2)', async () => {
@@ -12524,6 +12551,182 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // #916 follow-up B — GPS-free onFired도 lastAutoPromptedAt을 stamp한다(구 9단 경로가 은퇴
     // 전까지 담당하던 동일 필드 — GPS-free는 별도 30분 dedup 게이트 없이 stamp만 유지).
     expect(trip.lastAutoPromptedAt).toBe(NOW);
+  });
+
+  // #2854 — 프롬프트 발사 성공 순간 LA도 alert(소리·배너)로 함께 갱신한다. 공유 발사 본체
+  // (`fireBoardingPromptForAnchor`)에서 처리하므로 leg-1(GPS-free)이 대표로 검증한다 — leg-2도
+  // 같은 본체를 거치므로 자동 적용(아래 leg-2 describe의 대조 테스트로 audit).
+  describe('#2854 — 프롬프트 발사 성공 시 LA alert push 병행 발사', () => {
+    function findLaAlertCalls(fetchImpl: ReturnType<typeof vi.fn>): [string, RequestInit][] {
+      return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+        const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+        return headers['apns-push-type'] === 'liveactivity';
+      });
+    }
+
+    it('activityPushToken + activityState=live → LA alert push가 title/body/phase/버튼 컨텍스트 포함해 발사된다(RED→GREEN)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // #2280 — 실 프로덕션 trip은 등록 시점에 originStationName이 항상 stamp된다
+      // (resolveCurrentStationName의 SSoT-미정착 폴백 입력). 이 fixture도 그 전제를 맞춘다.
+      const trip = makeTrip({
+        activityPushToken: 'la-activity-token',
+        activityState: 'live',
+        originStationName: '용마산',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      const laCalls = findLaAlertCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const [url, init] = laCalls[0];
+      expect(url).toContain('/3/device/la-activity-token');
+      const body = JSON.parse(init.body as string) as {
+        aps: {
+          event: string;
+          alert?: { title: string; body: string };
+          'content-state': Record<string, unknown>;
+        };
+      };
+      expect(body.aps.event).toBe('update');
+      expect(body.aps.alert?.title).toBeTruthy();
+      expect(body.aps.alert?.body).toBeTruthy();
+      expect(body.aps['content-state']).toMatchObject({
+        boardingPhase: 'pre-boarding',
+        boardingPromptTripToken: trip.token,
+        boardingPromptOriginStation: '용마산',
+        boardingPromptLine: '7',
+        boardingAlertTitle: body.aps.alert?.title,
+        boardingAlertBody: body.aps.alert?.body,
+      });
+      // 필수 non-optional 필드(decode invariant, #2849) 누락 없이 채워져야 한다.
+      expect(body.aps['content-state'].stationName).toBeTruthy();
+      expect(body.aps['content-state'].lineName).toBeTruthy();
+      expect(body.aps['content-state'].lineColorHex).toBeTruthy();
+    });
+
+    it('activityPushToken 없음 → LA alert push 미발사(notification만, 기존과 동일)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    it('activityState=ended → LA alert push 미발사', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ activityPushToken: 'la-activity-token', activityState: 'ended' });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    it('notification push(boarding prompt) 실패 시 LA alert push도 발사하지 않는다', async () => {
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (String(url).includes('/3/device/')) {
+          return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+        }
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '120',
+                recptnDt: '',
+                updnLine: '상행',
+                trainLineNm: '군자',
+                btrainNo: '7246',
+                subwayNm: '지하철7호선',
+                arvlCd: 1,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      });
+      const trip = makeTrip({ activityPushToken: 'la-activity-token', activityState: 'live' });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    it('LA alert push가 throw해도 notification 발사 흐름은 막히지 않는다(catch, stats만)', async () => {
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if (headers['apns-push-type'] === 'liveactivity') {
+          throw new Error('network down');
+        }
+        if (String(url).includes('/3/device/')) {
+          return new Response(null, { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '120',
+                recptnDt: '',
+                updnLine: '상행',
+                trainLineNm: '군자',
+                btrainNo: '7246',
+                subwayNm: '지하철7호선',
+                arvlCd: 1,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      });
+      const trip = makeTrip({ activityPushToken: 'la-activity-token', activityState: 'live' });
+      const stats = makeStats();
+      const log = vi.fn();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        stats,
+        NOW,
+        log,
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.boardingPromptLaAlertFired).toBe(0);
+      expect(
+        log.mock.calls.some(([msg]) => String(msg).includes('la alert threw')),
+      ).toBe(true);
+    });
   });
 
   // #2851 — leg-1 origin fire/suppress가 D1 trip_events에 무기록(#2834의 candidateArvlCds/

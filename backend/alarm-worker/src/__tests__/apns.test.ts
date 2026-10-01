@@ -1182,6 +1182,59 @@ describe('sendLiveActivityUpdate (#586 C)', () => {
     });
     expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
   });
+
+  // #2854 — LA alert push (aps.alert). apns-push-type은 여전히 'liveactivity' 유지(별도
+  // 'alert' push-type이 아님 — Apple LA push alert 스펙).
+  it('alert 옵션 전달 시 aps.alert{title,body,sound} 포함 + apns-push-type은 여전히 liveactivity', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendLiveActivityUpdate({
+      activityToken: 'tok',
+      contentState: { boardingPhase: 'pre-boarding' },
+      event: 'update',
+      alert: { title: '탑승하셨나요?', body: '2호선 · 강남', sound: 'default' },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('liveactivity');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({ title: '탑승하셨나요?', body: '2호선 · 강남', sound: 'default' });
+    expect(body.aps['content-state']).toEqual({ boardingPhase: 'pre-boarding' });
+  });
+
+  it('alert 미전달 시 aps.alert 필드 자체가 생성되지 않는다(기존 무음 update 하위 호환)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendLiveActivityUpdate({
+      activityToken: 'tok',
+      contentState: {},
+      event: 'update',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('alert' in body.aps).toBe(false);
+  });
+
+  it('alert.sound 미전달 시 aps.alert에 sound 필드가 생성되지 않는다', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendLiveActivityUpdate({
+      activityToken: 'tok',
+      contentState: {},
+      event: 'update',
+      alert: { title: 'T', body: 'B' },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({ title: 'T', body: 'B' });
+    expect('sound' in body.aps.alert).toBe(false);
+  });
 });
 
 describe('sendBoardingPromptPush (#819)', () => {

@@ -194,6 +194,9 @@ export async function fireLiveActivityUpdate(
   now: number,
   log: Logger,
   waypointKind?: Waypoint['kind'],
+  // #2854 — 발사 순간을 OS 배너+소리로도 노출하는 "alert" LA update. 미전달 시 기존 동작
+  // (무음 content-state 교체)과 동일 — 하위 호환.
+  alert?: { title: string; body: string; sound?: string },
 ): Promise<LiveActivityFireResult> {
   if (!trip.activityPushToken || trip.activityState !== 'live') {
     return { dirty: false };
@@ -207,6 +210,7 @@ export async function fireLiveActivityUpdate(
         contentState,
         event: 'update',
         staleDate,
+        alert,
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
