@@ -153,6 +153,14 @@ import {
   type RawSignalEntry,
   type PushReceiptDetail,
 } from '../../observability/utils/rawSignalBuffer';
+// #2861 (T1) — push-receipt 독립 버퍼(cycle/enter/exit과 cap 비공유). Whole Chain 패널은
+// rawSignalLog가 아니라 이 채널을 소스로 읽는다(긴 트립 초반 receipt 증발 방지).
+import {
+  clearPushReceiptEntries,
+  getPushReceiptEntries,
+  subscribePushReceipt,
+  type PushReceiptBufferEntry,
+} from '../../observability/utils/pushReceiptBuffer';
 import type { AlarmEventMirror } from '../../alarm/utils/backendSsotMirror';
 import {
   dumpScheduledNotifications,
@@ -749,6 +757,11 @@ interface BuildDumpArgs {
    * 단위 테스트에서 raw signal을 다루지 않는 경우 호환.
    */
   rawSignalLog?: readonly RawSignalEntry[];
+  /**
+   * #2861 (T1) — push-receipt 독립 버퍼 entries (cap=60, cycle/enter/exit과 cap 비공유).
+   * 미전달 시 (empty) 출력.
+   */
+  pushReceiptLog?: readonly PushReceiptBufferEntry[];
   /**
    * #1540 (S7) — GPS drop ring buffer entries. 미전달/빈 배열은 (empty)로 출력.
    * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출한다.
@@ -1587,8 +1600,12 @@ function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
  *
  * backend 쪽: `backendSsotMirror.alarmEvents`(silent push payload가 forward하는 station별
  * 발사 결정 기록 — station-passed/transfer/destination/imminent type). device 쪽:
- * `rawSignalLog`에서 `kind === 'push-receipt'`인 entry들(#2541 `logPushReceipt`가 적재) —
- * pushType(alert/background) + displayed + suppressedReason.
+ * push-receipt 독립 버퍼(#2861 T1, `logPushReceipt`가 적재) entries — pushType(alert/background)
+ * + displayed + suppressedReason.
+ *
+ * #2861 (T1) — 이전에는 `rawSignalLog`(cycle/enter/exit과 cap=300 공유)에서 `kind ===
+ * 'push-receipt'`인 entry를 걸러 썼으나, 긴 트립에서 cycle entry가 초반 receipt를 밀어내
+ * 증발시키는 결함이 있었다. 이제 독립 버퍼의 `PushReceiptDetail[]`을 직접 받는다.
  *
  * "backend=[transfer] device=[none]"처럼 backend는 발사했는데 device 쪽 receipt가 전혀 없으면
  * 배달 단계에서 끊긴 것(BG alert push는 OS가 직접 표시해 JS 수신 핸들러가 아예 안 탈 수 있다는
@@ -1599,14 +1616,11 @@ function buildLockCorrectionSection(args: BuildDumpArgs): string[] {
  */
 function computeWholeChainLines(
   alarmEvents: readonly AlarmEventMirror[] | undefined,
-  rawSignalLog: readonly RawSignalEntry[] | undefined,
+  receipts: readonly PushReceiptDetail[] | undefined,
 ): string[] {
-  const receipts: PushReceiptDetail[] = [];
-  for (const e of rawSignalLog ?? []) {
-    if (e.pushReceipt != null) receipts.push(e.pushReceipt);
-  }
   const events = alarmEvents ?? [];
-  if (events.length === 0 && receipts.length === 0) return ['(empty)'];
+  const allReceipts = receipts ?? [];
+  if (events.length === 0 && allReceipts.length === 0) return ['(empty)'];
 
   const stations: string[] = [];
   const seen = new Set<string>();
@@ -1616,7 +1630,7 @@ function computeWholeChainLines(
       stations.push(e.stationId);
     }
   }
-  for (const detail of receipts) {
+  for (const detail of allReceipts) {
     if (!seen.has(detail.station)) {
       seen.add(detail.station);
       stations.push(detail.station);
@@ -1626,7 +1640,7 @@ function computeWholeChainLines(
   return stations.map((station) => {
     const backendTypes = events.filter((e) => e.stationId === station).map((e) => e.type);
     const backendPart = backendTypes.length > 0 ? backendTypes.join(',') : 'none';
-    const stationReceipts = receipts.filter((detail) => detail.station === station);
+    const stationReceipts = allReceipts.filter((detail) => detail.station === station);
     const devicePart =
       stationReceipts.length > 0
         ? stationReceipts
@@ -1641,7 +1655,8 @@ function computeWholeChainLines(
 }
 
 function buildWholeChainSection(args: BuildDumpArgs): string[] {
-  return computeWholeChainLines(args.backendSsotMirror?.alarmEvents, args.rawSignalLog);
+  const receipts = (args.pushReceiptLog ?? []).map((e) => e.detail);
+  return computeWholeChainLines(args.backendSsotMirror?.alarmEvents, receipts);
 }
 
 /**
@@ -2640,6 +2655,10 @@ function DebugModalInner({
   const [rawSignalLog, setRawSignalLog] = useState<readonly RawSignalEntry[]>(() =>
     getRawSignalEntries(),
   );
+  // #2861 (T1) — push-receipt 독립 버퍼. rawSignalLog와 동일 패턴(스냅샷 초기화 + subscribe).
+  const [pushReceiptLog, setPushReceiptLog] = useState<readonly PushReceiptBufferEntry[]>(() =>
+    getPushReceiptEntries(),
+  );
   // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
   // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
   const [scheduledDump, setScheduledDump] = useState<ScheduledNotificationDumpEntry[] | null>(null);
@@ -2708,6 +2727,11 @@ function DebugModalInner({
   // #1501 — PR-C. Raw signal buffer 변경 구독. push/clear 어느 쪽이든 같은 listener로 반응.
   useEffect(() => {
     return subscribeRawSignal(() => setRawSignalLog([...getRawSignalEntries()]));
+  }, []);
+
+  // #2861 (T1) — push-receipt 독립 버퍼 변경 구독.
+  useEffect(() => {
+    return subscribePushReceipt(() => setPushReceiptLog([...getPushReceiptEntries()]));
   }, []);
 
   const refreshLogs = useCallback(async () => {
@@ -2832,6 +2856,8 @@ function DebugModalInner({
       backendCalls,
       // #1501 — PR-C. Raw signal buffer entries (직전 N건). share dump가 모달 표시와 동일 SSOT.
       rawSignalLog,
+      // #2861 (T1) — push-receipt 독립 버퍼 entries. share dump가 모달 표시와 동일 SSOT.
+      pushReceiptLog,
       // #1898 — RC-12. trip route line sequence + accelerometer raw snapshot. share dump가
       // UI 표시와 동일 SSOT.
       routeLines,
@@ -2930,6 +2956,8 @@ function DebugModalInner({
     backendCalls,
     // #1501 — PR-C. raw signal entries 변경 시 share 텍스트 자동 갱신.
     rawSignalLog,
+    // #2861 (T1) — push-receipt 독립 버퍼 entries 변경 시 share 텍스트 자동 갱신.
+    pushReceiptLog,
     // #1898 — routeLines/accelSnapshot 변경 시 share 텍스트 자동 갱신.
     routeLines,
     accelSnapshot,
@@ -3313,7 +3341,7 @@ function DebugModalInner({
               push-receipt 교차 대조. buildWholeChainSection과 동일 SSOT (내부 helper 재사용). */}
           <WholeChainSection
             alarmEvents={backendSsotMirror?.alarmEvents}
-            rawSignalLog={rawSignalLog}
+            pushReceiptLog={pushReceiptLog}
             colors={colors}
           />
 
@@ -3590,6 +3618,10 @@ function DebugModalInner({
             onClear={() => {
               clearRawSignalEntries();
               setRawSignalLog([]);
+              // #2861 (T1) — push-receipt는 독립 버퍼라 rawSignalBuffer clear로는 안 비워진다.
+              // Raw Signal clear는 "진단 신호 전체 리셋" 의도이므로 같이 비운다.
+              clearPushReceiptEntries();
+              setPushReceiptLog([]);
             }}
             clearTestId="debug-raw-signal-clear"
             entryTestId="debug-raw-signal-entry"
@@ -4236,17 +4268,18 @@ function LockCorrectionSection({
  */
 function WholeChainSection({
   alarmEvents,
-  rawSignalLog,
+  pushReceiptLog,
   colors,
 }: Readonly<{
   alarmEvents: readonly AlarmEventMirror[] | undefined;
-  rawSignalLog: readonly RawSignalEntry[];
+  pushReceiptLog: readonly PushReceiptBufferEntry[];
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
+  const receipts = pushReceiptLog.map((e) => e.detail);
   return (
     <DumpTextSection
       title="Whole Chain"
-      lines={computeWholeChainLines(alarmEvents, rawSignalLog)}
+      lines={computeWholeChainLines(alarmEvents, receipts)}
       entryTestId="debug-whole-chain"
       colors={colors}
     />
