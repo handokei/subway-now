@@ -3,6 +3,7 @@ import {
   defaultNearestStationResolver,
   dismissBoardingPrompt,
   persistFromPositionResponse,
+  postBoardingConfirm,
   readActiveBoardingLine,
   readTripOriginCoords,
   uploadPosition,
@@ -574,6 +575,55 @@ describe('dismissBoardingPrompt (#819)', () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
     (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
     const r = await dismissBoardingPrompt('tok');
+    expect(r).toEqual({ ok: false });
+  });
+});
+
+// #2852 — notification [탑승] 응답을 backend `POST /trips/:token/boarding-confirm`(#2527)로
+// 무조건 forward. 계약은 Swift `BoardingIntents.swift`(#2527 참조 호출자)와 동일:
+// body = { action, station, line }.
+describe('postBoardingConfirm (#2852)', () => {
+  it('URL 미설정 → skipped', async () => {
+    const r = await postBoardingConfirm('tok', 'boarded', '강남', '2');
+    expect(r.skipped).toBe(true);
+  });
+
+  it('빈 token → ok:false 즉시 반환 (fetch 미호출)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    const r = await postBoardingConfirm('', 'boarded', '강남', '2');
+    expect(r).toEqual({ ok: false });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('정상 응답 → ok=true + backend 계약대로 URL/body 구성(#2527)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    const r = await postBoardingConfirm('tok', 'boarded', '강남', '2');
+    expect(r).toEqual({ ok: true, status: 200 });
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.test.dev/trips/tok/boarding-confirm');
+    expect(JSON.parse(init.body)).toEqual({ action: 'boarded', station: '강남', line: '2' });
+  });
+
+  it('token URL-encode(#2527 Swift 계약과 동일)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    await postBoardingConfirm('tok/with slash', 'boarded', '강남', '2');
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.test.dev/trips/tok%2Fwith%20slash/boarding-confirm');
+  });
+
+  it('non-OK status → ok=false + status', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 } as Response);
+    const r = await postBoardingConfirm('tok', 'boarded', '강남', '2');
+    expect(r).toEqual({ ok: false, status: 404 });
+  });
+
+  it('fetch throw → ok=false (fire-and-forget, throw 금지)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
+    const r = await postBoardingConfirm('tok', 'boarded', '강남', '2');
     expect(r).toEqual({ ok: false });
   });
 });
