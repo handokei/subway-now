@@ -5742,6 +5742,33 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         expect(section).toContain('용마산: backend=[none] device=[background:displayed=N]');
       });
 
+      it('#2861 (T1) UI — 마운트 이후 push-receipt 발생 시 subscribePushReceipt listener가 Whole Chain을 갱신한다', async () => {
+        const { pushPushReceiptEntry, clearPushReceiptEntries } = jest.requireActual(
+          '../../../observability/utils/pushReceiptBuffer',
+        );
+        setupHookDefaults();
+        clearPushReceiptEntries();
+        renderWithTheme(<DebugModal onClose={jest.fn()} />);
+        await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+        expect(screen.getByTestId('debug-whole-chain-empty')).toBeTruthy();
+        act(() => {
+          pushPushReceiptEntry({
+            ts: 1,
+            corrId: null,
+            detail: {
+              pushId: 'p-1',
+              station: 'UI용마산',
+              kind: 'station-passed',
+              pushType: 'background',
+              displayed: true,
+            },
+          });
+        });
+        const entry = screen.getByTestId('debug-whole-chain');
+        expect(entry.props.children).toContain('UI용마산');
+        clearPushReceiptEntries();
+      });
+
       it(
         '#2861 (T1) — 긴 트립(rawSignalLog가 cycle entry로 가득 차도) pushReceiptLog가 ' +
           '독립이라 receipt 행이 생략되지 않는다',

@@ -26,6 +26,14 @@ describe('boardingPromptDailyCounters (#2861 T2)', () => {
     expect(await getBoardingPromptDailyCounters()).toEqual({});
   });
 
+  it('ts 미지정 시 Date.now() 기본값 사용', async () => {
+    jest.useFakeTimers().setSystemTime(T0);
+    await recordBoardingPromptDailyCount('displayed');
+    jest.useRealTimers();
+    const counters = await getBoardingPromptDailyCounters();
+    expect(counters[toLocalDayKey(T0)].displayed).toBe(1);
+  });
+
   it('displayed 1건 기록 — responded는 증가하지 않는다', async () => {
     await recordBoardingPromptDailyCount('displayed', T0);
     const counters = await getBoardingPromptDailyCounters();
