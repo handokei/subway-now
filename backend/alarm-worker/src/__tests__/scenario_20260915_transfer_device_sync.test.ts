@@ -558,16 +558,17 @@ describe('PR #2649 코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/MEDIUM-4/LOW-5 (2026-09-1
       line: '2',
     });
 
-    // `ssot:<token>` GET은 왕십리 처리 중 2회(lock-release push의 SSoT snapshot + hop-end 프롬프트
-    // 게이트 평가), 건대입구 처리 중 1회(hop-end 프롬프트만, lock은 이미 release됨) 호출된다 —
-    // 3번째 호출(건대입구 처리 중)에서 던져 "첫 waypoint는 이미 완전히 커밋된 뒤" 실패를 재현한다.
+    // `ssot:<token>` GET은 왕십리 처리 중 3회(#2861 T3 alarmEvents stamp read + lock-release
+    // push의 SSoT snapshot + hop-end 프롬프트 게이트 평가), 건대입구 처리 중 1회째(#2861 T3
+    // alarmEvents stamp read, lock은 이미 release됨)에서 던져 "첫 waypoint는 이미 완전히
+    // 커밋된 뒤" 실패를 재현한다 — 4번째 호출(건대입구 처리 진입 직후)에서 throw.
     const ssotKey = `ssot:${trip.token}`;
     let ssotGetCount = 0;
     const originalGet = kv.get.bind(kv);
     kv.get = (async (key: string, options?: { cacheTtl?: number }) => {
       if (key === ssotKey) {
         ssotGetCount += 1;
-        if (ssotGetCount === 3) {
+        if (ssotGetCount === 4) {
           throw new Error('simulated KV outage mid-loop');
         }
       }
@@ -591,7 +592,7 @@ describe('PR #2649 코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/MEDIUM-4/LOW-5 (2026-09-1
     // release(실 노선변경 2→5)와 waypoints 전진이 최종 persist까지 살아남아야 한다.
     expect(after?.boardingLock).toBeUndefined();
     expect(after?.waypoints[0]?.stationName).not.toBe('왕십리');
-    expect(ssotGetCount).toBeGreaterThanOrEqual(3);
+    expect(ssotGetCount).toBeGreaterThanOrEqual(4);
   });
 
   it('LOW-5: D1 advance 이벤트의 shiftedCount가 요청값이 아니라 실제 적용값이다', async () => {

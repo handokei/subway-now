@@ -76,7 +76,9 @@ import {
   readSsot,
   seedSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
+  stampPassedStationAlarmEvent,
   writeSsot,
+  type AlarmEventType,
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import {
@@ -5719,6 +5721,29 @@ async function completeWaypointAdvance(
   // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
   // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
   appendPassedStation(trip, waypoint.stationName);
+  // #2861 (T3) — lock-경로 advance도 SSoT.alarmEvents를 stamp한다(lockless 경로
+  // `advanceTripPosition.ts`만 stamp하던 결함 수정). `advanceBoardingLockWaypoint`가 evidence를
+  // 받은 호출은 이미 `advanceTripPosition`을 거쳐 stamp되지만, evidence 없이 호출되는 실제
+  // production 경로(`/boarding-lock/sync`가 transfer/destination waypoint를 처리할 때,
+  // index.ts:2619-2629)는 이 함수(completeWaypointAdvance)로 바로 들어와 alarmEvents가 비어
+  // 있었다 — DebugModal Whole Chain 패널 backend 칼럼이 이 경로의 trip에서 항상 [none]으로
+  // 보이는 관측 결함이었다. 관측 전용 — 발사/게이트/advance 동작은 무변경(SSoT 필드 추가 기록만).
+  // completeWaypointAdvance는 'destination' kind를 받지 않는다(caller가 그 경우 직접
+  // cleanupTripWithLa+deleteSsot로 처리하고 이 함수를 호출하지 않음) — 'transfer'만 구분.
+  const alarmEventType: AlarmEventType = waypoint.kind === 'transfer' ? 'transfer' : 'station-passed';
+  const ssotForAlarmEvent = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  if (ssotForAlarmEvent !== null) {
+    await stampPassedStationAlarmEvent(
+      ssotForAlarmEvent,
+      trip.token,
+      waypoint.stationName,
+      alarmEventType,
+      now,
+    );
+    await writeSsot(env.TRIPS, ssotForAlarmEvent, { expiresAt: trip.expiresAt });
+  }
   // 잠실나루 redundant boarding prompt regression — slice 직전 다음 waypoint(새 leg 시작점)의
   // line을 캡처. transfer waypoint 자체의 line은 "방금 통과한(=현재) leg"의 line이라 항상
   // boardingLock.line과 같아 진짜 환승/같은 호선 오라벨을 구분하지 못한다. 실제 노선 변경

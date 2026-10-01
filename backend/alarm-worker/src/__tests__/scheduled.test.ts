@@ -14011,7 +14011,14 @@ describe('advanceBoardingLockWaypoint — alarmEvents stamping (#2861 T3)', () =
   function makeTransferWaypointTrip(overrides: Partial<Trip> = {}): Trip {
     return makeTrip({
       token: T3_TOKEN,
-      route: { type: 'transfer', fromLine: '7', toLine: '2', stopsToTransfer: 1, stopsFromTransfer: 2 },
+      route: {
+        type: 'transfer',
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 2,
+      },
       waypoints: [
         { stationName: '건대입구', line: '7', kind: 'transfer' },
         { stationName: '뚝섬유원지', line: '2', kind: 'destination' },
