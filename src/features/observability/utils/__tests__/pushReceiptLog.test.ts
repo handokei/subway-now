@@ -1,19 +1,48 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logPushReceipt, mapWaypointKindToReceiptKind } from '../pushReceiptLog';
 import {
-  getRawSignalEntries,
+  pushRawSignal,
   __resetRawSignalForTests__,
+  type RawSignalEntry,
 } from '../rawSignalBuffer';
+import {
+  getPushReceiptEntries,
+  clearPushReceiptEntries,
+} from '../pushReceiptBuffer';
 import { setTripCorrId, __resetTripCorrIdForTests__ } from '../tripCorrId';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
+function makeCycleEntry(ts: number): RawSignalEntry {
+  return {
+    ts,
+    corrId: null,
+    kind: 'cycle',
+    gps: null,
+    motion: null,
+    accelPattern: null,
+    cellular: null,
+    subsurface: null,
+    barometerHpa: null,
+    arvlCd: null,
+    line: null,
+    dir: null,
+    arcIdx: null,
+    arcProgress: null,
+    stationId: null,
+    source: null,
+    confidence: null,
+    pushReceipt: null,
+  };
+}
+
+describe('pushReceiptLog (#2541 obs: whole-chain 관측, #2861 T1 독립 버퍼 분리)', () => {
   beforeEach(async () => {
     jest.useRealTimers();
     __resetRawSignalForTests__();
+    clearPushReceiptEntries();
     __resetTripCorrIdForTests__();
     await AsyncStorage.clear();
     jest.clearAllMocks();
@@ -23,7 +52,7 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
   });
 
   describe('logPushReceipt', () => {
-    it('rawSignalBuffer에 kind=push-receipt entry를 적재한다', () => {
+    it('pushReceiptBuffer(독립 채널)에 entry를 적재한다 — rawSignalBuffer가 아니다', () => {
       logPushReceipt({
         pushId: 'push-1',
         station: '용마산',
@@ -33,12 +62,11 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         suppressedReason: 'legacy-station-kind-ignored',
         receivedAt: 1_700_000_000_000,
       });
-      const entries = getRawSignalEntries();
+      const entries = getPushReceiptEntries();
       expect(entries).toHaveLength(1);
       const [e] = entries;
-      expect(e.kind).toBe('push-receipt');
       expect(e.ts).toBe(1_700_000_000_000);
-      expect(e.pushReceipt).toEqual({
+      expect(e.detail).toEqual({
         pushId: 'push-1',
         station: '용마산',
         kind: 'station-passed',
@@ -46,24 +74,9 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         displayed: false,
         suppressedReason: 'legacy-station-kind-ignored',
       });
-      // push-receipt entry는 fusion 관련 필드가 모두 null.
-      expect(e.gps).toBeNull();
-      expect(e.motion).toBeNull();
-      expect(e.accelPattern).toBeNull();
-      expect(e.cellular).toBeNull();
-      expect(e.subsurface).toBeNull();
-      expect(e.barometerHpa).toBeNull();
-      expect(e.arvlCd).toBeNull();
-      expect(e.line).toBeNull();
-      expect(e.dir).toBeNull();
-      expect(e.arcIdx).toBeNull();
-      expect(e.arcProgress).toBeNull();
-      expect(e.stationId).toBeNull();
-      expect(e.source).toBeNull();
-      expect(e.confidence).toBeNull();
     });
 
-    it('pushId 누락(null/undefined)이면 pushReceipt.pushId=null로 정규화', () => {
+    it('pushId 누락(null/undefined)이면 detail.pushId=null로 정규화', () => {
       logPushReceipt({
         pushId: undefined,
         station: '성수',
@@ -71,8 +84,8 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         pushType: 'alert',
         displayed: true,
       });
-      const [e] = getRawSignalEntries();
-      expect(e.pushReceipt?.pushId).toBeNull();
+      const [e] = getPushReceiptEntries();
+      expect(e.detail.pushId).toBeNull();
     });
 
     it('suppressedReason 미지정 시 필드 자체를 넣지 않는다', () => {
@@ -83,8 +96,8 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         pushType: 'alert',
         displayed: true,
       });
-      const [e] = getRawSignalEntries();
-      expect(e.pushReceipt).not.toHaveProperty('suppressedReason');
+      const [e] = getPushReceiptEntries();
+      expect(e.detail).not.toHaveProperty('suppressedReason');
     });
 
     it('receivedAt 미지정 시 Date.now() 사용', () => {
@@ -97,7 +110,7 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         displayed: false,
         suppressedReason: 'boarding-prompt-remote-only',
       });
-      const [e] = getRawSignalEntries();
+      const [e] = getPushReceiptEntries();
       expect(e.ts).toBe(1_700_000_005_000);
       jest.useRealTimers();
     });
@@ -112,7 +125,7 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         displayed: false,
         suppressedReason: 'legacy-station-kind-ignored',
       });
-      const [e] = getRawSignalEntries();
+      const [e] = getPushReceiptEntries();
       expect(e.corrId).toBe('trip-corr-1');
     });
 
@@ -125,9 +138,47 @@ describe('pushReceiptLog (#2541 obs: whole-chain 관측)', () => {
         displayed: false,
         suppressedReason: 'legacy-station-kind-ignored',
       });
-      const [e] = getRawSignalEntries();
+      const [e] = getPushReceiptEntries();
       expect(e.corrId).toBeNull();
     });
+
+    it('rawSignalBuffer에는 절대 적재하지 않는다 — cycle과 cap 비공유', () => {
+      const { getRawSignalEntries } = require('../rawSignalBuffer');
+      logPushReceipt({
+        pushId: 'push-6',
+        station: '아차산',
+        kind: 'station-passed',
+        pushType: 'background',
+        displayed: true,
+      });
+      expect(getRawSignalEntries()).toHaveLength(0);
+    });
+
+    it(
+      '#2861 (T1) 긴 트립 모사 — 초반 push-receipt가 이후 300건 cycle entry에 밀려도 ' +
+        '증발하지 않는다 (rawSignalBuffer cap=300 공유 당시 결함 재현 방지)',
+      () => {
+        // 트립 초반(예: 어대·군자) receipt 1건 적재.
+        logPushReceipt({
+          pushId: 'push-early',
+          station: '어린이대공원',
+          kind: 'station-passed',
+          pushType: 'background',
+          displayed: true,
+          receivedAt: 1_700_000_000_000,
+        });
+
+        // 긴 트립 cycle entry 300건+ (30초 간격)으로 rawSignalBuffer(cap=300)를 가득 채운다 —
+        // 과거 구조(공유 버퍼)였다면 이 시점에 위 receipt가 FIFO eviction으로 사라졌다.
+        for (let i = 0; i < 320; i += 1) {
+          pushRawSignal(makeCycleEntry(1_700_000_000_000 + i * 30_000));
+        }
+
+        const entries = getPushReceiptEntries();
+        expect(entries).toHaveLength(1);
+        expect(entries[0].detail.station).toBe('어린이대공원');
+      },
+    );
   });
 
   describe('mapWaypointKindToReceiptKind', () => {
