@@ -11,11 +11,16 @@
  * Live Activity를 확보해 후속 piece(버튼/AppIntent)가 얹힐 토대를 만든다.
  *
  * 트리거:
- *   - destination 설정 + lock 없음 → pre-boarding LA start(or update) + boardingPhase 컨텍스트.
+ *   - destination 설정 + lock 없음 → pre-boarding LA start(or update). #2854부터 boardingPhase/
+ *     버튼 컨텍스트(#2434)는 싣지 않는다 — 평범한 추적 content만(배너 없음). 트립 시작부터
+ *     무조건 "탑승하셨나요" 유령 배너가 뜨던 회귀였다. 열차 임박 시의 phase 전환 + alert는
+ *     이제 backend(`fireBoardingPromptForAnchor`, PR-A #2854)가 LA alert push로 전담한다.
  *   - lock 생성됨(탑승 확정) → 이 훅은 관여를 멈춘다. 이후 LA 콘텐츠는 기존 GPS-트리거 파이프라인
  *     (`stationPipeline.ts` / `HomeScreen`의 `updateStationNotification`)이 소유한다 — 그 경로는
  *     boardingPrompt 필드를 넘기지 않으므로 다음 정기 tick에서 boardingPhase가 자연히 비워진다
- *     ("or 미세팅" 허용, 스펙 명시).
+ *     ("or 미세팅" 허용, 스펙 명시). 단, lock이 device evidence로 자동 확정된 직후 한 번은
+ *     이 훅이 "추적중" 배너로 갱신한다(#2528, 아래 `buildAutoLockedPreBoardingLiveActivityData`
+ *     — 이 경로는 #2854 범위 밖, 무변경).
  *   - destination 해제(non-null→null) → 이 훅이 스스로 시작한 pre-boarding 세션만 종료.
  *     (lock 활성 중 destination이 해제되는 통상 trip 종료는 HomeScreen이 이미 `clearStationNotification`을
  *     호출하므로 중복 종료를 피한다 — `preBoardingActiveRef`로 소유권 구분.)
@@ -47,7 +52,7 @@ import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
-import { clearStationNotification, buildBoardingPromptContent } from '../utils/stationNotification';
+import { clearStationNotification } from '../utils/stationNotification';
 import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -64,33 +69,23 @@ const PRE_BOARDING_UNKNOWN_LINE_COLOR_HEX = '#8E8E93';
  * 정보를, 없으면 "감지 중"(기존 `widget.detecting` 관례) placeholder를 stationName에 싣는다.
  * distanceM은 이 단계에선 의미가 없어 0 고정 — destinationName이 있으면 위젯은 거리 대신
  * "→ 목적지" 라우트 뷰를 그리므로 화면에 노출되지 않는다.
+ *
+ * #2854 — boardingPhase/버튼 컨텍스트(#2434)는 의도적으로 싣지 않는다. 트립 시작부터 무조건
+ * "탑승하셨나요" 배너를 띄우던 유령 pre-boarding 배너가 원인이었다 — 임박 전환은 이제
+ * backend(`fireBoardingPromptForAnchor`, PR-A #2854)가 LA alert push로 전담하므로, 이 훅은
+ * 평범한 추적 content만 깔아둔다(phase 미설정 → 위젯이 배너를 그리지 않음).
  */
 function buildPreBoardingLiveActivityData(
   destination: Station,
   origin: Station | null,
-  tripToken: string | null,
 ): LiveActivity.LiveActivityData {
-  const data: LiveActivity.LiveActivityData = {
+  return {
     stationName: origin ? getStationDisplayName(origin) : i18next.t('widget.detecting'),
     lineName: origin ? LINE_NAMES[origin.line] : '',
     lineColorHex: origin ? LINE_COLORS[origin.line] : PRE_BOARDING_UNKNOWN_LINE_COLOR_HEX,
     distanceM: 0,
     destinationName: getStationDisplayName(destination),
-    boardingPhase: 'pre-boarding',
   };
-  if (tripToken) {
-    data.boardingPromptTripToken = tripToken;
-  }
-  if (origin) {
-    data.boardingPromptOriginStation = getStationDisplayName(origin);
-    data.boardingPromptLine = origin.line;
-    // #2528 — 행동 필요 프롬프트(승차) alert 문구. origin 미확정("감지 중") 구간은 아직 "탑승
-    // 하셨나요?"를 물을 대상이 없어 alert 필드를 비워둔다 — native가 조용히 update.
-    const { title, body } = buildBoardingPromptContent(data.boardingPromptOriginStation, origin.line);
-    data.boardingAlertTitle = title;
-    data.boardingAlertBody = body;
-  }
-  return data;
 }
 
 /**
@@ -163,8 +158,7 @@ export function useLiveActivityPreBoardingLifecycle(): void {
 
     if (!LiveActivity.isLiveActivityEnabled()) return;
 
-    const tripToken = getCurrentTripCorrIdSync();
-    const data = buildPreBoardingLiveActivityData(destination, tripOrigin, tripToken);
+    const data = buildPreBoardingLiveActivityData(destination, tripOrigin);
     preBoardingActiveRef.current = true;
     // #2667 — 이 update가 native `start()`로 fall-through해 Activity를 만들면 push token이
     // emit된다. 구독이 없으면 그 token이 버려져 backend가 LA push를 영영 못 보낸다(실측
