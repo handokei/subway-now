@@ -41,6 +41,15 @@ jest.mock('../../../../shared/constants/debugFlags', () => ({
   isMinimalAlarmEnabled: () => mockIsMinimalAlarmEnabled(),
 }));
 
+// #2858 — transfer-release 직후 쿨다운. useLegAdvanceStore.stampedAt을 읽어 최근 환승 stamp
+// 윈도우 안이면 발사를 억제한다. getState() 기반 non-reactive read — 기존 #2278 패턴과 동일.
+const mockGetLegAdvanceState = jest.fn();
+jest.mock('../../store/useLegAdvanceStore', () => ({
+  useLegAdvanceStore: {
+    getState: () => mockGetLegAdvanceState(),
+  },
+}));
+
 const currentStation = getStationById('2-020')!; // 중곡
 const destination = getStationById('2-022')!; // 건대입구
 const route = makeDirectRoute(4, '2');
@@ -78,6 +87,8 @@ describe('useLocalBoardingPromptGate', () => {
     mockBuildBoardingPromptContext.mockReturnValue(context);
     mockEvaluateLocalBoardingPromptGate.mockReturnValue({ pass: true });
     mockFireLocalBoardingPromptNotification.mockResolvedValue(true);
+    // 기존 시나리오는 전부 legAdvance stamp 없음(leg-1/direct trip 전제) — 쿨다운 전용 테스트에서만 override.
+    mockGetLegAdvanceState.mockReturnValue({ nextLine: null, stampedAt: null });
   });
 
   it('MINIMAL_ALARM 플래그가 OFF면 게이트가 pass여도 로컬 발사하지 않는다 (backend가 유일 소스)', () => {
@@ -267,6 +278,61 @@ describe('useLocalBoardingPromptGate', () => {
     resolveFire(true);
     await waitFor(() => {
       expect(mockAddDomainBreadcrumb).toHaveBeenCalled();
+    });
+  });
+
+  // #2858 — leg-aware context fix(findLocklessActiveLegWaypoint) 외 추가 방어. transfer-release로
+  // legAdvance가 방금(AUTO_RELEASE_GRACE_MS 이내) stamp됐으면 GPS/route가 아직 새 leg로 안정화되지
+  // 않았을 edge를 대비해 로컬 프롬프트 발사를 쿨다운한다.
+  describe('#2858 transfer-release 직후 쿨다운', () => {
+    it('legAdvance stamp가 AUTO_RELEASE_GRACE_MS 이내면 context 평가 자체를 건너뛴다(발사 안 함)', () => {
+      mockGetLegAdvanceState.mockReturnValue({ nextLine: '7', stampedAt: Date.now() - 1000 });
+      renderHook(() =>
+        useLocalBoardingPromptGate({
+          route,
+          currentStation,
+          destination,
+          lock: null,
+          gpsFix: null,
+          arrival,
+        }),
+      );
+      expect(mockBuildBoardingPromptContext).not.toHaveBeenCalled();
+      expect(mockFireLocalBoardingPromptNotification).not.toHaveBeenCalled();
+    });
+
+    it('legAdvance stamp가 쿨다운(AUTO_RELEASE_GRACE_MS)을 지났으면 평소대로 발사한다', async () => {
+      mockGetLegAdvanceState.mockReturnValue({ nextLine: '7', stampedAt: Date.now() - 60_000 });
+      renderHook(() =>
+        useLocalBoardingPromptGate({
+          route,
+          currentStation,
+          destination,
+          lock: null,
+          gpsFix: null,
+          arrival,
+        }),
+      );
+      await waitFor(() => {
+        expect(mockFireLocalBoardingPromptNotification).toHaveBeenCalled();
+      });
+    });
+
+    it('legAdvance stamp가 없으면(stampedAt=null, leg-1/direct trip) 쿨다운 미적용 — 기존 동작 유지', async () => {
+      mockGetLegAdvanceState.mockReturnValue({ nextLine: null, stampedAt: null });
+      renderHook(() =>
+        useLocalBoardingPromptGate({
+          route,
+          currentStation,
+          destination,
+          lock: null,
+          gpsFix: null,
+          arrival,
+        }),
+      );
+      await waitFor(() => {
+        expect(mockFireLocalBoardingPromptNotification).toHaveBeenCalled();
+      });
     });
   });
 });

@@ -470,4 +470,32 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptDisplay.originStation).toBe('성수');
     });
   });
+
+  // #2858 — 10/1 실측 root. #2830은 currentStation이 **정확히** 환승역일 때만 매칭(exact name).
+  // 환승 release 이후 사용자가 leg-2를 한 정거장이라도 더 진행하면(=환승역 자체가 아님) 매칭이
+  // 다시 깨져 getFirstLeg(leg-1)로 fall back한다 — "뚝섬→성수 2호선 탑승하셨나요" 좀비 프롬프트.
+  describe('#2858 lock 미활성 — 환승 release 후 leg-2를 더 진행한 상태(건대입구 자체 아님)', () => {
+    it('환승역을 지나 leg-2 다음 역에 있음(currentStation=어린이대공원) → nextLine(7) 기준으로 stamp (leg-1 line=2로 회귀 금지)', () => {
+      const current = st('7-018'); // 어린이대공원 — 건대입구(7-019) 다음 역, 용마산 방향
+      const dest = st('7-015'); // 용마산
+      const ctx = buildBoardingPromptContext({
+        route: makeTransferRoute({
+          transferName: '건대입구',
+          fromLine: '2',
+          toLine: '7',
+          stopsToTransfer: 2,
+          stopsFromTransfer: 4,
+        }),
+        currentStation: current,
+        destination: dest,
+        lock: null,
+      });
+      expect(ctx).not.toBeNull();
+      // RED(기존 코드): findLocklessTransferWaypoint는 currentStation==='건대입구' exact match만
+      // 인정 — '어린이대공원'은 매칭 실패해 getFirstLeg(fromLine='2')로 fall back, line이 '2'로
+      // stale 고정된다. GREEN(fix 후): leg-2(7)로 stamp돼야 한다.
+      expect(ctx?.promptDisplay.line).toBe('7');
+      expect(ctx?.promptDisplay.originStation).toBe(current.name);
+    });
+  });
 });
