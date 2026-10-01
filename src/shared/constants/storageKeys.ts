@@ -322,3 +322,9 @@ export const BG_TASK_LAST_HEARTBEAT_KEY = 'subway-now:bg-task-last-heartbeat';
 // 형식: `{ [dayKey: 'YYYY-MM-DD']: { displayed, responded, boarded, dismissed } }` JSON.
 // 14일(BOARDING_PROMPT_DAILY_COUNTERS_RETENTION_DAYS) 초과 날짜는 매 write 시 정리(rolling).
 export const BOARDING_PROMPT_DAILY_COUNTERS_KEY = 'subway-now:boarding-prompt-daily-counters';
+// #2861 (T1) — push-receipt 독립 ring buffer(cap=60) 영속 키. rawSignalBuffer와 동일 이유로
+// AsyncStorage 영속이 필수다 — `logPushReceipt`는 BG headless JS 컨텍스트(silentPushTask.ts)에서도
+// 호출되는데, BG 프로세스는 FG DebugModal과 별도 JS 인스턴스라 in-memory만으로는 BG가 적재한
+// receipt가 FG에 전혀 보이지 않는다(app/_layout.tsx의 boot hydrate가 FG 재개 시 이 키를 읽어
+// 복원). cap이 작아(60) write 비용도 rawSignalBuffer보다 가볍다. 형식: PushReceiptBufferEntry[] JSON.
+export const PUSH_RECEIPT_BUFFER_KEY = 'subway-now:push-receipt-buffer';
