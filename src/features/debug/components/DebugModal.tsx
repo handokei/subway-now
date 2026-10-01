@@ -72,7 +72,15 @@ import {
 import {
   computeBoardingPromptMonitor,
   exportRecentDays,
+  type BoardingPromptDayCounts,
 } from '../../../features/alarm/utils/boardingPromptMonitor';
+// #2861 (T2) — Boarding Prompt Acceptance 일별 영속 카운터. "recent Nd" 시계열은 ring
+// 재집계(computeBoardingPromptMonitor.byDay, cap=200 회전에 취약) 대신 이 영속 소스를 읽는다.
+// totals(displayed/responded/boarded/dismissed 합계 + rate)는 여전히 ring 기반("최근" 뷰).
+import {
+  getBoardingPromptDailyCounters,
+  clearBoardingPromptDailyCounters,
+} from '../../../features/alarm/utils/boardingPromptDailyCounters';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
 // #2268 (C1) — pending→confirmed lock 정정 measurement infra(#1166). fired count 는
 // BoardingTrainList가 이미 기록하지만 DebugModal에 섹션이 없어 관측 불가했다.
@@ -664,6 +672,11 @@ interface BuildDumpArgs {
    */
   bgTaskLastHeartbeat?: BgTaskHeartbeatSnapshot | null;
   logs: AlarmLogEntry[];
+  /**
+   * #2861 (T2) — Boarding Prompt Acceptance "recent Nd" 시계열 소스. ring(alarmLog cap=200)
+   * 재집계와 무관하게 쓰기 시점에 영속화된 일자별 카운터. 미전달 시 전부 0 채움(단위 테스트 호환).
+   */
+  boardingPromptDailyCounters?: Readonly<Record<string, BoardingPromptDayCounts>>;
   /**
    * #2284 — fired-only 독립 영속 링버퍼 스냅샷. alarmLog 200-cap rotate와 무관하게 보존되는
    * 발사 기록 SSoT. 미전달 시 (empty) — 단위 테스트 호환.
@@ -1755,10 +1768,18 @@ function buildBoardingPromptSection(args: BuildDumpArgs): string[] {
 /**
  * #1413 — Boarding Prompt Acceptance dashboard.
  * displayed/responded/boarded/dismissed + 응답률·탑승률 + 최근 7일 시계열.
+ *
+ * #2861 (T2) — totals(상단 6줄)는 여전히 ring(alarmLog) 재집계 기반("최근" 뷰). 일자별
+ * 시계열(recent Nd)만 영속 daily counter(args.boardingPromptDailyCounters)로 교체 — ring
+ * cap=200 회전으로 지난 일자가 증발하던 결함 수정.
  */
 function buildBoardingPromptAcceptanceSection(args: BuildDumpArgs): string[] {
   const stats = computeBoardingPromptMonitor(args.logs);
-  const rows = exportRecentDays(stats, RECENT_DAYS, args.nowMs ?? Date.now());
+  const rows = exportRecentDays(
+    args.boardingPromptDailyCounters ?? {},
+    RECENT_DAYS,
+    args.nowMs ?? Date.now(),
+  );
   const lines: string[] = [
     `displayed=${stats.displayed}`,
     `responded=${stats.responded}`,
@@ -2615,6 +2636,10 @@ function DebugModalInner({
   }, []);
 
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
+  // #2861 (T2) — Boarding Prompt Acceptance 일별 영속 카운터 스냅샷. logs와 함께 refresh.
+  const [boardingPromptDailyCounters, setBoardingPromptDailyCounters] = useState<
+    Readonly<Record<string, BoardingPromptDayCounts>>
+  >({});
   // #2284 — fired-only 독립 영속 버퍼 스냅샷. alarmLog(200-cap, 모든 outcome 혼합) rotate와
   // 무관하게 보존되는 fired count SSoT.
   const [firedAlarmLog, setFiredAlarmLog] = useState<FiredAlarmLogEntry[]>([]);
@@ -2741,6 +2766,8 @@ function DebugModalInner({
     setFusionTierLogs(getFusionTierLog());
     // #2284 — fired-only 독립 버퍼도 동시 refresh. alarmLog와 별도 key라 별도 read 필요.
     setFiredAlarmLog(await getFiredAlarmLog());
+    // #2861 (T2) — Boarding Prompt Acceptance 영속 daily counter도 동시 refresh.
+    setBoardingPromptDailyCounters(await getBoardingPromptDailyCounters());
   }, []);
 
   useEffect(() => {
@@ -2760,6 +2787,8 @@ function DebugModalInner({
       clearGpsDropEntries(),
       clearBackendCallEntries(),
       clearRawSignalEntries(),
+      // #2861 (T2) — 다른 영속 버퍼(fired-only 등)와 동일하게 전체 Clear에 포함.
+      clearBoardingPromptDailyCounters(),
     ]);
     await refreshLogs();
   }, [refreshLogs]);
@@ -2820,6 +2849,8 @@ function DebugModalInner({
       // #2618 — BG task heartbeat 최신 스냅샷.
       bgTaskLastHeartbeat,
       logs,
+      // #2861 (T2) — Boarding Prompt Acceptance 영속 daily counter를 share dump에 포함.
+      boardingPromptDailyCounters,
       // #2284 — fired-only 독립 버퍼 entries를 share dump에 포함. alarmLog rotate와 무관 보존.
       firedAlarmLog,
       lowPowerMode,
@@ -2922,6 +2953,8 @@ function DebugModalInner({
     backendSsotMirror,
     bgTaskLastHeartbeat,
     logs,
+    // #2861 (T2) — boardingPromptDailyCounters 변경 시 share 텍스트 자동 갱신.
+    boardingPromptDailyCounters,
     lowPowerMode,
     scheduledDump,
     barometerSubsurface,
@@ -3588,7 +3621,11 @@ function DebugModalInner({
           </Section>
 
           {/* #1170: boarding-prompt acceptance dashboard (gate 통과율/응답률) */}
-          <BoardingPromptMonitorSection logs={logs} colors={colors} />
+          <BoardingPromptMonitorSection
+            logs={logs}
+            dailyCounters={boardingPromptDailyCounters}
+            colors={colors}
+          />
 
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
@@ -4381,13 +4418,15 @@ function formatRatePct(value: number | null): string {
 
 function BoardingPromptMonitorSection({
   logs,
+  dailyCounters,
   colors,
 }: Readonly<{
   logs: readonly AlarmLogEntry[];
+  dailyCounters: Readonly<Record<string, BoardingPromptDayCounts>>;
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
   const stats = computeBoardingPromptMonitor(logs);
-  const rows = exportRecentDays(stats, RECENT_DAYS);
+  const rows = exportRecentDays(dailyCounters, RECENT_DAYS);
   return (
     <Section title="Boarding Prompt Acceptance" colors={colors}>
       <KeyValue label="displayed" value={String(stats.displayed)} colors={colors} />

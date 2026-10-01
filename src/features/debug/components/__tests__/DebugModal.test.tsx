@@ -12,6 +12,8 @@ import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { RawSignalEntry, PushReceiptDetail } from '../../../observability/utils/rawSignalBuffer';
 import type { PushReceiptBufferEntry } from '../../../observability/utils/pushReceiptBuffer';
+// #2861 (T2) — 영속 daily counter의 dayKey 규약(toLocalDayKey)을 테스트에서도 재사용.
+import { toLocalDayKey } from '../../../alarm/utils/boardingPromptMonitor';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import { formatClockTimeWithSeconds } from '../../../../shared/utils/formatTime';
@@ -3976,6 +3978,34 @@ describe('DebugModal share SSOT (#1346)', () => {
       const dayLines = section.split('\n').filter((l) => /^\d{4}-\d{2}-\d{2} \|/.test(l));
       expect(dayLines).toHaveLength(7);
     });
+
+    it(
+      '#2861 (T2) — recent Nd 시계열은 ring(args.logs) 재집계가 아니라 ' +
+        'args.boardingPromptDailyCounters(영속)를 소스로 쓴다',
+      () => {
+        const now = new Date('2026-06-17T13:00:00Z').getTime();
+        // ring(logs)에는 아무 boarding-prompt entry도 없다 — "링이 회전해 증발한 상태"를 모사.
+        // boardingPromptDailyCounters(영속)에만 어제 데이터가 남아있다.
+        const yesterdayKey = toLocalDayKey(now - 24 * 60 * 60 * 1000);
+        const dump = __test__.buildDumpText(
+          makeSsotArgs({
+            nowMs: now,
+            logs: [],
+            boardingPromptDailyCounters: {
+              [yesterdayKey]: { displayed: 4, responded: 3, boarded: 2, dismissed: 1 },
+            },
+          }),
+        );
+        const section = dump.slice(
+          dump.indexOf('## Boarding Prompt Acceptance'),
+          dump.indexOf('## Counters'),
+        );
+        // totals(ring 기반, "최근" 뷰)는 ring이 비었으니 0.
+        expect(section).toContain('displayed=0');
+        // 하지만 day row(영속 기반)는 어제 데이터를 그대로 보존 — ring 회전과 무관.
+        expect(section).toContain(`${yesterdayKey} | 4 / 3 / 2 / 1`);
+      },
+    );
 
     it('Boarding Prompt Acceptance: displayed=0이면 rate 모두 — 표기', () => {
       const dump = __test__.buildDumpText(makeSsotArgs());
