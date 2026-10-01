@@ -54,6 +54,8 @@ import {
   shouldSkipStationary,
   resolveBoardingLinePayload,
   resolveWaypointEnvironment,
+  advanceBoardingLockWaypoint,
+  createEmptyScheduledStats,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -13990,6 +13992,139 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'walk-gated')).toBe(false);
       expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(true);
     });
+  });
+});
+
+// #2861 (T3) — lock-경로 advance(`advanceBoardingLockWaypoint` evidence=undefined, 실제로는
+// `/boarding-lock/sync`가 이 모양으로 호출)가 SSoT.alarmEvents를 stamp하는지 검증.
+//
+// root: alarmEvents append(`appendAlarmEvent`)는 lockless 경로(`advanceTripPosition.ts`)에만
+// 있었다 — evidence가 제공되면 `advanceBoardingLockWaypoint`가 내부에서 `advanceTripPosition`을
+// 거쳐 함께 stamp되지만, evidence가 없는 호출(`/boarding-lock/sync`가 transfer/destination
+// waypoint를 처리할 때 실제로 이렇게 호출한다 — index.ts:2619-2629)은 `advanceTripPosition`을
+// 건너뛰고 곧장 `completeWaypointAdvance`로 가는데, 그 함수는 alarmEvents를 전혀 건드리지
+// 않았다. 결과: DebugModal Whole Chain 패널의 backend 칼럼이 이 경로로 advance된 trip에서
+// 항상 [none]으로 보였다(10/1 trace 확정) — 관측 전용 결함, 발사/게이트 동작 자체는 무관.
+describe('advanceBoardingLockWaypoint — alarmEvents stamping (#2861 T3)', () => {
+  const T3_TOKEN = 'tok-2861-t3';
+
+  function makeTransferWaypointTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: T3_TOKEN,
+      route: { type: 'transfer', fromLine: '7', toLine: '2', stopsToTransfer: 1, stopsFromTransfer: 2 },
+      waypoints: [
+        { stationName: '건대입구', line: '7', kind: 'transfer' },
+        { stationName: '뚝섬유원지', line: '2', kind: 'destination' },
+      ],
+      boardingLock: {
+        trainCode: '7911',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['군자', '건대입구'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+      ...overrides,
+    });
+  }
+
+  function noopSeoul(): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+    });
+  }
+
+  it(
+    'evidence=undefined(실제 /boarding-lock/sync 호출 모양) — transfer waypoint advance 후 ' +
+      'ssot.alarmEvents에 type=transfer로 stamp된다',
+    async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferWaypointTrip();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+        expiresAt: trip.expiresAt,
+      });
+      const stats = createEmptyScheduledStats(NOW);
+      const okFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const result = await advanceBoardingLockWaypoint(
+        trip,
+        trip.waypoints[0],
+        makeEnv(kv),
+        {
+          seoul: noopSeoul(),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: okFetch as unknown as typeof fetch,
+        },
+        stats,
+        NOW,
+        () => {},
+        undefined,
+        () => 'p-2861-t3',
+      );
+      expect(result.consumed).toBe(true);
+
+      const after = await readSsot(kv as unknown as KVNamespace, trip.token);
+      expect(after?.alarmEvents).toBeDefined();
+      expect(after?.alarmEvents).toHaveLength(1);
+      expect(after?.alarmEvents?.[0]).toMatchObject({
+        stationId: '건대입구',
+        type: 'transfer',
+        decidedAt: NOW,
+      });
+    },
+  );
+
+  it('같은 waypoint를 두 번 advance해도 alarmEvents는 idempotent(appendAlarmEvent 기존 규약 재사용)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTransferWaypointTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+      expiresAt: trip.expiresAt,
+    });
+    const stats = createEmptyScheduledStats(NOW);
+    const okFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const deps = {
+      seoul: noopSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: okFetch as unknown as typeof fetch,
+    };
+    await advanceBoardingLockWaypoint(
+      trip,
+      trip.waypoints[0],
+      makeEnv(kv),
+      deps,
+      stats,
+      NOW,
+      () => {},
+      undefined,
+      () => 'p-2861-t3-dup',
+    );
+    // 두 번째 advance — 같은 stationId+type 조합이면 idempotent해야 한다는 것만 확인하면
+    // 충분하므로, 같은 SSoT 위에 같은 waypoint로 다시 한 번 advance를 재현한다.
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+      expiresAt: trip.expiresAt,
+    });
+    const freshTrip = makeTransferWaypointTrip();
+    await advanceBoardingLockWaypoint(
+      freshTrip,
+      freshTrip.waypoints[0],
+      makeEnv(kv),
+      deps,
+      createEmptyScheduledStats(NOW),
+      NOW,
+      () => {},
+      undefined,
+      () => 'p-2861-t3-dup2',
+    );
+
+    const after = await readSsot(kv as unknown as KVNamespace, trip.token);
+    expect(after?.alarmEvents).toHaveLength(1);
   });
 });
 
