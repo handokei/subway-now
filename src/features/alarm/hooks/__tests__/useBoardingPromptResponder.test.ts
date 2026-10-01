@@ -39,6 +39,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 jest.mock('../../../nearest-station/api/positionUpload', () => ({
   dismissBoardingPrompt: jest.fn(),
+  // #2852 — [탑승] 응답 → backend boarding-confirm 무조건 forward 검증용.
+  postBoardingConfirm: jest.fn(),
 }));
 // #2722 C — 리스너 단일화 검증용. `useBoardingPromptResponder`의 단일 dispatcher가 boarding-prompt가
 // 아닌 응답을 이 함수로 위임하는지만 확인하면 되므로, 로직 자체(별도 파일에서 이미 검증됨)는 mock.
@@ -419,6 +421,8 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       originStation: '강남',
       line: '2',
     });
+    // #2852 — tryAutoLock 성공 경로에서도 backend boarding-confirm은 무조건 forward.
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
   // #2696 — route/destination widget context가 존재할 때 "다음 목표역" 계산 경로
@@ -439,6 +443,18 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     );
   });
 
+  // #2852 — fire-and-forget 계약: postBoardingConfirm이 예외를 던져도(네트워크/backend 장애)
+  // handleResponse 자체는 throw 없이 정상 완료돼야 한다(critical path 무영향, invariants
+  // "절대 throw 금지" 패턴과 동형). 이 테스트는 caller 단(handleResponse)의 방어를 검증 —
+  // 실 구현(postBoardingConfirm)은 내부에서 이미 catch하지만, 호출부도 독립적으로 안전해야 한다.
+  it('postBoardingConfirm 예외 → handleResponse는 throw 없이 resolve (fire-and-forget 안전망)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    (positionUpload.postBoardingConfirm as jest.Mock).mockRejectedValueOnce(new Error('network down'));
+    const deps = makeDeps();
+    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toBeUndefined();
+    expect(createLockMock).toHaveBeenCalled();
+  });
+
   it('기본 탭 ($default) → boarded 분기와 동일 처리', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps();
@@ -450,17 +466,20 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(setBoardingCommittedMock).not.toHaveBeenCalled();
   });
 
-  it('[미탑승] 액션 → dismissBoardingPrompt 호출 (lock 미생성)', async () => {
+  it('[미탑승] 액션 → dismissBoardingPrompt 호출 (lock 미생성, boarding-confirm 미호출)', async () => {
     const deps = makeDeps();
     await handleResponse(BOARDING_PROMPT_ACTION_NOT_BOARDED, PAYLOAD, deps);
     expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok');
     expect(createLockMock).not.toHaveBeenCalled();
+    // #2852 — [미탑승]/dismiss 경로는 무변경(boarding-confirm 미호출).
+    expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
   });
 
-  it('dismiss(불명 액션) → dismissBoardingPrompt', async () => {
+  it('dismiss(불명 액션) → dismissBoardingPrompt (boarding-confirm 미호출)', async () => {
     const deps = makeDeps();
     await handleResponse('SOME_OTHER_ACTION', PAYLOAD, deps);
     expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok');
+    expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
   });
 
   // 진짜 trip 종료(storage에도 destination 없음) — dismiss만, lock 시도 안 함.
@@ -471,6 +490,9 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(deps.fetchArrivalsForStation).not.toHaveBeenCalled();
     expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok');
     expect(createLockMock).not.toHaveBeenCalled();
+    // #2852 — tryAutoLock의 이 내부 조기-return(트립 종료 판정)과 무관하게, 사용자가 [탑승]
+    // 응답을 한 사실 자체는 무조건 backend로 forward된다(ADR-014 명시 의향=lock 동급).
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
   // #2430 (cold-start race) — 알림의 "탑승했어요" 액션은 opensAppToForeground:true라
@@ -508,6 +530,9 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expectPendingFallbackLockCalled('2');
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+    // #2852 — tryAutoLock의 재조회 실패(arrivals null, PENDING fallback)에서도 backend
+    // boarding-confirm은 무조건 forward된다 — 로컬 lock 정밀도와 backend 신호는 독립.
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
   // #2524 — PENDING fallback lock 생성 = 탑승 커밋 시그널. infoModeEnabled와 별도로 stamp돼야
@@ -550,6 +575,9 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expectPendingFallbackLockCalled('2');
+    // #2852 — ambiguity(train 확정 실패)도 tryAutoLock 실패 모드 중 하나 — boarding-confirm은
+    // 여전히 무조건 forward.
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
   // #2407 — pending fallback lock도 payload.line이 유효 LineNumber가 아니면 생성 불가(극히
@@ -593,6 +621,9 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     });
     await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toBeUndefined();
     expectAutoLockLogged('autolock-lock-failed');
+    // #2852 — createLock 예외(storage/network)로 로컬 lock이 완전히 실패해도 backend
+    // boarding-confirm은 여전히 무조건 forward된다(fire-and-forget, critical path 무영향).
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
   // #2408 — 위험1 guard: stale prompt → 잘못된 lock 방지. BG_LAST_STATION mock helper.
@@ -1626,6 +1657,9 @@ describe('handleResponse — #2034 hop-end', () => {
     expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome: 'boarded' });
     // dismiss POST 는 호출 안 함 — 이미 backend 가 fired stamp 완료.
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+    // #2852 — hop-end(환승 하차) 분기는 이번 fix 스코프 밖(기존 의미 유지) — boarding-confirm
+    // 미호출.
+    expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
   });
 
   it('[아직] (NOT_YET action) → dismissBoardingPrompt POST + logBoardingPromptResponded(dismissed)', async () => {

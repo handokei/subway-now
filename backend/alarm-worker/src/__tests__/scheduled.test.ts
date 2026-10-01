@@ -54,6 +54,8 @@ import {
   shouldSkipStationary,
   resolveBoardingLinePayload,
   resolveWaypointEnvironment,
+  advanceBoardingLockWaypoint,
+  createEmptyScheduledStats,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -12523,6 +12525,152 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // 전까지 담당하던 동일 필드 — GPS-free는 별도 30분 dedup 게이트 없이 stamp만 유지).
     expect(trip.lastAutoPromptedAt).toBe(NOW);
   });
+
+  // #2851 — leg-1 origin fire/suppress가 D1 trip_events에 무기록(#2834의 candidateArvlCds/
+  // gateDecision 계측이 leg-2 전용 kind='leg-boarding-prompt' 경유라 편측)이었던 갭을 메운다.
+  // 발사/게이트 판정 자체는 무변경 — D1 계측만 검증.
+  describe('#2851 — origin boarding-prompt D1 계측 (기존 leg-boarding-prompt kind 재사용, meta.leg=origin)', () => {
+    function findOriginOutcomeInserts(inserts: unknown[][]): Array<{ leg: string; outcome: string; candidateArvlCds?: unknown }> {
+      return inserts
+        .filter((args) => args[2] === 'leg-boarding-prompt')
+        .map((args) => JSON.parse(args[5] as string) as { leg: string; outcome: string; candidateArvlCds?: unknown });
+    }
+
+    it('발사 성공 → D1에 kind=leg-boarding-prompt, meta={leg:origin, outcome:fired, candidateArvlCds}로 1건 기록', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip();
+      const kv = new InMemoryKV();
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'fired', candidateArvlCds: [1] }]);
+    });
+
+    it('억제(#2653 거리 가드, too-far) → D1에 meta.outcome=too-far로 기록', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 6.7,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'too-far' }]);
+    });
+
+    it('같은 outcome(too-far)이 연속 tick에서 반복 → 두 번째 호출은 D1 재기록 안 함(#2073 quota, 전이 시에만 append)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 6.7,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(2);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'too-far' }]);
+    });
+
+    it('SSoT 부재(lazy-seed 이전) → D1 기록 no-op(발사/게이트 판정은 무변경, 여전히 차단)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 222,
+          originAccuracyM: 6.7,
+        },
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 6.7,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      // seedSsot 호출 없음 — SSoT 미존재.
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([]);
+    });
+  });
 });
 
 // #2844 — subsumption 증명(이슈 본문)의 유일 반례: 은퇴 전 GPS 9단 경로는 `originProximityAt`의
@@ -13990,6 +14138,146 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'walk-gated')).toBe(false);
       expect(midEvents.some((e) => JSON.parse(e[5] as string).outcome === 'fired')).toBe(true);
     });
+  });
+});
+
+// #2861 (T3) — lock-경로 advance(`advanceBoardingLockWaypoint` evidence=undefined, 실제로는
+// `/boarding-lock/sync`가 이 모양으로 호출)가 SSoT.alarmEvents를 stamp하는지 검증.
+//
+// root: alarmEvents append(`appendAlarmEvent`)는 lockless 경로(`advanceTripPosition.ts`)에만
+// 있었다 — evidence가 제공되면 `advanceBoardingLockWaypoint`가 내부에서 `advanceTripPosition`을
+// 거쳐 함께 stamp되지만, evidence가 없는 호출(`/boarding-lock/sync`가 transfer/destination
+// waypoint를 처리할 때 실제로 이렇게 호출한다 — index.ts:2619-2629)은 `advanceTripPosition`을
+// 건너뛰고 곧장 `completeWaypointAdvance`로 가는데, 그 함수는 alarmEvents를 전혀 건드리지
+// 않았다. 결과: DebugModal Whole Chain 패널의 backend 칼럼이 이 경로로 advance된 trip에서
+// 항상 [none]으로 보였다(10/1 trace 확정) — 관측 전용 결함, 발사/게이트 동작 자체는 무관.
+describe('advanceBoardingLockWaypoint — alarmEvents stamping (#2861 T3)', () => {
+  const T3_TOKEN = 'tok-2861-t3';
+
+  function makeTransferWaypointTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: T3_TOKEN,
+      route: {
+        type: 'transfer',
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 2,
+      },
+      waypoints: [
+        { stationName: '건대입구', line: '7', kind: 'transfer' },
+        { stationName: '뚝섬유원지', line: '2', kind: 'destination' },
+      ],
+      boardingLock: {
+        trainCode: '7911',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['군자', '건대입구'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+      ...overrides,
+    });
+  }
+
+  function noopSeoul(): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+    });
+  }
+
+  it(
+    'evidence=undefined(실제 /boarding-lock/sync 호출 모양) — transfer waypoint advance 후 ' +
+      'ssot.alarmEvents에 type=transfer로 stamp된다',
+    async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTransferWaypointTrip();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+        expiresAt: trip.expiresAt,
+      });
+      const stats = createEmptyScheduledStats(NOW);
+      const okFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const result = await advanceBoardingLockWaypoint(
+        trip,
+        trip.waypoints[0],
+        makeEnv(kv),
+        {
+          seoul: noopSeoul(),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: okFetch as unknown as typeof fetch,
+        },
+        stats,
+        NOW,
+        () => {},
+        undefined,
+        () => 'p-2861-t3',
+      );
+      expect(result.consumed).toBe(true);
+
+      const after = await readSsot(kv as unknown as KVNamespace, trip.token);
+      expect(after?.alarmEvents).toBeDefined();
+      expect(after?.alarmEvents).toHaveLength(1);
+      expect(after?.alarmEvents?.[0]).toMatchObject({
+        stationId: '건대입구',
+        type: 'transfer',
+        decidedAt: NOW,
+      });
+    },
+  );
+
+  it('같은 waypoint를 두 번 advance해도 alarmEvents는 idempotent(appendAlarmEvent 기존 규약 재사용)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTransferWaypointTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+      expiresAt: trip.expiresAt,
+    });
+    const stats = createEmptyScheduledStats(NOW);
+    const okFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const deps = {
+      seoul: noopSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: okFetch as unknown as typeof fetch,
+    };
+    await advanceBoardingLockWaypoint(
+      trip,
+      trip.waypoints[0],
+      makeEnv(kv),
+      deps,
+      stats,
+      NOW,
+      () => {},
+      undefined,
+      () => 'p-2861-t3-dup',
+    );
+    // 두 번째 advance — 같은 stationId+type 조합이면 idempotent해야 한다는 것만 확인하면
+    // 충분하므로, 같은 SSoT 위에 같은 waypoint로 다시 한 번 advance를 재현한다.
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', {
+      expiresAt: trip.expiresAt,
+    });
+    const freshTrip = makeTransferWaypointTrip();
+    await advanceBoardingLockWaypoint(
+      freshTrip,
+      freshTrip.waypoints[0],
+      makeEnv(kv),
+      deps,
+      createEmptyScheduledStats(NOW),
+      NOW,
+      () => {},
+      undefined,
+      () => 'p-2861-t3-dup2',
+    );
+
+    const after = await readSsot(kv as unknown as KVNamespace, trip.token);
+    expect(after?.alarmEvents).toHaveLength(1);
   });
 });
 

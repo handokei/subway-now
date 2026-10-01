@@ -6,17 +6,23 @@
  * 있지만, 그 push가 실제로 device에 도달했는지/표시됐는지는 backend가 blind다 — device가 직접
  * 기록해야만 station+시각 기준으로 대조 가능하다.
  *
- * 저장 채널: 기존 `rawSignalBuffer`(ring buffer, AsyncStorage 영속화 + share-dump 자동 포함)를
- * 그대로 재사용한다. 새 채널/엔드포인트 신설 없음(#2541 "하지 말 것" 준수).
+ * 저장 채널: #2861 (T1) 이전에는 `rawSignalBuffer`(fusion cycle과 공유, cap=300, FIFO)에 함께
+ * 적재했으나, 긴 트립 초반 receipt가 cycle entry에 밀려 증발하는 결함이 있었다(DebugModal Whole
+ * Chain 패널이 역 행 자체를 생략). 이제 cycle/enter/exit과 cap을 공유하지 않는 독립 소형 채널
+ * `pushReceiptBuffer`(cap=60)에 적재한다 — 새 인프라 신설이 아니라 기존 `createDebugBuffer`
+ * (gpsDropBuffer 등과 동일 패턴) 재사용.
  *
  * 관측 전용 — 이 모듈은 발사/표시/dedup 동작을 바꾸지 않는다. 호출자가 이미 결정한 결과
  * (displayed/suppressedReason)를 그대로 기록만 한다.
  */
 import {
-  pushRawSignal,
-  type PushReceiptDetail,
-  type PushReceiptKind,
-  type PushReceiptType,
+  pushPushReceiptEntry,
+  type PushReceiptBufferEntry,
+} from './pushReceiptBuffer';
+import type {
+  PushReceiptDetail,
+  PushReceiptKind,
+  PushReceiptType,
 } from './rawSignalBuffer';
 import { getCurrentTripCorrIdSync } from './tripCorrId';
 
@@ -34,10 +40,10 @@ export interface LogPushReceiptInput {
 }
 
 /**
- * push-receipt 1건을 rawSignalBuffer에 적재한다.
+ * push-receipt 1건을 pushReceiptBuffer(독립 채널)에 적재한다.
  *
- * `kind: 'push-receipt'` entry — cycle/enter/exit(fusion 측정)와 discriminate되며, GPS/motion/
- * fusion 관련 필드는 모두 null로 채운다(push-receipt는 fusion 측정과 무관한 별도 관측 축).
+ * #2861 (T1) — cycle/enter/exit(fusion 측정)과 cap을 공유하지 않는다 — 긴 트립에서 cycle entry가
+ * 초반 receipt를 밀어내 증발시키는 결함(Whole Chain 패널 역 행 생략)을 막기 위함.
  */
 export function logPushReceipt(input: LogPushReceiptInput): void {
   const detail: PushReceiptDetail = {
@@ -48,26 +54,12 @@ export function logPushReceipt(input: LogPushReceiptInput): void {
     displayed: input.displayed,
     ...(input.suppressedReason !== undefined ? { suppressedReason: input.suppressedReason } : {}),
   };
-  pushRawSignal({
+  const entry: PushReceiptBufferEntry = {
     ts: input.receivedAt ?? Date.now(),
     corrId: getCurrentTripCorrIdSync(),
-    kind: 'push-receipt',
-    gps: null,
-    motion: null,
-    accelPattern: null,
-    cellular: null,
-    subsurface: null,
-    barometerHpa: null,
-    arvlCd: null,
-    line: null,
-    dir: null,
-    arcIdx: null,
-    arcProgress: null,
-    stationId: null,
-    source: null,
-    confidence: null,
-    pushReceipt: detail,
-  });
+    detail,
+  };
+  pushPushReceiptEntry(entry);
 }
 
 /**

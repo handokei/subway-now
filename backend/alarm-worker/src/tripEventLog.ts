@@ -220,6 +220,28 @@ export type LegBoardingPromptOutcome =
  */
 export type HopEndPromptOutcome = 'silenced' | 'fired';
 
+/**
+ * #2851 (진단 계측 only) — `maybeFireOriginBoardingPromptGpsFree`(scheduled.ts, leg-1 origin
+ * 전용)의 fire/suppress 사유(데이터 주도). #2834의 candidateArvlCds/gateDecision 계측이
+ * `recordLegBoardingPromptTransition`(kind='leg-boarding-prompt') 경유라 leg-2 전용이었던
+ * 편측 계측 갭을 메운다 — leg-1 origin도 같은 kind로 기록하되 `meta.leg: 'origin'`으로 구분한다
+ * (신규 kind 남발 금지, 이슈 spec).
+ *
+ * - `too-far` = #2653 거리 가드(`origin-too-far` / `origin-too-far-stale-anchor` 두 세부 사유를
+ *   단일 값으로 합산 — 세부 사유는 기존 `log()`로 wrangler tail에서 구분 가능, D1 증설 없음).
+ * - `silenced` = `evaluateBoardingPromptRepeatGate` dedup 또는 `onFireOnceSuppressed`(#2838,
+ *   leg-2와 동일하게 두 사유를 단일 값으로 합산).
+ * - `no-candidates` = Seoul API 열차 후보 0건.
+ * - `suppressed-not-imminent` = #2801, 후보는 있으나 전부 관측됐고 임박 0건.
+ * - `fired` = 실제 발사 성공.
+ */
+export type OriginBoardingPromptOutcome =
+  | 'too-far'
+  | 'silenced'
+  | 'no-candidates'
+  | 'suppressed-not-imminent'
+  | 'fired';
+
 export interface TripEventInput {
   /** trip token의 해시(hashTripToken 결과). 원본 token은 D1에 남기지 않는다. */
   tokenHash: string;

@@ -91,14 +91,13 @@ import {
 } from './transferLegConsensus';
 import { recordTripEvent } from './tripEventLog';
 import {
-  appendAlarmEvent,
-  computeAlarmId,
   isDeviceSyncStale,
   isSameLockSuggestion,
   MOTION_EVIDENCE_CAP,
   pushMotionEvidence,
   readSsot,
   setLockSuggestion,
+  stampPassedStationAlarmEvent,
   writeSsot,
   type EvidenceType,
   type LockSuggestion,
@@ -568,13 +567,9 @@ export async function advanceTripPosition(
   // stamp. device가 silent push payload `ssot.alarmEvents`로 동일 list를 받아 fire path 5개에서
   // `evaluateSsotFireGate`로 reader-only 게이트 사용. 같은 alarmId는 appendAlarmEvent가 idempotent로 skip.
   const passedStationId = ssot.currentStationId;
-  const alarmId = await computeAlarmId(token, passedStationId, 'station-passed');
-  appendAlarmEvent(next, {
-    alarmId,
-    stationId: passedStationId,
-    type: 'station-passed',
-    decidedAt: evidence.ts,
-  });
+  // #2861 (T3) — computeAlarmId+appendAlarmEvent 쌍을 공유 헬퍼로 추출(lock 경로
+  // completeWaypointAdvance와 재사용, 중복 구현 방지).
+  await stampPassedStationAlarmEvent(next, token, passedStationId, 'station-passed', evidence.ts);
 
   await writeSsot(kv, next, { expiresAt: trip.expiresAt });
   return { result: 'advanced', ssot: next };
