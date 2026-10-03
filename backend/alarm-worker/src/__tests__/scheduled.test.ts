@@ -11717,13 +11717,16 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
   });
 
   // #2801 (REOPENED 2026-09-30 정정 스펙) — 9/30 실측 트립(e25e1158) D1 RCA 재현: leg-2 후보 pool에
-  // 먼 열차만 있어도(arvlCd=3 전역출발/99 운행중, 전부 관측됨) 발사되던 조기 발사 회귀.
+  // 먼 열차만 있어도(전부 관측됨) 발사되던 조기 발사 회귀.
   // RED(fix 전): candidateTrains.length>0 이기만 하면 발사 — 이 테스트가 실패한다.
   // GREEN(fix 후): decideBoardingPromptFire OR-fallback 게이트가 suppressed-not-imminent로 차단.
-  it('#2801 — 후보 전부 non-imminent(arvlCd=3/99, 전부 관측됨) → 발사 안 함, blocked 증가, outcome=suppressed-not-imminent (9/30 조기 발사 회귀 재현)', async () => {
+  // #2801 (3차 reopen, 2026-10-03 정정) — arvlCd=3(전역출발)은 approaching 게이트 추가로 더 이상
+  // "먼 열차"가 아니다. 4(전역진입, 의도적 제외)로 교체해 "임박/approaching 둘 다 아닌 열차만" 계약을
+  // 유지한다.
+  it('#2801 — 후보 전부 non-imminent/non-approaching(arvlCd=4/99, 전부 관측됨) → 발사 안 함, blocked 증가, outcome=suppressed-not-imminent (9/30 조기 발사 회귀 재현)', async () => {
     const fetchImpl = vi.fn(
       makeArrivalsResponse([
-        { btrainNo: '3056', isUp: true, arvlCd: 3 },
+        { btrainNo: '3056', isUp: true, arvlCd: 4 },
         { btrainNo: '3058', isUp: true, arvlCd: 99 },
       ]),
     );
@@ -11738,9 +11741,16 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(trip.legBoardingPromptState?.fired).toBeFalsy();
     const outcomeInserts = inserts
       .filter((args) => args[2] === 'leg-boarding-prompt')
-      .map((args) => JSON.parse(args[5] as string) as { outcome: string; candidateArvlCds?: number[] });
+      .map(
+        (args) =>
+          JSON.parse(args[5] as string) as {
+            outcome: string;
+            candidateArvlCds?: number[];
+            gateDecision?: string;
+          },
+      );
     expect(outcomeInserts).toEqual([
-      { outcome: 'suppressed-not-imminent', candidateArvlCds: [3, 99] },
+      { outcome: 'suppressed-not-imminent', candidateArvlCds: [4, 99], gateDecision: 'suppressed-not-imminent' },
     ]);
   });
 
@@ -12733,13 +12743,23 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
   // gateDecision 계측이 leg-2 전용 kind='leg-boarding-prompt' 경유라 편측)이었던 갭을 메운다.
   // 발사/게이트 판정 자체는 무변경 — D1 계측만 검증.
   describe('#2851 — origin boarding-prompt D1 계측 (기존 leg-boarding-prompt kind 재사용, meta.leg=origin)', () => {
-    function findOriginOutcomeInserts(inserts: unknown[][]): Array<{ leg: string; outcome: string; candidateArvlCds?: unknown }> {
+    function findOriginOutcomeInserts(
+      inserts: unknown[][],
+    ): Array<{ leg: string; outcome: string; candidateArvlCds?: unknown; gateDecision?: unknown }> {
       return inserts
         .filter((args) => args[2] === 'leg-boarding-prompt')
-        .map((args) => JSON.parse(args[5] as string) as { leg: string; outcome: string; candidateArvlCds?: unknown });
+        .map(
+          (args) =>
+            JSON.parse(args[5] as string) as {
+              leg: string;
+              outcome: string;
+              candidateArvlCds?: unknown;
+              gateDecision?: unknown;
+            },
+        );
     }
 
-    it('발사 성공 → D1에 kind=leg-boarding-prompt, meta={leg:origin, outcome:fired, candidateArvlCds}로 1건 기록', async () => {
+    it('발사 성공 → D1에 kind=leg-boarding-prompt, meta={leg:origin, outcome:fired, candidateArvlCds, gateDecision}로 1건 기록', async () => {
       const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
       const trip = makeTrip();
       const kv = new InMemoryKV();
@@ -12756,7 +12776,9 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         () => 'pid-origin',
       );
       expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
-      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'fired', candidateArvlCds: [1] }]);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([
+        { leg: 'origin', outcome: 'fired', candidateArvlCds: [1], gateDecision: 'imminent' },
+      ]);
     });
 
     it('억제(#2653 거리 가드, too-far) → D1에 meta.outcome=too-far로 기록', async () => {
