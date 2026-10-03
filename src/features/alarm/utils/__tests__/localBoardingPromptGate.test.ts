@@ -132,13 +132,23 @@ describe('evaluateLocalBoardingPromptGate', () => {
 
   // #2801 (REOPENED 2026-09-30 정정 스펙 §3.3) — 근접+같은 line 후보가 있어도 전부 non-imminent면
   // (backend 조기 발사 회귀와 동일 결함이 device 로컬 게이트에도 있었다) 차단해야 한다.
-  it('근접+같은 line 후보 있지만 전부 non-imminent(arrivalCode=3) → suppressed-not-imminent', () => {
+  // #2801 (3차 reopen, audit-sides 편측 확정 2026-10-03) — arrivalCode=3(전역출발)은 backend와
+  // 동일하게 approaching으로 승격돼 더 이상 "먼 열차"가 아니다. 4(전역진입, 의도적 제외)로 교체.
+  it('근접+같은 line 후보 있지만 전부 non-imminent/non-approaching(arrivalCode=4) → suppressed-not-imminent', () => {
     const context = makeContext({ originDistanceM: 50, originAccuracyM: 10, direction: 'up', line: '7' });
-    const arrival = makeArrival({ direction: 'up', line: '7', arrivalCode: 3 });
+    const arrival = makeArrival({ direction: 'up', line: '7', arrivalCode: 4 });
     expect(evaluateLocalBoardingPromptGate({ context, arrival })).toEqual({
       pass: false,
       reason: 'suppressed-not-imminent',
     });
+  });
+
+  // #2801 (3차 reopen, audit-sides 편측 확정) — approaching(3/5)도 backend와 동일하게 pass해야
+  // 한다. drift 방치 시 MINIMAL_ALARM 활성화 순간 10/2 miss의 device 버전이 재현된다.
+  it('근접+같은 line 후보 approaching(arrivalCode=5 전역도착) → pass', () => {
+    const context = makeContext({ originDistanceM: 50, originAccuracyM: 10, direction: 'up', line: '7' });
+    const arrival = makeArrival({ direction: 'up', line: '7', arrivalCode: 5 });
+    expect(evaluateLocalBoardingPromptGate({ context, arrival })).toEqual({ pass: true });
   });
 
   it('근접+같은 line 후보 imminent(arrivalCode=1 ARRIVED) → pass', () => {
@@ -177,10 +187,33 @@ describe('#2801 — decideLocalBoardingPromptFire (device 로컬 임박 게이�
     });
   });
 
-  it('먼 열차만(arrivalCode=[3,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent', () => {
-    expect(decideLocalBoardingPromptFire([arrival(3), arrival(99)])).toEqual({
+  it('먼 열차만(arrivalCode=[4,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent', () => {
+    expect(decideLocalBoardingPromptFire([arrival(4), arrival(99)])).toEqual({
       fire: false,
       decision: 'suppressed-not-imminent',
+    });
+  });
+
+  // #2801 (3차 reopen, audit-sides 편측 확정 2026-10-03) — backend decideBoardingPromptFire와
+  // parity. 5(전역도착)/3(전역출발)만 있어도 발사해야 한다(decision 분리).
+  it('approaching(arrivalCode=5 전역도착) 존재 → fire:true, decision=approaching', () => {
+    expect(decideLocalBoardingPromptFire([arrival(5)])).toEqual({
+      fire: true,
+      decision: 'approaching',
+    });
+  });
+
+  it('4(전역진입)만 → fire:false, decision=suppressed-not-imminent (의도적 제외, 거부 케이스)', () => {
+    expect(decideLocalBoardingPromptFire([arrival(4)])).toEqual({
+      fire: false,
+      decision: 'suppressed-not-imminent',
+    });
+  });
+
+  it('혼합(arrivalCode=[3,-1]) → approaching이 결정적 신호이므로 fallback-unobservable보다 우선', () => {
+    expect(decideLocalBoardingPromptFire([arrival(3), arrival(-1)])).toEqual({
+      fire: true,
+      decision: 'approaching',
     });
   });
 

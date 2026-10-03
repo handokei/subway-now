@@ -203,6 +203,46 @@ describe('pickAutoTrainCode — arvlCd 우선순위', () => {
     const arrivals = [entry({ trainCode: '', arvlCd: 2 })];
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBeNull();
   });
+
+  /**
+   * #2801 (audit-sides 편측 확정, 2026-10-03) — approaching(3/5) 발사 프롬프트에 사용자가
+   * [탑승] 응답하면 3/5 후보가 priority 배열([2,1,0])의 어느 tier에도 안 걸려
+   * `directional[0]`(Seoul API 수신 순서 첫 후보)로 ambiguity 보호 없이 silent 선택된다 —
+   * 엉뚱한 열차 lock 가능. priority에 3/5를 각자 별도 tier로 추가해 기존 ambiguity 룰을
+   * 그대로 적용한다. 순서: 2>1>0(기존, 회고형 — 진행도 높을수록 탑승 열차일 확률 높음) >
+   * 3(전역출발, 도착 근접) > 5(전역도착).
+   */
+  it('priority 5: arvlCd=5 (전역도착) — 2/1/0 없고 99(운행중)와 공존해도 5가 채택 (99-only directional[0] fallback과 구분)', () => {
+    const arrivals = [
+      entry({ trainCode: 'B', arvlCd: 99 }),
+      entry({ trainCode: 'A', arvlCd: 5 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('A');
+  });
+
+  it('ambiguity: 같은 approaching tier(arvlCd=5) 후보 2+ → null', () => {
+    const arrivals = [
+      entry({ trainCode: 'T1', arvlCd: 5 }),
+      entry({ trainCode: 'T2', arvlCd: 5 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBeNull();
+  });
+
+  it('priority 4: arvlCd=3 (전역출발) — 3이 5(전역도착)보다 우선(도착 더 근접)', () => {
+    const arrivals = [
+      entry({ trainCode: 'T5', arvlCd: 5 }),
+      entry({ trainCode: 'T3', arvlCd: 3 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T3');
+  });
+
+  it('99-only pool은 여전히 directional[0] fallback(변경 금지, 기존 동작)', () => {
+    const arrivals = [
+      entry({ trainCode: 'T1', arvlCd: 99 }),
+      entry({ trainCode: 'T2', arvlCd: 99 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T1');
+  });
 });
 
 describe('evaluateHopEndPromptGates (#2034)', () => {
