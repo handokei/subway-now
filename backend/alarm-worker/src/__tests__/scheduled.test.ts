@@ -12781,6 +12781,37 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       ]);
     });
 
+    // code-review(medium) — approaching 게이트가 공유 본체(`fireBoardingPromptForAnchor`)라
+    // origin gps-free 경로에도 적용되는데 이 describe의 기존 케이스가 전부 arvlCd=1(imminent)뿐 —
+    // origin 경로에서 approaching이 실제로 발사+D1 전파되는지 문서화한다(leg-2는
+    // replay_20261002_leg2_prompt_miss.test.ts가 이미 커버).
+    it('approaching(arvlCd=[5,99]) → fire + D1에 meta={leg:origin, outcome:fired, candidateArvlCds:[5,99], gateDecision:approaching}로 기록', async () => {
+      const fetchImpl = vi.fn(
+        makeArrivalsResponse([
+          { btrainNo: '7246', isUp: true, arvlCd: 5 },
+          { btrainNo: '7247', isUp: true, arvlCd: 99 },
+        ]),
+      );
+      const trip = makeTrip();
+      const kv = new InMemoryKV();
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin-approaching',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([
+        { leg: 'origin', outcome: 'fired', candidateArvlCds: [5, 99], gateDecision: 'approaching' },
+      ]);
+    });
+
     it('억제(#2653 거리 가드, too-far) → D1에 meta.outcome=too-far로 기록', async () => {
       const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
       const trip = makeTrip({

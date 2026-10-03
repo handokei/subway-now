@@ -133,7 +133,7 @@ const CYCLES: ReadonlyArray<{ offsetSec: number; u1ArvlCd: number }> = [
 ];
 
 describe('#2801 (3차 reopen) replay — 10/2 leg-2 boarding-prompt approaching miss', () => {
-  it('9회 전부 suppressed였던 cron 샘플을 approaching 게이트로 재생하면 06:46:11 상당 cycle에서 최초 발사하고, 5분 내 후속 cycle은 발사 0, 전체 창 총 발사는 2 이하다', async () => {
+  it('9회 전부 suppressed였던 cron 샘플을 approaching 게이트로 재생하면 06:46:11 상당 cycle(index=2)에서 정확히 1회 발사하고, 이후(5분 repeat gate + trainCode dedup) 전체 창 종료까지 추가 발사는 0이다', async () => {
     const kv = new InMemoryKV(() => simNow);
     let simNow = offsetFromBase(0);
     const env = makeEnv(kv);
@@ -147,32 +147,35 @@ describe('#2801 (3차 reopen) replay — 10/2 leg-2 boarding-prompt approaching 
     const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };
 
     let pushId = 0;
-    for (const cycle of CYCLES) {
+    for (const [index, cycle] of CYCLES.entries()) {
       pool = [arrival('U1', true, cycle.u1ArvlCd), arrival('U2', true, 99)];
       simNow = offsetFromBase(cycle.offsetSec);
       // eslint-disable-next-line no-await-in-loop -- replay는 cron cycle 순서 재현이 핵심이라 순차 await 필수.
       await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, log, () => `p-${pushId++}`);
+
+      // code-review(medium) — fixture가 결정적이므로 느슨한 범위(≤2) 대신 정확한 시점을 단언한다.
+      // 최초 발사가 cycle index 2(06:46:11 상당, approaching arvlCd=5) **직후** 정확히 1이어야
+      // 한다 — 뒤로 밀리면(예: 다음 cycle에서야 발사) 사용자 실탑승(06:49:30)보다 늦어 miss가
+      // 재발하는데, ≤2 범위 assert는 이를 green으로 통과시켜 버린다.
+      if (index === 2) {
+        expect(stats.legBoardingPromptFired).toBe(1);
+      }
     }
 
-    // 06:46:11 상당(cycle index 2, 누적 3번째 호출)까지 발사 0 — 9/30 게이트({0,1,2}만)가 여전히
-    // 모든 cycle을 억제하는 현행 코드에서는 이 구간 자체는 green이지만, 아래 "최초 발사" 단언이
-    // 현행 코드(approaching 미지원)에서 red가 된다.
-    expect(stats.legBoardingPromptFired).toBeGreaterThanOrEqual(1);
-    expect(stats.legBoardingPromptFired).toBeLessThanOrEqual(2);
-    expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
-      stats.legBoardingPromptFired,
-    );
+    // 전체 창 종료 후에도 정확히 1 — 469s cycle(repeat gate는 경과하지만 trainCode dedup으로
+    // 재차단)에서 추가 발사가 나오면 사용자 탑승 후 스팸인데, 느슨한 ≤2 assert는 이를 놓친다.
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
 
     // 최초 발사가 06:46:11 상당 cycle(approaching, arvlCd=5)에서 일어났는지 — fired 로그에
     // gateDecision='approaching'이 기록돼야 한다(D1 meta로 나가는 것과 동일 라벨).
     const firedLogs = log.mock.calls.filter(([message]) => String(message).endsWith(': fired'));
-    expect(firedLogs.length).toBe(stats.legBoardingPromptFired);
-    expect(firedLogs.length).toBeGreaterThanOrEqual(1);
+    expect(firedLogs.length).toBe(1);
     const [, firstFiredMeta] = firedLogs[0];
     expect((firstFiredMeta as { gateDecision?: string }).gateDecision).toBe('approaching');
 
     // 5분 내 후속 cycle(06:46:39/06:48:29/06:49:24/06:50:55)은 발사 0 — repeat gate가 스팸을
     // 막는다(반복 방어 로직 무변경 회귀 안전).
-    expect(trip.legBoardingPromptState?.fireCount ?? 0).toBeLessThanOrEqual(2);
+    expect(trip.legBoardingPromptState?.fireCount ?? 0).toBe(1);
   });
 });
