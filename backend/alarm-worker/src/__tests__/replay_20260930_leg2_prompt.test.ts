@@ -21,8 +21,16 @@
  * 정직한 재구성 표기: 06:42/06:44 발사 시점의 실 arrivals arvlCd는 D1에 로깅되지 않았다(레코드에
  * outcome/timestamp만 있고 candidateArvlCds 계측은 이 버그를 고친 #2801 커밋에서야 추가됨).
  * leg-resolve가 3056을 06:46에야 도착(sttus=1)으로 관측했으므로, 06:42/06:44 pool은 "임박 아닌
- * 열차만"(arvlCd 3=전역출발/99=운행중, 둘 다 observed) — **재구성**이다. 나머지 타임라인(lock
+ * 열차만"(arvlCd 99=운행중, 둘 다 observed) — **재구성**이다. 나머지 타임라인(lock
  * 시각, leg-2 anchor 전이, leg-resolve 확정, 발사/억제 순서)은 D1 실측.
+ *
+ * #2801 (3차 reopen, 2026-10-03 정정) — 재구성 pool의 두 번째 열차 arvlCd를 3(전역출발)에서
+ * 99(운행중)로 정정한다. 06:46 도착 열차가 06:42/06:44 시점에 3(전역출발, 도착 60~150s 전)일
+ * 수는 없다 — 그 경우 06:43~06:44경 도착해야 하는데 실측상 06:46에야 도착했으므로 이 값은
+ * 재구성 당시의 오류였다. 또한 3/5(approaching)가 #2801 3차 reopen에서 발사 집합에 추가돼,
+ * 정정 전 값(3)을 그대로 두면 이 재구성 pool 자체가 조기 발사(회귀 재현 실패)를 유발한다.
+ * 실측 fixture(타임라인/시각/suppress 순서) 조정이 아니라 **재구성 당시 오류의 정정**이다
+ * (해당 트립의 arvlCd는 애초에 D1 미로깅 — 위 문단).
  *
  * 스코프: leg-1 매역 4발사(중곡~건대)는 다른 함수(`maybeFireStationEvents` 계열)가 담당하고 이미
  * 별도 replay(`replay_20260912_line7_arvlcd_sampling.test.ts` 등)로 커버돼 있다 — 이 셋업까지
@@ -138,8 +146,9 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     const trip = makeTrip();
     const stats = makeStats();
 
-    // 회귀 재구성 pool: 06:42/06:44 — 3056(전역출발=99)/3058(운행중=3), 전부 observed, 임박 0건.
-    let pool: readonly ArrivalEntry[] = [arrival('3056', true, 99), arrival('3058', true, 3)];
+    // 회귀 재구성 pool: 06:42/06:44 — 3056/3058 둘 다 운행중(99), 전부 observed, 임박/approaching 0건.
+    // #2801 (3차 reopen) — 3058의 arvlCd를 3(전역출발)에서 99로 정정(위 헤더 주석 근거).
+    let pool: readonly ArrivalEntry[] = [arrival('3056', true, 99), arrival('3058', true, 99)];
     const seoul = makeControllableSeoul(() => pool);
     const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
     const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };

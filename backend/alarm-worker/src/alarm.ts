@@ -32,6 +32,9 @@ export const ARRIVAL_CODE = {
    * 참조. 폴링 갭(cron 60s > 도착 창 ~30s)으로 진입→도착→출발이 한 tick에 지나갈 수 있어
    * 출발도 "방금 탑승" 신호로 포함한다(pickAutoTrainCode 우선순위 2>1>0과 정합). */
   DEPARTED: 2,
+  /** #2801 (3차 reopen) — boarding-prompt approaching 게이트(`decideBoardingPromptFire`)가
+   * 참조. 전역(직전역) 출발 = 도착 60~150s 전, 플랫폼 대기 사용자에게 "곧 도착" 신호로 적절. */
+  PREV_DEPARTED: 3,
   PREV_ENTERING: 4,
   PREV_ARRIVED: 5,
 } as const;

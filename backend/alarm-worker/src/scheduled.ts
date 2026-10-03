@@ -3307,6 +3307,10 @@ async function recordLegBoardingPromptTransition(
   // #2801 — decideBoardingPromptFire 계측(§3.4). 기존 meta({outcome}) 확장만, 신규 KV write
   // 없음(#2073 quota 보호, 기존 write 재사용). 값이 있을 때만 필드 첨부.
   candidateArvlCds?: readonly (number | null)[],
+  // #2801 (3차 reopen) — `decideBoardingPromptFire`의 decision 라벨('imminent'/'approaching'/
+  // 'fallback-unobservable'/'suppressed-not-imminent')을 D1 meta로 노출. 조기 불만 재발 시
+  // D1만으로 어느 창이 발사했는지 측정 가능해야 한다(이슈 Wire §2).
+  gateDecision?: BoardingFireDecision['decision'],
 ): Promise<void> {
   if (ssot === null || ssot.legBoardingPromptOutcome === outcome) return;
   await writeSsot(
@@ -3321,7 +3325,11 @@ async function recordLegBoardingPromptTransition(
       kind: 'leg-boarding-prompt',
       ...(station !== undefined ? { station } : {}),
       ...(line !== undefined ? { line } : {}),
-      meta: { outcome, ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}) },
+      meta: {
+        outcome,
+        ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
+        ...(gateDecision !== undefined ? { gateDecision } : {}),
+      },
     },
     now,
   );
@@ -3344,6 +3352,8 @@ async function recordOriginBoardingPromptTransition(
   outcome: OriginBoardingPromptOutcome,
   now: number,
   candidateArvlCds?: readonly (number | null)[],
+  // #2801 (3차 reopen) — leg-2(`recordLegBoardingPromptTransition`)와 동일 의미/필드명.
+  gateDecision?: BoardingFireDecision['decision'],
 ): Promise<void> {
   if (ssot === null || ssot.originBoardingPromptOutcome === outcome) return;
   await writeSsot(
@@ -3358,7 +3368,12 @@ async function recordOriginBoardingPromptTransition(
       kind: 'leg-boarding-prompt',
       station,
       line,
-      meta: { leg: 'origin', outcome, ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}) },
+      meta: {
+        leg: 'origin',
+        outcome,
+        ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
+        ...(gateDecision !== undefined ? { gateDecision } : {}),
+      },
     },
     now,
   );
@@ -7024,7 +7039,13 @@ async function fireBoardingPromptForAnchor(inputs: {
    */
   onFireOnceSuppressed: () => void;
   shouldProceedToSend?: (pool: readonly ArrivalEntry[]) => boolean;
-  onFired: (pool: readonly ArrivalEntry[]) => void;
+  /**
+   * #2801 (3차 reopen) — `decideBoardingPromptFire`가 반환한 fire 사유('imminent'/
+   * 'approaching'/'fallback-unobservable')를 caller가 D1 meta(`gateDecision`)로 기록할 수
+   * 있도록 전달. 조기 불만 재발 시 D1만으로 어느 창(imminent/approaching)이 발사했는지 측정
+   * 가능해야 한다(이슈 Wire §2).
+   */
+  onFired: (pool: readonly ArrivalEntry[], decision: BoardingFireDecision['decision']) => void;
 }): Promise<void> {
   const {
     trip,
@@ -7157,12 +7178,13 @@ async function fireBoardingPromptForAnchor(inputs: {
     stats.silentPushFiredByKind.boardingPrompt += 1;
     // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota).
     await stampBoardingPromptFireOnce(env.TRIPS, trip.token, station, now);
-    onFired(pool);
+    onFired(pool, gate.decision);
     dirty = true;
     log(`${logPrefix}: fired`, {
       token: trip.token.slice(0, 8),
       station,
       line,
+      gateDecision: gate.decision,
     });
     // #2854 — 발사 성공 순간 LA도 alert(배너+소리)로 병행 갱신. 이 발사 성공 분기 안에서만
     // 시도하므로 dedup/게이트는 위에서 이미 처리된 것을 그대로 상속(신규 게이트 추가 없음).
@@ -7389,6 +7411,8 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // `candidateArvlCds` 캡처 패턴과 동일).
   let promptOutcome: OriginBoardingPromptOutcome | null = null;
   let candidateArvlCds: readonly (number | null)[] | undefined;
+  // #2801 (3차 reopen) — decideBoardingPromptFire decision 라벨. D1 meta(gateDecision)로 전파.
+  let gateDecision: BoardingFireDecision['decision'] | undefined;
 
   await fireBoardingPromptForAnchor({
     trip,
@@ -7412,7 +7436,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       });
       promptOutcome = 'no-candidates';
     },
-    // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제.
+    // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박/approaching 0건 → 조기 발사 억제.
     // arvlCd===null(지하/미관측) 후보가 섞여 있으면 이 콜백 자체가 호출되지 않는다(fallback fire).
     onSuppressedNotImminent: (decision, arvlCds) => {
       stats.originGpsFreeBoardingPromptBlocked += 1;
@@ -7425,6 +7449,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       });
       promptOutcome = 'suppressed-not-imminent';
       candidateArvlCds = arvlCds;
+      gateDecision = decision;
     },
     // #2838 — fire-once 이중 방어 억제(leg-2와 동일 콜백/의미). D1 라벨은 repeat gate dedup
     // (`silenced`)과 같은 성격이라 기존 값을 재사용 — 세부 사유는 log()로 wrangler tail에서 구분.
@@ -7450,7 +7475,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       }
       return true;
     },
-    onFired: (pool) => {
+    onFired: (pool, decision) => {
       const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
       stats.originGpsFreeBoardingPromptFired += 1;
       trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
@@ -7470,6 +7495,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       };
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
+      gateDecision = decision;
     },
   });
 
@@ -7483,6 +7509,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       promptOutcome,
       now,
       candidateArvlCds,
+      gateDecision,
     );
   }
 }
@@ -7642,6 +7669,8 @@ export async function maybeFireLegBoardingPrompt(
   let promptOutcome: LegBoardingPromptOutcome | null = null;
   // #2801 — decideBoardingPromptFire 계측(§3.4). suppress/fired 경로에서 채워져 D1 meta로 나간다.
   let candidateArvlCds: readonly (number | null)[] | undefined;
+  // #2801 (3차 reopen) — decision 라벨. D1 meta(gateDecision)로 전파.
+  let gateDecision: BoardingFireDecision['decision'] | undefined;
 
   await fireBoardingPromptForAnchor({
     trip,
@@ -7665,7 +7694,7 @@ export async function maybeFireLegBoardingPrompt(
       });
       promptOutcome = 'no-candidates';
     },
-    // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제.
+    // #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박/approaching 0건 → 조기 발사 억제.
     // arvlCd===null(지하/미관측) 후보가 섞여 있으면 이 콜백 자체가 호출되지 않는다(fallback fire).
     onSuppressedNotImminent: (decision, arvlCds) => {
       stats.legBoardingPromptBlocked += 1;
@@ -7678,6 +7707,7 @@ export async function maybeFireLegBoardingPrompt(
       });
       promptOutcome = 'suppressed-not-imminent';
       candidateArvlCds = arvlCds;
+      gateDecision = decision;
     },
     // #2838 — fire-once 이중 방어 억제. D1 라벨은 repeat gate dedup(`silenced`)과 같은 성격이라
     // 기존 값을 재사용 — 세부 사유(reason='fire-once-key')는 log()로 wrangler tail에서 구분.
@@ -7705,13 +7735,14 @@ export async function maybeFireLegBoardingPrompt(
       }
       return true;
     },
-    onFired: (pool) => {
+    onFired: (pool, decision) => {
       const selectedTrainCode =
         pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
       stats.legBoardingPromptFired += 1;
       trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState, selectedTrainCode);
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
+      gateDecision = decision;
     },
   });
 
@@ -7725,6 +7756,7 @@ export async function maybeFireLegBoardingPrompt(
       promptOutcome,
       now,
       candidateArvlCds,
+      gateDecision,
     );
   }
 }

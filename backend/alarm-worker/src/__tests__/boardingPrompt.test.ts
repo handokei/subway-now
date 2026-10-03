@@ -160,10 +160,13 @@ describe('pickAutoTrainCode — arvlCd 우선순위', () => {
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T1');
   });
 
-  it('priority 4: 그 외 코드 → 첫 후보 (receivedAt 순서 가정)', () => {
+  // #2801 (3차 reopen, audit-sides 편측 확정) — 3(전역출발)이 별도 tier로 승격돼 더 이상
+  // "그 외" 코드가 아니다. 4(전역진입, 의도적 제외)로 교체해 "어느 tier에도 안 걸리는 코드만
+  // 있으면 받은 순서 첫 후보" 계약을 유지한다.
+  it('priority 6: 그 외 코드(0/1/2/3/5 아님) → 첫 후보 (receivedAt 순서 가정)', () => {
     const arrivals = [
       entry({ trainCode: 'T1', arvlCd: 99 }),
-      entry({ trainCode: 'T2', arvlCd: 3 }),
+      entry({ trainCode: 'T2', arvlCd: 4 }),
     ];
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T1');
   });
@@ -202,6 +205,46 @@ describe('pickAutoTrainCode — arvlCd 우선순위', () => {
   it('trainCode 빈 문자열 후보 → null', () => {
     const arrivals = [entry({ trainCode: '', arvlCd: 2 })];
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBeNull();
+  });
+
+  /**
+   * #2801 (audit-sides 편측 확정, 2026-10-03) — approaching(3/5) 발사 프롬프트에 사용자가
+   * [탑승] 응답하면 3/5 후보가 priority 배열([2,1,0])의 어느 tier에도 안 걸려
+   * `directional[0]`(Seoul API 수신 순서 첫 후보)로 ambiguity 보호 없이 silent 선택된다 —
+   * 엉뚱한 열차 lock 가능. priority에 3/5를 각자 별도 tier로 추가해 기존 ambiguity 룰을
+   * 그대로 적용한다. 순서: 2>1>0(기존, 회고형 — 진행도 높을수록 탑승 열차일 확률 높음) >
+   * 3(전역출발, 도착 근접) > 5(전역도착).
+   */
+  it('priority 5: arvlCd=5 (전역도착) — 2/1/0 없고 99(운행중)와 공존해도 5가 채택 (99-only directional[0] fallback과 구분)', () => {
+    const arrivals = [
+      entry({ trainCode: 'B', arvlCd: 99 }),
+      entry({ trainCode: 'A', arvlCd: 5 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('A');
+  });
+
+  it('ambiguity: 같은 approaching tier(arvlCd=5) 후보 2+ → null', () => {
+    const arrivals = [
+      entry({ trainCode: 'T1', arvlCd: 5 }),
+      entry({ trainCode: 'T2', arvlCd: 5 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBeNull();
+  });
+
+  it('priority 4: arvlCd=3 (전역출발) — 3이 5(전역도착)보다 우선(도착 더 근접)', () => {
+    const arrivals = [
+      entry({ trainCode: 'T5', arvlCd: 5 }),
+      entry({ trainCode: 'T3', arvlCd: 3 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T3');
+  });
+
+  it('99-only pool은 여전히 directional[0] fallback(변경 금지, 기존 동작)', () => {
+    const arrivals = [
+      entry({ trainCode: 'T1', arvlCd: 99 }),
+      entry({ trainCode: 'T2', arvlCd: 99 }),
+    ];
+    expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T1');
   });
 });
 
@@ -258,8 +301,8 @@ describe('#2801 — decideBoardingPromptFire (조기 발사 OR-fallback 게이�
     expect(result).toEqual({ fire: true, decision: 'imminent' });
   });
 
-  it('지상 먼 열차만(arvlCd=[3,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent (9/30 조기 발사 회귀 재현)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 3 }, { arvlCd: 99 }]);
+  it('지상 먼 열차만(arvlCd=[4,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent (9/30 조기 발사 회귀 재현 — 4는 APPROACHING에서 의도적 제외)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 4 }, { arvlCd: 99 }]);
     expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
   });
 
@@ -286,5 +329,48 @@ describe('#2801 — decideBoardingPromptFire (조기 발사 OR-fallback 게이�
   it('pool 빈 배열 → fire:false, decision=suppressed-not-imminent (imminent 0건 & null 0건 = "전부 관측되고 임박 없음"에 해당)', () => {
     const result = decideBoardingPromptFire([]);
     expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+});
+
+/**
+ * #2801 (3차 reopen, 2026-10-03) — approaching 게이트.
+ *
+ * 10/2 실측 트립 D1 RCA: leg-2 boarding-prompt 시도 9회 전부 `suppressed-not-imminent` —
+ * arvlCd∈{0,1,2}(imminent)가 cron 60s 샘플에 한 번도 안 걸리고, 가장 근접한 관측은
+ * 5(전역도착)/3(전역출발)였다. 이 둘을 발사 집합에 추가(decision='approaching'으로 분리),
+ * 4(전역진입)는 9/30 조기 발사 창(≈2~3분 전)에 근접해 의도적으로 제외한다.
+ *
+ * RED(fix 전): 아래 [5]/[3] 케이스는 현행 코드에서 decision='suppressed-not-imminent'로
+ * 나와 실패한다(IMMINENT_BOARDING_ARVLCD에 3/5가 없음).
+ */
+describe('#2801 (3차 reopen) — decideBoardingPromptFire approaching(전역출발/전역도착) 게이트', () => {
+  it('전역도착(arvlCd=5)만 → fire:true, decision=approaching', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 5 }]);
+    expect(result).toEqual({ fire: true, decision: 'approaching' });
+  });
+
+  it('전역출발(arvlCd=3)만 → fire:true, decision=approaching', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 3 }]);
+    expect(result).toEqual({ fire: true, decision: 'approaching' });
+  });
+
+  it('전역진입(arvlCd=4)만 → fire:false, decision=suppressed-not-imminent (의도적 제외, 거부 케이스)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 4 }]);
+    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+
+  it('운행중만(arvlCd=99) → fire:false, decision=suppressed-not-imminent', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 99 }]);
+    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+
+  it('임박(arvlCd=2 DEPARTED)이 있으면 approaching 후보가 섞여도 imminent가 우선 (기존 유지)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 2 }, { arvlCd: 5 }]);
+    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  });
+
+  it('혼합(arvlCd=[5, null]) → approaching이 결정적 신호이므로 null-fallback보다 우선', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 5 }, { arvlCd: null }]);
+    expect(result).toEqual({ fire: true, decision: 'approaching' });
   });
 });
