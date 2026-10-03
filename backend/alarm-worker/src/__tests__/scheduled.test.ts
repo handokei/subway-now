@@ -11746,11 +11746,12 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
           JSON.parse(args[5] as string) as {
             outcome: string;
             candidateArvlCds?: number[];
+            candidateEtaSeconds?: Array<number | null>;
             gateDecision?: string;
           },
       );
     expect(outcomeInserts).toEqual([
-      { outcome: 'suppressed-not-imminent', candidateArvlCds: [4, 99], gateDecision: 'suppressed-not-imminent' },
+      { outcome: 'suppressed-not-imminent', candidateArvlCds: [4, 99], candidateEtaSeconds: [120, 120], gateDecision: 'suppressed-not-imminent' },
     ]);
   });
 
@@ -12745,7 +12746,13 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
   describe('#2851 — origin boarding-prompt D1 계측 (기존 leg-boarding-prompt kind 재사용, meta.leg=origin)', () => {
     function findOriginOutcomeInserts(
       inserts: unknown[][],
-    ): Array<{ leg: string; outcome: string; candidateArvlCds?: unknown; gateDecision?: unknown }> {
+    ): Array<{
+      leg: string;
+      outcome: string;
+      candidateArvlCds?: unknown;
+      candidateEtaSeconds?: unknown;
+      gateDecision?: unknown;
+    }> {
       return inserts
         .filter((args) => args[2] === 'leg-boarding-prompt')
         .map(
@@ -12754,6 +12761,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
               leg: string;
               outcome: string;
               candidateArvlCds?: unknown;
+              candidateEtaSeconds?: unknown;
               gateDecision?: unknown;
             },
         );
@@ -12777,7 +12785,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       );
       expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
       expect(findOriginOutcomeInserts(inserts)).toEqual([
-        { leg: 'origin', outcome: 'fired', candidateArvlCds: [1], gateDecision: 'imminent' },
+        { leg: 'origin', outcome: 'fired', candidateArvlCds: [1], candidateEtaSeconds: [120], gateDecision: 'imminent' },
       ]);
     });
 
@@ -12808,7 +12816,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       );
       expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
       expect(findOriginOutcomeInserts(inserts)).toEqual([
-        { leg: 'origin', outcome: 'fired', candidateArvlCds: [5, 99], gateDecision: 'approaching' },
+        { leg: 'origin', outcome: 'fired', candidateArvlCds: [5, 99], candidateEtaSeconds: [120, 120], gateDecision: 'approaching' },
       ]);
     });
 
