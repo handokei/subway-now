@@ -126,8 +126,24 @@ export const IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
   ARRIVAL_CODE.DEPARTED, // 2
 ]);
 
+/**
+ * #2801 (3차 reopen, 2026-10-03 실측) — approaching 게이트. 임박{0,1,2}이 cron 60s 폴링에
+ * 걸리지 않은 채(도착창 ~30s가 폴링 갭보다 짧아) leg-2 "탑승하셨나요?" 시도 9회가 전부
+ * suppressed-not-imminent로 억제된 10/2 실측 miss를 봉합한다. 사용자 열차의 최근접 관측은
+ * 5(전역도착)/3(전역출발) — 직전역 신호(도착 60~150s 전), 플랫폼 대기 사용자에게 "곧 도착"
+ * 프롬프트로 적절한 창이다.
+ *
+ * 4(전역진입, ≈2~3분 전)는 **의도적으로 제외** — 9/30 조기 발사 불만(4분 전 발사) 창에
+ * 근접하고 10/2 실측에도 미관측. 필요 시 측정 후 별도 이슈로 확장.
+ */
+export const APPROACHING_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
+  ARRIVAL_CODE.PREV_DEPARTED, // 3
+  ARRIVAL_CODE.PREV_ARRIVED, // 5
+]);
+
 export type BoardingFireDecision =
   | { fire: true; decision: 'imminent' }
+  | { fire: true; decision: 'approaching' }
   | { fire: true; decision: 'fallback-unobservable' }
   | { fire: false; decision: 'suppressed-not-imminent' };
 
@@ -136,10 +152,12 @@ export type BoardingFireDecision =
  * 함수의 pool을 그대로 쓴다는 전제로 설계됨, 이슈 §4 금지사항).
  *
  * 1. 임박(§ IMMINENT_BOARDING_ARVLCD) 열차가 하나라도 있으면 발사.
- * 2. 임박이 없어도, 관측 불가(arvlCd===null) 후보가 하나라도 있으면 "임박이 아니다"를 확정할
- *    수 없으므로 발사(fallback) — 지하/API 부재에서 기존 동작(발사)을 보존해 miss 재발을
- *    막는다(equal-protection).
- * 3. 모든 후보가 관측됐는데(non-null) 임박이 하나도 없을 때만 억제 — 이 PR의 유일한 신규 억제.
+ * 2. 임박이 없어도 approaching(§ APPROACHING_BOARDING_ARVLCD) 열차가 하나라도 있으면 발사
+ *    (#2801 3차 reopen) — 관측된 결정적 신호이므로 null-fallback(3)보다 우선 판정한다.
+ * 3. 임박/approaching이 둘 다 없어도, 관측 불가(arvlCd===null) 후보가 하나라도 있으면
+ *    "임박이 아니다"를 확정할 수 없으므로 발사(fallback) — 지하/API 부재에서 기존 동작(발사)을
+ *    보존해 miss 재발을 막는다(equal-protection).
+ * 4. 모든 후보가 관측됐는데(non-null) 임박/approaching이 하나도 없을 때만 억제.
  */
 export function decideBoardingPromptFire(
   pool: readonly { arvlCd: number | null }[],
@@ -148,6 +166,10 @@ export function decideBoardingPromptFire(
     (a) => a.arvlCd !== null && IMMINENT_BOARDING_ARVLCD.has(a.arvlCd),
   );
   if (imminent.length > 0) return { fire: true, decision: 'imminent' };
+  const approaching = pool.filter(
+    (a) => a.arvlCd !== null && APPROACHING_BOARDING_ARVLCD.has(a.arvlCd),
+  );
+  if (approaching.length > 0) return { fire: true, decision: 'approaching' };
   if (pool.some((a) => a.arvlCd === null)) {
     return { fire: true, decision: 'fallback-unobservable' };
   }
