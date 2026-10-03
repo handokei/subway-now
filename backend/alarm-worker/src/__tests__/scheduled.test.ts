@@ -63,6 +63,7 @@ import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../se
 import { attemptBoardingAnchorResolution } from '../boardingAnchorResolver';
 import { getTransferSeconds } from '../../../../src/shared/utils/transferTimes';
 import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTtl';
+import { stampBoardingPromptFireOnce } from '../boardingPromptFireOnce';
 import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
 import {
   ACTIVE_TRIPS_MARKER_KEY,
@@ -12531,6 +12532,19 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         ([, meta]) => (meta as { reason?: string } | undefined)?.reason === 'fire-once-key',
       ),
     ).toBe(true);
+    // code-review(medium, #2801) — decideBoardingPromptFire 판정이 fire-once 체크보다 먼저
+    // 실행되므로(gate.fire===true 확인 후에만 fire-once 체크 진입), gateDecision도 같은 로그
+    // 라인에 함께 기록돼야 한다 — approaching 발사 창이 fire-once dedup에 삼켜진 횟수를
+    // wrangler tail/log만으로도 셀 수 있어야 한다(Wire §2 목적 완결, D1 쪽은 별도 #2851 describe
+    // 블록의 'silenced' outcome 테스트가 커버).
+    expect(
+      log.mock.calls.some(
+        ([, meta]) =>
+          (meta as { reason?: string; gateDecision?: string } | undefined)?.reason ===
+            'fire-once-key' &&
+          (meta as { gateDecision?: string } | undefined)?.gateDecision === 'imminent',
+      ),
+    ).toBe(true);
   });
 
   // #2844 — 은퇴한 GPS 9단 경로가 유일하게 담당하던 load-bearing 부수효과
@@ -12933,6 +12947,35 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       );
       expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
       expect(findOriginOutcomeInserts(inserts)).toEqual([]);
+    });
+
+    // code-review(medium, #2801) 지시 2 — gate(decideBoardingPromptFire)가 fire-once 체크보다
+    // 먼저 실행되므로(:7150 부근 — gate.fire===true 확인 후에만 fire-once 체크 진입) outcome=
+    // 'silenced'(fire-once dedup) D1 행에도 gateDecision이 붙어야 한다. approaching 발사 창이
+    // dedup에 삼켜진 횟수를 D1만으로 셀 수 있어야 한다는 Wire §2 목적 완결.
+    it('fire-once key로 억제(outcome=silenced) → D1 meta에 gateDecision도 함께 기록', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 5 }]));
+      const trip = makeTrip();
+      const kv = new InMemoryKV();
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      // fire-once key를 미리 stamp — 이번 호출이 gate(approaching)를 통과한 뒤 fire-once
+      // 이중 방어에서 즉시 억제되도록(위 cycle A/B 패턴을 단일 호출로 단축).
+      await stampBoardingPromptFireOnce(kv as unknown as KVNamespace, trip.token, '용마산', NOW - 60_000);
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin-fireonce',
+      );
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+      expect(findOriginOutcomeInserts(inserts)).toEqual([
+        { leg: 'origin', outcome: 'silenced', gateDecision: 'approaching' },
+      ]);
     });
   });
 });
