@@ -62,13 +62,26 @@ const LOCAL_IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
   ARRIVAL_CODE.DEPARTED,
 ]);
 
+/**
+ * #2801 (3차 reopen, audit-sides 편측 확정 2026-10-03) — backend `APPROACHING_BOARDING_ARVLCD`
+ * (boardingPrompt.ts)와 동일 값(3 전역출발/5 전역도착). device는 currently MINIMAL_ALARM 기본
+ * OFF라 이 게이트가 dead지만, 켜지는 순간 backend approaching 확장과 drift돼 10/2 miss의 device
+ * 버전이 재현된다 — 4(전역진입)는 backend와 동일하게 의도적 제외.
+ */
+const LOCAL_APPROACHING_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
+  ARRIVAL_CODE.PREV_DEPARTED,
+  ARRIVAL_CODE.PREV_ARRIVED,
+]);
+
 export type LocalBoardingFireDecision =
   | { fire: true; decision: 'imminent' }
+  | { fire: true; decision: 'approaching' }
   | { fire: true; decision: 'fallback-unobservable' }
   | { fire: false; decision: 'suppressed-not-imminent' };
 
 /**
- * backend `decideBoardingPromptFire`(boardingPrompt.ts)와 동일 OR-fallback 판정.
+ * backend `decideBoardingPromptFire`(boardingPrompt.ts)와 동일 4단 OR-fallback 판정
+ * (imminent → approaching → fallback-unobservable → suppress).
  * `ArrivalInfo.arrivalCode`는 누락/비숫자 시 -1(미관측) — backend의 arvlCd===null과 동치.
  */
 export function decideLocalBoardingPromptFire(
@@ -78,6 +91,10 @@ export function decideLocalBoardingPromptFire(
     (a) => a.arrivalCode >= 0 && LOCAL_IMMINENT_BOARDING_ARVLCD.has(a.arrivalCode),
   );
   if (imminent.length > 0) return { fire: true, decision: 'imminent' };
+  const approaching = pool.filter(
+    (a) => a.arrivalCode >= 0 && LOCAL_APPROACHING_BOARDING_ARVLCD.has(a.arrivalCode),
+  );
+  if (approaching.length > 0) return { fire: true, decision: 'approaching' };
   if (pool.some((a) => a.arrivalCode < 0)) {
     return { fire: true, decision: 'fallback-unobservable' };
   }

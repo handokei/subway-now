@@ -160,10 +160,13 @@ describe('pickAutoTrainCode — arvlCd 우선순위', () => {
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T1');
   });
 
-  it('priority 4: 그 외 코드 → 첫 후보 (receivedAt 순서 가정)', () => {
+  // #2801 (3차 reopen, audit-sides 편측 확정) — 3(전역출발)이 별도 tier로 승격돼 더 이상
+  // "그 외" 코드가 아니다. 4(전역진입, 의도적 제외)로 교체해 "어느 tier에도 안 걸리는 코드만
+  // 있으면 받은 순서 첫 후보" 계약을 유지한다.
+  it('priority 6: 그 외 코드(0/1/2/3/5 아님) → 첫 후보 (receivedAt 순서 가정)', () => {
     const arrivals = [
       entry({ trainCode: 'T1', arvlCd: 99 }),
-      entry({ trainCode: 'T2', arvlCd: 3 }),
+      entry({ trainCode: 'T2', arvlCd: 4 }),
     ];
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBe('T1');
   });

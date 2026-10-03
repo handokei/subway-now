@@ -341,10 +341,19 @@ export function pickAutoTrainCode(
     : matching;
   if (directional.length === 0) return null;
 
+  // #2801 (3차 reopen, audit-sides 편측 확정 2026-10-03) — 3(전역출발)/5(전역도착)를 각자
+  // 별도 tier로 추가. approaching 발사로 뜬 "탑승하셨나요?" 프롬프트에 사용자가 응답하면
+  // candidateTrains(payload)에 3/5만 있는 pool이 이 함수를 거친다 — 추가 전에는 어느 tier에도
+  // 안 걸려 "그 외" 분기(`directional[0]`, Seoul API 수신 순서 첫 후보)로 ambiguity 보호 없이
+  // silent 선택돼 엉뚱한 열차가 lock될 수 있었다. 순서 근거: 2>1>0(기존, 회고형 — 진행도 높은
+  // 열차가 탑승 열차일 확률 높음) > 3(전역출발, 도착 60~150s 전으로 5보다 근접) > 5(전역도착).
+  // 99-only(운행중만) pool의 `directional[0]` fallback은 무변경(기존 동작, 이 fix의 scope 밖).
   const priority: readonly number[] = [
     /* 2: 출발 */ 2,
     /* 1: 도착 */ ARRIVAL_CODE.ARRIVED,
     /* 0: 진입 */ ARRIVAL_CODE.ENTERING,
+    /* 3: 전역출발 */ ARRIVAL_CODE.PREV_DEPARTED,
+    /* 5: 전역도착 */ ARRIVAL_CODE.PREV_ARRIVED,
   ];
   for (const code of priority) {
     const tier = directional.filter((a) => a.arvlCd === code);
@@ -353,6 +362,6 @@ export function pickAutoTrainCode(
     if (tier.length === 1) return tier[0].trainCode || null;
     if (tier.length > 1) return null; // ambiguity → 자동 안 함
   }
-  // 그 외 — 받은 순서 첫 후보.
+  // 그 외(99 운행중 등) — 받은 순서 첫 후보.
   return directional[0].trainCode || null;
 }
