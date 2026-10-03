@@ -132,9 +132,11 @@ crons = ["*/1 * * * *"]
 # logs만 활성화해 invocation logs를 Workers Logs에 영구 저장, dashboard에서 조회 가능.
 # traces는 비용/성능 영향 최소화 위해 일단 비활성. 필요 시 토글.
 #
-# #2055 임시 조치: persist=false — 매 분 5개 idle log 축적으로 2000 cap 6시간 소진 회귀.
-# #2054 (idle skip + heartbeat) 배포 완료 시 persist=true 복구 검토.
-# wrangler tail 실시간 진단은 여전히 동작.
+# #2055 임시 조치(2026-07-08): persist=false — 매 분 5개 idle log 축적으로 2000 cap 6시간 소진.
+# #2054(idle skip, 로그량 95% 감소)가 같은 날 배포 완료됐으나 복구가 3개월 방치됨 —
+# 2026-10-03 복구(persist=true). 근거: 10/3 트립 RCA에서 백엔드 로그 소급 불가로
+# 미확정 잔존(지상 C3 무attempt 사유·발사 origin) — D1은 이벤트만 남고 "왜"의 전문은
+# Workers Logs가 유일한 소급 소스다. idle-skip 적용 후 로그량은 free tier 한도 내.
 [observability]
 enabled = false
 head_sampling_rate = 1
@@ -142,7 +144,7 @@ head_sampling_rate = 1
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
-persist = false
+persist = true
 invocation_logs = true
 
 [observability.traces]
