@@ -1,0 +1,97 @@
+[Subway debug] 2026-06-24T23:45:28.459Z
+
+## GPS
+lat=37.54, lng=127.05, speed=- m/s, accuracy=28.425346111246295 m
+fused=(no fused signal)
+state=fg, lastFix=08:45:21
+subsurface=false (readings=71)
+
+## Nearest
+성수 · 111 m
+variants: 성수(2)
+
+## Fusion
+confidence=gps-only, source=gps
+fused: 성수(2) · 111m
+gps:   성수(2) · 111m
+tier=low
+signalMask=UUF
+
+## Trip
+lockless=false
+tripStartedAt=08:31:55
+currentHopIndex=4
+route hop count=5
+displayOnlyEstimate=(none)
+lifecyclePhase=active
+
+## Sleep
+sleepMode=off
+firstHopApproaching=false
+
+## Arrival
+up: 성수행 - 건대입구방면 · 100s (2분 30초 후)
+down: 성수행 - 뚝섬방면 · 150s (3분 20초 후)
+
+## Silent Push
+permission=granted
+apnsToken=…35b3502c
+activeTrip=(none)
+apnsEnv=production
+taskRegistration=success
+route=(none)
+destination=(none)
+currentStation=(none)
+received=6 (last 08:38:43)
+receivedByKind=stn=1 xfer=0 dst=0 unk=5
+fired=0 (last (never))
+lastSkipped=08:34:45
+lowPowerMode=off
+
+## Backend SSoT
+(no recent SSoT push)
+
+## Scheduled queue (0)
+
+## Gates
+candidate-distance-reject=70, gate-passed-event-on-lock-origin=28, cross-trip-mirror-skip=13, gate-hop-window=9, gate-hop-window-no-source=4, v1-mismatch=4, movement-static-position=2, dedup-station=1, gate-phase-warmup=1, gate-station-already-passed=1, gate-station-passed-warmup=1
+
+## BoardingLock
+active=yes
+
+## Estimator State (20)
+08:38:19 | none | - idx=-
+08:37:42 | reanchored-hop | 어린이대공원(세종대)(7) idx=3
+08:37:02 | lockless-route-hop | 건대입구(7) idx=4
+08:36:59 | lockless-route-hop | 어린이대공원(세종대)(7) idx=3
+08:36:59 | lockless-route-hop | 용마산(7) idx=0
+08:36:42 | reanchored-hop | 군자(능동)(7) idx=2
+08:35:00 | arrival-eta | 중곡(7) idx=1
+08:34:59 | reanchored-hop | 중곡(7) idx=1
+08:34:52 | arrival-eta | 중곡(7) idx=1
+08:34:50 | none | - idx=-
+08:34:47 | backend-ssot-override | 중곡(7) idx=1
+08:34:45 | backend-ssot-override | 중곡(7) idx=0
+08:34:35 | arrival-eta | 중곡(7) idx=1
+08:34:18 | reanchored-hop | 용마산(7) idx=0
+08:34:10 | arrival-eta | 중곡(7) idx=1
+08:33:45 | reanchored-hop | 용마산(7) idx=0
+08:32:05 | none | - idx=-
+08:31:55 | live-position | 용마산(7) idx=0
+08:31:40 | lockless-route-hop | 용마산(7) idx=0
+07:58:58 | none | - idx=-
+
+## Notifications fired (3)
+08:44:25 | fg | fired | station-passed | 성수
+08:38:46 | fg | fired | transfer | early | 건대입구
+08:31:55 | boarding-prompt | fired | autolock-success | 7·용마산
+
+## Alarm log (158)
+sources: boarding-prompt=1, cross-trip-mirror-register=13, fg=30, fg-arvlcd=17, fg-evaluated=5, fg-hydrate=15, fusion-candidate-reject=70, silent-push-received=6, silent-push-skipped=1
+08:44:25 | fg | fired | station-passed | 성수
+08:38:46 | fg | fired | transfer | early | 건대입구
+08:38:43 | silent-push-received | received | 어린이대공원(세종대)
+08:34:45 | silent-push-received | received | station-passed | imminent | 중곡
+08:33:42 | silent-push-received | received | 중곡
+08:32:47 | silent-push-received | received | 중곡
+08:31:55 | boarding-prompt | fired | autolock-success | 7·용마산

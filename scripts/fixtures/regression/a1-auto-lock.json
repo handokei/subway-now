@@ -1,0 +1,82 @@
+{
+  "name": "A1 (#916) — backend trip-bound trainCode 자동 lock hydrate",
+  "seam": "A1",
+  "_doc": [
+    "Epic #912 P1 A1(#916) 회귀 가드. 사용자가 BoardingTrainList에서 열차를 명시 탭하지 않아도",
+    "backend `/boarding-lock/sync` 응답의 autoLockCandidate({ trainCode, line, subwayId })로",
+    "client BoardingLock store가 hydrate되어야 한다 (#915 destination-only baseline UX).",
+    "wire-up이 회귀하면 사용자가 직접 row를 탭해야만 lock 카드가 노출 → 매역 알림 활성화 누락.",
+    "",
+    "fixture 구성:",
+    "  - 강남(2-022) → 역삼(2-021) 단순 trip (2호선)",
+    "  - 강남 응답: 다음 열차 5분 후 (false-positive 알람 차단)",
+    "  - 역삼 응답: 다음 열차 7분 후 (false-positive 알람 차단)",
+    "  - /boarding-lock/sync 응답에 autoLockCandidate 부착 — 사용자 탭 없이 hydrate 트리거",
+    "",
+    "기대 client-observable 동작:",
+    "  - boarding-train-row-* 탭 없이 boarding-lock-hop-card 노출(자동 hydrate 성공)",
+    "  - ghost 알람(곧 도착/하차 알림/알람 끄기) 0건",
+    "  - 트립 chip은 강남으로 안정"
+  ],
+  "arrivals": {
+    "강남": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "성수",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "2211",
+              "line": "2",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "역삼": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "성수",
+              "arrivalMinutes": 7,
+              "arrivalSeconds": 420,
+              "statusMessage": "7분 후 도착",
+              "trainCode": "2211",
+              "line": "2",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  },
+  "boardingLockSync": {
+    "response": {
+      "ok": true,
+      "advanced": false,
+      "currentWaypoint": "강남",
+      "nextStation": "강남",
+      "autoLockCandidate": {
+        "trainCode": "2211",
+        "line": "2",
+        "subwayId": "1002"
+      }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+appId: com.subwaynow.app
+name: "gps - 경로 잠금 점프 거부 (#310)"
+# 사가정 → 어린이대공원 경로 후 GPS 순간이동 → 점프 거부로 origin 유지.
+---
+- setLocation:
+    latitude: 37.580894
+    longitude: 127.088478
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 외부 시스템 UI(권한 alert) — text 매칭 유지
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible:
+      id: "home-origin-station-name"
+      text: "사가정|Sagajeong"
+    timeout: 15000
+
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+
+- tapOn:
+    id: "destination-button"
+- assertVisible:
+    id: "search-input"
+- tapOn:
+    id: "search-input"
+- inputText: "어린이대공원"
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    id: "suggestion-item-7-018"
+
+- assertVisible:
+    id: "destination-clear-button"
+
+# 어린이대공원 좌표로 점프 — implied speed > 200km/h, 거부되어야 함
+- setLocation:
+    latitude: 37.548014
+    longitude: 127.074658
+
+# 폴링 2~3틱 진행될 시간 확보 후 어린이대공원이 현재역으로 잡히지 않았는지 확인
+- repeat:
+    times: 90
+    commands:
+      - evalScript: maestro.wait(1000)
+
+- assertVisible:
+    id: "home-origin-station-name"
+    text: "사가정|Sagajeong"

@@ -1,0 +1,77 @@
+appId: com.subwaynow.app
+name: "manual - 환승 leg trainCode sync 회귀 (보고 5/10)"
+# 사용자 trip 2026-06-12 evidence — 08:43 backend auto-end (consecutiveEtaMissing=5).
+# Root cause: 환승 leg trainCode를 backend boardingLockSync payload에 동봉 안 함.
+# 회귀 10 (Epic #1008 §7.1): 환승 있는 trip 중 backend auto-end 비율 0%.
+# 실기기에서 환승 후 backend trip 유지(D4) 검증 — wrangler tail로 보조.
+---
+- setLocation:
+    latitude: 37.5732
+    longitude: 127.0846
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+- waitForAnimationToEnd
+
+# 목적지: 성수 (환승 포함)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(1000)
+- setClipboard: "성수"
+- evalScript: maestro.wait(500)
+- pasteText
+- evalScript: maestro.wait(2000)
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    text: "성수"
+- waitForAnimationToEnd
+
+# trip 시작 → 첫 leg 진행
+- setLocation:
+    latitude: 37.5479
+    longitude: 127.0739
+- evalScript: maestro.wait(15000)
+
+# 환승역(건대입구) 이동
+- setLocation:
+    latitude: 37.5403
+    longitude: 127.0699
+- evalScript: maestro.wait(30000)
+
+# 환승 후 다음 역(성수) 좌표 — backend가 trip을 유지하는지 확인.
+- setLocation:
+    latitude: 37.5446
+    longitude: 127.0559
+- evalScript: maestro.wait(30000)
+
+# 회귀 검증: backend trip auto-end 발생 시 destination 도착 알람이 안 뜸.
+# 알람 뜨면 backend가 trainCode 갱신을 수신했다는 신호.
+- extendedWaitUntil:
+    visible:
+      id: "alarm-overlay-title"
+    timeout: 60000
+
+# DebugModal Alarm log에 trip-ended:eta-missing 부재 확인 (실기기 + wrangler tail).
+- tapOn:
+    text: ".*debug.*|.*디버그.*"
+    optional: true
+- evalScript: maestro.wait(500)
+- assertVisible:
+    id: "alarm-log-modal-content"
+- assertNotVisible:
+    text: ".*trip-ended.*eta-missing.*"
+    optional: true

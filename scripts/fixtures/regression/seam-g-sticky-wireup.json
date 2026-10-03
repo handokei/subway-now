@@ -1,0 +1,67 @@
+{
+  "name": "Seam G — barometer sticky wireup (#903)",
+  "seam": "G",
+  "_doc": [
+    "Epic #896 Seam G(#903) 회귀 가드. useBarometer.subsurface 신호가",
+    "useNearestStation / useFusedNearestStation → Sticky automotive 입력으로 흐르고",
+    "evaluateAlarmPhase가 degradedConfidence=true 시 early/transfer phase를 차단한다.",
+    "",
+    "Maestro fixture는 device-level 압력 시뮬레이션을 직접 토글할 수 없으므로(시뮬레이터에서",
+    "expo-sensors Barometer가 미지원), 본 시나리오는 sticky wireup의 **client-observable",
+    "표면 안정성**을 회귀 가드한다:",
+    "  - 지하 구간 좌표(보문, 6-029)에서 안암으로 단순 trip 형성",
+    "  - 안암 도착 ETA를 5분으로 stable 응답 → false-positive 알람 발사 없음",
+    "  - 트립 chip이 보문에 안정 (sticky 강등으로 인한 ghost chip jump 없음)",
+    "",
+    "Seam G 단위 테스트(barometerState/useBarometer/useStickyStation)가 압력→sticky→alarm",
+    "신호 경로를 검증하고, 본 fixture는 그 결과가 UI 표면에 ghost 알람을 만들지 않음을 가드한다."
+  ],
+  "arrivals": {
+    "보문": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "응암",
+              "arrivalMinutes": 3,
+              "arrivalSeconds": 180,
+              "statusMessage": "3분 후 도착",
+              "trainCode": "6029",
+              "line": "6",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "안암": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "응암",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "6029",
+              "line": "6",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  }
+}

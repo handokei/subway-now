@@ -1,7 +1,7 @@
-import type { NearestStationResult } from '../types/station';
-import type { ArrivalInfo } from '../api/arrivalApi';
-import type { JourneyDisplay } from '../utils/stationRoute';
-import type { Stop, ArrivalTrain } from '../utils/journeyAdapter';
+import type { NearestStationResult } from '../shared/types/station';
+import type { ArrivalInfo } from '../shared/types/arrival';
+import type { JourneyDisplay } from '../shared/utils/stationRoute';
+import type { Stop, ArrivalTrain } from '../shared/types/journey';
 
 export const MOCK_STATIONS = {
   hyochang: { id: '0601', name: '효창공원앞', line: '6' as const, lineColor: '#CD7C2F', lat: 37.5, lng: 126.9 },
@@ -20,6 +20,7 @@ export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination:
     arrivalMinutes: Math.floor(overrides.arrivalSeconds / 60),
     statusMessage: '',
     trainCode: 'T001',
+    line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,

@@ -1,0 +1,20 @@
+{
+  "name": "Seam D — DebugModal 진입 경로 (#456 / version footer 7-tap)",
+  "seam": "D",
+  "_doc": [
+    "DebugModal 진입 경로(설정 탭 → 버전 footer 7-탭) 자체의 회귀 가드.",
+    "13:24 trainCode 사라짐 같은 야전 회귀에서 사용자가 DebugModal에 진입해 진단 dump를 공유할 수 있어야",
+    "root cause 식별 latency가 짧아진다. 진입 경로가 회귀(testID 변경/7-tap 카운트 변경/release flag 미주입)하면",
+    "야전 진단 전부가 막힌다.",
+    "",
+    "fixture는 arrival 측면 검증이 아니므로 placeholder. flow의 핵심은 settings → version footer 7-tap →",
+    "debug-modal 노출 + debug-arrival-summary entry 표시 확인. 진입 자체에 arrival 데이터가 비어 있어도",
+    "modal은 렌더되어야 한다(빈 dump = 정상).",
+    "",
+    "전제: build env에 EXPO_PUBLIC_DEBUG_MODAL=true가 주입되어 있어야 한다(e2e.yml regression job에 추가).",
+    "release 빌드 기본은 false라 dev 빌드 동일 동작을 보장하려면 명시 주입 필요(#456 SSOT).",
+    "",
+    "기대 client-observable 동작: 7-탭 → debug-modal 노출, debug-modal-close로 정상 닫힘."
+  ],
+  "arrivals": {}
+}
