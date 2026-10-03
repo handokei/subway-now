@@ -258,8 +258,8 @@ describe('#2801 — decideBoardingPromptFire (조기 발사 OR-fallback 게이�
     expect(result).toEqual({ fire: true, decision: 'imminent' });
   });
 
-  it('지상 먼 열차만(arvlCd=[3,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent (9/30 조기 발사 회귀 재현)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 3 }, { arvlCd: 99 }]);
+  it('지상 먼 열차만(arvlCd=[4,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent (9/30 조기 발사 회귀 재현 — 4는 APPROACHING에서 의도적 제외)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 4 }, { arvlCd: 99 }]);
     expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
   });
 
@@ -286,5 +286,48 @@ describe('#2801 — decideBoardingPromptFire (조기 발사 OR-fallback 게이�
   it('pool 빈 배열 → fire:false, decision=suppressed-not-imminent (imminent 0건 & null 0건 = "전부 관측되고 임박 없음"에 해당)', () => {
     const result = decideBoardingPromptFire([]);
     expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+});
+
+/**
+ * #2801 (3차 reopen, 2026-10-03) — approaching 게이트.
+ *
+ * 10/2 실측 트립 D1 RCA: leg-2 boarding-prompt 시도 9회 전부 `suppressed-not-imminent` —
+ * arvlCd∈{0,1,2}(imminent)가 cron 60s 샘플에 한 번도 안 걸리고, 가장 근접한 관측은
+ * 5(전역도착)/3(전역출발)였다. 이 둘을 발사 집합에 추가(decision='approaching'으로 분리),
+ * 4(전역진입)는 9/30 조기 발사 창(≈2~3분 전)에 근접해 의도적으로 제외한다.
+ *
+ * RED(fix 전): 아래 [5]/[3] 케이스는 현행 코드에서 decision='suppressed-not-imminent'로
+ * 나와 실패한다(IMMINENT_BOARDING_ARVLCD에 3/5가 없음).
+ */
+describe('#2801 (3차 reopen) — decideBoardingPromptFire approaching(전역출발/전역도착) 게이트', () => {
+  it('전역도착(arvlCd=5)만 → fire:true, decision=approaching', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 5 }]);
+    expect(result).toEqual({ fire: true, decision: 'approaching' });
+  });
+
+  it('전역출발(arvlCd=3)만 → fire:true, decision=approaching', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 3 }]);
+    expect(result).toEqual({ fire: true, decision: 'approaching' });
+  });
+
+  it('전역진입(arvlCd=4)만 → fire:false, decision=suppressed-not-imminent (의도적 제외, 거부 케이스)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 4 }]);
+    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+
+  it('운행중만(arvlCd=99) → fire:false, decision=suppressed-not-imminent', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 99 }]);
+    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  });
+
+  it('임박(arvlCd=2 DEPARTED)이 있으면 approaching 후보가 섞여도 imminent가 우선 (기존 유지)', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 2 }, { arvlCd: 5 }]);
+    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  });
+
+  it('혼합(arvlCd=[5, null]) → approaching이 결정적 신호이므로 null-fallback보다 우선', () => {
+    const result = decideBoardingPromptFire([{ arvlCd: 5 }, { arvlCd: null }]);
+    expect(result).toEqual({ fire: true, decision: 'approaching' });
   });
 });
