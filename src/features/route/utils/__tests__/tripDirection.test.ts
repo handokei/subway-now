@@ -58,12 +58,12 @@ describe('resolveTripDirection', () => {
 
   describe('#2446 — 뚝섬 실탑승 회귀 재현: resolveTripDirection은 이미 정확한 방향을 산출한다', () => {
     // 2026-08-31 실탑승: 뚝섬(2호선)→신당(6호선 환승)→석계 route에서 보딩 카드가 "성수행"
-    // (반대 방향)을 노출한 사고. 재현 조사 결과 이 함수(resolveTripDirection) 자체는 이미
-    // 정확히 'up'(한양대/내선 방향, 신당 방면)을 산출한다 — 근본 원인은 nextAdjacentStation.ts의
-    // 별도 resolver(resolveNextAdjacentStationName)가 비단조 노선에서 null을 반환해 라벨이
-    // route와 무관한 raw trainLineNm으로 fallback한 것이었다(#2446 R1a, 별도 fix).
-    // 이 테스트는 resolveTripDirection의 기존 정확성을 회귀 가드로 고정한다.
-    it('뚝섬(2호선, transfer leg) → 신당(환승 waypoint) = up (내선/한양대 방향)', () => {
+    // (반대 방향)을 노출한 사고. 재현 조사 결과 nextAdjacentStation.ts의 별도 resolver
+    // (resolveNextAdjacentStationName)가 비단조 노선에서 null을 반환해 라벨이 route와 무관한
+    // raw trainLineNm으로 fallback한 것이 root였다(#2446 R1a, 별도 fix).
+    // #2867 — resolveTripDirection 자체의 기대값은 당시 역전된 ground truth 믿음으로 작성돼
+    // 있었다. 뚝섬(idx9)→신당(idx5)은 idx 감소(외선) → 'down'(10/3·9/17 실측 52쌍으로 교정).
+    it('뚝섬(2호선, transfer leg) → 신당(환승 waypoint) = down (외선)', () => {
       const route = makeTransferRoute({
         transferName: '신당',
         fromLine: '2',
@@ -73,7 +73,7 @@ describe('resolveTripDirection', () => {
       });
       // 뚝섬(2-010) 현재 위치, destination 석계(6호선) — direction은 첫 leg(2호선)의
       // fromLine + transferName(신당) 기준으로 산출된다.
-      expect(resolveTripDirection(route, '석계', '2-010')).toBe('up');
+      expect(resolveTripDirection(route, '석계', '2-010')).toBe('down');
     });
   });
 
@@ -106,10 +106,11 @@ describe('resolveTripDirection', () => {
   describe('#1922 — closed loop (2호선 환상선) direction', () => {
     // 2호선 본선 closed loop은 id 사전순 정렬이 wraparound와 일치하지 않을 수 있으므로
     // shortestLinePathIndices로 짧은 쪽 path를 산출해 방향 결정.
-    // 강변(2-014) → 잠실나루(2-015)는 short forward (path[1] > currIdx) → 'down'.
-    // 잠실나루(2-015) → 강변(2-014)는 short backward (path[1] < currIdx) → 'up'.
+    // #2867 — idx 증가 = 내선 = 'up', idx 감소 = 외선 = 'down'(10/3·9/17 실측 52쌍 ground truth).
+    // 강변(2-014) → 잠실나루(2-015)는 short forward (path[1] > currIdx) → 'up'(내선).
+    // 잠실나루(2-015) → 강변(2-014)는 short backward (path[1] < currIdx) → 'down'(외선).
 
-    it('환승 후 leg(2호선) — 강변 → 잠실나루 = down (외선)', () => {
+    it('환승 후 leg(2호선) — 강변 → 잠실나루 = up (내선)', () => {
       // 7→2 transfer route. 현재 위치가 강변(2-014)일 때 두 번째 leg(2호선)으로 direction 산출.
       const route = makeTransferRoute({
         transferName: '건대입구',
@@ -118,12 +119,12 @@ describe('resolveTripDirection', () => {
         stopsToTransfer: 5,
         stopsFromTransfer: 3,
       });
-      // destination = 잠실나루(2-015), current = 강변(2-014) → 'down' (외선 방향)
-      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+      // destination = 잠실나루(2-015), current = 강변(2-014) → 'up' (내선 방향)
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('up');
     });
 
-    it('환승 후 leg(2호선) — 잠실나루 → 강변 = up (내선)', () => {
-      // 7→2 transfer route. destination = 강변(2-014), current = 잠실나루(2-015) → 'up'
+    it('환승 후 leg(2호선) — 잠실나루 → 강변 = down (외선)', () => {
+      // 7→2 transfer route. destination = 강변(2-014), current = 잠실나루(2-015) → 'down'
       const route = makeTransferRoute({
         transferName: '건대입구',
         fromLine: '7',
@@ -131,13 +132,13 @@ describe('resolveTripDirection', () => {
         stopsToTransfer: 5,
         stopsFromTransfer: 1,
       });
-      expect(resolveTripDirection(route, '강변(동서울터미널)', '2-015')).toBe('up');
+      expect(resolveTripDirection(route, '강변(동서울터미널)', '2-015')).toBe('down');
     });
 
     it('direct 2호선 환상선 leg 내 정상 방향 결정', () => {
-      // direct route on line 2: 강변 → 잠실나루 = down (외선)
+      // direct route on line 2: 강변 → 잠실나루 = up (내선)
       const route = makeDirectRoute(1, '2');
-      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('up');
     });
   });
 
@@ -147,7 +148,7 @@ describe('resolveTripDirection', () => {
 
     it('multi-transfer 마지막 leg(current.line === last.toLine) 진입 후 direction 결정', () => {
       // 1호선 → 4호선 → 2호선 multi-transfer. current가 2호선(마지막 leg toLine)에 있으면
-      // 마지막 leg(toLine=2)로 direction 결정. 강변(2-014) → 잠실나루(2-015) = down.
+      // 마지막 leg(toLine=2)로 direction 결정. 강변(2-014) → 잠실나루(2-015) = up(내선, #2867).
       const route = makeMultiTransferRoute({
         transfers: [
           { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 5 },
@@ -156,7 +157,7 @@ describe('resolveTripDirection', () => {
         stopsAfterLastTransfer: 5,
       });
       // current 강변(2-014, 2호선), destination 잠실나루
-      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('up');
     });
 
     it('current가 어느 leg에도 없으면 first-leg fallback', () => {
@@ -182,8 +183,8 @@ describe('resolveTripDirection', () => {
         stopsToTransfer: 5,
         stopsFromTransfer: 3,
       });
-      // current 강변(2-014, 2호선), destination 잠실나루(2-015) → 'down'
-      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('down');
+      // current 강변(2-014, 2호선), destination 잠실나루(2-015) → 'up'(내선, #2867)
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('up');
     });
 
     it('currentStationId가 stations.json에 없으면 first-leg fallback (방어 분기)', () => {
@@ -210,16 +211,16 @@ describe('resolveTripDirection', () => {
 
     it('bounded arc(동대문역사문화공원~건대입구) 안의 성수는 transfers[2]로 정확히 매칭된다', () => {
       // 성수(2-011)는 동대문역사문화공원(idx4)~건대입구(idx11) 구간 안 → transfers[2] 채택.
-      // 성수(idx10) → 건대입구(idx11) = down.
-      expect(resolveTripDirection(route, '어린이대공원(세종대)', '2-011')).toBe('down');
+      // 성수(idx10) → 건대입구(idx11) = up(내선, #2867).
+      expect(resolveTripDirection(route, '어린이대공원(세종대)', '2-011')).toBe('up');
     });
 
     it('transfers[0]의 bounded 되지 않은 구간(사당 이전) 내 역은 여전히 transfers[0]로 매칭된다', () => {
       // 을지로입구(2-002)는 transfers[2]의 arc(동대문역사문화공원~건대입구, idx4~11) 밖 →
       // bounded leg 미매칭 → 첫 leg(transfers[0], endName='사당', idx25) fallback 채택.
       // 2호선 본선은 closed loop이므로 을지로입구(idx1)→사당(idx25)은 wraparound 짧은 쪽인
-      // 역방향(minusHops 19 < plusHops 24) 경로 → 'up'.
-      expect(resolveTripDirection(route, '어린이대공원(세종대)', '2-002')).toBe('up');
+      // 역방향(minusHops 19 < plusHops 24) 경로 → 'down'(외선, #2867).
+      expect(resolveTripDirection(route, '어린이대공원(세종대)', '2-002')).toBe('down');
     });
 
     it('bounded leg의 entry/exit boundary 역명이 해당 line에 없으면 arc 검증 실패 → 다음 후보 fallback', () => {
@@ -235,8 +236,8 @@ describe('resolveTripDirection', () => {
       });
       // 성수(2-011)는 여전히 line 2 위에 있으나 transfers[2]의 entryBoundary 조회 실패로
       // arc 검증 불가 → transfers[0](사당, idx25) fallback 채택.
-      // 성수(idx10) → 사당(idx25) = down.
-      expect(resolveTripDirection(brokenRoute, '어린이대공원(세종대)', '2-011')).toBe('down');
+      // 성수(idx10) → 사당(idx25) = up(내선, #2867).
+      expect(resolveTripDirection(brokenRoute, '어린이대공원(세종대)', '2-011')).toBe('up');
     });
 
     it('#1965 P2-1 — 최종 leg도 bounded arc 검증 대상. 리뷰 실증 시나리오(2호선→4호선(사당)→2호선) 회귀', () => {
@@ -257,9 +258,9 @@ describe('resolveTripDirection', () => {
         ],
         stopsAfterLastTransfer: 2,
       });
-      // 최종 leg 채택 시: 을지로입구(idx1) → 을지로3가(idx2) = down.
-      // (오귀속되어 transfers[0]/사당(idx25)로 채택되면 'up'이 산출된다 — 회귀 방지 대상.)
-      expect(resolveTripDirection(route, canonicalStationName('을지로3가', '2'), '2-002')).toBe('down');
+      // 최종 leg 채택 시: 을지로입구(idx1) → 을지로3가(idx2) = up(내선, #2867).
+      // (오귀속되어 transfers[0]/사당(idx25)로 채택되면 'down'이 산출된다 — 회귀 방지 대상.)
+      expect(resolveTripDirection(route, canonicalStationName('을지로3가', '2'), '2-002')).toBe('up');
     });
 
     it('#1965 P2-2 — 순환선 seam(시청↔충정로) 걸친 bounded leg는 wrap-aware하게 arc 검증한다', () => {
@@ -287,11 +288,11 @@ describe('resolveTripDirection', () => {
         ],
         stopsAfterLastTransfer: 2,
       });
-      // bounded leg(line 2) 채택 시: 시청(idx0) → 을지로3가(idx2) = down.
+      // bounded leg(line 2) 채택 시: 시청(idx0) → 을지로3가(idx2) = up(내선, #2867).
       // (arc 검증 실패로 fallback되면 line 7 불일치로 null이 산출된다 — 회귀 방지 대상.)
       expect(
         resolveTripDirection(route, canonicalStationName('동대문역사문화공원', '4'), '2-001'),
-      ).toBe('down');
+      ).toBe('up');
     });
 
     it('#1965 P3-1 — bounded leg boundary 역명이 부제 없는 base name이어도 정규화로 매칭된다', () => {
@@ -307,10 +308,10 @@ describe('resolveTripDirection', () => {
         stopsAfterLastTransfer: 4,
       });
       // 성수(idx10)는 왕십리(성동구청, idx7)~건대입구(idx11) 구간 안 → transfers[2] 채택.
-      // 성수(idx10) → 건대입구(idx11) = down.
+      // 성수(idx10) → 건대입구(idx11) = up(내선, #2867).
       expect(
         resolveTripDirection(route, canonicalStationName('어린이대공원(세종대)', '7'), '2-011'),
-      ).toBe('down');
+      ).toBe('up');
     });
 
     it('#1965 P2-1 방어 분기 — 최종 leg entry boundary 조회 실패 시 unbounded fallback으로 채택된다', () => {
@@ -330,10 +331,10 @@ describe('resolveTripDirection', () => {
         ],
         stopsAfterLastTransfer: 2,
       });
-      // 성수(idx10) → 건대입구(idx11) = down.
+      // 성수(idx10) → 건대입구(idx11) = up(내선, #2867).
       expect(
         resolveTripDirection(route, canonicalStationName('건대입구', '2'), '2-011'),
-      ).toBe('down');
+      ).toBe('up');
     });
   });
 });
