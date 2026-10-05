@@ -260,12 +260,18 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     };
   }
 
+  // #2867 — 이 trip은 강남(2-022)→역삼(2-021) 방향(idx 감소 = 외선/down, 10/3·9/17 양방향
+  // 실측 52쌍 ground truth). 이 helper는 합성 fixture(trainCode='TR-A' 등 placeholder, 실측
+  // Seoul 캡처가 아님)라 isUp 라벨은 테스트 작성자가 직접 고른 값이었다 — 당시 "id 감소=내선"
+  // 이라는 역전된 믿음으로 isUp:true(내선)를 골랐던 것을 물리적으로 맞는 외선(isUp:false)으로
+  // 교정한다. boardingPrompt.ts의 direction 필터(강남→역삼=down)가 isUp:true 열차를 올바르게
+  // 배제하게 된 것이 이 fix의 의도된 효과다.
   function arrivedTrain(trainCode: string): ArrivalEntry {
     return {
       destination: '성수',
       arrivalSeconds: 0,
       trainCode,
-      isUp: true,
+      isUp: false,
       subwayNm: '2호선',
       arvlCd: 1,
     };
