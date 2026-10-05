@@ -168,7 +168,7 @@ describe('#2869 — vanish swap KV persist + stale-lock env-consensus bypass (�
     const trip = makeSindangTrip();
     await putTrip(kv as unknown as KVNamespace, trip);
     const deps = makeDeps(makeSindangSeoul(), (async () => new Response('', { status: 200 })) as unknown as typeof fetch);
-    const stats = createEmptyScheduledStats();
+    const stats = createEmptyScheduledStats(NOW);
 
     await runTrainCodeTracking(
       trip,
@@ -191,7 +191,7 @@ describe('#2869 — vanish swap KV persist + stale-lock env-consensus bypass (�
     const trip = makeSindangTrip();
     await putTrip(kv as unknown as KVNamespace, trip);
     const deps = makeDeps(makeSindangSeoul(), (async () => new Response('', { status: 200 })) as unknown as typeof fetch);
-    const stats = createEmptyScheduledStats();
+    const stats = createEmptyScheduledStats(NOW);
 
     await runTrainCodeTracking(
       trip,
@@ -218,7 +218,7 @@ describe('#2869 — vanish swap KV persist + stale-lock env-consensus bypass (�
     await putTrip(kv as unknown as KVNamespace, trip);
     const fetchImpl = (async () => new Response('', { status: 200 })) as unknown as typeof fetch;
     const deps = makeDeps(makeSindangSeoul(), fetchImpl);
-    const stats = createEmptyScheduledStats();
+    const stats = createEmptyScheduledStats(NOW);
 
     await runTrainCodeTracking(
       trip,
@@ -271,7 +271,7 @@ describe('#2869 — vanish swap KV persist + stale-lock env-consensus bypass (�
       }) as unknown as typeof fetch,
     });
     const depsTick2 = makeDeps(seoulTick2, fetchImpl);
-    const statsTick2 = createEmptyScheduledStats();
+    const statsTick2 = createEmptyScheduledStats(NOW + 60_000);
 
     await runTrainCodeTracking(
       tripTick2!,
@@ -358,7 +358,7 @@ describe('#2869 E — vanish estimate-null / swap-fail D1 전이 계측 (중복 
       const currentTrip = (await getTrip(kv as unknown as KVNamespace, TOKEN_E))!;
       const currentSsot = await readSsot(kv as unknown as KVNamespace, TOKEN_E);
       const deps = makeDeps(makeEmptySeoul(() => now), fetchImpl);
-      const stats = createEmptyScheduledStats();
+      const stats = createEmptyScheduledStats(now);
       await runTrainCodeTracking(
         currentTrip,
         currentTrip.waypoints[0],

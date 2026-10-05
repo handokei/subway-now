@@ -375,6 +375,24 @@ export interface TripPositionSSoT {
    * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
    */
   lastFireBlockReason?: string;
+  /**
+   * #2869 (E, 진단 계측 전용) — `runTrainCodeTracking`의 직전 tick `estimate===null` 여부(dedup
+   * 마커). caller가 이 값과 이번 tick 결과를 비교해 다를 때만 D1 `trip_events`(kind='vanish-swap',
+   * meta.phase='estimate-null')로 append한다(#2073 quota 보호). 10/3 신당 고착 RCA의 "지상
+   * attempt 0행" 블라인드 재발 방지 — 발사/advance 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  vanishEstimateNullState?: boolean;
+  /**
+   * #2869 (E, 진단 계측 전용) — `attemptVanishSwap`이 실제로 시도된(threshold 도달) tick의
+   * 직전 결과(swap 실패=true/성공=false, dedup 마커). caller가 이 값과 이번 tick 결과를 비교해
+   * 다를 때만 D1 `trip_events`(kind='vanish-swap', meta.phase='swap-attempt')로 append한다
+   * (#2073 quota 보호). 발사/advance/lock 판정에는 관여하지 않는다.
+   *
+   * 구 backend 호환을 위해 optional — 본 필드 도입 이전 row는 undefined(= 최초 tick으로 취급).
+   */
+  vanishSwapFailState?: boolean;
   // #2844 — `originPromptSkippedForLegAnchor`(#2708 방어선 계측 전용) 필드 삭제. 은퇴한
   // `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트) 자체의 내부 defense-in-depth 진단
   // 전용 마커였다 — 그 함수와 함께 유일한 read/write caller(`recordOriginPromptLegMismatchSkip`)도
