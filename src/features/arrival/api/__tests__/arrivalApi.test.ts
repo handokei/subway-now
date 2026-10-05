@@ -68,6 +68,47 @@ describe('fetchArrivalInfo', () => {
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
 
+  // #2868 (device 편측 확장) — stations.json 역명이 Seoul API 정식 질의명과 다른 35역.
+  // URL 생성 직전 map 적용(backend fetchArrivals와 동일 정책).
+  describe('fetchArrivalInfo station name mapping (#2868)', () => {
+    it('평명이 정식인 역 — 괄호 제거된 Seoul 질의명으로 URL 생성', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      mockRealtimeArrivalList([]);
+
+      await fetchArrivalInfo('왕십리(성동구청)');
+
+      const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(url).toContain(encodeURIComponent('왕십리'));
+      expect(url).not.toContain(encodeURIComponent('왕십리(성동구청)'));
+
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('괄호명이 정식인 역은 무변경 — 회귀 가드 (군자(능동))', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      mockRealtimeArrivalList([]);
+
+      await fetchArrivalInfo('군자(능동)');
+
+      const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(url).toContain(encodeURIComponent('군자(능동)'));
+
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('특수 변형 — 자양(뚝섬한강공원) → 뚝섬유원지', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      mockRealtimeArrivalList([]);
+
+      await fetchArrivalInfo('자양(뚝섬한강공원)');
+
+      const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(url).toContain(encodeURIComponent('뚝섬유원지'));
+
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+  });
+
   it('API 응답이 실패하면 Mock 데이터를 반환한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
