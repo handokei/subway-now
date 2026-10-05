@@ -86,8 +86,9 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptGeoContext.direction).toBe('up');
     });
 
-    it('순환선(2호선) — resolveTravelDirection null이지만 inferLoopDirection fallback으로 down 채움 (#1703)', () => {
-      // 시청(2-001) → 을지로3가(2-003): forward=2, backward=41 → forward 짧음 → down(외선순환).
+    it('순환선(2호선) — resolveTravelDirection null이지만 inferLoopDirection fallback으로 up 채움 (#1703, #2872)', () => {
+      // 시청(2-001) → 을지로3가(2-003): forward=2, backward=41 → forward 짧음 → up(내선순환, #2867
+      // ground truth: 내선=id 증가='up'. #2872 전까지는 역전된 'down'이 나왔다).
       // 이전엔 null이었지만 #1703 wiring으로 순환선도 backend가 양방향 후보 ambiguity 회피.
       const ctx = buildBoardingPromptContext({
         route: makeDirectRoute(2, '2'),
@@ -95,7 +96,7 @@ describe('buildBoardingPromptContext', () => {
         destination: st('2-003'),
       });
       expect(ctx).not.toBeNull();
-      expect(ctx?.promptGeoContext.direction).toBe('down');
+      expect(ctx?.promptGeoContext.direction).toBe('up');
       expect(ctx?.promptDisplay.line).toBe('2');
     });
 
@@ -400,9 +401,9 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptDisplay.originStation).toBe('서초');
     });
 
-    it('lock 활성 + 순환선(2호선) → inferLoopDirection fallback이 direction 채움', () => {
+    it('lock 활성 + 순환선(2호선) → inferLoopDirection fallback이 direction 채움 (#2872)', () => {
       // 시청(2-001) → 을지로3가(2-003) 구간에 lock. 순환선이라 resolveTravelDirection null이지만
-      // inferLoopDirection이 down(외선순환)을 채워야 함.
+      // inferLoopDirection이 up(내선순환, #2867 ground truth)을 채워야 함.
       const current = st('2-001');
       const dest = st('2-003');
       const lock = makeLock({
@@ -417,7 +418,7 @@ describe('buildBoardingPromptContext', () => {
         lock,
       });
       expect(ctx).not.toBeNull();
-      expect(ctx?.promptGeoContext.direction).toBe('down');
+      expect(ctx?.promptGeoContext.direction).toBe('up');
       expect(ctx?.promptDisplay.line).toBe('2');
     });
   });
